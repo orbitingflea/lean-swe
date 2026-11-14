@@ -8,6 +8,8 @@ def main : IO Unit := do
   Glob.RuntimeTests.runAll
   Fs.Raw.RuntimeTests.runAll
   Fs.RuntimeTests.runAll
+  Process.Raw.RuntimeTests.runAll
+  Process.RuntimeTests.runAll
   match RegExp.findAll "[0-9]+" "a1b22" with
   | .ok xs =>
     if xs.map (·.matched) != #["1", "22"] then
