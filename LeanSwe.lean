@@ -47,3 +47,7 @@ import LeanSwe.Json.Impl
 import LeanSwe.Json.SpecTests
 import LeanSwe.Json.Proofs
 import LeanSwe.Json.RuntimeTests
+import LeanSwe.Env.Raw.Types
+import LeanSwe.Env.Raw.SpecTests
+import LeanSwe.Env.Types
+import LeanSwe.Env.SpecTests
