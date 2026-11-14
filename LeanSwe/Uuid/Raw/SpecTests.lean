@@ -17,13 +17,13 @@ def test_uuidraw_mapRawError_normalizesError
   | .shortRead _ _ => assert True
   | .userError _ => assert True
 
-/-- Successful `ops.randomBytes16` calls return exactly 16 bytes, and failures carry a non-empty message. -/
+/-- Successful `ops.randomBytes16` calls return exactly 16 bytes, and failures carry `.entropyFailed` with a non-empty message. -/
 def test_uuidraw_randomBytes16_returns16BytesOrError
     {S : Type} {runner} [NondetTest runner] (ops : RawUuidOpsM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   match (ops.randomBytes16.run s₀).1 with
   | .ok bs => assert (bs.size = 16)
-  | .error e => assert (e.message ≠ "")
+  | .error e => assert (e.kind = .entropyFailed ∧ e.message ≠ "")
 
 private def stubRawOps : RawUuidOps :=
   { mapRawError := fun
@@ -48,6 +48,10 @@ private def buggyShortBytesRaw : RawUuidOpsM (StateM Unit) :=
 private def buggyEmptyReadErrRaw : RawUuidOpsM (StateM Unit) :=
   { mapRawError := stubRawOps.mapRawError
     randomBytes16 := pure (.error { kind := .entropyFailed, message := "" }) }
+
+private def buggyWrongReadErrKindRaw : RawUuidOpsM (StateM Unit) :=
+  { mapRawError := stubRawOps.mapRawError
+    randomBytes16 := pure (.error { kind := .invalidFormat, message := "wrong kind" }) }
 
 example : ¬ Core.AllPass (test_uuidraw_mapRawError_normalizesError (buggyEmptyErrRaw stubRawOps)) := by
   intro h
@@ -80,5 +84,10 @@ example : ¬ Core.AllPass (test_uuidraw_randomBytes16_returns16BytesOrError bugg
   intro h
   have h0 := h ()
   simp [buggyEmptyReadErrRaw, StateT.run, pure, StateT.pure, assert] at h0
+
+example : ¬ Core.AllPass (test_uuidraw_randomBytes16_returns16BytesOrError buggyWrongReadErrKindRaw) := by
+  intro h
+  have h0 := h ()
+  simp [buggyWrongReadErrKindRaw, StateT.run, pure, StateT.pure, assert] at h0
 
 end LeanSwe.Uuid.Raw
