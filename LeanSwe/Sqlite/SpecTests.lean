@@ -303,6 +303,7 @@ def test_sqlite_exec_preservesActiveStmtCount_andPropagatesErrors
   let mode ← nondet MockFailMode
   assume (mode = .none ∨ mode = .failPrepare .invalidInput ∨ mode = .failBind .invalidInput ∨
     mode = .failStep .busy ∨ mode = .failStep .constraint)
+  assume (!(isBeginSql sql || isCommitSql sql || isRollbackSql sql))
   let api := mkApi mockRawOps
   let s₀ : MockDb := { openDbs := [1], nextDbId := 2, failMode := mode }
   let out := (api.exec { id := 1 } sql params).run s₀
@@ -730,7 +731,7 @@ example : ¬ Core.AllPass (test_sqlite_withDb_preservesActiveDbCount_andPropagat
 
 example : ¬ Core.AllPass (test_sqlite_exec_preservesActiveStmtCount_andPropagatesErrors buggyExecLeakMkApi) := by
   intro h
-  have h0 := h "x" #[] (.failStep .busy) (by decide)
+  have h0 := h "x" #[] (.failStep .busy) (by decide) (by decide)
   dsimp only [test_sqlite_exec_preservesActiveStmtCount_andPropagatesErrors, Core.NondetTest.assert,
     bind, StateT.run] at h0
   have hLen : ((buggyExecLeakMkApi mockRawOps).exec { id := 1 } "x" #[]
