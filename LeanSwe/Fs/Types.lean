@@ -1,76 +1,17 @@
+import LeanSwe.Fs.Raw.Types
+
 /-!
 # Fs Package Types
 
-Public data structs, error enums, and `FsApi` bundle for `LeanSwe.Fs`.
-Kept free of OS and implementation internals so specifications in `SpecTests`
-depend only on this module.
+Public data structs, error enums, and generic `FsApiM` bundle for `LeanSwe.Fs`.
+Re-exports shared primitive types from `LeanSwe.Fs.Raw.Types` and stays free of
+OS and implementation internals so `SpecTests` depend only on this module.
 -/
 
 namespace LeanSwe.Fs
 
-/-- Classification of filesystem and path errors modeled after Python `OSError` subclasses. -/
-inductive FsErrorKind where
-  /-- Target path or parent directory does not exist (`FileNotFoundError`). -/
-  | notFound
-  /-- Target path already exists (`FileExistsError`). -/
-  | alreadyExists
-  /-- Insufficient permissions or disallowed operation (`PermissionError`). -/
-  | permissionDenied
-  /-- Expected a regular file or non-directory, found a directory (`IsADirectoryError`). -/
-  | isADirectory
-  /-- Expected a directory, found a non-directory (`NotADirectoryError`). -/
-  | notADirectory
-  /-- Directory is not empty on `rmdir` (`ENOTEMPTY`). -/
-  | notEmpty
-  /-- Invalid path, suffix, filename, glob pattern, or encoding (`ValueError` / `EINVAL`). -/
-  | invalidInput
-  /-- Operation not supported on the current platform or filesystem. -/
-  | unsupported
-  /-- Other OS-level I/O failure (`OSError`). -/
-  | ioError
-  deriving Repr, BEq, DecidableEq
-
-/-- Typed filesystem error returned by `LeanSwe.Fs` operations. -/
-structure FsError where
-  /-- Machine-checkable error category. -/
-  kind : FsErrorKind
-  /-- Path associated with the error, when available. -/
-  path : Option String := none
-  /-- Underlying OS `errno` code, when available. -/
-  errnoCode : Option UInt32 := none
-  /-- Non-empty human-readable diagnostic message. -/
-  message : String
-  deriving Repr, BEq, DecidableEq
-
-/-- Directory entry file type returned by `stat` and `lstat`. -/
-inductive EntryKind where
-  /-- Regular file. -/
-  | file
-  /-- Directory. -/
-  | dir
-  /-- Symbolic link (visible under `lstat`). -/
-  | symlink
-  /-- Socket, FIFO, device, or other special entry. -/
-  | other
-  deriving Repr, BEq, DecidableEq
-
-/-- File status metadata modeled after Python `os.stat_result`. -/
-structure FileStat where
-  /-- Kind of filesystem entry. -/
-  kind : EntryKind
-  /-- Size in bytes. -/
-  byteSize : Nat
-  /-- POSIX permission bits (`st_mode & 0o7777`). -/
-  mode : Nat
-  /-- Last modification timestamp (seconds). -/
-  modifiedSec : Int
-  /-- Last modification timestamp (nanoseconds). -/
-  modifiedNsec : Nat
-  /-- Last access timestamp (seconds). -/
-  accessedSec : Int
-  /-- Last access timestamp (nanoseconds). -/
-  accessedNsec : Nat
-  deriving Repr, BEq, DecidableEq
+export LeanSwe.Fs.Raw
+  (FsErrorKind FsError EntryKind FileStat FsRawError RawFsOpsM RawFsOps)
 
 /-- Single yielded directory node from `walk` (analogous to Python `os.walk` triples). -/
 structure WalkEntry where
@@ -82,28 +23,8 @@ structure WalkEntry where
   files : Array String
   deriving Repr, BEq, DecidableEq
 
-/-- Pure representation of raw OS error inputs for total error-mapping specs. -/
-inductive FsRawError where
-  /-- Path or parent directory missing (`ENOENT`). -/
-  | noFileOrDirectory (path : String) (errno : UInt32) (detail : String)
-  /-- Destination already exists (`EEXIST`). -/
-  | alreadyExists (path? : Option String) (errno : UInt32) (detail : String)
-  /-- Permission denied (`EACCES` / `EPERM`). -/
-  | permissionDenied (path? : Option String) (errno : UInt32) (detail : String)
-  /-- Inappropriate file type (`EISDIR` / `ENOTDIR` / `ENOTEMPTY`). -/
-  | inappropriateType (path? : Option String) (errno : UInt32) (detail : String)
-  /-- Invalid argument (`EINVAL` / `ENAMETOOLONG`). -/
-  | invalidArgument (path? : Option String) (errno : UInt32) (detail : String)
-  /-- Unsupported platform operation. -/
-  | unsupportedOperation (errno : UInt32) (detail : String)
-  /-- Generic numeric OS error. -/
-  | otherError (errno : UInt32) (detail : String)
-  /-- Generic user-constructed error string. -/
-  | userError (detail : String)
-  deriving Repr, BEq, DecidableEq
-
-/-- Public operations exported by `LeanSwe.Fs`, modeled after Python `pathlib`/`os`/`shutil`. -/
-structure FsApi where
+/-- Public operations exported by `LeanSwe.Fs`, parameterized over effect monad `m`. -/
+structure FsApiM (m : Type → Type) where
   /-- Join two paths using `/` (`Path.joinpath`). -/
   join : String → String → String
   /-- Join an array of path segments left-to-right. -/
@@ -131,62 +52,65 @@ structure FsApi where
   /-- Convert a raw OS error record into a normalized `FsError` with non-empty message. -/
   mapRawError : FsRawError → FsError
   /-- Read entire UTF-8 text file (`Path.read_text`). -/
-  readText : String → IO (Except FsError String)
+  readText : String → m (Except FsError String)
   /-- Write or overwrite UTF-8 text file (`Path.write_text`). -/
-  writeText : String → String → IO (Except FsError Unit)
+  writeText : String → String → m (Except FsError Unit)
   /-- Append UTF-8 text to file, creating it if absent. -/
-  appendText : String → String → IO (Except FsError Unit)
+  appendText : String → String → m (Except FsError Unit)
   /-- Read entire binary file (`Path.read_bytes`). -/
-  readBytes : String → IO (Except FsError ByteArray)
+  readBytes : String → m (Except FsError ByteArray)
   /-- Write or overwrite binary file (`Path.write_bytes`). -/
-  writeBytes : String → ByteArray → IO (Except FsError Unit)
+  writeBytes : String → ByteArray → m (Except FsError Unit)
   /-- Atomically write text via a sibling temporary file and `rename`. -/
-  atomicWriteText : String → String → IO (Except FsError Unit)
+  atomicWriteText : String → String → m (Except FsError Unit)
   /-- Create empty file if missing (`Path.touch`). -/
-  touch : String → Bool → IO (Except FsError Unit)
+  touch : String → Bool → m (Except FsError Unit)
   /-- Create directory, optionally creating parents or succeeding if present (`Path.mkdir`). -/
-  mkdir : String → Bool → Bool → IO (Except FsError Unit)
+  mkdir : String → Bool → Bool → m (Except FsError Unit)
   /-- Remove file or symlink (`Path.unlink`). -/
-  unlink : String → Bool → IO (Except FsError Unit)
+  unlink : String → Bool → m (Except FsError Unit)
   /-- Remove empty directory (`Path.rmdir`). -/
-  rmdir : String → IO (Except FsError Unit)
+  rmdir : String → m (Except FsError Unit)
   /-- Recursively delete directory tree (`shutil.rmtree`). -/
-  rmtree : String → Bool → IO (Except FsError Unit)
+  rmtree : String → Bool → m (Except FsError Unit)
   /-- Rename or replace file/directory (`os.replace`). -/
-  rename : String → String → IO (Except FsError Unit)
+  rename : String → String → m (Except FsError Unit)
   /-- Copy file contents (`shutil.copyfile`). -/
-  copyFile : String → String → IO (Except FsError Unit)
+  copyFile : String → String → m (Except FsError Unit)
   /-- Recursively copy directory tree (`shutil.copytree`). -/
-  copyTree : String → String → Bool → IO (Except FsError Unit)
+  copyTree : String → String → Bool → m (Except FsError Unit)
   /-- Check whether `path` exists, following symlinks (`Path.exists`). -/
-  pathExists : String → IO (Except FsError Bool)
+  pathExists : String → m (Except FsError Bool)
   /-- Check whether `path` refers to a regular file, following symlinks (`Path.is_file`). -/
-  isFile : String → IO (Except FsError Bool)
+  isFile : String → m (Except FsError Bool)
   /-- Check whether `path` refers to a directory, following symlinks (`Path.is_dir`). -/
-  isDir : String → IO (Except FsError Bool)
+  isDir : String → m (Except FsError Bool)
   /-- Check whether `path` itself is a symbolic link (`Path.is_symlink`). -/
-  isSymlink : String → IO (Except FsError Bool)
+  isSymlink : String → m (Except FsError Bool)
   /-- Inspect metadata following symlinks (`os.stat`). -/
-  stat : String → IO (Except FsError FileStat)
+  stat : String → m (Except FsError FileStat)
   /-- Inspect metadata without following symlinks (`os.lstat`). -/
-  lstat : String → IO (Except FsError FileStat)
+  lstat : String → m (Except FsError FileStat)
   /-- Set POSIX permission mode bits (`os.chmod`). -/
-  chmod : String → Nat → IO (Except FsError Unit)
+  chmod : String → Nat → m (Except FsError Unit)
   /-- Create symbolic link at `linkPath` pointing to `target` (`os.symlink`). -/
-  symlink : String → String → IO (Except FsError Unit)
+  symlink : String → String → m (Except FsError Unit)
   /-- Read symbolic link target (`os.readlink`). -/
-  readLink : String → IO (Except FsError String)
+  readLink : String → m (Except FsError String)
   /-- Resolve symlinks and return canonical absolute path (`Path.resolve`). -/
-  resolve : String → IO (Except FsError String)
+  resolve : String → m (Except FsError String)
   /-- Return current working directory (`os.getcwd`). -/
-  cwd : IO (Except FsError String)
+  cwd : m (Except FsError String)
   /-- Return sorted immediate child names in directory (`os.listdir`). -/
-  listDir : String → IO (Except FsError (Array String))
+  listDir : String → m (Except FsError (Array String))
   /-- Top-down directory walk yielding sorted children (`os.walk`). -/
-  walk : String → IO (Except FsError (Array WalkEntry))
+  walk : String → m (Except FsError (Array WalkEntry))
   /-- Find sorted relative paths under `root` matching glob `pattern` (`Path.glob`). -/
-  glob : String → String → IO (Except FsError (Array String))
+  glob : String → String → m (Except FsError (Array String))
   /-- Recursively match glob `pattern` under `root` (`Path.rglob`). -/
-  rglob : String → String → IO (Except FsError (Array String))
+  rglob : String → String → m (Except FsError (Array String))
+
+/-- Concrete `IO` filesystem API bundle for `LeanSwe.Fs`. -/
+abbrev FsApi := FsApiM IO
 
 end LeanSwe.Fs

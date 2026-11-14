@@ -11,6 +11,12 @@ import LeanSwe.Glob.Impl
 import LeanSwe.Glob.SpecTests
 import LeanSwe.Glob.Proofs
 import LeanSwe.Glob.RuntimeTests
+import LeanSwe.Fs.Raw.Types
+import LeanSwe.Fs.Raw.Interface
+import LeanSwe.Fs.Raw.Impl
+import LeanSwe.Fs.Raw.SpecTests
+import LeanSwe.Fs.Raw.Proofs
+import LeanSwe.Fs.Raw.RuntimeTests
 import LeanSwe.Fs.Types
 import LeanSwe.Fs.Interface
 import LeanSwe.Fs.Impl

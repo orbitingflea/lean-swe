@@ -6,6 +6,7 @@ open LeanSwe
 def main : IO Unit := do
   RegExp.RuntimeTests.runAll
   Glob.RuntimeTests.runAll
+  Fs.Raw.RuntimeTests.runAll
   Fs.RuntimeTests.runAll
   match RegExp.findAll "[0-9]+" "a1b22" with
   | .ok xs =>

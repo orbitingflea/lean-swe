@@ -1,37 +1,20 @@
 import LeanSwe.Fs.Types
 import LeanSwe.Fs.Impl
+import LeanSwe.Fs.Raw.Interface
 
 /-!
 # Fs Package Interface
 
 Public entry point for `LeanSwe.Fs`, providing Python `pathlib`/`os`/`shutil`-style
 path manipulation, file/directory I/O, tree walking, globbing, and POSIX metadata,
-permissions, and symlink operations. Houses the audited `@[extern]` FFI shims.
+permissions, and symlink operations wired cleanly to `LeanSwe.Fs.Raw.defaultOps`.
 -/
 
 namespace LeanSwe.Fs
 
-@[extern "leanswe_fs_chmod"]
-private opaque rawChmod : @& String → UInt32 → IO Unit
-
-@[extern "leanswe_fs_symlink"]
-private opaque rawSymlink : @& String → @& String → IO Unit
-
-@[extern "leanswe_fs_readlink"]
-private opaque rawReadLink : @& String → IO String
-
-@[extern "leanswe_fs_stat_mode"]
-private opaque rawStatMode : @& String → Bool → IO UInt32
-
-private def posixRawOps : Internal.PosixRawOps :=
-  { chmod := rawChmod
-    symlink := rawSymlink
-    readLink := rawReadLink
-    statMode := rawStatMode }
-
-/-- Default `FsApi` backed by OS syscalls and audited C-ABI shims (`c/fs_shim.c`). -/
+/-- Default `FsApi` backed by `LeanSwe.Fs.Raw.defaultOps`. -/
 def defaultApi : FsApi :=
-  Internal.mkApi posixRawOps
+  Internal.mkApiM Raw.defaultOps
 
 /-- Join two paths using `/` (`Path.joinpath`). -/
 @[inline] def join (base sub : String) : String :=
@@ -205,6 +188,6 @@ def defaultApi : FsApi :=
 
 /-- Execute `f` with a fresh temporary directory that is cleaned up afterward. -/
 @[inline] def withTempDir {α : Type} (f : String → IO (Except FsError α)) : IO (Except FsError α) :=
-  Internal.withTempDir f
+  Raw.withTempDir f
 
 end LeanSwe.Fs
