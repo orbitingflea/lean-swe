@@ -639,7 +639,7 @@ def runVmLoop
         (o2, b2)
   if hEnd : curPos = hay.endPos then
     best2
-  else if step2.isEmpty then
+  else if step2.isEmpty && best2.isSome then
     best2
   else
     let c := curPos.get hEnd
@@ -683,23 +683,31 @@ def findAllSpansLoop
   | none => acc
   | some sp =>
     let acc' := acc.push sp
-    if hAdvance : cursor < sp.stopPos then
-      let prev' :=
-        if hne : sp.stopPos ≠ hay.startPos then
-          some ((sp.stopPos.prev hne).get (by
-            intro heq
-            have hlt : sp.stopPos.prev hne < sp.stopPos := String.Pos.prev_lt
-            have hle : sp.stopPos ≤ hay.endPos := String.Pos.le_endPos sp.stopPos
-            rw [heq] at hlt
-            exact absurd hlt (Nat.not_lt_of_le (String.Pos.le_iff.mp hle))))
-        else
-          prevChar?
-      findAllSpansLoop nfa entryPc hay sp.stopPos prev' acc'
-    else if hNotEnd : cursor ≠ hay.endPos then
-      let c := cursor.get hNotEnd
-      findAllSpansLoop nfa entryPc hay (cursor.next hNotEnd) (some c) acc'
+    if _hNonEmpty : sp.startPos < sp.stopPos then
+      if hAdvance : cursor < sp.stopPos then
+        let prev' :=
+          if hne : sp.stopPos ≠ hay.startPos then
+            some ((sp.stopPos.prev hne).get (by
+              intro heq
+              have hlt : sp.stopPos.prev hne < sp.stopPos := String.Pos.prev_lt
+              have hle : sp.stopPos ≤ hay.endPos := String.Pos.le_endPos sp.stopPos
+              rw [heq] at hlt
+              exact absurd hlt (Nat.not_lt_of_le (String.Pos.le_iff.mp hle))))
+          else
+            prevChar?
+        findAllSpansLoop nfa entryPc hay sp.stopPos prev' acc'
+      else if hNotEnd : cursor ≠ hay.endPos then
+        let c := cursor.get hNotEnd
+        findAllSpansLoop nfa entryPc hay (cursor.next hNotEnd) (some c) acc'
+      else
+        acc'
     else
-      acc'
+      let basePos := if cursor < sp.stopPos then sp.stopPos else cursor
+      if hNotEnd : basePos ≠ hay.endPos then
+        let c := basePos.get hNotEnd
+        findAllSpansLoop nfa entryPc hay (basePos.next hNotEnd) (some c) acc'
+      else
+        acc'
 termination_by hay.utf8ByteSize - cursor.offset.byteIdx
 decreasing_by
   · have hlt : cursor.offset.byteIdx < sp.stopPos.offset.byteIdx :=
@@ -711,6 +719,17 @@ decreasing_by
       String.Pos.lt_iff.mp String.Pos.lt_next
     have hle : (cursor.next hNotEnd).offset.byteIdx ≤ hay.utf8ByteSize :=
       (cursor.next hNotEnd).isValid.le_utf8ByteSize
+    omega
+  · have hbase : cursor.offset.byteIdx ≤ basePos.offset.byteIdx := by
+      dsimp only [basePos]
+      split
+      · next hlt => exact Nat.le_of_lt (String.Pos.lt_iff.mp hlt)
+      · exact Nat.le_refl _
+    have hlt : basePos.offset.byteIdx < (basePos.next hNotEnd).offset.byteIdx :=
+      String.Pos.lt_iff.mp String.Pos.lt_next
+    have hle : (basePos.next hNotEnd).offset.byteIdx ≤ hay.utf8ByteSize :=
+      (basePos.next hNotEnd).isValid.le_utf8ByteSize
+    dsimp only [basePos] at hbase hlt hle
     omega
 
 /-- Compile `pattern` and find all non-overlapping `PosSpan` matches in `haystack`. -/

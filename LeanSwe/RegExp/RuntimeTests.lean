@@ -37,6 +37,15 @@ def runAll : IO Unit := do
     assertTrue (sp.matched == "bbb" && sp.startByte == 2 && sp.stopByte == 5)
       s!"unexpected UTF-8 span: {repr sp}"
   | other => throw (IO.userError s!"unexpected UTF-8 findFirst: {repr other}")
+  assertOkEq (testPattern "$" "a") true "end anchor should match after scanning past index 0"
+  assertOkEq (testPattern "\\ba" " a") true "word boundary pattern should match at index 1"
+  assertOkEq (testPattern "\\Ba" "ba") true "non-word boundary pattern should match at index 1"
+  assertOkEq (countMatches "$" "a") 1 "zero-width end anchor should match once"
+  match findAll "\\b" " a" with
+  | .ok xs =>
+    assertTrue (xs.map (fun s => (s.startByte, s.stopByte)) == #[(1, 1), (2, 2)])
+      s!"unexpected word boundary spans: {repr xs}"
+  | .error e => throw (IO.userError s!"unexpected word boundary findAll error: {e.message}")
   for bad in ["[unclosed", "(abc", "*bad"] do
     match testPattern bad "hello" with
     | .error e => assertTrue (e.message != "") s!"empty error message for {bad}"
