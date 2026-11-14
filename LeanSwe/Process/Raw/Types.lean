@@ -1,15 +1,5 @@
-/-!
-# Process.Raw Package Types
-
-Public data types, typed error enums, execution request/result/handle records,
-and the minimal single-step process primitive interface (`RawProcessOpsM`) exported
-by `LeanSwe.Process.Raw`. Kept free of OS and implementation internals so
-`SpecTests` depend only on this module.
--/
-
 namespace LeanSwe.Process.Raw
 
-/-- Helper formatting a `ByteArray` for `Repr` instances without adding a global orphan instance. -/
 private def reprByteArray (bs : ByteArray) : Std.Format :=
   repr bs.toList
 
