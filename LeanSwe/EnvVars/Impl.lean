@@ -1,8 +1,8 @@
-import LeanSwe.Env.Types
+import LeanSwe.EnvVars.Types
 
-namespace LeanSwe.Env.Internal
+namespace LeanSwe.EnvVars.Internal
 
-open LeanSwe.Env (EnvErrorKind EnvError EnvRawError RawEnvOpsM EnvApiM)
+open LeanSwe.EnvVars (EnvVarsErrorKind EnvVarsError EnvVarsRawError RawEnvVarsOpsM EnvVarsApiM)
 
 /-- Return `true` iff `cs` contains `=` or NUL (`Char.ofNat 0`). -/
 def hasInvalidKeyChar : List Char → Bool
@@ -28,8 +28,8 @@ def splitColonRaw : List Char → List (List Char)
 def splitSearchPath (path : String) : Array String :=
   (((splitColonRaw path.toList).filter fun s => !s.isEmpty).map String.ofList).toArray
 
-/-- Build `EnvApiM m` from a `RawEnvOpsM m` backend with zero `IO` or `@[extern]` dependencies. -/
-def mkApiM {m : Type → Type} [Monad m] (raw : RawEnvOpsM m) : EnvApiM m :=
+/-- Build `EnvVarsApiM m` from a `RawEnvVarsOpsM m` backend with zero `IO` or `@[extern]` dependencies. -/
+def mkApiM {m : Type → Type} [Monad m] (raw : RawEnvVarsOpsM m) : EnvVarsApiM m :=
   { mapRawError := raw.mapRawError
     getEnv := fun key => do
       if !isValidKey key then
@@ -63,4 +63,4 @@ def mkApiM {m : Type → Type} [Monad m] (raw : RawEnvOpsM m) : EnvApiM m :=
       | .ok (some h) => return .ok h
     splitSearchPath := splitSearchPath }
 
-end LeanSwe.Env.Internal
+end LeanSwe.EnvVars.Internal

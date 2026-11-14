@@ -12,8 +12,8 @@ def main : IO Unit := do
   Process.RuntimeTests.runAll
   Time.RuntimeTests.runAll
   Json.RuntimeTests.runAll
-  Env.Raw.RuntimeTests.runAll
-  Env.RuntimeTests.runAll
+  EnvVars.Raw.RuntimeTests.runAll
+  EnvVars.RuntimeTests.runAll
   Uuid.Raw.RuntimeTests.runAll
   Uuid.RuntimeTests.runAll
   Sqlite.Raw.RuntimeTests.runAll

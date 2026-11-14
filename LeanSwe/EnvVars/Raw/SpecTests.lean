@@ -1,22 +1,22 @@
 import Core.NondetTest
-import LeanSwe.Env.Raw.Types
+import LeanSwe.EnvVars.Raw.Types
 
-namespace LeanSwe.Env.Raw
+namespace LeanSwe.EnvVars.Raw
 
 open Core (NondetTest)
 open Core.NondetTest
 
 /-- Every error returned by `ops.mapRawError` carries a non-empty diagnostic message. -/
-def test_envraw_mapRawError_returnsNonEmptyMessage
-    {runner} [NondetTest runner] (ops : RawEnvOps) : runner Unit := do
-  let raw ← nondet EnvRawError
+def test_envvarsraw_mapRawError_returnsNonEmptyMessage
+    {runner} [NondetTest runner] (ops : RawEnvVarsOps) : runner Unit := do
+  let raw ← nondet EnvVarsRawError
   let err := ops.mapRawError raw
   NondetTest.assert (err.message ≠ "")
 
-/-- `ops.mapRawError` maps each `EnvRawError` constructor to its expected `EnvErrorKind`, `key`, and `errnoCode`. -/
-def test_envraw_mapRawError_preservesKindAndMetadata
-    {runner} [NondetTest runner] (ops : RawEnvOps) : runner Unit := do
-  let raw ← nondet EnvRawError
+/-- `ops.mapRawError` maps each `EnvVarsRawError` constructor to its expected `EnvVarsErrorKind`, `key`, and `errnoCode`. -/
+def test_envvarsraw_mapRawError_preservesKindAndMetadata
+    {runner} [NondetTest runner] (ops : RawEnvVarsOps) : runner Unit := do
+  let raw ← nondet EnvVarsRawError
   let err := ops.mapRawError raw
   match raw with
   | .invalidEncoding key? _ =>
@@ -28,7 +28,7 @@ def test_envraw_mapRawError_preservesKindAndMetadata
   | .userError _ =>
     NondetTest.assert (err.kind = .ioError ∧ err.key = none ∧ err.errnoCode = none)
 
-private def stubRawOps : RawEnvOps :=
+private def stubRawOps : RawEnvVarsOps :=
   { mapRawError := fun
       | .invalidEncoding key? _ =>
         { kind := .invalidEncoding, key := key?, errnoCode := none, message := "stub" }
@@ -41,23 +41,23 @@ private def stubRawOps : RawEnvOps :=
     getEnv := fun _ => pure (.ok none)
     listEnv := pure (.ok #[]) }
 
-private def buggyEmptyErrRaw (base : RawEnvOps) : RawEnvOps :=
+private def buggyEmptyErrRaw (base : RawEnvVarsOps) : RawEnvVarsOps :=
   { base with mapRawError := fun _ => { kind := .ioError, message := "" } }
 
-private def buggyWrongKindRaw (base : RawEnvOps) : RawEnvOps :=
+private def buggyWrongKindRaw (base : RawEnvVarsOps) : RawEnvVarsOps :=
   { base with
     mapRawError := fun
       | .invalidEncoding key? _ => { kind := .ioError, key := key?, message := "bad kind" }
       | other => base.mapRawError other }
 
-example : ¬ Core.AllPass (test_envraw_mapRawError_returnsNonEmptyMessage (buggyEmptyErrRaw stubRawOps)) := by
+example : ¬ Core.AllPass (test_envvarsraw_mapRawError_returnsNonEmptyMessage (buggyEmptyErrRaw stubRawOps)) := by
   intro h
   have h0 := h (.userError "boom")
   simp [buggyEmptyErrRaw, assert] at h0
 
-example : ¬ Core.AllPass (test_envraw_mapRawError_preservesKindAndMetadata (buggyWrongKindRaw stubRawOps)) := by
+example : ¬ Core.AllPass (test_envvarsraw_mapRawError_preservesKindAndMetadata (buggyWrongKindRaw stubRawOps)) := by
   intro h
   have h0 := h (.invalidEncoding (some "PATH") "bad utf8")
   simp [buggyWrongKindRaw, assert] at h0
 
-end LeanSwe.Env.Raw
+end LeanSwe.EnvVars.Raw

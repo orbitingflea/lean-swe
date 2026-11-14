@@ -1,7 +1,7 @@
-namespace LeanSwe.Env.Raw
+namespace LeanSwe.EnvVars.Raw
 
 /-- Classification of environment variable errors. -/
-inductive EnvErrorKind where
+inductive EnvVarsErrorKind where
   /-- Invalid environment variable name (empty, contains `=`, or contains NUL). -/
   | invalidKey
   /-- Invalid UTF-8 encoding in an environment variable entry or value. -/
@@ -12,10 +12,10 @@ inductive EnvErrorKind where
   | ioError
   deriving Repr, BEq, DecidableEq
 
-/-- Typed environment error returned by `LeanSwe.Env.Raw` and `LeanSwe.Env` operations. -/
-structure EnvError where
+/-- Typed environment error returned by `LeanSwe.EnvVars.Raw` and `LeanSwe.EnvVars` operations. -/
+structure EnvVarsError where
   /-- Machine-checkable error category. -/
-  kind : EnvErrorKind
+  kind : EnvVarsErrorKind
   /-- Environment variable name associated with the error, when available. -/
   key : Option String := none
   /-- Underlying OS `errno` code, when available. -/
@@ -25,7 +25,7 @@ structure EnvError where
   deriving Repr, BEq, DecidableEq
 
 /-- Pure representation of raw OS environment error inputs for total error-mapping specs. -/
-inductive EnvRawError where
+inductive EnvVarsRawError where
   /-- Invalid UTF-8 sequence encountered while decoding an environment key or value. -/
   | invalidEncoding (key? : Option String) (detail : String)
   /-- Invalid argument or key rejected by the OS boundary (`EINVAL`). -/
@@ -37,15 +37,15 @@ inductive EnvRawError where
   deriving Repr, BEq, DecidableEq
 
 /-- Minimal read-only environment primitives parameterized over effect monad `m`. -/
-structure RawEnvOpsM (m : Type → Type) where
-  /-- Convert a raw OS error record into a normalized `EnvError` with non-empty message. -/
-  mapRawError : EnvRawError → EnvError
+structure RawEnvVarsOpsM (m : Type → Type) where
+  /-- Convert a raw OS error record into a normalized `EnvVarsError` with non-empty message. -/
+  mapRawError : EnvVarsRawError → EnvVarsError
   /-- Look up a single environment variable without upper-layer key validation. -/
-  getEnv : String → m (Except EnvRawError (Option String))
+  getEnv : String → m (Except EnvVarsRawError (Option String))
   /-- List all `(key, value)` environment entries in process `environ` order. -/
-  listEnv : m (Except EnvRawError (Array (String × String)))
+  listEnv : m (Except EnvVarsRawError (Array (String × String)))
 
-/-- Concrete `IO` thin-wrapper API bundle exported by `LeanSwe.Env.Raw`. -/
-abbrev RawEnvOps := RawEnvOpsM IO
+/-- Concrete `IO` thin-wrapper API bundle exported by `LeanSwe.EnvVars.Raw`. -/
+abbrev RawEnvVarsOps := RawEnvVarsOpsM IO
 
-end LeanSwe.Env.Raw
+end LeanSwe.EnvVars.Raw

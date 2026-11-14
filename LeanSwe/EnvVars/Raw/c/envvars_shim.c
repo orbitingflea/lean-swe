@@ -98,7 +98,7 @@ static int leanswe_is_valid_utf8(const unsigned char *s, size_t len) {
   return 1;
 }
 
-LEAN_EXPORT lean_obj_res leanswe_env_list(lean_obj_arg w) {
+LEAN_EXPORT lean_obj_res leanswe_envvars_list(lean_obj_arg w) {
   (void)w;
   lean_obj_res arr = lean_mk_empty_array();
   char **envp = LEANSWE_ENVIRON;

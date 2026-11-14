@@ -1,10 +1,10 @@
-import LeanSwe.Env.Raw.Types
+import LeanSwe.EnvVars.Raw.Types
 
-namespace LeanSwe.Env.Raw.Internal
+namespace LeanSwe.EnvVars.Raw.Internal
 
-open LeanSwe.Env.Raw (EnvErrorKind EnvError EnvRawError RawEnvOps)
+open LeanSwe.EnvVars.Raw (EnvVarsErrorKind EnvVarsError EnvVarsRawError RawEnvVarsOps)
 
-/-- POSIX FFI operations injected by `LeanSwe.Env.Raw.Interface`. -/
+/-- POSIX FFI operations injected by `LeanSwe.EnvVars.Raw.Interface`. -/
 structure PosixRawOps where
   /-- Read all `(key, value)` entries from POSIX `environ`. -/
   listEnv : IO (Array (String × String))
@@ -13,8 +13,8 @@ structure PosixRawOps where
 def nonEmptyMsg (fallback msg : String) : String :=
   if msg.isEmpty then fallback else msg
 
-/-- Convert a pure `EnvRawError` record into a normalized `EnvError` with non-empty message. -/
-def mapRawError : EnvRawError → EnvError
+/-- Convert a pure `EnvVarsRawError` record into a normalized `EnvVarsError` with non-empty message. -/
+def mapRawError : EnvVarsRawError → EnvVarsError
   | .invalidEncoding key? detail =>
     { kind := .invalidEncoding
       key := key?
@@ -36,8 +36,8 @@ def mapRawError : EnvRawError → EnvError
       errnoCode := none
       message := nonEmptyMsg "environment error" detail }
 
-/-- Convert a Lean `IO.Error` into `EnvRawError`. -/
-def ioErrorToRaw : IO.Error → EnvRawError
+/-- Convert a Lean `IO.Error` into `EnvVarsRawError`. -/
+def ioErrorToRaw : IO.Error → EnvVarsRawError
   | .invalidArgument key? code detail =>
     if detail == "invalid UTF-8 in environment entry" then
       .invalidEncoding key? detail
@@ -66,8 +66,8 @@ def ioErrorToRaw : IO.Error → EnvRawError
   | .noSuchThing _ code detail => .otherError code detail
   | .unexpectedEof => .userError "unexpected end of file"
 
-/-- Build the concrete `RawEnvOps` bundle from injected POSIX C-ABI hooks. -/
-def mkRawOps (posix : PosixRawOps) : RawEnvOps :=
+/-- Build the concrete `RawEnvVarsOps` bundle from injected POSIX C-ABI hooks. -/
+def mkRawOps (posix : PosixRawOps) : RawEnvVarsOps :=
   { mapRawError := mapRawError
     getEnv := fun key => do
       let val ← IO.getEnv key
@@ -78,4 +78,4 @@ def mkRawOps (posix : PosixRawOps) : RawEnvOps :=
       catch err =>
         return .error (ioErrorToRaw err) }
 
-end LeanSwe.Env.Raw.Internal
+end LeanSwe.EnvVars.Raw.Internal
