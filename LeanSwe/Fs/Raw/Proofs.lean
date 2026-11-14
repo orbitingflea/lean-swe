@@ -38,11 +38,24 @@ theorem proof_fsraw_mapRawError_returnsNonEmptyMessage :
   | unsupportedOperation _ _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
   | otherError code _ =>
     exact nonEmptyMsg_ne_empty _ _ (append_head_ne_empty "os error " (toString code) (by decide))
+  | wouldBlock _ _ _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
   | userError _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
 
 /-- Non-vacuity `CanReach` witness for `test_fsraw_mapRawError_returnsNonEmptyMessage`. -/
 theorem reach_fsraw_mapRawError_returnsNonEmptyMessage :
     CanReach (test_fsraw_mapRawError_returnsNonEmptyMessage defaultOps) :=
   ⟨.userError "", proof_fsraw_mapRawError_returnsNonEmptyMessage (.userError "")⟩
+
+/-- Proof of `test_fsraw_mapRawError_wouldBlock` for `defaultOps`. -/
+theorem proof_fsraw_mapRawError_wouldBlock :
+    AllPass (test_fsraw_mapRawError_wouldBlock defaultOps) := by
+  intro path? errno detail
+  simp only [defaultOps, Internal.mkRawOps, Internal.mapRawError, assert]
+  refine ⟨⟨trivial, trivial, trivial, nonEmptyMsg_ne_empty _ _ (by decide)⟩, trivial⟩
+
+/-- Non-vacuity `CanReach` witness for `test_fsraw_mapRawError_wouldBlock`. -/
+theorem reach_fsraw_mapRawError_wouldBlock :
+    CanReach (test_fsraw_mapRawError_wouldBlock defaultOps) :=
+  ⟨some "/tmp/a.lock", 11, "", proof_fsraw_mapRawError_wouldBlock (some "/tmp/a.lock") 11 ""⟩
 
 end LeanSwe.Fs.Raw.Proofs

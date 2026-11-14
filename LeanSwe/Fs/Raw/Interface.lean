@@ -15,11 +15,19 @@ private opaque rawReadLink : @& String → IO String
 @[extern "leanswe_fs_stat_mode"]
 private opaque rawStatMode : @& String → Bool → IO UInt32
 
+@[extern "leanswe_fs_acquire_lock"]
+private opaque rawAcquireLock : @& String → UInt8 → Bool → Bool → IO (UInt8 × UInt64 × UInt32)
+
+@[extern "leanswe_fs_release_lock"]
+private opaque rawReleaseLock : UInt64 → @& String → IO Unit
+
 private def posixRawOps : Internal.PosixRawOps :=
   { chmod := rawChmod
     symlink := rawSymlink
     readLink := rawReadLink
-    statMode := rawStatMode }
+    statMode := rawStatMode
+    acquireLock := rawAcquireLock
+    releaseLock := rawReleaseLock }
 
 /-- Default minimal OS primitive operations backed by `IO.FS` and `c/fs_shim.c`. -/
 def defaultOps : RawFsOps :=
@@ -88,5 +96,14 @@ def defaultOps : RawFsOps :=
 /-- Execute `f` with a fresh temporary directory cleaned up afterward. -/
 @[inline] def withTempDir {α : Type} (f : String → IO (Except FsError α)) : IO (Except FsError α) :=
   Internal.withTempDir f
+
+/-- Acquire an OS advisory file lock on `path`. -/
+@[inline] def acquireLock (path : String) (mode : LockMode := .exclusive)
+    (createIfMissing : Bool := true) (nonBlocking : Bool := false) : IO (Except FsError LockHandle) :=
+  defaultOps.acquireLock path mode createIfMissing nonBlocking
+
+/-- Release a previously acquired OS advisory file lock handle. -/
+@[inline] def releaseLock (handle : LockHandle) : IO (Except FsError Unit) :=
+  defaultOps.releaseLock handle
 
 end LeanSwe.Fs.Raw
