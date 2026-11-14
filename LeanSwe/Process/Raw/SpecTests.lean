@@ -65,7 +65,8 @@ def test_processRaw_killAndReap_restoresActiveCount
   match spawnRes with
   | .error _ => assume False
   | .ok h =>
-    assert (h.pid > 0 ∧ h.pgid > 0)
+    let n₁ := (ops.activeProcessCount.run s₁).1
+    assert (h.pid > 0 ∧ h.pgid > 0 ∧ n₁ = n₀ + 1)
     let (killRes, s₂) := (ops.killProcessGroup h).run s₁
     let (reapRes, s₃) := (ops.reap h).run s₂
     let n₃ := (ops.activeProcessCount.run s₃).1
@@ -135,6 +136,12 @@ private def buggySpawnEmptyRaw (base : RawProcessOpsM (StateM Nat)) : RawProcess
 private def buggyNoReapRaw (base : RawProcessOpsM (StateM Nat)) : RawProcessOpsM (StateM Nat) :=
   { base with reap := fun _ => pure (.ok ()) }
 
+/-- Negative mutation: `spawn` omitting active-handle tracking paired with no-op `reap` must fail `SpecTests`. -/
+private def buggyNoTrackSpawnRaw (base : RawProcessOpsM (StateM Nat)) : RawProcessOpsM (StateM Nat) :=
+  { base with
+    spawn := fun _ => pure (.ok { handleId := 1, pid := 100, pgid := 100 })
+    reap := fun _ => pure (.ok ()) }
+
 example : ¬ Core.AllPass (test_processRaw_mapRawError_returnsNonEmptyMessage (buggyEmptyErrRaw stubRawOps)) := by
   intro h
   have h0 := h (.userError "boom")
@@ -156,5 +163,10 @@ example : ¬ Core.AllPass (test_processRaw_killAndReap_restoresActiveCount (bugg
   have h0 := h 0 { program := "echo" }
   simp [buggyNoReapRaw, stubStatefulRawOps, StateT.run, bind, StateT.bind, pure, StateT.pure,
     modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, assert] at h0
+
+example : ¬ Core.AllPass (test_processRaw_killAndReap_restoresActiveCount (buggyNoTrackSpawnRaw stubStatefulRawOps)) := by
+  intro h
+  have h0 := h 0 { program := "echo" }
+  simp [buggyNoTrackSpawnRaw, stubStatefulRawOps, StateT.run, bind, pure, StateT.pure, assert] at h0
 
 end LeanSwe.Process.Raw

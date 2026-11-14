@@ -107,6 +107,21 @@ def test_process_validateRequest_rejectsZeroTimeout
   | .ok _ => assert False
   | .error err => assert (err.kind = .invalidInput ∧ err.message ≠ "")
 
+/-- Every valid `ExecRequest` (non-empty `program`, no NUL bytes, valid env keys, non-zero timeout) is accepted by `api.validateRequest`. -/
+def test_process_validateRequest_acceptsValidRequest
+    {runner} [NondetTest runner] (api : ProcessApi) : runner Unit := do
+  let req ← nondet ExecRequest
+  assume (req.program ≠ "" ∧ !req.program.toList.contains '\x00')
+  assume (req.args.toList.all (fun a => !a.toList.contains '\x00'))
+  assume (match req.cwd with | some d => !d.toList.contains '\x00' | none => true)
+  assume (req.env.toList.all (fun kv =>
+    kv.1 != "" && !kv.1.toList.contains '=' && !kv.1.toList.contains '\x00' &&
+    match kv.2 with | some v => !v.toList.contains '\x00' | none => true))
+  assume (req.timeoutMs ≠ some 0)
+  match api.validateRequest req with
+  | .error _ => assert False
+  | .ok _ => assert True
+
 /-- `api.validateRequest` is idempotent on all valid requests. -/
 def test_process_validateRequest_idempotent
     {runner} [NondetTest runner] (api : ProcessApi) : runner Unit := do
@@ -130,15 +145,40 @@ def test_process_validateRequest_preservesDirectArgsAndOptions
       norm.timeoutMs = req.timeoutMs ∧
       norm.maxOutputBytes = req.maxOutputBytes)
 
-/-- Duplicate environment keys in `req.env` normalize with last-write-wins semantics. -/
+/-- Duplicate environment keys `(k, v₁), (k, v₂)` in `req.env` normalize to `[(k, v₂)]` (last-write-wins, including `none` removals). -/
 def test_process_validateRequest_envOverride_lastWins
     {runner} [NondetTest runner] (api : ProcessApi) : runner Unit := do
   let prog ← nondet String
-  assume (prog ≠ "" ∧ '\x00' ∉ prog.toList)
-  let req : ExecRequest := { program := prog, env := #[("FOO", some "1"), ("FOO", some "2")] }
+  let k ← nondet String
+  let v₁ ← nondet (Option String)
+  let v₂ ← nondet (Option String)
+  assume (prog ≠ "" ∧ !prog.toList.contains '\x00')
+  assume (k ≠ "" ∧ !k.toList.contains '=' ∧ !k.toList.contains '\x00')
+  assume (match v₁ with | some v => !v.toList.contains '\x00' | none => true)
+  assume (match v₂ with | some v => !v.toList.contains '\x00' | none => true)
+  let req : ExecRequest := { program := prog, env := #[(k, v₁), (k, v₂)] }
   match api.validateRequest req with
   | .error _ => assert False
-  | .ok norm => assert (norm.env = #[("FOO", some "2")])
+  | .ok norm => assert (norm.env = #[(k, v₂)])
+
+/-- Distinct valid environment entries `(k₁, v₁), (k₂, v₂)` (`k₁ ≠ k₂`, including `none` removals) are preserved by `api.validateRequest`. -/
+def test_process_validateRequest_preservesDistinctEnv
+    {runner} [NondetTest runner] (api : ProcessApi) : runner Unit := do
+  let prog ← nondet String
+  let k₁ ← nondet String
+  let k₂ ← nondet String
+  let v₁ ← nondet (Option String)
+  let v₂ ← nondet (Option String)
+  assume (prog ≠ "" ∧ !prog.toList.contains '\x00')
+  assume (k₁ ≠ "" ∧ !k₁.toList.contains '=' ∧ !k₁.toList.contains '\x00')
+  assume (k₂ ≠ "" ∧ !k₂.toList.contains '=' ∧ !k₂.toList.contains '\x00')
+  assume (k₁ ≠ k₂)
+  assume (match v₁ with | some v => !v.toList.contains '\x00' | none => true)
+  assume (match v₂ with | some v => !v.toList.contains '\x00' | none => true)
+  let req : ExecRequest := { program := prog, env := #[(k₁, v₁), (k₂, v₂)] }
+  match api.validateRequest req with
+  | .error _ => assert False
+  | .ok norm => assert (norm.env = #[(k₁, v₁), (k₂, v₂)])
 
 /-- `api.mkCommandRequest` stores `program` and `args` verbatim (no `/bin/sh -c` wrapping) with clean defaults. -/
 def test_process_mkCommandRequest_preservesProgramAndArgsVerbatim
@@ -336,6 +376,22 @@ def test_process_run_respectsMaxOutputBytes
   | .ok out => assert (out.stdout.size + out.stderr.size ≤ limit)
   | .error _ => assume False
 
+/-- When a child is terminated by an OS signal, `api.run` cleans up/reaps handles and returns `.terminatedBySignal` with `program` and `signal`. -/
+def test_process_signaled_cleansUpAndErrors
+    {S : Type} {runner} [NondetTest runner] (api : ProcessApiM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let req ← nondet ExecRequest
+  let n₀ := (api.activeProcessCount.run s₀).1
+  let (res, s₁) := (api.run req).run s₀
+  match res with
+  | .error err =>
+    assume (err.kind = .terminatedBySignal)
+    assert (err.program = some req.program ∧
+      err.signal ≠ none ∧
+      err.message ≠ "" ∧
+      (api.activeProcessCount.run s₁).1 = n₀)
+  | .ok _ => assume False
+
 /-- Every error returned by `api.run` carries a non-empty diagnostic message. -/
 def test_process_run_onError_returnsNonEmptyMessage
     {S : Type} {runner} [NondetTest runner] (api : ProcessApiM (StateM S)) : runner Unit := do
@@ -490,6 +546,23 @@ example : ¬ Core.AllPass (test_process_validateRequest_rejectsZeroTimeout
   have h0 := h { program := "echo", timeoutMs := some 0 } rfl
   simp [assert] at h0
 
+example : ¬ Core.AllPass (test_process_validateRequest_acceptsValidRequest
+    { stubProcessApi with
+      validateRequest := fun req =>
+        if req.maxOutputBytes == some 0 then
+          .error { kind := .invalidInput, message := "bad limit" }
+        else stubProcessApi.validateRequest req }) := by
+  intro h
+  let req : ExecRequest :=
+    { program := "echo"
+      cwd := some "/tmp"
+      timeoutMs := some 100
+      maxOutputBytes := some 0
+      inheritEnv := false
+      env := #[("A", none)] }
+  have h0 := h req (by decide) (by decide) (by decide) (by decide) (by decide)
+  simp [req, assert] at h0
+
 example : ¬ Core.AllPass (test_process_validateRequest_idempotent
     { stubProcessApi with
       validateRequest := fun req =>
@@ -510,7 +583,17 @@ example : ¬ Core.AllPass (test_process_validateRequest_preservesDirectArgsAndOp
 example : ¬ Core.AllPass (test_process_validateRequest_envOverride_lastWins
     { stubProcessApi with validateRequest := fun req => .ok req }) := by
   intro h
-  have h0 := h "echo" ⟨by decide, by decide⟩
+  have h0 := h "echo" "FOO" (some "1") none
+    (by decide) (by decide) (by decide) (by decide)
+  simp [assert] at h0
+
+example : ¬ Core.AllPass (test_process_validateRequest_preservesDistinctEnv
+    { stubProcessApi with
+      validateRequest := fun req =>
+        .ok { req with env := req.env.filter (fun kv => kv.2.isSome) } }) := by
+  intro h
+  have h0 := h "echo" "A" "B" (some "1") none
+    (by decide) (by decide) (by decide) (by decide) (by decide) (by decide)
   simp [assert] at h0
 
 example : ¬ Core.AllPass (test_process_mkCommandRequest_preservesProgramAndArgsVerbatim
@@ -660,5 +743,13 @@ example : ¬ Core.AllPass (test_process_runChecked_onError_returnsNonEmptyMessag
   intro h
   have h0 := h 0 { program := "false" }
   simp [StateT.run, pure, StateT.pure, assert] at h0
+
+example : ¬ Core.AllPass (test_process_signaled_cleansUpAndErrors
+    { stubStatefulApi with
+      run := fun req =>
+        pure (.error { kind := .terminatedBySignal, program := some req.program, signal := none, message := "killed" }) }) := by
+  intro h
+  have h0 := h 0 { program := "sleep" } rfl
+  simp [StateT.run, assert] at h0
 
 end LeanSwe.Process
