@@ -60,8 +60,8 @@ structure MockDb where
   queryRows : Array SqliteRow := #[]
   /-- Chronological log of `(sql, params)` pairs passed to `bind`. -/
   boundCalls : List (String × Array SqliteValue) := []
-  /-- Records whether `openDb` was invoked. -/
-  openCalled : Bool := false
+  /-- Chronological log of `(path, cfg)` pairs passed to `openDb`. -/
+  openCalls : List (String × OpenConfig) := []
   /-- Fault-injection mode for testing error paths and cleanup. -/
   failMode : MockFailMode := .none
   deriving Repr, BEq
@@ -92,9 +92,10 @@ private def mockMapRawError (raw : SqliteRawError) : SqliteError :=
   | .sqliteCodeError c _ => { kind := .ioError, sqliteCode := some c, message := "sqliteCodeError" }
   | .userError _ => { kind := .ioError, message := "userError" }
 
-private def mockOpenDb (path : String) (_cfg : OpenConfig) : MockDb → Except SqliteError DbHandle × MockDb
-  | ⟨nextDbId, nextStmtId, openDbs, openStmts, inTx, comm, staged, qRows, bCalls, _, fMode⟩ =>
-    let s1 : MockDb := ⟨nextDbId, nextStmtId, openDbs, openStmts, inTx, comm, staged, qRows, bCalls, true, fMode⟩
+private def mockOpenDb (path : String) (cfg : OpenConfig) : MockDb → Except SqliteError DbHandle × MockDb
+  | ⟨nextDbId, nextStmtId, openDbs, openStmts, inTx, comm, staged, qRows, bCalls, oCalls, fMode⟩ =>
+    let oCalls' := oCalls ++ [(path, cfg)]
+    let s1 : MockDb := ⟨nextDbId, nextStmtId, openDbs, openStmts, inTx, comm, staged, qRows, bCalls, oCalls', fMode⟩
     match fMode with
     | .failOpen k => (.error { kind := k, path := some path, message := "mock open failure" }, s1)
     | _ =>
@@ -102,7 +103,7 @@ private def mockOpenDb (path : String) (_cfg : OpenConfig) : MockDb → Except S
         (.error { kind := .invalidInput, path := some path, message := "empty path" }, s1)
       else
         (.ok { id := nextDbId },
-          ⟨nextDbId + 1, nextStmtId, openDbs ++ [nextDbId], openStmts, inTx, comm, staged, qRows, bCalls, true, fMode⟩)
+          ⟨nextDbId + 1, nextStmtId, openDbs ++ [nextDbId], openStmts, inTx, comm, staged, qRows, bCalls, oCalls', fMode⟩)
 
 private def mockCloseDb (db : DbHandle) : MockDb → Except SqliteError Unit × MockDb
   | s@⟨nextDbId, nextStmtId, openDbs, openStmts, inTx, comm, staged, qRows, bCalls, oCalled, fMode⟩ =>
@@ -277,7 +278,8 @@ def test_sqlite_withDb_preservesActiveDbCount_andPropagatesBusy
   let sOk : MockDb := {}
   let outOk := (api.withDb path validCfg (fun _ =>
     if failOnBody then pure (.error bodyErr) else pure (.ok "done"))).run sOk
-  assert (outOk.2.openDbs.length = 0 ∧ (api.activeDbCount.run outOk.2).1 = 0)
+  assert (outOk.2.openDbs.length = 0 ∧ (api.activeDbCount.run outOk.2).1 = 0 ∧
+    outOk.2.openCalls = [(path, validCfg)])
   if failOnBody then
     assert (outOk.1 = .error bodyErr)
   else
@@ -285,11 +287,12 @@ def test_sqlite_withDb_preservesActiveDbCount_andPropagatesBusy
   let sBusy : MockDb := { failMode := .failOpen .busy }
   let outBusy := (api.withDb path validCfg (fun _ => pure (.ok ()))).run sBusy
   assert ((∃ e, outBusy.1 = .error e ∧ e.kind = .busy) ∧
-    outBusy.2.openDbs.length = 0 ∧ (api.activeDbCount.run outBusy.2).1 = 0)
+    outBusy.2.openDbs.length = 0 ∧ (api.activeDbCount.run outBusy.2).1 = 0 ∧
+    outBusy.2.openCalls = [(path, validCfg)])
   let badCfg : OpenConfig := { readOnly := true, createIfMissing := true }
   let outBad := (api.withDb path badCfg (fun _ => pure (.ok ()))).run sOk
   assert ((∃ e, outBad.1 = .error e ∧ e.kind = .invalidInput) ∧
-    outBad.2.openCalled = false ∧ outBad.2.openDbs.length = 0)
+    outBad.2.openCalls = [] ∧ outBad.2.openDbs.length = 0)
 
 /-- `exec` propagates `.busy`/`.constraint` errors and preserves `activeStmtCount` on all success and failure paths. -/
 def test_sqlite_exec_preservesActiveStmtCount_andPropagatesErrors
@@ -411,7 +414,7 @@ def test_sqlite_withTransaction_rollsBackOnCommitAndBeginBusy
   assert (outCommit.2.committedWrites = [] ∧ outCommit.2.stagedWrites = [] ∧ outCommit.2.inTransaction = false)
   assert (outCommit.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outCommit.2).1 = 0)
 
-/-- `exec` and `query` bind typed `SqliteValue` arrays directly via `bind` without SQL string interpolation. -/
+/-- `exec`, `query`, and `queryOne` bind typed `SqliteValue` arrays directly via `bind` without SQL string interpolation. -/
 def test_sqlite_binding_noSqlStringInterpolation
     {runner} [NondetTest runner]
     (mkApi : RawSqliteOpsM (StateM MockDb) → SqliteApiM (StateM MockDb)) : runner Unit := do
@@ -420,12 +423,14 @@ def test_sqlite_binding_noSqlStringInterpolation
   let api := mkApi mockRawOps
   let insertSql := "INSERT INTO users(name, age) VALUES (?, ?)"
   let selectSql := "SELECT name, age FROM users WHERE name = ? AND age = ?"
+  let selectOneSql := "SELECT name, age FROM users WHERE name = ? AND age = ? LIMIT 1"
   let params : Array SqliteValue := #[.text payload, .int n]
   let s₀ : MockDb := { openDbs := [1], nextDbId := 2, failMode := .none }
   let outExec := (api.exec { id := 1 } insertSql params).run s₀
   let outQuery := (api.query { id := 1 } selectSql params).run outExec.2
-  assert (outExec.1 = .ok () ∧ outQuery.1 = .ok #[])
-  assert (outQuery.2.boundCalls = [(insertSql, params), (selectSql, params)])
+  let outQueryOne := (api.queryOne { id := 1 } selectOneSql params).run outQuery.2
+  assert (outExec.1 = .ok () ∧ outQuery.1 = .ok #[] ∧ outQueryOne.1 = .ok none)
+  assert (outQueryOne.2.boundCalls = [(insertSql, params), (selectSql, params), (selectOneSql, params)])
 
 /-- `withDb` wrapping `withTransaction` and `exec` preserves both `activeDbCount` and `activeStmtCount`. -/
 def test_sqlite_withDb_withTransaction_preservesAllHandles
@@ -674,6 +679,16 @@ private def buggyInterpolateMkApi (ops : RawSqliteOpsM (StateM MockDb)) : Sqlite
   { base with
     exec := fun db sql _params => base.exec db (sql ++ " -- interpolated") #[] }
 
+private def buggyInterpolateQueryOneMkApi (ops : RawSqliteOpsM (StateM MockDb)) : SqliteApiM (StateM MockDb) :=
+  let base := goodMkApi ops
+  { base with
+    queryOne := fun db sql _params => base.queryOne db (sql ++ " -- interpolated") #[] }
+
+private def buggyDropOpenCfgMkApi (ops : RawSqliteOpsM (StateM MockDb)) : SqliteApiM (StateM MockDb) :=
+  let base := goodMkApi ops
+  { base with
+    withDb := fun path _cfg action => base.withDb path {} action }
+
 example : ¬ Core.AllPass (test_sqlite_mapRawError_returnsNonEmptyMessage (buggyEmptyErrApi stubGoodApi)) := by
   intro h
   have h0 := h (.userError "boom")
@@ -793,17 +808,59 @@ example : ¬ Core.AllPass (test_sqlite_binding_noSqlStringInterpolation buggyInt
   have h0 := h "'; DROP TABLE users; --" 7
   dsimp only [test_sqlite_binding_noSqlStringInterpolation, Core.NondetTest.nondet,
     Core.NondetTest.assert, bind, StateT.run] at h0
-  have hBound : ((buggyInterpolateMkApi mockRawOps).query { id := 1 }
-      "SELECT name, age FROM users WHERE name = ? AND age = ?"
+  have hBound : ((buggyInterpolateMkApi mockRawOps).queryOne { id := 1 }
+      "SELECT name, age FROM users WHERE name = ? AND age = ? LIMIT 1"
       #[.text "'; DROP TABLE users; --", .int 7]
-      ((buggyInterpolateMkApi mockRawOps).exec { id := 1 }
-        "INSERT INTO users(name, age) VALUES (?, ?)" #[.text "'; DROP TABLE users; --", .int 7]
-        { openDbs := [1], nextDbId := 2, failMode := .none }).2).2.boundCalls =
+      ((buggyInterpolateMkApi mockRawOps).query { id := 1 }
+        "SELECT name, age FROM users WHERE name = ? AND age = ?"
+        #[.text "'; DROP TABLE users; --", .int 7]
+        ((buggyInterpolateMkApi mockRawOps).exec { id := 1 }
+          "INSERT INTO users(name, age) VALUES (?, ?)" #[.text "'; DROP TABLE users; --", .int 7]
+          { openDbs := [1], nextDbId := 2, failMode := .none }).2).2).2.boundCalls =
       [("INSERT INTO users(name, age) VALUES (?, ?) -- interpolated", #[]),
        ("SELECT name, age FROM users WHERE name = ? AND age = ?",
+        #[.text "'; DROP TABLE users; --", .int 7]),
+       ("SELECT name, age FROM users WHERE name = ? AND age = ? LIMIT 1",
         #[.text "'; DROP TABLE users; --", .int 7])] := rfl
   have hBad := h0.2.1
   rw [hBound] at hBad
+  simp at hBad
+
+example : ¬ Core.AllPass (test_sqlite_binding_noSqlStringInterpolation buggyInterpolateQueryOneMkApi) := by
+  intro h
+  have h0 := h "'; DROP TABLE users; --" 7
+  dsimp only [test_sqlite_binding_noSqlStringInterpolation, Core.NondetTest.nondet,
+    Core.NondetTest.assert, bind, StateT.run] at h0
+  have hBound : ((buggyInterpolateQueryOneMkApi mockRawOps).queryOne { id := 1 }
+      "SELECT name, age FROM users WHERE name = ? AND age = ? LIMIT 1"
+      #[.text "'; DROP TABLE users; --", .int 7]
+      ((buggyInterpolateQueryOneMkApi mockRawOps).query { id := 1 }
+        "SELECT name, age FROM users WHERE name = ? AND age = ?"
+        #[.text "'; DROP TABLE users; --", .int 7]
+        ((buggyInterpolateQueryOneMkApi mockRawOps).exec { id := 1 }
+          "INSERT INTO users(name, age) VALUES (?, ?)" #[.text "'; DROP TABLE users; --", .int 7]
+          { openDbs := [1], nextDbId := 2, failMode := .none }).2).2).2.boundCalls =
+      [("INSERT INTO users(name, age) VALUES (?, ?)",
+        #[.text "'; DROP TABLE users; --", .int 7]),
+       ("SELECT name, age FROM users WHERE name = ? AND age = ?",
+        #[.text "'; DROP TABLE users; --", .int 7]),
+       ("SELECT name, age FROM users WHERE name = ? AND age = ? LIMIT 1 -- interpolated", #[])] := rfl
+  have hBad := h0.2.1
+  rw [hBound] at hBad
+  simp at hBad
+
+example : ¬ Core.AllPass (test_sqlite_withDb_preservesActiveDbCount_andPropagatesBusy buggyDropOpenCfgMkApi) := by
+  intro h
+  have h0 := h "db" { busyTimeoutMs := 123, walMode := false } false { kind := .ioError, message := "e" } (by decide)
+  dsimp only [test_sqlite_withDb_preservesActiveDbCount_andPropagatesBusy, Core.NondetTest.assert,
+    bind, StateT.run] at h0
+  simp only [Bool.false_eq_true, ↓reduceIte] at h0
+  have hCalls : ((buggyDropOpenCfgMkApi mockRawOps).withDb "db"
+      { busyTimeoutMs := 123 % (maxBusyTimeoutMs + 1), walMode := false }
+      (fun _ => pure (.ok "done"))
+      {}).2.openCalls = [("db", {})] := rfl
+  have hBad := h0.1.2.2
+  rw [hCalls] at hBad
   simp at hBad
 
 example : ¬ Core.AllPass (test_sqlite_withDb_withTransaction_preservesAllHandles buggyWithDbLeakMkApi) := by
