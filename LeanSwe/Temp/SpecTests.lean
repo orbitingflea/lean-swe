@@ -24,6 +24,12 @@ private def validPrefix (p : String) : Bool :=
 private def validRoot (r : String) : Bool :=
   !r.isEmpty && !(Char.ofNat 0 ∈ r.toList)
 
+private def validEntryName (n : String) : Bool :=
+  !n.isEmpty && n != "." && n != ".." && !('/' ∈ n.toList) && !(Char.ofNat 0 ∈ n.toList)
+
+private def hasRwx (st : FileStat) : Prop :=
+  st.kind = .dir ∧ (st.mode / 256) % 2 = 1 ∧ (st.mode / 128) % 2 = 1 ∧ (st.mode / 64) % 2 = 1
+
 private def hasPath (xs : Array String) (p : String) : Bool :=
   xs.toList.contains p
 
@@ -41,7 +47,7 @@ def test_temp_withTempDir_okCleansUpAndSetsMode
   let dirPrefix ← nondet String
   let val ← nondet Nat
   assume (validRoot root ∧ validPrefix dirPrefix)
-  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir)
+  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ hasRwx stRoot)
   let (uRes, sAfterUuid) := uuid.getUuid.run s₀
   match uRes with
   | .error _ => assume False
@@ -57,8 +63,9 @@ def test_temp_withTempDir_okCleansUpAndSetsMode
         if info.kind != .dir || info.mode != 0o700 || d != dir then
           return .error { kind := .invalidInput, path := some d, message := "unexpected dir mode or path" }
         else
-          let _ ← fs.writeText (fs.join d "payload.txt") "hello"
-          return .ok val).run s₀
+          match ← fs.writeText (fs.join d "payload.txt") "hello" with
+          | .error _ => return .error { kind := .ioError, path := some d, message := "writeText inside action failed" }
+          | .ok () => return .ok val).run s₀
     assert (res = .ok val)
     assert (((fs.lstat dir).run s₁).1.isOk = false)
 
@@ -73,7 +80,7 @@ def test_temp_withTempDir_errorCleansUpAndPreservesError
   let dirPrefix ← nondet String
   let actionErr ← nondet TempError
   assume (validRoot root ∧ validPrefix dirPrefix)
-  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir)
+  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ hasRwx stRoot)
   let (uRes, sAfterUuid) := uuid.getUuid.run s₀
   match uRes with
   | .error _ => assume False
@@ -103,7 +110,7 @@ def test_temp_withTempDir_cleanupErrorReturnedOnOk
   let dirPrefix ← nondet String
   let val ← nondet Nat
   assume (validRoot root ∧ validPrefix dirPrefix)
-  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir)
+  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ hasRwx stRoot)
   let (uRes, sAfterUuid) := uuid.getUuid.run s₀
   match uRes with
   | .error _ => assume False
@@ -127,7 +134,7 @@ def test_temp_withTempDir_collisionRejected
   let dirPrefix ← nondet String
   let markerPath ← nondet String
   assume (validRoot root ∧ validPrefix dirPrefix)
-  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir)
+  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ hasRwx stRoot)
   assume (((fs.lstat markerPath).run s₀).1.isOk = false)
   let (uRes, sAfterUuid) := uuid.getUuid.run s₀
   match uRes with
@@ -155,7 +162,7 @@ def test_temp_withTempDir_chmodFailureRollsBack
   let dirPrefix ← nondet String
   let markerPath ← nondet String
   assume (validRoot root ∧ validPrefix dirPrefix)
-  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir)
+  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ hasRwx stRoot)
   assume (((fs.lstat markerPath).run s₀).1.isOk = false)
   let (uRes, sAfterUuid) := uuid.getUuid.run s₀
   match uRes with
@@ -191,7 +198,7 @@ def test_temp_validation_rejectsInvalidInputs
   assert (∃ e, r3 = .error e ∧ e.kind = .invalidInput ∧ e.message ≠ "")
   assert (s1 = s₀ ∧ s2 = s₀ ∧ s3 = s₀)
 
-/-- With `root? = none`, `TMPDIR` is used when non-empty, NUL `TMPDIR` fails `.invalidInput`, missing `TMPDIR` fails strictly, and unset/empty `TMPDIR` falls back to `"/tmp"`. -/
+/-- With `root? = none`, all three operations resolve non-empty `TMPDIR`, reject NUL `TMPDIR` with `.invalidInput`, reject missing/non-dir `TMPDIR` strictly, and fall back to `"/tmp"` when `TMPDIR` is unset or empty. -/
 def test_temp_rootResolution_tmpdirAndFallbackAndStrictMissing
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
@@ -202,41 +209,67 @@ def test_temp_rootResolution_tmpdirAndFallbackAndStrictMissing
   assume (validPrefix dirPrefix)
   let (envRes, sAfterEnv) := (env.getEnv "TMPDIR").run s₀
   let (uRes, sAfterUuid) := uuid.getUuid.run sAfterEnv
+  let api := mkApi fs time uuid env
   match envRes, uRes with
   | .ok (some tmpdir), .ok u =>
     if !tmpdir.isEmpty then
       if Char.ofNat 0 ∈ tmpdir.toList then
-        let (r, s1) := ((mkApi fs time uuid env).withTempDir none dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
-        assert ((∃ e, r = .error e ∧ e.kind = .invalidInput) ∧ s1 = sAfterEnv)
+        let (r1, s1) := (api.withTempDir none dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
+        let (r2, s2) := (api.withLockedTempDir none dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
+        let (r3, s3) := (api.cleanupStaleTempDirs none dirPrefix 86400).run s₀
+        assert ((∃ e, r1 = .error e ∧ e.kind = .invalidInput) ∧ s1 = sAfterEnv)
+        assert ((∃ e, r2 = .error e ∧ e.kind = .invalidInput) ∧ s2 = sAfterEnv)
+        assert ((∃ e, r3 = .error e ∧ e.kind = .invalidInput) ∧ s3 = sAfterEnv)
       else
         match ((fs.stat tmpdir).run sAfterUuid).1 with
         | .error fe =>
-          let (r, _) := ((mkApi fs time uuid env).withTempDir none dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
-          assert (∃ te, r = .error te ∧ (fe.kind = .notFound → te.kind = .notFound))
+          let (r1, _) := (api.withTempDir none dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
+          let (r2, _) := (api.withLockedTempDir none dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
+          let (r3, _) := (api.cleanupStaleTempDirs none dirPrefix 86400).run s₀
+          assert (∃ te, r1 = .error te ∧ (fe.kind ≠ .notFound ∨ te.kind = .notFound))
+          assert (∃ te, r2 = .error te ∧ (fe.kind ≠ .notFound ∨ te.kind = .notFound))
+          assert (∃ te, r3 = .error te ∧ (fe.kind ≠ .notFound ∨ te.kind = .notFound))
         | .ok st =>
           if st.kind != .dir then
-            let (r, _) := ((mkApi fs time uuid env).withTempDir none dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
-            assert (∃ te, r = .error te ∧ te.kind = .notADirectory)
+            let (r1, _) := (api.withTempDir none dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
+            let (r2, _) := (api.withLockedTempDir none dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
+            let (r3, _) := (api.cleanupStaleTempDirs none dirPrefix 86400).run s₀
+            assert (∃ te, r1 = .error te ∧ te.kind = .notADirectory)
+            assert (∃ te, r2 = .error te ∧ te.kind = .notADirectory)
+            assert (∃ te, r3 = .error te ∧ te.kind = .notADirectory)
           else
+            assume (hasRwx st)
             let expectedDir := fs.join tmpdir (dirPrefix ++ uuid.toString u)
             assume (((fs.lstat expectedDir).run sAfterUuid).1.isOk = false)
-            let (r, _) := ((mkApi fs time uuid env).withTempDir none dirPrefix fun d => pure (.ok d)).run s₀
-            assert (r = .ok expectedDir)
+            let (r1, _) := (api.withTempDir none dirPrefix fun d => pure (.ok d)).run s₀
+            let (r2, _) := (api.withLockedTempDir none dirPrefix fun d => pure (.ok d)).run s₀
+            let (r3, _) := (api.cleanupStaleTempDirs none dirPrefix 86400).run s₀
+            assert (r1 = .ok expectedDir)
+            assert (r2 = .ok expectedDir)
+            assert (r3.isOk = true)
     else
-      assume (∃ stTmp, ((fs.stat "/tmp").run sAfterUuid).1 = .ok stTmp ∧ stTmp.kind = .dir)
+      assume (∃ stTmp, ((fs.stat "/tmp").run sAfterUuid).1 = .ok stTmp ∧ hasRwx stTmp)
       let expectedDir := fs.join "/tmp" (dirPrefix ++ uuid.toString u)
       assume (((fs.lstat expectedDir).run sAfterUuid).1.isOk = false)
-      let (r, _) := ((mkApi fs time uuid env).withTempDir none dirPrefix fun d => pure (.ok d)).run s₀
-      assert (r = .ok expectedDir)
+      let (r1, _) := (api.withTempDir none dirPrefix fun d => pure (.ok d)).run s₀
+      let (r2, _) := (api.withLockedTempDir none dirPrefix fun d => pure (.ok d)).run s₀
+      let (r3, _) := (api.cleanupStaleTempDirs none dirPrefix 86400).run s₀
+      assert (r1 = .ok expectedDir)
+      assert (r2 = .ok expectedDir)
+      assert (r3.isOk = true)
   | .ok none, .ok u =>
-    assume (∃ stTmp, ((fs.stat "/tmp").run sAfterUuid).1 = .ok stTmp ∧ stTmp.kind = .dir)
+    assume (∃ stTmp, ((fs.stat "/tmp").run sAfterUuid).1 = .ok stTmp ∧ hasRwx stTmp)
     let expectedDir := fs.join "/tmp" (dirPrefix ++ uuid.toString u)
     assume (((fs.lstat expectedDir).run sAfterUuid).1.isOk = false)
-    let (r, _) := ((mkApi fs time uuid env).withTempDir none dirPrefix fun d => pure (.ok d)).run s₀
-    assert (r = .ok expectedDir)
+    let (r1, _) := (api.withTempDir none dirPrefix fun d => pure (.ok d)).run s₀
+    let (r2, _) := (api.withLockedTempDir none dirPrefix fun d => pure (.ok d)).run s₀
+    let (r3, _) := (api.cleanupStaleTempDirs none dirPrefix 86400).run s₀
+    assert (r1 = .ok expectedDir)
+    assert (r2 = .ok expectedDir)
+    assert (r3.isOk = true)
   | _, _ => assume False
 
-/-- `withLockedTempDir` holds a `.shared` lock on `<dir>/.lock` while `action` runs, cleans up `dir` and releases the lock on `.ok` and `.error`, and propagates lock errors. -/
+/-- `withLockedTempDir` sets mode `0o700`, holds a `.shared` lock on `<dir>/.lock` while `action` runs, cleans up `dir` and releases all locks on `.ok` and `.error`, and propagates lock errors with precedence over cleanup errors. -/
 def test_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
@@ -248,7 +281,7 @@ def test_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit
   let val ← nondet Nat
   let err ← nondet TempError
   assume (validRoot root ∧ validPrefix dirPrefix)
-  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir)
+  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ hasRwx stRoot)
   let (uRes, sAfterUuid) := uuid.getUuid.run s₀
   match uRes with
   | .error _ => assume False
@@ -258,26 +291,51 @@ def test_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit
     assume (((fs.lstat dir).run sAfterUuid).1.isOk = false)
     let api := mkApi fs time uuid env
     let (resOk, sOk) := (api.withLockedTempDir (some root) dirPrefix fun d => do
+      let stDir ← fs.lstat d
       let lst ← fs.lstat (fs.join d ".lock")
       let sharedProbe ← fs.tryWithFileLock (fs.join d ".lock") .shared false (pure (.ok ()))
       let exProbe ← fs.tryWithFileLock (fs.join d ".lock") .exclusive false (pure (.ok ()))
-      match lst, sharedProbe, exProbe with
-      | .ok st, .ok (some ()), .ok none =>
-        if st.kind == .file then
+      match stDir, lst, sharedProbe, exProbe with
+      | .ok info, .ok st, .ok (some ()), .ok none =>
+        if info.kind == .dir && info.mode == 0o700 && d == dir && st.kind == .file then
           return .ok val
         else
-          return .error { kind := .ioError, path := some d, message := "lock invariant failed" }
-      | .error _, _, _ =>
+          return .error { kind := .ioError, path := some d, message := "dir mode or lock invariant failed" }
+      | .error _, _, _, _ =>
+        return .error { kind := .notFound, path := some d, message := "lstat dir failed" }
+      | _, .error _, _, _ =>
         return .error { kind := .notFound, path := some d, message := "missing lock file" }
-      | _, _, _ =>
+      | _, _, _, _ =>
         return .error { kind := .ioError, path := some d, message := "lock invariant failed" }).run s₀
     assert (resOk = .ok val)
     assert (((fs.lstat dir).run sOk).1.isOk = false)
     assert (∃ e, ((fs.lstat lockPath).run sOk).1 = .error e ∧ e.kind = .notFound)
+    let probeOk := (do
+      let _ ← fs.mkdir dir false false
+      fs.tryWithFileLock lockPath .exclusive true (pure (.ok ()))).run sOk
+    assert (probeOk.1 = .ok (some ()))
     let (resErr, sErr) := (api.withLockedTempDir (some root) dirPrefix fun _ =>
       pure (Except.error err : Except TempError Nat)).run s₀
     assert (resErr = .error err)
     assert (((fs.lstat dir).run sErr).1.isOk = false)
+    let probeErr := (do
+      let _ ← fs.mkdir dir false false
+      fs.tryWithFileLock lockPath .exclusive true (pure (.ok ()))).run sErr
+    assert (probeErr.1 = .ok (some ()))
+    let fsLockAndRmFail : FsApiM (StateM S) :=
+      { fs with
+        withFileLock := fun p _ _ _ => pure (.error { kind := .permissionDenied, path := some p, message := "lock denied" })
+        rmtree := fun p _ => pure (.error { kind := .ioError, path := some p, message := "rm failed" }) }
+    let (resLockRm, _) := ((mkApi fsLockAndRmFail time uuid env).withLockedTempDir (some root) dirPrefix fun _ =>
+      pure (.ok val)).run s₀
+    assert (∃ e, resLockRm = .error e ∧ e.kind = .permissionDenied)
+    let fsLockFailCleanOk : FsApiM (StateM S) :=
+      { fs with
+        withFileLock := fun p _ _ _ => pure (.error { kind := .permissionDenied, path := some p, message := "lock denied" }) }
+    let (resLockClean, sLockClean) := ((mkApi fsLockFailCleanOk time uuid env).withLockedTempDir (some root) dirPrefix fun _ =>
+      pure (.ok val)).run s₀
+    assert (∃ e, resLockClean = .error e ∧ e.kind = .permissionDenied)
+    assert (((fs.lstat dir).run sLockClean).1.isOk = false)
 
 /-- `withLockedTempDir` ignores `.notFound` from `fs.rmtree` in its finalizer so a concurrent sweep removing `dir` after `.lock` release does not discard `action`'s `.ok` result. -/
 def test_temp_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup
@@ -290,7 +348,7 @@ def test_temp_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup
   let dirPrefix ← nondet String
   let val ← nondet Nat
   assume (validRoot root ∧ validPrefix dirPrefix)
-  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir)
+  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ hasRwx stRoot)
   let (uRes, sAfterUuid) := uuid.getUuid.run s₀
   match uRes with
   | .error _ => assume False
@@ -318,7 +376,7 @@ def test_temp_tryFinally_exceptionCleansUpAndReleasesLock
   let root ← nondet String
   let dirPrefix ← nondet String
   assume (validRoot root ∧ validPrefix dirPrefix)
-  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir)
+  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ hasRwx stRoot)
   let (uRes, sAfterUuid) := uuid.getUuid.run s₀
   match uRes with
   | .error _ => assume False
@@ -334,6 +392,10 @@ def test_temp_tryFinally_exceptionCleansUpAndReleasesLock
       (throw "boom" : ExceptT String (StateM S) (Except TempError Unit)))).run s₀
     assert (r2 = .error "boom")
     assert (((fs.lstat dir).run s2).1.isOk = false)
+    let probeS2 := (do
+      let _ ← fs.mkdir dir false false
+      fs.tryWithFileLock (fs.join dir ".lock") .exclusive true (pure (.ok ()))).run s2
+    assert (probeS2.1 = .ok (some ()))
 
 /-- `cleanupStaleTempDirs` keeps any matching directory whose `<dir>/.lock` is actively locked (`.shared` or `.exclusive`), even when `age > maxAgeSec` (including `maxAgeSec = 0`). -/
 def test_temp_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge
@@ -347,8 +409,9 @@ def test_temp_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge
   let childName ← nondet String
   let maxAgeSec ← nondet Nat
   assume (validRoot root ∧ validPrefix dirPrefix)
+  assume (validEntryName childName)
   assume (dirPrefix.toList.isPrefixOf childName.toList)
-  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir)
+  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ hasRwx stRoot)
   let child := fs.join root childName
   let lockPath := fs.join child ".lock"
   assume (∃ stChild, ((fs.lstat child).run s₀).1 = .ok stChild ∧ stChild.kind = .dir)
@@ -386,12 +449,14 @@ def test_temp_cleanupStaleTempDirs_deadLockRemovedImmediately
   let childName ← nondet String
   let maxAgeSec ← nondet Nat
   assume (validRoot root ∧ validPrefix dirPrefix ∧ maxAgeSec > 0)
+  assume (validEntryName childName)
   assume (dirPrefix.toList.isPrefixOf childName.toList)
-  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir)
+  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ hasRwx stRoot)
   let child := fs.join root childName
   let lockPath := fs.join child ".lock"
-  assume (∃ stChild, ((fs.lstat child).run s₀).1 = .ok stChild ∧ stChild.kind = .dir)
+  assume (∃ stChild, ((fs.lstat child).run s₀).1 = .ok stChild ∧ hasRwx stChild)
   assume (∃ stLock, ((fs.lstat lockPath).run s₀).1 = .ok stLock ∧ stLock.kind = .file)
+  assume (((fs.listDir child).run s₀).1 = .ok #[".lock"])
   assume (((fs.tryWithFileLock lockPath .exclusive false (pure (.ok ()))).run s₀).1 = .ok (some ()))
   let (nowTs, _) := time.nowTimestamp.run s₀
   let (stChildRes, _) := (fs.lstat child).run s₀
@@ -405,6 +470,10 @@ def test_temp_cleanupStaleTempDirs_deadLockRemovedImmediately
     | .ok rep =>
       assert (hasPath rep.removed child ∧ ¬ hasPath rep.keptLocked child ∧ ¬ hasPath rep.keptFresh child)
       assert (((fs.lstat child).run s₁).1.isOk = false)
+      let probeAfter := (do
+        let _ ← fs.mkdir child false false
+        fs.tryWithFileLock lockPath .exclusive true (pure (.ok ()))).run s₁
+      assert (probeAfter.1 = .ok (some ()))
 
 /-- For matching directories without `.lock`, `cleanupStaleTempDirs` keeps directories with `nowSec - modifiedSec ≤ maxAgeSec` (including equality and negative clock skew) and removes those with `nowSec - modifiedSec > maxAgeSec`. -/
 def test_temp_cleanupStaleTempDirs_graceWindowAndOldUnlocked
@@ -418,11 +487,12 @@ def test_temp_cleanupStaleTempDirs_graceWindowAndOldUnlocked
   let childName ← nondet String
   let maxAgeSec ← nondet Nat
   assume (validRoot root ∧ validPrefix dirPrefix)
+  assume (validEntryName childName)
   assume (dirPrefix.toList.isPrefixOf childName.toList)
-  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir)
+  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ hasRwx stRoot)
   let child := fs.join root childName
   let lockPath := fs.join child ".lock"
-  assume (∃ stChild, ((fs.lstat child).run s₀).1 = .ok stChild ∧ stChild.kind = .dir)
+  assume (∃ stChild, ((fs.lstat child).run s₀).1 = .ok stChild ∧ hasRwx stChild)
   assume (∃ e, ((fs.lstat lockPath).run s₀).1 = .error e ∧ e.kind = .notFound)
   let (nowTs, _) := time.nowTimestamp.run s₀
   let (stChildRes, _) := (fs.lstat child).run s₀
@@ -438,6 +508,7 @@ def test_temp_cleanupStaleTempDirs_graceWindowAndOldUnlocked
         assert (hasPath rep.keptFresh child ∧ ¬ hasPath rep.removed child)
         assert (((fs.lstat child).run s₁).1.isOk = true)
       else
+        assume (((fs.listDir child).run s₀).1 = .ok #[])
         assert (hasPath rep.removed child ∧ ¬ hasPath rep.keptFresh child)
         assert (((fs.lstat child).run s₁).1.isOk = false)
 
@@ -453,7 +524,8 @@ def test_temp_cleanupStaleTempDirs_scopeAndSymlinkSafety
   let entryName ← nondet String
   let maxAgeSec ← nondet Nat
   assume (validRoot root ∧ validPrefix dirPrefix)
-  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir)
+  assume (validEntryName entryName)
+  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ hasRwx stRoot)
   let child := fs.join root entryName
   assume (∃ stChild, ((fs.lstat child).run s₀).1 = .ok stChild ∧
     (¬ dirPrefix.toList.isPrefixOf entryName.toList ∨ stChild.kind ≠ .dir))
@@ -465,7 +537,7 @@ def test_temp_cleanupStaleTempDirs_scopeAndSymlinkSafety
     assert (((fs.lstat child).run s₁).1.isOk = true)
     assert (isSorted rep.removed ∧ isSorted rep.keptLocked ∧ isSorted rep.keptFresh ∧ isSorted rep.skipped)
 
-/-- `cleanupStaleTempDirs` rejects non-regular `.lock` entries (symlinks, directories, other) into `failed` without removing `child`, and keeps `.lock` intact when deleting a non-`.lock` child fails. -/
+/-- `cleanupStaleTempDirs` rejects non-regular `.lock` entries (symlinks, directories, other) into `failed` without removing `child`, and keeps `.lock` intact and unlocked when deleting a non-`.lock` child fails. -/
 def test_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
@@ -477,11 +549,12 @@ def test_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety
   let childName ← nondet String
   let maxAgeSec ← nondet Nat
   assume (validRoot root ∧ validPrefix dirPrefix)
+  assume (validEntryName childName)
   assume (dirPrefix.toList.isPrefixOf childName.toList)
-  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir)
+  assume (∃ stRoot, ((fs.stat root).run s₀).1 = .ok stRoot ∧ hasRwx stRoot)
   let child := fs.join root childName
   let lockPath := fs.join child ".lock"
-  assume (∃ stChild, ((fs.lstat child).run s₀).1 = .ok stChild ∧ stChild.kind = .dir)
+  assume (∃ stChild, ((fs.lstat child).run s₀).1 = .ok stChild ∧ hasRwx stChild)
   let (lockStatRes, _) := (fs.lstat lockPath).run s₀
   match lockStatRes with
   | .ok stLock =>
@@ -509,6 +582,7 @@ def test_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety
         assert (¬ hasPath rep.removed child ∧ ¬ hasPath rep.keptFresh child)
         assert (!rep.failed.isEmpty)
         assert (((fs.lstat lockPath).run s₁).1.isOk = true)
+        assert (((fs.tryWithFileLock lockPath .exclusive false (pure (.ok ()))).run s₁).1 = .ok (some ()))
   | .error _ => assume False
 
 private structure TempStubState where
@@ -677,7 +751,8 @@ private def stubFs : FsApiM (StateM TempStubState) :=
       let ds := s.dirs.filterMap (fun d => stubParentChild p d.1)
       let fs := s.files.filterMap (fun f => stubParentChild p f.1)
       let ls := s.symlinks.filterMap (fun l => stubParentChild p l.1)
-      return .ok ((ds ++ fs ++ ls).mergeSort (· ≤ ·)).toArray
+      let all := ds ++ fs ++ ls
+      return .ok (match all with | [] => #[] | [x] => #[x] | _ => (all.mergeSort (· ≤ ·)).toArray)
     walk := fun _ => pure (.ok #[])
     glob := fun _ _ => pure (.ok #[])
     rglob := fun _ _ => pure (.ok #[])
@@ -1023,21 +1098,103 @@ private def buggyCleanupDeletesLockFirst : TempBuilder (StateM TempStubState) :=
         let _ ← fs.rmtree child true
         return .ok { failed := #[{ kind := .permissionDenied, path := some child, message := "partial" }] } }
 
+private def buggyWithLockedTempDirNoChmod : TempBuilder (StateM TempStubState) :=
+  fun fs _ uuid _ =>
+    { (noopTempBuilder fs stubTime uuid stubEnv) with
+      withLockedTempDir := fun root? dirPrefix action => do
+        let root := root?.getD "/tmp"
+        match ← uuid.getUuid with
+        | .error _ => return .error { kind := .ioError, message := "uuid" }
+        | .ok u =>
+          let dir := fs.join root (dirPrefix ++ uuid.toString u)
+          match ← fs.mkdir dir false false with
+          | .error _ => return .error { kind := .alreadyExists, message := "exists" }
+          | .ok () =>
+            let lockPath := fs.join dir ".lock"
+            let lr ← fs.withFileLock lockPath .shared true (do return .ok (← action dir))
+            let _ ← fs.rmtree dir true
+            match lr with
+            | .error _ => return .error { kind := .ioError, message := "lock" }
+            | .ok r => return r }
+
+private def buggyWithLockedTempDirSwallowsLockErr : TempBuilder (StateM TempStubState) :=
+  fun fs _ uuid _ =>
+    { (noopTempBuilder fs stubTime uuid stubEnv) with
+      withLockedTempDir := fun root? dirPrefix action => do
+        let root := root?.getD "/tmp"
+        match ← uuid.getUuid with
+        | .error _ => return .error { kind := .ioError, message := "uuid" }
+        | .ok u =>
+          let dir := fs.join root (dirPrefix ++ uuid.toString u)
+          match ← fs.mkdir dir false false with
+          | .error _ => return .error { kind := .alreadyExists, message := "exists" }
+          | .ok () =>
+            let _ ← fs.chmod dir 0o700
+            let lockPath := fs.join dir ".lock"
+            let lr ← fs.withFileLock lockPath .shared true (do return .ok (← action dir))
+            match ← fs.rmtree dir true with
+            | .error _ => return .error { kind := .ioError, message := "rm wins over lock err" }
+            | .ok () =>
+              match lr with
+              | .error _ => return .error { kind := .permissionDenied, message := "lock" }
+              | .ok r => return r }
+
+private def buggyLockedTempDirIgnoresTmpdir : TempBuilder (StateM TempStubState) :=
+  fun fs _ uuid env =>
+    { (noopTempBuilder fs stubTime uuid env) with
+      withTempDir := fun _ dirPrefix action => do
+        match ← uuid.getUuid with
+        | .error _ => return .error { kind := .ioError, message := "uuid" }
+        | .ok u =>
+          match ← env.getEnv "TMPDIR" with
+          | .ok (some t) =>
+            let root := if t.isEmpty then "/tmp" else t
+            let dir := fs.join root (dirPrefix ++ uuid.toString u)
+            let _ ← fs.mkdir dir false false
+            let _ ← fs.chmod dir 0o700
+            let r ← action dir
+            let _ ← fs.rmtree dir true
+            return r
+          | _ => return .error { kind := .ioError, message := "env" }
+      withLockedTempDir := fun _ dirPrefix action => do
+        match ← uuid.getUuid with
+        | .error _ => return .error { kind := .ioError, message := "uuid" }
+        | .ok u =>
+          let dir := fs.join "/tmp" (dirPrefix ++ uuid.toString u)
+          let _ ← fs.mkdir dir false false
+          let _ ← fs.chmod dir 0o700
+          let lockPath := fs.join dir ".lock"
+          let lr ← fs.withFileLock lockPath .shared true (do return .ok (← action dir))
+          let _ ← fs.rmtree dir true
+          match lr with
+          | .error _ => return .error { kind := .ioError, message := "lock" }
+          | .ok r => return r }
+
+private def buggyCleanupLeaksLockOnPartialFail : TempBuilder (StateM TempStubState) :=
+  fun fs _ _ _ =>
+    { (noopTempBuilder fs stubTime stubUuid stubEnv) with
+      cleanupStaleTempDirs := fun root? _ _ => do
+        let root := root?.getD "/tmp"
+        let child := fs.join root "tmp-dead"
+        let lockPath := fs.join child ".lock"
+        modify fun s => { s with locks := (lockPath, .exclusive) :: s.locks }
+        return .ok { failed := #[{ kind := .permissionDenied, path := some child, message := "leaked lock" }] } }
+
 example : ¬ Core.AllPass (test_temp_withTempDir_okCleansUpAndSetsMode buggyWithTempDirNoCleanup stubFs stubTime stubUuid stubEnv) := by
   intro h
-  have h0 := h {} "/tmp" "tmp-" 7 (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ (by decide)
+  have h0 := h {} "/tmp" "tmp-" 7 (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ (by decide)
   dsimp [test_temp_withTempDir_okCleansUpAndSetsMode, Core.NondetTest.assert, Bind.bind, stubFs, stubTime, stubUuid, stubEnv, buggyWithTempDirNoCleanup] at h0
   exact absurd h0.2 (by decide)
 
 example : ¬ Core.AllPass (test_temp_withTempDir_errorCleansUpAndPreservesError noopTempBuilder stubFs stubTime stubUuid stubEnv) := by
   intro h
-  have h0 := h {} "/tmp" "tmp-" { kind := .invalidInput, message := "err" } (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ (by decide)
+  have h0 := h {} "/tmp" "tmp-" { kind := .invalidInput, message := "err" } (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ (by decide)
   dsimp [test_temp_withTempDir_errorCleansUpAndPreservesError, Core.NondetTest.assert, Bind.bind, noopTempBuilder] at h0
   cases h0.1
 
 example : ¬ Core.AllPass (test_temp_withTempDir_cleanupErrorReturnedOnOk buggyWithTempDirSwallowsCleanupErr stubFs stubTime stubUuid stubEnv) := by
   intro h
-  have h0 := h {} "/tmp" "tmp-" 1 (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ (by decide)
+  have h0 := h {} "/tmp" "tmp-" 1 (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ (by decide)
   dsimp [test_temp_withTempDir_cleanupErrorReturnedOnOk, Core.NondetTest.assert, Bind.bind, buggyWithTempDirSwallowsCleanupErr] at h0
   rcases h0.1 with ⟨e, he, _⟩
   cases he
@@ -1045,14 +1202,14 @@ example : ¬ Core.AllPass (test_temp_withTempDir_cleanupErrorReturnedOnOk buggyW
 example : ¬ Core.AllPass (test_temp_withTempDir_collisionRejected buggyWithTempDirExistOk stubFs stubTime stubUuid stubEnv) := by
   intro h
   let s : TempStubState := { dirs := [("/tmp", 0, 0o755), ("/tmp/tmp-00000000-0000-4000-8000-000000000001", 0, 0o755)] }
-  have h0 := h s "/tmp" "tmp-" "/marker" (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, Or.inl rfl⟩
+  have h0 := h s "/tmp" "tmp-" "/marker" (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, Or.inl rfl⟩
   dsimp [test_temp_withTempDir_collisionRejected, Core.NondetTest.assert, Bind.bind, buggyWithTempDirExistOk] at h0
   rcases h0.1 with ⟨e, he, _⟩
   cases he
 
 example : ¬ Core.AllPass (test_temp_withTempDir_chmodFailureRollsBack buggyWithTempDirNoChmodRollback stubFs stubTime stubUuid stubEnv) := by
   intro h
-  have h0 := h {} "/tmp" "tmp-" "/marker" (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ (by decide) (by decide)
+  have h0 := h {} "/tmp" "tmp-" "/marker" (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ (by decide) (by decide)
   dsimp [test_temp_withTempDir_chmodFailureRollsBack, Core.NondetTest.assert, Bind.bind, buggyWithTempDirNoChmodRollback] at h0
   exact absurd h0.2.2 (by decide)
 
@@ -1067,25 +1224,46 @@ example : ¬ Core.AllPass (test_temp_validation_rejectsInvalidInputs noopTempBui
 example : ¬ Core.AllPass (test_temp_rootResolution_tmpdirAndFallbackAndStrictMissing buggyWithTempDirIgnoresTmpdir stubFs stubTime stubUuid stubEnv) := by
   intro h
   let s : TempStubState := { dirs := [("/tmp", 0, 0o755), ("/custom", 0, 0o755)], tmpdir := some "/custom" }
-  have h0 := h s "tmp-" (by decide) (by decide)
-  change (Except.ok "/tmp/tmp-00000000-0000-4000-8000-000000000001" = Except.ok "/custom/tmp-00000000-0000-4000-8000-000000000001" ∧ True) at h0
-  simp at h0
+  have h0 := h s "tmp-" (by decide) ⟨rfl, rfl, rfl, rfl⟩ (by decide)
+  have hEq : (Except.ok "/tmp/tmp-00000000-0000-4000-8000-000000000001" : Except TempError String) = Except.ok "/custom/tmp-00000000-0000-4000-8000-000000000001" := h0.1
+  simp at hEq
+
+example : ¬ Core.AllPass (test_temp_rootResolution_tmpdirAndFallbackAndStrictMissing buggyLockedTempDirIgnoresTmpdir stubFs stubTime stubUuid stubEnv) := by
+  intro h
+  let s : TempStubState := { dirs := [("/tmp", 0, 0o755), ("/custom", 0, 0o755)], tmpdir := some "/custom" }
+  have h0 := h s "tmp-" (by decide) ⟨rfl, rfl, rfl, rfl⟩ (by decide)
+  have hEq : (Except.ok "/tmp/tmp-00000000-0000-4000-8000-000000000001" : Except TempError String) = Except.ok "/custom/tmp-00000000-0000-4000-8000-000000000001" := h0.2.1
+  simp at hEq
 
 example : ¬ Core.AllPass (test_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit noopTempBuilder stubFs stubTime stubUuid stubEnv) := by
   intro h
-  have h0 := h {} "/tmp" "tmp-" 5 { kind := .ioError, message := "e" } (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ (by decide)
+  have h0 := h {} "/tmp" "tmp-" 5 { kind := .ioError, message := "e" } (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ (by decide)
   dsimp [test_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit, Core.NondetTest.assert, Bind.bind, noopTempBuilder] at h0
   cases h0.1
 
+example : ¬ Core.AllPass (test_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit buggyWithLockedTempDirNoChmod stubFs stubTime stubUuid stubEnv) := by
+  intro h
+  have h0 := h {} "/tmp" "tmp-" 5 { kind := .ioError, message := "e" } (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ (by decide)
+  have hEq : Except.error { kind := TempErrorKind.ioError, path := some "/tmp/tmp-00000000-0000-4000-8000-000000000001", message := "dir mode or lock invariant failed" } = (Except.ok 5 : Except TempError Nat) := h0.1
+  cases hEq
+
+example : ¬ Core.AllPass (test_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit buggyWithLockedTempDirSwallowsLockErr stubFs stubTime stubUuid stubEnv) := by
+  intro h
+  have h0 := h {} "/tmp" "tmp-" 5 { kind := .ioError, message := "e" } (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ (by decide)
+  rcases h0.2.2.2.2.2.2.2.1 with ⟨e, he, hk⟩
+  have hErr : Except.error { kind := TempErrorKind.ioError, message := "rm wins over lock err" } = (Except.error e : Except TempError Nat) := he
+  cases hErr
+  cases hk
+
 example : ¬ Core.AllPass (test_temp_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup buggyWithLockedTempDirPropagatesNotFound stubFs stubTime stubUuid stubEnv) := by
   intro h
-  have h0 := h {} "/tmp" "tmp-" 9 (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ (by decide)
+  have h0 := h {} "/tmp" "tmp-" 9 (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ (by decide)
   have hEq : Except.error { kind := TempErrorKind.notFound, path := some "/tmp/tmp-00000000-0000-4000-8000-000000000001", message := "rm failed" } = (Except.ok 9 : Except TempError Nat) := h0.1
   cases hEq
 
 example : ¬ Core.AllPass (test_temp_tryFinally_exceptionCleansUpAndReleasesLock buggyExNoTryFinally stubFsEx stubTimeEx stubUuidEx stubEnvEx stubFs stubUuid) := by
   intro h
-  have h0 := h {} "/tmp" "tmp-" (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ (by decide)
+  have h0 := h {} "/tmp" "tmp-" (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ (by decide)
   dsimp [test_temp_tryFinally_exceptionCleansUpAndReleasesLock, Core.NondetTest.assert, Bind.bind, buggyExNoTryFinally, stubFsEx, stubTimeEx, stubUuidEx, stubEnvEx, stubFs, stubUuid] at h0
   exact absurd h0.2.1 (by decide)
 
@@ -1095,7 +1273,7 @@ example : ¬ Core.AllPass (test_temp_cleanupStaleTempDirs_liveLockKeptRegardless
     { dirs := [("/tmp", 0, 0o755), ("/tmp/tmp-live", 0, 0o700)]
       files := [("/tmp/tmp-live/.lock", "", 0)]
       nowSec := 1000 }
-  have h0 := h s "/tmp" "tmp-" "tmp-live" 10 (by decide) (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ ⟨{ kind := .dir, byteSize := 0, mode := 0o700, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ ⟨{ kind := .file, byteSize := 0, mode := 0o644, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ (by decide)
+  have h0 := h s "/tmp" "tmp-" "tmp-live" 10 (by decide) (by decide) (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ ⟨{ kind := .dir, byteSize := 0, mode := 0o700, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ ⟨{ kind := .file, byteSize := 0, mode := 0o644, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ (by decide)
   dsimp [test_temp_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge, Core.NondetTest.assert, Bind.bind, buggyCleanupDeletesLocked, stubFs, stubTime, stubUuid, stubEnv] at h0
   exact absurd h0.1.1 (by decide)
 
@@ -1105,7 +1283,7 @@ example : ¬ Core.AllPass (test_temp_cleanupStaleTempDirs_deadLockRemovedImmedia
     { dirs := [("/tmp", 0, 0o755), ("/tmp/tmp-dead", 1000, 0o700)]
       files := [("/tmp/tmp-dead/.lock", "", 1000)]
       nowSec := 1000 }
-  have h0 := h s "/tmp" "tmp-" "tmp-dead" 86400 (by decide) (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ ⟨{ kind := .dir, byteSize := 0, mode := 0o700, modifiedSec := 1000, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ ⟨{ kind := .file, byteSize := 0, mode := 0o644, modifiedSec := 1000, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ rfl (by decide)
+  have h0 := h s "/tmp" "tmp-" "tmp-dead" 86400 (by decide) (by decide) (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ ⟨{ kind := .dir, byteSize := 0, mode := 0o700, modifiedSec := 1000, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ ⟨{ kind := .file, byteSize := 0, mode := 0o644, modifiedSec := 1000, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ (congrArg Except.ok (by decide)) rfl (by decide)
   dsimp [test_temp_cleanupStaleTempDirs_deadLockRemovedImmediately, Core.NondetTest.assert, Bind.bind, buggyCleanupKeepsDeadLock] at h0
   exact absurd h0.1.1 (by decide)
 
@@ -1114,7 +1292,7 @@ example : ¬ Core.AllPass (test_temp_cleanupStaleTempDirs_graceWindowAndOldUnloc
   let s : TempStubState :=
     { dirs := [("/tmp", 0, 0o755), ("/tmp/tmp-young", 950, 0o700)]
       nowSec := 1000 }
-  have h0 := h s "/tmp" "tmp-" "tmp-young" 100 (by decide) (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ ⟨{ kind := .dir, byteSize := 0, mode := 0o700, modifiedSec := 950, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ ⟨{ kind := .notFound, path := some "/tmp/tmp-young/.lock", message := "not found" }, rfl, rfl⟩
+  have h0 := h s "/tmp" "tmp-" "tmp-young" 100 (by decide) (by decide) (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ ⟨{ kind := .dir, byteSize := 0, mode := 0o700, modifiedSec := 950, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ ⟨{ kind := .notFound, path := some "/tmp/tmp-young/.lock", message := "not found" }, rfl, rfl⟩
   have hBad : (false = true ∧ ¬ true = true) ∧ false = true ∧ True := h0
   exact absurd hBad (by decide)
 
@@ -1123,7 +1301,7 @@ example : ¬ Core.AllPass (test_temp_cleanupStaleTempDirs_scopeAndSymlinkSafety 
   let s : TempStubState :=
     { dirs := [("/tmp", 0, 0o755), ("/tmp/other-dir", 0, 0o755)]
       nowSec := 1000 }
-  have h0 := h s "/tmp" "tmp-" "other-dir" 10 (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, Or.inl (by decide)⟩
+  have h0 := h s "/tmp" "tmp-" "other-dir" 10 (by decide) (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, Or.inl (by decide)⟩
   dsimp [test_temp_cleanupStaleTempDirs_scopeAndSymlinkSafety, Core.NondetTest.assert, Bind.bind, buggyCleanupDeletesNonMatching] at h0
   exact absurd h0.1.1 (by decide)
 
@@ -1133,8 +1311,18 @@ example : ¬ Core.AllPass (test_temp_cleanupStaleTempDirs_nonRegularLockAndParti
     { dirs := [("/tmp", 0, 0o755), ("/tmp/tmp-dead", 0, 0o700)]
       files := [("/tmp/tmp-dead/.lock", "", 0), ("/tmp/tmp-dead/locked_child.txt", "x", 0)]
       nowSec := 1000 }
-  have h0 := h s "/tmp" "tmp-" "tmp-dead" 86400 (by decide) (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ ⟨{ kind := .dir, byteSize := 0, mode := 0o700, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ ⟨{ kind := .file, byteSize := 1, mode := 0o644, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ rfl
+  have h0 := h s "/tmp" "tmp-" "tmp-dead" 86400 (by decide) (by decide) (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ ⟨{ kind := .dir, byteSize := 0, mode := 0o700, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ ⟨{ kind := .file, byteSize := 1, mode := 0o644, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ rfl
   dsimp [test_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety, Core.NondetTest.assert, Bind.bind, buggyCleanupDeletesLockFirst] at h0
-  exact absurd h0.2.2 (by decide)
+  exact absurd h0.2.2.1 (by decide)
+
+example : ¬ Core.AllPass (test_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety buggyCleanupLeaksLockOnPartialFail stubFs stubTime stubUuid stubEnv) := by
+  intro h
+  let s : TempStubState :=
+    { dirs := [("/tmp", 0, 0o755), ("/tmp/tmp-dead", 0, 0o700)]
+      files := [("/tmp/tmp-dead/.lock", "", 0), ("/tmp/tmp-dead/locked_child.txt", "x", 0)]
+      nowSec := 1000 }
+  have h0 := h s "/tmp" "tmp-" "tmp-dead" 86400 (by decide) (by decide) (by decide) ⟨{ kind := .dir, byteSize := 0, mode := 0o755, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ ⟨{ kind := .dir, byteSize := 0, mode := 0o700, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, ⟨rfl, rfl, rfl, rfl, rfl⟩⟩ ⟨{ kind := .file, byteSize := 1, mode := 0o644, modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }, rfl, rfl⟩ rfl
+  have hBad : (Except.ok (none : Option Unit) : Except FsError (Option Unit)) = Except.ok (some ()) := h0.2.2.2.1
+  cases hBad
 
 end LeanSwe.Temp
