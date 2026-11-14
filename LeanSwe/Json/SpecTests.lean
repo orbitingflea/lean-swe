@@ -142,6 +142,23 @@ def test_json_getPath_emptySingletonNestedAndErrors
   | .ok _ => assert False
   | .error e => assert (e.kind = .typeMismatch ∧ e.path = some k1 ∧ e.message ≠ "")
 
+/-- `getPath` records the full dot-joined `path` on nested `.decodeError`, stops at missing intermediate keys, and rejects non-object roots. -/
+def test_json_getPath_nestedDecodeAndIntermediateErrors
+    {runner} [NondetTest runner] (api : JsonApi) : runner Unit := do
+  let k1 ← nondet String
+  let k2 ← nondet String
+  let badStr ← nondet String
+  let badNested := Lean.Json.mkObj [(k1, Lean.Json.mkObj [(k2, Lean.toJson badStr)])]
+  match api.getPath (α := Nat) badNested [k1, k2] with
+  | .ok _ => assert False
+  | .error e => assert (e.kind = .decodeError ∧ e.path = some s!"{k1}.{k2}" ∧ e.message ≠ "")
+  match api.getPath (α := Nat) (Lean.Json.mkObj []) [k1, k2] with
+  | .ok _ => assert False
+  | .error e => assert (e.kind = .missingField ∧ e.path = some k1 ∧ e.message ≠ "")
+  match api.getPath (α := Nat) Lean.Json.null [k1, k2] with
+  | .ok _ => assert False
+  | .error e => assert (e.kind = .typeMismatch ∧ e.path = none ∧ e.message ≠ "")
+
 /-- Empirical contract (grounded in `RuntimeTests.lean`): `parse` failures always carry `.parseError`, a non-empty message, and `path := none`. -/
 def empirical_json_parse_onError_returnsParseErrorWithNonEmptyMessage
     {runner} [NondetTest runner] (api : JsonApi) : runner Unit := do
@@ -283,6 +300,18 @@ example : ¬ Core.AllPass (test_json_getPath_emptySingletonNestedAndErrors stubJ
   intro h
   have h0 := h (Lean.Json.obj ∅) "a" "b" "c" 1 (by decide)
   simp [stubJsonApi, bind, assert] at h0
+
+private def buggyGetPathDropsPrefixOnDecodeErrorApi : JsonApi :=
+  { stubJsonApi with
+    getPath := fun {_} _ _ keys =>
+      match keys.reverse with
+      | last :: _ => .error { kind := .decodeError, message := "bad", path := some last }
+      | [] => .error { kind := .decodeError, message := "bad", path := none } }
+
+example : ¬ Core.AllPass (test_json_getPath_nestedDecodeAndIntermediateErrors buggyGetPathDropsPrefixOnDecodeErrorApi) := by
+  intro h
+  have h0 := h "a" "b" "bad"
+  simp [buggyGetPathDropsPrefixOnDecodeErrorApi, bind, assert] at h0
 
 private def buggyEmptyParseErrorApi : JsonApi :=
   { stubJsonApi with
