@@ -1,19 +1,19 @@
-import LeanSwe.Env.Raw.Interface
+import LeanSwe.EnvVars.Raw.Interface
 
-namespace LeanSwe.Env.Raw.RuntimeTests
+namespace LeanSwe.EnvVars.Raw.RuntimeTests
 
-open LeanSwe.Env
+open LeanSwe.EnvVars
 
 private def assertTrue (cond : Bool) (msg : String) : IO Unit := do
   if !cond then
     throw (IO.userError s!"ASSERTION FAILED: {msg}")
 
-private def assertOk {α : Type} (res : Except Raw.EnvRawError α) (msg : String) : IO α := do
+private def assertOk {α : Type} (res : Except Raw.EnvVarsRawError α) (msg : String) : IO α := do
   match res with
   | .ok v => return v
   | .error e => throw (IO.userError s!"ASSERTION FAILED: {msg} (unexpected error: {repr e})")
 
-/-- Execute primitive OS environment grounding tests for `LeanSwe.Env.Raw`. -/
+/-- Execute primitive OS environment grounding tests for `LeanSwe.EnvVars.Raw`. -/
 def runAll : IO Unit := do
   let missingKey := "__LEANSWE_NONEXISTENT_ENV_VAR_9F2A__"
   let missing ← assertOk (← Raw.getEnv missingKey) "Raw.getEnv missing"
@@ -41,6 +41,6 @@ def runAll : IO Unit := do
   let e4 := Raw.mapRawError (.userError "")
   assertTrue (e4.kind == .ioError && e4.errnoCode == none && e4.message != "") "mapRawError userError"
 
-  IO.println "PASS: LeanSwe.Env.Raw runtime tests"
+  IO.println "PASS: LeanSwe.EnvVars.Raw runtime tests"
 
-end LeanSwe.Env.Raw.RuntimeTests
+end LeanSwe.EnvVars.Raw.RuntimeTests

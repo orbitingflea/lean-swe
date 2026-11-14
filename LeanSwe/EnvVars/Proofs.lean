@@ -1,8 +1,8 @@
-import LeanSwe.Env.Interface
-import LeanSwe.Env.SpecTests
-import LeanSwe.Env.Raw.Proofs
+import LeanSwe.EnvVars.Interface
+import LeanSwe.EnvVars.SpecTests
+import LeanSwe.EnvVars.Raw.Proofs
 
-namespace LeanSwe.Env.Proofs
+namespace LeanSwe.EnvVars.Proofs
 
 open Core
 open Core.NondetTest
@@ -207,132 +207,132 @@ private theorem splitColonRaw_intercalate (segs : List String)
       simp only [hs_empty_false, Bool.not_false, ↓reduceIte]
       exact congrArg (s.toList :: ·) (ih hrest)
 
-/-- Proof of `test_env_mapRawError_returnsNonEmptyMessage` for `defaultApi`. -/
-theorem proof_env_mapRawError_returnsNonEmptyMessage :
-    AllPass (test_env_mapRawError_returnsNonEmptyMessage defaultApi) := by
+/-- Proof of `test_envvars_mapRawError_returnsNonEmptyMessage` for `defaultApi`. -/
+theorem proof_envvars_mapRawError_returnsNonEmptyMessage :
+    AllPass (test_envvars_mapRawError_returnsNonEmptyMessage defaultApi) := by
   intro raw
   simpa [defaultApi, Internal.mkApiM] using
-    Env.Raw.Proofs.proof_envraw_mapRawError_returnsNonEmptyMessage raw
+    EnvVars.Raw.Proofs.proof_envvarsraw_mapRawError_returnsNonEmptyMessage raw
 
-/-- Non-vacuity `CanReach` witness for `test_env_mapRawError_returnsNonEmptyMessage`. -/
-theorem reach_env_mapRawError_returnsNonEmptyMessage :
-    CanReach (test_env_mapRawError_returnsNonEmptyMessage defaultApi) :=
-  ⟨.userError "", proof_env_mapRawError_returnsNonEmptyMessage (.userError "")⟩
+/-- Non-vacuity `CanReach` witness for `test_envvars_mapRawError_returnsNonEmptyMessage`. -/
+theorem reach_envvars_mapRawError_returnsNonEmptyMessage :
+    CanReach (test_envvars_mapRawError_returnsNonEmptyMessage defaultApi) :=
+  ⟨.userError "", proof_envvars_mapRawError_returnsNonEmptyMessage (.userError "")⟩
 
-/-- Proof of `test_env_mapRawError_delegatesToRaw` for `Internal.mkApiM`. -/
-theorem proof_env_mapRawError_delegatesToRaw :
-    AllPass (test_env_mapRawError_delegatesToRaw (Internal.mkApiM (m := Id))) := by
+/-- Proof of `test_envvars_mapRawError_delegatesToRaw` for `Internal.mkApiM`. -/
+theorem proof_envvars_mapRawError_delegatesToRaw :
+    AllPass (test_envvars_mapRawError_delegatesToRaw (Internal.mkApiM (m := Id))) := by
   intro rawErr mapFn
   simp [Internal.mkApiM, assert]
 
-/-- Non-vacuity `CanReach` witness for `test_env_mapRawError_delegatesToRaw`. -/
-theorem reach_env_mapRawError_delegatesToRaw :
-    CanReach (test_env_mapRawError_delegatesToRaw (Internal.mkApiM (m := Id))) :=
+/-- Non-vacuity `CanReach` witness for `test_envvars_mapRawError_delegatesToRaw`. -/
+theorem reach_envvars_mapRawError_delegatesToRaw :
+    CanReach (test_envvars_mapRawError_delegatesToRaw (Internal.mkApiM (m := Id))) :=
   ⟨.userError "", fun r => Raw.Internal.mapRawError r,
-    proof_env_mapRawError_delegatesToRaw (.userError "") (fun r => Raw.Internal.mapRawError r)⟩
+    proof_envvars_mapRawError_delegatesToRaw (.userError "") (fun r => Raw.Internal.mapRawError r)⟩
 
-/-- Proof of `test_env_getEnv_rejectsInvalidKey` for `Internal.mkApiM`. -/
-theorem proof_env_getEnv_rejectsInvalidKey :
-    AllPass (test_env_getEnv_rejectsInvalidKey (Internal.mkApiM (m := Id))) := by
+/-- Proof of `test_envvars_getEnv_rejectsInvalidKey` for `Internal.mkApiM`. -/
+theorem proof_envvars_getEnv_rejectsInvalidKey :
+    AllPass (test_envvars_getEnv_rejectsInvalidKey (Internal.mkApiM (m := Id))) := by
   intro key leak hbad
   have hk : Internal.isValidKey key = false := (isValidKey_false_iff key).mpr hbad
   simp only [Internal.mkApiM, hk, Bool.not_false, ↓reduceIte, pure, assert]
   exact ⟨⟨_, rfl, rfl, rfl, rfl, by simp⟩, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for `test_env_getEnv_rejectsInvalidKey`. -/
-theorem reach_env_getEnv_rejectsInvalidKey :
-    CanReach (test_env_getEnv_rejectsInvalidKey (Internal.mkApiM (m := Id))) :=
-  ⟨"", true, Or.inl rfl, proof_env_getEnv_rejectsInvalidKey "" true (Or.inl rfl)⟩
+/-- Non-vacuity `CanReach` witness for `test_envvars_getEnv_rejectsInvalidKey`. -/
+theorem reach_envvars_getEnv_rejectsInvalidKey :
+    CanReach (test_envvars_getEnv_rejectsInvalidKey (Internal.mkApiM (m := Id))) :=
+  ⟨"", true, Or.inl rfl, proof_envvars_getEnv_rejectsInvalidKey "" true (Or.inl rfl)⟩
 
-/-- Proof of `test_env_getEnv_foundInMockList` for `Internal.mkApiM`. -/
-theorem proof_env_getEnv_foundInMockList :
-    AllPass (test_env_getEnv_foundInMockList (Internal.mkApiM (m := Id))) := by
+/-- Proof of `test_envvars_getEnv_foundInMockList` for `Internal.mkApiM`. -/
+theorem proof_envvars_getEnv_foundInMockList :
+    AllPass (test_envvars_getEnv_foundInMockList (Internal.mkApiM (m := Id))) := by
   intro entries key val hvalid hfind
   have hk : Internal.isValidKey key = true := (isValidKey_true_iff key).mpr hvalid
   simp only [Internal.mkApiM, hk, Bool.not_true, Bool.false_eq_true, ↓reduceIte, bind, pure, assert]
-  change (Except.ok ((entries.find? fun p => p.1 == key).map (·.2)) : Except EnvError (Option String)) =
+  change (Except.ok ((entries.find? fun p => p.1 == key).map (·.2)) : Except EnvVarsError (Option String)) =
     Except.ok (some val) ∧ True
   rw [hfind]
   exact ⟨rfl, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for `test_env_getEnv_foundInMockList`. -/
-theorem reach_env_getEnv_foundInMockList :
-    CanReach (test_env_getEnv_foundInMockList (Internal.mkApiM (m := Id))) :=
+/-- Non-vacuity `CanReach` witness for `test_envvars_getEnv_foundInMockList`. -/
+theorem reach_envvars_getEnv_foundInMockList :
+    CanReach (test_envvars_getEnv_foundInMockList (Internal.mkApiM (m := Id))) :=
   ⟨[("PATH", "/bin")], "PATH", "/bin",
     ⟨by decide, by decide, by decide⟩, rfl,
-    proof_env_getEnv_foundInMockList [("PATH", "/bin")] "PATH" "/bin"
+    proof_envvars_getEnv_foundInMockList [("PATH", "/bin")] "PATH" "/bin"
       ⟨by decide, by decide, by decide⟩ rfl⟩
 
-/-- Proof of `test_env_getEnv_missingInMockList` for `Internal.mkApiM`. -/
-theorem proof_env_getEnv_missingInMockList :
-    AllPass (test_env_getEnv_missingInMockList (Internal.mkApiM (m := Id))) := by
+/-- Proof of `test_envvars_getEnv_missingInMockList` for `Internal.mkApiM`. -/
+theorem proof_envvars_getEnv_missingInMockList :
+    AllPass (test_envvars_getEnv_missingInMockList (Internal.mkApiM (m := Id))) := by
   intro entries key hvalid hfind
   have hk : Internal.isValidKey key = true := (isValidKey_true_iff key).mpr hvalid
   simp only [Internal.mkApiM, hk, Bool.not_true, Bool.false_eq_true, ↓reduceIte, bind, pure, assert]
-  change (Except.ok ((entries.find? fun p => p.1 == key).map (·.2)) : Except EnvError (Option String)) =
+  change (Except.ok ((entries.find? fun p => p.1 == key).map (·.2)) : Except EnvVarsError (Option String)) =
     Except.ok none ∧ True
   rw [hfind]
   exact ⟨rfl, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for `test_env_getEnv_missingInMockList`. -/
-theorem reach_env_getEnv_missingInMockList :
-    CanReach (test_env_getEnv_missingInMockList (Internal.mkApiM (m := Id))) :=
+/-- Non-vacuity `CanReach` witness for `test_envvars_getEnv_missingInMockList`. -/
+theorem reach_envvars_getEnv_missingInMockList :
+    CanReach (test_envvars_getEnv_missingInMockList (Internal.mkApiM (m := Id))) :=
   ⟨[], "PATH", ⟨by decide, by decide, by decide⟩, rfl,
-    proof_env_getEnv_missingInMockList [] "PATH" ⟨by decide, by decide, by decide⟩ rfl⟩
+    proof_envvars_getEnv_missingInMockList [] "PATH" ⟨by decide, by decide, by decide⟩ rfl⟩
 
-/-- Proof of `test_env_getEnv_propagatesRawError` for `Internal.mkApiM`. -/
-theorem proof_env_getEnv_propagatesRawError :
-    AllPass (test_env_getEnv_propagatesRawError (Internal.mkApiM (m := Id))) := by
+/-- Proof of `test_envvars_getEnv_propagatesRawError` for `Internal.mkApiM`. -/
+theorem proof_envvars_getEnv_propagatesRawError :
+    AllPass (test_envvars_getEnv_propagatesRawError (Internal.mkApiM (m := Id))) := by
   intro key rawErr mapFn hvalid
   have hk : Internal.isValidKey key = true := (isValidKey_true_iff key).mpr hvalid
   simp [Internal.mkApiM, hk, bind, pure, assert]
 
-/-- Non-vacuity `CanReach` witness for `test_env_getEnv_propagatesRawError`. -/
-theorem reach_env_getEnv_propagatesRawError :
-    CanReach (test_env_getEnv_propagatesRawError (Internal.mkApiM (m := Id))) :=
+/-- Non-vacuity `CanReach` witness for `test_envvars_getEnv_propagatesRawError`. -/
+theorem reach_envvars_getEnv_propagatesRawError :
+    CanReach (test_envvars_getEnv_propagatesRawError (Internal.mkApiM (m := Id))) :=
   ⟨"PATH", .userError "boom", Raw.Internal.mapRawError,
     ⟨by decide, by decide, by decide⟩,
-    proof_env_getEnv_propagatesRawError "PATH" (.userError "boom") Raw.Internal.mapRawError
+    proof_envvars_getEnv_propagatesRawError "PATH" (.userError "boom") Raw.Internal.mapRawError
       ⟨by decide, by decide, by decide⟩⟩
 
-/-- Proof of `test_env_listEnv_returnsMockEntries` for `Internal.mkApiM`. -/
-theorem proof_env_listEnv_returnsMockEntries :
-    AllPass (test_env_listEnv_returnsMockEntries (Internal.mkApiM (m := Id))) := by
+/-- Proof of `test_envvars_listEnv_returnsMockEntries` for `Internal.mkApiM`. -/
+theorem proof_envvars_listEnv_returnsMockEntries :
+    AllPass (test_envvars_listEnv_returnsMockEntries (Internal.mkApiM (m := Id))) := by
   intro entries
   simp only [Internal.mkApiM, bind, pure, assert]
-  change (Except.ok entries.toArray : Except EnvError (Array (String × String))) =
+  change (Except.ok entries.toArray : Except EnvVarsError (Array (String × String))) =
     Except.ok entries.toArray ∧ True
   exact ⟨rfl, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for `test_env_listEnv_returnsMockEntries`. -/
-theorem reach_env_listEnv_returnsMockEntries :
-    CanReach (test_env_listEnv_returnsMockEntries (Internal.mkApiM (m := Id))) :=
-  ⟨[("PATH", "/bin")], proof_env_listEnv_returnsMockEntries [("PATH", "/bin")]⟩
+/-- Non-vacuity `CanReach` witness for `test_envvars_listEnv_returnsMockEntries`. -/
+theorem reach_envvars_listEnv_returnsMockEntries :
+    CanReach (test_envvars_listEnv_returnsMockEntries (Internal.mkApiM (m := Id))) :=
+  ⟨[("PATH", "/bin")], proof_envvars_listEnv_returnsMockEntries [("PATH", "/bin")]⟩
 
-/-- Proof of `test_env_listEnv_propagatesRawError` for `Internal.mkApiM`. -/
-theorem proof_env_listEnv_propagatesRawError :
-    AllPass (test_env_listEnv_propagatesRawError (Internal.mkApiM (m := Id))) := by
+/-- Proof of `test_envvars_listEnv_propagatesRawError` for `Internal.mkApiM`. -/
+theorem proof_envvars_listEnv_propagatesRawError :
+    AllPass (test_envvars_listEnv_propagatesRawError (Internal.mkApiM (m := Id))) := by
   intro rawErr mapFn
   simp [Internal.mkApiM, bind, pure, assert]
 
-/-- Non-vacuity `CanReach` witness for `test_env_listEnv_propagatesRawError`. -/
-theorem reach_env_listEnv_propagatesRawError :
-    CanReach (test_env_listEnv_propagatesRawError (Internal.mkApiM (m := Id))) :=
+/-- Non-vacuity `CanReach` witness for `test_envvars_listEnv_propagatesRawError`. -/
+theorem reach_envvars_listEnv_propagatesRawError :
+    CanReach (test_envvars_listEnv_propagatesRawError (Internal.mkApiM (m := Id))) :=
   ⟨.userError "boom", Raw.Internal.mapRawError,
-    proof_env_listEnv_propagatesRawError (.userError "boom") Raw.Internal.mapRawError⟩
+    proof_envvars_listEnv_propagatesRawError (.userError "boom") Raw.Internal.mapRawError⟩
 
-/-- Proof of `test_env_homeDir_returnsNonEmptyHome` for `Internal.mkApiM`. -/
-theorem proof_env_homeDir_returnsNonEmptyHome :
-    AllPass (test_env_homeDir_returnsNonEmptyHome (Internal.mkApiM (m := Id))) := by
+/-- Proof of `test_envvars_homeDir_returnsNonEmptyHome` for `Internal.mkApiM`. -/
+theorem proof_envvars_homeDir_returnsNonEmptyHome :
+    AllPass (test_envvars_homeDir_returnsNonEmptyHome (Internal.mkApiM (m := Id))) := by
   intro entries home hne hfind
   change (match (Except.ok (Option.map (·.2) (entries.find? fun p => p.1 == "HOME")) :
-      Except EnvRawError (Option String)) with
+      Except EnvVarsRawError (Option String)) with
     | Except.error err => Except.error (Raw.Internal.mapRawError err)
     | Except.ok none => Except.error
-        { kind := Raw.EnvErrorKind.notFound, key := some "HOME", errnoCode := none,
+        { kind := Raw.EnvVarsErrorKind.notFound, key := some "HOME", errnoCode := none,
           message := "HOME environment variable is not set" }
     | Except.ok (some "") => Except.error
-        { kind := Raw.EnvErrorKind.notFound, key := some "HOME", errnoCode := none,
+        { kind := Raw.EnvVarsErrorKind.notFound, key := some "HOME", errnoCode := none,
           message := "HOME environment variable is empty" }
     | Except.ok (some h) => Except.ok h) = Except.ok home ∧ True
   rw [hfind, Option.map_some]
@@ -343,65 +343,65 @@ theorem proof_env_homeDir_returnsNonEmptyHome :
     exact hne (by rw [← String.ofList_toList (s := home), hhome])
   | cons c cs => simp
 
-/-- Non-vacuity `CanReach` witness for `test_env_homeDir_returnsNonEmptyHome`. -/
-theorem reach_env_homeDir_returnsNonEmptyHome :
-    CanReach (test_env_homeDir_returnsNonEmptyHome (Internal.mkApiM (m := Id))) :=
+/-- Non-vacuity `CanReach` witness for `test_envvars_homeDir_returnsNonEmptyHome`. -/
+theorem reach_envvars_homeDir_returnsNonEmptyHome :
+    CanReach (test_envvars_homeDir_returnsNonEmptyHome (Internal.mkApiM (m := Id))) :=
   ⟨[("HOME", "example-home")], "example-home", by decide, rfl,
-    proof_env_homeDir_returnsNonEmptyHome [("HOME", "example-home")] "example-home" (by decide) rfl⟩
+    proof_envvars_homeDir_returnsNonEmptyHome [("HOME", "example-home")] "example-home" (by decide) rfl⟩
 
-/-- Proof of `test_env_homeDir_missingOrEmptyFails` for `Internal.mkApiM`. -/
-theorem proof_env_homeDir_missingOrEmptyFails :
-    AllPass (test_env_homeDir_missingOrEmptyFails (Internal.mkApiM (m := Id))) := by
+/-- Proof of `test_envvars_homeDir_missingOrEmptyFails` for `Internal.mkApiM`. -/
+theorem proof_envvars_homeDir_missingOrEmptyFails :
+    AllPass (test_envvars_homeDir_missingOrEmptyFails (Internal.mkApiM (m := Id))) := by
   intro entries hfind
-  change (∃ e : EnvError, (match (Except.ok (Option.map (·.2) (entries.find? fun p => p.1 == "HOME")) :
-      Except EnvRawError (Option String)) with
+  change (∃ e : EnvVarsError, (match (Except.ok (Option.map (·.2) (entries.find? fun p => p.1 == "HOME")) :
+      Except EnvVarsRawError (Option String)) with
     | Except.error err => Except.error (Raw.Internal.mapRawError err)
     | Except.ok none => Except.error
-        { kind := Raw.EnvErrorKind.notFound, key := some "HOME", errnoCode := none,
+        { kind := Raw.EnvVarsErrorKind.notFound, key := some "HOME", errnoCode := none,
           message := "HOME environment variable is not set" }
     | Except.ok (some "") => Except.error
-        { kind := Raw.EnvErrorKind.notFound, key := some "HOME", errnoCode := none,
+        { kind := Raw.EnvVarsErrorKind.notFound, key := some "HOME", errnoCode := none,
           message := "HOME environment variable is empty" }
     | Except.ok (some h) => Except.ok h) = Except.error e ∧
-      e.kind = Raw.EnvErrorKind.notFound ∧ e.key = some "HOME" ∧ e.message ≠ "") ∧ True
+      e.kind = Raw.EnvVarsErrorKind.notFound ∧ e.key = some "HOME" ∧ e.message ≠ "") ∧ True
   rcases hfind with hnone | hempty
   · rw [hnone, Option.map_none]
     exact ⟨⟨_, rfl, rfl, rfl, by decide⟩, trivial⟩
   · rw [hempty, Option.map_some]
     exact ⟨⟨_, rfl, rfl, rfl, by decide⟩, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for `test_env_homeDir_missingOrEmptyFails`. -/
-theorem reach_env_homeDir_missingOrEmptyFails :
-    CanReach (test_env_homeDir_missingOrEmptyFails (Internal.mkApiM (m := Id))) :=
-  ⟨[], Or.inl rfl, proof_env_homeDir_missingOrEmptyFails [] (Or.inl rfl)⟩
+/-- Non-vacuity `CanReach` witness for `test_envvars_homeDir_missingOrEmptyFails`. -/
+theorem reach_envvars_homeDir_missingOrEmptyFails :
+    CanReach (test_envvars_homeDir_missingOrEmptyFails (Internal.mkApiM (m := Id))) :=
+  ⟨[], Or.inl rfl, proof_envvars_homeDir_missingOrEmptyFails [] (Or.inl rfl)⟩
 
-/-- Proof of `test_env_homeDir_propagatesRawError` for `Internal.mkApiM`. -/
-theorem proof_env_homeDir_propagatesRawError :
-    AllPass (test_env_homeDir_propagatesRawError (Internal.mkApiM (m := Id))) := by
+/-- Proof of `test_envvars_homeDir_propagatesRawError` for `Internal.mkApiM`. -/
+theorem proof_envvars_homeDir_propagatesRawError :
+    AllPass (test_envvars_homeDir_propagatesRawError (Internal.mkApiM (m := Id))) := by
   intro rawErr mapFn
   simp [Internal.mkApiM, bind, pure, assert]
 
-/-- Non-vacuity `CanReach` witness for `test_env_homeDir_propagatesRawError`. -/
-theorem reach_env_homeDir_propagatesRawError :
-    CanReach (test_env_homeDir_propagatesRawError (Internal.mkApiM (m := Id))) :=
+/-- Non-vacuity `CanReach` witness for `test_envvars_homeDir_propagatesRawError`. -/
+theorem reach_envvars_homeDir_propagatesRawError :
+    CanReach (test_envvars_homeDir_propagatesRawError (Internal.mkApiM (m := Id))) :=
   ⟨.userError "boom", Raw.Internal.mapRawError,
-    proof_env_homeDir_propagatesRawError (.userError "boom") Raw.Internal.mapRawError⟩
+    proof_envvars_homeDir_propagatesRawError (.userError "boom") Raw.Internal.mapRawError⟩
 
-/-- Proof of `test_env_splitSearchPath_emptyReturnsEmpty` for `defaultApi`. -/
-theorem proof_env_splitSearchPath_emptyReturnsEmpty :
-    AllPass (test_env_splitSearchPath_emptyReturnsEmpty defaultApi) := by
-  simp [test_env_splitSearchPath_emptyReturnsEmpty, Core.AllPass, defaultApi, Internal.mkApiM,
+/-- Proof of `test_envvars_splitSearchPath_emptyReturnsEmpty` for `defaultApi`. -/
+theorem proof_envvars_splitSearchPath_emptyReturnsEmpty :
+    AllPass (test_envvars_splitSearchPath_emptyReturnsEmpty defaultApi) := by
+  simp [test_envvars_splitSearchPath_emptyReturnsEmpty, Core.AllPass, defaultApi, Internal.mkApiM,
     Internal.splitSearchPath, Internal.splitColonRaw, assert]
 
-/-- Non-vacuity `CanReach` witness for `test_env_splitSearchPath_emptyReturnsEmpty`. -/
-theorem reach_env_splitSearchPath_emptyReturnsEmpty :
-    CanReach (test_env_splitSearchPath_emptyReturnsEmpty defaultApi) := by
-  simp [test_env_splitSearchPath_emptyReturnsEmpty, Core.CanReach, defaultApi, Internal.mkApiM,
+/-- Non-vacuity `CanReach` witness for `test_envvars_splitSearchPath_emptyReturnsEmpty`. -/
+theorem reach_envvars_splitSearchPath_emptyReturnsEmpty :
+    CanReach (test_envvars_splitSearchPath_emptyReturnsEmpty defaultApi) := by
+  simp [test_envvars_splitSearchPath_emptyReturnsEmpty, Core.CanReach, defaultApi, Internal.mkApiM,
     Internal.splitSearchPath, Internal.splitColonRaw, assert]
 
-/-- Proof of `test_env_splitSearchPath_entriesNonEmptyAndColonFree` for `defaultApi`. -/
-theorem proof_env_splitSearchPath_entriesNonEmptyAndColonFree :
-    AllPass (test_env_splitSearchPath_entriesNonEmptyAndColonFree defaultApi) := by
+/-- Proof of `test_envvars_splitSearchPath_entriesNonEmptyAndColonFree` for `defaultApi`. -/
+theorem proof_envvars_splitSearchPath_entriesNonEmptyAndColonFree :
+    AllPass (test_envvars_splitSearchPath_entriesNonEmptyAndColonFree defaultApi) := by
   intro path
   simp only [defaultApi, Internal.mkApiM, Internal.splitSearchPath, assert]
   refine ⟨?_, trivial⟩
@@ -430,14 +430,14 @@ theorem proof_env_splitSearchPath_entriesNonEmptyAndColonFree :
     rw [String.toList_ofList]
     exact decide_eq_false hno
 
-/-- Non-vacuity `CanReach` witness for `test_env_splitSearchPath_entriesNonEmptyAndColonFree`. -/
-theorem reach_env_splitSearchPath_entriesNonEmptyAndColonFree :
-    CanReach (test_env_splitSearchPath_entriesNonEmptyAndColonFree defaultApi) :=
-  ⟨"", proof_env_splitSearchPath_entriesNonEmptyAndColonFree ""⟩
+/-- Non-vacuity `CanReach` witness for `test_envvars_splitSearchPath_entriesNonEmptyAndColonFree`. -/
+theorem reach_envvars_splitSearchPath_entriesNonEmptyAndColonFree :
+    CanReach (test_envvars_splitSearchPath_entriesNonEmptyAndColonFree defaultApi) :=
+  ⟨"", proof_envvars_splitSearchPath_entriesNonEmptyAndColonFree ""⟩
 
-/-- Proof of `test_env_splitSearchPath_dropsEmptySegments` for `defaultApi`. -/
-theorem proof_env_splitSearchPath_dropsEmptySegments :
-    AllPass (test_env_splitSearchPath_dropsEmptySegments defaultApi) := by
+/-- Proof of `test_envvars_splitSearchPath_dropsEmptySegments` for `defaultApi`. -/
+theorem proof_envvars_splitSearchPath_dropsEmptySegments :
+    AllPass (test_envvars_splitSearchPath_dropsEmptySegments defaultApi) := by
   intro a b ⟨ha_ne, ha_no⟩ ⟨hb_ne, hb_no⟩
   have ha_list : a.toList ≠ [] := by
     intro hl
@@ -466,16 +466,16 @@ theorem proof_env_splitSearchPath_dropsEmptySegments :
     simp [Internal.splitColonRaw, ha_empty, hb_empty, String.ofList_toList]
   · decide
 
-/-- Non-vacuity `CanReach` witness for `test_env_splitSearchPath_dropsEmptySegments`. -/
-theorem reach_env_splitSearchPath_dropsEmptySegments :
-    CanReach (test_env_splitSearchPath_dropsEmptySegments defaultApi) :=
+/-- Non-vacuity `CanReach` witness for `test_envvars_splitSearchPath_dropsEmptySegments`. -/
+theorem reach_envvars_splitSearchPath_dropsEmptySegments :
+    CanReach (test_envvars_splitSearchPath_dropsEmptySegments defaultApi) :=
   ⟨"/a", "/b", ⟨by decide, by decide⟩, ⟨by decide, by decide⟩,
-    proof_env_splitSearchPath_dropsEmptySegments "/a" "/b"
+    proof_envvars_splitSearchPath_dropsEmptySegments "/a" "/b"
       ⟨by decide, by decide⟩ ⟨by decide, by decide⟩⟩
 
-/-- Proof of `test_env_splitSearchPath_roundTripsCleanSegments` for `defaultApi`. -/
-theorem proof_env_splitSearchPath_roundTripsCleanSegments :
-    AllPass (test_env_splitSearchPath_roundTripsCleanSegments defaultApi) := by
+/-- Proof of `test_envvars_splitSearchPath_roundTripsCleanSegments` for `defaultApi`. -/
+theorem proof_envvars_splitSearchPath_roundTripsCleanSegments :
+    AllPass (test_envvars_splitSearchPath_roundTripsCleanSegments defaultApi) := by
   intro segs hall
   simp only [defaultApi, Internal.mkApiM, Internal.splitSearchPath, assert]
   refine ⟨?_, trivial⟩
@@ -485,10 +485,10 @@ theorem proof_env_splitSearchPath_roundTripsCleanSegments :
     exact String.ofList_toList
   simp [hcomp]
 
-/-- Non-vacuity `CanReach` witness for `test_env_splitSearchPath_roundTripsCleanSegments`. -/
-theorem reach_env_splitSearchPath_roundTripsCleanSegments :
-    CanReach (test_env_splitSearchPath_roundTripsCleanSegments defaultApi) :=
+/-- Non-vacuity `CanReach` witness for `test_envvars_splitSearchPath_roundTripsCleanSegments`. -/
+theorem reach_envvars_splitSearchPath_roundTripsCleanSegments :
+    CanReach (test_envvars_splitSearchPath_roundTripsCleanSegments defaultApi) :=
   ⟨["/a", "/b"], by decide,
-    proof_env_splitSearchPath_roundTripsCleanSegments ["/a", "/b"] (by decide)⟩
+    proof_envvars_splitSearchPath_roundTripsCleanSegments ["/a", "/b"] (by decide)⟩
 
-end LeanSwe.Env.Proofs
+end LeanSwe.EnvVars.Proofs
