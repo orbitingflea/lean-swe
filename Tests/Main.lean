@@ -11,6 +11,7 @@ def main : IO Unit := do
   Process.Raw.RuntimeTests.runAll
   Process.RuntimeTests.runAll
   Time.RuntimeTests.runAll
+  Json.RuntimeTests.runAll
   match RegExp.findAll "[0-9]+" "a1b22" with
   | .ok xs =>
     if xs.map (·.matched) != #["1", "22"] then
