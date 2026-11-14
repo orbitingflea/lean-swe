@@ -1,15 +1,15 @@
 import Core.NondetTest
-import Packages.Regex.Interface
+import LeanSwe.RegExp.Types
 
 /-!
 # Regex SpecTests
 
-Human-audited behavioral specifications for `Packages.Regex.RegexApi` written in
+Human-audited behavioral specifications for `LeanSwe.RegExp.RegexApi` written in
 `Core.NondetTest`. Notice zero raw `∀`, `→`, or proof scripts appear in the
 spec definitions below.
 -/
 
-namespace Packages.Regex
+namespace LeanSwe.RegExp
 
 open Core (NondetTest)
 open Core.NondetTest
@@ -132,4 +132,4 @@ example : ¬ Core.AllPass (test_regex_testPattern_iff_findFirstSome buggyTestApi
   have h0 := h "a" "a"
   simp [buggyTestApi, assert] at h0
 
-end Packages.Regex
+end LeanSwe.RegExp

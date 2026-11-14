@@ -1,9 +1,10 @@
 import Core.NondetTest
-import Packages.Regex.Interface
-import Packages.Regex.Impl
-import Packages.Regex.SpecTests
-import Packages.Regex.Proofs
-import Packages.Regex.RuntimeTests
+import LeanSwe.RegExp.Types
+import LeanSwe.RegExp.Interface
+import LeanSwe.RegExp.Impl
+import LeanSwe.RegExp.SpecTests
+import LeanSwe.RegExp.Proofs
+import LeanSwe.RegExp.RuntimeTests
 
 /-!
 # LeanSwe

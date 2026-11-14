@@ -1,14 +1,14 @@
-import Packages.Regex.Impl
-import Packages.Regex.SpecTests
+import LeanSwe.RegExp.Interface
+import LeanSwe.RegExp.SpecTests
 
 /-!
 # Regex Proofs
 
 Machine-checked proofs discharging every `AllPass` safety specification and
-`CanReach` non-vacuity witness for `Packages.Regex.liveApi`.
+`CanReach` non-vacuity witness for `LeanSwe.RegExp.defaultApi`.
 -/
 
-namespace Packages.Regex.Proofs
+namespace LeanSwe.RegExp.Proofs
 
 open Core
 open Core.NondetTest
@@ -17,33 +17,35 @@ private theorem error_toString_ne_empty (err : _root_.Regex.Syntax.Parser.Error)
     toString err ≠ "" := by
   cases err <;> simp [toString]
 
-/-- Proof of `test_regex_onError_returnsNonEmptyMessage` for `liveApi`. -/
+/-- Proof of `test_regex_onError_returnsNonEmptyMessage` for `defaultApi`. -/
 theorem proof_regex_onError_returnsNonEmptyMessage :
-    AllPass (test_regex_onError_returnsNonEmptyMessage liveApi) := by
+    AllPass (test_regex_onError_returnsNonEmptyMessage defaultApi) := by
   intro pat hay
-  simp only [liveApi, compilePattern]
+  simp only [defaultApi, testPattern, Internal.testPattern, Internal.compilePattern]
   cases hp : _root_.Regex.parse pat with
   | ok _ => simp [bind, Except.bind, pure, Except.pure, assume]
   | error err =>
-    simp only [bind, Except.bind, mapError, assert]
+    simp only [bind, Except.bind, Internal.mapError, assert]
     exact ⟨error_toString_ne_empty err, trivial⟩
 
-/-- Proof of `test_regex_testPattern_iff_findFirstSome` for `liveApi`. -/
+/-- Proof of `test_regex_testPattern_iff_findFirstSome` for `defaultApi`. -/
 theorem proof_regex_testPattern_iff_findFirstSome :
-    AllPass (test_regex_testPattern_iff_findFirstSome liveApi) := by
+    AllPass (test_regex_testPattern_iff_findFirstSome defaultApi) := by
   intro pat hay
-  simp only [liveApi, compilePattern]
+  simp only [defaultApi, testPattern, findFirst, Internal.testPattern, Internal.findFirst,
+    Internal.compilePattern]
   cases hp : _root_.Regex.parse pat with
   | error _ => simp [bind, Except.bind, assume]
   | ok re =>
     simp only [bind, Except.bind, pure, Except.pure, _root_.Regex.test, Option.isSome_map, assert]
     exact ⟨by simp, trivial⟩
 
-/-- Proof of `test_regex_countMatches_eq_findAllSize` for `liveApi`. -/
+/-- Proof of `test_regex_countMatches_eq_findAllSize` for `defaultApi`. -/
 theorem proof_regex_countMatches_eq_findAllSize :
-    AllPass (test_regex_countMatches_eq_findAllSize liveApi) := by
+    AllPass (test_regex_countMatches_eq_findAllSize defaultApi) := by
   intro pat hay
-  simp only [liveApi, compilePattern]
+  simp only [defaultApi, countMatches, findAll, Internal.countMatches, Internal.findAll,
+    Internal.compilePattern]
   cases hp : _root_.Regex.parse pat with
   | error _ => simp [bind, Except.bind, assume]
   | ok re =>
@@ -66,23 +68,23 @@ private theorem findAll_go_str_eq {hay : String} (m : _root_.Regex.Matches hay)
     rw [_root_.Regex.findAll.go, hnext]
     exact hacc
 
-/-- Proof of `test_regex_findAll_spansValid` for `liveApi`. -/
+/-- Proof of `test_regex_findAll_spansValid` for `defaultApi`. -/
 theorem proof_regex_findAll_spansValid :
-    AllPass (test_regex_findAll_spansValid liveApi) := by
+    AllPass (test_regex_findAll_spansValid defaultApi) := by
   intro pat hay
-  simp only [liveApi, compilePattern]
+  simp only [defaultApi, findAll, Internal.findAll, Internal.compilePattern]
   cases hp : _root_.Regex.parse pat with
   | error _ => simp [bind, Except.bind, assume]
   | ok re =>
     intro i hi
     simp only [Array.size_map] at hi
-    have hmap : i < (Array.map sliceToSpan (re.findAll hay)).size := by
+    have hmap : i < (Array.map Internal.sliceToSpan (re.findAll hay)).size := by
       simpa [Array.size_map] using hi
-    have hget : (Array.map sliceToSpan (re.findAll hay))[i]! =
-        sliceToSpan ((re.findAll hay)[i]'hi) := by
-      rw [getElem!_pos (Array.map sliceToSpan (re.findAll hay)) i hmap]
+    have hget : (Array.map Internal.sliceToSpan (re.findAll hay))[i]! =
+        Internal.sliceToSpan ((re.findAll hay)[i]'hi) := by
+      rw [getElem!_pos (Array.map Internal.sliceToSpan (re.findAll hay)) i hmap]
       simp
-    simp only [hget, sliceToSpan, assert]
+    simp only [hget, Internal.sliceToSpan, assert]
     let sl : String.Slice := (re.findAll hay)[i]'hi
     have hslMem : sl ∈ re.findAll hay := Array.getElem_mem hi
     have hstr : sl.str = hay := by
@@ -127,11 +129,11 @@ private theorem split_go_size_ge_one {hay : String} (m : _root_.Regex.Matches ha
     · next heq => simp [hnext] at heq
     · simp
 
-/-- Proof of `test_regex_splitBy_nonEmpty` for `liveApi`. -/
+/-- Proof of `test_regex_splitBy_nonEmpty` for `defaultApi`. -/
 theorem proof_regex_splitBy_nonEmpty :
-    AllPass (test_regex_splitBy_nonEmpty liveApi) := by
+    AllPass (test_regex_splitBy_nonEmpty defaultApi) := by
   intro pat hay
-  simp only [liveApi, compilePattern]
+  simp only [defaultApi, splitBy, Internal.splitBy, Internal.compilePattern]
   cases hp : _root_.Regex.parse pat with
   | error _ => simp [bind, Except.bind, assume]
   | ok re =>
@@ -321,36 +323,6 @@ private theorem εClosure_done {s : String} (σ : _root_.Regex.Strategy s) (nfa 
   have h2 : _root_.Regex.VM.εClosure.writeUpdate nfa[state] = true := by
     simp [hnode, _root_.Regex.VM.εClosure.writeUpdate]
   rw [h1, h2, pushNext_done σ nfa p nfa[state] _ u stk hnode]
-  rfl
-
-private theorem vm_empty_val :
-    let nfa := _root_.Regex.NFA.compile (.group 0 .epsilon)
-    (_root_.Regex.VM.captureNextBuf nfa _root_.Regex.NFA.compile_wf 2 "".startPos) =
-      some ((_root_.Regex.Buffer.empty (s := "") (size := 2)).setIfInBounds 0 (String.PosPlusOne.pos "".startPos)
-        |>.setIfInBounds 1 (String.PosPlusOne.pos "".startPos)) := by
-  have heq : "".startPos = "".endPos := by decide
-  let nfa0 : _root_.Regex.NFA :=
-    { nodes := #[.done, .save 1 0, .epsilon 1, .save 0 2], start := 3 }
-  have hnfa : _root_.Regex.NFA.compile (.group 0 .epsilon) = nfa0 := by decide
-  dsimp only
-  simp only [hnfa]
-  unfold _root_.Regex.VM.captureNextBuf
-  rw [_root_.Regex.VM.captureNext.eq_def]
-  have hgo : ∀ m cur nxt, _root_.Regex.VM.captureNext.go (_root_.Regex.BufferStrategy "" 2) nfa0
-      (hnfa ▸ _root_.Regex.NFA.compile_wf) "".startPos m cur nxt = m := by
-    intro m cur nxt
-    rw [_root_.Regex.VM.captureNext.go.eq_def]
-    simp [heq]
-  simp only [hgo]
-  have h3 : nfa0[(⟨3, by decide⟩ : Fin nfa0.nodes.size)] = _root_.Regex.NFA.Node.save 0 2 := rfl
-  have h2 : nfa0[(⟨2, by decide⟩ : Fin nfa0.nodes.size)] = _root_.Regex.NFA.Node.epsilon 1 := rfl
-  have h1 : nfa0[(⟨1, by decide⟩ : Fin nfa0.nodes.size)] = _root_.Regex.NFA.Node.save 1 0 := rfl
-  have h0 : nfa0[(⟨0, by decide⟩ : Fin nfa0.nodes.size)] = _root_.Regex.NFA.Node.done := rfl
-  rw [εClosure_save (off := 0) (next := 2) (hmem := by clear heq hnfa hgo; decide) (hnode := h3)]
-  rw [εClosure_epsilon (next := 1) (hmem := by clear heq hnfa hgo; decide) (hnode := h2)]
-  rw [εClosure_save (off := 1) (next := 0) (hmem := by clear heq hnfa hgo; decide) (hnode := h1)]
-  rw [εClosure_done (hmem := by clear heq hnfa hgo; decide) (hnode := h0)]
-  rw [_root_.Regex.VM.εClosure.eq_def]
   rfl
 
 private theorem findAll_go_size_mono {hay : String} (m : _root_.Regex.Matches hay)
@@ -585,12 +557,12 @@ private theorem empty_replaceAll_empty_eq (rep : String) :
       · simp [hex1, hex2]
   · next h1 => simp [hc1] at h1
 
-/-- Proof of `test_regex_emptyPattern_matchesAnyHaystack` for `liveApi`. -/
+/-- Proof of `test_regex_emptyPattern_matchesAnyHaystack` for `defaultApi`. -/
 theorem proof_regex_emptyPattern_matchesAnyHaystack :
-    AllPass (test_regex_emptyPattern_matchesAnyHaystack liveApi) := by
+    AllPass (test_regex_emptyPattern_matchesAnyHaystack defaultApi) := by
   intro hay
-  simp only [liveApi, compilePattern, parse_empty_ok, bind, Except.bind, pure, Except.pure,
-    _root_.Regex.test, assert]
+  simp only [defaultApi, testPattern, Internal.testPattern, Internal.compilePattern,
+    parse_empty_ok, bind, Except.bind, pure, Except.pure, _root_.Regex.test, assert]
   have hval : hay.startPosPlusOne.isValid = true := by simp [String.startPosPlusOne]
   have hs := empty_searchNext_any_isSome hay hval
   unfold _root_.Regex.find _root_.Regex.Matches.next? _root_.Regex.matches
@@ -600,41 +572,43 @@ theorem proof_regex_emptyPattern_matchesAnyHaystack :
   · next h' => simp [h'] at hs
   · exact ⟨rfl, trivial⟩
 
-/-- Proof of `test_regex_replaceAll_emptyOnEmpty_eqReplacement` for `liveApi`. -/
+/-- Proof of `test_regex_replaceAll_emptyOnEmpty_eqReplacement` for `defaultApi`. -/
 theorem proof_regex_replaceAll_emptyOnEmpty_eqReplacement :
-    AllPass (test_regex_replaceAll_emptyOnEmpty_eqReplacement liveApi) := by
+    AllPass (test_regex_replaceAll_emptyOnEmpty_eqReplacement defaultApi) := by
   intro rep
-  simp only [liveApi, compilePattern, parse_empty_ok, bind, Except.bind, pure, Except.pure, assert]
+  simp only [defaultApi, replaceAll, Internal.replaceAll, Internal.compilePattern,
+    parse_empty_ok, bind, Except.bind, pure, Except.pure, assert]
   exact ⟨empty_replaceAll_empty_eq rep, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for `test_regex_onError_returnsNonEmptyMessage` on `liveApi`. -/
+/-- Non-vacuity `CanReach` witness for `test_regex_onError_returnsNonEmptyMessage` on `defaultApi`. -/
 theorem reach_regex_onError_returnsNonEmptyMessage :
-    CanReach (test_regex_onError_returnsNonEmptyMessage liveApi) := by
+    CanReach (test_regex_onError_returnsNonEmptyMessage defaultApi) := by
   refine ⟨"[", "hello", ?_⟩
-  simp only [liveApi, compilePattern, parse_lbracket_err, mapError, assert]
+  simp only [defaultApi, testPattern, Internal.testPattern, Internal.compilePattern,
+    parse_lbracket_err, Internal.mapError, assert]
   exact ⟨error_toString_ne_empty _, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for `test_regex_testPattern_iff_findFirstSome` on `liveApi`. -/
+/-- Non-vacuity `CanReach` witness for `test_regex_testPattern_iff_findFirstSome` on `defaultApi`. -/
 theorem reach_regex_testPattern_iff_findFirstSome :
-    CanReach (test_regex_testPattern_iff_findFirstSome liveApi) := by
+    CanReach (test_regex_testPattern_iff_findFirstSome defaultApi) := by
   refine ⟨"", "", ?_⟩
   have h := proof_regex_testPattern_iff_findFirstSome "" ""
-  simp only [liveApi, compilePattern, parse_empty_ok, bind, Except.bind, pure, Except.pure,
-    assert] at h ⊢
+  simp only [defaultApi, testPattern, findFirst, Internal.testPattern, Internal.findFirst,
+    Internal.compilePattern, parse_empty_ok, bind, Except.bind, pure, Except.pure, assert] at h ⊢
   exact h
 
-/-- Non-vacuity `CanReach` witness for `test_regex_countMatches_eq_findAllSize` on `liveApi`. -/
+/-- Non-vacuity `CanReach` witness for `test_regex_countMatches_eq_findAllSize` on `defaultApi`. -/
 theorem reach_regex_countMatches_eq_findAllSize :
-    CanReach (test_regex_countMatches_eq_findAllSize liveApi) := by
+    CanReach (test_regex_countMatches_eq_findAllSize defaultApi) := by
   refine ⟨"", "", ?_⟩
   have h := proof_regex_countMatches_eq_findAllSize "" ""
-  simp only [liveApi, compilePattern, parse_empty_ok, bind, Except.bind, pure, Except.pure,
-    assert] at h ⊢
+  simp only [defaultApi, countMatches, findAll, Internal.countMatches, Internal.findAll,
+    Internal.compilePattern, parse_empty_ok, bind, Except.bind, pure, Except.pure, assert] at h ⊢
   exact h
 
-/-- Non-vacuity `CanReach` witness for `test_regex_findAll_spansValid` on `liveApi`. -/
+/-- Non-vacuity `CanReach` witness for `test_regex_findAll_spansValid` on `defaultApi`. -/
 theorem reach_regex_findAll_spansValid :
-    CanReach (test_regex_findAll_spansValid liveApi) := by
+    CanReach (test_regex_findAll_spansValid defaultApi) := by
   refine ⟨"", "", ?_⟩
   have hn := empty_matches_next_isSome
   cases hnx : ((_root_.Regex.fromExpr (.group 0 .epsilon)).matches "").next? with
@@ -646,35 +620,35 @@ theorem reach_regex_findAll_spansValid :
       exact findAll_go_size_mono p.2 #[p.1]
     have hlt : 0 < ((_root_.Regex.fromExpr (.group 0 .epsilon)).findAll "").size := hge
     have hall := proof_regex_findAll_spansValid "" ""
-    simp only [liveApi, compilePattern, parse_empty_ok, bind, Except.bind, pure, Except.pure,
-      Array.size_map, assert] at hall ⊢
+    simp only [defaultApi, findAll, Internal.findAll, Internal.compilePattern, parse_empty_ok,
+      bind, Except.bind, pure, Except.pure, Array.size_map, assert] at hall ⊢
     exact ⟨0, hlt, (hall 0 hlt).1, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for `test_regex_splitBy_nonEmpty` on `liveApi`. -/
+/-- Non-vacuity `CanReach` witness for `test_regex_splitBy_nonEmpty` on `defaultApi`. -/
 theorem reach_regex_splitBy_nonEmpty :
-    CanReach (test_regex_splitBy_nonEmpty liveApi) := by
+    CanReach (test_regex_splitBy_nonEmpty defaultApi) := by
   refine ⟨"", "", ?_⟩
   have h := proof_regex_splitBy_nonEmpty "" ""
-  simp only [liveApi, compilePattern, parse_empty_ok, bind, Except.bind, pure, Except.pure,
-    assert] at h ⊢
+  simp only [defaultApi, splitBy, Internal.splitBy, Internal.compilePattern, parse_empty_ok,
+    bind, Except.bind, pure, Except.pure, assert] at h ⊢
   exact h
 
-/-- Non-vacuity `CanReach` witness for `test_regex_emptyPattern_matchesAnyHaystack` on `liveApi`. -/
+/-- Non-vacuity `CanReach` witness for `test_regex_emptyPattern_matchesAnyHaystack` on `defaultApi`. -/
 theorem reach_regex_emptyPattern_matchesAnyHaystack :
-    CanReach (test_regex_emptyPattern_matchesAnyHaystack liveApi) := by
+    CanReach (test_regex_emptyPattern_matchesAnyHaystack defaultApi) := by
   refine ⟨"abc", ?_⟩
   have h := proof_regex_emptyPattern_matchesAnyHaystack "abc"
-  simp only [liveApi, compilePattern, parse_empty_ok, bind, Except.bind, pure, Except.pure,
-    assert] at h ⊢
+  simp only [defaultApi, testPattern, Internal.testPattern, Internal.compilePattern,
+    parse_empty_ok, bind, Except.bind, pure, Except.pure, assert] at h ⊢
   exact h
 
-/-- Non-vacuity `CanReach` witness for `test_regex_replaceAll_emptyOnEmpty_eqReplacement` on `liveApi`. -/
+/-- Non-vacuity `CanReach` witness for `test_regex_replaceAll_emptyOnEmpty_eqReplacement` on `defaultApi`. -/
 theorem reach_regex_replaceAll_emptyOnEmpty_eqReplacement :
-    CanReach (test_regex_replaceAll_emptyOnEmpty_eqReplacement liveApi) := by
+    CanReach (test_regex_replaceAll_emptyOnEmpty_eqReplacement defaultApi) := by
   refine ⟨"X", ?_⟩
   have h := proof_regex_replaceAll_emptyOnEmpty_eqReplacement "X"
-  simp only [liveApi, compilePattern, parse_empty_ok, bind, Except.bind, pure, Except.pure,
-    assert] at h ⊢
+  simp only [defaultApi, replaceAll, Internal.replaceAll, Internal.compilePattern,
+    parse_empty_ok, bind, Except.bind, pure, Except.pure, assert] at h ⊢
   exact h
 
-end Packages.Regex.Proofs
+end LeanSwe.RegExp.Proofs
