@@ -1,13 +1,5 @@
 import LeanSwe.Fs.Raw.Types
 
-/-!
-# Fs Package Types
-
-Public data structs, error enums, and generic `FsApiM` bundle for `LeanSwe.Fs`.
-Re-exports shared primitive types from `LeanSwe.Fs.Raw.Types` and stays free of
-OS and implementation internals so `SpecTests` depend only on this module.
--/
-
 namespace LeanSwe.Fs
 
 export LeanSwe.Fs.Raw

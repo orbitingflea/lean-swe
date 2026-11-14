@@ -2,15 +2,6 @@ import LeanSwe.Fs.Interface
 import LeanSwe.Fs.SpecTests
 import LeanSwe.Fs.Raw.Proofs
 
-/-!
-# Fs Proofs
-
-Machine-checked proofs discharging every `AllPass` safety specification and
-`CanReach` non-vacuity witness for both `LeanSwe.Fs.defaultApi` (pure paths)
-and an injected pure VFS state model (`vfsApi`) covering multi-step filesystem
-operations, plus review-bug mutation refutations.
--/
-
 namespace LeanSwe.Fs.Proofs
 
 open Core
@@ -713,8 +704,6 @@ theorem reach_fs_suffixes_doubleDot :
     CanReach (test_fs_suffixes_doubleDot defaultApi) :=
   ⟨"a", by decide, by decide, by decide,
     proof_fs_suffixes_doubleDot "a" (by decide) (by decide) (by decide)⟩
-
-/-! ## Pure Virtual Filesystem (VFS) Model & Proofs for Layer-2 Thick Operations -/
 
 /-- Node stored in the pure in-memory VFS model. -/
 inductive VfsNode where
@@ -3120,12 +3109,6 @@ theorem reach_fs_vfs_copyTree_loopRejected :
       ⟨"/src", hResSrc, by decide, by decide, by decide, hResSelf⟩
       hListSrc ⟨vfsToStat (.dir 0o755), hStatSelf, rfl⟩ hLstatLoop⟩
 
-/-! ## Mutation Tests Against All PR #3 Code Review Bugs
-
-Each `example : ¬ AllPass ...` below mutates the real `Internal.*` implementation from `LeanSwe/Fs/Impl.lean`
-to re-introduce a concrete bug caught during PR #3 reviews and proves that our `SpecTests` reject it. -/
-
-/-- Bug 1 (PR #3 R1 I01): `mkdir` skips the initial existing-path check when `parents = true` and swallows `.alreadyExists` on `createDir`. -/
 private def buggyMkdirR1I01 (path : String) (parents existOk : Bool) : StateM VfsState (Except FsError Unit) := do
   if !parents then
     Internal.mkdirImplM vfsOps path parents existOk
@@ -3178,7 +3161,6 @@ example : ¬ AllPass (test_fs_vfs_mkdir_existingFails { vfsApi with mkdir := bug
   rcases hFail with ⟨⟨⟨e, he, _⟩, _⟩, _⟩
   cases he
 
-/-- Bug 2 (PR #3 R1 I02): `copyTree` passes `parents = false` to `mkdirImplM` when creating `dst`. -/
 private def buggyCopyTreeR1I02 (src dst : String) (dirsExistOk : Bool) : StateM VfsState (Except FsError Unit) := do
   match ← vfsOps.stat true src with
   | .error e => return .error e
@@ -3321,7 +3303,6 @@ example : ¬ AllPass (test_fs_vfs_copyTree_createsMissingParents { vfsApi with c
       simpa [hC] using hCreFail
     simp [hEq, assert] at hFail
 
-/-- Bug 3 (PR #3 R1 I03): `touch` inspects `stat` (`follow = true`) instead of `lstat` (`follow = false`). -/
 private def buggyTouchR1I03 (path : String) (existOk : Bool) : StateM VfsState (Except FsError Unit) := do
   match ← vfsOps.stat true path with
   | .ok st =>
@@ -3393,7 +3374,6 @@ example : ¬ AllPass (test_fs_vfs_touch_existingFails { vfsApi with touch := bug
     rw [hOkW] at he
     cases he
 
-/-- Bug 4 (PR #3 R1 I04): `copyTreeGoM` omits the `canon ∈ visited` symlink-loop check. -/
 private def buggyCopyTreeGoNoLoopM (src dst : String) (dirsExistOk : Bool) : Nat → StateM VfsState (Except FsError Unit)
   | 0 => return .error { kind := .ioError, path := some src, message := s!"maximum directory depth exceeded: {src}" }
   | fuel + 1 => do
@@ -3778,7 +3758,6 @@ example : ¬ AllPass (test_fs_vfs_copyTree_loopRejected
   rcases hFail with ⟨⟨e, hErr, hKind⟩, _⟩
   exact buggyCopyTreeGoNoLoopM_never_invalidInput 4096 src "/loop_dst" false st e hErr hKind
 
-/-- Bug 5 (PR #3 R2 I01): `walk` collapses `stat` errors into `.notFound`. -/
 private def buggyWalkR2I01 (root : String) : StateM VfsState (Except FsError (Array WalkEntry)) := do
   match ← vfsOps.stat true root with
   | .ok _ => Internal.walkImplM vfsOps root
@@ -3806,7 +3785,6 @@ example : ¬ AllPass (test_fs_vfs_walk_preservesStatError { vfsApi with walk := 
   cases he
   simp at hk
 
-/-- Bug 6 (PR #3 R3 I01): `suffixes` filters empty dot-split segments, corrupting double-dot filenames like `a..ext`. -/
 private def buggySuffixesR3I01 (path : String) : Array String :=
   match Internal.name path with
   | none => #[]
@@ -3828,7 +3806,6 @@ example : ¬ AllPass (test_fs_suffixes_doubleDot { defaultApi with suffixes := b
   rw [hCat, hVal] at hFail
   exact absurd hFail.1 (by decide)
 
-/-- Bug 7 (PR #3 R3 I02): `copyTree` omits the self-copy ancestor guard (`resolveApproxGoM`), failing to reject copying `/src` into `/src/sub`. -/
 private def buggyCopyTreeR3I02 (src dst : String) (dirsExistOk : Bool) : StateM VfsState (Except FsError Unit) :=
   Internal.copyTreeGoM vfsOps src dst dirsExistOk [] 4096
 

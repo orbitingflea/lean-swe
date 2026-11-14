@@ -1,11 +1,3 @@
-/-!
-# Glob Package Types
-
-Public data structs, closed error enum, and `GlobApi` record for `LeanSwe.Glob`.
-Kept free of internal implementation details so specifications in `SpecTests` depend
-only on this interface.
--/
-
 namespace LeanSwe.Glob
 
 /-- Classification of glob pattern syntax failures. -/

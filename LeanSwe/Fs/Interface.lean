@@ -2,14 +2,6 @@ import LeanSwe.Fs.Types
 import LeanSwe.Fs.Impl
 import LeanSwe.Fs.Raw.Interface
 
-/-!
-# Fs Package Interface
-
-Public entry point for `LeanSwe.Fs`, providing Python `pathlib`/`os`/`shutil`-style
-path manipulation, file/directory I/O, tree walking, globbing, and POSIX metadata,
-permissions, and symlink operations wired cleanly to `LeanSwe.Fs.Raw.defaultOps`.
--/
-
 namespace LeanSwe.Fs
 
 /-- Default `FsApi` backed by `LeanSwe.Fs.Raw.defaultOps`. -/

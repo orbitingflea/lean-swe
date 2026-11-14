@@ -1,14 +1,6 @@
 import Core.NondetTest
 import LeanSwe.RegExp.Types
 
-/-!
-# Regex SpecTests
-
-Human-audited behavioral specifications for `LeanSwe.RegExp.RegexApi` written in
-`Core.NondetTest`. Notice zero raw `∀`, `→`, or proof scripts appear in the
-spec definitions below.
--/
-
 namespace LeanSwe.RegExp
 
 open Core (NondetTest)
@@ -85,7 +77,6 @@ def test_regex_replaceAll_emptyOnEmpty_eqReplacement
   | .error _ => assume False
   | .ok out => assert (out = rep)
 
-/-- Compile-time negative mutation check: a broken `countMatches` must fail `SpecTests`. -/
 private def buggyCountApi : RegexApi :=
   { testPattern := fun _ _ => .ok false
     findFirst := fun _ _ => .ok none
@@ -104,7 +95,6 @@ example : ¬ Core.AllPass (test_regex_replaceAll_emptyOnEmpty_eqReplacement bugg
   have h0 := h "x"
   simp [buggyCountApi, assert] at h0
 
-/-- Compile-time negative mutation check: a stub that never matches must fail semantic `SpecTests`. -/
 private def buggyNeverMatchApi : RegexApi :=
   { testPattern := fun _ _ => .ok false
     findFirst := fun _ _ => .ok none
@@ -118,7 +108,6 @@ example : ¬ Core.AllPass (test_regex_emptyPattern_matchesAnyHaystack buggyNever
   have h0 := h "abc"
   simp [buggyNeverMatchApi, assert] at h0
 
-/-- Compile-time negative mutation check: a `testPattern` always returning `true` must fail `SpecTests`. -/
 private def buggyTestApi : RegexApi :=
   { testPattern := fun _ _ => .ok true
     findFirst := fun _ _ => .ok none

@@ -1,14 +1,6 @@
 import Regex
 import LeanSwe.RegExp.Types
 
-/-!
-# Regex Package Internal Implementation
-
-Implements `LeanSwe.RegExp` primitives on top of `pandaman64/lean-regex`.
-Placed under `namespace LeanSwe.RegExp.Internal` so opening `LeanSwe.RegExp` never
-exposes internal helpers to downstream callers.
--/
-
 namespace LeanSwe.RegExp.Internal
 
 open LeanSwe.RegExp (RegexErrorKind RegexError MatchSpan)

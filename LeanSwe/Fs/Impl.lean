@@ -1,14 +1,6 @@
 import LeanSwe.Fs.Types
 import LeanSwe.Glob.Interface
 
-/-!
-# Fs Package Internal Implementation
-
-Pure generic implementation of `LeanSwe.Fs.FsApiM` over injected `RawFsOpsM m`
-single-step primitives, combined with Python-parity path manipulation and
-`LeanSwe.Glob` tree filtering. Contains zero `IO.FS`, zero `IO`, and zero `@[extern]`.
--/
-
 namespace LeanSwe.Fs.Internal
 
 open LeanSwe.Fs

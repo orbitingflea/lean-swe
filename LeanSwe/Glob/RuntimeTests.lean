@@ -1,13 +1,5 @@
 import LeanSwe.Glob.Interface
 
-/-!
-# Glob RuntimeTests
-
-Concrete execution tests checking `LeanSwe.Glob` (`open LeanSwe` -> `Glob.*`) across
-wildcards, `**` recursive segments, character classes, negation, escapes, filtering,
-and syntax error categories.
--/
-
 namespace LeanSwe.Glob.RuntimeTests
 
 open LeanSwe

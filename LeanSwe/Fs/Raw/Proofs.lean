@@ -3,12 +3,6 @@ import LeanSwe.Fs.Raw.Interface
 import LeanSwe.Fs.Raw.Impl
 import LeanSwe.Fs.Raw.SpecTests
 
-/-!
-# Fs.Raw Proofs
-
-Machine-checked proofs discharging `LeanSwe.Fs.Raw.SpecTests` for `defaultOps`.
--/
-
 namespace LeanSwe.Fs.Raw.Proofs
 
 open Core

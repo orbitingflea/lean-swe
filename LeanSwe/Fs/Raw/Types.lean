@@ -1,11 +1,3 @@
-/-!
-# Fs.Raw Package Types
-
-Public data types, error enums, and the minimal single-step filesystem primitive
-interface (`RawFsOpsM`) exported by `LeanSwe.Fs.Raw`.
-Kept free of OS and implementation internals so `SpecTests` depend only on this module.
--/
-
 namespace LeanSwe.Fs.Raw
 
 /-- Classification of filesystem and path errors modeled after Python `OSError` subclasses. -/

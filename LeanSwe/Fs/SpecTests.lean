@@ -1,15 +1,6 @@
 import Core.NondetTest
 import LeanSwe.Fs.Types
 
-/-!
-# Fs SpecTests
-
-Human-audited behavioral specifications for `LeanSwe.Fs.FsApi` written in
-`Core.NondetTest`. Pure path and error-mapping contracts are verified via
-machine-checked proofs in `Proofs.lean`, while OS/C-ABI syscall effects are
-grounded in `RuntimeTests.lean`.
--/
-
 namespace LeanSwe.Fs
 
 open Core (NondetTest)
@@ -168,15 +159,12 @@ def test_fs_vfs_copyTree_loopRejected
   let (res, _) := (api.copyTree src dst false).run s₀
   assert (∃ e, res = .error e ∧ e.kind = .invalidInput)
 
-/-- Negative mutation check: `mapRawError` returning an empty message must fail `SpecTests`. -/
 private def buggyEmptyErrApi (base : FsApi) : FsApi :=
   { base with mapRawError := fun _ => { kind := .ioError, message := "" } }
 
-/-- Negative mutation check: broken `normPath` ignoring idempotence must fail `SpecTests`. -/
 private def buggyNormApi (base : FsApi) : FsApi :=
   { base with normPath := fun p => p ++ "/a" }
 
-/-- Negative mutation check: `withName` returning wrong filename must fail `SpecTests`. -/
 private def buggyWithNameApi (base : FsApi) : FsApi :=
   { base with
     withName := fun _ _ => .ok "/wrong"
@@ -226,11 +214,9 @@ private def stubFsApi : FsApi :=
     glob := fun _ _ => pure (.ok #[])
     rglob := fun _ _ => pure (.ok #[]) }
 
-/-- Negative mutation check: broken `suffixes` dropping empty dot segments must fail `SpecTests`. -/
 private def buggySuffixesApi (base : FsApi) : FsApi :=
   { base with suffixes := fun _ => #[] }
 
-/-- Sample `FileStat` used in `SpecTests` negative mutation checks. -/
 private def stubStat (kind : EntryKind) : FileStat :=
   { kind := kind
     byteSize := 0
@@ -240,7 +226,6 @@ private def stubStat (kind : EntryKind) : FileStat :=
     accessedSec := 0
     accessedNsec := 0 }
 
-/-- Dummy `StateM Unit` API bundle used for negative mutation checks over VFS specs. -/
 private def stubVfsApi : FsApiM (StateM Unit) :=
   { join := fun a b => if b.toList.head? == some '/' then b else if a == "" then b else a ++ "/" ++ b
     joinMany := fun _ => ""

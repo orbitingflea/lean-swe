@@ -1,11 +1,3 @@
-/-!
-# NondetTest Spec Language
-
-Shared nondeterministic test primitives (`nondet`, `assume`, `assert`) with two
-built-in interpretations: `AllPass` (universal safety proof) and `CanReach`
-(non-vacuity witness check).
--/
-
 namespace Core
 
 /-- Test-runner capability supporting `do`-notation alongside `nondet`, `assume`, and `assert`. -/

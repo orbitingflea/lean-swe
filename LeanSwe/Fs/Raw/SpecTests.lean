@@ -1,12 +1,6 @@
 import Core.NondetTest
 import LeanSwe.Fs.Raw.Types
 
-/-!
-# Fs.Raw SpecTests
-
-Human-audited contracts for `LeanSwe.Fs.Raw.RawFsOps`.
--/
-
 namespace LeanSwe.Fs.Raw
 
 open Core (NondetTest)
@@ -19,7 +13,6 @@ def test_fsraw_mapRawError_returnsNonEmptyMessage
   let err := ops.mapRawError raw
   assert (err.message ≠ "")
 
-/-- Negative mutation check: `mapRawError` returning an empty message must fail `SpecTests`. -/
 private def buggyEmptyErrRaw (base : RawFsOps) : RawFsOps :=
   { base with mapRawError := fun _ => { kind := .ioError, message := "" } }
 

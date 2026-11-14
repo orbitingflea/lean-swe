@@ -1,13 +1,5 @@
 import LeanSwe.Fs.Raw.Interface
 
-/-!
-# Fs.Raw RuntimeTests
-
-Concrete execution tests grounding `LeanSwe.Fs.Raw` (`createDir`, `removeDir`,
-`stat`, `readDir`, `writeBytes`, `readBytes`, `unlinkFile`, `chmod`, `symlink`,
-`readLink`, `realPath`, `cwd`, `withTempDir`) against real Linux OS syscalls.
--/
-
 namespace LeanSwe.Fs.Raw.RuntimeTests
 
 open LeanSwe.Fs

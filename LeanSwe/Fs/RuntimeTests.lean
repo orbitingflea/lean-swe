@@ -1,15 +1,5 @@
 import LeanSwe.Fs.Interface
 
-/-!
-# Fs RuntimeTests
-
-Concrete execution tests grounding `LeanSwe.Fs` (`open LeanSwe` -> `Fs.*`) against
-real temporary directories on disk, covering Python `pathlib`/`os`/`shutil` operations,
-C-ABI `chmod`/`symlink`/`readlink`/`statMode`, symlink loop safety in `walk`, and
-error classification (`notFound`, `alreadyExists`, `isADirectory`, `notADirectory`,
-`notEmpty`, `invalidInput`).
--/
-
 namespace LeanSwe.Fs.RuntimeTests
 
 open LeanSwe

@@ -1,13 +1,6 @@
 import LeanSwe.Fs.Raw.Types
 import LeanSwe.Fs.Raw.Impl
 
-/-!
-# Fs.Raw Package Interface
-
-Thin OS/C-ABI filesystem layer housing the audited `@[extern]` bindings into
-`c/fs_shim.c` and exposing single-step primitives (`defaultOps`) plus `withTempDir`.
--/
-
 namespace LeanSwe.Fs.Raw
 
 @[extern "leanswe_fs_chmod"]
