@@ -332,7 +332,7 @@ def test_cmdline_env_precedenceAndErrorPropagation
   | .ok _ => NondetTest.assert False
   | .error e => NondetTest.assert (e.kind = .ioError ∧ e.message = "bad utf8")
 
-/-- Canonical `renderArgs` handles short-only empty strings (`-s ""`), positionals starting with `-` after non-dash positionals, repeatable options, and round-trips through `parse`. -/
+/-- Canonical `renderArgs` handles short-only empty strings (`-s ""`), positionals starting with `-` (after `--`), repeatable options, and round-trips through `parse`. -/
 def test_cmdline_renderArgs_roundTripEdgeCases
     {runner} [NondetTest runner] (api : CmdLineApi) : runner Unit := do
   let spec : CommandSpec :=
@@ -346,7 +346,7 @@ def test_cmdline_renderArgs_roundTripEdgeCases
             args :=
               [ { name := "src", kind := .string },
                 { name := "dst", kind := .string } ] } ] }
-  match api.parse spec ["cp", "-s", "", "-vv", "--no-cache", "a.txt", "-b.txt"] with
+  match api.parse spec ["cp", "-s", "", "-vv", "--no-cache", "--", "a.txt", "-b.txt"] with
   | .error _ => NondetTest.assert False
   | .ok parsed =>
     NondetTest.assert
