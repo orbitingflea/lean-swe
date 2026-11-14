@@ -167,8 +167,10 @@ def test_numparse_int_concreteBoundaries
     , ("0b_1", .invalidUnderscore)
     , ("12abc", .trailingChars)
     , ("0x1g", .trailingChars)
-    , ("0o8", .trailingChars)
-    , ("0b2", .trailingChars)
+    , ("0o8", .invalidSyntax)
+    , ("0b2", .invalidSyntax)
+    , ("0o18", .trailingChars)
+    , ("0b12", .trailingChars)
     , ("42 ", .trailingChars)
     ]
   checkInt64Ok api
