@@ -472,13 +472,15 @@ theorem inInt64Range_iff (n : Int) :
     inInt64Range n = true ↔ int64MinInt ≤ n ∧ n ≤ int64MaxInt := by
   simp [inInt64Range]
 
-private def basePrefix? : Char → Option NumBase
+/-- Map base prefix character (`x`/`X`, `o`/`O`, `b`/`B`) to its `NumBase`. -/
+def basePrefix? : Char → Option NumBase
   | 'x' | 'X' => some .hex
   | 'o' | 'O' => some .oct
   | 'b' | 'B' => some .bin
   | _ => none
 
-private def consumeIntDigits (b : NumBase) (acc : Nat) : List Char → Except NumParseErrorKind Nat
+/-- Scan remaining digits and underscore separators for an integer literal in `NumBase`. -/
+def consumeIntDigits (b : NumBase) (acc : Nat) : List Char → Except NumParseErrorKind Nat
   | [] => .ok acc
   | '_' :: c :: cs =>
     match digitVal? b c with
@@ -490,7 +492,8 @@ private def consumeIntDigits (b : NumBase) (acc : Nat) : List Char → Except Nu
     | some d => consumeIntDigits b (acc * b.radix + d) cs
     | none => .error .trailingChars
 
-private def parseDecAfterSign (neg : Bool) : List Char → Except NumParseErrorKind Int
+/-- Parse an unprefixed signed decimal integer literal body in the model grammar. -/
+def parseDecAfterSign (neg : Bool) : List Char → Except NumParseErrorKind Int
   | [] => .error .invalidSyntax
   | '_' :: _ => .error .invalidUnderscore
   | '0' :: rest =>
@@ -615,7 +618,8 @@ theorem evalFloat_underflow_neg {m : Nat} {e : Int} (he : e < -(2048 + (m.log2 :
     evalFloat true m e = (-0.0 : Float) := by
   rw [evalFloat_neg, evalFloat_underflow_pos he]
 
-private def consumeDecFloatDigits (acc count : Nat) :
+/-- Scan decimal digits and underscore separators for a float part, returning `(value, digitCount, rest)`. -/
+def consumeDecFloatDigits (acc count : Nat) :
     List Char → Except NumParseErrorKind (Nat × Nat × List Char)
   | [] => .ok (acc, count, [])
   | '_' :: c :: cs =>
@@ -630,7 +634,8 @@ private def consumeDecFloatDigits (acc count : Nat) :
     else
       .ok (acc, count, c :: cs)
 
-private def parseFloatIntPart : List Char → Except NumParseErrorKind (Nat × List Char)
+/-- Parse the integer significand part of a TOML float literal, rejecting disallowed leading zeros. -/
+def parseFloatIntPart : List Char → Except NumParseErrorKind (Nat × List Char)
   | [] => .error .invalidSyntax
   | '_' :: _ => .error .invalidUnderscore
   | '0' :: rest =>
@@ -652,7 +657,8 @@ private def parseFloatIntPart : List Char → Except NumParseErrorKind (Nat × L
     else
       .error .invalidSyntax
 
-private def parseFloatExpPart : List Char → Except NumParseErrorKind (Int × List Char)
+/-- Parse the signed exponent part of a TOML float literal (allowing leading zeros per TOML 1.0). -/
+def parseFloatExpPart : List Char → Except NumParseErrorKind (Int × List Char)
   | cs =>
     let (expNeg, afterSign) :=
       match cs with
