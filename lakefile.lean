@@ -59,6 +59,22 @@ extern_lib «leanswe_uuid» pkg := do
   let name := nameToStaticLib "leanswe_uuid"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
+extern_lib «leanswe_sqlite» pkg := do
+  let lean ← getLeanInstall
+  let cDir := pkg.dir / "LeanSwe" / "Sqlite" / "Raw" / "c"
+  let sqliteO := pkg.buildDir / "c" / "sqlite3.o"
+  let sqliteSrc ← inputTextFile (cDir / "sqlite3.c")
+  let sqliteOJob ← buildO sqliteO sqliteSrc
+    #["-I", cDir.toString]
+    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror", "-DSQLITE_THREADSAFE=1", "-DSQLITE_OMIT_LOAD_EXTENSION=1", "-DSQLITE_DISABLE_LFS"]
+  let shimO := pkg.buildDir / "c" / "sqlite_shim.o"
+  let shimSrc ← inputTextFile (cDir / "sqlite_shim.c")
+  let shimOJob ← buildO shimO shimSrc
+    #["-I", lean.includeDir.toString, "-I", cDir.toString]
+    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+  let name := nameToStaticLib "leanswe_sqlite"
+  buildStaticLib (pkg.staticLibDir / name) #[sqliteOJob, shimOJob]
+
 @[default_target, test_driver]
 lean_exe «lean-swe-test» where
   root := `Tests.Main

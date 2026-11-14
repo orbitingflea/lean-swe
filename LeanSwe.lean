@@ -72,6 +72,14 @@ import LeanSwe.Uuid.SpecTests
 import LeanSwe.Uuid.Proofs
 import LeanSwe.Uuid.RuntimeTests
 import LeanSwe.Sqlite.Raw.Types
+import LeanSwe.Sqlite.Raw.Impl
+import LeanSwe.Sqlite.Raw.Interface
 import LeanSwe.Sqlite.Raw.SpecTests
+import LeanSwe.Sqlite.Raw.Proofs
+import LeanSwe.Sqlite.Raw.RuntimeTests
 import LeanSwe.Sqlite.Types
+import LeanSwe.Sqlite.Impl
+import LeanSwe.Sqlite.Interface
 import LeanSwe.Sqlite.SpecTests
+import LeanSwe.Sqlite.Proofs
+import LeanSwe.Sqlite.RuntimeTests

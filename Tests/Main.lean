@@ -16,6 +16,8 @@ def main : IO Unit := do
   Env.RuntimeTests.runAll
   Uuid.Raw.RuntimeTests.runAll
   Uuid.RuntimeTests.runAll
+  Sqlite.Raw.RuntimeTests.runAll
+  Sqlite.RuntimeTests.runAll
   match RegExp.findAll "[0-9]+" "a1b22" with
   | .ok xs =>
     if xs.map (·.matched) != #["1", "22"] then
