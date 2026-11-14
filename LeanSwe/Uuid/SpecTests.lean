@@ -12,6 +12,10 @@ private def isLowerHexChar (c : Char) : Bool :=
 private def isHexChar (c : Char) : Bool :=
   isLowerHexChar c || ('A' ≤ c && c ≤ 'F')
 
+private def lowerHexDigit (n : Nat) : Char :=
+  if n < 10 then Char.ofNat ('0'.toNat + n)
+  else Char.ofNat ('a'.toNat + (n - 10))
+
 private def mockCounterRawOps : RawUuidOpsM (StateM MockRngState) :=
   { mapRawError := fun
       | .osError code _ => { kind := .entropyFailed, errnoCode := some code, message := "mock os error" }
@@ -37,12 +41,16 @@ private def mockCounterRawOps : RawUuidOpsM (StateM MockRngState) :=
         ]
         return .ok bs }
 
-/-- Every error returned by `api.mapRawError` carries a non-empty diagnostic message. -/
+/-- Every error returned by `api.mapRawError` has kind `.entropyFailed` and a non-empty diagnostic message, preserving `errno` on `.osError`. -/
 def test_uuid_mapRawError_returnsNonEmptyMessage
     {runner} [NondetTest runner] (api : UuidApi) : runner Unit := do
   let raw ← nondet UuidRawError
   let err := api.mapRawError raw
-  assert (err.message ≠ "")
+  assert (err.kind = .entropyFailed ∧ err.message ≠ "")
+  match raw with
+  | .osError code _ => assert (err.errnoCode = some code)
+  | .shortRead _ _ => assert True
+  | .userError _ => assert True
 
 /-- `api.fromRandomBytes` accepts any 16-byte input, enforces RFC 4122 v4 version (`0x40`) and variant (`0x80`) bits, and preserves all remaining bits verbatim. -/
 def test_uuid_fromRandomBytes_validLen_setsV4BitsAndPreservesPayload
@@ -106,6 +114,21 @@ def test_uuid_toHex_formatAndRoundTrip
     | .ok _ => assert False
     | .error e => assert (e.kind = .invalidFormat ∧ e.message ≠ "")
 
+/-- `api.toHex` encodes the 16 UUID bytes in RFC 4122 big-endian byte and high/low nibble order. -/
+def test_uuid_toHex_bigEndianNibbleOrder
+    {runner} [NondetTest runner] (api : UuidApi) : runner Unit := do
+  let bs ← nondet ByteArray
+  assume (bs.size = 16)
+  match api.fromRandomBytes bs with
+  | .error _ => assume False
+  | .ok u =>
+    let cs := (api.toHex u).toList
+    let i ← nondet Nat
+    assume (i < 16)
+    let b := u.bytes[i]!.toNat
+    assert (cs[2 * i]? = some (lowerHexDigit (b / 16)))
+    assert (cs[2 * i + 1]? = some (lowerHexDigit (b % 16)))
+
 /-- `api.parse` and `api.parseHex` accept uppercase hex input and recover the exact `Uuid`. -/
 def test_uuid_parse_acceptsUppercaseHex
     {runner} [NondetTest runner] (api : UuidApi) : runner Unit := do
@@ -132,6 +155,18 @@ def test_uuid_parse_acceptedImpliesV4AndNormalizedRoundTrip
     assert ((u.bytes[6]! &&& (0xF0 : UInt8)) = (0x40 : UInt8))
     assert ((u.bytes[8]! &&& (0xC0 : UInt8)) = (0x80 : UInt8))
     assert ((api.toString u).toList = s.toList.map Char.toLower)
+
+/-- Every accepted `api.parseHex s = .ok u` yields valid 16-byte v4 bits and lowercased compact `api.toHex u`. -/
+def test_uuid_parseHex_acceptedImpliesV4AndNormalizedRoundTrip
+    {runner} [NondetTest runner] (api : UuidApi) : runner Unit := do
+  let s ← nondet String
+  match api.parseHex s with
+  | .error e => assert (e.message ≠ "")
+  | .ok u =>
+    assert (u.bytes.size = 16)
+    assert ((u.bytes[6]! &&& (0xF0 : UInt8)) = (0x40 : UInt8))
+    assert ((u.bytes[8]! &&& (0xC0 : UInt8)) = (0x80 : UInt8))
+    assert ((api.toHex u).toList = s.toList.map Char.toLower)
 
 /-- `api.parse` rejects any string whose length is not 36 with `.invalidFormat` and `api.isValid s = false`. -/
 def test_uuid_parse_rejectsInvalidLength
@@ -283,6 +318,20 @@ def test_uuid_getUuid_rejectsWrongRawByteCount
   | .ok _ => assert False
   | .error e => assert (e.kind = .invalidLength ∧ e.message ≠ "")
 
+/-- `getUuid` constructs its `Uuid` directly from the 16 payload bytes returned by `RawUuidOpsM.randomBytes16` via `fromRandomBytes`. -/
+def test_uuid_getUuid_usesRawRandomBytes
+    {runner} [NondetTest runner]
+    (mkApi : RawUuidOpsM (StateM MockRngState) → UuidApiM (StateM MockRngState)) : runner Unit := do
+  let bs ← nondet ByteArray
+  assume (bs.size = 16)
+  let fixedOps : RawUuidOpsM (StateM MockRngState) :=
+    { mockCounterRawOps with randomBytes16 := pure (.ok bs) }
+  let api := mkApi fixedOps
+  let s₀ ← nondet MockRngState
+  let (res, s₁) := api.getUuid.run s₀
+  assert (s₁ = s₀)
+  assert (res = api.fromRandomBytes bs)
+
 private def zeros16 : ByteArray :=
   ByteArray.mk (Array.replicate 16 0)
 
@@ -332,7 +381,25 @@ example : ¬ Core.AllPass (test_uuid_mapRawError_returnsNonEmptyMessage
     { stubUuidApi with mapRawError := fun _ => { kind := .entropyFailed, message := "" } }) := by
   intro h
   have h0 := h (.userError "boom")
-  simp [assert] at h0
+  dsimp [test_uuid_mapRawError_returnsNonEmptyMessage,
+    Core.NondetTest.assert, Bind.bind] at h0
+  exact absurd h0.1 (by decide)
+
+example : ¬ Core.AllPass (test_uuid_mapRawError_returnsNonEmptyMessage
+    { stubUuidApi with mapRawError := fun _ => { kind := .invalidFormat, message := "bad" } }) := by
+  intro h
+  have h0 := h (.userError "boom")
+  dsimp [test_uuid_mapRawError_returnsNonEmptyMessage,
+    Core.NondetTest.assert, Bind.bind] at h0
+  exact absurd h0.1 (by decide)
+
+example : ¬ Core.AllPass (test_uuid_mapRawError_returnsNonEmptyMessage
+    { stubUuidApi with mapRawError := fun _ => { kind := .entropyFailed, errnoCode := none, message := "bad" } }) := by
+  intro h
+  have h0 := h (.osError 5 "EIO")
+  dsimp [test_uuid_mapRawError_returnsNonEmptyMessage,
+    Core.NondetTest.assert, Bind.bind] at h0
+  exact absurd h0.2 (by decide)
 
 example : ¬ Core.AllPass (test_uuid_fromRandomBytes_validLen_setsV4BitsAndPreservesPayload
     { stubUuidApi with fromRandomBytes := fun bs => .ok { bytes := bs } }) := by
@@ -376,6 +443,14 @@ example : ¬ Core.AllPass (test_uuid_toHex_formatAndRoundTrip
     Core.NondetTest.assert, Bind.bind] at h0
   exact absurd h0.1 (by decide)
 
+example : ¬ Core.AllPass (test_uuid_toHex_bigEndianNibbleOrder stubUuidApi) := by
+  intro h
+  let bs := ByteArray.mk (Array.replicate 16 0xFF)
+  have h0 := h bs rfl 0 (by decide)
+  dsimp [test_uuid_toHex_bigEndianNibbleOrder, stubUuidApi, validNilV4Hex,
+    Core.NondetTest.assert, Bind.bind] at h0
+  exact absurd h0.1 (by decide)
+
 example : ¬ Core.AllPass (test_uuid_parse_acceptsUppercaseHex
     { stubUuidApi with
       toString := fun _ => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -400,6 +475,15 @@ example : ¬ Core.AllPass (test_uuid_parse_acceptedImpliesV4AndNormalizedRoundTr
   dsimp [test_uuid_parse_acceptedImpliesV4AndNormalizedRoundTrip, zeros16,
     Core.NondetTest.assert, Bind.bind] at h0
   exact absurd h0.2.2.1 (by decide)
+
+example : ¬ Core.AllPass (test_uuid_parseHex_acceptedImpliesV4AndNormalizedRoundTrip
+    { stubUuidApi with
+      parseHex := fun _ => .ok { bytes := zeros16 } }) := by
+  intro h
+  have h0 := h validNilV4Hex
+  dsimp [test_uuid_parseHex_acceptedImpliesV4AndNormalizedRoundTrip, zeros16,
+    Core.NondetTest.assert, Bind.bind] at h0
+  exact absurd h0.2.1 (by decide)
 
 example : ¬ Core.AllPass (test_uuid_parse_rejectsInvalidLength
     { stubUuidApi with
@@ -460,7 +544,8 @@ example : ¬ Core.AllPass (test_uuid_getUuid_consecutiveDistinctValidAndDetermin
   have h0 := h { counter := 0, failWith := none, draws := 0 } rfl
   dsimp [test_uuid_getUuid_consecutiveDistinctValidAndDeterministic, stubMkApi,
     Core.NondetTest.assert, Bind.bind, StateT.run, pure, StateT.pure] at h0
-  exact absurd h0.2.1 (by decide)
+  have h2 := h0.2.1
+  simp at h2
 
 example : ¬ Core.AllPass (test_uuid_getUuid_propagatesEntropyError
     (fun ops => { stubMkApi ops with getUuid := pure (.ok { bytes := validNilV4Bytes }) })) := by
@@ -480,5 +565,21 @@ example : ¬ Core.AllPass (test_uuid_getUuid_rejectsWrongRawByteCount
   dsimp [test_uuid_getUuid_rejectsWrongRawByteCount, stubMkApi,
     Core.NondetTest.assert, Bind.bind, StateT.run, StateT.bind, pure, StateT.pure] at h0
   exact h0.2.1
+
+example : ¬ Core.AllPass (test_uuid_getUuid_usesRawRandomBytes
+    (fun ops => { stubMkApi ops with
+      getUuid := do
+        match ← ops.randomBytes16 with
+        | .error e => return .error e
+        | .ok _ => return .ok { bytes := validNilV4Bytes } })) := by
+  intro h
+  have h0 := h (ByteArray.mk (Array.replicate 16 0xFF)) rfl { counter := 0, failWith := none, draws := 0 }
+  dsimp [test_uuid_getUuid_usesRawRandomBytes, stubMkApi, stubUuidApi, validNilV4Bytes, zeros16,
+    Core.NondetTest.assert, Bind.bind, StateT.run, StateT.bind, pure, StateT.pure] at h0
+  have h2 := h0.2.1
+  split at h2
+  · cases h2
+  · simp at h2
+    exact absurd h2 (by decide)
 
 end LeanSwe.Uuid
