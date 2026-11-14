@@ -1,13 +1,5 @@
 import LeanSwe.Process.Raw.Types
 
-/-!
-# Process Package Types
-
-Public data types, error enums, and generic `ProcessApiM` bundle for `LeanSwe.Process`.
-Re-exports shared primitive types from `LeanSwe.Process.Raw.Types` and stays free of
-OS and implementation internals so `SpecTests` depend only on this module.
--/
-
 namespace LeanSwe.Process
 
 export LeanSwe.Process.Raw

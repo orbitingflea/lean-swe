@@ -1,14 +1,6 @@
 import Core.NondetTest
 import LeanSwe.Process.Raw.Types
 
-/-!
-# Process.Raw SpecTests
-
-Human-audited contracts for `LeanSwe.Process.Raw.RawProcessOpsM`, covering
-error normalization (`mapRawError`) and single-step process-group spawn/kill/reap
-resource accounting.
--/
-
 namespace LeanSwe.Process.Raw
 
 open Core (NondetTest)
@@ -72,7 +64,6 @@ def test_processRaw_killAndReap_restoresActiveCount
     let n₃ := (ops.activeProcessCount.run s₃).1
     assert (killRes = .ok () ∧ reapRes = .ok () ∧ n₃ = n₀)
 
-/-- Baseline stub `RawProcessOps` for compile-time negative mutation checks. -/
 private def stubRawOps : RawProcessOps :=
   { mapRawError := fun
       | .executableNotFound prog errno _ =>
@@ -97,11 +88,9 @@ private def stubRawOps : RawProcessOps :=
     reap := fun _ => pure (.ok ())
     activeProcessCount := pure 0 }
 
-/-- Negative mutation: `mapRawError` returning an empty message must fail `SpecTests`. -/
 private def buggyEmptyErrRaw (base : RawProcessOps) : RawProcessOps :=
   { base with mapRawError := fun _ => { kind := .ioError, message := "" } }
 
-/-- Negative mutation: `mapRawError` collapsing `.timedOut` into `.ioError` must fail `SpecTests`. -/
 private def buggyWrongKindRaw (base : RawProcessOps) : RawProcessOps :=
   { base with
     mapRawError := fun raw =>
@@ -109,7 +98,6 @@ private def buggyWrongKindRaw (base : RawProcessOps) : RawProcessOps :=
       | .timedOut prog _ _ => { kind := .ioError, program := some prog, message := "timeout" }
       | other => base.mapRawError other }
 
-/-- Baseline `StateM Nat` `RawProcessOpsM` tracking active process count for negative checks. -/
 private def stubStatefulRawOps : RawProcessOpsM (StateM Nat) :=
   { mapRawError := stubRawOps.mapRawError
     spawn := fun req => do
@@ -125,18 +113,15 @@ private def stubStatefulRawOps : RawProcessOpsM (StateM Nat) :=
       return .ok ()
     activeProcessCount := fun s => (s, s) }
 
-/-- Negative mutation: `spawn` accepting an empty program must fail `SpecTests`. -/
 private def buggySpawnEmptyRaw (base : RawProcessOpsM (StateM Nat)) : RawProcessOpsM (StateM Nat) :=
   { base with
     spawn := fun _ => do
       modify (· + 1)
       return .ok { handleId := 1, pid := 100, pgid := 100 } }
 
-/-- Negative mutation: `reap` leaking active process handles must fail `SpecTests`. -/
 private def buggyNoReapRaw (base : RawProcessOpsM (StateM Nat)) : RawProcessOpsM (StateM Nat) :=
   { base with reap := fun _ => pure (.ok ()) }
 
-/-- Negative mutation: `spawn` omitting active-handle tracking paired with no-op `reap` must fail `SpecTests`. -/
 private def buggyNoTrackSpawnRaw (base : RawProcessOpsM (StateM Nat)) : RawProcessOpsM (StateM Nat) :=
   { base with
     spawn := fun _ => pure (.ok { handleId := 1, pid := 100, pgid := 100 })

@@ -1,17 +1,6 @@
 import Core.NondetTest
 import LeanSwe.Process.Types
 
-/-!
-# Process SpecTests
-
-Human-audited behavioral specifications for `LeanSwe.Process.ProcessApi` and
-`LeanSwe.Process.ProcessApiM (StateM S)` written in `Core.NondetTest`.
-Covers typed error mapping, option validation and normalization, direct
-`execvp`-style argument handling (no shell), `cwd`/`env`/`stdin` propagation,
-`run` vs `runChecked` exit behavior, process-group timeout and orphan cleanup,
-and output byte-cap enforcement.
--/
-
 namespace LeanSwe.Process
 
 open Core (NondetTest)
@@ -290,7 +279,7 @@ def test_process_runChecked_propagatesRunError
   | .error err =>
     assert ((api.runChecked req).run s₀ = (.error err, s₁))
 
-/-- `api.run` never leaks active child processes or process groups across any outcome. -/
+/-- `api.run` preserves `activeProcessCount` across all outcomes. -/
 def test_process_run_neverLeaksProcesses
     {S : Type} {runner} [NondetTest runner] (api : ProcessApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
@@ -300,7 +289,7 @@ def test_process_run_neverLeaksProcesses
   let n₁ := (api.activeProcessCount.run s₁).1
   assert (n₁ = n₀)
 
-/-- `api.runChecked` never leaks active child processes or process groups across any outcome. -/
+/-- `api.runChecked` preserves `activeProcessCount` across all outcomes. -/
 def test_process_runChecked_neverLeaksProcesses
     {S : Type} {runner} [NondetTest runner] (api : ProcessApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
@@ -310,7 +299,7 @@ def test_process_runChecked_neverLeaksProcesses
   let n₁ := (api.activeProcessCount.run s₁).1
   assert (n₁ = n₀)
 
-/-- When a timed command times out, `api.run` kills/reaps the process group (`activeProcessCount` restored) and returns `.timedOut`. -/
+/-- When `api.run` returns `.timedOut` on a timed request, it restores `activeProcessCount` and preserves `program` and a non-empty message. -/
 def test_process_timeout_cleansUpAndErrors
     {S : Type} {runner} [NondetTest runner] (api : ProcessApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
@@ -337,7 +326,7 @@ def test_process_run_noTimeout_neverTimesOut
   | .ok _ => pure ()
   | .error err => assert (err.kind ≠ .timedOut)
 
-/-- When a command exceeds `maxOutputBytes`, `api.run` kills/reaps the process group and returns `.outputLimitExceeded`. -/
+/-- When `api.run` returns `.outputLimitExceeded`, it restores `activeProcessCount` and preserves `program` and a non-empty message. -/
 def test_process_outputLimit_cleansUpAndErrors
     {S : Type} {runner} [NondetTest runner] (api : ProcessApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
@@ -376,7 +365,7 @@ def test_process_run_respectsMaxOutputBytes
   | .ok out => assert (out.stdout.size + out.stderr.size ≤ limit)
   | .error _ => assume False
 
-/-- When a child is terminated by an OS signal, `api.run` cleans up/reaps handles and returns `.terminatedBySignal` with `program` and `signal`. -/
+/-- When `api.run` returns `.terminatedBySignal`, it restores `activeProcessCount` and preserves `program`, `signal`, and a non-empty message. -/
 def test_process_signaled_cleansUpAndErrors
     {S : Type} {runner} [NondetTest runner] (api : ProcessApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
@@ -412,9 +401,6 @@ def test_process_runChecked_onError_returnsNonEmptyMessage
   | .ok _ => assume False
   | .error err => assert (err.message ≠ "")
 
-/-! ### Negative Mutation Checks -/
-
-/-- Pure reference stub `ProcessApi` used as a base for negative mutation checks. -/
 private def stubProcessApi : ProcessApi :=
   { mapRawError := fun
       | .executableNotFound prog errno _ =>
@@ -460,14 +446,12 @@ private def stubProcessApi : ProcessApi :=
     runCommandChecked := fun _ _ => pure (.error { kind := .ioError, message := "stub" })
     activeProcessCount := pure 0 }
 
-/-- Stub `run` implementation over `StateM Nat` for negative mutation checks. -/
 private def stubStatefulRun (req : ExecRequest) : StateM Nat (Except ProcessError ExecResult) :=
   match stubProcessApi.validateRequest req with
   | .error e => pure (.error e)
   | .ok norm =>
     pure (.ok { exitCode := 1, stdout := "hello".toUTF8, stderr := norm.stdin })
 
-/-- Stub `runChecked` implementation over `StateM Nat` for negative mutation checks. -/
 private def stubStatefulRunChecked (req : ExecRequest) : StateM Nat (Except ProcessError ExecResult) :=
   match stubProcessApi.validateRequest req with
   | .error e => pure (.error e)
@@ -480,7 +464,6 @@ private def stubStatefulRunChecked (req : ExecRequest) : StateM Nat (Except Proc
       stderr := some norm.stdin
       message := "non-zero exit" })
 
-/-- Stateful `StateM Nat` stub `ProcessApiM` used as a base for stateful negative mutation checks. -/
 private def stubStatefulApi : ProcessApiM (StateM Nat) :=
   { mapRawError := stubProcessApi.mapRawError
     validateRequest := stubProcessApi.validateRequest
