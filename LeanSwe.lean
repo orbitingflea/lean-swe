@@ -36,4 +36,8 @@ import LeanSwe.Process.Interface
 import LeanSwe.Process.Proofs
 import LeanSwe.Process.RuntimeTests
 import LeanSwe.Time.Types
+import LeanSwe.Time.Interface
+import LeanSwe.Time.Impl
 import LeanSwe.Time.SpecTests
+import LeanSwe.Time.Proofs
+import LeanSwe.Time.RuntimeTests
