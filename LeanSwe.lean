@@ -23,3 +23,7 @@ import LeanSwe.Fs.Impl
 import LeanSwe.Fs.SpecTests
 import LeanSwe.Fs.Proofs
 import LeanSwe.Fs.RuntimeTests
+import LeanSwe.Process.Raw.Types
+import LeanSwe.Process.Raw.SpecTests
+import LeanSwe.Process.Types
+import LeanSwe.Process.SpecTests
