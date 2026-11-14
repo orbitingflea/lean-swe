@@ -1,0 +1,9 @@
+.lake/
+build/
+.lint-cache/
+.agents/
+*.olean
+*.c.o.export
+*.o
+*.a
+a.out
