@@ -647,6 +647,19 @@ def mkSyntheticCommitId (n : Nat) : CommitId :=
       hexDigits f (k / 16) (ch :: acc)
   { hex := String.ofList (hexDigits 40 n []) }
 
+/-- Search `remaining` candidate synthetic IDs starting at `idx`, falling back to a strictly longer all-zero commit ID not in `s`. -/
+def freshSyntheticCommitIdAux (s : RepoState) (idx : Nat) : Nat → CommitId
+  | 0 =>
+    let maxLen := s.commits.foldl (fun m c => Nat.max m c.id.hex.length) 40
+    { hex := String.ofList (List.replicate (maxLen + 1) '0') }
+  | r + 1 =>
+    let cand := mkSyntheticCommitId idx
+    if !hasCommit s cand then cand else freshSyntheticCommitIdAux s (idx + 1) r
+
+/-- Return a `CommitId` guaranteed not to appear in `s.commits`. -/
+def freshSyntheticCommitId (s : RepoState) : CommitId :=
+  freshSyntheticCommitIdAux s s.commits.length (s.commits.length + 1)
+
 /-- Pure transition: initialize a fresh repository at `rootPath` with an unborn initial branch. -/
 def stepInit (rootPath : String) (bare : Bool) (initialBranch? : Option RefName) :
     Except GitError RepoState := do
@@ -1084,7 +1097,7 @@ def mockGitApi : GitApiM (StateM RepoState) :=
     add := fun path paths all =>
       runRepoStepUnit fun s => stepAdd s path paths all
     commit := fun path opts =>
-      runRepoStep fun s => stepCommit s path opts (mkSyntheticCommitId s.commits.length)
+      runRepoStep fun s => stepCommit s path opts (freshSyntheticCommitId s)
     createBranch := fun path branch startPoint? force =>
       fun s =>
         let target? :=
