@@ -1,13 +1,6 @@
 import LeanSwe.Glob.Interface
 import LeanSwe.Glob.SpecTests
 
-/-!
-# Glob Proofs
-
-Machine-checked proofs discharging every `AllPass` safety specification and
-`CanReach` non-vacuity witness for `LeanSwe.Glob.defaultApi`.
--/
-
 namespace LeanSwe.Glob.Proofs
 
 open Core

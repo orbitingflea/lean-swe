@@ -1,18 +1,10 @@
 import LeanSwe.Fs.Raw.Types
 
-/-!
-# Fs.Raw Package Internal Implementation
-
-Implements the minimal single-step `RawFsOpsM IO` primitives over Lean's `IO.FS`
-and an injected `PosixRawOps` bridge for POSIX calls in `c/fs_shim.c`.
-Placed under `namespace LeanSwe.Fs.Raw.Internal` with zero `@[extern]` declarations.
--/
-
 namespace LeanSwe.Fs.Raw.Internal
 
 open LeanSwe.Fs.Raw (FsErrorKind FsError EntryKind FileStat FsRawError RawFsOpsM RawFsOps)
 
-/-- Audited POSIX FFI operations injected by `LeanSwe.Fs.Raw.Interface`. -/
+/-- POSIX FFI operations injected by `LeanSwe.Fs.Raw.Interface`. -/
 structure PosixRawOps where
   /-- Set file mode bits (`chmod`). -/
   chmod : String → UInt32 → IO Unit

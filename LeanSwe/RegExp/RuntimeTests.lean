@@ -1,12 +1,5 @@
 import LeanSwe.RegExp.Interface
 
-/-!
-# Regex RuntimeTests
-
-Concrete execution tests checking `LeanSwe.RegExp` behavior across
-patterns, replacements, splits, UTF-8 inputs, and syntax error reporting.
--/
-
 namespace LeanSwe.RegExp.RuntimeTests
 
 private def assertTrue (cond : Bool) (msg : String) : IO Unit := do
@@ -39,13 +32,11 @@ def runAll : IO Unit := do
   assertOkEq (countMatches "a+" "baaaaca") 2 "expected 2 matches"
   assertOkEq (replaceAll "[0-9]+" "v1.2" "X") "vX.X" "expected replaceAll"
   assertOkEq (splitBy "," "a,,b") #["a", "", "b"] "expected 3 split parts"
-  -- UTF-8 multi-byte haystack byte bounds
   match findFirst "b+" "αbbbβ" with
   | .ok (some sp) =>
     assertTrue (sp.matched == "bbb" && sp.startByte == 2 && sp.stopByte == 5)
       s!"unexpected UTF-8 span: {repr sp}"
   | other => throw (IO.userError s!"unexpected UTF-8 findFirst: {repr other}")
-  -- Syntax error checks
   for bad in ["[unclosed", "(abc", "*bad"] do
     match testPattern bad "hello" with
     | .error e => assertTrue (e.message != "") s!"empty error message for {bad}"

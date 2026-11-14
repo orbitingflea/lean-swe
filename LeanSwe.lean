@@ -23,9 +23,3 @@ import LeanSwe.Fs.Impl
 import LeanSwe.Fs.SpecTests
 import LeanSwe.Fs.Proofs
 import LeanSwe.Fs.RuntimeTests
-
-/-!
-# LeanSwe
-
-Root module re-exporting shared verification primitives and software engineering packages.
--/

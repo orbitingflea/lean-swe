@@ -1,13 +1,5 @@
 import LeanSwe.Glob.Types
 
-/-!
-# Glob Package Internal Implementation
-
-Total, pure-Lean implementation of slash-separated path globbing (`*`, `?`, `[...]` /
-`[!...]`, `\` escapes, and `**` segment wildcards). Kept under `namespace LeanSwe.Glob.Internal`
-so `open LeanSwe.Glob` does not expose parser or AST helpers.
--/
-
 namespace LeanSwe.Glob.Internal
 
 open LeanSwe.Glob (GlobErrorKind GlobError)
@@ -24,7 +16,7 @@ inductive CharClassItem where
 structure CharClass where
   /-- `true` if class starts with `!`. -/
   negated : Bool
-  /-- Non-empty list of class items. -/
+  /-- List of class items. -/
   items : List CharClassItem
   deriving Repr, BEq, DecidableEq
 

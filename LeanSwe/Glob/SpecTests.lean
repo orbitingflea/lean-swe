@@ -1,14 +1,6 @@
 import Core.NondetTest
 import LeanSwe.Glob.Types
 
-/-!
-# Glob SpecTests
-
-Human-audited behavioral specifications for `LeanSwe.Glob.GlobApi` written in
-`Core.NondetTest`. Notice zero raw `∀`, `→`, or proof scripts appear in the
-spec definitions below.
--/
-
 namespace LeanSwe.Glob
 
 open Core (NondetTest)
@@ -87,7 +79,6 @@ def test_glob_escape_matchesSelf
   | .error _ => assert False
   | .ok b => assert (b = true)
 
-/-- Negative mutation check: a stub returning `countMatches = 99` must fail `SpecTests`. -/
 private def buggyCountApi : GlobApi :=
   { validate := fun _ => .ok ()
     isMatch := fun _ _ => .ok false
@@ -100,7 +91,6 @@ example : ¬ Core.AllPass (test_glob_countMatches_eq_filterSize buggyCountApi) :
   have h0 := h "*.lean" #[]
   simp [buggyCountApi, assert] at h0
 
-/-- Negative mutation check: a stub whose `isMatch` always fails to match must fail `SpecTests`. -/
 private def buggyNeverMatchApi : GlobApi :=
   { validate := fun _ => .ok ()
     isMatch := fun _ _ => .ok false
@@ -118,7 +108,6 @@ example : ¬ Core.AllPass (test_glob_escape_matchesSelf buggyNeverMatchApi) := b
   have h0 := h "a.lean"
   simp [buggyNeverMatchApi, assert] at h0
 
-/-- Negative mutation check: a `filter` dropping validation errors must fail `SpecTests` consistency. -/
 private def buggySilentValidateApi : GlobApi :=
   { validate := fun _ => .error { kind := .unclosedClass, message := "err" }
     isMatch := fun _ _ => .ok true

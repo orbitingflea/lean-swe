@@ -1,15 +1,6 @@
 import LeanSwe.RegExp.Types
 import LeanSwe.RegExp.Impl
 
-/-!
-# Regex Package Interface
-
-Public entry point for `LeanSwe.RegExp`. Exposes `RegexErrorKind`, `RegexError`,
-`MatchSpan`, and `RegexApi` from `LeanSwe.RegExp.Types`, exports top-level regex
-operations (`RegExp.testPattern`, `RegExp.findFirst`, etc.), and provides `defaultApi`
-for parameterized `SpecTests` and `Proofs`. Callers import only this module.
--/
-
 namespace LeanSwe.RegExp
 
 /-- Return `true` iff `pattern` matches any substring of `haystack`. -/

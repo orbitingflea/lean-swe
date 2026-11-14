@@ -1,13 +1,6 @@
 import LeanSwe.RegExp.Interface
 import LeanSwe.RegExp.SpecTests
 
-/-!
-# Regex Proofs
-
-Machine-checked proofs discharging every `AllPass` safety specification and
-`CanReach` non-vacuity witness for `LeanSwe.RegExp.defaultApi`.
--/
-
 namespace LeanSwe.RegExp.Proofs
 
 open Core

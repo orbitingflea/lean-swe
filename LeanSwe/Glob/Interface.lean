@@ -1,15 +1,6 @@
 import LeanSwe.Glob.Types
 import LeanSwe.Glob.Impl
 
-/-!
-# Glob Package Interface
-
-Public entry point for `LeanSwe.Glob`. Exposes `GlobErrorKind`, `GlobError`, and
-`GlobApi` from `LeanSwe.Glob.Types`, exports top-level glob operations
-(`Glob.validate`, `Glob.isMatch`, `Glob.filter`, `Glob.countMatches`, `Glob.escape`),
-and provides `defaultApi` for parameterized `SpecTests` and `Proofs`.
--/
-
 namespace LeanSwe.Glob
 
 /-- Validate glob pattern syntax without matching against a path. -/

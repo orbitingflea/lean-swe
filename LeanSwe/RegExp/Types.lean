@@ -1,11 +1,3 @@
-/-!
-# Regex Package Types
-
-Public data structs, closed error enum, and `RegexApi` record for `LeanSwe.RegExp`.
-Kept free of upstream `Regex` imports so specifications in `SpecTests` remain isolated from
-implementation internals.
--/
-
 namespace LeanSwe.RegExp
 
 /-- Classification of regex compilation failures. -/
