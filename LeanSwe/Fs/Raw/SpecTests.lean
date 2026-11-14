@@ -11,7 +11,7 @@ def test_fsraw_mapRawError_returnsNonEmptyMessage
     {runner} [NondetTest runner] (ops : RawFsOps) : runner Unit := do
   let raw ← nondet FsRawError
   let err := ops.mapRawError raw
-  assert (err.message ≠ "")
+  NondetTest.assert (err.message ≠ "")
 
 /-- Mapping a `.wouldBlock` raw error preserves `.wouldBlock` kind, path, errno, and non-empty message. -/
 def test_fsraw_mapRawError_wouldBlock
@@ -20,7 +20,7 @@ def test_fsraw_mapRawError_wouldBlock
   let errno ← nondet UInt32
   let detail ← nondet String
   let err := ops.mapRawError (.wouldBlock path? errno detail)
-  assert (err.kind = .wouldBlock ∧ err.path = path? ∧ err.errnoCode = some errno ∧ err.message ≠ "")
+  NondetTest.assert (err.kind = .wouldBlock ∧ err.path = path? ∧ err.errnoCode = some errno ∧ err.message ≠ "")
 
 private def buggyEmptyErrRaw (base : RawFsOps) : RawFsOps :=
   { base with mapRawError := fun _ => { kind := .ioError, message := "" } }

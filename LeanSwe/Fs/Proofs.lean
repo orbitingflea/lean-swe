@@ -669,17 +669,17 @@ theorem proof_fs_suffixes_doubleDot :
     have hBaseNoSlash : '/' ∉ base.toList := hNoSlash
     have hFullNoSlash : '/' ∉ (base ++ "..ext").toList := by
       simp [String.toList_append, hBaseNoSlash, show "..ext".toList = ['.', '.', 'e', 'x', 't'] by decide]
-    have hFullNotEmpty : (!(base.toList ++ "..ext".toList).isEmpty) = true := by
+    have hFullNotEmpty : (!(base.toList ++ ['.', '.', 'e', 'x', 't']).isEmpty) = true := by
       simp [hBase]
-    have hFullNotDot : ((base.toList ++ "..ext".toList) != ['.']) = true := by
+    have hFullNotDot : ((base.toList ++ ['.', '.', 'e', 'x', 't']) != ['.']) = true := by
       refine bne_iff_ne.mpr fun heq => ?_
       have hLen := congrArg List.length heq
-      simp [show "..ext".toList = ['.', '.', 'e', 'x', 't'] by decide] at hLen
+      simp at hLen
     have hName : Internal.name (base ++ "..ext") = some (base ++ "..ext") := by
       unfold Internal.name Internal.splitParentName Internal.cleanCharSegments
       dsimp only
       rw [splitCharList_of_no_sep '/' (base ++ "..ext").toList hFullNoSlash]
-      rw [String.toList_append]
+      rw [String.toList_append, show "..ext".toList = ['.', '.', 'e', 'x', 't'] by decide]
       simp [hFullNotEmpty, hFullNotDot, Internal.splitLastAux]
     unfold Internal.suffixes
     rw [hName]
@@ -1821,10 +1821,10 @@ theorem proof_fs_vfs_mkdir_existingFails :
   | ok p =>
     rcases p with ⟨canon, nd⟩
     dsimp only [vfsApi, Internal.mkApiM, Internal.mkdirImplM, vfsOps, vfsStatPure, StateT.run,
-      bind, StateT.bind, pure, StateT.pure, assert]
+      bind, StateT.bind, pure, Pure.pure, StateT.pure, assert]
     rw [hRes]
     simp only [Bool.false_and, Bool.false_eq_true, ↓reduceIte, StateT.pure]
-    exact ⟨⟨⟨_, rfl, rfl⟩, trivial⟩, trivial⟩
+    exact ⟨⟨⟨_, rfl, rfl⟩, rfl⟩, trivial⟩
 
 private theorem vfsResolveSegs_root_dir (m : Nat) :
     vfsResolveSegs (fun k => if k == "/" then some (.dir m) else none) "/" [] true 512 = .ok ("/", .dir m) := by
@@ -1880,10 +1880,10 @@ theorem proof_fs_vfs_touch_existingFails :
   | ok p =>
     rcases p with ⟨canon, nd⟩
     dsimp only [vfsApi, Internal.mkApiM, Internal.touchImplM, vfsOps, vfsStatPure, StateT.run,
-      bind, StateT.bind, pure, StateT.pure, assert]
+      bind, StateT.bind, pure, Pure.pure, StateT.pure, assert]
     rw [hRes]
     simp only [Bool.not_false, ↓reduceIte, StateT.pure]
-    exact ⟨⟨⟨_, rfl, rfl⟩, trivial⟩, trivial⟩
+    exact ⟨⟨⟨_, rfl, rfl⟩, rfl⟩, trivial⟩
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_touch_existingFails`. -/
 theorem reach_fs_vfs_touch_existingFails :
@@ -1903,19 +1903,19 @@ theorem proof_fs_vfs_walk_preservesStatError :
   cases hRes : vfsResolveSegs s₀.nodes "/" (vfsSplitSegs (vfsAbsNorm s₀.cwd root)) true 1024 with
   | error err =>
     dsimp only [vfsApi, Internal.mkApiM, Internal.walkImplM, vfsOps, vfsStatPure, StateT.run,
-      bind, StateT.bind, pure, StateT.pure, assert]
+      bind, StateT.bind, pure, Pure.pure, StateT.pure, assert]
     rw [hRes]
-    simp [StateT.pure]
+    simp [Pure.pure, StateT.pure]
   | ok p =>
     rcases p with ⟨canon, nd⟩
     dsimp only
     by_cases hNotDir : ((vfsToStat nd).kind != .dir) = true
     · simp only [hNotDir, ↓reduceIte]
       dsimp only [vfsApi, Internal.mkApiM, Internal.walkImplM, vfsOps, vfsStatPure, StateT.run,
-        bind, StateT.bind, pure, StateT.pure, assert]
+        bind, StateT.bind, pure, Pure.pure, StateT.pure, assert]
       rw [hRes]
       simp only [hNotDir, ↓reduceIte, StateT.pure]
-      exact ⟨⟨⟨_, rfl, rfl⟩, trivial⟩, trivial⟩
+      exact ⟨⟨⟨_, rfl, rfl⟩, rfl⟩, trivial⟩
     · have hNotDirFalse : ((vfsToStat nd).kind != .dir) = false := Bool.eq_false_iff.mpr hNotDir
       simp only [hNotDirFalse, Bool.false_eq_true, ↓reduceIte]
       trivial
@@ -2375,7 +2375,7 @@ private theorem copyTree_selfCopyRejected_exec (s₀ : VfsState) (src dst : Stri
         exact ⟨c.toList.length + child.toList.length, by omega⟩
       rcases hFuel2 with ⟨k, hFuelEq⟩
       simp only [hDstAbs, ↓reduceIte, hDstNorm]
-      dsimp only [Bind.bind, StateT.bind, StateT.pure]
+      dsimp only [Bind.bind, StateT.bind, Pure.pure, pure, StateT.pure]
       rw [hFuelEq]
       unfold Internal.resolveApproxGoM
       dsimp only [Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure]
@@ -2479,7 +2479,7 @@ private theorem not_prefix_new_parent_copy (c : String)
       simp only [List.cons_append, List.cons.injEq, true_and] at hEq
       have hLen : cs.length < 15 := by
         have hL := congrArg List.length hEq
-        simp [show "new_parent/copy".toList.length = 15 by decide] at hL
+        simp at hL
         omega
       have hAt : ("new_parent/copy".toList[cs.length]! == '/') = true := by
         have hIdx : (cs ++ '/' :: tail)[cs.length]! = "new_parent/copy".toList[cs.length]! :=
@@ -2577,11 +2577,10 @@ private theorem copyTree_pre_checks_ok {S : Type} (ops : RawFsOpsM (StateM S))
   dsimp only [Bind.bind, StateT.bind, StateT.pure]
   rw [show ops.realPath src s₀ = (ops.realPath src).run s₀ from rfl, hRp]
   simp only [hAbsDst, ↓reduceIte, hNormDst]
-  dsimp only [Bind.bind, StateT.bind, StateT.pure]
+  dsimp only [Bind.bind, StateT.bind, Pure.pure, pure, StateT.pure]
   dsimp only [StateT.run] at hApprox
   rw [hApprox]
   simp [hGuard]
-  dsimp only [Bind.bind, StateT.bind, StateT.pure]
 
 /-- Proof of `test_fs_vfs_copyTree_createsMissingParents` on `vfsApi`. -/
 theorem proof_fs_vfs_copyTree_createsMissingParents :
@@ -2651,7 +2650,7 @@ theorem proof_fs_vfs_copyTree_createsMissingParents :
     have h1 : ("/new_parent/copy" == c) = false := beq_false_of_ne (Ne.symm hCNeCopy)
     have h2 : (c == "/") = false := beq_false_of_ne hCNeRoot
     have h3 := not_prefix_new_parent_copy c hCAbs hCNeNP
-    simp [h1, h2, h3]
+    simp only [h1, h2, h3, Bool.or_false]
   have hStatS0 : (vfsOps.stat true src).run s₀ = (.ok stSrc, s₀) := by
     change (vfsStatPure s₀ true src, s₀) = (.ok stSrc, s₀)
     rw [show vfsStatPure s₀ true src = .ok stSrc from hStatSrc]
@@ -2953,7 +2952,7 @@ theorem proof_fs_vfs_copyTree_loopRejected :
     have h1 : ("/loop_dst" == c) = false := beq_false_of_ne (Ne.symm hCNeLoop)
     have h2 : (c == "/") = false := beq_false_of_ne hCNeRoot
     have h3 := not_prefix_loop_dst c hCAbs
-    simp [h1, h2, h3]
+    simp only [h1, h2, h3, Bool.or_false]
   have hStatS0 : (vfsOps.stat true src).run s₀ = (.ok stSrc, s₀) := by
     change (vfsStatPure s₀ true src, s₀) = (.ok stSrc, s₀)
     rw [show vfsStatPure s₀ true src = .ok stSrc from hStatSrc]
@@ -3208,7 +3207,8 @@ example : ¬ AllPass (test_fs_vfs_mkdir_existingFails { vfsApi with mkdir := bug
       cwd := "/"
       nonce := 0 }
   have hFail := h st "/broken" true vfsLstat_broken_symlink
-  dsimp only [buggyMkdirR1I01, bind, StateT.bind, pure, StateT.pure] at hFail
+  simp only [buggyMkdirR1I01, Bool.not_true, Bool.false_eq_true, ↓reduceIte, bind,
+    pure, Pure.pure] at hFail
   have hChain : Internal.ancestorChain "/broken" "/broken".toList.length = [] := by decide
   rw [hChain] at hFail
   have hCre : vfsCreateDirPure st "/broken" =

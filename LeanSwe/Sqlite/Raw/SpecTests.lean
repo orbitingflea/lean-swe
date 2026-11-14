@@ -11,7 +11,7 @@ def test_sqliteraw_mapRawError_returnsNonEmptyMessage
     {runner} [NondetTest runner] (ops : RawSqliteOps) : runner Unit := do
   let raw ← nondet SqliteRawError
   let err := ops.mapRawError raw
-  assert (err.message ≠ "")
+  NondetTest.assert (err.message ≠ "")
 
 /-- Known `SqliteRawError` constructors map to their corresponding `SqliteErrorKind`. -/
 def test_sqliteraw_mapRawError_mapsKnownKinds
@@ -19,12 +19,12 @@ def test_sqliteraw_mapRawError_mapsKnownKinds
   let path? ← nondet (Option String)
   let code ← nondet UInt32
   let detail ← nondet String
-  assert ((ops.mapRawError (.cantOpen path? code detail)).kind = .notFound)
-  assert ((ops.mapRawError (.busy code detail)).kind = .busy)
-  assert ((ops.mapRawError (.constraint code detail)).kind = .constraint)
-  assert ((ops.mapRawError (.misuse code detail)).kind = .misuse)
-  assert ((ops.mapRawError (.invalidArgument detail)).kind = .invalidInput)
-  assert ((ops.mapRawError (.ioFailure code detail)).kind = .ioError)
+  NondetTest.assert ((ops.mapRawError (.cantOpen path? code detail)).kind = .notFound)
+  NondetTest.assert ((ops.mapRawError (.busy code detail)).kind = .busy)
+  NondetTest.assert ((ops.mapRawError (.constraint code detail)).kind = .constraint)
+  NondetTest.assert ((ops.mapRawError (.misuse code detail)).kind = .misuse)
+  NondetTest.assert ((ops.mapRawError (.invalidArgument detail)).kind = .invalidInput)
+  NondetTest.assert ((ops.mapRawError (.ioFailure code detail)).kind = .ioError)
 
 /-- `openDb` keeps `activeDbCount` unchanged on error and increments by 1 on success until `closeDb`. -/
 def test_sqliteraw_openClose_preservesActiveDbCount
@@ -38,14 +38,14 @@ def test_sqliteraw_openClose_preservesActiveDbCount
   match openRes with
   | .error _ =>
     let (c₁, _) := ops.activeDbCount.run s₁
-    assert (c₁ = c₀)
+    NondetTest.assert (c₁ = c₀)
   | .ok db =>
     let (c₁, _) := ops.activeDbCount.run s₁
-    assert (c₁ = c₀ + 1)
+    NondetTest.assert (c₁ = c₀ + 1)
     let (closeRes, s₂) := (ops.closeDb db).run s₁
     assume (closeRes = .ok ())
     let (c₂, _) := ops.activeDbCount.run s₂
-    assert (c₂ = c₀)
+    NondetTest.assert (c₂ = c₀)
 
 /-- `prepare` keeps `activeStmtCount` unchanged on error and increments by 1 on success until `finalize`. -/
 def test_sqliteraw_prepareFinalize_preservesActiveStmtCount
@@ -59,14 +59,14 @@ def test_sqliteraw_prepareFinalize_preservesActiveStmtCount
   match prepRes with
   | .error _ =>
     let (c₁, _) := ops.activeStmtCount.run s₁
-    assert (c₁ = c₀)
+    NondetTest.assert (c₁ = c₀)
   | .ok stmt =>
     let (c₁, _) := ops.activeStmtCount.run s₁
-    assert (c₁ = c₀ + 1)
+    NondetTest.assert (c₁ = c₀ + 1)
     let (finRes, s₂) := (ops.finalize stmt).run s₁
     assume (finRes = .ok ())
     let (c₂, _) := ops.activeStmtCount.run s₂
-    assert (c₂ = c₀)
+    NondetTest.assert (c₂ = c₀)
 
 /-- Running `bind` and `step` followed by `finalize` restores `activeStmtCount` regardless of `bind`/`step` failure. -/
 def test_sqliteraw_bindStepFinalize_preservesActiveStmtCount
@@ -81,7 +81,7 @@ def test_sqliteraw_bindStepFinalize_preservesActiveStmtCount
   match prepRes with
   | .error _ =>
     let (c₁, _) := ops.activeStmtCount.run s₁
-    assert (c₁ = c₀)
+    NondetTest.assert (c₁ = c₀)
   | .ok stmt =>
     let (bindRes, s₂) := (ops.bind stmt params).run s₁
     let s₃ :=
@@ -91,7 +91,7 @@ def test_sqliteraw_bindStepFinalize_preservesActiveStmtCount
     let (finRes, s₄) := (ops.finalize stmt).run s₃
     assume (finRes = .ok ())
     let (c₄, _) := ops.activeStmtCount.run s₄
-    assert (c₄ = c₀)
+    NondetTest.assert (c₄ = c₀)
 
 private def stubRawOps : RawSqliteOps :=
   { mapRawError := fun raw =>

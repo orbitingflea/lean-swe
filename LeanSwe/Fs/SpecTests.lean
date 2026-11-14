@@ -11,19 +11,19 @@ def test_fs_mapRawError_returnsNonEmptyMessage
     {runner} [NondetTest runner] (api : FsApi) : runner Unit := do
   let raw ← nondet FsRawError
   let err := api.mapRawError raw
-  assert (err.message ≠ "")
+  NondetTest.assert (err.message ≠ "")
 
 /-- Lexical normalization `api.normPath` is idempotent on all path strings. -/
 def test_fs_normPath_idempotent
     {runner} [NondetTest runner] (api : FsApi) : runner Unit := do
   let path ← nondet String
-  assert (api.normPath (api.normPath path) = api.normPath path)
+  NondetTest.assert (api.normPath (api.normPath path) = api.normPath path)
 
 /-- Lexical normalization `api.normPath` never returns an empty string. -/
 def test_fs_normPath_neverEmpty
     {runner} [NondetTest runner] (api : FsApi) : runner Unit := do
   let path ← nondet String
-  assert (api.normPath path ≠ "")
+  NondetTest.assert (api.normPath path ≠ "")
 
 /-- Joining an absolute `sub` path overrides `base` (`Path.joinpath(base, "/x") = "/x"`). -/
 def test_fs_join_absOverridesBase
@@ -31,7 +31,7 @@ def test_fs_join_absOverridesBase
   let base ← nondet String
   let sub ← nondet String
   assume (api.isAbsolute sub = true)
-  assert (api.join base sub = sub)
+  NondetTest.assert (api.join base sub = sub)
 
 /-- When `api.withName path newName` succeeds, the resulting path's `name` equals `newName`. -/
 def test_fs_withName_updatesName
@@ -40,7 +40,7 @@ def test_fs_withName_updatesName
   let newName ← nondet String
   match api.withName path newName with
   | .error _ => assume False
-  | .ok updated => assert (api.name updated = some newName)
+  | .ok updated => NondetTest.assert (api.name updated = some newName)
 
 /-- When `api.withSuffix path ext` succeeds on a single-dot extension, `api.suffix` equals `ext`. -/
 def test_fs_withSuffix_updatesSuffix
@@ -51,7 +51,7 @@ def test_fs_withSuffix_updatesSuffix
   assume (!('.' ∈ ext.toList.tail))
   match api.withSuffix path ext with
   | .error _ => assume False
-  | .ok updated => assert (api.suffix updated = ext)
+  | .ok updated => NondetTest.assert (api.suffix updated = ext)
 
 /-- Multi-dot filenames like `base..ext` preserve `.` segments in `api.suffixes`. -/
 def test_fs_suffixes_doubleDot
@@ -61,7 +61,7 @@ def test_fs_suffixes_doubleDot
   assume ('.' ∉ base.toList)
   assume ('/' ∉ base.toList)
   let xs := api.suffixes (base ++ "..ext")
-  assert (xs = #[".", ".ext"])
+  NondetTest.assert (xs = #[".", ".ext"])
 
 /-- Calling `api.mkdir path parents false` on any existing path (including symlinks) fails with `.alreadyExists` and leaves state unchanged. -/
 def test_fs_vfs_mkdir_existingFails
@@ -71,7 +71,7 @@ def test_fs_vfs_mkdir_existingFails
   let parents ← nondet Bool
   assume (((api.lstat path).run s₀).1.isOk = true)
   let (res, s₁) := (api.mkdir path parents false).run s₀
-  assert ((∃ e, res = .error e ∧ e.kind = .alreadyExists) ∧ s₁ = s₀)
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .alreadyExists) ∧ s₁ = s₀)
 
 /-- Calling `api.touch path false` on any existing entry (including broken symlinks) fails with `.alreadyExists` and leaves state unchanged. -/
 def test_fs_vfs_touch_existingFails
@@ -80,7 +80,7 @@ def test_fs_vfs_touch_existingFails
   let path ← nondet String
   assume (((api.lstat path).run s₀).1.isOk = true)
   let (res, s₁) := (api.touch path false).run s₀
-  assert ((∃ e, res = .error e ∧ e.kind = .alreadyExists) ∧ s₁ = s₀)
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .alreadyExists) ∧ s₁ = s₀)
 
 /-- Failing `api.stat root` propagates its exact error kind (`notFound`, `permissionDenied`) through `api.walk root`. -/
 def test_fs_vfs_walk_preservesStatError
@@ -90,11 +90,11 @@ def test_fs_vfs_walk_preservesStatError
   match ((api.stat root).run s₀).1 with
   | .error err =>
     let (res, s₁) := (api.walk root).run s₀
-    assert ((∃ e, res = .error e ∧ e.kind = err.kind) ∧ s₁ = s₀)
+    NondetTest.assert ((∃ e, res = .error e ∧ e.kind = err.kind) ∧ s₁ = s₀)
   | .ok st =>
     if st.kind != .dir then
       let (res, s₁) := (api.walk root).run s₀
-      assert ((∃ e, res = .error e ∧ e.kind = .notADirectory) ∧ s₁ = s₀)
+      NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .notADirectory) ∧ s₁ = s₀)
     else
       pure ()
 
@@ -110,7 +110,7 @@ def test_fs_vfs_copyTree_selfCopyRejected
     (dst = c ∨ ∃ child, !child.isEmpty ∧ !('/' ∈ child.toList) ∧ child != "." ∧ child != ".." ∧
       dst = c ++ "/" ++ child ∧ ((api.resolve dst).run s₀).1.isOk = false))
   let (res, s₁) := (api.copyTree src dst false).run s₀
-  assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ s₁ = s₀)
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ s₁ = s₀)
 
 /-- Calling `api.mkdir path true false` when it succeeds creates a directory at `path`. -/
 def test_fs_vfs_mkdir_parentsCreatesDir
@@ -119,7 +119,7 @@ def test_fs_vfs_mkdir_parentsCreatesDir
   let path ← nondet String
   let (res, s₁) := (api.mkdir path true false).run s₀
   assume (res = .ok ())
-  assert (((api.isDir path).run s₁).1 = .ok true)
+  NondetTest.assert (((api.isDir path).run s₁).1 = .ok true)
 
 /-- Copying an empty directory to a missing nested path `"/new_parent/copy"` under writable `"/"` creates missing parents and succeeds. -/
 def test_fs_vfs_copyTree_createsMissingParents
@@ -139,7 +139,7 @@ def test_fs_vfs_copyTree_createsMissingParents
   assume (((api.stat dstPar).run s₀).1.isOk = false)
   assume (((api.lstat dst).run s₀).1.isOk = false)
   let (res, s₁) := (api.copyTree src dst false).run s₀
-  assert (res = .ok () ∧ ((api.isDir dstPar).run s₁).1 = .ok true ∧ ((api.isDir dst).run s₁).1 = .ok true)
+  NondetTest.assert (res = .ok () ∧ ((api.isDir dstPar).run s₁).1 = .ok true ∧ ((api.isDir dst).run s₁).1 = .ok true)
 
 /-- Copying a directory containing a symlink back to itself fails cleanly with `.invalidInput`. -/
 def test_fs_vfs_copyTree_loopRejected
@@ -157,7 +157,7 @@ def test_fs_vfs_copyTree_loopRejected
   assume (∃ stSelf, ((api.stat (api.join src "self")).run s₀).1 = .ok stSelf ∧ stSelf.kind = .dir)
   assume (((api.lstat dst).run s₀).1.isOk = false)
   let (res, _) := (api.copyTree src dst false).run s₀
-  assert (∃ e, res = .error e ∧ e.kind = .invalidInput)
+  NondetTest.assert (∃ e, res = .error e ∧ e.kind = .invalidInput)
 
 /-- Calling `api.withFileLock` on a lockable path with a pure `.ok` action returns the value and releases the lock for both `.shared` and `.exclusive` modes. -/
 def test_fs_vfs_withFileLock_releasesOnOk
@@ -170,7 +170,7 @@ def test_fs_vfs_withFileLock_releasesOnOk
   assume (((api.tryWithFileLock path .exclusive createIfMissing (pure (.ok ()))).run s₀).1 = .ok (some ()))
   let (res, s₁) := (api.withFileLock path mode createIfMissing (pure (.ok val))).run s₀
   let (probe, _) := (api.tryWithFileLock path .exclusive false (pure (.ok ()))).run s₁
-  assert (res = .ok val ∧ probe = .ok (some ()))
+  NondetTest.assert (res = .ok val ∧ probe = .ok (some ()))
 
 /-- Calling `api.withFileLock` on a lockable path with a pure `.error` action returns `.error err` and releases the lock for both `.shared` and `.exclusive` modes. -/
 def test_fs_vfs_withFileLock_releasesOnError
@@ -184,7 +184,7 @@ def test_fs_vfs_withFileLock_releasesOnError
   let (res, s₁) :=
     (api.withFileLock path mode createIfMissing (pure (Except.error err : Except FsError Unit))).run s₀
   let (probe, _) := (api.tryWithFileLock path .exclusive false (pure (.ok ()))).run s₁
-  assert (res = .error err ∧ probe = .ok (some ()))
+  NondetTest.assert (res = .error err ∧ probe = .ok (some ()))
 
 /-- Inside an outer `.shared` lock, an inner `.shared` `api.tryWithFileLock` on the same path succeeds. -/
 def test_fs_vfs_tryWithFileLock_sharedCoexists
@@ -195,7 +195,7 @@ def test_fs_vfs_tryWithFileLock_sharedCoexists
   let (res, _) := (api.withFileLock path .shared true
     (api.tryWithFileLock path .shared false (pure (Except.ok val)))).run s₀
   assume (res.isOk = true)
-  assert (res = .ok (some val))
+  NondetTest.assert (res = .ok (some val))
 
 /-- Inside an outer lock, a conflicting inner `api.tryWithFileLock` returns `.ok none` without running `action`, while keeping the outer lock held. -/
 def test_fs_vfs_tryWithFileLock_exclusiveRejects
@@ -215,7 +215,7 @@ def test_fs_vfs_tryWithFileLock_exclusiveRejects
     return .ok (r1, mAfter.isOk, r2)).run s₀
   match res with
   | .error _ => assume False
-  | .ok (r1, mOk, r2) => assert (r1 = .ok none ∧ mOk = false ∧ r2 = .ok none)
+  | .ok (r1, mOk, r2) => NondetTest.assert (r1 = .ok none ∧ mOk = false ∧ r2 = .ok none)
 
 /-- Calling `api.withFileLock` with `createIfMissing = false` on a missing path fails with `.notFound` without modifying state. -/
 def test_fs_vfs_withFileLock_missingNotCreated
@@ -227,7 +227,7 @@ def test_fs_vfs_withFileLock_missingNotCreated
   assume (path.toList.length = 1 ∨ path.toList.getLast? ≠ some '/')
   assume (∃ e, ((api.lstat path).run s₀).1 = .error e ∧ e.kind = .notFound)
   let (res, s₁) := (api.withFileLock path mode false (pure (.ok ()))).run s₀
-  assert ((∃ e, res = .error e ∧ e.kind = .notFound) ∧ s₁ = s₀)
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .notFound) ∧ s₁ = s₀)
 
 /-- Calling `api.withFileLock` on a symbolic link fails with `.invalidInput` without running `action` or modifying state. -/
 def test_fs_vfs_withFileLock_symlinkRejected
@@ -242,7 +242,7 @@ def test_fs_vfs_withFileLock_symlinkRejected
   assume (∃ st, ((api.lstat path).run s₀).1 = .ok st ∧ st.kind = .symlink)
   assume (((api.lstat markerPath).run s₀).1.isOk = false)
   let (res, s₁) := (api.withFileLock path mode createIfMissing (api.writeText markerPath "ran")).run s₀
-  assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ ((api.lstat markerPath).run s₁).1.isOk = false ∧ s₁ = s₀)
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ ((api.lstat markerPath).run s₁).1.isOk = false ∧ s₁ = s₀)
 
 /-- Calling `api.withFileLock` on a directory fails with `.isADirectory` without running `action` or modifying state. -/
 def test_fs_vfs_withFileLock_dirRejected
@@ -257,7 +257,7 @@ def test_fs_vfs_withFileLock_dirRejected
   assume (∃ st, ((api.lstat path).run s₀).1 = .ok st ∧ st.kind = .dir)
   assume (((api.lstat markerPath).run s₀).1.isOk = false)
   let (res, s₁) := (api.withFileLock path mode createIfMissing (api.writeText markerPath "ran")).run s₀
-  assert ((∃ e, res = .error e ∧ e.kind = .isADirectory) ∧ ((api.lstat markerPath).run s₁).1.isOk = false ∧ s₁ = s₀)
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .isADirectory) ∧ ((api.lstat markerPath).run s₁).1.isOk = false ∧ s₁ = s₀)
 
 /-- Calling `api.withFileLock` with `createIfMissing = true` on a missing path creates a zero-byte regular file when it succeeds. -/
 def test_fs_vfs_withFileLock_createsMissingFile
@@ -270,7 +270,7 @@ def test_fs_vfs_withFileLock_createsMissingFile
   assume (∃ e, ((api.lstat path).run s₀).1 = .error e ∧ e.kind = .notFound)
   let (res, s₁) := (api.withFileLock path mode true (pure (.ok ()))).run s₀
   assume (res = .ok ())
-  assert (∃ st, ((api.lstat path).run s₁).1 = .ok st ∧ st.kind = .file ∧ st.byteSize = 0)
+  NondetTest.assert (∃ st, ((api.lstat path).run s₁).1 = .ok st ∧ st.kind = .file ∧ st.byteSize = 0)
 
 /-- Calling `api.withFileLock` on an existing regular file preserves its exact bytes inside `action` and after release. -/
 def test_fs_vfs_withFileLock_preservesExistingBytes
@@ -286,7 +286,7 @@ def test_fs_vfs_withFileLock_preservesExistingBytes
   | .ok bs₀ =>
     let (res, s₁) := (api.withFileLock path mode createIfMissing (api.readBytes path)).run s₀
     assume (res.isOk = true)
-    assert (res = .ok bs₀ ∧ ((api.readBytes path).run s₁).1 = .ok bs₀)
+    NondetTest.assert (res = .ok bs₀ ∧ ((api.readBytes path).run s₁).1 = .ok bs₀)
 
 /-- Calling `api.withFileLock` on an empty path or non-root trailing `/` fails with `.invalidInput` without running `action` or modifying state. -/
 def test_fs_vfs_withFileLock_invalidPathRejected
@@ -299,7 +299,7 @@ def test_fs_vfs_withFileLock_invalidPathRejected
   assume (path.toList = [] ∨ (path.toList.length > 1 ∧ path.toList.getLast? = some '/'))
   assume (((api.lstat markerPath).run s₀).1.isOk = false)
   let (res, s₁) := (api.withFileLock path mode createIfMissing (api.writeText markerPath "ran")).run s₀
-  assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ ((api.lstat markerPath).run s₁).1.isOk = false ∧ s₁ = s₀)
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ ((api.lstat markerPath).run s₁).1.isOk = false ∧ s₁ = s₀)
 
 /-- Calling `api.tryWithFileLock` on a lockable path with a pure `.ok` action returns `.ok (some val)` and releases the lock. -/
 def test_fs_vfs_tryWithFileLock_releasesOnOk
@@ -312,7 +312,7 @@ def test_fs_vfs_tryWithFileLock_releasesOnOk
   assume (((api.tryWithFileLock path .exclusive createIfMissing (pure (.ok ()))).run s₀).1 = .ok (some ()))
   let (res, s₁) := (api.tryWithFileLock path mode createIfMissing (pure (Except.ok val))).run s₀
   let (probe, _) := (api.tryWithFileLock path .exclusive false (pure (.ok ()))).run s₁
-  assert (res = .ok (some val) ∧ probe = .ok (some ()))
+  NondetTest.assert (res = .ok (some val) ∧ probe = .ok (some ()))
 
 /-- Calling `api.tryWithFileLock` with `createIfMissing = false` on a missing path fails with `.notFound` without running `action` or modifying state. -/
 def test_fs_vfs_tryWithFileLock_missingNotSwallowed
@@ -326,7 +326,7 @@ def test_fs_vfs_tryWithFileLock_missingNotSwallowed
   assume (∃ e, ((api.lstat path).run s₀).1 = .error e ∧ e.kind = .notFound)
   assume (((api.lstat markerPath).run s₀).1.isOk = false)
   let (res, s₁) := (api.tryWithFileLock path mode false (api.writeText markerPath "ran")).run s₀
-  assert ((∃ e, res = .error e ∧ e.kind = .notFound) ∧ ((api.lstat markerPath).run s₁).1.isOk = false ∧ s₁ = s₀)
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .notFound) ∧ ((api.lstat markerPath).run s₁).1.isOk = false ∧ s₁ = s₀)
 
 /-- Calling `api.tryWithFileLock` on a lockable path when `action` returns `.error err` propagates `.error err` and releases the lock. -/
 def test_fs_vfs_tryWithFileLock_releasesOnActionError
@@ -340,7 +340,7 @@ def test_fs_vfs_tryWithFileLock_releasesOnActionError
   let (res, s₁) :=
     (api.tryWithFileLock path mode createIfMissing (pure (Except.error err : Except FsError Unit))).run s₀
   let (probe, _) := (api.tryWithFileLock path .exclusive false (pure (.ok ()))).run s₁
-  assert (res = .error err ∧ probe = .ok (some ()))
+  NondetTest.assert (res = .error err ∧ probe = .ok (some ()))
 
 private def buggyEmptyErrApi (base : FsApi) : FsApi :=
   { base with mapRawError := fun _ => { kind := .ioError, message := "" } }

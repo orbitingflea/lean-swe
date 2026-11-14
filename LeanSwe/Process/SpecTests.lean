@@ -11,7 +11,7 @@ def test_process_mapRawError_returnsNonEmptyMessage
     {runner} [NondetTest runner] (api : ProcessApi) : runner Unit := do
   let raw ← nondet ProcessRawError
   let err := api.mapRawError raw
-  assert (err.message ≠ "")
+  NondetTest.assert (err.message ≠ "")
 
 /-- `api.mapRawError` maps every `ProcessRawError` variant to its exact `ProcessErrorKind` and metadata. -/
 def test_process_mapRawError_preservesKindAndFields
@@ -20,21 +20,21 @@ def test_process_mapRawError_preservesKindAndFields
   let err := api.mapRawError raw
   match raw with
   | .executableNotFound prog errno _ =>
-    assert (err.kind = .notFound ∧ err.program = some prog ∧ err.errnoCode = some errno)
+    NondetTest.assert (err.kind = .notFound ∧ err.program = some prog ∧ err.errnoCode = some errno)
   | .permissionDenied prog? errno _ =>
-    assert (err.kind = .permissionDenied ∧ err.program = prog? ∧ err.errnoCode = some errno)
+    NondetTest.assert (err.kind = .permissionDenied ∧ err.program = prog? ∧ err.errnoCode = some errno)
   | .invalidArgument prog? errno _ =>
-    assert (err.kind = .invalidInput ∧ err.program = prog? ∧ err.errnoCode = some errno)
+    NondetTest.assert (err.kind = .invalidInput ∧ err.program = prog? ∧ err.errnoCode = some errno)
   | .timedOut prog _ _ =>
-    assert (err.kind = .timedOut ∧ err.program = some prog)
+    NondetTest.assert (err.kind = .timedOut ∧ err.program = some prog)
   | .outputLimitExceeded prog _ _ =>
-    assert (err.kind = .outputLimitExceeded ∧ err.program = some prog)
+    NondetTest.assert (err.kind = .outputLimitExceeded ∧ err.program = some prog)
   | .signaled prog sig _ =>
-    assert (err.kind = .terminatedBySignal ∧ err.program = some prog ∧ err.signal = some sig)
+    NondetTest.assert (err.kind = .terminatedBySignal ∧ err.program = some prog ∧ err.signal = some sig)
   | .otherError errno _ =>
-    assert (err.kind = .ioError ∧ err.errnoCode = some errno)
+    NondetTest.assert (err.kind = .ioError ∧ err.errnoCode = some errno)
   | .userError _ =>
-    assert (err.kind = .ioError)
+    NondetTest.assert (err.kind = .ioError)
 
 /-- `api.validateRequest` rejects an empty `program` with `.invalidInput` and a non-empty message. -/
 def test_process_validateRequest_rejectsEmptyProgram
@@ -42,8 +42,8 @@ def test_process_validateRequest_rejectsEmptyProgram
   let req ← nondet ExecRequest
   assume (req.program = "")
   match api.validateRequest req with
-  | .ok _ => assert False
-  | .error err => assert (err.kind = .invalidInput ∧ err.message ≠ "")
+  | .ok _ => NondetTest.assert False
+  | .error err => NondetTest.assert (err.kind = .invalidInput ∧ err.message ≠ "")
 
 /-- `api.validateRequest` rejects NUL bytes in `program` with `.invalidInput`. -/
 def test_process_validateRequest_rejectsNulInProgram
@@ -51,8 +51,8 @@ def test_process_validateRequest_rejectsNulInProgram
   let req ← nondet ExecRequest
   assume ('\x00' ∈ req.program.toList)
   match api.validateRequest req with
-  | .ok _ => assert False
-  | .error err => assert (err.kind = .invalidInput ∧ err.message ≠ "")
+  | .ok _ => NondetTest.assert False
+  | .error err => NondetTest.assert (err.kind = .invalidInput ∧ err.message ≠ "")
 
 /-- `api.validateRequest` rejects NUL bytes in any argument in `args` with `.invalidInput`. -/
 def test_process_validateRequest_rejectsNulInArg
@@ -62,8 +62,8 @@ def test_process_validateRequest_rejectsNulInArg
   assume (i < req.args.size)
   assume ('\x00' ∈ req.args[i]!.toList)
   match api.validateRequest req with
-  | .ok _ => assert False
-  | .error err => assert (err.kind = .invalidInput ∧ err.message ≠ "")
+  | .ok _ => NondetTest.assert False
+  | .error err => NondetTest.assert (err.kind = .invalidInput ∧ err.message ≠ "")
 
 /-- `api.validateRequest` rejects NUL bytes in `cwd` with `.invalidInput`. -/
 def test_process_validateRequest_rejectsNulInCwd
@@ -71,8 +71,8 @@ def test_process_validateRequest_rejectsNulInCwd
   let req ← nondet ExecRequest
   assume (∃ d, req.cwd = some d ∧ '\x00' ∈ d.toList)
   match api.validateRequest req with
-  | .ok _ => assert False
-  | .error err => assert (err.kind = .invalidInput ∧ err.message ≠ "")
+  | .ok _ => NondetTest.assert False
+  | .error err => NondetTest.assert (err.kind = .invalidInput ∧ err.message ≠ "")
 
 /-- `api.validateRequest` rejects empty env keys, `'='` in env keys, or NUL bytes in env keys/values. -/
 def test_process_validateRequest_rejectsInvalidEnv
@@ -84,8 +84,8 @@ def test_process_validateRequest_rejectsInvalidEnv
   assume (entry.1 = "" ∨ '=' ∈ entry.1.toList ∨ '\x00' ∈ entry.1.toList ∨
     (∃ v, entry.2 = some v ∧ '\x00' ∈ v.toList))
   match api.validateRequest req with
-  | .ok _ => assert False
-  | .error err => assert (err.kind = .invalidInput ∧ err.message ≠ "")
+  | .ok _ => NondetTest.assert False
+  | .error err => NondetTest.assert (err.kind = .invalidInput ∧ err.message ≠ "")
 
 /-- `api.validateRequest` rejects `timeoutMs = some 0` with `.invalidInput`. -/
 def test_process_validateRequest_rejectsZeroTimeout
@@ -93,8 +93,8 @@ def test_process_validateRequest_rejectsZeroTimeout
   let req ← nondet ExecRequest
   assume (req.timeoutMs = some 0)
   match api.validateRequest req with
-  | .ok _ => assert False
-  | .error err => assert (err.kind = .invalidInput ∧ err.message ≠ "")
+  | .ok _ => NondetTest.assert False
+  | .error err => NondetTest.assert (err.kind = .invalidInput ∧ err.message ≠ "")
 
 /-- Every valid `ExecRequest` (non-empty `program`, no NUL bytes, valid env keys, non-zero timeout) is accepted by `api.validateRequest`. -/
 def test_process_validateRequest_acceptsValidRequest
@@ -108,8 +108,8 @@ def test_process_validateRequest_acceptsValidRequest
     match kv.2 with | some v => !v.toList.contains '\x00' | none => true))
   assume (req.timeoutMs ≠ some 0)
   match api.validateRequest req with
-  | .error _ => assert False
-  | .ok _ => assert True
+  | .error _ => NondetTest.assert False
+  | .ok _ => NondetTest.assert True
 
 /-- `api.validateRequest` is idempotent on all valid requests. -/
 def test_process_validateRequest_idempotent
@@ -117,7 +117,7 @@ def test_process_validateRequest_idempotent
   let req ← nondet ExecRequest
   match api.validateRequest req with
   | .error _ => assume False
-  | .ok norm => assert (api.validateRequest norm = .ok norm)
+  | .ok norm => NondetTest.assert (api.validateRequest norm = .ok norm)
 
 /-- `api.validateRequest` preserves `program`, direct `args` (no shell wrapping), `cwd`, `inheritEnv`, `stdin`, and limits. -/
 def test_process_validateRequest_preservesDirectArgsAndOptions
@@ -126,7 +126,7 @@ def test_process_validateRequest_preservesDirectArgsAndOptions
   match api.validateRequest req with
   | .error _ => assume False
   | .ok norm =>
-    assert (norm.program = req.program ∧
+    NondetTest.assert (norm.program = req.program ∧
       norm.args = req.args ∧
       norm.cwd = req.cwd ∧
       norm.inheritEnv = req.inheritEnv ∧
@@ -147,8 +147,8 @@ def test_process_validateRequest_envOverride_lastWins
   assume (match v₂ with | some v => !v.toList.contains '\x00' | none => true)
   let req : ExecRequest := { program := prog, env := #[(k, v₁), (k, v₂)] }
   match api.validateRequest req with
-  | .error _ => assert False
-  | .ok norm => assert (norm.env = #[(k, v₂)])
+  | .error _ => NondetTest.assert False
+  | .ok norm => NondetTest.assert (norm.env = #[(k, v₂)])
 
 /-- Distinct valid environment entries `(k₁, v₁), (k₂, v₂)` (`k₁ ≠ k₂`, including `none` removals) are preserved by `api.validateRequest`. -/
 def test_process_validateRequest_preservesDistinctEnv
@@ -166,8 +166,8 @@ def test_process_validateRequest_preservesDistinctEnv
   assume (match v₂ with | some v => !v.toList.contains '\x00' | none => true)
   let req : ExecRequest := { program := prog, env := #[(k₁, v₁), (k₂, v₂)] }
   match api.validateRequest req with
-  | .error _ => assert False
-  | .ok norm => assert (norm.env = #[(k₁, v₁), (k₂, v₂)])
+  | .error _ => NondetTest.assert False
+  | .ok norm => NondetTest.assert (norm.env = #[(k₁, v₁), (k₂, v₂)])
 
 /-- `api.mkCommandRequest` stores `program` and `args` verbatim (no `/bin/sh -c` wrapping) with clean defaults. -/
 def test_process_mkCommandRequest_preservesProgramAndArgsVerbatim
@@ -175,7 +175,7 @@ def test_process_mkCommandRequest_preservesProgramAndArgsVerbatim
   let program ← nondet String
   let args ← nondet (Array String)
   let req := api.mkCommandRequest program args
-  assert (req.program = program ∧
+  NondetTest.assert (req.program = program ∧
     req.args = args ∧
     req.cwd = none ∧
     req.env = #[] ∧
@@ -190,7 +190,7 @@ def test_process_withTextInput_encodesUtf8
   let req ← nondet ExecRequest
   let text ← nondet String
   let updated := api.withTextInput req text
-  assert (updated.stdin = text.toUTF8 ∧
+  NondetTest.assert (updated.stdin = text.toUTF8 ∧
     updated.program = req.program ∧
     updated.args = req.args ∧
     updated.cwd = req.cwd ∧
@@ -208,7 +208,7 @@ def test_process_run_invalidRequest_doesNotLeak
   | .ok _ => assume False
   | .error _ =>
     let (res, s₁) := (api.run req).run s₀
-    assert ((∃ e, res = .error e ∧ e.kind = .invalidInput ∧ e.message ≠ "") ∧ s₁ = s₀)
+    NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput ∧ e.message ≠ "") ∧ s₁ = s₀)
 
 /-- `api.run` behaves identically on `req` and its `validateRequest` normalization. -/
 def test_process_run_usesNormalizedRequest
@@ -218,7 +218,7 @@ def test_process_run_usesNormalizedRequest
   match api.validateRequest req with
   | .error _ => assume False
   | .ok norm =>
-    assert ((api.run req).run s₀ = (api.run norm).run s₀)
+    NondetTest.assert ((api.run req).run s₀ = (api.run norm).run s₀)
 
 /-- `api.runCommand prog args` matches `api.run (api.mkCommandRequest prog args)`. -/
 def test_process_runCommand_eq_runMkCommandRequest
@@ -226,7 +226,7 @@ def test_process_runCommand_eq_runMkCommandRequest
   let s₀ ← nondet S
   let prog ← nondet String
   let args ← nondet (Array String)
-  assert ((api.runCommand prog args).run s₀ = (api.run (api.mkCommandRequest prog args)).run s₀)
+  NondetTest.assert ((api.runCommand prog args).run s₀ = (api.run (api.mkCommandRequest prog args)).run s₀)
 
 /-- `api.runCommandChecked prog args` matches `api.runChecked (api.mkCommandRequest prog args)`. -/
 def test_process_runCommandChecked_eq_runCheckedMkCommandRequest
@@ -234,7 +234,7 @@ def test_process_runCommandChecked_eq_runCheckedMkCommandRequest
   let s₀ ← nondet S
   let prog ← nondet String
   let args ← nondet (Array String)
-  assert ((api.runCommandChecked prog args).run s₀ =
+  NondetTest.assert ((api.runCommandChecked prog args).run s₀ =
     (api.runChecked (api.mkCommandRequest prog args)).run s₀)
 
 /-- `run` returns `.ok` on non-zero exit codes, whereas `runChecked` returns `.nonZeroExit` with captured outputs. -/
@@ -248,7 +248,7 @@ def test_process_run_allowsNonZeroExit_and_runChecked_rejectsIt
   | .ok out =>
     assume (out.exitCode ≠ 0)
     let (checkedRes, s₂) := (api.runChecked req).run s₀
-    assert ((∃ e, checkedRes = .error e ∧
+    NondetTest.assert ((∃ e, checkedRes = .error e ∧
       e.kind = .nonZeroExit ∧
       e.program = some req.program ∧
       e.exitCode = some out.exitCode ∧
@@ -266,7 +266,7 @@ def test_process_runChecked_zeroExit_matchesRun
   | .error _ => assume False
   | .ok out =>
     assume (out.exitCode = 0)
-    assert ((api.runChecked req).run s₀ = (.ok out, s₁))
+    NondetTest.assert ((api.runChecked req).run s₀ = (.ok out, s₁))
 
 /-- When `run` fails with an error, `runChecked` propagates the exact same error and state. -/
 def test_process_runChecked_propagatesRunError
@@ -277,7 +277,7 @@ def test_process_runChecked_propagatesRunError
   match res with
   | .ok _ => assume False
   | .error err =>
-    assert ((api.runChecked req).run s₀ = (.error err, s₁))
+    NondetTest.assert ((api.runChecked req).run s₀ = (.error err, s₁))
 
 /-- `api.run` preserves `activeProcessCount` across all outcomes. -/
 def test_process_run_neverLeaksProcesses
@@ -287,7 +287,7 @@ def test_process_run_neverLeaksProcesses
   let n₀ := (api.activeProcessCount.run s₀).1
   let (_, s₁) := (api.run req).run s₀
   let n₁ := (api.activeProcessCount.run s₁).1
-  assert (n₁ = n₀)
+  NondetTest.assert (n₁ = n₀)
 
 /-- `api.runChecked` preserves `activeProcessCount` across all outcomes. -/
 def test_process_runChecked_neverLeaksProcesses
@@ -297,7 +297,7 @@ def test_process_runChecked_neverLeaksProcesses
   let n₀ := (api.activeProcessCount.run s₀).1
   let (_, s₁) := (api.runChecked req).run s₀
   let n₁ := (api.activeProcessCount.run s₁).1
-  assert (n₁ = n₀)
+  NondetTest.assert (n₁ = n₀)
 
 /-- When `api.run` returns `.timedOut` on a timed request, it restores `activeProcessCount` and preserves `program` and a non-empty message. -/
 def test_process_timeout_cleansUpAndErrors
@@ -310,7 +310,7 @@ def test_process_timeout_cleansUpAndErrors
   match res with
   | .error err =>
     assume (err.kind = .timedOut)
-    assert (err.program = some req.program ∧
+    NondetTest.assert (err.program = some req.program ∧
       err.message ≠ "" ∧
       (api.activeProcessCount.run s₁).1 = n₀)
   | .ok _ => assume False
@@ -324,7 +324,7 @@ def test_process_run_noTimeout_neverTimesOut
   let (res, _) := (api.run req).run s₀
   match res with
   | .ok _ => pure ()
-  | .error err => assert (err.kind ≠ .timedOut)
+  | .error err => NondetTest.assert (err.kind ≠ .timedOut)
 
 /-- When `api.run` returns `.outputLimitExceeded`, it restores `activeProcessCount` and preserves `program` and a non-empty message. -/
 def test_process_outputLimit_cleansUpAndErrors
@@ -337,7 +337,7 @@ def test_process_outputLimit_cleansUpAndErrors
   match res with
   | .error err =>
     assume (err.kind = .outputLimitExceeded)
-    assert (err.program = some req.program ∧
+    NondetTest.assert (err.program = some req.program ∧
       err.message ≠ "" ∧
       (api.activeProcessCount.run s₁).1 = n₀)
   | .ok _ => assume False
@@ -351,7 +351,7 @@ def test_process_run_noOutputLimit_neverExceedsLimit
   let (res, _) := (api.run req).run s₀
   match res with
   | .ok _ => pure ()
-  | .error err => assert (err.kind ≠ .outputLimitExceeded)
+  | .error err => NondetTest.assert (err.kind ≠ .outputLimitExceeded)
 
 /-- Every successful `api.run` under `maxOutputBytes = some limit` caps `stdout.size + stderr.size ≤ limit`. -/
 def test_process_run_respectsMaxOutputBytes
@@ -362,7 +362,7 @@ def test_process_run_respectsMaxOutputBytes
   assume (req.maxOutputBytes = some limit)
   let (res, _) := (api.run req).run s₀
   match res with
-  | .ok out => assert (out.stdout.size + out.stderr.size ≤ limit)
+  | .ok out => NondetTest.assert (out.stdout.size + out.stderr.size ≤ limit)
   | .error _ => assume False
 
 /-- When `api.run` returns `.terminatedBySignal`, it restores `activeProcessCount` and preserves `program`, `signal`, and a non-empty message. -/
@@ -375,7 +375,7 @@ def test_process_signaled_cleansUpAndErrors
   match res with
   | .error err =>
     assume (err.kind = .terminatedBySignal)
-    assert (err.program = some req.program ∧
+    NondetTest.assert (err.program = some req.program ∧
       err.signal ≠ none ∧
       err.message ≠ "" ∧
       (api.activeProcessCount.run s₁).1 = n₀)
@@ -389,7 +389,7 @@ def test_process_run_onError_returnsNonEmptyMessage
   let (res, _) := (api.run req).run s₀
   match res with
   | .ok _ => assume False
-  | .error err => assert (err.message ≠ "")
+  | .error err => NondetTest.assert (err.message ≠ "")
 
 /-- Every error returned by `api.runChecked` carries a non-empty diagnostic message. -/
 def test_process_runChecked_onError_returnsNonEmptyMessage
@@ -399,7 +399,7 @@ def test_process_runChecked_onError_returnsNonEmptyMessage
   let (res, _) := (api.runChecked req).run s₀
   match res with
   | .ok _ => assume False
-  | .error err => assert (err.message ≠ "")
+  | .error err => NondetTest.assert (err.message ≠ "")
 
 private def stubProcessApi : ProcessApi :=
   { mapRawError := fun

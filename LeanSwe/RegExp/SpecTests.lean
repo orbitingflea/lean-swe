@@ -13,7 +13,7 @@ def test_regex_onError_returnsNonEmptyMessage
   let hay ← nondet String
   match api.testPattern pat hay with
   | .ok _ => assume False
-  | .error e => assert (e.message ≠ "")
+  | .error e => NondetTest.assert (e.message ≠ "")
 
 /-- On valid patterns, `testPattern` returns `true` iff `findFirst` returns `some span`. -/
 def test_regex_testPattern_iff_findFirstSome
@@ -24,8 +24,8 @@ def test_regex_testPattern_iff_findFirstSome
   | .error _ => assume False
   | .ok b =>
     match api.findFirst pat hay with
-    | .error _ => assert False
-    | .ok span? => assert (b = true ↔ span?.isSome)
+    | .error _ => NondetTest.assert False
+    | .ok span? => NondetTest.assert (b = true ↔ span?.isSome)
 
 /-- On valid patterns, `countMatches` equals `(findAll).size`. -/
 def test_regex_countMatches_eq_findAllSize
@@ -36,8 +36,8 @@ def test_regex_countMatches_eq_findAllSize
   | .error _ => assume False
   | .ok c =>
     match api.findAll pat hay with
-    | .error _ => assert False
-    | .ok xs => assert (c = xs.size)
+    | .error _ => NondetTest.assert False
+    | .ok xs => NondetTest.assert (c = xs.size)
 
 /-- Every `MatchSpan` returned by `findAll` satisfies `startByte ≤ stopByte ≤ hay.utf8ByteSize`. -/
 def test_regex_findAll_spansValid
@@ -50,7 +50,7 @@ def test_regex_findAll_spansValid
     let i ← nondet Nat
     assume (i < xs.size)
     let span := xs[i]!
-    assert (span.startByte ≤ span.stopByte ∧ span.stopByte ≤ hay.utf8ByteSize)
+    NondetTest.assert (span.startByte ≤ span.stopByte ∧ span.stopByte ≤ hay.utf8ByteSize)
 
 /-- On valid patterns, `splitBy` always returns at least one substring piece. -/
 def test_regex_splitBy_nonEmpty
@@ -59,7 +59,7 @@ def test_regex_splitBy_nonEmpty
   let hay ← nondet String
   match api.splitBy pat hay with
   | .error _ => assume False
-  | .ok parts => assert (1 ≤ parts.size)
+  | .ok parts => NondetTest.assert (1 ≤ parts.size)
 
 /-- The empty regex pattern `""` matches every haystack string. -/
 def test_regex_emptyPattern_matchesAnyHaystack
@@ -67,7 +67,7 @@ def test_regex_emptyPattern_matchesAnyHaystack
   let hay ← nondet String
   match api.testPattern "" hay with
   | .error _ => assume False
-  | .ok b => assert (b = true)
+  | .ok b => NondetTest.assert (b = true)
 
 /-- Replacing matches of `""` in `""` with `rep` returns `rep`. -/
 def test_regex_replaceAll_emptyOnEmpty_eqReplacement
@@ -75,7 +75,7 @@ def test_regex_replaceAll_emptyOnEmpty_eqReplacement
   let rep ← nondet String
   match api.replaceAll "" "" rep with
   | .error _ => assume False
-  | .ok out => assert (out = rep)
+  | .ok out => NondetTest.assert (out = rep)
 
 private def buggyCountApi : RegexApi :=
   { testPattern := fun _ _ => .ok false

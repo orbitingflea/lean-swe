@@ -36,8 +36,8 @@ private theorem fromJson_option_nat_toJson (opt : Option Nat) :
 
 private theorem fromJson_array_str_toJson (xs : Array String) :
     Lean.fromJson? (Lean.toJson xs) = .ok xs := by
-  change Array.fromJson? (Lean.Json.arr (xs.map Lean.toJson)) = .ok xs
-  simp only [Array.fromJson?]
+  change Lean.Array.fromJson? (Lean.Json.arr (xs.map Lean.toJson)) = .ok xs
+  simp only [Lean.Array.fromJson?]
   rw [Array.mapM_map]
   have hfn : (Lean.fromJson? (α := String) ∘ Lean.toJson) = fun x => pure x := by
     funext x
@@ -50,7 +50,6 @@ private theorem missingField_msg_ne_empty (k : String) :
   intro heq
   have hlen := congrArg String.length heq
   simp [toString] at hlen
-  exact absurd hlen.1 (by decide)
 
 private theorem treeMap_empty_getElem? (k : String) :
     (∅ : Std.TreeMap.Raw String Lean.Json compare)[k]? = none :=

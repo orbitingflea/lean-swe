@@ -46,11 +46,11 @@ def test_uuid_mapRawError_returnsNonEmptyMessage
     {runner} [NondetTest runner] (api : UuidApi) : runner Unit := do
   let raw ← nondet UuidRawError
   let err := api.mapRawError raw
-  assert (err.kind = .entropyFailed ∧ err.message ≠ "")
+  NondetTest.assert (err.kind = .entropyFailed ∧ err.message ≠ "")
   match raw with
-  | .osError code _ => assert (err.errnoCode = some code)
-  | .shortRead _ _ => assert True
-  | .userError _ => assert True
+  | .osError code _ => NondetTest.assert (err.errnoCode = some code)
+  | .shortRead _ _ => NondetTest.assert True
+  | .userError _ => NondetTest.assert True
 
 /-- `api.fromRandomBytes` accepts any 16-byte input, enforces RFC 4122 v4 version (`0x40`) and variant (`0x80`) bits, and preserves all remaining bits verbatim. -/
 def test_uuid_fromRandomBytes_validLen_setsV4BitsAndPreservesPayload
@@ -58,16 +58,16 @@ def test_uuid_fromRandomBytes_validLen_setsV4BitsAndPreservesPayload
   let bs ← nondet ByteArray
   assume (bs.size = 16)
   match api.fromRandomBytes bs with
-  | .error _ => assert False
+  | .error _ => NondetTest.assert False
   | .ok u =>
-    assert (u.bytes.size = 16)
-    assert ((u.bytes[6]! &&& (0xF0 : UInt8)) = (0x40 : UInt8))
-    assert ((u.bytes[8]! &&& (0xC0 : UInt8)) = (0x80 : UInt8))
-    assert ((u.bytes[6]! &&& (0x0F : UInt8)) = (bs[6]! &&& (0x0F : UInt8)))
-    assert ((u.bytes[8]! &&& (0x3F : UInt8)) = (bs[8]! &&& (0x3F : UInt8)))
+    NondetTest.assert (u.bytes.size = 16)
+    NondetTest.assert ((u.bytes[6]! &&& (0xF0 : UInt8)) = (0x40 : UInt8))
+    NondetTest.assert ((u.bytes[8]! &&& (0xC0 : UInt8)) = (0x80 : UInt8))
+    NondetTest.assert ((u.bytes[6]! &&& (0x0F : UInt8)) = (bs[6]! &&& (0x0F : UInt8)))
+    NondetTest.assert ((u.bytes[8]! &&& (0x3F : UInt8)) = (bs[8]! &&& (0x3F : UInt8)))
     let i ← nondet Nat
     assume (i < 16 ∧ i ≠ 6 ∧ i ≠ 8)
-    assert (u.bytes[i]! = bs[i]!)
+    NondetTest.assert (u.bytes[i]! = bs[i]!)
 
 /-- `api.fromRandomBytes` rejects byte arrays whose length is not 16 with `.invalidLength` and a non-empty message. -/
 def test_uuid_fromRandomBytes_invalidLen_returnsError
@@ -75,8 +75,8 @@ def test_uuid_fromRandomBytes_invalidLen_returnsError
   let bs ← nondet ByteArray
   assume (bs.size ≠ 16)
   match api.fromRandomBytes bs with
-  | .ok _ => assert False
-  | .error e => assert (e.kind = .invalidLength ∧ e.message ≠ "")
+  | .ok _ => NondetTest.assert False
+  | .error e => NondetTest.assert (e.kind = .invalidLength ∧ e.message ≠ "")
 
 /-- `api.toString` emits canonical lowercase `8-4-4-4-12` (36 chars) with v4 version/variant nibbles and round-trips through `api.parse` and `api.isValid`. -/
 def test_uuid_toString_formatAndRoundTrip
@@ -87,13 +87,13 @@ def test_uuid_toString_formatAndRoundTrip
   | .error _ => assume False
   | .ok u =>
     let s := api.toString u
-    assert (s.length = 36)
-    assert (s.toList[8]? = some '-' ∧ s.toList[13]? = some '-' ∧ s.toList[18]? = some '-' ∧ s.toList[23]? = some '-')
-    assert (s.toList.all (fun c => c == '-' || isLowerHexChar c) = true)
-    assert (s.toList[14]? = some '4')
-    assert (s.toList[19]? = some '8' ∨ s.toList[19]? = some '9' ∨ s.toList[19]? = some 'a' ∨ s.toList[19]? = some 'b')
-    assert (api.parse s = .ok u)
-    assert (api.isValid s = true)
+    NondetTest.assert (s.length = 36)
+    NondetTest.assert (s.toList[8]? = some '-' ∧ s.toList[13]? = some '-' ∧ s.toList[18]? = some '-' ∧ s.toList[23]? = some '-')
+    NondetTest.assert (s.toList.all (fun c => c == '-' || isLowerHexChar c) = true)
+    NondetTest.assert (s.toList[14]? = some '4')
+    NondetTest.assert (s.toList[19]? = some '8' ∨ s.toList[19]? = some '9' ∨ s.toList[19]? = some 'a' ∨ s.toList[19]? = some 'b')
+    NondetTest.assert (api.parse s = .ok u)
+    NondetTest.assert (api.isValid s = true)
 
 /-- `api.toHex` emits 32 lowercase hex chars matching `api.toString` without hyphens, round-trips through `api.parseHex`, and is rejected by strict canonical `api.isValid`. -/
 def test_uuid_toHex_formatAndRoundTrip
@@ -105,14 +105,14 @@ def test_uuid_toHex_formatAndRoundTrip
   | .ok u =>
     let h := api.toHex u
     let s := api.toString u
-    assert (h.length = 32)
-    assert (h.toList.all isLowerHexChar = true)
-    assert (h.toList = s.toList.filter (fun c => c != '-'))
-    assert (api.parseHex h = .ok u)
-    assert (api.isValid h = false)
+    NondetTest.assert (h.length = 32)
+    NondetTest.assert (h.toList.all isLowerHexChar = true)
+    NondetTest.assert (h.toList = s.toList.filter (fun c => c != '-'))
+    NondetTest.assert (api.parseHex h = .ok u)
+    NondetTest.assert (api.isValid h = false)
     match api.parse h with
-    | .ok _ => assert False
-    | .error e => assert (e.kind = .invalidFormat ∧ e.message ≠ "")
+    | .ok _ => NondetTest.assert False
+    | .error e => NondetTest.assert (e.kind = .invalidFormat ∧ e.message ≠ "")
 
 /-- `api.toHex` encodes the 16 UUID bytes in RFC 4122 big-endian byte and high/low nibble order. -/
 def test_uuid_toHex_bigEndianNibbleOrder
@@ -126,8 +126,8 @@ def test_uuid_toHex_bigEndianNibbleOrder
     let i ← nondet Nat
     assume (i < 16)
     let b := u.bytes[i]!.toNat
-    assert (cs[2 * i]? = some (lowerHexDigit (b / 16)))
-    assert (cs[2 * i + 1]? = some (lowerHexDigit (b % 16)))
+    NondetTest.assert (cs[2 * i]? = some (lowerHexDigit (b / 16)))
+    NondetTest.assert (cs[2 * i + 1]? = some (lowerHexDigit (b % 16)))
 
 /-- `api.parse` and `api.parseHex` accept uppercase hex input and recover the exact `Uuid`. -/
 def test_uuid_parse_acceptsUppercaseHex
@@ -139,34 +139,34 @@ def test_uuid_parse_acceptsUppercaseHex
   | .ok u =>
     let upperStr := String.ofList ((api.toString u).toList.map Char.toUpper)
     let upperHex := String.ofList ((api.toHex u).toList.map Char.toUpper)
-    assert (api.parse upperStr = .ok u)
-    assert (api.isValid upperStr = true)
-    assert (api.parseHex upperHex = .ok u)
+    NondetTest.assert (api.parse upperStr = .ok u)
+    NondetTest.assert (api.isValid upperStr = true)
+    NondetTest.assert (api.parseHex upperHex = .ok u)
 
 /-- Every accepted `api.parse s = .ok u` yields valid 16-byte v4 bits, `api.isValid s = true`, and lowercased canonical `api.toString u`. -/
 def test_uuid_parse_acceptedImpliesV4AndNormalizedRoundTrip
     {runner} [NondetTest runner] (api : UuidApi) : runner Unit := do
   let s ← nondet String
   match api.parse s with
-  | .error e => assert (e.message ≠ "" ∧ api.isValid s = false)
+  | .error e => NondetTest.assert (e.message ≠ "" ∧ api.isValid s = false)
   | .ok u =>
-    assert (api.isValid s = true)
-    assert (u.bytes.size = 16)
-    assert ((u.bytes[6]! &&& (0xF0 : UInt8)) = (0x40 : UInt8))
-    assert ((u.bytes[8]! &&& (0xC0 : UInt8)) = (0x80 : UInt8))
-    assert ((api.toString u).toList = s.toList.map Char.toLower)
+    NondetTest.assert (api.isValid s = true)
+    NondetTest.assert (u.bytes.size = 16)
+    NondetTest.assert ((u.bytes[6]! &&& (0xF0 : UInt8)) = (0x40 : UInt8))
+    NondetTest.assert ((u.bytes[8]! &&& (0xC0 : UInt8)) = (0x80 : UInt8))
+    NondetTest.assert ((api.toString u).toList = s.toList.map Char.toLower)
 
 /-- Every accepted `api.parseHex s = .ok u` yields valid 16-byte v4 bits and lowercased compact `api.toHex u`. -/
 def test_uuid_parseHex_acceptedImpliesV4AndNormalizedRoundTrip
     {runner} [NondetTest runner] (api : UuidApi) : runner Unit := do
   let s ← nondet String
   match api.parseHex s with
-  | .error e => assert (e.message ≠ "")
+  | .error e => NondetTest.assert (e.message ≠ "")
   | .ok u =>
-    assert (u.bytes.size = 16)
-    assert ((u.bytes[6]! &&& (0xF0 : UInt8)) = (0x40 : UInt8))
-    assert ((u.bytes[8]! &&& (0xC0 : UInt8)) = (0x80 : UInt8))
-    assert ((api.toHex u).toList = s.toList.map Char.toLower)
+    NondetTest.assert (u.bytes.size = 16)
+    NondetTest.assert ((u.bytes[6]! &&& (0xF0 : UInt8)) = (0x40 : UInt8))
+    NondetTest.assert ((u.bytes[8]! &&& (0xC0 : UInt8)) = (0x80 : UInt8))
+    NondetTest.assert ((api.toHex u).toList = s.toList.map Char.toLower)
 
 /-- `api.parse` rejects any string whose length is not 36 with `.invalidFormat` and `api.isValid s = false`. -/
 def test_uuid_parse_rejectsInvalidLength
@@ -174,8 +174,8 @@ def test_uuid_parse_rejectsInvalidLength
   let s ← nondet String
   assume (s.length ≠ 36)
   match api.parse s with
-  | .ok _ => assert False
-  | .error e => assert (e.kind = .invalidFormat ∧ e.message ≠ "" ∧ api.isValid s = false)
+  | .ok _ => NondetTest.assert False
+  | .error e => NondetTest.assert (e.kind = .invalidFormat ∧ e.message ≠ "" ∧ api.isValid s = false)
 
 /-- `api.parse` rejects any 36-char string with a non-hex character in a hex position. -/
 def test_uuid_parse_rejectsNonHexChar
@@ -186,8 +186,8 @@ def test_uuid_parse_rejectsNonHexChar
   assume (idx < 36 ∧ idx ≠ 8 ∧ idx ≠ 13 ∧ idx ≠ 18 ∧ idx ≠ 23)
   assume (isHexChar s.toList[idx]! = false)
   match api.parse s with
-  | .ok _ => assert False
-  | .error e => assert (e.kind = .invalidFormat ∧ e.message ≠ "" ∧ api.isValid s = false)
+  | .ok _ => NondetTest.assert False
+  | .error e => NondetTest.assert (e.kind = .invalidFormat ∧ e.message ≠ "" ∧ api.isValid s = false)
 
 /-- `api.parse` rejects any 36-char string missing a hyphen at index 8, 13, 18, or 23. -/
 def test_uuid_parse_rejectsMissingHyphen
@@ -196,8 +196,8 @@ def test_uuid_parse_rejectsMissingHyphen
   assume (s.length = 36)
   assume (s.toList[8]? ≠ some '-' ∨ s.toList[13]? ≠ some '-' ∨ s.toList[18]? ≠ some '-' ∨ s.toList[23]? ≠ some '-')
   match api.parse s with
-  | .ok _ => assert False
-  | .error e => assert (e.kind = .invalidFormat ∧ e.message ≠ "" ∧ api.isValid s = false)
+  | .ok _ => NondetTest.assert False
+  | .error e => NondetTest.assert (e.kind = .invalidFormat ∧ e.message ≠ "" ∧ api.isValid s = false)
 
 /-- `api.parse` rejects canonical 36-char UUIDs whose version nibble is not `4` or whose variant nibble is not RFC 4122 (`8`/`9`/`a`/`b`) with `.invalidVersion`. -/
 def test_uuid_parse_rejectsNonV4VersionOrVariant
@@ -215,11 +215,11 @@ def test_uuid_parse_rejectsNonV4VersionOrVariant
     let sBadVer := String.ofList (cs.set 14 badVer)
     let sBadVar := String.ofList (cs.set 19 badVar)
     match api.parse sBadVer with
-    | .ok _ => assert False
-    | .error e => assert (e.kind = .invalidVersion ∧ e.message ≠ "" ∧ api.isValid sBadVer = false)
+    | .ok _ => NondetTest.assert False
+    | .error e => NondetTest.assert (e.kind = .invalidVersion ∧ e.message ≠ "" ∧ api.isValid sBadVer = false)
     match api.parse sBadVar with
-    | .ok _ => assert False
-    | .error e => assert (e.kind = .invalidVersion ∧ e.message ≠ "" ∧ api.isValid sBadVar = false)
+    | .ok _ => NondetTest.assert False
+    | .error e => NondetTest.assert (e.kind = .invalidVersion ∧ e.message ≠ "" ∧ api.isValid sBadVar = false)
 
 /-- `api.parseHex` rejects any string whose length is not 32 with `.invalidFormat`. -/
 def test_uuid_parseHex_rejectsInvalidLength
@@ -227,8 +227,8 @@ def test_uuid_parseHex_rejectsInvalidLength
   let s ← nondet String
   assume (s.length ≠ 32)
   match api.parseHex s with
-  | .ok _ => assert False
-  | .error e => assert (e.kind = .invalidFormat ∧ e.message ≠ "")
+  | .ok _ => NondetTest.assert False
+  | .error e => NondetTest.assert (e.kind = .invalidFormat ∧ e.message ≠ "")
 
 /-- `api.parseHex` rejects any 32-char string containing a non-hex character (including hyphens) with `.invalidFormat`. -/
 def test_uuid_parseHex_rejectsNonHexChar
@@ -238,8 +238,8 @@ def test_uuid_parseHex_rejectsNonHexChar
   let idx ← nondet Nat
   assume (idx < 32 ∧ isHexChar s.toList[idx]! = false)
   match api.parseHex s with
-  | .ok _ => assert False
-  | .error e => assert (e.kind = .invalidFormat ∧ e.message ≠ "")
+  | .ok _ => NondetTest.assert False
+  | .error e => NondetTest.assert (e.kind = .invalidFormat ∧ e.message ≠ "")
 
 /-- `api.parseHex` rejects 32-char hex UUIDs whose version nibble is not `4` or whose variant nibble is not RFC 4122 (`8`/`9`/`a`/`b`) with `.invalidVersion`. -/
 def test_uuid_parseHex_rejectsNonV4VersionOrVariant
@@ -257,11 +257,11 @@ def test_uuid_parseHex_rejectsNonV4VersionOrVariant
     let hBadVer := String.ofList (cs.set 12 badVer)
     let hBadVar := String.ofList (cs.set 16 badVar)
     match api.parseHex hBadVer with
-    | .ok _ => assert False
-    | .error e => assert (e.kind = .invalidVersion ∧ e.message ≠ "")
+    | .ok _ => NondetTest.assert False
+    | .error e => NondetTest.assert (e.kind = .invalidVersion ∧ e.message ≠ "")
     match api.parseHex hBadVar with
-    | .ok _ => assert False
-    | .error e => assert (e.kind = .invalidVersion ∧ e.message ≠ "")
+    | .ok _ => NondetTest.assert False
+    | .error e => NondetTest.assert (e.kind = .invalidVersion ∧ e.message ≠ "")
 
 /-- Two consecutive `getUuid` calls over `StateM MockRngState` yield distinct valid v4 UUIDs, advance state monotonically, and leave zero state leak across independent runs. -/
 def test_uuid_getUuid_consecutiveDistinctValidAndDeterministic
@@ -278,17 +278,17 @@ def test_uuid_getUuid_consecutiveDistinctValidAndDeterministic
     let r1 ← api.getUuid
     let r2 ← api.getUuid
     pure (r1, r2)).run s₀
-  assert (r1 = r1b ∧ r2 = r2b ∧ s₁ = s₁b)
-  assert (s₁.counter = s₀.counter + 2 ∧ s₁.draws = s₀.draws + 2)
+  NondetTest.assert (r1 = r1b ∧ r2 = r2b ∧ s₁ = s₁b)
+  NondetTest.assert (s₁.counter = s₀.counter + 2 ∧ s₁.draws = s₀.draws + 2)
   match r1, r2 with
   | .ok u1, .ok u2 =>
-    assert (u1 ≠ u2)
-    assert (api.toString u1 ≠ api.toString u2)
-    assert (api.toHex u1 ≠ api.toHex u2)
-    assert (u1.bytes.size = 16 ∧ (u1.bytes[6]! &&& (0xF0 : UInt8)) = (0x40 : UInt8) ∧ (u1.bytes[8]! &&& (0xC0 : UInt8)) = (0x80 : UInt8))
-    assert (u2.bytes.size = 16 ∧ (u2.bytes[6]! &&& (0xF0 : UInt8)) = (0x40 : UInt8) ∧ (u2.bytes[8]! &&& (0xC0 : UInt8)) = (0x80 : UInt8))
-    assert (api.isValid (api.toString u1) = true ∧ api.isValid (api.toString u2) = true)
-  | _, _ => assert False
+    NondetTest.assert (u1 ≠ u2)
+    NondetTest.assert (api.toString u1 ≠ api.toString u2)
+    NondetTest.assert (api.toHex u1 ≠ api.toHex u2)
+    NondetTest.assert (u1.bytes.size = 16 ∧ (u1.bytes[6]! &&& (0xF0 : UInt8)) = (0x40 : UInt8) ∧ (u1.bytes[8]! &&& (0xC0 : UInt8)) = (0x80 : UInt8))
+    NondetTest.assert (u2.bytes.size = 16 ∧ (u2.bytes[6]! &&& (0xF0 : UInt8)) = (0x40 : UInt8) ∧ (u2.bytes[8]! &&& (0xC0 : UInt8)) = (0x80 : UInt8))
+    NondetTest.assert (api.isValid (api.toString u1) = true ∧ api.isValid (api.toString u2) = true)
+  | _, _ => NondetTest.assert False
 
 /-- When the underlying `RawUuidOpsM` entropy source fails, `getUuid` propagates the exact error without mutating `counter`. -/
 def test_uuid_getUuid_propagatesEntropyError
@@ -300,7 +300,7 @@ def test_uuid_getUuid_propagatesEntropyError
   assume (err.message ≠ "")
   assume (s₀.failWith = some err)
   let (res, s₁) := api.getUuid.run s₀
-  assert (res = .error err ∧ s₁.counter = s₀.counter ∧ s₁.draws = s₀.draws + 1)
+  NondetTest.assert (res = .error err ∧ s₁.counter = s₀.counter ∧ s₁.draws = s₀.draws + 1)
 
 /-- If `RawUuidOpsM.randomBytes16` returns `.ok` with a byte count other than 16, `getUuid` rejects it with `.invalidLength` and a non-empty message. -/
 def test_uuid_getUuid_rejectsWrongRawByteCount
@@ -313,10 +313,10 @@ def test_uuid_getUuid_rejectsWrongRawByteCount
   let api := mkApi badLenOps
   let s₀ ← nondet MockRngState
   let (res, s₁) := api.getUuid.run s₀
-  assert (s₁ = s₀)
+  NondetTest.assert (s₁ = s₀)
   match res with
-  | .ok _ => assert False
-  | .error e => assert (e.kind = .invalidLength ∧ e.message ≠ "")
+  | .ok _ => NondetTest.assert False
+  | .error e => NondetTest.assert (e.kind = .invalidLength ∧ e.message ≠ "")
 
 /-- `getUuid` constructs its `Uuid` directly from the 16 payload bytes returned by `RawUuidOpsM.randomBytes16` via `fromRandomBytes`. -/
 def test_uuid_getUuid_usesRawRandomBytes
@@ -329,8 +329,8 @@ def test_uuid_getUuid_usesRawRandomBytes
   let api := mkApi fixedOps
   let s₀ ← nondet MockRngState
   let (res, s₁) := api.getUuid.run s₀
-  assert (s₁ = s₀)
-  assert (res = api.fromRandomBytes bs)
+  NondetTest.assert (s₁ = s₀)
+  NondetTest.assert (res = api.fromRandomBytes bs)
 
 private def zeros16 : ByteArray :=
   ByteArray.mk (Array.replicate 16 0)
@@ -461,10 +461,7 @@ example : ¬ Core.AllPass (test_uuid_parse_acceptsUppercaseHex
   have h0 := h zeros16 rfl
   dsimp [test_uuid_parse_acceptsUppercaseHex, stubUuidApi, zeros16,
     Core.NondetTest.assert, Bind.bind] at h0
-  have hne : (String.ofList (List.map Char.toUpper "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".toList) ==
-      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa") = false := by decide
   have h1 := h0.1
-  rw [hne] at h1
   cases h1
 
 example : ¬ Core.AllPass (test_uuid_parse_acceptedImpliesV4AndNormalizedRoundTrip

@@ -10,8 +10,6 @@ package «lean-swe» where
     ⟨`weak.linter.unusedVariables, true⟩
   ]
 
-require Regex from git "https://github.com/pandaman64/lean-regex.git" @ "v4.27.0" / "regex"
-
 lean_lib Core where
   globs := #[.submodules `Core]
 

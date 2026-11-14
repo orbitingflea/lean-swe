@@ -436,7 +436,6 @@ theorem proof_uuid_mapRawError_returnsNonEmptyMessage :
     intro h
     have hlen := congrArg String.length h
     simp at hlen
-    exact absurd hlen.1 (by decide)
   | userError detail =>
     dsimp [test_uuid_mapRawError_returnsNonEmptyMessage, defaultApi, Internal.mkApiM,
       Raw.defaultOps, Raw.Internal.mkRawOps, Raw.Internal.mapRawError,
@@ -485,7 +484,6 @@ theorem proof_uuid_fromRandomBytes_invalidLen_returnsError :
   intro h
   have hlen := congrArg String.length h
   simp at hlen
-  exact absurd hlen.1 (by decide)
 
 /-- Non-vacuity witness for `test_uuid_fromRandomBytes_invalidLen_returnsError`. -/
 theorem reach_uuid_fromRandomBytes_invalidLen_returnsError :
@@ -1225,7 +1223,7 @@ theorem proof_uuid_parse_rejectsNonHexChar :
   have hbad' : isHexChar s.toList[idx]! = false := isHexChar_false_of_pred (by decide) hbad
   cases hs : Internal.stripCanonicalHyphens s.toList with
   | none =>
-    simp [Internal.parseCanonicalChars, hlen, hs, Except.isOk, Except.toBool]
+    simp [Internal.parseCanonicalChars, hclen, hs, Except.isOk, Except.toBool]
   | some hex =>
     have hmem := stripCanonicalHyphens_mem_of_idx hs hi h8 h13 h18 h23
     have hdec := decodeHexPairs_none_of_mem_bad hex s.toList[idx]! hmem hbad'
@@ -1234,7 +1232,7 @@ theorem proof_uuid_parse_rejectsNonHexChar :
         Bool.false_eq_true, Except.isOk, Except.toBool]
       exact ⟨⟨trivial, append_ne_empty_of_left (by decide), trivial⟩, trivial⟩
     · simp only [Bool.not_eq_true] at hhl
-      simp [Internal.parseCanonicalChars, hlen, hs, Internal.parseHexChars, hhl, hdec,
+      simp [Internal.parseCanonicalChars, hclen, hs, Internal.parseHexChars, hhl, hdec,
         Except.isOk, Except.toBool]
 
 /-- Non-vacuity witness for `test_uuid_parse_rejectsNonHexChar`. -/
@@ -1266,7 +1264,7 @@ theorem proof_uuid_parse_rejectsMissingHyphen :
       · exact Or.inl (Or.inr h)
       · exact Or.inr h
     simp [hhy]
-  simp [hlen, hs, Except.isOk, Except.toBool]
+  simp [hclen, hs, Except.isOk, Except.toBool]
 
 /-- Non-vacuity witness for `test_uuid_parse_rejectsMissingHyphen`. -/
 theorem reach_uuid_parse_rejectsMissingHyphen :
@@ -2021,8 +2019,10 @@ theorem proof_uuid_getUuid_rejectsWrongRawByteCount :
     ExceptT.run, ExceptT.mk, ExceptT.lift, StateT.bind, Pure.pure, StateT.pure,
     Functor.map, StateT.map]
   have hbne : (bs.size != 16) = true := bne_iff_ne.mpr hne
-  simp only [StateT.pure, StateT.bind, StateT.run, Bind.bind, hbne, ↓reduceIte, and_true]
-  exact ⟨trivial, trivial, append_ne_empty_of_left (by decide)⟩
+  simp only [StateT.pure, StateT.bind, StateT.run, Bind.bind, Pure.pure]
+  rw [hbne]
+  simp only [↓reduceIte]
+  exact ⟨trivial, ⟨trivial, append_ne_empty_of_left (by decide)⟩, trivial⟩
 
 /-- Non-vacuity witness for `test_uuid_getUuid_rejectsWrongRawByteCount`. -/
 theorem reach_uuid_getUuid_rejectsWrongRawByteCount :
@@ -2040,7 +2040,7 @@ theorem proof_uuid_getUuid_usesRawRandomBytes :
     Bind.bind, Core.NondetTest.assert, ExceptT.run, ExceptT.mk, ExceptT.lift,
     StateT.bind, Pure.pure, StateT.pure, Functor.map, StateT.map]
   simp only [StateT.pure, StateT.bind, StateT.run, Bind.bind]
-  exact ⟨trivial, trivial, trivial⟩
+  exact ⟨rfl, rfl, trivial⟩
 
 /-- Non-vacuity witness for `test_uuid_getUuid_usesRawRandomBytes`. -/
 theorem reach_uuid_getUuid_usesRawRandomBytes :

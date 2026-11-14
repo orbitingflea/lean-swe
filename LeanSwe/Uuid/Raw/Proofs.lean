@@ -36,7 +36,6 @@ theorem proof_uuidraw_mapRawError_normalizesError :
     intro h
     have hlen := congrArg String.length h
     simp at hlen
-    exact absurd hlen.1 (by decide)
   | userError detail =>
     dsimp [test_uuidraw_mapRawError_normalizesError, defaultOps, Internal.mkRawOps,
       Internal.mapRawError, Bind.bind, Core.NondetTest.assert]

@@ -217,7 +217,7 @@ def test_sqlite_mapRawError_returnsNonEmptyMessage
     {runner} [NondetTest runner] (api : SqliteApi) : runner Unit := do
   let raw ← nondet SqliteRawError
   let err := api.mapRawError raw
-  assert (err.message ≠ "")
+  NondetTest.assert (err.message ≠ "")
 
 /-- Known `SqliteRawError` inputs map to expected `SqliteErrorKind` categories with non-empty messages. -/
 def test_sqlite_mapRawError_mapsExpectedKinds
@@ -231,12 +231,12 @@ def test_sqlite_mapRawError_mapsExpectedKinds
   let eMisuse := api.mapRawError (.misuse code detail)
   let eInvalid := api.mapRawError (.invalidArgument detail)
   let eIo := api.mapRawError (.ioFailure code detail)
-  assert (eNotFound.kind = .notFound ∧ eNotFound.message ≠ "")
-  assert (eBusy.kind = .busy ∧ eBusy.message ≠ "")
-  assert (eConstraint.kind = .constraint ∧ eConstraint.message ≠ "")
-  assert (eMisuse.kind = .misuse ∧ eMisuse.message ≠ "")
-  assert (eInvalid.kind = .invalidInput ∧ eInvalid.message ≠ "")
-  assert (eIo.kind = .ioError ∧ eIo.message ≠ "")
+  NondetTest.assert (eNotFound.kind = .notFound ∧ eNotFound.message ≠ "")
+  NondetTest.assert (eBusy.kind = .busy ∧ eBusy.message ≠ "")
+  NondetTest.assert (eConstraint.kind = .constraint ∧ eConstraint.message ≠ "")
+  NondetTest.assert (eMisuse.kind = .misuse ∧ eMisuse.message ≠ "")
+  NondetTest.assert (eInvalid.kind = .invalidInput ∧ eInvalid.message ≠ "")
+  NondetTest.assert (eIo.kind = .ioError ∧ eIo.message ≠ "")
 
 /-- `validateConfig` rejects combining `readOnly = true` with `createIfMissing = true`. -/
 def test_sqlite_validateConfig_rejectsReadOnlyWithCreate
@@ -244,8 +244,8 @@ def test_sqlite_validateConfig_rejectsReadOnlyWithCreate
   let cfg ← nondet OpenConfig
   assume (cfg.readOnly = true ∧ cfg.createIfMissing = true)
   match api.validateConfig cfg with
-  | .ok () => assert False
-  | .error e => assert (e.kind = .invalidInput ∧ e.message ≠ "")
+  | .ok () => NondetTest.assert False
+  | .error e => NondetTest.assert (e.kind = .invalidInput ∧ e.message ≠ "")
 
 /-- `validateConfig` rejects `busyTimeoutMs` exceeding `maxBusyTimeoutMs`. -/
 def test_sqlite_validateConfig_rejectsExcessiveBusyTimeout
@@ -253,8 +253,8 @@ def test_sqlite_validateConfig_rejectsExcessiveBusyTimeout
   let cfg ← nondet OpenConfig
   assume (cfg.busyTimeoutMs > maxBusyTimeoutMs)
   match api.validateConfig cfg with
-  | .ok () => assert False
-  | .error e => assert (e.kind = .invalidInput ∧ e.message ≠ "")
+  | .ok () => NondetTest.assert False
+  | .error e => NondetTest.assert (e.kind = .invalidInput ∧ e.message ≠ "")
 
 /-- `validateConfig` accepts valid `OpenConfig` values. -/
 def test_sqlite_validateConfig_acceptsValidConfig
@@ -262,7 +262,7 @@ def test_sqlite_validateConfig_acceptsValidConfig
   let cfg ← nondet OpenConfig
   assume (!(cfg.readOnly && cfg.createIfMissing))
   assume (cfg.busyTimeoutMs ≤ maxBusyTimeoutMs)
-  assert (api.validateConfig cfg = .ok ())
+  NondetTest.assert (api.validateConfig cfg = .ok ())
 
 /-- `withDb` validates `OpenConfig`, propagates `.busy`, and preserves `activeDbCount` on `.ok` and `.error`. -/
 def test_sqlite_withDb_preservesActiveDbCount_andPropagatesBusy
@@ -278,20 +278,20 @@ def test_sqlite_withDb_preservesActiveDbCount_andPropagatesBusy
   let sOk : MockDb := {}
   let outOk := (api.withDb path validCfg (fun _ =>
     if failOnBody then pure (.error bodyErr) else pure (.ok "done"))).run sOk
-  assert (outOk.2.openDbs.length = 0 ∧ (api.activeDbCount.run outOk.2).1 = 0 ∧
+  NondetTest.assert (outOk.2.openDbs.length = 0 ∧ (api.activeDbCount.run outOk.2).1 = 0 ∧
     outOk.2.openCalls = [(path, validCfg)])
   if failOnBody then
-    assert (outOk.1 = .error bodyErr)
+    NondetTest.assert (outOk.1 = .error bodyErr)
   else
-    assert (outOk.1 = .ok "done")
+    NondetTest.assert (outOk.1 = .ok "done")
   let sBusy : MockDb := { failMode := .failOpen .busy }
   let outBusy := (api.withDb path validCfg (fun _ => pure (.ok ()))).run sBusy
-  assert ((∃ e, outBusy.1 = .error e ∧ e.kind = .busy) ∧
+  NondetTest.assert ((∃ e, outBusy.1 = .error e ∧ e.kind = .busy) ∧
     outBusy.2.openDbs.length = 0 ∧ (api.activeDbCount.run outBusy.2).1 = 0 ∧
     outBusy.2.openCalls = [(path, validCfg)])
   let badCfg : OpenConfig := { readOnly := true, createIfMissing := true }
   let outBad := (api.withDb path badCfg (fun _ => pure (.ok ()))).run sOk
-  assert ((∃ e, outBad.1 = .error e ∧ e.kind = .invalidInput) ∧
+  NondetTest.assert ((∃ e, outBad.1 = .error e ∧ e.kind = .invalidInput) ∧
     outBad.2.openCalls = [] ∧ outBad.2.openDbs.length = 0)
 
 /-- `exec` propagates `.busy`/`.constraint` errors and preserves `activeStmtCount` on all success and failure paths. -/
@@ -307,12 +307,12 @@ def test_sqlite_exec_preservesActiveStmtCount_andPropagatesErrors
   let api := mkApi mockRawOps
   let s₀ : MockDb := { openDbs := [1], nextDbId := 2, failMode := mode }
   let out := (api.exec { id := 1 } sql params).run s₀
-  assert (out.2.openStmts.length = 0 ∧ (api.activeStmtCount.run out.2).1 = 0)
+  NondetTest.assert (out.2.openStmts.length = 0 ∧ (api.activeStmtCount.run out.2).1 = 0)
   match mode with
-  | .none => assert (out.1 = .ok ())
-  | .failPrepare k => assert (∃ e, out.1 = .error e ∧ e.kind = k)
-  | .failBind k => assert (∃ e, out.1 = .error e ∧ e.kind = k)
-  | .failStep k => assert (∃ e, out.1 = .error e ∧ e.kind = k)
+  | .none => NondetTest.assert (out.1 = .ok ())
+  | .failPrepare k => NondetTest.assert (∃ e, out.1 = .error e ∧ e.kind = k)
+  | .failBind k => NondetTest.assert (∃ e, out.1 = .error e ∧ e.kind = k)
+  | .failStep k => NondetTest.assert (∃ e, out.1 = .error e ∧ e.kind = k)
   | _ => pure ()
 
 /-- `query` collects all rows in order and preserves `activeStmtCount` even on mid-stream `.busy` failures. -/
@@ -326,10 +326,10 @@ def test_sqlite_query_collectsRows_andPreservesActiveStmtCount
   let rows := #[r0, r1]
   let sOk : MockDb := { openDbs := [1], nextDbId := 2, queryRows := rows, failMode := .none }
   let outOk := (api.query { id := 1 } "SELECT id, name FROM items WHERE id = ?" params).run sOk
-  assert (outOk.1 = .ok rows ∧ outOk.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outOk.2).1 = 0)
+  NondetTest.assert (outOk.1 = .ok rows ∧ outOk.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outOk.2).1 = 0)
   let sMidErr : MockDb := { openDbs := [1], nextDbId := 2, queryRows := rows, failMode := .failStepAfterFirstRow .busy }
   let outErr := (api.query { id := 1 } "SELECT id, name FROM items WHERE id = ?" params).run sMidErr
-  assert ((∃ e, outErr.1 = .error e ∧ e.kind = .busy) ∧
+  NondetTest.assert ((∃ e, outErr.1 = .error e ∧ e.kind = .busy) ∧
     outErr.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outErr.2).1 = 0)
 
 /-- `queryOne` returns `none` on empty result, `some row` on non-empty result, and preserves `activeStmtCount`. -/
@@ -341,13 +341,13 @@ def test_sqlite_queryOne_returnsOptionalRow_andPreservesActiveStmtCount
   let api := mkApi mockRawOps
   let sEmpty : MockDb := { openDbs := [1], nextDbId := 2, queryRows := #[], failMode := .none }
   let outEmpty := (api.queryOne { id := 1 } "SELECT id FROM items WHERE id = ?" params).run sEmpty
-  assert (outEmpty.1 = .ok none ∧ outEmpty.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outEmpty.2).1 = 0)
+  NondetTest.assert (outEmpty.1 = .ok none ∧ outEmpty.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outEmpty.2).1 = 0)
   let sOne : MockDb := { openDbs := [1], nextDbId := 2, queryRows := #[row], failMode := .none }
   let outOne := (api.queryOne { id := 1 } "SELECT id FROM items WHERE id = ?" params).run sOne
-  assert (outOne.1 = .ok (some row) ∧ outOne.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outOne.2).1 = 0)
+  NondetTest.assert (outOne.1 = .ok (some row) ∧ outOne.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outOne.2).1 = 0)
   let sBusy : MockDb := { openDbs := [1], nextDbId := 2, queryRows := #[row], failMode := .failStep .busy }
   let outBusy := (api.queryOne { id := 1 } "SELECT id FROM items WHERE id = ?" params).run sBusy
-  assert ((∃ e, outBusy.1 = .error e ∧ e.kind = .busy) ∧
+  NondetTest.assert ((∃ e, outBusy.1 = .error e ∧ e.kind = .busy) ∧
     outBusy.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outBusy.2).1 = 0)
 
 private def txCommitBody (api : SqliteApiM (StateM MockDb)) (val : SqliteValue)
@@ -378,10 +378,10 @@ def test_sqlite_withTransaction_commitsOnOk
   let api := mkApi mockRawOps
   let s₀ : MockDb := { openDbs := [1], nextDbId := 2, failMode := .none }
   let out := (api.withTransaction { id := 1 } (txCommitBody api val)).run s₀
-  assert (out.1 = .ok "committed")
-  assert (out.2.inTransaction = false ∧ out.2.stagedWrites = [])
-  assert (out.2.committedWrites = [("INSERT INTO items(v) VALUES (?)", #[val])])
-  assert (out.2.openStmts.length = 0 ∧ (api.activeStmtCount.run out.2).1 = 0)
+  NondetTest.assert (out.1 = .ok "committed")
+  NondetTest.assert (out.2.inTransaction = false ∧ out.2.stagedWrites = [])
+  NondetTest.assert (out.2.committedWrites = [("INSERT INTO items(v) VALUES (?)", #[val])])
+  NondetTest.assert (out.2.openStmts.length = 0 ∧ (api.activeStmtCount.run out.2).1 = 0)
 
 /-- `withTransaction` rolls back all staged writes when `action` returns `.error`, preserving the error. -/
 def test_sqlite_withTransaction_rollsBackOnError
@@ -393,10 +393,10 @@ def test_sqlite_withTransaction_rollsBackOnError
   let prior : List (String × Array SqliteValue) := [("INSERT INTO items(v) VALUES (?)", #[.int 1])]
   let s₀ : MockDb := { openDbs := [1], nextDbId := 2, committedWrites := prior, failMode := .none }
   let out := (api.withTransaction { id := 1 } (txRollbackBody api val err)).run s₀
-  assert (out.1 = .error err)
-  assert (out.2.inTransaction = false ∧ out.2.stagedWrites = [])
-  assert (out.2.committedWrites = prior)
-  assert (out.2.openStmts.length = 0 ∧ (api.activeStmtCount.run out.2).1 = 0)
+  NondetTest.assert (out.1 = .error err)
+  NondetTest.assert (out.2.inTransaction = false ∧ out.2.stagedWrites = [])
+  NondetTest.assert (out.2.committedWrites = prior)
+  NondetTest.assert (out.2.openStmts.length = 0 ∧ (api.activeStmtCount.run out.2).1 = 0)
 
 /-- `withTransaction` propagates `.busy` on `BEGIN` or `COMMIT` failure and leaves committed state unchanged. -/
 def test_sqlite_withTransaction_rollsBackOnCommitAndBeginBusy
@@ -406,14 +406,14 @@ def test_sqlite_withTransaction_rollsBackOnCommitAndBeginBusy
   let api := mkApi mockRawOps
   let sBeginBusy : MockDb := { openDbs := [1], nextDbId := 2, failMode := .failBegin .busy }
   let outBegin := (api.withTransaction { id := 1 } (txExecInsert api val)).run sBeginBusy
-  assert (∃ e, outBegin.1 = .error e ∧ e.kind = .busy)
-  assert (outBegin.2.boundCalls = [] ∧ outBegin.2.committedWrites = [] ∧ outBegin.2.inTransaction = false)
-  assert (outBegin.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outBegin.2).1 = 0)
+  NondetTest.assert (∃ e, outBegin.1 = .error e ∧ e.kind = .busy)
+  NondetTest.assert (outBegin.2.boundCalls = [] ∧ outBegin.2.committedWrites = [] ∧ outBegin.2.inTransaction = false)
+  NondetTest.assert (outBegin.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outBegin.2).1 = 0)
   let sCommitBusy : MockDb := { openDbs := [1], nextDbId := 2, failMode := .failCommit .busy }
   let outCommit := (api.withTransaction { id := 1 } (txExecInsert api val)).run sCommitBusy
-  assert (∃ e, outCommit.1 = .error e ∧ e.kind = .busy)
-  assert (outCommit.2.committedWrites = [] ∧ outCommit.2.stagedWrites = [] ∧ outCommit.2.inTransaction = false)
-  assert (outCommit.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outCommit.2).1 = 0)
+  NondetTest.assert (∃ e, outCommit.1 = .error e ∧ e.kind = .busy)
+  NondetTest.assert (outCommit.2.committedWrites = [] ∧ outCommit.2.stagedWrites = [] ∧ outCommit.2.inTransaction = false)
+  NondetTest.assert (outCommit.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outCommit.2).1 = 0)
 
 /-- `exec`, `query`, and `queryOne` bind typed `SqliteValue` arrays directly via `bind` without SQL string interpolation. -/
 def test_sqlite_binding_noSqlStringInterpolation
@@ -430,8 +430,8 @@ def test_sqlite_binding_noSqlStringInterpolation
   let outExec := (api.exec { id := 1 } insertSql params).run s₀
   let outQuery := (api.query { id := 1 } selectSql params).run outExec.2
   let outQueryOne := (api.queryOne { id := 1 } selectOneSql params).run outQuery.2
-  assert (outExec.1 = .ok () ∧ outQuery.1 = .ok #[] ∧ outQueryOne.1 = .ok none)
-  assert (outQueryOne.2.boundCalls = [(insertSql, params), (selectSql, params), (selectOneSql, params)])
+  NondetTest.assert (outExec.1 = .ok () ∧ outQuery.1 = .ok #[] ∧ outQueryOne.1 = .ok none)
+  NondetTest.assert (outQueryOne.2.boundCalls = [(insertSql, params), (selectSql, params), (selectOneSql, params)])
 
 /-- `withDb` wrapping `withTransaction` and `exec` preserves both `activeDbCount` and `activeStmtCount`. -/
 def test_sqlite_withDb_withTransaction_preservesAllHandles
@@ -442,9 +442,9 @@ def test_sqlite_withDb_withTransaction_preservesAllHandles
   let cfg : OpenConfig := {}
   let s₀ : MockDb := {}
   let out := (api.withDb ":memory:" cfg (dbTxExec api val)).run s₀
-  assert (out.1 = .ok ())
-  assert (out.2.openDbs.length = 0 ∧ out.2.openStmts.length = 0)
-  assert ((api.activeDbCount.run out.2).1 = 0 ∧ (api.activeStmtCount.run out.2).1 = 0)
+  NondetTest.assert (out.1 = .ok ())
+  NondetTest.assert (out.2.openDbs.length = 0 ∧ out.2.openStmts.length = 0)
+  NondetTest.assert ((api.activeDbCount.run out.2).1 = 0 ∧ (api.activeStmtCount.run out.2).1 = 0)
 
 private def stubGoodApi : SqliteApi :=
   { mapRawError := mockMapRawError

@@ -136,7 +136,6 @@ private theorem parseSegList_nonEmptyErr (segs : List (List Char)) :
     unfold Internal.parseSegList
     refine nonEmptyErr_bind (parseSegment_nonEmptyErr seg) fun p => ?_
     refine nonEmptyErr_bind ih fun ps => ?_
-    dsimp only
     cases p with
     | atoms _ => exact nonEmptyErr_pure _
     | globStar =>

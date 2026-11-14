@@ -38,7 +38,7 @@ def test_env_mapRawError_returnsNonEmptyMessage
     {runner} [NondetTest runner] (api : EnvApi) : runner Unit := do
   let raw ← nondet EnvRawError
   let err := api.mapRawError raw
-  assert (err.message ≠ "")
+  NondetTest.assert (err.message ≠ "")
 
 /-- `mkApi raw` delegates `mapRawError` faithfully to `raw.mapRawError`. -/
 def test_env_mapRawError_delegatesToRaw
@@ -49,7 +49,7 @@ def test_env_mapRawError_delegatesToRaw
     { mapRawError := mapFn
       getEnv := fun _ => pure (.ok none)
       listEnv := pure (.ok #[]) }
-  assert ((mkApi raw).mapRawError rawErr = mapFn rawErr)
+  NondetTest.assert ((mkApi raw).mapRawError rawErr = mapFn rawErr)
 
 /-- `getEnv` rejects empty keys, keys containing `=`, and keys containing NUL with `.invalidKey` before calling `raw.getEnv`. -/
 def test_env_getEnv_rejectsInvalidKey
@@ -64,7 +64,7 @@ def test_env_getEnv_rejectsInvalidKey
         else pure (.error (.userError "raw_called"))
       listEnv := pure (.ok #[]) }
   let res := (mkApi raw).getEnv key
-  assert (∃ e, res = .error e ∧ e.kind = .invalidKey ∧ e.key = some key ∧ e.errnoCode = none ∧ e.message ≠ "")
+  NondetTest.assert (∃ e, res = .error e ∧ e.kind = .invalidKey ∧ e.key = some key ∧ e.errnoCode = none ∧ e.message ≠ "")
 
 /-- For a valid key present in a pure `List (String × String)` environment, `getEnv` returns its first matching value. -/
 def test_env_getEnv_foundInMockList
@@ -75,7 +75,7 @@ def test_env_getEnv_foundInMockList
   assume (key ≠ "" ∧ '=' ∉ key.toList ∧ Char.ofNat 0 ∉ key.toList)
   assume (entries.find? (fun p => p.1 == key) = some (key, val))
   let api := mkApi (mockListOps entries)
-  assert (api.getEnv key = .ok (some val))
+  NondetTest.assert (api.getEnv key = .ok (some val))
 
 /-- For a valid key absent from a pure `List (String × String)` environment, `getEnv` returns `none`. -/
 def test_env_getEnv_missingInMockList
@@ -85,7 +85,7 @@ def test_env_getEnv_missingInMockList
   assume (key ≠ "" ∧ '=' ∉ key.toList ∧ Char.ofNat 0 ∉ key.toList)
   assume (entries.find? (fun p => p.1 == key) = none)
   let api := mkApi (mockListOps entries)
-  assert (api.getEnv key = .ok none)
+  NondetTest.assert (api.getEnv key = .ok none)
 
 /-- `getEnv` propagates raw lookup errors through `raw.mapRawError` for valid keys. -/
 def test_env_getEnv_propagatesRawError
@@ -98,14 +98,14 @@ def test_env_getEnv_propagatesRawError
     { mapRawError := mapFn
       getEnv := fun _ => pure (.error rawErr)
       listEnv := pure (.ok #[]) }
-  assert ((mkApi raw).getEnv key = .error (mapFn rawErr))
+  NondetTest.assert ((mkApi raw).getEnv key = .error (mapFn rawErr))
 
 /-- `listEnv` returns all entries from the underlying `RawEnvOpsM` listing in order. -/
 def test_env_listEnv_returnsMockEntries
     {runner} [NondetTest runner] (mkApi : RawEnvOpsM Id → EnvApiM Id) : runner Unit := do
   let entries ← nondet (List (String × String))
   let api := mkApi (mockListOps entries)
-  assert (api.listEnv = .ok entries.toArray)
+  NondetTest.assert (api.listEnv = .ok entries.toArray)
 
 /-- `listEnv` propagates raw listing errors through `raw.mapRawError`. -/
 def test_env_listEnv_propagatesRawError
@@ -116,7 +116,7 @@ def test_env_listEnv_propagatesRawError
     { mapRawError := mapFn
       getEnv := fun _ => pure (.ok none)
       listEnv := pure (.error rawErr) }
-  assert ((mkApi raw).listEnv = .error (mapFn rawErr))
+  NondetTest.assert ((mkApi raw).listEnv = .error (mapFn rawErr))
 
 /-- `homeDir` returns the non-empty `HOME` value when set. -/
 def test_env_homeDir_returnsNonEmptyHome
@@ -126,7 +126,7 @@ def test_env_homeDir_returnsNonEmptyHome
   assume (home ≠ "")
   assume (entries.find? (fun p => p.1 == "HOME") = some ("HOME", home))
   let api := mkApi (mockListOps entries)
-  assert (api.homeDir = .ok home)
+  NondetTest.assert (api.homeDir = .ok home)
 
 /-- `homeDir` fails with `.notFound` and `key = some "HOME"` when `HOME` is unset or empty. -/
 def test_env_homeDir_missingOrEmptyFails
@@ -135,7 +135,7 @@ def test_env_homeDir_missingOrEmptyFails
   assume (entries.find? (fun p => p.1 == "HOME") = none ∨
     entries.find? (fun p => p.1 == "HOME") = some ("HOME", ""))
   let api := mkApi (mockListOps entries)
-  assert (∃ e, api.homeDir = .error e ∧ e.kind = .notFound ∧ e.key = some "HOME" ∧ e.message ≠ "")
+  NondetTest.assert (∃ e, api.homeDir = .error e ∧ e.kind = .notFound ∧ e.key = some "HOME" ∧ e.message ≠ "")
 
 /-- `homeDir` propagates raw lookup errors through `raw.mapRawError`. -/
 def test_env_homeDir_propagatesRawError
@@ -146,19 +146,19 @@ def test_env_homeDir_propagatesRawError
     { mapRawError := mapFn
       getEnv := fun _ => pure (.error rawErr)
       listEnv := pure (.ok #[]) }
-  assert ((mkApi raw).homeDir = .error (mapFn rawErr))
+  NondetTest.assert ((mkApi raw).homeDir = .error (mapFn rawErr))
 
 /-- `splitSearchPath ""` returns an empty array. -/
 def test_env_splitSearchPath_emptyReturnsEmpty
     {runner} [NondetTest runner] (api : EnvApi) : runner Unit := do
-  assert (api.splitSearchPath "" = #[])
+  NondetTest.assert (api.splitSearchPath "" = #[])
 
 /-- Every segment returned by `splitSearchPath` is non-empty and free of `:`. -/
 def test_env_splitSearchPath_entriesNonEmptyAndColonFree
     {runner} [NondetTest runner] (api : EnvApi) : runner Unit := do
   let path ← nondet String
   let parts := api.splitSearchPath path
-  assert (parts.toList.all fun p => !p.isEmpty && !(':' ∈ p.toList))
+  NondetTest.assert (parts.toList.all fun p => !p.isEmpty && !(':' ∈ p.toList))
 
 /-- `splitSearchPath` drops leading, middle, and trailing empty segments between `:` delimiters. -/
 def test_env_splitSearchPath_dropsEmptySegments
@@ -167,7 +167,7 @@ def test_env_splitSearchPath_dropsEmptySegments
   let b ← nondet String
   assume (a ≠ "" ∧ ':' ∉ a.toList)
   assume (b ≠ "" ∧ ':' ∉ b.toList)
-  assert (api.splitSearchPath (":" ++ a ++ "::" ++ b ++ ":") = #[a, b] ∧
+  NondetTest.assert (api.splitSearchPath (":" ++ a ++ "::" ++ b ++ ":") = #[a, b] ∧
     api.splitSearchPath ":::" = #[])
 
 /-- `splitSearchPath` is the exact inverse of `:`-intercalation on non-empty, `:`-free segments. -/
@@ -175,7 +175,7 @@ def test_env_splitSearchPath_roundTripsCleanSegments
     {runner} [NondetTest runner] (api : EnvApi) : runner Unit := do
   let segs ← nondet (List String)
   assume (segs.all fun s => !s.isEmpty && !(':' ∈ s.toList))
-  assert (api.splitSearchPath (String.intercalate ":" segs) = segs.toArray)
+  NondetTest.assert (api.splitSearchPath (String.intercalate ":" segs) = segs.toArray)
 
 private def stubEnvApi : EnvApi :=
   { mapRawError := mockMapRawError
