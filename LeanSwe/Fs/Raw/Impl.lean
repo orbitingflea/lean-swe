@@ -2,7 +2,7 @@ import LeanSwe.Fs.Raw.Types
 
 namespace LeanSwe.Fs.Raw.Internal
 
-open LeanSwe.Fs.Raw (FsErrorKind FsError EntryKind FileStat FsRawError RawFsOpsM RawFsOps)
+open LeanSwe.Fs.Raw (FsErrorKind FsError EntryKind FileStat FsRawError LockMode LockHandle RawFsOpsM RawFsOps)
 
 /-- POSIX FFI operations injected by `LeanSwe.Fs.Raw.Interface`. -/
 structure PosixRawOps where
@@ -14,6 +14,10 @@ structure PosixRawOps where
   readLink : String → IO String
   /-- Read POSIX mode bits (`st_mode & 0o7777`), optionally following symlinks. -/
   statMode : String → Bool → IO UInt32
+  /-- Acquire an advisory lock on `path` (`mode`, `createIfMissing`, `nonBlocking`), returning `(status, handleId, errno)`. -/
+  acquireLock : String → UInt8 → Bool → Bool → IO (UInt8 × UInt64 × UInt32)
+  /-- Release an advisory file lock handle `(handleId, path)`. -/
+  releaseLock : UInt64 → String → IO Unit
 
 /-- Return `msg` if non-empty, or `fallback` otherwise. -/
 def nonEmptyMsg (fallback msg : String) : String :=
@@ -58,6 +62,11 @@ def mapRawError : FsRawError → FsError
       path := path?
       errnoCode := some code
       message := nonEmptyMsg "invalid argument" detail }
+  | .wouldBlock path? code detail =>
+    { kind := .wouldBlock
+      path := path?
+      errnoCode := some code
+      message := nonEmptyMsg "resource temporarily unavailable" detail }
   | .unsupportedOperation code detail =>
     { kind := .unsupported
       path := none
@@ -152,7 +161,23 @@ def mkRawOps (posix : PosixRawOps) : RawFsOps :=
     cwd := catchFs none do
       let d ← IO.currentDir
       return d.toString
-    monotonicNonce := IO.monoNanosNow }
+    monotonicNonce := IO.monoNanosNow
+    acquireLock := fun path mode createIfMissing nonBlocking => do
+      let modeByte : UInt8 := match mode with
+        | .shared => 0
+        | .exclusive => 1
+      match ← catchFs (some path) (posix.acquireLock path modeByte createIfMissing nonBlocking) with
+      | .error e => return .error e
+      | .ok (0, handleId, _) =>
+        return .ok { handleId := handleId.toNat, path := path, mode := mode }
+      | .ok (1, _, errCode) =>
+        return .error (mapRawError (.wouldBlock (some path) errCode "resource temporarily unavailable"))
+      | .ok (_, _, errCode) =>
+        return .error (mapRawError (.invalidArgument (some path) errCode "invalid lock path"))
+    releaseLock := fun handle => do
+      if handle.handleId == 0 || handle.handleId ≥ UInt64.size then
+        return .error (mapRawError (.invalidArgument (some handle.path) 22 "invalid lock handle"))
+      catchFs (some handle.path) (posix.releaseLock (UInt64.ofNat handle.handleId) handle.path) }
 
 /-- Temporary directory bracket modeled after Python `tempfile.TemporaryDirectory`. -/
 def withTempDir {α : Type} (f : String → IO (Except FsError α)) : IO (Except FsError α) := do

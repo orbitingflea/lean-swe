@@ -182,4 +182,15 @@ def defaultApi : FsApi :=
 @[inline] def withTempDir {α : Type} (f : String → IO (Except FsError α)) : IO (Except FsError α) :=
   Raw.withTempDir f
 
+/-- Acquire an advisory `mode` lock on `path`, execute `action`, and always unlock/close afterward. -/
+@[inline] def withFileLock {α : Type} (path : String) (mode : LockMode := .exclusive)
+    (createIfMissing : Bool := true) (action : IO (Except FsError α)) : IO (Except FsError α) :=
+  defaultApi.withFileLock path mode createIfMissing action
+
+/-- Try a non-blocking `mode` advisory lock on `path`; returns `.ok none` if contended. -/
+@[inline] def tryWithFileLock {α : Type} (path : String) (mode : LockMode := .exclusive)
+    (createIfMissing : Bool := true) (action : IO (Except FsError α)) :
+    IO (Except FsError (Option α)) :=
+  defaultApi.tryWithFileLock path mode createIfMissing action
+
 end LeanSwe.Fs

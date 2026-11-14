@@ -1,4 +1,5 @@
 import LeanSwe.Fs.Interface
+import LeanSwe.Process.Interface
 
 namespace LeanSwe.Fs.RuntimeTests
 
@@ -159,13 +160,159 @@ private def testSymlinksAndGlobs (tmp moved : String) : IO (Except FsError Unit)
   assertErrKind (← Fs.glob tmp "[unclosed") .invalidInput "glob invalid pattern"
   return .ok ()
 
+private def waitForFile (path : String) (maxPolls : Nat := 200) : IO Unit := do
+  for _ in List.range maxPolls do
+    match ← Fs.pathExists path with
+    | .ok true => return ()
+    | _ => IO.sleep 10
+  throw (IO.userError s!"ASSERTION FAILED: timed out waiting for readiness file {path}")
+
+private def testLocksSingleProcess (tmp : String) : IO Unit := do
+  let lockPath := Fs.join tmp "bracket.lock"
+  let val ← assertOk (← Fs.withFileLock lockPath .exclusive true (pure (.ok 123)))
+    "withFileLock ok"
+  assertTrue (val == 123) "withFileLock ok value"
+  assertOkEq (← Fs.tryWithFileLock lockPath .exclusive false (pure (.ok 1))) (some 1)
+    "lock released after withFileLock ok"
+
+  let actionErr : FsError := { kind := .permissionDenied, message := "action failed" }
+  assertErrKind (← Fs.withFileLock lockPath .shared false (pure (Except.error actionErr : Except FsError Unit)))
+    .permissionDenied "withFileLock propagates action error"
+  assertOkEq (← Fs.tryWithFileLock lockPath .exclusive false (pure (.ok 2))) (some 2)
+    "lock released after withFileLock action error"
+
+  let mut threw := false
+  try
+    let _ ← Fs.withFileLock lockPath .exclusive false
+      (throw (IO.userError "boom") : IO (Except FsError Unit))
+  catch _ =>
+    threw := true
+  assertTrue threw "withFileLock rethrows IO error"
+  assertOkEq (← Fs.tryWithFileLock lockPath .exclusive false (pure (.ok 3))) (some 3)
+    "lock released even after IO exception"
+
+  let nestedShared ← assertOk (← Fs.withFileLock lockPath .shared false
+    (Fs.tryWithFileLock lockPath .shared false (pure (.ok "ok")))) "nested shared tryWithFileLock"
+  assertTrue (nestedShared == some "ok") "nested shared succeeds"
+
+  let marker := Fs.join tmp "conflict_marker.txt"
+  let nestedEx ← assertOk (← Fs.withFileLock lockPath .shared false
+    (Fs.tryWithFileLock lockPath .exclusive false (Fs.writeText marker "ran")))
+    "conflicting exclusive inside shared"
+  assertTrue (nestedEx == none) "conflicting tryWithFileLock returns none"
+  assertOkEq (← Fs.pathExists marker) false "conflicting action did not execute"
+
+  let missingPath := Fs.join tmp "never_created.lock"
+  assertErrKind (← Fs.tryWithFileLock missingPath .exclusive false (pure (.ok 1))) .notFound
+    "tryWithFileLock missing with createIfMissing=false fails with notFound"
+  assertOkEq (← Fs.pathExists missingPath) false "missing lockfile not created"
+
+  let tryActionErr ← Fs.tryWithFileLock lockPath .exclusive false
+    (pure (Except.error actionErr : Except FsError Nat))
+  assertErrKind tryActionErr .permissionDenied "tryWithFileLock propagates action error"
+  assertOkEq (← Fs.tryWithFileLock lockPath .exclusive false (pure (.ok 4))) (some 4)
+    "lock released after tryWithFileLock action error"
+
+private def testLocksMultiProcess (tmp : String) : IO Unit := do
+  assertTrue ((← Process.activeProcessCount) == 0) "initial activeProcessCount == 0"
+  let lockPath := Fs.join tmp "mp.lock"
+  assertOk (← Fs.writeText lockPath "init") "writeText mp.lock"
+
+  let ready1 := Fs.join tmp "mp1.ready"
+  let stop1 := Fs.join tmp "mp1.stop"
+  let holdScript :=
+    "import fcntl, os, sys, time\n" ++
+    "lp, rp, sp, mode = sys.argv[1:5]\n" ++
+    "fd = os.open(lp, os.O_RDONLY)\n" ++
+    "fcntl.flock(fd, fcntl.LOCK_SH if mode == 'sh' else fcntl.LOCK_EX)\n" ++
+    "open(rp, 'w').write('1')\n" ++
+    "deadline = time.monotonic() + 5.0\n" ++
+    "while not os.path.exists(sp) and time.monotonic() < deadline:\n" ++
+    "  time.sleep(0.01)\n"
+  let child1 ← match ← Process.Raw.spawn
+      { program := "python3", args := #["-c", holdScript, lockPath, ready1, stop1, "ex"] } with
+    | .ok h => pure h
+    | .error e => throw (IO.userError s!"spawn child1 failed: {repr e}")
+  try
+    waitForFile ready1
+    let probeMarker := Fs.join tmp "probe_skipped.txt"
+    assertOkEq (← Fs.tryWithFileLock lockPath .exclusive false (Fs.writeText probeMarker "ran"))
+      none "tryWithFileLock exclusive blocked by child exclusive lock"
+    assertOkEq (← Fs.pathExists probeMarker) false "blocked probe did not run action"
+    assertOkEq (← Fs.tryWithFileLock lockPath .shared false (pure (.ok 1)))
+      none "tryWithFileLock shared blocked by child exclusive lock"
+
+    assertOk (← Fs.writeText stop1 "go") "signal child1 to release and exit"
+    let got ← assertOk (← Fs.withFileLock lockPath .exclusive false (pure (.ok "acquired")))
+      "blocking withFileLock acquires once child1 exits"
+    assertTrue (got == "acquired") "blocking withFileLock result"
+    match ← Process.Raw.awaitOutput child1 with
+    | .ok (.exited out) => assertTrue (out.exitCode == 0) "child1 exited 0"
+    | .ok other => throw (IO.userError s!"child1 unexpected outcome: {repr other}")
+    | .error e => throw (IO.userError s!"awaitOutput child1 failed: {repr e}")
+  finally
+    let _ ← Process.Raw.reap child1
+
+  let ready2 := Fs.join tmp "mp2.ready"
+  let stop2 := Fs.join tmp "mp2.stop"
+  let child2 ← match ← Process.Raw.spawn
+      { program := "python3", args := #["-c", holdScript, lockPath, ready2, stop2, "sh"] } with
+    | .ok h => pure h
+    | .error e => throw (IO.userError s!"spawn child2 failed: {repr e}")
+  try
+    waitForFile ready2
+    assertOkEq (← Fs.tryWithFileLock lockPath .shared false (pure (.ok 77))) (some 77)
+      "multi-process shared coexistence succeeds"
+    assertOkEq (← Fs.tryWithFileLock lockPath .exclusive false (pure (.ok 1))) none
+      "multi-process shared blocks exclusive"
+    assertOk (← Fs.writeText stop2 "go") "signal child2 exit"
+    match ← Process.Raw.awaitOutput child2 with
+    | .ok (.exited out) => assertTrue (out.exitCode == 0) "child2 exited 0"
+    | .ok other => throw (IO.userError s!"child2 unexpected outcome: {repr other}")
+    | .error e => throw (IO.userError s!"awaitOutput child2 failed: {repr e}")
+  finally
+    let _ ← Process.Raw.reap child2
+
+  let ready3 := Fs.join tmp "mp3.ready"
+  let killScript :=
+    "import fcntl, os, signal, sys, time\n" ++
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" ++
+    "lp, rp = sys.argv[1:3]\n" ++
+    "fd = os.open(lp, os.O_RDONLY)\n" ++
+    "fcntl.flock(fd, fcntl.LOCK_EX)\n" ++
+    "open(rp, 'w').write('1')\n" ++
+    "time.sleep(10.0)\n"
+  let child3 ← match ← Process.Raw.spawn
+      { program := "python3", args := #["-c", killScript, lockPath, ready3] } with
+    | .ok h => pure h
+    | .error e => throw (IO.userError s!"spawn child3 failed: {repr e}")
+  try
+    waitForFile ready3
+    assertOkEq (← Fs.tryWithFileLock lockPath .exclusive false (pure (.ok 1))) none
+      "child3 holds exclusive lock before SIGKILL"
+    match ← Process.runCommand "kill" #["-9", toString child3.pid] with
+    | .ok kout => assertTrue (kout.exitCode == 0) "kill -9 child3 exitCode 0"
+    | .error e => throw (IO.userError s!"kill -9 child3 failed: {repr e}")
+  finally
+    let _ ← Process.Raw.reap child3
+
+  assertOkEq (← Fs.tryWithFileLock lockPath .exclusive false (pure (.ok "unlocked"))) (some "unlocked")
+    "OS kernel immediately releases flock on child SIGKILL"
+  assertTrue ((← Process.activeProcessCount) == 0) "final activeProcessCount == 0"
+
 /-- Execute all pure path and real filesystem runtime checks for `LeanSwe.Fs`. -/
 def runAll : IO Unit := do
   testPurePaths
   let res ← Fs.withTempDir fun tmp => do
-    match ← testFilesAndDirs tmp with
+    let moved ← match ← testFilesAndDirs tmp with
+      | .error e => return .error e
+      | .ok m => pure m
+    match ← testSymlinksAndGlobs tmp moved with
     | .error e => return .error e
-    | .ok moved => testSymlinksAndGlobs tmp moved
+    | .ok () => pure ()
+    testLocksSingleProcess tmp
+    testLocksMultiProcess tmp
+    return .ok ()
   match res with
   | .ok () => pure ()
   | .error e => throw (IO.userError s!"Fs RuntimeTests failed unexpectedly: {repr e}")

@@ -4,7 +4,7 @@ import LeanSwe.Glob.Interface
 namespace LeanSwe.Fs.Internal
 
 open LeanSwe.Fs
-  (FsErrorKind FsError EntryKind FileStat WalkEntry FsRawError RawFsOpsM FsApi FsApiM)
+  (FsErrorKind FsError EntryKind FileStat WalkEntry FsRawError LockMode LockHandle RawFsOpsM FsApi FsApiM)
 
 private def nonEmptyMsg (fallback msg : String) : String :=
   if msg.isEmpty then fallback else msg
@@ -545,8 +545,43 @@ private def readTextImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
     | some s => return .ok s
     | none => return .error { kind := .invalidInput, path := some path, message := s!"invalid UTF-8 in file: {path}" }
 
+/-- Run `action` under `handle`, always calling `ops.releaseLock handle` afterward. -/
+def bracketLockM {m : Type → Type} [Monad m] [MonadFinally m]
+    (ops : RawFsOpsM m) {α : Type} (handle : LockHandle)
+    (action : m (Except FsError α)) : m (Except FsError α) := do
+  let (actRes, relRes) ← tryFinally' action (fun _ => ops.releaseLock handle)
+  match actRes with
+  | .error e => return .error e
+  | .ok a =>
+    match relRes with
+    | .ok () => return .ok a
+    | .error re => return .error re
+
+/-- Acquire `mode` advisory lock on `path`, run `action`, and unlock/close afterward. -/
+def withFileLockImplM {m : Type → Type} [Monad m] [MonadFinally m]
+    (ops : RawFsOpsM m) {α : Type} (path : String) (mode : LockMode)
+    (createIfMissing : Bool) (action : m (Except FsError α)) : m (Except FsError α) := do
+  match ← ops.acquireLock path mode createIfMissing false with
+  | .error e => return .error e
+  | .ok handle => bracketLockM ops handle action
+
+/-- Try non-blocking `mode` lock on `path`; return `.ok none` on `.wouldBlock`, else run `action`. -/
+def tryWithFileLockImplM {m : Type → Type} [Monad m] [MonadFinally m]
+    (ops : RawFsOpsM m) {α : Type} (path : String) (mode : LockMode)
+    (createIfMissing : Bool) (action : m (Except FsError α)) : m (Except FsError (Option α)) := do
+  match ← ops.acquireLock path mode createIfMissing true with
+  | .error e =>
+    if e.kind == .wouldBlock then
+      return .ok none
+    else
+      return .error e
+  | .ok handle =>
+    match ← bracketLockM ops handle action with
+    | .ok a => return .ok (some a)
+    | .error e => return .error e
+
 /-- Build a generic `FsApiM m` from injected single-step `RawFsOpsM m` primitives. -/
-def mkApiM {m : Type → Type} [Monad m] (ops : RawFsOpsM m) : FsApiM m :=
+def mkApiM {m : Type → Type} [Monad m] [MonadFinally m] (ops : RawFsOpsM m) : FsApiM m :=
   { join := join
     joinMany := joinMany
     normPath := normPath
@@ -600,6 +635,8 @@ def mkApiM {m : Type → Type} [Monad m] (ops : RawFsOpsM m) : FsApiM m :=
     listDir := listDirSortedM ops
     walk := walkImplM ops
     glob := globImplM ops
-    rglob := rglobImplM ops }
+    rglob := rglobImplM ops
+    withFileLock := withFileLockImplM ops
+    tryWithFileLock := tryWithFileLockImplM ops }
 
 end LeanSwe.Fs.Internal
