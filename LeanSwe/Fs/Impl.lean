@@ -4,119 +4,18 @@ import LeanSwe.Glob.Interface
 /-!
 # Fs Package Internal Implementation
 
-Implements `LeanSwe.Fs.FsApi` with Python-parity path manipulation, error
-normalization, `IO.FS` wrappers, `LeanSwe.Glob`-powered tree walks, and an
-injected `PosixRawOps` bridge for POSIX calls implemented in `c/fs_shim.c`.
-Placed under `namespace LeanSwe.Fs.Internal` with zero `@[extern]` declarations.
+Pure generic implementation of `LeanSwe.Fs.FsApiM` over injected `RawFsOpsM m`
+single-step primitives, combined with Python-parity path manipulation and
+`LeanSwe.Glob` tree filtering. Contains zero `IO.FS`, zero `IO`, and zero `@[extern]`.
 -/
 
 namespace LeanSwe.Fs.Internal
 
-open LeanSwe.Fs (FsErrorKind FsError EntryKind FileStat WalkEntry FsRawError FsApi)
+open LeanSwe.Fs
+  (FsErrorKind FsError EntryKind FileStat WalkEntry FsRawError RawFsOpsM FsApi FsApiM)
 
-/-- Audited POSIX FFI operations injected by `LeanSwe.Fs.Interface`. -/
-structure PosixRawOps where
-  /-- Set file mode bits (`chmod`). -/
-  chmod : String → UInt32 → IO Unit
-  /-- Create symbolic link `(target, linkPath)`. -/
-  symlink : String → String → IO Unit
-  /-- Read symbolic link target path. -/
-  readLink : String → IO String
-  /-- Read POSIX mode bits (`st_mode & 0o7777`), optionally following symlinks. -/
-  statMode : String → Bool → IO UInt32
-
-/-- Return `msg` if non-empty, or `fallback` otherwise. -/
-def nonEmptyMsg (fallback msg : String) : String :=
+private def nonEmptyMsg (fallback msg : String) : String :=
   if msg.isEmpty then fallback else msg
-
-/-- Classify common Linux/macOS `errno` codes used across `otherError` and `inappropriateType`. -/
-def classifyErrno (code : UInt32) (defaultKind : FsErrorKind) : FsErrorKind :=
-  match code.toNat with
-  | 1 | 13 => .permissionDenied
-  | 2 => .notFound
-  | 17 => .alreadyExists
-  | 20 => .notADirectory
-  | 21 => .isADirectory
-  | 22 | 36 => .invalidInput
-  | 39 | 66 => .notEmpty
-  | _ => defaultKind
-
-/-- Convert a pure `FsRawError` record into a normalized `FsError` with non-empty message. -/
-def mapRawError : FsRawError → FsError
-  | .noFileOrDirectory path code detail =>
-    { kind := .notFound
-      path := some path
-      errnoCode := some code
-      message := nonEmptyMsg s!"no such file or directory: {path}" detail }
-  | .alreadyExists path? code detail =>
-    { kind := .alreadyExists
-      path := path?
-      errnoCode := some code
-      message := nonEmptyMsg "file or directory already exists" detail }
-  | .permissionDenied path? code detail =>
-    { kind := .permissionDenied
-      path := path?
-      errnoCode := some code
-      message := nonEmptyMsg "permission denied" detail }
-  | .inappropriateType path? code detail =>
-    { kind := classifyErrno code .ioError
-      path := path?
-      errnoCode := some code
-      message := nonEmptyMsg "inappropriate file type" detail }
-  | .invalidArgument path? code detail =>
-    { kind := .invalidInput
-      path := path?
-      errnoCode := some code
-      message := nonEmptyMsg "invalid argument" detail }
-  | .unsupportedOperation code detail =>
-    { kind := .unsupported
-      path := none
-      errnoCode := some code
-      message := nonEmptyMsg "unsupported filesystem operation" detail }
-  | .otherError code detail =>
-    { kind := classifyErrno code .ioError
-      path := none
-      errnoCode := some code
-      message := nonEmptyMsg s!"os error {code}" detail }
-  | .userError detail =>
-    { kind := .ioError
-      path := none
-      errnoCode := none
-      message := nonEmptyMsg "filesystem error" detail }
-
-/-- Convert a Lean `IO.Error` into `FsRawError`. -/
-def ioErrorToRaw (fallbackPath : Option String) : IO.Error → FsRawError
-  | .noFileOrDirectory p code detail => .noFileOrDirectory p code detail
-  | .alreadyExists p? code detail => .alreadyExists (p? <|> fallbackPath) code detail
-  | .permissionDenied p? code detail => .permissionDenied (p? <|> fallbackPath) code detail
-  | .inappropriateType p? code detail => .inappropriateType (p? <|> fallbackPath) code detail
-  | .invalidArgument p? code detail => .invalidArgument (p? <|> fallbackPath) code detail
-  | .unsupportedOperation code detail => .unsupportedOperation code detail
-  | .unsatisfiedConstraints code detail => .otherError code detail
-  | .illegalOperation code detail => .otherError code detail
-  | .resourceBusy code detail => .otherError code detail
-  | .resourceVanished code detail => .otherError code detail
-  | .hardwareFault code detail => .otherError code detail
-  | .protocolError code detail => .otherError code detail
-  | .timeExpired code detail => .otherError code detail
-  | .interrupted p code detail => .otherError code s!"{p}: {detail}"
-  | .resourceExhausted p? code detail => .invalidArgument (p? <|> fallbackPath) code detail
-  | .noSuchThing p? _ _ => .noFileOrDirectory (p?.or fallbackPath |>.getD "") 2 "no such file or directory"
-  | .unexpectedEof => .userError "unexpected end of file"
-  | .otherError code detail => .otherError code detail
-  | .userError detail => .userError detail
-
-/-- Normalize an `IO.Error` into an `FsError`, preserving `fallbackPath` if missing. -/
-def mapIoError (fallbackPath : Option String) (err : IO.Error) : FsError :=
-  let mapped := mapRawError (ioErrorToRaw fallbackPath err)
-  { mapped with path := mapped.path <|> fallbackPath }
-
-/-- Run an `IO α` action, capturing exceptions into `Except FsError α`. -/
-def catchFs {α : Type} (path? : Option String) (act : IO α) : IO (Except FsError α) := do
-  try
-    return .ok (← act)
-  catch err =>
-    return .error (mapIoError path? err)
 
 /-- Construct a `GlobError` mapped into `FsError`. -/
 def mapGlobError (pattern : String) (err : LeanSwe.Glob.GlobError) : FsError :=
@@ -138,7 +37,7 @@ def isAbsolute (path : String) : Bool :=
 def join (base sub : String) : String :=
   if isAbsolute sub then sub
   else if base.isEmpty then sub
-  else if base.endsWith "/" then base ++ sub
+  else if base.toList.getLast? == some '/' then base ++ sub
   else base ++ "/" ++ sub
 
 /-- Join an array of path strings left-to-right. -/
@@ -259,13 +158,13 @@ def suffixes (path : String) : Array String :=
   match name path with
   | none => #[]
   | some n =>
-    if n.endsWith "." then
-      #[]
-    else
-      let stripped := String.ofList (n.toList.dropWhile (· == '.'))
-      match stripped.splitOn "." with
+    match n.toList.reverse with
+    | '.' :: _ => #[]
+    | _ =>
+      let stripped := n.toList.dropWhile (· == '.')
+      match splitCharList '.' stripped with
       | [] | [_] => #[]
-      | _ :: exts => (exts.map ("." ++ ·)).toArray
+      | _ :: exts => (exts.map fun cs => "." ++ String.ofList cs).toArray
 
 /-- Return `true` iff `s` is a valid non-empty single path segment name. -/
 def validFileName (s : String) : Bool :=
@@ -329,55 +228,88 @@ def relativeTo (path base : String) : Except FsError String :=
     | some [] => .ok "."
     | some rel => .ok (String.ofList (joinSlashChars rel))
 
-private def toEntryKind : IO.FS.FileType → EntryKind
-  | .file => .file
-  | .dir => .dir
-  | .symlink => .symlink
-  | .other => .other
+/-- Read and sort immediate child entry names in `path`. -/
+def listDirSortedM {m : Type → Type} [Monad m] (ops : RawFsOpsM m) (path : String) :
+    m (Except FsError (Array String)) := do
+  match ← ops.readDir path with
+  | .error e => return .error e
+  | .ok names => return .ok (names.toList.mergeSort (· ≤ ·)).toArray
 
-private def statImpl (posix : PosixRawOps) (follow : Bool) (path : String) :
-    IO (Except FsError FileStat) :=
-  catchFs (some path) do
-    let fp := System.FilePath.mk path
-    let md ← if follow then fp.metadata else fp.symlinkMetadata
-    let mode ← posix.statMode path follow
-    return {
-      kind := toEntryKind md.type
-      byteSize := md.byteSize.toNat
-      mode := mode.toNat
-      modifiedSec := md.modified.sec
-      modifiedNsec := md.modified.nsec.toNat
-      accessedSec := md.accessed.sec
-      accessedNsec := md.accessed.nsec.toNat }
+/-- Build ancestor directory chain from outermost to immediate parent (excluding `/`). -/
+def ancestorChain (p : String) : Nat → List String
+  | 0 => []
+  | n + 1 =>
+    match parent p with
+    | none => []
+    | some "/" => []
+    | some par => ancestorChain par n ++ [par]
 
-private def listDirSorted (path : String) : IO (Except FsError (Array String)) :=
-  catchFs (some path) do
-    let entries ← (System.FilePath.mk path).readDir
-    let names := entries.map (·.fileName)
-    return names.qsort (· < ·)
+/-- Ensure ancestor directory `anc` exists as a directory. -/
+def ensureDirM {m : Type → Type} [Monad m] (ops : RawFsOpsM m) (anc : String) :
+    m (Except FsError Unit) := do
+  match ← ops.stat true anc with
+  | .ok st =>
+    if st.kind == .dir then
+      return .ok ()
+    else
+      return .error { kind := .notADirectory, path := some anc, message := s!"not a directory: {anc}" }
+  | .error e =>
+    if e.kind != .notFound then
+      return .error e
+    else
+      match ← ops.createDir anc with
+      | .ok () => return .ok ()
+      | .error ce =>
+        if ce.kind == .alreadyExists then
+          match ← ops.stat true anc with
+          | .ok st2 =>
+            if st2.kind == .dir then return .ok ()
+            else return .error { kind := .notADirectory, path := some anc, message := s!"not a directory: {anc}" }
+          | .error _ => return .error { kind := .notADirectory, path := some anc, message := s!"not a directory: {anc}" }
+        else
+          return .error ce
 
-private def mkdirImpl (posix : PosixRawOps) (path : String) (parents existOk : Bool) :
-    IO (Except FsError Unit) := do
-  let fp := System.FilePath.mk path
-  match ← statImpl posix false path with
+/-- Ensure a top-down list of ancestor directories exist. -/
+def ensureAncestorsM {m : Type → Type} [Monad m] (ops : RawFsOpsM m) :
+    List String → m (Except FsError Unit)
+  | [] => return .ok ()
+  | anc :: rest => do
+    match ← ensureDirM ops anc with
+    | .error e => return .error e
+    | .ok () => ensureAncestorsM ops rest
+
+/-- Generic `mkdir` implementation over `RawFsOpsM m`. -/
+def mkdirImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (path : String) (parents existOk : Bool) : m (Except FsError Unit) := do
+  match ← ops.stat false path with
   | .ok st =>
     if existOk && st.kind == .dir then
       return .ok ()
-    else if existOk && st.kind == .symlink && (← fp.isDir) then
-      return .ok ()
+    else if existOk && st.kind == .symlink then
+      match ← ops.stat true path with
+      | .ok tgtSt =>
+        if tgtSt.kind == .dir then
+          return .ok ()
+        else
+          return .error { kind := .alreadyExists, path := some path, message := s!"path already exists: {path}" }
+      | .error _ =>
+        return .error { kind := .alreadyExists, path := some path, message := s!"path already exists: {path}" }
     else
       return .error { kind := .alreadyExists, path := some path, message := s!"path already exists: {path}" }
   | .error e =>
     if e.kind != .notFound then
       return .error e
-    else if parents then
-      catchFs (some path) (IO.FS.createDirAll fp)
+    else if !parents then
+      ops.createDir path
     else
-      catchFs (some path) (IO.FS.createDir fp)
+      let ancs := ancestorChain path path.toList.length
+      match ← ensureAncestorsM ops ancs with
+      | .error ae => return .error ae
+      | .ok () => ops.createDir path
 
-private def unlinkImpl (posix : PosixRawOps) (path : String) (missingOk : Bool) :
-    IO (Except FsError Unit) := do
-  match ← statImpl posix false path with
+private def unlinkImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (path : String) (missingOk : Bool) : m (Except FsError Unit) := do
+  match ← ops.stat false path with
   | .error e =>
     if e.kind == .notFound && missingOk then
       return .ok ()
@@ -387,14 +319,37 @@ private def unlinkImpl (posix : PosixRawOps) (path : String) (missingOk : Bool) 
     if st.kind == .dir then
       return .error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }
     else
-      catchFs (some path) (IO.FS.removeFile (System.FilePath.mk path))
+      ops.unlinkFile path
 
-private def rmdirImpl (path : String) : IO (Except FsError Unit) :=
-  catchFs (some path) (IO.FS.removeDir (System.FilePath.mk path))
+/-- Sequence a monadic action `f` across `List String`, short-circuiting on first error. -/
+def forEachChildM {m : Type → Type} [Monad m]
+    (f : String → m (Except FsError Unit)) : List String → m (Except FsError Unit)
+  | [] => return .ok ()
+  | n :: rest => do
+    match ← f n with
+    | .error e => return .error e
+    | .ok () => forEachChildM f rest
 
-private def rmtreeImpl (posix : PosixRawOps) (path : String) (ignoreMissing : Bool) :
-    IO (Except FsError Unit) := do
-  match ← statImpl posix false path with
+private def rmtreeGoM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (dir : String) : Nat → m (Except FsError Unit)
+  | 0 => return .error { kind := .ioError, path := some dir, message := s!"maximum directory depth exceeded: {dir}" }
+  | fuel + 1 => do
+    match ← listDirSortedM ops dir with
+    | .error e => return .error e
+    | .ok names =>
+      match ← forEachChildM (fun n => do
+        let child := join dir n
+        match ← ops.stat false child with
+        | .error e => return .error e
+        | .ok st =>
+          if st.kind == .dir then rmtreeGoM ops child fuel
+          else ops.unlinkFile child) names.toList with
+      | .error e => return .error e
+      | .ok () => ops.removeDir dir
+
+private def rmtreeImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (path : String) (ignoreMissing : Bool) : m (Except FsError Unit) := do
+  match ← ops.stat false path with
   | .error e =>
     if e.kind == .notFound && ignoreMissing then
       return .ok ()
@@ -404,162 +359,172 @@ private def rmtreeImpl (posix : PosixRawOps) (path : String) (ignoreMissing : Bo
     if st.kind != .dir then
       return .error { kind := .notADirectory, path := some path, message := s!"not a directory: {path}" }
     else
-      catchFs (some path) (IO.FS.removeDirAll (System.FilePath.mk path))
+      rmtreeGoM ops path 4096
 
-private def copyFileImpl (posix : PosixRawOps) (src dst : String) : IO (Except FsError Unit) := do
-  match ← statImpl posix true src with
+private def copyFileImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (src dst : String) : m (Except FsError Unit) := do
+  match ← ops.stat true src with
   | .error e => return .error e
   | .ok st =>
     if st.kind == .dir then
       return .error { kind := .isADirectory, path := some src, message := s!"source is a directory: {src}" }
-    let bytesRes ← catchFs (some src) (IO.FS.readBinFile (System.FilePath.mk src))
-    match bytesRes with
+    match ← ops.readBytes src with
     | .error e => return .error e
-    | .ok bytes => catchFs (some dst) (IO.FS.writeBinFile (System.FilePath.mk dst) bytes)
+    | .ok bytes => ops.writeBytes dst bytes
 
-private partial def resolveApproxGo (cur : String) (tail : List String) : IO String := do
-  try
-    let rp ← IO.FS.realPath (System.FilePath.mk cur)
-    return tail.foldl join rp.toString
-  catch _ =>
-    match parent cur, name cur with
-    | some par, some seg => resolveApproxGo par (seg :: tail)
-    | _, _ => return tail.foldl join cur
+/-- Resolve the deepest existing ancestor of `cur` and append uncreated suffix segments. -/
+def resolveApproxGoM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (cur : String) (tail : List String) : Nat → m String
+  | 0 => return tail.foldl join cur
+  | fuel + 1 => do
+    match ← ops.realPath cur with
+    | .ok rp => return tail.foldl join rp
+    | .error _ =>
+      match parent cur, name cur with
+      | some par, some seg => resolveApproxGoM ops par (seg :: tail) fuel
+      | _, _ => return tail.foldl join cur
 
-private partial def copyTreeGo (posix : PosixRawOps) (src dst : String) (dirsExistOk : Bool)
-    (visited : List String) : IO (Except FsError Unit) := do
-  match ← statImpl posix true src with
-  | .error e => return .error e
-  | .ok st =>
-    if st.kind != .dir then
-      return .error { kind := .notADirectory, path := some src, message := s!"not a directory: {src}" }
-    let canonRes ← catchFs (some src) (IO.FS.realPath (System.FilePath.mk src))
-    let canon ← match canonRes with
-      | .error e => return .error e
-      | .ok rp => pure rp.toString
-    if canon ∈ visited then
-      return .error { kind := .invalidInput, path := some src, message := s!"symlink directory loop: {src}" }
-    let visited' := canon :: visited
-    match ← listDirSorted src with
+/-- Bounded recursive worker for `copyTreeImplM`. -/
+def copyTreeGoM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (src dst : String) (dirsExistOk : Bool) (visited : List String) : Nat → m (Except FsError Unit)
+  | 0 => return .error { kind := .ioError, path := some src, message := s!"maximum directory depth exceeded: {src}" }
+  | fuel + 1 => do
+    match ← ops.stat true src with
     | .error e => return .error e
-    | .ok names =>
-      match ← mkdirImpl posix dst true dirsExistOk with
+    | .ok st =>
+      if st.kind != .dir then
+        return .error { kind := .notADirectory, path := some src, message := s!"not a directory: {src}" }
+      match ← ops.realPath src with
       | .error e => return .error e
-      | .ok () =>
-        for n in names do
-          let sChild := join src n
-          let dChild := join dst n
-          match ← statImpl posix true sChild with
+      | .ok canon =>
+        if canon ∈ visited then
+          return .error { kind := .invalidInput, path := some src, message := s!"symlink directory loop: {src}" }
+        let visited' := canon :: visited
+        match ← listDirSortedM ops src with
+        | .error e => return .error e
+        | .ok names =>
+          match ← mkdirImplM ops dst true dirsExistOk with
           | .error e => return .error e
-          | .ok childSt =>
-            if childSt.kind == .dir then
-              match ← copyTreeGo posix sChild dChild dirsExistOk visited' with
+          | .ok () =>
+            forEachChildM (fun n => do
+              let sChild := join src n
+              let dChild := join dst n
+              match ← ops.stat true sChild with
               | .error e => return .error e
-              | .ok () => pure ()
-            else
-              match ← copyFileImpl posix sChild dChild with
-              | .error e => return .error e
-              | .ok () => pure ()
-        return .ok ()
+              | .ok childSt =>
+                if childSt.kind == .dir then
+                  copyTreeGoM ops sChild dChild dirsExistOk visited' fuel
+                else
+                  copyFileImplM ops sChild dChild) names.toList
 
-private def copyTreeImpl (posix : PosixRawOps) (src dst : String) (dirsExistOk : Bool) :
-    IO (Except FsError Unit) := do
-  match ← statImpl posix true src with
+/-- Generic `copyTree` implementation over `RawFsOpsM m` with cycle and self-copy guards. -/
+def copyTreeImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (src dst : String) (dirsExistOk : Bool) : m (Except FsError Unit) := do
+  match ← ops.stat true src with
   | .error e => return .error e
   | .ok st =>
     if st.kind != .dir then
       return .error { kind := .notADirectory, path := some src, message := s!"not a directory: {src}" }
-    match ← catchFs (some src) (IO.FS.realPath (System.FilePath.mk src)) with
+    match ← ops.realPath src with
     | .error e => return .error e
-    | .ok srcRp =>
-      let srcCanon := srcRp.toString
+    | .ok srcCanon =>
       let dstAbs ←
         if isAbsolute dst then
           pure (normPath dst)
         else do
-          let cwdDir ← catchFs none IO.currentDir
-          match cwdDir with
+          match ← ops.cwd with
           | .error _ => pure (normPath dst)
-          | .ok d => pure (normPath (join d.toString dst))
-      let dstCanon ← resolveApproxGo dstAbs []
-      if dstCanon == srcCanon || srcCanon == "/" || dstCanon.startsWith (srcCanon ++ "/") then
+          | .ok d => pure (normPath (join d dst))
+      let dstCanon ← resolveApproxGoM ops dstAbs [] (dstAbs.toList.length + 1)
+      if dstCanon == srcCanon || srcCanon == "/" || (srcCanon.toList ++ ['/']).isPrefixOf dstCanon.toList then
         return .error { kind := .invalidInput, path := some dst, message := s!"cannot copy directory into itself: {dst}" }
-      copyTreeGo posix src dst dirsExistOk []
+      copyTreeGoM ops src dst dirsExistOk [] 4096
 
-private def touchImpl (posix : PosixRawOps) (path : String) (existOk : Bool) :
-    IO (Except FsError Unit) := do
-  let fp := System.FilePath.mk path
-  match ← statImpl posix false path with
+/-- Generic `touch` implementation over `RawFsOpsM m`. -/
+def touchImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (path : String) (existOk : Bool) : m (Except FsError Unit) := do
+  match ← ops.stat false path with
   | .ok st =>
     if !existOk then
       return .error { kind := .alreadyExists, path := some path, message := s!"file already exists: {path}" }
-    else if st.kind == .dir || (st.kind == .symlink && (← fp.isDir)) then
+    else if st.kind == .dir then
       return .error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }
+    else if st.kind == .symlink then
+      match ← ops.stat true path with
+      | .ok tgtSt =>
+        if tgtSt.kind == .dir then
+          return .error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }
+        else
+          ops.appendText path ""
+      | .error _ =>
+        ops.appendText path ""
     else
-      catchFs (some path) do
-        let h ← IO.FS.Handle.mk fp .append
-        h.flush
+      ops.appendText path ""
   | .error e =>
     if e.kind == .notFound then
-      catchFs (some path) (IO.FS.writeFile fp "")
+      ops.writeBytes path ByteArray.empty
     else
       return .error e
 
-private def atomicWriteTextImpl (path content : String) : IO (Except FsError Unit) := do
+private def atomicWriteTextImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (path content : String) : m (Except FsError Unit) := do
   let parentDir := (parent path).getD "."
   let baseName := (name path).getD "tmp"
-  let nonce ← IO.monoNanosNow
+  let nonce ← ops.monotonicNonce
   let tmpPath := join parentDir s!".{baseName}.tmp.{nonce}"
-  match ← catchFs (some tmpPath) (IO.FS.writeFile (System.FilePath.mk tmpPath) content) with
+  match ← ops.writeBytes tmpPath content.toUTF8 with
   | .error e => return .error e
   | .ok () =>
-    match ← catchFs (some path) (IO.FS.rename (System.FilePath.mk tmpPath) (System.FilePath.mk path)) with
+    match ← ops.rename tmpPath path with
     | .error e =>
-      try IO.FS.removeFile (System.FilePath.mk tmpPath) catch _ => pure ()
+      let _ ← ops.unlinkFile tmpPath
       return .error e
     | .ok () => return .ok ()
 
-private partial def walkGo (root relRoot : String) (acc : Array WalkEntry) :
-    IO (Except FsError (Array WalkEntry)) := do
-  let fullDir := if relRoot == "." then root else join root relRoot
-  match ← listDirSorted fullDir with
-  | .error e => return .error e
-  | .ok names =>
-    let mut dirs : Array String := #[]
-    let mut files : Array String := #[]
-    for n in names do
-      let childFull := join fullDir n
-      let isSubDir ←
-        try
-          let md ← (System.FilePath.mk childFull).symlinkMetadata
-          pure (md.type == .dir)
-        catch _ =>
-          pure false
-      if isSubDir then
-        dirs := dirs.push n
-      else
-        files := files.push n
-    let mut out := acc.push { root := relRoot, dirs, files }
-    for d in dirs do
-      let nextRel := if relRoot == "." then d else join relRoot d
-      match ← walkGo root nextRel out with
-      | .error e => return .error e
-      | .ok out' => out := out'
-    return .ok out
+private def walkGoM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (root relRoot : String) (acc : Array WalkEntry) : Nat → m (Except FsError (Array WalkEntry))
+  | 0 => return .error { kind := .ioError, path := some root, message := s!"maximum directory depth exceeded: {root}" }
+  | fuel + 1 => do
+    let fullDir := if relRoot == "." then root else join root relRoot
+    match ← listDirSortedM ops fullDir with
+    | .error e => return .error e
+    | .ok names =>
+      let mut dirs : Array String := #[]
+      let mut files : Array String := #[]
+      for n in names do
+        let childFull := join fullDir n
+        let isSubDir ←
+          match ← ops.stat false childFull with
+          | .ok st => pure (st.kind == .dir)
+          | .error _ => pure false
+        if isSubDir then
+          dirs := dirs.push n
+        else
+          files := files.push n
+      let mut out := acc.push { root := relRoot, dirs, files }
+      for d in dirs do
+        let nextRel := if relRoot == "." then d else join relRoot d
+        match ← walkGoM ops root nextRel out fuel with
+        | .error e => return .error e
+        | .ok out' => out := out'
+      return .ok out
 
-private def walkImpl (root : String) : IO (Except FsError (Array WalkEntry)) := do
-  match ← catchFs (some root) ((System.FilePath.mk root).metadata) with
+/-- Generic `walk` implementation over `RawFsOpsM m`. -/
+def walkImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (root : String) : m (Except FsError (Array WalkEntry)) := do
+  match ← ops.stat true root with
   | .error e => return .error e
-  | .ok md =>
-    if md.type != .dir then
+  | .ok st =>
+    if st.kind != .dir then
       return .error { kind := .notADirectory, path := some root, message := s!"not a directory: {root}" }
-    walkGo root "." #[]
+    walkGoM ops root "." #[] 4096
 
-private def globImpl (root pattern : String) : IO (Except FsError (Array String)) := do
+private def globImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (root pattern : String) : m (Except FsError (Array String)) := do
   match LeanSwe.Glob.validate pattern with
   | .error e => return .error (mapGlobError pattern e)
   | .ok () =>
-    match ← walkImpl root with
+    match ← walkImplM ops root with
     | .error e => return .error e
     | .ok entries =>
       let mut candidates : Array String := #[]
@@ -574,12 +539,22 @@ private def globImpl (root pattern : String) : IO (Except FsError (Array String)
       | .error e => return .error (mapGlobError pattern e)
       | .ok matched => return .ok (matched.qsort (· < ·))
 
-private def rglobImpl (root pattern : String) : IO (Except FsError (Array String)) :=
+private def rglobImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (root pattern : String) : m (Except FsError (Array String)) :=
   let fullPat := if pattern == "**" || pattern.startsWith "**/" then pattern else "**/" ++ pattern
-  globImpl root fullPat
+  globImplM ops root fullPat
 
-/-- Build the concrete `FsApi` from injected POSIX C-ABI hooks. -/
-def mkApi (posix : PosixRawOps) : FsApi :=
+private def readTextImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (path : String) : m (Except FsError String) := do
+  match ← ops.readBytes path with
+  | .error e => return .error e
+  | .ok bs =>
+    match String.fromUTF8? bs with
+    | some s => return .ok s
+    | none => return .error { kind := .invalidInput, path := some path, message := s!"invalid UTF-8 in file: {path}" }
+
+/-- Build a generic `FsApiM m` from injected single-step `RawFsOpsM m` primitives. -/
+def mkApiM {m : Type → Type} [Monad m] (ops : RawFsOpsM m) : FsApiM m :=
   { join := join
     joinMany := joinMany
     normPath := normPath
@@ -592,54 +567,47 @@ def mkApi (posix : PosixRawOps) : FsApi :=
     withSuffix := withSuffix
     isAbsolute := isAbsolute
     relativeTo := relativeTo
-    mapRawError := mapRawError
-    readText := fun p => catchFs (some p) (IO.FS.readFile (System.FilePath.mk p))
-    writeText := fun p c => catchFs (some p) (IO.FS.writeFile (System.FilePath.mk p) c)
-    appendText := fun p c => catchFs (some p) do
-      let h ← IO.FS.Handle.mk (System.FilePath.mk p) .append
-      h.putStr c
-      h.flush
-    readBytes := fun p => catchFs (some p) (IO.FS.readBinFile (System.FilePath.mk p))
-    writeBytes := fun p b => catchFs (some p) (IO.FS.writeBinFile (System.FilePath.mk p) b)
-    atomicWriteText := atomicWriteTextImpl
-    touch := touchImpl posix
-    mkdir := mkdirImpl posix
-    unlink := unlinkImpl posix
-    rmdir := rmdirImpl
-    rmtree := rmtreeImpl posix
-    rename := fun s d => catchFs (some s) (IO.FS.rename (System.FilePath.mk s) (System.FilePath.mk d))
-    copyFile := copyFileImpl posix
-    copyTree := copyTreeImpl posix
-    pathExists := fun p => catchFs (some p) ((System.FilePath.mk p).pathExists)
-    isFile := fun p => catchFs (some p) do
-      match ← catchFs (some p) ((System.FilePath.mk p).metadata) with
-      | .error _ => return false
-      | .ok md => return md.type == .file
-    isDir := fun p => catchFs (some p) ((System.FilePath.mk p).isDir)
-    isSymlink := fun p => catchFs (some p) do
-      match ← catchFs (some p) ((System.FilePath.mk p).symlinkMetadata) with
-      | .error _ => return false
-      | .ok md => return md.type == .symlink
-    stat := statImpl posix true
-    lstat := statImpl posix false
-    chmod := fun p mode => catchFs (some p) (posix.chmod p (UInt32.ofNat mode))
-    symlink := fun t l => catchFs (some l) (posix.symlink t l)
-    readLink := fun p => catchFs (some p) (posix.readLink p)
-    resolve := fun p => catchFs (some p) do
-      let rp ← IO.FS.realPath (System.FilePath.mk p)
-      return rp.toString
-    cwd := catchFs none do
-      let d ← IO.currentDir
-      return d.toString
-    listDir := listDirSorted
-    walk := walkImpl
-    glob := globImpl
-    rglob := rglobImpl }
-
-/-- Temporary directory bracket modeled after Python `tempfile.TemporaryDirectory`. -/
-def withTempDir {α : Type} (f : String → IO (Except FsError α)) : IO (Except FsError α) := do
-  match ← catchFs none (IO.FS.withTempDir fun dir => f dir.toString) with
-  | .error e => return .error e
-  | .ok inner => return inner
+    mapRawError := ops.mapRawError
+    readText := readTextImplM ops
+    writeText := fun p c => ops.writeBytes p c.toUTF8
+    appendText := ops.appendText
+    readBytes := ops.readBytes
+    writeBytes := ops.writeBytes
+    atomicWriteText := atomicWriteTextImplM ops
+    touch := touchImplM ops
+    mkdir := mkdirImplM ops
+    unlink := unlinkImplM ops
+    rmdir := ops.removeDir
+    rmtree := rmtreeImplM ops
+    rename := ops.rename
+    copyFile := copyFileImplM ops
+    copyTree := copyTreeImplM ops
+    pathExists := fun p => do
+      match ← ops.stat true p with
+      | .ok _ => return .ok true
+      | .error _ => return .ok false
+    isFile := fun p => do
+      match ← ops.stat true p with
+      | .ok st => return .ok (st.kind == .file)
+      | .error _ => return .ok false
+    isDir := fun p => do
+      match ← ops.stat true p with
+      | .ok st => return .ok (st.kind == .dir)
+      | .error _ => return .ok false
+    isSymlink := fun p => do
+      match ← ops.stat false p with
+      | .ok st => return .ok (st.kind == .symlink)
+      | .error _ => return .ok false
+    stat := ops.stat true
+    lstat := ops.stat false
+    chmod := ops.chmod
+    symlink := ops.symlink
+    readLink := ops.readLink
+    resolve := ops.realPath
+    cwd := ops.cwd
+    listDir := listDirSortedM ops
+    walk := walkImplM ops
+    glob := globImplM ops
+    rglob := rglobImplM ops }
 
 end LeanSwe.Fs.Internal

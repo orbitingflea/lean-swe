@@ -21,7 +21,7 @@ lean_lib LeanSwe where
 
 extern_lib «leanswe_fs» pkg := do
   let oFile := pkg.buildDir / "c" / "fs_shim.o"
-  let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "Fs" / "c" / "fs_shim.c")
+  let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "Fs" / "Raw" / "c" / "fs_shim.c")
   let lean ← getLeanInstall
   let oJob ← buildO oFile srcJob
     #["-I", lean.includeDir.toString]
