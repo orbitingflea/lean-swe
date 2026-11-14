@@ -3,7 +3,7 @@ import LeanSwe.Fs.Raw.Types
 namespace LeanSwe.Fs
 
 export LeanSwe.Fs.Raw
-  (FsErrorKind FsError EntryKind FileStat FsRawError RawFsOpsM RawFsOps)
+  (FsErrorKind FsError EntryKind FileStat FsRawError LockMode LockHandle RawFsOpsM RawFsOps)
 
 /-- Single yielded directory node from `walk` (analogous to Python `os.walk` triples). -/
 structure WalkEntry where
@@ -101,6 +101,11 @@ structure FsApiM (m : Type → Type) where
   glob : String → String → m (Except FsError (Array String))
   /-- Recursively match glob `pattern` under `root` (`Path.rglob`). -/
   rglob : String → String → m (Except FsError (Array String))
+  /-- Acquire an advisory `flock`, execute `action`, and release the lock on exit. -/
+  withFileLock : {α : Type} → String → LockMode → Bool → m (Except FsError α) → m (Except FsError α)
+  /-- Non-blocking `withFileLock`, returning `.ok none` without running `action` when blocked. -/
+  tryWithFileLock :
+    {α : Type} → String → LockMode → Bool → m (Except FsError α) → m (Except FsError (Option α))
 
 /-- Concrete `IO` filesystem API bundle for `LeanSwe.Fs`. -/
 abbrev FsApi := FsApiM IO

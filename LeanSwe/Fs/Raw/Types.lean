@@ -18,8 +18,28 @@ inductive FsErrorKind where
   | invalidInput
   /-- Operation not supported on the current platform or filesystem. -/
   | unsupported
+  /-- Non-blocking `flock` would block because a conflicting lock is held (`EWOULDBLOCK` / `EAGAIN`). -/
+  | wouldBlock
   /-- Other OS-level I/O failure (`OSError`). -/
   | ioError
+  deriving Repr, BEq, DecidableEq
+
+/-- Advisory `flock(2)` lock mode. -/
+inductive LockMode where
+  /-- Shared (read) advisory lock (`LOCK_SH`). -/
+  | shared
+  /-- Exclusive (write) advisory lock (`LOCK_EX`). -/
+  | exclusive
+  deriving Repr, BEq, DecidableEq
+
+/-- Opaque handle to an open file descriptor holding an advisory `flock(2)` lock. -/
+structure LockHandle where
+  /-- Opaque C slot-table or VFS lock identifier managed by `RawFsOpsM`. -/
+  handleId : Nat
+  /-- Target lock file path passed to `acquireLock`. -/
+  path : String
+  /-- Advisory lock mode held by this handle. -/
+  mode : LockMode
   deriving Repr, BEq, DecidableEq
 
 /-- Typed filesystem error returned by `LeanSwe.Fs.Raw` and `LeanSwe.Fs` operations. -/
@@ -78,6 +98,8 @@ inductive FsRawError where
   | invalidArgument (path? : Option String) (errno : UInt32) (detail : String)
   /-- Unsupported platform operation. -/
   | unsupportedOperation (errno : UInt32) (detail : String)
+  /-- Non-blocking `flock` contended (`EWOULDBLOCK` / `EAGAIN`). -/
+  | wouldBlock (path? : Option String) (errno : UInt32) (detail : String)
   /-- Generic numeric OS error. -/
   | otherError (errno : UInt32) (detail : String)
   /-- Generic user-constructed error string. -/
@@ -118,6 +140,10 @@ structure RawFsOpsM (m : Type → Type) where
   cwd : m (Except FsError String)
   /-- Return a monotonic nonce for temporary sibling filenames. -/
   monotonicNonce : m Nat
+  /-- Open `path` and acquire an advisory `flock(2)` lock (`shared` or `exclusive`). -/
+  acquireLock : String → LockMode → Bool → Bool → m (Except FsError LockHandle)
+  /-- Unlock and close an acquired `LockHandle`. -/
+  releaseLock : LockHandle → m (Except FsError Unit)
 
 /-- Concrete `IO` thin-wrapper API bundle exported by `LeanSwe.Fs.Raw`. -/
 abbrev RawFsOps := RawFsOpsM IO

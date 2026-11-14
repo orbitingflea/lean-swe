@@ -159,6 +159,104 @@ def test_fs_vfs_copyTree_loopRejected
   let (res, _) := (api.copyTree src dst false).run s₀
   assert (∃ e, res = .error e ∧ e.kind = .invalidInput)
 
+/-- Calling `api.withFileLock` in `.exclusive` mode with a pure `.ok` action returns the value and releases the lock. -/
+def test_fs_vfs_withFileLock_releasesOnOk
+    {S : Type} {runner} [NondetTest runner] (api : FsApiM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let path ← nondet String
+  let createIfMissing ← nondet Bool
+  let val ← nondet Nat
+  let (res, s₁) := (api.withFileLock path .exclusive createIfMissing (pure (.ok val))).run s₀
+  assume (res.isOk = true)
+  let (probe, _) := (api.tryWithFileLock path .exclusive false (pure (.ok ()))).run s₁
+  assert (res = .ok val ∧ probe = .ok (some ()))
+
+/-- Calling `api.withFileLock` in `.exclusive` mode on a lockable path with a pure `.error` action returns `.error err` and releases the lock. -/
+def test_fs_vfs_withFileLock_releasesOnError
+    {S : Type} {runner} [NondetTest runner] (api : FsApiM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let path ← nondet String
+  let createIfMissing ← nondet Bool
+  let err ← nondet FsError
+  assume (((api.tryWithFileLock path .exclusive createIfMissing (pure (.ok ()))).run s₀).1 = .ok (some ()))
+  let (res, s₁) :=
+    (api.withFileLock path .exclusive createIfMissing (pure (Except.error err : Except FsError Unit))).run s₀
+  let (probe, _) := (api.tryWithFileLock path .exclusive false (pure (.ok ()))).run s₁
+  assert (res = .error err ∧ probe = .ok (some ()))
+
+/-- Inside an outer `.shared` lock, an inner `.shared` `api.tryWithFileLock` on the same path succeeds. -/
+def test_fs_vfs_tryWithFileLock_sharedCoexists
+    {S : Type} {runner} [NondetTest runner] (api : FsApiM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let path ← nondet String
+  let val ← nondet Nat
+  let (res, _) := (api.withFileLock path .shared true
+    (api.tryWithFileLock path .shared false (pure (Except.ok val)))).run s₀
+  assume (res.isOk = true)
+  assert (res = .ok (some val))
+
+/-- Inside an outer lock, a conflicting inner `api.tryWithFileLock` returns `.ok none` without running `action`, while keeping the outer lock held. -/
+def test_fs_vfs_tryWithFileLock_exclusiveRejects
+    {S : Type} {runner} [NondetTest runner] (api : FsApiM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let path ← nondet String
+  let markerPath ← nondet String
+  let outerMode ← nondet LockMode
+  let innerMode ← nondet LockMode
+  assume (outerMode = .exclusive ∨ innerMode = .exclusive)
+  assume (((api.lstat path).run s₀).1.isOk = true)
+  assume (((api.lstat markerPath).run s₀).1.isOk = false)
+  let (res, _) := (api.withFileLock path outerMode false do
+    let r1 ← api.tryWithFileLock path innerMode false (api.writeText markerPath "ran")
+    let mAfter ← api.lstat markerPath
+    let r2 ← api.tryWithFileLock path .exclusive false (pure (.ok ()))
+    return .ok (r1, mAfter.isOk, r2)).run s₀
+  match res with
+  | .error _ => assume False
+  | .ok (r1, mOk, r2) => assert (r1 = .ok none ∧ mOk = false ∧ r2 = .ok none)
+
+/-- Calling `api.withFileLock` with `createIfMissing = false` on a missing path fails with `.notFound` without modifying state. -/
+def test_fs_vfs_withFileLock_missingNotCreated
+    {S : Type} {runner} [NondetTest runner] (api : FsApiM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let path ← nondet String
+  let mode ← nondet LockMode
+  assume (path.toList ≠ [])
+  assume (path.toList.length = 1 ∨ path.toList.getLast? ≠ some '/')
+  assume (∃ e, ((api.lstat path).run s₀).1 = .error e ∧ e.kind = .notFound)
+  let (res, s₁) := (api.withFileLock path mode false (pure (.ok ()))).run s₀
+  assert ((∃ e, res = .error e ∧ e.kind = .notFound) ∧ s₁ = s₀)
+
+/-- Calling `api.withFileLock` on a symbolic link fails with `.invalidInput` without running `action` or modifying state. -/
+def test_fs_vfs_withFileLock_symlinkRejected
+    {S : Type} {runner} [NondetTest runner] (api : FsApiM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let path ← nondet String
+  let markerPath ← nondet String
+  let mode ← nondet LockMode
+  let createIfMissing ← nondet Bool
+  assume (path.toList ≠ [])
+  assume (path.toList.length = 1 ∨ path.toList.getLast? ≠ some '/')
+  assume (∃ st, ((api.lstat path).run s₀).1 = .ok st ∧ st.kind = .symlink)
+  assume (((api.lstat markerPath).run s₀).1.isOk = false)
+  let (res, s₁) := (api.withFileLock path mode createIfMissing (api.writeText markerPath "ran")).run s₀
+  assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ ((api.lstat markerPath).run s₁).1.isOk = false ∧ s₁ = s₀)
+
+/-- Calling `api.withFileLock` on a directory fails with `.isADirectory` without running `action` or modifying state. -/
+def test_fs_vfs_withFileLock_dirRejected
+    {S : Type} {runner} [NondetTest runner] (api : FsApiM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let path ← nondet String
+  let markerPath ← nondet String
+  let mode ← nondet LockMode
+  let createIfMissing ← nondet Bool
+  assume (path.toList ≠ [])
+  assume (path.toList.length = 1 ∨ path.toList.getLast? ≠ some '/')
+  assume (∃ st, ((api.lstat path).run s₀).1 = .ok st ∧ st.kind = .dir)
+  assume (((api.lstat markerPath).run s₀).1.isOk = false)
+  let (res, s₁) := (api.withFileLock path mode createIfMissing (api.writeText markerPath "ran")).run s₀
+  assert ((∃ e, res = .error e ∧ e.kind = .isADirectory) ∧ ((api.lstat markerPath).run s₁).1.isOk = false ∧ s₁ = s₀)
+
 private def buggyEmptyErrApi (base : FsApi) : FsApi :=
   { base with mapRawError := fun _ => { kind := .ioError, message := "" } }
 
@@ -212,7 +310,12 @@ private def stubFsApi : FsApi :=
     listDir := fun _ => pure (.ok #[])
     walk := fun _ => pure (.ok #[])
     glob := fun _ _ => pure (.ok #[])
-    rglob := fun _ _ => pure (.ok #[]) }
+    rglob := fun _ _ => pure (.ok #[])
+    withFileLock := fun _ _ _ act => act
+    tryWithFileLock := fun _ _ _ act => do
+      match ← act with
+      | .ok a => return .ok (some a)
+      | .error e => return .error e }
 
 private def buggySuffixesApi (base : FsApi) : FsApi :=
   { base with suffixes := fun _ => #[] }
@@ -268,7 +371,12 @@ private def stubVfsApi : FsApiM (StateM Unit) :=
     listDir := fun _ => pure (.ok #[])
     walk := fun _ => pure (.ok #[])
     glob := fun _ _ => pure (.ok #[])
-    rglob := fun _ _ => pure (.ok #[]) }
+    rglob := fun _ _ => pure (.ok #[])
+    withFileLock := fun _ _ _ act => act
+    tryWithFileLock := fun _ _ _ act => do
+      match ← act with
+      | .ok a => return .ok (some a)
+      | .error e => return .error e }
 
 example : ¬ Core.AllPass (test_fs_mapRawError_returnsNonEmptyMessage (buggyEmptyErrApi stubFsApi)) := by
   intro h
@@ -348,5 +456,72 @@ example : ¬ Core.AllPass (test_fs_vfs_copyTree_loopRejected
     ⟨"/src", rfl, by decide, by decide, by decide, rfl⟩
     rfl ⟨stubStat .dir, rfl, rfl⟩ rfl
   simp [stubVfsApi, StateT.run, pure, StateT.pure, assert] at h0
+
+example : ¬ Core.AllPass (test_fs_vfs_withFileLock_releasesOnOk
+    { stubVfsApi with
+      tryWithFileLock := fun {_} _ _ _ _ => pure (.ok none) }) := by
+  intro h
+  have h0 := h () "/a.lock" true 7 rfl
+  simp [assert] at h0
+
+example : ¬ Core.AllPass (test_fs_vfs_withFileLock_releasesOnError
+    { stubVfsApi with
+      withFileLock := fun {_} _ _ _ _ => pure (.error { kind := .ioError, message := "wrong" }) }) := by
+  intro h
+  have h0 := h () "/a.lock" false { kind := .notFound, message := "boom" } rfl
+  simp [stubVfsApi, StateT.run, bind, StateT.bind, pure, StateT.pure, assert] at h0
+
+example : ¬ Core.AllPass (test_fs_vfs_tryWithFileLock_sharedCoexists
+    { stubVfsApi with
+      tryWithFileLock := fun {_} _ _ _ _ => pure (.ok none) }) := by
+  intro h
+  have h0 := h () "/a.lock" 42 rfl
+  simp [assert] at h0
+
+example : ¬ Core.AllPass (test_fs_vfs_tryWithFileLock_exclusiveRejects
+    { stubVfsApi with
+      lstat := fun p =>
+        if p == "/a.lock" then pure (.ok (stubStat .file))
+        else pure (.error { kind := .notFound, message := "stub" }) }) := by
+  intro h
+  have h0 := h () "/a.lock" "/marker" .exclusive .exclusive (Or.inl rfl) rfl rfl
+  simp [stubVfsApi, StateT.run, bind, StateT.bind, pure, StateT.pure, assert] at h0
+
+example : ¬ Core.AllPass (test_fs_vfs_withFileLock_missingNotCreated
+    { stubVfsApi with
+      lstat := fun _ => pure (.error { kind := .notFound, message := "stub" }) }) := by
+  intro h
+  have h0 := h () "/missing.lock" .exclusive
+    (by decide) (Or.inr (by decide))
+    ⟨{ kind := .notFound, message := "stub" }, rfl, rfl⟩
+  simp [stubVfsApi, StateT.run, pure, assert] at h0
+  rcases h0 with ⟨⟨e, he, _⟩, _⟩
+  cases he
+
+example : ¬ Core.AllPass (test_fs_vfs_withFileLock_symlinkRejected
+    { stubVfsApi with
+      lstat := fun p =>
+        if p == "/sym.lock" then pure (.ok (stubStat .symlink))
+        else pure (.error { kind := .notFound, message := "stub" }) }) := by
+  intro h
+  have h0 := h () "/sym.lock" "/marker" .exclusive true
+    (by decide) (Or.inr (by decide))
+    ⟨stubStat .symlink, rfl, rfl⟩ rfl
+  simp [stubVfsApi, StateT.run, pure, assert] at h0
+  rcases h0 with ⟨⟨⟨e, he, _⟩, _⟩, _⟩
+  cases he
+
+example : ¬ Core.AllPass (test_fs_vfs_withFileLock_dirRejected
+    { stubVfsApi with
+      lstat := fun p =>
+        if p == "/dir" then pure (.ok (stubStat .dir))
+        else pure (.error { kind := .notFound, message := "stub" }) }) := by
+  intro h
+  have h0 := h () "/dir" "/marker" .exclusive true
+    (by decide) (Or.inr (by decide))
+    ⟨stubStat .dir, rfl, rfl⟩ rfl
+  simp [stubVfsApi, StateT.run, pure, assert] at h0
+  rcases h0 with ⟨⟨⟨e, he, _⟩, _⟩, _⟩
+  cases he
 
 end LeanSwe.Fs
