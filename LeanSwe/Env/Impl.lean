@@ -1,0 +1,66 @@
+import LeanSwe.Env.Types
+
+namespace LeanSwe.Env.Internal
+
+open LeanSwe.Env (EnvErrorKind EnvError EnvRawError RawEnvOpsM EnvApiM)
+
+/-- Return `true` iff `cs` contains `=` or NUL (`Char.ofNat 0`). -/
+def hasInvalidKeyChar : List Char → Bool
+  | [] => false
+  | c :: cs => c == '=' || c == Char.ofNat 0 || hasInvalidKeyChar cs
+
+/-- Return `true` iff `key` is a valid non-empty environment variable name without `=` or NUL. -/
+def isValidKey (key : String) : Bool :=
+  !key.toList.isEmpty && !hasInvalidKeyChar key.toList
+
+/-- Split `cs` on `:` separators, always producing a non-empty list of character segments. -/
+def splitColonRaw : List Char → List (List Char)
+  | [] => [[]]
+  | c :: cs =>
+    if c == ':' then
+      [] :: splitColonRaw cs
+    else
+      match splitColonRaw cs with
+      | [] => [[c]]
+      | seg :: rest => (c :: seg) :: rest
+
+/-- Split a POSIX `:`-delimited search path, dropping empty segments (`""` yields `#[]`). -/
+def splitSearchPath (path : String) : Array String :=
+  (((splitColonRaw path.toList).filter fun s => !s.isEmpty).map String.ofList).toArray
+
+/-- Build `EnvApiM m` from a `RawEnvOpsM m` backend with zero `IO` or `@[extern]` dependencies. -/
+def mkApiM {m : Type → Type} [Monad m] (raw : RawEnvOpsM m) : EnvApiM m :=
+  { mapRawError := raw.mapRawError
+    getEnv := fun key => do
+      if !isValidKey key then
+        return .error
+          { kind := .invalidKey
+            key := some key
+            errnoCode := none
+            message := "invalid environment variable name" }
+      match ← raw.getEnv key with
+      | .error err => return .error (raw.mapRawError err)
+      | .ok val => return .ok val
+    listEnv := do
+      match ← raw.listEnv with
+      | .error err => return .error (raw.mapRawError err)
+      | .ok entries => return .ok entries
+    homeDir := do
+      match ← raw.getEnv "HOME" with
+      | .error err => return .error (raw.mapRawError err)
+      | .ok none =>
+        return .error
+          { kind := .notFound
+            key := some "HOME"
+            errnoCode := none
+            message := "HOME environment variable is not set" }
+      | .ok (some "") =>
+        return .error
+          { kind := .notFound
+            key := some "HOME"
+            errnoCode := none
+            message := "HOME environment variable is empty" }
+      | .ok (some h) => return .ok h
+    splitSearchPath := splitSearchPath }
+
+end LeanSwe.Env.Internal
