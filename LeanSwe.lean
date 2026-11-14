@@ -59,3 +59,7 @@ import LeanSwe.Env.Impl
 import LeanSwe.Env.SpecTests
 import LeanSwe.Env.Proofs
 import LeanSwe.Env.RuntimeTests
+import LeanSwe.Uuid.Raw.Types
+import LeanSwe.Uuid.Raw.SpecTests
+import LeanSwe.Uuid.Types
+import LeanSwe.Uuid.SpecTests
