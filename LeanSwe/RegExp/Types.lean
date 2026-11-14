@@ -1,12 +1,12 @@
 /-!
-# Regex Package Interface
+# Regex Package Types
 
-Public data types, error enum, and exported API for `Packages.Regex`.
-Specifications in `SpecTests` depend only on this interface, while callers import
-`Packages.Regex.Impl` for `liveApi` without referencing upstream `Regex` internals directly.
+Public data structs, closed error enum, and `RegexApi` record for `LeanSwe.RegExp`.
+Kept free of upstream `Regex` imports so specifications in `SpecTests` remain isolated from
+implementation internals.
 -/
 
-namespace Packages.Regex
+namespace LeanSwe.RegExp
 
 /-- Classification of regex compilation failures. -/
 inductive RegexErrorKind where
@@ -34,7 +34,7 @@ structure MatchSpan where
   stopByte : Nat
   deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Public operations exported by `Packages.Regex`. -/
+/-- Public operations exported by `LeanSwe.RegExp`. -/
 structure RegexApi where
   /-- Return `true` iff `pattern` matches any substring of `haystack`. -/
   testPattern : String → String → Except RegexError Bool
@@ -49,4 +49,4 @@ structure RegexApi where
   /-- Split `haystack` around every match, always returning at least one piece. -/
   splitBy : String → String → Except RegexError (Array String)
 
-end Packages.Regex
+end LeanSwe.RegExp

@@ -13,12 +13,12 @@ package «lean-swe» where
 require Regex from git "https://github.com/pandaman64/lean-regex.git" @ "v4.27.0" / "regex"
 
 lean_lib Core where
-
-lean_lib Packages where
+  globs := #[.submodules `Core]
 
 @[default_target]
 lean_lib LeanSwe where
+  globs := #[.andSubmodules `LeanSwe]
 
-@[default_target]
+@[default_target, test_driver]
 lean_exe «lean-swe-test» where
   root := `Tests.Main
