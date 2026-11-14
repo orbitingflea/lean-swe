@@ -197,6 +197,7 @@ def test_git_api_worktreeAdd_branchInUseRejected
   assume (ValidRepoState s₀)
   assume (s₀.worktrees = [mainWt] ∧ mainWt.head = .attached b (some c))
   assume (isValidPathArg newWtPath = true ∧ newWtPath ≠ mainWt.path)
+  assume (isValidRefNameStr b.raw = true)
   let (res, s₁) :=
     (api.worktreeAdd mainWt.path { path := newWtPath, target? := some b.raw }).run s₀
   NondetTest.assert (∃ e, res = .error e ∧ e.kind = .branchInUse ∧ s₁ = s₀)
@@ -548,7 +549,7 @@ example : ¬ Core.AllPass (test_git_api_worktreeAdd_branchInUseRejected
     worktrees := [wt]
   }
   have hValid : ValidRepoState s0 := by cbv
-  have h0 := h s0 wt b c0 "/wt2" hValid ⟨rfl, rfl⟩ ⟨by decide, by decide⟩
+  have h0 := h s0 wt b c0 "/wt2" hValid ⟨rfl, rfl⟩ ⟨by decide, by decide⟩ (by decide)
   simp [StateT.run, assert] at h0
 
 example : ¬ Core.AllPass (test_git_api_checkout_dirtyWorktreeRejected
