@@ -34,7 +34,6 @@ private def testRfc8259ParsingAndEscapes : IO Unit := do
     (Lean.Json.arr #[Lean.Json.num 1, Lean.Json.str "two", Lean.Json.bool false, Lean.Json.null])
     "whitespace around array"
 
-  -- RFC 8259 string escapes, control chars, BMP, surrogate pairs, UTF-8
   assertOkEq (parse "\"\\\"\\\\\\/\\b\\f\\n\\r\\t\"")
     (Lean.Json.str "\"\\/\x08\x0c\n\r\t") "standard escapes"
   assertOkEq (parse "\"\\u0000\\u001f\\u03b1\\u03A9\"")
@@ -46,7 +45,6 @@ private def testRfc8259ParsingAndEscapes : IO Unit := do
   assertOkEq (parse "\"日本語 🚀 αβγ\"")
     (Lean.Json.str "日本語 🚀 αβγ") "raw UTF-8 multi-byte"
 
-  -- RFC 8259 numbers
   assertOkEq (parse "0") (Lean.Json.num ⟨0, 0⟩) "zero"
   assertOkEq (parse "-0") (Lean.Json.num ⟨0, 0⟩) "negative zero"
   assertOkEq (parse "-42") (Lean.Json.num ⟨-42, 0⟩) "negative int"
@@ -55,7 +53,6 @@ private def testRfc8259ParsingAndEscapes : IO Unit := do
   assertOkEq (parse "2e+4") (Lean.Json.num ⟨20000, 0⟩) "positive exponent"
   assertOkEq (parse "1E2") (Lean.Json.num ⟨100, 0⟩) "uppercase exponent"
 
-  -- Malformed inputs
   let badInputs : Array String := #[
     "", "   ", "{", "}", "[", "]", "[1,]", "{\"a\":1,}", "{a:1}", "'single'",
     "01", "-01", ".5", "1.", "+1", "1e", "1e+", "\"unclosed", "\"\\x\"",
@@ -92,7 +89,6 @@ private def testCompressPrettyAndRoundTrips : IO Unit := do
     assertTrue (compress jc == c && compress jp == c)
       s!"round-trip compressed form mismatch for {repr n}"
 
-  -- Deep nesting (64 levels)
   let mut deep := Lean.Json.mkObj [("leaf", Lean.Json.str "ok\nline")]
   for i in [:64] do
     deep := Lean.Json.mkObj [(s!"k{i}", Lean.Json.arr #[deep, Lean.Json.num i])]
@@ -103,7 +99,6 @@ private def testCompressPrettyAndRoundTrips : IO Unit := do
   let deepP ← assertOk (parse pDeep) "parse deep pretty"
   assertTrue (deepC == deep && deepP == deep) "64-level deep round-trip"
 
-  -- Primitive & container encode/decode round-trips
   for b in #[true, false] do
     assertOkEq (parse (compress (encode b)) >>= decode) b "bool round-trip"
   for i in #[(0 : Int), -1, 1, 9876543210, -9876543210] do
@@ -112,7 +107,6 @@ private def testCompressPrettyAndRoundTrips : IO Unit := do
   assertOkEq (parse (compress (encode arr)) >>= decode) arr "array string round-trip"
 
 private def testAccessorsAndDevtoolsPayloads : IO Unit := do
-  -- Simulate config, session-log, and harness JSON payloads
   let harnessRaw := "{\"claude\":{\"command\":\"claude\",\"timeout_sec\":120,\"enabled\":false,\"tags\":[\"fast\",\"cli\"],\"extra\":null,\"nested\":{\"model\":\"model-a\",\"retries\":3}}}"
   let root ← assertOk (parse harnessRaw) "parse harness payload"
   let objMap ← assertOk (getObject root) "getObject root"

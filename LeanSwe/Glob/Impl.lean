@@ -86,14 +86,14 @@ def parseClassItems :
     else .ok (acc.reverse, ⟨rest, by simp⟩)
   | c :: rest, acc => do
     let (lo, ⟨afterLo, hLo⟩) ← readClassAtom (c :: rest)
-    match afterLo with
+    match hAfter : afterLo with
     | '-' :: ']' :: tail =>
       .ok ((.single '-' :: .single lo :: acc).reverse,
-        ⟨tail, by simp only [List.length_cons] at hLo ⊢; omega⟩)
+        ⟨tail, by simp only [hAfter, List.length_cons] at hLo ⊢; omega⟩)
     | '-' :: rest2 =>
       let (hi, ⟨afterHi, hHi⟩) ← readClassAtom rest2
       have hSub : afterHi.length < (c :: rest).length := by
-        simp only [List.length_cons] at hLo ⊢; omega
+        simp only [hAfter, List.length_cons] at hLo ⊢; omega
       if lo ≤ hi then
         let ⟨items, ⟨r, hr⟩⟩ ← parseClassItems afterHi (.range lo hi :: acc)
         return (items, ⟨r, by omega⟩)
@@ -101,7 +101,7 @@ def parseClassItems :
         .error (invalidRangeErr lo hi)
     | rest1 =>
       let ⟨items, ⟨r, hr⟩⟩ ← parseClassItems rest1 (.single lo :: acc)
-      return (items, ⟨r, by omega⟩)
+      return (items, ⟨r, by simp only [hAfter] at hLo; omega⟩)
 termination_by cs _ => cs.length
 
 /-- Parse the interior and closing `]` of a character class after `[`. -/

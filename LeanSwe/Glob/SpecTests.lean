@@ -13,7 +13,7 @@ def test_glob_onError_returnsNonEmptyMessage
   let path ← nondet String
   match api.isMatch pat path with
   | .ok _ => assume False
-  | .error e => assert (e.message ≠ "")
+  | .error e => NondetTest.assert (e.message ≠ "")
 
 /-- `api.isMatch pat path` succeeds iff `api.validate pat` succeeds (independent of `path`). -/
 def test_glob_isMatch_iff_validateOk
@@ -23,12 +23,12 @@ def test_glob_isMatch_iff_validateOk
   match api.validate pat with
   | .error e1 =>
     match api.isMatch pat path with
-    | .ok _ => assert False
-    | .error e2 => assert (e1 = e2)
+    | .ok _ => NondetTest.assert False
+    | .error e2 => NondetTest.assert (e1 = e2)
   | .ok () =>
     match api.isMatch pat path with
-    | .error _ => assert False
-    | .ok _ => assert True
+    | .error _ => NondetTest.assert False
+    | .ok _ => NondetTest.assert True
 
 /-- On valid patterns, `api.filter` shrinks or keeps size and only emits matching paths. -/
 def test_glob_filter_preservesValidity
@@ -39,14 +39,14 @@ def test_glob_filter_preservesValidity
   | .error _ => assume False
   | .ok () =>
     match api.filter pat paths with
-    | .error _ => assert False
+    | .error _ => NondetTest.assert False
     | .ok kept =>
-      assert (kept.size ≤ paths.size)
+      NondetTest.assert (kept.size ≤ paths.size)
       let i ← nondet Nat
       assume (i < kept.size)
       match api.isMatch pat kept[i]! with
-      | .ok b => assert (b = true)
-      | .error _ => assert False
+      | .ok b => NondetTest.assert (b = true)
+      | .error _ => NondetTest.assert False
 
 /-- `api.countMatches pat paths` equals `(api.filter pat paths).map Array.size`. -/
 def test_glob_countMatches_eq_filterSize
@@ -56,12 +56,12 @@ def test_glob_countMatches_eq_filterSize
   match api.filter pat paths with
   | .error e1 =>
     match api.countMatches pat paths with
-    | .ok _ => assert False
-    | .error e2 => assert (e1 = e2)
+    | .ok _ => NondetTest.assert False
+    | .error e2 => NondetTest.assert (e1 = e2)
   | .ok kept =>
     match api.countMatches pat paths with
-    | .error _ => assert False
-    | .ok c => assert (c = kept.size)
+    | .error _ => NondetTest.assert False
+    | .ok c => NondetTest.assert (c = kept.size)
 
 /-- The recursive globstar pattern `"**"` matches every path. -/
 def test_glob_globStar_matchesAll
@@ -69,15 +69,15 @@ def test_glob_globStar_matchesAll
   let path ← nondet String
   match api.isMatch "**" path with
   | .error _ => assume False
-  | .ok b => assert (b = true)
+  | .ok b => NondetTest.assert (b = true)
 
 /-- Escaping any literal path produces a valid glob pattern that matches the original path. -/
 def test_glob_escape_matchesSelf
     {runner} [NondetTest runner] (api : GlobApi) : runner Unit := do
   let path ← nondet String
   match api.isMatch (api.escape path) path with
-  | .error _ => assert False
-  | .ok b => assert (b = true)
+  | .error _ => NondetTest.assert False
+  | .ok b => NondetTest.assert (b = true)
 
 private def buggyCountApi : GlobApi :=
   { validate := fun _ => .ok ()

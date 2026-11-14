@@ -131,34 +131,34 @@ private theorem validateRequest_error_msg_ne_empty (req : ExecRequest) (err : Pr
     err.kind = .invalidInput ∧ err.message ≠ "" := by
   unfold Internal.validateRequest at h
   by_cases h1 : req.program.isEmpty = true
-  · rw [if_pos h1, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-  · rw [if_neg h1] at h
+  · rw [ite_eq_left h1, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
+  · rw [ite_eq_right h1] at h
     by_cases h2 : Internal.hasNul req.program = true
-    · rw [if_pos h2, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-    · rw [if_neg h2] at h
+    · rw [ite_eq_left h2, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
+    · rw [ite_eq_right h2] at h
       by_cases h3 : req.args.toList.any Internal.hasNul = true
-      · rw [if_pos h3, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-      · rw [if_neg h3] at h
+      · rw [ite_eq_left h3, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
+      · rw [ite_eq_right h3] at h
         cases hcwd : req.cwd with
         | none =>
           simp only [hcwd, Bool.false_eq_true, ↓reduceIte] at h
           by_cases h5 : req.env.toList.any Internal.isInvalidEnvEntry = true
-          · rw [if_pos h5, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-          · rw [if_neg h5] at h
+          · rw [ite_eq_left h5, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
+          · rw [ite_eq_right h5] at h
             by_cases h6 : (req.timeoutMs == some 0) = true
-            · rw [if_pos h6, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-            · rw [if_neg h6] at h; contradiction
+            · rw [ite_eq_left h6, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
+            · rw [ite_eq_right h6] at h; contradiction
         | some d =>
           simp only [hcwd] at h
           by_cases h4 : Internal.hasNul d = true
-          · rw [if_pos h4, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-          · rw [if_neg h4] at h
+          · rw [ite_eq_left h4, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
+          · rw [ite_eq_right h4] at h
             by_cases h5 : req.env.toList.any Internal.isInvalidEnvEntry = true
-            · rw [if_pos h5, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-            · rw [if_neg h5] at h
+            · rw [ite_eq_left h5, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
+            · rw [ite_eq_right h5] at h
               by_cases h6 : (req.timeoutMs == some 0) = true
-              · rw [if_pos h6, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-              · rw [if_neg h6] at h; contradiction
+              · rw [ite_eq_left h6, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
+              · rw [ite_eq_right h6] at h; contradiction
 
 private theorem validateRequest_ok_eq (req norm : ExecRequest)
     (h : Internal.validateRequest req = .ok norm) :
@@ -171,37 +171,37 @@ private theorem validateRequest_ok_eq (req norm : ExecRequest)
     norm = { req with env := (Internal.dedupEnvList req.env.toList).toArray } := by
   unfold Internal.validateRequest at h
   by_cases h1 : req.program.isEmpty = true
-  · rw [if_pos h1] at h; contradiction
-  · rw [if_neg h1] at h
+  · rw [ite_eq_left h1] at h; contradiction
+  · rw [ite_eq_right h1] at h
     by_cases h2 : Internal.hasNul req.program = true
-    · rw [if_pos h2] at h; contradiction
-    · rw [if_neg h2] at h
+    · rw [ite_eq_left h2] at h; contradiction
+    · rw [ite_eq_right h2] at h
       by_cases h3 : req.args.toList.any Internal.hasNul = true
-      · rw [if_pos h3] at h; contradiction
-      · rw [if_neg h3] at h
+      · rw [ite_eq_left h3] at h; contradiction
+      · rw [ite_eq_right h3] at h
         cases hcwd : req.cwd with
         | none =>
           simp only [hcwd, Bool.false_eq_true, ↓reduceIte] at h
           by_cases h5 : req.env.toList.any Internal.isInvalidEnvEntry = true
-          · rw [if_pos h5] at h; contradiction
-          · rw [if_neg h5] at h
+          · rw [ite_eq_left h5] at h; contradiction
+          · rw [ite_eq_right h5] at h
             by_cases h6 : (req.timeoutMs == some 0) = true
-            · rw [if_pos h6] at h; contradiction
-            · rw [if_neg h6, Except.ok.injEq] at h
+            · rw [ite_eq_left h6] at h; contradiction
+            · rw [ite_eq_right h6, Except.ok.injEq] at h
               exact ⟨Bool.eq_false_iff.mpr h1, Bool.eq_false_iff.mpr h2,
                 Bool.eq_false_iff.mpr h3, by rfl,
                 Bool.eq_false_iff.mpr h5, Bool.eq_false_iff.mpr h6, h.symm⟩
         | some d =>
           simp only [hcwd] at h
           by_cases h4 : Internal.hasNul d = true
-          · rw [if_pos h4] at h; contradiction
-          · rw [if_neg h4] at h
+          · rw [ite_eq_left h4] at h; contradiction
+          · rw [ite_eq_right h4] at h
             by_cases h5 : req.env.toList.any Internal.isInvalidEnvEntry = true
-            · rw [if_pos h5] at h; contradiction
-            · rw [if_neg h5] at h
+            · rw [ite_eq_left h5] at h; contradiction
+            · rw [ite_eq_right h5] at h
               by_cases h6 : (req.timeoutMs == some 0) = true
-              · rw [if_pos h6] at h; contradiction
-              · rw [if_neg h6, Except.ok.injEq] at h
+              · rw [ite_eq_left h6] at h; contradiction
+              · rw [ite_eq_right h6, Except.ok.injEq] at h
                 exact ⟨Bool.eq_false_iff.mpr h1, Bool.eq_false_iff.mpr h2,
                   Bool.eq_false_iff.mpr h3, by simp [Bool.eq_false_iff.mpr h4],
                   Bool.eq_false_iff.mpr h5, Bool.eq_false_iff.mpr h6, h.symm⟩
@@ -217,7 +217,7 @@ theorem proof_process_validateRequest_rejectsEmptyProgram :
 theorem reach_process_validateRequest_rejectsEmptyProgram :
     CanReach (test_process_validateRequest_rejectsEmptyProgram defaultApi) :=
   ⟨{ program := "" }, rfl, by
-    simpa [assume, assert] using proof_process_validateRequest_rejectsEmptyProgram { program := "" } rfl⟩
+    simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, assert]⟩
 
 /-- Proof of `test_process_validateRequest_rejectsNulInProgram` for `defaultApi`. -/
 theorem proof_process_validateRequest_rejectsNulInProgram :
@@ -233,8 +233,7 @@ theorem proof_process_validateRequest_rejectsNulInProgram :
 theorem reach_process_validateRequest_rejectsNulInProgram :
     CanReach (test_process_validateRequest_rejectsNulInProgram defaultApi) := by
   refine ⟨{ program := "a\x00b" }, by decide, ?_⟩
-  simpa [assume, assert] using
-    proof_process_validateRequest_rejectsNulInProgram { program := "a\x00b" } (by decide)
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, assert]
 
 /-- Proof of `test_process_validateRequest_rejectsNulInArg` for `defaultApi`. -/
 theorem proof_process_validateRequest_rejectsNulInArg :
@@ -260,8 +259,7 @@ theorem reach_process_validateRequest_rejectsNulInArg :
     CanReach (test_process_validateRequest_rejectsNulInArg defaultApi) := by
   let req : ExecRequest := { program := "echo", args := #["x\x00y"] }
   refine ⟨req, 0, by decide, by decide, ?_⟩
-  simpa [assume, assert] using
-    proof_process_validateRequest_rejectsNulInArg req 0 (by decide) (by decide)
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, assert, req]
 
 /-- Proof of `test_process_validateRequest_rejectsNulInCwd` for `defaultApi`. -/
 theorem proof_process_validateRequest_rejectsNulInCwd :
@@ -285,8 +283,7 @@ theorem reach_process_validateRequest_rejectsNulInCwd :
     CanReach (test_process_validateRequest_rejectsNulInCwd defaultApi) := by
   let req : ExecRequest := { program := "echo", cwd := some "/tmp/\x00a" }
   refine ⟨req, ⟨"/tmp/\x00a", rfl, by decide⟩, ?_⟩
-  simpa [assume, assert] using
-    proof_process_validateRequest_rejectsNulInCwd req ⟨"/tmp/\x00a", rfl, by decide⟩
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, assert, req]
 
 /-- Proof of `test_process_validateRequest_rejectsInvalidEnv` for `defaultApi`. -/
 theorem proof_process_validateRequest_rejectsInvalidEnv :
@@ -319,8 +316,7 @@ theorem reach_process_validateRequest_rejectsInvalidEnv :
     CanReach (test_process_validateRequest_rejectsInvalidEnv defaultApi) := by
   let req : ExecRequest := { program := "echo", env := #[("A=B", some "1")] }
   refine ⟨req, 0, by decide, Or.inr (Or.inl (by decide)), ?_⟩
-  simpa [assume, assert] using
-    proof_process_validateRequest_rejectsInvalidEnv req 0 (by decide) (Or.inr (Or.inl (by decide)))
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, assert, req]
 
 /-- Proof of `test_process_validateRequest_rejectsZeroTimeout` for `defaultApi`. -/
 theorem proof_process_validateRequest_rejectsZeroTimeout :
@@ -342,7 +338,7 @@ theorem reach_process_validateRequest_rejectsZeroTimeout :
     CanReach (test_process_validateRequest_rejectsZeroTimeout defaultApi) := by
   let req : ExecRequest := { program := "echo", timeoutMs := some 0 }
   refine ⟨req, rfl, ?_⟩
-  simpa [assume, assert] using proof_process_validateRequest_rejectsZeroTimeout req rfl
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, assert, req]
 
 /-- Proof of `test_process_validateRequest_acceptsValidRequest` for `defaultApi`. -/
 theorem proof_process_validateRequest_acceptsValidRequest :
@@ -405,9 +401,8 @@ theorem reach_process_validateRequest_acceptsValidRequest :
     CanReach (test_process_validateRequest_acceptsValidRequest defaultApi) := by
   let req : ExecRequest := { program := "echo" }
   refine ⟨req, ⟨by decide, by decide⟩, by decide, by decide, by decide, by decide, ?_⟩
-  simpa [assume, assert] using
-    proof_process_validateRequest_acceptsValidRequest req ⟨by decide, by decide⟩
-      (by decide) (by decide) (by decide) (by decide)
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest,
+    Internal.dedupEnvList, assert, req]
 
 /-- Proof of `test_process_validateRequest_idempotent` for `defaultApi`. -/
 theorem proof_process_validateRequest_idempotent :
@@ -437,7 +432,8 @@ theorem proof_process_validateRequest_idempotent :
 theorem reach_process_validateRequest_idempotent :
     CanReach (test_process_validateRequest_idempotent defaultApi) := by
   refine ⟨{ program := "echo" }, ?_⟩
-  simpa [assume, assert] using proof_process_validateRequest_idempotent { program := "echo" }
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest,
+    Internal.dedupEnvList, assert]
 
 /-- Proof of `test_process_validateRequest_preservesDirectArgsAndOptions` for `defaultApi`. -/
 theorem proof_process_validateRequest_preservesDirectArgsAndOptions :
@@ -454,8 +450,8 @@ theorem proof_process_validateRequest_preservesDirectArgsAndOptions :
 theorem reach_process_validateRequest_preservesDirectArgsAndOptions :
     CanReach (test_process_validateRequest_preservesDirectArgsAndOptions defaultApi) := by
   refine ⟨{ program := "echo", args := #["a;b"] }, ?_⟩
-  simpa [assume, assert] using
-    proof_process_validateRequest_preservesDirectArgsAndOptions { program := "echo", args := #["a;b"] }
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest,
+    Internal.dedupEnvList, assert]
 
 /-- Proof of `test_process_validateRequest_envOverride_lastWins` for `defaultApi`. -/
 theorem proof_process_validateRequest_envOverride_lastWins :
@@ -495,9 +491,8 @@ theorem reach_process_validateRequest_envOverride_lastWins :
     CanReach (test_process_validateRequest_envOverride_lastWins defaultApi) := by
   refine ⟨"echo", "FOO", some "1", none, ⟨by decide, by decide⟩, ⟨by decide, by decide, by decide⟩,
     by decide, by decide, ?_⟩
-  simpa [assume, assert] using
-    proof_process_validateRequest_envOverride_lastWins "echo" "FOO" (some "1") none
-      ⟨by decide, by decide⟩ ⟨by decide, by decide, by decide⟩ (by decide) (by decide)
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest,
+    Internal.dedupEnvList, assert]
 
 /-- Proof of `test_process_validateRequest_preservesDistinctEnv` for `defaultApi`. -/
 theorem proof_process_validateRequest_preservesDistinctEnv :
@@ -546,10 +541,8 @@ theorem reach_process_validateRequest_preservesDistinctEnv :
   refine ⟨"echo", "A", "B", some "1", none, ⟨by decide, by decide⟩,
     ⟨by decide, by decide, by decide⟩, ⟨by decide, by decide, by decide⟩, by decide,
     by decide, by decide, ?_⟩
-  simpa [assume, assert] using
-    proof_process_validateRequest_preservesDistinctEnv "echo" "A" "B" (some "1") none
-      ⟨by decide, by decide⟩ ⟨by decide, by decide, by decide⟩ ⟨by decide, by decide, by decide⟩
-      (by decide) (by decide) (by decide)
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest,
+    Internal.dedupEnvList, assert]
 
 /-- Proof of `test_process_mkCommandRequest_preservesProgramAndArgsVerbatim` for `defaultApi`. -/
 theorem proof_process_mkCommandRequest_preservesProgramAndArgsVerbatim :
@@ -858,7 +851,9 @@ theorem proof_process_run_invalidRequest_doesNotLeak :
 theorem reach_process_run_invalidRequest_doesNotLeak :
     CanReach (test_process_run_invalidRequest_doesNotLeak mockApi) := by
   refine ⟨{}, { program := "" }, ?_⟩
-  simp [mockApi, Internal.mkApiM, Internal.run, Internal.validateRequest, assert, String.isEmpty]
+  dsimp only [mockApi, Internal.mkApiM, Internal.run, StateT.run]
+  simp +decide [Internal.validateRequest]
+  simp +decide [StateT.pure, Pure.pure, pure, assert]
 
 /-- Proof of `test_process_run_usesNormalizedRequest` for `mockApi`. -/
 theorem proof_process_run_usesNormalizedRequest :
@@ -949,7 +944,7 @@ theorem reach_process_run_allowsNonZeroExit_and_runChecked_rejectsIt :
     dsimp only [StateT.pure, Pure.pure]
   have h2 : (mockApi.runChecked req).run {} = (.error errNZ, {}) := by
     have hm : toString "process '" ++ toString "__nonzero__" ++ toString "' exited with status " ++
-        toString (1 : Int) = "process '__nonzero__' exited with status 1" := by decide
+        Int.repr 1 = "process '__nonzero__' exited with status 1" := by decide
     simp only [mockApi, Internal.mkApiM] at h1 ⊢
     simp +decide [Internal.runChecked, StateT.run, stateT_bind_apply, StateT.pure, Pure.pure, pure,
       show Internal.run mockRawOps req {} = (.ok resOk, {}) from h1, resOk, errNZ, req, hm]
@@ -1043,11 +1038,27 @@ theorem proof_process_run_neverLeaksProcesses :
   simp only [mockApi, Internal.mkApiM, mockRawOps, StateT.run, assert]
   exact ⟨congrArg List.length hAct, trivial⟩
 
+private theorem mockApi_run_ok_eq :
+    (mockApi.run { program := "ok" }).run {} =
+      (.ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }, {}) := by
+  have hVal : Internal.validateRequest { program := "ok" } = .ok { program := "ok" } :=
+    validateRequest_simple_ok "ok" (by decide) (by decide) none none (by decide)
+  simp only [mockApi, Internal.mkApiM, Internal.run, hVal, mockRawOps, freshMockId, StateT.run]
+  dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
+  simp +decide
+  dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
+  simp +decide
+  dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
+  simp +decide
+  dsimp only [StateT.pure, Pure.pure]
+
 /-- Non-vacuity `CanReach` witness for `test_process_run_neverLeaksProcesses`. -/
 theorem reach_process_run_neverLeaksProcesses :
-    CanReach (test_process_run_neverLeaksProcesses mockApi) :=
-  ⟨{}, { program := "ok" }, by
-    simpa [assume, assert] using proof_process_run_neverLeaksProcesses {} { program := "ok" }⟩
+    CanReach (test_process_run_neverLeaksProcesses mockApi) := by
+  refine ⟨{}, { program := "ok" }, ?_⟩
+  dsimp only
+  rw [mockApi_run_ok_eq]
+  simp [mockApi, Internal.mkApiM, mockRawOps, StateT.run, assert]
 
 /-- Proof of `test_process_runChecked_neverLeaksProcesses` for `mockApi`. -/
 theorem proof_process_runChecked_neverLeaksProcesses :
@@ -1068,9 +1079,15 @@ theorem proof_process_runChecked_neverLeaksProcesses :
 
 /-- Non-vacuity `CanReach` witness for `test_process_runChecked_neverLeaksProcesses`. -/
 theorem reach_process_runChecked_neverLeaksProcesses :
-    CanReach (test_process_runChecked_neverLeaksProcesses mockApi) :=
-  ⟨{}, { program := "ok" }, by
-    simpa [assume, assert] using proof_process_runChecked_neverLeaksProcesses {} { program := "ok" }⟩
+    CanReach (test_process_runChecked_neverLeaksProcesses mockApi) := by
+  refine ⟨{}, { program := "ok" }, ?_⟩
+  dsimp only
+  simp only [mockApi, Internal.mkApiM, Internal.runChecked, StateT.run, stateT_bind_apply]
+  have h1 : Internal.run mockRawOps { program := "ok" } {} =
+      (.ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }, {}) :=
+    mockApi_run_ok_eq
+  rw [h1]
+  simp +decide [StateT.pure, Pure.pure, pure, assert]
 
 /-- Proof of `test_process_timeout_cleansUpAndErrors` for `mockApi`. -/
 theorem proof_process_timeout_cleansUpAndErrors :
@@ -1143,7 +1160,9 @@ theorem reach_process_run_noTimeout_neverTimesOut :
     CanReach (test_process_run_noTimeout_neverTimesOut mockApi) := by
   let req : ExecRequest := { program := "ok", timeoutMs := none }
   refine ⟨{}, req, rfl, ?_⟩
-  simpa [assume, assert] using proof_process_run_noTimeout_neverTimesOut {} req rfl
+  dsimp only
+  rw [show (mockApi.run req).run {} = _ from mockApi_run_ok_eq]
+  simp [Pure.pure, pure]
 
 /-- Proof of `test_process_outputLimit_cleansUpAndErrors` for `mockApi`. -/
 theorem proof_process_outputLimit_cleansUpAndErrors :
@@ -1217,7 +1236,9 @@ theorem reach_process_run_noOutputLimit_neverExceedsLimit :
     CanReach (test_process_run_noOutputLimit_neverExceedsLimit mockApi) := by
   let req : ExecRequest := { program := "ok", maxOutputBytes := none }
   refine ⟨{}, req, rfl, ?_⟩
-  simpa [assume, assert] using proof_process_run_noOutputLimit_neverExceedsLimit {} req rfl
+  dsimp only
+  rw [show (mockApi.run req).run {} = _ from mockApi_run_ok_eq]
+  simp [Pure.pure, pure]
 
 /-- Proof of `test_process_run_respectsMaxOutputBytes` for `mockApi`. -/
 theorem proof_process_run_respectsMaxOutputBytes :
@@ -1295,7 +1316,7 @@ theorem reach_process_signaled_cleansUpAndErrors :
     simp +decide
     dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
     have hm : toString "process '" ++ toString "__signaled__" ++ toString "' terminated by signal " ++
-        toString (9 : Int) = "process '__signaled__' terminated by signal 9" := by decide
+        Int.repr 9 = "process '__signaled__' terminated by signal 9" := by decide
     simp +decide [errSig, hm]
   refine ⟨{}, req, ?_⟩
   simp only [mockApi, Internal.mkApiM, StateT.run] at h1 ⊢
@@ -1323,8 +1344,9 @@ theorem reach_process_run_onError_returnsNonEmptyMessage :
     CanReach (test_process_run_onError_returnsNonEmptyMessage mockApi) := by
   let req : ExecRequest := { program := "" }
   refine ⟨{}, req, ?_⟩
-  simp [mockApi, Internal.mkApiM, Internal.run, Internal.validateRequest, assert,
-    String.isEmpty, req]
+  dsimp only [mockApi, Internal.mkApiM, Internal.run, StateT.run]
+  simp +decide [Internal.validateRequest, req]
+  simp +decide [StateT.pure, Pure.pure, pure, assert]
 
 /-- Proof of `test_process_runChecked_onError_returnsNonEmptyMessage` for `mockApi`. -/
 theorem proof_process_runChecked_onError_returnsNonEmptyMessage :

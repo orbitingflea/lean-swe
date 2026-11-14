@@ -57,7 +57,7 @@ private def testUtcFormattingAndParsing : IO Unit := do
 
 private def testUtcDates : IO Unit := do
   let dateSamples : Array PlainDate := #[
-    PlainDate.ofDaysSinceUNIXEpoch 0,
+    PlainDate.ofEpochDay 0,
     PlainDate.ofYearMonthDayClip 0 1 1,
     PlainDate.ofYearMonthDayClip 2024 2 29,
     PlainDate.ofYearMonthDayClip 2026 11 14,

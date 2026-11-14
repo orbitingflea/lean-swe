@@ -149,12 +149,12 @@ private theorem intercalate_prepend (a b sep : String) (xs : List String) :
   | cons x rest ih =>
     change String.intercalate sep (((a ++ b) ++ sep ++ x) :: rest) =
       a ++ String.intercalate sep ((b ++ sep ++ x) :: rest)
-    simpa [String.append_assoc] using ih (b ++ sep ++ x)
+    simp [String.append_assoc]
 
 private theorem intercalate_cons_cons (s r sep : String) (rs : List String) :
     String.intercalate sep (s :: r :: rs) = s ++ sep ++ String.intercalate sep (r :: rs) := by
   change String.intercalate sep ((s ++ sep ++ r) :: rs) = _
-  simpa [String.append_assoc] using intercalate_prepend (s ++ sep) r sep rs
+  simp [String.append_assoc]
 
 private theorem splitColonRaw_intercalate (segs : List String)
     (hall : segs.all (fun s => !s.isEmpty && !(':' ∈ s.toList)) = true) :
@@ -194,7 +194,6 @@ private theorem splitColonRaw_intercalate (segs : List String)
       have hinter : (s ++ ":" ++ String.intercalate ":" (r :: rs)).toList =
           s.toList ++ ':' :: (String.intercalate ":" (r :: rs)).toList := by
         simp [String.toList_append]
-        rfl
       rw [hinter, splitColonRaw_append_colon _ _ hs_no']
       simp only [List.filter_cons, List.map_cons]
       have hs_empty_false : s.toList.isEmpty = false := by
@@ -397,7 +396,8 @@ theorem proof_env_splitSearchPath_emptyReturnsEmpty :
 /-- Non-vacuity `CanReach` witness for `test_env_splitSearchPath_emptyReturnsEmpty`. -/
 theorem reach_env_splitSearchPath_emptyReturnsEmpty :
     CanReach (test_env_splitSearchPath_emptyReturnsEmpty defaultApi) := by
-  simpa [CanReach, AllPass] using proof_env_splitSearchPath_emptyReturnsEmpty
+  simp [test_env_splitSearchPath_emptyReturnsEmpty, Core.CanReach, defaultApi, Internal.mkApiM,
+    Internal.splitSearchPath, Internal.splitColonRaw, assert]
 
 /-- Proof of `test_env_splitSearchPath_entriesNonEmptyAndColonFree` for `defaultApi`. -/
 theorem proof_env_splitSearchPath_entriesNonEmptyAndColonFree :
@@ -458,7 +458,6 @@ theorem proof_env_splitSearchPath_dropsEmptySegments :
   · have hcs : (":" ++ a ++ "::" ++ b ++ ":").toList =
         ':' :: (a.toList ++ ':' :: (':' :: (b.toList ++ [':']))) := by
       simp [String.toList_append]
-      rfl
     rw [hcs, Internal.splitColonRaw]
     simp only [beq_self_eq_true, ↓reduceIte]
     rw [splitColonRaw_append_colon _ _ ha_no]

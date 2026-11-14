@@ -55,8 +55,6 @@ private theorem bounded_ediv_val {lo hi : Int} (b : Internal.Bounded.LE lo hi)
     (b.ediv num h).val = b.val.ediv num := by
   rcases b with ⟨v, ⟨hl, hr⟩⟩
   simp [Internal.Bounded.LE.ediv]
-  split
-  rfl
 
 private theorem toMilliseconds_ofMillisecond (ms : Millisecond.Offset) :
     (Duration.ofMillisecond ms).toMilliseconds = ms := by
@@ -66,17 +64,21 @@ private theorem toMilliseconds_ofMillisecond (ms : Millisecond.Offset) :
     rw [toNanoseconds_ofNanoseconds]
     rfl
   generalize Duration.ofMillisecond ms = d at hval ⊢
-  rcases d with ⟨⟨s⟩, ⟨n, hn⟩, _⟩
-  change s * 1000000000 + n = ms.val * 1000000 at hval
-  change (({ val := s } : Second.Offset).mul 1000 +
-    Internal.UnitVal.ofInt (Internal.Bounded.LE.ediv (⟨n, hn⟩ : Internal.Bounded.LE (-999999999) 999999999) 1000000 (by decide)).val).val = ms.val
-  have hadd_val : ∀ (a b : Millisecond.Offset), (a + b).val = a.val + b.val := fun _ _ => rfl
-  have hmul_val : ∀ (a : Second.Offset) (k : Int), (a.mul k).val = a.val * k := fun _ _ => rfl
-  rw [hadd_val, hmul_val, bounded_ediv_val]
-  change s * 1000 + n.ediv 1000000 = ms.val
-  have hdiv : n.ediv 1000000 = n / 1000000 := rfl
-  have hed : 1000000 * (n / 1000000) + n % 1000000 = n := Int.mul_ediv_add_emod n 1000000
-  have hn' : -999999999 ≤ n ∧ n ≤ 999999999 := hn
+  rcases d with ⟨sec, nsec, hsign⟩
+  change sec.val * 1000000000 + nsec.val = ms.val * 1000000 at hval
+  have hed_val : (nsec.ediv 1000000 (by decide)).val = nsec.val.ediv 1000000 :=
+    bounded_ediv_val nsec 1000000 (by decide)
+  have hmsec : (Duration.mk sec nsec hsign).toMilliseconds.val =
+      sec.val * 1000 + nsec.val.ediv 1000000 :=
+    Eq.trans
+      (rfl : (Duration.mk sec nsec hsign).toMilliseconds.val =
+        sec.val * 1000 + (nsec.ediv 1000000 (by decide)).val)
+      (congrArg (sec.val * 1000 + ·) hed_val)
+  refine Eq.trans hmsec ?_
+  have hdiv : nsec.val.ediv 1000000 = nsec.val / 1000000 := rfl
+  have hed : 1000000 * (nsec.val / 1000000) + nsec.val % 1000000 = nsec.val :=
+    Int.mul_ediv_add_emod nsec.val 1000000
+  have hn' := nsec.property
   omega
 
 /-- Proof of `test_time_duration_addSubInverse`. -/
@@ -250,8 +252,8 @@ private theorem fakeSleepMs_spec (ms : Nat) (s0 : FakeClock) :
             Internal.fakeOps.sleep c
             Internal.sleepMs Internal.fakeOps (ms - chunkNat)).run s0).2 =
           ((Internal.sleepMs Internal.fakeOps (ms - chunkNat)).run sMid).2 := by
-        simp [Bind.bind, StateT.bind, StateT.run, Internal.fakeOps, modify, modifyGet,
-          MonadStateOf.modifyGet, StateT.modifyGet, sMid, c]
+        simp [Bind.bind, StateT.bind, StateT.run, pure, Pure.pure,
+          Internal.fakeOps, modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, sMid, c]
       dsimp only at hrec ⊢
       rw [hstep]
       rcases hrec with ⟨hmono, hwall, ⟨added, hlog, hall, hsum⟩⟩
@@ -312,11 +314,12 @@ theorem proof_time_fakeClock_sleepDuration_clampsAndRoundsUp :
   intro s0 d
   dsimp [test_time_fakeClock_sleepDuration_clampsAndRoundsUp, fakeApi, Internal.fakeApi,
     Internal.mkApiM, Internal.sleepDuration, Internal.sleepDurationMs, Core.NondetTest.assert]
-  split
-  · rw [Internal.sleepMs]
+  by_cases hle : d.toNanoseconds.val ≤ 0
+  · simp only [hle, ↓reduceIte]
+    rw [Internal.sleepMs]
     simp [StateT.run, pure, StateT.pure]
-  · next hgt =>
-    have hns : d.toNanoseconds.val > 0 := Int.lt_of_not_ge hgt
+  · simp only [hle, ↓reduceIte]
+    have hns : d.toNanoseconds.val > 0 := Int.lt_of_not_ge hle
     let ms := (d.toNanoseconds.val.toNat + 999999) / 1000000
     have hmono := (fakeSleepMs_spec ms s0).1
     rcases heq : StateT.run (Internal.sleepMs Internal.fakeOps ((d.toNanoseconds.val.toNat + 999999) / 1000000)) s0 with ⟨u, s₁⟩
@@ -351,10 +354,11 @@ theorem proof_time_fakeClock_measure_returnsValueAndElapsed :
     get, getThe, MonadStateOf.get, StateT.get] at heq
   rw [heq] at hmono ⊢
   dsimp only [Internal.elapsedDuration] at hmono ⊢
-  rw [hmono, if_pos (by omega)]
+  rw [hmono]
+  simp only [show s0.monoNanos ≤ s0.monoNanos + ms * 1000000 by omega, ↓reduceIte]
   have hdiff : s0.monoNanos + ms * 1000000 - s0.monoNanos = ms * 1000000 := by omega
   rw [hdiff]
-  refine ⟨trivial, ?_, rfl, trivial⟩
+  refine ⟨trivial, ?_, trivial, trivial⟩
   apply toNanoseconds_inj
   apply Internal.UnitVal.ext
   have hl : (Duration.ofNanoseconds (Nanosecond.Offset.ofNat (ms * 1000000))).toNanoseconds.val =

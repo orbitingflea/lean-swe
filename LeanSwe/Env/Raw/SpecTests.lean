@@ -11,7 +11,7 @@ def test_envraw_mapRawError_returnsNonEmptyMessage
     {runner} [NondetTest runner] (ops : RawEnvOps) : runner Unit := do
   let raw ← nondet EnvRawError
   let err := ops.mapRawError raw
-  assert (err.message ≠ "")
+  NondetTest.assert (err.message ≠ "")
 
 /-- `ops.mapRawError` maps each `EnvRawError` constructor to its expected `EnvErrorKind`, `key`, and `errnoCode`. -/
 def test_envraw_mapRawError_preservesKindAndMetadata
@@ -20,13 +20,13 @@ def test_envraw_mapRawError_preservesKindAndMetadata
   let err := ops.mapRawError raw
   match raw with
   | .invalidEncoding key? _ =>
-    assert (err.kind = .invalidEncoding ∧ err.key = key? ∧ err.errnoCode = none)
+    NondetTest.assert (err.kind = .invalidEncoding ∧ err.key = key? ∧ err.errnoCode = none)
   | .invalidArgument key? code _ =>
-    assert (err.kind = .invalidKey ∧ err.key = key? ∧ err.errnoCode = some code)
+    NondetTest.assert (err.kind = .invalidKey ∧ err.key = key? ∧ err.errnoCode = some code)
   | .otherError code _ =>
-    assert (err.kind = .ioError ∧ err.key = none ∧ err.errnoCode = some code)
+    NondetTest.assert (err.kind = .ioError ∧ err.key = none ∧ err.errnoCode = some code)
   | .userError _ =>
-    assert (err.kind = .ioError ∧ err.key = none ∧ err.errnoCode = none)
+    NondetTest.assert (err.kind = .ioError ∧ err.key = none ∧ err.errnoCode = none)
 
 private def stubRawOps : RawEnvOps :=
   { mapRawError := fun

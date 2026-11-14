@@ -89,7 +89,7 @@ theorem proof_sqlite_validateConfig_rejectsExcessiveBusyTimeout :
     defaultApi, Internal.mkApiM, Internal.validateConfigWith, Raw.defaultOps,
     Raw.Internal.mkRawOps, Raw.Internal.mapRawError, assert]
   cases hRO : (cfg.readOnly && cfg.createIfMissing)
-  · simp only [Bool.false_eq_true, ↓reduceIte, if_pos hGt]
+  · simp only [Bool.false_eq_true, ↓reduceIte, ite_eq_left hGt]
     refine ⟨⟨trivial, ?_⟩, trivial⟩
     apply nonEmptyMsg_ne_empty
     decide
@@ -396,7 +396,7 @@ theorem proof_sqlite_exec_preservesActiveStmtCount_andPropagatesErrors :
           (Except.ok Raw.StepResult.done, { s2 with committedWrites := [(sql, params)] }) := by
       dsimp only [mockRawOps]
       change (if _ then _ else _) = _ ∨ (if _ then _ else _) = _
-      rw [if_neg hNBegF, if_neg hNComF, if_neg hNRbF]
+      rw [ite_eq_right hNBegF, ite_eq_right hNComF, ite_eq_right hNRbF]
       dsimp only [s2, s1, s0]
       split
       · exact Or.inl (by simp [*])
@@ -442,7 +442,7 @@ theorem proof_sqlite_exec_preservesActiveStmtCount_andPropagatesErrors :
     have hs : mockRawOps.step stmt s2 = (.error { kind := .busy, message := "mock step failure" }, s2) := by
       dsimp only [mockRawOps]
       change (if _ then _ else _) = _
-      rw [if_neg hNBegF, if_neg hNComF, if_neg hNRbF]
+      rw [ite_eq_right hNBegF, ite_eq_right hNComF, ite_eq_right hNRbF]
     have hEx := execOp_step_err mockRawOps { id := 1 } sql params s0 s1 s2 s2 s3 stmt
       { kind := .busy, message := "mock step failure" } (.ok ()) rfl rfl hs rfl
     rw [hEx]
@@ -458,7 +458,7 @@ theorem proof_sqlite_exec_preservesActiveStmtCount_andPropagatesErrors :
         (.error { kind := .constraint, message := "mock step failure" }, s2) := by
       dsimp only [mockRawOps]
       change (if _ then _ else _) = _
-      rw [if_neg hNBegF, if_neg hNComF, if_neg hNRbF]
+      rw [ite_eq_right hNBegF, ite_eq_right hNComF, ite_eq_right hNRbF]
     have hEx := execOp_step_err mockRawOps { id := 1 } sql params s0 s1 s2 s2 s3 stmt
       { kind := .constraint, message := "mock step failure" } (.ok ()) rfl rfl hs rfl
     rw [hEx]
@@ -501,19 +501,19 @@ theorem proof_sqlite_query_collectsRows_andPreservesActiveStmtCount :
     dsimp only [mockRawOps]
     change (if _ then _ else _) = _
     dsimp only
-    rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_pos (by decide)]
+    rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_left (by decide)]
     simp [stmt, sOk, sOk2, sOk3]
   have hs1b : mockRawOps.step stmt sOk3 = (.ok (.row r1), sOk4) := by
     dsimp only [mockRawOps]
     change (if _ then _ else _) = _
     dsimp only
-    rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_pos (by decide)]
+    rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_left (by decide)]
     simp [stmt, sOk, sOk2, sOk4]
   have hs1c : mockRawOps.step stmt sOk4 = (.ok .done, sOk4) := by
     dsimp only [mockRawOps]
     change (if _ then _ else _) = _
     dsimp only
-    rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_pos (by decide)]
+    rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_left (by decide)]
     simp [sOk, sOk2, sOk4]
   have hf1 : mockRawOps.finalize stmt sOk4 = (.ok (), sOk5) := rfl
   have hQOk := queryOp_two_rows_ok mockRawOps { id := 1 } "SELECT id, name FROM items WHERE id = ?"
@@ -536,13 +536,13 @@ theorem proof_sqlite_query_collectsRows_andPreservesActiveStmtCount :
     dsimp only [mockRawOps]
     change (if _ then _ else _) = _
     dsimp only
-    rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_pos (by decide)]
+    rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_left (by decide)]
     simp [stmt, sMid, sMid2, sMid3]
   have hs2b : mockRawOps.step stmt sMid3 = (.error { kind := .busy, message := "mock mid-stream step failure" }, sMid3) := by
     dsimp only [mockRawOps]
     change (if _ then _ else _) = _
     dsimp only
-    rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_pos (by decide)]
+    rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_left (by decide)]
     simp [sMid, sMid2, sMid3]
   have hf2 : mockRawOps.finalize stmt sMid3 = (.ok (), sMid4) := rfl
   have hQMid := queryOp_two_rows_mid_err mockRawOps { id := 1 } "SELECT id, name FROM items WHERE id = ?"
@@ -579,7 +579,7 @@ theorem proof_sqlite_queryOne_returnsOptionalRow_andPreservesActiveStmtCount :
     dsimp only [mockRawOps]
     change (if _ then _ else _) = _
     dsimp only
-    rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_pos (by decide)]
+    rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_left (by decide)]
     simp [sE, sE2]
   have hE := queryOneOp_done mockRawOps { id := 1 } sql params sE sE1 sE2 sE2 sE3 stmt
     rfl rfl hsE rfl
@@ -599,7 +599,7 @@ theorem proof_sqlite_queryOne_returnsOptionalRow_andPreservesActiveStmtCount :
     dsimp only [mockRawOps]
     change (if _ then _ else _) = _
     dsimp only
-    rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_pos (by decide)]
+    rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_left (by decide)]
     simp [stmt, sO, sO2, sO3]
   have hO := queryOneOp_row mockRawOps { id := 1 } sql params sO sO1 sO2 sO3 sO4 stmt row
     rfl rfl hsO rfl
@@ -616,7 +616,7 @@ theorem proof_sqlite_queryOne_returnsOptionalRow_andPreservesActiveStmtCount :
     dsimp only [mockRawOps]
     change (if _ then _ else _) = _
     dsimp only
-    rw [if_neg (by decide), if_neg (by decide), if_neg (by decide)]
+    rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide)]
   have hB := queryOneOp_step_err mockRawOps { id := 1 } sql params sB sB1 sB2 sB2 sB3 stmt
     { kind := .busy, message := "mock step failure" } (.ok ()) rfl rfl hsB rfl
 
@@ -657,7 +657,7 @@ theorem proof_sqlite_withTransaction_commitsOnOk :
     dsimp only [mockRawOps]
     change (if _ then _ else _) = _
     dsimp only
-    rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_neg (by decide)]
+    rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide)]
     simp [s0, s1, s1b, s1c]
   have hBeg := execControlOp_ok mockRawOps { id := 1 } "BEGIN IMMEDIATE" s0 _ _ s1 { id := 1, dbId := 1 }
     rfl rfl rfl
@@ -707,7 +707,7 @@ theorem proof_sqlite_withTransaction_rollsBackOnError :
     dsimp only [mockRawOps]
     change (if _ then _ else _) = _
     dsimp only
-    rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_neg (by decide)]
+    rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide)]
     simp [s0, s1, s1b, s1c]
   have hBeg := execControlOp_ok mockRawOps { id := 1 } "BEGIN IMMEDIATE" s0 _ _ s1 { id := 1, dbId := 1 }
     rfl rfl rfl
@@ -778,7 +778,7 @@ theorem proof_sqlite_withTransaction_rollsBackOnCommitAndBeginBusy :
     dsimp only [mockRawOps]
     change (if _ then _ else _) = _
     dsimp only
-    rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_neg (by decide)]
+    rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide)]
     simp [sCom, sCom1, sCom1b, sCom1c]
   have hCBeg := execControlOp_ok mockRawOps { id := 1 } "BEGIN IMMEDIATE" sCom _ _ sCom1 { id := 1, dbId := 1 }
     rfl rfl rfl
@@ -852,7 +852,7 @@ theorem proof_sqlite_binding_noSqlStringInterpolation :
     dsimp only [mockRawOps]
     change (if _ then _ else _) = _
     dsimp only
-    rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_neg (by decide)]
+    rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide)]
     simp [s0, insertSql]
   have hf1 : mockRawOps.finalize { id := 1, dbId := 1 }
       { s0 with
@@ -871,7 +871,7 @@ theorem proof_sqlite_binding_noSqlStringInterpolation :
     dsimp only [mockRawOps]
     change (if _ then _ else _) = _
     dsimp only
-    rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_pos (by decide)]
+    rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_left (by decide)]
     simp [s0, s1, s1q, insertSql, selectSql]
   have hQ := queryOp_empty_ok mockRawOps { id := 1 } selectSql params s1 _ s1q s1q s2 { id := 2, dbId := 1 }
     rfl rfl hsQ rfl
@@ -884,7 +884,7 @@ theorem proof_sqlite_binding_noSqlStringInterpolation :
     dsimp only [mockRawOps]
     change (if _ then _ else _) = _
     dsimp only
-    rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_pos (by decide)]
+    rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_left (by decide)]
     simp [s0, s1, s2, s2q]
   have hQ1 := queryOneOp_done mockRawOps { id := 1 } selectOneSql params s2 _ s2q s2q s3 { id := 3, dbId := 1 }
     rfl rfl hsQ1 rfl
@@ -927,7 +927,7 @@ theorem proof_sqlite_withDb_withTransaction_preservesAllHandles :
     dsimp only [mockRawOps]
     change (if _ then _ else _) = _
     dsimp only
-    rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_neg (by decide)]
+    rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide)]
     simp [s1, s2, s2b, s2c]
   have hOpen : mockRawOps.openDb ":memory:" {} s0 = (.ok { id := 1 }, s1) := rfl
   have hBeg := execControlOp_ok mockRawOps { id := 1 } "BEGIN IMMEDIATE" s1 _ _ s2 { id := 1, dbId := 1 }
@@ -942,7 +942,7 @@ theorem proof_sqlite_withDb_withTransaction_preservesAllHandles :
     StateT.run, bind, pure, StateT.bind, StateT.pure]
   simp only [Bool.false_eq_true, Bool.false_and, ↓reduceIte]
   have hNotGt : ¬ (5000 > maxBusyTimeoutMs) := by decide
-  rw [if_neg hNotGt]
+  rw [ite_eq_right hNotGt]
   dsimp only
   rw [state_bind_step (s1 := s1) (a := .ok { id := 1 }) hOpen]
   dsimp only

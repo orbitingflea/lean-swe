@@ -62,13 +62,13 @@ def formatUtcIso8601 (ts : Std.Time.Timestamp) : String :=
 
 /-- Parse an ISO 8601 timestamp string (with `Z` or `±HH:MM` offset, with or without nanoseconds) into a UTC `Std.Time.Timestamp`. -/
 def parseUtcIso8601 (raw : String) : Except TimeError Std.Time.Timestamp :=
-  match Std.Time.ZonedDateTime.fromLeanDateTimeWithZoneString raw with
-  | .ok zdt => .ok zdt.toTimestamp
+  match Std.Time.DateTime.fromLeanDateTimeWithZoneString raw with
+  | .ok dt => .ok dt.toTimestamp
   | .error err => .error { kind := .invalidFormat, message := nonEmptyMsg "invalid UTC ISO 8601 timestamp" err }
 
 /-- Format a `Std.Time.Timestamp` as compact UTC stamp `YYYYMMDDTHHMMSSZ`. -/
 def formatUtcCompact (ts : Std.Time.Timestamp) : String :=
-  compactUtcFormat.format (Std.Time.DateTime.ofTimestamp ts .GMT)
+  compactUtcFormat.format (Std.Time.DateTime.ofTimestamp ts .UTC)
 
 /-- Format a `Std.Time.PlainDate` as `YYYY-MM-DD`. -/
 def formatUtcDate (d : Std.Time.PlainDate) : String :=
@@ -82,11 +82,11 @@ def parseUtcDate (raw : String) : Except TimeError Std.Time.PlainDate :=
 
 /-- Convert a `Std.Time.Timestamp` to its UTC calendar `Std.Time.PlainDate`. -/
 def utcDateOfTimestamp (ts : Std.Time.Timestamp) : Std.Time.PlainDate :=
-  ts.toPlainDateTimeAssumingUTC.date
+  (Std.Time.DateTime.ofTimestamp ts .UTC).toPlainDate
 
 /-- Convert a UTC `Std.Time.PlainDate` to the midnight `Std.Time.Timestamp` at start of that UTC day. -/
 def timestampOfUtcDate (d : Std.Time.PlainDate) : Std.Time.Timestamp :=
-  d.toTimestampAssumingUTC
+  d.toTimestamp .UTC
 
 /-- Assemble a `TimeApiM m` record over a `TimeOpsM m` effect implementation. -/
 def mkApiM {m : Type → Type} [Monad m] (ops : TimeOpsM m) : TimeApiM m :=

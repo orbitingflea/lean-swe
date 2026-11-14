@@ -174,7 +174,8 @@ theorem reach_processRaw_spawn_emptyProgram_failsInvalidInput :
     CanReach (test_processRaw_spawn_emptyProgram_failsInvalidInput mockRawOps) := by
   refine ⟨{}, { program := "" }, rfl, ?_⟩
   have h := proof_processRaw_spawn_emptyProgram_failsInvalidInput {} { program := "" } rfl
-  simpa [assume, assert] using h
+  simpa [test_processRaw_spawn_emptyProgram_failsInvalidInput, mockRawOps, StateT.run,
+    assume, assert, Bind.bind] using h
 
 /-- Proof of `test_processRaw_killAndReap_restoresActiveCount` for `mockRawOps`. -/
 theorem proof_processRaw_killAndReap_restoresActiveCount :
@@ -200,6 +201,7 @@ theorem reach_processRaw_killAndReap_restoresActiveCount :
     CanReach (test_processRaw_killAndReap_restoresActiveCount mockRawOps) := by
   refine ⟨{}, { program := "echo" }, ?_⟩
   have h := proof_processRaw_killAndReap_restoresActiveCount {} { program := "echo" }
-  simpa [mockRawOps, StateT.run, assume, assert] using h
+  simpa [test_processRaw_killAndReap_restoresActiveCount, mockRawOps, StateT.run,
+    assume, assert, Bind.bind] using h
 
 end LeanSwe.Process.Raw.Proofs
