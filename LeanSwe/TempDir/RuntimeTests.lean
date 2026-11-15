@@ -1,8 +1,8 @@
-import LeanSwe.Temp.Interface
-import LeanSwe.Temp.Impl
+import LeanSwe.TempDir.Interface
+import LeanSwe.TempDir.Impl
 import LeanSwe.Process.Interface
 
-namespace LeanSwe.Temp.RuntimeTests
+namespace LeanSwe.TempDir.RuntimeTests
 
 open LeanSwe
 open LeanSwe.Fs (FsError)
@@ -11,20 +11,20 @@ private def assertTrue (cond : Bool) (msg : String) : IO Unit := do
   if !cond then
     throw (IO.userError s!"ASSERTION FAILED: {msg}")
 
-private def assertTempOk {α : Type} (res : Except TempError α) (msg : String) : IO α := do
+private def assertTempDirOk {α : Type} (res : Except TempDirError α) (msg : String) : IO α := do
   match res with
   | .ok v => return v
-  | .error e => throw (IO.userError s!"ASSERTION FAILED: {msg} (unexpected TempError: {repr e})")
+  | .error e => throw (IO.userError s!"ASSERTION FAILED: {msg} (unexpected TempDirError: {repr e})")
 
 private def assertFsOk {α : Type} (res : Except FsError α) (msg : String) : IO α := do
   match res with
   | .ok v => return v
   | .error e => throw (IO.userError s!"ASSERTION FAILED: {msg} (unexpected FsError: {repr e})")
 
-private def assertTempErrKind {α : Type} (res : Except TempError α) (expected : TempErrorKind)
+private def assertTempDirErrKind {α : Type} (res : Except TempDirError α) (expected : TempDirErrorKind)
     (msg : String) : IO Unit := do
   match res with
-  | .ok _ => throw (IO.userError s!"ASSERTION FAILED: {msg} (expected TempError {repr expected}, got ok)")
+  | .ok _ => throw (IO.userError s!"ASSERTION FAILED: {msg} (expected TempDirError {repr expected}, got ok)")
   | .error e =>
     if e.kind != expected || e.message == "" then
       throw (IO.userError s!"ASSERTION FAILED: {msg} (got {repr e}, expected {repr expected})")
@@ -42,7 +42,7 @@ private def isSorted (xs : Array String) : Bool :=
 
 private def testWithTempDirLifecycle (sandbox : String) : IO Unit := do
   let createdPathRef ← IO.mkRef ""
-  let resOk ← Temp.withTempDir (some sandbox) "wt-" fun d => do
+  let resOk ← TempDir.withTempDir (some sandbox) "wt-" fun d => do
     createdPathRef.set d
     let st ← match ← Fs.lstat d with
       | .ok s => pure s
@@ -53,7 +53,7 @@ private def testWithTempDirLifecycle (sandbox : String) : IO Unit := do
     match ← Fs.writeText p "hello" with
     | .ok () => return .ok (42 : Nat)
     | .error e => return .error (Internal.mapFsError e)
-  let v ← assertTempOk resOk "withTempDir ok return"
+  let v ← assertTempDirOk resOk "withTempDir ok return"
   assertTrue (v == 42) "withTempDir returned expected value"
   let createdPath ← createdPathRef.get
   assertTrue (createdPath.startsWith (Fs.join sandbox "wt-")) "withTempDir path prefix"
@@ -62,12 +62,12 @@ private def testWithTempDirLifecycle (sandbox : String) : IO Unit := do
   | .error e => throw (IO.userError s!"pathExists failed: {repr e}")
 
   let errDirRef ← IO.mkRef ""
-  let expectedErr : TempError := { kind := .ioError, path := none, message := "action error" }
-  let resErr ← Temp.withTempDir (some sandbox) "wt-err-" fun d => do
+  let expectedErr : TempDirError := { kind := .ioError, path := none, message := "action error" }
+  let resErr ← TempDir.withTempDir (some sandbox) "wt-err-" fun d => do
     errDirRef.set d
     let _ ← Fs.writeText (Fs.join d "tmp.txt") "data"
-    return (Except.error expectedErr : Except TempError Nat)
-  assertTempErrKind resErr .ioError "withTempDir preserves action error"
+    return (Except.error expectedErr : Except TempDirError Nat)
+  assertTempDirErrKind resErr .ioError "withTempDir preserves action error"
   let errDir ← errDirRef.get
   match ← Fs.pathExists errDir with
   | .ok ex => assertTrue (!ex) "withTempDir removed dir on error exit"
@@ -75,7 +75,7 @@ private def testWithTempDirLifecycle (sandbox : String) : IO Unit := do
 
   let exDirRef ← IO.mkRef ""
   let threw ← try
-    let _r : Except TempError Unit ← Temp.withTempDir (some sandbox) "wt-ex-" fun d => do
+    let _r : Except TempDirError Unit ← TempDir.withTempDir (some sandbox) "wt-ex-" fun d => do
       exDirRef.set d
       let _ ← Fs.writeText (Fs.join d "crash.txt") "x"
       throw (IO.userError "boom")
@@ -89,14 +89,14 @@ private def testWithTempDirLifecycle (sandbox : String) : IO Unit := do
   | .error e => throw (IO.userError s!"pathExists failed: {repr e}")
 
   for badPrefix in ["", ".", "..", ".dot", "sub/dir", String.ofList ['a', Char.ofNat 0]] do
-    let r ← Temp.withTempDir (some sandbox) badPrefix fun _ => pure (.ok () : Except TempError Unit)
-    assertTempErrKind r .invalidInput s!"reject invalid prefix {repr badPrefix}"
-  let rBadRoot ← Temp.withTempDir (some "") "wt-" fun _ => pure (.ok () : Except TempError Unit)
-  assertTempErrKind rBadRoot .invalidInput "reject empty explicit root"
+    let r ← TempDir.withTempDir (some sandbox) badPrefix fun _ => pure (.ok () : Except TempDirError Unit)
+    assertTempDirErrKind r .invalidInput s!"reject invalid prefix {repr badPrefix}"
+  let rBadRoot ← TempDir.withTempDir (some "") "wt-" fun _ => pure (.ok () : Except TempDirError Unit)
+  assertTempDirErrKind rBadRoot .invalidInput "reject empty explicit root"
 
 private def testWithLockedTempDirAndRootResolution (sandbox : String) : IO Unit := do
   let lockedDirRef ← IO.mkRef ""
-  let resOk ← Temp.withLockedTempDir (some sandbox) "wl-" fun d => do
+  let resOk ← TempDir.withLockedTempDir (some sandbox) "wl-" fun d => do
     lockedDirRef.set d
     let lockPath := Fs.join d ".lock"
     let stDir ← match ← Fs.lstat d with
@@ -114,7 +114,7 @@ private def testWithLockedTempDirAndRootResolution (sandbox : String) : IO Unit 
     | .ok none => pure ()
     | other => throw (IO.userError s!"exclusive lock must block while inside withLockedTempDir: {repr other}")
     return .ok "locked-ok"
-  let val ← assertTempOk resOk "withLockedTempDir ok"
+  let val ← assertTempDirOk resOk "withLockedTempDir ok"
   assertTrue (val == "locked-ok") "withLockedTempDir ok value"
   let lockedDir ← lockedDirRef.get
   match ← Fs.pathExists lockedDir with
@@ -123,7 +123,7 @@ private def testWithLockedTempDirAndRootResolution (sandbox : String) : IO Unit 
 
   let exLockedRef ← IO.mkRef ""
   let threw ← try
-    let _r : Except TempError Unit ← Temp.withLockedTempDir (some sandbox) "wl-ex-" fun d => do
+    let _r : Except TempDirError Unit ← TempDir.withLockedTempDir (some sandbox) "wl-ex-" fun d => do
       exLockedRef.set d
       throw (IO.userError "boom-locked")
     pure false
@@ -134,13 +134,13 @@ private def testWithLockedTempDirAndRootResolution (sandbox : String) : IO Unit 
   | .ok ex => assertTrue (!ex) "withLockedTempDir removed dir on exception"
   | .error e => throw (IO.userError s!"pathExists failed: {repr e}")
 
-  let realRes ← Temp.withTempDir none "lean-swe-temp-rt-" fun d => do
+  let realRes ← TempDir.withTempDir none "lean-swe-tempdir-rt-" fun d => do
     match ← Fs.pathExists d with
     | .ok ex =>
       assertTrue ex "defaultApi root? := none created real dir"
       return .ok d
     | .error e => return .error (Internal.mapFsError e)
-  let realPath ← assertTempOk realRes "defaultApi root? := none succeeded"
+  let realPath ← assertTempDirOk realRes "defaultApi root? := none succeeded"
   match ← Fs.pathExists realPath with
   | .ok ex => assertTrue (!ex) "defaultApi root? := none cleaned up real dir"
   | .error e => throw (IO.userError s!"pathExists failed: {repr e}")
@@ -149,14 +149,14 @@ private def testWithLockedTempDirAndRootResolution (sandbox : String) : IO Unit 
     { EnvVars.defaultApi with getEnv := fun k => pure (.ok (if k == "TMPDIR" then some sandbox else none)) }
   let customApiOk := Internal.mkApiM Fs.defaultApi Time.defaultOps Uuid.defaultApi customEnvOk
   let customRes ← customApiOk.withTempDir none "env-ok-" fun d => pure (.ok d)
-  let customPath ← assertTempOk customRes "TMPDIR custom env resolved"
+  let customPath ← assertTempDirOk customRes "TMPDIR custom env resolved"
   assertTrue (customPath.startsWith (Fs.join sandbox "env-ok-")) "TMPDIR path honored"
 
   let missingPath := Fs.join sandbox "does-not-exist-tmpdir"
   let customEnvMissing : EnvVars.EnvVarsApiM IO :=
     { EnvVars.defaultApi with getEnv := fun k => pure (.ok (if k == "TMPDIR" then some missingPath else none)) }
   let customApiMissing := Internal.mkApiM Fs.defaultApi Time.defaultOps Uuid.defaultApi customEnvMissing
-  assertTempErrKind (← customApiMissing.withTempDir none "env-miss-" fun _ => pure (.ok ()))
+  assertTempDirErrKind (← customApiMissing.withTempDir none "env-miss-" fun _ => pure (.ok ()))
     .notFound "missing TMPDIR fails strictly"
 
   let fileTmp := Fs.join sandbox "not-a-dir.txt"
@@ -164,7 +164,7 @@ private def testWithLockedTempDirAndRootResolution (sandbox : String) : IO Unit 
   let customEnvFile : EnvVars.EnvVarsApiM IO :=
     { EnvVars.defaultApi with getEnv := fun k => pure (.ok (if k == "TMPDIR" then some fileTmp else none)) }
   let customApiFile := Internal.mkApiM Fs.defaultApi Time.defaultOps Uuid.defaultApi customEnvFile
-  assertTempErrKind (← customApiFile.withTempDir none "env-file-" fun _ => pure (.ok ()))
+  assertTempDirErrKind (← customApiFile.withTempDir none "env-file-" fun _ => pure (.ok ()))
     .notADirectory "non-dir TMPDIR fails with notADirectory"
 
 private def testCleanupStaleTempDirsOS (sandbox : String) : IO Unit := do
@@ -248,7 +248,7 @@ private def testCleanupStaleTempDirsOS (sandbox : String) : IO Unit := do
     | .error e => throw (IO.userError s!"kill -9 deadChild failed: {repr e}")
     let _ ← Process.Raw.reap deadChild
 
-    let rep1 ← assertTempOk (← Temp.cleanupStaleTempDirs (some sweepRoot) "job-" 3600)
+    let rep1 ← assertTempDirOk (← TempDir.cleanupStaleTempDirs (some sweepRoot) "job-" 3600)
       "first cleanup pass with 3600s grace window"
     assertTrue (rep1.keptLocked.toList.contains liveDir) "live locked dir kept in pass 1"
     assertTrue (!rep1.removed.toList.contains liveDir) "live locked dir not removed in pass 1"
@@ -268,7 +268,7 @@ private def testCleanupStaleTempDirsOS (sandbox : String) : IO Unit := do
     assertTrue (← assertFsOk (← Fs.pathExists symTarget) "pathExists symTarget") "symlink target untouched"
 
     IO.sleep 1500
-    let rep2 ← assertTempOk (← Temp.cleanupStaleTempDirs (some sweepRoot) "job-" 0)
+    let rep2 ← assertTempDirOk (← TempDir.cleanupStaleTempDirs (some sweepRoot) "job-" 0)
       "second cleanup pass with maxAgeSec = 0"
     assertTrue (rep2.keptLocked.toList.contains liveDir) "live locked dir STILL kept even when maxAgeSec = 0"
     assertTrue (!rep2.removed.toList.contains liveDir) "live locked dir not removed in pass 2"
@@ -289,7 +289,7 @@ private def testCleanupStaleTempDirsOS (sandbox : String) : IO Unit := do
 
   assertTrue ((← Process.activeProcessCount) == 0) "all child processes reaped"
 
-/-- Execute all runtime OS tests for `LeanSwe.Temp`. -/
+/-- Execute all runtime OS tests for `LeanSwe.TempDir`. -/
 def runAll : IO Unit := do
   let res ← Fs.withTempDir fun sandbox => do
     testWithTempDirLifecycle sandbox
@@ -297,6 +297,6 @@ def runAll : IO Unit := do
     testCleanupStaleTempDirsOS sandbox
     return .ok ()
   let _ ← assertFsOk res "outer sandbox cleanup"
-  IO.println "LEAN_SWE_TEMP_RUNTIME_TESTS_PASSED"
+  IO.println "LEAN_SWE_TEMPDIR_RUNTIME_TESTS_PASSED"
 
-end LeanSwe.Temp.RuntimeTests
+end LeanSwe.TempDir.RuntimeTests
