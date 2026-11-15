@@ -22,6 +22,7 @@ def main (args : List String) : IO UInt32 := do
     Uuid.RuntimeTests.runAll
     Sqlite.Raw.RuntimeTests.runAll
     Sqlite.RuntimeTests.runAll
+    Git.RuntimeTests.runAll
     CmdLine.RuntimeTests.runAll
     NumParse.RuntimeTests.runAll
     Toml.RuntimeTests.runAll
