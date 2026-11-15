@@ -20,6 +20,12 @@ private def assertOkEq {α : Type} [BEq α] [Repr α]
   if !(v == expected) then
     throw (IO.userError s!"ASSERTION FAILED: {msg} (got {repr v}, expected {repr expected})")
 
+private def assertOkBytesEq (actual : Except FsError ByteArray) (expected : ByteArray)
+    (msg : String) : IO Unit := do
+  let v ← assertOk actual msg
+  if !(v == expected) then
+    throw (IO.userError s!"ASSERTION FAILED: {msg} (got {repr v.data}, expected {repr expected.data})")
+
 private def assertErrKind {α : Type} (res : Except FsError α) (expected : FsErrorKind)
     (msg : String) : IO Unit := do
   match res with
@@ -300,6 +306,114 @@ private def testLocksMultiProcess (tmp : String) : IO Unit := do
     "OS kernel immediately releases flock on child SIGKILL"
   assertTrue ((← Process.activeProcessCount) == 0) "final activeProcessCount == 0"
 
+private def testAmbientSafety (tmp : String) : IO Unit := do
+  let workDir := Fs.join tmp "ambient_work"
+  assertOk (← Fs.mkdir workDir false false) "mkdir ambient_work"
+
+  let binTarget := Fs.join workDir "payload.bin"
+  let binBytes := ByteArray.mk #[0, 42, 127, 255, 10]
+  assertOk (← Fs.atomicWriteBytes binTarget binBytes) "atomicWriteBytes creates new file"
+  assertOkBytesEq (← Fs.readBytes binTarget) binBytes "atomicWriteBytes exact bytes"
+  assertOkEq (← Fs.listDir workDir) #["payload.bin"] "atomicWriteBytes leaves no tmp sibling"
+
+  let updatedBytes := ByteArray.mk #[9, 8, 7, 6]
+  assertOk (← Fs.atomicWriteBytes binTarget updatedBytes) "atomicWriteBytes overwrites file"
+  assertOkBytesEq (← Fs.readBytes binTarget) updatedBytes "atomicWriteBytes updated bytes"
+
+  let symVictim := Fs.join workDir "sym_victim.bin"
+  assertOk (← Fs.atomicWriteBytes symVictim binBytes) "atomicWriteBytes victim"
+  let symReplace := Fs.join workDir "sym_replace.bin"
+  assertOk (← Fs.symlink symVictim symReplace) "symlink to victim"
+  assertOk (← Fs.atomicWriteBytes symReplace updatedBytes) "atomicWriteBytes replaces symlink"
+  assertOkEq (← Fs.isSymlink symReplace) false "replaced symlink is now regular file"
+  assertOkBytesEq (← Fs.readBytes symReplace) updatedBytes "replaced symlink has new bytes"
+  assertOkBytesEq (← Fs.readBytes symVictim) binBytes "replaced symlink target untouched"
+
+  let symRead := Fs.join workDir "sym_read.bin"
+  assertOk (← Fs.symlink binTarget symRead) "symlink for readBytes roundtrip"
+  assertOkBytesEq (← Fs.readBytes symRead) updatedBytes "Fs.readBytes symlink exact bytes"
+
+  let nulStr := String.ofList ['x', Char.ofNat 0, 'y']
+  for badPath in #["", Fs.join workDir nulStr, workDir ++ "/", ".", "..", Fs.join workDir ".", Fs.join workDir ".."] do
+    assertErrKind (← Fs.atomicWriteBytes badPath binBytes) .invalidInput
+      s!"atomicWriteBytes invalid path rejected: {repr badPath}"
+    assertErrKind (← Fs.atomicWriteText badPath "bad") .invalidInput
+      s!"atomicWriteText invalid path rejected: {repr badPath}"
+
+  assertErrKind (← Fs.atomicWriteBytes "/" binBytes) .isADirectory "atomicWriteBytes / rejected"
+  assertErrKind (← Fs.atomicWriteText "/" "bad") .isADirectory "atomicWriteText / rejected"
+  assertErrKind (← Fs.atomicWriteBytes workDir binBytes) .isADirectory "atomicWriteBytes dir rejected"
+  assertErrKind (← Fs.atomicWriteText workDir "bad") .isADirectory "atomicWriteText dir rejected"
+
+  assertErrKind (← Fs.readBytes "") .invalidInput "Fs.readBytes empty rejected"
+  assertErrKind (← Fs.readBytes (Fs.join workDir nulStr)) .invalidInput "Fs.readBytes NUL rejected"
+  assertErrKind (← Fs.readBytes (workDir ++ "/")) .invalidInput "Fs.readBytes trailing slash rejected"
+  assertErrKind (← Fs.readBytes workDir) .isADirectory "Fs.readBytes dir rejected"
+
+  let fifoPath := Fs.join workDir "fs.fifo"
+  match ← Process.runCommand "mkfifo" #[fifoPath] with
+  | .ok out => assertTrue (out.exitCode == 0) "mkfifo exitCode 0"
+  | .error e => throw (IO.userError s!"mkfifo failed: {repr e}")
+  assertErrKind (← Fs.readBytes fifoPath) .invalidInput "Fs.readBytes FIFO rejected immediately"
+  assertErrKind (← Fs.readText fifoPath) .invalidInput "Fs.readText FIFO rejected immediately"
+
+  let sockPath := Fs.join workDir "fs.sock"
+  let readyPath := Fs.join workDir "fs_sock.ready"
+  let stopPath := Fs.join workDir "fs_sock.stop"
+  let sockScript :=
+    "import os, socket, sys, time\n" ++
+    "wd = sys.argv[1]\n" ++
+    "os.chdir(wd)\n" ++
+    "s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n" ++
+    "s.bind('fs.sock')\n" ++
+    "s.listen(1)\n" ++
+    "open('fs_sock.ready', 'w').write('1')\n" ++
+    "deadline = time.monotonic() + 5.0\n" ++
+    "while not os.path.exists('fs_sock.stop') and time.monotonic() < deadline:\n" ++
+    "  time.sleep(0.01)\n" ++
+    "s.close()\n"
+  let sockChild ← match ← Process.Raw.spawn { program := "python3", args := #["-c", sockScript, workDir] } with
+    | .ok h => pure h
+    | .error e => throw (IO.userError s!"spawn sockChild failed: {repr e}")
+  try
+    waitForFile readyPath
+    assertErrKind (← Fs.readBytes sockPath) .invalidInput "Fs.readBytes Unix socket rejected"
+    assertErrKind (← Fs.readText sockPath) .invalidInput "Fs.readText Unix socket rejected"
+    assertOk (← Fs.writeText stopPath "go") "stop sockChild"
+    match ← Process.Raw.awaitOutput sockChild with
+    | .ok (.exited out) => assertTrue (out.exitCode == 0) "sockChild exited 0"
+    | .ok other => throw (IO.userError s!"sockChild unexpected outcome: {repr other}")
+    | .error e => throw (IO.userError s!"awaitOutput sockChild failed: {repr e}")
+  finally
+    let _ ← Process.Raw.reap sockChild
+    let _ ← Fs.unlink sockPath true
+    let _ ← Fs.unlink readyPath true
+    let _ ← Fs.unlink stopPath true
+
+  let detApi := Fs.Internal.mkApiM { Raw.defaultOps with monotonicNonce := pure 777 }
+  let prePlanted := Fs.join workDir ".payload.bin.tmp.777"
+  assertOk (← Fs.symlink symVictim prePlanted) "pre-plant tmp symlink"
+  assertErrKind (← detApi.atomicWriteBytes binTarget (ByteArray.mk #[1, 2])) .alreadyExists
+    "atomicWriteBytes rejects pre-planted tmp symlink"
+  assertErrKind (← detApi.atomicWriteText binTarget "overwrite") .alreadyExists
+    "atomicWriteText rejects pre-planted tmp symlink"
+  assertOkBytesEq (← Fs.readBytes binTarget) updatedBytes "target preserved after pre-planted tmp rejection"
+  assertOkBytesEq (← Fs.readBytes symVictim) binBytes "victim preserved after pre-planted tmp rejection"
+  assertOkEq (← Fs.isSymlink prePlanted) true "pre-planted tmp symlink preserved"
+  assertOk (← Fs.unlink prePlanted) "unlink prePlanted"
+
+  let failRenameApi := Fs.Internal.mkApiM
+    { Raw.defaultOps with
+      monotonicNonce := pure 888
+      rename := fun _ _ => pure (.error { kind := .permissionDenied, message := "injected rename error" }) }
+  let expectedTmp := Fs.join workDir ".payload.bin.tmp.888"
+  assertErrKind (← failRenameApi.atomicWriteBytes binTarget (ByteArray.mk #[3, 4])) .permissionDenied
+    "atomicWriteBytes propagates rename error"
+  assertOkEq (← Fs.pathExists expectedTmp) false "tmp cleaned up after rename failure"
+  assertOkBytesEq (← Fs.readBytes binTarget) updatedBytes "target preserved after rename failure"
+
+  assertOk (← Fs.rmtree workDir) "cleanup ambient_work"
+
 private def withTempDir {α : Type} (f : String → IO α) : IO α :=
   IO.FS.withTempDir fun dir => f dir.toString
 
@@ -311,6 +425,7 @@ def runAll : IO Unit := do
     assertOk (← testSymlinksAndGlobs tmp moved) "testSymlinksAndGlobs"
     testLocksSingleProcess tmp
     testLocksMultiProcess tmp
+    testAmbientSafety tmp
   IO.println "PASS: LeanSwe.Fs runtime tests"
 
 end LeanSwe.Fs.RuntimeTests

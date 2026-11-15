@@ -80,6 +80,10 @@ def defaultApi : FsApi :=
 @[inline] def writeBytes (path : String) (content : ByteArray) : IO (Except FsError Unit) :=
   defaultApi.writeBytes path content
 
+/-- Atomically write binary bytes via a sibling exclusive temporary file and `rename`. -/
+@[inline] def atomicWriteBytes (path : String) (content : ByteArray) : IO (Except FsError Unit) :=
+  defaultApi.atomicWriteBytes path content
+
 /-- Atomically write text via a sibling temporary file and `rename`. -/
 @[inline] def atomicWriteText (path content : String) : IO (Except FsError Unit) :=
   defaultApi.atomicWriteText path content

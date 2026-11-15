@@ -214,6 +214,7 @@ private def mockFs : FsApiM (StateM TempDirMockState) :=
         return .ok ()
     readBytes := fun _ => pure (.ok ByteArray.empty)
     writeBytes := fun _ _ => pure (.ok ())
+    atomicWriteBytes := fun _ _ => pure (.ok ())
     atomicWriteText := fun _ _ => pure (.ok ())
     touch := fun p _ => do
       let s ← get
@@ -426,6 +427,7 @@ private def mockFsEx : FsApiM (ExceptT String (StateM TempDirMockState)) :=
     appendText := fun p c => liftM (mockFs.appendText p c)
     readBytes := fun p => liftM (mockFs.readBytes p)
     writeBytes := fun p bs => liftM (mockFs.writeBytes p bs)
+    atomicWriteBytes := fun p bs => liftM (mockFs.atomicWriteBytes p bs)
     atomicWriteText := fun p c => liftM (mockFs.atomicWriteText p c)
     touch := fun p ex => liftM (mockFs.touch p ex)
     mkdir := fun p par ex => liftM (mockFs.mkdir p par ex)

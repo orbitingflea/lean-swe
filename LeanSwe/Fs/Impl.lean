@@ -458,13 +458,29 @@ def touchImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
     else
       return .error e
 
-private def atomicWriteTextImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
-    (path content : String) : m (Except FsError Unit) := do
+private def isValidRawPath (path : String) : Bool :=
+  let cs := path.toList
+  !cs.isEmpty && !(Char.ofNat 0 ∈ cs) && !(cs.length > 1 && cs.getLast? == some '/')
+
+/-- Checks whether `path` ends with a raw `.` or `..` final segment before normalization. -/
+def hasDotFinalSegment (path : String) : Bool :=
+  match path.toList.reverse with
+  | ['.'] | '.' :: '/' :: _ => true
+  | ['.', '.'] | '.' :: '.' :: '/' :: _ => true
+  | _ => false
+
+/-- Checks raw path validity and rejects raw `.` or `..` final path segments. -/
+def isValidAtomicTargetPath (path : String) : Bool :=
+  isValidRawPath path && !hasDotFinalSegment path
+
+/-- Writes `bytes` to a sibling temp file with a fresh nonce and renames it atomically to `path`. -/
+def atomicWriteSiblingM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (path : String) (bytes : ByteArray) : m (Except FsError Unit) := do
   let parentDir := (parent path).getD "."
   let baseName := (name path).getD "tmp"
   let nonce ← ops.monotonicNonce
   let tmpPath := join parentDir s!".{baseName}.tmp.{nonce}"
-  match ← ops.writeBytes tmpPath content.toUTF8 with
+  match ← ops.createFileNew tmpPath bytes with
   | .error e => return .error e
   | .ok () =>
     match ← ops.rename tmpPath path with
@@ -472,6 +488,30 @@ private def atomicWriteTextImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM 
       let _ ← ops.unlinkFile tmpPath
       return .error e
     | .ok () => return .ok ()
+
+/-- Implements `FsApiM.atomicWriteBytes` cleanly over raw filesystem ops. -/
+def atomicWriteBytesImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (path : String) (bytes : ByteArray) : m (Except FsError Unit) := do
+  if !isValidAtomicTargetPath path then
+    return .error { kind := .invalidInput, path := some path, message := s!"invalid target path: {path}" }
+  else if path == "/" then
+    return .error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }
+  else
+    match ← ops.stat false path with
+    | .error e =>
+      if e.kind != .notFound then
+        return .error e
+      else
+        atomicWriteSiblingM ops path bytes
+    | .ok st =>
+      if st.kind == .dir then
+        return .error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }
+      else
+        atomicWriteSiblingM ops path bytes
+
+private def atomicWriteTextImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (path content : String) : m (Except FsError Unit) :=
+  atomicWriteBytesImplM ops path content.toUTF8
 
 private def walkGoM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
     (root relRoot : String) (acc : Array WalkEntry) : Nat → m (Except FsError (Array WalkEntry))
@@ -536,7 +576,8 @@ private def rglobImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
   let fullPat := if pattern == "**" || pattern.startsWith "**/" then pattern else "**/" ++ pattern
   globImplM ops root fullPat
 
-private def readTextImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+/-- Generic `readText` implementation over `RawFsOpsM m`. -/
+def readTextImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
     (path : String) : m (Except FsError String) := do
   match ← ops.readBytes path with
   | .error e => return .error e
@@ -600,6 +641,7 @@ def mkApiM {m : Type → Type} [Monad m] [MonadFinally m] (ops : RawFsOpsM m) : 
     appendText := ops.appendText
     readBytes := ops.readBytes
     writeBytes := ops.writeBytes
+    atomicWriteBytes := atomicWriteBytesImplM ops
     atomicWriteText := atomicWriteTextImplM ops
     touch := touchImplM ops
     mkdir := mkdirImplM ops
