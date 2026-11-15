@@ -1,6 +1,5 @@
-import LeanSwe.Fs.Raw.Types
-import LeanSwe.Fs.Raw.Interface
 import LeanSwe.Git.Interface
+import LeanSwe.TempDir.Interface
 
 namespace LeanSwe.Git.RuntimeTests
 
@@ -25,7 +24,7 @@ private def assertErrKind {α : Type} (res : Except GitError α) (expected : Git
       throw (IO.userError s!"ASSERTION FAILED: {msg} (got {repr e}, expected {repr expected})")
 
 private def withTempDirIO (f : String → IO Unit) : IO Unit := do
-  let res ← LeanSwe.Fs.Raw.withTempDir fun dir => do
+  let res ← LeanSwe.TempDir.withTempDir none "lean-swe-git-rt-" fun dir => do
     f dir
     pure (.ok ())
   match res with

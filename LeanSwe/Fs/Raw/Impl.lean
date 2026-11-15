@@ -179,10 +179,4 @@ def mkRawOps (posix : PosixRawOps) : RawFsOps :=
         return .error (mapRawError (.invalidArgument (some handle.path) 22 "invalid lock handle"))
       catchFs (some handle.path) (posix.releaseLock (UInt64.ofNat handle.handleId) handle.path) }
 
-/-- Temporary directory bracket modeled after Python `tempfile.TemporaryDirectory`. -/
-def withTempDir {α : Type} (f : String → IO (Except FsError α)) : IO (Except FsError α) := do
-  match ← catchFs none (IO.FS.withTempDir fun dir => f dir.toString) with
-  | .error e => return .error e
-  | .ok inner => return inner
-
 end LeanSwe.Fs.Raw.Internal

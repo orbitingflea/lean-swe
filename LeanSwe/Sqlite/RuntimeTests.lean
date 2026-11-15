@@ -1,5 +1,5 @@
 import LeanSwe.Sqlite.Interface
-import LeanSwe.Fs.Raw.Interface
+import LeanSwe.TempDir.Interface
 
 namespace LeanSwe.Sqlite.RuntimeTests
 
@@ -144,7 +144,7 @@ private def testExceptionSafety (dbPath : String) : IO Unit := do
 
 /-- Execute end-to-end runtime tests for `LeanSwe.Sqlite` over real SQLite files. -/
 def runAll : IO Unit := do
-  let res ← LeanSwe.Fs.Raw.withTempDir fun tmp => do
+  let res ← LeanSwe.TempDir.withTempDir none "lean-swe-sqlite-rt-" fun tmp => do
     let dbPath := tmp ++ "/app.sqlite3"
     testCrudWalFkAndBinding dbPath
     testTransactionsAndPersistence dbPath

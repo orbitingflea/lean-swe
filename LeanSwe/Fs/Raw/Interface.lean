@@ -93,10 +93,6 @@ def defaultOps : RawFsOps :=
 @[inline] def cwd : IO (Except FsError String) :=
   defaultOps.cwd
 
-/-- Execute `f` with a fresh temporary directory cleaned up afterward. -/
-@[inline] def withTempDir {α : Type} (f : String → IO (Except FsError α)) : IO (Except FsError α) :=
-  Internal.withTempDir f
-
 /-- Acquire an OS advisory file lock on `path`. -/
 @[inline] def acquireLock (path : String) (mode : LockMode := .exclusive)
     (createIfMissing : Bool := true) (nonBlocking : Bool := false) : IO (Except FsError LockHandle) :=

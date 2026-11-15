@@ -291,12 +291,12 @@ private def testCleanupStaleTempDirsOS (sandbox : String) : IO Unit := do
 
 /-- Execute all runtime OS tests for `LeanSwe.TempDir`. -/
 def runAll : IO Unit := do
-  let res ← Fs.withTempDir fun sandbox => do
+  let res ← TempDir.withTempDir none "lean-swe-tempdir-sandbox-" fun sandbox => do
     testWithTempDirLifecycle sandbox
     testWithLockedTempDirAndRootResolution sandbox
     testCleanupStaleTempDirsOS sandbox
     return .ok ()
-  let _ ← assertFsOk res "outer sandbox cleanup"
+  let _ ← assertTempDirOk res "outer sandbox cleanup"
   IO.println "LEAN_SWE_TEMPDIR_RUNTIME_TESTS_PASSED"
 
 end LeanSwe.TempDir.RuntimeTests

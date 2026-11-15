@@ -1,5 +1,5 @@
 import LeanSwe.Sqlite.Raw.Interface
-import LeanSwe.Fs.Raw.Interface
+import LeanSwe.TempDir.Interface
 
 namespace LeanSwe.Sqlite.Raw.RuntimeTests
 
@@ -24,7 +24,7 @@ private def assertErrKind {α : Type} (res : Except SqliteError α) (expected : 
 
 /-- Execute primitive SQLite C-shim grounding tests for `LeanSwe.Sqlite.Raw`. -/
 def runAll : IO Unit := do
-  let res ← LeanSwe.Fs.Raw.withTempDir fun tmp => do
+  let res ← LeanSwe.TempDir.withTempDir none "lean-swe-sqlite-raw-rt-" fun tmp => do
     let dbBefore ← Raw.activeDbCount
     let stmtBefore ← Raw.activeStmtCount
     assertTrue (dbBefore == 0 && stmtBefore == 0) "initial handle counts zero"
