@@ -104,3 +104,9 @@ import LeanSwe.Toml.Interface
 import LeanSwe.Toml.SpecTests
 import LeanSwe.Toml.Proofs
 import LeanSwe.Toml.RuntimeTests
+import LeanSwe.Temp.Types
+import LeanSwe.Temp.Impl
+import LeanSwe.Temp.Interface
+import LeanSwe.Temp.SpecTests
+import LeanSwe.Temp.Proofs
+import LeanSwe.Temp.RuntimeTests

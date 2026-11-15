@@ -25,6 +25,7 @@ def main (args : List String) : IO UInt32 := do
     CmdLine.RuntimeTests.runAll
     NumParse.RuntimeTests.runAll
     Toml.RuntimeTests.runAll
+    Temp.RuntimeTests.runAll
     match RegExp.findAll "[0-9]+" "a1b22" with
     | .ok xs =>
       if xs.map (·.matched) != #["1", "22"] then
