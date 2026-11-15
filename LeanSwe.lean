@@ -117,3 +117,9 @@ import LeanSwe.Temp.Interface
 import LeanSwe.Temp.SpecTests
 import LeanSwe.Temp.Proofs
 import LeanSwe.Temp.RuntimeTests
+import LeanSwe.Compress.Types
+import LeanSwe.Compress.Impl
+import LeanSwe.Compress.Interface
+import LeanSwe.Compress.SpecTests
+import LeanSwe.Compress.Proofs
+import LeanSwe.Compress.RuntimeTests
