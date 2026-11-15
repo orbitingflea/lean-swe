@@ -684,6 +684,7 @@ private def stubFs : FsApiM (StateM TempDirStubState) :=
       return .ok ()
     readBytes := fun _ => pure (.ok ByteArray.empty)
     writeBytes := fun _ _ => pure (.ok ())
+    atomicWriteBytes := fun _ _ => pure (.ok ())
     atomicWriteText := fun _ _ => pure (.ok ())
     touch := fun p _ => do
       let s ← get
@@ -840,6 +841,7 @@ private def stubFsEx : FsApiM (ExceptT String (StateM TempDirStubState)) :=
     appendText := fun p c => liftM (stubFs.appendText p c)
     readBytes := fun p => liftM (stubFs.readBytes p)
     writeBytes := fun p bs => liftM (stubFs.writeBytes p bs)
+    atomicWriteBytes := fun p bs => liftM (stubFs.atomicWriteBytes p bs)
     atomicWriteText := fun p c => liftM (stubFs.atomicWriteText p c)
     touch := fun p ex => liftM (stubFs.touch p ex)
     mkdir := fun p par ex => liftM (stubFs.mkdir p par ex)

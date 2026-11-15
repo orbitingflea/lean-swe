@@ -18,6 +18,10 @@ structure PosixRawOps where
   acquireLock : String → UInt8 → Bool → Bool → IO (UInt8 × UInt64 × UInt32)
   /-- Release an advisory file lock handle `(handleId, path)`. -/
   releaseLock : UInt64 → String → IO Unit
+  /-- Read entire regular file bytes without blocking on non-regular files. -/
+  readRegularBytes : String → IO ByteArray
+  /-- Exclusively create a new regular file without following final symlinks. -/
+  createFileNew : String → ByteArray → IO Unit
 
 /-- Return `msg` if non-empty, or `fallback` otherwise. -/
 def nonEmptyMsg (fallback msg : String) : String :=
@@ -145,8 +149,9 @@ def mkRawOps (posix : PosixRawOps) : RawFsOps :=
     createDir := fun path => catchFs (some path) (IO.FS.createDir (System.FilePath.mk path))
     removeDir := fun path => catchFs (some path) (IO.FS.removeDir (System.FilePath.mk path))
     unlinkFile := fun path => catchFs (some path) (IO.FS.removeFile (System.FilePath.mk path))
-    readBytes := fun path => catchFs (some path) (IO.FS.readBinFile (System.FilePath.mk path))
+    readBytes := fun path => catchFs (some path) (posix.readRegularBytes path)
     writeBytes := fun path b => catchFs (some path) (IO.FS.writeBinFile (System.FilePath.mk path) b)
+    createFileNew := fun path b => catchFs (some path) (posix.createFileNew path b)
     appendText := fun path content => catchFs (some path) do
       let h ← IO.FS.Handle.mk (System.FilePath.mk path) .append
       h.putStr content

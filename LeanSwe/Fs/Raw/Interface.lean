@@ -21,13 +21,21 @@ private opaque rawAcquireLock : @& String → UInt8 → Bool → Bool → IO (UI
 @[extern "leanswe_fs_release_lock"]
 private opaque rawReleaseLock : UInt64 → @& String → IO Unit
 
+@[extern "leanswe_fs_read_regular_bytes"]
+private opaque rawReadRegularBytes : @& String → IO ByteArray
+
+@[extern "leanswe_fs_create_file_new"]
+private opaque rawCreateFileNew : @& String → @& ByteArray → IO Unit
+
 private def posixRawOps : Internal.PosixRawOps :=
   { chmod := rawChmod
     symlink := rawSymlink
     readLink := rawReadLink
     statMode := rawStatMode
     acquireLock := rawAcquireLock
-    releaseLock := rawReleaseLock }
+    releaseLock := rawReleaseLock
+    readRegularBytes := rawReadRegularBytes
+    createFileNew := rawCreateFileNew }
 
 /-- Default minimal OS primitive operations backed by `IO.FS` and `c/fs_shim.c`. -/
 def defaultOps : RawFsOps :=
@@ -64,6 +72,10 @@ def defaultOps : RawFsOps :=
 /-- Write or overwrite binary file. -/
 @[inline] def writeBytes (path : String) (bytes : ByteArray) : IO (Except FsError Unit) :=
   defaultOps.writeBytes path bytes
+
+/-- Atomically create a new regular file without following symlinks (`O_CREAT | O_EXCL | O_NOFOLLOW`). -/
+@[inline] def createFileNew (path : String) (bytes : ByteArray) : IO (Except FsError Unit) :=
+  defaultOps.createFileNew path bytes
 
 /-- Append UTF-8 text to a file, creating it if absent. -/
 @[inline] def appendText (path content : String) : IO (Except FsError Unit) :=

@@ -93,19 +93,197 @@ LEAN_EXPORT lean_obj_res leanswe_fs_stat_mode(
   return lean_io_result_mk_ok(lean_box_uint32(perms));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_fs_acquire_lock(
-    b_lean_obj_arg path_obj, uint8_t mode, uint8_t create_if_missing, uint8_t non_blocking,
-    lean_obj_arg w) {
-  (void)w;
+static int validate_raw_path(b_lean_obj_arg path_obj) {
   size_t sz = lean_string_size(path_obj);
   size_t slen = (sz > 0) ? (sz - 1) : 0;
   const char *cpath = lean_string_cstr(path_obj);
   if (slen == 0 || strlen(cpath) != slen) {
-    return lean_io_result_mk_ok(mk_acquire_result(2, 0, (uint32_t)EINVAL));
+    return 0;
   }
   if (slen > 1 && cpath[slen - 1] == '/') {
+    return 0;
+  }
+  return 1;
+}
+
+LEAN_EXPORT lean_obj_res leanswe_fs_read_regular_bytes(b_lean_obj_arg path_obj, lean_obj_arg w) {
+  (void)w;
+  if (!validate_raw_path(path_obj)) {
+    return lean_io_result_mk_error(lean_decode_io_error(EINVAL, path_obj));
+  }
+  const char *cpath = lean_string_cstr(path_obj);
+  int fd = -1;
+  for (;;) {
+    fd = open(cpath, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY);
+    if (fd >= 0 || errno != EINTR) {
+      break;
+    }
+  }
+  if (fd < 0) {
+    int err = errno;
+    if (err == ENXIO) {
+      struct stat st;
+      if (stat(cpath, &st) == 0 || lstat(cpath, &st) == 0) {
+        if (S_ISDIR(st.st_mode)) {
+          return lean_io_result_mk_error(lean_decode_io_error(EISDIR, path_obj));
+        }
+      }
+      return lean_io_result_mk_error(lean_decode_io_error(EINVAL, path_obj));
+    }
+    return lean_io_result_mk_error(lean_decode_io_error(err, path_obj));
+  }
+
+  struct stat st;
+  if (fstat(fd, &st) != 0) {
+    int err = errno;
+    close(fd);
+    return lean_io_result_mk_error(lean_decode_io_error(err, path_obj));
+  }
+  if (S_ISDIR(st.st_mode)) {
+    close(fd);
+    return lean_io_result_mk_error(lean_decode_io_error(EISDIR, path_obj));
+  }
+  if (!S_ISREG(st.st_mode)) {
+    close(fd);
+    return lean_io_result_mk_error(lean_decode_io_error(EINVAL, path_obj));
+  }
+
+  int flags = fcntl(fd, F_GETFL, 0);
+  if (flags < 0) {
+    int err = errno;
+    close(fd);
+    return lean_io_result_mk_error(lean_decode_io_error(err, path_obj));
+  }
+  if ((flags & O_NONBLOCK) != 0) {
+    if (fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) != 0) {
+      int err = errno;
+      close(fd);
+      return lean_io_result_mk_error(lean_decode_io_error(err, path_obj));
+    }
+  }
+
+  size_t cap = 4096;
+  if (st.st_size > 0 && (uint64_t)st.st_size <= (uint64_t)(SIZE_MAX - 4096)) {
+    size_t hint = (size_t)st.st_size + 1;
+    if (hint > cap) {
+      cap = hint;
+    }
+  }
+  uint8_t *buf = (uint8_t *)malloc(cap);
+  if (buf == NULL) {
+    close(fd);
+    return lean_io_result_mk_error(lean_decode_io_error(ENOMEM, path_obj));
+  }
+  size_t len = 0;
+  for (;;) {
+    if (len == cap) {
+      if (cap > SIZE_MAX / 2) {
+        free(buf);
+        close(fd);
+        return lean_io_result_mk_error(lean_decode_io_error(ENOMEM, path_obj));
+      }
+      size_t new_cap = cap * 2;
+      uint8_t *new_buf = (uint8_t *)realloc(buf, new_cap);
+      if (new_buf == NULL) {
+        free(buf);
+        close(fd);
+        return lean_io_result_mk_error(lean_decode_io_error(ENOMEM, path_obj));
+      }
+      buf = new_buf;
+      cap = new_cap;
+    }
+    size_t space = cap - len;
+    size_t chunk = (space > 65536) ? 65536 : space;
+    ssize_t n = read(fd, buf + len, chunk);
+    if (n < 0) {
+      int err = errno;
+      if (err == EINTR || err == EAGAIN || err == EWOULDBLOCK) {
+        continue;
+      }
+      free(buf);
+      close(fd);
+      return lean_io_result_mk_error(lean_decode_io_error(err, path_obj));
+    }
+    if (n == 0) {
+      break;
+    }
+    len += (size_t)n;
+  }
+
+  if (close(fd) != 0) {
+    int err = errno;
+    if (err != EINTR) {
+      free(buf);
+      return lean_io_result_mk_error(lean_decode_io_error(err, path_obj));
+    }
+  }
+
+  lean_obj_res ba = lean_alloc_sarray(1, len, len);
+  if (len > 0) {
+    memcpy(lean_sarray_cptr(ba), buf, len);
+  }
+  free(buf);
+  return lean_io_result_mk_ok(ba);
+}
+
+LEAN_EXPORT lean_obj_res leanswe_fs_create_file_new(
+    b_lean_obj_arg path_obj, b_lean_obj_arg bytes_obj, lean_obj_arg w) {
+  (void)w;
+  if (!validate_raw_path(path_obj)) {
+    return lean_io_result_mk_error(lean_decode_io_error(EINVAL, path_obj));
+  }
+  const char *cpath = lean_string_cstr(path_obj);
+  int fd = -1;
+  for (;;) {
+    fd = open(cpath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, (mode_t)0644);
+    if (fd >= 0 || errno != EINTR) {
+      break;
+    }
+  }
+  if (fd < 0) {
+    return lean_io_result_mk_error(lean_decode_io_error(errno, path_obj));
+  }
+
+  size_t total = lean_sarray_size(bytes_obj);
+  const uint8_t *ptr = (total > 0) ? lean_sarray_cptr((lean_object *)bytes_obj) : NULL;
+  size_t off = 0;
+  while (off < total) {
+    ssize_t n = write(fd, ptr + off, total - off);
+    if (n < 0) {
+      int err = errno;
+      if (err == EINTR) {
+        continue;
+      }
+      close(fd);
+      (void)unlink(cpath);
+      return lean_io_result_mk_error(lean_decode_io_error(err, path_obj));
+    }
+    if (n == 0) {
+      close(fd);
+      (void)unlink(cpath);
+      return lean_io_result_mk_error(lean_decode_io_error(EIO, path_obj));
+    }
+    off += (size_t)n;
+  }
+
+  if (close(fd) != 0) {
+    int err = errno;
+    if (err != EINTR) {
+      (void)unlink(cpath);
+      return lean_io_result_mk_error(lean_decode_io_error(err, path_obj));
+    }
+  }
+  return lean_io_result_mk_ok(lean_box(0));
+}
+
+LEAN_EXPORT lean_obj_res leanswe_fs_acquire_lock(
+    b_lean_obj_arg path_obj, uint8_t mode, uint8_t create_if_missing, uint8_t non_blocking,
+    lean_obj_arg w) {
+  (void)w;
+  if (!validate_raw_path(path_obj)) {
     return lean_io_result_mk_ok(mk_acquire_result(2, 0, (uint32_t)EINVAL));
   }
+  const char *cpath = lean_string_cstr(path_obj);
 
   int base_flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK;
   int fd = -1;
