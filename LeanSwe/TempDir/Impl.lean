@@ -1,10 +1,10 @@
 import LeanSwe.EnvVars.Types
 import LeanSwe.Fs.Types
-import LeanSwe.Temp.Types
+import LeanSwe.TempDir.Types
 import LeanSwe.Time.Types
 import LeanSwe.Uuid.Types
 
-namespace LeanSwe.Temp.Internal
+namespace LeanSwe.TempDir.Internal
 
 open LeanSwe.Fs (FsApiM FsError EntryKind)
 open LeanSwe.Time (TimeOpsM)
@@ -30,27 +30,27 @@ def sortStrings : List String → List String
   | [] => []
   | x :: xs => insertSorted x (sortStrings xs)
 
-/-- Map an `FsError` into a `TempError` with non-empty diagnostic message. -/
-def mapFsError (err : FsError) : TempError :=
+/-- Map an `FsError` into a `TempDirError` with non-empty diagnostic message. -/
+def mapFsError (err : FsError) : TempDirError :=
   let kind :=
     match err.kind with
-    | .notFound => TempErrorKind.notFound
-    | .alreadyExists => TempErrorKind.alreadyExists
-    | .permissionDenied => TempErrorKind.permissionDenied
-    | .notADirectory => TempErrorKind.notADirectory
-    | _ => TempErrorKind.ioError
+    | .notFound => TempDirErrorKind.notFound
+    | .alreadyExists => TempDirErrorKind.alreadyExists
+    | .permissionDenied => TempDirErrorKind.permissionDenied
+    | .notADirectory => TempDirErrorKind.notADirectory
+    | _ => TempDirErrorKind.ioError
   { kind := kind
     path := err.path
     message := if err.message.isEmpty then "filesystem error" else err.message }
 
-/-- Map a `UuidError` into a `TempError` with non-empty diagnostic message. -/
-def mapUuidError (err : UuidError) : TempError :=
+/-- Map a `UuidError` into a `TempDirError` with non-empty diagnostic message. -/
+def mapUuidError (err : UuidError) : TempDirError :=
   { kind := .ioError
     path := none
     message := if err.message.isEmpty then "uuid generation failed" else err.message }
 
-/-- Map an `EnvError` into a `TempError` with non-empty diagnostic message. -/
-def mapEnvError (err : EnvVarsError) : TempError :=
+/-- Map an `EnvError` into a `TempDirError` with non-empty diagnostic message. -/
+def mapEnvError (err : EnvVarsError) : TempDirError :=
   { kind := .ioError
     path := none
     message := if err.message.isEmpty then "environment lookup failed" else err.message }
@@ -58,7 +58,7 @@ def mapEnvError (err : EnvVarsError) : TempError :=
 /-- Resolve and validate the base temporary directory from `root?` or `TMPDIR` (falling back to `"/tmp"`). -/
 def resolveRoot {m : Type → Type} [Monad m]
     (fs : FsApiM m) (env : EnvVarsApiM m) (root? : Option String) :
-    m (Except TempError String) := do
+    m (Except TempDirError String) := do
   let rawRoot? ←
     match root? with
     | some r => pure (Except.ok r)
@@ -81,7 +81,7 @@ def resolveRoot {m : Type → Type} [Monad m]
 
 /-- Remove `dir` recursively, treating `.notFound` as already removed. -/
 def cleanupDirIgnoringNotFound {m : Type → Type} [Monad m]
-    (fs : FsApiM m) (dir : String) : m (Except TempError Unit) := do
+    (fs : FsApiM m) (dir : String) : m (Except TempDirError Unit) := do
   match ← fs.rmtree dir true with
   | .ok () => return .ok ()
   | .error fe =>
@@ -92,7 +92,7 @@ def cleanupDirIgnoringNotFound {m : Type → Type} [Monad m]
 def createTempDir {m : Type → Type} [Monad m]
     (fs : FsApiM m) (uuid : UuidApiM m) (env : EnvVarsApiM m)
     (root? : Option String) (dirPrefix : String) :
-    m (Except TempError String) := do
+    m (Except TempDirError String) := do
   if !validPrefix dirPrefix then
     return .error { kind := .invalidInput, path := none, message := "invalid temporary directory prefix" }
   match ← resolveRoot fs env root? with
@@ -115,8 +115,8 @@ def createTempDir {m : Type → Type} [Monad m]
 def withTempDirM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
     (fs : FsApiM m) (uuid : UuidApiM m) (env : EnvVarsApiM m)
     (root? : Option String) (dirPrefix : String)
-    (action : String → m (Except TempError α)) :
-    m (Except TempError α) := do
+    (action : String → m (Except TempDirError α)) :
+    m (Except TempDirError α) := do
   match ← createTempDir fs uuid env root? dirPrefix with
   | .error te => return .error te
   | .ok dir =>
@@ -132,13 +132,13 @@ def withTempDirM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
 def withLockedTempDirM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
     (fs : FsApiM m) (uuid : UuidApiM m) (env : EnvVarsApiM m)
     (root? : Option String) (dirPrefix : String)
-    (action : String → m (Except TempError α)) :
-    m (Except TempError α) := do
+    (action : String → m (Except TempDirError α)) :
+    m (Except TempDirError α) := do
   match ← createTempDir fs uuid env root? dirPrefix with
   | .error te => return .error te
   | .ok dir =>
     let lockPath := fs.join dir ".lock"
-    let lockedAction : m (Except FsError (Except TempError α)) :=
+    let lockedAction : m (Except FsError (Except TempDirError α)) :=
       fs.withFileLock lockPath .shared true do
         let r ← action dir
         return .ok r
@@ -153,7 +153,7 @@ def withLockedTempDirM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m
 
 /-- Delete all non-`.lock` entries inside `child`, failing fast before removing `.lock`. -/
 def removeNonLockChildren {m : Type → Type} [Monad m]
-    (fs : FsApiM m) (child : String) : List String → m (Except TempError Unit)
+    (fs : FsApiM m) (child : String) : List String → m (Except TempDirError Unit)
   | [] => return .ok ()
   | name :: rest => do
     if name == ".lock" then
@@ -177,7 +177,7 @@ def removeNonLockChildren {m : Type → Type} [Monad m]
 
 /-- Remove a locked temp directory under an active `.exclusive` lock, deleting `.lock` last. -/
 def removeLockedTempDir {m : Type → Type} [Monad m]
-    (fs : FsApiM m) (child lockPath : String) : m (Except FsError (Except TempError Unit)) := do
+    (fs : FsApiM m) (child lockPath : String) : m (Except FsError (Except TempDirError Unit)) := do
   match ← fs.listDir child with
   | .error fe =>
     if fe.kind == .notFound then return .ok (.ok ())
@@ -246,7 +246,7 @@ def sweepEntries {m : Type → Type} [Monad m]
 def cleanupStaleTempDirsM {m : Type → Type} [Monad m]
     (fs : FsApiM m) (time : TimeOpsM m) (env : EnvVarsApiM m)
     (root? : Option String) (dirPrefix : String) (maxAgeSec : Nat) :
-    m (Except TempError CleanupReport) := do
+    m (Except TempDirError CleanupReport) := do
   if !validPrefix dirPrefix then
     return .error { kind := .invalidInput, path := none, message := "invalid temporary directory prefix" }
   match ← resolveRoot fs env root? with
@@ -265,13 +265,13 @@ def cleanupStaleTempDirsM {m : Type → Type} [Monad m]
           skipped := (sortStrings rep.skipped.toList).toArray
           failed := rep.failed }
 
-/-- Assemble a `TempApiM m` from injected `Fs`, `Time`, `Uuid`, and `Env` interfaces. -/
+/-- Assemble a `TempDirApiM m` from injected `Fs`, `Time`, `Uuid`, and `Env` interfaces. -/
 def mkApiM {m : Type → Type} [Monad m] [MonadFinally m]
     (fs : FsApiM m) (time : TimeOpsM m) (uuid : UuidApiM m) (env : EnvVarsApiM m) :
-    TempApiM m :=
+    TempDirApiM m :=
   { withTempDir := fun root? dirPrefix action => withTempDirM fs uuid env root? dirPrefix action
     withLockedTempDir := fun root? dirPrefix action => withLockedTempDirM fs uuid env root? dirPrefix action
     cleanupStaleTempDirs := fun root? dirPrefix maxAgeSec =>
       cleanupStaleTempDirsM fs time env root? dirPrefix maxAgeSec }
 
-end LeanSwe.Temp.Internal
+end LeanSwe.TempDir.Internal

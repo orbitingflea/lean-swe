@@ -1,7 +1,7 @@
-import LeanSwe.Temp.Interface
-import LeanSwe.Temp.SpecTests
+import LeanSwe.TempDir.Interface
+import LeanSwe.TempDir.SpecTests
 
-namespace LeanSwe.Temp.Proofs
+namespace LeanSwe.TempDir.Proofs
 
 open Core
 open Core.NondetTest
@@ -10,7 +10,7 @@ open LeanSwe.Time (TimeOpsM)
 open LeanSwe.Uuid (UuidApiM Uuid)
 open LeanSwe.EnvVars (EnvVarsApiM)
 
-/-- Entry kind stored in the `TempMockState` filesystem model. -/
+/-- Entry kind stored in the `TempDirMockState` filesystem model. -/
 inductive MockNode where
   /-- Directory with modification timestamp (`modifiedSec`) and POSIX mode bits. -/
   | dir (modifiedSec : Int) (mode : Nat)
@@ -20,8 +20,8 @@ inductive MockNode where
   | symlink (target : String) (modifiedSec : Int)
   deriving Repr, BEq, DecidableEq
 
-/-- Complete deterministic mock state used to verify all `LeanSwe.Temp` specifications. -/
-structure TempMockState where
+/-- Complete deterministic mock state used to verify all `LeanSwe.TempDir` specifications. -/
+structure TempDirMockState where
   /-- Association list of filesystem entries `(path, node)`. -/
   nodes : List (String × MockNode) := [("/tmp", .dir 0 0o755)]
   /-- Active advisory file locks `(inode, mode)`. -/
@@ -86,15 +86,15 @@ private def lookupNode (nodes : List (String × MockNode)) (p : String) : Option
   let np := normKey p
   (nodes.find? (fun e => normKey e.1 == np)).map Prod.snd
 
-private def resolveParentTarget (_s : TempMockState) (p : String) : Except FsError String :=
+private def resolveParentTarget (_s : TempDirMockState) (p : String) : Except FsError String :=
   .ok (normKey p)
 
-private def mockLstatPure (s : TempMockState) (p : String) : Except FsError FileStat :=
+private def mockLstatPure (s : TempDirMockState) (p : String) : Except FsError FileStat :=
   match lookupNode s.nodes p with
   | none => .error { kind := .notFound, path := some p, message := "not found" }
   | some node => .ok (mockNodeStat node)
 
-private def mockStatPure (s : TempMockState) (p : String) : Except FsError FileStat :=
+private def mockStatPure (s : TempDirMockState) (p : String) : Except FsError FileStat :=
   mockLstatPure s p
 
 private def hasWx (st : FileStat) : Bool :=
@@ -128,7 +128,7 @@ private def mockRemoveFirstLock (ino : Nat) (m : LockMode) : List (Nat × LockMo
   | [] => []
   | x :: xs => if x == (ino, m) then xs else x :: mockRemoveFirstLock ino m xs
 
-private def freshInode (s : TempMockState) : Nat :=
+private def freshInode (s : TempDirMockState) : Nat :=
   s.locks.foldl (fun m l => Nat.max m (l.1 + 1)) s.nextInode
 
 private def underDir (prefixDir key : String) : Bool :=
@@ -137,7 +137,7 @@ private def underDir (prefixDir key : String) : Bool :=
   let pref := if np == "/" then "/" else np ++ "/"
   nk == np || pref.toList.isPrefixOf nk.toList
 
-private def mockRmtreePure (p : String) (ignoreMissing : Bool) : StateM TempMockState (Except FsError Unit) := do
+private def mockRmtreePure (p : String) (ignoreMissing : Bool) : StateM TempDirMockState (Except FsError Unit) := do
   let s ← get
   match resolveParentTarget s p with
   | .error e =>
@@ -169,7 +169,7 @@ private def mockUuidToString (u : Uuid) : String :=
   let b15 := u.bytes[15]?.getD 0
   "00000000-0000-4000-8000-00000000" ++ mockHexByte b14 ++ mockHexByte b15
 
-private def mockFs : FsApiM (StateM TempMockState) :=
+private def mockFs : FsApiM (StateM TempDirMockState) :=
   { join := mockJoin
     joinMany := fun parts => parts.foldl mockJoin ""
     normPath := normKey
@@ -379,12 +379,12 @@ private def mockFs : FsApiM (StateM TempMockState) :=
           modify fun s' => { s' with locks := mockRemoveFirstLock ino mode s'.locks }
           return r.map some }
 
-private def mockTime : TimeOpsM (StateM TempMockState) :=
+private def mockTime : TimeOpsM (StateM TempDirMockState) :=
   { nowTimestamp := do return Std.Time.Timestamp.ofSecondsSinceUnixEpoch (Std.Time.Second.Offset.ofInt (← get).nowSec)
     monoNanosNow := pure 0
     sleep := fun _ => pure () }
 
-private def mockUuid : UuidApiM (StateM TempMockState) :=
+private def mockUuid : UuidApiM (StateM TempDirMockState) :=
   { mapRawError := fun _ => { kind := .entropyFailed, message := "entropy" }
     fromRandomBytes := fun _ => .ok (mockUuidOfNat 1)
     toString := mockUuidToString
@@ -398,7 +398,7 @@ private def mockUuid : UuidApiM (StateM TempMockState) :=
       set { s with nextUuid := s.nextUuid + 1 }
       return .ok u }
 
-private def mockEnv : EnvVarsApiM (StateM TempMockState) :=
+private def mockEnv : EnvVarsApiM (StateM TempDirMockState) :=
   { mapRawError := fun _ => { kind := .ioError, message := "env" }
     getEnv := fun k => do
       if k == "TMPDIR" then return .ok (← get).tmpdir
@@ -407,7 +407,7 @@ private def mockEnv : EnvVarsApiM (StateM TempMockState) :=
     homeDir := pure (.ok "/home/user")
     splitSearchPath := fun _ => #[] }
 
-private def mockFsEx : FsApiM (ExceptT String (StateM TempMockState)) :=
+private def mockFsEx : FsApiM (ExceptT String (StateM TempDirMockState)) :=
   { join := mockFs.join
     joinMany := mockFs.joinMany
     normPath := mockFs.normPath
@@ -451,7 +451,7 @@ private def mockFsEx : FsApiM (ExceptT String (StateM TempMockState)) :=
     glob := fun a b => liftM (mockFs.glob a b)
     rglob := fun a b => liftM (mockFs.rglob a b)
     withFileLock := fun p mode createIfMissing action => do
-      let s : TempMockState ← get
+      let s : TempDirMockState ← get
       match resolveParentTarget s p with
       | .error e => return .error e
       | .ok rp =>
@@ -461,20 +461,20 @@ private def mockFsEx : FsApiM (ExceptT String (StateM TempMockState)) :=
         | some (.file ino _ _ _) =>
           if mockHasConflict s.locks ino mode then
             return .error { kind := .wouldBlock, path := some p, message := "wouldBlock" }
-          liftM (set ({ s with locks := (ino, mode) :: s.locks } : TempMockState) : StateM TempMockState Unit)
+          liftM (set ({ s with locks := (ino, mode) :: s.locks } : TempDirMockState) : StateM TempDirMockState Unit)
           let (r, _) ← tryFinally' action (fun _ =>
-            liftM (modify (fun (s' : TempMockState) => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) : StateM TempMockState Unit))
+            liftM (modify (fun (s' : TempDirMockState) => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) : StateM TempDirMockState Unit))
           return r
         | none =>
           if !createIfMissing then
             return .error { kind := .notFound, path := some p, message := "not found" }
           let ino := freshInode s
-          liftM (set ({ s with nodes := (rp, .file ino "" s.nowSec 0o644) :: s.nodes, locks := (ino, mode) :: s.locks, nextInode := ino + 1 } : TempMockState) : StateM TempMockState Unit)
+          liftM (set ({ s with nodes := (rp, .file ino "" s.nowSec 0o644) :: s.nodes, locks := (ino, mode) :: s.locks, nextInode := ino + 1 } : TempDirMockState) : StateM TempDirMockState Unit)
           let (r, _) ← tryFinally' action (fun _ =>
-            liftM (modify (fun (s' : TempMockState) => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) : StateM TempMockState Unit))
+            liftM (modify (fun (s' : TempDirMockState) => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) : StateM TempDirMockState Unit))
           return r
     tryWithFileLock := fun p mode createIfMissing action => do
-      let s : TempMockState ← get
+      let s : TempDirMockState ← get
       match resolveParentTarget s p with
       | .error e => return .error e
       | .ok rp =>
@@ -483,25 +483,25 @@ private def mockFsEx : FsApiM (ExceptT String (StateM TempMockState)) :=
         | some (.symlink _ _) => return .error { kind := .invalidInput, path := some p, message := "symlink" }
         | some (.file ino _ _ _) =>
           if mockHasConflict s.locks ino mode then return .ok none
-          liftM (set ({ s with locks := (ino, mode) :: s.locks } : TempMockState) : StateM TempMockState Unit)
+          liftM (set ({ s with locks := (ino, mode) :: s.locks } : TempDirMockState) : StateM TempDirMockState Unit)
           let (r, _) ← tryFinally' action (fun _ =>
-            liftM (modify (fun (s' : TempMockState) => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) : StateM TempMockState Unit))
+            liftM (modify (fun (s' : TempDirMockState) => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) : StateM TempDirMockState Unit))
           return r.map some
         | none =>
           if !createIfMissing then
             return .error { kind := .notFound, path := some p, message := "not found" }
           let ino := freshInode s
-          liftM (set ({ s with nodes := (rp, .file ino "" s.nowSec 0o644) :: s.nodes, locks := (ino, mode) :: s.locks, nextInode := ino + 1 } : TempMockState) : StateM TempMockState Unit)
+          liftM (set ({ s with nodes := (rp, .file ino "" s.nowSec 0o644) :: s.nodes, locks := (ino, mode) :: s.locks, nextInode := ino + 1 } : TempDirMockState) : StateM TempDirMockState Unit)
           let (r, _) ← tryFinally' action (fun _ =>
-            liftM (modify (fun (s' : TempMockState) => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) : StateM TempMockState Unit))
+            liftM (modify (fun (s' : TempDirMockState) => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) : StateM TempDirMockState Unit))
           return r.map some }
 
-private def mockTimeEx : TimeOpsM (ExceptT String (StateM TempMockState)) :=
+private def mockTimeEx : TimeOpsM (ExceptT String (StateM TempDirMockState)) :=
   { nowTimestamp := liftM mockTime.nowTimestamp
     monoNanosNow := liftM mockTime.monoNanosNow
     sleep := fun ms => liftM (mockTime.sleep ms) }
 
-private def mockUuidEx : UuidApiM (ExceptT String (StateM TempMockState)) :=
+private def mockUuidEx : UuidApiM (ExceptT String (StateM TempDirMockState)) :=
   { mapRawError := mockUuid.mapRawError
     fromRandomBytes := mockUuid.fromRandomBytes
     toString := mockUuid.toString
@@ -511,7 +511,7 @@ private def mockUuidEx : UuidApiM (ExceptT String (StateM TempMockState)) :=
     isValid := mockUuid.isValid
     getUuid := liftM mockUuid.getUuid }
 
-private def mockEnvEx : EnvVarsApiM (ExceptT String (StateM TempMockState)) :=
+private def mockEnvEx : EnvVarsApiM (ExceptT String (StateM TempDirMockState)) :=
   { mapRawError := mockEnv.mapRawError
     getEnv := fun k => liftM (mockEnv.getEnv k)
     listEnv := liftM mockEnv.listEnv
@@ -976,7 +976,7 @@ private theorem list_map_id_of_mem {α : Type} (xs : List α) (f : α → α)
   | cons x xs ih =>
     simp only [List.map_cons, h x (by simp), ih (fun y hy => h y (by simp [hy]))]
 
-private theorem resolveRoot_some_mock_run (s₀ : TempMockState) (root : String)
+private theorem resolveRoot_some_mock_run (s₀ : TempDirMockState) (root : String)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
     (hDir : stRoot.kind = .dir) :
@@ -992,7 +992,7 @@ private theorem resolveRoot_some_mock_run (s₀ : TempMockState) (root : String)
   simp only [hDir, show (EntryKind.dir != EntryKind.dir) = false from rfl,
     Bool.false_eq_true, ↓reduceIte, stateM_pure_run]
 
-private theorem createTempDir_mock_steps (s₀ : TempMockState) (root dirPrefix : String)
+private theorem createTempDir_mock_steps (s₀ : TempDirMockState) (root dirPrefix : String)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat)
@@ -1101,7 +1101,7 @@ private theorem createTempDir_mock_steps (s₀ : TempMockState) (root dirPrefix 
   rw [stateM_bind_run, hCh]
   rw [stateM_pure_run]
 
-private theorem cleanupDir_mock_run (s : TempMockState) (dir : String) (hnorm : normKey dir = dir)
+private theorem cleanupDir_mock_run (s : TempDirMockState) (dir : String) (hnorm : normKey dir = dir)
     (hnode : ∃ m mode, lookupNode s.nodes dir = some (.dir m mode)) :
     (Internal.cleanupDirIgnoringNotFound mockFs dir).run s =
       (.ok (), { s with nodes := s.nodes.filter (fun e => !underDir dir e.1) }) := by
@@ -1112,11 +1112,11 @@ private theorem cleanupDir_mock_run (s : TempMockState) (dir : String) (hnorm : 
   rw [hnorm, hLook]
   simp only [stateM_bind_run, stateM_set_run, stateM_pure_run]
 
-private theorem mockFs_lstat_run (s : TempMockState) (p : String) :
+private theorem mockFs_lstat_run (s : TempDirMockState) (p : String) :
     (mockFs.lstat p).run s = (mockLstatPure s p, s) := by
   simp [mockFs]; rfl
 
-private theorem mockFs_writeText_run (s : TempMockState) (p c : String) :
+private theorem mockFs_writeText_run (s : TempDirMockState) (p c : String) :
     (mockFs.writeText p c).run s =
       (.ok (), { s with
         nodes := (normKey p, .file (freshInode s) c s.nowSec 0o644) :: s.nodes.filter (fun e => normKey e.1 != normKey p)
@@ -1127,13 +1127,13 @@ private theorem mockFs_writeText_run (s : TempMockState) (p c : String) :
 
 private theorem mkApiM_withTempDir_eq {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
     (fs : FsApiM m) (time : TimeOpsM m) (uuid : UuidApiM m) (env : EnvVarsApiM m)
-    (root? : Option String) (dirPrefix : String) (action : String → m (Except TempError α)) :
+    (root? : Option String) (dirPrefix : String) (action : String → m (Except TempDirError α)) :
     (Internal.mkApiM fs time uuid env).withTempDir root? dirPrefix action =
       Internal.withTempDirM fs uuid env root? dirPrefix action := rfl
 
 private theorem mkApiM_withLockedTempDir_eq {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
     (fs : FsApiM m) (time : TimeOpsM m) (uuid : UuidApiM m) (env : EnvVarsApiM m)
-    (root? : Option String) (dirPrefix : String) (action : String → m (Except TempError α)) :
+    (root? : Option String) (dirPrefix : String) (action : String → m (Except TempDirError α)) :
     (Internal.mkApiM fs time uuid env).withLockedTempDir root? dirPrefix action =
       Internal.withLockedTempDirM fs uuid env root? dirPrefix action := rfl
 
@@ -1143,17 +1143,17 @@ private theorem mkApiM_cleanupStaleTempDirs_eq {m : Type → Type} [Monad m] [Mo
     (Internal.mkApiM fs time uuid env).cleanupStaleTempDirs root? dirPrefix maxAgeSec =
       Internal.cleanupStaleTempDirsM fs time env root? dirPrefix maxAgeSec := rfl
 
-private theorem mockFs_stat_run (s : TempMockState) (p : String) :
+private theorem mockFs_stat_run (s : TempDirMockState) (p : String) :
     (mockFs.stat p).run s = (mockStatPure s p, s) := by
   simp [mockFs]; rfl
 
-private theorem mockFs_lstat_isOk_false_of_lookup_none (s : TempMockState) (p : String)
+private theorem mockFs_lstat_isOk_false_of_lookup_none (s : TempDirMockState) (p : String)
     (h : lookupNode s.nodes p = none) :
     ((mockFs.lstat p).run s).1.isOk = false := by
   rw [mockFs_lstat_run]
   simp [mockLstatPure, h, Except.isOk, Except.toBool]
 
-private theorem lookupNode_of_lstat_ok (s : TempMockState) (p : String) (st : FileStat)
+private theorem lookupNode_of_lstat_ok (s : TempDirMockState) (p : String) (st : FileStat)
     (h : mockLstatPure s p = .ok st) :
     ∃ nd, lookupNode s.nodes p = some nd ∧ mockNodeStat nd = st := by
   unfold mockLstatPure at h
@@ -1163,7 +1163,7 @@ private theorem lookupNode_of_lstat_ok (s : TempMockState) (p : String) (st : Fi
     simp only [hl, Except.ok.injEq] at h
     exact ⟨nd, rfl, h⟩
 
-private theorem lookupNode_none_of_lstat_error (s : TempMockState) (p : String) (e : FsError)
+private theorem lookupNode_none_of_lstat_error (s : TempDirMockState) (p : String) (e : FsError)
     (h : mockLstatPure s p = .error e) :
     lookupNode s.nodes p = none ∧ e.kind = .notFound := by
   unfold mockLstatPure at h
@@ -1471,11 +1471,11 @@ private theorem mockFs_join_eq : mockFs.join = mockJoin := rfl
 
 private theorem mockUuid_toString_eq : mockUuid.toString = mockUuidToString := rfl
 
-private theorem mockUuid_getUuid_run (s : TempMockState) :
+private theorem mockUuid_getUuid_run (s : TempDirMockState) :
     mockUuid.getUuid.run s = (.ok (mockUuidOfNat s.nextUuid), { s with nextUuid := s.nextUuid + 1 }) := rfl
 
-private def combineTempResult {α : Type} (ra : Except TempError α) (rc : Except TempError Unit) :
-    Except TempError α :=
+private def combineTempDirResult {α : Type} (ra : Except TempDirError α) (rc : Except TempDirError Unit) :
+    Except TempDirError α :=
   match ra, rc with
   | .ok a, .ok () => .ok a
   | .ok _, .error te => .error te
@@ -1485,13 +1485,13 @@ private theorem withTempDir_mock_run_step {S α : Type}
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
     (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S))
     (s₀ sMk sAct sFin : S) (root? : Option String) (dirPrefix dir : String)
-    (action : String → StateM S (Except TempError α))
-    (ra : Except TempError α) (rc : Except TempError Unit)
+    (action : String → StateM S (Except TempDirError α))
+    (ra : Except TempDirError α) (rc : Except TempDirError Unit)
     (hCre : (Internal.createTempDir fs uuid env root? dirPrefix).run s₀ = (.ok dir, sMk))
     (hAct : (action dir).run sMk = (ra, sAct))
     (hCln : (Internal.cleanupDirIgnoringNotFound fs dir).run sAct = (rc, sFin)) :
     ((Internal.mkApiM fs time uuid env).withTempDir root? dirPrefix action).run s₀ =
-      (combineTempResult ra rc, sFin) := by
+      (combineTempDirResult ra rc, sFin) := by
   rw [mkApiM_withTempDir_eq]
   dsimp only [Internal.withTempDirM]
   rw [stateM_bind_run, hCre]
@@ -1505,7 +1505,7 @@ private theorem withTempDir_create_err_step {S α : Type}
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
     (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S))
     (s₀ s1 : S) (root? : Option String) (dirPrefix : String)
-    (action : String → StateM S (Except TempError α)) (e : TempError)
+    (action : String → StateM S (Except TempDirError α)) (e : TempDirError)
     (hCre : (Internal.createTempDir fs uuid env root? dirPrefix).run s₀ = (.error e, s1)) :
     ((Internal.mkApiM fs time uuid env).withTempDir root? dirPrefix action).run s₀ = (.error e, s1) := by
   rw [mkApiM_withTempDir_eq]
@@ -1546,7 +1546,7 @@ private theorem payload_ne_dir (root child fileName : String)
     have hOne : ("/" : String).length = 1 := rfl
     omega
 
-private theorem spec1_mk_step (s₀ : TempMockState) (root dirPrefix : String)
+private theorem spec1_mk_step (s₀ : TempDirMockState) (root dirPrefix : String)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -1555,14 +1555,14 @@ private theorem spec1_mk_step (s₀ : TempMockState) (root dirPrefix : String)
       (mockJoin root (dirPrefix ++ mockUuidToString (mockUuidOfNat s₀.nextUuid)))).isOk = false) :
     let u := mockUuidOfNat s₀.nextUuid
     let dir := mockJoin root (dirPrefix ++ mockUuidToString u)
-    ∃ sMk : TempMockState,
+    ∃ sMk : TempDirMockState,
       (Internal.createTempDir mockFs mockUuid mockEnv (some root) dirPrefix).run s₀ = (.ok dir, sMk) ∧
       (mockFs.lstat dir).run sMk = (.ok (mockNodeStat (.dir s₀.nowSec 0o700)), sMk) ∧
       lookupNode sMk.nodes dir = some (.dir s₀.nowSec 0o700) := by
   intro u dir
   have hCreate := createTempDir_mock_steps s₀ root dirPrefix hvr hvp stRoot hRoot hRwx hNone
   dsimp only at hCreate
-  obtain ⟨sMk, hsMk⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sMk, hsMk⟩ : ∃ s : TempDirMockState, s =
       { s₀ with
         nextUuid := s₀.nextUuid + 1
         nodes := (dir, .dir s₀.nowSec 0o700) :: s₀.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
@@ -1576,13 +1576,13 @@ private theorem spec1_mk_step (s₀ : TempMockState) (root dirPrefix : String)
     simp [mockLstatPure, hLookDirMk]
   exact ⟨sMk, hCreate, hLstatDirMk, hLookDirMk⟩
 
-private theorem spec1_write_clean_step (s₀ sMk : TempMockState) (root dirPrefix : String)
+private theorem spec1_write_clean_step (s₀ sMk : TempDirMockState) (root dirPrefix : String)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (hLookDirMk : lookupNode sMk.nodes (mockJoin root (dirPrefix ++ mockUuidToString (mockUuidOfNat s₀.nextUuid))) = some (.dir s₀.nowSec 0o700)) :
     let u := mockUuidOfNat s₀.nextUuid
     let dir := mockJoin root (dirPrefix ++ mockUuidToString u)
-    ∃ sAct sFin : TempMockState,
+    ∃ sAct sFin : TempDirMockState,
       (mockFs.writeText (mockJoin dir "payload.txt") "hello").run sMk = (.ok (), sAct) ∧
       (Internal.cleanupDirIgnoringNotFound mockFs dir).run sAct = (.ok (), sFin) ∧
       ((mockFs.lstat dir).run sFin).1.isOk = false := by
@@ -1591,7 +1591,7 @@ private theorem spec1_write_clean_step (s₀ sMk : TempMockState) (root dirPrefi
   have ⟨hcNe, hcNoSlash⟩ := childName_parts dirPrefix u hvp
   have hDirNorm : normKey dir = dir := normKey_mockJoin root _ hcNe hcNoSlash
   let payload := mockJoin dir "payload.txt"
-  obtain ⟨sAct, hsAct⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sAct, hsAct⟩ : ∃ s : TempDirMockState, s =
       { sMk with
         nodes := (normKey payload, .file (freshInode sMk) "hello" sMk.nowSec 0o644) ::
           sMk.nodes.filter (fun e => normKey e.1 != normKey payload)
@@ -1614,7 +1614,7 @@ private theorem spec1_write_clean_step (s₀ sMk : TempMockState) (root dirPrefi
         rw [he, hDirNorm]
         exact ne_comm.mp hPayloadNeDir)
     exact hfu.trans hLookDirMk
-  obtain ⟨sFin, hsFin⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sFin, hsFin⟩ : ∃ s : TempDirMockState, s =
       { sAct with nodes := sAct.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   have hClean : (Internal.cleanupDirIgnoringNotFound mockFs dir).run sAct = (.ok (), sFin) := by
     rw [hsFin]
@@ -1626,10 +1626,10 @@ private theorem spec1_write_clean_step (s₀ sMk : TempMockState) (root dirPrefi
   exact ⟨sAct, sFin, hWrite, hClean, hGone⟩
 
 /-- Spec 1: `withTempDir` creates `<root>/<dirPrefix><uuid>` with mode `0o700`, executes `action dir`, returns `.ok val`, and removes `dir` on exit. -/
-theorem proof_temp_withTempDir_okCleansUpAndSetsMode :
-    AllPass (test_temp_withTempDir_okCleansUpAndSetsMode
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_withTempDir_okCleansUpAndSetsMode, AllPass]
+theorem proof_tempdir_withTempDir_okCleansUpAndSetsMode :
+    AllPass (test_tempdir_withTempDir_okCleansUpAndSetsMode
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_withTempDir_okCleansUpAndSetsMode, AllPass]
   intro s₀ root dirPrefix val ⟨hvr, hvp⟩ ⟨stRoot, hRoot, hRwx⟩
   have hRootPure : mockStatPure s₀ root = .ok stRoot := by
     rw [mockFs_stat_run] at hRoot
@@ -1668,12 +1668,12 @@ theorem proof_temp_withTempDir_okCleansUpAndSetsMode :
   rw [allPass_assert, allPass_assert_end]
   exact ⟨rfl, hGone, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for Spec 1 (`test_temp_withTempDir_okCleansUpAndSetsMode`). -/
-theorem reach_temp_withTempDir_okCleansUpAndSetsMode :
-    CanReach (test_temp_withTempDir_okCleansUpAndSetsMode
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_withTempDir_okCleansUpAndSetsMode, CanReach]
-  obtain ⟨s₀, hs₀⟩ : ∃ s : TempMockState, s = {} := ⟨{}, rfl⟩
+/-- Non-vacuity `CanReach` witness for Spec 1 (`test_tempdir_withTempDir_okCleansUpAndSetsMode`). -/
+theorem reach_tempdir_withTempDir_okCleansUpAndSetsMode :
+    CanReach (test_tempdir_withTempDir_okCleansUpAndSetsMode
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_withTempDir_okCleansUpAndSetsMode, CanReach]
+  obtain ⟨s₀, hs₀⟩ : ∃ s : TempDirMockState, s = {} := ⟨{}, rfl⟩
   rw [canReach_nondet]; refine ⟨s₀, ?_⟩
   rw [canReach_nondet]; refine ⟨"/tmp", ?_⟩
   rw [canReach_nondet]; refine ⟨"tmp-", ?_⟩
@@ -1747,7 +1747,7 @@ private theorem lookupNode_filter_none_of_none (nodes : List (String × MockNode
         exact ih h
       · exact ih h
 
-private theorem lookupNode_none_of_lstat_isOk_false (s : TempMockState) (p : String)
+private theorem lookupNode_none_of_lstat_isOk_false (s : TempDirMockState) (p : String)
     (h : ((mockFs.lstat p).run s).1.isOk = false) :
     lookupNode s.nodes p = none := by
   rw [mockFs_lstat_run] at h
@@ -1772,8 +1772,8 @@ private theorem mockJoin_tmp_ne_other (childName : String)
   rw [hdrop, htmpList] at hl
   simp at hl
 
-private theorem createTempDir_mock_steps_custom_rm (s₀ : TempMockState) (root dirPrefix : String)
-    (rm : String → Bool → StateM TempMockState (Except FsError Unit))
+private theorem createTempDir_mock_steps_custom_rm (s₀ : TempDirMockState) (root dirPrefix : String)
+    (rm : String → Bool → StateM TempDirMockState (Except FsError Unit))
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -1883,7 +1883,7 @@ private theorem createTempDir_mock_steps_custom_rm (s₀ : TempMockState) (root 
   rw [stateM_bind_run, hCh]
   rw [stateM_pure_run]
 
-private theorem spec2_exec_parts (s₀ : TempMockState) (root dirPrefix : String)
+private theorem spec2_exec_parts (s₀ : TempDirMockState) (root dirPrefix : String)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -1892,10 +1892,10 @@ private theorem spec2_exec_parts (s₀ : TempMockState) (root dirPrefix : String
       (mockJoin root (dirPrefix ++ mockUuidToString (mockUuidOfNat s₀.nextUuid)))).isOk = false) :
     let u := mockUuidOfNat s₀.nextUuid
     let dir := mockJoin root (dirPrefix ++ mockUuidToString u)
-    let rmFail : String → Bool → StateM TempMockState (Except FsError Unit) :=
+    let rmFail : String → Bool → StateM TempDirMockState (Except FsError Unit) :=
       fun _ _ => pure (.error { kind := .permissionDenied, message := "cleanup failed" })
-    let fsFailClean : FsApiM (StateM TempMockState) := { mockFs with rmtree := rmFail }
-    ∃ sMk sAct sFin : TempMockState,
+    let fsFailClean : FsApiM (StateM TempDirMockState) := { mockFs with rmtree := rmFail }
+    ∃ sMk sAct sFin : TempDirMockState,
       (Internal.createTempDir mockFs mockUuid mockEnv (some root) dirPrefix).run s₀ = (.ok dir, sMk) ∧
       (mockFs.writeText (mockFs.join dir "tmp.txt") "data").run sMk = (.ok (), sAct) ∧
       (Internal.cleanupDirIgnoringNotFound mockFs dir).run sAct = (.ok (), sFin) ∧
@@ -1909,7 +1909,7 @@ private theorem spec2_exec_parts (s₀ : TempMockState) (root dirPrefix : String
   have hDirNorm : normKey dir = dir := normKey_mockJoin root _ hcNe hcNoSlash
   have hCreate1 := createTempDir_mock_steps s₀ root dirPrefix hvr hvp stRoot hRoot hRwx hNone
   dsimp only at hCreate1
-  obtain ⟨sMk, hsMk⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sMk, hsMk⟩ : ∃ s : TempDirMockState, s =
       { s₀ with
         nextUuid := s₀.nextUuid + 1
         nodes := (dir, .dir s₀.nowSec 0o700) :: s₀.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
@@ -1917,7 +1917,7 @@ private theorem spec2_exec_parts (s₀ : TempMockState) (root dirPrefix : String
   have hLookDirMk : lookupNode sMk.nodes dir = some (.dir s₀.nowSec 0o700) := by
     rw [hsMk]; exact lookupNode_cons_eq _ _ _ _ rfl
   let tmpPath := mockJoin dir "tmp.txt"
-  obtain ⟨sAct, hsAct⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sAct, hsAct⟩ : ∃ s : TempDirMockState, s =
       { sMk with
         nodes := (normKey tmpPath, .file (freshInode sMk) "data" sMk.nowSec 0o644) ::
           sMk.nodes.filter (fun e => normKey e.1 != normKey tmpPath)
@@ -1940,7 +1940,7 @@ private theorem spec2_exec_parts (s₀ : TempMockState) (root dirPrefix : String
     exact hfu.trans hLookDirMk
   have hWrite1 : (mockFs.writeText (mockFs.join dir "tmp.txt") "data").run sMk = (.ok (), sAct) := by
     rw [mockFs_join_eq, mockFs_writeText_run, ← hsAct]
-  obtain ⟨sFin, hsFin⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sFin, hsFin⟩ : ∃ s : TempDirMockState, s =
       { sAct with nodes := sAct.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   have hClean1 : (Internal.cleanupDirIgnoringNotFound mockFs dir).run sAct = (.ok (), sFin) := by
     rw [hsFin]; exact cleanupDir_mock_run sAct dir hDirNorm ⟨_, _, hLookDirAct⟩
@@ -1962,10 +1962,10 @@ private theorem spec2_exec_parts (s₀ : TempMockState) (root dirPrefix : String
   exact ⟨sMk, sAct, sFin, hCreate1, hWrite1, hClean1, hGone1, hCreate2, hClean2⟩
 
 /-- Spec 2: `withTempDir` cleans up `dir` and preserves `action`'s `.error` even when cleanup also fails. -/
-theorem proof_temp_withTempDir_errorCleansUpAndPreservesError :
-    AllPass (test_temp_withTempDir_errorCleansUpAndPreservesError
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_withTempDir_errorCleansUpAndPreservesError, AllPass]
+theorem proof_tempdir_withTempDir_errorCleansUpAndPreservesError :
+    AllPass (test_tempdir_withTempDir_errorCleansUpAndPreservesError
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_withTempDir_errorCleansUpAndPreservesError, AllPass]
   intro s₀ root dirPrefix actionErr ⟨hvr, hvp⟩ ⟨stRoot, hRoot, hRwx⟩
   have hRootPure : mockStatPure s₀ root = .ok stRoot := by
     rw [mockFs_stat_run] at hRoot
@@ -2012,13 +2012,13 @@ theorem proof_temp_withTempDir_errorCleansUpAndPreservesError :
   rw [allPass_assert_end]
   exact ⟨rfl, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for Spec 2 (`test_temp_withTempDir_errorCleansUpAndPreservesError`). -/
-theorem reach_temp_withTempDir_errorCleansUpAndPreservesError :
-    CanReach (test_temp_withTempDir_errorCleansUpAndPreservesError
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_withTempDir_errorCleansUpAndPreservesError, CanReach]
-  obtain ⟨s₀, hs₀⟩ : ∃ s : TempMockState, s = {} := ⟨{}, rfl⟩
-  let err : TempError := { kind := .ioError, path := none, message := "boom" }
+/-- Non-vacuity `CanReach` witness for Spec 2 (`test_tempdir_withTempDir_errorCleansUpAndPreservesError`). -/
+theorem reach_tempdir_withTempDir_errorCleansUpAndPreservesError :
+    CanReach (test_tempdir_withTempDir_errorCleansUpAndPreservesError
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_withTempDir_errorCleansUpAndPreservesError, CanReach]
+  obtain ⟨s₀, hs₀⟩ : ∃ s : TempDirMockState, s = {} := ⟨{}, rfl⟩
+  let err : TempDirError := { kind := .ioError, path := none, message := "boom" }
   rw [canReach_nondet]; refine ⟨s₀, ?_⟩
   rw [canReach_nondet]; refine ⟨"/tmp", ?_⟩
   rw [canReach_nondet]; refine ⟨"tmp-", ?_⟩
@@ -2081,16 +2081,16 @@ theorem reach_temp_withTempDir_errorCleansUpAndPreservesError :
   rw [canReach_assert_end]
   exact ⟨rfl, trivial⟩
 
-private theorem spec3_exec (s₀ : TempMockState) (root dirPrefix : String) (val : Nat)
+private theorem spec3_exec (s₀ : TempDirMockState) (root dirPrefix : String) (val : Nat)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
     (hRwx : stRoot.kind = .dir ∧ (stRoot.mode / 256) % 2 = 1 ∧ (stRoot.mode / 128) % 2 = 1 ∧ (stRoot.mode / 64) % 2 = 1)
     (hNone : (mockLstatPure { s₀ with nextUuid := s₀.nextUuid + 1 }
       (mockJoin root (dirPrefix ++ mockUuidToString (mockUuidOfNat s₀.nextUuid)))).isOk = false) :
-    let fsFailClean : FsApiM (StateM TempMockState) :=
+    let fsFailClean : FsApiM (StateM TempDirMockState) :=
       { mockFs with rmtree := fun p _ => pure (.error { kind := .permissionDenied, path := some p, message := "rm failed" }) }
-    ∃ s₁ : TempMockState,
+    ∃ s₁ : TempDirMockState,
       ((Internal.mkApiM fsFailClean mockTime mockUuid mockEnv).withTempDir (some root) dirPrefix fun _ =>
         pure (.ok val)).run s₀ =
         (.error (Internal.mapFsError { kind := .permissionDenied, path := some (mockJoin root (dirPrefix ++ mockUuidToString (mockUuidOfNat s₀.nextUuid))), message := "rm failed" }), s₁) := by
@@ -2101,7 +2101,7 @@ private theorem spec3_exec (s₀ : TempMockState) (root dirPrefix : String) (val
     (fun p _ => pure (.error { kind := .permissionDenied, path := some p, message := "rm failed" }))
     hvr hvp stRoot hRoot hRwx hNone
   dsimp only at hCreate
-  obtain ⟨sMk, hsMk⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sMk, hsMk⟩ : ∃ s : TempDirMockState, s =
       { s₀ with
         nextUuid := s₀.nextUuid + 1
         nodes := (dir, .dir s₀.nowSec 0o700) :: s₀.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
@@ -2120,10 +2120,10 @@ private theorem spec3_exec (s₀ : TempMockState) (root dirPrefix : String) (val
   exact ⟨sMk, hRun⟩
 
 /-- Spec 3: `withTempDir` propagates cleanup error when `action` returns `.ok`. -/
-theorem proof_temp_withTempDir_cleanupErrorReturnedOnOk :
-    AllPass (test_temp_withTempDir_cleanupErrorReturnedOnOk
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_withTempDir_cleanupErrorReturnedOnOk, AllPass]
+theorem proof_tempdir_withTempDir_cleanupErrorReturnedOnOk :
+    AllPass (test_tempdir_withTempDir_cleanupErrorReturnedOnOk
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_withTempDir_cleanupErrorReturnedOnOk, AllPass]
   intro s₀ root dirPrefix val ⟨hvr, hvp⟩ ⟨stRoot, hRoot, hRwx⟩
   have hRootPure : mockStatPure s₀ root = .ok stRoot := by
     rw [mockFs_stat_run] at hRoot
@@ -2145,12 +2145,12 @@ theorem proof_temp_withTempDir_cleanupErrorReturnedOnOk :
   rw [show ("rm failed" : String).isEmpty = false from rfl]
   simp
 
-/-- Non-vacuity `CanReach` witness for Spec 3 (`test_temp_withTempDir_cleanupErrorReturnedOnOk`). -/
-theorem reach_temp_withTempDir_cleanupErrorReturnedOnOk :
-    CanReach (test_temp_withTempDir_cleanupErrorReturnedOnOk
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_withTempDir_cleanupErrorReturnedOnOk, CanReach]
-  obtain ⟨s₀, hs₀⟩ : ∃ s : TempMockState, s = {} := ⟨{}, rfl⟩
+/-- Non-vacuity `CanReach` witness for Spec 3 (`test_tempdir_withTempDir_cleanupErrorReturnedOnOk`). -/
+theorem reach_tempdir_withTempDir_cleanupErrorReturnedOnOk :
+    CanReach (test_tempdir_withTempDir_cleanupErrorReturnedOnOk
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_withTempDir_cleanupErrorReturnedOnOk, CanReach]
+  obtain ⟨s₀, hs₀⟩ : ∃ s : TempDirMockState, s = {} := ⟨{}, rfl⟩
   rw [canReach_nondet]; refine ⟨s₀, ?_⟩
   rw [canReach_nondet]; refine ⟨"/tmp", ?_⟩
   rw [canReach_nondet]; refine ⟨"tmp-", ?_⟩
@@ -2189,7 +2189,7 @@ theorem reach_temp_withTempDir_cleanupErrorReturnedOnOk :
   rw [show ("rm failed" : String).isEmpty = false from rfl]
   simp
 
-private theorem createTempDir_mock_collision (s₀ : TempMockState) (root dirPrefix : String)
+private theorem createTempDir_mock_collision (s₀ : TempDirMockState) (root dirPrefix : String)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -2262,10 +2262,10 @@ private theorem createTempDir_mock_collision (s₀ : TempMockState) (root dirPre
   rw [stateM_pure_run]
 
 /-- Spec 4: Exclusive creation rejects pre-existing directories or symlinks with `.alreadyExists`. -/
-theorem proof_temp_withTempDir_collisionRejected :
-    AllPass (test_temp_withTempDir_collisionRejected
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_withTempDir_collisionRejected, AllPass]
+theorem proof_tempdir_withTempDir_collisionRejected :
+    AllPass (test_tempdir_withTempDir_collisionRejected
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_withTempDir_collisionRejected, AllPass]
   intro s₀ root dirPrefix markerPath ⟨hvr, hvp⟩ ⟨stRoot, hRoot, hRwx⟩ hMarker
   have hRootPure : mockStatPure s₀ root = .ok stRoot := by
     rw [mockFs_stat_run] at hRoot
@@ -2295,13 +2295,13 @@ theorem proof_temp_withTempDir_collisionRejected :
     rfl
   exact ⟨⟨_, rfl, rfl⟩, hMarkerAfter, hDirAfter, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for Spec 4 (`test_temp_withTempDir_collisionRejected`). -/
-theorem reach_temp_withTempDir_collisionRejected :
-    CanReach (test_temp_withTempDir_collisionRejected
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_withTempDir_collisionRejected, CanReach]
+/-- Non-vacuity `CanReach` witness for Spec 4 (`test_tempdir_withTempDir_collisionRejected`). -/
+theorem reach_tempdir_withTempDir_collisionRejected :
+    CanReach (test_tempdir_withTempDir_collisionRejected
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_withTempDir_collisionRejected, CanReach]
   let dir := mockJoin "/tmp" ("tmp-" ++ mockUuidToString (mockUuidOfNat 1))
-  obtain ⟨s₀, hs₀⟩ : ∃ s : TempMockState,
+  obtain ⟨s₀, hs₀⟩ : ∃ s : TempDirMockState,
       s = { nodes := [("/tmp", .dir 0 0o755), (dir, .dir 0 0o755)] } := ⟨_, rfl⟩
   rw [canReach_nondet]; refine ⟨s₀, ?_⟩
   rw [canReach_nondet]; refine ⟨"/tmp", ?_⟩
@@ -2360,7 +2360,7 @@ theorem reach_temp_withTempDir_collisionRejected :
     rfl
   exact ⟨⟨_, rfl, rfl⟩, hMarkerAfter, hDirAfter, trivial⟩
 
-private theorem spec5_exec (s₀ : TempMockState) (root dirPrefix markerPath : String)
+private theorem spec5_exec (s₀ : TempDirMockState) (root dirPrefix markerPath : String)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -2370,9 +2370,9 @@ private theorem spec5_exec (s₀ : TempMockState) (root dirPrefix markerPath : S
       (mockJoin root (dirPrefix ++ mockUuidToString (mockUuidOfNat s₀.nextUuid)))).isOk = false) :
     let u := mockUuidOfNat s₀.nextUuid
     let dir := mockJoin root (dirPrefix ++ mockUuidToString u)
-    let fsBadChmod : FsApiM (StateM TempMockState) :=
+    let fsBadChmod : FsApiM (StateM TempDirMockState) :=
       { mockFs with chmod := fun p _ => pure (.error { kind := .permissionDenied, path := some p, message := "chmod denied" }) }
-    ∃ s₁ : TempMockState,
+    ∃ s₁ : TempDirMockState,
       (Internal.createTempDir fsBadChmod mockUuid mockEnv (some root) dirPrefix).run s₀ =
         (.error (Internal.mapFsError { kind := .permissionDenied, path := some dir, message := "chmod denied" }), s₁) ∧
       ((mockFs.lstat markerPath).run s₁).1.isOk = false ∧
@@ -2405,7 +2405,7 @@ private theorem spec5_exec (s₀ : TempMockState) (root dirPrefix markerPath : S
   have hvr' : Internal.validRoot root = true := by simpa [Internal.validRoot] using hvr
   have hvp' : Internal.validPrefix dirPrefix = true := by simpa [Internal.validPrefix] using hvp
   have hWx : hasWx stRoot = true := hasWx_of_hasRwx stRoot hRwx
-  obtain ⟨sMk, hsMk⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sMk, hsMk⟩ : ∃ s : TempDirMockState, s =
       { s₀ with
         nextUuid := s₀.nextUuid + 1
         nodes := (dir, .dir s₀.nowSec 0o755) :: s₀.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
@@ -2425,7 +2425,7 @@ private theorem spec5_exec (s₀ : TempMockState) (root dirPrefix markerPath : S
     simp only [stateM_bind_run, stateM_set_run, stateM_pure_run]
   have hLookDirMk : lookupNode sMk.nodes dir = some (.dir s₀.nowSec 0o755) := by
     rw [hsMk]; exact lookupNode_cons_eq _ _ _ _ rfl
-  obtain ⟨sFin, hsFin⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sFin, hsFin⟩ : ∃ s : TempDirMockState, s =
       { sMk with nodes := sMk.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   have hClean : (Internal.cleanupDirIgnoringNotFound fsBadChmod dir).run sMk = (.ok (), sFin) := by
     rw [hsFin]
@@ -2479,10 +2479,10 @@ private theorem spec5_exec (s₀ : TempMockState) (root dirPrefix markerPath : S
   exact ⟨sFin, hCreErr, hMarkerGone, hDirGone⟩
 
 /-- Spec 5: If `fs.chmod dir 0o700` fails right after `fs.mkdir`, `withTempDir` rolls back `dir` without running `action`. -/
-theorem proof_temp_withTempDir_chmodFailureRollsBack :
-    AllPass (test_temp_withTempDir_chmodFailureRollsBack
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_withTempDir_chmodFailureRollsBack, AllPass]
+theorem proof_tempdir_withTempDir_chmodFailureRollsBack :
+    AllPass (test_tempdir_withTempDir_chmodFailureRollsBack
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_withTempDir_chmodFailureRollsBack, AllPass]
   intro s₀ root dirPrefix markerPath ⟨hvr, hvp⟩ ⟨stRoot, hRoot, hRwx⟩ hMarker
   have hRootPure : mockStatPure s₀ root = .ok stRoot := by
     rw [mockFs_stat_run] at hRoot
@@ -2507,12 +2507,12 @@ theorem proof_temp_withTempDir_chmodFailureRollsBack :
   rw [mockFs_join_eq, mockUuid_toString_eq]
   exact ⟨⟨_, rfl, rfl⟩, hMarkerGone, hDirGone, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for Spec 5 (`test_temp_withTempDir_chmodFailureRollsBack`). -/
-theorem reach_temp_withTempDir_chmodFailureRollsBack :
-    CanReach (test_temp_withTempDir_chmodFailureRollsBack
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_withTempDir_chmodFailureRollsBack, CanReach]
-  obtain ⟨s₀, hs₀⟩ : ∃ s : TempMockState, s = {} := ⟨{}, rfl⟩
+/-- Non-vacuity `CanReach` witness for Spec 5 (`test_tempdir_withTempDir_chmodFailureRollsBack`). -/
+theorem reach_tempdir_withTempDir_chmodFailureRollsBack :
+    CanReach (test_tempdir_withTempDir_chmodFailureRollsBack
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_withTempDir_chmodFailureRollsBack, CanReach]
+  obtain ⟨s₀, hs₀⟩ : ∃ s : TempDirMockState, s = {} := ⟨{}, rfl⟩
   rw [canReach_nondet]; refine ⟨s₀, ?_⟩
   rw [canReach_nondet]; refine ⟨"/tmp", ?_⟩
   rw [canReach_nondet]; refine ⟨"tmp-", ?_⟩
@@ -2559,9 +2559,9 @@ theorem reach_temp_withTempDir_chmodFailureRollsBack :
   rw [mockFs_join_eq, mockUuid_toString_eq]
   exact ⟨⟨_, rfl, rfl⟩, hMarkerGone, hDirGone, trivial⟩
 
-private theorem resolveRoot_some_invalid_run (s₀ : TempMockState) (root : String)
+private theorem resolveRoot_some_invalid_run (s₀ : TempDirMockState) (root : String)
     (hInv : Internal.validRoot root = false) :
-    ∃ te : TempError,
+    ∃ te : TempDirError,
       (Internal.resolveRoot mockFs mockEnv (some root)).run s₀ = (.error te, s₀) ∧
       te.kind = .invalidInput ∧ te.message ≠ "" := by
   dsimp only [Internal.resolveRoot]
@@ -2570,12 +2570,12 @@ private theorem resolveRoot_some_invalid_run (s₀ : TempMockState) (root : Stri
   simp only [hInv, Bool.not_false, ↓reduceIte, stateM_pure_run]
   exact ⟨_, rfl, rfl, by simp⟩
 
-private theorem spec6_exec (s₀ : TempMockState) (root dirPrefix : String)
+private theorem spec6_exec (s₀ : TempDirMockState) (root dirPrefix : String)
     (hInv : (¬ Internal.validPrefix dirPrefix) ∨ (¬ Internal.validRoot root)) :
     (∃ e, ((Internal.mkApiM mockFs mockTime mockUuid mockEnv).withTempDir (some root) dirPrefix
-      (fun _ => pure (.ok () : Except TempError Unit))).run s₀ = (.error e, s₀) ∧ e.kind = .invalidInput ∧ e.message ≠ "") ∧
+      (fun _ => pure (.ok () : Except TempDirError Unit))).run s₀ = (.error e, s₀) ∧ e.kind = .invalidInput ∧ e.message ≠ "") ∧
     (∃ e, ((Internal.mkApiM mockFs mockTime mockUuid mockEnv).withLockedTempDir (some root) dirPrefix
-      (fun _ => pure (.ok () : Except TempError Unit))).run s₀ = (.error e, s₀) ∧ e.kind = .invalidInput ∧ e.message ≠ "") ∧
+      (fun _ => pure (.ok () : Except TempDirError Unit))).run s₀ = (.error e, s₀) ∧ e.kind = .invalidInput ∧ e.message ≠ "") ∧
     (∃ e, ((Internal.mkApiM mockFs mockTime mockUuid mockEnv).cleanupStaleTempDirs (some root) dirPrefix 86400).run s₀ =
       (.error e, s₀) ∧ e.kind = .invalidInput ∧ e.message ≠ "") := by
   by_cases hvp : Internal.validPrefix dirPrefix = true
@@ -2592,13 +2592,13 @@ private theorem spec6_exec (s₀ : TempMockState) (root dirPrefix : String)
       rw [stateM_bind_run, hRes]
       exact stateM_pure_run _ _
     have h1 : ((Internal.mkApiM mockFs mockTime mockUuid mockEnv).withTempDir (some root) dirPrefix
-        (fun _ => pure (.ok () : Except TempError Unit))).run s₀ = (.error te, s₀) := by
+        (fun _ => pure (.ok () : Except TempDirError Unit))).run s₀ = (.error te, s₀) := by
       rw [mkApiM_withTempDir_eq]
       dsimp only [Internal.withTempDirM]
       rw [stateM_bind_run, hCre]
       exact stateM_pure_run _ _
     have h2 : ((Internal.mkApiM mockFs mockTime mockUuid mockEnv).withLockedTempDir (some root) dirPrefix
-        (fun _ => pure (.ok () : Except TempError Unit))).run s₀ = (.error te, s₀) := by
+        (fun _ => pure (.ok () : Except TempDirError Unit))).run s₀ = (.error te, s₀) := by
       rw [mkApiM_withLockedTempDir_eq]
       dsimp only [Internal.withLockedTempDirM]
       rw [stateM_bind_run, hCre]
@@ -2617,14 +2617,14 @@ private theorem spec6_exec (s₀ : TempMockState) (root dirPrefix : String)
       dsimp only [Internal.createTempDir]
       simp only [hvpF, Bool.not_false, ↓reduceIte, stateM_pure_run]
     have h1 : ((Internal.mkApiM mockFs mockTime mockUuid mockEnv).withTempDir (some root) dirPrefix
-        (fun _ => pure (.ok () : Except TempError Unit))).run s₀ =
+        (fun _ => pure (.ok () : Except TempDirError Unit))).run s₀ =
         (.error { kind := .invalidInput, path := none, message := "invalid temporary directory prefix" }, s₀) := by
       rw [mkApiM_withTempDir_eq]
       dsimp only [Internal.withTempDirM]
       rw [stateM_bind_run, hCre]
       exact stateM_pure_run _ _
     have h2 : ((Internal.mkApiM mockFs mockTime mockUuid mockEnv).withLockedTempDir (some root) dirPrefix
-        (fun _ => pure (.ok () : Except TempError Unit))).run s₀ =
+        (fun _ => pure (.ok () : Except TempDirError Unit))).run s₀ =
         (.error { kind := .invalidInput, path := none, message := "invalid temporary directory prefix" }, s₀) := by
       rw [mkApiM_withLockedTempDir_eq]
       dsimp only [Internal.withLockedTempDirM]
@@ -2638,10 +2638,10 @@ private theorem spec6_exec (s₀ : TempMockState) (root dirPrefix : String)
     exact ⟨⟨_, h1, rfl, by decide⟩, ⟨_, h2, rfl, by decide⟩, ⟨_, h3, rfl, by decide⟩⟩
 
 /-- Spec 6: All three operations reject invalid `prefix` or `root` with `.invalidInput` and zero state mutations. -/
-theorem proof_temp_validation_rejectsInvalidInputs :
-    AllPass (test_temp_validation_rejectsInvalidInputs
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_validation_rejectsInvalidInputs, AllPass]
+theorem proof_tempdir_validation_rejectsInvalidInputs :
+    AllPass (test_tempdir_validation_rejectsInvalidInputs
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_validation_rejectsInvalidInputs, AllPass]
   intro s₀ root dirPrefix hInv
   have hInv' : (¬ Internal.validPrefix dirPrefix) ∨ (¬ Internal.validRoot root) := hInv
   obtain ⟨⟨e1, h1, hk1, hm1⟩, ⟨e2, h2, hk2, hm2⟩, ⟨e3, h3, hk3, hm3⟩⟩ := spec6_exec s₀ root dirPrefix hInv'
@@ -2650,12 +2650,12 @@ theorem proof_temp_validation_rejectsInvalidInputs :
   rw [allPass_assert, allPass_assert, allPass_assert, allPass_assert_end]
   exact ⟨⟨e1, rfl, hk1, hm1⟩, ⟨e2, rfl, hk2, hm2⟩, ⟨e3, rfl, hk3, hm3⟩, ⟨rfl, rfl, rfl⟩, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for Spec 6 (`test_temp_validation_rejectsInvalidInputs`). -/
-theorem reach_temp_validation_rejectsInvalidInputs :
-    CanReach (test_temp_validation_rejectsInvalidInputs
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_validation_rejectsInvalidInputs, CanReach]
-  obtain ⟨s₀, hs₀⟩ : ∃ s : TempMockState, s = {} := ⟨{}, rfl⟩
+/-- Non-vacuity `CanReach` witness for Spec 6 (`test_tempdir_validation_rejectsInvalidInputs`). -/
+theorem reach_tempdir_validation_rejectsInvalidInputs :
+    CanReach (test_tempdir_validation_rejectsInvalidInputs
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_validation_rejectsInvalidInputs, CanReach]
+  obtain ⟨s₀, hs₀⟩ : ∃ s : TempDirMockState, s = {} := ⟨{}, rfl⟩
   rw [canReach_nondet]; refine ⟨s₀, ?_⟩
   rw [canReach_nondet]; refine ⟨"", ?_⟩
   rw [canReach_nondet]; refine ⟨"bad/prefix", ?_⟩
@@ -2688,10 +2688,10 @@ private theorem lookupNode_filter_none_of_underDir (nodes : List (String × Mock
       rw [List.find?_cons, hne]
       exact ih
 
-private theorem resolveRoot_none_invalid_run (s₀ : TempMockState) (tmpdir : String)
+private theorem resolveRoot_none_invalid_run (s₀ : TempDirMockState) (tmpdir : String)
     (hTmp : s₀.tmpdir = some tmpdir) (hNe : tmpdir.isEmpty = false)
     (hNul : Char.ofNat 0 ∈ tmpdir.toList) :
-    ∃ te : TempError,
+    ∃ te : TempDirError,
       (Internal.resolveRoot mockFs mockEnv none).run s₀ = (.error te, s₀) ∧
       te.kind = .invalidInput := by
   have hEnvStep : (mockEnv.getEnv "TMPDIR").run s₀ = (.ok (some tmpdir), s₀) := by
@@ -2708,7 +2708,7 @@ private theorem resolveRoot_none_invalid_run (s₀ : TempMockState) (tmpdir : St
   simp only [hvrF, Bool.not_false, ↓reduceIte, stateM_pure_run]
   exact ⟨_, rfl, rfl⟩
 
-private theorem resolveRoot_none_stat_err_run (s₀ : TempMockState) (r : String) (fe : FsError)
+private theorem resolveRoot_none_stat_err_run (s₀ : TempDirMockState) (r : String) (fe : FsError)
     (hRaw : (match s₀.tmpdir with
       | some v => if v.isEmpty then "/tmp" else v
       | none => "/tmp") = r)
@@ -2737,7 +2737,7 @@ private theorem resolveRoot_none_stat_err_run (s₀ : TempMockState) (r : String
     rw [stateM_bind_run, hStatStep]
     exact stateM_pure_run _ _
 
-private theorem resolveRoot_none_nonDir_run (s₀ : TempMockState) (r : String) (st : FileStat)
+private theorem resolveRoot_none_nonDir_run (s₀ : TempDirMockState) (r : String) (st : FileStat)
     (hRaw : (match s₀.tmpdir with
       | some v => if v.isEmpty then "/tmp" else v
       | none => "/tmp") = r)
@@ -2772,7 +2772,7 @@ private theorem resolveRoot_none_nonDir_run (s₀ : TempMockState) (r : String) 
     simp only [hNotDir, ↓reduceIte]
     exact stateM_pure_run _ _
 
-private theorem resolveRoot_none_ok_run (s₀ : TempMockState) (r : String) (st : FileStat)
+private theorem resolveRoot_none_ok_run (s₀ : TempDirMockState) (r : String) (st : FileStat)
     (hRaw : (match s₀.tmpdir with
       | some v => if v.isEmpty then "/tmp" else v
       | none => "/tmp") = r)
@@ -2805,9 +2805,9 @@ private theorem resolveRoot_none_ok_run (s₀ : TempMockState) (r : String) (st 
       Bool.false_eq_true, ↓reduceIte, stateM_pure_run]
 
 private theorem mockFs_withFileLock_create_run {α : Type}
-    (s : TempMockState) (p : String) (mode : LockMode)
+    (s : TempDirMockState) (p : String) (mode : LockMode)
     (hp : normKey p = p) (hNone : lookupNode s.nodes p = none)
-    (act : StateM TempMockState (Except FsError α)) :
+    (act : StateM TempDirMockState (Except FsError α)) :
     let ino := freshInode s
     let sLock := { s with
       nodes := (p, .file ino "" s.nowSec 0o644) :: s.nodes
@@ -2824,19 +2824,19 @@ private theorem mockFs_withFileLock_create_run {α : Type}
   have hSet : (set ({
       nodes := (p, MockNode.file (freshInode s) "" s.nowSec 420) :: s.nodes,
       locks := (freshInode s, mode) :: s.locks,
-      nextInode := freshInode s + 1, tmpdir := s.tmpdir, nowSec := s.nowSec, nextUuid := s.nextUuid } : TempMockState) :
-      StateM TempMockState Unit).run s = ((), sLock) := rfl
+      nextInode := freshInode s + 1, tmpdir := s.tmpdir, nowSec := s.nowSec, nextUuid := s.nextUuid } : TempDirMockState) :
+      StateM TempDirMockState Unit).run s = ((), sLock) := rfl
   rw [hSet]
   dsimp only
   cases hAct : act.run sLock with
   | mk r sA =>
     dsimp only
-    have hMod : ((modify fun s' : TempMockState => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) :
-        StateM TempMockState Unit).run sA =
+    have hMod : ((modify fun s' : TempDirMockState => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) :
+        StateM TempDirMockState Unit).run sA =
         ((), { sA with locks := mockRemoveFirstLock ino mode sA.locks }) := rfl
     rw [hMod]
 
-private theorem createTempDir_none_mock_steps (s₀ : TempMockState) (root dirPrefix : String)
+private theorem createTempDir_none_mock_steps (s₀ : TempDirMockState) (root dirPrefix : String)
     (hvr : Internal.validRoot root = true)
     (hvp : Internal.validPrefix dirPrefix = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -2946,13 +2946,13 @@ private theorem createTempDir_none_mock_steps (s₀ : TempMockState) (root dirPr
   rw [stateM_bind_run, hCh]
   rw [stateM_pure_run]
 
-private theorem spec7_err_all_three (s₀ : TempMockState) (dirPrefix : String) (te : TempError)
+private theorem spec7_err_all_three (s₀ : TempDirMockState) (dirPrefix : String) (te : TempDirError)
     (hvp : Internal.validPrefix dirPrefix = true)
     (hRes : (Internal.resolveRoot mockFs mockEnv none).run s₀ = (.error te, s₀)) :
     ((Internal.mkApiM mockFs mockTime mockUuid mockEnv).withTempDir none dirPrefix
-      (fun _ => pure (.ok () : Except TempError Unit))).run s₀ = (.error te, s₀) ∧
+      (fun _ => pure (.ok () : Except TempDirError Unit))).run s₀ = (.error te, s₀) ∧
     ((Internal.mkApiM mockFs mockTime mockUuid mockEnv).withLockedTempDir none dirPrefix
-      (fun _ => pure (.ok () : Except TempError Unit))).run s₀ = (.error te, s₀) ∧
+      (fun _ => pure (.ok () : Except TempDirError Unit))).run s₀ = (.error te, s₀) ∧
     ((Internal.mkApiM mockFs mockTime mockUuid mockEnv).cleanupStaleTempDirs none dirPrefix 86400).run s₀ =
       (.error te, s₀) := by
   have hCre : (Internal.createTempDir mockFs mockUuid mockEnv none dirPrefix).run s₀ = (.error te, s₀) := by
@@ -2961,13 +2961,13 @@ private theorem spec7_err_all_three (s₀ : TempMockState) (dirPrefix : String) 
     rw [stateM_bind_run, hRes]
     exact stateM_pure_run _ _
   have h1 : ((Internal.mkApiM mockFs mockTime mockUuid mockEnv).withTempDir none dirPrefix
-      (fun _ => pure (.ok () : Except TempError Unit))).run s₀ = (.error te, s₀) := by
+      (fun _ => pure (.ok () : Except TempDirError Unit))).run s₀ = (.error te, s₀) := by
     rw [mkApiM_withTempDir_eq]
     dsimp only [Internal.withTempDirM]
     rw [stateM_bind_run, hCre]
     exact stateM_pure_run _ _
   have h2 : ((Internal.mkApiM mockFs mockTime mockUuid mockEnv).withLockedTempDir none dirPrefix
-      (fun _ => pure (.ok () : Except TempError Unit))).run s₀ = (.error te, s₀) := by
+      (fun _ => pure (.ok () : Except TempDirError Unit))).run s₀ = (.error te, s₀) := by
     rw [mkApiM_withLockedTempDir_eq]
     dsimp only [Internal.withLockedTempDirM]
     rw [stateM_bind_run, hCre]
@@ -2981,7 +2981,7 @@ private theorem spec7_err_all_three (s₀ : TempMockState) (dirPrefix : String) 
     exact stateM_pure_run _ _
   exact ⟨h1, h2, h3⟩
 
-private theorem spec7_ok_all_three (s₀ : TempMockState) (root dirPrefix : String)
+private theorem spec7_ok_all_three (s₀ : TempDirMockState) (root dirPrefix : String)
     (hvr : Internal.validRoot root = true)
     (hvp : Internal.validPrefix dirPrefix = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -3010,14 +3010,14 @@ private theorem spec7_ok_all_three (s₀ : TempMockState) (root dirPrefix : Stri
   have hDirNeSlash : dir ≠ "/" := mockJoin_ne_slash root _ hrNe hcNe
   have hCreate := createTempDir_none_mock_steps s₀ root dirPrefix hvr hvp stRoot hRoot hRwx hRes hNone
   dsimp only at hCreate
-  obtain ⟨sMk, hsMk⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sMk, hsMk⟩ : ∃ s : TempDirMockState, s =
       { s₀ with
         nextUuid := s₀.nextUuid + 1
         nodes := (dir, .dir s₀.nowSec 0o700) :: s₀.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   rw [← hsMk] at hCreate
   have hLookDirMk : lookupNode sMk.nodes dir = some (.dir s₀.nowSec 0o700) := by
     rw [hsMk]; exact lookupNode_cons_eq _ _ _ _ rfl
-  obtain ⟨sFin1, hsFin1⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sFin1, hsFin1⟩ : ∃ s : TempDirMockState, s =
       { sMk with nodes := sMk.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   have hClean1 : (Internal.cleanupDirIgnoringNotFound mockFs dir).run sMk = (.ok (), sFin1) := by
     rw [hsFin1]; exact cleanupDir_mock_run sMk dir hDirNorm ⟨_, _, hLookDirMk⟩
@@ -3046,7 +3046,7 @@ private theorem spec7_ok_all_three (s₀ : TempMockState) (root dirPrefix : Stri
       rw [hDirNorm, beq_false_of_ne (ne_comm.mp hLockNeDir)]
     rw [List.find?_cons, hb]
     exact lookupNode_filter_none_of_underDir s₀.nodes dir lockPath hUnderLock
-  obtain ⟨sAfterLock, hsAfterLock⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sAfterLock, hsAfterLock⟩ : ∃ s : TempDirMockState, s =
       { nodes := (lockPath, MockNode.file (freshInode sMk) "" sMk.nowSec 0o644) :: sMk.nodes
         locks := mockRemoveFirstLock (freshInode sMk) .shared ((freshInode sMk, .shared) :: sMk.locks)
         nextInode := freshInode sMk + 1
@@ -3061,7 +3061,7 @@ private theorem spec7_ok_all_three (s₀ : TempMockState) (root dirPrefix : Stri
       rw [hDirNorm, beq_false_of_ne hLockNeDir]
     rw [List.find?_cons, hb]
     exact hLookDirMk
-  obtain ⟨sFin2, hsFin2⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sFin2, hsFin2⟩ : ∃ s : TempDirMockState, s =
       { sAfterLock with nodes := sAfterLock.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   have hClean2 : (Internal.cleanupDirIgnoringNotFound mockFs dir).run sAfterLock = (.ok (), sFin2) := by
     rw [hsFin2]; exact cleanupDir_mock_run sAfterLock dir hDirNorm ⟨_, _, hLookDirAfterLock⟩
@@ -3135,10 +3135,10 @@ private theorem spec7_ok_all_three (s₀ : TempMockState) (root dirPrefix : Stri
   exact ⟨sFin1, sFin2, s3, rep3, h1, h2, h3⟩
 
 /-- Spec 7: With `root? = none`, all three operations resolve non-empty `TMPDIR`, reject NUL `TMPDIR` with `.invalidInput`, reject missing/non-dir `TMPDIR` strictly, and fall back to `"/tmp"` when `TMPDIR` is unset or empty. -/
-theorem proof_temp_rootResolution_tmpdirAndFallbackAndStrictMissing :
-    AllPass (test_temp_rootResolution_tmpdirAndFallbackAndStrictMissing
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_rootResolution_tmpdirAndFallbackAndStrictMissing, AllPass]
+theorem proof_tempdir_rootResolution_tmpdirAndFallbackAndStrictMissing :
+    AllPass (test_tempdir_rootResolution_tmpdirAndFallbackAndStrictMissing
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_rootResolution_tmpdirAndFallbackAndStrictMissing, AllPass]
   intro s₀ dirPrefix hvp
   have hvp' : Internal.validPrefix dirPrefix = true := hvp
   have hEnvStep : (mockEnv.getEnv "TMPDIR").run s₀ = (.ok s₀.tmpdir, s₀) := by
@@ -3277,12 +3277,12 @@ theorem proof_temp_rootResolution_tmpdirAndFallbackAndStrictMissing :
             simp only [show (EntryKind.other != EntryKind.dir) = true from rfl, ↓reduceIte]
             exact notDirBranch hNotDir
 
-/-- Non-vacuity `CanReach` witness for Spec 7 (`test_temp_rootResolution_tmpdirAndFallbackAndStrictMissing`). -/
-theorem reach_temp_rootResolution_tmpdirAndFallbackAndStrictMissing :
-    CanReach (test_temp_rootResolution_tmpdirAndFallbackAndStrictMissing
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_rootResolution_tmpdirAndFallbackAndStrictMissing, CanReach]
-  obtain ⟨s₀, hs₀⟩ : ∃ s : TempMockState, s = { tmpdir := some "/custom", nodes := [("/custom", .dir 0 0o755)] } :=
+/-- Non-vacuity `CanReach` witness for Spec 7 (`test_tempdir_rootResolution_tmpdirAndFallbackAndStrictMissing`). -/
+theorem reach_tempdir_rootResolution_tmpdirAndFallbackAndStrictMissing :
+    CanReach (test_tempdir_rootResolution_tmpdirAndFallbackAndStrictMissing
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_rootResolution_tmpdirAndFallbackAndStrictMissing, CanReach]
+  obtain ⟨s₀, hs₀⟩ : ∃ s : TempDirMockState, s = { tmpdir := some "/custom", nodes := [("/custom", .dir 0 0o755)] } :=
     ⟨_, rfl⟩
   rw [canReach_nondet]; refine ⟨s₀, ?_⟩
   rw [canReach_nondet]; refine ⟨"tmp-", ?_⟩
@@ -3352,7 +3352,7 @@ private theorem foldl_max_gt_mem (xs : List (Nat × LockMode)) (init : Nat)
     | inr hmem =>
       exact ih (Nat.max init (y.1 + 1)) hmem
 
-private theorem freshInode_gt_mem (s : TempMockState) (x : Nat × LockMode) (hx : x ∈ s.locks) :
+private theorem freshInode_gt_mem (s : TempDirMockState) (x : Nat × LockMode) (hx : x ∈ s.locks) :
     x.1 < freshInode s :=
   foldl_max_gt_mem s.locks s.nextInode x hx
 
@@ -3393,12 +3393,12 @@ private theorem mockRemoveFirstLock_head (ino : Nat) (m : LockMode) (locks : Lis
   rfl
 
 private theorem mockFs_tryWithFileLock_existing_ok_run {α : Type}
-    (s : TempMockState) (p : String) (mode : LockMode) (createIfMissing : Bool)
+    (s : TempDirMockState) (p : String) (mode : LockMode) (createIfMissing : Bool)
     (ino : Nat) (c : String) (t : Int) (mode0 : Nat)
     (hp : normKey p = p)
     (hNode : lookupNode s.nodes p = some (.file ino c t mode0))
     (hNoConflict : mockHasConflict s.locks ino mode = false)
-    (act : StateM TempMockState (Except FsError α)) :
+    (act : StateM TempDirMockState (Except FsError α)) :
     let sLock := { s with locks := (ino, mode) :: s.locks }
     (mockFs.tryWithFileLock p mode createIfMissing act).run s =
       ((act.run sLock).1.map some, { (act.run sLock).2 with locks := mockRemoveFirstLock ino mode (act.run sLock).2.locks }) := by
@@ -3410,25 +3410,25 @@ private theorem mockFs_tryWithFileLock_existing_ok_run {α : Type}
   dsimp only
   rw [hNoConflict]
   simp only [Bool.false_eq_true, ↓reduceIte, stateM_bind_run, stateM_pure_run]
-  have hSet : (set ({ s with locks := (ino, mode) :: s.locks } : TempMockState) : StateM TempMockState Unit).run s =
+  have hSet : (set ({ s with locks := (ino, mode) :: s.locks } : TempDirMockState) : StateM TempDirMockState Unit).run s =
       ((), sLock) := rfl
   rw [hSet]
   dsimp only
   cases hAct : act.run sLock with
   | mk r sA =>
     dsimp only
-    have hMod : ((modify fun s' : TempMockState => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) :
-        StateM TempMockState Unit).run sA =
+    have hMod : ((modify fun s' : TempDirMockState => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) :
+        StateM TempDirMockState Unit).run sA =
         ((), { sA with locks := mockRemoveFirstLock ino mode sA.locks }) := rfl
     rw [hMod]
 
 private theorem mockFs_tryWithFileLock_existing_conflict_run {α : Type}
-    (s : TempMockState) (p : String) (mode : LockMode) (createIfMissing : Bool)
+    (s : TempDirMockState) (p : String) (mode : LockMode) (createIfMissing : Bool)
     (ino : Nat) (c : String) (t : Int) (mode0 : Nat)
     (hp : normKey p = p)
     (hNode : lookupNode s.nodes p = some (.file ino c t mode0))
     (hConflict : mockHasConflict s.locks ino mode = true)
-    (act : StateM TempMockState (Except FsError α)) :
+    (act : StateM TempDirMockState (Except FsError α)) :
     (mockFs.tryWithFileLock p mode createIfMissing act).run s = (.ok none, s) := by
   dsimp only [mockFs, resolveParentTarget]
   rw [stateM_bind_run, stateM_get_run]
@@ -3439,9 +3439,9 @@ private theorem mockFs_tryWithFileLock_existing_conflict_run {α : Type}
   simp only [↓reduceIte, stateM_pure_run]
 
 private theorem mockFs_tryWithFileLock_create_run {α : Type}
-    (s : TempMockState) (p : String) (mode : LockMode)
+    (s : TempDirMockState) (p : String) (mode : LockMode)
     (hp : normKey p = p) (hNone : lookupNode s.nodes p = none)
-    (act : StateM TempMockState (Except FsError α)) :
+    (act : StateM TempDirMockState (Except FsError α)) :
     let ino := freshInode s
     let sLock := { s with
       nodes := (p, .file ino "" s.nowSec 0o644) :: s.nodes
@@ -3458,15 +3458,15 @@ private theorem mockFs_tryWithFileLock_create_run {α : Type}
   have hSet : (set ({
       nodes := (p, MockNode.file (freshInode s) "" s.nowSec 420) :: s.nodes,
       locks := (freshInode s, mode) :: s.locks,
-      nextInode := freshInode s + 1, tmpdir := s.tmpdir, nowSec := s.nowSec, nextUuid := s.nextUuid } : TempMockState) :
-      StateM TempMockState Unit).run s = ((), sLock) := rfl
+      nextInode := freshInode s + 1, tmpdir := s.tmpdir, nowSec := s.nowSec, nextUuid := s.nextUuid } : TempDirMockState) :
+      StateM TempDirMockState Unit).run s = ((), sLock) := rfl
   rw [hSet]
   dsimp only
   cases hAct : act.run sLock with
   | mk r sA =>
     dsimp only
-    have hMod : ((modify fun s' : TempMockState => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) :
-        StateM TempMockState Unit).run sA =
+    have hMod : ((modify fun s' : TempDirMockState => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) :
+        StateM TempDirMockState Unit).run sA =
         ((), { sA with locks := mockRemoveFirstLock ino mode sA.locks }) := rfl
     rw [hMod]
 
@@ -3527,7 +3527,7 @@ private theorem lookupNode_filter_not_underDir_eq (nodes : List (String × MockN
       · exact ih
 
 private theorem probe_exclusive_lock_after_cleanup_run
-    (s : TempMockState) (root child : String)
+    (s : TempDirMockState) (root child : String)
     (hrNe : root ≠ "") (hcNe : child ≠ "") (hcNoSlash : '/' ∉ child.toList)
     (rootNode : MockNode) (stRoot : FileStat)
     (hLookRoot : lookupNode s.nodes (normKey root) = some rootNode)
@@ -3552,7 +3552,7 @@ private theorem probe_exclusive_lock_after_cleanup_run
   have hJoinNorm : mockJoin (normKey root) child = dir :=
     mockJoin_normKey root child
   have hWx : hasWx stRoot = true := hasWx_of_hasRwx stRoot hRwx
-  obtain ⟨s1, hs1⟩ : ∃ s' : TempMockState, s' =
+  obtain ⟨s1, hs1⟩ : ∃ s' : TempDirMockState, s' =
       { s with nodes := (dir, .dir s.nowSec 0o755) :: s.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   have hMk : (mockFs.mkdir dir false false).run s = (.ok (), s1) := by
     dsimp only [mockFs]
@@ -3581,8 +3581,8 @@ private theorem probe_exclusive_lock_after_cleanup_run
   rw [stateM_pure_run]
   rfl
 
-private theorem createTempDir_mock_steps_of_ops (s₀ : TempMockState) (root dirPrefix : String)
-    (fs : FsApiM (StateM TempMockState))
+private theorem createTempDir_mock_steps_of_ops (s₀ : TempDirMockState) (root dirPrefix : String)
+    (fs : FsApiM (StateM TempDirMockState))
     (hJoin : fs.join = mockJoin) (hStat : fs.stat = mockFs.stat)
     (hMkdir : fs.mkdir = mockFs.mkdir) (hChmod : fs.chmod = mockFs.chmod)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
@@ -3708,8 +3708,8 @@ private theorem withLockedTempDir_wfl_err_step {S α : Type}
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
     (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S))
     (s₀ sMk sFin : S) (root? : Option String) (dirPrefix dir : String)
-    (action : String → StateM S (Except TempError α))
-    (fe : FsError) (rc : Except TempError Unit)
+    (action : String → StateM S (Except TempDirError α))
+    (fe : FsError) (rc : Except TempDirError Unit)
     (hCre : (Internal.createTempDir fs uuid env root? dirPrefix).run s₀ = (.ok dir, sMk))
     (hWfl : (fs.withFileLock (fs.join dir ".lock") .shared true (do let r ← action dir; return .ok r)).run sMk = (.error fe, sMk))
     (hCln : (Internal.cleanupDirIgnoringNotFound fs dir).run sMk = (rc, sFin)) :
@@ -3725,8 +3725,8 @@ private theorem withLockedTempDir_wfl_err_step {S α : Type}
   dsimp only
   exact stateM_pure_run _ _
 
-private theorem cleanupDir_mock_of_rmtree (s : TempMockState) (dir : String)
-    (fs : FsApiM (StateM TempMockState)) (hRm : fs.rmtree = mockFs.rmtree)
+private theorem cleanupDir_mock_of_rmtree (s : TempDirMockState) (dir : String)
+    (fs : FsApiM (StateM TempDirMockState)) (hRm : fs.rmtree = mockFs.rmtree)
     (hnorm : normKey dir = dir) (hnode : ∃ m mode, lookupNode s.nodes dir = some (.dir m mode)) :
     (Internal.cleanupDirIgnoringNotFound fs dir).run s =
       (.ok (), { s with nodes := s.nodes.filter (fun e => !underDir dir e.1) }) := by
@@ -3743,8 +3743,8 @@ private theorem cleanupDir_mock_of_rmtree (s : TempMockState) (dir : String)
   rw [stateM_bind_run, h1]
   exact stateM_pure_run _ _
 
-private theorem cleanupDir_mock_of_rmtree_err (s : TempMockState) (dir : String)
-    (fs : FsApiM (StateM TempMockState)) (err : FsError)
+private theorem cleanupDir_mock_of_rmtree_err (s : TempDirMockState) (dir : String)
+    (fs : FsApiM (StateM TempDirMockState)) (err : FsError)
     (hRm : (fs.rmtree dir true).run s = (.error err, s)) (hb : (err.kind == .notFound) = false) :
     (Internal.cleanupDirIgnoringNotFound fs dir).run s =
       (.error (Internal.mapFsError err), s) := by
@@ -3755,13 +3755,13 @@ private theorem cleanupDir_mock_of_rmtree_err (s : TempMockState) (dir : String)
   simp only [Bool.false_eq_true, ↓reduceIte]
   exact stateM_pure_run _ _
 
-private def spec8MkState (s₀ : TempMockState) (root dirPrefix : String) : TempMockState :=
+private def spec8MkState (s₀ : TempDirMockState) (root dirPrefix : String) : TempDirMockState :=
   let dir := mockJoin root (dirPrefix ++ mockUuidToString (mockUuidOfNat s₀.nextUuid))
   { s₀ with
     nextUuid := s₀.nextUuid + 1
     nodes := (dir, .dir s₀.nowSec 0o700) :: s₀.nodes.filter (fun e => !underDir dir e.1) }
 
-private def spec8LockState (s₀ : TempMockState) (root dirPrefix : String) : TempMockState :=
+private def spec8LockState (s₀ : TempDirMockState) (root dirPrefix : String) : TempDirMockState :=
   let sMk := spec8MkState s₀ root dirPrefix
   let dir := mockJoin root (dirPrefix ++ mockUuidToString (mockUuidOfNat s₀.nextUuid))
   let lockPath := mockJoin dir ".lock"
@@ -3770,7 +3770,7 @@ private def spec8LockState (s₀ : TempMockState) (root dirPrefix : String) : Te
     locks := (freshInode sMk, .shared) :: sMk.locks
     nextInode := freshInode sMk + 1 }
 
-private theorem spec8_lockState_probes (s₀ : TempMockState) (root dirPrefix : String)
+private theorem spec8_lockState_probes (s₀ : TempDirMockState) (root dirPrefix : String)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true) :
     let u := mockUuidOfNat s₀.nextUuid
@@ -3835,8 +3835,8 @@ private theorem lookupNode_after_cleanup_root
   rw [List.find?_cons, hb2]
   exact lookupNode_filter_not_underDir_eq nodes dir (normKey root) hNotUnder
 
-private theorem spec8_ok_exec (s₀ : TempMockState) (root dirPrefix : String) (val : Nat)
-    (act : String → StateM TempMockState (Except TempError Nat))
+private theorem spec8_ok_exec (s₀ : TempDirMockState) (root dirPrefix : String) (val : Nat)
+    (act : String → StateM TempDirMockState (Except TempDirError Nat))
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -3849,7 +3849,7 @@ private theorem spec8_ok_exec (s₀ : TempMockState) (root dirPrefix : String) (
     let dir := mockJoin root (dirPrefix ++ mockUuidToString u)
     let lockPath := mockJoin dir ".lock"
     let api := Internal.mkApiM mockFs mockTime mockUuid mockEnv
-    ∃ sOk : TempMockState,
+    ∃ sOk : TempDirMockState,
       (api.withLockedTempDir (some root) dirPrefix act).run s₀ = (.ok val, sOk) ∧
       ((mockFs.lstat dir).run sOk).1.isOk = false ∧
       (∃ e, ((mockFs.lstat lockPath).run sOk).1 = .error e ∧ e.kind = .notFound) ∧
@@ -3910,15 +3910,15 @@ private theorem spec8_ok_exec (s₀ : TempMockState) (root dirPrefix : String) (
     rw [List.find?_cons, hb]
     exact hLookDirMk
   have hActOk :
-      (do let r ← act dir; return .ok r : StateM TempMockState (Except FsError (Except TempError Nat))).run sLock =
+      (do let r ← act dir; return .ok r : StateM TempDirMockState (Except FsError (Except TempDirError Nat))).run sLock =
         (.ok (.ok val), sLock) := by
     rw [stateM_bind_run, hAct]
     exact stateM_pure_run _ _
-  obtain ⟨sAfterOk, hsAfterOk⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sAfterOk, hsAfterOk⟩ : ∃ s : TempDirMockState, s =
       { sLock with locks := mockRemoveFirstLock (freshInode sMk) .shared sLock.locks } := ⟨_, rfl⟩
   have hLookDirAfterOk : lookupNode sAfterOk.nodes dir = some (.dir s₀.nowSec 0o700) := by
     rw [hsAfterOk]; exact hLookDirLock
-  obtain ⟨sOk, hsOk⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sOk, hsOk⟩ : ∃ s : TempDirMockState, s =
       { sAfterOk with nodes := sAfterOk.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   have hCleanOk : (Internal.cleanupDirIgnoringNotFound mockFs dir).run sAfterOk = (.ok (), sOk) := by
     rw [hsOk]; exact cleanupDir_mock_run sAfterOk dir hDirNorm ⟨_, _, hLookDirAfterOk⟩
@@ -3967,7 +3967,7 @@ private theorem spec8_ok_exec (s₀ : TempMockState) (root dirPrefix : String) (
   · dsimp only [dir, lockPath]
     exact hProbeOk
 
-private theorem spec8_err_exec (s₀ : TempMockState) (root dirPrefix : String) (err : TempError)
+private theorem spec8_err_exec (s₀ : TempDirMockState) (root dirPrefix : String) (err : TempDirError)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -3978,9 +3978,9 @@ private theorem spec8_err_exec (s₀ : TempMockState) (root dirPrefix : String) 
     let dir := mockJoin root (dirPrefix ++ mockUuidToString u)
     let lockPath := mockJoin dir ".lock"
     let api := Internal.mkApiM mockFs mockTime mockUuid mockEnv
-    ∃ sErr : TempMockState,
+    ∃ sErr : TempDirMockState,
       (api.withLockedTempDir (some root) dirPrefix fun _ =>
-        pure (Except.error err : Except TempError Nat)).run s₀ = (.error err, sErr) ∧
+        pure (Except.error err : Except TempDirError Nat)).run s₀ = (.error err, sErr) ∧
       ((mockFs.lstat dir).run sErr).1.isOk = false ∧
       ((do let _ ← mockFs.mkdir dir false false; mockFs.tryWithFileLock lockPath .exclusive true (pure (.ok ()))).run sErr).1 =
         .ok (some ()) := by
@@ -4038,16 +4038,16 @@ private theorem spec8_err_exec (s₀ : TempMockState) (root dirPrefix : String) 
       rw [hDirNorm, beq_false_of_ne hLockNeDir]
     rw [List.find?_cons, hb]
     exact hLookDirMk
-  obtain ⟨sAfterErr, hsAfterErr⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sAfterErr, hsAfterErr⟩ : ∃ s : TempDirMockState, s =
       { sLock with locks := mockRemoveFirstLock (freshInode sMk) .shared sLock.locks } := ⟨_, rfl⟩
   have hLookDirAfterErr : lookupNode sAfterErr.nodes dir = some (.dir s₀.nowSec 0o700) := by
     rw [hsAfterErr]; exact hLookDirLock
-  obtain ⟨sErr, hsErr⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sErr, hsErr⟩ : ∃ s : TempDirMockState, s =
       { sAfterErr with nodes := sAfterErr.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   have hCleanErr : (Internal.cleanupDirIgnoringNotFound mockFs dir).run sAfterErr = (.ok (), sErr) := by
     rw [hsErr]; exact cleanupDir_mock_run sAfterErr dir hDirNorm ⟨_, _, hLookDirAfterErr⟩
   have hRunErr : (api.withLockedTempDir (some root) dirPrefix fun _ =>
-      pure (Except.error err : Except TempError Nat)).run s₀ = (.error err, sErr) := by
+      pure (Except.error err : Except TempDirError Nat)).run s₀ = (.error err, sErr) := by
     rw [mkApiM_withLockedTempDir_eq]
     dsimp only [Internal.withLockedTempDirM]
     rw [stateM_bind_run, hCreate]
@@ -4088,8 +4088,8 @@ private theorem spec8_err_exec (s₀ : TempMockState) (root dirPrefix : String) 
   dsimp only [dir, lockPath]
   exact hProbeErr
 
-private theorem spec8_lockRm_exec (s₀ : TempMockState) (root dirPrefix : String) (val : Nat)
-    (fs1 : FsApiM (StateM TempMockState))
+private theorem spec8_lockRm_exec (s₀ : TempDirMockState) (root dirPrefix : String) (val : Nat)
+    (fs1 : FsApiM (StateM TempDirMockState))
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -4098,10 +4098,10 @@ private theorem spec8_lockRm_exec (s₀ : TempMockState) (root dirPrefix : Strin
       (mockJoin root (dirPrefix ++ mockUuidToString (mockUuidOfNat s₀.nextUuid)))).isOk = false)
     (hJoin1 : fs1.join = mockJoin) (hStat1 : fs1.stat = mockFs.stat)
     (hMkdir1 : fs1.mkdir = mockFs.mkdir) (hChmod1 : fs1.chmod = mockFs.chmod)
-    (hWfl1 : ∀ {β : Type} p m c (body : StateM TempMockState (Except FsError β)),
+    (hWfl1 : ∀ {β : Type} p m c (body : StateM TempDirMockState (Except FsError β)),
       fs1.withFileLock p m c body = pure (.error { kind := .permissionDenied, path := some p, message := "lock denied" }))
     (hRm1 : ∀ p ign, fs1.rmtree p ign = pure (.error { kind := .ioError, path := some p, message := "rm failed" })) :
-    ∃ sLockRm : TempMockState, ∃ resLockRm : Except TempError Nat,
+    ∃ sLockRm : TempDirMockState, ∃ resLockRm : Except TempDirError Nat,
       ((Internal.mkApiM fs1 mockTime mockUuid mockEnv).withLockedTempDir
         (some root) dirPrefix fun _ => pure (.ok val)).run s₀ = (resLockRm, sLockRm) ∧
       (∃ e, resLockRm = .error e ∧ e.kind = .permissionDenied) := by
@@ -4110,14 +4110,14 @@ private theorem spec8_lockRm_exec (s₀ : TempMockState) (root dirPrefix : Strin
   let lockPath := mockJoin dir ".lock"
   have hCreateLockRm := createTempDir_mock_steps_of_ops s₀ root dirPrefix fs1 hJoin1 hStat1 hMkdir1 hChmod1 hvr hvp stRoot hRoot hRwx hNone
   dsimp only at hCreateLockRm
-  obtain ⟨sMk, hsMk⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sMk, hsMk⟩ : ∃ s : TempDirMockState, s =
       { s₀ with
         nextUuid := s₀.nextUuid + 1
         nodes := (dir, .dir s₀.nowSec 0o700) :: s₀.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   rw [← hsMk] at hCreateLockRm
   have hWflLockRm :
       (fs1.withFileLock (fs1.join dir ".lock") .shared true
-        (do let r ← (fun _ => (pure (.ok val) : StateM TempMockState (Except TempError Nat))) dir; return .ok r)).run sMk =
+        (do let r ← (fun _ => (pure (.ok val) : StateM TempDirMockState (Except TempDirError Nat))) dir; return .ok r)).run sMk =
         (.error { kind := .permissionDenied, path := some lockPath, message := "lock denied" }, sMk) := by
     rw [hJoin1, hWfl1]; exact stateM_pure_run _ _
   have hCleanLockRm :
@@ -4130,8 +4130,8 @@ private theorem spec8_lockRm_exec (s₀ : TempMockState) (root dirPrefix : Strin
     hCreateLockRm hWflLockRm hCleanLockRm
   exact ⟨sMk, _, hRunLockRm, _, rfl, rfl⟩
 
-private theorem spec8_lockClean_exec (s₀ : TempMockState) (root dirPrefix : String) (val : Nat)
-    (fs2 : FsApiM (StateM TempMockState))
+private theorem spec8_lockClean_exec (s₀ : TempDirMockState) (root dirPrefix : String) (val : Nat)
+    (fs2 : FsApiM (StateM TempDirMockState))
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -4140,12 +4140,12 @@ private theorem spec8_lockClean_exec (s₀ : TempMockState) (root dirPrefix : St
       (mockJoin root (dirPrefix ++ mockUuidToString (mockUuidOfNat s₀.nextUuid)))).isOk = false)
     (hJoin2 : fs2.join = mockJoin) (hStat2 : fs2.stat = mockFs.stat)
     (hMkdir2 : fs2.mkdir = mockFs.mkdir) (hChmod2 : fs2.chmod = mockFs.chmod)
-    (hWfl2 : ∀ {β : Type} p m c (body : StateM TempMockState (Except FsError β)),
+    (hWfl2 : ∀ {β : Type} p m c (body : StateM TempDirMockState (Except FsError β)),
       fs2.withFileLock p m c body = pure (.error { kind := .permissionDenied, path := some p, message := "lock denied" }))
     (hRm2 : fs2.rmtree = mockFs.rmtree) :
     let u := mockUuidOfNat s₀.nextUuid
     let dir := mockJoin root (dirPrefix ++ mockUuidToString u)
-    ∃ sLockClean : TempMockState, ∃ resLockClean : Except TempError Nat,
+    ∃ sLockClean : TempDirMockState, ∃ resLockClean : Except TempDirError Nat,
       ((Internal.mkApiM fs2 mockTime mockUuid mockEnv).withLockedTempDir
         (some root) dirPrefix fun _ => pure (.ok val)).run s₀ = (resLockClean, sLockClean) ∧
       (∃ e, resLockClean = .error e ∧ e.kind = .permissionDenied) ∧
@@ -4157,18 +4157,18 @@ private theorem spec8_lockClean_exec (s₀ : TempMockState) (root dirPrefix : St
   have hDirNorm : normKey dir = dir := normKey_mockJoin root _ hcNe hcNoSlash
   have hCreateLockClean := createTempDir_mock_steps_of_ops s₀ root dirPrefix fs2 hJoin2 hStat2 hMkdir2 hChmod2 hvr hvp stRoot hRoot hRwx hNone
   dsimp only at hCreateLockClean
-  obtain ⟨sMk, hsMk⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sMk, hsMk⟩ : ∃ s : TempDirMockState, s =
       { s₀ with
         nextUuid := s₀.nextUuid + 1
         nodes := (dir, .dir s₀.nowSec 0o700) :: s₀.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   rw [← hsMk] at hCreateLockClean
   have hLookDirMk : lookupNode sMk.nodes dir = some (.dir s₀.nowSec 0o700) := by
     rw [hsMk]; exact lookupNode_cons_eq _ _ _ _ rfl
-  obtain ⟨sFinClean, hsFinClean⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sFinClean, hsFinClean⟩ : ∃ s : TempDirMockState, s =
       { sMk with nodes := sMk.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   have hWflLockClean :
       (fs2.withFileLock (fs2.join dir ".lock") .shared true
-        (do let r ← (fun _ => (pure (.ok val) : StateM TempMockState (Except TempError Nat))) dir; return .ok r)).run sMk =
+        (do let r ← (fun _ => (pure (.ok val) : StateM TempDirMockState (Except TempDirError Nat))) dir; return .ok r)).run sMk =
         (.error { kind := .permissionDenied, path := some lockPath, message := "lock denied" }, sMk) := by
     rw [hJoin2, hWfl2]; exact stateM_pure_run _ _
   have hCleanLockClean : (Internal.cleanupDirIgnoringNotFound fs2 dir).run sMk = (.ok (), sFinClean) := by
@@ -4183,10 +4183,10 @@ private theorem spec8_lockClean_exec (s₀ : TempMockState) (root dirPrefix : St
     mockFs_lstat_isOk_false_of_lookup_none sFinClean dir hLookDirClean⟩
 
 /-- Spec 8: `withLockedTempDir` holds a `.shared` lock on `<dir>/.lock` during `action`, releases it and deletes `dir` on `.ok`/`.error`, and cleans up even if locking fails. -/
-theorem proof_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit :
-    AllPass (test_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit, AllPass]
+theorem proof_tempdir_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit :
+    AllPass (test_tempdir_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit, AllPass]
   intro s₀ root dirPrefix val err ⟨hvr, hvp⟩ ⟨stRoot, hRoot, hRwx⟩
   have hRootPure : mockStatPure s₀ root = .ok stRoot := by
     rw [mockFs_stat_run] at hRoot; exact hRoot
@@ -4200,7 +4200,7 @@ theorem proof_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExi
   rw [mockFs_join_eq, mockUuid_toString_eq]
   have ⟨hLDir, hLLock, hShared, hEx⟩ := spec8_lockState_probes s₀ root dirPrefix hvr hvp
   let dir := mockJoin root (dirPrefix ++ mockUuidToString (mockUuidOfNat s₀.nextUuid))
-  let act8 : String → StateM TempMockState (Except TempError Nat) := fun d => do
+  let act8 : String → StateM TempDirMockState (Except TempDirError Nat) := fun d => do
     let stDir ← mockFs.lstat d
     let lst ← mockFs.lstat (mockJoin d ".lock")
     let sharedProbe ← mockFs.tryWithFileLock (mockJoin d ".lock") .shared false (pure (.ok ()))
@@ -4227,11 +4227,11 @@ theorem proof_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExi
     have hModeVal : ((mockNodeStat (.dir s₀.nowSec 0o700)).mode == 0o700) = true := rfl
     have hKindFile : ((mockNodeStat (.file (freshInode (spec8MkState s₀ root dirPrefix)) "" (spec8MkState s₀ root dirPrefix).nowSec 0o644)).kind == EntryKind.file) = true := rfl
     simp only [hModeDir, hModeVal, beq_self_eq_true, hKindFile, Bool.and_self, ↓reduceIte, stateM_pure_run]
-  let fs1 : FsApiM (StateM TempMockState) :=
+  let fs1 : FsApiM (StateM TempDirMockState) :=
     { mockFs with
       withFileLock := fun p _ _ _ => pure (.error { kind := .permissionDenied, path := some p, message := "lock denied" })
       rmtree := fun p _ => pure (.error { kind := .ioError, path := some p, message := "rm failed" }) }
-  let fs2 : FsApiM (StateM TempMockState) :=
+  let fs2 : FsApiM (StateM TempDirMockState) :=
     { mockFs with
       withFileLock := fun p _ _ _ => pure (.error { kind := .permissionDenied, path := some p, message := "lock denied" }) }
   obtain ⟨sOk, hRunOk, h1, h2, h3⟩ :=
@@ -4257,13 +4257,13 @@ theorem proof_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExi
   rw [allPass_assert, allPass_assert_end]
   exact ⟨rfl, h1, h2, h3, rfl, h4, h5, h6, h7, h8, trivial⟩
 
-private theorem spec8_reach_tail (s₀ : TempMockState)
+private theorem spec8_reach_tail (s₀ : TempDirMockState)
     (hRootPure : mockStatPure s₀ "/tmp" = .ok (mockNodeStat (.dir 0 0o755)))
     (hNonePure : (mockLstatPure { s₀ with nextUuid := s₀.nextUuid + 1 }
       (mockJoin "/tmp" ("tmp-" ++ mockUuidToString (mockUuidOfNat s₀.nextUuid)))).isOk = false) :
     CanReach (do
       let dir := mockJoin "/tmp" ("tmp-" ++ mockUuidToString (mockUuidOfNat s₀.nextUuid))
-      let act8 : String → StateM TempMockState (Except TempError Nat) := fun d => do
+      let act8 : String → StateM TempDirMockState (Except TempDirError Nat) := fun d => do
         let stDir ← mockFs.lstat d
         let lst ← mockFs.lstat (mockJoin d ".lock")
         let sharedProbe ← mockFs.tryWithFileLock (mockJoin d ".lock") .shared false (pure (.ok ()))
@@ -4289,20 +4289,20 @@ private theorem spec8_reach_tail (s₀ : TempMockState)
         mockFs.tryWithFileLock (mockJoin dir ".lock") .exclusive true (pure (.ok ()))).run sOk
       NondetTest.assert (probeOk.1 = .ok (some ()))
       let (resErr, sErr) := ((Internal.mkApiM mockFs mockTime mockUuid mockEnv).withLockedTempDir (some "/tmp") "tmp-"
-        fun _ => pure (Except.error { kind := .ioError, message := "err" } : Except TempError Nat)).run s₀
+        fun _ => pure (Except.error { kind := .ioError, message := "err" } : Except TempDirError Nat)).run s₀
       NondetTest.assert (resErr = .error { kind := .ioError, message := "err" })
       NondetTest.assert (((mockFs.lstat dir).run sErr).1.isOk = false)
       let probeErr := (do
         let _ ← mockFs.mkdir dir false false
         mockFs.tryWithFileLock (mockJoin dir ".lock") .exclusive true (pure (.ok ()))).run sErr
       NondetTest.assert (probeErr.1 = .ok (some ()))
-      let fsLockFailRm : FsApiM (StateM TempMockState) :=
+      let fsLockFailRm : FsApiM (StateM TempDirMockState) :=
         { mockFs with
           withFileLock := fun p _ _ _ => pure (.error { kind := .permissionDenied, path := some p, message := "lock denied" })
           rmtree := fun p _ => pure (.error { kind := .ioError, path := some p, message := "rm failed" }) }
       let (resLockRm, _) := ((Internal.mkApiM fsLockFailRm mockTime mockUuid mockEnv).withLockedTempDir (some "/tmp") "tmp-" fun _ => pure (.ok (42 : Nat))).run s₀
       NondetTest.assert (∃ e, resLockRm = .error e ∧ e.kind = .permissionDenied)
-      let fsLockFailClean : FsApiM (StateM TempMockState) :=
+      let fsLockFailClean : FsApiM (StateM TempDirMockState) :=
         { mockFs with
           withFileLock := fun p _ _ _ => pure (.error { kind := .permissionDenied, path := some p, message := "lock denied" }) }
       let (resLockClean, sLockClean) := ((Internal.mkApiM fsLockFailClean mockTime mockUuid mockEnv).withLockedTempDir (some "/tmp") "tmp-" fun _ => pure (.ok (42 : Nat))).run s₀
@@ -4311,7 +4311,7 @@ private theorem spec8_reach_tail (s₀ : TempMockState)
   dsimp only [CanReach]
   have ⟨hLDir, hLLock, hShared, hEx⟩ := spec8_lockState_probes s₀ "/tmp" "tmp-" rfl rfl
   let dir := mockJoin "/tmp" ("tmp-" ++ mockUuidToString (mockUuidOfNat s₀.nextUuid))
-  let act8 : String → StateM TempMockState (Except TempError Nat) := fun d => do
+  let act8 : String → StateM TempDirMockState (Except TempDirError Nat) := fun d => do
     let stDir ← mockFs.lstat d
     let lst ← mockFs.lstat (mockJoin d ".lock")
     let sharedProbe ← mockFs.tryWithFileLock (mockJoin d ".lock") .shared false (pure (.ok ()))
@@ -4338,11 +4338,11 @@ private theorem spec8_reach_tail (s₀ : TempMockState)
     have hModeVal : ((mockNodeStat (.dir s₀.nowSec 0o700)).mode == 0o700) = true := rfl
     have hKindFile : ((mockNodeStat (.file (freshInode (spec8MkState s₀ "/tmp" "tmp-")) "" (spec8MkState s₀ "/tmp" "tmp-").nowSec 0o644)).kind == EntryKind.file) = true := rfl
     simp only [hModeDir, hModeVal, beq_self_eq_true, hKindFile, Bool.and_self, ↓reduceIte, stateM_pure_run]
-  let fs1 : FsApiM (StateM TempMockState) :=
+  let fs1 : FsApiM (StateM TempDirMockState) :=
     { mockFs with
       withFileLock := fun p _ _ _ => pure (.error { kind := .permissionDenied, path := some p, message := "lock denied" })
       rmtree := fun p _ => pure (.error { kind := .ioError, path := some p, message := "rm failed" }) }
-  let fs2 : FsApiM (StateM TempMockState) :=
+  let fs2 : FsApiM (StateM TempDirMockState) :=
     { mockFs with
       withFileLock := fun p _ _ _ => pure (.error { kind := .permissionDenied, path := some p, message := "lock denied" }) }
   obtain ⟨sOk, hRunOk, h1, h2, h3⟩ :=
@@ -4370,12 +4370,12 @@ private theorem spec8_reach_tail (s₀ : TempMockState)
   rw [canReach_assert, canReach_assert_end]
   exact ⟨rfl, h1, h2, h3, rfl, h4, h5, h6, h7, h8, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for Spec 8 (`test_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit`). -/
-theorem reach_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit :
-    CanReach (test_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit, CanReach]
-  obtain ⟨s₀, hs₀⟩ : ∃ s : TempMockState, s = {} := ⟨{}, rfl⟩
+/-- Non-vacuity `CanReach` witness for Spec 8 (`test_tempdir_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit`). -/
+theorem reach_tempdir_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit :
+    CanReach (test_tempdir_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit, CanReach]
+  obtain ⟨s₀, hs₀⟩ : ∃ s : TempDirMockState, s = {} := ⟨{}, rfl⟩
   rw [canReach_nondet]; refine ⟨s₀, ?_⟩
   rw [canReach_nondet]; refine ⟨"/tmp", ?_⟩
   rw [canReach_nondet]; refine ⟨"tmp-", ?_⟩
@@ -4407,8 +4407,8 @@ theorem reach_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExi
   rw [mockFs_join_eq, mockUuid_toString_eq]
   exact spec8_reach_tail s₀ hRootPure hNonePure
 
-private theorem spec9_exec (s₀ : TempMockState) (root dirPrefix : String) (val : Nat)
-    (fsConcurrentSweep : FsApiM (StateM TempMockState))
+private theorem spec9_exec (s₀ : TempDirMockState) (root dirPrefix : String) (val : Nat)
+    (fsConcurrentSweep : FsApiM (StateM TempDirMockState))
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -4425,7 +4425,7 @@ private theorem spec9_exec (s₀ : TempMockState) (root dirPrefix : String) (val
       pure (.error { kind := .notFound, path := some p, message := "removed concurrently" })) :
     let u := mockUuidOfNat s₀.nextUuid
     let dir := mockJoin root (dirPrefix ++ mockUuidToString u)
-    ∃ s₁ : TempMockState,
+    ∃ s₁ : TempDirMockState,
       ((Internal.mkApiM fsConcurrentSweep mockTime mockUuid mockEnv).withLockedTempDir
         (some root) dirPrefix fun _ => pure (.ok val)).run s₀ = (.ok val, s₁) ∧
       ((mockFs.lstat dir).run s₁).1.isOk = false := by
@@ -4444,7 +4444,7 @@ private theorem spec9_exec (s₀ : TempMockState) (root dirPrefix : String) (val
   have hCreate := createTempDir_mock_steps_of_ops s₀ root dirPrefix fsConcurrentSweep hJoin hStat hMkdir hChmod
     hvr hvp stRoot hRoot hRwx hNone
   dsimp only at hCreate
-  obtain ⟨sMk, hsMk⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sMk, hsMk⟩ : ∃ s : TempDirMockState, s =
       { s₀ with
         nextUuid := s₀.nextUuid + 1
         nodes := (dir, .dir s₀.nowSec 0o700) :: s₀.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
@@ -4459,7 +4459,7 @@ private theorem spec9_exec (s₀ : TempMockState) (root dirPrefix : String) (val
       rw [hDirNorm, beq_false_of_ne (ne_comm.mp hLockNeDir)]
     rw [List.find?_cons, hb]
     exact lookupNode_filter_none_of_underDir s₀.nodes dir (mockJoin dir ".lock") hUnderLock
-  obtain ⟨sAfterLock, hsAfterLock⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sAfterLock, hsAfterLock⟩ : ∃ s : TempDirMockState, s =
       { nodes := (mockJoin dir ".lock", .file (freshInode sMk) "" sMk.nowSec 0o644) :: sMk.nodes
         locks := mockRemoveFirstLock (freshInode sMk) .shared ((freshInode sMk, .shared) :: sMk.locks)
         nextInode := freshInode sMk + 1
@@ -4474,7 +4474,7 @@ private theorem spec9_exec (s₀ : TempMockState) (root dirPrefix : String) (val
       rw [hDirNorm, beq_false_of_ne hLockNeDir]
     rw [List.find?_cons, hb]
     exact hLookDirMk
-  obtain ⟨sFin, hsFin⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sFin, hsFin⟩ : ∃ s : TempDirMockState, s =
       { sAfterLock with nodes := sAfterLock.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   have hRmInner : (mockFs.rmtree dir true).run sAfterLock = (.ok (), sFin) := by
     rw [hsFin]
@@ -4510,10 +4510,10 @@ private theorem spec9_exec (s₀ : TempMockState) (root dirPrefix : String) (val
   exact ⟨sFin, hRun, mockFs_lstat_isOk_false_of_lookup_none sFin dir hLookDirFin⟩
 
 /-- Spec 9: `withLockedTempDir` ignores `.notFound` from `fs.rmtree` in its finalizer on concurrent cleanup. -/
-theorem proof_temp_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup :
-    AllPass (test_temp_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup, AllPass]
+theorem proof_tempdir_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup :
+    AllPass (test_tempdir_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup, AllPass]
   intro s₀ root dirPrefix val ⟨hvr, hvp⟩ ⟨stRoot, hRoot, hRwx⟩
   have hRootPure : mockStatPure s₀ root = .ok stRoot := by
     rw [mockFs_stat_run] at hRoot; exact hRoot
@@ -4524,7 +4524,7 @@ theorem proof_temp_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup :
   have hNonePure : (mockLstatPure { s₀ with nextUuid := s₀.nextUuid + 1 }
       (mockJoin root (dirPrefix ++ mockUuidToString (mockUuidOfNat s₀.nextUuid)))).isOk = false := by
     rw [mockFs_lstat_run, mockFs_join_eq, mockUuid_toString_eq] at hNone; exact hNone
-  let fsConcurrentSweep : FsApiM (StateM TempMockState) :=
+  let fsConcurrentSweep : FsApiM (StateM TempDirMockState) :=
     { mockFs with
       rmtree := fun p ign => do
         let _ ← mockFs.rmtree p ign
@@ -4536,12 +4536,12 @@ theorem proof_temp_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup :
   rw [allPass_assert, allPass_assert_end]
   exact ⟨rfl, hDead, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for Spec 9 (`test_temp_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup`). -/
-theorem reach_temp_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup :
-    CanReach (test_temp_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup, CanReach]
-  obtain ⟨s₀, hs₀⟩ : ∃ s : TempMockState, s = {} := ⟨{}, rfl⟩
+/-- Non-vacuity `CanReach` witness for Spec 9 (`test_tempdir_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup`). -/
+theorem reach_tempdir_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup :
+    CanReach (test_tempdir_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup, CanReach]
+  obtain ⟨s₀, hs₀⟩ : ∃ s : TempDirMockState, s = {} := ⟨{}, rfl⟩
   rw [canReach_nondet]; refine ⟨s₀, ?_⟩
   rw [canReach_nondet]; refine ⟨"/tmp", ?_⟩
   rw [canReach_nondet]; refine ⟨"tmp-", ?_⟩
@@ -4569,7 +4569,7 @@ theorem reach_temp_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup :
       { s₀ with nextUuid := s₀.nextUuid + 1 } |>.1.isOk = false := by
     rw [mockFs_lstat_run, mockFs_join_eq, mockUuid_toString_eq]; exact hNonePure
   rw [canReach_assume]; refine ⟨hNone, ?_⟩
-  let fsConcurrentSweep : FsApiM (StateM TempMockState) :=
+  let fsConcurrentSweep : FsApiM (StateM TempDirMockState) :=
     { mockFs with
       rmtree := fun p ign => do
         let _ ← mockFs.rmtree p ign
@@ -4593,7 +4593,7 @@ private theorem exceptT_stateM_pure_run {ε S α : Type} (a : α) (s : S) :
 private theorem exceptT_stateM_throw_run {ε S α : Type} (e : ε) (s : S) :
     (ExceptT.run (throw e : ExceptT ε (StateM S) α)).run s = (.error e, s) := rfl
 
-private theorem createTempDir_ex_mock_steps (s₀ : TempMockState) (root dirPrefix : String)
+private theorem createTempDir_ex_mock_steps (s₀ : TempDirMockState) (root dirPrefix : String)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -4728,7 +4728,7 @@ private theorem createTempDir_ex_mock_steps (s₀ : TempMockState) (root dirPref
   rw [exceptT_stateM_bind_run, hChEx]
   exact exceptT_stateM_pure_run _ _
 
-private theorem cleanupDir_ex_mock_run (s : TempMockState) (dir : String) (hnorm : normKey dir = dir)
+private theorem cleanupDir_ex_mock_run (s : TempDirMockState) (dir : String) (hnorm : normKey dir = dir)
     (hnode : ∃ m mode, lookupNode s.nodes dir = some (.dir m mode)) :
     (ExceptT.run (Internal.cleanupDirIgnoringNotFound mockFsEx dir)).run s =
       (.ok (.ok ()), { s with nodes := s.nodes.filter (fun e => !underDir dir e.1) }) := by
@@ -4751,9 +4751,9 @@ private theorem cleanupDir_ex_mock_run (s : TempMockState) (dir : String) (hnorm
   exact exceptT_stateM_pure_run _ _
 
 private theorem mockFsEx_withFileLock_create_throw_run
-    (s : TempMockState) (p : String) (mode : LockMode)
+    (s : TempDirMockState) (p : String) (mode : LockMode)
     (hp : normKey p = p) (hNone : lookupNode s.nodes p = none)
-    (act : ExceptT String (StateM TempMockState) (Except FsError (Except TempError Unit))) (errStr : String)
+    (act : ExceptT String (StateM TempDirMockState) (Except FsError (Except TempDirError Unit))) (errStr : String)
     (hActThrow : (ExceptT.run act).run
       { s with
         nodes := (p, .file (freshInode s) "" s.nowSec 0o644) :: s.nodes
@@ -4772,31 +4772,31 @@ private theorem mockFsEx_withFileLock_create_throw_run
   intro ino sAfter
   dsimp only [mockFsEx, resolveParentTarget]
   rw [exceptT_stateM_bind_run]
-  have hGet : (ExceptT.run (get : ExceptT String (StateM TempMockState) TempMockState)).run s = (.ok s, s) := rfl
+  have hGet : (ExceptT.run (get : ExceptT String (StateM TempDirMockState) TempDirMockState)).run s = (.ok s, s) := rfl
   rw [hGet]
   dsimp only
   rw [hp, hNone]
   simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, exceptT_stateM_bind_run, exceptT_stateM_pure_run]
-  let sLock : TempMockState := { s with
+  let sLock : TempDirMockState := { s with
     nodes := (p, .file ino "" s.nowSec 0o644) :: s.nodes
     locks := (ino, mode) :: s.locks
     nextInode := ino + 1 }
   have hSetEx : (ExceptT.run (liftM (set ({
       nodes := (p, MockNode.file (freshInode s) "" s.nowSec 420) :: s.nodes,
       locks := (freshInode s, mode) :: s.locks,
-      nextInode := freshInode s + 1, tmpdir := s.tmpdir, nowSec := s.nowSec, nextUuid := s.nextUuid } : TempMockState) :
-      StateM TempMockState Unit) : ExceptT String (StateM TempMockState) Unit)).run s = (.ok (), sLock) := by
+      nextInode := freshInode s + 1, tmpdir := s.tmpdir, nowSec := s.nowSec, nextUuid := s.nextUuid } : TempDirMockState) :
+      StateM TempDirMockState Unit) : ExceptT String (StateM TempDirMockState) Unit)).run s = (.ok (), sLock) := by
     rw [exceptT_liftM_stateM_run]; rfl
   rw [hSetEx]
   dsimp only
-  let fin : Option (Except FsError (Except TempError Unit)) → ExceptT String (StateM TempMockState) Unit :=
-    fun _ => liftM (modify (fun s' : TempMockState => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) :
-      StateM TempMockState Unit)
+  let fin : Option (Except FsError (Except TempDirError Unit)) → ExceptT String (StateM TempDirMockState) Unit :=
+    fun _ => liftM (modify (fun s' : TempDirMockState => { s' with locks := mockRemoveFirstLock ino mode s'.locks }) :
+      StateM TempDirMockState Unit)
   have hModEx : (ExceptT.run (fin none)).run sLock = (.ok (), sAfter) := by
     dsimp only [fin]; rw [exceptT_liftM_stateM_run]; rfl
   rw [exceptT_tryFinally'_error_run act fin sLock sLock sAfter errStr () hActThrow hModEx]
 
-private theorem spec10_part1_exec (s₀ : TempMockState) (root dirPrefix : String)
+private theorem spec10_part1_exec (s₀ : TempDirMockState) (root dirPrefix : String)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -4806,9 +4806,9 @@ private theorem spec10_part1_exec (s₀ : TempMockState) (root dirPrefix : Strin
     let u := mockUuidOfNat s₀.nextUuid
     let dir := mockJoin root (dirPrefix ++ mockUuidToString u)
     let apiEx := Internal.mkApiM mockFsEx mockTimeEx mockUuidEx mockEnvEx
-    ∃ s1 : TempMockState,
+    ∃ s1 : TempDirMockState,
       (ExceptT.run (apiEx.withTempDir (some root) dirPrefix fun _ =>
-        (throw "boom" : ExceptT String (StateM TempMockState) (Except TempError Unit)))).run s₀ =
+        (throw "boom" : ExceptT String (StateM TempDirMockState) (Except TempDirError Unit)))).run s₀ =
         (.error "boom", s1) ∧
       ((mockFs.lstat dir).run s1).1.isOk = false := by
   intro u dir apiEx
@@ -4817,26 +4817,26 @@ private theorem spec10_part1_exec (s₀ : TempMockState) (root dirPrefix : Strin
   have hDirNorm : normKey dir = dir := normKey_mockJoin root _ hcNe hcNoSlash
   have hCreate := createTempDir_ex_mock_steps s₀ root dirPrefix hvr hvp stRoot hRoot hRwx hNone
   dsimp only at hCreate
-  obtain ⟨sMk, hsMk⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sMk, hsMk⟩ : ∃ s : TempDirMockState, s =
       { s₀ with
         nextUuid := s₀.nextUuid + 1
         nodes := (dir, .dir s₀.nowSec 0o700) :: s₀.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   rw [← hsMk] at hCreate
   have hLookDirMk : lookupNode sMk.nodes dir = some (.dir s₀.nowSec 0o700) := by
     rw [hsMk]; exact lookupNode_cons_eq _ _ _ _ rfl
-  obtain ⟨s1Fin, hs1Fin⟩ : ∃ s : TempMockState, s =
+  obtain ⟨s1Fin, hs1Fin⟩ : ∃ s : TempDirMockState, s =
       { sMk with nodes := sMk.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   have hClean1 : (ExceptT.run (Internal.cleanupDirIgnoringNotFound mockFsEx dir)).run sMk = (.ok (.ok ()), s1Fin) := by
     rw [hs1Fin]; exact cleanupDir_ex_mock_run sMk dir hDirNorm ⟨_, _, hLookDirMk⟩
   have hRun1 : (ExceptT.run (apiEx.withTempDir (some root) dirPrefix fun _ =>
-      (throw "boom" : ExceptT String (StateM TempMockState) (Except TempError Unit)))).run s₀ =
+      (throw "boom" : ExceptT String (StateM TempDirMockState) (Except TempDirError Unit)))).run s₀ =
       (.error "boom", s1Fin) := by
     rw [mkApiM_withTempDir_eq]
     dsimp only [Internal.withTempDirM]
     rw [exceptT_stateM_bind_run, hCreate]
     dsimp only
     rw [exceptT_stateM_bind_run]
-    rw [exceptT_tryFinally'_error_run (throw "boom" : ExceptT String (StateM TempMockState) (Except TempError Unit))
+    rw [exceptT_tryFinally'_error_run (throw "boom" : ExceptT String (StateM TempDirMockState) (Except TempDirError Unit))
       (fun _ => Internal.cleanupDirIgnoringNotFound mockFsEx dir) sMk sMk s1Fin "boom" (.ok ())
       (exceptT_stateM_throw_run "boom" sMk) hClean1]
   have hLookDir1 : lookupNode s1Fin.nodes dir = none := by
@@ -4847,8 +4847,8 @@ private theorem withLockedTempDir_ex_throw_step {E S α : Type}
     (fs : FsApiM (ExceptT E (StateM S))) (time : TimeOpsM (ExceptT E (StateM S)))
     (uuid : UuidApiM (ExceptT E (StateM S))) (env : EnvVarsApiM (ExceptT E (StateM S)))
     (s₀ sMk sAfterLock sFin : S) (root? : Option String) (dirPrefix dir : String)
-    (action : String → ExceptT E (StateM S) (Except TempError α))
-    (err : E) (rc : Except TempError Unit)
+    (action : String → ExceptT E (StateM S) (Except TempDirError α))
+    (err : E) (rc : Except TempDirError Unit)
     (hCre : (ExceptT.run (Internal.createTempDir fs uuid env root? dirPrefix)).run s₀ = (.ok (.ok dir), sMk))
     (hWfl : (ExceptT.run (fs.withFileLock (fs.join dir ".lock") .shared true
         (do let r ← action dir; return .ok r))).run sMk = (.error err, sAfterLock))
@@ -4865,8 +4865,8 @@ private theorem withLockedTempDir_ex_throw_step {E S α : Type}
     (fun _ => Internal.cleanupDirIgnoringNotFound fs dir)
     sMk sAfterLock sFin err rc hWfl hCln]
 
-private theorem spec10_part2_run (s₀ : TempMockState) (root dirPrefix : String)
-    (sMk sAfterLock s2Fin : TempMockState)
+private theorem spec10_part2_run (s₀ : TempDirMockState) (root dirPrefix : String)
+    (sMk sAfterLock s2Fin : TempDirMockState)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -4889,7 +4889,7 @@ private theorem spec10_part2_run (s₀ : TempMockState) (root dirPrefix : String
         !underDir (mockJoin root (dirPrefix ++ mockUuidToString (mockUuidOfNat s₀.nextUuid))) e.1) }) :
     let apiEx := Internal.mkApiM mockFsEx mockTimeEx mockUuidEx mockEnvEx
     (ExceptT.run (apiEx.withLockedTempDir (some root) dirPrefix fun _ =>
-      (throw "boom" : ExceptT String (StateM TempMockState) (Except TempError Unit)))).run s₀ =
+      (throw "boom" : ExceptT String (StateM TempDirMockState) (Except TempDirError Unit)))).run s₀ =
       (.error "boom", s2Fin) := by
   intro _
   let u := mockUuidOfNat s₀.nextUuid
@@ -4930,8 +4930,8 @@ private theorem spec10_part2_run (s₀ : TempMockState) (root dirPrefix : String
       (.ok (.ok ()), s2Fin) := by
     rw [hs2Fin]; exact cleanupDir_ex_mock_run sAfterLock dir hDirNorm ⟨_, _, hLookDirAfterLock⟩
   have hInnerThrow : (ExceptT.run (do
-      let r ← (throw "boom" : ExceptT String (StateM TempMockState) (Except TempError Unit))
-      return .ok r : ExceptT String (StateM TempMockState) (Except FsError (Except TempError Unit)))).run
+      let r ← (throw "boom" : ExceptT String (StateM TempDirMockState) (Except TempDirError Unit))
+      return .ok r : ExceptT String (StateM TempDirMockState) (Except FsError (Except TempDirError Unit)))).run
       { sMk with
         nodes := (lockPath, .file (freshInode sMk) "" sMk.nowSec 0o644) :: sMk.nodes
         locks := (freshInode sMk, .shared) :: sMk.locks
@@ -4946,16 +4946,16 @@ private theorem spec10_part2_run (s₀ : TempMockState) (root dirPrefix : String
   rw [mockRemoveFirstLock_head, ← hsAfterLock] at hWflThrow
   have hJoinEx : mockFsEx.join = mockJoin := rfl
   have hWflLock : (ExceptT.run (mockFsEx.withFileLock (mockFsEx.join dir ".lock") .shared true
-      (do let r ← (fun _ => (throw "boom" : ExceptT String (StateM TempMockState) (Except TempError Unit))) dir; return .ok r))).run sMk =
+      (do let r ← (fun _ => (throw "boom" : ExceptT String (StateM TempDirMockState) (Except TempDirError Unit))) dir; return .ok r))).run sMk =
       (.error "boom", sAfterLock) := by
     rw [hJoinEx]
     exact hWflThrow
   exact withLockedTempDir_ex_throw_step mockFsEx mockTimeEx mockUuidEx mockEnvEx
     s₀ sMk sAfterLock s2Fin (some root) dirPrefix dir
-    (fun _ => (throw "boom" : ExceptT String (StateM TempMockState) (Except TempError Unit)))
+    (fun _ => (throw "boom" : ExceptT String (StateM TempDirMockState) (Except TempDirError Unit)))
     "boom" (.ok ()) hCreate hWflLock hClean2
 
-private theorem spec10_part2_probe_exec (s₀ sMk sAfterLock s2Fin : TempMockState) (root dirPrefix : String)
+private theorem spec10_part2_probe_exec (s₀ sMk sAfterLock s2Fin : TempDirMockState) (root dirPrefix : String)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -5030,7 +5030,7 @@ private theorem spec10_part2_probe_exec (s₀ sMk sAfterLock s2Fin : TempMockSta
   dsimp only [dir]
   exact hProbeS2
 
-private theorem spec10_part2_exec (s₀ : TempMockState) (root dirPrefix : String)
+private theorem spec10_part2_exec (s₀ : TempDirMockState) (root dirPrefix : String)
     (hvr : (!root.isEmpty && !(Char.ofNat 0 ∈ root.toList)) = true)
     (hvp : (!dirPrefix.isEmpty && dirPrefix.toList.head? != some '.' && !('/' ∈ dirPrefix.toList) && !(Char.ofNat 0 ∈ dirPrefix.toList)) = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot)
@@ -5040,24 +5040,24 @@ private theorem spec10_part2_exec (s₀ : TempMockState) (root dirPrefix : Strin
     let u := mockUuidOfNat s₀.nextUuid
     let dir := mockJoin root (dirPrefix ++ mockUuidToString u)
     let apiEx := Internal.mkApiM mockFsEx mockTimeEx mockUuidEx mockEnvEx
-    ∃ s2 : TempMockState,
+    ∃ s2 : TempDirMockState,
       (ExceptT.run (apiEx.withLockedTempDir (some root) dirPrefix fun _ =>
-        (throw "boom" : ExceptT String (StateM TempMockState) (Except TempError Unit)))).run s₀ =
+        (throw "boom" : ExceptT String (StateM TempDirMockState) (Except TempDirError Unit)))).run s₀ =
         (.error "boom", s2) ∧
       ((mockFs.lstat dir).run s2).1.isOk = false ∧
       ((do let _ ← mockFs.mkdir dir false false; mockFs.tryWithFileLock (mockJoin dir ".lock") .exclusive true (pure (.ok ()))).run s2).1 =
         .ok (some ()) := by
   intro u dir _
-  obtain ⟨sMk, hsMk⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sMk, hsMk⟩ : ∃ s : TempDirMockState, s =
       { s₀ with
         nextUuid := s₀.nextUuid + 1
         nodes := (dir, .dir s₀.nowSec 0o700) :: s₀.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
-  obtain ⟨sAfterLock, hsAfterLock⟩ : ∃ s : TempMockState, s =
+  obtain ⟨sAfterLock, hsAfterLock⟩ : ∃ s : TempDirMockState, s =
       { sMk with
         nodes := (mockJoin dir ".lock", .file (freshInode sMk) "" sMk.nowSec 0o644) :: sMk.nodes
         locks := sMk.locks
         nextInode := freshInode sMk + 1 } := ⟨_, rfl⟩
-  obtain ⟨s2Fin, hs2Fin⟩ : ∃ s : TempMockState, s =
+  obtain ⟨s2Fin, hs2Fin⟩ : ∃ s : TempDirMockState, s =
       { sAfterLock with nodes := sAfterLock.nodes.filter (fun e => !underDir dir e.1) } := ⟨_, rfl⟩
   have hRun2 := spec10_part2_run s₀ root dirPrefix sMk sAfterLock s2Fin hvr hvp stRoot hRoot hRwx hNone
     hsMk hsAfterLock hs2Fin
@@ -5067,11 +5067,11 @@ private theorem spec10_part2_exec (s₀ : TempMockState) (root dirPrefix : Strin
   dsimp only [Internal.mkApiM] at hRun2 ⊢
   exact ⟨s2Fin, hRun2, hLstat2, hProbe2⟩
 
-/-- Spec 10: Over `ExceptT String (StateM TempMockState)`, throwing inside `withTempDir` or `withLockedTempDir` cleans up and releases the lock while propagating the exception. -/
-theorem proof_temp_tryFinally_exceptionCleansUpAndReleasesLock :
-    AllPass (test_temp_tryFinally_exceptionCleansUpAndReleasesLock
-      (S := TempMockState) Internal.mkApiM mockFsEx mockTimeEx mockUuidEx mockEnvEx mockFs mockUuid) := by
-  dsimp only [test_temp_tryFinally_exceptionCleansUpAndReleasesLock, AllPass]
+/-- Spec 10: Over `ExceptT String (StateM TempDirMockState)`, throwing inside `withTempDir` or `withLockedTempDir` cleans up and releases the lock while propagating the exception. -/
+theorem proof_tempdir_tryFinally_exceptionCleansUpAndReleasesLock :
+    AllPass (test_tempdir_tryFinally_exceptionCleansUpAndReleasesLock
+      (S := TempDirMockState) Internal.mkApiM mockFsEx mockTimeEx mockUuidEx mockEnvEx mockFs mockUuid) := by
+  dsimp only [test_tempdir_tryFinally_exceptionCleansUpAndReleasesLock, AllPass]
   intro s₀ root dirPrefix ⟨hvr, hvp⟩ ⟨stRoot, hRoot, hRwx⟩
   have hRootPure : mockStatPure s₀ root = .ok stRoot := by
     rw [mockFs_stat_run] at hRoot; exact hRoot
@@ -5090,12 +5090,12 @@ theorem proof_temp_tryFinally_exceptionCleansUpAndReleasesLock :
   rw [allPass_assert, allPass_assert, allPass_assert, allPass_assert, allPass_assert_end]
   exact ⟨rfl, h1, rfl, h2, h3, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for Spec 10 (`test_temp_tryFinally_exceptionCleansUpAndReleasesLock`). -/
-theorem reach_temp_tryFinally_exceptionCleansUpAndReleasesLock :
-    CanReach (test_temp_tryFinally_exceptionCleansUpAndReleasesLock
-      (S := TempMockState) Internal.mkApiM mockFsEx mockTimeEx mockUuidEx mockEnvEx mockFs mockUuid) := by
-  dsimp only [test_temp_tryFinally_exceptionCleansUpAndReleasesLock, CanReach]
-  obtain ⟨s₀, hs₀⟩ : ∃ s : TempMockState, s = {} := ⟨{}, rfl⟩
+/-- Non-vacuity `CanReach` witness for Spec 10 (`test_tempdir_tryFinally_exceptionCleansUpAndReleasesLock`). -/
+theorem reach_tempdir_tryFinally_exceptionCleansUpAndReleasesLock :
+    CanReach (test_tempdir_tryFinally_exceptionCleansUpAndReleasesLock
+      (S := TempDirMockState) Internal.mkApiM mockFsEx mockTimeEx mockUuidEx mockEnvEx mockFs mockUuid) := by
+  dsimp only [test_tempdir_tryFinally_exceptionCleansUpAndReleasesLock, CanReach]
+  obtain ⟨s₀, hs₀⟩ : ∃ s : TempDirMockState, s = {} := ⟨{}, rfl⟩
   rw [canReach_nondet]; refine ⟨s₀, ?_⟩
   rw [canReach_nondet]; refine ⟨"/tmp", ?_⟩
   rw [canReach_nondet]; refine ⟨"tmp-", ?_⟩
@@ -5243,13 +5243,13 @@ private theorem isSorted_sortStrings (xs : List String) :
     pIsSorted (Internal.sortStrings xs).toArray = true := by
   simpa [pIsSorted] using pairwise_sortStrings xs
 
-private theorem mockFs_withFileLock_existing_conflict_run (s : TempMockState) (p : String)
+private theorem mockFs_withFileLock_existing_conflict_run (s : TempDirMockState) (p : String)
     (mode : LockMode) (createIfMissing : Bool)
     (ino : Nat) (c : String) (t : Int) (m : Nat)
     (hnorm : normKey p = p)
     (hnode : lookupNode s.nodes p = some (.file ino c t m))
     (hconf : mockHasConflict s.locks ino mode = true)
-    {β : Type} (act : StateM TempMockState (Except FsError β)) :
+    {β : Type} (act : StateM TempDirMockState (Except FsError β)) :
     (mockFs.withFileLock p mode createIfMissing act).run s =
       (.error { kind := .wouldBlock, path := some p, message := "wouldBlock" }, s) := by
   dsimp only [mockFs, resolveParentTarget]
@@ -5260,13 +5260,13 @@ private theorem mockFs_withFileLock_existing_conflict_run (s : TempMockState) (p
   rw [hconf]
   simp only [↓reduceIte, stateM_pure_run]
 
-private theorem mockFs_withFileLock_existing_ok_run (s : TempMockState) (p : String)
+private theorem mockFs_withFileLock_existing_ok_run (s : TempDirMockState) (p : String)
     (mode : LockMode) (createIfMissing : Bool)
     (ino : Nat) (c : String) (t : Int) (m : Nat)
     (hnorm : normKey p = p)
     (hnode : lookupNode s.nodes p = some (.file ino c t m))
     (hconf : mockHasConflict s.locks ino mode = false)
-    {β : Type} (act : StateM TempMockState (Except FsError β)) :
+    {β : Type} (act : StateM TempDirMockState (Except FsError β)) :
     (mockFs.withFileLock p mode createIfMissing act).run s =
       let (r, s1) := act.run { s with locks := (ino, mode) :: s.locks }
       (r, { s1 with locks := mockRemoveFirstLock ino mode s1.locks }) := by
@@ -5281,7 +5281,7 @@ private theorem mockFs_withFileLock_existing_ok_run (s : TempMockState) (p : Str
   rcases res with ⟨r, s1⟩
   rfl
 
-private theorem mockFs_unlink_existing_run (s : TempMockState) (p : String) (miss : Bool)
+private theorem mockFs_unlink_existing_run (s : TempDirMockState) (p : String) (miss : Bool)
     (ino : Nat) (c : String) (t : Int) (m : Nat)
     (hnorm : normKey p = p)
     (hnode : lookupNode s.nodes p = some (.file ino c t m)) :
@@ -5293,7 +5293,7 @@ private theorem mockFs_unlink_existing_run (s : TempMockState) (p : String) (mis
   rw [hnorm, hnode]
   simp only [stateM_bind_run, stateM_set_run, stateM_pure_run]
 
-private theorem mockFs_rmdir_dir_run (s : TempMockState) (p : String) (t : Int) (m : Nat)
+private theorem mockFs_rmdir_dir_run (s : TempDirMockState) (p : String) (t : Int) (m : Nat)
     (hnorm : normKey p = p)
     (hnode : lookupNode s.nodes p = some (.dir t m)) :
     (mockFs.rmdir p).run s =
@@ -5344,7 +5344,7 @@ private theorem mockParentChild_eq_of_normKey (dir a b : String) (h : normKey a 
   unfold mockParentChild
   rw [h]
 
-private theorem mockFs_listDir_run_of_rwx (s : TempMockState) (dir : String)
+private theorem mockFs_listDir_run_of_rwx (s : TempDirMockState) (dir : String)
     (st : FileStat) (hStat : mockStatPure s dir = .ok st) (hRwx : pHasRwx st) :
     let rp := normKey dir
     let names := Internal.sortStrings (eraseDupStrings (s.nodes.filterMap (fun e => mockParentChild rp e.1)))
@@ -5375,7 +5375,7 @@ private theorem mockFs_listDir_run_of_rwx (s : TempMockState) (dir : String)
     exact validEntryName_of_mockParentChild rp e.1 nm he
   exact ⟨hRun, hNd, hValid⟩
 
-private theorem mockFs_listDir_mem_of_lookupNode (s : TempMockState) (dir childName : String)
+private theorem mockFs_listDir_mem_of_lookupNode (s : TempDirMockState) (dir childName : String)
     (hd : dir ≠ "") (hn : pValidEntryName childName = true)
     (ndChild : MockNode) (hLookChild : lookupNode s.nodes (mockJoin dir childName) = some ndChild) :
     let rp := normKey dir
@@ -5400,21 +5400,21 @@ private theorem mockFs_listDir_mem_of_lookupNode (s : TempMockState) (dir childN
     rw [mem_sortStrings, mem_eraseDupStrings, List.mem_filterMap]
     exact ⟨p, hpMem, hPc⟩
 
-private def NodesFilteredPres (P : String → Prop) (s s' : TempMockState) : Prop :=
+private def NodesFilteredPres (P : String → Prop) (s s' : TempDirMockState) : Prop :=
   (∃ keep : String → Bool,
     (∀ k, P k → keep k = true) ∧
     s'.nodes = s.nodes.filter (fun e => keep e.1)) ∧
   s'.locks = s.locks ∧ s'.nextInode = s.nextInode ∧
   s'.tmpdir = s.tmpdir ∧ s'.nowSec = s.nowSec ∧ s'.nextUuid = s.nextUuid
 
-private theorem nodesFilteredPres_refl (P : String → Prop) (s : TempMockState) :
+private theorem nodesFilteredPres_refl (P : String → Prop) (s : TempDirMockState) :
     NodesFilteredPres P s s := by
   refine ⟨⟨fun _ => true, fun _ _ => rfl, ?_⟩, rfl, rfl, rfl, rfl, rfl⟩
   induction s.nodes with
   | nil => rfl
   | cons x xs ih => exact congrArg (List.cons x) ih
 
-private theorem nodesFilteredPres_trans {P : String → Prop} {s s1 s2 : TempMockState}
+private theorem nodesFilteredPres_trans {P : String → Prop} {s s1 s2 : TempDirMockState}
     (h1 : NodesFilteredPres P s s1) (h2 : NodesFilteredPres P s1 s2) :
     NodesFilteredPres P s s2 := by
   rcases h1 with ⟨⟨k1, hk1, hn1⟩, hl1, hi1, ht1, hs1, hu1⟩
@@ -5426,13 +5426,13 @@ private theorem nodesFilteredPres_trans {P : String → Prop} {s s1 s2 : TempMoc
   funext e
   exact Bool.and_comm (k2 e.1) (k1 e.1)
 
-private theorem nodesFilteredPres_mono {P Q : String → Prop} {s s' : TempMockState}
+private theorem nodesFilteredPres_mono {P Q : String → Prop} {s s' : TempDirMockState}
     (hPQ : ∀ k, Q k → P k) (h : NodesFilteredPres P s s') :
     NodesFilteredPres Q s s' := by
   rcases h with ⟨⟨keep, hk, hn⟩, hl, hi, ht, hs, hu⟩
   exact ⟨⟨keep, fun k hq => hk k (hPQ k hq), hn⟩, hl, hi, ht, hs, hu⟩
 
-private theorem nodesFilteredPres_lookupNode {P : String → Prop} {s s' : TempMockState}
+private theorem nodesFilteredPres_lookupNode {P : String → Prop} {s s' : TempDirMockState}
     (hPres : NodesFilteredPres P s s') (p : String)
     (hp : ∀ k, normKey k = normKey p → P k) :
     lookupNode s'.nodes p = lookupNode s.nodes p := by
@@ -5455,7 +5455,7 @@ private theorem nodesFilteredPres_lookupNode {P : String → Prop} {s s' : TempM
         rw [List.filter_cons]; simp only [hkxF, Bool.false_eq_true, ↓reduceIte, List.find?_cons, hxpF]
         exact ih
 
-private theorem nodesFilteredPres_listDir {P : String → Prop} {s s' : TempMockState}
+private theorem nodesFilteredPres_listDir {P : String → Prop} {s s' : TempDirMockState}
     (hPres : NodesFilteredPres P s s') (dir : String) (hd : dir ≠ "")
     (hDirP : ∀ k, normKey k = normKey dir → P k)
     (hUnderP : ∀ k, underDir dir k = true → P k) :
@@ -5512,7 +5512,7 @@ private theorem nodesFilteredPres_listDir {P : String → Prop} {s s' : TempMock
       · have h2f : (!hasRx (mockNodeStat nd)) = false := Bool.eq_false_iff.mpr h2
         simp only [h1f, h2f, Bool.false_eq_true, ↓reduceIte, hFm]; constructor <;> rfl
 
-private structure SweepFsOps (fs : FsApiM (StateM TempMockState)) : Prop where
+private structure SweepFsOps (fs : FsApiM (StateM TempDirMockState)) : Prop where
   hJoin : fs.join = mockJoin
   hStat : fs.stat = mockFs.stat
   hLstat : fs.lstat = mockFs.lstat
@@ -5528,8 +5528,8 @@ private theorem sweepFsOps_mockFs : SweepFsOps mockFs :=
   ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, fun _ _ _ => Or.inl rfl⟩
 
 private theorem cleanupDirIgnoringNotFound_filteredPres
-    (fs : FsApiM (StateM TempMockState)) (hRm : fs.rmtree = mockFs.rmtree)
-    (target : String) (s : TempMockState) :
+    (fs : FsApiM (StateM TempDirMockState)) (hRm : fs.rmtree = mockFs.rmtree)
+    (target : String) (s : TempDirMockState) :
     let (_, s') := (Internal.cleanupDirIgnoringNotFound fs target).run s
     NodesFilteredPres (fun k => underDir target k = false) s s' := by
   dsimp only [Internal.cleanupDirIgnoringNotFound]
@@ -5550,9 +5550,9 @@ private theorem cleanupDirIgnoringNotFound_filteredPres
     | symlink _ _ => exact nodesFilteredPres_refl _ s
 
 private theorem unlink_filteredPres
-    (fs : FsApiM (StateM TempMockState))
+    (fs : FsApiM (StateM TempDirMockState))
     (hUnlink : ∀ p miss s, (fs.unlink p miss).run s = (mockFs.unlink p miss).run s ∨ ∃ fe, (fs.unlink p miss).run s = (.error fe, s))
-    (p : String) (miss : Bool) (s : TempMockState) :
+    (p : String) (miss : Bool) (s : TempDirMockState) :
     NodesFilteredPres (fun k => normKey k ≠ normKey p) s ((fs.unlink p miss).run s).2 := by
   rcases hUnlink p miss s with hEq | ⟨fe, hErr⟩
   · rw [hEq]
@@ -5575,8 +5575,8 @@ private theorem unlink_filteredPres
     exact nodesFilteredPres_refl _ s
 
 private theorem rmdir_filteredPres
-    (fs : FsApiM (StateM TempMockState)) (hRmdir : fs.rmdir = mockFs.rmdir)
-    (p : String) (s : TempMockState) :
+    (fs : FsApiM (StateM TempDirMockState)) (hRmdir : fs.rmdir = mockFs.rmdir)
+    (p : String) (s : TempDirMockState) :
     NodesFilteredPres (fun k => normKey k ≠ normKey p) s ((fs.rmdir p).run s).2 := by
   rw [hRmdir]
   dsimp only [mockFs, resolveParentTarget]
@@ -5593,9 +5593,9 @@ private theorem rmdir_filteredPres
     | symlink _ _ => exact nodesFilteredPres_refl _ s
 
 private theorem removeNonLockChildren_filteredPres
-    (fs : FsApiM (StateM TempMockState)) (hOps : SweepFsOps fs)
+    (fs : FsApiM (StateM TempDirMockState)) (hOps : SweepFsOps fs)
     (other : String) (hoNe : other ≠ "") (hoNorm : normKey other = other) (hoSlash : other ≠ "/")
-    (names : List String) (hValid : ∀ nm ∈ names, pValidEntryName nm = true) (s : TempMockState) :
+    (names : List String) (hValid : ∀ nm ∈ names, pValidEntryName nm = true) (s : TempDirMockState) :
     NodesFilteredPres (fun k => underDir other k = false) s
       ((Internal.removeNonLockChildren fs other names).run s).2 := by
   induction names generalizing s with
@@ -5672,9 +5672,9 @@ private theorem removeNonLockChildren_filteredPres
             | ok _ => exact nodesFilteredPres_trans h1' (ih hrestV su)
 
 private theorem removeLockedTempDir_filteredPres
-    (fs : FsApiM (StateM TempMockState)) (hOps : SweepFsOps fs)
+    (fs : FsApiM (StateM TempDirMockState)) (hOps : SweepFsOps fs)
     (other : String) (hoNe : other ≠ "") (hoNorm : normKey other = other) (hoSlash : other ≠ "/")
-    (s : TempMockState) :
+    (s : TempDirMockState) :
     NodesFilteredPres (fun k => underDir other k = false) s
       ((Internal.removeLockedTempDir fs other (mockJoin other ".lock")).run s).2 := by
   dsimp only [Internal.removeLockedTempDir]
@@ -5801,10 +5801,10 @@ private theorem removeLockedTempDir_filteredPres
                   · simp only [Bool.eq_false_iff.mpr hnf, Bool.false_eq_true, ↓reduceIte, stateM_pure_run]; exact hAll
 
 private theorem sweepEntry_other_preserves
-    (fs : FsApiM (StateM TempMockState)) (hOps : SweepFsOps fs)
+    (fs : FsApiM (StateM TempDirMockState)) (hOps : SweepFsOps fs)
     (root dirPrefix childName otherName : String) (maxAgeSec : Nat) (nowSec : Int)
     (hr : root ≠ "") (hcV : pValidEntryName childName = true) (hoV : pValidEntryName otherName = true)
-    (hNe : otherName ≠ childName) (rep : CleanupReport) (s : TempMockState) :
+    (hNe : otherName ≠ childName) (rep : CleanupReport) (s : TempDirMockState) :
     let child := mockJoin root childName
     let P : String → Prop := fun k => underDir child k = true ∨ normKey k = normKey root
     let (rep', s') := (Internal.sweepEntry fs root dirPrefix maxAgeSec nowSec rep otherName).run s
@@ -5844,7 +5844,7 @@ private theorem sweepEntry_other_preserves
       (rep.failed.isEmpty = false → rep.failed.isEmpty = false) ∧
       (∀ e ∈ rep.failed.toList, e ∈ rep.failed.toList) :=
     ⟨nodesFilteredPres_refl P s, Iff.rfl, Iff.rfl, Iff.rfl, Iff.rfl, id, fun _ h => h⟩
-  have hPushFailed : ∀ err : TempError,
+  have hPushFailed : ∀ err : TempDirError,
       NodesFilteredPres P s s ∧
       (child ∈ rep.removed.toList ↔ child ∈ rep.removed.toList) ∧
       (child ∈ rep.keptLocked.toList ↔ child ∈ rep.keptLocked.toList) ∧
@@ -5976,9 +5976,9 @@ private theorem sweepEntry_other_preserves
                       · intro _; simp
                       · intro e he; simp [Array.toList_push, he]
 
-private theorem sweepEntries_append (fs : FsApiM (StateM TempMockState))
+private theorem sweepEntries_append (fs : FsApiM (StateM TempDirMockState))
     (root dirPrefix : String) (maxAgeSec : Nat) (nowSec : Int)
-    (rep : CleanupReport) (xs ys : List String) (s : TempMockState) :
+    (rep : CleanupReport) (xs ys : List String) (s : TempDirMockState) :
     (Internal.sweepEntries fs root dirPrefix maxAgeSec nowSec rep (xs ++ ys)).run s =
       let (rep1, s1) := (Internal.sweepEntries fs root dirPrefix maxAgeSec nowSec rep xs).run s
       (Internal.sweepEntries fs root dirPrefix maxAgeSec nowSec rep1 ys).run s1 := by
@@ -5991,11 +5991,11 @@ private theorem sweepEntries_append (fs : FsApiM (StateM TempMockState))
     | mk rep1 s1 => exact ih rep1 s1
 
 private theorem sweepEntries_other_preserves
-    (fs : FsApiM (StateM TempMockState)) (hOps : SweepFsOps fs)
+    (fs : FsApiM (StateM TempDirMockState)) (hOps : SweepFsOps fs)
     (root dirPrefix childName : String) (maxAgeSec : Nat) (nowSec : Int)
     (hr : root ≠ "") (hcV : pValidEntryName childName = true)
     (names : List String) (hValid : ∀ nm ∈ names, pValidEntryName nm = true) (hNotIn : childName ∉ names)
-    (rep : CleanupReport) (s : TempMockState) :
+    (rep : CleanupReport) (s : TempDirMockState) :
     let child := mockJoin root childName
     let P : String → Prop := fun k => underDir child k = true ∨ normKey k = normKey root
     let (rep', s') := (Internal.sweepEntries fs root dirPrefix maxAgeSec nowSec rep names).run s
@@ -6039,15 +6039,15 @@ private theorem sweepEntries_other_preserves
           fun e he => hTail.2.2.2.2.2.2 e (hStep.2.2.2.2.2.2 e he)⟩
 
 private theorem cleanupStaleTempDirs_split_exec
-    (fs : FsApiM (StateM TempMockState)) (hOps : SweepFsOps fs)
-    (s₀ : TempMockState) (root dirPrefix childName : String) (maxAgeSec : Nat)
+    (fs : FsApiM (StateM TempDirMockState)) (hOps : SweepFsOps fs)
+    (s₀ : TempDirMockState) (root dirPrefix childName : String) (maxAgeSec : Nat)
     (hvr : pValidRoot root = true) (hvp : pValidPrefix dirPrefix = true) (hcV : pValidEntryName childName = true)
     (stRoot : FileStat) (hRoot : mockStatPure s₀ root = .ok stRoot) (hRwx : pHasRwx stRoot)
     (ndChild : MockNode) (hChild : lookupNode s₀.nodes (mockJoin root childName) = some ndChild) :
     let child := mockJoin root childName
     let nowSec := (mockTime.nowTimestamp.run s₀).1.toSecondsSinceUnixEpoch.val
     let P : String → Prop := fun k => underDir child k = true ∨ normKey k = normKey root
-    ∃ before after : List String, ∃ repBefore : CleanupReport, ∃ sBefore : TempMockState,
+    ∃ before after : List String, ∃ repBefore : CleanupReport, ∃ sBefore : TempDirMockState,
       (∀ nm ∈ before, pValidEntryName nm = true) ∧
       (∀ nm ∈ after, pValidEntryName nm = true) ∧
       childName ∉ before ∧
@@ -6057,7 +6057,7 @@ private theorem cleanupStaleTempDirs_split_exec
       (child ∈ repBefore.keptLocked.toList ↔ False) ∧
       (child ∈ repBefore.keptFresh.toList ↔ False) ∧
       (child ∈ repBefore.skipped.toList ↔ False) ∧
-      (∀ (repMid : CleanupReport) (sMid : TempMockState),
+      (∀ (repMid : CleanupReport) (sMid : TempDirMockState),
         (Internal.sweepEntry fs root dirPrefix maxAgeSec nowSec repBefore childName).run sBefore = (repMid, sMid) →
         let (repAfter, sFinal) := (Internal.sweepEntries fs root dirPrefix maxAgeSec nowSec repMid after).run sMid
         let finalRep : CleanupReport :=
@@ -6170,7 +6170,7 @@ private theorem list_find_filter_none {α : Type} (p : α → Bool) (keep : α �
       · have hkf : keep x = false := Bool.eq_false_iff.mpr hk
         rw [List.filter_cons, hkf]; exact ih h
 
-private theorem nodesFilteredPres_lookupNode_none {P : String → Prop} {s s' : TempMockState}
+private theorem nodesFilteredPres_lookupNode_none {P : String → Prop} {s s' : TempDirMockState}
     (hPres : NodesFilteredPres P s s') (p : String)
     (hNone : lookupNode s.nodes p = none) :
     lookupNode s'.nodes p = none := by
@@ -6182,7 +6182,7 @@ private theorem nodesFilteredPres_lookupNode_none {P : String → Prop} {s s' : 
     | none => rfl
     | some _ => simp [hf] at hNone))
 
-private theorem nodesFilteredPres_lstat {P : String → Prop} {s s' : TempMockState}
+private theorem nodesFilteredPres_lstat {P : String → Prop} {s s' : TempDirMockState}
     (hPres : NodesFilteredPres P s s') (p : String)
     (hp : ∀ k, normKey k = normKey p → P k) :
     (mockFs.lstat p).run s' = (((mockFs.lstat p).run s).1, s') := by
@@ -6254,14 +6254,14 @@ private theorem disjoint_mockJoin_entry_target {dir nm tgt : String}
 private theorem removeNonLockChildren_fail_with_lock_intact
     (child payload : String) (hcNe : child ≠ "")
     (hPayEq : payload = mockJoin child "locked_child.txt")
-    (fs : FsApiM (StateM TempMockState))
+    (fs : FsApiM (StateM TempDirMockState))
     (hLstat : fs.lstat = mockFs.lstat) (hJoin : fs.join = mockJoin) (hRm : fs.rmtree = mockFs.rmtree)
     (hUnl : ∀ p miss s,
       (fs.unlink p miss).run s =
         if p == payload then (.error { kind := .permissionDenied, path := some p, message := "cannot unlink" }, s)
         else (mockFs.unlink p miss).run s)
     (names : List String) (hValid : ∀ nm ∈ names, pValidEntryName nm = true) (hNd : names.Nodup)
-    (hPayMem : "locked_child.txt" ∈ names) (s : TempMockState)
+    (hPayMem : "locked_child.txt" ∈ names) (s : TempDirMockState)
     (hPayNode : ∃ ino c t m, lookupNode s.nodes payload = some (.file ino c t m)) :
     let lockPath := mockJoin child ".lock"
     ∃ te s', (Internal.removeNonLockChildren fs child names).run s = (.error te, s') ∧
@@ -6374,10 +6374,10 @@ private theorem removeNonLockChildren_fail_with_lock_intact
                 exact ⟨te, s', hRec, nodesFilteredPres_trans hPresLock hPresRec⟩
 
 /-- Spec 11: `cleanupStaleTempDirs` keeps any matching directory with an active lock regardless of age. -/
-theorem proof_temp_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge :
-    AllPass (test_temp_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge, AllPass]
+theorem proof_tempdir_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge :
+    AllPass (test_tempdir_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge, AllPass]
   intro s₀ root dirPrefix childName maxAgeSec ⟨hvr, hvp⟩ hcV hPref ⟨stRoot, hRoot, hRwx⟩ ⟨stChild, hChild, hcDir⟩ ⟨stLock, hLock, hlFile⟩
   have hRootPure : mockStatPure s₀ root = .ok stRoot := by rw [mockFs_stat_run] at hRoot; exact hRoot
   have hChildPure : mockLstatPure s₀ (mockFs.join root childName) = .ok stChild := by
@@ -6409,7 +6409,7 @@ theorem proof_temp_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge :
       dsimp only
       intro hFalse; cases hFalse
     · have hConfF : mockHasConflict s₀.locks lockIno .shared = false := Bool.eq_false_iff.mpr hConf
-      let sLock : TempMockState := { s₀ with locks := (lockIno, .shared) :: s₀.locks }
+      let sLock : TempDirMockState := { s₀ with locks := (lockIno, .shared) :: s₀.locks }
       have hRootLock : mockStatPure sLock root = .ok stRoot := hRootPure
       have hChildLock : lookupNode sLock.nodes child = some ndChild := hLookChild
       have hChildLockPure : mockLstatPure sLock child = .ok stChild := hChildPure
@@ -6500,12 +6500,12 @@ theorem proof_temp_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge :
       have hNotRmMem : ¬ (child ∈ repMid.removed.toList) := hNotRmB.mp
       exact ⟨⟨hKLIff.mpr hKLMem, fun h => hNotRmMem (hRmIff.mp h)⟩, ⟨rfl, rfl⟩, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for Spec 11 (`test_temp_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge`). -/
-theorem reach_temp_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge :
-    CanReach (test_temp_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge, CanReach]
-  let s₀ : TempMockState :=
+/-- Non-vacuity `CanReach` witness for Spec 11 (`test_tempdir_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge`). -/
+theorem reach_tempdir_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge :
+    CanReach (test_tempdir_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge, CanReach]
+  let s₀ : TempDirMockState :=
     { nodes := [("/tmp", .dir 0 0o755), ("/tmp/tmp-a", .dir 0 0o755), ("/tmp/tmp-a/.lock", .file 1 "" 0 0o644)]
       nowSec := 100 }
   refine ⟨s₀, ?_⟩
@@ -6549,7 +6549,7 @@ theorem reach_temp_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge :
     rw [canReach_assert, canReach_assert_end]
     exact ⟨by decide, ⟨rfl, rfl⟩, trivial⟩
 
-private theorem mockFs_lstat_notFound_lookup_none (s : TempMockState) (p : String) (e : FsError)
+private theorem mockFs_lstat_notFound_lookup_none (s : TempDirMockState) (p : String) (e : FsError)
     (hl : ((mockFs.lstat p).run s).1 = .error e) :
     lookupNode s.nodes p = none := by
   rw [mockFs_lstat_run] at hl
@@ -6577,7 +6577,7 @@ private theorem lookupNode_filter_ne_none (nodes : List (String × MockNode)) (p
       simp only [hEq, bne_self_eq_false, Bool.false_eq_true, ↓reduceIte]
       exact ih
 
-private theorem tryWithFileLock_excl_false_conflict (s : TempMockState) (p : String)
+private theorem tryWithFileLock_excl_false_conflict (s : TempDirMockState) (p : String)
     (hp : normKey p = p) (ino : Nat) (c : String) (t : Int) (m : Nat)
     (hLook : lookupNode s.nodes p = some (.file ino c t m))
     (hTry : ((mockFs.tryWithFileLock p .exclusive false (pure (.ok ()))).run s).1 = .ok (some ())) :
@@ -6599,7 +6599,7 @@ private theorem list_filter_filter_and {α : Type} (xs : List α) (p q : α → 
 private theorem string_bne_true_of_ne (a b : String) (h : a ≠ b) : (a != b) = true :=
   bne_iff_ne.mpr h
 
-private theorem mockFs_listDir_with_locks (s : TempMockState) (locks' : List (Nat × LockMode))
+private theorem mockFs_listDir_with_locks (s : TempDirMockState) (locks' : List (Nat × LockMode))
     (dir : String) :
     let s' := { s with locks := locks' }
     (mockFs.listDir dir).run s' = (((mockFs.listDir dir).run s).1, s') := by
@@ -6630,7 +6630,7 @@ private theorem mockFs_listDir_with_locks (s : TempMockState) (locks' : List (Na
       · split <;> rfl
   exact Prod.ext hListEq hListSt
 
-private theorem spec12_sweepEntry_deadLock (s₀ sBefore : TempMockState)
+private theorem spec12_sweepEntry_deadLock (s₀ sBefore : TempDirMockState)
     (root dirPrefix childName : String) (maxAgeSec : Nat) (nowSec : Int)
     (repBefore : CleanupReport) (stChild stLock : FileStat)
     (lockIno : Nat) (lockC : String) (lockT : Int) (lockM : Nat)
@@ -6645,7 +6645,7 @@ private theorem spec12_sweepEntry_deadLock (s₀ sBefore : TempMockState)
     (hBeforePres : NodesFilteredPres (fun k => underDir (mockJoin root childName) k = true ∨ normKey k = normKey root) s₀ sBefore) :
     let child := mockJoin root childName
     let lockPath := mockJoin child ".lock"
-    ∃ sMid : TempMockState,
+    ∃ sMid : TempDirMockState,
       (Internal.sweepEntry mockFs root dirPrefix maxAgeSec nowSec repBefore childName).run sBefore =
         ({ repBefore with removed := repBefore.removed.push child }, sMid) ∧
       NodesFilteredPres (fun k => normKey k = normKey root) sBefore sMid ∧
@@ -6766,10 +6766,10 @@ private theorem spec12_sweepEntry_deadLock (s₀ sBefore : TempMockState)
   exact stateM_pure_run _ _
 
 /-- Spec 12: `cleanupStaleTempDirs` immediately removes a dead locked temp directory regardless of `maxAgeSec`, leaving zero locks held. -/
-theorem proof_temp_cleanupStaleTempDirs_deadLockRemovedImmediately :
-    AllPass (test_temp_cleanupStaleTempDirs_deadLockRemovedImmediately
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_cleanupStaleTempDirs_deadLockRemovedImmediately, AllPass]
+theorem proof_tempdir_cleanupStaleTempDirs_deadLockRemovedImmediately :
+    AllPass (test_tempdir_cleanupStaleTempDirs_deadLockRemovedImmediately
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_cleanupStaleTempDirs_deadLockRemovedImmediately, AllPass]
   intro s₀ root dirPrefix childName maxAgeSec ⟨hvr, hvp, _⟩ hcV hPref ⟨stRoot, hRoot, hRwx⟩
     ⟨stChild, hChild, hcDir⟩ ⟨stLock, hLock, hlFile⟩ hListZero hTryExcl
   have hrNe : root ≠ "" := validRoot_ne_empty root hvr
@@ -6845,12 +6845,12 @@ theorem proof_temp_cleanupStaleTempDirs_deadLockRemovedImmediately :
       · dsimp only [StateT.run] at hProbe
         exact hProbe
 
-/-- Non-vacuity `CanReach` witness for Spec 12 (`test_temp_cleanupStaleTempDirs_deadLockRemovedImmediately`). -/
-theorem reach_temp_cleanupStaleTempDirs_deadLockRemovedImmediately :
-    CanReach (test_temp_cleanupStaleTempDirs_deadLockRemovedImmediately
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_cleanupStaleTempDirs_deadLockRemovedImmediately, CanReach]
-  let s₀ : TempMockState :=
+/-- Non-vacuity `CanReach` witness for Spec 12 (`test_tempdir_cleanupStaleTempDirs_deadLockRemovedImmediately`). -/
+theorem reach_tempdir_cleanupStaleTempDirs_deadLockRemovedImmediately :
+    CanReach (test_tempdir_cleanupStaleTempDirs_deadLockRemovedImmediately
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_cleanupStaleTempDirs_deadLockRemovedImmediately, CanReach]
+  let s₀ : TempDirMockState :=
     { nodes := [("/tmp", .dir 0 0o755), ("/tmp/tmp-a", .dir 0 0o755), ("/tmp/tmp-a/.lock", .file 1 "" 0 0o644)]
       nowSec := 5 }
   refine ⟨s₀, "/tmp", "tmp-", "tmp-a", 10, ⟨by decide, by decide, by decide⟩, by decide, by decide,
@@ -6874,10 +6874,10 @@ theorem reach_temp_cleanupStaleTempDirs_deadLockRemovedImmediately :
   rfl
 
 /-- Spec 13: for matching unlocked temp directories, `cleanupStaleTempDirs` keeps directories within `age ≤ maxAgeSec` and removes those with `age > maxAgeSec`. -/
-theorem proof_temp_cleanupStaleTempDirs_graceWindowAndOldUnlocked :
-    AllPass (test_temp_cleanupStaleTempDirs_graceWindowAndOldUnlocked
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_cleanupStaleTempDirs_graceWindowAndOldUnlocked, AllPass]
+theorem proof_tempdir_cleanupStaleTempDirs_graceWindowAndOldUnlocked :
+    AllPass (test_tempdir_cleanupStaleTempDirs_graceWindowAndOldUnlocked
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_cleanupStaleTempDirs_graceWindowAndOldUnlocked, AllPass]
   intro s₀ root dirPrefix childName maxAgeSec ⟨hvr, hvp⟩ hcV hPref ⟨stRoot, hRoot, hRwx⟩
     ⟨stChild, hChild, hcDir⟩ ⟨eNf, hLock, _⟩
   have hrNe : root ≠ "" := validRoot_ne_empty root hvr
@@ -7006,12 +7006,12 @@ theorem proof_temp_cleanupStaleTempDirs_graceWindowAndOldUnlocked :
       nodesFilteredPres_lookupNode_none hAfterPres' child hChildNoneMid
     exact ⟨⟨hRmMem, hNotKF⟩, mockFs_lstat_isOk_false_of_lookup_none sFinal child hChildNoneFin, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for Spec 13 (`test_temp_cleanupStaleTempDirs_graceWindowAndOldUnlocked`). -/
-theorem reach_temp_cleanupStaleTempDirs_graceWindowAndOldUnlocked :
-    CanReach (test_temp_cleanupStaleTempDirs_graceWindowAndOldUnlocked
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_cleanupStaleTempDirs_graceWindowAndOldUnlocked, CanReach]
-  let s₀ : TempMockState :=
+/-- Non-vacuity `CanReach` witness for Spec 13 (`test_tempdir_cleanupStaleTempDirs_graceWindowAndOldUnlocked`). -/
+theorem reach_tempdir_cleanupStaleTempDirs_graceWindowAndOldUnlocked :
+    CanReach (test_tempdir_cleanupStaleTempDirs_graceWindowAndOldUnlocked
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_cleanupStaleTempDirs_graceWindowAndOldUnlocked, CanReach]
+  let s₀ : TempDirMockState :=
     { nodes := [("/tmp", .dir 0 0o755), ("/tmp/tmp-a", .dir 95 0o755)], nowSec := 100 }
   refine ⟨s₀, "/tmp", "tmp-", "tmp-a", 10, ⟨by decide, by decide⟩, by decide, by decide,
     ⟨mockNodeStat (.dir 0 0o755), rfl, ⟨rfl, rfl, rfl, rfl⟩⟩,
@@ -7034,10 +7034,10 @@ theorem reach_temp_cleanupStaleTempDirs_graceWindowAndOldUnlocked :
   · next hNot => exact absurd hCond hNot
 
 /-- Spec 14: `cleanupStaleTempDirs` skips non-matching names, files, and symlinks without removing them, and returns sorted arrays. -/
-theorem proof_temp_cleanupStaleTempDirs_scopeAndSymlinkSafety :
-    AllPass (test_temp_cleanupStaleTempDirs_scopeAndSymlinkSafety
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_cleanupStaleTempDirs_scopeAndSymlinkSafety, AllPass]
+theorem proof_tempdir_cleanupStaleTempDirs_scopeAndSymlinkSafety :
+    AllPass (test_tempdir_cleanupStaleTempDirs_scopeAndSymlinkSafety
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_cleanupStaleTempDirs_scopeAndSymlinkSafety, AllPass]
   intro s₀ root dirPrefix entryName maxAgeSec ⟨hvr, hvp⟩ hcV ⟨stRoot, hRoot, hRwx⟩ ⟨stChild, hChild, hSkipCond⟩
   let child := mockJoin root entryName
   have hRootPure : mockStatPure s₀ root = .ok stRoot := by rw [mockFs_stat_run] at hRoot; exact hRoot
@@ -7093,12 +7093,12 @@ theorem proof_temp_cleanupStaleTempDirs_scopeAndSymlinkSafety :
   exact ⟨⟨hSkMem, hNotRm⟩, hChildFin,
     ⟨isSorted_sortStrings _, isSorted_sortStrings _, isSorted_sortStrings _, isSorted_sortStrings _⟩, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for Spec 14 (`test_temp_cleanupStaleTempDirs_scopeAndSymlinkSafety`). -/
-theorem reach_temp_cleanupStaleTempDirs_scopeAndSymlinkSafety :
-    CanReach (test_temp_cleanupStaleTempDirs_scopeAndSymlinkSafety
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_cleanupStaleTempDirs_scopeAndSymlinkSafety, CanReach]
-  let s₀ : TempMockState :=
+/-- Non-vacuity `CanReach` witness for Spec 14 (`test_tempdir_cleanupStaleTempDirs_scopeAndSymlinkSafety`). -/
+theorem reach_tempdir_cleanupStaleTempDirs_scopeAndSymlinkSafety :
+    CanReach (test_tempdir_cleanupStaleTempDirs_scopeAndSymlinkSafety
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_cleanupStaleTempDirs_scopeAndSymlinkSafety, CanReach]
+  let s₀ : TempDirMockState :=
     { nodes := [("/tmp", .dir 0 0o755), ("/tmp/keep-me", .dir 0 0o755)], nowSec := 100 }
   refine ⟨s₀, "/tmp", "tmp-", "keep-me", 10, ⟨by decide, by decide⟩, by decide,
     ⟨mockNodeStat (.dir 0 0o755), rfl, ⟨rfl, rfl, rfl, rfl⟩⟩,
@@ -7111,7 +7111,7 @@ theorem reach_temp_cleanupStaleTempDirs_scopeAndSymlinkSafety :
   rw [canReach_assert, canReach_assert, canReach_assert_end]
   exact ⟨⟨by decide, by decide⟩, rfl, ⟨by decide, by decide, by decide, by decide⟩, trivial⟩
 
-private theorem spec15_partialFail_exec (s₀ : TempMockState)
+private theorem spec15_partialFail_exec (s₀ : TempDirMockState)
     (root dirPrefix childName : String) (maxAgeSec : Nat)
     (hvr : pValidRoot root = true) (hvp : pValidPrefix dirPrefix = true)
     (hcV : pValidEntryName childName = true) (hPref : dirPrefix.toList.isPrefixOf childName.toList = true)
@@ -7128,7 +7128,7 @@ private theorem spec15_partialFail_exec (s₀ : TempMockState)
     let child := mockJoin root childName
     let lockPath := mockJoin child ".lock"
     let payload := mockJoin child "locked_child.txt"
-    let fsFailChild : FsApiM (StateM TempMockState) :=
+    let fsFailChild : FsApiM (StateM TempDirMockState) :=
       { mockFs with
         unlink := fun p miss =>
           if p == payload then pure (.error { kind := .permissionDenied, path := some p, message := "cannot unlink" })
@@ -7270,10 +7270,10 @@ private theorem spec15_partialFail_exec (s₀ : TempMockState)
     · exact hTryFin
 
 /-- Spec 15: `cleanupStaleTempDirs` rejects non-regular `.lock` files into `failed` and preserves `.lock` intact and unlocked if deleting a payload fails. -/
-theorem proof_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety :
-    AllPass (test_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety, AllPass]
+theorem proof_tempdir_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety :
+    AllPass (test_tempdir_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety, AllPass]
   intro s₀ root dirPrefix childName maxAgeSec ⟨hvr, hvp⟩ hcV hPref ⟨stRoot, hRoot, hRwx⟩ ⟨stChild, hChild, hcDir⟩
   let child := mockJoin root childName
   let lockPath := mockJoin child ".lock"
@@ -7298,7 +7298,7 @@ theorem proof_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety :
         rw [nodesFilteredPres_lstat hBeforePres child hPChild, mockFs_lstat_run]; dsimp only; rw [hChildPure]
       have hLockBefore : (mockFs.lstat lockPath).run sBefore = (.ok stLock, sBefore) := by
         rw [nodesFilteredPres_lstat hBeforePres lockPath hPLock, mockFs_lstat_run]; dsimp only; rw [hlLock]
-      let errExp : TempError := { kind := .invalidInput, path := some lockPath, message := "lock entry is not a regular file" }
+      let errExp : TempDirError := { kind := .invalidInput, path := some lockPath, message := "lock entry is not a regular file" }
       let repMid : CleanupReport := { repBefore with failed := repBefore.failed.push errExp }
       have hSweepMid : (Internal.sweepEntry mockFs root dirPrefix maxAgeSec
           ((mockTime.nowTimestamp.run s₀).1.toSecondsSinceUnixEpoch.val) repBefore childName).run sBefore =
@@ -7370,12 +7370,12 @@ theorem proof_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety :
           rw [allPass_assert, allPass_assert, allPass_assert, allPass_assert_end]
           exact ⟨⟨h1, h2⟩, h3, h4, h5, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for Spec 15 (`test_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety`). -/
-theorem reach_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety :
-    CanReach (test_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety
-      (S := TempMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
-  dsimp only [test_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety, CanReach]
-  let s₀ : TempMockState :=
+/-- Non-vacuity `CanReach` witness for Spec 15 (`test_tempdir_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety`). -/
+theorem reach_tempdir_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety :
+    CanReach (test_tempdir_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety
+      (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by
+  dsimp only [test_tempdir_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety, CanReach]
+  let s₀ : TempDirMockState :=
     { nodes := [("/tmp", .dir 0 0o755), ("/tmp/tmp-a", .dir 0 0o755), ("/tmp/tmp-a/.lock", .symlink "/etc/passwd" 0)],
       nowSec := 100 }
   refine ⟨s₀, "/tmp", "tmp-", "tmp-a", 10, ⟨by decide, by decide⟩, by decide, by decide,
@@ -7400,4 +7400,4 @@ theorem reach_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety :
   rw [← Array.any_toList, List.any_eq_true]
   exact ⟨_, List.Mem.head _, rfl⟩
 
-end LeanSwe.Temp.Proofs
+end LeanSwe.TempDir.Proofs

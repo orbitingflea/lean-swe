@@ -1,0 +1,224 @@
+import LeanSwe.Process.Types
+import LeanSwe.Process.Impl
+import LeanSwe.Compress.Types
+
+namespace LeanSwe.Compress.Internal
+
+open LeanSwe.Process
+  (ProcessError ExecRequest ExecResult RawProcessOpsM)
+
+/-- Return the CLI executable name for `codec`. -/
+def codecProgram : Codec → String
+  | .zstd => "zstd"
+  | .xz => "xz"
+  | .gzip => "gzip"
+
+/-- Explicit environment removals clearing inherited codec configuration variables while keeping `PATH`. -/
+def codecSanitizedEnv : Array (String × Option String) :=
+  #[("XZ_OPT", none),
+    ("XZ_DEFAULTS", none),
+    ("ZSTD_CLEVEL", none),
+    ("ZSTD_NBTHREADS", none),
+    ("GZIP", none)]
+
+/-- Decode raw stderr bytes as `none` when empty or invalid UTF-8, and `some s` otherwise. -/
+def decodeStderr (bs : ByteArray) : Option String :=
+  if bs.isEmpty then none else String.fromUTF8? bs
+
+/-- Return a non-empty error message, using `fallback` when `msg` is empty. -/
+def nonEmptyMsg (fallback msg : String) : String :=
+  if msg.isEmpty then fallback else msg
+
+/-- Validate compression `opts` and `input` size purely before spawning a subprocess. -/
+def validateCompressOptions (codec : Codec) (opts : CompressOptions) (input : ByteArray) :
+    Except CompressError Unit :=
+  if opts.timeoutMs == 0 then
+    .error { kind := .invalidInput, codec := some codec, message := "timeoutMs must be greater than zero" }
+  else if opts.maxOutputBytes == 0 then
+    .error { kind := .invalidInput, codec := some codec, message := "maxOutputBytes must be greater than zero" }
+  else
+    let inputOk :=
+      match opts.maxInputBytes with
+      | none => true
+      | some lim => input.size ≤ lim
+    if !inputOk then
+      .error { kind := .invalidInput, codec := some codec, message := "input size exceeds maxInputBytes" }
+    else
+      let levelOk :=
+        match opts.level with
+        | none => true
+        | some lvl =>
+          match codec with
+          | .zstd => 1 ≤ lvl && lvl ≤ 19
+          | .xz => lvl ≤ 9
+          | .gzip => 1 ≤ lvl && lvl ≤ 9
+      if !levelOk then
+        .error { kind := .invalidInput, codec := some codec, message := "compression level out of range for codec" }
+      else
+        let threadsOk :=
+          match opts.threads with
+          | none => true
+          | some t =>
+            match codec with
+            | .zstd => t ≤ 4294967295
+            | .xz => t ≤ 16384
+            | .gzip => false
+        if !threadsOk then
+          .error { kind := .invalidInput, codec := some codec, message := "threads option invalid for codec" }
+        else
+          .ok ()
+
+/-- Validate decompression `opts` and `input` size purely before spawning a subprocess. -/
+def validateDecompressOptions (codec : Codec) (opts : DecompressOptions) (input : ByteArray) :
+    Except CompressError Unit :=
+  if opts.timeoutMs == 0 then
+    .error { kind := .invalidInput, codec := some codec, message := "timeoutMs must be greater than zero" }
+  else if opts.maxOutputBytes == 0 then
+    .error { kind := .invalidInput, codec := some codec, message := "maxOutputBytes must be greater than zero" }
+  else
+    let inputOk :=
+      match opts.maxInputBytes with
+      | none => true
+      | some lim => input.size ≤ lim
+    if !inputOk then
+      .error { kind := .invalidInput, codec := some codec, message := "input size exceeds maxInputBytes" }
+    else
+      .ok ()
+
+/-- Build the direct `execvp` argument array for compression. -/
+def mkCompressArgs (codec : Codec) (opts : CompressOptions) : Array String :=
+  let levelArgs : Array String :=
+    match opts.level with
+    | none => #[]
+    | some lvl => #[s!"-{lvl}"]
+  let threadArgs : Array String :=
+    match opts.threads with
+    | none => #[]
+    | some t => #[s!"-T{t}"]
+  match codec with
+  | .zstd => #["-c", "-q", "--no-progress"] ++ levelArgs ++ threadArgs
+  | .xz => #["-c", "-q"] ++ levelArgs ++ threadArgs
+  | .gzip => #["-c", "-n"] ++ levelArgs
+
+/-- Build the direct `execvp` argument array for decompression. -/
+def mkDecompressArgs : Codec → Array String
+  | .zstd => #["-d", "-c", "-q", "--no-progress"]
+  | .xz => #["-d", "-c", "-q"]
+  | .gzip => #["-d", "-c", "-n"]
+
+/-- Build the `ExecRequest` for `compressWith`. -/
+def mkCompressRequest (codec : Codec) (opts : CompressOptions) (input : ByteArray) : ExecRequest :=
+  { program := codecProgram codec
+    args := mkCompressArgs codec opts
+    cwd := none
+    env := codecSanitizedEnv
+    inheritEnv := true
+    stdin := input
+    timeoutMs := some opts.timeoutMs
+    maxOutputBytes := some opts.maxOutputBytes }
+
+/-- Build the `ExecRequest` for `decompressWith`. -/
+def mkDecompressRequest (codec : Codec) (opts : DecompressOptions) (input : ByteArray) : ExecRequest :=
+  { program := codecProgram codec
+    args := mkDecompressArgs codec
+    cwd := none
+    env := codecSanitizedEnv
+    inheritEnv := true
+    stdin := input
+    timeoutMs := some opts.timeoutMs
+    maxOutputBytes := some opts.maxOutputBytes }
+
+/-- Build the `ExecRequest` for `isToolAvailable`. -/
+def mkToolVersionRequest (codec : Codec) : ExecRequest :=
+  { program := codecProgram codec
+    args := #["--version"]
+    cwd := none
+    env := codecSanitizedEnv
+    inheritEnv := true
+    stdin := ByteArray.empty
+    timeoutMs := some 5000
+    maxOutputBytes := some 65536 }
+
+/-- Map a `ProcessError` from `LeanSwe.Process` into a normalized `CompressError`. -/
+def classifyProcessError (codec : Codec) (pe : ProcessError) : CompressError :=
+  let kind : CompressErrorKind :=
+    match pe.kind with
+    | .notFound => .toolNotFound
+    | .permissionDenied => .toolNotFound
+    | .invalidInput => .invalidInput
+    | .timedOut => .timedOut
+    | .outputLimitExceeded => .outputLimitExceeded
+    | .terminatedBySignal => .commandFailed
+    | .nonZeroExit => .commandFailed
+    | .ioError => .ioError
+  let fallback := codecProgram codec ++ " process invocation failed"
+  { kind := kind
+    codec := some codec
+    exitCode := pe.exitCode
+    stderr := pe.stderr.bind decodeStderr
+    message := nonEmptyMsg fallback pe.message }
+
+/-- Classify a completed `ExecResult` for compression (`isDecompress = false`) or decompression (`isDecompress = true`). -/
+def classifyExitResult (codec : Codec) (isDecompress : Bool) (res : ExecResult) :
+    Except CompressError ByteArray :=
+  if res.exitCode == 0 then
+    .ok res.stdout
+  else
+    let errStr? := decodeStderr res.stderr
+    let kind : CompressErrorKind := if isDecompress then .corruptData else .commandFailed
+    let fallback :=
+      if isDecompress then
+        codecProgram codec ++ " decompression failed with exit code " ++ toString res.exitCode
+      else
+        codecProgram codec ++ " compression failed with exit code " ++ toString res.exitCode
+    let msg :=
+      match errStr? with
+      | some s => nonEmptyMsg fallback s
+      | none => fallback
+    .error
+      { kind := kind
+        codec := some codec
+        exitCode := some res.exitCode
+        stderr := errStr?
+        message := msg }
+
+/-- Compress `input` with `codec` and `opts` via `raw`. -/
+def compressWith {m : Type → Type} [Monad m] (raw : RawProcessOpsM m)
+    (codec : Codec) (opts : CompressOptions) (input : ByteArray) :
+    m (Except CompressError ByteArray) := do
+  match validateCompressOptions codec opts input with
+  | .error err => return .error err
+  | .ok () =>
+    let req := mkCompressRequest codec opts input
+    match ← LeanSwe.Process.Internal.run raw req with
+    | .error pe => return .error (classifyProcessError codec pe)
+    | .ok res => return classifyExitResult codec false res
+
+/-- Decompress `input` with `codec` and `opts` via `raw`. -/
+def decompressWith {m : Type → Type} [Monad m] (raw : RawProcessOpsM m)
+    (codec : Codec) (opts : DecompressOptions) (input : ByteArray) :
+    m (Except CompressError ByteArray) := do
+  match validateDecompressOptions codec opts input with
+  | .error err => return .error err
+  | .ok () =>
+    let req := mkDecompressRequest codec opts input
+    match ← LeanSwe.Process.Internal.run raw req with
+    | .error pe => return .error (classifyProcessError codec pe)
+    | .ok res => return classifyExitResult codec true res
+
+/-- Return `true` iff the binary for `codec` succeeds on `--version` via `raw`. -/
+def isToolAvailable {m : Type → Type} [Monad m] (raw : RawProcessOpsM m)
+    (codec : Codec) : m Bool := do
+  match ← LeanSwe.Process.Internal.run raw (mkToolVersionRequest codec) with
+  | .ok res => return res.exitCode == 0
+  | .error _ => return false
+
+/-- Build a generic `CompressApiM m` backed by `raw : RawProcessOpsM m`. -/
+def mkApiM {m : Type → Type} [Monad m] (raw : RawProcessOpsM m) : CompressApiM m :=
+  { compress := fun codec input => compressWith raw codec {} input
+    decompress := fun codec input => decompressWith raw codec {} input
+    compressWith := compressWith raw
+    decompressWith := decompressWith raw
+    isToolAvailable := isToolAvailable raw }
+
+end LeanSwe.Compress.Internal
