@@ -83,3 +83,10 @@ import LeanSwe.Sqlite.Interface
 import LeanSwe.Sqlite.SpecTests
 import LeanSwe.Sqlite.Proofs
 import LeanSwe.Sqlite.RuntimeTests
+import LeanSwe.CmdLine.Types
+import LeanSwe.CmdLine.Model
+import LeanSwe.CmdLine.Impl
+import LeanSwe.CmdLine.Interface
+import LeanSwe.CmdLine.SpecTests
+import LeanSwe.CmdLine.Proofs
+import LeanSwe.CmdLine.RuntimeTests
