@@ -6,6 +6,14 @@ namespace LeanSwe.Fs
 open Core (NondetTest)
 open Core.NondetTest
 
+/-- Builder function assembling an `FsApiM m` from injected `RawFsOpsM m` primitives. -/
+abbrev FsBuilder (m : Type → Type) :=
+  RawFsOpsM m → FsApiM m
+
+private def isSingleValidName (fileName : String) : Bool :=
+  let cs := fileName.toList
+  !cs.isEmpty && !('/' ∈ cs) && !(Char.ofNat 0 ∈ cs) && fileName != "." && fileName != ".."
+
 /-- Every error returned by `api.mapRawError` carries a non-empty diagnostic message. -/
 def test_fs_mapRawError_returnsNonEmptyMessage
     {runner} [NondetTest runner] (api : FsApi) : runner Unit := do
@@ -342,6 +350,162 @@ def test_fs_vfs_tryWithFileLock_releasesOnActionError
   let (probe, _) := (api.tryWithFileLock path .exclusive false (pure (.ok ()))).run s₁
   NondetTest.assert (res = .error err ∧ probe = .ok (some ()))
 
+/-- Calling `api.atomicWriteBytes` for a valid child under writable `"/"` writes exact bytes atomically without leaving a `.tmp.<nonce>` sibling. -/
+def test_fs_vfs_atomicWriteBytes_writesAtomically
+    {S : Type} {runner} [NondetTest runner]
+    (mkApi : FsBuilder (StateM S)) (ops : RawFsOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let child ← nondet String
+  let bytes ← nondet ByteArray
+  assume (isSingleValidName child = true)
+  let path := "/" ++ child
+  assume (∃ stRoot, ((ops.stat false "/").run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir ∧
+    (stRoot.mode / 128) % 2 = 1 ∧ (stRoot.mode / 64) % 2 = 1)
+  let (nonce, _) := ops.monotonicNonce.run s₀
+  let tmpPath := "/." ++ child ++ ".tmp." ++ toString nonce
+  assume (((ops.stat false tmpPath).run s₀).1.isOk = false)
+  assume (((ops.stat false path).run s₀).1.isOk = false ∨
+    ∃ st, ((ops.stat false path).run s₀).1 = .ok st ∧ st.kind ≠ .dir)
+  let api := mkApi ops
+  let (res, s₁) := (api.atomicWriteBytes path bytes).run s₀
+  NondetTest.assert (res = .ok ())
+  NondetTest.assert (((api.readBytes path).run s₁).1 = .ok bytes)
+  NondetTest.assert (∃ st, ((api.lstat path).run s₁).1 = .ok st ∧ st.kind = .file ∧ st.byteSize = bytes.size)
+  NondetTest.assert (((ops.stat false tmpPath).run s₁).1.isOk = false)
+
+/-- When `.tmp.<nonce>` already exists (for instance as a pre-planted symlink), `api.atomicWriteBytes` fails with `.alreadyExists` and preserves target, symlink victim, and existing temp entry. -/
+def test_fs_vfs_atomicWriteBytes_rejectsPrePlantedTmpAndPreservesTarget
+    {S : Type} {runner} [NondetTest runner]
+    (mkApi : FsBuilder (StateM S)) (ops : RawFsOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let child ← nondet String
+  let victimPath ← nondet String
+  let newBytes ← nondet ByteArray
+  let origBytes ← nondet ByteArray
+  let victimBytes ← nondet ByteArray
+  assume (isSingleValidName child = true)
+  let path := "/" ++ child
+  assume (∃ stRoot, ((ops.stat false "/").run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir ∧
+    (stRoot.mode / 128) % 2 = 1 ∧ (stRoot.mode / 64) % 2 = 1)
+  let (nonce, _) := ops.monotonicNonce.run s₀
+  let tmpPath := "/." ++ child ++ ".tmp." ++ toString nonce
+  assume (((ops.stat false tmpPath).run s₀).1.isOk = true)
+  assume (((ops.readBytes path).run s₀).1 = .ok origBytes)
+  assume (((ops.readBytes victimPath).run s₀).1 = .ok victimBytes)
+  let (res, s₁) := ((mkApi ops).atomicWriteBytes path newBytes).run s₀
+  NondetTest.assert (∃ e, res = .error e ∧ e.kind = .alreadyExists)
+  NondetTest.assert (((ops.readBytes path).run s₁).1 = .ok origBytes)
+  NondetTest.assert (((ops.readBytes victimPath).run s₁).1 = .ok victimBytes)
+  NondetTest.assert (((ops.stat false tmpPath).run s₁).1.isOk = true)
+
+/-- When `ops.rename` fails after `createFileNew` succeeds, `api.atomicWriteBytes` propagates the error, cleans up `.tmp.<nonce>`, and preserves original target bytes. -/
+def test_fs_vfs_atomicWriteBytes_renameErrorCleansUpTmpAndPreservesTarget
+    {S : Type} {runner} [NondetTest runner]
+    (mkApi : FsBuilder (StateM S)) (ops : RawFsOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let child ← nondet String
+  let newBytes ← nondet ByteArray
+  let origBytes ← nondet ByteArray
+  let renameErr ← nondet FsError
+  assume (isSingleValidName child = true)
+  let path := "/" ++ child
+  assume (∃ stRoot, ((ops.stat false "/").run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir ∧
+    (stRoot.mode / 128) % 2 = 1 ∧ (stRoot.mode / 64) % 2 = 1)
+  let (nonce, _) := ops.monotonicNonce.run s₀
+  let tmpPath := "/." ++ child ++ ".tmp." ++ toString nonce
+  assume (((ops.stat false tmpPath).run s₀).1.isOk = false)
+  assume (((ops.readBytes path).run s₀).1 = .ok origBytes)
+  let opsFailRename : RawFsOpsM (StateM S) :=
+    { ops with rename := fun _ _ => pure (.error renameErr) }
+  let (res, s₁) := ((mkApi opsFailRename).atomicWriteBytes path newBytes).run s₀
+  NondetTest.assert (res = .error renameErr)
+  NondetTest.assert (((ops.stat false tmpPath).run s₁).1.isOk = false)
+  NondetTest.assert (((ops.readBytes path).run s₁).1 = .ok origBytes)
+
+/-- Calling `api.atomicWriteText` for a valid child under writable `"/"` writes exact UTF-8 bytes atomically without leaving `.tmp.<nonce>`. -/
+def test_fs_vfs_atomicWriteText_writesAtomically
+    {S : Type} {runner} [NondetTest runner]
+    (mkApi : FsBuilder (StateM S)) (ops : RawFsOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let child ← nondet String
+  let content ← nondet String
+  assume (isSingleValidName child = true)
+  let path := "/" ++ child
+  assume (∃ stRoot, ((ops.stat false "/").run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir ∧
+    (stRoot.mode / 128) % 2 = 1 ∧ (stRoot.mode / 64) % 2 = 1)
+  let (nonce, _) := ops.monotonicNonce.run s₀
+  let tmpPath := "/." ++ child ++ ".tmp." ++ toString nonce
+  assume (((ops.stat false tmpPath).run s₀).1.isOk = false)
+  assume (((ops.stat false path).run s₀).1.isOk = false ∨
+    ∃ st, ((ops.stat false path).run s₀).1 = .ok st ∧ st.kind ≠ .dir)
+  let api := mkApi ops
+  let (res, s₁) := (api.atomicWriteText path content).run s₀
+  NondetTest.assert (res = .ok ())
+  NondetTest.assert (((api.readBytes path).run s₁).1 = .ok content.toUTF8)
+  NondetTest.assert (((api.readText path).run s₁).1 = .ok content)
+  NondetTest.assert (((ops.stat false tmpPath).run s₁).1.isOk = false)
+
+/-- When `.tmp.<nonce>` already exists (for instance as a pre-planted symlink), `api.atomicWriteText` fails with `.alreadyExists` and preserves target, symlink victim, and existing temp entry. -/
+def test_fs_vfs_atomicWriteText_rejectsPrePlantedTmpAndPreservesTarget
+    {S : Type} {runner} [NondetTest runner]
+    (mkApi : FsBuilder (StateM S)) (ops : RawFsOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let child ← nondet String
+  let victimPath ← nondet String
+  let newText ← nondet String
+  let origBytes ← nondet ByteArray
+  let victimBytes ← nondet ByteArray
+  assume (isSingleValidName child = true)
+  let path := "/" ++ child
+  assume (∃ stRoot, ((ops.stat false "/").run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir ∧
+    (stRoot.mode / 128) % 2 = 1 ∧ (stRoot.mode / 64) % 2 = 1)
+  let (nonce, _) := ops.monotonicNonce.run s₀
+  let tmpPath := "/." ++ child ++ ".tmp." ++ toString nonce
+  assume (((ops.stat false tmpPath).run s₀).1.isOk = true)
+  assume (((ops.readBytes path).run s₀).1 = .ok origBytes)
+  assume (((ops.readBytes victimPath).run s₀).1 = .ok victimBytes)
+  let (res, s₁) := ((mkApi ops).atomicWriteText path newText).run s₀
+  NondetTest.assert (∃ e, res = .error e ∧ e.kind = .alreadyExists)
+  NondetTest.assert (((ops.readBytes path).run s₁).1 = .ok origBytes)
+  NondetTest.assert (((ops.readBytes victimPath).run s₁).1 = .ok victimBytes)
+  NondetTest.assert (((ops.stat false tmpPath).run s₁).1.isOk = true)
+
+/-- Calling `api.readBytes` on a symlink pointing to a regular file follows the symlink and returns the target bytes without modifying state. -/
+def test_fs_vfs_readBytes_followsSymlinkToRegularFile
+    {S : Type} {runner} [NondetTest runner] (api : FsApiM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let path ← nondet String
+  assume (∃ lst, ((api.lstat path).run s₀).1 = .ok lst ∧ lst.kind = .symlink)
+  assume (∃ st, ((api.stat path).run s₀).1 = .ok st ∧ st.kind = .file)
+  let (res, s₁) := (api.readBytes path).run s₀
+  NondetTest.assert ((∃ bs, res = .ok bs ∧
+    (∃ st, ((api.stat path).run s₀).1 = .ok st ∧ bs.size = st.byteSize)) ∧ s₁ = s₀)
+
+/-- Calling `api.readBytes` on a directory fails with `.isADirectory` and on a missing path preserves the `stat` error without modifying state. -/
+def test_fs_vfs_readBytes_dirAndMissingRejected
+    {S : Type} {runner} [NondetTest runner] (api : FsApiM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let path ← nondet String
+  match ((api.stat path).run s₀).1 with
+  | .error err =>
+    let (res, s₁) := (api.readBytes path).run s₀
+    NondetTest.assert ((∃ e, res = .error e ∧ e.kind = err.kind) ∧ s₁ = s₀)
+  | .ok st =>
+    if st.kind == .dir then
+      let (res, s₁) := (api.readBytes path).run s₀
+      NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .isADirectory) ∧ s₁ = s₀)
+    else
+      pure ()
+
+/-- External trust boundary assumptions for `LeanSwe.Fs` ambient OS behavior grounded in `RuntimeTests.lean`. -/
+structure EmpiricalAssumptions where
+  /-- `Fs.readBytes` and `Fs.readText` delegate to `Raw.readBytes` (`O_RDONLY | O_NONBLOCK | O_CLOEXEC` + `fstat`), immediately returning `.invalidInput` without blocking on FIFOs (`mkfifo`), sockets, or device nodes (`!S_ISREG`), `.isADirectory` on directories, and following symlinks to regular files. -/
+  readBytesNonBlockingRejectsFifoAndSpecialFiles : Prop
+  /-- `Fs.readBytes` and `Fs.readText` reject `""`, embedded NUL bytes, and non-root trailing `/` with `.invalidInput`. -/
+  readBytesValidatesPath : Prop
+  /-- `Fs.atomicWriteBytes` and `Fs.atomicWriteText` create sibling `.tmp.<nonce>` files via `Raw.createFileNew` (`O_CREAT | O_EXCL | O_NOFOLLOW`), never following pre-planted `.tmp` symlinks, and replace targets atomically via `rename`. -/
+  atomicWriteUsesExclusiveNoFollowTempFile : Prop
+
 private def buggyEmptyErrApi (base : FsApi) : FsApi :=
   { base with mapRawError := fun _ => { kind := .ioError, message := "" } }
 
@@ -372,6 +536,7 @@ private def stubFsApi : FsApi :=
     appendText := fun _ _ => pure (.ok ())
     readBytes := fun _ => pure (.ok ByteArray.empty)
     writeBytes := fun _ _ => pure (.ok ())
+    atomicWriteBytes := fun _ _ => pure (.ok ())
     atomicWriteText := fun _ _ => pure (.ok ())
     touch := fun _ _ => pure (.ok ())
     mkdir := fun _ _ _ => pure (.ok ())
@@ -433,6 +598,7 @@ private def stubVfsApi : FsApiM (StateM Unit) :=
     appendText := fun _ _ => pure (.ok ())
     readBytes := fun _ => pure (.ok ByteArray.empty)
     writeBytes := fun _ _ => pure (.ok ())
+    atomicWriteBytes := fun _ _ => pure (.ok ())
     atomicWriteText := fun _ _ => pure (.ok ())
     touch := fun _ _ => pure (.ok ())
     mkdir := fun _ _ _ => pure (.ok ())
@@ -563,6 +729,7 @@ private def stubBoolFsApi : FsApiM (StateM Bool) :=
       if s then (.ok ByteArray.empty, s)
       else (.ok (ByteArray.mk #[1, 2, 3]), s)
     writeBytes := fun _ _ => pure (.ok ())
+    atomicWriteBytes := fun _ _ => pure (.ok ())
     atomicWriteText := fun _ _ => pure (.ok ())
     touch := fun _ _ => pure (.ok ())
     mkdir := fun _ _ _ => pure (.ok ())
@@ -731,5 +898,103 @@ example : ¬ Core.AllPass (test_fs_vfs_tryWithFileLock_releasesOnActionError
   intro h
   have h0 := h () "/a.lock" .shared false { kind := .notFound, message := "boom" } rfl
   simp [StateT.run, bind, StateT.bind, pure, StateT.pure, assert] at h0
+
+private def stubVfsRawOps : RawFsOpsM (StateM Unit) :=
+  { mapRawError := fun _ => { kind := .ioError, message := "stub" }
+    stat := fun _ p =>
+      if p == "/" then pure (.ok (stubStat .dir))
+      else pure (.error { kind := .notFound, message := "stub" })
+    readDir := fun _ => pure (.ok #[])
+    createDir := fun _ => pure (.ok ())
+    removeDir := fun _ => pure (.ok ())
+    unlinkFile := fun _ => pure (.ok ())
+    readBytes := fun _ => pure (.ok ByteArray.empty)
+    writeBytes := fun _ _ => pure (.ok ())
+    createFileNew := fun _ _ => pure (.ok ())
+    appendText := fun _ _ => pure (.ok ())
+    rename := fun _ _ => pure (.ok ())
+    chmod := fun _ _ => pure (.ok ())
+    symlink := fun _ _ => pure (.ok ())
+    readLink := fun _ => pure (.error { kind := .notFound, message := "stub" })
+    realPath := fun _ => pure (.error { kind := .notFound, message := "stub" })
+    cwd := pure (.ok "/")
+    monotonicNonce := pure 0
+    acquireLock := fun path mode _ _ => pure (.ok { handleId := 1, path := path, mode := mode })
+    releaseLock := fun _ => pure (.ok ()) }
+
+example : ¬ Core.AllPass (test_fs_vfs_atomicWriteBytes_writesAtomically
+    (fun _ => { stubVfsApi with atomicWriteBytes := fun _ _ => pure (.error { kind := .ioError, message := "bug" }) })
+    stubVfsRawOps) := by
+  intro h
+  have h0 := h () "a.bin" ByteArray.empty (by decide)
+    ⟨stubStat .dir, rfl, rfl, by decide, by decide⟩
+    rfl (Or.inl rfl)
+  simp [stubVfsRawOps, stubVfsApi, StateT.run, bind, pure, StateT.pure, assert] at h0
+
+example : ¬ Core.AllPass (test_fs_vfs_atomicWriteBytes_rejectsPrePlantedTmpAndPreservesTarget
+    (fun _ => { stubVfsApi with atomicWriteBytes := fun _ _ => pure (.ok ()) })
+    { stubVfsRawOps with
+      stat := fun _ p =>
+        if p == "/" then pure (.ok (stubStat .dir))
+        else pure (.ok (stubStat .symlink)) }) := by
+  intro h
+  have h0 := h () "a.bin" "/victim" ByteArray.empty ByteArray.empty ByteArray.empty (by decide)
+    ⟨stubStat .dir, rfl, rfl, by decide, by decide⟩
+    rfl rfl rfl
+  simp [stubVfsRawOps, StateT.run, pure, assert] at h0
+  rcases h0 with ⟨⟨e, he, _⟩, _⟩
+  cases he
+
+example : ¬ Core.AllPass (test_fs_vfs_atomicWriteBytes_renameErrorCleansUpTmpAndPreservesTarget
+    (fun _ => { stubVfsApi with atomicWriteBytes := fun _ _ => pure (.ok ()) })
+    stubVfsRawOps) := by
+  intro h
+  have h0 := h () "a.bin" ByteArray.empty ByteArray.empty { kind := .permissionDenied, message := "EACCES" }
+    (by decide) ⟨stubStat .dir, rfl, rfl, by decide, by decide⟩ rfl rfl
+  simp [stubVfsRawOps, StateT.run, bind, pure, StateT.pure, assert] at h0
+
+example : ¬ Core.AllPass (test_fs_vfs_atomicWriteText_writesAtomically
+    (fun _ => { stubVfsApi with atomicWriteText := fun _ _ => pure (.error { kind := .ioError, message := "bug" }) })
+    stubVfsRawOps) := by
+  intro h
+  have h0 := h () "a.txt" "hi" (by decide)
+    ⟨stubStat .dir, rfl, rfl, by decide, by decide⟩
+    rfl (Or.inl rfl)
+  simp [stubVfsRawOps, stubVfsApi, StateT.run, bind, pure, StateT.pure, assert] at h0
+
+example : ¬ Core.AllPass (test_fs_vfs_atomicWriteText_rejectsPrePlantedTmpAndPreservesTarget
+    (fun _ => { stubVfsApi with atomicWriteText := fun _ _ => pure (.ok ()) })
+    { stubVfsRawOps with
+      stat := fun _ p =>
+        if p == "/" then pure (.ok (stubStat .dir))
+        else pure (.ok (stubStat .symlink)) }) := by
+  intro h
+  have h0 := h () "a.txt" "/victim" "new" ByteArray.empty ByteArray.empty (by decide)
+    ⟨stubStat .dir, rfl, rfl, by decide, by decide⟩
+    rfl rfl rfl
+  simp [stubVfsRawOps, StateT.run, pure, assert] at h0
+  rcases h0 with ⟨⟨e, he, _⟩, _⟩
+  cases he
+
+example : ¬ Core.AllPass (test_fs_vfs_readBytes_followsSymlinkToRegularFile
+    { stubVfsApi with
+      lstat := fun _ => pure (.ok (stubStat .symlink))
+      stat := fun _ => pure (.ok (stubStat .file))
+      readBytes := fun _ => pure (.error { kind := .invalidInput, message := "nofollow bug" }) }) := by
+  intro h
+  have h0 := h () "/sym" ⟨stubStat .symlink, rfl, rfl⟩ ⟨stubStat .file, rfl, rfl⟩
+  simp [StateT.run, pure, assert] at h0
+  rcases h0 with ⟨⟨bs, hbs, _⟩, _⟩
+  cases hbs
+
+example : ¬ Core.AllPass (test_fs_vfs_readBytes_dirAndMissingRejected
+    { stubVfsApi with
+      stat := fun _ => pure (.ok (stubStat .dir))
+      readBytes := fun _ => pure (.ok ByteArray.empty) }) := by
+  intro h
+  have h0 := h () "/dir"
+  simp [StateT.run, pure, assert] at h0
+  rcases h0 with ⟨⟨e, he, _⟩, _⟩
+  cases he
 
 end LeanSwe.Fs

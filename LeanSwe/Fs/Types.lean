@@ -53,7 +53,9 @@ structure FsApiM (m : Type → Type) where
   readBytes : String → m (Except FsError ByteArray)
   /-- Write or overwrite binary file (`Path.write_bytes`). -/
   writeBytes : String → ByteArray → m (Except FsError Unit)
-  /-- Atomically write text via a sibling temporary file and `rename`. -/
+  /-- Atomically write binary bytes via a sibling exclusive temporary file and `rename`. -/
+  atomicWriteBytes : String → ByteArray → m (Except FsError Unit)
+  /-- Atomically write text via a sibling exclusive temporary file and `rename`. -/
   atomicWriteText : String → String → m (Except FsError Unit)
   /-- Create empty file if missing (`Path.touch`). -/
   touch : String → Bool → m (Except FsError Unit)

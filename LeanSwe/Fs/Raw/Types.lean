@@ -120,10 +120,12 @@ structure RawFsOpsM (m : Type → Type) where
   removeDir : String → m (Except FsError Unit)
   /-- Remove a file or symbolic link. -/
   unlinkFile : String → m (Except FsError Unit)
-  /-- Read entire binary file. -/
+  /-- Read entire binary file (regular files only; rejects directories, FIFOs, and special files). -/
   readBytes : String → m (Except FsError ByteArray)
   /-- Write or overwrite binary file. -/
   writeBytes : String → ByteArray → m (Except FsError Unit)
+  /-- Atomically create a new regular file without following symlinks (`O_CREAT | O_EXCL | O_NOFOLLOW`), failing with `.alreadyExists` if any entry exists. -/
+  createFileNew : String → ByteArray → m (Except FsError Unit)
   /-- Append UTF-8 text to a file, creating it if absent. -/
   appendText : String → String → m (Except FsError Unit)
   /-- Rename or replace a file or directory. -/
