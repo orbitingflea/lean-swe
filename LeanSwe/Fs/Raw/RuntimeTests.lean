@@ -105,9 +105,12 @@ private def runLockTests (tmp : String) : IO Unit := do
   assertOk (← Raw.unlinkFile lockData) "unlink data.lock"
   assertOk (← Raw.unlinkFile lockNew) "unlink created.lock"
 
+private def withTempDir {α : Type} (f : String → IO α) : IO α :=
+  IO.FS.withTempDir fun dir => f dir.toString
+
 /-- Execute primitive Linux syscall grounding tests for `LeanSwe.Fs.Raw`. -/
 def runAll : IO Unit := do
-  let res ← Raw.withTempDir fun tmp => do
+  withTempDir fun tmp => do
     let d1 := tmp ++ "/dir1"
     assertOk (← Raw.createDir d1) "createDir d1"
     assertErrKind (← Raw.createDir d1) .alreadyExists "createDir existing fails"
@@ -144,10 +147,6 @@ def runAll : IO Unit := do
     assertOk (← Raw.unlinkFile f1) "unlinkFile f1"
     assertOk (← Raw.removeDir d1) "removeDir d1"
     runLockTests tmp
-    return .ok ()
-  match res with
-  | .ok () => pure ()
-  | .error e => throw (IO.userError s!"Fs.Raw RuntimeTests failed unexpectedly: {repr e}")
   IO.println "PASS: LeanSwe.Fs.Raw runtime tests"
 
 end LeanSwe.Fs.Raw.RuntimeTests

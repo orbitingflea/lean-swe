@@ -300,22 +300,17 @@ private def testLocksMultiProcess (tmp : String) : IO Unit := do
     "OS kernel immediately releases flock on child SIGKILL"
   assertTrue ((← Process.activeProcessCount) == 0) "final activeProcessCount == 0"
 
+private def withTempDir {α : Type} (f : String → IO α) : IO α :=
+  IO.FS.withTempDir fun dir => f dir.toString
+
 /-- Execute all pure path and real filesystem runtime checks for `LeanSwe.Fs`. -/
 def runAll : IO Unit := do
   testPurePaths
-  let res ← Fs.withTempDir fun tmp => do
-    let moved ← match ← testFilesAndDirs tmp with
-      | .error e => return .error e
-      | .ok m => pure m
-    match ← testSymlinksAndGlobs tmp moved with
-    | .error e => return .error e
-    | .ok () => pure ()
+  withTempDir fun tmp => do
+    let moved ← assertOk (← testFilesAndDirs tmp) "testFilesAndDirs"
+    assertOk (← testSymlinksAndGlobs tmp moved) "testSymlinksAndGlobs"
     testLocksSingleProcess tmp
     testLocksMultiProcess tmp
-    return .ok ()
-  match res with
-  | .ok () => pure ()
-  | .error e => throw (IO.userError s!"Fs RuntimeTests failed unexpectedly: {repr e}")
   IO.println "PASS: LeanSwe.Fs runtime tests"
 
 end LeanSwe.Fs.RuntimeTests

@@ -178,10 +178,6 @@ def defaultApi : FsApi :=
 @[inline] def rglob (root pattern : String) : IO (Except FsError (Array String)) :=
   defaultApi.rglob root pattern
 
-/-- Execute `f` with a fresh temporary directory that is cleaned up afterward. -/
-@[inline] def withTempDir {α : Type} (f : String → IO (Except FsError α)) : IO (Except FsError α) :=
-  Raw.withTempDir f
-
 /-- Acquire an advisory `mode` lock on `path`, execute `action`, and always unlock/close afterward. -/
 @[inline] def withFileLock {α : Type} (path : String) (mode : LockMode := .exclusive)
     (createIfMissing : Bool := true) (action : IO (Except FsError α)) : IO (Except FsError α) :=
