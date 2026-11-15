@@ -2,6 +2,7 @@ import Lake
 open Lake DSL
 
 package «lean-swe» where
+  moreLinkArgs := #["-lcrypto"]
   leanOptions := #[
     ⟨`autoImplicit, false⟩,
     ⟨`relaxedAutoImplicit, false⟩,
@@ -72,6 +73,16 @@ extern_lib «leanswe_sqlite» pkg := do
     #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
   let name := nameToStaticLib "leanswe_sqlite"
   buildStaticLib (pkg.staticLibDir / name) #[sqliteOJob, shimOJob]
+
+extern_lib «leanswe_cryptohash» pkg := do
+  let oFile := pkg.buildDir / "c" / "cryptohash_shim.o"
+  let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "CryptoHash" / "Raw" / "c" / "cryptohash_shim.c")
+  let lean ← getLeanInstall
+  let oJob ← buildO oFile srcJob
+    #["-I", lean.includeDir.toString]
+    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+  let name := nameToStaticLib "leanswe_cryptohash"
+  buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
 @[default_target, test_driver]
 lean_exe «lean-swe-test» where
