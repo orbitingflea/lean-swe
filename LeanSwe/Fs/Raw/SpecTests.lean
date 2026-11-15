@@ -92,11 +92,33 @@ def test_fsraw_readBytes_followsSymlinkToRegularFile
   NondetTest.assert ((∃ bs, res = .ok bs ∧
     (∃ st, ((ops.stat true path).run s₀).1 = .ok st ∧ bs.size = st.byteSize)) ∧ s₁ = s₀)
 
-/-- Calling `ops.readBytes` on a directory fails with `.isADirectory` and on a missing path fails with `.notFound` (preserving `stat` errors) without mutating state. -/
+/-- Writing `bytes` with `ops.createFileNew`, symlinking to it, and calling `ops.readBytes` on the symlink returns exact `bytes` without mutating state. -/
+def test_fsraw_readBytes_roundTripsExactBytesThroughSymlink
+    {S : Type} {runner} [NondetTest runner] (ops : RawFsOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let tgtName ← nondet String
+  let symName ← nondet String
+  let bytes ← nondet ByteArray
+  assume (isSingleValidName tgtName = true ∧ isSingleValidName symName = true ∧ tgtName ≠ symName)
+  let tgt := "/" ++ tgtName
+  let sym := "/" ++ symName
+  assume (∃ stRoot, ((ops.stat false "/").run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir ∧
+    (stRoot.mode / 128) % 2 = 1 ∧ (stRoot.mode / 64) % 2 = 1)
+  assume (∃ e1, ((ops.stat false tgt).run s₀).1 = .error e1 ∧ e1.kind = .notFound)
+  assume (∃ e2, ((ops.stat false sym).run s₀).1 = .error e2 ∧ e2.kind = .notFound)
+  let (r1, s₁) := (ops.createFileNew tgt bytes).run s₀
+  assume (r1 = .ok ())
+  let (r2, s₂) := (ops.symlink tgt sym).run s₁
+  assume (r2 = .ok ())
+  let (r3, s₃) := (ops.readBytes sym).run s₂
+  NondetTest.assert (r3 = .ok bytes ∧ s₃ = s₂)
+
+/-- Calling `ops.readBytes` on a directory fails with `.isADirectory` and on a missing valid path preserves the `stat` error without mutating state. -/
 def test_fsraw_readBytes_dirAndMissingRejected
     {S : Type} {runner} [NondetTest runner] (ops : RawFsOpsM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let path ← nondet String
+  assume (isValidRawPath path = true)
   match ((ops.stat true path).run s₀).1 with
   | .error err =>
     let (res, s₁) := (ops.readBytes path).run s₀
@@ -108,13 +130,22 @@ def test_fsraw_readBytes_dirAndMissingRejected
     else
       pure ()
 
+/-- Calling `ops.readBytes` with an empty path, embedded NUL byte, or non-root trailing `/` fails with `.invalidInput` and leaves state unchanged. -/
+def test_fsraw_readBytes_invalidPathRejected
+    {S : Type} {runner} [NondetTest runner] (ops : RawFsOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let path ← nondet String
+  assume (isValidRawPath path = false)
+  let (res, s₁) := (ops.readBytes path).run s₀
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ s₁ = s₀)
+
 /-- External trust boundary assumptions for `LeanSwe.Fs.Raw` C shims grounded in `RuntimeTests.lean`. -/
 structure EmpiricalAssumptions where
-  /-- `leanswe_fs_read_regular_bytes` opens `path` with `O_RDONLY | O_NONBLOCK | O_CLOEXEC`, checks `fstat`, returns `.isADirectory` on `S_ISDIR`, and returns `.invalidInput` immediately without blocking on FIFOs (`mkfifo`), sockets, or device nodes (`!S_ISREG`). -/
+  /-- `leanswe_fs_read_regular_bytes` opens `path` with `O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY`, maps `ENXIO` on Unix domain sockets and unbacked special files to `.invalidInput` (preserving `.isADirectory` on directories), checks `fstat` returning `.isADirectory` on `S_ISDIR` and `.invalidInput` on `!S_ISREG` (FIFOs, sockets, device nodes), and clears `O_NONBLOCK` via `fcntl` before reading to EOF handling `EINTR`/`EAGAIN`. -/
   readBytesNonBlockingRejectsNonRegular : Prop
-  /-- `leanswe_fs_read_regular_bytes` rejects `""`, embedded NUL bytes, and non-root trailing `/` with `.invalidInput`, follows symlinks to regular files, and reads to EOF handling `EINTR`. -/
+  /-- `leanswe_fs_read_regular_bytes` rejects `""`, embedded NUL bytes, and non-root trailing `/` with `.invalidInput` and follows symlinks to regular files (`mkfifo` FIFO and Unix domain socket grounded in `RuntimeTests.lean`). -/
   readBytesValidatesPathAndFollowsSymlinks : Prop
-  /-- `leanswe_fs_create_file_new` opens with `O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC` (mode `0644` masked by `umask`), rejects `""`, embedded NUL bytes, and non-root trailing `/` with `.invalidInput`, fails with `.alreadyExists` on existing files, directories, or symlinks (including dangling links) without following symlinks, and unlinks partial temp files on write failure. -/
+  /-- `leanswe_fs_create_file_new` opens with `O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC` (mode `0644` masked by `umask`), rejects `""`, embedded NUL bytes, and non-root trailing `/` with `.invalidInput`, fails with `.alreadyExists` on existing files, directories, or symlinks (including dangling links, `"/"`, `"."`, `".."`) without following symlinks (`O_EXCL | O_NOFOLLOW` and path validation grounded in `RuntimeTests.lean`), and performs best-effort `unlink(path)` on `write` or `close(fd)` failure preserving the original `errno` (audited in C shim). -/
   createFileNewExclusiveNoFollow : Prop
 
 private def buggyEmptyErrRaw (base : RawFsOps) : RawFsOps :=
@@ -238,9 +269,30 @@ example : ¬ Core.AllPass (test_fsraw_readBytes_dirAndMissingRejected
       stat := fun _ _ => pure (.ok (stubStat .dir))
       readBytes := fun _ => pure (.ok ByteArray.empty) }) := by
   intro h
-  have h0 := h () "/dir"
+  have h0 := h () "/dir" (by decide)
   simp [stubStat, StateT.run, pure, StateT.pure, assert] at h0
   have hDir : (EntryKind.dir == EntryKind.dir) = true := rfl
   simp [hDir] at h0
+
+example : ¬ Core.AllPass (test_fsraw_readBytes_invalidPathRejected stubVfsRawOps) := by
+  intro h
+  have h0 := h () "" (by decide)
+  simp [stubVfsRawOps, StateT.run, pure, assert] at h0
+  rcases h0 with ⟨⟨e, he, _⟩, _⟩
+  cases he
+
+example : ¬ Core.AllPass (test_fsraw_readBytes_roundTripsExactBytesThroughSymlink
+    { stubVfsRawOps with
+      stat := fun _ p =>
+        if p == "/" then pure (.ok (stubStat .dir))
+        else pure (.error { kind := .notFound, message := "stub" })
+      readBytes := fun _ => pure (.ok (ByteArray.mk #[0, 0, 0])) }) := by
+  intro h
+  have h0 := h () "a.bin" "sym" (ByteArray.mk #[1, 2, 3]) (And.intro (by decide) (And.intro (by decide) (by decide)))
+    ⟨stubStat .dir, rfl, rfl, by decide, by decide⟩
+    ⟨{ kind := .notFound, message := "stub" }, rfl, rfl⟩
+    ⟨{ kind := .notFound, message := "stub" }, rfl, rfl⟩
+    rfl rfl
+  simp [StateT.run, pure, StateT.pure, assert] at h0
 
 end LeanSwe.Fs.Raw
