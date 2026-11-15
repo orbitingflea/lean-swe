@@ -83,6 +83,13 @@ import LeanSwe.Sqlite.Interface
 import LeanSwe.Sqlite.SpecTests
 import LeanSwe.Sqlite.Proofs
 import LeanSwe.Sqlite.RuntimeTests
+import LeanSwe.Git.Types
+import LeanSwe.Git.Model
+import LeanSwe.Git.Interface
+import LeanSwe.Git.Impl
+import LeanSwe.Git.SpecTests
+import LeanSwe.Git.Proofs
+import LeanSwe.Git.RuntimeTests
 import LeanSwe.CmdLine.Types
 import LeanSwe.CmdLine.Model
 import LeanSwe.CmdLine.Impl
