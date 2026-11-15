@@ -117,3 +117,10 @@ import LeanSwe.Temp.Interface
 import LeanSwe.Temp.SpecTests
 import LeanSwe.Temp.Proofs
 import LeanSwe.Temp.RuntimeTests
+import LeanSwe.Base64.Types
+import LeanSwe.Base64.Model
+import LeanSwe.Base64.Impl
+import LeanSwe.Base64.Interface
+import LeanSwe.Base64.SpecTests
+import LeanSwe.Base64.Proofs
+import LeanSwe.Base64.RuntimeTests
