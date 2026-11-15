@@ -142,3 +142,10 @@ import LeanSwe.CryptoHash.Interface
 import LeanSwe.CryptoHash.SpecTests
 import LeanSwe.CryptoHash.Proofs
 import LeanSwe.CryptoHash.RuntimeTests
+import LeanSwe.Tar.Types
+import LeanSwe.Tar.Model
+import LeanSwe.Tar.Impl
+import LeanSwe.Tar.Interface
+import LeanSwe.Tar.SpecTests
+import LeanSwe.Tar.Proofs
+import LeanSwe.Tar.RuntimeTests
