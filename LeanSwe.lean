@@ -97,3 +97,10 @@ import LeanSwe.NumParse.Interface
 import LeanSwe.NumParse.SpecTests
 import LeanSwe.NumParse.Proofs
 import LeanSwe.NumParse.RuntimeTests
+import LeanSwe.Toml.Types
+import LeanSwe.Toml.Model
+import LeanSwe.Toml.Impl
+import LeanSwe.Toml.Interface
+import LeanSwe.Toml.SpecTests
+import LeanSwe.Toml.Proofs
+import LeanSwe.Toml.RuntimeTests
