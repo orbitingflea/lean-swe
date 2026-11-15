@@ -130,3 +130,15 @@ import LeanSwe.Base64.Interface
 import LeanSwe.Base64.SpecTests
 import LeanSwe.Base64.Proofs
 import LeanSwe.Base64.RuntimeTests
+import LeanSwe.CryptoHash.Raw.Types
+import LeanSwe.CryptoHash.Raw.Impl
+import LeanSwe.CryptoHash.Raw.Interface
+import LeanSwe.CryptoHash.Raw.SpecTests
+import LeanSwe.CryptoHash.Raw.Proofs
+import LeanSwe.CryptoHash.Raw.RuntimeTests
+import LeanSwe.CryptoHash.Types
+import LeanSwe.CryptoHash.Impl
+import LeanSwe.CryptoHash.Interface
+import LeanSwe.CryptoHash.SpecTests
+import LeanSwe.CryptoHash.Proofs
+import LeanSwe.CryptoHash.RuntimeTests
