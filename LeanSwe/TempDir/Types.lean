@@ -1,7 +1,7 @@
-namespace LeanSwe.Temp
+namespace LeanSwe.TempDir
 
-/-- Classification of failures in `LeanSwe.Temp`. -/
-inductive TempErrorKind where
+/-- Classification of failures in `LeanSwe.TempDir`. -/
+inductive TempDirErrorKind where
   /-- Invalid root path, directory prefix, or unexpected non-file lock entry. -/
   | invalidInput
   /-- Target path or temporary root does not exist. -/
@@ -16,10 +16,10 @@ inductive TempErrorKind where
   | ioError
   deriving Repr, BEq, DecidableEq
 
-/-- Typed error returned by `LeanSwe.Temp` operations. -/
-structure TempError where
+/-- Typed error returned by `LeanSwe.TempDir` operations. -/
+structure TempDirError where
   /-- Machine-checkable error category. -/
-  kind : TempErrorKind
+  kind : TempDirErrorKind
   /-- Path associated with the failure, when applicable. -/
   path : Option String := none
   /-- Non-empty human-readable diagnostic message. -/
@@ -37,21 +37,21 @@ structure CleanupReport where
   /-- Full paths of non-matching names or non-directory/symlink entries skipped. -/
   skipped : Array String := #[]
   /-- Per-entry errors recorded without aborting the rest of the sweep. -/
-  failed : Array TempError := #[]
+  failed : Array TempDirError := #[]
   deriving Repr, BEq, DecidableEq
 
-/-- Public temporary-directory operations exported by `LeanSwe.Temp`, parameterized over `m`. -/
-structure TempApiM (m : Type → Type) where
+/-- Public temporary-directory operations exported by `LeanSwe.TempDir`, parameterized over `m`. -/
+structure TempDirApiM (m : Type → Type) where
   /-- Exclusively create `<root>/<dirPrefix><uuid>`, run `action dir`, and recursively remove `dir` on exit. -/
   withTempDir :
-    {α : Type} → Option String → String → (String → m (Except TempError α)) → m (Except TempError α)
+    {α : Type} → Option String → String → (String → m (Except TempDirError α)) → m (Except TempDirError α)
   /-- Like `withTempDir`, while holding a `.shared` advisory `flock` on `<dir>/.lock` during `action dir`. -/
   withLockedTempDir :
-    {α : Type} → Option String → String → (String → m (Except TempError α)) → m (Except TempError α)
+    {α : Type} → Option String → String → (String → m (Except TempDirError α)) → m (Except TempDirError α)
   /-- Sweep immediate subdirectories of `root` matching `dirPrefix`, respecting live locks and `maxAgeSec`. -/
-  cleanupStaleTempDirs : Option String → String → Nat → m (Except TempError CleanupReport)
+  cleanupStaleTempDirs : Option String → String → Nat → m (Except TempDirError CleanupReport)
 
-/-- Concrete `IO` temporary-directory API bundle exported by `LeanSwe.Temp`. -/
-abbrev TempApi := TempApiM IO
+/-- Concrete `IO` temporary-directory API bundle exported by `LeanSwe.TempDir`. -/
+abbrev TempDirApi := TempDirApiM IO
 
-end LeanSwe.Temp
+end LeanSwe.TempDir

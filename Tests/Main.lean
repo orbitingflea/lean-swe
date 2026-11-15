@@ -26,7 +26,9 @@ def main (args : List String) : IO UInt32 := do
     CmdLine.RuntimeTests.runAll
     NumParse.RuntimeTests.runAll
     Toml.RuntimeTests.runAll
-    Temp.RuntimeTests.runAll
+    TempDir.RuntimeTests.runAll
+    Compress.RuntimeTests.runAll
+    Base64.RuntimeTests.runAll
     CryptoHash.Raw.RuntimeTests.runAll
     CryptoHash.RuntimeTests.runAll
     match RegExp.findAll "[0-9]+" "a1b22" with
