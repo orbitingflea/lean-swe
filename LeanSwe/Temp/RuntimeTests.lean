@@ -1,0 +1,302 @@
+import LeanSwe.Temp.Interface
+import LeanSwe.Temp.Impl
+import LeanSwe.Process.Interface
+
+namespace LeanSwe.Temp.RuntimeTests
+
+open LeanSwe
+open LeanSwe.Fs (FsError)
+
+private def assertTrue (cond : Bool) (msg : String) : IO Unit := do
+  if !cond then
+    throw (IO.userError s!"ASSERTION FAILED: {msg}")
+
+private def assertTempOk {α : Type} (res : Except TempError α) (msg : String) : IO α := do
+  match res with
+  | .ok v => return v
+  | .error e => throw (IO.userError s!"ASSERTION FAILED: {msg} (unexpected TempError: {repr e})")
+
+private def assertFsOk {α : Type} (res : Except FsError α) (msg : String) : IO α := do
+  match res with
+  | .ok v => return v
+  | .error e => throw (IO.userError s!"ASSERTION FAILED: {msg} (unexpected FsError: {repr e})")
+
+private def assertTempErrKind {α : Type} (res : Except TempError α) (expected : TempErrorKind)
+    (msg : String) : IO Unit := do
+  match res with
+  | .ok _ => throw (IO.userError s!"ASSERTION FAILED: {msg} (expected TempError {repr expected}, got ok)")
+  | .error e =>
+    if e.kind != expected || e.message == "" then
+      throw (IO.userError s!"ASSERTION FAILED: {msg} (got {repr e}, expected {repr expected})")
+
+private def waitForFile (path : String) : IO Unit := do
+  for _ in List.range 500 do
+    match ← Fs.pathExists path with
+    | .ok true => return ()
+    | _ => IO.sleep 10
+  throw (IO.userError s!"ASSERTION FAILED: timed out waiting for marker file {path}")
+
+private def isSorted (xs : Array String) : Bool :=
+  let ls := xs.toList
+  (ls.zip ls.tail).all fun (a, b) => decide (a ≤ b)
+
+private def testWithTempDirLifecycle (sandbox : String) : IO Unit := do
+  let createdPathRef ← IO.mkRef ""
+  let resOk ← Temp.withTempDir (some sandbox) "wt-" fun d => do
+    createdPathRef.set d
+    let st ← match ← Fs.lstat d with
+      | .ok s => pure s
+      | .error e => return .error (Internal.mapFsError e)
+    assertTrue (st.kind == .dir) "withTempDir created directory"
+    assertTrue (st.mode % 0o1000 == 0o700) "withTempDir enforced mode 0o700"
+    let p := Fs.join d "payload.txt"
+    match ← Fs.writeText p "hello" with
+    | .ok () => return .ok (42 : Nat)
+    | .error e => return .error (Internal.mapFsError e)
+  let v ← assertTempOk resOk "withTempDir ok return"
+  assertTrue (v == 42) "withTempDir returned expected value"
+  let createdPath ← createdPathRef.get
+  assertTrue (createdPath.startsWith (Fs.join sandbox "wt-")) "withTempDir path prefix"
+  match ← Fs.pathExists createdPath with
+  | .ok ex => assertTrue (!ex) "withTempDir removed dir on ok exit"
+  | .error e => throw (IO.userError s!"pathExists failed: {repr e}")
+
+  let errDirRef ← IO.mkRef ""
+  let expectedErr : TempError := { kind := .ioError, path := none, message := "action error" }
+  let resErr ← Temp.withTempDir (some sandbox) "wt-err-" fun d => do
+    errDirRef.set d
+    let _ ← Fs.writeText (Fs.join d "tmp.txt") "data"
+    return (Except.error expectedErr : Except TempError Nat)
+  assertTempErrKind resErr .ioError "withTempDir preserves action error"
+  let errDir ← errDirRef.get
+  match ← Fs.pathExists errDir with
+  | .ok ex => assertTrue (!ex) "withTempDir removed dir on error exit"
+  | .error e => throw (IO.userError s!"pathExists failed: {repr e}")
+
+  let exDirRef ← IO.mkRef ""
+  let threw ← try
+    let _r : Except TempError Unit ← Temp.withTempDir (some sandbox) "wt-ex-" fun d => do
+      exDirRef.set d
+      let _ ← Fs.writeText (Fs.join d "crash.txt") "x"
+      throw (IO.userError "boom")
+    pure false
+  catch _ => pure true
+  assertTrue threw "withTempDir propagated IO exception"
+  let exDir ← exDirRef.get
+  assertTrue (!exDir.isEmpty) "withTempDir entered action before throw"
+  match ← Fs.pathExists exDir with
+  | .ok ex => assertTrue (!ex) "withTempDir removed dir on IO exception"
+  | .error e => throw (IO.userError s!"pathExists failed: {repr e}")
+
+  for badPrefix in ["", ".", "..", ".dot", "sub/dir", String.ofList ['a', Char.ofNat 0]] do
+    let r ← Temp.withTempDir (some sandbox) badPrefix fun _ => pure (.ok () : Except TempError Unit)
+    assertTempErrKind r .invalidInput s!"reject invalid prefix {repr badPrefix}"
+  let rBadRoot ← Temp.withTempDir (some "") "wt-" fun _ => pure (.ok () : Except TempError Unit)
+  assertTempErrKind rBadRoot .invalidInput "reject empty explicit root"
+
+private def testWithLockedTempDirAndRootResolution (sandbox : String) : IO Unit := do
+  let lockedDirRef ← IO.mkRef ""
+  let resOk ← Temp.withLockedTempDir (some sandbox) "wl-" fun d => do
+    lockedDirRef.set d
+    let lockPath := Fs.join d ".lock"
+    let stDir ← match ← Fs.lstat d with
+      | .ok s => pure s
+      | .error e => return .error (Internal.mapFsError e)
+    let stLock ← match ← Fs.lstat lockPath with
+      | .ok s => pure s
+      | .error e => return .error (Internal.mapFsError e)
+    assertTrue (stDir.kind == .dir && stDir.mode % 0o1000 == 0o700) "withLockedTempDir mode 0o700"
+    assertTrue (stLock.kind == .file) "withLockedTempDir created regular .lock file"
+    match ← Fs.tryWithFileLock lockPath .shared false (pure (.ok ())) with
+    | .ok (some ()) => pure ()
+    | other => throw (IO.userError s!"shared lock should coexist inside withLockedTempDir: {repr other}")
+    match ← Fs.tryWithFileLock lockPath .exclusive false (pure (.ok ())) with
+    | .ok none => pure ()
+    | other => throw (IO.userError s!"exclusive lock must block while inside withLockedTempDir: {repr other}")
+    return .ok "locked-ok"
+  let val ← assertTempOk resOk "withLockedTempDir ok"
+  assertTrue (val == "locked-ok") "withLockedTempDir ok value"
+  let lockedDir ← lockedDirRef.get
+  match ← Fs.pathExists lockedDir with
+  | .ok ex => assertTrue (!ex) "withLockedTempDir removed dir on exit"
+  | .error e => throw (IO.userError s!"pathExists failed: {repr e}")
+
+  let exLockedRef ← IO.mkRef ""
+  let threw ← try
+    let _r : Except TempError Unit ← Temp.withLockedTempDir (some sandbox) "wl-ex-" fun d => do
+      exLockedRef.set d
+      throw (IO.userError "boom-locked")
+    pure false
+  catch _ => pure true
+  assertTrue threw "withLockedTempDir propagated IO exception"
+  let exLocked ← exLockedRef.get
+  match ← Fs.pathExists exLocked with
+  | .ok ex => assertTrue (!ex) "withLockedTempDir removed dir on exception"
+  | .error e => throw (IO.userError s!"pathExists failed: {repr e}")
+
+  let realRes ← Temp.withTempDir none "lean-swe-temp-rt-" fun d => do
+    match ← Fs.pathExists d with
+    | .ok ex =>
+      assertTrue ex "defaultApi root? := none created real dir"
+      return .ok d
+    | .error e => return .error (Internal.mapFsError e)
+  let realPath ← assertTempOk realRes "defaultApi root? := none succeeded"
+  match ← Fs.pathExists realPath with
+  | .ok ex => assertTrue (!ex) "defaultApi root? := none cleaned up real dir"
+  | .error e => throw (IO.userError s!"pathExists failed: {repr e}")
+
+  let customEnvOk : EnvVars.EnvVarsApiM IO :=
+    { EnvVars.defaultApi with getEnv := fun k => pure (.ok (if k == "TMPDIR" then some sandbox else none)) }
+  let customApiOk := Internal.mkApiM Fs.defaultApi Time.defaultOps Uuid.defaultApi customEnvOk
+  let customRes ← customApiOk.withTempDir none "env-ok-" fun d => pure (.ok d)
+  let customPath ← assertTempOk customRes "TMPDIR custom env resolved"
+  assertTrue (customPath.startsWith (Fs.join sandbox "env-ok-")) "TMPDIR path honored"
+
+  let missingPath := Fs.join sandbox "does-not-exist-tmpdir"
+  let customEnvMissing : EnvVars.EnvVarsApiM IO :=
+    { EnvVars.defaultApi with getEnv := fun k => pure (.ok (if k == "TMPDIR" then some missingPath else none)) }
+  let customApiMissing := Internal.mkApiM Fs.defaultApi Time.defaultOps Uuid.defaultApi customEnvMissing
+  assertTempErrKind (← customApiMissing.withTempDir none "env-miss-" fun _ => pure (.ok ()))
+    .notFound "missing TMPDIR fails strictly"
+
+  let fileTmp := Fs.join sandbox "not-a-dir.txt"
+  assertFsOk (← Fs.writeText fileTmp "x") "create regular file for TMPDIR non-dir check"
+  let customEnvFile : EnvVars.EnvVarsApiM IO :=
+    { EnvVars.defaultApi with getEnv := fun k => pure (.ok (if k == "TMPDIR" then some fileTmp else none)) }
+  let customApiFile := Internal.mkApiM Fs.defaultApi Time.defaultOps Uuid.defaultApi customEnvFile
+  assertTempErrKind (← customApiFile.withTempDir none "env-file-" fun _ => pure (.ok ()))
+    .notADirectory "non-dir TMPDIR fails with notADirectory"
+
+private def testCleanupStaleTempDirsOS (sandbox : String) : IO Unit := do
+  let sweepRoot := Fs.join sandbox "sweep"
+  assertFsOk (← Fs.mkdir sweepRoot false false) "create sweep root"
+
+  let liveDir := Fs.join sweepRoot "job-live-locked"
+  let liveLock := Fs.join liveDir ".lock"
+  let liveReady := Fs.join sandbox "live.ready"
+  let liveStop := Fs.join sandbox "live.stop"
+  assertFsOk (← Fs.mkdir liveDir false false) "create liveDir"
+  assertFsOk (← Fs.writeText liveLock "") "create live .lock"
+  assertFsOk (← Fs.writeText (Fs.join liveDir "work.txt") "busy") "create live payload"
+
+  let deadDir := Fs.join sweepRoot "job-crashed-locked"
+  let deadLock := Fs.join deadDir ".lock"
+  let deadReady := Fs.join sandbox "dead.ready"
+  assertFsOk (← Fs.mkdir deadDir false false) "create deadDir"
+  assertFsOk (← Fs.writeText deadLock "") "create dead .lock"
+  assertFsOk (← Fs.writeText (Fs.join deadDir "stale.txt") "orphan") "create dead payload"
+
+  let freshDir := Fs.join sweepRoot "job-fresh-unlocked"
+  assertFsOk (← Fs.mkdir freshDir false false) "create freshDir"
+
+  let oldDir := Fs.join sweepRoot "job-old-unlocked"
+  assertFsOk (← Fs.mkdir oldDir false false) "create oldDir"
+  assertFsOk (← Fs.writeText (Fs.join oldDir "old.txt") "bye") "create old payload"
+
+  let otherDir := Fs.join sweepRoot "other-keep"
+  assertFsOk (← Fs.mkdir otherDir false false) "create non-matching dir"
+
+  let fileChild := Fs.join sweepRoot "job-regular-file"
+  assertFsOk (← Fs.writeText fileChild "keep-file") "create matching regular file"
+
+  let symTarget := Fs.join sandbox "symlink-target"
+  assertFsOk (← Fs.mkdir symTarget false false) "create symlink target dir"
+  let symChild := Fs.join sweepRoot "job-symlink"
+  assertFsOk (← Fs.symlink symTarget symChild) "create matching symlink"
+
+  let badLockDir := Fs.join sweepRoot "job-bad-lock"
+  let badLockTarget := Fs.join sandbox "bad-lock-target"
+  assertFsOk (← Fs.writeText badLockTarget "t") "create badLockTarget"
+  assertFsOk (← Fs.mkdir badLockDir false false) "create badLockDir"
+  assertFsOk (← Fs.symlink badLockTarget (Fs.join badLockDir ".lock")) "create symlink .lock"
+
+  let holdScript :=
+    "import fcntl, os, sys, time\n" ++
+    "lp, rp, sp = sys.argv[1:4]\n" ++
+    "fd = os.open(lp, os.O_RDONLY)\n" ++
+    "fcntl.flock(fd, fcntl.LOCK_SH)\n" ++
+    "open(rp, 'w').write('1')\n" ++
+    "deadline = time.monotonic() + 15.0\n" ++
+    "while not os.path.exists(sp) and time.monotonic() < deadline:\n" ++
+    "  time.sleep(0.01)\n"
+  let liveChild ← match ← Process.Raw.spawn
+      { program := "python3", args := #["-c", holdScript, liveLock, liveReady, liveStop] } with
+    | .ok h => pure h
+    | .error e => throw (IO.userError s!"spawn liveChild failed: {repr e}")
+
+  let deadScript :=
+    "import fcntl, os, signal, sys, time\n" ++
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" ++
+    "lp, rp = sys.argv[1:3]\n" ++
+    "fd = os.open(lp, os.O_RDONLY)\n" ++
+    "fcntl.flock(fd, fcntl.LOCK_EX)\n" ++
+    "open(rp, 'w').write('1')\n" ++
+    "time.sleep(15.0)\n"
+  let deadChild ← match ← Process.Raw.spawn
+      { program := "python3", args := #["-c", deadScript, deadLock, deadReady] } with
+    | .ok h => pure h
+    | .error e =>
+      let _ ← Fs.writeText liveStop "go"
+      let _ ← Process.Raw.reap liveChild
+      throw (IO.userError s!"spawn deadChild failed: {repr e}")
+
+  try
+    waitForFile liveReady
+    waitForFile deadReady
+    match ← Process.runCommand "kill" #["-9", toString deadChild.pid] with
+    | .ok kout => assertTrue (kout.exitCode == 0) "kill -9 deadChild exitCode 0"
+    | .error e => throw (IO.userError s!"kill -9 deadChild failed: {repr e}")
+    let _ ← Process.Raw.reap deadChild
+
+    let rep1 ← assertTempOk (← Temp.cleanupStaleTempDirs (some sweepRoot) "job-" 3600)
+      "first cleanup pass with 3600s grace window"
+    assertTrue (rep1.keptLocked.toList.contains liveDir) "live locked dir kept in pass 1"
+    assertTrue (!rep1.removed.toList.contains liveDir) "live locked dir not removed in pass 1"
+    assertTrue (rep1.removed.toList.contains deadDir) "SIGKILL dead locked dir removed immediately"
+    assertTrue (rep1.keptFresh.toList.contains freshDir) "fresh unlocked dir kept within grace window"
+    assertTrue (rep1.keptFresh.toList.contains oldDir) "unlocked dir kept within 3600s window"
+    assertTrue (rep1.skipped.toList.contains otherDir) "non-matching dir skipped"
+    assertTrue (rep1.skipped.toList.contains fileChild) "matching regular file skipped"
+    assertTrue (rep1.skipped.toList.contains symChild) "matching symlink skipped"
+    assertTrue (rep1.failed.any (fun e => e.kind == .invalidInput && e.path == some (Fs.join badLockDir ".lock")))
+      "symlink .lock rejected into rep.failed"
+    assertTrue (isSorted rep1.removed && isSorted rep1.keptLocked && isSorted rep1.keptFresh && isSorted rep1.skipped)
+      "report arrays sorted"
+    assertTrue (!(← assertFsOk (← Fs.pathExists deadDir) "pathExists deadDir")) "deadDir removed from disk"
+    assertTrue (← assertFsOk (← Fs.pathExists liveDir) "pathExists liveDir") "liveDir still on disk"
+    assertTrue (← assertFsOk (← Fs.pathExists badLockDir) "pathExists badLockDir") "badLockDir preserved"
+    assertTrue (← assertFsOk (← Fs.pathExists symTarget) "pathExists symTarget") "symlink target untouched"
+
+    IO.sleep 1500
+    let rep2 ← assertTempOk (← Temp.cleanupStaleTempDirs (some sweepRoot) "job-" 0)
+      "second cleanup pass with maxAgeSec = 0"
+    assertTrue (rep2.keptLocked.toList.contains liveDir) "live locked dir STILL kept even when maxAgeSec = 0"
+    assertTrue (!rep2.removed.toList.contains liveDir) "live locked dir not removed in pass 2"
+    assertTrue (rep2.removed.toList.contains oldDir) "expired unlocked dir removed with maxAgeSec = 0"
+    assertTrue (rep2.removed.toList.contains freshDir) "freshDir also expired after sleep + maxAgeSec = 0"
+    assertTrue (← assertFsOk (← Fs.pathExists liveDir) "pathExists liveDir after pass 2") "liveDir intact after pass 2"
+    assertTrue (!(← assertFsOk (← Fs.pathExists oldDir) "pathExists oldDir after pass 2")) "oldDir removed after pass 2"
+
+    assertFsOk (← Fs.writeText liveStop "done") "signal liveChild stop"
+    match ← Process.Raw.awaitOutput liveChild with
+    | .ok (.exited out) => assertTrue (out.exitCode == 0) "liveChild exited cleanly"
+    | .ok other => throw (IO.userError s!"liveChild unexpected outcome: {repr other}")
+    | .error e => throw (IO.userError s!"awaitOutput liveChild failed: {repr e}")
+  finally
+    let _ ← Fs.writeText liveStop "done"
+    let _ ← Process.Raw.reap deadChild
+    let _ ← Process.Raw.reap liveChild
+
+  assertTrue ((← Process.activeProcessCount) == 0) "all child processes reaped"
+
+/-- Execute all runtime OS tests for `LeanSwe.Temp`. -/
+def runAll : IO Unit := do
+  let res ← Fs.withTempDir fun sandbox => do
+    testWithTempDirLifecycle sandbox
+    testWithLockedTempDirAndRootResolution sandbox
+    testCleanupStaleTempDirsOS sandbox
+    return .ok ()
+  let _ ← assertFsOk res "outer sandbox cleanup"
+  IO.println "LEAN_SWE_TEMP_RUNTIME_TESTS_PASSED"
+
+end LeanSwe.Temp.RuntimeTests
