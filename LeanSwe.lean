@@ -90,3 +90,10 @@ import LeanSwe.CmdLine.Interface
 import LeanSwe.CmdLine.SpecTests
 import LeanSwe.CmdLine.Proofs
 import LeanSwe.CmdLine.RuntimeTests
+import LeanSwe.NumParse.Types
+import LeanSwe.NumParse.Model
+import LeanSwe.NumParse.Impl
+import LeanSwe.NumParse.Interface
+import LeanSwe.NumParse.SpecTests
+import LeanSwe.NumParse.Proofs
+import LeanSwe.NumParse.RuntimeTests
