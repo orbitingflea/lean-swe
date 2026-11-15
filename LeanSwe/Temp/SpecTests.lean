@@ -1,5 +1,5 @@
 import Core.NondetTest
-import LeanSwe.Env.Types
+import LeanSwe.EnvVars.Types
 import LeanSwe.Fs.Types
 import LeanSwe.Temp.Types
 import LeanSwe.Time.Types
@@ -12,11 +12,11 @@ open Core.NondetTest
 open LeanSwe.Fs (FsApiM FsError FsErrorKind EntryKind FileStat LockMode)
 open LeanSwe.Time (TimeOpsM)
 open LeanSwe.Uuid (UuidApiM Uuid UuidError)
-open LeanSwe.Env (EnvApiM EnvError)
+open LeanSwe.EnvVars (EnvVarsApiM EnvVarsError)
 
 /-- Builder function assembling a `TempApiM m` from injected `Fs`, `Time`, `Uuid`, and `Env` interfaces. -/
 abbrev TempBuilder (m : Type → Type) :=
-  FsApiM m → TimeOpsM m → UuidApiM m → EnvApiM m → TempApiM m
+  FsApiM m → TimeOpsM m → UuidApiM m → EnvVarsApiM m → TempApiM m
 
 private def validPrefix (p : String) : Bool :=
   !p.isEmpty && p.toList.head? != some '.' && !('/' ∈ p.toList) && !(Char.ofNat 0 ∈ p.toList)
@@ -41,7 +41,7 @@ def test_temp_withTempDir_okCleansUpAndSetsMode
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
-    (uuid : UuidApiM (StateM S)) (env : EnvApiM (StateM S)) : runner Unit := do
+    (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let root ← nondet String
   let dirPrefix ← nondet String
@@ -66,15 +66,15 @@ def test_temp_withTempDir_okCleansUpAndSetsMode
           match ← fs.writeText (fs.join d "payload.txt") "hello" with
           | .error _ => return .error { kind := .ioError, path := some d, message := "writeText inside action failed" }
           | .ok () => return .ok val).run s₀
-    assert (res = .ok val)
-    assert (((fs.lstat dir).run s₁).1.isOk = false)
+    NondetTest.assert (res = .ok val)
+    NondetTest.assert (((fs.lstat dir).run s₁).1.isOk = false)
 
 /-- `withTempDir` cleans up `dir` and returns `action`'s `.error` with precedence over cleanup errors. -/
 def test_temp_withTempDir_errorCleansUpAndPreservesError
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
-    (uuid : UuidApiM (StateM S)) (env : EnvApiM (StateM S)) : runner Unit := do
+    (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let root ← nondet String
   let dirPrefix ← nondet String
@@ -91,20 +91,20 @@ def test_temp_withTempDir_errorCleansUpAndPreservesError
     let (res, s₁) := (api.withTempDir (some root) dirPrefix fun d => do
       let _ ← fs.writeText (fs.join d "tmp.txt") "data"
       return (Except.error actionErr : Except TempError Nat)).run s₀
-    assert (res = .error actionErr)
-    assert (((fs.lstat dir).run s₁).1.isOk = false)
+    NondetTest.assert (res = .error actionErr)
+    NondetTest.assert (((fs.lstat dir).run s₁).1.isOk = false)
     let fsFailClean : FsApiM (StateM S) :=
       { fs with rmtree := fun _ _ => pure (.error { kind := .permissionDenied, message := "cleanup failed" }) }
     let (resFail, _) := ((mkApi fsFailClean time uuid env).withTempDir (some root) dirPrefix fun _ =>
       pure (Except.error actionErr : Except TempError Nat)).run s₀
-    assert (resFail = .error actionErr)
+    NondetTest.assert (resFail = .error actionErr)
 
 /-- When `action` returns `.ok` and `fs.rmtree` fails, `withTempDir` propagates the cleanup error rather than swallowing it. -/
 def test_temp_withTempDir_cleanupErrorReturnedOnOk
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
-    (uuid : UuidApiM (StateM S)) (env : EnvApiM (StateM S)) : runner Unit := do
+    (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let root ← nondet String
   let dirPrefix ← nondet String
@@ -121,14 +121,14 @@ def test_temp_withTempDir_cleanupErrorReturnedOnOk
       { fs with rmtree := fun p _ => pure (.error { kind := .permissionDenied, path := some p, message := "rm failed" }) }
     let (res, _) := ((mkApi fsFailClean time uuid env).withTempDir (some root) dirPrefix fun _ =>
       pure (.ok val)).run s₀
-    assert (∃ e, res = .error e ∧ e.kind = .permissionDenied ∧ e.message ≠ "")
+    NondetTest.assert (∃ e, res = .error e ∧ e.kind = .permissionDenied ∧ e.message ≠ "")
 
 /-- Exclusive creation rejects pre-existing directories or symlinks at `<root>/<dirPrefix><uuid>` with `.alreadyExists` without running `action` or deleting the existing entry. -/
 def test_temp_withTempDir_collisionRejected
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
-    (uuid : UuidApiM (StateM S)) (env : EnvApiM (StateM S)) : runner Unit := do
+    (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let root ← nondet String
   let dirPrefix ← nondet String
@@ -147,16 +147,16 @@ def test_temp_withTempDir_collisionRejected
     let (res, s₁) := (api.withTempDir (some root) dirPrefix fun _ => do
       let _ ← fs.writeText markerPath "ran"
       return (.ok () : Except TempError Unit)).run s₀
-    assert (∃ e, res = .error e ∧ e.kind = .alreadyExists)
-    assert (((fs.lstat markerPath).run s₁).1.isOk = false)
-    assert (((fs.lstat dir).run s₁).1.isOk = true)
+    NondetTest.assert (∃ e, res = .error e ∧ e.kind = .alreadyExists)
+    NondetTest.assert (((fs.lstat markerPath).run s₁).1.isOk = false)
+    NondetTest.assert (((fs.lstat dir).run s₁).1.isOk = true)
 
 /-- If `fs.chmod dir 0o700` fails right after `fs.mkdir`, `withTempDir` rolls back `dir` without running `action`. -/
 def test_temp_withTempDir_chmodFailureRollsBack
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
-    (uuid : UuidApiM (StateM S)) (env : EnvApiM (StateM S)) : runner Unit := do
+    (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let root ← nondet String
   let dirPrefix ← nondet String
@@ -175,16 +175,16 @@ def test_temp_withTempDir_chmodFailureRollsBack
     let (res, s₁) := ((mkApi fsBadChmod time uuid env).withTempDir (some root) dirPrefix fun _ => do
       let _ ← fs.writeText markerPath "ran"
       return (.ok () : Except TempError Unit)).run s₀
-    assert (∃ e, res = .error e ∧ e.kind = .permissionDenied)
-    assert (((fs.lstat markerPath).run s₁).1.isOk = false)
-    assert (((fs.lstat dir).run s₁).1.isOk = false)
+    NondetTest.assert (∃ e, res = .error e ∧ e.kind = .permissionDenied)
+    NondetTest.assert (((fs.lstat markerPath).run s₁).1.isOk = false)
+    NondetTest.assert (((fs.lstat dir).run s₁).1.isOk = false)
 
 /-- All three operations reject invalid `dirPrefix` (`""`, `"."`, `".."`, leading `'.'`, `'/'`, NUL) and invalid explicit `root?` (`""`, NUL) with `.invalidInput` without modifying state. -/
 def test_temp_validation_rejectsInvalidInputs
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
-    (uuid : UuidApiM (StateM S)) (env : EnvApiM (StateM S)) : runner Unit := do
+    (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let root ← nondet String
   let dirPrefix ← nondet String
@@ -193,17 +193,17 @@ def test_temp_validation_rejectsInvalidInputs
   let (r1, s1) := (api.withTempDir (some root) dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
   let (r2, s2) := (api.withLockedTempDir (some root) dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
   let (r3, s3) := (api.cleanupStaleTempDirs (some root) dirPrefix 86400).run s₀
-  assert (∃ e, r1 = .error e ∧ e.kind = .invalidInput ∧ e.message ≠ "")
-  assert (∃ e, r2 = .error e ∧ e.kind = .invalidInput ∧ e.message ≠ "")
-  assert (∃ e, r3 = .error e ∧ e.kind = .invalidInput ∧ e.message ≠ "")
-  assert (s1 = s₀ ∧ s2 = s₀ ∧ s3 = s₀)
+  NondetTest.assert (∃ e, r1 = .error e ∧ e.kind = .invalidInput ∧ e.message ≠ "")
+  NondetTest.assert (∃ e, r2 = .error e ∧ e.kind = .invalidInput ∧ e.message ≠ "")
+  NondetTest.assert (∃ e, r3 = .error e ∧ e.kind = .invalidInput ∧ e.message ≠ "")
+  NondetTest.assert (s1 = s₀ ∧ s2 = s₀ ∧ s3 = s₀)
 
 /-- With `root? = none`, all three operations resolve non-empty `TMPDIR`, reject NUL `TMPDIR` with `.invalidInput`, reject missing/non-dir `TMPDIR` strictly, and fall back to `"/tmp"` when `TMPDIR` is unset or empty. -/
 def test_temp_rootResolution_tmpdirAndFallbackAndStrictMissing
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
-    (uuid : UuidApiM (StateM S)) (env : EnvApiM (StateM S)) : runner Unit := do
+    (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let dirPrefix ← nondet String
   assume (validPrefix dirPrefix)
@@ -217,26 +217,26 @@ def test_temp_rootResolution_tmpdirAndFallbackAndStrictMissing
         let (r1, s1) := (api.withTempDir none dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
         let (r2, s2) := (api.withLockedTempDir none dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
         let (r3, s3) := (api.cleanupStaleTempDirs none dirPrefix 86400).run s₀
-        assert ((∃ e, r1 = .error e ∧ e.kind = .invalidInput) ∧ s1 = sAfterEnv)
-        assert ((∃ e, r2 = .error e ∧ e.kind = .invalidInput) ∧ s2 = sAfterEnv)
-        assert ((∃ e, r3 = .error e ∧ e.kind = .invalidInput) ∧ s3 = sAfterEnv)
+        NondetTest.assert ((∃ e, r1 = .error e ∧ e.kind = .invalidInput) ∧ s1 = sAfterEnv)
+        NondetTest.assert ((∃ e, r2 = .error e ∧ e.kind = .invalidInput) ∧ s2 = sAfterEnv)
+        NondetTest.assert ((∃ e, r3 = .error e ∧ e.kind = .invalidInput) ∧ s3 = sAfterEnv)
       else
         match ((fs.stat tmpdir).run sAfterUuid).1 with
         | .error fe =>
           let (r1, _) := (api.withTempDir none dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
           let (r2, _) := (api.withLockedTempDir none dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
           let (r3, _) := (api.cleanupStaleTempDirs none dirPrefix 86400).run s₀
-          assert (∃ te, r1 = .error te ∧ (fe.kind ≠ .notFound ∨ te.kind = .notFound))
-          assert (∃ te, r2 = .error te ∧ (fe.kind ≠ .notFound ∨ te.kind = .notFound))
-          assert (∃ te, r3 = .error te ∧ (fe.kind ≠ .notFound ∨ te.kind = .notFound))
+          NondetTest.assert (∃ te, r1 = .error te ∧ (fe.kind ≠ .notFound ∨ te.kind = .notFound))
+          NondetTest.assert (∃ te, r2 = .error te ∧ (fe.kind ≠ .notFound ∨ te.kind = .notFound))
+          NondetTest.assert (∃ te, r3 = .error te ∧ (fe.kind ≠ .notFound ∨ te.kind = .notFound))
         | .ok st =>
           if st.kind != .dir then
             let (r1, _) := (api.withTempDir none dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
             let (r2, _) := (api.withLockedTempDir none dirPrefix fun _ => pure (.ok () : Except TempError Unit)).run s₀
             let (r3, _) := (api.cleanupStaleTempDirs none dirPrefix 86400).run s₀
-            assert (∃ te, r1 = .error te ∧ te.kind = .notADirectory)
-            assert (∃ te, r2 = .error te ∧ te.kind = .notADirectory)
-            assert (∃ te, r3 = .error te ∧ te.kind = .notADirectory)
+            NondetTest.assert (∃ te, r1 = .error te ∧ te.kind = .notADirectory)
+            NondetTest.assert (∃ te, r2 = .error te ∧ te.kind = .notADirectory)
+            NondetTest.assert (∃ te, r3 = .error te ∧ te.kind = .notADirectory)
           else
             assume (hasRwx st)
             let expectedDir := fs.join tmpdir (dirPrefix ++ uuid.toString u)
@@ -244,9 +244,9 @@ def test_temp_rootResolution_tmpdirAndFallbackAndStrictMissing
             let (r1, _) := (api.withTempDir none dirPrefix fun d => pure (.ok d)).run s₀
             let (r2, _) := (api.withLockedTempDir none dirPrefix fun d => pure (.ok d)).run s₀
             let (r3, _) := (api.cleanupStaleTempDirs none dirPrefix 86400).run s₀
-            assert (r1 = .ok expectedDir)
-            assert (r2 = .ok expectedDir)
-            assert (r3.isOk = true)
+            NondetTest.assert (r1 = .ok expectedDir)
+            NondetTest.assert (r2 = .ok expectedDir)
+            NondetTest.assert (r3.isOk = true)
     else
       assume (∃ stTmp, ((fs.stat "/tmp").run sAfterUuid).1 = .ok stTmp ∧ hasRwx stTmp)
       let expectedDir := fs.join "/tmp" (dirPrefix ++ uuid.toString u)
@@ -254,9 +254,9 @@ def test_temp_rootResolution_tmpdirAndFallbackAndStrictMissing
       let (r1, _) := (api.withTempDir none dirPrefix fun d => pure (.ok d)).run s₀
       let (r2, _) := (api.withLockedTempDir none dirPrefix fun d => pure (.ok d)).run s₀
       let (r3, _) := (api.cleanupStaleTempDirs none dirPrefix 86400).run s₀
-      assert (r1 = .ok expectedDir)
-      assert (r2 = .ok expectedDir)
-      assert (r3.isOk = true)
+      NondetTest.assert (r1 = .ok expectedDir)
+      NondetTest.assert (r2 = .ok expectedDir)
+      NondetTest.assert (r3.isOk = true)
   | .ok none, .ok u =>
     assume (∃ stTmp, ((fs.stat "/tmp").run sAfterUuid).1 = .ok stTmp ∧ hasRwx stTmp)
     let expectedDir := fs.join "/tmp" (dirPrefix ++ uuid.toString u)
@@ -264,9 +264,9 @@ def test_temp_rootResolution_tmpdirAndFallbackAndStrictMissing
     let (r1, _) := (api.withTempDir none dirPrefix fun d => pure (.ok d)).run s₀
     let (r2, _) := (api.withLockedTempDir none dirPrefix fun d => pure (.ok d)).run s₀
     let (r3, _) := (api.cleanupStaleTempDirs none dirPrefix 86400).run s₀
-    assert (r1 = .ok expectedDir)
-    assert (r2 = .ok expectedDir)
-    assert (r3.isOk = true)
+    NondetTest.assert (r1 = .ok expectedDir)
+    NondetTest.assert (r2 = .ok expectedDir)
+    NondetTest.assert (r3.isOk = true)
   | _, _ => assume False
 
 /-- `withLockedTempDir` sets mode `0o700`, holds a `.shared` lock on `<dir>/.lock` while `action` runs, cleans up `dir` and releases all locks on `.ok` and `.error`, and propagates lock errors with precedence over cleanup errors. -/
@@ -274,7 +274,7 @@ def test_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
-    (uuid : UuidApiM (StateM S)) (env : EnvApiM (StateM S)) : runner Unit := do
+    (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let root ← nondet String
   let dirPrefix ← nondet String
@@ -307,42 +307,42 @@ def test_temp_withLockedTempDir_holdsSharedLockDuringActionAndReleasesOnExit
         return .error { kind := .notFound, path := some d, message := "missing lock file" }
       | _, _, _, _ =>
         return .error { kind := .ioError, path := some d, message := "lock invariant failed" }).run s₀
-    assert (resOk = .ok val)
-    assert (((fs.lstat dir).run sOk).1.isOk = false)
-    assert (∃ e, ((fs.lstat lockPath).run sOk).1 = .error e ∧ e.kind = .notFound)
+    NondetTest.assert (resOk = .ok val)
+    NondetTest.assert (((fs.lstat dir).run sOk).1.isOk = false)
+    NondetTest.assert (∃ e, ((fs.lstat lockPath).run sOk).1 = .error e ∧ e.kind = .notFound)
     let probeOk := (do
       let _ ← fs.mkdir dir false false
       fs.tryWithFileLock lockPath .exclusive true (pure (.ok ()))).run sOk
-    assert (probeOk.1 = .ok (some ()))
+    NondetTest.assert (probeOk.1 = .ok (some ()))
     let (resErr, sErr) := (api.withLockedTempDir (some root) dirPrefix fun _ =>
       pure (Except.error err : Except TempError Nat)).run s₀
-    assert (resErr = .error err)
-    assert (((fs.lstat dir).run sErr).1.isOk = false)
+    NondetTest.assert (resErr = .error err)
+    NondetTest.assert (((fs.lstat dir).run sErr).1.isOk = false)
     let probeErr := (do
       let _ ← fs.mkdir dir false false
       fs.tryWithFileLock lockPath .exclusive true (pure (.ok ()))).run sErr
-    assert (probeErr.1 = .ok (some ()))
+    NondetTest.assert (probeErr.1 = .ok (some ()))
     let fsLockAndRmFail : FsApiM (StateM S) :=
       { fs with
         withFileLock := fun p _ _ _ => pure (.error { kind := .permissionDenied, path := some p, message := "lock denied" })
         rmtree := fun p _ => pure (.error { kind := .ioError, path := some p, message := "rm failed" }) }
     let (resLockRm, _) := ((mkApi fsLockAndRmFail time uuid env).withLockedTempDir (some root) dirPrefix fun _ =>
       pure (.ok val)).run s₀
-    assert (∃ e, resLockRm = .error e ∧ e.kind = .permissionDenied)
+    NondetTest.assert (∃ e, resLockRm = .error e ∧ e.kind = .permissionDenied)
     let fsLockFailCleanOk : FsApiM (StateM S) :=
       { fs with
         withFileLock := fun p _ _ _ => pure (.error { kind := .permissionDenied, path := some p, message := "lock denied" }) }
     let (resLockClean, sLockClean) := ((mkApi fsLockFailCleanOk time uuid env).withLockedTempDir (some root) dirPrefix fun _ =>
       pure (.ok val)).run s₀
-    assert (∃ e, resLockClean = .error e ∧ e.kind = .permissionDenied)
-    assert (((fs.lstat dir).run sLockClean).1.isOk = false)
+    NondetTest.assert (∃ e, resLockClean = .error e ∧ e.kind = .permissionDenied)
+    NondetTest.assert (((fs.lstat dir).run sLockClean).1.isOk = false)
 
 /-- `withLockedTempDir` ignores `.notFound` from `fs.rmtree` in its finalizer so a concurrent sweep removing `dir` after `.lock` release does not discard `action`'s `.ok` result. -/
 def test_temp_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
-    (uuid : UuidApiM (StateM S)) (env : EnvApiM (StateM S)) : runner Unit := do
+    (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let root ← nondet String
   let dirPrefix ← nondet String
@@ -362,15 +362,15 @@ def test_temp_withLockedTempDir_ignoresNotFoundOnConcurrentCleanup
           pure (.error { kind := .notFound, path := some p, message := "removed concurrently" }) }
     let (res, s₁) := ((mkApi fsConcurrentSweep time uuid env).withLockedTempDir (some root) dirPrefix fun _ =>
       pure (.ok val)).run s₀
-    assert (res = .ok val)
-    assert (((fs.lstat dir).run s₁).1.isOk = false)
+    NondetTest.assert (res = .ok val)
+    NondetTest.assert (((fs.lstat dir).run s₁).1.isOk = false)
 
 /-- Over `ExceptT String (StateM S)`, an uncaught exception thrown inside `withTempDir` or `withLockedTempDir` triggers cleanup (and lock release) while propagating the exception. -/
 def test_temp_tryFinally_exceptionCleansUpAndReleasesLock
     {S : Type} {runner} [NondetTest runner]
     (mkExApi : TempBuilder (ExceptT String (StateM S)))
     (fsEx : FsApiM (ExceptT String (StateM S))) (timeEx : TimeOpsM (ExceptT String (StateM S)))
-    (uuidEx : UuidApiM (ExceptT String (StateM S))) (envEx : EnvApiM (ExceptT String (StateM S)))
+    (uuidEx : UuidApiM (ExceptT String (StateM S))) (envEx : EnvVarsApiM (ExceptT String (StateM S)))
     (fs : FsApiM (StateM S)) (uuid : UuidApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let root ← nondet String
@@ -386,23 +386,23 @@ def test_temp_tryFinally_exceptionCleansUpAndReleasesLock
     let apiEx := mkExApi fsEx timeEx uuidEx envEx
     let (r1, s1) := (ExceptT.run (apiEx.withTempDir (some root) dirPrefix fun _ =>
       (throw "boom" : ExceptT String (StateM S) (Except TempError Unit)))).run s₀
-    assert (r1 = .error "boom")
-    assert (((fs.lstat dir).run s1).1.isOk = false)
+    NondetTest.assert (r1 = .error "boom")
+    NondetTest.assert (((fs.lstat dir).run s1).1.isOk = false)
     let (r2, s2) := (ExceptT.run (apiEx.withLockedTempDir (some root) dirPrefix fun _ =>
       (throw "boom" : ExceptT String (StateM S) (Except TempError Unit)))).run s₀
-    assert (r2 = .error "boom")
-    assert (((fs.lstat dir).run s2).1.isOk = false)
+    NondetTest.assert (r2 = .error "boom")
+    NondetTest.assert (((fs.lstat dir).run s2).1.isOk = false)
     let probeS2 := (do
       let _ ← fs.mkdir dir false false
       fs.tryWithFileLock (fs.join dir ".lock") .exclusive true (pure (.ok ()))).run s2
-    assert (probeS2.1 = .ok (some ()))
+    NondetTest.assert (probeS2.1 = .ok (some ()))
 
 /-- `cleanupStaleTempDirs` keeps any matching directory whose `<dir>/.lock` is actively locked (`.shared` or `.exclusive`), even when `age > maxAgeSec` (including `maxAgeSec = 0`). -/
 def test_temp_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
-    (uuid : UuidApiM (StateM S)) (env : EnvApiM (StateM S)) : runner Unit := do
+    (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let root ← nondet String
   let dirPrefix ← nondet String
@@ -432,17 +432,17 @@ def test_temp_cleanupStaleTempDirs_liveLockKeptRegardlessOfAge
     | .error _ => assume False
     | .ok (repRes, innerProbe, stillExists) =>
       match repRes with
-      | .error _ => assert False
+      | .error _ => NondetTest.assert False
       | .ok rep =>
-        assert (hasPath rep.keptLocked child ∧ ¬ hasPath rep.removed child)
-        assert (innerProbe = .ok none ∧ stillExists = true)
+        NondetTest.assert (hasPath rep.keptLocked child ∧ ¬ hasPath rep.removed child)
+        NondetTest.assert (innerProbe = .ok none ∧ stillExists = true)
 
 /-- `cleanupStaleTempDirs` immediately removes a matching directory whose `<dir>/.lock` exists and is unlocked, even when `age = 0 ≤ maxAgeSec`, leaving zero locks held. -/
 def test_temp_cleanupStaleTempDirs_deadLockRemovedImmediately
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
-    (uuid : UuidApiM (StateM S)) (env : EnvApiM (StateM S)) : runner Unit := do
+    (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let root ← nondet String
   let dirPrefix ← nondet String
@@ -466,21 +466,21 @@ def test_temp_cleanupStaleTempDirs_deadLockRemovedImmediately
     assume (nowTs.toSecondsSinceUnixEpoch.val - stChild.modifiedSec ≤ (maxAgeSec : Int))
     let (res, s₁) := ((mkApi fs time uuid env).cleanupStaleTempDirs (some root) dirPrefix maxAgeSec).run s₀
     match res with
-    | .error _ => assert False
+    | .error _ => NondetTest.assert False
     | .ok rep =>
-      assert (hasPath rep.removed child ∧ ¬ hasPath rep.keptLocked child ∧ ¬ hasPath rep.keptFresh child)
-      assert (((fs.lstat child).run s₁).1.isOk = false)
+      NondetTest.assert (hasPath rep.removed child ∧ ¬ hasPath rep.keptLocked child ∧ ¬ hasPath rep.keptFresh child)
+      NondetTest.assert (((fs.lstat child).run s₁).1.isOk = false)
       let probeAfter := (do
         let _ ← fs.mkdir child false false
         fs.tryWithFileLock lockPath .exclusive true (pure (.ok ()))).run s₁
-      assert (probeAfter.1 = .ok (some ()))
+      NondetTest.assert (probeAfter.1 = .ok (some ()))
 
 /-- For matching directories without `.lock`, `cleanupStaleTempDirs` keeps directories with `nowSec - modifiedSec ≤ maxAgeSec` (including equality and negative clock skew) and removes those with `nowSec - modifiedSec > maxAgeSec`. -/
 def test_temp_cleanupStaleTempDirs_graceWindowAndOldUnlocked
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
-    (uuid : UuidApiM (StateM S)) (env : EnvApiM (StateM S)) : runner Unit := do
+    (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let root ← nondet String
   let dirPrefix ← nondet String
@@ -502,22 +502,22 @@ def test_temp_cleanupStaleTempDirs_graceWindowAndOldUnlocked
     let ageSec := nowTs.toSecondsSinceUnixEpoch.val - stChild.modifiedSec
     let (res, s₁) := ((mkApi fs time uuid env).cleanupStaleTempDirs (some root) dirPrefix maxAgeSec).run s₀
     match res with
-    | .error _ => assert False
+    | .error _ => NondetTest.assert False
     | .ok rep =>
       if ageSec ≤ (maxAgeSec : Int) then
-        assert (hasPath rep.keptFresh child ∧ ¬ hasPath rep.removed child)
-        assert (((fs.lstat child).run s₁).1.isOk = true)
+        NondetTest.assert (hasPath rep.keptFresh child ∧ ¬ hasPath rep.removed child)
+        NondetTest.assert (((fs.lstat child).run s₁).1.isOk = true)
       else
         assume (((fs.listDir child).run s₀).1 = .ok #[])
-        assert (hasPath rep.removed child ∧ ¬ hasPath rep.keptFresh child)
-        assert (((fs.lstat child).run s₁).1.isOk = false)
+        NondetTest.assert (hasPath rep.removed child ∧ ¬ hasPath rep.keptFresh child)
+        NondetTest.assert (((fs.lstat child).run s₁).1.isOk = false)
 
 /-- `cleanupStaleTempDirs` skips non-matching names, regular files, and symlinks under `root` without modifying them, and emits sorted paths in `CleanupReport`. -/
 def test_temp_cleanupStaleTempDirs_scopeAndSymlinkSafety
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
-    (uuid : UuidApiM (StateM S)) (env : EnvApiM (StateM S)) : runner Unit := do
+    (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let root ← nondet String
   let dirPrefix ← nondet String
@@ -531,18 +531,18 @@ def test_temp_cleanupStaleTempDirs_scopeAndSymlinkSafety
     (¬ dirPrefix.toList.isPrefixOf entryName.toList ∨ stChild.kind ≠ .dir))
   let (res, s₁) := ((mkApi fs time uuid env).cleanupStaleTempDirs (some root) dirPrefix maxAgeSec).run s₀
   match res with
-  | .error _ => assert False
+  | .error _ => NondetTest.assert False
   | .ok rep =>
-    assert (hasPath rep.skipped child ∧ ¬ hasPath rep.removed child)
-    assert (((fs.lstat child).run s₁).1.isOk = true)
-    assert (isSorted rep.removed ∧ isSorted rep.keptLocked ∧ isSorted rep.keptFresh ∧ isSorted rep.skipped)
+    NondetTest.assert (hasPath rep.skipped child ∧ ¬ hasPath rep.removed child)
+    NondetTest.assert (((fs.lstat child).run s₁).1.isOk = true)
+    NondetTest.assert (isSorted rep.removed ∧ isSorted rep.keptLocked ∧ isSorted rep.keptFresh ∧ isSorted rep.skipped)
 
 /-- `cleanupStaleTempDirs` rejects non-regular `.lock` entries (symlinks, directories, other) into `failed` without removing `child`, and keeps `.lock` intact and unlocked when deleting a non-`.lock` child fails. -/
 def test_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety
     {S : Type} {runner} [NondetTest runner]
     (mkApi : TempBuilder (StateM S))
     (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
-    (uuid : UuidApiM (StateM S)) (env : EnvApiM (StateM S)) : runner Unit := do
+    (uuid : UuidApiM (StateM S)) (env : EnvVarsApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let root ← nondet String
   let dirPrefix ← nondet String
@@ -561,11 +561,11 @@ def test_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety
     if stLock.kind != .file then
       let (res, s₁) := ((mkApi fs time uuid env).cleanupStaleTempDirs (some root) dirPrefix maxAgeSec).run s₀
       match res with
-      | .error _ => assert False
+      | .error _ => NondetTest.assert False
       | .ok rep =>
-        assert (¬ hasPath rep.removed child ∧ ¬ hasPath rep.keptFresh child)
-        assert (rep.failed.any (fun e => e.kind == .invalidInput && e.path == some lockPath))
-        assert (((fs.lstat child).run s₁).1.isOk = true)
+        NondetTest.assert (¬ hasPath rep.removed child ∧ ¬ hasPath rep.keptFresh child)
+        NondetTest.assert (rep.failed.any (fun e => e.kind == .invalidInput && e.path == some lockPath))
+        NondetTest.assert (((fs.lstat child).run s₁).1.isOk = true)
     else
       let payload := fs.join child "locked_child.txt"
       assume (∃ stP, ((fs.lstat payload).run s₀).1 = .ok stP ∧ stP.kind = .file)
@@ -577,12 +577,12 @@ def test_temp_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety
             else fs.unlink p miss }
       let (res, s₁) := ((mkApi fsFailChild time uuid env).cleanupStaleTempDirs (some root) dirPrefix maxAgeSec).run s₀
       match res with
-      | .error _ => assert False
+      | .error _ => NondetTest.assert False
       | .ok rep =>
-        assert (¬ hasPath rep.removed child ∧ ¬ hasPath rep.keptFresh child)
-        assert (!rep.failed.isEmpty)
-        assert (((fs.lstat lockPath).run s₁).1.isOk = true)
-        assert (((fs.tryWithFileLock lockPath .exclusive false (pure (.ok ()))).run s₁).1 = .ok (some ()))
+        NondetTest.assert (¬ hasPath rep.removed child ∧ ¬ hasPath rep.keptFresh child)
+        NondetTest.assert (!rep.failed.isEmpty)
+        NondetTest.assert (((fs.lstat lockPath).run s₁).1.isOk = true)
+        NondetTest.assert (((fs.tryWithFileLock lockPath .exclusive false (pure (.ok ()))).run s₁).1 = .ok (some ()))
   | .error _ => assume False
 
 private structure TempStubState where
@@ -812,7 +812,7 @@ private def stubUuid : UuidApiM (StateM TempStubState) :=
     isValid := fun _ => true
     getUuid := pure (.ok stubUuidVal) }
 
-private def stubEnv : EnvApiM (StateM TempStubState) :=
+private def stubEnv : EnvVarsApiM (StateM TempStubState) :=
   { mapRawError := fun _ => { kind := .ioError, message := "env" }
     getEnv := fun k => do
       if k == "TMPDIR" then return .ok (← get).tmpdir
@@ -916,7 +916,7 @@ private def stubUuidEx : UuidApiM (ExceptT String (StateM TempStubState)) :=
     isValid := stubUuid.isValid
     getUuid := liftM stubUuid.getUuid }
 
-private def stubEnvEx : EnvApiM (ExceptT String (StateM TempStubState)) :=
+private def stubEnvEx : EnvVarsApiM (ExceptT String (StateM TempStubState)) :=
   { mapRawError := stubEnv.mapRawError
     getEnv := fun k => liftM (stubEnv.getEnv k)
     listEnv := liftM stubEnv.listEnv
