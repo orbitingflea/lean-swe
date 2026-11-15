@@ -123,3 +123,10 @@ import LeanSwe.Compress.Interface
 import LeanSwe.Compress.SpecTests
 import LeanSwe.Compress.Proofs
 import LeanSwe.Compress.RuntimeTests
+import LeanSwe.Base64.Types
+import LeanSwe.Base64.Model
+import LeanSwe.Base64.Impl
+import LeanSwe.Base64.Interface
+import LeanSwe.Base64.SpecTests
+import LeanSwe.Base64.Proofs
+import LeanSwe.Base64.RuntimeTests
