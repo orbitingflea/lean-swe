@@ -360,8 +360,8 @@ private def countLeftoverCgroups (parent? : Option String) : IO Nat := do
     let entries ← System.FilePath.readDir p
     return entries.foldl (fun acc e => if e.fileName.startsWith "leanswe-psandbox-" then acc + 1 else acc) 0
 
-/-- Execute end-to-end OS runtime verification tests for `LeanSwe.ProcessSandbox`. -/
-def runAll : IO Unit := do
+/-- Execute end-to-end OS runtime verification tests for `LeanSwe.ProcessSandbox`, returning `some reason` if skipped. -/
+def runAllOutcome : IO (Option String) := do
   let baseCounts ← ProcessSandbox.Raw.activeResourceCounts
   assertTrue (baseCounts == { openPlans := 0, activeBoxes := 0, activeForwarders := 0 })
     "initial ProcessSandbox activeResourceCounts == 0"
@@ -385,8 +385,10 @@ def runAll : IO Unit := do
       "ProcessSandbox.run fails closed .unavailable when unavailable"
     assertTrue ((← ProcessSandbox.Raw.activeResourceCounts) == baseCounts)
       "unavailable run leaves zero leaked resources"
-    IO.println "SKIP: LeanSwe.ProcessSandbox Linux runtime tests (isAvailable = false)"
-    return
+    let skipReason ← match ← ProcessSandbox.Raw.preflight { needMemoryCgroup := true, needPidsCgroup := true } with
+      | .error e => pure s!"isAvailable = false: {e.message}"
+      | .ok () => pure "isAvailable = false"
+    return some skipReason
 
   let cgParent ← findDelegatedCgroupParentDir
   let cgBefore ← countLeftoverCgroups cgParent
@@ -758,5 +760,10 @@ def runAll : IO Unit := do
   finally
     IO.FS.removeDirAll tmpDir
   IO.println "PASS: LeanSwe.ProcessSandbox runtime tests"
+  return none
+
+/-- Execute end-to-end OS runtime verification tests for `LeanSwe.ProcessSandbox`. -/
+def runAll : IO Unit := do
+  let _ ← runAllOutcome
 
 end LeanSwe.ProcessSandbox.RuntimeTests
