@@ -414,6 +414,255 @@ private def testAmbientSafety (tmp : String) : IO Unit := do
 
   assertOk (← Fs.rmtree workDir) "cleanup ambient_work"
 
+private def testWithSubtreeExtra (root : String) : IO Unit := do
+  let payload := ByteArray.mk #[1, 2, 3, 4]
+  let rExtra ← Fs.withSubtree root fun sub => do
+    let rUnlinkMissPre ← assertOk (Raw.RelPath.parse "no_such_dir/no_such_file") "parse no_such_dir/no_such_file"
+    assertOk (← sub.unlink rUnlinkMissPre true) "unlink missing intermediate missingOk=true"
+    assertErrKind (← sub.unlink rUnlinkMissPre false) .notFound "unlink missing intermediate missingOk=false"
+
+    let rRoSub ← assertOk (Raw.RelPath.parse "ro_sub") "parse ro_sub"
+    let rRoInner ← assertOk (Raw.RelPath.parse "ro_sub/entry.txt") "parse ro_sub/entry.txt"
+    assertOk (← sub.mkdir rRoSub false false) "mkdir ro_sub"
+    assertOk (← sub.atomicWriteBytes rRoInner payload) "write ro_sub/entry.txt"
+    assertOk (← Raw.chmod (Fs.join root "ro_sub") 0o400) "chmod 0400 ro_sub"
+    let roListed1 ← assertOk (← sub.listDir rRoSub) "listDir 0400 ro_sub"
+    let roListed2 ← assertOk (← sub.listDir rRoSub) "listDir 0400 ro_sub twice"
+    assertTrue (roListed1.map (·.val) == #["entry.txt"] && roListed2.map (·.val) == #["entry.txt"])
+      "listDir succeeds on 0400 subdirectory"
+    assertOk (← Raw.chmod (Fs.join root "ro_sub") 0o755) "restore chmod 0755 ro_sub"
+    assertOk (← sub.rmtree rRoSub false) "cleanup ro_sub"
+    return .ok ()
+  assertOk rExtra "withSubtree extra checks"
+
+private def testWithSubtree (tmp : String) : IO Unit := do
+  let root := Fs.join tmp "subroot"
+  assertOk (← Fs.mkdir root false false) "mkdir subroot"
+
+  let ranRef ← IO.mkRef false
+  assertErrKind (← Fs.withSubtree (Fs.join tmp "no_such_root") fun _ => do
+    ranRef.set true
+    return .ok ()) .notFound "withSubtree missing root"
+  assertTrue (!(← ranRef.get)) "missing root never runs action"
+
+  let fileRoot := Fs.join tmp "file_root"
+  assertOk (← Fs.writeText fileRoot "hi") "create file_root"
+  assertErrKind (← Fs.withSubtree fileRoot fun _ => do
+    ranRef.set true
+    return .ok ()) .notADirectory "withSubtree file root"
+  assertTrue (!(← ranRef.get)) "file root never runs action"
+  assertOk (← Fs.unlink fileRoot) "unlink file_root"
+
+  let noExecDir := Fs.join tmp "no_exec_root"
+  assertOk (← Fs.mkdir noExecDir false false) "mkdir no_exec_root"
+  assertOk (← Raw.chmod noExecDir 0o400) "chmod 0400 no_exec_root"
+  assertErrKind (← Fs.withSubtree noExecDir fun _ => do
+    ranRef.set true
+    return .ok ()) .permissionDenied "withSubtree refuses directory lacking owner search bit"
+  assertTrue (!(← ranRef.get)) "0400 root never runs action"
+  assertOk (← Raw.chmod noExecDir 0o755) "restore chmod 0755 no_exec_root"
+  assertOk (← Fs.rmdir noExecDir) "rmdir no_exec_root"
+
+  let escaped ← try
+    let _ : Except FsError Unit ← Fs.withSubtree root fun _ => throw (IO.userError "boom")
+    pure false
+  catch _ =>
+    pure true
+  assertTrue escaped "withSubtree propagates IO exception after closing handle"
+
+  let uidOut ← IO.Process.output { cmd := "id", args := #["-u"] }
+  let isNonRoot : Bool := uidOut.exitCode == 0 && uidOut.stdout.trimAscii.toString != "0"
+
+  let pOutside := Fs.join tmp "outside.bin"
+  let outsideBytes := ByteArray.mk #[42, 43, 44]
+  assertOk (← Fs.writeBytes pOutside outsideBytes) "write outside.bin"
+
+  let rUnit ← Fs.withSubtree root fun sub => do
+    let rootStat ← assertOk (← sub.lstat Raw.RelPath.root) "sub.lstat .root"
+    assertTrue (rootStat.kind == .dir) "rootStat kind == .dir"
+    assertOk (← sub.mkdir Raw.RelPath.root false true) "mkdir .root existOk=true"
+    assertErrKind (← sub.mkdir Raw.RelPath.root false false) .alreadyExists "mkdir .root existOk=false"
+    assertErrKind (← sub.readRegular Raw.RelPath.root) .isADirectory "readRegular .root"
+    let payload := ByteArray.mk #[1, 2, 3, 4]
+    assertErrKind (← sub.atomicWriteBytes Raw.RelPath.root payload) .invalidInput "atomicWriteBytes .root"
+    assertErrKind (← sub.unlink Raw.RelPath.root true) .invalidInput "unlink .root"
+    assertErrKind (← sub.rmdir Raw.RelPath.root) .invalidInput "rmdir .root"
+    assertErrKind (← sub.rmtree Raw.RelPath.root true) .invalidInput "rmtree .root"
+    assertErrKind (← sub.symlink "x" Raw.RelPath.root) .invalidInput "symlink .root"
+    assertErrKind (← sub.withFileLock Raw.RelPath.root .exclusive true (pure (.ok ()))) .invalidInput
+      "withFileLock .root"
+    assertErrKind (← sub.tryWithFileLock Raw.RelPath.root .exclusive true (pure (.ok ()))) .invalidInput
+      "tryWithFileLock .root"
+
+    let rNested ← assertOk (Raw.RelPath.parse "a/b/c") "parse a/b/c"
+    let rParentA ← assertOk (Raw.RelPath.parse "a") "parse a"
+    let rParentB ← assertOk (Raw.RelPath.parse "a/b") "parse a/b"
+    assertErrKind (← sub.mkdir rNested false false) .notFound "mkdir parents=false missing intermediate"
+    assertOk (← sub.mkdir rNested true false) "mkdir parents=true nested"
+    assertOk (← sub.mkdir rNested false true) "mkdir existOk=true existing dir"
+    assertErrKind (← sub.mkdir rNested false false) .alreadyExists "mkdir existOk=false existing dir"
+
+    let rData ← assertOk (Raw.RelPath.parse "a/b/c/data.bin") "parse data.bin"
+    assertOk (← sub.atomicWriteBytes rData payload) "atomicWriteBytes nested"
+    let got ← assertOk (← sub.readRegular rData) "readRegular nested"
+    assertTrue (got == payload) "readRegular roundtrip"
+    let stData ← assertOk (← sub.lstat rData) "lstat data.bin"
+    assertTrue (stData.kind == .file && stData.byteSize == payload.size) "lstat data.bin metadata"
+    assertErrKind (← sub.mkdir rData false true) .alreadyExists "mkdir existOk=true rejects existing regular file"
+
+    let max255Rel ← assertOk (Raw.RelPath.parse ("a/" ++ String.ofList (List.replicate 255 'z'))) "parse 255 leaf"
+    assertOk (← sub.atomicWriteBytes max255Rel payload) "atomicWriteBytes 255-byte leaf"
+    assertTrue ((← assertOk (← sub.readRegular max255Rel) "readRegular 255 leaf") == payload) "readRegular 255"
+    assertOk (← sub.unlink max255Rel false) "unlink 255 leaf"
+
+    let rSymLeaf ← assertOk (Raw.RelPath.parse "sym_leaf") "parse sym_leaf"
+    assertOk (← sub.symlink pOutside rSymLeaf) "symlink sym_leaf"
+    let stSym ← assertOk (← sub.lstat rSymLeaf) "lstat sym_leaf"
+    assertTrue (stSym.kind == .symlink) "sym_leaf is symlink"
+    assertErrKind (← sub.readRegular rSymLeaf) .invalidInput "readRegular leaf symlink"
+    assertErrKind (← sub.listDir rSymLeaf) .invalidInput "listDir leaf symlink"
+    assertErrKind (← sub.walk rSymLeaf) .invalidInput "walk leaf symlink"
+    assertErrKind (← sub.withFileLock rSymLeaf .exclusive false (pure (.ok ()))) .invalidInput "withFileLock leaf symlink"
+    assertErrKind (← sub.tryWithFileLock rSymLeaf .exclusive false (pure (.ok ()))) .invalidInput
+      "tryWithFileLock leaf symlink"
+    assertErrKind (← sub.mkdir rSymLeaf false true) .alreadyExists "mkdir leaf symlink"
+    assertErrKind (← sub.symlink "z" rSymLeaf) .alreadyExists "symlink leaf symlink"
+    assertErrKind (← sub.rmdir rSymLeaf) .notADirectory "rmdir leaf symlink"
+    assertErrKind (← sub.rmtree rSymLeaf true) .notADirectory "rmtree leaf symlink"
+    let newBytes := ByteArray.mk #[9, 9, 9]
+    assertOk (← sub.atomicWriteBytes rSymLeaf newBytes) "atomicWriteBytes replaces leaf symlink"
+    assertTrue ((← assertOk (← sub.lstat rSymLeaf) "lstat replaced symlink").kind == .file)
+      "replaced leaf symlink is regular file"
+    assertTrue ((← assertOk (← sub.readRegular rSymLeaf) "read replaced").data == newBytes.data)
+      "replaced leaf symlink content"
+    assertOkBytesEq (← Fs.readBytes pOutside) outsideBytes "outside symlink target preserved after replacement"
+
+    let rSymDir ← assertOk (Raw.RelPath.parse "sym_dir") "parse sym_dir"
+    let rSymDirSub ← assertOk (Raw.RelPath.parse "sym_dir/sub") "parse sym_dir/sub"
+    assertOk (← sub.symlink "a" rSymDir) "symlink sym_dir -> a"
+    assertErrKind (← sub.lstat rSymDirSub) .invalidInput "lstat refuses ancestor symlink"
+    assertErrKind (← sub.readRegular rSymDirSub) .invalidInput "readRegular refuses ancestor symlink"
+    assertErrKind (← sub.atomicWriteBytes rSymDirSub payload) .invalidInput "atomicWriteBytes refuses ancestor symlink"
+    assertErrKind (← sub.mkdir rSymDirSub true true) .invalidInput "mkdir refuses ancestor symlink"
+    assertErrKind (← sub.unlink rSymDirSub true) .invalidInput "unlink refuses ancestor symlink"
+    assertErrKind (← sub.rmdir rSymDirSub) .invalidInput "rmdir refuses ancestor symlink"
+    assertErrKind (← sub.rmtree rSymDirSub true) .invalidInput "rmtree refuses ancestor symlink"
+    assertErrKind (← sub.symlink "q" rSymDirSub) .invalidInput "symlink refuses ancestor symlink"
+    assertErrKind (← sub.listDir rSymDirSub) .invalidInput "listDir refuses ancestor symlink"
+    assertErrKind (← sub.walk rSymDirSub) .invalidInput "walk refuses ancestor symlink"
+    assertErrKind (← sub.withFileLock rSymDirSub .exclusive true (pure (.ok ()))) .invalidInput
+      "withFileLock refuses ancestor symlink"
+    assertErrKind (← sub.tryWithFileLock rSymDirSub .exclusive true (pure (.ok ()))) .invalidInput
+      "tryWithFileLock refuses ancestor symlink"
+    assertErrKind (← sub.lstat (← assertOk (Raw.RelPath.parse "a/b/sub_missing") "parse")) .notFound
+      "a/b untouched"
+
+    let listedRoot ← assertOk (← sub.listDir Raw.RelPath.root) "listDir .root"
+    assertTrue (List.Pairwise (fun x y => x.val < y.val) listedRoot.toList) "listDir strictly sorted"
+    assertTrue (listedRoot.map (·.val) == #["a", "sym_dir", "sym_leaf"]) "listDir entries match"
+
+    let walked ← assertOk (← sub.walk Raw.RelPath.root) "walk .root"
+    match walked.toList with
+    | e0 :: _ =>
+      assertTrue (e0.root == ".") "walk starts at ."
+      assertTrue (e0.dirs == #["a"] && e0.files == #["sym_dir", "sym_leaf"])
+        "walk exposes symlink in files and excludes from dirs"
+    | [] => assertTrue false "walk non-empty"
+    assertTrue (!(walked.any fun e => e.root == "sym_dir")) "walk never descends into symlink"
+    let subWalked ← assertOk (← sub.walk rParentB) "walk a/b"
+    match subWalked.toList with
+    | s0 :: _ => assertTrue (s0.root == "." && s0.dirs == #["c"]) "subwalk roots at ."
+    | [] => assertTrue false "subWalked non-empty"
+    assertErrKind (← sub.walk rData) .notADirectory "walk regular file fails notADirectory"
+
+    assertErrKind (← sub.atomicWriteBytes rParentB payload) .isADirectory "atomicWriteBytes existing dir"
+    let listedB ← assertOk (← sub.listDir rParentB) "listDir a/b after dir atomicWrite failure"
+    assertTrue (listedB.map (·.val) == #["c"]) "no leaked .t temp file after EISDIR"
+
+    let rLock ← assertOk (Raw.RelPath.parse "a/work.lock") "parse work.lock"
+    let lockRes : Except FsError Unit ← sub.withFileLock rLock .exclusive true do
+      let contended ← assertOk (← sub.tryWithFileLock rLock .exclusive false do
+        ranRef.set true
+        return .ok "should_not_run") "contended tryWithFileLock"
+      assertTrue contended.isNone "contended tryWithFileLock returns none"
+      return .error { kind := .ioError, message := "inner abort" }
+    assertErrKind lockRes .ioError "withFileLock propagates error"
+    assertTrue (!(← ranRef.get)) "contended callback never ran"
+    let afterUnlock ← assertOk (← sub.tryWithFileLock rLock .exclusive false (pure (.ok 99)))
+      "lock released after error"
+    assertTrue (afterUnlock == some 99) "lock reacquired cleanly"
+
+    assertOk (← sub.unlink rSymDir false) "unlink sym_dir without removing target a"
+    assertTrue ((← assertOk (← sub.lstat rParentA) "a intact after unlinking sym_dir").kind == .dir) "a intact"
+
+    assertErrKind (← sub.rmdir rParentA) .notEmpty "rmdir non-empty a"
+    assertErrKind (← sub.unlink rParentA false) .isADirectory "unlink dir fails isADirectory"
+    assertOk (← sub.rmtree (← assertOk (Raw.RelPath.parse "absent_dir") "parse") true) "rmtree ignoreMissing=true"
+    assertErrKind (← sub.rmtree (← assertOk (Raw.RelPath.parse "absent_dir") "parse") false) .notFound
+      "rmtree ignoreMissing=false"
+    assertErrKind (← sub.rmtree rSymLeaf false) .notADirectory "rmtree regular file"
+    assertOk (← sub.rmtree rParentA false) "rmtree a"
+    assertErrKind (← sub.lstat rParentA) .notFound "a notFound after rmtree"
+
+    if isNonRoot then
+      let rPart ← assertOk (Raw.RelPath.parse "part") "parse part"
+      let rPart1 ← assertOk (Raw.RelPath.parse "part/1_file") "parse part/1_file"
+      let rPart2 ← assertOk (Raw.RelPath.parse "part/2_dir") "parse part/2_dir"
+      assertOk (← sub.mkdir rPart false false) "mkdir part"
+      assertOk (← sub.atomicWriteBytes rPart1 payload) "write part/1_file"
+      assertOk (← sub.mkdir rPart2 false false) "mkdir part/2_dir"
+      assertOk (← Raw.chmod (Fs.join root "part/2_dir") 0o000) "chmod 0000 part/2_dir"
+      assertErrKind (← sub.rmtree rPart false) .permissionDenied "rmtree propagates child permissionDenied"
+      assertErrKind (← sub.lstat rPart1) .notFound "partial sibling unlinks preserved without rollback"
+      assertOk (← Raw.chmod (Fs.join root "part/2_dir") 0o755) "restore chmod part/2_dir"
+      assertOk (← sub.rmtree rPart false) "cleanup part"
+
+      let rUnrd ← assertOk (Raw.RelPath.parse "unreadable") "parse unreadable"
+      assertOk (← sub.mkdir rUnrd false false) "mkdir unreadable"
+      assertOk (← Raw.chmod (Fs.join root "unreadable") 0o111) "chmod 0111 unreadable"
+      assertErrKind (← sub.walk rUnrd) .permissionDenied "walk propagates permissionDenied"
+      assertOk (← Raw.chmod (Fs.join root "unreadable") 0o755) "restore unreadable chmod"
+      assertOk (← sub.rmdir rUnrd) "cleanup unreadable"
+
+    let movedRoot := Fs.join tmp "subroot_moved"
+    assertOk (← Fs.rename root movedRoot) "external rename of open subtree root"
+    let rPinnedFile ← assertOk (Raw.RelPath.parse "pinned.txt") "parse pinned.txt"
+    assertOk (← sub.atomicWriteBytes rPinnedFile payload) "write inside moved subtree via pinned descriptor"
+    assertOkBytesEq (← Fs.readBytes (Fs.join movedRoot "pinned.txt")) payload "read back from renamed path"
+
+    let fifoRel ← assertOk (Raw.RelPath.parse "sub.fifo") "parse sub.fifo"
+    match ← Process.runCommand "mkfifo" #[Fs.join movedRoot "sub.fifo"] with
+    | .ok out => assertTrue (out.exitCode == 0) "mkfifo sub.fifo"
+    | .error e => throw (IO.userError s!"mkfifo failed: {repr e}")
+    assertErrKind (← sub.readRegular fifoRel) .invalidInput "sub.readRegular FIFO rejected immediately"
+    assertOk (← sub.unlink fifoRel false) "unlink sub.fifo"
+
+    return .ok ()
+  let _ ← assertOk rUnit "withSubtree main checks"
+
+  let movedRoot := Fs.join tmp "subroot_moved"
+  let failRenameOps : RawDirOps :=
+    { Fs.defaultDirOps with
+      freshTempName := pure (Raw.EntryName.lit ".t.fail_tmp")
+      renameAt := fun _ _ _ _ => pure (.error { kind := .ioError, message := "injected rename error" }) }
+  let failOpener := Fs.Internal.mkSubtreeOpenerM failRenameOps
+  let rInjected ← failOpener.withSubtree movedRoot fun sub => do
+    sub.atomicWriteBytes (← assertOk (Raw.RelPath.parse "target.bin") "parse") (ByteArray.mk #[5])
+  assertErrKind rInjected .ioError "atomicWriteBytes propagates rename error"
+  assertOkEq (← Fs.pathExists (Fs.join movedRoot ".t.fail_tmp")) false "atomicWriteBytes cleans .t temp on error"
+
+  let collideOps : RawDirOps :=
+    { Fs.defaultDirOps with freshTempName := pure (Raw.EntryName.lit ".t.collide") }
+  assertOk (← Fs.writeText (Fs.join movedRoot ".t.collide") "held") "plant .t.collide"
+  let rCollide ← (Fs.Internal.mkSubtreeOpenerM collideOps).withSubtree movedRoot fun sub => do
+    sub.atomicWriteBytes (← assertOk (Raw.RelPath.parse "never.bin") "parse") (ByteArray.mk #[5])
+  assertErrKind rCollide .alreadyExists "atomicWriteBytes returns alreadyExists after 16 collisions"
+  assertOkEq (← Fs.pathExists (Fs.join movedRoot "never.bin")) false "never.bin absent after collision exhaustion"
+
+  testWithSubtreeExtra movedRoot
+  assertOk (← Fs.rmtree movedRoot) "cleanup subroot_moved"
+  assertOk (← Fs.unlink pOutside) "cleanup outside.bin"
+
 private def withTempDir {α : Type} (f : String → IO α) : IO α :=
   IO.FS.withTempDir fun dir => f dir.toString
 
@@ -426,6 +675,7 @@ def runAll : IO Unit := do
     testLocksSingleProcess tmp
     testLocksMultiProcess tmp
     testAmbientSafety tmp
+    testWithSubtree tmp
   IO.println "PASS: LeanSwe.Fs runtime tests"
 
 end LeanSwe.Fs.RuntimeTests
