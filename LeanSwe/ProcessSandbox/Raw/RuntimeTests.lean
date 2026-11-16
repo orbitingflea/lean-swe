@@ -27,8 +27,8 @@ private def assertErrKind {α : Type} (res : Except SandboxError α) (expected :
 private def isSystemRootPrefix (p : String) : Bool :=
   ["/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/"].any (fun pre => p.startsWith pre)
 
-/-- Execute OS-level runtime verification tests for `LeanSwe.ProcessSandbox.Raw`. -/
-def runAll : IO Unit := do
+/-- Execute OS-level runtime verification tests for `LeanSwe.ProcessSandbox.Raw`, returning `some reason` if skipped. -/
+def runAllOutcome : IO (Option String) := do
   let baseCounts ← Raw.activeResourceCounts
   assertTrue (baseCounts == { openPlans := 0, activeBoxes := 0, activeForwarders := 0 })
     "initial Raw.activeResourceCounts == 0"
@@ -40,8 +40,7 @@ def runAll : IO Unit := do
       "preflight fail-closed unavailable"
     let afterErrCounts ← Raw.activeResourceCounts
     assertTrue (afterErrCounts == baseCounts) "preflight failure leaves counts unchanged"
-    IO.println "SKIP: LeanSwe.ProcessSandbox.Raw Linux runtime tests (preflight unavailable)"
-    return
+    return some s!"preflight unavailable: {err.message}"
   | .ok () =>
     assertTrue ((← Raw.activeResourceCounts) == baseCounts) "preflight ok leaves counts unchanged"
 
@@ -205,5 +204,10 @@ def runAll : IO Unit := do
     let _ ← LeanSwe.Fs.Raw.chmod noAccessDir.toString 0o700
     IO.FS.removeDirAll tmpDir
   IO.println "PASS: LeanSwe.ProcessSandbox.Raw runtime tests"
+  return none
+
+/-- Execute OS-level runtime verification tests for `LeanSwe.ProcessSandbox.Raw`. -/
+def runAll : IO Unit := do
+  let _ ← runAllOutcome
 
 end LeanSwe.ProcessSandbox.Raw.RuntimeTests

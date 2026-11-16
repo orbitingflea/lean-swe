@@ -2,11 +2,14 @@
 """Measure peak private memory (RssAnon) for Lean source files using lake env."""
 
 import argparse
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -17,6 +20,8 @@ DEFAULT_JOBS = 2
 DEFAULT_POLL_INTERVAL_S = 0.02
 DEFAULT_TOP_N = 10
 CONFIG_FILENAME = ".proof-memory.json"
+FAST_EXIT_WINDOW_S = 0.25
+IMPORT_RE = re.compile(r"^(?:(?:public|meta|private)\s+)?import\s+(?:all\s+)?([A-Za-z0-9_.']+)")
 
 
 def find_repo_root(start: Path) -> Path:
@@ -79,6 +84,94 @@ def normalize_file_arg(raw: str, cwd: Path, repo_root: Path) -> str:
         return raw
 
 
+def parse_lean_imports(file_path: Path) -> list[str]:
+    """Extract leading Lean import module names before the first declaration."""
+    imports: list[str] = []
+    block_depth = 0
+    try:
+        lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return imports
+    for raw_line in lines:
+        line = raw_line
+        while True:
+            if block_depth > 0:
+                open_idx = line.find("/-")
+                close_idx = line.find("-/")
+                if close_idx == -1:
+                    if open_idx != -1:
+                        block_depth += 1
+                        line = line[open_idx + 2 :]
+                        continue
+                    line = ""
+                    break
+                if open_idx != -1 and open_idx < close_idx:
+                    block_depth += 1
+                    line = line[open_idx + 2 :]
+                    continue
+                block_depth -= 1
+                line = line[close_idx + 2 :]
+                continue
+            start_idx = line.find("/-")
+            line_comment_idx = line.find("--")
+            if start_idx != -1 and (line_comment_idx == -1 or start_idx < line_comment_idx):
+                prefix = line[:start_idx].strip()
+                if prefix:
+                    m = IMPORT_RE.match(prefix)
+                    if m:
+                        imports.append(m.group(1))
+                    elif prefix not in ("prelude", "module"):
+                        return imports
+                block_depth += 1
+                line = line[start_idx + 2 :]
+                continue
+            break
+        if "--" in line:
+            line = line.split("--", 1)[0]
+        s = line.strip()
+        if not s:
+            continue
+        m = IMPORT_RE.match(s)
+        if m:
+            imports.append(m.group(1))
+        elif s in ("prelude", "module"):
+            continue
+        else:
+            break
+    return imports
+
+
+def expand_with_revdeps(repo_root: Path, target_files: list[str]) -> list[str]:
+    """Expand target_files with all transitive reverse-import dependents in the repo."""
+    all_files = discover_lean_files(repo_root)
+    mod_to_file = {
+        (f[:-5] if f.endswith(".lean") else f).replace("/", "."): f
+        for f in all_files
+    }
+    rev_deps: dict[str, list[str]] = {f: [] for f in all_files}
+    for f in all_files:
+        for mod in parse_lean_imports(repo_root / f):
+            dep_file = mod_to_file.get(mod)
+            if dep_file is not None:
+                rev_deps[dep_file].append(f)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    queue: deque[str] = deque()
+    for f in target_files:
+        if f not in seen:
+            seen.add(f)
+            ordered.append(f)
+            queue.append(f)
+    while queue:
+        cur = queue.popleft()
+        for rev in sorted(rev_deps.get(cur, [])):
+            if rev not in seen:
+                seen.add(rev)
+                ordered.append(rev)
+                queue.append(rev)
+    return ordered
+
+
 def sample_rss_anon_kb(pid: int) -> int | None:
     """Read current RssAnon in KiB from /proc/<pid>/status, returning None if unavailable."""
     try:
@@ -91,28 +184,74 @@ def sample_rss_anon_kb(pid: int) -> int | None:
     return None
 
 
+def sample_tree_rss_anon_kb(root_pid: int) -> int | None:
+    """Sum current RssAnon in KiB across root_pid and its descendant processes."""
+    total_kb = 0
+    saw_sample = False
+    seen: set[int] = set()
+    queue: deque[int] = deque([root_pid])
+    while queue:
+        pid = queue.popleft()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        sample = sample_rss_anon_kb(pid)
+        if sample is not None:
+            total_kb += sample
+            saw_sample = True
+        task_dir = Path(f"/proc/{pid}/task")
+        try:
+            for tid_dir in task_dir.iterdir():
+                children_file = tid_dir / "children"
+                try:
+                    raw = children_file.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                for tok in raw.split():
+                    try:
+                        child_pid = int(tok)
+                    except ValueError:
+                        continue
+                    if child_pid not in seen:
+                        queue.append(child_pid)
+        except OSError:
+            continue
+    return total_kb if saw_sample else None
+
+
 def measure_file(
     lean_bin: str,
     env: dict[str, str],
     repo_root: Path,
     rel_path: str,
     poll_interval_s: float,
+    limit_mb: float,
 ) -> dict[str, object]:
-    """Run lean on one file and sample peak RssAnon until exit."""
+    """Run lean on one file and sample process-tree RssAnon until exit or runaway kill."""
     peak_anon_kb: int | None = None
+    killed_over_limit = False
+    kill_limit_mb = max(limit_mb + 256.0, limit_mb * 1.25)
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as out_file:
         t0 = time.monotonic()
         proc = subprocess.Popen(
-            [lean_bin, rel_path],
+            [lean_bin, "--threads=1", rel_path],
             cwd=repo_root,
             env=env,
             stdout=out_file,
             stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
         while True:
-            sample = sample_rss_anon_kb(proc.pid)
+            sample = sample_tree_rss_anon_kb(proc.pid)
             if sample is not None:
                 peak_anon_kb = sample if peak_anon_kb is None else max(peak_anon_kb, sample)
+                if (sample / 1024.0) > kill_limit_mb:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    killed_over_limit = True
+                    break
             if proc.poll() is not None:
                 break
             time.sleep(poll_interval_s)
@@ -120,11 +259,22 @@ def measure_file(
         wall_s = time.monotonic() - t0
         out_file.seek(0)
         output = out_file.read().strip()
+    if (
+        peak_anon_kb is None
+        and proc.returncode == 0
+        and not killed_over_limit
+        and wall_s < FAST_EXIT_WINDOW_S
+        and sample_rss_anon_kb(os.getpid()) is not None
+    ):
+        anon_mb: float | None = 0.0
+    else:
+        anon_mb = (peak_anon_kb / 1024.0) if peak_anon_kb is not None else None
     return {
         "file": rel_path,
-        "anon_mb": (peak_anon_kb / 1024.0) if peak_anon_kb is not None else None,
+        "anon_mb": anon_mb,
         "wall_s": wall_s,
         "rc": proc.returncode,
+        "killed_over_limit": killed_over_limit,
         "output": output,
     }
 
@@ -157,6 +307,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=DEFAULT_POLL_INTERVAL_S,
         help=f"Sampling interval in seconds (default: {DEFAULT_POLL_INTERVAL_S}).",
     )
+    parser.add_argument(
+        "--with-revdeps",
+        action="store_true",
+        help="Expand positional Lean files to include transitive reverse-import dependents.",
+    )
     return parser.parse_args(argv)
 
 
@@ -178,17 +333,20 @@ def main(argv: list[str] | None = None) -> int:
         if args.files
         else discover_lean_files(repo_root)
     )
+    if args.with_revdeps and args.files:
+        files = expand_with_revdeps(repo_root, files)
     if not files:
         print("ERROR: no Lean files found to check", file=sys.stderr)
         return 2
 
     env = load_lake_env(repo_root)
+    env["LEAN_NUM_THREADS"] = "1"
     lean_bin = shutil.which("lean", path=env.get("PATH")) or "lean"
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         rows = list(
             pool.map(
-                lambda f: measure_file(lean_bin, env, repo_root, f, args.poll_interval),
+                lambda f: measure_file(lean_bin, env, repo_root, f, args.poll_interval, limit_mb),
                 files,
             )
         )
@@ -203,8 +361,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     over_limit = [r for r in ranked if r["anon_mb"] is not None and float(r["anon_mb"]) > limit_mb]
-    unmeasured = [r for r in ranked if r["anon_mb"] is None and int(r["rc"]) == 0]
-    failed = [r for r in ranked if int(r["rc"]) != 0]
+    unmeasured = [
+        r for r in ranked
+        if r["anon_mb"] is None and int(r["rc"]) == 0 and not bool(r["killed_over_limit"])
+    ]
+    failed = [
+        r for r in ranked
+        if int(r["rc"]) != 0 and not bool(r["killed_over_limit"])
+    ]
     measured_vals = [float(r["anon_mb"]) for r in ranked if r["anon_mb"] is not None]
     max_anon_mb = max(measured_vals) if measured_vals else 0.0
 
