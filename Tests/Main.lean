@@ -7,6 +7,8 @@ def main (args : List String) : IO UInt32 := do
   match args with
   | "--cmdline-probe" :: rest =>
     return (← CmdLine.RuntimeTests.probeMain rest)
+  | "--slotpool-probe" :: rest =>
+    return (← SlotPool.RuntimeTests.probeMain rest)
   | _ =>
     RegExp.RuntimeTests.runAll
     Glob.RuntimeTests.runAll
@@ -36,6 +38,7 @@ def main (args : List String) : IO UInt32 := do
     ProcessSandbox.RuntimeTests.runAll
     ConnectProxy.Raw.RuntimeTests.runAll
     ConnectProxy.RuntimeTests.runAll
+    SlotPool.RuntimeTests.runAll
     match RegExp.findAll "[0-9]+" "a1b22" with
     | .ok xs =>
       if xs.map (·.matched) != #["1", "22"] then
