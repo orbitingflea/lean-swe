@@ -124,6 +124,16 @@ extern_lib «leanswe_psandbox» pkg := do
   let name := nameToStaticLib "leanswe_psandbox"
   buildStaticLib (pkg.staticLibDir / name) #[shimOJob]
 
+extern_lib «leanswe_connectproxy» pkg := do
+  let oFile := pkg.buildDir / "c" / "cproxy_shim.o"
+  let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "ConnectProxy" / "Raw" / "c" / "cproxy_shim.c")
+  let lean ← getLeanInstall
+  let oJob ← buildO oFile srcJob
+    #["-I", lean.includeDir.toString]
+    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+  let name := nameToStaticLib "leanswe_connectproxy"
+  buildStaticLib (pkg.staticLibDir / name) #[oJob]
+
 @[default_target, test_driver]
 lean_exe «lean-swe-test» where
   root := `Tests.Main
