@@ -2788,7 +2788,8 @@ LEAN_EXPORT lean_obj_res leanswe_psandbox_stop_forwarders(uint64_t fwd_hid, lean
   }
 
   uint8_t b = 1;
-  (void)write(fslot->wake_write_fd, &b, 1);
+  ssize_t wr = write(fslot->wake_write_fd, &b, 1);
+  (void)wr;
   close_fd(&fslot->wake_write_fd);
   if (fslot->thread_started) {
     pthread_join(fslot->thread, NULL);
