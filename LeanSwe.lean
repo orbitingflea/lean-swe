@@ -22,6 +22,11 @@ import LeanSwe.Fs.Model
 import LeanSwe.Fs.Interface
 import LeanSwe.Fs.Impl
 import LeanSwe.Fs.SpecTests
+import LeanSwe.Fs.Proofs.PurePathProofs
+import LeanSwe.Fs.Proofs.VfsShared
+import LeanSwe.Fs.Proofs.CopyTreeProofs
+import LeanSwe.Fs.Proofs.LockProofs
+import LeanSwe.Fs.Proofs.AtomicWriteProofs
 import LeanSwe.Fs.Proofs
 import LeanSwe.Fs.RuntimeTests
 import LeanSwe.Process.Raw.Types

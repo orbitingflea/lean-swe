@@ -151,10 +151,18 @@ theorem unpackLoop_encodeEntriesList (opts : UnpackOptions) (pre : ByteArray)
     rw [htail]
     simp [List.reverse_cons, List.append_assoc]
 
-/-- Prove `test_tar_packUnpack_roundTrip` for `defaultApi`. -/
-theorem allPass_packUnpack_roundTrip :
-    AllPass (test_tar_packUnpack_roundTrip defaultApi) := by
-  intro entries packOpts unpackOpts hvalid habs hpar hlen hbytes hpax
+private theorem packUnpack_roundTrip_witness
+    (entries : List TarEntry) (packOpts : PackOptions) (unpackOpts : UnpackOptions)
+    (hvalid : ValidArchive packOpts.allowAbsolute packOpts.allowParentTraversal entries)
+    (habs : (!packOpts.allowAbsolute || unpackOpts.allowAbsolute) = true)
+    (hpar : (!packOpts.allowParentTraversal || unpackOpts.allowParentTraversal) = true)
+    (hlen : entries.length ≤ unpackOpts.maxEntries)
+    (hbytes : totalDataBytes entries ≤ unpackOpts.maxTotalBytes)
+    (hpax : entries.all fitsPaxLimit = true) :
+    ∃ bytes decoded,
+      Impl.packWith packOpts entries = .ok bytes ∧
+      Impl.unpackWith unpackOpts bytes = .ok decoded ∧
+      TarEquiv (if packOpts.deterministic then entries.map zeroDeterministicMeta else entries) decoded := by
   let effEntries := if packOpts.deterministic then entries.map zeroDeterministicMeta else entries
   have hvalid_pack : (entries.all (validEntryBool packOpts.allowAbsolute packOpts.allowParentTraversal) &&
       noDupNormalizedPathsBool.go [] entries) = true := hvalid
@@ -226,12 +234,20 @@ theorem allPass_packUnpack_roundTrip :
     have hbytes_form : ByteArray.empty ++ (encodeEntriesList effEntries ++ (zeroBlock ++ zeroBlock)) = bytes := by
       simpa [ByteArray.empty_append] using hbytes_eq.symm
     simpa [hbytes_form] using hloop_ok
-  dsimp [AllPass, test_tar_packUnpack_roundTrip, Bind.bind, Pure.pure,
-    NondetTest.nondet, NondetTest.assume, NondetTest.assert, defaultApi, makeTarApi] at *
-  have hpack_def : Impl.packWith packOpts entries = .ok bytes := hpack_ok
+  exact ⟨bytes, decoded, hpack_ok, hunpack_ok, hteq⟩
+
+/-- Prove `test_tar_packUnpack_roundTrip` for `defaultApi`. -/
+theorem allPass_packUnpack_roundTrip :
+    AllPass (test_tar_packUnpack_roundTrip defaultApi) := by
+  intro entries packOpts unpackOpts hvalid habs hpar hlen hbytes hpax
+  have ⟨bytes, decoded, hpack_ok, hunpack_ok, hteq⟩ :=
+    packUnpack_roundTrip_witness entries packOpts unpackOpts hvalid habs hpar hlen hbytes hpax
+  have hpack_def : defaultApi.packWith packOpts entries = .ok bytes := hpack_ok
+  have hunpack_def : defaultApi.unpackWith unpackOpts bytes = .ok decoded := hunpack_ok
+  dsimp only [test_tar_packUnpack_roundTrip, Bind.bind, Pure.pure, NondetTest.assert]
   rw [hpack_def]
   dsimp only
-  rw [hunpack_ok]
+  rw [hunpack_def]
   exact ⟨hteq, trivial⟩
 
 /-- Witness `CanReach (test_tar_packUnpack_roundTrip defaultApi)` using an empty archive. -/
@@ -242,31 +258,16 @@ theorem canReach_packUnpack_roundTrip :
   have hlen : ([] : List TarEntry).length ≤ ({} : UnpackOptions).maxEntries := Nat.zero_le _
   have htot : totalDataBytes [] ≤ ({} : UnpackOptions).maxTotalBytes := by simp [totalDataBytes]
   have hpax : ([] : List TarEntry).all fitsPaxLimit = true := rfl
-  have hpack : Impl.packWith {} [] = .ok (ByteArray.empty ++ zeroBlock ++ zeroBlock) := by
-    rw [Impl.packWith, packWith.go.eq_1]
-  have hbytes_form : ByteArray.empty ++ zeroBlock ++ zeroBlock =
-      ByteArray.empty ++ (encodeEntriesList [] ++ (zeroBlock ++ zeroBlock)) := by
-    simp [encodeEntriesList, ByteArray.empty_append]
-  have ⟨decoded, hteq, hloop_ok⟩ := unpackLoop_encodeEntriesList {} ByteArray.empty [] [] [] 0
-    (by simp) (by simp [noDupNormalizedPathsBool.go.eq_1]) (by simp) (by simp) (by simp [totalDataBytes])
-  have hbytes_nz : ((ByteArray.empty ++ zeroBlock ++ zeroBlock).size == 0 ||
-      (ByteArray.empty ++ zeroBlock ++ zeroBlock).size % 512 != 0) = false := by
-    have hsz : (ByteArray.empty ++ zeroBlock ++ zeroBlock).size = 1024 := by
-      simp [ByteArray.size_append, zeroBlock_size]
-    rw [hsz]
-    rfl
-  have hunpack : Impl.unpackWith {} (ByteArray.empty ++ zeroBlock ++ zeroBlock) = .ok decoded := by
-    unfold Impl.unpackWith
-    rw [hbytes_nz]
-    simp only [encodeEntriesList, ByteArray.empty_append] at hloop_ok
-    simpa [ByteArray.empty_append] using hloop_ok
+  have ⟨bytes, decoded, hpack_ok, hunpack_ok, hteq⟩ :=
+    packUnpack_roundTrip_witness [] {} {} hv rfl rfl hlen htot hpax
+  have hpack_def : defaultApi.packWith {} [] = .ok bytes := hpack_ok
+  have hunpack_def : defaultApi.unpackWith {} bytes = .ok decoded := hunpack_ok
   unfold CanReach CanReachRun test_tar_packUnpack_roundTrip
-  simp only [defaultApi, makeTarApi, Bind.bind,
-    NondetTest.nondet, NondetTest.assume, NondetTest.assert]
+  simp only [Bind.bind, NondetTest.nondet, NondetTest.assume, NondetTest.assert]
   refine ⟨[], {}, {}, hv, rfl, rfl, hlen, htot, hpax, ?_⟩
-  rw [hpack]
+  rw [hpack_def]
   dsimp only
-  rw [hunpack]
+  rw [hunpack_def]
   exact ⟨hteq, trivial⟩
 
 /-- Decidable `Bool` form of `TarEquiv` for concrete certificate proofs. -/

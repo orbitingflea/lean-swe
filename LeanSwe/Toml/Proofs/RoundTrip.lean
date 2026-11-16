@@ -6995,165 +6995,149 @@ private theorem nodup_key_ne_of_scope (plan : List (String × EntryPlacement))
     · exact hnd'.1 (heq.symm ▸ List.mem_map.mpr ⟨p, hpxs, rfl⟩)
     · exact ih hpxs hp'xs hnd'.2
 
-private theorem renderPlan_props_strong (numApi : NumParseApi)
+private abbrev RenderPlanP1 (numApi : NumParseApi) (n : Nat) : Prop :=
+  ∀ (origEntries : List (String × TomlValue)) (remPlan : List (String × EntryPlacement))
+      (revPairs : List (String × String)) (lines : List String),
+      sizeOf remPlan ≤ n →
+      revPairs ≠ [] →
+      (∀ p ∈ revPairs, ∃ ks, renderKey p.1 ks = some p.2) →
+      noDupStringsBool (remPlan.map Prod.fst) = true →
+      (∀ p ∈ remPlan, ∃ v, lookupKeyList p.1 origEntries = some v) →
+      renderDottedList (revPairs.map Prod.snd) origEntries remPlan = some lines →
+      ∀ (startRoot : List (String × Node)) (parentPath : List String)
+        (parentLoc : List (String × Node)) (rbParent : List (String × Node) → List (String × Node))
+        (subLoc : List (String × Node)) (rbDotted : List (String × Node) → List (String × Node)),
+        AtLocalPath startRoot parentPath parentLoc rbParent →
+        DottedWriteFocus parentLoc (revPairs.reverse.map Prod.fst) subLoc rbDotted →
+        (∀ p ∈ remPlan, assocLookupNode p.1 subLoc = none) →
+        ∀ (restChars : List Char) (fuel : Nat),
+          fuel ≥ lines.length →
+          ∃ finalSubLoc,
+            (∀ p ∈ remPlan, ∃ v nd, lookupKeyList p.1 origEntries = some v ∧
+              assocLookupNode p.1 finalSubLoc = some nd ∧ TomlEquiv v (nodeToTomlValue nd)) ∧
+            (∀ q, q ∉ remPlan.map Prod.fst → assocLookupNode q finalSubLoc = assocLookupNode q subLoc) ∧
+            ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
+            (remPlan = [] → lines = [] ∧ finalSubLoc = subLoc ∧
+              parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) parentPath startRoot =
+              parseDocumentFuel numApi (fuel - lines.length) restChars parentPath startRoot) ∧
+            (remPlan ≠ [] →
+              parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) parentPath startRoot =
+              parseDocumentFuel numApi (fuel - lines.length) restChars
+                parentPath (rbParent (rbDotted finalSubLoc)))
+
+private abbrev RenderPlanP2 (numApi : NumParseApi) (n : Nat) : Prop :=
+  ∀ (origEntries : List (String × TomlValue)) (remPlan : List (String × EntryPlacement))
+      (revRen : List String) (lines : List String),
+      sizeOf remPlan ≤ n →
+      noDupStringsBool (remPlan.map Prod.fst) = true →
+      (∀ p ∈ remPlan, ∃ v, lookupKeyList p.1 origEntries = some v) →
+      renderInlineEntries revRen origEntries remPlan = some lines →
+      ∀ (root : List (String × Node)) (curPath : List String)
+        (startLoc : List (String × Node)) (rb : List (String × Node) → List (String × Node)),
+        AtLocalPath root curPath startLoc rb →
+        (∀ p ∈ remPlan, p.2.isInlineScope = true → assocLookupNode p.1 startLoc = none) →
+        ∀ (restChars : List Char) (fuel : Nat),
+          fuel ≥ lines.length →
+          ∃ finalLoc,
+            (∀ p ∈ remPlan, p.2.isInlineScope = true →
+              ∃ v nd, lookupKeyList p.1 origEntries = some v ∧
+                assocLookupNode p.1 finalLoc = some nd ∧ TomlEquiv v (nodeToTomlValue nd)) ∧
+            (∀ p ∈ remPlan, p.2.isInlineScope = false → assocLookupNode p.1 finalLoc = assocLookupNode p.1 startLoc) ∧
+            (∀ q, q ∉ remPlan.map Prod.fst → assocLookupNode q finalLoc = assocLookupNode q startLoc) ∧
+            ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
+            parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) curPath root =
+            parseDocumentFuel numApi (fuel - lines.length) restChars curPath (rb finalLoc)
+
+private abbrev RenderPlanP3 (numApi : NumParseApi) (n : Nat) : Prop :=
+  ∀ (elemPlans : List (List (String × EntryPlacement))) (xs : List TomlValue)
+      (pathPairs : List (String × String)) (k rk : String) (rc : String) (lines : List String),
+      sizeOf elemPlans ≤ n →
+      (∃ ks, renderKey k ks = some rk) →
+      (∀ p ∈ pathPairs, ∃ ks, renderKey p.1 ks = some p.2) →
+      (∃ comment, renderCommentSuffix comment = some rc) →
+      renderAotElems (rk :: pathPairs.reverse.map Prod.snd) rc xs elemPlans = some lines →
+      ∀ (root : List (String × Node)) (parentLoc : List (String × Node))
+        (rbParent : List (String × Node) → List (String × Node))
+        (prevElems : List (List (String × Node))) (startActivePath : List String),
+        AtHeaderFocus root (pathPairs.map Prod.fst) parentLoc rbParent →
+        ((prevElems = [] ∧ assocLookupNode k parentLoc = none) ∨
+         (prevElems ≠ [] ∧ assocLookupNode k parentLoc = some (.aot prevElems))) →
+        ∀ (restChars : List Char) (fuel : Nat),
+          fuel ≥ lines.length →
+          ∃ finalElems endActivePath,
+            (xs = [] → finalElems = prevElems ∧ lines = [] ∧ endActivePath = startActivePath) ∧
+            (xs ≠ [] → lines ≠ [] ∧
+              ∃ tailElems, finalElems = prevElems ++ tailElems ∧ tailElems ≠ [] ∧
+                TomlListEquiv xs (aotElemsToToml tailElems) ∧
+                AtLocalPath (rbParent (assocSetNode k (.aot finalElems) parentLoc))
+                  (pathPairs.map Prod.fst) (assocSetNode k (.aot finalElems) parentLoc) rbParent) ∧
+            ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
+            (xs ≠ [] →
+              parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) startActivePath root =
+              parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath
+                (rbParent (assocSetNode k (.aot finalElems) parentLoc)))
+
+private abbrev RenderPlanP4 (numApi : NumParseApi) (n : Nat) : Prop :=
+  ∀ (origEntries : List (String × TomlValue)) (remPlan : List (String × EntryPlacement))
+      (pathPairs : List (String × String)) (lines : List String),
+      sizeOf remPlan ≤ n →
+      (∀ p ∈ pathPairs, ∃ ks, renderKey p.1 ks = some p.2) →
+      noDupStringsBool (remPlan.map Prod.fst) = true →
+      (∀ p ∈ remPlan, ∃ v, lookupKeyList p.1 origEntries = some v) →
+      renderSectionEntries (pathPairs.reverse.map Prod.snd) origEntries remPlan = some lines →
+      ∀ (root : List (String × Node)) (startLoc : List (String × Node))
+        (rb : List (String × Node) → List (String × Node)) (startActivePath : List String),
+        AtHeaderFocus root (pathPairs.map Prod.fst) startLoc rb →
+        (∀ p ∈ remPlan, p.2.isInlineScope = false → assocLookupNode p.1 startLoc = none) →
+        ∀ (restChars : List Char) (fuel : Nat),
+          fuel ≥ lines.length →
+          ∃ finalLoc endActivePath,
+            (remPlan.any (fun p => !p.2.isInlineScope) = false →
+              lines = [] ∧ finalLoc = startLoc ∧ endActivePath = startActivePath ∧
+              parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) startActivePath root =
+              parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath root) ∧
+            (remPlan.any (fun p => !p.2.isInlineScope) = true →
+              lines ≠ [] ∧
+              (∀ p ∈ remPlan, p.2.isInlineScope = false →
+                ∃ v nd, lookupKeyList p.1 origEntries = some v ∧
+                  assocLookupNode p.1 finalLoc = some nd ∧ TomlEquiv v (nodeToTomlValue nd)) ∧
+              (∀ q, (∀ p ∈ remPlan, p.2.isInlineScope = false → q ≠ p.1) →
+                assocLookupNode q finalLoc = assocLookupNode q startLoc) ∧
+              AtLocalPath (rb finalLoc) (pathPairs.map Prod.fst) finalLoc rb ∧
+              parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) startActivePath root =
+              parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath (rb finalLoc)) ∧
+            ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true
+
+private abbrev RenderPlanP5 (numApi : NumParseApi) (n : Nat) : Prop :=
+  ∀ (origEntries : List (String × TomlValue)) (plan : List (String × EntryPlacement))
+      (pathPairs : List (String × String)) (lines : List String),
+      sizeOf plan + 1 ≤ n →
+      (∀ p ∈ pathPairs, ∃ ks, renderKey p.1 ks = some p.2) →
+      renderTablePlan (pathPairs.reverse.map Prod.snd) origEntries plan = some lines →
+      ∀ (root : List (String × Node)) (startLoc : List (String × Node))
+        (rb : List (String × Node) → List (String × Node)),
+        AtLocalPath root (pathPairs.map Prod.fst) startLoc rb →
+        startLoc = [] →
+        ∀ (restChars : List Char) (fuel : Nat),
+          fuel ≥ lines.length →
+          ∃ finalLoc endActivePath,
+            TomlTableEquivList origEntries (entriesToTomlList finalLoc) ∧
+            AtLocalPath (rb finalLoc) (pathPairs.map Prod.fst) finalLoc rb ∧
+            ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
+            parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars)
+              (pathPairs.map Prod.fst) root =
+            parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath (rb finalLoc)
+
+private abbrev RenderPlanAll (numApi : NumParseApi) (n : Nat) : Prop :=
+  RenderPlanP1 numApi n ∧ RenderPlanP2 numApi n ∧
+    RenderPlanP3 numApi n ∧ RenderPlanP4 numApi n ∧ RenderPlanP5 numApi n
+
+private theorem renderPlan_dot_step (numApi : NumParseApi)
     (hInt : ∀ tok n, NumParse.Model.parseInt64Model tok = .ok n → numApi.parseInt64 tok = .ok n)
     (hFloat : ∀ tok f, NumParse.Model.parseFloatModel tok = .ok f →
-      ∃ g, numApi.parseFloat tok = .ok g ∧ NumParse.Model.FloatBitMatch f g) :
-    ∀ n : Nat,
-      (∀ (origEntries : List (String × TomlValue)) (remPlan : List (String × EntryPlacement))
-          (revPairs : List (String × String)) (lines : List String),
-          sizeOf remPlan ≤ n →
-          revPairs ≠ [] →
-          (∀ p ∈ revPairs, ∃ ks, renderKey p.1 ks = some p.2) →
-          noDupStringsBool (remPlan.map Prod.fst) = true →
-          (∀ p ∈ remPlan, ∃ v, lookupKeyList p.1 origEntries = some v) →
-          renderDottedList (revPairs.map Prod.snd) origEntries remPlan = some lines →
-          ∀ (startRoot : List (String × Node)) (parentPath : List String)
-            (parentLoc : List (String × Node)) (rbParent : List (String × Node) → List (String × Node))
-            (subLoc : List (String × Node)) (rbDotted : List (String × Node) → List (String × Node)),
-            AtLocalPath startRoot parentPath parentLoc rbParent →
-            DottedWriteFocus parentLoc (revPairs.reverse.map Prod.fst) subLoc rbDotted →
-            (∀ p ∈ remPlan, assocLookupNode p.1 subLoc = none) →
-            ∀ (restChars : List Char) (fuel : Nat),
-              fuel ≥ lines.length →
-              ∃ finalSubLoc,
-                (∀ p ∈ remPlan, ∃ v nd, lookupKeyList p.1 origEntries = some v ∧
-                  assocLookupNode p.1 finalSubLoc = some nd ∧ TomlEquiv v (nodeToTomlValue nd)) ∧
-                (∀ q, q ∉ remPlan.map Prod.fst → assocLookupNode q finalSubLoc = assocLookupNode q subLoc) ∧
-                ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
-                (remPlan = [] → lines = [] ∧ finalSubLoc = subLoc ∧
-                  parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) parentPath startRoot =
-                  parseDocumentFuel numApi (fuel - lines.length) restChars parentPath startRoot) ∧
-                (remPlan ≠ [] →
-                  parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) parentPath startRoot =
-                  parseDocumentFuel numApi (fuel - lines.length) restChars
-                    parentPath (rbParent (rbDotted finalSubLoc)))) ∧
-      (∀ (origEntries : List (String × TomlValue)) (remPlan : List (String × EntryPlacement))
-          (revRen : List String) (lines : List String),
-          sizeOf remPlan ≤ n →
-          noDupStringsBool (remPlan.map Prod.fst) = true →
-          (∀ p ∈ remPlan, ∃ v, lookupKeyList p.1 origEntries = some v) →
-          renderInlineEntries revRen origEntries remPlan = some lines →
-          ∀ (root : List (String × Node)) (curPath : List String)
-            (startLoc : List (String × Node)) (rb : List (String × Node) → List (String × Node)),
-            AtLocalPath root curPath startLoc rb →
-            (∀ p ∈ remPlan, p.2.isInlineScope = true → assocLookupNode p.1 startLoc = none) →
-            ∀ (restChars : List Char) (fuel : Nat),
-              fuel ≥ lines.length →
-              ∃ finalLoc,
-                (∀ p ∈ remPlan, p.2.isInlineScope = true →
-                  ∃ v nd, lookupKeyList p.1 origEntries = some v ∧
-                    assocLookupNode p.1 finalLoc = some nd ∧ TomlEquiv v (nodeToTomlValue nd)) ∧
-                (∀ p ∈ remPlan, p.2.isInlineScope = false → assocLookupNode p.1 finalLoc = assocLookupNode p.1 startLoc) ∧
-                (∀ q, q ∉ remPlan.map Prod.fst → assocLookupNode q finalLoc = assocLookupNode q startLoc) ∧
-                ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
-                parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) curPath root =
-                parseDocumentFuel numApi (fuel - lines.length) restChars curPath (rb finalLoc)) ∧
-      (∀ (elemPlans : List (List (String × EntryPlacement))) (xs : List TomlValue)
-          (pathPairs : List (String × String)) (k rk : String) (rc : String) (lines : List String),
-          sizeOf elemPlans ≤ n →
-          (∃ ks, renderKey k ks = some rk) →
-          (∀ p ∈ pathPairs, ∃ ks, renderKey p.1 ks = some p.2) →
-          (∃ comment, renderCommentSuffix comment = some rc) →
-          renderAotElems (rk :: pathPairs.reverse.map Prod.snd) rc xs elemPlans = some lines →
-          ∀ (root : List (String × Node)) (parentLoc : List (String × Node))
-            (rbParent : List (String × Node) → List (String × Node))
-            (prevElems : List (List (String × Node))) (startActivePath : List String),
-            AtHeaderFocus root (pathPairs.map Prod.fst) parentLoc rbParent →
-            ((prevElems = [] ∧ assocLookupNode k parentLoc = none) ∨
-             (prevElems ≠ [] ∧ assocLookupNode k parentLoc = some (.aot prevElems))) →
-            ∀ (restChars : List Char) (fuel : Nat),
-              fuel ≥ lines.length →
-              ∃ finalElems endActivePath,
-                (xs = [] → finalElems = prevElems ∧ lines = [] ∧ endActivePath = startActivePath) ∧
-                (xs ≠ [] → lines ≠ [] ∧
-                  ∃ tailElems, finalElems = prevElems ++ tailElems ∧ tailElems ≠ [] ∧
-                    TomlListEquiv xs (aotElemsToToml tailElems) ∧
-                    AtLocalPath (rbParent (assocSetNode k (.aot finalElems) parentLoc))
-                      (pathPairs.map Prod.fst) (assocSetNode k (.aot finalElems) parentLoc) rbParent) ∧
-                ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
-                (xs ≠ [] →
-                  parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) startActivePath root =
-                  parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath
-                    (rbParent (assocSetNode k (.aot finalElems) parentLoc)))) ∧
-      (∀ (origEntries : List (String × TomlValue)) (remPlan : List (String × EntryPlacement))
-          (pathPairs : List (String × String)) (lines : List String),
-          sizeOf remPlan ≤ n →
-          (∀ p ∈ pathPairs, ∃ ks, renderKey p.1 ks = some p.2) →
-          noDupStringsBool (remPlan.map Prod.fst) = true →
-          (∀ p ∈ remPlan, ∃ v, lookupKeyList p.1 origEntries = some v) →
-          renderSectionEntries (pathPairs.reverse.map Prod.snd) origEntries remPlan = some lines →
-          ∀ (root : List (String × Node)) (startLoc : List (String × Node))
-            (rb : List (String × Node) → List (String × Node)) (startActivePath : List String),
-            AtHeaderFocus root (pathPairs.map Prod.fst) startLoc rb →
-            (∀ p ∈ remPlan, p.2.isInlineScope = false → assocLookupNode p.1 startLoc = none) →
-            ∀ (restChars : List Char) (fuel : Nat),
-              fuel ≥ lines.length →
-              ∃ finalLoc endActivePath,
-                (remPlan.any (fun p => !p.2.isInlineScope) = false →
-                  lines = [] ∧ finalLoc = startLoc ∧ endActivePath = startActivePath ∧
-                  parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) startActivePath root =
-                  parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath root) ∧
-                (remPlan.any (fun p => !p.2.isInlineScope) = true →
-                  lines ≠ [] ∧
-                  (∀ p ∈ remPlan, p.2.isInlineScope = false →
-                    ∃ v nd, lookupKeyList p.1 origEntries = some v ∧
-                      assocLookupNode p.1 finalLoc = some nd ∧ TomlEquiv v (nodeToTomlValue nd)) ∧
-                  (∀ q, (∀ p ∈ remPlan, p.2.isInlineScope = false → q ≠ p.1) →
-                    assocLookupNode q finalLoc = assocLookupNode q startLoc) ∧
-                  AtLocalPath (rb finalLoc) (pathPairs.map Prod.fst) finalLoc rb ∧
-                  parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) startActivePath root =
-                  parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath (rb finalLoc)) ∧
-                ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true) ∧
-      (∀ (origEntries : List (String × TomlValue)) (plan : List (String × EntryPlacement))
-          (pathPairs : List (String × String)) (lines : List String),
-          sizeOf plan + 1 ≤ n →
-          (∀ p ∈ pathPairs, ∃ ks, renderKey p.1 ks = some p.2) →
-          renderTablePlan (pathPairs.reverse.map Prod.snd) origEntries plan = some lines →
-          ∀ (root : List (String × Node)) (startLoc : List (String × Node))
-            (rb : List (String × Node) → List (String × Node)),
-            AtLocalPath root (pathPairs.map Prod.fst) startLoc rb →
-            startLoc = [] →
-            ∀ (restChars : List Char) (fuel : Nat),
-              fuel ≥ lines.length →
-              ∃ finalLoc endActivePath,
-                TomlTableEquivList origEntries (entriesToTomlList finalLoc) ∧
-                AtLocalPath (rb finalLoc) (pathPairs.map Prod.fst) finalLoc rb ∧
-                ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
-                parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars)
-                  (pathPairs.map Prod.fst) root =
-                parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath (rb finalLoc)) := by
-  intro n
-  induction n using Nat.strongRecOn with
-  | ind n ih =>
-    have hDot : ∀ (origEntries : List (String × TomlValue)) (remPlan : List (String × EntryPlacement))
-        (revPairs : List (String × String)) (lines : List String),
-        sizeOf remPlan ≤ n →
-        revPairs ≠ [] →
-        (∀ p ∈ revPairs, ∃ ks, renderKey p.1 ks = some p.2) →
-        noDupStringsBool (remPlan.map Prod.fst) = true →
-        (∀ p ∈ remPlan, ∃ v, lookupKeyList p.1 origEntries = some v) →
-        renderDottedList (revPairs.map Prod.snd) origEntries remPlan = some lines →
-        ∀ (startRoot : List (String × Node)) (parentPath : List String)
-          (parentLoc : List (String × Node)) (rbParent : List (String × Node) → List (String × Node))
-          (subLoc : List (String × Node)) (rbDotted : List (String × Node) → List (String × Node)),
-          AtLocalPath startRoot parentPath parentLoc rbParent →
-          DottedWriteFocus parentLoc (revPairs.reverse.map Prod.fst) subLoc rbDotted →
-          (∀ p ∈ remPlan, assocLookupNode p.1 subLoc = none) →
-          ∀ (restChars : List Char) (fuel : Nat),
-            fuel ≥ lines.length →
-            ∃ finalSubLoc,
-              (∀ p ∈ remPlan, ∃ v nd, lookupKeyList p.1 origEntries = some v ∧
-                assocLookupNode p.1 finalSubLoc = some nd ∧ TomlEquiv v (nodeToTomlValue nd)) ∧
-              (∀ q, q ∉ remPlan.map Prod.fst → assocLookupNode q finalSubLoc = assocLookupNode q subLoc) ∧
-              ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
-              (remPlan = [] → lines = [] ∧ finalSubLoc = subLoc ∧
-                parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) parentPath startRoot =
-                parseDocumentFuel numApi (fuel - lines.length) restChars parentPath startRoot) ∧
-              (remPlan ≠ [] →
-                parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) parentPath startRoot =
-                parseDocumentFuel numApi (fuel - lines.length) restChars
-                  parentPath (rbParent (rbDotted finalSubLoc))) := by
+      ∃ g, numApi.parseFloat tok = .ok g ∧ NumParse.Model.FloatBitMatch f g)
+    (n : Nat) (ih : ∀ m < n, RenderPlanAll numApi m) :
+    RenderPlanP1 numApi n := by
       intro origEntries remPlan revPairs lines hsz hrev_ne hrev_keys hnd_rem hmem_rem hdl
         startRoot parentPath parentLoc rbParent subLoc rbDotted hAt hDotFocus hfresh restChars fuel hf
       cases remPlan with
@@ -7384,27 +7368,13 @@ private theorem renderPlan_props_strong (numApi : NumParseApi)
                             rw [htl_cons (by simp)]
                             simp [List.length_append, Nat.sub_sub]
               | _ => simp at hdl
-    have hInl : ∀ (origEntries : List (String × TomlValue)) (remPlan : List (String × EntryPlacement))
-        (revRen : List String) (lines : List String),
-        sizeOf remPlan ≤ n →
-        noDupStringsBool (remPlan.map Prod.fst) = true →
-        (∀ p ∈ remPlan, ∃ v, lookupKeyList p.1 origEntries = some v) →
-        renderInlineEntries revRen origEntries remPlan = some lines →
-        ∀ (root : List (String × Node)) (curPath : List String)
-          (startLoc : List (String × Node)) (rb : List (String × Node) → List (String × Node)),
-          AtLocalPath root curPath startLoc rb →
-          (∀ p ∈ remPlan, p.2.isInlineScope = true → assocLookupNode p.1 startLoc = none) →
-          ∀ (restChars : List Char) (fuel : Nat),
-            fuel ≥ lines.length →
-            ∃ finalLoc,
-              (∀ p ∈ remPlan, p.2.isInlineScope = true →
-                ∃ v nd, lookupKeyList p.1 origEntries = some v ∧
-                  assocLookupNode p.1 finalLoc = some nd ∧ TomlEquiv v (nodeToTomlValue nd)) ∧
-              (∀ p ∈ remPlan, p.2.isInlineScope = false → assocLookupNode p.1 finalLoc = assocLookupNode p.1 startLoc) ∧
-              (∀ q, q ∉ remPlan.map Prod.fst → assocLookupNode q finalLoc = assocLookupNode q startLoc) ∧
-              ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
-              parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) curPath root =
-              parseDocumentFuel numApi (fuel - lines.length) restChars curPath (rb finalLoc) := by
+
+private theorem renderPlan_inl_step (numApi : NumParseApi)
+    (hInt : ∀ tok n, NumParse.Model.parseInt64Model tok = .ok n → numApi.parseInt64 tok = .ok n)
+    (hFloat : ∀ tok f, NumParse.Model.parseFloatModel tok = .ok f →
+      ∃ g, numApi.parseFloat tok = .ok g ∧ NumParse.Model.FloatBitMatch f g)
+    (n : Nat) (ih : ∀ m < n, RenderPlanAll numApi m) (hDot : RenderPlanP1 numApi n) :
+    RenderPlanP2 numApi n := by
       intro origEntries remPlan revRen lines hsz hnd_rem hmem_rem hrie
         root curPath startLoc rb hAt hfresh restChars fuel hf
       cases remPlan with
@@ -7632,33 +7602,10 @@ private theorem renderPlan_props_strong (numApi : NumParseApi)
             · intro q hq_not
               have hnot_tl' : q ∉ tl.map Prod.fst := fun hm => hq_not (by simp [hm])
               exact htl_rest q hnot_tl'
-    have hAot : ∀ (elemPlans : List (List (String × EntryPlacement))) (xs : List TomlValue)
-        (pathPairs : List (String × String)) (k rk : String) (rc : String) (lines : List String),
-        sizeOf elemPlans ≤ n →
-        (∃ ks, renderKey k ks = some rk) →
-        (∀ p ∈ pathPairs, ∃ ks, renderKey p.1 ks = some p.2) →
-        (∃ comment, renderCommentSuffix comment = some rc) →
-        renderAotElems (rk :: pathPairs.reverse.map Prod.snd) rc xs elemPlans = some lines →
-        ∀ (root : List (String × Node)) (parentLoc : List (String × Node))
-          (rbParent : List (String × Node) → List (String × Node))
-          (prevElems : List (List (String × Node))) (startActivePath : List String),
-          AtHeaderFocus root (pathPairs.map Prod.fst) parentLoc rbParent →
-          ((prevElems = [] ∧ assocLookupNode k parentLoc = none) ∨
-           (prevElems ≠ [] ∧ assocLookupNode k parentLoc = some (.aot prevElems))) →
-          ∀ (restChars : List Char) (fuel : Nat),
-            fuel ≥ lines.length →
-            ∃ finalElems endActivePath,
-              (xs = [] → finalElems = prevElems ∧ lines = [] ∧ endActivePath = startActivePath) ∧
-              (xs ≠ [] → lines ≠ [] ∧
-                ∃ tailElems, finalElems = prevElems ++ tailElems ∧ tailElems ≠ [] ∧
-                  TomlListEquiv xs (aotElemsToToml tailElems) ∧
-                  AtLocalPath (rbParent (assocSetNode k (.aot finalElems) parentLoc))
-                    (pathPairs.map Prod.fst) (assocSetNode k (.aot finalElems) parentLoc) rbParent) ∧
-              ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
-              (xs ≠ [] →
-                parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) startActivePath root =
-                parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath
-                  (rbParent (assocSetNode k (.aot finalElems) parentLoc))) := by
+
+private theorem renderPlan_aot_step (numApi : NumParseApi)
+    (n : Nat) (ih : ∀ m < n, RenderPlanAll numApi m) :
+    RenderPlanP3 numApi n := by
       intro elemPlans xs pathPairs k rk rc lines hsz hk hpath hrc_ex hrae
         root parentLoc rbParent prevElems startActivePath hFocus hprev restChars fuel hf
       rcases hrc_ex with ⟨comment, hrc⟩
@@ -7807,35 +7754,10 @@ private theorem renderPlan_props_strong (numApi : NumParseApi)
                     rw [show fuel - 1 - bodyLines.length - tailLines.length =
                         fuel - (("[[" ++ joinRenderedPath (rk :: pathPairs.reverse.map Prod.snd).reverse ++ "]]" ++ rc) :: bodyLines ++ tailLines).length by
                       simp only [List.length_cons, List.length_append]; omega]
-    have hSec : ∀ (origEntries : List (String × TomlValue)) (remPlan : List (String × EntryPlacement))
-        (pathPairs : List (String × String)) (lines : List String),
-        sizeOf remPlan ≤ n →
-        (∀ p ∈ pathPairs, ∃ ks, renderKey p.1 ks = some p.2) →
-        noDupStringsBool (remPlan.map Prod.fst) = true →
-        (∀ p ∈ remPlan, ∃ v, lookupKeyList p.1 origEntries = some v) →
-        renderSectionEntries (pathPairs.reverse.map Prod.snd) origEntries remPlan = some lines →
-        ∀ (root : List (String × Node)) (startLoc : List (String × Node))
-          (rb : List (String × Node) → List (String × Node)) (startActivePath : List String),
-          AtHeaderFocus root (pathPairs.map Prod.fst) startLoc rb →
-          (∀ p ∈ remPlan, p.2.isInlineScope = false → assocLookupNode p.1 startLoc = none) →
-          ∀ (restChars : List Char) (fuel : Nat),
-            fuel ≥ lines.length →
-            ∃ finalLoc endActivePath,
-              (remPlan.any (fun p => !p.2.isInlineScope) = false →
-                lines = [] ∧ finalLoc = startLoc ∧ endActivePath = startActivePath ∧
-                parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) startActivePath root =
-                parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath root) ∧
-              (remPlan.any (fun p => !p.2.isInlineScope) = true →
-                lines ≠ [] ∧
-                (∀ p ∈ remPlan, p.2.isInlineScope = false →
-                  ∃ v nd, lookupKeyList p.1 origEntries = some v ∧
-                    assocLookupNode p.1 finalLoc = some nd ∧ TomlEquiv v (nodeToTomlValue nd)) ∧
-                (∀ q, (∀ p ∈ remPlan, p.2.isInlineScope = false → q ≠ p.1) →
-                  assocLookupNode q finalLoc = assocLookupNode q startLoc) ∧
-                AtLocalPath (rb finalLoc) (pathPairs.map Prod.fst) finalLoc rb ∧
-                parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) startActivePath root =
-                parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath (rb finalLoc)) ∧
-              ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true := by
+
+private theorem renderPlan_sec_step (numApi : NumParseApi)
+    (n : Nat) (ih : ∀ m < n, RenderPlanAll numApi m) :
+    RenderPlanP4 numApi n := by
       intro origEntries remPlan pathPairs lines hsz hpath hnd_rem hmem_rem hrse
         root startLoc rb startActivePath hFocus hfresh restChars fuel hf
       cases remPlan with
@@ -8373,24 +8295,10 @@ private theorem renderPlan_props_strong (numApi : NumParseApi)
                               rw [htl_parse0]
                               rw [show fuel - aotLines.length - ([] : List String).length = fuel - (aotLines ++ []).length by
                                 simp only [List.length_append, List.length_nil, Nat.add_zero, Nat.sub_zero]]
-    have hPlan : ∀ (origEntries : List (String × TomlValue)) (plan : List (String × EntryPlacement))
-        (pathPairs : List (String × String)) (lines : List String),
-        sizeOf plan + 1 ≤ n →
-        (∀ p ∈ pathPairs, ∃ ks, renderKey p.1 ks = some p.2) →
-        renderTablePlan (pathPairs.reverse.map Prod.snd) origEntries plan = some lines →
-        ∀ (root : List (String × Node)) (startLoc : List (String × Node))
-          (rb : List (String × Node) → List (String × Node)),
-          AtLocalPath root (pathPairs.map Prod.fst) startLoc rb →
-          startLoc = [] →
-          ∀ (restChars : List Char) (fuel : Nat),
-            fuel ≥ lines.length →
-            ∃ finalLoc endActivePath,
-              TomlTableEquivList origEntries (entriesToTomlList finalLoc) ∧
-              AtLocalPath (rb finalLoc) (pathPairs.map Prod.fst) finalLoc rb ∧
-              ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
-              parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars)
-                (pathPairs.map Prod.fst) root =
-              parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath (rb finalLoc) := by
+
+private theorem renderPlan_plan_step (numApi : NumParseApi)
+    (n : Nat) (hInl : RenderPlanP2 numApi n) (hSec : RenderPlanP4 numApi n) :
+    RenderPlanP5 numApi n := by
       intro origEntries plan pathPairs lines hsz hpath hrtp root startLoc rb hAt hstart restChars fuel hf
       subst hstart
       simp only [renderTablePlan] at hrtp
@@ -8474,6 +8382,144 @@ private theorem renderPlan_props_strong (numApi : NumParseApi)
               refine ⟨finalLoc, pathPairs.map Prod.fst, heqv, hAt_mid, hcl_all, ?_⟩
               rw [joinLines_append, String.toList_append, List.append_assoc, hinl_parse, hsec_parse0]
               simp [List.length_append, Nat.sub_sub]
+
+private theorem renderPlan_props_strong (numApi : NumParseApi)
+    (hInt : ∀ tok n, NumParse.Model.parseInt64Model tok = .ok n → numApi.parseInt64 tok = .ok n)
+    (hFloat : ∀ tok f, NumParse.Model.parseFloatModel tok = .ok f →
+      ∃ g, numApi.parseFloat tok = .ok g ∧ NumParse.Model.FloatBitMatch f g) :
+    ∀ n : Nat,
+      (∀ (origEntries : List (String × TomlValue)) (remPlan : List (String × EntryPlacement))
+          (revPairs : List (String × String)) (lines : List String),
+          sizeOf remPlan ≤ n →
+          revPairs ≠ [] →
+          (∀ p ∈ revPairs, ∃ ks, renderKey p.1 ks = some p.2) →
+          noDupStringsBool (remPlan.map Prod.fst) = true →
+          (∀ p ∈ remPlan, ∃ v, lookupKeyList p.1 origEntries = some v) →
+          renderDottedList (revPairs.map Prod.snd) origEntries remPlan = some lines →
+          ∀ (startRoot : List (String × Node)) (parentPath : List String)
+            (parentLoc : List (String × Node)) (rbParent : List (String × Node) → List (String × Node))
+            (subLoc : List (String × Node)) (rbDotted : List (String × Node) → List (String × Node)),
+            AtLocalPath startRoot parentPath parentLoc rbParent →
+            DottedWriteFocus parentLoc (revPairs.reverse.map Prod.fst) subLoc rbDotted →
+            (∀ p ∈ remPlan, assocLookupNode p.1 subLoc = none) →
+            ∀ (restChars : List Char) (fuel : Nat),
+              fuel ≥ lines.length →
+              ∃ finalSubLoc,
+                (∀ p ∈ remPlan, ∃ v nd, lookupKeyList p.1 origEntries = some v ∧
+                  assocLookupNode p.1 finalSubLoc = some nd ∧ TomlEquiv v (nodeToTomlValue nd)) ∧
+                (∀ q, q ∉ remPlan.map Prod.fst → assocLookupNode q finalSubLoc = assocLookupNode q subLoc) ∧
+                ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
+                (remPlan = [] → lines = [] ∧ finalSubLoc = subLoc ∧
+                  parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) parentPath startRoot =
+                  parseDocumentFuel numApi (fuel - lines.length) restChars parentPath startRoot) ∧
+                (remPlan ≠ [] →
+                  parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) parentPath startRoot =
+                  parseDocumentFuel numApi (fuel - lines.length) restChars
+                    parentPath (rbParent (rbDotted finalSubLoc)))) ∧
+      (∀ (origEntries : List (String × TomlValue)) (remPlan : List (String × EntryPlacement))
+          (revRen : List String) (lines : List String),
+          sizeOf remPlan ≤ n →
+          noDupStringsBool (remPlan.map Prod.fst) = true →
+          (∀ p ∈ remPlan, ∃ v, lookupKeyList p.1 origEntries = some v) →
+          renderInlineEntries revRen origEntries remPlan = some lines →
+          ∀ (root : List (String × Node)) (curPath : List String)
+            (startLoc : List (String × Node)) (rb : List (String × Node) → List (String × Node)),
+            AtLocalPath root curPath startLoc rb →
+            (∀ p ∈ remPlan, p.2.isInlineScope = true → assocLookupNode p.1 startLoc = none) →
+            ∀ (restChars : List Char) (fuel : Nat),
+              fuel ≥ lines.length →
+              ∃ finalLoc,
+                (∀ p ∈ remPlan, p.2.isInlineScope = true →
+                  ∃ v nd, lookupKeyList p.1 origEntries = some v ∧
+                    assocLookupNode p.1 finalLoc = some nd ∧ TomlEquiv v (nodeToTomlValue nd)) ∧
+                (∀ p ∈ remPlan, p.2.isInlineScope = false → assocLookupNode p.1 finalLoc = assocLookupNode p.1 startLoc) ∧
+                (∀ q, q ∉ remPlan.map Prod.fst → assocLookupNode q finalLoc = assocLookupNode q startLoc) ∧
+                ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
+                parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) curPath root =
+                parseDocumentFuel numApi (fuel - lines.length) restChars curPath (rb finalLoc)) ∧
+      (∀ (elemPlans : List (List (String × EntryPlacement))) (xs : List TomlValue)
+          (pathPairs : List (String × String)) (k rk : String) (rc : String) (lines : List String),
+          sizeOf elemPlans ≤ n →
+          (∃ ks, renderKey k ks = some rk) →
+          (∀ p ∈ pathPairs, ∃ ks, renderKey p.1 ks = some p.2) →
+          (∃ comment, renderCommentSuffix comment = some rc) →
+          renderAotElems (rk :: pathPairs.reverse.map Prod.snd) rc xs elemPlans = some lines →
+          ∀ (root : List (String × Node)) (parentLoc : List (String × Node))
+            (rbParent : List (String × Node) → List (String × Node))
+            (prevElems : List (List (String × Node))) (startActivePath : List String),
+            AtHeaderFocus root (pathPairs.map Prod.fst) parentLoc rbParent →
+            ((prevElems = [] ∧ assocLookupNode k parentLoc = none) ∨
+             (prevElems ≠ [] ∧ assocLookupNode k parentLoc = some (.aot prevElems))) →
+            ∀ (restChars : List Char) (fuel : Nat),
+              fuel ≥ lines.length →
+              ∃ finalElems endActivePath,
+                (xs = [] → finalElems = prevElems ∧ lines = [] ∧ endActivePath = startActivePath) ∧
+                (xs ≠ [] → lines ≠ [] ∧
+                  ∃ tailElems, finalElems = prevElems ++ tailElems ∧ tailElems ≠ [] ∧
+                    TomlListEquiv xs (aotElemsToToml tailElems) ∧
+                    AtLocalPath (rbParent (assocSetNode k (.aot finalElems) parentLoc))
+                      (pathPairs.map Prod.fst) (assocSetNode k (.aot finalElems) parentLoc) rbParent) ∧
+                ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
+                (xs ≠ [] →
+                  parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) startActivePath root =
+                  parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath
+                    (rbParent (assocSetNode k (.aot finalElems) parentLoc)))) ∧
+      (∀ (origEntries : List (String × TomlValue)) (remPlan : List (String × EntryPlacement))
+          (pathPairs : List (String × String)) (lines : List String),
+          sizeOf remPlan ≤ n →
+          (∀ p ∈ pathPairs, ∃ ks, renderKey p.1 ks = some p.2) →
+          noDupStringsBool (remPlan.map Prod.fst) = true →
+          (∀ p ∈ remPlan, ∃ v, lookupKeyList p.1 origEntries = some v) →
+          renderSectionEntries (pathPairs.reverse.map Prod.snd) origEntries remPlan = some lines →
+          ∀ (root : List (String × Node)) (startLoc : List (String × Node))
+            (rb : List (String × Node) → List (String × Node)) (startActivePath : List String),
+            AtHeaderFocus root (pathPairs.map Prod.fst) startLoc rb →
+            (∀ p ∈ remPlan, p.2.isInlineScope = false → assocLookupNode p.1 startLoc = none) →
+            ∀ (restChars : List Char) (fuel : Nat),
+              fuel ≥ lines.length →
+              ∃ finalLoc endActivePath,
+                (remPlan.any (fun p => !p.2.isInlineScope) = false →
+                  lines = [] ∧ finalLoc = startLoc ∧ endActivePath = startActivePath ∧
+                  parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) startActivePath root =
+                  parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath root) ∧
+                (remPlan.any (fun p => !p.2.isInlineScope) = true →
+                  lines ≠ [] ∧
+                  (∀ p ∈ remPlan, p.2.isInlineScope = false →
+                    ∃ v nd, lookupKeyList p.1 origEntries = some v ∧
+                      assocLookupNode p.1 finalLoc = some nd ∧ TomlEquiv v (nodeToTomlValue nd)) ∧
+                  (∀ q, (∀ p ∈ remPlan, p.2.isInlineScope = false → q ≠ p.1) →
+                    assocLookupNode q finalLoc = assocLookupNode q startLoc) ∧
+                  AtLocalPath (rb finalLoc) (pathPairs.map Prod.fst) finalLoc rb ∧
+                  parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars) startActivePath root =
+                  parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath (rb finalLoc)) ∧
+                ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true) ∧
+      (∀ (origEntries : List (String × TomlValue)) (plan : List (String × EntryPlacement))
+          (pathPairs : List (String × String)) (lines : List String),
+          sizeOf plan + 1 ≤ n →
+          (∀ p ∈ pathPairs, ∃ ks, renderKey p.1 ks = some p.2) →
+          renderTablePlan (pathPairs.reverse.map Prod.snd) origEntries plan = some lines →
+          ∀ (root : List (String × Node)) (startLoc : List (String × Node))
+            (rb : List (String × Node) → List (String × Node)),
+            AtLocalPath root (pathPairs.map Prod.fst) startLoc rb →
+            startLoc = [] →
+            ∀ (restChars : List Char) (fuel : Nat),
+              fuel ≥ lines.length →
+              ∃ finalLoc endActivePath,
+                TomlTableEquivList origEntries (entriesToTomlList finalLoc) ∧
+                AtLocalPath (rb finalLoc) (pathPairs.map Prod.fst) finalLoc rb ∧
+                ((joinLines lines).toList.all fun c => !isDisallowedControl c && c != '\r') = true ∧
+                parseDocumentFuel numApi fuel ((joinLines lines).toList ++ restChars)
+                  (pathPairs.map Prod.fst) root =
+                parseDocumentFuel numApi (fuel - lines.length) restChars endActivePath (rb finalLoc)) := by
+  change ∀ n : Nat, RenderPlanAll numApi n
+  intro n
+  induction n using Nat.strongRecOn with
+  | ind n ih =>
+    have hDot := renderPlan_dot_step numApi hInt hFloat n ih
+    have hInl := renderPlan_inl_step numApi hInt hFloat n ih hDot
+    have hAot := renderPlan_aot_step numApi n ih
+    have hSec := renderPlan_sec_step numApi n ih
+    have hPlan := renderPlan_plan_step numApi n hInl hSec
     exact ⟨hDot, hInl, hAot, hSec, hPlan⟩
 
 private theorem parseDocumentFuel_skipTrivia (numApi : NumParseApi) (f : Nat)

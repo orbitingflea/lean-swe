@@ -308,29 +308,42 @@ theorem reach_time_fakeClock_sleepMs_advancesAndChunks :
     CanReach (test_time_fakeClock_sleepMs_advancesAndChunks fakeApi) :=
   ⟨default, 5, proof_time_fakeClock_sleepMs_advancesAndChunks default 5⟩
 
+private theorem fakeSleepMs_zero (s0 : FakeClock) :
+    (Internal.sleepMs Internal.fakeOps 0).run s0 = ((), s0) := by
+  rw [Internal.sleepMs]
+  rfl
+
+private theorem fakeSleepDuration_mono (s0 : FakeClock) (d : Duration) (hle : ¬ d.toNanoseconds.val ≤ 0) :
+    let s1 := ((Internal.sleepDuration Internal.fakeOps d).run s0).2
+    s0.monoNanos + d.toNanoseconds.val.toNat ≤ s1.monoNanos ∧
+      s1.monoNanos < s0.monoNanos + d.toNanoseconds.val.toNat + 1000000 := by
+  dsimp only [Internal.sleepDuration, Internal.sleepDurationMs]
+  simp only [hle, ↓reduceIte]
+  generalize hms : (d.toNanoseconds.val.toNat + 999999) / 1000000 = ms
+  have hmono := (fakeSleepMs_spec ms s0).1
+  rw [hmono]
+  have hdiv : d.toNanoseconds.val.toNat ≤ ms * 1000000 ∧
+      ms * 1000000 < d.toNanoseconds.val.toNat + 1000000 := by
+    rw [← hms]
+    omega
+  exact ⟨by omega, by omega⟩
+
 /-- Proof of `test_time_fakeClock_sleepDuration_clampsAndRoundsUp` for `fakeApi`. -/
 theorem proof_time_fakeClock_sleepDuration_clampsAndRoundsUp :
     AllPass (test_time_fakeClock_sleepDuration_clampsAndRoundsUp fakeApi) := by
   intro s0 d
-  dsimp [test_time_fakeClock_sleepDuration_clampsAndRoundsUp, fakeApi, Internal.fakeApi,
-    Internal.mkApiM, Internal.sleepDuration, Internal.sleepDurationMs, Core.NondetTest.assert]
+  dsimp only [test_time_fakeClock_sleepDuration_clampsAndRoundsUp, Core.NondetTest.assert]
+  have hSleepEq : fakeApi.sleepDuration d = Internal.sleepDuration Internal.fakeOps d := rfl
+  rw [hSleepEq]
   by_cases hle : d.toNanoseconds.val ≤ 0
   · simp only [hle, ↓reduceIte]
-    rw [Internal.sleepMs]
-    simp [StateT.run, pure, StateT.pure]
+    have h0 : ((Internal.sleepDuration Internal.fakeOps d).run s0).2 = s0 := by
+      dsimp only [Internal.sleepDuration, Internal.sleepDurationMs]
+      simp only [hle, ↓reduceIte]
+      exact congrArg Prod.snd (fakeSleepMs_zero s0)
+    exact ⟨h0, trivial⟩
   · simp only [hle, ↓reduceIte]
-    have hns : d.toNanoseconds.val > 0 := Int.lt_of_not_ge hle
-    let ms := (d.toNanoseconds.val.toNat + 999999) / 1000000
-    have hmono := (fakeSleepMs_spec ms s0).1
-    rcases heq : StateT.run (Internal.sleepMs Internal.fakeOps ((d.toNanoseconds.val.toNat + 999999) / 1000000)) s0 with ⟨u, s₁⟩
-    rw [heq] at hmono
-    dsimp only at hmono ⊢
-    rw [hmono]
-    have hdiv : d.toNanoseconds.val.toNat ≤ ms * 1000000 ∧
-        ms * 1000000 < d.toNanoseconds.val.toNat + 1000000 := by
-      dsimp only [ms]
-      omega
-    exact ⟨⟨by omega, by omega⟩, trivial⟩
+    exact ⟨fakeSleepDuration_mono s0 d hle, trivial⟩
 
 /-- Non-vacuity `CanReach` witness for `test_time_fakeClock_sleepDuration_clampsAndRoundsUp`. -/
 theorem reach_time_fakeClock_sleepDuration_clampsAndRoundsUp :

@@ -4,6 +4,8 @@ import LeanSwe.Git.Impl
 import LeanSwe.Git.Interface
 import LeanSwe.Git.SpecTests
 
+set_option Elab.async false
+
 namespace LeanSwe.Git.Proofs
 
 open Core
@@ -51,6 +53,44 @@ private theorem hasNulChar_eq_false_iff {cs : List Char} :
 private theorem string_ofList_append (xs ys : List Char) :
     String.ofList (xs ++ ys) = String.ofList xs ++ String.ofList ys :=
   String.toList_injective (by simp)
+
+private theorem decodeUtf8Lossy_toUTF8 (s : String) :
+    Impl.decodeUtf8Lossy s.toUTF8 = s := by
+  unfold Impl.decodeUtf8Lossy
+  rw [fromUTF8_toUTF8]
+  rfl
+
+private theorem decodeUtf8Checked_toUTF8 (s : String) :
+    Impl.decodeUtf8Checked s.toUTF8 = .ok s := by
+  unfold Impl.decodeUtf8Checked
+  rw [fromUTF8_toUTF8]
+
+private theorem all_no_nul_of_list (xs : List String)
+    (h : xs.all (fun a => !hasNulChar a.toList) = true) :
+    (xs.toArray.all fun a => !hasNulChar a.toList) = true := by
+  rw [Array.all_eq_true]
+  intro i hi
+  have hmem : xs.toArray[i] ∈ xs := by simp
+  exact List.all_eq_true.mp h _ hmem
+
+private theorem splitNulRecordsAux_eof (acc cs : List Char)
+    (hno : hasNulChar cs = false) (hne : ¬ (acc = [] ∧ cs = [])) :
+    splitNulRecordsAux acc cs = none := by
+  induction cs generalizing acc with
+  | nil =>
+    have hacc : acc ≠ [] := fun h => hne ⟨h, rfl⟩
+    simp [splitNulRecordsAux, hacc]
+  | cons c cs ih =>
+    have hc : c ≠ Char.ofNat 0 := hasNulChar_eq_false_iff.mp hno c List.mem_cons_self
+    have hcs : hasNulChar cs = false :=
+      hasNulChar_eq_false_iff.mpr fun x hx =>
+        hasNulChar_eq_false_iff.mp hno x (List.mem_cons_of_mem c hx)
+    have hne' : ¬ (c :: acc = [] ∧ cs = []) := fun ⟨h, _⟩ => by cases h
+    have hbeq : (c == Char.ofNat 0) = false := beq_false_of_ne hc
+    simp [splitNulRecordsAux, hbeq, ih (c :: acc) hcs hne']
+
+private theorem toUTF8_nonempty_of_ne {s : String} (hne : s ≠ "") : s.toUTF8.isEmpty = false :=
+  Bool.eq_false_iff.mpr fun hc => hne ((toUTF8_eq_empty_iff s).mp hc)
 
 private theorem splitNulRecordsAux_append_nul (acc cs rest : List Char)
     (hno : hasNulChar cs = false) (hne : ¬ (acc = [] ∧ cs = [])) :
@@ -147,8 +187,19 @@ theorem reach_git_mkRefName_rejectsUnsafeRefs :
 /-- Proof of `test_git_parsePorcelainStatusZ_framingAndEmpty` for `parsePorcelainStatusZ`. -/
 theorem proof_git_parsePorcelainStatusZ_framingAndEmpty :
     AllPass (test_git_parsePorcelainStatusZ_framingAndEmpty parsePorcelainStatusZ) := by
-  refine ⟨by cbv, ⟨⟨{ kind := .parseError, message := "unterminated or empty record in git status -z output" }, ?_, rfl, fun h => by have hl := congrArg String.length h; contradiction⟩, trivial⟩⟩
-  cbv
+  dsimp only [test_git_parsePorcelainStatusZ_framingAndEmpty, AllPass, assert]
+  have hEmpty : parsePorcelainStatusZ ByteArray.empty = .ok #[] := rfl
+  have hBad : parsePorcelainStatusZ (" M a.txt" : String).toUTF8 =
+      .error { kind := .parseError, message := "unterminated or empty record in git status -z output" } := by
+    unfold parsePorcelainStatusZ
+    rw [toUTF8_nonempty_of_ne (by decide), fromUTF8_toUTF8]
+    dsimp only
+    have hSplit : splitNulRecords " M a.txt" = none :=
+      splitNulRecordsAux_eof [] " M a.txt".toList (by decide) (by intro ⟨_, hc⟩; cases hc)
+    rw [hSplit]
+    rfl
+  exact ⟨hEmpty, ⟨{ kind := .parseError, message := "unterminated or empty record in git status -z output" },
+    hBad, rfl, fun h => by have hl := congrArg String.length h; contradiction⟩, trivial⟩
 
 private theorem prefix_rename_status_no_nul (dst : String) (hdst : hasNulChar dst.toList = false) :
     hasNulChar ('R' :: ' ' :: ' ' :: dst.toList) = false := by
@@ -191,7 +242,7 @@ private theorem parsePorcelainStatusZ_renameDestFirst_eq (src dst : String)
   have hRecList : ("R  " ++ dst).toList = 'R' :: ' ' :: ' ' :: dst.toList := by
     simp [String.toList_append]
   unfold parsePorcelainStatusZ
-  rw [hEmptyFalse, fromUTF8_toUTF8 s]
+  rw [hEmptyFalse, fromUTF8_toUTF8]
   dsimp only
   rw [hSplit]
   simp only [bind, Except.bind, pure, Except.pure, Bool.false_eq_true, ↓reduceIte]
@@ -252,7 +303,7 @@ private theorem parseDiffNameStatusZ_renameSourceFirst_eq (src dst : String)
     rw [hsList, hSplit1, hSplit2, hSplit3]
     simp [splitNulRecordsAux, String.ofList_toList]
   unfold parseDiffNameStatusZ
-  rw [hEmptyFalse, fromUTF8_toUTF8 s]
+  rw [hEmptyFalse, fromUTF8_toUTF8]
   dsimp only
   rw [hSplit]
   simp only [bind, Except.bind, pure, Except.pure, Bool.false_eq_true, ↓reduceIte]
@@ -266,7 +317,7 @@ private theorem parseDiffNameStatusZ_renameSourceFirst_eq (src dst : String)
       | (next _ heq => cases heq)
       | (next scoreChars heq =>
           cases heq
-          have hScore : parseSimilarityScore ['0', '9', '5'] = some 95 := by cbv
+          have hScore : parseSimilarityScore ['0', '9', '5'] = some 95 := by decide
           have hEnd : parseDiffTokens [] = .ok [] := rfl
           simp [hScore, hEnd, Except.map])
       | (next _ _ _ _ _ hR _ => exact absurd rfl (hR ['0', '9', '5']))
@@ -301,10 +352,283 @@ private theorem splitNulTokensAllowEmptyAux_append_nul (acc cs rest : List Char)
     have hbeq : (c == Char.ofNat 0) = false := beq_false_of_ne hc
     simp [splitNulTokensAllowEmptyAux, hbeq, ih (c :: acc) hcs, List.reverse_cons, List.append_assoc]
 
+private theorem splitWorktreeStanzas_empty (cur rest : List String) (hne : cur.isEmpty = false) :
+    splitWorktreeStanzas cur ("" :: rest) = (splitWorktreeStanzas [] rest).map (cur.reverse :: ·) := by
+  conv => lhs; unfold splitWorktreeStanzas
+  simp [hne]
+
+private theorem splitWorktreeStanzas_tok (cur : List String) (tok : String) (rest : List String)
+    (hne : tok ≠ "") :
+    splitWorktreeStanzas cur (tok :: rest) = splitWorktreeStanzas (tok :: cur) rest := by
+  conv => lhs; unfold splitWorktreeStanzas
+  split <;> rename_i heq <;> cases heq
+  · exact absurd rfl hne
+  · rfl
+
+private theorem parseWorktreeAttrs_bare (info : WorktreeInfo) (hs : Bool) (rest : List String) :
+    parseWorktreeAttrs info hs ("bare" :: rest) =
+      parseWorktreeAttrs { info with isBare := true } hs rest := rfl
+
+private theorem parseWorktreeAttrs_detached (info : WorktreeInfo) (hs : Bool) (rest : List String) :
+    parseWorktreeAttrs info hs ("detached" :: rest) =
+      parseWorktreeAttrs { info with isDetached := true } hs rest := rfl
+
+private theorem parseWorktreeAttrs_locked (info : WorktreeInfo) (hs : Bool) (rest : List String) :
+    parseWorktreeAttrs info hs ("locked" :: rest) =
+      parseWorktreeAttrs { info with isLocked := true, lockReason := none } hs rest := rfl
+
+private theorem list_all_replicate_true {α : Type} (n : Nat) (x : α) (p : α → Bool)
+    (hp : p x = true) : (List.replicate n x).all p = true := by
+  induction n with
+  | zero => rfl
+  | succ n ih => simp [List.replicate_succ, hp, ih]
+
+private theorem hasNulChar_head_rep40 (n : Nat) (ch : Char) (hch : ch ≠ Char.ofNat 0) :
+    hasNulChar ("HEAD " ++ String.ofList (List.replicate n ch)).toList = false := by
+  rw [hasNulChar_eq_false_iff, String.toList_append, String.toList_ofList]
+  intro c hc
+  rw [List.mem_append] at hc
+  rcases hc with hc | hc
+  · have hno : hasNulChar "HEAD ".toList = false := by decide
+    exact hasNulChar_eq_false_iff.mp hno c hc
+  · rw [String.toList_ofList] at hc
+    rcases List.mem_replicate.mp hc with ⟨_, rfl⟩
+    exact hch
+
+private theorem isAllZeros_rep40_zero :
+    isAllZerosCommitStr (String.ofList (List.replicate 40 '0')) = true := by
+  unfold isAllZerosCommitStr
+  rw [String.toList_ofList]
+  dsimp only
+  rw [List.length_replicate, list_all_replicate_true _ _ _ (by decide)]
+  rfl
+
+private theorem isAllZeros_rep40_a :
+    isAllZerosCommitStr (String.ofList (List.replicate 40 'a')) = false := by
+  unfold isAllZerosCommitStr
+  rw [String.toList_ofList]
+  simp [List.replicate_succ]
+
+private theorem isValidCommitIdStr_rep40_a :
+    isValidCommitIdStr (String.ofList (List.replicate 40 'a')) = true := by
+  unfold isValidCommitIdStr
+  rw [String.toList_ofList]
+  dsimp only
+  rw [List.length_replicate, list_all_replicate_true _ _ _ (by decide)]
+  rfl
+
+private theorem stripPrefixChars_append (p cs : List Char) :
+    stripPrefixChars p (p ++ cs) = some cs := by
+  induction p with
+  | nil => rfl
+  | cons x xs ih => simp [stripPrefixChars, ih]
+
+private theorem head_str_ne_empty (sha : String) : ("HEAD " ++ sha) ≠ "" := by
+  intro heq
+  have ht := congrArg (fun s : String => s.toList.head?) heq
+  rw [String.toList_append, show ("HEAD " : String).toList = ['H', 'E', 'A', 'D', ' '] from rfl] at ht
+  cases ht
+
+private theorem head_str_ne_tag (sha tag : String) (h : tag.toList.head? ≠ some 'H') :
+    ("HEAD " ++ sha == tag) = false := by
+  apply beq_false_of_ne
+  intro heq
+  have ht := congrArg (fun s : String => s.toList.head?) heq
+  rw [String.toList_append, show ("HEAD " : String).toList = ['H', 'E', 'A', 'D', ' '] from rfl] at ht
+  exact h ht.symm
+
+private theorem parseWorktreeAttrs_head_zeros (info : WorktreeInfo) (hs : Bool)
+    (sha : String) (rest : List String) (hz : isAllZerosCommitStr sha = true) :
+    parseWorktreeAttrs info hs (("HEAD " ++ sha) :: rest) =
+      parseWorktreeAttrs { info with head? := none } true rest := by
+  have hB := head_str_ne_tag sha "bare" (by decide)
+  have hD := head_str_ne_tag sha "detached" (by decide)
+  have hL := head_str_ne_tag sha "locked" (by decide)
+  have hP := head_str_ne_tag sha "prunable" (by decide)
+  have hPref : stripPrefixChars ['H', 'E', 'A', 'D', ' '] ("HEAD " ++ sha).toList = some sha.toList := by
+    rw [String.toList_append, show ("HEAD " : String).toList = ['H', 'E', 'A', 'D', ' '] from rfl]
+    exact stripPrefixChars_append ['H', 'E', 'A', 'D', ' '] sha.toList
+  conv => lhs; unfold parseWorktreeAttrs
+  simp only [hB, hD, hL, hP, Bool.false_eq_true, ↓reduceIte, hPref, String.ofList_toList, hz]
+
+private theorem parseWorktreeAttrs_head_commit (info : WorktreeInfo) (hs : Bool)
+    (sha : String) (cid : CommitId) (rest : List String)
+    (hz : isAllZerosCommitStr sha = false) (hCid : mkCommitId sha = .ok cid) :
+    parseWorktreeAttrs info hs (("HEAD " ++ sha) :: rest) =
+      parseWorktreeAttrs { info with head? := some cid } true rest := by
+  have hB := head_str_ne_tag sha "bare" (by decide)
+  have hD := head_str_ne_tag sha "detached" (by decide)
+  have hL := head_str_ne_tag sha "locked" (by decide)
+  have hP := head_str_ne_tag sha "prunable" (by decide)
+  have hPref : stripPrefixChars ['H', 'E', 'A', 'D', ' '] ("HEAD " ++ sha).toList = some sha.toList := by
+    rw [String.toList_append, show ("HEAD " : String).toList = ['H', 'E', 'A', 'D', ' '] from rfl]
+    exact stripPrefixChars_append ['H', 'E', 'A', 'D', ' '] sha.toList
+  conv => lhs; unfold parseWorktreeAttrs
+  simp only [hB, hD, hL, hP, Bool.false_eq_true, ↓reduceIte, hPref, String.ofList_toList, hz, hCid]
+
+private theorem parseWorktreeAttrs_branch (info : WorktreeInfo) (hs : Bool)
+    (line refStr shortStr : String) (ref : RefName) (rest : List String)
+    (hB : (line == "bare") = false) (hD : (line == "detached") = false)
+    (hL : (line == "locked") = false) (hP : (line == "prunable") = false)
+    (hNoH : stripPrefixChars ['H', 'E', 'A', 'D', ' '] line.toList = none)
+    (hBr : stripPrefixChars ['b', 'r', 'a', 'n', 'c', 'h', ' '] line.toList = some refStr.toList)
+    (hRh : stripPrefixChars ['r', 'e', 'f', 's', '/', 'h', 'e', 'a', 'd', 's', '/'] refStr.toList =
+      some shortStr.toList)
+    (hRef : mkRefName shortStr = .ok ref) :
+    parseWorktreeAttrs info hs (line :: rest) =
+      parseWorktreeAttrs { info with branch? := some ref } hs rest := by
+  conv => lhs; unfold parseWorktreeAttrs
+  simp only [hB, hD, hL, hP, Bool.false_eq_true, ↓reduceIte, hNoH, hBr, hRh, String.ofList_toList, hRef]
+
+private theorem parseWorktreeAttrs_prunable_reason (info : WorktreeInfo) (hs : Bool)
+    (line reason : String) (rest : List String)
+    (hB : (line == "bare") = false) (hD : (line == "detached") = false)
+    (hL : (line == "locked") = false) (hP : (line == "prunable") = false)
+    (hNoH : stripPrefixChars ['H', 'E', 'A', 'D', ' '] line.toList = none)
+    (hNoBr : stripPrefixChars ['b', 'r', 'a', 'n', 'c', 'h', ' '] line.toList = none)
+    (hNoLk : stripPrefixChars ['l', 'o', 'c', 'k', 'e', 'd', ' '] line.toList = none)
+    (hPr : stripPrefixChars ['p', 'r', 'u', 'n', 'a', 'b', 'l', 'e', ' '] line.toList = some reason.toList) :
+    parseWorktreeAttrs info hs (line :: rest) =
+      parseWorktreeAttrs { info with isPrunable := true, pruneReason := some reason } hs rest := by
+  conv => lhs; unfold parseWorktreeAttrs
+  simp only [hB, hD, hL, hP, Bool.false_eq_true, ↓reduceIte, hNoH, hNoBr, hNoLk, hPr, String.ofList_toList]
+
+private theorem parseWorktreeStanza_worktree (header path : String) (attrs : List String)
+    (hHdr : stripPrefixChars ['w', 'o', 'r', 'k', 't', 'r', 'e', 'e', ' '] header.toList = some path.toList)
+    (hNe : path.toList.isEmpty = false) :
+    parseWorktreeStanza (header :: attrs) =
+      Except.bind (parseWorktreeAttrs { path := path, head? := none, branch? := none } false attrs)
+        (fun p =>
+          if !p.1.isBare && !p.2 then
+            .error { kind := .parseError, message := s!"non-bare worktree '{p.1.path}' missing HEAD attribute" }
+          else
+            .ok p.1) := by
+  unfold parseWorktreeStanza
+  simp only [hHdr, hNe, Bool.false_eq_true, ↓reduceIte, String.ofList_toList]
+  rfl
+
+private theorem parseWorktreeListPorcelain_ok_of (s : String) (toks : List String)
+    (stanzas : List (List String)) (infos : List WorktreeInfo)
+    (hNe : s.toUTF8.isEmpty = false)
+    (hToks : splitNulTokensAllowEmptyAux [] s.toList = some toks)
+    (hStz : splitWorktreeStanzas [] toks = some stanzas)
+    (hInfos : parseWorktreeStanzas stanzas = .ok infos) :
+    parseWorktreeListPorcelain s.toUTF8 = .ok infos.toArray := by
+  unfold parseWorktreeListPorcelain
+  rw [hNe, fromUTF8_toUTF8]
+  dsimp only
+  rw [hToks]
+  dsimp only
+  rw [hStz]
+  dsimp only
+  rw [hInfos]
+  rfl
+
+private theorem splitNulTokensAllowEmptyAux_step (a : String) (rest : List Char)
+    (toks : List String)
+    (hno : hasNulChar a.toList = false)
+    (hrest : splitNulTokensAllowEmptyAux [] rest = some toks) :
+    splitNulTokensAllowEmptyAux [] (a.toList ++ Char.ofNat 0 :: rest) = some (a :: toks) := by
+  rw [splitNulTokensAllowEmptyAux_append_nul [] a.toList rest hno, hrest]
+  simp [String.ofList_toList]
+
+private theorem splitNulRecordsAux_step (a : String) (rest : List Char) (recs : List String)
+    (hne : a ≠ "") (hno : hasNulChar a.toList = false)
+    (hrest : splitNulRecordsAux [] rest = some recs) :
+    splitNulRecordsAux [] (a.toList ++ Char.ofNat 0 :: rest) = some (a :: recs) := by
+  have hacs : ¬ (([] : List Char) = [] ∧ a.toList = []) := fun h => hne (String.toList_injective h.2)
+  rw [splitNulRecordsAux_append_nul [] a.toList rest hno hacs, hrest]
+  simp [String.ofList_toList]
+
+private theorem parsePorcelainStatusZ_ok_of (s : String) (toks : List String)
+    (recs : List StatusEntry)
+    (hNe : s.toUTF8.isEmpty = false)
+    (hToks : splitNulRecordsAux [] s.toList = some toks)
+    (hRecs : parsePorcelainStatusRecords toks = .ok recs) :
+    parsePorcelainStatusZ s.toUTF8 = .ok recs.toArray := by
+  unfold parsePorcelainStatusZ
+  rw [hNe, fromUTF8_toUTF8]
+  dsimp only
+  have hSplit : splitNulRecords s = some toks := hToks
+  rw [hSplit]
+  dsimp only [bind, Except.bind, pure, Except.pure]
+  rw [hRecs]
+  rfl
+
+private theorem parsePorcelainStatusRecords_plain (tok path : String) (x y : Char)
+    (rest : List String) (kx ky : Option StatusKind)
+    (hTok : tok.toList = x :: y :: ' ' :: path.toList)
+    (hNe : path.toList.isEmpty = false) (hPair : isValidStatusPair x y = true)
+    (hx : statusCharToKind? x = some kx) (hy : statusCharToKind? y = some ky)
+    (hxNot : x ≠ 'R' ∧ x ≠ 'C') (hyNot : y ≠ 'R' ∧ y ≠ 'C') :
+    parsePorcelainStatusRecords (tok :: rest) =
+      (parsePorcelainStatusRecords rest).map
+        ({ indexStatus := kx, worktreeStatus := ky, path := path } :: ·) := by
+  conv => lhs; unfold parsePorcelainStatusRecords
+  rw [hTok]
+  split
+  · next x' y' pathChars heq =>
+    cases heq
+    simp [hNe, hPair, hx, hy, hxNot.1, hxNot.2, hyNot.1, hyNot.2, String.ofList_toList]
+  · next h => exact absurd rfl (h x y path.toList)
+
+private theorem parsePorcelainStatusRecords_rc (tok path orig : String) (x y : Char)
+    (rest : List String) (kx ky : Option StatusKind)
+    (hTok : tok.toList = x :: y :: ' ' :: path.toList)
+    (hNe : path.toList.isEmpty = false) (hPair : isValidStatusPair x y = true)
+    (hx : statusCharToKind? x = some kx) (hy : statusCharToKind? y = some ky)
+    (hRc : (x == 'R' || x == 'C') = true) :
+    parsePorcelainStatusRecords (tok :: orig :: rest) =
+      (parsePorcelainStatusRecords rest).map
+        ({ indexStatus := kx, worktreeStatus := ky, path := path, origPath := some orig } :: ·) := by
+  conv => lhs; unfold parsePorcelainStatusRecords
+  rw [hTok]
+  split
+  · next x' y' pathChars heq =>
+    cases heq
+    simp [hNe, hPair, hx, hy, hRc, String.ofList_toList]
+  · next h => exact absurd rfl (h x y path.toList)
+
 /-- Proof of `test_git_parseWorktreeListPorcelain_bareUnbornLocked` for `parseWorktreeListPorcelain`. -/
 theorem proof_git_parseWorktreeListPorcelain_bareUnbornLocked :
     AllPass (test_git_parseWorktreeListPorcelain_bareUnbornLocked parseWorktreeListPorcelain) := by
-  refine ⟨by cbv, ⟨?_, trivial⟩⟩
+  have hBare : parseWorktreeListPorcelain "worktree /tmp/bare.git\x00bare\x00\x00".toUTF8 =
+      .ok #[{ path := "/tmp/bare.git", head? := none, branch? := none, isBare := true }] := by
+    let sb := "worktree /tmp/bare.git\x00bare\x00\x00"
+    have hbList : sb.toList =
+        "worktree /tmp/bare.git".toList ++ Char.ofNat 0 ::
+        ("bare".toList ++ Char.ofNat 0 ::
+        ("".toList ++ Char.ofNat 0 :: [])) := by decide
+    have hToksB : splitNulTokensAllowEmptyAux [] sb.toList =
+        some ["worktree /tmp/bare.git", "bare", ""] := by
+      rw [hbList]
+      rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
+      rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
+      rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
+      have hNil : splitNulTokensAllowEmptyAux [] [] = some [] := rfl
+      rw [hNil]
+      simp only [List.reverse_nil, List.nil_append, String.ofList_toList, Option.map]
+    have hStzB : splitWorktreeStanzas [] ["worktree /tmp/bare.git", "bare", ""] =
+        some [["worktree /tmp/bare.git", "bare"]] := by
+      rw [splitWorktreeStanzas_tok _ _ _ (by decide), splitWorktreeStanzas_tok _ _ _ (by decide)]
+      rw [splitWorktreeStanzas_empty _ _ (by decide)]
+      rfl
+    have hPBare : parseWorktreeStanza ["worktree /tmp/bare.git", "bare"] =
+        .ok { path := "/tmp/bare.git", head? := none, branch? := none, isBare := true } := by
+      rw [parseWorktreeStanza_worktree "worktree /tmp/bare.git" "/tmp/bare.git" ["bare"] (by decide) (by decide)]
+      rw [parseWorktreeAttrs_bare]
+      rfl
+    have hInfosB : parseWorktreeStanzas [["worktree /tmp/bare.git", "bare"]] =
+        .ok [{ path := "/tmp/bare.git", head? := none, branch? := none, isBare := true }] := by
+      unfold parseWorktreeStanzas
+      rw [hPBare]
+      rfl
+    exact parseWorktreeListPorcelain_ok_of "worktree /tmp/bare.git\x00bare\x00\x00"
+      ["worktree /tmp/bare.git", "bare", ""]
+      [["worktree /tmp/bare.git", "bare"]]
+      [{ path := "/tmp/bare.git", head? := none, branch? := none, isBare := true }]
+      (toUTF8_nonempty_of_ne (by decide)) hToksB hStzB hInfosB
+  refine ⟨hBare, ⟨?_, trivial⟩⟩
   let z40 := String.ofList (List.replicate 40 '0')
   let s := "worktree /tmp/wt\x00HEAD " ++ z40 ++ "\x00branch refs/heads/main\x00locked\x00prunable gone\x00\x00"
   have hEmptyFalse : s.toUTF8.isEmpty = false := by
@@ -313,10 +637,8 @@ theorem proof_git_parseWorktreeListPorcelain_bareUnbornLocked :
     have he := (toUTF8_eq_empty_iff s).mp h
     have hl := congrArg String.length he
     simp [s] at hl
-  have hz40 : z40 = "0000000000000000000000000000000000000000" := by decide
-  have hHead : hasNulChar ("HEAD " ++ z40).toList = false := by
-    simp [hz40]
-    decide
+  have hHead : hasNulChar ("HEAD " ++ z40).toList = false :=
+    hasNulChar_head_rep40 40 '0' (by decide)
   have h1 : "worktree /tmp/wt\x00HEAD ".toList =
       "worktree /tmp/wt".toList ++ Char.ofNat 0 :: "HEAD ".toList := by decide
   have h2 : "\x00branch refs/heads/main\x00locked\x00prunable gone\x00\x00".toList =
@@ -331,7 +653,7 @@ theorem proof_git_parseWorktreeListPorcelain_bareUnbornLocked :
       ("".toList ++ Char.ofNat 0 :: []))))) := by
     simp only [s, String.toList_append, h1, h2, List.append_assoc, List.cons_append]
   unfold parseWorktreeListPorcelain
-  rw [hEmptyFalse, fromUTF8_toUTF8 s]
+  rw [hEmptyFalse, fromUTF8_toUTF8]
   dsimp only
   have hToks : splitNulTokensAllowEmptyAux [] s.toList =
       some ["worktree /tmp/wt", "HEAD " ++ z40, "branch refs/heads/main", "locked", "prunable gone", ""] := by
@@ -345,7 +667,43 @@ theorem proof_git_parseWorktreeListPorcelain_bareUnbornLocked :
     have hNil : splitNulTokensAllowEmptyAux [] [] = some [] := rfl
     rw [hNil]
     simp only [List.reverse_nil, List.nil_append, String.ofList_toList, Option.map]
-  rw [hToks, hz40]
+  let hzLine := "HEAD " ++ z40
+  have hStz : splitWorktreeStanzas []
+      ["worktree /tmp/wt", hzLine, "branch refs/heads/main", "locked", "prunable gone", ""] =
+      some [["worktree /tmp/wt", hzLine, "branch refs/heads/main", "locked", "prunable gone"]] := by
+    rw [splitWorktreeStanzas_tok _ _ _ (by decide), splitWorktreeStanzas_tok _ _ _ (head_str_ne_empty z40)]
+    rw [splitWorktreeStanzas_tok _ _ _ (by decide), splitWorktreeStanzas_tok _ _ _ (by decide)]
+    rw [splitWorktreeStanzas_tok _ _ _ (by decide), splitWorktreeStanzas_empty _ _ (by decide)]
+    rfl
+  have hRefMain : mkRefName "main" = .ok { raw := "main" } := by
+    unfold mkRefName
+    rw [show isValidRefNameStr "main" = true from by decide]
+    rfl
+  have hPWt : parseWorktreeStanza
+      ["worktree /tmp/wt", hzLine, "branch refs/heads/main", "locked", "prunable gone"] =
+      .ok { path := "/tmp/wt", head? := none, branch? := some { raw := "main" },
+            isLocked := true, isPrunable := true, pruneReason := some "gone" } := by
+    rw [parseWorktreeStanza_worktree "worktree /tmp/wt" "/tmp/wt"
+      [hzLine, "branch refs/heads/main", "locked", "prunable gone"] (by decide) (by decide)]
+    rw [parseWorktreeAttrs_head_zeros _ _ z40 _ isAllZeros_rep40_zero]
+    rw [parseWorktreeAttrs_branch _ _ "branch refs/heads/main" "refs/heads/main" "main" { raw := "main" } _
+      (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) hRefMain]
+    rw [parseWorktreeAttrs_locked]
+    rw [parseWorktreeAttrs_prunable_reason _ _ "prunable gone" "gone" _
+      (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) (by decide)]
+    rfl
+  have hInfos : parseWorktreeStanzas
+      [["worktree /tmp/wt", hzLine, "branch refs/heads/main", "locked", "prunable gone"]] =
+      .ok [{ path := "/tmp/wt", head? := none, branch? := some { raw := "main" },
+             isLocked := true, isPrunable := true, pruneReason := some "gone" }] := by
+    unfold parseWorktreeStanzas
+    rw [hPWt]
+    rfl
+  rw [hToks]
+  dsimp only
+  rw [hStz]
+  dsimp only
+  rw [hInfos]
   rfl
 
 private theorem mem_dedupCommitIds_iff {x : CommitId} {xs : List CommitId} :
@@ -687,7 +1045,9 @@ theorem reach_git_model_isAncestor_transitiveAndMergeBaseValid :
     commits := [{ id := c0, parents := [] }]
     worktrees := [{ path := "/repo", head := .detached c0 }]
   }
-  exact ⟨s, c0, c0, c0, by cbv, by cbv, ⟨by cbv, by cbv⟩, trivial⟩
+  have hValid : ValidRepoState s := by unfold ValidRepoState; decide
+  exact ⟨s, c0, c0, c0, hValid,
+    proof_git_model_isAncestor_transitiveAndMergeBaseValid s c0 c0 c0 hValid⟩
 
 private theorem freshSyntheticCommitIdAux_not_hasCommit (s : RepoState) (idx remaining : Nat) :
     hasCommit s (freshSyntheticCommitIdAux s idx remaining) = false := by
@@ -751,9 +1111,13 @@ theorem proof_git_api_unbornHead_behavior :
 /-- Non-vacuity `CanReach` witness for `test_git_api_unbornHead_behavior`. -/
 theorem reach_git_api_unbornHead_behavior :
     CanReach (test_git_api_unbornHead_behavior mockGitApi) := by
-  refine ⟨{ rootPath := "/repo" }, "/repo", { raw := "main" }, by decide, by cbv, ?_⟩
-  cbv
-  exact ⟨⟨{ kind := .invalidRef, message := "unknown revision 'HEAD'" }, rfl, rfl, by decide⟩, trivial⟩
+  let s0 : RepoState := { rootPath := "/repo" }
+  let branch : RefName := { raw := "main" }
+  have hPath : isValidPathArg "/repo" = true := by decide
+  have hInit : ((mockGitApi.init "/repo" false (some branch)).run s0).1 = .ok () := by
+    simp [mockGitApi, runRepoStepUnit, runRepoStep, stepInit, hPath, Except.map, StateT.run]
+  exact ⟨s0, "/repo", branch, hPath, hInit,
+    proof_git_api_unbornHead_behavior s0 "/repo" branch hPath hInit⟩
 
 /-- Proof of `test_git_api_commit_emptyVsAllowEmpty` for `mockGitApi`. -/
 theorem proof_git_api_commit_emptyVsAllowEmpty :
@@ -792,9 +1156,9 @@ theorem reach_git_api_commit_emptyVsAllowEmpty :
     branches := [(b, c0)]
     worktrees := [wt]
   }
-  refine ⟨s0, wt, by cbv, ⟨rfl, rfl, rfl, rfl⟩, ?_⟩
-  cbv
-  exact ⟨⟨{ kind := .nothingToCommit, message := "nothing to commit" }, rfl, rfl, rfl⟩, trivial⟩
+  have hValid : ValidRepoState s0 := by unfold ValidRepoState; decide
+  exact ⟨s0, wt, hValid, ⟨rfl, rfl, rfl, rfl⟩,
+    proof_git_api_commit_emptyVsAllowEmpty s0 wt hValid ⟨rfl, rfl, rfl, rfl⟩⟩
 
 private theorem isValidRevSpec_of_isValidRefNameStr {s : String} (h : isValidRefNameStr s = true) :
     isValidRevSpec s = true ∧ s.toList.any isAsciiWhitespace = false := by
@@ -875,9 +1239,9 @@ theorem reach_git_api_worktreeAdd_branchInUseRejected :
     branches := [(b, c0)]
     worktrees := [wt]
   }
-  refine ⟨s0, wt, b, c0, "/wt2", by cbv, ⟨rfl, rfl⟩, ⟨by decide, by decide⟩, by decide, ?_⟩
-  cbv
-  exact ⟨⟨{ kind := .branchInUse, message := "branch 'main' is already used by worktree" }, rfl, rfl, rfl⟩, trivial⟩
+  have hValid : ValidRepoState s0 := by unfold ValidRepoState; decide
+  exact ⟨s0, wt, b, c0, "/wt2", hValid, ⟨rfl, rfl⟩, ⟨by decide, by decide⟩, by decide,
+    proof_git_api_worktreeAdd_branchInUseRejected s0 wt b c0 "/wt2" hValid ⟨rfl, rfl⟩ ⟨by decide, by decide⟩ (by decide)⟩
 
 /-- Proof of `test_git_api_checkout_dirtyWorktreeRejected` for `mockGitApi`. -/
 theorem proof_git_api_checkout_dirtyWorktreeRejected :
@@ -908,9 +1272,9 @@ theorem reach_git_api_checkout_dirtyWorktreeRejected :
     branches := [(b, c0)]
     worktrees := [wt]
   }
-  refine ⟨s0, wt, b, c0, by cbv, ⟨rfl, rfl, rfl⟩, List.Mem.head _, ?_⟩
-  cbv
-  exact ⟨⟨{ kind := .dirtyWorktree, message := "local changes would be overwritten by checkout" }, rfl, rfl, rfl⟩, trivial⟩
+  have hValid : ValidRepoState s0 := by unfold ValidRepoState; decide
+  exact ⟨s0, wt, b, c0, hValid, ⟨rfl, rfl, by decide⟩, List.Mem.head _,
+    proof_git_api_checkout_dirtyWorktreeRejected s0 wt b c0 hValid ⟨rfl, rfl, by decide⟩ (List.Mem.head _)⟩
 
 /-- Proof of `test_git_api_withWorktree_cleanupAndErrorPrecedence` for `Impl.mkApiM`. -/
 theorem proof_git_api_withWorktree_cleanupAndErrorPrecedence :
@@ -918,7 +1282,7 @@ theorem proof_git_api_withWorktree_cleanupAndErrorPrecedence :
   intro repoPath wtPath actOk cleanOk ⟨hRepo, hWt⟩
   have hRepo' : Impl.validateRepoPath repoPath = .ok () := by simp [Impl.validateRepoPath, hRepo]
   have hCwdRepo : Impl.validateCwd? (some repoPath) = .ok () := by simp [Impl.validateCwd?, hRepo]
-  have hExtra : Impl.validateExtraEnv #[] = .ok () := by cbv
+  have hExtra : Impl.validateExtraEnv #[] = .ok () := by unfold Impl.validateExtraEnv; simp
   have hNulWt : hasNulChar wtPath.toList = false := by
     simp [isValidPathArg] at hWt
     exact hWt.2
@@ -978,31 +1342,226 @@ theorem proof_git_api_withWorktree_cleanupAndErrorPrecedence :
   · simp [Impl.mkApiM, Impl.withWorktreeImpl, Impl.worktreeAddImpl, Impl.worktreeRemoveImpl,
       Impl.runGitChecked, hRepo', hWt, hAddRaw, hRemRaw]
     simp [mockRawOps, StateT.run, bind, StateT.bind, pure, StateT.pure, MonadFinally.tryFinally', assert]
-  · simp [Impl.mkApiM, Impl.withWorktreeImpl, Impl.worktreeAddImpl, Impl.worktreeRemoveImpl,
+  · have hRemKind :
+        (Impl.classifyError "worktree remove"
+          { exitCode := 1, stdout := ByteArray.empty, stderr := "remove failed".toUTF8 }).kind =
+          .commandFailed := by
+      unfold Impl.classifyError
+      rw [decodeUtf8Lossy_toUTF8, show Impl.decodeUtf8Lossy ByteArray.empty = "" from rfl]
+      decide
+    simp [Impl.mkApiM, Impl.withWorktreeImpl, Impl.worktreeAddImpl, Impl.worktreeRemoveImpl,
       Impl.runGitChecked, hRepo', hWt, hAddRaw, hRemRaw]
     simp [mockRawOps, StateT.run, bind, StateT.bind, pure, StateT.pure, MonadFinally.tryFinally', assert]
-    decide
+    exact hRemKind
   · simp [Impl.mkApiM, Impl.withWorktreeImpl, Impl.worktreeAddImpl, Impl.worktreeRemoveImpl,
       Impl.runGitChecked, hRepo', hWt, hAddRaw, hRemRaw]
     simp [mockRawOps, StateT.run, bind, StateT.bind, pure, StateT.pure, MonadFinally.tryFinally', assert]
 
 /-- Non-vacuity `CanReach` witness for `test_git_api_withWorktree_cleanupAndErrorPrecedence`. -/
 theorem reach_git_api_withWorktree_cleanupAndErrorPrecedence :
-    CanReach (test_git_api_withWorktree_cleanupAndErrorPrecedence (fun ops => Impl.mkApiM ops)) := by
-  refine ⟨"/repo", "/wt", true, true, ⟨by decide, by decide⟩, ?_⟩
-  cbv
+    CanReach (test_git_api_withWorktree_cleanupAndErrorPrecedence (fun ops => Impl.mkApiM ops)) :=
+  ⟨"/repo", "/wt", true, true, ⟨by decide, by decide⟩,
+    proof_git_api_withWorktree_cleanupAndErrorPrecedence "/repo" "/wt" true true ⟨by decide, by decide⟩⟩
 
 /-- Proof of `test_git_raw_mkApi_isolationAndGuards` for `Impl.mkApiM`. -/
 theorem proof_git_raw_mkApi_isolationAndGuards :
     AllPass (test_git_raw_mkApi_isolationAndGuards (fun ops => Impl.mkApiM ops)) := by
-  cbv
-  refine ⟨⟨_, rfl, rfl⟩, ⟨_, rfl, rfl, rfl⟩, ⟨_, rfl, rfl, rfl⟩, ⟨_, rfl, rfl, rfl⟩, trivial⟩
+  dsimp only [test_git_raw_mkApi_isolationAndGuards, AllPass, assert]
+  let st₀ : GitCliMockState :=
+    { inheritedEnv := #[("GIT_DIR", "/evil/.git"), ("GIT_TERMINAL_PROMPT", "1"), ("PATH", "/usr/bin")]
+      handler := fun req _ =>
+        if req.args.toList.contains "commit" then
+          .ok { exitCode := 1, stdout := "nothing to commit, working tree clean\n".toUTF8, stderr := ByteArray.empty }
+        else if req.args.toList.contains "rev-parse" then
+          .ok { exitCode := 0, stdout := (String.ofList (List.replicate 40 'a') ++ "\n").toUTF8, stderr := ByteArray.empty }
+        else if req.args.toList.contains "cat-file" then
+          .ok { exitCode := 0, stdout := "tree\n".toUTF8, stderr := ByteArray.empty }
+        else
+          .ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty } }
+  have hRepoOk : Impl.validateRepoPath "/repo" = .ok () := by
+    unfold Impl.validateRepoPath
+    simp [show isValidPathArg "/repo" = true from by decide]
+  have hCwdOk : Impl.validateCwd? (some "/repo") = .ok () := by
+    unfold Impl.validateCwd?
+    simp [show isValidPathArg "/repo" = true from by decide]
+  have hExtraOk : Impl.validateExtraEnv #[] = .ok () := by
+    unfold Impl.validateExtraEnv; simp
+  have hEnvCheck :
+      (cleanGitEnv st₀.inheritedEnv #[]).toList.contains ("GIT_DIR", none) ∧
+      (cleanGitEnv st₀.inheritedEnv #[]).toList.contains ("GIT_TERMINAL_PROMPT", some "0") ∧
+      (cleanGitEnv st₀.inheritedEnv #[]).toList.contains ("GIT_CONFIG_VALUE_0", some "all") := by
+    decide
+  let commitOut : GitRawOutput :=
+    { exitCode := 1, stdout := "nothing to commit, working tree clean\n".toUTF8, stderr := ByteArray.empty }
+  have hCommitRun :
+      ((Impl.mkApiM mockRawOps).commit "/repo" { message := "msg" }).run st₀ =
+        (.error (Impl.classifyError "commit" commitOut),
+         { st₀ with
+           recordedEnvs := [cleanGitEnv st₀.inheritedEnv #[]]
+           recordedRequests := [{ cwd := some "/repo", args := #["commit", "--no-gpg-sign", "-m", "msg"] }]
+           callCount := 1 }) := by
+    change Impl.commitImpl mockRawOps "/repo" { message := "msg" } st₀ = _
+    have hMsg : (("msg" : String).isEmpty || hasNulChar "msg".toList) = false := by decide
+    have hExtraApp : (#[] ++ (#[] : Array (String × Option String))) = #[] := rfl
+    have hArgsApp : (#["commit", "--no-gpg-sign", "-m", "msg"] ++ #[]) =
+        #["commit", "--no-gpg-sign", "-m", "msg"] := rfl
+    have hArgs : (#["commit", "--no-gpg-sign", "-m", "msg"].all fun a => !hasNulChar a.toList) = true :=
+      all_no_nul_of_list ["commit", "--no-gpg-sign", "-m", "msg"] (by decide)
+    have hCont : (#["commit", "--no-gpg-sign", "-m", "msg"].toList.contains "commit") = true := by decide
+    unfold Impl.commitImpl Impl.runGitChecked Impl.runGitRaw
+    simp only [hRepoOk, hMsg, Bool.false_eq_true, ↓reduceIte, hExtraApp, hArgsApp, hCwdOk, hExtraOk,
+      hArgs, Bool.not_true, bind, StateT.bind, pure, List.nil_append, mockRawOps, st₀]
+    rw [hCont]
+    rfl
+  have hCommit :
+      ∃ e, (((Impl.mkApiM mockRawOps).commit "/repo" { message := "msg" }).run st₀).1 = .error e ∧
+        e.kind = .nothingToCommit := by
+    rw [hCommitRun]
+    have hKind : (Impl.classifyError "commit" commitOut).kind = .nothingToCommit := by
+      unfold Impl.classifyError
+      dsimp only [commitOut]
+      rw [show Impl.decodeUtf8Lossy ByteArray.empty = "" from rfl, decodeUtf8Lossy_toUTF8]
+      decide
+    exact ⟨_, rfl, hKind⟩
+  have hCommitEnv :
+      ((((Impl.mkApiM mockRawOps).commit "/repo" { message := "msg" }).run st₀).2.recordedEnvs.all fun env =>
+        env.toList.contains ("GIT_DIR", none) ∧
+        env.toList.contains ("GIT_TERMINAL_PROMPT", some "0") ∧
+        env.toList.contains ("GIT_CONFIG_VALUE_0", some "all")) := by
+    rw [hCommitRun]
+    dsimp only [List.all, Bool.and_true]
+    exact decide_eq_true hEnvCheck
+  have hShowRun :
+      (((Impl.mkApiM mockRawOps).showFile? "/repo" "HEAD" "subdir").run st₀).1 = .ok none ∧
+      (((Impl.mkApiM mockRawOps).showFile? "/repo" "HEAD" "subdir").run st₀).2.callCount = 2 := by
+    change (Impl.showFileImpl mockRawOps "/repo" "HEAD" "subdir" st₀).1 = .ok none ∧
+      (Impl.showFileImpl mockRawOps "/repo" "HEAD" "subdir" st₀).2.callCount = 2
+    have hStrict : isValidStrictRevSpec "HEAD" = true := by decide
+    have hRel : isValidRelRepoPath "subdir" = true := by decide
+    have hRev : isValidRevSpec "HEAD" = true := by decide
+    have hRevStr : ("HEAD" ++ "^{commit}") = "HEAD^{commit}" := rfl
+    have hArgs1 : (#["rev-parse", "-q", "--verify", "HEAD^{commit}"].all fun a => !hasNulChar a.toList) = true :=
+      all_no_nul_of_list ["rev-parse", "-q", "--verify", "HEAD^{commit}"] (by decide)
+    have hC1 : (#["rev-parse", "-q", "--verify", "HEAD^{commit}"].toList.contains "commit") = false := by decide
+    have hC2 : (#["rev-parse", "-q", "--verify", "HEAD^{commit}"].toList.contains "rev-parse") = true := by decide
+    have hCid : mkCommitId (Impl.trimTrailingNewlines (String.ofList (List.replicate 40 'a') ++ "\n")) =
+        .ok { hex := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } := by
+      rw [show Impl.trimTrailingNewlines (String.ofList (List.replicate 40 'a') ++ "\n") =
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" from by decide]
+      unfold mkCommitId
+      rw [show isValidCommitIdStr "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" = true from by decide]
+      rfl
+    have hCatStr : (toString "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ++ toString ":" ++ toString "subdir") =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:subdir" := rfl
+    have hArgs2 : (#["cat-file", "-t", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:subdir"].all
+        fun a => !hasNulChar a.toList) = true :=
+      all_no_nul_of_list ["cat-file", "-t", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:subdir"] (by decide)
+    have hD1 : (#["cat-file", "-t", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:subdir"].toList.contains "commit") = false := by decide
+    have hD2 : (#["cat-file", "-t", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:subdir"].toList.contains "rev-parse") = false := by decide
+    have hD3 : (#["cat-file", "-t", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:subdir"].toList.contains "cat-file") = true := by decide
+    have hTrim : (Impl.trimAsciiWhitespace "tree\n" != "blob") = true := by decide
+    have hShowEq : Impl.showFileImpl mockRawOps "/repo" "HEAD" "subdir" st₀ =
+        (.ok none,
+         { st₀ with
+           recordedEnvs := [cleanGitEnv st₀.inheritedEnv #[], cleanGitEnv st₀.inheritedEnv #[]]
+           recordedRequests :=
+             [{ cwd := some "/repo", args := #["rev-parse", "-q", "--verify", "HEAD^{commit}"] },
+              { cwd := some "/repo", args := #["cat-file", "-t", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:subdir"] }]
+           callCount := 2 }) := by
+      unfold Impl.showFileImpl Impl.revParseCommitImpl Impl.runGitChecked Impl.runGitRaw
+      simp only [hRepoOk, hStrict, hRel, hRev, hCwdOk, hExtraOk,
+        Bool.not_true, Bool.false_eq_true, ↓reduceIte, bind, StateT.bind, pure,
+        mockRawOps, st₀]
+      rw [hRevStr, hArgs1]
+      simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+      dsimp only [bind, StateT.bind, pure, StateT.pure]
+      rw [hC1, hC2]
+      simp only [Bool.false_eq_true, ↓reduceIte, beq_self_eq_true]
+      rw [decodeUtf8Checked_toUTF8]
+      dsimp only
+      rw [hCid]
+      dsimp only [bind, StateT.bind, pure, StateT.pure, mockRawOps]
+      rw [hCatStr, hArgs2]
+      simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+      dsimp only [bind, StateT.bind, pure, StateT.pure]
+      rw [hD1, hD2, hD3]
+      simp only [Bool.false_eq_true, ↓reduceIte, show (0 != (0 : Int)) = false from rfl]
+      rw [decodeUtf8Checked_toUTF8]
+      dsimp only
+      rw [hTrim]
+      simp only [↓reduceIte]
+      rfl
+    rw [hShowEq]
+    exact ⟨rfl, rfl⟩
+  have hFetch : ∃ e, (((Impl.mkApiM mockRawOps).fetch "/repo" "--upload-pack=evil" none false).run st₀).1 = .error e ∧
+      e.kind = .invalidInput ∧
+      (((Impl.mkApiM mockRawOps).fetch "/repo" "--upload-pack=evil" none false).run st₀).2.callCount = 0 := by
+    change ∃ e, (Impl.fetchImpl mockRawOps "/repo" "--upload-pack=evil" none false st₀).1 = .error e ∧
+      e.kind = .invalidInput ∧
+      (Impl.fetchImpl mockRawOps "/repo" "--upload-pack=evil" none false st₀).2.callCount = 0
+    unfold Impl.fetchImpl
+    rw [hRepoOk, show isValidRemoteOrRefspec "--upload-pack=evil" = false from by decide]
+    exact ⟨_, rfl, rfl, rfl⟩
+  have hAdd : ∃ e, (((Impl.mkApiM mockRawOps).add "/repo" #[] false).run st₀).1 = .error e ∧
+      e.kind = .invalidInput ∧
+      (((Impl.mkApiM mockRawOps).add "/repo" #[] false).run st₀).2.callCount = 0 := by
+    change ∃ e, (Impl.addImpl mockRawOps "/repo" #[] false st₀).1 = .error e ∧
+      e.kind = .invalidInput ∧
+      (Impl.addImpl mockRawOps "/repo" #[] false st₀).2.callCount = 0
+    unfold Impl.addImpl
+    rw [hRepoOk]
+    exact ⟨_, rfl, rfl, rfl⟩
+  have hColon : ∃ e, (((Impl.mkApiM mockRawOps).showFile? "/repo" "HEAD:etc/passwd" "a").run st₀).1 = .error e ∧
+      e.kind = .invalidInput ∧
+      (((Impl.mkApiM mockRawOps).showFile? "/repo" "HEAD:etc/passwd" "a").run st₀).2.callCount = 0 := by
+    change ∃ e, (Impl.showFileImpl mockRawOps "/repo" "HEAD:etc/passwd" "a" st₀).1 = .error e ∧
+      e.kind = .invalidInput ∧
+      (Impl.showFileImpl mockRawOps "/repo" "HEAD:etc/passwd" "a" st₀).2.callCount = 0
+    unfold Impl.showFileImpl
+    rw [hRepoOk, show isValidStrictRevSpec "HEAD:etc/passwd" = false from by decide]
+    exact ⟨_, rfl, rfl, rfl⟩
+  exact ⟨hCommit, hCommitEnv, hShowRun, hFetch, hAdd, hColon, trivial⟩
 
 /-- Proof of `empirical_git_status_parsesRealOutput` for `parsePorcelainStatusZ`. -/
 theorem proof_empirical_git_status_parsesRealOutput :
     AllPass (empirical_git_status_parsesRealOutput parsePorcelainStatusZ) := by
-  cbv
-  exact ⟨rfl, trivial⟩
+  dsimp only [empirical_git_status_parsesRealOutput, AllPass, assert]
+  refine ⟨?_, trivial⟩
+  let s := " M a b.txt\x00R  new name.txt\x00old name.txt\x00?? untrack.txt\x00"
+  have hsList : s.toList =
+      " M a b.txt".toList ++ Char.ofNat 0 ::
+      ("R  new name.txt".toList ++ Char.ofNat 0 ::
+      ("old name.txt".toList ++ Char.ofNat 0 ::
+      ("?? untrack.txt".toList ++ Char.ofNat 0 :: []))) := by decide
+  have h4 : splitNulRecordsAux [] ("?? untrack.txt".toList ++ Char.ofNat 0 :: []) = some ["?? untrack.txt"] :=
+    splitNulRecordsAux_step "?? untrack.txt" [] [] (by decide) (by decide) rfl
+  have h3 := splitNulRecordsAux_step "old name.txt" _ _ (by decide) (by decide) h4
+  have h2 := splitNulRecordsAux_step "R  new name.txt" _ _ (by decide) (by decide) h3
+  have h1 := splitNulRecordsAux_step " M a b.txt" _ _ (by decide) (by decide) h2
+  have hToks : splitNulRecordsAux [] s.toList =
+      some [" M a b.txt", "R  new name.txt", "old name.txt", "?? untrack.txt"] := by
+    rw [hsList]; exact h1
+  have hRecs : parsePorcelainStatusRecords
+      [" M a b.txt", "R  new name.txt", "old name.txt", "?? untrack.txt"] =
+      .ok [ { indexStatus := none, worktreeStatus := some .modified, path := "a b.txt" },
+            { indexStatus := some .renamed, worktreeStatus := none, path := "new name.txt", origPath := some "old name.txt" },
+            { indexStatus := some .untracked, worktreeStatus := some .untracked, path := "untrack.txt" } ] := by
+    have hr3 : parsePorcelainStatusRecords ["?? untrack.txt"] =
+        .ok [{ indexStatus := some .untracked, worktreeStatus := some .untracked, path := "untrack.txt" }] := by
+      rw [parsePorcelainStatusRecords_plain "?? untrack.txt" "untrack.txt" '?' '?' [] (some .untracked) (some .untracked)
+        (by decide) (by decide) (by decide) rfl rfl ⟨by decide, by decide⟩ ⟨by decide, by decide⟩]
+      rfl
+    have hr2 : parsePorcelainStatusRecords ["R  new name.txt", "old name.txt", "?? untrack.txt"] =
+        .ok [ { indexStatus := some .renamed, worktreeStatus := none, path := "new name.txt", origPath := some "old name.txt" },
+              { indexStatus := some .untracked, worktreeStatus := some .untracked, path := "untrack.txt" } ] := by
+      rw [parsePorcelainStatusRecords_rc "R  new name.txt" "new name.txt" "old name.txt" 'R' ' ' ["?? untrack.txt"]
+        (some .renamed) none (by decide) (by decide) (by decide) rfl rfl (by decide), hr3]
+      rfl
+    rw [parsePorcelainStatusRecords_plain " M a b.txt" "a b.txt" ' ' 'M'
+      ["R  new name.txt", "old name.txt", "?? untrack.txt"] none (some .modified)
+      (by decide) (by decide) (by decide) rfl rfl ⟨by decide, by decide⟩ ⟨by decide, by decide⟩, hr2]
+    rfl
+  exact parsePorcelainStatusZ_ok_of s _ _ (toUTF8_nonempty_of_ne (by decide)) hToks hRecs
 
 /-- Proof of `empirical_git_worktreeList_parsesRealOutput` for `parseWorktreeListPorcelain`. -/
 theorem proof_empirical_git_worktreeList_parsesRealOutput :
@@ -1017,10 +1576,8 @@ theorem proof_empirical_git_worktreeList_parsesRealOutput :
     have he := (toUTF8_eq_empty_iff s).mp h
     have hl := congrArg String.length he
     simp [s] at hl
-  have hsha : sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" := by decide
-  have hHead : hasNulChar ("HEAD " ++ sha).toList = false := by
-    simp [hsha]
-    decide
+  have hHead : hasNulChar ("HEAD " ++ sha).toList = false :=
+    hasNulChar_head_rep40 40 'a' (by decide)
   have h1 : "worktree /tmp/main\x00HEAD ".toList =
       "worktree /tmp/main".toList ++ Char.ofNat 0 :: "HEAD ".toList := by decide
   have h2 : "\x00branch refs/heads/main\x00\x00worktree /tmp/wt\x00HEAD ".toList =
@@ -1038,26 +1595,63 @@ theorem proof_empirical_git_worktreeList_parsesRealOutput :
       ("detached".toList ++ Char.ofNat 0 ::
       ("".toList ++ Char.ofNat 0 :: []))))))) := by
     simp only [s, String.toList_append, h1, h2, h3, List.append_assoc, List.cons_append]
-  unfold parseWorktreeListPorcelain
-  rw [hEmptyFalse, fromUTF8_toUTF8 s]
-  dsimp only
+  have ht8 : splitNulTokensAllowEmptyAux [] ("".toList ++ Char.ofNat 0 :: []) = some [""] :=
+    splitNulTokensAllowEmptyAux_step "" [] [] (by decide) rfl
+  have ht7 := splitNulTokensAllowEmptyAux_step "detached" _ _ (by decide) ht8
+  have ht6 := splitNulTokensAllowEmptyAux_step ("HEAD " ++ sha) _ _ hHead ht7
+  have ht5 := splitNulTokensAllowEmptyAux_step "worktree /tmp/wt" _ _ (by decide) ht6
+  have ht4 := splitNulTokensAllowEmptyAux_step "" _ _ (by decide) ht5
+  have ht3 := splitNulTokensAllowEmptyAux_step "branch refs/heads/main" _ _ (by decide) ht4
+  have ht2 := splitNulTokensAllowEmptyAux_step ("HEAD " ++ sha) _ _ hHead ht3
+  have ht1 := splitNulTokensAllowEmptyAux_step "worktree /tmp/main" _ _ (by decide) ht2
   have hToks : splitNulTokensAllowEmptyAux [] s.toList =
       some ["worktree /tmp/main", "HEAD " ++ sha, "branch refs/heads/main", "", "worktree /tmp/wt", "HEAD " ++ sha, "detached", ""] := by
-    rw [hsList]
-    rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
-    rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ hHead]
-    rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
-    rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
-    rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
-    rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ hHead]
-    rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
-    rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
-    have hNil : splitNulTokensAllowEmptyAux [] [] = some [] := rfl
-    rw [hNil]
-    simp only [List.reverse_nil, List.nil_append, String.ofList_toList, Option.map]
-  have hRep : String.ofList (List.replicate 40 'a') = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" := by decide
-  rw [hToks, hsha, hRep]
-  rfl
+    rw [hsList]; exact ht1
+  let haLine := "HEAD " ++ sha
+  have hCidA : mkCommitId sha = .ok { hex := sha } := by
+    unfold mkCommitId
+    rw [isValidCommitIdStr_rep40_a]
+    rfl
+  have hRefMain : mkRefName "main" = .ok { raw := "main" } := by
+    unfold mkRefName
+    rw [show isValidRefNameStr "main" = true from by decide]
+    rfl
+  have hStz : splitWorktreeStanzas []
+      ["worktree /tmp/main", haLine, "branch refs/heads/main", "", "worktree /tmp/wt", haLine, "detached", ""] =
+      some [["worktree /tmp/main", haLine, "branch refs/heads/main"],
+            ["worktree /tmp/wt", haLine, "detached"]] := by
+    rw [splitWorktreeStanzas_tok _ _ _ (by decide), splitWorktreeStanzas_tok _ _ _ (head_str_ne_empty sha)]
+    rw [splitWorktreeStanzas_tok _ _ _ (by decide), splitWorktreeStanzas_empty _ _ (by decide)]
+    rw [splitWorktreeStanzas_tok _ _ _ (by decide), splitWorktreeStanzas_tok _ _ _ (head_str_ne_empty sha)]
+    rw [splitWorktreeStanzas_tok _ _ _ (by decide), splitWorktreeStanzas_empty _ _ (by decide)]
+    rfl
+  have hP1 : parseWorktreeStanza ["worktree /tmp/main", haLine, "branch refs/heads/main"] =
+      .ok { path := "/tmp/main", head? := some { hex := sha }, branch? := some { raw := "main" } } := by
+    rw [parseWorktreeStanza_worktree "worktree /tmp/main" "/tmp/main"
+      [haLine, "branch refs/heads/main"] (by decide) (by decide)]
+    rw [parseWorktreeAttrs_head_commit _ _ sha { hex := sha } _ isAllZeros_rep40_a hCidA]
+    rw [parseWorktreeAttrs_branch _ _ "branch refs/heads/main" "refs/heads/main" "main" { raw := "main" } _
+      (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) hRefMain]
+    rfl
+  have hP2 : parseWorktreeStanza ["worktree /tmp/wt", haLine, "detached"] =
+      .ok { path := "/tmp/wt", head? := some { hex := sha }, branch? := none, isDetached := true } := by
+    rw [parseWorktreeStanza_worktree "worktree /tmp/wt" "/tmp/wt"
+      [haLine, "detached"] (by decide) (by decide)]
+    rw [parseWorktreeAttrs_head_commit _ _ sha { hex := sha } _ isAllZeros_rep40_a hCidA]
+    rw [parseWorktreeAttrs_detached]
+    rfl
+  have hInfos : parseWorktreeStanzas
+      [["worktree /tmp/main", haLine, "branch refs/heads/main"],
+       ["worktree /tmp/wt", haLine, "detached"]] =
+      .ok [{ path := "/tmp/main", head? := some { hex := sha }, branch? := some { raw := "main" } },
+           { path := "/tmp/wt", head? := some { hex := sha }, branch? := none, isDetached := true }] := by
+    unfold parseWorktreeStanzas
+    rw [hP1]
+    dsimp only [bind, Except.bind, pure, Except.pure]
+    unfold parseWorktreeStanzas
+    rw [hP2]
+    rfl
+  exact parseWorktreeListPorcelain_ok_of s _ _ _ hEmptyFalse hToks hStz hInfos
 
 /-- `Impl.ensureNonEmptyMsg` always returns a non-empty string when `fallback ≠ ""`. -/
 theorem proof_git_ensureNonEmptyMsg_nonEmpty (fallback msg : String) (hf : fallback ≠ "") :

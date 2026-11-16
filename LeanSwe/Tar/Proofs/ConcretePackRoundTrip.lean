@@ -9,6 +9,8 @@ import LeanSwe.Tar.Proofs.EncodeStep
 import LeanSwe.Tar.Proofs.Universal
 import LeanSwe.Tar.Proofs.ConcreteHelpers
 
+set_option Elab.async false
+
 namespace LeanSwe.Tar.Proofs
 
 open Core
@@ -372,6 +374,77 @@ private theorem checkRoundTripCase_test1_empty_ex :
     exact hloop
   exact ⟨bytes, hpack, hsz, hunpack⟩
 
+private theorem string_ofList_replicate_isEmpty_false (n : Nat) (hn : 0 < n) (c : Char) :
+    (String.ofList (List.replicate n c)).isEmpty = false := by
+  have h1 : (String.ofList (List.replicate n c)).length = n := by
+    simp only [String.length_ofList, List.length_replicate]
+  cases h : (String.ofList (List.replicate n c)).isEmpty
+  · rfl
+  · have he := String.isEmpty_iff.mp h
+    rw [he] at h1
+    have h0 : ("" : String).length = 0 := rfl
+    omega
+
+private theorem validEntryBool_reg_p (p norm : String)
+    (mode : UInt32) (uid gid mtime : Nat) (uname gname : String) (data : ByteArray)
+    (hval : validateEntryPath false false .regular p = .ok norm)
+    (hu : (!hasNulString uname) = true) (hg : (!hasNulString gname) = true)
+    (huid : uid < u64Limit) (hgid : gid < u64Limit) (hmtime : mtime < u64Limit)
+    (hsz : data.size < u64Limit) :
+    validEntryBool false false
+      { path := p, kind := .regular, mode := mode, uid := uid, gid := gid,
+        mtime := mtime, uname := uname, gname := gname, data := data } = true := by
+  simp only [validEntryBool, hval, hu, hg, huid, hgid, hmtime, hsz,
+    decide_true, Bool.and_true, beq_self_eq_true]
+
+private theorem validEntryBool_sym_lnk (lnk : String)
+    (hsym : validateSymlinkTarget false false "sub/link" lnk = .ok ()) :
+    validEntryBool false false { path := "sub/link", kind := .symlink, mode := 0o777, linkTarget := lnk } = true := by
+  have hval : validateEntryPath false false .symlink "sub/link" = .ok "sub/link" := rfl
+  have h0 : (0 : Nat) < u64Limit := by decide
+  have hnu : (!hasNulString "") = true := by decide
+  have hsz : (ByteArray.empty).size = 0 := rfl
+  simp only [validEntryBool, hval, hsym, h0, hnu, hsz, decide_true,
+    Bool.and_true, beq_self_eq_true]
+
+private theorem noDupNormalizedPathsBool_singleton (e : TarEntry) (p : String)
+    (hnp : normalizeTarPath e.kind e.path = p) :
+    noDupNormalizedPathsBool [e] = true := by
+  simp only [noDupNormalizedPathsBool, noDupNormalizedPathsBool.go.eq_2,
+    noDupNormalizedPathsBool.go.eq_1, hnp, List.contains, List.elem]
+  rfl
+
+private theorem noDupNormalizedPathsBool_four (e1 e2 e3 e4 : TarEntry) (p1 p2 p3 p4 : String)
+    (h1 : normalizeTarPath e1.kind e1.path = p1)
+    (h2 : normalizeTarPath e2.kind e2.path = p2)
+    (h3 : normalizeTarPath e3.kind e3.path = p3)
+    (h4 : normalizeTarPath e4.kind e4.path = p4)
+    (h21 : (p2 == p1) = false)
+    (h32 : (p3 == p2) = false) (h31 : (p3 == p1) = false)
+    (h43 : (p4 == p3) = false) (h42 : (p4 == p2) = false) (h41 : (p4 == p1) = false) :
+    noDupNormalizedPathsBool [e1, e2, e3, e4] = true := by
+  simp only [noDupNormalizedPathsBool, noDupNormalizedPathsBool.go.eq_2,
+    noDupNormalizedPathsBool.go.eq_1, h1, h2, h3, h4, List.contains, List.elem,
+    h21, h32, h31, h43, h42, h41]
+  rfl
+
+private theorem validArchive_singleton_of (allowAbs allowParent : Bool) (e : TarEntry)
+    (he : validEntryBool allowAbs allowParent e = true)
+    (hnp : noDupNormalizedPathsBool [e] = true) :
+    ValidArchive allowAbs allowParent [e] := by
+  unfold ValidArchive validArchiveBool
+  simp only [List.all_cons, List.all_nil, Bool.and_true, he, hnp]
+
+private theorem validArchive_four_of (allowAbs allowParent : Bool) (e1 e2 e3 e4 : TarEntry)
+    (he1 : validEntryBool allowAbs allowParent e1 = true)
+    (he2 : validEntryBool allowAbs allowParent e2 = true)
+    (he3 : validEntryBool allowAbs allowParent e3 = true)
+    (he4 : validEntryBool allowAbs allowParent e4 = true)
+    (hnd : noDupNormalizedPathsBool [e1, e2, e3, e4] = true) :
+    ValidArchive allowAbs allowParent [e1, e2, e3, e4] := by
+  unfold ValidArchive validArchiveBool
+  simp only [List.all_cons, List.all_nil, Bool.and_true, he1, he2, he3, he4, hnd]
+
 private theorem test1_split_props (splitPath : String) (splitEntry : TarEntry)
     (hsp : splitPath = String.ofList (List.replicate 60 'd') ++ "/" ++ String.ofList (List.replicate 60 'f'))
     (hse : splitEntry = { path := splitPath, kind := .regular, data := "hi".toUTF8 }) :
@@ -400,32 +473,29 @@ private theorem test1_split_props (splitPath : String) (splitEntry : TarEntry)
   have hv : ValidArchive false false
       [{ path := String.ofList (List.replicate 60 'd') ++ "/" ++ String.ofList (List.replicate 60 'f'),
          kind := .regular, data := "hi".toUTF8 }] := by
-    unfold ValidArchive validArchiveBool
-    simp only [List.all_cons, List.all_nil, Bool.and_true, validEntryBool,
-      hval, noDupNormalizedPathsBool, noDupNormalizedPathsBool.go.eq_2,
-      noDupNormalizedPathsBool.go.eq_1, hnp]
     have hhi : ("hi".toUTF8).size < u64Limit := by
       rw [toUTF8_eq_toByteArray, List.size_toByteArray]; decide
     have h0 : (0 : Nat) < u64Limit := by decide
     have hnu : (!hasNulString "") = true := by decide
-    simp only [hhi, h0, hnu, decide_true, Bool.true_and, Bool.and_true, beq_self_eq_true,
-      List.contains, List.elem]
-    rfl
+    have hve := validEntryBool_reg_p _ _ 0o644 0 0 0 "" "" "hi".toUTF8 hval hnu hnu h0 h0 h0 hhi
+    exact validArchive_singleton_of false false _ hve (noDupNormalizedPathsBool_singleton _ _ hnp)
   have hfind : (findUstarSplit
       (String.ofList (List.replicate 60 'd') ++ "/" ++ String.ofList (List.replicate 60 'f'))).isSome = true := by
     unfold findUstarSplit
     have hlist : (String.ofList (List.replicate 60 'd') ++ "/" ++ String.ofList (List.replicate 60 'f')).toList =
         List.replicate 60 'd' ++ ('/' :: List.replicate 60 'f') := by
-      simp
+      rw [String.toList_append, String.toList_append, String.toList_ofList, String.toList_ofList,
+        List.append_assoc]
+      rfl
     have hno : (List.replicate 60 'd').all (fun c => c != '/') = true := by
       rw [list_all_replicate]; decide
     rw [hlist, findUstarSplit_go_noSlash [] (List.replicate 60 'd') ('/' :: List.replicate 60 'f') hno,
       List.append_nil, List.reverse_replicate, findUstarSplit.go.eq_2, List.reverse_replicate,
       toUTF8_size_ofList_replicate 60 (by decide), toUTF8_size_ofList_replicate 60 (by decide)]
-    have he1 : (String.ofList (List.replicate 60 'd')).isEmpty = false := by decide
-    have he2 : (String.ofList (List.replicate 60 'f')).isEmpty = false := by decide
-    rw [he1, he2]
-    decide
+    have he1 := string_ofList_replicate_isEmpty_false 60 (by decide) 'd'
+    have he2 := string_ofList_replicate_isEmpty_false 60 (by decide) 'f'
+    rw [he1, he2, ite_eq_left (by decide)]
+    rfl
   have hneeds : needsPax
       { path := String.ofList (List.replicate 60 'd') ++ "/" ++ String.ofList (List.replicate 60 'f'),
         kind := .regular, data := "hi".toUTF8 }
@@ -537,11 +607,6 @@ private theorem test1_e14_props (paxBoundaryPath paxLongPath : String) (e1 e2 e3
        { path := "sub/link", kind := .symlink, mode := 0o777,
          linkTarget := "../" ++ String.ofList (List.replicate 91 'p') },
        { path := String.ofList (List.replicate 260 'x') ++ "/café.txt", kind := .regular, mode := 0o644 }] := by
-    unfold ValidArchive validArchiveBool
-    simp only [List.all_cons, List.all_nil, Bool.and_true, validEntryBool,
-      hval_e1, hval_e2, hval_e3, hval_e4, hsym_e3,
-      noDupNormalizedPathsBool, noDupNormalizedPathsBool.go.eq_2, noDupNormalizedPathsBool.go.eq_1,
-      hnp1, hnp2, hnp3, hnp4]
     have hpay : ("payload".toUTF8).size < u64Limit := by
       rw [toUTF8_eq_toByteArray, List.size_toByteArray]; decide
     have hn1 : (!hasNulString "üser") = true := by decide
@@ -551,9 +616,15 @@ private theorem test1_e14_props (paxBoundaryPath paxLongPath : String) (e1 e2 e3
     have hlt3 : ustarOctal11Limit + 42 < u64Limit := by decide
     have he_nul : (!hasNulString "") = true := by decide
     have h0_lt : (0 : Nat) < u64Limit := by decide
-    have hb_sz : (ByteArray.empty).size = 0 := rfl
-    simp only [hpay, hn1, hn2, hlt1, hlt2, hlt3, he_nul, h0_lt, hb_sz,
-      decide_true, Bool.true_and, Bool.and_true, beq_self_eq_true]
+    have hb_sz : (ByteArray.empty).size < u64Limit := h0_lt
+    have hve1 := validEntryBool_reg_p _ _ 0o100755 (ustarOctal7Limit + 7) (ustarOctal7Limit + 9)
+      (ustarOctal11Limit + 42) "üser" "grøup" "payload".toUTF8 hval_e1 hn1 hn2 hlt1 hlt2 hlt3 hpay
+    have hve2 : validEntryBool false false { path := "sub/", kind := .directory, mode := 0o755 } = true := by
+      simp only [validEntryBool, hval_e2]
+      decide
+    have hve3 := validEntryBool_sym_lnk _ hsym_e3
+    have hve4 := validEntryBool_reg_p _ _ 0o644 0 0 0 "" "" ByteArray.empty hval_e4
+      he_nul he_nul h0_lt h0_lt h0_lt hb_sz
     have hlen91 : (String.ofList (List.replicate 91 'p')).length = 91 := by
       simp only [String.length_ofList, List.length_replicate]
     have hcaf : ("/café.txt" : String).length = 9 := by decide
@@ -590,8 +661,8 @@ private theorem test1_e14_props (paxBoundaryPath paxLongPath : String) (e1 e2 e3
       intro heq
       have hlen := congrArg String.length heq
       omega
-    simp only [List.contains, List.elem, h21, h32, h31, h43, h42, h41]
-    rfl
+    exact validArchive_four_of false false _ _ _ _ hve1 hve2 hve3 hve4
+      (noDupNormalizedPathsBool_four _ _ _ _ _ _ _ _ hnp1 hnp2 hnp3 hnp4 h21 h32 h31 h43 h42 h41)
   have his1 : isAsciiString (String.ofList (List.replicate 91 'p')) = true :=
     isAsciiString_ofList_replicate 91 (by decide)
   have hsz1 : (String.ofList (List.replicate 91 'p')).toUTF8.size = 91 :=
