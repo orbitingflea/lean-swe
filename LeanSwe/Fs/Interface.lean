@@ -193,4 +193,17 @@ def defaultApi : FsApi :=
     IO (Except FsError (Option α)) :=
   defaultApi.tryWithFileLock path mode createIfMissing action
 
+/-- Default single-step directory-descriptor operations (`RawDirOps`) backed by `c/fs_shim.c`. -/
+def defaultDirOps : RawDirOps :=
+  Raw.defaultDirOps
+
+/-- Default `SubtreeOpener` backed by `defaultDirOps`. -/
+def defaultSubtreeOpener : SubtreeOpener :=
+  Internal.mkSubtreeOpenerM defaultDirOps
+
+/-- Open `rootPath` once as a confined directory handle, execute `action`, and always close the handle on exit. -/
+@[inline] def withSubtree {α : Type} (rootPath : String)
+    (action : Subtree → IO (Except FsError α)) : IO (Except FsError α) :=
+  defaultSubtreeOpener.withSubtree rootPath action
+
 end LeanSwe.Fs

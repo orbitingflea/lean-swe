@@ -114,4 +114,126 @@ def defaultOps : RawFsOps :=
 @[inline] def releaseLock (handle : LockHandle) : IO (Except FsError Unit) :=
   defaultOps.releaseLock handle
 
+@[extern "leanswe_fs_open_dir"]
+private opaque rawOpenDir : @& String → IO UInt64
+
+@[extern "leanswe_fs_open_dir_at"]
+private opaque rawOpenDirAt : UInt64 → @& String → IO UInt64
+
+@[extern "leanswe_fs_close_dir"]
+private opaque rawCloseDir : UInt64 → @& String → IO Unit
+
+@[extern "leanswe_fs_fstat_dir"]
+private opaque rawFstatDir : UInt64 → @& String → IO (UInt8 × UInt64 × UInt32 × Int × UInt32 × Int × UInt32)
+
+@[extern "leanswe_fs_lstat_at"]
+private opaque rawLstatAt : UInt64 → @& String → IO (UInt8 × UInt64 × UInt32 × Int × UInt32 × Int × UInt32)
+
+@[extern "leanswe_fs_read_dir_at"]
+private opaque rawReadDirAt : UInt64 → @& String → IO (Array String)
+
+@[extern "leanswe_fs_create_dir_at"]
+private opaque rawCreateDirAt : UInt64 → @& String → IO Unit
+
+@[extern "leanswe_fs_read_regular_at"]
+private opaque rawReadRegularAt : UInt64 → @& String → IO ByteArray
+
+@[extern "leanswe_fs_create_file_at"]
+private opaque rawCreateFileAt : UInt64 → @& String → @& ByteArray → IO Unit
+
+@[extern "leanswe_fs_rename_at"]
+private opaque rawRenameAt : UInt64 → @& String → UInt64 → @& String → IO Unit
+
+@[extern "leanswe_fs_unlink_at"]
+private opaque rawUnlinkAt : UInt64 → @& String → Bool → IO Unit
+
+@[extern "leanswe_fs_symlink_at"]
+private opaque rawSymlinkAt : @& String → UInt64 → @& String → IO Unit
+
+@[extern "leanswe_fs_acquire_lock_at"]
+private opaque rawAcquireLockAt : UInt64 → @& String → UInt8 → Bool → Bool → IO (UInt8 × UInt64 × UInt32)
+
+@[extern "leanswe_fs_fresh_temp_nonce"]
+private opaque rawFreshTempNonce : IO UInt64
+
+private def posixDirOps : Internal.PosixDirOps :=
+  { openDir := rawOpenDir
+    openDirAt := rawOpenDirAt
+    closeDir := rawCloseDir
+    fstatDir := rawFstatDir
+    lstatAt := rawLstatAt
+    readDirAt := rawReadDirAt
+    createDirAt := rawCreateDirAt
+    readRegularAt := rawReadRegularAt
+    createFileAt := rawCreateFileAt
+    renameAt := rawRenameAt
+    unlinkAt := rawUnlinkAt
+    symlinkAt := rawSymlinkAt
+    acquireLockAt := rawAcquireLockAt
+    releaseLock := rawReleaseLock
+    freshTempNonce := rawFreshTempNonce }
+
+/-- Default single-step directory-descriptor primitives backed by `c/fs_shim.c`. -/
+def defaultDirOps : RawDirOps :=
+  Internal.mkRawDirOps posixDirOps
+
+/-- Open `rootPath` directory returning a pinned `DirHandle`. -/
+@[inline] def openDir (rootPath : String) : IO (Except FsError DirHandle) :=
+  defaultDirOps.openDir rootPath
+
+/-- Open immediate child directory `name` under `dh` without following symlinks. -/
+@[inline] def openDirAt (dh : DirHandle) (name : EntryName) : IO (Except FsError DirHandle) :=
+  defaultDirOps.openDirAt dh name
+
+/-- Close an open `DirHandle`. -/
+@[inline] def closeDir (dh : DirHandle) : IO (Except FsError Unit) :=
+  defaultDirOps.closeDir dh
+
+/-- Inspect metadata of the open directory referenced by `dh` (`fstat`). -/
+@[inline] def fstatDir (dh : DirHandle) : IO (Except FsError FileStat) :=
+  defaultDirOps.fstatDir dh
+
+/-- Inspect metadata of immediate child `name` under `dh` without following symlinks. -/
+@[inline] def lstatAt (dh : DirHandle) (name : EntryName) : IO (Except FsError FileStat) :=
+  defaultDirOps.lstatAt dh name
+
+/-- List unsorted immediate entry names inside `dh` (excluding `.` and `..`). -/
+@[inline] def readDirAt (dh : DirHandle) : IO (Except FsError (Array EntryName)) :=
+  defaultDirOps.readDirAt dh
+
+/-- Create immediate child directory `name` under `dh` (`0o755`). -/
+@[inline] def createDirAt (dh : DirHandle) (name : EntryName) : IO (Except FsError Unit) :=
+  defaultDirOps.createDirAt dh name
+
+/-- Read entire regular file `name` under `dh` without following symlinks or blocking. -/
+@[inline] def readRegularAt (dh : DirHandle) (name : EntryName) : IO (Except FsError ByteArray) :=
+  defaultDirOps.readRegularAt dh name
+
+/-- Atomically create a new regular file `name` under `dh` (`O_CREAT | O_EXCL | O_NOFOLLOW`, `0o644`). -/
+@[inline] def createFileAt (dh : DirHandle) (name : EntryName) (bytes : ByteArray) : IO (Except FsError Unit) :=
+  defaultDirOps.createFileAt dh name bytes
+
+/-- Atomically rename `(srcDh, srcName)` to `(dstDh, dstName)`. -/
+@[inline] def renameAt (srcDh : DirHandle) (srcName : EntryName) (dstDh : DirHandle) (dstName : EntryName) :
+    IO (Except FsError Unit) :=
+  defaultDirOps.renameAt srcDh srcName dstDh dstName
+
+/-- Remove child entry (`isDir = false`) or empty child directory (`isDir = true`) under `dh`. -/
+@[inline] def unlinkAt (dh : DirHandle) (name : EntryName) (isDir : Bool) : IO (Except FsError Unit) :=
+  defaultDirOps.unlinkAt dh name isDir
+
+/-- Create symbolic link `(target, linkDh, linkName)`. -/
+@[inline] def symlinkAt (target : String) (linkDh : DirHandle) (linkName : EntryName) :
+    IO (Except FsError Unit) :=
+  defaultDirOps.symlinkAt target linkDh linkName
+
+/-- Acquire an advisory `flock(2)` lock on child `name` under `dh` without following symlinks. -/
+@[inline] def acquireLockAt (dh : DirHandle) (name : EntryName) (mode : LockMode := .exclusive)
+    (createIfMissing : Bool := true) (nonBlocking : Bool := false) : IO (Except FsError LockHandle) :=
+  defaultDirOps.acquireLockAt dh name mode createIfMissing nonBlocking
+
+/-- Generate a short target-independent temporary sibling `EntryName`. -/
+@[inline] def freshTempName : IO EntryName :=
+  defaultDirOps.freshTempName
+
 end LeanSwe.Fs.Raw

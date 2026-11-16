@@ -1,6 +1,10 @@
 import LeanSwe.Fs.Interface
 import LeanSwe.Fs.SpecTests
 import LeanSwe.Fs.Raw.Proofs
+import LeanSwe.Fs.Proofs.RawDirOps
+import LeanSwe.Fs.Proofs.SubtreeIsolation
+import LeanSwe.Fs.Proofs.SubtreeModelSpecs
+import LeanSwe.Fs.Proofs.SubtreeTests
 
 namespace LeanSwe.Fs.Proofs
 

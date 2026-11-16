@@ -2,7 +2,9 @@ import LeanSwe.Fs.Raw.Types
 
 namespace LeanSwe.Fs.Raw.Internal
 
-open LeanSwe.Fs.Raw (FsErrorKind FsError EntryKind FileStat FsRawError LockMode LockHandle RawFsOpsM RawFsOps)
+open LeanSwe.Fs.Raw
+  (FsErrorKind FsError EntryKind FileStat FsRawError LockMode LockHandle RawFsOpsM RawFsOps
+   DirHandle EntryName RawDirOps validSeg isValidDirHandleId)
 
 /-- POSIX FFI operations injected by `LeanSwe.Fs.Raw.Interface`. -/
 structure PosixRawOps where
@@ -183,5 +185,156 @@ def mkRawOps (posix : PosixRawOps) : RawFsOps :=
       if handle.handleId == 0 || handle.handleId ≥ UInt64.size then
         return .error (mapRawError (.invalidArgument (some handle.path) 22 "invalid lock handle"))
       catchFs (some handle.path) (posix.releaseLock (UInt64.ofNat handle.handleId) handle.path) }
+
+/-- POSIX directory-descriptor FFI hooks injected by `LeanSwe.Fs.Raw.Interface`. -/
+structure PosixDirOps where
+  /-- Open `root` directory descriptor returning an opaque slot ID. -/
+  openDir : String → IO UInt64
+  /-- Open child directory `name` under `dirId` without following symlinks. -/
+  openDirAt : UInt64 → String → IO UInt64
+  /-- Close open directory descriptor `dirId`. -/
+  closeDir : UInt64 → String → IO Unit
+  /-- Inspect metadata of open directory descriptor `dirId` (`fstat`). -/
+  fstatDir : UInt64 → String → IO (UInt8 × UInt64 × UInt32 × Int × UInt32 × Int × UInt32)
+  /-- Inspect metadata of child `name` under `dirId` without following symlinks (`fstatat`). -/
+  lstatAt : UInt64 → String → IO (UInt8 × UInt64 × UInt32 × Int × UInt32 × Int × UInt32)
+  /-- Read raw child entry names under `dirId`. -/
+  readDirAt : UInt64 → String → IO (Array String)
+  /-- Create child directory `name` under `dirId` (`0o755`). -/
+  createDirAt : UInt64 → String → IO Unit
+  /-- Read regular file `name` under `dirId` without following symlinks or blocking. -/
+  readRegularAt : UInt64 → String → IO ByteArray
+  /-- Create new regular file `name` under `dirId` (`O_CREAT | O_EXCL | O_NOFOLLOW`, `0o644`). -/
+  createFileAt : UInt64 → String → ByteArray → IO Unit
+  /-- Rename `(srcId, srcName)` to `(dstId, dstName)`. -/
+  renameAt : UInt64 → String → UInt64 → String → IO Unit
+  /-- Unlink child (`isDir = false`) or remove empty child directory (`isDir = true`). -/
+  unlinkAt : UInt64 → String → Bool → IO Unit
+  /-- Create symbolic link `(target, dirId, name)`. -/
+  symlinkAt : String → UInt64 → String → IO Unit
+  /-- Acquire advisory lock on child `name` under `dirId`, returning `(status, handleId, errno)`. -/
+  acquireLockAt : UInt64 → String → UInt8 → Bool → Bool → IO (UInt8 × UInt64 × UInt32)
+  /-- Release an advisory file lock handle `(handleId, path)`. -/
+  releaseLock : UInt64 → String → IO Unit
+  /-- Return a strictly monotonic non-zero process-local counter value. -/
+  freshTempNonce : IO UInt64
+
+/-- Convert a packed C `stat` tuple into `FileStat`. -/
+def toFileStat (raw : UInt8 × UInt64 × UInt32 × Int × UInt32 × Int × UInt32) : FileStat :=
+  let (kindByte, sz, mode, mSec, mNsec, aSec, aNsec) := raw
+  let kind : EntryKind :=
+    match kindByte.toNat with
+    | 0 => .file
+    | 1 => .dir
+    | 2 => .symlink
+    | _ => .other
+  { kind := kind
+    byteSize := sz.toNat
+    mode := mode.toNat
+    modifiedSec := mSec
+    modifiedNsec := mNsec.toNat
+    accessedSec := aSec
+    accessedNsec := aNsec.toNat }
+
+/-- Validate `DirHandle.handleId` before casting to `UInt64`, returning `.invalidInput` when out of range. -/
+def checkDirHandle (dh : DirHandle) (fallbackPath : String) : Except FsError UInt64 :=
+  if !isValidDirHandleId dh.handleId then
+    .error (mapRawError (.invalidArgument (some fallbackPath) 22 "invalid directory handle"))
+  else
+    .ok (UInt64.ofNat dh.handleId)
+
+/-- Parse and deduplicate raw OS directory entry names into `EntryName` values. -/
+def parseUniqueEntryNames (raw : Array String) : Except FsError (Array EntryName) := do
+  let mut out : Array EntryName := #[]
+  for s in raw do
+    let name ← EntryName.parse s
+    if !out.contains name then
+      out := out.push name
+  return out
+
+/-- Build the concrete `RawDirOps` bundle from injected POSIX directory-descriptor hooks. -/
+def mkRawDirOps (posix : PosixDirOps) : RawDirOps :=
+  { openDir := fun rootPath => catchFs (some rootPath) do
+      let hid ← posix.openDir rootPath
+      return { handleId := hid.toNat, rootPath := rootPath }
+    openDirAt := fun dh name =>
+      match checkDirHandle dh name.val with
+      | .error e => return .error e
+      | .ok dirId => catchFs (some name.val) do
+        let hid ← posix.openDirAt dirId name.val
+        return { handleId := hid.toNat, rootPath := dh.rootPath }
+    closeDir := fun dh =>
+      match checkDirHandle dh dh.rootPath with
+      | .error e => return .error e
+      | .ok dirId => catchFs (some dh.rootPath) (posix.closeDir dirId dh.rootPath)
+    fstatDir := fun dh =>
+      match checkDirHandle dh dh.rootPath with
+      | .error e => return .error e
+      | .ok dirId => catchFs (some dh.rootPath) do
+        return toFileStat (← posix.fstatDir dirId dh.rootPath)
+    lstatAt := fun dh name =>
+      match checkDirHandle dh name.val with
+      | .error e => return .error e
+      | .ok dirId => catchFs (some name.val) do
+        return toFileStat (← posix.lstatAt dirId name.val)
+    readDirAt := fun dh =>
+      match checkDirHandle dh dh.rootPath with
+      | .error e => return .error e
+      | .ok dirId => do
+        match ← catchFs (some dh.rootPath) (posix.readDirAt dirId dh.rootPath) with
+        | .error e => return .error e
+        | .ok raw => return parseUniqueEntryNames raw
+    createDirAt := fun dh name =>
+      match checkDirHandle dh name.val with
+      | .error e => return .error e
+      | .ok dirId => catchFs (some name.val) (posix.createDirAt dirId name.val)
+    readRegularAt := fun dh name =>
+      match checkDirHandle dh name.val with
+      | .error e => return .error e
+      | .ok dirId => catchFs (some name.val) (posix.readRegularAt dirId name.val)
+    createFileAt := fun dh name bytes =>
+      match checkDirHandle dh name.val with
+      | .error e => return .error e
+      | .ok dirId => catchFs (some name.val) (posix.createFileAt dirId name.val bytes)
+    renameAt := fun srcDh srcName dstDh dstName =>
+      match checkDirHandle srcDh srcName.val, checkDirHandle dstDh dstName.val with
+      | .error e, _ => return .error e
+      | _, .error e => return .error e
+      | .ok srcId, .ok dstId =>
+        catchFs (some srcName.val) (posix.renameAt srcId srcName.val dstId dstName.val)
+    unlinkAt := fun dh name isDir =>
+      match checkDirHandle dh name.val with
+      | .error e => return .error e
+      | .ok dirId => catchFs (some name.val) (posix.unlinkAt dirId name.val isDir)
+    symlinkAt := fun target dh name =>
+      match checkDirHandle dh name.val with
+      | .error e => return .error e
+      | .ok dirId => catchFs (some name.val) (posix.symlinkAt target dirId name.val)
+    acquireLockAt := fun dh name mode createIfMissing nonBlocking =>
+      match checkDirHandle dh name.val with
+      | .error e => return .error e
+      | .ok dirId => do
+        let modeByte : UInt8 := match mode with
+          | .shared => 0
+          | .exclusive => 1
+        match ← catchFs (some name.val) (posix.acquireLockAt dirId name.val modeByte createIfMissing nonBlocking) with
+        | .error e => return .error e
+        | .ok (0, handleId, _) =>
+          return .ok { handleId := handleId.toNat, path := name.val, mode := mode }
+        | .ok (1, _, errCode) =>
+          return .error (mapRawError (.wouldBlock (some name.val) errCode "resource temporarily unavailable"))
+        | .ok (_, _, errCode) =>
+          return .error (mapRawError (.invalidArgument (some name.val) errCode "invalid lock path"))
+    releaseLock := fun handle => do
+      if handle.handleId == 0 || handle.handleId ≥ UInt64.size then
+        return .error (mapRawError (.invalidArgument (some handle.path) 22 "invalid lock handle"))
+      catchFs (some handle.path) (posix.releaseLock (UInt64.ofNat handle.handleId) handle.path)
+    freshTempName := do
+      let n ← posix.freshTempNonce
+      let candidate := ".t." ++ toString n.toNat
+      if h : validSeg candidate = true then
+        return { val := candidate, valid := h }
+      else
+        return EntryName.lit ".t" }
 
 end LeanSwe.Fs.Raw.Internal
