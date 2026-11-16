@@ -257,7 +257,8 @@ private def probeCCode : String :=
   "    if (connect(cs, (struct sockaddr *)&sa, sizeof(sa)) != 0) return 42;\n" ++
   "    int afd = accept(ls, NULL, NULL);\n" ++
   "    if (afd < 0) return 43;\n" ++
-  "    write(cs, \"LO\", 2); char b[8]; ssize_t rn = read(afd, b, 2);\n" ++
+  "    if (write(cs, \"LO\", 2) != 2) { close(afd); close(cs); close(ls); return 45; }\n" ++
+  "    char b[8]; ssize_t rn = read(afd, b, 2);\n" ++
   "    close(afd); close(cs); close(ls);\n" ++
   "    if (rn != 2 || memcmp(b, \"LO\", 2) != 0) return 44;\n" ++
   "    printf(\"BOX_LO_OK\\n\");\n" ++
@@ -274,7 +275,7 @@ private def probeCCode : String :=
   "        int fd = open(path, O_CREAT | O_RDWR, 0644);\n" ++
   "        if (fd < 0) _exit(51);\n" ++
   "        if (flock(fd, LOCK_EX) != 0) _exit(52);\n" ++
-  "        write(pfd[1], \"L\", 1);\n" ++
+  "        if (write(pfd[1], \"L\", 1) != 1) _exit(53);\n" ++
   "        close(pfd[1]);\n" ++
   "        sleep(60);\n" ++
   "        _exit(0);\n" ++
@@ -282,7 +283,8 @@ private def probeCCode : String :=
   "      _exit(0);\n" ++
   "    }\n" ++
   "    close(pfd[1]);\n" ++
-  "    char ch = 0; read(pfd[0], &ch, 1); close(pfd[0]);\n" ++
+  "    char ch = 0; ssize_t r = read(pfd[0], &ch, 1); close(pfd[0]);\n" ++
+  "    if (r != 1 || ch != 'L') return 54;\n" ++
   "    waitpid(c, NULL, 0);\n" ++
   "    printf(\"PARENT_EXITED\\n\");\n" ++
   "    return 0;\n" ++

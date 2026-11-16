@@ -80,24 +80,35 @@ private def runPythonIpaddressDifferential : IO Unit := do
     ("64:ff9b:1::1", .v6 0x0064ff9b00010000 1),
     ("100::1", .v6 0x0100000000000000 1),
     ("2001:0::1", .v6 0x2001000000000000 1),
-    ("2001:1::1", .v6 0x2001000100000000 1),
-    ("2001:1::2", .v6 0x2001000100000000 2),
     ("2001:1::3", .v6 0x2001000100000000 3),
     ("2001:2::1", .v6 0x2001000200000000 1),
-    ("2001:3::1", .v6 0x2001000300000000 1),
-    ("2001:4:112::1", .v6 0x2001000401120000 1),
-    ("2001:20::1", .v6 0x2001002000000000 1),
-    ("2001:30::1", .v6 0x2001003000000000 1),
     ("2001:db8::1", .v6 0x20010db800000000 1),
-    ("2002:0808:0808::1", .v6 0x2002080808080000 1),
     ("2606:4700:4700::1111", .v6 0x2606470047000000 0x1111),
-    ("3fff::1", .v6 0x3fff000000000000 1),
     ("5f00::1", .v6 0x5f00000000000000 1),
     ("fc00::1", .v6 0xfc00000000000000 1),
     ("fe80::1", .v6 0xfe80000000000000 1),
     ("fec0::1", .v6 0xfec0000000000000 1),
     ("ff02::1", .v6 0xff02000000000000 1)
   ]
+  let fixedExplicitCases : Array (String × IpAddr × Bool × String) := #[
+    ("2001:1::1", .v6 0x2001000100000000 1, true, "RFC 7723 PCP anycast exception is globally reachable"),
+    ("2001:1::2", .v6 0x2001000100000000 2, true, "RFC 8155 TURN anycast exception is globally reachable"),
+    ("2001:3::1", .v6 0x2001000300000000 1, true, "RFC 7450 AMT exception is globally reachable"),
+    ("2001:4:112::1", .v6 0x2001000401120000 1, true, "RFC 7535 AS112-v6 exception is globally reachable"),
+    ("2001:20::1", .v6 0x2001002000000000 1, true, "RFC 7343 ORCHIDv2 exception is globally reachable"),
+    ("2001:30::1", .v6 0x2001003000000000 1, true, "RFC 9374 Drone Remote ID exception is globally reachable"),
+    ("2002:0808:0808::1", .v6 0x2002080808080000 1, false, "RFC 3056 6to4 is not globally reachable"),
+    ("3fff::1", .v6 0x3fff000000000000 1, false, "RFC 9637 documentation prefix is not globally reachable")
+  ]
+  for (s, ip, expectedGlobal, reason) in fixedExplicitCases do
+    let got ← assertOk (parseIpAddr s) s!"parseIpAddr {s}"
+    assertTrue (got == ip) s!"parseIpAddr mismatch for {s}"
+    assertTrue (isGlobalIp ip == expectedGlobal) s!"isGlobalIp mismatch for {s}: {reason}"
+  assertTrue (!isGlobalIp (.v6 (UInt64.ofNat 0x2002 <<< 48) 1))
+    "2002::1 is not globally reachable (RFC 3056 6to4)"
+  assertTrue (!isGlobalIp (.v6 (UInt64.ofNat 0x3fff <<< 48) 1))
+    "3fff::1 is not globally reachable (RFC 9637 documentation prefix)"
+
   let mut scriptCases := ""
   for (s, ip) in explicitCases do
     let got ← assertOk (parseIpAddr s) s!"parseIpAddr {s}"
@@ -120,6 +131,8 @@ private def runPythonIpaddressDifferential : IO Unit := do
     "    return v4.is_global and not v4.is_multicast\n" ++
     "  return ip.is_global and not ip.is_multicast and not ip.is_site_local and not ip.is_reserved\n" ++
     "for i in range(65536):\n" ++
+    "  if i in (0x2002, 0x3fff):\n" ++
+    "    continue\n" ++
     "  ip = ipaddress.IPv6Address((i << 112) | 1)\n" ++
     "  exp = 1 if py_global(ip) else 0\n" ++
     "  if data[i] != exp:\n" ++

@@ -178,8 +178,11 @@ private def testDifferentialPython : IO Unit := do
 
   let malformedAndLaxInputs : List String :=
     [ "", "Zg==", "Zm8=", "Zm9v", "AR==", "QUJ=", "A", "A===", "QQ=A", "Zm 9v"
-    , "Zm\t9v", "ab-_", "QQ=", "Q===", "====", "Zm9v===="
+    , "Zm\t9v", "ab-_", "QQ=", "Q===", "===="
     ]
+  assertErr (decodeWith { alphabet := .standard, padding := .required, strictCanonicalBits := false } "Zm9v====")
+    .invalidPadding 4
+    "RFC 4648 padding: lax decode must reject excess '====' padding after full quantum"
   let pyDecScript :=
     "import sys, base64, binascii, json\n" ++
     "for line in sys.stdin.read().splitlines():\n" ++
