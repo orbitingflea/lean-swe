@@ -796,6 +796,33 @@ static int cgroup_subfile(const char *cg_dir, const char *name, char *out, size_
   return 0;
 }
 
+static int configure_cgroup_memory(
+    const char *cg_dir, const char *mem_limit, const char **failed_file, int *err_out) {
+  static const struct {
+    const char *name;
+    const char *val;
+  } k_mem_opts[] = {
+    {"memory.swap.max", "0"},
+    {"memory.oom.group", "1"},
+  };
+  char path[PATH_MAX];
+  if (cgroup_subfile(cg_dir, "memory.max", path, sizeof(path)) != 0 ||
+      write_text_file(path, mem_limit) != 0) {
+    *err_out = errno ? errno : EACCES;
+    *failed_file = "memory.max";
+    return -1;
+  }
+  for (size_t i = 0; i < sizeof(k_mem_opts) / sizeof(k_mem_opts[0]); i++) {
+    if (cgroup_subfile(cg_dir, k_mem_opts[i].name, path, sizeof(path)) != 0 ||
+        (write_text_file(path, k_mem_opts[i].val) != 0 && errno != ENOENT)) {
+      *err_out = errno ? errno : EACCES;
+      *failed_file = k_mem_opts[i].name;
+      return -1;
+    }
+  }
+  return 0;
+}
+
 static int cleanup_cgroup_dir(const char *cg_dir) {
   if (cg_dir == NULL || cg_dir[0] == '\0') {
     return 0;
@@ -1429,6 +1456,7 @@ LEAN_EXPORT lean_obj_res leanswe_psandbox_preflight(
   }
 
   char path[PATH_MAX];
+  char fail_msg_buf[128];
   int fail_err = 0;
   const char *fail_msg = NULL;
 
@@ -1443,14 +1471,13 @@ LEAN_EXPORT lean_obj_res leanswe_psandbox_preflight(
   }
 
   if (fail_msg == NULL && need_mem) {
-    if (cgroup_subfile(cg_dir, "memory.max", path, sizeof(path)) != 0 ||
-        write_text_file(path, "max") != 0) {
-      fail_err = errno ? errno : EACCES;
-      fail_msg = "direct cgroup v2 memory controller unavailable";
-    } else if (cgroup_subfile(cg_dir, "memory.swap.max", path, sizeof(path)) == 0) {
-      if (write_text_file(path, "0") != 0 && errno != ENOENT) {
-        fail_err = errno ? errno : EACCES;
-        fail_msg = "direct cgroup v2 memory.swap.max unavailable";
+    const char *failed_file = NULL;
+    if (configure_cgroup_memory(cg_dir, "max", &failed_file, &fail_err) != 0) {
+      if (strcmp(failed_file, "memory.max") == 0) {
+        fail_msg = "direct cgroup v2 memory controller unavailable";
+      } else {
+        snprintf(fail_msg_buf, sizeof(fail_msg_buf), "direct cgroup v2 %s unavailable", failed_file);
+        fail_msg = fail_msg_buf;
       }
     }
   }
@@ -1923,23 +1950,14 @@ LEAN_EXPORT lean_obj_res leanswe_psandbox_spawn_box(uint64_t plan_hid, lean_obj_
 
   if (has_mem) {
     char numbuf[32];
+    const char *failed_file = NULL;
+    int e = 0;
     snprintf(numbuf, sizeof(numbuf), "%llu", (unsigned long long)mem_max);
-    if (cgroup_subfile(cg_dir, "memory.max", cg_file, sizeof(cg_file)) != 0 ||
-        write_text_file(cg_file, numbuf) != 0) {
-      int e = errno ? errno : EACCES;
+    if (configure_cgroup_memory(cg_dir, numbuf, &failed_file, &e) != 0) {
       err_tag = PS_TAG_UNAVAILABLE;
       err_code = (uint32_t)e;
-      snprintf(err_msg, sizeof(err_msg), "failed to set direct cgroup v2 memory.max: %s", strerror(e));
+      snprintf(err_msg, sizeof(err_msg), "failed to set direct cgroup v2 %s: %s", failed_file, strerror(e));
       goto fail;
-    }
-    if (cgroup_subfile(cg_dir, "memory.swap.max", cg_file, sizeof(cg_file)) == 0) {
-      if (write_text_file(cg_file, "0") != 0 && errno != ENOENT) {
-        int e = errno ? errno : EACCES;
-        err_tag = PS_TAG_UNAVAILABLE;
-        err_code = (uint32_t)e;
-        snprintf(err_msg, sizeof(err_msg), "failed to set direct cgroup v2 memory.swap.max: %s", strerror(e));
-        goto fail;
-      }
     }
   }
 
