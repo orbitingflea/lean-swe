@@ -1,5 +1,7 @@
 import LeanSwe.Tar.Proofs.ConcreteUnpackHelpers
 
+set_option Elab.async false
+
 namespace LeanSwe.Tar.Proofs
 
 open Core
@@ -799,20 +801,14 @@ theorem test5_badChkVal_err :
       e.kind = .checksumMismatch ∧ e.message ≠ "" :=
   badChkVal_abstract baseHdr5 baseHdr5Pre baseHdr5_size baseHdr5Pre_size baseHdr5_eq_patch baseHdr5_byte_257
 
-/-- Case 2 of Test 5: `badChkSyntax` fails with `.invalidHeader`. -/
-theorem test5_badChkSyntax_err :
-    ∃ e, Impl.unpackWith {} (baseHdr5.set! 148 88 ++ twoZeroBlocks) = .error e ∧
+private theorem badChkSyntax_abstract (hdr : ByteArray) (hhdr : hdr.size = 512)
+    (h257 : hdr[257]'(by rw [hhdr]; omega) ≠ 0)
+    (h148 : hdr[148]'(by rw [hhdr]; omega) = 88) :
+    ∃ e, Impl.unpackWith {} (hdr ++ twoZeroBlocks) = .error e ∧
       e.kind = .invalidHeader ∧ e.message ≠ "" := by
-  let hdr := baseHdr5.set! 148 88
   let bytes := hdr ++ twoZeroBlocks
-  have hhdr : hdr.size = 512 := (byteArray_set!_size _ _ _).trans baseHdr5_size
   have hbytes_sz : bytes.size = 512 + twoZeroBlocks.size := by
     simp only [bytes, ByteArray.size_append, hhdr]
-  have h257 : hdr[257]'(by rw [hhdr]; omega) ≠ 0 := by
-    change (baseHdr5.set! 148 88)[257]'(by rw [hhdr]; omega) ≠ 0
-    rw [byteArray_set!_getElem_val (by rw [baseHdr5_size]; omega) (by rw [baseHdr5_size]; omega)]
-    rw [ite_eq_right (by omega), baseHdr5_byte_257]
-    decide
   have hraw_len : (bytes.extract 148 156).toList.length = 8 := by
     rw [byteArray_toList_eq, Array.length_toList]
     change (bytes.extract 148 156).size = 8
@@ -824,17 +820,16 @@ theorem test5_badChkSyntax_err :
     have hb148 : bytes[148 + 0]'(by rw [hbytes_sz]; omega) = 88 := by
       have h1 : bytes[148 + 0]'(by rw [hbytes_sz]; omega) = hdr[148]'(by rw [hhdr]; omega) :=
         getElem_append_left (by rw [hhdr]; omega) (hab := by rw [hbytes_sz]; omega)
-      rw [h1]
-      change (baseHdr5.set! 148 88)[148]'(by rw [hhdr]; omega) = 88
-      rw [byteArray_set!_getElem_val (by rw [baseHdr5_size]; omega) (by rw [baseHdr5_size]; omega)]
-      simp
+      rw [h1, h148]
     cases hl : (bytes.extract 148 156).toList with
-    | nil => rw [hl] at hraw_len; simp at hraw_len
+    | nil => rw [hl] at hraw_len; cases hraw_len
     | cons hd tl =>
       have hhd0 : hd = (bytes.extract 148 156)[0]'(by rw [ByteArray.size_extract, hbytes_sz]; omega) := by
-        calc hd = (hd :: tl)[0]'(by simp) := rfl
-          _ = (bytes.extract 148 156).toList[0]'(by rw [hraw_len]; omega) := by simp [hl]
-          _ = (bytes.extract 148 156)[0]'(by rw [ByteArray.size_extract, hbytes_sz]; omega) := h0_eq
+        have hhd_lhs : hd = (hd :: tl)[0]'(Nat.zero_lt_succ _) := rfl
+        have hhd_mid : (hd :: tl)[0]'(Nat.zero_lt_succ _) =
+            (bytes.extract 148 156).toList[0]'(by rw [hraw_len]; omega) := by
+          simp only [hl]
+        exact hhd_lhs.trans (hhd_mid.trans h0_eq)
       rw [ByteArray.getElem_extract, hb148] at hhd0
       rw [hhd0]
       rfl
@@ -842,8 +837,8 @@ theorem test5_badChkSyntax_err :
       .error { kind := .invalidHeader, message := "missing octal digits in USTAR checksum", offset := some 0 } := by
     unfold parseChecksumOctal
     cases hl : (bytes.extract 148 156).toList with
-    | nil => rw [hl] at hraw_len; simp at hraw_len
-    | cons hd tl =>
+    | nil => rw [hl] at hraw_len; cases hraw_len
+    | cons hd _tl =>
       rw [hl] at hhead
       have hhd : hd = 88 := Option.some.inj hhead
       subst hhd
@@ -856,6 +851,39 @@ theorem test5_badChkSyntax_err :
     unfold parseUstarHeader
     simp only [Nat.zero_add]
     rw [hparse_chk]
+  exact ⟨_, unpackWith_hdr_rest_parseHeader_err hhdr twoZeroBlocks_pos twoZeroBlocks_mod h257 hparse_err,
+    rfl, by decide⟩
+
+/-- Case 2 of Test 5: `badChkSyntax` fails with `.invalidHeader`. -/
+theorem test5_badChkSyntax_err :
+    ∃ e, Impl.unpackWith {} (baseHdr5.set! 148 88 ++ twoZeroBlocks) = .error e ∧
+      e.kind = .invalidHeader ∧ e.message ≠ "" := by
+  let hdr := baseHdr5.set! 148 88
+  have hhdr : hdr.size = 512 := (byteArray_set!_size _ _ _).trans baseHdr5_size
+  have h257 : hdr[257]'(by rw [hhdr]; omega) ≠ 0 := by
+    change (baseHdr5.set! 148 88)[257]'(by rw [hhdr]; omega) ≠ 0
+    rw [byteArray_set!_getElem_val (by rw [baseHdr5_size]; omega) (by rw [baseHdr5_size]; omega)]
+    rw [ite_eq_right (by omega), baseHdr5_byte_257]
+    decide
+  have h148 : hdr[148]'(by rw [hhdr]; omega) = 88 := by
+    change (baseHdr5.set! 148 88)[148]'(by rw [hhdr]; omega) = 88
+    rw [byteArray_set!_getElem_val (by rw [baseHdr5_size]; omega) (by rw [baseHdr5_size]; omega)]
+    rw [ite_eq_left rfl]
+  exact badChkSyntax_abstract hdr hhdr h257 h148
+
+private theorem allNulChk_abstract (hdr : ByteArray) (hhdr : hdr.size = 512)
+    (h257 : hdr[257]'(by rw [hhdr]; omega) ≠ 0)
+    (hext_nul : (hdr ++ twoZeroBlocks).extract 148 156 = { data := Array.replicate 8 0 }) :
+    ∃ e, Impl.unpackWith {} (hdr ++ twoZeroBlocks) = .error e ∧
+      e.kind = .invalidHeader ∧ e.message ≠ "" := by
+  let nul8 : ByteArray := { data := Array.replicate 8 0 }
+  have hnul_list : nul8.data.toList = [0, 0, 0, 0, 0, 0, 0, 0] := by decide
+  have hparse_err : parseUstarHeader (hdr ++ twoZeroBlocks) 0 =
+      .error { kind := .invalidHeader, message := "missing octal digits in USTAR checksum", offset := some 0 } := by
+    unfold parseUstarHeader parseChecksumOctal
+    simp only [Nat.zero_add]
+    rw [hext_nul, byteArray_toList_eq, hnul_list]
+    rfl
   exact ⟨_, unpackWith_hdr_rest_parseHeader_err hhdr twoZeroBlocks_pos twoZeroBlocks_mod h257 hparse_err,
     rfl, by decide⟩
 
@@ -894,15 +922,7 @@ theorem test5_allNulChk_err :
     have hc : 148 ≤ 148 + k ∧ 148 + k < 148 + min 8 nul8.size := by rw [hnul_sz]; omega
     rw [dite_eq_left hc]
     simp only [(by omega : 148 + k - 148 = k)]
-  have hnul_list : nul8.data.toList = [0, 0, 0, 0, 0, 0, 0, 0] := by decide
-  have hparse_err : parseUstarHeader bytes 0 =
-      .error { kind := .invalidHeader, message := "missing octal digits in USTAR checksum", offset := some 0 } := by
-    unfold parseUstarHeader parseChecksumOctal
-    simp only [Nat.zero_add]
-    rw [hext_nul, byteArray_toList_eq, hnul_list]
-    rfl
-  exact ⟨_, unpackWith_hdr_rest_parseHeader_err hhdr twoZeroBlocks_pos twoZeroBlocks_mod h257 hparse_err,
-    rfl, by decide⟩
+  exact allNulChk_abstract hdr hhdr h257 hext_nul
 
 private theorem badMagic_abstract (hdrPre : ByteArray) (hpre : hdrPre.size = 512)
     (hpre_257 : hdrPre[257]'(by rw [hpre]; omega) = 0x6e)
@@ -1097,35 +1117,15 @@ private theorem decodeTarEntry_regular_a_txt {bytes : ByteArray}
   simp only [hmod]
   rfl
 
-private theorem posBase256Uid_abstract (hdrPre : ByteArray) (hpre : hdrPre.size = 512)
-    (h257_pre : hdrPre[257]'(by rw [hpre]; omega) = 0x75)
-    (hmag : ∀ (k : Nat) (_hk : k < 8), hdrPre[257 + k]'(by rw [hpre]; omega) =
-      baseHdr5[257 + k]'(by rw [baseHdr5_size]; omega))
-    (hmod_pre : ∀ (k : Nat) (_hk : k < 8), hdrPre[100 + k]'(by rw [hpre]; omega) =
-      baseHdr5[100 + k]'(by rw [baseHdr5_size]; omega))
-    (huid_pre : ∀ (k : Nat) (hk : k < 8), hdrPre[108 + k]'(by rw [hpre]; omega) =
-      ({ data := #[128, 0, 0, 0, 0, 0, 0, 42] } : ByteArray)[k]'(by show k < 8; exact hk))
-    (hgid_pre : ∀ (k : Nat) (_hk : k < 8), hdrPre[116 + k]'(by rw [hpre]; omega) =
-      baseHdr5[116 + k]'(by rw [baseHdr5_size]; omega))
-    (hsize_pre : ∀ (k : Nat) (_hk : k < 12), hdrPre[124 + k]'(by rw [hpre]; omega) =
-      baseHdr5[124 + k]'(by rw [baseHdr5_size]; omega))
-    (hmtime_pre : ∀ (k : Nat) (_hk : k < 12), hdrPre[136 + k]'(by rw [hpre]; omega) =
-      baseHdr5[136 + k]'(by rw [baseHdr5_size]; omega))
-    (h156_pre : hdrPre[156]'(by rw [hpre]; omega) = 48)
-    (hname_pre : ∀ (k : Nat) (_hk : k < 100), hdrPre[0 + k]'(by rw [hpre]; omega) =
-      baseHdr5[0 + k]'(by rw [baseHdr5_size]; omega))
-    (huname_pre : ∀ (k : Nat) (_hk : k < 32), hdrPre[265 + k]'(by rw [hpre]; omega) =
-      baseHdr5[265 + k]'(by rw [baseHdr5_size]; omega))
-    (hgname_pre : ∀ (k : Nat) (_hk : k < 32), hdrPre[297 + k]'(by rw [hpre]; omega) =
-      baseHdr5[297 + k]'(by rw [baseHdr5_size]; omega))
-    (hpfx_pre : ∀ (k : Nat) (_hk : k < 155), hdrPre[345 + k]'(by rw [hpre]; omega) =
-      baseHdr5[345 + k]'(by rw [baseHdr5_size]; omega)) :
+private theorem uidRegular_abstract (hdrPre : ByteArray) (uidVal : Nat) (hpre : hdrPre.size = 512)
+    (hagree : ∀ (i : Nat) (hi : i < 512), ¬(108 ≤ i ∧ i < 116) →
+      hdrPre[i]'(by rw [hpre]; exact hi) = baseHdr5[i]'(by rw [baseHdr5_size]; exact hi))
+    (huid : parseUstarNumeric (patchHeaderChecksum hdrPre ++ twoZeroBlocks) 108 116 0 true u64Limit "uid" =
+      .ok uidVal) :
     ∃ res, Impl.unpackWith {} (patchHeaderChecksum hdrPre ++ twoZeroBlocks) =
-      .ok res ∧ TarEquiv [{ path := "a.txt", kind := .regular, uid := 42 }] res := by
-  let src : ByteArray := { data := #[128, 0, 0, 0, 0, 0, 0, 42] }
+      .ok res ∧ TarEquiv [{ path := "a.txt", kind := .regular, uid := uidVal }] res := by
   let hdr := patchHeaderChecksum hdrPre
   let bytes := hdr ++ twoZeroBlocks
-  have hsrc_sz : src.size = 8 := by decide
   have hhdr : hdr.size = 512 := (patchHeaderChecksum_size _).trans hpre
   have hbytes_sz : bytes.size = 512 + twoZeroBlocks.size := by
     simp only [bytes, ByteArray.size_append, hhdr]
@@ -1136,31 +1136,17 @@ private theorem posBase256Uid_abstract (hdrPre : ByteArray) (hpre : hdrPre.size 
   have h257 : hdr[257]'(by rw [hhdr]; omega) ≠ 0 := by
     have h1 : bytes[0 + 257]'(by rw [hbytes_sz]; omega) = hdr[257]'(by rw [hhdr]; omega) :=
       getElem_append_left (by rw [hhdr]; omega)
-    rw [← h1, hp.2.2 257 (by omega) (by omega), h257_pre]
+    rw [← h1, hp.2.2 257 (by omega) (by omega), hagree 257 (by omega) (by omega), baseHdr5_byte_257]
     decide
-  have hmagic : hasValidMagic bytes 0 = true := patch_agree_magic twoZeroBlocks hpre hmag
-  have hmode := patch_agree_mode twoZeroBlocks hpre hmod_pre
-  have hext_uid : bytes.extract 108 116 = src := by
-    have h116 : (116 : Nat) = 108 + 8 := by omega
-    rw [h116]
-    exact extract_patch_eq_slice hpre (by omega) hsrc_sz (fun k hk => by omega) huid_pre
-  have huid : parseUstarNumeric bytes 108 116 0 true u64Limit "uid" = .ok 42 := by
-    unfold parseUstarNumeric
-    rw [hext_uid, byteArray_toList_eq]
-    have h42 : ¬((42 : Nat) ≥ u64Limit) := by decide
-    have hmsb : ((128 : UInt8) &&& 128 != 0) = true := rfl
-    have hsign : ¬(((128 : UInt8) &&& 64 != 0) = true) := by decide
-    have hval42 : List.foldl (fun acc (b : UInt8) => acc * 256 + b.toNat)
-        ((128 : UInt8) &&& 127).toNat [0, 0, 0, 0, 0, 0, 42] = 42 := rfl
-    simp only [src]
-    rw [ite_eq_left hmsb, ite_eq_right hsign, hval42, ite_eq_right h42]
-  have hgid := patch_agree_gid twoZeroBlocks hpre hgid_pre
-  have hsize := patch_agree_size twoZeroBlocks hpre hsize_pre
-  have hmtime := patch_agree_mtime twoZeroBlocks hpre hmtime_pre
+  have hmagic := patch_agree_magic twoZeroBlocks hpre fun k hk => hagree (257 + k) (by omega) (by omega)
+  have hmode := patch_agree_mode twoZeroBlocks hpre fun k hk => hagree (100 + k) (by omega) (by omega)
+  have hgid := patch_agree_gid twoZeroBlocks hpre fun k hk => hagree (116 + k) (by omega) (by omega)
+  have hsize := patch_agree_size twoZeroBlocks hpre fun k hk => hagree (124 + k) (by omega) (by omega)
+  have hmtime := patch_agree_mtime twoZeroBlocks hpre fun k hk => hagree (136 + k) (by omega) (by omega)
   have h156 : bytes[156]'(by rw [hbytes_sz]; omega) = 48 := by
-    rw [hp.2.2 156 (by omega) (by omega), h156_pre]
+    rw [hp.2.2 156 (by omega) (by omega), hagree 156 (by omega) (by omega), baseHdr5_byte_156]
   let fields : UstarHeaderFields :=
-    { mode := ((420 : UInt32) &&& 0o7777).toNat, uid := 42, gid := 0, size := 0, mtime := 0, typeflag := 48 }
+    { mode := ((420 : UInt32) &&& 0o7777).toNat, uid := uidVal, gid := 0, size := 0, mtime := 0, typeflag := 48 }
   have hparse : parseUstarHeader bytes 0 = .ok fields := by
     unfold parseUstarHeader
     simp only [Nat.zero_add]
@@ -1170,13 +1156,30 @@ private theorem posBase256Uid_abstract (hdrPre : ByteArray) (hpre : hdrPre.size 
       hmode, huid, hgid, hsize, hmtime]
     have hlt156 : 156 < bytes.size := by rw [hbytes_sz]; omega
     rw [dite_eq_left hlt156, h156]
-  have hstrs := patch_agree_regular_strings twoZeroBlocks hpre hname_pre huname_pre hgname_pre hpfx_pre
+  have hstrs := patch_agree_regular_strings twoZeroBlocks hpre
+    (fun k hk => hagree (0 + k) (by omega) (by omega))
+    (fun k hk => hagree (265 + k) (by omega) (by omega))
+    (fun k hk => hagree (297 + k) (by omega) (by omega))
+    (fun k hk => hagree (345 + k) (by omega) (by omega))
   let entry : TarEntry :=
-    { path := "a.txt", kind := .regular, mode := 420, uid := 42, gid := 0, mtime := 0,
+    { path := "a.txt", kind := .regular, mode := 420, uid := uidVal, gid := 0, mtime := 0,
       uname := "", gname := "", data := ByteArray.empty, linkTarget := "" }
-  have hdec := decodeTarEntry_regular_a_txt hbytes_sz 42 hstrs
+  have hdec := decodeTarEntry_regular_a_txt hbytes_sz uidVal hstrs
   refine ⟨[entry], unpackWith_hdr_twoZero_regular_ok hhdr h257 hparse rfl rfl hdec, ?_⟩
   exact tarEquiv_singleton_self entry
+
+private theorem extract_patch_blit108 (src : ByteArray) (hsrc_sz : src.size = 8) :
+    (patchHeaderChecksum (blitFixed baseHdr5 108 8 src) ++ twoZeroBlocks).extract 108 116 = src := by
+  have hpre : (blitFixed baseHdr5 108 8 src).size = 512 := (blitFixed_size _ _ _ _).trans baseHdr5_size
+  have hbd_blit : 108 + min 8 src.size ≤ 512 := by rw [hsrc_sz]; omega
+  have h116 : (116 : Nat) = 108 + 8 := by omega
+  rw [h116]
+  refine extract_patch_eq_slice hpre (by omega) hsrc_sz (fun k hk => by omega) ?_
+  intro k hk
+  change (blitFixed baseHdr5 108 8 src)[108 + k]'(by rw [hpre]; omega) = src[k]'(by rw [hsrc_sz]; exact hk)
+  rw [blitFixed_getElem (by rw [baseHdr5_size]; exact hbd_blit) (by rw [baseHdr5_size]; omega)]
+  rw [dite_eq_left (by rw [hsrc_sz]; omega)]
+  simp only [(by omega : 108 + k - 108 = k)]
 
 /-- Case 6 of Test 5: `posBase256Uid` succeeds with `uid := 42`. -/
 theorem test5_posBase256Uid_ok :
@@ -1184,27 +1187,24 @@ theorem test5_posBase256Uid_ok :
         (patchHeaderChecksum (blitFixed baseHdr5 108 8 { data := #[128, 0, 0, 0, 0, 0, 0, 42] }) ++ twoZeroBlocks) =
       .ok res ∧ TarEquiv [{ path := "a.txt", kind := .regular, uid := 42 }] res := by
   let src : ByteArray := { data := #[128, 0, 0, 0, 0, 0, 0, 42] }
+  let hdrPre := blitFixed baseHdr5 108 8 src
   have hsrc_sz : src.size = 8 := by decide
-  have hpre : (blitFixed baseHdr5 108 8 src).size = 512 := (blitFixed_size _ _ _ _).trans baseHdr5_size
+  have hpre : hdrPre.size = 512 := (blitFixed_size _ _ _ _).trans baseHdr5_size
   have hbd_blit : 108 + min 8 src.size ≤ 512 := by rw [hsrc_sz]; omega
-  refine posBase256Uid_abstract (blitFixed baseHdr5 108 8 src) hpre
-    (blitFixed_baseHdr5_257 108 8 src (by rw [hsrc_sz]; omega))
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (257 + k) (by omega) (Or.inr (by omega)))
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (100 + k) (by omega) (Or.inl (by omega)))
-    ?_
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (116 + k) (by omega) (Or.inr (by omega)))
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (124 + k) (by omega) (Or.inr (by omega)))
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (136 + k) (by omega) (Or.inr (by omega)))
-    (by rw [blitFixed_baseHdr5_outside 108 8 src hbd_blit 156 (by omega) (Or.inr (by omega))]; exact baseHdr5_byte_156)
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (0 + k) (by omega) (Or.inl (by omega)))
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (265 + k) (by omega) (Or.inr (by omega)))
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (297 + k) (by omega) (Or.inr (by omega)))
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (345 + k) (by omega) (Or.inr (by omega)))
-  intro k hk
-  rw [blitFixed_getElem (by rw [baseHdr5_size]; exact hbd_blit) (by rw [baseHdr5_size]; omega)]
-  rw [dite_eq_left (by rw [hsrc_sz]; omega)]
-  simp only [(by omega : 108 + k - 108 = k)]
-  rfl
+  have hext_uid := extract_patch_blit108 src hsrc_sz
+  have huid : parseUstarNumeric (patchHeaderChecksum hdrPre ++ twoZeroBlocks) 108 116 0 true u64Limit "uid" = .ok 42 := by
+    unfold parseUstarNumeric
+    rw [hext_uid, byteArray_toList_eq]
+    have h42 : ¬((42 : Nat) ≥ u64Limit) := by decide
+    have hmsb : ((128 : UInt8) &&& 128 != 0) = true := rfl
+    have hsign : ¬(((128 : UInt8) &&& 64 != 0) = true) := by decide
+    have hval42 : List.foldl (fun acc (b : UInt8) => acc * 256 + b.toNat)
+        ((128 : UInt8) &&& 127).toNat [0, 0, 0, 0, 0, 0, 42] = 42 := rfl
+    simp only [src]
+    rw [ite_eq_left hmsb, ite_eq_right hsign, hval42, ite_eq_right h42]
+  refine uidRegular_abstract hdrPre 42 hpre ?_ huid
+  intro i hi hnot
+  exact blitFixed_baseHdr5_outside 108 8 src hbd_blit i hi (by omega)
 
 private theorem nulSize_abstract (hdrPre : ByteArray) (hpre : hdrPre.size = 512)
     (h257_pre : hdrPre[257]'(by rw [hpre]; omega) = 0x75)
@@ -1283,109 +1283,25 @@ theorem test5_nulSize_err :
   simp only [(by omega : 124 + k - 124 = k)]
   rfl
 
-private theorem nulUid_abstract (hdrPre : ByteArray) (hpre : hdrPre.size = 512)
-    (h257_pre : hdrPre[257]'(by rw [hpre]; omega) = 0x75)
-    (hmag : ∀ (k : Nat) (_hk : k < 8), hdrPre[257 + k]'(by rw [hpre]; omega) =
-      baseHdr5[257 + k]'(by rw [baseHdr5_size]; omega))
-    (hmod_pre : ∀ (k : Nat) (_hk : k < 8), hdrPre[100 + k]'(by rw [hpre]; omega) =
-      baseHdr5[100 + k]'(by rw [baseHdr5_size]; omega))
-    (huid_pre : ∀ (k : Nat) (hk : k < 8), hdrPre[108 + k]'(by rw [hpre]; omega) =
-      ({ data := Array.replicate 8 0 } : ByteArray)[k]'(by show k < (Array.replicate 8 (0 : UInt8)).size; simp; exact hk))
-    (hgid_pre : ∀ (k : Nat) (_hk : k < 8), hdrPre[116 + k]'(by rw [hpre]; omega) =
-      baseHdr5[116 + k]'(by rw [baseHdr5_size]; omega))
-    (hsize_pre : ∀ (k : Nat) (_hk : k < 12), hdrPre[124 + k]'(by rw [hpre]; omega) =
-      baseHdr5[124 + k]'(by rw [baseHdr5_size]; omega))
-    (hmtime_pre : ∀ (k : Nat) (_hk : k < 12), hdrPre[136 + k]'(by rw [hpre]; omega) =
-      baseHdr5[136 + k]'(by rw [baseHdr5_size]; omega))
-    (h156_pre : hdrPre[156]'(by rw [hpre]; omega) = 48)
-    (hname_pre : ∀ (k : Nat) (_hk : k < 100), hdrPre[0 + k]'(by rw [hpre]; omega) =
-      baseHdr5[0 + k]'(by rw [baseHdr5_size]; omega))
-    (huname_pre : ∀ (k : Nat) (_hk : k < 32), hdrPre[265 + k]'(by rw [hpre]; omega) =
-      baseHdr5[265 + k]'(by rw [baseHdr5_size]; omega))
-    (hgname_pre : ∀ (k : Nat) (_hk : k < 32), hdrPre[297 + k]'(by rw [hpre]; omega) =
-      baseHdr5[297 + k]'(by rw [baseHdr5_size]; omega))
-    (hpfx_pre : ∀ (k : Nat) (_hk : k < 155), hdrPre[345 + k]'(by rw [hpre]; omega) =
-      baseHdr5[345 + k]'(by rw [baseHdr5_size]; omega)) :
-    ∃ res, Impl.unpackWith {} (patchHeaderChecksum hdrPre ++ twoZeroBlocks) =
-      .ok res ∧ TarEquiv [{ path := "a.txt", kind := .regular }] res := by
-  let src : ByteArray := { data := Array.replicate 8 0 }
-  let hdr := patchHeaderChecksum hdrPre
-  let bytes := hdr ++ twoZeroBlocks
-  have hsrc_sz : src.size = 8 := by decide
-  have hhdr : hdr.size = 512 := (patchHeaderChecksum_size _).trans hpre
-  have hbytes_sz : bytes.size = 512 + twoZeroBlocks.size := by
-    simp only [bytes, ByteArray.size_append, hhdr]
-  have hchk := parseUstarHeader_patch_check hpre (by rw [hbytes_sz]; omega)
-  have hext0 : bytes.extract 0 (0 + 512) = patchHeaderChecksum hdrPre := by
-    rw [Nat.zero_add]; exact extract_hdr_rest_head hdr twoZeroBlocks hhdr
-  have hp := parseChecksumOctal_patchHeaderChecksum hpre (by rw [hbytes_sz]; omega) hext0
-  have h257 : hdr[257]'(by rw [hhdr]; omega) ≠ 0 := by
-    have h1 : bytes[0 + 257]'(by rw [hbytes_sz]; omega) = hdr[257]'(by rw [hhdr]; omega) :=
-      getElem_append_left (by rw [hhdr]; omega)
-    rw [← h1, hp.2.2 257 (by omega) (by omega), h257_pre]
-    decide
-  have hmagic : hasValidMagic bytes 0 = true := patch_agree_magic twoZeroBlocks hpre hmag
-  have hmode := patch_agree_mode twoZeroBlocks hpre hmod_pre
-  have hext_uid : bytes.extract 108 116 = src := by
-    have h116 : (116 : Nat) = 108 + 8 := by omega
-    rw [h116]
-    exact extract_patch_eq_slice hpre (by omega) hsrc_sz (fun k hk => by omega) huid_pre
-  have hsrc_list : src.data.toList = List.replicate 8 0 := by decide
-  have huid : parseUstarNumeric bytes 108 116 0 true u64Limit "uid" = .ok 0 := by
-    unfold parseUstarNumeric
-    rw [hext_uid, byteArray_toList_eq, hsrc_list]
-    rfl
-  have hgid := patch_agree_gid twoZeroBlocks hpre hgid_pre
-  have hsize := patch_agree_size twoZeroBlocks hpre hsize_pre
-  have hmtime := patch_agree_mtime twoZeroBlocks hpre hmtime_pre
-  have h156 : bytes[156]'(by rw [hbytes_sz]; omega) = 48 := by
-    rw [hp.2.2 156 (by omega) (by omega), h156_pre]
-  let fields : UstarHeaderFields :=
-    { mode := ((420 : UInt32) &&& 0o7777).toNat, uid := 0, gid := 0, size := 0, mtime := 0, typeflag := 48 }
-  have hparse : parseUstarHeader bytes 0 = .ok fields := by
-    unfold parseUstarHeader
-    simp only [Nat.zero_add]
-    rw [hchk.2]
-    dsimp only
-    rw [bne_self_eq_false, ite_eq_right (by decide), ite_eq_right (by rw [hmagic]; decide),
-      hmode, huid, hgid, hsize, hmtime]
-    have hlt156 : 156 < bytes.size := by rw [hbytes_sz]; omega
-    rw [dite_eq_left hlt156, h156]
-  have hstrs := patch_agree_regular_strings twoZeroBlocks hpre hname_pre huname_pre hgname_pre hpfx_pre
-  let entry : TarEntry :=
-    { path := "a.txt", kind := .regular, mode := 420, uid := 0, gid := 0, mtime := 0,
-      uname := "", gname := "", data := ByteArray.empty, linkTarget := "" }
-  have hdec := decodeTarEntry_regular_a_txt hbytes_sz 0 hstrs
-  refine ⟨[entry], unpackWith_hdr_twoZero_regular_ok hhdr h257 hparse rfl rfl hdec, ?_⟩
-  exact tarEquiv_singleton_self entry
-
 /-- Case 8 of Test 5: `nulUid` succeeds with `uid := 0`. -/
 theorem test5_nulUid_ok :
     ∃ res, Impl.unpackWith {}
         (patchHeaderChecksum (blitFixed baseHdr5 108 8 { data := Array.replicate 8 0 }) ++ twoZeroBlocks) =
       .ok res ∧ TarEquiv [{ path := "a.txt", kind := .regular }] res := by
   let src : ByteArray := { data := Array.replicate 8 0 }
+  let hdrPre := blitFixed baseHdr5 108 8 src
   have hsrc_sz : src.size = 8 := by decide
-  have hpre : (blitFixed baseHdr5 108 8 src).size = 512 := (blitFixed_size _ _ _ _).trans baseHdr5_size
+  have hpre : hdrPre.size = 512 := (blitFixed_size _ _ _ _).trans baseHdr5_size
   have hbd_blit : 108 + min 8 src.size ≤ 512 := by rw [hsrc_sz]; omega
-  refine nulUid_abstract (blitFixed baseHdr5 108 8 src) hpre
-    (blitFixed_baseHdr5_257 108 8 src (by rw [hsrc_sz]; omega))
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (257 + k) (by omega) (Or.inr (by omega)))
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (100 + k) (by omega) (Or.inl (by omega)))
-    ?_
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (116 + k) (by omega) (Or.inr (by omega)))
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (124 + k) (by omega) (Or.inr (by omega)))
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (136 + k) (by omega) (Or.inr (by omega)))
-    (by rw [blitFixed_baseHdr5_outside 108 8 src hbd_blit 156 (by omega) (Or.inr (by omega))]; exact baseHdr5_byte_156)
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (0 + k) (by omega) (Or.inl (by omega)))
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (265 + k) (by omega) (Or.inr (by omega)))
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (297 + k) (by omega) (Or.inr (by omega)))
-    (fun k hk => blitFixed_baseHdr5_outside 108 8 src hbd_blit (345 + k) (by omega) (Or.inr (by omega)))
-  intro k hk
-  rw [blitFixed_getElem (by rw [baseHdr5_size]; exact hbd_blit) (by rw [baseHdr5_size]; omega)]
-  rw [dite_eq_left (by rw [hsrc_sz]; omega)]
-  simp only [(by omega : 108 + k - 108 = k)]
-  rfl
+  have hext_uid := extract_patch_blit108 src hsrc_sz
+  have hsrc_list : src.data.toList = List.replicate 8 0 := by decide
+  have huid : parseUstarNumeric (patchHeaderChecksum hdrPre ++ twoZeroBlocks) 108 116 0 true u64Limit "uid" = .ok 0 := by
+    unfold parseUstarNumeric
+    rw [hext_uid, byteArray_toList_eq, hsrc_list]
+    rfl
+  refine uidRegular_abstract hdrPre 0 hpre ?_ huid
+  intro i hi hnot
+  exact blitFixed_baseHdr5_outside 108 8 src hbd_blit i hi (by omega)
 
 private theorem parseUstarHeader_set156_abstract (hdrPre rest : ByteArray) (tf : UInt8)
     (hpre : hdrPre.size = 512) (hrest_pos : 0 < rest.size)

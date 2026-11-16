@@ -1,11 +1,54 @@
 import LeanSwe.CmdLine.Interface
 import LeanSwe.CmdLine.SpecTests
 
+set_option Elab.async false
+
 namespace LeanSwe.CmdLine.Proofs
 
 open Core
 open Core.NondetTest
 open LeanSwe.CmdLine
+
+private theorem string_contains_append_left {a b sub : String} (h : a.contains sub = true) :
+    (a ++ b).contains sub = true := by
+  rw [String.contains_string_iff] at h ⊢
+  rcases h with ⟨pre, post, hp⟩
+  exact ⟨pre, post ++ b.toList, by rw [String.toList_append, ← hp]; simp [List.append_assoc]⟩
+
+private theorem string_contains_append_right {a b sub : String} (h : b.contains sub = true) :
+    (a ++ b).contains sub = true := by
+  rw [String.contains_string_iff] at h ⊢
+  rcases h with ⟨pre, post, hp⟩
+  exact ⟨a.toList ++ pre, post, by rw [String.toList_append, ← hp]; simp [List.append_assoc]⟩
+
+private theorem string_contains_of_eq_sub (s : String) : s.contains s = true := by
+  rw [String.contains_string_iff]
+  exact ⟨[], [], by simp⟩
+
+private theorem string_contains_mid (pre mid post : String) :
+    (pre ++ mid ++ post).contains mid = true :=
+  string_contains_append_left (string_contains_append_right (string_contains_of_eq_sub mid))
+
+
+private theorem parse_ok_of_pred (spec : CommandSpec) (args : List String)
+    (p : ParsedCmd → Bool)
+    (h : (match defaultApi.parse spec args with | .ok a => p a | .error _ => false) = true) :
+    ∃ a, defaultApi.parse spec args = .ok a ∧ p a = true := by
+  cases he : defaultApi.parse spec args with
+  | error _ => simp [he] at h
+  | ok a => simp [he] at h; exact ⟨a, rfl, h⟩
+
+private theorem parse_err_of_pred (spec : CommandSpec) (args : List String)
+    (p : CmdLineError → Bool)
+    (h : (match defaultApi.parse spec args with | .ok _ => false | .error e => p e) = true) :
+    ∃ e, defaultApi.parse spec args = .error e ∧ p e = true := by
+  cases he : defaultApi.parse spec args with
+  | ok _ => simp [he] at h
+  | error e => simp [he] at h; exact ⟨e, rfl, h⟩
+
+private theorem ne_empty_of_isEmpty_false {s : String} (h : (!s.isEmpty) = true) : s ≠ "" := by
+  intro he; rw [he] at h; contradiction
+
 
 /-- `test_cmdline_validSpec_rejectsFlagCollisions` holds universally for `defaultApi`. -/
 theorem allPass_validSpec_rejectsFlagCollisions :
@@ -104,12 +147,41 @@ theorem canReach_parse_subcommandsAndInheritedGlobals :
     CanReach (test_cmdline_parse_subcommandsAndInheritedGlobals defaultApi) :=
   allPass_parse_subcommandsAndInheritedGlobals
 
+private def typoSpec : CommandSpec :=
+  { name := "tool"
+    options := [ { name := "verbose", long := some "verbose", kind := .bool, global := true } ]
+    subcommands := [ { name := "build" }, { name := "clean" } ] }
+
+private theorem typo_verbos_err :
+    ∃ e, defaultApi.parse typoSpec ["--verbos"] = .error e ∧
+      e.kind = .unknownOption ∧ e.message.contains "did you mean '--verbose'" = true := by
+  rcases parse_err_of_pred typoSpec ["--verbos"]
+      (fun e => decide (e.kind = .unknownOption) && e.message.contains "did you mean '--verbose'")
+      (by cbv) with ⟨e, he, hp⟩
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at hp
+  exact ⟨e, he, hp.1, hp.2⟩
+
+private theorem typo_biuld_err :
+    ∃ e, defaultApi.parse typoSpec ["biuld"] = .error e ∧
+      e.kind = .unknownSubcommand ∧ e.message.contains "did you mean 'build'" = true := by
+  rcases parse_err_of_pred typoSpec ["biuld"]
+      (fun e => decide (e.kind = .unknownSubcommand) && e.message.contains "did you mean 'build'")
+      (by cbv) with ⟨e, he, hp⟩
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at hp
+  exact ⟨e, he, hp.1, hp.2⟩
+
 /-- `test_cmdline_parse_typoSuggestions` holds universally for `defaultApi`. -/
 theorem allPass_parse_typoSuggestions :
     AllPass (test_cmdline_parse_typoSuggestions defaultApi) := by
   dsimp only [AllPass, AllPassRun, test_cmdline_parse_typoSuggestions, Bind.bind, Pure.pure,
     NondetTest.assert]
-  cbv
+  rcases typo_verbos_err with ⟨e1, he1, hk1, hm1⟩
+  rcases typo_biuld_err with ⟨e2, he2, hk2, hm2⟩
+  dsimp only [typoSpec] at he1 he2
+  rw [he1]
+  dsimp only
+  rw [he2]
+  exact ⟨⟨hk1, hm1⟩, ⟨hk2, hm2⟩, trivial⟩
 
 /-- `test_cmdline_parse_typoSuggestions` is reachable. -/
 theorem canReach_parse_typoSuggestions :
@@ -213,24 +285,65 @@ theorem canReach_renderArgs_roundTripEdgeCases :
     CanReach (test_cmdline_renderArgs_roundTripEdgeCases defaultApi) :=
   allPass_renderArgs_roundTripEdgeCases
 
+private def routingSpec : CommandSpec :=
+  { name := "mytool"
+    version := some "2.1.0"
+    options := [ { name := "port", long := some "port", kind := .nat, envVar := some "PORT" } ] }
+
+private theorem runCli_help_ok :
+    let r := ((Internal.mkApiM mockCliOps).runCli routingSpec ["--help"] (fun _ => do
+      mockCliOps.writeOut "HANDLER_CALLED"
+      pure 7)).run {}
+    r.1 = 0 ∧ r.2.stdout ≠ "" ∧ (!r.2.stdout.contains "HANDLER_CALLED") = true ∧ r.2.stderr = "" := by
+  cbv
+
+private theorem runCli_ver_ok :
+    let r := ((Internal.mkApiM mockCliOps).runCli routingSpec ["-V"] (fun _ => do
+      mockCliOps.writeOut "HANDLER_CALLED"
+      pure 7)).run {}
+    r.1 = 0 ∧ r.2.stdout = "mytool 2.1.0\n" ∧ r.2.stderr = "" := by
+  cbv
+
+private theorem runCli_unknown_ok :
+    let r := ((Internal.mkApiM mockCliOps).runCli routingSpec ["--unknown"] (fun _ => do
+      mockCliOps.writeOut "HANDLER_CALLED"
+      pure 7)).run {}
+    r.1 = 2 ∧ r.2.stdout = "" ∧ r.2.stderr ≠ "" := by
+  cbv; decide
+
+private theorem runCli_ioErr_ok :
+    let r := ((Internal.mkApiM mockCliOps).runCli routingSpec [] (fun _ => do
+      mockCliOps.writeOut "HANDLER_CALLED"
+      pure 7)).run { env := [("PORT", .error { kind := .ioError, message := "utf8" })] }
+    r.1 = 2 ∧ r.2.stdout = "" ∧ r.2.stderr.contains "utf8" = true := by
+  cbv
+
+private theorem runCli_port443_ok (exitCode : UInt32) :
+    let r := ((Internal.mkApiM mockCliOps).runCli routingSpec ["--port", "443"] (fun cmd =>
+      pure (if cmd.getNat "port" = some 443 then exitCode else 99))).run {}
+    r.1 = exitCode ∧ r.2.stderr = "" := by
+  have hp : (Internal.mkApiM mockCliOps).parseWithEnv routingSpec ["--port", "443"] [] {} =
+      (Except.ok { options := [("port", [.nat 443])] }, {}) := by cbv
+  dsimp only [Internal.mkApiM, Internal.runCli, Internal.runCliWith, StateT.run, Bind.bind,
+    StateT.bind, Pure.pure, StateT.pure] at hp ⊢
+  rw [hp]
+  exact ⟨rfl, rfl⟩
+
 /-- `test_cmdline_runCli_routingAndExitCodes` holds universally for `Internal.mkApiM`. -/
 theorem allPass_runCli_routingAndExitCodes :
     AllPass (test_cmdline_runCli_routingAndExitCodes Internal.mkApiM) := by
   dsimp only [AllPass, AllPassRun, test_cmdline_runCli_routingAndExitCodes, Bind.bind, Pure.pure,
     NondetTest.nondet, NondetTest.assert]
-  refine ⟨by cbv, by cbv, ?_, by cbv, fun exitCode => ?_⟩
-  · cbv; decide
-  · refine ⟨?_, trivial⟩
-    cbv
+  exact ⟨runCli_help_ok, runCli_ver_ok, runCli_unknown_ok, runCli_ioErr_ok,
+    fun exitCode => ⟨runCli_port443_ok exitCode, trivial⟩⟩
 
 /-- `test_cmdline_runCli_routingAndExitCodes` is reachable. -/
 theorem canReach_runCli_routingAndExitCodes :
     CanReach (test_cmdline_runCli_routingAndExitCodes Internal.mkApiM) := by
-  dsimp only [CanReach, CanReachRun, test_cmdline_runCli_routingAndExitCodes, Bind.bind, Pure.pure,
-    NondetTest.nondet, NondetTest.assert]
-  refine ⟨by cbv, by cbv, ?_, by cbv, 42, ?_, trivial⟩
-  · cbv; decide
-  · cbv
+  have h := allPass_runCli_routingAndExitCodes
+  dsimp only [AllPass, AllPassRun, CanReach, CanReachRun, test_cmdline_runCli_routingAndExitCodes,
+    Bind.bind, Pure.pure, NondetTest.nondet, NondetTest.assert] at h ⊢
+  exact ⟨h.1, h.2.1, h.2.2.1, h.2.2.2.1, 42, h.2.2.2.2 42⟩
 
 /-- `test_cmdline_interactive_promptAndConfirm` holds universally for `Internal.mkApiM`. -/
 theorem allPass_interactive_promptAndConfirm :
@@ -245,24 +358,87 @@ theorem canReach_interactive_promptAndConfirm :
     CanReach (test_cmdline_interactive_promptAndConfirm Internal.mkApiM) :=
   allPass_interactive_promptAndConfirm
 
+private def toolHvSpec : CommandSpec :=
+  { name := "tool"
+    version := some "1.0"
+    options := [ { name := "port", long := some "port", kind := .nat, global := true } ]
+    subcommands := [ { name := "sub", version := some "2.0" } ] }
+
 /-- `test_cmdline_parse_helpAndVersionRouting` holds universally for `defaultApi`. -/
 theorem allPass_parse_helpAndVersionRouting :
     AllPass (test_cmdline_parse_helpAndVersionRouting defaultApi) := by
   dsimp only [AllPass, AllPassRun, test_cmdline_parse_helpAndVersionRouting, Bind.bind, Pure.pure,
     NondetTest.assert]
-  cbv
+  rcases parse_err_of_pred { name := "app" } ["--version"] (fun e => decide (e.kind = .unknownOption))
+      (by decide) with ⟨e1, he1, hp1⟩
+  rcases parse_err_of_pred { name := "app" } ["-V"] (fun e => decide (e.kind = .unknownOption))
+      (by decide) with ⟨e2, he2, hp2⟩
+  rcases parse_err_of_pred toolHvSpec ["--badopt", "--help"] (fun e => decide (e.kind = .unknownOption))
+      (by decide) with ⟨e3, he3, hp3⟩
+  rcases parse_err_of_pred toolHvSpec ["--help", "--badopt"]
+      (fun e => decide (e.kind = .helpRequested) && !e.message.isEmpty)
+      (by cbv) with ⟨e4, he4, hp4⟩
+  rcases parse_err_of_pred toolHvSpec ["sub", "-V"]
+      (fun e => decide (e.kind = .versionRequested ∧ e.message = "tool 2.0\n"))
+      (by decide) with ⟨e5, he5, hp5⟩
+  rcases parse_err_of_pred toolHvSpec ["--port", "--help"] (fun e => decide (e.kind = .invalidValue))
+      (by decide) with ⟨e6, he6, hp6⟩
+  dsimp only [toolHvSpec] at he3 he4 he5 he6
+  simp only [decide_eq_true_eq, Bool.and_eq_true] at hp1 hp2 hp3 hp4 hp5 hp6
+  rw [he1]; dsimp only
+  rw [he2]; dsimp only
+  rw [he3]; dsimp only
+  rw [he4]; dsimp only
+  rw [he5]; dsimp only
+  rw [he6]; dsimp only
+  exact ⟨hp1, hp2, hp3, ⟨hp4.1, ne_empty_of_isEmpty_false hp4.2⟩, hp5, hp6, trivial⟩
 
 /-- `test_cmdline_parse_helpAndVersionRouting` is reachable. -/
 theorem canReach_parse_helpAndVersionRouting :
     CanReach (test_cmdline_parse_helpAndVersionRouting defaultApi) :=
   allPass_parse_helpAndVersionRouting
 
+private def posSpec : CommandSpec :=
+  { name := "app"
+    options :=
+      [ { name := "port", long := some "port", kind := .nat },
+        { name := "flag", long := some "flag", kind := .bool },
+        { name := "rep", long := some "rep", kind := .bool, repeatable := true } ]
+    args :=
+      [ { name := "count", kind := .nat },
+        { name := "mode", kind := .choice ["fast", "safe"], required := false, default := some "safe" },
+        { name := "rest", required := false, variadic := true } ] }
+
 /-- `test_cmdline_parse_positionalArgsAndErrors` holds universally for `defaultApi`. -/
 theorem allPass_parse_positionalArgsAndErrors :
     AllPass (test_cmdline_parse_positionalArgsAndErrors defaultApi) := by
   dsimp only [AllPass, AllPassRun, test_cmdline_parse_positionalArgsAndErrors, Bind.bind,
     Pure.pure, NondetTest.assert]
-  cbv
+  rcases parse_ok_of_pred posSpec ["10"]
+      (fun a => decide (a.getNat "count" = some 10 ∧ a.getChoice "mode" = some "safe" ∧
+        a.getList "rest" = [] ∧ a.rawPositionals = ["10"])) (by decide) with ⟨a1, h1, ha1⟩
+  rcases parse_ok_of_pred posSpec ["10", "fast", "a", "b"]
+      (fun a => decide (a.getNat "count" = some 10 ∧ a.getChoice "mode" = some "fast" ∧
+        a.getList "rest" = [.string "a", .string "b"] ∧ a.rawPositionals = ["10", "fast", "a", "b"])) (by decide) with ⟨a2, h2, ha2⟩
+  rcases parse_err_of_pred posSpec [] (fun e => decide (e.kind = .missingArgument)) (by decide) with ⟨e3, he3, hp3⟩
+  rcases parse_err_of_pred posSpec ["not-nat"] (fun e => decide (e.kind = .invalidValue)) (by decide) with ⟨e4, he4, hp4⟩
+  rcases parse_err_of_pred posSpec ["--port"] (fun e => decide (e.kind = .missingArgument)) (by decide) with ⟨e5, he5, hp5⟩
+  rcases parse_err_of_pred posSpec ["--no-flag=bar", "1"] (fun e => decide (e.kind = .invalidValue)) (by decide) with ⟨e6, he6, hp6⟩
+  rcases parse_err_of_pred posSpec ["--rep=false", "1"] (fun e => decide (e.kind = .invalidValue)) (by decide) with ⟨e7, he7, hp7⟩
+  rcases parse_err_of_pred { name := "app", args := [{ name := "one", kind := .string, required := true }] } ["a", "b"]
+      (fun e => decide (e.kind = .unexpectedArgument)) (by decide) with ⟨e8, he8, hp8⟩
+  dsimp only [posSpec] at h1 h2 he3 he4 he5 he6 he7 he8
+  simp only [decide_eq_true_eq] at hp3 hp4 hp5 hp6 hp7 hp8
+  rw [h1]; dsimp only
+  rw [h2]; dsimp only
+  rw [he3]; dsimp only
+  rw [he4]; dsimp only
+  rw [he5]; dsimp only
+  rw [he6]; dsimp only
+  rw [he7]; dsimp only
+  rw [he8]; dsimp only
+  simp only [decide_eq_true_eq] at ha1 ha2
+  exact ⟨⟨ha1.1, ha1.2.1, ha1.2.2.1⟩, ⟨ha2.2.1, ha2.2.2.1⟩, hp3, hp4, hp5, hp6, hp7, hp8, trivial⟩
 
 /-- `test_cmdline_parse_positionalArgsAndErrors` is reachable. -/
 theorem canReach_parse_positionalArgsAndErrors :
@@ -281,14 +457,18 @@ private def toolSpec : CommandSpec :=
 
 private theorem renderHelp_tool_root_eq :
     defaultApi.renderHelp toolSpec [] =
-      .ok ("Usage: tool [OPTIONS] <SUBCOMMAND>\n\nManage widgets\n\nSUBCOMMANDS:\n  add    Add widget\n\n" ++
-        "OPTIONS:\n    --cfg <VALUE>    Config file\n  -h, --help    Print help\n  -V, --version    Print version\n") := by
+      .ok (("Usage: " ++ "tool" ++ " [OPTIONS] <SUBCOMMAND>\n\nManage widgets\n\n") ++
+        ("SUBCOMMANDS:\n  " ++ "add" ++ "    Add widget\n\n") ++
+        ("OPTIONS:\n    " ++ "--cfg" ++ " <VALUE>    Config file\n") ++
+        ("  -h, " ++ "--help" ++ "    Print help\n") ++
+        ("  -V, " ++ "--version" ++ "    Print version\n")) := by
   cbv
 
 private theorem renderHelp_tool_add_eq :
     defaultApi.renderHelp toolSpec ["add"] =
-      .ok ("Usage: tool add [OPTIONS] <widget>\n\nAdd widget\n\nARGS:\n  <widget>    Widget name\n\n" ++
-        "OPTIONS:\n    --cfg <VALUE>    Config file\n  -h, --help    Print help\n  -V, --version    Print version\n") := by
+      .ok (("Usage: " ++ "tool add" ++ " [OPTIONS] <") ++
+        ("widget" ++ ">\n\nAdd widget\n\nARGS:\n  <widget>    Widget name\n\n") ++
+        ("OPTIONS:\n    " ++ "--cfg" ++ " <VALUE>    Config file\n  -h, --help    Print help\n  -V, --version    Print version\n")) := by
   change Internal.renderHelp toolSpec ["add"] = _
   have hv : Model.isValidSpec toolSpec = true := by decide
   have hp : Model.findSubcommandPath toolSpec ["add"] =
@@ -314,6 +494,11 @@ private theorem renderHelp_tool_add_eq :
   dsimp only [List.append, List.map]
   cbv
 
+private theorem renderHelp_tool_missing_eq :
+    defaultApi.renderHelp toolSpec ["missing"] =
+      .error { kind := .unknownSubcommand, message := "unknown subcommand 'missing'", target := some "missing" } := by
+  cbv
+
 /-- `test_cmdline_renderHelpAndVersion` holds universally for `defaultApi`. -/
 theorem allPass_renderHelpAndVersion :
     AllPass (test_cmdline_renderHelpAndVersion defaultApi) := by
@@ -321,9 +506,19 @@ theorem allPass_renderHelpAndVersion :
     NondetTest.assert]
   have hr := renderHelp_tool_root_eq
   have ha := renderHelp_tool_add_eq
-  dsimp only [toolSpec] at hr ha
-  rw [hr, ha]
-  cbv
+  have hm := renderHelp_tool_missing_eq
+  dsimp only [toolSpec] at hr ha hm
+  rw [hr, ha, hm]
+  dsimp only
+  refine ⟨⟨?_, ?_, ?_, ?_, ?_⟩, ⟨?_, ?_, ?_⟩, rfl, rfl, trivial⟩
+  · exact string_contains_append_left (string_contains_append_left (string_contains_append_left (string_contains_append_left (string_contains_mid _ _ _))))
+  · exact string_contains_append_left (string_contains_append_left (string_contains_append_left (string_contains_append_right (string_contains_mid _ _ _))))
+  · exact string_contains_append_left (string_contains_append_left (string_contains_append_right (string_contains_mid _ _ _)))
+  · exact string_contains_append_left (string_contains_append_right (string_contains_mid _ _ _))
+  · exact string_contains_append_right (string_contains_mid _ _ _)
+  · exact string_contains_append_left (string_contains_append_left (string_contains_mid _ _ _))
+  · exact string_contains_append_left (string_contains_append_right (string_contains_append_left (string_contains_of_eq_sub _)))
+  · exact string_contains_append_right (string_contains_mid _ _ _)
 
 /-- `test_cmdline_renderHelpAndVersion` is reachable. -/
 theorem canReach_renderHelpAndVersion :

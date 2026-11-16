@@ -5,6 +5,8 @@ import LeanSwe.SlotPool.Interface
 import LeanSwe.SlotPool.SpecTests
 import LeanSwe.SlotPool.Proofs.SimLemmas
 
+set_option Elab.async false
+
 namespace LeanSwe.SlotPool.Proofs
 
 open Core
@@ -1132,15 +1134,42 @@ private theorem withSlot_sim_waitUpTo_dl {α : Type}
   rw [stateM_bind_run, hScan]
   cases res <;> dsimp only [sTarget, dl, outcomeOfExcept, outcomeOfLease] <;> rfl
 
-/-- Specification 10 (`AllPass`): `WaitPolicy.waitUpTo` emits `expectedPollSleepLog`, expires cleanly at `deadlineNs`, and acquires the lowest freed slot on full-interval and clamped-remainder polls. -/
-theorem proof_waitUpTo_contendedPool_pollsAcquiresOrExpiresAtDeadline :
-    AllPass (test_slotpool_waitUpTo_contendedPool_pollsAcquiresOrExpiresAtDeadline mkApiM) := by
-  intro cfg freeIdx rounds timeoutMs val startMono ⟨hValid, hFreeLt, hTimeoutMax⟩
-  obtain ⟨_, hDirValid, _, hPollPos⟩ := validatePoolConfig_of_true cfg hValid
-  dsimp only [test_slotpool_waitUpTo_contendedPool_pollsAcquiresOrExpiresAtDeadline, AllPass]
-  rw [allPass_assert, allPass_assert]
+private theorem hasSimFile_with_expires (s : PoolSimState) (m : Nat) (l : Array UInt32) (p : String) :
+    hasSimFile { s with monoNanos := m, sleepLog := l } p = hasSimFile s p := rfl
+
+private theorem hasSimFile_of_files_nil {s : PoolSimState} (h : s.files = []) (p : String) :
+    hasSimFile s p = false := by
+  simp [hasSimFile, h]
+
+private theorem poolSim_with_heldLocks (s : PoolSimState) (m : Nat) (l : Array UInt32) :
+    ({ s with monoNanos := m, sleepLog := l } : PoolSimState).heldLocks = s.heldLocks := rfl
+
+private theorem poolSim_with_monoNanos (s : PoolSimState) (m : Nat) (l : Array UInt32) :
+    ({ s with monoNanos := m, sleepLog := l } : PoolSimState).monoNanos = m := rfl
+
+private theorem poolSim_with_sleepLog (s : PoolSimState) (m : Nat) (l : Array UInt32) :
+    ({ s with monoNanos := m, sleepLog := l } : PoolSimState).sleepLog = l := rfl
+
+private theorem waitUpTo_expires_mk
+    (cfg : PoolConfig) (timeoutMs startMono : Nat)
+    (hValid : validPoolConfig cfg = true) :
+    let dl := deadlineNanos startMono timeoutMs
+    let sExpire : PoolSimState :=
+      { externalLeases := leasesBeforeSlot simFs.join cfg.poolDir (dl + 1) cfg.totalSlots
+        monoNanos := startMono }
+    ∃ sAfterMkE : PoolSimState,
+      (simFs.mkdir cfg.poolDir true true).run sExpire = (.ok (), sAfterMkE) ∧
+      sAfterMkE.files = [] ∧
+      sAfterMkE.symlinks = [] ∧
+      sAfterMkE.heldLocks = [] ∧
+      normSimPath cfg.poolDir ∈ sAfterMkE.dirs ∧
+      (∀ d ∈ sAfterMkE.dirs, d.toList.length ≤ (normSimPath cfg.poolDir).toList.length) ∧
+      sAfterMkE.externalLeases =
+        leasesBeforeSlot simFs.join cfg.poolDir (deadlineNanos sAfterMkE.monoNanos timeoutMs + 1) cfg.totalSlots ∧
+      deadlineNanos sAfterMkE.monoNanos timeoutMs = dl ∧
+      sAfterMkE.sleepLog = #[] := by
+  obtain ⟨_, hDirValid, _, _⟩ := validatePoolConfig_of_true cfg hValid
   let dl := deadlineNanos startMono timeoutMs
-  let nextPath := normSimPath (slotLockPath simFs.join cfg.poolDir (freeIdx + 1))
   let sExpire : PoolSimState :=
     { externalLeases := leasesBeforeSlot simFs.join cfg.poolDir (dl + 1) cfg.totalSlots
       monoNanos := startMono }
@@ -1153,104 +1182,279 @@ theorem proof_waitUpTo_contendedPool_pollsAcquiresOrExpiresAtDeadline :
   have hSleepE : sAfterMkE.sleepLog = #[] := hSleepMkE
   have hDlE : deadlineNanos sAfterMkE.monoNanos timeoutMs = dl := by
     dsimp [dl]; rw [hMonoE]
-  have hExtE' : sAfterMkE.externalLeases =
+  have hExtE : sAfterMkE.externalLeases =
       leasesBeforeSlot simFs.join cfg.poolDir (deadlineNanos sAfterMkE.monoNanos timeoutMs + 1) cfg.totalSlots := by
     rw [hExtMkE, hDlE]
-  let sEndE : PoolSimState :=
-    { sAfterMkE with
-      monoNanos := deadlineNanos sAfterMkE.monoNanos timeoutMs
-      sleepLog := sAfterMkE.sleepLog ++ (expectedPollSleepLog cfg.pollIntervalMs timeoutMs).toArray }
-  have hNoRanE : hasSimFile sEndE "ran-expired" = false := by
-    dsimp only [sEndE]
-    simp [hasSimFile, hFilesMkE]
-  have hSleepLogE : sEndE.sleepLog.toList = expectedPollSleepLog cfg.pollIntervalMs timeoutMs := by
-    dsimp only [sEndE]
-    rw [hSleepE]
-    simp
-  rw [withSlot_sim_waitUpTo_expires cfg timeoutMs sExpire sAfterMkE hValid hMkRunE hTimeoutMax
-    hFilesMkE hSymsMkE hHeldE hParMkE hDirsLenMkE hExtE']
-  refine ⟨⟨rfl, hNoRanE, hHeldE⟩, ⟨hDlE, hSleepLogE⟩, ?_⟩
-  rw [allPass_ite_assert]
-  refine ⟨?_, ?_⟩
-  · intro ⟨_, hRBound⟩
+  exact ⟨sAfterMkE, hMkRunE, hFilesMkE, hSymsMkE, hHeldE, hParMkE, hDirsLenMkE, hExtE, hDlE, hSleepE⟩
+
+private theorem waitUpTo_exp_1 (cfg : PoolConfig) (timeoutMs startMono : Nat)
+    (action : Nat → StateM PoolSimState (Except SlotPoolError Nat))
+    (hValid : validPoolConfig cfg = true) (hTimeoutMax : timeoutMs < maxForeverPolls) :
+    let dl := deadlineNanos startMono timeoutMs
+    let sExpire : PoolSimState :=
+      { externalLeases := leasesBeforeSlot simFs.join cfg.poolDir (dl + 1) cfg.totalSlots
+        monoNanos := startMono }
+    let expOut := ((mkApiM simFs simTime).withSlot cfg (.waitUpTo timeoutMs) action).run sExpire
+    expOut.1 = .ok .noSlot := by
+  dsimp only
+  obtain ⟨sAfterMkE, hMk, hFiles, hSyms, hHeld, hPar, hDirsLen, hExt, _, _⟩ :=
+    waitUpTo_expires_mk cfg timeoutMs startMono hValid
+  rw [withSlot_sim_waitUpTo_expires cfg timeoutMs _ sAfterMkE hValid hMk hTimeoutMax
+    hFiles hSyms hHeld hPar hDirsLen hExt]
+
+private theorem waitUpTo_exp_2 (cfg : PoolConfig) (timeoutMs startMono : Nat)
+    (action : Nat → StateM PoolSimState (Except SlotPoolError Nat))
+    (hValid : validPoolConfig cfg = true) (hTimeoutMax : timeoutMs < maxForeverPolls) :
+    let dl := deadlineNanos startMono timeoutMs
+    let sExpire : PoolSimState :=
+      { externalLeases := leasesBeforeSlot simFs.join cfg.poolDir (dl + 1) cfg.totalSlots
+        monoNanos := startMono }
+    let expOut := ((mkApiM simFs simTime).withSlot cfg (.waitUpTo timeoutMs) action).run sExpire
+    hasSimFile expOut.2 "ran-expired" = false := by
+  dsimp only
+  obtain ⟨sAfterMkE, hMk, hFiles, hSyms, hHeld, hPar, hDirsLen, hExt, _, _⟩ :=
+    waitUpTo_expires_mk cfg timeoutMs startMono hValid
+  rw [withSlot_sim_waitUpTo_expires cfg timeoutMs _ sAfterMkE hValid hMk hTimeoutMax
+    hFiles hSyms hHeld hPar hDirsLen hExt, hasSimFile_with_expires]
+  exact hasSimFile_of_files_nil hFiles "ran-expired"
+
+private theorem waitUpTo_exp_3 (cfg : PoolConfig) (timeoutMs startMono : Nat)
+    (action : Nat → StateM PoolSimState (Except SlotPoolError Nat))
+    (hValid : validPoolConfig cfg = true) (hTimeoutMax : timeoutMs < maxForeverPolls) :
+    let dl := deadlineNanos startMono timeoutMs
+    let sExpire : PoolSimState :=
+      { externalLeases := leasesBeforeSlot simFs.join cfg.poolDir (dl + 1) cfg.totalSlots
+        monoNanos := startMono }
+    let expOut := ((mkApiM simFs simTime).withSlot cfg (.waitUpTo timeoutMs) action).run sExpire
+    expOut.2.heldLocks = [] := by
+  dsimp only
+  obtain ⟨sAfterMkE, hMk, hFiles, hSyms, hHeld, hPar, hDirsLen, hExt, _, _⟩ :=
+    waitUpTo_expires_mk cfg timeoutMs startMono hValid
+  rw [withSlot_sim_waitUpTo_expires cfg timeoutMs _ sAfterMkE hValid hMk hTimeoutMax
+    hFiles hSyms hHeld hPar hDirsLen hExt, poolSim_with_heldLocks]
+  exact hHeld
+
+private theorem waitUpTo_exp_4 (cfg : PoolConfig) (timeoutMs startMono : Nat)
+    (action : Nat → StateM PoolSimState (Except SlotPoolError Nat))
+    (hValid : validPoolConfig cfg = true) (hTimeoutMax : timeoutMs < maxForeverPolls) :
+    let dl := deadlineNanos startMono timeoutMs
+    let sExpire : PoolSimState :=
+      { externalLeases := leasesBeforeSlot simFs.join cfg.poolDir (dl + 1) cfg.totalSlots
+        monoNanos := startMono }
+    let expOut := ((mkApiM simFs simTime).withSlot cfg (.waitUpTo timeoutMs) action).run sExpire
+    expOut.2.monoNanos = dl := by
+  dsimp only
+  obtain ⟨sAfterMkE, hMk, hFiles, hSyms, hHeld, hPar, hDirsLen, hExt, hDl, _⟩ :=
+    waitUpTo_expires_mk cfg timeoutMs startMono hValid
+  rw [withSlot_sim_waitUpTo_expires cfg timeoutMs _ sAfterMkE hValid hMk hTimeoutMax
+    hFiles hSyms hHeld hPar hDirsLen hExt, poolSim_with_monoNanos]
+  exact hDl
+
+private theorem waitUpTo_exp_5 (cfg : PoolConfig) (timeoutMs startMono : Nat)
+    (action : Nat → StateM PoolSimState (Except SlotPoolError Nat))
+    (hValid : validPoolConfig cfg = true) (hTimeoutMax : timeoutMs < maxForeverPolls) :
+    let dl := deadlineNanos startMono timeoutMs
+    let sExpire : PoolSimState :=
+      { externalLeases := leasesBeforeSlot simFs.join cfg.poolDir (dl + 1) cfg.totalSlots
+        monoNanos := startMono }
+    let expOut := ((mkApiM simFs simTime).withSlot cfg (.waitUpTo timeoutMs) action).run sExpire
+    expOut.2.sleepLog.toList = expectedPollSleepLog cfg.pollIntervalMs timeoutMs := by
+  dsimp only
+  obtain ⟨sAfterMkE, hMk, hFiles, hSyms, hHeld, hPar, hDirsLen, hExt, _, hSleep⟩ :=
+    waitUpTo_expires_mk cfg timeoutMs startMono hValid
+  rw [withSlot_sim_waitUpTo_expires cfg timeoutMs _ sAfterMkE hValid hMk hTimeoutMax
+    hFiles hSyms hHeld hPar hDirsLen hExt, poolSim_with_sleepLog, Array.toList_append, hSleep]
+  simp
+
+private theorem waitUpTo_contendedPool_expires_ok
+    (cfg : PoolConfig) (timeoutMs startMono : Nat)
+    (action : Nat → StateM PoolSimState (Except SlotPoolError Nat))
+    (hValid : validPoolConfig cfg = true) (hTimeoutMax : timeoutMs < maxForeverPolls) :
+    let dl := deadlineNanos startMono timeoutMs
+    let sExpire : PoolSimState :=
+      { externalLeases := leasesBeforeSlot simFs.join cfg.poolDir (dl + 1) cfg.totalSlots
+        monoNanos := startMono }
+    let expOut := ((mkApiM simFs simTime).withSlot cfg (.waitUpTo timeoutMs) action).run sExpire
+    (expOut.1 = .ok .noSlot ∧ hasSimFile expOut.2 "ran-expired" = false ∧ expOut.2.heldLocks = []) ∧
+      (expOut.2.monoNanos = dl ∧ expOut.2.sleepLog.toList = expectedPollSleepLog cfg.pollIntervalMs timeoutMs) :=
+  ⟨⟨waitUpTo_exp_1 cfg timeoutMs startMono action hValid hTimeoutMax,
+    waitUpTo_exp_2 cfg timeoutMs startMono action hValid hTimeoutMax,
+    waitUpTo_exp_3 cfg timeoutMs startMono action hValid hTimeoutMax⟩,
+   ⟨waitUpTo_exp_4 cfg timeoutMs startMono action hValid hTimeoutMax,
+    waitUpTo_exp_5 cfg timeoutMs startMono action hValid hTimeoutMax⟩⟩
+
+private theorem waitUpTo_contendedPool_rounds_ok
+    (cfg : PoolConfig) (freeIdx rounds timeoutMs val startMono : Nat)
+    (action : Nat → StateM PoolSimState (Except SlotPoolError Nat))
+    (hValid : validPoolConfig cfg = true) (hFreeLt : freeIdx < cfg.totalSlots)
+    (hTimeoutMax : timeoutMs < maxForeverPolls)
+    (hRBound : rounds * cfg.pollIntervalMs ≤ timeoutMs)
+    (hAct : ∀ (s : PoolSimState), s.symlinks = [] →
+      (∀ d ∈ s.dirs, d.toList.length ≤ (normSimPath cfg.poolDir).toList.length) →
+      (action freeIdx).run { s with
+        files := (slotLockPath simFs.join cfg.poolDir freeIdx, "") :: s.files
+        heldLocks := (slotLockPath simFs.join cfg.poolDir freeIdx, .exclusive) :: s.heldLocks } =
+      (.ok val, { s with
+        files := (slotLockPath simFs.join cfg.poolDir freeIdx, "") :: s.files
+        heldLocks := (slotLockPath simFs.join cfg.poolDir freeIdx, .exclusive) :: s.heldLocks })) :
+    let dl := deadlineNanos startMono timeoutMs
+    let nextPath := normSimPath (slotLockPath simFs.join cfg.poolDir (freeIdx + 1))
     let targetRelNs := startMono + rounds * cfg.pollIntervalMs * nanosecondsPerMs
     let sAcquire : PoolSimState :=
       { externalLeases := leasesBeforeSlotUntil simFs.join cfg.poolDir freeIdx targetRelNs (dl + 1) cfg.totalSlots
         monoNanos := startMono }
-    have hDirsLenA : ∀ d ∈ sAcquire.dirs, d.toList.length ≤ (normSimPath cfg.poolDir).toList.length := by
-      intro d hd; cases hd
-    obtain ⟨sAfterMkA, hMkRunA, hFilesMkA, hSymsMkA, hHeldMkA, hExtMkA, _, hMonoMkA, _, hParMkA, hDirsLenMkA⟩ :=
-      simMkdir_clean sAcquire cfg.poolDir rfl rfl rfl hDirValid hDirsLenA
-    have hHeldA : sAfterMkA.heldLocks = [] := hHeldMkA
-    have hMonoA0 : sAfterMkA.monoNanos = startMono := hMonoMkA
-    have hLeDl : targetRelNs ≤ dl := by
-      dsimp only [targetRelNs, dl, deadlineNanos]
-      have : rounds * cfg.pollIntervalMs * nanosecondsPerMs ≤ timeoutMs * nanosecondsPerMs :=
-        Nat.mul_le_mul_right _ hRBound
-      omega
-    have hLeDlA : targetRelNs ≤ deadlineNanos sAfterMkA.monoNanos timeoutMs := by
-      dsimp [dl] at hLeDl; rw [hMonoA0]; exact hLeDl
-    have hLtLocked : targetRelNs ≤ dl + 1 := Nat.le_trans hLeDl (Nat.le_succ dl)
-    have hLockedStrictA : targetRelNs < dl + 1 := Nat.lt_succ_of_le hLeDl
-    have hRoundsLt : rounds < maxForeverPolls := by
-      have h1 : rounds ≤ rounds * cfg.pollIntervalMs := Nat.le_mul_of_pos_right rounds hPollPos
-      omega
-    have hMonoSumA : sAfterMkA.monoNanos + rounds * cfg.pollIntervalMs * nanosecondsPerMs = targetRelNs := by
-      rw [hMonoA0]
-    let sTargetA : PoolSimState :=
-      { sAfterMkA with
-        monoNanos := targetRelNs
-        sleepLog := sAfterMkA.sleepLog ++ (repeatSleepChunks cfg.pollIntervalMs rounds).toArray }
-    let sEndA : PoolSimState := { sTargetA with files := (slotLockPath simFs.join cfg.poolDir freeIdx, "") :: sTargetA.files }
-    have hNextNoA : hasSimFile sEndA nextPath = false := by
-      dsimp only [sEndA, nextPath]
-      rw [hasSimFile_cons_same_fields sTargetA _ _ hFilesMkA]
-      exact nextPath_not_in_single_file cfg.poolDir hDirValid freeIdx
-    rw [withSlot_sim_waitUpTo_rounds cfg freeIdx rounds timeoutMs sAcquire sAfterMkA hValid hMkRunA
-      hFilesMkA hSymsMkA hHeldA hParMkA hDirsLenMkA targetRelNs (dl + 1) hExtMkA
-      hLeDlA hLtLocked hLockedStrictA hRoundsLt hMonoSumA hFreeLt (.ok val)]
-    · dsimp only [outcomeOfLease]
-      exact ⟨rfl, hHeldA, rfl, hLeDl, Or.inr hNextNoA⟩
-    · rw [stateM_bind_run, simFs_sharedProbe_on_acquired sTargetA cfg.poolDir hDirValid hSymsMkA hDirsLenMkA freeIdx]
-      dsimp only
-      simp only [beq_self_eq_true, ↓reduceIte]
-      rfl
+    let acqOut := ((mkApiM simFs simTime).withSlot cfg (.waitUpTo timeoutMs) action).run sAcquire
+    acqOut.1 = .ok (.leased freeIdx val) ∧ acqOut.2.heldLocks = [] ∧
+      acqOut.2.monoNanos = targetRelNs ∧ acqOut.2.monoNanos ≤ dl ∧
+      (freeIdx + 1 ≥ cfg.totalSlots ∨ hasSimFile acqOut.2 nextPath = false) := by
+  obtain ⟨_, hDirValid, _, hPollPos⟩ := validatePoolConfig_of_true cfg hValid
+  let dl := deadlineNanos startMono timeoutMs
+  let nextPath := normSimPath (slotLockPath simFs.join cfg.poolDir (freeIdx + 1))
+  let targetRelNs := startMono + rounds * cfg.pollIntervalMs * nanosecondsPerMs
+  let sAcquire : PoolSimState :=
+    { externalLeases := leasesBeforeSlotUntil simFs.join cfg.poolDir freeIdx targetRelNs (dl + 1) cfg.totalSlots
+      monoNanos := startMono }
+  have hDirsLenA : ∀ d ∈ sAcquire.dirs, d.toList.length ≤ (normSimPath cfg.poolDir).toList.length := by
+    intro d hd; cases hd
+  obtain ⟨sAfterMkA, hMkRunA, hFilesMkA, hSymsMkA, hHeldMkA, hExtMkA, _, hMonoMkA, _, hParMkA, hDirsLenMkA⟩ :=
+    simMkdir_clean sAcquire cfg.poolDir rfl rfl rfl hDirValid hDirsLenA
+  have hHeldA : sAfterMkA.heldLocks = [] := hHeldMkA
+  have hMonoA0 : sAfterMkA.monoNanos = startMono := hMonoMkA
+  have hLeDl : targetRelNs ≤ dl := by
+    dsimp only [targetRelNs, dl, deadlineNanos]
+    have : rounds * cfg.pollIntervalMs * nanosecondsPerMs ≤ timeoutMs * nanosecondsPerMs :=
+      Nat.mul_le_mul_right _ hRBound
+    omega
+  have hLeDlA : targetRelNs ≤ deadlineNanos sAfterMkA.monoNanos timeoutMs := by
+    dsimp [dl] at hLeDl; rw [hMonoA0]; exact hLeDl
+  have hLtLocked : targetRelNs ≤ dl + 1 := Nat.le_trans hLeDl (Nat.le_succ dl)
+  have hLockedStrictA : targetRelNs < dl + 1 := Nat.lt_succ_of_le hLeDl
+  have hRoundsLt : rounds < maxForeverPolls := by
+    have h1 : rounds ≤ rounds * cfg.pollIntervalMs := Nat.le_mul_of_pos_right rounds hPollPos
+    omega
+  have hMonoSumA : sAfterMkA.monoNanos + rounds * cfg.pollIntervalMs * nanosecondsPerMs = targetRelNs := by
+    rw [hMonoA0]
+  let sTargetA : PoolSimState :=
+    { sAfterMkA with
+      monoNanos := targetRelNs
+      sleepLog := sAfterMkA.sleepLog ++ (repeatSleepChunks cfg.pollIntervalMs rounds).toArray }
+  let sEndA : PoolSimState := { sTargetA with files := (slotLockPath simFs.join cfg.poolDir freeIdx, "") :: sTargetA.files }
+  have hNextNoA : hasSimFile sEndA nextPath = false := by
+    dsimp only [sEndA, nextPath]
+    rw [hasSimFile_cons_same_fields sTargetA _ _ hFilesMkA]
+    exact nextPath_not_in_single_file cfg.poolDir hDirValid freeIdx
+  dsimp only
+  rw [withSlot_sim_waitUpTo_rounds cfg freeIdx rounds timeoutMs sAcquire sAfterMkA hValid hMkRunA
+    hFilesMkA hSymsMkA hHeldA hParMkA hDirsLenMkA targetRelNs (dl + 1) hExtMkA
+    hLeDlA hLtLocked hLockedStrictA hRoundsLt hMonoSumA hFreeLt (.ok val)
+    action (hAct sTargetA hSymsMkA hDirsLenMkA)]
+  dsimp only [outcomeOfLease]
+  exact ⟨rfl, hHeldA, rfl, hLeDl, Or.inr hNextNoA⟩
+
+private theorem waitUpTo_contendedPool_dl_ok
+    (cfg : PoolConfig) (freeIdx timeoutMs val startMono : Nat)
+    (action : Nat → StateM PoolSimState (Except SlotPoolError Nat))
+    (hValid : validPoolConfig cfg = true) (hFreeLt : freeIdx < cfg.totalSlots)
+    (hTimeoutMax : timeoutMs < maxForeverPolls)
+    (hAct : ∀ (s : PoolSimState), s.symlinks = [] →
+      (∀ d ∈ s.dirs, d.toList.length ≤ (normSimPath cfg.poolDir).toList.length) →
+      (action freeIdx).run { s with
+        files := (slotLockPath simFs.join cfg.poolDir freeIdx, "") :: s.files
+        heldLocks := (slotLockPath simFs.join cfg.poolDir freeIdx, .exclusive) :: s.heldLocks } =
+      (.ok val, { s with
+        files := (slotLockPath simFs.join cfg.poolDir freeIdx, "") :: s.files
+        heldLocks := (slotLockPath simFs.join cfg.poolDir freeIdx, .exclusive) :: s.heldLocks })) :
+    let dl := deadlineNanos startMono timeoutMs
+    let nextPath := normSimPath (slotLockPath simFs.join cfg.poolDir (freeIdx + 1))
+    let sAcquireDl : PoolSimState :=
+      { externalLeases := leasesBeforeSlotUntil simFs.join cfg.poolDir freeIdx dl (dl + 1) cfg.totalSlots
+        monoNanos := startMono }
+    let acqDlOut := ((mkApiM simFs simTime).withSlot cfg (.waitUpTo timeoutMs) action).run sAcquireDl
+    acqDlOut.1 = .ok (.leased freeIdx val) ∧ acqDlOut.2.heldLocks = [] ∧
+      acqDlOut.2.monoNanos = dl ∧
+      (freeIdx + 1 ≥ cfg.totalSlots ∨ hasSimFile acqDlOut.2 nextPath = false) := by
+  obtain ⟨_, hDirValid, _, _⟩ := validatePoolConfig_of_true cfg hValid
+  let dl := deadlineNanos startMono timeoutMs
+  let nextPath := normSimPath (slotLockPath simFs.join cfg.poolDir (freeIdx + 1))
+  let sAcquireDl : PoolSimState :=
+    { externalLeases := leasesBeforeSlotUntil simFs.join cfg.poolDir freeIdx dl (dl + 1) cfg.totalSlots
+      monoNanos := startMono }
+  have hDirsLenD : ∀ d ∈ sAcquireDl.dirs, d.toList.length ≤ (normSimPath cfg.poolDir).toList.length := by
+    intro d hd; cases hd
+  obtain ⟨sAfterMkD, hMkRunD, hFilesMkD, hSymsMkD, hHeldMkD, hExtMkD, _, hMonoMkD, _, hParMkD, hDirsLenMkD⟩ :=
+    simMkdir_clean sAcquireDl cfg.poolDir rfl rfl rfl hDirValid hDirsLenD
+  have hHeldD : sAfterMkD.heldLocks = [] := hHeldMkD
+  have hMonoD0 : sAfterMkD.monoNanos = startMono := hMonoMkD
+  have hDlD : deadlineNanos sAfterMkD.monoNanos timeoutMs = dl := by
+    dsimp [dl]; rw [hMonoD0]
+  have hExtD : sAfterMkD.externalLeases =
+      leasesBeforeSlotUntil simFs.join cfg.poolDir freeIdx
+        (deadlineNanos sAfterMkD.monoNanos timeoutMs) (deadlineNanos sAfterMkD.monoNanos timeoutMs + 1)
+        cfg.totalSlots := by
+    rw [hExtMkD, hDlD]
+  let sTargetD : PoolSimState :=
+    { sAfterMkD with
+      monoNanos := deadlineNanos sAfterMkD.monoNanos timeoutMs
+      sleepLog := sAfterMkD.sleepLog ++ (expectedWaitUpToChunks cfg.pollIntervalMs (timeoutMs + 1) timeoutMs).toArray }
+  let sEndD : PoolSimState := { sTargetD with files := (slotLockPath simFs.join cfg.poolDir freeIdx, "") :: sTargetD.files }
+  have hNextNoD : hasSimFile sEndD nextPath = false := by
+    dsimp only [sEndD, nextPath]
+    rw [hasSimFile_cons_same_fields sTargetD _ _ hFilesMkD]
+    exact nextPath_not_in_single_file cfg.poolDir hDirValid freeIdx
+  dsimp only
+  rw [withSlot_sim_waitUpTo_dl cfg freeIdx timeoutMs sAcquireDl sAfterMkD hValid hMkRunD hTimeoutMax
+    hFilesMkD hSymsMkD hHeldD hParMkD hDirsLenMkD hExtD hFreeLt (.ok val)
+    action (hAct sTargetD hSymsMkD hDirsLenMkD)]
+  dsimp only [outcomeOfLease]
+  exact ⟨rfl, hHeldD, hDlD, Or.inr hNextNoD⟩
+
+/-- Specification 10 (`AllPass`): `WaitPolicy.waitUpTo` emits `expectedPollSleepLog`, expires cleanly at `deadlineNs`, and acquires the lowest freed slot on full-interval and clamped-remainder polls. -/
+theorem proof_waitUpTo_contendedPool_pollsAcquiresOrExpiresAtDeadline :
+    AllPass (test_slotpool_waitUpTo_contendedPool_pollsAcquiresOrExpiresAtDeadline mkApiM) := by
+  intro cfg freeIdx rounds timeoutMs val startMono ⟨hValid, hFreeLt, hTimeoutMax⟩
+  obtain ⟨_, hDirValid, _, _⟩ := validatePoolConfig_of_true cfg hValid
+  dsimp only [test_slotpool_waitUpTo_contendedPool_pollsAcquiresOrExpiresAtDeadline, AllPass]
+  rw [allPass_assert, allPass_assert]
+  have hExp := waitUpTo_contendedPool_expires_ok cfg timeoutMs startMono
+    (fun _ => do
+      let _ ← simFs.writeText "ran-expired" "bad"
+      return (.ok val : Except SlotPoolError Nat))
+    hValid hTimeoutMax
+  refine ⟨hExp.1, hExp.2, ?_⟩
+  let verifySlotAction : Nat → StateM PoolSimState (Except SlotPoolError Nat) := fun idx => do
+    let p := slotLockPath simFs.join cfg.poolDir idx
+    let sharedProbe ← simFs.tryWithFileLock p .shared false (pure (.ok ()))
+    match sharedProbe with
+    | .ok none =>
+      if idx == freeIdx then
+        return .ok val
+      else
+        return .error { kind := .ioError, message := "wrong slot after waitUpTo" }
+    | _ =>
+      return .error { kind := .ioError, message := "wrong lock mode after waitUpTo" }
+  have hAct : ∀ (s : PoolSimState), s.symlinks = [] →
+      (∀ d ∈ s.dirs, d.toList.length ≤ (normSimPath cfg.poolDir).toList.length) →
+      (verifySlotAction freeIdx).run
+        { s with
+          files := (slotLockPath simFs.join cfg.poolDir freeIdx, "") :: s.files
+          heldLocks := (slotLockPath simFs.join cfg.poolDir freeIdx, .exclusive) :: s.heldLocks } =
+      (.ok val, { s with
+        files := (slotLockPath simFs.join cfg.poolDir freeIdx, "") :: s.files
+        heldLocks := (slotLockPath simFs.join cfg.poolDir freeIdx, .exclusive) :: s.heldLocks }) := by
+    intro s hSyms hDirsLen
+    dsimp only [verifySlotAction]
+    rw [stateM_bind_run, simFs_sharedProbe_on_acquired s cfg.poolDir hDirValid hSyms hDirsLen freeIdx]
+    dsimp only
+    simp only [beq_self_eq_true, ↓reduceIte]
+    rfl
+  rw [allPass_ite_assert]
+  refine ⟨?_, ?_⟩
+  · intro ⟨_, hRBound⟩
+    exact waitUpTo_contendedPool_rounds_ok cfg freeIdx rounds timeoutMs val startMono verifySlotAction hValid hFreeLt hTimeoutMax hRBound hAct
   · by_cases hT : 1 ≤ timeoutMs
     · simp only [hT, ↓reduceIte]
       rw [allPass_assert_end]
-      let sAcquireDl : PoolSimState :=
-        { externalLeases := leasesBeforeSlotUntil simFs.join cfg.poolDir freeIdx dl (dl + 1) cfg.totalSlots
-          monoNanos := startMono }
-      have hDirsLenD : ∀ d ∈ sAcquireDl.dirs, d.toList.length ≤ (normSimPath cfg.poolDir).toList.length := by
-        intro d hd; cases hd
-      obtain ⟨sAfterMkD, hMkRunD, hFilesMkD, hSymsMkD, hHeldMkD, hExtMkD, _, hMonoMkD, _, hParMkD, hDirsLenMkD⟩ :=
-        simMkdir_clean sAcquireDl cfg.poolDir rfl rfl rfl hDirValid hDirsLenD
-      have hHeldD : sAfterMkD.heldLocks = [] := hHeldMkD
-      have hMonoD0 : sAfterMkD.monoNanos = startMono := hMonoMkD
-      have hDlD : deadlineNanos sAfterMkD.monoNanos timeoutMs = dl := by
-        dsimp [dl]; rw [hMonoD0]
-      have hExtD' : sAfterMkD.externalLeases =
-          leasesBeforeSlotUntil simFs.join cfg.poolDir freeIdx
-            (deadlineNanos sAfterMkD.monoNanos timeoutMs) (deadlineNanos sAfterMkD.monoNanos timeoutMs + 1)
-            cfg.totalSlots := by
-        rw [hExtMkD, hDlD]
-      let sTargetD : PoolSimState :=
-        { sAfterMkD with
-          monoNanos := deadlineNanos sAfterMkD.monoNanos timeoutMs
-          sleepLog := sAfterMkD.sleepLog ++ (expectedWaitUpToChunks cfg.pollIntervalMs (timeoutMs + 1) timeoutMs).toArray }
-      let sEndD : PoolSimState := { sTargetD with files := (slotLockPath simFs.join cfg.poolDir freeIdx, "") :: sTargetD.files }
-      have hNextNoD : hasSimFile sEndD nextPath = false := by
-        dsimp only [sEndD, nextPath]
-        rw [hasSimFile_cons_same_fields sTargetD _ _ hFilesMkD]
-        exact nextPath_not_in_single_file cfg.poolDir hDirValid freeIdx
-      rw [withSlot_sim_waitUpTo_dl cfg freeIdx timeoutMs sAcquireDl sAfterMkD hValid hMkRunD hTimeoutMax
-        hFilesMkD hSymsMkD hHeldD hParMkD hDirsLenMkD hExtD' hFreeLt (.ok val)]
-      · dsimp only [outcomeOfLease]
-        exact ⟨⟨rfl, hHeldD, hDlD, Or.inr hNextNoD⟩, trivial⟩
-      · rw [stateM_bind_run, simFs_sharedProbe_on_acquired sTargetD cfg.poolDir hDirValid hSymsMkD hDirsLenMkD freeIdx]
-        dsimp only
-        simp only [beq_self_eq_true, ↓reduceIte]
-        rfl
+      exact ⟨waitUpTo_contendedPool_dl_ok cfg freeIdx timeoutMs val startMono verifySlotAction hValid hFreeLt hTimeoutMax hAct, trivial⟩
     · simp only [hT, ↓reduceIte]
       rw [allPass_assert_end]
       exact ⟨trivial, trivial⟩

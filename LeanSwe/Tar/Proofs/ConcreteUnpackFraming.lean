@@ -1,5 +1,7 @@
 import LeanSwe.Tar.Proofs.ConcreteUnpackHelpers
 
+set_option Elab.async false
+
 namespace LeanSwe.Tar.Proofs
 
 open Core
@@ -210,6 +212,26 @@ private theorem test4_h8 :
   rw [unpackStep.eq_1]
   simp [hnotge, hz1]
 
+private theorem dupPax_err_abstract (bytes : ByteArray)
+    (hsz : bytes.size = 4096)
+    (hstep : unpackLoop {} bytes 0 none [] [] 0 =
+      unpackLoop {} bytes 1024 (some { path? := some "a.txt" }) [] [] 0)
+    (hnz2 : isZeroRange bytes 1024 512 = false)
+    (hparse2 : parseUstarHeader bytes 1024 =
+      .ok { mode := ((0o644 : UInt32) &&& 0o7777).toNat, uid := 0, gid := 0, size := 14, mtime := 0, typeflag := 0x78 }) :
+    ∃ e, Impl.unpackWith {} bytes = .error e ∧ e.kind = .invalidHeader ∧ e.message ≠ "" := by
+  have hnz : (bytes.size == 0 || bytes.size % 512 != 0) = false := by rw [hsz]; rfl
+  have hnotge : ¬1024 ≥ bytes.size := by rw [hsz]; omega
+  have hnotgt : ¬1024 + 512 > bytes.size := by rw [hsz]; omega
+  have h78 : ((0x78 : UInt8) == 0x78) = true := rfl
+  have hsome : (some ({ path? := some "a.txt" } : PaxOverrides)).isSome = true := rfl
+  unfold Impl.unpackWith
+  rw [ite_eq_right (by rw [hnz]; decide), hstep, unpackLoop.eq_1, ite_eq_right hnotge, unpackStep.eq_1]
+  rw [ite_eq_right hnotge, ite_eq_right (by rw [hnz2]; decide), ite_eq_right hnotgt, hparse2]
+  dsimp only
+  rw [ite_eq_left h78, ite_eq_left hsome]
+  exact ⟨_, rfl, rfl, by decide⟩
+
 private theorem test4_h9 :
     let regFrame := mkRegularFrame "a.txt" "hi".toUTF8
     let paxHdr := mkPaxFrame (encodePaxRecord "path" "a.txt")
@@ -226,7 +248,6 @@ private theorem test4_h9 :
   let bytes := paxHdr ++ paxHdr ++ regFrame ++ twoZeroBlocks
   have hsz : bytes.size = 4096 := by
     simp only [bytes, ByteArray.size_append, hpax_sz, hreg_sz, twoZeroBlocks_size]
-  have hnz : (bytes.size == 0 || bytes.size % 512 != 0) = false := by rw [hsz]; rfl
   have hassoc : ByteArray.empty ++ mkPaxFrame (encodePaxRecord "path" "a.txt") ++ post = bytes := by
     simp only [bytes, post, paxHdr, ByteArray.empty_append, ByteArray.append_assoc]
   have hstep := unpackLoop_mkPaxFrame_step_any {} ByteArray.empty post
@@ -249,14 +270,7 @@ private theorem test4_h9 :
       .ok { mode := ((0o644 : UInt32) &&& 0o7777).toNat, uid := 0, gid := 0, size := 14, mtime := 0, typeflag := 0x78 } :=
     parseUstarHeader_mkUstarHeader (by decide) (by decide) (by decide) (by decide)
       (by rw [hsz]; omega) hext2
-  change ∃ e, Impl.unpackWith {} bytes = .error e ∧ e.kind = .invalidHeader ∧ e.message ≠ ""
-  unfold Impl.unpackWith
-  rw [hnz, hstep, unpackLoop.eq_1]
-  have hnotge : ¬1024 ≥ bytes.size := by rw [hsz]; omega
-  have hnotgt : ¬1024 + 512 > bytes.size := by rw [hsz]; omega
-  simp only [Bool.false_eq_true, hnotge, ↓reduceIte]
-  rw [unpackStep.eq_1]
-  simp [hnotge, hnz2, hnotgt, hparse2]
+  exact dupPax_err_abstract bytes hsz hstep hnz2 hparse2
 
 private theorem test4_h10 :
     let regFrame := mkRegularFrame "a.txt" "hi".toUTF8
@@ -437,6 +451,42 @@ private theorem byteArray_mk_append_getElem_left (a b : Array UInt8) (k : Nat)
   change (a ++ b)[k] = a[k]
   exact Array.getElem_append_left ha
 
+private theorem dirtyData_ok_abstract (hdr dirtyData : ByteArray)
+    (hhdr : hdr.size = 512) (hd_sz : dirtyData.size = 512)
+    (hnz_hdr : isZeroRange (hdr ++ dirtyData ++ twoZeroBlocks) 0 512 = false)
+    (hparse_hdr : parseUstarHeader (hdr ++ dirtyData ++ twoZeroBlocks) 0 =
+      .ok { mode := ((420 : UInt32) &&& 0o7777).toNat, uid := 0, gid := 0, size := 2, mtime := 0, typeflag := 0x30 })
+    (hdec : decodeTarEntry {} (hdr ++ dirtyData ++ twoZeroBlocks) 0
+      { mode := ((420 : UInt32) &&& 0o7777).toNat, uid := 0, gid := 0, size := 2, mtime := 0, typeflag := 0x30 }
+      none [] 0 0 =
+      .ok ({ path := "p.txt", kind := .regular, mode := 0o644, data := "AB".toUTF8 }, pad512 2)) :
+    ∃ res, Impl.unpackWith {} (hdr ++ dirtyData ++ twoZeroBlocks) = .ok res ∧
+      TarEquiv [{ path := "p.txt", kind := .regular, data := "AB".toUTF8 }] res := by
+  let bytes := hdr ++ dirtyData ++ twoZeroBlocks
+  have hsz : bytes.size = 2048 := by
+    simp only [bytes, ByteArray.size_append, hhdr, hd_sz, twoZeroBlocks_size]
+  have hnz : (bytes.size == 0 || bytes.size % 512 != 0) = false := by rw [hsz]; rfl
+  have hnotge : ¬0 ≥ bytes.size := by rw [hsz]; omega
+  have hnotgt : ¬0 + 512 > bytes.size := by rw [hsz]; omega
+  have h78 : ((0x30 : UInt8) == 0x78) = false := rfl
+  have hpad : (0 + 512 + pad512 2 : Nat) = 1024 := by decide
+  have hdata_sz : ("AB".toUTF8).size = "AB".utf8ByteSize := by
+    rw [toUTF8_eq_toByteArray, List.size_toByteArray]; decide
+  have htail := unpackLoop_at_twoZeroBlocks {} (hdr ++ dirtyData) ["p.txt"]
+    [{ path := "p.txt", kind := .regular, mode := 0o644, data := "AB".toUTF8 }]
+    "AB".utf8ByteSize
+  rw [ByteArray.size_append, hhdr, hd_sz] at htail
+  have hu : Impl.unpackWith {} bytes = .ok [{ path := "p.txt", kind := .regular, mode := 0o644, data := "AB".toUTF8 }] := by
+    unfold Impl.unpackWith
+    rw [ite_eq_right (by rw [hnz]; decide), unpackLoop.eq_1, ite_eq_right hnotge, unpackStep.eq_1]
+    rw [ite_eq_right hnotge, ite_eq_right (by rw [hnz_hdr]; decide), ite_eq_right hnotgt, hparse_hdr]
+    dsimp only
+    rw [ite_eq_right (by rw [h78]; decide), List.length_nil, hdec]
+    dsimp only
+    rw [ite_eq_left (by rw [hpad]; omega), hpad, Nat.zero_add, hdata_sz]
+    exact htail
+  exact ⟨_, hu, tarEquiv_singleton_self _⟩
+
 private theorem test4_dirtyData_ok :
     let hdr := mkUstarHeader "p.txt" 420 0 0 2 0 48 "" "" "" ""
     let dirtyData : ByteArray := { data := #[65, 66] ++ Array.replicate 510 255 }
@@ -451,7 +501,6 @@ private theorem test4_dirtyData_ok :
     decide
   have hsz : bytes.size = 2048 := by
     simp only [bytes, ByteArray.size_append, hhdr, hd_sz, twoZeroBlocks_size]
-  have hnz : (bytes.size == 0 || bytes.size % 512 != 0) = false := by rw [hsz]; rfl
   have hext_hdr : bytes.extract 0 512 = hdr := by
     have h := extract_append_mid ByteArray.empty hdr (dirtyData ++ twoZeroBlocks)
     simp only [ByteArray.size_empty, ByteArray.empty_append, Nat.zero_add, hhdr] at h
@@ -488,25 +537,14 @@ private theorem test4_dirtyData_ok :
     dsimp only [dirtyData]
     exact byteArray_mk_append_getElem_left #[65, 66] _ k
       (by simp only [List.size_toArray, List.length_cons, List.length_nil]; omega) _
-  have hpad : (0 + 512 + pad512 2 : Nat) = 1024 := by decide
-  have htail := unpackLoop_at_twoZeroBlocks {} (hdr ++ dirtyData) ["p.txt"]
-    [{ path := "p.txt", kind := .regular, mode := ((420 : UInt32) &&& 0o7777).toNat.toUInt32, data := "AB".toUTF8 }]
-    "AB".utf8ByteSize
-  rw [ByteArray.size_append, mkUstarHeader_size, hd_sz] at htail
+  have h2n0 : ((2 : Nat) == 0) = false := rfl
   have hmod : (((420 : UInt32) &&& 0o7777).toNat).toUInt32 = 0o644 := rfl
-  have hu : Impl.unpackWith {} bytes = .ok [{ path := "p.txt", kind := .regular, mode := 0o644, data := "AB".toUTF8 }] := by
-    unfold Impl.unpackWith
-    rw [hnz, unpackLoop.eq_1]
-    have hnotge : ¬0 ≥ bytes.size := by rw [hsz]; omega
-    have hnotgt : ¬0 + 512 > bytes.size := by rw [hsz]; omega
-    have h78 : ((0x30 : UInt8) == 0x78) = false := rfl
-    have h2n0 : ((2 : Nat) == 0) = false := rfl
-    simp only [Bool.false_eq_true, hnotge, ↓reduceIte]
-    rw [unpackStep.eq_1]
-    simp only [List.length_nil, hnotge, ↓reduceIte, hnz_hdr, Bool.false_eq_true, hnotgt, hparse_hdr, h78,
-      hdec, Option.getD_none, Nat.zero_add, h2n0, hdata_ext, hpad, hmod, (by decide : (1024 : Nat) > 0)]
-    simpa [bytes, twoZeroBlocks] using htail
-  exact ⟨_, hu, tarEquiv_singleton_self _⟩
+  have hdec' : decodeTarEntry {} bytes 0
+      { mode := ((420 : UInt32) &&& 0o7777).toNat, uid := 0, gid := 0, size := 2, mtime := 0, typeflag := 0x30 }
+      none [] 0 0 =
+      .ok ({ path := "p.txt", kind := .regular, mode := 0o644, data := "AB".toUTF8 }, pad512 2) := by
+    simpa only [Option.getD_none, Nat.zero_add, h2n0, Bool.false_eq_true, ↓reduceIte, hdata_ext, hmod] using hdec
+  exact dirtyData_ok_abstract hdr dirtyData hhdr hd_sz hnz_hdr hparse_hdr hdec'
 
 private theorem allPass_checkUnpackError_bind3
     (b₁ b₂ b₃ : ByteArray) (k₁ k₂ k₃ : TarErrorKind)
