@@ -121,6 +121,24 @@ private def probeCCode : String :=
   "    int st = 0; waitpid(c, &st, 0);\n" ++
   "    return 0;\n" ++
   "  }\n" ++
+  "  if (strcmp(argv[1], \"--mem-child\") == 0) {\n" ++
+  "    size_t psz = 4U * 1024U * 1024U;\n" ++
+  "    volatile char *pbuf = (volatile char *)malloc(psz);\n" ++
+  "    if (pbuf == NULL) return 1;\n" ++
+  "    for (size_t i = 0; i < psz; i += 4096) pbuf[i] = 1;\n" ++
+  "    pid_t c = fork();\n" ++
+  "    if (c < 0) return 1;\n" ++
+  "    if (c == 0) {\n" ++
+  "      size_t csz = 18U * 1024U * 1024U;\n" ++
+  "      volatile char *cbuf = (volatile char *)malloc(csz);\n" ++
+  "      if (cbuf == NULL) _exit(1);\n" ++
+  "      for (size_t i = 0; i < csz; i += 4096) cbuf[i] = 1;\n" ++
+  "      sleep(5);\n" ++
+  "      _exit(0);\n" ++
+  "    }\n" ++
+  "    int st = 0; waitpid(c, &st, 0);\n" ++
+  "    return pbuf[0] - 1;\n" ++
+  "  }\n" ++
   "  if (strcmp(argv[1], \"--tcp-connect\") == 0) {\n" ++
   "    int port = atoi(argv[2]);\n" ++
   "    int half_close = (argc > 3 && strcmp(argv[3], \"--half-close\") == 0);\n" ++
@@ -642,6 +660,15 @@ def runAll : IO Unit := do
     }) "whole-box multi-child cgroup v2 memory.max enforcement"
     assertTrue (oomRes.outcome == .signaled 9)
       s!"expected cgroup OOM SIGKILL (signaled 9), got {repr oomRes.outcome}"
+
+    let oomChildRes ← assertOk (← ProcessSandbox.run {
+      program := "/box/probe"
+      args := #["--mem-child"]
+      mounts := #[.readOnly probeBin.toString "/box/probe"]
+      limits := { timeoutMs := 15_000, memoryMaxBytes := some (20 * 1024 * 1024), pidsMax := some 8 }
+    }) "child OOM kills whole box atomically via cgroup memory.oom.group"
+    assertTrue (oomChildRes.outcome == .signaled 9)
+      s!"expected atomic whole-box OOM SIGKILL (signaled 9), got {repr oomChildRes.outcome}"
 
     let fsizeRes ← assertOk (← ProcessSandbox.run {
       program := "/bin/sh"
