@@ -19,3 +19,7 @@ Each package lives under `LeanSwe/<Package>/` in a six-part layout:
 lake build
 lake test
 ```
+
+## License
+
+`lean-swe` is released under the Apache License 2.0. See [LICENSE](LICENSE) for the full license text. The bundled SQLite amalgamation in `LeanSwe/Sqlite/Raw/c/sqlite3.c` and `LeanSwe/Sqlite/Raw/c/sqlite3.h` is in the public domain, and both files disclaim copyright.
