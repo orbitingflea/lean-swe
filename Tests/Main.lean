@@ -32,6 +32,8 @@ def main (args : List String) : IO UInt32 := do
     CryptoHash.Raw.RuntimeTests.runAll
     CryptoHash.RuntimeTests.runAll
     Tar.RuntimeTests.runAll
+    ProcessSandbox.Raw.RuntimeTests.runAll
+    ProcessSandbox.RuntimeTests.runAll
     match RegExp.findAll "[0-9]+" "a1b22" with
     | .ok xs =>
       if xs.map (·.matched) != #["1", "22"] then

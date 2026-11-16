@@ -84,6 +84,46 @@ extern_lib «leanswe_cryptohash» pkg := do
   let name := nameToStaticLib "leanswe_cryptohash"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
+extern_lib «leanswe_psandbox» pkg := do
+  let lean ← getLeanInstall
+  let cDir := pkg.dir / "LeanSwe" / "ProcessSandbox" / "Raw" / "c"
+  let outDir := pkg.buildDir / "c"
+  let initSrcJob ← inputTextFile (cDir / "psandbox_init.c")
+  let initBin := outDir / "leanswe-psandbox-init"
+  let initBinJob ← buildFileAfterDep initBin initSrcJob fun srcFile => do
+    createParentDirs initBin
+    proc {
+      cmd := "cc"
+      args := #["-O2", "-Wall", "-Wextra", "-Werror", srcFile.toString, "-o", initBin.toString]
+    }
+  let embedH := outDir / "psandbox_init_embed.h"
+  let embedHJob ← buildFileAfterDep embedH initBinJob fun binFile => do
+    let bytes ← IO.FS.readBinFile binFile
+    createParentDirs embedH
+    let h ← IO.FS.Handle.mk embedH .write
+    h.putStr "static const unsigned char g_psandbox_init_elf[] = {\n"
+    let mut i : Nat := 0
+    while i < bytes.size do
+      if i % 16 == 0 then
+        h.putStr "  "
+      h.putStr s!"{bytes[i]!.toNat},"
+      if i % 16 == 15 || i + 1 == bytes.size then
+        h.putStr "\n"
+      else
+        h.putStr " "
+      i := i + 1
+    h.putStr "};\n"
+    h.putStr s!"static const size_t g_psandbox_init_elf_len = {bytes.size}u;\n"
+    h.flush
+  let shimSrcJob ← inputTextFile (cDir / "psandbox_shim.c")
+  let shimDeps := Job.collectArray #[shimSrcJob, embedHJob]
+  let shimO := outDir / "psandbox_shim.o"
+  let shimOJob ← buildO shimO (shimDeps.map fun _ => cDir / "psandbox_shim.c")
+    #["-I", lean.includeDir.toString, "-I", outDir.toString]
+    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+  let name := nameToStaticLib "leanswe_psandbox"
+  buildStaticLib (pkg.staticLibDir / name) #[shimOJob]
+
 @[default_target, test_driver]
 lean_exe «lean-swe-test» where
   root := `Tests.Main
