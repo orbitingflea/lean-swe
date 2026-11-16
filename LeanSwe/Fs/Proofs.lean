@@ -3695,6 +3695,34 @@ private theorem vfsOps_mkdir_never_invalidInput (path : String) (parents existOk
           dsimp only [StateT.pure, Pure.pure, pure] at ha
           cases ha; exact hEnsureNe a s err (congrArg Prod.fst hE)
         | ok _ => exact ih s' err ha
+  have hCreExistNe : ∀ p s err, (Internal.createDirExistOkM vfsOps p s).1 = .error err → err.kind ≠ .invalidInput := by
+    intro p s err hce
+    dsimp only [Internal.createDirExistOkM, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure] at hce
+    cases hC : vfsOps.createDir p s with
+    | mk rc sc =>
+      rw [hC] at hce
+      cases rc with
+      | ok _ =>
+        dsimp only [StateT.pure, Pure.pure, pure] at hce
+        cases hce
+      | error ce =>
+        have hCeNe := hCreNe p s ce (congrArg Prod.fst hC)
+        dsimp only at hce
+        by_cases hAe : (ce.kind != .alreadyExists) = true
+        · simp [hAe, StateT.pure] at hce; cases hce; exact hCeNe
+        · have hAeF : (ce.kind != .alreadyExists) = false := Bool.eq_false_iff.mpr hAe
+          simp only [hAeF, Bool.false_eq_true, ↓reduceIte] at hce
+          dsimp only [Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure] at hce
+          cases hSt2 : vfsOps.stat true p sc with
+          | mk rs2 s2 =>
+            rw [hSt2] at hce
+            cases rs2 with
+            | error _ => simp [StateT.pure] at hce; cases hce; exact hCeNe
+            | ok st2 =>
+              dsimp only at hce
+              by_cases hD2 : (st2.kind == .dir) = true
+              · simp [hD2, StateT.pure] at hce
+              · simp [hD2, StateT.pure] at hce; cases hce; exact hCeNe
   dsimp only [Internal.mkdirImplM, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure] at hErr
   cases hSt : vfsOps.stat false path st with
   | mk resPre sPre =>
@@ -3735,7 +3763,10 @@ private theorem vfsOps_mkdir_never_invalidInput (path : String) (parents existOk
       · have hNfF : (e0.kind != .notFound) = false := Bool.eq_false_iff.mpr hNf
         simp only [hNfF, Bool.false_eq_true, ↓reduceIte] at hErr
         by_cases hP : (!parents) = true
-        · simp [hP] at hErr; exact hCreNe path sPre e hErr
+        · simp only [hP, ↓reduceIte] at hErr
+          cases existOk with
+          | false => simp only [Bool.false_eq_true, ↓reduceIte] at hErr; exact hCreNe path sPre e hErr
+          | true => simp only [↓reduceIte] at hErr; exact hCreExistNe path sPre e hErr
         · have hPF : (!parents) = false := Bool.eq_false_iff.mpr hP
           simp only [hPF, Bool.false_eq_true, ↓reduceIte] at hErr
           dsimp only [Bind.bind, StateT.bind, StateT.pure] at hErr
@@ -3746,7 +3777,11 @@ private theorem vfsOps_mkdir_never_invalidInput (path : String) (parents existOk
             | error ae =>
               dsimp only [StateT.pure, Pure.pure, pure] at hErr
               cases hErr; exact hAncNe _ sPre e (congrArg Prod.fst hAnc)
-            | ok _ => exact hCreNe path sa e hErr
+            | ok _ =>
+              dsimp only at hErr
+              cases existOk with
+              | false => simp only [Bool.false_eq_true, ↓reduceIte] at hErr; exact hCreNe path sa e hErr
+              | true => simp only [↓reduceIte] at hErr; exact hCreExistNe path sa e hErr
 
 private theorem forEachChildM_never_invalidInput (f : String → StateM VfsState (Except FsError Unit))
     (hf : ∀ x st e, (f x st).1 = .error e → e.kind ≠ .invalidInput) :
@@ -3978,6 +4013,32 @@ private theorem vfsEnsureAncestorsM_noFileTree (ps : List String) (st : VfsState
       | error _ => exact ht1
       | ok _ => exact ih s1 ht1
 
+private theorem vfsCreateDirExistOkM_noFileTree (p : String) (st : VfsState) (ht : NoFileTree st.tree) :
+    NoFileTree (Internal.createDirExistOkM vfsOps p st).2.tree := by
+  unfold Internal.createDirExistOkM
+  dsimp only [Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure]
+  cases hC : vfsOps.createDir p st with
+  | mk rc sc =>
+    have htc : NoFileTree sc.tree := by
+      have hEq : sc = (vfsCreateDirPure st p).2 := (congrArg Prod.snd hC).symm
+      rw [hEq]; exact vfsCreateDirPure_noFileTree st p ht
+    cases rc with
+    | ok _ => exact htc
+    | error ce =>
+      dsimp only
+      by_cases hAe : (ce.kind != .alreadyExists) = true
+      · simp only [hAe, ↓reduceIte]; exact htc
+      · have hAeF : (ce.kind != .alreadyExists) = false := Bool.eq_false_iff.mpr hAe
+        simp only [hAeF, Bool.false_eq_true, ↓reduceIte, Bind.bind, bind, StateT.bind]
+        cases hSt2 : vfsOps.stat true p sc with
+        | mk rs2 s2 =>
+          have hs2 : s2 = sc := (congrArg Prod.snd hSt2).symm
+          cases rs2 with
+          | error _ => subst hs2; exact htc
+          | ok st2 =>
+            by_cases hD2 : (st2.kind == .dir) = true <;>
+              simp only [hD2, ↓reduceIte, Bool.false_eq_true] <;> subst hs2 <;> exact htc
+
 private theorem vfsMkdirImplM_noFileTree (p : String) (parents existOk : Bool) (st : VfsState) (ht : NoFileTree st.tree) :
     NoFileTree (Internal.mkdirImplM vfsOps p parents existOk st).2.tree := by
   unfold Internal.mkdirImplM
@@ -4010,9 +4071,13 @@ private theorem vfsMkdirImplM_noFileTree (p : String) (parents existOk : Bool) (
       · simp only [hNf, Bool.false_eq_true, ↓reduceIte]
         by_cases hP : (!parents) = true
         · simp only [hP, ↓reduceIte]
-          have hCr : NoFileTree (vfsCreateDirPure s1 p).2.tree :=
-            vfsCreateDirPure_noFileTree s1 p (by subst hs1; exact ht)
-          exact hCr
+          cases existOk with
+          | false =>
+            simp only [Bool.false_eq_true, ↓reduceIte]
+            exact vfsCreateDirPure_noFileTree s1 p (by subst hs1; exact ht)
+          | true =>
+            simp only [↓reduceIte]
+            exact vfsCreateDirExistOkM_noFileTree p s1 (by subst hs1; exact ht)
         · have hPF : (!parents) = false := Bool.eq_false_iff.mpr hP
           simp only [hPF, Bool.false_eq_true, ↓reduceIte, Bind.bind, bind, StateT.bind]
           cases hAnc : Internal.ensureAncestorsM vfsOps (Internal.ancestorChain p p.toList.length) s1 with
@@ -4023,7 +4088,14 @@ private theorem vfsMkdirImplM_noFileTree (p : String) (parents existOk : Bool) (
               rw [hSaEq]; exact vfsEnsureAncestorsM_noFileTree (Internal.ancestorChain p p.toList.length) s1 (by subst hs1; exact ht)
             cases ra with
             | error _ => exact hta
-            | ok _ => exact vfsCreateDirPure_noFileTree sa p hta
+            | ok _ =>
+              cases existOk with
+              | false =>
+                simp only [Bool.false_eq_true, ↓reduceIte]
+                exact vfsCreateDirPure_noFileTree sa p hta
+              | true =>
+                simp only [↓reduceIte]
+                exact vfsCreateDirExistOkM_noFileTree p sa hta
 
 private theorem buggyCopyTreeGoNoLoopM_never_invalidInput :
     ∀ fuel src dst dirsExistOk st, NoFileTree st.tree →

@@ -272,6 +272,24 @@ def ensureAncestorsM {m : Type → Type} [Monad m] (ops : RawFsOpsM m) :
     | .error e => return .error e
     | .ok () => ensureAncestorsM ops rest
 
+/-- Create leaf directory `path`, tolerating concurrent `.alreadyExists` when `path` resolves to a directory. -/
+def createDirExistOkM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+    (path : String) : m (Except FsError Unit) := do
+  match ← ops.createDir path with
+  | .ok () => return .ok ()
+  | .error ce =>
+    if ce.kind != .alreadyExists then
+      return .error ce
+    else
+      match ← ops.stat true path with
+      | .ok st =>
+        if st.kind == .dir then
+          return .ok ()
+        else
+          return .error ce
+      | .error _ =>
+        return .error ce
+
 /-- Generic `mkdir` implementation over `RawFsOpsM m`. -/
 def mkdirImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
     (path : String) (parents existOk : Bool) : m (Except FsError Unit) := do
@@ -294,12 +312,12 @@ def mkdirImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
     if e.kind != .notFound then
       return .error e
     else if !parents then
-      ops.createDir path
+      if existOk then createDirExistOkM ops path else ops.createDir path
     else
       let ancs := ancestorChain path path.toList.length
       match ← ensureAncestorsM ops ancs with
       | .error ae => return .error ae
-      | .ok () => ops.createDir path
+      | .ok () => if existOk then createDirExistOkM ops path else ops.createDir path
 
 private def unlinkImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
     (path : String) (missingOk : Bool) : m (Except FsError Unit) := do
