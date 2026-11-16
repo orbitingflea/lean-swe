@@ -101,7 +101,12 @@ private def probeCCode : String :=
   "    errno = 0;\n" ++
   "    if (syscall(__NR_clone, (unsigned long)(0x10000000UL | SIGCHLD), NULL, NULL, NULL, 0) >= 0 || errno != EPERM) return 22;\n" ++
   "    errno = 0;\n" ++
-  "    if (syscall(__NR_clone, (unsigned long)0x80UL, NULL, NULL, NULL, 0) >= 0 || errno == EPERM) return 23;\n" ++
+  "    pid_t cpid = (pid_t)syscall(__NR_clone, (unsigned long)SIGCHLD, NULL, NULL, NULL, 0);\n" ++
+  "    if (cpid == 0) _exit(0);\n" ++
+  "    if (cpid <= 0) return 23;\n" ++
+  "    int cst = 0; pid_t wrc;\n" ++
+  "    do { wrc = waitpid(cpid, &cst, 0); } while (wrc < 0 && errno == EINTR);\n" ++
+  "    if (wrc != cpid || !WIFEXITED(cst) || WEXITSTATUS(cst) != 0) return 23;\n" ++
   "    int ptmx = open(\"/dev/ptmx\", O_RDWR);\n" ++
   "    if (ptmx < 0) return 24;\n" ++
   "    int ptyn = -1;\n" ++
@@ -483,6 +488,9 @@ def runAllOutcome : IO (Option String) := do
       args := #["--seccomp"]
       mounts := #[.readOnly probeBin.toString "/box/probe"]
     }) "seccomp + clone3 ENOSYS + pthread_create + socketpair vs socket(AF_UNIX) + Landlock init mask"
+    if seccompRes.outcome == .exited 23 then
+      throw (IO.userError
+        s!"ASSERTION FAILED: an ordinary process creation without namespace flags must succeed inside the box (got exited 23, err={String.fromUTF8! seccompRes.stderr})")
     assertTrue (seccompRes.outcome == .exited 0 &&
       String.fromUTF8! seccompRes.stdout == "SECCOMP_ALL_OK\n")
       s!"seccomp probe outcome: {repr seccompRes.outcome} err={String.fromUTF8! seccompRes.stderr}"
