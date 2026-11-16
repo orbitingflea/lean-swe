@@ -1,0 +1,354 @@
+import LeanSwe.ProcessSandbox.Raw.Types
+
+namespace LeanSwe.ProcessSandbox.Raw.Internal
+
+open LeanSwe.ProcessSandbox.Raw
+  (SandboxErrorKind SandboxError SandboxRawError SandboxMount PortForward
+   SandboxLimits PreflightReq PresetSystemEntry HostRuntimePreset
+   CompiledSandboxPlan isValidSandboxHandleId PlanHandle BoxHandle
+   PortForwarderHandle SandboxResourceCounts SandboxOutcome SandboxResult
+   RawProcessSandboxOps)
+
+/-- FFI hooks injected by `LeanSwe.ProcessSandbox.Raw.Interface`. -/
+structure PosixRawOps where
+  /-- Probe Linux, `bwrap`, Landlock ABI >= 4, `seccomp`, namespaces, and direct `cgroup v2`. -/
+  preflight : Bool → Bool → IO (UInt8 × UInt32 × String × String)
+  /-- Discover system runtime preset entries, `/etc` paths, and nested `$HOME` directories. -/
+  discoverPreset : IO (UInt8 × UInt32 × String × Array (UInt8 × String × String) × Array String × Array String)
+  /-- Create and seal `memfd` descriptors from serialized `LSWP0001` bytes. -/
+  sealPlan : ByteArray → IO (UInt8 × UInt32 × String × String × UInt64)
+  /-- Close and release a sealed plan handle. -/
+  closePlan : UInt64 → IO (UInt8 × UInt32 × String × String)
+  /-- Spawn a sandbox box instance from a sealed plan handle. -/
+  spawnBox : UInt64 → IO (UInt8 × UInt32 × String × String × UInt64 × UInt32 × UInt32 × UInt32)
+  /-- Start the host non-blocking TCP forwarder thread for handed-off listener FDs. -/
+  startForwarders : UInt64 → Array UInt16 → Array UInt16 → IO (UInt8 × UInt32 × String × String × UInt64)
+  /-- Stop and free a running TCP forwarder handle. -/
+  stopForwarders : UInt64 → IO (UInt8 × UInt32 × String × String)
+  /-- Release the pre-`execvp` gate, stream `stdin`, and collect bounded `stdout`/`stderr`. -/
+  readOutput : UInt64 → ByteArray → UInt64 → Bool → UInt64 → IO (UInt8 × UInt32 × String × String × UInt8 × UInt32 × ByteArray × ByteArray)
+  /-- Send `SIGKILL` to the sandbox process group (`-pgid`). -/
+  killPg : UInt64 → IO (UInt8 × UInt32 × String × String)
+  /-- Send `SIGKILL` via Linux `pidfd_send_signal`. -/
+  pidfdKill : UInt64 → IO (UInt8 × UInt32 × String × String)
+  /-- Kill the cgroup, reap the sandbox process, remove the cgroup directory, and free `BoxHandle`. -/
+  reapBox : UInt64 → IO (UInt8 × UInt32 × String × String)
+  /-- Return active `(openPlans, activeBoxes, activeForwarders)` resource counts. -/
+  activeCounts : IO (Nat × Nat × Nat)
+
+/-- Return `msg` if non-empty, or `fallback` otherwise. -/
+def nonEmptyMsg (fallback msg : String) : String :=
+  if msg.isEmpty then fallback else msg
+
+/-- Clamp a `Nat` to `UInt64` without modulo wraparound. -/
+def natToUInt64Sat (n : Nat) : UInt64 :=
+  UInt64.ofNat (Nat.min n (UInt64.size - 1))
+
+/-- Convert a pure `SandboxRawError` into a normalized `SandboxError` preserving kind, path, errno, and non-empty message. -/
+def mapRawError : SandboxRawError → SandboxError
+  | .unavailable errno? detail =>
+    { kind := .unavailable
+      path := none
+      errnoCode := errno?
+      message := nonEmptyMsg "sandbox unavailable" detail }
+  | .notFound p errno detail =>
+    { kind := .notFound
+      path := some p
+      errnoCode := some errno
+      message := nonEmptyMsg s!"not found: {p}" detail }
+  | .permissionDenied p? errno detail =>
+    { kind := .permissionDenied
+      path := p?
+      errnoCode := some errno
+      message := nonEmptyMsg "permission denied" detail }
+  | .invalidArgument p? errno? detail =>
+    { kind := .invalidInput
+      path := p?
+      errnoCode := errno?
+      message := nonEmptyMsg "invalid sandbox argument" detail }
+  | .ioError p? errno detail =>
+    { kind := .ioError
+      path := p?
+      errnoCode := some errno
+      message := nonEmptyMsg s!"sandbox I/O error {errno}" detail }
+  | .userError detail =>
+    { kind := .ioError
+      path := none
+      errnoCode := none
+      message := nonEmptyMsg "sandbox error" detail }
+
+/-- Decode a structured FFI error tag and fields into a normalized `SandboxError`. -/
+def decodeTupleError (tag : UInt8) (errnum : UInt32) (path detail : String) : SandboxError :=
+  let optPath := if path.isEmpty then none else some path
+  let optErrno := if errnum == 0 then none else some errnum
+  match tag.toNat with
+  | 1 => mapRawError (.unavailable optErrno detail)
+  | 2 => mapRawError (.notFound path errnum detail)
+  | 3 => mapRawError (.permissionDenied optPath errnum detail)
+  | 4 => mapRawError (.invalidArgument optPath optErrno detail)
+  | _ => mapRawError (.ioError optPath errnum detail)
+
+/-- Convert an uncaught Lean `IO.Error` into `SandboxRawError`. -/
+def ioErrorToRaw : IO.Error → SandboxRawError
+  | .noFileOrDirectory p code detail => .notFound p code detail
+  | .permissionDenied p? code detail => .permissionDenied p? code detail
+  | .invalidArgument p? code detail => .invalidArgument p? (some code) detail
+  | .otherError code detail => .ioError none code detail
+  | .userError detail => .userError detail
+  | .interrupted p code detail => .ioError (if p.isEmpty then none else some p) code detail
+  | .timeExpired code detail => .ioError none code detail
+  | .resourceExhausted p? code detail => .ioError p? code detail
+  | .noSuchThing p? code detail => .notFound (p?.getD "") code detail
+  | .alreadyExists p? code detail => .ioError p? code detail
+  | .inappropriateType p? code detail => .ioError p? code detail
+  | .unsupportedOperation code detail => .unavailable (some code) detail
+  | .unsatisfiedConstraints code detail => .unavailable (some code) detail
+  | .illegalOperation code detail => .ioError none code detail
+  | .resourceBusy code detail => .ioError none code detail
+  | .resourceVanished code detail => .ioError none code detail
+  | .hardwareFault code detail => .ioError none code detail
+  | .protocolError code detail => .ioError none code detail
+  | .unexpectedEof => .userError "unexpected end of file"
+
+/-- Execute an `IO` action and capture any thrown `IO.Error` into `Except SandboxError`. -/
+def catchSandbox {α : Type} (act : IO (Except SandboxError α)) : IO (Except SandboxError α) := do
+  try
+    return (← act)
+  catch err =>
+    return .error (mapRawError (ioErrorToRaw err))
+
+private def pushU8 (ba : ByteArray) (v : UInt8) : ByteArray :=
+  ba.push v
+
+private def pushU16LE (ba : ByteArray) (v : UInt16) : ByteArray :=
+  let n := v.toNat
+  ba.push (UInt8.ofNat (n % 256))
+    |>.push (UInt8.ofNat ((n / 256) % 256))
+
+private def pushU32LE (ba : ByteArray) (v : UInt32) : ByteArray :=
+  let n := v.toNat
+  ba.push (UInt8.ofNat (n % 256))
+    |>.push (UInt8.ofNat ((n / 256) % 256))
+    |>.push (UInt8.ofNat ((n / 65536) % 256))
+    |>.push (UInt8.ofNat ((n / 16777216) % 256))
+
+private def pushU64LE (ba : ByteArray) (v : UInt64) : ByteArray :=
+  let rec go (idx : Nat) (cur : UInt64) (acc : ByteArray) : ByteArray :=
+    match idx with
+    | 0 => acc
+    | k + 1 =>
+      let b := UInt8.ofNat (cur.toNat % 256)
+      go k (cur >>> 8) (acc.push b)
+  go 8 v ba
+
+private def hasNulByte (s : String) : Bool :=
+  s.toUTF8.toList.contains 0
+
+private def pushStr (ba : ByteArray) (s : String) : Except SandboxError ByteArray := do
+  if hasNulByte s then
+    .error (mapRawError (.invalidArgument none none "string contains NUL byte"))
+  let utf := s.toUTF8
+  if utf.size >= UInt32.size then
+    .error (mapRawError (.invalidArgument none none "string exceeds 32-bit length"))
+  let ba := pushU32LE ba (UInt32.ofNat utf.size)
+  return ba ++ utf
+
+private def boolU8 (b : Bool) : UInt8 :=
+  if b then 1 else 0
+
+/-- Serialize a `CompiledSandboxPlan` into `LSWP0001` binary bytes after verifying mandatory sandbox invariants. -/
+def encodePlan (plan : CompiledSandboxPlan) : Except SandboxError ByteArray := do
+  if !plan.emptyRoot || !plan.unshareAllNamespaces || !plan.mountFreshProc || !plan.mountSafeDev ||
+      !plan.directCgroupV2Fs || plan.landlockMinAbi < 4 || !plan.blockUnixSocketAndSmc ||
+      !plan.allowAnonUnixSocketpair || !plan.clone3EnosysFallback || !plan.seccompStrictDenylist ||
+      !plan.noNewPrivs || !plan.rlimitCoreZero || !plan.subreaperAndPdeathsig || !plan.cleanEnv then
+    .error (mapRawError (.invalidArgument none none "compiled plan violates mandatory sandbox invariants"))
+  if plan.program.isEmpty || plan.cwd.isEmpty then
+    .error (mapRawError (.invalidArgument none none "compiled plan requires non-empty program and cwd"))
+  if plan.limits.timeoutMs == 0 || plan.limits.memoryMaxBytes == some 0 || plan.limits.pidsMax == some 0 then
+    .error (mapRawError (.invalidArgument none none "compiled plan has invalid zero limit"))
+  if plan.portForwards.any (fun pf => pf.boxPort == 0 || pf.hostPort == 0) then
+    .error (mapRawError (.invalidArgument none none "compiled plan has zero port"))
+  let mut ba := "LSWP0001".toUTF8
+  ba := pushU8 ba (boolU8 plan.emptyRoot)
+  ba := pushU8 ba (boolU8 plan.unshareAllNamespaces)
+  ba := pushU8 ba (boolU8 plan.mountFreshProc)
+  ba := pushU8 ba (boolU8 plan.mountSafeDev)
+  ba := pushU8 ba (boolU8 plan.directCgroupV2Fs)
+  ba := pushU32LE ba (UInt32.ofNat (Nat.min plan.landlockMinAbi (UInt32.size - 1)))
+  ba := pushU8 ba (boolU8 plan.allowBoxLocalhost)
+  ba := pushU8 ba (boolU8 plan.blockUnixSocketAndSmc)
+  ba := pushU8 ba (boolU8 plan.allowAnonUnixSocketpair)
+  ba := pushU8 ba (boolU8 plan.clone3EnosysFallback)
+  ba := pushU8 ba (boolU8 plan.seccompStrictDenylist)
+  ba := pushU8 ba (boolU8 plan.noNewPrivs)
+  ba := pushU8 ba (boolU8 plan.rlimitCoreZero)
+  ba := pushU8 ba (boolU8 plan.subreaperAndPdeathsig)
+  ba := pushU8 ba (boolU8 plan.cleanEnv)
+  ba := pushU64LE ba (natToUInt64Sat plan.limits.timeoutMs)
+  ba := pushU8 ba (boolU8 plan.limits.memoryMaxBytes.isSome)
+  ba := pushU64LE ba (natToUInt64Sat (plan.limits.memoryMaxBytes.getD 0))
+  ba := pushU8 ba (boolU8 plan.limits.pidsMax.isSome)
+  ba := pushU64LE ba (natToUInt64Sat (plan.limits.pidsMax.getD 0))
+  ba := pushU8 ba (boolU8 plan.limits.fileSizeMaxBytes.isSome)
+  ba := pushU64LE ba (natToUInt64Sat (plan.limits.fileSizeMaxBytes.getD 0))
+  ba := pushU8 ba (boolU8 plan.limits.maxOutputBytes.isSome)
+  ba := pushU64LE ba (natToUInt64Sat (plan.limits.maxOutputBytes.getD 0))
+  ba ← pushStr ba plan.program
+  ba ← pushStr ba plan.cwd
+  ba := pushU32LE ba (UInt32.ofNat plan.args.size)
+  for a in plan.args do
+    ba ← pushStr ba a
+  ba := pushU32LE ba (UInt32.ofNat plan.env.size)
+  for (k, v) in plan.env do
+    ba ← pushStr ba k
+    ba ← pushStr ba v
+  ba := pushU32LE ba (UInt32.ofNat plan.presetSystemEntries.size)
+  for e in plan.presetSystemEntries do
+    match e with
+    | .readOnlyDir p =>
+      ba := pushU8 ba 0
+      ba ← pushStr ba p
+    | .topSymlink lp tgt =>
+      ba := pushU8 ba 1
+      ba ← pushStr ba lp
+      ba ← pushStr ba tgt
+  ba := pushU32LE ba (UInt32.ofNat plan.presetEtcPaths.size)
+  for p in plan.presetEtcPaths do
+    ba ← pushStr ba p
+  ba := pushU32LE ba (UInt32.ofNat plan.maskedPresetPaths.size)
+  for m in plan.maskedPresetPaths do
+    ba ← pushStr ba m
+  ba := pushU32LE ba (UInt32.ofNat plan.userMounts.size)
+  for m in plan.userMounts do
+    match m with
+    | .readOnly hp bp =>
+      ba := pushU8 ba 0
+      ba ← pushStr ba hp
+      ba ← pushStr ba bp
+    | .readWrite hp bp =>
+      ba := pushU8 ba 1
+      ba ← pushStr ba hp
+      ba ← pushStr ba bp
+    | .scratch bp =>
+      ba := pushU8 ba 2
+      ba ← pushStr ba bp
+  ba := pushU32LE ba (UInt32.ofNat plan.portForwards.size)
+  for pf in plan.portForwards do
+    ba := pushU16LE ba pf.boxPort
+    ba := pushU16LE ba pf.hostPort
+  return ba
+
+/-- Construct a concrete `RawProcessSandboxOps` bundle backed by injected POSIX FFI hooks. -/
+def mkRawOps (posix : PosixRawOps) : RawProcessSandboxOps :=
+  { mapRawError := mapRawError
+    preflight := fun req => catchSandbox do
+      let (tag, errnum, _path, msg) ← posix.preflight req.needMemoryCgroup req.needPidsCgroup
+      if tag == 0 then
+        return .ok ()
+      else
+        return .error (mapRawError (.unavailable (if errnum == 0 then none else some errnum) msg))
+    discoverHostPreset := catchSandbox do
+      let (tag, errnum, msg, rawSys, etcPaths, homePaths) ← posix.discoverPreset
+      if tag != 0 then
+        return .error (decodeTupleError tag errnum "" msg)
+      let sysEntries := rawSys.map fun (stag, p, tgt) =>
+        if stag == 1 then PresetSystemEntry.topSymlink p tgt else PresetSystemEntry.readOnlyDir p
+      return .ok
+        { systemEntries := sysEntries
+          etcPaths := etcPaths
+          excludedHomePaths := homePaths }
+    sealPlan := fun plan => catchSandbox do
+      match encodePlan plan with
+      | .error e => return .error e
+      | .ok bytes =>
+        let (tag, errnum, path, msg, hid) ← posix.sealPlan bytes
+        if tag != 0 then
+          return .error (decodeTupleError tag errnum path msg)
+        let hidNat := hid.toNat
+        if !isValidSandboxHandleId hidNat then
+          return .error (mapRawError (.ioError none 22 "shim returned invalid plan handle id"))
+        return .ok { handleId := hidNat }
+    closePlan := fun ph => catchSandbox do
+      if !isValidSandboxHandleId ph.handleId then
+        return .error (mapRawError (.invalidArgument none none "invalid plan handle"))
+      let (tag, errnum, path, msg) ← posix.closePlan (UInt64.ofNat ph.handleId)
+      if tag != 0 then
+        return .error (decodeTupleError tag errnum path msg)
+      return .ok ()
+    spawnBox := fun ph => catchSandbox do
+      if !isValidSandboxHandleId ph.handleId then
+        return .error (mapRawError (.invalidArgument none none "invalid plan handle"))
+      let (tag, errnum, path, msg, hid, pid, pgid, pidfd) ← posix.spawnBox (UInt64.ofNat ph.handleId)
+      if tag != 0 then
+        return .error (decodeTupleError tag errnum path msg)
+      let hidNat := hid.toNat
+      if !isValidSandboxHandleId hidNat || pid == 0 || pgid == 0 then
+        return .error (mapRawError (.unavailable none "shim returned invalid box handle"))
+      return .ok
+        { handleId := hidNat
+          pid := Int.ofNat pid.toNat
+          pgid := Int.ofNat pgid.toNat
+          pidfd := Int.ofNat pidfd.toNat }
+    startPortForwarders := fun bh fwds => catchSandbox do
+      if !isValidSandboxHandleId bh.handleId then
+        return .error (mapRawError (.invalidArgument none none "invalid box handle"))
+      let bps := fwds.map (·.boxPort)
+      let hps := fwds.map (·.hostPort)
+      let (tag, errnum, path, msg, fhid) ← posix.startForwarders (UInt64.ofNat bh.handleId) bps hps
+      if tag != 0 then
+        return .error (decodeTupleError tag errnum path msg)
+      let fhidNat := fhid.toNat
+      if !isValidSandboxHandleId fhidNat then
+        return .error (mapRawError (.ioError none 22 "shim returned invalid forwarder handle id"))
+      return .ok { handleId := fhidNat, boxHandleId := bh.handleId }
+    stopPortForwarders := fun fh => catchSandbox do
+      if !isValidSandboxHandleId fh.handleId then
+        return .error (mapRawError (.invalidArgument none none "invalid forwarder handle"))
+      let (tag, errnum, path, msg) ← posix.stopForwarders (UInt64.ofNat fh.handleId)
+      if tag != 0 then
+        return .error (decodeTupleError tag errnum path msg)
+      return .ok ()
+    readBoxOutput := fun bh stdin timeoutMs maxOut? => catchSandbox do
+      if !isValidSandboxHandleId bh.handleId then
+        return .error (mapRawError (.invalidArgument none none "invalid box handle"))
+      let toU64 := natToUInt64Sat (Nat.max 1 timeoutMs)
+      let hasLimit := maxOut?.isSome
+      let limU64 := natToUInt64Sat (maxOut?.getD 0)
+      let (tag, errnum, path, msg, outTag, exitOrSig, outBytes, errBytes) ←
+        posix.readOutput (UInt64.ofNat bh.handleId) stdin toU64 hasLimit limU64
+      if tag != 0 then
+        return .error (decodeTupleError tag errnum path msg)
+      let outcome :=
+        match outTag.toNat with
+        | 0 => SandboxOutcome.exited (Int.ofNat exitOrSig.toNat)
+        | 1 => SandboxOutcome.signaled (Int.ofNat exitOrSig.toNat)
+        | 2 => SandboxOutcome.timedOut
+        | _ => SandboxOutcome.outputLimitExceeded
+      return .ok { outcome := outcome, stdout := outBytes, stderr := errBytes }
+    killProcessGroup := fun bh => catchSandbox do
+      if !isValidSandboxHandleId bh.handleId then
+        return .error (mapRawError (.invalidArgument none none "invalid box handle"))
+      let (tag, errnum, path, msg) ← posix.killPg (UInt64.ofNat bh.handleId)
+      if tag != 0 then
+        return .error (decodeTupleError tag errnum path msg)
+      return .ok ()
+    pidfdKill := fun bh => catchSandbox do
+      if !isValidSandboxHandleId bh.handleId then
+        return .error (mapRawError (.invalidArgument none none "invalid box handle"))
+      let (tag, errnum, path, msg) ← posix.pidfdKill (UInt64.ofNat bh.handleId)
+      if tag != 0 then
+        return .error (decodeTupleError tag errnum path msg)
+      return .ok ()
+    reapBox := fun bh => catchSandbox do
+      if !isValidSandboxHandleId bh.handleId then
+        return .error (mapRawError (.invalidArgument none none "invalid box handle"))
+      let (tag, errnum, path, msg) ← posix.reapBox (UInt64.ofNat bh.handleId)
+      if tag != 0 then
+        return .error (decodeTupleError tag errnum path msg)
+      return .ok ()
+    activeResourceCounts := do
+      let (np, nb, nf) ← posix.activeCounts
+      return { openPlans := np, activeBoxes := nb, activeForwarders := nf } }
+
+end LeanSwe.ProcessSandbox.Raw.Internal
