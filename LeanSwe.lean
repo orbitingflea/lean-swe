@@ -18,6 +18,7 @@ import LeanSwe.Fs.Raw.SpecTests
 import LeanSwe.Fs.Raw.Proofs
 import LeanSwe.Fs.Raw.RuntimeTests
 import LeanSwe.Fs.Types
+import LeanSwe.Fs.Model
 import LeanSwe.Fs.Interface
 import LeanSwe.Fs.Impl
 import LeanSwe.Fs.SpecTests

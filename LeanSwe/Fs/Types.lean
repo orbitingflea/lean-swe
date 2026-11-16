@@ -3,7 +3,8 @@ import LeanSwe.Fs.Raw.Types
 namespace LeanSwe.Fs
 
 export LeanSwe.Fs.Raw
-  (FsErrorKind FsError EntryKind FileStat FsRawError LockMode LockHandle RawFsOpsM RawFsOps)
+  (FsErrorKind FsError EntryKind FileStat FsRawError LockMode LockHandle RawFsOpsM RawFsOps
+   DirHandle validSeg EntryName RelPath RawDirOpsM RawDirOps)
 
 /-- Single yielded directory node from `walk` (analogous to Python `os.walk` triples). -/
 structure WalkEntry where
@@ -111,5 +112,44 @@ structure FsApiM (m : Type → Type) where
 
 /-- Concrete `IO` filesystem API bundle for `LeanSwe.Fs`. -/
 abbrev FsApi := FsApiM IO
+
+/-- Directory-anchored, symlink-refusing filesystem capability scoped to an open subtree root. -/
+structure SubtreeM (m : Type → Type) : Type 1 where
+  /-- Inspect metadata at `rel` without following symlinks (`fstatDir` for `.root`). -/
+  lstat : RelPath → m (Except FsError FileStat)
+  /-- Read entire regular file at `rel` without following symlinks or blocking on special files. -/
+  readRegular : RelPath → m (Except FsError ByteArray)
+  /-- Atomically write `bytes` at `rel` (`0o644` subject to process `umask`). -/
+  atomicWriteBytes : RelPath → ByteArray → m (Except FsError Unit)
+  /-- Create directory at `rel` with `parents` and `existOk` (`0o755` subject to process `umask`). -/
+  mkdir : RelPath → Bool → Bool → m (Except FsError Unit)
+  /-- Remove non-directory or symbolic link at `rel` (with `missingOk`). -/
+  unlink : RelPath → Bool → m (Except FsError Unit)
+  /-- Remove empty directory at `rel`. -/
+  rmdir : RelPath → m (Except FsError Unit)
+  /-- Recursively remove directory tree at `rel` (with `ignoreMissing`). -/
+  rmtree : RelPath → Bool → m (Except FsError Unit)
+  /-- Create symbolic link at `linkRel` pointing to `target`. -/
+  symlink : String → RelPath → m (Except FsError Unit)
+  /-- Return sorted immediate child entry names inside directory `rel`. -/
+  listDir : RelPath → m (Except FsError (Array EntryName))
+  /-- Bounded top-down directory walk yielding sorted children inside `rel` without descending into symlinks. -/
+  walk : RelPath → m (Except FsError (Array WalkEntry))
+  /-- Acquire an advisory `flock` at `rel`, run `action`, and release the lock on exit. -/
+  withFileLock : {α : Type} → RelPath → LockMode → Bool → m (Except FsError α) → m (Except FsError α)
+  /-- Non-blocking `withFileLock`, returning `.ok none` without running `action` when contended. -/
+  tryWithFileLock :
+    {α : Type} → RelPath → LockMode → Bool → m (Except FsError α) → m (Except FsError (Option α))
+
+/-- Concrete `IO` confined subtree capability exported by `LeanSwe.Fs`. -/
+abbrev Subtree := SubtreeM IO
+
+/-- Capability opener providing a confined `SubtreeM m` scoped to an opened directory descriptor. -/
+structure SubtreeOpenerM (m : Type → Type) : Type 1 where
+  /-- Open `rootPath` once as a pinned directory handle, run `action`, and close the handle on exit. -/
+  withSubtree : {α : Type} → String → (SubtreeM m → m (Except FsError α)) → m (Except FsError α)
+
+/-- Concrete `IO` subtree opener bundle exported by `LeanSwe.Fs`. -/
+abbrev SubtreeOpener := SubtreeOpenerM IO
 
 end LeanSwe.Fs

@@ -147,6 +147,316 @@ structure EmpiricalAssumptions where
   readBytesValidatesPathAndFollowsSymlinks : Prop
   /-- `leanswe_fs_create_file_new` opens with `O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC` (mode `0644` masked by `umask`), rejects `""`, embedded NUL bytes, and non-root trailing `/` with `.invalidInput`, fails with `.alreadyExists` on existing files, directories, or symlinks (including dangling links, `"/"`, `"."`, `".."`) without following symlinks (`O_EXCL | O_NOFOLLOW` and path validation grounded in `RuntimeTests.lean`), and performs best-effort `unlink(path)` on `write` or `close(fd)` failure preserving the original `errno` (audited in C shim). -/
   createFileNewExclusiveNoFollow : Prop
+  /-- `openDir` opens with `O_RDONLY | O_DIRECTORY | O_CLOEXEC`; `openDirAt` uses `O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC` with `fstatat(..., AT_SYMLINK_NOFOLLOW)` fallback mapping symlinks (even when Linux returns `ENOTDIR`) to `.invalidInput`, and descriptor exhaustion (`EMFILE`/`ENFILE`) maps to `.invalidInput`. -/
+  openDirAtRefusesSymlinksAndEnforcesDirectory : Prop
+  /-- Single-step `*at` C shims (`lstatAt`, `readRegularAt`, `createFileAt`, `createDirAt`, `renameAt`, `unlinkAt`, `symlinkAt`, `acquireLockAt`) operate on one `EntryName` segment without following symlinks, map `ENXIO` on sockets and `!S_ISREG` to `.invalidInput`, validate `symlinkAt` target upfront for empty/embedded-NUL (`.invalidInput`), use `mkdirat(..., 0o755)` in `createDirAt` and `openat(..., O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o644)` in `createFileAt` (both subject to process `umask`, keeping `0o644` for `acquireLockAt`), and generate temp names via a thread-safe monotonic counter (`atomic` `u64`). -/
+  singleStepAtSyscallsNoFollowAndDefaultModes : Prop
+  /-- Refcounted `DirSlot` table in `fs_shim.c` tracks `{ id, fd, refs, closing }` with `0 < handleId < UInt64.size`, sets `closing = 1` atomically under the slot mutex in `closeDir`, never reuses a live OS descriptor mid-syscall, releases the `DirSlot` ref before blocking on `flock` in `acquireLockAt`, rejects closed/forged `DirHandle` values with `.invalidInput`, and keeps open descriptors pinned across concurrent external renames and symlink swaps. -/
+  dirSlotRefcountedSafeClosing : Prop
+
+/-- `EntryName.parse s` succeeds iff `validSeg s = true` and otherwise fails with `.invalidInput` and non-empty message. -/
+def test_fsraw_entryName_parse_acceptsValidAndRejectsUnsafe
+    {runner} [NondetTest runner]
+    (parseName : String → Except FsError EntryName := EntryName.parse) : runner Unit := do
+  let s ← nondet String
+  match parseName s with
+  | .ok n => NondetTest.assert (validSeg s = true ∧ n.val = s)
+  | .error e => NondetTest.assert (validSeg s = false ∧ e.kind = .invalidInput ∧ e.message ≠ "")
+
+/-- `RelPath.parse` rejects `""`, leading `/`, trailing `/`, `//`, `.`, `..`, and NUL with `.invalidInput`, accepts valid multi-segment paths like `"a/b"`, and `RelPath.parseRoot "."` returns `RelPath.root`. -/
+def test_fsraw_relPath_parse_rejectsUnsafeAndParseRootMapsDot
+    {runner} [NondetTest runner]
+    (parseRel : String → Except FsError RelPath := RelPath.parse)
+    (parseRelRoot : String → Except FsError RelPath := RelPath.parseRoot) : runner Unit := do
+  let seg ← nondet String
+  let bads := ["", "/" ++ seg, seg ++ "/", ".", "..", "a//b", "a/./b", "a/../b", "a" ++ String.ofList [Char.ofNat 0] ++ "b"]
+  NondetTest.assert (bads.all fun p =>
+    match parseRel p with
+    | .error e => e.kind == .invalidInput && e.message != ""
+    | .ok _ => false)
+  NondetTest.assert (match parseRel "a/b" with
+    | .ok rel => rel.segments.map (·.val) == ["a", "b"]
+    | .error _ => false)
+  NondetTest.assert (parseRelRoot "." = .ok RelPath.root)
+  NondetTest.assert (seg = "." ∨ parseRelRoot seg = parseRel seg)
+
+/-- Calling `ops.openDirAt dh child` when `lstatAt dh child` is a symlink fails with `.invalidInput` and preserves state. -/
+def test_fsraw_rawDirOps_openDirAt_refusesSymlinkAndPreservesState
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let dh ← nondet DirHandle
+  let child ← nondet EntryName
+  assume (∃ st, ((ops.lstatAt dh child).run s₀).1 = .ok st ∧ st.kind = .symlink)
+  let (res, s₁) := (ops.openDirAt dh child).run s₀
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ s₁ = s₀)
+
+/-- Calling `ops.readRegularAt dh child` on a symlink fails with `.invalidInput` and on a directory fails with `.isADirectory`, leaving state unchanged. -/
+def test_fsraw_rawDirOps_readRegularAt_refusesSymlinkAndDir
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let dh ← nondet DirHandle
+  let child ← nondet EntryName
+  match ((ops.lstatAt dh child).run s₀).1 with
+  | .error _ => pure ()
+  | .ok st =>
+    if st.kind == .symlink then
+      let (res, s₁) := (ops.readRegularAt dh child).run s₀
+      NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ s₁ = s₀)
+    else if st.kind == .dir then
+      let (res, s₁) := (ops.readRegularAt dh child).run s₀
+      NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .isADirectory) ∧ s₁ = s₀)
+    else
+      pure ()
+
+/-- Calling `ops.createFileAt` rejects existing entries (including symlinks) with `.alreadyExists` and creates missing regular files with exact bytes and mode `0o644`. -/
+def test_fsraw_rawDirOps_createFileAt_exclusiveNoFollow
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let dh ← nondet DirHandle
+  let child ← nondet EntryName
+  let bytes ← nondet ByteArray
+  assume (∃ dSt, ((ops.fstatDir dh).run s₀).1 = .ok dSt ∧ dSt.kind = .dir ∧
+    (dSt.mode / 128) % 2 = 1 ∧ (dSt.mode / 64) % 2 = 1)
+  match ((ops.lstatAt dh child).run s₀).1 with
+  | .ok _ =>
+    let (res, s₁) := (ops.createFileAt dh child bytes).run s₀
+    NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .alreadyExists) ∧ s₁ = s₀)
+  | .error err =>
+    assume (err.kind = .notFound)
+    let (res, s₁) := (ops.createFileAt dh child bytes).run s₀
+    NondetTest.assert (res = .ok ())
+    NondetTest.assert (∃ st, ((ops.lstatAt dh child).run s₁).1 = .ok st ∧
+      st.kind = .file ∧ st.byteSize = bytes.size ∧ st.mode = 0o644)
+    NondetTest.assert (((ops.readRegularAt dh child).run s₁).1 = .ok bytes)
+
+/-- Calling `ops.createDirAt` rejects existing entries (including symlinks) with `.alreadyExists` and creates missing directories with mode `0o755`. -/
+def test_fsraw_rawDirOps_createDirAt_createsOrRejectsExisting
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let dh ← nondet DirHandle
+  let child ← nondet EntryName
+  assume (∃ dSt, ((ops.fstatDir dh).run s₀).1 = .ok dSt ∧ dSt.kind = .dir ∧
+    (dSt.mode / 128) % 2 = 1 ∧ (dSt.mode / 64) % 2 = 1)
+  match ((ops.lstatAt dh child).run s₀).1 with
+  | .ok _ =>
+    let (res, s₁) := (ops.createDirAt dh child).run s₀
+    NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .alreadyExists) ∧ s₁ = s₀)
+  | .error err =>
+    assume (err.kind = .notFound)
+    let (res, s₁) := (ops.createDirAt dh child).run s₀
+    NondetTest.assert (res = .ok ())
+    NondetTest.assert (∃ st, ((ops.lstatAt dh child).run s₁).1 = .ok st ∧
+      st.kind = .dir ∧ st.mode = 0o755)
+
+/-- Calling `ops.unlinkAt` checks symlink vs directory flags, enforces empty-dir removal vs non-empty `.notEmpty`, and reports `.notFound` on missing entries. -/
+def test_fsraw_rawDirOps_unlinkAt_dirFlagSemantics
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let dh ← nondet DirHandle
+  let child ← nondet EntryName
+  assume (∃ dSt, ((ops.fstatDir dh).run s₀).1 = .ok dSt ∧ dSt.kind = .dir ∧
+    (dSt.mode / 128) % 2 = 1 ∧ (dSt.mode / 64) % 2 = 1)
+  match ((ops.lstatAt dh child).run s₀).1 with
+  | .ok st =>
+    if st.kind == .symlink then
+      let (rDir, sDir) := (ops.unlinkAt dh child true).run s₀
+      NondetTest.assert ((∃ e, rDir = .error e ∧ e.kind = .notADirectory) ∧ sDir = s₀)
+      let (rUnlink, sUnlink) := (ops.unlinkAt dh child false).run s₀
+      NondetTest.assert (rUnlink = .ok () ∧
+        ∃ e, ((ops.lstatAt dh child).run sUnlink).1 = .error e ∧ e.kind = .notFound)
+    else if st.kind == .dir then
+      let (rFile, sFile) := (ops.unlinkAt dh child false).run s₀
+      NondetTest.assert ((∃ e, rFile = .error e ∧ e.kind = .isADirectory) ∧ sFile = s₀)
+    else
+      pure ()
+  | .error lErr =>
+    if lErr.kind == .notFound then
+      let (rFile, sFile) := (ops.unlinkAt dh child false).run s₀
+      NondetTest.assert ((∃ e, rFile = .error e ∧ e.kind = .notFound) ∧ sFile = s₀)
+      let (rDir, sDir) := (ops.unlinkAt dh child true).run s₀
+      NondetTest.assert ((∃ e, rDir = .error e ∧ e.kind = .notFound) ∧ sDir = s₀)
+    else
+      pure ()
+  let (openRes, sRoot) := (ops.openDir "/").run s₀
+  match openRes with
+  | .error _ => pure ()
+  | .ok rootDh =>
+    let inner ← nondet EntryName
+    match ((ops.fstatDir rootDh).run sRoot).1, ((ops.lstatAt rootDh child).run sRoot).1 with
+    | .ok rSt, .error mErr =>
+      if rSt.kind == .dir && (rSt.mode / 128) % 2 == 1 && (rSt.mode / 64) % 2 == 1 && mErr.kind == .notFound then
+        let (rMk1, s₁) := (ops.createDirAt rootDh child).run sRoot
+        NondetTest.assert (rMk1 = .ok ())
+        let (rRmEmpty, s₂) := (ops.unlinkAt rootDh child true).run s₁
+        NondetTest.assert (rRmEmpty = .ok () ∧
+          ∃ e, ((ops.lstatAt rootDh child).run s₂).1 = .error e ∧ e.kind = .notFound)
+        let (rMk2, s₃) := (ops.createDirAt rootDh child).run sRoot
+        NondetTest.assert (rMk2 = .ok ())
+        let (rOpen, s₄) := (ops.openDirAt rootDh child).run s₃
+        match rOpen with
+        | .error _ =>
+          let _ := (ops.closeDir rootDh).run s₄
+          NondetTest.assert False
+        | .ok childDh =>
+          let (rCf, s₅) := (ops.createFileAt childDh inner ByteArray.empty).run s₄
+          NondetTest.assert (rCf = .ok ())
+          let (rCl, s₆) := (ops.closeDir childDh).run s₅
+          NondetTest.assert (rCl = .ok ())
+          let (rNotEmpty, s₇) := (ops.unlinkAt rootDh child true).run s₆
+          let _ := (ops.closeDir rootDh).run s₇
+          NondetTest.assert ((∃ e, rNotEmpty = .error e ∧ e.kind = .notEmpty) ∧ s₇ = s₆)
+      else
+        let _ := (ops.closeDir rootDh).run sRoot
+        pure ()
+    | _, _ =>
+      let _ := (ops.closeDir rootDh).run sRoot
+      pure ()
+
+/-- Closing an opened `DirHandle` via `ops.closeDir` invalidates it for all subsequent `*at` primitives (including asymmetric `renameAt` arguments) and zero-ID handles are rejected with `.invalidInput`. -/
+def test_fsraw_rawDirOps_closedHandleRejected
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let root ← nondet String
+  let child ← nondet EntryName
+  let bytes ← nondet ByteArray
+  let forgedZero : DirHandle := { handleId := 0, rootPath := "/" }
+  NondetTest.assert (∃ e, (ops.fstatDir forgedZero |>.run s₀).1 = .error e ∧ e.kind = .invalidInput)
+  NondetTest.assert (∃ e, (ops.closeDir forgedZero |>.run s₀).1 = .error e ∧ e.kind = .invalidInput)
+  let (openRes, s₁) := (ops.openDir root).run s₀
+  match openRes with
+  | .error _ => pure ()
+  | .ok dh =>
+    let (liveRes, s₁') := (ops.openDir root).run s₁
+    let (closeRes, s₂) := (ops.closeDir dh).run s₁'
+    NondetTest.assert (closeRes = .ok ())
+    NondetTest.assert (∃ e, (ops.fstatDir dh |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.lstatAt dh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.readDirAt dh |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.openDirAt dh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.createDirAt dh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.readRegularAt dh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.createFileAt dh child bytes |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.renameAt dh child dh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.unlinkAt dh child false |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.symlinkAt "t" dh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.acquireLockAt dh child .exclusive false true |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.closeDir dh |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    match liveRes with
+    | .ok liveDh =>
+      if liveDh.handleId != dh.handleId then
+        NondetTest.assert (∃ e, (ops.renameAt dh child liveDh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+        NondetTest.assert (∃ e, (ops.renameAt liveDh child dh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+      else
+        pure ()
+    | .error _ => pure ()
+
+/-- Calling `ops.fstatDir` on an opened `DirHandle` succeeds with `kind = .dir` and does not mutate state. -/
+def test_fsraw_rawDirOps_fstatDir_validReturnsDir
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let root ← nondet String
+  let (openRes, s₁) := (ops.openDir root).run s₀
+  match openRes with
+  | .error _ => pure ()
+  | .ok dh =>
+    let (res, s₂) := (ops.fstatDir dh).run s₁
+    let _ := (ops.closeDir dh).run s₂
+    NondetTest.assert ((∃ st, res = .ok st ∧ st.kind = .dir) ∧ s₂ = s₁)
+
+/-- Calling `ops.readDirAt` returns duplicate-free (`Nodup`) `EntryName` entries and leaves state unchanged. -/
+def test_fsraw_rawDirOps_readDirAt_sortedUnique
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let dh ← nondet DirHandle
+  let (res, s₁) := (ops.readDirAt dh).run s₀
+  match res with
+  | .error _ => NondetTest.assert (s₁ = s₀)
+  | .ok entries =>
+    NondetTest.assert (entries.toList.Nodup ∧ s₁ = s₀)
+
+/-- Calling `ops.renameAt` moves regular files across open handles, rejects missing sources with `.notFound`, and rejects file/directory kind mismatches (and directory-into-descendant `.invalidInput`). -/
+def test_fsraw_rawDirOps_renameAt_moveAndTypeMismatch
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let srcDh ← nondet DirHandle
+  let srcName ← nondet EntryName
+  let dstDh ← nondet DirHandle
+  let dstName ← nondet EntryName
+  assume (∃ dSt, ((ops.fstatDir srcDh).run s₀).1 = .ok dSt ∧ dSt.kind = .dir ∧
+    (dSt.mode / 128) % 2 = 1 ∧ (dSt.mode / 64) % 2 = 1)
+  assume (∃ dSt, ((ops.fstatDir dstDh).run s₀).1 = .ok dSt ∧ dSt.kind = .dir ∧
+    (dSt.mode / 128) % 2 = 1 ∧ (dSt.mode / 64) % 2 = 1)
+  match ((ops.lstatAt srcDh srcName).run s₀).1 with
+  | .error sErr =>
+    if sErr.kind == .notFound then
+      let (res, s₁) := (ops.renameAt srcDh srcName dstDh dstName).run s₀
+      NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .notFound) ∧ s₁ = s₀)
+    else
+      pure ()
+  | .ok srcSt =>
+    match ((ops.lstatAt dstDh dstName).run s₀).1 with
+    | .ok dstSt =>
+      if srcSt.kind == .dir && dstSt.kind == .file then
+        let (res, s₁) := (ops.renameAt srcDh srcName dstDh dstName).run s₀
+        if srcDh.handleId == dstDh.handleId then
+          NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .notADirectory) ∧ s₁ = s₀)
+        else
+          NondetTest.assert ((∃ e, res = .error e ∧ (e.kind = .notADirectory ∨ e.kind = .invalidInput)) ∧ s₁ = s₀)
+      else if srcSt.kind == .file && dstSt.kind == .dir then
+        let (res, s₁) := (ops.renameAt srcDh srcName dstDh dstName).run s₀
+        NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .isADirectory) ∧ s₁ = s₀)
+      else
+        pure ()
+    | .error dErr =>
+      if dErr.kind == .notFound && srcSt.kind == .file && (srcDh.handleId != dstDh.handleId || srcName != dstName) then
+        let (res, s₁) := (ops.renameAt srcDh srcName dstDh dstName).run s₀
+        NondetTest.assert (res = .ok ())
+        NondetTest.assert (∃ st, ((ops.lstatAt dstDh dstName).run s₁).1 = .ok st ∧ st.kind = .file)
+        NondetTest.assert (∃ e, ((ops.lstatAt srcDh srcName).run s₁).1 = .error e ∧ e.kind = .notFound)
+      else
+        pure ()
+
+/-- Calling `ops.symlinkAt` rejects empty or NUL-containing `target` strings with `.invalidInput` and creates a `.symlink` entry when missing and writable. -/
+def test_fsraw_rawDirOps_symlinkAt_validAndRejectsInvalidTarget
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let dh ← nondet DirHandle
+  let child ← nondet EntryName
+  let target ← nondet String
+  if target.isEmpty || target.contains (Char.ofNat 0) then
+    let (res, s₁) := (ops.symlinkAt target dh child).run s₀
+    NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ s₁ = s₀)
+  else
+    assume (∃ dSt, ((ops.fstatDir dh).run s₀).1 = .ok dSt ∧ dSt.kind = .dir ∧
+      (dSt.mode / 128) % 2 = 1 ∧ (dSt.mode / 64) % 2 = 1)
+    match ((ops.lstatAt dh child).run s₀).1 with
+    | .error err =>
+      if err.kind == .notFound then
+        let (res, s₁) := (ops.symlinkAt target dh child).run s₀
+        NondetTest.assert (res = .ok () ∧
+          ∃ st, ((ops.lstatAt dh child).run s₁).1 = .ok st ∧ st.kind = .symlink)
+      else
+        pure ()
+    | .ok _ => pure ()
+
+/-- Successive calls to `ops.freshTempName` produce distinct valid `EntryName` values. -/
+def test_fsraw_rawDirOps_freshTempName_distinctAndValid
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let (n₁, s₁) := ops.freshTempName.run s₀
+  let (n₂, _) := ops.freshTempName.run s₁
+  NondetTest.assert (validSeg n₁.val = true ∧ validSeg n₂.val = true ∧ n₁ ≠ n₂)
+
+/-- `isValidDirHandleId` rejects `0` and `≥ UInt64.size` while accepting positive 64-bit slot IDs strictly below `UInt64.size`. -/
+def test_fsraw_isValidDirHandleId_bounds
+    {runner} [NondetTest runner]
+    (checkId : Nat → Bool := isValidDirHandleId) : runner Unit := do
+  let id ← nondet Nat
+  NondetTest.assert (checkId 0 = false ∧ checkId UInt64.size = false)
+  if 0 < id && id < UInt64.size then
+    NondetTest.assert (checkId id = true)
+  else
+    NondetTest.assert (checkId id = false)
 
 private def buggyEmptyErrRaw (base : RawFsOps) : RawFsOps :=
   { base with mapRawError := fun _ => { kind := .ioError, message := "" } }
@@ -294,5 +604,154 @@ example : ¬ Core.AllPass (test_fsraw_readBytes_roundTripsExactBytesThroughSymli
     ⟨{ kind := .notFound, message := "stub" }, rfl, rfl⟩
     rfl rfl
   simp [StateT.run, pure, StateT.pure, assert] at h0
+
+private def stubRawDirOps : RawDirOpsM (StateM Unit) :=
+  { openDir := fun p => pure (.ok { handleId := 1, rootPath := p })
+    openDirAt := fun _ n => pure (.ok { handleId := 2, rootPath := n.val })
+    closeDir := fun _ => pure (.ok ())
+    fstatDir := fun _ => pure (.ok (stubStat .dir))
+    lstatAt := fun _ _ => pure (.error { kind := .notFound, message := "stub" })
+    readDirAt := fun _ => pure (.ok #[])
+    createDirAt := fun _ _ => pure (.ok ())
+    readRegularAt := fun _ _ => pure (.ok ByteArray.empty)
+    createFileAt := fun _ _ _ => pure (.ok ())
+    renameAt := fun _ _ _ _ => pure (.ok ())
+    unlinkAt := fun _ _ _ => pure (.ok ())
+    symlinkAt := fun _ _ _ => pure (.ok ())
+    acquireLockAt := fun _ n mode _ _ => pure (.ok { handleId := 1, path := n.val, mode := mode })
+    releaseLock := fun _ => pure (.ok ())
+    freshTempName := pure (EntryName.lit ".t.0") }
+
+example : ¬ Core.AllPass (test_fsraw_rawDirOps_openDirAt_refusesSymlinkAndPreservesState
+    { stubRawDirOps with
+      lstatAt := fun _ _ => pure (.ok (stubStat .symlink))
+      openDirAt := fun _ n => pure (.ok { handleId := 2, rootPath := n.val }) }) := by
+  intro h
+  have h0 := h () { handleId := 1, rootPath := "/" } (EntryName.lit "sym") ⟨stubStat .symlink, rfl, rfl⟩
+  simp [StateT.run, pure, assert] at h0
+  rcases h0 with ⟨⟨e, he, _⟩, _⟩
+  cases he
+
+example : ¬ Core.AllPass (test_fsraw_rawDirOps_readRegularAt_refusesSymlinkAndDir
+    { stubRawDirOps with
+      lstatAt := fun _ _ => pure (.ok (stubStat .symlink))
+      readRegularAt := fun _ _ => pure (.ok ByteArray.empty) }) := by
+  intro h
+  have h0 := h () { handleId := 1, rootPath := "/" } (EntryName.lit "sym")
+  simp [stubStat, StateT.run, pure, assert] at h0
+  rcases h0 with ⟨⟨e, he, _⟩, _⟩
+  cases he
+
+example : ¬ Core.AllPass (test_fsraw_rawDirOps_createFileAt_exclusiveNoFollow
+    { stubRawDirOps with
+      lstatAt := fun _ _ => pure (.ok (stubStat .symlink))
+      createFileAt := fun _ _ _ => pure (.ok ()) }) := by
+  intro h
+  have h0 := h () { handleId := 1, rootPath := "/" } (EntryName.lit "f") ByteArray.empty
+    ⟨stubStat .dir, rfl, rfl, by decide, by decide⟩
+  simp [stubStat, StateT.run, pure, assert] at h0
+  rcases h0 with ⟨⟨e, he, _⟩, _⟩
+  cases he
+
+example : ¬ Core.AllPass (test_fsraw_rawDirOps_createDirAt_createsOrRejectsExisting
+    { stubRawDirOps with
+      lstatAt := fun _ _ => pure (.ok (stubStat .symlink))
+      createDirAt := fun _ _ => pure (.ok ()) }) := by
+  intro h
+  have h0 := h () { handleId := 1, rootPath := "/" } (EntryName.lit "d")
+    ⟨stubStat .dir, rfl, rfl, by decide, by decide⟩
+  simp [stubStat, StateT.run, pure, assert] at h0
+  rcases h0 with ⟨⟨e, he, _⟩, _⟩
+  cases he
+
+example : ¬ Core.AllPass (test_fsraw_rawDirOps_unlinkAt_dirFlagSemantics
+    { stubRawDirOps with
+      lstatAt := fun _ _ => pure (.ok (stubStat .symlink))
+      unlinkAt := fun _ _ _ => pure (.ok ()) }) := by
+  intro h
+  have h0 := h () { handleId := 1, rootPath := "/" } (EntryName.lit "sym")
+    ⟨stubStat .dir, rfl, rfl, by decide, by decide⟩
+  simp [stubRawDirOps, stubStat, StateT.run, Bind.bind, pure, assert] at h0
+  rcases h0 with ⟨⟨e, he, _⟩, _⟩
+  cases he
+
+example : ¬ Core.AllPass (test_fsraw_rawDirOps_closedHandleRejected stubRawDirOps) := by
+  intro h
+  have h0 := h () "/" (EntryName.lit "c") ByteArray.empty
+  simp [stubRawDirOps, StateT.run, pure, assert] at h0
+  rcases h0 with ⟨⟨e, he, _⟩, _⟩
+  cases he
+
+example : ¬ Core.AllPass (test_fsraw_rawDirOps_fstatDir_validReturnsDir
+    { stubRawDirOps with fstatDir := fun _ => pure (.ok (stubStat .file)) }) := by
+  intro h
+  have h0 := h () "/"
+  simp [stubStat, StateT.run, pure, assert] at h0
+  rcases h0.1 with ⟨st, hst, hkind⟩
+  cases hst
+  cases hkind
+
+example : ¬ Core.AllPass (test_fsraw_rawDirOps_readDirAt_sortedUnique
+    { stubRawDirOps with readDirAt := fun _ => pure (.ok #[EntryName.lit "a", EntryName.lit "a"]) }) := by
+  intro h
+  have h0 := h () { handleId := 1, rootPath := "/" }
+  simp [StateT.run, pure, assert] at h0
+  exact (List.nodup_cons.mp h0.1).1 (by simp)
+
+example : ¬ Core.AllPass (test_fsraw_rawDirOps_renameAt_moveAndTypeMismatch
+    { stubRawDirOps with
+      lstatAt := fun _ n =>
+        pure (if n.val == "d" then .ok (stubStat .dir) else .ok (stubStat .file))
+      renameAt := fun _ _ _ _ => pure (.ok ()) }) := by
+  intro h
+  have h0 := h () { handleId := 1, rootPath := "/" } (EntryName.lit "d")
+    { handleId := 1, rootPath := "/" } (EntryName.lit "f")
+    ⟨stubStat .dir, rfl, rfl, by decide, by decide⟩
+    ⟨stubStat .dir, rfl, rfl, by decide, by decide⟩
+  simp [stubStat, StateT.run, pure, assert, EntryName.lit] at h0
+  rcases h0 with ⟨⟨e, he, _⟩, _⟩
+  cases he
+
+example : ¬ Core.AllPass (test_fsraw_rawDirOps_symlinkAt_validAndRejectsInvalidTarget
+    { stubRawDirOps with symlinkAt := fun _ _ _ => pure (.ok ()) }) := by
+  intro h
+  have h0 := h () { handleId := 1, rootPath := "/" } (EntryName.lit "s") ""
+  simp [StateT.run, pure, assert] at h0
+  rcases h0 with ⟨⟨e, he, _⟩, _⟩
+  cases he
+
+example : ¬ Core.AllPass (test_fsraw_entryName_parse_acceptsValidAndRejectsUnsafe
+    (fun _ => .ok (EntryName.lit "fallback"))) := by
+  intro h
+  have h0 := h ""
+  simp [assert] at h0
+
+example : ¬ Core.AllPass (test_fsraw_relPath_parse_rejectsUnsafeAndParseRootMapsDot
+    (fun _ => .ok RelPath.root) RelPath.parseRoot) := by
+  intro h
+  have h0 := h "x"
+  simp [Bind.bind, assert] at h0
+
+example : ¬ Core.AllPass (test_fsraw_relPath_parse_rejectsUnsafeAndParseRootMapsDot
+    (fun _ => .error { kind := .invalidInput, message := "nope" }) RelPath.parseRoot) := by
+  intro h
+  have h0 := h "x"
+  simp [Bind.bind, assert] at h0
+
+example : ¬ Core.AllPass (test_fsraw_rawDirOps_freshTempName_distinctAndValid stubRawDirOps) := by
+  intro h
+  have h0 := h ()
+  simp [stubRawDirOps, StateT.run, pure, assert] at h0
+  exact h0.1.2.2 rfl
+
+example : ¬ Core.AllPass (test_fsraw_isValidDirHandleId_bounds (fun _ => true)) := by
+  intro h
+  have h0 := h 0
+  simp [Bind.bind, assert] at h0
+
+example : ¬ Core.AllPass (test_fsraw_isValidDirHandleId_bounds (fun id => decide (0 < id))) := by
+  intro h
+  have h0 := h UInt64.size
+  simp [Bind.bind, assert] at h0
 
 end LeanSwe.Fs.Raw
