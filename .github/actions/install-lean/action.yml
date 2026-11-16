@@ -1,0 +1,54 @@
+name: Install Lean toolchain
+description: Restore or install elan and the lean-toolchain toolchain for lean-swe.
+
+runs:
+  using: composite
+  steps:
+    - name: Restore Lean toolchain cache
+      id: restore
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+      with:
+        path: ~/.elan
+        key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}
+
+    - name: Install elan and Lean toolchain on cache miss
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        retry_net() {
+          local delays=(15 45 135)
+          local attempt
+          for attempt in 1 2 3 4; do
+            if timeout --kill-after=10 180 "$@"; then
+              return 0
+            fi
+            if (( attempt == 4 )); then
+              return 1
+            fi
+            sleep "${delays[$((attempt - 1))]}"
+          done
+        }
+        tmpdir=$(mktemp -d)
+        trap 'rm -rf "$tmpdir"' EXIT
+        url="https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz"
+        expected="42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63"
+        retry_net curl -fsSL -o "$tmpdir/elan.tar.gz" "$url"
+        echo "$expected  $tmpdir/elan.tar.gz" | sha256sum -c -
+        tar -xzf "$tmpdir/elan.tar.gz" -C "$tmpdir"
+        chmod +x "$tmpdir/elan-init"
+        "$tmpdir/elan-init" -y --default-toolchain none --no-modify-path
+        toolchain=$(tr -d '[:space:]' < lean-toolchain)
+        test -n "$toolchain"
+        retry_net "$HOME/.elan/bin/elan" toolchain install "$toolchain"
+
+    - name: Save Lean toolchain cache
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+      with:
+        path: ~/.elan
+        key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}
+
+    - name: Add elan bin to PATH
+      shell: bash
+      run: echo "$HOME/.elan/bin" >> "$GITHUB_PATH"

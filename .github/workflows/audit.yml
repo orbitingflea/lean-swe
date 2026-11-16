@@ -1,0 +1,162 @@
+name: Audit gate
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: >-
+    audit-fast-${{
+      github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) ||
+      github.event_name == 'push' && github.ref == 'refs/heads/main' && 'main' ||
+      github.run_id
+    }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  audit-fast:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Fetch pull-request base commit
+        if: github.event_name == 'pull_request'
+        env:
+          RECORDED_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          BASE=$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -n 1)
+          BASE="${BASE:-$RECORDED_BASE}"
+          git fetch --no-tags --depth=1 origin "$BASE"
+          echo "BASE_SHA=$BASE" >> "$GITHUB_ENV"
+
+      - name: Check spec-change mark
+        if: github.event_name == 'pull_request'
+        run: python3 -B scripts/check_spec_change.py --base "$BASE_SHA" --head HEAD --event-path "$GITHUB_EVENT_PATH"
+
+      - name: Prepare runner packages, sandbox cgroup, and concurrency
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap zstd xz-utils gzip curl libssl-dev
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then
+            echo "+memory +pids" | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null 2>&1 || true
+            sudo mkdir -p /sys/fs/cgroup/leanswe/runner &&
+              echo "+memory +pids" | sudo tee /sys/fs/cgroup/leanswe/cgroup.subtree_control >/dev/null &&
+              sudo chown -R "$(id -u):$(id -g)" /sys/fs/cgroup/leanswe || true
+          fi
+          JOBS=$(python3 -c 'import os; print(max(1, min(os.cpu_count() or 2, 4)))')
+          echo "LEAN_JOBS=$JOBS" >> "$GITHUB_ENV"
+          echo "RUNNER_INFO: cpus=$(nproc) lean_jobs=$JOBS"
+          free -m
+          df -h /
+
+      - name: Restore build folder cache
+        id: lake-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: ./.lake
+          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/Raw/c/**') }}-${{ github.sha }}
+          restore-keys: |
+            lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/Raw/c/**') }}-
+
+      - name: Prune orphaned Lean build artifacts
+        run: |
+          python3 -c '
+          from pathlib import Path
+          for root in ("Core", "LeanSwe"):
+              lib_root = Path(".lake/build/lib/lean") / root
+              if not lib_root.exists():
+                  continue
+              for olean in list(lib_root.rglob("*.olean")):
+                  rel = olean.relative_to(".lake/build/lib/lean").with_suffix(".lean")
+                  if not rel.is_file():
+                      for ext in (".olean", ".olean.hash", ".olean.server", ".olean.private", ".ilean", ".ilean.hash", ".trace"):
+                          olean.with_suffix(ext).unlink(missing_ok=True)
+          '
+
+      - name: Install Lean toolchain
+        uses: ./.github/actions/install-lean
+
+      - name: Build Lean libraries and tests
+        id: build
+        run: |
+          set -euo pipefail
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail
+
+      - name: Run runtime test suites
+        run: |
+          set -euo pipefail
+          if [[ -f /sys/fs/cgroup/leanswe/runner/cgroup.procs ]]; then
+            printf '%s\n' "$$" | sudo -n tee /sys/fs/cgroup/leanswe/runner/cgroup.procs >/dev/null || true
+          fi
+          python3 -c '
+          import ctypes, os, pathlib, subprocess
+          libc = ctypes.CDLL(None, use_errno=True)
+          libc.syscall.argtypes = [ctypes.c_long, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32]
+          libc.syscall.restype = ctypes.c_long
+          ll = libc.syscall(444, None, 0, 1)
+          lsm = pathlib.Path("/sys/kernel/security/lsm").read_text().strip() if pathlib.Path("/sys/kernel/security/lsm").exists() else "n/a"
+          cg = pathlib.Path("/proc/self/cgroup").read_text().strip()
+          bw = subprocess.run(["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--unshare-all", "--", "/bin/true"], capture_output=True, text=True)
+          line = f"SANDBOX_PROBE: kernel={os.uname().release} landlock_abi={ll} lsm={lsm} cgroup={cg} bwrap_rc={bw.returncode}"
+          print(line)
+          if bw.returncode != 0:
+              print("SANDBOX_PROBE_BWRAP_ERR:", bw.stderr.strip())
+          s = os.environ.get("GITHUB_STEP_SUMMARY")
+          if s:
+              with open(s, "a", encoding="utf-8") as f:
+                  f.write(f"`{line}`\n\n")
+          '
+          .lake/build/bin/lean-swe-test
+
+      - name: Check 1 GB private-memory cap on changed modules and reverse dependents
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          DIFF_BASE="${BASE_SHA:-}"
+          if [[ -z "$DIFF_BASE" && -n "$PUSH_BEFORE" && "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]]; then
+            if git fetch --no-tags --depth=1 origin "$PUSH_BEFORE" 2>/dev/null; then
+              DIFF_BASE="$PUSH_BEFORE"
+            fi
+          fi
+          if [[ -z "$DIFF_BASE" ]]; then
+            echo "MEMORY_CHECK: no comparison base available; skipping incremental memory check"
+            exit 0
+          fi
+          mapfile -t CHANGED_LEAN < <(
+            git diff --name-only --diff-filter=ACMR "$DIFF_BASE" HEAD -- '*.lean' \
+              | grep -vxF 'lakefile.lean' || true
+          )
+          if (( ${#CHANGED_LEAN[@]} == 0 )); then
+            echo "MEMORY_CHECK: skipped (0 module .lean files changed against $DIFF_BASE)"
+          else
+            python3 -B scripts/check_proof_memory.py --with-revdeps --jobs "$LEAN_JOBS" -- "${CHANGED_LEAN[@]}"
+          fi
+
+      - name: Check spec promise theorem coverage
+        run: lake env lean --run scripts/CheckPromises.lean .lake/build/lib/lean
+
+      - name: Save build folder cache
+        if: >-
+          !cancelled() &&
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          steps.lake-cache.outputs.cache-hit != 'true' &&
+          steps.build.outcome == 'success'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: ./.lake
+          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/Raw/c/**') }}-${{ github.sha }}
