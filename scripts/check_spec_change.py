@@ -9,13 +9,15 @@ interpolated `s!"..."` expressions), char literals, and `mutual ... end` blocks;
 `--` comments, `/- ... -/` / `/-- ... -/` comments, and `@[...]` attributes stay attached to the
 following declaration, while `where`/`|`/`deriving`/`termination_by`/`decreasing_by`
 continuations stay attached to the preceding declaration. A unit is unchanged iff its text (doc
-comment included) is byte-identical. Pure declaration additions (`def`, `theorem`, `lemma`,
-`abbrev`, `structure`, `inductive`, `class`, `instance`, `example`, `mutual`, `opaque`)
+comment included) is byte-identical. Pure declaration additions (`def`, `theorem`, `abbrev`,
+`structure`, `inductive`, `example`, `mutual`) with at most allowlisted `@[...]` attributes,
 appended after all non-`end` base units (before any unchanged trailing `end` lines) or added as a
-new locked spec file require `spec-add` (also satisfied by `spec-change`). Any alteration
-(including adding fields to an existing `EmpiricalAssumptions` structure, editing doc comments, or
-adding `assume`), removal, rename/copy, middle insertion, embedded/indented/same-line extra
-commands, or non-declaration directive requires `spec-change`.
+validated new `{Types,Model,SpecTests}.lean` file in an existing package, require `spec-add` (also
+satisfied by `spec-change`). Any alteration (including adding fields to an existing
+`EmpiricalAssumptions` structure, editing doc comments, or adding `assume`), removal, rename/copy,
+middle insertion, new `Core/*.lean` or `Interface.lean`, `opaque`/`instance`/`class`, unsafe or
+custom `@[...]` attributes, embedded/indented/same-line extra commands, or non-declaration
+directive requires `spec-change`.
 """
 
 from __future__ import annotations
@@ -33,20 +35,26 @@ LABEL_ADD = "spec-add"
 LABEL_CHANGE = "spec-change"
 ALLOW_NEW_PACKAGES = True
 
+SAFE_DECL_ATTRS = frozenset({
+    "inline",
+    "reducible",
+    "always_inline",
+    "noinline",
+    "macro_inline",
+    "specialize",
+    "nospecialize",
+})
 PURE_DECL_MODIFIERS = frozenset({"private", "protected", "noncomputable", "partial"})
 PURE_DECL_HEADS = frozenset({
     "def",
     "theorem",
-    "lemma",
     "abbrev",
     "structure",
     "inductive",
-    "class",
-    "instance",
     "example",
     "mutual",
-    "opaque",
 })
+DISALLOWED_DECL_HEADS = frozenset({"opaque", "instance", "class"})
 CONTINUATION_TOKENS = frozenset({"where", "deriving", "termination_by", "decreasing_by"})
 NON_DECL_COMMANDS = frozenset({
     "axiom",
@@ -75,26 +83,30 @@ NON_DECL_COMMANDS = frozenset({
     "declare_syntax_cat",
     "initialize",
     "builtin_initialize",
-    "register_simp_attr",
-    "register_simproc_attr",
-    "register_tactic_extension",
-    "register_option",
-    "alias",
     "add_decl_doc",
     "unif_hint",
     "simproc",
     "dsimproc",
     "simproc_decl",
-    "irreducible_def",
     "coinductive",
     "seal",
     "unseal",
     "run_cmd",
     "run_elab",
-    "prelude",
     "unsafe",
     "/-!",
 })
+NON_RESERVED_HEAD_COMMANDS = frozenset({
+    "alias",
+    "lemma",
+    "prelude",
+    "irreducible_def",
+    "register_option",
+    "register_simp_attr",
+    "register_simproc_attr",
+    "register_tactic_extension",
+})
+NON_INTERP_MACROS = frozenset({"panic!", "unreachable!", "assert!", "debug_assert!"})
 IDENT_CONT_CHARS = "_'?!"
 
 
@@ -171,11 +183,9 @@ def existing_top_packages_at_base(repo_root: Path, base_ref: str) -> set[str]:
     return {line.strip().rstrip("/") for line in proc.stdout.splitlines() if line.strip().startswith("LeanSwe/")}
 
 
-def read_pr_labels(event_path: Path | None, cli_labels: list[str], legacy_mark: bool) -> set[str]:
+def read_pr_labels(event_path: Path | None, cli_labels: list[str]) -> set[str]:
     """Collect active spec labels from CLI flags and the GitHub PR event JSON payload."""
     labels = {lbl for lbl in cli_labels if lbl in (LABEL_ADD, LABEL_CHANGE)}
-    if legacy_mark:
-        labels.add(LABEL_CHANGE)
     if event_path is not None and event_path.exists():
         payload = json.loads(event_path.read_text(encoding="utf-8"))
         pr_obj = payload.get("pull_request") or {}
@@ -256,6 +266,8 @@ def scan_lean(source: str, state: LeanLexState | None = None) -> tuple[list[Lean
     attr_base_depth = st.attr_base_depth
 
     tokens: list[LeanToken] = []
+    last_ident_end = -1
+    last_ident_text = ""
     i = 0
     n = len(source)
     while i < n:
@@ -296,11 +308,16 @@ def scan_lean(source: str, state: LeanLexState | None = None) -> tuple[list[Lean
 
         # Code frame
         interp_depth = sum(1 for k, _ in frames if k == "str")
-        if ch == "r" and (i == 0 or not (source[i - 1].isalnum() or source[i - 1] in IDENT_CONT_CHARS + "»")):
+        after_num_or_dot = i > 0 and (source[i - 1].isdigit() or source[i - 1] == ".")
+        if ch == "r" and last_ident_end != i and not after_num_or_dot:
             k = i + 1
             while k < n and source[k] == "#":
                 k += 1
             if k < n and source[k] == '"':
+                if in_attr:
+                    tokens.append(
+                        LeanToken("<attr_arg>", bdepth, interp_depth, after_dot=False, after_backtick=False, in_attr=True)
+                    )
                 frames.append(("raw", k - (i + 1)))
                 i = k + 1
                 continue
@@ -317,20 +334,42 @@ def scan_lean(source: str, state: LeanLexState | None = None) -> tuple[list[Lean
             block_depth = 1
             i += 2
         elif ch == '"':
-            is_interp = i >= 2 and source[i - 1] == "!" and (
-                source[i - 2].isalnum() or source[i - 2] in IDENT_CONT_CHARS + "»"
+            if in_attr:
+                tokens.append(
+                    LeanToken("<attr_arg>", bdepth, interp_depth, after_dot=False, after_backtick=False, in_attr=True)
+                )
+            is_interp = (
+                last_ident_end == i
+                and last_ident_text.endswith("!")
+                and last_ident_text not in NON_INTERP_MACROS
             )
             frames.append(("str", is_interp))
             i += 1
-        elif ch == "'" and (i == 0 or not (source[i - 1].isalnum() or source[i - 1] in IDENT_CONT_CHARS + "»")):
+        elif ch == "'" and last_ident_end != i and not after_num_or_dot:
             if i + 2 < n and source[i + 1] == "\\":
                 close_pos = next((k for k in range(i + 3, min(n, i + 10)) if source[k] == "'"), -1)
                 if close_pos != -1 and "\n" not in source[i:close_pos]:
+                    if in_attr:
+                        tokens.append(
+                            LeanToken(
+                                "<attr_arg>", bdepth, interp_depth, after_dot=False, after_backtick=False, in_attr=True
+                            )
+                        )
                     i = close_pos + 1
                     continue
             elif i + 2 < n and source[i + 1] not in "'\\\n" and source[i + 2] == "'":
+                if in_attr:
+                    tokens.append(
+                        LeanToken(
+                            "<attr_arg>", bdepth, interp_depth, after_dot=False, after_backtick=False, in_attr=True
+                        )
+                    )
                 i += 3
                 continue
+            if in_attr:
+                tokens.append(
+                    LeanToken("<attr_arg>", bdepth, interp_depth, after_dot=False, after_backtick=False, in_attr=True)
+                )
             i += 1
         elif ch == "«":
             end = source.find("»", i + 1)
@@ -348,9 +387,10 @@ def scan_lean(source: str, state: LeanLexState | None = None) -> tuple[list[Lean
                     )
                 )
                 break
+            tok_text = source[i : end + 1]
             tokens.append(
                 LeanToken(
-                    source[i : end + 1],
+                    tok_text,
                     bdepth,
                     interp_depth,
                     after_dot=after_dot,
@@ -358,6 +398,8 @@ def scan_lean(source: str, state: LeanLexState | None = None) -> tuple[list[Lean
                     in_attr=in_attr,
                 )
             )
+            last_ident_end = end + 1
+            last_ident_text = tok_text
             i = end + 1
         elif source.startswith("@[", i) and not in_attr and bdepth == 0 and interp_depth == 0:
             in_attr = True
@@ -365,6 +407,10 @@ def scan_lean(source: str, state: LeanLexState | None = None) -> tuple[list[Lean
             bdepth += 1
             i += 2
         elif ch in "([{⟨":
+            if in_attr:
+                tokens.append(
+                    LeanToken("<attr_arg>", bdepth, interp_depth, after_dot=False, after_backtick=False, in_attr=True)
+                )
             if isinstance(frame_val, int) and frame_val > 0 and ch == "{":
                 frames[-1] = ("code", frame_val + 1)
             bdepth += 1
@@ -381,10 +427,12 @@ def scan_lean(source: str, state: LeanLexState | None = None) -> tuple[list[Lean
             bdepth = max(0, bdepth - 1)
             if in_attr and ch == "]" and bdepth <= attr_base_depth:
                 in_attr = False
+            elif in_attr:
+                tokens.append(
+                    LeanToken("<attr_arg>", bdepth, interp_depth, after_dot=False, after_backtick=False, in_attr=True)
+                )
             i += 1
-        elif ch == "#" and i + 1 < n and source[i + 1].isalpha() and (
-            i == 0 or not (source[i - 1].isalnum() or source[i - 1] in IDENT_CONT_CHARS + "»")
-        ):
+        elif ch == "#" and i + 1 < n and source[i + 1].isalpha():
             j = i + 1
             while j < n and (source[j].isalnum() or source[j] in IDENT_CONT_CHARS):
                 j += 1
@@ -398,9 +446,10 @@ def scan_lean(source: str, state: LeanLexState | None = None) -> tuple[list[Lean
             j = i
             while j < n and (source[j].isalnum() or source[j] in IDENT_CONT_CHARS):
                 j += 1
+            tok_text = source[i:j]
             tokens.append(
                 LeanToken(
-                    source[i:j],
+                    tok_text,
                     bdepth,
                     interp_depth,
                     after_dot=after_dot,
@@ -408,8 +457,14 @@ def scan_lean(source: str, state: LeanLexState | None = None) -> tuple[list[Lean
                     in_attr=in_attr,
                 )
             )
+            last_ident_end = j
+            last_ident_text = tok_text
             i = j
         else:
+            if in_attr and ch not in " \t\r\n,":
+                tokens.append(
+                    LeanToken("<attr_arg>", bdepth, interp_depth, after_dot=False, after_backtick=False, in_attr=True)
+                )
             i += 1
 
     next_state = LeanLexState(
@@ -512,11 +567,24 @@ def split_lean_units(source: str) -> tuple[list[str], bool]:
     return units, clean_eof
 
 
+def _validate_unit_attrs(tokens: list[LeanToken], unit_text: str) -> str | None:
+    """Validate that every `@[...]` attribute token in a unit belongs to `SAFE_DECL_ATTRS`."""
+    for tok in tokens:
+        if tok.in_attr:
+            if tok.after_dot or tok.after_backtick or tok.bdepth != 1 or tok.text not in SAFE_DECL_ATTRS:
+                return f"disallowed attribute '@[{tok.text}]' in unit: {unit_preview(unit_text)}"
+    return None
+
+
 def validate_pure_added_unit(unit_text: str) -> str | None:
     """Return None if `unit_text` is a single pure declaration addition, else an error reason."""
     tokens, end_state = scan_lean(unit_text)
     if not end_state.is_top_level:
         return f"unclosed syntax in added unit: {unit_preview(unit_text)}"
+
+    attr_err = _validate_unit_attrs(tokens, unit_text)
+    if attr_err is not None:
+        return attr_err
 
     head_tok, head_idx = _extract_head_from_tokens(tokens)
     if head_tok not in PURE_DECL_HEADS:
@@ -525,25 +593,29 @@ def validate_pure_added_unit(unit_text: str) -> str | None:
     if head_tok == "mutual":
         if head_idx > 0:
             return f"disallowed prefix on mutual block: {unit_preview(unit_text)}"
+        mutual_disallowed = NON_DECL_COMMANDS | DISALLOWED_DECL_HEADS
         mutual_depth = 1
         for tok in tokens[head_idx + 1 :]:
-            if tok.bdepth > 0 or tok.interp_depth > 0 or tok.after_dot or tok.after_backtick:
+            if tok.in_attr or tok.interp_depth > 0 or tok.after_dot or tok.after_backtick:
                 continue
             if mutual_depth == 0:
                 return f"trailing token '{tok.text}' after mutual 'end': {unit_preview(unit_text)}"
-            if tok.text in NON_DECL_COMMANDS or tok.text.startswith("#"):
+            if tok.text in mutual_disallowed or tok.text.startswith("#"):
                 return f"disallowed command '{tok.text}' inside mutual block: {unit_preview(unit_text)}"
-            if tok.text == "mutual":
-                mutual_depth += 1
-            elif tok.text == "end":
-                mutual_depth -= 1
+            if tok.bdepth == 0:
+                if tok.text == "mutual":
+                    mutual_depth += 1
+                elif tok.text == "end":
+                    mutual_depth -= 1
+            elif tok.text in ("mutual", "end"):
+                return f"disallowed keyword '{tok.text}' inside mutual block: {unit_preview(unit_text)}"
         if mutual_depth != 0:
             return f"unclosed mutual block: {unit_preview(unit_text)}"
         return None
 
-    disallowed_inner = NON_DECL_COMMANDS | PURE_DECL_HEADS | {"end"}
+    disallowed_inner = NON_DECL_COMMANDS | DISALLOWED_DECL_HEADS | PURE_DECL_HEADS | {"end"}
     for tok in tokens[head_idx + 1 :]:
-        if tok.bdepth > 0 or tok.interp_depth > 0 or tok.after_dot or tok.after_backtick:
+        if tok.in_attr or tok.interp_depth > 0 or tok.after_dot or tok.after_backtick:
             continue
         if tok.text in disallowed_inner or tok.text.startswith("#"):
             return (
@@ -564,6 +636,107 @@ def unit_preview(unit_text: str) -> str:
     return first[:80] + ("..." if len(first) > 80 else "")
 
 
+def _is_valid_dotted_name(tokens: list[LeanToken], blocked: frozenset[str]) -> bool:
+    """Return True if `tokens` form a single plain dotted identifier chain."""
+    if not tokens or tokens[0].after_dot:
+        return False
+    for idx, tok in enumerate(tokens):
+        if tok.in_attr or tok.bdepth > 0 or tok.interp_depth > 0 or tok.after_backtick:
+            return False
+        if idx > 0 and not tok.after_dot:
+            return False
+        if tok.text in blocked or tok.text.startswith("#"):
+            return False
+    return True
+
+
+def validate_new_spec_file(rel_path: str, head_text: str) -> tuple[bool, str]:
+    """Validate a newly added (`status == 'A'`) locked spec file for `spec-add` eligibility."""
+    path_obj = Path(rel_path)
+    if (path_obj.parts and path_obj.parts[0] == "Core") or path_obj.name == "Interface.lean":
+        return False, f"new locked spec file '{rel_path}' expands Core or Interface boundary"
+
+    head_units, head_clean = split_lean_units(head_text)
+    if not head_clean or not head_units:
+        return False, "new locked spec file is empty or has unclosed syntax"
+
+    blocked_framing_words = (
+        NON_DECL_COMMANDS | DISALLOWED_DECL_HEADS | PURE_DECL_HEADS | NON_RESERVED_HEAD_COMMANDS | {"end"}
+    )
+    seen_decl = False
+    pure_decl_count = 0
+    ns_stack: list[str] = []
+
+    for unit in head_units:
+        tokens, end_state = scan_lean(unit)
+        if not end_state.is_top_level:
+            return False, f"unclosed syntax in new spec unit: {unit_preview(unit)}"
+        if not tokens:
+            return False, f"standalone comment or empty unit in new spec file: {unit_preview(unit)}"
+
+        first = tokens[0]
+        if (
+            not first.in_attr
+            and first.bdepth == 0
+            and first.interp_depth == 0
+            and not first.after_dot
+            and not first.after_backtick
+        ):
+            head0 = first.text
+            if head0 == "/-!":
+                if len(tokens) != 1:
+                    return False, f"unexpected code after module docstring: {unit_preview(unit)}"
+                continue
+            if head0 == "import":
+                if seen_decl or ns_stack:
+                    return False, f"import must precede declarations and namespaces: {unit_preview(unit)}"
+                if not _is_valid_dotted_name(tokens[1:], blocked_framing_words):
+                    return False, f"disallowed import framing in new spec file: {unit_preview(unit)}"
+                continue
+            if head0 == "namespace":
+                if not _is_valid_dotted_name(tokens[1:], blocked_framing_words):
+                    return False, f"disallowed namespace framing in new spec file: {unit_preview(unit)}"
+                ns_stack.extend(tok.text for tok in tokens[1:])
+                continue
+            if head0 == "open":
+                if len(tokens) < 2 or any(
+                    tok.in_attr
+                    or tok.interp_depth > 0
+                    or tok.after_backtick
+                    or tok.text.startswith("#")
+                    or tok.text in blocked_framing_words
+                    or tok.text in ("scoped", "in")
+                    for tok in tokens[1:]
+                ):
+                    return False, f"disallowed 'open' framing in new spec file: {unit_preview(unit)}"
+                continue
+            if head0 == "end":
+                if len(tokens) == 1:
+                    if not ns_stack:
+                        return False, f"unmatched 'end' in new spec file: {unit_preview(unit)}"
+                    ns_stack.pop()
+                    continue
+                if not _is_valid_dotted_name(tokens[1:], blocked_framing_words):
+                    return False, f"disallowed 'end' framing in new spec file: {unit_preview(unit)}"
+                segs = [tok.text for tok in tokens[1:]]
+                if len(segs) > len(ns_stack) or ns_stack[-len(segs) :] != segs:
+                    return False, f"mismatched 'end {'.'.join(segs)}' in new spec file"
+                del ns_stack[-len(segs) :]
+                continue
+
+        err = validate_pure_added_unit(unit)
+        if err is not None:
+            return False, err
+        seen_decl = True
+        pure_decl_count += 1
+
+    if ns_stack:
+        return False, f"unclosed namespace '{'.'.join(ns_stack)}' in new spec file"
+    if pure_decl_count < 1:
+        return False, "new locked spec file contains no pure declarations"
+    return True, f"new locked spec file adding {pure_decl_count} pure declaration(s)"
+
+
 def classify_locked_spec_diff(
     repo_root: Path,
     base_ref: str,
@@ -577,14 +750,8 @@ def classify_locked_spec_diff(
         return LockedDiffAssessment(hit, LABEL_CHANGE, f"spec file status '{status}' alters or removes existing spec")
     if status == "A" and len(paths) == 1:
         head_text = git_show_text(repo_root, head_ref, paths[0])
-        head_units, head_clean = split_lean_units(head_text)
-        if not head_clean or not head_units:
-            return LockedDiffAssessment(hit, LABEL_CHANGE, "new locked spec file is empty or has unclosed syntax")
-        return LockedDiffAssessment(
-            hit,
-            LABEL_ADD,
-            f"new locked spec file adding {len(head_units)} unit(s) with no base declarations touched",
-        )
+        ok, reason = validate_new_spec_file(paths[0], head_text)
+        return LockedDiffAssessment(hit, LABEL_ADD if ok else LABEL_CHANGE, reason)
     if status != "M" or len(paths) != 1:
         return LockedDiffAssessment(hit, LABEL_CHANGE, f"unsupported spec diff status '{status}'")
 
@@ -653,11 +820,6 @@ def main(argv: list[str] | None = None) -> int:
         choices=[LABEL_ADD, LABEL_CHANGE],
         help="Treat the given PR label as present for local testing (repeatable).",
     )
-    parser.add_argument(
-        "--has-mark",
-        action="store_true",
-        help="Alias for --label spec-change.",
-    )
     args = parser.parse_args(argv)
 
     repo_root = resolve_repo_root()
@@ -680,7 +842,7 @@ def main(argv: list[str] | None = None) -> int:
         locked_assessments.append(classify_locked_spec_diff(repo_root, effective_base, args.head, status, paths))
 
     event_file = Path(args.event_path) if args.event_path else None
-    labels_present = read_pr_labels(event_file, args.label, args.has_mark)
+    labels_present = read_pr_labels(event_file, args.label)
 
     if not locked_assessments:
         if new_pkg_spec_hits:
