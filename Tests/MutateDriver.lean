@@ -231,34 +231,96 @@ private def runPropChecksEnvVars : IO Unit := do
     let rt := EnvVars.splitSearchPath (String.intercalate ":" parts.toList) == parts
     (r1, assertB "splitSearchPath roundTrip" rt)
 
-private def runIoErrorToRawUnitTests : IO Unit := do
-  let cases : Array (IO.Error × EnvVars.Raw.EnvVarsRawError) := #[
-    (.invalidArgument (some "K") 22 "invalid UTF-8 in environment entry", .invalidEncoding (some "K") "invalid UTF-8 in environment entry"),
-    (.invalidArgument (some "K") 22 "bad arg", .invalidArgument (some "K") 22 "bad arg"),
-    (.otherError 12 "nomem", .otherError 12 "nomem"),
-    (.userError "invalid UTF-8 in environment entry", .invalidEncoding none "invalid UTF-8 in environment entry"),
-    (.userError "oops", .userError "oops"),
-    (.noFileOrDirectory "p" 2 "noent", .otherError 2 "noent"),
-    (.alreadyExists none 17 "eexist", .otherError 17 "eexist"),
-    (.permissionDenied none 13 "eacces", .otherError 13 "eacces"),
-    (.inappropriateType none 20 "enotdir", .otherError 20 "enotdir"),
-    (.unsupportedOperation 95 "enotsup", .otherError 95 "enotsup"),
-    (.unsatisfiedConstraints 1 "constr", .otherError 1 "constr"),
-    (.illegalOperation 1 "illegal", .otherError 1 "illegal"),
-    (.resourceBusy 16 "ebusy", .otherError 16 "ebusy"),
-    (.resourceVanished 1 "vanish", .otherError 1 "vanish"),
-    (.hardwareFault 5 "eio", .otherError 5 "eio"),
-    (.protocolError 71 "eproto", .otherError 71 "eproto"),
-    (.timeExpired 110 "etimedout", .otherError 110 "etimedout"),
-    (.interrupted "p" 4 "eintr", .otherError 4 "p: eintr"),
-    (.resourceExhausted none 24 "emfile", .otherError 24 "emfile"),
-    (.noSuchThing none 2 "nosuch", .otherError 2 "nosuch"),
-    (.unexpectedEof, .userError "unexpected end of file")
+private def runRawDecoderUnitTests : IO Unit := do
+  let invalidUtf8 : ByteArray := ByteArray.mk #[0xFF, 0xFE]
+  let okPair : ByteArray := "OK_KEY=val=ue".toUTF8
+  let emptyValPair : ByteArray := "EMPTY_KEY=".toUTF8
+  let noEqPair : ByteArray := "MALFORMED".toUTF8
+  let emptyKeyPair : ByteArray := "=bad".toUTF8
+  let badKeyUtf8 : ByteArray := invalidUtf8 ++ "=val".toUTF8
+  let badValUtf8 : ByteArray := "K=".toUTF8 ++ invalidUtf8
+
+  let mapCases : Array (EnvVars.Raw.EnvVarsRawError × EnvVars.EnvVarsError) := #[
+    (.invalidEncoding (some "K") "bad utf8",
+      { kind := .invalidEncoding, key := some "K", errnoCode := none, message := "bad utf8" }),
+    (.invalidEncoding none "",
+      { kind := .invalidEncoding, key := none, errnoCode := none, message := "invalid UTF-8 in environment" }),
+    (.invalidArgument (some "A=B") 22 "bad key",
+      { kind := .invalidKey, key := some "A=B", errnoCode := some 22, message := "bad key" }),
+    (.invalidArgument none 22 "",
+      { kind := .invalidKey, key := none, errnoCode := some 22, message := "invalid environment variable name" }),
+    (.otherError 12 "nomem",
+      { kind := .ioError, key := none, errnoCode := some 12, message := "nomem" }),
+    (.otherError 5 "",
+      { kind := .ioError, key := none, errnoCode := some 5, message := "os error 5" }),
+    (.userError "oops",
+      { kind := .ioError, key := none, errnoCode := none, message := "oops" }),
+    (.userError "",
+      { kind := .ioError, key := none, errnoCode := none, message := "environment error" })
   ]
-  for (ioErr, expected) in cases do
-    let got := EnvVars.Raw.Internal.ioErrorToRaw ioErr
+  for (rawErr, expected) in mapCases do
+    let got := EnvVars.Raw.mapRawError rawErr
     if got != expected then
-      throw (IO.userError s!"ioErrorToRaw mismatch for {ioErr}: got {repr got}, expected {repr expected}")
+      throw (IO.userError s!"mapRawError mismatch for {repr rawErr}: got {repr got}, expected {repr expected}")
+
+  let fakeOps (getMap : String → Option ByteArray) (envList : Array ByteArray) : EnvVars.Raw.PosixRawOpsM Id :=
+    { getEnvBytes := fun k => pure (getMap k)
+      listEnvironBytes := pure envList }
+
+  let ops : EnvVars.Raw.RawEnvVarsOpsM Id := EnvVars.Raw.Internal.mkRawOps (fakeOps
+    (fun k =>
+      if k == "VALID" then some "abc=123".toUTF8
+      else if k == "EMPTY" then some ByteArray.empty
+      else if k == "BAD" then some invalidUtf8
+      else if k == "" || k == "A=B" then some "SHOULD_NOT_CALL".toUTF8
+      else none)
+    #[noEqPair, emptyKeyPair, okPair, emptyValPair])
+
+  match (ops.getEnv "" : Except EnvVars.Raw.EnvVarsRawError (Option String)) with
+  | .ok none => pure ()
+  | other => throw (IO.userError s!"mkRawOps getEnv empty key failed: {repr other}")
+
+  match (ops.getEnv "A=B" : Except EnvVars.Raw.EnvVarsRawError (Option String)) with
+  | .ok none => pure ()
+  | other => throw (IO.userError s!"mkRawOps getEnv '=' key failed: {repr other}")
+
+  match (ops.getEnv "VALID" : Except EnvVars.Raw.EnvVarsRawError (Option String)) with
+  | .ok (some "abc=123") => pure ()
+  | other => throw (IO.userError s!"mkRawOps getEnv VALID failed: {repr other}")
+
+  match (ops.getEnv "EMPTY" : Except EnvVars.Raw.EnvVarsRawError (Option String)) with
+  | .ok (some "") => pure ()
+  | other => throw (IO.userError s!"mkRawOps getEnv EMPTY failed: {repr other}")
+
+  match (ops.getEnv "MISSING" : Except EnvVars.Raw.EnvVarsRawError (Option String)) with
+  | .ok none => pure ()
+  | other => throw (IO.userError s!"mkRawOps getEnv MISSING failed: {repr other}")
+
+  match (ops.getEnv "BAD" : Except EnvVars.Raw.EnvVarsRawError (Option String)) with
+  | .error (.invalidEncoding (some "BAD") _) => pure ()
+  | other => throw (IO.userError s!"mkRawOps getEnv BAD failed: {repr other}")
+
+  match (ops.listEnv : Except EnvVars.Raw.EnvVarsRawError (Array (String × String))) with
+  | .ok #[("OK_KEY", "val=ue"), ("EMPTY_KEY", "")] => pure ()
+  | other => throw (IO.userError s!"mkRawOps listEnv ok failed: {repr other}")
+
+  let opsBadKey : EnvVars.Raw.RawEnvVarsOpsM Id :=
+    EnvVars.Raw.Internal.mkRawOps (fakeOps (fun _ => none) #[okPair, badKeyUtf8])
+  match (opsBadKey.listEnv : Except EnvVars.Raw.EnvVarsRawError (Array (String × String))) with
+  | .error (.invalidEncoding none _) => pure ()
+  | other => throw (IO.userError s!"mkRawOps listEnv badKey failed: {repr other}")
+
+  let opsBadVal : EnvVars.Raw.RawEnvVarsOpsM Id :=
+    EnvVars.Raw.Internal.mkRawOps (fakeOps (fun _ => none) #[okPair, badValUtf8])
+  match (opsBadVal.listEnv : Except EnvVars.Raw.EnvVarsRawError (Array (String × String))) with
+  | .error (.invalidEncoding (some "K") _) => pure ()
+  | other => throw (IO.userError s!"mkRawOps listEnv badVal failed: {repr other}")
+
+  if EnvVars.Raw.Internal.isValidPosixKey "" ||
+     EnvVars.Raw.Internal.isValidPosixKey "A=B" ||
+     EnvVars.Raw.Internal.isValidPosixKey (String.ofList ['A', Char.ofNat 0, 'B']) ||
+     !EnvVars.Raw.Internal.isValidPosixKey "GOOD_KEY_1" then
+    throw (IO.userError "isValidPosixKey check failed")
 
 private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("RegExp", do RegExp.RuntimeTests.runAll; smokeRegExp; return none, pure ()),
@@ -269,7 +331,7 @@ private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("Process", do Process.RuntimeTests.runAll; return none, pure ()),
   ("Time", do Time.RuntimeTests.runAll; return none, pure ()),
   ("Json", do Json.RuntimeTests.runAll; return none, pure ()),
-  ("EnvVars.Raw", do EnvVars.Raw.RuntimeTests.runAll; return none, do runPropChecksEnvVarsRaw; runIoErrorToRawUnitTests),
+  ("EnvVars.Raw", do EnvVars.Raw.RuntimeTests.runAll; return none, do runPropChecksEnvVarsRaw; runRawDecoderUnitTests),
   ("EnvVars", do EnvVars.RuntimeTests.runAll; return none, runPropChecksEnvVars),
   ("Uuid.Raw", do Uuid.Raw.RuntimeTests.runAll; return none, pure ()),
   ("Uuid", do Uuid.RuntimeTests.runAll; return none, pure ()),
@@ -313,6 +375,10 @@ private def parseFlags : List String → Except String MutateFlags
 /-- Mutation test driver supporting `--suite` filtering and omitting all `Proofs` imports. -/
 def main (args : List String) : IO UInt32 := do
   match args with
+  | "--envvars-raw-probe" :: rest =>
+    return (← EnvVars.Raw.RuntimeTests.probeMain rest)
+  | "--envvars-probe" :: rest =>
+    return (← EnvVars.RuntimeTests.probeMain rest)
   | "--cmdline-probe" :: rest =>
     return (← CmdLine.RuntimeTests.probeMain rest)
   | "--slotpool-probe" :: rest =>

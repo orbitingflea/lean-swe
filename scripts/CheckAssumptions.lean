@@ -36,14 +36,11 @@ private def allowedAxioms : Std.HashSet Name :=
 
 private def legacyExemptionAllowlist : Array Name := #[
   `LeanSwe.Base64,
-  `LeanSwe.CmdLine,
   `LeanSwe.Compress,
   `LeanSwe.ConnectProxy,
   `LeanSwe.ConnectProxy.Raw,
   `LeanSwe.CryptoHash,
   `LeanSwe.CryptoHash.Raw,
-  `LeanSwe.EnvVars,
-  `LeanSwe.EnvVars.Raw,
   `LeanSwe.Fs,
   `LeanSwe.Fs.Raw,
   `LeanSwe.Git,

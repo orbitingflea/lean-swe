@@ -24,6 +24,18 @@ structure EnvVarsError where
   message : String
   deriving Repr, BEq, DecidableEq
 
+/-- Constructor tag enum for `EnvVarsRawError` used in exhaustive error-coverage declarations. -/
+inductive EnvVarsRawErrorKind where
+  /-- Corresponds to `EnvVarsRawError.invalidEncoding`. -/
+  | invalidEncoding
+  /-- Corresponds to `EnvVarsRawError.invalidArgument`. -/
+  | invalidArgument
+  /-- Corresponds to `EnvVarsRawError.otherError`. -/
+  | otherError
+  /-- Corresponds to `EnvVarsRawError.userError`. -/
+  | userError
+  deriving Repr, BEq, DecidableEq
+
 /-- Pure representation of raw OS environment error inputs for total error-mapping specs. -/
 inductive EnvVarsRawError where
   /-- Invalid UTF-8 sequence encountered while decoding an environment key or value. -/
@@ -36,13 +48,37 @@ inductive EnvVarsRawError where
   | userError (detail : String)
   deriving Repr, BEq, DecidableEq
 
+/-- Return the closed constructor tag of an `EnvVarsRawError`. -/
+def EnvVarsRawError.kind : EnvVarsRawError → EnvVarsRawErrorKind
+  | .invalidEncoding _ _ => .invalidEncoding
+  | .invalidArgument _ _ _ => .invalidArgument
+  | .otherError _ _ => .otherError
+  | .userError _ => .userError
+
+/-- Thin byte-level POSIX data-passing hooks parameterized over effect monad `m`,
+    wrapping `getenv(3)` and `environ(7)` with zero UTF-8 decoding or `'='` parsing in C. -/
+structure PosixRawOpsM (m : Type → Type) where
+  /-- Look up raw NUL-free value bytes for a valid POSIX environment variable name via `getenv(3)`,
+      returning `none` when unset. -/
+  getEnvBytes : String → m (Option ByteArray)
+  /-- Copy all raw NUL-free entry byte slices from POSIX `environ(7)` in order
+      (`#[]` when `environ == NULL`). -/
+  listEnvironBytes : m (Array ByteArray)
+
+/-- Concrete `IO` thin-call POSIX byte hooks backed by `c/envvars_shim.c`. -/
+abbrev PosixRawOps := PosixRawOpsM IO
+
 /-- Minimal read-only environment primitives parameterized over effect monad `m`. -/
 structure RawEnvVarsOpsM (m : Type → Type) where
   /-- Convert a raw OS error record into a normalized `EnvVarsError` with non-empty message. -/
   mapRawError : EnvVarsRawError → EnvVarsError
-  /-- Look up a single environment variable without upper-layer key validation. -/
+  /-- Look up a single environment variable via `getenv(3)` without upper-layer `.invalidKey` errors,
+      returning `.ok none` when unset (or when `key` cannot name a POSIX environment variable) and
+      `.error (.invalidEncoding (some key) ...)` when the raw value bytes are not valid UTF-8. -/
   getEnv : String → m (Except EnvVarsRawError (Option String))
-  /-- List all `(key, value)` environment entries in process `environ` order. -/
+  /-- List all `(key, value)` environment entries from `environ(7)` in order, skipping entries
+      lacking `'='` or starting with `'='`, and failing with `.error (.invalidEncoding ...)` on
+      invalid UTF-8 in any key (`key? = none`) or value (`key? = some key`). -/
   listEnv : m (Except EnvVarsRawError (Array (String × String)))
 
 /-- Concrete `IO` thin-wrapper API bundle exported by `LeanSwe.EnvVars.Raw`. -/

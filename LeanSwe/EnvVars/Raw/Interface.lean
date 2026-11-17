@@ -3,13 +3,17 @@ import LeanSwe.EnvVars.Raw.Impl
 
 namespace LeanSwe.EnvVars.Raw
 
-@[extern "leanswe_envvars_list"]
-private opaque rawListEnv : IO (Array (String × String))
+@[extern "leanswe_envvars_getenv"]
+private opaque rawGetEnvBytes (key : @& String) : BaseIO (Option ByteArray)
 
-private def posixRawOps : Internal.PosixRawOps :=
-  { listEnv := rawListEnv }
+@[extern "leanswe_envvars_environ"]
+private opaque rawListEnvironBytes : BaseIO (Array ByteArray)
 
-/-- Default minimal OS environment primitives backed by `IO.getEnv` and `c/envvars_shim.c`. -/
+private def posixRawOps : PosixRawOps :=
+  { getEnvBytes := fun key => rawGetEnvBytes key
+    listEnvironBytes := rawListEnvironBytes }
+
+/-- Default minimal OS environment primitives backed by `c/envvars_shim.c` (`getenv(3)` and `environ(7)`). -/
 def defaultOps : RawEnvVarsOps :=
   Internal.mkRawOps posixRawOps
 
@@ -17,11 +21,11 @@ def defaultOps : RawEnvVarsOps :=
 @[inline] def mapRawError (err : EnvVarsRawError) : EnvVarsError :=
   defaultOps.mapRawError err
 
-/-- Look up a single environment variable via `IO.getEnv` without upper-layer key validation. -/
+/-- Look up a single environment variable via `getenv(3)` and Lean UTF-8 decoding without upper-layer `.invalidKey` errors. -/
 @[inline] def getEnv (key : String) : IO (Except EnvVarsRawError (Option String)) :=
   defaultOps.getEnv key
 
-/-- List all `(key, value)` environment entries in process `environ` order. -/
+/-- List all `(key, value)` environment entries from `environ(7)` in order via Lean `'='` splitting and UTF-8 decoding. -/
 @[inline] def listEnv : IO (Except EnvVarsRawError (Array (String × String))) :=
   defaultOps.listEnv
 

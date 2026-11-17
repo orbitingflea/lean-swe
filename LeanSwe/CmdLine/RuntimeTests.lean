@@ -1,3 +1,4 @@
+import Core.Assumptions
 import LeanSwe.CmdLine.Interface
 import LeanSwe.Process.Interface
 
@@ -114,6 +115,57 @@ def probeMain (args : List String) : IO UInt32 := do
       | .ok ok =>
         IO.println s!"STRICT:{tok}:{ok}"
         return 0
+  | ["confirm-ioerr"] =>
+    match ← CmdLine.confirm "OK?" none 2 with
+    | .error e =>
+      IO.eprintln s!"ERR:{reprStr e.kind}:{e.message}"
+      return 2
+    | .ok ok =>
+      IO.println s!"CONFIRM:{ok}"
+      return 0
+  | ["prompt-eof"] =>
+    match ← CmdLine.promptLine "Token" none with
+    | .error e =>
+      IO.eprintln s!"ERR:{reprStr e.kind}:{e.message}"
+      return 2
+    | .ok tok =>
+      IO.println s!"TOK:{tok}"
+      return 0
+  | ["prompt-default"] =>
+    match ← CmdLine.promptLine "Def" (some "d") with
+    | .error e =>
+      IO.eprintln s!"ERR:{reprStr e.kind}:{e.message}"
+      return 2
+    | .ok val =>
+      IO.println s!"DEF:{val}"
+      return 0
+  | ["confirm-exhaust"] =>
+    match ← CmdLine.confirm "OK?" none 2 with
+    | .error e =>
+      IO.eprintln s!"ERR:{reprStr e.kind}:{e.message}"
+      return 2
+    | .ok ok =>
+      IO.println s!"CONFIRM:{ok}"
+      return 0
+  | ["parse-env-err"] =>
+    match ← CmdLine.parseWithEnv probeBasicSpec [] with
+    | .error e =>
+      IO.eprintln s!"ERR:{reprStr e.kind}:{e.target.getD ""}:{e.message}"
+      return 2
+    | .ok p =>
+      IO.println s!"OK:{repr p.options}"
+      return 0
+  | ["default-get-env", key] =>
+    match ← CmdLine.defaultOps.getEnv key with
+    | .error e =>
+      IO.eprintln s!"ERR:{reprStr e.kind}:{e.target.getD ""}:{e.message}"
+      return 2
+    | .ok none =>
+      IO.println "OK:NONE"
+      return 0
+    | .ok (some v) =>
+      IO.println s!"OK:SOME:{v}"
+      return 0
   | _ =>
     IO.eprintln "unknown --cmdline-probe mode"
     return 3
@@ -137,6 +189,479 @@ private def runProbe (exe : String) (args : Array String)
   match ← Process.run req with
   | .ok res => return res
   | .error e => throw (IO.userError s!"ASSERTION FAILED: Process.run failed: {repr e}")
+
+private def cmdHexDigit (n : UInt8) : Char :=
+  if n < 10 then Char.ofNat (48 + n.toNat) else Char.ofNat (87 + n.toNat)
+
+private def cmdUtf8ToHex (s : String) : String := Id.run do
+  let mut out : String := ""
+  for b in s.toUTF8.data do
+    out := out.push (cmdHexDigit (b >>> 4))
+    out := out.push (cmdHexDigit (b &&& 0x0F))
+  return out
+
+private def execCmdProbeC : String :=
+  "#include <stdio.h>\n" ++
+  "#include <stdlib.h>\n" ++
+  "#include <string.h>\n" ++
+  "#include <unistd.h>\n" ++
+  "static int hexv(char c) {\n" ++
+  "  if (c >= '0' && c <= '9') return c - '0';\n" ++
+  "  if (c >= 'a' && c <= 'f') return c - 'a' + 10;\n" ++
+  "  if (c >= 'A' && c <= 'F') return c - 'A' + 10;\n" ++
+  "  return -1;\n" ++
+  "}\n" ++
+  "static char *dechex(const char *s) {\n" ++
+  "  size_t n = strlen(s);\n" ++
+  "  if (n % 2 != 0) return NULL;\n" ++
+  "  char *out = (char *)malloc(n / 2 + 1);\n" ++
+  "  if (!out) return NULL;\n" ++
+  "  for (size_t i = 0; i < n; i += 2) {\n" ++
+  "    int hi = hexv(s[i]), lo = hexv(s[i + 1]);\n" ++
+  "    if (hi < 0 || lo < 0) { free(out); return NULL; }\n" ++
+  "    out[i / 2] = (char)((hi << 4) | lo);\n" ++
+  "  }\n" ++
+  "  out[n / 2] = '\\0';\n" ++
+  "  return out;\n" ++
+  "}\n" ++
+  "int main(int argc, char **argv) {\n" ++
+  "  int close_stdin = (argc >= 2 && strcmp(argv[1], \"--close-stdin\") == 0);\n" ++
+  "  int start = close_stdin ? 2 : 1;\n" ++
+  "  int sep = -1;\n" ++
+  "  for (int i = start + 1; i < argc; i++) {\n" ++
+  "    if (strcmp(argv[i], \"--sep\") == 0) { sep = i; break; }\n" ++
+  "  }\n" ++
+  "  if (sep < 0) return 10;\n" ++
+  "  int child_argc = sep - start;\n" ++
+  "  char **child_argv = (char **)calloc((size_t)child_argc + 1, sizeof(char *));\n" ++
+  "  child_argv[0] = argv[start];\n" ++
+  "  for (int i = start + 1; i < sep; i++) child_argv[i - start] = argv[i];\n" ++
+  "  if (close_stdin) close(0);\n" ++
+  "  int envc = argc - sep - 1;\n" ++
+  "  char **envp = (char **)calloc((size_t)envc + 1, sizeof(char *));\n" ++
+  "  for (int i = 0; i < envc; i++) {\n" ++
+  "    envp[i] = dechex(argv[sep + 1 + i]);\n" ++
+  "    if (!envp[i]) return 11;\n" ++
+  "  }\n" ++
+  "  execve(argv[start], child_argv, envp);\n" ++
+  "  perror(\"execve\");\n" ++
+  "  return 12;\n" ++
+  "}\n"
+
+private def runCmdCProbe (closeStdin : Bool) (probeArgs hexEnv : Array String) : IO IO.Process.Output := do
+  let exe := (← IO.appPath).toString
+  let tmpDir ← IO.FS.createTempDir
+  try
+    let src := tmpDir / "cmd_probe.c"
+    let bin := tmpDir / "cmd_probe"
+    IO.FS.writeFile src execCmdProbeC
+    let ccOut ← IO.Process.output {
+      cmd := "cc"
+      args := #["-O2", "-Wall", "-Wextra", "-Werror", src.toString, "-o", bin.toString]
+    }
+    assertTrue (ccOut.exitCode == 0) s!"failed to compile cmd probe: {ccOut.stderr}"
+    let preArgs := if closeStdin then #["--close-stdin"] else #[]
+    IO.Process.output {
+      cmd := bin.toString
+      args := preArgs ++ #[exe, "--cmdline-probe"] ++ probeArgs ++ #["--sep"] ++ hexEnv
+    }
+  finally
+    let _ ← try IO.FS.removeDirAll tmpDir; pure () catch _ => pure ()
+
+private def readUntilByte (h : IO.FS.Handle) (target : UInt8) (limit : Nat := 256) : IO String := do
+  let mut bytes : ByteArray := ByteArray.empty
+  for _ in List.range limit do
+    let chunk ← h.read 1
+    if chunk.isEmpty then
+      return String.fromUTF8! bytes
+    bytes := bytes ++ chunk
+    if chunk.get! 0 == target then
+      return String.fromUTF8! bytes
+  return String.fromUTF8! bytes
+
+private def assertPureErrKind {α : Type} (res : Except CmdLineError α) (expected : CmdLineErrorKind)
+    (msg : String) : IO Unit := do
+  match res with
+  | .ok _ => throw (IO.userError s!"ASSERTION FAILED: {msg} (expected {repr expected}, got ok)")
+  | .error e =>
+    assertTrue (e.kind == expected && !e.message.isEmpty)
+      s!"{msg} (got {repr e}, expected {repr expected})"
+
+private def assertIoErrKind {α : Type} (act : IO (Except CmdLineError α)) (expected : CmdLineErrorKind)
+    (msg : String) : IO Unit := do
+  assertPureErrKind (← act) expected msg
+
+private def assertDefaultGetEnvUnset (key : String) : IO Unit := do
+  match ← CmdLine.defaultOps.getEnv key with
+  | .ok none => pure ()
+  | .ok (some v) =>
+    throw (IO.userError s!"ASSERTION FAILED: expected ok none for {key}, got some {repr v}")
+  | .error e =>
+    throw (IO.userError s!"ASSERTION FAILED: expected ok none for {key}, got error {repr e}")
+
+private def covBadSpec : CommandSpec := {
+  name := "bad"
+  options := [
+    { name := "dup", short := some 'd', long := some "dup" },
+    { name := "dup", short := some 'x', long := some "dup2" }
+  ]
+}
+
+private def covCustomValidators : CustomValidators :=
+  [("even", fun s =>
+    match s.toNat? with
+    | some n => if n % 2 == 0 then .ok () else .error "must be even"
+    | none => .error "expected nat")]
+
+private def covSpec : CommandSpec := {
+  name := "cov"
+  version := some "1.0.0"
+  options := [{ name := "flag", short := some 'f', long := some "flag", kind := .bool, global := true }]
+  subcommands := [{
+    name := "sub"
+    options := [{ name := "target", long := some "target", kind := .string, required := true }]
+    args := [{ name := "item", kind := .nat, required := true }]
+  }]
+}
+
+private def covLeafSpec : CommandSpec := {
+  name := "covleaf"
+  version := some "1.0.0"
+  options := [
+    { name := "count", short := some 'c', long := some "count", kind := .nat, required := true },
+    { name := "even", long := some "even", kind := .custom "even" },
+    { name := "flag", short := some 'f', long := some "flag", kind := .bool }
+  ]
+  args := [{ name := "input", kind := .string, required := true }]
+}
+
+/-- Verify `CmdLine.defaultOps.readLine` returns `none` on EOF. -/
+def assume_cmdline_defaultOps_readLine_eofReturnsNone : IO Unit := do
+  assertDefaultGetEnvUnset "__LEANSWE_UNSET_CMDLINE_ENV__"
+  let exe := (← IO.appPath).toString
+  let res ← runProbe exe #["prompt-eof"] #[] (some "")
+  let err := String.fromUTF8! res.stderr
+  assertTrue (res.exitCode == 2 && containsSubstr err "CmdLineErrorKind.eof")
+    s!"expected eof on closed stdin, got rc={res.exitCode} err={repr err}"
+
+/-- Verify `CmdLine.defaultOps.readLine` strips trailing LF and CR+LF newlines. -/
+def assume_cmdline_defaultOps_readLine_stripsTrailingNewlines : IO Unit := do
+  assertDefaultGetEnvUnset "__LEANSWE_UNSET_CMDLINE_ENV__"
+  let exe := (← IO.appPath).toString
+  let lfRes ← runProbe exe #["prompt-default"] #[] (some "alpha\n")
+  let lfOut := String.fromUTF8! lfRes.stdout
+  assertTrue (lfRes.exitCode == 0 && containsSubstr lfOut "DEF:alpha\n" && !containsSubstr lfOut "\r")
+    s!"expected LF stripped, got rc={lfRes.exitCode} out={repr lfOut}"
+  let crlfRes ← runProbe exe #["prompt-default"] #[] (some "beta\r\n")
+  let crlfOut := String.fromUTF8! crlfRes.stdout
+  assertTrue (crlfRes.exitCode == 0 && containsSubstr crlfOut "DEF:beta\n" && !containsSubstr crlfOut "\r")
+    s!"expected CRLF stripped, got rc={crlfRes.exitCode} out={repr crlfOut}"
+
+/-- Verify `CmdLine.defaultOps.writeOut` flushes stdout before blocking on `readLine`. -/
+def assume_cmdline_defaultOps_writeOut_flushesBeforeBlockingRead : IO Unit := do
+  assertDefaultGetEnvUnset "__LEANSWE_UNSET_CMDLINE_ENV__"
+  let exe := (← IO.appPath).toString
+  let child ← IO.Process.spawn {
+    cmd := exe
+    args := #["--cmdline-probe", "prompt-strict"]
+    stdin := .piped
+    stdout := .piped
+    stderr := .piped
+  }
+  let (cIn, child) ← child.takeStdin
+  let firstPrompt ← readUntilByte child.stdout 0x6E
+  assertTrue (firstPrompt == "Token")
+    s!"expected flushed stdout prompt before stdin write, got {repr firstPrompt}"
+  cIn.putStr "abc\n"
+  cIn.flush
+  let secondPrompt ← readUntilByte child.stdout 0x3F
+  assertTrue (secondPrompt == "OK?")
+    s!"expected flushed confirm prompt before stdin write, got {repr secondPrompt}"
+  cIn.putStr "yes\n"
+  cIn.flush
+  let rc ← child.wait
+  let restOut ← child.stdout.readToEnd
+  assertTrue (rc == 0 && containsSubstr restOut "STRICT:abc:true")
+    s!"expected prompt-strict exit 0 with STRICT:abc:true, got rc={rc} out={repr restOut}"
+
+/-- Verify `CmdLine.defaultOps.writeErr` flushes stderr before blocking on `readLine`. -/
+def assume_cmdline_defaultOps_writeErr_flushesBeforeBlockingRead : IO Unit := do
+  assertDefaultGetEnvUnset "__LEANSWE_UNSET_CMDLINE_ENV__"
+  let exe := (← IO.appPath).toString
+  let child ← IO.Process.spawn {
+    cmd := exe
+    args := #["--cmdline-probe", "prompt-strict"]
+    stdin := .piped
+    stdout := .piped
+    stderr := .piped
+  }
+  let (cIn, child) ← child.takeStdin
+  let p1 ← readUntilByte child.stdout 0x6E
+  assertTrue (p1 == "Token") s!"expected Token prompt, got {repr p1}"
+  cIn.putStr "xyz\n"
+  cIn.flush
+  let p2 ← readUntilByte child.stdout 0x3F
+  assertTrue (p2 == "OK?") s!"expected confirm prompt, got {repr p2}"
+  cIn.putStr "maybe\n"
+  cIn.flush
+  let errLine ← readUntilByte child.stderr 0x0A
+  assertTrue (errLine == "Please answer yes or no.\n")
+    s!"expected flushed stderr retry prompt before next stdin write, got {repr errLine}"
+  let p3 ← readUntilByte child.stdout 0x3F
+  assertTrue (p3 == "OK?") s!"expected second confirm prompt, got {repr p3}"
+  cIn.putStr "yes\n"
+  cIn.flush
+  let rc ← child.wait
+  let restOut ← child.stdout.readToEnd
+  assertTrue (rc == 0 && containsSubstr restOut "STRICT:xyz:true")
+    s!"expected prompt-strict exit 0 after retry, got rc={rc} out={repr restOut}"
+
+/-- Verify `CmdLine.defaultOps.getEnv` maps valid `EnvVars.getEnv` results and invalid UTF-8 to `.ioError`. -/
+def assume_cmdline_defaultOps_getEnv_mapsEnvVarsAndInvalidUtf8ToIoError : IO Unit := do
+  assertDefaultGetEnvUnset "__LEANSWE_UNSET_CMDLINE_ENV__"
+  let okOut ← runCmdCProbe false #["default-get-env", "MY_VAR"] #[cmdUtf8ToHex "MY_VAR=ok_val"]
+  assertTrue (okOut.exitCode == 0 && okOut.stdout == "OK:SOME:ok_val\n")
+    s!"expected defaultOps.getEnv ok some, got rc={okOut.exitCode} out={repr okOut.stdout}"
+  let badOut ← runCmdCProbe false #["default-get-env", "BAD_VAR"] #[cmdUtf8ToHex "BAD_VAR=" ++ "ff"]
+  assertTrue (badOut.exitCode == 2 && containsSubstr badOut.stderr "CmdLineErrorKind.ioError:BAD_VAR:")
+    s!"expected defaultOps.getEnv ioError on invalid UTF-8, got rc={badOut.exitCode} err={repr badOut.stderr}"
+
+/-- Registry of runtime assumption checks for `LeanSwe.CmdLine`. -/
+def registeredAssumptions : Array Core.RegisteredAssumption := #[
+  ⟨"LeanSwe.CmdLine.assume_cmdline_defaultOps_readLine_eofReturnsNone",
+    assume_cmdline_defaultOps_readLine_eofReturnsNone⟩,
+  ⟨"LeanSwe.CmdLine.assume_cmdline_defaultOps_readLine_stripsTrailingNewlines",
+    assume_cmdline_defaultOps_readLine_stripsTrailingNewlines⟩,
+  ⟨"LeanSwe.CmdLine.assume_cmdline_defaultOps_writeOut_flushesBeforeBlockingRead",
+    assume_cmdline_defaultOps_writeOut_flushesBeforeBlockingRead⟩,
+  ⟨"LeanSwe.CmdLine.assume_cmdline_defaultOps_writeErr_flushesBeforeBlockingRead",
+    assume_cmdline_defaultOps_writeErr_flushesBeforeBlockingRead⟩,
+  ⟨"LeanSwe.CmdLine.assume_cmdline_defaultOps_getEnv_mapsEnvVarsAndInvalidUtf8ToIoError",
+    assume_cmdline_defaultOps_getEnv_mapsEnvVarsAndInvalidUtf8ToIoError⟩
+]
+
+/-- Error test for `CmdLine.parse` returning `.helpRequested`. -/
+def err_cmdline_parse_helpRequested : IO Unit :=
+  assertPureErrKind (CmdLine.parse covSpec ["--help"]) .helpRequested "parse helpRequested"
+
+/-- Error test for `CmdLine.parse` returning `.versionRequested`. -/
+def err_cmdline_parse_versionRequested : IO Unit :=
+  assertPureErrKind (CmdLine.parse covSpec ["--version"]) .versionRequested "parse versionRequested"
+
+/-- Error test for `CmdLine.parse` returning `.unknownOption`. -/
+def err_cmdline_parse_unknownOption : IO Unit :=
+  assertPureErrKind (CmdLine.parse covLeafSpec ["--nope"]) .unknownOption "parse unknownOption"
+
+/-- Error test for `CmdLine.parse` returning `.missingOption`. -/
+def err_cmdline_parse_missingOption : IO Unit :=
+  assertPureErrKind (CmdLine.parse covLeafSpec ["in.txt"]) .missingOption "parse missingOption"
+
+/-- Error test for `CmdLine.parse` returning `.missingArgument`. -/
+def err_cmdline_parse_missingArgument : IO Unit :=
+  assertPureErrKind (CmdLine.parse covLeafSpec ["--count", "1"]) .missingArgument "parse missingArgument"
+
+/-- Error test for `CmdLine.parse` returning `.unexpectedArgument`. -/
+def err_cmdline_parse_unexpectedArgument : IO Unit :=
+  assertPureErrKind (CmdLine.parse covLeafSpec ["--count", "1", "a", "b"]) .unexpectedArgument "parse unexpectedArgument"
+
+/-- Error test for `CmdLine.parse` returning `.invalidValue`. -/
+def err_cmdline_parse_invalidValue : IO Unit :=
+  assertPureErrKind (CmdLine.parse covLeafSpec ["--count", "abc", "in.txt"]) .invalidValue "parse invalidValue"
+
+/-- Error test for `CmdLine.parse` returning `.unknownSubcommand`. -/
+def err_cmdline_parse_unknownSubcommand : IO Unit :=
+  assertPureErrKind (CmdLine.parse covSpec ["ghost"]) .unknownSubcommand "parse unknownSubcommand"
+
+/-- Error test for `CmdLine.parse` returning `.invalidSpec`. -/
+def err_cmdline_parse_invalidSpec : IO Unit :=
+  assertPureErrKind (CmdLine.parse covBadSpec []) .invalidSpec "parse invalidSpec"
+
+/-- Error test for `CmdLine.parseWith` returning `.helpRequested`. -/
+def err_cmdline_parseWith_helpRequested : IO Unit :=
+  assertPureErrKind (CmdLine.parseWith covLeafSpec ["-h"] covCustomValidators) .helpRequested "parseWith helpRequested"
+
+/-- Error test for `CmdLine.parseWith` returning `.versionRequested`. -/
+def err_cmdline_parseWith_versionRequested : IO Unit :=
+  assertPureErrKind (CmdLine.parseWith covLeafSpec ["-V"] covCustomValidators) .versionRequested "parseWith versionRequested"
+
+/-- Error test for `CmdLine.parseWith` returning `.unknownOption`. -/
+def err_cmdline_parseWith_unknownOption : IO Unit :=
+  assertPureErrKind (CmdLine.parseWith covLeafSpec ["-z"] covCustomValidators) .unknownOption "parseWith unknownOption"
+
+/-- Error test for `CmdLine.parseWith` returning `.missingOption`. -/
+def err_cmdline_parseWith_missingOption : IO Unit :=
+  assertPureErrKind (CmdLine.parseWith covLeafSpec ["in.txt"] covCustomValidators) .missingOption "parseWith missingOption"
+
+/-- Error test for `CmdLine.parseWith` returning `.missingArgument`. -/
+def err_cmdline_parseWith_missingArgument : IO Unit :=
+  assertPureErrKind (CmdLine.parseWith covLeafSpec ["--count=2"] covCustomValidators) .missingArgument "parseWith missingArgument"
+
+/-- Error test for `CmdLine.parseWith` returning `.unexpectedArgument`. -/
+def err_cmdline_parseWith_unexpectedArgument : IO Unit :=
+  assertPureErrKind (CmdLine.parseWith covLeafSpec ["--count=2", "a", "b"] covCustomValidators) .unexpectedArgument "parseWith unexpectedArgument"
+
+/-- Error test for `CmdLine.parseWith` returning `.invalidValue`. -/
+def err_cmdline_parseWith_invalidValue : IO Unit :=
+  assertPureErrKind (CmdLine.parseWith covLeafSpec ["--count=2", "--even=3", "in.txt"] covCustomValidators) .invalidValue "parseWith invalidValue"
+
+/-- Error test for `CmdLine.parseWith` returning `.unknownSubcommand`. -/
+def err_cmdline_parseWith_unknownSubcommand : IO Unit :=
+  assertPureErrKind (CmdLine.parseWith covSpec ["ghost"] covCustomValidators) .unknownSubcommand "parseWith unknownSubcommand"
+
+/-- Error test for `CmdLine.parseWith` returning `.invalidSpec`. -/
+def err_cmdline_parseWith_invalidSpec : IO Unit :=
+  assertPureErrKind (CmdLine.parseWith covBadSpec [] covCustomValidators) .invalidSpec "parseWith invalidSpec"
+
+/-- Error test for `CmdLine.parseWithEnv` returning `.helpRequested`. -/
+def err_cmdline_parseWithEnv_helpRequested : IO Unit :=
+  assertIoErrKind (CmdLine.parseWithEnv covLeafSpec ["--help"] covCustomValidators) .helpRequested "parseWithEnv helpRequested"
+
+/-- Error test for `CmdLine.parseWithEnv` returning `.versionRequested`. -/
+def err_cmdline_parseWithEnv_versionRequested : IO Unit :=
+  assertIoErrKind (CmdLine.parseWithEnv covLeafSpec ["--version"] covCustomValidators) .versionRequested "parseWithEnv versionRequested"
+
+/-- Error test for `CmdLine.parseWithEnv` returning `.unknownOption`. -/
+def err_cmdline_parseWithEnv_unknownOption : IO Unit :=
+  assertIoErrKind (CmdLine.parseWithEnv covLeafSpec ["--nope"] covCustomValidators) .unknownOption "parseWithEnv unknownOption"
+
+/-- Error test for `CmdLine.parseWithEnv` returning `.missingOption`. -/
+def err_cmdline_parseWithEnv_missingOption : IO Unit :=
+  assertIoErrKind (CmdLine.parseWithEnv covLeafSpec ["in.txt"] covCustomValidators) .missingOption "parseWithEnv missingOption"
+
+/-- Error test for `CmdLine.parseWithEnv` returning `.missingArgument`. -/
+def err_cmdline_parseWithEnv_missingArgument : IO Unit :=
+  assertIoErrKind (CmdLine.parseWithEnv covLeafSpec ["--count=1"] covCustomValidators) .missingArgument "parseWithEnv missingArgument"
+
+/-- Error test for `CmdLine.parseWithEnv` returning `.unexpectedArgument`. -/
+def err_cmdline_parseWithEnv_unexpectedArgument : IO Unit :=
+  assertIoErrKind (CmdLine.parseWithEnv covLeafSpec ["--count=1", "a", "b"] covCustomValidators) .unexpectedArgument "parseWithEnv unexpectedArgument"
+
+/-- Error test for `CmdLine.parseWithEnv` returning `.invalidValue`. -/
+def err_cmdline_parseWithEnv_invalidValue : IO Unit :=
+  assertIoErrKind (CmdLine.parseWithEnv covLeafSpec ["--count=1", "--even=5", "in.txt"] covCustomValidators) .invalidValue "parseWithEnv invalidValue"
+
+/-- Error test for `CmdLine.parseWithEnv` returning `.unknownSubcommand`. -/
+def err_cmdline_parseWithEnv_unknownSubcommand : IO Unit :=
+  assertIoErrKind (CmdLine.parseWithEnv covSpec ["ghost"] covCustomValidators) .unknownSubcommand "parseWithEnv unknownSubcommand"
+
+/-- Error test for `CmdLine.parseWithEnv` returning `.invalidSpec`. -/
+def err_cmdline_parseWithEnv_invalidSpec : IO Unit :=
+  assertIoErrKind (CmdLine.parseWithEnv covBadSpec [] covCustomValidators) .invalidSpec "parseWithEnv invalidSpec"
+
+/-- Error test for `CmdLine.parseWithEnv` returning `.ioError` on non-UTF-8 environment bytes. -/
+def err_cmdline_parseWithEnv_ioError : IO Unit := do
+  assertIoErrKind (CmdLine.parseWithEnv covBadSpec [] covCustomValidators) .invalidSpec "parseWithEnv baseline"
+  let out ← runCmdCProbe false #["parse-env-err"] #[cmdUtf8ToHex "PROBE_PORT=" ++ "ff"]
+  assertTrue (out.exitCode == 2 && containsSubstr out.stderr "CmdLineErrorKind.ioError:PROBE_PORT:")
+    s!"expected parseWithEnv ioError on invalid UTF-8 env, got rc={out.exitCode} err={repr out.stderr}"
+
+/-- Error test for `CmdLine.renderHelp` returning `.unknownSubcommand`. -/
+def err_cmdline_renderHelp_unknownSubcommand : IO Unit :=
+  assertPureErrKind (CmdLine.renderHelp covSpec ["ghost"]) .unknownSubcommand "renderHelp unknownSubcommand"
+
+/-- Error test for `CmdLine.renderHelp` returning `.invalidSpec`. -/
+def err_cmdline_renderHelp_invalidSpec : IO Unit :=
+  assertPureErrKind (CmdLine.renderHelp covBadSpec) .invalidSpec "renderHelp invalidSpec"
+
+/-- Error test for `CmdLine.renderArgs` returning `.missingArgument`. -/
+def err_cmdline_renderArgs_missingArgument : IO Unit :=
+  assertPureErrKind (CmdLine.renderArgs covSpec {}) .missingArgument "renderArgs missingArgument"
+
+/-- Error test for `CmdLine.renderArgs` returning `.invalidValue`. -/
+def err_cmdline_renderArgs_invalidValue : IO Unit :=
+  assertPureErrKind (CmdLine.renderArgs covLeafSpec { options := [("flag", [.bool true, .bool false])], args := [("input", [.string "x"])] }) .invalidValue "renderArgs invalidValue"
+
+/-- Error test for `CmdLine.renderArgs` returning `.unknownSubcommand`. -/
+def err_cmdline_renderArgs_unknownSubcommand : IO Unit :=
+  assertPureErrKind (CmdLine.renderArgs covSpec { subcommandPath := ["ghost"] }) .unknownSubcommand "renderArgs unknownSubcommand"
+
+/-- Error test for `CmdLine.renderArgs` returning `.invalidSpec`. -/
+def err_cmdline_renderArgs_invalidSpec : IO Unit :=
+  assertPureErrKind (CmdLine.renderArgs covBadSpec {}) .invalidSpec "renderArgs invalidSpec"
+
+/-- Error test for `CmdLine.promptLine` returning `.eof`. -/
+def err_cmdline_promptLine_eof : IO Unit := do
+  assertDefaultGetEnvUnset "__LEANSWE_UNSET_CMDLINE_ERR__"
+  let exe := (← IO.appPath).toString
+  let res ← runProbe exe #["prompt-eof"] #[] (some "")
+  let err := String.fromUTF8! res.stderr
+  assertTrue (res.exitCode == 2 && containsSubstr err "CmdLineErrorKind.eof")
+    s!"expected promptLine eof, got rc={res.exitCode} err={repr err}"
+
+/-- Error test for `CmdLine.promptLine` returning `.ioError` on closed stdin. -/
+def err_cmdline_promptLine_ioError : IO Unit := do
+  assertDefaultGetEnvUnset "__LEANSWE_UNSET_CMDLINE_ERR__"
+  let out ← runCmdCProbe true #["prompt-eof"] #[]
+  assertTrue (out.exitCode == 2 && containsSubstr out.stderr "CmdLineErrorKind.ioError")
+    s!"expected promptLine ioError on closed fd 0, got rc={out.exitCode} err={repr out.stderr}"
+
+/-- Error test for `CmdLine.confirm` returning `.invalidValue`. -/
+def err_cmdline_confirm_invalidValue : IO Unit := do
+  assertDefaultGetEnvUnset "__LEANSWE_UNSET_CMDLINE_ERR__"
+  let exe := (← IO.appPath).toString
+  let res ← runProbe exe #["confirm-exhaust"] #[] (some "maybe\nperhaps\n")
+  let err := String.fromUTF8! res.stderr
+  assertTrue (res.exitCode == 2 && containsSubstr err "CmdLineErrorKind.invalidValue")
+    s!"expected confirm invalidValue, got rc={res.exitCode} err={repr err}"
+
+/-- Error test for `CmdLine.confirm` returning `.eof`. -/
+def err_cmdline_confirm_eof : IO Unit := do
+  assertDefaultGetEnvUnset "__LEANSWE_UNSET_CMDLINE_ERR__"
+  let exe := (← IO.appPath).toString
+  let res ← runProbe exe #["prompt-strict"] #[] (some "name\n")
+  let err := String.fromUTF8! res.stderr
+  assertTrue (res.exitCode == 2 && containsSubstr err "CmdLineErrorKind.eof")
+    s!"expected confirm eof, got rc={res.exitCode} err={repr err}"
+
+/-- Error test for `CmdLine.confirm` returning `.ioError` on closed stdin. -/
+def err_cmdline_confirm_ioError : IO Unit := do
+  assertDefaultGetEnvUnset "__LEANSWE_UNSET_CMDLINE_ERR__"
+  let out ← runCmdCProbe true #["confirm-ioerr"] #[]
+  assertTrue (out.exitCode == 2 && containsSubstr out.stderr "CmdLineErrorKind.ioError")
+    s!"expected confirm ioError on closed fd 0, got rc={out.exitCode} err={repr out.stderr}"
+
+/-- Registry of error-coverage runtime tests for `LeanSwe.CmdLine`. -/
+def registeredErrorTests : Array Core.RegisteredErrorTest := #[
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_helpRequested", .real, err_cmdline_parse_helpRequested⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_versionRequested", .real, err_cmdline_parse_versionRequested⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_unknownOption", .real, err_cmdline_parse_unknownOption⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_missingOption", .real, err_cmdline_parse_missingOption⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_missingArgument", .real, err_cmdline_parse_missingArgument⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_unexpectedArgument", .real, err_cmdline_parse_unexpectedArgument⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_invalidValue", .real, err_cmdline_parse_invalidValue⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_unknownSubcommand", .real, err_cmdline_parse_unknownSubcommand⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_invalidSpec", .real, err_cmdline_parse_invalidSpec⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_helpRequested", .real, err_cmdline_parseWith_helpRequested⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_versionRequested", .real, err_cmdline_parseWith_versionRequested⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_unknownOption", .real, err_cmdline_parseWith_unknownOption⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_missingOption", .real, err_cmdline_parseWith_missingOption⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_missingArgument", .real, err_cmdline_parseWith_missingArgument⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_unexpectedArgument", .real, err_cmdline_parseWith_unexpectedArgument⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_invalidValue", .real, err_cmdline_parseWith_invalidValue⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_unknownSubcommand", .real, err_cmdline_parseWith_unknownSubcommand⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_invalidSpec", .real, err_cmdline_parseWith_invalidSpec⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_helpRequested", .real, err_cmdline_parseWithEnv_helpRequested⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_versionRequested", .real, err_cmdline_parseWithEnv_versionRequested⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_unknownOption", .real, err_cmdline_parseWithEnv_unknownOption⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_missingOption", .real, err_cmdline_parseWithEnv_missingOption⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_missingArgument", .real, err_cmdline_parseWithEnv_missingArgument⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_unexpectedArgument", .real, err_cmdline_parseWithEnv_unexpectedArgument⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_invalidValue", .real, err_cmdline_parseWithEnv_invalidValue⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_unknownSubcommand", .real, err_cmdline_parseWithEnv_unknownSubcommand⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_invalidSpec", .real, err_cmdline_parseWithEnv_invalidSpec⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_ioError", .real, err_cmdline_parseWithEnv_ioError⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_renderHelp_unknownSubcommand", .real, err_cmdline_renderHelp_unknownSubcommand⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_renderHelp_invalidSpec", .real, err_cmdline_renderHelp_invalidSpec⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_renderArgs_missingArgument", .real, err_cmdline_renderArgs_missingArgument⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_renderArgs_invalidValue", .real, err_cmdline_renderArgs_invalidValue⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_renderArgs_unknownSubcommand", .real, err_cmdline_renderArgs_unknownSubcommand⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_renderArgs_invalidSpec", .real, err_cmdline_renderArgs_invalidSpec⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_promptLine_eof", .real, err_cmdline_promptLine_eof⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_promptLine_ioError", .real, err_cmdline_promptLine_ioError⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_confirm_invalidValue", .real, err_cmdline_confirm_invalidValue⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_confirm_eof", .real, err_cmdline_confirm_eof⟩,
+  ⟨"LeanSwe.CmdLine.RuntimeTests.err_cmdline_confirm_ioError", .real, err_cmdline_confirm_ioError⟩
+]
 
 /-- Execute real OS subprocess, environment-variable, and stdio grounding tests for `LeanSwe.CmdLine`. -/
 def runAll : IO Unit := do
@@ -235,6 +760,8 @@ def runAll : IO Unit := do
   assertTrue (containsSubstr (String.fromUTF8! rConfirmExhaust.stderr) "ERR:LeanSwe.CmdLine.CmdLineErrorKind.invalidValue")
     s!"confirm exhaustion stderr: {repr (String.fromUTF8! rConfirmExhaust.stderr)}"
 
+  Core.runRegisteredAssumptions registeredAssumptions
+  Core.runRegisteredErrorTests registeredErrorTests
   IO.println "PASS: LeanSwe.CmdLine runtime tests"
 
 end LeanSwe.CmdLine.RuntimeTests
