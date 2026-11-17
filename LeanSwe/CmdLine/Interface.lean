@@ -31,9 +31,19 @@ def defaultOps : CliOps :=
             message := err.message
             target := err.key } }
 
-/-- Default `CmdLineApi` backed by `defaultOps`. -/
+private def catchIoAsCmdLineError {α : Type} (act : IO (Except CmdLineError α)) :
+    IO (Except CmdLineError α) :=
+  BaseIO.toEIO (EIO.catchExceptions act fun err =>
+    let msg := err.toString
+    pure (.error { kind := .ioError, message := if msg.isEmpty then "stdio I/O error" else msg }))
+
+/-- Default `CmdLineApi` backed by `defaultOps`, catching OS stdio exceptions into `.ioError`. -/
 def defaultApi : CmdLineApi :=
-  Internal.mkApiM defaultOps
+  { Internal.mkApiM defaultOps with
+    promptLine := fun prompt default =>
+      catchIoAsCmdLineError (Internal.promptLine defaultOps prompt default)
+    confirm := fun prompt default maxAttempts =>
+      catchIoAsCmdLineError (Internal.confirm defaultOps prompt default maxAttempts) }
 
 /-- Return `true` iff `spec` satisfies `ValidSpec`. -/
 @[inline] def isValidSpec (spec : CommandSpec) : Bool :=

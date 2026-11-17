@@ -1,10 +1,11 @@
 import Core.NondetTest
+import Core.Assumptions
 import LeanSwe.CmdLine.Types
 import LeanSwe.CmdLine.Model
 
 namespace LeanSwe.CmdLine
 
-open Core (NondetTest)
+open Core (NondetTest AssumptionObligation ErrorObligation)
 open Core.NondetTest
 
 /-- Pure `CliOpsM Id` with empty stdin, no-op stdout/stderr, and clean unset environment. -/
@@ -26,12 +27,6 @@ def mockCliOps : CliOpsM (StateM CliMockState) :=
       match s.env.find? (fun p => p.1 == key) with
       | none => (.ok none, s)
       | some (_, entry) => (entry.toExcept, s) }
-
-/-- Empirical assumptions for `LeanSwe.CmdLine` external `IO` and `LeanSwe.EnvVars` boundaries, grounded in `RuntimeTests.lean`. -/
-def EmpiricalAssumptions : List String :=
-  [ "LeanSwe.EnvVars.getEnv returns .ok none when unset, .ok (some v) when set, and .error on invalid UTF-8 or OS error.",
-    "IO.getStdin.getLine yields empty string on EOF; defaultOps.readLine strips trailing newline and returns none on EOF.",
-    "defaultOps.writeOut and defaultOps.writeErr flush to OS stdout and stderr respectively." ]
 
 /-- `isValidSpec` rejects duplicate long names, duplicate short names, `help`/`version` collisions, auto `-h`/`-V` collisions, and symmetric `no-` collisions. -/
 def test_cmdline_validSpec_rejectsFlagCollisions
@@ -532,6 +527,270 @@ def test_cmdline_runCliWith_customValidator
     pure (match cmd.getCustom "id" (fun s => .ok s) with | .ok (some "ok") => 5 | _ => 1))).run {}
   NondetTest.assert (cOk = 5 ∧ stOk.stderr = "")
 
+/-- Under `pureIdCliOps` (all environment variables unset), `parseWithEnv` agrees universally with `parseWith`
+    for every `CommandSpec`, argument list, and custom validator table. -/
+def test_cmdline_parseWithEnv_unsetEnvMatchesParseWith
+    {runner} [NondetTest runner]
+    (api : CmdLineApi) (mkApi : CliOpsM Id → CmdLineApiM Id) : runner Unit := do
+  let spec ← nondet CommandSpec
+  let args ← nondet (List String)
+  let validators ← nondet CustomValidators
+  NondetTest.assert ((mkApi pureIdCliOps).parseWithEnv spec args validators = api.parseWith spec args validators)
+
+/-- Frozen thin external-boundary assumptions for `LeanSwe.CmdLine.defaultOps` over OS `stdio`
+    (`IO.getStdin`, `IO.getStdout`, `IO.getStderr`) and `LeanSwe.EnvVars.getEnv` adapter error mapping. -/
+def externalAssumptions : List AssumptionObligation :=
+  [ { name := "LeanSwe.CmdLine.assume_cmdline_defaultOps_readLine_eofReturnsNone"
+      subject := "LeanSwe.CmdLine.defaultOps"
+      formalPred? := none }
+  , { name := "LeanSwe.CmdLine.assume_cmdline_defaultOps_readLine_stripsTrailingNewlines"
+      subject := "LeanSwe.CmdLine.defaultOps"
+      formalPred? := none }
+  , { name := "LeanSwe.CmdLine.assume_cmdline_defaultOps_writeOut_flushesBeforeBlockingRead"
+      subject := "LeanSwe.CmdLine.defaultOps"
+      formalPred? := none }
+  , { name := "LeanSwe.CmdLine.assume_cmdline_defaultOps_writeErr_flushesBeforeBlockingRead"
+      subject := "LeanSwe.CmdLine.defaultOps"
+      formalPred? := none }
+  , { name := "LeanSwe.CmdLine.assume_cmdline_defaultOps_getEnv_mapsEnvVarsAndInvalidUtf8ToIoError"
+      subject := "LeanSwe.CmdLine.defaultOps"
+      formalPred? := none } ]
+
+/-- Exhaustive `(request, errorKind)` coverage matrix across all 7 fallible `LeanSwe.CmdLine` entrypoints
+    (`7 × 11 = 77` obligations over `CmdLineErrorKind`). -/
+def errorCoverage : List (ErrorObligation CmdLineErrorKind) :=
+  [ { request := "LeanSwe.CmdLine.parse"
+      errorKind := .helpRequested
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_helpRequested" .real }
+  , { request := "LeanSwe.CmdLine.parse"
+      errorKind := .versionRequested
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_versionRequested" .real }
+  , { request := "LeanSwe.CmdLine.parse"
+      errorKind := .unknownOption
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_unknownOption" .real }
+  , { request := "LeanSwe.CmdLine.parse"
+      errorKind := .missingOption
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_missingOption" .real }
+  , { request := "LeanSwe.CmdLine.parse"
+      errorKind := .missingArgument
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_missingArgument" .real }
+  , { request := "LeanSwe.CmdLine.parse"
+      errorKind := .unexpectedArgument
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_unexpectedArgument" .real }
+  , { request := "LeanSwe.CmdLine.parse"
+      errorKind := .invalidValue
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_invalidValue" .real }
+  , { request := "LeanSwe.CmdLine.parse"
+      errorKind := .unknownSubcommand
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_unknownSubcommand" .real }
+  , { request := "LeanSwe.CmdLine.parse"
+      errorKind := .invalidSpec
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parse_invalidSpec" .real }
+  , { request := "LeanSwe.CmdLine.parse"
+      errorKind := .eof
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_parse_never_eof" }
+  , { request := "LeanSwe.CmdLine.parse"
+      errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_parse_never_ioError" }
+  , { request := "LeanSwe.CmdLine.parseWith"
+      errorKind := .helpRequested
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_helpRequested" .real }
+  , { request := "LeanSwe.CmdLine.parseWith"
+      errorKind := .versionRequested
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_versionRequested" .real }
+  , { request := "LeanSwe.CmdLine.parseWith"
+      errorKind := .unknownOption
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_unknownOption" .real }
+  , { request := "LeanSwe.CmdLine.parseWith"
+      errorKind := .missingOption
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_missingOption" .real }
+  , { request := "LeanSwe.CmdLine.parseWith"
+      errorKind := .missingArgument
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_missingArgument" .real }
+  , { request := "LeanSwe.CmdLine.parseWith"
+      errorKind := .unexpectedArgument
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_unexpectedArgument" .real }
+  , { request := "LeanSwe.CmdLine.parseWith"
+      errorKind := .invalidValue
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_invalidValue" .real }
+  , { request := "LeanSwe.CmdLine.parseWith"
+      errorKind := .unknownSubcommand
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_unknownSubcommand" .real }
+  , { request := "LeanSwe.CmdLine.parseWith"
+      errorKind := .invalidSpec
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWith_invalidSpec" .real }
+  , { request := "LeanSwe.CmdLine.parseWith"
+      errorKind := .eof
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_parseWith_never_eof" }
+  , { request := "LeanSwe.CmdLine.parseWith"
+      errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_parseWith_never_ioError" }
+  , { request := "LeanSwe.CmdLine.parseWithEnv"
+      errorKind := .helpRequested
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_helpRequested" .real }
+  , { request := "LeanSwe.CmdLine.parseWithEnv"
+      errorKind := .versionRequested
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_versionRequested" .real }
+  , { request := "LeanSwe.CmdLine.parseWithEnv"
+      errorKind := .unknownOption
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_unknownOption" .real }
+  , { request := "LeanSwe.CmdLine.parseWithEnv"
+      errorKind := .missingOption
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_missingOption" .real }
+  , { request := "LeanSwe.CmdLine.parseWithEnv"
+      errorKind := .missingArgument
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_missingArgument" .real }
+  , { request := "LeanSwe.CmdLine.parseWithEnv"
+      errorKind := .unexpectedArgument
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_unexpectedArgument" .real }
+  , { request := "LeanSwe.CmdLine.parseWithEnv"
+      errorKind := .invalidValue
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_invalidValue" .real }
+  , { request := "LeanSwe.CmdLine.parseWithEnv"
+      errorKind := .unknownSubcommand
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_unknownSubcommand" .real }
+  , { request := "LeanSwe.CmdLine.parseWithEnv"
+      errorKind := .invalidSpec
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_invalidSpec" .real }
+  , { request := "LeanSwe.CmdLine.parseWithEnv"
+      errorKind := .eof
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_parseWithEnv_never_eof" }
+  , { request := "LeanSwe.CmdLine.parseWithEnv"
+      errorKind := .ioError
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_parseWithEnv_ioError" .real }
+  , { request := "LeanSwe.CmdLine.renderHelp"
+      errorKind := .helpRequested
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderHelp_never_helpRequested" }
+  , { request := "LeanSwe.CmdLine.renderHelp"
+      errorKind := .versionRequested
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderHelp_never_versionRequested" }
+  , { request := "LeanSwe.CmdLine.renderHelp"
+      errorKind := .unknownOption
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderHelp_never_unknownOption" }
+  , { request := "LeanSwe.CmdLine.renderHelp"
+      errorKind := .missingOption
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderHelp_never_missingOption" }
+  , { request := "LeanSwe.CmdLine.renderHelp"
+      errorKind := .missingArgument
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderHelp_never_missingArgument" }
+  , { request := "LeanSwe.CmdLine.renderHelp"
+      errorKind := .unexpectedArgument
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderHelp_never_unexpectedArgument" }
+  , { request := "LeanSwe.CmdLine.renderHelp"
+      errorKind := .invalidValue
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderHelp_never_invalidValue" }
+  , { request := "LeanSwe.CmdLine.renderHelp"
+      errorKind := .unknownSubcommand
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_renderHelp_unknownSubcommand" .real }
+  , { request := "LeanSwe.CmdLine.renderHelp"
+      errorKind := .invalidSpec
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_renderHelp_invalidSpec" .real }
+  , { request := "LeanSwe.CmdLine.renderHelp"
+      errorKind := .eof
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderHelp_never_eof" }
+  , { request := "LeanSwe.CmdLine.renderHelp"
+      errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderHelp_never_ioError" }
+  , { request := "LeanSwe.CmdLine.renderArgs"
+      errorKind := .helpRequested
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderArgs_never_helpRequested" }
+  , { request := "LeanSwe.CmdLine.renderArgs"
+      errorKind := .versionRequested
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderArgs_never_versionRequested" }
+  , { request := "LeanSwe.CmdLine.renderArgs"
+      errorKind := .unknownOption
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderArgs_never_unknownOption" }
+  , { request := "LeanSwe.CmdLine.renderArgs"
+      errorKind := .missingOption
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderArgs_never_missingOption" }
+  , { request := "LeanSwe.CmdLine.renderArgs"
+      errorKind := .missingArgument
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_renderArgs_missingArgument" .real }
+  , { request := "LeanSwe.CmdLine.renderArgs"
+      errorKind := .unexpectedArgument
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderArgs_never_unexpectedArgument" }
+  , { request := "LeanSwe.CmdLine.renderArgs"
+      errorKind := .invalidValue
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_renderArgs_invalidValue" .real }
+  , { request := "LeanSwe.CmdLine.renderArgs"
+      errorKind := .unknownSubcommand
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_renderArgs_unknownSubcommand" .real }
+  , { request := "LeanSwe.CmdLine.renderArgs"
+      errorKind := .invalidSpec
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_renderArgs_invalidSpec" .real }
+  , { request := "LeanSwe.CmdLine.renderArgs"
+      errorKind := .eof
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderArgs_never_eof" }
+  , { request := "LeanSwe.CmdLine.renderArgs"
+      errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_renderArgs_never_ioError" }
+  , { request := "LeanSwe.CmdLine.promptLine"
+      errorKind := .helpRequested
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_promptLine_never_helpRequested" }
+  , { request := "LeanSwe.CmdLine.promptLine"
+      errorKind := .versionRequested
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_promptLine_never_versionRequested" }
+  , { request := "LeanSwe.CmdLine.promptLine"
+      errorKind := .unknownOption
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_promptLine_never_unknownOption" }
+  , { request := "LeanSwe.CmdLine.promptLine"
+      errorKind := .missingOption
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_promptLine_never_missingOption" }
+  , { request := "LeanSwe.CmdLine.promptLine"
+      errorKind := .missingArgument
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_promptLine_never_missingArgument" }
+  , { request := "LeanSwe.CmdLine.promptLine"
+      errorKind := .unexpectedArgument
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_promptLine_never_unexpectedArgument" }
+  , { request := "LeanSwe.CmdLine.promptLine"
+      errorKind := .invalidValue
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_promptLine_never_invalidValue" }
+  , { request := "LeanSwe.CmdLine.promptLine"
+      errorKind := .unknownSubcommand
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_promptLine_never_unknownSubcommand" }
+  , { request := "LeanSwe.CmdLine.promptLine"
+      errorKind := .invalidSpec
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_promptLine_never_invalidSpec" }
+  , { request := "LeanSwe.CmdLine.promptLine"
+      errorKind := .eof
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_promptLine_eof" .real }
+  , { request := "LeanSwe.CmdLine.promptLine"
+      errorKind := .ioError
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_promptLine_ioError" .real }
+  , { request := "LeanSwe.CmdLine.confirm"
+      errorKind := .helpRequested
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_confirm_never_helpRequested" }
+  , { request := "LeanSwe.CmdLine.confirm"
+      errorKind := .versionRequested
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_confirm_never_versionRequested" }
+  , { request := "LeanSwe.CmdLine.confirm"
+      errorKind := .unknownOption
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_confirm_never_unknownOption" }
+  , { request := "LeanSwe.CmdLine.confirm"
+      errorKind := .missingOption
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_confirm_never_missingOption" }
+  , { request := "LeanSwe.CmdLine.confirm"
+      errorKind := .missingArgument
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_confirm_never_missingArgument" }
+  , { request := "LeanSwe.CmdLine.confirm"
+      errorKind := .unexpectedArgument
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_confirm_never_unexpectedArgument" }
+  , { request := "LeanSwe.CmdLine.confirm"
+      errorKind := .invalidValue
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_confirm_invalidValue" .real }
+  , { request := "LeanSwe.CmdLine.confirm"
+      errorKind := .unknownSubcommand
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_confirm_never_unknownSubcommand" }
+  , { request := "LeanSwe.CmdLine.confirm"
+      errorKind := .invalidSpec
+      justification := .provedImpossible "LeanSwe.CmdLine.Proofs.cmdline_confirm_never_invalidSpec" }
+  , { request := "LeanSwe.CmdLine.confirm"
+      errorKind := .eof
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_confirm_eof" .real }
+  , { request := "LeanSwe.CmdLine.confirm"
+      errorKind := .ioError
+      justification := .tested "LeanSwe.CmdLine.RuntimeTests.err_cmdline_confirm_ioError" .real } ]
+
 private def stubCmdLineApiM {m : Type → Type} [Monad m] : CmdLineApiM m :=
   { isValidSpec := fun _ => true
     parse := fun _ _ => .ok {}
@@ -634,6 +893,13 @@ example : ¬ Core.AllPass (test_cmdline_runCliWith_customValidator (fun _ => stu
   intro h
   simp [Core.AllPass, test_cmdline_runCliWith_customValidator, stubCmdLineApiM, StateT.run,
     StateT.pure, pure, bind, assert] at h
+
+example : ¬ Core.AllPass (test_cmdline_parseWithEnv_unsetEnvMatchesParseWith
+    stubCmdLineApiM
+    (fun _ => { stubCmdLineApiM with parseWithEnv := fun _ _ _ => .error { kind := .ioError, message := "diverged" } })) := by
+  intro h
+  have h0 := h { name := "app" } [] []
+  simp [stubCmdLineApiM, assert] at h0
 
 example : Model.isValidSpec
     { name := "cli"

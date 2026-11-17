@@ -1,9 +1,10 @@
 import Core.NondetTest
+import Core.Assumptions
 import LeanSwe.EnvVars.Types
 
 namespace LeanSwe.EnvVars
 
-open Core (NondetTest)
+open Core (NondetTest ErrorObligation)
 open Core.NondetTest
 
 private def mockMapRawError : EnvVarsRawError → EnvVarsError
@@ -100,6 +101,26 @@ def test_envvars_getEnv_propagatesRawError
       listEnv := pure (.ok #[]) }
   NondetTest.assert ((mkApi raw).getEnv key = .error (mapFn rawErr))
 
+/-- Under Option A, when `raw.getEnv` reports `.invalidEncoding (some key) detail` for a valid key,
+    `getEnv` and `homeDir` fail with `.invalidEncoding`, `errnoCode = none`, non-empty `message`,
+    and `e.key = some key` (`some "HOME"` for `homeDir`). -/
+def test_envvars_getEnv_invalidEncodingReportsEncodingError
+    {runner} [NondetTest runner]
+    (api : EnvVarsApi) (mkApi : RawEnvVarsOpsM Id → EnvVarsApiM Id) : runner Unit := do
+  let key ← nondet String
+  let detail ← nondet String
+  assume (key ≠ "" ∧ '=' ∉ key.toList ∧ Char.ofNat 0 ∉ key.toList)
+  let raw : RawEnvVarsOpsM Id :=
+    { mapRawError := api.mapRawError
+      getEnv := fun k => pure (.error (.invalidEncoding (some k) detail))
+      listEnv := pure (.ok #[]) }
+  let resKey := (mkApi raw).getEnv key
+  NondetTest.assert (∃ e, resKey = .error e ∧ e.kind = .invalidEncoding ∧
+    e.key = some key ∧ e.errnoCode = none ∧ e.message ≠ "")
+  let resHome := (mkApi raw).homeDir
+  NondetTest.assert (∃ e, resHome = .error e ∧ e.kind = .invalidEncoding ∧
+    e.key = some "HOME" ∧ e.errnoCode = none ∧ e.message ≠ "")
+
 /-- `listEnv` returns all entries from the underlying `RawEnvVarsOpsM` listing in order. -/
 def test_envvars_listEnv_returnsMockEntries
     {runner} [NondetTest runner] (mkApi : RawEnvVarsOpsM Id → EnvVarsApiM Id) : runner Unit := do
@@ -176,6 +197,45 @@ def test_envvars_splitSearchPath_roundTripsCleanSegments
   let segs ← nondet (List String)
   assume (segs.all fun s => !s.isEmpty && !(':' ∈ s.toList))
   NondetTest.assert (api.splitSearchPath (String.intercalate ":" segs) = segs.toArray)
+
+/-- Declared error-coverage matrix for pure upper-layer `LeanSwe.EnvVars` requests (`EnvVarsErrorKind`). -/
+def errorCoverage : List (ErrorObligation EnvVarsErrorKind) :=
+  [ { request := "LeanSwe.EnvVars.getEnv"
+      errorKind := .invalidKey
+      justification := .tested "LeanSwe.EnvVars.RuntimeTests.err_envvars_getEnv_invalidKey" .real }
+  , { request := "LeanSwe.EnvVars.getEnv"
+      errorKind := .invalidEncoding
+      justification := .tested "LeanSwe.EnvVars.RuntimeTests.err_envvars_getEnv_invalidEncoding" .real }
+  , { request := "LeanSwe.EnvVars.getEnv"
+      errorKind := .notFound
+      justification := .provedImpossible "LeanSwe.EnvVars.Proofs.envvars_getEnv_never_notFound" }
+  , { request := "LeanSwe.EnvVars.getEnv"
+      errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.EnvVars.Proofs.envvars_getEnv_never_ioError" }
+  , { request := "LeanSwe.EnvVars.listEnv"
+      errorKind := .invalidKey
+      justification := .provedImpossible "LeanSwe.EnvVars.Proofs.envvars_listEnv_never_invalidKey" }
+  , { request := "LeanSwe.EnvVars.listEnv"
+      errorKind := .invalidEncoding
+      justification := .tested "LeanSwe.EnvVars.RuntimeTests.err_envvars_listEnv_invalidEncoding" .real }
+  , { request := "LeanSwe.EnvVars.listEnv"
+      errorKind := .notFound
+      justification := .provedImpossible "LeanSwe.EnvVars.Proofs.envvars_listEnv_never_notFound" }
+  , { request := "LeanSwe.EnvVars.listEnv"
+      errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.EnvVars.Proofs.envvars_listEnv_never_ioError" }
+  , { request := "LeanSwe.EnvVars.homeDir"
+      errorKind := .invalidKey
+      justification := .provedImpossible "LeanSwe.EnvVars.Proofs.envvars_homeDir_never_invalidKey" }
+  , { request := "LeanSwe.EnvVars.homeDir"
+      errorKind := .invalidEncoding
+      justification := .tested "LeanSwe.EnvVars.RuntimeTests.err_envvars_homeDir_invalidEncoding" .real }
+  , { request := "LeanSwe.EnvVars.homeDir"
+      errorKind := .notFound
+      justification := .tested "LeanSwe.EnvVars.RuntimeTests.err_envvars_homeDir_notFound" .real }
+  , { request := "LeanSwe.EnvVars.homeDir"
+      errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.EnvVars.Proofs.envvars_homeDir_never_ioError" } ]
 
 private def stubEnvVarsApi : EnvVarsApi :=
   { mapRawError := mockMapRawError
@@ -278,6 +338,22 @@ example : ¬ Core.AllPass (test_envvars_getEnv_propagatesRawError fun raw =>
   intro h
   have h0 := h "PATH" (.userError "boom") mockMapRawError (by decide)
   simp [pure, assert] at h0
+
+example : ¬ Core.AllPass (test_envvars_getEnv_invalidEncodingReportsEncodingError
+    stubEnvVarsApi fun raw => { stubMkApi raw with getEnv := fun _ => pure (.ok (some "\uFFFD")) }) := by
+  intro h
+  have h0 := h "BAD_VAL" "invalid UTF-8" (by decide)
+  simp [bind, pure, assert] at h0
+
+example : ¬ Core.AllPass (test_envvars_getEnv_invalidEncodingReportsEncodingError
+    { stubEnvVarsApi with mapRawError := fun _ => { kind := .ioError, key := none, message := "wrong" } }
+    stubMkApi) := by
+  intro h
+  have h0 := h "BAD_VAL" "invalid UTF-8" (by decide)
+  simp [stubMkApi, bind, pure, assert] at h0
+  rcases h0.1 with ⟨_, h1, h2, _⟩
+  cases h1
+  cases h2
 
 example : ¬ Core.AllPass (test_envvars_listEnv_propagatesRawError fun raw =>
     { stubMkApi raw with listEnv := pure (.ok #[]) }) := by

@@ -2,12 +2,8 @@ import LeanSwe.EnvVars.Raw.Types
 
 namespace LeanSwe.EnvVars.Raw.Internal
 
-open LeanSwe.EnvVars.Raw (EnvVarsErrorKind EnvVarsError EnvVarsRawError RawEnvVarsOps)
-
-/-- POSIX FFI operations injected by `LeanSwe.EnvVars.Raw.Interface`. -/
-structure PosixRawOps where
-  /-- Read all `(key, value)` entries from POSIX `environ`. -/
-  listEnv : IO (Array (String × String))
+open LeanSwe.EnvVars.Raw
+  (EnvVarsErrorKind EnvVarsError EnvVarsRawError PosixRawOpsM PosixRawOps RawEnvVarsOpsM RawEnvVarsOps)
 
 /-- Return `msg` if non-empty, or `fallback` otherwise. -/
 def nonEmptyMsg (fallback msg : String) : String :=
@@ -66,16 +62,10 @@ def ioErrorToRaw : IO.Error → EnvVarsRawError
   | .noSuchThing _ code detail => .otherError code detail
   | .unexpectedEof => .userError "unexpected end of file"
 
-/-- Build the concrete `RawEnvVarsOps` bundle from injected POSIX C-ABI hooks. -/
-def mkRawOps (posix : PosixRawOps) : RawEnvVarsOps :=
+/-- Stage 2 type-checking stub for constructing `RawEnvVarsOpsM m` from injected `PosixRawOpsM m` byte hooks. -/
+def mkRawOps {m : Type → Type} [Monad m] (_posix : PosixRawOpsM m) : RawEnvVarsOpsM m :=
   { mapRawError := mapRawError
-    getEnv := fun key => do
-      let val ← IO.getEnv key
-      return .ok val
-    listEnv := do
-      try
-        return .ok (← posix.listEnv)
-      catch err =>
-        return .error (ioErrorToRaw err) }
+    getEnv := fun _ => pure (.ok none)
+    listEnv := pure (.ok #[]) }
 
 end LeanSwe.EnvVars.Raw.Internal
