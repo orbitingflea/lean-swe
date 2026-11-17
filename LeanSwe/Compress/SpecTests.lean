@@ -427,6 +427,8 @@ structure EmpiricalAssumptions where
   missingOrUnexecutableToolReportsToolNotFound : Prop
   /-- Zero-byte decompression bombs terminate cleanly with `.outputLimitExceeded` under bounded `maxOutputBytes`. -/
   decompressionBombEnforcesOutputLimit : Prop
+  /-- Throwaway empirical field check. -/
+  throwawayExtraAssumption : Prop
 
 private def noopCompressBuilder {m : Type → Type} [Monad m] : CompressBuilder m :=
   fun _ =>
