@@ -1,3 +1,4 @@
+import Core.Assumptions
 import LeanSwe.Json.Interface
 
 namespace LeanSwe.Json.RuntimeTests
@@ -141,11 +142,156 @@ private def testAccessorsAndDevtoolsPayloads : IO Unit := do
   assertErr (getPath (α := Nat) (Lean.Json.str "not-obj") ["a", "b"]) .typeMismatch none "getPath non-object root"
   assertOkEq (getPath (α := String) (Lean.Json.str "hello") []) "hello" "getPath empty path"
 
+/-- Verify `assume_json_compress_noNewlineAndParseRoundTrip` at runtime. -/
+def assume_json_compress_noNewlineAndParseRoundTrip : IO Unit := do
+  let samples : Array Lean.Json :=
+    #[ Lean.Json.null
+     , Lean.Json.bool true
+     , Lean.Json.str "line1\nline2\r\t\"\\"
+     , Lean.Json.mkObj [("a", Lean.Json.num 42), ("b", Lean.Json.arr #[Lean.Json.bool false, Lean.Json.str "🚀"])]
+     ]
+  for j in samples do
+    let c := compress j
+    assertTrue (!(c.contains '\n')) s!"compress emitted newline: {c}"
+    let parsed ← assertOk (parse c) s!"parse(compress(...)) failed on {c}"
+    assertTrue (parsed == j) s!"compress round-trip mismatch: got {parsed}, expected {j}"
+
+/-- Verify `assume_json_pretty_parseRoundTrip` at runtime. -/
+def assume_json_pretty_parseRoundTrip : IO Unit := do
+  let samples : Array Lean.Json :=
+    #[ Lean.Json.null
+     , Lean.Json.arr #[Lean.Json.num 1, Lean.Json.str "x\ny", Lean.Json.bool true]
+     , Lean.Json.mkObj [("k", Lean.Json.mkObj [("inner", Lean.Json.num (-7))])]
+     ]
+  for j in samples do
+    for width in #[10, 40, 120] do
+      let p := pretty j width
+      let parsed ← assertOk (parse p) s!"parse(pretty(..., {width})) failed"
+      assertTrue (parsed == j) s!"pretty round-trip mismatch at width {width}"
+
+/-- Verify `assume_json_encodeCompressParseDecode_roundTrip` at runtime. -/
+def assume_json_encodeCompressParseDecode_roundTrip : IO Unit := do
+  assertOkEq (parse (compress (encode (42 : Nat))) >>= decode) (42 : Nat) "Nat round-trip"
+  assertOkEq (parse (compress (encode (-17 : Int))) >>= decode) (-17 : Int) "Int round-trip"
+  assertOkEq (parse (compress (encode true)) >>= decode) true "Bool round-trip"
+  assertOkEq (parse (compress (encode "hello\nworld")) >>= decode) "hello\nworld" "String round-trip"
+  assertOkEq (parse (compress (encode (#[1, 2, 3] : Array Nat))) >>= decode) (#[1, 2, 3] : Array Nat)
+    "Array Nat round-trip"
+
+/-- Registered external assumption checks for `LeanSwe.Json`. -/
+def registeredAssumptions : Array Core.RegisteredAssumption :=
+  #[ { specName := "LeanSwe.Json.assume_json_compress_noNewlineAndParseRoundTrip"
+     , run := assume_json_compress_noNewlineAndParseRoundTrip }
+   , { specName := "LeanSwe.Json.assume_json_pretty_parseRoundTrip"
+     , run := assume_json_pretty_parseRoundTrip }
+   , { specName := "LeanSwe.Json.assume_json_encodeCompressParseDecode_roundTrip"
+     , run := assume_json_encodeCompressParseDecode_roundTrip }
+   ]
+
+/-- Error test for `parse` returning `.parseError`. -/
+def err_json_parse_parseError : IO Unit := do
+  let res := parse "{bad"
+  assertErr res .parseError none "parse malformed JSON"
+  if let .error e := res then
+    assertTrue (e.message != "JSON parse error")
+      s!"parse error must preserve parser diagnostic, got fallback: {e.message}"
+
+/-- Error test for `decode` returning `.decodeError`. -/
+def err_json_decode_decodeError : IO Unit :=
+  assertErr (decode (α := Nat) (Lean.Json.str "not-a-nat")) .decodeError none "decode Nat from string"
+
+/-- Error test for `getObject` returning `.typeMismatch`. -/
+def err_json_getObject_typeMismatch : IO Unit :=
+  assertErr (getObject (Lean.Json.arr #[])) .typeMismatch none "getObject on array"
+
+/-- Error test for `getArray` returning `.typeMismatch`. -/
+def err_json_getArray_typeMismatch : IO Unit :=
+  assertErr (getArray (Lean.Json.mkObj [("a", Lean.Json.num 1)])) .typeMismatch none "getArray on object"
+
+/-- Error test for `getField` returning `.missingField`. -/
+def err_json_getField_missingField : IO Unit :=
+  assertErr (getField (α := Nat) (Lean.Json.mkObj []) "missing") .missingField (some "missing")
+    "getField missing key"
+
+/-- Error test for `getField` returning `.typeMismatch`. -/
+def err_json_getField_typeMismatch : IO Unit :=
+  assertErr (getField (α := Nat) Lean.Json.null "a") .typeMismatch none "getField on null"
+
+/-- Error test for `getField` returning `.decodeError`. -/
+def err_json_getField_decodeError : IO Unit :=
+  assertErr (getField (α := Nat) (Lean.Json.mkObj [("a", Lean.Json.str "x")]) "a") .decodeError (some "a")
+    "getField bad Nat value"
+
+/-- Error test for `getOptField` returning `.typeMismatch`. -/
+def err_json_getOptField_typeMismatch : IO Unit :=
+  assertErr (getOptField (α := Nat) Lean.Json.null "a") .typeMismatch none "getOptField on null"
+
+/-- Error test for `getOptField` returning `.decodeError`. -/
+def err_json_getOptField_decodeError : IO Unit :=
+  assertErr (getOptField (α := Nat) (Lean.Json.mkObj [("a", Lean.Json.str "x")]) "a") .decodeError (some "a")
+    "getOptField bad Nat value"
+
+/-- Error test for `getPath` returning `.missingField`. -/
+def err_json_getPath_missingField : IO Unit :=
+  assertErr (getPath (α := Nat) (Lean.Json.mkObj [("a", Lean.Json.mkObj [])]) ["a", "b"])
+    .missingField (some "a.b") "getPath missing nested key"
+
+/-- Error test for `getPath` returning `.typeMismatch`. -/
+def err_json_getPath_typeMismatch : IO Unit :=
+  assertErr (getPath (α := Nat) (Lean.Json.str "x") ["a"]) .typeMismatch none "getPath non-object root"
+
+/-- Error test for `getPath` returning `.decodeError`. -/
+def err_json_getPath_decodeError : IO Unit :=
+  assertErr (getPath (α := Nat) (Lean.Json.mkObj [("a", Lean.Json.str "x")]) ["a"])
+    .decodeError (some "a") "getPath bad Nat leaf"
+
+/-- Registered error-coverage tests for `LeanSwe.Json`. -/
+def registeredErrorTests : Array Core.RegisteredErrorTest :=
+  #[ { testName := "LeanSwe.Json.RuntimeTests.err_json_parse_parseError"
+     , mode := .real
+     , run := err_json_parse_parseError }
+   , { testName := "LeanSwe.Json.RuntimeTests.err_json_decode_decodeError"
+     , mode := .real
+     , run := err_json_decode_decodeError }
+   , { testName := "LeanSwe.Json.RuntimeTests.err_json_getObject_typeMismatch"
+     , mode := .real
+     , run := err_json_getObject_typeMismatch }
+   , { testName := "LeanSwe.Json.RuntimeTests.err_json_getArray_typeMismatch"
+     , mode := .real
+     , run := err_json_getArray_typeMismatch }
+   , { testName := "LeanSwe.Json.RuntimeTests.err_json_getField_missingField"
+     , mode := .real
+     , run := err_json_getField_missingField }
+   , { testName := "LeanSwe.Json.RuntimeTests.err_json_getField_typeMismatch"
+     , mode := .real
+     , run := err_json_getField_typeMismatch }
+   , { testName := "LeanSwe.Json.RuntimeTests.err_json_getField_decodeError"
+     , mode := .real
+     , run := err_json_getField_decodeError }
+   , { testName := "LeanSwe.Json.RuntimeTests.err_json_getOptField_typeMismatch"
+     , mode := .real
+     , run := err_json_getOptField_typeMismatch }
+   , { testName := "LeanSwe.Json.RuntimeTests.err_json_getOptField_decodeError"
+     , mode := .real
+     , run := err_json_getOptField_decodeError }
+   , { testName := "LeanSwe.Json.RuntimeTests.err_json_getPath_missingField"
+     , mode := .real
+     , run := err_json_getPath_missingField }
+   , { testName := "LeanSwe.Json.RuntimeTests.err_json_getPath_typeMismatch"
+     , mode := .real
+     , run := err_json_getPath_typeMismatch }
+   , { testName := "LeanSwe.Json.RuntimeTests.err_json_getPath_decodeError"
+     , mode := .real
+     , run := err_json_getPath_decodeError }
+   ]
+
 /-- Execute all runtime tests for `LeanSwe.Json`. -/
 def runAll : IO Unit := do
   testRfc8259ParsingAndEscapes
   testCompressPrettyAndRoundTrips
   testAccessorsAndDevtoolsPayloads
+  Core.runRegisteredAssumptions registeredAssumptions
+  Core.runRegisteredErrorTests registeredErrorTests
   IO.println "PASS: LeanSwe.Json runtime tests"
 
 end LeanSwe.Json.RuntimeTests

@@ -35,7 +35,6 @@ private def allowedAxioms : Std.HashSet Name :=
   Std.HashSet.emptyWithCapacity 4 |>.insert ``propext |>.insert ``Classical.choice |>.insert ``Quot.sound
 
 private def legacyExemptionAllowlist : Array Name := #[
-  `LeanSwe.Base64,
   `LeanSwe.Compress,
   `LeanSwe.ConnectProxy,
   `LeanSwe.ConnectProxy.Raw,
@@ -44,14 +43,10 @@ private def legacyExemptionAllowlist : Array Name := #[
   `LeanSwe.Fs,
   `LeanSwe.Fs.Raw,
   `LeanSwe.Git,
-  `LeanSwe.Glob,
-  `LeanSwe.Json,
-  `LeanSwe.NumParse,
   `LeanSwe.Process,
   `LeanSwe.Process.Raw,
   `LeanSwe.ProcessSandbox,
   `LeanSwe.ProcessSandbox.Raw,
-  `LeanSwe.RegExp,
   `LeanSwe.SlotPool,
   `LeanSwe.Sqlite,
   `LeanSwe.Sqlite.Raw,
@@ -665,10 +660,14 @@ private def isExternalBoundaryPkg (env : Environment) (knownPkgs : Array Name) (
           return true
         let isOwnedByPkg := cMod == ifaceMod ||
           (pkgNamespaceOfSpecWith knownPkgs cMod == pkgNs && !isSpecOrRuntimeOrProofsModule cMod)
-        if isOwnedByPkg then
-          if Lean.isExtern env cname then
+        let isLeanOrStd := cMod.getRoot == `Lean || cMod.getRoot == `Std
+        if isLeanOrStd then
+          if let some (.opaqueInfo _) := env.find? cname then
             return true
-          if !isProcessPkg && modImportsCli.getD cMod false then
+        if isOwnedByPkg || isLeanOrStd then
+          if isOwnedByPkg && Lean.isExtern env cname then
+            return true
+          if isOwnedByPkg && !isProcessPkg && modImportsCli.getD cMod false then
             return true
           if let some cinfo := env.find? cname then
             for u in cinfo.type.getUsedConstants do

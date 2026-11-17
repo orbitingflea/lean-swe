@@ -336,4 +336,269 @@ theorem reach_json_getPath_nestedDecodeAndIntermediateErrors :
   ⟨"a", "b", "bad",
     proof_json_getPath_nestedDecodeAndIntermediateErrors "a" "b" "bad"⟩
 
+/-- Proof of `test_json_parse_onError_returnsParseErrorWithNonEmptyMessage` for `defaultApi`. -/
+theorem proof_json_parse_onError_returnsParseErrorWithNonEmptyMessage :
+    AllPass (test_json_parse_onError_returnsParseErrorWithNonEmptyMessage defaultApi) := by
+  intro raw
+  dsimp [test_json_parse_onError_returnsParseErrorWithNonEmptyMessage, defaultApi,
+    Internal.defaultApi, Internal.parse]
+  cases Lean.Json.parse raw with
+  | ok _ => simp [Core.NondetTest.assert]
+  | error msg =>
+    dsimp [Core.NondetTest.assert]
+    exact ⟨⟨rfl, ensureNonEmpty_ne_empty "JSON parse error" msg (by decide), rfl⟩, trivial⟩
+
+/-- Non-vacuity `CanReach` witness for `test_json_parse_onError_returnsParseErrorWithNonEmptyMessage`. -/
+theorem reach_json_parse_onError_returnsParseErrorWithNonEmptyMessage :
+    CanReach (test_json_parse_onError_returnsParseErrorWithNonEmptyMessage defaultApi) :=
+  ⟨"", proof_json_parse_onError_returnsParseErrorWithNonEmptyMessage ""⟩
+
+private theorem parse_error_kind_eq (raw : String) {e : JsonError}
+    (h : LeanSwe.Json.parse raw = .error e) : e.kind = .parseError := by
+  dsimp [LeanSwe.Json.parse, Internal.parse] at h
+  cases hparse : Lean.Json.parse raw with
+  | ok _ => simp [hparse] at h
+  | error msg =>
+    simp [hparse] at h
+    cases h
+    rfl
+
+private theorem decode_error_kind_eq {α : Type} [Lean.FromJson α] (j : Lean.Json) {e : JsonError}
+    (h : LeanSwe.Json.decode (α := α) j = .error e) : e.kind = .decodeError := by
+  dsimp [LeanSwe.Json.decode, Internal.decode] at h
+  cases hdec : Lean.fromJson? (α := α) j with
+  | ok _ => simp [hdec] at h
+  | error msg =>
+    simp [hdec] at h
+    cases h
+    rfl
+
+private theorem getObject_error_kind_eq (j : Lean.Json) {e : JsonError}
+    (h : LeanSwe.Json.getObject j = .error e) : e.kind = .typeMismatch := by
+  cases j <;> simp [LeanSwe.Json.getObject, Internal.getObject] at h <;> cases h <;> rfl
+
+private theorem getArray_error_kind_eq (j : Lean.Json) {e : JsonError}
+    (h : LeanSwe.Json.getArray j = .error e) : e.kind = .typeMismatch := by
+  cases j <;> simp [LeanSwe.Json.getArray, Internal.getArray] at h <;> cases h <;> rfl
+
+private theorem getField_error_kind_ne_parseError {α : Type} [Lean.FromJson α]
+    (j : Lean.Json) (key : String) {e : JsonError}
+    (h : LeanSwe.Json.getField (α := α) j key = .error e) : e.kind ≠ .parseError := by
+  cases j with
+  | obj kvs =>
+    unfold LeanSwe.Json.getField Internal.getField at h
+    dsimp only at h
+    split at h
+    · split at h
+      · cases h
+      · cases h
+        exact decode_error_kind_eq _ ‹_› ▸ by decide
+    · cases h
+      simp
+  | null => simp [LeanSwe.Json.getField, Internal.getField] at h; cases h; simp
+  | bool _ => simp [LeanSwe.Json.getField, Internal.getField] at h; cases h; simp
+  | num _ => simp [LeanSwe.Json.getField, Internal.getField] at h; cases h; simp
+  | str _ => simp [LeanSwe.Json.getField, Internal.getField] at h; cases h; simp
+  | arr _ => simp [LeanSwe.Json.getField, Internal.getField] at h; cases h; simp
+
+private theorem getOptField_error_kind {α : Type} [Lean.FromJson α]
+    (j : Lean.Json) (key : String) {e : JsonError}
+    (h : LeanSwe.Json.getOptField (α := α) j key = .error e) :
+    e.kind = .typeMismatch ∨ e.kind = .decodeError := by
+  cases j with
+  | obj kvs =>
+    unfold LeanSwe.Json.getOptField Internal.getOptField at h
+    dsimp only at h
+    split at h
+    · cases h
+    · cases h
+    · split at h
+      · cases h
+      · cases h
+        rename_i heq
+        have hk := decode_error_kind_eq _ heq
+        exact Or.inr hk
+  | null => simp [LeanSwe.Json.getOptField, Internal.getOptField] at h; cases h; exact Or.inl rfl
+  | bool _ => simp [LeanSwe.Json.getOptField, Internal.getOptField] at h; cases h; exact Or.inl rfl
+  | num _ => simp [LeanSwe.Json.getOptField, Internal.getOptField] at h; cases h; exact Or.inl rfl
+  | str _ => simp [LeanSwe.Json.getOptField, Internal.getOptField] at h; cases h; exact Or.inl rfl
+  | arr _ => simp [LeanSwe.Json.getOptField, Internal.getOptField] at h; cases h; exact Or.inl rfl
+
+private theorem getPathAux_error_kind_ne_parseError {α : Type} [Lean.FromJson α]
+    (keys : List String) (revPrefix : List String) (j : Lean.Json) {e : JsonError}
+    (h : Internal.getPathAux (α := α) revPrefix j keys = .error e) : e.kind ≠ .parseError := by
+  induction keys generalizing revPrefix j with
+  | nil =>
+    unfold Internal.getPathAux at h
+    split at h
+    · cases h
+    · have hk : _ = JsonErrorKind.decodeError := decode_error_kind_eq j ‹_›
+      split at h <;> cases h <;> simp [hk]
+  | cons key rest ih =>
+    cases j with
+    | obj kvs =>
+      unfold Internal.getPathAux at h
+      dsimp only at h
+      split at h
+      · exact ih (key :: revPrefix) _ h
+      · cases h
+        simp
+    | null => simp [Internal.getPathAux] at h; cases h; simp
+    | bool _ => simp [Internal.getPathAux] at h; cases h; simp
+    | num _ => simp [Internal.getPathAux] at h; cases h; simp
+    | str _ => simp [Internal.getPathAux] at h; cases h; simp
+    | arr _ => simp [Internal.getPathAux] at h; cases h; simp
+
+/-- `LeanSwe.Json.parse` never returns `.missingField`. -/
+theorem json_parse_never_missingField (raw : String) :
+    NeverErrorKindPure JsonError.kind .missingField (LeanSwe.Json.parse raw) := by
+  cases h : LeanSwe.Json.parse raw with
+  | ok _ => trivial
+  | error e =>
+    dsimp [NeverErrorKindPure]
+    have hk := parse_error_kind_eq raw h
+    simp [hk]
+
+/-- `LeanSwe.Json.parse` never returns `.typeMismatch`. -/
+theorem json_parse_never_typeMismatch (raw : String) :
+    NeverErrorKindPure JsonError.kind .typeMismatch (LeanSwe.Json.parse raw) := by
+  cases h : LeanSwe.Json.parse raw with
+  | ok _ => trivial
+  | error e =>
+    dsimp [NeverErrorKindPure]
+    have hk := parse_error_kind_eq raw h
+    simp [hk]
+
+/-- `LeanSwe.Json.parse` never returns `.decodeError`. -/
+theorem json_parse_never_decodeError (raw : String) :
+    NeverErrorKindPure JsonError.kind .decodeError (LeanSwe.Json.parse raw) := by
+  cases h : LeanSwe.Json.parse raw with
+  | ok _ => trivial
+  | error e =>
+    dsimp [NeverErrorKindPure]
+    have hk := parse_error_kind_eq raw h
+    simp [hk]
+
+/-- `LeanSwe.Json.decode` never returns `.parseError`. -/
+theorem json_decode_never_parseError {α : Type} [Lean.FromJson α] (j : Lean.Json) :
+    NeverErrorKindPure JsonError.kind .parseError (LeanSwe.Json.decode (α := α) j) := by
+  cases h : LeanSwe.Json.decode (α := α) j with
+  | ok _ => trivial
+  | error e =>
+    dsimp [NeverErrorKindPure]
+    have hk := decode_error_kind_eq j h
+    simp [hk]
+
+/-- `LeanSwe.Json.decode` never returns `.missingField`. -/
+theorem json_decode_never_missingField {α : Type} [Lean.FromJson α] (j : Lean.Json) :
+    NeverErrorKindPure JsonError.kind .missingField (LeanSwe.Json.decode (α := α) j) := by
+  cases h : LeanSwe.Json.decode (α := α) j with
+  | ok _ => trivial
+  | error e =>
+    dsimp [NeverErrorKindPure]
+    have hk := decode_error_kind_eq j h
+    simp [hk]
+
+/-- `LeanSwe.Json.decode` never returns `.typeMismatch`. -/
+theorem json_decode_never_typeMismatch {α : Type} [Lean.FromJson α] (j : Lean.Json) :
+    NeverErrorKindPure JsonError.kind .typeMismatch (LeanSwe.Json.decode (α := α) j) := by
+  cases h : LeanSwe.Json.decode (α := α) j with
+  | ok _ => trivial
+  | error e =>
+    dsimp [NeverErrorKindPure]
+    have hk := decode_error_kind_eq j h
+    simp [hk]
+
+/-- `LeanSwe.Json.getObject` never returns `.parseError`. -/
+theorem json_getObject_never_parseError (j : Lean.Json) :
+    NeverErrorKindPure JsonError.kind .parseError (LeanSwe.Json.getObject j) := by
+  cases h : LeanSwe.Json.getObject j with
+  | ok _ => trivial
+  | error e =>
+    dsimp [NeverErrorKindPure]
+    have hk := getObject_error_kind_eq j h
+    simp [hk]
+
+/-- `LeanSwe.Json.getObject` never returns `.missingField`. -/
+theorem json_getObject_never_missingField (j : Lean.Json) :
+    NeverErrorKindPure JsonError.kind .missingField (LeanSwe.Json.getObject j) := by
+  cases h : LeanSwe.Json.getObject j with
+  | ok _ => trivial
+  | error e =>
+    dsimp [NeverErrorKindPure]
+    have hk := getObject_error_kind_eq j h
+    simp [hk]
+
+/-- `LeanSwe.Json.getObject` never returns `.decodeError`. -/
+theorem json_getObject_never_decodeError (j : Lean.Json) :
+    NeverErrorKindPure JsonError.kind .decodeError (LeanSwe.Json.getObject j) := by
+  cases h : LeanSwe.Json.getObject j with
+  | ok _ => trivial
+  | error e =>
+    dsimp [NeverErrorKindPure]
+    have hk := getObject_error_kind_eq j h
+    simp [hk]
+
+/-- `LeanSwe.Json.getArray` never returns `.parseError`. -/
+theorem json_getArray_never_parseError (j : Lean.Json) :
+    NeverErrorKindPure JsonError.kind .parseError (LeanSwe.Json.getArray j) := by
+  cases h : LeanSwe.Json.getArray j with
+  | ok _ => trivial
+  | error e =>
+    dsimp [NeverErrorKindPure]
+    have hk := getArray_error_kind_eq j h
+    simp [hk]
+
+/-- `LeanSwe.Json.getArray` never returns `.missingField`. -/
+theorem json_getArray_never_missingField (j : Lean.Json) :
+    NeverErrorKindPure JsonError.kind .missingField (LeanSwe.Json.getArray j) := by
+  cases h : LeanSwe.Json.getArray j with
+  | ok _ => trivial
+  | error e =>
+    dsimp [NeverErrorKindPure]
+    have hk := getArray_error_kind_eq j h
+    simp [hk]
+
+/-- `LeanSwe.Json.getArray` never returns `.decodeError`. -/
+theorem json_getArray_never_decodeError (j : Lean.Json) :
+    NeverErrorKindPure JsonError.kind .decodeError (LeanSwe.Json.getArray j) := by
+  cases h : LeanSwe.Json.getArray j with
+  | ok _ => trivial
+  | error e =>
+    dsimp [NeverErrorKindPure]
+    have hk := getArray_error_kind_eq j h
+    simp [hk]
+
+/-- `LeanSwe.Json.getField` never returns `.parseError`. -/
+theorem json_getField_never_parseError {α : Type} [Lean.FromJson α] (j : Lean.Json) (key : String) :
+    NeverErrorKindPure JsonError.kind .parseError (LeanSwe.Json.getField (α := α) j key) := by
+  cases h : LeanSwe.Json.getField (α := α) j key with
+  | ok _ => trivial
+  | error e => exact getField_error_kind_ne_parseError j key h
+
+/-- `LeanSwe.Json.getOptField` never returns `.parseError`. -/
+theorem json_getOptField_never_parseError {α : Type} [Lean.FromJson α] (j : Lean.Json) (key : String) :
+    NeverErrorKindPure JsonError.kind .parseError (LeanSwe.Json.getOptField (α := α) j key) := by
+  cases h : LeanSwe.Json.getOptField (α := α) j key with
+  | ok _ => trivial
+  | error e =>
+    dsimp [NeverErrorKindPure]
+    rcases getOptField_error_kind j key h with hk | hk <;> simp [hk]
+
+/-- `LeanSwe.Json.getOptField` never returns `.missingField`. -/
+theorem json_getOptField_never_missingField {α : Type} [Lean.FromJson α] (j : Lean.Json) (key : String) :
+    NeverErrorKindPure JsonError.kind .missingField (LeanSwe.Json.getOptField (α := α) j key) := by
+  cases h : LeanSwe.Json.getOptField (α := α) j key with
+  | ok _ => trivial
+  | error e =>
+    dsimp [NeverErrorKindPure]
+    rcases getOptField_error_kind j key h with hk | hk <;> simp [hk]
+
+/-- `LeanSwe.Json.getPath` never returns `.parseError`. -/
+theorem json_getPath_never_parseError {α : Type} [Lean.FromJson α] (j : Lean.Json) (keys : List String) :
+    NeverErrorKindPure JsonError.kind .parseError (LeanSwe.Json.getPath (α := α) j keys) := by
+  cases h : LeanSwe.Json.getPath (α := α) j keys with
+  | ok _ => trivial
+  | error e => exact getPathAux_error_kind_ne_parseError keys [] j h
+
 end LeanSwe.Json.Proofs

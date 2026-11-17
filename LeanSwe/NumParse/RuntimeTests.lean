@@ -1,3 +1,4 @@
+import Core.Assumptions
 import LeanSwe.NumParse.Interface
 
 namespace LeanSwe.NumParse.RuntimeTests
@@ -171,6 +172,9 @@ private def testFloatParsingAndFormatting : IO Unit := do
       assertTrue (s.contains '.' || s.contains 'e' || s.contains 'E')
         s!"formatFloat must contain . or e: {s}"
     assertFloatBits (parseFloat s) x s!"parseFloat(formatFloat({repr x}))"
+  assertTrue (formatFloat 100.0 == "100.0") s!"expected 100.0, got {formatFloat 100.0}"
+  assertTrue (formatFloat 0.1 == "0.1") s!"expected 0.1, got {formatFloat 0.1}"
+  assertTrue (formatFloat 1e30 == "1e30") s!"expected 1e30, got {formatFloat 1e30}"
 
 private def testDifferentialPythonIntAndTomllib : IO Unit := do
   let pyIntLiterals : List String :=
@@ -309,11 +313,142 @@ private def testDifferentialPythonIntAndTomllib : IO Unit := do
       assertTrue (pyOut == toString x.toBits)
         s!"tomllib formatFloat round-trip mismatch for bits={x.toBits} str={s}: py={pyOut}"
 
+/-- Error test for `parseInt` returning `.emptyInput`. -/
+def err_numparse_parseInt_emptyInput : IO Unit :=
+  assertErrKind (parseInt "") .emptyInput "parseInt empty input"
+
+/-- Error test for `parseInt` returning `.invalidSyntax`. -/
+def err_numparse_parseInt_invalidSyntax : IO Unit :=
+  assertErrKind (parseInt "0x") .invalidSyntax "parseInt invalid syntax"
+
+/-- Error test for `parseInt` returning `.invalidSignForBase`. -/
+def err_numparse_parseInt_invalidSignForBase : IO Unit :=
+  assertErrKind (parseInt "+0x1") .invalidSignForBase "parseInt signed base prefix"
+
+/-- Error test for `parseInt` returning `.leadingZero`. -/
+def err_numparse_parseInt_leadingZero : IO Unit :=
+  assertErrKind (parseInt "01") .leadingZero "parseInt leading zero"
+
+/-- Error test for `parseInt` returning `.invalidUnderscore`. -/
+def err_numparse_parseInt_invalidUnderscore : IO Unit :=
+  assertErrKind (parseInt "1__2") .invalidUnderscore "parseInt invalid underscore"
+
+/-- Error test for `parseInt` returning `.trailingChars`. -/
+def err_numparse_parseInt_trailingChars : IO Unit :=
+  assertErrKind (parseInt "12abc") .trailingChars "parseInt trailing chars"
+
+/-- Error test for `parseInt64` returning `.emptyInput`. -/
+def err_numparse_parseInt64_emptyInput : IO Unit :=
+  assertErrKind (parseInt64 "") .emptyInput "parseInt64 empty input"
+
+/-- Error test for `parseInt64` returning `.invalidSyntax`. -/
+def err_numparse_parseInt64_invalidSyntax : IO Unit :=
+  assertErrKind (parseInt64 "0x") .invalidSyntax "parseInt64 invalid syntax"
+
+/-- Error test for `parseInt64` returning `.invalidSignForBase`. -/
+def err_numparse_parseInt64_invalidSignForBase : IO Unit :=
+  assertErrKind (parseInt64 "-0x1") .invalidSignForBase "parseInt64 signed base prefix"
+
+/-- Error test for `parseInt64` returning `.leadingZero`. -/
+def err_numparse_parseInt64_leadingZero : IO Unit :=
+  assertErrKind (parseInt64 "01") .leadingZero "parseInt64 leading zero"
+
+/-- Error test for `parseInt64` returning `.invalidUnderscore`. -/
+def err_numparse_parseInt64_invalidUnderscore : IO Unit :=
+  assertErrKind (parseInt64 "_1") .invalidUnderscore "parseInt64 invalid underscore"
+
+/-- Error test for `parseInt64` returning `.overflow`. -/
+def err_numparse_parseInt64_overflow : IO Unit :=
+  assertErrKind (parseInt64 "9223372036854775808") .overflow "parseInt64 overflow"
+
+/-- Error test for `parseInt64` returning `.trailingChars`. -/
+def err_numparse_parseInt64_trailingChars : IO Unit :=
+  assertErrKind (parseInt64 "42 ") .trailingChars "parseInt64 trailing chars"
+
+/-- Error test for `parseFloat` returning `.emptyInput`. -/
+def err_numparse_parseFloat_emptyInput : IO Unit :=
+  assertErrKind (parseFloat "") .emptyInput "parseFloat empty input"
+
+/-- Error test for `parseFloat` returning `.invalidSyntax`. -/
+def err_numparse_parseFloat_invalidSyntax : IO Unit :=
+  assertErrKind (parseFloat "1.") .invalidSyntax "parseFloat invalid syntax"
+
+/-- Error test for `parseFloat` returning `.leadingZero`. -/
+def err_numparse_parseFloat_leadingZero : IO Unit :=
+  assertErrKind (parseFloat "01.5") .leadingZero "parseFloat leading zero"
+
+/-- Error test for `parseFloat` returning `.invalidUnderscore`. -/
+def err_numparse_parseFloat_invalidUnderscore : IO Unit :=
+  assertErrKind (parseFloat "1._0") .invalidUnderscore "parseFloat invalid underscore"
+
+/-- Error test for `parseFloat` returning `.trailingChars`. -/
+def err_numparse_parseFloat_trailingChars : IO Unit :=
+  assertErrKind (parseFloat "1.5abc") .trailingChars "parseFloat trailing chars"
+
+/-- Registered error-coverage tests for `LeanSwe.NumParse`. -/
+def registeredErrorTests : Array Core.RegisteredErrorTest :=
+  #[ { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt_emptyInput"
+     , mode := .real
+     , run := err_numparse_parseInt_emptyInput }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt_invalidSyntax"
+     , mode := .real
+     , run := err_numparse_parseInt_invalidSyntax }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt_invalidSignForBase"
+     , mode := .real
+     , run := err_numparse_parseInt_invalidSignForBase }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt_leadingZero"
+     , mode := .real
+     , run := err_numparse_parseInt_leadingZero }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt_invalidUnderscore"
+     , mode := .real
+     , run := err_numparse_parseInt_invalidUnderscore }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt_trailingChars"
+     , mode := .real
+     , run := err_numparse_parseInt_trailingChars }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt64_emptyInput"
+     , mode := .real
+     , run := err_numparse_parseInt64_emptyInput }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt64_invalidSyntax"
+     , mode := .real
+     , run := err_numparse_parseInt64_invalidSyntax }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt64_invalidSignForBase"
+     , mode := .real
+     , run := err_numparse_parseInt64_invalidSignForBase }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt64_leadingZero"
+     , mode := .real
+     , run := err_numparse_parseInt64_leadingZero }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt64_invalidUnderscore"
+     , mode := .real
+     , run := err_numparse_parseInt64_invalidUnderscore }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt64_overflow"
+     , mode := .real
+     , run := err_numparse_parseInt64_overflow }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt64_trailingChars"
+     , mode := .real
+     , run := err_numparse_parseInt64_trailingChars }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseFloat_emptyInput"
+     , mode := .real
+     , run := err_numparse_parseFloat_emptyInput }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseFloat_invalidSyntax"
+     , mode := .real
+     , run := err_numparse_parseFloat_invalidSyntax }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseFloat_leadingZero"
+     , mode := .real
+     , run := err_numparse_parseFloat_leadingZero }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseFloat_invalidUnderscore"
+     , mode := .real
+     , run := err_numparse_parseFloat_invalidUnderscore }
+   , { testName := "LeanSwe.NumParse.RuntimeTests.err_numparse_parseFloat_trailingChars"
+     , mode := .real
+     , run := err_numparse_parseFloat_trailingChars }
+   ]
+
 /-- Run all `LeanSwe.NumParse` deterministic and Python differential runtime tests. -/
 def runAll : IO Unit := do
   testIntParsingAndFormatting
   testFloatParsingAndFormatting
   testDifferentialPythonIntAndTomllib
+  Core.runRegisteredErrorTests registeredErrorTests
   IO.println "PASS: LeanSwe.NumParse runtime tests"
 
 end LeanSwe.NumParse.RuntimeTests
