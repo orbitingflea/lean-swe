@@ -77,7 +77,7 @@ private theorem mkObj_singleton_eq (k : String) (v : Lean.Json) :
 /-- Proof of `test_json_encodeDecode_primitivesRoundTrip` for `defaultApi`. -/
 theorem proof_json_encodeDecode_primitivesRoundTrip :
     AllPass (test_json_encodeDecode_primitivesRoundTrip defaultApi) := by
-  intro b _ n i s
+  intro b n i s
   dsimp [defaultApi, Internal.defaultApi, Internal.encode, Internal.decode, Bind.bind,
     Core.NondetTest.assert]
   refine ⟨⟨rfl, ?_⟩, ⟨rfl, ?_⟩, ⟨rfl, ?_⟩, ⟨rfl, ?_⟩, trivial⟩
@@ -89,7 +89,7 @@ theorem proof_json_encodeDecode_primitivesRoundTrip :
 /-- Non-vacuity `CanReach` witness for `test_json_encodeDecode_primitivesRoundTrip`. -/
 theorem reach_json_encodeDecode_primitivesRoundTrip :
     CanReach (test_json_encodeDecode_primitivesRoundTrip defaultApi) :=
-  ⟨true, rfl, 0, 0, "", proof_json_encodeDecode_primitivesRoundTrip true rfl 0 0 ""⟩
+  ⟨true, 0, 0, "", proof_json_encodeDecode_primitivesRoundTrip true 0 0 ""⟩
 
 /-- Proof of `test_json_encodeDecode_optionAndArrayRoundTrip` for `defaultApi`. -/
 theorem proof_json_encodeDecode_optionAndArrayRoundTrip :
@@ -335,14 +335,5 @@ theorem reach_json_getPath_nestedDecodeAndIntermediateErrors :
     CanReach (test_json_getPath_nestedDecodeAndIntermediateErrors defaultApi) :=
   ⟨"a", "b", "bad",
     proof_json_getPath_nestedDecodeAndIntermediateErrors "a" "b" "bad"⟩
-
-/-- Proof of throwaway added promise. -/
-theorem proof_json_throwawayAdd :
-    AllPass (test_json_throwawayAdd defaultApi) := by
-  intro b
-  dsimp [defaultApi, Internal.defaultApi, Internal.encode, Internal.decode, Bind.bind,
-    Core.NondetTest.assert]
-  refine ⟨⟨rfl, ?_⟩, trivial⟩
-  rw [fromJson_bool_toJson]
 
 end LeanSwe.Json.Proofs
