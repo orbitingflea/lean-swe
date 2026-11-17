@@ -336,4 +336,13 @@ theorem reach_json_getPath_nestedDecodeAndIntermediateErrors :
   ⟨"a", "b", "bad",
     proof_json_getPath_nestedDecodeAndIntermediateErrors "a" "b" "bad"⟩
 
+/-- Proof of throwaway added promise. -/
+theorem proof_json_throwawayAdd :
+    AllPass (test_json_throwawayAdd defaultApi) := by
+  intro b
+  dsimp [defaultApi, Internal.defaultApi, Internal.encode, Internal.decode, Bind.bind,
+    Core.NondetTest.assert]
+  refine ⟨⟨rfl, ?_⟩, trivial⟩
+  rw [fromJson_bool_toJson]
+
 end LeanSwe.Json.Proofs
