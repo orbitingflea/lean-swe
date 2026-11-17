@@ -3,18 +3,86 @@ import Lean
 /-!
 Promise coverage audit for `lean-swe` compiled `.olean` artifacts.
 
-Checks three properties:
+Checks:
 1. Every `LeanSwe/**/SpecTests.lean` file on disk is transitively imported by `LeanSwe`.
-2. Every public `test_*` declaration in a `SpecTests` module has a public, non-projection
-   theorem outside `SpecTests` and `RuntimeTests` whose conclusion is `Core.AllPass` applied
-   to that promise, plus one with `Core.CanReach` when the promise uses `Core.NondetTest.assume`.
-3. Qualifying theorems have no hypothesis: no binder whose type is a proposition (`Prop`).
-
-A theorem about a stand-in or over a deliberately empty type is not detected here; axiom
-verification is handled by `lake build --wfail` and `lake check`.
+2. Zero custom `axiom` declarations exist in `Core` or `LeanSwe`.
+3. Every public `test_*` (and non-legacy `empirical_*`) declaration in a `SpecTests` module has
+   a public, non-projection theorem outside `SpecTests` and `RuntimeTests` whose conclusion is
+   `Core.AllPass` applied to that promise, plus one with `Core.CanReach` when the promise uses
+   `Core.NondetTest.assume`.
+4. Qualifying theorems have no hypothesis (`Prop` binder) and use only standard axioms
+   (`propext`, `Classical.choice`, `Quot.sound`).
 -/
 
 open Lean Meta
+
+private def allowedAxioms : Std.HashSet Name :=
+  Std.HashSet.emptyWithCapacity 4 |>.insert ``propext |>.insert ``Classical.choice |>.insert ``Quot.sound
+
+private def legacyEmpiricalModules : Std.HashSet Name :=
+  Std.HashSet.emptyWithCapacity 4
+    |>.insert `LeanSwe.Json.SpecTests
+    |>.insert `LeanSwe.Time.SpecTests
+
+private structure AxCache where
+  safe : Std.HashSet Name := {}
+  bad : Std.HashMap Name Name := {}
+  inStack : Std.HashSet Name := {}
+
+private partial def findBadAxiom (env : Environment) (cName : Name) : StateM AxCache (Option Name) := do
+  if allowedAxioms.contains cName then return none
+  let st ← get
+  if st.safe.contains cName || st.inStack.contains cName then return none
+  if let some b := st.bad.get? cName then return some b
+  let some cinfo := env.find? cName | do
+    modify fun s => { s with safe := s.safe.insert cName }
+    return none
+  if cinfo matches .axiomInfo _ then
+    modify fun s => { s with bad := s.bad.insert cName cName }
+    return some cName
+  modify fun s => { s with inStack := s.inStack.insert cName }
+  let mut foundBad : Option Name := none
+  for u in cinfo.type.getUsedConstants do
+    if let some b ← findBadAxiom env u then
+      foundBad := some b
+      break
+  if foundBad.isNone then
+    let val? := match cinfo with
+      | .defnInfo v => some v.value
+      | .thmInfo v => some v.value
+      | .opaqueInfo v => some v.value
+      | _ => none
+    if let some val := val? then
+      for u in val.getUsedConstants do
+        if let some b ← findBadAxiom env u then
+          foundBad := some b
+          break
+  if foundBad.isNone then
+    let extra : List Name := match cinfo with
+      | .ctorInfo v => [v.induct]
+      | .recInfo v => v.all
+      | .inductInfo v => v.all ++ v.ctors
+      | _ => []
+    for u in extra do
+      if let some b ← findBadAxiom env u then
+        foundBad := some b
+        break
+  modify fun s => { s with inStack := s.inStack.erase cName }
+  if let some b := foundBad then
+    modify fun s => { s with bad := s.bad.insert cName b }
+    return some b
+  modify fun s => { s with safe := s.safe.insert cName }
+  return none
+
+private def checkAxiomsOk (cName : Name) : StateT AxCache CoreM (Option String) := do
+  let env ← getEnv
+  let (b?, st) := (findBadAxiom env cName).run (← get)
+  set st
+  if b?.isNone then return none
+  let axioms ← Lean.collectAxioms cName
+  let bad := axioms.filter fun ax => !allowedAxioms.contains ax
+  if bad.isEmpty then return none
+  else return some (String.intercalate ", " (bad.toList.map (·.toString)))
 
 private def isPrivateOrInternal (n : Name) : Bool :=
   isPrivateName n || n.isInternalOrNum
@@ -30,31 +98,42 @@ private partial def collectConclusionAtoms (e : Expr) : Array Expr :=
   else
     #[e]
 
-private partial def usesAssumeTransitive
+private def usesAssumeTransitive
     (env : Environment)
-    (seen : Std.HashSet Name)
-    (cName : Name) : Bool :=
-  if cName == `Core.NondetTest.assume then true
-  else if seen.contains cName then false
-  else if !isProjectModule (env.getModuleIdxFor? cName |>.bind (env.header.moduleNames[·]?) |>.getD .anonymous) then
-    false
-  else
+    (start : Name) : Bool := Id.run do
+  let mut queue : Array Name := #[start]
+  let mut seen : Std.HashSet Name := {}
+  while !queue.isEmpty do
+    let cName := queue.back!
+    queue := queue.pop
+    if cName == `Core.NondetTest.assume then
+      return true
+    if seen.contains cName then
+      continue
+    seen := seen.insert cName
+    if !isProjectModule (env.getModuleIdxFor? cName |>.bind (env.header.moduleNames[·]?) |>.getD .anonymous) then
+      continue
     let body? := match env.find? cName with
       | some (.defnInfo dv) => some dv.value
       | some (.opaqueInfo ov) => some ov.value
       | _ => none
-    match body? with
-    | some body =>
-      let seen' := seen.insert cName
-      body.getUsedConstants.any (usesAssumeTransitive env seen')
-    | none => false
+    if let some body := body? then
+      for u in body.getUsedConstants do
+        if !seen.contains u then
+          queue := queue.push u
+  return false
 
-private def extractUnconditionalAtoms (ty : Expr) : MetaM (Option (Array Expr)) :=
-  forallTelescope ty fun xs concl => do
-    for x in xs do
-      if ← isProp (← inferType x) then
+private partial def extractUnconditionalAtoms (ty : Expr) : MetaM (Option (Array Expr)) := do
+  let cur := ty.consumeMData
+  if let .forallE n d b bi := cur then
+    withLocalDecl n bi d fun x => do
+      if ← isProp d then
         return none
-    return some (collectConclusionAtoms concl)
+      extractUnconditionalAtoms (b.instantiate1 x)
+  else if let .letE _ _ v b _ := cur then
+    extractUnconditionalAtoms (b.instantiate1 v)
+  else
+    return some (collectConclusionAtoms cur)
 
 private def moduleNameUnderLeanSwe (leanSweDir entry : System.FilePath) : Name :=
   ((entry.withExtension "").components.drop leanSweDir.components.length).foldl
@@ -92,19 +171,28 @@ def main (args : List String) : IO UInt32 := do
     let m := env.header.moduleNames[i]
     if !isProjectModule m then continue
     let some data := env.header.moduleData[i]? | continue
+    for c in data.constants do
+      if let .axiomInfo _ := c then
+        if !allowedAxioms.contains c.name then
+          errors := errors.push s!"CUSTOM_AXIOM_FORBIDDEN: {c.name} in {m}"
     if m.getString! == "SpecTests" then
       specModCount := specModCount + 1
       for c in data.constants do
-        if !isPrivateOrInternal c.name && c.name.getString!.startsWith "test_" then
+        if isPrivateOrInternal c.name then continue
+        let short := c.name.getString!
+        let trackEmpirical := short.startsWith "empirical_" && !legacyEmpiricalModules.contains m
+        if short.startsWith "test_" || trackEmpirical then
           promises := promises.push (m, c.name)
           promiseSet := promiseSet.insert c.name
 
   promises := promises.qsort (fun a b => a.2.toString < b.2.toString)
-  let ctx : Core.Context := { fileName := "<CheckPromises>", fileMap := default }
+  let ctx : Core.Context := { fileName := "<CheckPromises>", fileMap := default, maxHeartbeats := 0 }
   let state : Core.State := { env }
-  let ((headAllPass, headCanReach), _) ← (Meta.MetaM.run' do
+  let ((headAllPass, headCanReach, axiomErrs), _) ← (Meta.MetaM.run' do
     let mut allPass : Std.HashMap Name (Array Name) := {}
     let mut canReach : Std.HashMap Name (Array Name) := {}
+    let mut axErrs : Array String := #[]
+    let mut axCache : AxCache := {}
     for h : i in [0 : env.header.moduleNames.size] do
       let m := env.header.moduleNames[i]
       if !isProjectModule m || m.getString! == "SpecTests" || m.getString! == "RuntimeTests" then
@@ -113,7 +201,21 @@ def main (args : List String) : IO UInt32 := do
       for c in data.constants do
         let .thmInfo v := c | continue
         if isPrivateOrInternal c.name || env.isProjectionFn c.name then continue
+        let used := v.type.getUsedConstants
+        if !used.any (fun k => k == `Core.AllPass || k == `Core.CanReach) then continue
         let some atoms ← extractUnconditionalAtoms v.type | continue
+        let mut hasPromiseAtom := false
+        for atom in atoms do
+          if atom.isAppOfArity `Core.AllPass 1 || atom.isAppOfArity `Core.CanReach 1 then
+            if let .const fn _ := atom.appArg!.consumeMData.getAppFn.consumeMData then
+              if promiseSet.contains fn || fn.getString!.startsWith "test_" || fn.getString!.startsWith "empirical_" then
+                hasPromiseAtom := true
+        if hasPromiseAtom then
+          let (badAx?, nextCache) ← (checkAxiomsOk c.name).run axCache
+          axCache := nextCache
+          if let some badAx := badAx? then
+            axErrs := axErrs.push s!"UNALLOWED_AXIOM_IN_THEOREM: {c.name} uses [{badAx}]"
+            continue
         for atom in atoms do
           if atom.isAppOfArity `Core.AllPass 1 then
             if let .const fn _ := atom.appArg!.consumeMData.getAppFn.consumeMData then
@@ -123,12 +225,14 @@ def main (args : List String) : IO UInt32 := do
             if let .const fn _ := atom.appArg!.consumeMData.getAppFn.consumeMData then
               if promiseSet.contains fn then
                 canReach := canReach.insert fn ((canReach.getD fn #[]).push c.name)
-    return (allPass, canReach)
+    return (allPass, canReach, axErrs)
   ).toIO ctx state
+
+  errors := errors ++ axiomErrs
 
   let mut withAssumeCount := 0
   for (m, pName) in promises do
-    let usesAssume := usesAssumeTransitive env {} pName
+    let usesAssume := usesAssumeTransitive env pName
     if usesAssume then
       withAssumeCount := withAssumeCount + 1
     if (headAllPass.getD pName #[]).isEmpty then
