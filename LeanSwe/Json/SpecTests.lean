@@ -337,4 +337,8 @@ example : ¬ Core.AllPass (empirical_json_encodeCompressParseDecode_roundTrip st
   have h0 := h true 1 "s" #[]
   simp [stubJsonApi, bind, assert] at h0
 
+@[inline, reducible]
+def throwawaySafeAlias (alias : String) : String :=
+  if false then panic!"{" else alias
+
 end LeanSwe.Json
