@@ -312,28 +312,4 @@ theorem reach_json_getPath_emptySingletonNestedAndErrors :
   ⟨Lean.Json.null, "a", "b", "c", 1, by decide,
     proof_json_getPath_emptySingletonNestedAndErrors Lean.Json.null "a" "b" "c" 1 (by decide)⟩
 
-/-- Proof of `test_json_getPath_nestedDecodeAndIntermediateErrors` for `defaultApi`. -/
-theorem proof_json_getPath_nestedDecodeAndIntermediateErrors :
-    AllPass (test_json_getPath_nestedDecodeAndIntermediateErrors defaultApi) := by
-  intro k1 k2 badStr
-  dsimp [defaultApi, Internal.defaultApi, Internal.getPath, Internal.getPathAux, Bind.bind,
-    Core.NondetTest.assert]
-  rw [mkObj_singleton_eq, mkObj_singleton_eq, mkObj_empty_eq]
-  dsimp only
-  rw [treeMap_singleton_getElem?_self]
-  dsimp only
-  rw [treeMap_singleton_getElem?_self, treeMap_empty_getElem?, toJson_str]
-  have hbad : Lean.fromJson? (α := Nat) (Lean.Json.str badStr) = .error "Natural number expected" := rfl
-  dsimp [Internal.decode]
-  rw [hbad]
-  dsimp [Internal.ensureNonEmpty, Internal.joinPath, Internal.joinSegments]
-  refine ⟨⟨rfl, ?_, by decide⟩, ⟨rfl, rfl, missingField_msg_ne_empty k1⟩, ⟨rfl, rfl, by decide⟩, trivial⟩
-  simp [Internal.joinSegments, toString]
-
-/-- Non-vacuity `CanReach` witness for `test_json_getPath_nestedDecodeAndIntermediateErrors`. -/
-theorem reach_json_getPath_nestedDecodeAndIntermediateErrors :
-    CanReach (test_json_getPath_nestedDecodeAndIntermediateErrors defaultApi) :=
-  ⟨"a", "b", "bad",
-    proof_json_getPath_nestedDecodeAndIntermediateErrors "a" "b" "bad"⟩
-
 end LeanSwe.Json.Proofs

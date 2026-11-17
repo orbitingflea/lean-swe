@@ -6,7 +6,7 @@ namespace LeanSwe.Json
 open Core (NondetTest)
 open Core.NondetTest
 
-/-- Encoding then decoding primitive types (`Bool`, `Nat`, `Int`, `String`) matches `Lean.toJson` and recovers the original values. -/
+/-- Encoding then decoding primitive types (`Bool`, `Nat`, `Int`, `String`) matches `Lean.toJson` and recovers the input values. -/
 def test_json_encodeDecode_primitivesRoundTrip
     {runner} [NondetTest runner] (api : JsonApi) : runner Unit := do
   let b ← nondet Bool
