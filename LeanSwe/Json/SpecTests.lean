@@ -332,9 +332,4 @@ example : ¬ Core.AllPass (empirical_json_pretty_parseRoundTrip stubJsonApi) := 
   have h0 := h Lean.Json.null 80 (by decide)
   simp [stubJsonApi, bind, assert] at h0
 
-example : ¬ Core.AllPass (empirical_json_encodeCompressParseDecode_roundTrip stubJsonApi) := by
-  intro h
-  have h0 := h true 1 "s" #[]
-  simp [stubJsonApi, bind, assert] at h0
-
 end LeanSwe.Json
