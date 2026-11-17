@@ -1,0 +1,190 @@
+name: Daily audit gate
+
+on:
+  schedule:
+    - cron: '17 06 * * *'
+  workflow_dispatch:
+    inputs:
+      test_runs:
+        description: 'Number of full runtime test repetitions (empty uses DAILY_TEST_RUNS or 5)'
+        required: false
+        default: ''
+
+concurrency:
+  group: audit-daily-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit-daily:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Prepare runner packages, swap, sandbox cgroup, and concurrency
+        id: setup
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap python3-zstandard zstd xz-utils gzip curl libssl-dev
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then
+            echo "+memory +pids" | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null 2>&1 || true
+            sudo mkdir -p /sys/fs/cgroup/leanswe/runner &&
+              echo "+memory +pids" | sudo tee /sys/fs/cgroup/leanswe/cgroup.subtree_control >/dev/null &&
+              sudo chown -R "$(id -u):$(id -g)" /sys/fs/cgroup/leanswe || true
+          fi
+          swapon --show || true
+          if (( $(awk 'NR>1 {s+=$3} END {print s+0}' /proc/swaps) < 4000000 )); then
+            if sudo fallocate -l 4G /swapfile_ci && sudo chmod 600 /swapfile_ci && sudo mkswap /swapfile_ci && sudo swapon /swapfile_ci; then
+              swapon --show || true
+            else
+              sudo rm -f /swapfile_ci || true
+              echo "SWAP_WARN: could not activate additional /swapfile_ci; continuing with existing swap"
+            fi
+          fi
+          JOBS=$(python3 -c 'import os; print(max(1, min(os.cpu_count() or 2, 4)))')
+          echo "LEAN_JOBS=$JOBS" >> "$GITHUB_ENV"
+          echo "RUNNER_INFO: cpus=$(nproc) lean_jobs=$JOBS"
+          free -m
+          df -h /
+
+      - name: Install Lean toolchain
+        id: toolchain
+        if: steps.setup.outcome == 'success'
+        uses: ./.github/actions/install-lean
+
+      - name: Run sandboxed lake check
+        id: lake_check
+        if: steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success'
+        run: |
+          set -euo pipefail
+          LAKE_NO_CACHE=true lake check 2>&1 | tee "$RUNNER_TEMP/lake_check.log"
+
+      - name: Check 1 GB private-memory cap on all modules
+        id: mem_check
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f .lake/build/lib/lean/LeanSwe.olean ]]; then
+            echo "Skipping check_proof_memory.py because lake check did not produce LeanSwe.olean" | tee "$RUNNER_TEMP/mem_check.log"
+            exit 1
+          fi
+          LAKE_NO_CACHE=true python3 -B scripts/check_proof_memory.py --jobs "$LEAN_JOBS" 2>&1 | tee "$RUNNER_TEMP/mem_check.log"
+
+      - name: Repeat runtime tests N times
+        id: repeat_tests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' }}
+        env:
+          INPUT_TEST_RUNS: ${{ inputs.test_runs }}
+          DAILY_TEST_RUNS: ${{ vars.DAILY_TEST_RUNS }}
+        run: |
+          set -euo pipefail
+          N="${INPUT_TEST_RUNS:-${DAILY_TEST_RUNS:-5}}"
+          if [[ ! "$N" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Invalid test repetition count N=$N" | tee "$RUNNER_TEMP/repeat_tests.log"
+            exit 2
+          fi
+          if [[ ! -x .lake/build/bin/lean-swe-test ]]; then
+            echo "Missing .lake/build/bin/lean-swe-test after lake check" | tee "$RUNNER_TEMP/repeat_tests.log"
+            exit 1
+          fi
+          if [[ -f /sys/fs/cgroup/leanswe/runner/cgroup.procs ]]; then
+            printf '%s\n' "$$" | sudo -n tee /sys/fs/cgroup/leanswe/runner/cgroup.procs >/dev/null || true
+          fi
+          python3 -c '
+          import ctypes, os, pathlib, subprocess
+          libc = ctypes.CDLL(None, use_errno=True)
+          libc.syscall.argtypes = [ctypes.c_long, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32]
+          libc.syscall.restype = ctypes.c_long
+          ll = libc.syscall(444, None, 0, 1)
+          lsm = pathlib.Path("/sys/kernel/security/lsm").read_text().strip() if pathlib.Path("/sys/kernel/security/lsm").exists() else "n/a"
+          cg = pathlib.Path("/proc/self/cgroup").read_text().strip()
+          bw = subprocess.run(["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--unshare-all", "--", "/bin/true"], capture_output=True, text=True)
+          line = f"SANDBOX_PROBE: kernel={os.uname().release} landlock_abi={ll} lsm={lsm} cgroup={cg} bwrap_rc={bw.returncode}"
+          print(line)
+          if bw.returncode != 0:
+              print("SANDBOX_PROBE_BWRAP_ERR:", bw.stderr.strip())
+          s = os.environ.get("GITHUB_STEP_SUMMARY")
+          if s:
+              with open(s, "a", encoding="utf-8") as f:
+                  f.write(f"`{line}`\n\n")
+          ' | tee "$RUNNER_TEMP/repeat_tests.log"
+          FAILED_RUNS=0
+          for ((i = 1; i <= N; i++)); do
+            echo "=== Test run $i of $N ===" | tee -a "$RUNNER_TEMP/repeat_tests.log"
+            set +e
+            LEANSWE_SUMMARY_LABEL="Run $i of $N" .lake/build/bin/lean-swe-test >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
+            RC=$?
+            set -e
+            tail -n 5 "$RUNNER_TEMP/repeat_tests.log"
+            if (( RC != 0 )); then
+              FAILED_RUNS=$((FAILED_RUNS + 1))
+            fi
+          done
+          SUMMARY="REPEAT_SUMMARY: total_runs=$N passed_runs=$((N - FAILED_RUNS)) failed_runs=$FAILED_RUNS"
+          echo "$SUMMARY" | tee -a "$RUNNER_TEMP/repeat_tests.log"
+          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            printf '\n**%s**\n\n' "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          (( FAILED_RUNS == 0 ))
+
+      - name: Open deduplicated GitHub issue on failure
+        if: ${{ failure() && !cancelled() && github.ref == 'refs/heads/main' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUT_SETUP: ${{ steps.setup.outcome }}
+          OUT_TOOLCHAIN: ${{ steps.toolchain.outcome }}
+          OUT_CHECK: ${{ steps.lake_check.outcome }}
+          OUT_MEM: ${{ steps.mem_check.outcome }}
+          OUT_TEST: ${{ steps.repeat_tests.outcome }}
+        run: |
+          set -euo pipefail
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
+            --json number,title,url | python3 -c '
+          import json, sys
+          rows = [r for r in json.load(sys.stdin) if r["title"].startswith("[audit-daily] Daily audit gate failed")]
+          print(rows[0]["url"] if rows else "")
+          ')
+          if [[ -n "$EXISTING" ]]; then
+            echo "Open issue already exists ($EXISTING); skipping duplicate creation."
+            exit 0
+          fi
+          python3 -c '
+          import os, pathlib, subprocess
+          sha = os.environ["GITHUB_SHA"]
+          short = sha[:8]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          server = os.environ["GITHUB_SERVER_URL"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          out_setup = os.environ["OUT_SETUP"]
+          out_toolchain = os.environ["OUT_TOOLCHAIN"]
+          out_check = os.environ["OUT_CHECK"]
+          out_mem = os.environ["OUT_MEM"]
+          out_test = os.environ["OUT_TEST"]
+          run_url = f"{server}/{repo}/actions/runs/{run_id}"
+          temp = pathlib.Path(os.environ["RUNNER_TEMP"])
+          tails = []
+          for name in ("lake_check", "mem_check", "repeat_tests"):
+              p = temp / f"{name}.log"
+              if p.exists():
+                  lines = [ln[:320] for ln in p.read_text(encoding="utf-8", errors="replace").splitlines()[-60:]]
+                  tails.append(f"### {name} (last {len(lines)} lines)\n````text\n" + "\n".join(lines) + "\n````")
+          body = "\n\n".join([
+              f"Daily audit gate failed on `main` at `{sha}`.",
+              f"- Run: {run_url}",
+              f"- Outcomes: setup=`{out_setup}`, toolchain=`{out_toolchain}`, lake_check=`{out_check}`, mem_check=`{out_mem}`, repeat_tests=`{out_test}`",
+              *tails,
+          ]).replace("@", "@\u200b")
+          subprocess.run([
+              "gh", "issue", "create",
+              "--repo", repo,
+              "--title", f"[audit-daily] Daily audit gate failed on main ({short})",
+              "--body", body,
+          ], check=True)
+          '
