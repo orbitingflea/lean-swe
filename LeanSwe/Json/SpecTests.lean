@@ -337,4 +337,17 @@ example : ¬ Core.AllPass (empirical_json_encodeCompressParseDecode_roundTrip st
   have h0 := h true 1 "s" #[]
   simp [stubJsonApi, bind, assert] at h0
 
+/- block comment -/
+private -- inline comment
+def helperCount (b : Bool) : Nat → Nat
+  | 0 => (s!"{if b then "\"" else "}"}" ++ r#"raw " ok"#).length
+  | n + 1 => helperCount b n
+termination_by n => n
+
+/-- Throwaway added promise verifying Bool round-trip. -/
+def test_json_throwawayAdd
+    {runner} [NondetTest runner] (api : JsonApi) : runner Unit := do
+  let b ← nondet Bool
+  NondetTest.assert (helperCount b 0 >= 0 ∧ api.encode b = Lean.toJson b ∧ api.decode (api.encode b) = .ok b)
+
 end LeanSwe.Json
