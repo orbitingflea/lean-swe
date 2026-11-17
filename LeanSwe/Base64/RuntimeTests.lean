@@ -1,3 +1,4 @@
+import Core.Assumptions
 import LeanSwe.Base64.Interface
 
 namespace LeanSwe.Base64.RuntimeTests
@@ -210,12 +211,101 @@ private def testDifferentialPython : IO Unit := do
       | .ok v =>
         throw (IO.userError s!"differential expected error for {repr s}, got {repr v.data.toList}")
 
+/-- Error test for `decode` returning `.invalidCharacter`. -/
+def err_base64_decode_invalidCharacter : IO Unit :=
+  assertErr (decode "ab-_") .invalidCharacter 2 "decode rejects '-'"
+
+/-- Error test for `decode` returning `.invalidLength`. -/
+def err_base64_decode_invalidLength : IO Unit :=
+  assertErr (decode "A") .invalidLength 0 "decode rejects length % 4 == 1"
+
+/-- Error test for `decode` returning `.invalidPadding`. -/
+def err_base64_decode_invalidPadding : IO Unit :=
+  assertErr (decode "QQ=A") .invalidPadding 2 "decode rejects data after padding"
+
+/-- Error test for `decode` returning `.nonCanonicalEncoding`. -/
+def err_base64_decode_nonCanonicalEncoding : IO Unit :=
+  assertErr (decode "Qm==") .nonCanonicalEncoding 1 "decode rejects non-canonical padding bits"
+
+/-- Error test for `decodeUrl` returning `.invalidCharacter`. -/
+def err_base64_decodeUrl_invalidCharacter : IO Unit :=
+  assertErr (decodeUrl "ab+/") .invalidCharacter 2 "decodeUrl rejects '+'"
+
+/-- Error test for `decodeUrl` returning `.invalidLength`. -/
+def err_base64_decodeUrl_invalidLength : IO Unit :=
+  assertErr (decodeUrl "A") .invalidLength 0 "decodeUrl rejects length % 4 == 1"
+
+/-- Error test for `decodeUrl` returning `.invalidPadding`. -/
+def err_base64_decodeUrl_invalidPadding : IO Unit :=
+  assertErr (decodeUrl "QQ=A") .invalidPadding 2 "decodeUrl rejects data after padding"
+
+/-- Error test for `decodeUrl` returning `.nonCanonicalEncoding`. -/
+def err_base64_decodeUrl_nonCanonicalEncoding : IO Unit :=
+  assertErr (decodeUrl "Qm==") .nonCanonicalEncoding 1 "decodeUrl rejects non-canonical padding bits"
+
+/-- Error test for `decodeWith` returning `.invalidCharacter`. -/
+def err_base64_decodeWith_invalidCharacter : IO Unit :=
+  assertErr (decodeWith { alphabet := .standard } "ab-_") .invalidCharacter 2 "decodeWith rejects '-'"
+
+/-- Error test for `decodeWith` returning `.invalidLength`. -/
+def err_base64_decodeWith_invalidLength : IO Unit :=
+  assertErr (decodeWith {} "A") .invalidLength 0 "decodeWith rejects length % 4 == 1"
+
+/-- Error test for `decodeWith` returning `.invalidPadding`. -/
+def err_base64_decodeWith_invalidPadding : IO Unit :=
+  assertErr (decodeWith { padding := .forbidden } "QQ==") .invalidPadding 2 "decodeWith forbidden padding"
+
+/-- Error test for `decodeWith` returning `.nonCanonicalEncoding`. -/
+def err_base64_decodeWith_nonCanonicalEncoding : IO Unit :=
+  assertErr (decodeWith {} "Qm==") .nonCanonicalEncoding 1 "decodeWith rejects non-canonical padding bits"
+
+/-- Registered error-coverage tests for `LeanSwe.Base64`. -/
+def registeredErrorTests : Array Core.RegisteredErrorTest :=
+  #[ { testName := "LeanSwe.Base64.RuntimeTests.err_base64_decode_invalidCharacter"
+     , mode := .real
+     , run := err_base64_decode_invalidCharacter }
+   , { testName := "LeanSwe.Base64.RuntimeTests.err_base64_decode_invalidLength"
+     , mode := .real
+     , run := err_base64_decode_invalidLength }
+   , { testName := "LeanSwe.Base64.RuntimeTests.err_base64_decode_invalidPadding"
+     , mode := .real
+     , run := err_base64_decode_invalidPadding }
+   , { testName := "LeanSwe.Base64.RuntimeTests.err_base64_decode_nonCanonicalEncoding"
+     , mode := .real
+     , run := err_base64_decode_nonCanonicalEncoding }
+   , { testName := "LeanSwe.Base64.RuntimeTests.err_base64_decodeUrl_invalidCharacter"
+     , mode := .real
+     , run := err_base64_decodeUrl_invalidCharacter }
+   , { testName := "LeanSwe.Base64.RuntimeTests.err_base64_decodeUrl_invalidLength"
+     , mode := .real
+     , run := err_base64_decodeUrl_invalidLength }
+   , { testName := "LeanSwe.Base64.RuntimeTests.err_base64_decodeUrl_invalidPadding"
+     , mode := .real
+     , run := err_base64_decodeUrl_invalidPadding }
+   , { testName := "LeanSwe.Base64.RuntimeTests.err_base64_decodeUrl_nonCanonicalEncoding"
+     , mode := .real
+     , run := err_base64_decodeUrl_nonCanonicalEncoding }
+   , { testName := "LeanSwe.Base64.RuntimeTests.err_base64_decodeWith_invalidCharacter"
+     , mode := .real
+     , run := err_base64_decodeWith_invalidCharacter }
+   , { testName := "LeanSwe.Base64.RuntimeTests.err_base64_decodeWith_invalidLength"
+     , mode := .real
+     , run := err_base64_decodeWith_invalidLength }
+   , { testName := "LeanSwe.Base64.RuntimeTests.err_base64_decodeWith_invalidPadding"
+     , mode := .real
+     , run := err_base64_decodeWith_invalidPadding }
+   , { testName := "LeanSwe.Base64.RuntimeTests.err_base64_decodeWith_nonCanonicalEncoding"
+     , mode := .real
+     , run := err_base64_decodeWith_nonCanonicalEncoding }
+   ]
+
 /-- Run all `LeanSwe.Base64` RFC 4648, edge-case, and Python differential runtime tests. -/
 def runAll : IO Unit := do
   testRfc4648Vectors
   testUrlSafeAndJwtPayloads
   testStrictAndMalformedCases
   testDifferentialPython
+  Core.runRegisteredErrorTests registeredErrorTests
   IO.println "PASS: LeanSwe.Base64 runtime tests"
 
 end LeanSwe.Base64.RuntimeTests

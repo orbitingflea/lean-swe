@@ -21,7 +21,6 @@ private def allowedAxioms : Std.HashSet Name :=
 
 private def legacyEmpiricalModules : Std.HashSet Name :=
   Std.HashSet.emptyWithCapacity 4
-    |>.insert `LeanSwe.Json.SpecTests
     |>.insert `LeanSwe.Time.SpecTests
 
 private structure AxCache where

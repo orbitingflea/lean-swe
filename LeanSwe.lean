@@ -108,6 +108,12 @@ import LeanSwe.NumParse.Model
 import LeanSwe.NumParse.Impl
 import LeanSwe.NumParse.Interface
 import LeanSwe.NumParse.SpecTests
+import LeanSwe.NumParse.Proofs.IntProofs
+import LeanSwe.NumParse.Proofs.FloatExpProofs
+import LeanSwe.NumParse.Proofs.FloatParseProofs
+import LeanSwe.NumParse.Proofs.SpecContractProofs
+import LeanSwe.NumParse.Proofs.FloatRenderProofs
+import LeanSwe.NumParse.Proofs.FloatFormatProofs
 import LeanSwe.NumParse.Proofs
 import LeanSwe.NumParse.RuntimeTests
 import LeanSwe.Toml.Types
