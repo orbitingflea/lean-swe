@@ -77,7 +77,7 @@ private theorem mkObj_singleton_eq (k : String) (v : Lean.Json) :
 /-- Proof of `test_json_encodeDecode_primitivesRoundTrip` for `defaultApi`. -/
 theorem proof_json_encodeDecode_primitivesRoundTrip :
     AllPass (test_json_encodeDecode_primitivesRoundTrip defaultApi) := by
-  intro b n i s
+  intro b _ n i s
   dsimp [defaultApi, Internal.defaultApi, Internal.encode, Internal.decode, Bind.bind,
     Core.NondetTest.assert]
   refine ⟨⟨rfl, ?_⟩, ⟨rfl, ?_⟩, ⟨rfl, ?_⟩, ⟨rfl, ?_⟩, trivial⟩
@@ -89,7 +89,7 @@ theorem proof_json_encodeDecode_primitivesRoundTrip :
 /-- Non-vacuity `CanReach` witness for `test_json_encodeDecode_primitivesRoundTrip`. -/
 theorem reach_json_encodeDecode_primitivesRoundTrip :
     CanReach (test_json_encodeDecode_primitivesRoundTrip defaultApi) :=
-  ⟨true, 0, 0, "", proof_json_encodeDecode_primitivesRoundTrip true 0 0 ""⟩
+  ⟨true, rfl, 0, 0, "", proof_json_encodeDecode_primitivesRoundTrip true rfl 0 0 ""⟩
 
 /-- Proof of `test_json_encodeDecode_optionAndArrayRoundTrip` for `defaultApi`. -/
 theorem proof_json_encodeDecode_optionAndArrayRoundTrip :
