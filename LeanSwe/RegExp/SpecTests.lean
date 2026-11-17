@@ -1,9 +1,10 @@
 import Core.NondetTest
+import Core.Assumptions
 import LeanSwe.RegExp.Types
 
 namespace LeanSwe.RegExp
 
-open Core (NondetTest)
+open Core (NondetTest ErrorObligation)
 open Core.NondetTest
 
 /-- Every error returned by `api.testPattern` must carry a non-empty diagnostic message. -/
@@ -120,5 +121,44 @@ example : ¬ Core.AllPass (test_regex_testPattern_iff_findFirstSome buggyTestApi
   intro h
   have h0 := h "a" "a"
   simp [buggyTestApi, assert] at h0
+
+/-- Declared error-coverage matrix for `LeanSwe.RegExp` fallible requests (`RegexErrorKind`). -/
+def errorCoverage : List (ErrorObligation RegexErrorKind) :=
+  [ { request := "LeanSwe.RegExp.testPattern"
+      errorKind := .invalidSyntax
+      justification := .tested "LeanSwe.RegExp.RuntimeTests.err_regexp_testPattern_invalidSyntax" .real }
+  , { request := "LeanSwe.RegExp.testPattern"
+      errorKind := .unexpectedEof
+      justification := .tested "LeanSwe.RegExp.RuntimeTests.err_regexp_testPattern_unexpectedEof" .real }
+  , { request := "LeanSwe.RegExp.findFirst"
+      errorKind := .invalidSyntax
+      justification := .tested "LeanSwe.RegExp.RuntimeTests.err_regexp_findFirst_invalidSyntax" .real }
+  , { request := "LeanSwe.RegExp.findFirst"
+      errorKind := .unexpectedEof
+      justification := .tested "LeanSwe.RegExp.RuntimeTests.err_regexp_findFirst_unexpectedEof" .real }
+  , { request := "LeanSwe.RegExp.findAll"
+      errorKind := .invalidSyntax
+      justification := .tested "LeanSwe.RegExp.RuntimeTests.err_regexp_findAll_invalidSyntax" .real }
+  , { request := "LeanSwe.RegExp.findAll"
+      errorKind := .unexpectedEof
+      justification := .tested "LeanSwe.RegExp.RuntimeTests.err_regexp_findAll_unexpectedEof" .real }
+  , { request := "LeanSwe.RegExp.countMatches"
+      errorKind := .invalidSyntax
+      justification := .tested "LeanSwe.RegExp.RuntimeTests.err_regexp_countMatches_invalidSyntax" .real }
+  , { request := "LeanSwe.RegExp.countMatches"
+      errorKind := .unexpectedEof
+      justification := .tested "LeanSwe.RegExp.RuntimeTests.err_regexp_countMatches_unexpectedEof" .real }
+  , { request := "LeanSwe.RegExp.replaceAll"
+      errorKind := .invalidSyntax
+      justification := .tested "LeanSwe.RegExp.RuntimeTests.err_regexp_replaceAll_invalidSyntax" .real }
+  , { request := "LeanSwe.RegExp.replaceAll"
+      errorKind := .unexpectedEof
+      justification := .tested "LeanSwe.RegExp.RuntimeTests.err_regexp_replaceAll_unexpectedEof" .real }
+  , { request := "LeanSwe.RegExp.splitBy"
+      errorKind := .invalidSyntax
+      justification := .tested "LeanSwe.RegExp.RuntimeTests.err_regexp_splitBy_invalidSyntax" .real }
+  , { request := "LeanSwe.RegExp.splitBy"
+      errorKind := .unexpectedEof
+      justification := .tested "LeanSwe.RegExp.RuntimeTests.err_regexp_splitBy_unexpectedEof" .real } ]
 
 end LeanSwe.RegExp

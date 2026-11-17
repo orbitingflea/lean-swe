@@ -1,10 +1,11 @@
 import Core.NondetTest
+import Core.Assumptions
 import LeanSwe.NumParse.Types
 import LeanSwe.NumParse.Model
 
 namespace LeanSwe.NumParse
 
-open Core (NondetTest)
+open Core (NondetTest ErrorObligation)
 open Core.NondetTest
 open LeanSwe.NumParse.Model
 
@@ -383,5 +384,71 @@ example : ¬ Core.AllPass (test_numparse_float_formatPreservesSpecialsAndExtreme
   intro h
   simp [Core.AllPass, test_numparse_float_formatPreservesSpecialsAndExtremes, stubNumParseApi, FloatFormatSpec,
     List.forM, bind, pure, assert] at h
+
+/-- Declared error-coverage matrix for `LeanSwe.NumParse` fallible requests (`NumParseErrorKind`). -/
+def errorCoverage : List (ErrorObligation NumParseErrorKind) :=
+  [ { request := "LeanSwe.NumParse.parseInt"
+      errorKind := .emptyInput
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt_emptyInput" .real }
+  , { request := "LeanSwe.NumParse.parseInt"
+      errorKind := .invalidSyntax
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt_invalidSyntax" .real }
+  , { request := "LeanSwe.NumParse.parseInt"
+      errorKind := .invalidSignForBase
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt_invalidSignForBase" .real }
+  , { request := "LeanSwe.NumParse.parseInt"
+      errorKind := .leadingZero
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt_leadingZero" .real }
+  , { request := "LeanSwe.NumParse.parseInt"
+      errorKind := .invalidUnderscore
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt_invalidUnderscore" .real }
+  , { request := "LeanSwe.NumParse.parseInt"
+      errorKind := .overflow
+      justification := .provedImpossible "LeanSwe.NumParse.Proofs.numparse_parseInt_never_overflow" }
+  , { request := "LeanSwe.NumParse.parseInt"
+      errorKind := .trailingChars
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt_trailingChars" .real }
+  , { request := "LeanSwe.NumParse.parseInt64"
+      errorKind := .emptyInput
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt64_emptyInput" .real }
+  , { request := "LeanSwe.NumParse.parseInt64"
+      errorKind := .invalidSyntax
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt64_invalidSyntax" .real }
+  , { request := "LeanSwe.NumParse.parseInt64"
+      errorKind := .invalidSignForBase
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt64_invalidSignForBase" .real }
+  , { request := "LeanSwe.NumParse.parseInt64"
+      errorKind := .leadingZero
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt64_leadingZero" .real }
+  , { request := "LeanSwe.NumParse.parseInt64"
+      errorKind := .invalidUnderscore
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt64_invalidUnderscore" .real }
+  , { request := "LeanSwe.NumParse.parseInt64"
+      errorKind := .overflow
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt64_overflow" .real }
+  , { request := "LeanSwe.NumParse.parseInt64"
+      errorKind := .trailingChars
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseInt64_trailingChars" .real }
+  , { request := "LeanSwe.NumParse.parseFloat"
+      errorKind := .emptyInput
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseFloat_emptyInput" .real }
+  , { request := "LeanSwe.NumParse.parseFloat"
+      errorKind := .invalidSyntax
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseFloat_invalidSyntax" .real }
+  , { request := "LeanSwe.NumParse.parseFloat"
+      errorKind := .invalidSignForBase
+      justification := .provedImpossible "LeanSwe.NumParse.Proofs.numparse_parseFloat_never_invalidSignForBase" }
+  , { request := "LeanSwe.NumParse.parseFloat"
+      errorKind := .leadingZero
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseFloat_leadingZero" .real }
+  , { request := "LeanSwe.NumParse.parseFloat"
+      errorKind := .invalidUnderscore
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseFloat_invalidUnderscore" .real }
+  , { request := "LeanSwe.NumParse.parseFloat"
+      errorKind := .overflow
+      justification := .provedImpossible "LeanSwe.NumParse.Proofs.numparse_parseFloat_never_overflow" }
+  , { request := "LeanSwe.NumParse.parseFloat"
+      errorKind := .trailingChars
+      justification := .tested "LeanSwe.NumParse.RuntimeTests.err_numparse_parseFloat_trailingChars" .real } ]
 
 end LeanSwe.NumParse

@@ -1,10 +1,11 @@
 import Core.NondetTest
+import Core.Assumptions
 import LeanSwe.Base64.Types
 import LeanSwe.Base64.Model
 
 namespace LeanSwe.Base64
 
-open Core (NondetTest)
+open Core (NondetTest ErrorObligation)
 open Core.NondetTest
 open LeanSwe.Base64.Model
 
@@ -331,5 +332,44 @@ example : ¬ Core.AllPass (test_base64_concreteVectorsAndErrors stubBase64Api) :
     List.forM, bind, pure, Core.NondetTest.assert] at h
   have hBad : "" = "Zg==" := h.2.2.2.2.1
   exact (by decide : "" ≠ "Zg==") hBad
+
+/-- Declared error-coverage matrix for `LeanSwe.Base64` fallible requests (`Base64ErrorKind`). -/
+def errorCoverage : List (ErrorObligation Base64ErrorKind) :=
+  [ { request := "LeanSwe.Base64.decode"
+      errorKind := .invalidCharacter
+      justification := .tested "LeanSwe.Base64.RuntimeTests.err_base64_decode_invalidCharacter" .real }
+  , { request := "LeanSwe.Base64.decode"
+      errorKind := .invalidLength
+      justification := .tested "LeanSwe.Base64.RuntimeTests.err_base64_decode_invalidLength" .real }
+  , { request := "LeanSwe.Base64.decode"
+      errorKind := .invalidPadding
+      justification := .tested "LeanSwe.Base64.RuntimeTests.err_base64_decode_invalidPadding" .real }
+  , { request := "LeanSwe.Base64.decode"
+      errorKind := .nonCanonicalEncoding
+      justification := .tested "LeanSwe.Base64.RuntimeTests.err_base64_decode_nonCanonicalEncoding" .real }
+  , { request := "LeanSwe.Base64.decodeUrl"
+      errorKind := .invalidCharacter
+      justification := .tested "LeanSwe.Base64.RuntimeTests.err_base64_decodeUrl_invalidCharacter" .real }
+  , { request := "LeanSwe.Base64.decodeUrl"
+      errorKind := .invalidLength
+      justification := .tested "LeanSwe.Base64.RuntimeTests.err_base64_decodeUrl_invalidLength" .real }
+  , { request := "LeanSwe.Base64.decodeUrl"
+      errorKind := .invalidPadding
+      justification := .tested "LeanSwe.Base64.RuntimeTests.err_base64_decodeUrl_invalidPadding" .real }
+  , { request := "LeanSwe.Base64.decodeUrl"
+      errorKind := .nonCanonicalEncoding
+      justification := .tested "LeanSwe.Base64.RuntimeTests.err_base64_decodeUrl_nonCanonicalEncoding" .real }
+  , { request := "LeanSwe.Base64.decodeWith"
+      errorKind := .invalidCharacter
+      justification := .tested "LeanSwe.Base64.RuntimeTests.err_base64_decodeWith_invalidCharacter" .real }
+  , { request := "LeanSwe.Base64.decodeWith"
+      errorKind := .invalidLength
+      justification := .tested "LeanSwe.Base64.RuntimeTests.err_base64_decodeWith_invalidLength" .real }
+  , { request := "LeanSwe.Base64.decodeWith"
+      errorKind := .invalidPadding
+      justification := .tested "LeanSwe.Base64.RuntimeTests.err_base64_decodeWith_invalidPadding" .real }
+  , { request := "LeanSwe.Base64.decodeWith"
+      errorKind := .nonCanonicalEncoding
+      justification := .tested "LeanSwe.Base64.RuntimeTests.err_base64_decodeWith_nonCanonicalEncoding" .real } ]
 
 end LeanSwe.Base64

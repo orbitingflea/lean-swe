@@ -1,9 +1,10 @@
 import Core.NondetTest
+import Core.Assumptions
 import LeanSwe.Json.Types
 
 namespace LeanSwe.Json
 
-open Core (NondetTest)
+open Core (NondetTest AssumptionObligation ErrorObligation)
 open Core.NondetTest
 
 /-- Encoding then decoding primitive types (`Bool`, `Nat`, `Int`, `String`) matches `Lean.toJson` and recovers the original values. -/
@@ -159,55 +160,113 @@ def test_json_getPath_nestedDecodeAndIntermediateErrors
   | .ok _ => NondetTest.assert False
   | .error e => NondetTest.assert (e.kind = .typeMismatch ∧ e.path = none ∧ e.message ≠ "")
 
-/-- Empirical contract (grounded in `RuntimeTests.lean`): `parse` failures always carry `.parseError`, a non-empty message, and `path := none`. -/
-def empirical_json_parse_onError_returnsParseErrorWithNonEmptyMessage
+/-- Every `parse` failure returns `.parseError` with a non-empty message and `path := none`. -/
+def test_json_parse_onError_returnsParseErrorWithNonEmptyMessage
     {runner} [NondetTest runner] (api : JsonApi) : runner Unit := do
   let raw ← nondet String
   match api.parse raw with
-  | .ok _ => assume False
+  | .ok _ => NondetTest.assert True
   | .error e => NondetTest.assert (e.kind = .parseError ∧ e.message ≠ "" ∧ e.path = none)
 
-/-- Empirical contract (grounded in `RuntimeTests.lean`): `compress` emits non-empty single-line JSON (no `\n` or `\r`) that parses back to an equivalent JSON rendering. -/
-def empirical_json_compress_noNewlineAndParseRoundTrip
-    {runner} [NondetTest runner] (api : JsonApi) : runner Unit := do
-  let j ← nondet Lean.Json
-  let s := api.compress j
-  NondetTest.assert (s ≠ "" ∧ !(s.contains '\n') ∧ !(s.contains '\r'))
-  match api.parse s with
-  | .error _ => NondetTest.assert False
-  | .ok j' => NondetTest.assert (api.compress j' = s)
+/-- Trusted `Lean.Data.Json.{Parser,Printer}` (`Lean.Json.parse`, `Lean.Json.compress`, `Lean.Json.pretty`) boundary obligations verified at runtime with nonce logging.
+    Object round-trip probes (`assume_json_compress_noNewlineAndParseRoundTrip` and `assume_json_pretty_parseRoundTrip`) apply to `Lean.Json` values whose object maps satisfy `Std.TreeMap.Raw.WF` (unique sorted keys, as produced by `Lean.Json.mkObj`, `Lean.toJson`, and `Lean.Json.parse`). -/
+def externalAssumptions : List AssumptionObligation :=
+  [ { name := "LeanSwe.Json.assume_json_compress_noNewlineAndParseRoundTrip"
+      subject := "LeanSwe.Json.compress"
+      formalPred? := none }
+  , { name := "LeanSwe.Json.assume_json_pretty_parseRoundTrip"
+      subject := "LeanSwe.Json.pretty"
+      formalPred? := none }
+  , { name := "LeanSwe.Json.assume_json_encodeCompressParseDecode_roundTrip"
+      subject := "LeanSwe.Json.parse"
+      formalPred? := none } ]
 
-/-- Empirical contract (grounded in `RuntimeTests.lean`): `pretty` emits non-empty JSON that parses back to the same compressed representation. -/
-def empirical_json_pretty_parseRoundTrip
-    {runner} [NondetTest runner] (api : JsonApi) : runner Unit := do
-  let j ← nondet Lean.Json
-  let w ← nondet Nat
-  assume (w > 0)
-  let s := api.pretty j w
-  NondetTest.assert (s ≠ "")
-  match api.parse s with
-  | .error _ => NondetTest.assert False
-  | .ok j' => NondetTest.assert (api.compress j' = api.compress j)
-
-/-- Empirical contract (grounded in `RuntimeTests.lean`): `encode` -> `compress` -> `parse` -> `decode` round-trips `Bool`, `Int`, `String`, and `Array String`. -/
-def empirical_json_encodeCompressParseDecode_roundTrip
-    {runner} [NondetTest runner] (api : JsonApi) : runner Unit := do
-  let b ← nondet Bool
-  let i ← nondet Int
-  let s ← nondet String
-  let xs ← nondet (Array String)
-  match api.parse (api.compress (api.encode b)) with
-  | .error _ => NondetTest.assert False
-  | .ok jb => NondetTest.assert (api.decode jb = .ok b)
-  match api.parse (api.compress (api.encode i)) with
-  | .error _ => NondetTest.assert False
-  | .ok ji => NondetTest.assert (api.decode ji = .ok i)
-  match api.parse (api.compress (api.encode s)) with
-  | .error _ => NondetTest.assert False
-  | .ok js => NondetTest.assert (api.decode js = .ok s)
-  match api.parse (api.compress (api.encode xs)) with
-  | .error _ => NondetTest.assert False
-  | .ok jxs => NondetTest.assert (api.decode jxs = .ok xs)
+/-- Declared error-coverage matrix for `LeanSwe.Json` fallible requests (`JsonErrorKind`). -/
+def errorCoverage : List (ErrorObligation JsonErrorKind) :=
+  [ { request := "LeanSwe.Json.parse"
+      errorKind := .parseError
+      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_parse_parseError" .real }
+  , { request := "LeanSwe.Json.parse"
+      errorKind := .missingField
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_parse_never_missingField" }
+  , { request := "LeanSwe.Json.parse"
+      errorKind := .typeMismatch
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_parse_never_typeMismatch" }
+  , { request := "LeanSwe.Json.parse"
+      errorKind := .decodeError
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_parse_never_decodeError" }
+  , { request := "LeanSwe.Json.decode"
+      errorKind := .parseError
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_decode_never_parseError" }
+  , { request := "LeanSwe.Json.decode"
+      errorKind := .missingField
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_decode_never_missingField" }
+  , { request := "LeanSwe.Json.decode"
+      errorKind := .typeMismatch
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_decode_never_typeMismatch" }
+  , { request := "LeanSwe.Json.decode"
+      errorKind := .decodeError
+      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_decode_decodeError" .real }
+  , { request := "LeanSwe.Json.getObject"
+      errorKind := .parseError
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getObject_never_parseError" }
+  , { request := "LeanSwe.Json.getObject"
+      errorKind := .missingField
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getObject_never_missingField" }
+  , { request := "LeanSwe.Json.getObject"
+      errorKind := .typeMismatch
+      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getObject_typeMismatch" .real }
+  , { request := "LeanSwe.Json.getObject"
+      errorKind := .decodeError
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getObject_never_decodeError" }
+  , { request := "LeanSwe.Json.getArray"
+      errorKind := .parseError
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getArray_never_parseError" }
+  , { request := "LeanSwe.Json.getArray"
+      errorKind := .missingField
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getArray_never_missingField" }
+  , { request := "LeanSwe.Json.getArray"
+      errorKind := .typeMismatch
+      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getArray_typeMismatch" .real }
+  , { request := "LeanSwe.Json.getArray"
+      errorKind := .decodeError
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getArray_never_decodeError" }
+  , { request := "LeanSwe.Json.getField"
+      errorKind := .parseError
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getField_never_parseError" }
+  , { request := "LeanSwe.Json.getField"
+      errorKind := .missingField
+      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getField_missingField" .real }
+  , { request := "LeanSwe.Json.getField"
+      errorKind := .typeMismatch
+      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getField_typeMismatch" .real }
+  , { request := "LeanSwe.Json.getField"
+      errorKind := .decodeError
+      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getField_decodeError" .real }
+  , { request := "LeanSwe.Json.getOptField"
+      errorKind := .parseError
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getOptField_never_parseError" }
+  , { request := "LeanSwe.Json.getOptField"
+      errorKind := .missingField
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getOptField_never_missingField" }
+  , { request := "LeanSwe.Json.getOptField"
+      errorKind := .typeMismatch
+      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getOptField_typeMismatch" .real }
+  , { request := "LeanSwe.Json.getOptField"
+      errorKind := .decodeError
+      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getOptField_decodeError" .real }
+  , { request := "LeanSwe.Json.getPath"
+      errorKind := .parseError
+      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getPath_never_parseError" }
+  , { request := "LeanSwe.Json.getPath"
+      errorKind := .missingField
+      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getPath_missingField" .real }
+  , { request := "LeanSwe.Json.getPath"
+      errorKind := .typeMismatch
+      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getPath_typeMismatch" .real }
+  , { request := "LeanSwe.Json.getPath"
+      errorKind := .decodeError
+      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getPath_decodeError" .real } ]
 
 private def stubJsonApi : JsonApi :=
   { parse := fun _ => .error { kind := .parseError, message := "stub" }
@@ -317,24 +376,27 @@ private def buggyEmptyParseErrorApi : JsonApi :=
   { stubJsonApi with
     parse := fun _ => .error { kind := .parseError, message := "" } }
 
-example : ¬ Core.AllPass (empirical_json_parse_onError_returnsParseErrorWithNonEmptyMessage buggyEmptyParseErrorApi) := by
+example : ¬ Core.AllPass (test_json_parse_onError_returnsParseErrorWithNonEmptyMessage buggyEmptyParseErrorApi) := by
   intro h
   have h0 := h "bad"
   simp [buggyEmptyParseErrorApi, assert] at h0
 
-example : ¬ Core.AllPass (empirical_json_compress_noNewlineAndParseRoundTrip stubJsonApi) := by
-  intro h
-  have h0 := h Lean.Json.null
-  simp [stubJsonApi, bind, assert] at h0
+private def buggyParseWrongKindApi : JsonApi :=
+  { stubJsonApi with
+    parse := fun _ => .error { kind := .decodeError, message := "bad", path := none } }
 
-example : ¬ Core.AllPass (empirical_json_pretty_parseRoundTrip stubJsonApi) := by
+example : ¬ Core.AllPass (test_json_parse_onError_returnsParseErrorWithNonEmptyMessage buggyParseWrongKindApi) := by
   intro h
-  have h0 := h Lean.Json.null 80 (by decide)
-  simp [stubJsonApi, bind, assert] at h0
+  have h0 := h "bad"
+  simp [buggyParseWrongKindApi, assert] at h0
 
-example : ¬ Core.AllPass (empirical_json_encodeCompressParseDecode_roundTrip stubJsonApi) := by
+private def buggyParseWithPathApi : JsonApi :=
+  { stubJsonApi with
+    parse := fun _ => .error { kind := .parseError, message := "bad", path := some "root" } }
+
+example : ¬ Core.AllPass (test_json_parse_onError_returnsParseErrorWithNonEmptyMessage buggyParseWithPathApi) := by
   intro h
-  have h0 := h true 1 "s" #[]
-  simp [stubJsonApi, bind, assert] at h0
+  have h0 := h "bad"
+  simp [buggyParseWithPathApi, assert] at h0
 
 end LeanSwe.Json
