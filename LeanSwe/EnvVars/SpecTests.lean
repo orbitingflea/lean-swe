@@ -355,6 +355,18 @@ example : ¬ Core.AllPass (test_envvars_getEnv_invalidEncodingReportsEncodingErr
   cases h1
   cases h2
 
+example : ¬ Core.AllPass (test_envvars_getEnv_invalidEncodingReportsEncodingError
+    stubEnvVarsApi
+    (fun raw =>
+      { stubMkApi raw with
+        homeDir := pure (.error { kind := .notFound, key := some "HOME", message := "masked encoding error" }) })) := by
+  intro h
+  have h0 := h "BAD_VAL" "invalid UTF-8" (by decide)
+  simp [stubMkApi, stubEnvVarsApi, mockMapRawError, bind, pure, assert] at h0
+  rcases h0.2 with ⟨_, h1, h2, _⟩
+  cases h1
+  cases h2
+
 example : ¬ Core.AllPass (test_envvars_listEnv_propagatesRawError fun raw =>
     { stubMkApi raw with listEnv := pure (.ok #[]) }) := by
   intro h
