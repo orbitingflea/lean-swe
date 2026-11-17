@@ -25,6 +25,8 @@ structure MockSandboxState where
   activeForwarders : List (Nat × Nat) := []
   /-- Whether host supports Linux + `bwrap` + namespaces + Landlock ABI >= 4 + `seccomp`. -/
   hostBaseAvailable : Bool := true
+  /-- Native `SeccompArch` returned by `hostSeccompArch` (`none` simulates an unsupported host architecture). -/
+  hostSeccompArch? : Option SeccompArch := some .x86_64
   /-- Whether direct `/sys/fs/cgroup` `memory` delegation (`memory.max` + `memory.swap.max=0`) is enforceable. -/
   memoryCgroupAvailable : Bool := true
   /-- Whether direct `/sys/fs/cgroup` `pids` delegation (`pids.max`) is enforceable. -/
@@ -46,6 +48,8 @@ structure MockSandboxState where
   lastPreflightReq : Option PreflightReq := none
   /-- Last `CompiledSandboxPlan` sealed via `sealPlan`. -/
   lastSealedPlan : Option CompiledSandboxPlan := none
+  /-- Last encoded `seccomp` BPF byte payload passed to `sealPlan`. -/
+  lastSealedSeccompBytes : Option ByteArray := none
   /-- Last `Array PortForward` passed to `startPortForwarders`. -/
   lastStartedForwards : Option (Array PortForward) := none
   /-- Last `stdin` payload passed to `readBoxOutput`. -/
@@ -72,6 +76,7 @@ instance : Repr MockSandboxState where
         "activeBoxes := " ++ repr s.activeBoxes,
         "activeForwarders := " ++ repr s.activeForwarders,
         "hostBaseAvailable := " ++ repr s.hostBaseAvailable,
+        "hostSeccompArch? := " ++ repr s.hostSeccompArch?,
         "memoryCgroupAvailable := " ++ repr s.memoryCgroupAvailable,
         "pidsCgroupAvailable := " ++ repr s.pidsCgroupAvailable,
         "spawnCalls := " ++ repr s.spawnCalls,
@@ -103,6 +108,38 @@ def mockMapRawError : SandboxRawError → SandboxError
     { kind := .ioError, path := none, errnoCode := none,
       message := if detail.isEmpty then "sandbox error" else detail }
 
+/-- Decode a raw Linux `AUDIT_ARCH_*` constant (`0xc000003e` or `0xc00000b7`) into `SeccompArch` for mock verification. -/
+def mockDecodeHostAuditArch (raw : UInt32) : Except SandboxError SeccompArch :=
+  if raw == 0xc000003e then
+    .ok .x86_64
+  else if raw == 0xc00000b7 then
+    .ok .aarch64
+  else
+    .error { kind := .unavailable, message := "unsupported host architecture for seccomp" }
+
+/-- Check whether `seccompBytes` is a non-empty 8-byte-aligned cBPF filter of at most `SECCOMP_MAX_INSNS` instructions. -/
+def isValidMockSeccompBytes (seccompBytes : ByteArray) : Bool :=
+  seccompBytes.size != 0 && seccompBytes.size % 8 == 0 &&
+    decide (seccompBytes.size ≤ 8 * SECCOMP_MAX_INSNS)
+
+/-- Validate mandatory `CompiledSandboxPlan` and `seccompBytes` invariants and frame `LSWP0002` output for mock verification. -/
+def mockEncodePlan (plan : CompiledSandboxPlan) (seccompBytes : ByteArray) :
+    Except SandboxError ByteArray :=
+  if !plan.emptyRoot || !plan.directCgroupV2Fs || !plan.blockUnixSocketAndSmc ||
+      !plan.allowAnonUnixSocketpair || !plan.clone3EnosysFallback || !plan.cleanEnv ||
+      plan.program.isEmpty then
+    .error { kind := .invalidInput, message := "compiled plan failed mandatory sandbox invariant check" }
+  else if !isValidMockSeccompBytes seccompBytes then
+    .error { kind := .invalidInput, message := "compiled seccomp BPF filter failed size or 8-byte alignment check" }
+  else
+    let n := seccompBytes.size / 8
+    let trailer := ByteArray.mk #[
+      UInt8.ofNat (n % 256),
+      UInt8.ofNat ((n / 256) % 256),
+      UInt8.ofNat ((n / 65536) % 256),
+      UInt8.ofNat ((n / 16777216) % 256)]
+    .ok ("LSWP0002".toUTF8 ++ trailer ++ seccompBytes)
+
 /-- Allocate a valid 64-bit handle ID from `s.nextHandleId`. -/
 def allocMockHandleId (s : MockSandboxState) : Nat :=
   if isValidSandboxHandleId s.nextHandleId then s.nextHandleId else 1
@@ -110,11 +147,13 @@ def allocMockHandleId (s : MockSandboxState) : Nat :=
 /-- Deterministic `RawProcessSandboxOpsM (StateM MockSandboxState)` test double. -/
 def mockRawOps : RawProcessSandboxOpsM (StateM MockSandboxState) :=
   { mapRawError := mockMapRawError
+    decodeHostAuditArch := mockDecodeHostAuditArch
+    encodePlan := mockEncodePlan
     hostSeccompArch := fun s =>
-      if s.hostBaseAvailable then
-        (.ok .x86_64, s)
-      else
-        (.error { kind := .unavailable, message := "sandbox host architecture unavailable" }, s)
+      match s.hostSeccompArch? with
+      | some arch => (.ok arch, s)
+      | none =>
+        (.error { kind := .unavailable, message := "unsupported host architecture for seccomp" }, s)
     preflight := fun req s =>
       let s' := { s with lastPreflightReq := some req }
       if !s.hostBaseAvailable then
@@ -126,13 +165,17 @@ def mockRawOps : RawProcessSandboxOpsM (StateM MockSandboxState) :=
       else
         (.ok (), s')
     discoverHostPreset := fun s => (.ok s.preset, s)
-    sealPlan := fun plan s =>
-      let id := allocMockHandleId s
-      (.ok { handleId := id },
-        { s with
-          nextHandleId := id + 1
-          openPlans := id :: s.openPlans
-          lastSealedPlan := some plan })
+    sealPlan := fun plan seccompBytes s =>
+      if !isValidMockSeccompBytes seccompBytes then
+        (.error { kind := .invalidInput, message := "invalid seccomp filter bytes for sealPlan" }, s)
+      else
+        let id := allocMockHandleId s
+        (.ok { handleId := id },
+          { s with
+            nextHandleId := id + 1
+            openPlans := id :: s.openPlans
+            lastSealedPlan := some plan
+            lastSealedSeccompBytes := some seccompBytes })
     closePlan := fun ph s =>
       if !isValidSandboxHandleId ph.handleId || !s.openPlans.contains ph.handleId then
         (.error { kind := .invalidInput, message := "invalid or closed plan handle" }, s)
@@ -222,10 +265,12 @@ def liftMockState {α : Type} (act : StateM MockSandboxState α) :
 /-- Exception-capable `RawProcessSandboxOpsM (ExceptT String (StateM MockSandboxState))` for `MonadFinally` cancellation tests. -/
 def mockRawOpsEx : RawProcessSandboxOpsM (ExceptT String (StateM MockSandboxState)) :=
   { mapRawError := mockRawOps.mapRawError
+    decodeHostAuditArch := mockRawOps.decodeHostAuditArch
+    encodePlan := mockRawOps.encodePlan
     hostSeccompArch := liftMockState mockRawOps.hostSeccompArch
     preflight := fun req => liftMockState (mockRawOps.preflight req)
     discoverHostPreset := liftMockState mockRawOps.discoverHostPreset
-    sealPlan := fun plan => liftMockState (mockRawOps.sealPlan plan)
+    sealPlan := fun plan seccompBytes => liftMockState (mockRawOps.sealPlan plan seccompBytes)
     closePlan := fun ph => liftMockState (mockRawOps.closePlan ph)
     spawnBox := fun ph => liftMockState (mockRawOps.spawnBox ph)
     startPortForwarders := fun bh fwds =>
@@ -486,7 +531,8 @@ def test_psandbox_run_sealsSoundEmptyRootAndHomeMaskedPlan
     (mkApi : ProcessSandboxBuilder (StateM MockSandboxState)) : runner Unit := do
   let api := mkApi mockRawOps
   let s₀ ← nondet MockSandboxState
-  assume (s₀.hostBaseAvailable = true ∧ s₀.memoryCgroupAvailable = true ∧ s₀.pidsCgroupAvailable = true)
+  assume (s₀.hostBaseAvailable = true ∧ s₀.memoryCgroupAvailable = true ∧
+    s₀.pidsCgroupAvailable = true ∧ s₀.hostSeccompArch?.isSome = true)
   assume (s₀.failSpawnWith = none ∧ s₀.failForwarderStartWith = none)
   let sWithPreset : MockSandboxState :=
     { s₀ with
@@ -576,7 +622,8 @@ def test_psandbox_run_forwardsStdinAndTimeoutMs
   let stdinBytes ← nondet ByteArray
   let timeoutMs ← nondet Nat
   assume (timeoutMs > 0)
-  assume (s₀.hostBaseAvailable = true ∧ s₀.memoryCgroupAvailable = true ∧ s₀.pidsCgroupAvailable = true)
+  assume (s₀.hostBaseAvailable = true ∧ s₀.memoryCgroupAvailable = true ∧
+    s₀.pidsCgroupAvailable = true ∧ s₀.hostSeccompArch?.isSome = true)
   assume (s₀.failSpawnWith = none ∧ s₀.failForwarderStartWith = none)
   assume (s₀.scriptedOutput.isOk = true)
   let spec : BoxSpec :=
@@ -597,7 +644,8 @@ def test_psandbox_run_portForwarderBracket
     (mkApi : ProcessSandboxBuilder (StateM MockSandboxState)) : runner Unit := do
   let api := mkApi mockRawOps
   let s₀ ← nondet MockSandboxState
-  assume (s₀.hostBaseAvailable = true ∧ s₀.memoryCgroupAvailable = true ∧ s₀.pidsCgroupAvailable = true)
+  assume (s₀.hostBaseAvailable = true ∧ s₀.memoryCgroupAvailable = true ∧
+    s₀.pidsCgroupAvailable = true ∧ s₀.hostSeccompArch?.isSome = true)
   assume (s₀.failSpawnWith = none)
   assume (s₀.scriptedOutput.isOk = true)
   let fwds : Array PortForward := #[{ boxPort := 8080, hostPort := 18080 }]
@@ -648,7 +696,8 @@ def test_psandbox_run_monadFinallyCleansUpOnCancellation
     (mkApiEx : ProcessSandboxBuilder (ExceptT String (StateM MockSandboxState))) : runner Unit := do
   let apiEx := mkApiEx mockRawOpsEx
   let s₀ ← nondet MockSandboxState
-  assume (s₀.hostBaseAvailable = true ∧ s₀.memoryCgroupAvailable = true ∧ s₀.pidsCgroupAvailable = true)
+  assume (s₀.hostBaseAvailable = true ∧ s₀.memoryCgroupAvailable = true ∧
+    s₀.pidsCgroupAvailable = true ∧ s₀.hostSeccompArch?.isSome = true)
   assume (s₀.failSpawnWith = none ∧ s₀.failForwarderStartWith = none)
   let spec : BoxSpec :=
     { program := "/bin/sleep"
@@ -764,6 +813,44 @@ def test_psandbox_model_compilePlanSound
     (validateFn : BoxSpec → Except SandboxError ValidBoxSpec := validateSpecPure)
     (compileFn : ValidBoxSpec → HostRuntimePreset → CompiledSandboxPlan := compilePlan) : runner Unit :=
   NondetTest.assert (SpecCompilePlanSoundOn validateFn compileFn)
+
+/-- `run` queries `raw.hostSeccompArch`, seals `api.encodeSeccompBpf (api.compileSeccompBpf arch)` for both `.x86_64` and `.aarch64` (producing architecture-specific valid cBPF filters matching `auditArchOf arch`), and fails closed with `.unavailable`, zero `spawnCalls`, zero `guestExecCalls`, and conserved resources when `hostSeccompArch` fails. -/
+def test_seccomp_run_queriesHostArchAndSealsEncodedFilter
+    {runner} [NondetTest runner]
+    (mkApi : ProcessSandboxBuilder (StateM MockSandboxState)) : runner Unit := do
+  let api := mkApi mockRawOps
+  let arch ← nondet SeccompArch
+  let s₀ ← nondet MockSandboxState
+  assume (s₀.hostBaseAvailable = true ∧ s₀.memoryCgroupAvailable = true ∧ s₀.pidsCgroupAvailable = true)
+  assume (s₀.failSpawnWith = none ∧ s₀.failForwarderStartWith = none)
+  assume (s₀.scriptedOutput.isOk = true)
+  let sArch : MockSandboxState := { s₀ with hostSeccompArch? := some arch }
+  let (resOk, sOk) := (api.run { program := "/bin/true" }).run sArch
+  let expectedProg := api.compileSeccompBpf arch
+  let expectedBytes := api.encodeSeccompBpf expectedProg
+  NondetTest.assert (resOk.isOk = true ∧
+    isValidLinuxSeccompProg expectedProg = true ∧
+    expectedBytes = encodeSeccompBpfModel expectedProg ∧
+    evalBpf expectedProg { arch := auditArchOf arch, nr := 0 } = some 0x7fff0000 ∧
+    evalBpf expectedProg { arch := 0, nr := 0 } = some 0x00050001 ∧
+    sOk.lastSealedSeccompBytes = some expectedBytes ∧
+    sOk.openPlans = sArch.openPlans ∧
+    sOk.activeBoxes = sArch.activeBoxes ∧
+    sOk.activeForwarders = sArch.activeForwarders)
+  let sNoArch ← nondet MockSandboxState
+  let specFail ← nondet BoxSpec
+  assume ((api.validateSpec specFail).isOk = true)
+  assume (sNoArch.hostBaseAvailable = true ∧
+    sNoArch.memoryCgroupAvailable = true ∧
+    sNoArch.pidsCgroupAvailable = true ∧
+    sNoArch.hostSeccompArch? = none)
+  let (resFail, sFail) := (api.run specFail).run sNoArch
+  NondetTest.assert ((∃ e, resFail = .error e ∧ e.kind = .unavailable ∧ e.message ≠ "") ∧
+    sFail.spawnCalls = sNoArch.spawnCalls ∧
+    sFail.guestExecCalls = sNoArch.guestExecCalls ∧
+    sFail.openPlans = sNoArch.openPlans ∧
+    sFail.activeBoxes = sNoArch.activeBoxes ∧
+    sFail.activeForwarders = sNoArch.activeForwarders)
 
 /-- `api.compileSeccompBpf` emits a structurally valid Linux `seccomp_check_filter` cBPF program (`1..160` instructions, forward in-bounds jumps, aligned low-word `BPF_ABS` offsets `{0, 4, 16 + 8 * i}`, total `{ALLOW, EPERM, ENOSYS}` verdicts), and `api.encodeSeccompBpf` serializes contiguous `8 * n`-byte little-endian `struct sock_filter` records. -/
 def test_seccomp_compileAndEncode_validProgAndLittleEndianWire
@@ -929,6 +1016,24 @@ structure EmpiricalAssumptions where
   /-- Dedicated `pthread_once` spawner thread (`bwrap --die-with-parent`), `leanswe-psandbox-init` (`PR_SET_CHILD_SUBREAPER` + `PR_SET_PDEATHSIG(SIGKILL)` + `O_CLOEXEC` `status_pipe`/`exec_err_pipe` + `kill(-1, SIGKILL)` + blocking `waitpid(-1, 0)` until `ECHILD`), and host `MonadFinally` (`killProcessGroup` + `pidfdKill` + `cgroup.kill = "1"` + `cgroup.events` `populated 0` `rmdir` + `stopPortForwarders` + `closePlan`) leave zero surviving grandchild processes, cgroup directories, or open FDs across normal exit, signal, timeout, output cap, or error. -/
   subreaperPidfdAndCgroupKillLeaveZeroOrphans : Prop
 
+private def stubCompileSeccompBpf (arch : SeccompArch) : Array SockFilter :=
+  #[ bpfStmt BPF_LD_W_ABS 4
+   , bpfJump BPF_JMP_JEQ_K (auditArchOf arch) 1 0
+   , bpfStmt BPF_RET_K 0x00050001
+   , bpfStmt BPF_RET_K 0x7fff0000 ]
+
+private theorem validMockBytes_wire8 :
+    isValidMockSeccompBytes (ByteArray.mk #[6, 0, 0, 0, 0, 0, 0xff, 0x7f]) = true := rfl
+
+private theorem validMockBytes_stubX86 :
+    isValidMockSeccompBytes (encodeSeccompBpfModel (stubCompileSeccompBpf .x86_64)) = true := rfl
+
+private theorem validMockBytes_stubAarch64 :
+    isValidMockSeccompBytes (encodeSeccompBpfModel (stubCompileSeccompBpf .aarch64)) = true := rfl
+
+private theorem validMockBytes_empty :
+    isValidMockSeccompBytes ByteArray.empty = false := rfl
+
 private def stubRunGeneric {m : Type → Type} [Monad m] [MonadFinally m]
     (raw : RawProcessSandboxOpsM m) (spec : BoxSpec) : m (Except SandboxError SandboxResult) := do
   match validateSpecPure spec with
@@ -941,60 +1046,65 @@ private def stubRunGeneric {m : Type → Type} [Monad m] [MonadFinally m]
     | .error e =>
       return .error { e with kind := .unavailable, message := if e.message.isEmpty then "unavailable" else e.message }
     | .ok () =>
-      match ← raw.discoverHostPreset with
+      match ← raw.hostSeccompArch with
       | .error e =>
-        return .error { e with message := if e.message.isEmpty then "preset error" else e.message }
-      | .ok preset =>
-        let plan := compilePlan valid preset
-        match ← raw.sealPlan plan with
+        return .error { e with kind := .unavailable, message := if e.message.isEmpty then "arch unavailable" else e.message }
+      | .ok arch =>
+        match ← raw.discoverHostPreset with
         | .error e =>
-          return .error { e with message := if e.message.isEmpty then "sealPlan error" else e.message }
-        | .ok ph =>
-          let (res, _) ← tryFinally' (do
-            match ← raw.spawnBox ph with
-            | .error e =>
-              return .error { e with message := if e.message.isEmpty then "spawnBox error" else e.message }
-            | .ok bh =>
-              let (boxRes, _) ← tryFinally' (do
-                let fwdRes : Except SandboxError (Option PortForwarderHandle) ←
-                  if plan.portForwards.isEmpty then
-                    pure (Except.ok none)
-                  else do
-                    match ← raw.startPortForwarders bh plan.portForwards with
+          return .error { e with message := if e.message.isEmpty then "preset error" else e.message }
+        | .ok preset =>
+          let plan := compilePlan valid preset
+          let seccompBytes := encodeSeccompBpfModel (stubCompileSeccompBpf arch)
+          match ← raw.sealPlan plan seccompBytes with
+          | .error e =>
+            return .error { e with message := if e.message.isEmpty then "sealPlan error" else e.message }
+          | .ok ph =>
+            let (res, _) ← tryFinally' (do
+              match ← raw.spawnBox ph with
+              | .error e =>
+                return .error { e with message := if e.message.isEmpty then "spawnBox error" else e.message }
+              | .ok bh =>
+                let (boxRes, _) ← tryFinally' (do
+                  let fwdRes : Except SandboxError (Option PortForwarderHandle) ←
+                    if plan.portForwards.isEmpty then
+                      pure (Except.ok none)
+                    else do
+                      match ← raw.startPortForwarders bh plan.portForwards with
+                      | .error e =>
+                        pure (Except.error { e with message := if e.message.isEmpty then "forwarder error" else e.message })
+                      | .ok fh =>
+                        pure (Except.ok (some fh))
+                  match fwdRes with
+                  | .error e => return .error e
+                  | .ok fwdOpt =>
+                    let (ioRes, _) ← tryFinally'
+                      (raw.readBoxOutput bh valid.stdin valid.limits.timeoutMs valid.limits.maxOutputBytes)
+                      (fun _ =>
+                        match fwdOpt with
+                        | some fh => do let _ ← raw.stopPortForwarders fh; pure ()
+                        | none => pure ())
+                    match ioRes with
                     | .error e =>
-                      pure (Except.error { e with message := if e.message.isEmpty then "forwarder error" else e.message })
-                    | .ok fh =>
-                      pure (Except.ok (some fh))
-                match fwdRes with
-                | .error e => return .error e
-                | .ok fwdOpt =>
-                  let (ioRes, _) ← tryFinally'
-                    (raw.readBoxOutput bh valid.stdin valid.limits.timeoutMs valid.limits.maxOutputBytes)
-                    (fun _ =>
-                      match fwdOpt with
-                      | some fh => do let _ ← raw.stopPortForwarders fh; pure ()
-                      | none => pure ())
-                  match ioRes with
-                  | .error e =>
-                    return .error { e with message := if e.message.isEmpty then "io error" else e.message }
-                  | .ok out =>
-                    return .ok out
-              ) (fun _ => do
-                let _ ← raw.killProcessGroup bh
-                let _ ← raw.pidfdKill bh
-                let _ ← raw.reapBox bh
-                pure ())
-              return boxRes
-          ) (fun _ => do
-            let _ ← raw.closePlan ph
-            pure ())
-          return res
+                      return .error { e with message := if e.message.isEmpty then "io error" else e.message }
+                    | .ok out =>
+                      return .ok out
+                ) (fun _ => do
+                  let _ ← raw.killProcessGroup bh
+                  let _ ← raw.pidfdKill bh
+                  let _ ← raw.reapBox bh
+                  pure ())
+                return boxRes
+            ) (fun _ => do
+              let _ ← raw.closePlan ph
+              pure ())
+            return res
 
 private def stubMkApi {m : Type → Type} [Monad m] [MonadFinally m]
     (raw : RawProcessSandboxOpsM m) : ProcessSandboxApiM m :=
   { validateSpec := validateSpecPure
-    compileSeccompBpf := fun _ => #[]
-    encodeSeccompBpf := fun _ => ByteArray.empty
+    compileSeccompBpf := stubCompileSeccompBpf
+    encodeSeccompBpf := encodeSeccompBpfModel
     run := stubRunGeneric raw
     isAvailable := do
       match ← raw.preflight { needMemoryCgroup := true, needPidsCgroup := true } with
@@ -1003,8 +1113,8 @@ private def stubMkApi {m : Type → Type} [Monad m] [MonadFinally m]
 
 private def stubApi : ProcessSandboxApi :=
   { validateSpec := validateSpecPure
-    compileSeccompBpf := fun _ => #[]
-    encodeSeccompBpf := fun _ => ByteArray.empty
+    compileSeccompBpf := stubCompileSeccompBpf
+    encodeSeccompBpf := encodeSeccompBpfModel
     run := fun _ => pure (.error { kind := .unavailable, message := "stub" })
     isAvailable := pure false }
 
@@ -1116,7 +1226,7 @@ example : ¬ Core.AllPass (test_psandbox_run_sealsSoundEmptyRootAndHomeMaskedPla
           (.ok { outcome := .exited 0, stdout := ByteArray.empty, stderr := ByteArray.empty },
             { s with lastSealedPlan := some { program := "env", emptyRoot := false } }) })) := by
   intro h
-  have h0 := h {} ⟨rfl, rfl, rfl⟩ ⟨rfl, rfl⟩
+  have h0 := h {} ⟨rfl, rfl, rfl, rfl⟩ ⟨rfl, rfl⟩
   simp [Bind.bind, isValidCompiledPlan, StateT.run, assert] at h0
 
 example : ¬ Core.AllPass (test_psandbox_run_outcomesAndOutputCap
@@ -1133,7 +1243,7 @@ example : ¬ Core.AllPass (test_psandbox_run_portForwarderBracket
         run := fun _ s =>
           (.ok { outcome := .exited 0, stdout := ByteArray.empty, stderr := ByteArray.empty }, s) })) := by
   intro h
-  have h0 := h {} ⟨rfl, rfl, rfl⟩ rfl rfl
+  have h0 := h {} ⟨rfl, rfl, rfl, rfl⟩ rfl rfl
   simp [Bind.bind, StateT.run, Except.isOk, Except.toBool, assert] at h0
 
 example : ¬ Core.AllPass (test_psandbox_run_conservesResourcesOnAllOutcomesAndErrors
@@ -1149,8 +1259,8 @@ example : ¬ Core.AllPass (test_psandbox_run_conservesResourcesOnAllOutcomesAndE
 example : ¬ Core.AllPass (test_psandbox_run_monadFinallyCleansUpOnCancellation
     (fun raw =>
       { validateSpec := validateSpecPure
-        compileSeccompBpf := fun _ => #[]
-        encodeSeccompBpf := fun _ => ByteArray.empty
+        compileSeccompBpf := stubCompileSeccompBpf
+        encodeSeccompBpf := encodeSeccompBpfModel
         isAvailable := pure true
         run := fun spec => do
           match validateSpecPure spec with
@@ -1161,7 +1271,8 @@ example : ¬ Core.AllPass (test_psandbox_run_monadFinallyCleansUpOnCancellation
             | .error e => return .error e
             | .ok pr =>
               let plan := compilePlan valid pr
-              match ← raw.sealPlan plan with
+              let seccompBytes := ByteArray.mk #[6, 0, 0, 0, 0, 0, 0xff, 0x7f]
+              match ← raw.sealPlan plan seccompBytes with
               | .error e => return .error e
               | .ok ph =>
                 match ← raw.spawnBox ph with
@@ -1176,9 +1287,10 @@ example : ¬ Core.AllPass (test_psandbox_run_monadFinallyCleansUpOnCancellation
                   let _ ← raw.closePlan ph
                   return r })) := by
   intro h
-  have h0 := h {} ⟨rfl, rfl, rfl⟩ ⟨rfl, rfl⟩
+  have h0 := h {} ⟨rfl, rfl, rfl, rfl⟩ ⟨rfl, rfl⟩
   dsimp [test_psandbox_run_monadFinallyCleansUpOnCancellation, mockRawOpsEx, mockRawOps,
     liftMockState, allocMockHandleId, isValidSandboxHandleId, UInt64.size,
+    validMockBytes_wire8,
     validateSpecPure, normalizeCleanAbsPath, parseCleanAbsSegs, splitSlashChars, splitSlashAux,
     hasNulChar, validateMountsList, allDistinct, isValidEnvPair, dedupEnvPairs,
     defaultSandboxPath, defaultSandboxCwd,
@@ -1269,6 +1381,7 @@ example : ¬ Core.AllPass (test_psandbox_run_outcomesAndOutputCap mutantMagicExi
   intro h
   have h97 := h 97 9 ByteArray.empty ByteArray.empty
   dsimp [test_psandbox_run_outcomesAndOutputCap, mutantMagicExit97And98, stubRunGeneric,
+    validMockBytes_stubX86,
     mockRawOps, allocMockHandleId, isValidSandboxHandleId, UInt64.size,
     validateSpecPure, normalizeCleanAbsPath, parseCleanAbsSegs, splitSlashChars, splitSlashAux,
     hasNulChar, validateMountsList, allDistinct, isValidEnvPair, dedupEnvPairs,
@@ -1289,6 +1402,7 @@ example : ¬ Core.AllPass (test_psandbox_run_outcomesAndOutputCap
   intro h
   have h98 := h 98 9 ByteArray.empty ByteArray.empty
   dsimp [test_psandbox_run_outcomesAndOutputCap, stubRunGeneric,
+    validMockBytes_stubX86,
     mockRawOps, allocMockHandleId, isValidSandboxHandleId, UInt64.size,
     validateSpecPure, normalizeCleanAbsPath, parseCleanAbsSegs, splitSlashChars, splitSlashAux,
     hasNulChar, validateMountsList, allDistinct, isValidEnvPair, dedupEnvPairs,
@@ -1411,7 +1525,7 @@ example : ¬ Core.AllPass (test_psandbox_run_sealsSoundEmptyRootAndHomeMaskedPla
           (.ok { outcome := .exited 0, stdout := ByteArray.empty, stderr := ByteArray.empty },
             { s with lastSealedPlan := some { (compilePlan default {}) with directCgroupV2Fs := false } }) })) := by
   intro h
-  have h0 := h {} ⟨rfl, rfl, rfl⟩ ⟨rfl, rfl⟩
+  have h0 := h {} ⟨rfl, rfl, rfl, rfl⟩ ⟨rfl, rfl⟩
   simp [Bind.bind, isValidCompiledPlan, StateT.run, assert] at h0
 
 private def mutantFallbackOnSpawnUnavailable (raw : RawProcessSandboxOpsM (StateM MockSandboxState)) :
@@ -1430,7 +1544,8 @@ private def mutantFallbackOnSpawnUnavailable (raw : RawProcessSandboxOpsM (State
           match ← raw.discoverHostPreset with
           | .error e => return .error e
           | .ok preset =>
-            match ← raw.sealPlan (compilePlan valid preset) with
+            let seccompBytes := ByteArray.mk #[6, 0, 0, 0, 0, 0, 0xff, 0x7f]
+            match ← raw.sealPlan (compilePlan valid preset) seccompBytes with
             | .error e => return .error e
             | .ok ph =>
               let sp ← raw.spawnBox ph
@@ -1450,6 +1565,7 @@ example : ¬ Core.AllPass (test_psandbox_isAvailable_and_failClosedUnavailable
   have hUnavail := h0.2 { hostBaseAvailable := false } { program := "/bin/true" } rfl (Or.inl rfl)
   have hSpawn := hUnavail.2 {} { program := "/bin/true" } rfl ⟨rfl, rfl, rfl⟩
   dsimp [mutantFallbackOnSpawnUnavailable, mockRawOps, allocMockHandleId, isValidSandboxHandleId,
+    validMockBytes_wire8,
     UInt64.size, validateSpecPure, normalizeCleanAbsPath, parseCleanAbsSegs, splitSlashChars,
     splitSlashAux, hasNulChar, validateMountsList, allDistinct, isValidEnvPair, dedupEnvPairs,
     defaultSandboxPath, defaultSandboxCwd, compilePlan, sortByDepth, insertByDepth, mountBoxDepth,
@@ -1465,8 +1581,9 @@ private def mutantDropStdinRun (raw : RawProcessSandboxOpsM (StateM MockSandboxS
 
 example : ¬ Core.AllPass (test_psandbox_run_forwardsStdinAndTimeoutMs mutantDropStdinRun) := by
   intro h
-  have h0 := h {} ("payload".toUTF8) 5000 (by decide) ⟨rfl, rfl, rfl⟩ ⟨rfl, rfl⟩ rfl
+  have h0 := h {} ("payload".toUTF8) 5000 (by decide) ⟨rfl, rfl, rfl, rfl⟩ ⟨rfl, rfl⟩ rfl
   dsimp [test_psandbox_run_forwardsStdinAndTimeoutMs, mutantDropStdinRun, stubRunGeneric,
+    validMockBytes_stubX86,
     mockRawOps, allocMockHandleId, isValidSandboxHandleId, UInt64.size,
     validateSpecPure, normalizeCleanAbsPath, parseCleanAbsSegs, splitSlashChars, splitSlashAux,
     hasNulChar, validateMountsList, allDistinct, isValidEnvPair, dedupEnvPairs,
@@ -1486,8 +1603,9 @@ private def mutantDropTimeoutRun (raw : RawProcessSandboxOpsM (StateM MockSandbo
 
 example : ¬ Core.AllPass (test_psandbox_run_forwardsStdinAndTimeoutMs mutantDropTimeoutRun) := by
   intro h
-  have h0 := h {} ByteArray.empty 5000 (by decide) ⟨rfl, rfl, rfl⟩ ⟨rfl, rfl⟩ rfl
+  have h0 := h {} ByteArray.empty 5000 (by decide) ⟨rfl, rfl, rfl, rfl⟩ ⟨rfl, rfl⟩ rfl
   dsimp [test_psandbox_run_forwardsStdinAndTimeoutMs, mutantDropTimeoutRun, stubRunGeneric,
+    validMockBytes_stubX86,
     mockRawOps, allocMockHandleId, isValidSandboxHandleId, UInt64.size,
     validateSpecPure, normalizeCleanAbsPath, parseCleanAbsSegs, splitSlashChars, splitSlashAux,
     hasNulChar, validateMountsList, allDistinct, isValidEnvPair, dedupEnvPairs,
@@ -1511,16 +1629,19 @@ private def mutantUnstableMountSortRun (raw : RawProcessSandboxOpsM (StateM Mock
     run := fun spec =>
       stubRunGeneric
         { raw with
-          sealPlan := fun plan =>
-            raw.sealPlan { plan with userMounts := (sortByDepthUnstable mountBoxDepth plan.userMounts.toList).toArray } }
+          sealPlan := fun plan seccompBytes =>
+            raw.sealPlan
+              { plan with userMounts := (sortByDepthUnstable mountBoxDepth plan.userMounts.toList).toArray }
+              seccompBytes }
         spec }
 
 example : ¬ Core.AllPass (test_psandbox_run_sealsSoundEmptyRootAndHomeMaskedPlan
     mutantUnstableMountSortRun) := by
   intro h
-  have h0 := h {} ⟨rfl, rfl, rfl⟩ ⟨rfl, rfl⟩
+  have h0 := h {} ⟨rfl, rfl, rfl, rfl⟩ ⟨rfl, rfl⟩
   dsimp [test_psandbox_run_sealsSoundEmptyRootAndHomeMaskedPlan, mutantUnstableMountSortRun,
-    stubRunGeneric, mockRawOps, allocMockHandleId, isValidSandboxHandleId, UInt64.size,
+    stubRunGeneric, validMockBytes_stubX86,
+    mockRawOps, allocMockHandleId, isValidSandboxHandleId, UInt64.size,
     validateSpecPure, normalizeCleanAbsPath, parseCleanAbsSegs, splitSlashChars, splitSlashAux,
     hasNulChar, validateMountsList, validateAndNormalizeMount, isReservedBoxSegs,
     reservedSystemTopDirs, formatAbsSegs, allDistinct, isValidEnvPair, dedupEnvPairs,
@@ -1950,5 +2071,200 @@ example : ¬ Core.AllPass (test_seccomp_rawDenyTableAndDefaultAllow_all33AndOthe
   have h0 := h.2.2 {}
   have hAllowX := h0.2.2 { arch := 0xc000003e, nr := 431 } ⟨rfl, by decide, by decide⟩
   exact absurd hAllowX.1 (by decide)
+
+private def mutantRunHardcodeX86Seccomp
+    (raw : RawProcessSandboxOpsM (StateM MockSandboxState)) :
+    ProcessSandboxApiM (StateM MockSandboxState) :=
+  { stubMkApi raw with
+    run := fun spec =>
+      stubRunGeneric
+        { raw with
+          sealPlan := fun plan _ =>
+            raw.sealPlan plan (encodeSeccompBpfModel (stubCompileSeccompBpf .x86_64)) }
+        spec }
+
+example : ¬ Core.AllPass (test_seccomp_run_queriesHostArchAndSealsEncodedFilter
+    mutantRunHardcodeX86Seccomp) := by
+  intro h
+  have h0 := h .aarch64 {} ⟨rfl, rfl, rfl⟩ ⟨rfl, rfl⟩ rfl
+  dsimp [test_seccomp_run_queriesHostArchAndSealsEncodedFilter, mutantRunHardcodeX86Seccomp,
+    stubMkApi, stubRunGeneric, validMockBytes_stubX86,
+    mockRawOps, allocMockHandleId, isValidSandboxHandleId, UInt64.size,
+    validateSpecPure, normalizeCleanAbsPath, parseCleanAbsSegs, splitSlashChars, splitSlashAux,
+    hasNulChar, validateMountsList, allDistinct, isValidEnvPair, dedupEnvPairs,
+    defaultSandboxPath, defaultSandboxCwd, compilePlan, sortByDepth, insertByDepth, mountBoxDepth,
+    mountBoxPath, tryFinally', MonadFinally.tryFinally', Bind.bind, Pure.pure,
+    StateT.run, StateT.bind, StateT.pure, assert] at h0
+  have hSealed := h0.1.2.2.2.2.2.1
+  injection hSealed with hBytes
+  have hByte := congrArg (fun bs => bs[12]!) hBytes
+  exact absurd hByte (by decide)
+
+private def mutantRunSealEmptySeccompBytes
+    (raw : RawProcessSandboxOpsM (StateM MockSandboxState)) :
+    ProcessSandboxApiM (StateM MockSandboxState) :=
+  { stubMkApi raw with
+    run := fun spec =>
+      stubRunGeneric
+        { raw with sealPlan := fun plan _ => raw.sealPlan plan ByteArray.empty }
+        spec }
+
+example : ¬ Core.AllPass (test_seccomp_run_queriesHostArchAndSealsEncodedFilter
+    mutantRunSealEmptySeccompBytes) := by
+  intro h
+  have h0 := h .x86_64 {} ⟨rfl, rfl, rfl⟩ ⟨rfl, rfl⟩ rfl
+  dsimp [test_seccomp_run_queriesHostArchAndSealsEncodedFilter, mutantRunSealEmptySeccompBytes,
+    stubMkApi, stubRunGeneric, validMockBytes_empty,
+    mockRawOps, allocMockHandleId, isValidSandboxHandleId, UInt64.size,
+    validateSpecPure, normalizeCleanAbsPath, parseCleanAbsSegs, splitSlashChars, splitSlashAux,
+    hasNulChar, validateMountsList, allDistinct, isValidEnvPair, dedupEnvPairs,
+    defaultSandboxPath, defaultSandboxCwd, compilePlan, sortByDepth, insertByDepth, mountBoxDepth,
+    mountBoxPath, tryFinally', MonadFinally.tryFinally', Bind.bind, Pure.pure,
+    StateT.run, StateT.bind, StateT.pure, Except.isOk, Except.toBool, assert] at h0
+  exact absurd h0.1.1 (by decide)
+
+private def mutantRunWrongArchErrorKind
+    (raw : RawProcessSandboxOpsM (StateM MockSandboxState)) :
+    ProcessSandboxApiM (StateM MockSandboxState) :=
+  { stubMkApi raw with
+    run := fun spec => do
+      match ← raw.hostSeccompArch with
+      | .error _ => return .error { kind := .ioError, message := "arch lookup ioError" }
+      | .ok _ => stubRunGeneric raw spec }
+
+example : ¬ Core.AllPass (test_seccomp_run_queriesHostArchAndSealsEncodedFilter
+    mutantRunWrongArchErrorKind) := by
+  intro h
+  have h0 := h .x86_64 {} ⟨rfl, rfl, rfl⟩ ⟨rfl, rfl⟩ rfl
+  have hFail := h0.2 { hostSeccompArch? := none } { program := "/bin/true" } rfl ⟨rfl, rfl, rfl, rfl⟩
+  dsimp [mutantRunWrongArchErrorKind, mockRawOps, StateT.run, Bind.bind, StateT.bind,
+    Pure.pure, StateT.pure, assert] at hFail
+  rcases hFail.1.1 with ⟨e, he, hKind, _⟩
+  injection he with he'
+  subst he'
+  cases hKind
+
+private def mutantAarch64UsesX86CloneNrBpf : SeccompArch → Array SockFilter
+  | arch =>
+    #[ bpfStmt BPF_LD_W_ABS 4
+     , bpfJump BPF_JMP_JEQ_K (auditArchOf arch) 1 0
+     , bpfStmt BPF_RET_K 0x00050001
+     , bpfStmt BPF_LD_W_ABS 0
+     , bpfJump BPF_JMP_JEQ_K 435 0 1
+     , bpfStmt BPF_RET_K 0x00050026
+     , bpfJump BPF_JMP_JEQ_K 56 0 5
+     , bpfStmt BPF_LD_W_ABS 16
+     , bpfStmt BPF_ALU_AND_K 0x7e020000
+     , bpfJump BPF_JMP_JEQ_K 0 1 0
+     , bpfStmt BPF_RET_K 0x00050001
+     , bpfStmt BPF_RET_K 0x7fff0000
+     , bpfStmt BPF_RET_K 0x7fff0000 ]
+
+example : ¬ Core.AllPass (test_seccomp_rawClone3AndClone_enosysAndNamespaceMask
+    { stubApi with compileSeccompBpf := mutantAarch64UsesX86CloneNrBpf }) := by
+  intro h
+  have h0 := h { args := { a0 := 0x00020000 } }
+  exact absurd h0.2.2.2.1 (by decide)
+
+private def mutantAarch64EmitsX32CheckBpf : SeccompArch → Array SockFilter
+  | arch =>
+    #[ bpfStmt BPF_LD_W_ABS 4
+     , bpfJump BPF_JMP_JEQ_K (auditArchOf arch) 1 0
+     , bpfStmt BPF_RET_K 0x00050001
+     , bpfStmt BPF_LD_W_ABS 0
+     , bpfJump BPF_JMP_JGE_K 0x40000000 0 1
+     , bpfStmt BPF_RET_K 0x00050001
+     , bpfStmt BPF_RET_K 0x7fff0000 ]
+
+example : ¬ Core.AllPass (test_seccomp_evalBpf_matchesStepGuestSyscallModel
+    { stubApi with compileSeccompBpf := mutantAarch64EmitsX32CheckBpf }) := by
+  intro h
+  let validPlan := compilePlan default {}
+  have hv : isValidCompiledPlan validPlan = true := rfl
+  have h0 := h .aarch64 validPlan {} { arch := 0xc00000b7, nr := 0x40000000 } hv
+  exact absurd h0.1 (by decide)
+
+private def mutantDenyBelow500AndX32OnAllArchsBpf : SeccompArch → Array SockFilter
+  | arch =>
+    #[ bpfStmt BPF_LD_W_ABS 4
+     , bpfJump BPF_JMP_JEQ_K (auditArchOf arch) 1 0
+     , bpfStmt BPF_RET_K 0x00050001
+     , bpfStmt BPF_LD_W_ABS 0
+     , bpfJump BPF_JMP_JGE_K 0x40000000 0 1
+     , bpfStmt BPF_RET_K 0x00050001
+     , bpfJump BPF_JMP_JGE_K 500 0 1
+     , bpfStmt BPF_RET_K 0x7fff0000
+     , bpfStmt BPF_RET_K 0x00050001 ]
+
+example : ¬ Core.AllPass (test_seccomp_rawDenyTableAndDefaultAllow_all33AndOtherSyscalls
+    { stubApi with compileSeccompBpf := mutantDenyBelow500AndX32OnAllArchsBpf }) := by
+  intro h
+  have h0 := h.2.2 {}
+  have hAllowX := h0.2.2 { arch := 0xc000003e, nr := 500 } ⟨rfl, by decide, by decide⟩
+  have hAllowA := hAllowX.2 { arch := 0xc00000b7, nr := 0x40000000 } ⟨rfl, by decide⟩
+  exact absurd hAllowA.1 (by decide)
+
+private def mutantSendmmsgWrongArg2Bpf : SeccompArch → Array SockFilter
+  | arch =>
+    let sendtoNr : UInt32 := match arch with | .x86_64 => 44 | .aarch64 => 206
+    let sendmsgNr : UInt32 := match arch with | .x86_64 => 46 | .aarch64 => 211
+    let sendmmsgNr : UInt32 := match arch with | .x86_64 => 307 | .aarch64 => 269
+    #[ bpfStmt BPF_LD_W_ABS 0
+     , bpfJump BPF_JMP_JEQ_K sendtoNr 0 5
+     , bpfStmt BPF_LD_W_ABS 40
+     , bpfStmt BPF_ALU_AND_K 0x20000000
+     , bpfJump BPF_JMP_JEQ_K 0 1 0
+     , bpfStmt BPF_RET_K 0x00050001
+     , bpfStmt BPF_RET_K 0x7fff0000
+     , bpfJump BPF_JMP_JEQ_K sendmsgNr 0 5
+     , bpfStmt BPF_LD_W_ABS 32
+     , bpfStmt BPF_ALU_AND_K 0x20000000
+     , bpfJump BPF_JMP_JEQ_K 0 1 0
+     , bpfStmt BPF_RET_K 0x00050001
+     , bpfStmt BPF_RET_K 0x7fff0000
+     , bpfJump BPF_JMP_JEQ_K sendmmsgNr 0 5
+     , bpfStmt BPF_LD_W_ABS 32
+     , bpfStmt BPF_ALU_AND_K 0x20000000
+     , bpfJump BPF_JMP_JEQ_K 0 1 0
+     , bpfStmt BPF_RET_K 0x00050001
+     , bpfStmt BPF_RET_K 0x7fff0000
+     , bpfStmt BPF_RET_K 0x7fff0000 ]
+
+example : ¬ Core.AllPass (test_seccomp_rawSendFastopen_exactArgIndices
+    { stubApi with compileSeccompBpf := mutantSendmmsgWrongArg2Bpf }) := by
+  intro h
+  have h0 := h { args := { a2 := 0, a3 := 0x20000000 } }
+  exact absurd h0.2.2.2.2.2.1 (by decide)
+
+private def mutantSocketpairAllowDgramBpf : SeccompArch → Array SockFilter
+  | arch =>
+    let sockNr : UInt32 := match arch with | .x86_64 => 41 | .aarch64 => 198
+    let pairNr : UInt32 := match arch with | .x86_64 => 53 | .aarch64 => 199
+    #[ bpfStmt BPF_LD_W_ABS 0
+     , bpfJump BPF_JMP_JEQ_K sockNr 0 5
+     , bpfStmt BPF_LD_W_ABS 16
+     , bpfJump BPF_JMP_JEQ_K 1 1 0
+     , bpfJump BPF_JMP_JEQ_K 43 0 1
+     , bpfStmt BPF_RET_K 0x00050001
+     , bpfStmt BPF_RET_K 0x7fff0000
+     , bpfJump BPF_JMP_JEQ_K pairNr 0 11
+     , bpfStmt BPF_LD_W_ABS 16
+     , bpfJump BPF_JMP_JEQ_K 1 0 7
+     , bpfStmt BPF_LD_W_ABS 32
+     , bpfJump BPF_JMP_JEQ_K 0 0 5
+     , bpfStmt BPF_LD_W_ABS 24
+     , bpfStmt BPF_ALU_AND_K 0xfff7f7ff
+     , bpfJump BPF_JMP_JEQ_K 1 3 0
+     , bpfJump BPF_JMP_JEQ_K 2 2 0
+     , bpfJump BPF_JMP_JEQ_K 5 1 0
+     , bpfStmt BPF_RET_K 0x00050001
+     , bpfStmt BPF_RET_K 0x7fff0000
+     , bpfStmt BPF_RET_K 0x7fff0000 ]
+
+example : ¬ Core.AllPass (test_seccomp_rawSocketAndSocketpair_afUnixSmcAndAnonPair
+    { stubApi with compileSeccompBpf := mutantSocketpairAllowDgramBpf }) := by
+  intro h
+  have h0 := h { args := { a0 := 1, a1 := 2, a2 := 0 } }
+  exact absurd h0.2.2.2.1 (by decide)
 
 end LeanSwe.ProcessSandbox

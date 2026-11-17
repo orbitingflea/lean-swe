@@ -1,5 +1,5 @@
 import LeanSwe.ProcessSandbox.Types
-import LeanSwe.ProcessSandbox.Model.Seccomp
+import LeanSwe.ProcessSandbox.Seccomp.Model
 
 namespace LeanSwe.ProcessSandbox.Model
 

@@ -1,9 +1,9 @@
-import LeanSwe.ProcessSandbox.Model.Seccomp
+import LeanSwe.ProcessSandbox.Seccomp.Model
 
 namespace LeanSwe.ProcessSandbox.Raw
 
 export LeanSwe.ProcessSandbox.Model
-  (SeccompArch SockFilter)
+  (SeccompArch SockFilter SECCOMP_MAX_INSNS)
 
 private def reprByteArray (bs : ByteArray) : Std.Format :=
   repr bs.toList
@@ -361,14 +361,18 @@ structure SandboxResourceCounts where
 structure RawProcessSandboxOpsM (m : Type → Type) where
   /-- Normalize a `SandboxRawError` into a `SandboxError` with a non-empty diagnostic message. -/
   mapRawError : SandboxRawError → SandboxError
+  /-- Decode a raw Linux `AUDIT_ARCH_*` constant (`0xc000003e` or `0xc00000b7`) into `SeccompArch`, failing closed with `.unavailable` on unsupported values. -/
+  decodeHostAuditArch : UInt32 → Except SandboxError SeccompArch
+  /-- Validate `CompiledSandboxPlan` and `8 * n`-byte (`1 ≤ n ≤ 160`) `seccomp` filter bytes and serialize them into `LSWP0002` wire format. -/
+  encodePlan : CompiledSandboxPlan → ByteArray → Except SandboxError ByteArray
   /-- Query the host's native 64-bit Linux `seccomp` audit architecture (`x86_64` or `aarch64`), failing closed with `.unavailable` on unsupported hosts. -/
   hostSeccompArch : m (Except SandboxError SeccompArch)
   /-- Probe Linux kernel, `bwrap`, namespaces, Landlock ABI >= 4, `seccomp`, and direct `/sys/fs/cgroup` sibling directory plus `memory`/`pids` delegation, failing closed with `.unavailable`. -/
   preflight : PreflightReq → m (Except SandboxError Unit)
   /-- Discover existing `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` entries, safe `/etc` files, and existing nested host `$HOME` / `passwd.pw_dir` directories without touching `/home` autofs. -/
   discoverHostPreset : m (Except SandboxError HostRuntimePreset)
-  /-- Serialize and `F_ADD_SEALS`-seal a `CompiledSandboxPlan` (plus embedded init and synthetic `/etc/hosts` payloads) into immutable `memfd`s. -/
-  sealPlan : CompiledSandboxPlan → m (Except SandboxError PlanHandle)
+  /-- Serialize via `encodePlan` and `F_ADD_SEALS`-seal a `CompiledSandboxPlan` and encoded `seccomp` filter payload (plus embedded init and synthetic `/etc/hosts` payloads) into immutable `memfd`s. -/
+  sealPlan : CompiledSandboxPlan → ByteArray → m (Except SandboxError PlanHandle)
   /-- Close and release a sealed `PlanHandle`. -/
   closePlan : PlanHandle → m (Except SandboxError Unit)
   /-- Create per-box direct `cgroup v2` directory (`memory.max`, `memory.swap.max = "0"`, `pids.max = pidsMax + 2`), spawn `bwrap --unshare-all --as-pid-1 --die-with-parent` via the dedicated `pthread_once` spawner thread using fresh `O_RDONLY` `/proc/self/fd/<memfd>` descriptors, place child into `cgroup.procs` before `execvp`, open `pidfd`, and complete pre-`execvp` setup barrier. -/

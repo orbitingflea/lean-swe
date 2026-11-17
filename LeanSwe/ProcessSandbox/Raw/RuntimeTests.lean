@@ -66,7 +66,8 @@ def runAllOutcome : IO (Option String) := do
   assertErrKind (← Raw.stopPortForwarders forgedFwd) .invalidInput "stopPortForwarders rejects 0"
 
   let mockFailOps := Internal.mkRawOps
-    { preflight := fun _ _ => pure (1, 13, "/sys/fs/cgroup", "mock preflight fail")
+    { hostArch := pure 0xc000003e
+      preflight := fun _ _ => pure (1, 13, "/sys/fs/cgroup", "mock preflight fail")
       discoverPreset := pure (1, 13, "unused", #[], #[], #[])
       sealPlan := fun _ => pure (1, 13, "", "unused", 0)
       closePlan := fun _ => pure (1, 13, "", "unused")
@@ -90,8 +91,9 @@ def runAllOutcome : IO (Option String) := do
     let validBase ← match validateSpecPure { program := "/bin/sh", args := #["-c", "cat; echo raw_err >&2"] } with
       | .ok v => pure v
       | .error e => throw (IO.userError s!"unexpected validateSpecPure error: {repr e}")
+    let seccompBytes := encodeSeccompBpfModel #[bpfStmt BPF_RET_K SECCOMP_RET_ALLOW]
     let plan := compilePlan validBase preset
-    let ph ← assertOk (← Raw.sealPlan plan) "sealPlan"
+    let ph ← assertOk (← Raw.sealPlan plan seccompBytes) "sealPlan"
     assertTrue (isValidSandboxHandleId ph.handleId) "sealPlan valid handleId"
     assertTrue ((← Raw.activeResourceCounts).openPlans == 1) "openPlans == 1"
 
@@ -118,7 +120,7 @@ def runAllOutcome : IO (Option String) := do
         { program := "/bin/true", mounts := #[.readOnly missingHost "/mnt"] } with
       | .ok v => pure v
       | .error e => throw (IO.userError s!"unexpected validateSpecPure error: {repr e}")
-    let phMiss ← assertOk (← Raw.sealPlan (compilePlan validMissing preset)) "sealPlan missing host"
+    let phMiss ← assertOk (← Raw.sealPlan (compilePlan validMissing preset) seccompBytes) "sealPlan missing host"
     try
       assertErrKind (← Raw.spawnBox phMiss) .notFound "spawnBox missing hostPath -> notFound"
     finally
@@ -130,7 +132,7 @@ def runAllOutcome : IO (Option String) := do
         { program := "/bin/true", mounts := #[.readOnly (noAccessDir / "sub").toString "/mnt"] } with
       | .ok v => pure v
       | .error e => throw (IO.userError s!"unexpected validateSpecPure error: {repr e}")
-    let phPerm ← assertOk (← Raw.sealPlan (compilePlan validPerm preset)) "sealPlan EACCES host"
+    let phPerm ← assertOk (← Raw.sealPlan (compilePlan validPerm preset) seccompBytes) "sealPlan EACCES host"
     try
       assertErrKind (← Raw.spawnBox phPerm) .permissionDenied
         "spawnBox unsearchable hostPath -> permissionDenied"
@@ -145,7 +147,7 @@ def runAllOutcome : IO (Option String) := do
           mounts := #[.readOnly roParent.toString "/work", .scratch "/work/new_nested_subdir"] } with
       | .ok v => pure v
       | .error e => throw (IO.userError s!"unexpected validateSpecPure error: {repr e}")
-    let phErofs ← assertOk (← Raw.sealPlan (compilePlan validErofs preset)) "sealPlan EROFS nested"
+    let phErofs ← assertOk (← Raw.sealPlan (compilePlan validErofs preset) seccompBytes) "sealPlan EROFS nested"
     try
       assertErrKind (← Raw.spawnBox phErofs) .unavailable
         "spawnBox nested mountpoint EROFS under RO parent fails closed .unavailable"
@@ -157,7 +159,7 @@ def runAllOutcome : IO (Option String) := do
           portForwards := #[{ boxPort := 19111, hostPort := 19112 }] } with
       | .ok v => pure v
       | .error e => throw (IO.userError s!"unexpected validateSpecPure error: {repr e}")
-    let phFwd ← assertOk (← Raw.sealPlan (compilePlan validFwd preset)) "sealPlan fwd"
+    let phFwd ← assertOk (← Raw.sealPlan (compilePlan validFwd preset) seccompBytes) "sealPlan fwd"
     try
       let bhFwd ← assertOk (← Raw.spawnBox phFwd) "spawnBox fwd"
       try
@@ -182,7 +184,7 @@ def runAllOutcome : IO (Option String) := do
     let validMany ← match validateSpecPure { program := "/bin/true", portForwards := manyPorts } with
       | .ok v => pure v
       | .error e => throw (IO.userError s!"unexpected validateSpecPure error: {repr e}")
-    let phMany ← assertOk (← Raw.sealPlan (compilePlan validMany preset)) "sealPlan 34 fwds"
+    let phMany ← assertOk (← Raw.sealPlan (compilePlan validMany preset) seccompBytes) "sealPlan 34 fwds"
     try
       let bhMany ← assertOk (← Raw.spawnBox phMany) "spawnBox 34 fwds (>32 SCM_RIGHTS batch)"
       try

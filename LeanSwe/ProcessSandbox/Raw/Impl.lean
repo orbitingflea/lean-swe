@@ -3,7 +3,7 @@ import LeanSwe.ProcessSandbox.Raw.Types
 namespace LeanSwe.ProcessSandbox.Raw.Internal
 
 open LeanSwe.ProcessSandbox.Raw
-  (SeccompArch SockFilter
+  (SeccompArch SockFilter SECCOMP_MAX_INSNS
    SandboxErrorKind SandboxError SandboxRawError SandboxMount PortForward
    SandboxLimits PreflightReq PresetSystemEntry HostRuntimePreset
    CompiledSandboxPlan isValidSandboxHandleId PlanHandle BoxHandle
@@ -18,7 +18,7 @@ structure PosixRawOps where
   preflight : Bool → Bool → IO (UInt8 × UInt32 × String × String)
   /-- Discover system runtime preset entries, `/etc` paths, and nested `$HOME` directories. -/
   discoverPreset : IO (UInt8 × UInt32 × String × Array (UInt8 × String × String) × Array String × Array String)
-  /-- Create and seal `memfd` descriptors from serialized `LSWP0001` bytes. -/
+  /-- Create and seal `memfd` descriptors from serialized `LSWP0002` bytes. -/
   sealPlan : ByteArray → IO (UInt8 × UInt32 × String × String × UInt64)
   /-- Close and release a sealed plan handle. -/
   closePlan : UInt64 → IO (UInt8 × UInt32 × String × String)
@@ -165,8 +165,8 @@ private def pushStr (ba : ByteArray) (s : String) : Except SandboxError ByteArra
 private def boolU8 (b : Bool) : UInt8 :=
   if b then 1 else 0
 
-/-- Serialize a `CompiledSandboxPlan` into `LSWP0001` binary bytes after verifying mandatory sandbox invariants. -/
-def encodePlan (plan : CompiledSandboxPlan) : Except SandboxError ByteArray := do
+/-- Serialize a `CompiledSandboxPlan` and `8 * n`-byte (`1 ≤ n ≤ 160`) `seccomp` filter into `LSWP0002` binary bytes after verifying mandatory sandbox invariants. -/
+def encodePlan (plan : CompiledSandboxPlan) (seccompBytes : ByteArray) : Except SandboxError ByteArray := do
   if !plan.emptyRoot || !plan.unshareAllNamespaces || !plan.mountFreshProc || !plan.mountSafeDev ||
       !plan.directCgroupV2Fs || plan.landlockMinAbi < 4 || !plan.blockUnixSocketAndSmc ||
       !plan.allowAnonUnixSocketpair || !plan.clone3EnosysFallback || !plan.seccompStrictDenylist ||
@@ -178,7 +178,9 @@ def encodePlan (plan : CompiledSandboxPlan) : Except SandboxError ByteArray := d
     .error (mapRawError (.invalidArgument none none "compiled plan has invalid zero limit"))
   if plan.portForwards.any (fun pf => pf.boxPort == 0 || pf.hostPort == 0) then
     .error (mapRawError (.invalidArgument none none "compiled plan has zero port"))
-  let mut ba := "LSWP0001".toUTF8
+  if seccompBytes.size == 0 || seccompBytes.size % 8 != 0 || seccompBytes.size > 8 * SECCOMP_MAX_INSNS then
+    .error (mapRawError (.invalidArgument none none "compiled seccomp filter must contain 1..160 8-byte instructions"))
+  let mut ba := "LSWP0002".toUTF8
   ba := pushU8 ba (boolU8 plan.emptyRoot)
   ba := pushU8 ba (boolU8 plan.unshareAllNamespaces)
   ba := pushU8 ba (boolU8 plan.mountFreshProc)
@@ -246,11 +248,14 @@ def encodePlan (plan : CompiledSandboxPlan) : Except SandboxError ByteArray := d
   for pf in plan.portForwards do
     ba := pushU16LE ba pf.boxPort
     ba := pushU16LE ba pf.hostPort
-  return ba
+  ba := pushU32LE ba (UInt32.ofNat (seccompBytes.size / 8))
+  return ba ++ seccompBytes
 
 /-- Construct a concrete `RawProcessSandboxOps` bundle backed by injected POSIX FFI hooks. -/
 def mkRawOps (posix : PosixRawOps) : RawProcessSandboxOps :=
   { mapRawError := mapRawError
+    decodeHostAuditArch := decodeHostAuditArch
+    encodePlan := encodePlan
     hostSeccompArch := catchSandbox do
       let raw ← posix.hostArch
       return decodeHostAuditArch raw
@@ -270,8 +275,8 @@ def mkRawOps (posix : PosixRawOps) : RawProcessSandboxOps :=
         { systemEntries := sysEntries
           etcPaths := etcPaths
           excludedHomePaths := homePaths }
-    sealPlan := fun plan => catchSandbox do
-      match encodePlan plan with
+    sealPlan := fun plan seccompBytes => catchSandbox do
+      match encodePlan plan seccompBytes with
       | .error e => return .error e
       | .ok bytes =>
         let (tag, errnum, path, msg, hid) ← posix.sealPlan bytes

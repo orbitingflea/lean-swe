@@ -69,6 +69,15 @@ def defaultOps : RawProcessSandboxOps :=
 @[inline] def mapRawError (err : SandboxRawError) : SandboxError :=
   defaultOps.mapRawError err
 
+/-- Decode a raw Linux `AUDIT_ARCH_*` constant into `SeccompArch`, failing closed with `.unavailable`. -/
+@[inline] def decodeHostAuditArch (raw : UInt32) : Except SandboxError SeccompArch :=
+  defaultOps.decodeHostAuditArch raw
+
+/-- Validate `CompiledSandboxPlan` and `8 * n`-byte `seccomp` filter bytes and serialize them into `LSWP0002` wire format. -/
+@[inline] def encodePlan (plan : CompiledSandboxPlan) (seccompBytes : ByteArray) :
+    Except SandboxError ByteArray :=
+  defaultOps.encodePlan plan seccompBytes
+
 /-- Query the host's native 64-bit Linux `seccomp` audit architecture (`x86_64` or `aarch64`), failing closed with `.unavailable`. -/
 @[inline] def hostSeccompArch : IO (Except SandboxError SeccompArch) :=
   defaultOps.hostSeccompArch
@@ -81,9 +90,10 @@ def defaultOps : RawProcessSandboxOps :=
 @[inline] def discoverHostPreset : IO (Except SandboxError HostRuntimePreset) :=
   defaultOps.discoverHostPreset
 
-/-- Serialize and `F_ADD_SEALS`-seal a `CompiledSandboxPlan` into immutable `memfd` descriptors. -/
-@[inline] def sealPlan (plan : CompiledSandboxPlan) : IO (Except SandboxError PlanHandle) :=
-  defaultOps.sealPlan plan
+/-- Serialize via `encodePlan` and `F_ADD_SEALS`-seal a `CompiledSandboxPlan` and encoded `seccomp` filter into immutable `memfd` descriptors. -/
+@[inline] def sealPlan (plan : CompiledSandboxPlan) (seccompBytes : ByteArray) :
+    IO (Except SandboxError PlanHandle) :=
+  defaultOps.sealPlan plan seccompBytes
 
 /-- Close and release a sealed `PlanHandle`. -/
 @[inline] def closePlan (ph : PlanHandle) : IO (Except SandboxError Unit) :=
