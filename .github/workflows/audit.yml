@@ -93,6 +93,7 @@ jobs:
         run: |
           set -euo pipefail
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail lean-swe-mut-test
 
       - name: Run runtime test suites
         run: |
@@ -118,7 +119,12 @@ jobs:
               with open(s, "a", encoding="utf-8") as f:
                   f.write(f"`{line}`\n\n")
           '
-          .lake/build/bin/lean-swe-test
+          ASSUMP_NONCE=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+          ASSUMP_LOG="${RUNNER_TEMP:-/tmp}/assump-${GITHUB_RUN_ID:-local}.log"
+          rm -f "$ASSUMP_LOG"
+          echo "ASSUMP_NONCE=$ASSUMP_NONCE" >> "$GITHUB_ENV"
+          echo "ASSUMP_LOG=$ASSUMP_LOG" >> "$GITHUB_ENV"
+          .lake/build/bin/lean-swe-test --assump-log "$ASSUMP_LOG" --assump-nonce "$ASSUMP_NONCE"
 
       - name: Check 1 GB private-memory cap on changed modules and reverse dependents
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -148,6 +154,9 @@ jobs:
 
       - name: Check spec promise theorem coverage
         run: lake env lean --run scripts/CheckPromises.lean .lake/build/lib/lean
+
+      - name: Check assumptions and error coverage
+        run: lake env lean --run scripts/CheckAssumptions.lean --allow-legacy --verify-log "$ASSUMP_LOG" --nonce "$ASSUMP_NONCE"
 
       - name: Save build folder cache
         if: >-

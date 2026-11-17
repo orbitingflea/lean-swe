@@ -11,6 +11,7 @@ package «lean-swe» where
     ⟨`weak.linter.unusedVariables, true⟩
   ]
 
+@[default_target]
 lean_lib Core where
   globs := #[.submodules `Core]
 
@@ -137,3 +138,6 @@ extern_lib «leanswe_connectproxy» pkg := do
 @[default_target, test_driver]
 lean_exe «lean-swe-test» where
   root := `Tests.Main
+
+lean_exe «lean-swe-mut-test» where
+  root := `Tests.MutateDriver
