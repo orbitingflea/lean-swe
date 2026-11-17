@@ -43,6 +43,19 @@ def test_psandboxRaw_mapRawError_preservesKindAndFields
   | .userError _ =>
     NondetTest.assert (err.kind = .ioError ∧ err.path = none ∧ err.errnoCode = none)
 
+/-- When `ops.hostSeccompArch` fails, it fails closed with `.unavailable`, a non-empty message, and unchanged resource counts; when it succeeds, resource counts are unchanged. -/
+def test_psandboxRaw_hostSeccompArch_failClosedUnavailable
+    {S : Type} {runner} [NondetTest runner] (ops : RawProcessSandboxOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let c₀ := (ops.activeResourceCounts.run s₀).1
+  let (res, s₁) := ops.hostSeccompArch.run s₀
+  let c₁ := (ops.activeResourceCounts.run s₁).1
+  match res with
+  | .ok arch =>
+    NondetTest.assert ((arch = .x86_64 ∨ arch = .aarch64) ∧ c₁ = c₀)
+  | .error err =>
+    NondetTest.assert (err.kind = .unavailable ∧ err.message ≠ "" ∧ c₁ = c₀)
+
 /-- When `ops.preflight req` fails, it fails closed with `.unavailable`, a non-empty message, and unchanged resource counts. -/
 def test_psandboxRaw_preflight_failClosedUnavailable
     {S : Type} {runner} [NondetTest runner] (ops : RawProcessSandboxOpsM (StateM S)) : runner Unit := do
@@ -137,16 +150,16 @@ def test_psandboxRaw_boxAndForwarderLifecycle_conservesResources
 
 /-- External trust boundary assumptions for `LeanSwe.ProcessSandbox.Raw` (`psandbox_shim.c` and `psandbox_init.c`) grounded in `RuntimeTests.lean`. -/
 structure EmpiricalAssumptions where
-  /-- `preflight` verifies Linux host, `bwrap` availability, unprivileged `user`/`pid`/`net`/`mount`/`ipc`/`uts` namespace creation, Landlock `landlock_create_ruleset` ABI >= 4, `seccomp` BPF support, and direct `/sys/fs/cgroup` sibling cgroup creation plus `memory` (`memory.max`, ignoring `ENOENT` on `memory.swap.max` on swapless kernels) and `pids` (`pids.max`) controller delegation when requested, failing closed with `.unavailable`. -/
+  /-- `leanswe_psandbox_host_arch` returns the native host `AUDIT_ARCH_X86_64` (`0xc000003e`) or `AUDIT_ARCH_AARCH64` (`0xc00000b7`) constant (`0` otherwise), and `preflight` verifies Linux host, `bwrap` availability, unprivileged `user`/`pid`/`net`/`mount`/`ipc`/`uts` namespace creation, Landlock `landlock_create_ruleset` ABI >= 4, `seccomp` BPF support, and direct `/sys/fs/cgroup` sibling cgroup creation plus `memory` (`memory.max`, ignoring `ENOENT` on `memory.swap.max` on swapless kernels) and `pids` (`pids.max`) controller delegation when requested, failing closed with `.unavailable`. -/
   preflightProbesNamespacesLandlockV4AndDirectCgroupV2 : Prop
   /-- `discoverHostPreset` inspects `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` via `lstat` (preserving top-level symlinks such as `/bin -> usr/bin`), checks the 9 allowlisted `/etc` paths, reads `getenv("HOME")` plus `getpwuid_r(getuid())` without touching unmounted `/home` autofs mounts, and includes nested home paths (including through symlinked system roots) in `excludedHomePaths` iff `stat` confirms the host directory exists. -/
   discoverHostPresetPreservesTopSymlinksAndAvoidsAutofs : Prop
-  /-- `sealPlan` writes the serialized `CompiledSandboxPlan`, embedded `leanswe-psandbox-init` (`--perms 0555 --ro-bind-data <fd> /etc/.leanswe-psandbox-init`), and synthetic `/etc/hosts` (`127.0.0.1 localhost\n::1 localhost\n`) into `memfd_create(..., MFD_CLOEXEC | MFD_ALLOW_SEALING)` descriptors sealed with `F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE`, and `spawnBox` opens fresh per-spawn `open("/proc/self/fd/<memfd>", O_RDONLY)` descriptors to avoid shared-offset `lseek` races across concurrent `run` calls. -/
+  /-- `sealPlan` writes the serialized `CompiledSandboxPlan` (including the Lean-compiled `8 * n`-byte little-endian `sock_filter` array for the host architecture), embedded `leanswe-psandbox-init` (`--perms 0555 --ro-bind-data <fd> /etc/.leanswe-psandbox-init`), and synthetic `/etc/hosts` (`127.0.0.1 localhost\n::1 localhost\n`) into `memfd_create(..., MFD_CLOEXEC | MFD_ALLOW_SEALING)` descriptors sealed with `F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE`, and `spawnBox` opens fresh per-spawn `open("/proc/self/fd/<memfd>", O_RDONLY)` descriptors to avoid shared-offset `lseek` races across concurrent `run` calls. -/
   memfdPlanAndInitSealedImmutable : Prop
   /-- `spawnBox` never uses `systemd-run --user --scope` (which closes inherited FDs `>= 3` with `EBADF`); instead `psandbox_shim.c` always creates a per-box sibling directory in `/sys/fs/cgroup` under `/proc/self/cgroup`'s delegated parent, writes `memory.max`, `memory.swap.max = "0"` (ignoring `ENOENT`), and `pids.max = pidsMax + 2` (for the 2 `--as-pid-1` wrapper tasks), spawns `bwrap --unshare-all --as-pid-1 --die-with-parent` from a dedicated `pthread_once` process-lifetime spawner thread (avoiding Linux `PR_SET_PDEATHSIG` misfires on short-lived Lean `Task` worker pthreads), places child PID into `cgroup.procs` before `execvp`, prechecks user mount `hostPath`s (`.notFound`/`.permissionDenied`) while mapping pre-`execvp` nested mountpoint `EROFS` to `.unavailable`, opens a race-free `pidfd`, and `reapBox` writes `cgroup.kill = "1"`, reaps `bwrap`, and polls `cgroup.events` (`populated 0`) with bounded `EBUSY`-retrying `rmdir`. -/
   directCgroupV2FsScopeAndCgroupKillRmdir : Prop
-  /-- `psandbox_init.c` runs under `bwrap` with `--perms 0000 --tmpfs <mask> --remount-ro <mask>` on `maskedPresetPaths` and trailing `--remount-ro /`, sets `PR_SET_PDEATHSIG(SIGKILL)` and `PR_SET_CHILD_SUBREAPER`, sets `RLIMIT_CORE = 0` and `RLIMIT_FSIZE`, binds `127.0.0.1:boxPort` listeners inside the box `net` namespace and hands them over `SCM_RIGHTS` before closing the control socket while keeping `O_CLOEXEC` `status_pipe` and `exec_err_pipe` reporting `{ EXEC_ERR(errno, isCwd), EXITED(code), SIGNALED(sig) }` (`ENOENT -> .notFound`, `EACCES | EPERM -> .permissionDenied`, other `errno -> .ioError`), installs `PR_SET_NO_NEW_PRIVS = 1`, Landlock ABI v4 rules (`handled_access_fs` masked strictly to ABI v4 bits without `IOCTL_DEV`, strictly `READ_DIR` on `"/"`, opening targets without `O_NOFOLLOW`, stripping directory-only bits when `!S_ISDIR`, granting `EXECUTE` on presets/mounts/`/tmp`, and setting `handled_access_net = 0` when `allowBoxLocalhost = true` vs `BIND_TCP | CONNECT_TCP` when `false`), and `seccomp` BPF returning `SECCOMP_RET_ERRNO | ENOSYS` on `clone3`, `EPERM` on `clone` iff `(flags & 0x7e020000) != 0` (excluding `0x80` `CSIGNAL`), blocking `socket(AF_UNIX, ...)`, `AF_SMC`, `MSG_FASTOPEN`, and admin/escape syscalls while allowing `socketpair(AF_UNIX, type, 0, sv)` when `(type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK)) ∈ {SOCK_STREAM, SOCK_SEQPACKET}`, clears inherited env (`clearenv`), and reaps all descendants via `kill(-1, SIGKILL)` + blocking `waitpid(-1, &s, 0)` until `ECHILD`. -/
-  psandboxInitLandlockSeccompClone3EnosysAndUnixSocketpair : Prop
+  /-- `psandbox_init.c` runs under `bwrap` with `--perms 0000 --tmpfs <mask> --remount-ro <mask>` on `maskedPresetPaths` and trailing `--remount-ro /`, sets `PR_SET_PDEATHSIG(SIGKILL)` and `PR_SET_CHILD_SUBREAPER`, sets `RLIMIT_CORE = 0` and `RLIMIT_FSIZE`, binds `127.0.0.1:boxPort` listeners inside the box `net` namespace and hands them over `SCM_RIGHTS` before closing the control socket while keeping `O_CLOEXEC` `status_pipe` and `exec_err_pipe` reporting `{ EXEC_ERR(errno, isCwd), EXITED(code), SIGNALED(sig) }` (`ENOENT -> .notFound`, `EACCES | EPERM -> .permissionDenied`, other `errno -> .ioError`), sets `PR_SET_NO_NEW_PRIVS = 1`, installs Landlock ABI v4 rules (`handled_access_fs` masked strictly to ABI v4 bits without `IOCTL_DEV`, strictly `READ_DIR` on `"/"`, opening targets without `O_NOFOLLOW`, stripping directory-only bits when `!S_ISDIR`, granting `EXECUTE` on presets/mounts/`/tmp`, and setting `handled_access_net = 0` when `allowBoxLocalhost = true` vs `BIND_TCP | CONNECT_TCP` when `false`), validates `0 < n && n <= 160` and `byte_len == 8 * n` before copying the Lean-compiled `sock_filter` slice unchanged into fixed `struct sock_filter buf[160]` and installing it via arch-correct `syscall(__NR_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog)` (with `ENOSYS` `prctl` fallback), clears inherited env (`clearenv`), and reaps all descendants via `kill(-1, SIGKILL)` + blocking `waitpid(-1, &s, 0)` until `ECHILD`. -/
+  psandboxInitLandlockAndBoundedSeccompLoader : Prop
   /-- `startPortForwarders` runs a non-blocking `poll()` TCP relay (`SOCK_NONBLOCK | SOCK_CLOEXEC`, `send(..., MSG_NOSIGNAL)`) capping concurrent active relay slots at `MAX_RELAY_SLOTS = 128` (clearing `listenerFd` `POLLIN` at capacity to prevent host `EMFILE`), gating `POLLIN`/`POLLOUT` on `16 KiB` per-direction ring buffers, propagating independent directional EOF via buffer drain + `shutdown(dstFd, SHUT_WR)` so TCP half-close works cleanly, and isolating per-slot socket/`ECONNREFUSED` errors, while `readBoxOutput` feeds `stdin` and bounds captured `stdout.size + stderr.size` to `maxOutputBytes` under monotonic `timeoutMs`. -/
   nonBlockingTcpForwarderAndBoundedOutputCapture : Prop
   /-- C-shim handle tables for `PlanHandle`, `BoxHandle`, and `PortForwarderHandle` allocate `0 < handleId < UInt64.size`, protect close/reap transitions under mutexes without FD-reuse races, and reject invalid/closed handles with `.invalidInput`. -/
@@ -174,6 +187,7 @@ private def mapRawErrStub : SandboxRawError → SandboxError
 
 private def stubRawOps : RawProcessSandboxOps :=
   { mapRawError := mapRawErrStub
+    hostSeccompArch := pure (.error { kind := .unavailable, message := "stub" })
     preflight := fun _ => pure (.error { kind := .unavailable, message := "stub" })
     discoverHostPreset := pure (.ok {})
     sealPlan := fun _ => pure (.error { kind := .unavailable, message := "stub" })
@@ -197,6 +211,9 @@ private structure RawMockState where
 
 private def stubStatefulRawOps : RawProcessSandboxOpsM (StateM RawMockState) :=
   { mapRawError := mapRawErrStub
+    hostSeccompArch := fun s =>
+      if s.preflightOk then (.ok .x86_64, s)
+      else (.error { kind := .unavailable, message := "unsupported host arch" }, s)
     preflight := fun _ s =>
       if s.preflightOk then (.ok (), s)
       else (.error { kind := .unavailable, message := "unavailable" }, s)
@@ -275,6 +292,13 @@ example : ¬ Core.AllPass (test_psandboxRaw_mapRawError_preservesKindAndFields
   intro h
   have h0 := h (.unavailable none "missing landlock")
   simp [assert] at h0
+
+example : ¬ Core.AllPass (test_psandboxRaw_hostSeccompArch_failClosedUnavailable
+    { stubStatefulRawOps with
+      hostSeccompArch := fun s => (.error { kind := .ioError, message := "wrong error kind" }, s) }) := by
+  intro h
+  have h0 := h {}
+  simp [StateT.run, assert] at h0
 
 example : ¬ Core.AllPass (test_psandboxRaw_preflight_failClosedUnavailable
     { stubStatefulRawOps with

@@ -3,6 +3,9 @@ import LeanSwe.ProcessSandbox.Raw.Impl
 
 namespace LeanSwe.ProcessSandbox.Raw
 
+@[extern "leanswe_psandbox_host_arch"]
+private opaque rawHostArch : IO UInt32
+
 @[extern "leanswe_psandbox_preflight"]
 private opaque rawPreflight : Bool → Bool → IO (UInt8 × UInt32 × String × String)
 
@@ -44,7 +47,8 @@ private opaque rawReapBox : UInt64 → IO (UInt8 × UInt32 × String × String)
 private opaque rawActiveCounts : IO (Nat × Nat × Nat)
 
 private def posixRawOps : Internal.PosixRawOps :=
-  { preflight := rawPreflight
+  { hostArch := rawHostArch
+    preflight := rawPreflight
     discoverPreset := rawDiscoverPreset
     sealPlan := rawSealPlan
     closePlan := rawClosePlan
@@ -64,6 +68,10 @@ def defaultOps : RawProcessSandboxOps :=
 /-- Normalize a `SandboxRawError` into a `SandboxError` with a non-empty diagnostic message. -/
 @[inline] def mapRawError (err : SandboxRawError) : SandboxError :=
   defaultOps.mapRawError err
+
+/-- Query the host's native 64-bit Linux `seccomp` audit architecture (`x86_64` or `aarch64`), failing closed with `.unavailable`. -/
+@[inline] def hostSeccompArch : IO (Except SandboxError SeccompArch) :=
+  defaultOps.hostSeccompArch
 
 /-- Probe Linux kernel, `bwrap`, namespaces, Landlock ABI >= 4, `seccomp`, and direct `/sys/fs/cgroup` delegation. -/
 @[inline] def preflight (req : PreflightReq := {}) : IO (Except SandboxError Unit) :=

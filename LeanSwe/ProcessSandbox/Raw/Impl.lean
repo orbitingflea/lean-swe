@@ -3,7 +3,8 @@ import LeanSwe.ProcessSandbox.Raw.Types
 namespace LeanSwe.ProcessSandbox.Raw.Internal
 
 open LeanSwe.ProcessSandbox.Raw
-  (SandboxErrorKind SandboxError SandboxRawError SandboxMount PortForward
+  (SeccompArch SockFilter
+   SandboxErrorKind SandboxError SandboxRawError SandboxMount PortForward
    SandboxLimits PreflightReq PresetSystemEntry HostRuntimePreset
    CompiledSandboxPlan isValidSandboxHandleId PlanHandle BoxHandle
    PortForwarderHandle SandboxResourceCounts SandboxOutcome SandboxResult
@@ -11,6 +12,8 @@ open LeanSwe.ProcessSandbox.Raw
 
 /-- FFI hooks injected by `LeanSwe.ProcessSandbox.Raw.Interface`. -/
 structure PosixRawOps where
+  /-- Return the host's native `AUDIT_ARCH_*` constant (`0` on unsupported platforms). -/
+  hostArch : IO UInt32
   /-- Probe Linux, `bwrap`, Landlock ABI >= 4, `seccomp`, namespaces, and direct `cgroup v2`. -/
   preflight : Bool → Bool → IO (UInt8 × UInt32 × String × String)
   /-- Discover system runtime preset entries, `/etc` paths, and nested `$HOME` directories. -/
@@ -116,6 +119,12 @@ def catchSandbox {α : Type} (act : IO (Except SandboxError α)) : IO (Except Sa
     return (← act)
   catch err =>
     return .error (mapRawError (ioErrorToRaw err))
+
+/-- Decode a raw Linux `AUDIT_ARCH_*` word into `SeccompArch`, failing closed with `.unavailable` on unsupported hosts. -/
+def decodeHostAuditArch (raw : UInt32) : Except SandboxError SeccompArch :=
+  match LeanSwe.ProcessSandbox.Model.seccompArchOfAudit? raw with
+  | some arch => .ok arch
+  | none => .error (mapRawError (.unavailable none "unsupported host architecture for seccomp"))
 
 private def pushU8 (ba : ByteArray) (v : UInt8) : ByteArray :=
   ba.push v
@@ -242,6 +251,9 @@ def encodePlan (plan : CompiledSandboxPlan) : Except SandboxError ByteArray := d
 /-- Construct a concrete `RawProcessSandboxOps` bundle backed by injected POSIX FFI hooks. -/
 def mkRawOps (posix : PosixRawOps) : RawProcessSandboxOps :=
   { mapRawError := mapRawError
+    hostSeccompArch := catchSandbox do
+      let raw ← posix.hostArch
+      return decodeHostAuditArch raw
     preflight := fun req => catchSandbox do
       let (tag, errnum, _path, msg) ← posix.preflight req.needMemoryCgroup req.needPidsCgroup
       if tag == 0 then

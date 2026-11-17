@@ -14,6 +14,14 @@ def ensureNonEmptyMsg (fallback : String) (err : SandboxError) : SandboxError :=
 def validateSpec (spec : BoxSpec) : Except SandboxError ValidBoxSpec :=
   validateSpecPure spec
 
+/-- Stage 2 compile-only placeholder replaced in Stage 4 by `LeanSwe.ProcessSandbox.Impl.Seccomp.compileSeccompBpf`. -/
+def compileSeccompBpf (_arch : SeccompArch) : Array SockFilter :=
+  #[]
+
+/-- Stage 2 compile-only placeholder replaced in Stage 4 by `LeanSwe.ProcessSandbox.Impl.Seccomp.encodeSeccompBpf`. -/
+def encodeSeccompBpf (_prog : Array SockFilter) : ByteArray :=
+  ByteArray.empty
+
 /-- Run `spec` inside a freshly compiled, sealed, and cgroup-bounded sandbox using `MonadFinally` brackets for leak-free teardown. -/
 def runGeneric {m : Type → Type} [Monad m] [MonadFinally m]
     (raw : RawProcessSandboxOpsM m) (spec : BoxSpec) : m (Except SandboxError SandboxResult) := do
@@ -88,6 +96,8 @@ def isAvailableGeneric {m : Type → Type} [Monad m] (raw : RawProcessSandboxOps
 def mkApiM {m : Type → Type} [Monad m] [MonadFinally m]
     (raw : RawProcessSandboxOpsM m) : ProcessSandboxApiM m :=
   { validateSpec := validateSpec
+    compileSeccompBpf := compileSeccompBpf
+    encodeSeccompBpf := encodeSeccompBpf
     run := runGeneric raw
     isAvailable := isAvailableGeneric raw }
 

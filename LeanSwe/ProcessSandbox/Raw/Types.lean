@@ -1,4 +1,9 @@
+import LeanSwe.ProcessSandbox.Model.Seccomp
+
 namespace LeanSwe.ProcessSandbox.Raw
+
+export LeanSwe.ProcessSandbox.Model
+  (SeccompArch SockFilter)
 
 private def reprByteArray (bs : ByteArray) : Std.Format :=
   repr bs.toList
@@ -356,6 +361,8 @@ structure SandboxResourceCounts where
 structure RawProcessSandboxOpsM (m : Type → Type) where
   /-- Normalize a `SandboxRawError` into a `SandboxError` with a non-empty diagnostic message. -/
   mapRawError : SandboxRawError → SandboxError
+  /-- Query the host's native 64-bit Linux `seccomp` audit architecture (`x86_64` or `aarch64`), failing closed with `.unavailable` on unsupported hosts. -/
+  hostSeccompArch : m (Except SandboxError SeccompArch)
   /-- Probe Linux kernel, `bwrap`, namespaces, Landlock ABI >= 4, `seccomp`, and direct `/sys/fs/cgroup` sibling directory plus `memory`/`pids` delegation, failing closed with `.unavailable`. -/
   preflight : PreflightReq → m (Except SandboxError Unit)
   /-- Discover existing `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` entries, safe `/etc` files, and existing nested host `$HOME` / `passwd.pw_dir` directories without touching `/home` autofs. -/
