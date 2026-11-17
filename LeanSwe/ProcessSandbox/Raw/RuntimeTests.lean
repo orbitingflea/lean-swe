@@ -63,6 +63,19 @@ def runAllOutcome : IO (Option String) := do
   assertErrKind (← Raw.killProcessGroup forgedBox) .invalidInput "killProcessGroup rejects 0"
   assertErrKind (← Raw.pidfdKill forgedBox) .invalidInput "pidfdKill rejects 0"
   assertErrKind (← Raw.reapBox forgedBox) .invalidInput "reapBox rejects 0"
+
+  let arch ← assertOk (← Raw.hostSeccompArch) "hostSeccompArch"
+  assertTrue (arch == .x86_64 || arch == .aarch64) "hostSeccompArch returns supported arch"
+  let validTrue ← match validateSpecPure { program := "/bin/true" } with
+    | .ok v => pure v
+    | .error e => throw (IO.userError s!"unexpected validateSpecPure error: {repr e}")
+  let invalidSeccompPlan := compilePlan validTrue preset
+  assertErrKind (← Raw.sealPlan invalidSeccompPlan ByteArray.empty) .invalidInput
+    "sealPlan rejects empty seccomp BPF payload"
+  assertErrKind (← Raw.sealPlan invalidSeccompPlan (ByteArray.mk #[1, 2, 3])) .invalidInput
+    "sealPlan rejects non-8-byte-aligned seccomp BPF payload"
+  assertErrKind (← Raw.sealPlan invalidSeccompPlan (ByteArray.mk (Array.replicate (161 * 8) 0))) .invalidInput
+    "sealPlan rejects > 160-instruction seccomp BPF payload"
   assertErrKind (← Raw.stopPortForwarders forgedFwd) .invalidInput "stopPortForwarders rejects 0"
 
   let mockFailOps := Internal.mkRawOps

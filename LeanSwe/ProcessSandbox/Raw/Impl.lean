@@ -126,22 +126,26 @@ def decodeHostAuditArch (raw : UInt32) : Except SandboxError SeccompArch :=
   | some arch => .ok arch
   | none => .error (mapRawError (.unavailable none "unsupported host architecture for seccomp"))
 
-private def pushU8 (ba : ByteArray) (v : UInt8) : ByteArray :=
+/-- Append a single byte to a `ByteArray`. -/
+def pushU8 (ba : ByteArray) (v : UInt8) : ByteArray :=
   ba.push v
 
-private def pushU16LE (ba : ByteArray) (v : UInt16) : ByteArray :=
+/-- Append a little-endian `UInt16` to a `ByteArray`. -/
+def pushU16LE (ba : ByteArray) (v : UInt16) : ByteArray :=
   let n := v.toNat
   ba.push (UInt8.ofNat (n % 256))
     |>.push (UInt8.ofNat ((n / 256) % 256))
 
-private def pushU32LE (ba : ByteArray) (v : UInt32) : ByteArray :=
+/-- Append a little-endian `UInt32` to a `ByteArray`. -/
+def pushU32LE (ba : ByteArray) (v : UInt32) : ByteArray :=
   let n := v.toNat
   ba.push (UInt8.ofNat (n % 256))
     |>.push (UInt8.ofNat ((n / 256) % 256))
     |>.push (UInt8.ofNat ((n / 65536) % 256))
     |>.push (UInt8.ofNat ((n / 16777216) % 256))
 
-private def pushU64LE (ba : ByteArray) (v : UInt64) : ByteArray :=
+/-- Append a little-endian `UInt64` to a `ByteArray`. -/
+def pushU64LE (ba : ByteArray) (v : UInt64) : ByteArray :=
   let rec go (idx : Nat) (cur : UInt64) (acc : ByteArray) : ByteArray :=
     match idx with
     | 0 => acc
@@ -150,10 +154,12 @@ private def pushU64LE (ba : ByteArray) (v : UInt64) : ByteArray :=
       go k (cur >>> 8) (acc.push b)
   go 8 v ba
 
-private def hasNulByte (s : String) : Bool :=
-  s.toUTF8.toList.contains 0
+/-- Return `true` iff the UTF-8 encoding of `s` contains a NUL byte. -/
+def hasNulByte (s : String) : Bool :=
+  s.toUTF8.data.toList.contains 0
 
-private def pushStr (ba : ByteArray) (s : String) : Except SandboxError ByteArray := do
+/-- Append a length-prefixed NUL-free UTF-8 string to a `ByteArray`. -/
+def pushStr (ba : ByteArray) (s : String) : Except SandboxError ByteArray := do
   if hasNulByte s then
     .error (mapRawError (.invalidArgument none none "string contains NUL byte"))
   let utf := s.toUTF8
@@ -162,94 +168,109 @@ private def pushStr (ba : ByteArray) (s : String) : Except SandboxError ByteArra
   let ba := pushU32LE ba (UInt32.ofNat utf.size)
   return ba ++ utf
 
-private def boolU8 (b : Bool) : UInt8 :=
+/-- Encode a `Bool` as `1` or `0` (`UInt8`). -/
+def boolU8 (b : Bool) : UInt8 :=
   if b then 1 else 0
 
+/-- Serialize the body of a `CompiledSandboxPlan` before appending the `seccomp` filter trailer. -/
+def encodePlanPrefix (plan : CompiledSandboxPlan) : Except SandboxError ByteArray :=
+  let ba := "LSWP0002".toUTF8
+  let ba := pushU8 ba (boolU8 plan.emptyRoot)
+  let ba := pushU8 ba (boolU8 plan.unshareAllNamespaces)
+  let ba := pushU8 ba (boolU8 plan.mountFreshProc)
+  let ba := pushU8 ba (boolU8 plan.mountSafeDev)
+  let ba := pushU8 ba (boolU8 plan.directCgroupV2Fs)
+  let ba := pushU32LE ba (UInt32.ofNat (Nat.min plan.landlockMinAbi (UInt32.size - 1)))
+  let ba := pushU8 ba (boolU8 plan.allowBoxLocalhost)
+  let ba := pushU8 ba (boolU8 plan.blockUnixSocketAndSmc)
+  let ba := pushU8 ba (boolU8 plan.allowAnonUnixSocketpair)
+  let ba := pushU8 ba (boolU8 plan.clone3EnosysFallback)
+  let ba := pushU8 ba (boolU8 plan.seccompStrictDenylist)
+  let ba := pushU8 ba (boolU8 plan.noNewPrivs)
+  let ba := pushU8 ba (boolU8 plan.rlimitCoreZero)
+  let ba := pushU8 ba (boolU8 plan.subreaperAndPdeathsig)
+  let ba := pushU8 ba (boolU8 plan.cleanEnv)
+  let ba := pushU64LE ba (natToUInt64Sat plan.limits.timeoutMs)
+  let ba := pushU8 ba (boolU8 plan.limits.memoryMaxBytes.isSome)
+  let ba := pushU64LE ba (natToUInt64Sat (plan.limits.memoryMaxBytes.getD 0))
+  let ba := pushU8 ba (boolU8 plan.limits.pidsMax.isSome)
+  let ba := pushU64LE ba (natToUInt64Sat (plan.limits.pidsMax.getD 0))
+  let ba := pushU8 ba (boolU8 plan.limits.fileSizeMaxBytes.isSome)
+  let ba := pushU64LE ba (natToUInt64Sat (plan.limits.fileSizeMaxBytes.getD 0))
+  let ba := pushU8 ba (boolU8 plan.limits.maxOutputBytes.isSome)
+  let ba := pushU64LE ba (natToUInt64Sat (plan.limits.maxOutputBytes.getD 0))
+  do
+    let ba ← pushStr ba plan.program
+    let ba ← pushStr ba plan.cwd
+    let ba := pushU32LE ba (UInt32.ofNat plan.args.size)
+    let ba ← forIn plan.args ba fun a ba => do
+      let ba ← pushStr ba a
+      pure (ForInStep.yield ba)
+    let ba := pushU32LE ba (UInt32.ofNat plan.env.size)
+    let ba ← forIn plan.env ba fun (k, v) ba => do
+      let ba ← pushStr ba k
+      let ba ← pushStr ba v
+      pure (ForInStep.yield ba)
+    let ba := pushU32LE ba (UInt32.ofNat plan.presetSystemEntries.size)
+    let ba ← forIn plan.presetSystemEntries ba fun e ba => do
+      match e with
+      | .readOnlyDir p =>
+        let ba := pushU8 ba 0
+        let ba ← pushStr ba p
+        pure (ForInStep.yield ba)
+      | .topSymlink lp tgt =>
+        let ba := pushU8 ba 1
+        let ba ← pushStr ba lp
+        let ba ← pushStr ba tgt
+        pure (ForInStep.yield ba)
+    let ba := pushU32LE ba (UInt32.ofNat plan.presetEtcPaths.size)
+    let ba ← forIn plan.presetEtcPaths ba fun p ba => do
+      let ba ← pushStr ba p
+      pure (ForInStep.yield ba)
+    let ba := pushU32LE ba (UInt32.ofNat plan.maskedPresetPaths.size)
+    let ba ← forIn plan.maskedPresetPaths ba fun m ba => do
+      let ba ← pushStr ba m
+      pure (ForInStep.yield ba)
+    let ba := pushU32LE ba (UInt32.ofNat plan.userMounts.size)
+    let ba ← forIn plan.userMounts ba fun m ba => do
+      match m with
+      | .readOnly hp bp =>
+        let ba := pushU8 ba 0
+        let ba ← pushStr ba hp
+        let ba ← pushStr ba bp
+        pure (ForInStep.yield ba)
+      | .readWrite hp bp =>
+        let ba := pushU8 ba 1
+        let ba ← pushStr ba hp
+        let ba ← pushStr ba bp
+        pure (ForInStep.yield ba)
+      | .scratch bp =>
+        let ba := pushU8 ba 2
+        let ba ← pushStr ba bp
+        pure (ForInStep.yield ba)
+    let ba := pushU32LE ba (UInt32.ofNat plan.portForwards.size)
+    forIn plan.portForwards ba fun pf ba =>
+      pure (ForInStep.yield (pushU16LE (pushU16LE ba pf.boxPort) pf.hostPort))
+
 /-- Serialize a `CompiledSandboxPlan` and `8 * n`-byte (`1 ≤ n ≤ 160`) `seccomp` filter into `LSWP0002` binary bytes after verifying mandatory sandbox invariants. -/
-def encodePlan (plan : CompiledSandboxPlan) (seccompBytes : ByteArray) : Except SandboxError ByteArray := do
+def encodePlan (plan : CompiledSandboxPlan) (seccompBytes : ByteArray) : Except SandboxError ByteArray :=
   if !plan.emptyRoot || !plan.unshareAllNamespaces || !plan.mountFreshProc || !plan.mountSafeDev ||
       !plan.directCgroupV2Fs || plan.landlockMinAbi < 4 || !plan.blockUnixSocketAndSmc ||
       !plan.allowAnonUnixSocketpair || !plan.clone3EnosysFallback || !plan.seccompStrictDenylist ||
       !plan.noNewPrivs || !plan.rlimitCoreZero || !plan.subreaperAndPdeathsig || !plan.cleanEnv then
     .error (mapRawError (.invalidArgument none none "compiled plan violates mandatory sandbox invariants"))
-  if plan.program.isEmpty || plan.cwd.isEmpty then
+  else if plan.program.isEmpty || plan.cwd.isEmpty then
     .error (mapRawError (.invalidArgument none none "compiled plan requires non-empty program and cwd"))
-  if plan.limits.timeoutMs == 0 || plan.limits.memoryMaxBytes == some 0 || plan.limits.pidsMax == some 0 then
+  else if plan.limits.timeoutMs == 0 || plan.limits.memoryMaxBytes == some 0 || plan.limits.pidsMax == some 0 then
     .error (mapRawError (.invalidArgument none none "compiled plan has invalid zero limit"))
-  if plan.portForwards.any (fun pf => pf.boxPort == 0 || pf.hostPort == 0) then
+  else if plan.portForwards.any (fun pf => pf.boxPort == 0 || pf.hostPort == 0) then
     .error (mapRawError (.invalidArgument none none "compiled plan has zero port"))
-  if seccompBytes.size == 0 || seccompBytes.size % 8 != 0 || seccompBytes.size > 8 * SECCOMP_MAX_INSNS then
+  else if seccompBytes.size == 0 || seccompBytes.size % 8 != 0 || seccompBytes.size > 8 * SECCOMP_MAX_INSNS then
     .error (mapRawError (.invalidArgument none none "compiled seccomp filter must contain 1..160 8-byte instructions"))
-  let mut ba := "LSWP0002".toUTF8
-  ba := pushU8 ba (boolU8 plan.emptyRoot)
-  ba := pushU8 ba (boolU8 plan.unshareAllNamespaces)
-  ba := pushU8 ba (boolU8 plan.mountFreshProc)
-  ba := pushU8 ba (boolU8 plan.mountSafeDev)
-  ba := pushU8 ba (boolU8 plan.directCgroupV2Fs)
-  ba := pushU32LE ba (UInt32.ofNat (Nat.min plan.landlockMinAbi (UInt32.size - 1)))
-  ba := pushU8 ba (boolU8 plan.allowBoxLocalhost)
-  ba := pushU8 ba (boolU8 plan.blockUnixSocketAndSmc)
-  ba := pushU8 ba (boolU8 plan.allowAnonUnixSocketpair)
-  ba := pushU8 ba (boolU8 plan.clone3EnosysFallback)
-  ba := pushU8 ba (boolU8 plan.seccompStrictDenylist)
-  ba := pushU8 ba (boolU8 plan.noNewPrivs)
-  ba := pushU8 ba (boolU8 plan.rlimitCoreZero)
-  ba := pushU8 ba (boolU8 plan.subreaperAndPdeathsig)
-  ba := pushU8 ba (boolU8 plan.cleanEnv)
-  ba := pushU64LE ba (natToUInt64Sat plan.limits.timeoutMs)
-  ba := pushU8 ba (boolU8 plan.limits.memoryMaxBytes.isSome)
-  ba := pushU64LE ba (natToUInt64Sat (plan.limits.memoryMaxBytes.getD 0))
-  ba := pushU8 ba (boolU8 plan.limits.pidsMax.isSome)
-  ba := pushU64LE ba (natToUInt64Sat (plan.limits.pidsMax.getD 0))
-  ba := pushU8 ba (boolU8 plan.limits.fileSizeMaxBytes.isSome)
-  ba := pushU64LE ba (natToUInt64Sat (plan.limits.fileSizeMaxBytes.getD 0))
-  ba := pushU8 ba (boolU8 plan.limits.maxOutputBytes.isSome)
-  ba := pushU64LE ba (natToUInt64Sat (plan.limits.maxOutputBytes.getD 0))
-  ba ← pushStr ba plan.program
-  ba ← pushStr ba plan.cwd
-  ba := pushU32LE ba (UInt32.ofNat plan.args.size)
-  for a in plan.args do
-    ba ← pushStr ba a
-  ba := pushU32LE ba (UInt32.ofNat plan.env.size)
-  for (k, v) in plan.env do
-    ba ← pushStr ba k
-    ba ← pushStr ba v
-  ba := pushU32LE ba (UInt32.ofNat plan.presetSystemEntries.size)
-  for e in plan.presetSystemEntries do
-    match e with
-    | .readOnlyDir p =>
-      ba := pushU8 ba 0
-      ba ← pushStr ba p
-    | .topSymlink lp tgt =>
-      ba := pushU8 ba 1
-      ba ← pushStr ba lp
-      ba ← pushStr ba tgt
-  ba := pushU32LE ba (UInt32.ofNat plan.presetEtcPaths.size)
-  for p in plan.presetEtcPaths do
-    ba ← pushStr ba p
-  ba := pushU32LE ba (UInt32.ofNat plan.maskedPresetPaths.size)
-  for m in plan.maskedPresetPaths do
-    ba ← pushStr ba m
-  ba := pushU32LE ba (UInt32.ofNat plan.userMounts.size)
-  for m in plan.userMounts do
-    match m with
-    | .readOnly hp bp =>
-      ba := pushU8 ba 0
-      ba ← pushStr ba hp
-      ba ← pushStr ba bp
-    | .readWrite hp bp =>
-      ba := pushU8 ba 1
-      ba ← pushStr ba hp
-      ba ← pushStr ba bp
-    | .scratch bp =>
-      ba := pushU8 ba 2
-      ba ← pushStr ba bp
-  ba := pushU32LE ba (UInt32.ofNat plan.portForwards.size)
-  for pf in plan.portForwards do
-    ba := pushU16LE ba pf.boxPort
-    ba := pushU16LE ba pf.hostPort
-  ba := pushU32LE ba (UInt32.ofNat (seccompBytes.size / 8))
-  return ba ++ seccompBytes
+  else do
+    let ba ← encodePlanPrefix plan
+    let ba := pushU32LE ba (UInt32.ofNat (seccompBytes.size / 8))
+    return ba ++ seccompBytes
 
 /-- Construct a concrete `RawProcessSandboxOps` bundle backed by injected POSIX FFI hooks. -/
 def mkRawOps (posix : PosixRawOps) : RawProcessSandboxOps :=

@@ -115,6 +115,7 @@ static lean_obj_res mk_read_tuple(
 
 #include <arpa/inet.h>
 #include <limits.h>
+#include <linux/audit.h>
 #include <linux/landlock.h>
 #include <linux/seccomp.h>
 #include <netinet/in.h>
@@ -144,7 +145,11 @@ static lean_obj_res mk_read_tuple(
 #define __NR_landlock_create_ruleset 444
 #endif
 #ifndef __NR_seccomp
+#if defined(__x86_64__)
 #define __NR_seccomp 317
+#elif defined(__aarch64__)
+#define __NR_seccomp 277
+#endif
 #endif
 #ifndef __NR_pidfd_open
 #define __NR_pidfd_open 434
@@ -1026,7 +1031,7 @@ static int br_str(BufReader *r, char **out) {
 }
 
 static int parse_plan_for_shim(const uint8_t *data, size_t len, PlanSlot *p) {
-  if (len < 8 || memcmp(data, "LSWP0001", 8) != 0) {
+  if (len < 8 || memcmp(data, "LSWP0002", 8) != 0) {
     return -1;
   }
   BufReader r = {data, len, 8};
@@ -1188,6 +1193,16 @@ static int parse_plan_for_shim(const uint8_t *data, size_t len, PlanSlot *p) {
       return -1;
     }
   }
+
+  uint32_t seccomp_n = 0;
+  if (br_u32(&r, &seccomp_n) != 0 || seccomp_n == 0 || seccomp_n > 160U) {
+    return -1;
+  }
+  size_t seccomp_byte_len = (size_t)seccomp_n * 8U;
+  if (r.len - r.pos != seccomp_byte_len) {
+    return -1;
+  }
+  r.pos += seccomp_byte_len;
 
   if (r.pos != r.len) {
     return -1;
@@ -1415,9 +1430,26 @@ static ForwarderSlot *detach_fwd_locked(uint64_t hid) {
   return NULL;
 }
 
+LEAN_EXPORT lean_obj_res leanswe_psandbox_host_arch(lean_obj_arg w) {
+  (void)w;
+#if defined(__x86_64__)
+  return lean_io_result_mk_ok(lean_box_uint32((uint32_t)AUDIT_ARCH_X86_64));
+#elif defined(__aarch64__)
+  return lean_io_result_mk_ok(lean_box_uint32((uint32_t)AUDIT_ARCH_AARCH64));
+#else
+  return lean_io_result_mk_ok(lean_box_uint32(0U));
+#endif
+}
+
 LEAN_EXPORT lean_obj_res leanswe_psandbox_preflight(
     uint8_t need_mem, uint8_t need_pids, lean_obj_arg w) {
   (void)w;
+#if !defined(__x86_64__) && !defined(__aarch64__)
+  (void)need_mem;
+  (void)need_pids;
+  return lean_io_result_mk_ok(
+      mk_err_tuple4(PS_TAG_UNAVAILABLE, ENOSYS, "", "unsupported host architecture for seccomp filter"));
+#endif
   char *bwrap_path = resolve_bwrap_path();
   if (bwrap_path == NULL) {
     return lean_io_result_mk_ok(
@@ -3297,6 +3329,11 @@ LEAN_EXPORT lean_obj_res leanswe_psandbox_active_counts(lean_obj_arg w) {
 }
 
 #else
+
+LEAN_EXPORT lean_obj_res leanswe_psandbox_host_arch(lean_obj_arg w) {
+  (void)w;
+  return lean_io_result_mk_ok(lean_box_uint32(0U));
+}
 
 LEAN_EXPORT lean_obj_res leanswe_psandbox_preflight(
     uint8_t need_mem, uint8_t need_pids, lean_obj_arg w) {

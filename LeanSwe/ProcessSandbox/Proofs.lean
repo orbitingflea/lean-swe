@@ -1,3 +1,11 @@
 import LeanSwe.ProcessSandbox.Proofs.ModelProofs
 import LeanSwe.ProcessSandbox.Proofs.ValidateProofs
+import LeanSwe.ProcessSandbox.Proofs.SeccompBytesLemma
+import LeanSwe.ProcessSandbox.Proofs.ApiHelpers
+import LeanSwe.ProcessSandbox.Proofs.ApiBracketHelpers
 import LeanSwe.ProcessSandbox.Proofs.ApiProofs
+import LeanSwe.ProcessSandbox.Proofs.ApiSpawnOkProofs
+import LeanSwe.ProcessSandbox.Proofs.ApiSealProofs
+import LeanSwe.ProcessSandbox.Proofs.ApiOutcomeProofs
+import LeanSwe.ProcessSandbox.Proofs.ApiCancelProofs
+import LeanSwe.ProcessSandbox.Proofs.SeccompApiProofs

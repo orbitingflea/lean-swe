@@ -41,6 +41,7 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
     "CryptoHash.Raw": pathlib.Path("LeanSwe/CryptoHash/Raw"),
     "CryptoHash": pathlib.Path("LeanSwe/CryptoHash"),
     "Tar": pathlib.Path("LeanSwe/Tar"),
+    "ProcessSandbox.Seccomp": pathlib.Path("LeanSwe/ProcessSandbox/Seccomp"),
     "ProcessSandbox.Raw": pathlib.Path("LeanSwe/ProcessSandbox/Raw"),
     "ProcessSandbox": pathlib.Path("LeanSwe/ProcessSandbox"),
     "ConnectProxy.Raw": pathlib.Path("LeanSwe/ConnectProxy/Raw"),
@@ -176,6 +177,48 @@ def generate_lean_mutants(rel_path: pathlib.Path, text: str) -> list[Mutant]:
         if m_kind:
             cands.append(("KindSwap", re.sub(r"kind\s*:=\s*\." + m_kind.group(1), "kind := .ioError", line, count=1),
                           f"relabel .{m_kind.group(1)} to .ioError"))
+        m_jump = re.match(r"^(\s*(?:,|\[)\s*bpfJump\s+.+?)\s+(\d+)\s+(\d+)(\s*)$", line)
+        if m_jump and m_jump.group(2) != m_jump.group(3):
+            cands.append(("BpfJumpSwap", f"{m_jump.group(1)} {m_jump.group(3)} {m_jump.group(2)}{m_jump.group(4)}",
+                          f"swap bpfJump jt/jf ({m_jump.group(2)} <-> {m_jump.group(3)})"))
+        if "SECCOMP_RET_ERRNO_EPERM" in line:
+            cands.append(("SeccompRetSwap", line.replace("SECCOMP_RET_ERRNO_EPERM", "SECCOMP_RET_ALLOW", 1),
+                          "replace SECCOMP_RET_ERRNO_EPERM with SECCOMP_RET_ALLOW"))
+        elif "SECCOMP_RET_ERRNO_ENOSYS" in line:
+            cands.append(("SeccompRetSwap", line.replace("SECCOMP_RET_ERRNO_ENOSYS", "SECCOMP_RET_ALLOW", 1),
+                          "replace SECCOMP_RET_ERRNO_ENOSYS with SECCOMP_RET_ALLOW"))
+        elif "SECCOMP_RET_ALLOW" in line:
+            cands.append(("SeccompRetSwap", line.replace("SECCOMP_RET_ALLOW", "SECCOMP_RET_ERRNO_EPERM", 1),
+                          "replace SECCOMP_RET_ALLOW with SECCOMP_RET_ERRNO_EPERM"))
+        m_arg = re.search(r"\(seccompArgLowOffset\s+(\d+)\)", line)
+        if m_arg:
+            arg_idx = int(m_arg.group(1))
+            shifted = (arg_idx + 1) % 4
+            cands.append(("ArgOffsetShift", line.replace(m_arg.group(0), f"(seccompArgLowOffset {shifted})", 1),
+                          f"shift seccompArgLowOffset {arg_idx} -> {shifted}"))
+        if "(c % 256)" in line:
+            cands.append(("ByteLaneSwap", line.replace("(c % 256)", "((c / 256) % 256)", 1),
+                          "perturb opcode low byte lane"))
+        elif "((c / 256) % 256)" in line:
+            cands.append(("ByteLaneSwap", line.replace("((c / 256) % 256)", "(c % 256)", 1),
+                          "perturb opcode high byte lane"))
+        elif "(k % 256)" in line:
+            cands.append(("ByteLaneSwap", line.replace("(k % 256)", "((k / 256) % 256)", 1),
+                          "perturb k byte 0 lane"))
+        elif "((k / 256) % 256)" in line:
+            cands.append(("ByteLaneSwap", line.replace("((k / 256) % 256)", "((k / 65536) % 256)", 1),
+                          "perturb k byte 1 lane"))
+        elif "((k / 65536) % 256)" in line:
+            cands.append(("ByteLaneSwap", line.replace("((k / 65536) % 256)", "((k / 256) % 256)", 1),
+                          "perturb k byte 2 lane"))
+        elif "((k / 16777216) % 256)" in line:
+            cands.append(("ByteLaneSwap", line.replace("((k / 16777216) % 256)", "((k / 65536) % 256)", 1),
+                          "perturb k byte 3 lane"))
+        if line.strip() == "| .aarch64 => []":
+            indent = line[: len(line) - len(line.lstrip())]
+            cands.append(("ArmX32GuardLeak",
+                          f"{indent}| .aarch64 => [bpfJump BPF_JMP_JGE_K X32_SYSCALL_BIT 0 1, bpfStmt BPF_RET_K SECCOMP_RET_ERRNO_EPERM]\n",
+                          "emit x32 guard on aarch64"))
         for op, new_l, desc in cands:
             if new_l != line:
                 mid = f"{rel_path.name}:{idx}:{op}"
@@ -297,9 +340,13 @@ def resolve_targets(root: pathlib.Path, suite: str) -> tuple[list[pathlib.Path],
     for d in dirs:
         pkg_dir = root / d
         if pkg_dir.is_dir():
-            raw_dir = pkg_dir / "Raw"
+            child_suite_dirs = [
+                root / sd
+                for sd in SUITE_TO_DIR.values()
+                if sd != d and (root / sd).is_relative_to(pkg_dir)
+            ]
             for lf in sorted(pkg_dir.rglob("*Impl.lean")):
-                if lf.is_relative_to(raw_dir):
+                if any(lf.is_relative_to(cd) for cd in child_suite_dirs):
                     continue
                 lean_targets.append(lf.relative_to(root))
         c_dir = pkg_dir / "c"

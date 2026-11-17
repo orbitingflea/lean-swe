@@ -12,14 +12,6 @@ def defaultApi : ProcessSandboxApi :=
 @[inline] def validateSpec (spec : BoxSpec) : Except SandboxError ValidBoxSpec :=
   defaultApi.validateSpec spec
 
-/-- Compile the architecture-specific `seccomp` classic BPF filter program for a sandboxed guest. -/
-@[inline] def compileSeccompBpf (arch : SeccompArch) : Array SockFilter :=
-  defaultApi.compileSeccompBpf arch
-
-/-- Serialize an `Array SockFilter` into contiguous `8 * n`-byte little-endian `struct sock_filter` wire bytes. -/
-@[inline] def encodeSeccompBpf (prog : Array SockFilter) : ByteArray :=
-  defaultApi.encodeSeccompBpf prog
-
 /-- Execute `BoxSpec` inside a fresh isolated Linux process sandbox and reap all descendants before returning. -/
 @[inline] def run (spec : BoxSpec) : IO (Except SandboxError SandboxResult) :=
   defaultApi.run spec

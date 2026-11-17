@@ -1,5 +1,6 @@
 import LeanSwe.ProcessSandbox.Types
 import LeanSwe.ProcessSandbox.Model
+import LeanSwe.ProcessSandbox.Seccomp.Impl
 
 namespace LeanSwe.ProcessSandbox.Internal
 
@@ -14,13 +15,10 @@ def ensureNonEmptyMsg (fallback : String) (err : SandboxError) : SandboxError :=
 def validateSpec (spec : BoxSpec) : Except SandboxError ValidBoxSpec :=
   validateSpecPure spec
 
-/-- Stage 2 compile-only placeholder replaced in Stage 4 by `LeanSwe.ProcessSandbox.Seccomp.Impl.compileSeccompBpf`. -/
-def compileSeccompBpf (_arch : SeccompArch) : Array SockFilter :=
-  #[bpfStmt BPF_RET_K SECCOMP_RET_ALLOW]
-
-/-- Stage 2 compile-only placeholder replaced in Stage 4 by `LeanSwe.ProcessSandbox.Seccomp.Impl.encodeSeccompBpf`. -/
-def encodeSeccompBpf (prog : Array SockFilter) : ByteArray :=
-  encodeSeccompBpfModel prog
+/-- Compile and encode the guest `seccomp` classic BPF filter wire payload for `arch`. -/
+@[irreducible] def encodedSeccompFilter (arch : SeccompArch) : ByteArray :=
+  LeanSwe.ProcessSandbox.Seccomp.Impl.encodeSeccompBpf
+    (LeanSwe.ProcessSandbox.Seccomp.Impl.compileSeccompBpf arch)
 
 /-- Run `spec` inside a freshly compiled, sealed, and cgroup-bounded sandbox using `MonadFinally` brackets for leak-free teardown. -/
 def runGeneric {m : Type → Type} [Monad m] [MonadFinally m]
@@ -44,7 +42,7 @@ def runGeneric {m : Type → Type} [Monad m] [MonadFinally m]
           return .error (ensureNonEmptyMsg "host runtime preset discovery failed" e)
         | .ok preset =>
           let plan := compilePlan valid preset
-          let seccompBytes := encodeSeccompBpf (compileSeccompBpf arch)
+          let seccompBytes := encodedSeccompFilter arch
           match ← raw.sealPlan plan seccompBytes with
           | .error e =>
             return .error (ensureNonEmptyMsg "failed to seal sandbox plan" e)
@@ -101,8 +99,6 @@ def isAvailableGeneric {m : Type → Type} [Monad m] (raw : RawProcessSandboxOps
 def mkApiM {m : Type → Type} [Monad m] [MonadFinally m]
     (raw : RawProcessSandboxOpsM m) : ProcessSandboxApiM m :=
   { validateSpec := validateSpec
-    compileSeccompBpf := compileSeccompBpf
-    encodeSeccompBpf := encodeSeccompBpf
     run := runGeneric raw
     isAvailable := isAvailableGeneric raw }
 
