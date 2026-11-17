@@ -32,40 +32,63 @@ def mapRawError : EnvVarsRawError → EnvVarsError
       errnoCode := none
       message := nonEmptyMsg "environment error" detail }
 
-/-- Convert a Lean `IO.Error` into `EnvVarsRawError`. -/
-def ioErrorToRaw : IO.Error → EnvVarsRawError
-  | .invalidArgument key? code detail =>
-    if detail == "invalid UTF-8 in environment entry" then
-      .invalidEncoding key? detail
-    else
-      .invalidArgument key? code detail
-  | .otherError code detail => .otherError code detail
-  | .userError detail =>
-    if detail == "invalid UTF-8 in environment entry" then
-      .invalidEncoding none detail
-    else
-      .userError detail
-  | .noFileOrDirectory _ code detail => .otherError code detail
-  | .alreadyExists _ code detail => .otherError code detail
-  | .permissionDenied _ code detail => .otherError code detail
-  | .inappropriateType _ code detail => .otherError code detail
-  | .unsupportedOperation code detail => .otherError code detail
-  | .unsatisfiedConstraints code detail => .otherError code detail
-  | .illegalOperation code detail => .otherError code detail
-  | .resourceBusy code detail => .otherError code detail
-  | .resourceVanished code detail => .otherError code detail
-  | .hardwareFault code detail => .otherError code detail
-  | .protocolError code detail => .otherError code detail
-  | .timeExpired code detail => .otherError code detail
-  | .interrupted p code detail => .otherError code s!"{p}: {detail}"
-  | .resourceExhausted _ code detail => .otherError code detail
-  | .noSuchThing _ code detail => .otherError code detail
-  | .unexpectedEof => .userError "unexpected end of file"
+/-- Return `true` iff `cs` contains `'='` or NUL (`Char.ofNat 0`). -/
+def hasInvalidKeyChar : List Char → Bool
+  | [] => false
+  | c :: cs => c == '=' || c == Char.ofNat 0 || hasInvalidKeyChar cs
 
-/-- Stage 2 type-checking stub for constructing `RawEnvVarsOpsM m` from injected `PosixRawOpsM m` byte hooks. -/
-def mkRawOps {m : Type → Type} [Monad m] (_posix : PosixRawOpsM m) : RawEnvVarsOpsM m :=
+/-- Return `true` iff `key` is a non-empty POSIX environment variable name without `'='` or NUL. -/
+def isValidPosixKey (key : String) : Bool :=
+  !key.isEmpty && !hasInvalidKeyChar key.toList
+
+/-- Accumulator helper splitting a byte list at the first `'='` (`0x3D`) with a non-empty prefix. -/
+def splitFirstEqList (revPre : List UInt8) : List UInt8 → Option (ByteArray × ByteArray)
+  | [] => none
+  | b :: bs =>
+    if b == 0x3D then
+      if revPre.isEmpty then none
+      else some (ByteArray.mk revPre.reverse.toArray, ByteArray.mk bs.toArray)
+    else
+      splitFirstEqList (b :: revPre) bs
+
+/-- Split a raw `NAME=VALUE` byte slice strictly at the first `'='` (`0x3D`), returning `none`
+    when `'='` is absent or occurs at index `0` (empty key). -/
+def splitFirstEqBytes (entry : ByteArray) : Option (ByteArray × ByteArray) :=
+  splitFirstEqList [] entry.data.toList
+
+/-- Decode raw `environ(7)` byte slices in order, skipping entries lacking `'='` or starting with `'='`,
+    and failing with `.invalidEncoding` on the first non-skipped entry containing invalid UTF-8. -/
+def decodeEnvironList : List ByteArray → Except EnvVarsRawError (List (String × String))
+  | [] => .ok []
+  | entry :: rest =>
+    match splitFirstEqBytes entry with
+    | none => decodeEnvironList rest
+    | some (kBytes, vBytes) =>
+      match String.fromUTF8? kBytes with
+      | none => .error (.invalidEncoding none "invalid UTF-8 in environment key")
+      | some k =>
+        match String.fromUTF8? vBytes with
+        | none => .error (.invalidEncoding (some k) "invalid UTF-8 in environment value")
+        | some v =>
+          match decodeEnvironList rest with
+          | .error err => .error err
+          | .ok tail => .ok ((k, v) :: tail)
+
+/-- Construct `RawEnvVarsOpsM m` from injected `PosixRawOpsM m` byte hooks, performing key
+    validation, `'='` splitting, and strict UTF-8 decoding in Lean. -/
+def mkRawOps {m : Type → Type} [Monad m] (posix : PosixRawOpsM m) : RawEnvVarsOpsM m :=
   { mapRawError := mapRawError
-    getEnv := fun _ => pure (.ok none)
-    listEnv := pure (.ok #[]) }
+    getEnv := fun key => do
+      if !isValidPosixKey key then
+        return .ok none
+      match ← posix.getEnvBytes key with
+      | none => return .ok none
+      | some bs =>
+        match String.fromUTF8? bs with
+        | some s => return .ok (some s)
+        | none => return .error (.invalidEncoding (some key) "invalid UTF-8 in environment value")
+    listEnv := do
+      let entries ← posix.listEnvironBytes
+      return (decodeEnvironList entries.toList).map List.toArray }
 
 end LeanSwe.EnvVars.Raw.Internal

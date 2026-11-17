@@ -1,5 +1,6 @@
 import LeanSwe.CmdLine.Interface
 import LeanSwe.CmdLine.SpecTests
+import LeanSwe.EnvVars.Proofs
 
 set_option Elab.async false
 
@@ -2896,5 +2897,1083 @@ theorem allPass_renderArgs_universalRoundTrip :
 theorem canReach_renderArgs_universalRoundTrip :
     CanReach (test_cmdline_renderArgs_universalRoundTrip defaultApi) :=
   ⟨{ name := "app" }, [], by decide, allPass_renderArgs_universalRoundTrip { name := "app" } [] (by decide)⟩
+
+private def exceptKindIn {α : Type} (P : CmdLineErrorKind → Prop) (r : Except CmdLineError α) : Prop :=
+  match r with
+  | .ok _ => True
+  | .error e => P e.kind
+
+private theorem exceptKindIn_bind {α β : Type} (P : CmdLineErrorKind → Prop)
+    (r : Except CmdLineError α) (k : α → Except CmdLineError β)
+    (hr : exceptKindIn P r) (hk : ∀ a, exceptKindIn P (k a)) :
+    exceptKindIn P (r >>= k) := by
+  cases r with
+  | error e => exact hr
+  | ok a => exact hk a
+
+private theorem exceptKindIn_mk {α : Type} {P : CmdLineErrorKind → Prop}
+    {kd : CmdLineErrorKind} {msg : String} {tgt : Option String} (h : P kd) :
+    exceptKindIn P (Except.error { kind := kd, message := msg, target := tgt } : Except CmdLineError α) := h
+
+private theorem parseOptValue_kind {k : ValueKind} {s : String} :
+    exceptKindIn (fun kd => kd = .invalidValue) (Model.parseOptValue k s) := by
+  unfold Model.parseOptValue
+  cases k <;> dsimp only
+  · trivial
+  · cases Model.parseBoolString s <;> trivial
+  · cases Model.parseNatChars s.toList <;> trivial
+  · cases Model.parseIntChars s.toList <;> trivial
+  · split <;> trivial
+  · trivial
+
+private theorem validateCustomValue_kind {k : ValueKind} {s : String} {v : CustomValidators} :
+    exceptKindIn (fun kd => kd = .invalidValue) (Model.validateCustomValue k s v) := by
+  unfold Model.validateCustomValue
+  cases k <;> dsimp only
+  · trivial
+  · trivial
+  · trivial
+  · trivial
+  · trivial
+  · cases v.find? _ with
+    | none => trivial
+    | some p =>
+      dsimp only
+      cases p.2 s with
+      | ok _ => trivial
+      | error _ => rfl
+
+private theorem parseOptValueWith_kind {k : ValueKind} {s : String} {v : CustomValidators} :
+    exceptKindIn (fun kd => kd = .invalidValue) (Model.parseOptValueWith k s v) := by
+  unfold Model.parseOptValueWith
+  refine exceptKindIn_bind _ _ _ parseOptValue_kind fun _ => ?_
+  refine exceptKindIn_bind _ _ _ validateCustomValue_kind fun _ => trivial
+
+private theorem parseOptValueWith_error {k : ValueKind} {s : String} {v : CustomValidators}
+    {e : CmdLineError} (h : Model.parseOptValueWith k s v = Except.error e) :
+    e.kind = .invalidValue := by
+  have hk := parseOptValueWith_kind (k := k) (s := s) (v := v)
+  rw [h] at hk
+  exact hk
+
+private theorem parseShortBundle_noEofIo (visibleOpts : List OptSpec) (shortHelp shortVersion : Bool)
+    (rootName : String) (subPath : List String) (effVer : Option String)
+    (curSpec : CommandSpec) (validators : CustomValidators)
+    (cliOpts : List (String × List OptValue)) (cs : List Char) :
+    exceptKindIn (fun kd => kd ≠ .eof ∧ kd ≠ .ioError)
+      (Internal.parseShortBundle visibleOpts shortHelp shortVersion rootName subPath effVer curSpec validators cliOpts cs) := by
+  induction cs generalizing cliOpts with
+  | nil => simp [Internal.parseShortBundle, exceptKindIn]
+  | cons c rest ih =>
+    unfold Internal.parseShortBundle
+    dsimp only
+    split
+    · exact exceptKindIn_mk (by decide)
+    · split
+      · cases effVer <;> exact exceptKindIn_mk (by decide)
+      · cases visibleOpts.find? (fun o => o.short == some c) with
+        | none => exact exceptKindIn_mk (by decide)
+        | some opt =>
+          dsimp only
+          split
+          · exact ih _
+          · split
+            · dsimp only [bind, Except.bind]
+              cases hp : Model.parseOptValueWith opt.kind (String.ofList rest) validators with
+              | error e =>
+                exact exceptKindIn_mk (by rw [parseOptValueWith_error hp]; decide)
+              | ok v => trivial
+            · trivial
+
+private theorem parseTokens_shortBundle_step
+    (sb : Except CmdLineError (List (String × List OptValue) × Option OptSpec))
+    (hsb : exceptKindIn (fun kd => kd ≠ .eof ∧ kd ≠ .ioError) sb)
+    (nextSt : List (String × List OptValue) × Option OptSpec → Internal.ParseState)
+    (k : Internal.ParseState → Except CmdLineError Internal.ParseState)
+    (hk : ∀ st', exceptKindIn (fun kd => kd ≠ .eof ∧ kd ≠ .ioError) (k st')) :
+    exceptKindIn (fun kd => kd ≠ .eof ∧ kd ≠ .ioError)
+      (match sb with
+      | .error err => .error err
+      | .ok v => k (nextSt v)) := by
+  cases sb with
+  | error e => exact hsb
+  | ok v => exact hk _
+
+private theorem parseTokens_noEofIo (rootName : String) (validators : CustomValidators)
+    (st : Internal.ParseState) (tokens : List String) :
+    exceptKindIn (fun kd => kd ≠ .eof ∧ kd ≠ .ioError)
+      (Internal.parseTokens rootName validators st tokens) := by
+  induction tokens generalizing st with
+  | nil =>
+    unfold Internal.parseTokens
+    cases st.pendingOpt with
+    | none => trivial
+    | some _ => exact exceptKindIn_mk (by decide)
+  | cons tok rest ih =>
+    unfold Internal.parseTokens
+    cases st.pendingOpt with
+    | some opt =>
+      dsimp only [bind, Except.bind]
+      cases hp : Model.parseOptValueWith opt.kind tok validators with
+      | error e => exact exceptKindIn_mk (by rw [parseOptValueWith_error hp]; decide)
+      | ok v => exact ih _
+    | none =>
+      dsimp only
+      cases hdd : st.afterDashDash
+      case true => simp only [↓reduceIte]; exact ih _
+      case false =>
+        simp only [Bool.false_eq_true, ↓reduceIte]
+        split
+        · exact ih _
+        · split
+          · exact exceptKindIn_mk (by decide)
+          · split
+            · cases st.effectiveVersion <;> exact exceptKindIn_mk (by decide)
+            · cases htok : tok.toList with
+              | nil =>
+                dsimp only
+                split
+                · cases st.curSpec.subcommands.find? (fun s => s.name == tok) with
+                  | some _ => exact ih _
+                  | none => exact exceptKindIn_mk (by decide)
+                · exact ih _
+              | cons c1 cs1 =>
+                cases c1 with
+                | _ =>
+                  split
+                  · split
+                    · exact exceptKindIn_mk (by decide)
+                    · split
+                      · exact exceptKindIn_mk (by decide)
+                      · cases Internal.lookupLongOpt (st.inheritedGlobals ++ st.curSpec.options) _ with
+                        | none => exact exceptKindIn_mk (by decide)
+                        | some p =>
+                          dsimp only
+                          split
+                          · cases (Internal.splitFirstEq _).2 with
+                            | some _ => exact exceptKindIn_mk (by decide)
+                            | none => exact ih _
+                          · split
+                            · cases (Internal.splitFirstEq _).2 with
+                              | none => exact ih _
+                              | some rawVal =>
+                                dsimp only
+                                cases hp : Model.parseOptValue .bool rawVal with
+                                | error e =>
+                                  have h := parseOptValue_kind (k := .bool) (s := rawVal)
+                                  rw [hp] at h
+                                  exact exceptKindIn_mk (by rw [h]; decide)
+                                | ok v =>
+                                  cases v with
+                                  | bool _ =>
+                                    dsimp only
+                                    split
+                                    · exact exceptKindIn_mk (by decide)
+                                    · exact ih _
+                                  | _ => exact exceptKindIn_mk (by decide)
+                            · cases (Internal.splitFirstEq _).2 with
+                              | some rawVal =>
+                                dsimp only [bind, Except.bind]
+                                cases hp : Model.parseOptValueWith p.1.kind rawVal validators with
+                                | error e => exact exceptKindIn_mk (by rw [parseOptValueWith_error hp]; decide)
+                                | ok _ => exact ih _
+                              | none => exact ih _
+                  · dsimp only [bind, Except.bind]
+                    rename_i c_s shortRest_s _ _
+                    have hsb := parseShortBundle_noEofIo (st.inheritedGlobals ++ st.curSpec.options)
+                      st.curSpec.shortHelp st.curSpec.shortVersion rootName st.subPath
+                      st.effectiveVersion st.curSpec validators st.cliOpts (c_s :: shortRest_s)
+                    split
+                    · rename_i err herr
+                      rw [herr] at hsb
+                      exact hsb
+                    · exact ih _
+                  · split
+                    · cases st.curSpec.subcommands.find? (fun s => s.name == tok) with
+                      | some _ => exact ih _
+                      | none => exact exceptKindIn_mk (by decide)
+                    · exact ih _
+
+private theorem resolveOptDefault_noEofIo (opt : OptSpec) (validators : CustomValidators) :
+    exceptKindIn (fun kd => kd ≠ .eof ∧ kd ≠ .ioError)
+      (Model.resolveOptDefault opt validators) := by
+  unfold Model.resolveOptDefault
+  cases opt.default with
+  | some d =>
+    dsimp only
+    cases hp : Model.parseOptValueWith opt.kind d validators with
+    | error e => exact exceptKindIn_mk (by rw [parseOptValueWith_error hp]; decide)
+    | ok _ => trivial
+  | none =>
+    dsimp only
+    split
+    · exact exceptKindIn_mk (by decide)
+    · split <;> trivial
+
+private theorem resolveSingleOption_pureNoEnv_noEofIo (opt : OptSpec) (cliVals : List OptValue)
+    (validators : CustomValidators) :
+    exceptKindIn (fun kd => kd ≠ .eof ∧ kd ≠ .ioError)
+      (Model.resolveSingleOption (m := Id) Internal.pureNoEnvOps.getEnv opt cliVals validators) := by
+  unfold Model.resolveSingleOption
+  split
+  · split
+    · exact exceptKindIn_mk (by decide)
+    · trivial
+  · cases opt.envVar with
+    | none => exact resolveOptDefault_noEofIo opt validators
+    | some _ => exact resolveOptDefault_noEofIo opt validators
+
+private theorem resolveOptions_step_exceptKindIn {P : CmdLineErrorKind → Prop}
+    (r1 : Except CmdLineError (Option (List OptValue)))
+    (r2 : Except CmdLineError (List (String × List OptValue)))
+    (optName : String)
+    (h1 : exceptKindIn P r1) (h2 : exceptKindIn P r2) :
+    exceptKindIn P (match r1 with
+      | .error e => .error e
+      | .ok resolved? => match r2 with
+        | .error e => .error e
+        | .ok tail => match resolved? with
+          | .none => .ok tail
+          | .some vals => .ok ((optName, vals) :: tail)) := by
+  cases r1 with
+  | error e => exact h1
+  | ok r? => cases r2 with | error e => exact h2 | ok _ => cases r? <;> trivial
+
+private theorem resolveOptions_pureNoEnv_noEofIo (visibleOpts : List OptSpec)
+    (cliOpts : List (String × List OptValue)) (validators : CustomValidators) :
+    exceptKindIn (fun kd => kd ≠ .eof ∧ kd ≠ .ioError)
+      (Model.resolveOptions (m := Id) Internal.pureNoEnvOps.getEnv visibleOpts cliOpts validators) := by
+  induction visibleOpts with
+  | nil => simp [Model.resolveOptions, exceptKindIn, pure]
+  | cons opt rest ih =>
+    unfold Model.resolveOptions
+    dsimp only [bind, pure]
+    exact resolveOptions_step_exceptKindIn _ _ opt.name
+      (resolveSingleOption_pureNoEnv_noEofIo opt
+        (match cliOpts.find? (fun p => p.1 == opt.name) with | some p => p.2 | none => []) validators)
+      ih
+
+private theorem resolveArgs_parseMany_noEofIo (arg : ArgSpec) (validators : CustomValidators)
+    (xs : List String) :
+    exceptKindIn (fun kd => kd ≠ .eof ∧ kd ≠ .ioError)
+      (Model.resolveArgs.parseMany validators arg xs) := by
+  induction xs with
+  | nil => simp [Model.resolveArgs.parseMany, exceptKindIn]
+  | cons s ss ih =>
+    unfold Model.resolveArgs.parseMany
+    dsimp only [bind, pure, Except.bind, Except.pure]
+    cases hp : Model.parseOptValueWith arg.kind s validators with
+    | error e => exact exceptKindIn_mk (by rw [parseOptValueWith_error hp]; decide)
+    | ok _ =>
+      dsimp only
+      cases hs : Model.resolveArgs.parseMany validators arg ss with
+      | error e => rw [hs] at ih; exact ih
+      | ok _ => trivial
+
+private theorem resolveArgs_go_noEofIo (validators : CustomValidators)
+    (argSpecs : List ArgSpec) (rawPos : List String) :
+    exceptKindIn (fun kd => kd ≠ .eof ∧ kd ≠ .ioError)
+      (Model.resolveArgs.go validators argSpecs rawPos) := by
+  induction argSpecs generalizing rawPos with
+  | nil =>
+    cases rawPos with
+    | nil => trivial
+    | cons _ _ => exact exceptKindIn_mk (by decide)
+  | cons arg restArgs ih =>
+    unfold Model.resolveArgs.go
+    dsimp only
+    split
+    · split
+      · split
+        · exact exceptKindIn_mk (by decide)
+        · cases arg.default with
+          | none => exact ih []
+          | some d =>
+            dsimp only [bind, pure, Except.bind, Except.pure]
+            cases hp : Model.parseOptValueWith arg.kind d validators with
+            | error e => dsimp only; exact exceptKindIn_mk (by rw [parseOptValueWith_error hp]; decide)
+            | ok _ =>
+              dsimp only
+              have ih0 := ih []
+              cases hg : Model.resolveArgs.go validators restArgs [] with
+              | error e => rw [hg] at ih0; exact ih0
+              | ok _ => trivial
+      · dsimp only [bind, pure, Except.bind, Except.pure]
+        have hm := resolveArgs_parseMany_noEofIo arg validators rawPos
+        cases hrp : Model.resolveArgs.parseMany validators arg rawPos with
+        | error e => rw [hrp] at hm; dsimp only; exact hm
+        | ok _ =>
+          dsimp only
+          have ih0 := ih []
+          cases hg : Model.resolveArgs.go validators restArgs [] with
+          | error e => rw [hg] at ih0; exact ih0
+          | ok _ => trivial
+    · cases rawPos with
+      | cons s remPos =>
+        dsimp only [bind, pure, Except.bind, Except.pure]
+        cases hp : Model.parseOptValueWith arg.kind s validators with
+        | error e => dsimp only; exact exceptKindIn_mk (by rw [parseOptValueWith_error hp]; decide)
+        | ok _ =>
+          dsimp only
+          have ihr := ih remPos
+          cases hg : Model.resolveArgs.go validators restArgs remPos with
+          | error e => rw [hg] at ihr; exact ihr
+          | ok _ => trivial
+      | nil =>
+        dsimp only
+        split
+        · exact exceptKindIn_mk (by decide)
+        · cases arg.default with
+          | none => exact ih []
+          | some d =>
+            dsimp only [bind, pure, Except.bind, Except.pure]
+            cases hp : Model.parseOptValueWith arg.kind d validators with
+            | error e => dsimp only; exact exceptKindIn_mk (by rw [parseOptValueWith_error hp]; decide)
+            | ok _ =>
+              dsimp only
+              have ih0 := ih []
+              cases hg : Model.resolveArgs.go validators restArgs [] with
+              | error e => rw [hg] at ih0; exact ih0
+              | ok _ => trivial
+
+private theorem resolveArgs_noEofIo (argSpecs : List ArgSpec) (rawPos : List String)
+    (validators : CustomValidators) :
+    exceptKindIn (fun kd => kd ≠ .eof ∧ kd ≠ .ioError)
+      (Model.resolveArgs argSpecs rawPos validators) :=
+  resolveArgs_go_noEofIo validators argSpecs rawPos
+
+private theorem parseWith_never_of (spec : CommandSpec) (args : List String)
+    (validators : CustomValidators) :
+    exceptKindIn (fun kd => kd ≠ .eof ∧ kd ≠ .ioError)
+      (CmdLine.parseWith spec args validators) := by
+  unfold CmdLine.parseWith defaultApi Internal.mkApiM Internal.parseWith
+    Internal.parseWithEnvM
+  dsimp only [pure, bind]
+  split
+  · exact exceptKindIn_mk (by decide)
+  · have htok := parseTokens_noEofIo spec.name validators
+      { curSpec := spec, effectiveVersion := spec.version } args
+    cases hp : Internal.parseTokens spec.name validators
+        { curSpec := spec, effectiveVersion := spec.version } args with
+    | error e => rw [hp] at htok; exact htok
+    | ok finalState =>
+      dsimp only
+      split
+      · split <;> exact exceptKindIn_mk (by decide)
+      · have hopts := resolveOptions_pureNoEnv_noEofIo
+          (finalState.inheritedGlobals ++ finalState.curSpec.options)
+          finalState.cliOpts validators
+        cases ho : Model.resolveOptions (m := Id) Internal.pureNoEnvOps.getEnv
+            (finalState.inheritedGlobals ++ finalState.curSpec.options) finalState.cliOpts validators with
+        | error e => rw [ho] at hopts; exact hopts
+        | ok _ =>
+          dsimp only
+          have hargs := resolveArgs_noEofIo finalState.curSpec.args finalState.rawPositionals validators
+          cases ha : Model.resolveArgs finalState.curSpec.args finalState.rawPositionals validators with
+          | error e => rw [ha] at hargs; exact hargs
+          | ok _ => trivial
+
+/-- Proof that `CmdLine.parse` never returns `.eof`. -/
+theorem cmdline_parse_never_eof (spec : CommandSpec) (args : List String) :
+    Core.NeverErrorKindPure CmdLineError.kind .eof (CmdLine.parse spec args) := by
+  have h := parseWith_never_of spec args []
+  change exceptKindIn (fun kd => kd ≠ .eof ∧ kd ≠ .ioError) (CmdLine.parse spec args) at h
+  unfold Core.NeverErrorKindPure
+  cases hr : CmdLine.parse spec args with
+  | ok _ => trivial
+  | error e => rw [hr] at h; exact h.1
+
+/-- Proof that `CmdLine.parse` never returns `.ioError`. -/
+theorem cmdline_parse_never_ioError (spec : CommandSpec) (args : List String) :
+    Core.NeverErrorKindPure CmdLineError.kind .ioError (CmdLine.parse spec args) := by
+  have h := parseWith_never_of spec args []
+  change exceptKindIn (fun kd => kd ≠ .eof ∧ kd ≠ .ioError) (CmdLine.parse spec args) at h
+  unfold Core.NeverErrorKindPure
+  cases hr : CmdLine.parse spec args with
+  | ok _ => trivial
+  | error e => rw [hr] at h; exact h.2
+
+/-- Proof that `CmdLine.parseWith` never returns `.eof`. -/
+theorem cmdline_parseWith_never_eof (spec : CommandSpec) (args : List String)
+    (validators : CustomValidators) :
+    Core.NeverErrorKindPure CmdLineError.kind .eof (CmdLine.parseWith spec args validators) := by
+  have h := parseWith_never_of spec args validators
+  unfold Core.NeverErrorKindPure
+  cases hr : CmdLine.parseWith spec args validators with
+  | ok _ => trivial
+  | error e => rw [hr] at h; exact h.1
+
+/-- Proof that `CmdLine.parseWith` never returns `.ioError`. -/
+theorem cmdline_parseWith_never_ioError (spec : CommandSpec) (args : List String)
+    (validators : CustomValidators) :
+    Core.NeverErrorKindPure CmdLineError.kind .ioError (CmdLine.parseWith spec args validators) := by
+  have h := parseWith_never_of spec args validators
+  unfold Core.NeverErrorKindPure
+  cases hr : CmdLine.parseWith spec args validators with
+  | ok _ => trivial
+  | error e => rw [hr] at h; exact h.2
+
+private def estOutCmdLineAllowed {α : Type} (P : CmdLineError → Prop)
+    (out : EST.Out IO.Error IO.RealWorld (Except CmdLineError α)) : Prop :=
+  match out with
+  | EST.Out.error _ _ => True
+  | EST.Out.ok (.ok _) _ => True
+  | EST.Out.ok (.error e) _ => P e
+
+private theorem io_bind_eq {α β : Type} (act : IO α) (k : α → IO β) (w : Void IO.RealWorld)
+    {a : α} {w' : Void IO.RealWorld} (h : act w = EST.Out.ok a w') :
+    (act >>= k) w = k a w' := by
+  change EST.bind act k w = k a w'
+  simp [EST.bind, h]
+
+private theorem io_bind_err {α β : Type} (act : IO α) (k : α → IO β) (w : Void IO.RealWorld)
+    {ex : IO.Error} {w' : Void IO.RealWorld} (h : act w = EST.Out.error ex w') :
+    (act >>= k) w = EST.Out.error ex w' := by
+  change EST.bind act k w = EST.Out.error ex w'
+  simp [EST.bind, h]
+
+private theorem io_pure_eq {α : Type} (a : α) (w : Void IO.RealWorld) :
+    (pure a : IO α) w = EST.Out.ok a w := rfl
+
+private theorem io_bind_allowed {α β : Type} (P : CmdLineError → Prop) (act : IO α)
+    (k : α → IO (Except CmdLineError β)) (w : Void IO.RealWorld)
+    (hk : ∀ a w', estOutCmdLineAllowed P (k a w')) :
+    estOutCmdLineAllowed P ((act >>= k) w) := by
+  cases ha : act w with
+  | error ex w' =>
+    rw [io_bind_err _ _ w ha]
+    trivial
+  | ok a w' =>
+    rw [io_bind_eq _ _ w ha]
+    exact hk a w'
+
+private theorem defaultOps_getEnv_noThrow_noEof (key : String) (w : Void IO.RealWorld) :
+    (∃ v w', defaultOps.getEnv key w = EST.Out.ok (Except.ok v) w') ∨
+    (∃ e w', defaultOps.getEnv key w = EST.Out.ok (Except.error e) w' ∧ e.kind ≠ .eof) := by
+  have hnf := EnvVars.Proofs.envvars_getEnv_never_notFound key w
+  unfold Core.NeverErrorKindIO at hnf
+  unfold defaultOps
+  dsimp only
+  cases hr : EnvVars.getEnv key w with
+  | error _ _ => rw [hr] at hnf; exact False.elim hnf
+  | ok res w' =>
+    rw [io_bind_eq _ _ w hr]
+    cases res with
+    | ok v => exact Or.inl ⟨v, w', io_pure_eq _ _⟩
+    | error err =>
+      refine Or.inr ⟨{ kind := .ioError, message := err.message, target := err.key }, w', io_pure_eq _ _, ?_⟩
+      dsimp only
+      decide
+
+private theorem resolveSingleOption_env_some (opt : OptSpec) (validators : CustomValidators)
+    (s : String) (hs : s ≠ "") (w' : Void IO.RealWorld) :
+    ∃ r w'_1,
+      (match (Except.ok (some s) : Except CmdLineError (Option String)) with
+        | Except.error e => (pure (Except.error e) : IO (Except CmdLineError (Option (List OptValue))))
+        | Except.ok none => pure (Model.resolveOptDefault opt validators)
+        | Except.ok (some "") => pure (Model.resolveOptDefault opt validators)
+        | Except.ok (some s) =>
+          match Model.parseOptValueWith opt.kind s validators with
+          | Except.error e => pure (Except.error { kind := e.kind, message := e.message, target := some opt.name })
+          | Except.ok v =>
+            if (opt.repeatable && opt.kind == ValueKind.bool && v == OptValue.bool false) = true then
+              pure (Except.ok none)
+            else pure (Except.ok (some [v]))) w' = EST.Out.ok r w'_1 ∧
+        exceptKindIn (fun kd => kd ≠ .eof) r := by
+  have hm :
+      (match (Except.ok (some s) : Except CmdLineError (Option String)) with
+        | Except.error e => (pure (Except.error e) : IO (Except CmdLineError (Option (List OptValue))))
+        | Except.ok none => pure (Model.resolveOptDefault opt validators)
+        | Except.ok (some "") => pure (Model.resolveOptDefault opt validators)
+        | Except.ok (some s) =>
+          match Model.parseOptValueWith opt.kind s validators with
+          | Except.error e => pure (Except.error { kind := e.kind, message := e.message, target := some opt.name })
+          | Except.ok v =>
+            if (opt.repeatable && opt.kind == ValueKind.bool && v == OptValue.bool false) = true then
+              pure (Except.ok none)
+            else pure (Except.ok (some [v]))) =
+      (match Model.parseOptValueWith opt.kind s validators with
+        | Except.error e =>
+          (pure (Except.error { kind := e.kind, message := e.message, target := some opt.name }) :
+            IO (Except CmdLineError (Option (List OptValue))))
+        | Except.ok v =>
+          if (opt.repeatable && opt.kind == ValueKind.bool && v == OptValue.bool false) = true then
+            pure (Except.ok none)
+          else pure (Except.ok (some [v]))) := by
+    split
+    · rename_i heq; cases heq
+    · rename_i heq; cases heq
+    · rename_i heq; cases heq; exact absurd rfl hs
+    · rename_i _ heq; cases heq; rfl
+  rw [congrFun hm w']
+  cases hp : Model.parseOptValueWith opt.kind s validators with
+  | error e =>
+    refine ⟨_, w', io_pure_eq _ _, ?_⟩
+    dsimp only [exceptKindIn]
+    rw [parseOptValueWith_error hp]
+    decide
+  | ok v =>
+    by_cases hrep : (opt.repeatable && opt.kind == ValueKind.bool && v == OptValue.bool false) = true
+    · simp only [hrep, ↓reduceIte]
+      exact ⟨_, w', io_pure_eq _ _, trivial⟩
+    · simp only [hrep, Bool.false_eq_true, ↓reduceIte]
+      exact ⟨_, w', io_pure_eq _ _, trivial⟩
+
+private theorem resolveSingleOption_defaultOps_noEof (opt : OptSpec) (cliVals : List OptValue)
+    (validators : CustomValidators) (w : Void IO.RealWorld) :
+    ∃ r w', Model.resolveSingleOption defaultOps.getEnv opt cliVals validators w = EST.Out.ok r w' ∧
+      exceptKindIn (fun kd => kd ≠ .eof) r := by
+  unfold Model.resolveSingleOption
+  by_cases hcli : !cliVals.isEmpty
+  · simp only [hcli, ↓reduceIte]
+    split
+    · exact ⟨_, w, io_pure_eq _ _, exceptKindIn_mk (by decide)⟩
+    · exact ⟨_, w, io_pure_eq _ _, trivial⟩
+  · simp only [hcli, Bool.false_eq_true, ↓reduceIte]
+    cases opt.envVar with
+    | none =>
+      refine ⟨_, w, io_pure_eq _ _, ?_⟩
+      have h := resolveOptDefault_noEofIo opt validators
+      cases hro : Model.resolveOptDefault opt validators with
+      | ok _ => trivial
+      | error e => rw [hro] at h; exact h.1
+    | some envKey =>
+      dsimp only
+      rcases defaultOps_getEnv_noThrow_noEof envKey w with ⟨v, w', hv⟩ | ⟨e, w', he, hne⟩
+      · rw [io_bind_eq _ _ w hv]
+        cases v with
+        | none =>
+          refine ⟨_, w', io_pure_eq _ _, ?_⟩
+          have h := resolveOptDefault_noEofIo opt validators
+          cases hro : Model.resolveOptDefault opt validators with
+          | ok _ => trivial
+          | error e => rw [hro] at h; exact h.1
+        | some s =>
+          by_cases hs : s = ""
+          · subst hs
+            refine ⟨_, w', io_pure_eq _ _, ?_⟩
+            have h := resolveOptDefault_noEofIo opt validators
+            cases hro : Model.resolveOptDefault opt validators with
+            | ok _ => trivial
+            | error e => rw [hro] at h; exact h.1
+          · exact resolveSingleOption_env_some opt validators s hs w'
+      · rw [io_bind_eq _ _ w he]
+        exact ⟨_, w', io_pure_eq _ _, hne⟩
+
+private theorem resolveOptions_step_io (optName : String)
+    (act1 : IO (Except CmdLineError (Option (List OptValue))))
+    (act2 : IO (Except CmdLineError (List (String × List OptValue))))
+    (w : Void IO.RealWorld)
+    (h1 : ∃ r w', act1 w = EST.Out.ok r w' ∧ exceptKindIn (fun kd => kd ≠ .eof) r)
+    (h2 : ∀ w1, ∃ r w', act2 w1 = EST.Out.ok r w' ∧ exceptKindIn (fun kd => kd ≠ .eof) r) :
+    ∃ r w', (act1 >>= fun
+      | Except.error e => (pure (Except.error e) : IO (Except CmdLineError (List (String × List OptValue))))
+      | Except.ok resolved? =>
+        act2 >>= fun
+        | Except.error e => (pure (Except.error e) : IO (Except CmdLineError (List (String × List OptValue))))
+        | Except.ok tail =>
+          match resolved? with
+          | none => pure (Except.ok tail)
+          | some vals => pure (Except.ok ((optName, vals) :: tail))) w = EST.Out.ok r w' ∧
+      exceptKindIn (fun kd => kd ≠ .eof) r := by
+  rcases h1 with ⟨r1, w1, hr1, hk1⟩
+  rw [io_bind_eq _ _ w hr1]
+  cases r1 with
+  | error e => exact ⟨_, w1, io_pure_eq _ _, hk1⟩
+  | ok resolved? =>
+    dsimp only
+    rcases h2 w1 with ⟨r2, w2, hr2, hk2⟩
+    rw [io_bind_eq _ _ w1 hr2]
+    cases r2 with
+    | error e => exact ⟨_, w2, io_pure_eq _ _, hk2⟩
+    | ok tail => cases resolved? <;> exact ⟨_, w2, io_pure_eq _ _, trivial⟩
+
+private theorem resolveOptions_defaultOps_noEof (visibleOpts : List OptSpec)
+    (cliOpts : List (String × List OptValue)) (validators : CustomValidators)
+    (w : Void IO.RealWorld) :
+    ∃ r w', Model.resolveOptions defaultOps.getEnv visibleOpts cliOpts validators w = EST.Out.ok r w' ∧
+      exceptKindIn (fun kd => kd ≠ .eof) r := by
+  induction visibleOpts generalizing w with
+  | nil => exact ⟨_, w, io_pure_eq _ _, trivial⟩
+  | cons opt rest ih =>
+    unfold Model.resolveOptions
+    exact resolveOptions_step_io opt.name _ _ w
+      (resolveSingleOption_defaultOps_noEof opt
+        (match cliOpts.find? (fun p => p.1 == opt.name) with | some p => p.2 | none => [])
+        validators w)
+      ih
+
+/-- Proof that `CmdLine.parseWithEnv` never returns `.eof`. -/
+theorem cmdline_parseWithEnv_never_eof (spec : CommandSpec) (args : List String)
+    (validators : CustomValidators) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .eof (CmdLine.parseWithEnv spec args validators) w := by
+  unfold Core.NeverErrorKindIO CmdLine.parseWithEnv defaultApi Internal.mkApiM
+    Internal.parseWithEnvM
+  dsimp only
+  cases hv : Model.isValidSpec spec
+  · simp only [Bool.not_false, ↓reduceIte, io_pure_eq]
+    decide
+  · simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    have htok := parseTokens_noEofIo spec.name validators
+      { curSpec := spec, effectiveVersion := spec.version } args
+    cases hp : Internal.parseTokens spec.name validators
+        { curSpec := spec, effectiveVersion := spec.version } args with
+    | error e =>
+      rw [hp] at htok
+      dsimp only
+      rw [io_pure_eq]
+      exact htok.1
+    | ok finalState =>
+      dsimp only
+      by_cases hsub : finalState.curSpec.subcommands.isEmpty
+      · simp only [hsub, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+        rcases resolveOptions_defaultOps_noEof
+          (finalState.inheritedGlobals ++ finalState.curSpec.options)
+          finalState.cliOpts validators w with ⟨ro, w1, hro, hko⟩
+        rw [io_bind_eq _ _ w hro]
+        cases ro with
+        | error e => dsimp only; rw [io_pure_eq]; exact hko
+        | ok resolvedOpts =>
+          dsimp only
+          have hargs := resolveArgs_noEofIo finalState.curSpec.args finalState.rawPositionals validators
+          cases ha : Model.resolveArgs finalState.curSpec.args finalState.rawPositionals validators with
+          | error e => rw [ha] at hargs; dsimp only; rw [io_pure_eq]; exact hargs.1
+          | ok _ => dsimp only; rw [io_pure_eq]; trivial
+      · simp only [hsub, Bool.not_false, ↓reduceIte]
+        cases hrp : finalState.rawPositionals.isEmpty <;>
+          simp [io_pure_eq]
+
+private theorem findSubcommandPath_kind (spec : CommandSpec) (path : List String) :
+    exceptKindIn (fun kd => kd = .unknownSubcommand) (Model.findSubcommandPath spec path) := by
+  unfold Model.findSubcommandPath
+  have hgo : ∀ (globals : List OptSpec) (ver : Option String) (cur : CommandSpec) (p : List String),
+      exceptKindIn (fun kd => kd = .unknownSubcommand)
+        (Model.findSubcommandPath.go globals ver cur p) := by
+    intro globals ver cur p
+    induction p generalizing globals ver cur with
+    | nil => simp [Model.findSubcommandPath.go, exceptKindIn]
+    | cons name rest ih =>
+      unfold Model.findSubcommandPath.go
+      cases cur.subcommands.find? (fun s => s.name == name) with
+      | none => rfl
+      | some sub => exact ih _ _ sub
+  exact hgo [] none spec path
+
+private theorem renderHelp_kind (rootSpec : CommandSpec) (subcommandPath : List String) :
+    exceptKindIn (fun kd => kd = .invalidSpec ∨ kd = .unknownSubcommand)
+      (CmdLine.renderHelp rootSpec subcommandPath) := by
+  unfold CmdLine.renderHelp defaultApi Internal.mkApiM Internal.renderHelp
+  dsimp only
+  split
+  · exact Or.inl rfl
+  · refine exceptKindIn_bind _ _ _ ?_ fun _ => trivial
+    have h := findSubcommandPath_kind rootSpec subcommandPath
+    cases hf : Model.findSubcommandPath rootSpec subcommandPath with
+    | error e => rw [hf] at h; exact Or.inr h
+    | ok _ => trivial
+
+private theorem renderHelp_never_of (rootSpec : CommandSpec) (subcommandPath : List String)
+    (k : CmdLineErrorKind) (hk1 : k ≠ .invalidSpec) (hk2 : k ≠ .unknownSubcommand) :
+    Core.NeverErrorKindPure CmdLineError.kind k (CmdLine.renderHelp rootSpec subcommandPath) := by
+  have h := renderHelp_kind rootSpec subcommandPath
+  unfold Core.NeverErrorKindPure
+  cases hr : CmdLine.renderHelp rootSpec subcommandPath with
+  | ok _ => trivial
+  | error e =>
+    rw [hr] at h
+    rcases h with he | he
+    · exact fun heq => hk1 (heq ▸ he)
+    · exact fun heq => hk2 (heq ▸ he)
+
+/-- Proof that `CmdLine.renderHelp` never returns `.helpRequested`. -/
+theorem cmdline_renderHelp_never_helpRequested (rootSpec : CommandSpec) (subcommandPath : List String) :
+    Core.NeverErrorKindPure CmdLineError.kind .helpRequested (CmdLine.renderHelp rootSpec subcommandPath) :=
+  renderHelp_never_of rootSpec subcommandPath .helpRequested (by decide) (by decide)
+
+/-- Proof that `CmdLine.renderHelp` never returns `.versionRequested`. -/
+theorem cmdline_renderHelp_never_versionRequested (rootSpec : CommandSpec) (subcommandPath : List String) :
+    Core.NeverErrorKindPure CmdLineError.kind .versionRequested (CmdLine.renderHelp rootSpec subcommandPath) :=
+  renderHelp_never_of rootSpec subcommandPath .versionRequested (by decide) (by decide)
+
+/-- Proof that `CmdLine.renderHelp` never returns `.unknownOption`. -/
+theorem cmdline_renderHelp_never_unknownOption (rootSpec : CommandSpec) (subcommandPath : List String) :
+    Core.NeverErrorKindPure CmdLineError.kind .unknownOption (CmdLine.renderHelp rootSpec subcommandPath) :=
+  renderHelp_never_of rootSpec subcommandPath .unknownOption (by decide) (by decide)
+
+/-- Proof that `CmdLine.renderHelp` never returns `.missingOption`. -/
+theorem cmdline_renderHelp_never_missingOption (rootSpec : CommandSpec) (subcommandPath : List String) :
+    Core.NeverErrorKindPure CmdLineError.kind .missingOption (CmdLine.renderHelp rootSpec subcommandPath) :=
+  renderHelp_never_of rootSpec subcommandPath .missingOption (by decide) (by decide)
+
+/-- Proof that `CmdLine.renderHelp` never returns `.missingArgument`. -/
+theorem cmdline_renderHelp_never_missingArgument (rootSpec : CommandSpec) (subcommandPath : List String) :
+    Core.NeverErrorKindPure CmdLineError.kind .missingArgument (CmdLine.renderHelp rootSpec subcommandPath) :=
+  renderHelp_never_of rootSpec subcommandPath .missingArgument (by decide) (by decide)
+
+/-- Proof that `CmdLine.renderHelp` never returns `.unexpectedArgument`. -/
+theorem cmdline_renderHelp_never_unexpectedArgument (rootSpec : CommandSpec) (subcommandPath : List String) :
+    Core.NeverErrorKindPure CmdLineError.kind .unexpectedArgument (CmdLine.renderHelp rootSpec subcommandPath) :=
+  renderHelp_never_of rootSpec subcommandPath .unexpectedArgument (by decide) (by decide)
+
+/-- Proof that `CmdLine.renderHelp` never returns `.invalidValue`. -/
+theorem cmdline_renderHelp_never_invalidValue (rootSpec : CommandSpec) (subcommandPath : List String) :
+    Core.NeverErrorKindPure CmdLineError.kind .invalidValue (CmdLine.renderHelp rootSpec subcommandPath) :=
+  renderHelp_never_of rootSpec subcommandPath .invalidValue (by decide) (by decide)
+
+/-- Proof that `CmdLine.renderHelp` never returns `.eof`. -/
+theorem cmdline_renderHelp_never_eof (rootSpec : CommandSpec) (subcommandPath : List String) :
+    Core.NeverErrorKindPure CmdLineError.kind .eof (CmdLine.renderHelp rootSpec subcommandPath) :=
+  renderHelp_never_of rootSpec subcommandPath .eof (by decide) (by decide)
+
+/-- Proof that `CmdLine.renderHelp` never returns `.ioError`. -/
+theorem cmdline_renderHelp_never_ioError (rootSpec : CommandSpec) (subcommandPath : List String) :
+    Core.NeverErrorKindPure CmdLineError.kind .ioError (CmdLine.renderHelp rootSpec subcommandPath) :=
+  renderHelp_never_of rootSpec subcommandPath .ioError (by decide) (by decide)
+
+private theorem renderValueList_kind (opt : OptSpec) (vs : List OptValue) :
+    exceptKindIn (fun kd => kd = .invalidSpec ∨ kd = .invalidValue)
+      (Model.renderSingleOpt.renderValueList opt vs) := by
+  induction vs with
+  | nil => simp [Model.renderSingleOpt.renderValueList, exceptKindIn]
+  | cons v rest ih =>
+    unfold Model.renderSingleOpt.renderValueList
+    dsimp only [bind, pure, Except.bind, Except.pure]
+    split
+    · exact exceptKindIn_mk (Or.inr rfl)
+    · cases opt.long with
+      | some _ =>
+        dsimp only
+        split
+        · cases hr : Model.renderSingleOpt.renderValueList opt rest with
+          | error _ => rw [hr] at ih; exact ih
+          | ok _ => trivial
+        · cases hr : Model.renderSingleOpt.renderValueList opt rest with
+          | error _ => rw [hr] at ih; exact ih
+          | ok _ => trivial
+      | none =>
+        dsimp only
+        cases opt.short with
+        | some _ =>
+          dsimp only
+          split
+          · cases hr : Model.renderSingleOpt.renderValueList opt rest with
+            | error _ => rw [hr] at ih; exact ih
+            | ok _ => trivial
+          · cases hr : Model.renderSingleOpt.renderValueList opt rest with
+            | error _ => rw [hr] at ih; exact ih
+            | ok _ => trivial
+        | none => exact exceptKindIn_mk (Or.inl rfl)
+
+private theorem renderSingleOpt_kind (opt : OptSpec) (vals : List OptValue) :
+    exceptKindIn (fun kd => kd = .invalidSpec ∨ kd = .invalidValue)
+      (Model.renderSingleOpt opt vals) := by
+  unfold Model.renderSingleOpt
+  split
+  · trivial
+  · split
+    · cases vals with
+      | nil => exact exceptKindIn_mk (P := fun kd => kd = .invalidSpec ∨ kd = .invalidValue) (Or.inr rfl)
+      | cons v rest =>
+        cases rest with
+        | cons _ _ =>
+          split
+          · rename_i heq; cases heq
+          · rename_i heq; cases heq
+          · exact exceptKindIn_mk (P := fun kd => kd = .invalidSpec ∨ kd = .invalidValue) (Or.inr rfl)
+        | nil =>
+          cases v with
+          | bool b =>
+            cases b
+            · cases opt.long with
+              | some _ => trivial
+              | none =>
+                dsimp only
+                cases opt.default with
+                | none => simp [exceptKindIn]
+                | some _ =>
+                  dsimp only
+                  split
+                  · exact exceptKindIn_mk (P := fun kd => kd = .invalidSpec ∨ kd = .invalidValue) (Or.inr rfl)
+                  · trivial
+            · cases opt.long with
+              | some _ => trivial
+              | none =>
+                cases opt.short with
+                | none => exact exceptKindIn_mk (Or.inl rfl)
+                | some _ => trivial
+          | string _ => exact exceptKindIn_mk (Or.inr rfl)
+          | nat _ => exact exceptKindIn_mk (Or.inr rfl)
+          | int _ => exact exceptKindIn_mk (Or.inr rfl)
+          | choice _ => exact exceptKindIn_mk (Or.inr rfl)
+          | custom _ => exact exceptKindIn_mk (Or.inr rfl)
+    · exact renderValueList_kind opt vals
+
+private theorem renderOpts_step_kind (r1 r2 : Except CmdLineError (List String))
+    (h1 : exceptKindIn (fun kd => kd = .invalidSpec ∨ kd = .invalidValue) r1)
+    (h2 : exceptKindIn (fun kd => kd = .invalidSpec ∨ kd = .unknownSubcommand ∨ kd = .missingArgument ∨ kd = .invalidValue) r2) :
+    exceptKindIn (fun kd => kd = .invalidSpec ∨ kd = .unknownSubcommand ∨ kd = .missingArgument ∨ kd = .invalidValue)
+      (do let v ← r1; let v_1 ← r2; return v ++ v_1) := by
+  dsimp only [bind, pure, Except.bind, Except.pure]
+  cases r1 with
+  | error e => rcases h1 with a | b; exact Or.inl a; exact Or.inr (Or.inr (Or.inr b))
+  | ok _ => cases r2 with | error _ => exact h2 | ok _ => trivial
+
+private theorem renderArgs_kind (spec : CommandSpec) (parsed : ParsedCmd) :
+    exceptKindIn (fun kd => kd = .invalidSpec ∨ kd = .unknownSubcommand ∨ kd = .missingArgument ∨ kd = .invalidValue)
+      (CmdLine.renderArgs spec parsed) := by
+  unfold CmdLine.renderArgs defaultApi Internal.mkApiM Model.renderArgs
+  dsimp only [bind, pure, Except.bind, Except.pure]
+  split
+  · exact exceptKindIn_mk (Or.inl rfl)
+  · have h := findSubcommandPath_kind spec parsed.subcommandPath
+    cases hf : Model.findSubcommandPath spec parsed.subcommandPath with
+    | error e => rw [hf] at h; exact Or.inr (Or.inl h)
+    | ok p =>
+      dsimp only
+      split
+      · exact exceptKindIn_mk (Or.inr (Or.inr (Or.inl rfl)))
+      · have hro : ∀ (opts : List OptSpec),
+            exceptKindIn (fun kd => kd = .invalidSpec ∨ kd = .unknownSubcommand ∨ kd = .missingArgument ∨ kd = .invalidValue)
+              (Model.renderArgs.renderOpts parsed opts) := by
+          intro opts
+          induction opts with
+          | nil => simp [Model.renderArgs.renderOpts, exceptKindIn]
+          | cons o rs ih =>
+            unfold Model.renderArgs.renderOpts
+            exact renderOpts_step_kind _ _
+              (renderSingleOpt_kind o
+                (match parsed.options.find? (fun p => p.1 == o.name) with | some p => p.2 | none => []))
+              ih
+        cases hres : Model.renderArgs.renderOpts parsed (p.1 ++ p.2.2.options) with
+        | error e => have hro' := hro (p.1 ++ p.2.2.options); rw [hres] at hro'; exact hro'
+        | ok _ => trivial
+
+private theorem renderArgs_never_of (spec : CommandSpec) (parsed : ParsedCmd)
+    (k : CmdLineErrorKind)
+    (hk1 : k ≠ .invalidSpec) (hk2 : k ≠ .unknownSubcommand)
+    (hk3 : k ≠ .missingArgument) (hk4 : k ≠ .invalidValue) :
+    Core.NeverErrorKindPure CmdLineError.kind k (CmdLine.renderArgs spec parsed) := by
+  have h := renderArgs_kind spec parsed
+  unfold Core.NeverErrorKindPure
+  cases hr : CmdLine.renderArgs spec parsed with
+  | ok _ => trivial
+  | error e =>
+    rw [hr] at h
+    rcases h with he | he | he | he
+    · exact fun heq => hk1 (heq ▸ he)
+    · exact fun heq => hk2 (heq ▸ he)
+    · exact fun heq => hk3 (heq ▸ he)
+    · exact fun heq => hk4 (heq ▸ he)
+
+/-- Proof that `CmdLine.renderArgs` never returns `.helpRequested`. -/
+theorem cmdline_renderArgs_never_helpRequested (spec : CommandSpec) (parsed : ParsedCmd) :
+    Core.NeverErrorKindPure CmdLineError.kind .helpRequested (CmdLine.renderArgs spec parsed) :=
+  renderArgs_never_of spec parsed .helpRequested (by decide) (by decide) (by decide) (by decide)
+
+/-- Proof that `CmdLine.renderArgs` never returns `.versionRequested`. -/
+theorem cmdline_renderArgs_never_versionRequested (spec : CommandSpec) (parsed : ParsedCmd) :
+    Core.NeverErrorKindPure CmdLineError.kind .versionRequested (CmdLine.renderArgs spec parsed) :=
+  renderArgs_never_of spec parsed .versionRequested (by decide) (by decide) (by decide) (by decide)
+
+/-- Proof that `CmdLine.renderArgs` never returns `.unknownOption`. -/
+theorem cmdline_renderArgs_never_unknownOption (spec : CommandSpec) (parsed : ParsedCmd) :
+    Core.NeverErrorKindPure CmdLineError.kind .unknownOption (CmdLine.renderArgs spec parsed) :=
+  renderArgs_never_of spec parsed .unknownOption (by decide) (by decide) (by decide) (by decide)
+
+/-- Proof that `CmdLine.renderArgs` never returns `.missingOption`. -/
+theorem cmdline_renderArgs_never_missingOption (spec : CommandSpec) (parsed : ParsedCmd) :
+    Core.NeverErrorKindPure CmdLineError.kind .missingOption (CmdLine.renderArgs spec parsed) :=
+  renderArgs_never_of spec parsed .missingOption (by decide) (by decide) (by decide) (by decide)
+
+/-- Proof that `CmdLine.renderArgs` never returns `.unexpectedArgument`. -/
+theorem cmdline_renderArgs_never_unexpectedArgument (spec : CommandSpec) (parsed : ParsedCmd) :
+    Core.NeverErrorKindPure CmdLineError.kind .unexpectedArgument (CmdLine.renderArgs spec parsed) :=
+  renderArgs_never_of spec parsed .unexpectedArgument (by decide) (by decide) (by decide) (by decide)
+
+/-- Proof that `CmdLine.renderArgs` never returns `.eof`. -/
+theorem cmdline_renderArgs_never_eof (spec : CommandSpec) (parsed : ParsedCmd) :
+    Core.NeverErrorKindPure CmdLineError.kind .eof (CmdLine.renderArgs spec parsed) :=
+  renderArgs_never_of spec parsed .eof (by decide) (by decide) (by decide) (by decide)
+
+/-- Proof that `CmdLine.renderArgs` never returns `.ioError`. -/
+theorem cmdline_renderArgs_never_ioError (spec : CommandSpec) (parsed : ParsedCmd) :
+    Core.NeverErrorKindPure CmdLineError.kind .ioError (CmdLine.renderArgs spec parsed) :=
+  renderArgs_never_of spec parsed .ioError (by decide) (by decide) (by decide) (by decide)
+
+private theorem catchIo_never_of {α : Type} (k : CmdLineErrorKind) (hk : k ≠ .ioError)
+    (act : IO (Except CmdLineError α))
+    (hact : ∀ w', estOutCmdLineAllowed (fun e => e.kind ≠ k) (act w'))
+    (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind k
+      (BaseIO.toEIO (EIO.catchExceptions act fun err =>
+        let msg := err.toString
+        pure (.error { kind := .ioError, message := if msg.isEmpty then "stdio I/O error" else msg }))) w := by
+  unfold Core.NeverErrorKindIO BaseIO.toEIO EIO.catchExceptions
+  have h := hact w
+  cases ha : act w with
+  | error ex s =>
+    dsimp only [pure, EST.pure, EStateM.pure]
+    exact hk.symm
+  | ok res s =>
+    rw [ha] at h
+    cases res with
+    | ok _ => trivial
+    | error e => exact h
+
+private theorem internal_promptLine_allowed (ops : CliOps) (prompt : String) (default : Option String)
+    (k : CmdLineErrorKind) (hk : k ≠ .eof) (w : Void IO.RealWorld) :
+    estOutCmdLineAllowed (fun e => e.kind ≠ k) (Internal.promptLine ops prompt default w) := by
+  unfold Internal.promptLine
+  refine io_bind_allowed _ _ _ w fun _ w1 => ?_
+  refine io_bind_allowed _ _ _ w1 fun line? w2 => ?_
+  cases line? with
+  | none => dsimp only; rw [io_pure_eq]; exact hk.symm
+  | some _ =>
+    dsimp only
+    split
+    · cases default <;> dsimp only <;> rw [io_pure_eq] <;> trivial
+    · rw [io_pure_eq]; trivial
+
+private theorem internal_confirm_allowed (ops : CliOps) (prompt : String) (default : Option Bool)
+    (maxAttempts : Nat) (k : CmdLineErrorKind) (hk1 : k ≠ .eof) (hk2 : k ≠ .invalidValue)
+    (w : Void IO.RealWorld) :
+    estOutCmdLineAllowed (fun e => e.kind ≠ k) (Internal.confirm ops prompt default maxAttempts w) := by
+  induction maxAttempts generalizing w with
+  | zero =>
+    unfold Internal.confirm
+    rw [io_pure_eq]
+    exact hk2.symm
+  | succ n ih =>
+    unfold Internal.confirm
+    refine io_bind_allowed _ _ _ w fun _ w1 => ?_
+    refine io_bind_allowed _ _ _ w1 fun line? w2 => ?_
+    cases line? with
+    | none => dsimp only; rw [io_pure_eq]; exact hk1.symm
+    | some line =>
+      dsimp only
+      split
+      · cases default with
+        | some _ => dsimp only; rw [io_pure_eq]; trivial
+        | none =>
+          cases n with
+          | zero => dsimp only; rw [io_pure_eq]; exact hk2.symm
+          | succ m => exact io_bind_allowed _ _ _ w2 fun _ w3 => ih w3
+      · split
+        · rw [io_pure_eq]; trivial
+        · split
+          · rw [io_pure_eq]; trivial
+          · cases n with
+            | zero => dsimp only; rw [io_pure_eq]; exact hk2.symm
+            | succ m => exact io_bind_allowed _ _ _ w2 fun _ w3 => ih w3
+
+private theorem promptLine_never_of (prompt : String) (default : Option String)
+    (k : CmdLineErrorKind) (hk1 : k ≠ .eof) (hk2 : k ≠ .ioError) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind k (CmdLine.promptLine prompt default) w := by
+  unfold CmdLine.promptLine defaultApi
+  dsimp only
+  apply catchIo_never_of k hk2
+  intro w'
+  exact internal_promptLine_allowed defaultOps prompt default k hk1 w'
+
+private theorem confirm_never_of (prompt : String) (default : Option Bool) (maxAttempts : Nat)
+    (k : CmdLineErrorKind) (hk1 : k ≠ .eof) (hk2 : k ≠ .invalidValue) (hk3 : k ≠ .ioError)
+    (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind k (CmdLine.confirm prompt default maxAttempts) w := by
+  unfold CmdLine.confirm defaultApi
+  dsimp only
+  apply catchIo_never_of k hk3
+  intro w'
+  exact internal_confirm_allowed defaultOps prompt default maxAttempts k hk1 hk2 w'
+
+/-- Proof that `CmdLine.promptLine` never returns `.helpRequested`. -/
+theorem cmdline_promptLine_never_helpRequested (prompt : String) (default : Option String) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .helpRequested (CmdLine.promptLine prompt default) w :=
+  promptLine_never_of prompt default .helpRequested (by decide) (by decide) w
+
+/-- Proof that `CmdLine.promptLine` never returns `.versionRequested`. -/
+theorem cmdline_promptLine_never_versionRequested (prompt : String) (default : Option String) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .versionRequested (CmdLine.promptLine prompt default) w :=
+  promptLine_never_of prompt default .versionRequested (by decide) (by decide) w
+
+/-- Proof that `CmdLine.promptLine` never returns `.unknownOption`. -/
+theorem cmdline_promptLine_never_unknownOption (prompt : String) (default : Option String) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .unknownOption (CmdLine.promptLine prompt default) w :=
+  promptLine_never_of prompt default .unknownOption (by decide) (by decide) w
+
+/-- Proof that `CmdLine.promptLine` never returns `.missingOption`. -/
+theorem cmdline_promptLine_never_missingOption (prompt : String) (default : Option String) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .missingOption (CmdLine.promptLine prompt default) w :=
+  promptLine_never_of prompt default .missingOption (by decide) (by decide) w
+
+/-- Proof that `CmdLine.promptLine` never returns `.missingArgument`. -/
+theorem cmdline_promptLine_never_missingArgument (prompt : String) (default : Option String) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .missingArgument (CmdLine.promptLine prompt default) w :=
+  promptLine_never_of prompt default .missingArgument (by decide) (by decide) w
+
+/-- Proof that `CmdLine.promptLine` never returns `.unexpectedArgument`. -/
+theorem cmdline_promptLine_never_unexpectedArgument (prompt : String) (default : Option String) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .unexpectedArgument (CmdLine.promptLine prompt default) w :=
+  promptLine_never_of prompt default .unexpectedArgument (by decide) (by decide) w
+
+/-- Proof that `CmdLine.promptLine` never returns `.invalidValue`. -/
+theorem cmdline_promptLine_never_invalidValue (prompt : String) (default : Option String) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .invalidValue (CmdLine.promptLine prompt default) w :=
+  promptLine_never_of prompt default .invalidValue (by decide) (by decide) w
+
+/-- Proof that `CmdLine.promptLine` never returns `.unknownSubcommand`. -/
+theorem cmdline_promptLine_never_unknownSubcommand (prompt : String) (default : Option String) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .unknownSubcommand (CmdLine.promptLine prompt default) w :=
+  promptLine_never_of prompt default .unknownSubcommand (by decide) (by decide) w
+
+/-- Proof that `CmdLine.promptLine` never returns `.invalidSpec`. -/
+theorem cmdline_promptLine_never_invalidSpec (prompt : String) (default : Option String) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .invalidSpec (CmdLine.promptLine prompt default) w :=
+  promptLine_never_of prompt default .invalidSpec (by decide) (by decide) w
+
+/-- Proof that `CmdLine.confirm` never returns `.helpRequested`. -/
+theorem cmdline_confirm_never_helpRequested (prompt : String) (default : Option Bool) (maxAttempts : Nat) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .helpRequested (CmdLine.confirm prompt default maxAttempts) w :=
+  confirm_never_of prompt default maxAttempts .helpRequested (by decide) (by decide) (by decide) w
+
+/-- Proof that `CmdLine.confirm` never returns `.versionRequested`. -/
+theorem cmdline_confirm_never_versionRequested (prompt : String) (default : Option Bool) (maxAttempts : Nat) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .versionRequested (CmdLine.confirm prompt default maxAttempts) w :=
+  confirm_never_of prompt default maxAttempts .versionRequested (by decide) (by decide) (by decide) w
+
+/-- Proof that `CmdLine.confirm` never returns `.unknownOption`. -/
+theorem cmdline_confirm_never_unknownOption (prompt : String) (default : Option Bool) (maxAttempts : Nat) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .unknownOption (CmdLine.confirm prompt default maxAttempts) w :=
+  confirm_never_of prompt default maxAttempts .unknownOption (by decide) (by decide) (by decide) w
+
+/-- Proof that `CmdLine.confirm` never returns `.missingOption`. -/
+theorem cmdline_confirm_never_missingOption (prompt : String) (default : Option Bool) (maxAttempts : Nat) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .missingOption (CmdLine.confirm prompt default maxAttempts) w :=
+  confirm_never_of prompt default maxAttempts .missingOption (by decide) (by decide) (by decide) w
+
+/-- Proof that `CmdLine.confirm` never returns `.missingArgument`. -/
+theorem cmdline_confirm_never_missingArgument (prompt : String) (default : Option Bool) (maxAttempts : Nat) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .missingArgument (CmdLine.confirm prompt default maxAttempts) w :=
+  confirm_never_of prompt default maxAttempts .missingArgument (by decide) (by decide) (by decide) w
+
+/-- Proof that `CmdLine.confirm` never returns `.unexpectedArgument`. -/
+theorem cmdline_confirm_never_unexpectedArgument (prompt : String) (default : Option Bool) (maxAttempts : Nat) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .unexpectedArgument (CmdLine.confirm prompt default maxAttempts) w :=
+  confirm_never_of prompt default maxAttempts .unexpectedArgument (by decide) (by decide) (by decide) w
+
+/-- Proof that `CmdLine.confirm` never returns `.unknownSubcommand`. -/
+theorem cmdline_confirm_never_unknownSubcommand (prompt : String) (default : Option Bool) (maxAttempts : Nat) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .unknownSubcommand (CmdLine.confirm prompt default maxAttempts) w :=
+  confirm_never_of prompt default maxAttempts .unknownSubcommand (by decide) (by decide) (by decide) w
+
+/-- Proof that `CmdLine.confirm` never returns `.invalidSpec`. -/
+theorem cmdline_confirm_never_invalidSpec (prompt : String) (default : Option Bool) (maxAttempts : Nat) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CmdLineError.kind .invalidSpec (CmdLine.confirm prompt default maxAttempts) w :=
+  confirm_never_of prompt default maxAttempts .invalidSpec (by decide) (by decide) (by decide) w
+
+/-- Proof that `parseWithEnv` under `pureIdCliOps` agrees universally with `parseWith`. -/
+theorem allPass_parseWithEnv_unsetEnvMatchesParseWith :
+    Core.AllPass (test_cmdline_parseWithEnv_unsetEnvMatchesParseWith defaultApi Internal.mkApiM) := by
+  intro spec args validators
+  exact ⟨rfl, trivial⟩
 
 end LeanSwe.CmdLine.Proofs

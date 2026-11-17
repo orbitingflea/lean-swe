@@ -491,4 +491,190 @@ theorem reach_envvars_splitSearchPath_roundTripsCleanSegments :
   ⟨["/a", "/b"], by decide,
     proof_envvars_splitSearchPath_roundTripsCleanSegments ["/a", "/b"] (by decide)⟩
 
+/-- Proof of `test_envvars_getEnv_invalidEncodingReportsEncodingError` for `defaultApi` and `Internal.mkApiM`. -/
+theorem proof_envvars_getEnv_invalidEncodingReportsEncodingError :
+    AllPass (test_envvars_getEnv_invalidEncodingReportsEncodingError defaultApi (Internal.mkApiM (m := Id))) := by
+  intro key detail hvalid
+  have hk : Internal.isValidKey key = true := (isValidKey_true_iff key).mpr hvalid
+  have hkind : ∀ k?, (defaultApi.mapRawError (.invalidEncoding (some k?) detail)).kind = .invalidEncoding := by
+    intro k?
+    have hpres := Raw.Proofs.proof_envvarsraw_mapRawError_preservesKindAndMetadata (.invalidEncoding (some k?) detail)
+    simpa [defaultApi, Internal.mkApiM, assert] using hpres.1.1
+  have hkey : ∀ k?, (defaultApi.mapRawError (.invalidEncoding (some k?) detail)).key = some k? := by
+    intro k?
+    have hpres := Raw.Proofs.proof_envvarsraw_mapRawError_preservesKindAndMetadata (.invalidEncoding (some k?) detail)
+    simpa [defaultApi, Internal.mkApiM, assert] using hpres.1.2.1
+  have herrno : ∀ k?, (defaultApi.mapRawError (.invalidEncoding (some k?) detail)).errnoCode = none := by
+    intro k?
+    have hpres := Raw.Proofs.proof_envvarsraw_mapRawError_preservesKindAndMetadata (.invalidEncoding (some k?) detail)
+    simpa [defaultApi, Internal.mkApiM, assert] using hpres.1.2.2
+  have hne : ∀ k?, (defaultApi.mapRawError (.invalidEncoding (some k?) detail)).message ≠ "" := by
+    intro k?
+    have hmsg := Raw.Proofs.proof_envvarsraw_mapRawError_returnsNonEmptyMessage (.invalidEncoding (some k?) detail)
+    simpa [defaultApi, Internal.mkApiM, assert] using hmsg.1
+  simp only [defaultApi, Internal.mkApiM, hk, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
+    bind, pure, assert]
+  exact ⟨⟨_, rfl, hkind key, hkey key, herrno key, hne key⟩,
+    ⟨_, rfl, hkind "HOME", hkey "HOME", herrno "HOME", hne "HOME"⟩, trivial⟩
+
+/-- Non-vacuity `CanReach` witness for `test_envvars_getEnv_invalidEncodingReportsEncodingError`. -/
+theorem reach_envvars_getEnv_invalidEncodingReportsEncodingError :
+    CanReach (test_envvars_getEnv_invalidEncodingReportsEncodingError defaultApi (Internal.mkApiM (m := Id))) :=
+  ⟨"BAD_VAL", "bad utf8", ⟨by decide, by decide, by decide⟩,
+    proof_envvars_getEnv_invalidEncodingReportsEncodingError "BAD_VAL" "bad utf8" ⟨by decide, by decide, by decide⟩⟩
+
+/-- Upper-layer consumer theorem for `Raw.assume_envvarsraw_listEnv_consistentWithGetEnv`:
+    whenever a `RawEnvVarsOpsM Id` backend satisfies the formal listing/lookup consistency assumption,
+    `Internal.mkApiM raw` preserves key well-formedness on `listEnv` and agrees with `listEnv` on valid `getEnv` keys. -/
+theorem envvars_listEnv_consistent_with_getEnv
+    (raw : RawEnvVarsOpsM Id)
+    (hcons : AllPass (Raw.assume_envvarsraw_listEnv_consistentWithGetEnv raw))
+    (pairs : Array (String × String))
+    (hlist : (Internal.mkApiM raw).listEnv = .ok pairs)
+    (k : String)
+    (hk : k ≠ "" ∧ '=' ∉ k.toList ∧ Char.ofNat 0 ∉ k.toList) :
+    (pairs.toList.all (fun p => !p.1.isEmpty && !('=' ∈ p.1.toList) && !(Char.ofNat 0 ∈ p.1.toList)) = true) ∧
+    ((Internal.mkApiM raw).getEnv k = .ok ((pairs.toList.find? (fun p => p.1 == k)).map Prod.snd)) := by
+  have hrawList : raw.listEnv = .ok pairs := by
+    simp only [Internal.mkApiM, bind] at hlist
+    cases hrl : raw.listEnv with
+    | error err => rw [hrl] at hlist; simp [pure] at hlist
+    | ok xs => rw [hrl] at hlist; simp [pure] at hlist; injection hlist with hEq; subst hEq; rfl
+  rcases hcons pairs k hrawList hk with ⟨⟨hall, hget⟩, _⟩
+  have hvalid : Internal.isValidKey k = true := (isValidKey_true_iff k).mpr hk
+  refine ⟨hall, ?_⟩
+  simp only [Internal.mkApiM, hvalid, Bool.not_true, Bool.false_eq_true, ↓reduceIte, bind, pure]
+  rw [hget]
+
+private theorem io_bind_ok {α β : Type} (act : IO α) (k : α → IO β) (w : Void IO.RealWorld)
+    {a : α} {w' : Void IO.RealWorld} (h : act w = EST.Out.ok a w') :
+    (act >>= k) w = k a w' := by
+  change EST.bind act k w = k a w'
+  simp [EST.bind, h]
+
+private theorem io_pure_eq {α : Type} (a : α) (w : Void IO.RealWorld) :
+    (pure a : IO α) w = EST.Out.ok a w := rfl
+
+private theorem raw_getEnv_res (key : String) (w : Void IO.RealWorld) :
+    (∃ a w', Raw.defaultOps.getEnv key w = EST.Out.ok (Except.ok a) w') ∨
+    (∃ key? detail w', Raw.defaultOps.getEnv key w = EST.Out.ok (Except.error (.invalidEncoding key? detail)) w') := by
+  have h1 := Raw.Proofs.raw_getEnv_never_invalidArgument key w
+  have h2 := Raw.Proofs.raw_getEnv_never_otherError key w
+  have h3 := Raw.Proofs.raw_getEnv_never_userError key w
+  unfold Core.NeverErrorKindIO Raw.getEnv at h1 h2 h3
+  cases hr : Raw.defaultOps.getEnv key w with
+  | error _ _ => rw [hr] at h1; exact False.elim h1
+  | ok res w' =>
+    cases res with
+    | ok a => exact Or.inl ⟨a, w', rfl⟩
+    | error e =>
+      cases e with
+      | invalidEncoding k d => exact Or.inr ⟨k, d, w', rfl⟩
+      | invalidArgument _ _ _ => rw [hr] at h1; exact False.elim (h1 rfl)
+      | otherError _ _ => rw [hr] at h2; exact False.elim (h2 rfl)
+      | userError _ => rw [hr] at h3; exact False.elim (h3 rfl)
+
+private theorem raw_listEnv_res (w : Void IO.RealWorld) :
+    (∃ a w', Raw.defaultOps.listEnv w = EST.Out.ok (Except.ok a) w') ∨
+    (∃ key? detail w', Raw.defaultOps.listEnv w = EST.Out.ok (Except.error (.invalidEncoding key? detail)) w') := by
+  have h1 := Raw.Proofs.raw_listEnv_never_invalidArgument w
+  have h2 := Raw.Proofs.raw_listEnv_never_otherError w
+  have h3 := Raw.Proofs.raw_listEnv_never_userError w
+  unfold Core.NeverErrorKindIO Raw.listEnv at h1 h2 h3
+  cases hr : Raw.defaultOps.listEnv w with
+  | error _ _ => rw [hr] at h1; exact False.elim h1
+  | ok res w' =>
+    cases res with
+    | ok a => exact Or.inl ⟨a, w', rfl⟩
+    | error e =>
+      cases e with
+      | invalidEncoding k d => exact Or.inr ⟨k, d, w', rfl⟩
+      | invalidArgument _ _ _ => rw [hr] at h1; exact False.elim (h1 rfl)
+      | otherError _ _ => rw [hr] at h2; exact False.elim (h2 rfl)
+      | userError _ => rw [hr] at h3; exact False.elim (h3 rfl)
+
+private theorem mapRawError_invalidEncoding_kind (key? : Option String) (detail : String) :
+    (Raw.defaultOps.mapRawError (.invalidEncoding key? detail)).kind = .invalidEncoding := by
+  simp [Raw.defaultOps, Raw.Internal.mkRawOps, Raw.Internal.mapRawError]
+
+private theorem envvars_getEnv_never_of (f : Raw.EnvVarsErrorKind)
+    (hf1 : f ≠ .invalidKey) (hf2 : f ≠ .invalidEncoding)
+    (key : String) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.EnvVarsError.kind f (EnvVars.getEnv key) w := by
+  unfold Core.NeverErrorKindIO EnvVars.getEnv EnvVars.defaultApi Internal.mkApiM
+  dsimp only
+  by_cases hk : Internal.isValidKey key
+  · simp only [hk, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    rcases raw_getEnv_res key w with ⟨a, w', hok⟩ | ⟨k?, d, w', herr⟩
+    · rw [io_bind_ok _ _ w hok]; dsimp only; rw [io_pure_eq]; trivial
+    · rw [io_bind_ok _ _ w herr]; dsimp only; rw [io_pure_eq]
+      intro heq
+      exact hf2 (heq ▸ mapRawError_invalidEncoding_kind k? d)
+  · simp only [hk, Bool.not_false, ↓reduceIte]
+    rw [io_pure_eq]
+    exact hf1.symm
+
+private theorem envvars_listEnv_never_of (f : Raw.EnvVarsErrorKind)
+    (hf : f ≠ .invalidEncoding) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.EnvVarsError.kind f EnvVars.listEnv w := by
+  unfold Core.NeverErrorKindIO EnvVars.listEnv EnvVars.defaultApi Internal.mkApiM
+  dsimp only
+  rcases raw_listEnv_res w with ⟨a, w', hok⟩ | ⟨k?, d, w', herr⟩
+  · rw [io_bind_ok _ _ w hok]; dsimp only; rw [io_pure_eq]; trivial
+  · rw [io_bind_ok _ _ w herr]; dsimp only; rw [io_pure_eq]
+    intro heq
+    exact hf (heq ▸ mapRawError_invalidEncoding_kind k? d)
+
+private theorem envvars_homeDir_never_of (f : Raw.EnvVarsErrorKind)
+    (hf1 : f ≠ .notFound) (hf2 : f ≠ .invalidEncoding) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.EnvVarsError.kind f EnvVars.homeDir w := by
+  unfold Core.NeverErrorKindIO EnvVars.homeDir EnvVars.defaultApi Internal.mkApiM
+  dsimp only
+  rcases raw_getEnv_res "HOME" w with ⟨a, w', hok⟩ | ⟨k?, d, w', herr⟩
+  · rw [io_bind_ok _ _ w hok]
+    cases a with
+    | none => dsimp only; rw [io_pure_eq]; exact hf1.symm
+    | some s =>
+      by_cases hs : s = ""
+      · subst hs; simp [io_pure_eq]; exact hf1.symm
+      · simp [io_pure_eq]
+  · rw [io_bind_ok _ _ w herr]; dsimp only; rw [io_pure_eq]
+    intro heq
+    exact hf2 (heq ▸ mapRawError_invalidEncoding_kind k? d)
+
+/-- Proof that `EnvVars.getEnv` never returns `.notFound`. -/
+theorem envvars_getEnv_never_notFound (key : String) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.EnvVarsError.kind .notFound (EnvVars.getEnv key) w :=
+  envvars_getEnv_never_of .notFound (by decide) (by decide) key w
+
+/-- Proof that `EnvVars.getEnv` never returns `.ioError`. -/
+theorem envvars_getEnv_never_ioError (key : String) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.EnvVarsError.kind .ioError (EnvVars.getEnv key) w :=
+  envvars_getEnv_never_of .ioError (by decide) (by decide) key w
+
+/-- Proof that `EnvVars.listEnv` never returns `.invalidKey`. -/
+theorem envvars_listEnv_never_invalidKey (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.EnvVarsError.kind .invalidKey EnvVars.listEnv w :=
+  envvars_listEnv_never_of .invalidKey (by decide) w
+
+/-- Proof that `EnvVars.listEnv` never returns `.notFound`. -/
+theorem envvars_listEnv_never_notFound (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.EnvVarsError.kind .notFound EnvVars.listEnv w :=
+  envvars_listEnv_never_of .notFound (by decide) w
+
+/-- Proof that `EnvVars.listEnv` never returns `.ioError`. -/
+theorem envvars_listEnv_never_ioError (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.EnvVarsError.kind .ioError EnvVars.listEnv w :=
+  envvars_listEnv_never_of .ioError (by decide) w
+
+/-- Proof that `EnvVars.homeDir` never returns `.invalidKey`. -/
+theorem envvars_homeDir_never_invalidKey (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.EnvVarsError.kind .invalidKey EnvVars.homeDir w :=
+  envvars_homeDir_never_of .invalidKey (by decide) (by decide) w
+
+/-- Proof that `EnvVars.homeDir` never returns `.ioError`. -/
+theorem envvars_homeDir_never_ioError (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.EnvVarsError.kind .ioError EnvVars.homeDir w :=
+  envvars_homeDir_never_of .ioError (by decide) (by decide) w
+
 end LeanSwe.EnvVars.Proofs

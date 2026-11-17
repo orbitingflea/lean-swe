@@ -105,6 +105,10 @@ private def parseMainOptions : List String → Except String MainOptions
 /-- Entrypoint running runtime tests for all `lean-swe` packages. -/
 def main (args : List String) : IO UInt32 := do
   match args with
+  | "--envvars-raw-probe" :: rest =>
+    return (← EnvVars.Raw.RuntimeTests.probeMain rest)
+  | "--envvars-probe" :: rest =>
+    return (← EnvVars.RuntimeTests.probeMain rest)
   | "--cmdline-probe" :: rest =>
     return (← CmdLine.RuntimeTests.probeMain rest)
   | "--slotpool-probe" :: rest =>
