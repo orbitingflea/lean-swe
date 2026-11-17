@@ -1,4 +1,5 @@
 import LeanSwe.ProcessSandbox.Types
+import LeanSwe.ProcessSandbox.Seccomp.Model
 
 namespace LeanSwe.ProcessSandbox.Model
 
@@ -464,75 +465,6 @@ def isCoveredByReadWriteGrant (mounts : List SandboxMount) (hp : String) : Bool 
   mounts.any fun
     | .readWrite hostRoot _ => isHostPathUnderOrEq hostRoot hp
     | _ => false
-
-/-- Socket types passed to anonymous `socketpair(AF_UNIX, ...)` inside the box. -/
-inductive UnixSocketpairType where
-  /-- `SOCK_STREAM` anonymous IPC pair (allowed by `seccomp`). -/
-  | stream
-  /-- `SOCK_SEQPACKET` anonymous IPC pair (allowed by `seccomp`). -/
-  | seqpacket
-  /-- Any other socket type such as `SOCK_DGRAM` or `SOCK_RAW` (blocked by `seccomp`). -/
-  | disallowedOther
-  deriving Repr, BEq, DecidableEq, Inhabited
-
-/-- Privileged or escape operations blocked by `seccomp` BPF, `PR_SET_NO_NEW_PRIVS`, and namespaces. -/
-inductive AdminOp where
-  /-- `reboot` or `kexec_load`. -/
-  | rebootOrKexec
-  /-- `settimeofday`, `clock_settime`, `clock_adjtime`, or `adjtimex`. -/
-  | setHostClock
-  /-- `init_module`, `finit_module`, or `delete_module`. -/
-  | kernelModuleOp (moduleName : String)
-  /-- `mount`, `umount2`, `pivot_root`, `swapon`, or `swapoff`. -/
-  | mountOrSwapOp
-  /-- `bpf`, `perf_event_open`, or `userfaultfd`. -/
-  | bpfOrPerfOp
-  /-- `io_uring_setup`, `io_uring_enter`, or `io_uring_register`. -/
-  | ioUringOp
-  /-- `keyctl`, `add_key`, or `request_key`. -/
-  | keyringOp
-  /-- `unshare` or `setns` namespace escape attempt. -/
-  | namespaceEscapeOp
-  /-- `socket(AF_UNIX, ...)`, `AF_SMC`, or `MSG_FASTOPEN` socket creation/connect attempt. -/
-  | unixSocketOrSmcOp (socketToken : String)
-  /-- Non-native ABI or `x32` syscall attempt. -/
-  | nonNativeArchSyscall
-  deriving Repr, BEq, DecidableEq, Inhabited
-
-/-- Guest syscall surface modeled across the shared Linux kernel boundary. -/
-inductive GuestSyscall where
-  /-- Privileged admin, kernel-escape, `io_uring`, `bpf`, or `socket(AF_UNIX, ...)` syscall. -/
-  | adminOp (op : AdminOp)
-  /-- Anonymous `socketpair(AF_UNIX, sockType, 0, sv)` IPC syscall (`SOCK_STREAM | SOCK_SEQPACKET` allowed box-locally). -/
-  | anonUnixSocketpair (sockType : UnixSocketpairType)
-  /-- Attempt to signal a host PID outside the box's isolated PID namespace. -/
-  | signalHostPid (hostPid : Nat)
-  /-- `clone3` syscall, rejected with `ENOSYS` by `seccomp` so glibc falls back cleanly to `clone`. -/
-  | clone3Attempt
-  /-- Read metadata or bytes from `boxPath` inside the box. -/
-  | fsRead (boxPath : String)
-  /-- Write `data` to `boxPath` inside the box. -/
-  | fsWrite (boxPath : String) (data : ByteArray)
-  /-- Allocate `bytes` of anonymous memory (`mmap` / `brk`) on the shared kernel. -/
-  | mmapAnon (bytes : Nat)
-  /-- Fork/clone a child `newBoxPid` via `clone` (`hasCloneNewFlags = true` attempts `CLONE_NEW*` namespace creation). -/
-  | cloneProc (newBoxPid : Nat) (hasCloneNewFlags : Bool := false)
-  /-- Send TCP `payload` to `(destIsLoopback, port)` from inside the box's network namespace. -/
-  | tcpSend (destIsLoopback : Bool) (port : UInt16) (payload : ByteArray)
-  deriving BEq, DecidableEq, Inhabited
-
-instance : Repr GuestSyscall where
-  reprPrec
-    | .adminOp op, _ => "GuestSyscall.adminOp (" ++ repr op ++ ")"
-    | .anonUnixSocketpair st, _ => "GuestSyscall.anonUnixSocketpair (" ++ repr st ++ ")"
-    | .signalHostPid pid, _ => "GuestSyscall.signalHostPid " ++ repr pid
-    | .clone3Attempt, _ => "GuestSyscall.clone3Attempt"
-    | .fsRead bp, _ => "GuestSyscall.fsRead " ++ repr bp
-    | .fsWrite bp bs, _ => "GuestSyscall.fsWrite " ++ repr bp ++ " " ++ repr bs.toList
-    | .mmapAnon n, _ => "GuestSyscall.mmapAnon " ++ repr n
-    | .cloneProc p flg, _ => "GuestSyscall.cloneProc " ++ repr p ++ " " ++ repr flg
-    | .tcpSend lo pt bs, _ =>
-      "GuestSyscall.tcpSend " ++ repr lo ++ " " ++ repr pt ++ " " ++ repr bs.toList
 
 /-- Explicit 3-category shared-kernel classification of a `GuestSyscall` step. -/
 inductive SyscallCategory where

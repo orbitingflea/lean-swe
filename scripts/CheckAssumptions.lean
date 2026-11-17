@@ -900,17 +900,52 @@ private partial def isNondetUnitSpecType (ty : Expr) : MetaM Bool := do
     return false
 
 private partial def isFallibleCodomain (ty : Expr) : MetaM Bool := do
-  forallTelescope ty fun _ ret => do
-    let rec check (e : Expr) : MetaM Bool := do
-      let e := e.consumeMData
-      if e.isAppOfArity ``Except 2 then return true
-      if e.isAppOfArity ``IO 1 then return ← check e.appArg!
-      if e.isAppOfArity ``BaseIO 1 then return ← check e.appArg!
-      if e.isAppOfArity ``EIO 2 then return ← check e.appArg!
-      let e' ← whnfCore e
-      if e' != e then return ← check e'
-      return false
-    check ret
+  let rec check (e : Expr) : MetaM Bool := do
+    let e := e.consumeMData
+    if e.isAppOfArity ``Except 2 then return true
+    if e.isAppOfArity ``ExceptT 3 then return true
+    if e.isAppOfArity ``IO 1 then return ← check e.appArg!
+    if e.isAppOfArity ``BaseIO 1 then return ← check e.appArg!
+    if e.isAppOfArity ``EIO 2 then return ← check e.appArg!
+    if e.isAppOfArity ``EST 3 then return ← check e.appArg!
+    if e.isAppOfArity ``EST.Out 3 then return ← check e.appArg!
+    if e.isForall then
+      return ← forallTelescope e fun _ inner => check inner
+    let e' ← whnf e
+    if e' != e then return ← check e'
+    return false
+  check ty
+
+private partial def hasFallibleSurface
+    (env : Environment) (visited : Std.HashSet Name) (ty : Expr) : MetaM Bool := do
+  if ← isFallibleCodomain ty then
+    return true
+  let rec checkStruct (e : Expr) : MetaM Bool := do
+    let e := e.consumeMData
+    if e.isAppOfArity ``IO 1 then return ← checkStruct e.appArg!
+    if e.isAppOfArity ``BaseIO 1 then return ← checkStruct e.appArg!
+    if e.isAppOfArity ``EIO 2 then return ← checkStruct e.appArg!
+    if e.isAppOfArity ``EST 3 then return ← checkStruct e.appArg!
+    if e.isAppOfArity ``EST.Out 3 then return ← checkStruct e.appArg!
+    if e.isForall then
+      return ← forallTelescope e fun _ inner => checkStruct inner
+    let e' ← whnf e
+    if e' != e then return ← checkStruct e'
+    if let .const structName _ := e.getAppFn.consumeMData then
+      if Lean.isStructure env structName &&
+          isProjectModule (moduleOfConst env structName) &&
+          !visited.contains structName then
+        let visited' := visited.insert structName
+        let fields := Lean.getStructureFields env structName
+        return ← Meta.withLocalDeclD `s e fun fvar => do
+          for i in [:fields.size] do
+            let proj := mkProj structName i fvar
+            let fieldTy ← inferType proj
+            if ← hasFallibleSurface env visited' fieldTy then
+              return true
+          return false
+    return false
+  checkStruct ty
 
 private def parseAssumptionObligation (e : Expr) : MetaM (Option (String × String × Option String)) := do
   let e ← whnf e
@@ -1530,100 +1565,124 @@ def main (args : List String) : IO UInt32 := do
           if m == specMod && !listedFormalPreds.contains aName then
             errs := errs.push s!"UNLISTED_FORMAL_ASSUMPTION: {aName} missing from {extAssumpConst}"
 
+      let ifaceMod := Name.str pkgNs "Interface"
+      let implMod := Name.str pkgNs "Impl"
+      let mut fallibleReqs : Array Name := #[]
+      let mut hasAnyFallibleIfaceSurface := false
+      for targetMod in [ifaceMod, implMod] do
+        if let some idx := env.header.moduleNames.findIdx? (· == targetMod) then
+          if let some modData := env.header.moduleData[idx]? then
+            for c in modData.constants do
+              if isPrivateName c.name || isCompilerAux c.name then continue
+              if targetMod == implMod && c.name.getPrefix != pkgNs then continue
+              if targetMod == ifaceMod then
+                if ← hasFallibleSurface env {} c.type then
+                  hasAnyFallibleIfaceSurface := true
+              if ← isFallibleCodomain c.type then
+                fallibleReqs := fallibleReqs.push c.name
+
       let regErrConst := Name.str rtMod "registeredErrorTests"
-      let mut regErrMap : Std.HashMap String (Name × Name) := {}
-      if let some (.defnInfo dv) := env.find? regErrConst then
-        unless ← usesAnyConstActive env (Std.HashSet.emptyWithCapacity 1 |>.insert regErrConst) runAllName do
-          errs := errs.push s!"REGISTERED_ERROR_TESTS_NOT_RUN: {runAllName} does not actively execute {regErrConst}"
-        if let some elems ← extractArrayElems dv.value then
-          for elem in elems do
-            if let some (tName, modeCtor, runFn) ← parseRegisteredErrorTest elem then
-              let runClean := runFn.consumeMData
-              if let .const fnName _ := runClean then
-                if moduleOfConst env fnName != rtMod || fnName.toString != tName then
-                  errs := errs.push s!"ERROR_TEST_NAME_MISMATCH: {tName} bound to {fnName}"
-                else
-                  let (deadErrFn, dbCache') ← hasStaticDeadBranchTransitive env dbCache fnName
-                  dbCache := dbCache'
-                  if deadErrFn then
-                    errs := errs.push s!"DEAD_CONDITIONAL_IN_TEST: {fnName}"
-                  unless ← usesAnyConstActive env throwTargets fnName do
-                    errs := errs.push s!"TRIVIAL_ERROR_TEST: {fnName} has no active failure/throw path"
-                  unless ← usesPackageImplConstActive env pkgNs rtMod fnName do
-                    errs := errs.push s!"MISSING_PACKAGE_REF_IN_TEST: {fnName} does not actively invoke {pkgNs} Interface/Impl"
-                  regErrMap := regErrMap.insert tName (modeCtor, fnName)
-              else
-                errs := errs.push s!"ERROR_TEST_NOT_NAMED_CONST: {tName} in {regErrConst}"
-            else
-              errs := errs.push s!"MALFORMED_REGISTERED_ERROR_TEST: in {regErrConst}"
-        else
-          errs := errs.push s!"UNPARSEABLE_REGISTERED_ERROR_TESTS: {regErrConst}"
-      else
-        errs := errs.push s!"MISSING_REGISTERED_ERROR_TESTS: {regErrConst}"
-
       let errCovConst := Name.str pkgNs "errorCoverage"
-      if let some (.defnInfo dv) := env.find? errCovConst then
-        let enumName? ← do
-          let ty ← whnf dv.type
-          if ty.isAppOfArity ``List 1 then
-            let ob ← whnf ty.appArg!
-            if ob.isAppOfArity `Core.ErrorObligation 1 then
-              let eTy ← whnf ob.appArg!
-              pure (if let .const en _ := eTy.getAppFn then some en else none)
-            else pure none
-          else pure none
-        let some enumName := enumName?
-          | errs := errs.push s!"MALFORMED_ERROR_COVERAGE_TYPE: {errCovConst}"; continue
-        let some (.inductInfo ind) := env.find? enumName
-          | errs := errs.push s!"NON_INDUCTIVE_ERROR_ENUM: {enumName} in {errCovConst}"; continue
-        let expectedCtors := ind.ctors
-        let some elems ← extractListElems dv.value
-          | errs := errs.push s!"UNPARSEABLE_ERROR_COVERAGE: {errCovConst}"; continue
-        let mut byReq : Std.HashMap String (Std.HashSet Name) := {}
-        for elem in elems do
-          let some (req, kindCtor, tag, targetStr) ← parseErrorObligation elem
-            | errs := errs.push s!"MALFORMED_ERROR_OBLIGATION: in {errCovConst}"; continue
-          byReq := byReq.insert req ((byReq.getD req {}).insert kindCtor)
-          if tag == `provedImpossible then
-            let thmName := targetStr.toName
-            let some (.thmInfo tv) := env.find? thmName
-              | errs := errs.push s!"MISSING_IMPOSSIBLE_THEOREM: {thmName} for ({req}, {kindCtor})"; continue
-            let thmMod := moduleOfConst env thmName
-            if thmMod.getString! == "SpecTests" || thmMod.getString! == "RuntimeTests" then
-              errs := errs.push s!"INVALID_THEOREM_LOCATION: {thmName} must be outside SpecTests/RuntimeTests"
-            let (badAx?, axCache') ← checkAxiomsOk axCache thmName
-            axCache := axCache'
-            if let some badAx := badAx? then
-              errs := errs.push s!"UNALLOWED_AXIOM_IN_THEOREM: {thmName} uses [{badAx}]"
-            if let some shapeErr ← checkProvedImpossibleTheorem env tv req.toName kindCtor enumName then
-              errs := errs.push s!"{shapeErr} ({thmName})"
-          else
-            let some (regMode, _) := regErrMap.get? targetStr
-              | errs := errs.push s!"MISSING_ERROR_TEST: {targetStr} for ({req}, {kindCtor}) not in {regErrConst}"; continue
-            if regMode != tag then
-              errs := errs.push s!"MODE_MISMATCH_ERROR_TEST: {targetStr} declared {tag} vs registered {regMode}"
-            expErrTests := expErrTests.push (targetStr, tag.toString)
-
-        let ifaceMod := Name.str pkgNs "Interface"
-        let implMod := Name.str pkgNs "Impl"
-        for targetMod in [ifaceMod, implMod] do
-          if let some idx := env.header.moduleNames.findIdx? (· == targetMod) then
-            if let some modData := env.header.moduleData[idx]? then
-              for c in modData.constants do
-                if isPrivateName c.name || isCompilerAux c.name then continue
-                if c.name.getPrefix != pkgNs then continue
-                if ← isFallibleCodomain c.type then
-                  unless byReq.contains c.name.toString do
-                    errs := errs.push s!"MISSING_REQUEST_IN_ERROR_COVERAGE: {c.name} omitted from {errCovConst}"
-
-        if byReq.isEmpty then
-          errs := errs.push s!"EMPTY_ERROR_COVERAGE: {errCovConst}"
-        for (req, covered) in byReq.toList do
-          for ctor in expectedCtors do
-            if !covered.contains ctor then
-              errs := errs.push s!"UNCOVERED_ERROR_KIND: ({req}, {ctor}) missing from {errCovConst}"
+      if !isExtPkg && fallibleReqs.isEmpty && !hasAnyFallibleIfaceSurface then
+        if let some (.defnInfo dv) := env.find? regErrConst then
+          match ← extractArrayElems dv.value with
+          | some elems =>
+            if !elems.isEmpty then
+              errs := errs.push s!"PURE_TOTAL_ERROR_TESTS_FORBIDDEN: {regErrConst} must be empty when {pkgNs} has no fallible codomains"
+          | none =>
+            errs := errs.push s!"UNPARSEABLE_REGISTERED_ERROR_TESTS: {regErrConst}"
+        if let some (.defnInfo dv) := env.find? errCovConst then
+          match ← extractListElems dv.value with
+          | some elems =>
+            if !elems.isEmpty then
+              errs := errs.push s!"PURE_TOTAL_ERROR_COVERAGE_FORBIDDEN: {errCovConst} must be empty when {pkgNs} has no fallible codomains"
+          | none =>
+            errs := errs.push s!"UNPARSEABLE_ERROR_COVERAGE: {errCovConst}"
       else
-        errs := errs.push s!"MISSING_ERROR_COVERAGE: {errCovConst}"
+        let mut regErrMap : Std.HashMap String (Name × Name) := {}
+        if let some (.defnInfo dv) := env.find? regErrConst then
+          unless ← usesAnyConstActive env (Std.HashSet.emptyWithCapacity 1 |>.insert regErrConst) runAllName do
+            errs := errs.push s!"REGISTERED_ERROR_TESTS_NOT_RUN: {runAllName} does not actively execute {regErrConst}"
+          if let some elems ← extractArrayElems dv.value then
+            for elem in elems do
+              if let some (tName, modeCtor, runFn) ← parseRegisteredErrorTest elem then
+                let runClean := runFn.consumeMData
+                if let .const fnName _ := runClean then
+                  if moduleOfConst env fnName != rtMod || fnName.toString != tName then
+                    errs := errs.push s!"ERROR_TEST_NAME_MISMATCH: {tName} bound to {fnName}"
+                  else
+                    let (deadErrFn, dbCache') ← hasStaticDeadBranchTransitive env dbCache fnName
+                    dbCache := dbCache'
+                    if deadErrFn then
+                      errs := errs.push s!"DEAD_CONDITIONAL_IN_TEST: {fnName}"
+                    unless ← usesAnyConstActive env throwTargets fnName do
+                      errs := errs.push s!"TRIVIAL_ERROR_TEST: {fnName} has no active failure/throw path"
+                    unless ← usesPackageImplConstActive env pkgNs rtMod fnName do
+                      errs := errs.push s!"MISSING_PACKAGE_REF_IN_TEST: {fnName} does not actively invoke {pkgNs} Interface/Impl"
+                    regErrMap := regErrMap.insert tName (modeCtor, fnName)
+                else
+                  errs := errs.push s!"ERROR_TEST_NOT_NAMED_CONST: {tName} in {regErrConst}"
+              else
+                errs := errs.push s!"MALFORMED_REGISTERED_ERROR_TEST: in {regErrConst}"
+          else
+            errs := errs.push s!"UNPARSEABLE_REGISTERED_ERROR_TESTS: {regErrConst}"
+        else
+          errs := errs.push s!"MISSING_REGISTERED_ERROR_TESTS: {regErrConst}"
+
+        if let some (.defnInfo dv) := env.find? errCovConst then
+          let enumName? ← do
+            let ty ← whnf dv.type
+            if ty.isAppOfArity ``List 1 then
+              let ob ← whnf ty.appArg!
+              if ob.isAppOfArity `Core.ErrorObligation 1 then
+                let eTy ← whnf ob.appArg!
+                pure (if let .const en _ := eTy.getAppFn then some en else none)
+              else pure none
+            else pure none
+          let some enumName := enumName?
+            | errs := errs.push s!"MALFORMED_ERROR_COVERAGE_TYPE: {errCovConst}"; continue
+          let some (.inductInfo ind) := env.find? enumName
+            | errs := errs.push s!"NON_INDUCTIVE_ERROR_ENUM: {enumName} in {errCovConst}"; continue
+          let expectedCtors := ind.ctors
+          let some elems ← extractListElems dv.value
+            | errs := errs.push s!"UNPARSEABLE_ERROR_COVERAGE: {errCovConst}"; continue
+          let mut byReq : Std.HashMap String (Std.HashSet Name) := {}
+          for elem in elems do
+            let some (req, kindCtor, tag, targetStr) ← parseErrorObligation elem
+              | errs := errs.push s!"MALFORMED_ERROR_OBLIGATION: in {errCovConst}"; continue
+            byReq := byReq.insert req ((byReq.getD req {}).insert kindCtor)
+            if tag == `provedImpossible then
+              let thmName := targetStr.toName
+              let some (.thmInfo tv) := env.find? thmName
+                | errs := errs.push s!"MISSING_IMPOSSIBLE_THEOREM: {thmName} for ({req}, {kindCtor})"; continue
+              let thmMod := moduleOfConst env thmName
+              if thmMod.getString! == "SpecTests" || thmMod.getString! == "RuntimeTests" then
+                errs := errs.push s!"INVALID_THEOREM_LOCATION: {thmName} must be outside SpecTests/RuntimeTests"
+              let (badAx?, axCache') ← checkAxiomsOk axCache thmName
+              axCache := axCache'
+              if let some badAx := badAx? then
+                errs := errs.push s!"UNALLOWED_AXIOM_IN_THEOREM: {thmName} uses [{badAx}]"
+              if let some shapeErr ← checkProvedImpossibleTheorem env tv req.toName kindCtor enumName then
+                errs := errs.push s!"{shapeErr} ({thmName})"
+            else
+              let some (regMode, _) := regErrMap.get? targetStr
+                | errs := errs.push s!"MISSING_ERROR_TEST: {targetStr} for ({req}, {kindCtor}) not in {regErrConst}"; continue
+              if regMode != tag then
+                errs := errs.push s!"MODE_MISMATCH_ERROR_TEST: {targetStr} declared {tag} vs registered {regMode}"
+              expErrTests := expErrTests.push (targetStr, tag.toString)
+
+          for reqName in fallibleReqs do
+            unless byReq.contains reqName.toString do
+              errs := errs.push s!"MISSING_REQUEST_IN_ERROR_COVERAGE: {reqName} omitted from {errCovConst}"
+
+          if byReq.isEmpty then
+            errs := errs.push s!"EMPTY_ERROR_COVERAGE: {errCovConst}"
+          for (req, covered) in byReq.toList do
+            for ctor in expectedCtors do
+              if !covered.contains ctor then
+                errs := errs.push s!"UNCOVERED_ERROR_KIND: ({req}, {ctor}) missing from {errCovConst}"
+        else
+          errs := errs.push s!"MISSING_ERROR_COVERAGE: {errCovConst}"
 
     return (errs, expAssumps, expErrTests)
   ).toIO ctx state

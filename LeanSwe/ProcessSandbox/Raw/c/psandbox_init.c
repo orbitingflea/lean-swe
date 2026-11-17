@@ -13,7 +13,6 @@
 #ifdef __linux__
 
 #include <arpa/inet.h>
-#include <linux/audit.h>
 #include <linux/filter.h>
 #include <linux/landlock.h>
 #include <linux/seccomp.h>
@@ -29,9 +28,6 @@
 
 extern char **environ;
 
-#ifndef __NR_clone3
-#define __NR_clone3 435
-#endif
 #ifndef __NR_close_range
 #define __NR_close_range 436
 #endif
@@ -54,19 +50,11 @@ extern char **environ;
 #endif
 
 #ifndef __NR_seccomp
+#if defined(__x86_64__)
 #define __NR_seccomp 317
+#elif defined(__aarch64__)
+#define __NR_seccomp 277
 #endif
-
-#ifndef AF_SMC
-#define AF_SMC 43
-#endif
-
-#ifndef MSG_FASTOPEN
-#define MSG_FASTOPEN 0x20000000U
-#endif
-
-#ifndef __X32_SYSCALL_BIT
-#define __X32_SYSCALL_BIT 0x40000000U
 #endif
 
 #define PS_LL_FS_EXECUTE (1ULL << 0)
@@ -86,7 +74,7 @@ extern char **environ;
 #define PS_STATUS_SIGNALED 5
 
 #define PS_INIT_MAX_PLAN_BYTES (16U * 1024U * 1024U)
-#define PS_CLONE_NEW_NS_MASK 0x7e020000U
+#define PS_SECCOMP_MAX_INSNS 160U
 
 struct psandbox_ll_ruleset_attr {
   uint64_t handled_access_fs;
@@ -143,6 +131,8 @@ typedef struct ParsedPlan {
   ParsedMount *mounts;
   uint32_t n_fwds;
   ParsedPortForward *fwds;
+  uint32_t seccomp_n;
+  struct sock_filter seccomp_insns[PS_SECCOMP_MAX_INSNS];
 } ParsedPlan;
 
 typedef struct BufReader {
@@ -370,7 +360,7 @@ static int read_plan_fd(int plan_fd, uint8_t **buf_out, size_t *len_out) {
 
 static int parse_plan(const uint8_t *data, size_t len, ParsedPlan *p) {
   memset(p, 0, sizeof(*p));
-  if (len < 8 || memcmp(data, "LSWP0001", 8) != 0) {
+  if (len < 8 || memcmp(data, "LSWP0002", 8) != 0) {
     errno = EINVAL;
     return -1;
   }
@@ -568,6 +558,30 @@ static int parse_plan(const uint8_t *data, size_t len, ParsedPlan *p) {
       errno = EINVAL;
       return -1;
     }
+  }
+
+  if (read_u32(&r, &p->seccomp_n) != 0 ||
+      p->seccomp_n == 0 ||
+      p->seccomp_n > PS_SECCOMP_MAX_INSNS) {
+    errno = EINVAL;
+    return -1;
+  }
+  size_t seccomp_byte_len = (size_t)p->seccomp_n * 8U;
+  if (seccomp_byte_len != r.len - r.pos) {
+    errno = EINVAL;
+    return -1;
+  }
+  for (uint32_t i = 0; i < p->seccomp_n; i++) {
+    uint16_t code = 0;
+    uint8_t jt = 0;
+    uint8_t jf = 0;
+    uint32_t k = 0;
+    if (read_u16(&r, &code) != 0 || read_u8(&r, &jt) != 0 ||
+        read_u8(&r, &jf) != 0 || read_u32(&r, &k) != 0) {
+      errno = EINVAL;
+      return -1;
+    }
+    p->seccomp_insns[i] = (struct sock_filter){code, jt, jf, k};
   }
 
   if (r.pos != r.len) {
@@ -840,201 +854,17 @@ static int install_landlock(const ParsedPlan *p) {
   return 0;
 }
 
-static int install_seccomp(void) {
-#if defined(__x86_64__)
-  const uint32_t expected_arch = AUDIT_ARCH_X86_64;
-#elif defined(__aarch64__)
-  const uint32_t expected_arch = AUDIT_ARCH_AARCH64;
-#else
-#error "Unsupported Linux architecture for seccomp"
-#endif
-
-  struct sock_filter f[160];
-  size_t n = 0;
-
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, (uint32_t)offsetof(struct seccomp_data, arch));
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, expected_arch, 1, 0);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
-
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, (uint32_t)offsetof(struct seccomp_data, nr));
-
-#if defined(__x86_64__)
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, __X32_SYSCALL_BIT, 0, 1);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
-#endif
-
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_clone3, 0, 1);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS);
-
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_clone, 0, 5);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, (uint32_t)offsetof(struct seccomp_data, args[0]));
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_ALU | BPF_AND | BPF_K, PS_CLONE_NEW_NS_MASK);
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
-
-#ifdef __NR_socket
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_socket, 0, 5);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, (uint32_t)offsetof(struct seccomp_data, args[0]));
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 1, 0);
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_SMC, 0, 1);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
-#endif
-
-#ifdef __NR_socketpair
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_socketpair, 0, 10);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, (uint32_t)offsetof(struct seccomp_data, args[0]));
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 0, 6);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, (uint32_t)offsetof(struct seccomp_data, args[2]));
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 4);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, (uint32_t)offsetof(struct seccomp_data, args[1]));
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_ALU | BPF_AND | BPF_K, (uint32_t)(~(SOCK_CLOEXEC | SOCK_NONBLOCK)));
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SOCK_STREAM, 2, 0);
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SOCK_SEQPACKET, 1, 0);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
-#endif
-
-#ifdef __NR_sendto
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_sendto, 0, 5);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, (uint32_t)offsetof(struct seccomp_data, args[3]));
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_ALU | BPF_AND | BPF_K, MSG_FASTOPEN);
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
-#endif
-
-#ifdef __NR_sendmsg
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_sendmsg, 0, 5);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, (uint32_t)offsetof(struct seccomp_data, args[2]));
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_ALU | BPF_AND | BPF_K, MSG_FASTOPEN);
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
-#endif
-
-#ifdef __NR_sendmmsg
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_sendmmsg, 0, 5);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, (uint32_t)offsetof(struct seccomp_data, args[3]));
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_ALU | BPF_AND | BPF_K, MSG_FASTOPEN);
-  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
-#endif
-
-  static const uint32_t k_deny_nrs[] = {
-#ifdef __NR_reboot
-    __NR_reboot,
-#endif
-#ifdef __NR_kexec_load
-    __NR_kexec_load,
-#endif
-#ifdef __NR_kexec_file_load
-    __NR_kexec_file_load,
-#endif
-#ifdef __NR_mount
-    __NR_mount,
-#endif
-#ifdef __NR_umount2
-    __NR_umount2,
-#endif
-#ifdef __NR_pivot_root
-    __NR_pivot_root,
-#endif
-#ifdef __NR_swapon
-    __NR_swapon,
-#endif
-#ifdef __NR_swapoff
-    __NR_swapoff,
-#endif
-#ifdef __NR_fsmount
-    __NR_fsmount,
-#endif
-#ifdef __NR_fsopen
-    __NR_fsopen,
-#endif
-#ifdef __NR_fspick
-    __NR_fspick,
-#endif
-#ifdef __NR_move_mount
-    __NR_move_mount,
-#endif
-#ifdef __NR_open_tree
-    __NR_open_tree,
-#endif
-#ifdef __NR_mount_setattr
-    __NR_mount_setattr,
-#endif
-#ifdef __NR_init_module
-    __NR_init_module,
-#endif
-#ifdef __NR_finit_module
-    __NR_finit_module,
-#endif
-#ifdef __NR_delete_module
-    __NR_delete_module,
-#endif
-#ifdef __NR_acct
-    __NR_acct,
-#endif
-#ifdef __NR_settimeofday
-    __NR_settimeofday,
-#endif
-#ifdef __NR_clock_settime
-    __NR_clock_settime,
-#endif
-#ifdef __NR_clock_adjtime
-    __NR_clock_adjtime,
-#endif
-#ifdef __NR_adjtimex
-    __NR_adjtimex,
-#endif
-#ifdef __NR_bpf
-    __NR_bpf,
-#endif
-#ifdef __NR_io_uring_setup
-    __NR_io_uring_setup,
-#endif
-#ifdef __NR_io_uring_enter
-    __NR_io_uring_enter,
-#endif
-#ifdef __NR_io_uring_register
-    __NR_io_uring_register,
-#endif
-#ifdef __NR_keyctl
-    __NR_keyctl,
-#endif
-#ifdef __NR_add_key
-    __NR_add_key,
-#endif
-#ifdef __NR_request_key
-    __NR_request_key,
-#endif
-#ifdef __NR_perf_event_open
-    __NR_perf_event_open,
-#endif
-#ifdef __NR_userfaultfd
-    __NR_userfaultfd,
-#endif
-#ifdef __NR_unshare
-    __NR_unshare,
-#endif
-#ifdef __NR_setns
-    __NR_setns,
-#endif
-  };
-
-  for (size_t i = 0; i < sizeof(k_deny_nrs) / sizeof(k_deny_nrs[0]); i++) {
-    f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, k_deny_nrs[i], 0, 1);
-    f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
+static int install_seccomp(const ParsedPlan *p) {
+  if (p->seccomp_n == 0 || p->seccomp_n > PS_SECCOMP_MAX_INSNS) {
+    errno = EINVAL;
+    return -1;
   }
-
-  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+  struct sock_filter buf[PS_SECCOMP_MAX_INSNS];
+  memcpy(buf, p->seccomp_insns, (size_t)p->seccomp_n * sizeof(struct sock_filter));
 
   struct sock_fprog prog;
-  prog.len = (unsigned short)n;
-  prog.filter = f;
+  prog.len = (unsigned short)p->seccomp_n;
+  prog.filter = buf;
   if (syscall(__NR_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog) != 0) {
     if (errno != ENOSYS || prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) != 0) {
       return -1;
@@ -1159,7 +989,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (install_seccomp() != 0) {
+  if (install_seccomp(&plan) != 0) {
     int err = errno ? errno : EPERM;
     send_status(status_fd, PS_STATUS_INIT_ERR, 0, err);
     return 1;

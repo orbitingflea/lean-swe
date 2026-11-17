@@ -1,4 +1,6 @@
 import LeanSwe.ProcessSandbox.Interface
+import LeanSwe.ProcessSandbox.Seccomp.Model
+import LeanSwe.ProcessSandbox.Seccomp.Interface
 import LeanSwe.ProcessSandbox.Raw.Interface
 import LeanSwe.Process.Interface
 import LeanSwe.Fs.Raw.Interface
@@ -54,6 +56,15 @@ private def probeCCode : String :=
   "#ifndef __NR_io_uring_setup\n" ++
   "#define __NR_io_uring_setup 425\n" ++
   "#endif\n" ++
+  "#ifndef __NR_mount_setattr\n" ++
+  "#define __NR_mount_setattr 442\n" ++
+  "#endif\n" ++
+  "#ifndef MSG_FASTOPEN\n" ++
+  "#define MSG_FASTOPEN 0x20000000\n" ++
+  "#endif\n" ++
+  "#ifndef AF_SMC\n" ++
+  "#define AF_SMC 43\n" ++
+  "#endif\n" ++
   "static void *thr_fn(void *a) { (void)a; return (void *)(uintptr_t)42; }\n" ++
   "int main(int argc, char **argv) {\n" ++
   "  if (argc < 2) return 2;\n" ++
@@ -73,7 +84,10 @@ private def probeCCode : String :=
   "    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sp2) != 0) return 11;\n" ++
   "    close(sp2[0]); close(sp2[1]);\n" ++
   "    if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sp3) == 0 || errno != EPERM) return 12;\n" ++
+  "    if (socketpair(AF_INET, SOCK_STREAM, 0, sp3) == 0 || errno != EPERM) return 12;\n" ++
+  "    if (socketpair(AF_UNIX, SOCK_STREAM, 1, sp3) == 0 || errno != EPERM) return 12;\n" ++
   "    if (socket(AF_UNIX, SOCK_STREAM, 0) >= 0 || errno != EPERM) return 13;\n" ++
+  "    if (socket(AF_SMC, SOCK_STREAM, 0) >= 0 || errno != EPERM) return 13;\n" ++
   "    pthread_t th;\n" ++
   "    void *ret = NULL;\n" ++
   "    if (pthread_create(&th, NULL, thr_fn, NULL) != 0) return 14;\n" ++
@@ -85,6 +99,20 @@ private def probeCCode : String :=
   "    if (syscall(__NR_io_uring_setup, 16, NULL) >= 0 || errno != EPERM) return 18;\n" ++
   "    if (syscall(__NR_bpf, 0, NULL, 0) >= 0 || errno != EPERM) return 19;\n" ++
   "    if (syscall(__NR_reboot, 0, 0, 0, 0) >= 0 || errno != EPERM) return 20;\n" ++
+  "    if (syscall(__NR_acct, NULL) >= 0 || errno != EPERM) return 28;\n" ++
+  "    if (syscall(__NR_mount_setattr, -1, NULL, 0, NULL, 0) >= 0 || errno != EPERM) return 29;\n" ++
+  "    char msg_byte = 'x';\n" ++
+  "    struct iovec msg_iov = { &msg_byte, 1 };\n" ++
+  "    struct msghdr mh; memset(&mh, 0, sizeof(mh));\n" ++
+  "    mh.msg_iov = &msg_iov; mh.msg_iovlen = 1;\n" ++
+  "    struct mmsghdr vmh; memset(&vmh, 0, sizeof(vmh));\n" ++
+  "    vmh.msg_hdr = mh;\n" ++
+  "    errno = 0; if (sendto(-1, &msg_byte, 1, MSG_FASTOPEN, NULL, 0) >= 0 || errno != EPERM) return 30;\n" ++
+  "    errno = 0; if (sendto(-1, &msg_byte, 1, 0, NULL, 0) >= 0 || errno == EPERM) return 31;\n" ++
+  "    errno = 0; if (sendmsg(-1, &mh, MSG_FASTOPEN) >= 0 || errno != EPERM) return 32;\n" ++
+  "    errno = 0; if (sendmsg(-1, &mh, 0) >= 0 || errno == EPERM) return 33;\n" ++
+  "    errno = 0; if (sendmmsg(-1, &vmh, 1, MSG_FASTOPEN) >= 0 || errno != EPERM) return 34;\n" ++
+  "    errno = 0; if (sendmmsg(-1, &vmh, 1, 0) >= 0 || errno == EPERM) return 35;\n" ++
   "    DIR *fdd = opendir(\"/proc/self/fd\");\n" ++
   "    if (fdd == NULL) return 26;\n" ++
   "    int fdd_fd = dirfd(fdd);\n" ++
@@ -483,6 +511,13 @@ def runAllOutcome : IO (Option String) := do
     assertTrue (fileMountRes.outcome == .exited 0 &&
       String.fromUTF8! fileMountRes.stdout == "single_file_content") "single file mount readable"
 
+    let x86Prog := Seccomp.compileSeccompBpf .x86_64
+    let aarch64Prog := Seccomp.compileSeccompBpf .aarch64
+    assertTrue (Model.isValidLinuxSeccompProg x86Prog && Model.isValidLinuxSeccompProg aarch64Prog)
+      "Seccomp.compileSeccompBpf produces valid Linux seccomp filters"
+    assertTrue ((Seccomp.encodeSeccompBpf x86Prog).size == 8 * x86Prog.size &&
+      (Seccomp.encodeSeccompBpf aarch64Prog).size == 8 * aarch64Prog.size)
+      "Seccomp.encodeSeccompBpf produces 8*n wire bytes"
     let seccompRes ← assertOk (← ProcessSandbox.run {
       program := "/box/probe"
       args := #["--seccomp"]

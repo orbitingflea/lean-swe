@@ -43,6 +43,63 @@ def test_psandboxRaw_mapRawError_preservesKindAndFields
   | .userError _ =>
     NondetTest.assert (err.kind = .ioError ∧ err.path = none ∧ err.errnoCode = none)
 
+/-- `ops.decodeHostAuditArch` maps `0xc000003e` to `.ok .x86_64`, `0xc00000b7` to `.ok .aarch64`, and rejects every other `UInt32` fail-closed with `.unavailable` and a non-empty message. -/
+def test_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed
+    {runner} [NondetTest runner] (ops : RawProcessSandboxOps) : runner Unit := do
+  NondetTest.assert (ops.decodeHostAuditArch 0xc000003e = .ok .x86_64)
+  NondetTest.assert (ops.decodeHostAuditArch 0xc00000b7 = .ok .aarch64)
+  let raw ← nondet UInt32
+  assume (raw ≠ 0xc000003e ∧ raw ≠ 0xc00000b7)
+  match ops.decodeHostAuditArch raw with
+  | .ok _ => NondetTest.assert False
+  | .error err => NondetTest.assert (err.kind = .unavailable ∧ err.message ≠ "")
+
+/-- `ops.encodePlan` rejects empty, non-8-byte-aligned, or `> 160`-instruction `seccompBytes` with `.invalidInput`, succeeds on valid plans with `1..160` 8-byte instructions, and frames `.ok` outputs with `"LSWP0002"` header and trailing `u32LE (seccompBytes.size / 8) ++ seccompBytes`. -/
+def test_psandboxRaw_encodePlan_validatesSeccompFilterAndFramesLswp0002
+    {runner} [NondetTest runner] (ops : RawProcessSandboxOps) : runner Unit := do
+  let planBad ← nondet CompiledSandboxPlan
+  let badSeccomp ← nondet ByteArray
+  assume (badSeccomp.size = 0 ∨ badSeccomp.size % 8 ≠ 0 ∨ badSeccomp.size > 8 * SECCOMP_MAX_INSNS)
+  match ops.encodePlan planBad badSeccomp with
+  | .ok _ => NondetTest.assert False
+  | .error err => NondetTest.assert (err.kind = .invalidInput ∧ err.message ≠ "")
+  let goodSeccomp ← nondet ByteArray
+  assume (0 < goodSeccomp.size ∧ goodSeccomp.size % 8 = 0 ∧ goodSeccomp.size ≤ 8 * SECCOMP_MAX_INSNS)
+  match ops.encodePlan { program := "/bin/true" } goodSeccomp with
+  | .error _ => NondetTest.assert False
+  | .ok _ => pure ()
+  let planAny ← nondet CompiledSandboxPlan
+  let seccompAny ← nondet ByteArray
+  match ops.encodePlan planAny seccompAny with
+  | .error err =>
+    NondetTest.assert (err.kind = .invalidInput ∧ err.message ≠ "")
+  | .ok wire =>
+    let nInsns := seccompAny.size / 8
+    let countOff := wire.size - (4 + seccompAny.size)
+    NondetTest.assert (0 < seccompAny.size ∧
+      seccompAny.size % 8 = 0 ∧
+      seccompAny.size ≤ 8 * SECCOMP_MAX_INSNS ∧
+      wire.size ≥ 12 + seccompAny.size ∧
+      wire.extract 0 8 = "LSWP0002".toUTF8 ∧
+      wire[countOff]! = UInt8.ofNat (nInsns % 256) ∧
+      wire[countOff + 1]! = UInt8.ofNat ((nInsns / 256) % 256) ∧
+      wire[countOff + 2]! = UInt8.ofNat ((nInsns / 65536) % 256) ∧
+      wire[countOff + 3]! = UInt8.ofNat ((nInsns / 16777216) % 256) ∧
+      wire.extract (wire.size - seccompAny.size) wire.size = seccompAny)
+
+/-- When `ops.hostSeccompArch` fails, it fails closed with `.unavailable`, a non-empty message, and unchanged resource counts; when it succeeds, resource counts are unchanged. -/
+def test_psandboxRaw_hostSeccompArch_failClosedUnavailable
+    {S : Type} {runner} [NondetTest runner] (ops : RawProcessSandboxOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let c₀ := (ops.activeResourceCounts.run s₀).1
+  let (res, s₁) := ops.hostSeccompArch.run s₀
+  let c₁ := (ops.activeResourceCounts.run s₁).1
+  match res with
+  | .ok arch =>
+    NondetTest.assert ((arch = .x86_64 ∨ arch = .aarch64) ∧ c₁ = c₀)
+  | .error err =>
+    NondetTest.assert (err.kind = .unavailable ∧ err.message ≠ "" ∧ c₁ = c₀)
+
 /-- When `ops.preflight req` fails, it fails closed with `.unavailable`, a non-empty message, and unchanged resource counts. -/
 def test_psandboxRaw_preflight_failClosedUnavailable
     {S : Type} {runner} [NondetTest runner] (ops : RawProcessSandboxOpsM (StateM S)) : runner Unit := do
@@ -63,13 +120,14 @@ def test_psandboxRaw_planLifecycle_conservesOpenPlansAndRejectsClosed
     {S : Type} {runner} [NondetTest runner] (ops : RawProcessSandboxOpsM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let plan ← nondet CompiledSandboxPlan
+  let seccompBytes ← nondet ByteArray
   let forgedZero : PlanHandle := { handleId := 0 }
   let forgedOverflow : PlanHandle := { handleId := UInt64.size }
   NondetTest.assert (∃ e, (ops.closePlan forgedZero |>.run s₀).1 = .error e ∧ e.kind = .invalidInput)
   NondetTest.assert (∃ e, (ops.closePlan forgedOverflow |>.run s₀).1 = .error e ∧ e.kind = .invalidInput)
   NondetTest.assert (∃ e, (ops.spawnBox forgedZero |>.run s₀).1 = .error e ∧ e.kind = .invalidInput)
   let c₀ := (ops.activeResourceCounts.run s₀).1
-  let (sealRes, s₁) := (ops.sealPlan plan).run s₀
+  let (sealRes, s₁) := (ops.sealPlan plan seccompBytes).run s₀
   match sealRes with
   | .error err =>
     let c₁ := (ops.activeResourceCounts.run s₁).1
@@ -90,6 +148,7 @@ def test_psandboxRaw_boxAndForwarderLifecycle_conservesResources
     {S : Type} {runner} [NondetTest runner] (ops : RawProcessSandboxOpsM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let plan ← nondet CompiledSandboxPlan
+  let seccompBytes ← nondet ByteArray
   let fwds ← nondet (Array PortForward)
   assume (!fwds.isEmpty)
   assume (fwds.toList.all (fun pf => pf.boxPort != 0 && pf.hostPort != 0) = true)
@@ -100,7 +159,7 @@ def test_psandboxRaw_boxAndForwarderLifecycle_conservesResources
   NondetTest.assert (∃ e, (ops.reapBox forgedBox |>.run s₀).1 = .error e ∧ e.kind = .invalidInput)
   NondetTest.assert (∃ e, (ops.stopPortForwarders forgedFwd |>.run s₀).1 = .error e ∧ e.kind = .invalidInput)
   let c₀ := (ops.activeResourceCounts.run s₀).1
-  let (sealRes, s₁) := (ops.sealPlan plan).run s₀
+  let (sealRes, s₁) := (ops.sealPlan plan seccompBytes).run s₀
   match sealRes with
   | .error _ => assume False
   | .ok ph =>
@@ -137,16 +196,16 @@ def test_psandboxRaw_boxAndForwarderLifecycle_conservesResources
 
 /-- External trust boundary assumptions for `LeanSwe.ProcessSandbox.Raw` (`psandbox_shim.c` and `psandbox_init.c`) grounded in `RuntimeTests.lean`. -/
 structure EmpiricalAssumptions where
-  /-- `preflight` verifies Linux host, `bwrap` availability, unprivileged `user`/`pid`/`net`/`mount`/`ipc`/`uts` namespace creation, Landlock `landlock_create_ruleset` ABI >= 4, `seccomp` BPF support, and direct `/sys/fs/cgroup` sibling cgroup creation plus `memory` (`memory.max`, ignoring `ENOENT` on `memory.swap.max` on swapless kernels) and `pids` (`pids.max`) controller delegation when requested, failing closed with `.unavailable`. -/
+  /-- `leanswe_psandbox_host_arch` returns the native host `AUDIT_ARCH_X86_64` (`0xc000003e`) or `AUDIT_ARCH_AARCH64` (`0xc00000b7`) constant (`0` otherwise), and `preflight` verifies Linux host, `bwrap` availability, unprivileged `user`/`pid`/`net`/`mount`/`ipc`/`uts` namespace creation, Landlock `landlock_create_ruleset` ABI >= 4, `seccomp` BPF support, and direct `/sys/fs/cgroup` sibling cgroup creation plus `memory` (`memory.max`, ignoring `ENOENT` on `memory.swap.max` on swapless kernels) and `pids` (`pids.max`) controller delegation when requested, failing closed with `.unavailable`. -/
   preflightProbesNamespacesLandlockV4AndDirectCgroupV2 : Prop
   /-- `discoverHostPreset` inspects `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` via `lstat` (preserving top-level symlinks such as `/bin -> usr/bin`), checks the 9 allowlisted `/etc` paths, reads `getenv("HOME")` plus `getpwuid_r(getuid())` without touching unmounted `/home` autofs mounts, and includes nested home paths (including through symlinked system roots) in `excludedHomePaths` iff `stat` confirms the host directory exists. -/
   discoverHostPresetPreservesTopSymlinksAndAvoidsAutofs : Prop
-  /-- `sealPlan` writes the serialized `CompiledSandboxPlan`, embedded `leanswe-psandbox-init` (`--perms 0555 --ro-bind-data <fd> /etc/.leanswe-psandbox-init`), and synthetic `/etc/hosts` (`127.0.0.1 localhost\n::1 localhost\n`) into `memfd_create(..., MFD_CLOEXEC | MFD_ALLOW_SEALING)` descriptors sealed with `F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE`, and `spawnBox` opens fresh per-spawn `open("/proc/self/fd/<memfd>", O_RDONLY)` descriptors to avoid shared-offset `lseek` races across concurrent `run` calls. -/
+  /-- `sealPlan` writes the `LSWP0002` byte buffer produced by `encodePlan`, embedded `leanswe-psandbox-init` (`--perms 0555 --ro-bind-data <fd> /etc/.leanswe-psandbox-init`), and synthetic `/etc/hosts` (`127.0.0.1 localhost\n::1 localhost\n`) into `memfd_create(..., MFD_CLOEXEC | MFD_ALLOW_SEALING)` descriptors sealed with `F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE`, and `spawnBox` opens fresh per-spawn `open("/proc/self/fd/<memfd>", O_RDONLY)` descriptors to avoid shared-offset `lseek` races across concurrent `run` calls. -/
   memfdPlanAndInitSealedImmutable : Prop
   /-- `spawnBox` never uses `systemd-run --user --scope` (which closes inherited FDs `>= 3` with `EBADF`); instead `psandbox_shim.c` always creates a per-box sibling directory in `/sys/fs/cgroup` under `/proc/self/cgroup`'s delegated parent, writes `memory.max`, `memory.swap.max = "0"` (ignoring `ENOENT`), and `pids.max = pidsMax + 2` (for the 2 `--as-pid-1` wrapper tasks), spawns `bwrap --unshare-all --as-pid-1 --die-with-parent` from a dedicated `pthread_once` process-lifetime spawner thread (avoiding Linux `PR_SET_PDEATHSIG` misfires on short-lived Lean `Task` worker pthreads), places child PID into `cgroup.procs` before `execvp`, prechecks user mount `hostPath`s (`.notFound`/`.permissionDenied`) while mapping pre-`execvp` nested mountpoint `EROFS` to `.unavailable`, opens a race-free `pidfd`, and `reapBox` writes `cgroup.kill = "1"`, reaps `bwrap`, and polls `cgroup.events` (`populated 0`) with bounded `EBUSY`-retrying `rmdir`. -/
   directCgroupV2FsScopeAndCgroupKillRmdir : Prop
-  /-- `psandbox_init.c` runs under `bwrap` with `--perms 0000 --tmpfs <mask> --remount-ro <mask>` on `maskedPresetPaths` and trailing `--remount-ro /`, sets `PR_SET_PDEATHSIG(SIGKILL)` and `PR_SET_CHILD_SUBREAPER`, sets `RLIMIT_CORE = 0` and `RLIMIT_FSIZE`, binds `127.0.0.1:boxPort` listeners inside the box `net` namespace and hands them over `SCM_RIGHTS` before closing the control socket while keeping `O_CLOEXEC` `status_pipe` and `exec_err_pipe` reporting `{ EXEC_ERR(errno, isCwd), EXITED(code), SIGNALED(sig) }` (`ENOENT -> .notFound`, `EACCES | EPERM -> .permissionDenied`, other `errno -> .ioError`), installs `PR_SET_NO_NEW_PRIVS = 1`, Landlock ABI v4 rules (`handled_access_fs` masked strictly to ABI v4 bits without `IOCTL_DEV`, strictly `READ_DIR` on `"/"`, opening targets without `O_NOFOLLOW`, stripping directory-only bits when `!S_ISDIR`, granting `EXECUTE` on presets/mounts/`/tmp`, and setting `handled_access_net = 0` when `allowBoxLocalhost = true` vs `BIND_TCP | CONNECT_TCP` when `false`), and `seccomp` BPF returning `SECCOMP_RET_ERRNO | ENOSYS` on `clone3`, `EPERM` on `clone` iff `(flags & 0x7e020000) != 0` (excluding `0x80` `CSIGNAL`), blocking `socket(AF_UNIX, ...)`, `AF_SMC`, `MSG_FASTOPEN`, and admin/escape syscalls while allowing `socketpair(AF_UNIX, type, 0, sv)` when `(type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK)) ∈ {SOCK_STREAM, SOCK_SEQPACKET}`, clears inherited env (`clearenv`), and reaps all descendants via `kill(-1, SIGKILL)` + blocking `waitpid(-1, &s, 0)` until `ECHILD`. -/
-  psandboxInitLandlockSeccompClone3EnosysAndUnixSocketpair : Prop
+  /-- `psandbox_init.c` runs under `bwrap` with `--perms 0000 --tmpfs <mask> --remount-ro <mask>` on `maskedPresetPaths` and trailing `--remount-ro /`, sets `PR_SET_PDEATHSIG(SIGKILL)` and `PR_SET_CHILD_SUBREAPER`, sets `RLIMIT_CORE = 0` and `RLIMIT_FSIZE`, binds `127.0.0.1:boxPort` listeners inside the box `net` namespace and hands them over `SCM_RIGHTS` before closing the control socket while keeping `O_CLOEXEC` `status_pipe` and `exec_err_pipe` reporting `{ EXEC_ERR(errno, isCwd), EXITED(code), SIGNALED(sig) }` (`ENOENT -> .notFound`, `EACCES | EPERM -> .permissionDenied`, other `errno -> .ioError`), sets `PR_SET_NO_NEW_PRIVS = 1`, installs Landlock ABI v4 rules (`handled_access_fs` masked strictly to ABI v4 bits without `IOCTL_DEV`, strictly `READ_DIR` on `"/"`, opening targets without `O_NOFOLLOW`, stripping directory-only bits when `!S_ISDIR`, granting `EXECUTE` on presets/mounts/`/tmp`, and setting `handled_access_net = 0` when `allowBoxLocalhost = true` vs `BIND_TCP | CONNECT_TCP` when `false`), validates `0 < n && n <= 160` and `byte_len == 8 * n` before copying the Lean-compiled `sock_filter` slice unchanged into fixed `struct sock_filter buf[160]` and installing it via arch-correct `syscall(__NR_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog)` (with `ENOSYS` `prctl` fallback), clears inherited env (`clearenv`), and reaps all descendants via `kill(-1, SIGKILL)` + blocking `waitpid(-1, &s, 0)` until `ECHILD`. -/
+  psandboxInitLandlockAndBoundedSeccompLoader : Prop
   /-- `startPortForwarders` runs a non-blocking `poll()` TCP relay (`SOCK_NONBLOCK | SOCK_CLOEXEC`, `send(..., MSG_NOSIGNAL)`) capping concurrent active relay slots at `MAX_RELAY_SLOTS = 128` (clearing `listenerFd` `POLLIN` at capacity to prevent host `EMFILE`), gating `POLLIN`/`POLLOUT` on `16 KiB` per-direction ring buffers, propagating independent directional EOF via buffer drain + `shutdown(dstFd, SHUT_WR)` so TCP half-close works cleanly, and isolating per-slot socket/`ECONNREFUSED` errors, while `readBoxOutput` feeds `stdin` and bounds captured `stdout.size + stderr.size` to `maxOutputBytes` under monotonic `timeoutMs`. -/
   nonBlockingTcpForwarderAndBoundedOutputCapture : Prop
   /-- C-shim handle tables for `PlanHandle`, `BoxHandle`, and `PortForwarderHandle` allocate `0 < handleId < UInt64.size`, protect close/reap transitions under mutexes without FD-reuse races, and reject invalid/closed handles with `.invalidInput`. -/
@@ -172,11 +231,32 @@ private def mapRawErrStub : SandboxRawError → SandboxError
     { kind := .ioError, path := none, errnoCode := none,
       message := if detail.isEmpty then "sandbox error" else detail }
 
+private def decodeArchStub (raw : UInt32) : Except SandboxError SeccompArch :=
+  if raw == 0xc000003e then .ok .x86_64
+  else if raw == 0xc00000b7 then .ok .aarch64
+  else .error { kind := .unavailable, message := "unsupported host arch" }
+
+private def encodePlanStub (_plan : CompiledSandboxPlan) (seccompBytes : ByteArray) :
+    Except SandboxError ByteArray :=
+  if seccompBytes.size == 0 || seccompBytes.size % 8 != 0 || seccompBytes.size > 8 * SECCOMP_MAX_INSNS then
+    .error { kind := .invalidInput, message := "invalid seccomp bytes" }
+  else
+    let n := seccompBytes.size / 8
+    let hdr := "LSWP0002".toUTF8 ++ ByteArray.mk #[
+      UInt8.ofNat (n % 256),
+      UInt8.ofNat ((n / 256) % 256),
+      UInt8.ofNat ((n / 65536) % 256),
+      UInt8.ofNat ((n / 16777216) % 256)]
+    .ok (hdr ++ seccompBytes)
+
 private def stubRawOps : RawProcessSandboxOps :=
   { mapRawError := mapRawErrStub
+    decodeHostAuditArch := decodeArchStub
+    encodePlan := encodePlanStub
+    hostSeccompArch := pure (.error { kind := .unavailable, message := "stub" })
     preflight := fun _ => pure (.error { kind := .unavailable, message := "stub" })
     discoverHostPreset := pure (.ok {})
-    sealPlan := fun _ => pure (.error { kind := .unavailable, message := "stub" })
+    sealPlan := fun _ _ => pure (.error { kind := .unavailable, message := "stub" })
     closePlan := fun _ => pure (.error { kind := .invalidInput, message := "closed" })
     spawnBox := fun _ => pure (.error { kind := .invalidInput, message := "closed" })
     startPortForwarders := fun _ _ => pure (.error { kind := .invalidInput, message := "closed" })
@@ -197,11 +277,16 @@ private structure RawMockState where
 
 private def stubStatefulRawOps : RawProcessSandboxOpsM (StateM RawMockState) :=
   { mapRawError := mapRawErrStub
+    decodeHostAuditArch := decodeArchStub
+    encodePlan := encodePlanStub
+    hostSeccompArch := fun s =>
+      if s.preflightOk then (.ok .x86_64, s)
+      else (.error { kind := .unavailable, message := "unsupported host arch" }, s)
     preflight := fun _ s =>
       if s.preflightOk then (.ok (), s)
       else (.error { kind := .unavailable, message := "unavailable" }, s)
     discoverHostPreset := fun s => (.ok {}, s)
-    sealPlan := fun _ s =>
+    sealPlan := fun _ _ s =>
       let id := if isValidSandboxHandleId s.nextId then s.nextId else 1
       (.ok { handleId := id }, { s with nextId := id + 1, plans := id :: s.plans })
     closePlan := fun ph s =>
@@ -276,6 +361,125 @@ example : ¬ Core.AllPass (test_psandboxRaw_mapRawError_preservesKindAndFields
   have h0 := h (.unavailable none "missing landlock")
   simp [assert] at h0
 
+example : ¬ Core.AllPass (test_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed
+    { stubRawOps with decodeHostAuditArch := fun _ => .ok .x86_64 }) := by
+  intro h
+  cases h.2.1
+
+example : ¬ Core.AllPass (test_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed
+    { stubRawOps with
+      decodeHostAuditArch := fun raw =>
+        if raw == 0xc000003e then .ok .x86_64
+        else if raw == 0xc00000b7 then .ok .aarch64
+        else .error { kind := .ioError, message := "wrong error kind" } }) := by
+  intro h
+  have h0 := h.2.2 0 ⟨by decide, by decide⟩
+  simp [assert] at h0
+
+example : ¬ Core.AllPass (test_psandboxRaw_encodePlan_validatesSeccompFilterAndFramesLswp0002
+    { stubRawOps with
+      encodePlan := fun _ seccompBytes => .ok ("LSWP0002".toUTF8 ++ ByteArray.mk #[0, 0, 0, 0] ++ seccompBytes) }) := by
+  intro h
+  have h0 := h { program := "/bin/true" } ByteArray.empty (Or.inl rfl)
+  exact h0.1
+
+example : ¬ Core.AllPass (test_psandboxRaw_encodePlan_validatesSeccompFilterAndFramesLswp0002
+    { stubRawOps with
+      encodePlan := fun _ seccompBytes =>
+        if seccompBytes.size == 0 || seccompBytes.size > 8 * SECCOMP_MAX_INSNS then
+          .error { kind := .invalidInput, message := "bad" }
+        else
+          .ok ("LSWP0002".toUTF8 ++ ByteArray.mk #[1, 0, 0, 0] ++ seccompBytes) }) := by
+  intro h
+  have h0 := h { program := "/bin/true" } (ByteArray.mk #[1, 2, 3, 4, 5, 6, 7]) (Or.inr (Or.inl (by decide)))
+  exact h0.1
+
+private def mutantEncodeSkipMaxCap (_ : CompiledSandboxPlan) (seccompBytes : ByteArray) :
+    Except SandboxError ByteArray :=
+  if seccompBytes.size == 0 || seccompBytes.size % 8 != 0 then
+    .error { kind := .invalidInput, message := "bad" }
+  else
+    .ok ("LSWP0002".toUTF8 ++ ByteArray.mk #[161, 0, 0, 0] ++ seccompBytes)
+
+example : ¬ Core.AllPass (test_psandboxRaw_encodePlan_validatesSeccompFilterAndFramesLswp0002
+    { stubRawOps with encodePlan := mutantEncodeSkipMaxCap }) := by
+  intro h
+  have hStep : ∀ (bs : ByteArray), bs.size = 1288 → False := by
+    intro bs hSz
+    have hGt : bs.size > 8 * SECCOMP_MAX_INSNS := by rw [hSz]; decide
+    have h0 := h { program := "/bin/true" } bs (Or.inr (Or.inr hGt))
+    dsimp only [test_psandboxRaw_encodePlan_validatesSeccompFilterAndFramesLswp0002,
+      stubRawOps, mutantEncodeSkipMaxCap, Bind.bind, Core.AllPassRun, assume, assert] at h0
+    rw [hSz] at h0
+    exact h0.1
+  exact hStep (ByteArray.mk (Array.replicate 1288 0)) (by simp [ByteArray.size])
+
+private def mutantEncodeWrongMagic (plan : CompiledSandboxPlan) (seccompBytes : ByteArray) :
+    Except SandboxError ByteArray :=
+  match encodePlanStub plan seccompBytes with
+  | .error e => .error e
+  | .ok _ => .ok ("LSWP0001".toUTF8 ++ ByteArray.mk #[1, 0, 0, 0] ++ seccompBytes)
+
+private def sampleSeccompBytes8 : ByteArray :=
+  ByteArray.mk #[6, 0, 0, 0, 0, 0, 0xff, 0x7f]
+
+example : ¬ Core.AllPass (test_psandboxRaw_encodePlan_validatesSeccompFilterAndFramesLswp0002
+    { stubRawOps with encodePlan := mutantEncodeWrongMagic }) := by
+  intro h
+  have hGood := (h { program := "/bin/true" } ByteArray.empty (Or.inl rfl)).2
+    sampleSeccompBytes8 ⟨by decide, by decide, by decide⟩
+  have hOk : mutantEncodeWrongMagic { program := "/bin/true" } sampleSeccompBytes8 =
+      .ok ("LSWP0001".toUTF8 ++ ByteArray.mk #[1, 0, 0, 0] ++ sampleSeccompBytes8) := by
+    unfold mutantEncodeWrongMagic encodePlanStub SECCOMP_MAX_INSNS
+    have hCond : (sampleSeccompBytes8.size == 0 || sampleSeccompBytes8.size % 8 != 0 ||
+        decide (sampleSeccompBytes8.size > 8 * 160)) = false := by decide
+    rw [hCond]
+    rfl
+  dsimp only [stubRawOps, Bind.bind, Pure.pure, Core.AllPassRun, nondet, assert] at hGood
+  rw [hOk] at hGood
+  have hAny := hGood { program := "/bin/true" } sampleSeccompBytes8
+  rw [hOk] at hAny
+  exact absurd hAny.1.2.2.2.2.1 (by decide)
+
+example : ¬ Core.AllPass (test_psandboxRaw_encodePlan_validatesSeccompFilterAndFramesLswp0002
+    { stubRawOps with
+      encodePlan := fun _ _ => .error { kind := .invalidInput, message := "always fail" } }) := by
+  intro h
+  let b8 := ByteArray.mk #[6, 0, 0, 0, 0, 0, 0xff, 0x7f]
+  have hGood := (h { program := "/bin/true" } ByteArray.empty (Or.inl rfl)).2 b8 ⟨by decide, by decide, by decide⟩
+  exact hGood.1
+
+private def mutantEncodeWrongInsnCount (plan : CompiledSandboxPlan) (seccompBytes : ByteArray) :
+    Except SandboxError ByteArray :=
+  match encodePlanStub plan seccompBytes with
+  | .error e => .error e
+  | .ok _ => .ok ("LSWP0002".toUTF8 ++ ByteArray.mk #[2, 0, 0, 0] ++ seccompBytes)
+
+example : ¬ Core.AllPass (test_psandboxRaw_encodePlan_validatesSeccompFilterAndFramesLswp0002
+    { stubRawOps with encodePlan := mutantEncodeWrongInsnCount }) := by
+  intro h
+  have hGood := (h { program := "/bin/true" } ByteArray.empty (Or.inl rfl)).2
+    sampleSeccompBytes8 ⟨by decide, by decide, by decide⟩
+  have hOk : mutantEncodeWrongInsnCount { program := "/bin/true" } sampleSeccompBytes8 =
+      .ok ("LSWP0002".toUTF8 ++ ByteArray.mk #[2, 0, 0, 0] ++ sampleSeccompBytes8) := by
+    unfold mutantEncodeWrongInsnCount encodePlanStub SECCOMP_MAX_INSNS
+    have hCond : (sampleSeccompBytes8.size == 0 || sampleSeccompBytes8.size % 8 != 0 ||
+        decide (sampleSeccompBytes8.size > 8 * 160)) = false := by decide
+    rw [hCond]
+    rfl
+  dsimp only [stubRawOps, Bind.bind, Pure.pure, Core.AllPassRun, nondet, assert] at hGood
+  rw [hOk] at hGood
+  have hAny := hGood { program := "/bin/true" } sampleSeccompBytes8
+  rw [hOk] at hAny
+  exact absurd hAny.1.2.2.2.2.2.1 (by decide)
+
+example : ¬ Core.AllPass (test_psandboxRaw_hostSeccompArch_failClosedUnavailable
+    { stubStatefulRawOps with
+      hostSeccompArch := fun s => (.error { kind := .ioError, message := "wrong error kind" }, s) }) := by
+  intro h
+  have h0 := h {}
+  simp [StateT.run, assert] at h0
+
 example : ¬ Core.AllPass (test_psandboxRaw_preflight_failClosedUnavailable
     { stubStatefulRawOps with
       preflight := fun _ s => (.error { kind := .ioError, message := "not fail-closed kind" }, s) }) := by
@@ -287,7 +491,7 @@ example : ¬ Core.AllPass (test_psandboxRaw_planLifecycle_conservesOpenPlansAndR
     { stubStatefulRawOps with
       closePlan := fun _ s => (.ok (), s) }) := by
   intro h
-  have h0 := h {} { program := "/bin/true" }
+  have h0 := h {} { program := "/bin/true" } (ByteArray.mk #[6, 0, 0, 0, 0, 0, 0xff, 0x7f])
   simp [Bind.bind, StateT.run, assert] at h0
 
 example : ¬ Core.AllPass (test_psandboxRaw_boxAndForwarderLifecycle_conservesResources
@@ -298,8 +502,8 @@ example : ¬ Core.AllPass (test_psandboxRaw_boxAndForwarderLifecycle_conservesRe
         else
           (.ok (), s) }) := by
   intro h
-  have h0 := h {} { program := "/bin/true" } #[{ boxPort := 8080, hostPort := 8080 }]
-    (by decide) (by decide)
+  have h0 := h {} { program := "/bin/true" } (ByteArray.mk #[6, 0, 0, 0, 0, 0, 0xff, 0x7f])
+    #[{ boxPort := 8080, hostPort := 8080 }] (by decide) (by decide)
   simp [Bind.bind, stubStatefulRawOps, isValidSandboxHandleId, UInt64.size, StateT.run, assert] at h0
 
 end LeanSwe.ProcessSandbox.Raw

@@ -26,6 +26,7 @@ import LeanSwe.Base64.RuntimeTests
 import LeanSwe.CryptoHash.Raw.RuntimeTests
 import LeanSwe.CryptoHash.RuntimeTests
 import LeanSwe.Tar.RuntimeTests
+import LeanSwe.ProcessSandbox.Seccomp.RuntimeTests
 import LeanSwe.ProcessSandbox.Raw.RuntimeTests
 import LeanSwe.ProcessSandbox.RuntimeTests
 import LeanSwe.ConnectProxy.Raw.RuntimeTests
@@ -284,6 +285,7 @@ private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("CryptoHash.Raw", do CryptoHash.Raw.RuntimeTests.runAll; return none, pure ()),
   ("CryptoHash", do CryptoHash.RuntimeTests.runAll; return none, pure ()),
   ("Tar", do Tar.RuntimeTests.runAll; return none, pure ()),
+  ("ProcessSandbox.Seccomp", do ProcessSandbox.Seccomp.RuntimeTests.runAll; return none, pure ()),
   ("ProcessSandbox.Raw", ProcessSandbox.Raw.RuntimeTests.runAllOutcome, pure ()),
   ("ProcessSandbox", ProcessSandbox.RuntimeTests.runAllOutcome, pure ()),
   ("ConnectProxy.Raw", do ConnectProxy.Raw.RuntimeTests.runAll; return none, pure ()),

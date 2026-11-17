@@ -1,5 +1,6 @@
 import LeanSwe.ProcessSandbox.Types
 import LeanSwe.ProcessSandbox.Model
+import LeanSwe.ProcessSandbox.Seccomp.Impl
 
 namespace LeanSwe.ProcessSandbox.Internal
 
@@ -14,6 +15,11 @@ def ensureNonEmptyMsg (fallback : String) (err : SandboxError) : SandboxError :=
 def validateSpec (spec : BoxSpec) : Except SandboxError ValidBoxSpec :=
   validateSpecPure spec
 
+/-- Compile and encode the guest `seccomp` classic BPF filter wire payload for `arch`. -/
+@[irreducible] def encodedSeccompFilter (arch : SeccompArch) : ByteArray :=
+  LeanSwe.ProcessSandbox.Seccomp.Impl.encodeSeccompBpf
+    (LeanSwe.ProcessSandbox.Seccomp.Impl.compileSeccompBpf arch)
+
 /-- Run `spec` inside a freshly compiled, sealed, and cgroup-bounded sandbox using `MonadFinally` brackets for leak-free teardown. -/
 def runGeneric {m : Type → Type} [Monad m] [MonadFinally m]
     (raw : RawProcessSandboxOpsM m) (spec : BoxSpec) : m (Except SandboxError SandboxResult) := do
@@ -27,56 +33,61 @@ def runGeneric {m : Type → Type} [Monad m] [MonadFinally m]
     | .error e =>
       return .error { ensureNonEmptyMsg "sandbox unavailable" e with kind := .unavailable }
     | .ok () =>
-      match ← raw.discoverHostPreset with
+      match ← raw.hostSeccompArch with
       | .error e =>
-        return .error (ensureNonEmptyMsg "host runtime preset discovery failed" e)
-      | .ok preset =>
-        let plan := compilePlan valid preset
-        match ← raw.sealPlan plan with
+        return .error { ensureNonEmptyMsg "unsupported host architecture for seccomp" e with kind := .unavailable }
+      | .ok arch =>
+        match ← raw.discoverHostPreset with
         | .error e =>
-          return .error (ensureNonEmptyMsg "failed to seal sandbox plan" e)
-        | .ok ph =>
-          let (res, _) ← tryFinally' (do
-            match ← raw.spawnBox ph with
-            | .error e =>
-              return .error (ensureNonEmptyMsg "failed to spawn sandbox" e)
-            | .ok bh =>
-              let (boxRes, _) ← tryFinally' (do
-                let fwdRes : Except SandboxError (Option PortForwarderHandle) ←
-                  if plan.portForwards.isEmpty then
-                    pure (.ok none)
-                  else do
-                    match ← raw.startPortForwarders bh plan.portForwards with
+          return .error (ensureNonEmptyMsg "host runtime preset discovery failed" e)
+        | .ok preset =>
+          let plan := compilePlan valid preset
+          let seccompBytes := encodedSeccompFilter arch
+          match ← raw.sealPlan plan seccompBytes with
+          | .error e =>
+            return .error (ensureNonEmptyMsg "failed to seal sandbox plan" e)
+          | .ok ph =>
+            let (res, _) ← tryFinally' (do
+              match ← raw.spawnBox ph with
+              | .error e =>
+                return .error (ensureNonEmptyMsg "failed to spawn sandbox" e)
+              | .ok bh =>
+                let (boxRes, _) ← tryFinally' (do
+                  let fwdRes : Except SandboxError (Option PortForwarderHandle) ←
+                    if plan.portForwards.isEmpty then
+                      pure (.ok none)
+                    else do
+                      match ← raw.startPortForwarders bh plan.portForwards with
+                      | .error e =>
+                        pure (.error (ensureNonEmptyMsg "failed to start port forwarders" e))
+                      | .ok fh =>
+                        pure (.ok (some fh))
+                  match fwdRes with
+                  | .error e => return .error e
+                  | .ok fwdOpt =>
+                    let (ioRes, _) ← tryFinally'
+                      (raw.readBoxOutput bh valid.stdin valid.limits.timeoutMs valid.limits.maxOutputBytes)
+                      (fun _ =>
+                        match fwdOpt with
+                        | some fh => do
+                          let _ ← raw.stopPortForwarders fh
+                          pure ()
+                        | none => pure ())
+                    match ioRes with
                     | .error e =>
-                      pure (.error (ensureNonEmptyMsg "failed to start port forwarders" e))
-                    | .ok fh =>
-                      pure (.ok (some fh))
-                match fwdRes with
-                | .error e => return .error e
-                | .ok fwdOpt =>
-                  let (ioRes, _) ← tryFinally'
-                    (raw.readBoxOutput bh valid.stdin valid.limits.timeoutMs valid.limits.maxOutputBytes)
-                    (fun _ =>
-                      match fwdOpt with
-                      | some fh => do
-                        let _ ← raw.stopPortForwarders fh
-                        pure ()
-                      | none => pure ())
-                  match ioRes with
-                  | .error e =>
-                    return .error (ensureNonEmptyMsg "sandbox I/O failed" e)
-                  | .ok out =>
-                    return .ok out
-              ) (fun _ => do
-                let _ ← raw.killProcessGroup bh
-                let _ ← raw.pidfdKill bh
-                let _ ← raw.reapBox bh
-                pure ())
-              return boxRes
-          ) (fun _ => do
-            let _ ← raw.closePlan ph
-            pure ())
-          return res
+                      return .error (ensureNonEmptyMsg "sandbox I/O failed" e)
+                    | .ok out =>
+                      return .ok out
+                ) (fun _ => do
+                  let _ ← raw.killProcessGroup bh
+                  let _ ← raw.pidfdKill bh
+                  let _ ← raw.reapBox bh
+                  pure ())
+                return boxRes
+            ) (fun _ => do
+              let _ ← raw.closePlan ph
+              pure ())
+            return res
 
 /-- Probe whether the host supports `ProcessSandbox.run` with default `memory` and `pids` cgroup controllers. -/
 def isAvailableGeneric {m : Type → Type} [Monad m] (raw : RawProcessSandboxOpsM m) : m Bool := do
