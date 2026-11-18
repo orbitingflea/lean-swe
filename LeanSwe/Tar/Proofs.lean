@@ -525,4 +525,212 @@ theorem allPass_defaultWrappers_matchOptionsDefaults :
   intro entries bytes
   exact ⟨rfl, ⟨rfl, trivial⟩⟩
 
+private def IsPackErrorKind (k : TarErrorKind) : Prop :=
+  k = .invalidPath ∨ k = .unsafePath ∨ k = .duplicatePath ∨ k = .invalidHeader ∨ k = .sizeOverflow
+
+private theorem checkSegments_kind (allowTrav : Bool) (segs : List (List Char))
+    {e : TarError} (h : checkSegments allowTrav segs = .error e) :
+    e.kind = .invalidPath ∨ e.kind = .unsafePath := by
+  unfold checkSegments at h
+  split at h
+  · cases h; exact Or.inl rfl
+  · suffices ∀ xs {e'}, checkSegments.go allowTrav xs = .error e' → e'.kind = .invalidPath ∨ e'.kind = .unsafePath
+      from this _ h
+    intro xs
+    induction xs with
+    | nil => intro e' hx; simp [checkSegments.go] at hx
+    | cons x rest ih =>
+      intro e' hx
+      unfold checkSegments.go at hx
+      split at hx
+      · cases hx; exact Or.inl rfl
+      · split at hx
+        · cases hx; exact Or.inr rfl
+        · split at hx
+          · cases hx; exact Or.inr rfl
+          · exact ih hx
+
+private theorem validateEntryPath_kind (allowAbs allowTrav : Bool) (kind : EntryKind) (path : String)
+    {e : TarError} (h : validateEntryPath allowAbs allowTrav kind path = .error e) :
+    e.kind = .invalidPath ∨ e.kind = .unsafePath := by
+  unfold validateEntryPath at h
+  dsimp only at h
+  split at h
+  · cases h; exact Or.inl rfl
+  · split at h
+    · cases h; exact Or.inl rfl
+    · split at h
+      · cases h; exact Or.inr rfl
+      · split at h
+        · cases h; exact Or.inl (match_1_kind ‹_›)
+        · split at h
+          · rename_i eSeg hSeg
+            have hk := checkSegments_kind allowTrav _ hSeg
+            cases h
+            exact hk
+          · cases h
+where
+  match_1_kind {kind : EntryKind} {path : String} {e : TarError} :
+      (match kind with
+       | .directory =>
+         let stripped := stripTrailingSlashesChars path.toList
+         if stripped.isEmpty then
+           Except.error { kind := .invalidPath, message := "directory tar path cannot be root-only", entryPath := some path }
+         else Except.ok stripped
+       | .regular | .symlink =>
+         if path.toList.reverse.head? == some '/' then
+           Except.error { kind := .invalidPath, message := "non-directory tar path cannot end with '/'", entryPath := some path }
+         else Except.ok path.toList) = Except.error e → e.kind = .invalidPath := by
+    intro hm
+    cases kind <;> simp only at hm <;> split at hm <;> cases hm <;> rfl
+
+private theorem validateSymlinkTarget_kind (allowAbs allowTrav : Bool) (ep lt : String)
+    {e : TarError} (h : validateSymlinkTarget allowAbs allowTrav ep lt = .error e) :
+    e.kind = .invalidPath ∨ e.kind = .unsafePath := by
+  unfold validateSymlinkTarget at h
+  dsimp only at h
+  split at h
+  · cases h; exact Or.inl rfl
+  · split at h
+    · cases h; exact Or.inl rfl
+    · split at h
+      · cases h; exact Or.inr rfl
+      · split at h
+        · cases h
+        · suffices ∀ d xs {e'}, validateSymlinkTarget.walkDepth ep d xs = .error e' → e'.kind = .invalidPath ∨ e'.kind = .unsafePath
+            from this _ _ h
+          intro d xs
+          induction xs generalizing d with
+          | nil => intro e' hx; simp [validateSymlinkTarget.walkDepth] at hx
+          | cons seg rest ih =>
+            intro e' hx
+            unfold validateSymlinkTarget.walkDepth at hx
+            split at hx
+            · exact ih d hx
+            · split at hx
+              · split at hx
+                · cases hx; exact Or.inr rfl
+                · exact ih (d - 1) hx
+              · exact ih (d + 1) hx
+
+private theorem packWith_go_kind (opts : PackOptions) (rest : List TarEntry)
+    (seen : List String) (acc : ByteArray) {e : TarError}
+    (h : Impl.packWith.go opts rest seen acc = .error e) : IsPackErrorKind e.kind := by
+  induction rest generalizing seen acc with
+  | nil => simp [Impl.packWith.go] at h
+  | cons hd tl ih =>
+    unfold Impl.packWith.go at h
+    cases hPath : validateEntryPath opts.allowAbsolute opts.allowParentTraversal hd.kind hd.path with
+    | error eP =>
+      rw [hPath] at h
+      cases h
+      rcases validateEntryPath_kind _ _ _ _ hPath with hk | hk
+      · exact Or.inl hk
+      · exact Or.inr (Or.inl hk)
+    | ok normPath =>
+      rw [hPath] at h
+      dsimp only at h
+      have finishRest :
+          ∀ {b1 b2 b3 b4 : Bool},
+            (if b1 = true then
+               Except.error { kind := TarErrorKind.invalidHeader, message := "non-regular tar entry cannot have payload data", entryPath := some hd.path }
+             else if b2 = true then
+               Except.error { kind := TarErrorKind.invalidHeader, message := "non-symlink tar entry cannot have linkTarget", entryPath := some hd.path }
+             else if b3 = true then
+               Except.error { kind := TarErrorKind.invalidHeader, message := "uname/gname cannot contain NUL byte", entryPath := some hd.path }
+             else if b4 = true then
+               Except.error { kind := TarErrorKind.sizeOverflow, message := "tar entry numeric field exceeds 2^64 - 1", entryPath := some hd.path }
+             else if seen.contains normPath = true then
+               Except.error { kind := TarErrorKind.duplicatePath, message := toString "duplicate tar entry path: " ++ toString normPath, entryPath := some normPath }
+             else Impl.packWith.go opts tl (normPath :: seen) (acc ++ encodeEntryBlocks (if opts.deterministic = true then zeroDeterministicMeta hd else hd) normPath)) = Except.error e →
+            IsPackErrorKind e.kind := by
+        intro b1 b2 b3 b4 hr
+        split at hr
+        · cases hr; exact Or.inr (Or.inr (Or.inr (Or.inl rfl)))
+        · split at hr
+          · cases hr; exact Or.inr (Or.inr (Or.inr (Or.inl rfl)))
+          · split at hr
+            · cases hr; exact Or.inr (Or.inr (Or.inr (Or.inl rfl)))
+            · split at hr
+              · cases hr; exact Or.inr (Or.inr (Or.inr (Or.inr rfl)))
+              · split at hr
+                · cases hr; exact Or.inr (Or.inr (Or.inl rfl))
+                · exact ih _ _ hr
+      cases hk : hd.kind <;> rw [hk] at h <;> dsimp only at h
+      · exact finishRest h
+      · exact finishRest h
+      · cases hSym : validateSymlinkTarget opts.allowAbsolute opts.allowParentTraversal normPath hd.linkTarget <;> rw [hSym] at h
+        · cases h
+          rcases validateSymlinkTarget_kind _ _ _ _ hSym with hsk | hsk
+          · exact Or.inl hsk
+          · exact Or.inr (Or.inl hsk)
+        · dsimp only at h; exact finishRest h
+
+private theorem packWith_never_of_not_packKind (k : TarErrorKind) (hk : ¬IsPackErrorKind k)
+    (opts : PackOptions) (entries : List TarEntry) :
+    Core.NeverErrorKindPure TarError.kind k (LeanSwe.Tar.packWith opts entries) := by
+  unfold Core.NeverErrorKindPure LeanSwe.Tar.packWith Impl.packWith
+  cases h : Impl.packWith.go opts entries [] ByteArray.empty with
+  | ok _ => trivial
+  | error e =>
+    dsimp only
+    intro hek
+    exact hk (hek ▸ packWith_go_kind opts entries [] ByteArray.empty h)
+
+private theorem pack_never_of_not_packKind (k : TarErrorKind) (hk : ¬IsPackErrorKind k)
+    (entries : List TarEntry) :
+    Core.NeverErrorKindPure TarError.kind k (LeanSwe.Tar.pack entries) := by
+  unfold Core.NeverErrorKindPure LeanSwe.Tar.pack Impl.pack
+  exact packWith_never_of_not_packKind k hk {} entries
+
+/-- `Tar.pack` never returns `.checksumMismatch`. -/
+theorem tar_pack_never_checksumMismatch (entries : List TarEntry) :
+    Core.NeverErrorKindPure TarError.kind .checksumMismatch (LeanSwe.Tar.pack entries) :=
+  pack_never_of_not_packKind .checksumMismatch (by unfold IsPackErrorKind; decide) entries
+
+/-- `Tar.pack` never returns `.truncatedArchive`. -/
+theorem tar_pack_never_truncatedArchive (entries : List TarEntry) :
+    Core.NeverErrorKindPure TarError.kind .truncatedArchive (LeanSwe.Tar.pack entries) :=
+  pack_never_of_not_packKind .truncatedArchive (by unfold IsPackErrorKind; decide) entries
+
+/-- `Tar.pack` never returns `.unsupportedEntry`. -/
+theorem tar_pack_never_unsupportedEntry (entries : List TarEntry) :
+    Core.NeverErrorKindPure TarError.kind .unsupportedEntry (LeanSwe.Tar.pack entries) :=
+  pack_never_of_not_packKind .unsupportedEntry (by unfold IsPackErrorKind; decide) entries
+
+/-- `Tar.pack` never returns `.invalidEncoding`. -/
+theorem tar_pack_never_invalidEncoding (entries : List TarEntry) :
+    Core.NeverErrorKindPure TarError.kind .invalidEncoding (LeanSwe.Tar.pack entries) :=
+  pack_never_of_not_packKind .invalidEncoding (by unfold IsPackErrorKind; decide) entries
+
+/-- `Tar.pack` never returns `.resourceLimitExceeded`. -/
+theorem tar_pack_never_resourceLimitExceeded (entries : List TarEntry) :
+    Core.NeverErrorKindPure TarError.kind .resourceLimitExceeded (LeanSwe.Tar.pack entries) :=
+  pack_never_of_not_packKind .resourceLimitExceeded (by unfold IsPackErrorKind; decide) entries
+
+/-- `Tar.packWith` never returns `.checksumMismatch`. -/
+theorem tar_packWith_never_checksumMismatch (opts : PackOptions) (entries : List TarEntry) :
+    Core.NeverErrorKindPure TarError.kind .checksumMismatch (LeanSwe.Tar.packWith opts entries) :=
+  packWith_never_of_not_packKind .checksumMismatch (by unfold IsPackErrorKind; decide) opts entries
+
+/-- `Tar.packWith` never returns `.truncatedArchive`. -/
+theorem tar_packWith_never_truncatedArchive (opts : PackOptions) (entries : List TarEntry) :
+    Core.NeverErrorKindPure TarError.kind .truncatedArchive (LeanSwe.Tar.packWith opts entries) :=
+  packWith_never_of_not_packKind .truncatedArchive (by unfold IsPackErrorKind; decide) opts entries
+
+/-- `Tar.packWith` never returns `.unsupportedEntry`. -/
+theorem tar_packWith_never_unsupportedEntry (opts : PackOptions) (entries : List TarEntry) :
+    Core.NeverErrorKindPure TarError.kind .unsupportedEntry (LeanSwe.Tar.packWith opts entries) :=
+  packWith_never_of_not_packKind .unsupportedEntry (by unfold IsPackErrorKind; decide) opts entries
+
+/-- `Tar.packWith` never returns `.invalidEncoding`. -/
+theorem tar_packWith_never_invalidEncoding (opts : PackOptions) (entries : List TarEntry) :
+    Core.NeverErrorKindPure TarError.kind .invalidEncoding (LeanSwe.Tar.packWith opts entries) :=
+  packWith_never_of_not_packKind .invalidEncoding (by unfold IsPackErrorKind; decide) opts entries
+
+/-- `Tar.packWith` never returns `.resourceLimitExceeded`. -/
+theorem tar_packWith_never_resourceLimitExceeded (opts : PackOptions) (entries : List TarEntry) :
+    Core.NeverErrorKindPure TarError.kind .resourceLimitExceeded (LeanSwe.Tar.packWith opts entries) :=
+  packWith_never_of_not_packKind .resourceLimitExceeded (by unfold IsPackErrorKind; decide) opts entries
+
 end LeanSwe.Tar.Proofs

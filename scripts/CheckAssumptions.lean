@@ -38,8 +38,6 @@ private def legacyExemptionAllowlist : Array Name := #[
   `LeanSwe.Compress,
   `LeanSwe.ConnectProxy,
   `LeanSwe.ConnectProxy.Raw,
-  `LeanSwe.CryptoHash,
-  `LeanSwe.CryptoHash.Raw,
   `LeanSwe.Fs,
   `LeanSwe.Fs.Raw,
   `LeanSwe.Git,
@@ -48,10 +46,8 @@ private def legacyExemptionAllowlist : Array Name := #[
   `LeanSwe.ProcessSandbox,
   `LeanSwe.ProcessSandbox.Raw,
   `LeanSwe.SlotPool,
-  `LeanSwe.Tar,
   `LeanSwe.TempDir,
   `LeanSwe.Time,
-  `LeanSwe.Toml,
   `LeanSwe.Uuid,
   `LeanSwe.Uuid.Raw
 ]
