@@ -4,13 +4,13 @@ import LeanSwe.CryptoHash.Raw.Impl
 namespace LeanSwe.CryptoHash.Raw
 
 @[extern "leanswe_cryptohash_digest"]
-private opaque rawDigest : UInt8 → @& ByteArray → IO (UInt32 × UInt64 × String × ByteArray)
+private opaque rawDigest : UInt8 → @& ByteArray → BaseIO (UInt32 × UInt64 × String × ByteArray)
 
 @[extern "leanswe_cryptohash_hmac_sha256"]
-private opaque rawHmacSha256 : @& ByteArray → @& ByteArray → IO (UInt32 × UInt64 × String × ByteArray)
+private opaque rawHmacSha256 : @& ByteArray → @& ByteArray → BaseIO (UInt32 × UInt64 × String × ByteArray)
 
 @[extern "leanswe_cryptohash_ct_equal"]
-private opaque rawCtEqual : @& ByteArray → @& ByteArray → IO (UInt32 × UInt64 × String × Bool)
+private opaque rawCtEqual : @& ByteArray → @& ByteArray → BaseIO Bool
 
 /-- Default OpenSSL 3 `libcrypto` primitive bundle backed by `c/cryptohash_shim.c`. -/
 def defaultOps : RawCryptoHashOps :=

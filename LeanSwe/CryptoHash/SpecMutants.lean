@@ -344,12 +344,12 @@ example : ¬ Core.AllPass (test_cryptohash_fromHex_rejectsWrongEvenHexLength
   have h0 := h .sha256 "abcd" (by decide)
   simp [assert] at h0
 
-example : ¬ Core.AllPass (empirical_cryptohash_vectorHexRoundTrip
+example : ¬ Core.AllPass (test_cryptohash_vectorHexRoundTrip
     { stubCryptoHashApi with toHex := fun _ => "0000" }) := by
   intro h
   have hlen : ("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".length ==
       2 * digestLen .sha256) = true := by decide
-  dsimp [empirical_cryptohash_vectorHexRoundTrip, stubCryptoHashApi,
+  dsimp [test_cryptohash_vectorHexRoundTrip, stubCryptoHashApi,
     Core.NondetTest.assert, Bind.bind] at h
   simp [hlen] at h
   exact h

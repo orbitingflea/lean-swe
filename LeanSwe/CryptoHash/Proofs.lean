@@ -1252,10 +1252,10 @@ private theorem fromHex_toUpper_toHex_of_lowerHex (alg : HashAlg) (s : String)
   exact fromHex_toHex_of_validHex alg (String.ofList (s.toList.map Char.toUpper)) s hlen_up hall_up hlow_up
 
 set_option maxRecDepth 2048 in
-/-- `defaultApi` satisfies `empirical_cryptohash_vectorHexRoundTrip`. -/
+/-- `defaultApi` satisfies `test_cryptohash_vectorHexRoundTrip`. -/
 theorem cryptohash_vectorHexRoundTrip :
-    AllPass (empirical_cryptohash_vectorHexRoundTrip defaultApi) := by
-  dsimp only [AllPass, AllPassRun, empirical_cryptohash_vectorHexRoundTrip, defaultApi, Internal.mkApiM,
+    AllPass (test_cryptohash_vectorHexRoundTrip defaultApi) := by
+  dsimp only [AllPass, AllPassRun, test_cryptohash_vectorHexRoundTrip, defaultApi, Internal.mkApiM,
     Core.NondetTest.assert, Bind.bind, Pure.pure]
   obtain ⟨d1, h1_ok, h1_hex⟩ := fromHex_toHex_of_validHex .sha256
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

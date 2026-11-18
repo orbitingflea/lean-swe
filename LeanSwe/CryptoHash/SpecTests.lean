@@ -1,9 +1,10 @@
 import Core.NondetTest
+import Core.Assumptions
 import LeanSwe.CryptoHash.Types
 
 namespace LeanSwe.CryptoHash
 
-open Core (NondetTest)
+open Core (NondetTest ErrorObligation)
 open Core.NondetTest
 
 private def isLowerHexChar (c : Char) : Bool :=
@@ -396,23 +397,8 @@ def test_cryptohash_fromHex_rejectsWrongEvenHexLength
   | .ok _ => NondetTest.assert False
   | .error e => NondetTest.assert (e.kind = .lengthMismatch ∧ e.message ≠ "")
 
-/-- External trust boundary assumptions for the OpenSSL 3 `libcrypto` C shim (`c/cryptohash_shim.c`), grounded in `RuntimeTests.lean`. -/
-structure EmpiricalAssumptions where
-  /-- `sha256` matches NIST FIPS 180-4 test vectors (`""`, `"abc"`, `"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"`). -/
-  sha256NistFips180_4 : Prop
-  /-- `sha512` matches NIST FIPS 180-4 test vectors (`""`, `"abc"`). -/
-  sha512NistFips180_4 : Prop
-  /-- `hmacSha256` matches RFC 4231 Test Cases 1–4, 6, and 7 (including 131-byte key > 64 bytes) plus empty key (`ByteArray.empty`). -/
-  hmacSha256Rfc4231AndEmptyKey : Prop
-  /-- `digestRaw` and `hmacSha256Raw` preserve embedded `0x00` bytes in both keys and payloads without C `strlen` truncation. -/
-  embeddedNulBytesPreserved : Prop
-  /-- `ctEqualRaw` returns `.ok (a == b)` on equal-length arrays (including empty arrays) and `.error` with `.lengthMismatch` on unequal lengths. -/
-  ctEqualRawMatchesBeqAndRejectsMismatch : Prop
-  /-- Differential equivalence with Python `hashlib.sha256`, `hashlib.sha512`, and `hmac.new(..., hashlib.sha256)` across empty, small, block-boundary (63/64/65/128 bytes), and large multi-MB buffers. -/
-  differentialPythonHashlibAndHmac : Prop
-
-/-- Empirical hex contract (grounded in `RuntimeTests.lean`): `api.fromHex` and `api.toHex` normalize and round-trip NIST FIPS 180-4 and RFC 4231 hex vectors. -/
-def empirical_cryptohash_vectorHexRoundTrip
+/-- `api.fromHex` and `api.toHex` normalize and round-trip NIST FIPS 180-4 and RFC 4231 hex vectors. -/
+def test_cryptohash_vectorHexRoundTrip
     {runner} [NondetTest runner] (api : CryptoHashApi) : runner Unit := do
   let sha256Empty := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   let sha512Empty := "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"
@@ -426,5 +412,92 @@ def empirical_cryptohash_vectorHexRoundTrip
   match api.fromHex .sha256 (String.ofList (rfc4231Case6.toList.map Char.toUpper)) with
   | .error _ => NondetTest.assert False
   | .ok d3 => NondetTest.assert (api.toHex d3 = rfc4231Case6)
+
+/-- Declared error-coverage matrix for pure upper-layer `LeanSwe.CryptoHash` fallible requests (`CryptoHashErrorKind`). -/
+def errorCoverage : List (ErrorObligation CryptoHashErrorKind) :=
+  [ { request := "LeanSwe.CryptoHash.hash"
+      errorKind := .invalidInput
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_hash_never_invalidInput" }
+  , { request := "LeanSwe.CryptoHash.hash"
+      errorKind := .invalidHex
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_hash_never_invalidHex" }
+  , { request := "LeanSwe.CryptoHash.hash"
+      errorKind := .lengthMismatch
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_hash_never_lengthMismatch" }
+  , { request := "LeanSwe.CryptoHash.hash"
+      errorKind := .cryptoError
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_hash_cryptoError" .mocked }
+  , { request := "LeanSwe.CryptoHash.sha256"
+      errorKind := .invalidInput
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_sha256_never_invalidInput" }
+  , { request := "LeanSwe.CryptoHash.sha256"
+      errorKind := .invalidHex
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_sha256_never_invalidHex" }
+  , { request := "LeanSwe.CryptoHash.sha256"
+      errorKind := .lengthMismatch
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_sha256_never_lengthMismatch" }
+  , { request := "LeanSwe.CryptoHash.sha256"
+      errorKind := .cryptoError
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_sha256_cryptoError" .mocked }
+  , { request := "LeanSwe.CryptoHash.sha512"
+      errorKind := .invalidInput
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_sha512_never_invalidInput" }
+  , { request := "LeanSwe.CryptoHash.sha512"
+      errorKind := .invalidHex
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_sha512_never_invalidHex" }
+  , { request := "LeanSwe.CryptoHash.sha512"
+      errorKind := .lengthMismatch
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_sha512_never_lengthMismatch" }
+  , { request := "LeanSwe.CryptoHash.sha512"
+      errorKind := .cryptoError
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_sha512_cryptoError" .mocked }
+  , { request := "LeanSwe.CryptoHash.hmacSha256"
+      errorKind := .invalidInput
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_hmacSha256_never_invalidInput" }
+  , { request := "LeanSwe.CryptoHash.hmacSha256"
+      errorKind := .invalidHex
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_hmacSha256_never_invalidHex" }
+  , { request := "LeanSwe.CryptoHash.hmacSha256"
+      errorKind := .lengthMismatch
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_hmacSha256_never_lengthMismatch" }
+  , { request := "LeanSwe.CryptoHash.hmacSha256"
+      errorKind := .cryptoError
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_hmacSha256_cryptoError" .mocked }
+  , { request := "LeanSwe.CryptoHash.verifyHmacSha256"
+      errorKind := .invalidInput
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_verifyHmacSha256_invalidInput" .real }
+  , { request := "LeanSwe.CryptoHash.verifyHmacSha256"
+      errorKind := .invalidHex
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_verifyHmacSha256_never_invalidHex" }
+  , { request := "LeanSwe.CryptoHash.verifyHmacSha256"
+      errorKind := .lengthMismatch
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_verifyHmacSha256_lengthMismatch" .real }
+  , { request := "LeanSwe.CryptoHash.verifyHmacSha256"
+      errorKind := .cryptoError
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_verifyHmacSha256_cryptoError" .mocked }
+  , { request := "LeanSwe.CryptoHash.fromHex"
+      errorKind := .invalidInput
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_fromHex_never_invalidInput" }
+  , { request := "LeanSwe.CryptoHash.fromHex"
+      errorKind := .invalidHex
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_fromHex_invalidHex" .real }
+  , { request := "LeanSwe.CryptoHash.fromHex"
+      errorKind := .lengthMismatch
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_fromHex_lengthMismatch" .real }
+  , { request := "LeanSwe.CryptoHash.fromHex"
+      errorKind := .cryptoError
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_fromHex_never_cryptoError" }
+  , { request := "LeanSwe.CryptoHash.ctEq"
+      errorKind := .invalidInput
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_ctEq_never_invalidInput" }
+  , { request := "LeanSwe.CryptoHash.ctEq"
+      errorKind := .invalidHex
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_ctEq_never_invalidHex" }
+  , { request := "LeanSwe.CryptoHash.ctEq"
+      errorKind := .lengthMismatch
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_ctEq_never_lengthMismatch" }
+  , { request := "LeanSwe.CryptoHash.ctEq"
+      errorKind := .cryptoError
+      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_ctEq_never_cryptoError" } ]
 
 end LeanSwe.CryptoHash

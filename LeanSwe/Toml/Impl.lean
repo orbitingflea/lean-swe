@@ -889,7 +889,9 @@ def formatWithNum (numApi : NumParseApi) (doc : TomlTable) : String :=
 
 /-- Decode a `TomlValue` using `[FromToml α]`. -/
 def tomlDecode {α : Type} [FromToml α] (v : TomlValue) : Except TomlError α :=
-  FromToml.fromToml v
+  match FromToml.fromToml v with
+  | .ok a => .ok a
+  | .error e => .error { e with kind := .decodeError, message := nonEmptyMsg e.message }
 
 /-- Encode `α` into a `TomlValue` using `[ToToml α]`. -/
 def tomlEncode {α : Type} [ToToml α] (x : α) : TomlValue :=
@@ -926,7 +928,10 @@ def tomlGetOptField {α : Type} [FromToml α] (t : TomlTable) (key : String) : E
 /-- Traverse nested tables along `keys` recording the dot-joined prefix path on failure. -/
 def tomlGetPathAux {α : Type} [FromToml α] (revPrefix : List String) (t : TomlTable) :
     List String → Except TomlError α
-  | [] => FromToml.fromToml (.table t)
+  | [] =>
+    match FromToml.fromToml (.table t) with
+    | .ok a => .ok a
+    | .error e => .error { e with kind := .decodeError, message := nonEmptyMsg e.message, path := none }
   | [k] =>
     let full := joinPath (revPrefix.reverse ++ [k])
     match lookupKey k t with

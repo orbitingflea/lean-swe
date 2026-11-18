@@ -1,41 +1,14 @@
 import Core.NondetTest
+import Core.Assumptions
 import LeanSwe.Tar.Types
 import LeanSwe.Tar.Model
+import LeanSwe.Tar.Helpers.Model
 
 namespace LeanSwe.Tar
 
-open Core (NondetTest)
+open Core (NondetTest ErrorObligation)
 open Core.NondetTest
 open LeanSwe.Tar.Model
-
-/-- Assert that `api.packWith opts entries` succeeds and `api.unpackWith unpackOpts` returns a `TarEquiv` list. -/
-def checkRoundTripCase {runner} [NondetTest runner] (api : TarApi)
-    (packOpts : PackOptions) (unpackOpts : UnpackOptions) (entries : List TarEntry) :
-    runner Unit :=
-  match api.packWith packOpts entries with
-  | .error _ => NondetTest.assert False
-  | .ok bytes =>
-    match api.unpackWith unpackOpts bytes with
-    | .error _ => NondetTest.assert False
-    | .ok decoded =>
-      let expected := if packOpts.deterministic then entries.map zeroDeterministicMeta else entries
-      NondetTest.assert (TarEquiv expected decoded)
-
-/-- Assert that `api.packWith opts entries` fails with exact `expectedKind` and non-empty message. -/
-def checkPackError {runner} [NondetTest runner] (api : TarApi)
-    (opts : PackOptions) (entries : List TarEntry) (expectedKind : TarErrorKind) :
-    runner Unit :=
-  match api.packWith opts entries with
-  | .ok _ => NondetTest.assert False
-  | .error e => NondetTest.assert (e.kind = expectedKind ∧ !e.message.isEmpty = true)
-
-/-- Assert that `api.unpackWith opts bytes` fails with exact `expectedKind` and non-empty message. -/
-def checkUnpackError {runner} [NondetTest runner] (api : TarApi)
-    (opts : UnpackOptions) (bytes : ByteArray) (expectedKind : TarErrorKind) :
-    runner Unit :=
-  match api.unpackWith opts bytes with
-  | .ok _ => NondetTest.assert False
-  | .error e => NondetTest.assert (e.kind = expectedKind ∧ !e.message.isEmpty = true)
 
 /-- Construct a 512-byte USTAR header block with recomputed unsigned checksum after applying byte patches. -/
 def patchHeaderChecksum (hdr : ByteArray) : ByteArray :=
@@ -310,6 +283,127 @@ def test_tar_unpackWith_securityOnWire_enforced
   | .error _ => NondetTest.assert False
   | .ok res => NondetTest.assert (TarEquiv [{ path := "safe.txt", kind := .regular }] res)
 
-/-! ## Compile-time Negative Mutation Checks (`¬ Core.AllPass ...`) -/
+/-- Declared error-coverage matrix for `LeanSwe.Tar` fallible requests (`TarErrorKind`). -/
+def errorCoverage : List (ErrorObligation TarErrorKind) :=
+  [ { request := "LeanSwe.Tar.pack"
+      errorKind := .invalidPath
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_pack_invalidPath" .real }
+  , { request := "LeanSwe.Tar.pack"
+      errorKind := .unsafePath
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_pack_unsafePath" .real }
+  , { request := "LeanSwe.Tar.pack"
+      errorKind := .duplicatePath
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_pack_duplicatePath" .real }
+  , { request := "LeanSwe.Tar.pack"
+      errorKind := .invalidHeader
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_pack_invalidHeader" .real }
+  , { request := "LeanSwe.Tar.pack"
+      errorKind := .checksumMismatch
+      justification := .provedImpossible "LeanSwe.Tar.Proofs.tar_pack_never_checksumMismatch" }
+  , { request := "LeanSwe.Tar.pack"
+      errorKind := .truncatedArchive
+      justification := .provedImpossible "LeanSwe.Tar.Proofs.tar_pack_never_truncatedArchive" }
+  , { request := "LeanSwe.Tar.pack"
+      errorKind := .unsupportedEntry
+      justification := .provedImpossible "LeanSwe.Tar.Proofs.tar_pack_never_unsupportedEntry" }
+  , { request := "LeanSwe.Tar.pack"
+      errorKind := .sizeOverflow
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_pack_sizeOverflow" .real }
+  , { request := "LeanSwe.Tar.pack"
+      errorKind := .invalidEncoding
+      justification := .provedImpossible "LeanSwe.Tar.Proofs.tar_pack_never_invalidEncoding" }
+  , { request := "LeanSwe.Tar.pack"
+      errorKind := .resourceLimitExceeded
+      justification := .provedImpossible "LeanSwe.Tar.Proofs.tar_pack_never_resourceLimitExceeded" }
+  , { request := "LeanSwe.Tar.packWith"
+      errorKind := .invalidPath
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_packWith_invalidPath" .real }
+  , { request := "LeanSwe.Tar.packWith"
+      errorKind := .unsafePath
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_packWith_unsafePath" .real }
+  , { request := "LeanSwe.Tar.packWith"
+      errorKind := .duplicatePath
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_packWith_duplicatePath" .real }
+  , { request := "LeanSwe.Tar.packWith"
+      errorKind := .invalidHeader
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_packWith_invalidHeader" .real }
+  , { request := "LeanSwe.Tar.packWith"
+      errorKind := .checksumMismatch
+      justification := .provedImpossible "LeanSwe.Tar.Proofs.tar_packWith_never_checksumMismatch" }
+  , { request := "LeanSwe.Tar.packWith"
+      errorKind := .truncatedArchive
+      justification := .provedImpossible "LeanSwe.Tar.Proofs.tar_packWith_never_truncatedArchive" }
+  , { request := "LeanSwe.Tar.packWith"
+      errorKind := .unsupportedEntry
+      justification := .provedImpossible "LeanSwe.Tar.Proofs.tar_packWith_never_unsupportedEntry" }
+  , { request := "LeanSwe.Tar.packWith"
+      errorKind := .sizeOverflow
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_packWith_sizeOverflow" .real }
+  , { request := "LeanSwe.Tar.packWith"
+      errorKind := .invalidEncoding
+      justification := .provedImpossible "LeanSwe.Tar.Proofs.tar_packWith_never_invalidEncoding" }
+  , { request := "LeanSwe.Tar.packWith"
+      errorKind := .resourceLimitExceeded
+      justification := .provedImpossible "LeanSwe.Tar.Proofs.tar_packWith_never_resourceLimitExceeded" }
+  , { request := "LeanSwe.Tar.unpack"
+      errorKind := .invalidPath
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpack_invalidPath" .real }
+  , { request := "LeanSwe.Tar.unpack"
+      errorKind := .unsafePath
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpack_unsafePath" .real }
+  , { request := "LeanSwe.Tar.unpack"
+      errorKind := .duplicatePath
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpack_duplicatePath" .real }
+  , { request := "LeanSwe.Tar.unpack"
+      errorKind := .invalidHeader
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpack_invalidHeader" .real }
+  , { request := "LeanSwe.Tar.unpack"
+      errorKind := .checksumMismatch
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpack_checksumMismatch" .real }
+  , { request := "LeanSwe.Tar.unpack"
+      errorKind := .truncatedArchive
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpack_truncatedArchive" .real }
+  , { request := "LeanSwe.Tar.unpack"
+      errorKind := .unsupportedEntry
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpack_unsupportedEntry" .real }
+  , { request := "LeanSwe.Tar.unpack"
+      errorKind := .sizeOverflow
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpack_sizeOverflow" .real }
+  , { request := "LeanSwe.Tar.unpack"
+      errorKind := .invalidEncoding
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpack_invalidEncoding" .real }
+  , { request := "LeanSwe.Tar.unpack"
+      errorKind := .resourceLimitExceeded
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpack_resourceLimitExceeded" .real }
+  , { request := "LeanSwe.Tar.unpackWith"
+      errorKind := .invalidPath
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_invalidPath" .real }
+  , { request := "LeanSwe.Tar.unpackWith"
+      errorKind := .unsafePath
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_unsafePath" .real }
+  , { request := "LeanSwe.Tar.unpackWith"
+      errorKind := .duplicatePath
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_duplicatePath" .real }
+  , { request := "LeanSwe.Tar.unpackWith"
+      errorKind := .invalidHeader
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_invalidHeader" .real }
+  , { request := "LeanSwe.Tar.unpackWith"
+      errorKind := .checksumMismatch
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_checksumMismatch" .real }
+  , { request := "LeanSwe.Tar.unpackWith"
+      errorKind := .truncatedArchive
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_truncatedArchive" .real }
+  , { request := "LeanSwe.Tar.unpackWith"
+      errorKind := .unsupportedEntry
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_unsupportedEntry" .real }
+  , { request := "LeanSwe.Tar.unpackWith"
+      errorKind := .sizeOverflow
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_sizeOverflow" .real }
+  , { request := "LeanSwe.Tar.unpackWith"
+      errorKind := .invalidEncoding
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_invalidEncoding" .real }
+  , { request := "LeanSwe.Tar.unpackWith"
+      errorKind := .resourceLimitExceeded
+      justification := .tested "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_resourceLimitExceeded" .real } ]
 
 end LeanSwe.Tar

@@ -1,9 +1,10 @@
 import Core.NondetTest
+import Core.Assumptions
 import LeanSwe.CryptoHash.Raw.Types
 
 namespace LeanSwe.CryptoHash.Raw
 
-open Core (NondetTest)
+open Core (NondetTest AssumptionObligation ErrorObligation)
 open Core.NondetTest
 
 /-- Every `CryptoHashRawError` maps to its expected `CryptoHashErrorKind`, preserves `opensslCode` on `.opensslError`, and carries a non-empty message. -/
@@ -60,5 +61,65 @@ def test_cryptohashraw_ctEqualRaw_equalLengths_returnsBoolOrError
   match (ops.ctEqualRaw a b).run s₀ with
   | (.ok _, _) => NondetTest.assert True
   | (.error e, _) => NondetTest.assert (e.message ≠ "")
+
+/-- Checkable external-boundary assumptions for `LeanSwe.CryptoHash.Raw` over OpenSSL 3 `libcrypto` (`c/cryptohash_shim.c`). -/
+def externalAssumptions : List AssumptionObligation :=
+  [ { name := "LeanSwe.CryptoHash.Raw.assume_cryptohashraw_digestRaw_sha256MatchesFips180Vectors"
+      subject := "LeanSwe.CryptoHash.Raw.digestRaw"
+      formalPred? := none }
+  , { name := "LeanSwe.CryptoHash.Raw.assume_cryptohashraw_digestRaw_sha512MatchesFips180Vectors"
+      subject := "LeanSwe.CryptoHash.Raw.digestRaw"
+      formalPred? := none }
+  , { name := "LeanSwe.CryptoHash.Raw.assume_cryptohashraw_hmacSha256Raw_matchesRfc4231AndEmptyKey"
+      subject := "LeanSwe.CryptoHash.Raw.hmacSha256Raw"
+      formalPred? := none }
+  , { name := "LeanSwe.CryptoHash.Raw.assume_cryptohashraw_digestAndHmac_preserveEmbeddedNulBytes"
+      subject := "LeanSwe.CryptoHash.Raw.digestRaw"
+      formalPred? := none }
+  , { name := "LeanSwe.CryptoHash.Raw.assume_cryptohashraw_ctEqualRaw_matchesByteEquality"
+      subject := "LeanSwe.CryptoHash.Raw.ctEqualRaw"
+      formalPred? := none }
+  , { name := "LeanSwe.CryptoHash.Raw.assume_cryptohashraw_differentialMatchesPythonHashlibAndHmac"
+      subject := "LeanSwe.CryptoHash.Raw.hmacSha256Raw"
+      formalPred? := none } ]
+
+/-- Declared error-coverage matrix for `LeanSwe.CryptoHash.Raw` fallible requests (`CryptoHashErrorKind`). -/
+def errorCoverage : List (ErrorObligation CryptoHashErrorKind) :=
+  [ { request := "LeanSwe.CryptoHash.Raw.digestRaw"
+      errorKind := .invalidInput
+      justification := .provedImpossible "LeanSwe.CryptoHash.Raw.Proofs.raw_digestRaw_never_invalidInput" }
+  , { request := "LeanSwe.CryptoHash.Raw.digestRaw"
+      errorKind := .invalidHex
+      justification := .provedImpossible "LeanSwe.CryptoHash.Raw.Proofs.raw_digestRaw_never_invalidHex" }
+  , { request := "LeanSwe.CryptoHash.Raw.digestRaw"
+      errorKind := .lengthMismatch
+      justification := .provedImpossible "LeanSwe.CryptoHash.Raw.Proofs.raw_digestRaw_never_lengthMismatch" }
+  , { request := "LeanSwe.CryptoHash.Raw.digestRaw"
+      errorKind := .cryptoError
+      justification := .tested "LeanSwe.CryptoHash.Raw.RuntimeTests.err_cryptohashraw_digestRaw_cryptoError" .mocked }
+  , { request := "LeanSwe.CryptoHash.Raw.hmacSha256Raw"
+      errorKind := .invalidInput
+      justification := .provedImpossible "LeanSwe.CryptoHash.Raw.Proofs.raw_hmacSha256Raw_never_invalidInput" }
+  , { request := "LeanSwe.CryptoHash.Raw.hmacSha256Raw"
+      errorKind := .invalidHex
+      justification := .provedImpossible "LeanSwe.CryptoHash.Raw.Proofs.raw_hmacSha256Raw_never_invalidHex" }
+  , { request := "LeanSwe.CryptoHash.Raw.hmacSha256Raw"
+      errorKind := .lengthMismatch
+      justification := .provedImpossible "LeanSwe.CryptoHash.Raw.Proofs.raw_hmacSha256Raw_never_lengthMismatch" }
+  , { request := "LeanSwe.CryptoHash.Raw.hmacSha256Raw"
+      errorKind := .cryptoError
+      justification := .tested "LeanSwe.CryptoHash.Raw.RuntimeTests.err_cryptohashraw_hmacSha256Raw_cryptoError" .mocked }
+  , { request := "LeanSwe.CryptoHash.Raw.ctEqualRaw"
+      errorKind := .invalidInput
+      justification := .provedImpossible "LeanSwe.CryptoHash.Raw.Proofs.raw_ctEqualRaw_never_invalidInput" }
+  , { request := "LeanSwe.CryptoHash.Raw.ctEqualRaw"
+      errorKind := .invalidHex
+      justification := .provedImpossible "LeanSwe.CryptoHash.Raw.Proofs.raw_ctEqualRaw_never_invalidHex" }
+  , { request := "LeanSwe.CryptoHash.Raw.ctEqualRaw"
+      errorKind := .lengthMismatch
+      justification := .tested "LeanSwe.CryptoHash.Raw.RuntimeTests.err_cryptohashraw_ctEqualRaw_lengthMismatch" .real }
+  , { request := "LeanSwe.CryptoHash.Raw.ctEqualRaw"
+      errorKind := .cryptoError
+      justification := .provedImpossible "LeanSwe.CryptoHash.Raw.Proofs.raw_ctEqualRaw_never_cryptoError" } ]
 
 end LeanSwe.CryptoHash.Raw
