@@ -42,8 +42,8 @@
       "legacy_unmigrated": true
     },
     "LeanSwe/Sqlite/Raw/c/sqlite_shim.c": {
-      "max_lines": 670,
-      "legacy_unmigrated": true
+      "max_lines": 615,
+      "legacy_unmigrated": false
     },
     "LeanSwe/Uuid/Raw/c/uuid_shim.c": {
       "max_lines": 99,

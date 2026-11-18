@@ -48,8 +48,6 @@ private def legacyExemptionAllowlist : Array Name := #[
   `LeanSwe.ProcessSandbox,
   `LeanSwe.ProcessSandbox.Raw,
   `LeanSwe.SlotPool,
-  `LeanSwe.Sqlite,
-  `LeanSwe.Sqlite.Raw,
   `LeanSwe.Tar,
   `LeanSwe.TempDir,
   `LeanSwe.Time,
@@ -110,6 +108,19 @@ private def isCompilerAux (n : Name) : Bool :=
       s == "noConfusion" || s == "noConfusionType" || s == "below" || s == "brecOn" ||
       s == "sizeOf_spec" || s == "inj" || s == "injEq" ||
       s.startsWith "eq_" || (s.splitOn "match_").length > 1
+
+private def isInductiveElimAux (env : Environment) (n : Name) : Bool :=
+  let s := n.getString!
+  if s == "ctorElimType" then
+    match env.find? n.getPrefix with
+    | some (.inductInfo _) => true
+    | _ => false
+  else if s == "elim" then
+    match env.find? n.getPrefix with
+    | some (.ctorInfo _) => true
+    | _ => false
+  else
+    false
 
 private def isClassInstanceOrAux (env : Environment) (n : Name) (ty : Expr) : MetaM Bool := do
   let checkType (t : Expr) : MetaM Bool :=
@@ -1268,7 +1279,7 @@ def main (args : List String) : IO UInt32 := do
       if cfg.legacyAllowlist.contains pkg then continue
       specModules := specModules.push m
       for c in data.constants do
-        if isCompilerAux c.name then continue
+        if isCompilerAux c.name || isInductiveElimAux env c.name then continue
         let short := c.name.getString!
         if short.startsWith "empirical_" then
           errors := errors.push s!"RENAMED_OR_EMPIRICAL_ASSUMPTION: {c.name} in {m}"
@@ -1301,7 +1312,7 @@ def main (args : List String) : IO UInt32 := do
       if cfg.legacyAllowlist.contains pkg then continue
       let some data := env.header.moduleData[i]? | continue
       for c in data.constants do
-        if isCompilerAux c.name then continue
+        if isCompilerAux c.name || isInductiveElimAux env c.name then continue
         if let .inductInfo ind := c then
           if ← hasPropField env ind.name then
             errs := errs.push s!"BARE_PROP_FIELD: {ind.name} in {m}"
