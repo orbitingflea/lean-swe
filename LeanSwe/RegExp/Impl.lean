@@ -2,782 +2,648 @@ import LeanSwe.RegExp.Types
 
 namespace LeanSwe.RegExp.Internal
 
-private def isWordChar (c : Char) : Bool :=
-  c.isAlphanum || c == '_'
+/-- Maximum allowed brace repetition count (`{m}`, `{m,}`, `{m,n}`). -/
+def maxRepetitionCount : Nat := 1000
 
-private def isSpaceChar (c : Char) : Bool :=
-  c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\x0b' || c == '\x0c'
-
-private def isDigitChar (c : Char) : Bool :=
+/-- Check whether `c` is an ASCII decimal digit `[0-9]`. -/
+def isDigitChar (c : Char) : Bool :=
   c >= '0' && c <= '9'
 
-/-- Character matching atom in the regex AST. -/
-inductive CharAtom where
-  | /-- Any character except newline. -/ any
-  | /-- ASCII digit `[0-9]`. -/ digit
-  | /-- Non-digit `[^0-9]`. -/ nonDigit
-  | /-- Word character `[A-Za-z0-9_]`. -/ word
-  | /-- Non-word character. -/ nonWord
-  | /-- Whitespace character. -/ space
-  | /-- Non-whitespace character. -/ nonSpace
-  | /-- Exact literal character. -/ literal (c : Char)
-  | /-- Bracket character class. -/ charClass (negated : Bool) (ranges : Array (Char × Char)) (preds : Array CharAtom)
-  deriving Repr, BEq, Inhabited
+/-- Check whether `c` is an ASCII regex word character `[A-Za-z0-9_]`. -/
+def isWordChar (c : Char) : Bool :=
+  c.isAlphanum || c == '_'
 
-private def matchCharAtom (atom : CharAtom) (c : Char) : Bool :=
-  match atom with
-  | .any => c != '\n'
+/-- Check whether `c` is an ASCII regex whitespace character. -/
+def isSpaceChar (c : Char) : Bool :=
+  c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\x0b' || c == '\x0c'
+
+/-- Shorthand character predicate (`\d`, `\D`, `\w`, `\W`, `\s`, `\S`). -/
+inductive CharPred where
+  /-- ASCII digit `\d`. -/
+  | digit
+  /-- Non-digit `\D`. -/
+  | nonDigit
+  /-- Word character `\w`. -/
+  | word
+  /-- Non-word character `\W`. -/
+  | nonWord
+  /-- Whitespace character `\s`. -/
+  | space
+  /-- Non-whitespace character `\S`. -/
+  | nonSpace
+  deriving Repr, BEq, DecidableEq, Inhabited
+
+/-- Evaluate a shorthand predicate on character `c`. -/
+def charPredMatches (p : CharPred) (c : Char) : Bool :=
+  match p with
   | .digit => isDigitChar c
   | .nonDigit => !isDigitChar c
   | .word => isWordChar c
   | .nonWord => !isWordChar c
   | .space => isSpaceChar c
   | .nonSpace => !isSpaceChar c
+
+/-- Character matching atom in the regex AST. -/
+inductive CharAtom where
+  /-- Any character except `'\n'`. -/
+  | any
+  /-- Shorthand predicate (`\d`, `\D`, `\w`, `\W`, `\s`, `\S`). -/
+  | pred (p : CharPred)
+  /-- Exact literal character. -/
+  | literal (c : Char)
+  /-- Bracket character class `[...]` or `[^...]`. -/
+  | charClass (negated : Bool) (ranges : List (Char × Char)) (preds : List CharPred)
+  deriving Repr, BEq, DecidableEq, Inhabited
+
+/-- Test whether character `c` matches `atom`. -/
+def charAtomMatches (atom : CharAtom) (c : Char) : Bool :=
+  match atom with
+  | .any => c != '\n'
+  | .pred p => charPredMatches p c
   | .literal x => c == x
   | .charClass negated ranges preds =>
-    let inRange := ranges.any (fun (lo, hi) => lo <= c && c <= hi)
-    let inPred := preds.any (fun p =>
-      match p with
-      | .digit => isDigitChar c
-      | .nonDigit => !isDigitChar c
-      | .word => isWordChar c
-      | .nonWord => !isWordChar c
-      | .space => isSpaceChar c
-      | .nonSpace => !isSpaceChar c
-      | _ => false)
+    let inRange := ranges.any fun (lo, hi) => lo <= c && c <= hi
+    let inPred := preds.any fun p => charPredMatches p c
     let hit := inRange || inPred
     if negated then !hit else hit
 
 /-- Abstract syntax tree for parsed regular expressions. -/
 inductive RegexAst where
-  | /-- Empty sequence matching zero characters. -/ empty
-  | /-- Single character atom. -/ char (atom : CharAtom)
-  | /-- Start-of-string anchor `^`. -/ anchorStart
-  | /-- End-of-string anchor `$`. -/ anchorEnd
-  | /-- Word boundary `\b` or `\B`. -/ wordBoundary (positive : Bool)
-  | /-- Concatenation of sub-expressions. -/ seq (items : List RegexAst)
-  | /-- Ordered alternation branches. -/ alt (branches : List RegexAst)
-  | /-- Bounded or unbounded repetition. -/ rep (inner : RegexAst) (min : Nat) (max? : Option Nat) (greedy : Bool)
-  deriving Repr, BEq, Inhabited
+  /-- Empty expression matching zero characters. -/
+  | empty
+  /-- Single-character atom matcher. -/
+  | char (atom : CharAtom)
+  /-- Start-of-string assertion `^`. -/
+  | anchorStart
+  /-- End-of-string assertion `$`. -/
+  | anchorEnd
+  /-- Word boundary assertion `\b` (`positive = true`) or `\B` (`positive = false`). -/
+  | wordBoundary (positive : Bool)
+  /-- Sequential concatenation `lhs` followed by `rhs`. -/
+  | seq (lhs rhs : RegexAst)
+  /-- Ordered alternation `lhs | rhs`. -/
+  | alt (lhs rhs : RegexAst)
+  /-- Repetition `inner{min, max?}` with greedy (`true`) or lazy (`false`) priority. -/
+  | rep (inner : RegexAst) (min : Nat) (max? : Option Nat) (greedy : Bool)
+  deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Construct an `invalidSyntax` error. -/
-def errSyntax (msg : String) : RegexError :=
-  { kind := .invalidSyntax, message := msg }
+/-- Construct a `RegexError` guaranteed to carry a non-empty message. -/
+def mkError (kind : RegexErrorKind) (msg : String) : RegexError :=
+  { kind := kind
+    message := if msg.isEmpty then "regular expression syntax error" else msg }
 
-/-- Construct an `unexpectedEof` error. -/
-def errEof (msg : String) : RegexError :=
-  { kind := .unexpectedEof, message := msg }
-
-/-- Parser cursor state over pattern characters. -/
-structure ParseState where
-  /-- Pattern characters. -/
-  chars : Array Char
-  /-- Current index in `chars`. -/
-  pos : Nat
-
-/-- Peek current character at parser cursor. -/
-def ParseState.peek? (st : ParseState) : Option Char :=
-  st.chars[st.pos]?
-
-/-- Advance parser cursor by one character. -/
-def ParseState.advance (st : ParseState) : ParseState :=
-  { st with pos := st.pos + 1 }
-
-/-- Maximum allowed brace repetition count. -/
-def maxRepetitionCount : Nat := 1000
-
-/-- Token parsed inside a character class. -/
+/-- Token parsed from an escape sequence inside a `[...]` character class. -/
 inductive ClassToken where
-  | /-- Literal character inside class. -/ single (c : Char)
-  | /-- Shorthand predicate inside class. -/ pred (p : CharAtom)
+  /-- Literal character token. -/
+  | single (c : Char)
+  /-- Shorthand predicate token (`\d`, `\D`, `\w`, `\W`, `\s`, `\S`). -/
+  | pred (p : CharPred)
+  deriving Repr, BEq, DecidableEq
 
-/-- Parse an escape sequence inside `[...]`. -/
-def parseClassEscape (st : ParseState) : Except RegexError (ClassToken × ParseState) :=
-  match st.peek? with
-  | none => .error (errEof "unexpected end of pattern in character class escape")
-  | some c =>
-    let st' := st.advance
-    match c with
-    | 'd' => .ok (.pred .digit, st')
-    | 'D' => .ok (.pred .nonDigit, st')
-    | 'w' => .ok (.pred .word, st')
-    | 'W' => .ok (.pred .nonWord, st')
-    | 's' => .ok (.pred .space, st')
-    | 'S' => .ok (.pred .nonSpace, st')
-    | 'n' => .ok (.single '\n', st')
-    | 'r' => .ok (.single '\r', st')
-    | 't' => .ok (.single '\t', st')
-    | _ => .ok (.single c, st')
-
-/-- Parse body of a `[...]` character class until `]`. -/
-def parseCharClassBody
-    (fuel : Nat)
-    (st : ParseState)
-    (negated : Bool)
-    (ranges : Array (Char × Char))
-    (preds : Array CharAtom) :
-    Except RegexError (CharAtom × ParseState) :=
-  match fuel with
-  | 0 => .error (errEof "unclosed character class '['")
-  | fuel' + 1 =>
-    match st.peek? with
-    | none => .error (errEof "unclosed character class '['")
-    | some ']' =>
-      if ranges.isEmpty && preds.isEmpty then
-        .error (errSyntax "empty character class '[]'")
-      else
-        .ok (.charClass negated ranges preds, st.advance)
-    | some c =>
-      let resTok : Except RegexError (ClassToken × ParseState) :=
-        if c == '\\' then parseClassEscape st.advance
-        else .ok (.single c, st.advance)
-      match resTok with
-      | .error e => .error e
-      | .ok (.pred p, st1) =>
-        parseCharClassBody fuel' st1 negated ranges (preds.push p)
-      | .ok (.single lo, st1) =>
-        match st1.peek? with
-        | some '-' =>
-          let stAfterDash := st1.advance
-          match stAfterDash.peek? with
-          | some ']' =>
-            let ranges' := (ranges.push (lo, lo)).push ('-', '-')
-            parseCharClassBody fuel' stAfterDash negated ranges' preds
-          | none => .error (errEof "unclosed character class '['")
-          | some c2 =>
-            let resHi : Except RegexError (ClassToken × ParseState) :=
-              if c2 == '\\' then parseClassEscape stAfterDash.advance
-              else .ok (.single c2, stAfterDash.advance)
-            match resHi with
-            | .error e => .error e
-            | .ok (.pred p, st2) =>
-              let ranges' := (ranges.push (lo, lo)).push ('-', '-')
-              parseCharClassBody fuel' st2 negated ranges' (preds.push p)
-            | .ok (.single hi, st2) =>
-              if lo.toNat > hi.toNat then
-                .error (errSyntax "character class range is out of order")
-              else
-                parseCharClassBody fuel' st2 negated (ranges.push (lo, hi)) preds
-        | _ =>
-          parseCharClassBody fuel' st1 negated (ranges.push (lo, lo)) preds
-
-/-- Parse a `[...]` or `[^...]` character class after `[`. -/
-def parseCharClass (fuel : Nat) (st : ParseState) : Except RegexError (CharAtom × ParseState) :=
-  match st.peek? with
-  | some '^' => parseCharClassBody fuel st.advance true #[] #[]
-  | _ => parseCharClassBody fuel st false #[] #[]
-
-private def parseDigits (fuel : Nat) (st : ParseState) (acc : Nat) (count : Nat) :
-    Nat × Nat × ParseState :=
-  match fuel with
-  | 0 => (acc, count, st)
-  | fuel' + 1 =>
-    match st.peek? with
-    | some c =>
-      if isDigitChar c then
-        let d := c.toNat - '0'.toNat
-        parseDigits fuel' st.advance (acc * 10 + d) (count + 1)
-      else
-        (acc, count, st)
-    | none => (acc, count, st)
-
-/-- Parse `{m}`, `{m,}`, or `{m,n}` quantifier bounds after `{`. -/
-def parseBraceQuantifier (fuel : Nat) (st : ParseState) :
-    Except RegexError (Nat × Option Nat × ParseState) :=
-  let (minVal, minDigits, st1) := parseDigits fuel st 0 0
-  if minDigits == 0 then
-    .error (errSyntax "invalid brace quantifier")
-  else if minVal > maxRepetitionCount then
-    .error (errSyntax "quantifier count exceeds maximum limit")
-  else
-    match st1.peek? with
-    | none => .error (errEof "unclosed brace quantifier '{'")
-    | some '}' => .ok (minVal, some minVal, st1.advance)
-    | some ',' =>
-      let st2 := st1.advance
-      match st2.peek? with
-      | none => .error (errEof "unclosed brace quantifier '{'")
-      | some '}' => .ok (minVal, none, st2.advance)
-      | some _ =>
-        let (maxVal, maxDigits, st3) := parseDigits fuel st2 0 0
-        if maxDigits == 0 then
-          .error (errSyntax "invalid brace quantifier")
-        else if maxVal > maxRepetitionCount then
-          .error (errSyntax "quantifier count exceeds maximum limit")
-        else if maxVal < minVal then
-          .error (errSyntax "quantifier upper bound is smaller than lower bound")
-        else
-          match st3.peek? with
-          | some '}' => .ok (minVal, some maxVal, st3.advance)
-          | none => .error (errEof "unclosed brace quantifier '{'")
-          | some _ => .error (errSyntax "invalid brace quantifier")
-    | some _ => .error (errSyntax "invalid brace quantifier")
-
-/-- Parse an escape sequence after `\\`. -/
-def parseEscape (st : ParseState) : Except RegexError (RegexAst × ParseState) :=
-  match st.peek? with
-  | none => .error (errEof "unexpected end of pattern after '\\'")
-  | some c =>
-    let st' := st.advance
-    match c with
-    | 'd' => .ok (.char .digit, st')
-    | 'D' => .ok (.char .nonDigit, st')
-    | 'w' => .ok (.char .word, st')
-    | 'W' => .ok (.char .nonWord, st')
-    | 's' => .ok (.char .space, st')
-    | 'S' => .ok (.char .nonSpace, st')
-    | 'b' => .ok (.wordBoundary true, st')
-    | 'B' => .ok (.wordBoundary false, st')
-    | 'n' => .ok (.char (.literal '\n'), st')
-    | 'r' => .ok (.char (.literal '\r'), st')
-    | 't' => .ok (.char (.literal '\t'), st')
-    | _ => .ok (.char (.literal c), st')
-
-private def applyLazyFlag (st : ParseState) : Bool × ParseState :=
-  match st.peek? with
-  | some '?' => (false, st.advance)
-  | _ => (true, st)
-
-/-- Parse an optional quantifier suffix after a regex atom. -/
-def parseQuantifierSuffix (fuel : Nat) (atom : RegexAst) (st : ParseState) :
-    Except RegexError (RegexAst × ParseState) :=
-  match st.peek? with
-  | some '*' =>
-    let (greedy, st1) := applyLazyFlag st.advance
-    .ok (.rep atom 0 none greedy, st1)
-  | some '+' =>
-    let (greedy, st1) := applyLazyFlag st.advance
-    .ok (.rep atom 1 none greedy, st1)
-  | some '?' =>
-    let (greedy, st1) := applyLazyFlag st.advance
-    .ok (.rep atom 0 (some 1) greedy, st1)
-  | some '{' =>
-    match parseBraceQuantifier fuel st.advance with
-    | .error e => .error e
-    | .ok (minVal, maxVal?, st1) =>
-      let (greedy, st2) := applyLazyFlag st1
-      .ok (.rep atom minVal maxVal? greedy, st2)
-  | _ => .ok (atom, st)
-
-/-- Reject ungrouped consecutive quantifiers. -/
-def rejectExtraQuantifier (st : ParseState) : Except RegexError Unit :=
-  match st.peek? with
-  | some '*' | some '+' | some '?' | some '{' =>
-    .error (errSyntax "nested quantifier is not supported")
-  | _ => .ok ()
+/-- Decode the escaped character `c` inside `[...]`. -/
+def decodeClassEscape (c : Char) : ClassToken :=
+  match c with
+  | 'd' => .pred .digit
+  | 'D' => .pred .nonDigit
+  | 'w' => .pred .word
+  | 'W' => .pred .nonWord
+  | 's' => .pred .space
+  | 'S' => .pred .nonSpace
+  | 'n' => .single '\n'
+  | 'r' => .single '\r'
+  | 't' => .single '\t'
+  | _ => .single c
 
 mutual
-/-- Parse an alternation expression. -/
-def parseAlternation (fuel : Nat) (st : ParseState) :
-    Except RegexError (RegexAst × ParseState) :=
-  match fuel with
-  | 0 => .error (errEof "pattern nesting exceeded limit")
-  | fuel' + 1 =>
-    parseAltLoop fuel' st #[]
-
-/-- Parse remaining `|`-separated branches. -/
-def parseAltLoop (fuel : Nat) (st : ParseState) (branches : Array RegexAst) :
-    Except RegexError (RegexAst × ParseState) :=
-  match fuel with
-  | 0 => .error (errEof "pattern nesting exceeded limit")
-  | fuel' + 1 =>
-    match parseSeqLoop fuel' st #[] with
-    | .error e => .error e
-    | .ok (seqAst, st1) =>
-      let branches' := branches.push seqAst
-      match st1.peek? with
-      | some '|' => parseAltLoop fuel' st1.advance branches'
-      | _ =>
-        if branches'.size == 1 then
-          .ok (branches'[0]!, st1)
+  /-- Parse body items and closing `']'` of a `[...]` character class from `chars` at `pos`. -/
+  def parseClassBody (chars : Array Char) (neg : Bool) (ranges : List (Char × Char))
+      (preds : List CharPred) (pos : Nat) : Except RegexError (CharAtom × Nat) :=
+    if h : pos < chars.size then
+      let c := chars[pos]
+      if c == ']' then
+        if ranges.isEmpty && preds.isEmpty then
+          .error (mkError .invalidSyntax "empty character class")
         else
-          .ok (.alt branches'.toList, st1)
-
-/-- Parse a sequence of quantified atoms. -/
-def parseSeqLoop (fuel : Nat) (st : ParseState) (items : Array RegexAst) :
-    Except RegexError (RegexAst × ParseState) :=
-  match fuel with
-  | 0 => .error (errEof "pattern nesting exceeded limit")
-  | fuel' + 1 =>
-    match st.peek? with
-    | none | some '|' | some ')' =>
-      if items.isEmpty then
-        .ok (.empty, st)
-      else if items.size == 1 then
-        .ok (items[0]!, st)
-      else
-        .ok (.seq items.toList, st)
-    | some c =>
-      if c == '*' || c == '+' || c == '?' || c == '{' then
-        .error (errSyntax "quantifier has nothing to repeat")
-      else
-        match parseAtom fuel' st with
-        | .error e => .error e
-        | .ok (atom, st1) =>
-          match parseQuantifierSuffix fuel' atom st1 with
-          | .error e => .error e
-          | .ok (quantAst, st2) =>
-            match quantAst with
-            | .rep _ _ _ _ =>
-              match rejectExtraQuantifier st2 with
-              | .error e => .error e
-              | .ok () => parseSeqLoop fuel' st2 (items.push quantAst)
-            | _ =>
-              parseSeqLoop fuel' st2 (items.push quantAst)
-
-/-- Parse a single regex atom. -/
-def parseAtom (fuel : Nat) (st : ParseState) :
-    Except RegexError (RegexAst × ParseState) :=
-  match fuel with
-  | 0 => .error (errEof "unexpected end of pattern")
-  | fuel' + 1 =>
-    match st.peek? with
-    | none => .error (errEof "unexpected end of pattern")
-    | some '.' => .ok (.char .any, st.advance)
-    | some '^' => .ok (.anchorStart, st.advance)
-    | some '$' => .ok (.anchorEnd, st.advance)
-    | some '\\' => parseEscape st.advance
-    | some '[' =>
-      match parseCharClass (fuel' + 1) st.advance with
-      | .error e => .error e
-      | .ok (atom, st1) => .ok (.char atom, st1)
-    | some '(' =>
-      let st1 := st.advance
-      let stBody :=
-        if st1.peek? == some '?' then
-          let stQ := st1.advance
-          if stQ.peek? == some ':' then stQ.advance else st1
+          .ok (.charClass neg ranges.reverse preds.reverse, pos + 1)
+      else if c == '\\' then
+        if h1 : pos + 1 < chars.size then
+          let esc := chars[pos + 1]
+          match decodeClassEscape esc with
+          | .pred p => parseClassBody chars neg ranges (p :: preds) (pos + 2)
+          | .single lo => parseClassAfter chars neg ranges preds lo (pos + 2)
         else
-          st1
-      match parseAlternation fuel' stBody with
-      | .error e => .error e
-      | .ok (inner, st2) =>
-        match st2.peek? with
-        | some ')' => .ok (inner, st2.advance)
-        | none => .error (errEof "unclosed group '('")
-        | some _ => .error (errSyntax "expected ')'")
-    | some c => .ok (.char (.literal c), st.advance)
+          .error (mkError .unexpectedEof "trailing backslash in character class")
+      else
+        parseClassAfter chars neg ranges preds c (pos + 1)
+    else
+      .error (mkError .unexpectedEof "unterminated character class")
+  termination_by chars.size - pos
+  decreasing_by
+    all_goals omega
+
+  /-- Handle optional `'-'` range continuation after literal `lo` inside `[...]`. -/
+  def parseClassAfter (chars : Array Char) (neg : Bool) (ranges : List (Char × Char))
+      (preds : List CharPred) (lo : Char) (pos : Nat) : Except RegexError (CharAtom × Nat) :=
+    if h : pos < chars.size then
+      let c := chars[pos]
+      if c == ']' then
+        .ok (.charClass neg ((lo, lo) :: ranges).reverse preds.reverse, pos + 1)
+      else if c == '-' then
+        parseClassRange chars neg ranges preds lo (pos + 1)
+      else if c == '\\' then
+        if h1 : pos + 1 < chars.size then
+          let ranges' := (lo, lo) :: ranges
+          match decodeClassEscape chars[pos + 1] with
+          | .pred p => parseClassBody chars neg ranges' (p :: preds) (pos + 2)
+          | .single lo2 => parseClassAfter chars neg ranges' preds lo2 (pos + 2)
+        else
+          .error (mkError .unexpectedEof "trailing backslash in character class")
+      else
+        parseClassAfter chars neg ((lo, lo) :: ranges) preds c (pos + 1)
+    else
+      .error (mkError .unexpectedEof "unterminated character class")
+  termination_by chars.size - pos
+  decreasing_by
+    all_goals omega
+
+  /-- Handle upper bound of `lo-hi` (or trailing `lo-]` / `lo-\d`) inside `[...]`. -/
+  def parseClassRange (chars : Array Char) (neg : Bool) (ranges : List (Char × Char))
+      (preds : List CharPred) (lo : Char) (pos : Nat) : Except RegexError (CharAtom × Nat) :=
+    if h : pos < chars.size then
+      let c := chars[pos]
+      if c == ']' then
+        .ok (.charClass neg (('-', '-') :: (lo, lo) :: ranges).reverse preds.reverse, pos + 1)
+      else if c == '\\' then
+        if h1 : pos + 1 < chars.size then
+          match decodeClassEscape chars[pos + 1] with
+          | .pred p =>
+            parseClassBody chars neg (('-', '-') :: (lo, lo) :: ranges) (p :: preds) (pos + 2)
+          | .single hi =>
+            if lo.toNat > hi.toNat then
+              .error (mkError .invalidSyntax "reversed character class range")
+            else
+              parseClassBody chars neg ((lo, hi) :: ranges) preds (pos + 2)
+        else
+          .error (mkError .unexpectedEof "trailing backslash in character class")
+      else
+        if lo.toNat > c.toNat then
+          .error (mkError .invalidSyntax "reversed character class range")
+        else
+          parseClassBody chars neg ((lo, c) :: ranges) preds (pos + 1)
+    else
+      .error (mkError .unexpectedEof "unterminated character class range")
+  termination_by chars.size - pos
+  decreasing_by
+    all_goals omega
 end
 
-/-- Ensure a `RegexError` always carries a non-empty diagnostic message. -/
-def ensureNonEmptyMsg (fallback : String) (e : RegexError) : RegexError :=
-  if e.message.isEmpty then { e with message := fallback } else e
+/-- Parse a `[...]` or `[^...]` character class immediately after `'['`. -/
+def parseCharClass (chars : Array Char) (pos : Nat) : Except RegexError (CharAtom × Nat) :=
+  if h : pos < chars.size then
+    if chars[pos] == '^' then
+      parseClassBody chars true [] [] (pos + 1)
+    else
+      parseClassBody chars false [] [] pos
+  else
+    parseClassBody chars false [] [] pos
 
-/-- Parse a regex pattern string into an AST. -/
+/-- Parse consecutive ASCII decimal digits starting at `pos`, returning `(value, count, nextPos)`. -/
+def parseDigits (chars : Array Char) (acc count pos : Nat) : Nat × Nat × Nat :=
+  if h : pos < chars.size then
+    let c := chars[pos]
+    if isDigitChar c then
+      parseDigits chars (acc * 10 + (c.toNat - '0'.toNat)) (count + 1) (pos + 1)
+    else
+      (acc, count, pos)
+  else
+    (acc, count, pos)
+termination_by chars.size - pos
+
+/-- Parse `{m}`, `{m,}`, or `{m,n}` quantifier bounds immediately after `'{'`. -/
+def parseBraceQuantifier (chars : Array Char) (pos : Nat) :
+    Except RegexError (Nat × Option Nat × Nat) :=
+  let (minVal, minDigits, pos1) := parseDigits chars 0 0 pos
+  if minDigits == 0 then
+    .error (mkError .invalidSyntax "missing minimum count in repetition quantifier")
+  else if minVal > maxRepetitionCount then
+    .error (mkError .invalidSyntax "repetition quantifier exceeds maximum bound")
+  else if h1 : pos1 < chars.size then
+    let c1 := chars[pos1]
+    if c1 == '}' then
+      .ok (minVal, some minVal, pos1 + 1)
+    else if c1 == ',' then
+      let pos2 := pos1 + 1
+      if h2 : pos2 < chars.size then
+        if chars[pos2] == '}' then
+          .ok (minVal, none, pos2 + 1)
+        else
+          let (maxVal, maxDigits, pos3) := parseDigits chars 0 0 pos2
+          if maxDigits == 0 then
+            .error (mkError .invalidSyntax "invalid maximum count in repetition quantifier")
+          else if maxVal > maxRepetitionCount then
+            .error (mkError .invalidSyntax "repetition quantifier exceeds maximum bound")
+          else if maxVal < minVal then
+            .error (mkError .invalidSyntax "repetition quantifier max is less than min")
+          else if h3 : pos3 < chars.size then
+            if chars[pos3] == '}' then
+              .ok (minVal, some maxVal, pos3 + 1)
+            else
+              .error (mkError .invalidSyntax "expected closing '}' in repetition quantifier")
+          else
+            .error (mkError .unexpectedEof "unterminated repetition quantifier")
+      else
+        .error (mkError .unexpectedEof "unterminated repetition quantifier")
+    else
+      .error (mkError .invalidSyntax "invalid character in repetition quantifier")
+  else
+    .error (mkError .unexpectedEof "unterminated repetition quantifier")
+
+/-- Parse an escape sequence immediately after `'\\'`. -/
+def parseEscape (chars : Array Char) (pos : Nat) : Except RegexError (RegexAst × Nat) :=
+  if h : pos < chars.size then
+    let c := chars[pos]
+    let nextPos := pos + 1
+    match c with
+    | 'd' => .ok (.char (.pred .digit), nextPos)
+    | 'D' => .ok (.char (.pred .nonDigit), nextPos)
+    | 'w' => .ok (.char (.pred .word), nextPos)
+    | 'W' => .ok (.char (.pred .nonWord), nextPos)
+    | 's' => .ok (.char (.pred .space), nextPos)
+    | 'S' => .ok (.char (.pred .nonSpace), nextPos)
+    | 'b' => .ok (.wordBoundary true, nextPos)
+    | 'B' => .ok (.wordBoundary false, nextPos)
+    | 'n' => .ok (.char (.literal '\n'), nextPos)
+    | 'r' => .ok (.char (.literal '\r'), nextPos)
+    | 't' => .ok (.char (.literal '\t'), nextPos)
+    | _ => .ok (.char (.literal c), nextPos)
+  else
+    .error (mkError .unexpectedEof "trailing backslash escape")
+
+/-- Consume an optional lazy `'?'` modifier after a quantifier. -/
+def parseLazyFlag (chars : Array Char) (pos : Nat) : Bool × Nat :=
+  if h : pos < chars.size then
+    if chars[pos] == '?' then
+      (false, pos + 1)
+    else
+      (true, pos)
+  else
+    (true, pos)
+
+/-- Reject ungrouped consecutive quantifiers (`**`, `*+`, `*??`, `{1}{2}`, etc.). -/
+def rejectExtraQuantifier (chars : Array Char) (pos : Nat) : Except RegexError Unit :=
+  if h : pos < chars.size then
+    let c := chars[pos]
+    if c == '*' || c == '+' || c == '?' || c == '{' then
+      .error (mkError .invalidSyntax "unexpected repeated quantifier")
+    else
+      .ok ()
+  else
+    .ok ()
+
+/-- Parse an optional quantifier suffix (`*`, `+`, `?`, `{...}`) plus optional lazy `'?'`. -/
+def parseQuantifierSuffix (atom : RegexAst) (chars : Array Char) (pos : Nat) :
+    Except RegexError (RegexAst × Nat) :=
+  if h : pos < chars.size then
+    let c := chars[pos]
+    if c == '*' then
+      let (greedy, pos1) := parseLazyFlag chars (pos + 1)
+      (rejectExtraQuantifier chars pos1).map fun () => (.rep atom 0 none greedy, pos1)
+    else if c == '+' then
+      let (greedy, pos1) := parseLazyFlag chars (pos + 1)
+      (rejectExtraQuantifier chars pos1).map fun () => (.rep atom 1 none greedy, pos1)
+    else if c == '?' then
+      let (greedy, pos1) := parseLazyFlag chars (pos + 1)
+      (rejectExtraQuantifier chars pos1).map fun () => (.rep atom 0 (some 1) greedy, pos1)
+    else if c == '{' then do
+      let (minVal, maxVal?, pos1) ← parseBraceQuantifier chars (pos + 1)
+      let (greedy, pos2) := parseLazyFlag chars pos1
+      let () ← rejectExtraQuantifier chars pos2
+      return (.rep atom minVal maxVal? greedy, pos2)
+    else
+      .ok (atom, pos)
+  else
+    .ok (atom, pos)
+
+/-- Check whether position `pos` terminates the current concatenation sequence (`EOF`, `'|'`, or `')'`). -/
+def isSeqStop (chars : Array Char) (pos : Nat) : Bool :=
+  if h : pos < chars.size then
+    let c := chars[pos]
+    c == '|' || c == ')'
+  else
+    true
+
+/-- Check whether `c` is a quantifier token that cannot begin a regex atom. -/
+def isLeadingQuantifier (c : Char) : Bool :=
+  c == '*' || c == '+' || c == '?' || c == '{'
+
+mutual
+  /-- Parse `|`-separated alternation branches from `chars` at `pos`. -/
+  def parseAlt (fuel : Nat) (chars : Array Char) (pos : Nat) :
+      Except RegexError (RegexAst × Nat) :=
+    match fuel with
+    | 0 => .error (mkError .unexpectedEof "unexpected end of pattern")
+    | fuel' + 1 => do
+      let (lhs, pos1) ← parseSeq fuel' chars pos
+      if h : pos1 < chars.size then
+        if chars[pos1] == '|' then
+          let (rhs, pos2) ← parseAlt fuel' chars (pos1 + 1)
+          return (.alt lhs rhs, pos2)
+        else
+          return (lhs, pos1)
+      else
+        return (lhs, pos1)
+
+  /-- Parse a sequence of zero or more quantified atoms from `chars` at `pos`. -/
+  def parseSeq (fuel : Nat) (chars : Array Char) (pos : Nat) :
+      Except RegexError (RegexAst × Nat) :=
+    match fuel with
+    | 0 => .error (mkError .unexpectedEof "unexpected end of pattern")
+    | fuel' + 1 =>
+      if h : pos < chars.size then
+        let c := chars[pos]
+        if c == '|' || c == ')' then
+          .ok (.empty, pos)
+        else if isLeadingQuantifier c then
+          .error (mkError .invalidSyntax "quantifier with nothing to repeat")
+        else do
+          let (atom, pos1) ← parseAtom fuel' chars pos
+          let (quant, pos2) ← parseQuantifierSuffix atom chars pos1
+          if isSeqStop chars pos2 then
+            return (quant, pos2)
+          else
+            let (tail, pos3) ← parseSeq fuel' chars pos2
+            return (.seq quant tail, pos3)
+      else
+        .ok (.empty, pos)
+
+  /-- Parse a single regex atom from `chars` at `pos`. -/
+  def parseAtom (fuel : Nat) (chars : Array Char) (pos : Nat) :
+      Except RegexError (RegexAst × Nat) :=
+    match fuel with
+    | 0 => .error (mkError .unexpectedEof "unexpected end of pattern")
+    | fuel' + 1 =>
+      if h : pos < chars.size then
+        let c := chars[pos]
+        let nextPos := pos + 1
+        if c == '.' then
+          .ok (.char .any, nextPos)
+        else if c == '^' then
+          .ok (.anchorStart, nextPos)
+        else if c == '$' then
+          .ok (.anchorEnd, nextPos)
+        else if c == '\\' then
+          parseEscape chars nextPos
+        else if c == '[' then
+          (parseCharClass chars nextPos).map fun (atom, pos1) => (.char atom, pos1)
+        else if c == '(' then do
+          let bodyPos :=
+            if h2 : nextPos + 1 < chars.size then
+              if chars[nextPos] == '?' && chars[nextPos + 1] == ':' then
+                nextPos + 2
+              else
+                nextPos
+            else
+              nextPos
+          let (inner, pos1) ← parseAlt fuel' chars bodyPos
+          if h1 : pos1 < chars.size then
+            if chars[pos1] == ')' then
+              return (inner, pos1 + 1)
+            else
+              .error (mkError .invalidSyntax "unmatched group delimiter")
+          else
+            .error (mkError .unexpectedEof "unclosed group '('")
+        else
+          .ok (.char (.literal c), nextPos)
+      else
+        .error (mkError .unexpectedEof "unexpected end of pattern")
+end
+
+/-- Parse a regular expression pattern string into a `RegexAst`. -/
 def parseRegex (pattern : String) : Except RegexError RegexAst :=
-  if pattern.isEmpty then
+  let chars := pattern.toList.toArray
+  if chars.isEmpty then
     .ok .empty
   else
-    let chars := pattern.toList.toArray
-    let st : ParseState := { chars := chars, pos := 0 }
-    let fuel := chars.size * 2 + 8
-    match parseAlternation fuel st with
-    | .error e => .error (ensureNonEmptyMsg "invalid regular expression" e)
-    | .ok (ast, stEnd) =>
-      match stEnd.peek? with
-      | none => .ok ast
-      | some ')' => .error (errSyntax "unmatched ')'")
-      | some _ => .error (errSyntax "unexpected trailing pattern characters")
+    let fuel := chars.size * 4 + 4
+    match parseAlt fuel chars 0 with
+    | .error e => .error e
+    | .ok (ast, pos) =>
+      if pos < chars.size then
+        .error (mkError .invalidSyntax "unexpected trailing pattern character")
+      else
+        .ok ast
 
-/-- NFA instruction for Thompson / PikeVM simulation. -/
-inductive NfaState where
-  | /-- Accepting state. -/ accept
-  | /-- Match character atom and transition to `next`. -/ char (atom : CharAtom) (next : Nat)
-  | /-- Start-of-string assertion. -/ anchorStart (next : Nat)
-  | /-- End-of-string assertion. -/ anchorEnd (next : Nat)
-  | /-- Word boundary assertion. -/ wordBoundary (positive : Bool) (next : Nat)
-  | /-- Ordered epsilon split (`first` higher priority than `second`). -/ split (first second : Nat)
-  | /-- Unconditional epsilon jump. -/ jmp (next : Nat)
-  deriving Repr, Inhabited
-
-/-- Append an NFA state and return its index. -/
-def emitState (nfa : Array NfaState) (st : NfaState) : Nat × Array NfaState :=
-  (nfa.size, nfa.push st)
-
-mutual
-/-- Compile a regex AST node into NFA states ending at `nextPc`. -/
-def compileAst (ast : RegexAst) (nextPc : Nat) (nfa : Array NfaState) :
-    Nat × Array NfaState :=
-  match ast with
-  | .empty => (nextPc, nfa)
-  | .char atom => emitState nfa (.char atom nextPc)
-  | .anchorStart => emitState nfa (.anchorStart nextPc)
-  | .anchorEnd => emitState nfa (.anchorEnd nextPc)
-  | .wordBoundary pos => emitState nfa (.wordBoundary pos nextPc)
-  | .seq items => compileSeq items nextPc nfa
-  | .alt branches => compileAlt branches nextPc nfa
-  | .rep inner min max? greedy =>
-    let tail := compileRepTail inner max? min greedy nextPc nfa
-    compileCopies inner min tail.1 tail.2
-
-/-- Compile a sequence of AST nodes. -/
-def compileSeq (items : List RegexAst) (nextPc : Nat) (nfa : Array NfaState) :
-    Nat × Array NfaState :=
-  match items with
-  | [] => (nextPc, nfa)
-  | item :: rest =>
-    let (restPc, nfa1) := compileSeq rest nextPc nfa
-    compileAst item restPc nfa1
-
-/-- Compile alternation branches into ordered splits. -/
-def compileAlt (branches : List RegexAst) (nextPc : Nat) (nfa : Array NfaState) :
-    Nat × Array NfaState :=
-  match branches with
-  | [] => (nextPc, nfa)
-  | [b] => compileAst b nextPc nfa
-  | b :: rest =>
-    let (bPc, nfa1) := compileAst b nextPc nfa
-    let (restPc, nfa2) := compileAlt rest nextPc nfa1
-    emitState nfa2 (.split bPc restPc)
-
-/-- Compile `count` mandatory repetitions of `inner`. -/
-def compileCopies (inner : RegexAst) (count : Nat) (nextPc : Nat) (nfa : Array NfaState) :
-    Nat × Array NfaState :=
-  match count with
-  | 0 => (nextPc, nfa)
-  | k + 1 =>
-    let (tailPc, nfa1) := compileCopies inner k nextPc nfa
-    compileAst inner tailPc nfa1
-
-/-- Compile `count` optional repetitions of `inner`. -/
-def compileOptCopies (inner : RegexAst) (count : Nat) (greedy : Bool)
-    (nextPc : Nat) (nfa : Array NfaState) : Nat × Array NfaState :=
-  match count with
-  | 0 => (nextPc, nfa)
-  | k + 1 =>
-    let (tailPc, nfa1) := compileOptCopies inner k greedy nextPc nfa
-    let (bodyPc, nfa2) := compileAst inner tailPc nfa1
-    let st := if greedy then NfaState.split bodyPc tailPc else NfaState.split tailPc bodyPc
-    emitState nfa2 st
-
-/-- Compile the variable tail of a repetition AST node. -/
-def compileRepTail (inner : RegexAst) (max? : Option Nat) (min : Nat) (greedy : Bool)
-    (nextPc : Nat) (nfa : Array NfaState) : Nat × Array NfaState :=
-  match max? with
-  | none =>
-    let (splitPc, nfa1) := emitState nfa (.jmp nextPc)
-    let (bodyPc, nfa2) := compileAst inner splitPc nfa1
-    let st := if greedy then NfaState.split bodyPc nextPc else NfaState.split nextPc bodyPc
-    let nfa3 := if _ : splitPc < nfa2.size then nfa2.set splitPc st else nfa2
-    (splitPc, nfa3)
-  | some max =>
-    compileOptCopies inner (max - min) greedy nextPc nfa
-end
-
-/-- Compile a parsed regex AST into `(entryPc, nfa)`. -/
-def compileRegex (ast : RegexAst) : Nat × Array NfaState :=
-  let (acceptPc, nfa0) := emitState #[] .accept
-  compileAst ast acceptPc nfa0
-
-/-- Reflexivity on `String.Pos`. -/
-theorem pos_le_refl {s : String} (p : s.Pos) : p ≤ p :=
-  String.Pos.le_iff.mpr (Nat.le_refl _)
-
-/-- Transitivity on `String.Pos`. -/
-theorem pos_le_trans {s : String} {a b c : s.Pos} (h1 : a ≤ b) (h2 : b ≤ c) : a ≤ c :=
-  String.Pos.le_iff.mpr (Nat.le_trans (String.Pos.le_iff.mp h1) (String.Pos.le_iff.mp h2))
-
-/-- Weaken strict order to non-strict order on `String.Pos`. -/
-theorem pos_le_of_lt {s : String} {a b : s.Pos} (h : a < b) : a ≤ b :=
-  String.Pos.le_iff.mpr (Nat.le_of_lt (String.Pos.lt_iff.mp h))
-
-/-- Validated match span of positions inside `hay`. -/
-structure PosSpan (hay : String) where
-  /-- Match start position. -/
-  startPos : hay.Pos
-  /-- Match end position. -/
-  stopPos : hay.Pos
-  /-- Proof that `startPos ≤ stopPos`. -/
-  hle : startPos ≤ stopPos
-
-/-- Active PikeVM thread at `curPos`. -/
-structure Thread (hay : String) (curPos : hay.Pos) where
-  /-- Current NFA instruction pointer. -/
-  pc : Nat
-  /-- Recorded match start position. -/
-  startPos : hay.Pos
-  /-- Proof that `startPos ≤ curPos`. -/
-  hle : startPos ≤ curPos
-
-private def isWordOpt (c? : Option Char) : Bool :=
-  match c? with
-  | none => false
+/-- Check whether the character at index `idx` in `chars` is a word character. -/
+def isWordAt (chars : Array Char) (idx : Nat) : Bool :=
+  match chars[idx]? with
   | some c => isWordChar c
+  | none => false
 
-/-- Expand epsilon transitions from `pc` at `curPos`. -/
-def addThread
-    (nfa : Array NfaState)
-    (hay : String)
-    (curPos : hay.Pos)
-    (prevChar? : Option Char)
-    (nextChar? : Option Char)
-    (pc : Nat)
-    (startPos : hay.Pos)
-    (hle : startPos ≤ curPos)
-    (visited : Array Bool)
-    (out : Array (Thread hay curPos))
-    (best? : Option (PosSpan hay))
-    (fuel : Nat) :
-    Array Bool × Array (Thread hay curPos) × Option (PosSpan hay) × Bool :=
-  match fuel with
-  | 0 => (visited, out, best?, false)
-  | fuel' + 1 =>
-    if hVis : pc < visited.size then
-      if visited[pc] then
-        (visited, out, best?, false)
+/-- Check whether position `idx` in `chars` is a word boundary. -/
+def isWordBoundary (chars : Array Char) (idx : Nat) : Bool :=
+  let prevWord := if idx == 0 then false else isWordAt chars (idx - 1)
+  let nextWord := isWordAt chars idx
+  prevWord != nextWord
+
+/-- Precompute the array of UTF-8 byte offsets for character indices `0..chars.size`. -/
+def buildByteOffsets (chars : Array Char) : Array Nat :=
+  let rec loop (i acc : Nat) (out : Array Nat) : Array Nat :=
+    if h : i < chars.size then
+      let nextAcc := acc + chars[i].utf8Size
+      loop (i + 1) nextAcc (out.push nextAcc)
+    else
+      out
+  termination_by chars.size - i
+  loop 0 0 (Array.mkEmpty (chars.size + 1) |>.push 0)
+
+/-- Deduplicate a list of indices keeping earliest occurrence, via explicit seen list. -/
+def dedupFirstAux (seen : List Nat) : List Nat → List Nat
+  | [] => []
+  | x :: xs =>
+    if seen.contains x then dedupFirstAux seen xs
+    else x :: dedupFirstAux (x :: seen) xs
+
+/-- Deduplicate a list of bounded indices keeping earliest occurrence, via boolean array. -/
+def dedupFirstBoolAux (seen : Array Bool) : List Nat → List Nat
+  | [] => []
+  | x :: xs =>
+    if seen[x]! then dedupFirstBoolAux seen xs
+    else x :: dedupFirstBoolAux (seen.setIfInBounds x true) xs
+
+/-- Deduplicate a priority-ordered list of positions `≤ bound`, preserving first-occurrence order. -/
+def dedupFirstFast (bound : Nat) (xs : List Nat) : List Nat :=
+  match xs with
+  | [] => []
+  | [x] => [x]
+  | _ =>
+    if xs.length <= 16 then
+      dedupFirstAux [] xs
+    else
+      dedupFirstBoolAux (Array.replicate (bound + 1) false) xs
+
+/-- Compose two `n + 1`-entry match tables sequentially with deduplication. -/
+def composeTab (n : Nat) (t1 t2 : Array (List Nat)) : Array (List Nat) :=
+  Array.ofFn fun (i : Fin (n + 1)) =>
+    dedupFirstFast n (t1[i.val]!.flatMap fun mid => t2[mid]!)
+
+/-- Combine two `n + 1`-entry match tables in ordered alternation priority. -/
+def altTab (n : Nat) (t1 t2 : Array (List Nat)) : Array (List Nat) :=
+  Array.ofFn fun (i : Fin (n + 1)) =>
+    dedupFirstFast n (t1[i.val]! ++ t2[i.val]!)
+
+/-- Identity match table mapping each `pos ≤ n` to `[pos]`. -/
+def idTab (n : Nat) : Array (List Nat) :=
+  Array.ofFn fun (i : Fin (n + 1)) => [i.val]
+
+/-- Iterate `f` `k` times on `acc` starting at `idTab n`, stopping early on a fixed point. -/
+def iterTab (f : Array (List Nat) → Array (List Nat)) : Nat → Array (List Nat) → Array (List Nat)
+  | 0, acc => acc
+  | k + 1, acc =>
+    let next := f acc
+    if next == acc then acc
+    else iterTab f k next
+
+/-- Single-step extension for optional repetition `evalOpt`. -/
+def optStep (n : Nat) (stepTab : Array (List Nat)) (greedy : Bool)
+    (acc : Array (List Nat)) : Array (List Nat) :=
+  Array.ofFn fun (i : Fin (n + 1)) =>
+    let pos := i.val
+    let more := dedupFirstFast n (stepTab[pos]!.flatMap fun mid => acc[mid]!)
+    if greedy then dedupFirstFast n (more ++ [pos])
+    else dedupFirstFast n (pos :: more)
+
+/-- Fill the `evalStarAux` table bottom-up from `n` down to `0`. -/
+def fillStarAux (n : Nat) (stepTab : Array (List Nat)) (greedy : Bool) :
+    Nat → Array (List Nat) → Array (List Nat)
+  | 0, acc => acc
+  | rem + 1, acc =>
+    let pos := rem
+    let nexts := (stepTab[pos]!).filter (· > pos)
+    let more := dedupFirstFast n (nexts.flatMap fun q => acc[q]!)
+    let row :=
+      if greedy then dedupFirstFast n (more ++ [pos])
+      else dedupFirstFast n (pos :: more)
+    fillStarAux n stepTab greedy rem (acc.setIfInBounds pos row)
+
+/-- Compute the `evalStarAux` match table for `stepTab` across all positions `0..n`. -/
+def starTab (n : Nat) (stepTab : Array (List Nat)) (greedy : Bool) : Array (List Nat) :=
+  let init := Array.replicate (n + 1) [n]
+  fillStarAux n stepTab greedy n init
+
+/-- Build the bottom-up match table `tab[pos] = evalAt chars ast pos` for all `pos ≤ chars.size`. -/
+def evalTable (chars : Array Char) (ast : RegexAst) : Array (List Nat) :=
+  let n := chars.size
+  match ast with
+  | .empty => idTab n
+  | .char atom =>
+    Array.ofFn fun (i : Fin (n + 1)) =>
+      match chars[i.val]? with
+      | some c => if charAtomMatches atom c then [i.val + 1] else []
+      | none => []
+  | .anchorStart =>
+    Array.ofFn fun (i : Fin (n + 1)) => if i.val == 0 then [0] else []
+  | .anchorEnd =>
+    Array.ofFn fun (i : Fin (n + 1)) => if i.val == n then [n] else []
+  | .wordBoundary positive =>
+    Array.ofFn fun (i : Fin (n + 1)) =>
+      if isWordBoundary chars i.val == positive then [i.val] else []
+  | .seq r1 r2 =>
+    composeTab n (evalTable chars r1) (evalTable chars r2)
+  | .alt r1 r2 =>
+    altTab n (evalTable chars r1) (evalTable chars r2)
+  | .rep inner minVal max? greedy =>
+    let step := evalTable chars inner
+    match max? with
+    | some maxVal =>
+      if maxVal < minVal then
+        Array.replicate (n + 1) []
       else
-        let visited' := visited.set pc true
-        match nfa[pc]? with
-        | none => (visited', out, best?, false)
-        | some .accept =>
-          let cand : PosSpan hay := { startPos := startPos, stopPos := curPos, hle := hle }
-          let best'' :=
-            match best? with
-            | none => some cand
-            | some prevBest =>
-              if startPos ≤ prevBest.startPos then some cand else some prevBest
-          (visited', out, best'', true)
-        | some (.char _ _) =>
-          (visited', out.push { pc := pc, startPos := startPos, hle := hle }, best?, false)
-        | some (.jmp nextPc) =>
-          addThread nfa hay curPos prevChar? nextChar? nextPc startPos hle visited' out best? fuel'
-        | some (.anchorStart nextPc) =>
-          if curPos.offset.byteIdx == 0 then
-            addThread nfa hay curPos prevChar? nextChar? nextPc startPos hle visited' out best? fuel'
-          else
-            (visited', out, best?, false)
-        | some (.anchorEnd nextPc) =>
-          if curPos.offset.byteIdx == hay.utf8ByteSize then
-            addThread nfa hay curPos prevChar? nextChar? nextPc startPos hle visited' out best? fuel'
-          else
-            (visited', out, best?, false)
-        | some (.wordBoundary posFlag nextPc) =>
-          let isBound := isWordOpt prevChar? != isWordOpt nextChar?
-          if isBound == posFlag then
-            addThread nfa hay curPos prevChar? nextChar? nextPc startPos hle visited' out best? fuel'
-          else
-            (visited', out, best?, false)
-        | some (.split firstPc secondPc) =>
-          let (v1, o1, b1, hit1) :=
-            addThread nfa hay curPos prevChar? nextChar? firstPc startPos hle visited' out best? fuel'
-          if hit1 then
-            (v1, o1, b1, true)
-          else
-            addThread nfa hay curPos prevChar? nextChar? secondPc startPos hle v1 o1 b1 fuel'
-    else
-      (visited, out, best?, false)
+        let base := iterTab (composeTab n step) minVal (idTab n)
+        let opt := iterTab (optStep n step greedy) (maxVal - minVal) (idTab n)
+        composeTab n base opt
+    | none =>
+      let base := iterTab (composeTab n step) minVal (idTab n)
+      composeTab n base (starTab n step greedy)
 
-/-- Expand epsilon closure across active `threads` in priority order. -/
-def expandThreads
-    (nfa : Array NfaState)
-    (hay : String)
-    (curPos : hay.Pos)
-    (prevChar? : Option Char)
-    (nextChar? : Option Char)
-    (threads : Array (Thread hay curPos))
-    (idx : Nat)
-    (visited : Array Bool)
-    (out : Array (Thread hay curPos))
-    (best? : Option (PosSpan hay)) :
-    Array Bool × Array (Thread hay curPos) × Option (PosSpan hay) × Bool :=
-  if h : idx < threads.size then
-    let th := threads[idx]
-    let (v1, o1, b1, hit1) :=
-      addThread nfa hay curPos prevChar? nextChar? th.pc th.startPos th.hle visited out best? nfa.size
-    if hit1 then
-      (v1, o1, b1, true)
-    else
-      expandThreads nfa hay curPos prevChar? nextChar? threads (idx + 1) v1 o1 b1
+/-- Scan positions `start .. start + rem` in `tab` for the first match. -/
+def findFirstIdxAux (tab : Array (List Nat)) : Nat → Nat → Option (Nat × Nat)
+  | 0, pos =>
+    match tab[pos]! with
+    | p :: _ => some (pos, p)
+    | [] => none
+  | rem + 1, pos =>
+    match tab[pos]! with
+    | p :: _ => some (pos, p)
+    | [] => findFirstIdxAux tab rem (pos + 1)
+
+/-- Find the leftmost-first match `(i, j)` in `tab` starting at or after `start`. -/
+def findFirstIdx (tab : Array (List Nat)) (n start : Nat) : Option (Nat × Nat) :=
+  if start ≤ n then
+    findFirstIdxAux tab (n - start) start
   else
-    (visited, out, best?, false)
-termination_by threads.size - idx
+    none
 
-private def advanceThreads
-    (nfa : Array NfaState)
-    (hay : String)
-    (curPos : hay.Pos)
-    (nextPos : hay.Pos)
-    (hleStep : curPos ≤ nextPos)
-    (c : Char)
-    (threads : Array (Thread hay curPos)) :
-    Array (Thread hay nextPos) :=
-  threads.foldl (fun acc th =>
-    match (nfa[th.pc]? : Option NfaState) with
-    | some (.char atom nextPc) =>
-      if matchCharAtom atom c then
-        acc.push { pc := nextPc, startPos := th.startPos, hle := pos_le_trans th.hle hleStep }
+/-- Collect all non-overlapping leftmost-first match index pairs from `tab`. -/
+def findAllIdxAux (tab : Array (List Nat)) (n : Nat) : Nat → Nat → List (Nat × Nat)
+  | 0, _ => []
+  | fuel + 1, cursor =>
+    match findFirstIdx tab n cursor with
+    | none => []
+    | some (i, j) =>
+      if i < j then
+        (i, j) :: findAllIdxAux tab n fuel j
+      else if j < n then
+        (i, j) :: findAllIdxAux tab n fuel (j + 1)
       else
-        acc
-    | _ => acc
-  ) #[]
+        [(i, j)]
 
-/-- Run PikeVM search loop from `curPos` until match completes or string ends. -/
-def runVmLoop
-    (nfa : Array NfaState)
-    (entryPc : Nat)
-    (hay : String)
-    (curPos : hay.Pos)
-    (prevChar? : Option Char)
-    (threads : Array (Thread hay curPos))
-    (best? : Option (PosSpan hay)) :
-    Option (PosSpan hay) :=
-  let nextChar? : Option Char :=
-    if h : curPos ≠ hay.endPos then some (curPos.get h) else none
-  let initVis := Array.replicate nfa.size false
-  let (vis1, step1, best1, hit1) :=
-    expandThreads nfa hay curPos prevChar? nextChar? threads 0 initVis #[] best?
-  let (step2, best2) :=
-    if hit1 then
-      (step1, best1)
-    else
-      match best1 with
-      | some _ => (step1, best1)
-      | none =>
-        let (_, o2, b2, _) :=
-          addThread nfa hay curPos prevChar? nextChar? entryPc curPos (pos_le_refl curPos)
-            vis1 step1 best1 nfa.size
-        (o2, b2)
-  if hEnd : curPos = hay.endPos then
-    best2
-  else if step2.isEmpty && best2.isSome then
-    best2
-  else
-    let c := curPos.get hEnd
-    let hleStep : curPos ≤ curPos.next hEnd := pos_le_of_lt String.Pos.lt_next
-    let nextThreads := advanceThreads nfa hay curPos (curPos.next hEnd) hleStep c step2
-    runVmLoop nfa entryPc hay (curPos.next hEnd) (some c) nextThreads best2
-termination_by hay.utf8ByteSize - curPos.offset.byteIdx
-decreasing_by
-  have hlt : curPos.offset.byteIdx < (curPos.next hEnd).offset.byteIdx :=
-    String.Pos.lt_iff.mp String.Pos.lt_next
-  have hle : (curPos.next hEnd).offset.byteIdx ≤ hay.utf8ByteSize :=
-    (curPos.next hEnd).isValid.le_utf8ByteSize
-  omega
+/-- Collect all non-overlapping match index pairs for `ast` in `chars`. -/
+def findAllIdx (chars : Array Char) (ast : RegexAst) : List (Nat × Nat) :=
+  let n := chars.size
+  let tab := evalTable chars ast
+  findAllIdxAux tab n (n + 1) 0
 
-/-- Find first match span starting at or after `startPos`. -/
-def findFirstSpanFrom
-    (nfa : Array NfaState)
-    (entryPc : Nat)
-    (hay : String)
-    (startPos : hay.Pos)
-    (prevChar? : Option Char) :
-    Option (PosSpan hay) :=
-  runVmLoop nfa entryPc hay startPos prevChar? #[] none
+/-- Construct a `MatchSpan` for character range `[i, j)` using precomputed UTF-8 offsets. -/
+def mkMatchSpanFast (chars : Array Char) (offsets : Array Nat) (i j : Nat) : MatchSpan :=
+  { matched := String.ofList (chars.extract i j).toList
+    startByte := offsets[i]!
+    stopByte := offsets[j]! }
 
-/-- Convert an internal `PosSpan` to a public `MatchSpan`. -/
-def posSpanToMatchSpan (hay : String) (sp : PosSpan hay) : MatchSpan :=
-  { matched := String.extract sp.startPos sp.stopPos
-    startByte := sp.startPos.offset.byteIdx
-    stopByte := sp.stopPos.offset.byteIdx }
+/-- Replace matched `[i, j)` character-index spans in `chars` with `rep`. -/
+def replaceSpansFast (chars : Array Char) (rep : String) (cursor : Nat) :
+    List (Nat × Nat) → String
+  | [] => String.ofList (chars.extract cursor chars.size).toList
+  | (i, j) :: rest =>
+    String.ofList (chars.extract cursor i).toList ++ rep ++ replaceSpansFast chars rep j rest
 
-/-- Collect all non-overlapping match spans starting at or after `cursor`. -/
-def findAllSpansLoop
-    (nfa : Array NfaState)
-    (entryPc : Nat)
-    (hay : String)
-    (cursor : hay.Pos)
-    (prevChar? : Option Char)
-    (acc : Array (PosSpan hay)) :
-    Array (PosSpan hay) :=
-  match findFirstSpanFrom nfa entryPc hay cursor prevChar? with
-  | none => acc
-  | some sp =>
-    let acc' := acc.push sp
-    if _hNonEmpty : sp.startPos < sp.stopPos then
-      if hAdvance : cursor < sp.stopPos then
-        let prev' :=
-          if hne : sp.stopPos ≠ hay.startPos then
-            some ((sp.stopPos.prev hne).get (by
-              intro heq
-              have hlt : sp.stopPos.prev hne < sp.stopPos := String.Pos.prev_lt
-              have hle : sp.stopPos ≤ hay.endPos := String.Pos.le_endPos sp.stopPos
-              rw [heq] at hlt
-              exact absurd hlt (Nat.not_lt_of_le (String.Pos.le_iff.mp hle))))
-          else
-            prevChar?
-        findAllSpansLoop nfa entryPc hay sp.stopPos prev' acc'
-      else if hNotEnd : cursor ≠ hay.endPos then
-        let c := cursor.get hNotEnd
-        findAllSpansLoop nfa entryPc hay (cursor.next hNotEnd) (some c) acc'
-      else
-        acc'
-    else
-      let basePos := if cursor < sp.stopPos then sp.stopPos else cursor
-      if hNotEnd : basePos ≠ hay.endPos then
-        let c := basePos.get hNotEnd
-        findAllSpansLoop nfa entryPc hay (basePos.next hNotEnd) (some c) acc'
-      else
-        acc'
-termination_by hay.utf8ByteSize - cursor.offset.byteIdx
-decreasing_by
-  · have hlt : cursor.offset.byteIdx < sp.stopPos.offset.byteIdx :=
-      String.Pos.lt_iff.mp hAdvance
-    have hle : sp.stopPos.offset.byteIdx ≤ hay.utf8ByteSize :=
-      sp.stopPos.isValid.le_utf8ByteSize
-    omega
-  · have hlt : cursor.offset.byteIdx < (cursor.next hNotEnd).offset.byteIdx :=
-      String.Pos.lt_iff.mp String.Pos.lt_next
-    have hle : (cursor.next hNotEnd).offset.byteIdx ≤ hay.utf8ByteSize :=
-      (cursor.next hNotEnd).isValid.le_utf8ByteSize
-    omega
-  · have hbase : cursor.offset.byteIdx ≤ basePos.offset.byteIdx := by
-      dsimp only [basePos]
-      split
-      · next hlt => exact Nat.le_of_lt (String.Pos.lt_iff.mp hlt)
-      · exact Nat.le_refl _
-    have hlt : basePos.offset.byteIdx < (basePos.next hNotEnd).offset.byteIdx :=
-      String.Pos.lt_iff.mp String.Pos.lt_next
-    have hle : (basePos.next hNotEnd).offset.byteIdx ≤ hay.utf8ByteSize :=
-      (basePos.next hNotEnd).isValid.le_utf8ByteSize
-    dsimp only [basePos] at hbase hlt hle
-    omega
-
-/-- Compile `pattern` and find all non-overlapping `PosSpan` matches in `haystack`. -/
-def findAllSpans (pattern haystack : String) : Except RegexError (Array (PosSpan haystack)) :=
-  match parseRegex pattern with
-  | .error e => .error e
-  | .ok ast =>
-    let (entryPc, nfa) := compileRegex ast
-    .ok (findAllSpansLoop nfa entryPc haystack haystack.startPos none #[])
-
-/-- Compile `pattern` and find the first `PosSpan` match in `haystack`. -/
-def findFirstSpan (pattern haystack : String) : Except RegexError (Option (PosSpan haystack)) :=
-  match parseRegex pattern with
-  | .error e => .error e
-  | .ok ast =>
-    let (entryPc, nfa) := compileRegex ast
-    .ok (findFirstSpanFrom nfa entryPc haystack haystack.startPos none)
-
-/-- Replace matched `PosSpan` intervals in `haystack` with `replacement`. -/
-def replaceFromSpans (haystack replacement : String) (spans : Array (PosSpan haystack)) :
-    String :=
-  let (acc, cursor) :=
-    spans.foldl (fun (acc, prev) sp =>
-      let prefixChunk := String.extract prev sp.startPos
-      (acc ++ prefixChunk ++ replacement, sp.stopPos)
-    ) ("", haystack.startPos)
-  acc ++ String.extract cursor haystack.endPos
-
-/-- Split `haystack` around matched `PosSpan` intervals. -/
-def splitFromSpans (haystack : String) (spans : Array (PosSpan haystack)) :
-    Array String :=
-  let (parts, cursor) :=
-    spans.foldl (fun (acc, prev) sp =>
-      (acc.push (String.extract prev sp.startPos), sp.stopPos)
-    ) (#[], haystack.startPos)
-  parts.push (String.extract cursor haystack.endPos)
+/-- Split `chars` around matched `[i, j)` character-index spans. -/
+def splitSpansFast (chars : Array Char) (cursor : Nat) : List (Nat × Nat) → List String
+  | [] => [String.ofList (chars.extract cursor chars.size).toList]
+  | (i, j) :: rest =>
+    String.ofList (chars.extract cursor i).toList :: splitSpansFast chars j rest
 
 /-- Return `true` iff `pattern` matches anywhere in `haystack`. -/
 def testPattern (pattern haystack : String) : Except RegexError Bool :=
-  (findFirstSpan pattern haystack).map Option.isSome
+  (parseRegex pattern).map fun ast =>
+    let chars := haystack.toList.toArray
+    let tab := evalTable chars ast
+    (findFirstIdx tab chars.size 0).isSome
 
 /-- Find the first leftmost-first match span of `pattern` in `haystack`, if any. -/
 def findFirst (pattern haystack : String) : Except RegexError (Option MatchSpan) :=
-  (findFirstSpan pattern haystack).map (Option.map (posSpanToMatchSpan haystack))
+  (parseRegex pattern).map fun ast =>
+    let chars := haystack.toList.toArray
+    let tab := evalTable chars ast
+    (findFirstIdx tab chars.size 0).map fun (i, j) =>
+      let offsets := buildByteOffsets chars
+      mkMatchSpanFast chars offsets i j
 
 /-- Find all non-overlapping match spans of `pattern` in `haystack`. -/
 def findAll (pattern haystack : String) : Except RegexError (Array MatchSpan) :=
-  (findAllSpans pattern haystack).map (Array.map (posSpanToMatchSpan haystack))
+  (parseRegex pattern).map fun ast =>
+    let chars := haystack.toList.toArray
+    let offsets := buildByteOffsets chars
+    ((findAllIdx chars ast).map fun (i, j) => mkMatchSpanFast chars offsets i j).toArray
 
 /-- Count all non-overlapping matches of `pattern` in `haystack`. -/
 def countMatches (pattern haystack : String) : Except RegexError Nat :=
@@ -785,10 +651,14 @@ def countMatches (pattern haystack : String) : Except RegexError Nat :=
 
 /-- Replace every non-overlapping match of `pattern` in `haystack` with `replacement`. -/
 def replaceAll (pattern haystack replacement : String) : Except RegexError String :=
-  (findAllSpans pattern haystack).map (replaceFromSpans haystack replacement)
+  (parseRegex pattern).map fun ast =>
+    let chars := haystack.toList.toArray
+    replaceSpansFast chars replacement 0 (findAllIdx chars ast)
 
 /-- Split `haystack` around all non-overlapping matches of `pattern`. -/
 def splitBy (pattern haystack : String) : Except RegexError (Array String) :=
-  (findAllSpans pattern haystack).map (splitFromSpans haystack)
+  (parseRegex pattern).map fun ast =>
+    let chars := haystack.toList.toArray
+    (splitSpansFast chars 0 (findAllIdx chars ast)).toArray
 
 end LeanSwe.RegExp.Internal
