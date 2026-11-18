@@ -1,3 +1,4 @@
+import Core.Assumptions
 import LeanSwe.Sqlite.Interface
 import LeanSwe.TempDir.Interface
 
@@ -21,6 +22,14 @@ private def assertErrKind {α : Type} (res : Except SqliteError α) (expected : 
   | .error e =>
     if e.kind != expected || e.message == "" then
       throw (IO.userError s!"ASSERTION FAILED: {msg} (got {repr e}, expected {repr expected})")
+
+private def withTempErr (action : String → IO Unit) : IO Unit := do
+  let wrap ← LeanSwe.TempDir.withTempDir none "lean-swe-sqlite-rt-" fun tmp => do
+    action tmp
+    return .ok ()
+  match wrap with
+  | .error te => throw (IO.userError s!"TempDir failed: {repr te}")
+  | .ok () => pure ()
 
 private def testCrudWalFkAndBinding (dbPath : String) : IO Unit := do
   let res ← withDb dbPath {} fun db => do
@@ -142,6 +151,304 @@ private def testExceptionSafety (dbPath : String) : IO Unit := do
     s!"unexpected persisted rows after thrown IO.Error: {repr rows}"
   assertTrue ((← activeDbCount) == 0 && (← activeStmtCount) == 0) "handles clean after check"
 
+/-- Real error-coverage test for `validateConfig` returning `.invalidInput`. -/
+def err_sqlite_validateConfig_invalidInput : IO Unit := do
+  assertErrKind (validateConfig { readOnly := true, createIfMissing := true }) .invalidInput "ro+create"
+  assertErrKind (validateConfig { busyTimeoutMs := maxBusyTimeoutMs + 1 }) .invalidInput "timeout"
+
+/-- Real error-coverage test for `withDb` returning `.notFound`. -/
+def err_sqlite_withDb_notFound : IO Unit :=
+  withTempErr fun tmp => do
+    assertErrKind (← withDb (tmp ++ "/missing/app.db") { createIfMissing := false } (fun _ => pure (.ok ())))
+      .notFound "withDb .notFound"
+
+/-- Real error-coverage test for `withDb` returning `.busy`. -/
+def err_sqlite_withDb_busy : IO Unit :=
+  withTempErr fun tmp => do
+    let p := tmp ++ "/busy.db"
+    let r ← withDb p { walMode := false } fun db1 => do
+      assertOk (← exec db1 "BEGIN EXCLUSIVE" #[]) "lock"
+      let r2 ← withDb p { walMode := true, busyTimeoutMs := 0 } (fun _ => pure (.ok ()))
+      let _ ← exec db1 "ROLLBACK" #[]
+      return .ok r2
+    assertErrKind (← assertOk r "outer") .busy "withDb .busy"
+
+/-- Real error-coverage test for `withDb` returning `.constraint`. -/
+def err_sqlite_withDb_constraint : IO Unit :=
+  withTempErr fun tmp => do
+    let r ← withDb (tmp ++ "/c.db") {} fun db => do
+      if let .error e ← exec db "CREATE TABLE pk(id INTEGER PRIMARY KEY)" #[] then return .error e
+      if let .error e ← exec db "INSERT INTO pk VALUES (1)" #[] then return .error e
+      exec db "INSERT INTO pk VALUES (1)" #[]
+    assertErrKind r .constraint "withDb .constraint"
+
+/-- Real error-coverage test for `withDb` returning `.misuse`. -/
+def err_sqlite_withDb_misuse : IO Unit :=
+  withTempErr fun tmp => do
+    let r ← withDb (tmp ++ "/m.db") {} fun db => exec db "SELECT 1; SELECT 2" #[]
+    assertErrKind r .misuse "withDb .misuse"
+
+/-- Real error-coverage test for `withDb` returning `.invalidInput`. -/
+def err_sqlite_withDb_invalidInput : IO Unit := do
+  assertErrKind (← withDb "" {} (fun _ => pure (.ok ()))) .invalidInput "withDb .invalidInput"
+
+/-- Real error-coverage test for `withDb` returning `.ioError`. -/
+def err_sqlite_withDb_ioError : IO Unit :=
+  withTempErr fun tmp => do
+    let p := tmp ++ "/corrupt.db"
+    IO.FS.writeBinFile p (ByteArray.mk (Array.replicate 128 0xAA))
+    assertErrKind (← withDb p { walMode := true } (fun _ => pure (.ok ())))
+      .ioError "withDb .ioError"
+
+/-- Real error-coverage test for `withTransaction` returning `.notFound`. -/
+def err_sqlite_withTransaction_notFound : IO Unit :=
+  withTempErr fun tmp => do
+    let r ← withDb (tmp ++ "/tx.db") {} fun db =>
+      withTransaction db fun _ =>
+        withDb (tmp ++ "/missing/sub.db") { createIfMissing := false } (fun _ => pure (.ok ()))
+    assertErrKind r .notFound "withTransaction .notFound"
+
+/-- Real error-coverage test for `withTransaction` returning `.busy`. -/
+def err_sqlite_withTransaction_busy : IO Unit :=
+  withTempErr fun tmp => do
+    let p := tmp ++ "/tx_busy.db"
+    let r ← withDb p { walMode := false } fun db1 => do
+      assertOk (← exec db1 "BEGIN EXCLUSIVE" #[]) "lock"
+      let r2 ← withDb p { walMode := false, busyTimeoutMs := 0 } fun db2 =>
+        withTransaction db2 (fun _ => pure (.ok ()))
+      let _ ← exec db1 "ROLLBACK" #[]
+      return .ok r2
+    assertErrKind (← assertOk r "outer") .busy "withTransaction .busy"
+
+/-- Real error-coverage test for `withTransaction` returning `.constraint`. -/
+def err_sqlite_withTransaction_constraint : IO Unit :=
+  withTempErr fun tmp => do
+    let r ← withDb (tmp ++ "/tx_c.db") {} fun db => do
+      if let .error e ← exec db "CREATE TABLE pk(id INTEGER PRIMARY KEY)" #[] then return .error e
+      if let .error e ← exec db "INSERT INTO pk VALUES (1)" #[] then return .error e
+      withTransaction db fun txDb => exec txDb "INSERT INTO pk VALUES (1)" #[]
+    assertErrKind r .constraint "withTransaction .constraint"
+
+/-- Real error-coverage test for `withTransaction` returning `.misuse`. -/
+def err_sqlite_withTransaction_misuse : IO Unit :=
+  withTempErr fun tmp => do
+    let r ← withDb (tmp ++ "/tx_m.db") {} fun db =>
+      withTransaction db fun txDb => exec txDb "SELECT 1; SELECT 2" #[]
+    assertErrKind r .misuse "withTransaction .misuse"
+
+/-- Real error-coverage test for `withTransaction` returning `.invalidInput`. -/
+def err_sqlite_withTransaction_invalidInput : IO Unit :=
+  withTempErr fun tmp => do
+    let r ← withDb (tmp ++ "/tx_i.db") {} fun db =>
+      withTransaction db fun txDb => exec txDb "SELECT ?" #[]
+    assertErrKind r .invalidInput "withTransaction .invalidInput"
+
+/-- Real error-coverage test for `withTransaction` returning `.ioError`. -/
+def err_sqlite_withTransaction_ioError : IO Unit :=
+  withTempErr fun tmp => do
+    let r ← withDb (tmp ++ "/tx_io.db") {} fun db =>
+      withTransaction db fun txDb =>
+        query txDb "SELECT CAST(X'FFFE80' AS TEXT)" #[]
+    assertErrKind r .ioError "withTransaction .ioError"
+
+/-- Real error-coverage test for `exec` returning `.notFound`. -/
+def err_sqlite_exec_notFound : IO Unit :=
+  withTempErr fun tmp => do
+    let r ← withDb ":memory:" {} fun db =>
+      exec db "VACUUM INTO ?" #[.text (tmp ++ "/missing_dir/out.db")]
+    assertErrKind r .notFound "exec .notFound"
+
+/-- Real error-coverage test for `exec` returning `.busy`. -/
+def err_sqlite_exec_busy : IO Unit :=
+  withTempErr fun tmp => do
+    let p := tmp ++ "/ex_busy.db"
+    let r ← withDb p { walMode := false } fun db1 => do
+      assertOk (← exec db1 "CREATE TABLE t(x INTEGER)" #[]) "create"
+      assertOk (← exec db1 "BEGIN EXCLUSIVE" #[]) "lock"
+      let r2 ← withDb p { walMode := false, busyTimeoutMs := 0 } fun db2 =>
+        exec db2 "INSERT INTO t VALUES (1)" #[]
+      let _ ← exec db1 "ROLLBACK" #[]
+      return .ok r2
+    assertErrKind (← assertOk r "outer") .busy "exec .busy"
+
+/-- Real error-coverage test for `exec` returning `.constraint`. -/
+def err_sqlite_exec_constraint : IO Unit := do
+  let r ← withDb ":memory:" {} fun db => do
+    if let .error e ← exec db "CREATE TABLE pk(id INTEGER PRIMARY KEY)" #[] then return .error e
+    if let .error e ← exec db "INSERT INTO pk VALUES (1)" #[] then return .error e
+    exec db "INSERT INTO pk VALUES (1)" #[]
+  assertErrKind r .constraint "exec .constraint"
+
+/-- Real error-coverage test for `exec` returning `.misuse`. -/
+def err_sqlite_exec_misuse : IO Unit := do
+  let r ← withDb ":memory:" {} fun db => exec db "SELECT 1; SELECT 2" #[]
+  assertErrKind r .misuse "exec .misuse"
+
+/-- Real error-coverage test for `exec` returning `.invalidInput`. -/
+def err_sqlite_exec_invalidInput : IO Unit := do
+  let r ← withDb ":memory:" {} fun db => exec db "SELECT ?" #[]
+  assertErrKind r .invalidInput "exec .invalidInput"
+
+/-- Real error-coverage test for `exec` returning `.ioError`. -/
+def err_sqlite_exec_ioError : IO Unit :=
+  withTempErr fun tmp => do
+    let r ← withDb (tmp ++ "/ex_io.db") { walMode := false, foreignKeys := false } fun db => do
+      if let .error e ← exec db "CREATE TABLE t(x INTEGER)" #[] then return .error e
+      if let .error e ← exec db "PRAGMA query_only = ON" #[] then return .error e
+      exec db "INSERT INTO t VALUES (1)" #[]
+    assertErrKind r .ioError "exec .ioError"
+
+/-- Real error-coverage test for `query` returning `.notFound`. -/
+def err_sqlite_query_notFound : IO Unit :=
+  withTempErr fun tmp => do
+    let r ← withDb ":memory:" {} fun db =>
+      query db "VACUUM INTO ?" #[.text (tmp ++ "/missing_dir/out.db")]
+    assertErrKind r .notFound "query .notFound"
+
+/-- Real error-coverage test for `query` returning `.busy`. -/
+def err_sqlite_query_busy : IO Unit :=
+  withTempErr fun tmp => do
+    let p := tmp ++ "/q_busy.db"
+    let r ← withDb p { walMode := false } fun db1 => do
+      assertOk (← exec db1 "CREATE TABLE t(x INTEGER)" #[]) "create"
+      assertOk (← exec db1 "BEGIN EXCLUSIVE" #[]) "lock"
+      let r2 ← withDb p { walMode := false, busyTimeoutMs := 0 } fun db2 =>
+        query db2 "INSERT INTO t VALUES (1)" #[]
+      let _ ← exec db1 "ROLLBACK" #[]
+      return .ok r2
+    assertErrKind (← assertOk r "outer") .busy "query .busy"
+
+/-- Real error-coverage test for `query` returning `.constraint`. -/
+def err_sqlite_query_constraint : IO Unit := do
+  let r ← withDb ":memory:" {} fun db => do
+    if let .error e ← exec db "CREATE TABLE pk(id INTEGER PRIMARY KEY)" #[] then return .error e
+    if let .error e ← exec db "INSERT INTO pk VALUES (1)" #[] then return .error e
+    query db "INSERT INTO pk VALUES (1)" #[]
+  assertErrKind r .constraint "query .constraint"
+
+/-- Real error-coverage test for `query` returning `.misuse`. -/
+def err_sqlite_query_misuse : IO Unit := do
+  let r ← withDb ":memory:" {} fun db => query db "SELECT 1; SELECT 2" #[]
+  assertErrKind r .misuse "query .misuse"
+
+/-- Real error-coverage test for `query` returning `.invalidInput`. -/
+def err_sqlite_query_invalidInput : IO Unit := do
+  let r ← withDb ":memory:" {} fun db => query db "SELECT ?" #[]
+  assertErrKind r .invalidInput "query .invalidInput"
+
+/-- Real error-coverage test for `query` returning `.ioError`. -/
+def err_sqlite_query_ioError : IO Unit := do
+  let r ← withDb ":memory:" {} fun db => query db "SELECT CAST(X'FFFE80' AS TEXT)" #[]
+  assertErrKind r .ioError "query .ioError"
+
+/-- Real error-coverage test for `queryOne` returning `.notFound`. -/
+def err_sqlite_queryOne_notFound : IO Unit :=
+  withTempErr fun tmp => do
+    let r ← withDb ":memory:" {} fun db =>
+      queryOne db "VACUUM INTO ?" #[.text (tmp ++ "/missing_dir/out.db")]
+    assertErrKind r .notFound "queryOne .notFound"
+
+/-- Real error-coverage test for `queryOne` returning `.busy`. -/
+def err_sqlite_queryOne_busy : IO Unit :=
+  withTempErr fun tmp => do
+    let p := tmp ++ "/q1_busy.db"
+    let r ← withDb p { walMode := false } fun db1 => do
+      assertOk (← exec db1 "CREATE TABLE t(x INTEGER)" #[]) "create"
+      assertOk (← exec db1 "BEGIN EXCLUSIVE" #[]) "lock"
+      let r2 ← withDb p { walMode := false, busyTimeoutMs := 0 } fun db2 =>
+        queryOne db2 "INSERT INTO t VALUES (1)" #[]
+      let _ ← exec db1 "ROLLBACK" #[]
+      return .ok r2
+    assertErrKind (← assertOk r "outer") .busy "queryOne .busy"
+
+/-- Real error-coverage test for `queryOne` returning `.constraint`. -/
+def err_sqlite_queryOne_constraint : IO Unit := do
+  let r ← withDb ":memory:" {} fun db => do
+    if let .error e ← exec db "CREATE TABLE pk(id INTEGER PRIMARY KEY)" #[] then return .error e
+    if let .error e ← exec db "INSERT INTO pk VALUES (1)" #[] then return .error e
+    queryOne db "INSERT INTO pk VALUES (1)" #[]
+  assertErrKind r .constraint "queryOne .constraint"
+
+/-- Real error-coverage test for `queryOne` returning `.misuse`. -/
+def err_sqlite_queryOne_misuse : IO Unit := do
+  let r ← withDb ":memory:" {} fun db => queryOne db "SELECT 1; SELECT 2" #[]
+  assertErrKind r .misuse "queryOne .misuse"
+
+/-- Real error-coverage test for `queryOne` returning `.invalidInput`. -/
+def err_sqlite_queryOne_invalidInput : IO Unit := do
+  let r ← withDb ":memory:" {} fun db => queryOne db "SELECT ?" #[]
+  assertErrKind r .invalidInput "queryOne .invalidInput"
+
+/-- Real error-coverage test for `queryOne` returning `.ioError`. -/
+def err_sqlite_queryOne_ioError : IO Unit := do
+  let r ← withDb ":memory:" {} fun db => queryOne db "SELECT CAST(X'FFFE80' AS TEXT)" #[]
+  assertErrKind r .ioError "queryOne .ioError"
+
+/-- Registered error-coverage tests for `LeanSwe.Sqlite`. -/
+def registeredErrorTests : Array Core.RegisteredErrorTest :=
+  #[ { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_validateConfig_invalidInput"
+       mode := .real, run := err_sqlite_validateConfig_invalidInput }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withDb_notFound"
+       mode := .real, run := err_sqlite_withDb_notFound }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withDb_busy"
+       mode := .real, run := err_sqlite_withDb_busy }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withDb_constraint"
+       mode := .real, run := err_sqlite_withDb_constraint }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withDb_misuse"
+       mode := .real, run := err_sqlite_withDb_misuse }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withDb_invalidInput"
+       mode := .real, run := err_sqlite_withDb_invalidInput }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withDb_ioError"
+       mode := .real, run := err_sqlite_withDb_ioError }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withTransaction_notFound"
+       mode := .real, run := err_sqlite_withTransaction_notFound }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withTransaction_busy"
+       mode := .real, run := err_sqlite_withTransaction_busy }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withTransaction_constraint"
+       mode := .real, run := err_sqlite_withTransaction_constraint }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withTransaction_misuse"
+       mode := .real, run := err_sqlite_withTransaction_misuse }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withTransaction_invalidInput"
+       mode := .real, run := err_sqlite_withTransaction_invalidInput }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withTransaction_ioError"
+       mode := .real, run := err_sqlite_withTransaction_ioError }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_exec_notFound"
+       mode := .real, run := err_sqlite_exec_notFound }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_exec_busy"
+       mode := .real, run := err_sqlite_exec_busy }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_exec_constraint"
+       mode := .real, run := err_sqlite_exec_constraint }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_exec_misuse"
+       mode := .real, run := err_sqlite_exec_misuse }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_exec_invalidInput"
+       mode := .real, run := err_sqlite_exec_invalidInput }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_exec_ioError"
+       mode := .real, run := err_sqlite_exec_ioError }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_query_notFound"
+       mode := .real, run := err_sqlite_query_notFound }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_query_busy"
+       mode := .real, run := err_sqlite_query_busy }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_query_constraint"
+       mode := .real, run := err_sqlite_query_constraint }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_query_misuse"
+       mode := .real, run := err_sqlite_query_misuse }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_query_invalidInput"
+       mode := .real, run := err_sqlite_query_invalidInput }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_query_ioError"
+       mode := .real, run := err_sqlite_query_ioError }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_queryOne_notFound"
+       mode := .real, run := err_sqlite_queryOne_notFound }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_queryOne_busy"
+       mode := .real, run := err_sqlite_queryOne_busy }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_queryOne_constraint"
+       mode := .real, run := err_sqlite_queryOne_constraint }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_queryOne_misuse"
+       mode := .real, run := err_sqlite_queryOne_misuse }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_queryOne_invalidInput"
+       mode := .real, run := err_sqlite_queryOne_invalidInput }
+   , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_queryOne_ioError"
+       mode := .real, run := err_sqlite_queryOne_ioError } ]
+
 /-- Execute end-to-end runtime tests for `LeanSwe.Sqlite` over real SQLite files. -/
 def runAll : IO Unit := do
   let res ← LeanSwe.TempDir.withTempDir none "lean-swe-sqlite-rt-" fun tmp => do
@@ -154,6 +461,7 @@ def runAll : IO Unit := do
   match res with
   | .ok () => pure ()
   | .error e => throw (IO.userError s!"Sqlite RuntimeTests failed unexpectedly: {repr e}")
+  Core.runRegisteredErrorTests registeredErrorTests
   IO.println "PASS: LeanSwe.Sqlite runtime tests"
 
 end LeanSwe.Sqlite.RuntimeTests

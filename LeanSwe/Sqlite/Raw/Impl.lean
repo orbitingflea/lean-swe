@@ -77,10 +77,6 @@ def hasZeroByte : List UInt8 → Bool
   | [] => false
   | b :: bs => b == 0 || hasZeroByte bs
 
-/-- Return `true` iff `s` contains an embedded NUL character (`Char.ofNat 0`). -/
-def hasEmbeddedNul (s : String) : Bool :=
-  hasZeroByte s.toUTF8.data.toList
-
 /-- Compute the `sqlite3_open_v2` bitmask (`SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_URI | ...`) for `cfg`. -/
 def computeOpenFlags (cfg : OpenConfig) : UInt32 :=
   let base := sqliteOpenFullMutex ||| sqliteOpenUri

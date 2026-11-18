@@ -94,6 +94,13 @@ import LeanSwe.Sqlite.Raw.Impl
 import LeanSwe.Sqlite.Raw.Interface
 import LeanSwe.Sqlite.Raw.SpecTests
 import LeanSwe.Sqlite.Raw.SpecMutants
+import LeanSwe.Sqlite.Raw.Proofs.Helpers
+import LeanSwe.Sqlite.Raw.Proofs.ErrorAndFlagsProofs
+import LeanSwe.Sqlite.Raw.Proofs.WalProofs
+import LeanSwe.Sqlite.Raw.Proofs.UriNoWalProofs
+import LeanSwe.Sqlite.Raw.Proofs.UriHasWalProofs
+import LeanSwe.Sqlite.Raw.Proofs.UriProofs
+import LeanSwe.Sqlite.Raw.Proofs.StmtProofs
 import LeanSwe.Sqlite.Raw.Proofs
 import LeanSwe.Sqlite.Raw.RuntimeTests
 import LeanSwe.Sqlite.Types

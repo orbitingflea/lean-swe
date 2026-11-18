@@ -962,4 +962,40 @@ theorem reach_sqlite_withDb_withTransaction_preservesAllHandles :
     CanReach (test_sqlite_withDb_withTransaction_preservesAllHandles Internal.mkApiM) :=
   ⟨.int 99, proof_sqlite_withDb_withTransaction_preservesAllHandles (.int 99)⟩
 
+private theorem validateConfig_never (k : SqliteErrorKind) (hk : k ≠ .invalidInput) (cfg : OpenConfig) :
+    Core.NeverErrorKindPure Raw.SqliteError.kind k (LeanSwe.Sqlite.validateConfig cfg) := by
+  unfold LeanSwe.Sqlite.validateConfig defaultApi Internal.mkApiM Internal.validateConfigWith
+    Raw.defaultOps Raw.Internal.mkRawOps Raw.Internal.mapRawError
+  dsimp only
+  split
+  · exact hk.symm
+  · split
+    · exact hk.symm
+    · trivial
+
+/-- `LeanSwe.Sqlite.validateConfig` never returns `.notFound`. -/
+theorem sqlite_validateConfig_never_notFound (cfg : OpenConfig) :
+    Core.NeverErrorKindPure Raw.SqliteError.kind .notFound (LeanSwe.Sqlite.validateConfig cfg) :=
+  validateConfig_never .notFound (by decide) cfg
+
+/-- `LeanSwe.Sqlite.validateConfig` never returns `.busy`. -/
+theorem sqlite_validateConfig_never_busy (cfg : OpenConfig) :
+    Core.NeverErrorKindPure Raw.SqliteError.kind .busy (LeanSwe.Sqlite.validateConfig cfg) :=
+  validateConfig_never .busy (by decide) cfg
+
+/-- `LeanSwe.Sqlite.validateConfig` never returns `.constraint`. -/
+theorem sqlite_validateConfig_never_constraint (cfg : OpenConfig) :
+    Core.NeverErrorKindPure Raw.SqliteError.kind .constraint (LeanSwe.Sqlite.validateConfig cfg) :=
+  validateConfig_never .constraint (by decide) cfg
+
+/-- `LeanSwe.Sqlite.validateConfig` never returns `.misuse`. -/
+theorem sqlite_validateConfig_never_misuse (cfg : OpenConfig) :
+    Core.NeverErrorKindPure Raw.SqliteError.kind .misuse (LeanSwe.Sqlite.validateConfig cfg) :=
+  validateConfig_never .misuse (by decide) cfg
+
+/-- `LeanSwe.Sqlite.validateConfig` never returns `.ioError`. -/
+theorem sqlite_validateConfig_never_ioError (cfg : OpenConfig) :
+    Core.NeverErrorKindPure Raw.SqliteError.kind .ioError (LeanSwe.Sqlite.validateConfig cfg) :=
+  validateConfig_never .ioError (by decide) cfg
+
 end LeanSwe.Sqlite.Proofs
