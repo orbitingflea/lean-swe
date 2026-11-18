@@ -1,11 +1,13 @@
 import Core.NondetTest
 import Core.Assumptions
 import LeanSwe.RegExp.Types
+import LeanSwe.RegExp.Model
 
 namespace LeanSwe.RegExp
 
 open Core (NondetTest ErrorObligation)
 open Core.NondetTest
+open LeanSwe.RegExp.Model
 
 /-- Every error returned by `api.testPattern` must carry a non-empty diagnostic message. -/
 def test_regex_onError_returnsNonEmptyMessage
@@ -77,6 +79,73 @@ def test_regex_replaceAll_emptyOnEmpty_eqReplacement
   match api.replaceAll "" "" rep with
   | .error _ => assume False
   | .ok out => NondetTest.assert (out = rep)
+
+/-- `api.testPattern` agrees unconditionally with `testPatternModel` on match result, error kind, and non-empty message. -/
+def test_regex_testPattern_matchesModel
+    {runner} [NondetTest runner] (api : RegexApi) : runner Unit := do
+  let pat ← nondet String
+  let hay ← nondet String
+  match api.testPattern pat hay, testPatternModel pat hay with
+  | .ok actual, .ok expected => NondetTest.assert (actual = expected)
+  | .error e, .error expectedKind =>
+    NondetTest.assert (e.kind = expectedKind ∧ e.message ≠ "")
+  | _, _ => NondetTest.assert False
+
+/-- `api.findFirst` agrees unconditionally with `findFirstModel` on leftmost-first match span, UTF-8 byte bounds, and error kind. -/
+def test_regex_findFirst_matchesModel
+    {runner} [NondetTest runner] (api : RegexApi) : runner Unit := do
+  let pat ← nondet String
+  let hay ← nondet String
+  match api.findFirst pat hay, findFirstModel pat hay with
+  | .ok actual, .ok expected => NondetTest.assert (actual = expected)
+  | .error e, .error expectedKind =>
+    NondetTest.assert (e.kind = expectedKind ∧ e.message ≠ "")
+  | _, _ => NondetTest.assert False
+
+/-- `api.findAll` agrees unconditionally with `findAllModel` on all non-overlapping match spans and error kind. -/
+def test_regex_findAll_matchesModel
+    {runner} [NondetTest runner] (api : RegexApi) : runner Unit := do
+  let pat ← nondet String
+  let hay ← nondet String
+  match api.findAll pat hay, findAllModel pat hay with
+  | .ok actual, .ok expected => NondetTest.assert (actual = expected)
+  | .error e, .error expectedKind =>
+    NondetTest.assert (e.kind = expectedKind ∧ e.message ≠ "")
+  | _, _ => NondetTest.assert False
+
+/-- `api.countMatches` agrees unconditionally with `countMatchesModel` on count and error kind. -/
+def test_regex_countMatches_matchesModel
+    {runner} [NondetTest runner] (api : RegexApi) : runner Unit := do
+  let pat ← nondet String
+  let hay ← nondet String
+  match api.countMatches pat hay, countMatchesModel pat hay with
+  | .ok actual, .ok expected => NondetTest.assert (actual = expected)
+  | .error e, .error expectedKind =>
+    NondetTest.assert (e.kind = expectedKind ∧ e.message ≠ "")
+  | _, _ => NondetTest.assert False
+
+/-- `api.replaceAll` agrees unconditionally with `replaceAllModel` on output text and error kind. -/
+def test_regex_replaceAll_matchesModel
+    {runner} [NondetTest runner] (api : RegexApi) : runner Unit := do
+  let pat ← nondet String
+  let hay ← nondet String
+  let rep ← nondet String
+  match api.replaceAll pat hay rep, replaceAllModel pat hay rep with
+  | .ok actual, .ok expected => NondetTest.assert (actual = expected)
+  | .error e, .error expectedKind =>
+    NondetTest.assert (e.kind = expectedKind ∧ e.message ≠ "")
+  | _, _ => NondetTest.assert False
+
+/-- `api.splitBy` agrees unconditionally with `splitByModel` on emitted pieces and error kind. -/
+def test_regex_splitBy_matchesModel
+    {runner} [NondetTest runner] (api : RegexApi) : runner Unit := do
+  let pat ← nondet String
+  let hay ← nondet String
+  match api.splitBy pat hay, splitByModel pat hay with
+  | .ok actual, .ok expected => NondetTest.assert (actual = expected)
+  | .error e, .error expectedKind =>
+    NondetTest.assert (e.kind = expectedKind ∧ e.message ≠ "")
+  | _, _ => NondetTest.assert False
 
 /-- Declared error-coverage matrix for `LeanSwe.RegExp` fallible requests (`RegexErrorKind`). -/
 def errorCoverage : List (ErrorObligation RegexErrorKind) :=
