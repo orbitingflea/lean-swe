@@ -177,6 +177,10 @@ example : ¬ Core.AllPass
           match r with
           | .error e => pure (.error (stubMapRawError e))
           | .ok rawDb =>
+            if path.toUTF8 == "file:mem.db?mode=%6Demory".toUTF8 then
+              let p ← cops.prepareV2 rawDb "PRAGMA journal_mode = WAL;"
+              if let .ok (some st, _) := p then
+                let _ ← cops.finalize st
             let id ← cops.modifyTable fun t =>
               (t.nextDbId, { t with nextDbId := t.nextDbId + 1, dbs := t.dbs ++ [(t.nextDbId, rawDb)] })
             pure (.ok { id := id }) }) := by
@@ -184,8 +188,45 @@ example : ¬ Core.AllPass
   have h0 := h "mem" ⟨by decide, by decide, by decide⟩ (by decide)
   dsimp only [test_sqliteraw_openDb_skipsWalOnMemoryAndReadOnlyTargets,
     Bind.bind, Pure.pure, StateT.run, assert] at h0
-  have hRwc := h0.2.2.2.2.2.2.2.2.2.1.2
-  exact absurd hRwc (by decide)
+  have hPctHi := h0.2.2.2.2.2.1.2
+  exact absurd hPctHi (by decide)
+
+example : ¬ Core.AllPass
+    (test_sqliteraw_openDb_uriAuthorityNullEscapeAndWalTargets fun cops =>
+      { stubBaseMkRaw cops with
+        openDb := fun path _ => do
+          let r ← cops.openV2 path (sqliteOpenFullMutex ||| sqliteOpenUri ||| sqliteOpenReadWrite ||| sqliteOpenCreate)
+          match r with
+          | .error e => pure (.error (stubMapRawError e))
+          | .ok rawDb =>
+            let id ← cops.modifyTable fun t =>
+              (t.nextDbId, { t with nextDbId := t.nextDbId + 1, dbs := t.dbs ++ [(t.nextDbId, rawDb)] })
+            pure (.ok { id := id }) }) := by
+  intro h
+  dsimp only [test_sqliteraw_openDb_uriAuthorityNullEscapeAndWalTargets,
+    Bind.bind, Pure.pure, StateT.run, assert] at h
+  have hAuthSlash := h.2.2.2.2.2.1.2
+  exact absurd hAuthSlash (by decide)
+
+example : ¬ Core.AllPass
+    (test_sqliteraw_openDb_uriAuthorityNullEscapeAndWalTargets fun cops =>
+      { stubBaseMkRaw cops with
+        openDb := fun path _ => do
+          let r ← cops.openV2 path (sqliteOpenFullMutex ||| sqliteOpenUri ||| sqliteOpenReadWrite ||| sqliteOpenCreate)
+          match r with
+          | .error e => pure (.error (stubMapRawError e))
+          | .ok rawDb =>
+            let p ← cops.prepareV2 rawDb "PRAGMA journal_mode = WAL;"
+            if let .ok (some st, _) := p then
+              let _ ← cops.finalize st
+            let id ← cops.modifyTable fun t =>
+              (t.nextDbId, { t with nextDbId := t.nextDbId + 1, dbs := t.dbs ++ [(t.nextDbId, rawDb)] })
+            pure (.ok { id := id }) }) := by
+  intro h
+  dsimp only [test_sqliteraw_openDb_uriAuthorityNullEscapeAndWalTargets,
+    Bind.bind, Pure.pure, StateT.run, assert] at h
+  have hNulFile := h.1.2
+  exact absurd hNulFile (by decide)
 
 example : ¬ Core.AllPass
     (test_sqliteraw_openDb_closesHandleOnAnySetupFailure fun cops =>
@@ -499,7 +540,7 @@ example : ¬ Core.AllPass
   have h0 := h 42 3.5 "ok" (ByteArray.mk #[0xFF, 0xFE]) rfl
   dsimp only [test_sqliteraw_step_decodesColumnsValidatesUtf8AndPropagatesColumnErrors,
     Bind.bind, Pure.pure, StateT.run, assert] at h0
-  cases h0.2.2.1
+  cases h0.2.2.1.1
 
 example : ¬ Core.AllPass
     (test_sqliteraw_finalize_releasesStmtEvenOnStickyErrorAndRejectsDoubleFinalize fun cops =>
@@ -521,5 +562,87 @@ example : ¬ Core.AllPass
     Bind.bind, Pure.pure, StateT.run, assert] at h0
   have hRejCnt := h0.2.2.1.2.2
   cases hRejCnt
+
+example : ¬ Core.AllPass
+    (test_sqliteraw_openClose_preservesActiveDbCountAndRejectsClosedOrBusy fun cops =>
+      { stubBaseMkRaw cops with
+        openDb := fun path _ => do
+          match ← cops.openV2 path sqliteOpenFullMutex with
+          | .error e => pure (.error (stubMapRawError e))
+          | .ok rawDb =>
+            let id ← cops.modifyTable fun t =>
+              (t.nextDbId, { t with nextDbId := t.nextDbId + 1, dbs := t.dbs ++ [(t.nextDbId, rawDb)] })
+            pure (.ok { id := id })
+        prepare := fun db sql => do
+          let rawDb? ← cops.modifyTable fun t =>
+            ((t.dbs.find? fun p => p.1 == db.id).map Prod.snd, t)
+          match rawDb? with
+          | none => pure (.error { kind := .misuse, message := "closed" })
+          | some rawDb =>
+            match ← cops.prepareV2 rawDb sql with
+            | .ok (some rawStmt, _) =>
+              let sh ← cops.modifyTable fun t =>
+                let sh : StmtHandle := { id := t.nextStmtId, dbId := db.id }
+                (sh, { t with nextStmtId := t.nextStmtId + 1, stmts := t.stmts ++ [(sh, rawStmt)] })
+              pure (.ok sh)
+            | _ => pure (.error { kind := .misuse, message := "empty" }) }) := by
+  intro h
+  have h0 := h 99 ⟨by decide, by decide⟩
+  dsimp only [test_sqliteraw_openClose_preservesActiveDbCountAndRejectsClosedOrBusy,
+    Bind.bind, Pure.pure, StateT.run, assert] at h0
+  have hCalledC := h0.2.2.2.1.2.1
+  injection hCalledC
+
+example : ¬ Core.AllPass
+    (test_sqliteraw_step_decodesColumnsValidatesUtf8AndPropagatesColumnErrors fun cops =>
+      { stubBaseMkRaw cops with
+        step := fun stmt => do
+          let rawStmt? ← cops.modifyTable fun t =>
+            ((t.stmts.find? fun p => p.1 == stmt).map Prod.snd, t)
+          match rawStmt? with
+          | none => pure (.error { kind := .misuse, message := "unknown" })
+          | some rawStmt =>
+            match ← cops.step rawStmt with
+            | .error e => pure (.error (stubMapRawError e))
+            | .ok .done => pure (.ok .done)
+            | .ok .row =>
+              match ← cops.columnCount rawStmt with
+              | .error e => pure (.error (stubMapRawError e))
+              | .ok cnt =>
+                if cnt == 1 then
+                  pure (.error { kind := .ioError, sqliteCode := some 11, message := "fabricated code" })
+                else
+                  pure (.error { kind := .misuse, message := "other" }) }) := by
+  intro h
+  have h0 := h 42 3.5 "ok" (ByteArray.mk #[0xFF, 0xFE]) rfl
+  dsimp only [test_sqliteraw_step_decodesColumnsValidatesUtf8AndPropagatesColumnErrors,
+    Bind.bind, Pure.pure, StateT.run, assert] at h0
+  rcases h0.2.2.2.1 with ⟨e, hEq, _, hCode, _⟩
+  injection hEq with hE
+  rw [← hE] at hCode
+  cases hCode
+
+example : ¬ Core.AllPass
+    (test_sqliteraw_step_decodesColumnsValidatesUtf8AndPropagatesColumnErrors fun cops =>
+      { stubBaseMkRaw cops with
+        step := fun stmt => do
+          let rawStmt? ← cops.modifyTable fun t =>
+            ((t.stmts.find? fun p => p.1 == stmt).map Prod.snd, t)
+          match rawStmt? with
+          | none => pure (.error { kind := .misuse, message := "unknown" })
+          | some rawStmt =>
+            match ← cops.step rawStmt with
+            | .error e => pure (.error (stubMapRawError e))
+            | .ok .done => pure (.ok .done)
+            | .ok .row =>
+              let _ ← cops.columnBlob rawStmt 3
+              let _ ← cops.columnBlob rawStmt 4
+              pure (.ok (.row #[.null, .int 42, .real 3.5, .text "ok", .bytes (ByteArray.mk #[0xFF, 0xFE])])) }) := by
+  intro h
+  have h0 := h 42 3.5 "ok" (ByteArray.mk #[0xFF, 0xFE]) rfl
+  dsimp only [test_sqliteraw_step_decodesColumnsValidatesUtf8AndPropagatesColumnErrors,
+    Bind.bind, Pure.pure, StateT.run, assert] at h0
+  have hHasTextCall := h0.2.2.1.2.1
+  exact absurd hHasTextCall (by decide)
 
 end LeanSwe.Sqlite.Raw

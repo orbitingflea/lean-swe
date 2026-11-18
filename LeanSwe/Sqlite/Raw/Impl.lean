@@ -359,10 +359,15 @@ def insertRawStmt (dbId : UInt64) (rawStmt : RawStmtHandle) (t : RawHandleTable)
   let sh : StmtHandle := { id := id, dbId := dbId }
   (sh, { t with nextStmtId := id + 1, stmts := t.stmts ++ [(sh, rawStmt)] })
 
+/-- Return `true` iff `stmts` contains an active statement belonging to `dbId`. -/
+def hasActiveStmtForDb (dbId : UInt64) : List (StmtHandle × RawStmtHandle) → Bool
+  | [] => false
+  | (sh, _) :: rest => sh.dbId == dbId || hasActiveStmtForDb dbId rest
+
 /-- Step a prepared `PRAGMA` statement until `.done` with bounded fuel. -/
 def stepPragmaLoop {m : Type → Type} [Monad m] (cops : CSqliteOpsM m) (rawStmt : RawStmtHandle) :
     Nat → m (Except SqliteRawError Unit)
-  | 0 => pure (.error (.ioFailure 0 "sqlite pragma step limit exceeded"))
+  | 0 => pure (.error (.userError "sqlite pragma step limit exceeded"))
   | fuel + 1 => do
     match ← cops.step rawStmt with
     | .error e => pure (.error e)
@@ -450,14 +455,14 @@ def decodeColumns {m : Type → Type} [Monad m] (cops : CSqliteOpsM m)
           | .error rawErr => pure (.error (mapRawError rawErr))
           | .ok d => pure (.ok (.real d))
         | 3 => do
-          match ← cops.columnRawBytes rawStmt colU with
+          match ← cops.columnTextBytes rawStmt colU with
           | .error rawErr => pure (.error (mapRawError rawErr))
           | .ok bs =>
             match String.fromUTF8? bs with
             | some s => pure (.ok (.text s))
-            | none => pure (.error (mapRawError (.ioFailure 11 "invalid UTF-8 in SQLite TEXT column")))
+            | none => pure (.error (mapRawError (.userError "invalid UTF-8 in SQLite TEXT column")))
         | 4 => do
-          match ← cops.columnRawBytes rawStmt colU with
+          match ← cops.columnBlob rawStmt colU with
           | .error rawErr => pure (.error (mapRawError rawErr))
           | .ok bs => pure (.ok (.bytes bs))
         | _ => pure (.ok .null)
@@ -498,10 +503,17 @@ def mkRawOps {m : Type → Type} [Monad m] [MonadFinally m] (cops : CSqliteOpsM 
             let db ← cops.modifyTable (insertRawDb rawDb)
             pure (.ok db)
     closeDb := fun db => do
-      let rawDb? ← cops.modifyTable (fun t => (lookupRawDb db.id t.dbs, t))
-      match rawDb? with
-      | none => pure (.error (mapRawError (.misuse 21 "invalid or closed database handle")))
-      | some rawDb =>
+      let lookupRes ← cops.modifyTable fun t =>
+        match lookupRawDb db.id t.dbs with
+        | none => (Except.error (.misuse 21 "invalid or closed database handle"), t)
+        | some rawDb =>
+          if hasActiveStmtForDb db.id t.stmts then
+            (Except.error (.busy 5 "unable to close database due to unfinalized statements"), t)
+          else
+            (Except.ok rawDb, t)
+      match lookupRes with
+      | .error rawErr => pure (.error (mapRawError rawErr))
+      | .ok rawDb =>
         match ← cops.close rawDb with
         | .error rawErr => pure (.error (mapRawError rawErr))
         | .ok () =>

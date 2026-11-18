@@ -61,8 +61,11 @@ private opaque rawColumnInt64 : @& RawStmtExt → UInt32 → BaseIO (UInt32 × S
 @[extern "leanswe_sqlite_column_double"]
 private opaque rawColumnDouble : @& RawStmtExt → UInt32 → BaseIO (UInt32 × String × Float)
 
-@[extern "leanswe_sqlite_column_raw_bytes"]
-private opaque rawColumnRawBytes : @& RawStmtExt → UInt32 → BaseIO (UInt32 × String × ByteArray)
+@[extern "leanswe_sqlite_column_text_bytes"]
+private opaque rawColumnTextBytes : @& RawStmtExt → UInt32 → BaseIO (UInt32 × String × ByteArray)
+
+@[extern "leanswe_sqlite_column_blob"]
+private opaque rawColumnBlob : @& RawStmtExt → UInt32 → BaseIO (UInt32 × String × ByteArray)
 
 private initialize gHandleTable : Std.Mutex RawHandleTable ← Std.Mutex.new {}
 
@@ -153,7 +156,8 @@ private def cSqliteOps : CSqliteOps :=
     columnType := fun stmt col => withStmtExt stmt fun ptr => mapValRc (rawColumnType ptr col)
     columnInt64 := fun stmt col => withStmtExt stmt fun ptr => mapValRc (rawColumnInt64 ptr col)
     columnDouble := fun stmt col => withStmtExt stmt fun ptr => mapValRc (rawColumnDouble ptr col)
-    columnRawBytes := fun stmt col => withStmtExt stmt fun ptr => mapValRc (rawColumnRawBytes ptr col) }
+    columnTextBytes := fun stmt col => withStmtExt stmt fun ptr => mapValRc (rawColumnTextBytes ptr col)
+    columnBlob := fun stmt col => withStmtExt stmt fun ptr => mapValRc (rawColumnBlob ptr col) }
 
 /-- Default single-step SQLite operations backed by `c/sqlite_shim.c` and vendored SQLite3. -/
 def defaultOps : RawSqliteOps :=

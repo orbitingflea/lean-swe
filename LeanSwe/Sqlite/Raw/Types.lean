@@ -231,9 +231,12 @@ structure CSqliteOpsM (m : Type → Type) where
   columnInt64 : RawStmtHandle → UInt32 → m (Except SqliteRawError Int64)
   /-- Thin wrapper around `sqlite3_column_double(stmt, col)` returning `SQLITE_MISUSE` on closed/invalid handles. -/
   columnDouble : RawStmtHandle → UInt32 → m (Except SqliteRawError Float)
-  /-- Thin wrapper reading raw column bytes (`sqlite3_column_text` + `sqlite3_column_bytes` for `SQLITE_TEXT` without UTF-8 validation,
-      or `sqlite3_column_blob` + `sqlite3_column_bytes` for `SQLITE_BLOB`) and returning `SQLITE_MISUSE` on closed/invalid handles. -/
-  columnRawBytes : RawStmtHandle → UInt32 → m (Except SqliteRawError ByteArray)
+  /-- Thin wrapper around `sqlite3_column_text(stmt, col)` + `sqlite3_column_bytes(stmt, col)` copying raw UTF-8
+      column bytes without C UTF-8 validation and returning `SQLITE_MISUSE` on closed/invalid handles. -/
+  columnTextBytes : RawStmtHandle → UInt32 → m (Except SqliteRawError ByteArray)
+  /-- Thin wrapper around `sqlite3_column_blob(stmt, col)` + `sqlite3_column_bytes(stmt, col)` copying raw binary
+      column bytes and returning `SQLITE_MISUSE` on closed/invalid handles. -/
+  columnBlob : RawStmtHandle → UInt32 → m (Except SqliteRawError ByteArray)
 
 /-- Concrete `IO` thin-C SQLite hooks backed by `c/sqlite_shim.c`. -/
 abbrev CSqliteOps := CSqliteOpsM IO
