@@ -1,3 +1,4 @@
+import Core.Assumptions
 import LeanSwe.Fs.Impl
 import LeanSwe.Fs.Interface
 import LeanSwe.Fs.Raw.Interface
@@ -490,8 +491,116 @@ private def testUncreatedPoolDirRace (exe sandbox : String) : IO Unit := do
       let _ ← Process.Raw.reap h
   assertTrue ((← Process.activeProcessCount) == 0) "all race-worker processes reaped"
 
+private def withSlotErrSandbox (act : String → IO Unit) : IO Unit := do
+  let res ← TempDir.withTempDir none "lean-swe-slotpool-err-" fun sandbox => do
+    act sandbox
+    return .ok ()
+  let _ ← match res with
+    | .ok () => pure ()
+    | .error e => throw (IO.userError s!"ASSERTION FAILED: outer temp sandbox error: {repr e}")
+
+/-- Real error test for `SlotPool.withSlot` returning `.invalidInput`. -/
+def err_slotpool_withSlot_invalidInput : IO Unit := do
+  let res ← SlotPool.withSlot { poolDir := "", totalSlots := 1 } .noWait (fun _ => pure (.ok ()))
+  let _ ← assertSlotErrKind res .invalidInput "withSlot invalidInput"
+
+/-- Real error test for `SlotPool.withSlot` returning `.notFound`. -/
+def err_slotpool_withSlot_notFound : IO Unit := do
+  let res ← SlotPool.withSlot
+    { poolDir := "/proc/leanswe_no_such_slotpool_999999", totalSlots := 1 } .noWait
+    (fun _ => pure (.ok ()))
+  let _ ← assertSlotErrKind res .notFound "withSlot notFound"
+
+/-- Real error test for `SlotPool.withSlot` returning `.alreadyExists`. -/
+def err_slotpool_withSlot_alreadyExists : IO Unit :=
+  withSlotErrSandbox fun sandbox => do
+    let filePath := Fs.join sandbox "existing_file"
+    assertFsOk (← Fs.writeText filePath "occupied") "create regular file"
+    let res ← SlotPool.withSlot { poolDir := filePath, totalSlots := 1 } .noWait (fun _ => pure (.ok ()))
+    let _ ← assertSlotErrKind res .alreadyExists "withSlot alreadyExists"
+
+/-- Real error test for `SlotPool.withSlot` returning `.permissionDenied`. -/
+def err_slotpool_withSlot_permissionDenied : IO Unit :=
+  withSlotErrSandbox fun sandbox => do
+    let roDir := Fs.join sandbox "ro_parent"
+    assertFsOk (← Fs.mkdir roDir false false) "create ro_parent"
+    assertFsOk (← Fs.chmod roDir 0o555) "chmod 0o555 ro_parent"
+    try
+      let res ← SlotPool.withSlot { poolDir := Fs.join roDir "pool", totalSlots := 1 } .noWait
+        (fun _ => pure (.ok ()))
+      let _ ← assertSlotErrKind res .permissionDenied "withSlot permissionDenied"
+    finally
+      let _ ← Fs.chmod roDir 0o755
+
+/-- Real error test for `SlotPool.withSlot` returning `.isADirectory`. -/
+def err_slotpool_withSlot_isADirectory : IO Unit :=
+  withSlotErrSandbox fun sandbox => do
+    let poolDir := Fs.join sandbox "pool"
+    assertFsOk (← Fs.mkdir poolDir false false) "create poolDir"
+    assertFsOk (← Fs.mkdir (Fs.join poolDir "slot-0.lock") false false) "create dir at slot-0.lock"
+    let res ← SlotPool.withSlot { poolDir := poolDir, totalSlots := 1 } .noWait (fun _ => pure (.ok ()))
+    let _ ← assertSlotErrKind res .isADirectory "withSlot isADirectory"
+
+/-- Real error test for `SlotPool.withSlot` returning `.notADirectory`. -/
+def err_slotpool_withSlot_notADirectory : IO Unit :=
+  withSlotErrSandbox fun sandbox => do
+    let filePath := Fs.join sandbox "not_a_dir"
+    assertFsOk (← Fs.writeText filePath "file") "create regular file"
+    let res ← SlotPool.withSlot { poolDir := Fs.join filePath "pool", totalSlots := 1 } .noWait
+      (fun _ => pure (.ok ()))
+    let _ ← assertSlotErrKind res .notADirectory "withSlot notADirectory"
+
+/-- Mocked error test for `SlotPool.withSlot` returning `.unsupported`. -/
+def err_slotpool_withSlot_unsupported : IO Unit := do
+  let fs :=
+    { Fs.defaultApi with
+      mkdir := fun _ _ _ =>
+        pure (.error { kind := .unsupported, path := some "/mock", message := "injected unsupported" }) }
+  let api := SlotPool.Internal.mkApiM fs Time.defaultOps
+  let res ← api.withSlot { poolDir := "/mock/pool", totalSlots := 1 } .noWait (fun _ => pure (.ok ()))
+  let _ ← assertSlotErrKind res .unsupported "withSlot unsupported"
+
+/-- Real error test for `SlotPool.withSlot` returning `.ioError`. -/
+def err_slotpool_withSlot_ioError : IO Unit :=
+  withSlotErrSandbox fun sandbox => do
+    let poolDir := Fs.join sandbox "pool"
+    let nonEmptyDir := Fs.join sandbox "nonempty"
+    let _ ← assertFsOk (← Fs.mkdir nonEmptyDir true false) "mkdir nonempty"
+    let _ ← assertFsOk (← Fs.atomicWriteText (Fs.join nonEmptyDir "keep") "x") "write keep"
+    let cfg : PoolConfig := { poolDir := poolDir, totalSlots := 1 }
+    let res : Except SlotPoolError (LeaseOutcome Unit) ← SlotPool.withSlot cfg .noWait fun _ => do
+      match ← Fs.rmdir nonEmptyDir with
+      | .ok () => return .ok ()
+      | .error fe => return .error (Model.mapFsError fe)
+    let _ ← assertSlotErrKind res .ioError "withSlot ioError"
+    let afterRes ← assertSlotOk (← SlotPool.withSlot cfg .noWait fun _ => pure (.ok ()))
+      "reacquire slot after ioError"
+    match afterRes with
+    | .leased _ () => pure ()
+    | .noSlot => throw (IO.userError "slot released after ioError")
+
+/-- Registered error-coverage tests for `LeanSwe.SlotPool.errorCoverage`. -/
+def registeredErrorTests : Array Core.RegisteredErrorTest :=
+  #[ { testName := "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_invalidInput"
+       mode := .real, run := err_slotpool_withSlot_invalidInput }
+   , { testName := "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_notFound"
+       mode := .real, run := err_slotpool_withSlot_notFound }
+   , { testName := "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_alreadyExists"
+       mode := .real, run := err_slotpool_withSlot_alreadyExists }
+   , { testName := "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_permissionDenied"
+       mode := .real, run := err_slotpool_withSlot_permissionDenied }
+   , { testName := "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_isADirectory"
+       mode := .real, run := err_slotpool_withSlot_isADirectory }
+   , { testName := "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_notADirectory"
+       mode := .real, run := err_slotpool_withSlot_notADirectory }
+   , { testName := "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_unsupported"
+       mode := .mocked, run := err_slotpool_withSlot_unsupported }
+   , { testName := "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_ioError"
+       mode := .real, run := err_slotpool_withSlot_ioError } ]
+
 /-- Execute all multi-process OS advisory-locking and boundary runtime checks for `LeanSwe.SlotPool`. -/
 def runAll : IO Unit := do
+  Core.runRegisteredErrorTests registeredErrorTests
   let exe := (← IO.appPath).toString
   let res ← TempDir.withTempDir none "lean-swe-slotpool-rt-" fun sandbox => do
     testInvalidConfigAndCollisions sandbox

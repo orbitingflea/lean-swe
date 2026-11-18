@@ -35,18 +35,14 @@ private def allowedAxioms : Std.HashSet Name :=
   Std.HashSet.emptyWithCapacity 4 |>.insert ``propext |>.insert ``Classical.choice |>.insert ``Quot.sound
 
 private def legacyExemptionAllowlist : Array Name := #[
-  `LeanSwe.Compress,
   `LeanSwe.ConnectProxy,
   `LeanSwe.ConnectProxy.Raw,
   `LeanSwe.Fs,
   `LeanSwe.Fs.Raw,
-  `LeanSwe.Git,
   `LeanSwe.Process,
   `LeanSwe.Process.Raw,
   `LeanSwe.ProcessSandbox,
-  `LeanSwe.ProcessSandbox.Raw,
-  `LeanSwe.SlotPool,
-  `LeanSwe.TempDir
+  `LeanSwe.ProcessSandbox.Raw
 ]
 
 private def forbiddenTestMainConsts : Std.HashSet Name :=

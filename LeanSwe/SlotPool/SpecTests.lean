@@ -1,4 +1,5 @@
 import Core.NondetTest
+import Core.Assumptions
 import LeanSwe.Fs.Types
 import LeanSwe.SlotPool.Model
 import LeanSwe.SlotPool.Types
@@ -6,7 +7,7 @@ import LeanSwe.Time.Types
 
 namespace LeanSwe.SlotPool
 
-open Core (NondetTest)
+open Core (NondetTest ErrorObligation)
 open Core.NondetTest
 open LeanSwe.Fs (FsApiM FsError FsErrorKind LockMode)
 open LeanSwe.Time (TimeOpsM)
@@ -398,13 +399,31 @@ def test_slotpool_waitForever_contendedPool_pollsUntilSlotFree
   NondetTest.assert (out.2.monoNanos = targetRelNs ∧
     out.2.sleepLog.toList = repeatSleepChunks cfg.pollIntervalMs rounds)
 
-/-- External OS kernel and multi-process advisory-locking assumptions grounded in `RuntimeTests.lean`. -/
-structure EmpiricalAssumptions where
-  /-- Multi-process POSIX `flock(2)` (`LOCK_EX | LOCK_NB` with `O_NOFOLLOW | O_CLOEXEC`) enforces mutual exclusion across child processes on `<poolDir>/slot-<i>.lock`, routing concurrent callers onto disjoint slots in `[0, totalSlots)`. -/
-  multiProcessFlockMutualExclusion : Prop
-  /-- Kernel open-file-description cleanup releases held `<poolDir>/slot-<i>.lock` advisory locks automatically when a callback throws `IO.Error` or a leaseholder subprocess is terminated via `SIGKILL`. -/
-  kernelReleasesSlotLockOnExceptionAndSigkill : Prop
-  /-- Real `IO.monoNanosNow` and `IO.sleep` satisfy `WaitPolicy.noWait`, `WaitPolicy.waitUpTo`, and `WaitPolicy.waitForever` wakeup and timeout contracts inside `LeanSwe.TempDir.withTempDir`. -/
-  monotonicClockWaitPoliciesInTempDir : Prop
+/-- Complete `1 × 8` `(request, errorKind)` coverage matrix for pure orchestration package `LeanSwe.SlotPool` (`SlotPoolErrorKind`). -/
+def errorCoverage : List (ErrorObligation SlotPoolErrorKind) :=
+  [ { request := "LeanSwe.SlotPool.withSlot"
+      errorKind := .invalidInput
+      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_invalidInput" .real }
+  , { request := "LeanSwe.SlotPool.withSlot"
+      errorKind := .notFound
+      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_notFound" .real }
+  , { request := "LeanSwe.SlotPool.withSlot"
+      errorKind := .alreadyExists
+      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_alreadyExists" .real }
+  , { request := "LeanSwe.SlotPool.withSlot"
+      errorKind := .permissionDenied
+      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_permissionDenied" .real }
+  , { request := "LeanSwe.SlotPool.withSlot"
+      errorKind := .isADirectory
+      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_isADirectory" .real }
+  , { request := "LeanSwe.SlotPool.withSlot"
+      errorKind := .notADirectory
+      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_notADirectory" .real }
+  , { request := "LeanSwe.SlotPool.withSlot"
+      errorKind := .unsupported
+      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_unsupported" .mocked }
+  , { request := "LeanSwe.SlotPool.withSlot"
+      errorKind := .ioError
+      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_ioError" .real } ]
 
 end LeanSwe.SlotPool

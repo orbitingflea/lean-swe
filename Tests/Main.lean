@@ -114,6 +114,8 @@ def main (args : List String) : IO UInt32 := do
     return (← CmdLine.RuntimeTests.probeMain rest)
   | "--slotpool-probe" :: rest =>
     return (← SlotPool.RuntimeTests.probeMain rest)
+  | "--compress-probe" :: rest =>
+    return (← Compress.RuntimeTests.probeMain rest)
   | "--sandbox-strace-worker" :: mode :: [] =>
     LinuxSyscall.Sandbox.RuntimeTests.runStraceWorker mode
     return 0

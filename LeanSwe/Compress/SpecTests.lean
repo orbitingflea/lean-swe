@@ -1,10 +1,12 @@
 import Core.NondetTest
+import Core.Assumptions
 import LeanSwe.Process.Types
 import LeanSwe.Compress.Types
+import LeanSwe.Compress.Model
 
 namespace LeanSwe.Compress
 
-open Core (NondetTest)
+open Core (NondetTest AssumptionObligation ErrorObligation)
 open Core.NondetTest
 open LeanSwe.Process
   (ProcessErrorKind ProcessError ExecRequest ExecResult ProcessHandle ExecOutcome RawProcessOpsM)
@@ -18,14 +20,6 @@ def codecProgram : Codec → String
   | .zstd => "zstd"
   | .xz => "xz"
   | .gzip => "gzip"
-
-/-- Explicit environment removals clearing inherited codec configuration variables while keeping `PATH`. -/
-def codecSanitizedEnv : Array (String × Option String) :=
-  #[("XZ_OPT", none),
-    ("XZ_DEFAULTS", none),
-    ("ZSTD_CLEVEL", none),
-    ("ZSTD_NBTHREADS", none),
-    ("GZIP", none)]
 
 /-- Valid compression level predicate per `Codec`. -/
 def isValidLevel (codec : Codec) : Option Nat → Bool
@@ -413,19 +407,116 @@ def test_compress_isToolAvailable_checksVersionAndCleansUp
   else
     NondetTest.assert (avail = false)
 
-/-- External trust boundary assumptions for real `/usr/bin/zstd`, `/usr/bin/xz`, and `/usr/bin/gzip` CLIs grounded in `RuntimeTests.lean`. -/
-structure EmpiricalAssumptions where
-  /-- `zstd`, `xz`, and `gzip` round-trip arbitrary `ByteArray` payloads (empty, repetitive, random, and multi-member concatenated streams). -/
-  roundTripValidInputs : Prop
-  /-- `gzip -c -n` produces byte-identical output across repeated invocations by omitting filename and mtime metadata. -/
-  gzipDeterminism : Prop
-  /-- Compressed outputs of `zstd`, `xz`, and `gzip` interoperate symmetrically with Python reference codecs (`zlib`, `lzma`, `zstd`/`zstandard`). -/
-  pythonInterop : Prop
-  /-- `zstd -d`, `xz -d`, and `gzip -d` fail with non-zero exit status on empty bytes, invalid magic, truncated streams, checksum corruption, and trailing non-zero garbage (distinct from format NUL padding; including `gzip` exit code `2`). -/
-  corruptAndTruncatedAndTrailingGarbageRejected : Prop
-  /-- Missing or unexecutable CLI binaries (`ENOENT` / `EACCES`) surface through `LeanSwe.Process` as `.toolNotFound`. -/
-  missingOrUnexecutableToolReportsToolNotFound : Prop
-  /-- Zero-byte decompression bombs terminate cleanly with `.outputLimitExceeded` under bounded `maxOutputBytes`. -/
-  decompressionBombEnforcesOutputLimit : Prop
+/-- External CLI boundary assumptions for `zstd`, `xz`, and `gzip` subprocesses executed via `LeanSwe.Compress`,
+    verified at runtime in `LeanSwe.Compress.RuntimeTests` with nonce-authenticated logging. -/
+def externalAssumptions : List AssumptionObligation :=
+  [ { name := "LeanSwe.Compress.assume_compress_isToolAvailable_installedCodecsReportTrue"
+      subject := "LeanSwe.Compress.isToolAvailable"
+      formalPred? := none }
+  , { name := "LeanSwe.Compress.assume_compress_roundTrip_validAndConcatenatedStreams"
+      subject := "LeanSwe.Compress.compress"
+      formalPred? := none }
+  , { name := "LeanSwe.Compress.assume_compress_compressWith_gzipDeterministicAndOptionsRoundTrip"
+      subject := "LeanSwe.Compress.compressWith"
+      formalPred? := none }
+  , { name := "LeanSwe.Compress.assume_compress_decompress_pythonReferenceInterop"
+      subject := "LeanSwe.Compress.decompress"
+      formalPred? := none }
+  , { name := "LeanSwe.Compress.assume_compress_decompress_rejectsCorruptTruncatedAndTrailingGarbage"
+      subject := "LeanSwe.Compress.decompress"
+      formalPred? := none }
+  , { name := "LeanSwe.Compress.assume_compress_defaultApi_sanitizesCodecEnvAndReportsMissingTool"
+      subject := "LeanSwe.Compress.defaultApi"
+      formalPred? := none }
+  , { name := "LeanSwe.Compress.assume_compress_decompressWith_enforcesMaxOutputBytesOnBomb"
+      subject := "LeanSwe.Compress.decompressWith"
+      formalPred? := none } ]
+
+/-- Complete `4 × 7` `(request, errorKind)` coverage matrix for `LeanSwe.Compress` (`CompressErrorKind`). -/
+def errorCoverage : List (ErrorObligation CompressErrorKind) :=
+  [ { request := "LeanSwe.Compress.compress"
+      errorKind := .toolNotFound
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compress_toolNotFound" .real }
+  , { request := "LeanSwe.Compress.compress"
+      errorKind := .invalidInput
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compress_invalidInput" .real }
+  , { request := "LeanSwe.Compress.compress"
+      errorKind := .corruptData
+      justification := .provedImpossible "LeanSwe.Compress.Proofs.compress_compress_never_corruptData" }
+  , { request := "LeanSwe.Compress.compress"
+      errorKind := .outputLimitExceeded
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compress_outputLimitExceeded" .real }
+  , { request := "LeanSwe.Compress.compress"
+      errorKind := .timedOut
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compress_timedOut" .mocked }
+  , { request := "LeanSwe.Compress.compress"
+      errorKind := .commandFailed
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compress_commandFailed" .mocked }
+  , { request := "LeanSwe.Compress.compress"
+      errorKind := .ioError
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compress_ioError" .real }
+  , { request := "LeanSwe.Compress.decompress"
+      errorKind := .toolNotFound
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompress_toolNotFound" .real }
+  , { request := "LeanSwe.Compress.decompress"
+      errorKind := .invalidInput
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompress_invalidInput" .real }
+  , { request := "LeanSwe.Compress.decompress"
+      errorKind := .corruptData
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompress_corruptData" .real }
+  , { request := "LeanSwe.Compress.decompress"
+      errorKind := .outputLimitExceeded
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompress_outputLimitExceeded" .real }
+  , { request := "LeanSwe.Compress.decompress"
+      errorKind := .timedOut
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompress_timedOut" .mocked }
+  , { request := "LeanSwe.Compress.decompress"
+      errorKind := .commandFailed
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompress_commandFailed" .mocked }
+  , { request := "LeanSwe.Compress.decompress"
+      errorKind := .ioError
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompress_ioError" .real }
+  , { request := "LeanSwe.Compress.compressWith"
+      errorKind := .toolNotFound
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_toolNotFound" .real }
+  , { request := "LeanSwe.Compress.compressWith"
+      errorKind := .invalidInput
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_invalidInput" .real }
+  , { request := "LeanSwe.Compress.compressWith"
+      errorKind := .corruptData
+      justification := .provedImpossible "LeanSwe.Compress.Proofs.compress_compressWith_never_corruptData" }
+  , { request := "LeanSwe.Compress.compressWith"
+      errorKind := .outputLimitExceeded
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_outputLimitExceeded" .real }
+  , { request := "LeanSwe.Compress.compressWith"
+      errorKind := .timedOut
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_timedOut" .real }
+  , { request := "LeanSwe.Compress.compressWith"
+      errorKind := .commandFailed
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_commandFailed" .mocked }
+  , { request := "LeanSwe.Compress.compressWith"
+      errorKind := .ioError
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_ioError" .real }
+  , { request := "LeanSwe.Compress.decompressWith"
+      errorKind := .toolNotFound
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_toolNotFound" .real }
+  , { request := "LeanSwe.Compress.decompressWith"
+      errorKind := .invalidInput
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_invalidInput" .real }
+  , { request := "LeanSwe.Compress.decompressWith"
+      errorKind := .corruptData
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_corruptData" .real }
+  , { request := "LeanSwe.Compress.decompressWith"
+      errorKind := .outputLimitExceeded
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_outputLimitExceeded" .real }
+  , { request := "LeanSwe.Compress.decompressWith"
+      errorKind := .timedOut
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_timedOut" .real }
+  , { request := "LeanSwe.Compress.decompressWith"
+      errorKind := .commandFailed
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_commandFailed" .mocked }
+  , { request := "LeanSwe.Compress.decompressWith"
+      errorKind := .ioError
+      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_ioError" .real } ]
 
 end LeanSwe.Compress

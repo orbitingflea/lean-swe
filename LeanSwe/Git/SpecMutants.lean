@@ -285,4 +285,16 @@ example : ¬ Core.AllPass (test_git_raw_mkApi_isolationAndGuards stubRawMkApi) :
   cases he
   cases hkind
 
+example : ¬ Core.AllPass (test_git_status_parsesRealOutput fun _ => .ok #[]) := by
+  intro h
+  dsimp [test_git_status_parsesRealOutput, Core.AllPass, assert] at h
+  have hlen := congrArg Array.size (Except.ok.inj h.1)
+  simp at hlen
+
+example : ¬ Core.AllPass (test_git_worktreeList_parsesRealOutput fun _ => .ok #[]) := by
+  intro h
+  dsimp [test_git_worktreeList_parsesRealOutput, Core.AllPass, assert] at h
+  have hlen := congrArg Array.size (Except.ok.inj h.1)
+  simp at hlen
+
 end LeanSwe.Git

@@ -117,6 +117,8 @@ import LeanSwe.Git.Interface
 import LeanSwe.Git.Impl
 import LeanSwe.Git.SpecTests
 import LeanSwe.Git.SpecMutants
+import LeanSwe.Git.Proofs.ParserProofs
+import LeanSwe.Git.Proofs.ImpossibleProofs
 import LeanSwe.Git.Proofs
 import LeanSwe.Git.RuntimeTests
 import LeanSwe.CmdLine.Types
@@ -154,9 +156,13 @@ import LeanSwe.TempDir.Impl
 import LeanSwe.TempDir.Interface
 import LeanSwe.TempDir.SpecTests
 import LeanSwe.TempDir.SpecMutants
+import LeanSwe.TempDir.Proofs.Shared
+import LeanSwe.TempDir.Proofs.WithTempDirProofs
+import LeanSwe.TempDir.Proofs.LockedProofs
 import LeanSwe.TempDir.Proofs
 import LeanSwe.TempDir.RuntimeTests
 import LeanSwe.Compress.Types
+import LeanSwe.Compress.Model
 import LeanSwe.Compress.Impl
 import LeanSwe.Compress.Interface
 import LeanSwe.Compress.SpecTests

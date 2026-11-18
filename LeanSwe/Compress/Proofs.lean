@@ -568,4 +568,191 @@ theorem reach_compress_isToolAvailable_checksVersionAndCleansUp :
     CanReach (test_compress_isToolAvailable_checksVersionAndCleansUp Internal.mkApiM) :=
   ⟨.zstd, true, 0, 0, proof_compress_isToolAvailable_checksVersionAndCleansUp .zstd true 0 0⟩
 
+private theorem io_pure_eq {α : Type} (a : α) (w : Void IO.RealWorld) :
+    (pure a : IO α) w = EST.Out.ok a w := rfl
+
+private theorem io_bind_eq {α β : Type} (x : IO α) (f : α → IO β) (w : Void IO.RealWorld) :
+    (x >>= f) w =
+      match x w with
+      | EST.Out.ok a w' => f a w'
+      | EST.Out.error e w' => EST.Out.error e w' := by
+  change EST.bind x f w = _
+  unfold EST.bind
+  cases x w <;> rfl
+
+private theorem io_tryCatch_eq {α : Type} (x : IO α) (h : IO.Error → IO α) (w : Void IO.RealWorld) :
+    (tryCatch x h) w =
+      match x w with
+      | EST.Out.ok a w' => EST.Out.ok a w'
+      | EST.Out.error e w' => h e w' := by
+  change EST.tryCatch x h w = _
+  unfold EST.tryCatch
+  cases x w <;> rfl
+
+private theorem catchProc_never_throws {α : Type} (prog? : Option String) (act : IO α)
+    (w : Void IO.RealWorld) :
+    ∃ r w', LeanSwe.Process.Raw.Internal.catchProc prog? act w = EST.Out.ok r w' := by
+  unfold LeanSwe.Process.Raw.Internal.catchProc
+  rw [io_bind_eq]
+  cases h : act w with
+  | ok a w' =>
+    refine ⟨Except.ok a, w', ?_⟩
+    rw [io_tryCatch_eq, io_bind_eq, h]
+    rfl
+  | error err w' =>
+    refine ⟨Except.error (LeanSwe.Process.Raw.Internal.mapIoError prog? err), w', ?_⟩
+    rw [io_tryCatch_eq, io_bind_eq, h]
+    rfl
+
+private theorem defaultOps_spawn_never_throws (req : ExecRequest) (w : Void IO.RealWorld) :
+    ∃ r w', LeanSwe.Process.Raw.defaultOps.spawn req w = EST.Out.ok r w' := by
+  unfold LeanSwe.Process.Raw.defaultOps LeanSwe.Process.Raw.Internal.mkRawOps
+  dsimp only
+  split
+  · rw [io_pure_eq]; exact ⟨_, _, rfl⟩
+  · exact catchProc_never_throws _ _ w
+
+private theorem defaultOps_awaitOutput_never_throws (h : LeanSwe.Process.Raw.ProcessHandle)
+    (stdin : ByteArray) (timeoutMs maxOut : Option Nat) (w : Void IO.RealWorld) :
+    ∃ r w', LeanSwe.Process.Raw.defaultOps.awaitOutput h stdin timeoutMs maxOut w = EST.Out.ok r w' := by
+  unfold LeanSwe.Process.Raw.defaultOps LeanSwe.Process.Raw.Internal.mkRawOps
+  dsimp only
+  exact catchProc_never_throws _ _ w
+
+private theorem defaultOps_killProcessGroup_never_throws (h : LeanSwe.Process.Raw.ProcessHandle)
+    (w : Void IO.RealWorld) :
+    ∃ r w', LeanSwe.Process.Raw.defaultOps.killProcessGroup h w = EST.Out.ok r w' := by
+  unfold LeanSwe.Process.Raw.defaultOps LeanSwe.Process.Raw.Internal.mkRawOps
+  dsimp only
+  exact catchProc_never_throws _ _ w
+
+private theorem defaultOps_reap_never_throws (h : LeanSwe.Process.Raw.ProcessHandle)
+    (w : Void IO.RealWorld) :
+    ∃ r w', LeanSwe.Process.Raw.defaultOps.reap h w = EST.Out.ok r w' := by
+  unfold LeanSwe.Process.Raw.defaultOps LeanSwe.Process.Raw.Internal.mkRawOps
+  dsimp only
+  exact catchProc_never_throws _ _ w
+
+private theorem processRun_defaultOps_never_throws (req : ExecRequest) (w : Void IO.RealWorld) :
+    ∃ r w', LeanSwe.Process.Internal.run LeanSwe.Process.Raw.defaultOps req w = EST.Out.ok r w' := by
+  unfold LeanSwe.Process.Internal.run
+  cases hVal : LeanSwe.Process.Internal.validateRequest req with
+  | error e =>
+    dsimp only
+    rw [io_pure_eq]
+    exact ⟨Except.error e, w, rfl⟩
+  | ok vreq =>
+    dsimp only
+    rw [io_bind_eq]
+    rcases defaultOps_spawn_never_throws vreq w with ⟨rSpawn, w1, hSpawn⟩
+    rw [hSpawn]
+    cases rSpawn with
+    | error err =>
+      dsimp only
+      rw [io_pure_eq]
+      exact ⟨_, _, rfl⟩
+    | ok h =>
+      dsimp only
+      rw [io_bind_eq]
+      rcases defaultOps_awaitOutput_never_throws h vreq.stdin vreq.timeoutMs vreq.maxOutputBytes w1 with
+        ⟨rAwait, w2, hAwait⟩
+      rw [hAwait]
+      rcases rAwait with err | outcome
+      · dsimp only
+        rw [io_bind_eq]
+        rcases defaultOps_killProcessGroup_never_throws h w2 with ⟨_, w3, hKill⟩
+        rw [hKill]; dsimp only; rw [io_bind_eq]
+        rcases defaultOps_reap_never_throws h w3 with ⟨_, w4, hReap⟩
+        rw [hReap]; dsimp only; rw [io_pure_eq]
+        exact ⟨_, _, rfl⟩
+      · cases outcome with
+        | exited res =>
+          dsimp only
+          rw [io_bind_eq]
+          rcases defaultOps_reap_never_throws h w2 with ⟨rReap, w3, hReap⟩
+          rw [hReap]
+          cases rReap <;> (dsimp only; rw [io_pure_eq]; exact ⟨_, _, rfl⟩)
+        | signaled _ _ _ =>
+          dsimp only
+          rw [io_bind_eq]
+          rcases defaultOps_killProcessGroup_never_throws h w2 with ⟨_, w3, hKill⟩
+          rw [hKill]; dsimp only; rw [io_bind_eq]
+          rcases defaultOps_reap_never_throws h w3 with ⟨_, w4, hReap⟩
+          rw [hReap]; dsimp only; rw [io_pure_eq]
+          exact ⟨_, _, rfl⟩
+        | timedOut _ _ =>
+          dsimp only
+          rw [io_bind_eq]
+          rcases defaultOps_killProcessGroup_never_throws h w2 with ⟨_, w3, hKill⟩
+          rw [hKill]; dsimp only; rw [io_bind_eq]
+          rcases defaultOps_reap_never_throws h w3 with ⟨_, w4, hReap⟩
+          rw [hReap]; dsimp only; rw [io_pure_eq]
+          exact ⟨_, _, rfl⟩
+        | outputLimitExceeded _ _ =>
+          dsimp only
+          rw [io_bind_eq]
+          rcases defaultOps_killProcessGroup_never_throws h w2 with ⟨_, w3, hKill⟩
+          rw [hKill]; dsimp only; rw [io_bind_eq]
+          rcases defaultOps_reap_never_throws h w3 with ⟨_, w4, hReap⟩
+          rw [hReap]; dsimp only; rw [io_pure_eq]
+          exact ⟨_, _, rfl⟩
+
+private theorem validateCompressOptions_error_ne_corruptData (codec : Codec)
+    (opts : CompressOptions) (input : ByteArray) {e : CompressError}
+    (h : Internal.validateCompressOptions codec opts input = .error e) :
+    e.kind ≠ .corruptData := by
+  by_cases hv : isValidCompressInput codec opts input = true
+  · have := (validateCompressOptions_true_implies_ok codec opts input hv).1
+    rw [this] at h
+    cases h
+  · have hfalse : isValidCompressInput codec opts input = false := by
+      cases hc : isValidCompressInput codec opts input <;> simp_all
+    rcases validateCompressOptions_false_implies_error codec opts input hfalse with
+      ⟨e', hVal, hk, _⟩
+    rw [hVal] at h
+    injection h with heq
+    rw [← heq, hk]
+    decide
+
+/-- Formal impossibility proof for `LeanSwe.Compress.compressWith` never returning `.corruptData`. -/
+theorem compress_compressWith_never_corruptData (codec : Codec) (opts : CompressOptions)
+    (input : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CompressError.kind .corruptData
+      (Compress.compressWith codec opts input) w := by
+  unfold Core.NeverErrorKindIO Compress.compressWith Compress.defaultApi Internal.mkApiM
+    Internal.compressWith
+  dsimp only
+  cases hVal : Internal.validateCompressOptions codec opts input with
+  | error e =>
+    dsimp only
+    rw [io_pure_eq]
+    exact validateCompressOptions_error_ne_corruptData codec opts input hVal
+  | ok _ =>
+    dsimp only
+    rw [io_bind_eq]
+    rcases processRun_defaultOps_never_throws (Internal.mkCompressRequest codec opts input) w with
+      ⟨r, w', hRun⟩
+    rw [hRun]
+    cases r with
+    | error pe =>
+      dsimp only
+      rw [io_pure_eq]
+      dsimp only
+      unfold Internal.classifyProcessError
+      cases pe.kind <;> simp
+    | ok res =>
+      dsimp only
+      rw [io_pure_eq]
+      dsimp only [Internal.classifyExitResult]
+      cases hZero : (res.exitCode == 0)
+      · simp
+      · simp
+
+/-- Formal impossibility proof for `LeanSwe.Compress.compress` never returning `.corruptData`. -/
+theorem compress_compress_never_corruptData (codec : Codec) (input : ByteArray)
+    (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO CompressError.kind .corruptData
+      (Compress.compress codec input) w :=
+  compress_compressWith_never_corruptData codec {} input w
+
 end LeanSwe.Compress.Proofs

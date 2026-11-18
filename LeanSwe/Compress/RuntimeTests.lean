@@ -1,3 +1,5 @@
+import Core.Assumptions
+import LeanSwe.Fs.Interface
 import LeanSwe.Process.Interface
 import LeanSwe.Compress.Types
 import LeanSwe.Compress.Impl
@@ -269,17 +271,337 @@ private def testTimedOutAndEnvSanitization : IO Unit := do
     let dec ← expectOk s!"poisoned env decompress {repr codec}" (← poisonedApi.decompress codec comp)
     assertBytesEq s!"poisoned env round-trip {repr codec}" dec sample
 
+/-- Verify installed `zstd`, `xz`, and `gzip` binaries report `isToolAvailable = true`. -/
+def assume_compress_isToolAvailable_installedCodecsReportTrue : IO Unit :=
+  testToolAvailability
+
+/-- Verify real CLI round-trips across payloads and concatenated streams for all codecs. -/
+def assume_compress_roundTrip_validAndConcatenatedStreams : IO Unit :=
+  testRoundTrips
+
+/-- Verify `compressWith` options round-trip and `gzip -n` outputs are byte-deterministic. -/
+def assume_compress_compressWith_gzipDeterministicAndOptionsRoundTrip : IO Unit :=
+  testCompressionOptionsAndDeterminism
+
+/-- Verify bidirectional byte-level interoperability against Python reference codecs. -/
+def assume_compress_decompress_pythonReferenceInterop : IO Unit :=
+  testPythonInterop
+
+/-- Verify `decompress` classifies empty, corrupt, truncated, and trailing-garbage streams as `.corruptData`. -/
+def assume_compress_decompress_rejectsCorruptTruncatedAndTrailingGarbage : IO Unit :=
+  testCorruptAndTruncatedAndTrailingGarbage
+
+/-- Verify `defaultApi` sanitizes codec environment variables and classifies missing/non-executable binaries as `.toolNotFound`. -/
+def assume_compress_defaultApi_sanitizesCodecEnvAndReportsMissingTool : IO Unit := do
+  testToolNotFoundAndNonExecutable
+  testTimedOutAndEnvSanitization
+
+/-- Verify `decompressWith` enforces `maxOutputBytes` on highly compressible bombs with `.outputLimitExceeded`. -/
+def assume_compress_decompressWith_enforcesMaxOutputBytesOnBomb : IO Unit :=
+  testOutputLimitExceeded
+
+private def mkMockAwaitApi (outcome : Raw.ExecOutcome) : CompressApi :=
+  let ops : RawProcessOpsM IO :=
+    { Raw.defaultOps with
+      spawn := fun _ => pure (.ok { handleId := 1, pid := 1, pgid := 1 })
+      awaitOutput := fun _ _ _ _ => pure (.ok outcome)
+      killProcessGroup := fun _ => pure (.ok ())
+      reap := fun _ => pure (.ok ())
+      activeProcessCount := pure 0 }
+  Internal.mkApiM ops
+
+private def compressErrKindTag : CompressErrorKind → String
+  | .toolNotFound => "toolNotFound"
+  | .invalidInput => "invalidInput"
+  | .corruptData => "corruptData"
+  | .outputLimitExceeded => "outputLimitExceeded"
+  | .timedOut => "timedOut"
+  | .commandFailed => "commandFailed"
+  | .ioError => "ioError"
+
+private def runProbeResult (res : Except CompressError ByteArray) : IO UInt32 := do
+  match res with
+  | .ok _ =>
+    IO.println "OK"
+    return 1
+  | .error e =>
+    IO.println s!"ERR:{compressErrKindTag e.kind}:{e.message}"
+    return 0
+
+/-- Subprocess probe entrypoint invoked via `--compress-probe` from `Tests.Main`. -/
+def probeMain (args : List String) : IO UInt32 := do
+  match args with
+  | ["compress"] => runProbeResult (← Compress.compress .zstd "hi".toUTF8)
+  | ["decompress"] => runProbeResult (← Compress.decompress .zstd "hi".toUTF8)
+  | ["compressWith"] => runProbeResult (← Compress.compressWith .zstd {} "hi".toUTF8)
+  | ["decompressWith"] => runProbeResult (← Compress.decompressWith .zstd {} "hi".toUTF8)
+  | _ =>
+    IO.eprintln s!"unknown compress probe args: {repr args}"
+    return 2
+
+private def runCompressProbeWithPath (label opTag pathEnv : String)
+    (expectedKind : CompressErrorKind) : IO Unit := do
+  let avail ← Compress.isToolAvailable .zstd
+  assertTrue s!"{label}: zstd available before probe" avail
+  let exe := (← IO.appPath).toString
+  let req : ExecRequest :=
+    { program := exe
+      args := #["--compress-probe", opTag]
+      env := #[("PATH", some pathEnv)]
+      inheritEnv := false
+      timeoutMs := some 10000
+      maxOutputBytes := some 65536 }
+  match ← LeanSwe.Process.run req with
+  | .error e =>
+    throw (IO.userError s!"{label}: probe process invocation failed: {e.message}")
+  | .ok res =>
+    let out := (String.fromUTF8? res.stdout |>.getD "").trimAscii.toString
+    let err := (String.fromUTF8? res.stderr |>.getD "").trimAscii.toString
+    if res.exitCode != 0 then
+      throw (IO.userError s!"{label}: probe exited {res.exitCode} stdout={out} stderr={err}")
+    let expectedPrefix := s!"ERR:{compressErrKindTag expectedKind}:"
+    if !out.startsWith expectedPrefix || out.length <= expectedPrefix.length then
+      throw (IO.userError s!"{label}: expected prefix {expectedPrefix}, got {out}")
+
+private def readUrandomBytes (n : Nat) : IO ByteArray := do
+  IO.FS.withFile "/dev/urandom" .read fun h => do
+    let mut out := ByteArray.emptyWithCapacity n
+    while out.size < n do
+      let rem := n - out.size
+      let chunk ← h.read (USize.ofNat rem)
+      if chunk.isEmpty then
+        throw (IO.userError "unexpected EOF reading /dev/urandom")
+      out := out ++ chunk
+    return out
+
+private def runToolNotFoundProbe (label opTag : String) : IO Unit := do
+  let tmpDir ← IO.FS.createTempDir
+  try
+    runCompressProbeWithPath label opTag tmpDir.toString .toolNotFound
+  finally
+    IO.FS.removeDirAll tmpDir
+
+private def runEloopProbe (label opTag : String) : IO Unit := do
+  let tmpDir ← IO.FS.createTempDir
+  try
+    let linkPath := (tmpDir / "zstd").toString
+    match ← LeanSwe.Fs.symlink "zstd" linkPath with
+    | .ok () => pure ()
+    | .error fe => throw (IO.userError s!"{label}: symlink failed: {fe.message}")
+    runCompressProbeWithPath label opTag tmpDir.toString .invalidInput
+  finally
+    IO.FS.removeDirAll tmpDir
+
+private def runEnametoolongProbe (label opTag : String) : IO Unit :=
+  let longPath := String.ofList (List.replicate 5000 'a')
+  runCompressProbeWithPath label opTag longPath .ioError
+
+/-- Real error test for `Compress.compress` returning `.toolNotFound`. -/
+def err_compress_compress_toolNotFound : IO Unit :=
+  runToolNotFoundProbe "compress toolNotFound" "compress"
+
+/-- Real error test for `Compress.compress` returning `.invalidInput`. -/
+def err_compress_compress_invalidInput : IO Unit :=
+  runEloopProbe "compress invalidInput" "compress"
+
+/-- Real error test for `Compress.compress` returning `.outputLimitExceeded`. -/
+def err_compress_compress_outputLimitExceeded : IO Unit := do
+  let payload ← readUrandomBytes (64 * 1024 * 1024 + 131072)
+  let _ ← expectErrKind "compress outputLimitExceeded" .outputLimitExceeded
+    (← Compress.compress .zstd payload)
+
+/-- Mocked error test for `Compress.compress` returning `.timedOut`. -/
+def err_compress_compress_timedOut : IO Unit := do
+  let api := mkMockAwaitApi (.timedOut ByteArray.empty ByteArray.empty)
+  let _ ← expectErrKind "compress timedOut" .timedOut (← api.compress .zstd "hi".toUTF8)
+
+/-- Mocked error test for `Compress.compress` returning `.commandFailed`. -/
+def err_compress_compress_commandFailed : IO Unit := do
+  let api := mkMockAwaitApi (.exited { exitCode := 2, stdout := ByteArray.empty, stderr := "err".toUTF8 })
+  let _ ← expectErrKind "compress commandFailed" .commandFailed (← api.compress .zstd "hi".toUTF8)
+
+/-- Real error test for `Compress.compress` returning `.ioError`. -/
+def err_compress_compress_ioError : IO Unit :=
+  runEnametoolongProbe "compress ioError" "compress"
+
+/-- Real error test for `Compress.decompress` returning `.toolNotFound`. -/
+def err_compress_decompress_toolNotFound : IO Unit :=
+  runToolNotFoundProbe "decompress toolNotFound" "decompress"
+
+/-- Real error test for `Compress.decompress` returning `.invalidInput`. -/
+def err_compress_decompress_invalidInput : IO Unit :=
+  runEloopProbe "decompress invalidInput" "decompress"
+
+/-- Real error test for `Compress.decompress` returning `.corruptData`. -/
+def err_compress_decompress_corruptData : IO Unit := do
+  let _ ← expectErrKind "decompress corruptData" .corruptData
+    (← decompress .zstd "not-valid-zstd-stream".toUTF8)
+
+/-- Real error test for `Compress.decompress` returning `.outputLimitExceeded`. -/
+def err_compress_decompress_outputLimitExceeded : IO Unit := do
+  let zeros := ByteArray.mk (Array.replicate (65 * 1024 * 1024) 0)
+  let comp ← expectOk "compress payload for decompress limit" (← Compress.compress .zstd zeros)
+  let _ ← expectErrKind "decompress outputLimitExceeded" .outputLimitExceeded
+    (← Compress.decompress .zstd comp)
+
+/-- Mocked error test for `Compress.decompress` returning `.timedOut`. -/
+def err_compress_decompress_timedOut : IO Unit := do
+  let api := mkMockAwaitApi (.timedOut ByteArray.empty ByteArray.empty)
+  let _ ← expectErrKind "decompress timedOut" .timedOut (← api.decompress .zstd "hi".toUTF8)
+
+/-- Mocked error test for `Compress.decompress` returning `.commandFailed`. -/
+def err_compress_decompress_commandFailed : IO Unit := do
+  let api := mkMockAwaitApi (.signaled 15 ByteArray.empty ByteArray.empty)
+  let _ ← expectErrKind "decompress commandFailed" .commandFailed (← api.decompress .zstd "hi".toUTF8)
+
+/-- Real error test for `Compress.decompress` returning `.ioError`. -/
+def err_compress_decompress_ioError : IO Unit :=
+  runEnametoolongProbe "decompress ioError" "decompress"
+
+/-- Real error test for `Compress.compressWith` returning `.toolNotFound`. -/
+def err_compress_compressWith_toolNotFound : IO Unit :=
+  runToolNotFoundProbe "compressWith toolNotFound" "compressWith"
+
+/-- Real error test for `Compress.compressWith` returning `.invalidInput`. -/
+def err_compress_compressWith_invalidInput : IO Unit := do
+  let _ ← expectErrKind "compressWith invalidInput" .invalidInput
+    (← compressWith .gzip { threads := some 1 } "abc".toUTF8)
+
+/-- Real error test for `Compress.compressWith` returning `.outputLimitExceeded`. -/
+def err_compress_compressWith_outputLimitExceeded : IO Unit := do
+  let _ ← expectErrKind "compressWith outputLimitExceeded" .outputLimitExceeded
+    (← compressWith .gzip { maxOutputBytes := 4 } (mkRepeatedBytes 8192))
+
+/-- Real error test for `Compress.compressWith` returning `.timedOut`. -/
+def err_compress_compressWith_timedOut : IO Unit := do
+  let payload ← readUrandomBytes (8 * 1024 * 1024)
+  let _ ← expectErrKind "compressWith timedOut" .timedOut
+    (← Compress.compressWith .xz { level := some 9, timeoutMs := 1 } payload)
+
+/-- Mocked error test for `Compress.compressWith` returning `.commandFailed`. -/
+def err_compress_compressWith_commandFailed : IO Unit := do
+  let api := mkMockAwaitApi (.exited { exitCode := 1, stdout := ByteArray.empty, stderr := "fail".toUTF8 })
+  let _ ← expectErrKind "compressWith commandFailed" .commandFailed (← api.compressWith .zstd {} "hi".toUTF8)
+
+/-- Real error test for `Compress.compressWith` returning `.ioError`. -/
+def err_compress_compressWith_ioError : IO Unit :=
+  runEnametoolongProbe "compressWith ioError" "compressWith"
+
+/-- Real error test for `Compress.decompressWith` returning `.toolNotFound`. -/
+def err_compress_decompressWith_toolNotFound : IO Unit :=
+  runToolNotFoundProbe "decompressWith toolNotFound" "decompressWith"
+
+/-- Real error test for `Compress.decompressWith` returning `.invalidInput`. -/
+def err_compress_decompressWith_invalidInput : IO Unit := do
+  let _ ← expectErrKind "decompressWith invalidInput" .invalidInput
+    (← decompressWith .zstd { timeoutMs := 0 } "abc".toUTF8)
+
+/-- Real error test for `Compress.decompressWith` returning `.corruptData`. -/
+def err_compress_decompressWith_corruptData : IO Unit := do
+  let _ ← expectErrKind "decompressWith corruptData" .corruptData
+    (← decompressWith .gzip {} "not-valid-gzip".toUTF8)
+
+/-- Real error test for `Compress.decompressWith` returning `.outputLimitExceeded`. -/
+def err_compress_decompressWith_outputLimitExceeded : IO Unit := do
+  let comp ← expectOk "compress zero bomb for decompressWith limit" (← compress .zstd (mkZeroBytes (2 * 1024 * 1024)))
+  let _ ← expectErrKind "decompressWith outputLimitExceeded" .outputLimitExceeded
+    (← decompressWith .zstd { maxOutputBytes := 1024 } comp)
+
+/-- Real error test for `Compress.decompressWith` returning `.timedOut`. -/
+def err_compress_decompressWith_timedOut : IO Unit := do
+  let payload ← readUrandomBytes (16 * 1024 * 1024)
+  let comp ← expectOk "compress xz payload for decompressWith timedOut"
+    (← Compress.compressWith .xz { level := some 1, timeoutMs := 30000 } payload)
+  let _ ← expectErrKind "decompressWith timedOut" .timedOut
+    (← Compress.decompressWith .xz { timeoutMs := 1 } comp)
+
+/-- Mocked error test for `Compress.decompressWith` returning `.commandFailed`. -/
+def err_compress_decompressWith_commandFailed : IO Unit := do
+  let api := mkMockAwaitApi (.signaled 9 ByteArray.empty ByteArray.empty)
+  let _ ← expectErrKind "decompressWith commandFailed" .commandFailed
+    (← api.decompressWith .zstd {} "hi".toUTF8)
+
+/-- Real error test for `Compress.decompressWith` returning `.ioError`. -/
+def err_compress_decompressWith_ioError : IO Unit :=
+  runEnametoolongProbe "decompressWith ioError" "decompressWith"
+
+/-- Registered runtime verification entries for `LeanSwe.Compress.externalAssumptions`. -/
+def registeredAssumptions : Array Core.RegisteredAssumption :=
+  #[ { specName := "LeanSwe.Compress.assume_compress_isToolAvailable_installedCodecsReportTrue"
+       run := assume_compress_isToolAvailable_installedCodecsReportTrue }
+   , { specName := "LeanSwe.Compress.assume_compress_roundTrip_validAndConcatenatedStreams"
+       run := assume_compress_roundTrip_validAndConcatenatedStreams }
+   , { specName := "LeanSwe.Compress.assume_compress_compressWith_gzipDeterministicAndOptionsRoundTrip"
+       run := assume_compress_compressWith_gzipDeterministicAndOptionsRoundTrip }
+   , { specName := "LeanSwe.Compress.assume_compress_decompress_pythonReferenceInterop"
+       run := assume_compress_decompress_pythonReferenceInterop }
+   , { specName := "LeanSwe.Compress.assume_compress_decompress_rejectsCorruptTruncatedAndTrailingGarbage"
+       run := assume_compress_decompress_rejectsCorruptTruncatedAndTrailingGarbage }
+   , { specName := "LeanSwe.Compress.assume_compress_defaultApi_sanitizesCodecEnvAndReportsMissingTool"
+       run := assume_compress_defaultApi_sanitizesCodecEnvAndReportsMissingTool }
+   , { specName := "LeanSwe.Compress.assume_compress_decompressWith_enforcesMaxOutputBytesOnBomb"
+       run := assume_compress_decompressWith_enforcesMaxOutputBytesOnBomb } ]
+
+/-- Registered error-coverage tests for `LeanSwe.Compress.errorCoverage`. -/
+def registeredErrorTests : Array Core.RegisteredErrorTest :=
+  #[ { testName := "LeanSwe.Compress.RuntimeTests.err_compress_compress_toolNotFound"
+       mode := .real, run := err_compress_compress_toolNotFound }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_compress_invalidInput"
+       mode := .real, run := err_compress_compress_invalidInput }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_compress_outputLimitExceeded"
+       mode := .real, run := err_compress_compress_outputLimitExceeded }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_compress_timedOut"
+       mode := .mocked, run := err_compress_compress_timedOut }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_compress_commandFailed"
+       mode := .mocked, run := err_compress_compress_commandFailed }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_compress_ioError"
+       mode := .real, run := err_compress_compress_ioError }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_decompress_toolNotFound"
+       mode := .real, run := err_compress_decompress_toolNotFound }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_decompress_invalidInput"
+       mode := .real, run := err_compress_decompress_invalidInput }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_decompress_corruptData"
+       mode := .real, run := err_compress_decompress_corruptData }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_decompress_outputLimitExceeded"
+       mode := .real, run := err_compress_decompress_outputLimitExceeded }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_decompress_timedOut"
+       mode := .mocked, run := err_compress_decompress_timedOut }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_decompress_commandFailed"
+       mode := .mocked, run := err_compress_decompress_commandFailed }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_decompress_ioError"
+       mode := .real, run := err_compress_decompress_ioError }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_toolNotFound"
+       mode := .real, run := err_compress_compressWith_toolNotFound }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_invalidInput"
+       mode := .real, run := err_compress_compressWith_invalidInput }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_outputLimitExceeded"
+       mode := .real, run := err_compress_compressWith_outputLimitExceeded }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_timedOut"
+       mode := .real, run := err_compress_compressWith_timedOut }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_commandFailed"
+       mode := .mocked, run := err_compress_compressWith_commandFailed }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_ioError"
+       mode := .real, run := err_compress_compressWith_ioError }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_toolNotFound"
+       mode := .real, run := err_compress_decompressWith_toolNotFound }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_invalidInput"
+       mode := .real, run := err_compress_decompressWith_invalidInput }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_corruptData"
+       mode := .real, run := err_compress_decompressWith_corruptData }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_outputLimitExceeded"
+       mode := .real, run := err_compress_decompressWith_outputLimitExceeded }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_timedOut"
+       mode := .real, run := err_compress_decompressWith_timedOut }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_commandFailed"
+       mode := .mocked, run := err_compress_decompressWith_commandFailed }
+   , { testName := "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_ioError"
+       mode := .real, run := err_compress_decompressWith_ioError } ]
+
 /-- Run all runtime tests for `LeanSwe.Compress`. -/
 def runAll : IO Unit := do
-  testToolAvailability
-  testRoundTrips
-  testCompressionOptionsAndDeterminism
-  testPythonInterop
-  testCorruptAndTruncatedAndTrailingGarbage
+  Core.runRegisteredAssumptions registeredAssumptions
+  Core.runRegisteredErrorTests registeredErrorTests
   testInvalidInputsNoSpawn
-  testToolNotFoundAndNonExecutable
-  testOutputLimitExceeded
-  testTimedOutAndEnvSanitization
   IO.println "PASS: LeanSwe.Compress runtime tests"
 
 end LeanSwe.Compress.RuntimeTests
