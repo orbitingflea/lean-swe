@@ -147,12 +147,15 @@ structure SeccompFlags where
   specAllow : Bool := false
   /-- Return `ESRCH` instead of positive thread ID if `TSYNC` cannot synchronize (`SECCOMP_FILTER_FLAG_TSYNC_ESRCH`). -/
   tsyncEsrch : Bool := false
+  /-- Wait killably for `USER_NOTIF` responses (`SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV`; fails `EINVAL` without `NEW_LISTENER`). -/
+  waitKillableRecv : Bool := false
   deriving Repr, DecidableEq, BEq
 
 /-- Encode `SeccompFlags` into a portable bitmask decoded by `sandbox_shim.c`. -/
 def SeccompFlags.toBits (f : SeccompFlags) : UInt32 :=
   let bit (b : Bool) (shift : UInt32) : UInt32 := if b then (1 <<< shift) else 0
-  bit f.tsync 0 ||| bit f.log 1 ||| bit f.specAllow 2 ||| bit f.tsyncEsrch 4
+  bit f.tsync 0 ||| bit f.log 1 ||| bit f.specAllow 2 ||| bit f.tsyncEsrch 4 |||
+    bit f.waitKillableRecv 5
 
 /-- Curated `prctl(2)` operations used for process sandboxing and supervision. -/
 inductive PrctlOp where

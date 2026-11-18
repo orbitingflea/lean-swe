@@ -65,7 +65,9 @@ theorem refine_seccomp (s : SandboxSysState) (hwf : s.wf = true)
     · have hFl0 : flags.toBits == 0 := by simpa using hFl
       by_cases hKnown : isKnownSeccompAction action
       · simp only [hFl, Bool.false_eq_true, ↓reduceIte, hKnown]
-        refine ⟨?_, hwf⟩
+        have hWfSec : ({ s with seccompEnabled := true }).wf = true := by
+          unfold SandboxSysState.wf at hwf ⊢; exact hwf
+        refine ⟨?_, hWfSec⟩
         cases hSec : s.seccompMayIntercept <;>
           simp [allowedStep, allowedStepCore, hFl0, hKnown, hSec]
       · simp only [hFl, Bool.false_eq_true, ↓reduceIte, hKnown]
@@ -87,55 +89,65 @@ theorem refine_seccomp (s : SandboxSysState) (hwf : s.wf = true)
       have hGuardOk : (isValidSeccompFilterByteLen filterBytes.size = true ∧ hasSafeSeccompRetBytes filterBytes = true) := by
         cases hV : isValidSeccompFilterByteLen filterBytes.size <;> cases hS : hasSafeSeccompRetBytes filterBytes <;>
           simp_all
-      by_cases hGate : (!(s.noNewPrivs?.getD false) && !(s.hasCapSysAdmin?.getD false)) = true
-      · have hFail := nnp_fail_iff hGate
-        simp only [hGuardF, Bool.false_eq_true, ↓reduceIte, hGate]
+      by_cases hWk : flags.waitKillableRecv = true
+      · simp only [hGuardF, Bool.false_eq_true, ↓reduceIte, hWk]
+        refine ⟨?_, hwf⟩
         cases hSec : s.seccompMayIntercept
-        · refine ⟨?_, by simp only [Bool.not_false, ↓reduceIte]; exact wf_pinFailed_misc s hwf⟩
-          simp [allowedStep, failsPureWrapperGuard, allowedStepCore, hGuardOk, canFailNnpGate, hFail, hSec,
-            show Errno.EACCES ≠ Errno.EFAULT by decide]
-        · refine ⟨?_, by simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]; exact hwf⟩
-          exact allowedStep_seccomp_err s _ Errno.EACCES (by simp [failsPureWrapperGuard, hGuardOk])
+        · simp [allowedStep, failsPureWrapperGuard, allowedStepCore, hGuardOk, hWk, hSec,
+            show Errno.EINVAL ≠ Errno.EFAULT by decide]
+        · exact allowedStep_seccomp_err s _ Errno.EINVAL (by simp [failsPureWrapperGuard, hGuardOk])
             hSec (by decide) (by decide) (by decide)
-      · have hGateF : (!(s.noNewPrivs?.getD false) && !(s.hasCapSysAdmin?.getD false)) = false :=
-          Bool.eq_false_iff.mpr hGate
-        have hPass := nnp_pass_iff hGateF
-        have hPassC : canPassNnpGate s = true := by
-          unfold canPassNnpGate
-          cases h1 : s.noNewPrivs? with
-          | none => simp
-          | some a => cases a <;> cases h2 : s.hasCapSysAdmin? <;> simp_all
-        simp only [hGuardF, Bool.false_eq_true, ↓reduceIte, hGateF]
-        cases hDec : decodeSockFilters filterBytes with
-        | none =>
+      · have hWkF : flags.waitKillableRecv = false := Bool.eq_false_iff.mpr hWk
+        by_cases hGate : (!(s.noNewPrivs?.getD false) && !(s.hasCapSysAdmin?.getD false)) = true
+        · have hFail := nnp_fail_iff hGate
+          simp only [hGuardF, Bool.false_eq_true, ↓reduceIte, hWkF, hGate]
           cases hSec : s.seccompMayIntercept
-          · refine ⟨?_, by simp only [Bool.not_false, ↓reduceIte]; exact wf_pinPassed_misc s hwf⟩
-            simp [allowedStep, failsPureWrapperGuard, allowedStepCore, hGuardOk, hPassC, hDec, hSec,
-              show Errno.EINVAL ≠ Errno.EACCES by decide,
-              show Errno.EINVAL ≠ Errno.EFAULT by decide]
+          · refine ⟨?_, by simp only [Bool.not_false, ↓reduceIte]; exact wf_pinFailed_misc s hwf⟩
+            simp [allowedStep, failsPureWrapperGuard, allowedStepCore, hGuardOk, hWkF, canFailNnpGate, hFail, hSec,
+              show Errno.EACCES ≠ Errno.EFAULT by decide]
           · refine ⟨?_, by simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]; exact hwf⟩
-            exact allowedStep_seccomp_err s _ Errno.EINVAL (by simp [failsPureWrapperGuard, hGuardOk])
+            exact allowedStep_seccomp_err s _ Errno.EACCES (by simp [failsPureWrapperGuard, hGuardOk])
               hSec (by decide) (by decide) (by decide)
-        | some prog =>
-          by_cases hBpf : checkSeccompBpf prog
-          · have hWfS : ({ pinPassedNnpGate s with
-                seccompFilters := s.seccompFilters + 1
-                seccompMayIntercept := s.seccompMayIntercept || !isAllowOnlySeccompFilter prog }).wf = true := by
-              have hp := wf_pinPassed_misc s hwf
-              unfold SandboxSysState.wf at hp ⊢; exact hp
-            simp only [hBpf, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-            refine ⟨?_, hWfS⟩
-            cases hSec : s.seccompMayIntercept <;>
-              simp [allowedStep, allowedStepCore, hGuardOk, hPassC, hDec, hBpf, hSec]
-          · simp only [hBpf, Bool.not_false, ↓reduceIte]
+        · have hGateF : (!(s.noNewPrivs?.getD false) && !(s.hasCapSysAdmin?.getD false)) = false :=
+            Bool.eq_false_iff.mpr hGate
+          have hPass := nnp_pass_iff hGateF
+          have hPassC : canPassNnpGate s = true := by
+            unfold canPassNnpGate
+            cases h1 : s.noNewPrivs? with
+            | none => simp
+            | some a => cases a <;> cases h2 : s.hasCapSysAdmin? <;> simp_all
+          simp only [hGuardF, Bool.false_eq_true, ↓reduceIte, hWkF, hGateF]
+          cases hDec : decodeSockFilters filterBytes with
+          | none =>
             cases hSec : s.seccompMayIntercept
             · refine ⟨?_, by simp only [Bool.not_false, ↓reduceIte]; exact wf_pinPassed_misc s hwf⟩
-              simp [allowedStep, failsPureWrapperGuard, allowedStepCore, hGuardOk, hPassC, hDec, hBpf, hSec,
+              simp [allowedStep, failsPureWrapperGuard, allowedStepCore, hGuardOk, hWkF, hPassC, hDec, hSec,
                 show Errno.EINVAL ≠ Errno.EACCES by decide,
                 show Errno.EINVAL ≠ Errno.EFAULT by decide]
             · refine ⟨?_, by simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]; exact hwf⟩
               exact allowedStep_seccomp_err s _ Errno.EINVAL (by simp [failsPureWrapperGuard, hGuardOk])
                 hSec (by decide) (by decide) (by decide)
+          | some prog =>
+            by_cases hBpf : checkSeccompBpf prog
+            · have hWfS : ({ pinPassedNnpGate s with
+                  seccompEnabled := true
+                  seccompFilters := s.seccompFilters + 1
+                  seccompMayIntercept := s.seccompMayIntercept || !isAllowOnlySeccompFilter prog }).wf = true := by
+                have hp := wf_pinPassed_misc s hwf
+                unfold SandboxSysState.wf at hp ⊢; exact hp
+              simp only [hBpf, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+              refine ⟨?_, hWfS⟩
+              cases hSec : s.seccompMayIntercept <;>
+                simp [allowedStep, allowedStepCore, hGuardOk, hWkF, hPassC, hDec, hBpf, hSec]
+            · simp only [hBpf, Bool.not_false, ↓reduceIte]
+              cases hSec : s.seccompMayIntercept
+              · refine ⟨?_, by simp only [Bool.not_false, ↓reduceIte]; exact wf_pinPassed_misc s hwf⟩
+                simp [allowedStep, failsPureWrapperGuard, allowedStepCore, hGuardOk, hWkF, hPassC, hDec, hBpf, hSec,
+                  show Errno.EINVAL ≠ Errno.EACCES by decide,
+                  show Errno.EINVAL ≠ Errno.EFAULT by decide]
+              · refine ⟨?_, by simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]; exact hwf⟩
+                exact allowedStep_seccomp_err s _ Errno.EINVAL (by simp [failsPureWrapperGuard, hGuardOk])
+                  hSec (by decide) (by decide) (by decide)
 
 /-- `modelOps.prctl` refines `allowedStep` and preserves `wf`. -/
 theorem refine_prctl (s : SandboxSysState) (hwf : s.wf = true) (op : PrctlOp) :
@@ -414,6 +426,7 @@ theorem refine_memfdCreate (s : SandboxSysState) (hwf : s.wf = true)
               fds := assocSet s.fds s.nextHid
                 { kind := .memfd flags.allowSealing flags.noexecSeal, cloexec := flags.cloexec }
               nextHid := Nat.max s.nextHid (s.nextHid + 1)
+              memfdEnabled := true
               memfdNoexecStrict? := if flags.exec then some false else s.memfdNoexecStrict? }).wf = true := by
             unfold SandboxSysState.wf
             exact Bool.and_eq_true _ _ |>.mpr ⟨assocSet_nextHid_all_lt s _ hwf, wf_abi_of_wf s hwf⟩

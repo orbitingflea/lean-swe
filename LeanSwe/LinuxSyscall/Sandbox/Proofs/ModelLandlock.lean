@@ -61,20 +61,20 @@ theorem wf_fds_of_wf (s : SandboxSysState) (hwf : s.wf = true) :
 
 /-- Extract minimum Landlock ABI invariant from `SandboxSysState.wf`. -/
 theorem wf_abi_of_wf (s : SandboxSysState) (hwf : s.wf = true) :
-    (match s.landlockAbi? with | none => true | some v => decide (v ≥ 4)) = true := by
+    (match s.landlockAbi? with | none => true | some v => decide (v ≥ 4 && v ≥ s.landlockMinAbi)) = true := by
   unfold SandboxSysState.wf at hwf
   exact (Bool.and_eq_true _ _ |>.mp hwf).2
 
-/-- `SandboxSysState.wf` transfers across states sharing `fds`, `nextHid`, and `landlockAbi?`. -/
+/-- `SandboxSysState.wf` transfers across states sharing `fds`, `nextHid`, `landlockAbi?`, and `landlockMinAbi`. -/
 theorem wf_congr {a b : SandboxSysState} (hf : a.fds = b.fds)
     (hn : a.nextHid = b.nextHid) (hl : a.landlockAbi? = b.landlockAbi?)
-    (ha : a.wf = true) : b.wf = true := by
-  unfold SandboxSysState.wf at ha ⊢; rw [← hf, ← hn, ← hl]; exact ha
+    (ha : a.wf = true) (hm : a.landlockMinAbi = b.landlockMinAbi) : b.wf = true := by
+  unfold SandboxSysState.wf at ha ⊢; rw [← hf, ← hn, ← hl, ← hm]; exact ha
 
 /-- `SandboxSysState.wf` is invariant under setting `landlockEnabled := true`. -/
 theorem wf_with_enabled (s : SandboxSysState) (hwf : s.wf = true) :
     ({ s with landlockEnabled := true }).wf = true :=
-  wf_congr rfl rfl rfl hwf
+  wf_congr rfl rfl rfl hwf rfl
 
 private theorem wf_pinPassed (s : SandboxSysState) (hwf : s.wf = true) :
     (pinPassedNnpGate s).wf = true := by
@@ -113,26 +113,99 @@ private theorem ui64_and_assoc (a b c : UInt64) : (a &&& b) &&& c = a &&& (b &&&
   apply UInt64.toNat_inj.mp
   simp only [UInt64.toNat_and, Nat.and_assoc]
 
-private theorem mask_not_v4_of_not_known (fs : UInt64) (abi : UInt32)
-    (h : (fs &&& ~~~landlockKnownFsMask abi) != 0) :
-    (fs &&& ~~~LANDLOCK_ACCESS_FS_V4_ALL) != 0 := by
+private theorem mask_not_known_mono (fs : UInt64) {a b : UInt32} (hab : a ≤ b)
+    (h : (fs &&& ~~~landlockKnownFsMask b) != 0) :
+    (fs &&& ~~~landlockKnownFsMask a) != 0 := by
   simp only [bne_iff_ne, ne_eq] at h ⊢
+  unfold landlockKnownFsMask at h ⊢
+  by_cases ha4 : a ≤ 4
+  · simp only [ha4, ↓reduceIte]
+    split at h
+    · exact h
+    · split at h
+      · have hSub : ~~~(((1 : UInt64) <<< 16) - 1) =
+            ~~~(((1 : UInt64) <<< 15) - 1) &&& ~~~(((1 : UInt64) <<< 16) - 1) := by decide
+        intro hz; apply h; rw [hSub, ← ui64_and_assoc, hz]; decide
+      · have hSub : ~~~(((1 : UInt64) <<< 17) - 1) =
+            ~~~(((1 : UInt64) <<< 15) - 1) &&& ~~~(((1 : UInt64) <<< 17) - 1) := by decide
+        intro hz; apply h; rw [hSub, ← ui64_and_assoc, hz]; decide
+  · by_cases ha8 : a ≤ 8
+    · have hb4 : ¬(b ≤ 4) := fun hb => ha4 (UInt32.le_trans hab hb)
+      simp only [ha4, ha8, ↓reduceIte]
+      simp only [hb4, ↓reduceIte] at h
+      split at h
+      · exact h
+      · have hSub : ~~~(((1 : UInt64) <<< 17) - 1) =
+            ~~~(((1 : UInt64) <<< 16) - 1) &&& ~~~(((1 : UInt64) <<< 17) - 1) := by decide
+        intro hz; apply h; rw [hSub, ← ui64_and_assoc, hz]; decide
+    · have hb4 : ¬(b ≤ 4) := fun hb => ha4 (UInt32.le_trans hab hb)
+      have hb8 : ¬(b ≤ 8) := fun hb => ha8 (UInt32.le_trans hab hb)
+      simp only [ha4, ha8, ↓reduceIte]
+      simp only [hb4, hb8, ↓reduceIte] at h
+      exact h
+
+private theorem maxU32_le_iff (a b c : UInt32) : maxU32 a b ≤ c ↔ a ≤ c ∧ b ≤ c := by
+  unfold maxU32
+  by_cases h : a < b
+  · simp only [h, ↓reduceIte]
+    exact ⟨fun hb => ⟨UInt32.le_trans (UInt32.le_of_lt h) hb, hb⟩, fun ⟨_, hb⟩ => hb⟩
+  · simp only [h, ↓reduceIte]
+    have hba : b ≤ a := UInt32.not_lt.mp h
+    exact ⟨fun ha => ⟨ha, UInt32.le_trans hba ha⟩, fun ⟨ha, _⟩ => ha⟩
+
+private theorem maxU32_ge_right (a b : UInt32) : b ≤ maxU32 a b := by
+  unfold maxU32
+  by_cases h : a < b
+  · simp [h]
+  · simp [h, UInt32.not_lt.mp h]
+
+private theorem maxU32_ge_left (a b : UInt32) : a ≤ maxU32 a b := by
+  unfold maxU32
+  by_cases h : a < b
+  · simp [h, UInt32.le_of_lt h]
+  · simp [h]
+
+private theorem impliedLandlockAbi_le (fs : UInt64) (abi : UInt32) (hGe4 : 4 ≤ abi)
+    (h : (fs &&& ~~~landlockKnownFsMask abi) = 0) :
+    impliedLandlockAbi fs ≤ abi := by
+  unfold impliedLandlockAbi
   unfold landlockKnownFsMask at h
-  split at h
-  · exact h
-  · split at h
-    · have hSub : ~~~(((1 : UInt64) <<< 16) - 1) =
-          ~~~LANDLOCK_ACCESS_FS_V4_ALL &&& ~~~(((1 : UInt64) <<< 16) - 1) := by decide
-      intro hz
-      apply h
-      rw [hSub, ← ui64_and_assoc, hz]
-      decide
-    · have hSub : ~~~(((1 : UInt64) <<< 17) - 1) =
-          ~~~LANDLOCK_ACCESS_FS_V4_ALL &&& ~~~(((1 : UInt64) <<< 17) - 1) := by decide
-      intro hz
-      apply h
-      rw [hSub, ← ui64_and_assoc, hz]
-      decide
+  by_cases h4 : abi ≤ 4
+  · simp only [h4, ↓reduceIte] at h
+    have hRes : (fs &&& LANDLOCK_ACCESS_FS_RESOLVE_UNIX) = 0 := by
+      have hSub : LANDLOCK_ACCESS_FS_RESOLVE_UNIX =
+          ~~~(((1 : UInt64) <<< 15) - 1) &&& LANDLOCK_ACCESS_FS_RESOLVE_UNIX := by decide
+      rw [hSub, ← ui64_and_assoc, h]; decide
+    have hIoc : (fs &&& LANDLOCK_ACCESS_FS_IOCTL_DEV) = 0 := by
+      have hSub : LANDLOCK_ACCESS_FS_IOCTL_DEV =
+          ~~~(((1 : UInt64) <<< 15) - 1) &&& LANDLOCK_ACCESS_FS_IOCTL_DEV := by decide
+      rw [hSub, ← ui64_and_assoc, h]; decide
+    simp [hRes, hIoc, hGe4]
+  · simp only [h4, ↓reduceIte] at h
+    by_cases h8 : abi ≤ 8
+    · simp only [h8, ↓reduceIte] at h
+      have hRes : (fs &&& LANDLOCK_ACCESS_FS_RESOLVE_UNIX) = 0 := by
+        have hSub : LANDLOCK_ACCESS_FS_RESOLVE_UNIX =
+            ~~~(((1 : UInt64) <<< 16) - 1) &&& LANDLOCK_ACCESS_FS_RESOLVE_UNIX := by decide
+        rw [hSub, ← ui64_and_assoc, h]; decide
+      have hGe5 : (5 : UInt32) ≤ abi := by
+        have hGt4 : (4 : UInt32) < abi := UInt32.not_le.mp h4
+        have hLtNat := UInt32.lt_iff_toNat_lt.mp hGt4
+        exact UInt32.le_iff_toNat_le.mpr (by change 5 ≤ abi.toNat; change 4 < abi.toNat at hLtNat; omega)
+      by_cases hIoc : (fs &&& LANDLOCK_ACCESS_FS_IOCTL_DEV) = 0
+      · simp [hRes, hIoc, hGe4]
+      · simp [hRes, hIoc, hGe5]
+    · simp only [h8, ↓reduceIte] at h
+      have hGt8 : (8 : UInt32) < abi := UInt32.not_le.mp h8
+      have hGe9 : (9 : UInt32) ≤ abi := by
+        have hLtNat := UInt32.lt_iff_toNat_lt.mp hGt8
+        exact UInt32.le_iff_toNat_le.mpr (by change 9 ≤ abi.toNat; change 8 < abi.toNat at hLtNat; omega)
+      have hGe5 : (5 : UInt32) ≤ abi := UInt32.le_trans (by decide) hGe9
+      by_cases hRes : (fs &&& LANDLOCK_ACCESS_FS_RESOLVE_UNIX) = 0
+      · by_cases hIoc : (fs &&& LANDLOCK_ACCESS_FS_IOCTL_DEV) = 0
+        · simp [hRes, hIoc, hGe4]
+        · simp [hRes, hIoc, hGe5]
+      · simp [hRes, hGe9]
 
 private theorem mask_known_to_9 (fs : UInt64) (abi : UInt32)
     (h : (fs &&& ~~~landlockKnownFsMask abi) = 0) :
@@ -172,6 +245,18 @@ theorem nnp_pass_iff {nnp? capA? : Option Bool}
   | none => simp_all
   | some a => cases a <;> cases capA? <;> simp_all
 
+private theorem effectiveAbi_ge_minAbi (s : SandboxSysState) (hwf : s.wf = true) :
+    s.landlockMinAbi ≤ effectiveModelLandlockAbi s := by
+  unfold effectiveModelLandlockAbi
+  have hAbi := wf_abi_of_wf s hwf
+  cases hOpt : s.landlockAbi? with
+  | some v =>
+    rw [hOpt] at hAbi
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at hAbi
+    exact hAbi.2
+  | none =>
+    exact maxU32_ge_right _ s.landlockMinAbi
+
 private theorem effectiveAbi_lt4_implies_none (s : SandboxSysState) (hwf : s.wf = true)
     (hLt : effectiveModelLandlockAbi s < 4) :
     s.landlockAbi? = none ∧ hasLandlockEvidence s = false := by
@@ -180,22 +265,24 @@ private theorem effectiveAbi_lt4_implies_none (s : SandboxSysState) (hwf : s.wf 
   cases hOpt : s.landlockAbi? with
   | some v =>
     rw [hOpt] at hLt hAbi
-    simp only [decide_eq_true_eq] at hAbi
-    have : ¬(v < 4) := UInt32.not_lt.mpr hAbi
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at hAbi
+    have : ¬(v < 4) := UInt32.not_lt.mpr hAbi.1
     exact absurd hLt this
   | none =>
     rw [hOpt] at hLt
     refine ⟨rfl, ?_⟩
+    have hBaseLt : (if s.defaultLandlockAbi < 4 && hasLandlockEvidence s then 4 else s.defaultLandlockAbi) < 4 :=
+      UInt32.lt_of_le_of_lt (maxU32_ge_left _ _) hLt
     cases hEv : hasLandlockEvidence s
     · rfl
-    · simp only [hEv, Bool.and_true] at hLt
+    · simp only [hEv, Bool.and_true] at hBaseLt
       by_cases hDef : s.defaultLandlockAbi < 4
       · have hDec : decide (s.defaultLandlockAbi < 4) = true := decide_eq_true hDef
-        simp only [hDec, ↓reduceIte] at hLt
-        exact absurd hLt (by decide)
+        simp only [hDec, ↓reduceIte] at hBaseLt
+        exact absurd hBaseLt (by decide)
       · have hDec : decide (s.defaultLandlockAbi < 4) = false := decide_eq_false hDef
-        simp only [hDec, Bool.false_eq_true, ↓reduceIte] at hLt
-        exact absurd hLt hDef
+        simp only [hDec, Bool.false_eq_true, ↓reduceIte] at hBaseLt
+        exact absurd hBaseLt hDef
 
 private theorem allowedStep_guard_err_eq (s : SandboxSysState) (req : SandboxReq) (e : Errno)
     (hGuard : failsPureWrapperGuard req = true)
@@ -239,31 +326,48 @@ theorem refine_landlockCreateRuleset (s : SandboxSysState) (hwf : s.wf = true)
         intro _
         simp [allowedStepCore, hFl0, hNoEv, enosys_ne_efault]
       · have hGe4 : effectiveModelLandlockAbi s ≥ 4 := UInt32.not_lt.mp hLt4
+        have hGeMin : effectiveModelLandlockAbi s ≥ s.landlockMinAbi := effectiveAbi_ge_minAbi s hwf
         by_cases hVer : flags == LANDLOCK_CREATE_RULESET_VERSION
         · simp only [hFl0, Bool.false_eq_true, ↓reduceIte, hLt4, hVer]
           cases hOpt : s.landlockAbi? with
           | none =>
-            simp [allowedStep, allowedStepCore, hVer, hOpt, hGe4]
+            have hNotLtMin : ¬(effectiveModelLandlockAbi s < s.landlockMinAbi) := UInt32.not_lt.mpr hGeMin
+            simp [allowedStep, allowedStepCore, hVer, hOpt, hGe4, hNotLtMin]
             unfold SandboxSysState.wf
-            simp [wf_fds_of_wf s hwf, decide_eq_true hGe4]
+            simp [wf_fds_of_wf s hwf, decide_eq_true hGe4, decide_eq_true hGeMin]
           | some prev =>
             have hEq : effectiveModelLandlockAbi s = prev := by simp [effectiveModelLandlockAbi, hOpt]
             have hPrevGe4 : 4 ≤ prev := by rw [← hEq]; exact hGe4
+            have hPrevGeMin : s.landlockMinAbi ≤ prev := by rw [← hEq]; exact hGeMin
             simp [allowedStep, allowedStepCore, hVer, hOpt, hEq, hPrevGe4]
             unfold SandboxSysState.wf
-            simp [wf_fds_of_wf s hwf, decide_eq_true hPrevGe4]
+            simp [wf_fds_of_wf s hwf, decide_eq_true hPrevGe4, decide_eq_true hPrevGeMin]
         · by_cases hErr : flags == LANDLOCK_CREATE_RULESET_ERRATA
           · by_cases hLt6 : effectiveModelLandlockAbi s < 6
             · simp only [hFl0, Bool.false_eq_true, ↓reduceIte, hLt4, hVer, hErr, hLt6]
               refine ⟨allowedStep_err_eq s _ _ (by simp [failsPureWrapperGuard, hFl0]) (by decide) (by decide) ?_, hwf⟩
               intro _
               cases hOpt : s.landlockAbi? with
-              | none => simp [allowedStepCore, hVer, hErr, Errno.EINVAL, Errno.EFAULT, hOpt]
+              | none =>
+                have hMinLt6 : s.landlockMinAbi < 6 := UInt32.lt_of_le_of_lt hGeMin hLt6
+                simp [allowedStepCore, hVer, hErr, Errno.EINVAL, Errno.EFAULT, hOpt, hMinLt6]
               | some a =>
                 have ha : a < 6 := by simpa [effectiveModelLandlockAbi, hOpt] using hLt6
                 simp [allowedStepCore, hVer, hErr, Errno.EINVAL, Errno.EFAULT, hOpt, ha]
             · simp only [hFl0, Bool.false_eq_true, ↓reduceIte, hLt4, hVer, hErr, hLt6]
-              refine ⟨?_, wf_with_enabled s hwf⟩
+              have hGe6 : (6 : UInt32) ≤ effectiveModelLandlockAbi s := UInt32.not_lt.mp hLt6
+              have hWfErr : ({ s with landlockEnabled := true, landlockMinAbi := maxU32 s.landlockMinAbi 6 }).wf = true := by
+                unfold SandboxSysState.wf
+                have hAbi := wf_abi_of_wf s hwf
+                cases hOpt : s.landlockAbi? with
+                | none => simp [wf_fds_of_wf s hwf]
+                | some a =>
+                  rw [hOpt] at hAbi
+                  simp only [Bool.and_eq_true, decide_eq_true_eq] at hAbi
+                  have ha6 : (6 : UInt32) ≤ a := by simpa [effectiveModelLandlockAbi, hOpt] using hGe6
+                  have hm : maxU32 s.landlockMinAbi 6 ≤ a := (maxU32_le_iff s.landlockMinAbi 6 a).mpr ⟨hAbi.2, ha6⟩
+                  simp [wf_fds_of_wf s hwf, decide_eq_true hAbi.1, decide_eq_true hm]
+              refine ⟨?_, hWfErr⟩
               cases hOpt : s.landlockAbi? with
               | none => simp [allowedStep, allowedStepCore, hVer, hErr, hOpt]
               | some a =>
@@ -302,8 +406,11 @@ theorem refine_landlockCreateRuleset (s : SandboxSysState) (hwf : s.wf = true)
               simp only [allowedStepCore, hFl, Bool.false_eq_true, ↓reduceIte, hEmpty, hNet]
               cases hOpt : s.landlockAbi? with
               | none =>
-                have hv4 := mask_not_v4_of_not_known attr.handledAccessFs (effectiveModelLandlockAbi s) hFs
-                simp [hv4, Errno.EINVAL, Errno.EFAULT]
+                have hLe : maxU32 4 s.landlockMinAbi ≤ effectiveModelLandlockAbi s :=
+                  (maxU32_le_iff 4 s.landlockMinAbi (effectiveModelLandlockAbi s)).mpr
+                    ⟨UInt32.not_lt.mp hLt4, effectiveAbi_ge_minAbi s hwf⟩
+                have hKnown := mask_not_known_mono attr.handledAccessFs hLe hFs
+                simp [hKnown, Errno.EINVAL, Errno.EFAULT]
               | some abi =>
                 have hEq : effectiveModelLandlockAbi s = abi := by simp [effectiveModelLandlockAbi, hOpt]
                 rw [hEq] at hFs
@@ -328,14 +435,29 @@ theorem refine_landlockCreateRuleset (s : SandboxSysState) (hwf : s.wf = true)
                     simp [hNe]
                 have hFds' := assocSet_nextHid_all_lt s
                   { kind := .landlockRuleset attr.handledAccessFs attr.handledAccessNet, cloexec := true } hwf
-                have hAbi' := wf_abi_of_wf s hwf
+                have hAbi := wf_abi_of_wf s hwf
                 have hWf' : ({ s with
                     fds := assocSet s.fds s.nextHid
                       { kind := .landlockRuleset attr.handledAccessFs attr.handledAccessNet, cloexec := true },
                     nextHid := Nat.max s.nextHid (s.nextHid + 1),
-                    landlockEnabled := true } : SandboxSysState).wf = true := by
+                    landlockEnabled := true,
+                    landlockMinAbi := maxU32 s.landlockMinAbi (impliedLandlockAbi attr.handledAccessFs) } : SandboxSysState).wf = true := by
                   unfold SandboxSysState.wf
-                  exact Bool.and_eq_true _ _ |>.mpr ⟨hFds', hAbi'⟩
+                  refine Bool.and_eq_true _ _ |>.mpr ⟨hFds', ?_⟩
+                  cases hOpt : s.landlockAbi? with
+                  | none => simp
+                  | some abi =>
+                    rw [hOpt] at hAbi
+                    simp only [Bool.and_eq_true, decide_eq_true_eq] at hAbi
+                    have hEq : effectiveModelLandlockAbi s = abi := by simp [effectiveModelLandlockAbi, hOpt]
+                    have hFs0 : (attr.handledAccessFs &&& ~~~landlockKnownFsMask abi) = 0 := by
+                      cases h1 : (attr.handledAccessFs &&& ~~~landlockKnownFsMask abi) == 0
+                      · simp only [bne_iff_ne, ne_eq] at hFs; rw [← hEq] at h1; simp_all
+                      · simpa using h1
+                    have hImp := impliedLandlockAbi_le attr.handledAccessFs abi hAbi.1 hFs0
+                    have hm : maxU32 s.landlockMinAbi (impliedLandlockAbi attr.handledAccessFs) ≤ abi :=
+                      (maxU32_le_iff _ _ _).mpr ⟨hAbi.2, hImp⟩
+                    simp [decide_eq_true hAbi.1, decide_eq_true hm]
                 simp only [hFl, Bool.false_eq_true, ↓reduceIte, hLt4, hEmpty, hNet, hFs, hEmf]
                 refine ⟨?_, hWf'⟩
                 cases hOpt : s.landlockAbi? with

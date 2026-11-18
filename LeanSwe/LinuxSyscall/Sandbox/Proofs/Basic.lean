@@ -56,6 +56,8 @@ private theorem seccompFlags_toBits_inj {f1 f2 : SeccompFlags}
     congrArg (· &&& ((1 : UInt32) <<< 2)) h
   have hb4 : f1.toBits &&& ((1 : UInt32) <<< 4) = f2.toBits &&& ((1 : UInt32) <<< 4) :=
     congrArg (· &&& ((1 : UInt32) <<< 4)) h
+  have hb5 : f1.toBits &&& ((1 : UInt32) <<< 5) = f2.toBits &&& ((1 : UInt32) <<< 5) :=
+    congrArg (· &&& ((1 : UInt32) <<< 5)) h
   have m0 : ∀ f : SeccompFlags, f.toBits &&& ((1 : UInt32) <<< 0) =
       if f.tsync then (1 : UInt32) <<< 0 else 0 := fun f => by
     unfold SeccompFlags.toBits
@@ -64,7 +66,8 @@ private theorem seccompFlags_toBits_inj {f1 f2 : SeccompFlags}
     rw [ui32_bit_and_self f.tsync 0 (by decide),
       ui32_bit_and_mask f.log 1 ((1 : UInt32) <<< 0) (by decide),
       ui32_bit_and_mask f.specAllow 2 ((1 : UInt32) <<< 0) (by decide),
-      ui32_bit_and_mask f.tsyncEsrch 4 ((1 : UInt32) <<< 0) (by decide)]
+      ui32_bit_and_mask f.tsyncEsrch 4 ((1 : UInt32) <<< 0) (by decide),
+      ui32_bit_and_mask f.waitKillableRecv 5 ((1 : UInt32) <<< 0) (by decide)]
     simp only [ui32_or_zero]
   have m1 : ∀ f : SeccompFlags, f.toBits &&& ((1 : UInt32) <<< 1) =
       if f.log then (1 : UInt32) <<< 1 else 0 := fun f => by
@@ -74,7 +77,8 @@ private theorem seccompFlags_toBits_inj {f1 f2 : SeccompFlags}
     rw [ui32_bit_and_mask f.tsync 0 ((1 : UInt32) <<< 1) (by decide),
       ui32_bit_and_self f.log 1 (by decide),
       ui32_bit_and_mask f.specAllow 2 ((1 : UInt32) <<< 1) (by decide),
-      ui32_bit_and_mask f.tsyncEsrch 4 ((1 : UInt32) <<< 1) (by decide)]
+      ui32_bit_and_mask f.tsyncEsrch 4 ((1 : UInt32) <<< 1) (by decide),
+      ui32_bit_and_mask f.waitKillableRecv 5 ((1 : UInt32) <<< 1) (by decide)]
     simp only [ui32_zero_or, ui32_or_zero]
   have m2 : ∀ f : SeccompFlags, f.toBits &&& ((1 : UInt32) <<< 2) =
       if f.specAllow then (1 : UInt32) <<< 2 else 0 := fun f => by
@@ -84,7 +88,8 @@ private theorem seccompFlags_toBits_inj {f1 f2 : SeccompFlags}
     rw [ui32_bit_and_mask f.tsync 0 ((1 : UInt32) <<< 2) (by decide),
       ui32_bit_and_mask f.log 1 ((1 : UInt32) <<< 2) (by decide),
       ui32_bit_and_self f.specAllow 2 (by decide),
-      ui32_bit_and_mask f.tsyncEsrch 4 ((1 : UInt32) <<< 2) (by decide)]
+      ui32_bit_and_mask f.tsyncEsrch 4 ((1 : UInt32) <<< 2) (by decide),
+      ui32_bit_and_mask f.waitKillableRecv 5 ((1 : UInt32) <<< 2) (by decide)]
     simp only [ui32_zero_or, ui32_or_zero]
   have m4 : ∀ f : SeccompFlags, f.toBits &&& ((1 : UInt32) <<< 4) =
       if f.tsyncEsrch then (1 : UInt32) <<< 4 else 0 := fun f => by
@@ -94,19 +99,33 @@ private theorem seccompFlags_toBits_inj {f1 f2 : SeccompFlags}
     rw [ui32_bit_and_mask f.tsync 0 ((1 : UInt32) <<< 4) (by decide),
       ui32_bit_and_mask f.log 1 ((1 : UInt32) <<< 4) (by decide),
       ui32_bit_and_mask f.specAllow 2 ((1 : UInt32) <<< 4) (by decide),
-      ui32_bit_and_self f.tsyncEsrch 4 (by decide)]
+      ui32_bit_and_self f.tsyncEsrch 4 (by decide),
+      ui32_bit_and_mask f.waitKillableRecv 5 ((1 : UInt32) <<< 4) (by decide)]
+    simp only [ui32_zero_or, ui32_or_zero]
+  have m5 : ∀ f : SeccompFlags, f.toBits &&& ((1 : UInt32) <<< 5) =
+      if f.waitKillableRecv then (1 : UInt32) <<< 5 else 0 := fun f => by
+    unfold SeccompFlags.toBits
+    dsimp only
+    repeat rw [ui32_or_and_distrib]
+    rw [ui32_bit_and_mask f.tsync 0 ((1 : UInt32) <<< 5) (by decide),
+      ui32_bit_and_mask f.log 1 ((1 : UInt32) <<< 5) (by decide),
+      ui32_bit_and_mask f.specAllow 2 ((1 : UInt32) <<< 5) (by decide),
+      ui32_bit_and_mask f.tsyncEsrch 4 ((1 : UInt32) <<< 5) (by decide),
+      ui32_bit_and_self f.waitKillableRecv 5 (by decide)]
     simp only [ui32_zero_or]
   rw [m0 f1, m0 f2] at hb0
   rw [m1 f1, m1 f2] at hb1
   rw [m2 f1, m2 f2] at hb2
   rw [m4 f1, m4 f2] at hb4
+  rw [m5 f1, m5 f2] at hb5
   cases f1; cases f2
-  dsimp only at hb0 hb1 hb2 hb4
+  dsimp only at hb0 hb1 hb2 hb4 hb5
   congr 1
   · exact bool_of_ui32_bit_eq (by decide) hb0
   · exact bool_of_ui32_bit_eq (by decide) hb1
   · exact bool_of_ui32_bit_eq (by decide) hb2
   · exact bool_of_ui32_bit_eq (by decide) hb4
+  · exact bool_of_ui32_bit_eq (by decide) hb5
 
 private theorem memfdFlags_toBits_inj {f1 f2 : MemfdFlags}
     (h : f1.toBits = f2.toBits) : f1 = f2 := by
@@ -269,7 +288,7 @@ theorem sandbox_flags_andBpfCodecInjective_allPass :
       have hBitsNe : sf1.toBits ≠ sf2.toBits := fun h => hNe (seccompFlags_toBits_inj h)
       simp [beq_eq_false_iff_ne, hBitsNe]
     · rw [(seccompFlags_beq_iff sf1 sf2).mp hEq]; simp
-  · exact ⟨rfl, rfl, rfl, rfl, rfl⟩
+  · exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
   · unfold SeccompFlags.toBits; rfl
   · intro p1 p2 sig
     refine ⟨?_, ?_, ?_⟩
@@ -318,7 +337,7 @@ theorem sandbox_flags_andBpfCodecInjective_canReach :
     CanReach (test_sandbox_flags_andBpfCodecInjective
       SeccompFlags.toBits PrctlOp.toRaw RlimitResource.toTag MemfdFlags.toBits
       encodeSockFilters decodeSockFilters) := by
-  refine ⟨{}, {}, ?_, ⟨rfl, rfl, rfl, rfl, rfl⟩, rfl,
+  refine ⟨{}, {}, ?_, ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩, rfl,
     .getNoNewPrivs, .getNoNewPrivs, 0, rfl, ⟨rfl, rfl, rfl, rfl, rfl⟩,
     .core, .core, rfl, ⟨rfl, rfl, rfl⟩,
     {}, {}, rfl, ⟨rfl, rfl, rfl, rfl, rfl⟩, rfl,

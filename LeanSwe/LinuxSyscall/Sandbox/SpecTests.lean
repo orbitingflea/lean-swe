@@ -58,12 +58,13 @@ def test_sandbox_flags_andBpfCodecInjective
   NondetTest.assert ((encSeccomp sf1 == encSeccomp sf2) = (sf1 == sf2))
   NondetTest.assert (encSeccomp {} = 0 ∧ encSeccomp { tsync := true } = 1 ∧
     encSeccomp { log := true } = 2 ∧ encSeccomp { specAllow := true } = 4 ∧
-    encSeccomp { tsyncEsrch := true } = 16)
+    encSeccomp { tsyncEsrch := true } = 16 ∧ encSeccomp { waitKillableRecv := true } = 32)
   NondetTest.assert (encSeccomp sf1 =
     ((if sf1.tsync then (1 : UInt32) else 0) |||
      (if sf1.log then (2 : UInt32) else 0) |||
      (if sf1.specAllow then (4 : UInt32) else 0) |||
-     (if sf1.tsyncEsrch then (16 : UInt32) else 0)))
+     (if sf1.tsyncEsrch then (16 : UInt32) else 0) |||
+     (if sf1.waitKillableRecv then (32 : UInt32) else 0)))
   let p1 ← nondet PrctlOp
   let p2 ← nondet PrctlOp
   let sig ← nondet UInt32
@@ -568,6 +569,25 @@ def test_sandbox_model_allowedStep_relationalInvariants
     NondetTest.assert (sTight.hasCapSysResource? = some false)
     NondetTest.assert ((step sTight (.setrlimit .fsize 512 2048) .unit).isNone)
     NondetTest.assert ((step sTight (.setrlimit .fsize 512 2047) .unit).isSome)
+  NondetTest.assert ((step s0 (.landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_RESOLVE_UNIX }) 0) (.err Errno.EOPNOTSUPP)).isSome)
+  NondetTest.assert ((step s0 (.seccomp .setModeFilter { waitKillableRecv := true } allowAllSeccompFilterBytes) (.err Errno.EINVAL)).isSome)
+  NondetTest.assert ((step s0 (.seccomp .setModeFilter { waitKillableRecv := true } allowAllSeccompFilterBytes) (.u32 0)).isNone)
+  match step s0 (.seccomp (.getActionAvail SECCOMP_RET_ALLOW) {} ByteArray.empty) (.u32 0) with
+  | none => NondetTest.assert False
+  | some sSec =>
+    NondetTest.assert ((step sSec (.seccomp (.getActionAvail SECCOMP_RET_ALLOW) {} ByteArray.empty) (.err Errno.ENOSYS)).isNone)
+    NondetTest.assert ((step sSec (.seccomp .setModeFilter {} allowAllSeccompFilterBytes) (.err Errno.ENOSYS)).isNone)
+  match step s0 (.memfdCreate (asciiBytes ['z']) {}) (.opened 0) with
+  | none => NondetTest.assert False
+  | some sMfd =>
+    NondetTest.assert ((step sMfd (.memfdCreate (asciiBytes ['w']) {}) (.err Errno.ENOSYS)).isNone)
+  match step s0 (.landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_RESOLVE_UNIX }) 0) (.opened 0) with
+  | none => NondetTest.assert False
+  | some sV9 =>
+    NondetTest.assert ((step sV9 (.landlockCreateRuleset none LANDLOCK_CREATE_RULESET_ERRATA) (.err Errno.EINVAL)).isNone)
+    NondetTest.assert ((step sV9 (.landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_IOCTL_DEV }) 0) (.err Errno.EINVAL)).isNone)
+    NondetTest.assert ((step sV9 (.landlockCreateRuleset none 1) (.landlockVersion 8)).isNone)
+    NondetTest.assert ((step sV9 (.landlockCreateRuleset none 1) (.landlockVersion 9)).isSome)
 
 /-- `Model.allowedStep` carries zero silent ambient assumptions in `SandboxSysState.initial` (`getNoNewPrivs == 1`, `CLONE_NEWUSER` `nnp == 0` with `hasCapSysAdmin? = some true`, pre-stacked outer Landlock `E2BIG` layer locking, and privileged `rlim_max` raising with `hasCapSysResource? = some true`), and enforces `pseudoFs` (`EBADFD`) plus `O_PATH` `ruleset` (`EBADF`) vs `parentFd` (`0` / `EBADFD`) asymmetry. -/
 def test_sandbox_model_allowedStep_environmentFreeAndOPath
@@ -666,7 +686,7 @@ def test_sandbox_model_modelOpsRefinesAllowedStep
   let (out, s') := (execSandboxReq ops req).run s
   NondetTest.assert (step s req out = some s' ∧ s'.wf = true)
 
-/-- External trust-boundary assumptions for `LeanSwe.LinuxSyscall.Sandbox` C wrappers (`sandbox_shim.c` + `fd_box.h`) and Linux kernel ABI (`x86_64` + `aarch64`), verified 1-to-1 by `RuntimeTests.lean`, `leanswe-world-fuzz`, and `strace` fault injection. On `assume_sandbox_seccomp_actionAvailAndFilterAbi`, `Internal.mkSandboxOps` enforces `hasSafeSeccompRetBytes` in pure Lean (rejecting `SECCOMP_RET_ERRNO | 0`, `SECCOMP_RET_ERRNO | EFAULT`, `KILL_PROCESS`, `KILL_THREAD`, `TRAP`, `TRACE`, `USER_NOTIF`, unknown action bits, `BPF_RET | BPF_A` `0x0016`, and `BPF_ALU | BPF_DIV | BPF_X` `0x003c` with `EINVAL`), so `SandboxFuzz` can fuzz arbitrary `filterBytes` with zero avoided inputs. -/
+/-- External trust-boundary assumptions for `LeanSwe.LinuxSyscall.Sandbox` C wrappers (`sandbox_shim.c` + `fd_box.h`) and Linux kernel ABI (`x86_64` + `aarch64`), verified 1-to-1 by `RuntimeTests.lean`, `leanswe-world-fuzz`, and `strace` fault injection. On `assume_sandbox_seccomp_actionAvailAndFilterAbi`, `Internal.mkSandboxOps` enforces `hasSafeSeccompRetBytes` in pure Lean (rejecting `SECCOMP_RET_ERRNO | 0`, `SECCOMP_RET_ERRNO | EFAULT`, `KILL_PROCESS`, `KILL_THREAD`, `TRAP`, `TRACE`, `USER_NOTIF`, unknown action bits, `BPF_RET | BPF_A` `0x0016`, and `BPF_ALU | BPF_DIV | BPF_X` `0x003c` with `EINVAL`), so `SandboxFuzz` can fuzz arbitrary `filterBytes` with zero avoided inputs; `SandboxSysState.withOuterSeccomp` likewise assumes inherited safe outer filters (`SECCOMP_RET_ERRNO | EFAULT` fails loud with `SIGABRT`, verified in `RuntimeTests.lean`). -/
 def externalAssumptions : List AssumptionObligation :=
   [ { name := "LeanSwe.LinuxSyscall.Sandbox.assume_sandbox_landlockCreateRuleset_versionAndRuleset"
       subject := "LeanSwe.LinuxSyscall.Sandbox.landlockCreateRuleset"

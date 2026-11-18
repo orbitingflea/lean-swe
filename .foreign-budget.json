@@ -6,11 +6,11 @@
       "legacy_unmigrated": false
     },
     ".github/workflows/audit-daily.yml": {
-      "max_lines": 215,
+      "max_lines": 235,
       "legacy_unmigrated": false
     },
     ".github/workflows/audit.yml": {
-      "max_lines": 188,
+      "max_lines": 205,
       "legacy_unmigrated": false
     },
     "LeanSwe/ConnectProxy/Raw/c/cproxy_shim.c": {
@@ -58,7 +58,7 @@
       "legacy_unmigrated": false
     },
     "LeanSwe/LinuxSyscall/c/sandbox_fuzz_env.c": {
-      "max_lines": 510,
+      "max_lines": 600,
       "legacy_unmigrated": false
     },
     "scripts/check_proof_memory.py": {

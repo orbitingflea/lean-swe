@@ -190,6 +190,8 @@ structure SandboxSysState where
   hasCapSysResource? : Option Bool := none
   /-- `true` once any Landlock syscall (including `ERRATA`) has succeeded on the host. -/
   landlockEnabled : Bool := false
+  /-- Implied minimum Landlock ABI version inferred from prior successful `ERRATA` (`>= 6`) or v5+/v9+ ruleset creation (`0` before any v5+ / `ERRATA` evidence). -/
+  landlockMinAbi : UInt32 := 0
   /-- Observed Landlock ABI version once queried (`none` before first `CREATE_RULESET_VERSION` query). -/
   landlockAbi? : Option UInt32 := none
   /-- Default Landlock ABI version used by deterministic `modelOps` when `landlockAbi? = none` (`9` on Linux `7.1.6`). -/
@@ -198,10 +200,14 @@ structure SandboxSysState where
   landlockLayers : Nat := 0
   /-- `true` once the exact stacked Landlock domain count is known (`false` when unknown outer Landlock domains may pre-exist). -/
   landlockLayersExact : Bool := false
+  /-- `true` once any `seccomp(2)` syscall has succeeded in the current trace. -/
+  seccompEnabled : Bool := false
   /-- Count of installed `seccomp` BPF filters on the calling thread. -/
   seccompFilters : Nat := 0
   /-- `true` once a potentially non-`ALLOW`/`LOG` `seccomp` filter has been installed in the current trace. -/
   seccompMayIntercept : Bool := false
+  /-- `true` once any `memfd_create(2)` syscall has succeeded or observed `vm.memfd_noexec == 2` (`EACCES`). -/
+  memfdEnabled : Bool := false
   /-- Tracked `RLIMIT_CORE` soft/hard state. -/
   rlimitCore : RlimitState := { cur := 0, hardUpper := RLIM_INFINITY, curExact := false, hardExact := false }
   /-- Tracked `RLIMIT_FSIZE` soft/hard state. -/
@@ -224,7 +230,7 @@ def SandboxSysState.unprivileged : SandboxSysState :=
     hasCapSysResource? := some false
     landlockLayersExact := true }
 
-/-- Initial or derived `SandboxSysState` for a process started beneath an inherited outer `SECCOMP_RET_ERRNO` filter. -/
+/-- Initial or derived `SandboxSysState` for a process started beneath an inherited **safe** outer `seccomp` filter satisfying the same verdict safety envelope as `hasSafeSeccompRetBytes` (`ALLOW`, `LOG`, or `SECCOMP_RET_ERRNO | e` with `1 <= e <= 4095` and `e != EFAULT`). Filters returning `SECCOMP_RET_ERRNO | 0` (fake-success `rax = 0` spoofing that aliases FD `0`, analogous to `ptrace`/`TRACE`/`USER_NOTIF`) are outside the safe-filter boundary, while `SECCOMP_RET_ERRNO | EFAULT` (`14`) hits the fail-loud C-ABI `abort()` invariant (`fd_box.h`, `sandbox_shim.c`). -/
 def SandboxSysState.withOuterSeccomp (s : SandboxSysState := SandboxSysState.initial) : SandboxSysState :=
   { s with seccompMayIntercept := true }
 
@@ -233,7 +239,7 @@ def SandboxSysState.wf (s : SandboxSysState) : Bool :=
   s.fds.all (fun p => decide (p.1 < s.nextHid)) &&
     match s.landlockAbi? with
     | none => true
-    | some v => decide (v ≥ 4)
+    | some v => decide (v ≥ 4 && v ≥ s.landlockMinAbi)
 
 /-- Register a pre-existing host filesystem descriptor (`isDir = true` for directory, `false` for regular file, `oPath = true` when opened with `O_PATH`) at `hid` in `s`. -/
 def SandboxSysState.withHostFd (s : SandboxSysState) (hid : HandleId) (isDir : Bool)
@@ -288,13 +294,32 @@ def hasLandlockEvidence (s : SandboxSysState) : Bool :=
   s.landlockEnabled || s.landlockAbi?.isSome || s.landlockLayers > 0 ||
     s.fds.any (fun (_, d) => match d.kind with | .landlockRuleset _ _ => true | _ => false)
 
-/-- Effective Landlock ABI version used by deterministic `modelOps` (`>= 4` whenever `hasLandlockEvidence s` holds). -/
+/-- Returns `true` iff any prior step in `s` has already confirmed that `seccomp(2)` is enabled in the kernel. -/
+def hasSeccompEvidence (s : SandboxSysState) : Bool :=
+  s.seccompEnabled || s.seccompFilters > 0
+
+/-- Returns `true` iff any prior step in `s` has already confirmed that `memfd_create(2)` is enabled in the kernel. -/
+def hasMemfdEvidence (s : SandboxSysState) : Bool :=
+  s.memfdEnabled || s.memfdNoexecStrict?.isSome ||
+    s.fds.any (fun (_, d) => match d.kind with | .memfd _ _ => true | _ => false)
+
+/-- Minimum Landlock ABI version required by `fsMask`. -/
+def impliedLandlockAbi (fsMask : UInt64) : UInt32 :=
+  if (fsMask &&& LANDLOCK_ACCESS_FS_RESOLVE_UNIX) != 0 then 9
+  else if (fsMask &&& LANDLOCK_ACCESS_FS_IOCTL_DEV) != 0 then 5
+  else 4
+
+/-- Maximum of two `UInt32` values (kernel-reducible). -/
+def maxU32 (a b : UInt32) : UInt32 :=
+  if a < b then b else a
+
+/-- Effective Landlock ABI version used by deterministic `modelOps` (`>= 4` whenever `hasLandlockEvidence s` holds, and `>= s.landlockMinAbi`). -/
 def effectiveModelLandlockAbi (s : SandboxSysState) : UInt32 :=
   match s.landlockAbi? with
   | some abi => abi
   | none =>
-    if s.defaultLandlockAbi < 4 && hasLandlockEvidence s then 4
-    else s.defaultLandlockAbi
+    let base := if s.defaultLandlockAbi < 4 && hasLandlockEvidence s then 4 else s.defaultLandlockAbi
+    maxU32 base s.landlockMinAbi
 
 /-- Invoke `ops.landlockRestrictSelf rs` `n` consecutive times in `StateM S`, stopping early on the first `.error`. -/
 def repeatRestrictSelf {S fd : Type} (ops : SandboxOpsM (StateM S) fd) (rs : fd) :
@@ -367,7 +392,7 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
           else if flags == LANDLOCK_CREATE_RULESET_ERRATA then
             let errataEinvalOk := match s.landlockAbi? with
               | some abi => abi < 6
-              | none => true
+              | none => s.landlockMinAbi < 6
             if (e == Errno.EINVAL && errataEinvalOk) || canDisable || Errno.isTransientOsErrno e then
               some s
             else
@@ -391,7 +416,8 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
               else
                 if Errno.isTransientOsErrno e then some s else none
             | none =>
-              if (attr.handledAccessFs &&& ~~~LANDLOCK_ACCESS_FS_V4_ALL) != 0 then
+              let knownMask := landlockKnownFsMask (maxU32 4 s.landlockMinAbi)
+              if (attr.handledAccessFs &&& ~~~knownMask) != 0 then
                 if e == Errno.EINVAL || canDisable || Errno.isTransientOsErrno e then some s else none
               else
                 if canDisable || Errno.isTransientOsErrno e then some s else none
@@ -476,33 +502,39 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
       | .seccomp (.getActionAvail action) flags _ =>
         if flags.toBits != 0 then
           if e == Errno.EINVAL then some s else none
-        else if isKnownSeccompAction action then
-          if e == Errno.ENOSYS || Errno.isTransientOsErrno e then some s else none
         else
-          if e == Errno.EOPNOTSUPP || e == Errno.ENOSYS || Errno.isTransientOsErrno e then some s else none
+          let canDisable := e == Errno.ENOSYS && !hasSeccompEvidence s
+          if isKnownSeccompAction action then
+            if canDisable || Errno.isTransientOsErrno e then some s else none
+          else
+            if e == Errno.EOPNOTSUPP || canDisable || Errno.isTransientOsErrno e then some s else none
       | .seccomp .setModeFilter flags filterBytes =>
         if !isValidSeccompFilterByteLen filterBytes.data.size ||
             !hasSafeSeccompRetBytes filterBytes then
           if e == Errno.EINVAL then some s else none
-        else if e == Errno.EACCES && canFailNnpGate s then
-          some (pinFailedNnpGate s)
-        else if canPassNnpGate s then
-          let sPass := pinPassedNnpGate s
-          match decodeSockFilters filterBytes with
-          | none =>
-            if e == Errno.EINVAL then some sPass else none
-          | some prog =>
-            if !checkSeccompBpf prog then
-              if e == Errno.EINVAL then some sPass
-              else if e == Errno.ENOSYS || Errno.isTransientOsErrno e then some s
-              else none
-            else
-              let tsyncEsrchOk := flags.tsync && flags.tsyncEsrch && e == Errno.ESRCH
-              if tsyncEsrchOk then some sPass
-              else if Errno.isTransientOsErrno e || e == Errno.ENOSYS then some s
-              else none
         else
-          if e == Errno.ENOSYS || Errno.isTransientOsErrno e then some s else none
+          let canDisable := e == Errno.ENOSYS && !hasSeccompEvidence s
+          if flags.waitKillableRecv then
+            if e == Errno.EINVAL || canDisable || Errno.isTransientOsErrno e then some s else none
+          else if e == Errno.EACCES && canFailNnpGate s then
+            some (pinFailedNnpGate s)
+          else if canPassNnpGate s then
+            let sPass := pinPassedNnpGate s
+            match decodeSockFilters filterBytes with
+            | none =>
+              if e == Errno.EINVAL then some sPass else none
+            | some prog =>
+              if !checkSeccompBpf prog then
+                if e == Errno.EINVAL then some sPass
+                else if canDisable || Errno.isTransientOsErrno e then some s
+                else none
+              else
+                let tsyncEsrchOk := flags.tsync && flags.tsyncEsrch && e == Errno.ESRCH
+                if tsyncEsrchOk then some sPass
+                else if canDisable || Errno.isTransientOsErrno e then some s
+                else none
+          else
+            if canDisable || Errno.isTransientOsErrno e then some s else none
       | .prctl (.setPdeathsig sig) =>
         if sig > MAX_LINUX_SIGNAL then
           if e == Errno.EINVAL then some s else none
@@ -547,7 +579,7 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
           if e == Errno.EINVAL then some s else none
         else if flags.exec && e == Errno.EACCES && s.memfdNoexecStrict? != some false then
           some { s with memfdNoexecStrict? := some true }
-        else if Errno.isTransientOsErrno e || e == Errno.ENOSYS then
+        else if Errno.isTransientOsErrno e || (e == Errno.ENOSYS && !hasMemfdEvidence s) then
           some s
         else
           none
@@ -558,15 +590,19 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
         if v < 4 then none
         else
           match s.landlockAbi? with
-          | none => some { s with landlockEnabled := true, landlockAbi? := some v }
+          | none =>
+            if v < s.landlockMinAbi then none
+            else some { s with landlockEnabled := true, landlockAbi? := some v }
           | some prev =>
             if v == prev then some { s with landlockEnabled := true, landlockAbi? := some v }
             else none
       else if flags == LANDLOCK_CREATE_RULESET_ERRATA then
         match s.landlockAbi? with
         | some abi =>
-          if abi < 6 then none else some { s with landlockEnabled := true }
-        | none => some { s with landlockEnabled := true }
+          if abi < 6 then none
+          else some { s with landlockEnabled := true, landlockMinAbi := maxU32 s.landlockMinAbi 6 }
+        | none =>
+          some { s with landlockEnabled := true, landlockMinAbi := maxU32 s.landlockMinAbi 6 }
       else
         none
     | _ => none
@@ -590,7 +626,8 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
               fds := assocSet s.fds hid
                 { kind := .landlockRuleset attr.handledAccessFs attr.handledAccessNet, cloexec := true }
               nextHid := Nat.max s.nextHid (hid + 1)
-              landlockEnabled := true }
+              landlockEnabled := true
+              landlockMinAbi := maxU32 s.landlockMinAbi (impliedLandlockAbi attr.handledAccessFs) }
       | .memfdCreate name flags =>
         if hasEmbeddedNul name || name.data.size > MFD_NAME_MAX then none
         else if flags.noexecSeal && flags.exec then none
@@ -601,6 +638,7 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
             fds := assocSet s.fds hid
               { kind := .memfd flags.allowSealing flags.noexecSeal, cloexec := flags.cloexec }
             nextHid := Nat.max s.nextHid (hid + 1)
+            memfdEnabled := true
             memfdNoexecStrict? := strict' }
       | _ => none
   | .unit =>
@@ -649,10 +687,12 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
   | .u32 val =>
     match req with
     | .seccomp (.getActionAvail action) flags _ =>
-      if flags.toBits == 0 && isKnownSeccompAction action && val == 0 then some s else none
+      if flags.toBits == 0 && isKnownSeccompAction action && val == 0 then
+        some { s with seccompEnabled := true }
+      else none
     | .seccomp .setModeFilter flags filterBytes =>
       if !isValidSeccompFilterByteLen filterBytes.data.size ||
-          !hasSafeSeccompRetBytes filterBytes then
+          !hasSafeSeccompRetBytes filterBytes || flags.waitKillableRecv then
         none
       else if !canPassNnpGate s then none
       else
@@ -664,10 +704,11 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
           else if val == 0 then
             let mayIntercept' := s.seccompMayIntercept || !isAllowOnlySeccompFilter prog
             some { sPass with
+              seccompEnabled := true
               seccompFilters := s.seccompFilters + 1
               seccompMayIntercept := mayIntercept' }
           else if flags.tsync && !flags.tsyncEsrch then
-            some sPass
+            some { sPass with seccompEnabled := true }
           else
             none
     | .prctl .setNoNewPrivs =>
@@ -685,7 +726,7 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
       if sig ≤ MAX_LINUX_SIGNAL && val == 0 then some { s with pdeathsig := sig } else none
     | _ => none
 
-/-- Relational step verifier for `LeanSwe.LinuxSyscall.Sandbox` (`some s'` iff `out` is a legal Linux kernel transition from `s` on `req`). -/
+/-- Relational step verifier for `LeanSwe.LinuxSyscall.Sandbox` (`some s'` iff `out` is a legal Linux kernel transition from `s` on `req`). When `seccompMayIntercept = true` and `req` passes pure-Lean wrapper guards (`failsPureWrapperGuard req = false`), Linux evaluates installed `seccomp` BPF filters at syscall entry *before* kernel argument validation, so any intercepted errno `1 <= e <= 4095` (`e != EFAULT`, as `EFAULT` intentionally triggers fail-loud `abort()` in `sandbox_shim.c`) is permitted without pinning `s`. -/
 def allowedStep (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutcome) : Option SandboxSysState :=
   if !failsPureWrapperGuard req && s.seccompMayIntercept then
     match out with
@@ -712,7 +753,7 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
         if flags == LANDLOCK_CREATE_RULESET_ERRATA then
           if abi < 6 then
             return .error Errno.EINVAL
-          set { s with landlockEnabled := true }
+          set { s with landlockEnabled := true, landlockMinAbi := maxU32 s.landlockMinAbi 6 }
           return .ok (.version 0)
         return .error Errno.EINVAL
       | some attr =>
@@ -733,7 +774,8 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
           fds := assocSet s.fds hid
             { kind := .landlockRuleset attr.handledAccessFs attr.handledAccessNet, cloexec := true }
           nextHid := Nat.max s.nextHid (hid + 1)
-          landlockEnabled := true }
+          landlockEnabled := true
+          landlockMinAbi := maxU32 s.landlockMinAbi (impliedLandlockAbi attr.handledAccessFs) }
         return .ok (.ruleset hid)
     landlockAddRule := fun ruleset rule => do
       let s ← get
@@ -803,11 +845,15 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
       match op with
       | .getActionAvail action =>
         if flags.toBits != 0 then return .error Errno.EINVAL
-        if isKnownSeccompAction action then return .ok 0
+        if isKnownSeccompAction action then
+          set { s with seccompEnabled := true }
+          return .ok 0
         else return .error Errno.EOPNOTSUPP
       | .setModeFilter =>
         if !isValidSeccompFilterByteLen filterBytes.data.size ||
             !hasSafeSeccompRetBytes filterBytes then
+          return .error Errno.EINVAL
+        if flags.waitKillableRecv then
           return .error Errno.EINVAL
         let nnp := s.noNewPrivs?.getD false
         let capA := s.hasCapSysAdmin?.getD false
@@ -825,6 +871,7 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
             return .error Errno.EINVAL
           let mayIntercept' := s.seccompMayIntercept || !isAllowOnlySeccompFilter prog
           set { sPass with
+            seccompEnabled := true
             seccompFilters := s.seccompFilters + 1
             seccompMayIntercept := mayIntercept' }
           return .ok 0
@@ -882,6 +929,7 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
         fds := assocSet s.fds hid
           { kind := .memfd flags.allowSealing flags.noexecSeal, cloexec := flags.cloexec }
         nextHid := Nat.max s.nextHid (hid + 1)
+        memfdEnabled := true
         memfdNoexecStrict? := strict' }
       return .ok hid }
 

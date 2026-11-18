@@ -56,6 +56,18 @@ opaque closeFd : @& RawFd → IO (Except Errno Unit)
 @[extern "leanswe_sbx_enter_userns"]
 opaque enterUserns : IO (Except Errno Unit)
 
+/-- Enter extra Linux namespaces (`bit 0`: `CLONE_NEWPID`, `1`: `CLONE_NEWNET`, `2`: `CLONE_NEWUTS`, `3`: `CLONE_NEWIPC`). -/
+@[extern "leanswe_sbx_unshare_extra"]
+opaque unshareExtra : UInt32 → IO (Except Errno Unit)
+
+/-- Install an arbitrary raw cBPF seccomp filter directly via `SYS_seccomp` (bypasses Lean wrapper guards for testing outer-filter boundaries). -/
+@[extern "leanswe_sbx_install_raw_seccomp"]
+opaque installRawSeccomp : @& ByteArray → IO (Except Errno Unit)
+
+/-- Ensure directory/file permissions are `0700` so temporary directories created inside userns can be removed cleanly. -/
+@[extern "leanswe_sbx_chmod_rw"]
+opaque chmodRw : @& ByteArray → IO (Except Errno Unit)
+
 /-- Enter a mapped user+mount namespace and prepare `overlayfs`, `devpts`, and bind-mount directories under `baseDir`. -/
 @[extern "leanswe_sbx_setup_mnt_ns"]
 opaque setupMntNs : @& ByteArray → IO (Except Errno Unit)

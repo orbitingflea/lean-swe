@@ -234,7 +234,13 @@ def assume_sandbox_seccomp_actionAvailAndFilterAbi : IO Unit := do
       | .error e => throw (IO.userError s!"getNoNewPrivs failed: {e}")
     if nnp0 == 0 && euid != 0 then
       assertErr (← seccomp .setModeFilter {} allowAllFilter) Errno.EACCES "seccomp before nnp"
+    assertErr (← seccomp (.getActionAvail SECCOMP_RET_ALLOW) { waitKillableRecv := true } ByteArray.empty)
+      Errno.EINVAL "waitKillableRecv on getActionAvail"
+    assertErr (← seccomp .setModeFilter { waitKillableRecv := true } allowAllFilter)
+      Errno.EINVAL "WAIT_KILLABLE_RECV without NEW_LISTENER before nnp"
     assertTrue ((← prctl .setNoNewPrivs) == .ok 0) "setNoNewPrivs failed"
+    assertErr (← seccomp .setModeFilter { waitKillableRecv := true } allowAllFilter)
+      Errno.EINVAL "WAIT_KILLABLE_RECV without NEW_LISTENER after nnp"
     let argFilter := encodeFilter
       [ { code := 0x0020, jt := 0, jf := 0, k := 0 }
       , { code := 0x0015, jt := 1, jf := 0, k := 999999 }
@@ -271,6 +277,21 @@ def assume_sandbox_seccomp_actionAvailAndFilterAbi : IO Unit := do
       , { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ERRNO ||| Errno.EPERM } ]
     assertTrue ((← seccomp .setModeFilter {} blockMemfd) == .ok 0) "install memfd EPERM filter failed"
     assertErr (← memfdCreate "blocked".toUTF8 {}) Errno.EPERM "outer seccomp memfd EPERM"
+  let (efaultSt, _) ← SandboxEnv.runForked do
+    assertTrue ((← prctl .setNoNewPrivs) == .ok 0) "setNoNewPrivs for EFAULT filter"
+    let efaultPrctl := encodeFilter
+      [ { code := 0x0020, jt := 0, jf := 0, k := 0 }
+      , { code := 0x0015, jt := 1, jf := 0, k := 157 }
+      , { code := 0x0015, jt := 0, jf := 1, k := 167 }
+      , { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ERRNO ||| Errno.EFAULT }
+      , { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW } ]
+    match ← SandboxEnv.installRawSeccomp efaultPrctl with
+    | .ok () => pure ()
+    | .error e => throw (IO.userError s!"installRawSeccomp failed: {e}")
+    let _ ← prctl .getNoNewPrivs
+    return ByteArray.empty
+  assertTrue ((efaultSt &&& 0x7F) == 6)
+    s!"outer SECCOMP_RET_ERRNO|EFAULT must fail-loud SIGABRT (6), got wait status {efaultSt}"
 
 /-- Verify 5-arg `prctl` ABI (`NO_NEW_PRIVS`, `CHILD_SUBREAPER`, `PDEATHSIG` bounds). -/
 def assume_sandbox_prctl_nnpSubreaperAndPdeathsig : IO Unit := do
