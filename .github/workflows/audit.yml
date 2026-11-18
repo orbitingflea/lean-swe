@@ -43,6 +43,9 @@ jobs:
         if: github.event_name == 'pull_request'
         run: python3 -B scripts/check_spec_change.py --base "$BASE_SHA" --head HEAD --event-path "$GITHUB_EVENT_PATH"
 
+      - name: Run spec-change ratchet unit tests
+        run: python3 -B -m unittest scripts/test_check_spec_change.py
+
       - name: Prepare runner packages, sandbox cgroup, and concurrency
         run: |
           set -euo pipefail
@@ -157,6 +160,9 @@ jobs:
 
       - name: Check assumptions and error coverage
         run: lake env lean --run scripts/CheckAssumptions.lean --allow-legacy --verify-log "$ASSUMP_LOG" --nonce "$ASSUMP_NONCE"
+
+      - name: Check non-Lean thinness gate
+        run: lake env lean -DwarningAsError=true --run scripts/CheckForeignThinness.lean .
 
       - name: Save build folder cache
         if: >-

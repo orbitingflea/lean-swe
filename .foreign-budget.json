@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "files": {
+    ".github/actions/install-lean/action.yml": {
+      "max_lines": 54,
+      "legacy_unmigrated": false
+    },
+    ".github/workflows/audit-daily.yml": {
+      "max_lines": 211,
+      "legacy_unmigrated": false
+    },
+    ".github/workflows/audit.yml": {
+      "max_lines": 177,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/ConnectProxy/Raw/c/cproxy_shim.c": {
+      "max_lines": 1696,
+      "legacy_unmigrated": true
+    },
+    "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c": {
+      "max_lines": 190,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/EnvVars/Raw/c/envvars_shim.c": {
+      "max_lines": 46,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/Fs/Raw/c/fs_shim.c": {
+      "max_lines": 1011,
+      "legacy_unmigrated": true
+    },
+    "LeanSwe/Process/Raw/c/process_shim.c": {
+      "max_lines": 960,
+      "legacy_unmigrated": true
+    },
+    "LeanSwe/ProcessSandbox/Raw/c/psandbox_init.c": {
+      "max_lines": 1148,
+      "legacy_unmigrated": true
+    },
+    "LeanSwe/ProcessSandbox/Raw/c/psandbox_shim.c": {
+      "max_lines": 3459,
+      "legacy_unmigrated": true
+    },
+    "LeanSwe/Sqlite/Raw/c/sqlite_shim.c": {
+      "max_lines": 670,
+      "legacy_unmigrated": true
+    },
+    "LeanSwe/Uuid/Raw/c/uuid_shim.c": {
+      "max_lines": 99,
+      "legacy_unmigrated": true
+    },
+    "scripts/check_proof_memory.py": {
+      "max_lines": 406,
+      "legacy_unmigrated": false
+    },
+    "scripts/check_spec_change.py": {
+      "max_lines": 1199,
+      "legacy_unmigrated": false
+    },
+    "scripts/mutate_and_test.py": {
+      "max_lines": 619,
+      "legacy_unmigrated": false
+    },
+    "scripts/test_check_spec_change.py": {
+      "max_lines": 331,
+      "legacy_unmigrated": false
+    }
+  },
+  "vendored_files": {
+    "LeanSwe/Sqlite/Raw/c/sqlite3.c": {
+      "sha256": "0c657666d819f261cc4007526ad57e1669de9949df7a8ea847aa284a2bf0ee52",
+      "max_lines": 271131
+    },
+    "LeanSwe/Sqlite/Raw/c/sqlite3.h": {
+      "sha256": "d6c84557261893439b341d2e6c35187ae3ea24fbfd843ad94616f72d89242b8c",
+      "max_lines": 14447
+    }
+  },
+  "function_overrides": {
+    "LeanSwe/EnvVars/Raw/c/envvars_shim.c::leanswe_envvars_environ": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c::capture_openssl_error": {
+      "max_loops": 1
+    },
+    "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c::leanswe_cryptohash_hmac_sha256": {
+      "max_code_lines": 54,
+      "max_branches": 10
+    }
+  },
+  "named_thread_helpers": []
+}
