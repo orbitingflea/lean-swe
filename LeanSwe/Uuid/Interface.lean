@@ -1,12 +1,17 @@
-import LeanSwe.Uuid.Raw.Interface
+import LeanSwe.LinuxSyscall.TimeRand.Interface
 import LeanSwe.Uuid.Types
 import LeanSwe.Uuid.Impl
 
 namespace LeanSwe.Uuid
 
-/-- Default concrete `IO` UUIDv4 API bundle backed by `LeanSwe.Uuid.Raw.defaultOps`. -/
+/-- Construct a `UuidApiM m` purely over an injected `LeanSwe.LinuxSyscall.TimeRand.TimeRandOpsM m` capability bundle. -/
+@[inline] def mkApi {m : Type → Type} [Monad m]
+    (sys : LeanSwe.LinuxSyscall.TimeRand.TimeRandOpsM m) : UuidApiM m :=
+  Internal.mkApi sys
+
+/-- Default concrete `IO` UUIDv4 API bundle backed by `LeanSwe.LinuxSyscall.TimeRand.defaultOps`. -/
 def defaultApi : UuidApi :=
-  Internal.mkApiM Raw.defaultOps
+  Internal.mkApi LeanSwe.LinuxSyscall.TimeRand.defaultOps
 
 /-- Convert a raw OS entropy error record into a normalized `UuidError` with non-empty message. -/
 @[inline] def mapRawError (err : UuidRawError) : UuidError :=
@@ -36,8 +41,12 @@ def defaultApi : UuidApi :=
 @[inline] def isValid (s : String) : Bool :=
   defaultApi.isValid s
 
-/-- Generate a fresh UUIDv4 using OS entropy. -/
+/-- Generate a fresh UUIDv4 using Linux `getrandom(2)` via `LeanSwe.LinuxSyscall.TimeRand`. -/
 @[inline] def getUuid : IO (Except UuidError Uuid) :=
+  defaultApi.getUuid
+
+/-- Alias of `getUuid` generating a fresh RFC 4122 v4 `Uuid` via `LeanSwe.LinuxSyscall.TimeRand`. -/
+@[inline] def v4 : IO (Except UuidError Uuid) :=
   defaultApi.getUuid
 
 end LeanSwe.Uuid

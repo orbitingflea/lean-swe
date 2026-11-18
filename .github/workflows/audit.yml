@@ -51,7 +51,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap strace python3-zstandard zstd xz-utils gzip curl libssl-dev
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          [[ ! -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] || sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then
             echo "+memory +pids" | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null 2>&1 || true
             sudo mkdir -p /sys/fs/cgroup/leanswe/runner &&
@@ -69,9 +69,9 @@ jobs:
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: ./.lake
-          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/Raw/c/**') }}-${{ github.sha }}
+          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/c/**') }}-${{ github.sha }}
           restore-keys: |
-            lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/Raw/c/**') }}-
+            lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/c/**') }}-
 
       - name: Prune orphaned Lean build artifacts
         run: |
@@ -141,6 +141,8 @@ jobs:
             sudo -n sysctl -w "vm.memfd_noexec=${OLD_MEMFD_NOEXEC}" >/dev/null
             trap - EXIT
           fi
+          .lake/build/bin/lean-swe-test --timerand-strace-fault-check
+          .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --self-test-shrink && .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 50000 --random-seed --self-test-shrink
 
       - name: Check 1 GB private-memory cap on changed modules and reverse dependents
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -187,4 +189,4 @@ jobs:
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: ./.lake
-          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/Raw/c/**') }}-${{ github.sha }}
+          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/c/**') }}-${{ github.sha }}

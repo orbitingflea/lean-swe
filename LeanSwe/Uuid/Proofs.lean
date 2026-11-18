@@ -390,8 +390,8 @@ private theorem decodeHexPairs_none_of_mem_bad :
         simp [hr]
 
 private theorem nonEmptyMsg_ne_empty {fallback msg : String} (hf : fallback ≠ "") :
-    Raw.Internal.nonEmptyMsg fallback msg ≠ "" := by
-  unfold Raw.Internal.nonEmptyMsg
+    Internal.nonEmptyMsg fallback msg ≠ "" := by
+  unfold Internal.nonEmptyMsg
   by_cases h : msg.isEmpty
   · simp [h, hf]
   · simp [h]
@@ -420,27 +420,24 @@ theorem proof_uuid_mapRawError_returnsNonEmptyMessage :
   intro raw
   cases raw with
   | osError code detail =>
-    dsimp [test_uuid_mapRawError_returnsNonEmptyMessage, defaultApi, Internal.mkApiM,
-      Raw.defaultOps, Raw.Internal.mkRawOps, Raw.Internal.mapRawError,
-      Bind.bind, Core.NondetTest.assert]
+    dsimp [test_uuid_mapRawError_returnsNonEmptyMessage, defaultApi, Internal.mkApi,
+      Internal.mkApi, Internal.mkApiM, Internal.mapRawError, Bind.bind, Core.NondetTest.assert]
     refine ⟨⟨rfl, nonEmptyMsg_ne_empty ?_⟩, rfl, trivial⟩
     intro h
     have hlen := congrArg String.length h
     simp at hlen
     exact absurd hlen.1 (by decide)
   | shortRead gotBytes detail =>
-    dsimp [test_uuid_mapRawError_returnsNonEmptyMessage, defaultApi, Internal.mkApiM,
-      Raw.defaultOps, Raw.Internal.mkRawOps, Raw.Internal.mapRawError,
-      Bind.bind, Core.NondetTest.assert]
-    refine ⟨⟨rfl, nonEmptyMsg_ne_empty ?_⟩, trivial, trivial⟩
+    dsimp [test_uuid_mapRawError_returnsNonEmptyMessage, defaultApi, Internal.mkApi,
+      Internal.mkApi, Internal.mkApiM, Internal.mapRawError, Bind.bind, Core.NondetTest.assert]
+    refine ⟨⟨rfl, nonEmptyMsg_ne_empty ?_⟩, rfl, trivial⟩
     intro h
     have hlen := congrArg String.length h
     simp at hlen
   | userError detail =>
-    dsimp [test_uuid_mapRawError_returnsNonEmptyMessage, defaultApi, Internal.mkApiM,
-      Raw.defaultOps, Raw.Internal.mkRawOps, Raw.Internal.mapRawError,
-      Bind.bind, Core.NondetTest.assert]
-    refine ⟨⟨rfl, nonEmptyMsg_ne_empty (by decide)⟩, trivial, trivial⟩
+    dsimp [test_uuid_mapRawError_returnsNonEmptyMessage, defaultApi, Internal.mkApi,
+      Internal.mkApi, Internal.mkApiM, Internal.mapRawError, Bind.bind, Core.NondetTest.assert]
+    refine ⟨⟨rfl, nonEmptyMsg_ne_empty (by decide)⟩, rfl, trivial⟩
 
 /-- Proof of `test_uuid_fromRandomBytes_validLen_setsV4BitsAndPreservesPayload` for `defaultApi`. -/
 theorem proof_uuid_fromRandomBytes_validLen_setsV4BitsAndPreservesPayload :
@@ -449,7 +446,7 @@ theorem proof_uuid_fromRandomBytes_validLen_setsV4BitsAndPreservesPayload :
   obtain ⟨b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15, rfl⟩ :=
     eq_of_size_16 bs hlen
   dsimp [test_uuid_fromRandomBytes_validLen_setsV4BitsAndPreservesPayload, defaultApi,
-    Internal.mkApiM, Bind.bind, Core.NondetTest.assert]
+    Internal.mkApi, Internal.mkApiM, Bind.bind, Core.NondetTest.assert]
   rw [fromRandomBytes16_eq]
   refine ⟨rfl, ?_, ?_, ?_, ?_, ?_⟩
   · exact uint8_v4_ver b6
@@ -468,7 +465,7 @@ theorem reach_uuid_fromRandomBytes_validLen_setsV4BitsAndPreservesPayload :
   have h := proof_uuid_fromRandomBytes_validLen_setsV4BitsAndPreservesPayload
     (ByteArray.mk #[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) rfl
   dsimp [test_uuid_fromRandomBytes_validLen_setsV4BitsAndPreservesPayload, defaultApi,
-    Internal.mkApiM, Bind.bind, Core.NondetTest.assert] at h ⊢
+    Internal.mkApi, Internal.mkApiM, Bind.bind, Core.NondetTest.assert] at h ⊢
   exact ⟨ByteArray.mk #[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], rfl,
     h.1, h.2.1, h.2.2.1, h.2.2.2.1, h.2.2.2.2.1, 0, by decide, h.2.2.2.2.2 0 (by decide)⟩
 
@@ -476,7 +473,7 @@ theorem reach_uuid_fromRandomBytes_validLen_setsV4BitsAndPreservesPayload :
 theorem proof_uuid_fromRandomBytes_invalidLen_returnsError :
     AllPass (test_uuid_fromRandomBytes_invalidLen_returnsError defaultApi) := by
   intro bs hne
-  dsimp [test_uuid_fromRandomBytes_invalidLen_returnsError, defaultApi, Internal.mkApiM,
+  dsimp [test_uuid_fromRandomBytes_invalidLen_returnsError, defaultApi, Internal.mkApi, Internal.mkApiM,
     Internal.fromRandomBytes, Bind.bind, Core.NondetTest.assert]
   have hbne : (bs.size != 16) = true := bne_iff_ne.mpr hne
   rw [hbne]
@@ -489,7 +486,7 @@ theorem proof_uuid_fromRandomBytes_invalidLen_returnsError :
 theorem reach_uuid_fromRandomBytes_invalidLen_returnsError :
     CanReach (test_uuid_fromRandomBytes_invalidLen_returnsError defaultApi) := by
   refine ⟨ByteArray.empty, by decide, ?_⟩
-  dsimp [test_uuid_fromRandomBytes_invalidLen_returnsError, defaultApi, Internal.mkApiM,
+  dsimp [test_uuid_fromRandomBytes_invalidLen_returnsError, defaultApi, Internal.mkApi, Internal.mkApiM,
     Internal.fromRandomBytes, Bind.bind, Core.NondetTest.assert]
   exact ⟨⟨rfl, by decide⟩, trivial⟩
 
@@ -804,7 +801,7 @@ theorem proof_uuid_toString_formatAndRoundTrip :
   intro bs hlen
   obtain ⟨b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15, rfl⟩ :=
     eq_of_size_16 bs hlen
-  dsimp [test_uuid_toString_formatAndRoundTrip, defaultApi, Internal.mkApiM,
+  dsimp [test_uuid_toString_formatAndRoundTrip, defaultApi, Internal.mkApi, Internal.mkApiM,
     Internal.parse, Internal.isValid, Bind.bind, Core.NondetTest.assert]
   rw [fromRandomBytes16_eq]
   dsimp only
@@ -851,7 +848,7 @@ theorem proof_uuid_toHex_formatAndRoundTrip :
   intro bs hlen
   obtain ⟨b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15, rfl⟩ :=
     eq_of_size_16 bs hlen
-  dsimp [test_uuid_toHex_formatAndRoundTrip, defaultApi, Internal.mkApiM,
+  dsimp [test_uuid_toHex_formatAndRoundTrip, defaultApi, Internal.mkApi, Internal.mkApiM,
     Internal.parseHex, Internal.parse, Internal.isValid, Bind.bind, Core.NondetTest.assert]
   rw [fromRandomBytes16_eq]
   dsimp only
@@ -907,7 +904,7 @@ theorem proof_uuid_toHex_bigEndianNibbleOrder :
   intro bs hlen
   obtain ⟨b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15, rfl⟩ :=
     eq_of_size_16 bs hlen
-  dsimp [test_uuid_toHex_bigEndianNibbleOrder, defaultApi, Internal.mkApiM,
+  dsimp [test_uuid_toHex_bigEndianNibbleOrder, defaultApi, Internal.mkApi, Internal.mkApiM,
     Bind.bind, Core.NondetTest.assert]
   rw [fromRandomBytes16_eq]
   dsimp only
@@ -929,7 +926,7 @@ theorem reach_uuid_toHex_bigEndianNibbleOrder :
     CanReach (test_uuid_toHex_bigEndianNibbleOrder defaultApi) := by
   have h := proof_uuid_toHex_bigEndianNibbleOrder
     (ByteArray.mk #[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) rfl 0 (by decide)
-  dsimp [test_uuid_toHex_bigEndianNibbleOrder, defaultApi, Internal.mkApiM,
+  dsimp [test_uuid_toHex_bigEndianNibbleOrder, defaultApi, Internal.mkApi, Internal.mkApiM,
     Bind.bind, Core.NondetTest.assert] at h ⊢
   exact ⟨ByteArray.mk #[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], rfl, 0, by decide, h⟩
 
@@ -939,7 +936,7 @@ theorem proof_uuid_parse_acceptsUppercaseHex :
   intro bs hlen
   obtain ⟨b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15, rfl⟩ :=
     eq_of_size_16 bs hlen
-  dsimp [test_uuid_parse_acceptsUppercaseHex, defaultApi, Internal.mkApiM,
+  dsimp [test_uuid_parse_acceptsUppercaseHex, defaultApi, Internal.mkApi, Internal.mkApiM,
     Internal.parse, Internal.parseHex, Internal.isValid, Bind.bind, Core.NondetTest.assert]
   rw [fromRandomBytes16_eq]
   dsimp only
@@ -977,7 +974,7 @@ theorem reach_uuid_parse_acceptsUppercaseHex :
     CanReach (test_uuid_parse_acceptsUppercaseHex defaultApi) := by
   have h := proof_uuid_parse_acceptsUppercaseHex
     (ByteArray.mk #[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) rfl
-  dsimp [test_uuid_parse_acceptsUppercaseHex, defaultApi, Internal.mkApiM,
+  dsimp [test_uuid_parse_acceptsUppercaseHex, defaultApi, Internal.mkApi, Internal.mkApiM,
     Internal.parse, Internal.parseHex, Internal.isValid, Bind.bind, Core.NondetTest.assert] at h ⊢
   exact ⟨ByteArray.mk #[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], rfl, h⟩
 
@@ -1116,7 +1113,7 @@ theorem proof_uuid_parse_acceptedImpliesV4AndNormalizedRoundTrip :
     AllPass (test_uuid_parse_acceptedImpliesV4AndNormalizedRoundTrip defaultApi) := by
   intro s
   dsimp [test_uuid_parse_acceptedImpliesV4AndNormalizedRoundTrip, defaultApi,
-    Internal.mkApiM, Internal.parse, Internal.isValid, Internal.toString,
+    Internal.mkApi, Internal.mkApiM, Internal.parse, Internal.isValid, Internal.toString,
     Bind.bind, Core.NondetTest.assert]
   cases hp : Internal.parseCanonicalChars s.toList with
   | error e =>
@@ -1149,7 +1146,7 @@ theorem proof_uuid_parseHex_acceptedImpliesV4AndNormalizedRoundTrip :
     AllPass (test_uuid_parseHex_acceptedImpliesV4AndNormalizedRoundTrip defaultApi) := by
   intro s
   dsimp [test_uuid_parseHex_acceptedImpliesV4AndNormalizedRoundTrip, defaultApi,
-    Internal.mkApiM, Internal.parseHex, Internal.toHex,
+    Internal.mkApi, Internal.mkApiM, Internal.parseHex, Internal.toHex,
     Bind.bind, Core.NondetTest.assert]
   cases hp : Internal.parseHexChars s.toList with
   | error e => exact ⟨parseHexChars_err_msg hp, trivial⟩
@@ -1162,7 +1159,7 @@ theorem proof_uuid_parseHex_acceptedImpliesV4AndNormalizedRoundTrip :
 theorem proof_uuid_parse_rejectsInvalidLength :
     AllPass (test_uuid_parse_rejectsInvalidLength defaultApi) := by
   intro s hne
-  dsimp [test_uuid_parse_rejectsInvalidLength, defaultApi, Internal.mkApiM,
+  dsimp [test_uuid_parse_rejectsInvalidLength, defaultApi, Internal.mkApi, Internal.mkApiM,
     Internal.parse, Internal.isValid, Internal.parseCanonicalChars,
     Bind.bind, Core.NondetTest.assert]
   have hlen : s.toList.length ≠ 36 := by
@@ -1216,7 +1213,7 @@ private theorem stripCanonicalHyphens_mem_of_idx {cs hex : List Char}
 theorem proof_uuid_parse_rejectsNonHexChar :
     AllPass (test_uuid_parse_rejectsNonHexChar defaultApi) := by
   intro s hlen idx ⟨hi, h8, h13, h18, h23⟩ hbad
-  dsimp [test_uuid_parse_rejectsNonHexChar, defaultApi, Internal.mkApiM,
+  dsimp [test_uuid_parse_rejectsNonHexChar, defaultApi, Internal.mkApi, Internal.mkApiM,
     Internal.parse, Internal.isValid, Bind.bind, Core.NondetTest.assert]
   have hclen : s.toList.length = 36 := by rw [String.length_toList]; exact hlen
   have hbne : (s.toList.length != 36) = false := by simp [hclen]
@@ -1246,7 +1243,7 @@ theorem reach_uuid_parse_rejectsNonHexChar :
 theorem proof_uuid_parse_rejectsMissingHyphen :
     AllPass (test_uuid_parse_rejectsMissingHyphen defaultApi) := by
   intro s hlen hmiss
-  dsimp [test_uuid_parse_rejectsMissingHyphen, defaultApi, Internal.mkApiM,
+  dsimp [test_uuid_parse_rejectsMissingHyphen, defaultApi, Internal.mkApi, Internal.mkApiM,
     Internal.parse, Internal.isValid, Internal.parseCanonicalChars,
     Bind.bind, Core.NondetTest.assert]
   have hclen : s.toList.length = 36 := by rw [String.length_toList]; exact hlen
@@ -1584,7 +1581,7 @@ theorem proof_uuid_parse_rejectsNonV4VersionOrVariant :
     AllPass (test_uuid_parse_rejectsNonV4VersionOrVariant defaultApi) := by
   intro bs hlen badVer ⟨hverHex, hverNe⟩ badVar ⟨hvarHex, h8, h9, ha, hb, hA, hB⟩
   have h := parse_badVer_badVar_spec bs hlen hverHex hverNe hvarHex h8 h9 ha hb hA hB
-  dsimp [test_uuid_parse_rejectsNonV4VersionOrVariant, defaultApi, Internal.mkApiM,
+  dsimp [test_uuid_parse_rejectsNonV4VersionOrVariant, defaultApi, Internal.mkApi, Internal.mkApiM,
     Bind.bind, Core.NondetTest.assert]
   cases hfr : Internal.fromRandomBytes bs with
   | error _ => intro hf; exact False.elim hf
@@ -1612,7 +1609,7 @@ theorem reach_uuid_parse_rejectsNonV4VersionOrVariant :
   have h := parse_badVer_badVar_spec bs hlen (badVer := '5') (by decide) (by decide)
     (badVar := '0') (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) (by decide)
   dsimp [CanReach, test_uuid_parse_rejectsNonV4VersionOrVariant, defaultApi,
-    Internal.mkApiM, Bind.bind, Core.NondetTest.nondet, Core.NondetTest.assume,
+    Internal.mkApi, Internal.mkApiM, Bind.bind, Core.NondetTest.nondet, Core.NondetTest.assume,
     Core.NondetTest.assert]
   refine ⟨bs, hlen, '5', by decide, '0', by decide, ?_⟩
   cases hfr : Internal.fromRandomBytes bs with
@@ -1637,7 +1634,7 @@ theorem reach_uuid_parse_rejectsNonV4VersionOrVariant :
 theorem proof_uuid_parseHex_rejectsInvalidLength :
     AllPass (test_uuid_parseHex_rejectsInvalidLength defaultApi) := by
   intro s hne
-  dsimp [test_uuid_parseHex_rejectsInvalidLength, defaultApi, Internal.mkApiM,
+  dsimp [test_uuid_parseHex_rejectsInvalidLength, defaultApi, Internal.mkApi, Internal.mkApiM,
     Internal.parseHex, Internal.parseHexChars, Bind.bind, Core.NondetTest.assert]
   have hlen : s.toList.length ≠ 32 := by
     rw [String.length_toList]
@@ -1656,7 +1653,7 @@ theorem reach_uuid_parseHex_rejectsInvalidLength :
 theorem proof_uuid_parseHex_rejectsNonHexChar :
     AllPass (test_uuid_parseHex_rejectsNonHexChar defaultApi) := by
   intro s hlen idx ⟨hidx, hbad⟩
-  dsimp [test_uuid_parseHex_rejectsNonHexChar, defaultApi, Internal.mkApiM,
+  dsimp [test_uuid_parseHex_rejectsNonHexChar, defaultApi, Internal.mkApi, Internal.mkApiM,
     Internal.parseHex, Internal.parseHexChars, Bind.bind, Core.NondetTest.assert]
   have hclen : s.toList.length = 32 := by rw [String.length_toList]; exact hlen
   have hbne : (s.toList.length != 32) = false := by simp [hclen]
@@ -1826,7 +1823,7 @@ theorem proof_uuid_parseHex_rejectsNonV4VersionOrVariant :
     AllPass (test_uuid_parseHex_rejectsNonV4VersionOrVariant defaultApi) := by
   intro bs hlen badVer ⟨hverHex, hverNe⟩ badVar ⟨hvarHex, h8, h9, ha, hb, hA, hB⟩
   have h := parseHex_badVer_badVar_spec bs hlen hverHex hverNe hvarHex h8 h9 ha hb hA hB
-  dsimp [test_uuid_parseHex_rejectsNonV4VersionOrVariant, defaultApi, Internal.mkApiM,
+  dsimp [test_uuid_parseHex_rejectsNonV4VersionOrVariant, defaultApi, Internal.mkApi, Internal.mkApiM,
     Bind.bind, Core.NondetTest.assert]
   cases hfr : Internal.fromRandomBytes bs with
   | error _ => intro hf; exact False.elim hf
@@ -1854,7 +1851,7 @@ theorem reach_uuid_parseHex_rejectsNonV4VersionOrVariant :
   have h := parseHex_badVer_badVar_spec bs hlen (badVer := '5') (by decide) (by decide)
     (badVar := '0') (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) (by decide)
   dsimp [CanReach, test_uuid_parseHex_rejectsNonV4VersionOrVariant, defaultApi,
-    Internal.mkApiM, Bind.bind, Core.NondetTest.nondet, Core.NondetTest.assume,
+    Internal.mkApi, Internal.mkApiM, Bind.bind, Core.NondetTest.nondet, Core.NondetTest.assume,
     Core.NondetTest.assert]
   refine ⟨bs, hlen, '5', by decide, '0', by decide, ?_⟩
   cases hfr : Internal.fromRandomBytes bs with
@@ -1875,109 +1872,209 @@ theorem reach_uuid_parseHex_rejectsNonV4VersionOrVariant :
         simp only [and_true]
         exact ⟨h.1, h.2⟩
 
-private def bsOfCounter (c : Nat) : ByteArray :=
-  ByteArray.mk #[
-    UInt8.ofNat (c % 256),
-    UInt8.ofNat ((c / 256) % 256),
-    UInt8.ofNat ((c / 65536) % 256),
-    UInt8.ofNat ((c / 16777216) % 256),
-    0x11, 0x22, 0x03, 0x44,
-    0x05, 0x66, 0x77, 0x88,
-    0x99, 0xaa, 0xbb, 0xcc
-  ]
+private theorem deterministicEntropyBytes_16_eq (d : Nat) :
+    LeanSwe.LinuxSyscall.TimeRand.deterministicEntropyBytes d 16 =
+      ByteArray.mk #[
+        UInt8.ofNat ((d / 1) % 256),
+        UInt8.ofNat ((d / 256) % 256),
+        UInt8.ofNat ((d / 65536) % 256),
+        UInt8.ofNat ((d / 16777216) % 256),
+        UInt8.ofNat ((d * 131 + 4 * 17 + 0x5A) % 256),
+        UInt8.ofNat ((d * 131 + 5 * 17 + 0x5A) % 256),
+        UInt8.ofNat ((d * 131 + 6 * 17 + 0x5A) % 256),
+        UInt8.ofNat ((d * 131 + 7 * 17 + 0x5A) % 256),
+        UInt8.ofNat ((d * 131 + 8 * 17 + 0x5A) % 256),
+        UInt8.ofNat ((d * 131 + 9 * 17 + 0x5A) % 256),
+        UInt8.ofNat ((d * 131 + 10 * 17 + 0x5A) % 256),
+        UInt8.ofNat ((d * 131 + 11 * 17 + 0x5A) % 256),
+        UInt8.ofNat ((d * 131 + 12 * 17 + 0x5A) % 256),
+        UInt8.ofNat ((d * 131 + 13 * 17 + 0x5A) % 256),
+        UInt8.ofNat ((d * 131 + 14 * 17 + 0x5A) % 256),
+        UInt8.ofNat ((d * 131 + 15 * 17 + 0x5A) % 256)
+      ] := rfl
 
-private def mkV4UuidOfCounter (c : Nat) : Uuid :=
+private def mkModelV4Uuid (d : Nat) : Uuid :=
   { bytes := ByteArray.mk #[
-      UInt8.ofNat (c % 256),
-      UInt8.ofNat ((c / 256) % 256),
-      UInt8.ofNat ((c / 65536) % 256),
-      UInt8.ofNat ((c / 16777216) % 256),
-      0x11, 0x22, 0x43, 0x44,
-      0x85, 0x66, 0x77, 0x88,
-      0x99, 0xaa, 0xbb, 0xcc
+      UInt8.ofNat ((d / 1) % 256),
+      UInt8.ofNat ((d / 256) % 256),
+      UInt8.ofNat ((d / 65536) % 256),
+      UInt8.ofNat ((d / 16777216) % 256),
+      UInt8.ofNat ((d * 131 + 4 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 5 * 17 + 0x5A) % 256),
+      (UInt8.ofNat ((d * 131 + 6 * 17 + 0x5A) % 256) &&& (0x0F : UInt8)) ||| (0x40 : UInt8),
+      UInt8.ofNat ((d * 131 + 7 * 17 + 0x5A) % 256),
+      (UInt8.ofNat ((d * 131 + 8 * 17 + 0x5A) % 256) &&& (0x3F : UInt8)) ||| (0x80 : UInt8),
+      UInt8.ofNat ((d * 131 + 9 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 10 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 11 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 12 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 13 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 14 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 15 * 17 + 0x5A) % 256)
     ] }
 
-private theorem fromRandomBytes_bsOfCounter (c : Nat) :
-    Internal.fromRandomBytes (bsOfCounter c) = .ok (mkV4UuidOfCounter c) := by
-  unfold bsOfCounter mkV4UuidOfCounter
+private theorem fromRandomBytes_det16 (d : Nat) :
+    Internal.fromRandomBytes (LeanSwe.LinuxSyscall.TimeRand.deterministicEntropyBytes d 16) =
+      .ok (mkModelV4Uuid d) := by
+  rw [deterministicEntropyBytes_16_eq]
   exact fromRandomBytes16_eq _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
-private theorem mkV4UuidOfCounter_parse (c : Nat) :
-    Internal.parse (Internal.toString (mkV4UuidOfCounter c)) = .ok (mkV4UuidOfCounter c) := by
-  have hto : Internal.toString (mkV4UuidOfCounter c) = String.ofList (Internal.insertHyphens (Internal.formatHexList
-      [UInt8.ofNat (c % 256), UInt8.ofNat ((c / 256) % 256), UInt8.ofNat ((c / 65536) % 256),
-       UInt8.ofNat ((c / 16777216) % 256), 0x11, 0x22, 0x43, 0x44,
-       0x85, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc])) :=
-    toString16_eq _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+private theorem mkModelV4Uuid_parse (d : Nat) :
+    Internal.parse (Internal.toString (mkModelV4Uuid d)) = .ok (mkModelV4Uuid d) := by
+  have hto : Internal.toString (mkModelV4Uuid d) = String.ofList (Internal.insertHyphens (Internal.formatHexList [
+      UInt8.ofNat ((d / 1) % 256),
+      UInt8.ofNat ((d / 256) % 256),
+      UInt8.ofNat ((d / 65536) % 256),
+      UInt8.ofNat ((d / 16777216) % 256),
+      UInt8.ofNat ((d * 131 + 4 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 5 * 17 + 0x5A) % 256),
+      (UInt8.ofNat ((d * 131 + 6 * 17 + 0x5A) % 256) &&& (0x0F : UInt8)) ||| (0x40 : UInt8),
+      UInt8.ofNat ((d * 131 + 7 * 17 + 0x5A) % 256),
+      (UInt8.ofNat ((d * 131 + 8 * 17 + 0x5A) % 256) &&& (0x3F : UInt8)) ||| (0x80 : UInt8),
+      UInt8.ofNat ((d * 131 + 9 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 10 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 11 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 12 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 13 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 14 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 15 * 17 + 0x5A) % 256)
+    ])) := toString16_eq _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
   rw [Internal.parse, hto, String.toList_ofList]
-  exact parseCanonicalChars16_bytes _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ rfl rfl
+  exact parseCanonicalChars16_bytes _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+    (uint8_v4_ver _) (uint8_v4_var _)
 
-private theorem mkV4UuidOfCounter_parseHex (c : Nat) :
-    Internal.parseHex (Internal.toHex (mkV4UuidOfCounter c)) = .ok (mkV4UuidOfCounter c) := by
-  have hto : Internal.toHex (mkV4UuidOfCounter c) = String.ofList (Internal.formatHexList
-      [UInt8.ofNat (c % 256), UInt8.ofNat ((c / 256) % 256), UInt8.ofNat ((c / 65536) % 256),
-       UInt8.ofNat ((c / 16777216) % 256), 0x11, 0x22, 0x43, 0x44,
-       0x85, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc]) :=
-    toHex16_eq _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+private theorem mkModelV4Uuid_parseHex (d : Nat) :
+    Internal.parseHex (Internal.toHex (mkModelV4Uuid d)) = .ok (mkModelV4Uuid d) := by
+  have hto : Internal.toHex (mkModelV4Uuid d) = String.ofList (Internal.formatHexList [
+      UInt8.ofNat ((d / 1) % 256),
+      UInt8.ofNat ((d / 256) % 256),
+      UInt8.ofNat ((d / 65536) % 256),
+      UInt8.ofNat ((d / 16777216) % 256),
+      UInt8.ofNat ((d * 131 + 4 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 5 * 17 + 0x5A) % 256),
+      (UInt8.ofNat ((d * 131 + 6 * 17 + 0x5A) % 256) &&& (0x0F : UInt8)) ||| (0x40 : UInt8),
+      UInt8.ofNat ((d * 131 + 7 * 17 + 0x5A) % 256),
+      (UInt8.ofNat ((d * 131 + 8 * 17 + 0x5A) % 256) &&& (0x3F : UInt8)) ||| (0x80 : UInt8),
+      UInt8.ofNat ((d * 131 + 9 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 10 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 11 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 12 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 13 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 14 * 17 + 0x5A) % 256),
+      UInt8.ofNat ((d * 131 + 15 * 17 + 0x5A) % 256)
+    ]) := toHex16_eq _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
   rw [Internal.parseHex, hto, String.toList_ofList]
-  exact parseHexChars16_bytes _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ rfl rfl
+  exact parseHexChars16_bytes _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+    (uint8_v4_ver _) (uint8_v4_var _)
 
-private theorem mkV4UuidOfCounter_ne_succ (c : Nat) :
-    mkV4UuidOfCounter c ≠ mkV4UuidOfCounter (c + 1) := by
+private theorem mkModelV4Uuid_ne_succ (d : Nat) :
+    mkModelV4Uuid d ≠ mkModelV4Uuid (d + 1) := by
   intro h
   have hb0 := congrArg (fun u => u.bytes[0]!.toNat) h
-  change (UInt8.ofNat (c % 256)).toNat = (UInt8.ofNat ((c + 1) % 256)).toNat at hb0
+  change (UInt8.ofNat ((d / 1) % 256)).toNat = (UInt8.ofNat (((d + 1) / 1) % 256)).toNat at hb0
   simp only [UInt8.toNat_ofNat', Nat.mod_mod] at hb0
   omega
 
-/-- Proof of `test_uuid_getUuid_consecutiveDistinctValidAndDeterministic` for `mkApiM`. -/
-theorem proof_uuid_getUuid_consecutiveDistinctValidAndDeterministic :
-    AllPass (test_uuid_getUuid_consecutiveDistinctValidAndDeterministic Internal.mkApiM) := by
-  intro ⟨cnt, fw, dr⟩ hfail
-  dsimp only at hfail
-  subst hfail
-  dsimp [test_uuid_getUuid_consecutiveDistinctValidAndDeterministic, Internal.mkApiM,
-    Bind.bind, StateT.bind, Pure.pure, StateT.pure, Core.NondetTest.assert,
-    ExceptT.run, ExceptT.mk, ExceptT.lift, Functor.map, StateT.map]
-  change
-    (match
-        ((Internal.fromRandomBytes (bsOfCounter cnt), Internal.fromRandomBytes (bsOfCounter (cnt + 1))),
-          ({ counter := cnt + 2, failWith := none, draws := dr + 2 } : MockRngState)) with
-      | ((r1, r2), s₁) =>
-        match
-          ((Internal.fromRandomBytes (bsOfCounter cnt), Internal.fromRandomBytes (bsOfCounter (cnt + 1))),
-            ({ counter := cnt + 2, failWith := none, draws := dr + 2 } : MockRngState)) with
-        | ((r1b, r2b), s₁b) => fun (post : Unit → Prop) =>
-          (r1 = r1b ∧ r2 = r2b ∧ s₁ = s₁b) ∧
-            (s₁.counter = cnt + 2 ∧ s₁.draws = dr + 2) ∧
-              (match r1, r2 with
-                | Except.ok u1, Except.ok u2 => fun (post : Unit → Prop) =>
-                  ¬u1 = u2 ∧
-                    ¬Internal.toString u1 = Internal.toString u2 ∧
-                      ¬Internal.toHex u1 = Internal.toHex u2 ∧
-                        (u1.bytes.size = 16 ∧ u1.bytes[6]! &&& 240 = 64 ∧ u1.bytes[8]! &&& 192 = 128) ∧
-                          (u2.bytes.size = 16 ∧ u2.bytes[6]! &&& 240 = 64 ∧ u2.bytes[8]! &&& 192 = 128) ∧
-                            (Internal.isValid (Internal.toString u1) = true ∧
-                                Internal.isValid (Internal.toString u2) = true) ∧
-                              post ()
-                | _, _ => fun (post : Unit → Prop) => False ∧ post ())
-                post)
-      fun _ => True
-  rw [fromRandomBytes_bsOfCounter cnt, fromRandomBytes_bsOfCounter (cnt + 1)]
+private theorem appendBytes_size (a b : ByteArray) :
+    (Internal.appendBytes a b).size = a.size + b.size := by
+  cases a with
+  | mk arrA =>
+    cases b with
+    | mk arrB =>
+      unfold Internal.appendBytes
+      by_cases h0 : (ByteArray.mk arrA).size == 0
+      · have ha : arrA.size = 0 := beq_iff_eq.mp h0
+        simp only [h0, ↓reduceIte]
+        change arrB.size = arrA.size + arrB.size
+        omega
+      · simp only [h0, Bool.false_eq_true, ↓reduceIte]
+        change (arrA.toList ++ arrB.toList).toArray.size = arrA.size + arrB.size
+        simp
+
+private theorem appendBytes_empty_left (b : ByteArray) :
+    Internal.appendBytes ByteArray.empty b = b := rfl
+
+private theorem appendBytes_nonempty_left (a b : ByteArray) (ha : 0 < a.size) :
+    Internal.appendBytes a b = ByteArray.mk (a.data.toList ++ b.data.toList).toArray := by
+  unfold Internal.appendBytes
+  have hne : (a.size == 0) = false := beq_false_of_ne (by omega)
+  rw [hne]
+  rfl
+
+private theorem gatherRandomBytes16_step_succ {m : Type → Type} [Monad m]
+    (sys : LeanSwe.LinuxSyscall.TimeRand.TimeRandOpsM m) (fuel' : Nat)
+    (acc : ByteArray) (hacc : acc.size < 16) (last? : Option LeanSwe.LinuxSyscall.Errno) :
+    Internal.gatherRandomBytes16 sys (fuel' + 1) acc last? =
+      (do
+        let r ← sys.getrandom (UInt32.ofNat (16 - acc.size)) {}
+        match Internal.stepRandomBytes16 (16 - acc.size) acc r with
+        | .error err => pure (.error err)
+        | .ok (.inl doneBytes) => pure (.ok doneBytes)
+        | .ok (.inr (nextAcc, nextLast)) => Internal.gatherRandomBytes16 sys fuel' nextAcc nextLast) := by
+  rw [Internal.gatherRandomBytes16.eq_def]
+  have h16 : (acc.size == 16) = false := beq_false_of_ne (by omega)
+  have hgt : decide (acc.size > 16) = false := decide_eq_false (by omega)
+  simp only [h16, hgt, Bool.false_eq_true, ↓reduceIte]
+  rfl
+
+private theorem gatherRandomBytes16_zero_lt {m : Type → Type} [Monad m]
+    (sys : LeanSwe.LinuxSyscall.TimeRand.TimeRandOpsM m)
+    (acc : ByteArray) (hacc : acc.size < 16) (last? : Option LeanSwe.LinuxSyscall.Errno) :
+    Internal.gatherRandomBytes16 sys 0 acc last? =
+      match last? with
+      | some e => pure (.error (Internal.mapErrnoToUuidError e))
+      | none => pure (.error (Internal.mapRawError (.shortRead acc.size
+          s!"getrandom retry budget exhausted after {acc.size} of 16 bytes"))) := by
+  rw [Internal.gatherRandomBytes16.eq_def]
+  have h16 : (acc.size == 16) = false := beq_false_of_ne (by omega)
+  have hgt : decide (acc.size > 16) = false := decide_eq_false (by omega)
+  simp only [h16, hgt, Bool.false_eq_true, ↓reduceIte]
+  cases last? <;> rfl
+
+private theorem mkApiM_modelOps_getUuid_run (s : LeanSwe.LinuxSyscall.TimeRand.TimeRandState) :
+    (Internal.mkApiM LeanSwe.LinuxSyscall.TimeRand.modelOps).getUuid s =
+      (.ok (mkModelV4Uuid s.entropyDraws),
+        { s with crngReady := true, entropyDraws := s.entropyDraws + 1 }) := by
+  have hmax : Internal.MAX_GETRANDOM_ATTEMPTS = 32 := rfl
+  cases s with
+  | mk mono rt crng dr amb =>
+    cases crng <;>
+    · dsimp [Internal.mkApiM, Internal.mkApi, Bind.bind, Pure.pure,
+        StateT.bind, StateT.pure]
+      rw [hmax, gatherRandomBytes16_step_succ _ _ ByteArray.empty (by decide)]
+      dsimp [Internal.stepRandomBytes16, Internal.appendBytes,
+        LeanSwe.LinuxSyscall.TimeRand.modelOps, Bind.bind, Pure.pure,
+        StateT.bind, StateT.pure, MonadStateOf.get, get, StateT.get,
+        MonadStateOf.set, set, StateT.set]
+      exact congrArg
+        (fun x => (x, LeanSwe.LinuxSyscall.TimeRand.TimeRandState.mk mono rt true (dr + 1) amb))
+        (fromRandomBytes_det16 dr)
+
+/-- Proof of `test_uuid_getUuid_overTimeRandModel_consecutiveDistinctValid` for `mkApiM`. -/
+theorem proof_uuid_getUuid_overTimeRandModel_consecutiveDistinctValid :
+    AllPass (test_uuid_getUuid_overTimeRandModel_consecutiveDistinctValid Internal.mkApiM) := by
+  intro s₀
+  dsimp [test_uuid_getUuid_overTimeRandModel_consecutiveDistinctValid, Bind.bind, Pure.pure,
+    StateT.run, StateT.bind, StateT.pure, Core.NondetTest.assert]
+  have h1 := mkApiM_modelOps_getUuid_run s₀
+  have h2 := mkApiM_modelOps_getUuid_run { s₀ with crngReady := true, entropyDraws := s₀.entropyDraws + 1 }
+  dsimp only at h1 h2
+  rw [h1]
   dsimp only
-  have hne := mkV4UuidOfCounter_ne_succ cnt
-  have hp1 := mkV4UuidOfCounter_parse cnt
-  have hp2 := mkV4UuidOfCounter_parse (cnt + 1)
-  have hh1 := mkV4UuidOfCounter_parseHex cnt
-  have hh2 := mkV4UuidOfCounter_parseHex (cnt + 1)
-  have hv6 : ∀ c, ((mkV4UuidOfCounter c).bytes[6]! &&& (0xF0 : UInt8)) = 0x40 := fun c => by
-    change ((0x43 : UInt8) &&& (0xF0 : UInt8)) = 0x40
-    decide
-  have hv8 : ∀ c, ((mkV4UuidOfCounter c).bytes[8]! &&& (0xC0 : UInt8)) = 0x80 := fun c => by
-    change ((0x85 : UInt8) &&& (0xC0 : UInt8)) = 0x80
-    decide
+  rw [h2]
+  dsimp only [Internal.mkApiM, Internal.mkApi]
+  have hne := mkModelV4Uuid_ne_succ s₀.entropyDraws
+  have hp1 := mkModelV4Uuid_parse s₀.entropyDraws
+  have hp2 := mkModelV4Uuid_parse (s₀.entropyDraws + 1)
+  have hh1 := mkModelV4Uuid_parseHex s₀.entropyDraws
+  have hh2 := mkModelV4Uuid_parseHex (s₀.entropyDraws + 1)
+  have hv6 : ∀ d, ((mkModelV4Uuid d).bytes[6]! &&& (0xF0 : UInt8)) = 0x40 := fun d =>
+    uint8_v4_ver _
+  have hv8 : ∀ d, ((mkModelV4Uuid d).bytes[8]! &&& (0xC0 : UInt8)) = 0x80 := fun d =>
+    uint8_v4_var _
   refine ⟨⟨rfl, rfl, rfl⟩, ⟨rfl, rfl⟩, hne, ?_, ?_,
-    ⟨rfl, hv6 cnt, hv8 cnt⟩, ⟨rfl, hv6 (cnt + 1), hv8 (cnt + 1)⟩,
+    ⟨rfl, hv6 s₀.entropyDraws, hv8 s₀.entropyDraws⟩,
+    ⟨rfl, hv6 (s₀.entropyDraws + 1), hv8 (s₀.entropyDraws + 1)⟩,
     ⟨by rw [Internal.isValid, hp1]; rfl, by rw [Internal.isValid, hp2]; rfl⟩, trivial⟩
   · intro h
     have := congrArg Internal.parse h
@@ -1988,65 +2085,559 @@ theorem proof_uuid_getUuid_consecutiveDistinctValidAndDeterministic :
     rw [hh1, hh2] at this
     exact hne (Except.ok.inj this)
 
-/-- Non-vacuity witness for `test_uuid_getUuid_consecutiveDistinctValidAndDeterministic`. -/
-theorem reach_uuid_getUuid_consecutiveDistinctValidAndDeterministic :
-    CanReach (test_uuid_getUuid_consecutiveDistinctValidAndDeterministic Internal.mkApiM) :=
-  ⟨{}, rfl, proof_uuid_getUuid_consecutiveDistinctValidAndDeterministic {} rfl⟩
+/-- Non-vacuity witness for `test_uuid_getUuid_overTimeRandModel_consecutiveDistinctValid`. -/
+theorem reach_uuid_getUuid_overTimeRandModel_consecutiveDistinctValid :
+    CanReach (test_uuid_getUuid_overTimeRandModel_consecutiveDistinctValid Internal.mkApiM) :=
+  ⟨{}, proof_uuid_getUuid_overTimeRandModel_consecutiveDistinctValid {}⟩
 
-/-- Proof of `test_uuid_getUuid_propagatesEntropyError` for `mkApiM`. -/
-theorem proof_uuid_getUuid_propagatesEntropyError :
-    AllPass (test_uuid_getUuid_propagatesEntropyError Internal.mkApiM) := by
-  intro ⟨cnt, fw, dr⟩ err hne hfail
-  dsimp only at hfail
-  subst hfail
-  exact ⟨⟨rfl, rfl, rfl⟩, trivial⟩
+/-- Proof of `test_uuid_getUuid_usesExact16BytesFromGetrandom` for `mkApiM`. -/
+theorem proof_uuid_getUuid_usesExact16BytesFromGetrandom :
+    AllPass (test_uuid_getUuid_usesExact16BytesFromGetrandom Internal.mkApiM) := by
+  intro bs hlen
+  dsimp [test_uuid_getUuid_usesExact16BytesFromGetrandom, Internal.mkApiM, Internal.mkApi,
+    Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure,
+    modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, Core.NondetTest.assert]
+  have hmax : Internal.MAX_GETRANDOM_ATTEMPTS = 32 := rfl
+  rw [hmax, gatherRandomBytes16_step_succ _ _ ByteArray.empty (by decide)]
+  dsimp only [Bind.bind, Pure.pure, StateT.bind, StateT.pure, StateT.modifyGet,
+    Internal.stepRandomBytes16]
+  have hbs16 : (bs.size == 16) = true := beq_iff_eq.mpr hlen
+  have hbs0 : (bs.size == 0) = false := beq_false_of_ne (by omega)
+  have hbsgt : decide (bs.size > 16 - ByteArray.empty.size) = false := by
+    have : ¬(bs.size > 16 - ByteArray.empty.size) := by change ¬(bs.size > 16 - 0); omega
+    exact decide_eq_false this
+  have happ : Internal.appendBytes ByteArray.empty bs = bs := rfl
+  have hcond : (bs.size == 0 || decide (bs.size > 16 - ByteArray.empty.size)) = false := by
+    rw [hbs0, hbsgt]; rfl
+  rw [hcond]
+  simp only [Bool.false_eq_true, ↓reduceIte, happ, hbs16]
+  exact ⟨⟨rfl, rfl⟩, trivial⟩
 
-/-- Non-vacuity witness for `test_uuid_getUuid_propagatesEntropyError`. -/
-theorem reach_uuid_getUuid_propagatesEntropyError :
-    CanReach (test_uuid_getUuid_propagatesEntropyError Internal.mkApiM) :=
-  ⟨{ failWith := some { kind := .entropyFailed, message := "err" } },
-    { kind := .entropyFailed, message := "err" }, by decide, rfl,
-    proof_uuid_getUuid_propagatesEntropyError
-      { failWith := some { kind := .entropyFailed, message := "err" } }
-      { kind := .entropyFailed, message := "err" } (by decide) rfl⟩
+/-- Non-vacuity witness for `test_uuid_getUuid_usesExact16BytesFromGetrandom`. -/
+theorem reach_uuid_getUuid_usesExact16BytesFromGetrandom :
+    CanReach (test_uuid_getUuid_usesExact16BytesFromGetrandom Internal.mkApiM) :=
+  ⟨ByteArray.mk #[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], rfl,
+    proof_uuid_getUuid_usesExact16BytesFromGetrandom
+      (ByteArray.mk #[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) rfl⟩
 
-/-- Proof of `test_uuid_getUuid_rejectsWrongRawByteCount` for `mkApiM`. -/
-theorem proof_uuid_getUuid_rejectsWrongRawByteCount :
-    AllPass (test_uuid_getUuid_rejectsWrongRawByteCount Internal.mkApiM) := by
-  intro bs hne ⟨cnt, fw, dr⟩
-  dsimp [test_uuid_getUuid_rejectsWrongRawByteCount, Internal.mkApiM,
-    Internal.fromRandomBytes, Bind.bind, Core.NondetTest.assert,
-    ExceptT.run, ExceptT.mk, ExceptT.lift, StateT.bind, Pure.pure, StateT.pure,
-    Functor.map, StateT.map]
-  have hbne : (bs.size != 16) = true := bne_iff_ne.mpr hne
-  simp only [StateT.pure, StateT.bind, StateT.run, Bind.bind, Pure.pure]
-  rw [hbne]
-  simp only [↓reduceIte]
-  exact ⟨trivial, ⟨trivial, append_ne_empty_of_left (by decide)⟩, trivial⟩
+private theorem scriptedGetrandomOps_cons (x : Except LeanSwe.LinuxSyscall.Errno ByteArray)
+    (xs : List (Except LeanSwe.LinuxSyscall.Errno ByteArray))
+    (len : UInt32) (flags : LeanSwe.LinuxSyscall.TimeRand.GrndFlags) :
+    scriptedGetrandomOps.getrandom len flags (x :: xs) = (x, xs) := rfl
 
-/-- Non-vacuity witness for `test_uuid_getUuid_rejectsWrongRawByteCount`. -/
-theorem reach_uuid_getUuid_rejectsWrongRawByteCount :
-    CanReach (test_uuid_getUuid_rejectsWrongRawByteCount Internal.mkApiM) :=
-  ⟨ByteArray.empty, by decide, {},
-    proof_uuid_getUuid_rejectsWrongRawByteCount ByteArray.empty (by decide) {}⟩
+private theorem countingFixedGetrandomOps_run (fixed : Except LeanSwe.LinuxSyscall.Errno ByteArray)
+    (len : UInt32) (flags : LeanSwe.LinuxSyscall.TimeRand.GrndFlags) (c : Nat) :
+    (countingFixedGetrandomOps fixed).getrandom len flags c = (fixed, c + 1) := rfl
 
-/-- Proof of `test_uuid_getUuid_usesRawRandomBytes` for `mkApiM`. -/
-theorem proof_uuid_getUuid_usesRawRandomBytes :
-    AllPass (test_uuid_getUuid_usesRawRandomBytes Internal.mkApiM) := by
-  intro bs hlen ⟨cnt, fw, dr⟩
-  obtain ⟨b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15, rfl⟩ :=
-    eq_of_size_16 bs hlen
-  dsimp [test_uuid_getUuid_usesRawRandomBytes, Internal.mkApiM,
-    Bind.bind, Core.NondetTest.assert, ExceptT.run, ExceptT.mk, ExceptT.lift,
-    StateT.bind, Pure.pure, StateT.pure, Functor.map, StateT.map]
-  simp only [StateT.pure, StateT.bind, StateT.run, Bind.bind]
-  exact ⟨rfl, rfl, trivial⟩
+private theorem gather_script_eintr_loop (k fuel : Nat) (hk : k + 1 ≤ fuel)
+    (acc b2 : ByteArray) (hacc0 : 0 < acc.size) (hb20 : 0 < b2.size) (hsum : acc.size + b2.size = 16)
+    (last? : Option LeanSwe.LinuxSyscall.Errno) :
+    Internal.gatherRandomBytes16 scriptedGetrandomOps fuel acc last?
+      (List.replicate k (.error LeanSwe.LinuxSyscall.Errno.EINTR) ++ [.ok b2]) =
+      (.ok (ByteArray.mk (acc.data.toList ++ b2.data.toList).toArray), []) := by
+  induction k generalizing fuel last? with
+  | zero =>
+    obtain ⟨fuel', rfl⟩ := Nat.exists_eq_succ_of_ne_zero (by omega : fuel ≠ 0)
+    rw [gatherRandomBytes16_step_succ _ _ acc (by omega)]
+    dsimp only [Bind.bind, StateT.bind, List.replicate_zero, List.nil_append]
+    rw [scriptedGetrandomOps_cons]
+    have hb20' : (b2.size == 0) = false := beq_false_of_ne (by omega)
+    have hb2gt : decide (b2.size > 16 - acc.size) = false := decide_eq_false (by omega)
+    have happ := appendBytes_nonempty_left acc b2 hacc0
+    have hnext16 : ((Internal.appendBytes acc b2).size == 16) = true := by
+      rw [appendBytes_size, hsum]
+      rfl
+    have hcond : (b2.size == 0 || decide (b2.size > 16 - acc.size)) = false := by
+      rw [hb20', hb2gt]; rfl
+    dsimp only [Internal.stepRandomBytes16]
+    rw [hcond]
+    simp only [Bool.false_eq_true, ↓reduceIte, hnext16, Pure.pure, StateT.pure]
+    rw [happ]
+  | succ k' ih =>
+    obtain ⟨fuel', rfl⟩ := Nat.exists_eq_succ_of_ne_zero (by omega : fuel ≠ 0)
+    rw [gatherRandomBytes16_step_succ _ _ acc (by omega)]
+    dsimp only [Bind.bind, StateT.bind, List.replicate_succ, List.cons_append]
+    rw [scriptedGetrandomOps_cons]
+    have heintr : (LeanSwe.LinuxSyscall.Errno.EINTR == LeanSwe.LinuxSyscall.Errno.EINTR) = true := rfl
+    dsimp only [Internal.stepRandomBytes16]
+    rw [heintr]
+    exact ih fuel' (by omega) (some LeanSwe.LinuxSyscall.Errno.EINTR)
 
-/-- Non-vacuity witness for `test_uuid_getUuid_usesRawRandomBytes`. -/
-theorem reach_uuid_getUuid_usesRawRandomBytes :
-    CanReach (test_uuid_getUuid_usesRawRandomBytes Internal.mkApiM) :=
-  ⟨ByteArray.mk #[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], rfl, {},
-    proof_uuid_getUuid_usesRawRandomBytes
-      (ByteArray.mk #[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) rfl {}⟩
+/-- Proof of `test_uuid_getUuid_accumulatesPartialReadsAndRetriesEintr` for `mkApiM`. -/
+theorem proof_uuid_getUuid_accumulatesPartialReadsAndRetriesEintr :
+    AllPass (test_uuid_getUuid_accumulatesPartialReadsAndRetriesEintr Internal.mkApiM) := by
+  intro b1 b2 eintrCount ⟨hb1, hb2, hsum⟩ heintr
+  dsimp [test_uuid_getUuid_accumulatesPartialReadsAndRetriesEintr, Internal.mkApiM, Internal.mkApi,
+    Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure, Core.NondetTest.assert]
+  have hmax : Internal.MAX_GETRANDOM_ATTEMPTS = 32 := rfl
+  rw [hmax, gatherRandomBytes16_step_succ _ _ ByteArray.empty (by decide)]
+  dsimp only [Bind.bind, StateT.bind, List.cons_append]
+  rw [scriptedGetrandomOps_cons]
+  have hb10 : (b1.size == 0) = false := beq_false_of_ne (by omega)
+  have hb1gt : decide (b1.size > 16 - ByteArray.empty.size) = false := by
+    have : ¬(b1.size > 16 - ByteArray.empty.size) := by change ¬(b1.size > 16 - 0); omega
+    exact decide_eq_false this
+  have happ0 : Internal.appendBytes ByteArray.empty b1 = b1 := rfl
+  have hb116 : (b1.size == 16) = false := beq_false_of_ne (by omega)
+  have hcond : (b1.size == 0 || decide (b1.size > 16 - ByteArray.empty.size)) = false := by
+    rw [hb10, hb1gt]; rfl
+  dsimp only [Internal.stepRandomBytes16]
+  rw [hcond]
+  simp only [Bool.false_eq_true, ↓reduceIte, happ0, hb116]
+  rw [gather_script_eintr_loop eintrCount 31 (by omega) b1 b2 hb1 hb2 hsum none]
+  exact ⟨⟨rfl, rfl⟩, trivial⟩
+
+/-- Non-vacuity witness for `test_uuid_getUuid_accumulatesPartialReadsAndRetriesEintr`. -/
+theorem reach_uuid_getUuid_accumulatesPartialReadsAndRetriesEintr :
+    CanReach (test_uuid_getUuid_accumulatesPartialReadsAndRetriesEintr Internal.mkApiM) :=
+  ⟨ByteArray.mk #[1, 2, 3, 4], ByteArray.mk #[5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], 1,
+    by decide, by decide,
+    proof_uuid_getUuid_accumulatesPartialReadsAndRetriesEintr
+      (ByteArray.mk #[1, 2, 3, 4])
+      (ByteArray.mk #[5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+      1 (by decide) (by decide)⟩
+
+private theorem mapRawError_message_ne_empty (r : UuidRawError) :
+    (Internal.mapRawError r).message ≠ "" := by
+  have h := proof_uuid_mapRawError_returnsNonEmptyMessage r
+  dsimp [test_uuid_mapRawError_returnsNonEmptyMessage, defaultApi, Internal.mkApi,
+    Bind.bind, Core.NondetTest.assert] at h
+  exact h.1.2
+
+/-- Proof of `test_uuid_getUuid_mapsNonEintrErrnoWithoutRetry` for `mkApiM`. -/
+theorem proof_uuid_getUuid_mapsNonEintrErrnoWithoutRetry :
+    AllPass (test_uuid_getUuid_mapsNonEintrErrnoWithoutRetry Internal.mkApiM) := by
+  intro e hne
+  dsimp [test_uuid_getUuid_mapsNonEintrErrnoWithoutRetry, Internal.mkApiM, Internal.mkApi,
+    Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure, Core.NondetTest.assert]
+  have hmax : Internal.MAX_GETRANDOM_ATTEMPTS = 32 := rfl
+  rw [hmax, gatherRandomBytes16_step_succ _ _ ByteArray.empty (by decide)]
+  dsimp only [Bind.bind, StateT.bind]
+  rw [countingFixedGetrandomOps_run]
+  have heq : (e == LeanSwe.LinuxSyscall.Errno.EINTR) = false := beq_false_of_ne hne
+  dsimp only [Internal.stepRandomBytes16]
+  rw [heq]
+  simp only [Bool.false_eq_true, ↓reduceIte]
+  dsimp only [Pure.pure, StateT.pure]
+  refine ⟨rfl, ⟨Internal.mapErrnoToUuidError e, rfl, rfl, rfl, mapRawError_message_ne_empty _⟩, trivial⟩
+
+/-- Non-vacuity witness for `test_uuid_getUuid_mapsNonEintrErrnoWithoutRetry`. -/
+theorem reach_uuid_getUuid_mapsNonEintrErrnoWithoutRetry :
+    CanReach (test_uuid_getUuid_mapsNonEintrErrnoWithoutRetry Internal.mkApiM) :=
+  ⟨LeanSwe.LinuxSyscall.Errno.EIO, by decide,
+    proof_uuid_getUuid_mapsNonEintrErrnoWithoutRetry LeanSwe.LinuxSyscall.Errno.EIO (by decide)⟩
+
+private theorem gather_fixed_eintr_loop (fuel c : Nat) :
+    Internal.gatherRandomBytes16
+      (countingFixedGetrandomOps (.error LeanSwe.LinuxSyscall.Errno.EINTR))
+      fuel ByteArray.empty (some LeanSwe.LinuxSyscall.Errno.EINTR) c =
+      (.error (Internal.mapErrnoToUuidError LeanSwe.LinuxSyscall.Errno.EINTR), c + fuel) := by
+  induction fuel generalizing c with
+  | zero =>
+    rw [gatherRandomBytes16_zero_lt _ _ (by decide)]
+    rfl
+  | succ fuel' ih =>
+    rw [gatherRandomBytes16_step_succ _ _ ByteArray.empty (by decide)]
+    dsimp only [Bind.bind, StateT.bind]
+    rw [countingFixedGetrandomOps_run]
+    have heintr : (LeanSwe.LinuxSyscall.Errno.EINTR == LeanSwe.LinuxSyscall.Errno.EINTR) = true := rfl
+    dsimp only [Internal.stepRandomBytes16]
+    rw [heintr]
+    simp only [↓reduceIte]
+    rw [ih (c + 1)]
+    congr 1
+    omega
+
+/-- Proof of `test_uuid_getUuid_persistentEintrAndInvalidChunkReturnEntropyFailed` for `mkApiM`. -/
+theorem proof_uuid_getUuid_persistentEintrAndInvalidChunkReturnEntropyFailed :
+    AllPass (test_uuid_getUuid_persistentEintrAndInvalidChunkReturnEntropyFailed Internal.mkApiM) := by
+  intro bigChunk hbig
+  dsimp [test_uuid_getUuid_persistentEintrAndInvalidChunkReturnEntropyFailed,
+    Internal.mkApiM, Internal.mkApi, Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure,
+    Core.NondetTest.assert]
+  have hmax : Internal.MAX_GETRANDOM_ATTEMPTS = 32 := rfl
+  have heintrStep :
+      Internal.gatherRandomBytes16
+        (countingFixedGetrandomOps (.error LeanSwe.LinuxSyscall.Errno.EINTR))
+        Internal.MAX_GETRANDOM_ATTEMPTS ByteArray.empty none 0 =
+        (.error (Internal.mapErrnoToUuidError LeanSwe.LinuxSyscall.Errno.EINTR), Internal.MAX_GETRANDOM_ATTEMPTS) := by
+    rw [hmax, gatherRandomBytes16_step_succ _ _ ByteArray.empty (by decide)]
+    dsimp only [Bind.bind, StateT.bind]
+    rw [countingFixedGetrandomOps_run]
+    have heintr : (LeanSwe.LinuxSyscall.Errno.EINTR == LeanSwe.LinuxSyscall.Errno.EINTR) = true := rfl
+    dsimp only [Internal.stepRandomBytes16]
+    rw [heintr]
+    simp only [↓reduceIte]
+    exact gather_fixed_eintr_loop 31 1
+  have hemptyStep :
+      Internal.gatherRandomBytes16
+        (countingFixedGetrandomOps (.ok ByteArray.empty))
+        Internal.MAX_GETRANDOM_ATTEMPTS ByteArray.empty none 0 =
+        (.error (Internal.mapRawError (.shortRead 0
+          s!"unexpected getrandom chunk length 0 (expected 1..16)")), 1) := by
+    rw [hmax, gatherRandomBytes16_step_succ _ _ ByteArray.empty (by decide)]
+    dsimp only [Bind.bind, StateT.bind]
+    rw [countingFixedGetrandomOps_run]
+    dsimp only [Internal.stepRandomBytes16, Pure.pure, StateT.pure]
+    rfl
+  obtain ⟨errBig, hbigEq, hbigKind, hbigErrno, hbigMsg⟩ :
+      ∃ err, Internal.gatherRandomBytes16
+        (countingFixedGetrandomOps (.ok bigChunk))
+        Internal.MAX_GETRANDOM_ATTEMPTS ByteArray.empty none 0 = (.error err, 1) ∧
+        err.kind = .entropyFailed ∧ err.errnoCode = none ∧ err.message ≠ "" := by
+    rw [hmax, gatherRandomBytes16_step_succ _ _ ByteArray.empty (by decide)]
+    dsimp only [Bind.bind, StateT.bind]
+    rw [countingFixedGetrandomOps_run]
+    have hgt : decide (bigChunk.size > 16 - ByteArray.empty.size) = true :=
+      decide_eq_true (by change bigChunk.size > 16 - 0; omega)
+    dsimp only [Internal.stepRandomBytes16]
+    rw [hgt, Bool.or_true]
+    simp only [↓reduceIte]
+    dsimp only [Pure.pure, StateT.pure]
+    exact ⟨_, rfl, rfl, rfl, mapRawError_message_ne_empty _⟩
+  rw [heintrStep, hemptyStep, hbigEq]
+  refine ⟨⟨rfl, _, rfl, rfl, rfl, mapRawError_message_ne_empty _⟩,
+    ⟨rfl, _, rfl, rfl, rfl, mapRawError_message_ne_empty _⟩,
+    ⟨rfl, errBig, rfl, hbigKind, hbigErrno, hbigMsg⟩, trivial⟩
+
+/-- Non-vacuity witness for `test_uuid_getUuid_persistentEintrAndInvalidChunkReturnEntropyFailed`. -/
+theorem reach_uuid_getUuid_persistentEintrAndInvalidChunkReturnEntropyFailed :
+    CanReach (test_uuid_getUuid_persistentEintrAndInvalidChunkReturnEntropyFailed Internal.mkApiM) :=
+  ⟨ByteArray.mk #[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], by decide,
+    proof_uuid_getUuid_persistentEintrAndInvalidChunkReturnEntropyFailed
+      (ByteArray.mk #[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]) (by decide)⟩
+
+private theorem fromRandomBytes_error_kind (bs : ByteArray) :
+    match LeanSwe.Uuid.fromRandomBytes bs with
+    | .error e => e.kind = .invalidLength
+    | .ok _ => True := by
+  change match Internal.fromRandomBytes bs with | .error e => e.kind = .invalidLength | .ok _ => True
+  unfold Internal.fromRandomBytes
+  by_cases h : (bs.size != 16)
+  · simp only [h, ↓reduceIte]
+  · simp only [h, Bool.false_eq_true, ↓reduceIte]
+
+private theorem validateV4BytesList_error_kind (bs : List UInt8) :
+    match Internal.validateV4BytesList bs with
+    | .error e => e.kind = .invalidFormat ∨ e.kind = .invalidVersion
+    | .ok _ => True := by
+  unfold Internal.validateV4BytesList
+  dsimp only
+  by_cases h1 : (ByteArray.mk bs.toArray).size != 16
+  · simp only [h1, ↓reduceIte]; simp
+  · simp only [h1, Bool.false_eq_true, ↓reduceIte]
+    by_cases h2 : ((ByteArray.mk bs.toArray)[6]! &&& (0xF0 : UInt8)) != (0x40 : UInt8)
+    · simp only [h2, ↓reduceIte]; simp
+    · simp only [h2, Bool.false_eq_true, ↓reduceIte]
+      by_cases h3 : ((ByteArray.mk bs.toArray)[8]! &&& (0xC0 : UInt8)) != (0x80 : UInt8)
+      · simp only [h3, ↓reduceIte]; simp
+      · simp only [h3, Bool.false_eq_true, ↓reduceIte]
+
+private theorem parseHexChars_error_kind (cs : List Char) :
+    match Internal.parseHexChars cs with
+    | .error e => e.kind = .invalidFormat ∨ e.kind = .invalidVersion
+    | .ok _ => True := by
+  unfold Internal.parseHexChars
+  by_cases h1 : cs.length != 32
+  · simp only [h1, ↓reduceIte]; simp
+  · simp only [h1, Bool.false_eq_true, ↓reduceIte]
+    cases Internal.decodeHexPairs cs with
+    | none => simp
+    | some bs => exact validateV4BytesList_error_kind bs
+
+private theorem parseCanonicalChars_error_kind (cs : List Char) :
+    match Internal.parseCanonicalChars cs with
+    | .error e => e.kind = .invalidFormat ∨ e.kind = .invalidVersion
+    | .ok _ => True := by
+  unfold Internal.parseCanonicalChars
+  by_cases h1 : cs.length != 36
+  · simp only [h1, ↓reduceIte]; simp
+  · simp only [h1, Bool.false_eq_true, ↓reduceIte]
+    cases Internal.stripCanonicalHyphens cs with
+    | none => simp
+    | some hex => exact parseHexChars_error_kind hex
+
+private theorem mapRawError_kind (r : UuidRawError) :
+    (Internal.mapRawError r).kind = .entropyFailed := by
+  cases r <;> rfl
+
+private theorem stepRandomBytes16_error_and_size (acc : ByteArray) (hacc : acc.size ≤ 16)
+    (r : Except LeanSwe.LinuxSyscall.Errno ByteArray) :
+    match Internal.stepRandomBytes16 (16 - acc.size) acc r with
+    | .error err => err.kind = .entropyFailed
+    | .ok (.inl bs) => bs.size = 16
+    | .ok (.inr (nextAcc, _)) => nextAcc.size ≤ 16 := by
+  cases r with
+  | error e =>
+    dsimp [Internal.stepRandomBytes16]
+    by_cases he : e == LeanSwe.LinuxSyscall.Errno.EINTR
+    · simp only [he, ↓reduceIte]; exact hacc
+    · simp only [he, Bool.false_eq_true, ↓reduceIte]; exact mapRawError_kind _
+  | ok chunk =>
+    dsimp [Internal.stepRandomBytes16]
+    by_cases h0 : chunk.size = 0
+    · have hc : (chunk.size == 0 || decide (chunk.size > 16 - acc.size)) = true := by
+        simp [h0]
+      simp only [hc, ↓reduceIte]
+      exact mapRawError_kind _
+    · by_cases hgt : chunk.size > 16 - acc.size
+      · have hc : (chunk.size == 0 || decide (chunk.size > 16 - acc.size)) = true := by
+          simp [hgt]
+        simp only [hc, ↓reduceIte]
+        exact mapRawError_kind _
+      · have hle : chunk.size ≤ 16 - acc.size := by omega
+        have hc : (chunk.size == 0 || decide (chunk.size > 16 - acc.size)) = false := by
+          have h0f : (chunk.size == 0) = false := beq_false_of_ne h0
+          have hgf : decide (chunk.size > 16 - acc.size) = false := decide_eq_false hgt
+          rw [h0f, hgf]; rfl
+        simp only [hc, Bool.false_eq_true, ↓reduceIte]
+        by_cases h16 : (Internal.appendBytes acc chunk).size == 16
+        · simp only [h16, ↓reduceIte]
+          exact beq_iff_eq.mp h16
+        · simp only [h16, Bool.false_eq_true, ↓reduceIte]
+          rw [appendBytes_size]
+          omega
+
+private theorem io_bind_eq {α β : Type} (x : IO α) (f : α → IO β) (w : Void IO.RealWorld)
+    {a : α} {w' : Void IO.RealWorld} (hx : x w = EST.Out.ok a w') :
+    (x >>= f) w = f a w' := by
+  change EST.bind x f w = f a w'
+  dsimp only [EST.bind]
+  rw [hx]
+
+private theorem liftM_baseIO_ok {α : Type} (act : BaseIO α) (w : Void IO.RealWorld) :
+    ∃ a w', (liftM act : IO α) w = EST.Out.ok a w' := by
+  cases h : act w
+  exact ⟨_, _, by change EST.Out.ok _ _ = _; rfl⟩
+
+private theorem gatherRandomBytes16_ok_or_entropyFailed
+    (sys : LeanSwe.LinuxSyscall.TimeRand.TimeRandOps)
+    (hsys : ∀ len flags (w : Void IO.RealWorld),
+      ∃ r w', sys.getrandom len flags w = EST.Out.ok r w')
+    (fuel : Nat) (acc : ByteArray) (hacc : acc.size ≤ 16)
+    (last? : Option LeanSwe.LinuxSyscall.Errno) (w : Void IO.RealWorld) :
+    match (Internal.gatherRandomBytes16 sys fuel acc last?) w with
+    | EST.Out.ok (.error err) _ => err.kind = .entropyFailed
+    | EST.Out.ok (.ok bs) _ => bs.size = 16
+    | EST.Out.error _ _ => False := by
+  induction fuel generalizing acc last? w with
+  | zero =>
+    by_cases h16 : acc.size = 16
+    · rw [Internal.gatherRandomBytes16.eq_def]
+      have hb : (acc.size == 16) = true := beq_iff_eq.mpr h16
+      simp only [hb, ↓reduceIte]
+      dsimp only [Pure.pure, EST.pure]
+      exact h16
+    · rw [gatherRandomBytes16_zero_lt _ acc (by omega)]
+      cases last? with
+      | none => exact mapRawError_kind _
+      | some e => exact rfl
+  | succ fuel' ih =>
+    by_cases h16 : acc.size = 16
+    · rw [Internal.gatherRandomBytes16.eq_def]
+      have hb : (acc.size == 16) = true := beq_iff_eq.mpr h16
+      simp only [hb, ↓reduceIte]
+      exact h16
+    · rw [gatherRandomBytes16_step_succ _ _ acc (by omega)]
+      obtain ⟨r, w', hr⟩ := hsys (UInt32.ofNat (16 - acc.size)) {} w
+      rw [io_bind_eq _ _ w hr]
+      have hs := stepRandomBytes16_error_and_size acc hacc r
+      cases hsRes : Internal.stepRandomBytes16 (16 - acc.size) acc r with
+      | error err =>
+        rw [hsRes] at hs
+        exact hs
+      | ok x =>
+        cases x with
+        | inl bs =>
+          rw [hsRes] at hs
+          exact hs
+        | inr p =>
+          rcases p with ⟨nextAcc, nextLast⟩
+          rw [hsRes] at hs
+          exact ih nextAcc hs nextLast w'
+
+private theorem defaultOps_getrandom_noThrow
+    (len : UInt32) (flags : LeanSwe.LinuxSyscall.TimeRand.GrndFlags) (w : Void IO.RealWorld) :
+    ∃ r w', LeanSwe.LinuxSyscall.TimeRand.defaultOps.getrandom len flags w = EST.Out.ok r w' :=
+  liftM_baseIO_ok _ w
+
+private theorem getUuid_ok_or_entropyFailed (w : Void IO.RealWorld) :
+    match LeanSwe.Uuid.getUuid w with
+    | .ok (.error e) _ => e.kind = .entropyFailed
+    | .ok (.ok _) _ => True
+    | .error _ _ => False := by
+  have hgDef : LeanSwe.Uuid.getUuid =
+      (Internal.gatherRandomBytes16 LeanSwe.LinuxSyscall.TimeRand.defaultOps
+        Internal.MAX_GETRANDOM_ATTEMPTS ByteArray.empty none >>= fun res =>
+          match res with
+          | .error err => pure (.error err)
+          | .ok bs => pure (Internal.fromRandomBytes bs)) := rfl
+  rw [hgDef]
+  have h := gatherRandomBytes16_ok_or_entropyFailed
+    LeanSwe.LinuxSyscall.TimeRand.defaultOps defaultOps_getrandom_noThrow
+    Internal.MAX_GETRANDOM_ATTEMPTS ByteArray.empty (by decide) none w
+  cases hg : (Internal.gatherRandomBytes16 LeanSwe.LinuxSyscall.TimeRand.defaultOps
+      Internal.MAX_GETRANDOM_ATTEMPTS ByteArray.empty none) w with
+  | error e _ =>
+    rw [hg] at h
+    exact False.elim h
+  | ok res w' =>
+    rw [hg] at h
+    rw [io_bind_eq _ _ w hg]
+    cases res with
+    | error err => exact h
+    | ok bs =>
+      have hbs16 : bs.size = 16 := h
+      have hbeq : (bs.size == 16) = true := beq_iff_eq.mpr hbs16
+      have hne : (bs.size != 16) = false := by
+        change (!(bs.size == 16)) = false
+        rw [hbeq]
+        rfl
+      dsimp only [Internal.fromRandomBytes]
+      rw [hne]
+      trivial
+
+/-- Proof that `LeanSwe.Uuid.fromRandomBytes` never returns `.entropyFailed`. -/
+theorem uuid_fromRandomBytes_never_entropyFailed (bs : ByteArray) :
+    NeverErrorKindPure UuidError.kind .entropyFailed (LeanSwe.Uuid.fromRandomBytes bs) := by
+  have h := fromRandomBytes_error_kind bs
+  dsimp [NeverErrorKindPure]
+  cases hf : LeanSwe.Uuid.fromRandomBytes bs with
+  | ok _ => trivial
+  | error e => rw [hf] at h; dsimp only; rw [h]; decide
+
+/-- Proof that `LeanSwe.Uuid.fromRandomBytes` never returns `.invalidFormat`. -/
+theorem uuid_fromRandomBytes_never_invalidFormat (bs : ByteArray) :
+    NeverErrorKindPure UuidError.kind .invalidFormat (LeanSwe.Uuid.fromRandomBytes bs) := by
+  have h := fromRandomBytes_error_kind bs
+  dsimp [NeverErrorKindPure]
+  cases hf : LeanSwe.Uuid.fromRandomBytes bs with
+  | ok _ => trivial
+  | error e => rw [hf] at h; dsimp only; rw [h]; decide
+
+/-- Proof that `LeanSwe.Uuid.fromRandomBytes` never returns `.invalidVersion`. -/
+theorem uuid_fromRandomBytes_never_invalidVersion (bs : ByteArray) :
+    NeverErrorKindPure UuidError.kind .invalidVersion (LeanSwe.Uuid.fromRandomBytes bs) := by
+  have h := fromRandomBytes_error_kind bs
+  dsimp [NeverErrorKindPure]
+  cases hf : LeanSwe.Uuid.fromRandomBytes bs with
+  | ok _ => trivial
+  | error e => rw [hf] at h; dsimp only; rw [h]; decide
+
+/-- Proof that `LeanSwe.Uuid.parse` never returns `.entropyFailed`. -/
+theorem uuid_parse_never_entropyFailed (s : String) :
+    NeverErrorKindPure UuidError.kind .entropyFailed (LeanSwe.Uuid.parse s) := by
+  have h := parseCanonicalChars_error_kind s.toList
+  dsimp [NeverErrorKindPure, LeanSwe.Uuid.parse, LeanSwe.Uuid.defaultApi,
+    Internal.mkApi, Internal.parse] at h ⊢
+  cases hp : Internal.parseCanonicalChars s.toList with
+  | ok _ => trivial
+  | error e =>
+    rw [hp] at h
+    dsimp only
+    rcases h with h1 | h2
+    · rw [h1]; decide
+    · rw [h2]; decide
+
+/-- Proof that `LeanSwe.Uuid.parse` never returns `.invalidLength`. -/
+theorem uuid_parse_never_invalidLength (s : String) :
+    NeverErrorKindPure UuidError.kind .invalidLength (LeanSwe.Uuid.parse s) := by
+  have h := parseCanonicalChars_error_kind s.toList
+  dsimp [NeverErrorKindPure, LeanSwe.Uuid.parse, LeanSwe.Uuid.defaultApi,
+    Internal.mkApi, Internal.parse] at h ⊢
+  cases hp : Internal.parseCanonicalChars s.toList with
+  | ok _ => trivial
+  | error e =>
+    rw [hp] at h
+    dsimp only
+    rcases h with h1 | h2
+    · rw [h1]; decide
+    · rw [h2]; decide
+
+/-- Proof that `LeanSwe.Uuid.parseHex` never returns `.entropyFailed`. -/
+theorem uuid_parseHex_never_entropyFailed (s : String) :
+    NeverErrorKindPure UuidError.kind .entropyFailed (LeanSwe.Uuid.parseHex s) := by
+  have h := parseHexChars_error_kind s.toList
+  dsimp [NeverErrorKindPure, LeanSwe.Uuid.parseHex, LeanSwe.Uuid.defaultApi,
+    Internal.mkApi, Internal.parseHex] at h ⊢
+  cases hp : Internal.parseHexChars s.toList with
+  | ok _ => trivial
+  | error e =>
+    rw [hp] at h
+    dsimp only
+    rcases h with h1 | h2
+    · rw [h1]; decide
+    · rw [h2]; decide
+
+/-- Proof that `LeanSwe.Uuid.parseHex` never returns `.invalidLength`. -/
+theorem uuid_parseHex_never_invalidLength (s : String) :
+    NeverErrorKindPure UuidError.kind .invalidLength (LeanSwe.Uuid.parseHex s) := by
+  have h := parseHexChars_error_kind s.toList
+  dsimp [NeverErrorKindPure, LeanSwe.Uuid.parseHex, LeanSwe.Uuid.defaultApi,
+    Internal.mkApi, Internal.parseHex] at h ⊢
+  cases hp : Internal.parseHexChars s.toList with
+  | ok _ => trivial
+  | error e =>
+    rw [hp] at h
+    dsimp only
+    rcases h with h1 | h2
+    · rw [h1]; decide
+    · rw [h2]; decide
+
+/-- Proof that `LeanSwe.Uuid.getUuid` never returns `.invalidLength`. -/
+theorem uuid_getUuid_never_invalidLength (w : Void IO.RealWorld) :
+    NeverErrorKindIO UuidError.kind .invalidLength LeanSwe.Uuid.getUuid w := by
+  have h := getUuid_ok_or_entropyFailed w
+  dsimp [NeverErrorKindIO]
+  cases hg : LeanSwe.Uuid.getUuid w with
+  | ok res _ =>
+    rw [hg] at h
+    cases res with
+    | ok _ => trivial
+    | error e => dsimp only; rw [h]; decide
+  | error _ _ => rw [hg] at h; exact False.elim h
+
+/-- Proof that `LeanSwe.Uuid.getUuid` never returns `.invalidFormat`. -/
+theorem uuid_getUuid_never_invalidFormat (w : Void IO.RealWorld) :
+    NeverErrorKindIO UuidError.kind .invalidFormat LeanSwe.Uuid.getUuid w := by
+  have h := getUuid_ok_or_entropyFailed w
+  dsimp [NeverErrorKindIO]
+  cases hg : LeanSwe.Uuid.getUuid w with
+  | ok res _ =>
+    rw [hg] at h
+    cases res with
+    | ok _ => trivial
+    | error e => dsimp only; rw [h]; decide
+  | error _ _ => rw [hg] at h; exact False.elim h
+
+/-- Proof that `LeanSwe.Uuid.getUuid` never returns `.invalidVersion`. -/
+theorem uuid_getUuid_never_invalidVersion (w : Void IO.RealWorld) :
+    NeverErrorKindIO UuidError.kind .invalidVersion LeanSwe.Uuid.getUuid w := by
+  have h := getUuid_ok_or_entropyFailed w
+  dsimp [NeverErrorKindIO]
+  cases hg : LeanSwe.Uuid.getUuid w with
+  | ok res _ =>
+    rw [hg] at h
+    cases res with
+    | ok _ => trivial
+    | error e => dsimp only; rw [h]; decide
+  | error _ _ => rw [hg] at h; exact False.elim h
+
+/-- Proof that `LeanSwe.Uuid.v4` never returns `.invalidLength`. -/
+theorem uuid_v4_never_invalidLength (w : Void IO.RealWorld) :
+    NeverErrorKindIO UuidError.kind .invalidLength LeanSwe.Uuid.v4 w :=
+  uuid_getUuid_never_invalidLength w
+
+/-- Proof that `LeanSwe.Uuid.v4` never returns `.invalidFormat`. -/
+theorem uuid_v4_never_invalidFormat (w : Void IO.RealWorld) :
+    NeverErrorKindIO UuidError.kind .invalidFormat LeanSwe.Uuid.v4 w :=
+  uuid_getUuid_never_invalidFormat w
+
+/-- Proof that `LeanSwe.Uuid.v4` never returns `.invalidVersion`. -/
+theorem uuid_v4_never_invalidVersion (w : Void IO.RealWorld) :
+    NeverErrorKindIO UuidError.kind .invalidVersion LeanSwe.Uuid.v4 w :=
+  uuid_getUuid_never_invalidVersion w
 
 end LeanSwe.Uuid.Proofs
+
+

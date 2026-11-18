@@ -8,6 +8,8 @@ namespace LeanSwe.Time
 
 open Core (NondetTest)
 open Core.NondetTest
+open LeanSwe.LinuxSyscall (Errno)
+open LeanSwe.LinuxSyscall.TimeRand (TimeRandOpsM TimeRandState Timespec)
 
 private def stubTimeApiAt {m : Type → Type} [Monad m] : TimeApiM m :=
   { nowTimestamp := pure (Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0)
@@ -98,37 +100,165 @@ example : ¬ Core.AllPass (test_time_fakeClock_monoNanosNow_readsWithoutMutating
   have h0 := h ⟨0, 77, #[]⟩
   simp [stubTimeApiAt, StateT.run, pure, StateT.pure, assert] at h0
 
-example : ¬ Core.AllPass (empirical_time_utcIso8601_roundTrip stubTimeApiAt) := by
+example : ¬ Core.AllPass (test_time_utcIso8601_roundTrip stubTimeApiAt) := by
   intro h
   have h0 := h (Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0) (by decide)
-  simp [stubTimeApiAt, assert] at h0
+  simp [stubTimeApiAt, bind, assert] at h0
 
-example : ¬ Core.AllPass (empirical_time_utcIso8601_invalidReturnsNonEmptyError
+example : ¬ Core.AllPass (test_time_utcIso8601_invalidReturnsNonEmptyError
     { stubTimeApiAt with parseUtcIso8601 := fun _ => .error { kind := .invalidFormat, message := "" } }) := by
   intro h
   have h0 := h "bad"
-  simp [assert] at h0
+  simp [bind, assert] at h0
 
-example : ¬ Core.AllPass (empirical_time_utcDate_roundTrip stubTimeApiAt) := by
+example : ¬ Core.AllPass (test_time_utcIso8601_invalidReturnsNonEmptyError
+    { stubTimeApiAt with parseUtcIso8601 := fun _ => .ok (Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0) }) := by
+  intro h
+  have h0 := h "bad"
+  simp [bind, assert, Except.isOk, Except.toBool] at h0
+
+example : ¬ Core.AllPass (test_time_utcDate_roundTrip stubTimeApiAt) := by
   intro h
   have h0 := h (Std.Time.PlainDate.ofEpochDay 0) (by decide)
-  simp [stubTimeApiAt, assert] at h0
+  simp [stubTimeApiAt, bind, assert] at h0
 
-example : ¬ Core.AllPass (empirical_time_utcDate_invalidReturnsNonEmptyError
+example : ¬ Core.AllPass (test_time_utcDate_invalidReturnsNonEmptyError
     { stubTimeApiAt with parseUtcDate := fun _ => .error { kind := .invalidFormat, message := "" } }) := by
   intro h
   have h0 := h "bad"
-  simp [assert] at h0
+  simp [bind, assert] at h0
 
-example : ¬ Core.AllPass (empirical_time_utcDate_timestampRoundTrip stubTimeApiAt) := by
+example : ¬ Core.AllPass (test_time_utcDate_invalidReturnsNonEmptyError
+    { stubTimeApiAt with parseUtcDate := fun _ => .ok (Std.Time.PlainDate.ofEpochDay 0) }) := by
+  intro h
+  have h0 := h "bad"
+  simp [bind, assert, Except.isOk, Except.toBool] at h0
+
+example : ¬ Core.AllPass (test_time_utcDate_timestampRoundTrip stubTimeApiAt) := by
   intro h
   have h0 := h (Std.Time.PlainDate.ofEpochDay 1)
-  simp [stubTimeApiAt, assert] at h0
+  simp [stubTimeApiAt, bind, assert] at h0
   exact absurd h0.1 (by decide)
 
-example : ¬ Core.AllPass (empirical_time_utcCompact_formatShape stubTimeApiAt) := by
+example : ¬ Core.AllPass (test_time_utcCompact_formatShape stubTimeApiAt) := by
   intro h
   have h0 := h (Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0) (by decide)
-  simp [stubTimeApiAt, assert] at h0
+  simp [stubTimeApiAt, bind, assert] at h0
+
+example : ¬ Core.AllPass (test_time_utcCompact_formatShape
+    { stubTimeApiAt with
+      formatUtcIso8601 := fun _ => "1970-01-01T00:00:00.000000000Z"
+      formatUtcCompact := fun _ => "00000000T000000Z" }) := by
+  intro h
+  have h0 := h (Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0) (by decide)
+  dsimp [test_time_utcCompact_formatShape, stubTimeApiAt, Core.NondetTest.assert, Bind.bind] at h0
+  exact absurd h0.1.2 (by decide)
+
+example : ¬ Core.AllPass (test_time_mkTimeOps_readsRealtimeAndMonotonic
+    (fun _ => { nowTimestamp := Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0
+                monoNanosNow := 0
+                sleep := fun _ => () })) := by
+  intro h
+  have h0 := h { sec := -1, nsec := 999999999 } { sec := 0, nsec := 42 } Errno.EIO (by decide)
+  have h1 := h0.2.1
+  simp [Timespec.toNanosNat, LeanSwe.LinuxSyscall.TimeRand.NSEC_PER_SEC] at h1
+
+example : ¬ Core.AllPass (test_time_mkTimeOps_sleepZeroAndModelSleepMs
+    (fun _ =>
+      { nowTimestamp := pure (Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0)
+        monoNanosNow := pure 0
+        sleep := fun _ => pure () })
+    (fun _ =>
+      { nowTimestamp := pure (Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0)
+        monoNanosNow := do return (← get).monoLowerBoundNs
+        sleep := fun _ => pure () })
+    (fun _ => stubTimeApiAt)) := by
+  intro h
+  have h0 := h {} {} 5 (by decide)
+  have h1 := h0.2.2.1
+  dsimp only [stubTimeApiAt, StateT.run, Bind.bind, StateT.bind, pure, StateT.pure] at h1
+  omega
+
+example : ¬ Core.AllPass (test_time_mkTimeOps_sleepAbstimeRetriesEintrWithoutDrift
+    (fun sys =>
+      { nowTimestamp := pure (Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0)
+        monoNanosNow := pure 0
+        sleep := fun ms =>
+          if ms == 0 then pure ()
+          else do
+            let _ ← sys.clock_nanosleep .monotonic false
+              { sec := Int64.ofInt (Int.ofNat (ms.toNat / 1000))
+                nsec := UInt32.ofNat ((ms.toNat % 1000) * 1000000) }
+            pure () })) := by
+  intro h
+  have h0 := h { sec := 1, nsec := 0 } 10 1 Errno.EIO (by decide) (by decide) (by decide) (by decide) (by decide)
+  dsimp [test_time_mkTimeOps_sleepAbstimeRetriesEintrWithoutDrift, scriptedSleepSysOps,
+    Core.NondetTest.assert, Bind.bind, StateT.run, StateT.bind, get, getThe,
+    MonadStateOf.get, StateT.get, set, StateT.set, pure, StateT.pure] at h0
+  exact absurd h0.1 (by decide)
+
+private def retryBugNoFallbackLoop {m : Type → Type} [Monad m]
+    (sys : TimeRandOpsM m) (target : Timespec) : Nat → m Unit
+  | 0 => do
+    let _ ← sys.clock_nanosleep .monotonic true target
+    pure ()
+  | fuel + 1 => do
+    match ← sys.clock_nanosleep .monotonic true target with
+    | .ok () => pure ()
+    | .error e =>
+      if e == Errno.EINTR then retryBugNoFallbackLoop sys target fuel
+      else pure ()
+
+example : ¬ Core.AllPass (test_time_mkTimeOps_sleepAbstimeRetriesEintrWithoutDrift
+    (fun sys =>
+      { nowTimestamp := pure (Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0)
+        monoNanosNow := pure 0
+        sleep := fun ms =>
+          if ms == 0 then pure ()
+          else do
+            match ← sys.clock_gettime .monotonic with
+            | .ok nowTs =>
+              if decide (0 ≤ nowTs.sec.toInt) then
+                match Timespec.ofNanosNat? (nowTs.toNanosNat + ms.toNat * 1000000) with
+                | some targetTs => retryBugNoFallbackLoop sys targetTs MAX_EINTR_RETRIES
+                | none => pure ()
+              else pure ()
+            | .error _ => pure () })) := by
+  intro h
+  have h0 := h { sec := 1, nsec := 0 } 10 1 Errno.EIO (by decide) (by decide) (by decide) (by decide) (by decide)
+  have hGetErr := h0.2.2.2.2.2.1
+  dsimp [scriptedSleepSysOps, Core.NondetTest.assert, Bind.bind, StateT.run, StateT.bind,
+    get, getThe, MonadStateOf.get, StateT.get, set, StateT.set, pure, StateT.pure] at hGetErr
+  exact absurd hGetErr.2.1 (by decide)
+
+example : ¬ Core.AllPass (test_time_mkTimeOps_sleepAbstimeRetriesEintrWithoutDrift
+    (fun sys =>
+      { nowTimestamp := pure (Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0)
+        monoNanosNow := pure 0
+        sleep := fun ms =>
+          if ms == 0 then pure ()
+          else do
+            match ← sys.clock_gettime .monotonic with
+            | .ok nowTs =>
+              if decide (0 ≤ nowTs.sec.toInt) then
+                match Timespec.ofNanosNat? (nowTs.toNanosNat + ms.toNat * 1000000) with
+                | some targetTs => retryBugNoFallbackLoop sys targetTs MAX_EINTR_RETRIES
+                | none =>
+                  let _ ← sys.clock_nanosleep .monotonic false { sec := 0, nsec := 0 }
+                  pure ()
+              else
+                let _ ← sys.clock_nanosleep .monotonic false { sec := 0, nsec := 0 }
+                pure ()
+            | .error _ =>
+              let _ ← sys.clock_nanosleep .monotonic false { sec := 0, nsec := 0 }
+              pure () })) := by
+  intro h
+  have h0 := h { sec := 1, nsec := 0 } 10 1 Errno.EIO (by decide) (by decide) (by decide) (by decide) (by decide)
+  have hGetErr := h0.2.2.2.2.2.1
+  dsimp [scriptedSleepSysOps, Timespec.isValid, Timespec.toNanosNat,
+    LeanSwe.LinuxSyscall.TimeRand.NSEC_PER_SEC, Core.NondetTest.assert, Bind.bind,
+    StateT.run, StateT.bind, get, getThe, MonadStateOf.get, StateT.get,
+    set, StateT.set, pure, StateT.pure] at hGetErr
+  exact absurd hGetErr.2.2 (by decide)
 
 end LeanSwe.Time

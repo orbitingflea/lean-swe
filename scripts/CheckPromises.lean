@@ -25,8 +25,91 @@ private def allowedAxioms : Std.HashSet Name :=
   Std.HashSet.emptyWithCapacity 4 |>.insert ``propext |>.insert ``Classical.choice |>.insert ``Quot.sound
 
 private def legacyEmpiricalModules : Std.HashSet Name :=
+  Std.HashSet.emptyWithCapacity 0
+
+private def timeRandAuditModules : Array Name := #[
+  `LeanSwe.LinuxSyscall.TimeRand.Types,
+  `LeanSwe.LinuxSyscall.TimeRand.Model,
+  `LeanSwe.LinuxSyscall.TimeRand.Impl,
+  `LeanSwe.LinuxSyscall.TimeRand.Interface,
+  `LeanSwe.LinuxSyscall.TimeRand.SpecTests,
+  `LeanSwe.LinuxSyscall.TimeRand.Proofs
+]
+
+private def isProjectModule (m : Name) : Bool :=
+  let r := m.getRoot
+  r == `Core || r == `LeanSwe
+
+private def nameLastStr (n : Name) : String :=
+  match n with
+  | .str _ s => s
+  | _ => ""
+
+private def isAllowedTimeRandClosureModule (m : Name) : Bool :=
+  m.getRoot == `Core ||
+    m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
+    timeRandAuditModules.contains m
+
+private def allowedTimeRandExterns : Std.HashSet Name :=
   Std.HashSet.emptyWithCapacity 4
-    |>.insert `LeanSwe.Time.SpecTests
+    |>.insert `rawClockGettime
+    |>.insert `rawClockNanosleep
+    |>.insert `rawGetrandom
+
+private def checkTimeRandTrustedClosure : IO (Array String) := do
+  let trEnv ← importModules (timeRandAuditModules.map fun m => { module := m }) {} (loadExts := false)
+  let mut errs : Array String := #[]
+  for m in trEnv.header.moduleNames do
+    if isProjectModule m && !isAllowedTimeRandClosureModule m then
+      errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_IMPORT: {m} imported into TimeRand closure"
+  let mut visited : Std.HashSet Name := {}
+  let mut queue : Array (Name × Name) := #[]
+  for h : i in [0 : trEnv.header.moduleNames.size] do
+    let m := trEnv.header.moduleNames[i]
+    if timeRandAuditModules.contains m then
+      let some data := trEnv.header.moduleData[i]? | continue
+      for c in data.constants do
+        queue := queue.push (m, c.name)
+  while !queue.isEmpty do
+    let (originMod, cName) := queue.back!
+    queue := queue.pop
+    if visited.contains cName then
+      continue
+    visited := visited.insert cName
+    let some cinfo := trEnv.find? cName | continue
+    if cinfo matches .axiomInfo _ then
+      if !allowedAxioms.contains cName then
+        errs := errs.push s!"TRUSTED_CLOSURE_AXIOM_FORBIDDEN: {cName} reachable from {originMod}"
+      continue
+    let cMod := trEnv.getModuleIdxFor? cName |>.bind (trEnv.header.moduleNames[·]?) |>.getD .anonymous
+    if isProjectModule cMod then
+      if !isAllowedTimeRandClosureModule cMod then
+        errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_MODULE: {cName} in {cMod} reachable from {originMod}"
+      if cinfo matches .opaqueInfo _ || (getExternAttrData? trEnv cName).isSome then
+        let short := Name.mkSimple (nameLastStr cName)
+        if cMod != `LeanSwe.LinuxSyscall.TimeRand.Interface || !allowedTimeRandExterns.contains short then
+          errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_EXTERN: {cName} in {cMod} reachable from {originMod}"
+    for u in cinfo.type.getUsedConstants do
+      if !visited.contains u then
+        queue := queue.push (originMod, u)
+    let val? := match cinfo with
+      | .defnInfo v => some v.value
+      | .thmInfo v => some v.value
+      | .opaqueInfo v => some v.value
+      | _ => none
+    if let some val := val? then
+      for u in val.getUsedConstants do
+        if !visited.contains u then
+          queue := queue.push (originMod, u)
+    let extra : List Name := match cinfo with
+      | .ctorInfo v => [v.induct]
+      | .recInfo v => v.all
+      | .inductInfo v => v.all ++ v.ctors
+      | _ => []
+    for u in extra do
+      if !visited.contains u then
+        queue := queue.push (originMod, u)
+  return errs
 
 private structure AxCache where
   safe : Std.HashSet Name := {}
@@ -90,15 +173,6 @@ private def checkAxiomsOk (cName : Name) : StateT AxCache CoreM (Option String) 
 
 private def isPrivateOrInternal (n : Name) : Bool :=
   isPrivateName n || n.isInternalOrNum
-
-private def isProjectModule (m : Name) : Bool :=
-  let r := m.getRoot
-  r == `Core || r == `LeanSwe
-
-private def nameLastStr (n : Name) : String :=
-  match n with
-  | .str _ s => s
-  | _ => ""
 
 private def isMutantModule (m : Name) : Bool :=
   nameLastStr m == "SpecMutants" || m.components.contains `SpecMutants
@@ -547,7 +621,8 @@ unsafe def main (args : List String) : IO UInt32 := do
     return (allPass, canReach, axErrs)
   ).toIO ctx state
 
-  errors := errors ++ axiomErrs
+  let trClosureErrs ← checkTimeRandTrustedClosure
+  errors := errors ++ axiomErrs ++ trClosureErrs
 
   let mut modImports : Std.HashMap Name (Array Name) := {}
   for h : i in [0 : env.header.moduleNames.size] do

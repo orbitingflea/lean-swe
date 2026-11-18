@@ -1,6 +1,12 @@
+import Core.Assumptions
+import LeanSwe.LinuxSyscall.TimeRand.RuntimeTests
 import LeanSwe.Uuid.Interface
 
 namespace LeanSwe.Uuid.RuntimeTests
+
+open Core
+open LeanSwe.LinuxSyscall
+open LeanSwe.LinuxSyscall.TimeRand
 
 private def check (name : String) (cond : Bool) : IO Unit := do
   if !cond then
@@ -102,10 +108,118 @@ private def runEdgeCaseTests : IO Unit := do
   checkErrKind "parseHex nil rejected" (Uuid.parseHex "00000000000000000000000000000000") .invalidVersion
   checkErrKind "parseHex variant c rejected" (Uuid.parseHex "550e8400e29b41d4c716446655440000") .invalidVersion
 
-/-- Execute the empirical OS-entropy batch and validation runtime tests for `LeanSwe.Uuid`. -/
+private def mkFailingTimeRandOps (e : Errno) : TimeRandOps :=
+  { clock_gettime := fun _ => return .error e
+    clock_nanosleep := fun _ _ _ => return .error e
+    getrandom := fun _ _ => return .error e }
+
+/-- Verify `Uuid.fromRandomBytes` returns `.invalidLength` on wrong byte counts. -/
+def err_uuid_fromRandomBytes_invalidLength : IO Unit := do
+  checkErrKind "fromRandomBytes empty" (Uuid.fromRandomBytes ByteArray.empty) .invalidLength
+  checkErrKind "fromRandomBytes 15" (Uuid.fromRandomBytes (ByteArray.mk (Array.replicate 15 0))) .invalidLength
+
+/-- Verify `Uuid.parse` returns `.invalidFormat` on malformed canonical UUID strings. -/
+def err_uuid_parse_invalidFormat : IO Unit := do
+  checkErrKind "parse empty" (Uuid.parse "") .invalidFormat
+  checkErrKind "parse compact hex" (Uuid.parse "550e8400e29b41d4a716446655440000") .invalidFormat
+
+/-- Verify `Uuid.parse` returns `.invalidVersion` on non-v4 or non-RFC-4122-variant UUIDs. -/
+def err_uuid_parse_invalidVersion : IO Unit := do
+  checkErrKind "parse v1" (Uuid.parse "550e8400-e29b-11d4-a716-446655440000") .invalidVersion
+  checkErrKind "parse variant c" (Uuid.parse "550e8400-e29b-41d4-c716-446655440000") .invalidVersion
+
+/-- Verify `Uuid.parseHex` returns `.invalidFormat` on malformed compact hex UUID strings. -/
+def err_uuid_parseHex_invalidFormat : IO Unit := do
+  checkErrKind "parseHex empty" (Uuid.parseHex "") .invalidFormat
+  checkErrKind "parseHex hyphenated" (Uuid.parseHex "550e8400-e29b-41d4-a716-446655440000") .invalidFormat
+
+/-- Verify `Uuid.parseHex` returns `.invalidVersion` on non-v4 or non-RFC-4122-variant compact hex UUIDs. -/
+def err_uuid_parseHex_invalidVersion : IO Unit := do
+  checkErrKind "parseHex v1" (Uuid.parseHex "550e8400e29b11d4a716446655440000") .invalidVersion
+  checkErrKind "parseHex variant c" (Uuid.parseHex "550e8400e29b41d4c716446655440000") .invalidVersion
+
+/-- Verify mocked `Uuid.mkApi.getUuid` surfaces `.entropyFailed` when `getrandom` fails with `EIO`. -/
+def err_uuid_getUuid_entropyFailed : IO Unit := do
+  let api := Uuid.mkApi (mkFailingTimeRandOps Errno.EIO)
+  checkErrKind "mock getUuid EIO" (← api.getUuid) .entropyFailed
+
+/-- Verify mocked `Uuid.mkApi.getUuid` (`v4` backend) surfaces `.entropyFailed` when `getrandom` fails with `ENOMEM`. -/
+def err_uuid_v4_entropyFailed : IO Unit := do
+  let api := Uuid.mkApi (mkFailingTimeRandOps Errno.ENOMEM)
+  checkErrKind "mock v4 ENOMEM" (← api.getUuid) .entropyFailed
+
+/-- Registered error-coverage tests matching `Uuid/SpecTests.lean`. -/
+def registeredErrorTests : Array RegisteredErrorTest :=
+  #[ { testName := "LeanSwe.Uuid.RuntimeTests.err_uuid_fromRandomBytes_invalidLength"
+       mode := .real
+       run := err_uuid_fromRandomBytes_invalidLength }
+   , { testName := "LeanSwe.Uuid.RuntimeTests.err_uuid_parse_invalidFormat"
+       mode := .real
+       run := err_uuid_parse_invalidFormat }
+   , { testName := "LeanSwe.Uuid.RuntimeTests.err_uuid_parse_invalidVersion"
+       mode := .real
+       run := err_uuid_parse_invalidVersion }
+   , { testName := "LeanSwe.Uuid.RuntimeTests.err_uuid_parseHex_invalidFormat"
+       mode := .real
+       run := err_uuid_parseHex_invalidFormat }
+   , { testName := "LeanSwe.Uuid.RuntimeTests.err_uuid_parseHex_invalidVersion"
+       mode := .real
+       run := err_uuid_parseHex_invalidVersion }
+   , { testName := "LeanSwe.Uuid.RuntimeTests.err_uuid_getUuid_entropyFailed"
+       mode := .mocked
+       run := err_uuid_getUuid_entropyFailed }
+   , { testName := "LeanSwe.Uuid.RuntimeTests.err_uuid_v4_entropyFailed"
+       mode := .mocked
+       run := err_uuid_v4_entropyFailed } ]
+
+private def seccompWorker (errName : String) : IO UInt32 := do
+  let expected? : Option UInt32 :=
+    match errName with
+    | "EPERM" => some Errno.EPERM
+    | "EINTR" => some Errno.EINTR
+    | _ => none
+  let some expected := expected?
+    | do
+        IO.eprintln s!"uuid seccomp-worker: unsupported errno {errName}"
+        return 1
+  let rc ← LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.installSeccompErrnoForTest expected 7
+  if rc != 0 then
+    IO.eprintln s!"uuid seccomp-worker: installSeccompErrnoForTest failed errno={rc}"
+    return 1
+  match ← Uuid.getUuid with
+  | .ok u =>
+    IO.eprintln s!"uuid seccomp-worker ({errName}): expected entropyFailed, got {Uuid.toString u}"
+    return 2
+  | .error e =>
+    if e.kind != .entropyFailed || e.errnoCode != some expected || e.message.isEmpty then
+      IO.eprintln s!"uuid seccomp-worker ({errName}): unexpected error {repr e}"
+      return 3
+    return 0
+
+/-- CLI entrypoint for `--uuid-probe`. -/
+def probeMain (args : List String) : IO UInt32 := do
+  match args with
+  | ["--seccomp-worker", errName] => seccompWorker errName
+  | _ =>
+    IO.eprintln s!"unknown uuid-probe args: {args}"
+    return 1
+
+private def checkLiveSeccomp : IO Unit := do
+  let exe ← IO.appPath
+  for errName in ["EPERM", "EINTR"] do
+    let out ← IO.Process.output {
+      cmd := exe.toString
+      args := #["--uuid-probe", "--seccomp-worker", errName]
+    }
+    if out.exitCode != 0 then
+      throw <| IO.userError s!"LeanSwe.Uuid.RuntimeTests FAILED (live seccomp {errName} exit={out.exitCode}): {out.stderr}"
+
+/-- Execute the empirical OS-entropy batch, error-coverage, and validation runtime tests for `LeanSwe.Uuid`. -/
 def runAll : IO Unit := do
+  Core.runRegisteredErrorTests registeredErrorTests
   runBatchTests 1000
   runEdgeCaseTests
+  checkLiveSeccomp
   IO.println "PASS: LeanSwe.Uuid runtime tests"
 
 end LeanSwe.Uuid.RuntimeTests

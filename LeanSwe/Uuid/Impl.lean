@@ -1,8 +1,87 @@
+import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.Uuid.Types
 
 namespace LeanSwe.Uuid.Internal
 
-open LeanSwe.Uuid (UuidErrorKind UuidError UuidRawError RawUuidOpsM Uuid UuidApiM)
+open LeanSwe.LinuxSyscall (Errno)
+open LeanSwe.LinuxSyscall.TimeRand (TimeRandOpsM)
+open LeanSwe.Uuid (UuidErrorKind UuidError UuidRawError Uuid UuidApiM)
+
+/-- Alias of `LeanSwe.Uuid.MAX_GETRANDOM_ATTEMPTS` (`32`). -/
+abbrev MAX_GETRANDOM_ATTEMPTS : Nat := LeanSwe.Uuid.MAX_GETRANDOM_ATTEMPTS
+
+/-- Return `msg` if non-empty, or `fallback` otherwise. -/
+def nonEmptyMsg (fallback msg : String) : String :=
+  if msg.isEmpty then fallback else msg
+
+/-- Convert a pure `UuidRawError` record into a normalized `UuidError` with kind `.entropyFailed` and a non-empty message. -/
+def mapRawError : UuidRawError → UuidError
+  | .osError code detail =>
+    { kind := .entropyFailed
+      errnoCode := some code
+      message := nonEmptyMsg s!"os entropy error {code}" detail }
+  | .shortRead gotBytes detail =>
+    { kind := .entropyFailed
+      errnoCode := none
+      message := nonEmptyMsg s!"entropy short read: expected 16 bytes, got {gotBytes}" detail }
+  | .userError detail =>
+    { kind := .entropyFailed
+      errnoCode := none
+      message := nonEmptyMsg "os entropy error" detail }
+
+/-- Map a Linux `Errno` returned by `TimeRand.getrandom` into a normalized `.entropyFailed` `UuidError`. -/
+def mapErrnoToUuidError (e : Errno) : UuidError :=
+  mapRawError (.osError e s!"getrandom failed with {Errno.name e} ({e})")
+
+/-- Kernel-reducible `ByteArray` concatenation helper avoiding opaque `@[extern] ByteArray.copySlice` in proofs. -/
+def appendBytes (a b : ByteArray) : ByteArray :=
+  if a.size == 0 then b
+  else ByteArray.mk (a.data.toList ++ b.data.toList).toArray
+
+/-- Classify a single `getrandom` outcome when `need = 16 - acc.size` bytes remain: `.error err` aborts, `.ok (.inl full16)` finishes, and `.ok (.inr (nextAcc, nextLast))` continues. -/
+def stepRandomBytes16 (need : Nat) (acc : ByteArray)
+    (res : Except Errno ByteArray) :
+    Except UuidError (Sum ByteArray (ByteArray × Option Errno)) :=
+  match res with
+  | .error e =>
+    if e == Errno.EINTR then
+      .ok (.inr (acc, some e))
+    else
+      .error (mapErrnoToUuidError e)
+  | .ok chunk =>
+    if chunk.size == 0 || decide (chunk.size > need) then
+      .error (mapRawError (.shortRead (acc.size + chunk.size)
+        s!"unexpected getrandom chunk length {chunk.size} (expected 1..{need})"))
+    else
+      let nextAcc := appendBytes acc chunk
+      if nextAcc.size == 16 then
+        .ok (.inl nextAcc)
+      else
+        .ok (.inr (nextAcc, none))
+
+/-- Structurally bounded loop gathering exactly 16 random bytes from `sys.getrandom`, retrying `Errno.EINTR` and accumulating partial reads while failing immediately on non-`EINTR` errnos or invalid chunk sizes. -/
+def gatherRandomBytes16 {m : Type → Type} [Monad m]
+    (sys : TimeRandOpsM m) (fuel : Nat) (acc : ByteArray) (lastErrno? : Option Errno := none) :
+    m (Except UuidError ByteArray) :=
+  if acc.size == 16 then
+    pure (.ok acc)
+  else if decide (acc.size > 16) then
+    pure (.error (mapRawError (.shortRead acc.size s!"entropy accumulator exceeded 16 bytes ({acc.size})")))
+  else
+    match fuel with
+    | 0 =>
+      match lastErrno? with
+      | some e => pure (.error (mapErrnoToUuidError e))
+      | none =>
+        pure (.error (mapRawError (.shortRead acc.size
+          s!"getrandom retry budget exhausted after {acc.size} of 16 bytes")))
+    | fuel' + 1 => do
+      let need : Nat := 16 - acc.size
+      let r ← sys.getrandom (UInt32.ofNat need) {}
+      match stepRandomBytes16 need acc r with
+      | .error err => pure (.error err)
+      | .ok (.inl doneBytes) => pure (.ok doneBytes)
+      | .ok (.inr (nextAcc, nextLast)) => gatherRandomBytes16 sys fuel' nextAcc nextLast
 
 /-- Convert a nibble `0..15` to its lowercase ASCII hex character. -/
 def lowerHexDigit (n : Nat) : Char :=
@@ -117,9 +196,9 @@ def parseHex (s : String) : Except UuidError Uuid :=
 def isValid (s : String) : Bool :=
   (parse s).isOk
 
-/-- Build the generic `UuidApiM m` bundle over an injected `RawUuidOpsM m` entropy source. -/
-def mkApiM {m : Type → Type} [Monad m] (rawOps : RawUuidOpsM m) : UuidApiM m :=
-  { mapRawError := rawOps.mapRawError
+/-- Build the generic `UuidApiM m` bundle purely over an injected `TimeRandOpsM m` Linux syscall bundle. -/
+def mkApi {m : Type → Type} [Monad m] (sys : TimeRandOpsM m) : UuidApiM m :=
+  { mapRawError := mapRawError
     fromRandomBytes := fromRandomBytes
     toString := toString
     toHex := toHex
@@ -127,8 +206,12 @@ def mkApiM {m : Type → Type} [Monad m] (rawOps : RawUuidOpsM m) : UuidApiM m :
     parseHex := parseHex
     isValid := isValid
     getUuid := do
-      match ← rawOps.randomBytes16 with
+      match ← gatherRandomBytes16 sys MAX_GETRANDOM_ATTEMPTS ByteArray.empty none with
       | .error err => return .error err
       | .ok bs => return fromRandomBytes bs }
+
+/-- Alias of `mkApi` for uniformity across capability-parameterized packages. -/
+abbrev mkApiM {m : Type → Type} [Monad m] (sys : TimeRandOpsM m) : UuidApiM m :=
+  mkApi sys
 
 end LeanSwe.Uuid.Internal

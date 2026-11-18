@@ -1,6 +1,11 @@
-import Std.Time
+import Std.Time.Date.PlainDate
+import Std.Time.DateTime.Timestamp
+import Std.Time.Duration
 
 namespace LeanSwe.Time
+
+/-- Maximum `EINTR` retries performed by `mkTimeOps.sleep` on a single `UInt32` millisecond sleep chunk (`8`). -/
+def MAX_EINTR_RETRIES : Nat := 8
 
 /-- Classification of failures in `LeanSwe.Time`. -/
 inductive TimeErrorKind where
@@ -26,16 +31,16 @@ structure FakeClock where
   sleepLog : Array UInt32 := #[]
   deriving Repr, DecidableEq, Inhabited
 
-/-- Minimal effect interface wrapping the three real-clock and `sleep` `IO` entry points. -/
+/-- Minimal effect interface wrapping wall-clock, monotonic-clock, and millisecond-sleep primitives. -/
 structure TimeOpsM (m : Type → Type) where
-  /-- Read current UTC wall-clock timestamp (`Std.Time.Timestamp.now`). -/
+  /-- Read current UTC wall-clock timestamp (`CLOCK_REALTIME`). -/
   nowTimestamp : m Std.Time.Timestamp
-  /-- Read current monotonic clock in nanoseconds (`IO.monoNanosNow`). -/
+  /-- Read current monotonic clock in nanoseconds (`CLOCK_MONOTONIC`). -/
   monoNanosNow : m Nat
-  /-- Sleep for `ms` milliseconds (`IO.sleep`). -/
+  /-- Sleep for `ms` milliseconds (`clock_nanosleep` with `TIMER_ABSTIME` and bounded `EINTR` retry). -/
   sleep : UInt32 → m Unit
 
-/-- Concrete `IO` time operations bundle backed by `Std.Time.Timestamp.now`, `IO.monoNanosNow`, and `IO.sleep`. -/
+/-- Concrete `IO` time operations bundle backed by `LeanSwe.LinuxSyscall.TimeRand.defaultOps`. -/
 abbrev TimeOps := TimeOpsM IO
 
 /-- Public operations exported by `LeanSwe.Time`, parameterized over effect monad `m`. -/

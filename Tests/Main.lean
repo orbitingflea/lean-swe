@@ -28,7 +28,6 @@ private def allSuites : Array (String × String × IO (Option String)) := #[
   ("Json", "LeanSwe/Json/RuntimeTests.lean", do Json.RuntimeTests.runAll; return none),
   ("EnvVars.Raw", "LeanSwe/EnvVars/Raw/RuntimeTests.lean", do EnvVars.Raw.RuntimeTests.runAll; return none),
   ("EnvVars", "LeanSwe/EnvVars/RuntimeTests.lean", do EnvVars.RuntimeTests.runAll; return none),
-  ("Uuid.Raw", "LeanSwe/Uuid/Raw/RuntimeTests.lean", do Uuid.Raw.RuntimeTests.runAll; return none),
   ("Uuid", "LeanSwe/Uuid/RuntimeTests.lean", do Uuid.RuntimeTests.runAll; return none),
   ("Sqlite.Raw", "LeanSwe/Sqlite/Raw/RuntimeTests.lean", do Sqlite.Raw.RuntimeTests.runAll; return none),
   ("Sqlite", "LeanSwe/Sqlite/RuntimeTests.lean", do Sqlite.RuntimeTests.runAll; return none),
@@ -48,7 +47,8 @@ private def allSuites : Array (String × String × IO (Option String)) := #[
   ("ConnectProxy.Raw", "LeanSwe/ConnectProxy/Raw/RuntimeTests.lean", do ConnectProxy.Raw.RuntimeTests.runAll; return none),
   ("ConnectProxy", "LeanSwe/ConnectProxy/RuntimeTests.lean", do ConnectProxy.RuntimeTests.runAll; return none),
   ("SlotPool", "LeanSwe/SlotPool/RuntimeTests.lean", do SlotPool.RuntimeTests.runAll; return none),
-  ("LinuxSyscall.Sandbox", "LeanSwe/LinuxSyscall/Sandbox/RuntimeTests.lean", do LinuxSyscall.Sandbox.RuntimeTests.runAll; return none)
+  ("LinuxSyscall.Sandbox", "LeanSwe/LinuxSyscall/Sandbox/RuntimeTests.lean", do LinuxSyscall.Sandbox.RuntimeTests.runAll; return none),
+  ("LinuxSyscall.TimeRand", "LeanSwe/LinuxSyscall/TimeRand/RuntimeTests.lean", do LinuxSyscall.TimeRand.RuntimeTests.runAll; return none)
 ]
 
 private def findUnregisteredRuntimeTests : IO (Array String) := do
@@ -121,6 +121,12 @@ def main (args : List String) : IO UInt32 := do
     LinuxSyscall.Sandbox.RuntimeTests.runStraceFaultCheck
     IO.println "SANDBOX_STRACE_FAULT_CHECK_OK"
     return 0
+  | "--timerand-strace-fault-check" :: rest =>
+    return (← LinuxSyscall.TimeRand.RuntimeTests.probeMain rest)
+  | "--uuid-probe" :: rest =>
+    return (← Uuid.RuntimeTests.probeMain rest)
+  | "--time-probe" :: rest =>
+    return (← Time.RuntimeTests.probeMain rest)
   | _ =>
     let opts ← match parseMainOptions args with
       | .ok o => pure o

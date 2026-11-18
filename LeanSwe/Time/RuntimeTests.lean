@@ -1,3 +1,5 @@
+import Core.Assumptions
+import LeanSwe.LinuxSyscall.TimeRand.RuntimeTests
 import LeanSwe.Time.Interface
 
 namespace LeanSwe.Time.RuntimeTests
@@ -112,11 +114,67 @@ private def testRealClockAndSleep : IO Unit := do
   assertTrue (fakeEnd.sleepLog == #[UInt32.ofNat 4294967295, UInt32.ofNat 2])
     s!"unexpected fake sleepLog chunks: {repr fakeEnd.sleepLog}"
 
+/-- Real error-forcing test proving `parseUtcIso8601` returns `.invalidFormat` on malformed timestamps. -/
+def err_time_parseUtcIso8601_invalidFormat : IO Unit := do
+  for bad in ["", "2024-02-30T00:00:00Z", "2026-11-14T18:15:00", "2026-11-14T25:00:00Z"] do
+    assertErrInvalidFormat (parseUtcIso8601 bad) s!"expected invalidFormat ISO 8601 for {bad}"
+
+/-- Real error-forcing test proving `parseUtcDate` returns `.invalidFormat` on malformed dates. -/
+def err_time_parseUtcDate_invalidFormat : IO Unit := do
+  for bad in ["", "2024-02-30", "2026-13-01", "2026/11/14", "2026-11-14Z"] do
+    assertErrInvalidFormat (parseUtcDate bad) s!"expected invalidFormat date for {bad}"
+
+/-- Runtime error-coverage obligations verified for `LeanSwe.Time`. -/
+def registeredErrorTests : Array Core.RegisteredErrorTest :=
+  #[ { testName := "LeanSwe.Time.RuntimeTests.err_time_parseUtcIso8601_invalidFormat"
+       mode := .real
+       run := err_time_parseUtcIso8601_invalidFormat }
+   , { testName := "LeanSwe.Time.RuntimeTests.err_time_parseUtcDate_invalidFormat"
+       mode := .real
+       run := err_time_parseUtcDate_invalidFormat } ]
+
+private def seccompWorker : IO UInt32 := do
+  let rc ← LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.installSeccompErrnoForTest
+    LeanSwe.LinuxSyscall.Errno.EPERM 7
+  if rc != 0 then
+    IO.eprintln s!"time seccomp-worker: installSeccompErrnoForTest failed errno={rc}"
+    return 1
+  let ts ← nowTimestamp
+  if ts != Timestamp.ofSecondsSinceUnixEpoch 0 then
+    IO.eprintln s!"time seccomp-worker: expected epoch 0 fallback, got {repr ts}"
+    return 2
+  let mono ← monoNanosNow
+  if mono != 0 then
+    IO.eprintln s!"time seccomp-worker: expected monoNanosNow = 0 fallback, got {mono}"
+    return 3
+  sleepMs 1000
+  sleepDuration (Duration.ofMillisecond 1000)
+  return 0
+
+/-- CLI entrypoint for `--time-probe`. -/
+def probeMain (args : List String) : IO UInt32 := do
+  match args with
+  | ["--seccomp-worker", "EPERM"] => seccompWorker
+  | _ =>
+    IO.eprintln s!"unknown time-probe args: {args}"
+    return 1
+
+private def checkLiveSeccomp : IO Unit := do
+  let exe ← IO.appPath
+  let out ← IO.Process.output {
+    cmd := exe.toString
+    args := #["--time-probe", "--seccomp-worker", "EPERM"]
+  }
+  if out.exitCode != 0 then
+    throw <| IO.userError s!"LeanSwe.Time.RuntimeTests FAILED (live seccomp EPERM exit={out.exitCode}): {out.stderr}"
+
 /-- Execute all runtime checks for `LeanSwe.Time`. -/
 def runAll : IO Unit := do
   testUtcFormattingAndParsing
   testUtcDates
   testRealClockAndSleep
+  Core.runRegisteredErrorTests registeredErrorTests
+  checkLiveSeccomp
   IO.println "PASS: LeanSwe.Time runtime tests"
 
 end LeanSwe.Time.RuntimeTests
