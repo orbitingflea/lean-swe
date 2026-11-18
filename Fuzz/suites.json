@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "common_paths": [
+    "Fuzz/Common/",
+    "Fuzz/Main.lean",
+    "Fuzz/SelfTest.lean",
+    "lakefile.lean",
+    "lean-toolchain"
+  ],
+  "suites": {
+    "selftest": {
+      "paths": [
+        "Fuzz/SelfTest.lean"
+      ]
+    }
+  }
+}
