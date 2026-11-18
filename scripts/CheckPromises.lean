@@ -549,6 +549,38 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   errors := errors ++ axiomErrs
 
+  let mut modImports : Std.HashMap Name (Array Name) := {}
+  for h : i in [0 : env.header.moduleNames.size] do
+    let m := env.header.moduleNames[i]
+    if let some data := env.header.moduleData[i]? then
+      modImports := modImports.insert m (data.imports.map (·.module))
+  let isSandboxClosureAllowed (imp : Name) : Bool :=
+    let s := imp.toString
+    if !s.startsWith "LeanSwe." then true
+    else
+      s.startsWith "LeanSwe.LinuxSyscall.Common." ||
+        s == "LeanSwe.LinuxSyscall.Sandbox" ||
+        s.startsWith "LeanSwe.LinuxSyscall.Sandbox."
+  let mut sandboxQueue : Array Name := #[]
+  let mut sandboxSeen : Std.HashSet Name := {}
+  for m in env.header.moduleNames do
+    let s := m.toString
+    if (s == "LeanSwe.LinuxSyscall.Sandbox" || s.startsWith "LeanSwe.LinuxSyscall.Sandbox.") &&
+        s != "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests" then
+      sandboxQueue := sandboxQueue.push m
+      sandboxSeen := sandboxSeen.insert m
+  let mut qIdx : Nat := 0
+  while hq : qIdx < sandboxQueue.size do
+    let cur := sandboxQueue[qIdx]
+    qIdx := qIdx + 1
+    for imp in modImports.getD cur #[] do
+      if !isSandboxClosureAllowed imp then
+        errors := errors.push s!"TRUSTED_CLOSURE_VIOLATION: {cur} imports forbidden {imp}"
+      else if imp.toString.startsWith "LeanSwe." && !sandboxSeen.contains imp then
+        sandboxSeen := sandboxSeen.insert imp
+        sandboxQueue := sandboxQueue.push imp
+  IO.println s!"TRUSTED_CLOSURE: sandbox_modules={sandboxSeen.size} allowlist=Common+Sandbox"
+
   let mut withAssumeCount := 0
   for (m, pName) in promises do
     let usesAssume := usesAssumeTransitive env pName

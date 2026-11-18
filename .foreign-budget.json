@@ -6,11 +6,11 @@
       "legacy_unmigrated": false
     },
     ".github/workflows/audit-daily.yml": {
-      "max_lines": 211,
+      "max_lines": 215,
       "legacy_unmigrated": false
     },
     ".github/workflows/audit.yml": {
-      "max_lines": 177,
+      "max_lines": 179,
       "legacy_unmigrated": false
     },
     "LeanSwe/ConnectProxy/Raw/c/cproxy_shim.c": {
@@ -49,6 +49,18 @@
       "max_lines": 99,
       "legacy_unmigrated": true
     },
+    "LeanSwe/LinuxSyscall/c/fd_box.h": {
+      "max_lines": 122,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/LinuxSyscall/c/sandbox_shim.c": {
+      "max_lines": 292,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/LinuxSyscall/c/sandbox_fuzz_env.c": {
+      "max_lines": 305,
+      "legacy_unmigrated": false
+    },
     "scripts/check_proof_memory.py": {
       "max_lines": 406,
       "legacy_unmigrated": false
@@ -58,7 +70,7 @@
       "legacy_unmigrated": false
     },
     "scripts/mutate_and_test.py": {
-      "max_lines": 619,
+      "max_lines": 630,
       "legacy_unmigrated": false
     },
     "scripts/test_check_spec_change.py": {
@@ -88,5 +100,7 @@
       "max_branches": 10
     }
   },
-  "named_thread_helpers": []
+  "named_thread_helpers": [
+    "LeanSwe/LinuxSyscall/c/sandbox_fuzz_env.c::leanswe_sbx_spawn_sync_thread"
+  ]
 }

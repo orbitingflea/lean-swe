@@ -47,7 +47,8 @@ private def allSuites : Array (String × String × IO (Option String)) := #[
   ("ProcessSandbox", "LeanSwe/ProcessSandbox/RuntimeTests.lean", ProcessSandbox.RuntimeTests.runAllOutcome),
   ("ConnectProxy.Raw", "LeanSwe/ConnectProxy/Raw/RuntimeTests.lean", do ConnectProxy.Raw.RuntimeTests.runAll; return none),
   ("ConnectProxy", "LeanSwe/ConnectProxy/RuntimeTests.lean", do ConnectProxy.RuntimeTests.runAll; return none),
-  ("SlotPool", "LeanSwe/SlotPool/RuntimeTests.lean", do SlotPool.RuntimeTests.runAll; return none)
+  ("SlotPool", "LeanSwe/SlotPool/RuntimeTests.lean", do SlotPool.RuntimeTests.runAll; return none),
+  ("LinuxSyscall.Sandbox", "LeanSwe/LinuxSyscall/Sandbox/RuntimeTests.lean", do LinuxSyscall.Sandbox.RuntimeTests.runAll; return none)
 ]
 
 private def findUnregisteredRuntimeTests : IO (Array String) := do
@@ -113,6 +114,13 @@ def main (args : List String) : IO UInt32 := do
     return (← CmdLine.RuntimeTests.probeMain rest)
   | "--slotpool-probe" :: rest =>
     return (← SlotPool.RuntimeTests.probeMain rest)
+  | "--sandbox-strace-worker" :: mode :: [] =>
+    LinuxSyscall.Sandbox.RuntimeTests.runStraceWorker mode
+    return 0
+  | "--sandbox-strace-fault-check" :: [] =>
+    LinuxSyscall.Sandbox.RuntimeTests.runStraceFaultCheck
+    IO.println "SANDBOX_STRACE_FAULT_CHECK_OK"
+    return 0
   | _ =>
     let opts ← match parseMainOptions args with
       | .ok o => pure o

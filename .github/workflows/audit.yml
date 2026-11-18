@@ -50,7 +50,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap python3-zstandard zstd xz-utils gzip curl libssl-dev
+          sudo apt-get install -y --no-install-recommends bubblewrap strace python3-zstandard zstd xz-utils gzip curl libssl-dev
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then
             echo "+memory +pids" | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null 2>&1 || true
@@ -96,7 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail lean-swe-mut-test
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail lean-swe-mut-test leanswe-world-fuzz
 
       - name: Run runtime test suites
         run: |
@@ -128,6 +128,8 @@ jobs:
           echo "ASSUMP_NONCE=$ASSUMP_NONCE" >> "$GITHUB_ENV"
           echo "ASSUMP_LOG=$ASSUMP_LOG" >> "$GITHUB_ENV"
           .lake/build/bin/lean-swe-test --assump-log "$ASSUMP_LOG" --assump-nonce "$ASSUMP_NONCE"
+          .lake/build/bin/lean-swe-test --sandbox-strace-fault-check
+          .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --self-test-shrink
 
       - name: Check 1 GB private-memory cap on changed modules and reverse dependents
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')

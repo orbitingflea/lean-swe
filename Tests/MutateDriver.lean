@@ -33,6 +33,7 @@ import LeanSwe.ProcessSandbox.RuntimeTests
 import LeanSwe.ConnectProxy.Raw.RuntimeTests
 import LeanSwe.ConnectProxy.RuntimeTests
 import LeanSwe.SlotPool.RuntimeTests
+import LeanSwe.LinuxSyscall.Sandbox.RuntimeTests
 
 open LeanSwe
 open Core.PropCheck
@@ -469,7 +470,8 @@ private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("ProcessSandbox", ProcessSandbox.RuntimeTests.runAllOutcome, pure ()),
   ("ConnectProxy.Raw", do ConnectProxy.Raw.RuntimeTests.runAll; return none, pure ()),
   ("ConnectProxy", do ConnectProxy.RuntimeTests.runAll; return none, pure ()),
-  ("SlotPool", do SlotPool.RuntimeTests.runAll; return none, pure ())
+  ("SlotPool", do SlotPool.RuntimeTests.runAll; return none, pure ()),
+  ("LinuxSyscall.Sandbox", do LinuxSyscall.Sandbox.RuntimeTests.runAll; return none, pure ())
 ]
 
 private structure MutateFlags where
