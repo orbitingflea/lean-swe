@@ -224,6 +224,10 @@ def SandboxSysState.unprivileged : SandboxSysState :=
     hasCapSysResource? := some false
     landlockLayersExact := true }
 
+/-- Initial or derived `SandboxSysState` for a process started beneath an inherited outer `SECCOMP_RET_ERRNO` filter. -/
+def SandboxSysState.withOuterSeccomp (s : SandboxSysState := SandboxSysState.initial) : SandboxSysState :=
+  { s with seccompMayIntercept := true }
+
 /-- Well-formedness invariant on `SandboxSysState` preserved by `allowedStep` and `modelOps`. -/
 def SandboxSysState.wf (s : SandboxSysState) : Bool :=
   s.fds.all (fun p => decide (p.1 < s.nextHid)) &&
@@ -568,7 +572,7 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
     | _ => none
   | .opened hid =>
     if (assocGet s.fds hid).isSome ||
-        (s.rlimitNofile.curExact && s.fds.length ≥ s.rlimitNofile.cur.toNat) then
+        (s.rlimitNofile.curExact && s.rlimitNofile.cur == 0) then
       none
     else
       match req with

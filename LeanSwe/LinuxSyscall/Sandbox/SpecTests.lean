@@ -638,6 +638,20 @@ def test_sandbox_model_allowedStep_environmentFreeAndOPath
     NondetTest.assert ((step sPseudoNnp (.landlockRestrictSelf 50) .unit).isNone)
     NondetTest.assert (step sPseudoNnp (.landlockRestrictSelf 53) (.err Errno.EBADF) = some sPseudoNnp)
     NondetTest.assert ((step sPseudoNnp (.landlockRestrictSelf 53) (.err EBADFD)).isNone)
+  let sGapBase := (((s0.withHostFd 9 true).withHostFd 10 false).withHostFd 11 true).withHostFd 12 false
+  match step sGapBase (.setrlimit .nofile 4 1024) .unit with
+  | none => NondetTest.assert False
+  | some sGap =>
+    NondetTest.assert ((step sGap (.memfdCreate (asciiBytes ['g']) {}) (.opened 13)).isSome)
+    NondetTest.assert ((step sGap (.landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0) (.opened 13)).isSome)
+  match step sGapBase (.setrlimit .nofile 0 1024) .unit with
+  | none => NondetTest.assert False
+  | some sZeroNofile =>
+    NondetTest.assert ((step sZeroNofile (.memfdCreate (asciiBytes ['g']) {}) (.opened 13)).isNone)
+  let sOuter := s0.withOuterSeccomp
+  NondetTest.assert ((step sOuter (.memfdCreate (asciiBytes ['o']) {}) (.err Errno.EPERM)).isSome)
+  NondetTest.assert ((step sOuter (.memfdCreate (asciiBytes ['o']) {}) (.err Errno.EFAULT)).isNone)
+  NondetTest.assert ((step sOuter (.memfdCreate (ByteArray.mk #[97, 0]) {}) (.err Errno.EPERM)).isNone)
 
 /-- `SandboxSysState.initial` and `SandboxSysState.unprivileged` satisfy `wf`, and for every well-formed `s : SandboxSysState` and request `req : SandboxReq`, executing `modelOps` produces an outcome and next state accepted by `allowedStep` while preserving `wf`. -/
 def test_sandbox_model_modelOpsRefinesAllowedStep

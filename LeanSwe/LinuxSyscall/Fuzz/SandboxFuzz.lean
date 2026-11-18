@@ -30,6 +30,8 @@ private inductive HandleChoice where
   | hostDir (idx : Nat)
   | hostFile (idx : Nat)
   | pseudo (idx : Nat)
+  | opathMemfd
+  | opathRuleset
   | dynamic (idx : Nat)
   | closed (idx : Nat)
   | unmapped
@@ -50,10 +52,16 @@ private inductive FuzzStep where
 
 private structure EpisodePlan where
   useUserns : Bool
-  spawnThread : Bool
+  preNnp : Bool
+  preOuterLayers : Nat
+  preOuterSeccomp : Bool
+  spawnMode : Nat
+  closeLowFds : Bool
   dirOPaths : Array Bool
   fileOPaths : Array Bool
   pseudoOPaths : Array Bool
+  seedOPathSpecials : Bool
+  specialSeedIdx : Nat
   steps : Array FuzzStep
   deriving Repr
 
@@ -78,13 +86,15 @@ private def encodeFilter (insns : List SockFilterInsn) : ByteArray :=
     return out
 
 private def genHandleChoice (r : Rng) : HandleChoice × Rng :=
-  let (kind, r1) := r.nextNat 10
-  let (idx, r2) := r1.nextNat 6
+  let (kind, r1) := r.nextNat 12
+  let (idx, r2) := r1.nextNat 8
   if kind < 3 then (.dynamic idx, r2)
   else if kind < 5 then (.hostDir idx, r2)
   else if kind < 7 then (.hostFile idx, r2)
   else if kind == 7 then (.pseudo idx, r2)
-  else if kind == 8 then (.closed idx, r2)
+  else if kind == 8 then (.opathMemfd, r2)
+  else if kind == 9 then (.opathRuleset, r2)
+  else if kind == 10 then (.closed idx, r2)
   else (.unmapped, r2)
 
 private def fsMaskPool : Array UInt64 := #[
@@ -93,11 +103,14 @@ private def fsMaskPool : Array UInt64 := #[
   LANDLOCK_ACCESS_FS_WRITE_FILE,
   LANDLOCK_ACCESS_FS_READ_FILE,
   LANDLOCK_ACCESS_FS_READ_DIR,
+  (1 : UInt64) <<< 14,
+  (1 : UInt64) <<< 15,
   LANDLOCK_ACCESS_FS_READ_FILE ||| LANDLOCK_ACCESS_FS_READ_DIR,
   LANDLOCK_ACCESS_FS_EXECUTE ||| LANDLOCK_ACCESS_FS_READ_FILE ||| LANDLOCK_ACCESS_FS_READ_DIR,
   LANDLOCK_ACCESS_FS_V4_ALL,
   LANDLOCK_ACCESS_FS_IOCTL_DEV,
   LANDLOCK_ACCESS_FS_RESOLVE_UNIX,
+  (1 : UInt64) <<< 17,
   (1 : UInt64) <<< 20,
   (1 : UInt64) <<< 60
 ]
@@ -116,16 +129,14 @@ private def genFsMask (r : Rng) : UInt64 × Rng :=
   if mode < 6 then
     r1.pickArray fsMaskPool LANDLOCK_ACCESS_FS_EXECUTE
   else
-    let (v, r2) := r1.nextU64
-    (v, r2)
+    r1.nextU64
 
 private def genNetMask (r : Rng) : UInt64 × Rng :=
   let (mode, r1) := r.nextNat 8
   if mode < 6 then
     r1.pickArray netMaskPool LANDLOCK_ACCESS_NET_CONNECT_TCP
   else
-    let (v, r2) := r1.nextU64
-    (v, r2)
+    r1.nextU64
 
 private def genSeccompFlags (r : Rng) : SeccompFlags × Rng :=
   let (b0, r1) := r.chance 1 3
@@ -144,6 +155,18 @@ private def genRandomBytes (r : Rng) (len : Nat) : ByteArray × Rng :=
       cur := nxt
     return (out, cur)
 
+private def seccompErrnoPool : Array UInt32 := #[
+  Errno.EPERM,
+  Errno.EACCES,
+  Errno.E2BIG,
+  Errno.EBADF,
+  Errno.ENOSYS,
+  4095,
+  4096,
+  5000,
+  0xFFFF
+]
+
 private def seccompRetPool : Array UInt32 := #[
   SECCOMP_RET_ALLOW,
   SECCOMP_RET_ALLOW ||| 0x42,
@@ -154,6 +177,10 @@ private def seccompRetPool : Array UInt32 := #[
   SECCOMP_RET_ERRNO ||| Errno.E2BIG,
   SECCOMP_RET_ERRNO ||| Errno.EBADF,
   SECCOMP_RET_ERRNO ||| Errno.ENOSYS,
+  SECCOMP_RET_ERRNO ||| 4095,
+  SECCOMP_RET_ERRNO ||| 4096,
+  SECCOMP_RET_ERRNO ||| 5000,
+  SECCOMP_RET_ERRNO ||| 0xFFFF,
   SECCOMP_RET_ERRNO,
   SECCOMP_RET_ERRNO ||| Errno.EFAULT,
   SECCOMP_RET_KILL_PROCESS,
@@ -165,27 +192,36 @@ private def seccompRetPool : Array UInt32 := #[
 ]
 
 private def sandboxSyscallNrs : Array UInt32 := #[
-  444, 445, 446, 317, 277, 157, 167, 160, 163, 319, 279
+  444, 445, 446, 317, 277, 157, 167, 160, 163, 164, 261, 302, 319, 279
 ]
 
-private def genSafeDagFilter (r : Rng) (allowSelectErr : Bool) : ByteArray × Rng :=
+private def simpleBpfOps : Array UInt16 := #[
+  0x0000, 0x0001, 0x0080, 0x0081, 0x0007, 0x0087,
+  0x0004, 0x000c, 0x0014, 0x001c, 0x0024, 0x002c,
+  0x0044, 0x004c, 0x0054, 0x005c, 0x006c, 0x007c,
+  0x0084, 0x00a4, 0x00ac
+]
+
+private def condJmpOps : Array UInt16 := #[
+  0x0015, 0x001d, 0x0025, 0x002d, 0x0035, 0x003d, 0x0045, 0x004d
+]
+
+private def genFullCbpfDag (r : Rng) (allowSelectErr : Bool) : ByteArray × Rng :=
   Id.run do
     let mut cur := r
-    let (nBody, r1) := cur.nextRange 1 12
+    let (longMode, rLenMode) := cur.chance 1 5
+    cur := rLenMode
+    let (nBody, r1) := if longMode then cur.nextRange 60 159 else cur.nextRange 1 18
     cur := r1
-    let mut insns : List SockFilterInsn := []
-    let (useSelector, r2) := cur.chance 1 2
+    let (useSelector, r2) := cur.chance 1 3
     cur := r2
-    let (targetNr, r3) := cur.pickArray sandboxSyscallNrs 446
+    let (retAction, r3) := cur.pickArray #[SECCOMP_RET_ALLOW, SECCOMP_RET_LOG] SECCOMP_RET_ALLOW
     cur := r3
-    let (argMode, r4) := cur.chance 1 2
-    cur := r4
-    let (errVal, r5) := cur.pickArray #[Errno.EPERM, Errno.EACCES, Errno.E2BIG, Errno.EINVAL, Errno.ENOMEM] Errno.EPERM
-    cur := r5
-    let (retAction, r6) := cur.pickArray #[SECCOMP_RET_ALLOW, SECCOMP_RET_LOG] SECCOMP_RET_ALLOW
-    cur := r6
     if useSelector && allowSelectErr then
-      let (argCmpVal, r7) := cur.nextNat 4
+      let (targetNr, r4) := cur.pickArray sandboxSyscallNrs 446
+      let (argMode, r5) := r4.chance 1 2
+      let (errVal, r6) := r5.pickArray seccompErrnoPool Errno.EPERM
+      let (argCmpVal, r7) := r6.nextNat 4
       cur := r7
       let checkArg : List SockFilterInsn :=
         if argMode then
@@ -200,36 +236,131 @@ private def genSafeDagFilter (r : Rng) (allowSelectErr : Bool) : ByteArray × Rn
         checkArg ++
         [ { code := 0x0006, jt := 0, jf := 0, k := retAction } ]
       return (encodeFilter prog, cur)
+    let totalLen := nBody + 1
+    let mut pathMasks : Array UInt32 := Array.replicate totalLen (0xFFFF : UInt32)
+    let mut curMask : UInt32 := 0
+    let mut insns : List SockFilterInsn := []
     for idx in List.range nBody do
       let rem := nBody - 1 - idx
-      let (kind, nxt) := cur.nextNat 6
+      let effMask := curMask &&& (pathMasks.getD idx 0xFFFF)
+      let (cat, nxt) := cur.nextNat 16
       cur := nxt
-      if kind == 0 then
+      if cat < 5 then
+        let (op, nxt2) := cur.pickArray simpleBpfOps 0x0000
+        let (imm, nxt3) := nxt2.nextNat 128
+        cur := nxt3
+        insns := insns ++ [{ code := op, jt := 0, jf := 0, k := UInt32.ofNat imm }]
+        curMask := effMask
+      else if cat < 7 then
         let (offIdx, nxt2) := cur.nextRange 0 15
         cur := nxt2
         insns := insns ++ [{ code := 0x0020, jt := 0, jf := 0, k := UInt32.ofNat (offIdx * 4) }]
-      else if kind == 1 then
-        let (imm, nxt2) := cur.nextNat 64
+        curMask := effMask
+      else if cat == 7 then
+        let (divVal, nxt2) := cur.nextRange 1 16
         cur := nxt2
-        insns := insns ++ [{ code := 0x0004, jt := 0, jf := 0, k := UInt32.ofNat imm }]
-      else if kind == 2 then
-        let (slot, nxt2) := cur.nextNat 4
+        insns := insns ++ [{ code := 0x0034, jt := 0, jf := 0, k := UInt32.ofNat divVal }]
+        curMask := effMask
+      else if cat == 8 then
+        let (shOp, nxt2) := cur.pickArray #[0x0064, 0x0074] 0x0064
+        let (shAmt, nxt3) := nxt2.nextNat 32
+        cur := nxt3
+        insns := insns ++ [{ code := shOp, jt := 0, jf := 0, k := UInt32.ofNat shAmt }]
+        curMask := effMask
+      else if cat < 11 then
+        let (stOp, nxt2) := cur.pickArray #[0x0002, 0x0003] 0x0002
+        let (slot, nxt3) := nxt2.nextNat 16
+        cur := nxt3
+        insns := insns ++ [{ code := stOp, jt := 0, jf := 0, k := UInt32.ofNat slot }]
+        curMask := effMask ||| ((1 : UInt32) <<< UInt32.ofNat slot)
+      else if cat == 11 && effMask != 0 then
+        let (ldOp, nxt2) := cur.pickArray #[0x0060, 0x0061] 0x0060
+        let (startSlot, nxt3) := nxt2.nextNat 16
+        cur := nxt3
+        let mut chosenSlot := 0
+        for off in List.range 16 do
+          let cand := (startSlot + off) % 16
+          if (effMask &&& ((1 : UInt32) <<< UInt32.ofNat cand)) != 0 then
+            chosenSlot := cand
+            break
+        insns := insns ++ [{ code := ldOp, jt := 0, jf := 0, k := UInt32.ofNat chosenSlot }]
+        curMask := effMask
+      else if cat == 12 && rem > 0 then
+        let (kOff, nxt2) := cur.nextNat rem
         cur := nxt2
-        insns := insns ++ [{ code := 0x0002, jt := 0, jf := 0, k := UInt32.ofNat slot }]
-      else if kind == 3 && rem > 0 then
-        let (jtRaw, nxt2) := cur.nextNat rem
-        let (jfRaw, nxt3) := nxt2.nextNat rem
-        let (kVal, nxt4) := nxt3.nextNat 16
-        cur := nxt4
-        insns := insns ++ [{ code := 0x0015, jt := UInt8.ofNat jtRaw, jf := UInt8.ofNat jfRaw, k := UInt32.ofNat kVal }]
+        let tgt := idx + 1 + kOff
+        pathMasks := pathMasks.set! tgt ((pathMasks.getD tgt 0xFFFF) &&& effMask)
+        insns := insns ++ [{ code := 0x0005, jt := 0, jf := 0, k := UInt32.ofNat kOff }]
+        curMask := 0xFFFF
+      else if cat < 15 && rem > 0 then
+        let (jmpOp, nxt2) := cur.pickArray condJmpOps 0x0015
+        let (jtOff, nxt3) := nxt2.nextNat rem
+        let (jfOff, nxt4) := nxt3.nextNat rem
+        let (kVal, nxt5) := nxt4.nextNat 16
+        cur := nxt5
+        let t1 := idx + 1 + jtOff
+        let t2 := idx + 1 + jfOff
+        pathMasks := pathMasks.set! t1 ((pathMasks.getD t1 0xFFFF) &&& effMask)
+        pathMasks := pathMasks.set! t2 ((pathMasks.getD t2 0xFFFF) &&& effMask)
+        insns := insns ++ [{ code := jmpOp, jt := UInt8.ofNat jtOff, jf := UInt8.ofNat jfOff, k := UInt32.ofNat kVal }]
+        curMask := 0xFFFF
       else
-        let (mask, nxt2) := cur.nextNat 255
+        let (midAct, nxt2) := cur.pickArray #[SECCOMP_RET_ALLOW, SECCOMP_RET_LOG] SECCOMP_RET_ALLOW
         cur := nxt2
-        insns := insns ++ [{ code := 0x0054, jt := 0, jf := 0, k := UInt32.ofNat mask }]
+        insns := insns ++ [{ code := 0x0006, jt := 0, jf := 0, k := midAct }]
+        curMask := effMask
     insns := insns ++ [{ code := 0x0006, jt := 0, jf := 0, k := retAction }]
     return (encodeFilter insns, cur)
 
-private def genFilterBytes (r : Rng) : ByteArray × Rng :=
+private def genAdvSeccompFilter (r : Rng) (allowSelectErr : Bool) : ByteArray × Rng :=
+  let (advKind, r1) := r.nextNat 14
+  let (retK, r2) := r1.pickArray seccompRetPool SECCOMP_RET_ALLOW
+  if advKind == 0 then
+    let act := retK &&& SECCOMP_RET_ACTION_FULL
+    let isNonBlocking := act == SECCOMP_RET_ERRNO && (retK &&& 0xFFFF) != 0 && (retK &&& 0xFFFF) != Errno.EFAULT
+    let isExternalTrap := act == SECCOMP_RET_TRACE || act == SECCOMP_RET_USER_NOTIF
+    if isNonBlocking || isExternalTrap then
+      if allowSelectErr then
+        let (targetNr, r3) := r2.pickArray sandboxSyscallNrs 446
+        (encodeFilter
+          [ { code := 0x0020, jt := 0, jf := 0, k := 0 }
+          , { code := 0x0015, jt := 1, jf := 0, k := targetNr }
+          , { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }
+          , { code := 0x0006, jt := 0, jf := 0, k := retK } ], r3)
+      else
+        (encodeFilter [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
+    else
+      (encodeFilter [{ code := 0x0006, jt := 0, jf := 0, k := retK }], r2)
+  else if advKind == 1 then
+    (encodeFilter [{ code := 0x0016, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
+  else if advKind == 2 then
+    (encodeFilter [{ code := 0x003c, jt := 0, jf := 0, k := 0 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
+  else if advKind == 3 then
+    (encodeFilter [{ code := 0x0000, jt := 0, jf := 0, k := 0 }], r2)
+  else if advKind == 4 then
+    (encodeFilter [{ code := 0x0020, jt := 0, jf := 0, k := 64 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
+  else if advKind == 5 then
+    (encodeFilter [{ code := 0x0020, jt := 0, jf := 0, k := 2 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
+  else if advKind == 6 then
+    (encodeFilter [{ code := 0x0060, jt := 0, jf := 0, k := 0 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
+  else if advKind == 7 then
+    (encodeFilter [{ code := 0x0002, jt := 0, jf := 0, k := 16 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
+  else if advKind == 8 then
+    (encodeFilter [{ code := 0x0034, jt := 0, jf := 0, k := 0 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
+  else if advKind == 9 then
+    (encodeFilter [{ code := 0x0064, jt := 0, jf := 0, k := 32 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
+  else if advKind == 10 then
+    (encodeFilter [{ code := 0x0074, jt := 0, jf := 0, k := 32 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
+  else if advKind == 11 then
+    (encodeFilter [{ code := 0x0005, jt := 0, jf := 0, k := 2 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
+  else if advKind == 12 then
+    (encodeFilter [{ code := 0x0015, jt := 2, jf := 0, k := 0 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
+  else
+    let oversized := (List.replicate 160 { code := 0x0000, jt := 0, jf := 0, k := 0 }) ++
+      [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }]
+    (encodeFilter oversized, r2)
+
+private def genFilterBytes (r : Rng) (allowSelectErr : Bool) : ByteArray × Rng :=
   let (kind, r1) := r.nextNat 10
   if kind < 2 then
     let (lenChoice, r2) := r1.nextNat 5
@@ -240,49 +371,23 @@ private def genFilterBytes (r : Rng) : ByteArray × Rng :=
       else r2.nextRange 1 80
     genRandomBytes r3 len
   else if kind < 5 then
-    let (advKind, r2) := r1.nextNat 7
-    let (retK, r3) := r2.pickArray seccompRetPool SECCOMP_RET_ALLOW
-    if advKind == 0 then
-      let act := retK &&& SECCOMP_RET_ACTION_FULL
-      let isNonBlocking := act == SECCOMP_RET_ERRNO && (retK &&& 0xFFFF) != 0 && (retK &&& 0xFFFF) != Errno.EFAULT
-      let isExternalTrap := act == SECCOMP_RET_TRACE || act == SECCOMP_RET_USER_NOTIF
-      if isNonBlocking || isExternalTrap then
-        let (targetNr, r4) := r3.pickArray sandboxSyscallNrs 446
-        (encodeFilter
-          [ { code := 0x0020, jt := 0, jf := 0, k := 0 }
-          , { code := 0x0015, jt := 1, jf := 0, k := targetNr }
-          , { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }
-          , { code := 0x0006, jt := 0, jf := 0, k := retK } ], r4)
-      else
-        (encodeFilter [{ code := 0x0006, jt := 0, jf := 0, k := retK }], r3)
-    else if advKind == 1 then
-      (encodeFilter [{ code := 0x0016, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r3)
-    else if advKind == 2 then
-      (encodeFilter [{ code := 0x003c, jt := 0, jf := 0, k := 0 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r3)
-    else if advKind == 3 then
-      (encodeFilter [{ code := 0x0000, jt := 0, jf := 0, k := 0 }], r3)
-    else if advKind == 4 then
-      (encodeFilter [{ code := 0x0020, jt := 0, jf := 0, k := 64 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r3)
-    else if advKind == 5 then
-      (encodeFilter [{ code := 0x0060, jt := 0, jf := 0, k := 0 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r3)
-    else
-      (encodeFilter [{ code := 0x0015, jt := 2, jf := 0, k := 0 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r3)
+    genAdvSeccompFilter r1 allowSelectErr
   else
-    genSafeDagFilter r1 true
+    genFullCbpfDag r1 allowSelectErr
 
 private def rlimitVals : Array UInt64 := #[
-  0, 1, 16, 64, 512, 1024, 2048, 4096, 65536, NOFILE_KERNEL_MAX, NOFILE_KERNEL_MAX + 1, RLIM_INFINITY
+  0, 1, 2, 3, 4, 7, 15, 16, 64, 512, 1024, 2048, 4096, 65536, 131072,
+  1048576, NOFILE_KERNEL_MAX, NOFILE_KERNEL_MAX + 1, RLIM_INFINITY
 ]
+
+private def memfdNameLens : Array Nat := #[0, 1, 248, 249, 250, 512]
 
 private def genMemfdName (r : Rng) : ByteArray × Rng :=
   let (kind, r1) := r.nextNat 8
-  if kind == 0 then
-    (ByteArray.empty, r1)
-  else if kind == 1 then
-    genRandomBytes r1 MFD_NAME_MAX
-  else if kind == 2 then
-    genRandomBytes r1 (MFD_NAME_MAX + 3)
-  else if kind == 3 then
+  if kind < 4 then
+    let (len, r2) := r1.pickArray memfdNameLens 1
+    genRandomBytes r2 len
+  else if kind == 4 then
     let (preLen, r2) := r1.nextRange 0 8
     let (pre, r3) := genRandomBytes r2 preLen
     (pre.push 0 |>.push 97, r3)
@@ -297,8 +402,19 @@ private def genMemfdName (r : Rng) : ByteArray × Rng :=
         cur := nxt
       return (out, cur)
 
-private def genStep (r : Rng) : FuzzStep × Rng :=
-  let (opKind, r1) := r.nextNat 10
+private def netPortPool : Array UInt64 := #[
+  0, 1, 80, 443, 65535, 65536, 100000, 0x100000001, UInt64.ofNat 0xFFFFFFFFFFFFFFFF
+]
+
+private def genStep (r : Rng) (llBurst : Bool) (allowSelectErr : Bool) : FuzzStep × Rng :=
+  let (opRaw, r1) := r.nextNat 12
+  let opKind :=
+    if llBurst && opRaw >= 6 && opRaw <= 8 then
+      if opRaw == 6 then 0 else 3
+    else if opRaw >= 10 then
+      if opRaw == 10 then 7 else 9
+    else
+      opRaw
   if opKind == 0 then
     let (useNull, r2) := r1.chance 1 4
     if useNull then
@@ -316,7 +432,7 @@ private def genStep (r : Rng) : FuzzStep × Rng :=
     (.llAddPath rs parent acc, r4)
   else if opKind == 2 then
     let (rs, r2) := genHandleChoice r1
-    let (port, r3) := r2.pickArray #[0, 80, 443, 65535, 65536, 100000] 80
+    let (port, r3) := r2.pickArray netPortPool 80
     let (acc, r4) := genNetMask r3
     (.llAddNet rs port acc, r4)
   else if opKind == 3 then
@@ -329,7 +445,7 @@ private def genStep (r : Rng) : FuzzStep × Rng :=
       let (act, r4) := r3.pickArray seccompRetPool SECCOMP_RET_ALLOW
       (.scGetAvail act fl, r4)
     else
-      let (bs, r4) := genFilterBytes r3
+      let (bs, r4) := genFilterBytes r3 allowSelectErr
       (.scSetFilter fl bs, r4)
   else if opKind == 5 then
     let (pk, r2) := r1.nextNat 6
@@ -359,8 +475,19 @@ private def genStep (r : Rng) : FuzzStep × Rng :=
 private def genEpisodePlan (r : Rng) (nSteps : Nat) : EpisodePlan × Rng :=
   Id.run do
     let (useUserns, r1) := r.chance 1 5
-    let (spawnThread, r2) := r1.chance 1 8
-    let mut cur := r2
+    let (preNnp, r2) := r1.chance 1 5
+    let (hasOuterLayers, r3) := r2.chance 1 5
+    let (outerLayersRaw, r4) := r3.nextRange 1 16
+    let preOuterLayers := if hasOuterLayers then outerLayersRaw else 0
+    let (preOuterSeccomp, r5) := r4.chance 1 10
+    let (spawnRoll, r6) := r5.nextNat 8
+    let spawnMode := if spawnRoll == 0 then 1 else if spawnRoll == 1 then 2 else 0
+    let (closeLowFds, r7) := r6.chance 1 5
+    let (seedOPathSpecials, r8) := r7.chance 1 3
+    let (specialSeedIdx, r9) := r8.nextNat 64
+    let (llBurst, r10) := r9.chance 1 5
+    let (allowLateSeccompErr, r11) := r10.chance 1 4
+    let mut cur := r11
     let mut dirOPaths := #[]
     let mut fileOPaths := #[]
     let mut pseudoOPaths := #[]
@@ -372,12 +499,18 @@ private def genEpisodePlan (r : Rng) (nSteps : Nat) : EpisodePlan × Rng :=
       fileOPaths := fileOPaths.push b2
       pseudoOPaths := pseudoOPaths.push b3
       cur := c3
+    let lateThreshold := (nSteps * 3) / 4
     let mut steps := Array.mkEmpty nSteps
-    for _ in List.range nSteps do
-      let (st, nxt) := genStep cur
+    for i in List.range nSteps do
+      let allowErrHere := allowLateSeccompErr && i >= lateThreshold
+      let (st, nxt) := genStep cur llBurst allowErrHere
       steps := steps.push st
       cur := nxt
-    return ({ useUserns, spawnThread, dirOPaths, fileOPaths, pseudoOPaths, steps }, cur)
+    return ({
+      useUserns, preNnp, preOuterLayers, preOuterSeccomp, spawnMode,
+      closeLowFds, dirOPaths, fileOPaths, pseudoOPaths,
+      seedOPathSpecials, specialSeedIdx, steps
+    }, cur)
 
 private structure HandleSlot where
   hid : HandleId
@@ -389,6 +522,8 @@ private structure ExecState where
   hostDirs : Array HandleSlot
   hostFiles : Array HandleSlot
   pseudos : Array HandleSlot
+  opathMemfd? : Option HandleSlot
+  opathRuleset? : Option HandleSlot
   dynamics : Array HandleSlot
   closedHids : Array HandleSlot
   deadFd : RawFd
@@ -404,6 +539,14 @@ private def resolveChoice (st : ExecState) : HandleChoice → HandleId × RawFd
   | .hostDir i => pickSlot st.hostDirs i st.deadFd
   | .hostFile i => pickSlot st.hostFiles i st.deadFd
   | .pseudo i => pickSlot st.pseudos i st.deadFd
+  | .opathMemfd =>
+    match st.opathMemfd? with
+    | some s => (s.hid, s.fd)
+    | none => (9999, st.deadFd)
+  | .opathRuleset =>
+    match st.opathRuleset? with
+    | some s => (s.hid, s.fd)
+    | none => (9999, st.deadFd)
   | .dynamic i => pickSlot st.dynamics i st.deadFd
   | .closed i => pickSlot st.closedHids i st.deadFd
   | .unmapped => (99999, st.deadFd)
@@ -449,35 +592,82 @@ private def encodeOutcome : SandboxOutcome → String
   | .u32 v => s!"N:{v}"
   | .err e => s!"E:{e}"
 
+private def extraDirPaths : Array String := #[
+  "/var/tmp", "/proc", "/sys", "/sys/fs/cgroup"
+]
+
+private def extraFilePaths : Array String := #[
+  "/proc/self/status", "/dev/null"
+]
+
+private def blockMemfdFilter : ByteArray :=
+  encodeFilter
+    [ { code := 0x0020, jt := 0, jf := 0, k := 0 }
+    , { code := 0x0015, jt := 2, jf := 0, k := 319 }
+    , { code := 0x0015, jt := 1, jf := 0, k := 279 }
+    , { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }
+    , { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ERRNO ||| Errno.EPERM } ]
+
+private def setupPreEnvironment (plan : EpisodePlan) : IO (Bool × SandboxSysState) := do
+  if plan.useUserns then
+    let _ ← SandboxEnv.enterUserns
+  if plan.preOuterLayers > 0 then
+    if !plan.useUserns then
+      let _ ← prctl .setNoNewPrivs
+    match ← landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0 with
+    | .ok (.ruleset outerRs) =>
+      for _ in List.range plan.preOuterLayers do
+        let _ ← landlockRestrictSelf outerRs
+      let _ ← SandboxEnv.closeFd outerRs
+    | _ => pure ()
+  if plan.preNnp then
+    let _ ← prctl .setNoNewPrivs
+  let mut sys := SandboxSysState.initial
+  if plan.preOuterSeccomp then
+    let _ ← prctl .setNoNewPrivs
+    match ← seccomp .setModeFilter {} blockMemfdFilter with
+    | .ok 0 => sys := sys.withOuterSeccomp
+    | _ => pure ()
+  let mut spawnActive := false
+  if plan.spawnMode == 1 then
+    match ← SandboxEnv.spawnSyncThread true with
+    | .ok _ => spawnActive := true
+    | .error _ => pure ()
+  else if plan.spawnMode == 2 then
+    match ← SandboxEnv.spawnSyncThread false with
+    | .ok _ => spawnActive := true
+    | .error _ => pure ()
+  return (spawnActive, sys)
+
 private def runPlanInChild
     (dirPath filePath : String)
     (plan : EpisodePlan)
     (stepOracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState := allowedStep) :
     IO EpisodeResult := do
   let (st, payload) ← SandboxEnv.runForked do
-    let mut spawnActive := false
-    if plan.useUserns then
-      let _ ← SandboxEnv.enterUserns
-    if plan.spawnThread then
-      match ← SandboxEnv.spawnSyncThread with
-      | .ok _ => spawnActive := true
-      | .error _ => pure ()
-    let mut sys := SandboxSysState.initial
+    let (spawnActive, initSys) ← setupPreEnvironment plan
+    let mut sys := initSys
     let mut nextHid : HandleId := 1
     let mut hostDirs : Array HandleSlot := #[]
     let mut hostFiles : Array HandleSlot := #[]
     let mut pseudos : Array HandleSlot := #[]
+    let mut opathMemfd? : Option HandleSlot := none
+    let mut opathRuleset? : Option HandleSlot := none
     let mut closedHids : Array HandleSlot := #[]
-    for oPath in plan.dirOPaths do
-      match ← SandboxEnv.openHostFd dirPath.toUTF8 (if oPath then 1 else 0) with
+    for i in List.range plan.dirOPaths.size do
+      let oPath := plan.dirOPaths.getD i false
+      let dPath := if i == 0 then dirPath else extraDirPaths.getD (plan.specialSeedIdx % extraDirPaths.size) "/var/tmp"
+      match ← SandboxEnv.openHostFd dPath.toUTF8 (if oPath then 1 else 0) with
       | .ok fd =>
         let hid := nextHid
         nextHid := nextHid + 1
         sys := sys.withHostFd hid true oPath
         hostDirs := hostDirs.push { hid, fd }
       | .error _ => pure ()
-    for oPath in plan.fileOPaths do
-      match ← SandboxEnv.openHostFd filePath.toUTF8 (if oPath then 3 else 2) with
+    for i in List.range plan.fileOPaths.size do
+      let oPath := plan.fileOPaths.getD i false
+      let fPath := if i == 0 then filePath else extraFilePaths.getD (plan.specialSeedIdx % extraFilePaths.size) "/dev/null"
+      match ← SandboxEnv.openHostFd fPath.toUTF8 (if oPath then 3 else 2) with
       | .ok fd =>
         let hid := nextHid
         nextHid := nextHid + 1
@@ -492,15 +682,79 @@ private def runPlanInChild
         sys := sys.withPseudoFd hid oPath
         pseudos := pseudos.push { hid, fd }
       | .error _ => pure ()
+    if plan.seedOPathSpecials then
+      let pseudoKind := UInt32.ofNat (plan.specialSeedIdx % 3)
+      match ← SandboxEnv.openSpecialFd pseudoKind ByteArray.empty with
+      | .ok fd =>
+        let hid := nextHid
+        nextHid := nextHid + 1
+        sys := sys.withPseudoFd hid false
+        pseudos := pseudos.push { hid, fd }
+      | .error _ => pure ()
+      let pathKind := UInt32.ofNat (3 + (plan.specialSeedIdx % 5))
+      let sPath := s!"{dirPath}/sp_{plan.specialSeedIdx}"
+      match ← SandboxEnv.openSpecialFd pathKind sPath.toUTF8 with
+      | .ok fd =>
+        let hid := nextHid
+        nextHid := nextHid + 1
+        let isDirSpecial := pathKind == 4
+        let isOPathSpecial := pathKind == 5 || pathKind == 6 || pathKind == 7
+        sys := sys.withHostFd hid isDirSpecial isOPathSpecial
+        if isDirSpecial then
+          hostDirs := hostDirs.push { hid, fd }
+        else
+          hostFiles := hostFiles.push { hid, fd }
+      | .error _ => pure ()
+      match ← memfdCreate "opm".toUTF8 {} with
+      | .ok mfd =>
+        match ← SandboxEnv.reopenOPath mfd with
+        | .ok opFd =>
+          let hid := nextHid
+          nextHid := nextHid + 1
+          sys := {
+            sys with
+            fds := assocSet sys.fds hid { kind := .memfd false false, cloexec := true, oPath := true }
+            nextHid := Nat.max sys.nextHid (hid + 1)
+          }
+          opathMemfd? := some { hid, fd := opFd }
+        | .error _ => pure ()
+        let _ ← SandboxEnv.closeFd mfd
+      | .error _ => pure ()
+      match ← landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0 with
+      | .ok (.ruleset rs) =>
+        match ← SandboxEnv.reopenOPath rs with
+        | .ok opRs =>
+          let hid := nextHid
+          nextHid := nextHid + 1
+          sys := {
+            sys with
+            fds := assocSet sys.fds hid { kind := .landlockRuleset LANDLOCK_ACCESS_FS_EXECUTE 0, cloexec := true, oPath := true }
+            nextHid := Nat.max sys.nextHid (hid + 1)
+            landlockEnabled := true
+          }
+          opathRuleset? := some { hid, fd := opRs }
+        | .error _ => pure ()
+        let _ ← SandboxEnv.closeFd rs
+      | _ => pure ()
     let deadFd ← match ← memfdCreate "dead".toUTF8 {} with
       | .ok f =>
         let _ ← SandboxEnv.closeFd f
         pure f
-      | .error e =>
-        throw (IO.userError s!"deadFd setup failed: {e}")
+      | .error _ =>
+        match ← SandboxEnv.openHostFd filePath.toUTF8 3 with
+        | .ok f =>
+          let _ ← SandboxEnv.closeFd f
+          pure f
+        | .error e =>
+          throw (IO.userError s!"deadFd setup failed: {e}")
     closedHids := closedHids.push { hid := 9999, fd := deadFd }
+    if plan.closeLowFds then
+      SandboxEnv.closeRaw 0
+      SandboxEnv.closeRaw 1
+      SandboxEnv.closeRaw 2
     let mut ex : ExecState := {
-      sys, nextHid, hostDirs, hostFiles, pseudos, dynamics := #[], closedHids, deadFd
+      sys, nextHid, hostDirs, hostFiles, pseudos, opathMemfd?, opathRuleset?,
+      dynamics := #[], closedHids, deadFd
     }
     let mut executed : Nat := 0
     let mut hits : Array (String × Nat) := #[]
@@ -662,6 +916,8 @@ private def runPlanInChild
     for s in ex.hostDirs do let _ ← SandboxEnv.closeFd s.fd
     for s in ex.hostFiles do let _ ← SandboxEnv.closeFd s.fd
     for s in ex.pseudos do let _ ← SandboxEnv.closeFd s.fd
+    if let some s := ex.opathMemfd? then let _ ← SandboxEnv.closeFd s.fd
+    if let some s := ex.opathRuleset? then let _ ← SandboxEnv.closeFd s.fd
     for s in ex.dynamics do let _ ← SandboxEnv.closeFd s.fd
     let mut lines := #[toString executed]
     match mismatch? with
@@ -727,6 +983,10 @@ private def withFuzzDir {α : Type} (f : String → String → IO α) : IO α :=
   try
     f dir file
   finally
+    for idx in List.range 64 do
+      let sp := s!"{dir}/sp_{idx}"
+      try IO.FS.removeFile sp catch _ => pure ()
+      try IO.FS.removeDir sp catch _ => pure ()
     try IO.FS.removeFile file catch _ => pure ()
     try IO.FS.removeDir dir catch _ => pure ()
 
@@ -743,6 +1003,7 @@ def runShrinkSelfTest (seed : UInt64 := 0x123456789abcdef0) : IO Unit := do
     let prefixSteps := basePlan.steps.extract 0 15
     let suffixSteps := basePlan.steps.extract 15 basePlan.steps.size
     let injected := { basePlan with
+      preOuterSeccomp := false
       steps := (prefixSteps.push (.doPrctl (.setPdeathsig 9))) ++ suffixSteps }
     let initialRes ← runPlanInChild dirPath filePath injected badOracle
     match initialRes.mismatch? with

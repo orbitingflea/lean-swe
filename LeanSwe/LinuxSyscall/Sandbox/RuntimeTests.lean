@@ -249,6 +249,24 @@ def assume_sandbox_seccomp_actionAvailAndFilterAbi : IO Unit := do
         Errno.ESRCH "diverged TSYNC_ESRCH must fail ESRCH"
     finally
       let _ ← SandboxEnv.stopSyncThread
+  runForkedOk "seccomp clean-thread TSYNC and outer memfd EPERM" do
+    let _tid ← match ← SandboxEnv.spawnSyncThread false with
+      | .ok t => pure t
+      | .error e => throw (IO.userError s!"spawnSyncThread(false) failed: {e}")
+    try
+      assertTrue ((← prctl .setNoNewPrivs) == .ok 0) "setNoNewPrivs failed"
+      assertTrue ((← seccomp .setModeFilter { tsync := true } allowAllFilter) == .ok 0)
+        "clean-thread TSYNC must succeed with 0"
+    finally
+      let _ ← SandboxEnv.stopSyncThread
+    let blockMemfd := encodeFilter
+      [ { code := 0x0020, jt := 0, jf := 0, k := 0 }
+      , { code := 0x0015, jt := 2, jf := 0, k := 319 }
+      , { code := 0x0015, jt := 1, jf := 0, k := 279 }
+      , { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }
+      , { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ERRNO ||| Errno.EPERM } ]
+    assertTrue ((← seccomp .setModeFilter {} blockMemfd) == .ok 0) "install memfd EPERM filter failed"
+    assertErr (← memfdCreate "blocked".toUTF8 {}) Errno.EPERM "outer seccomp memfd EPERM"
 
 /-- Verify 5-arg `prctl` ABI (`NO_NEW_PRIVS`, `CHILD_SUBREAPER`, `PDEATHSIG` bounds). -/
 def assume_sandbox_prctl_nnpSubreaperAndPdeathsig : IO Unit := do
@@ -286,6 +304,31 @@ def assume_sandbox_setrlimit_curMaxAndHardCap : IO Unit := do
       | .error e => throw (IO.userError s!"memfd after restore failed: {e}")
     closeFdChecked mfd
     assertErr (← setrlimit .nofile RLIM_INFINITY RLIM_INFINITY) Errno.EPERM "nofile RLIM_INFINITY"
+  runForkedOk "setrlimit RLIMIT_NOFILE FD-gap allocation above fds.length" do
+    let (_, curMaxNofile) ← match ← SandboxEnv.getRlimit 2 with
+      | .ok p => pure p
+      | .error e => throw (IO.userError s!"getRlimit(nofile) failed: {e}")
+    let safeHigh := if curMaxNofile > 64 then 64 else curMaxNofile
+    let mut kept : Array RawFd := #[]
+    for _ in List.range 4 do
+      let f ← match ← memfdCreate "keep".toUTF8 {} with
+        | .ok fd => pure fd
+        | .error e => throw (IO.userError s!"keep memfd failed: {e}")
+      kept := kept.push f
+    SandboxEnv.closeRaw 0
+    SandboxEnv.closeRaw 1
+    SandboxEnv.closeRaw 2
+    assertTrue ((← setrlimit .nofile 4 safeHigh) == .ok ()) "setrlimit nofile 4"
+    let gapMemfd ← match ← memfdCreate "gap".toUTF8 {} with
+      | .ok fd => pure fd
+      | .error e => throw (IO.userError s!"gap memfd failed: {e}")
+    let gapRs ← match ← landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0 with
+      | .ok (.ruleset rs) => pure rs
+      | other => throw (IO.userError s!"gap landlockCreate failed: {repr other}")
+    closeFdChecked gapMemfd
+    closeFdChecked gapRs
+    for f in kept do
+      closeFdChecked f
 
 /-- Verify `memfd_create` `0..249` name bounds, embedded NUL guard, and sealing flags. -/
 def assume_sandbox_memfdCreate_nameBoundsAndSeals : IO Unit := do

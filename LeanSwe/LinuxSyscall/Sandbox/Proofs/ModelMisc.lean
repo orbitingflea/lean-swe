@@ -403,6 +403,13 @@ theorem refine_memfdCreate (s : SandboxSysState) (hwf : s.wf = true)
         · have hNoneHid := assocGet_nextHid_none s hwf
           have hEmfF : (s.rlimitNofile.curExact && decide (s.fds.length ≥ s.rlimitNofile.cur.toNat)) = false := by
             simpa using hEmf
+          have hEmf0 : (s.rlimitNofile.curExact && (s.rlimitNofile.cur == 0)) = false := by
+            cases hEx : s.rlimitNofile.curExact
+            · simp
+            · simp only [hEx, Bool.true_and, decide_eq_false_iff_not, Nat.not_le] at hEmfF
+              have hNz : s.rlimitNofile.cur.toNat ≠ 0 := Nat.ne_of_gt (Nat.lt_of_le_of_lt (Nat.zero_le _) hEmfF)
+              have hNe : s.rlimitNofile.cur ≠ 0 := fun h0 => hNz (by simp [h0])
+              simp [hNe]
           have hWf' : ({ s with
               fds := assocSet s.fds s.nextHid
                 { kind := .memfd flags.allowSealing flags.noexecSeal, cloexec := flags.cloexec }
@@ -413,7 +420,7 @@ theorem refine_memfdCreate (s : SandboxSysState) (hwf : s.wf = true)
           simp only [hBadNameF, Bool.false_eq_true, ↓reduceIte, hConfF, hStrictF, hEmf]
           refine ⟨?_, hWf'⟩
           cases hSec : s.seccompMayIntercept <;>
-            simp [allowedStep, allowedStepCore, hNoneHid, hEmfF, hNameOk, hConfF, hStrictF, hSec,
+            simp [allowedStep, allowedStepCore, hNoneHid, hEmf0, hNameOk, hConfF, hStrictF, hSec,
               Nat.max_eq_right (Nat.le_succ s.nextHid)]
 
 end LeanSwe.LinuxSyscall.Sandbox

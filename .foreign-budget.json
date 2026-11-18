@@ -58,7 +58,7 @@
       "legacy_unmigrated": false
     },
     "LeanSwe/LinuxSyscall/c/sandbox_fuzz_env.c": {
-      "max_lines": 305,
+      "max_lines": 430,
       "legacy_unmigrated": false
     },
     "scripts/check_proof_memory.py": {

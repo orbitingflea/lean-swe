@@ -32,13 +32,21 @@ opaque readBytesRaw : UInt32 → UInt32 → IO (Except Errno ByteArray)
 @[extern "leanswe_sbx_close_raw"]
 opaque closeRaw : UInt32 → IO Unit
 
-/-- Open a host path into a `RawFd` using selector `0..4` (`O_RDONLY|O_DIRECTORY`, `O_PATH|O_DIRECTORY`, `O_RDONLY`, `O_PATH`, `O_RDWR|O_CREAT`). -/
+/-- Open a host path into a `RawFd` using selector `0..6` (`O_RDONLY|O_DIRECTORY`, `O_PATH|O_DIRECTORY`, `O_RDONLY`, `O_PATH`, `O_RDWR|O_CREAT`, `O_PATH|O_NOFOLLOW`, `O_RDONLY|O_NONBLOCK`). -/
 @[extern "leanswe_sbx_open_host_fd"]
 opaque openHostFd : @& ByteArray → UInt32 → IO (Except Errno RawFd)
 
 /-- Open a pseudo-filesystem pipe `RawFd` (`asOPath != 0` opens `/proc/self/fd/<pipe>` with `O_PATH`). -/
 @[extern "leanswe_sbx_open_pipe_fd"]
 opaque openPipeFd : UInt32 → IO (Except Errno RawFd)
+
+/-- Re-open an existing `RawFd` via `/proc/self/fd/<fd>` with `O_PATH | O_CLOEXEC`. -/
+@[extern "leanswe_sbx_reopen_opath"]
+opaque reopenOPath : @& RawFd → IO (Except Errno RawFd)
+
+/-- Open a specialized kernel descriptor (`0`: `eventfd`, `1`: `AF_UNIX` socket, `2`: `nsfs`, `3`: unlinked file, `4`: unlinked dir, `5`: FIFO `O_PATH`, `6`: dangling symlink `O_PATH|O_NOFOLLOW`, `7`: bound `AF_UNIX` socket `O_PATH`). -/
+@[extern "leanswe_sbx_open_special_fd"]
+opaque openSpecialFd : UInt32 → @& ByteArray → IO (Except Errno RawFd)
 
 /-- Close a boxed `RawFd` cleanly. -/
 @[extern "leanswe_sbx_close_fd"]
@@ -60,9 +68,13 @@ opaque getTid : IO UInt32
 @[extern "leanswe_sbx_geteuid"]
 opaque getEuid : IO UInt32
 
-/-- Spawn the helper pthread inside a forked child and return its Linux TID. -/
+/-- Spawn the helper pthread inside a forked child (`installFilter != 0` installs an independent `SECCOMP_RET_ALLOW` filter) and return its Linux TID. -/
 @[extern "leanswe_sbx_spawn_sync_thread"]
-opaque spawnSyncThread : IO (Except Errno UInt32)
+opaque spawnSyncThreadRaw : UInt32 → IO (Except Errno UInt32)
+
+/-- Spawn the helper pthread inside a forked child (`installFilter = true` diverges its seccomp filter from the main thread; `false` leaves it clean for `TSYNC`). -/
+def spawnSyncThread (installFilter : Bool := true) : IO (Except Errno UInt32) :=
+  spawnSyncThreadRaw (if installFilter then 1 else 0)
 
 /-- Stop and join the helper pthread inside a forked child. -/
 @[extern "leanswe_sbx_stop_sync_thread"]

@@ -319,6 +319,13 @@ theorem refine_landlockCreateRuleset (s : SandboxSysState) (hwf : s.wf = true)
               · have hNoneHid := assocGet_nextHid_none s hwf
                 have hEmfF : (s.rlimitNofile.curExact && decide (s.fds.length ≥ s.rlimitNofile.cur.toNat)) = false := by
                   simpa using hEmf
+                have hEmf0 : (s.rlimitNofile.curExact && (s.rlimitNofile.cur == 0)) = false := by
+                  cases hEx : s.rlimitNofile.curExact
+                  · simp
+                  · simp only [hEx, Bool.true_and, decide_eq_false_iff_not, Nat.not_le] at hEmfF
+                    have hNz : s.rlimitNofile.cur.toNat ≠ 0 := Nat.ne_of_gt (Nat.lt_of_le_of_lt (Nat.zero_le _) hEmfF)
+                    have hNe : s.rlimitNofile.cur ≠ 0 := fun h0 => hNz (by simp [h0])
+                    simp [hNe]
                 have hFds' := assocSet_nextHid_all_lt s
                   { kind := .landlockRuleset attr.handledAccessFs attr.handledAccessNet, cloexec := true } hwf
                 have hAbi' := wf_abi_of_wf s hwf
@@ -340,7 +347,7 @@ theorem refine_landlockCreateRuleset (s : SandboxSysState) (hwf : s.wf = true)
                       · simpa using h1
                     exact mask_known_to_9 attr.handledAccessFs (effectiveModelLandlockAbi s) hRaw
                   cases hSec : s.seccompMayIntercept <;>
-                    simp [allowedStep, allowedStepCore, hFl, hEmpty, hNet, hNoneHid, hEmfF, hOpt, hFs9, hSec,
+                    simp [allowedStep, allowedStepCore, hFl, hEmpty, hNet, hNoneHid, hEmf0, hOpt, hFs9, hSec,
                       Nat.max_eq_right (Nat.le_succ s.nextHid)]
                 | some abi =>
                   have hFsA : (attr.handledAccessFs &&& ~~~landlockKnownFsMask abi) = 0 := by
@@ -351,7 +358,7 @@ theorem refine_landlockCreateRuleset (s : SandboxSysState) (hwf : s.wf = true)
                       simp_all
                     · simpa using h1
                   cases hSec : s.seccompMayIntercept <;>
-                    simp [allowedStep, allowedStepCore, hFl, hEmpty, hNet, hNoneHid, hEmfF, hOpt, hFsA, hSec,
+                    simp [allowedStep, allowedStepCore, hFl, hEmpty, hNet, hNoneHid, hEmf0, hOpt, hFsA, hSec,
                       Nat.max_eq_right (Nat.le_succ s.nextHid)]
 
 /-- `modelOps.landlockAddRule` refines `allowedStep` and preserves `wf`. -/
