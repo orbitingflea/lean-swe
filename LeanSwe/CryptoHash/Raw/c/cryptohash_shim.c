@@ -29,21 +29,7 @@ static lean_obj_res mk_bytes_result(uint32_t status, uint64_t code,
   lean_obj_res p1 = lean_alloc_ctor(0, 2, 0);
   lean_ctor_set(p1, 0, lean_box_uint32(status));
   lean_ctor_set(p1, 1, p2);
-  return lean_io_result_mk_ok(p1);
-}
-
-static lean_obj_res mk_bool_result(uint32_t status, uint64_t code,
-                                   const char *detail, uint8_t val) {
-  lean_obj_res p3 = lean_alloc_ctor(0, 2, 0);
-  lean_ctor_set(p3, 0, lean_mk_string(detail != NULL ? detail : ""));
-  lean_ctor_set(p3, 1, lean_box(val ? 1 : 0));
-  lean_obj_res p2 = lean_alloc_ctor(0, 2, 0);
-  lean_ctor_set(p2, 0, lean_box_uint64(code));
-  lean_ctor_set(p2, 1, p3);
-  lean_obj_res p1 = lean_alloc_ctor(0, 2, 0);
-  lean_ctor_set(p1, 0, lean_box_uint32(status));
-  lean_ctor_set(p1, 1, p2);
-  return lean_io_result_mk_ok(p1);
+  return p1;
 }
 
 static void capture_openssl_error(const char *fallback, uint64_t *out_code,
@@ -63,20 +49,12 @@ static void capture_openssl_error(const char *fallback, uint64_t *out_code,
 }
 
 LEAN_EXPORT lean_obj_res leanswe_cryptohash_digest(uint8_t alg_tag,
-                                                   b_lean_obj_arg data,
-                                                   lean_obj_arg w) {
-  (void)w;
-  const char *alg_name = NULL;
-  size_t expected_len = 0;
+                                                   b_lean_obj_arg data) {
+  const char *alg_name = "SHA512";
+  size_t expected_len = 64;
   if (alg_tag == 0) {
     alg_name = "SHA256";
     expected_len = 32;
-  } else if (alg_tag == 1) {
-    alg_name = "SHA512";
-    expected_len = 64;
-  } else {
-    return mk_bytes_result(1, 0, "unknown hash algorithm tag",
-                           lean_alloc_sarray(1, 0, 0));
   }
 
   size_t data_len = 0;
@@ -96,7 +74,7 @@ LEAN_EXPORT lean_obj_res leanswe_cryptohash_digest(uint8_t alg_tag,
     char msg[128];
     snprintf(msg, sizeof(msg), "digest length mismatch: expected %zu, got %zu",
              expected_len, out_len);
-    return mk_bytes_result(2, 0, msg, lean_alloc_sarray(1, 0, 0));
+    return mk_bytes_result(3, 0, msg, lean_alloc_sarray(1, 0, 0));
   }
 
   lean_obj_res ba = lean_alloc_sarray(1, out_len, out_len);
@@ -105,9 +83,7 @@ LEAN_EXPORT lean_obj_res leanswe_cryptohash_digest(uint8_t alg_tag,
 }
 
 LEAN_EXPORT lean_obj_res leanswe_cryptohash_hmac_sha256(b_lean_obj_arg key,
-                                                        b_lean_obj_arg msg,
-                                                        lean_obj_arg w) {
-  (void)w;
+                                                        b_lean_obj_arg msg) {
   size_t key_len = 0;
   size_t msg_len = 0;
   const uint8_t *key_ptr = leanswe_ba_cptr(key, &key_len);
@@ -158,7 +134,7 @@ LEAN_EXPORT lean_obj_res leanswe_cryptohash_hmac_sha256(b_lean_obj_arg key,
     char errbuf[128];
     snprintf(errbuf, sizeof(errbuf), "HMAC-SHA256 length mismatch: expected 32, got %zu",
              out_len);
-    return mk_bytes_result(2, 0, errbuf, lean_alloc_sarray(1, 0, 0));
+    return mk_bytes_result(3, 0, errbuf, lean_alloc_sarray(1, 0, 0));
   }
 
   lean_obj_res ba = lean_alloc_sarray(1, 32, 32);
@@ -166,22 +142,15 @@ LEAN_EXPORT lean_obj_res leanswe_cryptohash_hmac_sha256(b_lean_obj_arg key,
   return mk_bytes_result(0, 0, "", ba);
 }
 
-LEAN_EXPORT lean_obj_res leanswe_cryptohash_ct_equal(b_lean_obj_arg a,
-                                                     b_lean_obj_arg b,
-                                                     lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT uint8_t leanswe_cryptohash_ct_equal(b_lean_obj_arg a,
+                                                b_lean_obj_arg b) {
   size_t a_len = 0;
   size_t b_len = 0;
   const uint8_t *a_ptr = leanswe_ba_cptr(a, &a_len);
   const uint8_t *b_ptr = leanswe_ba_cptr(b, &b_len);
-
   if (a_len != b_len) {
-    char errbuf[128];
-    snprintf(errbuf, sizeof(errbuf), "length mismatch: expected %zu bytes, got %zu",
-             a_len, b_len);
-    return mk_bool_result(2, 0, errbuf, 0);
+    return 0;
   }
-
   int rc = CRYPTO_memcmp(a_ptr, b_ptr, a_len);
-  return mk_bool_result(0, 0, "", rc == 0 ? 1 : 0);
+  return rc == 0 ? 1 : 0;
 }

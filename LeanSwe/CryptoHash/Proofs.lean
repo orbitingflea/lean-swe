@@ -1252,10 +1252,10 @@ private theorem fromHex_toUpper_toHex_of_lowerHex (alg : HashAlg) (s : String)
   exact fromHex_toHex_of_validHex alg (String.ofList (s.toList.map Char.toUpper)) s hlen_up hall_up hlow_up
 
 set_option maxRecDepth 2048 in
-/-- `defaultApi` satisfies `empirical_cryptohash_vectorHexRoundTrip`. -/
+/-- `defaultApi` satisfies `test_cryptohash_vectorHexRoundTrip`. -/
 theorem cryptohash_vectorHexRoundTrip :
-    AllPass (empirical_cryptohash_vectorHexRoundTrip defaultApi) := by
-  dsimp only [AllPass, AllPassRun, empirical_cryptohash_vectorHexRoundTrip, defaultApi, Internal.mkApiM,
+    AllPass (test_cryptohash_vectorHexRoundTrip defaultApi) := by
+  dsimp only [AllPass, AllPassRun, test_cryptohash_vectorHexRoundTrip, defaultApi, Internal.mkApiM,
     Core.NondetTest.assert, Bind.bind, Pure.pure]
   obtain ⟨d1, h1_ok, h1_hex⟩ := fromHex_toHex_of_validHex .sha256
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1270,5 +1270,217 @@ theorem cryptohash_vectorHexRoundTrip :
     (by decide) (by decide)
   rw [h1_ok, h2_ok, h3_ok]
   exact ⟨h1_hex, h2_hex, h3_hex, trivial⟩
+
+private theorem io_bind_eq {α β : Type} (act : IO α) (k : α → IO β) (w : Void IO.RealWorld) :
+    (act >>= k) w =
+      match act w with
+      | EST.Out.ok a s => k a s
+      | EST.Out.error e s => EST.Out.error e s := by
+  dsimp only [Bind.bind, Monad.toBind, instMonadEIO, instMonadEIO._aux_13, EST.bind]
+  cases act w <;> rfl
+
+private theorem io_pure_eq {α : Type} (a : α) (w : Void IO.RealWorld) :
+    (pure a : IO α) w = EST.Out.ok a w := rfl
+
+private theorem hash_never (k : CryptoHashErrorKind) (hk : k ≠ .cryptoError)
+    (alg : HashAlg) (msg : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind k (LeanSwe.CryptoHash.hash alg msg) w := by
+  unfold Core.NeverErrorKindIO LeanSwe.CryptoHash.hash defaultApi Internal.mkApiM Internal.hashM
+  dsimp only
+  rw [io_bind_eq]
+  rcases Raw.Proofs.defaultOps_digestRaw_outcome alg msg w with ⟨bs, w', hok, hsz⟩ | ⟨e, w', herr, hek⟩
+  · rw [hok]
+    have hf : (bs.size != Raw.digestLen alg) = false := bne_eq_false_iff_eq.mpr hsz
+    dsimp only
+    simp only [hf, Bool.false_eq_true, ↓reduceIte]
+    rw [io_pure_eq]
+    trivial
+  · rw [herr]
+    dsimp only
+    rw [io_pure_eq]
+    simp [hek, hk.symm]
+
+private theorem hmacSha256_never (k : CryptoHashErrorKind) (hk : k ≠ .cryptoError)
+    (key msg : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind k (hmacSha256 key msg) w := by
+  unfold Core.NeverErrorKindIO hmacSha256 defaultApi Internal.mkApiM Internal.hmacSha256M
+  dsimp only
+  rw [io_bind_eq]
+  rcases Raw.Proofs.defaultOps_hmacSha256Raw_outcome key msg w with ⟨bs, w', hok, hsz⟩ | ⟨e, w', herr, hek⟩
+  · rw [hok]
+    have hf : (bs.size != 32) = false := bne_eq_false_iff_eq.mpr hsz
+    dsimp only
+    simp only [hf, Bool.false_eq_true, ↓reduceIte]
+    rw [io_pure_eq]
+    trivial
+  · rw [herr]
+    dsimp only
+    rw [io_pure_eq]
+    simp [hek, hk.symm]
+
+private theorem ctEq_never (k : CryptoHashErrorKind)
+    (a b : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind k (ctEq a b) w := by
+  unfold Core.NeverErrorKindIO ctEq defaultApi Internal.mkApiM Internal.ctEqM
+  by_cases hne : (a.size != b.size) = true
+  · simp only [hne, ↓reduceIte]
+    rw [io_pure_eq]
+    trivial
+  · simp only [hne, Bool.false_eq_true, ↓reduceIte]
+    have heq : a.size = b.size := by
+      cases hsz : (a.size == b.size)
+      · simp [bne, hsz] at hne
+      · exact beq_iff_eq.mp hsz
+    rcases Raw.Proofs.defaultOps_ctEqualRaw_outcome a b w with ⟨hdiff, _⟩ | ⟨_, eq, w', hok⟩
+    · exact absurd heq hdiff
+    · rw [hok]; trivial
+
+/-- `CryptoHash.hash` never returns `.invalidInput`. -/
+theorem cryptohash_hash_never_invalidInput (alg : HashAlg) (msg : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidInput (LeanSwe.CryptoHash.hash alg msg) w :=
+  hash_never .invalidInput (by decide) alg msg w
+
+/-- `CryptoHash.hash` never returns `.invalidHex`. -/
+theorem cryptohash_hash_never_invalidHex (alg : HashAlg) (msg : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidHex (LeanSwe.CryptoHash.hash alg msg) w :=
+  hash_never .invalidHex (by decide) alg msg w
+
+/-- `CryptoHash.hash` never returns `.lengthMismatch`. -/
+theorem cryptohash_hash_never_lengthMismatch (alg : HashAlg) (msg : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .lengthMismatch (LeanSwe.CryptoHash.hash alg msg) w :=
+  hash_never .lengthMismatch (by decide) alg msg w
+
+/-- `CryptoHash.sha256` never returns `.invalidInput`. -/
+theorem cryptohash_sha256_never_invalidInput (msg : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidInput (sha256 msg) w :=
+  hash_never .invalidInput (by decide) .sha256 msg w
+
+/-- `CryptoHash.sha256` never returns `.invalidHex`. -/
+theorem cryptohash_sha256_never_invalidHex (msg : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidHex (sha256 msg) w :=
+  hash_never .invalidHex (by decide) .sha256 msg w
+
+/-- `CryptoHash.sha256` never returns `.lengthMismatch`. -/
+theorem cryptohash_sha256_never_lengthMismatch (msg : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .lengthMismatch (sha256 msg) w :=
+  hash_never .lengthMismatch (by decide) .sha256 msg w
+
+/-- `CryptoHash.sha512` never returns `.invalidInput`. -/
+theorem cryptohash_sha512_never_invalidInput (msg : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidInput (sha512 msg) w :=
+  hash_never .invalidInput (by decide) .sha512 msg w
+
+/-- `CryptoHash.sha512` never returns `.invalidHex`. -/
+theorem cryptohash_sha512_never_invalidHex (msg : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidHex (sha512 msg) w :=
+  hash_never .invalidHex (by decide) .sha512 msg w
+
+/-- `CryptoHash.sha512` never returns `.lengthMismatch`. -/
+theorem cryptohash_sha512_never_lengthMismatch (msg : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .lengthMismatch (sha512 msg) w :=
+  hash_never .lengthMismatch (by decide) .sha512 msg w
+
+/-- `CryptoHash.hmacSha256` never returns `.invalidInput`. -/
+theorem cryptohash_hmacSha256_never_invalidInput (key msg : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidInput (hmacSha256 key msg) w :=
+  hmacSha256_never .invalidInput (by decide) key msg w
+
+/-- `CryptoHash.hmacSha256` never returns `.invalidHex`. -/
+theorem cryptohash_hmacSha256_never_invalidHex (key msg : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidHex (hmacSha256 key msg) w :=
+  hmacSha256_never .invalidHex (by decide) key msg w
+
+/-- `CryptoHash.hmacSha256` never returns `.lengthMismatch`. -/
+theorem cryptohash_hmacSha256_never_lengthMismatch (key msg : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .lengthMismatch (hmacSha256 key msg) w :=
+  hmacSha256_never .lengthMismatch (by decide) key msg w
+
+/-- `CryptoHash.verifyHmacSha256` never returns `.invalidHex`. -/
+theorem cryptohash_verifyHmacSha256_never_invalidHex
+    (key msg : ByteArray) (expected : Digest) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidHex (verifyHmacSha256 key msg expected) w := by
+  unfold Core.NeverErrorKindIO verifyHmacSha256 defaultApi Internal.mkApiM Internal.verifyHmacSha256M
+  by_cases halg : (expected.alg != .sha256) = true
+  · simp only [halg, ↓reduceIte]
+    rw [io_pure_eq]
+    intro h; cases h
+  · simp only [halg, Bool.false_eq_true, ↓reduceIte]
+    by_cases hlen : (expected.bytes.size != 32) = true
+    · simp only [hlen, ↓reduceIte]
+      rw [io_pure_eq]
+      intro h; cases h
+    · simp only [hlen, Bool.false_eq_true, ↓reduceIte]
+      have hexp : expected.bytes.size = 32 := by
+        cases hsz : (expected.bytes.size == 32)
+        · simp [bne, hsz] at hlen
+        · exact beq_iff_eq.mp hsz
+      rw [io_bind_eq]
+      dsimp only [Internal.hmacSha256M]
+      rw [io_bind_eq]
+      rcases Raw.Proofs.defaultOps_hmacSha256Raw_outcome key msg w with ⟨bs, w', hok, hbs⟩ | ⟨e, w', herr, hek⟩
+      · rw [hok]
+        have hf : (bs.size != 32) = false := bne_eq_false_iff_eq.mpr hbs
+        dsimp only
+        simp only [hf, Bool.false_eq_true, ↓reduceIte]
+        rw [io_pure_eq]
+        dsimp only [Internal.ctEqM]
+        have hszEq : bs.size = expected.bytes.size := by rw [hbs, hexp]
+        have hne : (bs.size != expected.bytes.size) = false := bne_eq_false_iff_eq.mpr hszEq
+        simp only [hne, Bool.false_eq_true, ↓reduceIte]
+        rcases Raw.Proofs.defaultOps_ctEqualRaw_outcome bs expected.bytes w' with ⟨hdiff, _⟩ | ⟨_, eq, w'', hct⟩
+        · exact absurd hszEq hdiff
+        · rw [hct]; trivial
+      · rw [herr]
+        dsimp only
+        rw [io_pure_eq]
+        dsimp only
+        rw [io_pure_eq]
+        dsimp only
+        intro h
+        exact absurd (hek.symm.trans h) (by decide)
+
+private theorem fromHex_never (k : CryptoHashErrorKind)
+    (hk1 : k ≠ .invalidHex) (hk2 : k ≠ .lengthMismatch)
+    (alg : HashAlg) (s : String) :
+    Core.NeverErrorKindPure Raw.CryptoHashError.kind k (fromHex alg s) := by
+  unfold Core.NeverErrorKindPure fromHex defaultApi Internal.mkApiM Internal.fromHex
+  dsimp only
+  cases Internal.decodeHexPairs s.toList with
+  | none => dsimp only; exact hk1.symm
+  | some bs =>
+    dsimp only
+    by_cases hlen : ((ByteArray.mk bs.toArray).size != digestLen alg) = true
+    · simp only [hlen, ↓reduceIte]; exact hk2.symm
+    · simp only [hlen, Bool.false_eq_true, ↓reduceIte]
+
+/-- `CryptoHash.fromHex` never returns `.invalidInput`. -/
+theorem cryptohash_fromHex_never_invalidInput (alg : HashAlg) (s : String) :
+    Core.NeverErrorKindPure Raw.CryptoHashError.kind .invalidInput (fromHex alg s) :=
+  fromHex_never .invalidInput (by decide) (by decide) alg s
+
+/-- `CryptoHash.fromHex` never returns `.cryptoError`. -/
+theorem cryptohash_fromHex_never_cryptoError (alg : HashAlg) (s : String) :
+    Core.NeverErrorKindPure Raw.CryptoHashError.kind .cryptoError (fromHex alg s) :=
+  fromHex_never .cryptoError (by decide) (by decide) alg s
+
+/-- `CryptoHash.ctEq` never returns `.invalidInput`. -/
+theorem cryptohash_ctEq_never_invalidInput (a b : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidInput (ctEq a b) w :=
+  ctEq_never .invalidInput a b w
+
+/-- `CryptoHash.ctEq` never returns `.invalidHex`. -/
+theorem cryptohash_ctEq_never_invalidHex (a b : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidHex (ctEq a b) w :=
+  ctEq_never .invalidHex a b w
+
+/-- `CryptoHash.ctEq` never returns `.lengthMismatch`. -/
+theorem cryptohash_ctEq_never_lengthMismatch (a b : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .lengthMismatch (ctEq a b) w :=
+  ctEq_never .lengthMismatch a b w
+
+/-- `CryptoHash.ctEq` never returns `.cryptoError`. -/
+theorem cryptohash_ctEq_never_cryptoError (a b : ByteArray) (w : Void IO.RealWorld) :
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .cryptoError (ctEq a b) w :=
+  ctEq_never .cryptoError a b w
 
 end LeanSwe.CryptoHash.Proofs

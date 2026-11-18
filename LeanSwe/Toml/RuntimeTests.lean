@@ -1,3 +1,4 @@
+import Core.Assumptions
 import LeanSwe.Toml.Interface
 
 namespace LeanSwe.Toml.RuntimeTests
@@ -334,12 +335,94 @@ private def testCodecsAndAccessors : IO Unit := do
   let arr ← assertOk (getArray encoded) "getArray encoded"
   assertTrue (arr.size == 3) "encoded array size"
 
+/-- Verify `parse` rejects malformed syntax with `.parseError`. -/
+def err_toml_parse_parseError : IO Unit :=
+  assertErrKind (parse "a =") .parseError "parse syntax error"
+
+/-- Verify `parse` rejects duplicate keys with `.duplicateKey`. -/
+def err_toml_parse_duplicateKey : IO Unit :=
+  assertErrKind (parse "a = 1\na = 2\n") .duplicateKey "parse duplicate key"
+
+/-- Verify `parse` rejects redefined table headers with `.redefinedTable`. -/
+def err_toml_parse_redefinedTable : IO Unit :=
+  assertErrKind (parse "[t]\na = 1\n[t]\nb = 2\n") .redefinedTable "parse redefined table"
+
+/-- Verify `parse` rejects dotted extension of an inline table with `.immutableInlineTable`. -/
+def err_toml_parse_immutableInlineTable : IO Unit :=
+  assertErrKind (parse "t = { a = 1 }\nt.b = 2\n") .immutableInlineTable "parse immutable inline table"
+
+/-- Verify `parse` rejects bare carriage return / control chars with `.invalidUtf8OrControl`. -/
+def err_toml_parse_invalidUtf8OrControl : IO Unit :=
+  assertErrKind (parse "a = 1\r b = 2\n") .invalidUtf8OrControl "parse bare CR"
+
+/-- Verify `parse` rejects 64-bit integer overflow with `.numericOverflow`. -/
+def err_toml_parse_numericOverflow : IO Unit :=
+  assertErrKind (parse "a = 9223372036854775808\n") .numericOverflow "parse int64 overflow"
+
+/-- Verify `decode` rejects incompatible `TomlValue` with `.decodeError`. -/
+def err_toml_decode_decodeError : IO Unit :=
+  assertErrKind (decode (α := Int64) (.string "not_an_int")) .decodeError "decode string as Int64"
+
+/-- Verify `getTable` rejects non-table `TomlValue` with `.typeMismatch`. -/
+def err_toml_getTable_typeMismatch : IO Unit :=
+  assertErrKind (getTable (.int 1)) .typeMismatch "getTable non-table"
+
+/-- Verify `getArray` rejects non-array `TomlValue` with `.typeMismatch`. -/
+def err_toml_getArray_typeMismatch : IO Unit :=
+  assertErrKind (getArray (.bool false)) .typeMismatch "getArray non-array"
+
+/-- Verify `getField` rejects absent key with `.missingField`. -/
+def err_toml_getField_missingField : IO Unit :=
+  assertErrKind (getField (α := Nat) #[("a", .int 1)] "absent") .missingField "getField missing"
+
+/-- Verify `getField` rejects ill-typed field value with `.decodeError`. -/
+def err_toml_getField_decodeError : IO Unit :=
+  assertErrKind (getField (α := Nat) #[("name", .string "srv")] "name") .decodeError "getField decode error"
+
+/-- Verify `getOptField` rejects present ill-typed field value with `.decodeError`. -/
+def err_toml_getOptField_decodeError : IO Unit :=
+  assertErrKind (getOptField (α := Nat) #[("name", .string "srv")] "name") .decodeError "getOptField decode error"
+
+/-- Verify `getPath` rejects missing nested key with `.missingField`. -/
+def err_toml_getPath_missingField : IO Unit :=
+  let tab : TomlTable := #[("db", .table #[("host", .string "localhost")])]
+  assertErrKind (getPath (α := String) tab ["db", "missing", "host"]) .missingField "getPath missing"
+
+/-- Verify `getPath` rejects non-table intermediate key with `.typeMismatch`. -/
+def err_toml_getPath_typeMismatch : IO Unit :=
+  let tab : TomlTable := #[("port", .int 8080)]
+  assertErrKind (getPath (α := String) tab ["port", "sub"]) .typeMismatch "getPath non-table intermediate"
+
+/-- Verify `getPath` rejects ill-typed leaf value with `.decodeError`. -/
+def err_toml_getPath_decodeError : IO Unit :=
+  let tab : TomlTable := #[("db", .table #[("host", .string "localhost")])]
+  assertErrKind (getPath (α := Nat) tab ["db", "host"]) .decodeError "getPath decode error"
+
+/-- Registered error-coverage tests for `LeanSwe.Toml`. -/
+def registeredErrorTests : Array Core.RegisteredErrorTest :=
+  #[ { testName := "LeanSwe.Toml.RuntimeTests.err_toml_parse_parseError", mode := .real, run := err_toml_parse_parseError }
+   , { testName := "LeanSwe.Toml.RuntimeTests.err_toml_parse_duplicateKey", mode := .real, run := err_toml_parse_duplicateKey }
+   , { testName := "LeanSwe.Toml.RuntimeTests.err_toml_parse_redefinedTable", mode := .real, run := err_toml_parse_redefinedTable }
+   , { testName := "LeanSwe.Toml.RuntimeTests.err_toml_parse_immutableInlineTable", mode := .real, run := err_toml_parse_immutableInlineTable }
+   , { testName := "LeanSwe.Toml.RuntimeTests.err_toml_parse_invalidUtf8OrControl", mode := .real, run := err_toml_parse_invalidUtf8OrControl }
+   , { testName := "LeanSwe.Toml.RuntimeTests.err_toml_parse_numericOverflow", mode := .real, run := err_toml_parse_numericOverflow }
+   , { testName := "LeanSwe.Toml.RuntimeTests.err_toml_decode_decodeError", mode := .real, run := err_toml_decode_decodeError }
+   , { testName := "LeanSwe.Toml.RuntimeTests.err_toml_getTable_typeMismatch", mode := .real, run := err_toml_getTable_typeMismatch }
+   , { testName := "LeanSwe.Toml.RuntimeTests.err_toml_getArray_typeMismatch", mode := .real, run := err_toml_getArray_typeMismatch }
+   , { testName := "LeanSwe.Toml.RuntimeTests.err_toml_getField_missingField", mode := .real, run := err_toml_getField_missingField }
+   , { testName := "LeanSwe.Toml.RuntimeTests.err_toml_getField_decodeError", mode := .real, run := err_toml_getField_decodeError }
+   , { testName := "LeanSwe.Toml.RuntimeTests.err_toml_getOptField_decodeError", mode := .real, run := err_toml_getOptField_decodeError }
+   , { testName := "LeanSwe.Toml.RuntimeTests.err_toml_getPath_missingField", mode := .real, run := err_toml_getPath_missingField }
+   , { testName := "LeanSwe.Toml.RuntimeTests.err_toml_getPath_typeMismatch", mode := .real, run := err_toml_getPath_typeMismatch }
+   , { testName := "LeanSwe.Toml.RuntimeTests.err_toml_getPath_decodeError", mode := .real, run := err_toml_getPath_decodeError } ]
+
 /-- Run all differential and runtime verification tests for `LeanSwe.Toml`. -/
 def runAll : IO Unit := do
   testDifferentialVsPython
   testFormattedRoundTripViaPython
   testYear0000DirectRfc3339
   testCodecsAndAccessors
+  Core.runRegisteredErrorTests registeredErrorTests
   IO.println "PASS: LeanSwe.Toml runtime tests"
 
 end LeanSwe.Toml.RuntimeTests

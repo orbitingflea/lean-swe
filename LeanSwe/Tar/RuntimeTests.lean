@@ -1,3 +1,4 @@
+import Core.Assumptions
 import LeanSwe.Tar.Interface
 
 namespace LeanSwe.Tar.RuntimeTests
@@ -158,12 +159,234 @@ private def testCorruptAndSecurityFuzzing : IO Unit := do
   assertErrKind (pack [{ path := "escape", kind := .symlink, linkTarget := "../etc/passwd" }]) .unsafePath "root symlink escape rejected"
   assertErrKind (pack [{ path := "sub/", kind := .directory }, { path := "sub", kind := .regular }]) .duplicatePath "duplicate normalized path rejected"
 
+private def zeroTrailer : ByteArray :=
+  ByteArray.mk (Array.replicate 1024 0)
+
+private def pad512Bytes (bs : ByteArray) : ByteArray :=
+  let rem := bs.size % 512
+  if rem == 0 then bs
+  else bs ++ ByteArray.mk (Array.replicate (512 - rem) 0)
+
+private def recomputeHeaderChecksum (hdr : ByteArray) : ByteArray := Id.run do
+  let mut h := hdr
+  for i in [148:156] do
+    h := h.set! i 0x20
+  let mut sum : Nat := 0
+  for i in [:512] do
+    sum := sum + h[i]!.toNat
+  let oct := Nat.toDigits 8 sum
+  let padded := (List.replicate (6 - oct.length) '0') ++ oct
+  for j in [:6] do
+    h := h.set! (148 + j) (UInt8.ofNat padded[j]!.toNat)
+  h := h.set! 154 0
+  h := h.set! 155 0x20
+  pure h
+
+private def mkHeaderWithType (name : String) (size : Nat) (typeflag : UInt8) : ByteArray :=
+  Impl.buildUstarHeader name 0o644 0 0 size 0 typeflag "" "" "" ""
+
+/-- Verify `pack` rejects empty entry path with `.invalidPath`. -/
+def err_tar_pack_invalidPath : IO Unit :=
+  assertErrKind (pack [{ path := "", kind := .regular }]) .invalidPath "pack empty path"
+
+/-- Verify `pack` rejects traversal path with `.unsafePath`. -/
+def err_tar_pack_unsafePath : IO Unit :=
+  assertErrKind (pack [{ path := "../escape.txt", kind := .regular }]) .unsafePath "pack traversal path"
+
+/-- Verify `pack` rejects colliding normalized paths with `.duplicatePath`. -/
+def err_tar_pack_duplicatePath : IO Unit :=
+  assertErrKind (pack [{ path := "sub/", kind := .directory }, { path := "sub", kind := .regular }])
+    .duplicatePath "pack duplicate path"
+
+/-- Verify `pack` rejects non-regular entry carrying payload bytes with `.invalidHeader`. -/
+def err_tar_pack_invalidHeader : IO Unit :=
+  assertErrKind (pack [{ path := "dir/", kind := .directory, data := "x".toUTF8 }])
+    .invalidHeader "pack directory with payload"
+
+/-- Verify `pack` rejects `uid >= 2^64` with `.sizeOverflow`. -/
+def err_tar_pack_sizeOverflow : IO Unit :=
+  assertErrKind (pack [{ path := "a.txt", kind := .regular, uid := 2 ^ 64 }])
+    .sizeOverflow "pack uid overflow"
+
+/-- Verify `packWith` rejects empty entry path with `.invalidPath`. -/
+def err_tar_packWith_invalidPath : IO Unit :=
+  assertErrKind (packWith {} [{ path := "", kind := .regular }]) .invalidPath "packWith empty path"
+
+/-- Verify `packWith` rejects traversal path with `.unsafePath`. -/
+def err_tar_packWith_unsafePath : IO Unit :=
+  assertErrKind (packWith {} [{ path := "../escape.txt", kind := .regular }]) .unsafePath "packWith traversal path"
+
+/-- Verify `packWith` rejects colliding normalized paths with `.duplicatePath`. -/
+def err_tar_packWith_duplicatePath : IO Unit :=
+  assertErrKind (packWith {} [{ path := "sub/", kind := .directory }, { path := "sub", kind := .regular }])
+    .duplicatePath "packWith duplicate path"
+
+/-- Verify `packWith` rejects non-regular entry carrying payload bytes with `.invalidHeader`. -/
+def err_tar_packWith_invalidHeader : IO Unit :=
+  assertErrKind (packWith {} [{ path := "dir/", kind := .directory, data := "x".toUTF8 }])
+    .invalidHeader "packWith directory with payload"
+
+/-- Verify `packWith` rejects `uid >= 2^64` with `.sizeOverflow`. -/
+def err_tar_packWith_sizeOverflow : IO Unit :=
+  assertErrKind (packWith {} [{ path := "a.txt", kind := .regular, uid := 2 ^ 64 }])
+    .sizeOverflow "packWith uid overflow"
+
+private def mkInvalidPathArchive : ByteArray :=
+  mkHeaderWithType "" 0 0x30 ++ zeroTrailer
+
+private def mkUnsafePathArchive : ByteArray :=
+  mkHeaderWithType "../escape.txt" 0 0x30 ++ zeroTrailer
+
+private def mkDuplicatePathArchive : ByteArray :=
+  let h := mkHeaderWithType "dup.txt" 0 0x30
+  h ++ h ++ zeroTrailer
+
+private def mkInvalidHeaderArchive : ByteArray :=
+  mkHeaderWithType "d" 5 0x35 ++ ByteArray.mk (Array.replicate 512 0) ++ zeroTrailer
+
+private def mkUnsupportedEntryArchive : ByteArray :=
+  mkHeaderWithType "fifo" 0 0x36 ++ zeroTrailer
+
+private def mkSizeOverflowArchive : ByteArray :=
+  let paxBody := "29 size=18446744073709551616\n".toUTF8
+  let paxHdr := mkHeaderWithType "PaxHeader/a.txt" paxBody.size 0x78
+  let regHdr := mkHeaderWithType "a.txt" 0 0x30
+  paxHdr ++ pad512Bytes paxBody ++ regHdr ++ zeroTrailer
+
+private def mkInvalidEncodingArchive : ByteArray :=
+  let rawHdr := (mkHeaderWithType "aa.txt" 0 0x30).set! 0 0xff
+  recomputeHeaderChecksum rawHdr ++ zeroTrailer
+
+private def mkHugeSizeArchive : ByteArray :=
+  mkHeaderWithType "huge.bin" 300000000 0x30 ++ zeroTrailer
+
+/-- Verify `unpack` rejects empty archive entry path with `.invalidPath`. -/
+def err_tar_unpack_invalidPath : IO Unit :=
+  assertErrKind (unpack mkInvalidPathArchive) .invalidPath "unpack empty path"
+
+/-- Verify `unpack` rejects traversal archive entry path with `.unsafePath`. -/
+def err_tar_unpack_unsafePath : IO Unit :=
+  assertErrKind (unpack mkUnsafePathArchive) .unsafePath "unpack traversal path"
+
+/-- Verify `unpack` rejects duplicate archive entry paths with `.duplicatePath`. -/
+def err_tar_unpack_duplicatePath : IO Unit :=
+  assertErrKind (unpack mkDuplicatePathArchive) .duplicatePath "unpack duplicate path"
+
+/-- Verify `unpack` rejects non-regular header with non-zero size with `.invalidHeader`. -/
+def err_tar_unpack_invalidHeader : IO Unit :=
+  assertErrKind (unpack mkInvalidHeaderArchive) .invalidHeader "unpack invalid header"
+
+/-- Verify `unpack` rejects corrupted header checksum with `.checksumMismatch`. -/
+def err_tar_unpack_checksumMismatch : IO Unit := do
+  let valid ← assertOk (pack [{ path := "a.txt", kind := .regular, data := "hello".toUTF8 }]) "valid pack"
+  let flipped := valid.set! 10 (valid[10]! ^^^ 0x01)
+  assertErrKind (unpack flipped) .checksumMismatch "unpack checksumMismatch"
+
+/-- Verify `unpack` rejects archive missing trailing zero block with `.truncatedArchive`. -/
+def err_tar_unpack_truncatedArchive : IO Unit := do
+  let valid ← assertOk (pack [{ path := "a.txt", kind := .regular, data := "hello".toUTF8 }]) "valid pack"
+  assertErrKind (unpack (valid.extract 0 (valid.size - 512))) .truncatedArchive "unpack truncatedArchive"
+
+/-- Verify `unpack` rejects unsupported typeflag with `.unsupportedEntry`. -/
+def err_tar_unpack_unsupportedEntry : IO Unit :=
+  assertErrKind (unpack mkUnsupportedEntryArchive) .unsupportedEntry "unpack unsupportedEntry"
+
+/-- Verify `unpack` rejects PAX size >= 2^64 with `.sizeOverflow`. -/
+def err_tar_unpack_sizeOverflow : IO Unit :=
+  assertErrKind (unpack mkSizeOverflowArchive) .sizeOverflow "unpack sizeOverflow"
+
+/-- Verify `unpack` rejects invalid UTF-8 header string with `.invalidEncoding`. -/
+def err_tar_unpack_invalidEncoding : IO Unit :=
+  assertErrKind (unpack mkInvalidEncodingArchive) .invalidEncoding "unpack invalidEncoding"
+
+/-- Verify `unpack` rejects declared entry size exceeding `maxTotalBytes` with `.resourceLimitExceeded`. -/
+def err_tar_unpack_resourceLimitExceeded : IO Unit :=
+  assertErrKind (unpack mkHugeSizeArchive) .resourceLimitExceeded "unpack resourceLimitExceeded"
+
+/-- Verify `unpackWith` rejects empty archive entry path with `.invalidPath`. -/
+def err_tar_unpackWith_invalidPath : IO Unit :=
+  assertErrKind (unpackWith {} mkInvalidPathArchive) .invalidPath "unpackWith empty path"
+
+/-- Verify `unpackWith` rejects traversal archive entry path with `.unsafePath`. -/
+def err_tar_unpackWith_unsafePath : IO Unit :=
+  assertErrKind (unpackWith {} mkUnsafePathArchive) .unsafePath "unpackWith traversal path"
+
+/-- Verify `unpackWith` rejects duplicate archive entry paths with `.duplicatePath`. -/
+def err_tar_unpackWith_duplicatePath : IO Unit :=
+  assertErrKind (unpackWith {} mkDuplicatePathArchive) .duplicatePath "unpackWith duplicate path"
+
+/-- Verify `unpackWith` rejects non-regular header with non-zero size with `.invalidHeader`. -/
+def err_tar_unpackWith_invalidHeader : IO Unit :=
+  assertErrKind (unpackWith {} mkInvalidHeaderArchive) .invalidHeader "unpackWith invalid header"
+
+/-- Verify `unpackWith` rejects corrupted header checksum with `.checksumMismatch`. -/
+def err_tar_unpackWith_checksumMismatch : IO Unit := do
+  let valid ← assertOk (pack [{ path := "a.txt", kind := .regular, data := "hello".toUTF8 }]) "valid pack"
+  let flipped := valid.set! 10 (valid[10]! ^^^ 0x01)
+  assertErrKind (unpackWith {} flipped) .checksumMismatch "unpackWith checksumMismatch"
+
+/-- Verify `unpackWith` rejects archive missing trailing zero block with `.truncatedArchive`. -/
+def err_tar_unpackWith_truncatedArchive : IO Unit := do
+  let valid ← assertOk (pack [{ path := "a.txt", kind := .regular, data := "hello".toUTF8 }]) "valid pack"
+  assertErrKind (unpackWith {} (valid.extract 0 (valid.size - 512))) .truncatedArchive "unpackWith truncatedArchive"
+
+/-- Verify `unpackWith` rejects unsupported typeflag with `.unsupportedEntry`. -/
+def err_tar_unpackWith_unsupportedEntry : IO Unit :=
+  assertErrKind (unpackWith {} mkUnsupportedEntryArchive) .unsupportedEntry "unpackWith unsupportedEntry"
+
+/-- Verify `unpackWith` rejects PAX size >= 2^64 with `.sizeOverflow`. -/
+def err_tar_unpackWith_sizeOverflow : IO Unit :=
+  assertErrKind (unpackWith {} mkSizeOverflowArchive) .sizeOverflow "unpackWith sizeOverflow"
+
+/-- Verify `unpackWith` rejects invalid UTF-8 header string with `.invalidEncoding`. -/
+def err_tar_unpackWith_invalidEncoding : IO Unit :=
+  assertErrKind (unpackWith {} mkInvalidEncodingArchive) .invalidEncoding "unpackWith invalidEncoding"
+
+/-- Verify `unpackWith` rejects entry count exceeding `maxEntries` with `.resourceLimitExceeded`. -/
+def err_tar_unpackWith_resourceLimitExceeded : IO Unit := do
+  let valid ← assertOk (pack [{ path := "a.txt", kind := .regular }, { path := "b.txt", kind := .regular }]) "two entries"
+  assertErrKind (unpackWith { maxEntries := 1 } valid) .resourceLimitExceeded "unpackWith maxEntries exceeded"
+
+/-- Registered error-coverage tests for `LeanSwe.Tar`. -/
+def registeredErrorTests : Array Core.RegisteredErrorTest :=
+  #[ { testName := "LeanSwe.Tar.RuntimeTests.err_tar_pack_invalidPath", mode := .real, run := err_tar_pack_invalidPath }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_pack_unsafePath", mode := .real, run := err_tar_pack_unsafePath }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_pack_duplicatePath", mode := .real, run := err_tar_pack_duplicatePath }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_pack_invalidHeader", mode := .real, run := err_tar_pack_invalidHeader }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_pack_sizeOverflow", mode := .real, run := err_tar_pack_sizeOverflow }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_packWith_invalidPath", mode := .real, run := err_tar_packWith_invalidPath }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_packWith_unsafePath", mode := .real, run := err_tar_packWith_unsafePath }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_packWith_duplicatePath", mode := .real, run := err_tar_packWith_duplicatePath }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_packWith_invalidHeader", mode := .real, run := err_tar_packWith_invalidHeader }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_packWith_sizeOverflow", mode := .real, run := err_tar_packWith_sizeOverflow }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpack_invalidPath", mode := .real, run := err_tar_unpack_invalidPath }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpack_unsafePath", mode := .real, run := err_tar_unpack_unsafePath }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpack_duplicatePath", mode := .real, run := err_tar_unpack_duplicatePath }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpack_invalidHeader", mode := .real, run := err_tar_unpack_invalidHeader }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpack_checksumMismatch", mode := .real, run := err_tar_unpack_checksumMismatch }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpack_truncatedArchive", mode := .real, run := err_tar_unpack_truncatedArchive }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpack_unsupportedEntry", mode := .real, run := err_tar_unpack_unsupportedEntry }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpack_sizeOverflow", mode := .real, run := err_tar_unpack_sizeOverflow }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpack_invalidEncoding", mode := .real, run := err_tar_unpack_invalidEncoding }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpack_resourceLimitExceeded", mode := .real, run := err_tar_unpack_resourceLimitExceeded }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_invalidPath", mode := .real, run := err_tar_unpackWith_invalidPath }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_unsafePath", mode := .real, run := err_tar_unpackWith_unsafePath }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_duplicatePath", mode := .real, run := err_tar_unpackWith_duplicatePath }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_invalidHeader", mode := .real, run := err_tar_unpackWith_invalidHeader }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_checksumMismatch", mode := .real, run := err_tar_unpackWith_checksumMismatch }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_truncatedArchive", mode := .real, run := err_tar_unpackWith_truncatedArchive }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_unsupportedEntry", mode := .real, run := err_tar_unpackWith_unsupportedEntry }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_sizeOverflow", mode := .real, run := err_tar_unpackWith_sizeOverflow }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_invalidEncoding", mode := .real, run := err_tar_unpackWith_invalidEncoding }
+   , { testName := "LeanSwe.Tar.RuntimeTests.err_tar_unpackWith_resourceLimitExceeded", mode := .real, run := err_tar_unpackWith_resourceLimitExceeded } ]
+
 /-- Run all differential and runtime verification tests for `LeanSwe.Tar`. -/
 def runAll : IO Unit := do
   testLeanPackToPythonUnpack
   testDeterministicPack
   testPythonPackToLeanUnpack
   testCorruptAndSecurityFuzzing
+  Core.runRegisteredErrorTests registeredErrorTests
   IO.println "PASS: LeanSwe.Tar runtime tests"
 
 end LeanSwe.Tar.RuntimeTests
