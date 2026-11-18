@@ -8,6 +8,8 @@ namespace LeanSwe.Uuid
 
 open Core (NondetTest)
 open Core.NondetTest
+open LeanSwe.LinuxSyscall (Errno)
+open LeanSwe.LinuxSyscall.TimeRand (TimeRandOpsM TimeRandState GrndFlags)
 
 private def zeros16 : ByteArray :=
   ByteArray.mk (Array.replicate 16 0)
@@ -22,7 +24,10 @@ private def validNilV4Hex : String :=
   "00000000000040008000000000000000"
 
 private def stubUuidApi : UuidApi :=
-  { mapRawError := fun _ => { kind := .entropyFailed, message := "stub" }
+  { mapRawError := fun
+      | .osError code _ => { kind := .entropyFailed, errnoCode := some code, message := "stub" }
+      | .shortRead _ _ => { kind := .entropyFailed, errnoCode := none, message := "stub" }
+      | .userError _ => { kind := .entropyFailed, errnoCode := none, message := "stub" }
     fromRandomBytes := fun bs =>
       if bs.size != 16 then
         .error { kind := .invalidLength, message := "bad len" }
@@ -41,7 +46,7 @@ private def stubUuidApi : UuidApi :=
     isValid := fun s => s == validNilV4Str
     getUuid := pure (.ok { bytes := validNilV4Bytes }) }
 
-private def stubMkApi (ops : RawUuidOpsM (StateM MockRngState)) : UuidApiM (StateM MockRngState) :=
+private def stubMkApi {m : Type → Type} [Monad m] (_ : TimeRandOpsM m) : UuidApiM m :=
   { mapRawError := stubUuidApi.mapRawError
     fromRandomBytes := stubUuidApi.fromRandomBytes
     toString := stubUuidApi.toString
@@ -49,10 +54,7 @@ private def stubMkApi (ops : RawUuidOpsM (StateM MockRngState)) : UuidApiM (Stat
     parse := stubUuidApi.parse
     parseHex := stubUuidApi.parseHex
     isValid := stubUuidApi.isValid
-    getUuid := do
-      match ← ops.randomBytes16 with
-      | .error e => return .error e
-      | .ok bs => return stubUuidApi.fromRandomBytes bs }
+    getUuid := pure (.ok { bytes := validNilV4Bytes }) }
 
 example : ¬ Core.AllPass (test_uuid_mapRawError_returnsNonEmptyMessage
     { stubUuidApi with mapRawError := fun _ => { kind := .entropyFailed, message := "" } }) := by
@@ -60,7 +62,7 @@ example : ¬ Core.AllPass (test_uuid_mapRawError_returnsNonEmptyMessage
   have h0 := h (.userError "boom")
   dsimp [test_uuid_mapRawError_returnsNonEmptyMessage,
     Core.NondetTest.assert, Bind.bind] at h0
-  exact absurd h0.1 (by decide)
+  exact absurd h0.1.2 (by decide)
 
 example : ¬ Core.AllPass (test_uuid_mapRawError_returnsNonEmptyMessage
     { stubUuidApi with mapRawError := fun _ => { kind := .invalidFormat, message := "bad" } }) := by
@@ -68,7 +70,7 @@ example : ¬ Core.AllPass (test_uuid_mapRawError_returnsNonEmptyMessage
   have h0 := h (.userError "boom")
   dsimp [test_uuid_mapRawError_returnsNonEmptyMessage,
     Core.NondetTest.assert, Bind.bind] at h0
-  exact absurd h0.1 (by decide)
+  exact absurd h0.1.1 (by decide)
 
 example : ¬ Core.AllPass (test_uuid_mapRawError_returnsNonEmptyMessage
     { stubUuidApi with mapRawError := fun _ => { kind := .entropyFailed, errnoCode := none, message := "bad" } }) := by
@@ -76,7 +78,7 @@ example : ¬ Core.AllPass (test_uuid_mapRawError_returnsNonEmptyMessage
   have h0 := h (.osError 5 "EIO")
   dsimp [test_uuid_mapRawError_returnsNonEmptyMessage,
     Core.NondetTest.assert, Bind.bind] at h0
-  exact absurd h0.2 (by decide)
+  exact absurd h0.2.1 (by decide)
 
 example : ¬ Core.AllPass (test_uuid_fromRandomBytes_validLen_setsV4BitsAndPreservesPayload
     { stubUuidApi with fromRandomBytes := fun bs => .ok { bytes := bs } }) := by
@@ -94,7 +96,7 @@ example : ¬ Core.AllPass (test_uuid_fromRandomBytes_validLen_setsV4BitsAndPrese
   dsimp [test_uuid_fromRandomBytes_validLen_setsV4BitsAndPreservesPayload,
     Core.NondetTest.assert, Bind.bind] at h0
   have h1 := h0.2.2.2.2.2 0 (by decide)
-  exact absurd h1 (by decide)
+  exact absurd h1.1 (by decide)
 
 example : ¬ Core.AllPass (test_uuid_fromRandomBytes_invalidLen_returnsError
     { stubUuidApi with fromRandomBytes := fun _ => .ok { bytes := validNilV4Bytes } }) := by
@@ -138,8 +140,7 @@ example : ¬ Core.AllPass (test_uuid_parse_acceptsUppercaseHex
   have h0 := h zeros16 rfl
   dsimp [test_uuid_parse_acceptsUppercaseHex, stubUuidApi, zeros16,
     Core.NondetTest.assert, Bind.bind] at h0
-  have h1 := h0.1
-  cases h1
+  cases h0.1
 
 example : ¬ Core.AllPass (test_uuid_parse_acceptedImpliesV4AndNormalizedRoundTrip
     { stubUuidApi with
@@ -212,48 +213,59 @@ example : ¬ Core.AllPass (test_uuid_parseHex_rejectsNonV4VersionOrVariant
     Core.NondetTest.assert, Bind.bind] at h0
   exact h0.1
 
-example : ¬ Core.AllPass (test_uuid_getUuid_consecutiveDistinctValidAndDeterministic
-    (fun ops => { stubMkApi ops with getUuid := pure (.ok { bytes := validNilV4Bytes }) })) := by
+example : ¬ Core.AllPass (test_uuid_getUuid_overTimeRandModel_consecutiveDistinctValid stubMkApi) := by
   intro h
-  have h0 := h { counter := 0, failWith := none, draws := 0 } rfl
-  dsimp [test_uuid_getUuid_consecutiveDistinctValidAndDeterministic, stubMkApi,
+  have h0 := h {}
+  dsimp [test_uuid_getUuid_overTimeRandModel_consecutiveDistinctValid, stubMkApi,
     Core.NondetTest.assert, Bind.bind, StateT.run, pure, StateT.pure] at h0
-  have h2 := h0.2.1
-  simp at h2
+  exact absurd h0.2.1.1 (by decide)
 
-example : ¬ Core.AllPass (test_uuid_getUuid_propagatesEntropyError
-    (fun ops => { stubMkApi ops with getUuid := pure (.ok { bytes := validNilV4Bytes }) })) := by
+example : ¬ Core.AllPass (test_uuid_getUuid_usesExact16BytesFromGetrandom stubMkApi) := by
   intro h
-  let err : UuidError := { kind := .entropyFailed, message := "entropy down" }
-  have h0 := h { counter := 0, failWith := some err, draws := 0 } err (by decide) rfl
-  simp [StateT.run, pure, StateT.pure, assert] at h0
+  have h0 := h (ByteArray.mk (Array.replicate 16 0xFF)) rfl
+  dsimp [test_uuid_getUuid_usesExact16BytesFromGetrandom, stubMkApi,
+    Core.NondetTest.assert, Bind.bind, StateT.run, pure, StateT.pure] at h0
+  cases h0.1.1
 
-example : ¬ Core.AllPass (test_uuid_getUuid_rejectsWrongRawByteCount
-    (fun ops => { stubMkApi ops with
+example : ¬ Core.AllPass (test_uuid_getUuid_accumulatesPartialReadsAndRetriesEintr
+    (fun sys => { stubMkApi sys with
       getUuid := do
-        match ← ops.randomBytes16 with
-        | .error e => return .error e
-        | .ok _ => return .ok { bytes := validNilV4Bytes } })) := by
+        match ← sys.getrandom 16 {} with
+        | .error e => return .error { kind := .entropyFailed, errnoCode := some e, message := "err" }
+        | .ok bs =>
+          if bs.size != 16 then
+            return .error { kind := .entropyFailed, message := "no partial read loop" }
+          else
+            return stubUuidApi.fromRandomBytes bs })) := by
   intro h
-  have h0 := h ByteArray.empty (by decide) { counter := 0, failWith := none, draws := 0 }
-  dsimp [test_uuid_getUuid_rejectsWrongRawByteCount, stubMkApi,
-    Core.NondetTest.assert, Bind.bind, StateT.run, StateT.bind, pure, StateT.pure] at h0
-  exact h0.2.1
+  let b8 := ByteArray.mk (Array.replicate 8 0xAA)
+  have h0 := h b8 b8 1 (by decide) (by decide)
+  dsimp [test_uuid_getUuid_accumulatesPartialReadsAndRetriesEintr, scriptedGetrandomOps,
+    stubMkApi, stubUuidApi, Core.NondetTest.assert, Bind.bind, StateT.run, StateT.bind,
+    get, getThe, MonadStateOf.get, StateT.get, set, StateT.set, pure, StateT.pure] at h0
+  cases h0.1.1
 
-example : ¬ Core.AllPass (test_uuid_getUuid_usesRawRandomBytes
-    (fun ops => { stubMkApi ops with
-      getUuid := do
-        match ← ops.randomBytes16 with
-        | .error e => return .error e
-        | .ok _ => return .ok { bytes := validNilV4Bytes } })) := by
+example : ¬ Core.AllPass (test_uuid_getUuid_mapsNonEintrErrnoWithoutRetry stubMkApi) := by
   intro h
-  have h0 := h (ByteArray.mk (Array.replicate 16 0xFF)) rfl { counter := 0, failWith := none, draws := 0 }
-  dsimp [test_uuid_getUuid_usesRawRandomBytes, stubMkApi, stubUuidApi, validNilV4Bytes, zeros16,
-    Core.NondetTest.assert, Bind.bind, StateT.run, StateT.bind, pure, StateT.pure] at h0
-  have h2 := h0.2.1
-  split at h2
-  · cases h2
-  · simp at h2
-    exact absurd h2 (by decide)
+  have h0 := h Errno.EIO (by decide)
+  dsimp [test_uuid_getUuid_mapsNonEintrErrnoWithoutRetry, stubMkApi,
+    Core.NondetTest.assert, Bind.bind, StateT.run, pure, StateT.pure] at h0
+  exact absurd h0.1 (by decide)
+
+example : ¬ Core.AllPass (test_uuid_getUuid_persistentEintrAndInvalidChunkReturnEntropyFailed
+    (fun sys => { stubMkApi sys with
+      getUuid := do
+        match ← sys.getrandom 16 {} with
+        | .error e => return .error { kind := .entropyFailed, errnoCode := some e, message := "err" }
+        | .ok bs => return stubUuidApi.fromRandomBytes bs })) := by
+  intro h
+  have h0 := h (ByteArray.mk #[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]) (by decide)
+  dsimp [test_uuid_getUuid_persistentEintrAndInvalidChunkReturnEntropyFailed,
+    countingFixedGetrandomOps, stubMkApi, stubUuidApi,
+    Core.NondetTest.assert, Bind.bind, StateT.run, StateT.bind, modify, modifyGet,
+    MonadStateOf.modifyGet, StateT.modifyGet, pure, StateT.pure] at h0
+  rcases h0.2.1.2 with ⟨err, herr, hkind, _⟩
+  cases herr
+  cases hkind
 
 end LeanSwe.Uuid

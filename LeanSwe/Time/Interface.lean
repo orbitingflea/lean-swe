@@ -1,13 +1,17 @@
+import LeanSwe.LinuxSyscall.TimeRand.Interface
 import LeanSwe.Time.Types
 import LeanSwe.Time.Impl
 
 namespace LeanSwe.Time
 
-/-- Default `TimeOps` backed by `Std.Time.Timestamp.now`, `IO.monoNanosNow`, and `IO.sleep`. -/
+/-- Build a `TimeOpsM m` capability bundle purely over `LeanSwe.LinuxSyscall.TimeRand.TimeRandOpsM m`. -/
+@[inline] def mkTimeOps {m : Type → Type} [Monad m]
+    (sys : LeanSwe.LinuxSyscall.TimeRand.TimeRandOpsM m) : TimeOpsM m :=
+  Internal.mkTimeOps sys
+
+/-- Default `TimeOps` backed by `LeanSwe.LinuxSyscall.TimeRand.defaultOps` (`CLOCK_REALTIME`, `CLOCK_MONOTONIC`, and `TIMER_ABSTIME` `clock_nanosleep` with bounded `EINTR` retry). -/
 def defaultOps : TimeOps :=
-  { nowTimestamp := Std.Time.Timestamp.now
-    monoNanosNow := IO.monoNanosNow
-    sleep := fun ms => IO.sleep ms }
+  Internal.mkTimeOps LeanSwe.LinuxSyscall.TimeRand.defaultOps
 
 /-- Default `TimeApi` backed by `defaultOps`. -/
 def defaultApi : TimeApi :=

@@ -1,10 +1,44 @@
 import Core.NondetTest
+import Core.Assumptions
+import LeanSwe.LinuxSyscall.TimeRand.Model
 import LeanSwe.Time.Types
 
 namespace LeanSwe.Time
 
-open Core (NondetTest)
+open Core (NondetTest ErrorObligation)
 open Core.NondetTest
+open LeanSwe.LinuxSyscall (Errno)
+open LeanSwe.LinuxSyscall.TimeRand
+  (ClockId Timespec TimeRandOpsM TimeRandState MAX_TIMESPEC_NANOS)
+
+/-- Trace state recording `TimeRandOpsM` calls made by `mkTimeOps` during `EINTR` and sleep tests. -/
+structure SleepTraceState where
+  /-- Monotonic `Timespec` returned by `clock_gettime .monotonic`. -/
+  monoNow : Timespec := { sec := 0, nsec := 0 }
+  /-- Queued `clock_nanosleep` responses popped in order (defaulting to `.ok ()` once empty). -/
+  sleepResponses : List (Except Errno Unit) := []
+  /-- Number of `clock_gettime` calls observed. -/
+  gettimeCalls : Nat := 0
+  /-- Recorded `(clk, abstime, req)` arguments passed to `clock_nanosleep` (most recent first). -/
+  nanosleepLog : List (ClockId × Bool × Timespec) := []
+  deriving Repr, Inhabited
+
+/-- Scripted `TimeRandOpsM (StateM SleepTraceState)` logging `clock_gettime` and `clock_nanosleep` invocations. -/
+def scriptedSleepSysOps (fallback : Except Errno Unit := .ok ()) :
+    TimeRandOpsM (StateM SleepTraceState) :=
+  { clock_gettime := fun _ => do
+      let s ← get
+      set { s with gettimeCalls := s.gettimeCalls + 1 }
+      return .ok s.monoNow
+    clock_nanosleep := fun clk abstime req => do
+      let s ← get
+      let log' := (clk, abstime, req) :: s.nanosleepLog
+      let r := match s.sleepResponses with
+        | [] => fallback
+        | x :: _ => x
+      set { s with sleepResponses := s.sleepResponses.tail, nanosleepLog := log' }
+      return r
+    getrandom := fun _ _ => pure (.error Errno.ENOSYS) }
 
 /-- Adding then subtracting the same `Std.Time.Duration` recovers the original `Std.Time.Duration`. -/
 def test_time_duration_addSubInverse
@@ -98,54 +132,154 @@ def test_time_fakeClock_measure_returnsValueAndElapsed
   NondetTest.assert (elapsed = Std.Time.Duration.ofMillisecond (Std.Time.Millisecond.Offset.ofNat ms))
   NondetTest.assert (s₁.monoNanos = s₀.monoNanos + ms * 1000000)
 
-/-- Empirical contract (grounded in `RuntimeTests.lean`): formatting any 4-digit UTC year (`0000`..`9999`) `Timestamp` as ISO 8601 and parsing it back yields the exact `Timestamp`. -/
-def empirical_time_utcIso8601_roundTrip
+/-- Formatting any 4-digit UTC year (`0000`..`9999`) `Timestamp` as ISO 8601 and parsing it back yields the exact `Timestamp`, and `±HH:MM` offset timestamps normalize to the exact UTC instant. -/
+def test_time_utcIso8601_roundTrip
     {runner} [NondetTest runner] (api : TimeApi) : runner Unit := do
   let ts ← nondet Std.Time.Timestamp
   assume (-62167219200000000000 ≤ ts.toNanosecondsSinceUnixEpoch.val ∧
     ts.toNanosecondsSinceUnixEpoch.val ≤ 253402300799999999999)
   let s := api.formatUtcIso8601 ts
   NondetTest.assert (api.parseUtcIso8601 s = .ok ts)
+  NondetTest.assert (api.parseUtcIso8601 "2026-11-14T20:15:00+02:00" =
+    api.parseUtcIso8601 "2026-11-14T18:15:00Z")
+  NondetTest.assert (api.parseUtcIso8601 "2026-11-14T12:45:00-05:30" =
+    api.parseUtcIso8601 "2026-11-14T18:15:00Z")
 
-/-- Empirical contract (grounded in `RuntimeTests.lean`): `parseUtcIso8601` returns `.error` with a non-empty message on invalid input. -/
-def empirical_time_utcIso8601_invalidReturnsNonEmptyError
+/-- Every `parseUtcIso8601` failure carries `.invalidFormat` and a non-empty message, and malformed inputs (empty, invalid calendar day, missing timezone, or out-of-range hour) are rejected. -/
+def test_time_utcIso8601_invalidReturnsNonEmptyError
     {runner} [NondetTest runner] (api : TimeApi) : runner Unit := do
   let raw ← nondet String
   match api.parseUtcIso8601 raw with
-  | .ok _ => assume False
+  | .ok _ => NondetTest.assert True
   | .error e => NondetTest.assert (e.kind = .invalidFormat ∧ e.message ≠ "")
+  NondetTest.assert ((api.parseUtcIso8601 "").isOk = false)
+  NondetTest.assert ((api.parseUtcIso8601 "2024-02-30T00:00:00Z").isOk = false)
+  NondetTest.assert ((api.parseUtcIso8601 "2026-11-14T18:15:00").isOk = false)
+  NondetTest.assert ((api.parseUtcIso8601 "2026-11-14T25:00:00Z").isOk = false)
 
-/-- Empirical contract (grounded in `RuntimeTests.lean`): formatting any 4-digit year (`0000`..`9999`) `PlainDate` as `YYYY-MM-DD` and parsing it back yields the exact `PlainDate`. -/
-def empirical_time_utcDate_roundTrip
+/-- Formatting any 4-digit year (`0000`..`9999`) `PlainDate` as `YYYY-MM-DD` and parsing it back yields the exact `PlainDate`. -/
+def test_time_utcDate_roundTrip
     {runner} [NondetTest runner] (api : TimeApi) : runner Unit := do
   let d ← nondet Std.Time.PlainDate
   assume (0 ≤ d.year.toInt ∧ d.year.toInt ≤ 9999)
   let s := api.formatUtcDate d
   NondetTest.assert (api.parseUtcDate s = .ok d)
 
-/-- Empirical contract (grounded in `RuntimeTests.lean`): `parseUtcDate` returns `.error` with `.invalidFormat` and a non-empty message on invalid input. -/
-def empirical_time_utcDate_invalidReturnsNonEmptyError
+/-- Every `parseUtcDate` failure carries `.invalidFormat` and a non-empty message, and malformed dates (empty, invalid leap day, invalid month, slash separator, or trailing junk) are rejected. -/
+def test_time_utcDate_invalidReturnsNonEmptyError
     {runner} [NondetTest runner] (api : TimeApi) : runner Unit := do
   let raw ← nondet String
   match api.parseUtcDate raw with
-  | .ok _ => assume False
+  | .ok _ => NondetTest.assert True
   | .error e => NondetTest.assert (e.kind = .invalidFormat ∧ e.message ≠ "")
+  NondetTest.assert ((api.parseUtcDate "").isOk = false)
+  NondetTest.assert ((api.parseUtcDate "2024-02-30").isOk = false)
+  NondetTest.assert ((api.parseUtcDate "2026-13-01").isOk = false)
+  NondetTest.assert ((api.parseUtcDate "2026/11/14").isOk = false)
+  NondetTest.assert ((api.parseUtcDate "2026-11-14Z").isOk = false)
 
-/-- Empirical contract (grounded in `RuntimeTests.lean`): converting any `PlainDate` to UTC midnight `Timestamp` and back recovers the same `PlainDate`, and timestamps strictly before midnight belong to an earlier UTC day. -/
-def empirical_time_utcDate_timestampRoundTrip
+/-- Converting any `PlainDate` to UTC midnight `Timestamp` and back recovers the same `PlainDate`, and timestamps 1 ns before midnight belong to an earlier UTC day. -/
+def test_time_utcDate_timestampRoundTrip
     {runner} [NondetTest runner] (api : TimeApi) : runner Unit := do
   let d ← nondet Std.Time.PlainDate
   let midnight := api.timestampOfUtcDate d
   NondetTest.assert (api.utcDateOfTimestamp midnight = d)
   NondetTest.assert (compare (api.utcDateOfTimestamp (midnight - Std.Time.Duration.ofNanoseconds 1)) d = .lt)
 
-/-- Empirical contract (grounded in `RuntimeTests.lean`): `formatUtcCompact` emits 16-char `YYYYMMDDTHHMMSSZ` strings for 4-digit UTC years (`0000`..`9999`). -/
-def empirical_time_utcCompact_formatShape
+/-- `formatUtcCompact` emits 16-char `YYYYMMDDTHHMMSSZ` strings for 4-digit UTC years (`0000`..`9999`). -/
+def test_time_utcCompact_formatShape
     {runner} [NondetTest runner] (api : TimeApi) : runner Unit := do
   let ts ← nondet Std.Time.Timestamp
   assume (-62167219200000000000 ≤ ts.toNanosecondsSinceUnixEpoch.val ∧
     ts.toNanosecondsSinceUnixEpoch.val ≤ 253402300799999999999)
   let s := api.formatUtcCompact ts
   NondetTest.assert (s.length = 16 ∧ s.endsWith "Z" = true)
+
+/-- `mkTimeOps` reads `CLOCK_REALTIME` (including pre-1970 negative `sec`) into `Std.Time.Timestamp` and `CLOCK_MONOTONIC` into `Nat` nanoseconds, falling back cleanly to `0` on syscall error. -/
+def test_time_mkTimeOps_readsRealtimeAndMonotonic
+    {runner} [NondetTest runner]
+    (mkOps : TimeRandOpsM Id → TimeOpsM Id) : runner Unit := do
+  let realTs ← nondet Timespec
+  let monoTs ← nondet Timespec
+  let errCode ← nondet Errno
+  assume (monoTs.isValid = true)
+  let okSys : TimeRandOpsM Id :=
+    { clock_gettime := fun
+        | .realtime => .ok realTs
+        | .monotonic => .ok monoTs
+      clock_nanosleep := fun _ _ _ => .ok ()
+      getrandom := fun _ _ => .ok ByteArray.empty }
+  let opsOk := mkOps okSys
+  NondetTest.assert (opsOk.nowTimestamp =
+    Std.Time.Timestamp.ofNanosecondsSinceUnixEpoch
+      (Std.Time.Nanosecond.Offset.ofInt realTs.toEpochNanos))
+  NondetTest.assert (opsOk.monoNanosNow = monoTs.toNanosNat)
+  let errSys : TimeRandOpsM Id :=
+    { clock_gettime := fun _ => .error errCode
+      clock_nanosleep := fun _ _ _ => .error errCode
+      getrandom := fun _ _ => .error errCode }
+  let opsErr := mkOps errSys
+  NondetTest.assert (opsErr.nowTimestamp = Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0)
+  NondetTest.assert (opsErr.monoNanosNow = 0)
+
+/-- Over `TimeRand.modelOps`, `(mkOpsTrace sys).sleep 0` performs zero syscalls and `(mkApiFn (mkOpsModel modelOps)).sleepMs ms` / `measure` advance monotonic nanoseconds by exact `ms * 1_000_000` (including multi-chunk `ms > UInt32.max`). -/
+def test_time_mkTimeOps_sleepZeroAndModelSleepMs
+    {runner} [NondetTest runner]
+    (mkOpsTrace : TimeRandOpsM (StateM SleepTraceState) → TimeOpsM (StateM SleepTraceState))
+    (mkOpsModel : TimeRandOpsM (StateM TimeRandState) → TimeOpsM (StateM TimeRandState))
+    (mkApiFn : TimeOpsM (StateM TimeRandState) → TimeApiM (StateM TimeRandState)) : runner Unit := do
+  let traceInit ← nondet SleepTraceState
+  let s₀ ← nondet TimeRandState
+  let ms ← nondet Nat
+  assume (s₀.monoLowerBoundNs + ms * 1000000 ≤ MAX_TIMESPEC_NANOS)
+  let ((), traceAfterZero) := ((mkOpsTrace (scriptedSleepSysOps)).sleep 0).run traceInit
+  NondetTest.assert (traceAfterZero.gettimeCalls = traceInit.gettimeCalls ∧
+    traceAfterZero.nanosleepLog = traceInit.nanosleepLog)
+  let api := mkApiFn (mkOpsModel LeanSwe.LinuxSyscall.TimeRand.modelOps)
+  let ((val, elapsed), s₁) := (api.measure (do api.sleepMs ms; pure ms)).run s₀
+  NondetTest.assert (val = ms)
+  NondetTest.assert (s₁.monoLowerBoundNs = s₀.monoLowerBoundNs + ms * 1000000)
+  NondetTest.assert (elapsed = Std.Time.Duration.ofMillisecond (Std.Time.Millisecond.Offset.ofNat ms))
+
+/-- `(mkOps sys).sleep ms` (`ms > 0`) computes the `TIMER_ABSTIME` monotonic deadline once, retries `Errno.EINTR` without deadline drift, stops after 1 call on non-`EINTR` errnos, and terminates within `MAX_EINTR_RETRIES + 1` attempts under persistent `EINTR`. -/
+def test_time_mkTimeOps_sleepAbstimeRetriesEintrWithoutDrift
+    {runner} [NondetTest runner]
+    (mkOps : TimeRandOpsM (StateM SleepTraceState) → TimeOpsM (StateM SleepTraceState)) : runner Unit := do
+  let startMono ← nondet Timespec
+  let ms ← nondet UInt32
+  let eintrCount ← nondet Nat
+  let fatalErr ← nondet Errno
+  assume (startMono.isValid = true)
+  assume (ms > 0)
+  assume (startMono.toNanosNat + ms.toNat * 1000000 ≤ MAX_TIMESPEC_NANOS)
+  assume (eintrCount ≤ 4)
+  assume (fatalErr ≠ Errno.EINTR)
+  let initEintr : SleepTraceState :=
+    { monoNow := startMono
+      sleepResponses := List.replicate eintrCount (.error Errno.EINTR) ++ [.ok ()] }
+  let ((), stAfterEintr) := ((mkOps (scriptedSleepSysOps)).sleep ms).run initEintr
+  NondetTest.assert (stAfterEintr.gettimeCalls = 1)
+  NondetTest.assert (stAfterEintr.nanosleepLog.length = eintrCount + 1)
+  NondetTest.assert (stAfterEintr.nanosleepLog.all (fun (clk, abs, req) =>
+    clk == .monotonic && abs == true && req.isValid &&
+    req.toNanosNat == startMono.toNanosNat + ms.toNat * 1000000) = true)
+  let initFatal : SleepTraceState :=
+    { monoNow := startMono
+      sleepResponses := [.error fatalErr, .ok ()] }
+  let ((), stAfterFatal) := ((mkOps (scriptedSleepSysOps)).sleep ms).run initFatal
+  NondetTest.assert (stAfterFatal.gettimeCalls = 1 ∧ stAfterFatal.nanosleepLog.length = 1)
+  let initStorm : SleepTraceState := { monoNow := startMono }
+  let ((), stAfterStorm) := ((mkOps (scriptedSleepSysOps (.error Errno.EINTR))).sleep ms).run initStorm
+  NondetTest.assert (stAfterStorm.gettimeCalls = 1 ∧
+    stAfterStorm.nanosleepLog.length = MAX_EINTR_RETRIES + 1)
+
+/-- Declared error-coverage matrix for pure helper package `LeanSwe.Time` (`TimeErrorKind`, covering `parseUtcIso8601` and `parseUtcDate`). -/
+def errorCoverage : List (ErrorObligation TimeErrorKind) :=
+  [ { request := "LeanSwe.Time.parseUtcIso8601"
+      errorKind := .invalidFormat
+      justification := .tested "LeanSwe.Time.RuntimeTests.err_time_parseUtcIso8601_invalidFormat" .real }
+  , { request := "LeanSwe.Time.parseUtcDate"
+      errorKind := .invalidFormat
+      justification := .tested "LeanSwe.Time.RuntimeTests.err_time_parseUtcDate_invalidFormat" .real } ]
 
 end LeanSwe.Time

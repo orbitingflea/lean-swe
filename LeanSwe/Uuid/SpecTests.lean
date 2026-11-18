@@ -1,45 +1,47 @@
 import Core.NondetTest
+import Core.Assumptions
+import LeanSwe.LinuxSyscall.TimeRand.Model
 import LeanSwe.Uuid.Types
 
 namespace LeanSwe.Uuid
 
-open Core (NondetTest)
+open Core (NondetTest ErrorObligation)
 open Core.NondetTest
+open LeanSwe.LinuxSyscall (Errno)
+open LeanSwe.LinuxSyscall.TimeRand (TimeRandOpsM TimeRandState GrndFlags)
 
-private def isLowerHexChar (c : Char) : Bool :=
+/-- Return `true` iff `c` is a lowercase ASCII hexadecimal digit (`'0'..'9'` or `'a'..'f'`). -/
+def isLowerHexChar (c : Char) : Bool :=
   ('0' ≤ c && c ≤ '9') || ('a' ≤ c && c ≤ 'f')
 
-private def isHexChar (c : Char) : Bool :=
+/-- Return `true` iff `c` is an ASCII hexadecimal digit (`'0'..'9'`, `'a'..'f'`, or `'A'..'F'`). -/
+def isHexChar (c : Char) : Bool :=
   isLowerHexChar c || ('A' ≤ c && c ≤ 'F')
 
-private def lowerHexDigit (n : Nat) : Char :=
+/-- Convert a nibble `0..15` into its lowercase ASCII hexadecimal character. -/
+def lowerHexDigit (n : Nat) : Char :=
   if n < 10 then Char.ofNat ('0'.toNat + n)
   else Char.ofNat ('a'.toNat + (n - 10))
 
-private def mockCounterRawOps : RawUuidOpsM (StateM MockRngState) :=
-  { mapRawError := fun
-      | .osError code _ => { kind := .entropyFailed, errnoCode := some code, message := "mock os error" }
-      | .shortRead _ _ => { kind := .entropyFailed, message := "mock short read" }
-      | .userError _ => { kind := .entropyFailed, message := "mock entropy error" }
-    randomBytes16 := do
-      let s ← get
-      match s.failWith with
-      | some err =>
-        set { s with draws := s.draws + 1 }
-        return .error err
-      | none =>
-        let c := s.counter
-        set { s with counter := c + 1, draws := s.draws + 1 }
-        let bs := ByteArray.mk #[
-          UInt8.ofNat (c % 256),
-          UInt8.ofNat ((c / 256) % 256),
-          UInt8.ofNat ((c / 65536) % 256),
-          UInt8.ofNat ((c / 16777216) % 256),
-          0x11, 0x22, 0x03, 0x44,
-          0x05, 0x66, 0x77, 0x88,
-          0x99, 0xaa, 0xbb, 0xcc
-        ]
-        return .ok bs }
+/-- Scripted `TimeRandOpsM` popping queued `getrandom` responses from `List (Except Errno ByteArray)` (returning `EIO` once empty). -/
+def scriptedGetrandomOps : TimeRandOpsM (StateM (List (Except Errno ByteArray))) :=
+  { clock_gettime := fun _ => pure (.error Errno.ENOSYS)
+    clock_nanosleep := fun _ _ _ => pure (.error Errno.ENOSYS)
+    getrandom := fun _ _ => do
+      let q ← get
+      let r := match q with
+        | [] => .error Errno.EIO
+        | x :: _ => x
+      set q.tail
+      return r }
+
+/-- Counting `TimeRandOpsM` incrementing `StateM Nat` on each `getrandom` call and returning `fixed`. -/
+def countingFixedGetrandomOps (fixed : Except Errno ByteArray) : TimeRandOpsM (StateM Nat) :=
+  { clock_gettime := fun _ => pure (.error Errno.ENOSYS)
+    clock_nanosleep := fun _ _ _ => pure (.error Errno.ENOSYS)
+    getrandom := fun _ _ => do
+      modify (· + 1)
+      return fixed }
 
 /-- Every error returned by `api.mapRawError` has kind `.entropyFailed` and a non-empty diagnostic message, preserving `errno` on `.osError`. -/
 def test_uuid_mapRawError_returnsNonEmptyMessage
@@ -49,8 +51,8 @@ def test_uuid_mapRawError_returnsNonEmptyMessage
   NondetTest.assert (err.kind = .entropyFailed ∧ err.message ≠ "")
   match raw with
   | .osError code _ => NondetTest.assert (err.errnoCode = some code)
-  | .shortRead _ _ => NondetTest.assert True
-  | .userError _ => NondetTest.assert True
+  | .shortRead _ _ => NondetTest.assert (err.errnoCode = none)
+  | .userError _ => NondetTest.assert (err.errnoCode = none)
 
 /-- `api.fromRandomBytes` accepts any 16-byte input, enforces RFC 4122 v4 version (`0x40`) and variant (`0x80`) bits, and preserves all remaining bits verbatim. -/
 def test_uuid_fromRandomBytes_validLen_setsV4BitsAndPreservesPayload
@@ -263,13 +265,12 @@ def test_uuid_parseHex_rejectsNonV4VersionOrVariant
     | .ok _ => NondetTest.assert False
     | .error e => NondetTest.assert (e.kind = .invalidVersion ∧ e.message ≠ "")
 
-/-- Two consecutive `getUuid` calls over `StateM MockRngState` yield distinct valid v4 UUIDs, advance state monotonically, and leave zero state leak across independent runs. -/
-def test_uuid_getUuid_consecutiveDistinctValidAndDeterministic
+/-- Two consecutive `getUuid` calls over `TimeRand.modelOps` (`StateM TimeRandState`) yield distinct valid RFC 4122 v4 UUIDs, mark CRNG ready, advance `entropyDraws` by 2, and replay deterministically. -/
+def test_uuid_getUuid_overTimeRandModel_consecutiveDistinctValid
     {runner} [NondetTest runner]
-    (mkApi : RawUuidOpsM (StateM MockRngState) → UuidApiM (StateM MockRngState)) : runner Unit := do
-  let api := mkApi mockCounterRawOps
-  let s₀ ← nondet MockRngState
-  assume (s₀.failWith = none)
+    (mkApiFn : TimeRandOpsM (StateM TimeRandState) → UuidApiM (StateM TimeRandState)) : runner Unit := do
+  let api := mkApiFn LeanSwe.LinuxSyscall.TimeRand.modelOps
+  let s₀ ← nondet TimeRandState
   let ((r1, r2), s₁) := (do
     let r1 ← api.getUuid
     let r2 ← api.getUuid
@@ -279,7 +280,7 @@ def test_uuid_getUuid_consecutiveDistinctValidAndDeterministic
     let r2 ← api.getUuid
     pure (r1, r2)).run s₀
   NondetTest.assert (r1 = r1b ∧ r2 = r2b ∧ s₁ = s₁b)
-  NondetTest.assert (s₁.counter = s₀.counter + 2 ∧ s₁.draws = s₀.draws + 2)
+  NondetTest.assert (s₁.entropyDraws = s₀.entropyDraws + 2 ∧ s₁.crngReady = true)
   match r1, r2 with
   | .ok u1, .ok u2 =>
     NondetTest.assert (u1 ≠ u2)
@@ -290,46 +291,136 @@ def test_uuid_getUuid_consecutiveDistinctValidAndDeterministic
     NondetTest.assert (api.isValid (api.toString u1) = true ∧ api.isValid (api.toString u2) = true)
   | _, _ => NondetTest.assert False
 
-/-- When the underlying `RawUuidOpsM` entropy source fails, `getUuid` propagates the exact error without mutating `counter`. -/
-def test_uuid_getUuid_propagatesEntropyError
+/-- When `sys.getrandom` returns 16 bytes on the first call, `(mkApiFn sys).getUuid` requests `(16, {})` once and constructs its `Uuid` via `fromRandomBytes`. -/
+def test_uuid_getUuid_usesExact16BytesFromGetrandom
     {runner} [NondetTest runner]
-    (mkApi : RawUuidOpsM (StateM MockRngState) → UuidApiM (StateM MockRngState)) : runner Unit := do
-  let api := mkApi mockCounterRawOps
-  let s₀ ← nondet MockRngState
-  let err ← nondet UuidError
-  assume (err.message ≠ "")
-  assume (s₀.failWith = some err)
-  let (res, s₁) := api.getUuid.run s₀
-  NondetTest.assert (res = .error err ∧ s₁.counter = s₀.counter ∧ s₁.draws = s₀.draws + 1)
-
-/-- If `RawUuidOpsM.randomBytes16` returns `.ok` with a byte count other than 16, `getUuid` rejects it with `.invalidLength` and a non-empty message. -/
-def test_uuid_getUuid_rejectsWrongRawByteCount
-    {runner} [NondetTest runner]
-    (mkApi : RawUuidOpsM (StateM MockRngState) → UuidApiM (StateM MockRngState)) : runner Unit := do
-  let bs ← nondet ByteArray
-  assume (bs.size ≠ 16)
-  let badLenOps : RawUuidOpsM (StateM MockRngState) :=
-    { mockCounterRawOps with randomBytes16 := pure (.ok bs) }
-  let api := mkApi badLenOps
-  let s₀ ← nondet MockRngState
-  let (res, s₁) := api.getUuid.run s₀
-  NondetTest.assert (s₁ = s₀)
-  match res with
-  | .ok _ => NondetTest.assert False
-  | .error e => NondetTest.assert (e.kind = .invalidLength ∧ e.message ≠ "")
-
-/-- `getUuid` constructs its `Uuid` directly from the 16 payload bytes returned by `RawUuidOpsM.randomBytes16` via `fromRandomBytes`. -/
-def test_uuid_getUuid_usesRawRandomBytes
-    {runner} [NondetTest runner]
-    (mkApi : RawUuidOpsM (StateM MockRngState) → UuidApiM (StateM MockRngState)) : runner Unit := do
+    (mkApiFn : TimeRandOpsM (StateM (List (UInt32 × GrndFlags))) →
+      UuidApiM (StateM (List (UInt32 × GrndFlags)))) : runner Unit := do
   let bs ← nondet ByteArray
   assume (bs.size = 16)
-  let fixedOps : RawUuidOpsM (StateM MockRngState) :=
-    { mockCounterRawOps with randomBytes16 := pure (.ok bs) }
-  let api := mkApi fixedOps
-  let s₀ ← nondet MockRngState
-  let (res, s₁) := api.getUuid.run s₀
-  NondetTest.assert (s₁ = s₀)
-  NondetTest.assert (res = api.fromRandomBytes bs)
+  let recOps : TimeRandOpsM (StateM (List (UInt32 × GrndFlags))) :=
+    { clock_gettime := fun _ => pure (.error Errno.ENOSYS)
+      clock_nanosleep := fun _ _ _ => pure (.error Errno.ENOSYS)
+      getrandom := fun len flags => do
+        modify (fun xs => xs ++ [(len, flags)])
+        return .ok bs }
+  let api := mkApiFn recOps
+  let (res, log) := api.getUuid.run []
+  NondetTest.assert (log = [(16, {})] ∧ res = api.fromRandomBytes bs)
+
+/-- `(mkApiFn sys).getUuid` accumulates partial `getrandom` reads across arbitrary `Errno.EINTR` interruptions without losing prefix bytes and stamps RFC 4122 v4 bits on the assembled 16-byte buffer. -/
+def test_uuid_getUuid_accumulatesPartialReadsAndRetriesEintr
+    {runner} [NondetTest runner]
+    (mkApiFn : TimeRandOpsM (StateM (List (Except Errno ByteArray))) →
+      UuidApiM (StateM (List (Except Errno ByteArray)))) : runner Unit := do
+  let b1 ← nondet ByteArray
+  let b2 ← nondet ByteArray
+  let eintrCount ← nondet Nat
+  assume (0 < b1.size ∧ 0 < b2.size ∧ b1.size + b2.size = 16)
+  assume (eintrCount ≤ 8)
+  let script : List (Except Errno ByteArray) :=
+    [.ok b1] ++ List.replicate eintrCount (.error Errno.EINTR) ++ [.ok b2]
+  let api := mkApiFn scriptedGetrandomOps
+  let (res, rem) := api.getUuid.run script
+  let combined := ByteArray.mk (b1.data.toList ++ b2.data.toList).toArray
+  NondetTest.assert (rem = [] ∧ res = api.fromRandomBytes combined)
+
+/-- When `sys.getrandom` fails with any non-`EINTR` `Errno`, `(mkApiFn sys).getUuid` stops immediately after 1 call and returns `.entropyFailed` with `errnoCode = some e` and non-empty message. -/
+def test_uuid_getUuid_mapsNonEintrErrnoWithoutRetry
+    {runner} [NondetTest runner]
+    (mkApiFn : TimeRandOpsM (StateM Nat) → UuidApiM (StateM Nat)) : runner Unit := do
+  let e ← nondet Errno
+  assume (e ≠ Errno.EINTR)
+  let api := mkApiFn (countingFixedGetrandomOps (.error e))
+  let (res, calls) := api.getUuid.run 0
+  NondetTest.assert (calls = 1)
+  NondetTest.assert (∃ err, res = .error err ∧ err.kind = .entropyFailed ∧
+    err.errnoCode = some e ∧ err.message ≠ "")
+
+/-- Persistent `Errno.EINTR` terminates within `MAX_GETRANDOM_ATTEMPTS` returning `.entropyFailed` (`errnoCode = some EINTR`), and anomalous `0`-byte or oversized (`> 16`-byte) `getrandom` chunks stop after 1 call returning `.entropyFailed` (`errnoCode = none`). -/
+def test_uuid_getUuid_persistentEintrAndInvalidChunkReturnEntropyFailed
+    {runner} [NondetTest runner]
+    (mkApiFn : TimeRandOpsM (StateM Nat) → UuidApiM (StateM Nat)) : runner Unit := do
+  let bigChunk ← nondet ByteArray
+  assume (bigChunk.size > 16)
+  let (rEintr, callsEintr) := (mkApiFn (countingFixedGetrandomOps (.error Errno.EINTR))).getUuid.run 0
+  NondetTest.assert (callsEintr = MAX_GETRANDOM_ATTEMPTS ∧
+    ∃ err, rEintr = .error err ∧ err.kind = .entropyFailed ∧
+      err.errnoCode = some Errno.EINTR ∧ err.message ≠ "")
+  let (rEmpty, callsEmpty) := (mkApiFn (countingFixedGetrandomOps (.ok ByteArray.empty))).getUuid.run 0
+  NondetTest.assert (callsEmpty = 1 ∧
+    ∃ err, rEmpty = .error err ∧ err.kind = .entropyFailed ∧
+      err.errnoCode = none ∧ err.message ≠ "")
+  let (rBig, callsBig) := (mkApiFn (countingFixedGetrandomOps (.ok bigChunk))).getUuid.run 0
+  NondetTest.assert (callsBig = 1 ∧
+    ∃ err, rBig = .error err ∧ err.kind = .entropyFailed ∧
+      err.errnoCode = none ∧ err.message ≠ "")
+
+/-- Declared error-coverage matrix for pure helper package `LeanSwe.Uuid` (`UuidErrorKind`, `20` obligations across `fromRandomBytes`, `parse`, `parseHex`, `getUuid`, and `v4`). -/
+def errorCoverage : List (ErrorObligation UuidErrorKind) :=
+  [ { request := "LeanSwe.Uuid.fromRandomBytes"
+      errorKind := .entropyFailed
+      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_fromRandomBytes_never_entropyFailed" }
+  , { request := "LeanSwe.Uuid.fromRandomBytes"
+      errorKind := .invalidLength
+      justification := .tested "LeanSwe.Uuid.RuntimeTests.err_uuid_fromRandomBytes_invalidLength" .real }
+  , { request := "LeanSwe.Uuid.fromRandomBytes"
+      errorKind := .invalidFormat
+      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_fromRandomBytes_never_invalidFormat" }
+  , { request := "LeanSwe.Uuid.fromRandomBytes"
+      errorKind := .invalidVersion
+      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_fromRandomBytes_never_invalidVersion" }
+
+  , { request := "LeanSwe.Uuid.parse"
+      errorKind := .entropyFailed
+      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_parse_never_entropyFailed" }
+  , { request := "LeanSwe.Uuid.parse"
+      errorKind := .invalidLength
+      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_parse_never_invalidLength" }
+  , { request := "LeanSwe.Uuid.parse"
+      errorKind := .invalidFormat
+      justification := .tested "LeanSwe.Uuid.RuntimeTests.err_uuid_parse_invalidFormat" .real }
+  , { request := "LeanSwe.Uuid.parse"
+      errorKind := .invalidVersion
+      justification := .tested "LeanSwe.Uuid.RuntimeTests.err_uuid_parse_invalidVersion" .real }
+
+  , { request := "LeanSwe.Uuid.parseHex"
+      errorKind := .entropyFailed
+      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_parseHex_never_entropyFailed" }
+  , { request := "LeanSwe.Uuid.parseHex"
+      errorKind := .invalidLength
+      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_parseHex_never_invalidLength" }
+  , { request := "LeanSwe.Uuid.parseHex"
+      errorKind := .invalidFormat
+      justification := .tested "LeanSwe.Uuid.RuntimeTests.err_uuid_parseHex_invalidFormat" .real }
+  , { request := "LeanSwe.Uuid.parseHex"
+      errorKind := .invalidVersion
+      justification := .tested "LeanSwe.Uuid.RuntimeTests.err_uuid_parseHex_invalidVersion" .real }
+
+  , { request := "LeanSwe.Uuid.getUuid"
+      errorKind := .entropyFailed
+      justification := .tested "LeanSwe.Uuid.RuntimeTests.err_uuid_getUuid_entropyFailed" .mocked }
+  , { request := "LeanSwe.Uuid.getUuid"
+      errorKind := .invalidLength
+      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_getUuid_never_invalidLength" }
+  , { request := "LeanSwe.Uuid.getUuid"
+      errorKind := .invalidFormat
+      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_getUuid_never_invalidFormat" }
+  , { request := "LeanSwe.Uuid.getUuid"
+      errorKind := .invalidVersion
+      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_getUuid_never_invalidVersion" }
+
+  , { request := "LeanSwe.Uuid.v4"
+      errorKind := .entropyFailed
+      justification := .tested "LeanSwe.Uuid.RuntimeTests.err_uuid_v4_entropyFailed" .mocked }
+  , { request := "LeanSwe.Uuid.v4"
+      errorKind := .invalidLength
+      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_v4_never_invalidLength" }
+  , { request := "LeanSwe.Uuid.v4"
+      errorKind := .invalidFormat
+      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_v4_never_invalidFormat" }
+  , { request := "LeanSwe.Uuid.v4"
+      errorKind := .invalidVersion
+      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_v4_never_invalidVersion" } ]
 
 end LeanSwe.Uuid

@@ -1,9 +1,39 @@
-import LeanSwe.Uuid.Raw.Types
-
 namespace LeanSwe.Uuid
 
-export LeanSwe.Uuid.Raw
-  (UuidErrorKind UuidError UuidRawError RawUuidOpsM RawUuidOps)
+/-- Maximum `getrandom(2)` attempts (covering up to 16 single-byte partial reads plus 16 `EINTR` retries) when gathering 16 UUIDv4 entropy bytes. -/
+def MAX_GETRANDOM_ATTEMPTS : Nat := 32
+
+/-- Classification of failures in `LeanSwe.Uuid`. -/
+inductive UuidErrorKind where
+  /-- OS entropy source (`TimeRand.getrandom`) failed, exhausted retries, or returned an invalid chunk length. -/
+  | entropyFailed
+  /-- Input byte array passed to `fromRandomBytes` did not have length 16. -/
+  | invalidLength
+  /-- Input string had invalid length, characters, or hyphen layout. -/
+  | invalidFormat
+  /-- Parsed UUID did not have RFC 4122 version 4 and variant `10xx` bits. -/
+  | invalidVersion
+  deriving Repr, BEq, DecidableEq, Inhabited
+
+/-- Typed error returned by `LeanSwe.Uuid` operations. -/
+structure UuidError where
+  /-- Machine-checkable error category. -/
+  kind : UuidErrorKind
+  /-- Underlying OS `errno` code from `getrandom`, when available. -/
+  errnoCode : Option UInt32 := none
+  /-- Non-empty human-readable diagnostic message. -/
+  message : String
+  deriving Repr, BEq, DecidableEq, Inhabited
+
+/-- Pure representation of raw OS entropy error inputs for total error-mapping specs. -/
+inductive UuidRawError where
+  /-- OS entropy read failed with `errno` and detail message. -/
+  | osError (errno : UInt32) (detail : String)
+  /-- Entropy source returned an unexpected byte count or exhausted bounded retries before reaching 16 bytes. -/
+  | shortRead (gotBytes : Nat) (detail : String)
+  /-- Generic runtime error message. -/
+  | userError (detail : String)
+  deriving Repr, BEq, DecidableEq, Inhabited
 
 /-- Wrapper around a 16-byte RFC 4122 UUID value. -/
 structure Uuid where
@@ -13,16 +43,6 @@ structure Uuid where
 
 instance : Repr Uuid where
   reprPrec u prec := Repr.addAppParen ("Uuid.mk " ++ repr u.bytes.data) prec
-
-/-- Deterministic mock entropy state for testing and proofs over `RawUuidOpsM (StateM MockRngState)`. -/
-structure MockRngState where
-  /-- Monotonic counter mixed into generated 16-byte blocks so consecutive draws differ. -/
-  counter : Nat := 0
-  /-- Optional injected failure returned instead of generating entropy bytes. -/
-  failWith : Option UuidError := none
-  /-- Number of `randomBytes16` calls observed on this state. -/
-  draws : Nat := 0
-  deriving Repr, BEq, DecidableEq, Inhabited
 
 /-- Public UUIDv4 operations exported by `LeanSwe.Uuid`, parameterized over effect monad `m`. -/
 structure UuidApiM (m : Type → Type) where
