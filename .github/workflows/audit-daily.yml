@@ -65,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           LAKE_NO_CACHE=true lake check 2>&1 | tee "$RUNNER_TEMP/lake_check.log"
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail lean-swe-mut-test leanswe-world-fuzz 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail lean-swe-mut-test leanswe-world-fuzz leanswe-fuzz 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
 
       - name: Check 1 GB private-memory cap on all modules
         id: mem_check
@@ -171,6 +171,7 @@ jobs:
           (( FAILED_RUNS == 0 ))
           .lake/build/bin/lean-swe-test --timerand-strace-fault-check 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
           { .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 1000000 --self-test-shrink && .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 250000 --random-seed --self-test-shrink; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+          .lake/build/bin/leanswe-fuzz --suite float --steps 50000 --random-seed --self-test-shrink 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
 
       - name: Open deduplicated GitHub issue on failure
         if: ${{ failure() && !cancelled() && github.ref == 'refs/heads/main' }}

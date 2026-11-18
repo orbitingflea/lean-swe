@@ -69,15 +69,15 @@ jobs:
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: ./.lake
-          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/c/**') }}-${{ github.sha }}
+          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/c/**', 'Fuzz/**/c/**') }}-${{ github.sha }}
           restore-keys: |
-            lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/c/**') }}-
+            lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/c/**', 'Fuzz/**/c/**') }}-
 
       - name: Prune orphaned Lean build artifacts
         run: |
           python3 -c '
           from pathlib import Path
-          for root in ("Core", "LeanSwe"):
+          for root in ("Core", "LeanSwe", "Fuzz"):
               lib_root = Path(".lake/build/lib/lean") / root
               if not lib_root.exists():
                   continue
@@ -96,7 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail lean-swe-mut-test leanswe-world-fuzz
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail lean-swe-mut-test leanswe-world-fuzz leanswe-fuzz
 
       - name: Run runtime test suites
         run: |
@@ -143,6 +143,12 @@ jobs:
           fi
           .lake/build/bin/lean-swe-test --timerand-strace-fault-check
           .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --self-test-shrink && .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 50000 --random-seed --self-test-shrink
+          python3 -B -m unittest scripts/test_fuzz_changed.py
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" && -n "${BASE_SHA:-}" ]]; then
+            python3 -B scripts/fuzz_changed.py --base "$BASE_SHA" --head HEAD --run --extra-arg=--self-test-shrink
+          else
+            .lake/build/bin/leanswe-fuzz --smoke --all --self-test-shrink
+          fi
 
       - name: Check 1 GB private-memory cap on changed modules and reverse dependents
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -189,4 +195,4 @@ jobs:
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: ./.lake
-          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/c/**') }}-${{ github.sha }}
+          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/c/**', 'Fuzz/**/c/**') }}-${{ github.sha }}
