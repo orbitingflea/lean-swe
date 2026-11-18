@@ -21,30 +21,32 @@ private def readUrandomU64 : IO UInt64 := do
     acc := acc ||| ((UInt64.ofNat (bs.get! i).toNat) <<< UInt64.ofNat (i * 8))
   return acc
 
-private def parseArgs : List String → Except String CliArgs
-  | [] => .ok {}
-  | "--suite" :: s :: rest => do
-    let acc ← parseArgs rest
-    return { acc with suite := s }
-  | "--steps" :: nStr :: rest => do
-    let acc ← parseArgs rest
+private def parseArgs (args : List String) (acc : CliArgs := {}) : Except String CliArgs :=
+  match args with
+  | [] => .ok acc
+  | ["--suite"] => .error "missing value for --suite"
+  | "--suite" :: s :: rest => parseArgs rest { acc with suite := s }
+  | ["--steps"] => .error "missing value for --steps"
+  | "--steps" :: nStr :: rest =>
     match nStr.toNat? with
-    | some n => return { acc with steps := n }
+    | some n =>
+      if n > 0 then
+        parseArgs rest { acc with steps := n }
+      else
+        .error s!"invalid --steps value (must be >= 1): {nStr}"
     | none => .error s!"invalid --steps value: {nStr}"
-  | "--seed" :: sStr :: rest => do
-    let acc ← parseArgs rest
+  | ["--seed"] => .error "missing value for --seed"
+  | "--seed" :: sStr :: rest =>
     match sStr.toNat? with
-    | some n => return { acc with seed := UInt64.ofNat n, randomSeed := false }
+    | some n =>
+      if n < UInt64.size then
+        parseArgs rest { acc with seed := UInt64.ofNat n, randomSeed := false }
+      else
+        .error s!"--seed out of UInt64 range: {sStr}"
     | none => .error s!"invalid --seed value: {sStr}"
-  | "--random-seed" :: rest => do
-    let acc ← parseArgs rest
-    return { acc with randomSeed := true }
-  | "--self-test-shrink" :: rest => do
-    let acc ← parseArgs rest
-    return { acc with selfTestShrink := true }
-  | "--require-memfd-strict" :: rest => do
-    let acc ← parseArgs rest
-    return { acc with requireMemfdStrict := true }
+  | "--random-seed" :: rest => parseArgs rest { acc with randomSeed := true }
+  | "--self-test-shrink" :: rest => parseArgs rest { acc with selfTestShrink := true }
+  | "--require-memfd-strict" :: rest => parseArgs rest { acc with requireMemfdStrict := true }
   | other :: _ => .error s!"unknown argument: {other}"
 
 /-- CLI entry point for `leanswe-world-fuzz`. -/
