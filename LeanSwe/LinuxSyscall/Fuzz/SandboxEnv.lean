@@ -56,7 +56,7 @@ opaque closeFd : @& RawFd → IO (Except Errno Unit)
 @[extern "leanswe_sbx_enter_userns"]
 opaque enterUserns : IO (Except Errno Unit)
 
-/-- Enter extra Linux namespaces (`bit 0`: `CLONE_NEWPID`, `1`: `CLONE_NEWNET`, `2`: `CLONE_NEWUTS`, `3`: `CLONE_NEWIPC`). -/
+/-- Enter extra Linux namespaces (`bit 0`: `CLONE_NEWPID`, `1`: `CLONE_NEWNET`, `2`: `CLONE_NEWUTS`, `3`: `CLONE_NEWIPC`, `4`: `CLONE_NEWCGROUP`). -/
 @[extern "leanswe_sbx_unshare_extra"]
 opaque unshareExtra : UInt32 → IO (Except Errno Unit)
 

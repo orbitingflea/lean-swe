@@ -8,6 +8,7 @@ private structure CliArgs where
   seed : UInt64 := 0x517cc1b727220a95
   randomSeed : Bool := false
   selfTestShrink : Bool := false
+  requireMemfdStrict : Bool := false
 
 private def readUrandomU64 : IO UInt64 := do
   let h ← IO.FS.Handle.mk "/dev/urandom" .read
@@ -41,6 +42,9 @@ private def parseArgs : List String → Except String CliArgs
   | "--self-test-shrink" :: rest => do
     let acc ← parseArgs rest
     return { acc with selfTestShrink := true }
+  | "--require-memfd-strict" :: rest => do
+    let acc ← parseArgs rest
+    return { acc with requireMemfdStrict := true }
   | other :: _ => .error s!"unknown argument: {other}"
 
 /-- CLI entry point for `leanswe-world-fuzz`. -/
@@ -62,6 +66,7 @@ def main (args : List String) : IO UInt32 := do
         seed := effectiveSeed
         steps := cfg.steps
         selfTestShrink := cfg.selfTestShrink
+        requireMemfdStrict := cfg.requireMemfdStrict
       }
     | other =>
       IO.eprintln s!"unknown fuzz suite: {other}"

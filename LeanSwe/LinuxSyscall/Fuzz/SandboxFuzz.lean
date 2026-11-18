@@ -24,6 +24,8 @@ structure FuzzConfig where
   printMatrix : Bool := true
   /-- Run self-test verifying greedy delta-shrinking against an injected oracle fault. -/
   selfTestShrink : Bool := false
+  /-- Require discriminating `vm.memfd_noexec=2` strict EACCES observations to pass. -/
+  requireMemfdStrict : Bool := false
   deriving Repr
 
 private inductive HandleChoice where
@@ -95,7 +97,7 @@ private def encodeFilter (insns : List SockFilterInsn) : ByteArray :=
 
 private def genHandleChoice (r : Rng) : HandleChoice × Rng :=
   let (kind, r1) := r.nextNat 12
-  let (idx, r2) := r1.nextNat 8
+  let (idx, r2) := r1.nextNat 65536
   if kind < 3 then (.dynamic idx, r2)
   else if kind < 5 then (.hostDir idx, r2)
   else if kind < 7 then (.hostFile idx, r2)
@@ -108,7 +110,7 @@ private def genHandleChoice (r : Rng) : HandleChoice × Rng :=
 private def genRulesetTargetChoice (r : Rng) : HandleChoice × Rng :=
   let (hitRs, r1) := r.chance 3 5
   if hitRs then
-    let (idx, r2) := r1.nextNat 8
+    let (idx, r2) := r1.nextNat 65536
     (.openRuleset idx, r2)
   else
     genHandleChoice r1
@@ -117,7 +119,7 @@ private def genPathParentChoice (r : Rng) : HandleChoice × Rng :=
   let (hitHost, r1) := r.chance 1 2
   if hitHost then
     let (useDir, r2) := r1.chance 1 2
-    let (idx, r3) := r2.nextNat 8
+    let (idx, r3) := r2.nextNat 65536
     if useDir then (.hostDir idx, r3) else (.hostFile idx, r3)
   else
     genHandleChoice r1
@@ -270,7 +272,7 @@ private def buildMultiSyscallFilter (targets : Array UInt32) (errVal : UInt32) :
     let n := targets.size
     for i in List.range n do
       let nr := targets.getD i 319
-      let jtToErr := n - 1 - i
+      let jtToErr := n - i
       insns := insns ++ [{ code := 0x0015, jt := UInt8.ofNat jtToErr, jf := 0, k := nr }]
     insns := insns ++
       [ { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }
@@ -648,7 +650,7 @@ private def genStep (r : Rng) (llBurst : Bool) (allowSelectErr : Bool) : FuzzSte
     let (b3, r6) := r5.chance 1 4
     (.doMemfd name { cloexec := b0, allowSealing := b1, noexecSeal := b2, exec := b3 }, r6)
   else
-    let (idx, r2) := r1.nextNat 8
+    let (idx, r2) := r1.nextNat 65536
     (.closeDyn idx, r2)
 
 private def genEpisodePlan (r : Rng) (nSteps : Nat) : EpisodePlan × Rng :=
@@ -656,7 +658,7 @@ private def genEpisodePlan (r : Rng) (nSteps : Nat) : EpisodePlan × Rng :=
     let (useUserns, r1) := r.chance 1 4
     let (useMntNs, rMnt) := r1.chance 1 6
     let (useExtraNs, rEns) := rMnt.chance 1 4
-    let (extraNsRaw, rEns2) := rEns.nextRange 1 15
+    let (extraNsRaw, rEns2) := rEns.nextRange 1 31
     let extraNsMask := if useExtraNs then UInt32.ofNat extraNsRaw else 0
     let (preNnp, r2) := rEns2.chance 1 5
     let (preLowerLimits, rLim) := r2.chance 1 6
@@ -1200,6 +1202,8 @@ private def runPlanInChild
             pure (SandboxOutcome.opened hid)
         executed := executed + 1
         hits := bumpHit hits s!"{reqTag req} -> {outcomeTag out}"
+        if !ex.sys.seccompMayIntercept && fl.exec && !fl.noexecSeal && out == .err Errno.EACCES then
+          hits := bumpHit hits "memfd_create.noexec_strict -> err.13"
         match stepOracle ex.sys req out with
         | some s' =>
           if !s'.wf then
@@ -1394,8 +1398,39 @@ def runShrinkSelfTest (seed : UInt64 := 0x123456789abcdef0) : IO Unit := do
       throw (IO.userError s!"shrink self-test expected <= 2 steps, got {minimal.steps.size}")
     IO.println s!"SANDBOX_SHRINK_SELFTEST_OK: {injected.steps.size} -> {minimal.steps.size} step(s)"
 
+/-- Verify `buildMultiSyscallFilter` intercepts all listed targets with the requested errno while allowing other syscalls. -/
+private def runOuterSeccompSelfTest : IO Unit := do
+  let (st, payload) ← SandboxEnv.runForked do
+    match ← prctl .setNoNewPrivs with
+    | .ok 0 => pure ()
+    | other => return (s!"setNoNewPrivs failed: {repr other}").toUTF8
+    let filter := buildMultiSyscallFilter #[319, 279, 444] Errno.EPERM
+    match ← seccomp .setModeFilter {} filter with
+    | .ok 0 => pure ()
+    | other => return (s!"seccomp failed: {repr other}").toUTF8
+    match ← memfdCreate "selftest".toUTF8 {} with
+    | .error e =>
+      if e != Errno.EPERM then
+        return (s!"memfdCreate expected EPERM, got {e}").toUTF8
+    | .ok fd =>
+      let _ ← SandboxEnv.closeFd fd
+      return "memfdCreate unexpectedly succeeded".toUTF8
+    match ← landlockCreateRuleset .none LANDLOCK_CREATE_RULESET_VERSION with
+    | .error e =>
+      if e != Errno.EPERM then
+        return (s!"landlockCreateRuleset expected EPERM, got {e}").toUTF8
+    | .ok _ =>
+      return "landlockCreateRuleset unexpectedly succeeded".toUTF8
+    match ← prctl .getNoNewPrivs with
+    | .ok 1 => return "OK".toUTF8
+    | other => return (s!"getNoNewPrivs expected 1, got {repr other}").toUTF8
+  let msg := String.fromUTF8! payload
+  if st != 0 || msg != "OK" then
+    throw (IO.userError s!"outer seccomp self-test failed (status={st}, payload={msg})")
+
 /-- Execute `cfg.steps` real sandbox syscalls inside forked child episodes, verify every step against `Model.allowedStep`, and assert full matrix coverage for runs `>= 50000` steps. -/
 def runFuzz (cfg : FuzzConfig := {}) : IO UInt32 := do
+  runOuterSeccompSelfTest
   if cfg.selfTestShrink then
     runShrinkSelfTest cfg.seed
   withFuzzDir fun dirPath filePath => do
@@ -1432,6 +1467,9 @@ def runFuzz (cfg : FuzzConfig := {}) : IO UInt32 := do
       if !missing.isEmpty then
         IO.eprintln s!"SANDBOX_FUZZ_MATRIX_MISSING ({missing.size}): {", ".intercalate missing.toList}"
         return 1
+    if cfg.requireMemfdStrict && getHitCount hits "memfd_create.noexec_strict -> err.13" == 0 then
+      IO.eprintln "SANDBOX_FUZZ_MEMFD_STRICT_MISSING: expected memfd_create.noexec_strict -> err.13 > 0"
+      return 1
     IO.println s!"SANDBOX_FUZZ_OK: syscalls={totalSteps} episodes={episodes} seed={cfg.seed}"
     return 0
 

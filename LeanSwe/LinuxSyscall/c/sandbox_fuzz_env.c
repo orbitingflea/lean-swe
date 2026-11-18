@@ -234,6 +234,7 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_unshare_extra(uint32_t ns_bits, lean_obj_ar
   if ((ns_bits & 2u) != 0u) { flags |= CLONE_NEWNET; }
   if ((ns_bits & 4u) != 0u) { flags |= CLONE_NEWUTS; }
   if ((ns_bits & 8u) != 0u) { flags |= CLONE_NEWIPC; }
+  if ((ns_bits & 16u) != 0u) { flags |= CLONE_NEWCGROUP; }
   if (flags != 0 && unshare(flags) < 0) {
     return leanswe_mk_errno(errno);
   }
