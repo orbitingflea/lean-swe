@@ -410,20 +410,20 @@ theorem sandbox_impl_seccompSafetyGuards_allPass :
       !hasSafeSeccompRetBytes (encodeSockFilters [{ code := 0x000e, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }])) = true := by decide
   have hBad9 : (!isValidSeccompFilterByteLen (encodeSockFilters [{ code := 0x003c, jt := 0, jf := 0, k := 0 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }]).data.size ||
       !hasSafeSeccompRetBytes (encodeSockFilters [{ code := 0x003c, jt := 0, jf := 0, k := 0 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }])) = true := by decide
+  have hBad10 : (!isValidSeccompFilterByteLen (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_TRACE ||| 7 }]).data.size ||
+      !hasSafeSeccompRetBytes (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_TRACE ||| 7 }])) = true := by decide
+  have hBad11 : (!isValidSeccompFilterByteLen (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_USER_NOTIF }]).data.size ||
+      !hasSafeSeccompRetBytes (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_USER_NOTIF }])) = true := by decide
   have hOk1 : (!isValidSeccompFilterByteLen (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }]).data.size ||
       !hasSafeSeccompRetBytes (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }])) = false := by decide
   have hOk2 : (!isValidSeccompFilterByteLen (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_LOG }]).data.size ||
       !hasSafeSeccompRetBytes (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_LOG }])) = false := by decide
-  have hOk3 : (!isValidSeccompFilterByteLen (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_TRACE ||| 7 }]).data.size ||
-      !hasSafeSeccompRetBytes (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_TRACE ||| 7 }])) = false := by decide
-  have hOk4 : (!isValidSeccompFilterByteLen (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_USER_NOTIF }]).data.size ||
-      !hasSafeSeccompRetBytes (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_USER_NOTIF }])) = false := by decide
   have hOk5 : (!isValidSeccompFilterByteLen (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ERRNO ||| Errno.EPERM }]).data.size ||
       !hasSafeSeccompRetBytes (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ERRNO ||| Errno.EPERM }])) = false := by decide
   have hOk6 : (!isValidSeccompFilterByteLen (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ERRNO ||| 4095 }]).data.size ||
       !hasSafeSeccompRetBytes (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ERRNO ||| 4095 }])) = false := by decide
   simp only [hBad1, hBad2, hBad3, hBad4, hBad5, hBad6, hBad7, hBad8, hBad9,
-    hOk1, hOk2, hOk3, hOk4, hOk5, hOk6, ↓reduceIte, Bool.false_eq_true]
+    hBad10, hBad11, hOk1, hOk2, hOk5, hOk6, ↓reduceIte, Bool.false_eq_true]
   repeat first | exact trivial | exact rfl | refine ⟨?_, ?_⟩
 
 end LeanSwe.LinuxSyscall.Sandbox

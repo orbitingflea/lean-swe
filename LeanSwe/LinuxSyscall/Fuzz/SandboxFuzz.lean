@@ -27,6 +27,7 @@ structure FuzzConfig where
   deriving Repr
 
 private inductive HandleChoice where
+  | openRuleset (idx : Nat)
   | hostDir (idx : Nat)
   | hostFile (idx : Nat)
   | pseudo (idx : Nat)
@@ -52,13 +53,18 @@ private inductive FuzzStep where
 
 private structure EpisodePlan where
   useUserns : Bool
+  useMntNs : Bool
   preNnp : Bool
+  preLowerLimits : Bool
   preOuterLayers : Nat
   preOuterSeccomp : Bool
+  outerKeepNnpZero : Bool
+  outerSeccompTargets : Array UInt32
+  outerSeccompErrno : UInt32
   spawnMode : Nat
   closeLowFds : Bool
-  dirOPaths : Array Bool
-  fileOPaths : Array Bool
+  dirModes : Array UInt32
+  fileModes : Array UInt32
   pseudoOPaths : Array Bool
   seedOPathSpecials : Bool
   specialSeedIdx : Nat
@@ -97,6 +103,23 @@ private def genHandleChoice (r : Rng) : HandleChoice × Rng :=
   else if kind == 10 then (.closed idx, r2)
   else (.unmapped, r2)
 
+private def genRulesetTargetChoice (r : Rng) : HandleChoice × Rng :=
+  let (hitRs, r1) := r.chance 3 5
+  if hitRs then
+    let (idx, r2) := r1.nextNat 8
+    (.openRuleset idx, r2)
+  else
+    genHandleChoice r1
+
+private def genPathParentChoice (r : Rng) : HandleChoice × Rng :=
+  let (hitHost, r1) := r.chance 1 2
+  if hitHost then
+    let (useDir, r2) := r1.chance 1 2
+    let (idx, r3) := r2.nextNat 8
+    if useDir then (.hostDir idx, r3) else (.hostFile idx, r3)
+  else
+    genHandleChoice r1
+
 private def fsMaskPool : Array UInt64 := #[
   0,
   LANDLOCK_ACCESS_FS_EXECUTE,
@@ -113,6 +136,15 @@ private def fsMaskPool : Array UInt64 := #[
   (1 : UInt64) <<< 17,
   (1 : UInt64) <<< 20,
   (1 : UInt64) <<< 60
+]
+
+private def validCreateFsPool : Array UInt64 := #[
+  LANDLOCK_ACCESS_FS_EXECUTE,
+  LANDLOCK_ACCESS_FS_READ_FILE,
+  LANDLOCK_ACCESS_FS_READ_FILE ||| LANDLOCK_ACCESS_FS_READ_DIR,
+  LANDLOCK_ACCESS_FS_EXECUTE ||| LANDLOCK_ACCESS_FS_READ_FILE ||| LANDLOCK_ACCESS_FS_READ_DIR ||| LANDLOCK_ACCESS_FS_WRITE_FILE,
+  LANDLOCK_ACCESS_FS_V4_ALL,
+  LANDLOCK_ACCESS_FS_V4_ALL ||| LANDLOCK_ACCESS_FS_IOCTL_DEV ||| LANDLOCK_ACCESS_FS_RESOLVE_UNIX
 ]
 
 private def netMaskPool : Array UInt64 := #[
@@ -145,6 +177,14 @@ private def genSeccompFlags (r : Rng) : SeccompFlags × Rng :=
   let (b3, r4) := r3.chance 1 3
   ({ tsync := b0, log := b1, specAllow := b2, tsyncEsrch := b3 }, r4)
 
+private def genU32 (r : Rng) : UInt32 × Rng :=
+  let (v, nxt) := r.nextU64
+  (v.toUInt32, nxt)
+
+private def genU16 (r : Rng) : UInt16 × Rng :=
+  let (v, nxt) := r.nextU64
+  (v.toUInt16, nxt)
+
 private def genRandomBytes (r : Rng) (len : Nat) : ByteArray × Rng :=
   Id.run do
     let mut cur := r
@@ -152,6 +192,16 @@ private def genRandomBytes (r : Rng) (len : Nat) : ByteArray × Rng :=
     for _ in List.range len do
       let (v, nxt) := cur.nextNat 256
       out := out.push (UInt8.ofNat v)
+      cur := nxt
+    return (out, cur)
+
+private def genNonNulBytes (r : Rng) (len : Nat) : ByteArray × Rng :=
+  Id.run do
+    let mut cur := r
+    let mut out := ByteArray.empty
+    for _ in List.range len do
+      let (v, nxt) := cur.nextNat 255
+      out := out.push (UInt8.ofNat (v + 1))
       cur := nxt
     return (out, cur)
 
@@ -206,23 +256,42 @@ private def condJmpOps : Array UInt16 := #[
   0x0015, 0x001d, 0x0025, 0x002d, 0x0035, 0x003d, 0x0045, 0x004d
 ]
 
+private def invalidBpfOps : Array UInt16 := #[
+  0x0094, 0x009c, 0x00b1, 0x0028, 0x0030, 0x0040, 0x008c
+]
+
+private def buildMultiSyscallFilter (targets : Array UInt32) (errVal : UInt32) : ByteArray :=
+  Id.run do
+    let mut insns : List SockFilterInsn := [{ code := 0x0020, jt := 0, jf := 0, k := 0 }]
+    let n := targets.size
+    for i in List.range n do
+      let nr := targets.getD i 319
+      let jtToErr := n - 1 - i
+      insns := insns ++ [{ code := 0x0015, jt := UInt8.ofNat jtToErr, jf := 0, k := nr }]
+    insns := insns ++
+      [ { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }
+      , { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ERRNO ||| errVal } ]
+    return encodeFilter insns
+
 private def genFullCbpfDag (r : Rng) (allowSelectErr : Bool) : ByteArray × Rng :=
   Id.run do
     let mut cur := r
     let (longMode, rLenMode) := cur.chance 1 5
     cur := rLenMode
-    let (nBody, r1) := if longMode then cur.nextRange 60 159 else cur.nextRange 1 18
+    let (nBodyRaw, r1) := if longMode then cur.nextRange 60 159 else cur.nextRange 1 18
     cur := r1
     let (useSelector, r2) := cur.chance 1 3
     cur := r2
-    let (retAction, r3) := cur.pickArray #[SECCOMP_RET_ALLOW, SECCOMP_RET_LOG] SECCOMP_RET_ALLOW
+    let (errVal, rErr) := cur.pickArray seccompErrnoPool Errno.EPERM
+    cur := rErr
+    let safeActions := #[SECCOMP_RET_ALLOW, SECCOMP_RET_LOG]
+    let (retAction, r3) := cur.pickArray safeActions SECCOMP_RET_ALLOW
     cur := r3
     if useSelector && allowSelectErr then
       let (targetNr, r4) := cur.pickArray sandboxSyscallNrs 446
       let (argMode, r5) := r4.chance 1 2
-      let (errVal, r6) := r5.pickArray seccompErrnoPool Errno.EPERM
-      let (argCmpVal, r7) := r6.nextNat 4
-      cur := r7
+      let (argCmpVal, r6) := r5.nextNat 4
+      cur := r6
       let checkArg : List SockFilterInsn :=
         if argMode then
           [ { code := 0x0020, jt := 0, jf := 0, k := 16 }
@@ -236,20 +305,29 @@ private def genFullCbpfDag (r : Rng) (allowSelectErr : Bool) : ByteArray × Rng 
         checkArg ++
         [ { code := 0x0006, jt := 0, jf := 0, k := retAction } ]
       return (encodeFilter prog, cur)
+    let (emitDagErr, rDagErr) := cur.chance 1 3
+    cur := rDagErr
+    let guardTarget := allowSelectErr && emitDagErr
+    let nBody := if guardTarget then Nat.min nBodyRaw 156 else nBodyRaw
     let totalLen := nBody + 1
     let mut pathMasks : Array UInt32 := Array.replicate totalLen (0xFFFF : UInt32)
     let mut curMask : UInt32 := 0
     let mut insns : List SockFilterInsn := []
     for idx in List.range nBody do
-      let rem := nBody - 1 - idx
+      let rem := nBody - idx
       let effMask := curMask &&& (pathMasks.getD idx 0xFFFF)
       let (cat, nxt) := cur.nextNat 16
       cur := nxt
       if cat < 5 then
         let (op, nxt2) := cur.pickArray simpleBpfOps 0x0000
-        let (imm, nxt3) := nxt2.nextNat 128
-        cur := nxt3
-        insns := insns ++ [{ code := op, jt := 0, jf := 0, k := UInt32.ofNat imm }]
+        let (smallImm, nxt3) := nxt2.chance 1 2
+        let (imm32, nxt4) := if smallImm then
+            let (v, rImm) := nxt3.nextNat 128
+            (UInt32.ofNat v, rImm)
+          else
+            genU32 nxt3
+        cur := nxt4
+        insns := insns ++ [{ code := op, jt := 0, jf := 0, k := imm32 }]
         curMask := effMask
       else if cat < 7 then
         let (offIdx, nxt2) := cur.nextRange 0 15
@@ -285,14 +363,14 @@ private def genFullCbpfDag (r : Rng) (allowSelectErr : Bool) : ByteArray × Rng 
             break
         insns := insns ++ [{ code := ldOp, jt := 0, jf := 0, k := UInt32.ofNat chosenSlot }]
         curMask := effMask
-      else if cat == 12 && rem > 0 then
+      else if cat == 12 then
         let (kOff, nxt2) := cur.nextNat rem
         cur := nxt2
         let tgt := idx + 1 + kOff
         pathMasks := pathMasks.set! tgt ((pathMasks.getD tgt 0xFFFF) &&& effMask)
         insns := insns ++ [{ code := 0x0005, jt := 0, jf := 0, k := UInt32.ofNat kOff }]
         curMask := 0xFFFF
-      else if cat < 15 && rem > 0 then
+      else if cat < 15 then
         let (jmpOp, nxt2) := cur.pickArray condJmpOps 0x0015
         let (jtOff, nxt3) := nxt2.nextNat rem
         let (jfOff, nxt4) := nxt3.nextNat rem
@@ -305,21 +383,32 @@ private def genFullCbpfDag (r : Rng) (allowSelectErr : Bool) : ByteArray × Rng 
         insns := insns ++ [{ code := jmpOp, jt := UInt8.ofNat jtOff, jf := UInt8.ofNat jfOff, k := UInt32.ofNat kVal }]
         curMask := 0xFFFF
       else
-        let (midAct, nxt2) := cur.pickArray #[SECCOMP_RET_ALLOW, SECCOMP_RET_LOG] SECCOMP_RET_ALLOW
-        cur := nxt2
-        insns := insns ++ [{ code := 0x0006, jt := 0, jf := 0, k := midAct }]
+        let (midAct, nxt2) := cur.pickArray safeActions SECCOMP_RET_ALLOW
+        let (useMidErr, nxt3) := nxt2.chance 1 2
+        cur := nxt3
+        let finalMid := if guardTarget && useMidErr then SECCOMP_RET_ERRNO ||| errVal else midAct
+        insns := insns ++ [{ code := 0x0006, jt := 0, jf := 0, k := finalMid }]
         curMask := effMask
-    insns := insns ++ [{ code := 0x0006, jt := 0, jf := 0, k := retAction }]
-    return (encodeFilter insns, cur)
+    let termAction := if guardTarget then SECCOMP_RET_ERRNO ||| errVal else retAction
+    insns := insns ++ [{ code := 0x0006, jt := 0, jf := 0, k := termAction }]
+    if guardTarget then
+      let (targetNr, rNr) := cur.pickArray sandboxSyscallNrs 446
+      cur := rNr
+      let hdr : List SockFilterInsn :=
+        [ { code := 0x0020, jt := 0, jf := 0, k := 0 }
+        , { code := 0x0015, jt := 0, jf := UInt8.ofNat (nBody + 1), k := targetNr } ]
+      let fullProg := hdr ++ insns ++ [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }]
+      return (encodeFilter fullProg, cur)
+    else
+      return (encodeFilter insns, cur)
 
 private def genAdvSeccompFilter (r : Rng) (allowSelectErr : Bool) : ByteArray × Rng :=
-  let (advKind, r1) := r.nextNat 14
+  let (advKind, r1) := r.nextNat 20
   let (retK, r2) := r1.pickArray seccompRetPool SECCOMP_RET_ALLOW
   if advKind == 0 then
     let act := retK &&& SECCOMP_RET_ACTION_FULL
-    let isNonBlocking := act == SECCOMP_RET_ERRNO && (retK &&& 0xFFFF) != 0 && (retK &&& 0xFFFF) != Errno.EFAULT
-    let isExternalTrap := act == SECCOMP_RET_TRACE || act == SECCOMP_RET_USER_NOTIF
-    if isNonBlocking || isExternalTrap then
+    let isValidErrno := act == SECCOMP_RET_ERRNO && (retK &&& 0xFFFF) != 0 && (retK &&& 0xFFFF) != Errno.EFAULT
+    if isValidErrno then
       if allowSelectErr then
         let (targetNr, r3) := r2.pickArray sandboxSyscallNrs 446
         (encodeFilter
@@ -355,6 +444,24 @@ private def genAdvSeccompFilter (r : Rng) (allowSelectErr : Bool) : ByteArray ×
     (encodeFilter [{ code := 0x0005, jt := 0, jf := 0, k := 2 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
   else if advKind == 12 then
     (encodeFilter [{ code := 0x0015, jt := 2, jf := 0, k := 0 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
+  else if advKind == 13 then
+    let (badOp, r3) := r2.pickArray invalidBpfOps 0x0094
+    (encodeFilter [{ code := badOp, jt := 0, jf := 0, k := 1 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r3)
+  else if advKind == 14 then
+    (encodeFilter [{ code := 0x0003, jt := 0, jf := 0, k := 16 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
+  else if advKind == 15 then
+    (encodeFilter [{ code := 0x0061, jt := 0, jf := 0, k := 0 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r2)
+  else if advKind == 16 then
+    (encodeFilter
+      [ { code := 0x0000, jt := 3, jf := 2, k := 7 }
+      , { code := 0x0087, jt := 1, jf := 1, k := 42 }
+      , { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW } ], r2)
+  else if advKind == 17 then
+    let (rawOp16, r3) := genU16 r2
+    let (kRand, r4) := genU32 r3
+    (encodeFilter [{ code := rawOp16, jt := 0, jf := 0, k := kRand }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }], r4)
+  else if advKind == 18 then
+    (encodeFilter [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_TRACE ||| 7 }], r2)
   else
     let oversized := (List.replicate 160 { code := 0x0000, jt := 0, jf := 0, k := 0 }) ++
       [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }]
@@ -384,7 +491,10 @@ private def memfdNameLens : Array Nat := #[0, 1, 248, 249, 250, 512]
 
 private def genMemfdName (r : Rng) : ByteArray × Rng :=
   let (kind, r1) := r.nextNat 8
-  if kind < 4 then
+  if kind < 2 then
+    let (len, r2) := r1.pickArray memfdNameLens 250
+    genNonNulBytes r2 len
+  else if kind < 4 then
     let (len, r2) := r1.pickArray memfdNameLens 1
     genRandomBytes r2 len
   else if kind == 4 then
@@ -406,37 +516,68 @@ private def netPortPool : Array UInt64 := #[
   0, 1, 80, 443, 65535, 65536, 100000, 0x100000001, UInt64.ofNat 0xFFFFFFFFFFFFFFFF
 ]
 
+private def addRuleFsAccessPool : Array UInt64 := #[
+  0,
+  LANDLOCK_ACCESS_FS_EXECUTE,
+  LANDLOCK_ACCESS_FS_READ_FILE,
+  LANDLOCK_ACCESS_FS_READ_DIR,
+  LANDLOCK_ACCESS_FS_WRITE_FILE,
+  LANDLOCK_ACCESS_FS_EXECUTE ||| LANDLOCK_ACCESS_FS_READ_FILE
+]
+
 private def genStep (r : Rng) (llBurst : Bool) (allowSelectErr : Bool) : FuzzStep × Rng :=
   let (opRaw, r1) := r.nextNat 12
   let opKind :=
-    if llBurst && opRaw >= 6 && opRaw <= 8 then
-      if opRaw == 6 then 0 else 3
+    if llBurst then
+      if opRaw <= 1 then 0
+      else if opRaw <= 4 then 1
+      else if opRaw <= 7 then 2
+      else if opRaw <= 9 then 3
+      else if opRaw == 10 then 5
+      else 11
     else if opRaw >= 10 then
       if opRaw == 10 then 7 else 9
     else
       opRaw
   if opKind == 0 then
-    let (useNull, r2) := r1.chance 1 4
+    let (useNull, r2) := r1.chance 3 20
     if useNull then
-      let (fl, r3) := r2.pickArray #[0, 1, 2, 3, 7] 1
-      (.llCreate none fl, r3)
+      let (randFl, r3) := r2.chance 1 2
+      if randFl then
+        let (fl, r4) := genU32 r3
+        (.llCreate none fl, r4)
+      else
+        let (fl, r4) := r3.pickArray #[0, 1, 2, 3, 7] 1
+        (.llCreate none fl, r4)
     else
-      let (fs, r3) := genFsMask r2
-      let (net, r4) := genNetMask r3
-      let (fl, r5) := r4.pickArray #[0, 0, 0, 1, 2] 0
-      (.llCreate (some { handledAccessFs := fs, handledAccessNet := net }) fl, r5)
+      let (validStyle, r3) := r2.chance 13 20
+      if validStyle then
+        let (fs, r4) := r3.pickArray validCreateFsPool LANDLOCK_ACCESS_FS_V4_ALL
+        let (net, r5) := r4.pickArray #[0, LANDLOCK_ACCESS_NET_BIND_TCP, LANDLOCK_ACCESS_NET_CONNECT_TCP, LANDLOCK_ACCESS_NET_ALL] LANDLOCK_ACCESS_NET_ALL
+        (.llCreate (some { handledAccessFs := fs, handledAccessNet := net }) 0, r5)
+      else
+        let (isZero, r4) := r3.chance 3 10
+        if isZero then
+          (.llCreate (some { handledAccessFs := 0, handledAccessNet := 0 }) 0, r4)
+        else
+          let (fs, r5) := genFsMask r4
+          let (net, r6) := genNetMask r5
+          let (useRandFl, r7) := r6.chance 1 3
+          let (fl, r8) := if useRandFl then genU32 r7 else r7.pickArray #[0, 0, 1, 2] 0
+          (.llCreate (some { handledAccessFs := fs, handledAccessNet := net }) fl, r8)
   else if opKind == 1 then
-    let (rs, r2) := genHandleChoice r1
-    let (parent, r3) := genHandleChoice r2
-    let (acc, r4) := genFsMask r3
-    (.llAddPath rs parent acc, r4)
+    let (rs, r2) := genRulesetTargetChoice r1
+    let (parent, r3) := genPathParentChoice r2
+    let (useFriendly, r4) := r3.chance 3 5
+    let (acc, r5) := if useFriendly then r4.pickArray addRuleFsAccessPool LANDLOCK_ACCESS_FS_EXECUTE else genFsMask r4
+    (.llAddPath rs parent acc, r5)
   else if opKind == 2 then
-    let (rs, r2) := genHandleChoice r1
+    let (rs, r2) := genRulesetTargetChoice r1
     let (port, r3) := r2.pickArray netPortPool 80
     let (acc, r4) := genNetMask r3
     (.llAddNet rs port acc, r4)
   else if opKind == 3 then
-    let (rs, r2) := genHandleChoice r1
+    let (rs, r2) := genRulesetTargetChoice r1
     (.llRestrict rs, r2)
   else if opKind == 4 then
     let (sub, r2) := r1.chance 1 3
@@ -454,8 +595,9 @@ private def genStep (r : Rng) (llBurst : Bool) (allowSelectErr : Bool) : FuzzSte
     else if pk == 2 then (.doPrctl (.setChildSubreaper true), r2)
     else if pk == 3 then (.doPrctl (.setChildSubreaper false), r2)
     else
-      let (sig, r3) := r2.pickArray #[0, 1, 9, 15, 64, 65, 100] 9
-      (.doPrctl (.setPdeathsig sig), r3)
+      let (randSig, r3) := r2.chance 1 2
+      let (sig, r4) := if randSig then genU32 r3 else r3.pickArray #[0, 1, 9, 15, 64, 65, 100] 9
+      (.doPrctl (.setPdeathsig sig), r4)
   else if opKind == 6 then
     let (res, r2) := r1.pickArray #[RlimitResource.core, RlimitResource.fsize, RlimitResource.nofile] RlimitResource.fsize
     let (cur, r3) := r2.pickArray rlimitVals 512
@@ -474,42 +616,56 @@ private def genStep (r : Rng) (llBurst : Bool) (allowSelectErr : Bool) : FuzzSte
 
 private def genEpisodePlan (r : Rng) (nSteps : Nat) : EpisodePlan × Rng :=
   Id.run do
-    let (useUserns, r1) := r.chance 1 5
-    let (preNnp, r2) := r1.chance 1 5
-    let (hasOuterLayers, r3) := r2.chance 1 5
-    let (outerLayersRaw, r4) := r3.nextRange 1 16
-    let preOuterLayers := if hasOuterLayers then outerLayersRaw else 0
-    let (preOuterSeccomp, r5) := r4.chance 1 10
-    let (spawnRoll, r6) := r5.nextNat 8
+    let (useUserns, r1) := r.chance 1 4
+    let (useMntNs, rMnt) := r1.chance 1 6
+    let (preNnp, r2) := rMnt.chance 1 5
+    let (preLowerLimits, rLim) := r2.chance 1 6
+    let (outer16Roll, r3) := rLim.chance 1 12
+    let (hasOuterRand, r4) := r3.chance 1 6
+    let (outerLayersRaw, r5) := r4.nextRange 1 15
+    let preOuterLayers := if outer16Roll then 16 else if hasOuterRand then outerLayersRaw else 0
+    let (preOuterSeccomp, r6) := r5.chance 3 20
+    let (outerKeepNnpZero, rK0) := r6.chance 1 2
+    let (outerCount, rOc) := rK0.nextRange 1 5
+    let mut cur := rOc
+    let mut outerTargets : Array UInt32 := #[]
+    for _ in List.range outerCount do
+      let (nr, nxt) := cur.pickArray sandboxSyscallNrs 319
+      outerTargets := outerTargets.push nr
+      cur := nxt
+    let (outerErr, rOe) := cur.pickArray seccompErrnoPool Errno.EPERM
+    cur := rOe
+    let (spawnRoll, rSp) := cur.nextNat 8
     let spawnMode := if spawnRoll == 0 then 1 else if spawnRoll == 1 then 2 else 0
-    let (closeLowFds, r7) := r6.chance 1 5
-    let (seedOPathSpecials, r8) := r7.chance 1 3
-    let (specialSeedIdx, r9) := r8.nextNat 64
-    let (llBurst, r10) := r9.chance 1 5
-    let (allowLateSeccompErr, r11) := r10.chance 1 4
-    let mut cur := r11
-    let mut dirOPaths := #[]
-    let mut fileOPaths := #[]
+    let (closeLowFds, rCl) := rSp.chance 1 5
+    let (seedOPathSpecials, rSd) := rCl.chance 1 3
+    let (specialSeedIdx, rSi) := rSd.nextNat 64
+    let (llBurst, rLb) := rSi.chance 1 3
+    let (allowEpisodeSeccompErr, rSc) := rLb.chance 7 20
+    cur := rSc
+    let mut dirModes := #[]
+    let mut fileModes := #[]
     let mut pseudoOPaths := #[]
+    let dirModePool : Array UInt32 := #[0, 1]
+    let fileModePool : Array UInt32 := #[2, 3, 4, 5, 6]
     for _ in List.range 2 do
-      let (b1, c1) := cur.chance 1 2
-      let (b2, c2) := c1.chance 1 2
-      let (b3, c3) := c2.chance 1 2
-      dirOPaths := dirOPaths.push b1
-      fileOPaths := fileOPaths.push b2
-      pseudoOPaths := pseudoOPaths.push b3
+      let (dm, c1) := cur.pickArray dirModePool 0
+      let (fm, c2) := c1.pickArray fileModePool 2
+      let (bp, c3) := c2.chance 1 2
+      dirModes := dirModes.push dm
+      fileModes := fileModes.push fm
+      pseudoOPaths := pseudoOPaths.push bp
       cur := c3
-    let lateThreshold := (nSteps * 3) / 4
     let mut steps := Array.mkEmpty nSteps
-    for i in List.range nSteps do
-      let allowErrHere := allowLateSeccompErr && i >= lateThreshold
-      let (st, nxt) := genStep cur llBurst allowErrHere
+    for _ in List.range nSteps do
+      let (st, nxt) := genStep cur llBurst allowEpisodeSeccompErr
       steps := steps.push st
       cur := nxt
     return ({
-      useUserns, preNnp, preOuterLayers, preOuterSeccomp, spawnMode,
-      closeLowFds, dirOPaths, fileOPaths, pseudoOPaths,
-      seedOPathSpecials, specialSeedIdx, steps
+      useUserns, useMntNs, preNnp, preLowerLimits, preOuterLayers,
+      preOuterSeccomp, outerKeepNnpZero, outerSeccompTargets := outerTargets,
+      outerSeccompErrno := outerErr, spawnMode, closeLowFds,
+      dirModes, fileModes, pseudoOPaths, seedOPathSpecials, specialSeedIdx, steps
     }, cur)
 
 private structure HandleSlot where
@@ -524,6 +680,7 @@ private structure ExecState where
   pseudos : Array HandleSlot
   opathMemfd? : Option HandleSlot
   opathRuleset? : Option HandleSlot
+  rulesets : Array HandleSlot
   dynamics : Array HandleSlot
   closedHids : Array HandleSlot
   deadFd : RawFd
@@ -536,6 +693,7 @@ private def pickSlot (slots : Array HandleSlot) (idx : Nat) (fallback : RawFd) :
     (s.hid, s.fd)
 
 private def resolveChoice (st : ExecState) : HandleChoice → HandleId × RawFd
+  | .openRuleset i => pickSlot st.rulesets i st.deadFd
   | .hostDir i => pickSlot st.hostDirs i st.deadFd
   | .hostFile i => pickSlot st.hostFiles i st.deadFd
   | .pseudo i => pickSlot st.pseudos i st.deadFd
@@ -555,7 +713,7 @@ private def outcomeTag : SandboxOutcome → String
   | .landlockVersion _ => "ok.version"
   | .opened _ => "ok.fd"
   | .unit => "ok.unit"
-  | .u32 _ => "ok.u32"
+  | .u32 v => if v == 0 then "ok.u32.0" else "ok.u32.pos"
   | .err e => s!"err.{e}"
 
 private def reqTag : SandboxReq → String
@@ -600,19 +758,27 @@ private def extraFilePaths : Array String := #[
   "/proc/self/status", "/dev/null"
 ]
 
-private def blockMemfdFilter : ByteArray :=
-  encodeFilter
-    [ { code := 0x0020, jt := 0, jf := 0, k := 0 }
-    , { code := 0x0015, jt := 2, jf := 0, k := 319 }
-    , { code := 0x0015, jt := 1, jf := 0, k := 279 }
-    , { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }
-    , { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ERRNO ||| Errno.EPERM } ]
-
-private def setupPreEnvironment (plan : EpisodePlan) : IO (Bool × SandboxSysState) := do
-  if plan.useUserns then
-    let _ ← SandboxEnv.enterUserns
+private def setupPreEnvironment (dirPath : String) (plan : EpisodePlan) :
+    IO (Bool × Bool × SandboxSysState) := do
+  let mntBase := s!"{dirPath}/m"
+  let mut inUserns := false
+  let mut mntReady := false
+  if plan.useMntNs then
+    match ← SandboxEnv.setupMntNs mntBase.toUTF8 with
+    | .ok () =>
+      inUserns := true
+      mntReady := true
+    | .error _ =>
+      if plan.useUserns then
+        match ← SandboxEnv.enterUserns with
+        | .ok () => inUserns := true
+        | .error _ => pure ()
+  else if plan.useUserns then
+    match ← SandboxEnv.enterUserns with
+    | .ok () => inUserns := true
+    | .error _ => pure ()
   if plan.preOuterLayers > 0 then
-    if !plan.useUserns then
+    if !inUserns then
       let _ ← prctl .setNoNewPrivs
     match ← landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0 with
     | .ok (.ruleset outerRs) =>
@@ -622,10 +788,15 @@ private def setupPreEnvironment (plan : EpisodePlan) : IO (Bool × SandboxSysSta
     | _ => pure ()
   if plan.preNnp then
     let _ ← prctl .setNoNewPrivs
+  if plan.preLowerLimits then
+    let _ ← setrlimit .core 4096 8192
+    let _ ← setrlimit .fsize 131072 262144
   let mut sys := SandboxSysState.initial
   if plan.preOuterSeccomp then
-    let _ ← prctl .setNoNewPrivs
-    match ← seccomp .setModeFilter {} blockMemfdFilter with
+    if !(inUserns && plan.outerKeepNnpZero) then
+      let _ ← prctl .setNoNewPrivs
+    let outerFilter := buildMultiSyscallFilter plan.outerSeccompTargets plan.outerSeccompErrno
+    match ← seccomp .setModeFilter {} outerFilter with
     | .ok 0 => sys := sys.withOuterSeccomp
     | _ => pure ()
   let mut spawnActive := false
@@ -637,7 +808,10 @@ private def setupPreEnvironment (plan : EpisodePlan) : IO (Bool × SandboxSysSta
     match ← SandboxEnv.spawnSyncThread false with
     | .ok _ => spawnActive := true
     | .error _ => pure ()
-  return (spawnActive, sys)
+  return (spawnActive, mntReady, sys)
+
+private def isModeOPath (m : UInt32) : Bool :=
+  m == 1 || m == 3 || m == 5
 
 private def runPlanInChild
     (dirPath filePath : String)
@@ -645,7 +819,7 @@ private def runPlanInChild
     (stepOracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState := allowedStep) :
     IO EpisodeResult := do
   let (st, payload) ← SandboxEnv.runForked do
-    let (spawnActive, initSys) ← setupPreEnvironment plan
+    let (spawnActive, mntReady, initSys) ← setupPreEnvironment dirPath plan
     let mut sys := initSys
     let mut nextHid : HandleId := 1
     let mut hostDirs : Array HandleSlot := #[]
@@ -654,26 +828,49 @@ private def runPlanInChild
     let mut opathMemfd? : Option HandleSlot := none
     let mut opathRuleset? : Option HandleSlot := none
     let mut closedHids : Array HandleSlot := #[]
-    for i in List.range plan.dirOPaths.size do
-      let oPath := plan.dirOPaths.getD i false
+    for i in List.range plan.dirModes.size do
+      let dMode := plan.dirModes.getD i 0
+      let oPath := isModeOPath dMode
       let dPath := if i == 0 then dirPath else extraDirPaths.getD (plan.specialSeedIdx % extraDirPaths.size) "/var/tmp"
-      match ← SandboxEnv.openHostFd dPath.toUTF8 (if oPath then 1 else 0) with
+      match ← SandboxEnv.openHostFd dPath.toUTF8 dMode with
       | .ok fd =>
         let hid := nextHid
         nextHid := nextHid + 1
         sys := sys.withHostFd hid true oPath
         hostDirs := hostDirs.push { hid, fd }
       | .error _ => pure ()
-    for i in List.range plan.fileOPaths.size do
-      let oPath := plan.fileOPaths.getD i false
-      let fPath := if i == 0 then filePath else extraFilePaths.getD (plan.specialSeedIdx % extraFilePaths.size) "/dev/null"
-      match ← SandboxEnv.openHostFd fPath.toUTF8 (if oPath then 3 else 2) with
+    for i in List.range plan.fileModes.size do
+      let fMode := plan.fileModes.getD i 2
+      let oPath := isModeOPath fMode
+      let fPath := if i == 0 || fMode == 4 then filePath else extraFilePaths.getD (plan.specialSeedIdx % extraFilePaths.size) "/dev/null"
+      match ← SandboxEnv.openHostFd fPath.toUTF8 fMode with
       | .ok fd =>
         let hid := nextHid
         nextHid := nextHid + 1
         sys := sys.withHostFd hid false oPath
         hostFiles := hostFiles.push { hid, fd }
       | .error _ => pure ()
+    if mntReady then
+      let mntBase := s!"{dirPath}/m"
+      let mntDirs := #[s!"{mntBase}/ov", s!"{mntBase}/dp", s!"{mntBase}/bm"]
+      let mntFiles := #[s!"{mntBase}/ov/f.txt", s!"{mntBase}/dp/ptmx", s!"{mntBase}/bm/f.txt"]
+      let dMode := plan.dirModes.getD 0 0
+      for md in mntDirs do
+        match ← SandboxEnv.openHostFd md.toUTF8 dMode with
+        | .ok fd =>
+          let hid := nextHid
+          nextHid := nextHid + 1
+          sys := sys.withHostFd hid true (isModeOPath dMode)
+          hostDirs := hostDirs.push { hid, fd }
+        | .error _ => pure ()
+      for mf in mntFiles do
+        match ← SandboxEnv.openHostFd mf.toUTF8 3 with
+        | .ok fd =>
+          let hid := nextHid
+          nextHid := nextHid + 1
+          sys := sys.withHostFd hid false true
+          hostFiles := hostFiles.push { hid, fd }
+        | .error _ => pure ()
     for oPath in plan.pseudoOPaths do
       match ← SandboxEnv.openPipeFd (if oPath then 1 else 0) with
       | .ok fd =>
@@ -754,7 +951,7 @@ private def runPlanInChild
       SandboxEnv.closeRaw 2
     let mut ex : ExecState := {
       sys, nextHid, hostDirs, hostFiles, pseudos, opathMemfd?, opathRuleset?,
-      dynamics := #[], closedHids, deadFd
+      rulesets := #[], dynamics := #[], closedHids, deadFd
     }
     let mut executed : Nat := 0
     let mut hits : Array (String × Nat) := #[]
@@ -772,6 +969,7 @@ private def runPlanInChild
           let sys' := { ex.sys with fds := ex.sys.fds.filter (fun p => p.1 != slot.hid) }
           ex := { ex with
             sys := sys'
+            rulesets := ex.rulesets.filter (fun s => s.hid != slot.hid)
             dynamics := ex.dynamics.eraseIdx! pos
             closedHids := ex.closedHids.push slot }
       | .llCreate attr? flags =>
@@ -781,7 +979,11 @@ private def runPlanInChild
           | .ok (.version v) => pure (SandboxOutcome.landlockVersion v)
           | .ok (.ruleset fd) =>
             let hid := ex.nextHid
-            ex := { ex with nextHid := hid + 1, dynamics := ex.dynamics.push { hid, fd } }
+            let slot : HandleSlot := { hid, fd }
+            ex := { ex with
+              nextHid := hid + 1
+              rulesets := ex.rulesets.push slot
+              dynamics := ex.dynamics.push slot }
             pure (SandboxOutcome.opened hid)
         executed := executed + 1
         hits := bumpHit hits s!"{reqTag req} -> {outcomeTag out}"
@@ -987,8 +1189,59 @@ private def withFuzzDir {α : Type} (f : String → String → IO α) : IO α :=
       let sp := s!"{dir}/sp_{idx}"
       try IO.FS.removeFile sp catch _ => pure ()
       try IO.FS.removeDir sp catch _ => pure ()
+    for sub in ["ov/f.txt", "bm/f.txt", "bs/f.txt", "up/f.txt"] do
+      try IO.FS.removeFile s!"{dir}/m/{sub}" catch _ => pure ()
+    for sub in ["lo", "up", "wk", "ov", "dp", "bm", "bs"] do
+      try IO.FS.removeDir s!"{dir}/m/{sub}" catch _ => pure ()
+    try IO.FS.removeDir s!"{dir}/m" catch _ => pure ()
     try IO.FS.removeFile file catch _ => pure ()
     try IO.FS.removeDir dir catch _ => pure ()
+
+private def requiredMatrixKeys : Array String := #[
+  "landlock_create_ruleset -> ok.version",
+  "landlock_create_ruleset -> ok.fd",
+  "landlock_create_ruleset -> err.22",
+  "landlock_create_ruleset -> err.24",
+  "landlock_create_ruleset -> err.42",
+  "landlock_add_rule.path -> ok.unit",
+  "landlock_add_rule.path -> err.9",
+  "landlock_add_rule.path -> err.22",
+  "landlock_add_rule.path -> err.42",
+  "landlock_add_rule.path -> err.77",
+  "landlock_add_rule.net -> ok.unit",
+  "landlock_add_rule.net -> err.9",
+  "landlock_add_rule.net -> err.22",
+  "landlock_add_rule.net -> err.42",
+  "landlock_add_rule.net -> err.77",
+  "landlock_restrict_self -> ok.unit",
+  "landlock_restrict_self -> err.1",
+  "landlock_restrict_self -> err.7",
+  "landlock_restrict_self -> err.9",
+  "landlock_restrict_self -> err.77",
+  "seccomp.avail -> ok.u32.0",
+  "seccomp.avail -> err.22",
+  "seccomp.avail -> err.95",
+  "seccomp.filter -> ok.u32.0",
+  "seccomp.filter -> ok.u32.pos",
+  "seccomp.filter -> err.3",
+  "seccomp.filter -> err.13",
+  "seccomp.filter -> err.22",
+  "prctl -> ok.u32.0",
+  "prctl -> ok.u32.pos",
+  "prctl -> err.22",
+  "setrlimit -> ok.unit",
+  "setrlimit -> err.1",
+  "setrlimit -> err.22",
+  "memfd_create -> ok.fd",
+  "memfd_create -> err.1",
+  "memfd_create -> err.22",
+  "memfd_create -> err.24"
+]
+
+private def getHitCount (hits : Array (String × Nat)) (k : String) : Nat :=
+  match hits.find? (fun p => p.1 == k) with
+  | some p => p.2
+  | none => 0
 
 /-- Verify greedy delta-shrinking against an injected faulty oracle over a multi-step random trace. -/
 def runShrinkSelfTest (seed : UInt64 := 0x123456789abcdef0) : IO Unit := do
@@ -1014,7 +1267,7 @@ def runShrinkSelfTest (seed : UInt64 := 0x123456789abcdef0) : IO Unit := do
       throw (IO.userError s!"shrink self-test expected <= 2 steps, got {minimal.steps.size}")
     IO.println s!"SANDBOX_SHRINK_SELFTEST_OK: {injected.steps.size} -> {minimal.steps.size} step(s)"
 
-/-- Execute `cfg.steps` real sandbox syscalls inside forked child episodes and verify every step against `Model.allowedStep`. -/
+/-- Execute `cfg.steps` real sandbox syscalls inside forked child episodes, verify every step against `Model.allowedStep`, and assert full matrix coverage for runs `>= 50000` steps. -/
 def runFuzz (cfg : FuzzConfig := {}) : IO UInt32 := do
   if cfg.selfTestShrink then
     runShrinkSelfTest cfg.seed
@@ -1039,12 +1292,20 @@ def runFuzz (cfg : FuzzConfig := {}) : IO UInt32 := do
         IO.eprintln s!"SHRUNK_TRACE ({minimal.steps.size} steps): {repr minimal}"
         return 1
       | none => pure ()
-    IO.println s!"SANDBOX_FUZZ_OK: syscalls={totalSteps} episodes={episodes} seed={cfg.seed}"
     if cfg.printMatrix then
       IO.println "SANDBOX_FUZZ_MATRIX_BEGIN"
       for (k, n) in hits do
         IO.println s!"  {k}: {n}"
       IO.println "SANDBOX_FUZZ_MATRIX_END"
+    if cfg.steps >= 50000 then
+      let mut missing : Array String := #[]
+      for k in requiredMatrixKeys do
+        if getHitCount hits k == 0 then
+          missing := missing.push k
+      if !missing.isEmpty then
+        IO.eprintln s!"SANDBOX_FUZZ_MATRIX_MISSING ({missing.size}): {", ".intercalate missing.toList}"
+        return 1
+    IO.println s!"SANDBOX_FUZZ_OK: syscalls={totalSteps} episodes={episodes} seed={cfg.seed}"
     return 0
 
 end LeanSwe.LinuxSyscall.Fuzz.SandboxFuzz

@@ -150,7 +150,7 @@ jobs:
           done
           if (( FAILED_RUNS == 0 )); then
             .lake/build/bin/lean-swe-test --sandbox-strace-fault-check >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
-            .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 200000 --self-test-shrink >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
+            .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 1000000 --self-test-shrink >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
           fi
           SUMMARY="REPEAT_SUMMARY: total_runs=$N passed_runs=$((N - FAILED_RUNS)) failed_runs=$FAILED_RUNS"
           echo "$SUMMARY" | tee -a "$RUNNER_TEMP/repeat_tests.log"

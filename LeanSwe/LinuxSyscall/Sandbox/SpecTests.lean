@@ -201,7 +201,7 @@ def test_sandbox_impl_wrapperGuards
   NondetTest.assert ((errOps.setrlimit rlRes rlCur rlMax).run 0 = (.error rawErr, 1))
   NondetTest.assert ((errOps.memfdCreate okName mfdFlags).run 0 = (.error rawErr, 1))
 
-/-- `Internal.mkSandboxOps` rejects unsafe `seccomp(SECCOMP_SET_MODE_FILTER)` return verdicts and runtime zero-abort opcodes (`SECCOMP_RET_ERRNO | 0`, `SECCOMP_RET_ERRNO | EFAULT`, `SECCOMP_RET_KILL_PROCESS`, `SECCOMP_RET_KILL_THREAD`, `SECCOMP_RET_TRAP`, unknown action bits, `BPF_RET | BPF_A` `0x0016`, reserved `BPF_RET` `0x000e`, and `BPF_ALU | BPF_DIV | BPF_X` `0x003c`) with `(.error Errno.EINVAL, 0)` in pure Lean, while forwarding `ALLOW`, `LOG`, `TRACE`, `USER_NOTIF`, and non-zero non-`EFAULT` `SECCOMP_RET_ERRNO` filters (`callCount = 1`). -/
+/-- `Internal.mkSandboxOps` rejects unsafe `seccomp(SECCOMP_SET_MODE_FILTER)` return verdicts and runtime zero-abort opcodes (`SECCOMP_RET_ERRNO | 0`, `SECCOMP_RET_ERRNO | EFAULT`, `SECCOMP_RET_KILL_PROCESS`, `SECCOMP_RET_KILL_THREAD`, `SECCOMP_RET_TRAP`, `SECCOMP_RET_TRACE`, `SECCOMP_RET_USER_NOTIF`, unknown action bits, `BPF_RET | BPF_A` `0x0016`, reserved `BPF_RET` `0x000e`, and `BPF_ALU | BPF_DIV | BPF_X` `0x003c`) with `(.error Errno.EINVAL, 0)` in pure Lean, while forwarding `ALLOW`, `LOG`, and non-zero non-`EFAULT` `SECCOMP_RET_ERRNO` filters (`callCount = 1`). -/
 def test_sandbox_impl_seccompSafetyGuards
     {runner} [NondetTest runner]
     (mkOps : PosixSandboxOpsM (StateM Nat) Nat → SandboxOpsM (StateM Nat) Nat) : runner Unit := do
@@ -229,6 +229,8 @@ def test_sandbox_impl_seccompSafetyGuards
   let fRetX := encodeSockFilters [{ code := 0x000e, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }]
   let fDivX := encodeSockFilters
     [{ code := 0x003c, jt := 0, jf := 0, k := 0 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }]
+  let fTrace := encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_TRACE ||| 7 }]
+  let fNotif := encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_USER_NOTIF }]
   NondetTest.assert ((ops.seccomp .setModeFilter scFlags fErrnoZero).run 0 = (.error Errno.EINVAL, 0))
   NondetTest.assert ((ops.seccomp .setModeFilter scFlags fErrnoEfault).run 0 = (.error Errno.EINVAL, 0))
   NondetTest.assert ((ops.seccomp .setModeFilter scFlags fKillProc).run 0 = (.error Errno.EINVAL, 0))
@@ -238,16 +240,14 @@ def test_sandbox_impl_seccompSafetyGuards
   NondetTest.assert ((ops.seccomp .setModeFilter scFlags fRetA).run 0 = (.error Errno.EINVAL, 0))
   NondetTest.assert ((ops.seccomp .setModeFilter scFlags fRetX).run 0 = (.error Errno.EINVAL, 0))
   NondetTest.assert ((ops.seccomp .setModeFilter scFlags fDivX).run 0 = (.error Errno.EINVAL, 0))
+  NondetTest.assert ((ops.seccomp .setModeFilter scFlags fTrace).run 0 = (.error Errno.EINVAL, 0))
+  NondetTest.assert ((ops.seccomp .setModeFilter scFlags fNotif).run 0 = (.error Errno.EINVAL, 0))
   let fAllow := encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }]
   let fLog := encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_LOG }]
-  let fTrace := encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_TRACE ||| 7 }]
-  let fNotif := encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_USER_NOTIF }]
   let fErrnoEperm := encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ERRNO ||| Errno.EPERM }]
   let fErrnoMax := encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ERRNO ||| 4095 }]
   NondetTest.assert ((ops.seccomp .setModeFilter scFlags fAllow).run 0 = (.ok (scFlags.toBits + 8), 1))
   NondetTest.assert ((ops.seccomp .setModeFilter scFlags fLog).run 0 = (.ok (scFlags.toBits + 8), 1))
-  NondetTest.assert ((ops.seccomp .setModeFilter scFlags fTrace).run 0 = (.ok (scFlags.toBits + 8), 1))
-  NondetTest.assert ((ops.seccomp .setModeFilter scFlags fNotif).run 0 = (.ok (scFlags.toBits + 8), 1))
   NondetTest.assert ((ops.seccomp .setModeFilter scFlags fErrnoEperm).run 0 = (.ok (scFlags.toBits + 8), 1))
   NondetTest.assert ((ops.seccomp .setModeFilter scFlags fErrnoMax).run 0 = (.ok (scFlags.toBits + 8), 1))
 
@@ -666,7 +666,7 @@ def test_sandbox_model_modelOpsRefinesAllowedStep
   let (out, s') := (execSandboxReq ops req).run s
   NondetTest.assert (step s req out = some s' ∧ s'.wf = true)
 
-/-- External trust-boundary assumptions for `LeanSwe.LinuxSyscall.Sandbox` C wrappers (`sandbox_shim.c` + `fd_box.h`) and Linux kernel ABI (`x86_64` + `aarch64`), verified 1-to-1 by `RuntimeTests.lean`, `leanswe-world-fuzz`, and `strace` fault injection. On `assume_sandbox_seccomp_actionAvailAndFilterAbi`, `Internal.mkSandboxOps` enforces `hasSafeSeccompRetBytes` in pure Lean (rejecting `SECCOMP_RET_ERRNO | 0`, `SECCOMP_RET_ERRNO | EFAULT`, `KILL_PROCESS`, `KILL_THREAD`, `TRAP`, unknown action bits, `BPF_RET | BPF_A` `0x0016`, and `BPF_ALU | BPF_DIV | BPF_X` `0x003c` with `EINVAL`), so `SandboxFuzz` can fuzz arbitrary `filterBytes` with zero avoided inputs under non-adversarial external tracing (`PTRACE_O_TRACESECCOMP` / external `USER_NOTIF` listeners). -/
+/-- External trust-boundary assumptions for `LeanSwe.LinuxSyscall.Sandbox` C wrappers (`sandbox_shim.c` + `fd_box.h`) and Linux kernel ABI (`x86_64` + `aarch64`), verified 1-to-1 by `RuntimeTests.lean`, `leanswe-world-fuzz`, and `strace` fault injection. On `assume_sandbox_seccomp_actionAvailAndFilterAbi`, `Internal.mkSandboxOps` enforces `hasSafeSeccompRetBytes` in pure Lean (rejecting `SECCOMP_RET_ERRNO | 0`, `SECCOMP_RET_ERRNO | EFAULT`, `KILL_PROCESS`, `KILL_THREAD`, `TRAP`, `TRACE`, `USER_NOTIF`, unknown action bits, `BPF_RET | BPF_A` `0x0016`, and `BPF_ALU | BPF_DIV | BPF_X` `0x003c` with `EINVAL`), so `SandboxFuzz` can fuzz arbitrary `filterBytes` with zero avoided inputs. -/
 def externalAssumptions : List AssumptionObligation :=
   [ { name := "LeanSwe.LinuxSyscall.Sandbox.assume_sandbox_landlockCreateRuleset_versionAndRuleset"
       subject := "LeanSwe.LinuxSyscall.Sandbox.landlockCreateRuleset"

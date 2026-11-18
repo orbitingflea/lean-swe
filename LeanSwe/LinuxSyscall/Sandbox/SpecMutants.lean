@@ -344,7 +344,6 @@ example : ¬ Core.AllPass (test_sandbox_impl_seccompSafetyGuards fun raw =>
                 insn.code == 0x0006 &&
                   (let act := insn.k &&& SECCOMP_RET_ACTION_FULL
                    act == SECCOMP_RET_ALLOW || act == SECCOMP_RET_LOG ||
-                   act == SECCOMP_RET_USER_NOTIF || act == SECCOMP_RET_TRACE ||
                    (act == SECCOMP_RET_ERRNO && (insn.k &&& 0xFFFF) != 0))
               else true
           if !isValidSeccompFilterByteLen filterBytes.data.size || !allowEfault then

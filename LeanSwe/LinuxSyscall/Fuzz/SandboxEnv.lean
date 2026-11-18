@@ -56,6 +56,10 @@ opaque closeFd : @& RawFd → IO (Except Errno Unit)
 @[extern "leanswe_sbx_enter_userns"]
 opaque enterUserns : IO (Except Errno Unit)
 
+/-- Enter a mapped user+mount namespace and prepare `overlayfs`, `devpts`, and bind-mount directories under `baseDir`. -/
+@[extern "leanswe_sbx_setup_mnt_ns"]
+opaque setupMntNs : @& ByteArray → IO (Except Errno Unit)
+
 /-- Read current `(rlim_cur, rlim_max)` for resource selector `0..2`. -/
 @[extern "leanswe_sbx_get_rlimit"]
 opaque getRlimit : UInt32 → IO (Except Errno (UInt64 × UInt64))

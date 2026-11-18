@@ -219,10 +219,14 @@ def assume_sandbox_seccomp_actionAvailAndFilterAbi : IO Unit := do
   let unsafeRetA := encodeFilter [{ code := 0x0016, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }]
   let unsafeDivX := encodeFilter
     [{ code := 0x003c, jt := 0, jf := 0, k := 0 }, { code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }]
+  let unsafeTrace := encodeFilter [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_TRACE ||| 7 }]
+  let unsafeNotif := encodeFilter [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_USER_NOTIF }]
   assertErr (← seccomp .setModeFilter {} unsafeZero) Errno.EINVAL "RET_ERRNO|0 guard"
   assertErr (← seccomp .setModeFilter {} unsafeEfault) Errno.EINVAL "RET_ERRNO|EFAULT guard"
   assertErr (← seccomp .setModeFilter {} unsafeRetA) Errno.EINVAL "BPF_RET|BPF_A guard"
   assertErr (← seccomp .setModeFilter {} unsafeDivX) Errno.EINVAL "BPF_DIV|BPF_X guard"
+  assertErr (← seccomp .setModeFilter {} unsafeTrace) Errno.EINVAL "RET_TRACE guard"
+  assertErr (← seccomp .setModeFilter {} unsafeNotif) Errno.EINVAL "RET_USER_NOTIF guard"
   runForkedOk "seccomp safe filter and TSYNC" do
     let euid ← SandboxEnv.getEuid
     let nnp0 ← match ← prctl .getNoNewPrivs with

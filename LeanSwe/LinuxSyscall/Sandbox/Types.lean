@@ -235,7 +235,7 @@ def decodeSockFilterList : List UInt8 → Option (List SockFilterInsn)
 def decodeSockFilters (b : ByteArray) : Option (List SockFilterInsn) :=
   decodeSockFilterList b.data.toList
 
-/-- Returns `true` iff `insn` neither aborts early with `0 = SECCOMP_RET_KILL_THREAD` via `BPF_ALU | BPF_DIV | BPF_X` (`0x003c` when `X == 0`) nor uses an unsafe `BPF_RET` instruction (`BPF_RET | BPF_A`, `KILL_PROCESS`, `KILL_THREAD`, `TRAP`, unknown action bits, `SECCOMP_RET_ERRNO | 0`, or `SECCOMP_RET_ERRNO | EFAULT`). -/
+/-- Returns `true` iff `insn` neither aborts early with `0 = SECCOMP_RET_KILL_THREAD` via `BPF_ALU | BPF_DIV | BPF_X` (`0x003c` when `X == 0`) nor uses an unsafe `BPF_RET` instruction (`BPF_RET | BPF_A`, `KILL_PROCESS`, `KILL_THREAD`, `TRAP`, `TRACE`, `USER_NOTIF`, unknown action bits, `SECCOMP_RET_ERRNO | 0`, or `SECCOMP_RET_ERRNO | EFAULT`). -/
 def isSafeSeccompInsn (insn : SockFilterInsn) : Bool :=
   if insn.code == 0x003c then
     false
@@ -244,8 +244,7 @@ def isSafeSeccompInsn (insn : SockFilterInsn) : Bool :=
       false
     else
       let act := insn.k &&& SECCOMP_RET_ACTION_FULL
-      if act == SECCOMP_RET_ALLOW || act == SECCOMP_RET_LOG ||
-          act == SECCOMP_RET_USER_NOTIF || act == SECCOMP_RET_TRACE then
+      if act == SECCOMP_RET_ALLOW || act == SECCOMP_RET_LOG then
         true
       else if act == SECCOMP_RET_ERRNO then
         let data := insn.k &&& 0xFFFF

@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
+#include <sys/mount.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -356,10 +357,12 @@ static int sbx_make_unix_sock_opath(const char *cpath) {
 
 static int sbx_open_unlinked(uint32_t kind, const char *cpath) {
   if (kind == 3u) {
+    (void)rmdir(cpath);
     int fd = open(cpath, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (fd >= 0) { (void)unlink(cpath); }
     return fd;
   }
+  (void)unlink(cpath);
   (void)rmdir(cpath);
   if (mkdir(cpath, 0700) != 0) {
     return -1;
@@ -417,4 +420,79 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_open_special_fd(
   lean_obj_res obj = leanswe_mk_fd_obj(fd);
   if (obj == NULL) { return leanswe_mk_errno(ENOMEM); }
   return leanswe_mk_ok(obj);
+}
+
+static int sbx_write_text(const char *path, const char *txt) {
+  int fd = open(path, O_WRONLY | O_CLOEXEC);
+  if (fd < 0) { return -1; }
+  size_t len = strlen(txt);
+  ssize_t wn = write(fd, txt, len);
+  int saved = errno;
+  close(fd);
+  if (wn != (ssize_t)len) { errno = saved; return -1; }
+  return 0;
+}
+
+static int sbx_setup_idmap(uid_t uid, gid_t gid) {
+  char ubuf[64], gbuf[64];
+  snprintf(ubuf, sizeof(ubuf), "0 %u 1\n", (unsigned)uid);
+  snprintf(gbuf, sizeof(gbuf), "0 %u 1\n", (unsigned)gid);
+  if (sbx_write_text("/proc/self/setgroups", "deny\n") != 0) { return -1; }
+  if (sbx_write_text("/proc/self/uid_map", ubuf) != 0) { return -1; }
+  if (sbx_write_text("/proc/self/gid_map", gbuf) != 0) { return -1; }
+  return 0;
+}
+
+static void sbx_mkdir_sub(const char *base, const char *sub) {
+  char p[4096];
+  snprintf(p, sizeof(p), "%s/%s", base, sub);
+  (void)mkdir(p, 0700);
+}
+
+static void sbx_touch_sub(const char *base, const char *sub) {
+  char p[4096];
+  snprintf(p, sizeof(p), "%s/%s", base, sub);
+  int fd = open(p, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+  if (fd >= 0) { close(fd); }
+}
+
+static void sbx_do_mounts(const char *base) {
+  char lo[1024], up[1024], wk[1024], ov[1024], dp[1024], bm[1024], bs[1024], opt[3200];
+  snprintf(lo, sizeof(lo), "%s/lo", base);
+  snprintf(up, sizeof(up), "%s/up", base);
+  snprintf(wk, sizeof(wk), "%s/wk", base);
+  snprintf(ov, sizeof(ov), "%s/ov", base);
+  snprintf(dp, sizeof(dp), "%s/dp", base);
+  snprintf(bm, sizeof(bm), "%s/bm", base);
+  snprintf(bs, sizeof(bs), "%s/bs", base);
+  snprintf(opt, sizeof(opt), "lowerdir=%s,upperdir=%s,workdir=%s", lo, up, wk);
+  (void)mount("overlay", ov, "overlay", 0, opt);
+  (void)mount("devpts", dp, "devpts", 0, "newinstance,ptmxmode=0666");
+  (void)mount(bs, bm, NULL, MS_BIND, NULL);
+  sbx_touch_sub(ov, "f.txt");
+  sbx_touch_sub(bm, "f.txt");
+}
+
+LEAN_EXPORT lean_obj_res leanswe_sbx_setup_mnt_ns(b_lean_obj_arg base_ba, lean_obj_arg w) {
+  (void)w;
+  uid_t uid = getuid();
+  gid_t gid = getgid();
+  if (unshare(CLONE_NEWUSER | CLONE_NEWNS) < 0) { return leanswe_mk_errno(errno); }
+  if (sbx_setup_idmap(uid, gid) != 0) { return leanswe_mk_errno(errno); }
+  char sbuf[4096];
+  const char *cbase = NULL;
+  char *heap = NULL;
+  int perr = sbx_env_ba_to_cstr(base_ba, sbuf, sizeof(sbuf), &cbase, &heap);
+  if (perr != 0) { return leanswe_mk_errno(perr); }
+  (void)mkdir(cbase, 0700);
+  sbx_mkdir_sub(cbase, "lo");
+  sbx_mkdir_sub(cbase, "up");
+  sbx_mkdir_sub(cbase, "wk");
+  sbx_mkdir_sub(cbase, "ov");
+  sbx_mkdir_sub(cbase, "dp");
+  sbx_mkdir_sub(cbase, "bm");
+  sbx_mkdir_sub(cbase, "bs");
+  sbx_do_mounts(cbase);
+  if (heap != NULL) { free(heap); }
+  return leanswe_mk_ok(lean_box(0));
 }

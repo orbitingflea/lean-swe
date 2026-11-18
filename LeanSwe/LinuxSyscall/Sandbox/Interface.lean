@@ -67,7 +67,7 @@ def defaultOps : SandboxOps :=
 @[inline] def landlockRestrictSelf (ruleset : RawFd) : IO (Except Errno Unit) :=
   defaultOps.landlockRestrictSelf ruleset
 
-/-- Probe action availability or install a classic BPF filter via Linux `seccomp(2)`. For `SECCOMP_SET_MODE_FILTER`, rejects invalid byte lengths (`0`, non-multiple of `8`, or `> 160` instructions) and unsafe filter instructions (`SECCOMP_RET_ERRNO | 0`, `SECCOMP_RET_ERRNO | EFAULT`, `KILL_PROCESS`, `KILL_THREAD`, `TRAP`, unknown action bits, `BPF_RET | BPF_A`, and `BPF_ALU | BPF_DIV | BPF_X` `0x003c`) with `EINVAL` in pure Lean before invoking the kernel. -/
+/-- Probe action availability or install a classic BPF filter via Linux `seccomp(2)`. For `SECCOMP_SET_MODE_FILTER`, rejects invalid byte lengths (`0`, non-multiple of `8`, or `> 160` instructions) and unsafe filter instructions (`SECCOMP_RET_ERRNO | 0`, `SECCOMP_RET_ERRNO | EFAULT`, `KILL_PROCESS`, `KILL_THREAD`, `TRAP`, `TRACE`, `USER_NOTIF`, unknown action bits, `BPF_RET | BPF_A`, and `BPF_ALU | BPF_DIV | BPF_X` `0x003c`) with `EINVAL` in pure Lean before invoking the kernel. -/
 @[inline] def seccomp (op : SeccompOp) (flags : SeccompFlags) (filterBytes : ByteArray) :
     IO (Except Errno UInt32) :=
   defaultOps.seccomp op flags filterBytes
