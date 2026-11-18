@@ -29,6 +29,14 @@
       "max_lines": 1011,
       "legacy_unmigrated": true
     },
+    "LeanSwe/LinuxSyscall/c/timerand_fuzz_sig.c": {
+      "max_lines": 120,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/LinuxSyscall/c/timerand_shim.c": {
+      "max_lines": 88,
+      "legacy_unmigrated": false
+    },
     "LeanSwe/Process/Raw/c/process_shim.c": {
       "max_lines": 960,
       "legacy_unmigrated": true
@@ -44,10 +52,6 @@
     "LeanSwe/Sqlite/Raw/c/sqlite_shim.c": {
       "max_lines": 615,
       "legacy_unmigrated": false
-    },
-    "LeanSwe/Uuid/Raw/c/uuid_shim.c": {
-      "max_lines": 99,
-      "legacy_unmigrated": true
     },
     "LeanSwe/LinuxSyscall/c/fd_box.h": {
       "max_lines": 122,

@@ -27,7 +27,6 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
     "Json": pathlib.Path("LeanSwe/Json"),
     "EnvVars.Raw": pathlib.Path("LeanSwe/EnvVars/Raw"),
     "EnvVars": pathlib.Path("LeanSwe/EnvVars"),
-    "Uuid.Raw": pathlib.Path("LeanSwe/Uuid/Raw"),
     "Uuid": pathlib.Path("LeanSwe/Uuid"),
     "Sqlite.Raw": pathlib.Path("LeanSwe/Sqlite/Raw"),
     "Sqlite": pathlib.Path("LeanSwe/Sqlite"),
@@ -48,13 +47,14 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
     "ConnectProxy": pathlib.Path("LeanSwe/ConnectProxy"),
     "SlotPool": pathlib.Path("LeanSwe/SlotPool"),
     "LinuxSyscall.Sandbox": pathlib.Path("LeanSwe/LinuxSyscall/Sandbox"),
+    "LinuxSyscall.TimeRand": pathlib.Path("LeanSwe/LinuxSyscall/TimeRand"),
 }
 
 C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
     "fs_shim.c": "leanswe_fs",
     "process_shim.c": "leanswe_process",
     "envvars_shim.c": "leanswe_envvars",
-    "uuid_shim.c": "leanswe_uuid",
+    "timerand_shim.c": "leanswe_linux_timerand",
     "sqlite_shim.c": "leanswe_sqlite",
     "cryptohash_shim.c": "leanswe_cryptohash",
     "psandbox_shim.c": "leanswe_psandbox",
@@ -64,6 +64,7 @@ C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
 
 SUITE_TO_EXTRA_C: dict[str, list[pathlib.Path]] = {
     "LinuxSyscall.Sandbox": [pathlib.Path("LeanSwe/LinuxSyscall/c/sandbox_shim.c")],
+    "LinuxSyscall.TimeRand": [pathlib.Path("LeanSwe/LinuxSyscall/c/timerand_shim.c")],
 }
 
 SANCOV_RT_C = r"""
@@ -360,8 +361,7 @@ def resolve_targets(root: pathlib.Path, suite: str) -> tuple[list[pathlib.Path],
             for cf in sorted(c_dir.glob("*.c")):
                 if cf.name in C_SHIM_TO_EXTERN_LIB:
                     c_targets.append(cf.relative_to(root))
-    extra_keys = list(SUITE_TO_DIR.keys()) if suite == "all" else [suite]
-    for sk in extra_keys:
+    for sk in (SUITE_TO_DIR if suite == "all" else (suite,)):
         for rel_c in SUITE_TO_EXTRA_C.get(sk, []):
             if (root / rel_c).is_file() and rel_c not in c_targets:
                 c_targets.append(rel_c)

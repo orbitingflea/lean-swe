@@ -1,77 +1,173 @@
 import LeanSwe.LinuxSyscall.Fuzz.SandboxFuzz
+import LeanSwe.LinuxSyscall.Fuzz.TimeRandFuzz
 
 namespace LeanSwe.LinuxSyscall.Fuzz.Main
 
-private structure CliArgs where
+/-- CLI options for `leanswe-world-fuzz`. -/
+structure FuzzCliOpts where
+  /-- Selected fuzz suite (`sandbox`, `timerand`, or `all`). -/
   suite : String := "sandbox"
+  /-- Number of syscall steps to execute. -/
   steps : Nat := 1000000
+  /-- Initial 64-bit SplitMix64 seed. -/
   seed : UInt64 := 0x517cc1b727220a95
+  /-- Draw initial seed from OS entropy (`TimeRand.getrandom`) and print `SEED=<u64>`. -/
   randomSeed : Bool := false
+  /-- Whether to run the delta-shrinker self-test before fuzzing. -/
   selfTestShrink : Bool := false
+  /-- Require `vm.memfd_noexec=2` strict assertions in the `sandbox` suite. -/
   requireMemfdStrict : Bool := false
+  /-- Allow skipping `CLONE_NEWTIME` (`timens`) sub-episodes when unshare is unavailable. -/
+  allowNoTimens : Bool := false
+  /-- Optional child-environment mode (`seccomp` or `timens`) used internally for forked sub-episodes. -/
+  envChild? : Option String := none
+  /-- Optional `errno` value (`1..4095`) for `--env-child seccomp`. -/
+  seccompErrno : UInt32 := 1
+  /-- Syscall bitmask (`bit0=clock_gettime`, `bit1=clock_nanosleep`, `bit2=getrandom`) for `--env-child seccomp`. -/
+  seccompMask : UInt32 := 7
+  /-- Optional un-filtered warmup steps before installing `seccomp` in `--env-child seccomp`. -/
+  seccompDelaySteps : Nat := 0
+  deriving Repr
 
-private def readUrandomU64 : IO UInt64 := do
-  let h ← IO.FS.Handle.mk "/dev/urandom" .read
-  let bs : ByteArray ← h.read 8
-  if bs.size < 8 then
-    let ns ← IO.monoNanosNow
-    return UInt64.ofNat ns
-  let mut acc : UInt64 := 0
+private def parsePositiveNatArg (flag val : String) : Except String Nat :=
+  match val.toNat? with
+  | some n =>
+    if n > 0 then .ok n else .error s!"INVALID_{flag}: expected >= 1, got '{val}'"
+  | none => .error s!"INVALID_{flag}: expected Nat, got '{val}'"
+
+private def parseNatArg (flag val : String) : Except String Nat :=
+  match val.toNat? with
+  | some n => .ok n
+  | none => .error s!"INVALID_{flag}: expected Nat, got '{val}'"
+
+private def parseUInt64Arg (flag val : String) : Except String UInt64 :=
+  match val.toNat? with
+  | some n =>
+    if n < UInt64.size then
+      .ok (UInt64.ofNat n)
+    else
+      .error s!"INVALID_{flag}: out of UInt64 range, got '{val}'"
+  | none => .error s!"INVALID_{flag}: expected UInt64, got '{val}'"
+
+private def parseCliArgs : List String → (opts : FuzzCliOpts := {}) → Except String FuzzCliOpts
+  | [], opts => .ok opts
+  | ["--suite"], _ => .error "missing value for --suite"
+  | "--suite" :: s :: rest, opts =>
+    parseCliArgs rest { opts with suite := s }
+  | ["--steps"], _ => .error "missing value for --steps"
+  | "--steps" :: s :: rest, opts => do
+    let n ← parsePositiveNatArg "STEPS" s
+    parseCliArgs rest { opts with steps := n }
+  | ["--seed"], _ => .error "missing value for --seed"
+  | "--seed" :: s :: rest, opts => do
+    let sd ← parseUInt64Arg "SEED" s
+    parseCliArgs rest { opts with seed := sd, randomSeed := false }
+  | "--random-seed" :: rest, opts =>
+    parseCliArgs rest { opts with randomSeed := true }
+  | "--self-test-shrink" :: rest, opts =>
+    parseCliArgs rest { opts with selfTestShrink := true }
+  | "--require-memfd-strict" :: rest, opts =>
+    parseCliArgs rest { opts with requireMemfdStrict := true }
+  | "--allow-no-timens" :: rest, opts =>
+    parseCliArgs rest { opts with allowNoTimens := true }
+  | ["--env-child"], _ => .error "missing value for --env-child"
+  | "--env-child" :: mode :: rest, opts =>
+    parseCliArgs rest { opts with envChild? := some mode }
+  | ["--seccomp-errno"], _ => .error "missing value for --seccomp-errno"
+  | "--seccomp-errno" :: s :: rest, opts => do
+    let n ← parseNatArg "SECCOMP_ERRNO" s
+    if n == 0 || n > 4095 then
+      .error s!"INVALID_SECCOMP_ERRNO: expected 1..4095, got '{s}'"
+    else
+      parseCliArgs rest { opts with seccompErrno := UInt32.ofNat n }
+  | ["--seccomp-mask"], _ => .error "missing value for --seccomp-mask"
+  | "--seccomp-mask" :: s :: rest, opts => do
+    let n ← parseNatArg "SECCOMP_MASK" s
+    if n == 0 || n > 7 then
+      .error s!"INVALID_SECCOMP_MASK: expected 1..7, got '{s}'"
+    else
+      parseCliArgs rest { opts with seccompMask := UInt32.ofNat n }
+  | ["--seccomp-delay-steps"], _ => .error "missing value for --seccomp-delay-steps"
+  | "--seccomp-delay-steps" :: s :: rest, opts => do
+    let n ← parseNatArg "SECCOMP_DELAY_STEPS" s
+    parseCliArgs rest { opts with seccompDelaySteps := n }
+  | flag :: _, _ => .error s!"UNKNOWN_FLAG: {flag}"
+
+private def drawOsEntropySeed : IO UInt64 := do
+  let mut acc : Array UInt8 := #[]
+  for _ in List.range 16 do
+    if acc.size ≥ 8 then
+      break
+    match ← LeanSwe.LinuxSyscall.TimeRand.getrandom (UInt32.ofNat (8 - acc.size)) {} with
+    | .ok bs =>
+      for b in bs.data do
+        acc := acc.push b
+    | .error e =>
+      if e != LeanSwe.LinuxSyscall.Errno.EINTR then
+        throw (IO.userError s!"drawOsEntropySeed getrandom failed: {e}")
+  if acc.size < 8 then
+    throw (IO.userError s!"drawOsEntropySeed short read: got {acc.size} bytes")
+  let mut v : UInt64 := 0
   for i in List.range 8 do
-    acc := acc ||| ((UInt64.ofNat (bs.get! i).toNat) <<< UInt64.ofNat (i * 8))
-  return acc
+    v := v ||| (UInt64.ofNat acc[i]!.toNat <<< UInt64.ofNat (8 * i))
+  return v
 
-private def parseArgs (args : List String) (acc : CliArgs := {}) : Except String CliArgs :=
-  match args with
-  | [] => .ok acc
-  | ["--suite"] => .error "missing value for --suite"
-  | "--suite" :: s :: rest => parseArgs rest { acc with suite := s }
-  | ["--steps"] => .error "missing value for --steps"
-  | "--steps" :: nStr :: rest =>
-    match nStr.toNat? with
-    | some n =>
-      if n > 0 then
-        parseArgs rest { acc with steps := n }
-      else
-        .error s!"invalid --steps value (must be >= 1): {nStr}"
-    | none => .error s!"invalid --steps value: {nStr}"
-  | ["--seed"] => .error "missing value for --seed"
-  | "--seed" :: sStr :: rest =>
-    match sStr.toNat? with
-    | some n =>
-      if n < UInt64.size then
-        parseArgs rest { acc with seed := UInt64.ofNat n, randomSeed := false }
-      else
-        .error s!"--seed out of UInt64 range: {sStr}"
-    | none => .error s!"invalid --seed value: {sStr}"
-  | "--random-seed" :: rest => parseArgs rest { acc with randomSeed := true }
-  | "--self-test-shrink" :: rest => parseArgs rest { acc with selfTestShrink := true }
-  | "--require-memfd-strict" :: rest => parseArgs rest { acc with requireMemfdStrict := true }
-  | other :: _ => .error s!"unknown argument: {other}"
-
-/-- CLI entry point for `leanswe-world-fuzz`. -/
-def main (args : List String) : IO UInt32 := do
-  match parseArgs args with
-  | .error msg =>
-    IO.eprintln s!"leanswe-world-fuzz: {msg}"
+private def runTimerandSuite (opts : FuzzCliOpts) (effectiveSeed : UInt64) : IO UInt32 := do
+  if opts.selfTestShrink then
+    selfTestShrink effectiveSeed
+  match opts.envChild? with
+  | some "seccomp" =>
+    let _ ← fuzzTimeRandSeccompChild opts.steps effectiveSeed opts.seccompErrno opts.seccompMask opts.seccompDelaySteps
+    return 0
+  | some "timens" =>
+    let _ ← fuzzTimeRand opts.steps effectiveSeed (runEnvSubEpisodes := false) (allowNoTimens := opts.allowNoTimens)
+    return 0
+  | some other =>
+    IO.eprintln s!"UNKNOWN_ENV_CHILD: {other}"
     return 2
-  | .ok cfg =>
-    let effectiveSeed ← if cfg.randomSeed then
-        let s ← readUrandomU64
-        IO.println s!"SEED={s}"
-        pure s
-      else
-        pure cfg.seed
-    match cfg.suite with
-    | "sandbox" =>
-      SandboxFuzz.runFuzz {
-        seed := effectiveSeed
-        steps := cfg.steps
-        selfTestShrink := cfg.selfTestShrink
-        requireMemfdStrict := cfg.requireMemfdStrict
-      }
-    | other =>
-      IO.eprintln s!"unknown fuzz suite: {other}"
+  | none =>
+    let _ ← fuzzTimeRand opts.steps effectiveSeed (runEnvSubEpisodes := true) (allowNoTimens := opts.allowNoTimens)
+    return 0
+
+/-- CLI entrypoint for `leanswe-world-fuzz`. -/
+def main (args : List String) : IO UInt32 := do
+  let opts ← match parseCliArgs args with
+    | .ok o => pure o
+    | .error msg =>
+      IO.eprintln msg
       return 2
+  if opts.suite != "sandbox" && opts.suite != "timerand" && opts.suite != "all" then
+    IO.eprintln s!"UNKNOWN_SUITE: {opts.suite} (expected sandbox, timerand, or all)"
+    return 2
+  let effectiveSeed ←
+    if opts.randomSeed then drawOsEntropySeed else pure opts.seed
+  if opts.envChild?.isNone || opts.randomSeed then
+    IO.println s!"SEED={effectiveSeed}"
+  match opts.suite with
+  | "sandbox" =>
+    if opts.envChild?.isSome then
+      IO.eprintln "--env-child is only supported for --suite timerand"
+      return 2
+    SandboxFuzz.runFuzz {
+      seed := effectiveSeed
+      steps := opts.steps
+      selfTestShrink := opts.selfTestShrink
+      requireMemfdStrict := opts.requireMemfdStrict
+    }
+  | "timerand" =>
+    runTimerandSuite opts effectiveSeed
+  | _ =>
+    if opts.envChild?.isSome then
+      IO.eprintln "--env-child is only supported for --suite timerand"
+      return 2
+    let rc ← SandboxFuzz.runFuzz {
+      seed := effectiveSeed
+      steps := opts.steps
+      selfTestShrink := opts.selfTestShrink
+      requireMemfdStrict := opts.requireMemfdStrict
+    }
+    if rc != 0 then
+      return rc
+    runTimerandSuite opts effectiveSeed
 
 end LeanSwe.LinuxSyscall.Fuzz.Main

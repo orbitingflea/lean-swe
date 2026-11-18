@@ -174,7 +174,8 @@ def test_timerand_allowedStep_exactKernelSemantics
     {runner} [NondetTest runner]
     (step : TimeRandState → TimeRandReq → TimeRandOutcome → Option TimeRandState := allowedStep) :
     runner Unit := do
-  let s ← nondet TimeRandState
+  let sRaw ← nondet TimeRandState
+  let s : TimeRandState := { sRaw with ambientSeccomp := false }
   let negReal : Timespec := { sec := -1, nsec := 999999999 }
   let badNsec : Timespec := { sec := 0, nsec := 1000000000 }
   NondetTest.assert (step s (.clock_gettime .realtime) (.timespec negReal) = some s)
@@ -216,6 +217,48 @@ def test_timerand_allowedStep_exactKernelSemantics
   NondetTest.assert (step s (.getrandom 16 {}) (.err Errno.ENFILE) = none)
   NondetTest.assert (step s (.clock_gettime .monotonic) (.err Errno.EMFILE) = none)
   NondetTest.assert (step s (.clock_nanosleep .monotonic false reqValid) (.err Errno.ENOSPC) = none)
+  let sZero : TimeRandState := { s with monoLowerBoundNs := 0, realtimeNs := 0 }
+  NondetTest.assert (step sZero (.clock_gettime .realtime) (.err Errno.EINTR) = none)
+  NondetTest.assert (step sZero (.clock_gettime .realtime) (.err Errno.ENOMEM) = none)
+  NondetTest.assert (step sZero (.clock_gettime .realtime) (.err Errno.EIO) = none)
+  NondetTest.assert (step sZero (.clock_gettime .monotonic) (.err Errno.EINTR) = none)
+  NondetTest.assert (step sZero (.clock_gettime .monotonic) (.err Errno.ENOMEM) = none)
+  NondetTest.assert (step sZero (.clock_gettime .monotonic) (.err Errno.EIO) = none)
+  NondetTest.assert (step sPos (.clock_nanosleep .monotonic false reqValid) (.err Errno.ENOMEM) = none)
+  NondetTest.assert (step sPos (.clock_nanosleep .monotonic false reqValid) (.err Errno.EIO) = none)
+  NondetTest.assert (step sUnready (.getrandom 16 {}) (.err Errno.EINTR) = some sUnready)
+  NondetTest.assert (step sUnready (.getrandom 16 { nonblock := true }) (.err Errno.EINTR) = none)
+  NondetTest.assert (step sUnready (.getrandom 16 { insecure := true }) (.err Errno.EINTR) = none)
+  NondetTest.assert (step sReady (.getrandom 16 {}) (.err Errno.EINTR) = none)
+  NondetTest.assert (step sUnready (.getrandom 16 {}) (.err Errno.ENOMEM) = none)
+  NondetTest.assert (step sUnready (.getrandom 16 {}) (.err Errno.EIO) = none)
+
+/-- Under `TimeRandState.withOuterSeccomp`, `allowedStep` permits `SECCOMP_RET_ERRNO` codes `1..4095` (excluding `EFAULT`) across all 3 syscalls while keeping `EFAULT`, out-of-range codes, non-error invariants, and non-seccomp strictness intact. -/
+def test_timerand_allowedStep_withOuterSeccomp
+    {runner} [NondetTest runner]
+    (step : TimeRandState → TimeRandReq → TimeRandOutcome → Option TimeRandState := allowedStep) :
+    runner Unit := do
+  let sBase ← nondet TimeRandState
+  let sNoSec : TimeRandState := { sBase with ambientSeccomp := false }
+  let sSec := sNoSec.withOuterSeccomp
+  let reqBadTs : Timespec := { sec := -1, nsec := 0 }
+  let reqValidTs : Timespec := { sec := 0, nsec := 1000 }
+  let sPosSec : TimeRandState := { sSec with monoLowerBoundNs := 5000 }
+  NondetTest.assert (TimeRandState.initial.ambientSeccomp = false)
+  NondetTest.assert (sSec.ambientSeccomp = true)
+  NondetTest.assert (step sNoSec (.clock_gettime .monotonic) (.err Errno.EPERM) = none)
+  NondetTest.assert (step sSec (.clock_gettime .monotonic) (.err Errno.EPERM) = some sSec)
+  NondetTest.assert (step sSec (.clock_gettime .realtime) (.err Errno.EACCES) = some sSec)
+  NondetTest.assert (step sSec (.clock_nanosleep .monotonic false reqBadTs) (.err Errno.EPERM) = some sSec)
+  NondetTest.assert (step sSec (.clock_nanosleep .monotonic false reqValidTs) (.err Errno.ENOSYS) = some sSec)
+  NondetTest.assert (step sSec (.getrandom 16 { random := true, insecure := true }) (.err Errno.EAGAIN) = some sSec)
+  NondetTest.assert (step sSec (.getrandom 16 {}) (.err Errno.EINVAL) = some sSec)
+  NondetTest.assert (step sSec (.clock_gettime .monotonic) (.err Errno.EFAULT) = none)
+  NondetTest.assert (step sSec (.clock_nanosleep .monotonic false reqValidTs) (.err Errno.EFAULT) = none)
+  NondetTest.assert (step sSec (.getrandom 16 {}) (.err Errno.EFAULT) = none)
+  NondetTest.assert (step sSec (.getrandom 16 {}) (.err 0) = none)
+  NondetTest.assert (step sSec (.getrandom 16 {}) (.err 4096) = none)
+  NondetTest.assert (step sPosSec (.clock_gettime .monotonic) (.timespec { sec := 0, nsec := 4999 }) = none)
 
 /-- Every step executed by `modelOps` from any `TimeRandState` and any `TimeRand` request produces an outcome and next state accepted by `allowedStep`. -/
 def test_timerand_modelOps_soundAgainstAllowedStep

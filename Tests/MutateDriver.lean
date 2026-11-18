@@ -12,7 +12,6 @@ import LeanSwe.EnvVars.Raw.Interface
 import LeanSwe.EnvVars.Raw.RuntimeTests
 import LeanSwe.EnvVars.Interface
 import LeanSwe.EnvVars.RuntimeTests
-import LeanSwe.Uuid.Raw.RuntimeTests
 import LeanSwe.Uuid.RuntimeTests
 import LeanSwe.Sqlite.Raw.Interface
 import LeanSwe.Sqlite.Raw.RuntimeTests
@@ -34,6 +33,7 @@ import LeanSwe.ConnectProxy.Raw.RuntimeTests
 import LeanSwe.ConnectProxy.RuntimeTests
 import LeanSwe.SlotPool.RuntimeTests
 import LeanSwe.LinuxSyscall.Sandbox.RuntimeTests
+import LeanSwe.LinuxSyscall.TimeRand.RuntimeTests
 
 open LeanSwe
 open Core.PropCheck
@@ -451,7 +451,6 @@ private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("Json", do Json.RuntimeTests.runAll; return none, pure ()),
   ("EnvVars.Raw", do EnvVars.Raw.RuntimeTests.runAll; return none, do runPropChecksEnvVarsRaw; runRawDecoderUnitTests),
   ("EnvVars", do EnvVars.RuntimeTests.runAll; return none, runPropChecksEnvVars),
-  ("Uuid.Raw", do Uuid.Raw.RuntimeTests.runAll; return none, pure ()),
   ("Uuid", do Uuid.RuntimeTests.runAll; return none, pure ()),
   ("Sqlite.Raw", do Sqlite.Raw.RuntimeTests.runAll; return none, runSqliteRawUnitTests),
   ("Sqlite", do Sqlite.RuntimeTests.runAll; return none, pure ()),
@@ -471,7 +470,8 @@ private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("ConnectProxy.Raw", do ConnectProxy.Raw.RuntimeTests.runAll; return none, pure ()),
   ("ConnectProxy", do ConnectProxy.RuntimeTests.runAll; return none, pure ()),
   ("SlotPool", do SlotPool.RuntimeTests.runAll; return none, pure ()),
-  ("LinuxSyscall.Sandbox", do LinuxSyscall.Sandbox.RuntimeTests.runAll; return none, pure ())
+  ("LinuxSyscall.Sandbox", do LinuxSyscall.Sandbox.RuntimeTests.runAll; return none, pure ()),
+  ("LinuxSyscall.TimeRand", do LinuxSyscall.TimeRand.RuntimeTests.runAll; return none, pure ())
 ]
 
 private structure MutateFlags where
@@ -502,6 +502,12 @@ def main (args : List String) : IO UInt32 := do
     return (← CmdLine.RuntimeTests.probeMain rest)
   | "--slotpool-probe" :: rest =>
     return (← SlotPool.RuntimeTests.probeMain rest)
+  | "--timerand-strace-fault-check" :: rest =>
+    return (← LinuxSyscall.TimeRand.RuntimeTests.probeMain rest)
+  | "--uuid-probe" :: rest =>
+    return (← Uuid.RuntimeTests.probeMain rest)
+  | "--time-probe" :: rest =>
+    return (← Time.RuntimeTests.probeMain rest)
   | _ =>
     let flags ← match parseFlags args with
       | .ok f => pure f

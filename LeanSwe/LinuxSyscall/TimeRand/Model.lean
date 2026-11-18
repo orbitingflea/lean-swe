@@ -39,14 +39,21 @@ structure TimeRandState where
   crngReady : Bool := false
   /-- Count of succeeding `getrandom` reads observed so far (seeds distinct deterministic byte blocks in `modelOps`). -/
   entropyDraws : Nat := 0
+  /-- Whether an ambient outer `seccomp` filter (`SECCOMP_RET_ERRNO`) may preempt any `TimeRand` syscall before argument validation (`EFAULT` excluded). -/
+  ambientSeccomp : Bool := false
   deriving Repr, DecidableEq, BEq, Inhabited
 
-/-- Initial `TimeRandState` before any monotonic observation (`monoLowerBoundNs = 0`, `crngReady = false` so early-boot `EAGAIN` is also permitted until first non-`insecure` `getrandom` success). -/
+/-- Initial `TimeRandState` before any monotonic observation (`monoLowerBoundNs = 0`, `crngReady = false` so early-boot `EAGAIN` is also permitted until first non-`insecure` `getrandom` success, `ambientSeccomp = false`). -/
 def TimeRandState.initial (realtimeNs : Int := 0) (crngReady : Bool := false) : TimeRandState :=
   { monoLowerBoundNs := 0
     realtimeNs := realtimeNs
     crngReady := crngReady
-    entropyDraws := 0 }
+    entropyDraws := 0
+    ambientSeccomp := false }
+
+/-- Enable ambient outer `seccomp` `SECCOMP_RET_ERRNO` preemption on a `TimeRandState` (safe filters have `1 ≤ data ≤ 4095 ∧ data ≠ EFAULT`: `SECCOMP_RET_ERRNO | 0` spoofs `rc = 0` fake success without executing the syscall, and `SECCOMP_RET_ERRNO | EFAULT` triggers the repo-wide fail-loud C-pointer `abort()` invariant in `Common/Types.lean:48`). -/
+def TimeRandState.withOuterSeccomp (s : TimeRandState := TimeRandState.initial) : TimeRandState :=
+  { s with ambientSeccomp := true }
 
 /-- Deterministic byte-stream generator producing exact `len` bytes seeded by `(drawIdx, pos)` for `modelOps.getrandom`. -/
 def deterministicEntropyList (drawIdx : Nat) : Nat → Nat → List UInt8
@@ -63,10 +70,6 @@ def deterministicEntropyList (drawIdx : Nat) : Nat → Nat → List UInt8
 def deterministicEntropyBytes (drawIdx len : Nat) : ByteArray :=
   ByteArray.mk (deterministicEntropyList drawIdx len 0).toArray
 
-/-- Return `true` iff `e` is a transient kernel/allocation fault applicable to FD-free `TimeRand` syscalls (`EINTR`, `ENOMEM`, `EIO`; excludes `EMFILE`, `ENFILE`, and `ENOSPC` since `TimeRand` never allocates file descriptors or writes to filesystems). -/
-def isTransientTimeRandErrno (e : Errno) : Bool :=
-  e == Errno.EINTR || e == Errno.ENOMEM || e == Errno.EIO
-
 /-- Return `true` iff `gotLen` is a legal Linux `getrandom(2)` byte count for requested `len` (`0` when `len == 0`, exact `len` when `1 ≤ len ≤ 256`, and `1 ≤ gotLen ≤ min len MAX_READ_BYTES` when `len > 256`). -/
 def validGetrandomResultLen (len : UInt32) (gotLen : Nat) : Bool :=
   let cap := min len.toNat MAX_READ_BYTES.toNat
@@ -77,8 +80,8 @@ def validGetrandomResultLen (len : UInt32) (gotLen : Nat) : Bool :=
   else
     1 ≤ gotLen && gotLen ≤ cap
 
-/-- Relational step checker for `LeanSwe.LinuxSyscall.TimeRand` (`some s'` iff `out` is a legal Linux `7.1+` outcome for `req` in state `s`). -/
-def allowedStep (s : TimeRandState) (req : TimeRandReq) (out : TimeRandOutcome) : Option TimeRandState :=
+/-- Core Linux `7.1+` relational step checker without ambient `seccomp` `SECCOMP_RET_ERRNO` preemption. -/
+def allowedStepCore (s : TimeRandState) (req : TimeRandReq) (out : TimeRandOutcome) : Option TimeRandState :=
   match req with
   | .clock_gettime clk =>
     match out with
@@ -95,7 +98,11 @@ def allowedStep (s : TimeRandState) (req : TimeRandReq) (out : TimeRandOutcome) 
         else
           none
     | .err e =>
-      if isTransientTimeRandErrno e then some s else none
+      match clk with
+      | .realtime =>
+        if (Timespec.ofEpochNanos? s.realtimeNs).isNone && e == Errno.EIO then some s else none
+      | .monotonic =>
+        if (Timespec.ofNanosNat? s.monoLowerBoundNs).isNone && e == Errno.EIO then some s else none
     | _ => none
   | .clock_nanosleep clk abstime reqTs =>
     if !reqTs.isValid then
@@ -112,7 +119,7 @@ def allowedStep (s : TimeRandState) (req : TimeRandReq) (out : TimeRandOutcome) 
           let nextMono := if abstime then max s.monoLowerBoundNs reqNs else s.monoLowerBoundNs + reqNs
           some { s with monoLowerBoundNs := nextMono }
       | .err e =>
-        if isTransientTimeRandErrno e then some s else none
+        if e == Errno.EINTR then some s else none
       | _ => none
   | .getrandom len flags =>
     if flags.isInvalid then
@@ -130,11 +137,25 @@ def allowedStep (s : TimeRandState) (req : TimeRandReq) (out : TimeRandOutcome) 
           none
       | .err e =>
         let allowEagain := !s.crngReady && flags.nonblock && !flags.insecure && e == Errno.EAGAIN
-        if allowEagain || isTransientTimeRandErrno e then
+        let allowEintr := !s.crngReady && !flags.nonblock && !flags.insecure && e == Errno.EINTR
+        if allowEagain || allowEintr then
           some s
         else
           none
       | _ => none
+
+/-- Relational step checker for `LeanSwe.LinuxSyscall.TimeRand` (`some s'` iff `out` is a legal Linux `7.1+` outcome for `req` in state `s`). -/
+def allowedStep (s : TimeRandState) (req : TimeRandReq) (out : TimeRandOutcome) : Option TimeRandState :=
+  if s.ambientSeccomp then
+    match out with
+    | .err e =>
+      if e != Errno.EFAULT && 1 ≤ e.toNat && e.toNat ≤ 4095 then
+        some s
+      else
+        allowedStepCore s req out
+    | _ => allowedStepCore s req out
+  else
+    allowedStepCore s req out
 
 /-- Convert an `Except Errno Timespec` result into its `TimeRandOutcome`. -/
 def outcomeOfTimespec : Except Errno Timespec → TimeRandOutcome

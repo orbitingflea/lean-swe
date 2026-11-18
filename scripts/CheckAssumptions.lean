@@ -46,10 +46,7 @@ private def legacyExemptionAllowlist : Array Name := #[
   `LeanSwe.ProcessSandbox,
   `LeanSwe.ProcessSandbox.Raw,
   `LeanSwe.SlotPool,
-  `LeanSwe.TempDir,
-  `LeanSwe.Time,
-  `LeanSwe.Uuid,
-  `LeanSwe.Uuid.Raw
+  `LeanSwe.TempDir
 ]
 
 private def forbiddenTestMainConsts : Std.HashSet Name :=

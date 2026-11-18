@@ -201,4 +201,64 @@ example : ¬ Core.AllPass (test_timerand_modelOps_soundAgainstAllowedStep stubMo
     Core.NondetTest.assert, Bind.bind, StateT.run, pure, StateT.pure] at h0
   cases h0.1
 
+example : ¬ Core.AllPass (test_timerand_allowedStep_withOuterSeccomp
+    (fun s req out => allowedStep { s with ambientSeccomp := false } req out)) := by
+  intro h
+  have h0 := h {}
+  dsimp [test_timerand_allowedStep_withOuterSeccomp, TimeRandState.withOuterSeccomp,
+    allowedStep, allowedStepCore,
+    Core.NondetTest.assert, Bind.bind] at h0
+  cases h0.2.2.2.1
+
+example : ¬ Core.AllPass (test_timerand_allowedStep_withOuterSeccomp
+    (fun s req out =>
+      if s.ambientSeccomp then
+        match out with
+        | .err _ => some s
+        | _ => allowedStep s req out
+      else allowedStep s req out)) := by
+  intro h
+  have h0 := h {}
+  dsimp [test_timerand_allowedStep_withOuterSeccomp, TimeRandState.withOuterSeccomp,
+    allowedStep, allowedStepCore,
+    Core.NondetTest.assert, Bind.bind] at h0
+  cases h0.2.2.2.2.2.2.2.2.2.1
+
+example : ¬ Core.AllPass (test_timerand_allowedStep_exactKernelSemantics
+    (fun s req out =>
+      match req, out with
+      | .clock_gettime _, .err e => if e == Errno.ENOMEM then some s else allowedStep s req out
+      | _, _ => allowedStep s req out)) := by
+  intro h
+  have h0 := h {}
+  dsimp [test_timerand_allowedStep_exactKernelSemantics,
+    Timespec.ofEpochNanos?, MIN_TIMESPEC_SEC_INT, MAX_TIMESPEC_SEC, NSEC_PER_SEC,
+    Core.NondetTest.assert, Bind.bind] at h0
+  have hBad := h0.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1
+  cases hBad
+
+example : ¬ Core.AllPass (test_timerand_allowedStep_exactKernelSemantics
+    (fun s req out =>
+      match req, out with
+      | .clock_nanosleep _ _ _, .err e => if e == Errno.EIO then some s else allowedStep s req out
+      | _, _ => allowedStep s req out)) := by
+  intro h
+  have h0 := h {}
+  dsimp [test_timerand_allowedStep_exactKernelSemantics,
+    Core.NondetTest.assert, Bind.bind] at h0
+  have hBad := h0.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1
+  cases hBad
+
+example : ¬ Core.AllPass (test_timerand_allowedStep_exactKernelSemantics
+    (fun s req out =>
+      match req, out with
+      | .getrandom _ _, .err e => if e == Errno.EINTR then some s else allowedStep s req out
+      | _, _ => allowedStep s req out)) := by
+  intro h
+  have h0 := h {}
+  dsimp [test_timerand_allowedStep_exactKernelSemantics,
+    Core.NondetTest.assert, Bind.bind] at h0
+  have hBad := h0.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1
+  cases hBad
+
 end LeanSwe.LinuxSyscall.TimeRand

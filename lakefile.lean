@@ -155,6 +155,26 @@ extern_lib «leanswe_sandbox_fuzz_env» pkg := do
   let name := nameToStaticLib "leanswe_sandbox_fuzz_env"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
+extern_lib «leanswe_linux_timerand» pkg := do
+  let oFile := pkg.buildDir / "c" / "timerand_shim.o"
+  let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "LinuxSyscall" / "c" / "timerand_shim.c")
+  let lean ← getLeanInstall
+  let oJob ← buildO oFile srcJob
+    #["-I", lean.includeDir.toString]
+    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+  let name := nameToStaticLib "leanswe_linux_timerand"
+  buildStaticLib (pkg.staticLibDir / name) #[oJob]
+
+extern_lib «leanswe_linux_timerand_fuzz» pkg := do
+  let oFile := pkg.buildDir / "c" / "timerand_fuzz_sig.o"
+  let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "LinuxSyscall" / "c" / "timerand_fuzz_sig.c")
+  let lean ← getLeanInstall
+  let oJob ← buildO oFile srcJob
+    #["-I", lean.includeDir.toString]
+    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+  let name := nameToStaticLib "leanswe_linux_timerand_fuzz"
+  buildStaticLib (pkg.staticLibDir / name) #[oJob]
+
 @[default_target, test_driver]
 lean_exe «lean-swe-test» where
   root := `Tests.Main
