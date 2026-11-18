@@ -13,8 +13,10 @@ open LeanSwe.LinuxSyscall.TimeRand
 
 /-- Trace state recording `TimeRandOpsM` calls made by `mkTimeOps` during `EINTR` and sleep tests. -/
 structure SleepTraceState where
-  /-- Monotonic `Timespec` returned by `clock_gettime .monotonic`. -/
+  /-- Monotonic `Timespec` returned by `clock_gettime .monotonic` when `gettimeErr? = none`. -/
   monoNow : Timespec := { sec := 0, nsec := 0 }
+  /-- Optional `Errno` returned by `clock_gettime` to exercise error-fallback paths. -/
+  gettimeErr? : Option Errno := none
   /-- Queued `clock_nanosleep` responses popped in order (defaulting to `.ok ()` once empty). -/
   sleepResponses : List (Except Errno Unit) := []
   /-- Number of `clock_gettime` calls observed. -/
@@ -28,8 +30,11 @@ def scriptedSleepSysOps (fallback : Except Errno Unit := .ok ()) :
     TimeRandOpsM (StateM SleepTraceState) :=
   { clock_gettime := fun _ => do
       let s ← get
+      let r := match s.gettimeErr? with
+        | some e => .error e
+        | none => .ok s.monoNow
       set { s with gettimeCalls := s.gettimeCalls + 1 }
-      return .ok s.monoNow
+      return r
     clock_nanosleep := fun clk abstime req => do
       let s ← get
       let log' := (clk, abstime, req) :: s.nanosleepLog
@@ -186,14 +191,18 @@ def test_time_utcDate_timestampRoundTrip
   NondetTest.assert (api.utcDateOfTimestamp midnight = d)
   NondetTest.assert (compare (api.utcDateOfTimestamp (midnight - Std.Time.Duration.ofNanoseconds 1)) d = .lt)
 
-/-- `formatUtcCompact` emits 16-char `YYYYMMDDTHHMMSSZ` strings for 4-digit UTC years (`0000`..`9999`). -/
+/-- `formatUtcCompact` emits 16-char `YYYYMMDDTHHMMSSZ` strings matching the exact date and time digits of `formatUtcIso8601` for 4-digit UTC years (`0000`..`9999`). -/
 def test_time_utcCompact_formatShape
     {runner} [NondetTest runner] (api : TimeApi) : runner Unit := do
   let ts ← nondet Std.Time.Timestamp
   assume (-62167219200000000000 ≤ ts.toNanosecondsSinceUnixEpoch.val ∧
     ts.toNanosecondsSinceUnixEpoch.val ≤ 253402300799999999999)
-  let s := api.formatUtcCompact ts
-  NondetTest.assert (s.length = 16 ∧ s.endsWith "Z" = true)
+  let cs := (api.formatUtcCompact ts).toList
+  let iso := (api.formatUtcIso8601 ts).toList
+  let expected :=
+    iso.take 4 ++ (iso.drop 5).take 2 ++ (iso.drop 8).take 2 ++ ['T'] ++
+    (iso.drop 11).take 2 ++ (iso.drop 14).take 2 ++ (iso.drop 17).take 2 ++ ['Z']
+  NondetTest.assert (cs.length = 16 ∧ cs = expected)
 
 /-- `mkTimeOps` reads `CLOCK_REALTIME` (including pre-1970 negative `sec`) into `Std.Time.Timestamp` and `CLOCK_MONOTONIC` into `Nat` nanoseconds, falling back cleanly to `0` on syscall error. -/
 def test_time_mkTimeOps_readsRealtimeAndMonotonic
@@ -241,7 +250,7 @@ def test_time_mkTimeOps_sleepZeroAndModelSleepMs
   NondetTest.assert (s₁.monoLowerBoundNs = s₀.monoLowerBoundNs + ms * 1000000)
   NondetTest.assert (elapsed = Std.Time.Duration.ofMillisecond (Std.Time.Millisecond.Offset.ofNat ms))
 
-/-- `(mkOps sys).sleep ms` (`ms > 0`) computes the `TIMER_ABSTIME` monotonic deadline once, retries `Errno.EINTR` without deadline drift, stops after 1 call on non-`EINTR` errnos, and terminates within `MAX_EINTR_RETRIES + 1` attempts under persistent `EINTR`. -/
+/-- `(mkOps sys).sleep ms` (`ms > 0`) computes the `TIMER_ABSTIME` monotonic deadline once, retries `Errno.EINTR` without deadline drift, stops after 1 call on non-`EINTR` errnos, terminates within `MAX_EINTR_RETRIES + 1` attempts under persistent `EINTR`, and falls back to a single relative `clock_nanosleep .monotonic false` of `ms * 1_000_000` ns when `clock_gettime` fails, returns negative `sec`, or overflows `MAX_TIMESPEC_NANOS`. -/
 def test_time_mkTimeOps_sleepAbstimeRetriesEintrWithoutDrift
     {runner} [NondetTest runner]
     (mkOps : TimeRandOpsM (StateM SleepTraceState) → TimeOpsM (StateM SleepTraceState)) : runner Unit := do
@@ -257,7 +266,7 @@ def test_time_mkTimeOps_sleepAbstimeRetriesEintrWithoutDrift
   let initEintr : SleepTraceState :=
     { monoNow := startMono
       sleepResponses := List.replicate eintrCount (.error Errno.EINTR) ++ [.ok ()] }
-  let ((), stAfterEintr) := ((mkOps (scriptedSleepSysOps)).sleep ms).run initEintr
+  let stAfterEintr := (((mkOps (scriptedSleepSysOps)).sleep ms).run initEintr).2
   NondetTest.assert (stAfterEintr.gettimeCalls = 1)
   NondetTest.assert (stAfterEintr.nanosleepLog.length = eintrCount + 1)
   NondetTest.assert (stAfterEintr.nanosleepLog.all (fun (clk, abs, req) =>
@@ -266,12 +275,32 @@ def test_time_mkTimeOps_sleepAbstimeRetriesEintrWithoutDrift
   let initFatal : SleepTraceState :=
     { monoNow := startMono
       sleepResponses := [.error fatalErr, .ok ()] }
-  let ((), stAfterFatal) := ((mkOps (scriptedSleepSysOps)).sleep ms).run initFatal
+  let stAfterFatal := (((mkOps (scriptedSleepSysOps)).sleep ms).run initFatal).2
   NondetTest.assert (stAfterFatal.gettimeCalls = 1 ∧ stAfterFatal.nanosleepLog.length = 1)
   let initStorm : SleepTraceState := { monoNow := startMono }
-  let ((), stAfterStorm) := ((mkOps (scriptedSleepSysOps (.error Errno.EINTR))).sleep ms).run initStorm
+  let stAfterStorm := (((mkOps (scriptedSleepSysOps (.error Errno.EINTR))).sleep ms).run initStorm).2
   NondetTest.assert (stAfterStorm.gettimeCalls = 1 ∧
     stAfterStorm.nanosleepLog.length = MAX_EINTR_RETRIES + 1)
+  let isExpectedRelCall : ClockId × Bool × Timespec → Bool := fun (clk, abs, req) =>
+    clk == .monotonic && abs == false && req.isValid && req.toNanosNat == ms.toNat * 1000000
+  let initGetErr : SleepTraceState :=
+    { gettimeErr? := some fatalErr
+      sleepResponses := [.error Errno.EINTR, .ok ()] }
+  let stAfterGetErr := (((mkOps (scriptedSleepSysOps)).sleep ms).run initGetErr).2
+  NondetTest.assert (stAfterGetErr.gettimeCalls = 1 ∧ stAfterGetErr.nanosleepLog.length = 1 ∧
+    stAfterGetErr.nanosleepLog.all isExpectedRelCall = true)
+  let initOverflow : SleepTraceState :=
+    { monoNow := { sec := 9223372036854775807, nsec := 999999999 }
+      sleepResponses := [.error Errno.EINTR, .ok ()] }
+  let stAfterOverflow := (((mkOps (scriptedSleepSysOps)).sleep ms).run initOverflow).2
+  NondetTest.assert (stAfterOverflow.gettimeCalls = 1 ∧ stAfterOverflow.nanosleepLog.length = 1 ∧
+    stAfterOverflow.nanosleepLog.all isExpectedRelCall = true)
+  let initNegSec : SleepTraceState :=
+    { monoNow := { sec := -1, nsec := 0 }
+      sleepResponses := [.error Errno.EINTR, .ok ()] }
+  let stAfterNegSec := (((mkOps (scriptedSleepSysOps)).sleep ms).run initNegSec).2
+  NondetTest.assert (stAfterNegSec.gettimeCalls = 1 ∧ stAfterNegSec.nanosleepLog.length = 1 ∧
+    stAfterNegSec.nanosleepLog.all isExpectedRelCall = true)
 
 /-- Declared error-coverage matrix for pure helper package `LeanSwe.Time` (`TimeErrorKind`, covering `parseUtcIso8601` and `parseUtcDate`). -/
 def errorCoverage : List (ErrorObligation TimeErrorKind) :=

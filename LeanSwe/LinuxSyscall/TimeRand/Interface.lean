@@ -6,18 +6,18 @@ namespace LeanSwe.LinuxSyscall.TimeRand
 open LeanSwe.LinuxSyscall
 
 @[extern "leanswe_sys_clock_gettime"]
-private opaque rawClockGettime : UInt32 → IO (Except Errno (Int64 × UInt32))
+private opaque rawClockGettime : UInt32 → BaseIO (Except Errno (Int64 × UInt32))
 
 @[extern "leanswe_sys_clock_nanosleep"]
-private opaque rawClockNanosleep : UInt32 → UInt8 → Int64 → UInt32 → IO (Except Errno Unit)
+private opaque rawClockNanosleep : UInt32 → UInt8 → Int64 → UInt32 → BaseIO (Except Errno Unit)
 
 @[extern "leanswe_sys_getrandom"]
-private opaque rawGetrandom : UInt32 → UInt32 → IO (Except Errno ByteArray)
+private opaque rawGetrandom : UInt32 → UInt32 → BaseIO (Except Errno ByteArray)
 
 private def posixTimeRandOps : Internal.PosixTimeRandOps :=
-  { clock_gettime := rawClockGettime
-    clock_nanosleep := rawClockNanosleep
-    getrandom := rawGetrandom }
+  { clock_gettime := fun clk => liftM (rawClockGettime clk)
+    clock_nanosleep := fun clk abs sec nsec => liftM (rawClockNanosleep clk abs sec nsec)
+    getrandom := fun len flags => liftM (rawGetrandom len flags) }
 
 /-- Default Linux `TimeRand` syscall bundle backed by `LeanSwe/LinuxSyscall/c/timerand_shim.c`. -/
 def defaultOps : TimeRandOps :=

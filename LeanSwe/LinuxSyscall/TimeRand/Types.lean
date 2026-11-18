@@ -56,11 +56,11 @@ def Timespec.toNanosNat (ts : Timespec) : Nat :=
 def Timespec.toEpochNanos (ts : Timespec) : Int :=
   ts.sec.toInt * Int.ofNat NSEC_PER_SEC + Int.ofNat ts.nsec.toNat
 
-/-- Construct a valid non-negative `Timespec` from total nanoseconds `ns`, returning `none` iff `ns / 10^9 > Int64.max`. -/
+/-- Construct a valid non-negative `Timespec` from total nanoseconds `ns`, returning `none` iff `ns > MAX_TIMESPEC_NANOS` (`ns / 10^9 > Int64.max`). -/
 def Timespec.ofNanosNat? (ns : Nat) : Option Timespec :=
-  let sNat := ns / NSEC_PER_SEC
-  let nsRem := ns % NSEC_PER_SEC
-  if sNat ≤ MAX_TIMESPEC_SEC then
+  if Nat.ble ns MAX_TIMESPEC_NANOS then
+    let sNat := ns / NSEC_PER_SEC
+    let nsRem := ns % NSEC_PER_SEC
     some { sec := Int64.ofInt (Int.ofNat sNat), nsec := UInt32.ofNat nsRem }
   else
     none

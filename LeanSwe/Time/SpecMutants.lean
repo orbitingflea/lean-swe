@@ -145,6 +145,15 @@ example : ¬ Core.AllPass (test_time_utcCompact_formatShape stubTimeApiAt) := by
   have h0 := h (Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0) (by decide)
   simp [stubTimeApiAt, bind, assert] at h0
 
+example : ¬ Core.AllPass (test_time_utcCompact_formatShape
+    { stubTimeApiAt with
+      formatUtcIso8601 := fun _ => "1970-01-01T00:00:00.000000000Z"
+      formatUtcCompact := fun _ => "00000000T000000Z" }) := by
+  intro h
+  have h0 := h (Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0) (by decide)
+  dsimp [test_time_utcCompact_formatShape, stubTimeApiAt, Core.NondetTest.assert, Bind.bind] at h0
+  exact absurd h0.1.2 (by decide)
+
 example : ¬ Core.AllPass (test_time_mkTimeOps_readsRealtimeAndMonotonic
     (fun _ => { nowTimestamp := Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0
                 monoNanosNow := 0
@@ -187,5 +196,69 @@ example : ¬ Core.AllPass (test_time_mkTimeOps_sleepAbstimeRetriesEintrWithoutDr
     Core.NondetTest.assert, Bind.bind, StateT.run, StateT.bind, get, getThe,
     MonadStateOf.get, StateT.get, set, StateT.set, pure, StateT.pure] at h0
   exact absurd h0.1 (by decide)
+
+private def retryBugNoFallbackLoop {m : Type → Type} [Monad m]
+    (sys : TimeRandOpsM m) (target : Timespec) : Nat → m Unit
+  | 0 => do
+    let _ ← sys.clock_nanosleep .monotonic true target
+    pure ()
+  | fuel + 1 => do
+    match ← sys.clock_nanosleep .monotonic true target with
+    | .ok () => pure ()
+    | .error e =>
+      if e == Errno.EINTR then retryBugNoFallbackLoop sys target fuel
+      else pure ()
+
+example : ¬ Core.AllPass (test_time_mkTimeOps_sleepAbstimeRetriesEintrWithoutDrift
+    (fun sys =>
+      { nowTimestamp := pure (Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0)
+        monoNanosNow := pure 0
+        sleep := fun ms =>
+          if ms == 0 then pure ()
+          else do
+            match ← sys.clock_gettime .monotonic with
+            | .ok nowTs =>
+              if decide (0 ≤ nowTs.sec.toInt) then
+                match Timespec.ofNanosNat? (nowTs.toNanosNat + ms.toNat * 1000000) with
+                | some targetTs => retryBugNoFallbackLoop sys targetTs MAX_EINTR_RETRIES
+                | none => pure ()
+              else pure ()
+            | .error _ => pure () })) := by
+  intro h
+  have h0 := h { sec := 1, nsec := 0 } 10 1 Errno.EIO (by decide) (by decide) (by decide) (by decide) (by decide)
+  have hGetErr := h0.2.2.2.2.2.1
+  dsimp [scriptedSleepSysOps, Core.NondetTest.assert, Bind.bind, StateT.run, StateT.bind,
+    get, getThe, MonadStateOf.get, StateT.get, set, StateT.set, pure, StateT.pure] at hGetErr
+  exact absurd hGetErr.2.1 (by decide)
+
+example : ¬ Core.AllPass (test_time_mkTimeOps_sleepAbstimeRetriesEintrWithoutDrift
+    (fun sys =>
+      { nowTimestamp := pure (Std.Time.Timestamp.ofSecondsSinceUnixEpoch 0)
+        monoNanosNow := pure 0
+        sleep := fun ms =>
+          if ms == 0 then pure ()
+          else do
+            match ← sys.clock_gettime .monotonic with
+            | .ok nowTs =>
+              if decide (0 ≤ nowTs.sec.toInt) then
+                match Timespec.ofNanosNat? (nowTs.toNanosNat + ms.toNat * 1000000) with
+                | some targetTs => retryBugNoFallbackLoop sys targetTs MAX_EINTR_RETRIES
+                | none =>
+                  let _ ← sys.clock_nanosleep .monotonic false { sec := 0, nsec := 0 }
+                  pure ()
+              else
+                let _ ← sys.clock_nanosleep .monotonic false { sec := 0, nsec := 0 }
+                pure ()
+            | .error _ =>
+              let _ ← sys.clock_nanosleep .monotonic false { sec := 0, nsec := 0 }
+              pure () })) := by
+  intro h
+  have h0 := h { sec := 1, nsec := 0 } 10 1 Errno.EIO (by decide) (by decide) (by decide) (by decide) (by decide)
+  have hGetErr := h0.2.2.2.2.2.1
+  dsimp [scriptedSleepSysOps, Timespec.isValid, Timespec.toNanosNat,
+    LeanSwe.LinuxSyscall.TimeRand.NSEC_PER_SEC, Core.NondetTest.assert, Bind.bind,
+    StateT.run, StateT.bind, get, getThe, MonadStateOf.get, StateT.get,
+    set, StateT.set, pure, StateT.pure] at hGetErr
+  exact absurd hGetErr.2.2 (by decide)
 
 end LeanSwe.Time
