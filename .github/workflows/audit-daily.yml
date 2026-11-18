@@ -84,6 +84,13 @@ jobs:
           set -euo pipefail
           lake env lean --run scripts/CheckPromises.lean .lake/build/lib/lean
 
+      - name: Check non-Lean thinness gate
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          lake env lean -DwarningAsError=true --run scripts/CheckForeignThinness.lean .
+          python3 -B -m unittest scripts/test_check_spec_change.py
+
       - name: Repeat runtime tests N times
         id: repeat_tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' }}

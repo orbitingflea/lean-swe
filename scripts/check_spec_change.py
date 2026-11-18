@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify PR labels for edits to frozen spec files (`spec-add` vs `spec-change`).
+"""Verify PR labels for locked specs (`spec-add`/`spec-change`) and foreign budget (`add-foreign-lang`).
 
 Locked spec files (`Core/*.lean` and `LeanSwe/**/{Types,Model,SpecTests,Interface}.lean`,
 except brand-new `LeanSwe/<Pkg>` packages absent at the base commit) always require a PR label.
@@ -18,6 +18,12 @@ satisfied by `spec-change`). Any alteration (including adding fields to an exist
 middle insertion, new `Core/*.lean` or `Interface.lean`, `opaque`/`instance`/`class`, unsafe or
 custom `@[...]` attributes, embedded/indented/same-line extra commands, or non-declaration
 directive requires `spec-change`.
+
+`.foreign-budget.json` is enforced as a strictly orthogonal one-way ratchet: deleting files,
+lowering `max_lines`, clearing `legacy_unmigrated`, or tightening `function_overrides` /
+`named_thread_helpers` needs no label, whereas adding/loosening any budget entry, changing a
+vendored SHA-256, or deleting/renaming `.foreign-budget.json` requires `add-foreign-lang` (`spec-change`
+and `spec-add` do not substitute for `add-foreign-lang`, nor vice versa).
 """
 
 from __future__ import annotations
@@ -31,8 +37,17 @@ import subprocess
 import sys
 
 SPEC_BASENAMES = frozenset({"Types.lean", "Model.lean", "SpecTests.lean", "Interface.lean"})
+FOREIGN_BUDGET_PATH = ".foreign-budget.json"
+BUDGET_ROOT_KEYS = frozenset({"version", "files", "vendored_files", "function_overrides", "named_thread_helpers"})
+BUDGET_FILE_KEYS = frozenset({"max_lines", "legacy_unmigrated"})
+BUDGET_VENDORED_KEYS = frozenset({"sha256", "max_lines"})
+BUDGET_OVERRIDE_KEYS = frozenset(
+    {"max_code_lines", "max_branches", "allow_array_copy_loop", "max_loops", "allow_poll"}
+)
 LABEL_ADD = "spec-add"
 LABEL_CHANGE = "spec-change"
+LABEL_FOREIGN = "add-foreign-lang"
+ALL_GATE_LABELS = frozenset({LABEL_ADD, LABEL_CHANGE, LABEL_FOREIGN})
 ALLOW_NEW_PACKAGES = True
 
 SAFE_DECL_ATTRS = frozenset({
@@ -184,15 +199,20 @@ def existing_top_packages_at_base(repo_root: Path, base_ref: str) -> set[str]:
 
 
 def read_pr_labels(event_path: Path | None, cli_labels: list[str]) -> set[str]:
-    """Collect active spec labels from CLI flags and the GitHub PR event JSON payload."""
-    labels = {lbl for lbl in cli_labels if lbl in (LABEL_ADD, LABEL_CHANGE)}
+    """Collect active gate labels from CLI flags and the GitHub PR event JSON payload."""
+    labels: set[str] = set()
+    for raw in cli_labels:
+        for part in raw.split(","):
+            lbl = part.strip()
+            if lbl in ALL_GATE_LABELS:
+                labels.add(lbl)
     if event_path is not None and event_path.exists():
         payload = json.loads(event_path.read_text(encoding="utf-8"))
         pr_obj = payload.get("pull_request") or {}
         for item in pr_obj.get("labels") or []:
             if isinstance(item, dict):
                 name = item.get("name")
-                if name in (LABEL_ADD, LABEL_CHANGE):
+                if name in ALL_GATE_LABELS:
                     labels.add(name)
     return labels
 
@@ -803,9 +823,241 @@ def classify_locked_spec_diff(
     return LockedDiffAssessment(hit, LABEL_ADD, f"pure addition of {len(added_units)} declaration(s)")
 
 
+def _is_nonneg_int(val: object) -> bool:
+    """Return True if val is an int (excluding bool) >= 0."""
+    return isinstance(val, int) and not isinstance(val, bool) and val >= 0
+
+
+def _check_budget_files_ratchet(base_files: object, head_files: object) -> str | None:
+    """Return a loosen-reason string if 'files' loosened or broke schema, else None."""
+    if not isinstance(base_files, dict) or not isinstance(head_files, dict):
+        return "invalid 'files' section in .foreign-budget.json"
+    for path, head_entry in head_files.items():
+        if path not in base_files:
+            return f"added foreign budget entry '{path}'"
+        base_entry = base_files[path]
+        if not isinstance(base_entry, dict) or not isinstance(head_entry, dict):
+            return f"invalid entry object for '{path}'"
+        if not set(head_entry.keys()).issubset(BUDGET_FILE_KEYS):
+            return f"unknown key in entry '{path}'"
+        base_max = base_entry.get("max_lines")
+        head_max = head_entry.get("max_lines")
+        if not _is_nonneg_int(base_max) or not _is_nonneg_int(head_max):
+            return f"invalid max_lines in '{path}'"
+        if head_max > base_max:
+            return f"raised max_lines on '{path}' ({base_max} -> {head_max})"
+        base_leg = base_entry.get("legacy_unmigrated")
+        head_leg = head_entry.get("legacy_unmigrated")
+        if not isinstance(base_leg, bool) or not isinstance(head_leg, bool):
+            return f"invalid legacy_unmigrated in '{path}'"
+        if not base_leg and head_leg:
+            return f"loosened legacy_unmigrated on '{path}' (false -> true)"
+    return None
+
+
+def _check_budget_vendored_ratchet(base_vend: object, head_vend: object) -> str | None:
+    """Return a loosen-reason string if 'vendored_files' loosened or changed hash, else None."""
+    if not isinstance(base_vend, dict) or not isinstance(head_vend, dict):
+        return "invalid 'vendored_files' section in .foreign-budget.json"
+    for path, head_entry in head_vend.items():
+        if path not in base_vend:
+            return f"added vendored file entry '{path}'"
+        base_entry = base_vend[path]
+        if not isinstance(base_entry, dict) or not isinstance(head_entry, dict):
+            return f"invalid vendored entry for '{path}'"
+        if not set(head_entry.keys()).issubset(BUDGET_VENDORED_KEYS):
+            return f"unknown key in vendored entry '{path}'"
+        base_sha = base_entry.get("sha256")
+        head_sha = head_entry.get("sha256")
+        if not isinstance(base_sha, str) or not isinstance(head_sha, str):
+            return f"invalid sha256 in vendored entry '{path}'"
+        if head_sha != base_sha:
+            return f"changed vendored sha256 on '{path}'"
+        if "max_lines" in base_entry and "max_lines" not in head_entry:
+            return f"removed vendored max_lines cap on '{path}'"
+        if "max_lines" in head_entry:
+            head_max = head_entry["max_lines"]
+            if not _is_nonneg_int(head_max):
+                return f"invalid vendored max_lines on '{path}'"
+            if "max_lines" in base_entry:
+                base_max = base_entry["max_lines"]
+                if not _is_nonneg_int(base_max) or head_max > base_max:
+                    return f"raised vendored max_lines on '{path}' ({base_max} -> {head_max})"
+    return None
+
+
+def _effective_override_limits(entry: object, fn_key: str) -> tuple[tuple[int, int, int, int, bool] | None, str | None]:
+    """Compute `(max_code_lines, max_branches, max_for_loops, max_other_loops, allow_poll)` for an override."""
+    if not isinstance(entry, dict):
+        return None, f"invalid function_overrides object for '{fn_key}'"
+    if not set(entry.keys()).issubset(BUDGET_OVERRIDE_KEYS):
+        return None, f"unknown key in function_overrides '{fn_key}'"
+    lines = entry.get("max_code_lines", 35)
+    if not _is_nonneg_int(lines):
+        return None, f"invalid max_code_lines in function_overrides '{fn_key}'"
+    branches = entry.get("max_branches", 8)
+    if not _is_nonneg_int(branches):
+        return None, f"invalid max_branches in function_overrides '{fn_key}'"
+    allow_copy = entry.get("allow_array_copy_loop", False)
+    if not isinstance(allow_copy, bool):
+        return None, f"invalid allow_array_copy_loop in function_overrides '{fn_key}'"
+    allow_poll = entry.get("allow_poll", False)
+    if not isinstance(allow_poll, bool):
+        return None, f"invalid allow_poll in function_overrides '{fn_key}'"
+    if "max_loops" in entry:
+        max_loops = entry["max_loops"]
+        if not _is_nonneg_int(max_loops):
+            return None, f"invalid max_loops in function_overrides '{fn_key}'"
+        max_for = max_loops
+        max_other = max_loops
+    elif allow_copy:
+        max_for = 1
+        max_other = 0
+    else:
+        max_for = 0
+        max_other = 0
+    return (lines, branches, max_for, max_other, allow_poll), None
+
+
+def _check_budget_overrides_ratchet(base_ov: object, head_ov: object) -> str | None:
+    """Return a loosen-reason string if 'function_overrides' added or loosened effective limits, else None."""
+    if base_ov is None:
+        base_ov = {}
+    if head_ov is None:
+        head_ov = {}
+    if not isinstance(base_ov, dict) or not isinstance(head_ov, dict):
+        return "invalid 'function_overrides' section in .foreign-budget.json"
+    default_limits = (35, 8, 0, 0, False)
+    for fn_key in set(base_ov.keys()) | set(head_ov.keys()):
+        if fn_key not in base_ov:
+            return f"added function_overrides entry '{fn_key}'"
+        base_limits, err = _effective_override_limits(base_ov[fn_key], fn_key)
+        if err is not None or base_limits is None:
+            return err
+        if fn_key not in head_ov:
+            head_limits = default_limits
+        else:
+            head_limits, err = _effective_override_limits(head_ov[fn_key], fn_key)
+            if err is not None or head_limits is None:
+                return err
+        base_lines, base_br, base_for, base_other, base_poll = base_limits
+        head_lines, head_br, head_for, head_other, head_poll = head_limits
+        if head_lines > base_lines:
+            return f"raised max_code_lines on '{fn_key}' ({base_lines} -> {head_lines})"
+        if head_br > base_br:
+            return f"raised max_branches on '{fn_key}' ({base_br} -> {head_br})"
+        if head_for > base_for or head_other > base_other:
+            return f"loosened loop allowance on '{fn_key}'"
+        if not base_poll and head_poll:
+            return f"loosened allow_poll on '{fn_key}'"
+    return None
+
+
+def _check_budget_thread_helpers_ratchet(base_helpers: object, head_helpers: object) -> str | None:
+    """Return a loosen-reason string if 'named_thread_helpers' gained entries, else None."""
+    if base_helpers is None:
+        base_helpers = []
+    if head_helpers is None:
+        head_helpers = []
+    if not isinstance(base_helpers, list) or not isinstance(head_helpers, list):
+        return "invalid 'named_thread_helpers' section in .foreign-budget.json"
+    if not all(isinstance(x, str) for x in base_helpers) or not all(isinstance(x, str) for x in head_helpers):
+        return "non-string item in 'named_thread_helpers'"
+    added = sorted(set(head_helpers) - set(base_helpers))
+    if added:
+        return f"added named_thread_helpers entry '{added[0]}'"
+    return None
+
+
+def _strict_object_pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Decode JSON object while rejecting duplicate keys."""
+    out: dict[str, object] = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError(f"duplicate JSON key '{key}'")
+        out[key] = value
+    return out
+
+
+def _reject_json_constant(token: str) -> object:
+    """Reject non-standard JSON constants such as NaN and Infinity."""
+    raise ValueError(f"invalid JSON constant '{token}'")
+
+
+def _loads_strict_json(text: str) -> object:
+    """Parse JSON while forbidding duplicate keys and non-finite numeric constants."""
+    return json.loads(
+        text,
+        object_pairs_hook=_strict_object_pairs_hook,
+        parse_constant=_reject_json_constant,
+    )
+
+
+def classify_foreign_budget_texts(base_text: str, head_text: str) -> str | None:
+    """Return None when head .foreign-budget.json only tightens or keeps base, else loosen reason."""
+    try:
+        base_obj = _loads_strict_json(base_text)
+        head_obj = _loads_strict_json(head_text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        return f"invalid JSON in .foreign-budget.json: {exc}"
+    if not isinstance(base_obj, dict) or not isinstance(head_obj, dict):
+        return ".foreign-budget.json root must be a JSON object"
+    if not set(head_obj.keys()).issubset(BUDGET_ROOT_KEYS):
+        return "unknown top-level key in .foreign-budget.json"
+    base_ver = base_obj.get("version")
+    head_ver = head_obj.get("version")
+    if not _is_nonneg_int(base_ver) or not _is_nonneg_int(head_ver) or head_ver != base_ver:
+        return "changed or invalid version in .foreign-budget.json"
+    for checker, key in (
+        (_check_budget_files_ratchet, "files"),
+        (_check_budget_vendored_ratchet, "vendored_files"),
+        (_check_budget_overrides_ratchet, "function_overrides"),
+        (_check_budget_thread_helpers_ratchet, "named_thread_helpers"),
+    ):
+        err = checker(base_obj.get(key), head_obj.get(key))
+        if err is not None:
+            return err
+    return None
+
+
+def classify_foreign_budget_diff(
+    repo_root: Path,
+    base_ref: str,
+    head_ref: str,
+    status: str,
+    paths: list[str],
+) -> LockedDiffAssessment | None:
+    """Return an `add-foreign-lang` assessment if `.foreign-budget.json` loosened, else None."""
+    hit = f"{status}\t{' -> '.join(paths)}"
+    if status != "M" or paths != [FOREIGN_BUDGET_PATH]:
+        return LockedDiffAssessment(
+            hit,
+            LABEL_FOREIGN,
+            f"foreign budget status '{status}' alters or introduces '{FOREIGN_BUDGET_PATH}'",
+        )
+    base_text = git_show_text(repo_root, base_ref, FOREIGN_BUDGET_PATH)
+    head_text = git_show_text(repo_root, head_ref, FOREIGN_BUDGET_PATH)
+    reason = classify_foreign_budget_texts(base_text, head_text)
+    if reason is not None:
+        return LockedDiffAssessment(hit, LABEL_FOREIGN, reason)
+    return None
+
+
+def _parse_cli_label(value: str) -> str:
+    """Validate comma-separated CLI `--label` values against known gate labels."""
+    parts = [p.strip() for p in value.split(",") if p.strip()]
+    if not parts or any(p not in ALL_GATE_LABELS for p in parts):
+        raise argparse.ArgumentTypeError(
+            f"invalid label '{value}' (choose from {sorted(ALL_GATE_LABELS)})"
+        )
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
-    """CLI entrypoint checking PR spec-change and spec-add labels."""
-    parser = argparse.ArgumentParser(description="Verify spec-add / spec-change PR labels on locked spec files.")
+    """CLI entrypoint checking PR spec-change, spec-add, and add-foreign-lang labels."""
+    parser = argparse.ArgumentParser(
+        description="Verify spec-add / spec-change / add-foreign-lang PR labels on locked files."
+    )
     parser.add_argument("--base", required=True, help="Base commit or ref to diff against.")
     parser.add_argument("--head", default="HEAD", help="Head commit or ref (default: HEAD).")
     parser.add_argument(
@@ -817,8 +1069,8 @@ def main(argv: list[str] | None = None) -> int:
         "--label",
         action="append",
         default=[],
-        choices=[LABEL_ADD, LABEL_CHANGE],
-        help="Treat the given PR label as present for local testing (repeatable).",
+        type=_parse_cli_label,
+        help="Treat the given PR label(s) as present for local testing (repeatable or comma-separated).",
     )
     args = parser.parse_args(argv)
 
@@ -828,9 +1080,17 @@ def main(argv: list[str] | None = None) -> int:
     entries = diff_entries(repo_root, effective_base, args.head)
 
     locked_assessments: list[LockedDiffAssessment] = []
+    foreign_assessments: list[LockedDiffAssessment] = []
     new_pkg_spec_hits: list[str] = []
+    budget_tightened = False
 
     for status, paths in entries:
+        if FOREIGN_BUDGET_PATH in paths:
+            budget_err = classify_foreign_budget_diff(repo_root, effective_base, args.head, status, paths)
+            if budget_err is not None:
+                foreign_assessments.append(budget_err)
+            else:
+                budget_tightened = True
         spec_paths = [p for p in paths if is_spec_file(p)]
         if not spec_paths:
             continue
@@ -844,19 +1104,79 @@ def main(argv: list[str] | None = None) -> int:
     event_file = Path(args.event_path) if args.event_path else None
     labels_present = read_pr_labels(event_file, args.label)
 
+    failed = False
+    if foreign_assessments and LABEL_FOREIGN not in labels_present:
+        failed = True
+        print(
+            f"FOREIGN_BUDGET_CHECK: failed (missing '{LABEL_FOREIGN}' label for "
+            f"loosening/adding '{FOREIGN_BUDGET_PATH}')",
+            file=sys.stderr,
+        )
+        for a in foreign_assessments:
+            print(
+                f"UNMARKED_FOREIGN_BUDGET: {a.hit} ({a.reason}; apply label '{LABEL_FOREIGN}')",
+                file=sys.stderr,
+            )
+
+    if locked_assessments:
+        requires_change = any(a.required_label == LABEL_CHANGE for a in locked_assessments)
+        required_label = LABEL_CHANGE if requires_change else LABEL_ADD
+        if LABEL_CHANGE in labels_present:
+            pass
+        elif LABEL_ADD in labels_present and not requires_change:
+            pass
+        elif LABEL_ADD in labels_present and requires_change:
+            failed = True
+            print(
+                f"SPEC_CHECK: failed (label '{LABEL_ADD}' allows pure appended declarations only, "
+                f"but existing spec content was modified or removed; apply label '{LABEL_CHANGE}')",
+                file=sys.stderr,
+            )
+            for a in locked_assessments:
+                tag = "SPEC_CHANGE_REQUIRED" if a.required_label == LABEL_CHANGE else "SPEC_ADD_ONLY"
+                hint = f"apply label '{LABEL_CHANGE}'" if a.required_label == LABEL_CHANGE else "covered if upgraded"
+                print(f"{tag}: {a.hit} ({a.reason}; {hint})", file=sys.stderr)
+        else:
+            failed = True
+            print(
+                f"SPEC_CHECK: failed (missing '{required_label}' label for "
+                f"{len(locked_assessments)} locked spec file(s))",
+                file=sys.stderr,
+            )
+            for a in locked_assessments:
+                if a.required_label == LABEL_ADD:
+                    print(
+                        f"UNMARKED_SPEC_ADD: {a.hit} ({a.reason}; apply label '{LABEL_ADD}' or '{LABEL_CHANGE}')",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"UNMARKED_SPEC_CHANGE: {a.hit} ({a.reason}; apply label '{LABEL_CHANGE}')",
+                        file=sys.stderr,
+                    )
+
+    if failed:
+        return 1
+
+    if foreign_assessments:
+        print(f"FOREIGN_BUDGET_CHECK: ok (label='{LABEL_FOREIGN}' present)")
+        for a in foreign_assessments:
+            print(f"  MARKED_FOREIGN_BUDGET: {a.hit} ({a.reason})")
+    elif budget_tightened:
+        print("FOREIGN_BUDGET_CHECK: ok (foreign-budget tightened; no label required)")
+
     if not locked_assessments:
+        suffix = "; foreign-budget tightened" if budget_tightened else ""
         if new_pkg_spec_hits:
             print(
                 f"SPEC_CHECK: ok (new-package spec files={len(new_pkg_spec_hits)}, "
-                "locked spec files touched=0)"
+                f"locked spec files touched=0{suffix})"
             )
         else:
-            print("SPEC_CHECK: ok (spec files touched=0)")
+            print(f"SPEC_CHECK: ok (spec files touched=0{suffix})")
         return 0
 
     requires_change = any(a.required_label == LABEL_CHANGE for a in locked_assessments)
-    required_label = LABEL_CHANGE if requires_change else LABEL_ADD
-
     if LABEL_CHANGE in labels_present:
         print(
             f"SPEC_CHECK: ok (label='{LABEL_CHANGE}' present, "
@@ -866,44 +1186,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  MARKED_SPEC_EDIT: {a.hit} ({a.reason})")
         return 0
 
-    if LABEL_ADD in labels_present and not requires_change:
-        print(
-            f"SPEC_CHECK: ok (label='{LABEL_ADD}' present, "
-            f"pure additions verified across {len(locked_assessments)} locked spec file(s))"
-        )
-        for a in locked_assessments:
-            print(f"  MARKED_SPEC_ADD: {a.hit} ({a.reason})")
-        return 0
-
-    if LABEL_ADD in labels_present and requires_change:
-        print(
-            f"SPEC_CHECK: failed (label '{LABEL_ADD}' allows pure appended declarations only, "
-            f"but existing spec content was modified or removed; apply label '{LABEL_CHANGE}')",
-            file=sys.stderr,
-        )
-        for a in locked_assessments:
-            tag = "SPEC_CHANGE_REQUIRED" if a.required_label == LABEL_CHANGE else "SPEC_ADD_ONLY"
-            hint = f"apply label '{LABEL_CHANGE}'" if a.required_label == LABEL_CHANGE else "covered if upgraded"
-            print(f"{tag}: {a.hit} ({a.reason}; {hint})", file=sys.stderr)
-        return 1
-
     print(
-        f"SPEC_CHECK: failed (missing '{required_label}' label for "
-        f"{len(locked_assessments)} locked spec file(s))",
-        file=sys.stderr,
+        f"SPEC_CHECK: ok (label='{LABEL_ADD}' present, "
+        f"pure additions verified across {len(locked_assessments)} locked spec file(s))"
     )
     for a in locked_assessments:
-        if a.required_label == LABEL_ADD:
-            print(
-                f"UNMARKED_SPEC_ADD: {a.hit} ({a.reason}; apply label '{LABEL_ADD}' or '{LABEL_CHANGE}')",
-                file=sys.stderr,
-            )
-        else:
-            print(
-                f"UNMARKED_SPEC_CHANGE: {a.hit} ({a.reason}; apply label '{LABEL_CHANGE}')",
-                file=sys.stderr,
-            )
-    return 1
+        print(f"  MARKED_SPEC_ADD: {a.hit} ({a.reason})")
+    return 0
 
 
 if __name__ == "__main__":
