@@ -1,9 +1,22 @@
 import LeanSwe.Tar.SpecTests
 import LeanSwe.Tar.Interface
+import LeanSwe.Tar.Proofs.ByteModel
+import LeanSwe.Tar.Proofs.FieldCodecs
+import LeanSwe.Tar.Proofs.HeaderLayout
 import LeanSwe.Tar.Proofs.PackValid
 import LeanSwe.Tar.Proofs.UnpackValid
-import LeanSwe.Tar.Proofs.Universal
-import LeanSwe.Tar.Proofs.Concrete
+import LeanSwe.Tar.Proofs.RoundTrip
+import LeanSwe.Tar.Proofs.ConcretePack
+import LeanSwe.Tar.Proofs.ConcreteUnpack
+import LeanSwe.Tar.Proofs.ConcreteUnpackHeader
+
+/-!
+# Top-Level Tar Proof Aggregator
+
+Re-exports all 9 modular `LeanSwe.Tar.Proofs.*` components and discharges the
+universal non-empty error-message property, default wrapper equivalence, and
+`pack`/`packWith` error-kind exclusion theorems for `LeanSwe.Tar`.
+-/
 
 namespace LeanSwe.Tar.Proofs
 
@@ -13,42 +26,17 @@ open LeanSwe.Tar
 open LeanSwe.Tar.Model
 open LeanSwe.Tar.Impl
 
-private theorem nonEmpty_append_left {a b : String} (ha : (!a.isEmpty) = true) :
-    (!(a ++ b).isEmpty) = true := by
-  have hPos : 0 < a.utf8ByteSize := by
-    cases h0 : a.utf8ByteSize with
-    | zero =>
-      exfalso
-      have he : a.isEmpty = true := by simp [String.isEmpty, h0]
-      rw [he] at ha
-      contradiction
-    | succ _ => omega
-  have hSum : (a ++ b).utf8ByteSize = a.utf8ByteSize + b.utf8ByteSize :=
-    String.utf8ByteSize_append
-  cases hEmp : (a ++ b).isEmpty
-  · rfl
-  · exfalso
-    have hEq : a ++ b = "" := String.isEmpty_iff.mp hEmp
-    have hSize : (a ++ b).utf8ByteSize = 0 := by rw [hEq]; rfl
-    omega
-
-/-- Solve non-empty error message goals by descending left through string concatenation. -/
 local macro "solve_nonempty_msg" : tactic =>
   `(tactic| (dsimp only [ToString.toString]; repeat (first | rfl | apply nonEmpty_append_left)))
+
+local macro "close_err_nonempty" h:ident : tactic =>
+  `(tactic| repeat (any_goals first | (cases $h:ident <;> solve_nonempty_msg) | split at $h:ident))
 
 private theorem parsePaxNat_nonEmptyMsg (val : String) (offset : Nat) (key : String)
     {e : TarError} (h : parsePaxNat val offset key = .error e) : (!e.message.isEmpty) = true := by
   unfold parsePaxNat at h
   dsimp only at h
-  split at h
-  · cases h; solve_nonempty_msg
-  · split at h
-    · cases h; solve_nonempty_msg
-    · split at h
-      · cases h; solve_nonempty_msg
-      · split at h
-        · cases h; solve_nonempty_msg
-        · cases h
+  close_err_nonempty h
 
 private theorem parsePaxMtime_nonEmptyMsg (val : String) (offset : Nat)
     {e : TarError} (h : parsePaxMtime val offset = .error e) : (!e.message.isEmpty) = true := by
@@ -95,38 +83,23 @@ private theorem applyPaxKey_nonEmptyMsg (ov : PaxOverrides) (key val : String) (
                 · simp only [Except.map] at h; split at h <;> cases h; exact parsePaxMtime_nonEmptyMsg val offset ‹_›
                 · cases h
 
-private theorem parsePaxPayload_go_nonEmptyMsg (pax : ByteArray) (offset pos : Nat)
+private theorem parsePaxPayload_go_nonEmptyMsg (pax : ByteArray) (offset fuel pos : Nat)
     (seenKeys : List String) (ov : PaxOverrides) {e : TarError}
-    (h : parsePaxPayload.go pax offset pos seenKeys ov = .error e) : (!e.message.isEmpty) = true := by
-  fun_induction parsePaxPayload.go pax offset pos seenKeys ov with
-  | case1 => simp at h
-  | case2 => cases h; rfl
-  | case3 => cases h; rfl
-  | case4 => cases h; rfl
-  | case5 => cases h; rfl
-  | case6 => cases h; rfl
-  | case7 => cases h; rfl
-  | case8 => cases h; rfl
-  | case9 => cases h; rfl
-  | case10 => cases h; rfl
-  | case11 => cases h; solve_nonempty_msg
-  | case12 => cases h; rfl
-  | case13 =>
-    cases h
-    exact applyPaxKey_nonEmptyMsg _ _ _ _ ‹_›
-  | case14 =>
-    rename_i ih
-    exact ih h
+    (h : parsePaxPayload.go pax offset fuel pos seenKeys ov = .error e) : (!e.message.isEmpty) = true := by
+  fun_induction parsePaxPayload.go pax offset fuel pos seenKeys ov <;>
+    first
+      | (cases h; try (first | rfl | solve_nonempty_msg | exact applyPaxKey_nonEmptyMsg _ _ _ _ ‹_›))
+      | (rename_i ih; exact ih h)
+
+private theorem parsePaxPayload_nonEmptyMsg (pax : ByteArray) (offset : Nat)
+    {e : TarError} (h : parsePaxPayload pax offset = .error e) : (!e.message.isEmpty) = true :=
+  parsePaxPayload_go_nonEmptyMsg pax offset (pax.size + 1) 0 [] {} h
 
 private theorem parseChecksumOctal_nonEmptyMsg (bytes : ByteArray) (start stop offset : Nat)
     {e : TarError} (h : parseChecksumOctal bytes start stop offset = .error e) : (!e.message.isEmpty) = true := by
   unfold parseChecksumOctal at h
   dsimp only at h
-  split at h
-  · cases h; rfl
-  · split at h
-    · cases h; rfl
-    · cases h
+  close_err_nonempty h
 
 private theorem parseUstarNumeric_nonEmptyMsg (bytes : ByteArray) (start stop offset : Nat)
     (allowAllEmpty : Bool) (limit : Nat) (fieldName : String)
@@ -134,25 +107,7 @@ private theorem parseUstarNumeric_nonEmptyMsg (bytes : ByteArray) (start stop of
     (!e.message.isEmpty) = true := by
   unfold parseUstarNumeric at h
   dsimp only at h
-  split at h
-  · cases h; solve_nonempty_msg
-  · split at h
-    · split at h
-      · cases h; solve_nonempty_msg
-      · split at h
-        · cases h; solve_nonempty_msg
-        · cases h
-    · split at h
-      · split at h
-        · cases h
-        · cases h; solve_nonempty_msg
-      · split at h
-        · cases h; solve_nonempty_msg
-        · split at h
-          · cases h; solve_nonempty_msg
-          · split at h
-            · cases h; solve_nonempty_msg
-            · cases h
+  close_err_nonempty h
 
 private theorem decodeCStringUtf8_nonEmptyMsg (bytes : ByteArray) (start stop offset : Nat)
     (fieldName : String) {e : TarError}
@@ -160,18 +115,19 @@ private theorem decodeCStringUtf8_nonEmptyMsg (bytes : ByteArray) (start stop of
     (!e.message.isEmpty) = true := by
   unfold decodeCStringUtf8 at h
   dsimp only at h
-  split at h
-  · cases h
-  · cases h; solve_nonempty_msg
+  close_err_nonempty h
 
 private theorem parseUstarHeader_nonEmptyMsg (bytes : ByteArray) (offset : Nat)
     {e : TarError} (h : parseUstarHeader bytes offset = .error e) : (!e.message.isEmpty) = true := by
   unfold parseUstarHeader at h
+  dsimp only [bind, Except.bind, pure, Except.pure] at h
   cases hChk : parseChecksumOctal bytes (offset + 148) (offset + 156) offset <;> rw [hChk] at h
   · cases h; exact parseChecksumOctal_nonEmptyMsg _ _ _ _ hChk
   · dsimp only at h
-    cases hEq : (‹Nat› != ustarChecksumAt bytes offset) <;> rw [hEq] at h
-    · cases hMagic : (!hasValidMagic bytes offset) <;> rw [hMagic] at h
+    split at h
+    · cases h; rfl
+    · split at h
+      · cases h; rfl
       · cases hM : parseUstarNumeric bytes (offset + 100) (offset + 108) offset false u32Limit "mode" <;> rw [hM] at h
         · cases h; exact parseUstarNumeric_nonEmptyMsg _ _ _ _ _ _ _ hM
         · dsimp only at h
@@ -187,8 +143,6 @@ private theorem parseUstarHeader_nonEmptyMsg (bytes : ByteArray) (offset : Nat)
                 cases hT : parseUstarNumeric bytes (offset + 136) (offset + 148) offset true u64Limit "mtime" <;> rw [hT] at h
                 · cases h; exact parseUstarNumeric_nonEmptyMsg _ _ _ _ _ _ _ hT
                 · cases h
-      · cases h; rfl
-    · cases h; rfl
 
 private theorem checkSegments_nonEmptyMsg (allowTrav : Bool) (segs : List (List Char))
     {e : TarError} (h : checkSegments allowTrav segs = .error e) : (!e.message.isEmpty) = true := by
@@ -202,13 +156,7 @@ private theorem checkSegments_nonEmptyMsg (allowTrav : Bool) (segs : List (List 
     | cons x rest ih =>
       intro e' hx
       unfold checkSegments.go at hx
-      split at hx
-      · cases hx; rfl
-      · split at hx
-        · cases hx; rfl
-        · split at hx
-          · cases hx; rfl
-          · exact ih hx
+      close_err_nonempty hx <;> exact ih hx
 
 private theorem validateEntryPath_nonEmptyMsg (allowAbs allowTrav : Bool) (kind : EntryKind) (path : String)
     {e : TarError} (h : validateEntryPath allowAbs allowTrav kind path = .error e) :
@@ -273,56 +221,6 @@ private theorem validateSymlinkTarget_nonEmptyMsg (allowAbs allowTrav : Bool) (e
                 · exact ih (d - 1) hx
               · exact ih (d + 1) hx
 
-private theorem packWith_go_nonEmptyMsg (opts : PackOptions) (rest : List TarEntry)
-    (seen : List String) (acc : ByteArray) {e : TarError}
-    (h : packWith.go opts rest seen acc = .error e) : (!e.message.isEmpty) = true := by
-  induction rest generalizing seen acc with
-  | nil => simp [packWith.go] at h
-  | cons hd tl ih =>
-    unfold packWith.go at h
-    cases hPath : validateEntryPath opts.allowAbsolute opts.allowParentTraversal hd.kind hd.path with
-    | error eP =>
-      rw [hPath] at h; cases h; exact validateEntryPath_nonEmptyMsg _ _ _ _ hPath
-    | ok normPath =>
-      rw [hPath] at h
-      dsimp only at h
-      have finishRest :
-          ∀ {b1 b2 b3 b4 : Bool},
-            (if b1 = true then
-               Except.error { kind := TarErrorKind.invalidHeader, message := "non-regular tar entry cannot have payload data", entryPath := some hd.path }
-             else if b2 = true then
-               Except.error { kind := TarErrorKind.invalidHeader, message := "non-symlink tar entry cannot have linkTarget", entryPath := some hd.path }
-             else if b3 = true then
-               Except.error { kind := TarErrorKind.invalidHeader, message := "uname/gname cannot contain NUL byte", entryPath := some hd.path }
-             else if b4 = true then
-               Except.error { kind := TarErrorKind.sizeOverflow, message := "tar entry numeric field exceeds 2^64 - 1", entryPath := some hd.path }
-             else if seen.contains normPath = true then
-               Except.error { kind := TarErrorKind.duplicatePath, message := toString "duplicate tar entry path: " ++ toString normPath, entryPath := some normPath }
-             else packWith.go opts tl (normPath :: seen) (acc ++ encodeEntryBlocks (if opts.deterministic = true then zeroDeterministicMeta hd else hd) normPath)) = Except.error e →
-            (!e.message.isEmpty) = true := by
-        intro b1 b2 b3 b4 hr
-        split at hr
-        · cases hr; rfl
-        · split at hr
-          · cases hr; rfl
-          · split at hr
-            · cases hr; rfl
-            · split at hr
-              · cases hr; rfl
-              · split at hr
-                · cases hr; solve_nonempty_msg
-                · exact ih _ _ hr
-      cases hk : hd.kind <;> rw [hk] at h <;> dsimp only at h
-      · exact finishRest h
-      · exact finishRest h
-      · cases hSym : validateSymlinkTarget opts.allowAbsolute opts.allowParentTraversal normPath hd.linkTarget <;> rw [hSym] at h
-        · cases h; exact validateSymlinkTarget_nonEmptyMsg _ _ _ _ hSym
-        · dsimp only at h; exact finishRest h
-
-private theorem packWith_nonEmptyMsg (opts : PackOptions) (entries : List TarEntry)
-    {e : TarError} (h : Impl.packWith opts entries = .error e) : (!e.message.isEmpty) = true :=
-  packWith_go_nonEmptyMsg opts entries [] ByteArray.empty h
-
 private theorem decodeTarEntry_nonEmptyMsg (opts : UnpackOptions) (bytes : ByteArray) (offset : Nat)
     (hdr : UstarHeaderFields) (pendingPax : Option PaxOverrides)
     (seen : List String) (accLen totalBytes : Nat) {e : TarError}
@@ -355,10 +253,7 @@ private theorem decodeTarEntry_nonEmptyMsg (opts : UnpackOptions) (bytes : ByteA
               rename_i heqP
               split at heqP
               · cases heqP
-              · split at heqP
-                · cases heqP; exact decodeCStringUtf8_nonEmptyMsg _ _ _ _ _ ‹_›
-                · cases heqP; exact decodeCStringUtf8_nonEmptyMsg _ _ _ _ _ ‹_›
-                · cases heqP
+              · split at heqP <;> cases heqP <;> exact decodeCStringUtf8_nonEmptyMsg _ _ _ _ _ ‹_›
             · cases h
               rename_i heqL
               split at heqL
@@ -412,112 +307,63 @@ private theorem unpackStep_nonEmptyMsg (opts : UnpackOptions) (bytes : ByteArray
       · cases hHdr : parseUstarHeader bytes offset <;> rw [hHdr] at h
         · cases h; exact parseUstarHeader_nonEmptyMsg _ _ hHdr
         · dsimp only at h
-          cases hTy : (‹UstarHeaderFields›.typeflag == 120)
-          · simp only [hTy, Bool.false_eq_true, ↓reduceIte] at h
-            cases hDec : decodeTarEntry opts bytes offset ‹_› pendingPax seen acc.length totalBytes <;> rw [hDec] at h
+          split at h
+          · split at h
+            · cases h; rfl
+            · split at h
+              · cases h; rfl
+              · split at h
+                · cases h; rfl
+                · cases hPax : parsePaxPayload (bytes.extract (offset + 512) (offset + 512 + ‹UstarHeaderFields›.size)) offset <;>
+                    rw [hPax] at h
+                  · cases h; exact parsePaxPayload_nonEmptyMsg _ _ hPax
+                  · cases h
+          · cases hDec : decodeTarEntry opts bytes offset ‹_› pendingPax seen acc.length totalBytes <;>
+              rw [hDec] at h
             · cases h; exact decodeTarEntry_nonEmptyMsg _ _ _ _ _ _ _ _ hDec
             · cases h
-          · simp only [hTy, ↓reduceIte] at h
-            by_cases hPend : pendingPax.isSome = true
-            · simp only [hPend] at h; cases h; rfl
-            · simp only [hPend] at h
-              by_cases hMax : ‹UstarHeaderFields›.size > maxPaxHeaderBytes
-              · simp only [hMax, ↓reduceIte] at h; cases h; rfl
-              · simp only [hMax, ↓reduceIte] at h
-                by_cases hTr : offset + 512 + pad512 ‹UstarHeaderFields›.size > bytes.size
-                · simp only [hTr, ↓reduceIte] at h; cases h; rfl
-                · simp only [hTr, ↓reduceIte] at h
-                  cases hPax : parsePaxPayload (bytes.extract (offset + 512) (offset + 512 + ‹UstarHeaderFields›.size)) offset <;> rw [hPax] at h
-                  · cases h; exact parsePaxPayload_go_nonEmptyMsg _ _ _ _ _ hPax
-                  · cases h
 
-private theorem unpackLoop_nonEmptyMsg (opts : UnpackOptions) (bytes : ByteArray) (offset : Nat)
-    (pendingPax : Option PaxOverrides) (seen : List String) (acc : List TarEntry) (totalBytes : Nat)
-    {e : TarError} (h : unpackLoop opts bytes offset pendingPax seen acc totalBytes = .error e) :
-    (!e.message.isEmpty) = true := by
-  fun_induction unpackLoop opts bytes offset pendingPax seen acc totalBytes with
-  | case1 => cases h; rfl
-  | case2 =>
-    cases h
-    exact unpackStep_nonEmptyMsg _ _ _ _ _ _ _ ‹_›
-  | case3 => cases h
-  | case4 =>
-    rename_i ih
-    exact ih h
-  | case5 => cases h; rfl
+private theorem unpackLoopFuel_nonEmptyMsg (opts : UnpackOptions) (bytes : ByteArray) :
+    ∀ (fuel offset : Nat) (pendingPax : Option PaxOverrides)
+      (seen : List String) (acc : List TarEntry) (totalBytes : Nat) {e : TarError},
+      unpackLoopFuel fuel opts bytes offset pendingPax seen acc totalBytes = .error e →
+      (!e.message.isEmpty) = true := by
+  intro fuel
+  induction fuel with
+  | zero => intro _ _ _ _ _ _ h; cases h; rfl
+  | succ fuel ih =>
+    intro offset pendingPax seen acc totalBytes e h
+    unfold unpackLoopFuel at h
+    split at h
+    · cases h; rfl
+    · cases hStep : unpackStep opts bytes offset pendingPax seen acc totalBytes <;> rw [hStep] at h
+      · cases h; exact unpackStep_nonEmptyMsg _ _ _ _ _ _ _ hStep
+      · cases ‹UnpackStep› with
+        | done res => cases h
+        | cont no np ns na nt =>
+          dsimp only at h
+          split at h
+          · exact ih _ _ _ _ _ h
+          · cases h; rfl
 
 private theorem unpackWith_nonEmptyMsg (opts : UnpackOptions) (bytes : ByteArray)
     {e : TarError} (h : Impl.unpackWith opts bytes = .error e) : (!e.message.isEmpty) = true := by
   unfold Impl.unpackWith at h
   split at h
   · cases h; rfl
-  · exact unpackLoop_nonEmptyMsg opts bytes 0 none [] [] 0 h
+  · exact unpackLoopFuel_nonEmptyMsg opts bytes _ 0 none [] [] 0 h
 
 /-- Prove `test_tar_onError_returnsNonEmptyMessage` for `defaultApi`. -/
 theorem allPass_onError_returnsNonEmptyMessage :
     AllPass (test_tar_onError_returnsNonEmptyMessage defaultApi) := by
   intro entries packOpts bytes unpackOpts
-  dsimp only [AllPassRun, test_tar_onError_returnsNonEmptyMessage, Bind.bind, Pure.pure,
-    NondetTest.assert, defaultApi, Impl.makeTarApi, Impl.pack, Impl.unpack]
-  cases h1 : Impl.packWith {} entries with
-  | ok _ =>
-    dsimp only
-    cases h2 : Impl.packWith packOpts entries with
-    | ok _ =>
-      dsimp only
-      cases h3 : Impl.unpackWith {} bytes with
-      | ok _ =>
-        dsimp only
-        cases h4 : Impl.unpackWith unpackOpts bytes with
-        | ok _ => trivial
-        | error e4 => exact ⟨unpackWith_nonEmptyMsg unpackOpts bytes h4, trivial⟩
-      | error e3 =>
-        refine ⟨unpackWith_nonEmptyMsg {} bytes h3, ?_⟩
-        cases h4 : Impl.unpackWith unpackOpts bytes with
-        | ok _ => trivial
-        | error e4 => exact ⟨unpackWith_nonEmptyMsg unpackOpts bytes h4, trivial⟩
-    | error e2 =>
-      refine ⟨packWith_nonEmptyMsg packOpts entries h2, ?_⟩
-      cases h3 : Impl.unpackWith {} bytes with
-      | ok _ =>
-        dsimp only
-        cases h4 : Impl.unpackWith unpackOpts bytes with
-        | ok _ => trivial
-        | error e4 => exact ⟨unpackWith_nonEmptyMsg unpackOpts bytes h4, trivial⟩
-      | error e3 =>
-        refine ⟨unpackWith_nonEmptyMsg {} bytes h3, ?_⟩
-        cases h4 : Impl.unpackWith unpackOpts bytes with
-        | ok _ => trivial
-        | error e4 => exact ⟨unpackWith_nonEmptyMsg unpackOpts bytes h4, trivial⟩
-  | error e1 =>
-    refine ⟨packWith_nonEmptyMsg {} entries h1, ?_⟩
-    cases h2 : Impl.packWith packOpts entries with
-    | ok _ =>
-      dsimp only
-      cases h3 : Impl.unpackWith {} bytes with
-      | ok _ =>
-        dsimp only
-        cases h4 : Impl.unpackWith unpackOpts bytes with
-        | ok _ => trivial
-        | error e4 => exact ⟨unpackWith_nonEmptyMsg unpackOpts bytes h4, trivial⟩
-      | error e3 =>
-        refine ⟨unpackWith_nonEmptyMsg {} bytes h3, ?_⟩
-        cases h4 : Impl.unpackWith unpackOpts bytes with
-        | ok _ => trivial
-        | error e4 => exact ⟨unpackWith_nonEmptyMsg unpackOpts bytes h4, trivial⟩
-    | error e2 =>
-      refine ⟨packWith_nonEmptyMsg packOpts entries h2, ?_⟩
-      cases h3 : Impl.unpackWith {} bytes with
-      | ok _ =>
-        dsimp only
-        cases h4 : Impl.unpackWith unpackOpts bytes with
-        | ok _ => trivial
-        | error e4 => exact ⟨unpackWith_nonEmptyMsg unpackOpts bytes h4, trivial⟩
-      | error e3 =>
-        refine ⟨unpackWith_nonEmptyMsg {} bytes h3, ?_⟩
-        cases h4 : Impl.unpackWith unpackOpts bytes with
-        | ok _ => trivial
-        | error e4 => exact ⟨unpackWith_nonEmptyMsg unpackOpts bytes h4, trivial⟩
+  dsimp only [test_tar_onError_returnsNonEmptyMessage, defaultApi, Impl.makeTarApi, Impl.pack, Impl.unpack,
+    Bind.bind, Pure.pure, NondetTest.assert, AllPassRun]
+  cases h1 : Impl.packWith {} entries <;> (dsimp only; try refine ⟨by simpa using packWith_nonEmptyMsg {} entries h1, ?_⟩) <;>
+  cases h2 : Impl.packWith packOpts entries <;> (dsimp only; try refine ⟨by simpa using packWith_nonEmptyMsg packOpts entries h2, ?_⟩) <;>
+  cases h3 : Impl.unpackWith {} bytes <;> (dsimp only; try refine ⟨by simpa using unpackWith_nonEmptyMsg {} bytes h3, ?_⟩) <;>
+  cases h4 : Impl.unpackWith unpackOpts bytes <;> dsimp only <;>
+    first | trivial | exact ⟨by simpa using unpackWith_nonEmptyMsg unpackOpts bytes h4, trivial⟩
 
 /-- Prove `test_tar_defaultWrappers_matchOptionsDefaults` for `defaultApi`. -/
 theorem allPass_defaultWrappers_matchOptionsDefaults :
@@ -525,157 +371,16 @@ theorem allPass_defaultWrappers_matchOptionsDefaults :
   intro entries bytes
   exact ⟨rfl, ⟨rfl, trivial⟩⟩
 
-private def IsPackErrorKind (k : TarErrorKind) : Prop :=
-  k = .invalidPath ∨ k = .unsafePath ∨ k = .duplicatePath ∨ k = .invalidHeader ∨ k = .sizeOverflow
-
-private theorem checkSegments_kind (allowTrav : Bool) (segs : List (List Char))
-    {e : TarError} (h : checkSegments allowTrav segs = .error e) :
-    e.kind = .invalidPath ∨ e.kind = .unsafePath := by
-  unfold checkSegments at h
-  split at h
-  · cases h; exact Or.inl rfl
-  · suffices ∀ xs {e'}, checkSegments.go allowTrav xs = .error e' → e'.kind = .invalidPath ∨ e'.kind = .unsafePath
-      from this _ h
-    intro xs
-    induction xs with
-    | nil => intro e' hx; simp [checkSegments.go] at hx
-    | cons x rest ih =>
-      intro e' hx
-      unfold checkSegments.go at hx
-      split at hx
-      · cases hx; exact Or.inl rfl
-      · split at hx
-        · cases hx; exact Or.inr rfl
-        · split at hx
-          · cases hx; exact Or.inr rfl
-          · exact ih hx
-
-private theorem validateEntryPath_kind (allowAbs allowTrav : Bool) (kind : EntryKind) (path : String)
-    {e : TarError} (h : validateEntryPath allowAbs allowTrav kind path = .error e) :
-    e.kind = .invalidPath ∨ e.kind = .unsafePath := by
-  unfold validateEntryPath at h
-  dsimp only at h
-  split at h
-  · cases h; exact Or.inl rfl
-  · split at h
-    · cases h; exact Or.inl rfl
-    · split at h
-      · cases h; exact Or.inr rfl
-      · split at h
-        · cases h; exact Or.inl (match_1_kind ‹_›)
-        · split at h
-          · rename_i eSeg hSeg
-            have hk := checkSegments_kind allowTrav _ hSeg
-            cases h
-            exact hk
-          · cases h
-where
-  match_1_kind {kind : EntryKind} {path : String} {e : TarError} :
-      (match kind with
-       | .directory =>
-         let stripped := stripTrailingSlashesChars path.toList
-         if stripped.isEmpty then
-           Except.error { kind := .invalidPath, message := "directory tar path cannot be root-only", entryPath := some path }
-         else Except.ok stripped
-       | .regular | .symlink =>
-         if path.toList.reverse.head? == some '/' then
-           Except.error { kind := .invalidPath, message := "non-directory tar path cannot end with '/'", entryPath := some path }
-         else Except.ok path.toList) = Except.error e → e.kind = .invalidPath := by
-    intro hm
-    cases kind <;> simp only at hm <;> split at hm <;> cases hm <;> rfl
-
-private theorem validateSymlinkTarget_kind (allowAbs allowTrav : Bool) (ep lt : String)
-    {e : TarError} (h : validateSymlinkTarget allowAbs allowTrav ep lt = .error e) :
-    e.kind = .invalidPath ∨ e.kind = .unsafePath := by
-  unfold validateSymlinkTarget at h
-  dsimp only at h
-  split at h
-  · cases h; exact Or.inl rfl
-  · split at h
-    · cases h; exact Or.inl rfl
-    · split at h
-      · cases h; exact Or.inr rfl
-      · split at h
-        · cases h
-        · suffices ∀ d xs {e'}, validateSymlinkTarget.walkDepth ep d xs = .error e' → e'.kind = .invalidPath ∨ e'.kind = .unsafePath
-            from this _ _ h
-          intro d xs
-          induction xs generalizing d with
-          | nil => intro e' hx; simp [validateSymlinkTarget.walkDepth] at hx
-          | cons seg rest ih =>
-            intro e' hx
-            unfold validateSymlinkTarget.walkDepth at hx
-            split at hx
-            · exact ih d hx
-            · split at hx
-              · split at hx
-                · cases hx; exact Or.inr rfl
-                · exact ih (d - 1) hx
-              · exact ih (d + 1) hx
-
-private theorem packWith_go_kind (opts : PackOptions) (rest : List TarEntry)
-    (seen : List String) (acc : ByteArray) {e : TarError}
-    (h : Impl.packWith.go opts rest seen acc = .error e) : IsPackErrorKind e.kind := by
-  induction rest generalizing seen acc with
-  | nil => simp [Impl.packWith.go] at h
-  | cons hd tl ih =>
-    unfold Impl.packWith.go at h
-    cases hPath : validateEntryPath opts.allowAbsolute opts.allowParentTraversal hd.kind hd.path with
-    | error eP =>
-      rw [hPath] at h
-      cases h
-      rcases validateEntryPath_kind _ _ _ _ hPath with hk | hk
-      · exact Or.inl hk
-      · exact Or.inr (Or.inl hk)
-    | ok normPath =>
-      rw [hPath] at h
-      dsimp only at h
-      have finishRest :
-          ∀ {b1 b2 b3 b4 : Bool},
-            (if b1 = true then
-               Except.error { kind := TarErrorKind.invalidHeader, message := "non-regular tar entry cannot have payload data", entryPath := some hd.path }
-             else if b2 = true then
-               Except.error { kind := TarErrorKind.invalidHeader, message := "non-symlink tar entry cannot have linkTarget", entryPath := some hd.path }
-             else if b3 = true then
-               Except.error { kind := TarErrorKind.invalidHeader, message := "uname/gname cannot contain NUL byte", entryPath := some hd.path }
-             else if b4 = true then
-               Except.error { kind := TarErrorKind.sizeOverflow, message := "tar entry numeric field exceeds 2^64 - 1", entryPath := some hd.path }
-             else if seen.contains normPath = true then
-               Except.error { kind := TarErrorKind.duplicatePath, message := toString "duplicate tar entry path: " ++ toString normPath, entryPath := some normPath }
-             else Impl.packWith.go opts tl (normPath :: seen) (acc ++ encodeEntryBlocks (if opts.deterministic = true then zeroDeterministicMeta hd else hd) normPath)) = Except.error e →
-            IsPackErrorKind e.kind := by
-        intro b1 b2 b3 b4 hr
-        split at hr
-        · cases hr; exact Or.inr (Or.inr (Or.inr (Or.inl rfl)))
-        · split at hr
-          · cases hr; exact Or.inr (Or.inr (Or.inr (Or.inl rfl)))
-          · split at hr
-            · cases hr; exact Or.inr (Or.inr (Or.inr (Or.inl rfl)))
-            · split at hr
-              · cases hr; exact Or.inr (Or.inr (Or.inr (Or.inr rfl)))
-              · split at hr
-                · cases hr; exact Or.inr (Or.inr (Or.inl rfl))
-                · exact ih _ _ hr
-      cases hk : hd.kind <;> rw [hk] at h <;> dsimp only at h
-      · exact finishRest h
-      · exact finishRest h
-      · cases hSym : validateSymlinkTarget opts.allowAbsolute opts.allowParentTraversal normPath hd.linkTarget <;> rw [hSym] at h
-        · cases h
-          rcases validateSymlinkTarget_kind _ _ _ _ hSym with hsk | hsk
-          · exact Or.inl hsk
-          · exact Or.inr (Or.inl hsk)
-        · dsimp only at h; exact finishRest h
-
 private theorem packWith_never_of_not_packKind (k : TarErrorKind) (hk : ¬IsPackErrorKind k)
     (opts : PackOptions) (entries : List TarEntry) :
     Core.NeverErrorKindPure TarError.kind k (LeanSwe.Tar.packWith opts entries) := by
-  unfold Core.NeverErrorKindPure LeanSwe.Tar.packWith Impl.packWith
-  cases h : Impl.packWith.go opts entries [] ByteArray.empty with
+  unfold Core.NeverErrorKindPure LeanSwe.Tar.packWith
+  cases h : Impl.packWith opts entries with
   | ok _ => trivial
   | error e =>
     dsimp only
     intro hek
-    exact hk (hek ▸ packWith_go_kind opts entries [] ByteArray.empty h)
+    exact hk (hek ▸ packWith_err_kind opts entries h)
 
 private theorem pack_never_of_not_packKind (k : TarErrorKind) (hk : ¬IsPackErrorKind k)
     (entries : List TarEntry) :

@@ -13,28 +13,27 @@ def padRightBytes (width : Nat) (bs : ByteArray) : ByteArray :=
 
 /-- Sum unsigned byte values over `[start .. start + 512)` treating `[start + 148 .. start + 156)` as `0x20`. -/
 def ustarChecksumAt (bytes : ByteArray) (start : Nat) : Nat :=
-  go 0 0
+  go 512 0 0
 where
-  /-- Accumulate checksum bytes over `0..512`. -/
-  go (idx acc : Nat) : Nat :=
-    if idx ≥ 512 then acc
-    else
+  /-- Accumulate checksum bytes over `rem` remaining positions starting at `idx`. -/
+  go : Nat → Nat → Nat → Nat
+    | 0, _, acc => acc
+    | rem + 1, idx, acc =>
       let b : Nat :=
         if 148 ≤ idx && idx < 156 then 0x20
         else if h : start + idx < bytes.size then (bytes[start + idx]'h).toNat
         else 0
-      go (idx + 1) (acc + b)
-  termination_by 512 - idx
+      go rem (idx + 1) (acc + b)
 
 /-- Construct a 512-byte USTAR header by concatenating exact-width fields. -/
 def buildUstarHeader (name : String) (mode : UInt32) (uid gid size mtime : Nat)
     (typeflag : UInt8) (linkname uname gname pfx : String) : ByteArray :=
   let fName := padRightBytes 100 name.toUTF8
-  let fMode := padRightBytes 8 (encodeOctalField (mode &&& 0o7777).toNat 7)
-  let fUid := padRightBytes 8 (encodeOctalField uid 7)
-  let fGid := padRightBytes 8 (encodeOctalField gid 7)
-  let fSize := padRightBytes 12 (encodeOctalField size 11)
-  let fMtime := padRightBytes 12 (encodeOctalField mtime 11)
+  let fMode := encodeOctalField (mode &&& 0o7777).toNat 7
+  let fUid := encodeOctalField uid 7
+  let fGid := encodeOctalField gid 7
+  let fSize := encodeOctalField size 11
+  let fMtime := encodeOctalField mtime 11
   let fChkSpaces := ByteArray.mk (Array.replicate 8 0x20)
   let fType := ByteArray.mk #[typeflag]
   let fLink := padRightBytes 100 linkname.toUTF8
@@ -48,7 +47,7 @@ def buildUstarHeader (name : String) (mode : UInt32) (uid gid size mtime : Nat)
   let hdrPre := fName ++ fMode ++ fUid ++ fGid ++ fSize ++ fMtime ++ fChkSpaces ++
     fType ++ fLink ++ fMagic ++ fVer ++ fUname ++ fGname ++ fDev ++ fPrefix ++ fPad
   let chk := ustarChecksumAt hdrPre 0
-  let fChk := padRightBytes 8 (encodeOctalField chk 6 ++ ByteArray.mk #[0x20])
+  let fChk := encodeOctalField chk 6 ++ ByteArray.mk #[0x20]
   fName ++ fMode ++ fUid ++ fGid ++ fSize ++ fMtime ++ fChk ++
     fType ++ fLink ++ fMagic ++ fVer ++ fUname ++ fGname ++ fDev ++ fPrefix ++ fPad
 
@@ -94,6 +93,23 @@ def encodeEntryBlocks (e : TarEntry) (normPath : String) : ByteArray :=
       paxHdr ++ padBlock512 paxPayload ++ hdr ++ padBlock512 e.data
   entryBlocks
 
+/-- Validate a single entry for `packWith` and return its canonical normalized path. -/
+def validatePackEntry (opts : PackOptions) (e : TarEntry) : Except TarError String := do
+  let normPath ← validateEntryPath opts.allowAbsolute opts.allowParentTraversal e.kind e.path
+  match e.kind with
+  | .symlink => validateSymlinkTarget opts.allowAbsolute opts.allowParentTraversal normPath e.linkTarget
+  | .regular | .directory => pure ()
+  if e.kind != .regular && e.data.size != 0 then
+    throw { kind := .invalidHeader, message := "non-regular tar entry cannot have payload data", entryPath := some e.path }
+  else if e.kind != .symlink && e.linkTarget != "" then
+    throw { kind := .invalidHeader, message := "non-symlink tar entry cannot have linkTarget", entryPath := some e.path }
+  else if hasNulString e.uname || hasNulString e.gname then
+    throw { kind := .invalidHeader, message := "uname/gname cannot contain NUL byte", entryPath := some e.path }
+  else if e.uid ≥ u64Limit || e.gid ≥ u64Limit || e.mtime ≥ u64Limit || e.data.size ≥ u64Limit then
+    throw { kind := .sizeOverflow, message := "tar entry numeric field exceeds 2^64 - 1", entryPath := some e.path }
+  else
+    pure normPath
+
 /-- Validate entries left-to-right and serialize them into a USTAR/PAX tar archive. -/
 def packWith (opts : PackOptions) (entries : List TarEntry) : Except TarError ByteArray :=
   go entries [] ByteArray.empty
@@ -103,29 +119,14 @@ where
     match rest with
     | [] => .ok (acc ++ zeroBlock ++ zeroBlock)
     | e :: tail =>
-      match validateEntryPath opts.allowAbsolute opts.allowParentTraversal e.kind e.path with
+      match validatePackEntry opts e with
       | .error err => .error err
       | .ok normPath =>
-        let symCheck : Except TarError Unit :=
-          match e.kind with
-          | .symlink => validateSymlinkTarget opts.allowAbsolute opts.allowParentTraversal normPath e.linkTarget
-          | .regular | .directory => .ok ()
-        match symCheck with
-        | .error err => .error err
-        | .ok () =>
-          if e.kind != .regular && e.data.size != 0 then
-            .error { kind := .invalidHeader, message := "non-regular tar entry cannot have payload data", entryPath := some e.path }
-          else if e.kind != .symlink && e.linkTarget != "" then
-            .error { kind := .invalidHeader, message := "non-symlink tar entry cannot have linkTarget", entryPath := some e.path }
-          else if hasNulString e.uname || hasNulString e.gname then
-            .error { kind := .invalidHeader, message := "uname/gname cannot contain NUL byte", entryPath := some e.path }
-          else if e.uid ≥ u64Limit || e.gid ≥ u64Limit || e.mtime ≥ u64Limit || e.data.size ≥ u64Limit then
-            .error { kind := .sizeOverflow, message := "tar entry numeric field exceeds 2^64 - 1", entryPath := some e.path }
-          else if seen.contains normPath then
-            .error { kind := .duplicatePath, message := s!"duplicate tar entry path: {normPath}", entryPath := some normPath }
-          else
-            let eff := if opts.deterministic then zeroDeterministicMeta e else e
-            go tail (normPath :: seen) (acc ++ encodeEntryBlocks eff normPath)
+        if seen.contains normPath then
+          .error { kind := .duplicatePath, message := s!"duplicate tar entry path: {normPath}", entryPath := some normPath }
+        else
+          let eff := if opts.deterministic then zeroDeterministicMeta e else e
+          go tail (normPath :: seen) (acc ++ encodeEntryBlocks eff normPath)
 
 /-- Serialize entries using default `PackOptions`. -/
 def pack (entries : List TarEntry) : Except TarError ByteArray :=
@@ -133,34 +134,38 @@ def pack (entries : List TarEntry) : Except TarError ByteArray :=
 
 /-- Return `true` iff all `len` bytes starting at `offset` in `bytes` are `0x00`. -/
 def isZeroRange (bytes : ByteArray) (offset len : Nat) : Bool :=
-  go 0
+  go len 0
 where
-  /-- Check byte `offset + i` for `i < len`. -/
-  go (i : Nat) : Bool :=
-    if i ≥ len then true
-    else if h : offset + i < bytes.size then
-      if (bytes[offset + i]'h) == 0 then go (i + 1) else false
-    else false
-  termination_by len - i
+  /-- Check `rem` remaining bytes starting at `offset + i`. -/
+  go : Nat → Nat → Bool
+    | 0, _ => true
+    | rem + 1, i =>
+      if h : offset + i < bytes.size then
+        if (bytes[offset + i]'h) == 0 then go rem (i + 1) else false
+      else false
 
 /-- Verify all remaining 512-byte blocks from `offset` to `bytes.size` are all-zero. -/
 def allZeroTrailer (bytes : ByteArray) (offset : Nat) : Bool :=
-  if offset ≥ bytes.size then true
-  else isZeroRange bytes offset 512 && allZeroTrailer bytes (offset + 512)
-  termination_by bytes.size - offset
+  go ((bytes.size - offset + 511) / 512) offset
+where
+  /-- Check up to `rem` trailing 512-byte blocks starting at `pos`. -/
+  go : Nat → Nat → Bool
+    | 0, _ => true
+    | rem + 1, pos =>
+      if pos ≥ bytes.size then true
+      else isZeroRange bytes pos 512 && go rem (pos + 512)
 
 /-- Extract bytes `[start .. stop)` up to the first `0x00` byte. -/
 def extractCStringBytes (bytes : ByteArray) (start stop : Nat) : ByteArray :=
-  let endPos := findNul start
-  bytes.extract start endPos
+  bytes.extract start (findNul (stop - start) start)
 where
-  /-- Locate the first `0x00` byte in `[start .. stop)`. -/
-  findNul (i : Nat) : Nat :=
-    if i ≥ stop then stop
-    else if h : i < bytes.size then
-      if (bytes[i]'h) == 0 then i else findNul (i + 1)
-    else stop
-  termination_by stop - i
+  /-- Scan up to `rem` positions starting at `i` for the first `0x00` byte. -/
+  findNul : Nat → Nat → Nat
+    | 0, _ => stop
+    | rem + 1, i =>
+      if h : i < bytes.size then
+        if (bytes[i]'h) == 0 then i else findNul rem (i + 1)
+      else stop
 
 /-- Decode a NUL-terminated UTF-8 field from `[start .. stop)`. -/
 def decodeCStringUtf8 (bytes : ByteArray) (start stop offset : Nat) (fieldName : String) :
@@ -172,7 +177,7 @@ def decodeCStringUtf8 (bytes : ByteArray) (start stop offset : Nat) (fieldName :
 
 /-- Parse strict octal ASCII bytes `[start .. stop)` for `chksum` (no base-256, not all-NUL/space). -/
 def parseChecksumOctal (bytes : ByteArray) (start stop offset : Nat) : Except TarError Nat :=
-  let raw := (bytes.extract start stop).toList
+  let raw := (bytes.extract start stop).data.toList
   let afterLead := raw.dropWhile (· == 0x20)
   let digits := afterLead.takeWhile (fun b => 0x30 ≤ b && b ≤ 0x37)
   let tail := afterLead.drop digits.length
@@ -186,7 +191,7 @@ def parseChecksumOctal (bytes : ByteArray) (start stop offset : Nat) : Except Ta
 /-- Parse a USTAR numeric field (octal ASCII or base-256) enforcing `limit`. -/
 def parseUstarNumeric (bytes : ByteArray) (start stop offset : Nat)
     (allowAllEmpty : Bool) (limit : Nat) (fieldName : String) : Except TarError Nat :=
-  let raw := (bytes.extract start stop).toList
+  let raw := (bytes.extract start stop).data.toList
   match raw with
   | [] => .error { kind := .invalidHeader, message := s!"empty USTAR {fieldName} field", offset := some offset }
   | b0 :: rest =>
@@ -219,8 +224,8 @@ def parseUstarNumeric (bytes : ByteArray) (start stop offset : Nat)
 
 /-- Validate USTAR POSIX or GNU magic/version bytes at `[offset + 257 .. offset + 265)`. -/
 def hasValidMagic (bytes : ByteArray) (offset : Nat) : Bool :=
-  let magic := (bytes.extract (offset + 257) (offset + 263)).toList
-  let ver := (bytes.extract (offset + 263) (offset + 265)).toList
+  let magic := (bytes.extract (offset + 257) (offset + 263)).data.toList
+  let ver := (bytes.extract (offset + 263) (offset + 265)).data.toList
   (magic == [0x75, 0x73, 0x74, 0x61, 0x72, 0x00] && ver == [0x30, 0x30]) ||
   (magic == [0x75, 0x73, 0x74, 0x61, 0x72, 0x20] && ver == [0x20, 0x00])
 
@@ -288,17 +293,21 @@ def parsePaxMtime (val : String) (offset : Nat) : Except TarError Nat :=
 
 /-- Locate index of byte `target` in `bs` starting at `idx` up to `stop`. -/
 def findByteIn (bs : ByteArray) (target : UInt8) (idx stop : Nat) : Option Nat :=
-  if idx ≥ stop then none
-  else if h : idx < bs.size then
-    if (bs[idx]'h) == target then some idx else findByteIn bs target (idx + 1) stop
-  else none
-  termination_by stop - idx
+  go (stop - idx) idx
+where
+  /-- Scan up to `rem` positions starting at `i` for `target`. -/
+  go : Nat → Nat → Option Nat
+    | 0, _ => none
+    | rem + 1, i =>
+      if h : i < bs.size then
+        if (bs[i]'h) == target then some i else go rem (i + 1)
+      else none
 
 /-- Parse a decimal ASCII PAX record length without leading `'0'`. -/
 def parsePaxLen (bs : ByteArray) (start stop : Nat) : Option Nat :=
   if start ≥ stop then none
   else
-    let digits := (bs.extract start stop).toList
+    let digits := (bs.extract start stop).data.toList
     match digits with
     | [] => none
     | d0 :: _ =>
@@ -337,55 +346,53 @@ def applyPaxKey (ov : PaxOverrides) (key val : String) (offset : Nat) : Except T
 
 /-- Parse all `<len> <key>=<value>\n` records from a PAX `'x'` payload. -/
 def parsePaxPayload (pax : ByteArray) (offset : Nat) : Except TarError PaxOverrides :=
-  go 0 [] {}
+  go (pax.size + 1) 0 [] {}
 where
-  /-- Decode records sequentially from byte index `pos`. -/
-  go (pos : Nat) (seenKeys : List String) (ov : PaxOverrides) : Except TarError PaxOverrides :=
-    if pos ≥ pax.size then .ok ov
-    else
-      match findByteIn pax 0x20 pos pax.size with
-      | none =>
-        .error { kind := .invalidHeader, message := "missing space in PAX record", offset := some offset }
-      | some spIdx =>
-        match parsePaxLen pax pos spIdx with
+  /-- Decode records sequentially from `pos` with structural recursion fuel `fuel`. -/
+  go : Nat → Nat → List String → PaxOverrides → Except TarError PaxOverrides
+    | 0, _, _, ov => .ok ov
+    | fuel + 1, pos, seenKeys, ov =>
+      if pos ≥ pax.size then .ok ov
+      else
+        match findByteIn pax 0x20 pos pax.size with
         | none =>
-          .error { kind := .invalidHeader, message := "invalid PAX record length", offset := some offset }
-        | some recLen =>
-          if recLen < 5 then
-            .error { kind := .invalidHeader, message := "PAX record length < 5", offset := some offset }
-          else if pos + recLen > pax.size then
-            .error { kind := .invalidHeader, message := "out-of-bounds PAX record length", offset := some offset }
-          else
-            let recEnd := pos + recLen
-            let hasNl :=
-              if h : recEnd - 1 < pax.size then (pax[recEnd - 1]'h) == 0x0a else false
-            if !hasNl then
-              .error { kind := .invalidHeader, message := "PAX record missing trailing newline", offset := some offset }
+          .error { kind := .invalidHeader, message := "missing space in PAX record", offset := some offset }
+        | some spIdx =>
+          match parsePaxLen pax pos spIdx with
+          | none =>
+            .error { kind := .invalidHeader, message := "invalid PAX record length", offset := some offset }
+          | some recLen =>
+            if recLen < 5 then
+              .error { kind := .invalidHeader, message := "PAX record length < 5", offset := some offset }
+            else if pos + recLen > pax.size then
+              .error { kind := .invalidHeader, message := "out-of-bounds PAX record length", offset := some offset }
             else
-              match findByteIn pax 0x3d (spIdx + 1) (recEnd - 1) with
-              | none =>
-                .error { kind := .invalidHeader, message := "PAX record missing '='", offset := some offset }
-              | some eqIdx =>
-                let keyBytes := pax.extract (spIdx + 1) eqIdx
-                let valBytes := pax.extract (eqIdx + 1) (recEnd - 1)
-                match String.fromUTF8? keyBytes, String.fromUTF8? valBytes with
-                | none, _ | _, none =>
-                  .error { kind := .invalidEncoding, message := "invalid UTF-8 in PAX record", offset := some offset }
-                | some key, some val =>
-                  if key.isEmpty || hasNulString key || key.toList.contains '\n' then
-                    .error { kind := .invalidHeader, message := "invalid PAX record key", offset := some offset }
-                  else if seenKeys.contains key then
-                    .error { kind := .invalidHeader, message := s!"duplicate PAX key: {key}", offset := some offset }
-                  else if startsWithStr key "GNU.sparse." then
-                    .error { kind := .unsupportedEntry, message := "GNU sparse PAX archives are unsupported", offset := some offset }
-                  else
-                    match applyPaxKey ov key val offset with
-                    | .error err => .error err
-                    | .ok nextOv => go recEnd (key :: seenKeys) nextOv
-  termination_by pax.size - pos
-  decreasing_by
-    simp_wf
-    omega
+              let recEnd := pos + recLen
+              let hasNl :=
+                if h : recEnd - 1 < pax.size then (pax[recEnd - 1]'h) == 0x0a else false
+              if !hasNl then
+                .error { kind := .invalidHeader, message := "PAX record missing trailing newline", offset := some offset }
+              else
+                match findByteIn pax 0x3d (spIdx + 1) (recEnd - 1) with
+                | none =>
+                  .error { kind := .invalidHeader, message := "PAX record missing '='", offset := some offset }
+                | some eqIdx =>
+                  let keyBytes := pax.extract (spIdx + 1) eqIdx
+                  let valBytes := pax.extract (eqIdx + 1) (recEnd - 1)
+                  match String.fromUTF8? keyBytes, String.fromUTF8? valBytes with
+                  | none, _ | _, none =>
+                    .error { kind := .invalidEncoding, message := "invalid UTF-8 in PAX record", offset := some offset }
+                  | some key, some val =>
+                    if key.isEmpty || hasNulString key || key.toList.contains '\n' then
+                      .error { kind := .invalidHeader, message := "invalid PAX record key", offset := some offset }
+                    else if seenKeys.contains key then
+                      .error { kind := .invalidHeader, message := s!"duplicate PAX key: {key}", offset := some offset }
+                    else if startsWithStr key "GNU.sparse." then
+                      .error { kind := .unsupportedEntry, message := "GNU sparse PAX archives are unsupported", offset := some offset }
+                    else
+                      match applyPaxKey ov key val offset with
+                      | .error err => .error err
+                      | .ok nextOv => go fuel recEnd (key :: seenKeys) nextOv
 
 /-- Decoded header fields from a single validated 512-byte USTAR block. -/
 structure UstarHeaderFields where
@@ -403,32 +410,19 @@ structure UstarHeaderFields where
   typeflag : UInt8
 
 /-- Validate checksum, magic/version, and numeric fields of a non-zero 512-byte header block at `offset`. -/
-def parseUstarHeader (bytes : ByteArray) (offset : Nat) : Except TarError UstarHeaderFields :=
-  match parseChecksumOctal bytes (offset + 148) (offset + 156) offset with
-  | .error err => .error err
-  | .ok storedChk =>
-    if storedChk != ustarChecksumAt bytes offset then
-      .error { kind := .checksumMismatch, message := "USTAR header checksum mismatch", offset := some offset }
-    else if !hasValidMagic bytes offset then
-      .error { kind := .invalidHeader, message := "invalid USTAR magic or version", offset := some offset }
-    else
-      match parseUstarNumeric bytes (offset + 100) (offset + 108) offset false u32Limit "mode" with
-      | .error e => .error e
-      | .ok uMode =>
-        match parseUstarNumeric bytes (offset + 108) (offset + 116) offset true u64Limit "uid" with
-        | .error e => .error e
-        | .ok uUid =>
-          match parseUstarNumeric bytes (offset + 116) (offset + 124) offset true u64Limit "gid" with
-          | .error e => .error e
-          | .ok uGid =>
-            match parseUstarNumeric bytes (offset + 124) (offset + 136) offset false u64Limit "size" with
-            | .error e => .error e
-            | .ok uSize =>
-              match parseUstarNumeric bytes (offset + 136) (offset + 148) offset true u64Limit "mtime" with
-              | .error e => .error e
-              | .ok uMtime =>
-                let typeByte : UInt8 := if h : offset + 156 < bytes.size then bytes[offset + 156]'h else 0
-                .ok { mode := uMode, uid := uUid, gid := uGid, size := uSize, mtime := uMtime, typeflag := typeByte }
+def parseUstarHeader (bytes : ByteArray) (offset : Nat) : Except TarError UstarHeaderFields := do
+  let storedChk ← parseChecksumOctal bytes (offset + 148) (offset + 156) offset
+  if storedChk != ustarChecksumAt bytes offset then
+    throw { kind := .checksumMismatch, message := "USTAR header checksum mismatch", offset := some offset }
+  if !hasValidMagic bytes offset then
+    throw { kind := .invalidHeader, message := "invalid USTAR magic or version", offset := some offset }
+  let uMode ← parseUstarNumeric bytes (offset + 100) (offset + 108) offset false u32Limit "mode"
+  let uUid ← parseUstarNumeric bytes (offset + 108) (offset + 116) offset true u64Limit "uid"
+  let uGid ← parseUstarNumeric bytes (offset + 116) (offset + 124) offset true u64Limit "gid"
+  let uSize ← parseUstarNumeric bytes (offset + 124) (offset + 136) offset false u64Limit "size"
+  let uMtime ← parseUstarNumeric bytes (offset + 136) (offset + 148) offset true u64Limit "mtime"
+  let typeByte : UInt8 := if h : offset + 156 < bytes.size then bytes[offset + 156]'h else 0
+  pure { mode := uMode, uid := uUid, gid := uGid, size := uSize, mtime := uMtime, typeflag := typeByte }
 
 /-- Construct and validate a `TarEntry` from a non-`'x'` USTAR header and optional PAX overrides. -/
 def decodeTarEntry (opts : UnpackOptions) (bytes : ByteArray) (offset : Nat)
@@ -562,25 +556,31 @@ def unpackStep (opts : UnpackOptions) (bytes : ByteArray) (offset : Nat)
         | .ok (entry, padded) =>
           .ok (.cont (offset + 512 + padded) none (entry.path :: seen) (entry :: acc) (totalBytes + entry.data.size))
 
+/-- Structural fuel-bounded driver for `unpackLoop`. -/
+def unpackLoopFuel (fuel : Nat) (opts : UnpackOptions) (bytes : ByteArray) (offset : Nat)
+    (pendingPax : Option PaxOverrides) (seen : List String)
+    (acc : List TarEntry) (totalBytes : Nat) : Except TarError (List TarEntry) :=
+  match fuel with
+  | 0 =>
+    .error { kind := .truncatedArchive, message := "tar archive missing end-of-archive zero blocks", offset := some offset }
+  | fuel' + 1 =>
+    if offset ≥ bytes.size then
+      .error { kind := .truncatedArchive, message := "tar archive missing end-of-archive zero blocks", offset := some offset }
+    else
+      match unpackStep opts bytes offset pendingPax seen acc totalBytes with
+      | .error err => .error err
+      | .ok (.done res) => .ok res
+      | .ok (.cont nextOffset nextPax nextSeen nextAcc nextTotal) =>
+        if nextOffset > offset then
+          unpackLoopFuel fuel' opts bytes nextOffset nextPax nextSeen nextAcc nextTotal
+        else
+          .error { kind := .invalidHeader, message := "invalid tar block advance", offset := some offset }
+
 /-- Loop `unpackStep` until `.done` or error. -/
 def unpackLoop (opts : UnpackOptions) (bytes : ByteArray) (offset : Nat)
     (pendingPax : Option PaxOverrides) (seen : List String)
     (acc : List TarEntry) (totalBytes : Nat) : Except TarError (List TarEntry) :=
-  if offset ≥ bytes.size then
-    .error { kind := .truncatedArchive, message := "tar archive missing end-of-archive zero blocks", offset := some offset }
-  else
-    match unpackStep opts bytes offset pendingPax seen acc totalBytes with
-    | .error err => .error err
-    | .ok (.done res) => .ok res
-    | .ok (.cont nextOffset nextPax nextSeen nextAcc nextTotal) =>
-      if nextOffset > offset then
-        unpackLoop opts bytes nextOffset nextPax nextSeen nextAcc nextTotal
-      else
-        .error { kind := .invalidHeader, message := "invalid tar block advance", offset := some offset }
-termination_by bytes.size - offset
-decreasing_by
-  simp_wf
-  omega
+  unpackLoopFuel (bytes.size - offset + 1) opts bytes offset pendingPax seen acc totalBytes
 
 /-- Deserialize a USTAR/PAX tar byte array enforcing options and safety limits. -/
 def unpackWith (opts : UnpackOptions) (bytes : ByteArray) : Except TarError (List TarEntry) :=

@@ -2,7 +2,7 @@ import LeanSwe.Tar.SpecTests
 import LeanSwe.Tar.Interface
 import LeanSwe.Tar.Proofs.ByteModel
 import LeanSwe.Tar.Proofs.FieldCodecs
-import LeanSwe.Tar.Proofs.Headers
+import LeanSwe.Tar.Proofs.HeaderLayout
 
 namespace LeanSwe.Tar.Proofs
 
@@ -12,90 +12,65 @@ open LeanSwe.Tar
 open LeanSwe.Tar.Model
 open LeanSwe.Tar.Impl
 
-private theorem nonEmpty_append_left {a b : String} (ha : (!a.isEmpty) = true) :
-    (!(a ++ b).isEmpty) = true := by
-  have hPos : 0 < a.utf8ByteSize := by
-    cases h0 : a.utf8ByteSize with
-    | zero =>
-      exfalso
-      have he : a.isEmpty = true := by simp [String.isEmpty, h0]
-      rw [he] at ha
-      contradiction
-    | succ _ => omega
-  have hSum : (a ++ b).utf8ByteSize = a.utf8ByteSize + b.utf8ByteSize :=
-    String.utf8ByteSize_append
-  cases hEmp : (a ++ b).isEmpty
-  · rfl
-  · exfalso
-    have hEq : a ++ b = "" := String.isEmpty_iff.mp hEmp
-    have hSize : (a ++ b).utf8ByteSize = 0 := by rw [hEq]; rfl
-    omega
+/-- Predicate characterizing every `TarErrorKind` that `Impl.packWith` / `Impl.pack` can emit. -/
+def IsPackErrorKind (k : TarErrorKind) : Prop :=
+  k = .invalidPath ∨ k = .unsafePath ∨ k = .invalidHeader ∨ k = .sizeOverflow ∨ k = .duplicatePath
 
-private theorem checkSegments_go_nonEmptyMsg (allowPar : Bool) (segs : List (List Char))
-    {e : TarError} (h : checkSegments.go allowPar segs = .error e) : (!e.message.isEmpty) = true := by
+private theorem checkSegments_go_err_props (allowPar : Bool) (segs : List (List Char))
+    {e : TarError} (h : checkSegments.go allowPar segs = .error e) :
+    (!e.message.isEmpty) = true ∧ IsPackErrorKind e.kind := by
   induction segs with
   | nil => rw [checkSegments.go.eq_1] at h; cases h
   | cons seg rest ih =>
     rw [checkSegments.go.eq_2] at h
     split at h
-    · cases h; rfl
+    · cases h; exact ⟨rfl, by simp [IsPackErrorKind]⟩
     · split at h
-      · cases h; rfl
+      · cases h; exact ⟨rfl, by simp [IsPackErrorKind]⟩
       · split at h
-        · cases h; rfl
+        · cases h; exact ⟨rfl, by simp [IsPackErrorKind]⟩
         · exact ih h
 
-private theorem checkSegments_nonEmptyMsg (allowPar : Bool) (segs : List (List Char))
-    {e : TarError} (h : checkSegments allowPar segs = .error e) : (!e.message.isEmpty) = true := by
+private theorem checkSegments_err_props (allowPar : Bool) (segs : List (List Char))
+    {e : TarError} (h : checkSegments allowPar segs = .error e) :
+    (!e.message.isEmpty) = true ∧ IsPackErrorKind e.kind := by
   unfold checkSegments at h
   cases segs with
-  | nil => cases h; rfl
-  | cons seg rest => exact checkSegments_go_nonEmptyMsg allowPar (seg :: rest) h
+  | nil => cases h; exact ⟨rfl, by simp [IsPackErrorKind]⟩
+  | cons seg rest => exact checkSegments_go_err_props allowPar (seg :: rest) h
 
-private theorem validateEntryPath_nonEmptyMsg (allowAbs allowPar : Bool) (kind : EntryKind)
+private theorem validateEntryPath_err_props (allowAbs allowPar : Bool) (kind : EntryKind)
     (path : String) {e : TarError} (h : validateEntryPath allowAbs allowPar kind path = .error e) :
-    (!e.message.isEmpty) = true := by
+    (!e.message.isEmpty) = true ∧ IsPackErrorKind e.kind := by
   unfold validateEntryPath at h
   dsimp only at h
   split at h
-  · cases h; rfl
+  · cases h; exact ⟨rfl, by simp [IsPackErrorKind]⟩
   · split at h
-    · cases h; rfl
+    · cases h; exact ⟨rfl, by simp [IsPackErrorKind]⟩
     · split at h
-      · cases h; rfl
+      · cases h; exact ⟨rfl, by simp [IsPackErrorKind]⟩
       · cases hk : kind <;> simp only [hk] at h
         · split at h
-          · rename_i heq
-            cases h
-            split at heq <;> cases heq; rfl
+          · rename_i heq; cases h; split at heq <;> cases heq <;> exact ⟨rfl, by simp [IsPackErrorKind]⟩
           · split at h
-            · rename_i ce hc
-              cases h
-              simpa using checkSegments_nonEmptyMsg allowPar _ hc
+            · rename_i ce hc; cases h; simpa using checkSegments_err_props allowPar _ hc
             · cases h
         · split at h
-          · rename_i heq
-            cases h
-            split at heq <;> cases heq; rfl
+          · rename_i heq; cases h; split at heq <;> cases heq <;> exact ⟨rfl, by simp [IsPackErrorKind]⟩
           · split at h
-            · rename_i ce hc
-              cases h
-              simpa using checkSegments_nonEmptyMsg allowPar _ hc
+            · rename_i ce hc; cases h; simpa using checkSegments_err_props allowPar _ hc
             · cases h
         · split at h
-          · rename_i heq
-            cases h
-            split at heq <;> cases heq; rfl
+          · rename_i heq; cases h; split at heq <;> cases heq <;> exact ⟨rfl, by simp [IsPackErrorKind]⟩
           · split at h
-            · rename_i ce hc
-              cases h
-              simpa using checkSegments_nonEmptyMsg allowPar _ hc
+            · rename_i ce hc; cases h; simpa using checkSegments_err_props allowPar _ hc
             · cases h
 
-private theorem walkDepth_nonEmptyMsg (entryPath : String) (depth : Nat)
+private theorem walkDepth_err_props (entryPath : String) (depth : Nat)
     (segs : List (List Char)) {e : TarError}
     (h : validateSymlinkTarget.walkDepth entryPath depth segs = .error e) :
-    (!e.message.isEmpty) = true := by
+    (!e.message.isEmpty) = true ∧ IsPackErrorKind e.kind := by
   induction segs generalizing depth with
   | nil => rw [validateSymlinkTarget.walkDepth.eq_1] at h; cases h
   | cons seg rest ih =>
@@ -104,84 +79,80 @@ private theorem walkDepth_nonEmptyMsg (entryPath : String) (depth : Nat)
     · exact ih depth h
     · split at h
       · split at h
-        · cases h; rfl
+        · cases h; exact ⟨rfl, by simp [IsPackErrorKind]⟩
         · exact ih (depth - 1) h
       · exact ih (depth + 1) h
 
-private theorem validateSymlinkTarget_nonEmptyMsg (allowAbs allowPar : Bool)
+private theorem validateSymlinkTarget_err_props (allowAbs allowPar : Bool)
     (entryPath linkTarget : String) {e : TarError}
     (h : validateSymlinkTarget allowAbs allowPar entryPath linkTarget = .error e) :
-    (!e.message.isEmpty) = true := by
+    (!e.message.isEmpty) = true ∧ IsPackErrorKind e.kind := by
   unfold validateSymlinkTarget at h
   dsimp only at h
   split at h
-  · cases h; rfl
+  · cases h; exact ⟨rfl, by simp [IsPackErrorKind]⟩
   · split at h
-    · cases h; rfl
+    · cases h; exact ⟨rfl, by simp [IsPackErrorKind]⟩
     · split at h
-      · cases h; rfl
+      · cases h; exact ⟨rfl, by simp [IsPackErrorKind]⟩
       · split at h
         · cases h
-        · exact walkDepth_nonEmptyMsg entryPath _ _ h
+        · exact walkDepth_err_props entryPath _ _ h
 
-private theorem packWith_go_nonEmptyMsg (opts : PackOptions) (rest : List TarEntry)
+private theorem validatePackEntry_err_props (opts : PackOptions) (entry : TarEntry)
+    {e : TarError} (h : validatePackEntry opts entry = .error e) :
+    (!e.message.isEmpty) = true ∧ IsPackErrorKind e.kind := by
+  unfold validatePackEntry at h
+  simp only [bind, Except.bind, pure, Except.pure, throw, throwThe, MonadExceptOf.throw, MonadExcept.throw] at h
+  cases hv : validateEntryPath opts.allowAbsolute opts.allowParentTraversal entry.kind entry.path with
+  | error ev =>
+    rw [hv] at h; cases h
+    exact validateEntryPath_err_props _ _ _ _ hv
+  | ok normPath =>
+    rw [hv] at h; dsimp only at h
+    cases hk : entry.kind <;> simp only [hk] at h
+    · repeat (split at h; · (cases h; exact ⟨rfl, by simp [IsPackErrorKind]⟩))
+      cases h
+    · repeat (split at h; · (cases h; exact ⟨rfl, by simp [IsPackErrorKind]⟩))
+      cases h
+    · cases hs : validateSymlinkTarget opts.allowAbsolute opts.allowParentTraversal normPath entry.linkTarget with
+      | error se =>
+        rw [hs] at h; cases h
+        exact validateSymlinkTarget_err_props _ _ _ _ hs
+      | ok _ =>
+        rw [hs] at h; dsimp only at h
+        repeat (split at h; · (cases h; exact ⟨rfl, by simp [IsPackErrorKind]⟩))
+        cases h
+
+private theorem packWith_go_err_props (opts : PackOptions) (rest : List TarEntry)
     (seen : List String) (acc : ByteArray) {e : TarError}
-    (h : packWith.go opts rest seen acc = .error e) : (!e.message.isEmpty) = true := by
+    (h : packWith.go opts rest seen acc = .error e) :
+    (!e.message.isEmpty) = true ∧ IsPackErrorKind e.kind := by
   induction rest generalizing seen acc with
   | nil => rw [packWith.go.eq_1] at h; cases h
   | cons entry tail ih =>
     rw [packWith.go.eq_2] at h
     dsimp only at h
-    cases hv : validateEntryPath opts.allowAbsolute opts.allowParentTraversal entry.kind entry.path with
+    cases hv : validatePackEntry opts entry with
     | error ev =>
       rw [hv] at h; cases h
-      exact validateEntryPath_nonEmptyMsg _ _ _ _ hv
+      exact validatePackEntry_err_props opts entry hv
     | ok normPath =>
-      rw [hv] at h
-      dsimp only at h
-      have hsym : ∀ u, (match entry.kind with
-          | .symlink => validateSymlinkTarget opts.allowAbsolute opts.allowParentTraversal normPath entry.linkTarget
-          | .regular | .directory => Except.ok ()) = u →
-          (match u with
-          | .error err => Except.error err
-          | .ok () =>
-            if (entry.kind != EntryKind.regular && entry.data.size != 0) = true then
-              Except.error { kind := .invalidHeader, message := "non-regular tar entry cannot have payload data", entryPath := some entry.path }
-            else if (entry.kind != EntryKind.symlink && entry.linkTarget != "") = true then
-              Except.error { kind := .invalidHeader, message := "non-symlink tar entry cannot have linkTarget", entryPath := some entry.path }
-            else if (hasNulString entry.uname || hasNulString entry.gname) = true then
-              Except.error { kind := .invalidHeader, message := "uname/gname cannot contain NUL byte", entryPath := some entry.path }
-            else if (entry.uid ≥ u64Limit || entry.gid ≥ u64Limit || entry.mtime ≥ u64Limit || entry.data.size ≥ u64Limit) = true then
-              Except.error { kind := .sizeOverflow, message := "tar entry numeric field exceeds 2^64 - 1", entryPath := some entry.path }
-            else if seen.contains normPath = true then
-              Except.error { kind := .duplicatePath, message := s!"duplicate tar entry path: {normPath}", entryPath := some normPath }
-            else
-              packWith.go opts tail (normPath :: seen) (acc ++ encodeEntryBlocks (if opts.deterministic then zeroDeterministicMeta entry else entry) normPath)) = .error e →
-          (!e.message.isEmpty) = true := by
-        intro u hu hm
-        cases u with
-        | error se =>
-          cases hm
-          cases hk : entry.kind with
-          | regular => simp only [hk] at hu; cases hu
-          | directory => simp only [hk] at hu; cases hu
-          | symlink =>
-            simp only [hk] at hu
-            exact validateSymlinkTarget_nonEmptyMsg _ _ _ _ hu
-        | ok _ =>
-          dsimp only at hm
-          split at hm
-          · cases hm; rfl
-          · split at hm
-            · cases hm; rfl
-            · split at hm
-              · cases hm; rfl
-              · split at hm
-                · cases hm; rfl
-                · split at hm
-                  · cases hm; exact nonEmpty_append_left rfl
-                  · exact ih (normPath :: seen) _ hm
-      exact hsym _ rfl h
+      rw [hv] at h; dsimp only at h
+      split at h
+      · cases h
+        exact ⟨nonEmpty_append_left rfl, by simp [IsPackErrorKind]⟩
+      · exact ih _ _ h
+
+/-- Every error returned by `Impl.packWith` has a non-empty message. -/
+theorem packWith_nonEmptyMsg (opts : PackOptions) (entries : List TarEntry) {e : TarError}
+    (h : Impl.packWith opts entries = .error e) : (!e.message.isEmpty) = true :=
+  (packWith_go_err_props opts entries [] ByteArray.empty h).1
+
+/-- Every error returned by `Impl.packWith` has an allowed pack `TarErrorKind`. -/
+theorem packWith_err_kind (opts : PackOptions) (entries : List TarEntry) {e : TarError}
+    (h : Impl.packWith opts entries = .error e) : IsPackErrorKind e.kind :=
+  (packWith_go_err_props opts entries [] ByteArray.empty h).2
 
 private theorem list_dropWhile_idemp {α : Type} (p : α → Bool) (xs : List α) :
     (xs.dropWhile p).dropWhile p = xs.dropWhile p := by
@@ -713,6 +684,129 @@ theorem fitsPaxLimit_zeroDeterministicMeta {e : TarEntry}
       · simp only [h4, or_true, true_or]
   · rfl
 
+private theorem validatePackEntry_ok_iff (opts : PackOptions) (entry : TarEntry) (normPath : String) :
+    validatePackEntry opts entry = .ok normPath ↔
+      (normPath = normalizeTarPath entry.kind entry.path ∧
+        validEntryBool opts.allowAbsolute opts.allowParentTraversal entry = true) := by
+  constructor
+  · intro h
+    unfold validatePackEntry at h
+    simp only [bind, Except.bind, pure, Except.pure, throw, throwThe, MonadExceptOf.throw, MonadExcept.throw] at h
+    cases hv : validateEntryPath opts.allowAbsolute opts.allowParentTraversal entry.kind entry.path with
+    | error _ => rw [hv] at h; cases h
+    | ok np =>
+      rw [hv] at h; dsimp only at h
+      have hnp : np = normalizeTarPath entry.kind entry.path := validateEntryPath_normPath hv
+      have hsym_and_hm : (match entry.kind with
+          | .symlink => validateSymlinkTarget opts.allowAbsolute opts.allowParentTraversal np entry.linkTarget
+          | .regular | .directory => Except.ok ()) = .ok () ∧
+          (if (entry.kind != EntryKind.regular && entry.data.size != 0) = true then
+            Except.error ({ kind := .invalidHeader, message := "non-regular tar entry cannot have payload data", entryPath := some entry.path } : TarError)
+          else if (entry.kind != EntryKind.symlink && entry.linkTarget != "") = true then
+            Except.error ({ kind := .invalidHeader, message := "non-symlink tar entry cannot have linkTarget", entryPath := some entry.path } : TarError)
+          else if (hasNulString entry.uname || hasNulString entry.gname) = true then
+            Except.error ({ kind := .invalidHeader, message := "uname/gname cannot contain NUL byte", entryPath := some entry.path } : TarError)
+          else if (entry.uid ≥ u64Limit || entry.gid ≥ u64Limit || entry.mtime ≥ u64Limit || entry.data.size ≥ u64Limit) = true then
+            Except.error ({ kind := .sizeOverflow, message := "tar entry numeric field exceeds 2^64 - 1", entryPath := some entry.path } : TarError)
+          else Except.ok np) = .ok normPath := by
+        cases hk : entry.kind
+        · simp only [hk] at h ⊢; exact ⟨trivial, h⟩
+        · simp only [hk] at h ⊢; exact ⟨trivial, h⟩
+        · simp only [hk] at h ⊢
+          cases hs : validateSymlinkTarget opts.allowAbsolute opts.allowParentTraversal np entry.linkTarget with
+          | error _ => rw [hs] at h; cases h
+          | ok u =>
+            cases u
+            rw [hs] at h
+            exact ⟨rfl, h⟩
+      rcases hsym_and_hm with ⟨hsym_eq, hm⟩
+      split at hm
+      · cases hm
+      · split at hm
+        · cases hm
+        · split at hm
+          · cases hm
+          · split at hm
+            · cases hm
+            · rename_i hndata hnlink hnnul hnu64
+              cases hm
+              refine ⟨hnp, ?_⟩
+              unfold validEntryBool
+              rw [hv]; dsimp only; simp only [Bool.and_eq_true]
+              refine ⟨⟨?_, ?_⟩, ?_⟩
+              · cases hk : entry.kind with
+                | regular =>
+                  simp only [hk] at hnlink ⊢
+                  have hne : (EntryKind.regular != EntryKind.symlink) = true := by decide
+                  cases hl : entry.linkTarget == ""
+                  · exfalso; apply hnlink; rw [hne, Bool.true_and, bne, hl]; rfl
+                  · rfl
+                | directory =>
+                  simp only [hk] at hnlink ⊢
+                  have hne : (EntryKind.directory != EntryKind.symlink) = true := by decide
+                  cases hl : entry.linkTarget == ""
+                  · exfalso; apply hnlink; rw [hne, Bool.true_and, bne, hl]; rfl
+                  · rfl
+                | symlink =>
+                  simp only [hk] at hsym_eq ⊢
+                  rw [hsym_eq]
+              · cases hk : entry.kind with
+                | regular => rfl
+                | directory =>
+                  simp only [hk] at hndata ⊢
+                  have hne : (EntryKind.directory != EntryKind.regular) = true := by decide
+                  cases hd : entry.data.size == 0
+                  · exfalso; apply hndata; rw [hne, Bool.true_and, bne, hd]; rfl
+                  · rfl
+                | symlink =>
+                  simp only [hk] at hndata ⊢
+                  have hne : (EntryKind.symlink != EntryKind.regular) = true := by decide
+                  cases hd : entry.data.size == 0
+                  · exfalso; apply hndata; rw [hne, Bool.true_and, bne, hd]; rfl
+                  · rfl
+              · have hu_f : hasNulString entry.uname = false := by cases hc : hasNulString entry.uname <;> simp_all
+                have hg_f : hasNulString entry.gname = false := by cases hc : hasNulString entry.gname <;> simp_all
+                simp only [Bool.or_eq_true, decide_eq_true_eq, not_or, Nat.not_le] at hnu64
+                simp [hu_f, hg_f, hnu64.1.1.1, hnu64.1.1.2, hnu64.1.2, hnu64.2]
+  · rintro ⟨rfl, hve⟩
+    unfold validEntryBool at hve
+    cases hv : validateEntryPath opts.allowAbsolute opts.allowParentTraversal entry.kind entry.path with
+    | error _ => rw [hv] at hve; cases hve
+    | ok np =>
+      rw [hv] at hve; dsimp only at hve
+      have hnp : np = normalizeTarPath entry.kind entry.path := validateEntryPath_normPath hv
+      subst hnp
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at hve
+      rcases hve with ⟨⟨hsym_ok, hdata_ok⟩, ⟨⟨⟨⟨⟨hnul_u, hnul_g⟩, huid⟩, hgid⟩, hmtime⟩, hsz⟩⟩
+      have hndata : (entry.kind != EntryKind.regular && entry.data.size != 0) = false := by
+        cases hk : entry.kind with
+        | regular =>
+          have hb : (EntryKind.regular != EntryKind.regular) = false := by decide
+          simp [hb]
+        | directory => simp only [hk] at hdata_ok ⊢; simp [bne, hdata_ok]
+        | symlink => simp only [hk] at hdata_ok ⊢; simp [bne, hdata_ok]
+      have hnlink : (entry.kind != EntryKind.symlink && entry.linkTarget != "") = false := by
+        cases hk : entry.kind with
+        | regular => simp only [hk] at hsym_ok ⊢; simp [bne, hsym_ok]
+        | directory => simp only [hk] at hsym_ok ⊢; simp [bne, hsym_ok]
+        | symlink =>
+          have hb : (EntryKind.symlink != EntryKind.symlink) = false := by decide
+          simp [hb]
+      have hnnul : (hasNulString entry.uname || hasNulString entry.gname) = false := by
+        cases h1 : hasNulString entry.uname <;> cases h2 : hasNulString entry.gname <;> simp_all
+      have hnu64 : (entry.uid ≥ u64Limit || entry.gid ≥ u64Limit ||
+          entry.mtime ≥ u64Limit || entry.data.size ≥ u64Limit) = false := by
+        simp [Nat.not_le_of_lt huid, Nat.not_le_of_lt hgid, Nat.not_le_of_lt hmtime, Nat.not_le_of_lt hsz]
+      unfold validatePackEntry
+      simp only [bind, Except.bind, pure, Except.pure, throw, throwThe, MonadExceptOf.throw, MonadExcept.throw, hv]
+      cases hk : entry.kind <;> simp only [hk] at hsym_ok hndata hnlink ⊢
+      · simp [hndata, hnlink, hnnul, hnu64]
+      · simp [hndata, hnlink, hnnul, hnu64]
+      · cases hs : validateSymlinkTarget opts.allowAbsolute opts.allowParentTraversal
+            (normalizeTarPath .symlink entry.path) entry.linkTarget with
+        | error _ => rw [hs] at hsym_ok; cases hsym_ok
+        | ok _ => simp [hndata, hnlink, hnnul, hnu64]
+
 /-- Full functional specification of `Impl.packWith.go`. -/
 theorem packWith_go_spec (opts : PackOptions) (rest : List TarEntry)
     (seen : List String) (acc : ByteArray) :
@@ -741,198 +835,68 @@ theorem packWith_go_spec (opts : PackOptions) (rest : List TarEntry)
     · intro out hout
       rw [packWith.go.eq_2] at hout
       dsimp only at hout
-      cases hv : validateEntryPath opts.allowAbsolute opts.allowParentTraversal entry.kind entry.path with
+      cases hv : validatePackEntry opts entry with
       | error _ => rw [hv] at hout; cases hout
       | ok normPath =>
-        rw [hv] at hout
-        dsimp only at hout
-        have hnp : normPath = normalizeTarPath entry.kind entry.path :=
-          validateEntryPath_normPath hv
-        have hsym_outer : ∀ u, (match entry.kind with
-            | EntryKind.symlink => validateSymlinkTarget opts.allowAbsolute opts.allowParentTraversal normPath entry.linkTarget
-            | EntryKind.regular | EntryKind.directory => Except.ok ()) = u →
-            (match u with
-            | .error err => Except.error err
-            | .ok () =>
-              if (entry.kind != EntryKind.regular && entry.data.size != 0) = true then
-                Except.error { kind := .invalidHeader, message := "non-regular tar entry cannot have payload data", entryPath := some entry.path }
-              else if (entry.kind != EntryKind.symlink && entry.linkTarget != "") = true then
-                Except.error { kind := .invalidHeader, message := "non-symlink tar entry cannot have linkTarget", entryPath := some entry.path }
-              else if (hasNulString entry.uname || hasNulString entry.gname) = true then
-                Except.error { kind := .invalidHeader, message := "uname/gname cannot contain NUL byte", entryPath := some entry.path }
-              else if (entry.uid ≥ u64Limit || entry.gid ≥ u64Limit || entry.mtime ≥ u64Limit || entry.data.size ≥ u64Limit) = true then
-                Except.error { kind := .sizeOverflow, message := "tar entry numeric field exceeds 2^64 - 1", entryPath := some entry.path }
-              else if seen.contains normPath = true then
-                Except.error { kind := .duplicatePath, message := s!"duplicate tar entry path: {normPath}", entryPath := some normPath }
-              else
-                packWith.go opts tail (normPath :: seen)
-                  (acc ++ encodeEntryBlocks (if opts.deterministic then zeroDeterministicMeta entry else entry) normPath)) = .ok out →
-            (List.all (entry :: tail) (validEntryBool opts.allowAbsolute opts.allowParentTraversal) &&
-              noDupNormalizedPathsBool.go seen (entry :: tail)) = true ∧
-            out = acc ++ List.foldl (fun b e => b ++ encodeEntryBlocks
-              (if opts.deterministic then zeroDeterministicMeta e else e)
-              (normalizeTarPath e.kind e.path)) ByteArray.empty (entry :: tail) ++ (zeroBlock ++ zeroBlock) := by
-          intro u hsym hm
-          cases u with
-          | error _ => cases hm
-          | ok _ =>
-            dsimp only at hm
-            split at hm
-            · cases hm
-            · split at hm
-              · cases hm
-              · split at hm
-                · cases hm
-                · split at hm
-                  · cases hm
-                  · split at hm
-                    · cases hm
-                    · rename_i hndata hnlink hnnul hnu64 hndup
-                      have hve : validEntryBool opts.allowAbsolute opts.allowParentTraversal entry = true := by
-                        unfold validEntryBool
-                        rw [hv]
-                        dsimp only
-                        simp only [Bool.and_eq_true]
-                        refine ⟨⟨?_, ?_⟩, ?_⟩
-                        · cases hk : entry.kind with
-                          | regular =>
-                            simp only [hk] at hnlink ⊢
-                            have hne : (EntryKind.regular != EntryKind.symlink) = true := by decide
-                            cases hl : entry.linkTarget == ""
-                            · exfalso; apply hnlink; rw [hne, Bool.true_and, bne, hl]; rfl
-                            · rfl
-                          | directory =>
-                            simp only [hk] at hnlink ⊢
-                            have hne : (EntryKind.directory != EntryKind.symlink) = true := by decide
-                            cases hl : entry.linkTarget == ""
-                            · exfalso; apply hnlink; rw [hne, Bool.true_and, bne, hl]; rfl
-                            · rfl
-                          | symlink =>
-                            simp only [hk] at hsym ⊢
-                            rw [hsym]
-                        · cases hk : entry.kind with
-                          | regular => rfl
-                          | directory =>
-                            simp only [hk] at hndata ⊢
-                            have hne : (EntryKind.directory != EntryKind.regular) = true := by decide
-                            cases hd : entry.data.size == 0
-                            · exfalso; apply hndata; rw [hne, Bool.true_and, bne, hd]; rfl
-                            · rfl
-                          | symlink =>
-                            simp only [hk] at hndata ⊢
-                            have hne : (EntryKind.symlink != EntryKind.regular) = true := by decide
-                            cases hd : entry.data.size == 0
-                            · exfalso; apply hndata; rw [hne, Bool.true_and, bne, hd]; rfl
-                            · rfl
-                        · have hu_f : hasNulString entry.uname = false := by
-                            cases hc : hasNulString entry.uname <;> simp_all
-                          have hg_f : hasNulString entry.gname = false := by
-                            cases hc : hasNulString entry.gname <;> simp_all
-                          simp only [Bool.or_eq_true, decide_eq_true_eq, not_or, Nat.not_le] at hnu64
-                          have h1_lt : entry.uid < u64Limit := hnu64.1.1.1
-                          have h2_lt : entry.gid < u64Limit := hnu64.1.1.2
-                          have h3_lt : entry.mtime < u64Limit := hnu64.1.2
-                          have h4_lt : entry.data.size < u64Limit := hnu64.2
-                          simp [hu_f, hg_f, h1_lt, h2_lt, h3_lt, h4_lt]
-                      have ⟨hand_t, hout_eq⟩ := (ih (normPath :: seen)
-                        (acc ++ encodeEntryBlocks (if opts.deterministic then zeroDeterministicMeta entry else entry) normPath)).1 out hm
-                      rw [Bool.and_eq_true] at hand_t
-                      rcases hand_t with ⟨hall_t, hnodup_t⟩
-                      have hndup_b : (!seen.contains normPath) = true := by
-                        cases hc : seen.contains normPath <;> simp_all
-                      refine ⟨?_, ?_⟩
-                      · simp only [List.all_cons, noDupNormalizedPathsBool.go.eq_2, Bool.and_eq_true]
-                        rw [← hnp]
-                        exact ⟨⟨hve, hall_t⟩, hndup_b, hnodup_t⟩
-                      · rw [hout_eq]
-                        have hfold : ∀ (init : ByteArray) (xs : List TarEntry),
-                            xs.foldl (fun b e => b ++ encodeEntryBlocks
-                              (if opts.deterministic then zeroDeterministicMeta e else e)
-                              (normalizeTarPath e.kind e.path)) init =
-                            init ++ xs.foldl (fun b e => b ++ encodeEntryBlocks
-                              (if opts.deterministic then zeroDeterministicMeta e else e)
-                              (normalizeTarPath e.kind e.path)) ByteArray.empty := by
-                          intro init xs
-                          induction xs generalizing init with
-                          | nil => simp [ByteArray.append_empty]
-                          | cons x xs ihx =>
-                            simp only [List.foldl_cons, ByteArray.empty_append]
-                            rw [ihx, ihx (encodeEntryBlocks _ _), ByteArray.append_assoc]
-                        have hcons : (entry :: tail).foldl (fun b e => b ++ encodeEntryBlocks
-                              (if opts.deterministic then zeroDeterministicMeta e else e)
-                              (normalizeTarPath e.kind e.path)) ByteArray.empty =
-                            encodeEntryBlocks
-                              (if opts.deterministic then zeroDeterministicMeta entry else entry) normPath ++
-                            tail.foldl (fun b e => b ++ encodeEntryBlocks
-                              (if opts.deterministic then zeroDeterministicMeta e else e)
-                              (normalizeTarPath e.kind e.path)) ByteArray.empty := by
-                          simp only [List.foldl_cons, ByteArray.empty_append, ← hnp]
-                          exact hfold _ tail
-                        rw [hcons]
-                        simp only [ByteArray.append_assoc]
-        exact hsym_outer _ rfl hout
+        rw [hv] at hout; dsimp only at hout
+        have ⟨hnp, hve⟩ := (validatePackEntry_ok_iff opts entry normPath).1 hv
+        split at hout
+        · cases hout
+        · rename_i hndup
+          have ⟨hand_t, hout_eq⟩ := (ih (normPath :: seen)
+            (acc ++ encodeEntryBlocks (if opts.deterministic then zeroDeterministicMeta entry else entry) normPath)).1 out hout
+          rw [Bool.and_eq_true] at hand_t
+          rcases hand_t with ⟨hall_t, hnodup_t⟩
+          have hndup_b : (!seen.contains normPath) = true := by
+            cases hc : seen.contains normPath <;> simp_all
+          refine ⟨?_, ?_⟩
+          · simp only [List.all_cons, noDupNormalizedPathsBool.go.eq_2, Bool.and_eq_true]
+            rw [← hnp]
+            exact ⟨⟨hve, hall_t⟩, hndup_b, hnodup_t⟩
+          · rw [hout_eq]
+            have hfold : ∀ (init : ByteArray) (xs : List TarEntry),
+                xs.foldl (fun b e => b ++ encodeEntryBlocks
+                  (if opts.deterministic then zeroDeterministicMeta e else e)
+                  (normalizeTarPath e.kind e.path)) init =
+                init ++ xs.foldl (fun b e => b ++ encodeEntryBlocks
+                  (if opts.deterministic then zeroDeterministicMeta e else e)
+                  (normalizeTarPath e.kind e.path)) ByteArray.empty := by
+              intro init xs
+              induction xs generalizing init with
+              | nil => simp [ByteArray.append_empty]
+              | cons x xs ihx =>
+                simp only [List.foldl_cons, ByteArray.empty_append]
+                rw [ihx, ihx (encodeEntryBlocks _ _), ByteArray.append_assoc]
+            have hcons : (entry :: tail).foldl (fun b e => b ++ encodeEntryBlocks
+                  (if opts.deterministic then zeroDeterministicMeta e else e)
+                  (normalizeTarPath e.kind e.path)) ByteArray.empty =
+                encodeEntryBlocks
+                  (if opts.deterministic then zeroDeterministicMeta entry else entry) normPath ++
+                tail.foldl (fun b e => b ++ encodeEntryBlocks
+                  (if opts.deterministic then zeroDeterministicMeta e else e)
+                  (normalizeTarPath e.kind e.path)) ByteArray.empty := by
+              simp only [List.foldl_cons, ByteArray.empty_append, ← hnp]
+              exact hfold _ tail
+            rw [hcons]
+            simp only [ByteArray.append_assoc]
     · intro hvalid
       simp only [Bool.and_eq_true, List.all_cons, noDupNormalizedPathsBool.go.eq_2] at hvalid
       rcases hvalid with ⟨⟨hve, hall_t⟩, hndup⟩
-      unfold validEntryBool at hve
-      cases hv : validateEntryPath opts.allowAbsolute opts.allowParentTraversal entry.kind entry.path with
-      | error _ => rw [hv] at hve; cases hve
-      | ok normPath =>
-        rw [hv] at hve
-        dsimp only at hve
-        have hnp : normPath = normalizeTarPath entry.kind entry.path :=
-          validateEntryPath_normPath hv
-        rw [← hnp] at hndup
-        rcases hndup with ⟨hnot_seen, hnodup_t⟩
-        simp only [Bool.and_eq_true] at hve
-        rcases hve with ⟨⟨hsym_ok, hdata_ok⟩, hmeta_ok⟩
-        simp only [decide_eq_true_eq] at hmeta_ok
-        rcases hmeta_ok with ⟨⟨⟨⟨⟨hnul_u, hnul_g⟩, huid⟩, hgid⟩, hmtime⟩, hsz⟩
-        have hndata : (entry.kind != .regular && entry.data.size != 0) = false := by
-          cases hk : entry.kind with
-          | regular =>
-            have hb : (EntryKind.regular != EntryKind.regular) = false := by decide
-            simp [hb]
-          | directory => simp only [hk] at hdata_ok ⊢; simp [bne, hdata_ok]
-          | symlink => simp only [hk] at hdata_ok ⊢; simp [bne, hdata_ok]
-        have hnlink : (entry.kind != .symlink && entry.linkTarget != "") = false := by
-          cases hk : entry.kind with
-          | regular => simp only [hk] at hsym_ok ⊢; simp [bne, hsym_ok]
-          | directory => simp only [hk] at hsym_ok ⊢; simp [bne, hsym_ok]
-          | symlink =>
-            have hb : (EntryKind.symlink != EntryKind.symlink) = false := by decide
-            simp [hb]
-        have hnnul : (hasNulString entry.uname || hasNulString entry.gname) = false := by
-          cases h1 : hasNulString entry.uname <;> cases h2 : hasNulString entry.gname <;> simp_all
-        have hnu64 : (entry.uid ≥ u64Limit || entry.gid ≥ u64Limit ||
-            entry.mtime ≥ u64Limit || entry.data.size ≥ u64Limit) = false := by
-          simp [Nat.not_le_of_lt huid, Nat.not_le_of_lt hgid, Nat.not_le_of_lt hmtime, Nat.not_le_of_lt hsz]
-        have hseen_f : seen.contains normPath = false := by
-          cases hc : seen.contains normPath <;> simp_all
-        have ⟨out, hout⟩ := (ih (normPath :: seen)
-          (acc ++ encodeEntryBlocks (if opts.deterministic then zeroDeterministicMeta entry else entry) normPath)).2
-          (by simp [hall_t, hnodup_t])
-        refine ⟨out, ?_⟩
-        rw [packWith.go.eq_2]
-        dsimp only
-        rw [hv]
-        dsimp only
-        cases hk : entry.kind with
-        | regular =>
-          simp only [hk] at hndata hnlink
-          simp only [hndata, hnlink, hnnul, hnu64, hseen_f, Bool.false_eq_true, ↓reduceIte]
-          exact hout
-        | directory =>
-          simp only [hk] at hndata hnlink
-          simp only [hndata, hnlink, hnnul, hnu64, hseen_f, Bool.false_eq_true, ↓reduceIte]
-          exact hout
-        | symlink =>
-          simp only [hk] at hsym_ok hndata hnlink
-          cases hs : validateSymlinkTarget opts.allowAbsolute opts.allowParentTraversal normPath entry.linkTarget with
-          | error _ => rw [hs] at hsym_ok; cases hsym_ok
-          | ok _ =>
-            simp only [hndata, hnlink, hnnul, hnu64, hseen_f, Bool.false_eq_true, ↓reduceIte]
-            exact hout
+      let normPath := normalizeTarPath entry.kind entry.path
+      have hv : validatePackEntry opts entry = .ok normPath :=
+        (validatePackEntry_ok_iff opts entry normPath).2 ⟨rfl, hve⟩
+      rcases hndup with ⟨hnot_seen, hnodup_t⟩
+      have hseen_f : seen.contains normPath = false := by
+        dsimp only [normPath]
+        cases hc : seen.contains (normalizeTarPath entry.kind entry.path) <;> simp_all
+      have ⟨out, hout⟩ := (ih (normPath :: seen)
+        (acc ++ encodeEntryBlocks (if opts.deterministic then zeroDeterministicMeta entry else entry) normPath)).2
+        (by simp [hall_t, normPath, hnodup_t])
+      refine ⟨out, ?_⟩
+      rw [packWith.go.eq_2, hv]
+      dsimp only
+      simp only [hseen_f, Bool.false_eq_true, ↓reduceIte]
+      exact hout
 
 /-- Prove `test_tar_packWith_iffValidArchive` for `defaultApi`. -/
 theorem allPass_packWith_iffValidArchive :
@@ -945,7 +909,7 @@ theorem allPass_packWith_iffValidArchive :
     refine ⟨?_, trivial⟩
     exact ((packWith_go_spec opts entries [] ByteArray.empty).1 out h).1
   | error err =>
-    refine ⟨⟨?_, by simpa using packWith_go_nonEmptyMsg opts entries [] ByteArray.empty h⟩, trivial⟩
+    refine ⟨⟨?_, packWith_nonEmptyMsg opts entries h⟩, trivial⟩
     intro hv
     unfold Impl.packWith at h
     have ⟨out, hout⟩ := (packWith_go_spec opts entries [] ByteArray.empty).2 hv

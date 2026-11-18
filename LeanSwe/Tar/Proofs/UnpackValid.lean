@@ -2,7 +2,7 @@ import LeanSwe.Tar.SpecTests
 import LeanSwe.Tar.Interface
 import LeanSwe.Tar.Proofs.ByteModel
 import LeanSwe.Tar.Proofs.FieldCodecs
-import LeanSwe.Tar.Proofs.Headers
+import LeanSwe.Tar.Proofs.HeaderLayout
 import LeanSwe.Tar.Proofs.PackValid
 
 namespace LeanSwe.Tar.Proofs
@@ -103,28 +103,46 @@ private theorem fromUTF8?_eq_some_toUTF8 {bs : ByteArray} {s : String}
 private theorem extractCStringBytes_no_zero (bytes : ByteArray) (start stop : Nat)
     {j : Nat} (hj : j < (extractCStringBytes bytes start stop).size) :
     (extractCStringBytes bytes start stop)[j]'hj ≠ 0 := by
-  have hfind : ∀ i, start ≤ i →
+  have hfind : ∀ rem i, rem + i = stop → start ≤ i →
       (∀ k, start ≤ k → k < i → ∀ hk : k < bytes.size, bytes[k]'hk ≠ 0) →
-      extractCStringBytes.findNul bytes stop i ≤ stop ∧
-      (∀ k, start ≤ k → k < extractCStringBytes.findNul bytes stop i → ∀ hk : k < bytes.size, bytes[k]'hk ≠ 0) := by
-    intro i hsi hk
-    fun_induction extractCStringBytes.findNul bytes stop i with
-    | case1 => exact ⟨by omega, fun k hk1 hk2 hkbd => hk k hk1 (by omega) hkbd⟩
-    | case2 => exact ⟨by omega, fun k hk1 hk2 hkbd => hk k hk1 (by omega) hkbd⟩
-    | case3 i hnotge hbd hnz ih =>
-      refine ih (by omega) ?_
-      intro k hk1 hk2 hkbd
-      rcases Nat.lt_or_eq_of_le (Nat.lt_succ_iff.mp hk2) with hlt | rfl
-      · exact hk k hk1 hlt hkbd
-      · exact fun heq => hnz (beq_iff_eq.mpr heq)
-    | case4 => exact ⟨by omega, fun k hk1 hk2 hkbd => hk k hk1 (by omega) hkbd⟩
-  have hprop := hfind start (Nat.le_refl _) (fun k hk1 hk2 _ => absurd hk2 (Nat.not_lt_of_ge hk1))
+      extractCStringBytes.findNul bytes stop rem i ≤ stop ∧
+      (∀ k, start ≤ k → k < extractCStringBytes.findNul bytes stop rem i → ∀ hk : k < bytes.size, bytes[k]'hk ≠ 0) := by
+    intro rem
+    induction rem with
+    | zero =>
+      intro i hsum hsi hk
+      rw [extractCStringBytes.findNul.eq_1]
+      exact ⟨by omega, fun k hk1 hk2 hkbd => hk k hk1 (by omega) hkbd⟩
+    | succ d ih =>
+      intro i hsum hsi hk
+      rw [extractCStringBytes.findNul.eq_2]
+      split
+      · rename_i hbd
+        split
+        · exact ⟨by omega, fun k hk1 hk2 hkbd => hk k hk1 (by omega) hkbd⟩
+        · rename_i hnz
+          refine ih (i + 1) (by omega) (by omega) ?_
+          intro k hk1 hk2 hkbd
+          rcases Nat.lt_or_eq_of_le (Nat.lt_succ_iff.mp hk2) with hlt | rfl
+          · exact hk k hk1 hlt hkbd
+          · exact fun heq => hnz (beq_iff_eq.mpr heq)
+      · exact ⟨by omega, fun k hk1 hk2 hkbd => hk k hk1 (by omega) hkbd⟩
+  have hss : start ≤ stop := by
+    by_cases hle : start ≤ stop
+    · exact hle
+    · exfalso
+      have h0 : stop - start = 0 := by omega
+      have hj' := hj
+      unfold extractCStringBytes at hj'
+      rw [h0, extractCStringBytes.findNul.eq_1, ByteArray.size_extract] at hj'
+      omega
+  have hprop := hfind (stop - start) start (by omega) (Nat.le_refl _) (fun k hk1 hk2 _ => absurd hk2 (Nat.not_lt_of_ge hk1))
   unfold extractCStringBytes at hj ⊢
   rw [ByteArray.getElem_extract]
   have hbd : start + j < bytes.size := by
     rw [ByteArray.size_extract] at hj
     omega
-  have hlt : start + j < extractCStringBytes.findNul bytes stop start := by
+  have hlt : start + j < extractCStringBytes.findNul bytes stop (stop - start) start := by
     rw [ByteArray.size_extract] at hj
     omega
   exact hprop.2 (start + j) (Nat.le_add_right _ _) hlt hbd
@@ -468,27 +486,27 @@ private theorem applyPaxKey_invariants (ov nextOv : PaxOverrides) (key val : Str
                       fun m hm => by cases hm; exact hparseMtime n hn⟩
                 · cases happly; exact hov
 
-private theorem parsePaxPayload_go_invariants (pax : ByteArray) (offset pos : Nat)
+/-- Validity invariant on parsed PAX overrides: NUL-free `uname`/`gname` and numeric bounds `< u64Limit`. -/
+def PaxOverrides.Valid (ov : PaxOverrides) : Prop :=
+  (!hasNulString (ov.uname?.getD "") = true) ∧
+  (!hasNulString (ov.gname?.getD "") = true) ∧
+  (∀ n, ov.uid? = some n → n < u64Limit) ∧
+  (∀ n, ov.gid? = some n → n < u64Limit) ∧
+  (∀ n, ov.size? = some n → n < u64Limit) ∧
+  (∀ n, ov.mtime? = some n → n < u64Limit)
+
+private theorem parsePaxPayload_go_invariants (pax : ByteArray) (offset rem pos : Nat)
     (seenKeys : List String) (ov resOv : PaxOverrides)
-    (hov : (!hasNulString (ov.uname?.getD "") = true) ∧
-      (!hasNulString (ov.gname?.getD "") = true) ∧
-      (∀ n, ov.uid? = some n → n < u64Limit) ∧
-      (∀ n, ov.gid? = some n → n < u64Limit) ∧
-      (∀ n, ov.size? = some n → n < u64Limit) ∧
-      (∀ n, ov.mtime? = some n → n < u64Limit))
-    (hpax : parsePaxPayload.go pax offset pos seenKeys ov = .ok resOv) :
-    (!hasNulString (resOv.uname?.getD "") = true) ∧
-    (!hasNulString (resOv.gname?.getD "") = true) ∧
-    (∀ n, resOv.uid? = some n → n < u64Limit) ∧
-    (∀ n, resOv.gid? = some n → n < u64Limit) ∧
-    (∀ n, resOv.size? = some n → n < u64Limit) ∧
-    (∀ n, resOv.mtime? = some n → n < u64Limit) := by
-  fun_induction parsePaxPayload.go pax offset pos seenKeys ov with
+    (hov : PaxOverrides.Valid ov)
+    (hpax : parsePaxPayload.go pax offset rem pos seenKeys ov = .ok resOv) :
+    PaxOverrides.Valid resOv := by
+  fun_induction parsePaxPayload.go pax offset rem pos seenKeys ov with
   | case1 => cases hpax; exact hov
-  | case14 =>
-    rename_i happly ih
-    exact ih (applyPaxKey_invariants _ _ _ _ _ hov happly) hpax
-  | _ => cases hpax
+  | case2 => cases hpax; exact hov
+  | _ =>
+    first
+    | cases hpax
+    | (rename_i happly ih; exact ih (applyPaxKey_invariants _ _ _ _ _ hov happly) hpax)
 
 private theorem parseUstarNumeric_lt (bytes : ByteArray) (start stop offset : Nat)
     (allowAllEmpty : Bool) (limit : Nat) (fieldName : String) (val : Nat)
@@ -496,7 +514,7 @@ private theorem parseUstarNumeric_lt (bytes : ByteArray) (start stop offset : Na
     val < limit := by
   unfold parseUstarNumeric at h
   dsimp only at h
-  cases hraw : (bytes.extract start stop).toList with
+  cases hraw : (bytes.extract start stop).data.toList with
   | nil => rw [hraw] at h; cases h
   | cons b0 rest =>
     rw [hraw] at h
@@ -523,6 +541,7 @@ private theorem parseUstarHeader_u64 (bytes : ByteArray) (offset : Nat) (hdr : U
     (h : parseUstarHeader bytes offset = .ok hdr) :
     hdr.uid < u64Limit ∧ hdr.gid < u64Limit ∧ hdr.size < u64Limit ∧ hdr.mtime < u64Limit := by
   unfold parseUstarHeader at h
+  simp only [bind, Except.bind, pure, Except.pure, throw, throwThe, MonadExceptOf.throw, MonadExcept.throw] at h
   split at h
   · cases h
   · split at h
@@ -551,151 +570,150 @@ private theorem parseUstarHeader_u64 (bytes : ByteArray) (offset : Nat) (hdr : U
                     parseUstarNumeric_lt _ _ _ _ _ _ _ _ hpos hsize,
                     parseUstarNumeric_lt _ _ _ _ _ _ _ _ hpos hmtime⟩
 
-private theorem unpackLoop_valid (opts : UnpackOptions) (bytes : ByteArray) (offset : Nat)
+private theorem unpackLoopFuel_valid (fuel : Nat) (opts : UnpackOptions) (bytes : ByteArray) (offset : Nat)
     (pendingPax : Option PaxOverrides) (seen : List String)
     (acc : List TarEntry) (totalBytes : Nat) (res : List TarEntry)
-    (hpax_ok : ∀ ov, pendingPax = some ov →
-      (!hasNulString (ov.uname?.getD "") = true) ∧
-      (!hasNulString (ov.gname?.getD "") = true) ∧
-      (∀ n, ov.uid? = some n → n < u64Limit) ∧
-      (∀ n, ov.gid? = some n → n < u64Limit) ∧
-      (∀ n, ov.size? = some n → n < u64Limit) ∧
-      (∀ n, ov.mtime? = some n → n < u64Limit))
+    (hpax_ok : ∀ ov, pendingPax = some ov → PaxOverrides.Valid ov)
     (hacc_valid : ∀ e ∈ acc, validEntryBool opts.allowAbsolute opts.allowParentTraversal e = true)
     (hseen_eq : seen = acc.map (fun e => normalizeTarPath e.kind e.path))
     (hacc_pw : (acc.map (fun e => normalizeTarPath e.kind e.path)).Pairwise (· ≠ ·))
     (hacc_len : acc.length ≤ opts.maxEntries)
     (htot_eq : totalDataBytes acc = totalBytes)
     (htot_le : totalBytes ≤ opts.maxTotalBytes)
-    (hrun : unpackLoop opts bytes offset pendingPax seen acc totalBytes = .ok res) :
+    (hrun : unpackLoopFuel fuel opts bytes offset pendingPax seen acc totalBytes = .ok res) :
     ValidArchive opts.allowAbsolute opts.allowParentTraversal res ∧
     res.length ≤ opts.maxEntries ∧
     totalDataBytes res ≤ opts.maxTotalBytes := by
-  fun_induction unpackLoop opts bytes offset pendingPax seen acc totalBytes with
-  | case1 => cases hrun
-  | case2 => cases hrun
-  | case3 offset pendingPax seen acc totalBytes _ resDone hstep =>
-    unfold unpackStep at hstep
-    split at hstep
-    · cases hstep
-    · split at hstep
-      · split at hstep
-        · cases hstep
-        · split at hstep
+  induction fuel generalizing offset pendingPax seen acc totalBytes with
+  | zero => rw [unpackLoopFuel.eq_1] at hrun; cases hrun
+  | succ fuel' ih =>
+    rw [unpackLoopFuel.eq_2] at hrun
+    split at hrun
+    · cases hrun
+    · cases hstep : unpackStep opts bytes offset pendingPax seen acc totalBytes with
+      | error _ => rw [hstep] at hrun; cases hrun
+      | ok step =>
+        cases step with
+        | done resDone =>
+          simp only [hstep] at hrun
+          unfold unpackStep at hstep
+          split at hstep
           · cases hstep
           · split at hstep
-            · cases hstep
-            · split at hstep
-              · cases hstep
-              · cases hstep
-                cases hrun
-                refine ⟨?_, ?_, ?_⟩
-                · unfold ValidArchive validArchiveBool
-                  rw [Bool.and_eq_true, List.all_eq_true, noDupNormalizedPathsBool,
-                    noDupNormalizedPathsBool_go_iff_pairwise]
-                  refine ⟨fun e he => hacc_valid e (List.mem_reverse.mp he), ?_, fun _ h _ => by contradiction⟩
-                  rw [List.map_reverse, List.pairwise_reverse]
-                  refine List.Pairwise.imp (fun {a b} hne => hne.symm) hacc_pw
-                · simpa using hacc_len
-                · rw [totalDataBytes_reverse, htot_eq]; exact htot_le
-      · split at hstep
-        · cases hstep
-        · split at hstep
-          · cases hstep
-          · split at hstep
-            · by_cases hps : pendingPax.isSome = true
-              · simp [hps] at hstep
-              · simp only [hps, Bool.false_eq_true, ↓reduceIte] at hstep
-                split at hstep
-                · cases hstep
-                · split at hstep
-                  · cases hstep
-                  · split at hstep <;> cases hstep
-            · split at hstep
-              · cases hstep
-              · cases hstep
-  | case4 offset pendingPax seen acc totalBytes _ nextOffset nextPax nextSeen nextAcc nextTotal hstep hgt ih =>
-    unfold unpackStep at hstep
-    split at hstep
-    · cases hstep
-    · split at hstep
-      · split at hstep
-        · cases hstep
-        · split at hstep
-          · cases hstep
-          · split at hstep
-            · cases hstep
-            · split at hstep
-              · cases hstep
-              · cases hstep
-      · split at hstep
-        · cases hstep
-        · split at hstep
-          · cases hstep
-          · rename_i hparse_hdr
-            split at hstep
             · split at hstep
               · cases hstep
               · split at hstep
                 · cases hstep
-                · dsimp only at hstep
-                  split at hstep
+                · split at hstep
                   · cases hstep
                   · split at hstep
                     · cases hstep
-                    · rename_i hpax_parse
-                      cases hstep
-                      have hpax_empty : (!hasNulString (({} : PaxOverrides).uname?.getD "") = true) ∧
-                          (!hasNulString (({} : PaxOverrides).gname?.getD "") = true) ∧
-                          (∀ n, ({} : PaxOverrides).uid? = some n → n < u64Limit) ∧
-                          (∀ n, ({} : PaxOverrides).gid? = some n → n < u64Limit) ∧
-                          (∀ n, ({} : PaxOverrides).size? = some n → n < u64Limit) ∧
-                          (∀ n, ({} : PaxOverrides).mtime? = some n → n < u64Limit) := by
-                        simp [hasNulString, hasNulChars]
-                      have hpax_res := parsePaxPayload_go_invariants _ _ _ _ _ _ hpax_empty hpax_parse
-                      exact ih (fun ov hov => by cases hov; exact hpax_res)
-                        hacc_valid hseen_eq hacc_pw hacc_len htot_eq htot_le hrun
+                    · cases hstep
+                      cases hrun
+                      refine ⟨?_, ?_, ?_⟩
+                      · unfold ValidArchive validArchiveBool
+                        rw [Bool.and_eq_true, List.all_eq_true, noDupNormalizedPathsBool,
+                          noDupNormalizedPathsBool_go_iff_pairwise]
+                        refine ⟨fun e he => hacc_valid e (List.mem_reverse.mp he), ?_, fun _ h _ => by contradiction⟩
+                        rw [List.map_reverse, List.pairwise_reverse]
+                        refine List.Pairwise.imp (fun {a b} hne => hne.symm) hacc_pw
+                      · simpa using hacc_len
+                      · rw [totalDataBytes_reverse, htot_eq]; exact htot_le
             · split at hstep
               · cases hstep
-              · rename_i entry padded hdec
-                cases hstep
-                have hhdr_ok := parseUstarHeader_u64 _ _ _ hparse_hdr
-                have ⟨hve, hnorm_id, hnot_seen, hle_e, hle_b, _⟩ :=
-                  decodeTarEntry_valid opts bytes offset _ pendingPax seen acc.length totalBytes
-                    entry padded hpax_ok hhdr_ok hdec
-                have hacc_valid' : ∀ e ∈ entry :: acc, validEntryBool opts.allowAbsolute opts.allowParentTraversal e = true := by
-                  intro e he
-                  rcases List.mem_cons.mp he with rfl | he_acc
-                  · exact hve
-                  · exact hacc_valid e he_acc
-                have hseen_eq' : (entry.path :: seen) =
-                    (entry :: acc).map (fun e => normalizeTarPath e.kind e.path) := by
-                  simp [hnorm_id, hseen_eq]
-                have hacc_pw' : ((entry :: acc).map (fun e => normalizeTarPath e.kind e.path)).Pairwise (· ≠ ·) := by
-                  simp only [List.map_cons, List.pairwise_cons, hnorm_id]
-                  refine ⟨?_, hacc_pw⟩
-                  intro x hx heq
-                  rw [← hseen_eq] at hx
-                  have hc := List.contains_iff_mem.mpr (heq ▸ hx)
-                  rw [hc] at hnot_seen
-                  cases hnot_seen
-                have htot_eq' : totalDataBytes (entry :: acc) = totalBytes + entry.data.size := by
-                  unfold totalDataBytes
-                  simp only [List.foldl_cons, Nat.zero_add]
-                  have hfold : ∀ (init : Nat) (xs : List TarEntry),
-                      xs.foldl (fun a x => a + x.data.size) init =
-                      init + xs.foldl (fun a x => a + x.data.size) 0 := by
-                    intro init xs
-                    induction xs generalizing init with
-                    | nil => simp
-                    | cons x xs ihx =>
-                      simp only [List.foldl_cons, Nat.zero_add]
-                      rw [ihx (init + x.data.size), ihx x.data.size, Nat.add_assoc]
-                  rw [hfold entry.data.size acc]
-                  have hacc_tot : acc.foldl (fun a x => a + x.data.size) 0 = totalBytes := htot_eq
-                  omega
-                exact ih (fun ov hov => by cases hov) hacc_valid' hseen_eq' hacc_pw' hle_e htot_eq' hle_b hrun
-  | case5 => cases hrun
+              · split at hstep
+                · cases hstep
+                · split at hstep
+                  · by_cases hps : pendingPax.isSome = true
+                    · simp [hps] at hstep
+                    · simp only [hps, Bool.false_eq_true, ↓reduceIte] at hstep
+                      split at hstep
+                      · cases hstep
+                      · split at hstep
+                        · cases hstep
+                        · split at hstep <;> cases hstep
+                  · split at hstep
+                    · cases hstep
+                    · cases hstep
+        | cont nextOffset nextPax nextSeen nextAcc nextTotal =>
+          simp only [hstep] at hrun
+          split at hrun
+          · unfold unpackStep at hstep
+            split at hstep
+            · cases hstep
+            · split at hstep
+              · split at hstep
+                · cases hstep
+                · split at hstep
+                  · cases hstep
+                  · split at hstep
+                    · cases hstep
+                    · split at hstep
+                      · cases hstep
+                      · cases hstep
+              · split at hstep
+                · cases hstep
+                · split at hstep
+                  · cases hstep
+                  · rename_i hparse_hdr
+                    split at hstep
+                    · split at hstep
+                      · cases hstep
+                      · split at hstep
+                        · cases hstep
+                        · dsimp only at hstep
+                          split at hstep
+                          · cases hstep
+                          · split at hstep
+                            · cases hstep
+                            · rename_i hpax_parse
+                              cases hstep
+                              have hpax_empty : PaxOverrides.Valid {} := by
+                                simp [PaxOverrides.Valid, hasNulString, hasNulChars]
+                              have hpax_res := parsePaxPayload_go_invariants _ _ _ _ _ _ _ hpax_empty hpax_parse
+                              exact ih _ _ _ _ _ (fun ov hov => by cases hov; exact hpax_res)
+                                hacc_valid hseen_eq hacc_pw hacc_len htot_eq htot_le hrun
+                    · split at hstep
+                      · cases hstep
+                      · rename_i entry padded hdec
+                        cases hstep
+                        have hhdr_ok := parseUstarHeader_u64 _ _ _ hparse_hdr
+                        have ⟨hve, hnorm_id, hnot_seen, hle_e, hle_b, _⟩ :=
+                          decodeTarEntry_valid opts bytes offset _ pendingPax seen acc.length totalBytes
+                            entry padded hpax_ok hhdr_ok hdec
+                        have hacc_valid' : ∀ e ∈ entry :: acc, validEntryBool opts.allowAbsolute opts.allowParentTraversal e = true := by
+                          intro e he
+                          rcases List.mem_cons.mp he with rfl | he_acc
+                          · exact hve
+                          · exact hacc_valid e he_acc
+                        have hseen_eq' : (entry.path :: seen) =
+                            (entry :: acc).map (fun e => normalizeTarPath e.kind e.path) := by
+                          simp [hnorm_id, hseen_eq]
+                        have hacc_pw' : ((entry :: acc).map (fun e => normalizeTarPath e.kind e.path)).Pairwise (· ≠ ·) := by
+                          simp only [List.map_cons, List.pairwise_cons, hnorm_id]
+                          refine ⟨?_, hacc_pw⟩
+                          intro x hx heq
+                          rw [← hseen_eq] at hx
+                          have hc := List.contains_iff_mem.mpr (heq ▸ hx)
+                          rw [hc] at hnot_seen
+                          cases hnot_seen
+                        have htot_eq' : totalDataBytes (entry :: acc) = totalBytes + entry.data.size := by
+                          unfold totalDataBytes
+                          simp only [List.foldl_cons, Nat.zero_add]
+                          have hfold : ∀ (init : Nat) (xs : List TarEntry),
+                              xs.foldl (fun a x => a + x.data.size) init =
+                              init + xs.foldl (fun a x => a + x.data.size) 0 := by
+                            intro init xs
+                            induction xs generalizing init with
+                            | nil => simp
+                            | cons x xs ihx =>
+                              simp only [List.foldl_cons, Nat.zero_add]
+                              rw [ihx (init + x.data.size), ihx x.data.size, Nat.add_assoc]
+                          rw [hfold entry.data.size acc]
+                          have hacc_tot : acc.foldl (fun a x => a + x.data.size) 0 = totalBytes := htot_eq
+                          omega
+                        exact ih _ _ _ _ _ (fun ov hov => by cases hov) hacc_valid' hseen_eq' hacc_pw' hle_e htot_eq' hle_b hrun
+          · cases hrun
 
 /-- Prove `test_tar_unpackWith_returnsValidArchiveWithinLimits` for `defaultApi`. -/
 theorem allPass_unpackWith_returnsValidArchiveWithinLimits :
@@ -709,7 +727,8 @@ theorem allPass_unpackWith_returnsValidArchiveWithinLimits :
     unfold Impl.unpackWith at h
     split at h
     · cases h
-    · have ⟨hv, hl, ht⟩ := unpackLoop_valid opts bytes 0 none [] [] 0 entries
+    · unfold unpackLoop at h
+      have ⟨hv, hl, ht⟩ := unpackLoopFuel_valid (bytes.size - 0 + 1) opts bytes 0 none [] [] 0 entries
         (fun _ hov => by cases hov) (fun _ hmem => by contradiction) rfl
         List.Pairwise.nil (Nat.zero_le _) rfl (Nat.zero_le _) h
       exact ⟨hv, hl, ht, trivial⟩
