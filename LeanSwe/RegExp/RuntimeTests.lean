@@ -165,6 +165,39 @@ def runAll : IO Unit := do
   | .ok (some sp) =>
     assertTrue (sp.matched == "a") s!"lazy plus should match minimal 'a', got {sp.matched}"
   | other => throw (IO.userError s!"unexpected lazy findFirst: {repr other}")
+  assertErrKind (testPattern "(((((((*" "a") .invalidSyntax "deep parens leading quantifier invalidSyntax"
+  assertErrKind (testPattern "(((((([]" "a") .invalidSyntax "deep parens empty class invalidSyntax"
+  assertErrKind (testPattern "((((((a**" "a") .invalidSyntax "deep parens extra quantifier invalidSyntax"
+  assertErrKind (testPattern "((((((a" "a") .unexpectedEof "deep parens unclosed unexpectedEof"
+  assertOkEq (testPattern "((((((a))))))" "a") true "deep valid parens match"
+  match findAll "(a*?)*" "ab" with
+  | .ok xs =>
+    assertTrue (xs.map (·.matched) == #["a", "", ""]) s!"unexpected (a*?)* on ab: {repr xs}"
+  | .error e => throw (IO.userError s!"unexpected (a*?)* error: {e.message}")
+  match findAll "(a*?)+" "baab" with
+  | .ok xs =>
+    assertTrue (xs.map (·.matched) == #["", "aa", "", ""]) s!"unexpected (a*?)+ on baab: {repr xs}"
+  | .error e => throw (IO.userError s!"unexpected (a*?)+ error: {e.message}")
+  match findAll "(a*?){1,}" "ab" with
+  | .ok xs =>
+    assertTrue (xs.map (·.matched) == #["a", "", ""]) s!"unexpected (a*?)\{1,} on ab: {repr xs}"
+  | .error e => throw (IO.userError s!"unexpected (a*?)\{1,} error: {e.message}")
+  match findAll "((a*?)*)*" "ab" with
+  | .ok xs =>
+    assertTrue (xs.map (·.matched) == #["a", "", ""]) s!"unexpected ((a*?)*)* on ab: {repr xs}"
+  | .error e => throw (IO.userError s!"unexpected ((a*?)*)* error: {e.message}")
+  match findAll "(?:|a*?)*" "ab" with
+  | .ok xs =>
+    assertTrue (xs.map (·.matched) == #["a", "", ""]) s!"unexpected (?:|a*?)* on ab: {repr xs}"
+  | .error e => throw (IO.userError s!"unexpected (?:|a*?)* error: {e.message}")
+  match findAll "(a*?b?)*" "baab" with
+  | .ok xs =>
+    assertTrue (xs.map (·.matched) == #["baab", ""]) s!"unexpected (a*?b?)* on baab: {repr xs}"
+  | .error e => throw (IO.userError s!"unexpected (a*?b?)* error: {e.message}")
+  match findAll "(b?a*?)*" "baab" with
+  | .ok xs =>
+    assertTrue (xs.map (·.matched) == #["baab", ""]) s!"unexpected (b?a*?)* on baab: {repr xs}"
+  | .error e => throw (IO.userError s!"unexpected (b?a*?)* error: {e.message}")
   Core.runRegisteredErrorTests registeredErrorTests
   IO.println "PASS: LeanSwe.RegExp runtime tests"
 

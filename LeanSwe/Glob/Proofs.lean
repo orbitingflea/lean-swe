@@ -394,4 +394,901 @@ theorem reach_glob_escape_matchesSelf :
     CanReach (test_glob_escape_matchesSelf defaultApi) :=
   ⟨"a/*/b", proof_glob_escape_matchesSelf "a/*/b"⟩
 
+private def toModelItem : Internal.CharClassItem → Model.ClassItem
+  | .single c => .single c
+  | .range lo hi => .range lo hi
+
+private def toModelClass (cc : Internal.CharClass) : Model.CharClass :=
+  { negated := cc.negated, items := cc.items.map toModelItem }
+
+private def toModelAtom : Internal.SegAtom → Model.Atom
+  | .lit c => .lit c
+  | .anyChar => .any
+  | .star => .star
+  | .charClass cc => .charClass (toModelClass cc)
+
+private def toModelSeg : Internal.SegmentPat → Model.Segment
+  | .globStar => .globStar
+  | .atoms xs => .atoms (xs.map toModelAtom)
+
+private theorem splitOnChar_slash_eq_splitSlash (cs : List Char) :
+    Internal.splitOnChar '/' cs = Model.splitSlash cs := by
+  induction cs with
+  | nil => rfl
+  | cons c rest ih =>
+    simp only [Internal.splitOnChar, Model.splitSlash, ih]
+    split <;> rfl
+
+private theorem escapeChars_eq_model (cs : List Char) :
+    Internal.escapeChars cs = Model.escapeCharsModel cs := by
+  induction cs with
+  | nil => rfl
+  | cons c rest ih =>
+    simp only [Internal.escapeChars, Model.escapeCharsModel, ih]
+
+private theorem matchClassItems_eq_any (c : Char) (items : List Internal.CharClassItem) :
+    Internal.matchClassItems c items = (items.map toModelItem).any (Model.classItemMatches c) := by
+  induction items with
+  | nil => rfl
+  | cons it rest ih =>
+    cases it <;> simp [Internal.matchClassItems, Model.classItemMatches, toModelItem, ih]
+
+private theorem matchCharClass_eq_model (cc : Internal.CharClass) (c : Char) :
+    Internal.matchCharClass cc c = Model.charClassMatches (toModelClass cc) c := by
+  simp [Internal.matchCharClass, Model.charClassMatches, toModelClass, matchClassItems_eq_any]
+
+private theorem matchSegAtoms_star_eq (atoms : List Internal.SegAtom) (cs : List Char)
+    (ih : ∀ cs', Internal.matchSegAtoms atoms cs' = Model.evalSeg (atoms.map toModelAtom) cs') :
+    Internal.matchSegAtoms (.star :: atoms) cs =
+      Model.evalSeg (.star :: atoms.map toModelAtom) cs := by
+  induction cs with
+  | nil =>
+    simp only [Internal.matchSegAtoms, Model.evalSeg, Model.evalSegStar]
+    exact ih []
+  | cons c rest ihCs =>
+    simp only [Internal.matchSegAtoms, Model.evalSeg, Model.evalSegStar] at ihCs ⊢
+    rw [ih (c :: rest), ihCs]
+
+private theorem matchSegAtoms_eq_evalSeg (atoms : List Internal.SegAtom) (cs : List Char) :
+    Internal.matchSegAtoms atoms cs = Model.evalSeg (atoms.map toModelAtom) cs := by
+  induction atoms generalizing cs with
+  | nil =>
+    cases cs <;> simp [Internal.matchSegAtoms, Model.evalSeg]
+  | cons a rest ih =>
+    cases a with
+    | lit p =>
+      cases cs with
+      | nil => simp [Internal.matchSegAtoms, Model.evalSeg, toModelAtom]
+      | cons c tl => simp [Internal.matchSegAtoms, Model.evalSeg, toModelAtom, ih tl]
+    | anyChar =>
+      cases cs with
+      | nil => simp [Internal.matchSegAtoms, Model.evalSeg, toModelAtom]
+      | cons c tl => simp [Internal.matchSegAtoms, Model.evalSeg, toModelAtom, ih tl]
+    | charClass cc =>
+      cases cs with
+      | nil => simp [Internal.matchSegAtoms, Model.evalSeg, toModelAtom]
+      | cons c tl =>
+        simp [Internal.matchSegAtoms, Model.evalSeg, toModelAtom, matchCharClass_eq_model, ih tl]
+    | star =>
+      exact matchSegAtoms_star_eq rest cs ih
+
+private theorem evalSegStar_congr {f g : List Char → Bool} (hfg : ∀ cs, f cs = g cs) (cs : List Char) :
+    Model.evalSegStar f cs = Model.evalSegStar g cs := by
+  induction cs with
+  | nil => exact hfg []
+  | cons c rest ih => simp [Model.evalSegStar, hfg (c :: rest), ih]
+
+private theorem evalSeg_star_congr {a1 a2 : List Model.Atom}
+    (ha : ∀ cs, Model.evalSeg a1 cs = Model.evalSeg a2 cs) (cs : List Char) :
+    Model.evalSeg (.star :: a1) cs = Model.evalSeg (.star :: a2) cs := by
+  simp only [Model.evalSeg]
+  exact evalSegStar_congr ha cs
+
+private theorem evalSeg_star_star (xs : List Model.Atom) (cs : List Char) :
+    Model.evalSeg (.star :: .star :: xs) cs = Model.evalSeg (.star :: xs) cs := by
+  apply Bool.eq_iff_iff.mpr
+  simp only [Model.evalSeg_eq_true_iff]
+  constructor
+  · intro h
+    cases h with
+    | star pre1 suf1 hs1 =>
+      cases hs1 with
+      | star pre2 suf2 hs2 =>
+        simpa [List.append_assoc] using Model.MatchSeg.star (pre1 ++ pre2) suf2 hs2
+  · intro h
+    cases h with
+    | star pre suf hs =>
+      exact Model.MatchSeg.star [] (pre ++ suf) (Model.MatchSeg.star pre suf hs)
+
+private theorem matchSegPats_globStar_eq (pats : List Internal.SegmentPat) (segs : List (List Char))
+    (ih : ∀ segs', Internal.matchSegPats pats segs' = Model.evalPath (pats.map toModelSeg) segs') :
+    Internal.matchSegPats (.globStar :: pats) segs =
+      Model.evalPath (.globStar :: pats.map toModelSeg) segs := by
+  induction segs with
+  | nil =>
+    simp only [Internal.matchSegPats, Model.evalPath, Model.evalPathGlobStar]
+    exact ih []
+  | cons s rest ihS =>
+    simp only [Internal.matchSegPats, Model.evalPath, Model.evalPathGlobStar] at ihS ⊢
+    rw [ih (s :: rest), ihS]
+
+private theorem matchSegPats_eq_evalPath (pats : List Internal.SegmentPat) (segs : List (List Char)) :
+    Internal.matchSegPats pats segs = Model.evalPath (pats.map toModelSeg) segs := by
+  induction pats generalizing segs with
+  | nil =>
+    cases segs <;> simp [Internal.matchSegPats, Model.evalPath]
+  | cons p rest ih =>
+    cases p with
+    | atoms a =>
+      cases segs with
+      | nil => simp [Internal.matchSegPats, Model.evalPath, toModelSeg]
+      | cons s ss =>
+        simp [Internal.matchSegPats, Model.evalPath, toModelSeg, matchSegAtoms_eq_evalSeg, ih ss]
+    | globStar =>
+      exact matchSegPats_globStar_eq rest segs ih
+
+private theorem evalPathGlobStar_congr {f g : List (List Char) → Bool}
+    (hfg : ∀ segs, f segs = g segs) (segs : List (List Char)) :
+    Model.evalPathGlobStar f segs = Model.evalPathGlobStar g segs := by
+  induction segs with
+  | nil => exact hfg []
+  | cons s rest ih => simp [Model.evalPathGlobStar, hfg (s :: rest), ih]
+
+private theorem evalPath_globStar_congr {p1 p2 : List Model.Segment}
+    (hp : ∀ segs, Model.evalPath p1 segs = Model.evalPath p2 segs) (segs : List (List Char)) :
+    Model.evalPath (.globStar :: p1) segs = Model.evalPath (.globStar :: p2) segs := by
+  simp only [Model.evalPath]
+  exact evalPathGlobStar_congr hp segs
+
+private theorem evalPath_globStar_globStar (xs : List Model.Segment) (segs : List (List Char)) :
+    Model.evalPath (.globStar :: .globStar :: xs) segs = Model.evalPath (.globStar :: xs) segs := by
+  apply Bool.eq_iff_iff.mpr
+  simp only [Model.evalPath_eq_true_iff]
+  constructor
+  · intro h
+    cases h with
+    | globStar pre1 suf1 hs1 =>
+      cases hs1 with
+      | globStar pre2 suf2 hs2 =>
+        simpa [List.append_assoc] using Model.MatchPath.globStar (pre1 ++ pre2) suf2 hs2
+  · intro h
+    cases h with
+    | globStar pre suf hs =>
+      exact Model.MatchPath.globStar [] (pre ++ suf) (Model.MatchPath.globStar pre suf hs)
+
+private theorem model_parseClassAfter_nonDash (neg : Bool) (acc : List Model.ClassItem)
+    (lo : Char) (cs : List Char) (hNotDash : ∀ tl, cs ≠ '-' :: tl) :
+    Model.parseClassAfter neg acc lo cs = Model.parseClass neg (.single lo :: acc) cs := by
+  cases cs with
+  | nil => rfl
+  | cons c rest =>
+    by_cases hcDash : c = '-'
+    · exact absurd (hcDash ▸ rfl) (hNotDash rest)
+    · by_cases hcRbr : c = ']'
+      · subst hcRbr
+        rfl
+      · by_cases hcBs : c = '\\'
+        · subst hcBs
+          cases rest with
+          | nil => rfl
+          | cons lo2 tail => rfl
+        · unfold Model.parseClassAfter Model.parseClass
+          simp [hcBs]
+
+private def ClassItemsMatch (neg : Bool) (acc : List Internal.CharClassItem)
+    (cs : List Char) : Prop :=
+  match Internal.parseClassItems cs acc with
+  | .error e => Model.parseClass neg (acc.map toModelItem) cs = .error e.kind
+  | .ok (items, ⟨r, _⟩) =>
+    Model.parseClass neg (acc.map toModelItem) cs =
+      (Model.parseAtoms r).map
+        (Model.Atom.charClass { negated := neg, items := items.map toModelItem } :: ·)
+
+private theorem parseClassItems_match_aux (n : Nat) :
+    ∀ (cs : List Char), cs.length ≤ n → ∀ neg acc, ClassItemsMatch neg acc cs := by
+  induction n using Nat.strongRecOn with
+  | ind n ih =>
+    intro cs hLen neg acc
+    unfold ClassItemsMatch
+    rw [Internal.parseClassItems.eq_def]
+    cases cs with
+    | nil =>
+      simp [Internal.classUnclosedErr, Model.parseClass]
+    | cons c rest =>
+      by_cases hcRbr : c = ']'
+      · subst hcRbr
+        by_cases hEmpty : acc.isEmpty = true
+        · simp [hEmpty, Internal.classEmptyErr, Model.parseClass]
+        · have hEmpty' : acc.isEmpty = false := Bool.eq_false_iff.mpr hEmpty
+          have hAccNonEmpty : (acc.map toModelItem).isEmpty = false := by
+            cases acc with
+            | nil => simp at hEmpty
+            | cons _ _ => rfl
+          have hMapRev : (acc.map toModelItem).reverse = acc.reverse.map toModelItem :=
+            (List.map_reverse (f := toModelItem) (l := acc)).symm
+          simp only [hEmpty', hAccNonEmpty, Bool.false_eq_true, ↓reduceIte, Model.parseClass, hMapRev]
+      · have hParseStep :
+            Model.parseClass neg (acc.map toModelItem) (c :: rest) =
+              match Internal.readClassAtom (c :: rest) with
+              | .error e => .error e.kind
+              | .ok (lo, ⟨afterLo, _⟩) => Model.parseClassAfter neg (acc.map toModelItem) lo afterLo := by
+          by_cases hcBs : c = '\\'
+          · subst hcBs
+            cases rest with
+            | nil => simp [Internal.readClassAtom, Internal.trailingEscapeErr, Model.parseClass]
+            | cons lo tail => simp [Internal.readClassAtom, Model.parseClass]
+          · unfold Internal.readClassAtom Model.parseClass
+            simp [hcBs]
+        cases hAtom : Internal.readClassAtom (c :: rest) with
+        | error e =>
+          simp only [bind, Except.bind, hAtom] at hParseStep ⊢
+          exact hParseStep
+        | ok p =>
+          rcases p with ⟨lo, ⟨afterLo, hLo⟩⟩
+          simp only [bind, Except.bind, hAtom] at hParseStep ⊢
+          clear hAtom
+          revert hLo hParseStep
+          cases hAfter : afterLo with
+          | nil =>
+            intro hLo hParseStep
+            rw [hParseStep]
+            have hND : ∀ tl, ([] : List Char) ≠ '-' :: tl := by intro _ h; cases h
+            rw [model_parseClassAfter_nonDash neg (acc.map toModelItem) lo [] hND]
+            have hRec := ih 0 (by rw [List.length_cons] at hLen hLo; omega) [] (Nat.le_refl 0) neg (.single lo :: acc)
+            unfold ClassItemsMatch at hRec
+            simp only [pure, Except.pure, List.map_cons, toModelItem] at hRec ⊢
+            cases hRes : Internal.parseClassItems [] (.single lo :: acc) with
+            | error e => rw [hRes] at hRec; exact hRec
+            | ok q => rw [hRes] at hRec; exact hRec
+          | cons d afterRest =>
+            intro hLo hParseStep
+            have hStep : (d :: afterRest).length < n := by
+              simp only [List.length_cons] at hLen hLo ⊢
+              omega
+            by_cases hdDash : d = '-'
+            · subst hdDash
+              cases afterRest with
+              | nil =>
+                rw [hParseStep]
+                simp [Internal.readClassAtom, Internal.classUnclosedErr,
+                  Model.parseClassAfter, Model.parseClassRange]
+              | cons e afterRest2 =>
+                by_cases heRbr : e = ']'
+                · subst heRbr
+                  rw [hParseStep]
+                  have hItems :
+                      (Model.ClassItem.single '-' :: Model.ClassItem.single lo :: acc.map toModelItem).reverse =
+                        (Internal.CharClassItem.single '-' :: Internal.CharClassItem.single lo :: acc).reverse.map
+                          toModelItem := by
+                    simp [List.map_reverse, toModelItem]
+                  simp only [Model.parseClassAfter, Model.parseClassRange, hItems]
+                · have hRangeStep :
+                      Model.parseClassAfter neg (acc.map toModelItem) lo ('-' :: e :: afterRest2) =
+                        match Internal.readClassAtom (e :: afterRest2) with
+                        | .error err => .error err.kind
+                        | .ok (hi, ⟨afterHi, _⟩) =>
+                          if lo ≤ hi then
+                            Model.parseClass neg (.range lo hi :: acc.map toModelItem) afterHi
+                          else
+                            .error .invalidRange := by
+                    by_cases heBs : e = '\\'
+                    · subst heBs
+                      cases afterRest2 with
+                      | nil =>
+                        simp [Internal.readClassAtom, Internal.trailingEscapeErr,
+                          Model.parseClassAfter, Model.parseClassRange]
+                      | cons hi tail =>
+                        simp [Internal.readClassAtom, Model.parseClassAfter, Model.parseClassRange]
+                    · unfold Internal.readClassAtom Model.parseClassAfter Model.parseClassRange
+                      simp [heBs]
+                  rw [hParseStep, hRangeStep]
+                  split
+                  · rename_i _ errRes heq
+                    split at heq
+                    · rename_i heq1
+                      injection heq1 with _ h2
+                      injection h2 with he
+                      exact absurd he heRbr
+                    · rename_i rest2 _ heqRest
+                      injection heqRest with _ hRestEq
+                      subst hRestEq
+                      cases hHiAtom : Internal.readClassAtom (e :: afterRest2) with
+                      | error err =>
+                        rw [hHiAtom] at heq
+                        injection heq with hErr
+                        subst hErr
+                        rfl
+                      | ok q =>
+                        rcases q with ⟨hi, ⟨afterHi, hHi⟩⟩
+                        rw [hHiAtom] at heq
+                        by_cases hRng : lo ≤ hi
+                        · simp only [hRng, ↓reduceIte] at heq
+                          have hSub : afterHi.length < n := by
+                            simp only [List.length_cons] at hLo hHi hLen
+                            omega
+                          have hRec := ih afterHi.length hSub afterHi (Nat.le_refl _)
+                            neg (.range lo hi :: acc)
+                          unfold ClassItemsMatch at hRec
+                          simp only [List.map_cons, toModelItem] at hRec
+                          cases hRes : Internal.parseClassItems afterHi (.range lo hi :: acc) with
+                          | error err2 =>
+                            rw [hRes] at heq hRec
+                            dsimp only [bind, Except.bind] at heq
+                            injection heq with hErr
+                            subst hErr
+                            simpa [hRng] using hRec
+                          | ok res =>
+                            rw [hRes] at heq
+                            dsimp only [bind, Except.bind, pure, Except.pure] at heq
+                            cases heq
+                        · simp only [hRng, ↓reduceIte] at heq
+                          injection heq with hErr
+                          subst hErr
+                          simp [hRng, Internal.invalidRangeErr]
+                    · rename_i hNotRange
+                      exact absurd rfl (hNotRange (e :: afterRest2))
+                  · rename_i _ items r hProp heq
+                    split at heq
+                    · rename_i heq1
+                      injection heq1 with _ h2
+                      injection h2 with he
+                      exact absurd he heRbr
+                    · rename_i rest2 _ heqRest
+                      injection heqRest with _ hRestEq
+                      subst hRestEq
+                      cases hHiAtom : Internal.readClassAtom (e :: afterRest2) with
+                      | error err => rw [hHiAtom] at heq; cases heq
+                      | ok q =>
+                        rcases q with ⟨hi, ⟨afterHi, hHi⟩⟩
+                        rw [hHiAtom] at heq
+                        by_cases hRng : lo ≤ hi
+                        · simp only [hRng, ↓reduceIte] at heq
+                          have hSub : afterHi.length < n := by
+                            simp only [List.length_cons] at hLo hHi hLen
+                            omega
+                          have hRec := ih afterHi.length hSub afterHi (Nat.le_refl _)
+                            neg (.range lo hi :: acc)
+                          unfold ClassItemsMatch at hRec
+                          simp only [List.map_cons, toModelItem] at hRec
+                          cases hRes : Internal.parseClassItems afterHi (.range lo hi :: acc) with
+                          | error err2 =>
+                            rw [hRes] at heq
+                            dsimp only [bind, Except.bind] at heq
+                            cases heq
+                          | ok res =>
+                            rw [hRes] at heq hRec
+                            dsimp only [bind, Except.bind, pure, Except.pure] at heq
+                            injection heq with hPair
+                            cases hPair
+                            simpa [hRng] using hRec
+                        · simp only [hRng, ↓reduceIte] at heq
+                          cases heq
+                    · rename_i hNotRange
+                      exact absurd rfl (hNotRange (e :: afterRest2))
+            · rw [hParseStep]
+              have hND : ∀ tl, (d :: afterRest) ≠ '-' :: tl := by
+                intro _ h; injection h with hd; exact hdDash hd
+              rw [model_parseClassAfter_nonDash neg (acc.map toModelItem) lo (d :: afterRest) hND]
+              have hRec := ih (d :: afterRest).length hStep (d :: afterRest) (Nat.le_refl _)
+                neg (.single lo :: acc)
+              unfold ClassItemsMatch at hRec
+              simp only [pure, Except.pure, List.map_cons, toModelItem] at hRec ⊢
+              split
+              · rename_i _ errRes heq
+                split at heq
+                · rename_i heq1; injection heq1 with hd; exact absurd hd hdDash
+                · rename_i heq1; injection heq1 with hd; exact absurd hd hdDash
+                · cases hRes : Internal.parseClassItems (d :: afterRest) (.single lo :: acc) with
+                  | error e =>
+                    rw [hRes] at heq hRec
+                    injection heq with hErr
+                    subst hErr
+                    exact hRec
+                  | ok res =>
+                    rw [hRes] at heq
+                    cases heq
+              · rename_i _ items r hProp heq
+                split at heq
+                · rename_i heq1; injection heq1 with hd; exact absurd hd hdDash
+                · rename_i heq1; injection heq1 with hd; exact absurd hd hdDash
+                · cases hRes : Internal.parseClassItems (d :: afterRest) (.single lo :: acc) with
+                  | error e => rw [hRes] at heq; cases heq
+                  | ok res =>
+                    rw [hRes] at heq hRec
+                    injection heq with hPair
+                    cases hPair
+                    exact hRec
+
+private theorem parseClassItems_match (neg : Bool) (acc : List Internal.CharClassItem)
+    (cs : List Char) : ClassItemsMatch neg acc cs :=
+  parseClassItems_match_aux cs.length cs (Nat.le_refl _) neg acc
+
+private def modelParseClass (cs : List Char) : Except GlobErrorKind (List Model.Atom) :=
+  match cs with
+  | '!' :: tail => Model.parseClass true [] tail
+  | other => Model.parseClass false [] other
+
+private def CharClassMatch (cs : List Char) : Prop :=
+  match Internal.parseCharClass cs with
+  | .error e => modelParseClass cs = .error e.kind
+  | .ok (cc, r) => modelParseClass cs = (Model.parseAtoms r.1).map (.charClass (toModelClass cc) :: ·)
+
+private theorem internal_parseCharClass_nonBang (d : Char) (tail : List Char) (hd : d ≠ '!') :
+    Internal.parseCharClass (d :: tail) =
+      match Internal.parseClassItems (d :: tail) [] with
+      | .error err => .error err
+      | .ok (items, r) => .ok ({ negated := false, items }, r) := by
+  unfold Internal.parseCharClass
+  simp [hd]
+  cases Internal.parseClassItems (d :: tail) [] <;> rfl
+
+private theorem parseCharClass_match (cs : List Char) : CharClassMatch cs := by
+  unfold CharClassMatch modelParseClass
+  cases cs with
+  | nil =>
+    unfold Internal.parseCharClass
+    have h := parseClassItems_match false [] []
+    unfold ClassItemsMatch at h
+    simp only [List.map_nil, bind, Except.bind, pure, Except.pure] at h ⊢
+    cases hRes : Internal.parseClassItems [] [] with
+    | error e => simp only [hRes] at h ⊢; exact h
+    | ok res => simp only [hRes, toModelClass] at h ⊢; exact h
+  | cons d tail =>
+    by_cases hdBang : d = '!'
+    · subst hdBang
+      unfold Internal.parseCharClass
+      have h := parseClassItems_match true [] tail
+      unfold ClassItemsMatch at h
+      simp only [List.map_nil, bind, Except.bind, pure, Except.pure] at h ⊢
+      cases hRes : Internal.parseClassItems tail [] with
+      | error e => simp only [hRes] at h ⊢; exact h
+      | ok res => simp only [hRes, toModelClass] at h ⊢; exact h
+    · rw [internal_parseCharClass_nonBang d tail hdBang]
+      have h := parseClassItems_match false [] (d :: tail)
+      unfold ClassItemsMatch at h
+      simp only [List.map_nil] at h
+      have hModel :
+          (match d :: tail with
+          | '!' :: t => Model.parseClass true [] t
+          | other => Model.parseClass false [] other) =
+            Model.parseClass false [] (d :: tail) := by
+        split
+        · rename_i t heq
+          injection heq with hd
+          exact absurd hd hdBang
+        · rfl
+      rw [hModel]
+      cases hRes : Internal.parseClassItems (d :: tail) [] with
+      | error e => simp only [hRes] at h ⊢; exact h
+      | ok res => simp only [hRes, toModelClass] at h ⊢; exact h
+
+private theorem parseCharClass_len_le {cs : List Char} {cc : Internal.CharClass}
+    {r : List Char} {hr : r.length ≤ cs.length}
+    (_h : Internal.parseCharClass cs = .ok (cc, ⟨r, hr⟩)) :
+    r.length ≤ cs.length := hr
+
+private theorem model_parseAtoms_lbracket (rest : List Char) :
+    Model.parseAtoms ('[' :: rest) = modelParseClass rest := by
+  cases rest with
+  | nil => rfl
+  | cons d tail =>
+    by_cases hdBang : d = '!'
+    · subst hdBang; rfl
+    · unfold modelParseClass
+      rw [Model.parseAtoms.eq_def]
+      split
+      · rename_i heq; cases heq
+      · rename_i heq; cases heq
+      · rename_i heq; cases heq
+      · rename_i heq; cases heq
+      · rename_i heq; cases heq
+      · rename_i heq; injection heq with _ h2; injection h2 with h3; exact absurd h3 hdBang
+      · rename_i heq
+        injection heq with _ hr
+        subst hr
+        split
+        · rename_i h; injection h with hd; exact absurd hd hdBang
+        · rfl
+      · rename_i hNot heq
+        injection heq with hc hr
+        subst hc hr
+        exact absurd rfl hNot
+
+private theorem internal_parseAtoms_lbracket (rest : List Char) :
+    Internal.parseAtoms ('[' :: rest) =
+      (do
+        let (cc, ⟨after, _⟩) ← Internal.parseCharClass rest
+        let tail ← Internal.parseAtoms after
+        pure (Internal.SegAtom.charClass cc :: tail)) := by
+  rw [Internal.parseAtoms.eq_def]; rfl
+
+private theorem internal_parseAtoms_lit (c : Char) (rest : List Char)
+    (hBs : c ≠ '\\') (hStar : c ≠ '*') (hQ : c ≠ '?') (hLbr : c ≠ '[') :
+    Internal.parseAtoms (c :: rest) = (Internal.parseAtoms rest).map (.lit c :: ·) := by
+  rw [Internal.parseAtoms.eq_def]
+  split <;> rename_i heq <;> first
+    | (cases heq; done)
+    | (injection heq with hc; first
+        | exact absurd hc hBs
+        | exact absurd hc hStar
+        | exact absurd hc hQ
+        | exact absurd hc hLbr)
+    | (injection heq with hc hr; subst hc hr
+       simp only [bind, Except.bind, pure, Except.pure, Except.map])
+
+private theorem model_parseAtoms_lit (c : Char) (rest : List Char)
+    (hBs : c ≠ '\\') (hStar : c ≠ '*') (hQ : c ≠ '?') (hLbr : c ≠ '[') :
+    Model.parseAtoms (c :: rest) = (Model.parseAtoms rest).map (.lit c :: ·) := by
+  rw [Model.parseAtoms.eq_def]
+  split <;> rename_i heq <;> first
+    | (cases heq; done)
+    | (injection heq with hc; first
+        | exact absurd hc hBs
+        | exact absurd hc hStar
+        | exact absurd hc hQ
+        | exact absurd hc hLbr)
+    | (injection heq with hc hr; subst hc hr; rfl)
+
+private def AtomsMatch (cs : List Char) : Prop :=
+  match Internal.parseAtoms cs, Model.parseAtoms cs with
+  | .error e, .error k => e.kind = k
+  | .ok a1, .ok a2 => ∀ s, Internal.matchSegAtoms a1 s = Model.evalSeg a2 s
+  | _, _ => False
+
+private theorem parseAtoms_match_aux (n : Nat) :
+    ∀ cs : List Char, cs.length ≤ n → AtomsMatch cs := by
+  induction n using Nat.strongRecOn with
+  | ind n ih =>
+    intro cs hLen
+    unfold AtomsMatch
+    rw [Internal.parseAtoms.eq_def]
+    cases cs with
+    | nil =>
+      simp only [Model.parseAtoms]
+      intro s
+      cases s <;> simp [Internal.matchSegAtoms, Model.evalSeg]
+    | cons c rest =>
+      by_cases hcBs : c = '\\'
+      · subst hcBs
+        cases rest with
+        | nil => simp [Internal.trailingEscapeErr, Model.parseAtoms]
+        | cons d tail =>
+          have hSub : tail.length < n := by rw [List.length_cons, List.length_cons] at hLen; omega
+          have hRec := ih tail.length hSub tail (Nat.le_refl _)
+          unfold AtomsMatch at hRec
+          simp only [Model.parseAtoms, bind, Except.bind, pure, Except.pure, Except.map] at hRec ⊢
+          cases h1 : Internal.parseAtoms tail with
+          | error e1 =>
+            cases h2 : Model.parseAtoms tail with
+            | error k2 => simp only [h1, h2] at hRec ⊢; exact hRec
+            | ok a2 => simp only [h1, h2] at hRec
+          | ok a1 =>
+            cases h2 : Model.parseAtoms tail with
+            | error k2 => simp only [h1, h2] at hRec
+            | ok a2 =>
+              simp only [h1, h2] at hRec ⊢
+              intro s
+              cases s with
+              | nil => simp [Internal.matchSegAtoms, Model.evalSeg]
+              | cons ch cs' =>
+                simp [Internal.matchSegAtoms, Model.evalSeg, hRec cs']
+      · by_cases hcStar : c = '*'
+        · subst hcStar
+          have hSub : rest.length < n := by rw [List.length_cons] at hLen; omega
+          have hRec := ih rest.length hSub rest (Nat.le_refl _)
+          unfold AtomsMatch at hRec
+          simp only [Model.parseAtoms, bind, Except.bind, pure, Except.pure, Except.map] at hRec ⊢
+          cases h1 : Internal.parseAtoms rest with
+          | error e1 =>
+            cases h2 : Model.parseAtoms rest with
+            | error k2 => simp only [h1, h2] at hRec ⊢; exact hRec
+            | ok a2 => simp only [h1, h2] at hRec
+          | ok a1 =>
+            cases h2 : Model.parseAtoms rest with
+            | error k2 => simp only [h1, h2] at hRec
+            | ok a2 =>
+              simp only [h1, h2] at hRec ⊢
+              cases a1 with
+              | nil =>
+                intro s
+                rw [matchSegAtoms_eq_evalSeg]
+                simp only [List.map_cons, toModelAtom]
+                exact evalSeg_star_congr (fun s' => by rw [← matchSegAtoms_eq_evalSeg]; exact hRec s') s
+              | cons hd tl =>
+                cases hd with
+                | star =>
+                  intro s
+                  have hCongr := @evalSeg_star_congr ((Internal.SegAtom.star :: tl).map toModelAtom) a2
+                    (fun s' => (matchSegAtoms_eq_evalSeg _ s').symm.trans (hRec s')) s
+                  simp only [List.map_cons, toModelAtom] at hCongr
+                  rw [evalSeg_star_star] at hCongr
+                  exact (matchSegAtoms_eq_evalSeg _ s).trans hCongr
+                | _ =>
+                  intro s
+                  rw [matchSegAtoms_eq_evalSeg]
+                  simp only [List.map_cons, toModelAtom]
+                  exact evalSeg_star_congr (fun s' =>
+                    (matchSegAtoms_eq_evalSeg _ s').symm.trans (hRec s')) s
+        · by_cases hcQ : c = '?'
+          · subst hcQ
+            have hSub : rest.length < n := by rw [List.length_cons] at hLen; omega
+            have hRec := ih rest.length hSub rest (Nat.le_refl _)
+            unfold AtomsMatch at hRec
+            simp only [Model.parseAtoms, bind, Except.bind, pure, Except.pure, Except.map] at hRec ⊢
+            cases h1 : Internal.parseAtoms rest with
+            | error e1 =>
+              cases h2 : Model.parseAtoms rest with
+              | error k2 => simp only [h1, h2] at hRec ⊢; exact hRec
+              | ok a2 => simp only [h1, h2] at hRec
+            | ok a1 =>
+              cases h2 : Model.parseAtoms rest with
+              | error k2 => simp only [h1, h2] at hRec
+              | ok a2 =>
+                simp only [h1, h2] at hRec ⊢
+                intro s
+                cases s with
+                | nil => simp [Internal.matchSegAtoms, Model.evalSeg]
+                | cons ch cs' => simp [Internal.matchSegAtoms, Model.evalSeg, hRec cs']
+          · by_cases hcLbr : c = '['
+            · subst hcLbr
+              have hCC := parseCharClass_match rest
+              unfold CharClassMatch at hCC
+              rw [← Internal.parseAtoms.eq_def, internal_parseAtoms_lbracket,
+                model_parseAtoms_lbracket]
+              cases hRes : Internal.parseCharClass rest with
+              | error e =>
+                rw [hRes] at hCC
+                dsimp only at hCC ⊢
+                simp only [bind, Except.bind]
+                rw [hCC]
+              | ok q =>
+                rcases q with ⟨cc, ⟨after, hAfter⟩⟩
+                rw [hRes] at hCC
+                dsimp only at hCC ⊢
+                have hLenAfter : after.length < n := by
+                  rw [List.length_cons] at hLen
+                  omega
+                have hRec := ih after.length hLenAfter after (Nat.le_refl _)
+                unfold AtomsMatch at hRec
+                rw [hCC]
+                simp only [bind, Except.bind, pure, Except.pure, Except.map]
+                cases h1 : Internal.parseAtoms after with
+                | error e1 =>
+                  cases h2 : Model.parseAtoms after with
+                  | error k2 => rw [h1, h2] at hRec; exact hRec
+                  | ok a2 => rw [h1, h2] at hRec; try exact False.elim hRec
+                | ok a1 =>
+                  cases h2 : Model.parseAtoms after with
+                  | error k2 => rw [h1, h2] at hRec; try exact False.elim hRec
+                  | ok a2 =>
+                    rw [h1, h2] at hRec
+                    intro s
+                    cases s with
+                    | nil => simp [Internal.matchSegAtoms, Model.evalSeg]
+                    | cons ch cs' =>
+                      simp [Internal.matchSegAtoms, Model.evalSeg, matchCharClass_eq_model, hRec cs']
+            · have hSub : rest.length < n := by rw [List.length_cons] at hLen; omega
+              have hRec := ih rest.length hSub rest (Nat.le_refl _)
+              unfold AtomsMatch at hRec
+              rw [← Internal.parseAtoms.eq_def, internal_parseAtoms_lit c rest hcBs hcStar hcQ hcLbr,
+                model_parseAtoms_lit c rest hcBs hcStar hcQ hcLbr]
+              simp only [Except.map]
+              cases h1 : Internal.parseAtoms rest with
+              | error e1 =>
+                cases h2 : Model.parseAtoms rest with
+                | error k2 => rw [h1, h2] at hRec; exact hRec
+                | ok a2 => rw [h1, h2] at hRec; try exact False.elim hRec
+              | ok a1 =>
+                cases h2 : Model.parseAtoms rest with
+                | error k2 => rw [h1, h2] at hRec; try exact False.elim hRec
+                | ok a2 =>
+                  rw [h1, h2] at hRec
+                  intro s
+                  cases s with
+                  | nil => simp [Internal.matchSegAtoms, Model.evalSeg]
+                  | cons ch cs' => simp [Internal.matchSegAtoms, Model.evalSeg, hRec cs']
+
+private theorem parseAtoms_match (cs : List Char) : AtomsMatch cs :=
+  parseAtoms_match_aux cs.length cs (Nat.le_refl _)
+
+private def SegMatch (seg : List Char) : Prop :=
+  match Internal.parseSegment seg, Model.parseSegment seg with
+  | .error e, .error k => e.kind = k
+  | .ok .globStar, .ok .globStar => True
+  | .ok (.atoms a1), .ok (.atoms a2) => ∀ s, Internal.matchSegAtoms a1 s = Model.evalSeg a2 s
+  | _, _ => False
+
+private theorem parseSegment_match (seg : List Char) : SegMatch seg := by
+  unfold SegMatch Internal.parseSegment Model.parseSegment
+  by_cases hGS : (seg == ['*', '*']) = true
+  · simp [hGS]
+  · simp only [hGS, Bool.false_eq_true, ↓reduceIte, Except.map]
+    have h := parseAtoms_match seg
+    unfold AtomsMatch at h
+    cases h1 : Internal.parseAtoms seg with
+    | error e1 =>
+      cases h2 : Model.parseAtoms seg with
+      | error k2 => rw [h1, h2] at h; exact h
+      | ok a2 => rw [h1, h2] at h; exact False.elim h
+    | ok a1 =>
+      cases h2 : Model.parseAtoms seg with
+      | error k2 => rw [h1, h2] at h; exact False.elim h
+      | ok a2 => rw [h1, h2] at h; exact h
+
+private def SegListMatch (segs : List (List Char)) : Prop :=
+  match Internal.parseSegList segs, Model.parseSegments segs with
+  | .error e, .error k => e.kind = k
+  | .ok ps1, .ok ps2 => ∀ ss, Internal.matchSegPats ps1 ss = Model.evalPath ps2 ss
+  | _, _ => False
+
+private theorem parseSegList_match (segs : List (List Char)) : SegListMatch segs := by
+  induction segs with
+  | nil =>
+    unfold SegListMatch
+    intro ss
+    cases ss <;> simp [Internal.matchSegPats, Model.evalPath]
+  | cons seg rest ih =>
+    unfold SegListMatch at ih ⊢
+    simp only [Internal.parseSegList, Model.parseSegments, bind, Except.bind, pure, Except.pure]
+    have hSeg := parseSegment_match seg
+    unfold SegMatch at hSeg
+    cases hp1 : Internal.parseSegment seg with
+    | error e1 =>
+      cases hp2 : Model.parseSegment seg with
+      | error k2 => rw [hp1, hp2] at hSeg; exact hSeg
+      | ok p2 => rw [hp1, hp2] at hSeg; try exact False.elim hSeg
+    | ok p1 =>
+      cases hp2 : Model.parseSegment seg with
+      | error k2 =>
+        rw [hp1, hp2] at hSeg
+        cases p1 <;> exact False.elim hSeg
+      | ok p2 =>
+        rw [hp1, hp2] at hSeg
+        cases hps1 : Internal.parseSegList rest with
+        | error e1 =>
+          cases hps2 : Model.parseSegments rest with
+          | error k2 => rw [hps1, hps2] at ih; exact ih
+          | ok ps2 => rw [hps1, hps2] at ih; exact False.elim ih
+        | ok ps1 =>
+          cases hps2 : Model.parseSegments rest with
+          | error k2 => rw [hps1, hps2] at ih; exact False.elim ih
+          | ok ps2 =>
+            rw [hps1, hps2] at ih
+            dsimp only at ih
+            cases p1 with
+            | globStar =>
+              cases p2 with
+              | atoms _ => exact False.elim hSeg
+              | globStar =>
+                cases ps1 with
+                | nil =>
+                  intro ss
+                  rw [matchSegPats_eq_evalPath]
+                  simp only [List.map_cons, toModelSeg]
+                  exact evalPath_globStar_congr (fun ss' => by
+                    rw [← matchSegPats_eq_evalPath]; exact ih ss') ss
+                | cons hd tl =>
+                  cases hd with
+                  | globStar =>
+                    intro ss
+                    have hCongr := @evalPath_globStar_congr ((Internal.SegmentPat.globStar :: tl).map toModelSeg) ps2
+                      (fun ss' => (matchSegPats_eq_evalPath _ ss').symm.trans (ih ss')) ss
+                    simp only [List.map_cons, toModelSeg] at hCongr
+                    rw [evalPath_globStar_globStar] at hCongr
+                    exact (matchSegPats_eq_evalPath _ ss).trans hCongr
+                  | atoms _ =>
+                    intro ss
+                    rw [matchSegPats_eq_evalPath]
+                    simp only [List.map_cons, toModelSeg]
+                    exact evalPath_globStar_congr (fun ss' =>
+                      (matchSegPats_eq_evalPath _ ss').symm.trans (ih ss')) ss
+            | atoms a1 =>
+              cases p2 with
+              | globStar => exact False.elim hSeg
+              | atoms a2 =>
+                intro ss
+                cases ss with
+                | nil => simp [Internal.matchSegPats, Model.evalPath]
+                | cons s ss' =>
+                  simp only [Internal.matchSegPats, Model.evalPath]
+                  rw [hSeg s, ih ss']
+
+private theorem compilePattern_match (pat : String) :
+    match Internal.compilePattern pat, Model.parsePattern pat with
+    | .error e, .error k => e.kind = k
+    | .ok ps1, .ok ps2 => ∀ ss, Internal.matchSegPats ps1 ss = Model.evalPath ps2 ss
+    | _, _ => False := by
+  simp only [Internal.compilePattern, Model.parsePattern, splitOnChar_slash_eq_splitSlash]
+  exact parseSegList_match (Model.splitSlash pat.toList)
+
+/-- Proof of `test_glob_validate_matchesModel` for `defaultApi`. -/
+theorem proof_glob_validate_matchesModel :
+    AllPass (test_glob_validate_matchesModel defaultApi) := by
+  intro pat
+  have h := compilePattern_match pat
+  simp only [defaultApi, validate, Internal.validate, Model.validateModel,
+    bind, Except.bind, pure, Except.pure, Except.map]
+  cases hc : Internal.compilePattern pat with
+  | error e =>
+    cases hm : Model.parsePattern pat with
+    | error k => rw [hc, hm] at h; exact ⟨⟨h, compilePattern_err_ne_empty hc⟩, trivial⟩
+    | ok ps2 => rw [hc, hm] at h; exact False.elim h
+  | ok ps1 =>
+    cases hm : Model.parsePattern pat with
+    | error k => rw [hc, hm] at h; exact False.elim h
+    | ok ps2 => exact ⟨trivial, trivial⟩
+
+/-- Proof of `test_glob_isMatch_matchesModel` for `defaultApi`. -/
+theorem proof_glob_isMatch_matchesModel :
+    AllPass (test_glob_isMatch_matchesModel defaultApi) := by
+  intro pat path
+  have h := compilePattern_match pat
+  simp only [defaultApi, isMatch, Internal.isMatch, Model.isMatchModel,
+    splitOnChar_slash_eq_splitSlash, bind, Except.bind, pure, Except.pure, Except.map]
+  cases hc : Internal.compilePattern pat with
+  | error e =>
+    cases hm : Model.parsePattern pat with
+    | error k => rw [hc, hm] at h; exact ⟨⟨h, compilePattern_err_ne_empty hc⟩, trivial⟩
+    | ok ps2 => rw [hc, hm] at h; exact False.elim h
+  | ok ps1 =>
+    cases hm : Model.parsePattern pat with
+    | error k => rw [hc, hm] at h; exact False.elim h
+    | ok ps2 => rw [hc, hm] at h; exact ⟨h (Model.splitSlash path.toList), trivial⟩
+
+/-- Proof of `test_glob_filter_matchesModel` for `defaultApi`. -/
+theorem proof_glob_filter_matchesModel :
+    AllPass (test_glob_filter_matchesModel defaultApi) := by
+  intro pat paths
+  have h := compilePattern_match pat
+  simp only [defaultApi, filter, Internal.filter, Internal.filterCompiled, Model.filterModel,
+    splitOnChar_slash_eq_splitSlash, bind, Except.bind, pure, Except.pure, Except.map]
+  cases hc : Internal.compilePattern pat with
+  | error e =>
+    cases hm : Model.parsePattern pat with
+    | error k => rw [hc, hm] at h; exact ⟨⟨h, compilePattern_err_ne_empty hc⟩, trivial⟩
+    | ok ps2 => rw [hc, hm] at h; exact False.elim h
+  | ok ps1 =>
+    cases hm : Model.parsePattern pat with
+    | error k => rw [hc, hm] at h; exact False.elim h
+    | ok ps2 =>
+      rw [hc, hm] at h
+      have hEq : (paths.filter fun p => Internal.matchSegPats ps1 (Model.splitSlash p.toList)) =
+          (paths.filter fun p => Model.evalPath ps2 (Model.splitSlash p.toList)) := by
+        congr 1
+        funext p
+        exact h (Model.splitSlash p.toList)
+      exact ⟨hEq, trivial⟩
+
+/-- Proof of `test_glob_countMatches_matchesModel` for `defaultApi`. -/
+theorem proof_glob_countMatches_matchesModel :
+    AllPass (test_glob_countMatches_matchesModel defaultApi) := by
+  intro pat paths
+  have h := compilePattern_match pat
+  simp only [defaultApi, countMatches, Internal.countMatches, Internal.filter,
+    Internal.filterCompiled, Model.countMatchesModel, Model.filterModel,
+    splitOnChar_slash_eq_splitSlash, bind, Except.bind, pure, Except.pure, Except.map]
+  cases hc : Internal.compilePattern pat with
+  | error e =>
+    cases hm : Model.parsePattern pat with
+    | error k => rw [hc, hm] at h; exact ⟨⟨h, compilePattern_err_ne_empty hc⟩, trivial⟩
+    | ok ps2 => rw [hc, hm] at h; exact False.elim h
+  | ok ps1 =>
+    cases hm : Model.parsePattern pat with
+    | error k => rw [hc, hm] at h; exact False.elim h
+    | ok ps2 =>
+      rw [hc, hm] at h
+      have hEq : (paths.filter fun p => Internal.matchSegPats ps1 (Model.splitSlash p.toList)) =
+          (paths.filter fun p => Model.evalPath ps2 (Model.splitSlash p.toList)) := by
+        congr 1
+        funext p
+        exact h (Model.splitSlash p.toList)
+      exact ⟨congrArg Array.size hEq, trivial⟩
+
+/-- Proof of `test_glob_escape_matchesModel` for `defaultApi`. -/
+theorem proof_glob_escape_matchesModel :
+    AllPass (test_glob_escape_matchesModel defaultApi) := by
+  intro literal
+  simp [defaultApi, escape, Internal.escape, Model.escapeModel, escapeChars_eq_model, assert]
+
 end LeanSwe.Glob.Proofs
+
