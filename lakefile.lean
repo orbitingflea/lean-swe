@@ -23,6 +23,9 @@ lean_lib Core where
 lean_lib LeanSwe where
   globs := #[.andSubmodules `LeanSwe]
 
+lean_lib Fuzz where
+  globs := #[.submodules `Fuzz]
+
 extern_lib «leanswe_fs» pkg := do
   let oFile := pkg.buildDir / "c" / "fs_shim.o"
   let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "Fs" / "Raw" / "c" / "fs_shim.c")
@@ -184,3 +187,6 @@ lean_exe «lean-swe-mut-test» where
 
 lean_exe «leanswe-world-fuzz» where
   root := `Tests.WorldFuzzMain
+
+lean_exe «leanswe-fuzz» where
+  root := `Fuzz.Main

@@ -13,6 +13,10 @@
       "max_lines": 205,
       "legacy_unmigrated": false
     },
+    "Fuzz/suites.json": {
+      "max_lines": 17,
+      "legacy_unmigrated": false
+    },
     "LeanSwe/ConnectProxy/Raw/c/cproxy_shim.c": {
       "max_lines": 1696,
       "legacy_unmigrated": true
@@ -73,12 +77,20 @@
       "max_lines": 1199,
       "legacy_unmigrated": false
     },
+    "scripts/fuzz_changed.py": {
+      "max_lines": 326,
+      "legacy_unmigrated": false
+    },
     "scripts/mutate_and_test.py": {
       "max_lines": 630,
       "legacy_unmigrated": false
     },
     "scripts/test_check_spec_change.py": {
       "max_lines": 331,
+      "legacy_unmigrated": false
+    },
+    "scripts/test_fuzz_changed.py": {
+      "max_lines": 239,
       "legacy_unmigrated": false
     }
   },
