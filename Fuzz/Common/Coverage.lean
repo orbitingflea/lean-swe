@@ -31,15 +31,18 @@ def CoverageTracker.empty : CoverageTracker := {}
 
 /-- Increment the hit count for `(op, outcomeBucket)` by `count` (default `1`). -/
 def CoverageTracker.record (t : CoverageTracker) (op outcomeBucket : String) (count : Nat := 1) : CoverageTracker :=
-  let key : CoverageBucket := { op := op, bucket := outcomeBucket }
-  let prev := t.hits.getD key 0
-  { hits := t.hits.insert key (prev + count)
-    total := t.total + count }
+  if count == 0 then
+    t
+  else
+    let key : CoverageBucket := { op := op, bucket := outcomeBucket }
+    let prev := t.hits.getD key 0
+    { hits := t.hits.insert key (prev + count)
+      total := t.total + count }
 
 /-- Merge two `CoverageTracker` maps by summing counts per bucket. -/
 def CoverageTracker.merge (a b : CoverageTracker) : CoverageTracker :=
   let mergedHits := b.hits.fold (init := a.hits) fun acc k n =>
-    acc.insert k (acc.getD k 0 + n)
+    if n == 0 then acc else acc.insert k (acc.getD k 0 + n)
   { hits := mergedHits
     total := a.total + b.total }
 

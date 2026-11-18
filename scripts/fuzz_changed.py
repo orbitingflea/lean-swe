@@ -51,14 +51,34 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return out
 
 
+def validate_git_rev(rev: str, label: str = "revision") -> str:
+    """Reject empty, whitespace-padded, NUL-containing, or leading-dash git revisions."""
+    if not rev or rev != rev.strip():
+        raise ValueError(f"Invalid git {label}: {rev!r}")
+    if rev.startswith("-"):
+        raise ValueError(f"Git {label} must not start with '-': {rev!r}")
+    if "\x00" in rev or any(ch.isspace() for ch in rev):
+        raise ValueError(f"Invalid characters in git {label}: {rev!r}")
+    return rev
+
+
 def _validate_path_list(raw: Any, label: str) -> tuple[str, ...]:
     if not isinstance(raw, list):
         raise ValueError(f"{label} must be a list of path strings")
     cleaned: list[str] = []
     for item in raw:
-        if not isinstance(item, str) or not item.strip():
+        if not isinstance(item, str) or not item:
             raise ValueError(f"{label} items must be non-empty strings")
+        if item != item.strip() or "\x00" in item:
+            raise ValueError(f"{label} path has invalid whitespace or NUL: {item!r}")
+        if item == "./" or item.startswith("/") or "//" in item or "\\" in item:
+            raise ValueError(f"{label} path must be a normalized repo-relative path: {item!r}")
         norm = item[2:] if item.startswith("./") else item
+        if not norm or norm.startswith("/") or "//" in norm:
+            raise ValueError(f"{label} path must be a normalized repo-relative path: {item!r}")
+        parts = [p for p in norm.split("/") if p]
+        if ".." in parts or "." in parts:
+            raise ValueError(f"{label} path must not contain '.' or '..' segments: {item!r}")
         cleaned.append(norm)
     return tuple(cleaned)
 
@@ -116,14 +136,15 @@ def path_matches_pattern(rel_path: str, pattern: str) -> bool:
 
 def read_git_tree(repo_dir: Path, rev: str) -> dict[str, tuple[str, str]]:
     """Return `{rel_path: (mode, blob_sha)}` for all entries in git tree `rev`."""
+    safe_rev = validate_git_rev(rev)
     proc = subprocess.run(
-        ["git", "-C", str(repo_dir), "ls-tree", "-r", "-z", rev],
+        ["git", "-C", str(repo_dir), "ls-tree", "-r", "-z", safe_rev],
         capture_output=True,
         check=False,
     )
     if proc.returncode != 0:
         err = proc.stderr.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(f"git ls-tree failed for {rev}: {err}")
+        raise RuntimeError(f"git ls-tree failed for {safe_rev}: {err}")
     entries: dict[str, tuple[str, str]] = {}
     for record in proc.stdout.split(b"\x00"):
         if not record:
@@ -136,25 +157,26 @@ def read_git_tree(repo_dir: Path, rev: str) -> dict[str, tuple[str, str]]:
     return entries
 
 
-def read_git_manifest_suites(repo_dir: Path, rev: str, rel_manifest: str) -> dict[str, Any] | None:
-    """Read `suites` mapping from `rel_manifest` at git `rev`, or None if absent."""
-    proc = subprocess.run(
-        ["git", "-C", str(repo_dir), "cat-file", "-e", f"{rev}:{rel_manifest}"],
+def read_git_manifest(repo_dir: Path, rev: str, rel_manifest: str) -> SuiteManifest | None:
+    """Read and parse `rel_manifest` at git `rev`, or None if absent at `rev`."""
+    safe_rev = validate_git_rev(rev)
+    spec = f"{safe_rev}:{rel_manifest}"
+    probe = subprocess.run(
+        ["git", "-C", str(repo_dir), "cat-file", "-e", spec],
         capture_output=True,
         check=False,
     )
-    if proc.returncode != 0:
+    if probe.returncode != 0:
         return None
     show = subprocess.run(
-        ["git", "-C", str(repo_dir), "show", f"{rev}:{rel_manifest}"],
+        ["git", "-C", str(repo_dir), "show", spec],
         capture_output=True,
         text=True,
         check=False,
     )
     if show.returncode != 0:
-        return None
-    manifest = parse_manifest_text(show.stdout)
-    return {s.name: list(s.paths) for s in manifest.suites}
+        raise RuntimeError(f"git show failed for {spec}: {show.stderr.strip()}")
+    return parse_manifest_text(show.stdout)
 
 
 def compute_suite_hash(
@@ -162,7 +184,7 @@ def compute_suite_hash(
     patterns: tuple[str, ...],
     manifest_entry: list[str] | None = None,
 ) -> str:
-    """Compute a deterministic SHA-256 digest over matched tree blobs and optional suite manifest entry."""
+    """Compute a deterministic SHA-256 digest over matched tree blobs and optional suite patterns."""
     hasher = hashlib.sha256()
     if manifest_entry is not None:
         encoded_entry = json.dumps(manifest_entry, separators=(",", ":")).encode("utf-8")
@@ -178,25 +200,41 @@ def compute_suite_hash(
     return hasher.hexdigest()
 
 
+def _absent_suite_hash(suite_name: str) -> str:
+    return hashlib.sha256(f"absent\x00{suite_name}\x00".encode("utf-8")).hexdigest()
+
+
 def compute_changed_suites(
     repo_dir: Path,
     base_rev: str,
     head_rev: str,
     manifest: SuiteManifest,
-    rel_manifest: str | None = None,
+    base_manifest: SuiteManifest | None = None,
+    manifest_in_git: bool = False,
 ) -> list[SuiteDiffResult]:
     """Compare per-suite input hashes between `base_rev` and `head_rev`."""
-    base_tree = read_git_tree(repo_dir, base_rev)
-    head_tree = read_git_tree(repo_dir, head_rev)
-    base_suites = read_git_manifest_suites(repo_dir, base_rev, rel_manifest) if rel_manifest else None
-    head_suites = read_git_manifest_suites(repo_dir, head_rev, rel_manifest) if rel_manifest else None
+    safe_base = validate_git_rev(base_rev, "base")
+    safe_head = validate_git_rev(head_rev, "head")
+    base_tree = read_git_tree(repo_dir, safe_base)
+    head_tree = read_git_tree(repo_dir, safe_head)
+    base_by_name = {s.name: s for s in base_manifest.suites} if base_manifest is not None else {}
     results: list[SuiteDiffResult] = []
     for spec in manifest.suites:
-        patterns = manifest.common_paths + spec.paths
-        base_entry = base_suites.get(spec.name) if base_suites is not None else None
-        head_entry = head_suites.get(spec.name) if head_suites is not None else None
-        base_hash = compute_suite_hash(base_tree, patterns, base_entry)
-        head_hash = compute_suite_hash(head_tree, patterns, head_entry)
+        head_patterns = manifest.common_paths + spec.paths
+        head_hash = compute_suite_hash(
+            head_tree,
+            head_patterns,
+            list(head_patterns) if manifest_in_git else None,
+        )
+        if manifest_in_git:
+            if base_manifest is None or spec.name not in base_by_name:
+                base_hash = _absent_suite_hash(spec.name)
+            else:
+                base_spec = base_by_name[spec.name]
+                base_patterns = base_manifest.common_paths + base_spec.paths
+                base_hash = compute_suite_hash(base_tree, base_patterns, list(base_patterns))
+        else:
+            base_hash = compute_suite_hash(base_tree, head_patterns, None)
         results.append(
             SuiteDiffResult(
                 name=spec.name,
@@ -277,9 +315,32 @@ def main(argv: list[str] | None = None) -> int:
         manifest_path = repo_dir / manifest_path
 
     try:
-        manifest = load_manifest(manifest_path)
+        safe_base = validate_git_rev(args.base, "base")
+        safe_head = validate_git_rev(args.head, "head")
         rel_manifest = _resolve_rel_manifest(repo_dir, manifest_path)
-        diffs = compute_changed_suites(repo_dir, args.base, args.head, manifest, rel_manifest)
+        if rel_manifest is not None:
+            head_manifest = read_git_manifest(repo_dir, safe_head, rel_manifest)
+            if head_manifest is None:
+                raise RuntimeError(f"Manifest {rel_manifest} not found in git revision {safe_head}")
+            base_manifest = read_git_manifest(repo_dir, safe_base, rel_manifest)
+            diffs = compute_changed_suites(
+                repo_dir,
+                safe_base,
+                safe_head,
+                head_manifest,
+                base_manifest=base_manifest,
+                manifest_in_git=True,
+            )
+        else:
+            manifest = load_manifest(manifest_path)
+            diffs = compute_changed_suites(
+                repo_dir,
+                safe_base,
+                safe_head,
+                manifest,
+                base_manifest=None,
+                manifest_in_git=False,
+            )
     except (ValueError, OSError, RuntimeError) as exc:
         print(f"FUZZ_CHANGED_ERROR: {exc}", file=sys.stderr)
         return 2
@@ -294,13 +355,19 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             print(f"DRY_RUN: {shlex.join(cmd)}")
             return 0
-        proc = subprocess.run(cmd, cwd=repo_dir, check=False)
+        try:
+            proc = subprocess.run(cmd, cwd=repo_dir, check=False)
+        except OSError as exc:
+            print(f"FUZZ_CHANGED_ERROR: failed to execute {cmd[0]}: {exc}", file=sys.stderr)
+            return 2
+        if proc.returncode < 0:
+            return 128 + (-proc.returncode)
         return proc.returncode
 
     if args.format == "json":
         payload = {
-            "base": args.base,
-            "head": args.head,
+            "base": safe_base,
+            "head": safe_head,
             "changed_suites": changed,
             "suites": {
                 d.name: {

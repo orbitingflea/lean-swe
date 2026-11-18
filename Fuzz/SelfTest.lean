@@ -125,31 +125,50 @@ private def verifyRngInvariants (seedVal : UInt64) : IO Unit := do
   if picked != "a" && picked != "b" then
     throw (IO.userError s!"RNG_CHOOSE_WEIGHTED_INVALID: {picked}")
 
+private def warmupCorpus : Array StackOp := #[
+  .clear,
+  .pop,
+  .push 1,
+  .push 2,
+  .add,
+  .add,
+  .push 4,
+  .push 5,
+  .push 6,
+  .pop
+]
+
+private def runTraceRecorded (tracker : CoverageTracker) (trace : Array StackOp) : IO CoverageTracker := do
+  let mut tr := tracker
+  let mut stModel : StackState := {}
+  let mut stImpl : StackState := {}
+  for op in trace do
+    let (mNext, mOut) := stepModel stModel op
+    let (iNext, iOut) := stepImpl stImpl op
+    tr := tr.record (opName op) (outcomeBucket iOut)
+    if mNext != iNext || mOut != iOut then
+      let shrunk ← shrinkTrace (fun cand => pure (!checkTraceAgainstOracle stepModel cand)) trace
+      throw (IO.userError s!"SELFTEST_MISMATCH shrunk={repr shrunk}")
+    stModel := mNext
+    stImpl := iNext
+  return tr
+
 private def runStackDiffFuzz (steps : Nat) (seedVal : UInt64) : IO Unit := do
   verifyRngInvariants seedVal
   let mut rng := Rng.seed seedVal
-  let mut tracker := CoverageTracker.empty
+  let mut tracker ← runTraceRecorded CoverageTracker.empty warmupCorpus
   let mut done := 0
   while done < steps do
     let (epLenRaw, rEp) := rng.nextRange 8 24
     rng := rEp
     let epLen := min epLenRaw (steps - done)
-    let mut stModel : StackState := {}
-    let mut stImpl : StackState := {}
     let mut trace : Array StackOp := Array.mkEmpty epLen
     for _ in List.range epLen do
       let (op, rOp) := genStackOp rng
       rng := rOp
       trace := trace.push op
-      let (mNext, mOut) := stepModel stModel op
-      let (iNext, iOut) := stepImpl stImpl op
-      tracker := tracker.record (opName op) (outcomeBucket iOut)
-      if mNext != iNext || mOut != iOut then
-        let shrunk ← shrinkTrace (fun cand => pure (!checkTraceAgainstOracle stepModel cand)) trace
-        throw (IO.userError s!"SELFTEST_MISMATCH shrunk={repr shrunk}")
-      stModel := mNext
-      stImpl := iNext
-      done := done + 1
+    tracker ← runTraceRecorded tracker trace
+    done := done + epLen
   assertCoverage "selftest" tracker requiredBuckets
   let missingEmpty := checkCoverage CoverageTracker.empty requiredBuckets
   if missingEmpty.size != requiredBuckets.size then

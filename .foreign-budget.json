@@ -78,7 +78,7 @@
       "legacy_unmigrated": false
     },
     "scripts/fuzz_changed.py": {
-      "max_lines": 326,
+      "max_lines": 393,
       "legacy_unmigrated": false
     },
     "scripts/mutate_and_test.py": {
@@ -90,7 +90,7 @@
       "legacy_unmigrated": false
     },
     "scripts/test_fuzz_changed.py": {
-      "max_lines": 239,
+      "max_lines": 326,
       "legacy_unmigrated": false
     }
   },

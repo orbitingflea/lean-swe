@@ -23,6 +23,7 @@ lean_lib Core where
 lean_lib LeanSwe where
   globs := #[.andSubmodules `LeanSwe]
 
+@[default_target]
 lean_lib Fuzz where
   globs := #[.submodules `Fuzz]
 
@@ -188,5 +189,6 @@ lean_exe «lean-swe-mut-test» where
 lean_exe «leanswe-world-fuzz» where
   root := `Tests.WorldFuzzMain
 
+@[default_target]
 lean_exe «leanswe-fuzz» where
   root := `Fuzz.Main
