@@ -1,8 +1,12 @@
 import Lake
 open Lake DSL
 
+#eval (if System.Platform.isWindows || System.Platform.isOSX then
+    Lean.throwError "LeanSwe requires Linux (x86_64 or aarch64)"
+  else pure () : Lean.Elab.Command.CommandElabM Unit)
+
 package «lean-swe» where
-  moreLinkArgs := #["-lcrypto"]
+  moreLinkArgs := #["-lcrypto", "-lpthread"]
   leanOptions := #[
     ⟨`autoImplicit, false⟩,
     ⟨`relaxedAutoImplicit, false⟩,
@@ -135,9 +139,38 @@ extern_lib «leanswe_connectproxy» pkg := do
   let name := nameToStaticLib "leanswe_connectproxy"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
+extern_lib «leanswe_linux_sandbox» pkg := do
+  let cDir := pkg.dir / "LeanSwe" / "LinuxSyscall" / "c"
+  let hdrJob ← inputTextFile (cDir / "fd_box.h")
+  let srcJob ← inputTextFile (cDir / "sandbox_shim.c")
+  let deps := Job.collectArray #[hdrJob, srcJob]
+  let lean ← getLeanInstall
+  let oFile := pkg.buildDir / "c" / "linux_sandbox_shim.o"
+  let oJob ← buildO oFile (deps.map fun _ => cDir / "sandbox_shim.c")
+    #["-I", lean.includeDir.toString, "-I", cDir.toString]
+    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror", "-pthread"]
+  let name := nameToStaticLib "leanswe_linux_sandbox"
+  buildStaticLib (pkg.staticLibDir / name) #[oJob]
+
+extern_lib «leanswe_sandbox_fuzz_env» pkg := do
+  let cDir := pkg.dir / "LeanSwe" / "LinuxSyscall" / "c"
+  let hdrJob ← inputTextFile (cDir / "fd_box.h")
+  let srcJob ← inputTextFile (cDir / "sandbox_fuzz_env.c")
+  let deps := Job.collectArray #[hdrJob, srcJob]
+  let lean ← getLeanInstall
+  let oFile := pkg.buildDir / "c" / "linux_sandbox_fuzz_env.o"
+  let oJob ← buildO oFile (deps.map fun _ => cDir / "sandbox_fuzz_env.c")
+    #["-I", lean.includeDir.toString, "-I", cDir.toString]
+    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror", "-pthread"]
+  let name := nameToStaticLib "leanswe_sandbox_fuzz_env"
+  buildStaticLib (pkg.staticLibDir / name) #[oJob]
+
 @[default_target, test_driver]
 lean_exe «lean-swe-test» where
   root := `Tests.Main
 
 lean_exe «lean-swe-mut-test» where
   root := `Tests.MutateDriver
+
+lean_exe «leanswe-world-fuzz» where
+  root := `Tests.WorldFuzzMain

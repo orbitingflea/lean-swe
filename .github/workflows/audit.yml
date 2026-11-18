@@ -50,7 +50,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap python3-zstandard zstd xz-utils gzip curl libssl-dev
+          sudo apt-get install -y --no-install-recommends bubblewrap strace python3-zstandard zstd xz-utils gzip curl libssl-dev
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then
             echo "+memory +pids" | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null 2>&1 || true
@@ -96,7 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail lean-swe-mut-test
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail lean-swe-mut-test leanswe-world-fuzz
 
       - name: Run runtime test suites
         run: |
@@ -128,6 +128,19 @@ jobs:
           echo "ASSUMP_NONCE=$ASSUMP_NONCE" >> "$GITHUB_ENV"
           echo "ASSUMP_LOG=$ASSUMP_LOG" >> "$GITHUB_ENV"
           .lake/build/bin/lean-swe-test --assump-log "$ASSUMP_LOG" --assump-nonce "$ASSUMP_NONCE"
+          .lake/build/bin/lean-swe-test --sandbox-strace-fault-check
+          .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 100000 --self-test-shrink
+          .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed
+          if sudo -n sysctl -n vm.memfd_noexec >/dev/null 2>&1; then
+            OLD_MEMFD_NOEXEC=$(sudo -n sysctl -n vm.memfd_noexec)
+            trap 'sudo -n sysctl -w "vm.memfd_noexec=${OLD_MEMFD_NOEXEC}" >/dev/null || true' EXIT
+            sudo -n sysctl -w vm.memfd_noexec=1 >/dev/null
+            .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed
+            sudo -n sysctl -w vm.memfd_noexec=2 >/dev/null
+            .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed --require-memfd-strict
+            sudo -n sysctl -w "vm.memfd_noexec=${OLD_MEMFD_NOEXEC}" >/dev/null
+            trap - EXIT
+          fi
 
       - name: Check 1 GB private-memory cap on changed modules and reverse dependents
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')

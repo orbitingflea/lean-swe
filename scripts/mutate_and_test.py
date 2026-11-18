@@ -47,6 +47,7 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
     "ConnectProxy.Raw": pathlib.Path("LeanSwe/ConnectProxy/Raw"),
     "ConnectProxy": pathlib.Path("LeanSwe/ConnectProxy"),
     "SlotPool": pathlib.Path("LeanSwe/SlotPool"),
+    "LinuxSyscall.Sandbox": pathlib.Path("LeanSwe/LinuxSyscall/Sandbox"),
 }
 
 C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
@@ -58,6 +59,11 @@ C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
     "cryptohash_shim.c": "leanswe_cryptohash",
     "psandbox_shim.c": "leanswe_psandbox",
     "cproxy_shim.c": "leanswe_connectproxy",
+    "sandbox_shim.c": "leanswe_linux_sandbox",
+}
+
+SUITE_TO_EXTRA_C: dict[str, list[pathlib.Path]] = {
+    "LinuxSyscall.Sandbox": [pathlib.Path("LeanSwe/LinuxSyscall/c/sandbox_shim.c")],
 }
 
 SANCOV_RT_C = r"""
@@ -354,6 +360,11 @@ def resolve_targets(root: pathlib.Path, suite: str) -> tuple[list[pathlib.Path],
             for cf in sorted(c_dir.glob("*.c")):
                 if cf.name in C_SHIM_TO_EXTERN_LIB:
                     c_targets.append(cf.relative_to(root))
+    extra_keys = list(SUITE_TO_DIR.keys()) if suite == "all" else [suite]
+    for sk in extra_keys:
+        for rel_c in SUITE_TO_EXTRA_C.get(sk, []):
+            if (root / rel_c).is_file() and rel_c not in c_targets:
+                c_targets.append(rel_c)
     return lean_targets, c_targets
 
 
