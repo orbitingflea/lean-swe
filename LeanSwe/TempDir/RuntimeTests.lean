@@ -1,3 +1,4 @@
+import Core.Assumptions
 import LeanSwe.TempDir.Interface
 import LeanSwe.TempDir.Impl
 import LeanSwe.Process.Interface
@@ -289,8 +290,212 @@ private def testCleanupStaleTempDirsOS (sandbox : String) : IO Unit := do
 
   assertTrue ((← Process.activeProcessCount) == 0) "all child processes reaped"
 
+private def withTempDirErrSandbox (act : String → IO Unit) : IO Unit := do
+  let res ← TempDir.withTempDir none "lean-swe-tempdir-err-" fun sandbox => do
+    act sandbox
+    return .ok ()
+  let _ ← assertTempDirOk res "tempdir err sandbox cleanup"
+
+private def mkCollidingUuid (root : String) (dirPrefix : String) : IO Uuid.Uuid := do
+  let u ← match ← Uuid.getUuid with
+    | .ok v => pure v
+    | .error e => throw (IO.userError s!"Uuid.getUuid failed: {repr e}")
+  assertFsOk (← Fs.mkdir (Fs.join root (dirPrefix ++ Uuid.toString u)) false false)
+    "precreate colliding temp dir"
+  return u
+
+/-- Real error test for `TempDir.withTempDir` returning `.invalidInput`. -/
+def err_tempdir_withTempDir_invalidInput : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    assertTempDirErrKind (← TempDir.withTempDir (some sandbox) "" (fun _ => pure (.ok ())))
+      .invalidInput "withTempDir invalidInput"
+
+/-- Real error test for `TempDir.withTempDir` returning `.notFound`. -/
+def err_tempdir_withTempDir_notFound : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    assertTempDirErrKind (← TempDir.withTempDir (some (Fs.join sandbox "missing")) "p-" (fun _ => pure (.ok ())))
+      .notFound "withTempDir notFound"
+
+/-- Mocked error test for `TempDir.withTempDir` returning `.alreadyExists`. -/
+def err_tempdir_withTempDir_alreadyExists : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    let u ← mkCollidingUuid sandbox "dup-"
+    let fixedUuid : Uuid.UuidApi := { Uuid.defaultApi with getUuid := pure (.ok u) }
+    let api := TempDir.Internal.mkApiM Fs.defaultApi Time.defaultOps fixedUuid EnvVars.defaultApi
+    assertTempDirErrKind (← api.withTempDir (some sandbox) "dup-" (fun _ => pure (.ok ())))
+      .alreadyExists "withTempDir alreadyExists"
+
+/-- Real error test for `TempDir.withTempDir` returning `.permissionDenied`. -/
+def err_tempdir_withTempDir_permissionDenied : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    let roRoot := Fs.join sandbox "ro_root"
+    assertFsOk (← Fs.mkdir roRoot false false) "create ro_root"
+    assertFsOk (← Fs.chmod roRoot 0o555) "chmod 0o555 ro_root"
+    try
+      assertTempDirErrKind (← TempDir.withTempDir (some roRoot) "p-" (fun _ => pure (.ok ())))
+        .permissionDenied "withTempDir permissionDenied"
+    finally
+      let _ ← Fs.chmod roRoot 0o755
+
+/-- Real error test for `TempDir.withTempDir` returning `.notADirectory`. -/
+def err_tempdir_withTempDir_notADirectory : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    let regFile := Fs.join sandbox "reg_file"
+    assertFsOk (← Fs.writeText regFile "x") "create reg_file"
+    assertTempDirErrKind (← TempDir.withTempDir (some regFile) "p-" (fun _ => pure (.ok ())))
+      .notADirectory "withTempDir notADirectory"
+
+/-- Real error test for `TempDir.withTempDir` returning `.ioError`. -/
+def err_tempdir_withTempDir_ioError : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    let loopPath := Fs.join sandbox "eloop"
+    assertFsOk (← Fs.symlink loopPath loopPath) "create ELOOP symlink"
+    assertTempDirErrKind (← TempDir.withTempDir (some loopPath) "p-" (fun _ => pure (.ok ())))
+      .ioError "withTempDir ioError"
+
+/-- Real error test for `TempDir.withLockedTempDir` returning `.invalidInput`. -/
+def err_tempdir_withLockedTempDir_invalidInput : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    assertTempDirErrKind (← TempDir.withLockedTempDir (some sandbox) "" (fun _ => pure (.ok ())))
+      .invalidInput "withLockedTempDir invalidInput"
+
+/-- Real error test for `TempDir.withLockedTempDir` returning `.notFound`. -/
+def err_tempdir_withLockedTempDir_notFound : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    assertTempDirErrKind
+      (← TempDir.withLockedTempDir (some (Fs.join sandbox "missing")) "p-" (fun _ => pure (.ok ())))
+      .notFound "withLockedTempDir notFound"
+
+/-- Mocked error test for `TempDir.withLockedTempDir` returning `.alreadyExists`. -/
+def err_tempdir_withLockedTempDir_alreadyExists : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    let u ← mkCollidingUuid sandbox "dup-"
+    let fixedUuid : Uuid.UuidApi := { Uuid.defaultApi with getUuid := pure (.ok u) }
+    let api := TempDir.Internal.mkApiM Fs.defaultApi Time.defaultOps fixedUuid EnvVars.defaultApi
+    assertTempDirErrKind (← api.withLockedTempDir (some sandbox) "dup-" (fun _ => pure (.ok ())))
+      .alreadyExists "withLockedTempDir alreadyExists"
+
+/-- Real error test for `TempDir.withLockedTempDir` returning `.permissionDenied`. -/
+def err_tempdir_withLockedTempDir_permissionDenied : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    let roRoot := Fs.join sandbox "ro_root"
+    assertFsOk (← Fs.mkdir roRoot false false) "create ro_root"
+    assertFsOk (← Fs.chmod roRoot 0o555) "chmod 0o555 ro_root"
+    try
+      assertTempDirErrKind (← TempDir.withLockedTempDir (some roRoot) "p-" (fun _ => pure (.ok ())))
+        .permissionDenied "withLockedTempDir permissionDenied"
+    finally
+      let _ ← Fs.chmod roRoot 0o755
+
+/-- Real error test for `TempDir.withLockedTempDir` returning `.notADirectory`. -/
+def err_tempdir_withLockedTempDir_notADirectory : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    let regFile := Fs.join sandbox "reg_file"
+    assertFsOk (← Fs.writeText regFile "x") "create reg_file"
+    assertTempDirErrKind (← TempDir.withLockedTempDir (some regFile) "p-" (fun _ => pure (.ok ())))
+      .notADirectory "withLockedTempDir notADirectory"
+
+/-- Real error test for `TempDir.withLockedTempDir` returning `.ioError`. -/
+def err_tempdir_withLockedTempDir_ioError : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    let loopPath := Fs.join sandbox "eloop"
+    assertFsOk (← Fs.symlink loopPath loopPath) "create ELOOP symlink"
+    assertTempDirErrKind (← TempDir.withLockedTempDir (some loopPath) "p-" (fun _ => pure (.ok ())))
+      .ioError "withLockedTempDir ioError"
+
+/-- Real error test for `TempDir.cleanupStaleTempDirs` returning `.invalidInput`. -/
+def err_tempdir_cleanupStaleTempDirs_invalidInput : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    assertTempDirErrKind (← TempDir.cleanupStaleTempDirs (some sandbox) "" 0)
+      .invalidInput "cleanupStaleTempDirs invalidInput"
+
+/-- Real error test for `TempDir.cleanupStaleTempDirs` returning `.notFound`. -/
+def err_tempdir_cleanupStaleTempDirs_notFound : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    assertTempDirErrKind (← TempDir.cleanupStaleTempDirs (some (Fs.join sandbox "missing")) "p-" 0)
+      .notFound "cleanupStaleTempDirs notFound"
+
+/-- Mocked error test for `TempDir.cleanupStaleTempDirs` returning `.alreadyExists`. -/
+def err_tempdir_cleanupStaleTempDirs_alreadyExists : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    let fs :=
+      { Fs.defaultApi with
+        listDir := fun _ =>
+          pure (.error { kind := .alreadyExists, path := some "/mock", message := "injected alreadyExists" }) }
+    let api := TempDir.Internal.mkApiM fs Time.defaultOps Uuid.defaultApi EnvVars.defaultApi
+    assertTempDirErrKind (← api.cleanupStaleTempDirs (some sandbox) "p-" 0)
+      .alreadyExists "cleanupStaleTempDirs alreadyExists"
+
+/-- Real error test for `TempDir.cleanupStaleTempDirs` returning `.permissionDenied`. -/
+def err_tempdir_cleanupStaleTempDirs_permissionDenied : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    let noReadRoot := Fs.join sandbox "noread_root"
+    assertFsOk (← Fs.mkdir noReadRoot false false) "create noread_root"
+    assertFsOk (← Fs.chmod noReadRoot 0o000) "chmod 0o000 noread_root"
+    try
+      assertTempDirErrKind (← TempDir.cleanupStaleTempDirs (some noReadRoot) "p-" 0)
+        .permissionDenied "cleanupStaleTempDirs permissionDenied"
+    finally
+      let _ ← Fs.chmod noReadRoot 0o755
+
+/-- Real error test for `TempDir.cleanupStaleTempDirs` returning `.notADirectory`. -/
+def err_tempdir_cleanupStaleTempDirs_notADirectory : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    let regFile := Fs.join sandbox "reg_file"
+    assertFsOk (← Fs.writeText regFile "x") "create reg_file"
+    assertTempDirErrKind (← TempDir.cleanupStaleTempDirs (some regFile) "p-" 0)
+      .notADirectory "cleanupStaleTempDirs notADirectory"
+
+/-- Real error test for `TempDir.cleanupStaleTempDirs` returning `.ioError`. -/
+def err_tempdir_cleanupStaleTempDirs_ioError : IO Unit :=
+  withTempDirErrSandbox fun sandbox => do
+    let loopPath := Fs.join sandbox "eloop"
+    assertFsOk (← Fs.symlink loopPath loopPath) "create ELOOP symlink"
+    assertTempDirErrKind (← TempDir.cleanupStaleTempDirs (some loopPath) "p-" 0)
+      .ioError "cleanupStaleTempDirs ioError"
+
+/-- Registered error-coverage tests for `LeanSwe.TempDir.errorCoverage`. -/
+def registeredErrorTests : Array Core.RegisteredErrorTest :=
+  #[ { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_withTempDir_invalidInput"
+       mode := .real, run := err_tempdir_withTempDir_invalidInput }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_withTempDir_notFound"
+       mode := .real, run := err_tempdir_withTempDir_notFound }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_withTempDir_alreadyExists"
+       mode := .mocked, run := err_tempdir_withTempDir_alreadyExists }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_withTempDir_permissionDenied"
+       mode := .real, run := err_tempdir_withTempDir_permissionDenied }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_withTempDir_notADirectory"
+       mode := .real, run := err_tempdir_withTempDir_notADirectory }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_withTempDir_ioError"
+       mode := .real, run := err_tempdir_withTempDir_ioError }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_withLockedTempDir_invalidInput"
+       mode := .real, run := err_tempdir_withLockedTempDir_invalidInput }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_withLockedTempDir_notFound"
+       mode := .real, run := err_tempdir_withLockedTempDir_notFound }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_withLockedTempDir_alreadyExists"
+       mode := .mocked, run := err_tempdir_withLockedTempDir_alreadyExists }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_withLockedTempDir_permissionDenied"
+       mode := .real, run := err_tempdir_withLockedTempDir_permissionDenied }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_withLockedTempDir_notADirectory"
+       mode := .real, run := err_tempdir_withLockedTempDir_notADirectory }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_withLockedTempDir_ioError"
+       mode := .real, run := err_tempdir_withLockedTempDir_ioError }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_cleanupStaleTempDirs_invalidInput"
+       mode := .real, run := err_tempdir_cleanupStaleTempDirs_invalidInput }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_cleanupStaleTempDirs_notFound"
+       mode := .real, run := err_tempdir_cleanupStaleTempDirs_notFound }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_cleanupStaleTempDirs_alreadyExists"
+       mode := .mocked, run := err_tempdir_cleanupStaleTempDirs_alreadyExists }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_cleanupStaleTempDirs_permissionDenied"
+       mode := .real, run := err_tempdir_cleanupStaleTempDirs_permissionDenied }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_cleanupStaleTempDirs_notADirectory"
+       mode := .real, run := err_tempdir_cleanupStaleTempDirs_notADirectory }
+   , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_cleanupStaleTempDirs_ioError"
+       mode := .real, run := err_tempdir_cleanupStaleTempDirs_ioError } ]
+
 /-- Execute all runtime OS tests for `LeanSwe.TempDir`. -/
 def runAll : IO Unit := do
+  Core.runRegisteredErrorTests registeredErrorTests
   let res ← TempDir.withTempDir none "lean-swe-tempdir-sandbox-" fun sandbox => do
     testWithTempDirLifecycle sandbox
     testWithLockedTempDirAndRootResolution sandbox

@@ -4,6 +4,7 @@ import LeanSwe.Git.Impl
 import LeanSwe.Git.Interface
 import LeanSwe.Git.SpecTests
 import LeanSwe.Git.Proofs.ParserProofs
+import LeanSwe.Git.Proofs.ImpossibleProofs
 
 set_option Elab.async false
 

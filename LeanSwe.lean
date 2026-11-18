@@ -118,6 +118,7 @@ import LeanSwe.Git.Impl
 import LeanSwe.Git.SpecTests
 import LeanSwe.Git.SpecMutants
 import LeanSwe.Git.Proofs.ParserProofs
+import LeanSwe.Git.Proofs.ImpossibleProofs
 import LeanSwe.Git.Proofs
 import LeanSwe.Git.RuntimeTests
 import LeanSwe.CmdLine.Types

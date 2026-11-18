@@ -431,7 +431,7 @@ def mockEnv : EnvVarsApiM (StateM TempDirMockState) :=
       if k == "TMPDIR" then return .ok (← get).tmpdir
       else return .ok none
     listEnv := pure (.ok #[])
-    homeDir := pure (.ok "/home/user")
+    homeDir := pure (.ok "/mock/user")
     splitSearchPath := fun _ => #[] }
 
 /-- Shared proof helper `mockFsEx`. -/

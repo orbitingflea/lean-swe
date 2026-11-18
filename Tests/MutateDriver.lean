@@ -502,6 +502,8 @@ def main (args : List String) : IO UInt32 := do
     return (← CmdLine.RuntimeTests.probeMain rest)
   | "--slotpool-probe" :: rest =>
     return (← SlotPool.RuntimeTests.probeMain rest)
+  | "--compress-probe" :: rest =>
+    return (← Compress.RuntimeTests.probeMain rest)
   | "--timerand-strace-fault-check" :: rest =>
     return (← LinuxSyscall.TimeRand.RuntimeTests.probeMain rest)
   | "--uuid-probe" :: rest =>
