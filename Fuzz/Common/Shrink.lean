@@ -1,9 +1,96 @@
+import Std.Data.HashMap
 import Fuzz.Common.Rng
 
 namespace Fuzz.Common
 
-/-- Greedy delta-minimization shrinker reducing a failing trace toward a minimal reproducing subtrace. -/
-partial def shrinkTrace {m : Type → Type} [Monad m] {α : Type}
+@[specialize] private def shrinkTraceDdmin {m : Type → Type} [Monad m] {α : Type}
+    (fails : Array α → m Bool) (initial : Array α) : m (Array α) := do
+  let mut cur := initial
+  let mut n := min 2 cur.size
+  let mut compStart := 0
+  let mut trySubsets := true
+  while cur.size > 1 do
+    let m := cur.size
+    if n > m then
+      n := m
+    if n < 2 then
+      n := min 2 m
+    let base := m / n
+    let rem := m % n
+    let chunkRange (i : Nat) : Nat × Nat :=
+      let start := i * base + min i rem
+      let len := base + (if i < rem then 1 else 0)
+      (start, start + len)
+    let mut reduced := false
+    if trySubsets then
+      for i in [:n] do
+        let (start, stop) := chunkRange i
+        let len := stop - start
+        if len > 0 && len < m then
+          let sub := cur.extract start stop
+          if ← fails sub then
+            cur := sub
+            n := min 2 cur.size
+            compStart := 0
+            trySubsets := true
+            reduced := true
+            break
+    if reduced then
+      continue
+    if n > 2 then
+      let offset := compStart % n
+      for k in [:n] do
+        let i := (offset + k) % n
+        let (start, stop) := chunkRange i
+        let len := stop - start
+        if len > 0 && len < m then
+          let comp := cur.extract 0 start ++ cur.extract stop m
+          if !comp.isEmpty then
+            if ← fails comp then
+              cur := comp
+              if cur.size <= 1 then
+                return cur
+              let nextN := max 2 (min (n - 1) cur.size)
+              compStart := i % nextN
+              trySubsets := nextN == 2 || cur.size <= 32
+              n := nextN
+              reduced := true
+              break
+    if reduced then
+      continue
+    if n >= cur.size then
+      if !trySubsets then
+        trySubsets := true
+        continue
+      break
+    n := min cur.size (n * 2)
+    compStart := 0
+    trySubsets := true
+  return cur
+
+@[specialize] private def shrinkTraceWindows {m : Type → Type} [Monad m] {α : Type}
+    (fails : Array α → m Bool) (cur : Array α) : m (Option (Array α)) := do
+  if cur.size <= 256 then
+    for winSize in #[2, 3, 4] do
+      if winSize < cur.size then
+        let maxStart := cur.size - winSize
+        for start in [:maxStart + 1] do
+          let cand := cur.extract 0 start ++ cur.extract (start + winSize) cur.size
+          if !cand.isEmpty then
+            if ← fails cand then
+              return some cand
+  if cur.size >= 3 && cur.size <= 32 then
+    for i in [:cur.size] do
+      if i + 2 < cur.size then
+        for j in [i + 2 : cur.size] do
+          let cand := cur.extract 0 i ++ cur.extract (i + 1) j ++ cur.extract (j + 1) cur.size
+          if !cand.isEmpty then
+            if ← fails cand then
+              return some cand
+  return none
+
+/-- Zeller `ddmin` delta-minimization shrinker with sliding-window and coupled-pair reduction. -/
+@[specialize] partial def shrinkTrace {m : Type → Type} [Monad m] {α : Type}
     (fails : Array α → m Bool) (trace : Array α) (allowEmpty : Bool := false) : m (Array α) := do
   if allowEmpty then
     if ← fails #[] then
@@ -11,52 +98,88 @@ partial def shrinkTrace {m : Type → Type} [Monad m] {α : Type}
   if trace.size <= 1 then
     return trace
   let mut cur := trace
-  let mut chunk := max 1 (cur.size / 2)
-  while chunk >= 1 && cur.size > 1 do
-    let mut improved := false
-    let mut start := 0
-    while start < cur.size && cur.size > 1 do
-      let stop := min cur.size (start + chunk)
-      let cand := cur.extract 0 start ++ cur.extract stop cur.size
-      if (allowEmpty || !cand.isEmpty) && (← fails cand) then
-        cur := cand
-        improved := true
-        if cur.size == 0 then
-          return cur
-      else
-        start := start + chunk
-    if !improved then
-      if chunk == 1 then
-        break
-      chunk := max 1 (chunk / 2)
+  while cur.size > 1 do
+    cur ← shrinkTraceDdmin fails cur
+    if cur.size <= 1 then
+      break
+    match ← shrinkTraceWindows fails cur with
+    | some smaller =>
+      cur := smaller
+    | none =>
+      break
   return cur
 
-/-- Greedily shrink individual trace elements in-place using `shrinkItem` while preserving failure. -/
-def shrinkElements {m : Type → Type} [Monad m] {α : Type}
-    (shrinkItem : α → List α) (fails : Array α → m Bool) (trace : Array α) : m (Array α) := do
+private def seenContains {α : Type} [BEq α] (seen : Array α) (x : α) : Bool :=
+  seen.any (· == x)
+
+private def recordSeen {α : Type} (map : Std.HashMap Nat (Array α)) (idx : Nat) (val : α) :
+    Std.HashMap Nat (Array α) :=
+  map.alter idx fun
+    | none => some #[val]
+    | some arr => some (arr.push val)
+
+@[specialize] private def tryCandidatesAt {m : Type → Type} [Monad m] {α : Type} [BEq α]
+    (fails : Array α → m Bool) (idx : Nat) (orig : α) (seen : Array α) :
+    List α → (cur : Array α) → idx < cur.size → m (Array α × Bool)
+  | [], cur, _ => pure (cur, false)
+  | cand :: rest, cur, h => do
+    if cand == orig || seenContains seen cand then
+      tryCandidatesAt fails idx orig seen rest cur h
+    else
+      let cur' := cur.set idx cand h
+      have h' : idx < cur'.size := by simpa [cur'] using h
+      if ← fails cur' then
+        pure (cur', true)
+      else
+        let restored := cur'.set idx orig h'
+        have hRest : idx < restored.size := by simpa [restored] using h'
+        tryCandidatesAt fails idx orig seen rest restored hRest
+
+private def getSeenAt {α : Type} (map : Std.HashMap Nat (Array α)) (idx : Nat) : Array α :=
+  map.getD idx #[]
+
+/-- Greedily shrink individual trace elements in-place to a fixed point with exact cycle protection and per-index fairness cap. -/
+@[specialize] def shrinkElements {m : Type → Type} [Monad m] {α : Type} [BEq α]
+    (shrinkItem : α → List α) (fails : Array α → m Bool) (trace : Array α)
+    (maxSteps : Nat := 10000) : m (Array α) := do
   let mut cur := trace
-  let mut idx := 0
-  while idx < cur.size do
-    match cur[idx]? with
-    | none => break
-    | some orig =>
-      let mut replaced := false
-      for candItem in shrinkItem orig do
-        let cand := cur.setIfInBounds idx candItem
-        if ← fails cand then
-          cur := cand
-          replaced := true
-          break
-      if !replaced then
+  let mut seenMap : Std.HashMap Nat (Array α) := {}
+  let mut steps : Nat := 0
+  let mut outerChanged := true
+  let perIdxCap := if cur.size <= 1 then maxSteps else max 64 (maxSteps / cur.size)
+  while outerChanged && steps < maxSteps do
+    outerChanged := false
+    let mut idx : Nat := 0
+    let mut idxSteps : Nat := 0
+    while idx < cur.size && steps < maxSteps do
+      if idxSteps >= perIdxCap then
         idx := idx + 1
+        idxSteps := 0
+      else if h : idx < cur.size then
+        let orig := cur[idx]
+        let seen := getSeenAt seenMap idx
+        let cands := shrinkItem orig
+        let (nextCur, replaced) ← tryCandidatesAt fails idx orig seen cands cur h
+        cur := nextCur
+        if replaced then
+          seenMap := recordSeen seenMap idx orig
+          steps := steps + 1
+          idxSteps := idxSteps + 1
+          outerChanged := true
+        else
+          idx := idx + 1
+          idxSteps := 0
+      else
+        break
   return cur
 
 /-- Verify that `shrinkTrace` preserves `fails` and reduces `trace` to at most `maxExpectedSize` elements. -/
-def verifyShrinker {m : Type → Type} [Monad m] {α : Type}
-    (fails : Array α → m Bool) (trace : Array α) (maxExpectedSize : Nat := 1) : m (Except String (Array α)) := do
+@[specialize] def verifyShrinker {m : Type → Type} [Monad m] {α : Type}
+    (fails : Array α → m Bool) (trace : Array α) (maxExpectedSize : Nat := 1)
+    (allowEmpty : Bool := (maxExpectedSize == 0)) : m (Except String (Array α)) := do
   unless ← fails trace do
     return .error s!"verifyShrinker: initial trace (size={trace.size}) did not trigger failure"
-  let shrunk ← shrinkTrace fails trace
+  let shrunk ← shrinkTrace fails trace allowEmpty
   unless ← fails shrunk do
     return .error s!"verifyShrinker: shrunk trace (size={shrunk.size}) no longer triggers failure"
   if shrunk.size > maxExpectedSize then
@@ -65,9 +188,9 @@ def verifyShrinker {m : Type → Type} [Monad m] {α : Type}
 
 /-- Self-test `shrinkTrace` on both a single-step fault and an ordered two-step fault embedded in random traces. -/
 def runGenericShrinkSelfTest (seedVal : UInt64 := 0x123456789abcdef0) : IO Unit := do
-  let mut rng := Rng.seed (seedVal ^^^ 0x517cc1b727220a95)
+  let mut rng := Rng.seed (seedVal ^^^ 0x6a09e667f3bcc908)
   let mut trace1 : Array Nat := Array.mkEmpty 24
-  for _ in List.range 24 do
+  for _ in [:24] do
     let (v, r') := rng.nextRange 1 999
     rng := r'
     trace1 := trace1.push v
@@ -82,7 +205,7 @@ def runGenericShrinkSelfTest (seedVal : UInt64 := 0x123456789abcdef0) : IO Unit 
     if shrunk1 != #[1000001] then
       throw (IO.userError s!"GENERIC_SHRINK_SELFTEST_SINGLE_MISMATCH: got {repr shrunk1}")
   let mut trace2 : Array Nat := Array.mkEmpty 24
-  for _ in List.range 24 do
+  for _ in [:24] do
     let (v, r') := rng.nextRange 1 999
     rng := r'
     trace2 := trace2.push v
