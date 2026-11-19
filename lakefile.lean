@@ -189,6 +189,16 @@ extern_lib «leanswe_float_fuzz_oracle» pkg := do
   let name := nameToStaticLib "leanswe_float_fuzz_oracle"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
+extern_lib «leanswe_cmdline_fuzz» pkg := do
+  let oFile := pkg.buildDir / "c" / "cmdline_fuzz_env.o"
+  let srcJob ← inputTextFile (pkg.dir / "Fuzz" / "CmdLine" / "c" / "cmdline_fuzz_env.c")
+  let lean ← getLeanInstall
+  let oJob ← buildO oFile srcJob
+    #["-I", lean.includeDir.toString]
+    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+  let name := nameToStaticLib "leanswe_cmdline_fuzz"
+  buildStaticLib (pkg.staticLibDir / name) #[oJob]
+
 @[default_target, test_driver]
 lean_exe «lean-swe-test» where
   root := `Tests.Main

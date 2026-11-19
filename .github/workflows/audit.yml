@@ -145,7 +145,7 @@ jobs:
             echo "::warning::sudo -n sysctl unavailable; skipping vm.memfd_noexec={1,2} strict checks"
           fi
           .lake/build/bin/lean-swe-test --timerand-strace-fault-check
-          .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.TimeRand
+          .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.TimeRand && .lake/build/bin/lean-swe-mut-test --mode full --suite CmdLine && .lake/build/bin/lean-swe-test --suite CmdLine 0<&- 1>&- 2>&-
           .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --self-test-shrink
           .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --random-seed --self-test-shrink
           python3 -B -m unittest scripts/test_fuzz_changed.py
@@ -183,10 +183,10 @@ jobs:
           fi
 
       - name: Check spec promise theorem coverage
-        run: lake env lean --run scripts/CheckPromises.lean .lake/build/lib/lean
+        run: lake env lean -DwarningAsError=true --run scripts/CheckPromises.lean .lake/build/lib/lean
 
       - name: Check assumptions and error coverage
-        run: lake env lean --run scripts/CheckAssumptions.lean --allow-legacy --verify-log "$ASSUMP_LOG" --nonce "$ASSUMP_NONCE"
+        run: lake env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --allow-legacy --verify-log "$ASSUMP_LOG" --nonce "$ASSUMP_NONCE"
 
       - name: Check non-Lean thinness gate
         run: lake env lean -DwarningAsError=true --run scripts/CheckForeignThinness.lean .

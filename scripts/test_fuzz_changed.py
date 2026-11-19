@@ -90,7 +90,7 @@ class FuzzChangedUnitTests(unittest.TestCase):
         self.assertIn(".github/workflows/audit.yml", manifest.common_paths)
         self.assertIn(".github/actions/install-lean/action.yml", manifest.common_paths)
         by_name = {s.name: s for s in manifest.suites}
-        self.assertIn("selftest", by_name); self.assertIn("float", by_name)
+        self.assertIn("selftest", by_name); self.assertIn("float", by_name); self.assertIn("cmdline", by_name)
         self.assertIn("Fuzz/SelfTest.lean", by_name["selftest"].paths)
         daily = (REPO_ROOT / ".github" / "workflows" / "audit-daily.yml").read_text(encoding="utf-8")
         self.assertIn("scripts/test_fuzz_changed.py", daily); self.assertIn("--check-manifest", daily)

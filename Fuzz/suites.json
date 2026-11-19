@@ -11,15 +11,8 @@
     "scripts/fuzz_changed.py"
   ],
   "suites": {
-    "selftest": {
-      "paths": ["Fuzz/SelfTest.lean"]
-    },
-    "float": {
-      "paths": [
-        "Fuzz/Float/",
-        "LeanSwe/NumParse/",
-        "LeanSwe/Toml/"
-      ]
-    }
+    "selftest": { "paths": ["Fuzz/SelfTest.lean"] },
+    "float": { "paths": ["Fuzz/Float/", "LeanSwe/NumParse/", "LeanSwe/Toml/"] },
+    "cmdline": { "paths": ["Fuzz/CmdLine/", "LeanSwe/CmdLine/", "LeanSwe/EnvVars/", "LeanSwe/LinuxSyscall/c/timerand_fuzz_sig.c"] }
   }
 }

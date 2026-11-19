@@ -512,4 +512,841 @@ where
         let tailToks ← renderOpts rest
         .ok (headToks ++ tailToks)
 
+/-- Check whether byte `b` is a UTF-8 continuation byte (`0x80..0xBF`). -/
+def isUtf8ContinuationByte (b : UInt8) : Bool :=
+  0x80 ≤ b && b ≤ 0xBF
+
+/-- Pure model of Lean 4's `validate_utf8_one`: returns `some (cp, width)` iff a valid UTF-8
+    codepoint starts at byte offset `i` in `bs`. -/
+def validateUtf8OneWidth (bs : ByteArray) (i : Nat) : Option (Nat × Nat) :=
+  if _ : i < bs.size then
+    let b0 := bs[i]
+    if b0 < 0x80 then
+      some (b0.toNat, 1)
+    else if 0xC2 ≤ b0 && b0 ≤ 0xDF then
+      if _ : i + 1 < bs.size then
+        let b1 := bs[i + 1]
+        if isUtf8ContinuationByte b1 then
+          some (((b0.toNat &&& 0x1F) <<< 6) ||| (b1.toNat &&& 0x3F), 2)
+        else none
+      else none
+    else if 0xE0 ≤ b0 && b0 ≤ 0xEF then
+      if _ : i + 2 < bs.size then
+        let b1 := bs[i + 1]
+        let b2 := bs[i + 2]
+        let b1Ok :=
+          if b0 == 0xE0 then 0xA0 ≤ b1 && b1 ≤ 0xBF
+          else if b0 == 0xED then 0x80 ≤ b1 && b1 ≤ 0x9F
+          else isUtf8ContinuationByte b1
+        if b1Ok && isUtf8ContinuationByte b2 then
+          let cp := ((b0.toNat &&& 0x0F) <<< 12) ||| ((b1.toNat &&& 0x3F) <<< 6) ||| (b2.toNat &&& 0x3F)
+          some (cp, 3)
+        else none
+      else none
+    else if 0xF0 ≤ b0 && b0 ≤ 0xF4 then
+      if _ : i + 3 < bs.size then
+        let b1 := bs[i + 1]
+        let b2 := bs[i + 2]
+        let b3 := bs[i + 3]
+        let b1Ok :=
+          if b0 == 0xF0 then 0x90 ≤ b1 && b1 ≤ 0xBF
+          else if b0 == 0xF4 then 0x80 ≤ b1 && b1 ≤ 0x8F
+          else isUtf8ContinuationByte b1
+        if b1Ok && isUtf8ContinuationByte b2 && isUtf8ContinuationByte b3 then
+          let cp := ((b0.toNat &&& 0x07) <<< 18) ||| ((b1.toNat &&& 0x3F) <<< 12) |||
+            ((b2.toNat &&& 0x3F) <<< 6) ||| (b3.toNat &&& 0x3F)
+          some (cp, 4)
+        else none
+      else none
+    else none
+  else none
+
+/-- Advance `i` past all contiguous UTF-8 continuation bytes (`0x80..0xBF`), matching
+    Lean 4 `lean_mk_string_lossy_recover`. -/
+def skipUtf8ContinuationBytes (bs : ByteArray) (i : Nat) : Nat :=
+  go bs i (bs.size - i)
+where
+  go (bs : ByteArray) (pos : Nat) : Nat → Nat
+    | 0 => pos
+    | fuel + 1 =>
+      if _ : pos < bs.size then
+        if isUtf8ContinuationByte bs[pos] then go bs (pos + 1) fuel else pos
+      else pos
+
+/-- Pure bit-for-bit model of Lean 4's `lean_mk_string_from_bytes` / `lean_mk_string_lossy_recover`.
+    Preserves embedded NUL (`0x00`); replaces each invalid sequence plus all contiguous
+    continuation bytes `0x80..0xBF` with a single `U+FFFD`. -/
+def decodeUtf8LossyLean (bs : ByteArray) : String :=
+  String.ofList (go 0 bs.size []).reverse
+where
+  go (pos : Nat) (fuel : Nat) (accRev : List Char) : List Char :=
+    match fuel with
+    | 0 => accRev
+    | fuel' + 1 =>
+      if pos >= bs.size then accRev
+      else
+        match validateUtf8OneWidth bs pos with
+        | some (cp, w) => go (pos + w) fuel' (Char.ofNat cp :: accRev)
+        | none =>
+          let nextPos := skipUtf8ContinuationBytes bs (pos + 1)
+          go nextPos fuel' (Char.ofNat 0xFFFD :: accRev)
+
+/-- Strict UTF-8 decoder returning `none` on any invalid sequence. -/
+def decodeUtf8Strict? (bs : ByteArray) : Option String :=
+  (go 0 bs.size []).map (fun rev => String.ofList rev.reverse)
+where
+  go (pos : Nat) (fuel : Nat) (accRev : List Char) : Option (List Char) :=
+    match fuel with
+    | 0 => if pos >= bs.size then some accRev else none
+    | fuel' + 1 =>
+      if pos >= bs.size then some accRev
+      else
+        match validateUtf8OneWidth bs pos with
+        | some (cp, w) => go (pos + w) fuel' (Char.ofNat cp :: accRev)
+        | none => none
+
+/-- Pure model of `Internal.stripTrailingNewline`: drop all trailing `'\n'` and `'\r'` chars. -/
+def stripTrailingNewlineModel (s : String) : String :=
+  String.ofList (s.toList.reverse.dropWhile (fun c => c == '\n' || c == '\r')).reverse
+
+/-- Underlying stream semantics active on a `StdioChannelState`. -/
+inductive StreamBackend where
+  /-- Standard OS `FILE*` stream (`IO.getStdin`/`Stdout`/`Stderr`). -/
+  | osFileStar
+  /-- Thread-local in-memory `IO.FS.Stream.ofBuffer` (strict UTF-8, no sticky `ferror`). -/
+  | leanOfBuffer
+  /-- Unbuffered `LinuxSyscall.Files` 1-byte read / full-write backend. -/
+  | linuxSyscallFiles
+  deriving Repr, BEq, DecidableEq, Inhabited
+
+/-- Physical OS descriptor backing for `stdin`/`stdout`/`stderr`. -/
+inductive FdBacking where
+  /-- Pipe or FIFO with queued raw byte chunks, EOF/writer-closed status, and `O_NONBLOCK` flag. -/
+  | pipe (pending : ByteArray := ByteArray.empty) (writersClosed : Bool := true)
+      (nonblock : Bool := false) (readersClosed : Bool := false) (capacity : Nat := 65536)
+  /-- Seekable regular file (`memfd` / tmpfile) with optional `RLIMIT_FSIZE` cap. -/
+  | regFile (bytes : ByteArray := ByteArray.empty) (pos : Nat := 0) (fsizeLimit? : Option Nat := none)
+  /-- `/dev/null`: immediate EOF on read, discards all writes. -/
+  | nullDev
+  /-- `/dev/full`: reads NUL bytes; writes fail `ENOSPC` (`28`). -/
+  | fullDev
+  /-- Directory fd (`O_DIRECTORY`): reads fail `EISDIR` (`21`). -/
+  | dirFd
+  /-- Wrong open access mode (`O_WRONLY` on `stdin` or `O_RDONLY` on `stdout`/`stderr`): `EBADF` (`9`). -/
+  | wrongMode
+  /-- Closed fd (`close(0/1/2)` in-process): `EBADF` (`9`). -/
+  | closedFd
+  /-- Canonical PTY slave (`openpty`): queued `read(0)` chunks (`some bs` or `none` for `^D`), `masterOpen`, and buffered partial line before `\n`/`^D`. -/
+  | ptySlave (segments : List (Option ByteArray) := []) (masterOpen : Bool := true)
+      (pendingLine : ByteArray := ByteArray.empty)
+  /-- Hung-up PTY master whose slave fd is closed (`EIO` `5` on read; small writes up to `4096` bytes succeed, larger writes block). -/
+  | ptyHungup (written : Nat := 0)
+  deriving BEq, DecidableEq, Inhabited
+
+/-- Stateful channel model for one of `stdin` (`0`), `stdout` (`1`), or `stderr` (`2`). -/
+structure StdioChannelState where
+  /-- Kernel descriptor backing attached to this stdio slot. -/
+  backing : FdBacking := .nullDev
+  /-- Stream backend (`osFileStar` for Stage A `defaultOps`). -/
+  backend : StreamBackend := .osFileStar
+  /-- Glibc `FILE*` sticky `_IO_ERR_SEEN` flag poisoned by prior read error. -/
+  stickyReadErr : Bool := false
+  /-- Pending injected signal interruption (`some 4` for `EINTR` without `SA_RESTART`). -/
+  pendingInterrupt? : Option UInt32 := none
+  /-- Accumulated bytes actually flushed/written to kernel sink. -/
+  writtenBytes : ByteArray := ByteArray.empty
+  /-- In-memory buffer backing `StreamBackend.leanOfBuffer` (`IO.FS.Stream.ofBuffer`), isolated from OS FDs. -/
+  memBuffer : ByteArray := ByteArray.empty
+  /-- Current byte cursor within `memBuffer` for `StreamBackend.leanOfBuffer`. -/
+  memPos : Nat := 0
+  /-- Whether `SIGXFSZ` is ignored (`SIG_IGN`) rather than terminating with `SIG_DFL` on `RLIMIT_FSIZE`. -/
+  sigxfszIgnored : Bool := false
+  /-- Buffered bytes already pulled into glibc `FILE*` read buffer (`StreamBackend.osFileStar`). -/
+  stdioBuf : ByteArray := ByteArray.empty
+  /-- Glibc `FILE*` sticky `_IO_EOF_SEEN` flag latched when EOF occurs while `_IO_ERR_SEEN` is active. -/
+  stickyEof : Bool := false
+  deriving BEq, DecidableEq, Inhabited
+
+/-- Pure OS-world state for modeling all impure `LeanSwe.CmdLine` entry points. -/
+structure StdioWorld where
+  /-- Standard input (`fd 0`). -/
+  stdin : StdioChannelState := {}
+  /-- Standard output (`fd 1`). -/
+  stdout : StdioChannelState := { backing := .pipe ByteArray.empty false false false 65536 }
+  /-- Standard error (`fd 2`). -/
+  stderr : StdioChannelState := { backing := .pipe ByteArray.empty false false false 65536 }
+  /-- Raw POSIX `environ` entries (`KEY=VAL` byte arrays, preserving duplicates and invalid UTF-8). -/
+  rawEnviron : List ByteArray := []
+  /-- Whether `SIGPIPE` is ignored (`true` in Lean 4 runtime even when inherited as `SIG_DFL`). -/
+  sigpipeIgnored : Bool := true
+  /-- Last thread-local `errno` value observable when sticky `ferror` triggers without a fresh syscall error. -/
+  lastErrno : UInt32 := 0
+  deriving BEq, DecidableEq, Inhabited
+
+/-- Typed errno categories observable across the `CmdLine` `IO` boundary. -/
+inductive StdioErrClass where
+  /-- `EINTR` (`4`). -/
+  | interrupted
+  /-- `EIO` (`5`, PTY master hangup). -/
+  | hardwareFault
+  /-- `EBADF` (`9`: closed fd or wrong `O_RDONLY`/`O_WRONLY` mode). -/
+  | badFd
+  /-- `EAGAIN` / `EWOULDBLOCK` (`11`: `O_NONBLOCK` empty read pipe or full write pipe). -/
+  | wouldBlock
+  /-- `EISDIR` (`21`: directory fd on `stdin`). -/
+  | isDirectory
+  /-- `EFBIG` (`27`: `RLIMIT_FSIZE` exceeded). -/
+  | fileTooLarge
+  /-- `ENOSPC` (`28`: `/dev/full` or full tmpfs). -/
+  | noSpace
+  /-- `EPIPE` (`32`: broken pipe with `SIGPIPE = SIG_IGN`). -/
+  | brokenPipe
+  /-- Sticky `ferror` on glibc `FILE*` where next call consumed a line then failed. -/
+  | stickyReadError
+  /-- Blocking operation in single-threaded state (open empty pipe/PTY or `/dev/full` stream read). -/
+  | blocked
+  /-- Process terminated by an uncaught signal (e.g., `SIGXFSZ` `25` on `RLIMIT_FSIZE`). -/
+  | terminatedBySignal (sig : UInt8)
+  /-- Strict UTF-8 error thrown by `IO.FS.Stream.ofBuffer`. -/
+  | invalidUtf8Buffer
+  deriving Repr, BEq, DecidableEq, Inhabited
+
+/-- Map `StdioErrClass` to its Linux `errno` code (`0` if not an `errno`-backed failure). -/
+def stdioErrClassToErrno : StdioErrClass → UInt32
+  | .interrupted => 4
+  | .hardwareFault => 5
+  | .badFd => 9
+  | .wouldBlock => 11
+  | .isDirectory => 21
+  | .fileTooLarge => 27
+  | .noSpace => 28
+  | .brokenPipe => 32
+  | _ => 0
+
+/-- Map stale thread-local `lastErrno` observable under sticky `ferror` back to `StdioErrClass`. -/
+def stdioErrClassOfErrno (err : UInt32) : StdioErrClass :=
+  match err with
+  | 4 => .interrupted
+  | 5 => .hardwareFault
+  | 9 => .badFd
+  | 11 => .wouldBlock
+  | 21 => .isDirectory
+  | 27 => .fileTooLarge
+  | 28 => .noSpace
+  | 32 => .brokenPipe
+  | _ => .stickyReadError
+
+/-- Outcome of an `IO` step, explicitly separating normal return values from uncaught `IO.Error` throws. -/
+inductive IoStepOutcome (α : Type) where
+  /-- Action completed normally and returned `val`. -/
+  | returned (val : α)
+  /-- Action threw an uncaught `IO.Error` belonging to `errClass`. -/
+  | threwIo (errClass : StdioErrClass)
+  deriving Repr, BEq, DecidableEq
+
+/-- Look up the first `KEY=VAL` entry in `rawEnviron` matching `key` (pure POSIX `getenv(3)` semantics),
+    validating `key` (`isValidEnvKey`) and decoding the value strictly as UTF-8. -/
+def stepDefaultGetEnv (w : StdioWorld) (key : String) : Except CmdLineError (Option String) :=
+  if !isValidEnvKey key then
+    .error { kind := .ioError, message := "invalid environment variable name", target := some key }
+  else
+    let keyBytes := key.toUTF8
+    match findEntry w.rawEnviron keyBytes with
+    | none => .ok none
+    | some valBytes =>
+      match decodeUtf8Strict? valBytes with
+      | some s => .ok (some s)
+      | none => .error { kind := .ioError, message := "invalid UTF-8 in environment value", target := some key }
+where
+  hasPrefixEq (entry keyBytes : ByteArray) : Bool :=
+    entry.size > keyBytes.size &&
+    entry[keyBytes.size]! == 0x3D &&
+    (List.range keyBytes.size).all (fun i => entry[i]! == keyBytes[i]!)
+  findEntry : List ByteArray → ByteArray → Option ByteArray
+    | [], _ => none
+    | e :: es, kb =>
+      if hasPrefixEq e kb then
+        some (e.extract (kb.size + 1) e.size)
+      else
+        findEntry es kb
+
+/-- Split `bs` at the first newline byte `0x0A`, returning `(lineWithLf, rest)` if found. -/
+def splitLineBytes (bs : ByteArray) : Option (ByteArray × ByteArray) :=
+  go 0 bs.size
+where
+  go (pos : Nat) : Nat → Option (ByteArray × ByteArray)
+    | 0 => none
+    | fuel + 1 =>
+      if _ : pos < bs.size then
+        if bs[pos] == 0x0A then
+          some (bs.extract 0 (pos + 1), bs.extract (pos + 1) bs.size)
+        else
+          go (pos + 1) fuel
+      else
+        none
+
+/-- Split `memBuffer` from `startPos` matching Lean 4 `IO.FS.Stream.ofBuffer.getLine`:
+    stops *before* `0x00` (without advancing `nextPos` past `0x00`) or *after* `0x0A`. -/
+def splitBufferLineBytes (bs : ByteArray) (startPos : Nat := 0) : ByteArray × Nat :=
+  go startPos (bs.size - startPos + 1)
+where
+  go (i fuel : Nat) : ByteArray × Nat :=
+    match fuel with
+    | 0 => (bs.extract startPos bs.size, bs.size)
+    | fuel' + 1 =>
+      if _ : i < bs.size then
+        let b := bs[i]
+        if b == 0x00 then
+          (bs.extract startPos i, i)
+        else if b == 0x0A then
+          (bs.extract startPos (i + 1), i + 1)
+        else
+          go (i + 1) fuel'
+      else
+        (bs.extract startPos bs.size, bs.size)
+
+/-- Canonical Linux `n_tty` (`ICANON | ICRNL`) input feeder: translates `0x0D` to `0x0A`,
+    splits completed lines, and flushes `partialLine` or emits `none` on `^D` (`0x04`). -/
+def ptyFeedBytes (segments : List (Option ByteArray)) (pendingLine : ByteArray) (bs : ByteArray) :
+    List (Option ByteArray) × ByteArray :=
+  let (addedRev, rem) := go 0 bs.size [] pendingLine
+  (segments ++ addedRev.reverse, rem)
+where
+  go (i fuel : Nat) (accRev : List (Option ByteArray)) (cur : ByteArray) :
+      List (Option ByteArray) × ByteArray :=
+    match fuel with
+    | 0 => (accRev, cur)
+    | fuel' + 1 =>
+      if _ : i < bs.size then
+        let b := bs[i]
+        let b' := if b == 0x0D then 0x0A else b
+        if b' == 0x0A then
+          go (i + 1) fuel' (some (cur.push 0x0A) :: accRev) ByteArray.empty
+        else if b' == 0x04 then
+          if cur.isEmpty then
+            go (i + 1) fuel' (none :: accRev) ByteArray.empty
+          else
+            go (i + 1) fuel' (some cur :: accRev) ByteArray.empty
+        else
+          go (i + 1) fuel' accRev (cur.push b')
+      else
+        (accRev, cur)
+
+/-- Consume canonical PTY slave segments on `fgets`, splitting on interior `0x0A` and returning `hitCtrlDEof`. -/
+def consumePtySegments (acc : ByteArray) :
+    List (Option ByteArray) → Option (ByteArray × List (Option ByteArray) × Bool)
+  | [] => none
+  | none :: rest => some (acc, rest, true)
+  | some chunk :: rest =>
+    let combined := acc ++ chunk
+    match splitLineBytes combined with
+    | some (lineBs, rem) =>
+      let rest' := if rem.isEmpty then rest else some rem :: rest
+      some (lineBs, rest', false)
+    | none =>
+      consumePtySegments combined rest
+
+/-- Decode raw line bytes for `backend`: strict UTF-8 for `.leanOfBuffer`, Lean lossy UTF-8 for OS streams. -/
+def decodeStreamLineBytes (backend : StreamBackend) (bs : ByteArray) : IoStepOutcome String :=
+  match backend with
+  | .leanOfBuffer =>
+    match decodeUtf8Strict? bs with
+    | some s => .returned s
+    | none => .threwIo .invalidUtf8Buffer
+  | .osFileStar | .linuxSyscallFiles =>
+    .returned (decodeUtf8LossyLean bs)
+
+/-- Update `w.lastErrno` when an `IO` step throws a kernel `errno`-backed error. -/
+def updateWorldErrno {α : Type} (w : StdioWorld) (out : IoStepOutcome α) : StdioWorld :=
+  match out with
+  | .returned _ => w
+  | .threwIo err =>
+    let code := stdioErrClassToErrno err
+    if code != 0 then { w with lastErrno := code } else w
+
+/-- Pull up to 4096-byte (`__fbufsize`) chunks from a regular file until LF or EOF. -/
+def pullRegFileChunks (bytes : ByteArray) (curPos : Nat) (curBuf : ByteArray) (fuel : Nat) :
+    Option (ByteArray × ByteArray) × Nat × ByteArray :=
+  match fuel with
+  | 0 => (none, curPos, curBuf)
+  | fuel' + 1 =>
+    if curPos >= bytes.size then
+      (none, curPos, curBuf)
+    else
+      let nextPos := min bytes.size (curPos + 4096)
+      let avail := curBuf ++ bytes.extract curPos nextPos
+      match splitLineBytes avail with
+      | some pair => (some pair, nextPos, ByteArray.empty)
+      | none =>
+        if nextPos >= bytes.size then
+          (none, bytes.size, avail)
+        else
+          pullRegFileChunks bytes nextPos avail fuel'
+
+/-- Pull up to 4096-byte (`__fbufsize`) chunks from a pipe until LF or drained. -/
+def pullPipeChunks (curBuf remPending : ByteArray) (fuel : Nat) :
+    Option (ByteArray × ByteArray) × ByteArray × ByteArray :=
+  match fuel with
+  | 0 => (none, remPending, curBuf)
+  | fuel' + 1 =>
+    if remPending.isEmpty then
+      (none, ByteArray.empty, curBuf)
+    else
+      let pull := min 4096 remPending.size
+      let avail := curBuf ++ remPending.extract 0 pull
+      let restPending := remPending.extract pull remPending.size
+      match splitLineBytes avail with
+      | some pair => (some pair, restPending, ByteArray.empty)
+      | none => pullPipeChunks avail restPending fuel'
+
+/-- Pure transition of `IO.getStdin.getLine` on `StdioWorld`. -/
+def stepRawGetLine (w : StdioWorld) : IoStepOutcome String × StdioWorld :=
+  let ch := w.stdin
+  if ch.backend == .leanOfBuffer then
+    let (lineBs, nextPos) := splitBufferLineBytes ch.memBuffer ch.memPos
+    let ch' := { ch with memPos := nextPos }
+    (decodeStreamLineBytes .leanOfBuffer lineBs, { w with stdin := ch' })
+  else
+    let sticky := ch.backend == .osFileStar && ch.stickyReadErr
+    let stickyErr := stdioErrClassOfErrno w.lastErrno
+    match (if ch.backend == .osFileStar then splitLineBytes ch.stdioBuf else none) with
+    | some (lineBs, restBuf) =>
+      let ch' := { ch with stdioBuf := restBuf }
+      let w' := { w with stdin := ch' }
+      if sticky then (.threwIo stickyErr, w') else (decodeStreamLineBytes ch.backend lineBs, w')
+    | none =>
+      if ch.backend == .osFileStar && ch.stickyEof then
+        if sticky then
+          (.threwIo stickyErr, { w with stdin := { ch with stdioBuf := ByteArray.empty } })
+        else
+          (.returned "", { w with stdin := { ch with stdioBuf := ByteArray.empty, stickyEof := false } })
+      else
+        match ch.backing with
+        | .closedFd | .wrongMode =>
+          let ch' := { ch with stdioBuf := ByteArray.empty, stickyReadErr := ch.backend == .osFileStar || ch.stickyReadErr }
+          (.threwIo .badFd, { w with stdin := ch', lastErrno := 9 })
+        | .dirFd =>
+          let ch' := { ch with stdioBuf := ByteArray.empty, stickyReadErr := ch.backend == .osFileStar || ch.stickyReadErr }
+          (.threwIo .isDirectory, { w with stdin := ch', lastErrno := 21 })
+        | .nullDev =>
+          if ch.backend == .osFileStar then
+            let ch' := { ch with stdioBuf := ByteArray.empty, stickyEof := sticky }
+            if sticky then (.threwIo stickyErr, { w with stdin := ch' })
+            else (decodeStreamLineBytes ch.backend ch.stdioBuf, { w with stdin := ch' })
+          else
+            (decodeStreamLineBytes ch.backend ch.stdioBuf, { w with stdin := { ch with stdioBuf := ByteArray.empty } })
+        | .fullDev =>
+          (.threwIo .blocked, w)
+        | .regFile bytes pos fsizeLimit? =>
+          if ch.backend == .osFileStar then
+            let (split?, newPos, eofBuf) :=
+              pullRegFileChunks bytes pos ch.stdioBuf ((bytes.size - pos) / 4096 + 2)
+            match split? with
+            | some (lineBs, rest) =>
+              let ch' := { ch with backing := .regFile bytes newPos fsizeLimit?, stdioBuf := rest }
+              let w' := { w with stdin := ch' }
+              if sticky then (.threwIo stickyErr, w') else (decodeStreamLineBytes ch.backend lineBs, w')
+            | none =>
+              let ch' := { ch with backing := .regFile bytes newPos fsizeLimit?, stdioBuf := ByteArray.empty, stickyEof := sticky }
+              let w' := { w with stdin := ch' }
+              if sticky then (.threwIo stickyErr, w') else (decodeStreamLineBytes ch.backend eofBuf, w')
+          else
+            let avail := ch.stdioBuf ++ bytes.extract pos bytes.size
+            let (lineBs, newPos, remBuf) :=
+              match splitLineBytes avail with
+              | some (l, _) =>
+                (l, pos + (l.size - ch.stdioBuf.size),
+                 ch.stdioBuf.extract (min l.size ch.stdioBuf.size) ch.stdioBuf.size)
+              | none => (avail, max pos bytes.size, ByteArray.empty)
+            let ch' := { ch with backing := .regFile bytes newPos fsizeLimit?, stdioBuf := remBuf }
+            (decodeStreamLineBytes ch.backend lineBs, { w with stdin := ch' })
+        | .pipe pending writersClosed nonblock readersClosed cap =>
+          let (split?, newPending, eofBuf) :=
+            if ch.backend == .osFileStar then
+              pullPipeChunks ch.stdioBuf pending (pending.size / 4096 + 2)
+            else
+              let avail := ch.stdioBuf ++ pending
+              match splitLineBytes avail with
+              | some (l, rest) => (some (l, ByteArray.empty), rest, ByteArray.empty)
+              | none => (none, ByteArray.empty, avail)
+          match split? with
+          | some (lineBs, newStdioBuf) =>
+            let ch' := { ch with backing := .pipe newPending writersClosed nonblock readersClosed cap, stdioBuf := newStdioBuf }
+            let w' := { w with stdin := ch' }
+            if sticky then (.threwIo stickyErr, w') else (decodeStreamLineBytes ch.backend lineBs, w')
+          | none =>
+            if writersClosed then
+              let eofLatch := ch.backend == .osFileStar && sticky
+              let ch' := { ch with backing := .pipe ByteArray.empty true nonblock readersClosed cap, stdioBuf := ByteArray.empty, stickyEof := eofLatch }
+              let w' := { w with stdin := ch' }
+              if sticky then (.threwIo stickyErr, w') else (decodeStreamLineBytes ch.backend eofBuf, w')
+            else if nonblock then
+              let ch' :=
+                { ch with
+                  backing := .pipe ByteArray.empty false true readersClosed cap
+                  stdioBuf := ByteArray.empty
+                  stickyReadErr := ch.backend == .osFileStar || ch.stickyReadErr }
+              (.threwIo .wouldBlock, { w with stdin := ch', lastErrno := 11 })
+            else
+              match ch.pendingInterrupt? with
+              | some _ =>
+                let ch' :=
+                  { ch with
+                    backing := .pipe ByteArray.empty false false readersClosed cap
+                    stdioBuf := ByteArray.empty
+                    stickyReadErr := ch.backend == .osFileStar || ch.stickyReadErr
+                    pendingInterrupt? := none }
+                (.threwIo .interrupted, { w with stdin := ch', lastErrno := 4 })
+              | none =>
+                (.threwIo .blocked, w)
+        | .ptySlave segs masterOpen pendingLine =>
+          if !masterOpen then
+            let eofLatch := ch.backend == .osFileStar && sticky
+            let ch' := { ch with backing := .ptySlave [] false ByteArray.empty, stdioBuf := ByteArray.empty, stickyEof := eofLatch }
+            let w' := { w with stdin := ch' }
+            if sticky then (.threwIo stickyErr, w') else (decodeStreamLineBytes ch.backend ch.stdioBuf, w')
+          else
+            match consumePtySegments ch.stdioBuf segs with
+            | some (lineBs, rest, hitCtrlD) =>
+              let eofLatch := ch.backend == .osFileStar && sticky && hitCtrlD
+              let ch' := { ch with backing := .ptySlave rest true pendingLine, stdioBuf := ByteArray.empty, stickyEof := eofLatch }
+              let w' := { w with stdin := ch' }
+              if sticky then (.threwIo stickyErr, w') else (decodeStreamLineBytes ch.backend lineBs, w')
+            | none =>
+              match ch.pendingInterrupt? with
+              | some _ =>
+                let ch' :=
+                  { ch with
+                    backing := .ptySlave [] true pendingLine
+                    stdioBuf := ByteArray.empty
+                    stickyReadErr := ch.backend == .osFileStar || ch.stickyReadErr
+                    pendingInterrupt? := none }
+                (.threwIo .interrupted, { w with stdin := ch', lastErrno := 4 })
+              | none =>
+                (.threwIo .blocked, w)
+        | .ptyHungup _ =>
+          let ch' := { ch with stdioBuf := ByteArray.empty, stickyReadErr := ch.backend == .osFileStar || ch.stickyReadErr }
+          (.threwIo .hardwareFault, { w with stdin := ch', lastErrno := 5 })
+
+/-- Pure transition of `defaultOps.readLine` on `StdioWorld`. -/
+def stepDefaultReadLine (w : StdioWorld) : IoStepOutcome (Option String) × StdioWorld :=
+  match stepRawGetLine w with
+  | (.threwIo e, w') => (.threwIo e, w')
+  | (.returned line, w') =>
+    if line.isEmpty then
+      (.returned none, w')
+    else
+      (.returned (some (stripTrailingNewlineModel line)), w')
+
+/-- Valid kernel partial-write bound for an `O_NONBLOCK` pipe under glibc `FILE*` chunking. -/
+def isValidNonblockPipeWriteBytes (avail bsSize actualWritten : Nat) : Bool :=
+  actualWritten ≤ min avail bsSize
+
+/-- Write `chunk` into regular-file `bytes` at `pos`, zero-filling `[bytes.size .. pos)` when `pos > bytes.size`. -/
+def writeAtRegFileOffset (bytes : ByteArray) (pos : Nat) (chunk : ByteArray) : ByteArray :=
+  if chunk.isEmpty then bytes
+  else if pos > bytes.size then
+    bytes ++ ByteArray.mk (Array.replicate (pos - bytes.size) 0) ++ chunk
+  else if pos == bytes.size then
+    bytes ++ chunk
+  else
+    bytes.extract 0 pos ++ chunk ++ bytes.extract (min (pos + chunk.size) bytes.size) bytes.size
+
+/-- Pure transition of `putStr text >> flush` on a `StdioChannelState`. -/
+def stepChannelWrite (ch : StdioChannelState) (text : String) : IoStepOutcome Unit × StdioChannelState :=
+  if text.isEmpty && (ch.backend == .osFileStar || ch.backend == .leanOfBuffer) then
+    (.returned (), ch)
+  else if ch.backend == .leanOfBuffer then
+    let bs := text.toUTF8
+    let newBuf := bs.copySlice 0 ch.memBuffer ch.memPos bs.size false
+    let ch' :=
+      { ch with
+        memBuffer := newBuf
+        memPos := ch.memPos + bs.size
+        writtenBytes := ch.writtenBytes ++ bs }
+    (.returned (), ch')
+  else
+    let bs := text.toUTF8
+    match ch.backing with
+    | .closedFd | .wrongMode | .dirFd => (.threwIo .badFd, ch)
+    | .fullDev =>
+      (.threwIo .noSpace, ch)
+    | .nullDev => (.returned (), ch)
+    | .pipe pending writersClosed nonblock readersClosed cap =>
+      if bs.isEmpty then
+        (.returned (), ch)
+      else if readersClosed then
+        (.threwIo .brokenPipe, ch)
+      else if pending.size + bs.size > cap then
+        if nonblock then
+          let avail := if cap > pending.size then cap - pending.size else 0
+          let partialBs := bs.extract 0 (min avail bs.size)
+          let ch' :=
+            { ch with
+              backing := .pipe (pending ++ partialBs) writersClosed nonblock readersClosed cap
+              writtenBytes := ch.writtenBytes ++ partialBs }
+          (.threwIo .wouldBlock, ch')
+        else
+          (.threwIo .blocked, ch)
+      else
+        let ch' :=
+          { ch with
+            backing := .pipe (pending ++ bs) writersClosed nonblock readersClosed cap
+            writtenBytes := ch.writtenBytes ++ bs }
+        (.returned (), ch')
+    | .regFile bytes pos fsizeLimit? =>
+      if bs.isEmpty then
+        (.returned (), ch)
+      else
+        let avail? : Option Nat :=
+          match fsizeLimit? with
+          | some lim => if pos + bs.size > lim then some (if lim > pos then lim - pos else 0) else none
+          | none => none
+        match avail? with
+        | some avail =>
+          let partialBs := bs.extract 0 (min avail bs.size)
+          let newBytes := writeAtRegFileOffset bytes pos partialBs
+          let ch' :=
+            { ch with
+              backing := .regFile newBytes (pos + partialBs.size) fsizeLimit?
+              writtenBytes := ch.writtenBytes ++ partialBs }
+          let err := if ch.sigxfszIgnored then StdioErrClass.fileTooLarge else StdioErrClass.terminatedBySignal 25
+          (.threwIo err, ch')
+        | none =>
+          let newBytes := writeAtRegFileOffset bytes pos bs
+          let ch' :=
+            { ch with
+              backing := .regFile newBytes (pos + bs.size) fsizeLimit?
+              writtenBytes := ch.writtenBytes ++ bs }
+          (.returned (), ch')
+    | .ptySlave segs masterOpen pendingLine =>
+      if !masterOpen then
+        (.threwIo .hardwareFault, ch)
+      else if bs.isEmpty then
+        (.returned (), ch)
+      else
+        let ch' :=
+          { ch with
+            backing := .ptySlave segs true pendingLine
+            writtenBytes := ch.writtenBytes ++ bs }
+        (.returned (), ch')
+    | .ptyHungup written =>
+      if written + bs.size > 4096 then
+        (.threwIo .blocked, ch)
+      else
+        let ch' :=
+          { ch with
+            backing := .ptyHungup (written + bs.size)
+            writtenBytes := ch.writtenBytes ++ bs }
+        (.returned (), ch')
+
+/-- Pure transition of `defaultOps.writeOut` on `StdioWorld`. -/
+def stepDefaultWriteOut (w : StdioWorld) (text : String) : IoStepOutcome Unit × StdioWorld :=
+  let (out0, ch') := stepChannelWrite w.stdout text
+  let out :=
+    if out0 == .threwIo .brokenPipe && !w.sigpipeIgnored then
+      .threwIo (.terminatedBySignal 13)
+    else
+      out0
+  (out, updateWorldErrno { w with stdout := ch' } out)
+
+/-- Pure transition of `defaultOps.writeErr` on `StdioWorld`. -/
+def stepDefaultWriteErr (w : StdioWorld) (text : String) : IoStepOutcome Unit × StdioWorld :=
+  let (out0, ch') := stepChannelWrite w.stderr text
+  let out :=
+    if out0 == .threwIo .brokenPipe && !w.sigpipeIgnored then
+      .threwIo (.terminatedBySignal 13)
+    else
+      out0
+  (out, updateWorldErrno { w with stderr := ch' } out)
+
+/-- Pure transition of `defaultApi.promptLine` (catching OS `IO.Error` into `.ioError`). -/
+def stepPromptLine (w : StdioWorld) (prompt : String) (default : Option String := none) :
+    Except CmdLineError String × StdioWorld :=
+  match stepDefaultWriteOut w prompt with
+  | (.threwIo _, w1) =>
+    (.error { kind := .ioError, message := "stdio I/O error" }, w1)
+  | (.returned (), w1) =>
+    match stepDefaultReadLine w1 with
+    | (.threwIo _, w2) =>
+      (.error { kind := .ioError, message := "stdio I/O error" }, w2)
+    | (.returned none, w2) =>
+      (.error { kind := .eof, message := "unexpected end of input" }, w2)
+    | (.returned (some line), w2) =>
+      let trimmed := trimAscii line
+      if trimmed.isEmpty then
+        match default with
+        | some d => (.ok d, w2)
+        | none => (.ok "", w2)
+      else
+        (.ok trimmed, w2)
+
+/-- Pure transition of `defaultApi.confirm` (catching OS `IO.Error` into `.ioError`). -/
+def stepConfirm (w : StdioWorld) (prompt : String) (default : Option Bool := none)
+    (maxAttempts : Nat := 100) : Except CmdLineError Bool × StdioWorld :=
+  match maxAttempts with
+  | 0 => (.error { kind := .invalidValue, message := "exceeded maximum confirmation attempts" }, w)
+  | n + 1 =>
+    match stepDefaultWriteOut w prompt with
+    | (.threwIo _, w1) =>
+      (.error { kind := .ioError, message := "stdio I/O error" }, w1)
+    | (.returned (), w1) =>
+      match stepDefaultReadLine w1 with
+      | (.threwIo _, w2) =>
+        (.error { kind := .ioError, message := "stdio I/O error" }, w2)
+      | (.returned none, w2) =>
+        (.error { kind := .eof, message := "unexpected end of input" }, w2)
+      | (.returned (some line), w2) =>
+        let norm := asciiLower (trimAscii line)
+        if norm.isEmpty then
+          match default with
+          | some b => (.ok b, w2)
+          | none =>
+            match n with
+            | 0 => (.error { kind := .invalidValue, message := "exceeded maximum confirmation attempts" }, w2)
+            | _ + 1 =>
+              match stepDefaultWriteErr w2 "Please answer yes or no.\n" with
+              | (.threwIo _, w3) =>
+                (.error { kind := .ioError, message := "stdio I/O error" }, w3)
+              | (.returned (), w3) => stepConfirm w3 prompt default n
+        else if norm == "y" || norm == "yes" then
+          (.ok true, w2)
+        else if norm == "n" || norm == "no" then
+          (.ok false, w2)
+        else
+          match n with
+          | 0 => (.error { kind := .invalidValue, message := "exceeded maximum confirmation attempts" }, w2)
+          | _ + 1 =>
+            match stepDefaultWriteErr w2 "Please answer yes or no.\n" with
+            | (.threwIo _, w3) =>
+              (.error { kind := .ioError, message := "stdio I/O error" }, w3)
+            | (.returned (), w3) => stepConfirm w3 prompt default n
+
+/-- Find index of first `0x3D` (`'='`) byte in `bs`. -/
+def findFirstEqByte (bs : ByteArray) : Option Nat :=
+  go 0 bs.size
+where
+  go (i fuel : Nat) : Option Nat :=
+    match fuel with
+    | 0 => none
+    | fuel' + 1 =>
+      if _ : i < bs.size then
+        if bs[i] == 0x3D then some i else go (i + 1) fuel'
+      else none
+
+/-- Sort tagged `(key, idx, val)` array and keep lowest-index entry per `key`. -/
+def dedupSortedFirst {α : Type} (tagged : Array (String × Nat × α)) : Array (String × α) := Id.run do
+  let sorted := tagged.qsort (fun a b => if a.1 == b.1 then a.2.1 < b.2.1 else a.1 < b.1)
+  let mut out : Array (String × α) := Array.mkEmpty sorted.size
+  for entry in sorted do
+    let keep := match out.back? with | some prev => prev.1 != entry.1 | none => true
+    if keep then
+      out := out.push (entry.1, entry.2.2)
+  return out
+
+/-- Binary search in a strictly sorted `Array (String × α)`. -/
+def bsearchSortedKey {α : Type} (arr : Array (String × α)) (k : String) : Option α :=
+  go 0 arr.size (arr.size + 1)
+where
+  go (lo hi fuel : Nat) : Option α :=
+    match fuel with
+    | 0 => none
+    | fuel' + 1 =>
+      if lo < hi then
+        let mid := (lo + hi) / 2
+        match arr[mid]? with
+        | none => none
+        | some entry =>
+          if entry.1 == k then some entry.2
+          else if entry.1 < k then go (mid + 1) hi fuel'
+          else go lo mid fuel'
+      else none
+
+/-- Tail-recursive model of `resolveOptions` in `Id`, `O((M + U + E) log(U + E))` and safe on arbitrarily long option lists under 1 MiB stack. -/
+def resolveOptionsModelTR (w : StdioWorld) (visibleOpts : List OptSpec)
+    (cliOpts : List (String × List OptValue)) (validators : CustomValidators := []) :
+    Except CmdLineError (List (String × List OptValue)) :=
+  let cliArr := dedupSortedFirst (indexCli 0 cliOpts #[])
+  let envArr := dedupSortedFirst (indexEnv 0 w.rawEnviron #[])
+  go cliArr envArr visibleOpts []
+where
+  indexCli (i : Nat) : List (String × List OptValue) → Array (String × Nat × List OptValue) → Array (String × Nat × List OptValue)
+    | [], acc => acc
+    | (k, vs) :: rest, acc => indexCli (i + 1) rest (acc.push (k, i, vs))
+  indexEnv (i : Nat) : List ByteArray → Array (String × Nat × ByteArray) → Array (String × Nat × ByteArray)
+    | [], acc => acc
+    | entry :: rest, acc =>
+      let acc' :=
+        match findFirstEqByte entry with
+        | some eqPos =>
+          match decodeUtf8Strict? (entry.extract 0 eqPos) with
+          | some kStr => acc.push (kStr, i, entry.extract (eqPos + 1) entry.size)
+          | none => acc
+        | none => acc
+      indexEnv (i + 1) rest acc'
+  lookupEnvFast (envArr : Array (String × ByteArray)) (key : String) : Except CmdLineError (Option String) :=
+    if !isValidEnvKey key then
+      .error { kind := .ioError, message := "invalid environment variable name", target := some key }
+    else
+      match bsearchSortedKey envArr key with
+      | none => .ok none
+      | some valBytes =>
+        match decodeUtf8Strict? valBytes with
+        | some s => .ok (some s)
+        | none => .error { kind := .ioError, message := "invalid UTF-8 in environment value", target := some key }
+  go (cliArr : Array (String × List OptValue)) (envArr : Array (String × ByteArray)) :
+      List OptSpec → List (String × List OptValue) → Except CmdLineError (List (String × List OptValue))
+    | [], accRev => .ok accRev.reverse
+    | opt :: rest, accRev =>
+      let cliVals := (bsearchSortedKey cliArr opt.name).getD []
+      match resolveSingleOption (m := Id) (fun key => lookupEnvFast envArr key) opt cliVals validators with
+      | .error e => .error e
+      | .ok none => go cliArr envArr rest accRev
+      | .ok (some vals) => go cliArr envArr rest ((opt.name, vals) :: accRev)
+
+/-- Pure transition of `resolveOptions` using `stepDefaultGetEnv` on `StdioWorld`. -/
+def stepResolveOptionsWithEnv (w : StdioWorld) (visibleOpts : List OptSpec)
+    (cliOpts : List (String × List OptValue)) (validators : CustomValidators := []) :
+    Except CmdLineError (List (String × List OptValue)) :=
+  resolveOptionsModelTR w visibleOpts cliOpts validators
+
+/-- Pure transition of `defaultApi.runCliWith` routing given a resolved parse outcome. -/
+def stepRunCliWithOutcome (w : StdioWorld) (parseOutcome : Except CmdLineError ParsedCmd)
+    (handler : ParsedCmd → StdioWorld → IoStepOutcome UInt32 × StdioWorld) :
+    IoStepOutcome UInt32 × StdioWorld :=
+  match parseOutcome with
+  | .error e =>
+    match e.kind with
+    | .helpRequested | .versionRequested =>
+      match stepDefaultWriteOut w e.message with
+      | (.threwIo err, w1) => (.threwIo err, w1)
+      | (.returned (), w1) => (.returned 0, w1)
+    | _ =>
+      match stepDefaultWriteErr w (e.message ++ "\n") with
+      | (.threwIo err, w1) => (.threwIo err, w1)
+      | (.returned (), w1) => (.returned 2, w1)
+  | .ok parsed => handler parsed w
+
+/-- Truncate `bs` at its first `0x00` byte, matching C `strlen` / `execve` `argv` C strings. -/
+def truncateAtNul (bs : ByteArray) : ByteArray :=
+  go 0 bs.size
+where
+  go (i fuel : Nat) : ByteArray :=
+    match fuel with
+    | 0 => bs
+    | fuel' + 1 =>
+      if _ : i < bs.size then
+        if bs[i] == 0x00 then bs.extract 0 i else go (i + 1) fuel'
+      else bs
+
+/-- Pure model of Lean 4 startup decoding raw OS `argv` C strings (`strlen` NUL-truncation + `decodeUtf8LossyLean`). -/
+def decodeArgvModel (rawArgv : List ByteArray) : List String :=
+  rawArgv.map (fun bs => decodeUtf8LossyLean (truncateAtNul bs))
+
+/-- Pure model of Linux process exit code (`WEXITSTATUS` or `128 + sig`) observed by a parent process. -/
+def osExitCodeModel : IoStepOutcome UInt32 → UInt8
+  | .returned code => UInt8.ofNat (code.toNat % 256)
+  | .threwIo (.terminatedBySignal sig) => 128 + sig
+  | .threwIo _ => 1
+
 end LeanSwe.CmdLine.Model

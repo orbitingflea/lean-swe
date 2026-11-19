@@ -691,9 +691,19 @@ private def moduleNameUnderLeanSwe (leanSweDir entry : System.FilePath) : Name :
 /-- Audit compiled `.olean` artifacts reachable from `LeanSwe` for promise coverage. -/
 unsafe def main (args : List String) : IO UInt32 := do
   let libDir : System.FilePath := args.headD ".lake/build/lib/lean"
-  let repoDir : System.FilePath := match args.drop 1 with
-    | r :: _ => r
-    | [] => "."
+  let cleanStr := String.ofList (libDir.toString.toList.reverse.dropWhile (· == System.FilePath.pathSeparator)).reverse
+  let cleanLib : System.FilePath := if cleanStr.isEmpty then libDir else System.FilePath.mk cleanStr
+  let inferredRepo := cleanLib / ".." / ".." / ".." / ".."
+  let repoDir : System.FilePath ← match args.drop 1 with
+    | r :: _ => pure r
+    | [] =>
+      if libDir == System.FilePath.mk ".lake/build/lib/lean" then
+        pure "."
+      else if ← (inferredRepo / "LeanSwe").isDir then
+        pure inferredRepo
+      else
+        IO.eprintln s!"MISSING_REPO_DIR: expected LeanSwe near {cleanLib}"
+        return 1
   unless ← (libDir / "LeanSwe.olean").pathExists do
     IO.eprintln s!"MISSING_OLEAN: LeanSwe ({libDir / "LeanSwe.olean"})"
     return 1
