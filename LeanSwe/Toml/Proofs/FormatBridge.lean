@@ -441,7 +441,7 @@ private theorem formatWithNum_roundTrip_model (numApi : NumParseApi) (hnum : Val
   unfold formatWithNum; cases hlines : formatSectionLines numApi [] doc with
   | nil =>
     refine ⟨#[], ?_, by simp [TomlTableEquiv, formatSectionLines_nil_eq_nil numApi [] doc hlines, TomlTableEquivList, lookupKeyList]⟩
-    simp [parseWithNum, parseCharsWithNum, normalizeChars, parseDocumentFuel, skipTriviaNewlines, skipTriviaNewlinesAux, entriesToTomlList, bind, Except.bind]
+    simp [parseWithNum, parseCharsWithNum, normalizeChars, normalizeCharsAux, parseDocumentFuel, skipTriviaNewlines, skipTriviaNewlinesAux, entriesToTomlList, bind, Except.bind]
   | cons hd tl =>
     have hwf_b : wellFormedTableBool doc = true := hwf
     have hwf_p : noDupKeysBool doc.toList = true ∧ wellFormedValueBool.wellFormedTableListBool doc.toList = true := by

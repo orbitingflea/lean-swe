@@ -278,9 +278,13 @@ private theorem wellFormedAotBool_append_empty (l : List (List (String × Node))
   | nil => simp [wellFormedAotBool, entriesNoDup, wellFormedNodeListBool]
   | cons _ _ ih => simp only [List.cons_append, wellFormedAotBool, Bool.and_eq_true] at h ⊢; exact ⟨h.1, ih h.2⟩
 
-private theorem normalizeChars_post (line col : Nat) (cs : List Char) : PostOK (fun _ => True) (normalizeChars line col cs) := by
-  fun_induction normalizeChars line col cs <;>
-    first | trivial | exact parseErrOK_mkErr | exact postOK_bind ‹PostOK _ _› fun _ _ => trivial
+private theorem normalizeCharsAux_post (line col : Nat) (acc cs : List Char) :
+    PostOK (fun _ => True) (normalizeCharsAux line col acc cs) := by
+  fun_induction normalizeCharsAux line col acc cs <;>
+    first | trivial | exact parseErrOK_mkErr | assumption
+
+private theorem normalizeChars_post (line col : Nat) (cs : List Char) : PostOK (fun _ => True) (normalizeChars line col cs) :=
+  normalizeCharsAux_post line col [] cs
 
 private theorem parseUnicodeHex_post (count : Nat) (cs : List Char) : PostOK (fun _ => True) (parseUnicodeHex count cs) := by
   unfold parseUnicodeHex; cases takeHexDigits count 0 cs with
