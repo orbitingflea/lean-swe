@@ -50,48 +50,109 @@ private def isAllowedTimeRandClosureModule (m : Name) : Bool :=
     m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
     timeRandAuditModules.contains m
 
-private def allowedTimeRandExterns : Std.HashSet Name :=
-  Std.HashSet.emptyWithCapacity 4
-    |>.insert `rawClockGettime
-    |>.insert `rawClockNanosleep
-    |>.insert `rawGetrandom
+private def allowedTimeRandExternSyms : Std.HashMap Name String :=
+  Std.HashMap.emptyWithCapacity 4
+    |>.insert `LeanSwe.LinuxSyscall.TimeRand.rawClockGettime "leanswe_sys_clock_gettime"
+    |>.insert `LeanSwe.LinuxSyscall.TimeRand.rawClockNanosleep "leanswe_sys_clock_nanosleep"
+    |>.insert `LeanSwe.LinuxSyscall.TimeRand.rawGetrandom "leanswe_sys_getrandom"
 
-private def checkTimeRandTrustedClosure : IO (Array String) := do
-  let trEnv ← importModules (timeRandAuditModules.map fun m => { module := m }) {} (loadExts := false)
+private def forbiddenHostCSymPrefixes : Array String :=
+  #["lean_io_", "lean_uv_", "lean_dbg_", "lean_st_", "lean_process_"]
+
+private def isForbiddenHostExtern (cName : Name) (extData : ExternAttrData) : Bool :=
+  cName.getRoot == `IO || cName.components.contains `IO ||
+    cName == `dbgTrace || cName == `dbgTraceVal ||
+    cName.toString.startsWith "Lean.IO." ||
+    cName.toString.startsWith "Std.Internal.UV." ||
+    cName.toString.startsWith "ST.Prim." ||
+    cName.toString.startsWith "BaseIO." ||
+    extData.entries.any fun e =>
+      let sym := match e with
+        | .inline _ s => s
+        | .standard _ s => s
+        | _ => ""
+      forbiddenHostCSymPrefixes.any fun p => sym.startsWith p
+
+private def isCompilerGeneratedCtorIdx (env : Environment) (cName impl : Name) (cinfo : ConstantInfo) : Bool :=
+  !isPrivateName cName &&
+    cName.getString! == "ctorIdx" &&
+    impl == cName.str "_impl" &&
+    env.getModuleIdxFor? cName.getPrefix == env.getModuleIdxFor? cName &&
+    match env.find? cName.getPrefix, env.find? impl with
+    | some (.inductInfo iv), some (.defnInfo implInfo) =>
+      !(iv.type.getForallBody.isProp) &&
+        iv.ctors.length > 1 &&
+        implInfo.value.getUsedConstants.contains `getObjTagNat &&
+        implInfo.value.getUsedConstants.all fun u =>
+          u == `getObjTagNat || u == cName.getPrefix || cinfo.type.getUsedConstants.contains u
+    | _, _ => false
+
+private unsafe def checkTimeRandTrustedClosure : IO (Array String) := do
+  enableInitializersExecution
+  let trEnv ← importModules (timeRandAuditModules.map fun m => { module := m }) {} (loadExts := true)
+  let csimpState := Lean.Compiler.CSimp.ext.getState trEnv
   let mut errs : Array String := #[]
   for m in trEnv.header.moduleNames do
-    if isProjectModule m && !isAllowedTimeRandClosureModule m then
+    if (isProjectModule m && !isAllowedTimeRandClosureModule m) ||
+        m.components.take 3 == [`Std, `Internal, `UV] then
       errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_IMPORT: {m} imported into TimeRand closure"
-  let mut visited : Std.HashSet Name := {}
-  let mut queue : Array (Name × Name) := #[]
+  let mut visited : Std.HashSet (Name × Bool) := {}
+  let mut queue : Array (Name × Bool × Name) := #[]
   for h : i in [0 : trEnv.header.moduleNames.size] do
     let m := trEnv.header.moduleNames[i]
-    if timeRandAuditModules.contains m then
+    if timeRandAuditModules.contains m || m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] then
       let some data := trEnv.header.moduleData[i]? | continue
       for c in data.constants do
-        queue := queue.push (m, c.name)
+        queue := queue.push (m, false, c.name)
   while !queue.isEmpty do
-    let (originMod, cName) := queue.back!
+    let (originMod, inStdImpl, cName) := queue.back!
     queue := queue.pop
-    if visited.contains cName then
+    if visited.contains (cName, inStdImpl) then
       continue
-    visited := visited.insert cName
+    visited := visited.insert (cName, inStdImpl)
     let some cinfo := trEnv.find? cName | continue
     if cinfo matches .axiomInfo _ then
-      if !allowedAxioms.contains cName then
+      if !allowedAxioms.contains cName && !(inStdImpl && cName == `lcProof) then
         errs := errs.push s!"TRUSTED_CLOSURE_AXIOM_FORBIDDEN: {cName} reachable from {originMod}"
       continue
     let cMod := trEnv.getModuleIdxFor? cName |>.bind (trEnv.header.moduleNames[·]?) |>.getD .anonymous
-    if isProjectModule cMod then
+    let projMod := isProjectModule cMod
+    if let some impl := Lean.Compiler.getImplementedBy? trEnv cName then
+      let nextStd := inStdImpl || !projMod
+      if !visited.contains (impl, nextStd) then
+        queue := queue.push (originMod, nextStd, impl)
+      if projMod && !isCompilerGeneratedCtorIdx trEnv cName impl cinfo then
+        errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_IMPL_BY: {cName} -> {impl} in {cMod} reachable from {originMod}"
+    if let some entry := csimpState.map.find? cName then
+      let nextStd := inStdImpl || !projMod
+      if !visited.contains (entry.toDeclName, nextStd) then
+        queue := queue.push (originMod, nextStd, entry.toDeclName)
+      let thmMod := trEnv.getModuleIdxFor? entry.thmName |>.bind (trEnv.header.moduleNames[·]?) |>.getD .anonymous
+      let toMod := trEnv.getModuleIdxFor? entry.toDeclName |>.bind (trEnv.header.moduleNames[·]?) |>.getD .anonymous
+      if projMod || isProjectModule thmMod || isProjectModule toMod then
+        errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_CSIMP: {cName} -> {entry.toDeclName} (thm={entry.thmName}) reachable from {originMod}"
+    if projMod then
       if !isAllowedTimeRandClosureModule cMod then
         errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_MODULE: {cName} in {cMod} reachable from {originMod}"
       if cinfo matches .opaqueInfo _ || (getExternAttrData? trEnv cName).isSome then
-        let short := Name.mkSimple (nameLastStr cName)
-        if cMod != `LeanSwe.LinuxSyscall.TimeRand.Interface || !allowedTimeRandExterns.contains short then
+        let userName := privateToUserName? cName |>.getD cName
+        let isRawFdPointed :=
+          cMod == `LeanSwe.LinuxSyscall.Common.Types &&
+          userName == `LeanSwe.LinuxSyscall.RawFdPointed &&
+          (getExternAttrData? trEnv cName).isNone
+        let isExpectedInterfaceExtern :=
+          cMod == `LeanSwe.LinuxSyscall.TimeRand.Interface &&
+          match allowedTimeRandExternSyms.get? userName, getExternAttrData? trEnv cName with
+          | some expectedSym, some extData => extData.entries == [.standard `all expectedSym]
+          | _, _ => false
+        if !isRawFdPointed && !isExpectedInterfaceExtern then
           errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_EXTERN: {cName} in {cMod} reachable from {originMod}"
+    else if let some extData := getExternAttrData? trEnv cName then
+      if isForbiddenHostExtern cName extData then
+        errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_HOST_IO_EXTERN: {cName} in {cMod} reachable from {originMod}"
     for u in cinfo.type.getUsedConstants do
-      if !visited.contains u then
-        queue := queue.push (originMod, u)
+      if !visited.contains (u, inStdImpl) then
+        queue := queue.push (originMod, inStdImpl, u)
     let val? := match cinfo with
       | .defnInfo v => some v.value
       | .thmInfo v => some v.value
@@ -99,16 +160,16 @@ private def checkTimeRandTrustedClosure : IO (Array String) := do
       | _ => none
     if let some val := val? then
       for u in val.getUsedConstants do
-        if !visited.contains u then
-          queue := queue.push (originMod, u)
+        if !visited.contains (u, inStdImpl) then
+          queue := queue.push (originMod, inStdImpl, u)
     let extra : List Name := match cinfo with
       | .ctorInfo v => [v.induct]
       | .recInfo v => v.all
       | .inductInfo v => v.all ++ v.ctors
       | _ => []
     for u in extra do
-      if !visited.contains u then
-        queue := queue.push (originMod, u)
+      if !visited.contains (u, inStdImpl) then
+        queue := queue.push (originMod, inStdImpl, u)
   return errs
 
 private structure AxCache where

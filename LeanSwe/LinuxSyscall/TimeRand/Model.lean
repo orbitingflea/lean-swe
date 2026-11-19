@@ -55,20 +55,37 @@ def TimeRandState.initial (realtimeNs : Int := 0) (crngReady : Bool := false) : 
 def TimeRandState.withOuterSeccomp (s : TimeRandState := TimeRandState.initial) : TimeRandState :=
   { s with ambientSeccomp := true }
 
+/-- Compute deterministic byte `pos` for draw `drawIdx` used by `modelOps.getrandom`. -/
+def deterministicEntropyByte (drawIdx pos : Nat) : UInt8 :=
+  let mixed : Nat :=
+    if pos < 4 then
+      (drawIdx / (256 ^ pos)) % 256
+    else
+      (drawIdx * 131 + pos * 17 + 0x5A) % 256
+  UInt8.ofNat mixed
+
+/-- Tail-recursive reversed-accumulator helper for `deterministicEntropyList`. -/
+def deterministicEntropyListAux (drawIdx : Nat) : Nat → Nat → List UInt8 → List UInt8
+  | 0, _, acc => acc.reverse
+  | rem + 1, pos, acc =>
+    deterministicEntropyListAux drawIdx rem (pos + 1) (deterministicEntropyByte drawIdx pos :: acc)
+
 /-- Deterministic byte-stream generator producing exact `len` bytes seeded by `(drawIdx, pos)` for `modelOps.getrandom`. -/
-def deterministicEntropyList (drawIdx : Nat) : Nat → Nat → List UInt8
-  | 0, _ => []
-  | rem + 1, pos =>
-    let mixed : Nat :=
-      if pos < 4 then
-        (drawIdx / (256 ^ pos)) % 256
-      else
-        (drawIdx * 131 + pos * 17 + 0x5A) % 256
-    UInt8.ofNat mixed :: deterministicEntropyList drawIdx rem (pos + 1)
+def deterministicEntropyList (drawIdx rem pos : Nat) : List UInt8 :=
+  deterministicEntropyListAux drawIdx rem pos []
+
+/-- Tail-recursive `ByteArray` accumulator producing exact `rem` bytes seeded by `(drawIdx, pos)`. -/
+def deterministicEntropyBytesAux (drawIdx : Nat) : Nat → Nat → ByteArray → ByteArray
+  | 0, _, acc => acc
+  | rem + 1, pos, acc =>
+    deterministicEntropyBytesAux drawIdx rem (pos + 1) (acc.push (deterministicEntropyByte drawIdx pos))
 
 /-- Construct a deterministic `ByteArray` of exact length `len` for draw `drawIdx`. -/
 def deterministicEntropyBytes (drawIdx len : Nat) : ByteArray :=
-  ByteArray.mk (deterministicEntropyList drawIdx len 0).toArray
+  if len ≤ 256 then
+    ByteArray.mk (deterministicEntropyList drawIdx len 0).toArray
+  else
+    deterministicEntropyBytesAux drawIdx len 0 (ByteArray.emptyWithCapacity len)
 
 /-- Return `true` iff `gotLen` is a legal Linux `getrandom(2)` byte count for requested `len` (`0` when `len == 0`, exact `len` when `1 ≤ len ≤ 256`, and `1 ≤ gotLen ≤ min len MAX_READ_BYTES` when `len > 256`). -/
 def validGetrandomResultLen (len : UInt32) (gotLen : Nat) : Bool :=
@@ -93,16 +110,10 @@ def allowedStepCore (s : TimeRandState) (req : TimeRandReq) (out : TimeRandOutco
         else
           none
       | .monotonic =>
-        if ts.isValid && s.monoLowerBoundNs ≤ ts.toNanosNat then
-          some { s with monoLowerBoundNs := ts.toNanosNat }
+        if ts.isValid && min s.monoLowerBoundNs MAX_TIMESPEC_NANOS ≤ ts.toNanosNat then
+          some { s with monoLowerBoundNs := max s.monoLowerBoundNs ts.toNanosNat }
         else
           none
-    | .err e =>
-      match clk with
-      | .realtime =>
-        if (Timespec.ofEpochNanos? s.realtimeNs).isNone && e == Errno.EIO then some s else none
-      | .monotonic =>
-        if (Timespec.ofNanosNat? s.monoLowerBoundNs).isNone && e == Errno.EIO then some s else none
     | _ => none
   | .clock_nanosleep clk abstime reqTs =>
     if !reqTs.isValid then
@@ -116,7 +127,9 @@ def allowedStepCore (s : TimeRandState) (req : TimeRandReq) (out : TimeRandOutco
         | .realtime => some s
         | .monotonic =>
           let reqNs := reqTs.toNanosNat
-          let nextMono := if abstime then max s.monoLowerBoundNs reqNs else s.monoLowerBoundNs + reqNs
+          let nextMono :=
+            if abstime then max s.monoLowerBoundNs reqNs
+            else max s.monoLowerBoundNs (min MAX_TIMESPEC_NANOS (s.monoLowerBoundNs + reqNs))
           some { s with monoLowerBoundNs := nextMono }
       | .err e =>
         if e == Errno.EINTR then some s else none
@@ -180,13 +193,19 @@ def modelOps : TimeRandOpsM (StateM TimeRandState) :=
       | .realtime =>
         match Timespec.ofEpochNanos? s.realtimeNs with
         | some ts => return .ok ts
-        | none => return .error Errno.EIO
+        | none =>
+          let clampedSec : Int64 :=
+            if s.realtimeNs < 0 then Int64.minValue else Int64.maxValue
+          let clampedNsec : UInt32 :=
+            if s.realtimeNs < 0 then 0 else UInt32.ofNat (NSEC_PER_SEC - 1)
+          return .ok { sec := clampedSec, nsec := clampedNsec }
       | .monotonic =>
         match Timespec.ofNanosNat? s.monoLowerBoundNs with
         | some ts =>
           set { s with monoLowerBoundNs := ts.toNanosNat }
           return .ok ts
-        | none => return .error Errno.EIO
+        | none =>
+          return .ok { sec := Int64.ofInt (Int.ofNat MAX_TIMESPEC_SEC), nsec := UInt32.ofNat (NSEC_PER_SEC - 1) }
     clock_nanosleep := fun clk abstime reqTs => do
       let s ← get
       if !reqTs.isValid then
@@ -196,7 +215,9 @@ def modelOps : TimeRandOpsM (StateM TimeRandState) :=
         return .ok ()
       | .monotonic =>
         let reqNs := reqTs.toNanosNat
-        let nextMono := if abstime then max s.monoLowerBoundNs reqNs else s.monoLowerBoundNs + reqNs
+        let nextMono :=
+          if abstime then max s.monoLowerBoundNs reqNs
+          else max s.monoLowerBoundNs (min MAX_TIMESPEC_NANOS (s.monoLowerBoundNs + reqNs))
         set { s with monoLowerBoundNs := nextMono }
         return .ok ()
     getrandom := fun len flags => do

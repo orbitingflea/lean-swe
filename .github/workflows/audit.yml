@@ -146,7 +146,9 @@ jobs:
             trap - EXIT
           fi
           .lake/build/bin/lean-swe-test --timerand-strace-fault-check
-          .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --self-test-shrink && .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 50000 --random-seed --self-test-shrink
+          .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.TimeRand
+          .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --self-test-shrink
+          .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --random-seed --self-test-shrink
           python3 -B -m unittest scripts/test_fuzz_changed.py
           if [[ "${GITHUB_EVENT_NAME}" == "pull_request" && -n "${BASE_SHA:-}" ]]; then
             python3 -B scripts/fuzz_changed.py --base "$BASE_SHA" --head HEAD --check-manifest --run --extra-arg=--self-test-shrink
