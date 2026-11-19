@@ -111,6 +111,14 @@ def createTempDir {m : Type → Type} [Monad m]
           let _ ← cleanupDirIgnoringNotFound fs dir
           return .error (mapFsError fe)
 
+/-- Combine `action` and finalizer cleanup results, giving `action`'s error precedence. -/
+def combineCleanup {α : Type} (actionRes : Except TempDirError α)
+    (cleanRes : Except TempDirError Unit) : Except TempDirError α :=
+  match actionRes, cleanRes with
+  | .error te, _ => .error te
+  | .ok a, .ok () => .ok a
+  | .ok _, .error ce => .error ce
+
 /-- Generic `withTempDir` implementation over injected capability interfaces. -/
 def withTempDirM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
     (fs : FsApiM m) (uuid : UuidApiM m) (env : EnvVarsApiM m)
@@ -121,35 +129,18 @@ def withTempDirM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
   | .error te => return .error te
   | .ok dir =>
     let (actionRes, cleanRes) ← tryFinally' (action dir) (fun _ => cleanupDirIgnoringNotFound fs dir)
-    match actionRes with
-    | .error te => return .error te
-    | .ok a =>
-      match cleanRes with
-      | .error ce => return .error ce
-      | .ok () => return .ok a
+    return combineCleanup actionRes cleanRes
 
 /-- Generic `withLockedTempDir` implementation holding a `.shared` lock on `<dir>/.lock`. -/
 def withLockedTempDirM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
     (fs : FsApiM m) (uuid : UuidApiM m) (env : EnvVarsApiM m)
     (root? : Option String) (dirPrefix : String)
     (action : String → m (Except TempDirError α)) :
-    m (Except TempDirError α) := do
-  match ← createTempDir fs uuid env root? dirPrefix with
-  | .error te => return .error te
-  | .ok dir =>
-    let lockPath := fs.join dir ".lock"
-    let lockedAction : m (Except FsError (Except TempDirError α)) :=
-      fs.withFileLock lockPath .shared true do
-        let r ← action dir
-        return .ok r
-    let (lockRes, cleanRes) ← tryFinally' lockedAction (fun _ => cleanupDirIgnoringNotFound fs dir)
-    match lockRes with
+    m (Except TempDirError α) :=
+  withTempDirM fs uuid env root? dirPrefix fun dir => do
+    match ← fs.withFileLock (fs.join dir ".lock") .shared true (do return .ok (← action dir)) with
     | .error fe => return .error (mapFsError fe)
-    | .ok (.error te) => return .error te
-    | .ok (.ok a) =>
-      match cleanRes with
-      | .error ce => return .error ce
-      | .ok () => return .ok a
+    | .ok r => return r
 
 /-- Delete all non-`.lock` entries inside `child`, failing fast before removing `.lock`. -/
 def removeNonLockChildren {m : Type → Type} [Monad m]
