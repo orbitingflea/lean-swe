@@ -443,10 +443,69 @@ def registeredErrorTests : Array Core.RegisteredErrorTest :=
      , run := err_numparse_parseFloat_trailingChars }
    ]
 
+private def testLargeFloatDoSAndChunkBoundaries : IO Unit := do
+  let z300k := String.ofList (List.replicate 300000 '0')
+  let n300k := String.ofList (List.replicate 300000 '9')
+  let f300k := String.ofList (List.replicate 300000 'f')
+  let s300k := String.ofList (List.replicate 300000 '7')
+  let o300k := String.ofList (List.replicate 300000 '1')
+  assertFloatBits (parseFloat ("1." ++ z300k)) 1.0 "300k trailing zeros"
+  assertFloatBits (parseFloat ("1." ++ n300k)) 2.0 "300k trailing nines"
+  assertFloatBits (parseFloat ("0." ++ z300k ++ "5e300000")) 0.5 "300k leading frac zeros with compensating exp"
+  assertFloatBits (parseFloat ("1.0e" ++ z300k ++ "2")) 100.0 "300k leading exponent zeros"
+  assertFloatBits (parseFloat (n300k ++ ".0")) Float.inf "300k int digits .0 overflow"
+  assertFloatBits (parseFloat ("-" ++ n300k ++ ".0")) (-Float.inf) "300k neg int digits .0 overflow"
+  assertFloatBits (parseFloat (n300k ++ "e0")) Float.inf "300k int digits e0 overflow"
+  assertFloatBits (parseFloat ("1." ++ n300k ++ "e300000")) Float.inf "300k frac digits +e300000 overflow"
+  assertFloatBits (parseFloat (n300k ++ "e-150000")) Float.inf "300k int digits e-150000 log2 overflow"
+  assertFloatBits (parseFloat (n300k ++ "e-299000")) Float.inf "300k int digits e-299000 exact shift overflow"
+  assertFloatBits (parseFloat (n300k ++ "e-300000")) 1.0 "300k int digits e-300000 rounds to 1.0"
+  assertFloatBits (parseFloat (n300k ++ "e-300400")) 0.0 "300k int digits e-300400 fast underflow"
+  assertFloatBits (parseFloat ("-" ++ n300k ++ "e-300400")) (-0.0) "300k neg int digits e-300400 signed zero"
+  assertErrKind (parseFloat ("1." ++ z300k ++ "_")) .invalidUnderscore "300k trailing underscore error"
+  assertErrKind (parseFloat ("1." ++ z300k ++ "x")) .trailingChars "300k trailing char error"
+  let decBig ← assertOk (parseInt n300k) "300k decimal parseInt"
+  assertTrue (decBig + 1 == Int.ofNat (10 ^ 300000)) "300k decimal parseInt exact value"
+  assertErrKind (parseInt64 n300k) .overflow "300k decimal parseInt64 overflow"
+  assertErrKind (parseInt64 ("-" ++ n300k)) .overflow "300k neg decimal parseInt64 overflow"
+  let hexBig ← assertOk (parseInt ("0x" ++ f300k)) "300k hex parseInt"
+  assertTrue (hexBig + 1 == Int.ofNat (1 <<< 1200000)) "300k hex parseInt exact value"
+  let octBig ← assertOk (parseInt ("0o" ++ s300k)) "300k oct parseInt"
+  assertTrue (octBig + 1 == Int.ofNat (1 <<< 900000)) "300k oct parseInt exact value"
+  let binBig ← assertOk (parseInt ("0b" ++ o300k)) "300k bin parseInt"
+  assertTrue (binBig + 1 == Int.ofNat (1 <<< 300000)) "300k bin parseInt exact value"
+  assertErrKind (parseInt (n300k ++ "_")) .invalidUnderscore "300k int trailing underscore"
+  assertErrKind (parseInt ("0x" ++ f300k ++ "g")) .trailingChars "300k hex trailing char"
+  let intChunkBoundaryCases : List (String × Int) :=
+    [ ("1" ++ String.ofList (List.replicate 14 '0'), Int.ofNat (10 ^ 14))
+    , ("1" ++ String.ofList (List.replicate 15 '0'), Int.ofNat (10 ^ 15))
+    , ("1" ++ String.ofList (List.replicate 16 '0'), Int.ofNat (10 ^ 16))
+    , ("1_" ++ String.ofList (List.replicate 15 '0') ++ "_" ++ String.ofList (List.replicate 15 '0'), Int.ofNat (10 ^ 30))
+    , ("0x1" ++ String.ofList (List.replicate 14 '0'), Int.ofNat (1 <<< 56))
+    , ("0x1" ++ String.ofList (List.replicate 15 '0'), Int.ofNat (1 <<< 60))
+    , ("0x1" ++ String.ofList (List.replicate 16 '0'), Int.ofNat (1 <<< 64))
+    , ("0x1_" ++ String.ofList (List.replicate 15 'f') ++ "_f", Int.ofNat ((1 <<< 65) - 1))
+    ]
+  for (lit, expected) in intChunkBoundaryCases do
+    assertOkEq (parseInt lit) expected s!"int chunk boundary {lit}"
+  let chunkBoundaryCases : List (String × Float) :=
+    [ ("0." ++ String.ofList (List.replicate 17 '0') ++ "125e20", 125.0)
+    , ("0." ++ String.ofList (List.replicate 18 '0') ++ "125e21", 125.0)
+    , ("0." ++ String.ofList (List.replicate 19 '0') ++ "125e22", 125.0)
+    , ("0." ++ String.ofList (List.replicate 17 '0') ++ "_25e17", 0.25)
+    , ("0." ++ String.ofList (List.replicate 18 '0') ++ "_25e18", 0.25)
+    , ("0." ++ String.ofList (List.replicate 19 '0') ++ "_25e19", 0.25)
+    , ("0." ++ String.ofList (List.replicate 36 '0') ++ "_25e36", 0.25)
+    , ("0." ++ String.ofList (List.replicate 54 '0') ++ "_25e54", 0.25)
+    ]
+  for (lit, expected) in chunkBoundaryCases do
+    assertFloatBits (parseFloat lit) expected s!"chunk boundary {lit}"
+
 /-- Run all `LeanSwe.NumParse` deterministic and Python differential runtime tests. -/
 def runAll : IO Unit := do
   testIntParsingAndFormatting
   testFloatParsingAndFormatting
+  testLargeFloatDoSAndChunkBoundaries
   testDifferentialPythonIntAndTomllib
   Core.runRegisteredErrorTests registeredErrorTests
   IO.println "PASS: LeanSwe.NumParse runtime tests"

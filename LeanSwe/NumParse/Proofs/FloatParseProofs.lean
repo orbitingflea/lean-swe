@@ -61,7 +61,11 @@ private theorem parseFloat_signed_spec (s : String) (neg : Bool) (body : List Ch
               · rename_i afterE
                 rcases parseFloatExpTail_spec s neg mantissa (-Int.ofNat fracCount) afterE with ⟨h1, h2⟩
                 exact ⟨by simp only [Int.sub_eq_add_neg]; rw [h1]; cases parseFloatExpPart afterE <;> rfl, h2⟩
-              · exact ⟨rfl, fun _ h => nomatch h⟩
+              · have hev := Except.ok.inj ((parseFloatExpTail_spec s neg mantissa (-Int.ofNat fracCount) ['0']).1)
+                change Internal.evalScientificFloat neg mantissa (0 + -Int.ofNat fracCount) =
+                  evalFloat neg mantissa (0 + -Int.ofNat fracCount) at hev
+                rw [Int.zero_add] at hev
+                exact ⟨by simp only [Except.mapError, hev], fun _ h => nomatch h⟩
               · simp only []; exact ⟨rfl, fun _ h => by cases h; exact makeError_msg_ne_empty _ _⟩
           · simp [hdec, mapError_makeError, makeError_msg_ne_empty]
         · exact ⟨rfl, fun _ h => by cases h; exact makeError_msg_ne_empty _ _⟩

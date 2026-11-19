@@ -12,22 +12,16 @@ open LeanSwe.NumParse.Model
 /-- `Internal.makeError` always produces a non-empty message. -/
 theorem makeError_msg_ne_empty (k : NumParseErrorKind) (detail : String) :
     (Internal.makeError k detail).message ≠ "" := by
-  unfold Internal.makeError
-  intro heq
-  have hlen := congrArg String.length heq
-  simp only [String.length_append] at hlen
-  have h1 : (": " : String).length = 2 := rfl
-  have h2 : ("" : String).length = 0 := rfl
-  omega
+  unfold Internal.makeError; intro heq
+  have hlen := congrArg String.length heq; simp only [String.length_append] at hlen
+  have : (": " : String).length = 2 := rfl; have : ("" : String).length = 0 := rfl; omega
 
 /-- Mapping `.kind` over `Internal.makeError` yields `Except.error k`. -/
 theorem mapError_makeError {α : Type} (k : NumParseErrorKind) (detail : String) :
-    (Except.error (Internal.makeError k detail) : Except NumParseError α).mapError (·.kind) =
-      .error k := rfl
+    (Except.error (Internal.makeError k detail) : Except NumParseError α).mapError (·.kind) = .error k := rfl
 
 /-- `Internal.isDecDigit` agrees with `Model.isDecDigit`. -/
-theorem isDecDigit_eq (c : Char) :
-    Internal.isDecDigit c = isDecDigit c := rfl
+theorem isDecDigit_eq (c : Char) : Internal.isDecDigit c = isDecDigit c := rfl
 
 /-- Extract an implementation `ok` result from a mapped model `ok` result. -/
 theorem impl_eq_ok_of_mapError {α : Type} {impl : Except NumParseError α}
@@ -43,8 +37,7 @@ theorem impl_eq_error_of_mapError {α : Type} {impl : Except NumParseError α}
   cases h : impl <;> simp [h, Except.mapError, hk] at hm ⊢; exact hm
 
 /-- Any decimal digit differs from any non-decimal character. -/
-theorem decDigit_ne_of_false {c x : Char} (hc : isDecDigit c = true) (hx : isDecDigit x = false) :
-    c ≠ x := by
+theorem decDigit_ne_of_false {c x : Char} (hc : isDecDigit c = true) (hx : isDecDigit x = false) : c ≠ x := by
   intro h; subst h; rw [hx] at hc; cases hc
 
 /-- Single decimal accumulation step over ASCII digit characters. -/
@@ -140,19 +133,68 @@ private theorem err_spec (k : NumParseErrorKind) (raw : String) {α : Type} :
       ∀ e, (Except.error (Internal.makeError k raw) : Except NumParseError α) = .error e → e.message ≠ "" :=
   ⟨rfl, fun _ h => by cases h; exact makeError_msg_ne_empty _ _⟩
 
+private theorem evalPairsLinear_append (acc : Nat) (xs ys : List (Nat × Nat)) :
+    Internal.evalPairsLinear acc (xs ++ ys) = Internal.evalPairsLinear (Internal.evalPairsLinear acc xs) ys := by
+  induction xs generalizing acc with | nil => rfl | cons x xs ih => exact ih (acc * x.2 + x.1)
+
+private theorem mergePairsRev_eval (a : Nat) (acc xs : List (Nat × Nat)) :
+    Internal.evalPairsLinear a (Internal.mergePairsRev acc xs) =
+      Internal.evalPairsLinear (Internal.evalPairsLinear a acc.reverse) xs := by
+  fun_induction Internal.mergePairsRev acc xs with
+  | case1 _ _ _ _ _ _ ih =>
+    rw [ih, List.reverse_cons, evalPairsLinear_append]; dsimp [Internal.evalPairsLinear]
+    rw [Nat.add_mul, Nat.mul_assoc, Nat.add_assoc]
+  | case2 => rw [List.reverse_cons, evalPairsLinear_append]
+  | case3 => rfl
+
+private theorem evalWeightedPairsFuel_eq (fuel : Nat) (xs : List (Nat × Nat)) :
+    Internal.evalWeightedPairsFuel fuel xs = Internal.evalPairsLinear 0 xs := by
+  induction fuel generalizing xs with
+  | zero => rfl
+  | succ fuel ih =>
+    rcases xs with _ | ⟨⟨v, p⟩, _ | ⟨b, rest⟩⟩
+    · rfl
+    · simp [Internal.evalWeightedPairsFuel, Internal.evalPairsLinear]
+    · simp only [Internal.evalWeightedPairsFuel, ih, mergePairsRev_eval]; rfl
+
+private def chunkVal (radix : Nat) (chunksRev : List (Nat × Nat)) (chunkAcc chunkLen : Nat) : Nat :=
+  Internal.evalPairsLinear 0 chunksRev.reverse * radix ^ chunkLen + chunkAcc
+
+private theorem chunkVal_flush (radix : Nat) (chunksRev : List (Nat × Nat)) (chunkAcc k d : Nat) :
+    chunkVal radix ((chunkAcc, radix ^ k) :: chunksRev) d 1 = chunkVal radix chunksRev chunkAcc k * radix + d := by
+  simp [chunkVal, evalPairsLinear_append, Internal.evalPairsLinear]
+
+private theorem chunkVal_step (radix : Nat) (chunksRev : List (Nat × Nat)) (chunkAcc chunkLen d : Nat) :
+    chunkVal radix chunksRev (chunkAcc * radix + d) (chunkLen + 1) = chunkVal radix chunksRev chunkAcc chunkLen * radix + d := by
+  simp only [chunkVal, Nat.pow_succ]; rw [Nat.add_mul, Nat.mul_assoc, Nat.add_assoc]
+
+private theorem intChunkBase_eq (b : NumBase) : Internal.intChunkBase b.radix = b.radix ^ 15 := by cases b <;> rfl
+
+private theorem scanIntDigitsLoop_spec (raw : String) (b : NumBase)
+    (chunksRev : List (Nat × Nat)) (chunkAcc chunkLen : Nat) (cs : List Char) :
+    (Internal.scanIntDigitsLoop raw b.radix (b.radix ^ 15) chunksRev chunkAcc chunkLen cs).mapError (·.kind) =
+        consumeIntDigits b (chunkVal b.radix chunksRev chunkAcc chunkLen) cs ∧
+      ∀ e, Internal.scanIntDigitsLoop raw b.radix (b.radix ^ 15) chunksRev chunkAcc chunkLen cs = .error e → e.message ≠ "" := by
+  fun_induction Internal.scanIntDigitsLoop raw b.radix (b.radix ^ 15) chunksRev chunkAcc chunkLen cs with
+  | case1 chunksRev chunkAcc chunkLen =>
+    rw [Internal.evalWeightedPairs, evalWeightedPairsFuel_eq, List.reverse_cons, evalPairsLinear_append]
+    exact ⟨rfl, fun _ h => nomatch h⟩
+  | case2 _ _ c cs d hd ih => rw [digitValue_eq_digitVal] at hd; rw [chunkVal_flush] at ih; simpa [consumeIntDigits, hd] using ih
+  | case3 _ _ _ c cs d hd _ ih => rw [digitValue_eq_digitVal] at hd; rw [chunkVal_step] at ih; simpa [consumeIntDigits, hd] using ih
+  | case4 _ _ _ c cs hnone => rw [digitValue_eq_digitVal] at hnone; simpa [consumeIntDigits, hnone] using err_spec .invalidUnderscore raw
+  | case5 => exact err_spec .invalidUnderscore raw
+  | case6 _ _ c cs hc1 hc2 d hd ih =>
+    rw [digitValue_eq_digitVal] at hd; rw [chunkVal_flush] at ih; rw [consumeIntDigits.eq_4 _ _ _ _ hc1 hc2]; simpa [hd] using ih
+  | case7 _ _ _ c cs hc1 hc2 d hd _ ih =>
+    rw [digitValue_eq_digitVal] at hd; rw [chunkVal_step] at ih; rw [consumeIntDigits.eq_4 _ _ _ _ hc1 hc2]; simpa [hd] using ih
+  | case8 _ _ _ c cs hc1 hc2 hnone =>
+    rw [digitValue_eq_digitVal] at hnone; rw [consumeIntDigits.eq_4 _ _ _ _ hc1 hc2]; simpa [hnone] using err_spec .trailingChars raw
+
 private theorem scanIntDigits_spec (raw : String) (b : NumBase) (acc : Nat) (cs : List Char) :
     (Internal.scanIntDigits raw b.radix acc cs).mapError (·.kind) = consumeIntDigits b acc cs ∧
       ∀ e, Internal.scanIntDigits raw b.radix acc cs = .error e → e.message ≠ "" := by
-  fun_induction Internal.scanIntDigits raw b.radix acc cs with
-  | case1 => exact ⟨rfl, fun _ h => nomatch h⟩
-  | case2 acc c cs d hd ih => rw [digitValue_eq_digitVal] at hd; simpa [consumeIntDigits, hd] using ih
-  | case3 acc c cs hnone => rw [digitValue_eq_digitVal] at hnone; simpa [consumeIntDigits, hnone] using err_spec .invalidUnderscore raw
-  | case4 => exact err_spec .invalidUnderscore raw
-  | case5 acc c cs hc1 hc2 d hd ih =>
-    rw [digitValue_eq_digitVal] at hd; rw [consumeIntDigits.eq_4 _ _ _ _ hc1 hc2]; simpa [hd] using ih
-  | case6 acc c cs hc1 hc2 hnone =>
-    rw [digitValue_eq_digitVal] at hnone; rw [consumeIntDigits.eq_4 _ _ _ _ hc1 hc2]
-    simpa [hnone] using err_spec .trailingChars raw
+  unfold Internal.scanIntDigits; rw [intChunkBase_eq]
+  simpa [chunkVal, Internal.evalPairsLinear] using scanIntDigitsLoop_spec raw b [(acc, 1)] 0 0 cs
 
 private theorem lift_scanInt {raw : String} {b : NumBase} {d : Nat} {cs : List Char} (f : Nat → Int) :
     Except.mapError NumParseError.kind
@@ -327,8 +369,7 @@ private theorem parseIntModel_formatPos (neg : Bool) (m : Nat) :
           (List.mem_cons.mp hm).elim (fun h => absurd h (by decide)) (fun h => decDigit_ne_of_false (hall '_' h) (by decide) rfl)
         simp [String.contains_char_eq, String.toList_ofList, hnu]
       · simp only [parseIntModel, String.toList_ofList, ↓reduceIte, List.singleton_append]
-        rw [parseIntModelChars.eq_5 _ (fun _ _ h => by cases h; exact hne0 rfl)]
-        exact hpd
+        rw [parseIntModelChars.eq_5 _ (fun _ _ h => by cases h; exact hne0 rfl)]; exact hpd
 
 /-- `parseIntModel` round-trips `Internal.formatInt` without underscores. -/
 theorem parseIntModel_formatInt (n : Int) :
@@ -336,9 +377,7 @@ theorem parseIntModel_formatInt (n : Int) :
   cases n with
   | ofNat k =>
     cases k with
-    | zero =>
-      refine ⟨?_, rfl⟩
-      simp only [Internal.formatInt, Internal.formatIntChars, String.contains_char_eq, String.toList_ofList]; decide
+    | zero => refine ⟨by simp only [Internal.formatInt, Internal.formatIntChars, String.contains_char_eq, String.toList_ofList]; decide, rfl⟩
     | succ m => exact parseIntModel_formatPos false m
   | negSucc m => exact parseIntModel_formatPos true m
 

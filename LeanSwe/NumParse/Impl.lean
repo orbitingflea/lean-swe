@@ -43,18 +43,60 @@ def digitValue? (radix : Nat) (c : Char) : Option Nat :=
     else none
   else none
 
-/-- Scan remaining digits and underscore separators for an integer literal in `radix`. -/
-def scanIntDigits (raw : String) (radix acc : Nat) : List Char → Except NumParseError Nat
-  | [] => .ok acc
+/-- Linear accumulator evaluating big-endian `(val, radixPow)` chunks. -/
+def evalPairsLinear (acc : Nat) : List (Nat × Nat) → Nat
+  | [] => acc
+  | (v, p) :: rest => evalPairsLinear (acc * p + v) rest
+
+/-- Tail-recursively merge adjacent `(val, radixPow)` chunk pairs in `O(N)` list steps. -/
+def mergePairsRev (acc : List (Nat × Nat)) : List (Nat × Nat) → List (Nat × Nat)
+  | (v1, p1) :: (v2, p2) :: rest => mergePairsRev ((v1 * p2 + v2, p1 * p2) :: acc) rest
+  | [x] => (x :: acc).reverse
+  | [] => acc.reverse
+
+/-- Tail-recursively evaluate `(val, radixPow)` chunks via balanced pairwise multiplication bounded by `fuel`. -/
+def evalWeightedPairsFuel : Nat → List (Nat × Nat) → Nat
+  | 0, xs => evalPairsLinear 0 xs
+  | _ + 1, [] => 0
+  | _ + 1, [(v, _)] => v
+  | fuel + 1, a :: b :: rest => evalWeightedPairsFuel fuel (mergePairsRev [] (a :: b :: rest))
+
+/-- Evaluate big-endian `(val, radixPow)` chunks in `O(N log^2 N)` time. -/
+def evalWeightedPairs (xs : List (Nat × Nat)) : Nat :=
+  evalWeightedPairsFuel xs.length xs
+
+/-- Precomputed `radix ^ 15` chunk base fitting in an unboxed scalar `Nat` for radices `2, 8, 10, 16`. -/
+def intChunkBase : Nat → Nat
+  | 2 => 32768
+  | 8 => 35184372088832
+  | 10 => 1000000000000000
+  | _ => 1152921504606846976
+
+/-- Tail-recursively scan integer digits and underscores in `radix` using 15-digit unboxed chunks. -/
+def scanIntDigitsLoop (raw : String) (radix chunkBase : Nat)
+    (chunksRev : List (Nat × Nat)) (chunkAcc chunkLen : Nat) :
+    List Char → Except NumParseError Nat
+  | [] => .ok (evalWeightedPairs (((chunkAcc, radix ^ chunkLen) :: chunksRev).reverse))
   | '_' :: c :: cs =>
     match digitValue? radix c with
-    | some d => scanIntDigits raw radix (acc * radix + d) cs
+    | some d =>
+      match chunkLen with
+      | 15 => scanIntDigitsLoop raw radix chunkBase ((chunkAcc, chunkBase) :: chunksRev) d 1 cs
+      | _ => scanIntDigitsLoop raw radix chunkBase chunksRev (chunkAcc * radix + d) (chunkLen + 1) cs
     | none => .error (makeError .invalidUnderscore raw)
   | '_' :: [] => .error (makeError .invalidUnderscore raw)
   | c :: cs =>
     match digitValue? radix c with
-    | some d => scanIntDigits raw radix (acc * radix + d) cs
+    | some d =>
+      match chunkLen with
+      | 15 => scanIntDigitsLoop raw radix chunkBase ((chunkAcc, chunkBase) :: chunksRev) d 1 cs
+      | _ => scanIntDigitsLoop raw radix chunkBase chunksRev (chunkAcc * radix + d) (chunkLen + 1) cs
     | none => .error (makeError .trailingChars raw)
+
+/-- Scan remaining digits and underscore separators for an integer literal in `radix`. -/
+def scanIntDigits (raw : String) (radix acc : Nat) (cs : List Char) :
+    Except NumParseError Nat :=
+  scanIntDigitsLoop raw radix (intChunkBase radix) [(acc, 1)] 0 0 cs
 
 /-- Parse an unprefixed signed decimal integer literal body. -/
 def parseDecSigned (raw : String) (neg : Bool) : List Char → Except NumParseError Int
@@ -146,21 +188,33 @@ def formatIntChars : Int → List Char
 def formatInt (n : Int) : String :=
   String.ofList (formatIntChars n)
 
-/-- Scan decimal digits and underscore separators for a float part. -/
-def scanDecFloatDigits (raw : String) (acc count : Nat) :
+/-- Tail-recursively scan decimal float digits and underscores using 18-digit unboxed chunks. -/
+def scanDecFloatDigitsLoop (raw : String) (chunksRev : List (Nat × Nat))
+    (chunkAcc chunkLen count : Nat) :
     List Char → Except NumParseError (Nat × Nat × List Char)
-  | [] => .ok (acc, count, [])
+  | [] => .ok (evalWeightedPairs (((chunkAcc, 10 ^ chunkLen) :: chunksRev).reverse), count, [])
   | '_' :: c :: cs =>
     if isDecDigit c then
-      scanDecFloatDigits raw (acc * 10 + (c.toNat - '0'.toNat)) (count + 1) cs
+      let d := c.toNat - '0'.toNat
+      match chunkLen with
+      | 18 => scanDecFloatDigitsLoop raw ((chunkAcc, 1000000000000000000) :: chunksRev) d 1 (count + 1) cs
+      | _ => scanDecFloatDigitsLoop raw chunksRev (chunkAcc * 10 + d) (chunkLen + 1) (count + 1) cs
     else
       .error (makeError .invalidUnderscore raw)
   | '_' :: [] => .error (makeError .invalidUnderscore raw)
   | c :: cs =>
     if isDecDigit c then
-      scanDecFloatDigits raw (acc * 10 + (c.toNat - '0'.toNat)) (count + 1) cs
+      let d := c.toNat - '0'.toNat
+      match chunkLen with
+      | 18 => scanDecFloatDigitsLoop raw ((chunkAcc, 1000000000000000000) :: chunksRev) d 1 (count + 1) cs
+      | _ => scanDecFloatDigitsLoop raw chunksRev (chunkAcc * 10 + d) (chunkLen + 1) (count + 1) cs
     else
-      .ok (acc, count, c :: cs)
+      .ok (evalWeightedPairs (((chunkAcc, 10 ^ chunkLen) :: chunksRev).reverse), count, c :: cs)
+
+/-- Scan decimal digits and underscore separators for a float part. -/
+def scanDecFloatDigits (raw : String) (acc count : Nat) (cs : List Char) :
+    Except NumParseError (Nat × Nat × List Char) :=
+  scanDecFloatDigitsLoop raw [(acc, 1)] 0 0 count cs
 
 /-- Parse the integer significand part of a float literal. -/
 def parseFloatIntPart (raw : String) : List Char → Except NumParseError (Nat × List Char)
@@ -205,10 +259,37 @@ def parseFloatExpPart (raw : String) (cs : List Char) :
     else
       .error (makeError .invalidSyntax raw)
 
-/-- Evaluate `(-1)^neg * mantissa * 10^exp10` as a binary64 `Float` via `Float.Model.ofScientific`. -/
-def evalScientificFloat (neg : Bool) (mantissa : Nat) (exp10 : Int) : Float :=
+/-- Direct `Float.Model.ofScientific` wrapper for bounded formatting candidates. -/
+def evalModelFloat (neg : Bool) (mantissa : Nat) (exp10 : Int) : Float :=
   let m := Float.Model.ofScientific mantissa exp10
   Float.ofModel (if neg then -m else m)
+
+/-- Evaluate `(-1)^neg * mantissa * 10^exp10` as a binary64 `Float` with fast overflow and underflow bounds. -/
+def evalScientificFloat (neg : Bool) (mantissa : Nat) (exp10 : Int) : Float :=
+  let zeroOut : Float := match neg with | true => -0.0 | false => 0.0
+  let infOut : Float := match neg with | true => -Float.inf | false => Float.inf
+  match mantissa with
+  | 0 => zeroOut
+  | m1 + 1 =>
+    let m := m1 + 1
+    let lb := m.log2
+    match decide (0 ≤ exp10) with
+    | true =>
+      let p := exp10.toNat
+      match decide (1024 ≤ lb + 3 * p) with
+      | true => infOut
+      | false => evalModelFloat neg m exp10
+    | false =>
+      let k := (-exp10).toNat
+      match decide (lb + 1080 ≤ 3 * k) with
+      | true => zeroOut
+      | false =>
+        match decide (1024 + 4 * k ≤ lb) with
+        | true => infOut
+        | false =>
+          match decide (((10 ^ k) <<< 1024) ≤ m) with
+          | true => infOut
+          | false => evalModelFloat neg m exp10
 
 /-- Parse an exponent tail after `'e'`/`'E'` and ensure no trailing characters remain. -/
 def parseFloatExpTail (raw : String) (neg : Bool) (mantissa : Nat) (fracAdj : Int)
@@ -313,7 +394,7 @@ def checkFloatCandidate (x : Float) (neg : Bool) (mant : Nat) (exp10 : Int) : Op
   else
     let (m', e') := stripTrailingZeros mant exp10
     let (effMant, effExp, str) := renderFloatChoice neg m' e'
-    if (evalScientificFloat neg effMant effExp).toBits == x.toBits then some str else none
+    if (evalModelFloat neg effMant effExp).toBits == x.toBits then some str else none
 
 /-- Round `num / den` to the nearest integer with ties rounded up. -/
 def roundScaledCandidate (num den : Nat) : Nat :=
