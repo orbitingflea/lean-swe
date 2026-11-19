@@ -186,4 +186,11 @@ example : ¬ Core.AllPass (test_envvars_splitSearchPath_roundTripsCleanSegments
   have h0 := h ["/a"] (by decide)
   simp [assert] at h0
 
+example : ¬ Core.AllPass (test_envvars_mkApi_matchesModel fun raw =>
+    { stubMkApi raw with splitSearchPath := fun _ => #["bug"] }) := by
+  intro h
+  have h0 := h {} "K" "" (.userError "x")
+  simp [stubMkApi, Model.modelApi, Model.splitSearchPathModel, Model.splitColonAccModel,
+    Bind.bind, assert] at h0
+
 end LeanSwe.EnvVars

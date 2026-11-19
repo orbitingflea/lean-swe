@@ -56,26 +56,24 @@ def splitFirstEqList (revPre : List UInt8) : List UInt8 → Option (ByteArray ×
 def splitFirstEqBytes (entry : ByteArray) : Option (ByteArray × ByteArray) :=
   splitFirstEqList [] entry.data.toList
 
-/-- Decode raw `environ(7)` byte slices in order, skipping entries lacking `'='` or starting with `'='`,
-    and failing with `.invalidEncoding` on the first non-skipped entry containing invalid UTF-8. -/
-def decodeEnvironList : List ByteArray → Except EnvVarsRawError (List (String × String))
-  | [] => .ok []
+/-- Tail-recursive accumulator decoding raw `environ(7)` byte slices in order, skipping entries
+    lacking `'='` or starting with `'='`, and failing with `.invalidEncoding` on the first
+    non-skipped entry containing invalid UTF-8. -/
+def decodeEnvironAcc (accRev : List (String × String)) :
+    List ByteArray → Except EnvVarsRawError (List (String × String))
+  | [] => .ok accRev.reverse
   | entry :: rest =>
     match splitFirstEqBytes entry with
-    | none => decodeEnvironList rest
+    | none => decodeEnvironAcc accRev rest
     | some (kBytes, vBytes) =>
       match String.fromUTF8? kBytes with
       | none => .error (.invalidEncoding none "invalid UTF-8 in environment key")
       | some k =>
         match String.fromUTF8? vBytes with
         | none => .error (.invalidEncoding (some k) "invalid UTF-8 in environment value")
-        | some v =>
-          match decodeEnvironList rest with
-          | .error err => .error err
-          | .ok tail => .ok ((k, v) :: tail)
+        | some v => decodeEnvironAcc ((k, v) :: accRev) rest
 
-/-- Construct `RawEnvVarsOpsM m` from injected `PosixRawOpsM m` byte hooks, performing key
-    validation, `'='` splitting, and strict UTF-8 decoding in Lean. -/
+/-- Build `RawEnvVarsOpsM m` from a `PosixRawOpsM m` backend. -/
 def mkRawOps {m : Type → Type} [Monad m] (posix : PosixRawOpsM m) : RawEnvVarsOpsM m :=
   { mapRawError := mapRawError
     getEnv := fun key => do
@@ -89,6 +87,6 @@ def mkRawOps {m : Type → Type} [Monad m] (posix : PosixRawOpsM m) : RawEnvVars
         | none => return .error (.invalidEncoding (some key) "invalid UTF-8 in environment value")
     listEnv := do
       let entries ← posix.listEnvironBytes
-      return (decodeEnvironList entries.toList).map List.toArray }
+      return (decodeEnvironAcc [] entries.toList).map List.toArray }
 
 end LeanSwe.EnvVars.Raw.Internal

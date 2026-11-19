@@ -13,20 +13,18 @@ def hasInvalidKeyChar : List Char → Bool
 def isValidKey (key : String) : Bool :=
   !key.toList.isEmpty && !hasInvalidKeyChar key.toList
 
-/-- Split `cs` on `:` separators, always producing a non-empty list of character segments. -/
-def splitColonRaw : List Char → List (List Char)
-  | [] => [[]]
+/-- Tail-recursive accumulator splitting `cs` on `:` separators into character segments. -/
+def splitColonAcc (curRev : List Char) (accRev : List (List Char)) : List Char → List (List Char)
+  | [] => (curRev.reverse :: accRev).reverse
   | c :: cs =>
     if c == ':' then
-      [] :: splitColonRaw cs
+      splitColonAcc [] (curRev.reverse :: accRev) cs
     else
-      match splitColonRaw cs with
-      | [] => [[c]]
-      | seg :: rest => (c :: seg) :: rest
+      splitColonAcc (c :: curRev) accRev cs
 
-/-- Split a POSIX `:`-delimited search path, dropping empty segments (`""` yields `#[]`). -/
+/-- Split a POSIX `:`-delimited search path into non-empty components. -/
 def splitSearchPath (path : String) : Array String :=
-  (((splitColonRaw path.toList).filter fun s => !s.isEmpty).map String.ofList).toArray
+  (((splitColonAcc [] [] path.toList).filter fun s => !s.isEmpty).map String.ofList).toArray
 
 /-- Build `EnvVarsApiM m` from a `RawEnvVarsOpsM m` backend with zero `IO` or `@[extern]` dependencies. -/
 def mkApiM {m : Type → Type} [Monad m] (raw : RawEnvVarsOpsM m) : EnvVarsApiM m :=

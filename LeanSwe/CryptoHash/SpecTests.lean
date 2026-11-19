@@ -1,6 +1,7 @@
 import Core.NondetTest
 import Core.Assumptions
 import LeanSwe.CryptoHash.Types
+import LeanSwe.CryptoHash.Model
 
 namespace LeanSwe.CryptoHash
 
@@ -417,49 +418,49 @@ def test_cryptohash_vectorHexRoundTrip
 def errorCoverage : List (ErrorObligation CryptoHashErrorKind) :=
   [ { request := "LeanSwe.CryptoHash.hash"
       errorKind := .invalidInput
-      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_hash_never_invalidInput" }
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_hash_invalidInput" .mocked }
   , { request := "LeanSwe.CryptoHash.hash"
       errorKind := .invalidHex
       justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_hash_never_invalidHex" }
   , { request := "LeanSwe.CryptoHash.hash"
       errorKind := .lengthMismatch
-      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_hash_never_lengthMismatch" }
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_hash_lengthMismatch" .mocked }
   , { request := "LeanSwe.CryptoHash.hash"
       errorKind := .cryptoError
       justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_hash_cryptoError" .mocked }
   , { request := "LeanSwe.CryptoHash.sha256"
       errorKind := .invalidInput
-      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_sha256_never_invalidInput" }
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_sha256_invalidInput" .mocked }
   , { request := "LeanSwe.CryptoHash.sha256"
       errorKind := .invalidHex
       justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_sha256_never_invalidHex" }
   , { request := "LeanSwe.CryptoHash.sha256"
       errorKind := .lengthMismatch
-      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_sha256_never_lengthMismatch" }
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_sha256_lengthMismatch" .mocked }
   , { request := "LeanSwe.CryptoHash.sha256"
       errorKind := .cryptoError
       justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_sha256_cryptoError" .mocked }
   , { request := "LeanSwe.CryptoHash.sha512"
       errorKind := .invalidInput
-      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_sha512_never_invalidInput" }
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_sha512_invalidInput" .mocked }
   , { request := "LeanSwe.CryptoHash.sha512"
       errorKind := .invalidHex
       justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_sha512_never_invalidHex" }
   , { request := "LeanSwe.CryptoHash.sha512"
       errorKind := .lengthMismatch
-      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_sha512_never_lengthMismatch" }
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_sha512_lengthMismatch" .mocked }
   , { request := "LeanSwe.CryptoHash.sha512"
       errorKind := .cryptoError
       justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_sha512_cryptoError" .mocked }
   , { request := "LeanSwe.CryptoHash.hmacSha256"
       errorKind := .invalidInput
-      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_hmacSha256_never_invalidInput" }
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_hmacSha256_invalidInput" .mocked }
   , { request := "LeanSwe.CryptoHash.hmacSha256"
       errorKind := .invalidHex
       justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_hmacSha256_never_invalidHex" }
   , { request := "LeanSwe.CryptoHash.hmacSha256"
       errorKind := .lengthMismatch
-      justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_hmacSha256_never_lengthMismatch" }
+      justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_hmacSha256_lengthMismatch" .mocked }
   , { request := "LeanSwe.CryptoHash.hmacSha256"
       errorKind := .cryptoError
       justification := .tested "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_hmacSha256_cryptoError" .mocked }
@@ -499,5 +500,28 @@ def errorCoverage : List (ErrorObligation CryptoHashErrorKind) :=
   , { request := "LeanSwe.CryptoHash.ctEq"
       errorKind := .cryptoError
       justification := .provedImpossible "LeanSwe.CryptoHash.Proofs.cryptohash_ctEq_never_cryptoError" } ]
+
+/-- `mkApi Raw.Model.modelRawOps` agrees identically with `Model.modelApi` across all 9 `CryptoHashApiM` methods. -/
+def test_cryptohash_mkApi_matchesModel
+    {runner} [NondetTest runner] (mkApi : RawCryptoHashOpsM Id → CryptoHashApiM Id) : runner Unit := do
+  let alg ← nondet HashAlg
+  let key ← nondet ByteArray
+  let msg ← nondet ByteArray
+  let expected ← nondet Digest
+  let hexStr ← nondet String
+  let a ← nondet ByteArray
+  let b ← nondet ByteArray
+  let rawErr ← nondet CryptoHashRawError
+  let implApi := mkApi Raw.Model.modelRawOps
+  let refApi := Model.modelApi
+  NondetTest.assert (implApi.mapRawError rawErr = refApi.mapRawError rawErr)
+  NondetTest.assert (implApi.hash alg msg = refApi.hash alg msg)
+  NondetTest.assert (implApi.sha256 msg = refApi.sha256 msg)
+  NondetTest.assert (implApi.sha512 msg = refApi.sha512 msg)
+  NondetTest.assert (implApi.hmacSha256 key msg = refApi.hmacSha256 key msg)
+  NondetTest.assert (implApi.verifyHmacSha256 key msg expected = refApi.verifyHmacSha256 key msg expected)
+  NondetTest.assert (implApi.toHex expected = refApi.toHex expected)
+  NondetTest.assert (implApi.fromHex alg hexStr = refApi.fromHex alg hexStr)
+  NondetTest.assert (implApi.ctEq a b = refApi.ctEq a b)
 
 end LeanSwe.CryptoHash

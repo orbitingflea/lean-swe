@@ -13,6 +13,10 @@
       "max_lines": 205,
       "legacy_unmigrated": false
     },
+    "Fuzz/EnvVars/c/envvars_fuzz_env.c": {
+      "max_lines": 135,
+      "legacy_unmigrated": false
+    },
     "Fuzz/Float/c/float_oracle.c": {
       "max_lines": 560,
       "legacy_unmigrated": false
@@ -22,7 +26,7 @@
       "legacy_unmigrated": false
     },
     "Fuzz/suites.json": {
-      "max_lines": 26,
+      "max_lines": 42,
       "legacy_unmigrated": false
     },
     "LeanSwe/ConnectProxy/Raw/c/cproxy_shim.c": {
@@ -30,7 +34,7 @@
       "legacy_unmigrated": true
     },
     "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c": {
-      "max_lines": 190,
+      "max_lines": 185,
       "legacy_unmigrated": false
     },
     "LeanSwe/EnvVars/Raw/c/envvars_shim.c": {
@@ -116,15 +120,23 @@
     "LeanSwe/EnvVars/Raw/c/envvars_shim.c::leanswe_envvars_environ": {
       "allow_array_copy_loop": true
     },
-    "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c::capture_openssl_error": {
+    "Fuzz/EnvVars/c/envvars_fuzz_env.c::leanswe_fuzz_host_snapshot": {
+      "max_loops": 2
+    },
+    "Fuzz/EnvVars/c/envvars_fuzz_env.c::leanswe_fuzz_raw_end": {
       "max_loops": 1
     },
     "Fuzz/CmdLine/c/cmdline_fuzz_env.c::wait_child_masked": {
       "max_loops": 1
     },
-    "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c::leanswe_cryptohash_hmac_sha256": {
-      "max_code_lines": 54,
-      "max_branches": 10
+    "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c::ossl_iso_restore_segs": {
+      "max_loops": 2
+    },
+    "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c::ossl_iso_enter": {
+      "max_loops": 2
+    },
+    "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c::mk_ossl_err_result": {
+      "max_loops": 1
     }
   },
   "named_thread_helpers": [

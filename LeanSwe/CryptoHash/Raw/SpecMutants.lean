@@ -120,4 +120,14 @@ example : ¬ Core.AllPass (test_cryptohashraw_ctEqualRaw_equalLengths_returnsBoo
   have h0 := h () ByteArray.empty ByteArray.empty rfl
   simp [StateT.run, pure, StateT.pure, assert] at h0
 
+example : ¬ Core.AllPass (test_cryptohashraw_modelDigestsValidLengthsAndVectors
+    { Model.modelRawOps with digestRaw := fun _ _ => .ok ByteArray.empty }) := by
+  intro h
+  have h0 := h .sha256 ByteArray.empty ByteArray.empty
+  dsimp [test_cryptohashraw_modelDigestsValidLengthsAndVectors, Core.NondetTest.assert, Bind.bind] at h0
+  have hsz := congrArg (fun r : Except CryptoHashError ByteArray =>
+    match r with | .ok bs => bs.size | .error _ => 0) h0.1
+  change 0 = 32 at hsz
+  omega
+
 end LeanSwe.CryptoHash.Raw

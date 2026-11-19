@@ -1,6 +1,7 @@
 import Core.NondetTest
 import Core.Assumptions
 import LeanSwe.EnvVars.Types
+import LeanSwe.EnvVars.Model
 
 namespace LeanSwe.EnvVars
 
@@ -236,5 +237,20 @@ def errorCoverage : List (ErrorObligation EnvVarsErrorKind) :=
   , { request := "LeanSwe.EnvVars.homeDir"
       errorKind := .ioError
       justification := .provedImpossible "LeanSwe.EnvVars.Proofs.envvars_homeDir_never_ioError" } ]
+
+/-- `mkApi (Raw.Model.modelRawOps s)` agrees identically with `Model.modelApi s` across `mapRawError`, `getEnv`, `listEnv`, `homeDir`, and `splitSearchPath`. -/
+def test_envvars_mkApi_matchesModel
+    {runner} [NondetTest runner] (mkApi : RawEnvVarsOpsM Id → EnvVarsApiM Id) : runner Unit := do
+  let s ← nondet Raw.Model.EnvironState
+  let key ← nondet String
+  let path ← nondet String
+  let rawErr ← nondet EnvVarsRawError
+  let implApi := mkApi (Raw.Model.modelRawOps s)
+  let refApi := Model.modelApi s
+  NondetTest.assert (implApi.mapRawError rawErr = refApi.mapRawError rawErr)
+  NondetTest.assert (implApi.getEnv key = refApi.getEnv key)
+  NondetTest.assert (implApi.listEnv = refApi.listEnv)
+  NondetTest.assert (implApi.homeDir = refApi.homeDir)
+  NondetTest.assert (implApi.splitSearchPath path = refApi.splitSearchPath path)
 
 end LeanSwe.EnvVars

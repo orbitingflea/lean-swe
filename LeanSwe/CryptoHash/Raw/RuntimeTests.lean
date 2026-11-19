@@ -108,7 +108,11 @@ def assume_cryptohashraw_differentialMatchesPythonHashlibAndHmac : IO Unit := do
     "print(hashlib.sha256(m).hexdigest()); " ++
     "print(hashlib.sha512(m).hexdigest()); " ++
     "print(hmac.new(k, m, hashlib.sha256).hexdigest())"
-  let out ← IO.Process.output { cmd := "python3", args := #["-c", script] }
+  let out ← IO.Process.output {
+    cmd := "/usr/bin/python3"
+    args := #["-I", "-c", script]
+    env := #[("OPENSSL_CONF", some "/dev/null"), ("OPENSSL_MODULES", none), ("PYTHONPATH", none)]
+  }
   if out.exitCode != 0 then
     throw (IO.userError s!"python3 differential check failed: {out.stderr}")
   let lines := out.stdout.trimAscii.toString.splitOn "\n" |>.map (fun s => s.trimAscii.toString)
@@ -134,6 +138,30 @@ def registeredAssumptions : Array Core.RegisteredAssumption :=
    , { specName := "LeanSwe.CryptoHash.Raw.assume_cryptohashraw_differentialMatchesPythonHashlibAndHmac"
        run := assume_cryptohashraw_differentialMatchesPythonHashlibAndHmac } ]
 
+/-- Verify mocked invalid-tag status in `digestRaw` produces `.invalidInput`. -/
+def err_cryptohashraw_digestRaw_invalidInput : IO Unit := do
+  let ops := Internal.mkRawOps
+    { digestRaw := fun _ _ => pure (1, 0, "unknown digest algorithm tag", ByteArray.empty)
+      hmacSha256Raw := fun _ _ => pure (0, 0, "", ByteArray.empty)
+      ctEqualRaw := fun _ _ => pure false }
+  match ← ops.digestRaw .sha256 ByteArray.empty with
+  | .ok _ => throw (IO.userError "mocked digestRaw invalidInput should fail")
+  | .error e =>
+    assertTrue (e.kind == .invalidInput && e.opensslCode == none && !e.message.isEmpty)
+      "mocked digestRaw returns .invalidInput"
+
+/-- Verify mocked wrong-length digest in `digestRaw` produces `.lengthMismatch`. -/
+def err_cryptohashraw_digestRaw_lengthMismatch : IO Unit := do
+  let ops := Internal.mkRawOps
+    { digestRaw := fun _ _ => pure (0, 0, "", ByteArray.mk #[1, 2, 3])
+      hmacSha256Raw := fun _ _ => pure (0, 0, "", ByteArray.empty)
+      ctEqualRaw := fun _ _ => pure false }
+  match ← ops.digestRaw .sha256 ByteArray.empty with
+  | .ok _ => throw (IO.userError "mocked digestRaw lengthMismatch should fail")
+  | .error e =>
+    assertTrue (e.kind == .lengthMismatch && !e.message.isEmpty)
+      "mocked digestRaw returns .lengthMismatch"
+
 /-- Verify mocked FFI failure in `digestRaw` produces `.cryptoError` with non-empty message. -/
 def err_cryptohashraw_digestRaw_cryptoError : IO Unit := do
   let ops := Internal.mkRawOps
@@ -145,6 +173,30 @@ def err_cryptohashraw_digestRaw_cryptoError : IO Unit := do
   | .error e =>
     assertTrue (e.kind == .cryptoError && e.opensslCode == some 123 && !e.message.isEmpty)
       "mocked digestRaw returns .cryptoError"
+
+/-- Verify mocked invalid-input status in `hmacSha256Raw` produces `.invalidInput`. -/
+def err_cryptohashraw_hmacSha256Raw_invalidInput : IO Unit := do
+  let ops := Internal.mkRawOps
+    { digestRaw := fun _ _ => pure (0, 0, "", ByteArray.empty)
+      hmacSha256Raw := fun _ _ => pure (1, 0, "invalid hmac argument", ByteArray.empty)
+      ctEqualRaw := fun _ _ => pure false }
+  match ← ops.hmacSha256Raw ByteArray.empty ByteArray.empty with
+  | .ok _ => throw (IO.userError "mocked hmacSha256Raw invalidInput should fail")
+  | .error e =>
+    assertTrue (e.kind == .invalidInput && e.opensslCode == none && !e.message.isEmpty)
+      "mocked hmacSha256Raw returns .invalidInput"
+
+/-- Verify mocked wrong-length tag in `hmacSha256Raw` produces `.lengthMismatch`. -/
+def err_cryptohashraw_hmacSha256Raw_lengthMismatch : IO Unit := do
+  let ops := Internal.mkRawOps
+    { digestRaw := fun _ _ => pure (0, 0, "", ByteArray.empty)
+      hmacSha256Raw := fun _ _ => pure (0, 0, "", ByteArray.mk #[1, 2, 3])
+      ctEqualRaw := fun _ _ => pure false }
+  match ← ops.hmacSha256Raw ByteArray.empty ByteArray.empty with
+  | .ok _ => throw (IO.userError "mocked hmacSha256Raw lengthMismatch should fail")
+  | .error e =>
+    assertTrue (e.kind == .lengthMismatch && !e.message.isEmpty)
+      "mocked hmacSha256Raw returns .lengthMismatch"
 
 /-- Verify mocked FFI failure in `hmacSha256Raw` produces `.cryptoError` with non-empty message. -/
 def err_cryptohashraw_hmacSha256Raw_cryptoError : IO Unit := do
@@ -169,15 +221,127 @@ def err_cryptohashraw_ctEqualRaw_lengthMismatch : IO Unit := do
 
 /-- Registered error-coverage tests for `LeanSwe.CryptoHash.Raw`. -/
 def registeredErrorTests : Array Core.RegisteredErrorTest :=
-  #[ { testName := "LeanSwe.CryptoHash.Raw.RuntimeTests.err_cryptohashraw_digestRaw_cryptoError"
+  #[ { testName := "LeanSwe.CryptoHash.Raw.RuntimeTests.err_cryptohashraw_digestRaw_invalidInput"
+       mode := .mocked
+       run := err_cryptohashraw_digestRaw_invalidInput }
+   , { testName := "LeanSwe.CryptoHash.Raw.RuntimeTests.err_cryptohashraw_digestRaw_lengthMismatch"
+       mode := .mocked
+       run := err_cryptohashraw_digestRaw_lengthMismatch }
+   , { testName := "LeanSwe.CryptoHash.Raw.RuntimeTests.err_cryptohashraw_digestRaw_cryptoError"
        mode := .mocked
        run := err_cryptohashraw_digestRaw_cryptoError }
+   , { testName := "LeanSwe.CryptoHash.Raw.RuntimeTests.err_cryptohashraw_hmacSha256Raw_invalidInput"
+       mode := .mocked
+       run := err_cryptohashraw_hmacSha256Raw_invalidInput }
+   , { testName := "LeanSwe.CryptoHash.Raw.RuntimeTests.err_cryptohashraw_hmacSha256Raw_lengthMismatch"
+       mode := .mocked
+       run := err_cryptohashraw_hmacSha256Raw_lengthMismatch }
    , { testName := "LeanSwe.CryptoHash.Raw.RuntimeTests.err_cryptohashraw_hmacSha256Raw_cryptoError"
        mode := .mocked
        run := err_cryptohashraw_hmacSha256Raw_cryptoError }
    , { testName := "LeanSwe.CryptoHash.Raw.RuntimeTests.err_cryptohashraw_ctEqualRaw_lengthMismatch"
        mode := .real
        run := err_cryptohashraw_ctEqualRaw_lengthMismatch } ]
+
+@[extern "leanswe_cryptohash_digest"]
+private opaque rawDirectDigestProbe (algTag : UInt8) (data : @& ByteArray) :
+    BaseIO (UInt32 × UInt64 × String × ByteArray)
+
+@[extern "EVP_MD_CTX_copy_ex"]
+private opaque osslPushNullErr : USize → USize → BaseIO UInt32
+
+@[extern "ERR_set_mark"]
+private opaque osslErrSetMark : BaseIO UInt32
+
+@[extern "ERR_pop_to_mark"]
+private opaque osslErrPopToMark : BaseIO UInt32
+
+@[extern "ERR_peek_last_error"]
+private opaque osslErrPeekLastError : BaseIO UInt64
+
+@[extern "ERR_peek_error"]
+private opaque osslErrPeekError : BaseIO UInt64
+
+@[extern "ERR_get_error"]
+private opaque osslErrGetError : BaseIO UInt64
+
+private def drainOsslErrs : IO Unit := do
+  for _ in List.range 64 do
+    if (← osslErrGetError) == 0 then
+      break
+
+private def checkOsslErrQueueIsolation : IO Unit := do
+  drainOsslErrs
+  match ← digestRaw .sha256 "abc".toUTF8 with
+  | .error e => throw (IO.userError s!"digestRaw on empty queue failed: {e.message}")
+  | .ok bs => assertTrue (bs.size == 32) "digestRaw empty queue output len"
+  assertTrue ((← osslErrPeekError) == 0 && (← osslErrPopToMark) == 0)
+    "digestRaw leaves empty queue without mark"
+
+  let rNoMark ← osslPushNullErr 0 0
+  assertTrue (rNoMark == 0) "osslPushNullErr no-mark failed as expected"
+  let eNoMark ← osslErrPeekLastError
+  match ← hmacSha256Raw (ByteArray.mk (Array.replicate 70 0x42)) "msg".toUTF8 with
+  | .error e =>
+    drainOsslErrs
+    throw (IO.userError s!"hmacSha256Raw with no-mark caller err failed: {e.message}")
+  | .ok bs => assertTrue (bs.size == 32) "hmacSha256Raw no-mark output len"
+  let peekNoMark ← osslErrPeekLastError
+  let popNoMark ← osslErrPopToMark
+  let remNoMark ← osslErrPeekError
+  drainOsslErrs
+  assertTrue (peekNoMark == eNoMark && eNoMark != 0 && popNoMark == 0 && remNoMark == 0)
+    "hmacSha256Raw preserved unmarked caller error without adding stray mark"
+
+  let r1 ← osslPushNullErr 0 0
+  assertTrue (r1 == 0) "osslPushNullErr 1 failed as expected"
+  let e1 ← osslErrPeekLastError
+  let mkOk ← osslErrSetMark
+  assertTrue (mkOk == 1) "ERR_set_mark succeeded"
+  let r2 ← osslPushNullErr 0 0
+  assertTrue (r2 == 0) "osslPushNullErr 2 failed as expected"
+  let e2 ← osslErrPeekLastError
+  match ← digestRaw .sha256 "abc".toUTF8 with
+  | .error e =>
+    drainOsslErrs
+    throw (IO.userError s!"digestRaw with caller err queue failed: {e.message}")
+  | .ok bs =>
+    assertTrue (bs.size == 32) "digestRaw sha256 output len"
+  let lastAfter ← osslErrPeekLastError
+  if lastAfter != e2 then
+    drainOsslErrs
+    throw (IO.userError s!"OpenSSL caller mark/queue corrupted across digestRaw: last={lastAfter} expected={e2}")
+  let pOk ← osslErrPopToMark
+  let eBase ← osslErrGetError
+  let rem ← osslErrPeekError
+  drainOsslErrs
+  assertTrue (pOk == 1 && eBase == e1 && eBase != 0 && rem == 0)
+    "OpenSSL caller errors and mark preserved across digestRaw"
+
+  let mut expectedTop : UInt64 := 0
+  for _ in List.range 17 do
+    let rm ← osslPushNullErr 0 0
+    assertTrue (rm == 0) "osslPushNullErr seg failed"
+    let mOk ← osslErrSetMark
+    assertTrue (mOk == 1) "ERR_set_mark seg succeeded"
+  let rTop ← osslPushNullErr 0 0
+  assertTrue (rTop == 0) "osslPushNullErr top failed"
+  expectedTop ← osslErrPeekLastError
+  match ← digestRaw .sha512 "xyz".toUTF8 with
+  | .error e =>
+    drainOsslErrs
+    throw (IO.userError s!"digestRaw with 17+ marks failed: {e.message}")
+  | .ok bs => assertTrue (bs.size == 64) "digestRaw 17+ marks output len"
+  let topAfter ← osslErrPeekLastError
+  let popTop ← osslErrPopToMark
+  let mut drainedCount := 0
+  for _ in List.range 32 do
+    if (← osslErrGetError) == 0 then
+      break
+    drainedCount := drainedCount + 1
+  drainOsslErrs
+  assertTrue (topAfter == expectedTop && popTop == 1 && drainedCount == 14)
+    "OpenSSL multi-mark queue (max 15 ring entries) preserved across digestRaw"
 
 /-- Run all runtime verification tests for `LeanSwe.CryptoHash.Raw`. -/
 def runAll : IO Unit := do
@@ -187,6 +351,11 @@ def runAll : IO Unit := do
   let err2 := mapRawError (.opensslError (some 123) "")
   assertTrue (err2.kind == .cryptoError && !err2.message.isEmpty && err2.opensslCode == some 123)
     "mapRawError opensslError"
+
+  let (oobSt, oobCode, oobMsg, oobBytes) ← rawDirectDigestProbe 2 ByteArray.empty
+  assertTrue (oobSt == 1 && oobCode == 0 && oobBytes.isEmpty && oobMsg == "unknown digest algorithm tag")
+    "direct C shim digest rejects algTag=2"
+  checkOsslErrQueueIsolation
 
   let longKey := ByteArray.mk (Array.replicate 131 0xAA)
   match ← hmacSha256Raw longKey "msg".toUTF8 with

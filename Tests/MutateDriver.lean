@@ -206,8 +206,13 @@ private def runPropChecksEnvVars : IO Unit := do
           getEnv := fun k => pure (.ok ((entries.find? fun p => p.1 == k).map (·.2)))
           listEnv := pure (.ok entries.toArray) }
       let res : Except EnvVars.EnvVarsError String := (EnvVars.Internal.mkApiM raw).homeDir
+      let expectedMsg :=
+        if entries.find? (fun p => p.1 == "HOME") == some ("HOME", "") then
+          "HOME environment variable is empty"
+        else
+          "HOME environment variable is not set"
       let ok := match res with
-        | .error e => e.kind == .notFound && e.key == some "HOME" && !e.message.isEmpty
+        | .error e => e.kind == .notFound && e.key == some "HOME" && e.message == expectedMsg
         | .ok _ => false
       (r1, assertB "homeDir missing/empty fails" ok)
 

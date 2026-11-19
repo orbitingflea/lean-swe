@@ -1,7 +1,14 @@
 import LeanSwe.CryptoHash.Raw.Types
+import LeanSwe.CryptoHash.Raw.Model
 import LeanSwe.CryptoHash.Raw.Impl
 import LeanSwe.CryptoHash.Raw.Interface
 import LeanSwe.CryptoHash.Raw.SpecTests
+import LeanSwe.CryptoHash.Raw.Sha256Vectors
+import LeanSwe.CryptoHash.Raw.Sha512Vectors
+import LeanSwe.CryptoHash.Raw.HmacVectors
+import LeanSwe.CryptoHash.Raw.HmacTc1
+import LeanSwe.CryptoHash.Raw.HmacTc2
+import LeanSwe.CryptoHash.Raw.HmacTc6
 
 namespace LeanSwe.CryptoHash.Raw.Proofs
 
@@ -62,65 +69,74 @@ theorem raw_mapRawError_mapsKindsAndNonEmptyMessage :
     · exact ⟨rfl, rfl⟩
     · trivial
 
-private def pureModelRawOps : RawCryptoHashOpsM (StateM Unit) :=
-  { mapRawError := Internal.mapRawError
-    digestRaw := fun alg _ => pure (.ok (ByteArray.mk (Array.replicate (digestLen alg) 0)))
-    hmacSha256Raw := fun _ _ => pure (.ok (ByteArray.mk (Array.replicate 32 0)))
-    ctEqualRaw := fun a b =>
-      if a.size != b.size then
-        pure (.error (Internal.mapRawError (.lengthError a.size b.size "length mismatch")))
-      else
-        pure (.ok (a == b)) }
+private theorem digestBytesModel_size (alg : HashAlg) (msg : ByteArray) :
+    (Model.digestBytesModel alg msg).size = digestLen alg := by
+  cases alg <;> rfl
 
-/-- `pureModelRawOps` satisfies `test_cryptohashraw_digestRaw_returnsExpectedLengthOrError`. -/
+private theorem hmacSha256Bytes_size (key msg : ByteArray) :
+    (Model.hmacSha256Bytes key msg).size = 32 := rfl
+
+/-- `Model.modelStateRawOps` satisfies `test_cryptohashraw_digestRaw_returnsExpectedLengthOrError`. -/
 theorem raw_digestRaw_returnsExpectedLengthOrError :
-    AllPass (test_cryptohashraw_digestRaw_returnsExpectedLengthOrError pureModelRawOps) := by
-  intro _ alg _
-  dsimp [test_cryptohashraw_digestRaw_returnsExpectedLengthOrError, pureModelRawOps,
+    AllPass (test_cryptohashraw_digestRaw_returnsExpectedLengthOrError (Model.modelStateRawOps (S := Unit))) := by
+  intro _ alg msg
+  dsimp [test_cryptohashraw_digestRaw_returnsExpectedLengthOrError, Model.modelStateRawOps,
     StateT.run, pure, StateT.pure, Core.NondetTest.assert, Bind.bind]
-  simp [ByteArray.size]
+  exact ⟨digestBytesModel_size alg msg, trivial⟩
 
-/-- `pureModelRawOps` satisfies `test_cryptohashraw_hmacSha256Raw_returns32BytesOrError`. -/
+/-- `Model.modelStateRawOps` satisfies `test_cryptohashraw_hmacSha256Raw_returns32BytesOrError`. -/
 theorem raw_hmacSha256Raw_returns32BytesOrError :
-    AllPass (test_cryptohashraw_hmacSha256Raw_returns32BytesOrError pureModelRawOps) := by
-  intro _ _ _
-  dsimp [test_cryptohashraw_hmacSha256Raw_returns32BytesOrError, pureModelRawOps,
+    AllPass (test_cryptohashraw_hmacSha256Raw_returns32BytesOrError (Model.modelStateRawOps (S := Unit))) := by
+  intro _ key msg
+  dsimp [test_cryptohashraw_hmacSha256Raw_returns32BytesOrError, Model.modelStateRawOps,
     StateT.run, pure, StateT.pure, Core.NondetTest.assert, Bind.bind]
-  simp [ByteArray.size]
+  exact ⟨hmacSha256Bytes_size key msg, trivial⟩
 
-/-- `pureModelRawOps` satisfies `test_cryptohashraw_ctEqualRaw_unequalLengths_returnsLengthMismatch`. -/
+/-- `Model.modelStateRawOps` satisfies `test_cryptohashraw_ctEqualRaw_unequalLengths_returnsLengthMismatch`. -/
 theorem raw_ctEqualRaw_unequalLengths_returnsLengthMismatch :
-    AllPass (test_cryptohashraw_ctEqualRaw_unequalLengths_returnsLengthMismatch pureModelRawOps) := by
+    AllPass (test_cryptohashraw_ctEqualRaw_unequalLengths_returnsLengthMismatch (Model.modelStateRawOps (S := Unit))) := by
   intro _ a b hne
-  dsimp [test_cryptohashraw_ctEqualRaw_unequalLengths_returnsLengthMismatch, pureModelRawOps,
-    StateT.run, pure, StateT.pure, Core.NondetTest.assert, Bind.bind, Core.NondetTest.assume]
+  dsimp [test_cryptohashraw_ctEqualRaw_unequalLengths_returnsLengthMismatch, Model.modelStateRawOps,
+    Model.ctEqualRawModel, StateT.run, Core.NondetTest.assert, Bind.bind,
+    Core.NondetTest.assume]
   have hneB : (a.size != b.size) = true := bne_iff_ne.mpr hne
-  simp [hneB, StateT.pure, pure, Internal.mapRawError, Internal.nonEmptyMsg]
+  simp only [hneB, ↓reduceIte, Pure.pure, Model.mapRawErrorModel]
+  refine ⟨⟨trivial, ?_⟩, trivial⟩
+  unfold Model.nonEmptyMsgModel
+  split
+  · intro h
+    have hlen := congrArg String.length h
+    simp [String.length] at hlen
+  · rename_i hne_s
+    intro hemp
+    have hlen := congrArg String.length hemp
+    simp [String.length] at hlen
 
 /-- Non-vacuity witness for `test_cryptohashraw_ctEqualRaw_unequalLengths_returnsLengthMismatch`. -/
 theorem raw_ctEqualRaw_unequalLengths_canReach :
-    CanReach (test_cryptohashraw_ctEqualRaw_unequalLengths_returnsLengthMismatch pureModelRawOps) := by
+    CanReach (test_cryptohashraw_ctEqualRaw_unequalLengths_returnsLengthMismatch (Model.modelStateRawOps (S := Unit))) := by
   refine ⟨(), ByteArray.empty, ByteArray.mk #[1], by decide, ?_⟩
-  dsimp [test_cryptohashraw_ctEqualRaw_unequalLengths_returnsLengthMismatch, pureModelRawOps,
-    StateT.run, pure, StateT.pure, Core.NondetTest.assert, Bind.bind]
-  simp [ByteArray.size, Internal.mapRawError, Internal.nonEmptyMsg, StateT.pure, pure]
+  dsimp [test_cryptohashraw_ctEqualRaw_unequalLengths_returnsLengthMismatch, Model.modelStateRawOps,
+    Model.ctEqualRawModel, StateT.run, Core.NondetTest.assert, Bind.bind]
+  simp only [ByteArray.size, bne, Pure.pure, Model.mapRawErrorModel, Model.nonEmptyMsgModel]
+  exact ⟨⟨rfl, by decide⟩, trivial⟩
 
-/-- `pureModelRawOps` satisfies `test_cryptohashraw_ctEqualRaw_equalLengths_returnsBoolOrError`. -/
+/-- `Model.modelStateRawOps` satisfies `test_cryptohashraw_ctEqualRaw_equalLengths_returnsBoolOrError`. -/
 theorem raw_ctEqualRaw_equalLengths_returnsBoolOrError :
-    AllPass (test_cryptohashraw_ctEqualRaw_equalLengths_returnsBoolOrError pureModelRawOps) := by
+    AllPass (test_cryptohashraw_ctEqualRaw_equalLengths_returnsBoolOrError (Model.modelStateRawOps (S := Unit))) := by
   intro _ a b heq
-  dsimp [test_cryptohashraw_ctEqualRaw_equalLengths_returnsBoolOrError, pureModelRawOps,
-    StateT.run, pure, StateT.pure, Core.NondetTest.assert, Bind.bind]
+  dsimp [test_cryptohashraw_ctEqualRaw_equalLengths_returnsBoolOrError, Model.modelStateRawOps,
+    Model.ctEqualRawModel, StateT.run, Core.NondetTest.assert, Bind.bind]
   have hfalse : (a.size != b.size) = false := by simp [heq]
-  simp [hfalse, StateT.pure, pure]
+  simp [hfalse, Pure.pure]
 
 /-- Non-vacuity witness for `test_cryptohashraw_ctEqualRaw_equalLengths_returnsBoolOrError`. -/
 theorem raw_ctEqualRaw_equalLengths_canReach :
-    CanReach (test_cryptohashraw_ctEqualRaw_equalLengths_returnsBoolOrError pureModelRawOps) := by
+    CanReach (test_cryptohashraw_ctEqualRaw_equalLengths_returnsBoolOrError (Model.modelStateRawOps (S := Unit))) := by
   refine ⟨(), ByteArray.empty, ByteArray.empty, rfl, ?_⟩
-  dsimp [test_cryptohashraw_ctEqualRaw_equalLengths_returnsBoolOrError, pureModelRawOps,
-    StateT.run, pure, StateT.pure, Core.NondetTest.assert, Bind.bind]
-  simp
+  dsimp [test_cryptohashraw_ctEqualRaw_equalLengths_returnsBoolOrError, Model.modelStateRawOps,
+    Model.ctEqualRawModel, StateT.run, Core.NondetTest.assert, Bind.bind]
+  simp [Pure.pure]
 
 private theorem baseIO_liftM_never_throws {α : Type} (act : BaseIO α) (w : Void IO.RealWorld) :
     ∃ a w', (liftM act : IO α) w = .ok a w' := by
@@ -150,10 +166,17 @@ private theorem io_bind_baseIO {α β : Type} (act : BaseIO α) (k : α → IO �
       | EST.Out.error e s => EST.Out.error e s := rfl
   rw [hbind, hv]
 
-/-- Exact outcome characterization of `Raw.defaultOps.digestRaw`: either `.ok bs` of length `digestLen alg` or `.error` with `.cryptoError`. -/
+private theorem decodeShimError_ne_invalidHex (status : UInt32) (code : UInt64) (detail : String) :
+    (Internal.decodeShimError status code detail).kind ≠ .invalidHex := by
+  unfold Internal.decodeShimError Internal.decodeOpenSslError Internal.mapRawError
+  split
+  · simp
+  · split <;> simp
+
+/-- Exact outcome characterization of `Raw.defaultOps.digestRaw`: either `.ok bs` of length `digestLen alg` or `.error` whose kind is never `.invalidHex`. -/
 theorem defaultOps_digestRaw_outcome (alg : HashAlg) (data : ByteArray) (w : Void IO.RealWorld) :
     (∃ bs w', (defaultOps.digestRaw alg data) w = .ok (.ok bs) w' ∧ bs.size = digestLen alg) ∨
-    (∃ e w', (defaultOps.digestRaw alg data) w = .ok (.error e) w' ∧ e.kind = .cryptoError) := by
+    (∃ e w', (defaultOps.digestRaw alg data) w = .ok (.error e) w' ∧ e.kind ≠ .invalidHex) := by
   dsimp [defaultOps, Internal.mkRawOps]
   rw [io_bind_baseIO]
   rcases hres : ((_ : BaseIO _) w).val with ⟨status, code, detail, bs⟩
@@ -161,12 +184,12 @@ theorem defaultOps_digestRaw_outcome (alg : HashAlg) (data : ByteArray) (w : Voi
   by_cases hs : (status != 0) = true
   · simp only [hs, ↓reduceIte]
     rw [io_pure_eq]
-    exact Or.inr ⟨_, _, rfl, by simp [Internal.decodeOpenSslError, Internal.mapRawError]⟩
+    exact Or.inr ⟨_, _, rfl, decodeShimError_ne_invalidHex status code detail⟩
   · simp only [hs, Bool.false_eq_true, ↓reduceIte]
     by_cases hlen : (bs.size != digestLen alg) = true
     · simp only [hlen, ↓reduceIte]
       rw [io_pure_eq]
-      exact Or.inr ⟨_, _, rfl, by simp [Internal.decodeOpenSslError, Internal.mapRawError]⟩
+      exact Or.inr ⟨_, _, rfl, by simp [Internal.mapRawError]⟩
     · simp only [hlen, Bool.false_eq_true, ↓reduceIte]
       rw [io_pure_eq]
       have heq : bs.size = digestLen alg := by
@@ -175,10 +198,10 @@ theorem defaultOps_digestRaw_outcome (alg : HashAlg) (data : ByteArray) (w : Voi
         · exact beq_iff_eq.mp hsz
       exact Or.inl ⟨bs, _, rfl, heq⟩
 
-/-- Exact outcome characterization of `Raw.defaultOps.hmacSha256Raw`: either `.ok bs` of length `32` or `.error` with `.cryptoError`. -/
+/-- Exact outcome characterization of `Raw.defaultOps.hmacSha256Raw`: either `.ok bs` of length `32` or `.error` whose kind is never `.invalidHex`. -/
 theorem defaultOps_hmacSha256Raw_outcome (key msg : ByteArray) (w : Void IO.RealWorld) :
     (∃ bs w', (defaultOps.hmacSha256Raw key msg) w = .ok (.ok bs) w' ∧ bs.size = 32) ∨
-    (∃ e w', (defaultOps.hmacSha256Raw key msg) w = .ok (.error e) w' ∧ e.kind = .cryptoError) := by
+    (∃ e w', (defaultOps.hmacSha256Raw key msg) w = .ok (.error e) w' ∧ e.kind ≠ .invalidHex) := by
   dsimp [defaultOps, Internal.mkRawOps]
   rw [io_bind_baseIO]
   rcases hres : ((_ : BaseIO _) w).val with ⟨status, code, detail, bs⟩
@@ -186,12 +209,12 @@ theorem defaultOps_hmacSha256Raw_outcome (key msg : ByteArray) (w : Void IO.Real
   by_cases hs : (status != 0) = true
   · simp only [hs, ↓reduceIte]
     rw [io_pure_eq]
-    exact Or.inr ⟨_, _, rfl, by simp [Internal.decodeOpenSslError, Internal.mapRawError]⟩
+    exact Or.inr ⟨_, _, rfl, decodeShimError_ne_invalidHex status code detail⟩
   · simp only [hs, Bool.false_eq_true, ↓reduceIte]
     by_cases hlen : (bs.size != 32) = true
     · simp only [hlen, ↓reduceIte]
       rw [io_pure_eq]
-      exact Or.inr ⟨_, _, rfl, by simp [Internal.decodeOpenSslError, Internal.mapRawError]⟩
+      exact Or.inr ⟨_, _, rfl, by simp [Internal.mapRawError]⟩
     · simp only [hlen, Bool.false_eq_true, ↓reduceIte]
       rw [io_pure_eq]
       have heq : bs.size = 32 := by
@@ -218,22 +241,6 @@ theorem defaultOps_ctEqualRaw_outcome (a b : ByteArray) (w : Void IO.RealWorld) 
       · exact beq_iff_eq.mp hsz
     exact Or.inr ⟨heq, _, _, rfl⟩
 
-private theorem digestRaw_never (k : CryptoHashErrorKind) (hk : k ≠ .cryptoError)
-    (alg : HashAlg) (data : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO CryptoHashError.kind k (digestRaw alg data) w := by
-  unfold Core.NeverErrorKindIO digestRaw
-  rcases defaultOps_digestRaw_outcome alg data w with ⟨bs, w', hok, _⟩ | ⟨e, w', herr, hek⟩
-  · rw [hok]; trivial
-  · rw [herr]; simp [hek, hk.symm]
-
-private theorem hmacSha256Raw_never (k : CryptoHashErrorKind) (hk : k ≠ .cryptoError)
-    (key msg : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO CryptoHashError.kind k (hmacSha256Raw key msg) w := by
-  unfold Core.NeverErrorKindIO hmacSha256Raw
-  rcases defaultOps_hmacSha256Raw_outcome key msg w with ⟨bs, w', hok, _⟩ | ⟨e, w', herr, hek⟩
-  · rw [hok]; trivial
-  · rw [herr]; simp [hek, hk.symm]
-
 private theorem ctEqualRaw_never (k : CryptoHashErrorKind) (hk : k ≠ .lengthMismatch)
     (a b : ByteArray) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO CryptoHashError.kind k (ctEqualRaw a b) w := by
@@ -242,35 +249,21 @@ private theorem ctEqualRaw_never (k : CryptoHashErrorKind) (hk : k ≠ .lengthMi
   · rw [herr]; simp [hek, hk.symm]
   · rw [hok]; trivial
 
-/-- `Raw.digestRaw` never returns `.invalidInput`. -/
-theorem raw_digestRaw_never_invalidInput (alg : HashAlg) (data : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO CryptoHashError.kind .invalidInput (digestRaw alg data) w :=
-  digestRaw_never .invalidInput (by decide) alg data w
-
 /-- `Raw.digestRaw` never returns `.invalidHex`. -/
 theorem raw_digestRaw_never_invalidHex (alg : HashAlg) (data : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO CryptoHashError.kind .invalidHex (digestRaw alg data) w :=
-  digestRaw_never .invalidHex (by decide) alg data w
-
-/-- `Raw.digestRaw` never returns `.lengthMismatch`. -/
-theorem raw_digestRaw_never_lengthMismatch (alg : HashAlg) (data : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO CryptoHashError.kind .lengthMismatch (digestRaw alg data) w :=
-  digestRaw_never .lengthMismatch (by decide) alg data w
-
-/-- `Raw.hmacSha256Raw` never returns `.invalidInput`. -/
-theorem raw_hmacSha256Raw_never_invalidInput (key msg : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO CryptoHashError.kind .invalidInput (hmacSha256Raw key msg) w :=
-  hmacSha256Raw_never .invalidInput (by decide) key msg w
+    Core.NeverErrorKindIO CryptoHashError.kind .invalidHex (digestRaw alg data) w := by
+  unfold Core.NeverErrorKindIO digestRaw
+  rcases defaultOps_digestRaw_outcome alg data w with ⟨bs, w', hok, _⟩ | ⟨e, w', herr, hek⟩
+  · rw [hok]; trivial
+  · rw [herr]; exact hek
 
 /-- `Raw.hmacSha256Raw` never returns `.invalidHex`. -/
 theorem raw_hmacSha256Raw_never_invalidHex (key msg : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO CryptoHashError.kind .invalidHex (hmacSha256Raw key msg) w :=
-  hmacSha256Raw_never .invalidHex (by decide) key msg w
-
-/-- `Raw.hmacSha256Raw` never returns `.lengthMismatch`. -/
-theorem raw_hmacSha256Raw_never_lengthMismatch (key msg : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO CryptoHashError.kind .lengthMismatch (hmacSha256Raw key msg) w :=
-  hmacSha256Raw_never .lengthMismatch (by decide) key msg w
+    Core.NeverErrorKindIO CryptoHashError.kind .invalidHex (hmacSha256Raw key msg) w := by
+  unfold Core.NeverErrorKindIO hmacSha256Raw
+  rcases defaultOps_hmacSha256Raw_outcome key msg w with ⟨bs, w', hok, _⟩ | ⟨e, w', herr, hek⟩
+  · rw [hok]; trivial
+  · rw [herr]; exact hek
 
 /-- `Raw.ctEqualRaw` never returns `.invalidInput`. -/
 theorem raw_ctEqualRaw_never_invalidInput (a b : ByteArray) (w : Void IO.RealWorld) :
@@ -286,5 +279,15 @@ theorem raw_ctEqualRaw_never_invalidHex (a b : ByteArray) (w : Void IO.RealWorld
 theorem raw_ctEqualRaw_never_cryptoError (a b : ByteArray) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO CryptoHashError.kind .cryptoError (ctEqualRaw a b) w :=
   ctEqualRaw_never .cryptoError (by decide) a b w
+
+/-- `Model.modelRawOps` satisfies `test_cryptohashraw_modelDigestsValidLengthsAndVectors`. -/
+theorem raw_modelDigestsValidLengthsAndVectors :
+    AllPass (test_cryptohashraw_modelDigestsValidLengthsAndVectors Model.modelRawOps) := by
+  intro alg key msg
+  dsimp only [test_cryptohashraw_modelDigestsValidLengthsAndVectors, Model.modelRawOps,
+    Core.NondetTest.assert, Bind.bind, Pure.pure]
+  exact ⟨rfl, digestBytesModel_size alg msg, rfl, hmacSha256Bytes_size key msg,
+    sha256_empty_vec, sha256_abc_vec, sha512_empty_vec, sha512_abc_vec,
+    hmac_tc1_vec, hmac_tc2_vec, hmac_tc6_vec, hmac_empty_vec, trivial⟩
 
 end LeanSwe.CryptoHash.Raw.Proofs

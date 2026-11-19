@@ -3,6 +3,7 @@
   "common_paths": [
     ".github/actions/install-lean/action.yml",
     ".github/workflows/audit.yml",
+    "Core/",
     "Fuzz/Common/",
     "Fuzz/Main.lean",
     "lake-manifest.json",
@@ -13,6 +14,8 @@
   "suites": {
     "selftest": { "paths": ["Fuzz/SelfTest.lean"] },
     "float": { "paths": ["Fuzz/Float/", "LeanSwe/NumParse/", "LeanSwe/Toml/"] },
-    "cmdline": { "paths": ["Fuzz/CmdLine/", "LeanSwe/CmdLine/", "LeanSwe/EnvVars/", "LeanSwe/LinuxSyscall/c/timerand_fuzz_sig.c"] }
+    "cmdline": { "paths": ["Fuzz/CmdLine/", "LeanSwe/CmdLine/", "LeanSwe/EnvVars/", "LeanSwe/LinuxSyscall/c/timerand_fuzz_sig.c"] },
+    "envvars": { "paths": ["LeanSwe/EnvVars/", "Fuzz/EnvVars/"] },
+    "cryptohash": { "paths": ["LeanSwe/CryptoHash/", "Fuzz/CryptoHash/"] }
   }
 }
