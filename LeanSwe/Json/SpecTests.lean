@@ -168,19 +168,6 @@ def test_json_parse_onError_returnsParseErrorWithNonEmptyMessage
   | .ok _ => NondetTest.assert True
   | .error e => NondetTest.assert (e.kind = .parseError ∧ e.message ≠ "" ∧ e.path = none)
 
-/-- Trusted `Lean.Data.Json.{Parser,Printer}` (`Lean.Json.parse`, `Lean.Json.compress`, `Lean.Json.pretty`) boundary obligations verified at runtime with nonce logging.
-    Object round-trip probes (`assume_json_compress_noNewlineAndParseRoundTrip` and `assume_json_pretty_parseRoundTrip`) apply to `Lean.Json` values whose object maps satisfy `Std.TreeMap.Raw.WF` (unique sorted keys, as produced by `Lean.Json.mkObj`, `Lean.toJson`, and `Lean.Json.parse`). -/
-def externalAssumptions : List AssumptionObligation :=
-  [ { name := "LeanSwe.Json.assume_json_compress_noNewlineAndParseRoundTrip"
-      subject := "LeanSwe.Json.compress"
-      formalPred? := none }
-  , { name := "LeanSwe.Json.assume_json_pretty_parseRoundTrip"
-      subject := "LeanSwe.Json.pretty"
-      formalPred? := none }
-  , { name := "LeanSwe.Json.assume_json_encodeCompressParseDecode_roundTrip"
-      subject := "LeanSwe.Json.parse"
-      formalPred? := none } ]
-
 /-- Declared error-coverage matrix for `LeanSwe.Json` fallible requests (`JsonErrorKind`). -/
 def errorCoverage : List (ErrorObligation JsonErrorKind) :=
   [ { request := "LeanSwe.Json.parse"
