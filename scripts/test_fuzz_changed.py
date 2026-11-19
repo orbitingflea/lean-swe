@@ -92,6 +92,10 @@ class FuzzChangedUnitTests(unittest.TestCase):
         by_name = {s.name: s for s in manifest.suites}
         self.assertIn("selftest", by_name); self.assertIn("float", by_name); self.assertIn("cmdline", by_name)
         self.assertIn("envvars", by_name); self.assertIn("cryptohash", by_name)
+        self.assertIn("passwd", by_name)
+        self.assertIn("LeanSwe/LinuxSyscall/Passwd/", by_name["passwd"].paths)
+        self.assertIn("LeanSwe/LinuxSyscall/c/passwd_shim.c", by_name["passwd"].paths)
+        self.assertIn("LeanSwe/LinuxSyscall/Common/", by_name["passwd"].paths)
         self.assertIn("Fuzz/SelfTest.lean", by_name["selftest"].paths)
         daily = (REPO_ROOT / ".github" / "workflows" / "audit-daily.yml").read_text(encoding="utf-8")
         self.assertIn("scripts/test_fuzz_changed.py", daily); self.assertIn("--check-manifest", daily)

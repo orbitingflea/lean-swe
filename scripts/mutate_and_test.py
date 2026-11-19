@@ -48,6 +48,7 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
     "SlotPool": pathlib.Path("LeanSwe/SlotPool"),
     "LinuxSyscall.Sandbox": pathlib.Path("LeanSwe/LinuxSyscall/Sandbox"),
     "LinuxSyscall.TimeRand": pathlib.Path("LeanSwe/LinuxSyscall/TimeRand"),
+    "LinuxSyscall.Passwd": pathlib.Path("LeanSwe/LinuxSyscall/Passwd"),
 }
 
 C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
@@ -55,6 +56,7 @@ C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
     "process_shim.c": "leanswe_process",
     "envvars_shim.c": "leanswe_envvars",
     "timerand_shim.c": "leanswe_linux_timerand",
+    "passwd_shim.c": "leanswe_linux_passwd",
     "sqlite_shim.c": "leanswe_sqlite",
     "cryptohash_shim.c": "leanswe_cryptohash",
     "psandbox_shim.c": "leanswe_psandbox",
@@ -65,6 +67,7 @@ C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
 SUITE_TO_EXTRA_C: dict[str, list[pathlib.Path]] = {
     "LinuxSyscall.Sandbox": [pathlib.Path("LeanSwe/LinuxSyscall/c/sandbox_shim.c")],
     "LinuxSyscall.TimeRand": [pathlib.Path("LeanSwe/LinuxSyscall/c/timerand_shim.c")],
+    "LinuxSyscall.Passwd": [pathlib.Path("LeanSwe/LinuxSyscall/c/passwd_shim.c")],
 }
 
 SANCOV_RT_C = r"""

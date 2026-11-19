@@ -48,7 +48,8 @@ private def allSuites : Array (String × String × IO (Option String)) := #[
   ("ConnectProxy", "LeanSwe/ConnectProxy/RuntimeTests.lean", do ConnectProxy.RuntimeTests.runAll; return none),
   ("SlotPool", "LeanSwe/SlotPool/RuntimeTests.lean", do SlotPool.RuntimeTests.runAll; return none),
   ("LinuxSyscall.Sandbox", "LeanSwe/LinuxSyscall/Sandbox/RuntimeTests.lean", do LinuxSyscall.Sandbox.RuntimeTests.runAll; return none),
-  ("LinuxSyscall.TimeRand", "LeanSwe/LinuxSyscall/TimeRand/RuntimeTests.lean", do LinuxSyscall.TimeRand.RuntimeTests.runAll; return none)
+  ("LinuxSyscall.TimeRand", "LeanSwe/LinuxSyscall/TimeRand/RuntimeTests.lean", do LinuxSyscall.TimeRand.RuntimeTests.runAll; return none),
+  ("LinuxSyscall.Passwd", "LeanSwe/LinuxSyscall/Passwd/RuntimeTests.lean", do LinuxSyscall.Passwd.RuntimeTests.runAll; return none)
 ]
 
 private def findUnregisteredRuntimeTests : IO (Array String) := do
@@ -125,6 +126,8 @@ def main (args : List String) : IO UInt32 := do
     return 0
   | "--timerand-strace-fault-check" :: rest =>
     return (← LinuxSyscall.TimeRand.RuntimeTests.probeMain rest)
+  | "--passwd-probe" :: rest =>
+    return (← LinuxSyscall.Passwd.RuntimeTests.probeMain rest)
   | "--uuid-probe" :: rest =>
     return (← Uuid.RuntimeTests.probeMain rest)
   | "--time-probe" :: rest =>

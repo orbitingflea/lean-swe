@@ -36,6 +36,15 @@ private def timeRandAuditModules : Array Name := #[
   `LeanSwe.LinuxSyscall.TimeRand.Proofs
 ]
 
+private def passwdAuditModules : Array Name := #[
+  `LeanSwe.LinuxSyscall.Passwd.Types,
+  `LeanSwe.LinuxSyscall.Passwd.Model,
+  `LeanSwe.LinuxSyscall.Passwd.Impl,
+  `LeanSwe.LinuxSyscall.Passwd.Interface,
+  `LeanSwe.LinuxSyscall.Passwd.SpecTests,
+  `LeanSwe.LinuxSyscall.Passwd.Proofs
+]
+
 private def envVarsAuditModules : Array Name := #[
   `LeanSwe.EnvVars.Raw.Types,
   `LeanSwe.EnvVars.Raw.Model,
@@ -118,6 +127,11 @@ private def isAllowedTimeRandClosureModule (m : Name) : Bool :=
     m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
     timeRandAuditModules.contains m
 
+private def isAllowedPasswdClosureModule (m : Name) : Bool :=
+  m.getRoot == `Core ||
+    m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
+    passwdAuditModules.contains m
+
 private def isAllowedEnvVarsClosureModule (m : Name) : Bool :=
   m.getRoot == `Core || envVarsAuditModules.contains m
 
@@ -131,6 +145,11 @@ private def allowedTimeRandExternSyms : Std.HashMap Name String :=
     |>.insert `LeanSwe.LinuxSyscall.TimeRand.rawClockGettime "leanswe_sys_clock_gettime"
     |>.insert `LeanSwe.LinuxSyscall.TimeRand.rawClockNanosleep "leanswe_sys_clock_nanosleep"
     |>.insert `LeanSwe.LinuxSyscall.TimeRand.rawGetrandom "leanswe_sys_getrandom"
+
+private def allowedPasswdExternSyms : Std.HashMap Name String :=
+  Std.HashMap.emptyWithCapacity 4
+    |>.insert `LeanSwe.LinuxSyscall.Passwd.rawGetpwuidOnce "leanswe_sys_getpwuid_once"
+    |>.insert `LeanSwe.LinuxSyscall.Passwd.rawGetpwnamOnce "leanswe_sys_getpwnam_once"
 
 private def allowedEnvVarsExternSyms : Std.HashMap Name String :=
   Std.HashMap.emptyWithCapacity 4
@@ -641,6 +660,47 @@ private unsafe def checkSandboxTrustedClosure (env : Environment) : IO (Array St
   IO.println s!"TRUSTED_CLOSURE: sandbox_modules={sandboxSeen.size} discovered={discoveredMods.size} allowlist=Common+Sandbox externs={allowedSandboxExternSyms.size}"
   return errs
 
+private def checkPasswdPrivateWiring (env : Environment) : IO (Array String) := do
+  let mut privRawUid? : Option Name := none
+  let mut privRawNam? : Option Name := none
+  let mut privPosixOps? : Option Name := none
+  for h : i in [0 : env.header.moduleNames.size] do
+    if env.header.moduleNames[i] == `LeanSwe.LinuxSyscall.Passwd.Interface then
+      if let some data := env.header.moduleData[i]? then
+        for c in data.constants do
+          if isPrivateName c.name then
+            match privateToUserName? c.name with
+            | some `LeanSwe.LinuxSyscall.Passwd.rawGetpwuidOnce => privRawUid? := some c.name
+            | some `LeanSwe.LinuxSyscall.Passwd.rawGetpwnamOnce => privRawNam? := some c.name
+            | some `LeanSwe.LinuxSyscall.Passwd.posixPasswdOps => privPosixOps? := some c.name
+            | _ => pure ()
+  let ctx : Core.Context := { fileName := "<CheckPasswdWiring>", fileMap := default, maxHeartbeats := 0 }
+  let state : Core.State := { env }
+  let (errs, _) ← (Meta.MetaM.run' do
+    let mut wErrs : Array String := #[]
+    match privRawUid?, privRawNam?, privPosixOps? with
+    | some rawUidName, some rawNamName, some posixOpsName =>
+      match env.find? posixOpsName, env.find? `LeanSwe.LinuxSyscall.Passwd.defaultOps with
+      | some (.defnInfo pInfo), some (.defnInfo dInfo) =>
+        let pWhnf := (← Meta.withTransparency .all (Meta.whnf pInfo.value)).consumeMData
+        let pArgs := pWhnf.getAppArgs
+        let pOk :=
+          pWhnf.getAppFn.constName? == some `LeanSwe.LinuxSyscall.Passwd.Internal.PosixPasswdOpsM.mk &&
+          pArgs.size == 3 &&
+          pArgs[1]!.consumeMData.constName? == some rawUidName &&
+          pArgs[2]!.consumeMData.constName? == some rawNamName
+        if !pOk then
+          wErrs := wErrs.push "TRUSTED_CLOSURE_INTERFACE_WIRING_MISMATCH: posixPasswdOps does not directly bind (rawGetpwuidOnce, rawGetpwnamOnce)"
+        if !dInfo.value.getUsedConstants.contains posixOpsName then
+          wErrs := wErrs.push "TRUSTED_CLOSURE_INTERFACE_WIRING_MISMATCH: defaultOps does not reference private posixPasswdOps"
+      | _, _ =>
+        wErrs := wErrs.push "TRUSTED_CLOSURE_INTERFACE_WIRING_MISMATCH: missing posixPasswdOps or defaultOps definition"
+    | _, _, _ =>
+      wErrs := wErrs.push "TRUSTED_CLOSURE_INTERFACE_WIRING_MISMATCH: missing private rawGetpwuidOnce/rawGetpwnamOnce/posixPasswdOps in Passwd.Interface"
+    return wErrs
+  ).toIO ctx state
+  return errs
+
 private structure AxCache where
   safe : Std.HashSet Name := {}
   bad : Std.HashMap Name Name := {}
@@ -1099,15 +1159,46 @@ private def moduleToOleanPath (libDir : System.FilePath) (modName : Name) : Syst
 
 /-- Audit compiled `.olean` artifacts reachable from `LeanSwe` for promise coverage. -/
 unsafe def main (args : List String) : IO UInt32 := do
-  let libDir : System.FilePath := args.headD ".lake/build/lib/lean"
-  let repoDir : System.FilePath ← match args with
-    | _ :: r :: _ => pure r
-    | [l] =>
-      if l == ".lake/build/lib/lean" || l == "./.lake/build/lib/lean" then
-        pure "."
+  if args.length > 2 then
+    IO.eprintln s!"USAGE_ERROR: expected at most 2 arguments ([libDir] [repoDir]), got {args.length}"
+    return 1
+  let mut libDir : System.FilePath := ".lake/build/lib/lean"
+  let mut repoDir : System.FilePath := "."
+  match args with
+  | [] => pure ()
+  | [arg1] =>
+    let p1 : System.FilePath := arg1
+    if !(← (p1 / "LeanSwe.olean").pathExists) &&
+        (← (p1 / ".lake" / "build" / "lib" / "lean" / "LeanSwe.olean").pathExists) then
+      repoDir := p1
+      libDir := p1 / ".lake" / "build" / "lib" / "lean"
+    else
+      libDir := p1
+      let absLib? ← try some <$> IO.FS.realPath libDir catch _ => pure none
+      let some absLib := absLib?
+        | do
+            IO.eprintln s!"MISSING_OLEAN: LeanSwe ({libDir / "LeanSwe.olean"})"
+            return 1
+      let comps := absLib.components
+      if comps.length >= 5 && comps.drop (comps.length - 4) == [".lake", "build", "lib", "lean"] then
+        repoDir := System.mkFilePath (comps.take (comps.length - 4))
       else
-        pure (System.FilePath.mk l / ".." / ".." / ".." / "..")
-    | [] => pure "."
+        IO.eprintln s!"MISSING_SOURCE_DIR: libDir {libDir} must reside at <repoDir>/.lake/build/lib/lean"
+        return 1
+  | [arg1, arg2] =>
+    libDir := arg1
+    repoDir := arg2
+    let absLib? ← try some <$> IO.FS.realPath libDir catch _ => pure none
+    let absExp? ← try some <$> IO.FS.realPath (repoDir / ".lake" / "build" / "lib" / "lean") catch _ => pure none
+    match absLib?, absExp? with
+    | some absLib, some absExp =>
+      if absLib != absExp then
+        IO.eprintln s!"SPLIT_BRAIN_REPO_DIR: libDir {libDir} ({absLib}) does not match {repoDir}/.lake/build/lib/lean ({absExp})"
+        return 1
+    | _, _ =>
+      IO.eprintln s!"SPLIT_BRAIN_REPO_DIR: could not resolve {libDir} against {repoDir}/.lake/build/lib/lean"
+      return 1
+  | _ => unreachable!
   unless ← (libDir / "LeanSwe.olean").pathExists do
     IO.eprintln s!"MISSING_OLEAN: LeanSwe ({libDir / "LeanSwe.olean"})"
     return 1
@@ -1453,16 +1544,20 @@ unsafe def main (args : List String) : IO UInt32 := do
   ).toIO ctx state
 
   let trAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.TimeRand timeRandAuditModules
+  let pwAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.Passwd passwdAuditModules
   let envAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.EnvVars envVarsAuditModules
   let chAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.CryptoHash cryptoHashAuditModules
   let trClosureErrs ← checkPackageTrustedClosure repoDir "TimeRand" trAuditMods
     isAllowedTimeRandClosureModule `LeanSwe.LinuxSyscall.TimeRand.Interface allowedTimeRandExternSyms true
+  let pwClosureErrs ← checkPackageTrustedClosure repoDir "Passwd" pwAuditMods
+    isAllowedPasswdClosureModule `LeanSwe.LinuxSyscall.Passwd.Interface allowedPasswdExternSyms true
+  let pwWiringErrs ← checkPasswdPrivateWiring env
   let envClosureErrs ← checkPackageTrustedClosure repoDir "EnvVars" envAuditMods
     isAllowedEnvVarsClosureModule `LeanSwe.EnvVars.Raw.Interface allowedEnvVarsExternSyms false
   let chClosureErrs ← checkPackageTrustedClosure repoDir "CryptoHash" chAuditMods
     isAllowedCryptoHashClosureModule `LeanSwe.CryptoHash.Raw.Interface allowedCryptoHashExternSyms false
   let sbxClosureErrs ← checkSandboxTrustedClosure env
-  errors := errors ++ axiomErrs ++ trClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sbxClosureErrs
+  errors := errors ++ axiomErrs ++ trClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ envClosureErrs ++ chClosureErrs ++ sbxClosureErrs
 
   let mut withAssumeCount := 0
   for (m, pName) in promises do

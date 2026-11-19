@@ -45,6 +45,10 @@
       "max_lines": 1011,
       "legacy_unmigrated": true
     },
+    "LeanSwe/LinuxSyscall/c/passwd_shim.c": {
+      "max_lines": 145,
+      "legacy_unmigrated": false
+    },
     "LeanSwe/LinuxSyscall/c/timerand_fuzz_sig.c": {
       "max_lines": 120,
       "legacy_unmigrated": false
@@ -94,7 +98,7 @@
       "legacy_unmigrated": false
     },
     "scripts/mutate_and_test.py": {
-      "max_lines": 630,
+      "max_lines": 635,
       "legacy_unmigrated": false
     },
     "scripts/test_check_spec_change.py": {
