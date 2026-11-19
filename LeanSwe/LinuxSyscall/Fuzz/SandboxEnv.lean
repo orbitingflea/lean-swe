@@ -32,9 +32,22 @@ opaque readBytesRaw : UInt32 → UInt32 → IO (Except Errno ByteArray)
 @[extern "leanswe_sbx_close_raw"]
 opaque closeRaw : UInt32 → IO Unit
 
-/-- Close stdio FDs `0..2` safely without closing `libuv` internal event/epoll FDs. -/
+/-- Peek the raw POSIX FD integer inside a `RawFd` without pinning (`0xFFFFFFFF` if closed). -/
+@[extern "leanswe_sbx_peek_raw_fd"]
+opaque peekRawFd : @& RawFd → IO UInt32
+
+/-- Close stdio FDs `0..2` not in `keepMask` without closing `libuv` internal event/epoll/io_uring FDs. -/
 @[extern "leanswe_sbx_close_low_fds"]
-opaque closeLowFdsSafe : IO Unit
+opaque closeLowFdsRaw : UInt32 → IO Unit
+
+/-- Close stdio FDs `0..2` safely while preserving `libuv` internal FDs and all live `RawFd`s in `keep`. -/
+def closeLowFdsSafe (keep : Array RawFd := #[]) : IO Unit := do
+  let mut mask : UInt32 := 0
+  for fdObj in keep do
+    let raw ← peekRawFd fdObj
+    if raw < 3 then
+      mask := mask ||| ((1 : UInt32) <<< raw)
+  closeLowFdsRaw mask
 
 /-- Open a host path into a `RawFd` using selector `0..6` (`O_RDONLY|O_DIRECTORY`, `O_PATH|O_DIRECTORY`, `O_RDONLY`, `O_PATH`, `O_RDWR|O_CREAT`, `O_PATH|O_NOFOLLOW`, `O_RDONLY|O_NONBLOCK`). -/
 @[extern "leanswe_sbx_open_host_fd"]
@@ -107,6 +120,22 @@ partial def readAllRaw (fd : UInt32) : IO (Except Errno ByteArray) := do
         return .error e
   go ByteArray.empty
 
+private partial def readUpToRaw (fd : UInt32) (target : Nat) : IO (Except Errno ByteArray) := do
+  let rec go (acc : ByteArray) : IO (Except Errno ByteArray) := do
+    if acc.size >= target then
+      return .ok acc
+    match ← readBytesRaw fd (UInt32.ofNat (target - acc.size)) with
+    | .ok chunk =>
+      if chunk.isEmpty then
+        return .ok acc
+      go (acc ++ chunk)
+    | .error e =>
+      if e == Errno.EINTR then
+        go acc
+      else
+        return .error e
+  go ByteArray.empty
+
 /-- Stop and join the helper pthread inside a forked child. -/
 @[extern "leanswe_sbx_stop_sync_thread"]
 opaque stopSyncThread : IO (Except Errno Unit)
@@ -116,7 +145,7 @@ def spawnSyncThread (installFilter : Bool := true) : IO (Except Errno UInt32) :=
   match ← spawnSyncThreadRaw (if installFilter then 1 else 0) with
   | .error e => return .error e
   | .ok rfd =>
-    let dataRes ← readAllRaw rfd
+    let dataRes ← readUpToRaw rfd 4
     closeRaw rfd
     match dataRes with
     | .ok bytes =>

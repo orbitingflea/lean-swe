@@ -61,12 +61,14 @@ static lean_external_class *g_leanswe_fd_class = NULL;
 static pthread_once_t g_leanswe_fd_class_once = PTHREAD_ONCE_INIT;
 
 static void leanswe_fd_box_finalize(void *ptr) {
+  int saved = errno;
   LeanFdBox *box = (LeanFdBox *)ptr;
   if (box != NULL) {
     if (!box->closed && box->fd >= 0) { close(box->fd); box->fd = -1; box->closed = 1; }
     pthread_mutex_destroy(&box->mu);
     free(box);
   }
+  errno = saved;
 }
 
 static void leanswe_fd_box_foreach(void *ptr, b_lean_obj_arg f) { (void)ptr; (void)f; }
@@ -75,7 +77,7 @@ static void leanswe_init_fd_class(void) {
   g_leanswe_fd_class = lean_register_external_class(leanswe_fd_box_finalize, leanswe_fd_box_foreach);
 }
 
-lean_external_class *leanswe_get_fd_class(void) {
+LEAN_EXPORT lean_external_class *leanswe_get_fd_class(void) {
   pthread_once(&g_leanswe_fd_class_once, leanswe_init_fd_class);
   return g_leanswe_fd_class;
 }
@@ -105,8 +107,7 @@ static int sbx_ba_to_cstr(b_lean_obj_arg ba, char *stack_buf, size_t cap,
   return 0;
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sys_landlock_query(uint32_t flags, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sys_landlock_query(uint32_t flags) {
   long rc = syscall(SYS_landlock_create_ruleset, NULL, (unsigned long)0, (unsigned long)flags);
   if (rc < 0) {
     return leanswe_mk_errno(errno);
@@ -114,8 +115,7 @@ LEAN_EXPORT lean_obj_res leanswe_sys_landlock_query(uint32_t flags, lean_obj_arg
   return leanswe_mk_ok(lean_box_uint32((uint32_t)rc));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sys_landlock_create(uint64_t fs, uint64_t net, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sys_landlock_create(uint64_t fs, uint64_t net) {
   leanswe_ll_ruleset_attr_t attr;
   memset(&attr, 0, sizeof(attr));
   attr.handled_access_fs = fs;
@@ -132,8 +132,7 @@ LEAN_EXPORT lean_obj_res leanswe_sys_landlock_create(uint64_t fs, uint64_t net, 
 }
 
 LEAN_EXPORT lean_obj_res leanswe_sys_landlock_add_path_beneath(
-    b_lean_obj_arg ruleset, b_lean_obj_arg parent, uint64_t access, lean_obj_arg w) {
-  (void)w;
+    b_lean_obj_arg ruleset, b_lean_obj_arg parent, uint64_t access) {
   LeanFdBox *rbox = (LeanFdBox *)lean_get_external_data(ruleset);
   LeanFdBox *pbox = (LeanFdBox *)lean_get_external_data(parent);
   int rfd = -1, pfd = -1;
@@ -154,8 +153,7 @@ LEAN_EXPORT lean_obj_res leanswe_sys_landlock_add_path_beneath(
 }
 
 LEAN_EXPORT lean_obj_res leanswe_sys_landlock_add_net_port(
-    b_lean_obj_arg ruleset, uint64_t port, uint64_t access, lean_obj_arg w) {
-  (void)w;
+    b_lean_obj_arg ruleset, uint64_t port, uint64_t access) {
   LeanFdBox *rbox = (LeanFdBox *)lean_get_external_data(ruleset);
   int rfd = -1;
   int rpinned = (leanswe_fd_box_pin(rbox, &rfd) == 0);
@@ -172,8 +170,7 @@ LEAN_EXPORT lean_obj_res leanswe_sys_landlock_add_net_port(
   return leanswe_mk_ok(lean_box(0));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sys_landlock_restrict_self(b_lean_obj_arg ruleset, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sys_landlock_restrict_self(b_lean_obj_arg ruleset) {
   LeanFdBox *rbox = (LeanFdBox *)lean_get_external_data(ruleset);
   int rfd = -1;
   int rpinned = (leanswe_fd_box_pin(rbox, &rfd) == 0);
@@ -186,8 +183,7 @@ LEAN_EXPORT lean_obj_res leanswe_sys_landlock_restrict_self(b_lean_obj_arg rules
   return leanswe_mk_ok(lean_box(0));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sys_seccomp_get_action_avail(uint32_t action, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sys_seccomp_get_action_avail(uint32_t action) {
   uint32_t act = action;
   long rc = syscall(SYS_seccomp, 2UL, 0UL, &act);
   if (rc < 0) {
@@ -197,8 +193,7 @@ LEAN_EXPORT lean_obj_res leanswe_sys_seccomp_get_action_avail(uint32_t action, l
 }
 
 LEAN_EXPORT lean_obj_res leanswe_sys_seccomp_set_filter(
-    uint32_t flags, b_lean_obj_arg filter_ba, lean_obj_arg w) {
-  (void)w;
+    uint32_t flags, b_lean_obj_arg filter_ba) {
   size_t byte_len = lean_sarray_size(filter_ba);
   if (byte_len == 0 || (byte_len % 8) != 0 || (byte_len / 8) > 0xFFFFu) {
     return leanswe_mk_errno(EINVAL);
@@ -225,8 +220,7 @@ LEAN_EXPORT lean_obj_res leanswe_sys_seccomp_set_filter(
   return leanswe_mk_ok(lean_box_uint32((uint32_t)rc));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sys_prctl(uint32_t tag, uint32_t arg, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sys_prctl(uint32_t tag, uint32_t arg) {
   static const int k_prctl_cmds[4] = { 38, 39, 36, 1 };
   if (tag >= 4u) {
     return leanswe_mk_errno(EINVAL);
@@ -240,8 +234,7 @@ LEAN_EXPORT lean_obj_res leanswe_sys_prctl(uint32_t tag, uint32_t arg, lean_obj_
 }
 
 LEAN_EXPORT lean_obj_res leanswe_sys_setrlimit(
-    uint32_t tag, uint64_t cur, uint64_t max_lim, lean_obj_arg w) {
-  (void)w;
+    uint32_t tag, uint64_t cur, uint64_t max_lim) {
   static const int k_rlimit_resources[3] = { RLIMIT_CORE, RLIMIT_FSIZE, RLIMIT_NOFILE };
   if (tag >= 3u) {
     return leanswe_mk_errno(EINVAL);
@@ -256,8 +249,7 @@ LEAN_EXPORT lean_obj_res leanswe_sys_setrlimit(
 }
 
 LEAN_EXPORT lean_obj_res leanswe_sys_memfd_create(
-    b_lean_obj_arg name_ba, uint32_t flags, lean_obj_arg w) {
-  (void)w;
+    b_lean_obj_arg name_ba, uint32_t flags) {
   char sbuf[512];
   const char *cname = NULL;
   char *heap = NULL;

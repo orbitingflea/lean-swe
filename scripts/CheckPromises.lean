@@ -185,27 +185,48 @@ private def isAllowedSandboxClosureModule (m : Name) : Bool :=
   m.getRoot == `Core ||
     m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
     (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Sandbox] &&
-      m != `LeanSwe.LinuxSyscall.Sandbox.RuntimeTests)
+      m != `LeanSwe.LinuxSyscall.Sandbox.RuntimeTests &&
+      m != `LeanSwe.LinuxSyscall.Sandbox.SpecMutants)
 
 private def isSandboxStandardLibModule (m : Name) : Bool :=
   let r := m.getRoot
   r == `Init || r == `Std
 
-private def allowedSandboxExterns : Std.HashSet Name :=
-  Std.HashSet.emptyWithCapacity 16
-    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawLandlockQuery
-    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawLandlockCreate
-    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawLandlockAddPathBeneath
-    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawLandlockAddNetPort
-    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawLandlockRestrictSelf
-    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawSeccompGetActionAvail
-    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawSeccompSetFilter
-    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawPrctl
-    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawSetrlimit
-    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawMemfdCreate
+private def allowedSandboxExternSyms : Std.HashMap Name String :=
+  Std.HashMap.emptyWithCapacity 16
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawLandlockQuery "leanswe_sys_landlock_query"
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawLandlockCreate "leanswe_sys_landlock_create"
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawLandlockAddPathBeneath "leanswe_sys_landlock_add_path_beneath"
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawLandlockAddNetPort "leanswe_sys_landlock_add_net_port"
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawLandlockRestrictSelf "leanswe_sys_landlock_restrict_self"
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawSeccompGetActionAvail "leanswe_sys_seccomp_get_action_avail"
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawSeccompSetFilter "leanswe_sys_seccomp_set_filter"
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawPrctl "leanswe_sys_prctl"
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawSetrlimit "leanswe_sys_setrlimit"
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawMemfdCreate "leanswe_sys_memfd_create"
 
-private def checkSandboxTrustedClosure (env : Environment) : IO (Array String) := do
-  let sbxEnv ← importModules (sandboxAuditModules.map fun m => { module := m }) {} (loadExts := false)
+private def isExactStandardExtern (extData? : Option ExternAttrData) (expectedSym : String) : Bool :=
+  match extData? with
+  | some data =>
+    match data.entries with
+    | [.standard backend sym] => backend == `all && sym == expectedSym
+    | _ => false
+  | none => false
+
+private unsafe def checkSandboxTrustedClosure (env : Environment) : IO (Array String) := do
+  let mut discoveredMods : Array Name := #[]
+  for m in env.header.moduleNames do
+    let s := m.toString
+    if (s == "LeanSwe.LinuxSyscall.Sandbox" || s.startsWith "LeanSwe.LinuxSyscall.Sandbox.") &&
+        s != "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests" &&
+        s != "LeanSwe.LinuxSyscall.Sandbox.SpecMutants" then
+      discoveredMods := discoveredMods.push m
+  for reqMod in sandboxAuditModules do
+    if !discoveredMods.contains reqMod then
+      discoveredMods := discoveredMods.push reqMod
+  enableInitializersExecution
+  let sbxEnv ← importModules (discoveredMods.map fun m => { module := m }) {} (loadExts := true)
+  let csimpState := Lean.Compiler.CSimp.ext.getState sbxEnv
   let mut errs : Array String := #[]
   for m in sbxEnv.header.moduleNames do
     if !isSandboxStandardLibModule m && !isAllowedSandboxClosureModule m then
@@ -214,10 +235,7 @@ private def checkSandboxTrustedClosure (env : Environment) : IO (Array String) :
   let mut queue : Array (Name × Name) := #[]
   for h : i in [0 : sbxEnv.header.moduleNames.size] do
     let m := sbxEnv.header.moduleNames[i]
-    if sandboxAuditModules.contains m ||
-        (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Sandbox] &&
-          m != `LeanSwe.LinuxSyscall.Sandbox.RuntimeTests &&
-          m != `LeanSwe.LinuxSyscall.Sandbox.SpecMutants) then
+    if discoveredMods.contains m then
       let some data := sbxEnv.header.moduleData[i]? | continue
       for c in data.constants do
         queue := queue.push (m, c.name)
@@ -236,14 +254,35 @@ private def checkSandboxTrustedClosure (env : Environment) : IO (Array String) :
     if cMod != .anonymous && !isSandboxStandardLibModule cMod then
       if !isAllowedSandboxClosureModule cMod then
         errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_MODULE: {cName} in {cMod} reachable from {originMod}"
-      if cinfo matches .opaqueInfo _ || (getExternAttrData? sbxEnv cName).isSome then
+      if let some implName := Lean.Compiler.getImplementedBy? sbxEnv cName then
+        let isCtorIdxImpl :=
+          cName.getString! == "ctorIdx" &&
+          implName == Name.str cName "_impl" &&
+          (match sbxEnv.find? cName.getPrefix with | some (.inductInfo _) => true | _ => false)
+        if !isCtorIdxImpl then
+          errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_IMPLEMENTED_BY: {cName} in {cMod} implemented_by {implName}"
+        if !visited.contains implName then
+          queue := queue.push (originMod, implName)
+      if let some csEntry := csimpState.map.find? cName then
+        errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_CSIMP: {cName} in {cMod} csimp->{csEntry.toDeclName} via {csEntry.thmName}"
+        if !visited.contains csEntry.toDeclName then
+          queue := queue.push (originMod, csEntry.toDeclName)
+      if csimpState.thmNames.contains cName then
+        errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_CSIMP_THM: {cName} in {cMod} marked @[csimp]"
+      let extData? := getExternAttrData? sbxEnv cName
+      if cinfo matches .opaqueInfo _ || extData?.isSome then
         let userName := (privateToUserName? cName).getD cName
         let isRawFdPointed :=
           cMod == `LeanSwe.LinuxSyscall.Common.Types &&
           userName == `LeanSwe.LinuxSyscall.RawFdPointed &&
-          (getExternAttrData? sbxEnv cName).isNone
-        if !isRawFdPointed &&
-            (cMod != `LeanSwe.LinuxSyscall.Sandbox.Interface || !allowedSandboxExterns.contains userName) then
+          extData?.isNone
+        let isAllowedSandboxExtern :=
+          cMod == `LeanSwe.LinuxSyscall.Sandbox.Interface &&
+          (cinfo matches .opaqueInfo _) &&
+          match allowedSandboxExternSyms.get? userName with
+          | some expectedSym => isExactStandardExtern extData? expectedSym
+          | none => false
+        if !isRawFdPointed && !isAllowedSandboxExtern then
           errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_EXTERN: {cName} in {cMod} reachable from {originMod}"
     for u in cinfo.type.getUsedConstants do
       if !visited.contains u then
@@ -274,12 +313,9 @@ private def checkSandboxTrustedClosure (env : Environment) : IO (Array String) :
     isSandboxStandardLibModule imp || isAllowedSandboxClosureModule imp
   let mut sandboxQueue : Array Name := #[]
   let mut sandboxSeen : Std.HashSet Name := {}
-  for m in env.header.moduleNames do
-    let s := m.toString
-    if (s == "LeanSwe.LinuxSyscall.Sandbox" || s.startsWith "LeanSwe.LinuxSyscall.Sandbox.") &&
-        s != "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests" then
-      sandboxQueue := sandboxQueue.push m
-      sandboxSeen := sandboxSeen.insert m
+  for m in discoveredMods do
+    sandboxQueue := sandboxQueue.push m
+    sandboxSeen := sandboxSeen.insert m
   let mut qIdx : Nat := 0
   while hq : qIdx < sandboxQueue.size do
     let cur := sandboxQueue[qIdx]
@@ -290,7 +326,7 @@ private def checkSandboxTrustedClosure (env : Environment) : IO (Array String) :
       else if !sandboxSeen.contains imp then
         sandboxSeen := sandboxSeen.insert imp
         sandboxQueue := sandboxQueue.push imp
-  IO.println s!"TRUSTED_CLOSURE: sandbox_modules={sandboxSeen.size} allowlist=Common+Sandbox externs={allowedSandboxExterns.size}"
+  IO.println s!"TRUSTED_CLOSURE: sandbox_modules={sandboxSeen.size} discovered={discoveredMods.size} allowlist=Common+Sandbox externs={allowedSandboxExternSyms.size}"
   return errs
 
 private structure AxCache where

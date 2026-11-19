@@ -248,7 +248,7 @@ private def seccompRetPool : Array UInt32 := #[
 ]
 
 private def sandboxSyscallNrs : Array UInt32 := #[
-  444, 445, 446, 317, 277, 157, 167, 160, 163, 164, 261, 302, 319, 279
+  3, 57, 444, 445, 446, 317, 277, 157, 167, 160, 163, 164, 261, 302, 319, 279
 ]
 
 private def simpleBpfOps : Array UInt16 := #[
@@ -883,14 +883,6 @@ private def setupPreEnvironment (dirPath : String) (plan : EpisodePlan) :
   if plan.preLowerLimits then
     let _ ← setrlimit .core 4096 8192
     let _ ← setrlimit .fsize 131072 262144
-  let mut sys := SandboxSysState.initial
-  if plan.preOuterSeccomp then
-    if !(inUserns && plan.outerKeepNnpZero) then
-      let _ ← prctl .setNoNewPrivs
-    let outerFilter := buildMultiSyscallFilter plan.outerSeccompTargets plan.outerSeccompErrno
-    match ← seccomp .setModeFilter {} outerFilter with
-    | .ok 0 => sys := sys.withOuterSeccomp
-    | _ => pure ()
   let mut spawnActive := false
   if plan.spawnMode == 1 then
     match ← SandboxEnv.spawnSyncThread true with
@@ -900,6 +892,14 @@ private def setupPreEnvironment (dirPath : String) (plan : EpisodePlan) :
     match ← SandboxEnv.spawnSyncThread false with
     | .ok _ => spawnActive := true
     | .error _ => pure ()
+  let mut sys := SandboxSysState.initial
+  if plan.preOuterSeccomp then
+    if !(inUserns && plan.outerKeepNnpZero) then
+      let _ ← prctl .setNoNewPrivs
+    let outerFilter := buildMultiSyscallFilter plan.outerSeccompTargets plan.outerSeccompErrno
+    match ← seccomp .setModeFilter {} outerFilter with
+    | .ok 0 => sys := sys.withOuterSeccomp
+    | _ => pure ()
   return (spawnActive, mntReady, sys)
 
 private def recordOutcomeHit (hits : Array (String × Nat)) (sys : SandboxSysState)
@@ -920,6 +920,13 @@ private def runPlanInChild
     (stepOracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState := allowedStep) :
     IO EpisodeResult := do
   let (st, payload) ← SandboxEnv.runForked do
+    let deadFd ← match ← SandboxEnv.openHostFd filePath.toUTF8 3 with
+      | .ok f =>
+        if let .error e ← SandboxEnv.closeFd f then
+          throw (IO.userError s!"deadFd close failed: {e}")
+        pure f
+      | .error e =>
+        throw (IO.userError s!"deadFd setup failed: {e}")
     let (spawnActive, mntReady, initSys) ← setupPreEnvironment dirPath plan
     let mut sys := initSys
     let mut nextHid : HandleId := 1
@@ -1036,17 +1043,6 @@ private def runPlanInChild
         | .error _ => pure ()
         let _ ← SandboxEnv.closeFd rs
       | _ => pure ()
-    let deadFd ← match ← memfdCreate "dead".toUTF8 {} with
-      | .ok f =>
-        let _ ← SandboxEnv.closeFd f
-        pure f
-      | .error _ =>
-        match ← SandboxEnv.openHostFd filePath.toUTF8 3 with
-        | .ok f =>
-          let _ ← SandboxEnv.closeFd f
-          pure f
-        | .error e =>
-          throw (IO.userError s!"deadFd setup failed: {e}")
     closedHids := closedHids.push { hid := 9999, fd := deadFd }
     if plan.preLowerNofile then
       match ← SandboxEnv.getRlimit 2 with
@@ -1056,7 +1052,13 @@ private def runPlanInChild
         let _ ← setrlimit .nofile targetCur curMax
       | .error _ => pure ()
     if plan.closeLowFds then
-      SandboxEnv.closeLowFdsSafe
+      let mut keepFds : Array RawFd := #[]
+      for s in hostDirs do keepFds := keepFds.push s.fd
+      for s in hostFiles do keepFds := keepFds.push s.fd
+      for s in pseudos do keepFds := keepFds.push s.fd
+      if let some s := opathMemfd? then keepFds := keepFds.push s.fd
+      if let some s := opathRuleset? then keepFds := keepFds.push s.fd
+      SandboxEnv.closeLowFdsSafe keepFds
     let mut ex : ExecState := {
       sys, nextHid, hostDirs, hostFiles, pseudos, opathMemfd?, opathRuleset?,
       rulesets := #[], dynamics := #[], closedHids, deadFd
@@ -1073,13 +1075,25 @@ private def runPlanInChild
         if !ex.dynamics.isEmpty then
           let pos := idx % ex.dynamics.size
           let slot := ex.dynamics.getD pos { hid := 9999, fd := ex.deadFd }
-          let _ ← SandboxEnv.closeFd slot.fd
-          let sys' := { ex.sys with fds := ex.sys.fds.filter (fun p => p.1 != slot.hid) }
-          ex := { ex with
-            sys := sys'
-            rulesets := ex.rulesets.filter (fun s => s.hid != slot.hid)
-            dynamics := ex.dynamics.eraseIdx! pos
-            closedHids := ex.closedHids.push slot }
+          match ← SandboxEnv.closeFd slot.fd with
+          | .ok () =>
+            let sys' := { ex.sys with fds := ex.sys.fds.filter (fun p => p.1 != slot.hid) }
+            ex := { ex with
+              sys := sys'
+              rulesets := ex.rulesets.filter (fun s => s.hid != slot.hid)
+              dynamics := ex.dynamics.eraseIdx! pos
+              closedHids := ex.closedHids.push slot }
+          | .error e =>
+            if e == Errno.EPERM || e == Errno.EACCES || e == Errno.ENOSYS then
+              if !ex.sys.seccompMayIntercept then
+                mismatch? := some (stepIdx, s!"closeFd unexpected seccomp errno {e}")
+            else
+              let sys' := { ex.sys with fds := ex.sys.fds.filter (fun p => p.1 != slot.hid) }
+              ex := { ex with
+                sys := sys'
+                rulesets := ex.rulesets.filter (fun s => s.hid != slot.hid)
+                dynamics := ex.dynamics.eraseIdx! pos
+                closedHids := ex.closedHids.push slot }
       | .llCreate attr? flags =>
         let req : SandboxReq := .landlockCreateRuleset attr? flags
         let out ← match ← landlockCreateRuleset attr? flags with
@@ -1269,9 +1283,25 @@ private def runPlanInChild
     return { executed, hits, mismatch? := some (0, "truncated child IPC payload (missing OK/ERR status line)") }
   return { executed, hits, mismatch? }
 
+private def mismatchClassKey (msg : String) : String :=
+  let first := (msg.splitOn "\n").headD msg
+  let words := first.splitOn " "
+  let reqPart := (words.find? (·.startsWith "req=")).getD ""
+  let outPart := (words.find? (·.startsWith "out=")).getD ""
+  if !reqPart.isEmpty || !outPart.isEmpty then
+    s!"{reqPart} {outPart}"
+  else
+    " ".intercalate (words.take 3)
+
+private def matchesTargetClass (targetClass : String) (res : EpisodeResult) : Bool :=
+  match res.mismatch? with
+  | some (_, m) => mismatchClassKey m == targetClass
+  | none => false
+
 private def shrinkStepsOnce
     (dirPath filePath : String)
     (bestInit : EpisodePlan)
+    (targetClass : String)
     (oracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState) :
     IO EpisodePlan := do
   let mut best := bestInit
@@ -1286,7 +1316,7 @@ private def shrinkStepsOnce
         let candidate := { best with steps := shrunkSteps }
         let res ← try runPlanInChild dirPath filePath candidate oracle
           catch _ => pure { executed := 0, hits := #[], mismatch? := none }
-        if res.mismatch?.isSome then
+        if matchesTargetClass targetClass res then
           best := candidate
           improved := true
           break
@@ -1297,12 +1327,77 @@ private def shrinkStepsOnce
       chunk := chunk / 2
   return best
 
+private def shrinkStepPayloadCandidates (step : FuzzStep) : Array FuzzStep := Id.run do
+  match step with
+  | .llCreate (some attr) flags =>
+    let mut cands : Array FuzzStep := #[]
+    if flags != 0 then
+      cands := cands.push (.llCreate (some attr) 0)
+    if attr.handledAccessNet != 0 then
+      cands := cands.push (.llCreate (some { attr with handledAccessNet := 0 }) flags)
+    if attr.handledAccessFs != 0 && attr.handledAccessFs != 1 then
+      cands := cands.push (.llCreate (some { attr with handledAccessFs := 1 }) flags)
+      cands := cands.push (.llCreate (some { attr with handledAccessFs := 0 }) flags)
+    cands
+  | .scSetFilter flags filterBytes =>
+    let mut cands : Array FuzzStep := #[]
+    let allowOne := encodeFilter [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }]
+    if filterBytes.size > 8 then
+      cands := cands.push (.scSetFilter flags allowOne)
+      let halfBytes := ((filterBytes.size / 16) * 8)
+      if halfBytes >= 8 && halfBytes < filterBytes.size then
+        cands := cands.push (.scSetFilter flags (filterBytes.extract 0 halfBytes))
+    cands
+  | .doPrctl (.setPdeathsig sig) =>
+    if sig > 1 then #[.doPrctl (.setPdeathsig 0), .doPrctl (.setPdeathsig 1), .doPrctl (.setPdeathsig (sig / 2))]
+    else if sig == 1 then #[.doPrctl (.setPdeathsig 0)]
+    else #[]
+  | .doSetrlimit res cur max =>
+    let mut cands : Array FuzzStep := #[]
+    if cur != 0 || max != 0 then
+      cands := cands.push (.doSetrlimit res 0 0)
+    if cur > 0 then
+      cands := cands.push (.doSetrlimit res 0 max)
+    if cur > 1 || max > 1 then
+      cands := cands.push (.doSetrlimit res (cur / 2) (max / 2))
+    cands
+  | .doMemfd name flags =>
+    if name.size > 1 then
+      #[.doMemfd ByteArray.empty flags, .doMemfd (ByteArray.mk #[97]) flags, .doMemfd (name.extract 0 (name.size / 2)) flags]
+    else if !name.isEmpty then
+      #[.doMemfd ByteArray.empty flags]
+    else #[]
+  | _ => #[]
+
+private def shrinkStepPayloads
+    (dirPath filePath : String)
+    (bestInit : EpisodePlan)
+    (targetClass : String)
+    (oracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState) :
+    IO EpisodePlan := do
+  let mut best := bestInit
+  for idx in List.range best.steps.size do
+    let mut keepGoing := true
+    while keepGoing do
+      keepGoing := false
+      let curStep := best.steps.getD idx (.doPrctl .getNoNewPrivs)
+      for candStep in shrinkStepPayloadCandidates curStep do
+        let candidate := { best with steps := best.steps.set! idx candStep }
+        let res ← try runPlanInChild dirPath filePath candidate oracle
+          catch _ => pure { executed := 0, hits := #[], mismatch? := none }
+        if matchesTargetClass targetClass res then
+          best := candidate
+          keepGoing := true
+          break
+  return best
+
 private partial def shrinkPlan
     (dirPath filePath : String)
     (plan : EpisodePlan)
+    (targetClass : String)
     (oracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState) :
     IO EpisodePlan := do
-  let mut best ← shrinkStepsOnce dirPath filePath plan oracle
+  let mut best ← shrinkStepsOnce dirPath filePath plan targetClass oracle
   let envCands : Array (EpisodePlan → EpisodePlan) := #[
     fun p => { p with useUserns := false },
     fun p => { p with useMntNs := false },
@@ -1322,11 +1417,12 @@ private partial def shrinkPlan
     let candidate := fn best
     let res ← try runPlanInChild dirPath filePath candidate oracle
       catch _ => pure { executed := 0, hits := #[], mismatch? := none }
-    if res.mismatch?.isSome then
+    if matchesTargetClass targetClass res then
       best := candidate
       envChanged := true
   if envChanged && best.steps.size > 1 then
-    best ← shrinkStepsOnce dirPath filePath best oracle
+    best ← shrinkStepsOnce dirPath filePath best targetClass oracle
+  best ← shrinkStepPayloads dirPath filePath best targetClass oracle
   return best
 
 private def withFuzzDir {α : Type} (f : String → String → IO α) : IO α := do
@@ -1417,26 +1513,51 @@ def runShrinkSelfTest (seed : UInt64 := 0x123456789abcdef0) : IO Unit := do
       fun s req out =>
         match req, out with
         | .prctl (.setPdeathsig 9), .u32 0 => none
+        | .prctl .getNoNewPrivs, .u32 _ => none
         | _, _ => allowedStep s req out
     let rng := Rng.seed seed
     let (basePlan, _) := genEpisodePlan rng 29
     let prefixSteps := (basePlan.steps.extract 0 15).filter fun
       | .scSetFilter _ _ => false
+      | .doPrctl .getNoNewPrivs => false
       | _ => true
-    let suffixSteps := basePlan.steps.extract 15 basePlan.steps.size
+    let suffixSteps := #[.doPrctl .getNoNewPrivs] ++ basePlan.steps.extract 15 basePlan.steps.size
     let injected := { basePlan with
       preOuterSeccomp := false
       steps := (prefixSteps.push (.doPrctl (.setPdeathsig 9))) ++ suffixSteps }
     let initialRes ← runPlanInChild dirPath filePath injected badOracle
-    match initialRes.mismatch? with
-    | none => throw (IO.userError "shrink self-test failed to trigger injected oracle bug")
-    | some _ => pure ()
-    let minimal ← shrinkPlan dirPath filePath injected badOracle
+    let initClass ← match initialRes.mismatch? with
+      | none => throw (IO.userError "shrink self-test failed to trigger injected oracle bug")
+      | some (_, m) => pure (mismatchClassKey m)
+    let minimal ← shrinkPlan dirPath filePath injected initClass badOracle
     if minimal.steps.size > 2 then
       throw (IO.userError s!"shrink self-test expected <= 2 steps, got {minimal.steps.size}")
+    let minRes ← runPlanInChild dirPath filePath minimal badOracle
+    match minRes.mismatch? with
+    | none => throw (IO.userError "shrink self-test minimal plan no longer fails")
+    | some (_, mm) =>
+      if mismatchClassKey mm != initClass then
+        throw (IO.userError s!"shrink self-test slipped from '{initClass}' to '{mismatchClassKey mm}'")
+    let payloadOracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState :=
+      fun s req out =>
+        match req, out with
+        | .memfdCreate _ _, .opened _ => none
+        | _, _ => allowedStep s req out
+    let bigName := ByteArray.mk (Array.replicate 24 97)
+    let pPlan := { injected with preLowerNofile := false, preOuterSeccomp := false, steps := #[.doMemfd bigName {}] }
+    let pInit ← runPlanInChild dirPath filePath pPlan payloadOracle
+    let pClass ← match pInit.mismatch? with
+      | none => throw (IO.userError "shrink self-test payload probe failed to fail")
+      | some (_, m) => pure (mismatchClassKey m)
+    let pMin ← shrinkPlan dirPath filePath pPlan pClass payloadOracle
+    match (pMin.steps[0]? : Option FuzzStep) with
+    | some (.doMemfd nm _) =>
+      if !nm.isEmpty then
+        throw (IO.userError s!"shrink self-test failed to shrink memfd name (size={nm.size})")
+    | other => throw (IO.userError s!"shrink self-test unexpected payload step {repr other}")
     IO.println s!"SANDBOX_SHRINK_SELFTEST_OK: {injected.steps.size} -> {minimal.steps.size} step(s)"
 
-/-- Verify `buildMultiSyscallFilter` intercepts all listed targets with the requested errno while allowing other syscalls. -/
+/-- Verify `buildMultiSyscallFilter` intercepts all listed targets with the requested errno while allowing other syscalls, and verify `__NR_close` seccomp rejection does not poison `LeanFdBox`. -/
 private def runOuterSeccompSelfTest : IO Unit := do
   let (st, payload) ← SandboxEnv.runForked do
     match ← prctl .setNoNewPrivs with
@@ -1465,6 +1586,34 @@ private def runOuterSeccompSelfTest : IO Unit := do
   let msg := (String.fromUTF8? payload).getD "invalid UTF-8 from child"
   if st != 0 || msg != "OK" then
     throw (IO.userError s!"outer seccomp self-test failed (status={st}, payload={msg})")
+  let (stClose, payloadClose) ← SandboxEnv.runForked do
+    let rs ← match ← landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0 with
+      | .ok (.ruleset r) => pure r
+      | .ok (.version v) => return (s!"close-seccomp unexpected version {v}").toUTF8
+      | .error e => return (s!"close-seccomp landlockCreateRuleset failed: {e}").toUTF8
+    match ← prctl .setNoNewPrivs with
+    | .ok 0 => pure ()
+    | other => return (s!"close-seccomp setNoNewPrivs failed: {repr other}").toUTF8
+    let closeFilter := buildMultiSyscallFilter #[3, 57] Errno.EPERM
+    match ← seccomp .setModeFilter {} closeFilter with
+    | .ok 0 => pure ()
+    | other => return (s!"close-seccomp seccomp failed: {repr other}").toUTF8
+    match ← SandboxEnv.closeFd rs with
+    | .error e =>
+      if e != Errno.EPERM then
+        return (s!"close-seccomp close1 expected EPERM, got {e}").toUTF8
+    | .ok () => return "close-seccomp close1 unexpectedly succeeded".toUTF8
+    match ← SandboxEnv.closeFd rs with
+    | .error e =>
+      if e != Errno.EPERM then
+        return (s!"close-seccomp close2 expected EPERM (no poisoning), got {e}").toUTF8
+    | .ok () => return "close-seccomp close2 unexpectedly succeeded".toUTF8
+    match ← landlockRestrictSelf rs with
+    | .ok () => return "OK".toUTF8
+    | .error e => return (s!"close-seccomp landlockRestrictSelf expected ok on unpoisoned fd, got {e}").toUTF8
+  let msgClose := (String.fromUTF8? payloadClose).getD "invalid UTF-8 from close-seccomp child"
+  if stClose != 0 || msgClose != "OK" then
+    throw (IO.userError s!"__NR_close seccomp self-test failed (status={stClose}, payload={msgClose})")
 
 /-- Execute `cfg.steps` real sandbox syscalls inside forked child episodes, verify every step against `Model.allowedStep`, and assert full matrix coverage for runs `>= 50000` steps. -/
 def runFuzz (cfg : FuzzConfig := {}) : IO UInt32 := do
@@ -1493,7 +1642,7 @@ def runFuzz (cfg : FuzzConfig := {}) : IO UInt32 := do
       hits := mergeHits hits res.hits
       match res.mismatch? with
       | some (_, msg) =>
-        let minimal ← shrinkPlan dirPath filePath plan allowedStep
+        let minimal ← shrinkPlan dirPath filePath plan (mismatchClassKey msg) allowedStep
         IO.eprintln s!"SANDBOX_FUZZ_MISMATCH after {totalSteps} steps (episode {episodes}): {msg}"
         IO.eprintln s!"SHRUNK_TRACE ({minimal.steps.size} steps): {repr minimal}"
         return 1

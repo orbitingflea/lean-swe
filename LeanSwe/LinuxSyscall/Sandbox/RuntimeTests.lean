@@ -348,7 +348,7 @@ def assume_sandbox_setrlimit_curMaxAndHardCap : IO Unit := do
         | .ok fd => pure fd
         | .error e => throw (IO.userError s!"keep memfd failed: {e}")
       kept := kept.push f
-    SandboxEnv.closeLowFdsSafe
+    SandboxEnv.closeLowFdsSafe kept
     assertTrue ((← setrlimit .nofile 4 safeHigh) == .ok ()) "setrlimit nofile 4"
     let gapMemfd ← match ← memfdCreate "gap".toUTF8 {} with
       | .ok fd => pure fd

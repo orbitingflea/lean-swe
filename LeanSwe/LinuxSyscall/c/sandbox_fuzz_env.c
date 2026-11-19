@@ -24,9 +24,10 @@
 #include <unistd.h>
 #include "fd_box.h"
 
+typedef struct { int install; int ready_wfd; int stop_rfd; } SbxSyncArgs;
+static pthread_mutex_t g_sbx_sync_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t g_sbx_sync_tid;
 static int g_sbx_sync_active = 0;
-static int g_sbx_sync_install = 1;
 static int g_sbx_sync_stop_wfd = -1;
 static int g_sbx_sync_stop_rfd = -1;
 
@@ -58,83 +59,81 @@ static int sbx_env_ba_to_cstr(b_lean_obj_arg ba, char *stack_buf, size_t cap,
 }
 
 static void *leanswe_sbx_sync_worker(void *arg) {
-  int ready_wfd = (int)(intptr_t)arg;
-  if (g_sbx_sync_install != 0) {
+  SbxSyncArgs sa = *(SbxSyncArgs *)arg;
+  free(arg);
+  if (sa.install != 0) {
     struct sock_filter allow = { 0x0006, 0, 0, 0x7FFF0000U };
     struct sock_fprog prog = { 1, &allow };
     if (syscall(SYS_prctl, 38UL, 1UL, 0UL, 0UL, 0UL) < 0 ||
         syscall(SYS_seccomp, 1UL, 0UL, &prog) < 0) {
-      close(ready_wfd);
+      close(sa.ready_wfd);
       return NULL;
     }
   }
   uint32_t tid = (uint32_t)syscall(SYS_gettid);
-  ssize_t wn = write(ready_wfd, &tid, sizeof(tid));
+  ssize_t wn = write(sa.ready_wfd, &tid, sizeof(tid));
   (void)wn;
-  close(ready_wfd);
+  close(sa.ready_wfd);
   char ch = 0;
-  ssize_t rn = read(g_sbx_sync_stop_rfd, &ch, 1);
+  ssize_t rn = read(sa.stop_rfd, &ch, 1);
   (void)rn;
   return NULL;
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_pipe(lean_obj_arg w) {
-  (void)w;
+static int sbx_dup_above2(int fd) {
+  if (fd >= 3) { return fd; }
+  int nfd = fcntl(fd, F_DUPFD_CLOEXEC, 3);
+  int saved = errno;
+  close(fd);
+  if (nfd < 0) { errno = saved; }
+  return nfd;
+}
+
+LEAN_EXPORT lean_obj_res leanswe_sbx_pipe(void) {
   int fds[2] = { -1, -1 };
-  if (pipe2(fds, O_CLOEXEC) < 0) {
-    return leanswe_mk_errno(errno);
+  if (pipe2(fds, O_CLOEXEC) < 0) { return leanswe_mk_errno(errno); }
+  int r = sbx_dup_above2(fds[0]);
+  int w = sbx_dup_above2(fds[1]);
+  if (r < 0 || w < 0) {
+    int saved = errno;
+    if (r >= 0) { close(r); }
+    if (w >= 0) { close(w); }
+    return leanswe_mk_errno(saved);
   }
-  uint64_t packed = ((uint64_t)(uint32_t)fds[0]) | (((uint64_t)(uint32_t)fds[1]) << 32);
+  uint64_t packed = ((uint64_t)(uint32_t)r) | (((uint64_t)(uint32_t)w) << 32);
   return leanswe_mk_ok(lean_box_uint64(packed));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_fork(lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_fork(void) {
   fflush(NULL);
   pid_t pid = fork();
-  if (pid < 0) {
-    return leanswe_mk_errno(errno);
-  }
+  if (pid < 0) { return leanswe_mk_errno(errno); }
   return leanswe_mk_ok(lean_box_uint32((uint32_t)pid));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_waitpid(uint32_t pid, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_waitpid(uint32_t pid) {
   int status = 0;
   pid_t rc = waitpid((pid_t)pid, &status, 0);
-  if (rc < 0) {
-    return leanswe_mk_errno(errno);
-  }
+  if (rc < 0) { return leanswe_mk_errno(errno); }
   return leanswe_mk_ok(lean_box_uint32((uint32_t)status));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_exit(uint32_t code, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_exit(uint32_t code) {
   _exit((int)code);
   return lean_io_result_mk_ok(lean_box(0));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_write_bytes(
-    uint32_t fd, b_lean_obj_arg ba, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_write_bytes(uint32_t fd, b_lean_obj_arg ba) {
   ssize_t n = write((int)fd, lean_sarray_cptr(ba), lean_sarray_size(ba));
-  if (n < 0) {
-    return leanswe_mk_errno(errno);
-  }
+  if (n < 0) { return leanswe_mk_errno(errno); }
   return leanswe_mk_ok(lean_box_uint32((uint32_t)n));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_read_bytes(
-    uint32_t fd, uint32_t max_bytes, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_read_bytes(uint32_t fd, uint32_t max_bytes) {
   size_t cap = (size_t)max_bytes;
-  if (cap > 65536u) {
-    cap = 65536u;
-  }
+  if (cap > 65536u) { cap = 65536u; }
   lean_obj_res arr = lean_alloc_sarray(1, 0, cap);
-  if (arr == NULL) {
-    return leanswe_mk_errno(ENOMEM);
-  }
+  if (arr == NULL) { return leanswe_mk_errno(ENOMEM); }
   ssize_t n = read((int)fd, lean_sarray_cptr(arr), cap);
   if (n < 0) {
     int saved = errno;
@@ -151,28 +150,33 @@ static void sbx_close_if_not_uv(int fd) {
   ssize_t n = readlink(p, tgt, sizeof(tgt) - 1);
   if (n >= 0) {
     tgt[n] = '\0';
-    if (strncmp(tgt, "anon_inode:[event", 17) == 0) { return; }
+    if (strncmp(tgt, "anon_inode:[event", 17) == 0 ||
+        strncmp(tgt, "anon_inode:[io_uring", 20) == 0) { return; }
     close(fd);
   }
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_close_low_fds(lean_obj_arg w) {
-  (void)w;
-  sbx_close_if_not_uv(0);
-  sbx_close_if_not_uv(1);
-  sbx_close_if_not_uv(2);
+LEAN_EXPORT lean_obj_res leanswe_sbx_peek_raw_fd(b_lean_obj_arg fd_obj) {
+  LeanFdBox *box = (LeanFdBox *)lean_get_external_data(fd_obj);
+  pthread_mutex_lock(&box->mu);
+  int fd = (box->closed || box->fd < 0) ? -1 : box->fd;
+  pthread_mutex_unlock(&box->mu);
+  return lean_io_result_mk_ok(lean_box_uint32((uint32_t)fd));
+}
+
+LEAN_EXPORT lean_obj_res leanswe_sbx_close_low_fds(uint32_t keep_mask) {
+  if ((keep_mask & 1u) == 0u) { sbx_close_if_not_uv(0); }
+  if ((keep_mask & 2u) == 0u) { sbx_close_if_not_uv(1); }
+  if ((keep_mask & 4u) == 0u) { sbx_close_if_not_uv(2); }
   return lean_io_result_mk_ok(lean_box(0));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_close_raw(uint32_t fd, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_close_raw(uint32_t fd) {
   close((int)fd);
   return lean_io_result_mk_ok(lean_box(0));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_open_host_fd(
-    b_lean_obj_arg path_ba, uint32_t kind, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_open_host_fd(b_lean_obj_arg path_ba, uint32_t kind) {
   static const int k_open_flags[7] = {
     O_RDONLY | O_DIRECTORY | O_CLOEXEC, O_PATH | O_DIRECTORY | O_CLOEXEC,
     O_RDONLY | O_CLOEXEC, O_PATH | O_CLOEXEC, O_RDWR | O_CREAT | O_CLOEXEC,
@@ -193,8 +197,7 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_open_host_fd(
   return leanswe_mk_ok(obj);
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_open_pipe_fd(uint32_t as_o_path, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_open_pipe_fd(uint32_t as_o_path) {
   int fds[2] = { -1, -1 };
   if (pipe2(fds, O_CLOEXEC) < 0) { return leanswe_mk_errno(errno); }
   close(fds[1]);
@@ -212,22 +215,19 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_open_pipe_fd(uint32_t as_o_path, lean_obj_a
   return leanswe_mk_ok(obj);
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_close_fd(b_lean_obj_arg fd_obj, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_close_fd(b_lean_obj_arg fd_obj) {
   LeanFdBox *box = (LeanFdBox *)lean_get_external_data(fd_obj);
   int err = leanswe_fd_box_close(box);
   if (err != 0) { return leanswe_mk_errno(err); }
   return leanswe_mk_ok(lean_box(0));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_enter_userns(lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_enter_userns(void) {
   if (unshare(CLONE_NEWUSER) < 0) { return leanswe_mk_errno(errno); }
   return leanswe_mk_ok(lean_box(0));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_unshare_extra(uint32_t ns_bits, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_unshare_extra(uint32_t ns_bits) {
   int flags = 0;
   if ((ns_bits & 1u) != 0u) { flags |= CLONE_NEWPID; }
   if ((ns_bits & 2u) != 0u) { flags |= CLONE_NEWNET; }
@@ -238,9 +238,7 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_unshare_extra(uint32_t ns_bits, lean_obj_ar
   return leanswe_mk_ok(lean_box(0));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_install_raw_seccomp(
-    b_lean_obj_arg filter_ba, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_install_raw_seccomp(b_lean_obj_arg filter_ba) {
   size_t len = lean_sarray_size(filter_ba);
   if (len == 0u || (len % sizeof(struct sock_filter)) != 0u) { return leanswe_mk_errno(EINVAL); }
   size_t cnt = len / sizeof(struct sock_filter);
@@ -249,15 +247,14 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_install_raw_seccomp(
   if (insns == NULL) { return leanswe_mk_errno(ENOMEM); }
   memcpy(insns, lean_sarray_cptr(filter_ba), len);
   struct sock_fprog prog = { (unsigned short)cnt, insns };
-  long rc = syscall(SYS_seccomp, 1U, 0U, &prog);
+  long rc = syscall(SYS_seccomp, 1UL, 0UL, &prog);
   int saved = errno;
   free(insns);
   if (rc < 0) { return leanswe_mk_errno(saved); }
   return leanswe_mk_ok(lean_box(0));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_chmod_rw(b_lean_obj_arg path_ba, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_chmod_rw(b_lean_obj_arg path_ba) {
   char sbuf[4096];
   const char *cpath = NULL;
   char *heap = NULL;
@@ -270,30 +267,23 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_chmod_rw(b_lean_obj_arg path_ba, lean_obj_a
   return leanswe_mk_ok(lean_box(0));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_get_rlimit(uint32_t tag, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_get_rlimit(uint32_t tag) {
   static const int k_rlimit_resources[3] = { RLIMIT_CORE, RLIMIT_FSIZE, RLIMIT_NOFILE };
-  if (tag >= 3u) {
-    return leanswe_mk_errno(EINVAL);
-  }
+  if (tag >= 3u) { return leanswe_mk_errno(EINVAL); }
   struct rlimit rl;
-  if (getrlimit(k_rlimit_resources[tag], &rl) < 0) {
-    return leanswe_mk_errno(errno);
-  }
+  if (getrlimit(k_rlimit_resources[tag], &rl) < 0) { return leanswe_mk_errno(errno); }
   lean_obj_res p = lean_alloc_ctor(0, 2, 0);
   lean_ctor_set(p, 0, lean_box_uint64((uint64_t)rl.rlim_cur));
   lean_ctor_set(p, 1, lean_box_uint64((uint64_t)rl.rlim_max));
   return leanswe_mk_ok(p);
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_get_tid(lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_get_tid(void) {
   uint32_t tid = (uint32_t)syscall(SYS_gettid);
   return lean_io_result_mk_ok(lean_box_uint32(tid));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_geteuid(lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_geteuid(void) {
   return lean_io_result_mk_ok(lean_box_uint32((uint32_t)geteuid()));
 }
 
@@ -302,53 +292,55 @@ static void sbx_close_pair(int fds[2]) {
   if (fds[1] >= 0) { close(fds[1]); }
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_spawn_sync_thread(
-    uint32_t install_filter, lean_obj_arg w) {
-  (void)w;
-  if (g_sbx_sync_active != 0) { return leanswe_mk_errno(EBUSY); }
-  int ready_fds[2] = { -1, -1 };
-  int stop_fds[2] = { -1, -1 };
-  if (pipe2(ready_fds, O_CLOEXEC) < 0) { return leanswe_mk_errno(errno); }
-  if (pipe2(stop_fds, O_CLOEXEC) < 0) {
-    int saved = errno;
-    sbx_close_pair(ready_fds);
+LEAN_EXPORT lean_obj_res leanswe_sbx_spawn_sync_thread(uint32_t install_filter) {
+  int ready_fds[2] = { -1, -1 }, stop_fds[2] = { -1, -1 };
+  SbxSyncArgs *sa = (SbxSyncArgs *)malloc(sizeof(*sa));
+  if (sa == NULL) { return leanswe_mk_errno(ENOMEM); }
+  pthread_mutex_lock(&g_sbx_sync_mu);
+  if (g_sbx_sync_active != 0) {
+    pthread_mutex_unlock(&g_sbx_sync_mu); free(sa); return leanswe_mk_errno(EBUSY);
+  }
+  if (pipe2(ready_fds, O_CLOEXEC) < 0 || pipe2(stop_fds, O_CLOEXEC) < 0) {
+    int saved = errno; pthread_mutex_unlock(&g_sbx_sync_mu); free(sa);
+    sbx_close_pair(ready_fds); sbx_close_pair(stop_fds);
     return leanswe_mk_errno(saved);
   }
-  g_sbx_sync_install = (install_filter != 0u) ? 1 : 0;
-  g_sbx_sync_stop_rfd = stop_fds[0];
-  g_sbx_sync_stop_wfd = stop_fds[1];
-  int rc = pthread_create(
-      &g_sbx_sync_tid, NULL, leanswe_sbx_sync_worker, (void *)(intptr_t)ready_fds[1]);
+  sa->install = (install_filter != 0u) ? 1 : 0;
+  sa->ready_wfd = ready_fds[1];
+  sa->stop_rfd = stop_fds[0];
+  int rc = pthread_create(&g_sbx_sync_tid, NULL, leanswe_sbx_sync_worker, sa);
   if (rc != 0) {
-    sbx_close_pair(ready_fds);
-    sbx_close_pair(stop_fds);
-    g_sbx_sync_stop_rfd = -1;
-    g_sbx_sync_stop_wfd = -1;
+    pthread_mutex_unlock(&g_sbx_sync_mu); free(sa);
+    sbx_close_pair(ready_fds); sbx_close_pair(stop_fds);
     return leanswe_mk_errno(rc);
   }
+  g_sbx_sync_stop_rfd = stop_fds[0];
+  g_sbx_sync_stop_wfd = stop_fds[1];
   g_sbx_sync_active = 1;
+  pthread_mutex_unlock(&g_sbx_sync_mu);
   return leanswe_mk_ok(lean_box_uint32((uint32_t)ready_fds[0]));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_stop_sync_thread(lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_stop_sync_thread(void) {
+  pthread_mutex_lock(&g_sbx_sync_mu);
   if (g_sbx_sync_active == 0) {
+    pthread_mutex_unlock(&g_sbx_sync_mu);
     return leanswe_mk_ok(lean_box(0));
   }
+  pthread_t tid = g_sbx_sync_tid;
+  int wfd = g_sbx_sync_stop_wfd, rfd = g_sbx_sync_stop_rfd;
+  g_sbx_sync_active = 0; g_sbx_sync_stop_wfd = -1; g_sbx_sync_stop_rfd = -1;
+  pthread_mutex_unlock(&g_sbx_sync_mu);
   char ch = 1;
-  ssize_t wn = write(g_sbx_sync_stop_wfd, &ch, 1);
+  ssize_t wn = write(wfd, &ch, 1);
   (void)wn;
-  pthread_join(g_sbx_sync_tid, NULL);
-  close(g_sbx_sync_stop_wfd);
-  close(g_sbx_sync_stop_rfd);
-  g_sbx_sync_stop_wfd = -1;
-  g_sbx_sync_stop_rfd = -1;
-  g_sbx_sync_active = 0;
+  pthread_join(tid, NULL);
+  close(wfd);
+  close(rfd);
   return leanswe_mk_ok(lean_box(0));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_reopen_opath(b_lean_obj_arg fd_obj, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_reopen_opath(b_lean_obj_arg fd_obj) {
   LeanFdBox *box = (LeanFdBox *)lean_get_external_data(fd_obj);
   int raw_fd = -1;
   int perr = leanswe_fd_box_pin(box, &raw_fd);
@@ -439,9 +431,7 @@ static int sbx_open_special_path(uint32_t kind, const char *cpath) {
   return -1;
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_open_special_fd(
-    uint32_t kind, b_lean_obj_arg path_ba, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_open_special_fd(uint32_t kind, b_lean_obj_arg path_ba) {
   int fd = -1;
   int saved = 0;
   if (kind == 0u) {
@@ -567,8 +557,7 @@ static int sbx_make_mnt_dirs(const char *cbase) {
   return 0;
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_setup_mnt_ns(b_lean_obj_arg base_ba, lean_obj_arg w) {
-  (void)w;
+LEAN_EXPORT lean_obj_res leanswe_sbx_setup_mnt_ns(b_lean_obj_arg base_ba) {
   uid_t uid = getuid();
   gid_t gid = getgid();
   if (unshare(CLONE_NEWUSER | CLONE_NEWNS) < 0) { return leanswe_mk_errno(errno); }

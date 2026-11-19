@@ -16,7 +16,7 @@ typedef struct {
   uint8_t closed;
 } LeanFdBox;
 
-extern lean_external_class *leanswe_get_fd_class(void);
+LEAN_EXPORT lean_external_class *leanswe_get_fd_class(void);
 
 static inline lean_obj_res leanswe_mk_fd_obj(int fd) {
   LeanFdBox *box = (LeanFdBox *)malloc(sizeof(LeanFdBox));
@@ -37,6 +37,10 @@ static inline int leanswe_fd_box_pin(LeanFdBox *box, int *out_fd) {
     pthread_mutex_unlock(&box->mu);
     return EBADF;
   }
+  if (box->in_use == UINT32_MAX) {
+    pthread_mutex_unlock(&box->mu);
+    return EOVERFLOW;
+  }
   box->in_use++;
   *out_fd = box->fd;
   pthread_mutex_unlock(&box->mu);
@@ -51,6 +55,10 @@ static inline void leanswe_fd_box_unpin(LeanFdBox *box) {
   pthread_mutex_unlock(&box->mu);
 }
 
+static inline int leanswe_is_seccomp_entry_err(int err) {
+  return err == EPERM || err == EACCES || err == ENOSYS;
+}
+
 static inline int leanswe_fd_box_close(LeanFdBox *box) {
   pthread_mutex_lock(&box->mu);
   if (box->closed || box->fd < 0) {
@@ -61,14 +69,14 @@ static inline int leanswe_fd_box_close(LeanFdBox *box) {
     pthread_mutex_unlock(&box->mu);
     return EBUSY;
   }
-  int fd = box->fd;
-  box->fd = -1;
-  box->closed = 1;
-  pthread_mutex_unlock(&box->mu);
-  if (close(fd) < 0) {
-    return errno;
+  int rc = close(box->fd);
+  int err = (rc < 0) ? errno : 0;
+  if (rc == 0 || !leanswe_is_seccomp_entry_err(err)) {
+    box->fd = -1;
+    box->closed = 1;
   }
-  return 0;
+  pthread_mutex_unlock(&box->mu);
+  return err;
 }
 
 static inline void leanswe_abort_on_efault(int err) {
