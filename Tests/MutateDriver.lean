@@ -35,6 +35,7 @@ import LeanSwe.ConnectProxy.RuntimeTests
 import LeanSwe.SlotPool.RuntimeTests
 import LeanSwe.LinuxSyscall.Sandbox.RuntimeTests
 import LeanSwe.LinuxSyscall.TimeRand.RuntimeTests
+import LeanSwe.LinuxSyscall.Passwd.RuntimeTests
 
 open LeanSwe
 open Core.PropCheck
@@ -599,7 +600,8 @@ private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("ConnectProxy", do ConnectProxy.RuntimeTests.runAll; return none, pure ()),
   ("SlotPool", do SlotPool.RuntimeTests.runAll; return none, pure ()),
   ("LinuxSyscall.Sandbox", do LinuxSyscall.Sandbox.RuntimeTests.runAll; return none, pure ()),
-  ("LinuxSyscall.TimeRand", do LinuxSyscall.TimeRand.RuntimeTests.runAll; return none, pure ())
+  ("LinuxSyscall.TimeRand", do LinuxSyscall.TimeRand.RuntimeTests.runAll; return none, pure ()),
+  ("LinuxSyscall.Passwd", do LinuxSyscall.Passwd.RuntimeTests.runAll; return none, pure ())
 ]
 
 private structure MutateFlags where
@@ -634,6 +636,8 @@ def main (args : List String) : IO UInt32 := do
     return (← Compress.RuntimeTests.probeMain rest)
   | "--timerand-strace-fault-check" :: rest =>
     return (← LinuxSyscall.TimeRand.RuntimeTests.probeMain rest)
+  | "--passwd-probe" :: rest =>
+    return (← LinuxSyscall.Passwd.RuntimeTests.probeMain rest)
   | "--uuid-probe" :: rest =>
     return (← Uuid.RuntimeTests.probeMain rest)
   | "--time-probe" :: rest =>

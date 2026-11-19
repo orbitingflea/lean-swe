@@ -307,6 +307,14 @@ import LeanSwe.LinuxSyscall.TimeRand.SpecTests
 import LeanSwe.LinuxSyscall.TimeRand.SpecMutants
 import LeanSwe.LinuxSyscall.TimeRand.Proofs
 import LeanSwe.LinuxSyscall.TimeRand.RuntimeTests
+import LeanSwe.LinuxSyscall.Passwd.Types
+import LeanSwe.LinuxSyscall.Passwd.Model
+import LeanSwe.LinuxSyscall.Passwd.Impl
+import LeanSwe.LinuxSyscall.Passwd.Interface
+import LeanSwe.LinuxSyscall.Passwd.SpecTests
+import LeanSwe.LinuxSyscall.Passwd.SpecMutants
+import LeanSwe.LinuxSyscall.Passwd.Proofs
+import LeanSwe.LinuxSyscall.Passwd.RuntimeTests
 import LeanSwe.LinuxSyscall.Fuzz.Rng
 import LeanSwe.LinuxSyscall.Fuzz.SandboxEnv
 import LeanSwe.LinuxSyscall.Fuzz.SandboxFuzz

@@ -1,6 +1,7 @@
 import Fuzz.Common.Suite
 import Fuzz.Float.Suite
 import Fuzz.CmdLine.Suite
+import Fuzz.Passwd.Suite
 import Fuzz.SelfTest
 import Fuzz.EnvVars.Suite
 import Fuzz.CryptoHash.Suite
@@ -32,7 +33,8 @@ private def registeredSuites : List FuzzSuite := [
   Fuzz.Float.suite,
   Fuzz.CmdLine.suite,
   Fuzz.EnvVars.suite,
-  Fuzz.CryptoHash.suite
+  Fuzz.CryptoHash.suite,
+  Fuzz.Passwd.suite
 ]
 
 private def truncArg (s : String) (maxLen : Nat := 64) : String :=

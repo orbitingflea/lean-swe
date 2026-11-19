@@ -33,7 +33,7 @@ extern_lib «leanswe_fs» pkg := do
   let lean ← getLeanInstall
   let oJob ← buildO oFile srcJob
     #["-I", lean.includeDir.toString]
-    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror"]
   let name := nameToStaticLib "leanswe_fs"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
@@ -43,7 +43,7 @@ extern_lib «leanswe_process» pkg := do
   let lean ← getLeanInstall
   let oJob ← buildO oFile srcJob
     #["-I", lean.includeDir.toString]
-    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror"]
   let name := nameToStaticLib "leanswe_process"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
@@ -74,12 +74,12 @@ extern_lib «leanswe_sqlite» pkg := do
   let sqliteSrc ← inputTextFile (cDir / "sqlite3.c")
   let sqliteOJob ← buildO sqliteO sqliteSrc
     #["-I", cDir.toString]
-    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror", "-DSQLITE_THREADSAFE=1", "-DSQLITE_OMIT_LOAD_EXTENSION=1", "-DSQLITE_DISABLE_LFS"]
+    #["-O2", "-DNDEBUG", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-DSQLITE_THREADSAFE=1", "-DSQLITE_OMIT_LOAD_EXTENSION=1", "-DSQLITE_DISABLE_LFS"]
   let shimO := pkg.buildDir / "c" / "sqlite_shim.o"
   let shimSrc ← inputTextFile (cDir / "sqlite_shim.c")
   let shimOJob ← buildO shimO shimSrc
     #["-I", lean.includeDir.toString, "-I", cDir.toString]
-    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror"]
   let name := nameToStaticLib "leanswe_sqlite"
   buildStaticLib (pkg.staticLibDir / name) #[sqliteOJob, shimOJob]
 
@@ -129,7 +129,7 @@ extern_lib «leanswe_psandbox» pkg := do
   let shimO := outDir / "psandbox_shim.o"
   let shimOJob ← buildO shimO (shimDeps.map fun _ => cDir / "psandbox_shim.c")
     #["-I", lean.includeDir.toString, "-I", outDir.toString]
-    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror"]
   let name := nameToStaticLib "leanswe_psandbox"
   buildStaticLib (pkg.staticLibDir / name) #[shimOJob]
 
@@ -139,21 +139,8 @@ extern_lib «leanswe_connectproxy» pkg := do
   let lean ← getLeanInstall
   let oJob ← buildO oFile srcJob
     #["-I", lean.includeDir.toString]
-    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror"]
   let name := nameToStaticLib "leanswe_connectproxy"
-  buildStaticLib (pkg.staticLibDir / name) #[oJob]
-
-extern_lib «leanswe_linux_sandbox» pkg := do
-  let cDir := pkg.dir / "LeanSwe" / "LinuxSyscall" / "c"
-  let hdrJob ← inputTextFile (cDir / "fd_box.h")
-  let srcJob ← inputTextFile (cDir / "sandbox_shim.c")
-  let deps := Job.collectArray #[hdrJob, srcJob]
-  let lean ← getLeanInstall
-  let oFile := pkg.buildDir / "c" / "linux_sandbox_shim.o"
-  let oJob ← buildO oFile (deps.map fun _ => cDir / "sandbox_shim.c")
-    #["-I", lean.includeDir.toString, "-I", cDir.toString]
-    #["-O2", "-DNDEBUG", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
-  let name := nameToStaticLib "leanswe_linux_sandbox"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
 extern_lib «leanswe_sandbox_fuzz_env» pkg := do
@@ -165,8 +152,21 @@ extern_lib «leanswe_sandbox_fuzz_env» pkg := do
   let oFile := pkg.buildDir / "c" / "linux_sandbox_fuzz_env.o"
   let oJob ← buildO oFile (deps.map fun _ => cDir / "sandbox_fuzz_env.c")
     #["-I", lean.includeDir.toString, "-I", cDir.toString]
-    #["-O2", "-DNDEBUG", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
   let name := nameToStaticLib "leanswe_sandbox_fuzz_env"
+  buildStaticLib (pkg.staticLibDir / name) #[oJob]
+
+extern_lib «leanswe_linux_sandbox» pkg := do
+  let cDir := pkg.dir / "LeanSwe" / "LinuxSyscall" / "c"
+  let hdrJob ← inputTextFile (cDir / "fd_box.h")
+  let srcJob ← inputTextFile (cDir / "sandbox_shim.c")
+  let deps := Job.collectArray #[hdrJob, srcJob]
+  let lean ← getLeanInstall
+  let oFile := pkg.buildDir / "c" / "linux_sandbox_shim.o"
+  let oJob ← buildO oFile (deps.map fun _ => cDir / "sandbox_shim.c")
+    #["-I", lean.includeDir.toString, "-I", cDir.toString]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
+  let name := nameToStaticLib "leanswe_linux_sandbox"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
 extern_lib «leanswe_linux_timerand» pkg := do
@@ -175,7 +175,7 @@ extern_lib «leanswe_linux_timerand» pkg := do
   let lean ← getLeanInstall
   let oJob ← buildO oFile srcJob
     #["-I", lean.includeDir.toString]
-    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror"]
   let name := nameToStaticLib "leanswe_linux_timerand"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
@@ -185,8 +185,18 @@ extern_lib «leanswe_linux_timerand_fuzz» pkg := do
   let lean ← getLeanInstall
   let oJob ← buildO oFile srcJob
     #["-I", lean.includeDir.toString]
-    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror", "-pthread"]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
   let name := nameToStaticLib "leanswe_linux_timerand_fuzz"
+  buildStaticLib (pkg.staticLibDir / name) #[oJob]
+
+extern_lib «leanswe_linux_passwd» pkg := do
+  let oFile := pkg.buildDir / "c" / "passwd_shim.o"
+  let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "LinuxSyscall" / "c" / "passwd_shim.c")
+  let lean ← getLeanInstall
+  let oJob ← buildO oFile srcJob
+    #["-isystem", lean.includeDir.toString]
+    #["-O2", "-fPIC", "-DNDEBUG", "-DLEAN_EXPORTING", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-Wshadow", "-Wconversion"]
+  let name := nameToStaticLib "leanswe_linux_passwd"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
 extern_lib «leanswe_float_fuzz_oracle» pkg := do
@@ -195,7 +205,7 @@ extern_lib «leanswe_float_fuzz_oracle» pkg := do
   let lean ← getLeanInstall
   let oJob ← buildO oFile srcJob
     #["-I", lean.includeDir.toString]
-    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror", "-fno-fast-math", "-ffp-contract=off", "-fno-builtin-snprintf", "-DNDEBUG"]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-fno-fast-math", "-ffp-contract=off", "-fno-builtin-snprintf"]
   let name := nameToStaticLib "leanswe_float_fuzz_oracle"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
