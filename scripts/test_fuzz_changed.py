@@ -184,8 +184,9 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
             self.assertEqual(self._run_cli(["--repo", str(sub), "--manifest", "suites.json", "--base", base, "--head", rem_sha, "--run"])[0], 0)
             link_sub = Path(tmpdir) / "link_to_fuzz"; os.symlink(str(sub), link_sub)
             _write_files(repo, {"Fuzz/suites.json": json.dumps(SAMPLE_MANIFEST) + "\n"})
-            rc_ls, _, err_ls = self._run_cli(["--repo", str(link_sub), "--manifest", "suites.json", "--base", base, "--head", del_sha])
-            self.assertEqual(rc_ls, 2); self.assertIn("deleted from manifest: envvars", err_ls)
+            for m_arg in (["--repo", str(link_sub), "--manifest", "suites.json"], ["--repo", str(repo), "--manifest", str(link_sub / "suites.json")], ["--repo", str(repo), "--manifest", "../link_to_fuzz/suites.json"]):
+                rc_ls, _, err_ls = self._run_cli([*m_arg, "--base", base, "--head", del_sha])
+                self.assertEqual(rc_ls, 2, m_arg); self.assertIn("deleted from manifest: envvars", err_ls)
 
     def test_submodule_gitlink_and_tracked_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -278,6 +278,32 @@ private def verifyShrinkRegressions : IO Unit := do
   let _ ← shrinkElements shrinkLasso (fun _ => do callsLasso.modify (· + 1); pure true) #[0]
   if (← callsLasso.get) >= 1000 then
     throw (IO.userError s!"SHRINK_BRENT_LASSO_FAILED: calls={← callsLasso.get}")
+  let calls2Cand ← IO.mkRef (0 : Nat)
+  let shrink2Cand : Nat × Nat → List (Nat × Nat)
+    | (0, v) => [(0, (v + 1) % 259), (0, (v + 2) % 259)]
+    | (1, v) => if v == 0 then [] else [(1, 0)]
+    | _ => []
+  let shrunk2Cand ← shrinkElements shrink2Cand (fun _ => do calls2Cand.modify (· + 1); pure true) #[(0, 0), (1, 1000)]
+  if shrunk2Cand[1]! != (1, 0) || (← calls2Cand.get) > 265 then
+    throw (IO.userError s!"SHRINK_2CAND_259_FAILED: got={repr shrunk2Cand} calls={← calls2Cand.get}")
+  let callsProd ← IO.mkRef (0 : Nat)
+  let shrinkProd : Nat × Nat → List (Nat × Nat)
+    | (0, v) =>
+      let a := v / 17
+      let b := v % 17
+      [(0, ((a + 1) % 23) * 17 + b), (0, a * 17 + ((b + 1) % 17))]
+    | (1, v) => if v == 0 then [] else [(1, 0)]
+    | _ => []
+  let shrunkProd ← shrinkElements shrinkProd (fun _ => do callsProd.modify (· + 1); pure true) #[(0, 0), (1, 1000)]
+  if shrunkProd[1]! != (1, 0) || (← callsProd.get) > 400 then
+    throw (IO.userError s!"SHRINK_PROD_CYCLE_FAILED: got={repr shrunkProd} calls={← callsProd.get}")
+  let shrinkDivFair : Nat × Nat → List (Nat × Nat)
+    | (0, v) => [(0, v + 1)]
+    | (1, v) => if v == 0 then [] else [(1, 0)]
+    | _ => []
+  let shrunkFair ← shrinkElements shrinkDivFair (fun _ => pure true) #[(0, 0), (1, 1000)] (maxSteps := 300)
+  if shrunkFair[1]! != (1, 0) then
+    throw (IO.userError s!"SHRINK_DIV_FAIRNESS_FAILED: got={repr shrunkFair}")
 
 private def warmupCorpus : Array StackOp := #[
   .clear,

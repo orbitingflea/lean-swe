@@ -322,6 +322,7 @@ def _resolve_rel_manifest(repo_dir: Path, manifest_path: Path, toplevel: str, pr
     cands = [os.path.normpath(raw_str)] if manifest_path.is_absolute() else [os.path.normpath(os.path.join(b, raw_str)) for b in (repo_abs, repo_real)]
     if manifest_path.is_absolute() and cands[0].startswith(repo_abs + os.sep):
         cands.append(os.path.normpath(os.path.join(repo_real, cands[0][len(repo_abs) + 1 :])))
+    cands.extend(os.path.normpath(os.path.join(os.path.realpath(os.path.dirname(c)), os.path.basename(c))) for c in list(cands))
     for cand in cands:
         for root in roots:
             if cand == root: raise ValueError(f"Manifest path points to repository root directory: {manifest_path!s}")

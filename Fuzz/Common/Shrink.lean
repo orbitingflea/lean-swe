@@ -109,36 +109,17 @@ namespace Fuzz.Common
       break
   return cur
 
-private structure SeenState (α : Type) where
-  recent : Array α := #[]
-  pos : Nat := 0
-  tortoise? : Option α := none
-  power : Nat := 1
-  lam : Nat := 0
+private def seenContains {α : Type} [BEq α] (seen : Array α) (x : α) : Bool :=
+  seen.any (· == x)
 
-private def seenContains {α : Type} [BEq α] (st : SeenState α) (x : α) : Bool :=
-  (match st.tortoise? with | some t => x == t | none => false) || st.recent.any (· == x)
-
-private def recordSeen {α : Type} (map : Std.HashMap Nat (SeenState α)) (idx : Nat) (val : α) :
-    Std.HashMap Nat (SeenState α) :=
-  let cap := 256
-  match map.get? idx with
-  | none =>
-    map.insert idx { recent := #[val], pos := 1, tortoise? := some val, power := 1, lam := 1 }
-  | some st =>
-    let recent' :=
-      if st.recent.size < cap then st.recent.push val
-      else st.recent.setIfInBounds (st.pos % cap) val
-    let pos' := (st.pos + 1) % cap
-    let (tort', pow', lam') :=
-      if st.lam >= st.power then
-        (some val, st.power * 2, 1)
-      else
-        (st.tortoise?, st.power, st.lam + 1)
-    map.insert idx { recent := recent', pos := pos', tortoise? := tort', power := pow', lam := lam' }
+private def recordSeen {α : Type} (map : Std.HashMap Nat (Array α)) (idx : Nat) (val : α) :
+    Std.HashMap Nat (Array α) :=
+  map.alter idx fun
+    | none => some #[val]
+    | some arr => some (arr.push val)
 
 @[specialize] private def tryCandidatesAt {m : Type → Type} [Monad m] {α : Type} [BEq α]
-    (fails : Array α → m Bool) (idx : Nat) (orig : α) (seen : SeenState α) :
+    (fails : Array α → m Bool) (idx : Nat) (orig : α) (seen : Array α) :
     List α → (cur : Array α) → idx < cur.size → m (Array α × Bool)
   | [], cur, _ => pure (cur, false)
   | cand :: rest, cur, h => do
@@ -154,24 +135,27 @@ private def recordSeen {α : Type} (map : Std.HashMap Nat (SeenState α)) (idx :
         have hRest : idx < restored.size := by simpa [restored] using h'
         tryCandidatesAt fails idx orig seen rest restored hRest
 
-private def getSeenAt {α : Type} (map : Std.HashMap Nat (SeenState α)) (idx : Nat) : SeenState α :=
-  match map.get? idx with
-  | none => {}
-  | some st => st
+private def getSeenAt {α : Type} (map : Std.HashMap Nat (Array α)) (idx : Nat) : Array α :=
+  map.getD idx #[]
 
-/-- Greedily shrink individual trace elements in-place to a fixed point with cycle protection and step budget. -/
+/-- Greedily shrink individual trace elements in-place to a fixed point with exact cycle protection and per-index fairness cap. -/
 @[specialize] def shrinkElements {m : Type → Type} [Monad m] {α : Type} [BEq α]
     (shrinkItem : α → List α) (fails : Array α → m Bool) (trace : Array α)
     (maxSteps : Nat := 10000) : m (Array α) := do
   let mut cur := trace
-  let mut seenMap : Std.HashMap Nat (SeenState α) := {}
+  let mut seenMap : Std.HashMap Nat (Array α) := {}
   let mut steps : Nat := 0
   let mut outerChanged := true
+  let perIdxCap := if cur.size <= 1 then maxSteps else max 64 (maxSteps / cur.size)
   while outerChanged && steps < maxSteps do
     outerChanged := false
     let mut idx : Nat := 0
+    let mut idxSteps : Nat := 0
     while idx < cur.size && steps < maxSteps do
-      if h : idx < cur.size then
+      if idxSteps >= perIdxCap then
+        idx := idx + 1
+        idxSteps := 0
+      else if h : idx < cur.size then
         let orig := cur[idx]
         let seen := getSeenAt seenMap idx
         let cands := shrinkItem orig
@@ -180,9 +164,11 @@ private def getSeenAt {α : Type} (map : Std.HashMap Nat (SeenState α)) (idx : 
         if replaced then
           seenMap := recordSeen seenMap idx orig
           steps := steps + 1
+          idxSteps := idxSteps + 1
           outerChanged := true
         else
           idx := idx + 1
+          idxSteps := 0
       else
         break
   return cur
