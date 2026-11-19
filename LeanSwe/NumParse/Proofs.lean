@@ -18,19 +18,12 @@ private theorem consumeIntDigits_ne_overflow (b : NumBase) (acc : Nat) (cs : Lis
 private theorem parseDecAfterSign_ne_overflow (neg : Bool) (cs : List Char) :
     parseDecAfterSign neg cs ≠ .error .overflow := by
   unfold parseDecAfterSign
-  repeat' (first
-    | (simp; done)
-    | (intro hk; cases hk; exact consumeIntDigits_ne_overflow .dec _ _ ‹_›)
-    | split)
+  repeat' (first | (simp; done) | (intro hk; cases hk; exact consumeIntDigits_ne_overflow .dec _ _ ‹_›) | split)
 
 private theorem parseIntModelChars_ne_overflow (cs : List Char) :
     parseIntModelChars cs ≠ .error .overflow := by
   unfold parseIntModelChars
-  repeat' (first
-    | (simp; done)
-    | exact parseDecAfterSign_ne_overflow _ _
-    | (intro hk; cases hk; exact consumeIntDigits_ne_overflow _ _ _ ‹_›)
-    | split)
+  repeat' (first | (simp; done) | exact parseDecAfterSign_ne_overflow _ _ | (intro hk; cases hk; exact consumeIntDigits_ne_overflow _ _ _ ‹_›) | split)
 
 /-- `LeanSwe.NumParse.parseInt` never fails with `.overflow`. -/
 theorem numparse_parseInt_never_overflow (s : String) :
@@ -38,10 +31,8 @@ theorem numparse_parseInt_never_overflow (s : String) :
   cases h : LeanSwe.NumParse.parseInt s with
   | ok _ => trivial
   | error e =>
-    change Internal.parseInt s = .error e at h
-    have hm := (parseInt_spec s).1; rw [h] at hm
-    dsimp [Except.mapError, parseIntModel] at hm
-    intro hk; rw [hk] at hm; exact parseIntModelChars_ne_overflow s.toList hm.symm
+    change Internal.parseInt s = .error e at h; have hm := (parseInt_spec s).1; rw [h] at hm
+    dsimp [Except.mapError, parseIntModel] at hm; intro hk; rw [hk] at hm; exact parseIntModelChars_ne_overflow s.toList hm.symm
 
 private theorem consumeDecFloatDigits_err_ok (acc count : Nat) (cs : List Char)
     {k : NumParseErrorKind} (hk : consumeDecFloatDigits acc count cs = .error k) :
@@ -52,36 +43,19 @@ private theorem consumeDecFloatDigits_err_ok (acc count : Nat) (cs : List Char)
   | case3 | case4 => cases hk; decide
 
 private theorem parseFloatIntPart_err_ok (cs : List Char) {k : NumParseErrorKind}
-    (hk : parseFloatIntPart cs = .error k) :
-    k ≠ .invalidSignForBase ∧ k ≠ .overflow := by
+    (hk : parseFloatIntPart cs = .error k) : k ≠ .invalidSignForBase ∧ k ≠ .overflow := by
   unfold parseFloatIntPart at hk
-  repeat' (first
-    | (cases hk; exact ⟨by decide, by decide⟩; done)
-    | (cases hk; exact consumeDecFloatDigits_err_ok _ _ _ ‹_›; done)
-    | (cases hk; done)
-    | split at hk)
+  repeat' (first | (cases hk; exact ⟨by decide, by decide⟩; done) | (cases hk; exact consumeDecFloatDigits_err_ok _ _ _ ‹_›; done) | (cases hk; done) | split at hk)
 
 private theorem parseFloatExpPart_err_ok (cs : List Char) {k : NumParseErrorKind}
-    (hk : parseFloatExpPart cs = .error k) :
-    k ≠ .invalidSignForBase ∧ k ≠ .overflow := by
+    (hk : parseFloatExpPart cs = .error k) : k ≠ .invalidSignForBase ∧ k ≠ .overflow := by
   unfold parseFloatExpPart at hk; dsimp only at hk
-  repeat' (first
-    | (cases hk; exact ⟨by decide, by decide⟩; done)
-    | (cases hk; exact consumeDecFloatDigits_err_ok _ _ _ ‹_›; done)
-    | (cases hk; done)
-    | split at hk)
+  repeat' (first | (cases hk; exact ⟨by decide, by decide⟩; done) | (cases hk; exact consumeDecFloatDigits_err_ok _ _ _ ‹_›; done) | (cases hk; done) | split at hk)
 
 private theorem parseFloatModelChars_err_ok (cs : List Char) {k : NumParseErrorKind}
-    (hk : parseFloatModelChars cs = .error k) :
-    k ≠ .invalidSignForBase ∧ k ≠ .overflow := by
+    (hk : parseFloatModelChars cs = .error k) : k ≠ .invalidSignForBase ∧ k ≠ .overflow := by
   unfold parseFloatModelChars at hk; dsimp only at hk
-  repeat' (first
-    | (cases hk; exact ⟨by decide, by decide⟩; done)
-    | (cases hk; exact parseFloatIntPart_err_ok _ ‹_›; done)
-    | (cases hk; exact consumeDecFloatDigits_err_ok _ _ _ ‹_›; done)
-    | (cases hk; exact parseFloatExpPart_err_ok _ ‹_›; done)
-    | (cases hk; done)
-    | split at hk)
+  repeat' (first | (cases hk; exact ⟨by decide, by decide⟩; done) | (cases hk; exact parseFloatIntPart_err_ok _ ‹_›; done) | (cases hk; exact consumeDecFloatDigits_err_ok _ _ _ ‹_›; done) | (cases hk; exact parseFloatExpPart_err_ok _ ‹_›; done) | (cases hk; done) | split at hk)
 
 private theorem parseFloat_err_ok (s : String) {e : NumParseError}
     (h : LeanSwe.NumParse.parseFloat s = .error e) :

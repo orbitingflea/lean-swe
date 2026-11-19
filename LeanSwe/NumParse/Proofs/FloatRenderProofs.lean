@@ -363,7 +363,7 @@ private theorem checkFloatCandidate_spec {x : Float} {neg : Bool} {mant : Nat} {
     have hr := renderFloatChoice_spec neg m' hm'pos e'
     rcases hrc : Internal.renderFloatChoice neg m' e' with ⟨effMant, effExp, str⟩
     rw [hrc] at h hr; simp only [] at h hr
-    by_cases hbits : (Internal.evalScientificFloat neg effMant effExp).toBits = x.toBits
+    by_cases hbits : (Internal.evalModelFloat neg effMant effExp).toBits = x.toBits
     · simp only [beq_iff_eq.mpr hbits, ↓reduceIte] at h
       injection h with hs; subst hs
       exact ⟨hr.1, hr.2.1, evalFloat neg effMant effExp, hr.2.2, hbits⟩
