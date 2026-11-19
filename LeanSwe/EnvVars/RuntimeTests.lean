@@ -119,7 +119,7 @@ def err_envvars_getEnv_invalidKey : IO Unit := do
     match ← EnvVars.getEnv badKey with
     | .ok v => throw (IO.userError s!"expected .invalidKey for {repr badKey}, got ok {repr v}")
     | .error e =>
-      assertEnvTrue (e.kind == .invalidKey && e.key == some badKey && !e.message.isEmpty)
+      assertEnvTrue (e.kind == .invalidKey && e.key == some badKey && e.message == "invalid environment variable name")
         s!"unexpected error for invalid key {repr badKey}: {repr e}"
 
 /-- Verify `EnvVars.getEnv` returns `.invalidEncoding` when the queried variable holds invalid UTF-8 bytes. -/
@@ -155,10 +155,10 @@ def err_envvars_homeDir_notFound : IO Unit := do
   | .ok h => assertEnvTrue (!h.isEmpty) "in-process homeDir is non-empty when set"
   | .error e => assertEnvTrue (e.kind == .notFound) s!"expected notFound when HOME unset, got {repr e}"
   let unsetOut ← runEnvHexProbe #["home"] #[envUtf8ToHex "OTHER=1"]
-  assertEnvTrue (unsetOut.exitCode == 2 && unsetOut.stdout.startsWith "ERR:notFound:HOME:")
+  assertEnvTrue (unsetOut.exitCode == 2 && unsetOut.stdout == "ERR:notFound:HOME:HOME environment variable is not set\n")
     s!"expected EnvVars.homeDir notFound when unset, got rc={unsetOut.exitCode} out={repr unsetOut.stdout}"
   let emptyOut ← runEnvHexProbe #["home"] #[envUtf8ToHex "HOME="]
-  assertEnvTrue (emptyOut.exitCode == 2 && emptyOut.stdout.startsWith "ERR:notFound:HOME:")
+  assertEnvTrue (emptyOut.exitCode == 2 && emptyOut.stdout == "ERR:notFound:HOME:HOME environment variable is empty\n")
     s!"expected EnvVars.homeDir notFound when empty, got rc={emptyOut.exitCode} out={repr emptyOut.stdout}"
 
 /-- Registry of error-coverage runtime tests for `LeanSwe.EnvVars`. -/

@@ -354,4 +354,15 @@ example : ¬ Core.AllPass (test_cryptohash_vectorHexRoundTrip
   simp [hlen] at h
   exact h
 
+example : ¬ Core.AllPass (test_cryptohash_mkApi_matchesModel fun _ =>
+    { Model.modelApi with ctEq := fun _ _ => .ok false }) := by
+  intro h
+  have h0 := h .sha256 ByteArray.empty ByteArray.empty validDigest32 "" ByteArray.empty ByteArray.empty (.userError "x")
+  dsimp [test_cryptohash_mkApi_matchesModel, Model.modelApi, Model.ctEqModel,
+    Core.NondetTest.assert, Bind.bind] at h0
+  have hfalse : (Except.ok false : Except CryptoHashError Bool) = .ok (ByteArray.empty == ByteArray.empty) :=
+    h0.2.2.2.2.2.2.2.2.1
+  injection hfalse with hb
+  exact absurd hb (by decide)
+
 end LeanSwe.CryptoHash

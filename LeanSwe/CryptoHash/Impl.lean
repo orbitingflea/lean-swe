@@ -36,18 +36,18 @@ def formatHexList (bs : List UInt8) : List Char :=
 def toHex (d : Digest) : String :=
   String.ofList (formatHexList d.bytes.data.toList)
 
-/-- Decode an even-length list of ASCII hexadecimal characters into bytes, returning `none` on odd length or non-hex input. -/
-def decodeHexPairs : List Char → Option (List UInt8)
-  | [] => some []
+/-- Tail-recursive accumulator decoding an even-length list of ASCII hexadecimal characters into bytes. -/
+def decodeHexPairsAcc (accRev : List UInt8) : List Char → Option (List UInt8)
+  | [] => some accRev.reverse
   | hi :: lo :: rest =>
-    match hexCharsToByte hi lo, decodeHexPairs rest with
-    | some b, some bs => some (b :: bs)
-    | _, _ => none
+    match hexCharsToByte hi lo with
+    | some b => decodeHexPairsAcc (b :: accRev) rest
+    | none => none
   | _ => none
 
-/-- Decode case-insensitive ASCII hexadecimal characters into a length-checked `Digest`. -/
+/-- Decode a hexadecimal `Digest` string for `alg`, validating format and byte length. -/
 def fromHex (alg : HashAlg) (s : String) : Except CryptoHashError Digest :=
-  match decodeHexPairs s.toList with
+  match decodeHexPairsAcc [] s.toList with
   | none =>
     .error { kind := .invalidHex, message := "hex string must have even length and contain only ASCII hex digits" }
   | some bs =>

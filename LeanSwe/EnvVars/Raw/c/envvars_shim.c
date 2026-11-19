@@ -5,13 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(__APPLE__)
-#include <crt_externs.h>
-#define LEANSWE_ENVIRON (*_NSGetEnviron())
-#else
 extern char **environ;
-#define LEANSWE_ENVIRON environ
-#endif
 
 static lean_obj_res mk_byte_array(const char *s, size_t len) {
   lean_obj_res ba = lean_alloc_sarray(1, len, len);
@@ -22,7 +16,12 @@ static lean_obj_res mk_byte_array(const char *s, size_t len) {
 }
 
 LEAN_EXPORT lean_obj_res leanswe_envvars_getenv(b_lean_obj_arg key) {
-  const char *val = getenv(lean_string_cstr(key));
+  size_t len = lean_string_size(key) - 1;
+  const char *k = lean_string_cstr(key);
+  if (len == 0 || memchr(k, '\0', len) != NULL || memchr(k, '=', len) != NULL) {
+    return lean_box(0);
+  }
+  const char *val = getenv(k);
   if (val == NULL) {
     return lean_box(0);
   }
@@ -33,7 +32,7 @@ LEAN_EXPORT lean_obj_res leanswe_envvars_getenv(b_lean_obj_arg key) {
 
 LEAN_EXPORT lean_obj_res leanswe_envvars_environ(void) {
   lean_obj_res arr = lean_mk_empty_array();
-  char **envp = LEANSWE_ENVIRON;
+  char **envp = environ;
   if (envp == NULL) {
     return arr;
   }

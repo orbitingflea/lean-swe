@@ -1,3 +1,4 @@
+import LeanSwe.CryptoHash.Model
 import LeanSwe.CryptoHash.Interface
 import LeanSwe.CryptoHash.SpecTests
 import LeanSwe.CryptoHash.Raw.Proofs
@@ -144,22 +145,30 @@ private theorem formatHexList_all_lowerHex (bs : List UInt8) :
       List.cons_append, List.nil_append, List.all_cons] at ih ⊢
     simp [h1, h2, ih]
 
+private def decodeHexPairs : List Char → Option (List UInt8)
+  | [] => some []
+  | hi :: lo :: rest =>
+    match Internal.hexCharsToByte hi lo, decodeHexPairs rest with
+    | some b, some bs => some (b :: bs)
+    | _, _ => none
+  | _ => none
+
 private theorem decodeHexPairs_formatHexList (bs : List UInt8) :
-    Internal.decodeHexPairs (Internal.formatHexList bs) = some bs := by
+    decodeHexPairs (Internal.formatHexList bs) = some bs := by
   induction bs with
   | nil => rfl
   | cons b rest ih =>
     simp only [Internal.formatHexList, List.flatMap_cons, Internal.byteToHexChars,
-      List.cons_append, List.nil_append, Internal.decodeHexPairs] at ih ⊢
+      List.cons_append, List.nil_append, decodeHexPairs] at ih ⊢
     rw [uint8_hex_roundtrip b, ih]
 
 private theorem decodeHexPairs_upper_formatHexList (bs : List UInt8) :
-    Internal.decodeHexPairs ((Internal.formatHexList bs).map Char.toUpper) = some bs := by
+    decodeHexPairs ((Internal.formatHexList bs).map Char.toUpper) = some bs := by
   induction bs with
   | nil => rfl
   | cons b rest ih =>
     simp only [Internal.formatHexList, List.flatMap_cons, Internal.byteToHexChars,
-      List.cons_append, List.nil_append, List.map_cons, Internal.decodeHexPairs] at ih ⊢
+      List.cons_append, List.nil_append, List.map_cons, decodeHexPairs] at ih ⊢
     rw [uint8_hex_upper_roundtrip b, ih]
 
 private theorem formatHexList_getElem? (bs : List UInt8) (i : Nat) (hi : i < bs.length) :
@@ -244,18 +253,18 @@ private theorem hexCharsToByte_toLower {hi lo : Char} {b : UInt8}
       simp [Internal.byteToHexChars, hdiv, hmod, hh_low, hl_low]
 
 private theorem decodeHexPairs_some_format {cs : List Char} {bs : List UInt8}
-    (h : Internal.decodeHexPairs cs = some bs) :
+    (h : decodeHexPairs cs = some bs) :
     Internal.formatHexList bs = cs.map Char.toLower := by
   match cs, bs with
   | [], [] => rfl
-  | [], _ :: _ => simp [Internal.decodeHexPairs] at h
-  | [_], _ => simp [Internal.decodeHexPairs] at h
+  | [], _ :: _ => simp [decodeHexPairs] at h
+  | [_], _ => simp [decodeHexPairs] at h
   | hi :: lo :: rest, bs =>
-    simp only [Internal.decodeHexPairs] at h
+    simp only [decodeHexPairs] at h
     cases hb : Internal.hexCharsToByte hi lo with
     | none => simp [hb] at h
     | some b =>
-      cases hrest : Internal.decodeHexPairs rest with
+      cases hrest : decodeHexPairs rest with
       | none => simp [hb, hrest] at h
       | some restBs =>
         simp [hb, hrest] at h
@@ -274,7 +283,7 @@ private theorem hexCharToNibble_none_of_not_isHexChar {c : Char}
 
 private theorem decodeHexPairs_none_of_nonHex {cs : List Char} {idx : Nat}
     (hidx : idx < cs.length) (hbad : isHexChar cs[idx] = false) :
-    Internal.decodeHexPairs cs = none := by
+    decodeHexPairs cs = none := by
   match cs, idx with
   | [], _ => simp at hidx
   | [_], 0 => rfl
@@ -282,29 +291,29 @@ private theorem decodeHexPairs_none_of_nonHex {cs : List Char} {idx : Nat}
   | hi :: lo :: rest, 0 =>
     have hnone : Internal.hexCharToNibble hi = none :=
       hexCharToNibble_none_of_not_isHexChar (by simpa using hbad)
-    simp [Internal.decodeHexPairs, Internal.hexCharsToByte, hnone]
+    simp [decodeHexPairs, Internal.hexCharsToByte, hnone]
   | hi :: lo :: rest, 1 =>
     have hnone : Internal.hexCharToNibble lo = none :=
       hexCharToNibble_none_of_not_isHexChar (by simpa using hbad)
-    simp [Internal.decodeHexPairs, Internal.hexCharsToByte, hnone]
+    simp [decodeHexPairs, Internal.hexCharsToByte, hnone]
   | hi :: lo :: rest, k + 2 =>
     have hk : k < rest.length := by simpa using hidx
     have hbad' : isHexChar rest[k] = false := by simpa using hbad
     have ih := decodeHexPairs_none_of_nonHex hk hbad'
-    simp [Internal.decodeHexPairs, ih]
+    simp [decodeHexPairs, ih]
 
 private theorem decodeHexPairs_length_even {cs : List Char} {bs : List UInt8}
-    (h : Internal.decodeHexPairs cs = some bs) : cs.length = 2 * bs.length := by
+    (h : decodeHexPairs cs = some bs) : cs.length = 2 * bs.length := by
   match cs, bs with
   | [], [] => rfl
-  | [], _ :: _ => simp [Internal.decodeHexPairs] at h
-  | [_], _ => simp [Internal.decodeHexPairs] at h
+  | [], _ :: _ => simp [decodeHexPairs] at h
+  | [_], _ => simp [decodeHexPairs] at h
   | hi :: lo :: rest, bs =>
-    simp only [Internal.decodeHexPairs] at h
+    simp only [decodeHexPairs] at h
     cases hb : Internal.hexCharsToByte hi lo with
     | none => simp [hb] at h
     | some b =>
-      cases hrest : Internal.decodeHexPairs rest with
+      cases hrest : decodeHexPairs rest with
       | none => simp [hb, hrest] at h
       | some restBs =>
         simp [hb, hrest] at h
@@ -314,15 +323,15 @@ private theorem decodeHexPairs_length_even {cs : List Char} {bs : List UInt8}
         omega
 
 private theorem decodeHexPairs_none_of_odd {cs : List Char}
-    (hodd : cs.length % 2 = 1) : Internal.decodeHexPairs cs = none := by
-  cases h : Internal.decodeHexPairs cs with
+    (hodd : cs.length % 2 = 1) : decodeHexPairs cs = none := by
+  cases h : decodeHexPairs cs with
   | none => rfl
   | some bs =>
     have heven := decodeHexPairs_length_even h
     omega
 
 private theorem decodeHexPairs_length_div2 {cs : List Char} {bs : List UInt8}
-    (h : Internal.decodeHexPairs cs = some bs) : bs.length * 2 = cs.length := by
+    (h : decodeHexPairs cs = some bs) : bs.length * 2 = cs.length := by
   have hev := decodeHexPairs_length_even h
   omega
 
@@ -349,7 +358,7 @@ private theorem hexCharsToByte_isSome_of_isHexChar {hi lo : Char}
 
 private theorem decodeHexPairs_some_of_all_hex {cs : List Char}
     (heven : cs.length % 2 = 0) (hall : cs.all isHexChar = true) :
-    ∃ bs, Internal.decodeHexPairs cs = some bs ∧ 2 * bs.length = cs.length := by
+    ∃ bs, decodeHexPairs cs = some bs ∧ 2 * bs.length = cs.length := by
   match cs with
   | [] => exact ⟨[], rfl, rfl⟩
   | [_] => simp at heven
@@ -363,7 +372,7 @@ private theorem decodeHexPairs_some_of_all_hex {cs : List Char}
       omega
     obtain ⟨bs, hbs, hlen⟩ := decodeHexPairs_some_of_all_hex heven' h2.2
     refine ⟨b :: bs, ?_, ?_⟩
-    · simp [Internal.decodeHexPairs, hb, hbs]
+    · simp [decodeHexPairs, hb, hbs]
     · simp only [List.length_cons] at hlen ⊢
       omega
 
@@ -983,6 +992,26 @@ theorem reach_cryptohash_verifyHmacSha256_matchesTagAndRejectsTampered :
   exact ⟨{}, ⟨rfl, rfl, rfl⟩, ByteArray.empty, ByteArray.empty, d, ⟨rfl, by decide⟩,
     cryptohash_verifyHmacSha256_matchesTagAndRejectsTampered {} ⟨rfl, rfl, rfl⟩ ByteArray.empty ByteArray.empty d ⟨rfl, by decide⟩⟩
 
+private theorem decodeHexPairsAcc_spec (accRev : List UInt8) (cs : List Char) :
+    Internal.decodeHexPairsAcc accRev cs =
+      (decodeHexPairs cs).map (fun tail => accRev.reverse ++ tail) := by
+  match cs with
+  | [] => simp [Internal.decodeHexPairsAcc, decodeHexPairs]
+  | [_] => simp [Internal.decodeHexPairsAcc, decodeHexPairs]
+  | hi :: lo :: rest =>
+    simp only [Internal.decodeHexPairsAcc, decodeHexPairs]
+    cases Internal.hexCharsToByte hi lo with
+    | none => rfl
+    | some b =>
+      dsimp only
+      rw [decodeHexPairsAcc_spec (b :: accRev) rest]
+      cases decodeHexPairs rest <;> simp [List.reverse_cons, List.append_assoc]
+
+private theorem decodeHexPairsAcc_nil (cs : List Char) :
+    Internal.decodeHexPairsAcc [] cs = decodeHexPairs cs := by
+  rw [decodeHexPairsAcc_spec]
+  cases decodeHexPairs cs <;> rfl
+
 /-- `defaultApi` satisfies `test_cryptohash_toHex_formatAndRoundTrip`. -/
 theorem cryptohash_toHex_formatAndRoundTrip :
     AllPass (test_cryptohash_toHex_formatAndRoundTrip defaultApi) := by
@@ -991,13 +1020,14 @@ theorem cryptohash_toHex_formatAndRoundTrip :
   dsimp [test_cryptohash_toHex_formatAndRoundTrip, AllPassRun, defaultApi, Internal.mkApiM,
     Internal.toHex, Internal.fromHex, Bind.bind, Pure.pure, Core.NondetTest.assert,
     Core.NondetTest.nondet, Core.NondetTest.assume]
+  rw [decodeHexPairsAcc_nil]
   have hlen : (String.ofList (Internal.formatHexList d.bytes.data.toList)).length = 2 * digestLen d.alg := by
     rw [String.length_ofList, formatHexList_length, Array.length_toList, ← ByteArray.size, hd]
   have hall : (String.ofList (Internal.formatHexList d.bytes.data.toList)).toList.all isLowerHexChar = true := by
     rw [String.toList_ofList]
     exact formatHexList_all_lowerHex d.bytes.data.toList
   have hrt :
-      (match Internal.decodeHexPairs (String.ofList (Internal.formatHexList d.bytes.data.toList)).toList with
+      (match decodeHexPairs (String.ofList (Internal.formatHexList d.bytes.data.toList)).toList with
         | none => Except.error ({ kind := .invalidHex, message := "hex string must have even length and contain only ASCII hex digits" } : CryptoHashError)
         | some bs =>
           let ba := ByteArray.mk bs.toArray
@@ -1052,7 +1082,7 @@ theorem cryptohash_fromHex_acceptsUppercaseAndRoundTrips :
   dsimp only
   dsimp [test_cryptohash_fromHex_acceptsUppercaseAndRoundTrips, AllPassRun, defaultApi, Internal.mkApiM,
     Internal.toHex, Internal.fromHex, Bind.bind, Pure.pure, Core.NondetTest.assert]
-  rw [String.toList_ofList, String.toList_ofList, decodeHexPairs_upper_formatHexList]
+  rw [decodeHexPairsAcc_nil, String.toList_ofList, String.toList_ofList, decodeHexPairs_upper_formatHexList]
   have hba : ByteArray.mk d.bytes.data.toList.toArray = d.bytes := by
     cases d.bytes
     simp
@@ -1074,7 +1104,8 @@ theorem cryptohash_fromHex_acceptedImpliesValidAndNormalizedRoundTrip :
   intro alg s
   dsimp [test_cryptohash_fromHex_acceptedImpliesValidAndNormalizedRoundTrip, AllPassRun, defaultApi,
     Internal.mkApiM, Internal.toHex, Internal.fromHex, Bind.bind, Pure.pure, Core.NondetTest.assert]
-  cases hdec : Internal.decodeHexPairs s.toList with
+  rw [decodeHexPairsAcc_nil]
+  cases hdec : decodeHexPairs s.toList with
   | none =>
     refine ⟨?_, trivial⟩
     decide
@@ -1112,7 +1143,7 @@ theorem cryptohash_fromHex_rejectsNonHexChar :
   have hidx_list : idx < s.toList.length := by simpa [String.length_toList] using hidx
   have hbad' : isHexChar s.toList[idx] = false := by
     rwa [list_getElem!_eq s.toList idx hidx_list] at hbad
-  rw [decodeHexPairs_none_of_nonHex hidx_list hbad']
+  rw [decodeHexPairsAcc_nil, decodeHexPairs_none_of_nonHex hidx_list hbad']
   exact ⟨⟨rfl, by decide⟩, trivial⟩
 
 /-- Non-vacuity witness for `test_cryptohash_fromHex_rejectsNonHexChar`. -/
@@ -1129,7 +1160,7 @@ theorem cryptohash_fromHex_rejectsOddLengthHex :
   dsimp [test_cryptohash_fromHex_rejectsOddLengthHex, AllPassRun, defaultApi, Internal.mkApiM,
     Internal.fromHex, Bind.bind, Pure.pure, Core.NondetTest.assert]
   have hodd_list : s.toList.length % 2 = 1 := by simpa [String.length_toList] using hodd
-  rw [decodeHexPairs_none_of_odd hodd_list]
+  rw [decodeHexPairsAcc_nil, decodeHexPairs_none_of_odd hodd_list]
   exact ⟨⟨rfl, by decide⟩, trivial⟩
 
 /-- Non-vacuity witness for `test_cryptohash_fromHex_rejectsOddLengthHex`. -/
@@ -1148,7 +1179,7 @@ theorem cryptohash_fromHex_rejectsWrongEvenHexLength :
     Internal.fromHex, Bind.bind, Pure.pure, Core.NondetTest.assert]
   have heven_list : s.toList.length % 2 = 0 := by simpa [String.length_toList] using heven
   obtain ⟨bs, hbs, h2⟩ := decodeHexPairs_some_of_all_hex heven_list hall
-  rw [hbs]
+  rw [decodeHexPairsAcc_nil, hbs]
   have hne : ((ByteArray.mk bs.toArray).size != digestLen alg) = true := by
     apply bne_iff_ne.mpr
     intro heq
@@ -1192,7 +1223,7 @@ private theorem fromHex_toHex_of_validHex (alg : HashAlg) (s expected : String)
     bne_eq_false_iff_eq.mpr hsz
   refine ⟨{ alg := alg, bytes := ByteArray.mk bs.toArray }, ?_, ?_⟩
   · unfold Internal.fromHex
-    rw [hbs]
+    rw [decodeHexPairsAcc_nil, hbs]
     simp [hf]
   · unfold Internal.toHex
     change String.ofList (Internal.formatHexList bs.toArray.toList) = expected
@@ -1282,9 +1313,9 @@ private theorem io_bind_eq {α β : Type} (act : IO α) (k : α → IO β) (w : 
 private theorem io_pure_eq {α : Type} (a : α) (w : Void IO.RealWorld) :
     (pure a : IO α) w = EST.Out.ok a w := rfl
 
-private theorem hash_never (k : CryptoHashErrorKind) (hk : k ≠ .cryptoError)
+private theorem hash_never_invalidHex
     (alg : HashAlg) (msg : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO Raw.CryptoHashError.kind k (LeanSwe.CryptoHash.hash alg msg) w := by
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidHex (LeanSwe.CryptoHash.hash alg msg) w := by
   unfold Core.NeverErrorKindIO LeanSwe.CryptoHash.hash defaultApi Internal.mkApiM Internal.hashM
   dsimp only
   rw [io_bind_eq]
@@ -1298,11 +1329,11 @@ private theorem hash_never (k : CryptoHashErrorKind) (hk : k ≠ .cryptoError)
   · rw [herr]
     dsimp only
     rw [io_pure_eq]
-    simp [hek, hk.symm]
+    exact hek
 
-private theorem hmacSha256_never (k : CryptoHashErrorKind) (hk : k ≠ .cryptoError)
+private theorem hmacSha256_never_invalidHex
     (key msg : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO Raw.CryptoHashError.kind k (hmacSha256 key msg) w := by
+    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidHex (hmacSha256 key msg) w := by
   unfold Core.NeverErrorKindIO hmacSha256 defaultApi Internal.mkApiM Internal.hmacSha256M
   dsimp only
   rw [io_bind_eq]
@@ -1316,7 +1347,7 @@ private theorem hmacSha256_never (k : CryptoHashErrorKind) (hk : k ≠ .cryptoEr
   · rw [herr]
     dsimp only
     rw [io_pure_eq]
-    simp [hek, hk.symm]
+    exact hek
 
 private theorem ctEq_never (k : CryptoHashErrorKind)
     (a b : ByteArray) (w : Void IO.RealWorld) :
@@ -1335,65 +1366,25 @@ private theorem ctEq_never (k : CryptoHashErrorKind)
     · exact absurd heq hdiff
     · rw [hok]; trivial
 
-/-- `CryptoHash.hash` never returns `.invalidInput`. -/
-theorem cryptohash_hash_never_invalidInput (alg : HashAlg) (msg : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidInput (LeanSwe.CryptoHash.hash alg msg) w :=
-  hash_never .invalidInput (by decide) alg msg w
-
 /-- `CryptoHash.hash` never returns `.invalidHex`. -/
 theorem cryptohash_hash_never_invalidHex (alg : HashAlg) (msg : ByteArray) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidHex (LeanSwe.CryptoHash.hash alg msg) w :=
-  hash_never .invalidHex (by decide) alg msg w
-
-/-- `CryptoHash.hash` never returns `.lengthMismatch`. -/
-theorem cryptohash_hash_never_lengthMismatch (alg : HashAlg) (msg : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO Raw.CryptoHashError.kind .lengthMismatch (LeanSwe.CryptoHash.hash alg msg) w :=
-  hash_never .lengthMismatch (by decide) alg msg w
-
-/-- `CryptoHash.sha256` never returns `.invalidInput`. -/
-theorem cryptohash_sha256_never_invalidInput (msg : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidInput (sha256 msg) w :=
-  hash_never .invalidInput (by decide) .sha256 msg w
+  hash_never_invalidHex alg msg w
 
 /-- `CryptoHash.sha256` never returns `.invalidHex`. -/
 theorem cryptohash_sha256_never_invalidHex (msg : ByteArray) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidHex (sha256 msg) w :=
-  hash_never .invalidHex (by decide) .sha256 msg w
-
-/-- `CryptoHash.sha256` never returns `.lengthMismatch`. -/
-theorem cryptohash_sha256_never_lengthMismatch (msg : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO Raw.CryptoHashError.kind .lengthMismatch (sha256 msg) w :=
-  hash_never .lengthMismatch (by decide) .sha256 msg w
-
-/-- `CryptoHash.sha512` never returns `.invalidInput`. -/
-theorem cryptohash_sha512_never_invalidInput (msg : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidInput (sha512 msg) w :=
-  hash_never .invalidInput (by decide) .sha512 msg w
+  hash_never_invalidHex .sha256 msg w
 
 /-- `CryptoHash.sha512` never returns `.invalidHex`. -/
 theorem cryptohash_sha512_never_invalidHex (msg : ByteArray) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidHex (sha512 msg) w :=
-  hash_never .invalidHex (by decide) .sha512 msg w
-
-/-- `CryptoHash.sha512` never returns `.lengthMismatch`. -/
-theorem cryptohash_sha512_never_lengthMismatch (msg : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO Raw.CryptoHashError.kind .lengthMismatch (sha512 msg) w :=
-  hash_never .lengthMismatch (by decide) .sha512 msg w
-
-/-- `CryptoHash.hmacSha256` never returns `.invalidInput`. -/
-theorem cryptohash_hmacSha256_never_invalidInput (key msg : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidInput (hmacSha256 key msg) w :=
-  hmacSha256_never .invalidInput (by decide) key msg w
+  hash_never_invalidHex .sha512 msg w
 
 /-- `CryptoHash.hmacSha256` never returns `.invalidHex`. -/
 theorem cryptohash_hmacSha256_never_invalidHex (key msg : ByteArray) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO Raw.CryptoHashError.kind .invalidHex (hmacSha256 key msg) w :=
-  hmacSha256_never .invalidHex (by decide) key msg w
-
-/-- `CryptoHash.hmacSha256` never returns `.lengthMismatch`. -/
-theorem cryptohash_hmacSha256_never_lengthMismatch (key msg : ByteArray) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO Raw.CryptoHashError.kind .lengthMismatch (hmacSha256 key msg) w :=
-  hmacSha256_never .lengthMismatch (by decide) key msg w
+  hmacSha256_never_invalidHex key msg w
 
 /-- `CryptoHash.verifyHmacSha256` never returns `.invalidHex`. -/
 theorem cryptohash_verifyHmacSha256_never_invalidHex
@@ -1436,8 +1427,7 @@ theorem cryptohash_verifyHmacSha256_never_invalidHex
         dsimp only
         rw [io_pure_eq]
         dsimp only
-        intro h
-        exact absurd (hek.symm.trans h) (by decide)
+        exact hek
 
 private theorem fromHex_never (k : CryptoHashErrorKind)
     (hk1 : k ≠ .invalidHex) (hk2 : k ≠ .lengthMismatch)
@@ -1445,7 +1435,8 @@ private theorem fromHex_never (k : CryptoHashErrorKind)
     Core.NeverErrorKindPure Raw.CryptoHashError.kind k (fromHex alg s) := by
   unfold Core.NeverErrorKindPure fromHex defaultApi Internal.mkApiM Internal.fromHex
   dsimp only
-  cases Internal.decodeHexPairs s.toList with
+  rw [decodeHexPairsAcc_nil]
+  cases decodeHexPairs s.toList with
   | none => dsimp only; exact hk1.symm
   | some bs =>
     dsimp only
@@ -1482,5 +1473,103 @@ theorem cryptohash_ctEq_never_lengthMismatch (a b : ByteArray) (w : Void IO.Real
 theorem cryptohash_ctEq_never_cryptoError (a b : ByteArray) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO Raw.CryptoHashError.kind .cryptoError (ctEq a b) w :=
   ctEq_never .cryptoError a b w
+
+private theorem lowerHexDigitModel_eq : Model.lowerHexDigitModel = Internal.lowerHexDigit := by
+  funext n
+  rfl
+
+private theorem hexCharToNibbleModel_eq : Model.hexCharToNibbleModel = Internal.hexCharToNibble := by
+  funext c
+  rfl
+
+private theorem byteToHexCharsModel_eq : Model.byteToHexCharsModel = Internal.byteToHexChars := by
+  funext b
+  rfl
+
+private theorem hexCharsToByteModel_eq : Model.hexCharsToByteModel = Internal.hexCharsToByte := by
+  funext hi lo
+  rfl
+
+private theorem decodeHexPairsAccModel_eq (accRev : List UInt8) (cs : List Char) :
+    Model.decodeHexPairsAccModel accRev cs = Internal.decodeHexPairsAcc accRev cs := by
+  match cs with
+  | [] => rfl
+  | [_] => rfl
+  | hi :: lo :: rest =>
+    simp only [Model.decodeHexPairsAccModel, Internal.decodeHexPairsAcc, hexCharsToByteModel_eq]
+    cases Internal.hexCharsToByte hi lo with
+    | none => rfl
+    | some b => exact decodeHexPairsAccModel_eq (b :: accRev) rest
+
+private theorem toHexModel_eq : Model.toHexModel = Internal.toHex := by
+  funext d
+  simp [Model.toHexModel, Internal.toHex, Internal.formatHexList, byteToHexCharsModel_eq]
+
+private theorem fromHexModel_eq : Model.fromHexModel = Internal.fromHex := by
+  funext alg s
+  dsimp only [Model.fromHexModel, Internal.fromHex]
+  rw [decodeHexPairsAccModel_eq]
+  rfl
+
+private theorem digestBytesModel_size (alg : HashAlg) (msg : ByteArray) :
+    (Raw.Model.digestBytesModel alg msg).size = digestLen alg := by
+  cases alg <;> rfl
+
+private theorem hmacSha256Bytes_size (key msg : ByteArray) :
+    (Raw.Model.hmacSha256Bytes key msg).size = 32 := rfl
+
+/-- `Internal.mkApiM` satisfies `test_cryptohash_mkApi_matchesModel`. -/
+theorem cryptohash_mkApi_matchesModel :
+    AllPass (test_cryptohash_mkApi_matchesModel Internal.mkApiM) := by
+  intro alg key msg expected hexStr a b rawErr
+  dsimp only [test_cryptohash_mkApi_matchesModel]
+  simp only [Internal.mkApiM, Model.modelApi, Raw.Model.modelRawOps,
+    Internal.hashM, Internal.hmacSha256M, Internal.verifyHmacSha256M, Internal.ctEqM,
+    Model.hashModel, Model.sha256Model, Model.sha512Model, Model.hmacSha256Model,
+    Model.verifyHmacSha256Model, Model.ctEqModel, Raw.Model.ctEqualRawModel,
+    toHexModel_eq, fromHexModel_eq, Bind.bind, bind, pure, Core.NondetTest.assert]
+  have hd : ((Raw.Model.digestBytesModel alg msg).size != digestLen alg) = false :=
+    bne_eq_false_iff_eq.mpr (digestBytesModel_size alg msg)
+  have hd256 : ((Raw.Model.digestBytesModel .sha256 msg).size != digestLen .sha256) = false :=
+    bne_eq_false_iff_eq.mpr (digestBytesModel_size .sha256 msg)
+  have hd512 : ((Raw.Model.digestBytesModel .sha512 msg).size != digestLen .sha512) = false :=
+    bne_eq_false_iff_eq.mpr (digestBytesModel_size .sha512 msg)
+  have hh : ((Raw.Model.hmacSha256Bytes key msg).size != 32) = false :=
+    bne_eq_false_iff_eq.mpr (hmacSha256Bytes_size key msg)
+  refine ⟨trivial, ?_, ?_, ?_, ?_, ?_, trivial, trivial, ?_, trivial⟩
+  · simp [hd]
+  · simp [hd256]
+  · simp [hd512]
+  · simp [hh]
+  · cases halg : expected.alg
+    · have hfa : (Raw.HashAlg.sha256 != Raw.HashAlg.sha256) = false := rfl
+      simp only [hfa, Bool.false_eq_true, ↓reduceIte]
+      by_cases hlen : expected.bytes.size = 32
+      · have hfl : (expected.bytes.size != 32) = false := bne_eq_false_iff_eq.mpr hlen
+        have hfl2 : ((Raw.Model.hmacSha256Bytes key msg).size != expected.bytes.size) = false := by
+          rw [hmacSha256Bytes_size, hlen]; rfl
+        simp [hfl, hh, hfl2]
+      · have htl : (expected.bytes.size != 32) = true := bne_iff_ne.mpr hlen
+        simp [htl]
+    · have hta : (Raw.HashAlg.sha512 != Raw.HashAlg.sha256) = true := rfl
+      simp [hta]
+  · by_cases hsz : a.size = b.size
+    · have hf : (a.size != b.size) = false := bne_eq_false_iff_eq.mpr hsz
+      simp [hf]
+    · have hne : (a == b) = false := by
+        cases hab : a == b
+        · rfl
+        · have heq := eq_of_beq hab; subst heq; exact absurd rfl hsz
+      rw [hne]
+      have ht : (a.size != b.size) = true := bne_iff_ne.mpr hsz
+      simp [ht]
+
+/-- Non-vacuity witness for `test_cryptohash_mkApi_matchesModel`. -/
+theorem reach_cryptohash_mkApi_matchesModel :
+    CanReach (test_cryptohash_mkApi_matchesModel Internal.mkApiM) := by
+  let d : Digest := { alg := .sha256, bytes := ByteArray.mk (Array.replicate 32 0) }
+  exact ⟨.sha256, ByteArray.empty, ByteArray.empty, d, "", ByteArray.empty, ByteArray.empty,
+    .invalidArgument "",
+    cryptohash_mkApi_matchesModel .sha256 ByteArray.empty ByteArray.empty d "" ByteArray.empty ByteArray.empty (.invalidArgument "")⟩
 
 end LeanSwe.CryptoHash.Proofs

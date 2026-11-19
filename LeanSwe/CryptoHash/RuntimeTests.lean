@@ -188,17 +188,25 @@ private def runPythonDifferential : IO Unit := do
     payload := pushUInt32BE (pushUInt32BE payload k.size) m.size
     payload := payload ++ k ++ m
   let child ← IO.Process.spawn {
-    cmd := "python3"
-    args := #["-c", pythonDiffScript]
+    cmd := "/usr/bin/python3"
+    args := #["-I", "-c", pythonDiffScript]
+    env := #[("OPENSSL_CONF", some "/dev/null"), ("OPENSSL_MODULES", none), ("PYTHONPATH", none)]
     stdin := .piped
     stdout := .piped
     stderr := .piped
   }
-  child.stdin.write payload
+  let writeErr? ← try
+    child.stdin.write payload
+    child.stdin.flush
+    pure none
+  catch e =>
+    pure (some e)
   let (_, child) ← child.takeStdin
   let out ← child.stdout.readToEnd
   let err ← child.stderr.readToEnd
   let exitCode ← child.wait
+  if let some we := writeErr? then
+    throw (IO.userError s!"python3 differential write failed ({we}) exit={exitCode}: {err}")
   assertTrue (exitCode == 0) s!"python3 differential exited {exitCode}: {err}"
   let lines := out.trimAscii.toString.splitOn "\n" |>.toArray
   assertTrue (lines.size == cases.size) s!"python3 line count mismatch: {lines.size} vs {cases.size}"
@@ -213,41 +221,95 @@ private def runPythonDifferential : IO Unit := do
     assertTrue (toHex d512 == parts[1]!) s!"diff sha512 mismatch at idx {idx} (len {m.size})"
     assertTrue (toHex dmac == parts[2]!) s!"diff hmac mismatch at idx {idx} (len {k.size}/{m.size})"
 
-private def mkFailingCryptoOps : RawCryptoHashOps :=
-  let err : CryptoHashError :=
-    { kind := .cryptoError, opensslCode := some 789, message := "mocked OpenSSL failure" }
+private def mkFailingCryptoOps (err : CryptoHashError) : RawCryptoHashOps :=
   { mapRawError := Raw.mapRawError
     digestRaw := fun _ _ => pure (.error err)
     hmacSha256Raw := fun _ _ => pure (.error err)
     ctEqualRaw := fun _ _ => pure (.error err) }
 
+private def mkInvalidInputCryptoOps : RawCryptoHashOps :=
+  mkFailingCryptoOps { kind := .invalidInput, opensslCode := none, message := "mocked invalid input" }
+
+private def mkLengthMismatchRawFfiOps : RawCryptoHashOps :=
+  { mapRawError := Raw.mapRawError
+    digestRaw := fun _ _ => pure (.ok (ByteArray.mk #[1, 2, 3]))
+    hmacSha256Raw := fun _ _ => pure (.ok (ByteArray.mk #[1, 2, 3]))
+    ctEqualRaw := fun _ _ => pure (.ok false) }
+
+private def expectMockErr (label : String) (expectedKind : Raw.CryptoHashErrorKind)
+    (act : IO (Except CryptoHashError Digest)) : IO Unit := do
+  match ← act with
+  | .ok _ => throw (IO.userError s!"{label} should fail")
+  | .error e =>
+    assertTrue (e.kind == expectedKind && !e.message.isEmpty) s!"{label} returns {repr expectedKind}"
+
+/-- Verify mocked invalid-input failure in `hash` produces `.invalidInput`. -/
+def err_cryptohash_hash_invalidInput : IO Unit :=
+  expectMockErr "mocked hash invalidInput" .invalidInput
+    ((Internal.mkApiM mkInvalidInputCryptoOps).hash .sha256 ByteArray.empty)
+
+/-- Verify mocked digest length mismatch in `hash` produces `.lengthMismatch`. -/
+def err_cryptohash_hash_lengthMismatch : IO Unit :=
+  expectMockErr "mocked hash lengthMismatch" .lengthMismatch
+    ((Internal.mkApiM mkLengthMismatchRawFfiOps).hash .sha256 ByteArray.empty)
+
 /-- Verify mocked OpenSSL failure in `hash` produces `.cryptoError`. -/
 def err_cryptohash_hash_cryptoError : IO Unit := do
-  let api := Internal.mkApiM mkFailingCryptoOps
+  let api := Internal.mkApiM (mkFailingCryptoOps { kind := .cryptoError, opensslCode := some 789, message := "mocked OpenSSL failure" })
   match ← api.hash .sha256 ByteArray.empty with
   | .ok _ => throw (IO.userError "mocked hash should fail")
   | .error e =>
     assertTrue (e.kind == .cryptoError && !e.message.isEmpty) "mocked hash returns .cryptoError"
 
+/-- Verify mocked invalid-input failure in `sha256` produces `.invalidInput`. -/
+def err_cryptohash_sha256_invalidInput : IO Unit :=
+  expectMockErr "mocked sha256 invalidInput" .invalidInput
+    ((Internal.mkApiM mkInvalidInputCryptoOps).sha256 ByteArray.empty)
+
+/-- Verify mocked digest length mismatch in `sha256` produces `.lengthMismatch`. -/
+def err_cryptohash_sha256_lengthMismatch : IO Unit :=
+  expectMockErr "mocked sha256 lengthMismatch" .lengthMismatch
+    ((Internal.mkApiM mkLengthMismatchRawFfiOps).sha256 ByteArray.empty)
+
 /-- Verify mocked OpenSSL failure in `sha256` produces `.cryptoError`. -/
 def err_cryptohash_sha256_cryptoError : IO Unit := do
-  let api := Internal.mkApiM mkFailingCryptoOps
+  let api := Internal.mkApiM (mkFailingCryptoOps { kind := .cryptoError, opensslCode := some 789, message := "mocked OpenSSL failure" })
   match ← api.sha256 ByteArray.empty with
   | .ok _ => throw (IO.userError "mocked sha256 should fail")
   | .error e =>
     assertTrue (e.kind == .cryptoError && !e.message.isEmpty) "mocked sha256 returns .cryptoError"
 
+/-- Verify mocked invalid-input failure in `sha512` produces `.invalidInput`. -/
+def err_cryptohash_sha512_invalidInput : IO Unit :=
+  expectMockErr "mocked sha512 invalidInput" .invalidInput
+    ((Internal.mkApiM mkInvalidInputCryptoOps).sha512 ByteArray.empty)
+
+/-- Verify mocked digest length mismatch in `sha512` produces `.lengthMismatch`. -/
+def err_cryptohash_sha512_lengthMismatch : IO Unit :=
+  expectMockErr "mocked sha512 lengthMismatch" .lengthMismatch
+    ((Internal.mkApiM mkLengthMismatchRawFfiOps).sha512 ByteArray.empty)
+
 /-- Verify mocked OpenSSL failure in `sha512` produces `.cryptoError`. -/
 def err_cryptohash_sha512_cryptoError : IO Unit := do
-  let api := Internal.mkApiM mkFailingCryptoOps
+  let api := Internal.mkApiM (mkFailingCryptoOps { kind := .cryptoError, opensslCode := some 789, message := "mocked OpenSSL failure" })
   match ← api.sha512 ByteArray.empty with
   | .ok _ => throw (IO.userError "mocked sha512 should fail")
   | .error e =>
     assertTrue (e.kind == .cryptoError && !e.message.isEmpty) "mocked sha512 returns .cryptoError"
 
+/-- Verify mocked invalid-input failure in `hmacSha256` produces `.invalidInput`. -/
+def err_cryptohash_hmacSha256_invalidInput : IO Unit :=
+  expectMockErr "mocked hmacSha256 invalidInput" .invalidInput
+    ((Internal.mkApiM mkInvalidInputCryptoOps).hmacSha256 ByteArray.empty ByteArray.empty)
+
+/-- Verify mocked tag length mismatch in `hmacSha256` produces `.lengthMismatch`. -/
+def err_cryptohash_hmacSha256_lengthMismatch : IO Unit :=
+  expectMockErr "mocked hmacSha256 lengthMismatch" .lengthMismatch
+    ((Internal.mkApiM mkLengthMismatchRawFfiOps).hmacSha256 ByteArray.empty ByteArray.empty)
+
 /-- Verify mocked OpenSSL failure in `hmacSha256` produces `.cryptoError`. -/
 def err_cryptohash_hmacSha256_cryptoError : IO Unit := do
-  let api := Internal.mkApiM mkFailingCryptoOps
+  let api := Internal.mkApiM (mkFailingCryptoOps { kind := .cryptoError, opensslCode := some 789, message := "mocked OpenSSL failure" })
   match ← api.hmacSha256 ByteArray.empty ByteArray.empty with
   | .ok _ => throw (IO.userError "mocked hmacSha256 should fail")
   | .error e =>
@@ -259,7 +321,7 @@ def err_cryptohash_verifyHmacSha256_invalidInput : IO Unit := do
   match ← verifyHmacSha256 "k".toUTF8 "m".toUTF8 badAlg with
   | .ok _ => throw (IO.userError "verifyHmacSha256 should reject sha512 digest")
   | .error e =>
-    assertTrue (e.kind == .invalidInput && !e.message.isEmpty)
+    assertTrue (e.kind == .invalidInput && e.message == "expected HMAC-SHA256 digest algorithm")
       "verifyHmacSha256 non-sha256 returns .invalidInput"
 
 /-- Verify `verifyHmacSha256` rejects non-32-byte expected digest with `.lengthMismatch`. -/
@@ -273,7 +335,7 @@ def err_cryptohash_verifyHmacSha256_lengthMismatch : IO Unit := do
 
 /-- Verify mocked OpenSSL failure in `verifyHmacSha256` produces `.cryptoError`. -/
 def err_cryptohash_verifyHmacSha256_cryptoError : IO Unit := do
-  let api := Internal.mkApiM mkFailingCryptoOps
+  let api := Internal.mkApiM (mkFailingCryptoOps { kind := .cryptoError, opensslCode := some 789, message := "mocked OpenSSL failure" })
   let expected : Digest := { alg := .sha256, bytes := repeatByte 32 0x00 }
   match ← api.verifyHmacSha256 ByteArray.empty ByteArray.empty expected with
   | .ok _ => throw (IO.userError "mocked verifyHmacSha256 should fail")
@@ -286,11 +348,11 @@ def err_cryptohash_fromHex_invalidHex : IO Unit := do
   match fromHex .sha256 "zzzz" with
   | .ok _ => throw (IO.userError "fromHex should reject non-hex characters")
   | .error e =>
-    assertTrue (e.kind == .invalidHex && !e.message.isEmpty) "fromHex non-hex returns .invalidHex"
+    assertTrue (e.kind == .invalidHex && e.message == "hex string must have even length and contain only ASCII hex digits") "fromHex non-hex returns .invalidHex"
   match fromHex .sha256 "abc" with
   | .ok _ => throw (IO.userError "fromHex should reject odd-length hex")
   | .error e =>
-    assertTrue (e.kind == .invalidHex && !e.message.isEmpty) "fromHex odd-length returns .invalidHex"
+    assertTrue (e.kind == .invalidHex && e.message == "hex string must have even length and contain only ASCII hex digits") "fromHex odd-length returns .invalidHex"
 
 /-- Verify `fromHex` rejects wrong decoded byte count with `.lengthMismatch`. -/
 def err_cryptohash_fromHex_lengthMismatch : IO Unit := do
@@ -302,15 +364,39 @@ def err_cryptohash_fromHex_lengthMismatch : IO Unit := do
 
 /-- Registered error-coverage tests for `LeanSwe.CryptoHash`. -/
 def registeredErrorTests : Array Core.RegisteredErrorTest :=
-  #[ { testName := "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_hash_cryptoError"
+  #[ { testName := "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_hash_invalidInput"
+       mode := .mocked
+       run := err_cryptohash_hash_invalidInput }
+   , { testName := "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_hash_lengthMismatch"
+       mode := .mocked
+       run := err_cryptohash_hash_lengthMismatch }
+   , { testName := "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_hash_cryptoError"
        mode := .mocked
        run := err_cryptohash_hash_cryptoError }
+   , { testName := "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_sha256_invalidInput"
+       mode := .mocked
+       run := err_cryptohash_sha256_invalidInput }
+   , { testName := "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_sha256_lengthMismatch"
+       mode := .mocked
+       run := err_cryptohash_sha256_lengthMismatch }
    , { testName := "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_sha256_cryptoError"
        mode := .mocked
        run := err_cryptohash_sha256_cryptoError }
+   , { testName := "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_sha512_invalidInput"
+       mode := .mocked
+       run := err_cryptohash_sha512_invalidInput }
+   , { testName := "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_sha512_lengthMismatch"
+       mode := .mocked
+       run := err_cryptohash_sha512_lengthMismatch }
    , { testName := "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_sha512_cryptoError"
        mode := .mocked
        run := err_cryptohash_sha512_cryptoError }
+   , { testName := "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_hmacSha256_invalidInput"
+       mode := .mocked
+       run := err_cryptohash_hmacSha256_invalidInput }
+   , { testName := "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_hmacSha256_lengthMismatch"
+       mode := .mocked
+       run := err_cryptohash_hmacSha256_lengthMismatch }
    , { testName := "LeanSwe.CryptoHash.RuntimeTests.err_cryptohash_hmacSha256_cryptoError"
        mode := .mocked
        run := err_cryptohash_hmacSha256_cryptoError }

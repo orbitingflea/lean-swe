@@ -1,3 +1,4 @@
+import LeanSwe.EnvVars.Model
 import LeanSwe.EnvVars.Interface
 import LeanSwe.EnvVars.SpecTests
 import LeanSwe.EnvVars.Raw.Proofs
@@ -87,22 +88,32 @@ private theorem isValidKey_false_iff (key : String) :
             cases ht
     · intro _; rfl
 
+private def splitColonRaw : List Char → List (List Char)
+  | [] => [[]]
+  | c :: cs =>
+    if c == ':' then
+      [] :: splitColonRaw cs
+    else
+      match splitColonRaw cs with
+      | [] => [[c]]
+      | seg :: rest => (c :: seg) :: rest
+
 private theorem splitColonRaw_ne_nil (cs : List Char) :
-    Internal.splitColonRaw cs ≠ [] := by
+    splitColonRaw cs ≠ [] := by
   induction cs with
-  | nil => simp [Internal.splitColonRaw]
+  | nil => simp [splitColonRaw]
   | cons c rest _ =>
-    simp only [Internal.splitColonRaw]
+    simp only [splitColonRaw]
     split
     · simp
-    · cases Internal.splitColonRaw rest <;> simp
+    · cases splitColonRaw rest <;> simp
 
 private theorem splitColonRaw_no_colon (cs : List Char) :
-    ∀ seg ∈ Internal.splitColonRaw cs, ':' ∉ seg := by
+    ∀ seg ∈ splitColonRaw cs, ':' ∉ seg := by
   induction cs with
-  | nil => simp [Internal.splitColonRaw]
+  | nil => simp [splitColonRaw]
   | cons c rest ih =>
-    simp only [Internal.splitColonRaw]
+    simp only [splitColonRaw]
     split
     · intro seg hmem
       simp only [List.mem_cons] at hmem
@@ -111,7 +122,7 @@ private theorem splitColonRaw_no_colon (cs : List Char) :
       · exact ih seg hmem
     · next hne =>
       have hcne : c ≠ ':' := fun h => hne (by subst h; exact beq_self_eq_true _)
-      cases hsp : Internal.splitColonRaw rest with
+      cases hsp : splitColonRaw rest with
       | nil => exact absurd hsp (splitColonRaw_ne_nil rest)
       | cons hd tl =>
         intro seg hmem
@@ -125,22 +136,22 @@ private theorem splitColonRaw_no_colon (cs : List Char) :
         · exact ih seg (by rw [hsp]; simp [hmem])
 
 private theorem splitColonRaw_of_no_colon (a : List Char) (hno : ':' ∉ a) :
-    Internal.splitColonRaw a = [a] := by
+    splitColonRaw a = [a] := by
   induction a with
-  | nil => simp [Internal.splitColonRaw]
+  | nil => simp [splitColonRaw]
   | cons c rest ih =>
     have hcne : c ≠ ':' := fun h => hno (by subst h; simp)
     have ih' := ih (fun h => hno (by simp [h]))
-    simp [Internal.splitColonRaw, hcne, ih']
+    simp [splitColonRaw, hcne, ih']
 
 private theorem splitColonRaw_append_colon (a b : List Char) (hno : ':' ∉ a) :
-    Internal.splitColonRaw (a ++ ':' :: b) = a :: Internal.splitColonRaw b := by
+    splitColonRaw (a ++ ':' :: b) = a :: splitColonRaw b := by
   induction a with
-  | nil => simp [Internal.splitColonRaw]
+  | nil => simp [splitColonRaw]
   | cons c rest ih =>
     have hcne : c ≠ ':' := fun h => hno (by subst h; simp)
     have ih' := ih (fun h => hno (by simp [h]))
-    simp [Internal.splitColonRaw, hcne, ih']
+    simp [splitColonRaw, hcne, ih']
 
 private theorem intercalate_prepend (a b sep : String) (xs : List String) :
     String.intercalate sep ((a ++ b) :: xs) = a ++ String.intercalate sep (b :: xs) := by
@@ -158,10 +169,10 @@ private theorem intercalate_cons_cons (s r sep : String) (rs : List String) :
 
 private theorem splitColonRaw_intercalate (segs : List String)
     (hall : segs.all (fun s => !s.isEmpty && !(':' ∈ s.toList)) = true) :
-    (Internal.splitColonRaw (String.intercalate ":" segs).toList).filter (fun s => !s.isEmpty) =
+    (splitColonRaw (String.intercalate ":" segs).toList).filter (fun s => !s.isEmpty) =
       segs.map String.toList := by
   induction segs with
-  | nil => simp [String.intercalate, Internal.splitColonRaw]
+  | nil => simp [String.intercalate, splitColonRaw]
   | cons s rest ih =>
     simp only [List.all_cons, Bool.and_eq_true, Bool.not_eq_true'] at hall
     rcases hall with ⟨⟨hs_ne, hs_no⟩, hrest⟩
@@ -179,7 +190,7 @@ private theorem splitColonRaw_intercalate (segs : List String)
       | cons _ _ => rfl
     cases rest with
     | nil =>
-      change (Internal.splitColonRaw s.toList).filter (fun s => !s.isEmpty) = [s.toList]
+      change (splitColonRaw s.toList).filter (fun s => !s.isEmpty) = [s.toList]
       rw [splitColonRaw_of_no_colon s.toList hs_no']
       simp only [List.filter_cons, List.filter_nil]
       cases hs2 : s.toList with
@@ -387,25 +398,52 @@ theorem reach_envvars_homeDir_propagatesRawError :
   ⟨.userError "boom", Raw.Internal.mapRawError,
     proof_envvars_homeDir_propagatesRawError (.userError "boom") Raw.Internal.mapRawError⟩
 
+private theorem splitColonAcc_spec (curRev : List Char) (accRev : List (List Char)) (cs : List Char) :
+    Internal.splitColonAcc curRev accRev cs =
+      accRev.reverse ++
+        match splitColonRaw cs with
+        | [] => [curRev.reverse]
+        | seg :: rest => (curRev.reverse ++ seg) :: rest := by
+  induction cs generalizing curRev accRev with
+  | nil => simp [Internal.splitColonAcc, splitColonRaw]
+  | cons c rest ih =>
+    simp only [Internal.splitColonAcc, splitColonRaw]
+    split
+    · rw [ih [] (curRev.reverse :: accRev)]
+      cases hsp : splitColonRaw rest with
+      | nil => exact absurd hsp (splitColonRaw_ne_nil rest)
+      | cons seg tl => simp [List.reverse_cons]
+    · rw [ih (c :: curRev) accRev]
+      cases hsp : splitColonRaw rest with
+      | nil => exact absurd hsp (splitColonRaw_ne_nil rest)
+      | cons seg tl => simp [List.reverse_cons, List.append_assoc]
+
+private theorem splitColonAcc_nil (cs : List Char) :
+    Internal.splitColonAcc [] [] cs = splitColonRaw cs := by
+  rw [splitColonAcc_spec]
+  cases hsp : splitColonRaw cs with
+  | nil => exact absurd hsp (splitColonRaw_ne_nil cs)
+  | cons seg tl => simp
+
 /-- Proof of `test_envvars_splitSearchPath_emptyReturnsEmpty` for `defaultApi`. -/
 theorem proof_envvars_splitSearchPath_emptyReturnsEmpty :
     AllPass (test_envvars_splitSearchPath_emptyReturnsEmpty defaultApi) := by
   simp [test_envvars_splitSearchPath_emptyReturnsEmpty, Core.AllPass, defaultApi, Internal.mkApiM,
-    Internal.splitSearchPath, Internal.splitColonRaw, assert]
+    Internal.splitSearchPath, splitColonAcc_nil, splitColonRaw, assert]
 
 /-- Non-vacuity `CanReach` witness for `test_envvars_splitSearchPath_emptyReturnsEmpty`. -/
 theorem reach_envvars_splitSearchPath_emptyReturnsEmpty :
     CanReach (test_envvars_splitSearchPath_emptyReturnsEmpty defaultApi) := by
   simp [test_envvars_splitSearchPath_emptyReturnsEmpty, Core.CanReach, defaultApi, Internal.mkApiM,
-    Internal.splitSearchPath, Internal.splitColonRaw, assert]
+    Internal.splitSearchPath, splitColonAcc_nil, splitColonRaw, assert]
 
 /-- Proof of `test_envvars_splitSearchPath_entriesNonEmptyAndColonFree` for `defaultApi`. -/
 theorem proof_envvars_splitSearchPath_entriesNonEmptyAndColonFree :
     AllPass (test_envvars_splitSearchPath_entriesNonEmptyAndColonFree defaultApi) := by
   intro path
-  simp only [defaultApi, Internal.mkApiM, Internal.splitSearchPath, assert]
+  simp only [defaultApi, Internal.mkApiM, Internal.splitSearchPath, splitColonAcc_nil, assert]
   refine ⟨?_, trivial⟩
-  change (((Internal.splitColonRaw path.toList).filter fun s => !s.isEmpty).map String.ofList).all
+  change (((splitColonRaw path.toList).filter fun s => !s.isEmpty).map String.ofList).all
     (fun p => !p.isEmpty && !(':' ∈ p.toList)) = true
   rw [List.all_eq_true]
   intro p hp
@@ -453,17 +491,17 @@ theorem proof_envvars_splitSearchPath_dropsEmptySegments :
     cases h : b.toList with
     | nil => exact absurd h hb_list
     | cons _ _ => rfl
-  simp only [defaultApi, Internal.mkApiM, Internal.splitSearchPath, assert]
+  simp only [defaultApi, Internal.mkApiM, Internal.splitSearchPath, splitColonAcc_nil, assert]
   refine ⟨⟨?_, ?_⟩, trivial⟩
   · have hcs : (":" ++ a ++ "::" ++ b ++ ":").toList =
         ':' :: (a.toList ++ ':' :: (':' :: (b.toList ++ [':']))) := by
       simp [String.toList_append]
-    rw [hcs, Internal.splitColonRaw]
+    rw [hcs, splitColonRaw]
     simp only [beq_self_eq_true, ↓reduceIte]
     rw [splitColonRaw_append_colon _ _ ha_no]
-    simp only [Internal.splitColonRaw, beq_self_eq_true, ↓reduceIte]
+    simp only [splitColonRaw, beq_self_eq_true, ↓reduceIte]
     rw [splitColonRaw_append_colon _ _ hb_no]
-    simp [Internal.splitColonRaw, ha_empty, hb_empty, String.ofList_toList]
+    simp [splitColonRaw, ha_empty, hb_empty, String.ofList_toList]
   · decide
 
 /-- Non-vacuity `CanReach` witness for `test_envvars_splitSearchPath_dropsEmptySegments`. -/
@@ -477,7 +515,7 @@ theorem reach_envvars_splitSearchPath_dropsEmptySegments :
 theorem proof_envvars_splitSearchPath_roundTripsCleanSegments :
     AllPass (test_envvars_splitSearchPath_roundTripsCleanSegments defaultApi) := by
   intro segs hall
-  simp only [defaultApi, Internal.mkApiM, Internal.splitSearchPath, assert]
+  simp only [defaultApi, Internal.mkApiM, Internal.splitSearchPath, splitColonAcc_nil, assert]
   refine ⟨?_, trivial⟩
   rw [splitColonRaw_intercalate segs hall, List.map_map]
   have hcomp : (String.ofList ∘ String.toList) = id := by
@@ -676,5 +714,69 @@ theorem envvars_homeDir_never_invalidKey (w : Void IO.RealWorld) :
 theorem envvars_homeDir_never_ioError (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO Raw.EnvVarsError.kind .ioError EnvVars.homeDir w :=
   envvars_homeDir_never_of .ioError (by decide) (by decide) w
+
+private theorem splitColonAccModel_eq (curRev : List Char) (accRev : List (List Char)) (cs : List Char) :
+    Model.splitColonAccModel curRev accRev cs = Internal.splitColonAcc curRev accRev cs := by
+  induction cs generalizing curRev accRev with
+  | nil => rfl
+  | cons c cs ih =>
+    simp only [Model.splitColonAccModel, Internal.splitColonAcc]
+    split <;> exact ih _ _
+
+private theorem splitSearchPathModel_eq (path : String) :
+    Model.splitSearchPathModel path = Internal.splitSearchPath path := by
+  simp [Model.splitSearchPathModel, Internal.splitSearchPath, splitColonAccModel_eq]
+
+private theorem hasInvalidKeyCharModel_eq (cs : List Char) :
+    Raw.Model.hasInvalidKeyCharModel cs = Internal.hasInvalidKeyChar cs := by
+  induction cs with
+  | nil => rfl
+  | cons c cs ih =>
+    simp only [Raw.Model.hasInvalidKeyCharModel, Internal.hasInvalidKeyChar, ih]
+    cases (c == '=' || c == Char.ofNat 0) <;> rfl
+
+private theorem isEmpty_iff_toList_isEmpty (s : String) :
+    s.isEmpty = s.toList.isEmpty := by
+  cases h : s.toList with
+  | nil =>
+    have hs : s = "" := by rw [← String.ofList_toList (s := s), h]
+    subst hs
+    rfl
+  | cons c cs =>
+    have hne : s ≠ "" := fun hs => by subst hs; cases h
+    cases he : s.isEmpty with
+    | false => rfl
+    | true => exact absurd (String.isEmpty_iff.mp he) hne
+
+private theorem isValidKey_eq_model (key : String) :
+    Internal.isValidKey key = Raw.Model.isValidPosixKeyModel key := by
+  simp [Internal.isValidKey, Raw.Model.isValidPosixKeyModel, isEmpty_iff_toList_isEmpty,
+    hasInvalidKeyCharModel_eq]
+
+/-- Proof of `test_envvars_mkApi_matchesModel` for `Internal.mkApiM`. -/
+theorem proof_envvars_mkApi_matchesModel :
+    AllPass (test_envvars_mkApi_matchesModel (Internal.mkApiM (m := Id))) := by
+  intro s key path rawErr
+  dsimp [test_envvars_mkApi_matchesModel]
+  simp only [Internal.mkApiM, Model.modelApi,
+    Model.getEnvModel, Model.listEnvModel, Model.homeDirModel,
+    Raw.Model.modelRawOps, splitSearchPathModel_eq, isValidKey_eq_model,
+    Except.mapError, Bind.bind, bind, pure, assert]
+  refine ⟨trivial, ?_, ?_, ?_, trivial, trivial⟩
+  · cases Raw.Model.isValidPosixKeyModel key with
+    | false => rfl
+    | true =>
+      simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+      cases Raw.Model.rawGetEnvModel s key <;> rfl
+  · cases Raw.Model.rawListEnvModel s <;> rfl
+  · cases Raw.Model.rawGetEnvModel s "HOME" with
+    | error e => rfl
+    | ok v? =>
+      cases v? with
+      | none => rfl
+      | some v =>
+        by_cases hv : v = ""
+        · subst hv; simp
+        · simp
 
 end LeanSwe.EnvVars.Proofs

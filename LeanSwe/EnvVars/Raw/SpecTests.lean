@@ -1,6 +1,7 @@
 import Core.NondetTest
 import Core.Assumptions
 import LeanSwe.EnvVars.Raw.Types
+import LeanSwe.EnvVars.Raw.Model
 
 namespace LeanSwe.EnvVars.Raw
 
@@ -252,5 +253,28 @@ def errorCoverage : List (ErrorObligation EnvVarsRawErrorKind) :=
   , { request := "LeanSwe.EnvVars.Raw.listEnv"
       errorKind := .userError
       justification := .provedImpossible "LeanSwe.EnvVars.Raw.Proofs.raw_listEnv_never_userError" } ]
+
+/-- `(mkRaw (Model.modelPosixRawOps s))` agrees identically with `Model.modelRawOps s` across `getEnv`, `listEnv`, and `mapRawError`. -/
+def test_envvarsraw_mkRaw_matchesModel
+    {runner} [NondetTest runner] (mkRaw : PosixRawOpsM Id → RawEnvVarsOpsM Id) : runner Unit := do
+  let s ← nondet Model.EnvironState
+  let key ← nondet String
+  let rawErr ← nondet EnvVarsRawError
+  NondetTest.assert ((mkRaw (Model.modelPosixRawOps s)).getEnv key = Model.rawGetEnvModel s key)
+  NondetTest.assert ((mkRaw (Model.modelPosixRawOps s)).listEnv = Model.rawListEnvModel s)
+  NondetTest.assert ((mkRaw (Model.modelPosixRawOps s)).mapRawError rawErr = Model.mapRawErrorModel rawErr)
+
+/-- Whenever `s.isWellFormed = true`, `mkOps s` (instantiated with `Model.modelRawOps`) satisfies `assume_envvarsraw_listEnv_consistentWithGetEnv`. -/
+def test_envvarsraw_modelSatisfiesConsistentWithGetEnv
+    {runner} [NondetTest runner] (mkOps : Model.EnvironState → RawEnvVarsOpsM Id) : runner Unit := do
+  let s ← nondet Model.EnvironState
+  let pairs ← nondet (Array (String × String))
+  let k ← nondet String
+  assume (s.isWellFormed = true)
+  assume ((mkOps s).listEnv = .ok pairs)
+  assume (k ≠ "" ∧ '=' ∉ k.toList ∧ Char.ofNat 0 ∉ k.toList)
+  NondetTest.assert
+    (pairs.toList.all (fun p => !p.1.isEmpty && !('=' ∈ p.1.toList) && !(Char.ofNat 0 ∈ p.1.toList)) = true ∧
+     (mkOps s).getEnv k = .ok ((pairs.toList.find? (fun p => p.1 == k)).map Prod.snd))
 
 end LeanSwe.EnvVars.Raw

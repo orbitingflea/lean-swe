@@ -299,4 +299,21 @@ example : ¬ Core.AllPass (assume_envvarsraw_listEnv_consistentWithGetEnv
   injection h0 with h1
   exact absurd h1 (by decide)
 
+example : ¬ Core.AllPass (test_envvarsraw_mkRaw_matchesModel fun posix =>
+    { stubMkRaw posix with getEnv := fun _ => .ok (some "bug") }) := by
+  intro h
+  have h0 := h {} "K" (.userError "x")
+  simp [Bind.bind, assert, Model.rawGetEnvModel, Model.posixGetEnvBytesModel, Model.isValidPosixKeyModel,
+    Model.hasInvalidKeyCharModel, Model.findFirstKeyValue] at h0
+  cases h0.1
+
+example : ¬ Core.AllPass (test_envvarsraw_modelSatisfiesConsistentWithGetEnv fun _ =>
+    { mapRawError := stubMapRawError
+      getEnv := fun _ => .ok none
+      listEnv := .ok #[("DUP", "1")] }) := by
+  intro h
+  have h0 := h {} #[("DUP", "1")] "DUP" rfl rfl (by decide)
+  dsimp [test_envvarsraw_modelSatisfiesConsistentWithGetEnv, assert] at h0
+  cases h0.1.2
+
 end LeanSwe.EnvVars.Raw

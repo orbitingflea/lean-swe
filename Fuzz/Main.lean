@@ -2,6 +2,8 @@ import Fuzz.Common.Suite
 import Fuzz.Float.Suite
 import Fuzz.CmdLine.Suite
 import Fuzz.SelfTest
+import Fuzz.EnvVars.Suite
+import Fuzz.CryptoHash.Suite
 
 namespace Fuzz.Main
 
@@ -28,7 +30,9 @@ structure CliOptions where
 private def registeredSuites : List FuzzSuite := [
   Fuzz.SelfTest.suite,
   Fuzz.Float.suite,
-  Fuzz.CmdLine.suite
+  Fuzz.CmdLine.suite,
+  Fuzz.EnvVars.suite,
+  Fuzz.CryptoHash.suite
 ]
 
 private def truncArg (s : String) (maxLen : Nat := 64) : String :=

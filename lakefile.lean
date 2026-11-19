@@ -6,7 +6,7 @@ open Lake DSL
   else pure () : Lean.Elab.Command.CommandElabM Unit)
 
 package «lean-swe» where
-  moreLinkArgs := #["-lcrypto", "-lpthread"]
+  moreLinkArgs := #["-lcrypto", "-Wl,--exclude-libs,libcrypto.a", "-lpthread"]
   leanOptions := #[
     ⟨`autoImplicit, false⟩,
     ⟨`relaxedAutoImplicit, false⟩,
@@ -53,8 +53,18 @@ extern_lib «leanswe_envvars» pkg := do
   let lean ← getLeanInstall
   let oJob ← buildO oFile srcJob
     #["-I", lean.includeDir.toString]
-    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror"]
   let name := nameToStaticLib "leanswe_envvars"
+  buildStaticLib (pkg.staticLibDir / name) #[oJob]
+
+extern_lib «leanswe_envvars_fuzz» pkg := do
+  let oFile := pkg.buildDir / "c" / "envvars_fuzz_env.o"
+  let srcJob ← inputTextFile (pkg.dir / "Fuzz" / "EnvVars" / "c" / "envvars_fuzz_env.c")
+  let lean ← getLeanInstall
+  let oJob ← buildO oFile srcJob
+    #["-I", lean.includeDir.toString]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror"]
+  let name := nameToStaticLib "leanswe_envvars_fuzz"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
 extern_lib «leanswe_sqlite» pkg := do
@@ -79,7 +89,7 @@ extern_lib «leanswe_cryptohash» pkg := do
   let lean ← getLeanInstall
   let oJob ← buildO oFile srcJob
     #["-I", lean.includeDir.toString]
-    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-pthread", "-Wall", "-Wextra", "-Werror"]
   let name := nameToStaticLib "leanswe_cryptohash"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
