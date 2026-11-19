@@ -26,7 +26,7 @@ private partial def nextBigNatLoop (r : Rng) (words : Nat) (space : Nat) (bound 
   Id.run do
     let mut cur := r
     let mut acc : Nat := 0
-    for _ in List.range words do
+    for _ in [:words] do
       let (v, nxt) := cur.nextU64
       cur := nxt
       acc := acc * UInt64.size + v.toNat
@@ -47,13 +47,16 @@ private partial def nextSmallNatLoop (r : Rng) (bound threshold : Nat) : Nat × 
 def Rng.nextNat (r : Rng) (bound : Nat) : Nat × Rng :=
   if bound <= 1 then
     (0, r)
+  else if bound == UInt64.size then
+    let (v, r') := r.nextU64
+    (v.toNat, r')
   else if bound < UInt64.size then
     nextSmallNatLoop r bound (UInt64.size % bound)
   else
     let (words, space) := Id.run do
       let mut w : Nat := 2
       let mut sp : Nat := UInt64.size * UInt64.size
-      while sp <= bound do
+      while sp < bound do
         w := w + 1
         sp := sp * UInt64.size
       return (w, sp)
@@ -107,16 +110,22 @@ def Rng.nextBytes (r : Rng) (len : Nat) : ByteArray × Rng := Id.run do
   let mut out := ByteArray.emptyWithCapacity len
   let fullWords := len / 8
   let remBytes := len % 8
-  for _ in List.range fullWords do
+  for _ in [:fullWords] do
     let (w, nxt) := cur.nextU64
     cur := nxt
-    for shift in List.range 8 do
-      out := out.push (UInt8.ofNat ((w >>> UInt64.ofNat (shift * 8)).toNat % 256))
+    out := out.push w.toUInt8
+    out := out.push (w >>> 8).toUInt8
+    out := out.push (w >>> 16).toUInt8
+    out := out.push (w >>> 24).toUInt8
+    out := out.push (w >>> 32).toUInt8
+    out := out.push (w >>> 40).toUInt8
+    out := out.push (w >>> 48).toUInt8
+    out := out.push (w >>> 56).toUInt8
   if remBytes > 0 then
     let (w, nxt) := cur.nextU64
     cur := nxt
-    for shift in List.range remBytes do
-      out := out.push (UInt8.ofNat ((w >>> UInt64.ofNat (shift * 8)).toNat % 256))
+    for shift in [:remBytes] do
+      out := out.push (w >>> UInt64.ofNat (shift * 8)).toUInt8
   return (out, cur)
 
 /-- Return a `ByteArray` of unbiased random length in `[minLen, maxLen]` filled with random bytes. -/

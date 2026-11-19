@@ -1,4 +1,5 @@
 import Std.Data.HashMap
+import Std.Data.HashSet
 
 namespace Fuzz.Common
 
@@ -39,12 +40,15 @@ def CoverageTracker.record (t : CoverageTracker) (op outcomeBucket : String) (co
     { hits := t.hits.insert key (prev + count)
       total := t.total + count }
 
-/-- Merge two `CoverageTracker` maps by summing counts per bucket. -/
+/-- Merge two `CoverageTracker` maps symmetrically, dropping zero-count buckets and recomputing `total`. -/
 def CoverageTracker.merge (a b : CoverageTracker) : CoverageTracker :=
-  let mergedHits := b.hits.fold (init := a.hits) fun acc k n =>
-    if n == 0 then acc else acc.insert k (acc.getD k 0 + n)
+  let addNonZero (init : Std.HashMap CoverageBucket Nat) (m : Std.HashMap CoverageBucket Nat) :=
+    m.fold (init := init) fun acc k n =>
+      if n == 0 then acc else acc.insert k (acc.getD k 0 + n)
+  let mergedHits := addNonZero (addNonZero {} a.hits) b.hits
+  let totalHits := mergedHits.fold (init := 0) fun acc _ n => acc + n
   { hits := mergedHits
-    total := a.total + b.total }
+    total := totalHits }
 
 /-- Return the hit count for `(op, outcomeBucket)`, or `0` if unseen. -/
 def CoverageTracker.get (t : CoverageTracker) (op outcomeBucket : String) : Nat :=
@@ -52,23 +56,30 @@ def CoverageTracker.get (t : CoverageTracker) (op outcomeBucket : String) : Nat 
 
 /-- Return all non-zero buckets sorted deterministically by `(op, bucket)`. -/
 def CoverageTracker.sortedEntries (t : CoverageTracker) : Array (CoverageBucket × Nat) :=
-  let arr := t.hits.fold (init := #[]) fun acc k v => acc.push (k, v)
+  let arr := t.hits.fold (init := #[]) fun acc k v =>
+    if v > 0 then acc.push (k, v) else acc
   arr.qsort fun a b =>
     if a.1.op != b.1.op then a.1.op < b.1.op
     else a.1.bucket < b.1.bucket
 
 /-- Format a deterministic multi-line summary of observed `(op -> bucket): count` entries. -/
 def CoverageTracker.formatReport (t : CoverageTracker) (suiteName : String) : String := Id.run do
-  let mut lines : Array String := #[s!"COVERAGE_MATRIX_BEGIN suite={suiteName} total={t.total}"]
-  for (k, n) in t.sortedEntries do
+  let entries := t.sortedEntries
+  let sumTotal := entries.foldl (fun acc (_, n) => acc + n) 0
+  let mut lines : Array String := #[s!"COVERAGE_MATRIX_BEGIN suite={suiteName} total={sumTotal}"]
+  for (k, n) in entries do
     lines := lines.push s!"  {k.label}: {n}"
   lines := lines.push s!"COVERAGE_MATRIX_END suite={suiteName}"
   return "\n".intercalate lines.toList
 
-/-- Return every `CoverageBucket` in `required` with `0` hits in `tracker`. -/
+/-- Return every unique `CoverageBucket` in `required` with `0` hits in `tracker` (preserving first-seen order). -/
 def checkCoverage (tracker : CoverageTracker) (required : Array CoverageBucket) : Array CoverageBucket := Id.run do
   let mut missing : Array CoverageBucket := #[]
+  let mut seen : Std.HashSet CoverageBucket := {}
   for req in required do
+    if seen.contains req then
+      continue
+    seen := seen.insert req
     if tracker.get req.op req.bucket == 0 then
       missing := missing.push req
   return missing

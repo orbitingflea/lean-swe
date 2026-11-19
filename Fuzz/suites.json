@@ -1,9 +1,10 @@
 {
   "version": 1,
   "common_paths": [
+    ".github/actions/install-lean/action.yml",
+    ".github/workflows/audit.yml",
     "Fuzz/Common/",
     "Fuzz/Main.lean",
-    "Fuzz/SelfTest.lean",
     "lake-manifest.json",
     "lakefile.lean",
     "lean-toolchain",
@@ -11,9 +12,7 @@
   ],
   "suites": {
     "selftest": {
-      "paths": [
-        "Fuzz/SelfTest.lean"
-      ]
+      "paths": ["Fuzz/SelfTest.lean"]
     },
     "float": {
       "paths": [

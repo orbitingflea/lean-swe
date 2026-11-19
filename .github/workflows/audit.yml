@@ -34,9 +34,13 @@ jobs:
           RECORDED_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          BASE=$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -n 1)
-          BASE="${BASE:-$RECORDED_BASE}"
-          git fetch --no-tags --depth=1 origin "$BASE"
+          if P1=$(git rev-parse --verify --quiet HEAD^1 2>/dev/null) && git rev-parse --verify --quiet HEAD^2 >/dev/null 2>&1 && ! git rev-parse --verify --quiet HEAD^3 >/dev/null 2>&1; then
+            BASE="$P1"
+          else
+            BASE=$(python3 -c 'import os,re,subprocess; h=subprocess.check_output(["git","cat-file","commit","HEAD"]).split(b"\n\n",1)[0]; ps=[m.group(1).decode() for l in h.splitlines() if (m:=re.fullmatch(rb"parent ([0-9a-f]{40})",l))]; print(ps[0] if len(ps)==2 else os.environ.get("RECORDED_BASE",""))')
+          fi
+          [[ "$BASE" =~ ^[0-9a-f]{40}$ ]] || { echo "INVALID_BASE_SHA: $BASE" >&2; exit 2; }
+          git fetch --no-tags --depth=1 origin -- "$BASE"
           echo "BASE_SHA=$BASE" >> "$GITHUB_ENV"
 
       - name: Check spec-change mark
@@ -145,8 +149,9 @@ jobs:
           .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --self-test-shrink && .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 50000 --random-seed --self-test-shrink
           python3 -B -m unittest scripts/test_fuzz_changed.py
           if [[ "${GITHUB_EVENT_NAME}" == "pull_request" && -n "${BASE_SHA:-}" ]]; then
-            python3 -B scripts/fuzz_changed.py --base "$BASE_SHA" --head HEAD --run --extra-arg=--self-test-shrink
+            python3 -B scripts/fuzz_changed.py --base "$BASE_SHA" --head HEAD --check-manifest --run --extra-arg=--self-test-shrink
           else
+            python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest
             .lake/build/bin/leanswe-fuzz --smoke --all --self-test-shrink
           fi
 
@@ -157,8 +162,8 @@ jobs:
         run: |
           set -euo pipefail
           DIFF_BASE="${BASE_SHA:-}"
-          if [[ -z "$DIFF_BASE" && -n "$PUSH_BEFORE" && "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]]; then
-            if git fetch --no-tags --depth=1 origin "$PUSH_BEFORE" 2>/dev/null; then
+          if [[ -z "$DIFF_BASE" && "$PUSH_BEFORE" =~ ^[0-9a-f]{40}$ && "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]]; then
+            if git fetch --no-tags --depth=1 origin -- "$PUSH_BEFORE" 2>/dev/null; then
               DIFF_BASE="$PUSH_BEFORE"
             fi
           fi
