@@ -2429,11 +2429,18 @@ unsafe def main (args : List String) : IO UInt32 := do
     IO.eprintln s!"MISSING_SOURCE_DIR: {leanSweDir}"
     return 1
   let hasTestsMainOlean ← (libDir / "Tests" / "Main.olean").pathExists
+  let hasPostForkVerifiedSrc ← (leanSweDir / "PostFork" / "Verified.lean").pathExists
+  if hasPostForkVerifiedSrc then
+    unless ← (libDir / "LeanSwe" / "PostFork" / "Verified.olean").pathExists do
+      IO.eprintln s!"MISSING_OLEAN: LeanSwe.PostFork.Verified ({libDir / "LeanSwe" / "PostFork" / "Verified.olean"})"
+      return 1
   Lean.enableInitializersExecution
   initSearchPath (← findSysroot) [libDir]
-  let rootImports :=
-    if hasTestsMainOlean then #[{ module := `LeanSwe }, { module := `Tests.Main }]
-    else #[{ module := `LeanSwe }]
+  let mut rootImports : Array Import := #[{ module := `LeanSwe }]
+  if hasTestsMainOlean then
+    rootImports := rootImports.push { module := `Tests.Main }
+  if hasPostForkVerifiedSrc then
+    rootImports := rootImports.push { module := `LeanSwe.PostFork.Verified }
   let env ← importModules rootImports {} (loadExts := true)
   let transImpsOf := buildTransitiveImportFn env
 

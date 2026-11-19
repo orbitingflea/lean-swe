@@ -722,10 +722,9 @@ private def parseBudget (raw : String) : Except String ForeignBudget := do
   let json ← Json.parse raw |>.mapError (fun e => s!"BUDGET_SCHEMA_ERROR: invalid JSON ({e})")
   let .obj _ := json | .error "BUDGET_SCHEMA_ERROR: root must be a JSON object"
   ensureAllowedKeys "root" json #["version", "files", "vendored_files", "function_overrides", "named_thread_helpers"]
-  if let .ok _ := json.getObjVal? "version" then
-    let v ← parseJsonNatField json "version" |>.mapError (fun e => s!"BUDGET_SCHEMA_ERROR: {e}")
-    if v != 1 then
-      .error s!"BUDGET_SCHEMA_ERROR: unsupported version {v}"
+  let v ← parseJsonNatField json "version" |>.mapError (fun e => s!"BUDGET_SCHEMA_ERROR: {e}")
+  if v != 1 then
+    .error s!"BUDGET_SCHEMA_ERROR: unsupported version {v}"
 
   let filesJson ← json.getObjVal? "files" |>.mapError (fun _ => "BUDGET_SCHEMA_ERROR: missing 'files' object")
   let .obj filesObj := filesJson | .error "BUDGET_SCHEMA_ERROR: 'files' must be an object"
@@ -814,6 +813,529 @@ private def isCOrHeader (relPath : String) : Bool :=
   relPath.endsWith ".cc" || relPath.endsWith ".cpp" ||
   relPath.endsWith ".cxx" || relPath.endsWith ".hpp"
 
+private def isAeneasExtractedRustPath (relPath : String) : Bool :=
+  relPath == "LeanSwe/PostFork/rust/src/child.rs" ||
+  relPath == "LeanSwe/PostFork/rust/src/fd_ops.rs"
+
+private inductive RTokKind where
+  | ident (name : String)
+  | lbrace
+  | rbrace
+  | lparen
+  | rparen
+  | lbrack
+  | rbrack
+  | lt
+  | gt
+  | arrow
+  | fatArrow
+  | comma
+  | hash
+  | bang
+  | colon2
+  | semi
+  | qmark
+  | amp2
+  | pipe2
+  | lit
+  | other
+  deriving BEq, Inhabited
+
+private structure RTok where
+  kind : RTokKind
+  line : Nat
+  deriving Inhabited
+
+private structure RFunc where
+  name : String
+  body : Array RTok
+  deriving Inhabited
+
+private def countRawHashes (bytes : ByteArray) (start : Nat) : Option Nat := Id.run do
+  let n := bytes.size
+  let mut k := 0
+  let mut j := start
+  while j < n && bytes[j]! == 35 do
+    k := k + 1
+    j := j + 1
+  if j < n && bytes[j]! == 34 then
+    return some k
+  return none
+
+private def hasClosingRawHashes (bytes : ByteArray) (pos k : Nat) : Bool := Id.run do
+  if pos + k > bytes.size then
+    return false
+  for off in [0 : k] do
+    if bytes[pos + off]! != 35 then
+      return false
+  return true
+
+private def lexRustBytes (bytes : ByteArray) : Array RTok := Id.run do
+  let n := bytes.size
+  let mut i := 0
+  let mut line := 1
+  let mut out : Array RTok := #[]
+  while i < n do
+    let b := bytes[i]!
+    if b == 10 then
+      line := line + 1
+      i := i + 1
+    else if isSpaceByte b then
+      i := i + 1
+    else if b == 47 && i + 1 < n && bytes[i + 1]! == 47 then
+      i := i + 2
+      while i < n && bytes[i]! != 10 do
+        i := i + 1
+    else if b == 47 && i + 1 < n && bytes[i + 1]! == 42 then
+      i := i + 2
+      let mut depth := 1
+      while i < n && depth > 0 do
+        if bytes[i]! == 47 && i + 1 < n && bytes[i + 1]! == 42 then
+          depth := depth + 1
+          i := i + 2
+        else if bytes[i]! == 42 && i + 1 < n && bytes[i + 1]! == 47 then
+          depth := depth - 1
+          i := i + 2
+        else
+          if bytes[i]! == 10 then line := line + 1
+          i := i + 1
+    else if (b == 114 || ((b == 98 || b == 99) && i + 1 < n && bytes[i + 1]! == 114)) &&
+        (countRawHashes bytes (if b == 114 then i + 1 else i + 2)).isSome then
+      let startLine := line
+      let hStart := if b == 114 then i + 1 else i + 2
+      let k := (countRawHashes bytes hStart).getD 0
+      i := hStart + k + 1
+      while i < n do
+        if bytes[i]! == 10 then
+          line := line + 1
+          i := i + 1
+        else if bytes[i]! == 34 && hasClosingRawHashes bytes (i + 1) k then
+          i := i + 1 + k
+          break
+        else
+          i := i + 1
+      out := out.push { kind := .lit, line := startLine }
+    else if b == 34 || ((b == 98 || b == 99) && i + 1 < n && bytes[i + 1]! == 34) then
+      let startLine := line
+      i := if b == 34 then i + 1 else i + 2
+      while i < n do
+        let c := bytes[i]!
+        if c == 92 then
+          if i + 1 < n && bytes[i + 1]! == 10 then line := line + 1
+          i := min n (i + 2)
+        else if c == 34 then
+          i := i + 1
+          break
+        else
+          if c == 10 then line := line + 1
+          i := i + 1
+      out := out.push { kind := .lit, line := startLine }
+    else if b == 39 || (b == 98 && i + 1 < n && bytes[i + 1]! == 39) then
+      let qIdx := if b == 39 then i else i + 1
+      if qIdx + 2 < n && bytes[qIdx + 1]! != 92 && bytes[qIdx + 1]! != 39 && bytes[qIdx + 1]! != 10 &&
+          bytes[qIdx + 2]! == 39 then
+        out := out.push { kind := .lit, line }
+        i := qIdx + 3
+      else if qIdx + 1 < n && bytes[qIdx + 1]! == 92 then
+        let startLine := line
+        i := qIdx + 1
+        while i < n && bytes[i]! != 10 do
+          if bytes[i]! == 92 then
+            i := min n (i + 2)
+          else if bytes[i]! == 39 then
+            i := i + 1
+            break
+          else
+            i := i + 1
+        out := out.push { kind := .lit, line := startLine }
+      else if b == 39 && qIdx + 1 < n && bytes[qIdx + 1]! >= 128 then
+        let mut u := qIdx + 2
+        while u < n && bytes[u]! >= 128 && bytes[u]! < 192 do
+          u := u + 1
+        if u < n && bytes[u]! == 39 then
+          out := out.push { kind := .lit, line }
+          i := u + 1
+        else
+          i := i + 1
+      else
+        i := i + 1
+    else if b == 114 && i + 1 < n && bytes[i + 1]! == 35 && i + 2 < n && isIdentStartByte bytes[i + 2]! then
+      let start := i + 2
+      i := i + 3
+      while i < n && isIdentContByte bytes[i]! do
+        i := i + 1
+      out := out.push { kind := .ident (bytesSliceToAsciiString bytes start i), line }
+    else if isIdentStartByte b then
+      let start := i
+      i := i + 1
+      while i < n && isIdentContByte bytes[i]! do
+        i := i + 1
+      out := out.push { kind := .ident (bytesSliceToAsciiString bytes start i), line }
+    else if isDigitByte b then
+      i := i + 1
+      while i < n && (isIdentContByte bytes[i]! || bytes[i]! == 46) do
+        i := i + 1
+      out := out.push { kind := .lit, line }
+    else if b == 58 && i + 1 < n && bytes[i + 1]! == 58 then
+      out := out.push { kind := .colon2, line }
+      i := i + 2
+    else if b == 38 && i + 1 < n && bytes[i + 1]! == 38 then
+      out := out.push { kind := .amp2, line }
+      i := i + 2
+    else if b == 124 && i + 1 < n && bytes[i + 1]! == 124 then
+      out := out.push { kind := .pipe2, line }
+      i := i + 2
+    else if b == 45 && i + 1 < n && bytes[i + 1]! == 62 then
+      out := out.push { kind := .arrow, line }
+      i := i + 2
+    else if b == 61 && i + 1 < n && bytes[i + 1]! == 62 then
+      out := out.push { kind := .fatArrow, line }
+      i := i + 2
+    else
+      let kind : RTokKind := match b with
+        | 123 => .lbrace
+        | 125 => .rbrace
+        | 40 => .lparen
+        | 41 => .rparen
+        | 91 => .lbrack
+        | 93 => .rbrack
+        | 60 => .lt
+        | 62 => .gt
+        | 44 => .comma
+        | 35 => .hash
+        | 33 => .bang
+        | 59 => .semi
+        | 63 => .qmark
+        | _ => .other
+      out := out.push { kind, line }
+      i := i + 1
+  return out
+
+private def isAllowedSysSyscallNr (s : String) : Bool :=
+  s == "SYS_rt_sigaction" || s == "SYS_rt_sigprocmask" ||
+  s == "SYS_close_range" || s == "SYS_getdents64"
+
+private def isAllowedSysLibcItem (s : String) : Bool :=
+  isAllowedSysSyscallNr s ||
+  s == "__errno_location" || s == "_exit" || s == "chdir" || s == "close" ||
+  s == "dup2" || s == "execve" || s == "fcntl" || s == "open" ||
+  s == "read" || s == "setpgid" || s == "syscall" || s == "write" ||
+  s == "EINVAL" || s == "SIG_DFL" || s == "SIG_IGN" || s == "SIG_UNBLOCK" ||
+  s == "F_GETFD" || s == "F_SETFD" || s == "F_DUPFD_CLOEXEC" ||
+  s == "O_RDONLY" || s == "O_DIRECTORY" || s == "O_CLOEXEC" ||
+  s == "c_int" || s == "c_long" || s == "c_ulong" || s == "c_void"
+
+private def isAllowedPostForkNoMangleFn (s : String) : Bool :=
+  s == "leanswe_postfork_run_child" || s == "leanswe_postfork_close_fds_above2_except"
+
+private def isExternalRustQual (relPath : String) (s : String) : Bool :=
+  s == "libc" || s == "core" || s == "child" || s == "fd_ops" ||
+  (s == "sys" && relPath != "LeanSwe/PostFork/rust/src/sys.rs")
+
+private def collectRustIntraFileCallees
+    (relPath : String)
+    (defined : Std.HashSet String)
+    (body : Array RTok) : Array String := Id.run do
+  let mut callees : Array String := #[]
+  let mut seen : Std.HashSet String := {}
+  for i in [0 : body.size] do
+    if let .ident callee := body[i]!.kind then
+      if defined.contains callee && !seen.contains callee then
+        let extQual :=
+          i >= 2 && body[i - 1]!.kind == .colon2 &&
+          match body[i - 2]!.kind with
+          | .ident q => isExternalRustQual relPath q
+          | _ => false
+        if !extQual then
+          seen := seen.insert callee
+          callees := callees.push callee
+  return callees
+
+private def findRustCallCycleErrors (relPath : String) (funcs : Array RFunc) : Array String := Id.run do
+  let mut defined : Std.HashSet String := {}
+  for fn in funcs do
+    defined := defined.insert fn.name
+  let mut adj : Std.HashMap String (Array String) := {}
+  for fn in funcs do
+    let existing := adj.getD fn.name #[]
+    adj := adj.insert fn.name (existing ++ collectRustIntraFileCallees relPath defined fn.body)
+  let mut errs : Array String := #[]
+  let mut reported : Std.HashSet String := {}
+  for fn in funcs do
+    if reported.contains fn.name then
+      continue
+    let mut visited : Std.HashSet String := {}
+    let mut stack := adj.getD fn.name #[]
+    let mut hasCycle := false
+    while !stack.isEmpty do
+      let cur := stack.back!
+      stack := stack.pop
+      if cur == fn.name then
+        hasCycle := true
+        break
+      if !visited.contains cur then
+        visited := visited.insert cur
+        for nxt in adj.getD cur #[] do
+          stack := stack.push nxt
+    if hasCycle then
+      reported := reported.insert fn.name
+      errs := errs.push s!"RUST_LOOP_FORBIDDEN: {relPath}::{fn.name} participates in recursive call cycle"
+  return errs
+
+private def checkAeneasRustFile (relPath : String) (bytes : ByteArray) : Array String := Id.run do
+  let toks := lexRustBytes bytes
+  let mut errs : Array String := #[]
+  let hasForbidUnsafe :=
+    toks.size >= 8 &&
+    toks[0]!.kind == .hash &&
+    toks[1]!.kind == .bang &&
+    toks[2]!.kind == .lbrack &&
+    toks[3]!.kind == .ident "forbid" &&
+    toks[4]!.kind == .lparen &&
+    toks[5]!.kind == .ident "unsafe_code" &&
+    toks[6]!.kind == .rparen &&
+    toks[7]!.kind == .rbrack
+  if !hasForbidUnsafe then
+    errs := errs.push s!"RUST_AENEAS_UNSAFE_FORBIDDEN: {relPath} must start with #![forbid(unsafe_code)]"
+  for tok in toks do
+    if let .ident name := tok.kind then
+      if name == "cfg" || name == "cfg_attr" || name == "charon" then
+        errs := errs.push s!"RUST_AENEAS_CFG_FORBIDDEN: {relPath}:{tok.line} uses '{name}' (split-brain hazard)"
+      else if name == "unsafe" || name == "extern" || name == "libc" || name == "std" ||
+          name == "syscall" || name == "asm" || name == "global_asm" || name == "naked_asm" ||
+          name == "no_mangle" || name == "export_name" || name == "link_section" ||
+          name == "link_name" || name == "linkage" || name == "no_link" || name == "extern_weak" ||
+          name == "macro_rules" || name == "include" || name == "include_bytes" || name == "include_str" then
+        errs := errs.push s!"RUST_AENEAS_THICK_FORBIDDEN: {relPath}:{tok.line} uses forbidden '{name}'"
+  return errs
+
+private partial def scanRustScope
+    (relPath : String)
+    (toks : Array RTok)
+    (inFnBody : Bool) : Array RFunc × Array String := Id.run do
+  let n := toks.size
+  let mut funcs : Array RFunc := #[]
+  let mut errs : Array String := #[]
+  let mut i := 0
+  while i < n do
+    if toks[i]!.kind == .ident "fn" then
+      if i + 1 < n && toks[i + 1]!.kind == .lparen then
+        i := i + 1
+        continue
+      else if i + 1 < n then
+        if let .ident fnName := toks[i + 1]!.kind then
+          let mut j := i + 2
+          let mut pdepth := 0
+          let mut bdepth := 0
+          let mut adepth := 0
+          let mut cdepth := 0
+          let mut hdrMalformed := false
+          while j < n do
+            match toks[j]!.kind with
+            | .lparen => pdepth := pdepth + 1
+            | .rparen =>
+              if pdepth > 0 then
+                pdepth := pdepth - 1
+              else
+                hdrMalformed := true
+                break
+            | .lbrack => bdepth := bdepth + 1
+            | .rbrack =>
+              if bdepth > 0 then
+                bdepth := bdepth - 1
+              else
+                hdrMalformed := true
+                break
+            | .lt =>
+              if pdepth == 0 && bdepth == 0 && cdepth == 0 then
+                adepth := adepth + 1
+            | .gt =>
+              if pdepth == 0 && bdepth == 0 && cdepth == 0 then
+                if adepth > 0 then
+                  adepth := adepth - 1
+                else
+                  hdrMalformed := true
+                  break
+            | .semi =>
+              if pdepth == 0 && bdepth == 0 && adepth == 0 && cdepth == 0 then
+                break
+            | .lbrace =>
+              if pdepth == 0 && bdepth == 0 && adepth == 0 && cdepth == 0 then
+                break
+              else
+                cdepth := cdepth + 1
+            | .rbrace =>
+              if cdepth > 0 then
+                cdepth := cdepth - 1
+              else
+                hdrMalformed := true
+                break
+            | _ => pure ()
+            j := j + 1
+          if hdrMalformed || j >= n then
+            errs := errs.push s!"RUST_MALFORMED_FN: {relPath}:{toks[i]!.line} malformed header in fn '{fnName}'"
+            i := i + 2
+            continue
+          let (hdrFuncs, hdrErrs) := scanRustScope relPath (toks.extract (i + 2) j) false
+          funcs := funcs ++ hdrFuncs
+          errs := errs ++ hdrErrs
+          if toks[j]!.kind == .semi then
+            i := j + 1
+            continue
+          else if toks[j]!.kind == .lbrace then
+            let bodyStart := j + 1
+            let mut depth := 1
+            j := bodyStart
+            while j < n && depth > 0 do
+              match toks[j]!.kind with
+              | .lbrace => depth := depth + 1
+              | .rbrace => depth := depth - 1
+              | _ => pure ()
+              j := j + 1
+            if depth != 0 then
+              errs := errs.push s!"RUST_MALFORMED_FN: {relPath}:{toks[i]!.line} unclosed body in fn '{fnName}'"
+              i := n
+              continue
+            let bodyEnd := j - 1
+            let bodyToks := toks.extract bodyStart bodyEnd
+            funcs := funcs.push { name := fnName, body := bodyToks }
+            let mut lineSet : Std.HashSet Nat := {}
+            let mut branches := 0
+            for t in bodyToks do
+              lineSet := lineSet.insert t.line
+              match t.kind with
+              | .ident "if" | .ident "match" | .amp2 | .pipe2 | .qmark => branches := branches + 1
+              | _ => pure ()
+            if lineSet.size > 50 then
+              errs := errs.push s!"RUST_FUNC_TOO_LONG: {relPath}::{fnName} has {lineSet.size} code lines (max 50)"
+            if branches > 8 then
+              errs := errs.push s!"RUST_FUNC_TOO_MANY_BRANCHES: {relPath}::{fnName} has {branches} branches (max 8)"
+            let (innerFuncs, innerErrs) := scanRustScope relPath bodyToks true
+            funcs := funcs ++ innerFuncs
+            errs := errs ++ innerErrs
+            i := j
+            continue
+          else
+            errs := errs.push s!"RUST_MALFORMED_FN: {relPath}:{toks[i]!.line} unexpected token in fn '{fnName}'"
+            i := i + 2
+            continue
+        else
+          errs := errs.push s!"RUST_MALFORMED_FN: {relPath}:{toks[i]!.line} unexpected token after 'fn'"
+          i := i + 1
+          continue
+      else
+        errs := errs.push s!"RUST_MALFORMED_FN: {relPath}:{toks[i]!.line} trailing 'fn' at EOF"
+        i := i + 1
+        continue
+    if !inFnBody then
+      match toks[i]!.kind with
+      | .ident "if" | .ident "match" | .amp2 | .pipe2 | .qmark =>
+        errs := errs.push s!"RUST_THICK_CONSTRUCT_FORBIDDEN: {relPath}:{toks[i]!.line} uses branch outside fn body"
+      | _ => pure ()
+    i := i + 1
+  return (funcs, errs)
+
+private def checkNonAeneasRustFile (relPath : String) (bytes : ByteArray) : Array String := Id.run do
+  let toks := lexRustBytes bytes
+  let n := toks.size
+  let mut errs : Array String := #[]
+  let mut inUseStmt := false
+  for idx in [0 : n] do
+    let tok := toks[idx]!
+    if tok.kind == .ident "use" then
+      inUseStmt := true
+    else if tok.kind == .semi then
+      inUseStmt := false
+    if let .ident name := tok.kind then
+      if name == "for" || name == "while" || name == "loop" then
+        errs := errs.push s!"RUST_LOOP_FORBIDDEN: {relPath}:{tok.line} uses '{name}'"
+      else if name == "macro_rules" then
+        errs := errs.push s!"RUST_MACRO_FORBIDDEN: {relPath}:{tok.line} uses 'macro_rules'"
+      else if name == "include" || name == "include_bytes" || name == "include_str" ||
+          name == "asm" || name == "global_asm" || name == "naked_asm" ||
+          name == "export_name" || name == "link_section" || name == "link_name" ||
+          name == "linkage" || name == "no_link" || name == "extern_weak" ||
+          name == "std" || name == "cfg_attr" || name == "charon" then
+        errs := errs.push s!"RUST_THICK_CONSTRUCT_FORBIDDEN: {relPath}:{tok.line} uses '{name}'"
+      else if name == "mod" then
+        let okLibMod :=
+          relPath == "LeanSwe/PostFork/rust/src/lib.rs" &&
+          idx + 2 < n &&
+          (match toks[idx + 1]!.kind with | .ident _ => true | _ => false) &&
+          toks[idx + 2]!.kind == .semi
+        if !okLibMod then
+          errs := errs.push s!"RUST_THICK_CONSTRUCT_FORBIDDEN: {relPath}:{tok.line} uses inline or unauthorized 'mod'"
+      else if relPath == "LeanSwe/PostFork/rust/src/sys.rs" &&
+          (name == "child" || name == "fd_ops" ||
+            (name == "ffi" && !(idx >= 2 && toks[idx - 2]!.kind == .ident "core" && toks[idx - 1]!.kind == .colon2))) then
+        errs := errs.push s!"RUST_THICK_CONSTRUCT_FORBIDDEN: {relPath}:{tok.line} references upper module '{name}'"
+      else if name == "cfg" then
+        let allowedCfg :=
+          (relPath == "LeanSwe/PostFork/rust/src/lib.rs" || relPath == "LeanSwe/PostFork/rust/src/sys.rs") &&
+          idx + 5 < n &&
+          toks[idx + 1]!.kind == .lparen &&
+          toks[idx + 2]!.kind == .ident "feature" &&
+          toks[idx + 3]!.kind == .other &&
+          toks[idx + 4]!.kind == .lit &&
+          toks[idx + 5]!.kind == .rparen
+        if !allowedCfg then
+          errs := errs.push s!"RUST_CFG_FORBIDDEN: {relPath}:{tok.line} uses unauthorized cfg predicate"
+      else if name == "extern" then
+        let okExternFn :=
+          (idx + 1 < n && toks[idx + 1]!.kind == .ident "fn") ||
+          (idx + 2 < n && toks[idx + 1]!.kind == .lit && toks[idx + 2]!.kind == .ident "fn")
+        if !okExternFn then
+          errs := errs.push s!"RUST_EXTERN_BLOCK_FORBIDDEN: {relPath}:{tok.line} uses foreign extern block or crate"
+      else if name == "libc" then
+        if relPath != "LeanSwe/PostFork/rust/src/sys.rs" then
+          errs := errs.push s!"RUST_DIRECT_LIBC_FORBIDDEN: {relPath}:{tok.line} references 'libc' outside sys.rs"
+        else if inUseStmt || idx + 2 >= n || toks[idx + 1]!.kind != .colon2 || (idx > 0 && toks[idx - 1]!.kind == .colon2) then
+          errs := errs.push s!"RUST_DIRECT_LIBC_FORBIDDEN: {relPath}:{tok.line} shadows, aliases, or unqualifies 'libc'"
+        else
+          match toks[idx + 2]!.kind with
+          | .ident item =>
+            if !isAllowedSysLibcItem item then
+              errs := errs.push s!"RUST_DIRECT_LIBC_FORBIDDEN: {relPath}:{tok.line} uses non-allowlisted libc item '{item}'"
+          | _ =>
+            errs := errs.push s!"RUST_DIRECT_LIBC_FORBIDDEN: {relPath}:{tok.line} shadows, aliases, or unqualifies 'libc'"
+      else if name == "syscall" then
+        let okCall :=
+          relPath == "LeanSwe/PostFork/rust/src/sys.rs" &&
+          idx >= 2 &&
+          toks[idx - 2]!.kind == .ident "libc" &&
+          toks[idx - 1]!.kind == .colon2 &&
+          idx + 5 < n &&
+          toks[idx + 1]!.kind == .lparen &&
+          toks[idx + 2]!.kind == .ident "libc" &&
+          toks[idx + 3]!.kind == .colon2 &&
+          toks[idx + 5]!.kind == .comma &&
+          match toks[idx + 4]!.kind with
+          | .ident nr => isAllowedSysSyscallNr nr
+          | _ => false
+        if !okCall then
+          errs := errs.push s!"RUST_SYSCALL_NR_FORBIDDEN: {relPath}:{tok.line} invokes non-allowlisted or uncanonical syscall"
+      else if name == "no_mangle" then
+        if relPath != "LeanSwe/PostFork/rust/src/ffi.rs" then
+          errs := errs.push s!"RUST_NO_MANGLE_FORBIDDEN: {relPath}:{tok.line} uses #[no_mangle] outside ffi.rs"
+        else
+          let mut j := idx + 1
+          let mut fnTarget? : Option String := none
+          while j + 1 < n && toks[j]!.kind != .lbrace && toks[j]!.kind != .semi do
+            if toks[j]!.kind == .ident "fn" then
+              if let .ident fnName := toks[j + 1]!.kind then
+                fnTarget? := some fnName
+              break
+            j := j + 1
+          match fnTarget? with
+          | some fnName =>
+            if !isAllowedPostForkNoMangleFn fnName then
+              errs := errs.push s!"RUST_NO_MANGLE_FORBIDDEN: {relPath}:{tok.line} exports unauthorized symbol '{fnName}'"
+          | none =>
+            errs := errs.push s!"RUST_NO_MANGLE_FORBIDDEN: {relPath}:{tok.line} #[no_mangle] does not attach to a named fn"
+  let (funcs, scopeErrs) := scanRustScope relPath toks false
+  errs := errs ++ scopeErrs ++ findRustCallCycleErrors relPath funcs
+  return errs
+
 private def isAllowedLeanSourcePath (relPath : String) : Bool :=
   if !relPath.endsWith ".lean" then
     false
@@ -890,6 +1412,7 @@ def main (args : List String) : IO UInt32 := do
       continue
 
     unless ← fullPath.pathExists do
+      errors := errors.push s!"MISSING_TRACKED_FOREIGN_FILE: {relPath}"
       continue
     let bytes ← IO.FS.readBinFile fullPath
     let actualLines := countLinesBytes bytes
@@ -904,6 +1427,11 @@ def main (args : List String) : IO UInt32 := do
         let (fileErrs, fnCount) := checkNonLegacyCFile relPath bytes budget
         checkedCFuncs := checkedCFuncs + fnCount
         errors := errors ++ fileErrs
+    else if relPath.endsWith ".rs" && !entry.legacyUnmigrated then
+      if isAeneasExtractedRustPath relPath then
+        errors := errors ++ checkAeneasRustFile relPath bytes
+      else
+        errors := errors ++ checkNonAeneasRustFile relPath bytes
 
   for (vendPath, _) in budget.vendored do
     if !seenVendored.contains vendPath then
