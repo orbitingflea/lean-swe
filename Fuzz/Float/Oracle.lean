@@ -2,10 +2,13 @@ import LeanSwe.NumParse.Interface
 
 /-!
 Thin C99/POSIX IEEE-754 oracle bindings, pure IEEE-754 bit-pattern helpers,
-and persistent Python 3 `float`/`repr`/`tomllib` co-process differential oracle for `Fuzz/Float/`.
+and persistent Python 3 `float`/`repr`/`tomllib`/`fractions` co-process differential oracle for `Fuzz/Float/`.
 -/
 
 namespace Fuzz.Float
+
+@[extern "leanswe_float_oracle_is_tonearest"]
+private opaque rawCIsRoundToNearest : IO Bool
 
 @[extern "leanswe_float_oracle_strtod"]
 private opaque rawCStrtod (s : @& String) : USize × UInt64
@@ -19,8 +22,23 @@ private opaque rawCRawDoubleFromBits (rawBits : UInt64) : Float
 @[extern "leanswe_float_oracle_raw_f32_from_bits"]
 private opaque rawCRawFloat32FromBits (rawBits : UInt32) : Float32
 
+@[extern "leanswe_float_oracle_raw_bits_from_double"]
+private opaque rawCRawBitsFromDouble (d : Float) : UInt64
+
+@[extern "leanswe_float_oracle_raw_bits_from_f32"]
+private opaque rawCRawBitsFromFloat32 (f : Float32) : UInt32
+
 @[extern "leanswe_float_oracle_unop"]
 private opaque rawCUnOp (op : UInt8) (aBits : UInt64) : UInt64
+
+@[extern "leanswe_float_oracle_trans1"]
+private opaque rawCTrans1 (op : UInt8) (aBits : UInt64) : UInt64
+
+@[extern "leanswe_float_oracle_trans2"]
+private opaque rawCTrans2 (op : UInt8) (aBits : UInt64) : UInt64
+
+@[extern "leanswe_float_oracle_trans3"]
+private opaque rawCTrans3 (op : UInt8) (aBits : UInt64) : UInt64
 
 @[extern "leanswe_float_oracle_binop"]
 private opaque rawCBinOp (op : UInt8) (aBits bBits : UInt64) : UInt64
@@ -61,6 +79,46 @@ private opaque rawCOfUInt64 (u : UInt64) : UInt64
 @[extern "leanswe_float_oracle_of_int64"]
 private opaque rawCOfInt64 (iBits : UInt64) : UInt64
 
+@[extern "leanswe_float_oracle_f32_unop"]
+private opaque rawCF32UnOp (op : UInt8) (aBits : UInt32) : UInt32
+
+@[extern "leanswe_float_oracle_f32_binop"]
+private opaque rawCF32BinOp (op : UInt8) (aBits bBits : UInt32) : UInt32
+
+@[extern "leanswe_float_oracle_f32_fma"]
+private opaque rawCF32Fma (aBits bBits cBits : UInt32) : UInt32
+
+@[extern "leanswe_float_oracle_f32_cmp"]
+private opaque rawCF32Cmp (aBits bBits : UInt32) : UInt8
+
+@[extern "leanswe_float_oracle_f32_frexp"]
+private opaque rawCF32Frexp (aBits : UInt32) : UInt32 × UInt32
+
+@[extern "leanswe_float_oracle_f32_ldexp"]
+private opaque rawCF32Ldexp (aBits : UInt32) (expBits : UInt32) : UInt32
+
+@[extern "leanswe_float_oracle_f32_minmax"]
+private opaque rawCF32MinMax (isMax : UInt8) (aBits bBits : UInt32) : UInt32
+
+@[extern "leanswe_float_oracle_f32_minmax_num"]
+private opaque rawCF32MinMaxNum (isMax : UInt8) (aBits bBits : UInt32) : UInt32
+
+@[extern "leanswe_float_oracle_f32_to_uint64"]
+private opaque rawCF32ToUInt64 (aBits : UInt32) (maxVal : UInt64) : UInt64
+
+@[extern "leanswe_float_oracle_f32_to_int64"]
+private opaque rawCF32ToInt64 (aBits : UInt32) (minBits maxBits : UInt64) : UInt64
+
+@[extern "leanswe_float_oracle_f32_of_uint64"]
+private opaque rawCF32OfUInt64 (u : UInt64) : UInt32
+
+@[extern "leanswe_float_oracle_f32_of_int64"]
+private opaque rawCF32OfInt64 (iBits : UInt64) : UInt32
+
+/-- Verify that the host IEEE-754 rounding mode is `FE_TONEAREST`. -/
+def cIsRoundToNearest : IO Bool :=
+  rawCIsRoundToNearest
+
 /-- Call C99 `strtod_l` in the `"C"` locale, returning `(consumedBytes, rawBinary64Bits)`. -/
 def cStrtod (s : String) : USize × UInt64 :=
   rawCStrtod s
@@ -77,11 +135,31 @@ def rawDoubleFromBits (rawBits : UInt64) : Float :=
 def rawFloat32FromBits (rawBits : UInt32) : Float32 :=
   rawCRawFloat32FromBits rawBits
 
+/-- Read raw uncanonicalized binary64 bits directly from a Lean `Float` register. -/
+def rawBitsFromDouble (d : Float) : UInt64 :=
+  rawCRawBitsFromDouble d
+
+/-- Read raw uncanonicalized binary32 bits directly from a Lean `Float32` register. -/
+def rawBitsFromFloat32 (f : Float32) : UInt32 :=
+  rawCRawBitsFromFloat32 f
+
 /-- Compute C unary double op (`0`: `-a`, `1`: `fabs`, `2`: `sqrt`, `3`: `ceil`, `4`: `floor`, `5`: `round`). -/
 def cUnOp (op : UInt8) (aBits : UInt64) : UInt64 :=
   rawCUnOp op aBits
 
-/-- Compute C binary double op (`0`: `+`, `1`: `-`, `2`: `*`, `3`: `/`) returning raw bits. -/
+/-- Compute C unary transcendental group 1 (`0`: `sin`, `1`: `cos`, `2`: `tan`, `3`: `asin`, `4`: `acos`, `5`: `atan`, `6`: `sinh`). -/
+def cTrans1 (op : UInt8) (aBits : UInt64) : UInt64 :=
+  rawCTrans1 op aBits
+
+/-- Compute C unary transcendental group 2 (`0`: `cosh`, `1`: `tanh`, `2`: `asinh`, `3`: `acosh`, `4`: `atanh`, `5`: `exp`, `6`: `exp2`). -/
+def cTrans2 (op : UInt8) (aBits : UInt64) : UInt64 :=
+  rawCTrans2 op aBits
+
+/-- Compute C unary transcendental group 3 (`0`: `log`, `1`: `log2`, `2`: `log10`, `3`: `cbrt`). -/
+def cTrans3 (op : UInt8) (aBits : UInt64) : UInt64 :=
+  rawCTrans3 op aBits
+
+/-- Compute C binary double op (`0`: `+`, `1`: `-`, `2`: `*`, `3`: `/`, `4`: `pow`, `5`: `atan2`) returning raw bits. -/
 def cBinOp (op : UInt8) (aBits bBits : UInt64) : UInt64 :=
   rawCBinOp op aBits bBits
 
@@ -134,6 +212,55 @@ def cOfUInt64 (u : UInt64) : UInt64 :=
 def cOfInt64 (i : Int64) : UInt64 :=
   rawCOfInt64 i.toUInt64
 
+/-- Compute C unary float32 op (`0`: `-a`, `1`: `fabsf`, `2`: `sqrtf`, `3`: `ceilf`, `4`: `floorf`, `5`: `roundf`). -/
+def cF32UnOp (op : UInt8) (aBits : UInt32) : UInt32 :=
+  rawCF32UnOp op aBits
+
+/-- Compute C binary float32 op (`0`: `+`, `1`: `-`, `2`: `*`, `3`: `/`, `4`: `powf`) returning raw bits. -/
+def cF32BinOp (op : UInt8) (aBits bBits : UInt32) : UInt32 :=
+  rawCF32BinOp op aBits bBits
+
+/-- Compute C99 `fmaf(a, b, c)` returning raw binary32 bits. -/
+def cF32Fma (aBits bBits cBits : UInt32) : UInt32 :=
+  rawCF32Fma aBits bBits cBits
+
+/-- Compute C float32 comparison/classification bitmask (`==`, `<`, `<=`, `isnan`, `isfinite`, `isinf`). -/
+def cF32Cmp (aBits bBits : UInt32) : UInt8 :=
+  rawCF32Cmp aBits bBits
+
+/-- Compute C `frexpf(a, &exp)` returning `(mantissaBits, expInt32)`. -/
+def cF32Frexp (aBits : UInt32) : UInt32 × Int32 :=
+  let (sig, expBits) := rawCF32Frexp aBits
+  (sig, Int32.ofUInt32 expBits)
+
+/-- Compute C `ldexpf(a, exp)` returning raw binary32 bits. -/
+def cF32Ldexp (aBits : UInt32) (exp : Int32) : UInt32 :=
+  rawCF32Ldexp aBits exp.toUInt32
+
+/-- Compute IEEE-754-2019 float32 `minimum` (`isMax=false`) or `maximum` (`isMax=true`) in C. -/
+def cF32MinMax (isMax : Bool) (aBits bBits : UInt32) : UInt32 :=
+  rawCF32MinMax (if isMax then 1 else 0) aBits bBits
+
+/-- Compute IEEE-754-2019 float32 `minimumNumber` (`isMax=false`) or `maximumNumber` (`isMax=true`) in C. -/
+def cF32MinMaxNum (isMax : Bool) (aBits bBits : UInt32) : UInt32 :=
+  rawCF32MinMaxNum (if isMax then 1 else 0) aBits bBits
+
+/-- Convert binary32 `aBits` to clamped unsigned integer `[0, maxVal]` in C without UB. -/
+def cF32ToUInt64 (aBits : UInt32) (maxVal : UInt64) : UInt64 :=
+  rawCF32ToUInt64 aBits maxVal
+
+/-- Convert binary32 `aBits` to clamped signed integer `[minVal, maxVal]` in C without UB. -/
+def cF32ToInt64 (aBits : UInt32) (minVal maxVal : Int64) : Int64 :=
+  Int64.ofUInt64 (rawCF32ToInt64 aBits minVal.toUInt64 maxVal.toUInt64)
+
+/-- Convert `UInt64` to binary32 bits via C `(float)`. -/
+def cF32OfUInt64 (u : UInt64) : UInt32 :=
+  rawCF32OfUInt64 u
+
+/-- Convert `Int64` to binary32 bits via C `(float)`. -/
+def cF32OfInt64 (i : Int64) : UInt32 :=
+  rawCF32OfInt64 i.toUInt64
+
 /-- Return `true` iff `b` encodes any IEEE-754 binary64 NaN (quiet or signaling, either sign). -/
 def isRawNaNBits (b : UInt64) : Bool :=
   ((b &&& 0x7ff0000000000000) == 0x7ff0000000000000) &&
@@ -150,6 +277,10 @@ def canonBits32 (b : UInt32) : UInt32 :=
 /-- Return `true` iff `b` encodes a signaling binary64 NaN (quiet bit 51 cleared). -/
 def isSignalingNaNBits (b : UInt64) : Bool :=
   isRawNaNBits b && ((b &&& 0x0008000000000000) == 0)
+
+/-- Return `true` iff `b` encodes a signaling binary32 NaN (quiet bit 22 cleared). -/
+def isSignalingNaNBits32 (b : UInt32) : Bool :=
+  isRawNaNBits32 b && ((b &&& 0x00400000) == 0)
 
 /-- Canonicalize any raw binary64 NaN bit pattern to Lean's `0x7ff8000000000000`. -/
 def canonBits (b : UInt64) : UInt64 :=
@@ -193,7 +324,8 @@ private def hasDotWithoutFracDigit : List Char → Bool
   | '.' :: [] => true
   | '.' :: 'e' :: _ => true
   | '.' :: 'E' :: _ => true
-  | '.' :: c :: _ => !isAsciiDigit c
+  | '.' :: c :: rest =>
+    if isAsciiDigit c then hasDotWithoutFracDigit rest else true
   | _ :: rest => hasDotWithoutFracDigit rest
 
 /-- Verify that a string accepted in full by C `strtod_l` legitimately violates TOML 1.0 float syntax. -/
@@ -204,8 +336,10 @@ def isAllowedStrtodOnlySyntax (s : String) : Bool :=
     | cs => cs
   let bodyStr := String.ofList body
   let lowBody := bodyStr.toLower
-  if lowBody.startsWith "0x" || lowBody.startsWith "inf" || lowBody.startsWith "nan" then
+  if lowBody.startsWith "0x" then
     true
+  else if lowBody.startsWith "inf" || lowBody.startsWith "nan" then
+    bodyStr != "inf" && bodyStr != "nan"
   else if !bodyStr.contains '.' && !bodyStr.contains 'e' && !bodyStr.contains 'E' then
     true
   else if bodyStr.startsWith "." || hasDotWithoutFracDigit body then
@@ -223,7 +357,6 @@ def isTomlCheckEligible (s : String) : Bool :=
   !s.startsWith "\t" &&
   !s.endsWith "\t" &&
   !s.contains '\n' &&
-  !s.contains '\r' &&
   !s.contains '#' &&
   !s.contains '\\' &&
   !s.contains '"' &&
@@ -261,6 +394,28 @@ structure PyIntFloatItem where
   expectedBits : UInt64
   deriving Repr, Inhabited
 
+/-- One independent Python `fractions.Fraction` extern check (`ceil`, `floor`, `round`, `frExp`, `scaleB`). -/
+structure PyExternItem where
+  /-- `false` for `Float` (binary64), `true` for `Float32` (binary32). -/
+  isFloat32 : Bool
+  /-- Raw IEEE-754 bits (`UInt64` for binary64, zero-extended `UInt32` for binary32). -/
+  bits : UInt64
+  /-- Exponent passed to `scaleB`. -/
+  scaleExp : Int32
+  /-- Expected `ceil` canonical bits. -/
+  ceilBits : UInt64
+  /-- Expected `floor` canonical bits. -/
+  floorBits : UInt64
+  /-- Expected `round` canonical bits. -/
+  roundBits : UInt64
+  /-- Expected `frExp` significand canonical bits. -/
+  frexpSigBits : UInt64
+  /-- Expected `frExp` integer exponent (checked when finite). -/
+  frexpExp : Int
+  /-- Expected `scaleB` canonical bits. -/
+  scaleBBits : UInt64
+  deriving Repr, Inhabited
+
 /-- Accumulated batch of Python 3 differential verification items for one episode. -/
 structure PyOracleBatch where
   /-- Queued string parse checks. -/
@@ -271,11 +426,14 @@ structure PyOracleBatch where
   reprBits : Array UInt64 := #[]
   /-- Queued `Int -> Float` checks against Python `float(int(s))`. -/
   intFloats : Array PyIntFloatItem := #[]
+  /-- Queued independent `Fraction`-based `ceil`/`floor`/`round`/`frExp`/`scaleB` checks. -/
+  externs : Array PyExternItem := #[]
   deriving Inhabited
 
 /-- Return `true` iff `batch` has no queued checks. -/
 def PyOracleBatch.isEmpty (b : PyOracleBatch) : Bool :=
-  b.parses.isEmpty && b.formats.isEmpty && b.reprBits.isEmpty && b.intFloats.isEmpty
+  b.parses.isEmpty && b.formats.isEmpty && b.reprBits.isEmpty &&
+    b.intFloats.isEmpty && b.externs.isEmpty
 
 private def hexDigit (n : Nat) : Char :=
   if n < 10 then Char.ofNat ('0'.toNat + n)
@@ -339,12 +497,20 @@ private def parseHexU64? (hex : String) : Option UInt64 :=
       nib?.map fun d => (acc <<< 4) ||| UInt64.ofNat d
 
 private def pythonCoprocScript : String :=
+  "from fractions import Fraction\n" ++
   "import math, struct, sys, tomllib\n" ++
   "sys.set_int_max_str_digits(0)\n" ++
   "def canon(v):\n" ++
   "    if math.isnan(v):\n" ++
   "        return 0x7ff8000000000000\n" ++
   "    return struct.unpack('>Q', struct.pack('>d', v))[0]\n" ++
+  "def canon32(v):\n" ++
+  "    if math.isnan(v):\n" ++
+  "        return 0x7fc00000\n" ++
+  "    try:\n" ++
+  "        return struct.unpack('>I', struct.pack('>f', v))[0]\n" ++
+  "    except OverflowError:\n" ++
+  "        return 0x7f800000 if v >= 0 else 0xff800000\n" ++
   "def norm_repr(s):\n" ++
   "    low = s.lower()\n" ++
   "    if low in ('nan', '-nan', '+nan'):\n" ++
@@ -356,6 +522,55 @@ private def pythonCoprocScript : String :=
   "    if '.' in s or 'e' in s or 'E' in s:\n" ++
   "        return s\n" ++
   "    return s + '.0'\n" ++
+  "def check_extern(is_f32, bits, sc, e_ceil, e_floor, e_round, e_fsig, e_fexp, e_scale):\n" ++
+  "    c_fn = canon32 if is_f32 else canon\n" ++
+  "    d = struct.unpack('>f', struct.pack('>I', bits))[0] if is_f32 else struct.unpack('>d', struct.pack('>Q', bits))[0]\n" ++
+  "    if not math.isfinite(d):\n" ++
+  "        cb = c_fn(d)\n" ++
+  "        for name, exp in (('ceil', e_ceil), ('floor', e_floor), ('round', e_round), ('frexp_sig', e_fsig), ('scaleb', e_scale)):\n" ++
+  "            if cb != exp:\n" ++
+  "                raise AssertionError(f'E nonfinite {name} mismatch: f32={is_f32} bits={bits:#x} py={cb:#x} lean={exp:#x}')\n" ++
+  "        return\n" ++
+  "    f = Fraction(d)\n" ++
+  "    cv = math.ceil(f)\n" ++
+  "    cf = math.copysign(0.0, d) if cv == 0 else float(cv)\n" ++
+  "    if c_fn(cf) != e_ceil:\n" ++
+  "        raise AssertionError(f'E ceil mismatch: f32={is_f32} bits={bits:#x} py={c_fn(cf):#x} lean={e_ceil:#x}')\n" ++
+  "    fv = math.floor(f)\n" ++
+  "    ff = math.copysign(0.0, d) if fv == 0 else float(fv)\n" ++
+  "    if c_fn(ff) != e_floor:\n" ++
+  "        raise AssertionError(f'E floor mismatch: f32={is_f32} bits={bits:#x} py={c_fn(ff):#x} lean={e_floor:#x}')\n" ++
+  "    rv = math.floor(f + Fraction(1, 2)) if f >= 0 else -math.floor(-f + Fraction(1, 2))\n" ++
+  "    rf = math.copysign(0.0, d) if rv == 0 else float(rv)\n" ++
+  "    if c_fn(rf) != e_round:\n" ++
+  "        raise AssertionError(f'E round mismatch: f32={is_f32} bits={bits:#x} py={c_fn(rf):#x} lean={e_round:#x}')\n" ++
+  "    if d == 0.0:\n" ++
+  "        sig_bits = c_fn(d)\n" ++
+  "        ex = 0\n" ++
+  "    else:\n" ++
+  "        num, den = abs(d).as_integer_ratio()\n" ++
+  "        ex = num.bit_length() - (den.bit_length() - 1)\n" ++
+  "        sig_v = math.copysign(float(Fraction(num, 1 << num.bit_length())), d)\n" ++
+  "        sig_bits = c_fn(sig_v)\n" ++
+  "    if sig_bits != e_fsig or ex != e_fexp:\n" ++
+  "        raise AssertionError(f'E frexp mismatch: f32={is_f32} bits={bits:#x} py=({sig_bits:#x},{ex}) lean=({e_fsig:#x},{e_fexp})')\n" ++
+  "    if d == 0.0:\n" ++
+  "        sb = c_fn(d)\n" ++
+  "    elif sc > 3000:\n" ++
+  "        sb = c_fn(math.copysign(float('inf'), d))\n" ++
+  "    elif sc < -3000:\n" ++
+  "        sb = c_fn(math.copysign(0.0, d))\n" ++
+  "    else:\n" ++
+  "        sf = f * (1 << sc) if sc >= 0 else f / (1 << (-sc))\n" ++
+  "        try:\n" ++
+  "            sv = float(sf)\n" ++
+  "            if sv == 0.0:\n" ++
+  "                sv = math.copysign(0.0, d)\n" ++
+  "            sb = c_fn(sv)\n" ++
+  "        except OverflowError:\n" ++
+  "            sb = c_fn(math.copysign(float('inf'), d))\n" ++
+  "    if sb != e_scale:\n" ++
+  "        raise AssertionError(f'E scaleB mismatch: f32={is_f32} bits={bits:#x} sc={sc} py={sb:#x} lean={e_scale:#x}')\n" ++
   "out_lines = []\n" ++
   "batch_err = None\n" ++
   "for raw_line in sys.stdin:\n" ++
@@ -420,13 +635,21 @@ private def pythonCoprocScript : String :=
   "            out_lines.append('R ' + parts[1] + ' ' + norm_repr(repr(d)).encode('utf-8').hex())\n" ++
   "        elif tag == 'I':\n" ++
   "            exp_bits = int(parts[1], 16)\n" ++
-  "            n = int(parts[2])\n" ++
+  "            dec_s = bytes.fromhex(parts[2]).decode('utf-8')\n" ++
+  "            n = int(dec_s)\n" ++
   "            try:\n" ++
   "                got_i = canon(float(n))\n" ++
   "            except OverflowError:\n" ++
   "                got_i = 0x7ff0000000000000 if n >= 0 else 0xfff0000000000000\n" ++
   "            if got_i != exp_bits:\n" ++
-  "                raise AssertionError(f'I int->float mismatch: n={parts[2]} py={got_i:#018x} lean={exp_bits:#018x}')\n" ++
+  "                raise AssertionError(f'I int->float mismatch: n={dec_s[:80]} py={got_i:#018x} lean={exp_bits:#018x}')\n" ++
+  "        elif tag == 'E':\n" ++
+  "            check_extern(\n" ++
+  "                int(parts[1]), int(parts[2], 16),\n" ++
+  "                int(bytes.fromhex(parts[3]).decode('utf-8')),\n" ++
+  "                int(parts[4], 16), int(parts[5], 16), int(parts[6], 16),\n" ++
+  "                int(parts[7], 16), int(bytes.fromhex(parts[8]).decode('utf-8')),\n" ++
+  "                int(parts[9], 16))\n" ++
   "        else:\n" ++
   "            raise AssertionError(f'unknown tag {tag!r}')\n" ++
   "    except Exception as exc:\n" ++
@@ -434,7 +657,8 @@ private def pythonCoprocScript : String :=
   "        batch_err = msg if msg else type(exc).__name__\n"
 
 private def encodeBatchPayload (batch : PyOracleBatch) : String := Id.run do
-  let total := batch.parses.size + batch.formats.size + batch.reprBits.size + batch.intFloats.size
+  let total := batch.parses.size + batch.formats.size + batch.reprBits.size +
+    batch.intFloats.size + batch.externs.size
   let mut lines : Array String := Array.mkEmpty (total + 1)
   for item in batch.parses do
     let tc := if item.tomlCheck then "1" else "0"
@@ -445,14 +669,40 @@ private def encodeBatchPayload (batch : PyOracleBatch) : String := Id.run do
   for b in batch.reprBits do
     lines := lines.push s!"R {u64ToHex16 b}"
   for item in batch.intFloats do
-    lines := lines.push s!"I {u64ToHex16 item.expectedBits} {item.decStr}"
+    lines := lines.push s!"I {u64ToHex16 item.expectedBits} {stringToHex item.decStr}"
+  for item in batch.externs do
+    let f32Tag := if item.isFloat32 then "1" else "0"
+    lines := lines.push (s!"E {f32Tag} {u64ToHex16 item.bits} {stringToHex (toString item.scaleExp)} " ++
+      s!"{u64ToHex16 item.ceilBits} {u64ToHex16 item.floorBits} {u64ToHex16 item.roundBits} " ++
+      s!"{u64ToHex16 item.frexpSigBits} {stringToHex (toString item.frexpExp)} {u64ToHex16 item.scaleBBits}")
   lines := lines.push "END"
   return "\n".intercalate lines.toList ++ "\n"
+
+private def drainPipeToDiscard (h : IO.FS.Handle) : IO Unit := do
+  while true do
+    let chunk ← h.read 8192
+    if chunk.isEmpty then
+      break
+
+private def drainStderrLoop (h : IO.FS.Handle) (ref : IO.Ref String) : IO Unit := do
+  while true do
+    let chunk ← h.read 4096
+    if chunk.isEmpty then
+      break
+    let text := match String.fromUTF8? chunk with
+      | some s => s
+      | none => s!"<non-utf8 {chunk.size}B>"
+    ref.modify fun cur =>
+      if cur.length < 16384 then cur ++ text else cur
 
 /-- Persistent Python 3 co-process handle used to check every episode without clamping. -/
 structure PyOracleClient where
   /-- Spawned `python3` child process. -/
   child : IO.Process.Child { stdin := .piped, stdout := .piped, stderr := .piped }
+  /-- Captured bounded `stderr` output drained continuously on a background task. -/
+  stderrRef : IO.Ref String
+  /-- Background task continuously draining `child.stderr` to prevent >64 KiB pipe deadlocks. -/
+  stderrTask : Task (Except IO.Error Unit)
 
 /-- Spawn the persistent Python 3 differential oracle co-process in isolated mode (`-I`). -/
 def startPyOracleClient : IO PyOracleClient := do
@@ -463,7 +713,9 @@ def startPyOracleClient : IO PyOracleClient := do
     stdout := .piped
     stderr := .piped
   }
-  return { child }
+  let stderrRef ← IO.mkRef ""
+  let stderrTask ← IO.asTask (drainStderrLoop child.stderr stderrRef)
+  return { child, stderrRef, stderrTask }
 
 /-- Flush one episode's `PyOracleBatch` to the persistent Python 3 co-process and verify all `repr()` round-trips. -/
 def flushPyBatch (client : PyOracleClient) (batch : PyOracleBatch) : IO (Except String Unit) := do
@@ -474,14 +726,14 @@ def flushPyBatch (client : PyOracleClient) (batch : PyOracleBatch) : IO (Except 
     client.child.stdin.putStr payload
     client.child.stdin.flush
   catch e =>
-    let stderr ← try client.child.stderr.readToEnd catch _ => pure ""
+    let stderr ← client.stderrRef.get
     return .error s!"PYTHON_ORACLE_EOF: write failed ({e}); stderr={stderr.trimAscii.toString}"
   let mut reprLines : Array (UInt64 × String) := Array.mkEmpty batch.reprBits.size
   let mut errMsg? : Option String := none
   while true do
     let rawLine ← client.child.stdout.getLine
     if rawLine.isEmpty then
-      let stderr ← try client.child.stderr.readToEnd catch _ => pure ""
+      let stderr ← client.stderrRef.get
       errMsg? := some s!"PYTHON_ORACLE_EOF: {stderr.trimAscii.toString}"
       break
     let line := rawLine.trimAscii.toString
@@ -509,7 +761,11 @@ def flushPyBatch (client : PyOracleClient) (batch : PyOracleBatch) : IO (Except 
     return .error err
   if reprLines.size != batch.reprBits.size then
     return .error s!"PYTHON_ORACLE_LINE_COUNT_MISMATCH: expected {batch.reprBits.size}, got {reprLines.size}"
-  for (bits, reprStr) in reprLines do
+  for idx in [0 : reprLines.size] do
+    let (bits, reprStr) := reprLines[idx]!
+    let reqBits := batch.reprBits[idx]!
+    if bits != reqBits then
+      return .error s!"PYTHON_ORACLE_BITS_ECHO_MISMATCH idx={idx} echoed={u64ToHex16 bits} requested={u64ToHex16 reqBits}"
     match LeanSwe.NumParse.parseFloat reprStr with
     | .error err =>
       return .error s!"PYTHON_REPR_PARSE_FAILED bits={u64ToHex16 bits} repr='{reprStr}': {repr err}"
@@ -519,31 +775,48 @@ def flushPyBatch (client : PyOracleClient) (batch : PyOracleBatch) : IO (Except 
         return .error s!"PYTHON_REPR_BITS_MISMATCH bits={u64ToHex16 bits} repr='{reprStr}' got={u64ToHex16 parsed.toBits} expected={u64ToHex16 expected}"
   return .ok ()
 
+@[noinline]
+private def closeChildStdin
+    (child : IO.Process.Child { stdin := .piped, stdout := .piped, stderr := .piped }) :
+    IO (IO.Process.Child { stdin := .null, stdout := .piped, stderr := .piped }) := do
+  let (h, c) ← child.takeStdin
+  let _ := h
+  return c
+
 /-- Cleanly shut down the persistent Python 3 co-process and verify exit status `0`. -/
 def closePyOracleClient (client : PyOracleClient) : IO Unit := do
+  let { child, stderrRef, stderrTask } := client
   try
-    client.child.stdin.putStr "QUIT\n"
-    client.child.stdin.flush
+    child.stdin.putStr "QUIT\n"
+    child.stdin.flush
   catch _ =>
     pure ()
-  let (_, child) ← client.child.takeStdin
-  let stderrTask ← IO.asTask child.stderr.readToEnd
+  let child ← closeChildStdin child
+  let stdoutTask ← IO.asTask (drainPipeToDiscard child.stdout)
   let exitCode ← child.wait
-  let stderr ← IO.ofExcept stderrTask.get
+  let _ ← IO.ofExcept stdoutTask.get
+  let _ ← IO.ofExcept stderrTask.get
+  let stderr ← stderrRef.get
   if exitCode != 0 then
     throw (IO.userError s!"PYTHON_ORACLE_EXIT_NONZERO exit={exitCode}: {stderr.trimAscii.toString}")
 
 /-- Best-effort quiet cleanup of the Python 3 co-process on error paths so primary errors are preserved. -/
 def closePyOracleClientQuiet (client : PyOracleClient) : IO Unit := do
+  let { child, stderrRef := _, stderrTask } := client
   try
-    client.child.stdin.putStr "QUIT\n"
-    client.child.stdin.flush
+    child.stdin.putStr "QUIT\n"
+    child.stdin.flush
   catch _ =>
     pure ()
   try
-    let (_, child) ← client.child.takeStdin
-    let _ ← child.stderr.readToEnd
+    let child ← closeChildStdin child
+    let stdoutTask ← IO.asTask (drainPipeToDiscard child.stdout)
+    IO.sleep 10
+    if (← child.tryWait).isNone then
+      try child.kill catch _ => pure ()
     let _ ← child.wait
+    let _ ← IO.ofExcept stdoutTask.get
+    let _ ← IO.ofExcept stderrTask.get
   catch _ =>
     pure ()
 

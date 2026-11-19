@@ -185,7 +185,7 @@ extern_lib «leanswe_float_fuzz_oracle» pkg := do
   let lean ← getLeanInstall
   let oJob ← buildO oFile srcJob
     #["-I", lean.includeDir.toString]
-    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror", "-fno-fast-math"]
+    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror", "-fno-fast-math", "-ffp-contract=off", "-fno-builtin-snprintf", "-DNDEBUG"]
   let name := nameToStaticLib "leanswe_float_fuzz_oracle"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 

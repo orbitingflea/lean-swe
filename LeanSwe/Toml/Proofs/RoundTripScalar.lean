@@ -14,9 +14,16 @@ private abbrev isCleanTokChar (c : Char) : Bool := !isDisallowedControl c && c !
 private theorem forall_ascii_of_decide (p q : Char → Bool) (hascii : ∀ c, p c = true → c.toNat < 128)
     (hdec : (List.range 128).all (fun n => !p (Char.ofNat n) || q (Char.ofNat n)) = true) (c : Char) (hp : p c = true) : q c = true := by
   simpa [Char.ofNat_toNat, hp] using List.all_eq_true.mp hdec c.toNat (List.mem_range.mpr (hascii c hp))
+private theorem normalizeCharsAux_clean (acc cs : List Char)
+    (h : cs.all (fun c => !isDisallowedControl c && c != '\r') = true) (line col : Nat) :
+    normalizeCharsAux line col acc cs = .ok (acc.reverse ++ cs) := by
+  fun_induction normalizeCharsAux line col acc cs <;> simp_all [List.reverse_cons]
+
 /-- Internal TOML scalar round-trip lemma `normalizeChars_clean`. -/
 theorem normalizeChars_clean (cs : List Char) (h : cs.all (fun c => !isDisallowedControl c && c != '\r') = true) (line col : Nat) :
-    normalizeChars line col cs = .ok cs := by fun_induction normalizeChars line col cs <;> simp_all [bind, Except.bind]
+    normalizeChars line col cs = .ok cs := by
+  unfold normalizeChars
+  simpa using normalizeCharsAux_clean [] cs h line col
 /-- Internal TOML scalar round-trip lemma `isBareKeyChar_clean`. -/
 theorem isBareKeyChar_clean (c : Char) (h : isBareKeyChar c = true) :
     (!isDisallowedControl c && c != '\r' && c != '\n' && !isHorizWs c &&

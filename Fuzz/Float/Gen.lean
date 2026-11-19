@@ -17,7 +17,7 @@ inductive FloatFuzzCase where
   | parseStr (s : String)
   /-- Bit-pattern, raw FFI NaN ABI, formatting round-trip, `snprintf`, and `Toml` round-trip. -/
   | checkBits (u : UInt64)
-  /-- Binary arithmetic, IEEE-754-2019 min/max, comparisons, and `DecidableEq`. -/
+  /-- Binary arithmetic, IEEE-754-2019 min/max, comparisons, `pow`, and `DecidableEq`. -/
   | checkBinOp (ua ub : UInt64)
   /-- Ternary fused multiply-add (`Float.fma` vs `Float.Model.fma` vs C `fma`). -/
   | checkFma (ua ub uc : UInt64)
@@ -25,7 +25,7 @@ inductive FloatFuzzCase where
   | checkIntConv (u : UInt64)
   /-- `OfScientific.ofScientific` and `Lean.JsonNumber.toFloat` fast/slow and multi-word GMP path checks. -/
   | checkSci (m : Nat) (negExp : Bool) (e : Nat)
-  /-- Deterministic `Float` externs (`frExp`, `scaleB` on `Int32`, `ceil`, `floor`, `round`, `Float32`, `FloatArray`). -/
+  /-- Deterministic `Float` / `Float32` externs (`frExp`, `scaleB` on `Int32`, `ceil`, `floor`, `round`, `Float32`, `FloatArray`, transcendentals). -/
   | checkExtern (u : UInt64) (u32 : UInt32) (scaleExp : Int32)
   deriving Repr, DecidableEq, BEq, Inhabited
 
@@ -58,12 +58,34 @@ private def edgeMantissas : Array UInt64 := #[
 
 private def namedBoundaryBits : Array UInt64 := #[
   0x3fe0000000000000,
+  0xbfe0000000000000,
   0x3ff0000000000000,
+  0xbff0000000000000,
+  0x405fc00000000000,
+  0x4060000000000000,
+  0xc060000000000000,
+  0xc060200000000000,
+  0x406fe00000000000,
+  0x4070000000000000,
+  0x40dfffc000000000,
+  0x40e0000000000000,
+  0xc0e0000000000000,
+  0xc0e0002000000000,
+  0x40efffe000000000,
+  0x40f0000000000000,
+  0x41dfffffffc00000,
+  0x41e0000000000000,
+  0xc1e0000000000000,
+  0xc1e0000000200000,
+  0x41f0000000000000,
   0x4330000000000000,
+  0xc330000000000000,
   0x4340000000000000,
+  0xc340000000000000,
   0x43e0000000000000,
   0xc3e0000000000000,
   0x43f0000000000000,
+  0xc3f0000000000000,
   0x7fefffffffffffff,
   0xffefffffffffffff
 ]
@@ -174,46 +196,45 @@ private def insertValidUnderscores (r : Rng) (s : String) : String × Rng := Id.
       prevWasZeroLead := false
   return (String.ofList out.toList, cur)
 
-private def formatDecimalSci (neg : Bool) (mant : Nat) (exp10 : Int) : String :=
+private def formatDecimalSci (signStr : String) (upperE : Bool) (mant : Nat) (exp10 : Int) : String :=
+  let sep := if upperE then "E" else "e"
   if mant == 0 then
-    if neg then "-0.0" else "0.0"
+    s!"{signStr}0.0"
   else
     let ds := (natToDecString mant).toList
-    let signStr := if neg then "-" else ""
     match ds with
-    | [] => signStr ++ "0.0"
+    | [] => s!"{signStr}0.0"
     | [d] =>
       let expStr := if exp10 >= 0 then s!"+{exp10}" else s!"{exp10}"
-      s!"{signStr}{d}e{expStr}"
+      s!"{signStr}{d}{sep}{expStr}"
     | d :: rest =>
       let adjExp := exp10 + Int.ofNat rest.length
       let expStr := if adjExp >= 0 then s!"+{adjExp}" else s!"{adjExp}"
-      s!"{signStr}{String.singleton d}.{String.ofList rest}e{expStr}"
+      s!"{signStr}{String.singleton d}.{String.ofList rest}{sep}{expStr}"
 
-private def formatDecimalFixed? (neg : Bool) (mant : Nat) (exp10 : Int) : Option String :=
+private def formatDecimalFixed? (signStr : String) (mant : Nat) (exp10 : Int) : Option String :=
   if mant == 0 then
-    some (if neg then "-0.0" else "0.0")
+    some s!"{signStr}0.0"
   else
     let ds := natToDecString mant
     let len := ds.length
-    let signStr := if neg then "-" else ""
     if exp10 >= 0 then
       let pad := exp10.toNat
-      if len + pad + 4 <= 1050 then
+      if len + pad + 4 <= 1200 then
         some (signStr ++ ds ++ String.ofList (List.replicate pad '0') ++ ".0")
       else
         none
     else
       let k := (-exp10).toNat
       if k < len then
-        if len + 4 <= 1050 then
+        if len + 4 <= 1200 then
           let cs := ds.toList
           some (signStr ++ String.ofList (cs.take (len - k)) ++ "." ++ String.ofList (cs.drop (len - k)))
         else
           none
       else
         let zeros := k - len
-        if zeros + len + 4 <= 1050 then
+        if zeros + len + 4 <= 1200 then
           some (signStr ++ "0." ++ String.ofList (List.replicate zeros '0') ++ ds)
         else
           none
@@ -227,7 +248,8 @@ private def exactBinaryToDecimal (num : Nat) (pow2Exp : Int) : Nat × Int :=
 
 /-- Generate an exact binary64 midpoint or `±1`-ULP decimal string (Clinger/Paxson/Eisel-Lemire stress cases). -/
 def genExactMidpointString (r : Rng) : String × Rng :=
-  let (neg, r1) := r.nextBool
+  let (signKind, r1) := r.nextNat 4
+  let signStr := if signKind < 2 then "-" else if signKind == 2 then "+" else ""
   let (isSubnormal, r2) := r1.chance 1 3
   let (num, pow2Exp, r3) :=
     if isSubnormal then
@@ -259,14 +281,15 @@ def genExactMidpointString (r : Rng) : String × Rng :=
       let tweaked := if scaled > 0 then scaled - 1 else 0
       (tweaked, decExp10 - Int.ofNat pad, rA)
   let (useFixed, r6) := r5.chance 2 5
+  let (upperE, r6b) := r6.nextBool
   let raw :=
     if useFixed then
-      match formatDecimalFixed? neg finalMant finalExp with
+      match formatDecimalFixed? signStr finalMant finalExp with
       | some s => s
-      | none => formatDecimalSci neg finalMant finalExp
+      | none => formatDecimalSci signStr upperE finalMant finalExp
     else
-      formatDecimalSci neg finalMant finalExp
-  let (addUnder, r7) := r6.chance 1 5
+      formatDecimalSci signStr upperE finalMant finalExp
+  let (addUnder, r7) := r6b.chance 1 5
   if addUnder then
     insertValidUnderscores r7 raw
   else
@@ -284,10 +307,11 @@ private def invalidTomlLiterals : Array String := #[
   "00.5", "+01.2", "-00e1", "0_1.5", "0_0e0",
   "_1.0", "1_.0", "1._0", "1.0_", "1__0.0", "1.0__2", "1.0e_1", "1.0e+_1", "1.0e1_", "1.0e1__2",
   "1.5x", "1.5 ", "1.5\t", "1.5\n", "1.5\r", "1.5\x00", "1.5\x01", "1.5\x0b", "1.5\x0c", "1.5\x7f",
-  "infx", "+inf ", "nan(1)", "nan0", "1.5e2.3", "1.5_.",
-  "42", "-0", "+0", ".5", "1.", "1.e2", "1e", "1e+", "1e-",
+  "infx", "+inf ", "-inf ", "nan ", "nan(1)", "nan0", "1.5e2.3", "1.5_.",
+  "42", "-0", "+0", ".5", "+.5", "1.", "+1.", "1.e2", "1.E2", "1e", "1e+", "1e-",
   "Inf", "INF", "Infinity", "-Infinity", "NaN", "NAN",
-  "0x1.8p1", "-0x1p-2", " 1.5", "\t0.0", "+", "-", "\x00", "\x7f"
+  "0x1p0", "0x1.8p1", "-0x1p-2", "+0x1.0p0", "0x1.0p+10", "-0x1.fffffffffffffp1023",
+  " 1.5", "\t0.0", "+", "-", "\x00", "\x7f"
 ]
 
 private def extremeExponents : Array Int := #[
@@ -338,23 +362,25 @@ def genFloatString (r : Rng) : String × Rng :=
     r1.choose validTomlVariants "0.0"
   else if bucket < 55 then
     let (mode, r2) := r1.nextNat 3
-    let (neg, r3) := r2.nextBool
-    let signStr := if neg then "-" else ""
+    let (signKind, r3) := r2.nextNat 4
+    let signStr := if signKind < 2 then "-" else if signKind == 2 then "+" else ""
+    let (upperE, r3b) := r3.nextBool
+    let sep := if upperE then "E" else "e"
     if mode == 0 then
-      let (expVal, r4) := r3.choose extremeExponents 308
+      let (expVal, r4) := r3b.choose extremeExponents 308
       let (mant, r5) := r4.nextRange 1 999999999
-      (s!"{signStr}{mant}.5e{expVal}", r5)
+      (s!"{signStr}{mant}.5{sep}{expVal}", r5)
     else if mode == 1 then
-      let (hugeExp, r4) := r3.nextBool
+      let (hugeExp, r4) := r3b.nextBool
       if hugeExp then
-        (s!"{signStr}1.25e999999999999999999999", r4)
+        (s!"{signStr}1.25{sep}999999999999999999999", r4)
       else
-        (s!"{signStr}1.25e-999999999999999999999", r4)
+        (s!"{signStr}1.25{sep}-999999999999999999999", r4)
     else
-      let (k, r4) := r3.nextRange 1 400
+      let (k, r4) := r3b.nextRange 1 400
       let (d, r5) := r4.nextRange 1 9999
       let (expVal, r6) := r5.nextIntRange (-350) 350
-      let s := signStr ++ "0." ++ String.ofList (List.replicate k '0') ++ toString d ++ s!"e{expVal}"
+      let s := signStr ++ "0." ++ String.ofList (List.replicate k '0') ++ toString d ++ s!"{sep}{expVal}"
       (s, r6)
   else if bucket < 75 then
     r1.choose invalidTomlLiterals ""
@@ -373,23 +399,40 @@ def genFloatString (r : Rng) : String × Rng :=
       return (String.ofList out.toList, cur)
 
 private def genBinOpCase (r : Rng) : FloatFuzzCase × Rng :=
-  let (ua, r1) := genFloatBits r
-  let (corr, r2) := r1.chance 3 10
-  if corr then
-    let (kind, r3) := r2.nextNat 4
-    let ub :=
-      if kind == 0 then ua
-      else if kind == 1 then ua ^^^ 0x8000000000000000
-      else if kind == 2 then ua + 1
-      else ua - 1
-    (.checkBinOp ua ub, r3)
+  let (zeroPair, r0) := r.chance 1 25
+  if zeroPair then
+    let (flip, r1) := r0.nextBool
+    if flip then
+      (.checkBinOp 0x8000000000000000 0x0000000000000000, r1)
+    else
+      (.checkBinOp 0x0000000000000000 0x8000000000000000, r1)
   else
-    let (ub, r3) := genFloatBits r2
-    (.checkBinOp ua ub, r3)
+    let (ua, r1) := genFloatBits r0
+    let (corr, r2) := r1.chance 3 10
+    if corr then
+      let (kind, r3) := r2.nextNat 4
+      let ub :=
+        if kind == 0 then ua
+        else if kind == 1 then ua ^^^ 0x8000000000000000
+        else if kind == 2 then ua + 1
+        else ua - 1
+      (.checkBinOp ua ub, r3)
+    else
+      let (ub, r3) := genFloatBits r2
+      (.checkBinOp ua ub, r3)
 
 private def genFmaCase (r : Rng) : FloatFuzzCase × Rng :=
-  let (nearCancel, r1) := r.chance 2 5
-  if nearCancel then
+  let (mode, r1) := r.nextNat 10
+  if mode < 2 then
+    let (exp, r2) := r1.nextRange 1 2000
+    let (m1, r3) := r2.nextRange 1 0x000fffffffffffff
+    let (m2, r4) := r3.nextRange 1 0x000fffffffffffff
+    let ua : UInt64 := (UInt64.ofNat exp <<< 52) ||| UInt64.ofNat m1
+    let ub : UInt64 := (0x3ff0000000000000 : UInt64) ||| UInt64.ofNat m2
+    let prod := (Float.Model.ofBits ua).mul (Float.Model.ofBits ub)
+    let negProdBits := prod.toBits ^^^ 0x8000000000000000
+    (.checkFma ua ub negProdBits, r4)
+  else if mode < 6 then
     let (ua, r2) := genFloatBits r1
     let (ub, r3) := genFloatBits r2
     let prod := (Float.Model.ofBits ua).mul (Float.Model.ofBits ub)
@@ -555,11 +598,16 @@ def genFloatFuzzCase (r : Rng) : FloatFuzzCase × Rng :=
     let (sc, r4) := genScaleExp r3
     (.checkExtern u u32 sc, r4)
 
-/-- Deterministic regression corpus covering famous binary64 boundary literals, raw FFI NaNs, externs, and 300 KiB inputs. -/
+/--
+Deterministic regression corpus covering famous binary64 boundary literals, raw FFI NaNs, externs, and large inputs.
+Note: `"1." ++ 300000 * '0'` is deferred for follow-up once `NumParse.parseFloat` `O(N^2)` trailing-zero DoS is fixed;
+a bounded 1000-zero regression is included below.
+-/
 def smokeCases : Array FloatFuzzCase :=
   let pow5_1075 := 5 ^ 1075
   let dblMaxMid := ((1 <<< 54) - 1) * (1 <<< 970)
   let bigZeros := String.ofList (List.replicate 300000 '0')
+  let trailZeros := String.ofList (List.replicate 1000 '0')
   let bigJunk := String.ofList (List.replicate 300000 'a')
   #[
     .checkBits 0x0000000000000000,
@@ -606,6 +654,8 @@ def smokeCases : Array FloatFuzzCase :=
     .parseStr "9007199254740993.5",
     .parseStr "9007199254740993.0",
     .parseStr ("0." ++ bigZeros ++ "5e-323"),
+    .parseStr ("1." ++ trailZeros),
+    .parseStr ("1." ++ trailZeros ++ "5"),
     .parseStr ("1.0" ++ bigJunk),
     .parseStr "",
     .parseStr "00.5",
@@ -645,14 +695,16 @@ def smokeCases : Array FloatFuzzCase :=
     .checkBinOp 0x0010000000000000 0x0010000000000000,
     .checkBinOp 0x3ff0000000000000 0x0000000000000000,
     .checkBinOp 0x3ff0000000000000 0x4008000000000000,
-    .checkFma 0x3ff0000000000000 0x3ca0000000000000 0xbff0000000000000,
-    .checkFma 0x8010000000000000 0x0010000000000000 0x8000000000000000,
+    .checkBinOp 0x3ff0000000000000 0x401c000000000000,
+    .checkFma 0x3ff0000000000001 0x3feffffffffffffe 0xbff0000000000000,
+    .checkFma 0x8010000000000000 0x0010000000000000 0x0000000000000000,
     .checkIntConv 0x4045000000000000,
     .checkIntConv 0xbff0000000000000,
     .checkIntConv 0x4620000000000000,
     .checkIntConv 0x7ff8000000000000,
     .checkExtern 0x0000000000000000 0x00000000 0,
     .checkExtern 0x8000000000000000 0x80000000 (Int32.ofInt (-2147483648)),
+    .checkExtern 0xbff0000000000000 0xbf800000 (Int32.ofInt (-2147483648)),
     .checkExtern 0x0000000000000001 0x7f800000 1023,
     .checkExtern 0x3ff8000000000000 0xff800000 (Int32.ofInt (-1075)),
     .checkExtern 0xbff8000000000000 0x7fc00000 2147483647,

@@ -19,23 +19,24 @@ def mkErr (kind : TomlErrorKind) (msg : String)
     (line : Option Nat := none) (col : Option Nat := none) (path : Option String := none) : TomlError :=
   { kind := kind, message := nonEmptyMsg msg, line := line, col := col, path := path }
 
-/-- Validate input characters and normalize CRLF line endings to LF. -/
-def normalizeChars (line col : Nat) : List Char → Except TomlError (List Char)
-  | [] => .ok []
-  | '\r' :: '\n' :: rest => do
-    let tail ← normalizeChars (line + 1) 1 rest
-    .ok ('\n' :: tail)
+/-- Tail-recursive helper for `normalizeChars`, accumulating normalized characters in reverse order. -/
+def normalizeCharsAux (line col : Nat) (acc : List Char) : List Char → Except TomlError (List Char)
+  | [] => .ok acc.reverse
+  | '\r' :: '\n' :: rest =>
+    normalizeCharsAux (line + 1) 1 ('\n' :: acc) rest
   | '\r' :: _ =>
     .error (mkErr .invalidUtf8OrControl "bare carriage return is not allowed in TOML" (some line) (some col))
-  | '\n' :: rest => do
-    let tail ← normalizeChars (line + 1) 1 rest
-    .ok ('\n' :: tail)
+  | '\n' :: rest =>
+    normalizeCharsAux (line + 1) 1 ('\n' :: acc) rest
   | c :: rest =>
     if isDisallowedControl c then
       .error (mkErr .invalidUtf8OrControl "disallowed control character in TOML input" (some line) (some col))
-    else do
-      let tail ← normalizeChars line (col + 1) rest
-      .ok (c :: tail)
+    else
+      normalizeCharsAux line (col + 1) (c :: acc) rest
+
+/-- Validate input characters and normalize CRLF line endings to LF. -/
+def normalizeChars (line col : Nat) (cs : List Char) : Except TomlError (List Char) :=
+  normalizeCharsAux line col [] cs
 
 /-- Check whether `c` is horizontal TOML whitespace (`' '` or `'\t'`). -/
 def isHorizWs (c : Char) : Bool :=

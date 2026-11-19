@@ -14,7 +14,7 @@
       "legacy_unmigrated": false
     },
     "Fuzz/Float/c/float_oracle.c": {
-      "max_lines": 275,
+      "max_lines": 560,
       "legacy_unmigrated": false
     },
     "Fuzz/suites.json": {
