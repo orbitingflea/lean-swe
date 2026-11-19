@@ -345,9 +345,21 @@ def parseOffsetPart : List Char → Except TomlError Std.Time.TimeZone.Offset
     else .error (mkErr .parseError "invalid sign in RFC 3339 offset")
   | _ => .error (mkErr .parseError "invalid RFC 3339 timezone offset")
 
-/-- Attempt to classify and parse an unquoted token as one of the 4 RFC 3339 datetime kinds. -/
-def parseDateTimeToken (tok : String) : Option (Except TomlError TomlValue) :=
-  let cs := tok.toList
+/-- Internal char-list numeric parser interface avoiding `String.ofList`/`toList` ping-pong. -/
+structure CharNumApi where
+  /-- Parse an integer literal from characters. -/
+  parseInt64Chars : List Char → Except NumParseError Int64
+  /-- Parse a float literal from characters. -/
+  parseFloatChars : List Char → Except NumParseError Float
+
+/-- Lift a `NumParseApi` to `CharNumApi` at the outer boundary. -/
+def toCharNumApi (numApi : NumParseApi) : CharNumApi :=
+  { parseInt64Chars := fun cs => numApi.parseInt64 (String.ofList cs)
+  , parseFloatChars := fun cs => numApi.parseFloat (String.ofList cs)
+  }
+
+/-- Attempt to classify and parse an unquoted character token as one of the 4 RFC 3339 datetime kinds. -/
+def parseDateTimeChars (cs : List Char) : Option (Except TomlError TomlValue) :=
   if hasDatePrefix cs then
     match parseDatePart cs with
     | .error e => some (.error e)
@@ -368,7 +380,7 @@ def parseDateTimeToken (tok : String) : Option (Except TomlError TomlValue) :=
     | .error e => some (.error e)
     | .ok (tm, []) => some (.ok (.localTime tm))
     | .ok (_, _ :: _) => some (.error (mkErr .parseError "unexpected trailing characters in local time"))
-  else if tok.toList.contains ':' then
+  else if cs.contains ':' then
     some (.error (mkErr .parseError "malformed time literal"))
   else
     none
@@ -384,8 +396,8 @@ def takeNonDelim (acc : List Char) : List Char → List Char × List Char
     else takeNonDelim (c :: acc) rest
   | [] => (acc.reverse, [])
 
-/-- Consume an unquoted scalar token, allowing a single `0x20` space separator in `YYYY-MM-DD HH:MM:SS...`. -/
-def takeUnquotedToken (cs : List Char) : String × List Char :=
+/-- Consume an unquoted scalar token as `List Char`, allowing a single `0x20` space separator in `YYYY-MM-DD HH:MM:SS...`. -/
+def takeUnquotedTokenChars (cs : List Char) : List Char × List Char :=
   match cs with
   | y1 :: y2 :: y3 :: y4 :: '-' :: m1 :: m2 :: '-' :: d1 :: d2 :: ' ' ::
       h1 :: h2 :: ':' :: min1 :: min2 :: ':' :: s1 :: s2 :: rest =>
@@ -395,56 +407,55 @@ def takeUnquotedToken (cs : List Char) : String × List Char :=
        isAsciiDigit s1 && isAsciiDigit s2 then
       let pfx := [y1, y2, y3, y4, '-', m1, m2, '-', d1, d2, ' ', h1, h2, ':', min1, min2, ':', s1, s2]
       let (tail, after) := takeNonDelim [] rest
-      (String.ofList (pfx ++ tail), after)
+      (pfx ++ tail, after)
     else
-      let (tok, after) := takeNonDelim [] cs
-      (String.ofList tok, after)
+      takeNonDelim [] cs
   | _ =>
-    let (tok, after) := takeNonDelim [] cs
-    (String.ofList tok, after)
+    takeNonDelim [] cs
 
 /-- Map `NumParseError` to `TomlError` (`overflow` -> `.numericOverflow`, others -> `.parseError`). -/
 def mapNumParseErr (e : NumParseError) : TomlError :=
   let kind := if e.kind == .overflow then TomlErrorKind.numericOverflow else TomlErrorKind.parseError
   mkErr kind e.message
 
-/-- Check whether an integer token begins with a forbidden uppercase base prefix `0X`/`0O`/`0B`. -/
-def hasUppercaseBasePrefix (tok : String) : Bool :=
-  tok.startsWith "0X" || tok.startsWith "0O" || tok.startsWith "0B" ||
-  tok.startsWith "+0X" || tok.startsWith "+0O" || tok.startsWith "+0B" ||
-  tok.startsWith "-0X" || tok.startsWith "-0O" || tok.startsWith "-0B"
+/-- Check whether an integer char token begins with a forbidden uppercase base prefix `0X`/`0O`/`0B`. -/
+def hasUppercaseBasePrefixChars : List Char → Bool
+  | '0' :: 'X' :: _ | '0' :: 'O' :: _ | '0' :: 'B' :: _
+  | '+' :: '0' :: 'X' :: _ | '+' :: '0' :: 'O' :: _ | '+' :: '0' :: 'B' :: _
+  | '-' :: '0' :: 'X' :: _ | '-' :: '0' :: 'O' :: _ | '-' :: '0' :: 'B' :: _ => true
+  | _ => false
 
-/-- Check whether an unquoted token should be routed to float parsing rather than integer parsing. -/
-def isFloatTokenCandidate (tok : String) : Bool :=
+/-- Check whether an unquoted char token routes to float parsing rather than integer parsing. -/
+def isFloatTokenCandidateChars (cs : List Char) : Bool :=
   let isSpecial :=
-    tok == "inf" || tok == "+inf" || tok == "-inf" ||
-    tok == "nan" || tok == "+nan" || tok == "-nan"
+    cs == ['i', 'n', 'f'] || cs == ['+', 'i', 'n', 'f'] || cs == ['-', 'i', 'n', 'f'] ||
+    cs == ['n', 'a', 'n'] || cs == ['+', 'n', 'a', 'n'] || cs == ['-', 'n', 'a', 'n']
   let hasHexPrefix :=
-    tok.startsWith "0x" || tok.startsWith "0X" ||
-    tok.startsWith "+0x" || tok.startsWith "-0x" ||
-    tok.startsWith "+0X" || tok.startsWith "-0X"
-  isSpecial || (!hasHexPrefix && (tok.toList.contains '.' || tok.toList.contains 'e' || tok.toList.contains 'E'))
+    match cs with
+    | '0' :: 'x' :: _ | '0' :: 'X' :: _
+    | '+' :: '0' :: 'x' :: _ | '-' :: '0' :: 'x' :: _
+    | '+' :: '0' :: 'X' :: _ | '-' :: '0' :: 'X' :: _ => true
+    | _ => false
+  isSpecial || (!hasHexPrefix && (cs.contains '.' || cs.contains 'e' || cs.contains 'E'))
 
-/-- Classify and parse an unquoted TOML scalar token using `numApi`. -/
-def classifyScalarToken (numApi : NumParseApi) (tok : String) : Except TomlError TomlValue :=
-  if tok.isEmpty then
-    .error (mkErr .parseError "expected TOML value")
-  else if tok == "true" then
-    .ok (.bool true)
-  else if tok == "false" then
-    .ok (.bool false)
-  else
-    match parseDateTimeToken tok with
+/-- Classify and parse an unquoted TOML scalar character token using `numApi`. -/
+def classifyScalarChars (numApi : CharNumApi) (cs : List Char) : Except TomlError TomlValue :=
+  match cs with
+  | [] => .error (mkErr .parseError "expected TOML value")
+  | ['t', 'r', 'u', 'e'] => .ok (.bool true)
+  | ['f', 'a', 'l', 's', 'e'] => .ok (.bool false)
+  | _ =>
+    match parseDateTimeChars cs with
     | some res => res
     | none =>
-      if isFloatTokenCandidate tok then
-        match numApi.parseFloat tok with
+      if isFloatTokenCandidateChars cs then
+        match numApi.parseFloatChars cs with
         | .ok f => .ok (.float f)
         | .error e => .error (mapNumParseErr e)
-      else if hasUppercaseBasePrefix tok then
+      else if hasUppercaseBasePrefixChars cs then
         .error (mkErr .parseError "uppercase integer base prefix is not allowed in TOML")
       else
-        match numApi.parseInt64 tok with
+        match numApi.parseInt64Chars cs with
         | .ok n => .ok (.int n)
         | .error e => .error (mapNumParseErr e)
 
@@ -558,7 +569,7 @@ def insertDottedEntries (fullPath : List String) :
 
 mutual
   /-- Fuel-indexed value parser covering strings, arrays, inline tables, booleans, datetimes, floats, and ints. -/
-  def parseValueFuel (numApi : NumParseApi) : Nat → List Char → Except TomlError (TomlValue × List Char)
+  def parseValueFuel (numApi : CharNumApi) : Nat → List Char → Except TomlError (TomlValue × List Char)
     | 0, _ => .error (mkErr .parseError "TOML value nesting exceeded parser fuel")
     | fuel + 1, cs =>
       match cs with
@@ -580,12 +591,12 @@ mutual
         | '}' :: afterClose => .ok (.table #[], afterClose)
         | other => parseInlineTableFuel numApi fuel other []
       | _ => do
-        let (tok, after) := takeUnquotedToken cs
-        let v ← classifyScalarToken numApi tok
+        let (tok, after) := takeUnquotedTokenChars cs
+        let v ← classifyScalarChars numApi tok
         .ok (v, after)
 
   /-- Fuel-indexed array parser supporting multiline whitespace, `#` comments, and trailing commas. -/
-  def parseArrayFuel (numApi : NumParseApi) : Nat → List Char → List TomlValue → Except TomlError (TomlValue × List Char)
+  def parseArrayFuel (numApi : CharNumApi) : Nat → List Char → List TomlValue → Except TomlError (TomlValue × List Char)
     | 0, _, _ => .error (mkErr .parseError "unterminated TOML array")
     | fuel + 1, cs, revAcc =>
       match skipTriviaNewlines cs with
@@ -601,7 +612,7 @@ mutual
         | _ => .error (mkErr .parseError "expected ',' or ']' in TOML array")
 
   /-- Fuel-indexed single-line inline table parser allowing dotted keys and forbidding trailing commas or structural newlines. -/
-  def parseInlineTableFuel (numApi : NumParseApi) :
+  def parseInlineTableFuel (numApi : CharNumApi) :
       Nat → List Char → List (String × Node) → Except TomlError (TomlValue × List Char)
     | 0, _, _ => .error (mkErr .parseError "unterminated inline table")
     | fuel + 1, cs, entries => do
@@ -625,7 +636,7 @@ mutual
 end
 
 /-- Parse a TOML value starting at the head of `cs`. -/
-def parseValue (numApi : NumParseApi) (cs : List Char) : Except TomlError (TomlValue × List Char) :=
+def parseValue (numApi : CharNumApi) (cs : List Char) : Except TomlError (TomlValue × List Char) :=
   parseValueFuel numApi (cs.length + 2) cs
 
 /-- Update the last element of an `[[aot]]` list. -/
@@ -639,77 +650,56 @@ def mapLastAot (f : List (String × Node) → Except TomlError (List (String × 
     let rest ← mapLastAot f tl
     .ok (hd :: rest)
 
-/-- Traverse or open a `[table]` header along `path`, enforcing 4-state provenance rules. -/
-def applyTableHeader (fullPath : List String) :
-    List (String × Node) → List String → Except TomlError (List (String × Node))
-  | _, [] => .error (mkErr .parseError "empty table header path")
-  | entries, [k] =>
-    match assocLookupNode k entries with
-    | none => .ok (assocSetNode k (.table .explicit []) entries)
-    | some (.table .subtableImplicit sub) => .ok (assocSetNode k (.table .explicit sub) entries)
-    | some (.table .inline _) =>
-      .error (mkErr .immutableInlineTable ("cannot reopen inline table: " ++ joinPath fullPath)
-        (path := some (joinPath fullPath)))
-    | some (.leaf (.table _)) =>
-      .error (mkErr .immutableInlineTable ("cannot reopen inline table: " ++ joinPath fullPath)
-        (path := some (joinPath fullPath)))
-    | some _ =>
-      .error (mkErr .redefinedTable ("table already defined: " ++ joinPath fullPath)
-        (path := some (joinPath fullPath)))
-  | entries, k :: rest =>
-    match assocLookupNode k entries with
-    | none => do
-      let sub ← applyTableHeader fullPath [] rest
-      .ok (assocSetNode k (.table .subtableImplicit sub) entries)
-    | some (.table .inline _) =>
-      .error (mkErr .immutableInlineTable ("cannot traverse inline table: " ++ joinPath fullPath)
-        (path := some (joinPath fullPath)))
-    | some (.leaf (.table _)) =>
-      .error (mkErr .immutableInlineTable ("cannot traverse inline table: " ++ joinPath fullPath)
-        (path := some (joinPath fullPath)))
-    | some (.table kind sub) => do
-      let nextSub ← applyTableHeader fullPath sub rest
-      .ok (assocSetNode k (.table kind nextSub) entries)
-    | some (.aot elems) => do
-      let nextElems ← mapLastAot (fun elem => applyTableHeader fullPath elem rest) elems
-      .ok (assocSetNode k (.aot nextElems) entries)
-    | some (.leaf _) =>
-      .error (mkErr .redefinedTable ("cannot traverse non-table value in header: " ++ k)
-        (path := some (joinPath fullPath)))
+/-- Leaf action applied at the final key segment of a `[table]` or `[[aot]]` header. -/
+inductive HeaderMode where
+  /-- Standard `[table]` header. -/
+  | table
+  /-- Array-of-tables `[[aot]]` header. -/
+  | aot
+  deriving Repr, BEq, DecidableEq
 
-/-- Traverse or append an `[[array_of_tables]]` header along `path`. -/
-def applyAotHeader (fullPath : List String) :
+/-- Apply the leaf update of a `[table]` or `[[aot]]` header at key `k`. -/
+def applyHeaderLeaf (mode : HeaderMode) (fullPath : List String)
+    (entries : List (String × Node)) (k : String) : Except TomlError (List (String × Node)) :=
+  match mode, assocLookupNode k entries with
+  | .table, none => .ok (assocSetNode k (.table .explicit []) entries)
+  | .table, some (.table .subtableImplicit sub) => .ok (assocSetNode k (.table .explicit sub) entries)
+  | .table, some (.table .inline _) | .table, some (.leaf (.table _)) =>
+    .error (mkErr .immutableInlineTable ("cannot reopen inline table: " ++ joinPath fullPath)
+      (path := some (joinPath fullPath)))
+  | .table, some _ =>
+    .error (mkErr .redefinedTable ("table already defined: " ++ joinPath fullPath)
+      (path := some (joinPath fullPath)))
+  | .aot, none => .ok (assocSetNode k (.aot [[]]) entries)
+  | .aot, some (.aot elems) => .ok (assocSetNode k (.aot (elems ++ [[]])) entries)
+  | .aot, some (.table .inline _) | .aot, some (.leaf (.table _)) =>
+    .error (mkErr .immutableInlineTable ("cannot append to inline table as array of tables: " ++ joinPath fullPath)
+      (path := some (joinPath fullPath)))
+  | .aot, some _ =>
+    .error (mkErr .redefinedTable ("cannot redefine non-AoT entry as array of tables: " ++ joinPath fullPath)
+      (path := some (joinPath fullPath)))
+
+/-- Traverse along `path` and apply `applyHeaderLeaf mode` at the final key. -/
+def applyHeader (mode : HeaderMode) (fullPath : List String) :
     List (String × Node) → List String → Except TomlError (List (String × Node))
-  | _, [] => .error (mkErr .parseError "empty array-of-tables header path")
-  | entries, [k] =>
-    match assocLookupNode k entries with
-    | none => .ok (assocSetNode k (.aot [[]]) entries)
-    | some (.aot elems) => .ok (assocSetNode k (.aot (elems ++ [[]])) entries)
-    | some (.table .inline _) =>
-      .error (mkErr .immutableInlineTable ("cannot append to inline table as array of tables: " ++ joinPath fullPath)
-        (path := some (joinPath fullPath)))
-    | some (.leaf (.table _)) =>
-      .error (mkErr .immutableInlineTable ("cannot append to inline table as array of tables: " ++ joinPath fullPath)
-        (path := some (joinPath fullPath)))
-    | some _ =>
-      .error (mkErr .redefinedTable ("cannot redefine non-AoT entry as array of tables: " ++ joinPath fullPath)
-        (path := some (joinPath fullPath)))
-  | entries, k :: rest =>
+  | _, [] =>
+    .error (mkErr .parseError (match mode with
+      | .table => "empty table header path"
+      | .aot => "empty array-of-tables header path"))
+  | entries, [k] => applyHeaderLeaf mode fullPath entries k
+  | entries, k :: k' :: rest =>
     match assocLookupNode k entries with
     | none => do
-      let sub ← applyAotHeader fullPath [] rest
+      let sub ← applyHeader mode fullPath [] (k' :: rest)
       .ok (assocSetNode k (.table .subtableImplicit sub) entries)
-    | some (.table .inline _) =>
-      .error (mkErr .immutableInlineTable ("cannot traverse inline table: " ++ joinPath fullPath)
-        (path := some (joinPath fullPath)))
-    | some (.leaf (.table _)) =>
+    | some (.table .inline _) | some (.leaf (.table _)) =>
       .error (mkErr .immutableInlineTable ("cannot traverse inline table: " ++ joinPath fullPath)
         (path := some (joinPath fullPath)))
     | some (.table kind sub) => do
-      let nextSub ← applyAotHeader fullPath sub rest
+      let nextSub ← applyHeader mode fullPath sub (k' :: rest)
       .ok (assocSetNode k (.table kind nextSub) entries)
     | some (.aot elems) => do
-      let nextElems ← mapLastAot (fun elem => applyAotHeader fullPath elem rest) elems
+      let nextElems ← mapLastAot (fun elem => applyHeader mode fullPath elem (k' :: rest)) elems
       .ok (assocSetNode k (.aot nextElems) entries)
     | some (.leaf _) =>
       .error (mkErr .redefinedTable ("cannot traverse non-table value in header: " ++ k)
@@ -738,7 +728,7 @@ def consumeStatementEnd (cs : List Char) : Except TomlError (List Char) :=
   | _ => .error (mkErr .parseError "unexpected trailing characters after TOML statement")
 
 /-- Fuel-indexed top-level TOML statement loop. -/
-def parseDocumentFuel (numApi : NumParseApi) :
+def parseDocumentFuel (numApi : CharNumApi) :
     Nat → List Char → List String → List (String × Node) → Except TomlError (List (String × Node))
   | 0, cs, _, root =>
     match skipTriviaNewlines cs with
@@ -752,7 +742,7 @@ def parseDocumentFuel (numApi : NumParseApi) :
       match skipHorizWs r1 with
       | ']' :: ']' :: r2 => do
         let nextCs ← consumeStatementEnd r2
-        let nextRoot ← applyAotHeader path root path
+        let nextRoot ← applyHeader .aot path root path
         parseDocumentFuel numApi fuel nextCs path nextRoot
       | _ => .error (mkErr .parseError "expected ']]' closing array-of-tables header")
     | '[' :: rest => do
@@ -760,7 +750,7 @@ def parseDocumentFuel (numApi : NumParseApi) :
       match skipHorizWs r1 with
       | ']' :: r2 => do
         let nextCs ← consumeStatementEnd r2
-        let nextRoot ← applyTableHeader path root path
+        let nextRoot ← applyHeader .table path root path
         parseDocumentFuel numApi fuel nextCs path nextRoot
       | _ => .error (mkErr .parseError "expected ']' closing table header")
     | cs1 => do
@@ -773,11 +763,15 @@ def parseDocumentFuel (numApi : NumParseApi) :
         parseDocumentFuel numApi fuel nextCs activePath nextRoot
       | _ => .error (mkErr .parseError "expected '=' after key")
 
-/-- Pure TOML 1.0 parser parameterized over `NumParseApi`. -/
-def parseWithNum (numApi : NumParseApi) (input : String) : Except TomlError TomlTable := do
-  let normalized ← normalizeChars 1 1 input.toList
+/-- Parse already-decoded character list using `CharNumApi`. -/
+def parseCharsWithNum (numApi : CharNumApi) (cs : List Char) : Except TomlError TomlTable := do
+  let normalized ← normalizeChars 1 1 cs
   let root ← parseDocumentFuel numApi (normalized.length + 1) normalized [] []
   .ok (entriesToTomlList root).toArray
+
+/-- Pure TOML 1.0 parser parameterized over `NumParseApi`. -/
+def parseWithNum (numApi : NumParseApi) (input : String) : Except TomlError TomlTable :=
+  parseCharsWithNum (toCharNumApi numApi) input.toList
 
 /-- Format a key using bare syntax when ASCII bare-valid, or basic escaped quotes otherwise. -/
 def formatKey (k : String) : String :=
