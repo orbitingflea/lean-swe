@@ -13,8 +13,12 @@
       "max_lines": 205,
       "legacy_unmigrated": false
     },
+    "Fuzz/Float/c/float_oracle.c": {
+      "max_lines": 275,
+      "legacy_unmigrated": false
+    },
     "Fuzz/suites.json": {
-      "max_lines": 17,
+      "max_lines": 26,
       "legacy_unmigrated": false
     },
     "LeanSwe/ConnectProxy/Raw/c/cproxy_shim.c": {

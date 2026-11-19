@@ -1,4 +1,5 @@
 import Fuzz.Common.Suite
+import Fuzz.Float.Suite
 import Fuzz.SelfTest
 
 namespace Fuzz.Main
@@ -20,7 +21,8 @@ structure CliOptions where
   deriving Repr
 
 private def registeredSuites : List FuzzSuite := [
-  Fuzz.SelfTest.suite
+  Fuzz.SelfTest.suite,
+  Fuzz.Float.suite
 ]
 
 private def parsePositiveNat (flag val : String) : Except String Nat :=

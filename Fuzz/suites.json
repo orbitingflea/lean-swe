@@ -4,13 +4,22 @@
     "Fuzz/Common/",
     "Fuzz/Main.lean",
     "Fuzz/SelfTest.lean",
+    "lake-manifest.json",
     "lakefile.lean",
-    "lean-toolchain"
+    "lean-toolchain",
+    "scripts/fuzz_changed.py"
   ],
   "suites": {
     "selftest": {
       "paths": [
         "Fuzz/SelfTest.lean"
+      ]
+    },
+    "float": {
+      "paths": [
+        "Fuzz/Float/",
+        "LeanSwe/NumParse/",
+        "LeanSwe/Toml/"
       ]
     }
   }

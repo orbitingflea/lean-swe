@@ -179,6 +179,16 @@ extern_lib «leanswe_linux_timerand_fuzz» pkg := do
   let name := nameToStaticLib "leanswe_linux_timerand_fuzz"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
+extern_lib «leanswe_float_fuzz_oracle» pkg := do
+  let oFile := pkg.buildDir / "c" / "float_fuzz_oracle.o"
+  let srcJob ← inputTextFile (pkg.dir / "Fuzz" / "Float" / "c" / "float_oracle.c")
+  let lean ← getLeanInstall
+  let oJob ← buildO oFile srcJob
+    #["-I", lean.includeDir.toString]
+    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror", "-fno-fast-math"]
+  let name := nameToStaticLib "leanswe_float_fuzz_oracle"
+  buildStaticLib (pkg.staticLibDir / name) #[oJob]
+
 @[default_target, test_driver]
 lean_exe «lean-swe-test» where
   root := `Tests.Main
