@@ -342,14 +342,24 @@ def assume_sandbox_setrlimit_curMaxAndHardCap : IO Unit := do
       | .ok p => pure p
       | .error e => throw (IO.userError s!"getRlimit(nofile) failed: {e}")
     let safeHigh := if curMaxNofile > 64 then 64 else curMaxNofile
+    let gap0 ← match ← memfdCreate "g0".toUTF8 {} with
+      | .ok fd => pure fd
+      | .error e => throw (IO.userError s!"g0 memfd failed: {e}")
+    let gap1 ← match ← memfdCreate "g1".toUTF8 {} with
+      | .ok fd => pure fd
+      | .error e => throw (IO.userError s!"g1 memfd failed: {e}")
+    let g1Raw ← SandboxEnv.peekRawFd gap1
     let mut kept : Array RawFd := #[]
     for _ in List.range 4 do
       let f ← match ← memfdCreate "keep".toUTF8 {} with
         | .ok fd => pure fd
         | .error e => throw (IO.userError s!"keep memfd failed: {e}")
       kept := kept.push f
+    closeFdChecked gap0
+    closeFdChecked gap1
     SandboxEnv.closeLowFdsSafe kept
-    let targetNofile : UInt64 := if safeHigh > 12 then 12 else safeHigh
+    let minCap := g1Raw.toUInt64 + 1
+    let targetNofile : UInt64 := if safeHigh > minCap then minCap else safeHigh
     assertTrue ((← setrlimit .nofile targetNofile safeHigh) == .ok ()) "setrlimit nofile gap"
     let gapMemfd ← match ← memfdCreate "gap".toUTF8 {} with
       | .ok fd => pure fd
