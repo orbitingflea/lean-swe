@@ -36,6 +36,7 @@ import LeanSwe.SlotPool.RuntimeTests
 import LeanSwe.LinuxSyscall.Sandbox.RuntimeTests
 import LeanSwe.LinuxSyscall.TimeRand.RuntimeTests
 import LeanSwe.LinuxSyscall.Passwd.RuntimeTests
+import LeanSwe.LinuxSyscall.Dns.RuntimeTests
 
 open LeanSwe
 open Core.PropCheck
@@ -569,6 +570,44 @@ private def runCmdLineMutateExtra : IO Unit := do
   checkB "confirm bad 1 msg" (mockConfBad.1 == .error { kind := .invalidValue, message := "exceeded maximum confirmation attempts" })
   checkB "stripCrLf" (CmdLine.Internal.stripTrailingNewline "ab\r\n" == "ab" && CmdLine.Internal.stripTrailingNewline "ab\r" == "ab" && CmdLine.Internal.stripTrailingNewline "ab\n" == "ab")
 
+private def runDnsUnitTests : IO Unit := do
+  let checkB (label : String) (cond : Bool) : IO Unit := do
+    if !cond then throw (IO.userError s!"{label} failed")
+  match ← LinuxSyscall.Dns.getaddrinfo "" with
+  | .error e =>
+    checkB "dns empty invalidHost" (e.kind == .invalidHost && e.gaiCode == LinuxSyscall.Dns.EAI_NONAME)
+  | .ok _ => throw (IO.userError "dns empty unexpectedly succeeded")
+  match ← LinuxSyscall.Dns.getaddrinfo "a\x00b" with
+  | .error e =>
+    checkB "dns nul invalidHost" (e.kind == .invalidHost && e.gaiCode == LinuxSyscall.Dns.EAI_NONAME)
+  | .ok _ => throw (IO.userError "dns nul unexpectedly succeeded")
+  checkB "dns 127.0.0.1" ((← LinuxSyscall.Dns.getaddrinfo "127.0.0.1") == .ok [.ipv4 127 0 0 1])
+  checkB "dns ::1" ((← LinuxSyscall.Dns.getaddrinfo "::1") == .ok [.ipv6 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0])
+  checkB "dns ::ffff:127.0.0.1 any"
+    ((← LinuxSyscall.Dns.getaddrinfo "::ffff:127.0.0.1" { family := .ipv4, sockType := .any }) ==
+      .ok [.ipv4 127 0 0 1, .ipv4 127 0 0 1, .ipv4 127 0 0 1])
+  match ← LinuxSyscall.Dns.getaddrinfo "fe80::1%lo" with
+  | .ok addrs => checkB "dns scoped fe80::1%lo" (!addrs.isEmpty && addrs.all fun a => a.isIpv6 && !a.isUnscoped)
+  | .error e => throw (IO.userError s!"dns fe80::1%lo failed: {repr e}")
+  match ← LinuxSyscall.Dns.getaddrinfo "bad host" with
+  | .error e => checkB "dns bad host" (e.kind == .nameNotFound)
+  | .ok _ => throw (IO.userError "dns bad host unexpectedly succeeded")
+  let addrs : List LinuxSyscall.Dns.DnsAddr :=
+    [.ipv4 10 0 0 1, .ipv6 0xfe 0x80 0 0 0 0 0 0 0 0 0 0 0 0 0 1 7]
+  checkB "dns codec roundtrip"
+    (LinuxSyscall.Dns.Internal.decodeRecords (LinuxSyscall.Dns.Internal.encodeRecords addrs) == .ok addrs)
+  let mockSys := LinuxSyscall.Dns.Internal.mkDnsOps
+    { getaddrinfo := fun _ _ _ => pure (.error (LinuxSyscall.Dns.EAI_SYSTEM, LinuxSyscall.Errno.ENOENT, "mock sys".toUTF8)) }
+  match ← mockSys.getaddrinfo "example.invalid" {} with
+  | .error e =>
+    checkB "dns mock EAI_SYSTEM" (e.kind == .systemError && e.errno? == some LinuxSyscall.Errno.ENOENT && e.message == "mock sys")
+  | .ok _ => throw (IO.userError "dns mock EAI_SYSTEM unexpectedly succeeded")
+  let mockBadUtf8 := LinuxSyscall.Dns.Internal.mkDnsOps
+    { getaddrinfo := fun _ _ _ => pure (.error (LinuxSyscall.Dns.EAI_FAIL, 0, ByteArray.mk #[0xff, 0xfe])) }
+  match ← mockBadUtf8.getaddrinfo "example.invalid" {} with
+  | .error e => checkB "dns mock non-utf8" (e.kind == .nameNotFound && e.gaiCode == LinuxSyscall.Dns.EAI_FAIL && e.message == "<non-utf8:2B>")
+  | .ok _ => throw (IO.userError "dns mock non-utf8 unexpectedly succeeded")
+
 private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("RegExp", do RegExp.RuntimeTests.runAll; smokeRegExp; return none, pure ()),
   ("Glob", do Glob.RuntimeTests.runAll; return none, pure ()),
@@ -601,7 +640,8 @@ private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("SlotPool", do SlotPool.RuntimeTests.runAll; return none, pure ()),
   ("LinuxSyscall.Sandbox", do LinuxSyscall.Sandbox.RuntimeTests.runAll; return none, pure ()),
   ("LinuxSyscall.TimeRand", do LinuxSyscall.TimeRand.RuntimeTests.runAll; return none, pure ()),
-  ("LinuxSyscall.Passwd", do LinuxSyscall.Passwd.RuntimeTests.runAll; return none, pure ())
+  ("LinuxSyscall.Passwd", do LinuxSyscall.Passwd.RuntimeTests.runAll; return none, pure ()),
+  ("LinuxSyscall.Dns", do LinuxSyscall.Dns.RuntimeTests.runAll; return none, runDnsUnitTests)
 ]
 
 private structure MutateFlags where

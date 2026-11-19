@@ -49,7 +49,8 @@ private def allSuites : Array (String × String × IO (Option String)) := #[
   ("SlotPool", "LeanSwe/SlotPool/RuntimeTests.lean", do SlotPool.RuntimeTests.runAll; return none),
   ("LinuxSyscall.Sandbox", "LeanSwe/LinuxSyscall/Sandbox/RuntimeTests.lean", do LinuxSyscall.Sandbox.RuntimeTests.runAll; return none),
   ("LinuxSyscall.TimeRand", "LeanSwe/LinuxSyscall/TimeRand/RuntimeTests.lean", do LinuxSyscall.TimeRand.RuntimeTests.runAll; return none),
-  ("LinuxSyscall.Passwd", "LeanSwe/LinuxSyscall/Passwd/RuntimeTests.lean", do LinuxSyscall.Passwd.RuntimeTests.runAll; return none)
+  ("LinuxSyscall.Passwd", "LeanSwe/LinuxSyscall/Passwd/RuntimeTests.lean", do LinuxSyscall.Passwd.RuntimeTests.runAll; return none),
+  ("LinuxSyscall.Dns", "LeanSwe/LinuxSyscall/Dns/RuntimeTests.lean", do LinuxSyscall.Dns.RuntimeTests.runAll; return none)
 ]
 
 private def findUnregisteredRuntimeTests : IO (Array String) := do

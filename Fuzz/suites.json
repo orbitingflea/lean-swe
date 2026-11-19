@@ -17,6 +17,7 @@
     "cmdline": { "paths": ["Fuzz/CmdLine/", "LeanSwe/CmdLine/", "LeanSwe/EnvVars/", "LeanSwe/LinuxSyscall/c/timerand_fuzz_sig.c"] },
     "envvars": { "paths": ["LeanSwe/EnvVars/", "Fuzz/EnvVars/"] },
     "cryptohash": { "paths": ["LeanSwe/CryptoHash/", "Fuzz/CryptoHash/"] },
-    "passwd": { "paths": ["Fuzz/Passwd/", "LeanSwe/LinuxSyscall/c/passwd_shim.c", "LeanSwe/LinuxSyscall/Common/", "LeanSwe/LinuxSyscall/Passwd/"] }
+    "passwd": { "paths": ["Fuzz/Passwd/", "LeanSwe/LinuxSyscall/c/passwd_shim.c", "LeanSwe/LinuxSyscall/Common/", "LeanSwe/LinuxSyscall/Passwd/"] },
+    "dns": { "paths": ["Fuzz/Dns/", "LeanSwe/LinuxSyscall/Dns/", "LeanSwe/LinuxSyscall/Common/", "LeanSwe/LinuxSyscall/c/dns_shim.c"] }
   }
 }

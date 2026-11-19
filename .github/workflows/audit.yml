@@ -144,8 +144,8 @@ jobs:
           else
             echo "::warning::sudo -n sysctl unavailable; skipping vm.memfd_noexec={1,2} strict checks"
           fi
-          .lake/build/bin/lean-swe-test --timerand-strace-fault-check && .lake/build/bin/lean-swe-test --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite LinuxSyscall.Passwd 0<&- 1>&- 2>&-
-          .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.TimeRand,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd
+          .lake/build/bin/lean-swe-test --timerand-strace-fault-check && .lake/build/bin/lean-swe-test --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite LinuxSyscall.Passwd --suite LinuxSyscall.Dns 0<&- 1>&- 2>&-
+          .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.TimeRand,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns
           .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --self-test-shrink
           .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --random-seed --self-test-shrink
           python3 -B -m unittest scripts/test_fuzz_changed.py

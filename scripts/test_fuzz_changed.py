@@ -91,7 +91,8 @@ class FuzzChangedUnitTests(unittest.TestCase):
         self.assertIn(".github/actions/install-lean/action.yml", manifest.common_paths)
         by_name = {s.name: s for s in manifest.suites}
         self.assertIn("selftest", by_name); self.assertIn("float", by_name); self.assertIn("cmdline", by_name)
-        self.assertIn("envvars", by_name); self.assertIn("cryptohash", by_name)
+        self.assertIn("envvars", by_name); self.assertIn("cryptohash", by_name); self.assertIn("dns", by_name)
+        self.assertIn("Core/", manifest.common_paths)
         self.assertIn("passwd", by_name)
         self.assertIn("LeanSwe/LinuxSyscall/Passwd/", by_name["passwd"].paths)
         self.assertIn("LeanSwe/LinuxSyscall/c/passwd_shim.c", by_name["passwd"].paths)
