@@ -15,7 +15,13 @@ private def failWith {α : Type} (msg : String) : IO α :=
 @[extern "leanswe_fuzz_install_seccomp_errno"]
 private opaque installSeccompErrnoRaw (eno : UInt32) (mask : UInt32) : BaseIO UInt32
 
-/-- Install a thread-scoped `SECCOMP_RET_ERRNO` BPF filter in forked runtime-test children (`1 ≤ eno ≤ 4095`). -/
+@[extern "leanswe_sys_clock_gettime"]
+private opaque rawClockGettimeForTest : UInt32 → BaseIO (Except Errno (Int64 × UInt32))
+
+@[extern "leanswe_sys_clock_nanosleep"]
+private opaque rawClockNanosleepForTest : UInt32 → UInt8 → Int64 → UInt32 → BaseIO (Except Errno Unit)
+
+/-- Install a process-wide (`TSYNC`) `SECCOMP_RET_ERRNO` BPF filter in forked runtime-test children (`1 ≤ eno ≤ 4095`). -/
 def installSeccompErrnoForTest (eno : Errno) (mask : UInt32 := 7) : BaseIO UInt32 :=
   installSeccompErrnoRaw eno mask
 
@@ -54,7 +60,7 @@ def assume_timerand_clockGettime_realtimeAndMonotonic : IO Unit := do
   expectOk "clock_nanosleep 10us for monotonic check"
     (← clock_nanosleep .monotonic false { sec := 0, nsec := 10000 })
   let m2 ← expectOk "clock_gettime monotonic after 10us sleep" (← clock_gettime .monotonic)
-  assertTrue "monotonic after sleep ≥ prior" (m1.toNanosNat ≤ m2.toNanosNat)
+  assertTrue "monotonic after sleep ≥ prior + 10000" (m1.toNanosNat + 10000 ≤ m2.toNanosNat)
 
 /-- Runtime verification for `LeanSwe.LinuxSyscall.TimeRand.assume_timerand_clockNanosleep_relativeAndAbstime`. -/
 def assume_timerand_clockNanosleep_relativeAndAbstime : IO Unit := do
@@ -62,7 +68,7 @@ def assume_timerand_clockNanosleep_relativeAndAbstime : IO Unit := do
   expectOk "clock_nanosleep monotonic relative 5us"
     (← clock_nanosleep .monotonic false { sec := 0, nsec := 5000 })
   let m1 ← expectOk "clock_gettime monotonic after rel sleep" (← clock_gettime .monotonic)
-  assertTrue "monotonic non-decreasing across rel sleep" (m0.toNanosNat ≤ m1.toNanosNat)
+  assertTrue "monotonic non-decreasing across rel sleep ≥ +5000" (m0.toNanosNat + 5000 ≤ m1.toNanosNat)
   let some monoDeadline := Timespec.ofNanosNat? (m1.toNanosNat + 5000)
     | failWith "Timespec.ofNanosNat? failed for monotonic deadline"
   expectOk "clock_nanosleep monotonic abstime"
@@ -281,10 +287,19 @@ private def checkOuterSeccompRuntime : IO Unit := do
     if abortOut.exitCode != 134 then
       failWith s!"outer seccomp EFAULT ({opName}) expected SIGABRT (134), got exit={abortOut.exitCode}: {abortOut.stderr}"
 
+private def checkRawInvalidTags : IO Unit := do
+  expectErr "raw clock_gettime clk=2 -> EINVAL"
+    Errno.EINVAL (← rawClockGettimeForTest 2)
+  expectErr "raw clock_nanosleep clk=2 -> EINVAL"
+    Errno.EINVAL (← rawClockNanosleepForTest 2 0 0 1)
+  expectErr "raw clock_nanosleep abstime=2 -> EINVAL"
+    Errno.EINVAL (← rawClockNanosleepForTest 1 2 0 1)
+
 /-- Run all `TimeRand` assumption checks and error-coverage tests. -/
 def runAll : IO Unit := do
   Core.runRegisteredAssumptions registeredAssumptions
   Core.runRegisteredErrorTests registeredErrorTests
+  checkRawInvalidTags
   checkOuterSeccompRuntime
   IO.println "PASS: LeanSwe.LinuxSyscall.TimeRand runtime tests"
 
@@ -298,15 +313,33 @@ private def straceWorker (opName errName : String) : IO UInt32 := do
     | "clock_gettime" =>
       let r ← clock_gettime .monotonic
       pure (.clock_gettime .monotonic, r.map (fun _ => ()))
+    | "clock_gettime_realtime" =>
+      let r ← clock_gettime .realtime
+      pure (.clock_gettime .realtime, r.map (fun _ => ()))
     | "clock_nanosleep" =>
       let ts : Timespec := { sec := 0, nsec := 1000 }
       let r ← clock_nanosleep .monotonic false ts
       pure (.clock_nanosleep .monotonic false ts, r)
+    | "clock_nanosleep_realtime" =>
+      let ts : Timespec := { sec := 0, nsec := 1000 }
+      let r ← clock_nanosleep .realtime false ts
+      pure (.clock_nanosleep .realtime false ts, r)
+    | "clock_nanosleep_abstime" =>
+      let ts : Timespec := { sec := 0, nsec := 1000 }
+      let r ← clock_nanosleep .monotonic true ts
+      pure (.clock_nanosleep .monotonic true ts, r)
     | "getrandom" =>
       let r ← getrandom 16 {}
       pure (.getrandom 16 {}, r.map (fun _ => ()))
+    | "getrandom_large" =>
+      let r ← getrandom 8192 {}
+      pure (.getrandom 8192 {}, r.map (fun _ => ()))
     | "getrandom_nonblock" =>
       let flags : GrndFlags := { nonblock := true }
+      let r ← getrandom 16 flags
+      pure (.getrandom 16 flags, r.map (fun _ => ()))
+    | "getrandom_insecure" =>
+      let flags : GrndFlags := { insecure := true }
       let r ← getrandom 16 flags
       pure (.getrandom 16 flags, r.map (fun _ => ()))
     | _ =>
@@ -324,9 +357,11 @@ private def straceWorker (opName errName : String) : IO UInt32 := do
     if allowedStep sSec req out != some sSec then
       IO.eprintln s!"strace-worker ({opName}, {errName}): rejected by TimeRandState.withOuterSeccomp"
       return 4
+    let isSleepOp := opName == "clock_nanosleep" || opName == "clock_nanosleep_realtime" || opName == "clock_nanosleep_abstime"
+    let isRandOp := opName == "getrandom" || opName == "getrandom_large" || opName == "getrandom_nonblock" || opName == "getrandom_insecure"
     let expectPlainAllowed :=
-      (opName == "clock_nanosleep" && e == Errno.EINTR) ||
-      (opName == "getrandom" && e == Errno.EINTR) ||
+      (isSleepOp && e == Errno.EINTR) ||
+      ((opName == "getrandom" || opName == "getrandom_large") && e == Errno.EINTR) ||
       (opName == "getrandom_nonblock" && e == Errno.EAGAIN)
     let plainRes := allowedStep sPlain req out
     if expectPlainAllowed && plainRes != some sPlain then
@@ -335,7 +370,7 @@ private def straceWorker (opName errName : String) : IO UInt32 := do
     if !expectPlainAllowed && plainRes != none then
       IO.eprintln s!"strace-worker ({opName}, {errName}): expected allowedStepCore to reject without outer seccomp"
       return 6
-    if (opName == "getrandom" || opName == "getrandom_nonblock") && allowedStep sReady req out != none then
+    if isRandOp && allowedStep sReady req out != none then
       IO.eprintln s!"strace-worker ({opName}, {errName}): expected allowedStepCore to reject once crngReady = true"
       return 7
     return 0
@@ -343,14 +378,19 @@ private def straceWorker (opName errName : String) : IO UInt32 := do
     IO.eprintln s!"strace-worker ({opName}): expected {Errno.name expected}, got ok"
     return 3
 
-/-- Run live `strace -f` fault-injection checks verifying `EINTR`, `ENOMEM`, `EIO`, and `EAGAIN` across `clock_gettime`, `clock_nanosleep`, and `getrandom` (`{}`, `{ nonblock := true }`). -/
+/-- Run live `strace -f` fault-injection checks verifying `EINTR`, `ENOMEM`, `EIO`, and `EAGAIN` across `clock_gettime`, `clock_nanosleep`, and `getrandom` variants. -/
 def runStraceFaultCheck : IO Unit := do
   let exe ← IO.appPath
   let cases : List (String × String × List String) :=
     [ ("clock_gettime", "clock_gettime", ["EINTR", "ENOMEM", "EIO", "EAGAIN"])
+    , ("clock_gettime_realtime", "clock_gettime", ["EINTR", "ENOMEM", "EIO", "EAGAIN"])
     , ("clock_nanosleep", "clock_nanosleep", ["EINTR", "ENOMEM", "EIO", "EAGAIN"])
+    , ("clock_nanosleep_realtime", "clock_nanosleep", ["EINTR", "ENOMEM", "EIO", "EAGAIN"])
+    , ("clock_nanosleep_abstime", "clock_nanosleep", ["EINTR", "ENOMEM", "EIO", "EAGAIN"])
     , ("getrandom", "getrandom", ["EINTR", "ENOMEM", "EIO", "EAGAIN"])
-    , ("getrandom_nonblock", "getrandom", ["EAGAIN"]) ]
+    , ("getrandom_large", "getrandom", ["EINTR", "ENOMEM", "EIO", "EAGAIN"])
+    , ("getrandom_nonblock", "getrandom", ["EAGAIN", "EINTR", "ENOMEM", "EIO"])
+    , ("getrandom_insecure", "getrandom", ["EAGAIN", "EINTR", "ENOMEM", "EIO"]) ]
   for (opName, syscallName, errNames) in cases do
     for errName in errNames do
       let out ← IO.Process.output {

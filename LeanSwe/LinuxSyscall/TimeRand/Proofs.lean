@@ -123,15 +123,39 @@ private theorem ofEpochNanos?_spec (ns : Int) :
     rw [decide_eq_false h']
     rfl
 
+private theorem deterministicEntropyListAux_length (drawIdx rem pos : Nat) (acc : List UInt8) :
+    (deterministicEntropyListAux drawIdx rem pos acc).length = acc.length + rem := by
+  induction rem generalizing pos acc with
+  | zero => simp [deterministicEntropyListAux]
+  | succ rem ih =>
+    simp only [deterministicEntropyListAux]
+    rw [ih]
+    simp [List.length_cons]
+    omega
+
 private theorem deterministicEntropyList_length (drawIdx rem pos : Nat) :
     (deterministicEntropyList drawIdx rem pos).length = rem := by
-  induction rem generalizing pos with
-  | zero => rfl
-  | succ rem ih => simp [deterministicEntropyList, ih]
+  rw [deterministicEntropyList, deterministicEntropyListAux_length]
+  simp
+
+private theorem deterministicEntropyBytesAux_size (drawIdx rem pos : Nat) (acc : ByteArray) :
+    (deterministicEntropyBytesAux drawIdx rem pos acc).size = acc.size + rem := by
+  induction rem generalizing pos acc with
+  | zero => simp [deterministicEntropyBytesAux]
+  | succ rem ih =>
+    simp only [deterministicEntropyBytesAux]
+    rw [ih, ByteArray.size_push]
+    omega
 
 private theorem deterministicEntropyBytes_size (drawIdx len : Nat) :
     (deterministicEntropyBytes drawIdx len).size = len := by
-  simp [deterministicEntropyBytes, ByteArray.size, deterministicEntropyList_length]
+  unfold deterministicEntropyBytes
+  by_cases h : len ≤ 256
+  · simp [h, ByteArray.size, deterministicEntropyList_length]
+  · simp only [h, ↓reduceIte]
+    rw [deterministicEntropyBytesAux_size]
+    have h0 : (ByteArray.emptyWithCapacity len).size = 0 := rfl
+    omega
 
 private theorem deterministicEntropyBytes_succ_ne (drawIdx : Nat) :
     deterministicEntropyBytes drawIdx 16 ≠ deterministicEntropyBytes (drawIdx + 1) 16 := by
@@ -139,12 +163,14 @@ private theorem deterministicEntropyBytes_succ_ne (drawIdx : Nat) :
   have h0 : (deterministicEntropyBytes drawIdx 16).data.toList.head? =
       (deterministicEntropyBytes (drawIdx + 1) 16).data.toList.head? :=
     congrArg (fun ba => ba.data.toList.head?) heq
-  change (deterministicEntropyList drawIdx 16 0).head? =
-      (deterministicEntropyList (drawIdx + 1) 16 0).head? at h0
-  simp only [deterministicEntropyList, Nat.pow_zero, Nat.div_one, List.head?_cons] at h0
+  have hL : (deterministicEntropyBytes drawIdx 16).data.toList.head? =
+      some (UInt8.ofNat ((drawIdx / 1) % 256)) := rfl
+  have hR : (deterministicEntropyBytes (drawIdx + 1) 16).data.toList.head? =
+      some (UInt8.ofNat (((drawIdx + 1) / 1) % 256)) := rfl
+  rw [hL, hR] at h0
   injection h0 with hbyte
   have hval := congrArg UInt8.toNat hbyte
-  change (drawIdx % 256) % 256 = ((drawIdx + 1) % 256) % 256 at hval
+  change ((drawIdx / 1) % 256) % 256 = (((drawIdx + 1) / 1) % 256) % 256 at hval
   omega
 
 private theorem validGetrandomResultLen_eq (len : UInt32) :
@@ -161,7 +187,12 @@ private theorem modelOps_clock_gettime_realtime (s : TimeRandState) :
     modelOps.clock_gettime .realtime s =
       match Timespec.ofEpochNanos? s.realtimeNs with
       | some ts => (Except.ok ts, s)
-      | none => (Except.error Errno.EIO, s) := by
+      | none =>
+        let clampedSec : Int64 :=
+          if s.realtimeNs < 0 then Int64.minValue else Int64.maxValue
+        let clampedNsec : UInt32 :=
+          if s.realtimeNs < 0 then 0 else UInt32.ofNat (NSEC_PER_SEC - 1)
+        (Except.ok { sec := clampedSec, nsec := clampedNsec }, s) := by
   dsimp only [modelOps, Bind.bind, Pure.pure, StateT.bind, StateT.pure,
     get, MonadState.get, getThe, MonadStateOf.get, StateT.get]
   cases Timespec.ofEpochNanos? s.realtimeNs <;> simp [StateT.pure] <;> rfl
@@ -170,7 +201,8 @@ private theorem modelOps_clock_gettime_monotonic (s : TimeRandState) :
     modelOps.clock_gettime .monotonic s =
       match Timespec.ofNanosNat? s.monoLowerBoundNs with
       | some ts => (Except.ok ts, { s with monoLowerBoundNs := ts.toNanosNat })
-      | none => (Except.error Errno.EIO, s) := by
+      | none =>
+        (Except.ok { sec := Int64.ofInt (Int.ofNat MAX_TIMESPEC_SEC), nsec := UInt32.ofNat (NSEC_PER_SEC - 1) }, s) := by
   dsimp only [modelOps, Bind.bind, Pure.pure, StateT.bind, StateT.pure,
     get, MonadState.get, getThe, MonadStateOf.get, StateT.get,
     set, MonadStateOf.set, StateT.set]
@@ -185,7 +217,9 @@ private theorem modelOps_clock_nanosleep (clk : ClockId) (abs : Bool) (req : Tim
         match clk with
         | .realtime => (Except.ok (), s)
         | .monotonic =>
-          let nextMono := if abs then max s.monoLowerBoundNs req.toNanosNat else s.monoLowerBoundNs + req.toNanosNat
+          let nextMono :=
+            if abs then max s.monoLowerBoundNs req.toNanosNat
+            else max s.monoLowerBoundNs (min MAX_TIMESPEC_NANOS (s.monoLowerBoundNs + req.toNanosNat))
           (Except.ok (), { s with monoLowerBoundNs := nextMono }) := by
   dsimp only [modelOps, Bind.bind, Pure.pure, StateT.bind, StateT.pure,
     get, MonadState.get, getThe, MonadStateOf.get, StateT.get,
@@ -349,9 +383,14 @@ theorem proof_timerand_ops_monotonicMultiCallAndNanosleepBounds :
   have hsnRel : modelOps.clock_nanosleep .monotonic false relTs s₁ = (.ok (), s₃) := by
     rw [modelOps_clock_nanosleep]
     simp only [hrel, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    change (Except.ok (), { s₁ with monoLowerBoundNs := s₁.monoLowerBoundNs + relTs.toNanosNat }) =
+    have hmin : min MAX_TIMESPEC_NANOS (s₀.monoLowerBoundNs + relTs.toNanosNat) =
+        s₀.monoLowerBoundNs + relTs.toNanosNat := Nat.min_eq_right hstep1Mono
+    have hmax : max s₀.monoLowerBoundNs (s₀.monoLowerBoundNs + relTs.toNanosNat) =
+        s₀.monoLowerBoundNs + relTs.toNanosNat := Nat.max_eq_right (Nat.le_add_right _ _)
+    change (Except.ok (), { s₁ with
+        monoLowerBoundNs := max s₁.monoLowerBoundNs (min MAX_TIMESPEC_NANOS (s₁.monoLowerBoundNs + relTs.toNanosNat)) }) =
       (Except.ok (), s₃)
-    simp only [s₁, s₃, ht0Ns]
+    simp only [s₁, s₃, ht0Ns, hmin, hmax]
   have hcg2 : modelOps.clock_gettime .monotonic s₃ = (.ok t2, s₄) := by
     rw [modelOps_clock_gettime_monotonic]
     have hm3 : s₃.monoLowerBoundNs = s₀.monoLowerBoundNs + relTs.toNanosNat := rfl
@@ -464,9 +503,8 @@ private theorem allowedStep_clock_cases (s : TimeRandState) (hs : s.ambientSecco
     allowedStep sZero (.clock_gettime .monotonic) (.err Errno.EIO) = none := by
   have hzero : decide (-9223372036854775808 ≤ Int.ediv 0 1000000000 ∧ Int.ediv 0 1000000000 ≤ 9223372036854775807) = true := by decide
   simp [allowedStep, allowedStepCore, hs, Timespec.hasValidNsec, Timespec.isValid,
-    Timespec.toNanosNat, Timespec.ofEpochNanos?, Timespec.ofNanosNat?,
-    MIN_TIMESPEC_SEC_INT, MAX_TIMESPEC_SEC, MAX_TIMESPEC_NANOS,
-    NSEC_PER_SEC, Errno.EINTR, Errno.ENOMEM, Errno.EIO] <;>
+    Timespec.toNanosNat, MAX_TIMESPEC_SEC, MAX_TIMESPEC_NANOS,
+    NSEC_PER_SEC] <;>
   exact hzero
 
 private theorem allowedStep_sleep_cases (s : TimeRandState) (hs : s.ambientSeccomp = false) :
@@ -490,7 +528,8 @@ private theorem allowedStep_sleep_cases (s : TimeRandState) (hs : s.ambientSecco
     allowedStep sPos (.clock_nanosleep .monotonic false reqValid) (.err Errno.ENOMEM) = none ∧
     allowedStep sPos (.clock_nanosleep .monotonic false reqValid) (.err Errno.EIO) = none := by
   simp [allowedStep, allowedStepCore, hs, Timespec.isValid, Timespec.toNanosNat,
-    NSEC_PER_SEC, Errno.EINVAL, Errno.EINTR, Errno.ENOMEM, Errno.EIO]
+    MAX_TIMESPEC_NANOS, MAX_TIMESPEC_SEC, NSEC_PER_SEC,
+    Errno.EINVAL, Errno.EINTR, Errno.ENOMEM, Errno.EIO]
 
 private theorem allowedStep_rand_cases (s : TimeRandState) (hs : s.ambientSeccomp = false) :
     let sUnready : TimeRandState := { s with crngReady := false }
@@ -554,8 +593,9 @@ theorem proof_timerand_allowedStep_withOuterSeccomp :
   dsimp only [test_timerand_allowedStep_withOuterSeccomp, Core.NondetTest.assert, Bind.bind]
   simp [TimeRandState.initial, TimeRandState.withOuterSeccomp, allowedStep, allowedStepCore,
     Timespec.isValid, Timespec.toNanosNat, GrndFlags.isInvalid,
+    MAX_TIMESPEC_NANOS, MAX_TIMESPEC_SEC,
     NSEC_PER_SEC, Errno.EPERM, Errno.EACCES, Errno.ENOSYS, Errno.EAGAIN, Errno.EINVAL,
-    Errno.EFAULT, Errno.EINTR, Errno.EIO]
+    Errno.EFAULT, Errno.EINTR]
 
 /-- Proof of `test_timerand_modelOps_soundAgainstAllowedStep` for `modelOps` and `allowedStep`. -/
 theorem proof_timerand_modelOps_soundAgainstAllowedStep :
@@ -579,20 +619,39 @@ theorem proof_timerand_modelOps_soundAgainstAllowedStep :
         cases hsec : s.ambientSeccomp <;>
           simp [outcomeOfTimespec, allowedStep, allowedStepCore, hsec, htsValid]
       · rw [hspec]
+        let clampedSec : Int64 :=
+          if s.realtimeNs < 0 then Int64.minValue else Int64.maxValue
+        let clampedNsec : UInt32 :=
+          if s.realtimeNs < 0 then 0 else UInt32.ofNat (NSEC_PER_SEC - 1)
+        let clampedTs : Timespec := { sec := clampedSec, nsec := clampedNsec }
+        have hval : clampedTs.hasValidNsec = true := by
+          dsimp only [clampedTs, clampedNsec, Timespec.hasValidNsec, NSEC_PER_SEC]
+          by_cases hneg : s.realtimeNs < 0 <;> simp [hneg] <;> decide
         cases hsec : s.ambientSeccomp <;>
-          simp [outcomeOfTimespec, allowedStep, allowedStepCore, hsec, hspec,
-            Errno.EIO, Errno.EFAULT]
+          simp [outcomeOfTimespec, allowedStep, allowedStepCore, hsec, hval, clampedTs, clampedSec, clampedNsec]
     · rw [modelOps_clock_gettime_monotonic]
       by_cases hm : s.monoLowerBoundNs ≤ MAX_TIMESPEC_NANOS
       · obtain ⟨ts, htsEq, htsValid, htsNs⟩ := ofNanosNat?_some hm
         rw [htsEq]
+        have hmin : min s.monoLowerBoundNs MAX_TIMESPEC_NANOS = s.monoLowerBoundNs := Nat.min_eq_left hm
         cases hsec : s.ambientSeccomp <;>
-          simp [outcomeOfTimespec, allowedStep, allowedStepCore, hsec, htsValid, htsNs]
-      · have hnone := ofNanosNat?_none (Nat.lt_of_not_le hm)
+          simp [outcomeOfTimespec, allowedStep, allowedStepCore, hsec, htsValid, htsNs, hmin]
+      · have hgt : MAX_TIMESPEC_NANOS < s.monoLowerBoundNs := Nat.lt_of_not_le hm
+        have hnone := ofNanosNat?_none hgt
         rw [hnone]
-        cases hsec : s.ambientSeccomp <;>
-          simp [outcomeOfTimespec, allowedStep, allowedStepCore, hsec, hnone,
-            Errno.EIO, Errno.EFAULT]
+        have hmin : min s.monoLowerBoundNs MAX_TIMESPEC_NANOS = MAX_TIMESPEC_NANOS :=
+          Nat.min_eq_right (Nat.le_of_lt hgt)
+        have hmax : max s.monoLowerBoundNs MAX_TIMESPEC_NANOS = s.monoLowerBoundNs :=
+          Nat.max_eq_left (Nat.le_of_lt hgt)
+        have hval : Timespec.isValid { sec := Int64.ofInt (MAX_TIMESPEC_SEC : Int), nsec := UInt32.ofNat (NSEC_PER_SEC - 1) } = true := by decide
+        have hns : Timespec.toNanosNat { sec := Int64.ofInt (MAX_TIMESPEC_SEC : Int), nsec := UInt32.ofNat (NSEC_PER_SEC - 1) } = MAX_TIMESPEC_NANOS := by decide
+        cases hsec : s.ambientSeccomp
+        · simp [outcomeOfTimespec, allowedStep, allowedStepCore, hsec, hmin]
+          rw [hval, hns]
+          cases s; simp_all
+        · simp [outcomeOfTimespec, allowedStep, allowedStepCore, hsec, hmin]
+          rw [hval, hns]
+          cases s; simp_all
   · rw [modelOps_clock_nanosleep]
     by_cases hv : req.isValid = true
     · simp only [hv, Bool.not_true, Bool.false_eq_true, ↓reduceIte]

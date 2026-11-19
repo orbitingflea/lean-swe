@@ -78,17 +78,45 @@ theorem scripted_cons (x : Except Errno ByteArray) (xs : List (Except Errno Byte
 theorem counting_run (fixed : Except Errno ByteArray) (len : UInt32) (flags : GrndFlags) (c : Nat) :
     (countingFixedGetrandomOps fixed).getrandom len flags c = (fixed, c + 1) := rfl
 
-private theorem deterministicEntropyList_length (d : Nat) : ∀ rem pos, (deterministicEntropyList d rem pos).length = rem
-  | 0, _ => rfl | rem + 1, pos => by simp [deterministicEntropyList, deterministicEntropyList_length d rem (pos + 1)]
+private theorem deterministicEntropyListAux_length (d : Nat) :
+    ∀ rem pos acc, (LinuxSyscall.TimeRand.deterministicEntropyListAux d rem pos acc).length = rem + acc.length
+  | 0, _, acc => by simp [LinuxSyscall.TimeRand.deterministicEntropyListAux]
+  | rem + 1, pos, acc => by
+    simp [LinuxSyscall.TimeRand.deterministicEntropyListAux, deterministicEntropyListAux_length d rem (pos + 1)]
+    omega
+
+private theorem deterministicEntropyList_length (d rem pos : Nat) :
+    (deterministicEntropyList d rem pos).length = rem := by
+  rw [deterministicEntropyList, deterministicEntropyListAux_length]
+  simp
+
+private theorem deterministicEntropyBytesAux_size (d rem pos : Nat) (acc : ByteArray) :
+    (LinuxSyscall.TimeRand.deterministicEntropyBytesAux d rem pos acc).size = acc.size + rem := by
+  induction rem generalizing pos acc with
+  | zero => simp [LinuxSyscall.TimeRand.deterministicEntropyBytesAux]
+  | succ rem ih =>
+    simp only [LinuxSyscall.TimeRand.deterministicEntropyBytesAux]
+    rw [ih, ByteArray.size_push]
+    omega
 
 /-- `deterministicEntropyBytes d len` has exact length `len`. -/
 theorem deterministicEntropyBytes_size (d len : Nat) : (deterministicEntropyBytes d len).size = len := by
-  simp [deterministicEntropyBytes, ByteArray.size, deterministicEntropyList_length]
+  unfold deterministicEntropyBytes
+  by_cases h : len ≤ 256
+  · simp [h, ByteArray.size, deterministicEntropyList_length]
+  · simp only [h, ↓reduceIte]
+    rw [deterministicEntropyBytesAux_size]
+    have h0 : (ByteArray.emptyWithCapacity len).size = 0 := rfl
+    omega
 
 /-- Byte `0` of `deterministicEntropyBytes d 16` equals `UInt8.ofNat (d % 256)`. -/
 theorem deterministicEntropyBytes_16_get0 (d : Nat) : (deterministicEntropyBytes d 16)[0]! = UInt8.ofNat (d % 256) := by
-  unfold deterministicEntropyBytes
-  rw [getElem!_pos _ 0 (by simp [ByteArray.size, deterministicEntropyList_length])]; simp [deterministicEntropyList]; rfl
+  rw [getElem!_pos _ 0 (by rw [deterministicEntropyBytes_size]; omega)]
+  dsimp [deterministicEntropyBytes, deterministicEntropyList,
+    LinuxSyscall.TimeRand.deterministicEntropyListAux, List.reverse, List.reverseAux,
+    LinuxSyscall.TimeRand.deterministicEntropyByte]
+  simp only [Nat.div_one]
+  rfl
 
 /-- Single-call execution of `(Internal.mkApiM modelOps).getUuid` on any `TimeRandState`. -/
 theorem mkApiM_modelOps_getUuid_run (s : TimeRandState) :

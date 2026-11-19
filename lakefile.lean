@@ -175,7 +175,7 @@ extern_lib «leanswe_linux_timerand_fuzz» pkg := do
   let lean ← getLeanInstall
   let oJob ← buildO oFile srcJob
     #["-I", lean.includeDir.toString]
-    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"]
+    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror", "-pthread"]
   let name := nameToStaticLib "leanswe_linux_timerand_fuzz"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
