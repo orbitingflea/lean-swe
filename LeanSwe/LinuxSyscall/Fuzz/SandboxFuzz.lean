@@ -914,6 +914,10 @@ private def recordOutcomeHit (hits : Array (String × Nat)) (sys : SandboxSysSta
 private def isModeOPath (m : UInt32) : Bool :=
   m == 1 || m == 3 || m == 5
 
+private def isKernelCloseDetachErr (e : UInt32) : Bool :=
+  e == Errno.EBADF || e == Errno.EINTR || e == Errno.EIO || e == 28 ||
+    e == 122 || e == Errno.ENOMEM || e == 116 || e == 104
+
 private def runPlanInChild
     (dirPath filePath : String)
     (plan : EpisodePlan)
@@ -1084,7 +1088,7 @@ private def runPlanInChild
               dynamics := ex.dynamics.eraseIdx! pos
               closedHids := ex.closedHids.push slot }
           | .error e =>
-            if e == Errno.EPERM || e == Errno.EACCES || e == Errno.ENOSYS then
+            if !isKernelCloseDetachErr e then
               if !ex.sys.seccompMayIntercept then
                 mismatch? := some (stepIdx, s!"closeFd unexpected seccomp errno {e}")
             else
@@ -1287,7 +1291,8 @@ private def mismatchClassKey (msg : String) : String :=
   let first := (msg.splitOn "\n").headD msg
   let words := first.splitOn " "
   let reqPart := (words.find? (·.startsWith "req=")).getD ""
-  let outPart := (words.find? (·.startsWith "out=")).getD ""
+  let rawOutPart := (words.find? (·.startsWith "out=")).getD ""
+  let outPart := if rawOutPart.startsWith "out=O:" then "out=O" else rawOutPart
   if !reqPart.isEmpty || !outPart.isEmpty then
     s!"{reqPart} {outPart}"
   else
@@ -1541,20 +1546,27 @@ def runShrinkSelfTest (seed : UInt64 := 0x123456789abcdef0) : IO Unit := do
     let payloadOracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState :=
       fun s req out =>
         match req, out with
-        | .memfdCreate _ _, .opened _ => none
+        | .memfdCreate _ _, .opened _ =>
+          if s.noNewPrivs? == some true then none else allowedStep s req out
         | _, _ => allowedStep s req out
     let bigName := ByteArray.mk (Array.replicate 24 97)
-    let pPlan := { injected with preLowerNofile := false, preOuterSeccomp := false, steps := #[.doMemfd bigName {}] }
+    let pPlan := { injected with
+      preNnp := false
+      preLowerNofile := false
+      preOuterSeccomp := false
+      steps := #[.doMemfd bigName {}, .doPrctl .setNoNewPrivs, .doMemfd bigName {}] }
     let pInit ← runPlanInChild dirPath filePath pPlan payloadOracle
     let pClass ← match pInit.mismatch? with
       | none => throw (IO.userError "shrink self-test payload probe failed to fail")
       | some (_, m) => pure (mismatchClassKey m)
     let pMin ← shrinkPlan dirPath filePath pPlan pClass payloadOracle
-    match (pMin.steps[0]? : Option FuzzStep) with
-    | some (.doMemfd nm _) =>
+    if pMin.steps.size != 2 then
+      throw (IO.userError s!"shrink self-test causal O:hid probe expected 2 steps, got {pMin.steps.size}")
+    match (pMin.steps[0]? : Option FuzzStep), (pMin.steps[1]? : Option FuzzStep) with
+    | some (.doPrctl .setNoNewPrivs), some (.doMemfd nm _) =>
       if !nm.isEmpty then
         throw (IO.userError s!"shrink self-test failed to shrink memfd name (size={nm.size})")
-    | other => throw (IO.userError s!"shrink self-test unexpected payload step {repr other}")
+    | s0, s1 => throw (IO.userError s!"shrink self-test unexpected causal steps ({repr s0}, {repr s1})")
     IO.println s!"SANDBOX_SHRINK_SELFTEST_OK: {injected.steps.size} -> {minimal.steps.size} step(s)"
 
 /-- Verify `buildMultiSyscallFilter` intercepts all listed targets with the requested errno while allowing other syscalls, and verify `__NR_close` seccomp rejection does not poison `LeanFdBox`. -/

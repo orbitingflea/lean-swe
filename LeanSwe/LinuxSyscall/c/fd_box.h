@@ -55,8 +55,9 @@ static inline void leanswe_fd_box_unpin(LeanFdBox *box) {
   pthread_mutex_unlock(&box->mu);
 }
 
-static inline int leanswe_is_seccomp_entry_err(int err) {
-  return err == EPERM || err == EACCES || err == ENOSYS;
+static inline int leanswe_is_kernel_close_detach_err(int err) {
+  return err == EBADF || err == EINTR || err == EIO || err == ENOSPC ||
+         err == EDQUOT || err == ENOMEM || err == ESTALE || err == ECONNRESET;
 }
 
 static inline int leanswe_fd_box_close(LeanFdBox *box) {
@@ -71,7 +72,7 @@ static inline int leanswe_fd_box_close(LeanFdBox *box) {
   }
   int rc = close(box->fd);
   int err = (rc < 0) ? errno : 0;
-  if (rc == 0 || !leanswe_is_seccomp_entry_err(err)) {
+  if (rc == 0 || leanswe_is_kernel_close_detach_err(err)) {
     box->fd = -1;
     box->closed = 1;
   }

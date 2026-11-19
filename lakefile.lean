@@ -142,7 +142,7 @@ extern_lib «leanswe_linux_sandbox» pkg := do
   let oFile := pkg.buildDir / "c" / "linux_sandbox_shim.o"
   let oJob ← buildO oFile (deps.map fun _ => cDir / "sandbox_shim.c")
     #["-I", lean.includeDir.toString, "-I", cDir.toString]
-    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror", "-pthread"]
+    #["-O2", "-DNDEBUG", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
   let name := nameToStaticLib "leanswe_linux_sandbox"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
@@ -155,7 +155,7 @@ extern_lib «leanswe_sandbox_fuzz_env» pkg := do
   let oFile := pkg.buildDir / "c" / "linux_sandbox_fuzz_env.o"
   let oJob ← buildO oFile (deps.map fun _ => cDir / "sandbox_fuzz_env.c")
     #["-I", lean.includeDir.toString, "-I", cDir.toString]
-    #["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror", "-pthread"]
+    #["-O2", "-DNDEBUG", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
   let name := nameToStaticLib "leanswe_sandbox_fuzz_env"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 

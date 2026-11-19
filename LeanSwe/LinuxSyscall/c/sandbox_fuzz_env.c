@@ -89,18 +89,25 @@ static int sbx_dup_above2(int fd) {
   return nfd;
 }
 
-LEAN_EXPORT lean_obj_res leanswe_sbx_pipe(void) {
-  int fds[2] = { -1, -1 };
-  if (pipe2(fds, O_CLOEXEC) < 0) { return leanswe_mk_errno(errno); }
+static int sbx_pipe_above2(int fds[2]) {
+  if (pipe2(fds, O_CLOEXEC) < 0) { return -1; }
   int r = sbx_dup_above2(fds[0]);
   int w = sbx_dup_above2(fds[1]);
   if (r < 0 || w < 0) {
     int saved = errno;
     if (r >= 0) { close(r); }
     if (w >= 0) { close(w); }
-    return leanswe_mk_errno(saved);
+    fds[0] = -1; fds[1] = -1; errno = saved;
+    return -1;
   }
-  uint64_t packed = ((uint64_t)(uint32_t)r) | (((uint64_t)(uint32_t)w) << 32);
+  fds[0] = r; fds[1] = w;
+  return 0;
+}
+
+LEAN_EXPORT lean_obj_res leanswe_sbx_pipe(void) {
+  int fds[2] = { -1, -1 };
+  if (sbx_pipe_above2(fds) < 0) { return leanswe_mk_errno(errno); }
+  uint64_t packed = ((uint64_t)(uint32_t)fds[0]) | (((uint64_t)(uint32_t)fds[1]) << 32);
   return leanswe_mk_ok(lean_box_uint64(packed));
 }
 
@@ -292,7 +299,18 @@ static void sbx_close_pair(int fds[2]) {
   if (fds[1] >= 0) { close(fds[1]); }
 }
 
+static pthread_once_t g_sbx_atfork_once = PTHREAD_ONCE_INIT;
+
+static void sbx_atfork_child(void) {
+  g_sbx_sync_active = 0; g_sbx_sync_stop_wfd = -1; g_sbx_sync_stop_rfd = -1;
+}
+
+static void sbx_register_atfork(void) {
+  pthread_atfork(NULL, NULL, sbx_atfork_child);
+}
+
 LEAN_EXPORT lean_obj_res leanswe_sbx_spawn_sync_thread(uint32_t install_filter) {
+  pthread_once(&g_sbx_atfork_once, sbx_register_atfork);
   int ready_fds[2] = { -1, -1 }, stop_fds[2] = { -1, -1 };
   SbxSyncArgs *sa = (SbxSyncArgs *)malloc(sizeof(*sa));
   if (sa == NULL) { return leanswe_mk_errno(ENOMEM); }
@@ -300,7 +318,7 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_spawn_sync_thread(uint32_t install_filter) 
   if (g_sbx_sync_active != 0) {
     pthread_mutex_unlock(&g_sbx_sync_mu); free(sa); return leanswe_mk_errno(EBUSY);
   }
-  if (pipe2(ready_fds, O_CLOEXEC) < 0 || pipe2(stop_fds, O_CLOEXEC) < 0) {
+  if (sbx_pipe_above2(ready_fds) < 0 || sbx_pipe_above2(stop_fds) < 0) {
     int saved = errno; pthread_mutex_unlock(&g_sbx_sync_mu); free(sa);
     sbx_close_pair(ready_fds); sbx_close_pair(stop_fds);
     return leanswe_mk_errno(saved);

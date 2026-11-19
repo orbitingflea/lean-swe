@@ -40,7 +40,7 @@ def mkSandboxOps {m : Type → Type} [Monad m] {fd : Type} (raw : PosixSandboxOp
         else
           raw.seccompGetActionAvail action
       | .setModeFilter =>
-        if !isValidSeccompFilterByteLen filterBytes.data.size ||
+        if !isValidSeccompFilterByteLen filterBytes.size ||
             !hasSafeSeccompRetBytes filterBytes then
           pure (.error Errno.EINVAL)
         else
@@ -51,7 +51,7 @@ def mkSandboxOps {m : Type → Type} [Monad m] {fd : Type} (raw : PosixSandboxOp
     setrlimit := fun res cur max =>
       raw.setrlimit res.toTag cur max
     memfdCreate := fun name flags =>
-      if hasEmbeddedNul name || name.data.size > MFD_NAME_MAX then
+      if name.size > MFD_NAME_MAX || hasEmbeddedNul name then
         pure (.error Errno.EINVAL)
       else
         raw.memfdCreate name flags.toBits }

@@ -264,6 +264,73 @@ private theorem decodeSockFilterList_len_mod8 :
       simp only [List.length_cons]
       omega
 
+private theorem byteArray_get!_eq (b : ByteArray) (j : Nat) (hj : j < b.size) :
+    b.get! j = b.data[j]'(by exact hj) := by
+  have h1 : b.get! j = b.data[j]! := rfl
+  rw [h1]
+  exact getElem!_pos b.data j hj
+
+private theorem decodeSockFilterBytesAux_eq (b : ByteArray) :
+    ∀ (n i : Nat) (acc : List SockFilterInsn),
+      i + n * 8 = b.size →
+      some (decodeSockFilterBytesAux b i acc n) =
+        (decodeSockFilterList (b.data.toList.drop i)).map (acc.reverse ++ ·)
+  | 0, i, acc, hEq => by
+    have hi : b.data.toList.length ≤ i := by
+      have : b.data.toList.length = b.size := Array.length_toList
+      omega
+    rw [List.drop_of_length_le hi]
+    simp [decodeSockFilterBytesAux, decodeSockFilterList]
+  | n + 1, i, acc, hEq => by
+    have hi8 : i + 8 ≤ b.size := by omega
+    have hLen : b.data.toList.length = b.size := Array.length_toList
+    have hDrop : ∀ k, k < 8 →
+        b.data.toList.drop (i + k) =
+          (b.get! (i + k)) :: b.data.toList.drop (i + k + 1) := by
+      intro k hk
+      have hjk : i + k < b.data.toList.length := by omega
+      rw [List.drop_eq_getElem_cons hjk, byteArray_get!_eq b (i + k) (by omega)]
+      simp
+    have h8 : b.data.toList.drop i =
+        b.get! i :: b.get! (i + 1) :: b.get! (i + 2) :: b.get! (i + 3) ::
+          b.get! (i + 4) :: b.get! (i + 5) :: b.get! (i + 6) :: b.get! (i + 7) ::
+            b.data.toList.drop (i + 8) := by
+      rw [show i = i + 0 from rfl, hDrop 0 (by omega),
+          hDrop 1 (by omega), hDrop 2 (by omega), hDrop 3 (by omega),
+          hDrop 4 (by omega), hDrop 5 (by omega), hDrop 6 (by omega), hDrop 7 (by omega)]
+    rw [h8]
+    unfold decodeSockFilterList decodeSockFilterBytesAux
+    have ih := decodeSockFilterBytesAux_eq b n (i + 8)
+      ({ code := UInt16.ofNat ((b.get! i).toNat + (b.get! (i + 1)).toNat * 256),
+         jt := b.get! (i + 2), jf := b.get! (i + 3),
+         k := UInt32.ofNat ((b.get! (i + 4)).toNat + (b.get! (i + 5)).toNat * 256 +
+           (b.get! (i + 6)).toNat * 65536 + (b.get! (i + 7)).toNat * 16777216) } :: acc)
+      (by omega)
+    cases hRec : decodeSockFilterList (b.data.toList.drop (i + 8)) with
+    | none => simp [hRec] at ih
+    | some tail =>
+      simp only [Option.map_some] at ih ⊢
+      rw [hRec, Option.map_some] at ih
+      simp only [List.reverse_cons, List.append_assoc, List.singleton_append] at ih
+      exact ih
+
+private theorem decodeSockFilters_eq_list (b : ByteArray) :
+    decodeSockFilters b = decodeSockFilterList b.data.toList := by
+  unfold decodeSockFilters
+  by_cases hMod : b.size % 8 = 0
+  · have hB : (b.size % 8 != 0) = false := by simp [hMod]
+    simp only [hB, Bool.false_eq_true, ↓reduceIte]
+    have hEq := decodeSockFilterBytesAux_eq b (b.size / 8) 0 [] (by omega)
+    simpa using hEq
+  · have hB : (b.size % 8 != 0) = true := bne_iff_ne.mpr hMod
+    simp only [hB, ↓reduceIte]
+    cases hDec : decodeSockFilterList b.data.toList with
+    | none => rfl
+    | some p =>
+      have hm := decodeSockFilterList_len_mod8 b.data.toList p hDec
+      have hLen : b.data.toList.length = b.size := Array.length_toList
+      omega
+
 /-- Every `Errno` satisfies the `Sandbox` transient classification and `SandboxErrorKind.ofErrno` bucket mapping. -/
 theorem sandbox_errno_classificationAndConstants_allPass :
     AllPass (test_sandbox_errno_classificationAndConstants
@@ -320,14 +387,14 @@ theorem sandbox_flags_andBpfCodecInjective_allPass :
           · simp [encodeSockFilters, encodeSockFilterInsn]
           · intro prog
             refine ⟨?_, ?_⟩
-            · unfold decodeSockFilters encodeSockFilters
+            · rw [decodeSockFilters_eq_list]; unfold encodeSockFilters
               exact decode_encodeSockFilterList prog
             · intro oddBytes hOdd
               refine ⟨?_, trivial⟩
               cases hDec : decodeSockFilters oddBytes with
               | none => rfl
               | some p =>
-                unfold decodeSockFilters at hDec
+                rw [decodeSockFilters_eq_list] at hDec
                 have hMod := decodeSockFilterList_len_mod8 oddBytes.data.toList p hDec
                 rw [Array.length_toList] at hMod
                 exact absurd hMod hOdd
@@ -381,7 +448,7 @@ theorem sandbox_impl_wrapperGuards_allPass :
   have hEmptySecBits : ({ } : SeccompFlags).toBits = 0 := rfl
   simp only [StateT.pure, StateT.bind, StateT.modifyGet, Pure.pure, Bind.bind,
     hqB, hqBne, hnzB, hBadFCheck, hOkFCheck, hNul, hOverB, hOkNul, hOkSizeB,
-    hEmptySecBits, Bool.true_or, Bool.or_true, Bool.false_or, Bool.false_eq_true, ↓reduceIte,
+    hEmptySecBits, ByteArray.size, Bool.true_or, Bool.or_true, Bool.false_or, Bool.false_eq_true, ↓reduceIte,
     bne_self_eq_false, beq_self_eq_true, Bool.and_self, Nat.zero_add]
   repeat first | exact trivial | exact rfl | refine ⟨?_, ?_⟩
 
@@ -401,7 +468,7 @@ theorem sandbox_impl_wrapperGuards_canReach :
     dsimp only [test_sandbox_impl_wrapperGuards, CanReachRun, NondetTest.assert,
       Internal.mkSandboxOps, StateT.run, Id.run, Pure.pure, Bind.bind, StateT.bind, StateT.pure,
       modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet]
-    simp only [h250Sz, Bool.or_true, ↓reduceIte]
+    simp only [h250Sz, ByteArray.size, Bool.true_or, ↓reduceIte]
     repeat first | exact trivial | exact rfl | refine ⟨?_, ?_⟩
 
 /-- `Internal.mkSandboxOps` rejects all unsafe seccomp instructions and forwards all safe actions. -/
@@ -441,7 +508,7 @@ theorem sandbox_impl_seccompSafetyGuards_allPass :
       !hasSafeSeccompRetBytes (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ERRNO ||| Errno.EPERM }])) = false := by decide
   have hOk6 : (!isValidSeccompFilterByteLen (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ERRNO ||| 4095 }]).data.size ||
       !hasSafeSeccompRetBytes (encodeSockFilters [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ERRNO ||| 4095 }])) = false := by decide
-  simp only [hBad1, hBad2, hBad3, hBad4, hBad5, hBad6, hBad7, hBad8, hBad9,
+  simp only [ByteArray.size, hBad1, hBad2, hBad3, hBad4, hBad5, hBad6, hBad7, hBad8, hBad9,
     hBad10, hBad11, hOk1, hOk2, hOk5, hOk6, ↓reduceIte, Bool.false_eq_true]
   repeat first | exact trivial | exact rfl | refine ⟨?_, ?_⟩
 

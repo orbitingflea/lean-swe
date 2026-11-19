@@ -190,7 +190,7 @@ private def isAllowedSandboxClosureModule (m : Name) : Bool :=
 
 private def isSandboxStandardLibModule (m : Name) : Bool :=
   let r := m.getRoot
-  r == `Init || r == `Std
+  (r == `Init || r == `Std) && !m.toString.startsWith "Std.Internal.UV"
 
 private def allowedSandboxExternSyms : Std.HashMap Name String :=
   Std.HashMap.emptyWithCapacity 16
@@ -213,13 +213,19 @@ private def isExactStandardExtern (extData? : Option ExternAttrData) (expectedSy
     | _ => false
   | none => false
 
+private def isPropInductiveType : Expr → Bool
+  | .sort .zero => true
+  | .forallE _ _ b _ => isPropInductiveType b
+  | _ => false
+
 private unsafe def checkSandboxTrustedClosure (env : Environment) : IO (Array String) := do
   let mut discoveredMods : Array Name := #[]
   for m in env.header.moduleNames do
     let s := m.toString
-    if (s == "LeanSwe.LinuxSyscall.Sandbox" || s.startsWith "LeanSwe.LinuxSyscall.Sandbox.") &&
-        s != "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests" &&
-        s != "LeanSwe.LinuxSyscall.Sandbox.SpecMutants" then
+    if ((s == "LeanSwe.LinuxSyscall.Sandbox" || s.startsWith "LeanSwe.LinuxSyscall.Sandbox.") &&
+          s != "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests" &&
+          s != "LeanSwe.LinuxSyscall.Sandbox.SpecMutants") ||
+        s.startsWith "LeanSwe.LinuxSyscall.Common." then
       discoveredMods := discoveredMods.push m
   for reqMod in sandboxAuditModules do
     if !discoveredMods.contains reqMod then
@@ -231,6 +237,10 @@ private unsafe def checkSandboxTrustedClosure (env : Environment) : IO (Array St
   for m in sbxEnv.header.moduleNames do
     if !isSandboxStandardLibModule m && !isAllowedSandboxClosureModule m then
       errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_IMPORT: {m} imported into Sandbox closure"
+  for (origName, csEntry) in csimpState.map.toList do
+    let thmMod := sbxEnv.getModuleIdxFor? csEntry.thmName |>.bind (sbxEnv.header.moduleNames[·]?) |>.getD .anonymous
+    if isProjectModule thmMod then
+      errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_CSIMP: {origName} csimp->{csEntry.toDeclName} via {csEntry.thmName} in {thmMod}"
   let mut visited : Std.HashSet Name := {}
   let mut queue : Array (Name × Name) := #[]
   for h : i in [0 : sbxEnv.header.moduleNames.size] do
@@ -251,14 +261,36 @@ private unsafe def checkSandboxTrustedClosure (env : Environment) : IO (Array St
         errs := errs.push s!"TRUSTED_CLOSURE_AXIOM_FORBIDDEN: {cName} reachable from {originMod}"
       continue
     let cMod := sbxEnv.getModuleIdxFor? cName |>.bind (sbxEnv.header.moduleNames[·]?) |>.getD .anonymous
-    if cMod != .anonymous && !isSandboxStandardLibModule cMod then
+    if isSandboxStandardLibModule cMod then
+      let extData? := getExternAttrData? sbxEnv cName
+      if extData?.isSome || cinfo matches .opaqueInfo _ then
+        let cs := cName.toString
+        if (cs.startsWith "IO." || cs.startsWith "System.") && cName != `IO.RealWorld.nonemptyType then
+          errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_STDLIB_IO: {cName} in {cMod} reachable from {originMod}"
+      if let some ed := extData? then
+        let badSyms := ["lean_io_", "lean_uv_", "lean_dbg_", "lean_process_", "lean_st_", "lean_task_"]
+        for ent in ed.entries do
+          let sym := match ent with
+            | .standard _ s => s | .inline _ s => s | .opaque => "" | .adhoc _ => ""
+          if badSyms.any (sym.startsWith ·) then
+            errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_STDLIB_EXTERN: {cName} ({sym}) in {cMod} reachable from {originMod}"
+    else if cMod != .anonymous then
       if !isAllowedSandboxClosureModule cMod then
         errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_MODULE: {cName} in {cMod} reachable from {originMod}"
       if let some implName := Lean.Compiler.getImplementedBy? sbxEnv cName then
         let isCtorIdxImpl :=
           cName.getString! == "ctorIdx" &&
           implName == Name.str cName "_impl" &&
-          (match sbxEnv.find? cName.getPrefix with | some (.inductInfo _) => true | _ => false)
+          (match sbxEnv.find? cName.getPrefix, sbxEnv.find? implName with
+           | some (.inductInfo iv), some (.defnInfo implVal) =>
+             let ivMod := sbxEnv.getModuleIdxFor? iv.name |>.bind (sbxEnv.header.moduleNames[·]?) |>.getD .anonymous
+             !isPropInductiveType iv.type && cMod == ivMod &&
+               implVal.value.getUsedConstants.all (fun u =>
+                 let uMod := sbxEnv.getModuleIdxFor? u |>.bind (sbxEnv.header.moduleNames[·]?) |>.getD .anonymous
+                 isSandboxStandardLibModule uMod || u == `optParam ||
+                   u == `LeanSwe.LinuxSyscall.RawFd ||
+                   (match sbxEnv.find? u with | some (.inductInfo _) => true | _ => false))
+           | _, _ => false)
         if !isCtorIdxImpl then
           errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_IMPLEMENTED_BY: {cName} in {cMod} implemented_by {implName}"
         if !visited.contains implName then
