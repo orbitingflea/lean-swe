@@ -3,7 +3,7 @@ import Fuzz.Common.Rng
 
 namespace Fuzz.Common
 
-private def shrinkTraceDdmin {m : Type → Type} [Monad m] {α : Type}
+@[specialize] private def shrinkTraceDdmin {m : Type → Type} [Monad m] {α : Type}
     (fails : Array α → m Bool) (initial : Array α) : m (Array α) := do
   let mut cur := initial
   let mut n := min 2 cur.size
@@ -68,7 +68,7 @@ private def shrinkTraceDdmin {m : Type → Type} [Monad m] {α : Type}
     trySubsets := true
   return cur
 
-private def shrinkTraceWindows {m : Type → Type} [Monad m] {α : Type}
+@[specialize] private def shrinkTraceWindows {m : Type → Type} [Monad m] {α : Type}
     (fails : Array α → m Bool) (cur : Array α) : m (Option (Array α)) := do
   if cur.size <= 256 then
     for winSize in #[2, 3, 4] do
@@ -90,7 +90,7 @@ private def shrinkTraceWindows {m : Type → Type} [Monad m] {α : Type}
   return none
 
 /-- Zeller `ddmin` delta-minimization shrinker with sliding-window and coupled-pair reduction. -/
-partial def shrinkTrace {m : Type → Type} [Monad m] {α : Type}
+@[specialize] partial def shrinkTrace {m : Type → Type} [Monad m] {α : Type}
     (fails : Array α → m Bool) (trace : Array α) (allowEmpty : Bool := false) : m (Array α) := do
   if allowEmpty then
     if ← fails #[] then
@@ -109,22 +109,36 @@ partial def shrinkTrace {m : Type → Type} [Monad m] {α : Type}
       break
   return cur
 
-private def seenContains {α : Type} [BEq α] (seen : Array α) (x : α) : Bool :=
-  seen.any (· == x)
+private structure SeenState (α : Type) where
+  recent : Array α := #[]
+  pos : Nat := 0
+  tortoise? : Option α := none
+  power : Nat := 1
+  lam : Nat := 0
 
-private def recordSeen {α : Type} (map : Std.HashMap Nat (Array α × Nat)) (idx : Nat) (val : α) :
-    Std.HashMap Nat (Array α × Nat) :=
+private def seenContains {α : Type} [BEq α] (st : SeenState α) (x : α) : Bool :=
+  (match st.tortoise? with | some t => x == t | none => false) || st.recent.any (· == x)
+
+private def recordSeen {α : Type} (map : Std.HashMap Nat (SeenState α)) (idx : Nat) (val : α) :
+    Std.HashMap Nat (SeenState α) :=
   let cap := 256
   match map.get? idx with
-  | none => map.insert idx (#[val], 1)
-  | some (arr, pos) =>
-    if arr.size < cap then
-      map.insert idx (arr.push val, (pos + 1) % cap)
-    else
-      map.insert idx (arr.setIfInBounds (pos % cap) val, (pos + 1) % cap)
+  | none =>
+    map.insert idx { recent := #[val], pos := 1, tortoise? := some val, power := 1, lam := 1 }
+  | some st =>
+    let recent' :=
+      if st.recent.size < cap then st.recent.push val
+      else st.recent.setIfInBounds (st.pos % cap) val
+    let pos' := (st.pos + 1) % cap
+    let (tort', pow', lam') :=
+      if st.lam >= st.power then
+        (some val, st.power * 2, 1)
+      else
+        (st.tortoise?, st.power, st.lam + 1)
+    map.insert idx { recent := recent', pos := pos', tortoise? := tort', power := pow', lam := lam' }
 
-private def tryCandidatesAt {m : Type → Type} [Monad m] {α : Type} [BEq α]
-    (fails : Array α → m Bool) (idx : Nat) (orig : α) (seen : Array α) :
+@[specialize] private def tryCandidatesAt {m : Type → Type} [Monad m] {α : Type} [BEq α]
+    (fails : Array α → m Bool) (idx : Nat) (orig : α) (seen : SeenState α) :
     List α → (cur : Array α) → idx < cur.size → m (Array α × Bool)
   | [], cur, _ => pure (cur, false)
   | cand :: rest, cur, h => do
@@ -140,17 +154,17 @@ private def tryCandidatesAt {m : Type → Type} [Monad m] {α : Type} [BEq α]
         have hRest : idx < restored.size := by simpa [restored] using h'
         tryCandidatesAt fails idx orig seen rest restored hRest
 
-private def getSeenAt {α : Type} (map : Std.HashMap Nat (Array α × Nat)) (idx : Nat) : Array α :=
+private def getSeenAt {α : Type} (map : Std.HashMap Nat (SeenState α)) (idx : Nat) : SeenState α :=
   match map.get? idx with
-  | none => #[]
-  | some (arr, _) => arr
+  | none => {}
+  | some st => st
 
 /-- Greedily shrink individual trace elements in-place to a fixed point with cycle protection and step budget. -/
 @[specialize] def shrinkElements {m : Type → Type} [Monad m] {α : Type} [BEq α]
     (shrinkItem : α → List α) (fails : Array α → m Bool) (trace : Array α)
     (maxSteps : Nat := 10000) : m (Array α) := do
   let mut cur := trace
-  let mut seenMap : Std.HashMap Nat (Array α × Nat) := {}
+  let mut seenMap : Std.HashMap Nat (SeenState α) := {}
   let mut steps : Nat := 0
   let mut outerChanged := true
   while outerChanged && steps < maxSteps do
@@ -174,7 +188,7 @@ private def getSeenAt {α : Type} (map : Std.HashMap Nat (Array α × Nat)) (idx
   return cur
 
 /-- Verify that `shrinkTrace` preserves `fails` and reduces `trace` to at most `maxExpectedSize` elements. -/
-def verifyShrinker {m : Type → Type} [Monad m] {α : Type}
+@[specialize] def verifyShrinker {m : Type → Type} [Monad m] {α : Type}
     (fails : Array α → m Bool) (trace : Array α) (maxExpectedSize : Nat := 1)
     (allowEmpty : Bool := (maxExpectedSize == 0)) : m (Except String (Array α)) := do
   unless ← fails trace do

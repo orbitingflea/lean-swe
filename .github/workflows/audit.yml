@@ -37,7 +37,7 @@ jobs:
           if P1=$(git rev-parse --verify --quiet HEAD^1 2>/dev/null) && git rev-parse --verify --quiet HEAD^2 >/dev/null 2>&1 && ! git rev-parse --verify --quiet HEAD^3 >/dev/null 2>&1; then
             BASE="$P1"
           else
-            BASE=$(python3 -c 'import os,re,subprocess; h=subprocess.check_output(["git","cat-file","commit","HEAD"]).split(b"\n\n",1)[0]; ps=[m.group(1).decode() for l in h.splitlines() if (m:=re.fullmatch(rb"parent ([0-9a-f]{40})",l))]; print(ps[0] if len(ps)==2 else os.environ.get("RECORDED_BASE",""))')
+            BASE=$(python3 -c 'import os,re,subprocess; h=subprocess.check_output(["git","cat-file","commit","HEAD"]).split(b"\n\n",1)[0]; ps=[m.group(1).decode() for l in h.split(b"\n") if (m:=re.fullmatch(rb"parent ([0-9a-f]{40})",l))]; print(ps[0] if len(ps)==2 else os.environ.get("RECORDED_BASE",""))')
           fi
           [[ "$BASE" =~ ^[0-9a-f]{40}$ ]] || { echo "INVALID_BASE_SHA: $BASE" >&2; exit 2; }
           git fetch --no-tags --depth=1 origin -- "$BASE"

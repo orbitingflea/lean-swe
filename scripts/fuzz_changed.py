@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import argparse, functools, hashlib, json, os, posixpath, re, shlex, subprocess, sys
+import argparse, hashlib, json, os, posixpath, re, shlex, subprocess, sys
 from collections import deque
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -95,9 +95,15 @@ def load_manifest(manifest_path: Path) -> SuiteManifest:
     """Read and parse a manifest file from disk."""
     return parse_manifest_text(manifest_path.read_text(encoding="utf-8"))
 
-@functools.lru_cache(maxsize=1024)
-def _compile_seg(pat: str) -> re.Pattern[str]:
-    return re.compile("".join(".*" if ch == "*" else ("." if ch == "?" else re.escape(ch)) for ch in pat), re.DOTALL)
+def _seg_matches(pat: str, seg: str) -> bool:
+    pi = si = match = 0; star = -1; pn, sn = len(pat), len(seg)
+    while si < sn:
+        if pi < pn and (pat[pi] == "?" or pat[pi] == seg[si]): pi += 1; si += 1
+        elif pi < pn and pat[pi] == "*": star, match, pi = pi, si, pi + 1
+        elif star != -1: pi, match = star + 1, match + 1; si = match
+        else: return False
+    while pi < pn and pat[pi] == "*": pi += 1
+    return pi == pn
 
 def path_matches_pattern(rel_path: str, pattern: str, mode: str = "") -> bool:
     """Return True if repo-relative path `rel_path` matches `pattern` (literal, dir prefix, or segment glob)."""
@@ -107,17 +113,17 @@ def path_matches_pattern(rel_path: str, pattern: str, mode: str = "") -> bool:
     pat_parts = base_pat.split("/")
     if pat_parts == ["**"]: return True
     path_parts = rel_path.split("/")
-    n = len(path_parts)
+    n, m = len(path_parts), len(pat_parts)
     trailing_dir = norm_pat.endswith("/") or pat_parts[-1] == "**"
-    dp = [True] + [False] * n
-    for seg_pat in pat_parts:
+    dp, strict_prefix = [True] + [False] * n, False
+    for idx, seg_pat in enumerate(pat_parts):
         if seg_pat == "**":
             seen = False
             dp = [seen := (seen or v) for v in dp]
         else:
-            rx = _compile_seg(seg_pat)
-            dp = [False] + [dp[j] and (rx.fullmatch(path_parts[j]) is not None) for j in range(n)]
-    return any(dp[:n]) or (dp[n] and ((not trailing_dir) or mode == "160000"))
+            dp = [False] + [dp[j] and _seg_matches(seg_pat, path_parts[j]) for j in range(n)]
+        if idx < m - 1 and dp[n]: strict_prefix = True
+    return any(dp[:n]) or (dp[n] and ((not trailing_dir) or mode in ("160000", "120000"))) or (mode in ("120000", "160000") and strict_prefix)
 
 def _git_raw(repo_dir: Path, *args: str, input_bytes: bytes | None = None, err_ctx: str = "git") -> bytes:
     proc = subprocess.run(["git", "-C", str(repo_dir), *args], input=input_bytes, capture_output=True, check=False)
@@ -158,9 +164,10 @@ def _read_symlink_targets(repo_dir: Path, tree_entries: dict[str, tuple[str, str
         nl = raw.index(b"\n", pos)
         hdr = raw[pos:nl].decode("ascii", errors="replace").split(" ")
         pos = nl + 1
-        if len(hdr) >= 3 and hdr[1] == "blob":
+        if len(hdr) >= 3 and hdr[1] in ("blob", "tree", "commit", "tag"):
             size = int(hdr[2])
-            by_sha[hdr[0]] = _dec(raw[pos : pos + size])
+            if hdr[1] == "blob":
+                by_sha[hdr[0]] = _dec(raw[pos : pos + size])
             pos += size + 1
     return {p: by_sha[sha] for p, sha in links if sha in by_sha}
 
@@ -170,10 +177,9 @@ def _resolve_symlink_in_tree(
     target = symlink_targets.get(rel_path)
     if target is None or target.startswith("/"):
         return ("external", target if target is not None else "missing-target")
+    if not target: return ("dangling", "<empty>")
     base_dir = posixpath.dirname(rel_path)
-    cur_parts = base_dir.split("/") if base_dir else []
-    pending: deque[str] = deque(target.split("/"))
-    hops = 0
+    cur_parts, pending, hops = (base_dir.split("/") if base_dir else []), deque(target.split("/")), 0
     while pending:
         comp = pending.popleft()
         if comp in ("", "."): continue
@@ -183,18 +189,19 @@ def _resolve_symlink_in_tree(
             continue
         cur_parts.append(comp)
         prefix = "/".join(cur_parts)
-        if prefix in tree_entries and tree_entries[prefix][0] == "120000":
-            hops += 1
-            if hops > max_hops: return ("cycle", prefix)
-            nxt = symlink_targets.get(prefix)
-            if nxt is None or nxt.startswith("/"): return ("external", nxt or prefix)
-            cur_parts.pop()
-            pending.extendleft(reversed(nxt.split("/")))
+        if prefix in tree_entries:
+            p_mode, p_sha = tree_entries[prefix]
+            if p_mode == "160000": return ("submodule", prefix, p_sha, "/".join(pending))
+            if p_mode == "120000":
+                hops += 1
+                if hops > max_hops: return ("cycle", prefix)
+                nxt = symlink_targets.get(prefix)
+                if not nxt or nxt.startswith("/"): return ("external", nxt if nxt is not None else prefix)
+                cur_parts.pop()
+                pending.extendleft(reversed(nxt.split("/")))
     resolved = "/".join(cur_parts)
     if not resolved: return ("dir", "")
-    if resolved in tree_entries:
-        t_mode, t_sha = tree_entries[resolved]
-        return ("file", resolved, t_mode, t_sha)
+    if resolved in tree_entries: return ("file", resolved, *tree_entries[resolved])
     return ("dir", resolved) if any(p.startswith(resolved + "/") for p in tree_entries) else ("dangling", resolved)
 
 def read_git_manifest(repo_dir: Path, rev: str, rel_manifest: str) -> SuiteManifest | None:
@@ -244,6 +251,8 @@ def compute_suite_hash(
             for p, m, s in sorted(((k, v[0], v[1]) for k, v in tree_entries.items() if not pfx or k.startswith(pfx)), key=lambda it: _enc(it[0])):
                 hasher.update(f"{m} {s} ".encode("ascii") + _enc(p) + b"\x00")
                 if m == "120000" and p not in visited: queue.append(p)
+        elif kind == "submodule":
+            hasher.update(b"symlink-submodule\x00" + _enc(lp) + b"\x00" + f"160000 {res[2]} ".encode("ascii") + _enc(res[1]) + b"\x00" + _enc(res[3]) + b"\x00")
         elif kind == "dangling":
             hasher.update(b"symlink-dangling\x00" + _enc(lp) + b"\x00" + _enc(res[1]) + b"\x00")
         else:
@@ -303,15 +312,20 @@ def check_manifest_drift(runner: str, repo_dir: Path, manifest: SuiteManifest) -
         raise ValueError(f"Manifest drift vs {runner} --list-suites: missing_in_manifest={sorted(r_set - m_set)} missing_in_runner={sorted(m_set - r_set)}")
 
 def _resolve_rel_manifest(repo_dir: Path, manifest_path: Path, toplevel: str, prefix: str) -> str | None:
-    repo_abs = os.path.normpath(os.path.abspath(str(repo_dir)))
+    repo_abs, repo_real = os.path.normpath(os.path.abspath(str(repo_dir))), os.path.normpath(os.path.realpath(str(repo_dir)))
     roots = [os.path.normpath(toplevel)]
     suffix = (os.sep + os.path.normpath(prefix.rstrip("/"))) if prefix else ""
-    if not prefix: roots.insert(0, repo_abs)
-    elif repo_abs.endswith(suffix): roots.insert(0, os.path.normpath(repo_abs[: -len(suffix)]))
-    cand = os.path.normpath(str(manifest_path) if manifest_path.is_absolute() else os.path.join(repo_abs, str(manifest_path)))
-    for root in roots:
-        if cand == root: raise ValueError(f"Manifest path points to repository root directory: {manifest_path!s}")
-        if cand.startswith(root + os.sep): return Path(cand[len(root) + 1 :]).as_posix()
+    for base in (repo_abs, repo_real):
+        if not prefix: roots.append(base)
+        elif base.endswith(suffix): roots.append(os.path.normpath(base[: -len(suffix)]))
+    raw_str = str(manifest_path)
+    cands = [os.path.normpath(raw_str)] if manifest_path.is_absolute() else [os.path.normpath(os.path.join(b, raw_str)) for b in (repo_abs, repo_real)]
+    if manifest_path.is_absolute() and cands[0].startswith(repo_abs + os.sep):
+        cands.append(os.path.normpath(os.path.join(repo_real, cands[0][len(repo_abs) + 1 :])))
+    for cand in cands:
+        for root in roots:
+            if cand == root: raise ValueError(f"Manifest path points to repository root directory: {manifest_path!s}")
+            if cand.startswith(root + os.sep): return Path(cand[len(root) + 1 :]).as_posix()
     return None
 
 def main(argv: list[str] | None = None) -> int:
@@ -330,6 +344,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("CLI runner/extra-arg must not contain NUL bytes")
         safe_base, safe_head = validate_git_rev(args.base, "base"), validate_git_rev(args.head, "head")
         toplevel, prefix = _git_repo_info(repo_dir)
+        top_dir = Path(toplevel)
         rel_manifest = _resolve_rel_manifest(repo_dir, raw_manifest, toplevel, prefix)
         if rel_manifest is not None:
             head_manifest = read_git_manifest(repo_dir, safe_head, rel_manifest)
@@ -343,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             active_manifest = load_manifest(raw_manifest if raw_manifest.is_absolute() else repo_dir / raw_manifest)
             diffs = compute_changed_suites(repo_dir, safe_base, safe_head, active_manifest, None, False, args.allow_deleted_suites)
-        if args.check_manifest: check_manifest_drift(args.runner, repo_dir, active_manifest)
+        if args.check_manifest: check_manifest_drift(args.runner, top_dir, active_manifest)
     except (ValueError, OSError, RuntimeError) as exc:
         print(f"FUZZ_CHANGED_ERROR: {exc}", file=sys.stderr)
         return 2
@@ -356,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             print(f"DRY_RUN: {shlex.join(cmd)}")
             return 0
-        try: proc = subprocess.run(cmd, cwd=repo_dir, check=False)
+        try: proc = subprocess.run(cmd, cwd=top_dir, check=False)
         except (OSError, ValueError) as exc:
             print(f"FUZZ_CHANGED_ERROR: failed to execute {cmd[0]!r}: {exc}", file=sys.stderr)
             return 2

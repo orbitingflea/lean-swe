@@ -265,6 +265,19 @@ private def verifyShrinkRegressions : IO Unit := do
   | .ok shrunkBad =>
     throw (IO.userError s!"VERIFY_SHRINKER_DISALLOWEMPTY_FAILED: expected error, got {repr shrunkBad}")
   | .error _ => pure ()
+  let calls258 ← IO.mkRef (0 : Nat)
+  let shrink258 : Nat × Nat → List (Nat × Nat)
+    | (0, v) => [(0, (v + 1) % 258)]
+    | (1, v) => if v == 0 then [] else [(1, 0)]
+    | _ => []
+  let shrunk258 ← shrinkElements shrink258 (fun _ => do calls258.modify (· + 1); pure true) #[(0, 0), (1, 1000)]
+  if shrunk258[1]! != (1, 0) || (← calls258.get) >= 1000 then
+    throw (IO.userError s!"SHRINK_BRENT_258_FAILED: got={repr shrunk258} calls={← calls258.get}")
+  let callsLasso ← IO.mkRef (0 : Nat)
+  let shrinkLasso (n : Nat) : List Nat := [if n < 307 then n + 1 else 50]
+  let _ ← shrinkElements shrinkLasso (fun _ => do callsLasso.modify (· + 1); pure true) #[0]
+  if (← callsLasso.get) >= 1000 then
+    throw (IO.userError s!"SHRINK_BRENT_LASSO_FAILED: calls={← callsLasso.get}")
 
 private def warmupCorpus : Array StackOp := #[
   .clear,
