@@ -838,11 +838,16 @@ private def setupPreEnvironment (dirPath : String) (plan : EpisodePlan) :
   let mut mntReady := false
   if plan.useMntNs then
     match ← SandboxEnv.setupMntNs mntBase.toUTF8 with
-    | .ok () =>
+    | .ok mountErr =>
       inUserns := true
-      mntReady := true
+      if mountErr == 0 then
+        mntReady := true
+      else if mountErr != Errno.EINVAL && mountErr != Errno.ENODEV &&
+          mountErr != Errno.EPERM && mountErr != Errno.EACCES &&
+          mountErr != Errno.EROFS && mountErr != Errno.ENOSPC then
+        throw (IO.userError s!"setupMntNs mount failed: {mountErr}")
     | .error e =>
-      if e == Errno.EPERM || e == Errno.EACCES then
+      if e == Errno.EPERM || e == Errno.EACCES || e == Errno.EINVAL || e == Errno.ENODEV then
         if plan.useUserns then
           match ← SandboxEnv.enterUserns with
           | .ok () => inUserns := true
@@ -896,6 +901,15 @@ private def setupPreEnvironment (dirPath : String) (plan : EpisodePlan) :
     | .ok _ => spawnActive := true
     | .error _ => pure ()
   return (spawnActive, mntReady, sys)
+
+private def recordOutcomeHit (hits : Array (String × Nat)) (sys : SandboxSysState)
+    (req : SandboxReq) (out : SandboxOutcome) : Array (String × Nat) :=
+  let isMaskedErr := match out with
+    | .err _ => sys.seccompMayIntercept && !failsPureWrapperGuard req
+    | _ => false
+  let key := if isMaskedErr then s!"seccomp_masked.{reqTag req} -> {outcomeTag out}"
+    else s!"{reqTag req} -> {outcomeTag out}"
+  bumpHit hits key
 
 private def isModeOPath (m : UInt32) : Bool :=
   m == 1 || m == 3 || m == 5
@@ -1042,9 +1056,7 @@ private def runPlanInChild
         let _ ← setrlimit .nofile targetCur curMax
       | .error _ => pure ()
     if plan.closeLowFds then
-      SandboxEnv.closeRaw 0
-      SandboxEnv.closeRaw 1
-      SandboxEnv.closeRaw 2
+      SandboxEnv.closeLowFdsSafe
     let mut ex : ExecState := {
       sys, nextHid, hostDirs, hostFiles, pseudos, opathMemfd?, opathRuleset?,
       rulesets := #[], dynamics := #[], closedHids, deadFd
@@ -1082,7 +1094,7 @@ private def runPlanInChild
               dynamics := ex.dynamics.push slot }
             pure (SandboxOutcome.opened hid)
         executed := executed + 1
-        hits := bumpHit hits s!"{reqTag req} -> {outcomeTag out}"
+        hits := recordOutcomeHit hits ex.sys req out
         match stepOracle ex.sys req out with
         | some s' =>
           if !s'.wf then
@@ -1098,7 +1110,7 @@ private def runPlanInChild
           | .ok () => .unit
           | .error e => .err e
         executed := executed + 1
-        hits := bumpHit hits s!"{reqTag req} -> {outcomeTag out}"
+        hits := recordOutcomeHit hits ex.sys req out
         match stepOracle ex.sys req out with
         | some s' =>
           if !s'.wf then
@@ -1113,7 +1125,7 @@ private def runPlanInChild
           | .ok () => .unit
           | .error e => .err e
         executed := executed + 1
-        hits := bumpHit hits s!"{reqTag req} -> {outcomeTag out}"
+        hits := recordOutcomeHit hits ex.sys req out
         match stepOracle ex.sys req out with
         | some s' =>
           if !s'.wf then
@@ -1128,7 +1140,7 @@ private def runPlanInChild
           | .ok () => .unit
           | .error e => .err e
         executed := executed + 1
-        hits := bumpHit hits s!"{reqTag req} -> {outcomeTag out}"
+        hits := recordOutcomeHit hits ex.sys req out
         match stepOracle ex.sys req out with
         | some s' =>
           if !s'.wf then
@@ -1142,7 +1154,7 @@ private def runPlanInChild
           | .ok v => .u32 v
           | .error e => .err e
         executed := executed + 1
-        hits := bumpHit hits s!"{reqTag req} -> {outcomeTag out}"
+        hits := recordOutcomeHit hits ex.sys req out
         match stepOracle ex.sys req out with
         | some s' =>
           if !s'.wf then
@@ -1156,7 +1168,7 @@ private def runPlanInChild
           | .ok v => .u32 v
           | .error e => .err e
         executed := executed + 1
-        hits := bumpHit hits s!"{reqTag req} -> {outcomeTag out}"
+        hits := recordOutcomeHit hits ex.sys req out
         match stepOracle ex.sys req out with
         | some s' =>
           if !s'.wf then
@@ -1170,7 +1182,7 @@ private def runPlanInChild
           | .ok v => .u32 v
           | .error e => .err e
         executed := executed + 1
-        hits := bumpHit hits s!"{reqTag req} -> {outcomeTag out}"
+        hits := recordOutcomeHit hits ex.sys req out
         match stepOracle ex.sys req out with
         | some s' =>
           if !s'.wf then
@@ -1184,7 +1196,7 @@ private def runPlanInChild
           | .ok () => .unit
           | .error e => .err e
         executed := executed + 1
-        hits := bumpHit hits s!"{reqTag req} -> {outcomeTag out}"
+        hits := recordOutcomeHit hits ex.sys req out
         match stepOracle ex.sys req out with
         | some s' =>
           if !s'.wf then
@@ -1201,7 +1213,7 @@ private def runPlanInChild
             ex := { ex with nextHid := hid + 1, dynamics := ex.dynamics.push { hid, fd } }
             pure (SandboxOutcome.opened hid)
         executed := executed + 1
-        hits := bumpHit hits s!"{reqTag req} -> {outcomeTag out}"
+        hits := recordOutcomeHit hits ex.sys req out
         if !ex.sys.seccompMayIntercept && fl.exec && !fl.noexecSeal && out == .err Errno.EACCES then
           hits := bumpHit hits "memfd_create.noexec_strict -> err.13"
         match stepOracle ex.sys req out with
@@ -1222,37 +1234,47 @@ private def runPlanInChild
     let mut lines := #[toString executed]
     match mismatch? with
     | none => lines := lines.push "OK"
-    | some (idx, msg) => lines := lines.push s!"ERR\t{idx}\t{msg}"
+    | some (idx, msg) =>
+      let flatMsg := (msg.replace "\r" "").replace "\n" "\\n"
+      lines := lines.push s!"ERR\t{idx}\t{flatMsg}"
     for (k, n) in hits do
       lines := lines.push s!"HIT\t{k}\t{n}"
     return ("\n".intercalate lines.toList).toUTF8
   if (st &&& 0x7F) != 0 || ((st >>> 8) &&& 0xFF) != 0 then
     return { executed := 0, hits := #[], mismatch? := some (0, s!"child crashed/signaled waitStatus={st}") }
-  let txt := String.fromUTF8! payload
+  let some txt := String.fromUTF8? payload
+    | return { executed := 0, hits := #[], mismatch? := some (0, "invalid UTF-8 IPC payload from child") }
   let lines := txt.splitOn "\n"
-  let executed := (lines.head?.bind String.toNat?).getD 0
+  let some executed := lines.head?.bind String.toNat?
+    | return { executed := 0, hits := #[], mismatch? := some (0, "incomplete/empty child IPC payload") }
   let rest := lines.drop 1
   let mut mismatch? : Option (Nat × String) := none
   let mut hits : Array (String × Nat) := #[]
+  let mut sawStatus := false
   for ln in rest do
-    if ln.startsWith "ERR\t" then
+    if ln == "OK" then
+      sawStatus := true
+    else if ln.startsWith "ERR\t" then
+      sawStatus := true
       let parts := ln.splitOn "\t"
       let idx := (parts.getD 1 "0").toNat?.getD 0
-      let msg := "\t".intercalate (parts.drop 2)
-      mismatch? := some (idx, msg)
+      let rawMsg := "\t".intercalate (parts.drop 2)
+      mismatch? := some (idx, rawMsg.replace "\\n" "\n")
     else if ln.startsWith "HIT\t" then
       let parts := ln.splitOn "\t"
       let k := parts.getD 1 ""
       let n := (parts.getD 2 "0").toNat?.getD 0
       hits := hits.push (k, n)
+  if !sawStatus then
+    return { executed, hits, mismatch? := some (0, "truncated child IPC payload (missing OK/ERR status line)") }
   return { executed, hits, mismatch? }
 
-private partial def shrinkPlan
+private def shrinkStepsOnce
     (dirPath filePath : String)
-    (plan : EpisodePlan)
+    (bestInit : EpisodePlan)
     (oracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState) :
     IO EpisodePlan := do
-  let mut best := plan
+  let mut best := bestInit
   let mut chunk := Nat.max 1 (best.steps.size / 2)
   while chunk >= 1 && best.steps.size > 1 do
     let mut improved := false
@@ -1262,7 +1284,8 @@ private partial def shrinkPlan
       let shrunkSteps := best.steps.extract 0 start ++ best.steps.extract stop best.steps.size
       if !shrunkSteps.isEmpty then
         let candidate := { best with steps := shrunkSteps }
-        let res ← runPlanInChild dirPath filePath candidate oracle
+        let res ← try runPlanInChild dirPath filePath candidate oracle
+          catch _ => pure { executed := 0, hits := #[], mismatch? := none }
         if res.mismatch?.isSome then
           best := candidate
           improved := true
@@ -1272,6 +1295,14 @@ private partial def shrinkPlan
       if chunk == 1 then
         break
       chunk := chunk / 2
+  return best
+
+private partial def shrinkPlan
+    (dirPath filePath : String)
+    (plan : EpisodePlan)
+    (oracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState) :
+    IO EpisodePlan := do
+  let mut best ← shrinkStepsOnce dirPath filePath plan oracle
   let envCands : Array (EpisodePlan → EpisodePlan) := #[
     fun p => { p with useUserns := false },
     fun p => { p with useMntNs := false },
@@ -1281,15 +1312,21 @@ private partial def shrinkPlan
     fun p => { p with preLowerNofile := false },
     fun p => { p with preOuterLayers := 0 },
     fun p => { p with preOuterSeccomp := false },
+    fun p => { p with outerKeepNnpZero := false },
     fun p => { p with spawnMode := 0 },
     fun p => { p with closeLowFds := false },
     fun p => { p with seedOPathSpecials := false }
   ]
+  let mut envChanged := false
   for fn in envCands do
     let candidate := fn best
-    let res ← runPlanInChild dirPath filePath candidate oracle
+    let res ← try runPlanInChild dirPath filePath candidate oracle
+      catch _ => pure { executed := 0, hits := #[], mismatch? := none }
     if res.mismatch?.isSome then
       best := candidate
+      envChanged := true
+  if envChanged && best.steps.size > 1 then
+    best ← shrinkStepsOnce dirPath filePath best oracle
   return best
 
 private def withFuzzDir {α : Type} (f : String → String → IO α) : IO α := do
@@ -1319,7 +1356,6 @@ private def withFuzzDir {α : Type} (f : String → String → IO α) : IO α :=
 
 private def requiredMatrixKeys : Array String := #[
   "landlock_create_ruleset.version -> ok.version",
-  "landlock_create_ruleset.errata -> ok.version",
   "landlock_create_ruleset.create -> ok.fd",
   "landlock_create_ruleset.create -> err.22",
   "landlock_create_ruleset.create -> err.24",
@@ -1364,7 +1400,7 @@ private def requiredMatrixKeys : Array String := #[
   "setrlimit.nofile -> err.1",
   "setrlimit.nofile -> err.22",
   "memfd_create -> ok.fd",
-  "memfd_create -> err.1",
+  "seccomp_masked.memfd_create -> err.1",
   "memfd_create -> err.22",
   "memfd_create -> err.24"
 ]
@@ -1384,7 +1420,9 @@ def runShrinkSelfTest (seed : UInt64 := 0x123456789abcdef0) : IO Unit := do
         | _, _ => allowedStep s req out
     let rng := Rng.seed seed
     let (basePlan, _) := genEpisodePlan rng 29
-    let prefixSteps := basePlan.steps.extract 0 15
+    let prefixSteps := (basePlan.steps.extract 0 15).filter fun
+      | .scSetFilter _ _ => false
+      | _ => true
     let suffixSteps := basePlan.steps.extract 15 basePlan.steps.size
     let injected := { basePlan with
       preOuterSeccomp := false
@@ -1424,7 +1462,7 @@ private def runOuterSeccompSelfTest : IO Unit := do
     match ← prctl .getNoNewPrivs with
     | .ok 1 => return "OK".toUTF8
     | other => return (s!"getNoNewPrivs expected 1, got {repr other}").toUTF8
-  let msg := String.fromUTF8! payload
+  let msg := (String.fromUTF8? payload).getD "invalid UTF-8 from child"
   if st != 0 || msg != "OK" then
     throw (IO.userError s!"outer seccomp self-test failed (status={st}, payload={msg})")
 
@@ -1433,6 +1471,12 @@ def runFuzz (cfg : FuzzConfig := {}) : IO UInt32 := do
   runOuterSeccompSelfTest
   if cfg.selfTestShrink then
     runShrinkSelfTest cfg.seed
+  let errataExpectedKey ← match ← landlockCreateRuleset none LANDLOCK_CREATE_RULESET_ERRATA with
+    | .ok (.version _) => pure "landlock_create_ruleset.errata -> ok.version"
+    | .ok (.ruleset rs) =>
+      let _ ← SandboxEnv.closeFd rs
+      throw (IO.userError "unexpected ruleset fd from LANDLOCK_CREATE_RULESET_ERRATA")
+    | .error _ => pure "landlock_create_ruleset.errata -> err.22"
   withFuzzDir fun dirPath filePath => do
     let mut rng := Rng.seed cfg.seed
     let mut totalSteps : Nat := 0
@@ -1461,7 +1505,7 @@ def runFuzz (cfg : FuzzConfig := {}) : IO UInt32 := do
       IO.println "SANDBOX_FUZZ_MATRIX_END"
     if cfg.steps >= 50000 then
       let mut missing : Array String := #[]
-      for k in requiredMatrixKeys do
+      for k in requiredMatrixKeys.push errataExpectedKey do
         if getHitCount hits k == 0 then
           missing := missing.push k
       if !missing.isEmpty then

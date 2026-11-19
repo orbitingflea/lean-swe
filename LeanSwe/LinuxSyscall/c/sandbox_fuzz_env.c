@@ -62,8 +62,11 @@ static void *leanswe_sbx_sync_worker(void *arg) {
   if (g_sbx_sync_install != 0) {
     struct sock_filter allow = { 0x0006, 0, 0, 0x7FFF0000U };
     struct sock_fprog prog = { 1, &allow };
-    (void)syscall(SYS_prctl, 38UL, 1UL, 0UL, 0UL, 0UL);
-    (void)syscall(SYS_seccomp, 1U, 0U, &prog);
+    if (syscall(SYS_prctl, 38UL, 1UL, 0UL, 0UL, 0UL) < 0 ||
+        syscall(SYS_seccomp, 1UL, 0UL, &prog) < 0) {
+      close(ready_wfd);
+      return NULL;
+    }
   }
   uint32_t tid = (uint32_t)syscall(SYS_gettid);
   ssize_t wn = write(ready_wfd, &tid, sizeof(tid));
@@ -134,11 +137,31 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_read_bytes(
   }
   ssize_t n = read((int)fd, lean_sarray_cptr(arr), cap);
   if (n < 0) {
+    int saved = errno;
     lean_dec(arr);
-    return leanswe_mk_errno(errno);
+    return leanswe_mk_errno(saved);
   }
   lean_sarray_set_size(arr, (size_t)n);
   return leanswe_mk_ok(arr);
+}
+
+static void sbx_close_if_not_uv(int fd) {
+  char p[64], tgt[64];
+  snprintf(p, sizeof(p), "/proc/self/fd/%d", fd);
+  ssize_t n = readlink(p, tgt, sizeof(tgt) - 1);
+  if (n >= 0) {
+    tgt[n] = '\0';
+    if (strncmp(tgt, "anon_inode:[event", 17) == 0) { return; }
+    close(fd);
+  }
+}
+
+LEAN_EXPORT lean_obj_res leanswe_sbx_close_low_fds(lean_obj_arg w) {
+  (void)w;
+  sbx_close_if_not_uv(0);
+  sbx_close_if_not_uv(1);
+  sbx_close_if_not_uv(2);
+  return lean_io_result_mk_ok(lean_box(0));
 }
 
 LEAN_EXPORT lean_obj_res leanswe_sbx_close_raw(uint32_t fd, lean_obj_arg w) {
@@ -151,45 +174,29 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_open_host_fd(
     b_lean_obj_arg path_ba, uint32_t kind, lean_obj_arg w) {
   (void)w;
   static const int k_open_flags[7] = {
-    O_RDONLY | O_DIRECTORY | O_CLOEXEC,
-    O_PATH | O_DIRECTORY | O_CLOEXEC,
-    O_RDONLY | O_CLOEXEC,
-    O_PATH | O_CLOEXEC,
-    O_RDWR | O_CREAT | O_CLOEXEC,
-    O_PATH | O_NOFOLLOW | O_CLOEXEC,
-    O_RDONLY | O_NONBLOCK | O_CLOEXEC
+    O_RDONLY | O_DIRECTORY | O_CLOEXEC, O_PATH | O_DIRECTORY | O_CLOEXEC,
+    O_RDONLY | O_CLOEXEC, O_PATH | O_CLOEXEC, O_RDWR | O_CREAT | O_CLOEXEC,
+    O_PATH | O_NOFOLLOW | O_CLOEXEC, O_RDONLY | O_NONBLOCK | O_CLOEXEC
   };
-  if (kind >= 7u) {
-    return leanswe_mk_errno(EINVAL);
-  }
+  if (kind >= 7u) { return leanswe_mk_errno(EINVAL); }
   char sbuf[4096];
   const char *cpath = NULL;
   char *heap = NULL;
   int perr = sbx_env_ba_to_cstr(path_ba, sbuf, sizeof(sbuf), &cpath, &heap);
-  if (perr != 0) {
-    return leanswe_mk_errno(perr);
-  }
+  if (perr != 0) { return leanswe_mk_errno(perr); }
   int fd = open(cpath, k_open_flags[kind], 0600);
   int saved = errno;
-  if (heap != NULL) {
-    free(heap);
-  }
-  if (fd < 0) {
-    return leanswe_mk_errno(saved);
-  }
+  if (heap != NULL) { free(heap); }
+  if (fd < 0) { return leanswe_mk_errno(saved); }
   lean_obj_res obj = leanswe_mk_fd_obj(fd);
-  if (obj == NULL) {
-    return leanswe_mk_errno(ENOMEM);
-  }
+  if (obj == NULL) { return leanswe_mk_errno(ENOMEM); }
   return leanswe_mk_ok(obj);
 }
 
 LEAN_EXPORT lean_obj_res leanswe_sbx_open_pipe_fd(uint32_t as_o_path, lean_obj_arg w) {
   (void)w;
   int fds[2] = { -1, -1 };
-  if (pipe2(fds, O_CLOEXEC) < 0) {
-    return leanswe_mk_errno(errno);
-  }
+  if (pipe2(fds, O_CLOEXEC) < 0) { return leanswe_mk_errno(errno); }
   close(fds[1]);
   int target = fds[0];
   if (as_o_path != 0u) {
@@ -198,14 +205,10 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_open_pipe_fd(uint32_t as_o_path, lean_obj_a
     target = open(pbuf, O_PATH | O_CLOEXEC);
     int saved = errno;
     close(fds[0]);
-    if (target < 0) {
-      return leanswe_mk_errno(saved);
-    }
+    if (target < 0) { return leanswe_mk_errno(saved); }
   }
   lean_obj_res obj = leanswe_mk_fd_obj(target);
-  if (obj == NULL) {
-    return leanswe_mk_errno(ENOMEM);
-  }
+  if (obj == NULL) { return leanswe_mk_errno(ENOMEM); }
   return leanswe_mk_ok(obj);
 }
 
@@ -213,17 +216,13 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_close_fd(b_lean_obj_arg fd_obj, lean_obj_ar
   (void)w;
   LeanFdBox *box = (LeanFdBox *)lean_get_external_data(fd_obj);
   int err = leanswe_fd_box_close(box);
-  if (err != 0) {
-    return leanswe_mk_errno(err);
-  }
+  if (err != 0) { return leanswe_mk_errno(err); }
   return leanswe_mk_ok(lean_box(0));
 }
 
 LEAN_EXPORT lean_obj_res leanswe_sbx_enter_userns(lean_obj_arg w) {
   (void)w;
-  if (unshare(CLONE_NEWUSER) < 0) {
-    return leanswe_mk_errno(errno);
-  }
+  if (unshare(CLONE_NEWUSER) < 0) { return leanswe_mk_errno(errno); }
   return leanswe_mk_ok(lean_box(0));
 }
 
@@ -235,9 +234,7 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_unshare_extra(uint32_t ns_bits, lean_obj_ar
   if ((ns_bits & 4u) != 0u) { flags |= CLONE_NEWUTS; }
   if ((ns_bits & 8u) != 0u) { flags |= CLONE_NEWIPC; }
   if ((ns_bits & 16u) != 0u) { flags |= CLONE_NEWCGROUP; }
-  if (flags != 0 && unshare(flags) < 0) {
-    return leanswe_mk_errno(errno);
-  }
+  if (flags != 0 && unshare(flags) < 0) { return leanswe_mk_errno(errno); }
   return leanswe_mk_ok(lean_box(0));
 }
 
@@ -245,25 +242,17 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_install_raw_seccomp(
     b_lean_obj_arg filter_ba, lean_obj_arg w) {
   (void)w;
   size_t len = lean_sarray_size(filter_ba);
-  if (len == 0u || (len % sizeof(struct sock_filter)) != 0u) {
-    return leanswe_mk_errno(EINVAL);
-  }
+  if (len == 0u || (len % sizeof(struct sock_filter)) != 0u) { return leanswe_mk_errno(EINVAL); }
   size_t cnt = len / sizeof(struct sock_filter);
-  if (cnt > 65535u) {
-    return leanswe_mk_errno(EINVAL);
-  }
+  if (cnt > 65535u) { return leanswe_mk_errno(EINVAL); }
   struct sock_filter *insns = (struct sock_filter *)malloc(len);
-  if (insns == NULL) {
-    return leanswe_mk_errno(ENOMEM);
-  }
+  if (insns == NULL) { return leanswe_mk_errno(ENOMEM); }
   memcpy(insns, lean_sarray_cptr(filter_ba), len);
   struct sock_fprog prog = { (unsigned short)cnt, insns };
   long rc = syscall(SYS_seccomp, 1U, 0U, &prog);
   int saved = errno;
   free(insns);
-  if (rc < 0) {
-    return leanswe_mk_errno(saved);
-  }
+  if (rc < 0) { return leanswe_mk_errno(saved); }
   return leanswe_mk_ok(lean_box(0));
 }
 
@@ -333,21 +322,12 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_spawn_sync_thread(
   if (rc != 0) {
     sbx_close_pair(ready_fds);
     sbx_close_pair(stop_fds);
+    g_sbx_sync_stop_rfd = -1;
+    g_sbx_sync_stop_wfd = -1;
     return leanswe_mk_errno(rc);
   }
-  uint32_t tid = 0;
-  ssize_t rn = read(ready_fds[0], &tid, sizeof(tid));
-  close(ready_fds[0]);
-  if (rn != (ssize_t)sizeof(tid)) {
-    char ch = 1;
-    ssize_t wn = write(g_sbx_sync_stop_wfd, &ch, 1);
-    (void)wn;
-    pthread_join(g_sbx_sync_tid, NULL);
-    sbx_close_pair(stop_fds);
-    return leanswe_mk_errno(EIO);
-  }
   g_sbx_sync_active = 1;
-  return leanswe_mk_ok(lean_box_uint32(tid));
+  return leanswe_mk_ok(lean_box_uint32((uint32_t)ready_fds[0]));
 }
 
 LEAN_EXPORT lean_obj_res leanswe_sbx_stop_sync_thread(lean_obj_arg w) {
@@ -391,14 +371,19 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_reopen_opath(b_lean_obj_arg fd_obj, lean_ob
 }
 
 static int sbx_make_unix_sock_opath(const char *cpath) {
+  size_t len = strlen(cpath);
+  struct sockaddr_un addr;
+  if (len >= sizeof(addr.sun_path)) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
   int sfd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (sfd < 0) {
     return -1;
   }
-  struct sockaddr_un addr;
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", cpath);
+  memcpy(addr.sun_path, cpath, len + 1);
   (void)unlink(cpath);
   int brc = bind(sfd, (const struct sockaddr *)&addr, sizeof(addr));
   int berr = errno;
@@ -407,7 +392,14 @@ static int sbx_make_unix_sock_opath(const char *cpath) {
     errno = berr;
     return -1;
   }
-  return open(cpath, O_PATH | O_CLOEXEC);
+  int fd = open(cpath, O_PATH | O_CLOEXEC);
+  if (fd < 0) {
+    int oerr = errno;
+    (void)unlink(cpath);
+    errno = oerr;
+    return -1;
+  }
+  return fd;
 }
 
 static int sbx_open_unlinked(uint32_t kind, const char *cpath) {
@@ -484,7 +476,8 @@ static int sbx_write_text(const char *path, const char *txt) {
   ssize_t wn = write(fd, txt, len);
   int saved = errno;
   close(fd);
-  if (wn != (ssize_t)len) { errno = saved; return -1; }
+  if (wn < 0) { errno = saved; return -1; }
+  if (wn != (ssize_t)len) { errno = EIO; return -1; }
   return 0;
 }
 
@@ -500,14 +493,16 @@ static int sbx_setup_idmap(uid_t uid, gid_t gid) {
 
 static int sbx_mkdir_sub(const char *base, const char *sub) {
   char p[4096];
-  snprintf(p, sizeof(p), "%s/%s", base, sub);
+  int n = snprintf(p, sizeof(p), "%s/%s", base, sub);
+  if (n < 0 || (size_t)n >= sizeof(p)) { errno = ENAMETOOLONG; return -1; }
   if (mkdir(p, 0700) < 0 && errno != EEXIST) { return -1; }
   return 0;
 }
 
 static int sbx_touch_sub(const char *base, const char *sub) {
   char p[4096];
-  snprintf(p, sizeof(p), "%s/%s", base, sub);
+  int n = snprintf(p, sizeof(p), "%s/%s", base, sub);
+  if (n < 0 || (size_t)n >= sizeof(p)) { errno = ENAMETOOLONG; return -1; }
   int fd = open(p, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
   if (fd < 0) { return -1; }
   close(fd);
@@ -526,10 +521,14 @@ static int sbx_remount_ro(const char *path) {
 #ifdef ST_RELATIME
   if ((sv.f_flag & ST_RELATIME) != 0) { fl |= MS_RELATIME; }
 #endif
+#if defined(ST_NOSYMFOLLOW) && defined(MS_NOSYMFOLLOW)
+  if ((sv.f_flag & ST_NOSYMFOLLOW) != 0) { fl |= MS_NOSYMFOLLOW; }
+#endif
   return mount(NULL, path, NULL, fl, NULL);
 }
 
 static int sbx_do_mounts(const char *base) {
+  if (strlen(base) >= 900u) { errno = ENAMETOOLONG; return -1; }
   char lo[1024], up[1024], wk[1024], ov[1024], dp[1024], bm[1024], bs[1024], ro[1024], opt[3200];
   snprintf(lo, sizeof(lo), "%s/lo", base);
   snprintf(up, sizeof(up), "%s/up", base);
@@ -573,16 +572,19 @@ LEAN_EXPORT lean_obj_res leanswe_sbx_setup_mnt_ns(b_lean_obj_arg base_ba, lean_o
   uid_t uid = getuid();
   gid_t gid = getgid();
   if (unshare(CLONE_NEWUSER | CLONE_NEWNS) < 0) { return leanswe_mk_errno(errno); }
-  if (sbx_setup_idmap(uid, gid) != 0) { return leanswe_mk_errno(errno); }
+  if (sbx_setup_idmap(uid, gid) != 0) {
+    int err = errno;
+    return leanswe_mk_ok(lean_box_uint32((uint32_t)(err > 0 ? err : EIO)));
+  }
   char sbuf[4096];
   const char *cbase = NULL;
   char *heap = NULL;
   int perr = sbx_env_ba_to_cstr(base_ba, sbuf, sizeof(sbuf), &cbase, &heap);
-  if (perr != 0) { return leanswe_mk_errno(perr); }
+  if (perr != 0) { return leanswe_mk_ok(lean_box_uint32((uint32_t)perr)); }
   int rc = sbx_make_mnt_dirs(cbase);
   if (rc == 0) { rc = sbx_do_mounts(cbase); }
   int saved = errno;
   if (heap != NULL) { free(heap); }
-  if (rc != 0) { return leanswe_mk_errno(saved); }
-  return leanswe_mk_ok(lean_box(0));
+  if (rc != 0) { return leanswe_mk_ok(lean_box_uint32((uint32_t)(saved > 0 ? saved : EIO))); }
+  return leanswe_mk_ok(lean_box_uint32(0u));
 }

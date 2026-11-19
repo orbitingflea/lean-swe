@@ -188,14 +188,20 @@ structure SandboxSysState where
   hasCapSysAdmin? : Option Bool := none
   /-- Lazily observed `capable(CAP_SYS_RESOURCE)` in `init_user_ns` (`none` until observed via `setrlimit`). -/
   hasCapSysResource? : Option Bool := none
-  /-- `true` once any Landlock syscall (including `ERRATA`) has succeeded on the host. -/
+  /-- `true` once any Landlock syscall (including `ERRATA`) has succeeded or returned a Landlock-initialized error on the host. -/
   landlockEnabled : Bool := false
-  /-- Implied minimum Landlock ABI version inferred from prior successful `ERRATA` (`>= 6`) or v5+/v9+ ruleset creation (`0` before any v5+ / `ERRATA` evidence). -/
+  /-- Implied minimum Landlock ABI version inferred from prior successful v5+/v9+ ruleset creation (`0` before any v5+ evidence). -/
   landlockMinAbi : UInt32 := 0
+  /-- Implied upper bound on Landlock ABI inferred from `EINVAL` on unknown `LANDLOCK_ACCESS_FS_*` bits (`4` if `IOCTL_DEV` rejected, `8` if `RESOLVE_UNIX` rejected). -/
+  landlockMaxAbi? : Option UInt32 := none
+  /-- Observed `LANDLOCK_CREATE_RULESET_ERRATA` state (`none`: unobserved, `some none`: `EINVAL` unsupported, `some (some mask)`: supported errata bitmask). -/
+  landlockErrata? : Option (Option UInt32) := none
   /-- Observed Landlock ABI version once queried (`none` before first `CREATE_RULESET_VERSION` query). -/
   landlockAbi? : Option UInt32 := none
   /-- Default Landlock ABI version used by deterministic `modelOps` when `landlockAbi? = none` (`9` on Linux `7.1.6`). -/
   defaultLandlockAbi : UInt32 := 9
+  /-- `true` once a `no_new_privs || CAP_SYS_ADMIN` gate has succeeded while both `noNewPrivs?` and `hasCapSysAdmin?` were unknown. -/
+  passedNnpGate : Bool := false
   /-- Lower bound on enacted Landlock domains stacked on the calling thread (`0..16`). -/
   landlockLayers : Nat := 0
   /-- `true` once the exact stacked Landlock domain count is known (`false` when unknown outer Landlock domains may pre-exist). -/
@@ -237,9 +243,16 @@ def SandboxSysState.withOuterSeccomp (s : SandboxSysState := SandboxSysState.ini
 /-- Well-formedness invariant on `SandboxSysState` preserved by `allowedStep` and `modelOps`. -/
 def SandboxSysState.wf (s : SandboxSysState) : Bool :=
   s.fds.all (fun p => decide (p.1 < s.nextHid)) &&
+    !(s.passedNnpGate && s.noNewPrivs? == some false && s.hasCapSysAdmin? == some false) &&
+    (match s.landlockMaxAbi? with
+     | none => true
+     | some m => decide (4 ≤ m && s.landlockMinAbi ≤ m)) &&
     match s.landlockAbi? with
     | none => true
-    | some v => decide (v ≥ 4 && v ≥ s.landlockMinAbi)
+    | some v => decide (v ≥ 4 && v ≥ s.landlockMinAbi &&
+        match s.landlockMaxAbi? with
+        | none => true
+        | some m => v ≤ m)
 
 /-- Register a pre-existing host filesystem descriptor (`isDir = true` for directory, `false` for regular file, `oPath = true` when opened with `O_PATH`) at `hid` in `s`. -/
 def SandboxSysState.withHostFd (s : SandboxSysState) (hid : HandleId) (isDir : Bool)
@@ -257,7 +270,7 @@ def SandboxSysState.withPseudoFd (s : SandboxSysState) (hid : HandleId)
 
 /-- Returns `true` iff `s` is consistent with failing the `no_new_privs || CAP_SYS_ADMIN` gate (`EPERM` / `EACCES`). -/
 def canFailNnpGate (s : SandboxSysState) : Bool :=
-  s.noNewPrivs? != some true && s.hasCapSysAdmin? != some true
+  !s.passedNnpGate && s.noNewPrivs? != some true && s.hasCapSysAdmin? != some true
 
 /-- Returns `true` iff `s` is consistent with passing the `no_new_privs || CAP_SYS_ADMIN` gate. -/
 def canPassNnpGate (s : SandboxSysState) : Bool :=
@@ -267,14 +280,16 @@ def canPassNnpGate (s : SandboxSysState) : Bool :=
 def pinFailedNnpGate (s : SandboxSysState) : SandboxSysState :=
   { s with noNewPrivs? := some false, hasCapSysAdmin? := some false }
 
-/-- Refine `(noNewPrivs?, hasCapSysAdmin?)` when a `no_new_privs || CAP_SYS_ADMIN` gate succeeds (`noNewPrivs? == some false` implies `hasCapSysAdmin? := some true`, and `hasCapSysAdmin? == some false` implies `noNewPrivs? := some true`). -/
+/-- Refine `(noNewPrivs?, hasCapSysAdmin?, passedNnpGate)` when a `no_new_privs || CAP_SYS_ADMIN` gate succeeds. -/
 def pinPassedNnpGate (s : SandboxSysState) : SandboxSysState :=
-  if s.noNewPrivs? == some false then
+  if s.noNewPrivs? == some true || s.hasCapSysAdmin? == some true then
+    s
+  else if s.noNewPrivs? == some false then
     { s with hasCapSysAdmin? := some true }
   else if s.hasCapSysAdmin? == some false then
     { s with noNewPrivs? := some true }
   else
-    s
+    { s with passedNnpGate := true }
 
 /-- Read the tracked `RlimitState` for `res` from `s`. -/
 def SandboxSysState.getRlimit (s : SandboxSysState) : RlimitResource → RlimitState
@@ -291,7 +306,8 @@ def SandboxSysState.setRlimit (s : SandboxSysState) (res : RlimitResource) (st :
 
 /-- Returns `true` iff any prior step in `s` has already confirmed that Landlock is initialized and enabled in the kernel. -/
 def hasLandlockEvidence (s : SandboxSysState) : Bool :=
-  s.landlockEnabled || s.landlockAbi?.isSome || s.landlockLayers > 0 ||
+  s.landlockEnabled || s.landlockAbi?.isSome || s.landlockErrata?.isSome ||
+    s.landlockMaxAbi?.isSome || s.landlockLayers > 0 ||
     s.fds.any (fun (_, d) => match d.kind with | .landlockRuleset _ _ => true | _ => false)
 
 /-- Returns `true` iff any prior step in `s` has already confirmed that `seccomp(2)` is enabled in the kernel. -/
@@ -309,17 +325,36 @@ def impliedLandlockAbi (fsMask : UInt64) : UInt32 :=
   else if (fsMask &&& LANDLOCK_ACCESS_FS_IOCTL_DEV) != 0 then 5
   else 4
 
+/-- Maximum Landlock ABI upper bound implied when `landlock_create_ruleset` rejects `fsMask` with `EINVAL`. -/
+def impliedMaxLandlockAbiOnEinval (fsMask : UInt64) : Option UInt32 :=
+  if (fsMask &&& ~~~landlockKnownFsMask 8) == 0 then some 4
+  else if (fsMask &&& ~~~landlockKnownFsMask 9) == 0 then some 8
+  else none
+
 /-- Maximum of two `UInt32` values (kernel-reducible). -/
 def maxU32 (a b : UInt32) : UInt32 :=
   if a < b then b else a
 
-/-- Effective Landlock ABI version used by deterministic `modelOps` (`>= 4` whenever `hasLandlockEvidence s` holds, and `>= s.landlockMinAbi`). -/
+/-- Minimum of two `UInt32` values (kernel-reducible). -/
+def minU32 (a b : UInt32) : UInt32 :=
+  if a < b then a else b
+
+/-- Tighten an optional `UInt32` upper bound with `bound`. -/
+def tightenMaxAbi (cur? : Option UInt32) (bound : UInt32) : Option UInt32 :=
+  match cur? with
+  | none => some bound
+  | some m => some (minU32 m bound)
+
+/-- Effective Landlock ABI version used by deterministic `modelOps` (`>= 4` whenever `hasLandlockEvidence s` holds, bounded by `landlockMinAbi` and `landlockMaxAbi?`). -/
 def effectiveModelLandlockAbi (s : SandboxSysState) : UInt32 :=
   match s.landlockAbi? with
   | some abi => abi
   | none =>
     let base := if s.defaultLandlockAbi < 4 && hasLandlockEvidence s then 4 else s.defaultLandlockAbi
-    maxU32 base s.landlockMinAbi
+    let capped := match s.landlockMaxAbi? with
+      | none => base
+      | some m => minU32 base m
+    maxU32 capped s.landlockMinAbi
 
 /-- Invoke `ops.landlockRestrictSelf rs` `n` consecutive times in `StateM S`, stopping early on the first `.error`. -/
 def repeatRestrictSelf {S fd : Type} (ops : SandboxOpsM (StateM S) fd) (rs : fd) :
@@ -390,37 +425,55 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
           if flags == LANDLOCK_CREATE_RULESET_VERSION then
             if canDisable || Errno.isTransientOsErrno e then some s else none
           else if flags == LANDLOCK_CREATE_RULESET_ERRATA then
-            let errataEinvalOk := match s.landlockAbi? with
-              | some abi => abi < 6
-              | none => s.landlockMinAbi < 6
-            if (e == Errno.EINVAL && errataEinvalOk) || canDisable || Errno.isTransientOsErrno e then
+            let errataEinvalOk := match s.landlockErrata? with
+              | some (some _) => false
+              | _ => true
+            if canDisable || Errno.isTransientOsErrno e then
               some s
+            else if e == Errno.EINVAL && errataEinvalOk then
+              some { s with landlockEnabled := true, landlockErrata? := some none }
             else
               none
           else
-            if e == Errno.EINVAL || canDisable || Errno.isTransientOsErrno e then some s else none
+            if canDisable || Errno.isTransientOsErrno e then some s
+            else if e == Errno.EINVAL then some { s with landlockEnabled := true }
+            else none
       | .landlockCreateRuleset (some attr) flags =>
         if flags != 0 then
           if e == Errno.EINVAL then some s else none
         else
           let canDisable := (e == Errno.EOPNOTSUPP || e == Errno.ENOSYS) && !hasLandlockEvidence s
-          if attr.handledAccessFs == 0 && attr.handledAccessNet == 0 then
-            if e == ENOMSG || canDisable || Errno.isTransientOsErrno e then some s else none
+          if canDisable then
+            some s
+          else if attr.handledAccessFs == 0 && attr.handledAccessNet == 0 then
+            if e == ENOMSG then some { s with landlockEnabled := true }
+            else if Errno.isTransientOsErrno e then some s
+            else none
           else if (attr.handledAccessNet &&& ~~~LANDLOCK_ACCESS_NET_ALL) != 0 then
-            if e == Errno.EINVAL || canDisable || Errno.isTransientOsErrno e then some s else none
+            if e == Errno.EINVAL then some { s with landlockEnabled := true }
+            else if Errno.isTransientOsErrno e then some s
+            else none
           else
             match s.landlockAbi? with
             | some abi =>
               if (attr.handledAccessFs &&& ~~~landlockKnownFsMask abi) != 0 then
-                if e == Errno.EINVAL || Errno.isTransientOsErrno e then some s else none
+                if e == Errno.EINVAL then some { s with landlockEnabled := true }
+                else if Errno.isTransientOsErrno e then some s
+                else none
               else
                 if Errno.isTransientOsErrno e then some s else none
             | none =>
               let knownMask := landlockKnownFsMask (maxU32 4 s.landlockMinAbi)
               if (attr.handledAccessFs &&& ~~~knownMask) != 0 then
-                if e == Errno.EINVAL || canDisable || Errno.isTransientOsErrno e then some s else none
+                if e == Errno.EINVAL then
+                  let nextMax := match impliedMaxLandlockAbiOnEinval attr.handledAccessFs with
+                    | none => s.landlockMaxAbi?
+                    | some b => tightenMaxAbi s.landlockMaxAbi? b
+                  some { s with landlockEnabled := true, landlockMaxAbi? := nextMax }
+                else if Errno.isTransientOsErrno e then some s
+                else none
               else
-                if canDisable || Errno.isTransientOsErrno e then some s else none
+                if Errno.isTransientOsErrno e then some s else none
       | .landlockAddRule ruleset rule =>
         let canDisable := (e == Errno.EOPNOTSUPP || e == Errno.ENOSYS) && !hasLandlockEvidence s
         if canDisable then
@@ -428,39 +481,59 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
         else
           match assocGet s.fds ruleset with
           | none =>
-            if e == Errno.EBADF || Errno.isTransientOsErrno e then some s else none
+            if e == Errno.EBADF then some { s with landlockEnabled := true }
+            else if Errno.isTransientOsErrno e then some s
+            else none
           | some rsDesc =>
             if rsDesc.oPath then
-              if e == Errno.EBADF || Errno.isTransientOsErrno e then some s else none
+              if e == Errno.EBADF then some { s with landlockEnabled := true }
+              else if Errno.isTransientOsErrno e then some s
+              else none
             else
               match rsDesc.kind with
               | .memfd _ _ | .hostPath _ | .pseudoFs =>
-                if e == EBADFD || Errno.isTransientOsErrno e then some s else none
+                if e == EBADFD then some { s with landlockEnabled := true }
+                else if Errno.isTransientOsErrno e then some s
+                else none
               | .landlockRuleset handledFs handledNet =>
                 match rule with
                 | .pathBeneath parentHid allowedAccess =>
                   if allowedAccess == 0 then
-                    if e == ENOMSG || Errno.isTransientOsErrno e then some s else none
+                    if e == ENOMSG then some { s with landlockEnabled := true }
+                    else if Errno.isTransientOsErrno e then some s
+                    else none
                   else if (allowedAccess &&& ~~~handledFs) != 0 then
-                    if e == Errno.EINVAL || Errno.isTransientOsErrno e then some s else none
+                    if e == Errno.EINVAL then some { s with landlockEnabled := true }
+                    else if Errno.isTransientOsErrno e then some s
+                    else none
                   else
                     match assocGet s.fds parentHid with
                     | none =>
-                      if e == Errno.EBADF || Errno.isTransientOsErrno e then some s else none
+                      if e == Errno.EBADF then some { s with landlockEnabled := true }
+                      else if Errno.isTransientOsErrno e then some s
+                      else none
                     | some pDesc =>
                       match pDesc.kind with
                       | .landlockRuleset _ _ | .memfd _ _ | .pseudoFs =>
-                        if e == EBADFD || Errno.isTransientOsErrno e then some s else none
+                        if e == EBADFD then some { s with landlockEnabled := true }
+                        else if Errno.isTransientOsErrno e then some s
+                        else none
                       | .hostPath isDir =>
                         if !isDir && (allowedAccess &&& LANDLOCK_DIR_ONLY_FS_MASK) != 0 then
-                          if e == Errno.EINVAL || Errno.isTransientOsErrno e then some s else none
+                          if e == Errno.EINVAL then some { s with landlockEnabled := true }
+                          else if Errno.isTransientOsErrno e then some s
+                          else none
                         else
                           if Errno.isTransientOsErrno e then some s else none
                 | .netPort port allowedAccess =>
                   if allowedAccess == 0 then
-                    if e == ENOMSG || Errno.isTransientOsErrno e then some s else none
+                    if e == ENOMSG then some { s with landlockEnabled := true }
+                    else if Errno.isTransientOsErrno e then some s
+                    else none
                   else if (allowedAccess &&& ~~~handledNet) != 0 || port > 65535 then
-                    if e == Errno.EINVAL || Errno.isTransientOsErrno e then some s else none
+                    if e == Errno.EINVAL then some { s with landlockEnabled := true }
+                    else if Errno.isTransientOsErrno e then some s
+                    else none
                   else
                     if Errno.isTransientOsErrno e then some s else none
       | .landlockRestrictSelf ruleset =>
@@ -468,9 +541,9 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
         if canDisable then
           some s
         else if e == Errno.EPERM && canFailNnpGate s then
-          some (pinFailedNnpGate s)
+          some { pinFailedNnpGate s with landlockEnabled := true }
         else if canPassNnpGate s then
-          let sPass := pinPassedNnpGate s
+          let sPass := { pinPassedNnpGate s with landlockEnabled := true }
           match assocGet s.fds ruleset with
           | none =>
             if e == Errno.EBADF then some sPass
@@ -490,7 +563,6 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
               | .landlockRuleset _ _ =>
                 if e == Errno.E2BIG && (s.landlockLayers ≥ LANDLOCK_MAX_STACKED_LAYERS || !s.landlockLayersExact) then
                   some { sPass with
-                    landlockEnabled := true
                     landlockLayers := LANDLOCK_MAX_STACKED_LAYERS
                     landlockLayersExact := true }
                 else if Errno.isTransientOsErrno e then
@@ -507,7 +579,9 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
           if isKnownSeccompAction action then
             if canDisable || Errno.isTransientOsErrno e then some s else none
           else
-            if e == Errno.EOPNOTSUPP || canDisable || Errno.isTransientOsErrno e then some s else none
+            if e == Errno.EOPNOTSUPP then some { s with seccompEnabled := true }
+            else if canDisable || Errno.isTransientOsErrno e then some s
+            else none
       | .seccomp .setModeFilter flags filterBytes =>
         if !isValidSeccompFilterByteLen filterBytes.data.size ||
             !hasSafeSeccompRetBytes filterBytes then
@@ -515,38 +589,44 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
         else
           let canDisable := e == Errno.ENOSYS && !hasSeccompEvidence s
           if flags.waitKillableRecv then
-            if e == Errno.EINVAL || canDisable || Errno.isTransientOsErrno e then some s else none
+            if e == Errno.EINVAL then some { s with seccompEnabled := true }
+            else if canDisable || Errno.isTransientOsErrno e then some s
+            else none
+          else if canDisable then
+            some s
           else if e == Errno.EACCES && canFailNnpGate s then
-            some (pinFailedNnpGate s)
+            some { pinFailedNnpGate s with seccompEnabled := true }
           else if canPassNnpGate s then
-            let sPass := pinPassedNnpGate s
+            let sPass := { pinPassedNnpGate s with seccompEnabled := true }
             match decodeSockFilters filterBytes with
             | none =>
-              if e == Errno.EINVAL then some sPass else none
+              if e == Errno.EINVAL then some sPass
+              else if Errno.isTransientOsErrno e then some s
+              else none
             | some prog =>
               if !checkSeccompBpf prog then
                 if e == Errno.EINVAL then some sPass
-                else if canDisable || Errno.isTransientOsErrno e then some s
+                else if Errno.isTransientOsErrno e then some s
                 else none
               else
                 let tsyncEsrchOk := flags.tsync && flags.tsyncEsrch && e == Errno.ESRCH
                 if tsyncEsrchOk then some sPass
-                else if canDisable || Errno.isTransientOsErrno e then some s
+                else if Errno.isTransientOsErrno e then some s
                 else none
           else
-            if canDisable || Errno.isTransientOsErrno e then some s else none
+            if Errno.isTransientOsErrno e then some s else none
       | .prctl (.setPdeathsig sig) =>
         if sig > MAX_LINUX_SIGNAL then
-          if e == Errno.EINVAL then some s else none
+          if e == Errno.EINVAL || Errno.isTransientOsErrno e then some s else none
         else
           if Errno.isTransientOsErrno e then some s else none
       | .prctl _ =>
         if Errno.isTransientOsErrno e then some s else none
       | .setrlimit res cur max =>
         if cur > max then
-          if e == Errno.EINVAL then some s else none
+          if e == Errno.EINVAL || Errno.isTransientOsErrno e then some s else none
         else if res == .nofile && max > s.nofileNrOpenCeil then
-          if e == Errno.EPERM then some s else none
+          if e == Errno.EPERM || Errno.isTransientOsErrno e then some s else none
         else
           let st := s.getRlimit res
           if e == Errno.EPERM then
@@ -576,9 +656,11 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
         if hasEmbeddedNul name || name.data.size > MFD_NAME_MAX then
           if e == Errno.EINVAL then some s else none
         else if flags.noexecSeal && flags.exec then
-          if e == Errno.EINVAL then some s else none
+          if e == Errno.EINVAL then some { s with memfdEnabled := true }
+          else if Errno.isTransientOsErrno e || (e == Errno.ENOSYS && !hasMemfdEvidence s) then some s
+          else none
         else if flags.exec && e == Errno.EACCES && s.memfdNoexecStrict? != some false then
-          some { s with memfdNoexecStrict? := some true }
+          some { s with memfdEnabled := true, memfdNoexecStrict? := some true }
         else if Errno.isTransientOsErrno e || (e == Errno.ENOSYS && !hasMemfdEvidence s) then
           some s
         else
@@ -591,18 +673,23 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
         else
           match s.landlockAbi? with
           | none =>
-            if v < s.landlockMinAbi then none
+            let maxOk := match s.landlockMaxAbi? with
+              | none => true
+              | some m => v ≤ m
+            if v < s.landlockMinAbi || !maxOk then none
             else some { s with landlockEnabled := true, landlockAbi? := some v }
           | some prev =>
             if v == prev then some { s with landlockEnabled := true, landlockAbi? := some v }
             else none
       else if flags == LANDLOCK_CREATE_RULESET_ERRATA then
-        match s.landlockAbi? with
-        | some abi =>
-          if abi < 6 then none
-          else some { s with landlockEnabled := true, landlockMinAbi := maxU32 s.landlockMinAbi 6 }
+        match s.landlockErrata? with
         | none =>
-          some { s with landlockEnabled := true, landlockMinAbi := maxU32 s.landlockMinAbi 6 }
+          some { s with landlockEnabled := true, landlockErrata? := some (some v) }
+        | some (some prev) =>
+          if v == prev then some { s with landlockEnabled := true }
+          else none
+        | some none =>
+          none
       else
         none
     | _ => none
@@ -620,14 +707,18 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
           let fsOk := match s.landlockAbi? with
             | some abi => (attr.handledAccessFs &&& ~~~landlockKnownFsMask abi) == 0
             | none => (attr.handledAccessFs &&& ~~~landlockKnownFsMask 9) == 0
-          if !fsOk then none
+          let impMin := impliedLandlockAbi attr.handledAccessFs
+          let abiCeilingOk := match s.landlockMaxAbi? with
+            | none => true
+            | some m => impMin ≤ m
+          if !fsOk || !abiCeilingOk then none
           else
             some { s with
               fds := assocSet s.fds hid
                 { kind := .landlockRuleset attr.handledAccessFs attr.handledAccessNet, cloexec := true }
               nextHid := Nat.max s.nextHid (hid + 1)
               landlockEnabled := true
-              landlockMinAbi := maxU32 s.landlockMinAbi (impliedLandlockAbi attr.handledAccessFs) }
+              landlockMinAbi := maxU32 s.landlockMinAbi impMin }
       | .memfdCreate name flags =>
         if hasEmbeddedNul name || name.data.size > MFD_NAME_MAX then none
         else if flags.noexecSeal && flags.exec then none
@@ -714,8 +805,10 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
     | .prctl .setNoNewPrivs =>
       if val == 0 then some { s with noNewPrivs? := some true } else none
     | .prctl .getNoNewPrivs =>
-      if val == 0 && s.noNewPrivs? != some true then
-        some { s with noNewPrivs? := some false }
+      if val == 0 && s.noNewPrivs? != some true && !(s.passedNnpGate && s.hasCapSysAdmin? == some false) then
+        some { s with
+          noNewPrivs? := some false
+          hasCapSysAdmin? := if s.passedNnpGate then some true else s.hasCapSysAdmin? }
       else if val == 1 && s.noNewPrivs? != some false then
         some { s with noNewPrivs? := some true }
       else
@@ -751,10 +844,19 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
           set { s with landlockEnabled := true, landlockAbi? := some abi }
           return .ok (.version abi)
         if flags == LANDLOCK_CREATE_RULESET_ERRATA then
-          if abi < 6 then
+          match s.landlockErrata? with
+          | some none =>
+            if !s.seccompMayIntercept then
+              set { s with landlockEnabled := true }
             return .error Errno.EINVAL
-          set { s with landlockEnabled := true, landlockMinAbi := maxU32 s.landlockMinAbi 6 }
-          return .ok (.version 0)
+          | some (some mask) =>
+            set { s with landlockEnabled := true }
+            return .ok (.version mask)
+          | none =>
+            set { s with landlockEnabled := true, landlockErrata? := some (some 0) }
+            return .ok (.version 0)
+        if !s.seccompMayIntercept then
+          set { s with landlockEnabled := true }
         return .error Errno.EINVAL
       | some attr =>
         if flags != 0 then
@@ -762,10 +864,22 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
         if abi < 4 then
           return .error Errno.ENOSYS
         if attr.handledAccessFs == 0 && attr.handledAccessNet == 0 then
+          if !s.seccompMayIntercept then
+            set { s with landlockEnabled := true }
           return .error ENOMSG
         if (attr.handledAccessNet &&& ~~~LANDLOCK_ACCESS_NET_ALL) != 0 then
+          if !s.seccompMayIntercept then
+            set { s with landlockEnabled := true }
           return .error Errno.EINVAL
         if (attr.handledAccessFs &&& ~~~landlockKnownFsMask abi) != 0 then
+          if !s.seccompMayIntercept then
+            let nextMax := match s.landlockAbi? with
+              | some _ => s.landlockMaxAbi?
+              | none =>
+                match impliedMaxLandlockAbiOnEinval attr.handledAccessFs with
+                | none => s.landlockMaxAbi?
+                | some b => tightenMaxAbi s.landlockMaxAbi? b
+            set { s with landlockEnabled := true, landlockMaxAbi? := nextMax }
           return .error Errno.EINVAL
         if s.rlimitNofile.curExact && s.fds.length ≥ s.rlimitNofile.cur.toNat then
           return .error Errno.EMFILE
@@ -782,42 +896,63 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
       if effectiveModelLandlockAbi s < 4 then
         return .error Errno.ENOSYS
       match assocGet s.fds ruleset with
-      | none => return .error Errno.EBADF
+      | none =>
+        if !s.seccompMayIntercept then set { s with landlockEnabled := true }
+        return .error Errno.EBADF
       | some rsDesc =>
-        if rsDesc.oPath then return .error Errno.EBADF
+        if rsDesc.oPath then
+          if !s.seccompMayIntercept then set { s with landlockEnabled := true }
+          return .error Errno.EBADF
         match rsDesc.kind with
-        | .memfd _ _ | .hostPath _ | .pseudoFs => return .error EBADFD
+        | .memfd _ _ | .hostPath _ | .pseudoFs =>
+          if !s.seccompMayIntercept then set { s with landlockEnabled := true }
+          return .error EBADFD
         | .landlockRuleset handledFs handledNet =>
           match rule with
           | .pathBeneath parentHid allowedAccess =>
-            if allowedAccess == 0 then return .error ENOMSG
-            if (allowedAccess &&& ~~~handledFs) != 0 then return .error Errno.EINVAL
+            if allowedAccess == 0 then
+              if !s.seccompMayIntercept then set { s with landlockEnabled := true }
+              return .error ENOMSG
+            if (allowedAccess &&& ~~~handledFs) != 0 then
+              if !s.seccompMayIntercept then set { s with landlockEnabled := true }
+              return .error Errno.EINVAL
             match assocGet s.fds parentHid with
-            | none => return .error Errno.EBADF
+            | none =>
+              if !s.seccompMayIntercept then set { s with landlockEnabled := true }
+              return .error Errno.EBADF
             | some pDesc =>
               match pDesc.kind with
-              | .landlockRuleset _ _ | .memfd _ _ | .pseudoFs => return .error EBADFD
+              | .landlockRuleset _ _ | .memfd _ _ | .pseudoFs =>
+                if !s.seccompMayIntercept then set { s with landlockEnabled := true }
+                return .error EBADFD
               | .hostPath isDir =>
                 if !isDir && (allowedAccess &&& LANDLOCK_DIR_ONLY_FS_MASK) != 0 then
+                  if !s.seccompMayIntercept then set { s with landlockEnabled := true }
                   return .error Errno.EINVAL
                 set { s with landlockEnabled := true }
                 return .ok ()
           | .netPort port allowedAccess =>
-            if allowedAccess == 0 then return .error ENOMSG
-            if (allowedAccess &&& ~~~handledNet) != 0 then return .error Errno.EINVAL
-            if port > 65535 then return .error Errno.EINVAL
+            if allowedAccess == 0 then
+              if !s.seccompMayIntercept then set { s with landlockEnabled := true }
+              return .error ENOMSG
+            if (allowedAccess &&& ~~~handledNet) != 0 then
+              if !s.seccompMayIntercept then set { s with landlockEnabled := true }
+              return .error Errno.EINVAL
+            if port > 65535 then
+              if !s.seccompMayIntercept then set { s with landlockEnabled := true }
+              return .error Errno.EINVAL
             set { s with landlockEnabled := true }
             return .ok ()
     landlockRestrictSelf := fun ruleset => do
       let s ← get
       if effectiveModelLandlockAbi s < 4 then
         return .error Errno.ENOSYS
-      let nnp := s.noNewPrivs?.getD false
-      let capA := s.hasCapSysAdmin?.getD false
+      let nnp := s.noNewPrivs?.getD (s.passedNnpGate && s.hasCapSysAdmin? == some false)
+      let capA := s.hasCapSysAdmin?.getD (s.passedNnpGate && !nnp)
       if !nnp && !capA then
-        if !s.seccompMayIntercept then set (pinFailedNnpGate s)
+        if !s.seccompMayIntercept then set { pinFailedNnpGate s with landlockEnabled := true }
         return .error Errno.EPERM
-      let sPass := pinPassedNnpGate s
+      let sPass := { pinPassedNnpGate s with landlockEnabled := true }
       match assocGet s.fds ruleset with
       | none =>
         if !s.seccompMayIntercept then set sPass
@@ -834,11 +969,10 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
           if s.landlockLayers ≥ LANDLOCK_MAX_STACKED_LAYERS then
             if !s.seccompMayIntercept then
               set { sPass with
-                landlockEnabled := true
                 landlockLayers := LANDLOCK_MAX_STACKED_LAYERS
                 landlockLayersExact := true }
             return .error Errno.E2BIG
-          set { sPass with landlockEnabled := true, landlockLayers := s.landlockLayers + 1 }
+          set { sPass with landlockLayers := s.landlockLayers + 1 }
           return .ok ()
     seccomp := fun op flags filterBytes => do
       let s ← get
@@ -848,19 +982,22 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
         if isKnownSeccompAction action then
           set { s with seccompEnabled := true }
           return .ok 0
-        else return .error Errno.EOPNOTSUPP
+        else
+          if !s.seccompMayIntercept then set { s with seccompEnabled := true }
+          return .error Errno.EOPNOTSUPP
       | .setModeFilter =>
         if !isValidSeccompFilterByteLen filterBytes.data.size ||
             !hasSafeSeccompRetBytes filterBytes then
           return .error Errno.EINVAL
         if flags.waitKillableRecv then
+          if !s.seccompMayIntercept then set { s with seccompEnabled := true }
           return .error Errno.EINVAL
-        let nnp := s.noNewPrivs?.getD false
-        let capA := s.hasCapSysAdmin?.getD false
+        let nnp := s.noNewPrivs?.getD (s.passedNnpGate && s.hasCapSysAdmin? == some false)
+        let capA := s.hasCapSysAdmin?.getD (s.passedNnpGate && !nnp)
         if !nnp && !capA then
-          if !s.seccompMayIntercept then set (pinFailedNnpGate s)
+          if !s.seccompMayIntercept then set { pinFailedNnpGate s with seccompEnabled := true }
           return .error Errno.EACCES
-        let sPass := pinPassedNnpGate s
+        let sPass := { pinPassedNnpGate s with seccompEnabled := true }
         match decodeSockFilters filterBytes with
         | none =>
           if !s.seccompMayIntercept then set sPass
@@ -871,7 +1008,6 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
             return .error Errno.EINVAL
           let mayIntercept' := s.seccompMayIntercept || !isAllowOnlySeccompFilter prog
           set { sPass with
-            seccompEnabled := true
             seccompFilters := s.seccompFilters + 1
             seccompMayIntercept := mayIntercept' }
           return .ok 0
@@ -882,8 +1018,9 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
         set { s with noNewPrivs? := some true }
         return .ok 0
       | .getNoNewPrivs =>
-        let nnp := s.noNewPrivs?.getD false
-        set { s with noNewPrivs? := some nnp }
+        let nnp := s.noNewPrivs?.getD (s.passedNnpGate && s.hasCapSysAdmin? == some false)
+        let capA' := if !nnp && s.passedNnpGate then some true else s.hasCapSysAdmin?
+        set { s with noNewPrivs? := some nnp, hasCapSysAdmin? := capA' }
         return .ok (if nnp then 1 else 0)
       | .setChildSubreaper enable =>
         set { s with childSubreaper := enable }
@@ -918,8 +1055,10 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
       if hasEmbeddedNul name || name.data.size > MFD_NAME_MAX then
         return .error Errno.EINVAL
       if flags.noexecSeal && flags.exec then
+        if !s.seccompMayIntercept then set { s with memfdEnabled := true }
         return .error Errno.EINVAL
       if flags.exec && s.memfdNoexecStrict? == some true then
+        if !s.seccompMayIntercept then set { s with memfdEnabled := true }
         return .error Errno.EACCES
       if s.rlimitNofile.curExact && s.fds.length ≥ s.rlimitNofile.cur.toNat then
         return .error Errno.EMFILE

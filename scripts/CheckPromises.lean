@@ -172,6 +172,127 @@ private unsafe def checkTimeRandTrustedClosure : IO (Array String) := do
         queue := queue.push (originMod, inStdImpl, u)
   return errs
 
+private def sandboxAuditModules : Array Name := #[
+  `LeanSwe.LinuxSyscall.Sandbox.Types,
+  `LeanSwe.LinuxSyscall.Sandbox.Model,
+  `LeanSwe.LinuxSyscall.Sandbox.Impl,
+  `LeanSwe.LinuxSyscall.Sandbox.Interface,
+  `LeanSwe.LinuxSyscall.Sandbox.SpecTests,
+  `LeanSwe.LinuxSyscall.Sandbox.Proofs
+]
+
+private def isAllowedSandboxClosureModule (m : Name) : Bool :=
+  m.getRoot == `Core ||
+    m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
+    (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Sandbox] &&
+      m != `LeanSwe.LinuxSyscall.Sandbox.RuntimeTests)
+
+private def isSandboxStandardLibModule (m : Name) : Bool :=
+  let r := m.getRoot
+  r == `Init || r == `Std
+
+private def allowedSandboxExterns : Std.HashSet Name :=
+  Std.HashSet.emptyWithCapacity 16
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawLandlockQuery
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawLandlockCreate
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawLandlockAddPathBeneath
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawLandlockAddNetPort
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawLandlockRestrictSelf
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawSeccompGetActionAvail
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawSeccompSetFilter
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawPrctl
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawSetrlimit
+    |>.insert `LeanSwe.LinuxSyscall.Sandbox.rawMemfdCreate
+
+private def checkSandboxTrustedClosure (env : Environment) : IO (Array String) := do
+  let sbxEnv ← importModules (sandboxAuditModules.map fun m => { module := m }) {} (loadExts := false)
+  let mut errs : Array String := #[]
+  for m in sbxEnv.header.moduleNames do
+    if !isSandboxStandardLibModule m && !isAllowedSandboxClosureModule m then
+      errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_IMPORT: {m} imported into Sandbox closure"
+  let mut visited : Std.HashSet Name := {}
+  let mut queue : Array (Name × Name) := #[]
+  for h : i in [0 : sbxEnv.header.moduleNames.size] do
+    let m := sbxEnv.header.moduleNames[i]
+    if sandboxAuditModules.contains m ||
+        (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Sandbox] &&
+          m != `LeanSwe.LinuxSyscall.Sandbox.RuntimeTests &&
+          m != `LeanSwe.LinuxSyscall.Sandbox.SpecMutants) then
+      let some data := sbxEnv.header.moduleData[i]? | continue
+      for c in data.constants do
+        queue := queue.push (m, c.name)
+  while !queue.isEmpty do
+    let (originMod, cName) := queue.back!
+    queue := queue.pop
+    if visited.contains cName then
+      continue
+    visited := visited.insert cName
+    let some cinfo := sbxEnv.find? cName | continue
+    if cinfo matches .axiomInfo _ then
+      if !allowedAxioms.contains cName then
+        errs := errs.push s!"TRUSTED_CLOSURE_AXIOM_FORBIDDEN: {cName} reachable from {originMod}"
+      continue
+    let cMod := sbxEnv.getModuleIdxFor? cName |>.bind (sbxEnv.header.moduleNames[·]?) |>.getD .anonymous
+    if cMod != .anonymous && !isSandboxStandardLibModule cMod then
+      if !isAllowedSandboxClosureModule cMod then
+        errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_MODULE: {cName} in {cMod} reachable from {originMod}"
+      if cinfo matches .opaqueInfo _ || (getExternAttrData? sbxEnv cName).isSome then
+        let userName := (privateToUserName? cName).getD cName
+        let isRawFdPointed :=
+          cMod == `LeanSwe.LinuxSyscall.Common.Types &&
+          userName == `LeanSwe.LinuxSyscall.RawFdPointed &&
+          (getExternAttrData? sbxEnv cName).isNone
+        if !isRawFdPointed &&
+            (cMod != `LeanSwe.LinuxSyscall.Sandbox.Interface || !allowedSandboxExterns.contains userName) then
+          errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_EXTERN: {cName} in {cMod} reachable from {originMod}"
+    for u in cinfo.type.getUsedConstants do
+      if !visited.contains u then
+        queue := queue.push (originMod, u)
+    let val? := match cinfo with
+      | .defnInfo v => some v.value
+      | .thmInfo v => some v.value
+      | .opaqueInfo v => some v.value
+      | _ => none
+    if let some val := val? then
+      for u in val.getUsedConstants do
+        if !visited.contains u then
+          queue := queue.push (originMod, u)
+    let extra : List Name := match cinfo with
+      | .ctorInfo v => [v.induct]
+      | .recInfo v => v.all
+      | .inductInfo v => v.all ++ v.ctors
+      | _ => []
+    for u in extra do
+      if !visited.contains u then
+        queue := queue.push (originMod, u)
+  let mut modImports : Std.HashMap Name (Array Name) := {}
+  for h : i in [0 : env.header.moduleNames.size] do
+    let m := env.header.moduleNames[i]
+    if let some data := env.header.moduleData[i]? then
+      modImports := modImports.insert m (data.imports.map (·.module))
+  let isSandboxClosureAllowed (imp : Name) : Bool :=
+    isSandboxStandardLibModule imp || isAllowedSandboxClosureModule imp
+  let mut sandboxQueue : Array Name := #[]
+  let mut sandboxSeen : Std.HashSet Name := {}
+  for m in env.header.moduleNames do
+    let s := m.toString
+    if (s == "LeanSwe.LinuxSyscall.Sandbox" || s.startsWith "LeanSwe.LinuxSyscall.Sandbox.") &&
+        s != "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests" then
+      sandboxQueue := sandboxQueue.push m
+      sandboxSeen := sandboxSeen.insert m
+  let mut qIdx : Nat := 0
+  while hq : qIdx < sandboxQueue.size do
+    let cur := sandboxQueue[qIdx]
+    qIdx := qIdx + 1
+    for imp in modImports.getD cur #[] do
+      if !isSandboxClosureAllowed imp then
+        errs := errs.push s!"TRUSTED_CLOSURE_VIOLATION: {cur} imports forbidden {imp}"
+      else if !sandboxSeen.contains imp then
+        sandboxSeen := sandboxSeen.insert imp
+        sandboxQueue := sandboxQueue.push imp
+  IO.println s!"TRUSTED_CLOSURE: sandbox_modules={sandboxSeen.size} allowlist=Common+Sandbox externs={allowedSandboxExterns.size}"
+  return errs
+
 private structure AxCache where
   safe : Std.HashSet Name := {}
   bad : Std.HashMap Name Name := {}
@@ -683,39 +804,8 @@ unsafe def main (args : List String) : IO UInt32 := do
   ).toIO ctx state
 
   let trClosureErrs ← checkTimeRandTrustedClosure
-  errors := errors ++ axiomErrs ++ trClosureErrs
-
-  let mut modImports : Std.HashMap Name (Array Name) := {}
-  for h : i in [0 : env.header.moduleNames.size] do
-    let m := env.header.moduleNames[i]
-    if let some data := env.header.moduleData[i]? then
-      modImports := modImports.insert m (data.imports.map (·.module))
-  let isSandboxClosureAllowed (imp : Name) : Bool :=
-    let s := imp.toString
-    if !s.startsWith "LeanSwe." then true
-    else
-      s.startsWith "LeanSwe.LinuxSyscall.Common." ||
-        s == "LeanSwe.LinuxSyscall.Sandbox" ||
-        s.startsWith "LeanSwe.LinuxSyscall.Sandbox."
-  let mut sandboxQueue : Array Name := #[]
-  let mut sandboxSeen : Std.HashSet Name := {}
-  for m in env.header.moduleNames do
-    let s := m.toString
-    if (s == "LeanSwe.LinuxSyscall.Sandbox" || s.startsWith "LeanSwe.LinuxSyscall.Sandbox.") &&
-        s != "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests" then
-      sandboxQueue := sandboxQueue.push m
-      sandboxSeen := sandboxSeen.insert m
-  let mut qIdx : Nat := 0
-  while hq : qIdx < sandboxQueue.size do
-    let cur := sandboxQueue[qIdx]
-    qIdx := qIdx + 1
-    for imp in modImports.getD cur #[] do
-      if !isSandboxClosureAllowed imp then
-        errors := errors.push s!"TRUSTED_CLOSURE_VIOLATION: {cur} imports forbidden {imp}"
-      else if imp.toString.startsWith "LeanSwe." && !sandboxSeen.contains imp then
-        sandboxSeen := sandboxSeen.insert imp
-        sandboxQueue := sandboxQueue.push imp
-  IO.println s!"TRUSTED_CLOSURE: sandbox_modules={sandboxSeen.size} allowlist=Common+Sandbox"
+  let sbxClosureErrs ← checkSandboxTrustedClosure env
+  errors := errors ++ axiomErrs ++ trClosureErrs ++ sbxClosureErrs
 
   let mut withAssumeCount := 0
   for (m, pName) in promises do

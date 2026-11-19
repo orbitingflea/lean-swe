@@ -149,18 +149,24 @@ jobs:
             fi
           done
           if (( FAILED_RUNS == 0 )); then
-            .lake/build/bin/lean-swe-test --sandbox-strace-fault-check >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
-            .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 1000000 --self-test-shrink >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
-            .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 250000 --random-seed >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
+            .lake/build/bin/lean-swe-test --sandbox-strace-fault-check 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+            { .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 1000000 --self-test-shrink && .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 250000 --random-seed --self-test-shrink; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
             if sudo -n sysctl -n vm.memfd_noexec >/dev/null 2>&1; then
               OLD_MEMFD_NOEXEC=$(sudo -n sysctl -n vm.memfd_noexec)
-              trap 'sudo -n sysctl -w "vm.memfd_noexec=${OLD_MEMFD_NOEXEC}" >/dev/null || true' EXIT
-              sudo -n sysctl -w vm.memfd_noexec=1 >/dev/null
-              .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
-              sudo -n sysctl -w vm.memfd_noexec=2 >/dev/null
-              .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed --require-memfd-strict >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
-              sudo -n sysctl -w "vm.memfd_noexec=${OLD_MEMFD_NOEXEC}" >/dev/null
-              trap - EXIT
+              if (( OLD_MEMFD_NOEXEC == 2 )); then
+                echo "MEMFD_NOEXEC_WARN: vm.memfd_noexec=2 enforced; skipping vm.memfd_noexec=1" | tee -a "$RUNNER_TEMP/repeat_tests.log"
+                .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink --require-memfd-strict 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+              else
+                trap 'sudo -n sysctl -w "vm.memfd_noexec=${OLD_MEMFD_NOEXEC}" >/dev/null || true' EXIT
+                sudo -n sysctl -w vm.memfd_noexec=1 >/dev/null
+                .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+                sudo -n sysctl -w vm.memfd_noexec=2 >/dev/null
+                .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink --require-memfd-strict 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+                sudo -n sysctl -w "vm.memfd_noexec=${OLD_MEMFD_NOEXEC}" >/dev/null
+                trap - EXIT
+              fi
+            else
+              echo "::warning::sudo -n sysctl unavailable; skipping vm.memfd_noexec={1,2} strict checks" | tee -a "$RUNNER_TEMP/repeat_tests.log"
             fi
           fi
           SUMMARY="REPEAT_SUMMARY: total_runs=$N passed_runs=$((N - FAILED_RUNS)) failed_runs=$FAILED_RUNS"
