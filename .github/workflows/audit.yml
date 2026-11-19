@@ -73,9 +73,9 @@ jobs:
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: ./.lake
-          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/c/**', 'Fuzz/**/c/**') }}-${{ github.sha }}
+          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/c/**', 'Fuzz/**/c/**', 'LeanSwe/**/rust/**') }}-${{ github.sha }}
           restore-keys: |
-            lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/c/**', 'Fuzz/**/c/**') }}-
+            lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/c/**', 'Fuzz/**/c/**', 'LeanSwe/**/rust/**') }}-
 
       - name: Prune orphaned Lean build artifacts
         run: |
@@ -95,12 +95,39 @@ jobs:
       - name: Install Lean toolchain
         uses: ./.github/actions/install-lean
 
+      - name: Install Rust toolchain, Charon, and Aeneas
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 180 -o "$RUNNER_TEMP/rustup-init" https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init
+            echo "20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c  $RUNNER_TEMP/rustup-init" | sha256sum -c -
+            chmod +x "$RUNNER_TEMP/rustup-init" && "$RUNNER_TEMP/rustup-init" -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH" && export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          (cd LeanSwe/PostFork/rust && rustup show active-toolchain >/dev/null 2>&1 || rustup toolchain install nightly-2026-09-17 --profile minimal --component rustc-dev llvm-tools rust-src)
+          mkdir -p "$RUNNER_TEMP/aeneas-dist"
+          curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 180 -o "$RUNNER_TEMP/aeneas.tar.gz" https://github.com/AeneasVerif/aeneas/releases/download/nightly-2026.11.11-0d21a9e/aeneas-linux-x86_64.tar.gz
+          echo "471047623451a0bd8c885dbd63bb660d0168e23c5393cf184f884091ff7c9233  $RUNNER_TEMP/aeneas.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/aeneas.tar.gz" -C "$RUNNER_TEMP/aeneas-dist" && echo "$RUNNER_TEMP/aeneas-dist" >> "$GITHUB_PATH"
+
+      - name: Verify PostFork Rust build and Charon/Aeneas 0-diff extraction
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/pf-regen"; mkdir -p "$RUNNER_TEMP/pf-regen"; export CARGO_TARGET_DIR="$RUNNER_TEMP/pf-cargo-target"
+          (cd LeanSwe/PostFork/rust && cargo build --locked --release --features standalone && charon cargo --preset aeneas --opaque postfork::sys --dest-file "$RUNNER_TEMP/pf-regen/postfork.llbc")
+          aeneas -backend lean -split-files -subdir LeanSwe.PostFork.Aeneas -use-lean-modules false -dest "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/pf-regen/postfork.llbc"
+          diff -u LeanSwe/PostFork/Aeneas/Types.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Types.lean"; diff -u LeanSwe/PostFork/Aeneas/Funs.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Funs.lean"
+
       - name: Build Lean libraries and tests
         id: build
         run: |
           set -euo pipefail
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail lean-swe-mut-test leanswe-world-fuzz leanswe-fuzz
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail; LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail LeanSwe.PostFork.Verified lean-swe-mut-test leanswe-world-fuzz leanswe-fuzz
+          actual_syms=$(nm -u .lake/build/lib/libleanswe_postfork_rust.a | awk '$1 ~ /^[Uuwv]$/ { print $2 }' | sort -u)
+          expected_syms=$(printf '%s\n' __errno_location _exit chdir close dup2 execve fcntl open read setpgid syscall write | sort -u)
+          expected_c_syms=$(printf '%s\n' leanswe_postfork_host_close_fd leanswe_postfork_host_fork_run leanswe_postfork_host_pipe_cloexec leanswe_postfork_host_probe_fd leanswe_postfork_host_probe_handle leanswe_postfork_host_read_once leanswe_postfork_host_setpgid leanswe_postfork_host_wait_once leanswe_postfork_host_write_once | sort -u)
+          diff -u <(printf '%s\n' "$expected_syms") <(printf '%s\n' "$actual_syms"); diff -u <(printf '%s\n' leanswe_postfork_close_fds_above2_except leanswe_postfork_run_child) <(nm --defined-only .lake/build/lib/libleanswe_postfork_rust.a | awk '$2 ~ /^[A-Z]$/ { print $3 }' | sort -u); diff -u <(printf '%s\n' "$expected_c_syms") <(nm --defined-only .lake/build/lib/libleanswe_postfork.a | awk '$2 ~ /^[ABCDGRST]$/ { print $3 }' | sort -u)
+          for b in lean-swe-test lean-swe-mut-test leanswe-world-fuzz leanswe-fuzz; do readelf -d ".lake/build/bin/$b" | grep -qE 'BIND_NOW|NOW'; done
 
       - name: Run runtime test suites
         run: |
@@ -144,18 +171,18 @@ jobs:
           else
             echo "::warning::sudo -n sysctl unavailable; skipping vm.memfd_noexec={1,2} strict checks"
           fi
-          .lake/build/bin/lean-swe-test --timerand-strace-fault-check; .lake/build/bin/lean-swe-test --files-strace-fault-check; .lake/build/bin/lean-swe-test --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite LinuxSyscall.Sandbox --suite LinuxSyscall.TimeRand --suite LinuxSyscall.Passwd --suite LinuxSyscall.Dns --suite LinuxSyscall.Poll --suite LinuxSyscall.Net --suite LinuxSyscall.Process --suite LinuxSyscall.Files 0<&- 1>&- 2>&-
-          .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,LinuxSyscall.Poll,LinuxSyscall.Net,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns,LinuxSyscall.Files
+          .lake/build/bin/lean-swe-test --timerand-strace-fault-check; .lake/build/bin/lean-swe-test --files-strace-fault-check; .lake/build/bin/lean-swe-test --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite LinuxSyscall.Sandbox --suite LinuxSyscall.TimeRand --suite LinuxSyscall.Passwd --suite LinuxSyscall.Dns --suite LinuxSyscall.Poll --suite LinuxSyscall.Net --suite LinuxSyscall.Process --suite LinuxSyscall.Files --suite PostFork 0<&- 1>&- 2>&-
+          .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,LinuxSyscall.Poll,LinuxSyscall.Net,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns,LinuxSyscall.Files,PostFork
           .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --self-test-shrink; .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --random-seed --self-test-shrink
           .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process; .lake/build/bin/lean-swe-test --process-strace-fault-check; .lake/build/bin/leanswe-world-fuzz --suite process --steps 15000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-world-fuzz --suite process --steps 5000 --random-seed --self-test-shrink --require-ns
           python3 -B -m unittest scripts/test_fuzz_changed.py
           if [[ "${GITHUB_EVENT_NAME}" == "pull_request" && -n "${BASE_SHA:-}" ]]; then
             python3 -B scripts/fuzz_changed.py --base "$BASE_SHA" --head HEAD --check-manifest --run --extra-arg=--self-test-shrink
           else
-            python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest
-            .lake/build/bin/leanswe-fuzz --smoke --all --self-test-shrink
+            python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest; .lake/build/bin/leanswe-fuzz --smoke --all --self-test-shrink
           fi
           .lake/build/bin/lean-swe-test --poll-strace-fault-check; .lake/build/bin/lean-swe-test --net-strace-fault-check; .lake/build/bin/leanswe-world-fuzz --suite poll --steps 50000 --self-test-shrink; .lake/build/bin/leanswe-world-fuzz --suite poll --steps 50000 --random-seed --self-test-shrink; .lake/build/bin/leanswe-world-fuzz --suite net --steps 50000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-world-fuzz --suite net --seed 11262680905236430927 --steps 50000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-world-fuzz --suite net --steps 50000 --random-seed --self-test-shrink --require-ns
+          .lake/build/bin/leanswe-fuzz --suite postfork --steps 25000 --self-test-shrink; .lake/build/bin/leanswe-fuzz --suite postfork --steps 25000 --random-seed --self-test-shrink; .lake/build/bin/leanswe-fuzz --suite postfork --steps 500 --self-test-shrink 0<&- >/dev/null
 
       - name: Check 1 GB private-memory cap on changed modules and reverse dependents
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -226,4 +253,4 @@ jobs:
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: ./.lake
-          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/c/**', 'Fuzz/**/c/**') }}-${{ github.sha }}
+          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './lakefile.lean', 'LeanSwe/**/c/**', 'Fuzz/**/c/**', 'LeanSwe/**/rust/**') }}-${{ github.sha }}

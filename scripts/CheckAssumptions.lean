@@ -1188,8 +1188,11 @@ def main (args : List String) : IO UInt32 := do
   unless ← (libDir / "Tests" / "Main.olean").pathExists do
     IO.eprintln s!"MISSING_OLEAN: Tests.Main ({libDir / "Tests" / "Main.olean"})"
     return 1
+  unless ← (libDir / "LeanSwe" / "PostFork" / "Verified.olean").pathExists do
+    IO.eprintln s!"MISSING_OLEAN: LeanSwe.PostFork.Verified ({libDir / "LeanSwe" / "PostFork" / "Verified.olean"})"
+    return 1
   initSearchPath (← findSysroot) [libDir]
-  let env ← importModules #[{ module := `LeanSwe }, { module := `Tests.Main }] {}
+  let env ← importModules #[{ module := `LeanSwe }, { module := `Tests.Main }, { module := `LeanSwe.PostFork.Verified }] {}
 
   let mut visited : Std.HashSet Name := {}
   let mut knownPkgs : Array Name := #[]

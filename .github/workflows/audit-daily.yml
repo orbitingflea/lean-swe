@@ -59,13 +59,49 @@ jobs:
         if: steps.setup.outcome == 'success'
         uses: ./.github/actions/install-lean
 
-      - name: Run sandboxed lake check
-        id: lake_check
+      - name: Install Rust toolchain, Charon, and Aeneas
+        id: rust_aeneas
         if: steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success'
         run: |
           set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 180 -o "$RUNNER_TEMP/rustup-init" https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init
+            echo "20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c  $RUNNER_TEMP/rustup-init" | sha256sum -c -
+            chmod +x "$RUNNER_TEMP/rustup-init" && "$RUNNER_TEMP/rustup-init" -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH" && export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          (cd LeanSwe/PostFork/rust && rustup show active-toolchain >/dev/null 2>&1 || rustup toolchain install nightly-2026-09-17 --profile minimal --component rustc-dev llvm-tools rust-src)
+          mkdir -p "$RUNNER_TEMP/aeneas-dist"
+          curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 180 -o "$RUNNER_TEMP/aeneas.tar.gz" https://github.com/AeneasVerif/aeneas/releases/download/nightly-2026.11.11-0d21a9e/aeneas-linux-x86_64.tar.gz
+          echo "471047623451a0bd8c885dbd63bb660d0168e23c5393cf184f884091ff7c9233  $RUNNER_TEMP/aeneas.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/aeneas.tar.gz" -C "$RUNNER_TEMP/aeneas-dist"
+          echo "$RUNNER_TEMP/aeneas-dist" >> "$GITHUB_PATH"
+
+      - name: Verify PostFork Rust build and Charon/Aeneas 0-diff extraction
+        id: postfork_extract
+        if: steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.rust_aeneas.outcome == 'success'
+        run: |
+          set -euo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/pf-cargo-target"
+          (cd LeanSwe/PostFork/rust && cargo build --locked --release --features standalone)
+          rm -rf "$RUNNER_TEMP/pf-regen" && mkdir -p "$RUNNER_TEMP/pf-regen"
+          (cd LeanSwe/PostFork/rust && charon cargo --preset aeneas --opaque postfork::sys --dest-file "$RUNNER_TEMP/pf-regen/postfork.llbc")
+          aeneas -backend lean -split-files -subdir LeanSwe.PostFork.Aeneas -use-lean-modules false -dest "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/pf-regen/postfork.llbc"
+          diff -u LeanSwe/PostFork/Aeneas/Types.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Types.lean"
+          diff -u LeanSwe/PostFork/Aeneas/Funs.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Funs.lean"
+
+      - name: Run sandboxed lake check
+        id: lake_check
+        if: steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.postfork_extract.outcome == 'success'
+        run: |
+          set -euo pipefail
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake check 2>&1 | tee "$RUNNER_TEMP/lake_check.log"
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail lean-swe-mut-test leanswe-world-fuzz leanswe-fuzz 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail LeanSwe.PostFork.Verified lean-swe-mut-test leanswe-world-fuzz leanswe-fuzz 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
+          actual_syms=$(nm -u .lake/build/lib/libleanswe_postfork_rust.a | awk '$1 ~ /^[Uuwv]$/ { print $2 }' | sort -u)
+          expected_syms=$(printf '%s\n' __errno_location _exit chdir close dup2 execve fcntl open read setpgid syscall write | sort -u)
+          expected_c_syms=$(printf '%s\n' leanswe_postfork_host_close_fd leanswe_postfork_host_fork_run leanswe_postfork_host_pipe_cloexec leanswe_postfork_host_probe_fd leanswe_postfork_host_probe_handle leanswe_postfork_host_read_once leanswe_postfork_host_setpgid leanswe_postfork_host_wait_once leanswe_postfork_host_write_once | sort -u)
+          { diff -u <(printf '%s\n' "$expected_syms") <(printf '%s\n' "$actual_syms") && diff -u <(printf '%s\n' leanswe_postfork_close_fds_above2_except leanswe_postfork_run_child) <(nm --defined-only .lake/build/lib/libleanswe_postfork_rust.a | awk '$2 ~ /^[A-Z]$/ { print $3 }' | sort -u) && diff -u <(printf '%s\n' "$expected_c_syms") <(nm --defined-only .lake/build/lib/libleanswe_postfork.a | awk '$2 ~ /^[ABCDGRST]$/ { print $3 }' | sort -u); } 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
+          { for b in lean-swe-test lean-swe-mut-test leanswe-world-fuzz leanswe-fuzz; do readelf -d ".lake/build/bin/$b" | grep -qE 'BIND_NOW|NOW'; done; } 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
 
       - name: Check 1 GB private-memory cap on all modules
         id: mem_check
@@ -100,17 +136,9 @@ jobs:
         run: |
           set -euo pipefail
           N="${INPUT_TEST_RUNS:-${DAILY_TEST_RUNS:-5}}"
-          if [[ ! "$N" =~ ^[1-9][0-9]*$ ]]; then
-            echo "Invalid test repetition count N=$N" | tee "$RUNNER_TEMP/repeat_tests.log"
-            exit 2
-          fi
-          if [[ ! -x .lake/build/bin/lean-swe-test ]]; then
-            echo "Missing .lake/build/bin/lean-swe-test after lake check" | tee "$RUNNER_TEMP/repeat_tests.log"
-            exit 1
-          fi
-          if [[ -f /sys/fs/cgroup/leanswe/runner/cgroup.procs ]]; then
-            printf '%s\n' "$$" | sudo -n tee /sys/fs/cgroup/leanswe/runner/cgroup.procs >/dev/null || true
-          fi
+          if [[ ! "$N" =~ ^[1-9][0-9]*$ ]]; then echo "Invalid test repetition count N=$N" | tee "$RUNNER_TEMP/repeat_tests.log"; exit 2; fi
+          if [[ ! -x .lake/build/bin/lean-swe-test ]]; then echo "Missing .lake/build/bin/lean-swe-test after lake check" | tee "$RUNNER_TEMP/repeat_tests.log"; exit 1; fi
+          if [[ -f /sys/fs/cgroup/leanswe/runner/cgroup.procs ]]; then printf '%s\n' "$$" | sudo -n tee /sys/fs/cgroup/leanswe/runner/cgroup.procs >/dev/null || true; fi
           python3 -c '
           import ctypes, os, pathlib, subprocess
           libc = ctypes.CDLL(None, use_errno=True)
@@ -130,6 +158,7 @@ jobs:
                   f.write(f"`{line}`\n\n")
           ' | tee "$RUNNER_TEMP/repeat_tests.log"
           FAILED_RUNS=0
+          FIRST_NONCE=""
           for ((i = 1; i <= N; i++)); do
             echo "=== Test run $i of $N ===" | tee -a "$RUNNER_TEMP/repeat_tests.log"
             RUN_NONCE=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
@@ -139,14 +168,16 @@ jobs:
             LEANSWE_SUMMARY_LABEL="Run $i of $N" .lake/build/bin/lean-swe-test --assump-log "$RUN_LOG" --assump-nonce "$RUN_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
             RC=$?
             if (( RC == 0 )); then
-              lake env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --allow-legacy --verify-log "$RUN_LOG" --nonce "$RUN_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
+              if [[ -z "$FIRST_NONCE" ]]; then
+                lake env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --allow-legacy --verify-log "$RUN_LOG" --nonce "$RUN_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1 && FIRST_NONCE="$RUN_NONCE" && FIRST_LOG="$RUN_LOG"
+              else
+                python3 -c 'import pathlib, sys; p1, p2, nc, fnc = sys.argv[1:5]; norm = lambda ls, n: sorted([l.split("|", 1)[1] for l in ls if l.startswith(n + "|")]); l1 = [l.strip() for l in pathlib.Path(p1).read_text().splitlines() if l.strip()]; l2 = [l.strip() for l in pathlib.Path(p2).read_text().splitlines() if l.strip()]; assert len(l2) >= 2 and len(l1) == len(l2) and all(l.startswith(nc + "|") for l in l2) and l2[0] == f"{nc}|LOG_INIT" and l2[-1] == f"{nc}|LOG_CLOSE" and norm(l1, fnc) == norm(l2, nc)' "$FIRST_LOG" "$RUN_LOG" "$RUN_NONCE" "$FIRST_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
+              fi
               RC=$?
             fi
             set -e
             tail -n 5 "$RUNNER_TEMP/repeat_tests.log"
-            if (( RC != 0 )); then
-              FAILED_RUNS=$((FAILED_RUNS + 1))
-            fi
+            if (( RC != 0 )); then FAILED_RUNS=$((FAILED_RUNS + 1)); fi
           done
           if (( FAILED_RUNS == 0 )); then
             .lake/build/bin/lean-swe-test --sandbox-strace-fault-check 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
@@ -170,7 +201,7 @@ jobs:
           fi
           (( FAILED_RUNS == 0 ))
           .lake/build/bin/lean-swe-test --timerand-strace-fault-check 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
-          { .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,LinuxSyscall.Poll,LinuxSyscall.Net,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns,LinuxSyscall.Files; .lake/build/bin/lean-swe-test --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite LinuxSyscall.Sandbox --suite LinuxSyscall.TimeRand --suite LinuxSyscall.Passwd --suite LinuxSyscall.Dns --suite LinuxSyscall.Poll --suite LinuxSyscall.Net --suite LinuxSyscall.Process --suite LinuxSyscall.Files 0<&- 1>&- 2>&-; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+          { .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,LinuxSyscall.Poll,LinuxSyscall.Net,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns,LinuxSyscall.Files,PostFork; .lake/build/bin/lean-swe-test --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite LinuxSyscall.Sandbox --suite LinuxSyscall.TimeRand --suite LinuxSyscall.Passwd --suite LinuxSyscall.Dns --suite LinuxSyscall.Poll --suite LinuxSyscall.Net --suite LinuxSyscall.Process --suite LinuxSyscall.Files --suite PostFork 0<&- 1>&- 2>&-; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
           { .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 1000000 --self-test-shrink; .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 250000 --random-seed --self-test-shrink; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
           [[ -x .lake/build/bin/leanswe-fuzz ]] || { echo "Missing .lake/build/bin/leanswe-fuzz" | tee -a "$RUNNER_TEMP/repeat_tests.log"; exit 1; }
           PYTHONUNBUFFERED=1 python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
@@ -178,6 +209,7 @@ jobs:
           { .lake/build/bin/lean-swe-test --poll-strace-fault-check && .lake/build/bin/lean-swe-test --net-strace-fault-check && .lake/build/bin/leanswe-world-fuzz --suite poll --steps 250000 --self-test-shrink && .lake/build/bin/leanswe-world-fuzz --suite poll --steps 750000 --random-seed --self-test-shrink; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
           { .lake/build/bin/leanswe-world-fuzz --suite net --steps 250000 --self-test-shrink --require-ns && .lake/build/bin/leanswe-world-fuzz --suite net --steps 750000 --random-seed --self-test-shrink --require-ns; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
           { .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process; .lake/build/bin/lean-swe-test --process-strace-fault-check; .lake/build/bin/leanswe-world-fuzz --suite process --steps 50000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-world-fuzz --suite process --steps 15000 --random-seed --self-test-shrink --require-ns; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+          { .lake/build/bin/leanswe-fuzz --suite postfork --steps 100000 --self-test-shrink; .lake/build/bin/leanswe-fuzz --suite postfork --steps 50000 --random-seed --self-test-shrink; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
 
       - name: Run Files world-model differential fuzzer and strace fault injection
         id: files_world_fuzz
@@ -275,6 +307,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           OUT_SETUP: ${{ steps.setup.outcome }}
           OUT_TOOLCHAIN: ${{ steps.toolchain.outcome }}
+          OUT_RUST: ${{ steps.rust_aeneas.outcome }}
+          OUT_EXTRACT: ${{ steps.postfork_extract.outcome }}
           OUT_CHECK: ${{ steps.lake_check.outcome }}
           OUT_MEM: ${{ steps.mem_check.outcome }}
           OUT_TEST: ${{ steps.repeat_tests.outcome }}
@@ -288,7 +322,7 @@ jobs:
           e = os.environ; sha, repo, srv, rid = e["GITHUB_SHA"], e["GITHUB_REPOSITORY"], e["GITHUB_SERVER_URL"], e["GITHUB_RUN_ID"]
           temp = pathlib.Path(e["RUNNER_TEMP"])
           tails = [f"### {n} (last {len(ls)} lines)\n````text\n" + "\n".join(ls) + "\n````" for n in ("lake_check", "mem_check", "repeat_tests", "files_world_fuzz") if (temp / f"{n}.log").exists() for ls in [[ln[:320] for ln in (temp / f"{n}.log").read_text(encoding="utf-8", errors="replace").splitlines()[-60:]]]]
-          outcomes = ", ".join(f"{k}=`" + e[f"OUT_{k.upper()}"] + "`" for k in ("setup", "toolchain", "check", "mem", "test", "files_fuzz"))
+          outcomes = ", ".join(f"{k}=`" + e[f"OUT_{k.upper()}"] + "`" for k in ("setup", "toolchain", "rust", "extract", "check", "mem", "test", "files_fuzz"))
           body = "\n\n".join([f"Daily audit gate failed on `main` at `{sha}`.", f"- Run: {srv}/{repo}/actions/runs/{rid}", f"- Outcomes: {outcomes}", *tails]).replace("@", "@\u200b")
           subprocess.run(["gh", "issue", "create", "--repo", repo, "--title", f"[audit-daily] Daily audit gate failed on main ({sha[:8]})", "--body", body], check=True)
           '

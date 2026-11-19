@@ -55,7 +55,8 @@ private def allSuites : Array (String × String × IO (Option String)) := #[
   ("LinuxSyscall.Net", "LeanSwe/LinuxSyscall/Net/RuntimeTests.lean", do LinuxSyscall.Net.RuntimeTests.runAll; return none),
   ("LinuxSyscall.Process", "LeanSwe/LinuxSyscall/Process/RuntimeTests.lean", do LinuxSyscall.Process.RuntimeTests.runAll; return none),
   ("LinuxSyscall.Files", "LeanSwe/LinuxSyscall/Files/RuntimeTests.lean",
-    do LeanSwe.LinuxSyscall.Files.RuntimeTests.runAll; return none)
+    do LeanSwe.LinuxSyscall.Files.RuntimeTests.runAll; return none),
+  ("PostFork", "LeanSwe/PostFork/RuntimeTests.lean", do PostFork.RuntimeTests.runAll; return none)
 ]
 
 private def findUnregisteredRuntimeTests : IO (Array String) := do

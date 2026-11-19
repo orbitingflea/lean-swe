@@ -6,11 +6,11 @@
       "legacy_unmigrated": false
     },
     ".github/workflows/audit-daily.yml": {
-      "max_lines": 295,
+      "max_lines": 330,
       "legacy_unmigrated": false
     },
     ".github/workflows/audit.yml": {
-      "max_lines": 230,
+      "max_lines": 258,
       "legacy_unmigrated": false
     },
     "Fuzz/EnvVars/c/envvars_fuzz_env.c": {
@@ -25,8 +25,16 @@
       "max_lines": 480,
       "legacy_unmigrated": false
     },
+    "Fuzz/PostFork/c/postfork_fuzz.c": {
+      "max_lines": 415,
+      "legacy_unmigrated": false
+    },
+    "Fuzz/PostFork/c/postfork_probe.c": {
+      "max_lines": 180,
+      "legacy_unmigrated": false
+    },
     "Fuzz/suites.json": {
-      "max_lines": 42,
+      "max_lines": 28,
       "legacy_unmigrated": false
     },
     "LeanSwe/ConnectProxy/Raw/c/cproxy_shim.c": {
@@ -67,6 +75,46 @@
     },
     "LeanSwe/LinuxSyscall/c/process_shim.c": {
       "max_lines": 190,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/PostFork/c/postfork.h": {
+      "max_lines": 48,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/PostFork/c/postfork_shim.c": {
+      "max_lines": 540,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/PostFork/rust/Cargo.lock": {
+      "max_lines": 16,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/PostFork/rust/Cargo.toml": {
+      "max_lines": 25,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/PostFork/rust/rust-toolchain.toml": {
+      "max_lines": 5,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/PostFork/rust/src/child.rs": {
+      "max_lines": 545,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/PostFork/rust/src/fd_ops.rs": {
+      "max_lines": 526,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/PostFork/rust/src/ffi.rs": {
+      "max_lines": 118,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/PostFork/rust/src/lib.rs": {
+      "max_lines": 10,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/PostFork/rust/src/sys.rs": {
+      "max_lines": 250,
       "legacy_unmigrated": false
     },
     "LeanSwe/Process/Raw/c/process_shim.c": {
@@ -138,7 +186,7 @@
       "legacy_unmigrated": false
     },
     "scripts/mutate_and_test.py": {
-      "max_lines": 660,
+      "max_lines": 662,
       "legacy_unmigrated": false
     },
     "scripts/test_check_spec_change.py": {
@@ -161,6 +209,75 @@
     }
   },
   "function_overrides": {
+    "LeanSwe/PostFork/c/postfork_shim.c::pf_pin_handles": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/PostFork/c/postfork_shim.c::pf_unpin_handles": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/PostFork/c/postfork_shim.c::pf_resolve_vec": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/PostFork/c/postfork_shim.c::pf_alloc_cstr_ptrs": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/PostFork/c/postfork_shim.c::pf_free_arg_ptrs": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/PostFork/c/postfork_shim.c::pf_alloc_arg_ptrs": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/PostFork/c/postfork_shim.c::pf_prune_pipes_locked": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/PostFork/c/postfork_shim.c::pf_untrack_fd_locked": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/PostFork/c/postfork_shim.c::pf_i32_has": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/PostFork/c/postfork_shim.c::pf_append_tracked_closes_locked": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/PostFork/c/postfork_shim.c::pf_spawner_pop_req": {
+      "max_loops": 1
+    },
+    "LeanSwe/PostFork/c/postfork_shim.c::pf_spawner_thread_main": {
+      "max_loops": 1
+    },
+    "LeanSwe/PostFork/c/postfork_shim.c::pf_spawn_via_spawner": {
+      "max_loops": 1
+    },
+    "Fuzz/PostFork/c/postfork_fuzz.c::pf_dump_close_bits": {
+      "max_loops": 1
+    },
+    "Fuzz/PostFork/c/postfork_fuzz.c::pf_wait_eintr": {
+      "max_loops": 1
+    },
+    "Fuzz/PostFork/c/postfork_fuzz.c::pf_alloc_strs": {
+      "allow_array_copy_loop": true
+    },
+    "Fuzz/PostFork/c/postfork_probe.c::write_exact": {
+      "max_loops": 1
+    },
+    "Fuzz/PostFork/c/postfork_probe.c::count_open_fds_proc": {
+      "max_loops": 1
+    },
+    "Fuzz/PostFork/c/postfork_probe.c::count_str_vec": {
+      "max_loops": 1
+    },
+    "Fuzz/PostFork/c/postfork_probe.c::dump_str_vec": {
+      "max_loops": 1
+    },
+    "Fuzz/PostFork/c/postfork_probe.c::dump_argv": {
+      "allow_array_copy_loop": true
+    },
+    "Fuzz/PostFork/c/postfork_probe.c::count_open_fds": {
+      "max_loops": 1
+    },
+    "Fuzz/PostFork/c/postfork_probe.c::dump_open_fds": {
+      "max_loops": 1
+    },
     "LeanSwe/EnvVars/Raw/c/envvars_shim.c::leanswe_envvars_environ": {
       "allow_array_copy_loop": true
     },
@@ -230,6 +347,7 @@
     "Fuzz/CmdLine/c/cmdline_fuzz_env.c::leanswe_cmdfuzz_run_on_1mib_stack",
     "LeanSwe/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_spawn_thread",
     "LeanSwe/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_spawn_sibling_child",
-    "LeanSwe/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_check_fd_close_seccomp"
+    "LeanSwe/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_check_fd_close_seccomp",
+    "LeanSwe/PostFork/c/postfork_shim.c::pf_init_spawner_once"
   ]
 }
