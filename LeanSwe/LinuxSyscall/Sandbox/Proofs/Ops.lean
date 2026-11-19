@@ -29,7 +29,7 @@ theorem sandbox_ops_prctl_noNewPrivsSubreaperAndPdeathsig_allPass :
   dsimp only [AllPass, test_sandbox_ops_prctl_noNewPrivsSubreaperAndPdeathsig, NondetTest.assert,
     Bind.bind, Pure.pure]
   refine ⟨⟨rfl, rfl⟩, ⟨rfl, rfl⟩, ⟨rfl, rfl⟩, ⟨rfl, rfl, rfl, rfl, rfl⟩,
-    ⟨rfl, rfl⟩, ⟨rfl, rfl⟩, ⟨rfl, rfl, rfl, rfl, rfl⟩, trivial⟩
+    ⟨rfl, rfl⟩, rfl, ⟨rfl, rfl, rfl, rfl, rfl⟩, trivial⟩
 
 /-- `modelOps` satisfies `test_sandbox_ops_landlock_rulesetAddRuleAndRestrictSelf` on pre-populated `unprivInitWithHostFds`. -/
 theorem sandbox_ops_landlock_rulesetAddRuleAndRestrictSelf_allPass :
@@ -118,7 +118,7 @@ theorem sandbox_ops_memfdCreate_nameBoundsAndFlags_allPass :
     Bind.bind, Pure.pure, modelOps, SandboxSysState.unprivileged, StateT.run, Id.run,
     StateT.bind, StateT.pure, get, getThe, MonadStateOf.get, set, StateT.get, StateT.set]
   simp only [hNul, Bool.true_or, hOverB, Bool.or_true, h249Nul, h249Sz, Bool.false_or, ↓reduceIte]
-  refine ⟨⟨rfl, rfl⟩, ⟨rfl, rfl⟩, ⟨rfl, rfl⟩, ⟨by decide, by decide, by decide⟩, trivial⟩
+  refine ⟨⟨rfl, rfl⟩, ⟨rfl, rfl⟩, rfl, ⟨by decide, by decide, by decide⟩, trivial⟩
 
 /-- Reachability witness for `test_sandbox_ops_memfdCreate_nameBoundsAndFlags`. -/
 theorem sandbox_ops_memfdCreate_nameBoundsAndFlags_canReach :
@@ -134,6 +134,6 @@ theorem sandbox_ops_memfdCreate_nameBoundsAndFlags_canReach :
       Bind.bind, Pure.pure, modelOps, SandboxSysState.unprivileged, StateT.run, Id.run,
       StateT.bind, StateT.pure, get, getThe, MonadStateOf.get, set, StateT.get, StateT.set]
     simp only [h250Sz, Bool.or_true, h249Nul, h249Sz, Bool.false_or, ↓reduceIte]
-    refine ⟨⟨rfl, rfl⟩, ⟨rfl, rfl⟩, ⟨rfl, rfl⟩, ⟨by decide, by decide, by decide⟩, trivial⟩
+    refine ⟨⟨rfl, rfl⟩, ⟨rfl, rfl⟩, rfl, ⟨by decide, by decide, by decide⟩, trivial⟩
 
 end LeanSwe.LinuxSyscall.Sandbox

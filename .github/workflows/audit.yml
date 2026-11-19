@@ -132,18 +132,17 @@ jobs:
           echo "ASSUMP_NONCE=$ASSUMP_NONCE" >> "$GITHUB_ENV"
           echo "ASSUMP_LOG=$ASSUMP_LOG" >> "$GITHUB_ENV"
           .lake/build/bin/lean-swe-test --assump-log "$ASSUMP_LOG" --assump-nonce "$ASSUMP_NONCE"
-          .lake/build/bin/lean-swe-test --sandbox-strace-fault-check
-          .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 100000 --self-test-shrink
-          .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed
+          .lake/build/bin/lean-swe-test --sandbox-strace-fault-check && .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 100000 --self-test-shrink && .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink
           if sudo -n sysctl -n vm.memfd_noexec >/dev/null 2>&1; then
             OLD_MEMFD_NOEXEC=$(sudo -n sysctl -n vm.memfd_noexec)
             trap 'sudo -n sysctl -w "vm.memfd_noexec=${OLD_MEMFD_NOEXEC}" >/dev/null || true' EXIT
-            sudo -n sysctl -w vm.memfd_noexec=1 >/dev/null
-            .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed
-            sudo -n sysctl -w vm.memfd_noexec=2 >/dev/null
-            .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed --require-memfd-strict
-            sudo -n sysctl -w "vm.memfd_noexec=${OLD_MEMFD_NOEXEC}" >/dev/null
-            trap - EXIT
+            if (( OLD_MEMFD_NOEXEC == 2 )); then echo "MEMFD_NOEXEC_WARN: vm.memfd_noexec=2 enforced; skipping vm.memfd_noexec=1"; else
+              sudo -n sysctl -w vm.memfd_noexec=1 >/dev/null && .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink && sudo -n sysctl -w vm.memfd_noexec=2 >/dev/null
+            fi
+            .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink --require-memfd-strict
+            sudo -n sysctl -w "vm.memfd_noexec=${OLD_MEMFD_NOEXEC}" >/dev/null; trap - EXIT
+          else
+            echo "::warning::sudo -n sysctl unavailable; skipping vm.memfd_noexec={1,2} strict checks"
           fi
           .lake/build/bin/lean-swe-test --timerand-strace-fault-check
           .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.TimeRand

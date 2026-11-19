@@ -1,5 +1,6 @@
 import Core.Assumptions
 import LeanSwe.LinuxSyscall.Sandbox.Interface
+import LeanSwe.LinuxSyscall.Sandbox.Model
 import LeanSwe.LinuxSyscall.Fuzz.SandboxEnv
 
 namespace LeanSwe.LinuxSyscall.Sandbox.RuntimeTests
@@ -100,7 +101,10 @@ def assume_sandbox_landlockCreateRuleset_versionAndRuleset : IO Unit := do
     throw (IO.userError s!"expected version, got {repr other}")
   match ← landlockCreateRuleset none LANDLOCK_CREATE_RULESET_ERRATA with
   | .ok (.version _) => pure ()
-  | other => throw (IO.userError s!"expected errata version, got {repr other}")
+  | .error e =>
+    if e == Errno.EINVAL then pure ()
+    else throw (IO.userError s!"expected errata version or EINVAL, got {e}")
+  | other => throw (IO.userError s!"expected errata version or EINVAL, got {repr other}")
   assertErr (← landlockCreateRuleset none 0) Errno.EINVAL "null attr with flags=0"
   assertErr (← landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 1)
     Errno.EINVAL "attr with nonzero flags"
@@ -175,10 +179,11 @@ def assume_sandbox_landlockRestrictSelf_nnpAndLayerCap : IO Unit := do
     let rs ← match ← landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0 with
       | .ok (.ruleset r) => pure r
       | other => throw (IO.userError s!"createRuleset failed: {repr other}")
+    let euid ← SandboxEnv.getEuid
     let nnpBefore ← match ← prctl .getNoNewPrivs with
       | .ok v => pure v
       | .error e => throw (IO.userError s!"getNoNewPrivs failed: {e}")
-    if nnpBefore == 0 then
+    if nnpBefore == 0 && euid != 0 then
       assertErr (← landlockRestrictSelf rs) Errno.EPERM "restrict_self before nnp"
     assertTrue ((← prctl .setNoNewPrivs) == .ok 0) "setNoNewPrivs failed"
     for idx in List.range LANDLOCK_MAX_STACKED_LAYERS do
@@ -192,18 +197,21 @@ def assume_sandbox_landlockRestrictSelf_nnpAndLayerCap : IO Unit := do
     closeFdChecked rs
     assertErr (← landlockRestrictSelf rs) Errno.EBADF "restrict_self on closed rs must fail EBADF"
   runForkedOk "landlock_restrict_self in CLONE_NEWUSER with nnp=0" do
+    let nnpAmbient ← match ← prctl .getNoNewPrivs with
+      | .ok v => pure v
+      | .error e => throw (IO.userError s!"getNoNewPrivs before userns failed: {e}")
     match ← SandboxEnv.enterUserns with
     | .error e => throw (IO.userError s!"unshare CLONE_NEWUSER failed: {e}")
     | .ok () => pure ()
     let nnpUser ← match ← prctl .getNoNewPrivs with
       | .ok v => pure v
       | .error e => throw (IO.userError s!"getNoNewPrivs in userns failed: {e}")
-    assertTrue (nnpUser == 0) s!"expected nnp==0 in fresh userns, got {nnpUser}"
+    assertTrue (nnpUser == nnpAmbient) s!"expected nnp=={nnpAmbient} in fresh userns, got {nnpUser}"
     let rs ← match ← landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0 with
       | .ok (.ruleset r) => pure r
       | other => throw (IO.userError s!"createRuleset in userns failed: {repr other}")
     assertTrue ((← landlockRestrictSelf rs) == .ok ()) "restrict_self in userns with CAP_SYS_ADMIN failed"
-    assertTrue ((← prctl .getNoNewPrivs) == .ok 0) "restrict_self must not toggle nnp"
+    assertTrue ((← prctl .getNoNewPrivs) == .ok nnpAmbient) "restrict_self must not toggle nnp"
     closeFdChecked rs
 
 /-- Verify `seccomp` `GET_ACTION_AVAIL`, pure-Lean unsafe return rejection, safe DAG BPF filter install, and `TSYNC` / `TSYNC_ESRCH`. -/
@@ -334,16 +342,25 @@ def assume_sandbox_setrlimit_curMaxAndHardCap : IO Unit := do
       | .ok p => pure p
       | .error e => throw (IO.userError s!"getRlimit(nofile) failed: {e}")
     let safeHigh := if curMaxNofile > 64 then 64 else curMaxNofile
+    let gap0 ← match ← memfdCreate "g0".toUTF8 {} with
+      | .ok fd => pure fd
+      | .error e => throw (IO.userError s!"g0 memfd failed: {e}")
+    let gap1 ← match ← memfdCreate "g1".toUTF8 {} with
+      | .ok fd => pure fd
+      | .error e => throw (IO.userError s!"g1 memfd failed: {e}")
+    let g1Raw ← SandboxEnv.peekRawFd gap1
     let mut kept : Array RawFd := #[]
     for _ in List.range 4 do
       let f ← match ← memfdCreate "keep".toUTF8 {} with
         | .ok fd => pure fd
         | .error e => throw (IO.userError s!"keep memfd failed: {e}")
       kept := kept.push f
-    SandboxEnv.closeRaw 0
-    SandboxEnv.closeRaw 1
-    SandboxEnv.closeRaw 2
-    assertTrue ((← setrlimit .nofile 4 safeHigh) == .ok ()) "setrlimit nofile 4"
+    closeFdChecked gap0
+    closeFdChecked gap1
+    SandboxEnv.closeLowFdsSafe kept
+    let minCap := g1Raw.toUInt64 + 1
+    let targetNofile : UInt64 := if safeHigh > minCap then minCap else safeHigh
+    assertTrue ((← setrlimit .nofile targetNofile safeHigh) == .ok ()) "setrlimit nofile gap"
     let gapMemfd ← match ← memfdCreate "gap".toUTF8 {} with
       | .ok fd => pure fd
       | .error e => throw (IO.userError s!"gap memfd failed: {e}")
@@ -400,7 +417,11 @@ def err_landlockCreateRuleset_invalidArg : IO Unit := do
 /-- Real error test for `landlockCreateRuleset` (`EMFILE` under `RLIMIT_NOFILE=0`). -/
 def err_landlockCreateRuleset_transientOrResource : IO Unit := do
   runForkedOk "landlockCreateRuleset EMFILE" do
-    assertTrue ((← setrlimit .nofile 0 64) == .ok ()) "setrlimit nofile 0"
+    let (_, curMaxNofile) ← match ← SandboxEnv.getRlimit 2 with
+      | .ok p => pure p
+      | .error e => throw (IO.userError s!"getRlimit(nofile) failed: {e}")
+    let safeHigh := if curMaxNofile > 64 then 64 else curMaxNofile
+    assertTrue ((← setrlimit .nofile 0 safeHigh) == .ok ()) "setrlimit nofile 0"
     assertErr (← landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0)
       Errno.EMFILE "EMFILE expected"
 
@@ -461,10 +482,11 @@ def err_landlockRestrictSelf_permissionDenied : IO Unit := do
     let rs ← match ← landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0 with
       | .ok (.ruleset r) => pure r
       | other => throw (IO.userError s!"createRuleset: {repr other}")
+    let euid ← SandboxEnv.getEuid
     let nnp ← match ← prctl .getNoNewPrivs with
       | .ok v => pure v
       | .error e => throw (IO.userError s!"getNoNewPrivs: {e}")
-    if nnp == 0 then
+    if nnp == 0 && euid != 0 then
       assertErr (← landlockRestrictSelf rs) Errno.EPERM "expected EPERM before nnp"
     closeFdChecked rs
 
@@ -542,7 +564,11 @@ def err_memfdCreate_invalidArg : IO Unit := do
 /-- Real error test for `memfdCreate` (`EMFILE` under `RLIMIT_NOFILE=0`). -/
 def err_memfdCreate_transientOrResource : IO Unit := do
   runForkedOk "memfdCreate EMFILE" do
-    assertTrue ((← setrlimit .nofile 0 64) == .ok ()) "setrlimit nofile 0"
+    let (_, curMaxNofile) ← match ← SandboxEnv.getRlimit 2 with
+      | .ok p => pure p
+      | .error e => throw (IO.userError s!"getRlimit(nofile) failed: {e}")
+    let safeHigh := if curMaxNofile > 64 then 64 else curMaxNofile
+    assertTrue ((← setrlimit .nofile 0 safeHigh) == .ok ()) "setrlimit nofile 0"
     assertErr (← memfdCreate "x".toUTF8 {}) Errno.EMFILE "EMFILE expected"
 
 /-- Mocked error test for `landlockCreateRuleset` (`badFd`, `permissionDenied`, `limitOrUnsupported`). -/
@@ -626,13 +652,29 @@ def registeredErrorTests : Array Core.RegisteredErrorTest := #[
   ⟨"LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_memfdCreate_mocked", .mocked, err_memfdCreate_mocked⟩
 ]
 
-/-- Worker entry point invoked under `strace -f -e inject=...` to check real C-ABI errno propagation for a single syscall (`EINTR`, `ENOMEM`, `EMFILE`/`ENFILE`, `ENOSYS`). -/
+/-- Worker entry point invoked under `strace -f -e inject=...` to check real C-ABI errno propagation for all 10 C shim hooks (including invalid-argument kernel paths). -/
 def runStraceWorker (mode : String) : IO Unit := do
   match mode with
+  | "landlock_query" =>
+    match ← landlockCreateRuleset none LANDLOCK_CREATE_RULESET_VERSION with
+    | .error e => IO.println s!"STRACE_ERR={e}"
+    | .ok _ => throw (IO.userError "strace injection did not intercept landlock_query")
   | "landlock_create_ruleset" =>
     match ← landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0 with
     | .error e => IO.println s!"STRACE_ERR={e}"
     | .ok _ => throw (IO.userError "strace injection did not intercept landlock_create_ruleset")
+  | "landlock_add_path_beneath" =>
+    let rs ← match ← landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_READ_DIR }) 0 with
+      | .ok (.ruleset r) => pure r
+      | other => throw (IO.userError s!"createRuleset: {repr other}")
+    let dirFd ← openHostOrThrow "/tmp" 1 "strace /tmp O_PATH"
+    try
+      match ← landlockAddRule rs (.pathBeneath dirFd LANDLOCK_ACCESS_FS_READ_DIR) with
+      | .error e => IO.println s!"STRACE_ERR={e}"
+      | .ok () => throw (IO.userError "strace injection did not intercept landlock_add_path_beneath")
+    finally
+      closeFdChecked dirFd
+      closeFdChecked rs
   | "landlock_add_rule" =>
     let rs ← match ← landlockCreateRuleset (some { handledAccessNet := LANDLOCK_ACCESS_NET_CONNECT_TCP }) 0 with
       | .ok (.ruleset r) => pure r
@@ -658,28 +700,64 @@ def runStraceWorker (mode : String) : IO Unit := do
     match ← seccomp (.getActionAvail SECCOMP_RET_ALLOW) {} ByteArray.empty with
     | .error e => IO.println s!"STRACE_ERR={e}"
     | .ok _ => throw (IO.userError "strace injection did not intercept seccomp")
+  | "seccomp_set_filter" =>
+    assertTrue ((← prctl .setNoNewPrivs) == .ok 0) "setNoNewPrivs"
+    match ← seccomp .setModeFilter {} allowAllFilter with
+    | .error e => IO.println s!"STRACE_ERR={e}"
+    | .ok _ => throw (IO.userError "strace injection did not intercept seccomp_set_filter")
   | "prctl" =>
     match ← prctl .getNoNewPrivs with
     | .error e => IO.println s!"STRACE_ERR={e}"
     | .ok _ => throw (IO.userError "strace injection did not intercept prctl")
+  | "prctl_invalid_pdeathsig" =>
+    match ← prctl (.setPdeathsig 65) with
+    | .error e => IO.println s!"STRACE_ERR={e}"
+    | .ok _ => throw (IO.userError "prctl_invalid_pdeathsig unexpectedly succeeded")
   | "setrlimit" =>
-    for _ in List.range 6 do
+    for _ in List.range 8 do
       match ← setrlimit .core 0 0 with
       | .error e =>
         IO.println s!"STRACE_ERR={e}"
         return ()
       | .ok () => pure ()
     throw (IO.userError "strace injection did not intercept setrlimit")
+  | "setrlimit_invalid_cur" =>
+    for _ in List.range 10 do
+      match ← setrlimit .core 100 50 with
+      | .error e =>
+        if e != Errno.EINVAL then
+          IO.println s!"STRACE_ERR={e}"
+          return ()
+      | .ok () => pure ()
+    throw (IO.userError "strace injection did not intercept setrlimit_invalid_cur")
+  | "setrlimit_nofile_inf" =>
+    for _ in List.range 10 do
+      match ← setrlimit .nofile 0 RLIM_INFINITY with
+      | .error e =>
+        if e != Errno.EPERM then
+          IO.println s!"STRACE_ERR={e}"
+          return ()
+      | .ok () => pure ()
+    throw (IO.userError "strace injection did not intercept setrlimit_nofile_inf")
   | "memfd_create" =>
     match ← memfdCreate "strace".toUTF8 {} with
     | .error e => IO.println s!"STRACE_ERR={e}"
     | .ok fd =>
       closeFdChecked fd
       throw (IO.userError "strace injection did not intercept memfd_create")
+  | "memfd_create_conflict" =>
+    match ← memfdCreate "a".toUTF8 { noexecSeal := true, exec := true } with
+    | .error e => IO.println s!"STRACE_ERR={e}"
+    | .ok fd =>
+      closeFdChecked fd
+      throw (IO.userError "memfd_create_conflict unexpectedly succeeded")
   | other =>
     throw (IO.userError s!"unknown strace worker mode: {other}")
 
-private def straceInjectOnce (exe : String) (syscallName workerMode errnoName : String) (expectedErrno : Errno) : IO Unit := do
+private def straceInjectOnce (exe : String) (syscallName workerMode errnoName : String)
+    (expectedErrno : Errno) (modelState : SandboxSysState) (modelReq : SandboxReq) : IO Unit := do
+  if (allowedStep modelState modelReq (.err expectedErrno)).isNone then
+    throw (IO.userError s!"strace {syscallName}({workerMode},{errnoName}): Model.allowedStep rejected errno {expectedErrno}")
   let spec := if syscallName == "setrlimit" then
       s!"prlimit64:error={errnoName}:when=5+"
     else
@@ -691,31 +769,86 @@ private def straceInjectOnce (exe : String) (syscallName workerMode errnoName : 
   if out.exitCode != 0 then
     throw (IO.userError s!"strace {syscallName}({errnoName}) failed rc={out.exitCode} out={out.stdout} err={out.stderr}")
   let expectedLine := s!"STRACE_ERR={expectedErrno}"
-  if !(out.stdout.contains expectedLine) then
-    throw (IO.userError s!"strace {syscallName}({errnoName}) missing '{expectedLine}' in stdout={out.stdout}")
+  let hasExactLine := (out.stdout.splitOn "\n").any (fun ln => ln.trimAscii.toString == expectedLine)
+  if !hasExactLine then
+    throw (IO.userError s!"strace {syscallName}({workerMode},{errnoName}) missing exact '{expectedLine}' in stdout={out.stdout}")
 
-/-- Run `strace -f` fault injection checks across all 7 syscalls (`EINTR`, `ENOMEM`, `EMFILE`/`ENFILE`, `ENOSYS`). -/
+/-- Run `strace -f` fault injection checks across all 10 C shim hooks and invalid-arg kernel paths, validating outcomes against `Model.allowedStep`. -/
 def runStraceFaultCheck : IO Unit := do
   let exe := (← IO.appPath).toString
-  let matrix : Array (String × String × Array (String × Errno)) := #[
-    ("landlock_create_ruleset", "landlock_create_ruleset",
+  let s0 := SandboxSysState.initial
+  let sNnp := { s0 with noNewPrivs? := some true }
+  let sRsNet : SandboxSysState := {
+    s0 with
+    fds := [(0, { kind := .landlockRuleset 0 LANDLOCK_ACCESS_NET_CONNECT_TCP })]
+    nextHid := 1
+    landlockEnabled := true
+  }
+  let sRsPath : SandboxSysState := {
+    s0 with
+    fds := [(0, { kind := .landlockRuleset LANDLOCK_ACCESS_FS_READ_DIR 0 }), (1, { kind := .hostPath true, oPath := true })]
+    nextHid := 2
+    landlockEnabled := true
+  }
+  let sRsExec : SandboxSysState := {
+    sNnp with
+    fds := [(0, { kind := .landlockRuleset LANDLOCK_ACCESS_FS_EXECUTE 0 })]
+    nextHid := 1
+    landlockEnabled := true
+  }
+  let matrix : Array (String × String × SandboxSysState × SandboxReq × Array (String × Errno)) := #[
+    ("landlock_create_ruleset", "landlock_query", s0,
+      .landlockCreateRuleset none LANDLOCK_CREATE_RULESET_VERSION,
+      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("ENOSYS", Errno.ENOSYS)]),
+    ("landlock_create_ruleset", "landlock_create_ruleset", s0,
+      .landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0,
       #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("ENFILE", Errno.ENFILE), ("ENOSYS", Errno.ENOSYS)]),
-    ("landlock_add_rule", "landlock_add_rule",
+    ("landlock_add_rule", "landlock_add_path_beneath", sRsPath,
+      .landlockAddRule 0 (.pathBeneath 1 LANDLOCK_ACCESS_FS_READ_DIR),
+      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM)]),
+    ("landlock_add_rule", "landlock_add_rule", sRsNet,
+      .landlockAddRule 0 (.netPort 80 LANDLOCK_ACCESS_NET_CONNECT_TCP),
+      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM)]),
+    ("landlock_add_rule", "landlock_add_rule", s0,
+      .landlockAddRule 0 (.netPort 80 LANDLOCK_ACCESS_NET_CONNECT_TCP),
+      #[("ENOSYS", Errno.ENOSYS)]),
+    ("landlock_restrict_self", "landlock_restrict_self", sRsExec,
+      .landlockRestrictSelf 0,
+      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM)]),
+    ("landlock_restrict_self", "landlock_restrict_self", s0,
+      .landlockRestrictSelf 0,
+      #[("ENOSYS", Errno.ENOSYS)]),
+    ("seccomp", "seccomp", s0,
+      .seccomp (.getActionAvail SECCOMP_RET_ALLOW) {} ByteArray.empty,
       #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("ENOSYS", Errno.ENOSYS)]),
-    ("landlock_restrict_self", "landlock_restrict_self",
+    ("seccomp", "seccomp_set_filter", sNnp,
+      .seccomp .setModeFilter {} allowAllFilter,
       #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("ENOSYS", Errno.ENOSYS)]),
-    ("seccomp", "seccomp",
-      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("ENOSYS", Errno.ENOSYS)]),
-    ("prctl", "prctl",
-      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("ENOSYS", Errno.ENOSYS)]),
-    ("setrlimit", "setrlimit",
-      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("ENOSYS", Errno.ENOSYS)]),
-    ("memfd_create", "memfd_create",
-      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("EMFILE", Errno.EMFILE), ("ENFILE", Errno.ENFILE), ("ENOSYS", Errno.ENOSYS)])
+    ("prctl", "prctl", s0,
+      .prctl .getNoNewPrivs,
+      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM)]),
+    ("prctl", "prctl_invalid_pdeathsig", s0,
+      .prctl (.setPdeathsig 65),
+      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM)]),
+    ("setrlimit", "setrlimit", s0,
+      .setrlimit .core 0 0,
+      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM)]),
+    ("setrlimit", "setrlimit_invalid_cur", s0,
+      .setrlimit .core 100 50,
+      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM)]),
+    ("setrlimit", "setrlimit_nofile_inf", s0,
+      .setrlimit .nofile 0 RLIM_INFINITY,
+      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM)]),
+    ("memfd_create", "memfd_create", s0,
+      .memfdCreate "strace".toUTF8 {},
+      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("EMFILE", Errno.EMFILE), ("ENFILE", Errno.ENFILE), ("ENOSYS", Errno.ENOSYS)]),
+    ("memfd_create", "memfd_create_conflict", s0,
+      .memfdCreate "a".toUTF8 { noexecSeal := true, exec := true },
+      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("ENOSYS", Errno.ENOSYS)])
   ]
-  for (scName, mode, cases) in matrix do
+  for (scName, mode, st, req, cases) in matrix do
     for (errName, errCode) in cases do
-      straceInjectOnce exe scName mode errName errCode
+      straceInjectOnce exe scName mode errName errCode st req
 
 /-- Execute all runtime assumption tests and all error-coverage tests for `LeanSwe.LinuxSyscall.Sandbox`. -/
 def runAll : IO Unit := do

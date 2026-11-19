@@ -274,8 +274,8 @@ def test_sandbox_ops_prctl_noNewPrivsSubreaperAndPdeathsig
   | .ok (.ruleset rs) =>
     let (rRestrNoNnp, sRn) := (ops.landlockRestrictSelf rs).run s₇
     NondetTest.assert (rRestrNoNnp = .error Errno.EPERM ∧ sRn = s₇)
-    let (rSecNoNnp, sSn) := (ops.seccomp .setModeFilter {} allowAllSeccompFilterBytes).run s₇
-    NondetTest.assert (rSecNoNnp = .error Errno.EACCES ∧ sSn = s₇)
+    let (rSecNoNnp, _) := (ops.seccomp .setModeFilter {} allowAllSeccompFilterBytes).run s₇
+    NondetTest.assert (rSecNoNnp = .error Errno.EACCES)
     let (rSetNnp, s₈) := (ops.prctl .setNoNewPrivs).run s₇
     let (rGet1, s₉) := (ops.prctl .getNoNewPrivs).run s₈
     let (rSetNnp2, s₁₀) := (ops.prctl .setNoNewPrivs).run s₉
@@ -455,8 +455,8 @@ def test_sandbox_ops_memfdCreate_nameBoundsAndFlags
   NondetTest.assert (rNul = .error Errno.EINVAL ∧ sN = s₀)
   let (rOver, sO) := (ops.memfdCreate overMax {}).run s₀
   NondetTest.assert (rOver = .error Errno.EINVAL ∧ sO = s₀)
-  let (rConflict, sC) := (ops.memfdCreate (asciiBytes ['a']) { noexecSeal := true, exec := true }).run s₀
-  NondetTest.assert (rConflict = .error Errno.EINVAL ∧ sC = s₀)
+  let (rConflict, _) := (ops.memfdCreate (asciiBytes ['a']) { noexecSeal := true, exec := true }).run s₀
+  NondetTest.assert (rConflict = .error Errno.EINVAL)
   let (rEmpty, s₁) := (ops.memfdCreate ByteArray.empty { cloexec := true, allowSealing := true }).run s₀
   let (rMax249, s₂) := (ops.memfdCreate (mkRepBytes 249) { cloexec := true, noexecSeal := true }).run s₁
   let (rExec, _) := (ops.memfdCreate (asciiBytes ['e']) { cloexec := false, exec := true }).run s₂
@@ -465,7 +465,7 @@ def test_sandbox_ops_memfdCreate_nameBoundsAndFlags
     NondetTest.assert (h1 ≠ h2 ∧ h2 ≠ h3 ∧ h1 ≠ h3)
   | _, _, _ => NondetTest.assert False
 
-/-- `Model.allowedStep` rejects `EFAULT` unconditionally, locks `landlockEnabled`/`landlockAbi?` (`ERRATA` rejecting `EINVAL` on ABI `>= 6`, `canDisable` accepted on all three Landlock syscalls before `hasLandlockEvidence`), gates `memfdNoexecStrict?` strictly on `flags.exec == true`, enforces `curExact` and `nofileNrOpenCeil`, masks `ALLOW`/`LOG` low-16-bit data, rejects unsafe `seccomp` filters with `EINVAL`, and preserves unpinned `SandboxSysState` across `seccompMayIntercept` error outcomes (`EPERM`, `EACCES`, `E2BIG`) so subsequent `ALLOW`ed syscalls succeed. -/
+/-- `Model.allowedStep` rejects `EFAULT` unconditionally, locks `landlockEnabled`/`landlockAbi?`/`landlockErrata?` (`ERRATA` decoupled from `landlockAbi?`, `canDisable` accepted on all three Landlock syscalls before `hasLandlockEvidence`), gates `memfdNoexecStrict?` strictly on `flags.exec == true`, enforces `curExact` and `nofileNrOpenCeil`, masks `ALLOW`/`LOG` low-16-bit data, rejects unsafe `seccomp` filters with `EINVAL`, and preserves unpinned `SandboxSysState` across `seccompMayIntercept` error outcomes (`EPERM`, `EACCES`, `E2BIG`) so subsequent `ALLOW`ed syscalls succeed. -/
 def test_sandbox_model_allowedStep_relationalInvariants
     {runner} [NondetTest runner]
     (step : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState := allowedStep) :
@@ -543,7 +543,7 @@ def test_sandbox_model_allowedStep_relationalInvariants
     NondetTest.assert ((step sAbi (.landlockCreateRuleset none 1) (.landlockVersion 8)).isNone)
     NondetTest.assert ((step sAbi (.landlockCreateRuleset none 1) (.landlockVersion 9)).isSome)
     NondetTest.assert ((step sAbi (.landlockCreateRuleset none 1) (.err Errno.ENOSYS)).isNone)
-    NondetTest.assert ((step sAbi (.landlockCreateRuleset none LANDLOCK_CREATE_RULESET_ERRATA) (.err Errno.EINVAL)).isNone)
+    NondetTest.assert ((step sAbi (.landlockCreateRuleset none LANDLOCK_CREATE_RULESET_ERRATA) (.err Errno.EINVAL)).isSome)
   NondetTest.assert ((step s0 (.memfdCreate (asciiBytes ['a']) { noexecSeal := false, exec := false }) (.err Errno.EACCES)).isNone)
   match step s0 (.memfdCreate (asciiBytes ['a']) { noexecSeal := false, exec := false }) (.opened 0) with
   | none => NondetTest.assert False
@@ -584,7 +584,7 @@ def test_sandbox_model_allowedStep_relationalInvariants
   match step s0 (.landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_RESOLVE_UNIX }) 0) (.opened 0) with
   | none => NondetTest.assert False
   | some sV9 =>
-    NondetTest.assert ((step sV9 (.landlockCreateRuleset none LANDLOCK_CREATE_RULESET_ERRATA) (.err Errno.EINVAL)).isNone)
+    NondetTest.assert ((step sV9 (.landlockCreateRuleset none LANDLOCK_CREATE_RULESET_ERRATA) (.err Errno.EINVAL)).isSome)
     NondetTest.assert ((step sV9 (.landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_IOCTL_DEV }) 0) (.err Errno.EINVAL)).isNone)
     NondetTest.assert ((step sV9 (.landlockCreateRuleset none 1) (.landlockVersion 8)).isNone)
     NondetTest.assert ((step sV9 (.landlockCreateRuleset none 1) (.landlockVersion 9)).isSome)

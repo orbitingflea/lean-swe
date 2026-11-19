@@ -234,9 +234,30 @@ def decodeSockFilterList : List UInt8 → Option (List SockFilterInsn)
       some ({ code, jt, jf, k } :: tail)
   | _ => none
 
+/-- Tail-recursive byte decoder for `ByteArray` into `SockFilterInsn` records without materializing `ByteArray.data.toList`. -/
+def decodeSockFilterBytesAux (b : ByteArray) (i : Nat) (acc : List SockFilterInsn) :
+    Nat → List SockFilterInsn
+  | 0 => acc.reverse
+  | n + 1 =>
+    let b0 := b.get! i
+    let b1 := b.get! (i + 1)
+    let jt := b.get! (i + 2)
+    let jf := b.get! (i + 3)
+    let k0 := b.get! (i + 4)
+    let k1 := b.get! (i + 5)
+    let k2 := b.get! (i + 6)
+    let k3 := b.get! (i + 7)
+    let code : UInt16 := UInt16.ofNat (b0.toNat + b1.toNat * 256)
+    let k : UInt32 :=
+      UInt32.ofNat (k0.toNat + k1.toNat * 256 + k2.toNat * 65536 + k3.toNat * 16777216)
+    decodeSockFilterBytesAux b (i + 8) ({ code, jt, jf, k } :: acc) n
+
 /-- Decode a `ByteArray` into `SockFilterInsn` instructions (`none` if byte length is not a multiple of `8`). -/
 def decodeSockFilters (b : ByteArray) : Option (List SockFilterInsn) :=
-  decodeSockFilterList b.data.toList
+  if b.size % 8 != 0 then
+    none
+  else
+    some (decodeSockFilterBytesAux b 0 [] (b.size / 8))
 
 /-- Returns `true` iff `insn` neither aborts early with `0 = SECCOMP_RET_KILL_THREAD` via `BPF_ALU | BPF_DIV | BPF_X` (`0x003c` when `X == 0`) nor uses an unsafe `BPF_RET` instruction (`BPF_RET | BPF_A`, `KILL_PROCESS`, `KILL_THREAD`, `TRAP`, `TRACE`, `USER_NOTIF`, unknown action bits, `SECCOMP_RET_ERRNO | 0`, or `SECCOMP_RET_ERRNO | EFAULT`). -/
 def isSafeSeccompInsn (insn : SockFilterInsn) : Bool :=

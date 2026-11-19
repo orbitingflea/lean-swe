@@ -599,7 +599,7 @@ example : ¬ Core.AllPass (test_sandbox_model_allowedStep_relationalInvariants
   intro h
   dsimp only [Core.AllPass, test_sandbox_model_allowedStep_relationalInvariants,
     Bind.bind, assert, pure] at h
-  exact absurd h.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1.2 (by decide)
+  exact absurd h.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1.2 (by decide)
 
 example : ¬ Core.AllPass (test_sandbox_model_allowedStep_relationalInvariants
     (fun s req out =>

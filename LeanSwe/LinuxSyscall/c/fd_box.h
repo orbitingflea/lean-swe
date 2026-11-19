@@ -16,36 +16,7 @@ typedef struct {
   uint8_t closed;
 } LeanFdBox;
 
-static lean_external_class *g_leanswe_fd_class = NULL;
-static pthread_once_t g_leanswe_fd_class_once = PTHREAD_ONCE_INIT;
-
-static void leanswe_fd_box_finalize(void *ptr) {
-  LeanFdBox *box = (LeanFdBox *)ptr;
-  if (box != NULL) {
-    if (!box->closed && box->fd >= 0) {
-      close(box->fd);
-      box->fd = -1;
-      box->closed = 1;
-    }
-    pthread_mutex_destroy(&box->mu);
-    free(box);
-  }
-}
-
-static void leanswe_fd_box_foreach(void *ptr, b_lean_obj_arg f) {
-  (void)ptr;
-  (void)f;
-}
-
-static void leanswe_init_fd_class(void) {
-  g_leanswe_fd_class = lean_register_external_class(
-      leanswe_fd_box_finalize, leanswe_fd_box_foreach);
-}
-
-static inline lean_external_class *leanswe_get_fd_class(void) {
-  pthread_once(&g_leanswe_fd_class_once, leanswe_init_fd_class);
-  return g_leanswe_fd_class;
-}
+LEAN_EXPORT lean_external_class *leanswe_get_fd_class(void);
 
 static inline lean_obj_res leanswe_mk_fd_obj(int fd) {
   LeanFdBox *box = (LeanFdBox *)malloc(sizeof(LeanFdBox));
@@ -66,6 +37,10 @@ static inline int leanswe_fd_box_pin(LeanFdBox *box, int *out_fd) {
     pthread_mutex_unlock(&box->mu);
     return EBADF;
   }
+  if (box->in_use == UINT32_MAX) {
+    pthread_mutex_unlock(&box->mu);
+    return EOVERFLOW;
+  }
   box->in_use++;
   *out_fd = box->fd;
   pthread_mutex_unlock(&box->mu);
@@ -80,6 +55,11 @@ static inline void leanswe_fd_box_unpin(LeanFdBox *box) {
   pthread_mutex_unlock(&box->mu);
 }
 
+static inline int leanswe_is_kernel_close_detach_err(int err) {
+  return err == EBADF || err == EINTR || err == EIO || err == ENOSPC ||
+         err == EDQUOT || err == ENOMEM || err == ESTALE || err == ECONNRESET;
+}
+
 static inline int leanswe_fd_box_close(LeanFdBox *box) {
   pthread_mutex_lock(&box->mu);
   if (box->closed || box->fd < 0) {
@@ -90,14 +70,14 @@ static inline int leanswe_fd_box_close(LeanFdBox *box) {
     pthread_mutex_unlock(&box->mu);
     return EBUSY;
   }
-  int fd = box->fd;
-  box->fd = -1;
-  box->closed = 1;
-  pthread_mutex_unlock(&box->mu);
-  if (close(fd) < 0) {
-    return errno;
+  int rc = close(box->fd);
+  int err = (rc < 0) ? errno : 0;
+  if (rc == 0 || leanswe_is_kernel_close_detach_err(err)) {
+    box->fd = -1;
+    box->closed = 1;
   }
-  return 0;
+  pthread_mutex_unlock(&box->mu);
+  return err;
 }
 
 static inline void leanswe_abort_on_efault(int err) {

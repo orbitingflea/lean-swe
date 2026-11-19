@@ -32,6 +32,23 @@ opaque readBytesRaw : UInt32 → UInt32 → IO (Except Errno ByteArray)
 @[extern "leanswe_sbx_close_raw"]
 opaque closeRaw : UInt32 → IO Unit
 
+/-- Peek the raw POSIX FD integer inside a `RawFd` without pinning (`0xFFFFFFFF` if closed). -/
+@[extern "leanswe_sbx_peek_raw_fd"]
+opaque peekRawFd : @& RawFd → IO UInt32
+
+/-- Close stdio FDs `0..2` not in `keepMask` without closing `libuv` internal event/epoll/io_uring FDs. -/
+@[extern "leanswe_sbx_close_low_fds"]
+opaque closeLowFdsRaw : UInt32 → IO Unit
+
+/-- Close stdio FDs `0..2` safely while preserving `libuv` internal FDs and all live `RawFd`s in `keep`. -/
+def closeLowFdsSafe (keep : Array RawFd := #[]) : IO Unit := do
+  let mut mask : UInt32 := 0
+  for fdObj in keep do
+    let raw ← peekRawFd fdObj
+    if raw < 3 then
+      mask := mask ||| ((1 : UInt32) <<< raw)
+  closeLowFdsRaw mask
+
 /-- Open a host path into a `RawFd` using selector `0..6` (`O_RDONLY|O_DIRECTORY`, `O_PATH|O_DIRECTORY`, `O_RDONLY`, `O_PATH`, `O_RDWR|O_CREAT`, `O_PATH|O_NOFOLLOW`, `O_RDONLY|O_NONBLOCK`). -/
 @[extern "leanswe_sbx_open_host_fd"]
 opaque openHostFd : @& ByteArray → UInt32 → IO (Except Errno RawFd)
@@ -68,9 +85,9 @@ opaque installRawSeccomp : @& ByteArray → IO (Except Errno Unit)
 @[extern "leanswe_sbx_chmod_rw"]
 opaque chmodRw : @& ByteArray → IO (Except Errno Unit)
 
-/-- Enter a mapped user+mount namespace and prepare `overlayfs`, `devpts`, and bind-mount directories under `baseDir`. -/
+/-- Enter a mapped user+mount namespace and prepare `overlayfs`, `devpts`, and bind-mount directories under `baseDir` (returns `0` on full success or mount errno after entering userns). -/
 @[extern "leanswe_sbx_setup_mnt_ns"]
-opaque setupMntNs : @& ByteArray → IO (Except Errno Unit)
+opaque setupMntNs : @& ByteArray → IO (Except Errno UInt32)
 
 /-- Read current `(rlim_cur, rlim_max)` for resource selector `0..2`. -/
 @[extern "leanswe_sbx_get_rlimit"]
@@ -88,13 +105,62 @@ opaque getEuid : IO UInt32
 @[extern "leanswe_sbx_spawn_sync_thread"]
 opaque spawnSyncThreadRaw : UInt32 → IO (Except Errno UInt32)
 
-/-- Spawn the helper pthread inside a forked child (`installFilter = true` diverges its seccomp filter from the main thread; `false` leaves it clean for `TSYNC`). -/
-def spawnSyncThread (installFilter : Bool := true) : IO (Except Errno UInt32) :=
-  spawnSyncThreadRaw (if installFilter then 1 else 0)
+/-- Read from raw FD `fd` until EOF, retrying on `EINTR`. -/
+partial def readAllRaw (fd : UInt32) : IO (Except Errno ByteArray) := do
+  let rec go (acc : ByteArray) : IO (Except Errno ByteArray) := do
+    match ← readBytesRaw fd 65536 with
+    | .ok chunk =>
+      if chunk.isEmpty then
+        return .ok acc
+      go (acc ++ chunk)
+    | .error e =>
+      if e == Errno.EINTR then
+        go acc
+      else
+        return .error e
+  go ByteArray.empty
+
+private partial def readUpToRaw (fd : UInt32) (target : Nat) : IO (Except Errno ByteArray) := do
+  let rec go (acc : ByteArray) : IO (Except Errno ByteArray) := do
+    if acc.size >= target then
+      return .ok acc
+    match ← readBytesRaw fd (UInt32.ofNat (target - acc.size)) with
+    | .ok chunk =>
+      if chunk.isEmpty then
+        return .ok acc
+      go (acc ++ chunk)
+    | .error e =>
+      if e == Errno.EINTR then
+        go acc
+      else
+        return .error e
+  go ByteArray.empty
 
 /-- Stop and join the helper pthread inside a forked child. -/
 @[extern "leanswe_sbx_stop_sync_thread"]
 opaque stopSyncThread : IO (Except Errno Unit)
+
+/-- Spawn the helper pthread inside a forked child (`installFilter = true` diverges its seccomp filter from the main thread; `false` leaves it clean for `TSYNC`). -/
+def spawnSyncThread (installFilter : Bool := true) : IO (Except Errno UInt32) := do
+  match ← spawnSyncThreadRaw (if installFilter then 1 else 0) with
+  | .error e => return .error e
+  | .ok rfd =>
+    let dataRes ← readUpToRaw rfd 4
+    closeRaw rfd
+    match dataRes with
+    | .ok bytes =>
+      if bytes.size == 4 then
+        let b0 := (bytes.get! 0).toUInt32
+        let b1 := (bytes.get! 1).toUInt32 <<< 8
+        let b2 := (bytes.get! 2).toUInt32 <<< 16
+        let b3 := (bytes.get! 3).toUInt32 <<< 24
+        return .ok (b0 ||| b1 ||| b2 ||| b3)
+      else
+        let _ ← stopSyncThread
+        return .error Errno.EIO
+    | .error e =>
+      let _ ← stopSyncThread
+      return .error e
 
 /-- Unpack `(readFd, writeFd)` from `pipePacked`. -/
 def createPipe : IO (Except Errno (UInt32 × UInt32)) := do
@@ -122,21 +188,6 @@ partial def writeAllRaw (fd : UInt32) (bytes : ByteArray) : IO (Except Errno Uni
       else
         return .error e
   go 0
-
-/-- Read from raw FD `fd` until EOF, retrying on `EINTR`. -/
-partial def readAllRaw (fd : UInt32) : IO (Except Errno ByteArray) := do
-  let rec go (acc : ByteArray) : IO (Except Errno ByteArray) := do
-    match ← readBytesRaw fd 65536 with
-    | .ok chunk =>
-      if chunk.isEmpty then
-        return .ok acc
-      go (acc ++ chunk)
-    | .error e =>
-      if e == Errno.EINTR then
-        go acc
-      else
-        return .error e
-  go ByteArray.empty
 
 /-- Wait for `pid`, retrying on `EINTR`. -/
 partial def waitpidRetry (pid : UInt32) : IO (Except Errno UInt32) := do
@@ -167,9 +218,11 @@ def runForked (childAction : IO ByteArray) : IO (UInt32 × ByteArray) := do
         catch err =>
           let msg := err.toString.toUTF8
           pure (ByteArray.mk #[1] ++ msg)
-      let _ ← writeAllRaw wfd out
+      let wr ← writeAllRaw wfd out
       closeRaw wfd
-      exitChild 0
+      match wr with
+      | .ok () => exitChild 0
+      | .error _ => exitChild 1
       return (0, ByteArray.empty)
     else
       closeRaw wfd
@@ -183,7 +236,7 @@ def runForked (childAction : IO ByteArray) : IO (UInt32 × ByteArray) := do
         | .ok b => pure b
         | .error e => throw (IO.userError s!"pipe read failed: {e}")
       if !data.isEmpty && data.get! 0 == 1 then
-        let errTxt := String.fromUTF8! (data.extract 1 data.size)
+        let errTxt := (String.fromUTF8? (data.extract 1 data.size)).getD "invalid UTF-8 error message from forked child"
         throw (IO.userError s!"forked child error: {errTxt}")
       let payload := if data.isEmpty then ByteArray.empty else data.extract 1 data.size
       return (st, payload)
