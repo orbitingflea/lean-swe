@@ -9,11 +9,15 @@ namespace LeanSwe.Json.Internal
 def ensureNonEmpty (fallback msg : String) : String :=
   if msg == "" then fallback else msg
 
+/-- Tail-recursive helper joining path segments with `"."`. -/
+def joinSegmentsAux (acc : String) : List String → String
+  | [] => acc
+  | k :: rest => joinSegmentsAux (acc ++ "." ++ k) rest
+
 /-- Join path segments with `"."`. -/
 def joinSegments : List String → String
   | [] => ""
-  | [k] => k
-  | k :: rest => k ++ "." ++ joinSegments rest
+  | k :: rest => joinSegmentsAux k rest
 
 /-- Format a reversed path prefix as an optional dot-separated field path. -/
 def joinPath (revPrefix : List String) : Option String :=
@@ -32,16 +36,40 @@ termination_by n
 def countDigits (n : Nat) : Nat :=
   countDigitsAux n 1
 
-/-- Format `k` fractional decimal digits of `n` while stripping trailing `'0'`s. -/
-def formatFracRev : Nat → Nat → Bool → List Char → List Char
-  | 0, _, _, acc => acc
-  | k + 1, n, started, acc =>
-    let d := n % 10
-    let q := n / 10
-    if started || d != 0 then
-      formatFracRev k q true (Char.ofNat ('0'.toNat + d) :: acc)
+/-- Scan backwards past trailing `'0'` ASCII bytes in `s`. -/
+def stripTrailingZerosEnd (s : String) (pos : Nat) (hPos : pos ≤ s.utf8ByteSize) : Nat :=
+  match pos with
+  | 0 => 0
+  | p + 1 =>
+    have hp : p < s.utf8ByteSize := by omega
+    if s.getUTF8Byte ⟨p⟩ hp == 0x30 then
+      stripTrailingZerosEnd s p (by omega)
     else
-      formatFracRev k q false acc
+      p + 1
+
+/-- Extract the ASCII prefix of `s` up to `len` bytes. -/
+def takeAsciiPrefix (s : String) (len : Nat) : String :=
+  (String.fromUTF8? (s.toUTF8.extract 0 len)).getD ""
+
+/-- Tail-recursive helper appending `n` `'0'` bytes to `acc`. -/
+def pushZeroBytes (acc : ByteArray) : Nat → ByteArray
+  | 0 => acc
+  | n + 1 => pushZeroBytes (acc.push 0x30) n
+
+/-- Format `k` fractional decimal digits of `rem < 10^k` with trailing `'0'`s stripped in near-linear time. -/
+def formatFracStr (k rem : Nat) : String :=
+  let s := rem.repr
+  let sBytes := s.toUTF8
+  let trimmedEnd := stripTrailingZerosEnd s s.utf8ByteSize (Nat.le_refl _)
+  if trimmedEnd == 0 then
+    ""
+  else if sBytes.size < k then
+    let pad := k - sBytes.size
+    let buf := pushZeroBytes (ByteArray.emptyWithCapacity (pad + trimmedEnd)) pad
+    let buf := sBytes.copySlice 0 buf pad trimmedEnd
+    (String.fromUTF8? buf).getD ""
+  else
+    takeAsciiPrefix s trimmedEnd
 
 /-- Format a `Lean.JsonNumber` as an RFC 8259 number string using total arithmetic. -/
 def jsonNumberToString : Lean.JsonNumber → String
@@ -59,7 +87,7 @@ def jsonNumberToString : Lean.JsonNumber → String
     if rem == 0 && exp == 0 then
       s!"{sign}{left}"
     else
-      let right := String.ofList (formatFracRev k rem false [])
+      let right := formatFracStr k rem
       let expStr := if exp == 0 then "" else "e" ++ exp.repr
       s!"{sign}{left}.{right}{expStr}"
 
@@ -111,7 +139,7 @@ mutual
   def jsonWeight : Lean.Json → Nat
     | .null | .bool _ | .num _ | .str _ => 2
     | .arr elems => 2 + arrWeight elems.toList
-    | .obj kvs => 2 + treeWeight kvs.inner.inner
+    | .obj kvs => 3 + treeWeight kvs.inner.inner
   termination_by j => sizeOf j
   decreasing_by
     · cases elems; simp; omega
@@ -126,7 +154,7 @@ mutual
   /-- Structural weight of a `Std.DTreeMap` internal tree of JSON values. -/
   def treeWeight : Std.DTreeMap.Internal.Impl String (fun _ => Lean.Json) → Nat
     | .leaf => 0
-    | .inner _ _ v l r => treeWeight l + (jsonWeight v + 2) + treeWeight r
+    | .inner _ _ v l r => treeWeight l + (jsonWeight v + 5) + treeWeight r
   termination_by t => sizeOf t
 end
 
@@ -138,67 +166,44 @@ inductive CompressTask where
   | text (s : String)
   /-- Emit a `"key":` prefix and serialize `v`. -/
   | field (k : String) (v : Lean.Json)
+  /-- Emit remaining array elements and closing `"]"`. -/
+  | arrTail (elems : List Lean.Json)
+  /-- Emit tree entries in ascending key order, inserting `","` if `needComma` is true. -/
+  | treeIn (t : Std.DTreeMap.Internal.Impl String (fun _ => Lean.Json)) (needComma : Bool)
 
 /-- Termination weight of a single compression task. -/
 def taskWeight : CompressTask → Nat
   | .val j => jsonWeight j
   | .text _ => 1
   | .field _ v => jsonWeight v + 1
+  | .arrTail xs => arrWeight xs + 1
+  | .treeIn t _ => treeWeight t + 1
 
 /-- Total termination weight of a compression task worklist. -/
 def tasksWeight : List CompressTask → Nat
   | [] => 0
   | t :: ts => taskWeight t + tasksWeight ts
 
-/-- Prepend array element tasks followed by `"]"` onto `rest`. -/
-def pushArrTasks : List Lean.Json → List CompressTask → List CompressTask
-  | [], rest => .text "]" :: rest
-  | [x], rest => .val x :: .text "]" :: rest
-  | x :: y :: xs, rest => .val x :: .text "," :: pushArrTasks (y :: xs) rest
-
-/-- Prepend object entry tasks in ascending key order onto `rest`, returning `(tasks, hasAny)`. -/
-def pushTreeTasks : Std.DTreeMap.Internal.Impl String (fun _ => Lean.Json) →
-    Bool → List CompressTask → List CompressTask × Bool
-  | .leaf, hasNext, acc => (acc, hasNext)
-  | .inner _ k v l r, hasNext, acc =>
-    let (accR, hasAfterV) := pushTreeTasks r hasNext acc
-    let accV := if hasAfterV then .field k v :: .text "," :: accR else .field k v :: accR
-    pushTreeTasks l true accV
-
-private theorem tasksWeight_pushArr (xs : List Lean.Json) (rest : List CompressTask) :
-    tasksWeight (pushArrTasks xs rest) ≤ arrWeight xs + 1 + tasksWeight rest := by
-  match xs with
-  | [] => simp [pushArrTasks, tasksWeight, taskWeight, arrWeight]
-  | [_] => simp [pushArrTasks, tasksWeight, taskWeight, arrWeight]; omega
-  | _ :: y :: ys =>
-    have ih := tasksWeight_pushArr (y :: ys) rest
-    simp only [pushArrTasks, tasksWeight, taskWeight] at ih ⊢
-    unfold arrWeight
-    omega
-
-private theorem tasksWeight_pushTree
-    (t : Std.DTreeMap.Internal.Impl String (fun _ => Lean.Json))
-    (hasNext : Bool) (acc : List CompressTask) :
-    tasksWeight (pushTreeTasks t hasNext acc).1 ≤ treeWeight t + tasksWeight acc := by
-  induction t generalizing hasNext acc with
-  | leaf => simp [pushTreeTasks, treeWeight]
-  | inner sz k v l r ihl ihr =>
-    simp only [pushTreeTasks, treeWeight]
-    have hl := ihl true
-      (if (pushTreeTasks r hasNext acc).2 then
-        CompressTask.field k v :: CompressTask.text "," :: (pushTreeTasks r hasNext acc).1
-      else
-        CompressTask.field k v :: (pushTreeTasks r hasNext acc).1)
-    have hr := ihr hasNext acc
-    cases h2 : (pushTreeTasks r hasNext acc).2 <;>
-      simp only [h2, Bool.false_eq_true, ↓reduceIte, tasksWeight, taskWeight] at hl ⊢ <;>
-      omega
-
 /-- Tail-recursive total JSON compression loop. -/
 def compressLoop (acc : String) : (tasks : List CompressTask) → String
   | [] => acc
   | .text s :: rest => compressLoop (acc ++ s) rest
   | .field k v :: rest => compressLoop (renderString k acc ++ ":") (.val v :: rest)
+  | .arrTail [] :: rest => compressLoop (acc ++ "]") rest
+  | .arrTail (x :: xs) :: rest =>
+    compressLoop (acc ++ ",") (.val x :: .arrTail xs :: rest)
+  | .treeIn .leaf _ :: rest => compressLoop acc rest
+  | .treeIn (.inner _ k v l r) needComma :: rest =>
+    let commaBeforeV := needComma || match l with | .leaf => false | .inner _ _ _ _ _ => true
+    let next0 := match r with
+      | .leaf => rest
+      | .inner _ _ _ _ _ => .treeIn r true :: rest
+    let next1 := .field k v :: next0
+    let next2 := if commaBeforeV then .text "," :: next1 else next1
+    let next3 := match l with
+      | .leaf => next2
+      | .inner _ _ _ _ _ => .treeIn l needComma :: next2
+    compressLoop acc next3
   | .val j :: rest =>
     match j with
     | .null => compressLoop (acc ++ "null") rest
@@ -206,75 +211,194 @@ def compressLoop (acc : String) : (tasks : List CompressTask) → String
     | .bool false => compressLoop (acc ++ "false") rest
     | .num n => compressLoop (acc ++ jsonNumberToString n) rest
     | .str s => compressLoop (renderString s acc) rest
-    | .arr elems => compressLoop (acc ++ "[") (pushArrTasks elems.toList rest)
-    | .obj kvs => compressLoop (acc ++ "{") ((pushTreeTasks kvs.inner.inner false (.text "}" :: rest)).1)
+    | .arr elems =>
+      match heq : elems.toList with
+      | [] =>
+        have : 0 < jsonWeight (.arr elems) := by simp [jsonWeight]; omega
+        compressLoop (acc ++ "[]") rest
+      | x :: xs =>
+        have hDec : tasksWeight (.val x :: .arrTail xs :: rest) <
+            tasksWeight (.val (.arr elems) :: rest) := by
+          simp only [tasksWeight, taskWeight, jsonWeight]
+          rw [heq]
+          simp [arrWeight]
+          omega
+        compressLoop (acc ++ "[") (.val x :: .arrTail xs :: rest)
+    | .obj kvs =>
+      match heq : kvs.inner.inner with
+      | .leaf =>
+        have : 0 < jsonWeight (.obj kvs) := by simp [jsonWeight]; omega
+        compressLoop (acc ++ "{}") rest
+      | t =>
+        have hDec : tasksWeight (.treeIn t false :: .text "}" :: rest) <
+            tasksWeight (.val (.obj kvs) :: rest) := by
+          simp only [tasksWeight, taskWeight, jsonWeight]
+          rw [heq]
+          omega
+        compressLoop (acc ++ "{") (.treeIn t false :: .text "}" :: rest)
 termination_by tasks => tasksWeight tasks
 decreasing_by
   all_goals simp_wf
   · simp [tasksWeight, taskWeight]
   · simp [tasksWeight, taskWeight]
-  · simp [tasksWeight, taskWeight, jsonWeight]
-  · simp [tasksWeight, taskWeight, jsonWeight]
-  · simp [tasksWeight, taskWeight, jsonWeight]
-  · simp [tasksWeight, taskWeight, jsonWeight]
-  · simp [tasksWeight, taskWeight, jsonWeight]
-  · have h := tasksWeight_pushArr elems.toList rest
-    simp only [tasksWeight, taskWeight, jsonWeight] at h ⊢
+  · simp [tasksWeight, taskWeight]
+  · simp only [tasksWeight, taskWeight, arrWeight]
     omega
-  · have h := tasksWeight_pushTree kvs.inner.inner false (.text "}" :: rest)
-    simp only [tasksWeight, taskWeight, jsonWeight] at h ⊢
-    omega
+  · simp [tasksWeight, taskWeight]
+  · cases needComma <;> cases l <;> cases r <;>
+      simp [tasksWeight, taskWeight, treeWeight] <;> omega
+  · simp [tasksWeight, taskWeight, jsonWeight]
+  · simp [tasksWeight, taskWeight, jsonWeight]
+  · simp [tasksWeight, taskWeight, jsonWeight]
+  · simp [tasksWeight, taskWeight, jsonWeight]
+  · simp [tasksWeight, taskWeight, jsonWeight]
+  · simp [tasksWeight, taskWeight, jsonWeight]; omega
+  · exact hDec
+  · simp [tasksWeight, taskWeight, jsonWeight]; omega
+  · exact hDec
 
-private theorem jsonWeight_lt_arr_of_mem {x : Lean.Json} {xs : List Lean.Json} (h : x ∈ xs) :
-    jsonWeight x < 2 + arrWeight xs := by
-  induction xs with
-  | nil => cases h
-  | cons y ys ih =>
-    cases h with
-    | head _ => unfold arrWeight; omega
-    | tail _ hmem =>
-      have hSub := ih hmem
-      unfold arrWeight
+/-- Worklist item for iterative in-order traversal of JSON object trees during pretty-printing. -/
+inductive ObjWalkItem where
+  /-- Traverse subtree `t` in-order. -/
+  | tree (t : Std.DTreeMap.Internal.Impl String (fun _ => Lean.Json))
+  /-- Format object entry `(k, v)`. -/
+  | emitKv (k : String) (v : Lean.Json)
+
+/-- Termination weight of one object walk item. -/
+def objWalkWeight : ObjWalkItem → Nat
+  | .tree t => treeWeight t + 1
+  | .emitKv _ v => jsonWeight v + 3
+
+/-- Total termination weight of pending object walk items. -/
+def pendingWeight : List ObjWalkItem → Nat
+  | [] => 0
+  | w :: ws => objWalkWeight w + pendingWeight ws
+
+/-- Continuation frame for tail-recursive total JSON `Std.Format` construction. -/
+inductive PrettyFrame where
+  /-- Waiting for the current array element, with reversed prior formats and remaining elements. -/
+  | arr (accRev : List Std.Format) (remaining : List Lean.Json)
+  /-- Waiting for the value format of key `k`, with accumulated object field formats and pending walk items. -/
+  | objKv (k : String) (acc : List Std.Format) (pending : List ObjWalkItem)
+
+/-- Termination weight of one pretty-printing frame. -/
+def prettyFrameWeight : PrettyFrame → Nat
+  | .arr _ rem => arrWeight rem + 1
+  | .objKv _ _ pending => pendingWeight pending + 2
+
+/-- Total termination weight of a pretty-printing continuation stack. -/
+def prettyFramesWeight : List PrettyFrame → Nat
+  | [] => 0
+  | f :: fs => prettyFrameWeight f + prettyFramesWeight fs
+
+/-- Tail-recursively join a non-empty reversed list of `Std.Format` values with `sep`. -/
+def joinSepRevAux (sep acc : Std.Format) : List Std.Format → Std.Format
+  | [] => acc
+  | x :: xs => joinSepRevAux sep (x ++ sep ++ acc) xs
+
+mutual
+  /-- Tail-recursively render `j` into `Std.Format` using an explicit frame stack. -/
+  def renderEval (j : Lean.Json) (frames : List PrettyFrame) : Std.Format :=
+    match j with
+    | .null => renderApply "null" frames
+    | .bool true => renderApply "true" frames
+    | .bool false => renderApply "false" frames
+    | .num n => renderApply (jsonNumberToString n) frames
+    | .str s => renderApply (renderString s) frames
+    | .arr elems =>
+      match heq : elems.toList with
+      | [] =>
+        have : 0 < jsonWeight (.arr elems) := by simp [jsonWeight]; omega
+        renderApply (Std.Format.bracket "[" .nil "]") frames
+      | x :: xs =>
+        have hDec : jsonWeight x + prettyFramesWeight (.arr [] xs :: frames) <
+            jsonWeight (.arr elems) + prettyFramesWeight frames := by
+          simp only [jsonWeight, prettyFramesWeight, prettyFrameWeight]
+          rw [heq]
+          simp [arrWeight]
+          omega
+        renderEval x (.arr [] xs :: frames)
+    | .obj kvs =>
+      match heq : kvs.inner.inner with
+      | .leaf =>
+        have : 0 < jsonWeight (.obj kvs) := by simp [jsonWeight]; omega
+        renderApply (Std.Format.bracket "{" .nil "}") frames
+      | t =>
+        have hDec : 1 + pendingWeight [.tree t] + prettyFramesWeight frames <
+            jsonWeight (.obj kvs) + prettyFramesWeight frames := by
+          simp only [jsonWeight, pendingWeight, objWalkWeight]
+          rw [heq]
+          omega
+        renderObjNext [] [.tree t] frames
+  termination_by jsonWeight j + prettyFramesWeight frames
+  decreasing_by
+    all_goals simp_wf
+    · simp [jsonWeight]
+    · simp [jsonWeight]
+    · simp [jsonWeight]
+    · simp [jsonWeight]
+    · simp [jsonWeight]
+    · simp [jsonWeight]; omega
+    · exact hDec
+    · simp [jsonWeight]; omega
+    · omega
+
+  /-- Tail-recursively advance through `pending` object tree walk items. -/
+  def renderObjNext (acc : List Std.Format) (pending : List ObjWalkItem)
+      (frames : List PrettyFrame) : Std.Format :=
+    match pending with
+    | [] =>
+      let body := match acc.reverse with
+        | [] => .nil
+        | last :: restRev => joinSepRevAux ("," ++ Std.Format.line) last restRev
+      renderApply (Std.Format.bracket "{" body "}") frames
+    | .tree .leaf :: rest => renderObjNext acc rest frames
+    | .tree (.inner _ k v l r) :: rest =>
+      let next0 := match r with
+        | .leaf => rest
+        | .inner _ _ _ _ _ => .tree r :: rest
+      let next1 := .emitKv k v :: next0
+      let next2 := match l with
+        | .leaf => next1
+        | .inner _ _ _ _ _ => .tree l :: next1
+      renderObjNext acc next2 frames
+    | .emitKv k v :: rest =>
+      renderEval v (.objKv k acc rest :: frames)
+  termination_by 1 + pendingWeight pending + prettyFramesWeight frames
+  decreasing_by
+    all_goals simp_wf
+    · omega
+    · simp [pendingWeight, objWalkWeight]
+    · cases l <;> cases r <;>
+        simp [pendingWeight, objWalkWeight, treeWeight] <;> omega
+    · simp [pendingWeight, objWalkWeight, prettyFramesWeight, prettyFrameWeight]
       omega
 
-/-- Collect formatted object fields in descending key order using a bounded value renderer. -/
-def renderObjTree (bound : Nat)
-    (renderFn : (x : Lean.Json) → jsonWeight x < bound → Std.Format)
-    (t : Std.DTreeMap.Internal.Impl String (fun _ => Lean.Json))
-    (hBound : treeWeight t < bound)
-    (acc : List Std.Format) : List Std.Format :=
-  match t with
-  | .leaf => acc
-  | .inner _ k v l r =>
-    have hL : treeWeight l < bound := by unfold treeWeight at hBound; omega
-    have hV : jsonWeight v < bound := by unfold treeWeight at hBound; omega
-    have hR : treeWeight r < bound := by unfold treeWeight at hBound; omega
-    let acc1 := renderObjTree bound renderFn l hL acc
-    let kvFmt := Std.Format.group (renderString k ++ ":" ++ Std.Format.line ++ renderFn v hV)
-    renderObjTree bound renderFn r hR (kvFmt :: acc1)
-termination_by sizeOf t
+  /-- Tail-recursively feed a completed `Std.Format` value into the enclosing continuation frame. -/
+  def renderApply (valFmt : Std.Format) (frames : List PrettyFrame) : Std.Format :=
+    match frames with
+    | [] => valFmt
+    | .arr accRev [] :: rest =>
+      let body := joinSepRevAux ("," ++ Std.Format.line) valFmt accRev
+      renderApply (Std.Format.bracket "[" body "]") rest
+    | .arr accRev (x :: xs) :: rest =>
+      renderEval x (.arr (valFmt :: accRev) xs :: rest)
+    | .objKv k acc pending :: rest =>
+      let kvFmt := Std.Format.group (renderString k ++ ":" ++ Std.Format.line ++ valFmt)
+      renderObjNext (kvFmt :: acc) pending rest
+  termination_by prettyFramesWeight frames
+  decreasing_by
+    all_goals simp_wf
+    · simp [prettyFramesWeight, prettyFrameWeight]
+    · simp only [prettyFramesWeight, prettyFrameWeight, arrWeight]
+      omega
+    · simp [prettyFramesWeight, prettyFrameWeight]
+      omega
+end
 
-/-- Render a `Lean.Json` value into a `Std.Format` document using total recursion. -/
+/-- Render a `Lean.Json` value into a `Std.Format` document iteratively without recursion. -/
 def renderFormat (j : Lean.Json) : Std.Format :=
-  match j with
-  | .null => "null"
-  | .bool true => "true"
-  | .bool false => "false"
-  | .num n => jsonNumberToString n
-  | .str s => renderString s
-  | .arr elems =>
-    let rendered := elems.toList.attach.map fun ⟨x, hx⟩ =>
-      have : jsonWeight x < jsonWeight (.arr elems) := by
-        simpa [jsonWeight] using jsonWeight_lt_arr_of_mem hx
-      renderFormat x
-    Std.Format.bracket "[" (Std.Format.joinSep rendered ("," ++ Std.Format.line)) "]"
-  | .obj kvs =>
-    have hTop : treeWeight kvs.inner.inner < jsonWeight (.obj kvs) := by
-      simp [jsonWeight]
-    let kvsFmt := renderObjTree (jsonWeight (.obj kvs)) (fun x _ => renderFormat x)
-      kvs.inner.inner hTop []
-    Std.Format.bracket "{" (Std.Format.joinSep kvsFmt ("," ++ Std.Format.line)) "}"
-termination_by jsonWeight j
+  renderEval j []
 
 /-- Check whether `b` is RFC 8259 whitespace (`' '`, `'\t'`, `'\n'`, `'\r'`). -/
 def isWsByte (b : UInt8) : Bool :=
@@ -328,14 +452,14 @@ def pushUtf8Cp (acc : ByteArray) (cp : Nat) : ByteArray :=
       |>.push (0x80 ||| ((cp >>> 6) &&& 0x3F)).toUInt8
       |>.push (0x80 ||| (cp &&& 0x3F)).toUInt8
 
-/-- Parse the interior and closing `'"'` of a JSON string starting right after the opening `'"'`. -/
+/-- Tail-recursively parse the interior and closing `'"'` of a JSON string starting right after `'"'`. -/
 def parseStringBody (bytes : ByteArray) (pos : Nat) (acc : ByteArray) :
-    Except String (String × { p : Nat // pos < p ∧ p ≤ bytes.size }) :=
+    Except String (String × Nat) :=
   if h : pos < bytes.size then
     let b := bytes[pos]
     if b == 0x22 then
       match String.fromUTF8? acc with
-      | some s => .ok (s, ⟨pos + 1, by omega, by omega⟩)
+      | some s => .ok (s, pos + 1)
       | none => .error "invalid UTF-8 sequence in string"
     else if b < 0x20 then
       .error "unescaped control character in string"
@@ -353,10 +477,7 @@ def parseStringBody (bytes : ByteArray) (pos : Nat) (acc : ByteArray) :
           else if esc == 0x74 then some 0x09
           else none
         match simple? with
-        | some ch =>
-          match parseStringBody bytes (pos + 2) (acc.push ch) with
-          | .ok (s, ⟨p, hp1, hp2⟩) => .ok (s, ⟨p, by omega, hp2⟩)
-          | .error e => .error e
+        | some ch => parseStringBody bytes (pos + 2) (acc.push ch)
         | none =>
           if esc == 0x75 then
             match parseHex4? bytes (pos + 2) with
@@ -378,30 +499,18 @@ def parseStringBody (bytes : ByteArray) (pos : Nat) (acc : ByteArray) :
                   else
                     none
                 match paired? with
-                | some cp =>
-                  match parseStringBody bytes (pos + 12) (pushUtf8Cp acc cp) with
-                  | .ok (s, ⟨p, hp1, hp2⟩) => .ok (s, ⟨p, by omega, hp2⟩)
-                  | .error e => .error e
-                | none =>
-                  match parseStringBody bytes (pos + 6) (pushUtf8Cp acc 0xFFFD) with
-                  | .ok (s, ⟨p, hp1, hp2⟩) => .ok (s, ⟨p, by omega, hp2⟩)
-                  | .error e => .error e
+                | some cp => parseStringBody bytes (pos + 12) (pushUtf8Cp acc cp)
+                | none => parseStringBody bytes (pos + 6) (pushUtf8Cp acc 0xFFFD)
               else if 0xDC00 ≤ u1 && u1 < 0xE000 then
-                match parseStringBody bytes (pos + 6) (pushUtf8Cp acc 0xFFFD) with
-                | .ok (s, ⟨p, hp1, hp2⟩) => .ok (s, ⟨p, by omega, hp2⟩)
-                | .error e => .error e
+                parseStringBody bytes (pos + 6) (pushUtf8Cp acc 0xFFFD)
               else
-                match parseStringBody bytes (pos + 6) (pushUtf8Cp acc u1) with
-                | .ok (s, ⟨p, hp1, hp2⟩) => .ok (s, ⟨p, by omega, hp2⟩)
-                | .error e => .error e
+                parseStringBody bytes (pos + 6) (pushUtf8Cp acc u1)
           else
             .error "invalid escape sequence in string"
       else
         .error "unterminated escape sequence in string"
     else
-      match parseStringBody bytes (pos + 1) (acc.push b) with
-      | .ok (s, ⟨p, hp1, hp2⟩) => .ok (s, ⟨p, by omega, hp2⟩)
-      | .error e => .error e
+      parseStringBody bytes (pos + 1) (acc.push b)
   else
     .error "unterminated string literal"
 termination_by bytes.size - pos
@@ -412,27 +521,63 @@ def parseStringAt (bytes : ByteArray) (pos : Nat) :
   if h : pos < bytes.size then
     if bytes[pos] == 0x22 then
       match parseStringBody bytes (pos + 1) ByteArray.empty with
-      | .ok (s, ⟨p, hp1, hp2⟩) => .ok (s, ⟨p, by omega, hp2⟩)
+      | .ok (s, p) =>
+        if hp : pos < p ∧ p ≤ bytes.size then
+          .ok (s, ⟨p, hp⟩)
+        else
+          .error "internal string parser bounds error"
       | .error e => .error e
     else
       .error "expected '\"' to start JSON string"
   else
     .error "unexpected end of input while expecting string"
 
-/-- Scan zero or more ASCII decimal digits starting at `pos`. -/
-def scanDigits (bytes : ByteArray) (pos : Nat) (hPos : pos ≤ bytes.size) (acc count : Nat) :
-    Nat × Nat × { p : Nat // pos ≤ p ∧ p ≤ bytes.size } :=
+/-- Decimal chunk base `10^18` fitting in a single unboxed 64-bit Lean scalar `Nat`. -/
+private def decChunkBase : Nat := 1000000000000000000
+
+/-- Tail-recursively scan ASCII decimal digits using 18-digit chunking with early caps on digit count and optional value cap. -/
+def scanDigitsLoop (bytes : ByteArray) (pos bigAcc chunkAcc chunkLen count limitCount : Nat)
+    (hasValCap : Bool) (limitVal : Nat) : Nat × Nat × Nat :=
   if h : pos < bytes.size then
     let b := bytes[pos]
     if 0x30 ≤ b && b ≤ 0x39 then
-      let d := b.toNat - 0x30
-      let (a, c, ⟨p, hp1, hp2⟩) := scanDigits bytes (pos + 1) h (acc * 10 + d) (count + 1)
-      (a, c, ⟨p, by omega, hp2⟩)
+      let count' := count + 1
+      if count' > limitCount then
+        (bigAcc * (10 ^ chunkLen) + chunkAcc, count', pos)
+      else
+        let d := b.toNat - 0x30
+        let (bigAcc', chunkAcc', chunkLen') :=
+          if chunkLen == 18 then
+            (bigAcc * decChunkBase + chunkAcc, d, 1)
+          else
+            (bigAcc, chunkAcc * 10 + d, chunkLen + 1)
+        let overVal :=
+          if hasValCap then
+            bigAcc' > limitVal ||
+              (bigAcc' > 0 && bigAcc' * (10 ^ chunkLen') + chunkAcc' > limitVal) ||
+              (bigAcc' == 0 && chunkAcc' > limitVal)
+          else
+            false
+        if overVal then
+          (bigAcc' * (10 ^ chunkLen') + chunkAcc', count', pos + 1)
+        else
+          scanDigitsLoop bytes (pos + 1) bigAcc' chunkAcc' chunkLen' count' limitCount hasValCap limitVal
     else
-      (acc, count, ⟨pos, Nat.le_refl _, hPos⟩)
+      (bigAcc * (10 ^ chunkLen) + chunkAcc, count, pos)
+  else
+    (bigAcc * (10 ^ chunkLen) + chunkAcc, count, pos)
+termination_by bytes.size - pos
+
+/-- Tail-recursively scan digits and wrap the final end position with its interval proof. -/
+def scanDigits (bytes : ByteArray) (pos : Nat) (hPos : pos ≤ bytes.size)
+    (initAcc initCount limitCount : Nat) (hasValCap : Bool) (limitVal : Nat) :
+    Nat × Nat × { p : Nat // pos ≤ p ∧ p ≤ bytes.size } :=
+  let (acc, count, p) := scanDigitsLoop bytes pos 0 initAcc (if initCount == 0 then 0 else 1)
+    initCount limitCount hasValCap limitVal
+  if hp : pos ≤ p ∧ p ≤ bytes.size then
+    (acc, count, ⟨p, hp⟩)
   else
     (acc, count, ⟨pos, Nat.le_refl _, hPos⟩)
-termination_by bytes.size - pos
 
 /-- Parse an RFC 8259 JSON number starting at `pos`. -/
 def parseNumberAt (bytes : ByteArray) (pos : Nat) :
@@ -448,7 +593,7 @@ def parseNumberAt (bytes : ByteArray) (pos : Nat) :
         if b0 == 0x30 then
           Except.ok (0, (⟨p0 + 1, by omega, by omega⟩ : { p : Nat // pos < p ∧ p ≤ bytes.size }))
         else if 0x31 ≤ b0 && b0 ≤ 0x39 then
-          let (w, _, pSub) := scanDigits bytes (p0 + 1) h1 (b0.toNat - 0x30) 1
+          let (w, _, pSub) := scanDigits bytes (p0 + 1) h1 (b0.toNat - 0x30) 1 bytes.size false 0
           Except.ok (w, (⟨pSub.1, by have := pSub.2; omega, pSub.2.2⟩ :
             { p : Nat // pos < p ∧ p ≤ bytes.size }))
         else
@@ -460,7 +605,7 @@ def parseNumberAt (bytes : ByteArray) (pos : Nat) :
       let res2 ←
         if hDot : p1 < bytes.size then
           if bytes[p1] == 0x2e then
-            let (frac, d, pSub) := scanDigits bytes (p1 + 1) hDot 0 0
+            let (frac, d, pSub) := scanDigits bytes (p1 + 1) hDot 0 0 100_000 false 0
             if d == 0 then
               Except.error "expected digit after decimal point"
             else if d > 100_000 then
@@ -490,11 +635,16 @@ def parseNumberAt (bytes : ByteArray) (pos : Nat) :
               else (false, ⟨p3, Nat.le_refl _, Nat.le_of_lt hSign⟩)
             else
               (false, ⟨p3, Nat.le_refl _, hExp⟩)
-          let (expVal, expDigits, pSub) := scanDigits bytes p4Sub.1 p4Sub.2.2 0 0
+          let countCap := if expNeg then 100_000 else bytes.size
+          let (expVal, expDigits, pSub) :=
+            scanDigits bytes p4Sub.1 p4Sub.2.2 0 0 countCap (!expNeg) 100_000
           if expDigits == 0 then
             Except.error "expected digit in exponent"
           else if expNeg then
-            Except.ok (baseNum.shiftr expVal, ⟨pSub.1, by have := pSub.2; have := p4Sub.2; omega, pSub.2.2⟩)
+            if expDigits > 100_000 then
+              Except.error "exponent too large"
+            else
+              Except.ok (baseNum.shiftr expVal, ⟨pSub.1, by have := pSub.2; have := p4Sub.2; omega, pSub.2.2⟩)
           else if expVal > 100_000 then
             Except.error "exponent too large"
           else

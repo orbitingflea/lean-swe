@@ -295,14 +295,14 @@ theorem proof_json_getPath_emptySingletonNestedAndErrors :
       .error { kind := .missingField, message := s!"missing field: {k3}", path := some s!"{k1}.{k3}" } := by
     simp only [Internal.getPath, Internal.getPathAux, mkObj_singleton_eq, Std.TreeMap.Raw.get?_eq_getElem?,
       treeMap_singleton_getElem?_self, treeMap_singleton_getElem?_ne k2 k3 (Lean.toJson v) hne,
-      Internal.joinPath, Internal.joinSegments, List.isEmpty, List.reverse_cons, List.reverse_nil,
+      Internal.joinPath, Internal.joinSegments, Internal.joinSegmentsAux, List.isEmpty, List.reverse_cons, List.reverse_nil,
       List.nil_append, List.cons_append, Bool.false_eq_true, ↓reduceIte, toString]
   have hflat : Internal.getPath (α := Nat)
       (Lean.Json.mkObj [(k1, Lean.Json.null)]) [k1, k2] =
       .error { kind := .typeMismatch, message := "expected JSON object", path := some k1 } := by
     simp only [Internal.getPath, Internal.getPathAux, mkObj_singleton_eq, Std.TreeMap.Raw.get?_eq_getElem?,
-      treeMap_singleton_getElem?_self, Internal.joinPath, Internal.joinSegments, List.isEmpty,
-      List.reverse_cons, List.reverse_nil, List.nil_append, Bool.false_eq_true, ↓reduceIte]
+      treeMap_singleton_getElem?_self, Internal.joinPath, Internal.joinSegments, Internal.joinSegmentsAux,
+      List.isEmpty, List.reverse_cons, List.reverse_nil, List.nil_append, Bool.false_eq_true, ↓reduceIte]
   rw [hempty, hsingle, hnested, hmiss, hflat]
   exact ⟨rfl, rfl, rfl, ⟨rfl, rfl, missingField_msg_ne_empty k3⟩, ⟨rfl, rfl, by simp⟩, trivial⟩
 
@@ -326,9 +326,9 @@ theorem proof_json_getPath_nestedDecodeAndIntermediateErrors :
   have hbad : Lean.fromJson? (α := Nat) (Lean.Json.str badStr) = .error "Natural number expected" := rfl
   dsimp [Internal.decode]
   rw [hbad]
-  dsimp [Internal.ensureNonEmpty, Internal.joinPath, Internal.joinSegments]
+  dsimp [Internal.ensureNonEmpty, Internal.joinPath, Internal.joinSegments, Internal.joinSegmentsAux]
   refine ⟨⟨rfl, ?_, by decide⟩, ⟨rfl, rfl, missingField_msg_ne_empty k1⟩, ⟨rfl, rfl, by decide⟩, trivial⟩
-  simp [Internal.joinSegments, toString]
+  simp [Internal.joinSegmentsAux, toString]
 
 /-- Non-vacuity `CanReach` witness for `test_json_getPath_nestedDecodeAndIntermediateErrors`. -/
 theorem reach_json_getPath_nestedDecodeAndIntermediateErrors :
@@ -616,11 +616,10 @@ theorem json_compress_emptyContainers :
     LeanSwe.Json.compress (Lean.Json.arr #[]) = "[]" ∧
       LeanSwe.Json.compress (Lean.Json.mkObj []) = "{}" := by
   constructor
-  · simp [LeanSwe.Json.compress, Internal.compress, Internal.compressLoop, Internal.pushArrTasks]
+  · simp [LeanSwe.Json.compress, Internal.compress, Internal.compressLoop]
   · simp [LeanSwe.Json.compress, Internal.compress, Internal.compressLoop, mkObj_empty_eq]
     have hLeaf : (∅ : Std.TreeMap.Raw String Lean.Json compare).inner.inner = .leaf := rfl
     rw [hLeaf]
-    simp [Internal.pushTreeTasks, Internal.compressLoop]
 
 /-- Any error returned by `LeanSwe.Json.parse` has `.parseError` kind, non-empty message, and `path = none`. -/
 theorem json_parse_error_invariants (raw : String) {e : JsonError}
