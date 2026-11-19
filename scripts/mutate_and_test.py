@@ -54,6 +54,7 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
     "LinuxSyscall.Net": pathlib.Path("LeanSwe/LinuxSyscall/Net"),
     "LinuxSyscall.Process": pathlib.Path("LeanSwe/LinuxSyscall/Process"),
     "LinuxSyscall.Files": pathlib.Path("LeanSwe/LinuxSyscall/Files"),
+    "PostFork": pathlib.Path("LeanSwe/PostFork"),
 }
 
 C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
@@ -73,6 +74,7 @@ C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
     "poll_shim.c": "leanswe_linux_poll",
     "net_shim.c": "leanswe_linux_net",
     "files_shim.c": "leanswe_linux_files",
+    "postfork_shim.c": "leanswe_postfork",
 }
 
 SUITE_TO_C_SHIMS: dict[str, list[pathlib.Path]] = {
@@ -84,6 +86,7 @@ SUITE_TO_C_SHIMS: dict[str, list[pathlib.Path]] = {
     "LinuxSyscall.Net": [pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.c"), pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.h"), pathlib.Path("LeanSwe/LinuxSyscall/c/net_shim.c")],
     "LinuxSyscall.Process": [pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.c"), pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.h"), pathlib.Path("LeanSwe/LinuxSyscall/c/process_shim.c")],
     "LinuxSyscall.Files": [pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.c"), pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.h"), pathlib.Path("LeanSwe/LinuxSyscall/c/files_shim.c")],
+    "PostFork": [pathlib.Path("LeanSwe/PostFork/c/postfork_shim.c")],
 }
 
 SANCOV_RT_C = r"""

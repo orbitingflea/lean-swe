@@ -4,6 +4,7 @@ import Fuzz.Float.Suite
 import Fuzz.CmdLine.Suite
 import Fuzz.Passwd.Suite
 import Fuzz.Dns.Suite
+import Fuzz.PostFork.Suite
 import Fuzz.SelfTest
 import Fuzz.EnvVars.Suite
 import Fuzz.CryptoHash.Suite
@@ -39,7 +40,8 @@ private def registeredSuites : List FuzzSuite := [
   Fuzz.CryptoHash.suite,
   Fuzz.Passwd.suite,
   Fuzz.Dns.suite,
-  Fuzz.Compress.suite
+  Fuzz.Compress.suite,
+  Fuzz.PostFork.suite
 ]
 
 private def truncArg (s : String) (maxLen : Nat := 64) : String :=
@@ -51,8 +53,8 @@ private def isSuiteNameChar (c : Char) : Bool :=
   ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') ||
   ('0' <= c && c <= '9') || c == '_' || c == '-' || c == '.'
 
-private def isValidSuiteName (name : String) : Bool :=
-  match name.toList with
+private def isValidSuiteName (suiteName : String) : Bool :=
+  match suiteName.toList with
   | [] => false
   | c :: rest =>
     (('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9')) &&
@@ -191,24 +193,24 @@ private def drawOsEntropySeed : IO UInt64 := do
     v := v ||| (UInt64.ofNat bytes[i]!.toNat <<< UInt64.ofNat (8 * i))
   return v
 
-private def findSuite? (name : String) : Option FuzzSuite :=
-  registeredSuites.find? (·.name == name)
+private def findSuite? (suiteName : String) : Option FuzzSuite :=
+  registeredSuites.find? (·.name == suiteName)
 
 private def resolveSelectedSuites (opts : CliOptions) : Except String (List FuzzSuite) := do
   if opts.runAll || opts.suites.isEmpty then
     return registeredSuites
   let mut selected : List FuzzSuite := []
   let mut seen : List String := []
-  for name in opts.suites do
-    if seen.contains name then
+  for suiteName in opts.suites do
+    if seen.contains suiteName then
       continue
-    match findSuite? name with
+    match findSuite? suiteName with
     | some s =>
       selected := selected ++ [s]
-      seen := seen ++ [name]
+      seen := seen ++ [suiteName]
     | none =>
       let avail := ", ".intercalate (registeredSuites.map (·.name))
-      throw s!"UNKNOWN_SUITE: '{truncArg name}' (available: {avail})"
+      throw s!"UNKNOWN_SUITE: '{truncArg suiteName}' (available: {avail})"
   return selected
 
 private def validateOptions (opts : CliOptions) : Except String (List FuzzSuite) := do
@@ -218,17 +220,34 @@ private def validateOptions (opts : CliOptions) : Except String (List FuzzSuite)
     throw "CONFLICTING_FLAGS: pass either --seed or --random-seed, not both"
   resolveSelectedSuites opts
 
+private def safeFlush (s : IO.FS.Stream) : IO Unit := do
+  try s.flush catch _ => pure ()
+
+private def safeOutLn (msg : String) : IO Unit := do
+  try
+    let s ← IO.getStdout
+    s.putStrLn msg
+    s.flush
+  catch _ => pure ()
+
+private def safeErrLn (msg : String) : IO Unit := do
+  try
+    let s ← IO.getStderr
+    s.putStrLn msg
+    s.flush
+  catch _ => pure ()
+
 private def printUsage : IO Unit := do
-  IO.println "Usage: leanswe-fuzz [OPTIONS]"
-  IO.println "  --smoke              Run fast deterministic smoke corpus and shrinker self-test"
-  IO.println "  --suite <name>       Run named fuzz suite (repeatable or comma-separated; supports --suite=<name>)"
-  IO.println "  --all                Run all registered fuzz suites (default if --suite omitted)"
-  IO.println "  --steps <N>          Number of fuzz steps per suite (supports --steps=<N>)"
-  IO.println "  --seed <u64>         Deterministic SplitMix64 seed (decimal or 0x hex; supports --seed=<u64>)"
-  IO.println "  --random-seed        Draw 64-bit seed from /dev/urandom and print SEED=<u64>"
-  IO.println "  --self-test-shrink   Run shrinker self-test before fuzzing"
-  IO.println "  --list-suites        List registered fuzz suites and exit"
-  IO.println "  -h, --help           Show this help message"
+  safeOutLn "Usage: leanswe-fuzz [OPTIONS]"
+  safeOutLn "  --smoke              Run fast deterministic smoke corpus and shrinker self-test"
+  safeOutLn "  --suite <name>       Run named fuzz suite (repeatable or comma-separated; supports --suite=<name>)"
+  safeOutLn "  --all                Run all registered fuzz suites (default if --suite omitted)"
+  safeOutLn "  --steps <N>          Number of fuzz steps per suite (supports --steps=<N>)"
+  safeOutLn "  --seed <u64>         Deterministic SplitMix64 seed (decimal or 0x hex; supports --seed=<u64>)"
+  safeOutLn "  --random-seed        Draw 64-bit seed from /dev/urandom and print SEED=<u64>"
+  safeOutLn "  --self-test-shrink   Run shrinker self-test before fuzzing"
+  safeOutLn "  --list-suites        List registered fuzz suites and exit"
+  safeOutLn "  -h, --help           Show this help message"
 
 private def safeStream (fd : UInt32) (orig : IO.FS.Stream) : IO.FS.Stream := {
   flush := do
@@ -241,9 +260,6 @@ private def safeStream (fd : UInt32) (orig : IO.FS.Stream) : IO.FS.Stream := {
     if (← LeanSwe.LinuxSyscall.Fuzz.Env.fdKind fd) != 6 then orig.putStr s
   isTty := orig.isTty
 }
-
-private def safeFlush (h : IO.FS.Stream) : IO Unit :=
-  try h.flush catch _ => pure ()
 
 private def safePrintln (s : String) : IO Unit := do
   try
