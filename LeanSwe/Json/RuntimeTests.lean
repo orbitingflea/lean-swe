@@ -142,8 +142,8 @@ private def testAccessorsAndDevtoolsPayloads : IO Unit := do
   assertErr (getPath (α := Nat) (Lean.Json.str "not-obj") ["a", "b"]) .typeMismatch none "getPath non-object root"
   assertOkEq (getPath (α := String) (Lean.Json.str "hello") []) "hello" "getPath empty path"
 
-/-- Verify `assume_json_compress_noNewlineAndParseRoundTrip` at runtime. -/
-def assume_json_compress_noNewlineAndParseRoundTrip : IO Unit := do
+/-- Verify `compress` emits no newline and round-trips through `parse`. -/
+private def testCompressNoNewlineAndParseRoundTrip : IO Unit := do
   let samples : Array Lean.Json :=
     #[ Lean.Json.null
      , Lean.Json.bool true
@@ -156,8 +156,8 @@ def assume_json_compress_noNewlineAndParseRoundTrip : IO Unit := do
     let parsed ← assertOk (parse c) s!"parse(compress(...)) failed on {c}"
     assertTrue (parsed == j) s!"compress round-trip mismatch: got {parsed}, expected {j}"
 
-/-- Verify `assume_json_pretty_parseRoundTrip` at runtime. -/
-def assume_json_pretty_parseRoundTrip : IO Unit := do
+/-- Verify `pretty` round-trips through `parse` across widths. -/
+private def testPrettyParseRoundTrip : IO Unit := do
   let samples : Array Lean.Json :=
     #[ Lean.Json.null
      , Lean.Json.arr #[Lean.Json.num 1, Lean.Json.str "x\ny", Lean.Json.bool true]
@@ -169,24 +169,14 @@ def assume_json_pretty_parseRoundTrip : IO Unit := do
       let parsed ← assertOk (parse p) s!"parse(pretty(..., {width})) failed"
       assertTrue (parsed == j) s!"pretty round-trip mismatch at width {width}"
 
-/-- Verify `assume_json_encodeCompressParseDecode_roundTrip` at runtime. -/
-def assume_json_encodeCompressParseDecode_roundTrip : IO Unit := do
+/-- Verify `encode`/`compress`/`parse`/`decode` round-trips across primitive and array types. -/
+private def testEncodeCompressParseDecodeRoundTrip : IO Unit := do
   assertOkEq (parse (compress (encode (42 : Nat))) >>= decode) (42 : Nat) "Nat round-trip"
   assertOkEq (parse (compress (encode (-17 : Int))) >>= decode) (-17 : Int) "Int round-trip"
   assertOkEq (parse (compress (encode true)) >>= decode) true "Bool round-trip"
   assertOkEq (parse (compress (encode "hello\nworld")) >>= decode) "hello\nworld" "String round-trip"
   assertOkEq (parse (compress (encode (#[1, 2, 3] : Array Nat))) >>= decode) (#[1, 2, 3] : Array Nat)
     "Array Nat round-trip"
-
-/-- Registered external assumption checks for `LeanSwe.Json`. -/
-def registeredAssumptions : Array Core.RegisteredAssumption :=
-  #[ { specName := "LeanSwe.Json.assume_json_compress_noNewlineAndParseRoundTrip"
-     , run := assume_json_compress_noNewlineAndParseRoundTrip }
-   , { specName := "LeanSwe.Json.assume_json_pretty_parseRoundTrip"
-     , run := assume_json_pretty_parseRoundTrip }
-   , { specName := "LeanSwe.Json.assume_json_encodeCompressParseDecode_roundTrip"
-     , run := assume_json_encodeCompressParseDecode_roundTrip }
-   ]
 
 /-- Error test for `parse` returning `.parseError`. -/
 def err_json_parse_parseError : IO Unit := do
@@ -290,7 +280,9 @@ def runAll : IO Unit := do
   testRfc8259ParsingAndEscapes
   testCompressPrettyAndRoundTrips
   testAccessorsAndDevtoolsPayloads
-  Core.runRegisteredAssumptions registeredAssumptions
+  testCompressNoNewlineAndParseRoundTrip
+  testPrettyParseRoundTrip
+  testEncodeCompressParseDecodeRoundTrip
   Core.runRegisteredErrorTests registeredErrorTests
   IO.println "PASS: LeanSwe.Json runtime tests"
 
