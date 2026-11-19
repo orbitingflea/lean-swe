@@ -1,5 +1,6 @@
 import Fuzz.Common.Suite
 import Fuzz.Float.Suite
+import Fuzz.CmdLine.Suite
 import Fuzz.SelfTest
 
 namespace Fuzz.Main
@@ -26,7 +27,8 @@ structure CliOptions where
 
 private def registeredSuites : List FuzzSuite := [
   Fuzz.SelfTest.suite,
-  Fuzz.Float.suite
+  Fuzz.Float.suite,
+  Fuzz.CmdLine.suite
 ]
 
 private def truncArg (s : String) (maxLen : Nat := 64) : String :=
@@ -219,6 +221,9 @@ private def printUsage : IO Unit := do
 
 /-- Unified CLI entry point for `leanswe-fuzz`. -/
 def main (args : List String) : IO UInt32 := do
+  match args with
+  | "--cmdline-fuzz-worker" :: rest => return ← Fuzz.CmdLine.Subproc.workerMain rest
+  | _ => pure ()
   let stdout ← IO.getStdout
   let stderr ← IO.getStderr
   match validateRegisteredSuites with

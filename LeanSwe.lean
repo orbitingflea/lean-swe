@@ -129,6 +129,10 @@ import LeanSwe.CmdLine.Impl
 import LeanSwe.CmdLine.Interface
 import LeanSwe.CmdLine.SpecTests
 import LeanSwe.CmdLine.SpecMutants
+import LeanSwe.CmdLine.Proofs.Concrete
+import LeanSwe.CmdLine.Proofs.ParserCore
+import LeanSwe.CmdLine.Proofs.RoundTrip
+import LeanSwe.CmdLine.Proofs.ErrorBounds
 import LeanSwe.CmdLine.Proofs
 import LeanSwe.CmdLine.RuntimeTests
 import LeanSwe.NumParse.Types

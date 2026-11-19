@@ -17,6 +17,10 @@
       "max_lines": 560,
       "legacy_unmigrated": false
     },
+    "Fuzz/CmdLine/c/cmdline_fuzz_env.c": {
+      "max_lines": 480,
+      "legacy_unmigrated": false
+    },
     "Fuzz/suites.json": {
       "max_lines": 26,
       "legacy_unmigrated": false
@@ -115,12 +119,16 @@
     "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c::capture_openssl_error": {
       "max_loops": 1
     },
+    "Fuzz/CmdLine/c/cmdline_fuzz_env.c::wait_child_masked": {
+      "max_loops": 1
+    },
     "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c::leanswe_cryptohash_hmac_sha256": {
       "max_code_lines": 54,
       "max_branches": 10
     }
   },
   "named_thread_helpers": [
-    "LeanSwe/LinuxSyscall/c/sandbox_fuzz_env.c::leanswe_sbx_spawn_sync_thread"
+    "LeanSwe/LinuxSyscall/c/sandbox_fuzz_env.c::leanswe_sbx_spawn_sync_thread",
+    "Fuzz/CmdLine/c/cmdline_fuzz_env.c::leanswe_cmdfuzz_run_on_1mib_stack"
   ]
 }
