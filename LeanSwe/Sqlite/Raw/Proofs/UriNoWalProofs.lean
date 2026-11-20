@@ -24,6 +24,7 @@ theorem uriNoWal_spec (path : String)
     mockCOps, mockPrepareSuccess, rawDbToken, rawStmtToken]
   simp only [Bind.bind, StateT.bind, Pure.pure, StateT.pure, pure,
     StateT.run, tryFinally', MonadFinally.tryFinally',
+    byteArray_size_eq_zero, hasZeroByteBa_zero,
     hBytes, hZero, hWal, Bool.false_eq_true, ↓reduceIte]
   simp
   exact ⟨rfl, rfl, rfl⟩

@@ -877,6 +877,110 @@ def main (_ : List String) : IO UInt32 := do
          "def runAll : IO Unit := Core.runRegisteredErrorTests registeredErrorTests\n" ++
          "end LeanSwe.MiniPure.RuntimeTests\n")
 
+    runPositiveCase base tmpRoot bin "step_from_finally_refines_ok" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure RawBoxOpsM (m : Type → Type) where\n" ++
+         "  readBox : m Nat\n" ++
+         "structure BoxApiM (m : Type → Type) where\n" ++
+         "  withBox : {α : Type} → (Nat → m α) → m α\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def rawWf (_ : Nat) : Bool := true\n" ++
+         "def execRaw {W : Type} (raw : RawBoxOpsM (StateM W)) (_ : Unit) : StateM W Nat := raw.readBox\n" ++
+         "def rawAllowed (s : Nat) (_ : Unit) (out s' : Nat) : Prop := out = s ∧ s' = s\n" ++
+         "def execPkg {W : Type} (api : BoxApiM (StateM W)) (_ : Unit) : StateM W Nat := api.withBox (fun n => pure (n + 1))\n" ++
+         "def pkgAllowed (s : Nat) (_ : Unit) (out s' : Nat) : Prop := out = s + 1 ∧ s' = s\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkApiM {m : Type → Type} [Monad m] [MonadFinally m] (raw : RawBoxOpsM m) : BoxApiM m := {\n" ++
+         "  withBox := fun k => do\n" ++
+         "    let (a, _) ← tryFinally' (do let v ← raw.readBox; k v) (fun _ => pure ())\n" ++
+         "    pure a\n" ++
+         "}\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def defaultOps : RawBoxOpsM IO := { readBox := pure 7 }\n" ++
+         "def defaultApi : BoxApiM IO := Internal.mkApiM defaultOps\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def withBox {α : Type} (k : Nat → IO α) : IO α := defaultApi.withBox k\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Refines\n" ++
+         "import LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "private theorem step_ok : Core.RefinesStepFromFinally id Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf Internal.mkApiM Model.execPkg Model.pkgAllowed := by\n" ++
+         "  intro W proj raw hRaw w _ _\n" ++
+         "  have h := hRaw w () rfl\n" ++
+         "  dsimp only [Model.execRaw, Model.rawAllowed, Model.execPkg, Model.pkgAllowed, Internal.mkApiM, tryFinally', MonadFinally.tryFinally', Bind.bind, StateT.bind, Pure.pure, StateT.pure, StateT.run, Function.comp, id] at h ⊢\n" ++
+         "  cases hr : raw.readBox w with\n" ++
+         "  | mk v w1 =>\n" ++
+         "    simp only [hr] at h ⊢\n" ++
+         "    exact ⟨congrArg (· + 1) h.1, h.2⟩\n" ++
+         "theorem refines_model :\n" ++
+         "    Core.RefinesPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.RefinesStepFromFinally id Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf Internal.mkApiM Model.execPkg Model.pkgAllowed :=\n" ++
+         "  ⟨fun _ => rfl, step_ok⟩\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #["LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl", "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
+
+    runMutantCase base tmpRoot bin "step_from_finally_trivial_allowed" "TRIVIAL_ALLOWED_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure RawBoxOpsM (m : Type → Type) where\n" ++
+         "  readBox : m Nat\n" ++
+         "structure BoxApiM (m : Type → Type) where\n" ++
+         "  withBox : {α : Type} → (Nat → m α) → m α\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def rawWf (_ : Nat) : Bool := true\n" ++
+         "def execRaw {W : Type} (raw : RawBoxOpsM (StateM W)) (_ : Unit) : StateM W Nat := raw.readBox\n" ++
+         "def rawAllowed (s : Nat) (_ : Unit) (out s' : Nat) : Prop := out = s ∧ s' = s\n" ++
+         "def execPkg {W : Type} (api : BoxApiM (StateM W)) (_ : Unit) : StateM W Nat := api.withBox (fun n => pure (n + 1))\n" ++
+         "def pkgAllowed (_ : Nat) (_ : Unit) (_ _ : Nat) : Prop := True\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkApiM {m : Type → Type} [Monad m] [MonadFinally m] (raw : RawBoxOpsM m) : BoxApiM m := {\n" ++
+         "  withBox := fun k => do\n" ++
+         "    let (a, _) ← tryFinally' (do let v ← raw.readBox; k v) (fun _ => pure ())\n" ++
+         "    pure a\n" ++
+         "}\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def defaultOps : RawBoxOpsM IO := { readBox := pure 7 }\n" ++
+         "def defaultApi : BoxApiM IO := Internal.mkApiM defaultOps\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def withBox {α : Type} (k : Nat → IO α) : IO α := defaultApi.withBox k\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Refines\n" ++
+         "import LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem refines_model :\n" ++
+         "    Core.RefinesPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.RefinesStepFromFinally id Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf Internal.mkApiM Model.execPkg Model.pkgAllowed :=\n" ++
+         "  ⟨fun _ => rfl, fun _ _ _ _ _ _ => trivial⟩\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #["LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl", "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
+
     expectFailureCode bin "inconclusive_dead_branch_fails_closed" "INCONCLUSIVE_DEAD_BRANCH_CHECK"
       base.libDir base.root #["--allow-legacy", "--dead-branch-fuel", "0"]
 

@@ -137,6 +137,20 @@ private def cryptoHashVectorModules : Array Name := #[
   `LeanSwe.CryptoHash.Raw.Sha512Vectors
 ]
 
+private def sqliteAuditModules : Array Name := #[
+  `LeanSwe.Sqlite.Types, `LeanSwe.Sqlite.Model, `LeanSwe.Sqlite.Impl, `LeanSwe.Sqlite.Interface,
+  `LeanSwe.Sqlite.SpecTests, `LeanSwe.Sqlite.Proofs, `LeanSwe.Sqlite.Proofs.ModelTrace,
+  `LeanSwe.Sqlite.Raw.Types, `LeanSwe.Sqlite.Raw.Model, `LeanSwe.Sqlite.Raw.Impl, `LeanSwe.Sqlite.Raw.Interface,
+  `LeanSwe.Sqlite.Raw.SpecTests, `LeanSwe.Sqlite.Raw.Proofs,
+  `LeanSwe.Sqlite.Raw.Proofs.ErrorAndFlagsProofs,
+  `LeanSwe.Sqlite.Raw.Proofs.Helpers,
+  `LeanSwe.Sqlite.Raw.Proofs.StmtProofs,
+  `LeanSwe.Sqlite.Raw.Proofs.UriHasWalProofs,
+  `LeanSwe.Sqlite.Raw.Proofs.UriNoWalProofs,
+  `LeanSwe.Sqlite.Raw.Proofs.UriProofs,
+  `LeanSwe.Sqlite.Raw.Proofs.WalProofs
+]
+
 private def isProjectModule (m : Name) : Bool :=
   let r := m.getRoot
   r == `Core || r == `LeanSwe
@@ -225,6 +239,9 @@ private def isAllowedCryptoHashClosureModule (m : Name) : Bool :=
   m.getRoot == `Core ||
     cryptoHashAuditModules.contains m ||
     cryptoHashVectorModules.contains m
+
+private def isAllowedSqliteClosureModule (m : Name) : Bool :=
+  m.getRoot == `Core || sqliteAuditModules.contains m
 
 private def allowedTimeRandExternSyms : Std.HashMap Name String :=
   Std.HashMap.emptyWithCapacity 4
@@ -318,6 +335,37 @@ private def allowedCryptoHashExternSyms : Std.HashMap Name String :=
     |>.insert `LeanSwe.CryptoHash.Raw.rawHmacSha256 "leanswe_cryptohash_hmac_sha256"
     |>.insert `LeanSwe.CryptoHash.Raw.rawCtEqual "leanswe_cryptohash_ct_equal"
 
+private def allowedSqliteExternSyms : Std.HashMap Name String :=
+  Std.HashMap.ofList [
+    (`LeanSwe.Sqlite.Raw.rawOpenV2, "leanswe_sqlite_open_v2"), (`LeanSwe.Sqlite.Raw.rawClose, "leanswe_sqlite_close"),
+    (`LeanSwe.Sqlite.Raw.rawExtendedResultCodes, "leanswe_sqlite_extended_result_codes"),
+    (`LeanSwe.Sqlite.Raw.rawBusyTimeout, "leanswe_sqlite_busy_timeout"), (`LeanSwe.Sqlite.Raw.rawPrepareV2, "leanswe_sqlite_prepare_v2"),
+    (`LeanSwe.Sqlite.Raw.rawStep, "leanswe_sqlite_step"), (`LeanSwe.Sqlite.Raw.rawReset, "leanswe_sqlite_reset"),
+    (`LeanSwe.Sqlite.Raw.rawClearBindings, "leanswe_sqlite_clear_bindings"), (`LeanSwe.Sqlite.Raw.rawFinalize, "leanswe_sqlite_finalize"),
+    (`LeanSwe.Sqlite.Raw.rawBindParamCount, "leanswe_sqlite_bind_param_count"), (`LeanSwe.Sqlite.Raw.rawBindNull, "leanswe_sqlite_bind_null"),
+    (`LeanSwe.Sqlite.Raw.rawBindInt64, "leanswe_sqlite_bind_int64"), (`LeanSwe.Sqlite.Raw.rawBindDouble, "leanswe_sqlite_bind_double"),
+    (`LeanSwe.Sqlite.Raw.rawBindText, "leanswe_sqlite_bind_text"), (`LeanSwe.Sqlite.Raw.rawBindBlob, "leanswe_sqlite_bind_blob"),
+    (`LeanSwe.Sqlite.Raw.rawColumnCount, "leanswe_sqlite_column_count"), (`LeanSwe.Sqlite.Raw.rawColumnType, "leanswe_sqlite_column_type"),
+    (`LeanSwe.Sqlite.Raw.rawColumnInt64, "leanswe_sqlite_column_int64"), (`LeanSwe.Sqlite.Raw.rawColumnDouble, "leanswe_sqlite_column_double"),
+    (`LeanSwe.Sqlite.Raw.rawColumnTextBytes, "leanswe_sqlite_column_text_bytes"), (`LeanSwe.Sqlite.Raw.rawColumnBlob, "leanswe_sqlite_column_blob")
+  ]
+
+private def isAllowedSqliteStdMutexOrRef (cName : Name) (extData : ExternAttrData) : Bool :=
+  let expectedSym? : Option String :=
+    if cName == `ST.Prim.mkRef then some "lean_st_mk_ref"
+    else if cName == `ST.Prim.Ref.get then some "lean_st_ref_get"
+    else if cName == `ST.Prim.Ref.put then some "lean_st_ref_put"
+    else if cName == `ST.Prim.Ref.take then some "lean_st_ref_take"
+    else if cName == `ST.Prim.Ref.swap then some "lean_st_ref_swap"
+    else if cName == `Std.BaseMutex.new then some "lean_io_basemutex_new"
+    else if cName == `Std.BaseMutex.lock then some "lean_io_basemutex_lock"
+    else if cName == `Std.BaseMutex.tryLock then some "lean_io_basemutex_try_lock"
+    else if cName == `Std.BaseMutex.unlock then some "lean_io_basemutex_unlock"
+    else none
+  match expectedSym? with
+  | some sym => extData.entries == [.standard `all sym]
+  | none => false
+
 private def forbiddenHostCSymPrefixes : Array String :=
   #["lean_io_", "lean_uv_", "lean_dbg_", "lean_st_", "lean_process_",
     "lean_get_current_time", "lean_get_windows_", "lean_windows_",
@@ -350,7 +398,7 @@ private def isCompilerGeneratedCtorIdx (env : Environment) (cName impl : Name) (
   let indName := cName.getPrefix
   if cName != indName.str "ctorIdx" || isPrivateName cName != isPrivateName indName then
     return false
-  if (Lean.declRangeExt.find? env impl).isSome then
+  if (Lean.declRangeExt.find? env cName).isSome || (Lean.declRangeExt.find? env impl).isSome then
     return false
   if env.getModuleIdxFor? indName != env.getModuleIdxFor? cName ||
       env.getModuleIdxFor? impl != env.getModuleIdxFor? cName then
@@ -427,7 +475,8 @@ private def closureForbiddenMetaSyntaxKinds : Array Name :=
     `Lean.Elab.Command.reprove, `Lean.Elab.Command.aux_def,
     `Lean.guardMsgsCmd, `Lean.GuardMsgs.guardMsgsCmd, `Lean.guardPanicCmd]
 
-private def checkClosureModuleAttrs (repoDir : System.FilePath) (env : Environment) (modName externMod : Name) : IO (Option String) := do
+private def checkClosureModuleAttrs (repoDir : System.FilePath) (env : Environment) (modName externMod : Name)
+    (allowStdSyncMutex : Bool := false) : IO (Option String) := do
   let parts := modName.components.map (·.toString)
   let path : System.FilePath := (parts.foldl (fun p seg => p / seg) repoDir).withExtension "lean"
   unless ← path.pathExists do
@@ -448,7 +497,7 @@ private def checkClosureModuleAttrs (repoDir : System.FilePath) (env : Environme
     if Parser.isTerminalCommand stx then break
     if closureForbiddenMetaSyntaxKinds.any (hasSyntaxKindInClosure · stx) then
       return some s!"TRUSTED_CLOSURE_FORBIDDEN_SYNTAX: {path} uses macro/elab/syntax/notation/run_cmd"
-    if modName != `Core.Assumptions &&
+    if modName != `Core.Assumptions && !(allowStdSyncMutex && modName == `LeanSwe.Sqlite.Raw.Interface) &&
         hasSyntaxKindInClosure ``Lean.Parser.Command.initialize stx then
       return some s!"TRUSTED_CLOSURE_FORBIDDEN_INIT_SYNTAX: {path} uses initialize/builtin_initialize"
     if hasAttrNameInStx forbidden stx then
@@ -479,6 +528,28 @@ private def isAllowedCoreInitFn (env : Environment) (modName cName initFn : Name
         iv.value.getUsedConstants.all isAllowedCoreInitFnConst
     | _ => false
 
+private def isAllowedSqliteInitDecl (modName cName : Name) : Bool :=
+  modName == `LeanSwe.Sqlite.Raw.Interface &&
+    (privateToUserName? cName |>.getD cName) == `LeanSwe.Sqlite.Raw.gHandleTable
+
+private def allowedSqliteInitConsts : Array Name := #[
+  ``Std.Mutex, ``Std.Mutex.new, ``List.nil, ``Prod,
+  ``OfNat.ofNat, ``UInt64, ``UInt64.instOfNat, ``Unit, ``liftM, ``BaseIO, ``EIO, ``IO.Error,
+  ``instMonadLiftTOfMonadLift, ``instMonadLiftBaseIOEIO, ``instMonadLiftT,
+  `LeanSwe.Sqlite.Raw.RawHandleState, `LeanSwe.Sqlite.Raw.RawHandleState.mk,
+  `LeanSwe.Sqlite.Raw.RawHandleTable, `LeanSwe.Sqlite.Raw.RawHandleTable.mk,
+  `LeanSwe.Sqlite.Raw.RawDbHandle, `LeanSwe.Sqlite.Raw.RawStmtHandle, `LeanSwe.Sqlite.Raw.StmtHandle
+]
+
+private def isAllowedSqliteInitFn (env : Environment) (modName cName initFn : Name) : Bool :=
+  isAllowedSqliteInitDecl modName cName && match env.find? initFn with
+    | some (.defnInfo iv) =>
+      iv.safety == .safe && (getExternAttrData? env initFn).isNone &&
+        (Lean.Compiler.getImplementedBy? env initFn).isNone &&
+        iv.value.getUsedConstants.contains ``Std.Mutex.new &&
+        iv.value.getUsedConstants.all (fun u => allowedSqliteInitConsts.contains (privateToUserName? u |>.getD u))
+    | _ => false
+
 private def isAllowedCompilerUnsafeDef (env : Environment) (cName : Name) (v : DefinitionVal) : IO Bool := do
   if (Lean.declRangeExt.find? env cName).isSome then
     return false
@@ -496,7 +567,8 @@ private def isAllowedCompilerUnsafeDef (env : Environment) (cName : Name) (v : D
 
 private unsafe def checkPackageTrustedClosure (repoDir : System.FilePath) (pkgLabel : String) (auditModules : Array Name)
     (isAllowedMod : Name → Bool) (externMod : Name) (allowedExternSyms : Std.HashMap Name String)
-    (seedLinuxCommon : Bool := false) (allowIO : Bool := false) (allowInternalForIn : Bool := false) : IO (Array String) := do
+    (seedLinuxCommon : Bool := false) (allowIO : Bool := false)
+    (allowInternalForIn : Bool := false) (allowStdSyncMutex : Bool := false) : IO (Array String) := do
   enableInitializersExecution
   let trEnv ← importModules (auditModules.map fun m => { module := m }) {} (loadExts := true)
   let csimpState := Lean.Compiler.CSimp.ext.getState trEnv
@@ -507,18 +579,20 @@ private unsafe def checkPackageTrustedClosure (repoDir : System.FilePath) (pkgLa
       if !isAllowedMod m then
         errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_IMPORT: {m} imported into {pkgLabel} closure"
       else
-        if let some attrErr ← checkClosureModuleAttrs repoDir trEnv m externMod then
+        if let some attrErr ← checkClosureModuleAttrs repoDir trEnv m externMod allowStdSyncMutex then
           errs := errs.push attrErr
       if let some data := trEnv.header.moduleData[i]? then
         for c in data.constants do
           if (Lean.getExportNameFor? trEnv c.name).isSome then
             errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_EXPORT: {c.name} in {m}"
           if let some initFn := Lean.regularInitAttr.getParam? trEnv c.name then
-            if !isAllowedCoreInitFn trEnv m c.name initFn then
+            if !isAllowedCoreInitFn trEnv m c.name initFn &&
+                !(allowStdSyncMutex && isAllowedSqliteInitFn trEnv m c.name initFn) then
               errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_INIT: {c.name} in {m}"
           if (Lean.builtinInitAttr.getParam? trEnv c.name).isSome then
             errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_BUILTIN_INIT: {c.name} in {m}"
-    else if !isAllowedClosureStdlibModule allowInternalForIn m then
+    else if !(isAllowedClosureStdlibModule allowInternalForIn m ||
+        (allowStdSyncMutex && m.components.take 2 == [`Std, `Sync])) then
       errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_IMPORT: {m} imported into {pkgLabel} closure"
     for scEntry in Lean.Compiler.CSimp.ext.ext.getModuleEntries trEnv i do
       let entry := match scEntry with
@@ -529,15 +603,15 @@ private unsafe def checkPackageTrustedClosure (repoDir : System.FilePath) (pkgLa
       let toMod := trEnv.getModuleIdxFor? entry.toDeclName |>.bind (trEnv.header.moduleNames[·]?) |>.getD .anonymous
       if isProjectModule m || isProjectModule origMod || isProjectModule thmMod || isProjectModule toMod then
         errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_CSIMP: {entry.fromDeclName} -> {entry.toDeclName} (thm={entry.thmName}, mod={m})"
-  let mut visited : Std.HashSet (Name × Bool × Bool) := {}
-  let mut queue : Array (Name × Bool × Bool × Name) := #[]
+  let mut visited : Std.HashSet (Name × Bool × Bool × Bool) := {}
+  let mut queue : Array (Name × Bool × Bool × Bool × Name) := #[]
   for h : i in [0 : trEnv.header.moduleNames.size] do
     let m := trEnv.header.moduleNames[i]
     if m.getRoot == `LeanSwe || (m.getRoot == `Core && m != `Core.Assumptions) then
       let some data := trEnv.header.moduleData[i]? | continue
       let fromSpec := m.getString! == "SpecTests"
       for c in data.constants do
-        queue := queue.push (m, false, fromSpec, c.name)
+        queue := queue.push (m, false, fromSpec, false, c.name)
     else if m == `Core.Assumptions then
       let some data := trEnv.header.moduleData[i]? | continue
       for c in data.constants do
@@ -551,11 +625,11 @@ private unsafe def checkPackageTrustedClosure (repoDir : System.FilePath) (pkgLa
             if !(← isAllowedCompilerUnsafeDef trEnv c.name v) then
               errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_UNSAFE_DEF: {c.name} in {m}"
   while !queue.isEmpty do
-    let (originMod, inStdImpl, fromSpecTests, cName) := queue.back!
+    let (originMod, inStdImpl, fromSpecTests, viaExternMod, cName) := queue.back!
     queue := queue.pop
-    if visited.contains (cName, inStdImpl, fromSpecTests) then
+    if visited.contains (cName, inStdImpl, fromSpecTests, viaExternMod) then
       continue
-    visited := visited.insert (cName, inStdImpl, fromSpecTests)
+    visited := visited.insert (cName, inStdImpl, fromSpecTests, viaExternMod)
     let some cinfo := trEnv.find? cName | continue
     if cinfo matches .axiomInfo _ then
       if !allowedAxioms.contains cName && !(inStdImpl && cName == `lcProof) then
@@ -565,17 +639,18 @@ private unsafe def checkPackageTrustedClosure (repoDir : System.FilePath) (pkgLa
     if cMod == `Core.Assumptions && fromSpecTests then
       continue
     let projMod := isProjectModule cMod
+    let nextViaExt := if projMod then (cMod == externMod) else viaExternMod
     if let some impl := Lean.Compiler.getImplementedBy? trEnv cName then
       let nextStd := inStdImpl || !projMod
-      if !visited.contains (impl, nextStd, fromSpecTests) then
-        queue := queue.push (originMod, nextStd, fromSpecTests, impl)
+      if !visited.contains (impl, nextStd, fromSpecTests, nextViaExt) then
+        queue := queue.push (originMod, nextStd, fromSpecTests, nextViaExt, impl)
       if projMod then
         if !(← isCompilerGeneratedCtorIdx trEnv cName impl cinfo) then
           errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_IMPL_BY: {cName} -> {impl} in {cMod} reachable from {originMod}"
     if let some entry := csimpState.map.find? cName then
       let nextStd := inStdImpl || !projMod
-      if !visited.contains (entry.toDeclName, nextStd, fromSpecTests) then
-        queue := queue.push (originMod, nextStd, fromSpecTests, entry.toDeclName)
+      if !visited.contains (entry.toDeclName, nextStd, fromSpecTests, nextViaExt) then
+        queue := queue.push (originMod, nextStd, fromSpecTests, nextViaExt, entry.toDeclName)
       let thmMod := trEnv.getModuleIdxFor? entry.thmName |>.bind (trEnv.header.moduleNames[·]?) |>.getD .anonymous
       let toMod := trEnv.getModuleIdxFor? entry.toDeclName |>.bind (trEnv.header.moduleNames[·]?) |>.getD .anonymous
       if projMod || isProjectModule thmMod || isProjectModule toMod then
@@ -590,7 +665,7 @@ private unsafe def checkPackageTrustedClosure (repoDir : System.FilePath) (pkgLa
       if cinfo matches .opaqueInfo _ || (getExternAttrData? trEnv cName).isSome then
         let userName := privateToUserName? cName |>.getD cName
         let isAllowedCoreInit :=
-          isAllowedCoreInitDecl cMod cName &&
+          (isAllowedCoreInitDecl cMod cName || (allowStdSyncMutex && isAllowedSqliteInitDecl cMod cName)) &&
           (cinfo matches .opaqueInfo _) &&
           (getExternAttrData? trEnv cName).isNone
         let isRawFdPointed :=
@@ -598,23 +673,30 @@ private unsafe def checkPackageTrustedClosure (repoDir : System.FilePath) (pkgLa
           cMod == `LeanSwe.LinuxSyscall.Common.Types &&
           userName == `LeanSwe.LinuxSyscall.RawFdPointed &&
           (getExternAttrData? trEnv cName).isNone
+        let isRawSqlitePointed :=
+          allowStdSyncMutex &&
+          cMod == `LeanSwe.Sqlite.Raw.Types &&
+          (userName == `LeanSwe.Sqlite.Raw.RawDbExtPointed ||
+            userName == `LeanSwe.Sqlite.Raw.RawStmtExtPointed) &&
+          (getExternAttrData? trEnv cName).isNone
         let isExpectedInterfaceExtern :=
           cMod == externMod &&
-          (!allowIO || isPrivateName cName) &&
+          (!(allowIO || allowStdSyncMutex) || isPrivateName cName) &&
           (cinfo matches .opaqueInfo _) &&
           (cinfo.type.getUsedConstants.contains ``BaseIO ||
             (allowIO && cinfo.type.getUsedConstants.contains ``IO && isPrivateName cName)) &&
           match allowedExternSyms.get? userName, getExternAttrData? trEnv cName with
           | some expectedSym, some extData => extData.entries == [.standard `all expectedSym]
           | _, _ => false
-        if !isAllowedCoreInit && !isRawFdPointed && !isExpectedInterfaceExtern then
+        if !isAllowedCoreInit && !isRawFdPointed && !isRawSqlitePointed && !isExpectedInterfaceExtern then
           errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_EXTERN: {cName} in {cMod} reachable from {originMod}"
     else if let some extData := getExternAttrData? trEnv cName then
-      if isForbiddenHostExtern cName cinfo extData then
+      if !(allowStdSyncMutex && viaExternMod && isAllowedSqliteStdMutexOrRef cName extData) &&
+          isForbiddenHostExtern cName cinfo extData then
         errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_HOST_IO_EXTERN: {cName} in {cMod} reachable from {originMod}"
     for u in cinfo.type.getUsedConstants do
-      if !visited.contains (u, inStdImpl, fromSpecTests) then
-        queue := queue.push (originMod, inStdImpl, fromSpecTests, u)
+      if !visited.contains (u, inStdImpl, fromSpecTests, nextViaExt) then
+        queue := queue.push (originMod, inStdImpl, fromSpecTests, nextViaExt, u)
     let val? := match cinfo with
       | .defnInfo v => some v.value
       | .thmInfo v => some v.value
@@ -622,16 +704,16 @@ private unsafe def checkPackageTrustedClosure (repoDir : System.FilePath) (pkgLa
       | _ => none
     if let some val := val? then
       for u in val.getUsedConstants do
-        if !visited.contains (u, inStdImpl, fromSpecTests) then
-          queue := queue.push (originMod, inStdImpl, fromSpecTests, u)
+        if !visited.contains (u, inStdImpl, fromSpecTests, nextViaExt) then
+          queue := queue.push (originMod, inStdImpl, fromSpecTests, nextViaExt, u)
     let extra : List Name := match cinfo with
       | .ctorInfo v => [v.induct]
       | .recInfo v => v.all
       | .inductInfo v => v.all ++ v.ctors
       | _ => []
     for u in extra do
-      if !visited.contains (u, inStdImpl, fromSpecTests) then
-        queue := queue.push (originMod, inStdImpl, fromSpecTests, u)
+      if !visited.contains (u, inStdImpl, fromSpecTests, nextViaExt) then
+        queue := queue.push (originMod, inStdImpl, fromSpecTests, nextViaExt, u)
   trEnv.freeRegions
   return errs
 
@@ -1747,7 +1829,8 @@ unsafe def main (args : List String) : IO UInt32 := do
       m.components.take 2 == [`LeanSwe, `EnvVars] ||
       m.components.take 2 == [`LeanSwe, `CryptoHash] ||
       m.components.take 2 == [`LeanSwe, `LinuxSyscall] ||
-      m.components.take 2 == [`LeanSwe, `PostFork]
+      m.components.take 2 == [`LeanSwe, `PostFork] ||
+      m.components.take 2 == [`LeanSwe, `Sqlite]
 
   let auditEnvPhase (auditE : Environment) (onlyPf : Bool) :
       IO (Array String × Nat × Array Name × Std.HashSet Name × Array (Name × Name) × Std.HashMap Name (Array Name) × Std.HashMap Name (Array Name) × Nat) := do
@@ -1788,7 +1871,8 @@ unsafe def main (args : List String) : IO UInt32 := do
         if let some initFn := Lean.regularInitAttr.getParam? auditE c.name then
           if isMutantModule m then
             pErrs := pErrs.push s!"FORBIDDEN_INIT_IN_MUTANT: {c.name} in {m}"
-          else if shouldForbidModuleInit m && !isAllowedCoreInitFn auditE m c.name initFn then
+          else if shouldForbidModuleInit m && !isAllowedCoreInitFn auditE m c.name initFn &&
+              !isAllowedSqliteInitFn auditE m c.name initFn then
             pErrs := pErrs.push s!"FORBIDDEN_INIT: {c.name} in {m}"
         if (Lean.builtinInitAttr.getParam? auditE c.name).isSome then
           if isMutantModule m then
@@ -2099,7 +2183,8 @@ unsafe def main (args : List String) : IO UInt32 := do
         if (Lean.getExportNameFor? extraEnv c.name).isSome then
           errors := errors.push s!"FORBIDDEN_EXPORT: {c.name} in {m}"
         if let some initFn := Lean.regularInitAttr.getParam? extraEnv c.name then
-          if !isAllowedCoreInitFn extraEnv m c.name initFn then
+          if !isAllowedCoreInitFn extraEnv m c.name initFn &&
+              !isAllowedSqliteInitFn extraEnv m c.name initFn then
             errors := errors.push s!"FORBIDDEN_INIT: {c.name} in {m}"
         if (Lean.builtinInitAttr.getParam? extraEnv c.name).isSome then
           errors := errors.push s!"FORBIDDEN_BUILTIN_INIT: {c.name} in {m}"
@@ -2198,6 +2283,10 @@ unsafe def main (args : List String) : IO UInt32 := do
     isAllowedEnvVarsClosureModule `LeanSwe.EnvVars.Raw.Interface allowedEnvVarsExternSyms false
   let chClosureErrs ← checkPackageTrustedClosure repoDir "CryptoHash" chAuditMods
     isAllowedCryptoHashClosureModule `LeanSwe.CryptoHash.Raw.Interface allowedCryptoHashExternSyms false
+  let sqAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.Sqlite sqliteAuditModules
+  let sqClosureErrs ← checkPackageTrustedClosure repoDir "Sqlite" sqAuditMods
+    isAllowedSqliteClosureModule `LeanSwe.Sqlite.Raw.Interface allowedSqliteExternSyms false false false true
+  IO.println s!"TRUSTED_CLOSURE: sqlite_modules={sqAuditMods.size} allowlist=Sqlite+Sqlite.Raw"
   let sbxClosureErrs ← checkSandboxTrustedClosure env
   let compClosureErrs ← checkCompressTrustedClosure repoDir env importableExtraMods
   let pfClosureErrs ← checkPackageTrustedClosure repoDir "PostFork" postForkAuditModules
@@ -2213,7 +2302,7 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   let promCount := prom1.size + prom2Count
   let withAssumeCount := wAss1 + wAss2
-  errors := errors ++ eErrs1 ++ eErrs2 ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sbxClosureErrs ++ compClosureErrs ++ pfClosureErrs ++ pfWiringErrs ++ pfAeneasErrs
+  errors := errors ++ eErrs1 ++ eErrs2 ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sqClosureErrs ++ sbxClosureErrs ++ compClosureErrs ++ pfClosureErrs ++ pfWiringErrs ++ pfAeneasErrs
   IO.println s!"PROMISE_CHECK: spec_modules={specModCount} promises={promCount} with_assume={withAssumeCount} errors={errors.size}"
   if errors.isEmpty then
     return 0

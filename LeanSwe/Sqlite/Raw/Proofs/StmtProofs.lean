@@ -20,8 +20,11 @@ theorem proof_sqliteraw_prepare_rejectsNulClosedDbAndEmptySql :
     Internal.mkRawOps, mockStateWithOpenDb, mockCOps, mockPrepareSuccess, rawDbToken, maxSqlByteLen, assert]
   dsimp only [Bind.bind, StateT.bind, bind, Pure.pure, StateT.pure, pure, StateT.run]
   refine ⟨?_, ?_, ?_, ?_, trivial⟩
-  · rw [hNul]
-    simp [Internal.mapRawError, Internal.nonEmptyMsg]
+  · by_cases hSz : (pre ++ String.ofList [Char.ofNat 0] ++ suf).utf8ByteSize > 2147483647
+    · simp only [hSz, ↓reduceIte, Internal.mapRawError]
+      exact ⟨assert_invalidInput_record _, rfl, rfl⟩
+    · simp only [hSz, ↓reduceIte, hasZeroByteBa_zero, hNul, Internal.mapRawError]
+      exact ⟨assert_invalidInput_record _, rfl, rfl⟩
   · simp [Internal.lookupRawDb, hBeq1, Internal.mapRawError, Internal.nonEmptyMsg]
   · exact ⟨errKind_eq_of_isErrorKind _ _ rfl, rfl⟩
   · exact ⟨errKind_eq_of_isErrorKind _ _ rfl, rfl⟩
@@ -83,7 +86,8 @@ theorem proof_sqliteraw_prepare_acceptsCommentsAndWhitespaceInTail :
     have hNotGt : ¬ (("SELECT 1; --" ++ lineBody).toUTF8.size > 2147483647) := Nat.not_lt.mpr hSzLe
     have hNotEmptyStr : ("SELECT 1; --" ++ lineBody).toList.isEmpty = false := by
       simp [String.toList_append]
-    simp only [stateT_bind_apply, Bool.not_true, hNotEmptyStr, hZero, Bool.false_eq_true, ↓reduceIte,
+    simp only [stateT_bind_apply, utf8ByteSize_eq, hasZeroByteBa_zero, scanSqlTailBa_eq,
+      Bool.not_true, hNotEmptyStr, hZero, Bool.false_eq_true, ↓reduceIte,
       hNotGt, hCons, hTail, Internal.lookupRawDb, Internal.insertRawStmt, beq_self_eq_true,
       List.contains_cons, List.contains_nil, Bool.or_false]
     exact ⟨rfl, rfl, rfl⟩
@@ -119,7 +123,8 @@ theorem proof_sqliteraw_prepare_acceptsCommentsAndWhitespaceInTail :
       Nat.not_lt.mpr hSzLe
     have hNotEmptyStr : ("SELECT 1; --" ++ lineBody ++ "\n \t\r\x0c").toList.isEmpty = false := by
       simp [String.toList_append]
-    simp only [stateT_bind_apply, Bool.not_true, hNotEmptyStr, hZero, Bool.false_eq_true, ↓reduceIte,
+    simp only [stateT_bind_apply, utf8ByteSize_eq, hasZeroByteBa_zero, scanSqlTailBa_eq,
+      Bool.not_true, hNotEmptyStr, hZero, Bool.false_eq_true, ↓reduceIte,
       hNotGt, hCons, hTail, Internal.lookupRawDb, Internal.insertRawStmt, beq_self_eq_true,
       List.contains_cons, List.contains_nil, Bool.or_false]
     exact ⟨rfl, rfl, rfl⟩
@@ -154,7 +159,8 @@ theorem proof_sqliteraw_prepare_acceptsCommentsAndWhitespaceInTail :
       Nat.not_lt.mpr hSzLe
     have hNotEmptyStr : ("SELECT 1; /*" ++ blockBody ++ "*/ \n").toList.isEmpty = false := by
       simp [String.toList_append]
-    simp only [stateT_bind_apply, Bool.not_true, hNotEmptyStr, hZero, Bool.false_eq_true, ↓reduceIte,
+    simp only [stateT_bind_apply, utf8ByteSize_eq, hasZeroByteBa_zero, scanSqlTailBa_eq,
+      Bool.not_true, hNotEmptyStr, hZero, Bool.false_eq_true, ↓reduceIte,
       hNotGt, hCons, hTail, Internal.lookupRawDb, Internal.insertRawStmt, beq_self_eq_true,
       List.contains_cons, List.contains_nil, Bool.or_false]
     exact ⟨rfl, rfl, rfl⟩
@@ -211,7 +217,8 @@ theorem proof_sqliteraw_prepare_rejectsMultiStmtAndUnclosedBlockCommentAndFinali
     have hNotGt : ¬ (("SELECT 1; /*" ++ unclosedBody).toUTF8.size > 2147483647) := Nat.not_lt.mpr hSzLe
     have hNotEmptyStr : ("SELECT 1; /*" ++ unclosedBody).toList.isEmpty = false := by
       simp [String.toList_append]
-    simp only [stateT_bind_apply, Bool.not_true, hNotEmptyStr, hAllZero, Bool.false_eq_true, ↓reduceIte,
+    simp only [stateT_bind_apply, utf8ByteSize_eq, hasZeroByteBa_zero, scanSqlTailBa_eq,
+      Bool.not_true, hNotEmptyStr, hAllZero, Bool.false_eq_true, ↓reduceIte,
       hNotGt, hCons, hTailFalse, Internal.lookupRawDb, Internal.mapRawError, Internal.nonEmptyMsg,
       beq_self_eq_true, List.contains_cons, List.contains_nil, Bool.or_false, String.isEmpty]
     exact ⟨⟨_, rfl, rfl⟩, rfl, rfl⟩
@@ -449,7 +456,8 @@ theorem proof_sqliteraw_finalize_releasesStmtEvenOnStickyErrorAndRejectsDoubleFi
     Internal.mkRawOps, mockStateWithOpenStmt, mockCOps, rawStmtToken, rawDbToken, assert]
   dsimp only [Bind.bind, StateT.bind, bind, Pure.pure, StateT.pure, pure, StateT.run]
   simp [Internal.lookupRawStmt, Internal.lookupRawDb, Internal.eraseRawStmt,
-    Internal.eraseRawDb, Internal.mapRawError, Internal.nonEmptyMsg,
+    Internal.eraseRawStmtAux, Internal.eraseRawDb, Internal.eraseRawDbAux,
+    Internal.mapRawError, Internal.nonEmptyMsg,
     hLive200, hLiveDbNil, hActNil]
 
 /-- Non-vacuity `CanReach` witness for `test_sqliteraw_finalize_releasesStmtEvenOnStickyErrorAndRejectsDoubleFinalize`. -/

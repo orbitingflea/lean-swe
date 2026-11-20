@@ -67,7 +67,56 @@ private opaque rawColumnTextBytes : @& RawStmtExt → UInt32 → BaseIO (UInt32 
 @[extern "leanswe_sqlite_column_blob"]
 private opaque rawColumnBlob : @& RawStmtExt → UInt32 → BaseIO (UInt32 × String × ByteArray)
 
-private initialize gHandleTable : Std.Mutex RawHandleTable ← Std.Mutex.new {}
+private structure RawHandleState where
+  table : RawHandleTable := {}
+  stmtLocks : List (StmtHandle × Std.Mutex Unit) := []
+  deriving Inhabited
+
+private initialize gHandleTable : Std.Mutex RawHandleState ← Std.Mutex.new {}
+
+private def lookupStmtLock (sh : StmtHandle) : List (StmtHandle × Std.Mutex Unit) → Option (Std.Mutex Unit)
+  | [] => none
+  | (k, mu) :: rest => if k == sh then some mu else lookupStmtLock sh rest
+
+private def filterLiveLocksAux (live : List (StmtHandle × RawStmtHandle))
+    (acc : List (StmtHandle × Std.Mutex Unit)) :
+    List (StmtHandle × Std.Mutex Unit) → List (StmtHandle × Std.Mutex Unit)
+  | [] => acc.reverse
+  | (sh, mu) :: rest =>
+    if (Internal.lookupRawStmt sh live).isSome then
+      filterLiveLocksAux live ((sh, mu) :: acc) rest
+    else
+      filterLiveLocksAux live acc rest
+
+private def withStmtLock {α : Type} (sh : StmtHandle) (act : IO α) : IO α := do
+  let fastRes ← gHandleTable.atomically do
+    let st ← get
+    match lookupStmtLock sh st.stmtLocks with
+    | some mu => return some (some mu)
+    | none =>
+      if (Internal.lookupRawStmt sh st.table.stmts).isSome then
+        return some none
+      else
+        return none
+  let mu? ←
+    match fastRes with
+    | none => pure none
+    | some (some mu) => pure (some mu)
+    | some none =>
+      let newMu ← Std.Mutex.new ()
+      gHandleTable.atomically do
+        let st ← get
+        match lookupStmtLock sh st.stmtLocks with
+        | some mu => return some mu
+        | none =>
+          if (Internal.lookupRawStmt sh st.table.stmts).isSome then
+            set { st with stmtLocks := (sh, newMu) :: st.stmtLocks }
+            return some newMu
+          else
+            return none
+  match mu? with
+  | some mu => mu.atomically act
+  | none => act
 
 private def withDbExt {α : Type} (h : RawDbHandle)
     (k : RawDbExt → BaseIO (Except SqliteRawError α)) : IO (Except SqliteRawError α) :=
@@ -98,9 +147,10 @@ private def mapValRc {α : Type} (act : BaseIO (UInt32 × String × α)) : BaseI
 private def cSqliteOps : CSqliteOps :=
   { modifyTable := fun f =>
       liftM (m := BaseIO) <| gHandleTable.atomically do
-        let t ← get
-        let (a, t') := f t
-        set t'
+        let s ← get
+        let (a, t') := f s.table
+        let locks' := filterLiveLocksAux t'.stmts [] s.stmtLocks
+        set ({ table := t', stmtLocks := locks' } : RawHandleState)
         return a
     openV2 := fun path flags =>
       liftM do
@@ -161,7 +211,7 @@ private def cSqliteOps : CSqliteOps :=
 
 /-- Default single-step SQLite operations backed by `c/sqlite_shim.c` and vendored SQLite3. -/
 def defaultOps : RawSqliteOps :=
-  Internal.mkRawOps cSqliteOps
+  Internal.mkRawOps cSqliteOps withStmtLock
 
 /-- Convert a raw SQLite error record into a normalized `SqliteError` with non-empty message. -/
 @[inline] def mapRawError (err : SqliteRawError) : SqliteError :=

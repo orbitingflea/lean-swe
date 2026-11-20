@@ -2220,7 +2220,8 @@ private def checkRefinesModelTheorem
           return aErrs
 
         let stepFromInfo? : Option (Expr × Expr × Expr × Expr × Expr × Expr × Expr × Expr × Expr × Array (Expr × Expr × Expr × Expr)) :=
-          if ab.isAppOfArity `Core.RefinesStepFrom 16 then
+          if ab.isAppOfArity `Core.RefinesStepFrom 16 ||
+              ab.isAppOfArity `Core.RefinesStepFromFinally 16 then
             let args := ab.getAppArgs
             some (args[0]!, args[1]!, args[6]!, args[7]!, args[8]!, args[9]!, args[12]!, args[13]!, args[14]!,
               #[(args[4]!, args[5]!, args[10]!, args[11]!), (args[6]!, args[7]!, args[14]!, args[15]!)])

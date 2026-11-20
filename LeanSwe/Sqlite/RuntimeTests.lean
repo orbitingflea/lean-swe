@@ -1,5 +1,7 @@
 import Core.Assumptions
+import LeanSwe.Sqlite.Impl
 import LeanSwe.Sqlite.Interface
+import LeanSwe.Sqlite.Model
 import LeanSwe.TempDir.Interface
 
 namespace LeanSwe.Sqlite.RuntimeTests
@@ -72,6 +74,19 @@ private def testCrudWalFkAndBinding (dbPath : String) : IO Unit := do
     let emptyOne ← assertOk (← queryOne db "SELECT id FROM children WHERE id = ?" #[.int 404])
       "queryOne missing row"
     assertTrue (emptyOne == none) "queryOne missing returns none"
+
+    let zeroBlob? ← assertOk (← queryOne db "SELECT X'', ?" #[.bytes ByteArray.empty])
+      "queryOne empty blob"
+    assertTrue (zeroBlob? == some #[.bytes ByteArray.empty, .bytes ByteArray.empty])
+      s!"empty blob decoded as null/wrong value: {repr zeroBlob?}"
+
+    let negZero := -0.0
+    let negZero? ← assertOk (← queryOne db "SELECT ?" #[.real negZero])
+      "queryOne negative zero"
+    let negZeroOk := match negZero? with
+      | some #[.real r] => r.toBits == negZero.toBits
+      | _ => false
+    assertTrue negZeroOk s!"negative zero roundtrip bit mismatch: {repr negZero?}"
     return .ok ()
 
   assertOk res "CRUD/WAL/FK/binding block"
@@ -449,6 +464,171 @@ def registeredErrorTests : Array Core.RegisteredErrorTest :=
    , { testName := "LeanSwe.Sqlite.RuntimeTests.err_sqlite_queryOne_ioError"
        mode := .real, run := err_sqlite_queryOne_ioError } ]
 
+private def testImplErrorPrecedenceAndRelationalModel : IO Unit := do
+  let mkMockOps (stepFn : String → Except SqliteError Raw.StepResult)
+      (finFn : String → Except SqliteError Unit)
+      (closeFn : DbHandle → Except SqliteError Unit := fun _ => .ok ()) :
+      RawSqliteOpsM (StateM (Array (UInt64 × String))) :=
+    { mapRawError := Model.mapRawError
+      openDb := fun _ _ => pure (.ok { id := 1 })
+      closeDb := fun db => pure (closeFn db)
+      prepare := fun _ sql => modifyGet fun log =>
+        let sid := UInt64.ofNat (log.size + 1)
+        (.ok { id := sid, dbId := 1 }, log.push (sid, sql))
+      bind := fun _ _ => pure (.ok ())
+      step := fun sh => do
+        let log ← get
+        let sql := ((log.find? fun p => p.1 == sh.id).map (·.2)).getD ""
+        pure (stepFn sql)
+      finalize := fun sh => do
+        let log ← get
+        let sql := ((log.find? fun p => p.1 == sh.id).map (·.2)).getD ""
+        pure (finFn sql)
+      activeDbCount := pure 0
+      activeStmtCount := pure 0 }
+
+  let apiStepOverFin := Internal.mkApiM (mkMockOps
+    (fun _ => .error { kind := .constraint, sqliteCode := some 2067, message := "primary step err" })
+    (fun _ => .error { kind := .ioError, sqliteCode := some 999, message := "secondary fin err" }))
+  let (rExecPrec, _) := (apiStepOverFin.exec { id := 1 } "SELECT 1" #[]).run #[]
+  assertTrue (match rExecPrec with | .error e => e.sqliteCode == some 2067 | .ok _ => false)
+    s!"execOp must preserve primary step error over finalize error: {repr rExecPrec}"
+
+  let apiFinErr := Internal.mkApiM (mkMockOps
+    (fun sql => if sql == "SELECT 2" then .ok (.row #[.int 2]) else .ok .done)
+    (fun _ => .error { kind := .ioError, sqliteCode := some 777, message := "finalize failed" }))
+  let (rQueryFin, _) := (apiFinErr.query { id := 1 } "SELECT 1" #[]).run #[]
+  assertTrue (match rQueryFin with | .error e => e.sqliteCode == some 777 | .ok _ => false)
+    s!"queryOp must propagate finalize error: {repr rQueryFin}"
+  let (rQueryOneFin, _) := (apiFinErr.queryOne { id := 1 } "SELECT 2" #[]).run #[]
+  assertTrue (match rQueryOneFin with | .error e => e.sqliteCode == some 777 | .ok _ => false)
+    s!"queryOneOp must propagate finalize error: {repr rQueryOneFin}"
+
+  let apiCloseErr := Internal.mkApiM (mkMockOps
+    (fun _ => .ok .done) (fun _ => .ok ())
+    (fun _ => .error { kind := .busy, sqliteCode := some 5, message := "close busy" }))
+  let (rWithDbClose, _) := (apiCloseErr.withDb ":memory:" {} fun _ => pure (.ok (42 : Nat))).run #[]
+  assertTrue (match rWithDbClose with | .error e => e.kind == .busy && e.sqliteCode == some 5 | .ok _ => false)
+    s!"withDbOp must propagate closeDb error on action ok: {repr rWithDbClose}"
+  let (rWithDbActionErr, _) := (apiCloseErr.withDb ":memory:" {} fun _ =>
+    pure (.error { kind := .constraint, sqliteCode := some 19, message := "action err" } : Except SqliteError Nat)).run #[]
+  assertTrue (match rWithDbActionErr with | .error e => e.kind == .constraint && e.sqliteCode == some 19 | .ok _ => false)
+    s!"withDbOp must preserve primary action error over closeDb error: {repr rWithDbActionErr}"
+
+  let apiCommitFail := Internal.mkApiM (mkMockOps
+    (fun sql =>
+      if sql == "COMMIT" then .error { kind := .busy, sqliteCode := some 5, message := "commit busy" }
+      else .ok .done)
+    (fun _ => .ok ()))
+  let (rCommitRbOk, logCommitRbOk) := (apiCommitFail.withTransaction { id := 1 } fun _ => pure (.ok ())).run #[]
+  assertTrue ((match rCommitRbOk with | .error e => e.sqliteCode == some 5 | .ok _ => false) &&
+    logCommitRbOk.map (·.2) == #["BEGIN IMMEDIATE", "COMMIT", "ROLLBACK"])
+    s!"withTransactionOp must run ROLLBACK on COMMIT failure: res={repr rCommitRbOk} log={repr logCommitRbOk}"
+
+  let apiCommitAndRbFail := Internal.mkApiM (mkMockOps
+    (fun sql =>
+      if sql == "COMMIT" then .error { kind := .busy, sqliteCode := some 5, message := "commit busy" }
+      else if sql == "ROLLBACK" then .error { kind := .ioError, sqliteCode := some 516, message := "rb err" }
+      else .ok .done)
+    (fun _ => .ok ()))
+  let (rCommitRbErr, _) := (apiCommitAndRbFail.withTransaction { id := 1 } fun _ => pure (.ok ())).run #[]
+  assertTrue (match rCommitRbErr with | .error e => e.sqliteCode == some 5 | .ok _ => false)
+    s!"withTransactionOp must preserve COMMIT error over ROLLBACK error: {repr rCommitRbErr}"
+
+  let apiBodyAndRbFail := Internal.mkApiM (mkMockOps
+    (fun sql =>
+      if sql == "ROLLBACK" then .error { kind := .ioError, sqliteCode := some 516, message := "rb err" }
+      else .ok .done)
+    (fun _ => .ok ()))
+  let (rBodyRbErr, _) := (apiBodyAndRbFail.withTransaction { id := 1 } fun _ =>
+    pure (.error { kind := .busy, sqliteCode := some 5, message := "body err" } : Except SqliteError Unit)).run #[]
+  assertTrue (match rBodyRbErr with | .error e => e.sqliteCode == some 5 | .ok _ => false)
+    s!"withTransactionOp must preserve action error over ROLLBACK error: {repr rBodyRbErr}"
+
+  assertTrue (Model.allowedSelectRows {} "BEGIN" #[] #[] &&
+    Model.allowedSelectRows {} "COMMIT" #[] #[] &&
+    Model.allowedQueryOneRow {} "ROLLBACK" #[] none)
+    "allowedSelectRows and allowedQueryOneRow must accept empty result on transaction control SQL"
+
+  let (.ok mdb, st0) := (Model.modelRawOps.openDb ":memory:" { walMode := false, foreignKeys := false }).run {}
+    | throw (IO.userError "model openDb failed")
+  let (.ok (), st1) := (Model.modelApi.exec mdb "CREATE TABLE t(id INTEGER PRIMARY KEY, x ANY) STRICT" #[]).run st0
+    | throw (IO.userError "model CREATE TABLE failed")
+  let (.ok (), st2) := (Model.modelApi.exec mdb "INSERT INTO t VALUES (1, ?)" #[.real 1.0]).run st1
+    | throw (IO.userError "model INSERT 1 failed")
+  let (.ok (), st3) := (Model.modelApi.exec mdb "INSERT INTO t VALUES (2, ?)" #[.real (-0.0)]).run st2
+    | throw (IO.userError "model INSERT 2 failed")
+  let (.ok ms, st4) := (Model.modelRawOps.prepare mdb "SELECT id, x FROM t").run st3
+    | throw (IO.userError "model prepare failed")
+  let (.ok (), st5) := (Model.modelRawOps.bind ms #[]).run st4
+    | throw (IO.userError "model bind failed")
+  let (_, some st6) := Model.stepRawRelational ms (.ok (.row #[.int 1, .real 1.0])) st5
+    | throw (IO.userError "stepRawRelational step1 failed")
+  let (.ok (), st7) := (Model.modelApi.exec mdb "UPDATE t SET x = ? WHERE id = 2" #[.real 0.0]).run st6
+    | throw (IO.userError "model UPDATE +0.0 failed")
+  let (_, stPosZero?) := Model.stepRawRelational ms (.ok (.row #[.int 2, .real 0.0])) st7
+  let (_, stStaleNegZero?) := Model.stepRawRelational ms (.ok (.row #[.int 2, .real (-0.0)])) st7
+  assertTrue (stPosZero?.isSome && stStaleNegZero?.isNone)
+    "stepRawRelational must distinguish +0.0 from -0.0 across mid-scan UPDATE"
+
+  let (.ok mdb2, u0) := (Model.modelRawOps.openDb ":memory:" { walMode := false, foreignKeys := false }).run {}
+    | throw (IO.userError "model openDb 2 failed")
+  let (.ok (), u1) := (Model.modelApi.exec mdb2 "CREATE TABLE u(id INTEGER PRIMARY KEY, k INT, ucol INT UNIQUE)" #[]).run u0
+    | throw (IO.userError "model CREATE u failed")
+  let mut uSt := u1
+  for i in [1:18] do
+    let idV := Int64.ofInt (Int.ofNat i)
+    let uV := Int64.ofInt (Int.ofNat (18 - i))
+    let (.ok (), uNext) := (Model.modelApi.exec mdb2 "INSERT INTO u VALUES (?, 0, ?)" #[.int idV, .int uV]).run uSt
+      | throw (IO.userError "model INSERT u failed")
+    uSt := uNext
+  let (.ok us, uPrep) := (Model.modelRawOps.prepare mdb2 "SELECT k FROM u WHERE ucol > 0").run uSt
+    | throw (IO.userError "model prepare u failed")
+  let (.ok (), uBind) := (Model.modelRawOps.bind us #[]).run uPrep
+    | throw (IO.userError "model bind u failed")
+  let (_, some uStep1) := Model.stepRawRelational us (.ok (.row #[.int 0])) uBind
+    | throw (IO.userError "stepRawRelational 17-row step1 failed")
+  let (.ok (), uAfterDel) := (Model.modelApi.exec mdb2 "DELETE FROM u WHERE id <= 16" #[]).run uStep1
+    | throw (IO.userError "model DELETE u failed")
+  let (_, uDone?) := Model.stepRawRelational us (.ok .done) uAfterDel
+  assertTrue uDone?.isSome "stepRawRelational must accept .done after 17th-row index visit and mid-scan DELETE"
+
+  let pad := String.ofList (List.replicate (Model.maxCuratedSqlBytes + 16) ' ')
+  let bigStrSql := pad ++ "SELECT 'a  b'"
+  let (bigStrRes, _) := (Model.modelApi.query mdb2 bigStrSql #[]).run uAfterDel
+  assertTrue (match bigStrRes with | .ok #[#[.text "a  b"]] => true | _ => false)
+    s!"oversized SQL must preserve spaces in string literal: {repr bigStrRes}"
+  let bigCmtSql := pad ++ "-- line comment\nSELECT 2"
+  let (bigCmtRes, _) := (Model.modelApi.query mdb2 bigCmtSql #[]).run uAfterDel
+  assertTrue (match bigCmtRes with | .ok #[#[.int 2]] => true | _ => false)
+    s!"oversized SQL must preserve newline terminating line comment: {repr bigCmtRes}"
+
+  let (.ok mdb3, r0) := (Model.modelRawOps.openDb ":memory:" { walMode := false, foreignKeys := false }).run {}
+    | throw (IO.userError "model openDb 3 failed")
+  let (.ok (), r1) := (Model.modelApi.exec mdb3 "CREATE TABLE rw(id INTEGER PRIMARY KEY, x TEXT)" #[]).run r0
+    | throw (IO.userError "model CREATE rw failed")
+  let (_, some r2) := Model.stepInsertRelational r1 mdb3 "INSERT INTO rw(id, x) VALUES (NULL, 'a')" #[] [#[.int (-999), .text "a"]]
+    | throw (IO.userError "relational auto-rowid must accept arbitrary unused Int64 (-999)")
+  let (_, badNegExp?) := Model.stepInsertRelational r2 mdb3 "INSERT INTO rw(id, x) VALUES (10, 'b')" #[] [#[.int (-999), .text "a"], #[.int 99, .text "b"]]
+  assertTrue badNegExp?.isNone "relational insert must reject mismatch on explicit INTEGER PRIMARY KEY"
+  let (_, some r3) := Model.stepInsertRelational r2 mdb3 "INSERT INTO rw(id, x) VALUES (10, 'b')" #[] [#[.int (-999), .text "a"], #[.int 10, .text "b"]]
+    | throw (IO.userError "relational insert must accept exact explicit INTEGER PRIMARY KEY 10")
+  let (_, badNonIpk?) := Model.stepInsertRelational r3 mdb3 "INSERT INTO rw(id, x) VALUES (NULL, 'c')" #[] [#[.int (-999), .text "a"], #[.int 10, .text "b"], #[.int 42, .text "wrong"]]
+  assertTrue badNonIpk?.isNone "relational insert must reject non-rowid column mismatch"
+  let (.ok (), ra1) := (Model.modelApi.exec mdb3 "CREATE TABLE rwa(id INTEGER PRIMARY KEY AUTOINCREMENT, x TEXT)" #[]).run r3
+    | throw (IO.userError "model CREATE rwa failed")
+  let (.ok (), ra2) := (Model.modelApi.exec mdb3 "INSERT INTO rwa(id, x) VALUES (10, 'p')" #[]).run ra1
+    | throw (IO.userError "model INSERT rwa explicit 10 failed")
+  let (_, badMono?) := Model.stepInsertRelational ra2 mdb3 "INSERT INTO rwa(id, x) VALUES (NULL, 'q')" #[] [#[.int 9, .text "q"], #[.int 10, .text "p"]]
+  assertTrue badMono?.isNone "relational AUTOINCREMENT must reject auto-rowid <= maxAutoRowid"
+  let (_, some ra3) := Model.stepInsertRelational ra2 mdb3 "INSERT INTO rwa(id, x) VALUES (NULL, 'q')" #[] [#[.int 10, .text "p"], #[.int 42, .text "q"]]
+    | throw (IO.userError "relational AUTOINCREMENT must accept auto-rowid > maxAutoRowid")
+  let (.ok (), ra4) := (Model.modelApi.exec mdb3 "INSERT INTO rwa(id, x) VALUES (9223372036854775807, 'top')" #[]).run ra3
+    | throw (IO.userError "model INSERT rwa maxValue failed")
+  let (raFull, _) := (Model.modelApi.exec mdb3 "INSERT INTO rwa(id, x) VALUES (NULL, 'full')" #[]).run ra4
+  assertTrue (match raFull with | .error e => e.sqliteCode == some 13 | _ => false)
+    "AUTOINCREMENT after Int64.maxValue must fail with SQLITE_FULL (13)"
+
 /-- Execute end-to-end runtime tests for `LeanSwe.Sqlite` over real SQLite files. -/
 def runAll : IO Unit := do
   let res ← LeanSwe.TempDir.withTempDir none "lean-swe-sqlite-rt-" fun tmp => do
@@ -461,6 +641,7 @@ def runAll : IO Unit := do
   match res with
   | .ok () => pure ()
   | .error e => throw (IO.userError s!"Sqlite RuntimeTests failed unexpectedly: {repr e}")
+  testImplErrorPrecedenceAndRelationalModel
   Core.runRegisteredErrorTests registeredErrorTests
   IO.println "PASS: LeanSwe.Sqlite runtime tests"
 
