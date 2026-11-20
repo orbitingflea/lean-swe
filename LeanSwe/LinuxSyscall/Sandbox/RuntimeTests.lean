@@ -758,6 +758,25 @@ private def straceInjectOnce (exe : String) (syscallName workerMode errnoName : 
     (expectedErrno : Errno) (modelState : SandboxSysState) (modelReq : SandboxReq) : IO Unit := do
   if (allowedStep modelState modelReq (.err expectedErrno)).isNone then
     throw (IO.userError s!"strace {syscallName}({workerMode},{errnoName}): Model.allowedStep rejected errno {expectedErrno}")
+  let hEnv1 : HealthyEnv := { state := modelState, eintrBudget := 1 }
+  let hEnv0 : HealthyEnv := { state := modelState, eintrBudget := 0 }
+  if Errno.isCriticalOsErrno expectedErrno then
+    if !isCriticalFault (.err expectedErrno) || (healthyStep hEnv1 modelReq (.err expectedErrno)).isSome then
+      throw (IO.userError s!"strace {syscallName}({workerMode},{errnoName}): Model.healthyStep failed to reject critical fault {expectedErrno}")
+  else if expectedErrno == Errno.EINTR then
+    match healthyStep hEnv1 modelReq (.err expectedErrno) with
+    | some hNext =>
+      if hNext.eintrBudget != 0 || (healthyStep hEnv0 modelReq (.err expectedErrno)).isSome then
+        throw (IO.userError s!"strace {syscallName}({workerMode},{errnoName}): Model.healthyStep EINTR budget check failed")
+    | none =>
+      throw (IO.userError s!"strace {syscallName}({workerMode},{errnoName}): Model.healthyStep rejected EINTR with positive budget")
+  else
+    match healthyStep hEnv1 modelReq (.err expectedErrno) with
+    | some hNext =>
+      if hNext.eintrBudget != 1 || !hNext.wf then
+        throw (IO.userError s!"strace {syscallName}({workerMode},{errnoName}): Model.healthyStep unexpectedly mutated budget/wf on {expectedErrno}")
+    | none =>
+      throw (IO.userError s!"strace {syscallName}({workerMode},{errnoName}): Model.healthyStep rejected everyday error {expectedErrno}")
   let spec := if syscallName == "setrlimit" then
       s!"prlimit64:error={errnoName}:when=5+"
     else
@@ -773,7 +792,7 @@ private def straceInjectOnce (exe : String) (syscallName workerMode errnoName : 
   if !hasExactLine then
     throw (IO.userError s!"strace {syscallName}({workerMode},{errnoName}) missing exact '{expectedLine}' in stdout={out.stdout}")
 
-/-- Run `strace -f` fault injection checks across all 10 C shim hooks and invalid-arg kernel paths, validating outcomes against `Model.allowedStep`. -/
+/-- Run `strace -f` fault injection checks across all 10 C shim hooks and invalid-arg kernel paths, validating outcomes against `Model.allowedStep` and `Model.healthyStep`. -/
 def runStraceFaultCheck : IO Unit := do
   let exe := (← IO.appPath).toString
   let s0 := SandboxSysState.initial
@@ -796,13 +815,31 @@ def runStraceFaultCheck : IO Unit := do
     nextHid := 1
     landlockEnabled := true
   }
+  let nonFdReqs : Array (String × SandboxSysState × SandboxReq) := #[
+    ("landlock_query", s0, .landlockCreateRuleset none LANDLOCK_CREATE_RULESET_VERSION),
+    ("landlock_create_empty_masks", s0, .landlockCreateRuleset (some {}) 0),
+    ("landlock_add_path", sRsPath, .landlockAddRule 0 (.pathBeneath 1 LANDLOCK_ACCESS_FS_READ_DIR)),
+    ("landlock_add_net", sRsNet, .landlockAddRule 0 (.netPort 80 LANDLOCK_ACCESS_NET_CONNECT_TCP)),
+    ("landlock_restrict_self", sRsExec, .landlockRestrictSelf 0),
+    ("seccomp_avail", s0, .seccomp (.getActionAvail SECCOMP_RET_ALLOW) {} ByteArray.empty),
+    ("seccomp_filter", sNnp, .seccomp .setModeFilter {} allowAllFilter),
+    ("prctl", s0, .prctl .getNoNewPrivs),
+    ("setrlimit", s0, .setrlimit .core 0 0),
+    ("memfd_conflict", s0, .memfdCreate "a".toUTF8 { noexecSeal := true, exec := true })
+  ]
+  for (lbl, st, req) in nonFdReqs do
+    for fdOnlyErr in [Errno.EMFILE, Errno.ENOSPC] do
+      if (allowedStep st req (.err fdOnlyErr)).isSome ||
+          (healthyStep { state := st, eintrBudget := 1 } req (.err fdOnlyErr)).isSome then
+        throw (IO.userError s!"non-FD syscall {lbl} erroneously accepted {fdOnlyErr}")
   let matrix : Array (String × String × SandboxSysState × SandboxReq × Array (String × Errno)) := #[
     ("landlock_create_ruleset", "landlock_query", s0,
       .landlockCreateRuleset none LANDLOCK_CREATE_RULESET_VERSION,
       #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("ENOSYS", Errno.ENOSYS)]),
     ("landlock_create_ruleset", "landlock_create_ruleset", s0,
       .landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0,
-      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("ENFILE", Errno.ENFILE), ("ENOSYS", Errno.ENOSYS)]),
+      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("EMFILE", Errno.EMFILE),
+        ("ENFILE", Errno.ENFILE), ("ENOSPC", Errno.ENOSPC), ("ENOSYS", Errno.ENOSYS)]),
     ("landlock_add_rule", "landlock_add_path_beneath", sRsPath,
       .landlockAddRule 0 (.pathBeneath 1 LANDLOCK_ACCESS_FS_READ_DIR),
       #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM)]),
@@ -841,7 +878,8 @@ def runStraceFaultCheck : IO Unit := do
       #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM)]),
     ("memfd_create", "memfd_create", s0,
       .memfdCreate "strace".toUTF8 {},
-      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("EMFILE", Errno.EMFILE), ("ENFILE", Errno.ENFILE), ("ENOSYS", Errno.ENOSYS)]),
+      #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("EMFILE", Errno.EMFILE),
+        ("ENFILE", Errno.ENFILE), ("ENOSPC", Errno.ENOSPC), ("ENOSYS", Errno.ENOSYS)]),
     ("memfd_create", "memfd_create_conflict", s0,
       .memfdCreate "a".toUTF8 { noexecSeal := true, exec := true },
       #[("EINTR", Errno.EINTR), ("ENOMEM", Errno.ENOMEM), ("ENOSYS", Errno.ENOSYS)])

@@ -686,6 +686,73 @@ def test_sandbox_model_modelOpsRefinesAllowedStep
   let (out, s') := (execSandboxReq ops req).run s
   NondetTest.assert (step s req out = some s' ∧ s'.wf = true)
 
+/-- `healthyStep`, `healthyModelOps`, `Errno.isCriticalOsErrno`, and `Errno.isResourceLimitErrno` partition `Errno.isTransientOsErrno` cleanly (`EMFILE` and `ENOSPC` accepted on FD-allocating `memfdCreate` and `landlockCreateRuleset (some attr) 0` while rejected on non-FD-allocating syscalls, critical `ENOMEM`/`EIO`/`ENFILE` and `EFAULT` rejected everywhere, `EINTR` strictly consuming `eintrBudget`), preserve `SandboxSysState.wf` (and `HealthyEnv.wf` across non-intercepting transitions), and run non-degenerately on `healthyModelOps`. -/
+def test_sandbox_healthyStep_and_healthyModelOps
+    {runner} [NondetTest runner]
+    (ops : SandboxOpsM (StateM HealthyEnv) HandleId := healthyModelOps)
+    (step : HealthyEnv → SandboxReq → SandboxOutcome → Option HealthyEnv := healthyStep)
+    (isCrit : Errno → Bool := Errno.isCriticalOsErrno)
+    (isResLim : Errno → Bool := Errno.isResourceLimitErrno) :
+    runner Unit := do
+  let e ← nondet Errno
+  NondetTest.assert (Errno.isTransientOsErrno e = (e == Errno.EINTR || isCrit e || isResLim e))
+  NondetTest.assert ((isCrit e && isResLim e) = false)
+  NondetTest.assert (isCrit Errno.EMFILE = false ∧ isCrit Errno.ENOSPC = false ∧
+    isResLim Errno.EMFILE = true ∧ isResLim Errno.ENOSPC = true)
+  let e1 := HealthyEnv.initial 1
+  let e0 := HealthyEnv.initial 0
+  NondetTest.assert (e1.wf = true ∧ ({ state := SandboxSysState.unprivileged, eintrBudget := 1 } : HealthyEnv).wf = true)
+  NondetTest.assert ((step { state := SandboxSysState.initial.withOuterSeccomp, eintrBudget := 1 }
+    (.prctl .setNoNewPrivs) (.u32 0)).isNone)
+  NondetTest.assert ((step e1 (.prctl .setNoNewPrivs) (.err Errno.ENOMEM)).isNone ∧
+    (step e1 (.prctl .setNoNewPrivs) (.err Errno.EIO)).isNone ∧
+    (step e1 (.prctl .setNoNewPrivs) (.err Errno.ENFILE)).isNone ∧
+    (step e1 (.prctl .setNoNewPrivs) (.err Errno.EFAULT)).isNone)
+  NondetTest.assert (step e1 (.memfdCreate (asciiBytes ['a']) {}) (.err Errno.EMFILE) = some e1 ∧
+    step e1 (.memfdCreate (asciiBytes ['a']) {}) (.err Errno.ENOSPC) = some e1 ∧
+    step e1 (.landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0)
+      (.err Errno.EMFILE) = some e1 ∧
+    step e1 (.landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0)
+      (.err Errno.ENOSPC) = some e1)
+  NondetTest.assert ((step e1 (.setrlimit .nofile 64 64) (.err Errno.EMFILE)).isNone ∧
+    (step e1 (.setrlimit .nofile 64 64) (.err Errno.ENOSPC)).isNone ∧
+    (step e1 (.prctl .setNoNewPrivs) (.err Errno.EMFILE)).isNone ∧
+    (step e1 (.landlockCreateRuleset none LANDLOCK_CREATE_RULESET_VERSION) (.err Errno.EMFILE)).isNone ∧
+    (step e1 (.landlockAddRule 0 (.netPort 80 1)) (.err Errno.EMFILE)).isNone ∧
+    (step e1 (.landlockRestrictSelf 0) (.err Errno.EMFILE)).isNone ∧
+    (step e1 (.seccomp (.getActionAvail SECCOMP_RET_ALLOW) {} ByteArray.empty) (.err Errno.EMFILE)).isNone)
+  NondetTest.assert (step e1 (.prctl .setNoNewPrivs) (.err Errno.EINTR) = some e0 ∧
+    (step e0 (.prctl .setNoNewPrivs) (.err Errno.EINTR)).isNone)
+  let (rNnp, envAfterNnp) := (ops.prctl .setNoNewPrivs).run e1
+  let (rMfd, _) := (ops.memfdCreate (asciiBytes ['m']) {}).run envAfterNnp
+  NondetTest.assert (rNnp = .ok 0 ∧ envAfterNnp.state.noNewPrivs? = some true ∧
+    envAfterNnp.eintrBudget = 1 ∧ rMfd = .ok 0)
+  let env ← nondet HealthyEnv
+  assume (env.wf = true)
+  let req ← nondet SandboxReq
+  let (out, env') := (execSandboxReq ops req).run env
+  let (mOut, s') := (execSandboxReq modelOps req).run env.state
+  NondetTest.assert ((out, env') = (mOut, { env with state := s' }) ∧
+    step env req out = some env' ∧ env'.eintrBudget = env.eintrBudget ∧
+    env'.state.wf = true ∧ (installsInterceptingSeccomp req out = false → env'.wf = true))
+  let anyEnv ← nondet HealthyEnv
+  let anyReq ← nondet SandboxReq
+  let anyOut ← nondet SandboxOutcome
+  NondetTest.assert (step anyEnv anyReq anyOut =
+    if !anyEnv.wf || isCriticalFault anyOut then
+      none
+    else
+      match allowedStep anyEnv.state anyReq anyOut with
+      | none => none
+      | some sNext =>
+        if isEintrOutcome anyOut then
+          if anyEnv.eintrBudget > 0 then
+            some { state := sNext, eintrBudget := anyEnv.eintrBudget - 1 }
+          else
+            none
+        else
+          some { state := sNext, eintrBudget := anyEnv.eintrBudget })
+
 /-- External trust-boundary assumptions for `LeanSwe.LinuxSyscall.Sandbox` C wrappers (`sandbox_shim.c` + `fd_box.h`) and Linux kernel ABI (`x86_64` + `aarch64`), verified 1-to-1 by `RuntimeTests.lean`, `leanswe-world-fuzz`, and `strace` fault injection. On `assume_sandbox_seccomp_actionAvailAndFilterAbi`, `Internal.mkSandboxOps` enforces `hasSafeSeccompRetBytes` in pure Lean (rejecting `SECCOMP_RET_ERRNO | 0`, `SECCOMP_RET_ERRNO | EFAULT`, `KILL_PROCESS`, `KILL_THREAD`, `TRAP`, `TRACE`, `USER_NOTIF`, unknown action bits, `BPF_RET | BPF_A` `0x0016`, and `BPF_ALU | BPF_DIV | BPF_X` `0x003c` with `EINVAL`), so `SandboxFuzz` can fuzz arbitrary `filterBytes` with zero avoided inputs; `SandboxSysState.withOuterSeccomp` likewise assumes inherited safe outer filters (`SECCOMP_RET_ERRNO | EFAULT` fails loud with `SIGABRT`, verified in `RuntimeTests.lean`). -/
 def externalAssumptions : List AssumptionObligation :=
   [ { name := "LeanSwe.LinuxSyscall.Sandbox.assume_sandbox_landlockCreateRuleset_versionAndRuleset"

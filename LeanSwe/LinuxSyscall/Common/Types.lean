@@ -162,4 +162,12 @@ def hasEmbeddedNul (b : ByteArray) : Bool :=
 def asciiBytes (cs : List Char) : ByteArray :=
   ByteArray.mk (cs.map (fun c => UInt8.ofNat c.toNat)).toArray
 
+/-- Returns `true` iff `e` is a curated catastrophic OS or hardware fault (`ENOMEM`, `EIO`, `ENFILE`) excluded from `healthyStep`. -/
+def Errno.isCriticalOsErrno (e : Errno) : Bool :=
+  e == Errno.ENOMEM || e == Errno.EIO || e == Errno.ENFILE
+
+/-- Returns `true` iff `e` is an everyday visible OS resource-limit errno (`EMFILE`, `ENOSPC`) permitted inside `healthyStep`. -/
+def Errno.isResourceLimitErrno (e : Errno) : Bool :=
+  e == Errno.EMFILE || e == Errno.ENOSPC
+
 end LeanSwe.LinuxSyscall

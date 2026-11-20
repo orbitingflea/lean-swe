@@ -261,4 +261,46 @@ example : ¬ Core.AllPass (test_timerand_allowedStep_exactKernelSemantics
   have hBad := h0.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1
   cases hBad
 
+example : ¬ Core.AllPass (test_timerand_healthyStep_and_healthyModelOps
+    (step := fun env req out =>
+      if !env.wf || isCriticalFault out then none
+      else (allowedStep env.state req out).map (fun s' => { state := s', eintrBudget := env.eintrBudget }))) := by
+  intro h
+  exact absurd h.2.2.1.2 (by decide)
+
+example : ¬ Core.AllPass (test_timerand_healthyStep_and_healthyModelOps
+    (ops := { healthyModelOps with clock_gettime := fun _ => pure (.error Errno.EINTR) })) := by
+  intro h
+  have h0 := h.2.2.2.2.2 (HealthyEnv.initial 1 0 false) rfl .monotonic false { sec := 0, nsec := 0 } 0 {}
+  rcases h0.1.2.1 with ⟨_, hEq⟩
+  cases hEq
+
+example : ¬ Core.AllPass (test_timerand_healthyStep_and_healthyModelOps
+    (ops := { healthyModelOps with
+      getrandom := fun len flags env =>
+        if flags.isInvalid then (.error Errno.EINVAL, env)
+        else
+          let cap := min len.toNat MAX_READ_BYTES.toNat
+          (.ok (ByteArray.mk (Array.replicate cap 0)),
+           { env with state := { env.state with
+               crngReady := env.state.crngReady || !flags.insecure
+               entropyDraws := env.state.entropyDraws + 1 } }) })) := by
+  intro h
+  have h0 := h.2.2.2.2.2 (HealthyEnv.initial 1 0 false) rfl .monotonic false { sec := 0, nsec := 0 }
+    16 { nonblock := true }
+  have hEq := congrArg Prod.fst h0.2.2.1.1
+  cases hEq
+
+example : ¬ Core.AllPass (test_timerand_healthyStep_and_healthyModelOps
+    (step := fun env req out =>
+      if decide (env.eintrBudget ≥ 2) && isEintrOutcome out then
+        (healthyStep env req out).map (fun env' => { env' with eintrBudget := env.eintrBudget })
+      else
+        healthyStep env req out)) := by
+  intro h
+  have hRest := h.2.2.2.2.2 (HealthyEnv.initial 1 0 false) rfl .monotonic false { sec := 0, nsec := 0 } 0 {}
+  have hStep := (hRest.2.2.2 (HealthyEnv.initial 2 0 false)
+    (.clock_nanosleep .monotonic false { sec := 0, nsec := 1000 }) (.err Errno.EINTR)).1
+  exact absurd (congrArg (Option.map HealthyEnv.eintrBudget) hStep) (by decide)
+
 end LeanSwe.LinuxSyscall.TimeRand

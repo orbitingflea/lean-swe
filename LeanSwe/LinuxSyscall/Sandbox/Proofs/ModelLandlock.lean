@@ -518,7 +518,7 @@ theorem refine_landlockCreateRuleset (s : SandboxSysState) (hwf : s.wf = true)
                 · refine ⟨?_, by simp only [Bool.not_false, ↓reduceIte, st_bind, st_set, st_pure]; exact wf_with_enabled s hwf⟩
                   simp [allowedStep, failsPureWrapperGuard, allowedStepCore, hFl0, hVer, hErr, hEr, hSec,
                     Errno.EINVAL, Errno.EOPNOTSUPP, Errno.ENOSYS, Errno.EFAULT,
-                    show Errno.isTransientOsErrno 22 = false by decide]
+                    show isNonFdTransientErrno 22 = false by decide]
                 · refine ⟨?_, by simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, st_pure]; exact hwf⟩
                   exact allowedStep_seccomp_err s _ Errno.EINVAL (by simp [failsPureWrapperGuard, hFl0])
                     hSec (by decide) (by decide) (by decide)
@@ -537,7 +537,7 @@ theorem refine_landlockCreateRuleset (s : SandboxSysState) (hwf : s.wf = true)
             · refine ⟨?_, by simp only [Bool.not_false, ↓reduceIte, st_bind, st_set, st_pure]; exact wf_with_enabled s hwf⟩
               simp [allowedStep, failsPureWrapperGuard, allowedStepCore, hFl0, hVer, hErr, hSec,
                 Errno.EINVAL, Errno.EOPNOTSUPP, Errno.ENOSYS, Errno.EFAULT,
-                show Errno.isTransientOsErrno 22 = false by decide]
+                show isNonFdTransientErrno 22 = false by decide]
             · refine ⟨?_, by simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, st_pure]; exact hwf⟩
               exact allowedStep_seccomp_err s _ Errno.EINVAL (by simp [failsPureWrapperGuard, hFl0])
                 hSec (by decide) (by decide) (by decide)
@@ -631,14 +631,16 @@ theorem refine_landlockCreateRuleset (s : SandboxSysState) (hwf : s.wf = true)
                 cases hOpt : s.landlockAbi? with
                 | none =>
                   by_cases hM : (attr.handledAccessFs &&& ~~~landlockKnownFsMask (maxU32 4 s.landlockMinAbi)) != 0 <;>
-                    simp [hM, Errno.isTransientOsErrno, show Errno.EMFILE ≠ Errno.EINVAL by decide,
+                    simp [hM, isFdAllocTransientErrno, Errno.isCriticalOsErrno, Errno.isResourceLimitErrno,
+                      show Errno.EMFILE ≠ Errno.EINVAL by decide,
                       show Errno.EMFILE ≠ Errno.EOPNOTSUPP by decide, show Errno.EMFILE ≠ Errno.ENOSYS by decide,
                       emfile_ne_efault]
                 | some abi =>
                   have hEq : effectiveModelLandlockAbi s = abi := by simp [effectiveModelLandlockAbi, hOpt]
                   have hFsA : ((attr.handledAccessFs &&& ~~~landlockKnownFsMask abi) != 0) = false := by
                     rw [← hEq]; exact Bool.eq_false_iff.mpr hFs
-                  simp [hFsA, Errno.isTransientOsErrno, emfile_ne_efault]
+                  simp [hFsA, isFdAllocTransientErrno, Errno.isCriticalOsErrno, Errno.isResourceLimitErrno,
+                    emfile_ne_efault]
               · have hNoneHid := assocGet_nextHid_none s hwf
                 have hEmfF : (s.rlimitNofile.curExact && decide (s.fds.length ≥ s.rlimitNofile.cur.toNat)) = false := by
                   simpa using hEmf

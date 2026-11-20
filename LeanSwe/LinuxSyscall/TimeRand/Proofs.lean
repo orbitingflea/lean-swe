@@ -684,4 +684,407 @@ theorem proof_timerand_modelOps_soundAgainstAllowedStep :
         cases hsec : s.ambientSeccomp <;>
           simp [allowedStep, allowedStepCore, hsec, hinvFalse, hlen]
 
+/-- Exact disjoint partition of `Errno.isTransientOsErrno` into `EINTR`, `Errno.isCriticalOsErrno`, and `Errno.isResourceLimitErrno`. -/
+theorem errno_transient_partition (e : Errno) :
+    Errno.isTransientOsErrno e =
+      (e == Errno.EINTR || Errno.isCriticalOsErrno e || Errno.isResourceLimitErrno e) ∧
+    (Errno.isCriticalOsErrno e && Errno.isResourceLimitErrno e) = false := by
+  refine ⟨?_, ?_⟩
+  · unfold Errno.isTransientOsErrno Errno.isCriticalOsErrno Errno.isResourceLimitErrno
+    cases e == Errno.EINTR <;> cases e == Errno.EIO <;> cases e == Errno.ENOMEM <;>
+      cases e == Errno.ENFILE <;> cases e == Errno.EMFILE <;> cases e == Errno.ENOSPC <;> rfl
+  · by_cases h1 : e == Errno.ENOMEM
+    · have : e = Errno.ENOMEM := eq_of_beq h1
+      subst this; decide
+    · by_cases h2 : e == Errno.EIO
+      · have : e = Errno.EIO := eq_of_beq h2
+        subst this; decide
+      · by_cases h3 : e == Errno.ENFILE
+        · have : e = Errno.ENFILE := eq_of_beq h3
+          subst this; decide
+        · simp [Errno.isCriticalOsErrno, h1, h2, h3]
+
+private theorem allowedStepCore_preserves_ambientSeccomp
+    (s s' : TimeRandState) (req : TimeRandReq) (out : TimeRandOutcome)
+    (h : allowedStepCore s req out = some s') :
+    s'.ambientSeccomp = s.ambientSeccomp := by
+  cases req with
+  | clock_gettime clk =>
+    cases out with
+    | timespec ts =>
+      cases clk <;> simp only [allowedStepCore] at h <;> split at h <;>
+        first | contradiction | (injection h with hEq; rw [← hEq])
+    | _ => simp [allowedStepCore] at h
+  | clock_nanosleep clk abstime reqTs =>
+    simp only [allowedStepCore] at h
+    split at h
+    · cases out with
+      | err e =>
+        simp only at h
+        split at h <;> first | contradiction | (injection h with hEq; rw [← hEq])
+      | _ => simp at h
+    · cases out with
+      | unit =>
+        cases clk <;> simp only at h <;> injection h with hEq <;> rw [← hEq]
+      | err e =>
+        simp only at h
+        split at h <;> first | contradiction | (injection h with hEq; rw [← hEq])
+      | _ => simp at h
+  | getrandom len flags =>
+    simp only [allowedStepCore] at h
+    split at h
+    · cases out with
+      | err e =>
+        simp only at h
+        split at h <;> first | contradiction | (injection h with hEq; rw [← hEq])
+      | _ => simp at h
+    · cases out with
+      | bytes got =>
+        simp only at h
+        split at h <;> first | contradiction | (injection h with hEq; rw [← hEq])
+      | err e =>
+        simp only at h
+        split at h <;> first | contradiction | (injection h with hEq; rw [← hEq])
+      | _ => simp at h
+
+private theorem allowedStepCore_not_critical
+    (s s' : TimeRandState) (req : TimeRandReq) (out : TimeRandOutcome)
+    (h : allowedStepCore s req out = some s') :
+    isCriticalFault out = false := by
+  cases out with
+  | unit | timespec _ | bytes _ => rfl
+  | err e =>
+    cases req with
+    | clock_gettime clk => simp [allowedStepCore] at h
+    | clock_nanosleep clk abstime reqTs =>
+      simp only [allowedStepCore] at h
+      split at h
+      · split at h
+        · rename_i heq
+          have : e = Errno.EINVAL := eq_of_beq heq
+          subst this; decide
+        · contradiction
+      · split at h
+        · rename_i heq
+          have : e = Errno.EINTR := eq_of_beq heq
+          subst this; decide
+        · contradiction
+    | getrandom len flags =>
+      simp only [allowedStepCore] at h
+      split at h
+      · split at h
+        · rename_i heq
+          have : e = Errno.EINVAL := eq_of_beq heq
+          subst this; decide
+        · contradiction
+      · split at h
+        · rename_i hcond
+          rcases Bool.or_eq_true_iff.mp hcond with h1 | h2
+          · simp only [Bool.and_eq_true] at h1
+            have : e = Errno.EAGAIN := eq_of_beq h1.2
+            subst this; decide
+          · simp only [Bool.and_eq_true] at h2
+            have : e = Errno.EINTR := eq_of_beq h2.2
+            subst this; decide
+        · contradiction
+
+/-- Initial healthy `TimeRand` environments satisfy `HealthyEnv.wf`. -/
+theorem healthyEnv_initial_wf (budget : Nat) (realtimeNs : Int) (crngReady : Bool) :
+    (HealthyEnv.initial budget realtimeNs crngReady).wf = true :=
+  rfl
+
+/-- Tightness by construction: every `allowedStep` transition from a healthy `TimeRand` environment without curated critical faults (and with positive `eintrBudget` on `EINTR`) is accepted by `healthyStep`. -/
+theorem allowedStep_healthy_tight
+    (env : HealthyEnv) (req : TimeRandReq) (out : TimeRandOutcome) (s' : TimeRandState)
+    (hStep : allowedStep env.state req out = some s')
+    (hWf : env.wf = true)
+    (hBudget : isEintrOutcome out = true → 0 < env.eintrBudget)
+    (hNoCrit : isCriticalFault out = false) :
+    healthyStep env req out =
+      some { state := s',
+             eintrBudget := if isEintrOutcome out then env.eintrBudget - 1 else env.eintrBudget } := by
+  unfold healthyStep
+  have hGuard : (!env.wf || isCriticalFault out) = false := by simp [hWf, hNoCrit]
+  simp only [hGuard, Bool.false_eq_true, ↓reduceIte, hStep]
+  cases hEi : isEintrOutcome out
+  · simp
+  · have hb : env.eintrBudget > 0 := hBudget hEi
+    simp [hb]
+
+/-- Soundness of `healthyStep` with respect to `allowedStep`: every `healthyStep` transition is a valid `allowedStep` transition, preserves `HealthyEnv.wf`, excludes curated critical OS faults, and strictly decreases `eintrBudget` on `EINTR`. -/
+theorem healthyStep_implies_allowedStep
+    (env env' : HealthyEnv) (req : TimeRandReq) (out : TimeRandOutcome)
+    (h : healthyStep env req out = some env') :
+    allowedStep env.state req out = some env'.state ∧
+    env.wf = true ∧
+    env'.wf = true ∧
+    isCriticalFault out = false ∧
+    env'.eintrBudget ≤ env.eintrBudget ∧
+    (isEintrOutcome out = true → env'.eintrBudget < env.eintrBudget) := by
+  unfold healthyStep at h
+  by_cases hBad : (!env.wf || isCriticalFault out) = true
+  · simp [hBad] at h
+  · have hWf : env.wf = true := by
+      cases hw : env.wf <;> simp_all
+    have hNoCrit : isCriticalFault out = false := by
+      cases hc : isCriticalFault out <;> simp_all
+    simp only [hBad, Bool.false_eq_true, ↓reduceIte] at h
+    cases hAl : allowedStep env.state req out with
+    | none => rw [hAl] at h; contradiction
+    | some s' =>
+      rw [hAl] at h
+      dsimp only at h
+      have hSecF : env.state.ambientSeccomp = false := by
+        unfold HealthyEnv.wf at hWf
+        cases hb : env.state.ambientSeccomp <;> simp_all
+      have hCore : allowedStepCore env.state req out = some s' := by
+        simpa [allowedStep, hSecF] using hAl
+      have hSec' : s'.ambientSeccomp = false := by
+        rw [allowedStepCore_preserves_ambientSeccomp _ _ _ _ hCore, hSecF]
+      cases hEi : isEintrOutcome out with
+      | false =>
+        simp only [hEi, Bool.false_eq_true, ↓reduceIte, Option.some.injEq] at h
+        subst h
+        dsimp only
+        exact ⟨rfl, hWf, by simp [HealthyEnv.wf, hSec'], hNoCrit, Nat.le_refl _, fun hc => by cases hc⟩
+      | true =>
+        simp only [hEi, ↓reduceIte] at h
+        by_cases hb : env.eintrBudget > 0
+        · simp only [hb, ↓reduceIte, Option.some.injEq] at h
+          subst h
+          dsimp only
+          exact ⟨rfl, hWf, by simp [HealthyEnv.wf, hSec'], hNoCrit, Nat.sub_le _ _, fun _ => by omega⟩
+        · simp [hb] at h
+
+/-- Reference `healthyModelOps` refines `healthyStep` universally across all requests. -/
+theorem healthyModelOps_refinesHealthyTimeRand :
+    RefinesHealthyTimeRand healthyModelOps := by
+  intro env req hWf
+  dsimp only [id] at hWf ⊢
+  have hSound := proof_timerand_modelOps_soundAgainstAllowedStep env.state
+  have hSecF : env.state.ambientSeccomp = false := by
+    unfold HealthyEnv.wf at hWf
+    cases hb : env.state.ambientSeccomp <;> simp_all
+  cases req with
+  | clock_gettime clk =>
+    have h1 := (hSound clk false default 0 {}).1
+    have hCore : allowedStepCore env.state (.clock_gettime clk)
+        (outcomeOfTimespec (modelOps.clock_gettime clk env.state).1) =
+        some (modelOps.clock_gettime clk env.state).2 := by
+      simpa [allowedStep, hSecF] using h1
+    have hNoCrit := allowedStepCore_not_critical _ _ _ _ hCore
+    have hNoEi : isEintrOutcome (outcomeOfTimespec (modelOps.clock_gettime clk env.state).1) = false := by
+      cases clk
+      · rw [modelOps_clock_gettime_realtime]
+        cases Timespec.ofEpochNanos? env.state.realtimeNs <;> rfl
+      · rw [modelOps_clock_gettime_monotonic]
+        cases Timespec.ofNanosNat? env.state.monoLowerBoundNs <;> rfl
+    have hTight := allowedStep_healthy_tight env (.clock_gettime clk) _ _ h1 hWf (by simp [hNoEi]) hNoCrit
+    simp only [hNoEi, Bool.false_eq_true, ↓reduceIte] at hTight
+    dsimp only [execTimeRandReq, healthyModelOps, TimeRandOpsM.clock_gettime, Bind.bind, Pure.pure,
+      StateT.run, StateT.bind, StateT.pure, get, MonadStateOf.get, getThe, StateT.get,
+      set, MonadStateOf.set, StateT.set]
+    exact hTight
+  | clock_nanosleep clk abstime reqTs =>
+    have h2 := (hSound clk abstime reqTs 0 {}).2.1
+    have hCore : allowedStepCore env.state (.clock_nanosleep clk abstime reqTs)
+        (outcomeOfUnit (modelOps.clock_nanosleep clk abstime reqTs env.state).1) =
+        some (modelOps.clock_nanosleep clk abstime reqTs env.state).2 := by
+      simpa [allowedStep, hSecF] using h2
+    have hNoCrit := allowedStepCore_not_critical _ _ _ _ hCore
+    have hNoEi : isEintrOutcome (outcomeOfUnit (modelOps.clock_nanosleep clk abstime reqTs env.state).1) = false := by
+      rw [modelOps_clock_nanosleep]
+      split
+      · dsimp only; decide
+      · cases clk <;> rfl
+    have hTight := allowedStep_healthy_tight env (.clock_nanosleep clk abstime reqTs) _ _ h2 hWf (by simp [hNoEi]) hNoCrit
+    simp only [hNoEi, Bool.false_eq_true, ↓reduceIte] at hTight
+    dsimp only [execTimeRandReq, healthyModelOps, TimeRandOpsM.clock_nanosleep, Bind.bind, Pure.pure,
+      StateT.run, StateT.bind, StateT.pure, get, MonadStateOf.get, getThe, StateT.get,
+      set, MonadStateOf.set, StateT.set]
+    exact hTight
+  | getrandom len flags =>
+    have h3 := (hSound .realtime false default len flags).2.2.1
+    have hCore : allowedStepCore env.state (.getrandom len flags)
+        (outcomeOfBytes (modelOps.getrandom len flags env.state).1) =
+        some (modelOps.getrandom len flags env.state).2 := by
+      simpa [allowedStep, hSecF] using h3
+    have hNoCrit := allowedStepCore_not_critical _ _ _ _ hCore
+    have hNoEi : isEintrOutcome (outcomeOfBytes (modelOps.getrandom len flags env.state).1) = false := by
+      rw [modelOps_getrandom]
+      by_cases h1 : flags.isInvalid = true
+      · simp [h1]; decide
+      · by_cases h2 : (!env.state.crngReady && flags.nonblock && !flags.insecure) = true
+        · simp [h1, h2]; decide
+        · simp [h1, h2, outcomeOfBytes, isEintrOutcome]
+    have hTight := allowedStep_healthy_tight env (.getrandom len flags) _ _ h3 hWf (by simp [hNoEi]) hNoCrit
+    simp only [hNoEi, Bool.false_eq_true, ↓reduceIte] at hTight
+    dsimp only [execTimeRandReq, healthyModelOps, TimeRandOpsM.getrandom, Bind.bind, Pure.pure,
+      StateT.run, StateT.bind, StateT.pure, get, MonadStateOf.get, getThe, StateT.get,
+      set, MonadStateOf.set, StateT.set]
+    exact hTight
+
+/-- Over any `ops` satisfying `RefinesHealthyTimeRandAt proj ops`, `clock_gettime` succeeds unconditionally without consuming `eintrBudget`. -/
+theorem refinesHealthy_clock_gettime_ok
+    {W : Type} {proj : W → HealthyEnv} {ops : TimeRandOpsM (StateM W)}
+    (hRef : RefinesHealthyTimeRandAt proj ops)
+    (w : W) (clk : ClockId) (hWf : (proj w).wf = true) :
+    ∃ ts w', (ops.clock_gettime clk).run w = (.ok ts, w') ∧
+      (proj w').wf = true ∧
+      (proj w').eintrBudget = (proj w).eintrBudget ∧
+      allowedStepCore (proj w).state (.clock_gettime clk) (.timespec ts) = some (proj w').state := by
+  have hStep := hRef w (.clock_gettime clk) hWf
+  dsimp only [execTimeRandReq, Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure] at hStep
+  cases hRun : (ops.clock_gettime clk).run w with
+  | mk res w' =>
+    change (ops.clock_gettime clk) w = (res, w') at hRun
+    rw [hRun] at hStep
+    dsimp only at hStep
+    rcases healthyStep_implies_allowedStep (proj w) (proj w') (.clock_gettime clk)
+      (outcomeOfTimespec res) hStep with ⟨hAl, _, hWf', _, _, _⟩
+    have hSecF : (proj w).state.ambientSeccomp = false := by
+      unfold HealthyEnv.wf at hWf
+      cases hb : (proj w).state.ambientSeccomp <;> simp_all
+    have hCore : allowedStepCore (proj w).state (.clock_gettime clk) (outcomeOfTimespec res) =
+        some (proj w').state := by
+      simpa [allowedStep, hSecF] using hAl
+    cases res with
+    | error e =>
+      simp [outcomeOfTimespec, allowedStepCore] at hCore
+    | ok ts =>
+      have hBud : (proj w').eintrBudget = (proj w).eintrBudget := by
+        unfold healthyStep at hStep
+        rw [hAl] at hStep
+        simp only [hWf, Bool.not_true, isCriticalFault, outcomeOfTimespec, Bool.or_self,
+          Bool.false_eq_true, ↓reduceIte, isEintrOutcome, Option.some.injEq] at hStep
+        exact (congrArg HealthyEnv.eintrBudget hStep).symm
+      exact ⟨ts, w', rfl, hWf', hBud, hCore⟩
+
+/-- Lens-lifting composition theorem: lifting any `ops` satisfying `RefinesHealthyTimeRand` along `(getEnv, setEnv)` with `∀ w e, getEnv (setEnv w e) = e` satisfies `RefinesHealthyTimeRandAt getEnv`. -/
+theorem refinesHealthyTimeRandAt_of_lens
+    {W : Type} (getEnv : W → HealthyEnv) (setEnv : W → HealthyEnv → W)
+    (hGetSet : ∀ (w : W) (e : HealthyEnv), getEnv (setEnv w e) = e)
+    {ops : TimeRandOpsM (StateM HealthyEnv)} (hRef : RefinesHealthyTimeRand ops) :
+    RefinesHealthyTimeRandAt getEnv
+      { clock_gettime := fun clk w =>
+          let (res, e') := (ops.clock_gettime clk).run (getEnv w); (res, setEnv w e')
+        clock_nanosleep := fun clk abstime reqTs w =>
+          let (res, e') := (ops.clock_nanosleep clk abstime reqTs).run (getEnv w); (res, setEnv w e')
+        getrandom := fun len flags w =>
+          let (res, e') := (ops.getrandom len flags).run (getEnv w); (res, setEnv w e') } := by
+  intro w req hWf
+  have hStep := hRef (getEnv w) req hWf
+  cases req with
+  | clock_gettime clk =>
+    dsimp only [id, execTimeRandReq, Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure] at hStep ⊢
+    cases hC : ops.clock_gettime clk (getEnv w) with
+    | mk res e' => rw [hC] at hStep; simp only [hGetSet]; exact hStep
+  | clock_nanosleep clk abstime reqTs =>
+    dsimp only [id, execTimeRandReq, Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure] at hStep ⊢
+    cases hC : ops.clock_nanosleep clk abstime reqTs (getEnv w) with
+    | mk res e' => rw [hC] at hStep; simp only [hGetSet]; exact hStep
+  | getrandom len flags =>
+    dsimp only [id, execTimeRandReq, Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure] at hStep ⊢
+    cases hC : ops.getrandom len flags (getEnv w) with
+    | mk res e' => rw [hC] at hStep; simp only [hGetSet]; exact hStep
+
+/-- Proof of `test_timerand_healthyStep_and_healthyModelOps`. -/
+theorem proof_timerand_healthyStep_and_healthyModelOps :
+    AllPass test_timerand_healthyStep_and_healthyModelOps := by
+  dsimp only [test_timerand_healthyStep_and_healthyModelOps, NondetTest.assert, Bind.bind, Pure.pure]
+  refine ⟨⟨rfl, rfl⟩, rfl, ?_, ?_, ?_, ?_⟩
+  · decide
+  · decide
+  · decide
+  · intro env hWf clk abstime sleepTs len flags
+    obtain ⟨ts, envGet, hRunGet, hWfGet, hBudGet, _⟩ :=
+      refinesHealthy_clock_gettime_ok healthyModelOps_refinesHealthyTimeRand env clk hWf
+    have hStepGet := healthyModelOps_refinesHealthyTimeRand env (.clock_gettime clk) hWf
+    dsimp only [id, execTimeRandReq, Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure] at hStepGet
+    have hStepSleep := healthyModelOps_refinesHealthyTimeRand env (.clock_nanosleep clk abstime sleepTs) hWf
+    dsimp only [id, execTimeRandReq, Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure] at hStepSleep
+    have hStepRand := healthyModelOps_refinesHealthyTimeRand env (.getrandom len flags) hWf
+    dsimp only [id, execTimeRandReq, Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure] at hStepRand
+    refine ⟨?_, ?_, ?_, fun _ _ _ => ⟨rfl, trivial⟩⟩
+    · have hLiftG : (healthyModelOps.clock_gettime clk).run env =
+          (let (mGet, sGet) := (modelOps.clock_gettime clk).run env.state; (mGet, { env with state := sGet })) := by
+        dsimp only [healthyModelOps, Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure,
+          get, MonadStateOf.get, getThe, StateT.get, set, MonadStateOf.set, StateT.set]
+        cases (modelOps.clock_gettime clk).run env.state <;> rfl
+      show (healthyModelOps.clock_gettime clk).run env =
+          (let (mGet, sGet) := (modelOps.clock_gettime clk).run env.state; (mGet, { env with state := sGet })) ∧
+        (∃ ts, (healthyModelOps.clock_gettime clk env).1 = .ok ts) ∧
+        healthyStep env (.clock_gettime clk) (outcomeOfTimespec (healthyModelOps.clock_gettime clk env).1) =
+          some (healthyModelOps.clock_gettime clk env).2 ∧
+        (healthyModelOps.clock_gettime clk env).2.wf = true ∧
+        (healthyModelOps.clock_gettime clk env).2.eintrBudget = env.eintrBudget
+      change healthyModelOps.clock_gettime clk env = (.ok ts, envGet) at hRunGet
+      refine ⟨hLiftG, ?_⟩
+      rw [hRunGet] at hStepGet ⊢
+      dsimp only at hStepGet ⊢
+      exact ⟨⟨ts, rfl⟩, hStepGet, hWfGet, hBudGet⟩
+    · have hLiftS : (healthyModelOps.clock_nanosleep clk abstime sleepTs).run env =
+          (let (mSleep, sSleep) := (modelOps.clock_nanosleep clk abstime sleepTs).run env.state; (mSleep, { env with state := sSleep })) := by
+        dsimp only [healthyModelOps, Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure,
+          get, MonadStateOf.get, getThe, StateT.get, set, MonadStateOf.set, StateT.set]
+        cases (modelOps.clock_nanosleep clk abstime sleepTs).run env.state <;> rfl
+      show (healthyModelOps.clock_nanosleep clk abstime sleepTs).run env =
+          (let (mSleep, sSleep) := (modelOps.clock_nanosleep clk abstime sleepTs).run env.state; (mSleep, { env with state := sSleep })) ∧
+        healthyStep env (.clock_nanosleep clk abstime sleepTs)
+          (outcomeOfUnit (healthyModelOps.clock_nanosleep clk abstime sleepTs env).1) =
+          some (healthyModelOps.clock_nanosleep clk abstime sleepTs env).2 ∧
+        (healthyModelOps.clock_nanosleep clk abstime sleepTs env).2.wf = true ∧
+        (healthyModelOps.clock_nanosleep clk abstime sleepTs env).2.eintrBudget = env.eintrBudget
+      refine ⟨hLiftS, ?_⟩
+      cases hS : healthyModelOps.clock_nanosleep clk abstime sleepTs env with
+      | mk rSleep envSleep =>
+        rw [hS] at hStepSleep
+        dsimp only at hStepSleep ⊢
+        have hWfS := (healthyStep_implies_allowedStep env envSleep _ _ hStepSleep).2.2.1
+        have hBudS : envSleep.eintrBudget = env.eintrBudget := by
+          dsimp only [healthyModelOps, Bind.bind, Pure.pure, StateT.bind, StateT.pure,
+            get, MonadStateOf.get, getThe, StateT.get, set, MonadStateOf.set, StateT.set] at hS
+          cases modelOps.clock_nanosleep clk abstime sleepTs env.state with
+          | mk r0 s0 =>
+            injection hS with _ hEnvEq
+            rw [← hEnvEq]
+        exact ⟨hStepSleep, hWfS, hBudS⟩
+    · have hLiftR : (healthyModelOps.getrandom len flags).run env =
+          (let (mRand, sRand) := (modelOps.getrandom len flags).run env.state; (mRand, { env with state := sRand })) := by
+        dsimp only [healthyModelOps, Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure,
+          get, MonadStateOf.get, getThe, StateT.get, set, MonadStateOf.set, StateT.set]
+        cases (modelOps.getrandom len flags).run env.state <;> rfl
+      show (healthyModelOps.getrandom len flags).run env =
+          (let (mRand, sRand) := (modelOps.getrandom len flags).run env.state; (mRand, { env with state := sRand })) ∧
+        healthyStep env (.getrandom len flags)
+          (outcomeOfBytes (healthyModelOps.getrandom len flags env).1) =
+          some (healthyModelOps.getrandom len flags env).2 ∧
+        (healthyModelOps.getrandom len flags env).2.wf = true ∧
+        (healthyModelOps.getrandom len flags env).2.eintrBudget = env.eintrBudget
+      refine ⟨hLiftR, ?_⟩
+      cases hR : healthyModelOps.getrandom len flags env with
+      | mk rRand envRand =>
+        rw [hR] at hStepRand
+        dsimp only at hStepRand ⊢
+        have hWfR := (healthyStep_implies_allowedStep env envRand _ _ hStepRand).2.2.1
+        have hBudR : envRand.eintrBudget = env.eintrBudget := by
+          dsimp only [healthyModelOps, Bind.bind, Pure.pure, StateT.bind, StateT.pure,
+            get, MonadStateOf.get, getThe, StateT.get, set, MonadStateOf.set, StateT.set] at hR
+          cases modelOps.getrandom len flags env.state with
+          | mk r0 s0 =>
+            injection hR with _ hEnvEq
+            rw [← hEnvEq]
+        exact ⟨hStepRand, hWfR, hBudR⟩
+
+/-- Reachability witness for `test_timerand_healthyStep_and_healthyModelOps`. -/
+theorem reach_timerand_healthyStep_and_healthyModelOps :
+    CanReach test_timerand_healthyStep_and_healthyModelOps := by
+  have hAll := proof_timerand_healthyStep_and_healthyModelOps
+  have hRest := hAll.2.2.2.2.2 (HealthyEnv.initial 1 0 false) rfl .monotonic false { sec := 0, nsec := 0 } 0 {}
+  refine ⟨hAll.1, hAll.2.1, hAll.2.2.1, hAll.2.2.2.1, hAll.2.2.2.2.1,
+    HealthyEnv.initial 1 0 false, rfl, .monotonic, false, { sec := 0, nsec := 0 }, 0, {},
+    hRest.1, hRest.2.1, hRest.2.2.1,
+    HealthyEnv.initial 1 0 false, .clock_gettime .monotonic, .timespec { sec := 0, nsec := 0 }, ?_⟩
+  exact hRest.2.2.2 (HealthyEnv.initial 1 0 false) (.clock_gettime .monotonic) (.timespec { sec := 0, nsec := 0 })
+
 end LeanSwe.LinuxSyscall.TimeRand.Proofs

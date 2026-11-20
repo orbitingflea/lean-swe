@@ -216,6 +216,87 @@ def test_dns_mkRawOps_soundAgainstAllowedOutcome
           message := expMsg }
     | _, _ => True)
 
+/-- `healthyStep` and `healthyModelOps` preserve `HealthyEnv.wf`, force in-family pure numeric IP literals (`"127.0.0.1"`) to resolve unconditionally without `EINTR` or `EAI_AGAIN`, preserve oracle outcomes on non-numeric hostnames (`"localhost"`, `"fe80::1%lo"`) whenever non-critical and non-`EINTR`, accept everyday hostname failures (`EAI_AGAIN`, `EAI_NONAME`, `EAI_SYSTEM`/`EMFILE`), reject curated critical faults (`EAI_MEMORY`, `EAI_SYSTEM` + `ENOMEM`/`EIO`/`ENFILE`) and ambient `seccomp`, and strictly decrement `eintrBudget` on `EAI_SYSTEM`/`EINTR`. -/
+def test_dns_healthyStep_and_healthyModelOps
+    {runner} [NondetTest runner]
+    (ops : DnsOpsM (StateM HealthyEnv) := healthyModelOps)
+    (step : HealthyEnv → DnsReq → DnsOutcome → Option HealthyEnv := healthyStep) :
+    runner Unit := do
+  let e1 := HealthyEnv.initial 1 defaultOfflineOracle
+  let e0 := HealthyEnv.initial 0 defaultOfflineOracle
+  NondetTest.assert (e1.wf = true ∧ e0.wf = true)
+  NondetTest.assert (step { state := DnsState.initial.withOuterSeccomp, eintrBudget := 1 }
+    { host := "127.0.0.1" } (.ok [.ipv4 127 0 0 1]) = none)
+  NondetTest.assert ((ops.getaddrinfo "127.0.0.1" { family := .ipv4, sockType := .stream }).run e1 =
+    (.ok [.ipv4 127 0 0 1], e1))
+  NondetTest.assert ((ops.getaddrinfo "localhost" { family := .any, sockType := .stream }).run e1 =
+    (.ok [.ipv6 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0, .ipv4 127 0 0 1], e1))
+  NondetTest.assert ((ops.getaddrinfo "fe80::1%lo" { family := .any, sockType := .stream }).run e1 =
+    (.ok [.ipv6 0xfe 0x80 0 0 0 0 0 0 0 0 0 0 0 0 0 1 1], e1))
+  NondetTest.assert (step e1 { host := "127.0.0.1", hints := { family := .ipv4, sockType := .stream } }
+    (.error { kind := .temporaryFailure, gaiCode := EAI_AGAIN, errno? := none, message := "x" }) = none ∧
+    step e1 { host := "127.0.0.1", hints := { family := .ipv4, sockType := .stream } }
+      (.error { kind := .systemError, gaiCode := EAI_SYSTEM, errno? := some Errno.EINTR, message := "x" }) = none ∧
+    step e1 { host := "127.0.0.1", hints := { family := .ipv6, sockType := .stream } }
+      (.error { kind := .otherGai, gaiCode := EAI_ADDRFAMILY, errno? := none, message := "x" }) = some e1)
+  NondetTest.assert (step e1 { host := "localhost" }
+      (.error { kind := .temporaryFailure, gaiCode := EAI_AGAIN, errno? := none, message := "x" }) = some e1 ∧
+    step e1 { host := "localhost" }
+      (.error { kind := .systemError, gaiCode := EAI_SYSTEM, errno? := some Errno.EMFILE, message := "x" }) = some e1)
+  NondetTest.assert (step e1 { host := "localhost" }
+      (.error { kind := .systemError, gaiCode := EAI_MEMORY, errno? := none, message := "x" }) = none ∧
+    step e1 { host := "localhost" }
+      (.error { kind := .systemError, gaiCode := EAI_SYSTEM, errno? := some Errno.ENOMEM, message := "x" }) = none ∧
+    step e1 { host := "localhost" }
+      (.error { kind := .systemError, gaiCode := EAI_SYSTEM, errno? := some Errno.EIO, message := "x" }) = none ∧
+    step e1 { host := "localhost" }
+      (.error { kind := .systemError, gaiCode := EAI_SYSTEM, errno? := some Errno.ENFILE, message := "x" }) = none)
+  NondetTest.assert (step e1 { host := "localhost" }
+      (.error { kind := .systemError, gaiCode := EAI_SYSTEM, errno? := some Errno.EINTR, message := "x" }) = some e0 ∧
+    step e0 { host := "localhost" }
+      (.error { kind := .systemError, gaiCode := EAI_SYSTEM, errno? := some Errno.EINTR, message := "x" }) = none)
+  let env ← nondet HealthyEnv
+  assume (env.wf = true)
+  let host ← nondet String
+  let hints ← nondet ResolveHints
+  let (res, env') := (ops.getaddrinfo host hints).run env
+  NondetTest.assert (step env { host := host, hints := hints } res = some env' ∧
+    env'.wf = true ∧ env'.eintrBudget = env.eintrBudget)
+  NondetTest.assert (((isNumericHostLiteral host = false ∧
+      isCriticalFault (modelResolve env.state.oracle host hints) = false ∧
+      isEintrOutcome (modelResolve env.state.oracle host hints) = false) →
+      res = modelResolve env.state.oracle host hints) ∧
+    (∀ baseAddr sc, parseHybridScopedNumericZone? host = some (baseAddr, sc) →
+      (hints.family != .ipv4) = true →
+      res = match modelResolve env.state.oracle host hints with
+        | .ok addrs => .ok addrs
+        | .error _ => .ok (expandSockType hints [withIpv6Scope sc baseAddr])))
+  NondetTest.assert ((res, env') = (healthyModelResolve env.state.oracle host hints, env) ∧
+    ((parsePureNumericAddr? host = none ∧ parseHybridScopedNumericZone? host = none) →
+      res =
+        if isCriticalFault (modelResolve env.state.oracle host hints) ||
+            isEintrOutcome (modelResolve env.state.oracle host hints) then
+          .error (emptyPayloadError host hints)
+        else
+          modelResolve env.state.oracle host hints))
+  let anyEnv ← nondet HealthyEnv
+  let anyReq ← nondet DnsReq
+  let anyOut ← nondet DnsOutcome
+  NondetTest.assert (step anyEnv anyReq anyOut =
+    if !anyEnv.wf || isCriticalFault anyOut then
+      none
+    else
+      match allowedStep anyEnv.state anyReq anyOut with
+      | none => none
+      | some s' =>
+        if isEintrOutcome anyOut then
+          if anyEnv.eintrBudget > 0 then
+            some { state := s', eintrBudget := anyEnv.eintrBudget - 1 }
+          else
+            none
+        else
+          some { state := s', eintrBudget := anyEnv.eintrBudget })
+
 /-- Thin C-wrapper boundary assumptions for `LeanSwe.LinuxSyscall.Dns` (`c/dns_shim.c`), verified offline at runtime with nonce logging. -/
 def externalAssumptions : List AssumptionObligation :=
   [ { name := "LeanSwe.LinuxSyscall.Dns.assume_dns_getaddrinfo_offlineAndScoped"

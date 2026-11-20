@@ -233,4 +233,89 @@ def modelOps : TimeRandOpsM (StateM TimeRandState) :=
         entropyDraws := s.entropyDraws + 1 }
       return .ok bs }
 
+/-- Execute one `TimeRandReq` against a `TimeRandOpsM m` capability bundle and decode its `TimeRandOutcome`. -/
+def execTimeRandReq {m : Type → Type} [Monad m]
+    (ops : TimeRandOpsM m) (req : TimeRandReq) : m TimeRandOutcome :=
+  match req with
+  | .clock_gettime clk => do
+    return outcomeOfTimespec (← ops.clock_gettime clk)
+  | .clock_nanosleep clk abstime reqTs => do
+    return outcomeOfUnit (← ops.clock_nanosleep clk abstime reqTs)
+  | .getrandom len flags => do
+    return outcomeOfBytes (← ops.getrandom len flags)
+
+/-- Return `true` iff `out` is a curated catastrophic OS fault (`ENOMEM`, `EIO`, `ENFILE`). -/
+def isCriticalFault : TimeRandOutcome → Bool
+  | .err e => Errno.isCriticalOsErrno e
+  | _ => false
+
+/-- Return `true` iff `out` is an interrupted syscall outcome (`.err Errno.EINTR`). -/
+def isEintrOutcome : TimeRandOutcome → Bool
+  | .err e => e == Errno.EINTR
+  | _ => false
+
+/-- Healthy execution environment wrapping `TimeRandState` with a finite `EINTR` interruption budget (`ambientSeccomp = false`). -/
+structure HealthyEnv where
+  /-- Underlying `TimeRand` kernel world state. -/
+  state : TimeRandState := TimeRandState.initial
+  /-- Remaining bound on `EINTR` signal interruptions. -/
+  eintrBudget : Nat := 0
+  deriving Repr, DecidableEq, BEq, Inhabited
+
+/-- Initial healthy `TimeRand` environment with `ambientSeccomp = false` and `EINTR` budget `eintrBudget`. -/
+def HealthyEnv.initial (eintrBudget : Nat := 0) (realtimeNs : Int := 0)
+    (crngReady : Bool := false) : HealthyEnv :=
+  { state := TimeRandState.initial realtimeNs crngReady
+    eintrBudget := eintrBudget }
+
+/-- Return `true` iff `env` has no ambient `seccomp` `SECCOMP_RET_ERRNO` filter interception. -/
+def HealthyEnv.wf (env : HealthyEnv) : Bool :=
+  !env.state.ambientSeccomp
+
+/-- Relational healthy-OS step checker for `LeanSwe.LinuxSyscall.TimeRand`, capturing all legitimate Linux nondeterminism and bounded `EINTR` while banning curated critical OS faults and ambient `seccomp`. -/
+def healthyStep (env : HealthyEnv) (req : TimeRandReq) (out : TimeRandOutcome) : Option HealthyEnv :=
+  if !env.wf || isCriticalFault out then
+    none
+  else
+    match allowedStep env.state req out with
+    | none => none
+    | some s' =>
+      if isEintrOutcome out then
+        if env.eintrBudget > 0 then
+          some { state := s', eintrBudget := env.eintrBudget - 1 }
+        else
+          none
+      else
+        some { state := s', eintrBudget := env.eintrBudget }
+
+/-- Reference `TimeRandOpsM (StateM HealthyEnv)` lifting `modelOps` while preserving `eintrBudget`. -/
+def healthyModelOps : TimeRandOpsM (StateM HealthyEnv) :=
+  { clock_gettime := fun clk => do
+      let env ← get
+      let (res, s') := (modelOps.clock_gettime clk).run env.state
+      set { env with state := s' }
+      return res
+    clock_nanosleep := fun clk abstime reqTs => do
+      let env ← get
+      let (res, s') := (modelOps.clock_nanosleep clk abstime reqTs).run env.state
+      set { env with state := s' }
+      return res
+    getrandom := fun len flags => do
+      let env ← get
+      let (res, s') := (modelOps.getrandom len flags).run env.state
+      set { env with state := s' }
+      return res }
+
+/-- Universal healthy-world refinement predicate over an arbitrary state `W` projected via `proj`. -/
+def RefinesHealthyTimeRandAt {W : Type} (proj : W → HealthyEnv)
+    (ops : TimeRandOpsM (StateM W)) : Prop :=
+  ∀ (w : W) (req : TimeRandReq),
+    (proj w).wf = true →
+    let (out, w') := (execTimeRandReq ops req).run w
+    healthyStep (proj w) req out = some (proj w')
+
+/-- Universal healthy-world refinement predicate specialized to `StateM HealthyEnv`. -/
+abbrev RefinesHealthyTimeRand (ops : TimeRandOpsM (StateM HealthyEnv)) : Prop :=
+  RefinesHealthyTimeRandAt id ops
+
 end LeanSwe.LinuxSyscall.TimeRand

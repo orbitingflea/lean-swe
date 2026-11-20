@@ -918,10 +918,50 @@ private def isKernelCloseDetachErr (e : UInt32) : Bool :=
   e == Errno.EBADF || e == Errno.EINTR || e == Errno.EIO || e == 28 ||
     e == 122 || e == Errno.ENOMEM || e == 116 || e == 104
 
+private def checkStepWithHealthy
+    (stepOracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState)
+    (checkHealthy : Bool)
+    (stepIdx : Nat) (sys : SandboxSysState) (hEnv : HealthyEnv)
+    (req : SandboxReq) (out : SandboxOutcome) :
+    SandboxSysState × HealthyEnv × Option (Nat × String) :=
+  match stepOracle sys req out with
+  | none =>
+    (sys, hEnv, some (stepIdx, s!"model mismatch step={stepIdx} req={reqTag req} out={encodeOutcome out} sys={repr sys}"))
+  | some s' =>
+    if !s'.wf then
+      (s', { hEnv with state := s' }, some (stepIdx, s!"wf violated after {reqTag req} ({encodeOutcome out})"))
+    else if checkHealthy then
+      if !hEnv.wf || isCriticalFault out then
+        if (healthyStep hEnv req out).isSome then
+          (s', { hEnv with state := s' },
+            some (stepIdx, s!"healthyStep accepted critical/unhealthy step={stepIdx} req={reqTag req} out={encodeOutcome out}"))
+        else
+          (s', { hEnv with state := s' }, none)
+      else
+        match healthyStep hEnv req out with
+        | none =>
+          (s', { hEnv with state := s' },
+            some (stepIdx, s!"healthyStep mismatch step={stepIdx} req={reqTag req} out={encodeOutcome out} env={repr hEnv}"))
+        | some hEnv' =>
+          let expWf := !installsInterceptingSeccomp req out
+          let eintrOk :=
+            if isEintrOutcome out then
+              hEnv'.eintrBudget + 1 == hEnv.eintrBudget &&
+                (healthyStep { hEnv with eintrBudget := 0 } req out).isNone
+            else
+              hEnv'.eintrBudget == hEnv.eintrBudget
+          if hEnv'.state != s' || (hEnv'.state.wf != true) || (hEnv'.wf != expWf) || !eintrOk then
+            (s', hEnv', some (stepIdx, s!"healthyStep state divergence after {reqTag req} ({encodeOutcome out})"))
+          else
+            (s', hEnv', none)
+    else
+      (s', { hEnv with state := s' }, none)
+
 private def runPlanInChild
     (dirPath filePath : String)
     (plan : EpisodePlan)
-    (stepOracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState := allowedStep) :
+    (stepOracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState := allowedStep)
+    (checkHealthy : Bool := true) :
     IO EpisodeResult := do
   let (st, payload) ← SandboxEnv.runForked do
     let deadFd ← match ← SandboxEnv.openHostFd filePath.toUTF8 3 with
@@ -1067,6 +1107,7 @@ private def runPlanInChild
       sys, nextHid, hostDirs, hostFiles, pseudos, opathMemfd?, opathRuleset?,
       rulesets := #[], dynamics := #[], closedHids, deadFd
     }
+    let mut hEnv : HealthyEnv := { state := ex.sys, eintrBudget := plan.steps.size }
     let mut executed : Nat := 0
     let mut hits : Array (String × Nat) := #[]
     let mut mismatch? : Option (Nat × String) := none
@@ -1087,6 +1128,7 @@ private def runPlanInChild
               rulesets := ex.rulesets.filter (fun s => s.hid != slot.hid)
               dynamics := ex.dynamics.eraseIdx! pos
               closedHids := ex.closedHids.push slot }
+            hEnv := { hEnv with state := sys' }
           | .error e =>
             if !isKernelCloseDetachErr e then
               if !ex.sys.seccompMayIntercept then
@@ -1098,6 +1140,7 @@ private def runPlanInChild
                 rulesets := ex.rulesets.filter (fun s => s.hid != slot.hid)
                 dynamics := ex.dynamics.eraseIdx! pos
                 closedHids := ex.closedHids.push slot }
+              hEnv := { hEnv with state := sys' }
       | .llCreate attr? flags =>
         let req : SandboxReq := .landlockCreateRuleset attr? flags
         let out ← match ← landlockCreateRuleset attr? flags with
@@ -1113,13 +1156,10 @@ private def runPlanInChild
             pure (SandboxOutcome.opened hid)
         executed := executed + 1
         hits := recordOutcomeHit hits ex.sys req out
-        match stepOracle ex.sys req out with
-        | some s' =>
-          if !s'.wf then
-            mismatch? := some (stepIdx, s!"wf violated after {reqTag req} ({encodeOutcome out})")
-          ex := { ex with sys := s' }
-        | none =>
-          mismatch? := some (stepIdx, s!"model mismatch step={stepIdx} req={reqTag req} out={encodeOutcome out} sys={repr ex.sys}")
+        let (s', hEnv', mm?) := checkStepWithHealthy stepOracle checkHealthy stepIdx ex.sys hEnv req out
+        ex := { ex with sys := s' }
+        hEnv := hEnv'
+        if mm?.isSome then mismatch? := mm?
       | .llAddPath rsCh pCh acc =>
         let (rHid, rFd) := resolveChoice ex rsCh
         let (pHid, pFd) := resolveChoice ex pCh
@@ -1129,13 +1169,10 @@ private def runPlanInChild
           | .error e => .err e
         executed := executed + 1
         hits := recordOutcomeHit hits ex.sys req out
-        match stepOracle ex.sys req out with
-        | some s' =>
-          if !s'.wf then
-            mismatch? := some (stepIdx, s!"wf violated after {reqTag req} ({encodeOutcome out})")
-          ex := { ex with sys := s' }
-        | none =>
-          mismatch? := some (stepIdx, s!"model mismatch step={stepIdx} req={reqTag req} out={encodeOutcome out} sys={repr ex.sys}")
+        let (s', hEnv', mm?) := checkStepWithHealthy stepOracle checkHealthy stepIdx ex.sys hEnv req out
+        ex := { ex with sys := s' }
+        hEnv := hEnv'
+        if mm?.isSome then mismatch? := mm?
       | .llAddNet rsCh port acc =>
         let (rHid, rFd) := resolveChoice ex rsCh
         let req : SandboxReq := .landlockAddRule rHid (.netPort port acc)
@@ -1144,13 +1181,10 @@ private def runPlanInChild
           | .error e => .err e
         executed := executed + 1
         hits := recordOutcomeHit hits ex.sys req out
-        match stepOracle ex.sys req out with
-        | some s' =>
-          if !s'.wf then
-            mismatch? := some (stepIdx, s!"wf violated after {reqTag req} ({encodeOutcome out})")
-          ex := { ex with sys := s' }
-        | none =>
-          mismatch? := some (stepIdx, s!"model mismatch step={stepIdx} req={reqTag req} out={encodeOutcome out} sys={repr ex.sys}")
+        let (s', hEnv', mm?) := checkStepWithHealthy stepOracle checkHealthy stepIdx ex.sys hEnv req out
+        ex := { ex with sys := s' }
+        hEnv := hEnv'
+        if mm?.isSome then mismatch? := mm?
       | .llRestrict rsCh =>
         let (rHid, rFd) := resolveChoice ex rsCh
         let req : SandboxReq := .landlockRestrictSelf rHid
@@ -1159,13 +1193,10 @@ private def runPlanInChild
           | .error e => .err e
         executed := executed + 1
         hits := recordOutcomeHit hits ex.sys req out
-        match stepOracle ex.sys req out with
-        | some s' =>
-          if !s'.wf then
-            mismatch? := some (stepIdx, s!"wf violated after {reqTag req} ({encodeOutcome out})")
-          ex := { ex with sys := s' }
-        | none =>
-          mismatch? := some (stepIdx, s!"model mismatch step={stepIdx} req={reqTag req} out={encodeOutcome out} sys={repr ex.sys}")
+        let (s', hEnv', mm?) := checkStepWithHealthy stepOracle checkHealthy stepIdx ex.sys hEnv req out
+        ex := { ex with sys := s' }
+        hEnv := hEnv'
+        if mm?.isSome then mismatch? := mm?
       | .scGetAvail act fl =>
         let req : SandboxReq := .seccomp (.getActionAvail act) fl ByteArray.empty
         let out : SandboxOutcome := match ← seccomp (.getActionAvail act) fl ByteArray.empty with
@@ -1173,13 +1204,10 @@ private def runPlanInChild
           | .error e => .err e
         executed := executed + 1
         hits := recordOutcomeHit hits ex.sys req out
-        match stepOracle ex.sys req out with
-        | some s' =>
-          if !s'.wf then
-            mismatch? := some (stepIdx, s!"wf violated after {reqTag req} ({encodeOutcome out})")
-          ex := { ex with sys := s' }
-        | none =>
-          mismatch? := some (stepIdx, s!"model mismatch step={stepIdx} req={reqTag req} out={encodeOutcome out} sys={repr ex.sys}")
+        let (s', hEnv', mm?) := checkStepWithHealthy stepOracle checkHealthy stepIdx ex.sys hEnv req out
+        ex := { ex with sys := s' }
+        hEnv := hEnv'
+        if mm?.isSome then mismatch? := mm?
       | .scSetFilter fl bs =>
         let req : SandboxReq := .seccomp .setModeFilter fl bs
         let out : SandboxOutcome := match ← seccomp .setModeFilter fl bs with
@@ -1187,13 +1215,10 @@ private def runPlanInChild
           | .error e => .err e
         executed := executed + 1
         hits := recordOutcomeHit hits ex.sys req out
-        match stepOracle ex.sys req out with
-        | some s' =>
-          if !s'.wf then
-            mismatch? := some (stepIdx, s!"wf violated after {reqTag req} ({encodeOutcome out})")
-          ex := { ex with sys := s' }
-        | none =>
-          mismatch? := some (stepIdx, s!"model mismatch step={stepIdx} req={reqTag req} out={encodeOutcome out} sys={repr ex.sys}")
+        let (s', hEnv', mm?) := checkStepWithHealthy stepOracle checkHealthy stepIdx ex.sys hEnv req out
+        ex := { ex with sys := s' }
+        hEnv := hEnv'
+        if mm?.isSome then mismatch? := mm?
       | .doPrctl op =>
         let req : SandboxReq := .prctl op
         let out : SandboxOutcome := match ← prctl op with
@@ -1201,13 +1226,10 @@ private def runPlanInChild
           | .error e => .err e
         executed := executed + 1
         hits := recordOutcomeHit hits ex.sys req out
-        match stepOracle ex.sys req out with
-        | some s' =>
-          if !s'.wf then
-            mismatch? := some (stepIdx, s!"wf violated after {reqTag req} ({encodeOutcome out})")
-          ex := { ex with sys := s' }
-        | none =>
-          mismatch? := some (stepIdx, s!"model mismatch step={stepIdx} req={reqTag req} out={encodeOutcome out} sys={repr ex.sys}")
+        let (s', hEnv', mm?) := checkStepWithHealthy stepOracle checkHealthy stepIdx ex.sys hEnv req out
+        ex := { ex with sys := s' }
+        hEnv := hEnv'
+        if mm?.isSome then mismatch? := mm?
       | .doSetrlimit res cur maxV =>
         let req : SandboxReq := .setrlimit res cur maxV
         let out : SandboxOutcome := match ← setrlimit res cur maxV with
@@ -1215,13 +1237,10 @@ private def runPlanInChild
           | .error e => .err e
         executed := executed + 1
         hits := recordOutcomeHit hits ex.sys req out
-        match stepOracle ex.sys req out with
-        | some s' =>
-          if !s'.wf then
-            mismatch? := some (stepIdx, s!"wf violated after {reqTag req} ({encodeOutcome out})")
-          ex := { ex with sys := s' }
-        | none =>
-          mismatch? := some (stepIdx, s!"model mismatch step={stepIdx} req={reqTag req} out={encodeOutcome out} sys={repr ex.sys}")
+        let (s', hEnv', mm?) := checkStepWithHealthy stepOracle checkHealthy stepIdx ex.sys hEnv req out
+        ex := { ex with sys := s' }
+        hEnv := hEnv'
+        if mm?.isSome then mismatch? := mm?
       | .doMemfd name fl =>
         let req : SandboxReq := .memfdCreate name fl
         let out ← match ← memfdCreate name fl with
@@ -1234,13 +1253,10 @@ private def runPlanInChild
         hits := recordOutcomeHit hits ex.sys req out
         if !ex.sys.seccompMayIntercept && fl.exec && !fl.noexecSeal && out == .err Errno.EACCES then
           hits := bumpHit hits "memfd_create.noexec_strict -> err.13"
-        match stepOracle ex.sys req out with
-        | some s' =>
-          if !s'.wf then
-            mismatch? := some (stepIdx, s!"wf violated after {reqTag req} ({encodeOutcome out})")
-          ex := { ex with sys := s' }
-        | none =>
-          mismatch? := some (stepIdx, s!"model mismatch step={stepIdx} req={reqTag req} out={encodeOutcome out} sys={repr ex.sys}")
+        let (s', hEnv', mm?) := checkStepWithHealthy stepOracle checkHealthy stepIdx ex.sys hEnv req out
+        ex := { ex with sys := s' }
+        hEnv := hEnv'
+        if mm?.isSome then mismatch? := mm?
     if spawnActive then
       let _ ← SandboxEnv.stopSyncThread
     for s in ex.hostDirs do let _ ← SandboxEnv.closeFd s.fd
@@ -1307,7 +1323,8 @@ private def shrinkStepsOnce
     (dirPath filePath : String)
     (bestInit : EpisodePlan)
     (targetClass : String)
-    (oracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState) :
+    (oracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState)
+    (checkHealthy : Bool := true) :
     IO EpisodePlan := do
   let mut best := bestInit
   let mut chunk := Nat.max 1 (best.steps.size / 2)
@@ -1319,7 +1336,7 @@ private def shrinkStepsOnce
       let shrunkSteps := best.steps.extract 0 start ++ best.steps.extract stop best.steps.size
       if !shrunkSteps.isEmpty then
         let candidate := { best with steps := shrunkSteps }
-        let res ← try runPlanInChild dirPath filePath candidate oracle
+        let res ← try runPlanInChild dirPath filePath candidate oracle checkHealthy
           catch _ => pure { executed := 0, hits := #[], mismatch? := none }
         if matchesTargetClass targetClass res then
           best := candidate
@@ -1378,7 +1395,8 @@ private def shrinkStepPayloads
     (dirPath filePath : String)
     (bestInit : EpisodePlan)
     (targetClass : String)
-    (oracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState) :
+    (oracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState)
+    (checkHealthy : Bool := true) :
     IO EpisodePlan := do
   let mut best := bestInit
   for idx in List.range best.steps.size do
@@ -1388,7 +1406,7 @@ private def shrinkStepPayloads
       let curStep := best.steps.getD idx (.doPrctl .getNoNewPrivs)
       for candStep in shrinkStepPayloadCandidates curStep do
         let candidate := { best with steps := best.steps.set! idx candStep }
-        let res ← try runPlanInChild dirPath filePath candidate oracle
+        let res ← try runPlanInChild dirPath filePath candidate oracle checkHealthy
           catch _ => pure { executed := 0, hits := #[], mismatch? := none }
         if matchesTargetClass targetClass res then
           best := candidate
@@ -1400,9 +1418,10 @@ private partial def shrinkPlan
     (dirPath filePath : String)
     (plan : EpisodePlan)
     (targetClass : String)
-    (oracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState) :
+    (oracle : SandboxSysState → SandboxReq → SandboxOutcome → Option SandboxSysState)
+    (checkHealthy : Bool := true) :
     IO EpisodePlan := do
-  let mut best ← shrinkStepsOnce dirPath filePath plan targetClass oracle
+  let mut best ← shrinkStepsOnce dirPath filePath plan targetClass oracle checkHealthy
   let envCands : Array (EpisodePlan → EpisodePlan) := #[
     fun p => { p with useUserns := false },
     fun p => { p with useMntNs := false },
@@ -1420,14 +1439,14 @@ private partial def shrinkPlan
   let mut envChanged := false
   for fn in envCands do
     let candidate := fn best
-    let res ← try runPlanInChild dirPath filePath candidate oracle
+    let res ← try runPlanInChild dirPath filePath candidate oracle checkHealthy
       catch _ => pure { executed := 0, hits := #[], mismatch? := none }
     if matchesTargetClass targetClass res then
       best := candidate
       envChanged := true
   if envChanged && best.steps.size > 1 then
-    best ← shrinkStepsOnce dirPath filePath best targetClass oracle
-  best ← shrinkStepPayloads dirPath filePath best targetClass oracle
+    best ← shrinkStepsOnce dirPath filePath best targetClass oracle checkHealthy
+  best ← shrinkStepPayloads dirPath filePath best targetClass oracle checkHealthy
   return best
 
 private def withFuzzDir {α : Type} (f : String → String → IO α) : IO α := do
@@ -1530,14 +1549,14 @@ def runShrinkSelfTest (seed : UInt64 := 0x123456789abcdef0) : IO Unit := do
     let injected := { basePlan with
       preOuterSeccomp := false
       steps := (prefixSteps.push (.doPrctl (.setPdeathsig 9))) ++ suffixSteps }
-    let initialRes ← runPlanInChild dirPath filePath injected badOracle
+    let initialRes ← runPlanInChild dirPath filePath injected badOracle false
     let initClass ← match initialRes.mismatch? with
       | none => throw (IO.userError "shrink self-test failed to trigger injected oracle bug")
       | some (_, m) => pure (mismatchClassKey m)
-    let minimal ← shrinkPlan dirPath filePath injected initClass badOracle
+    let minimal ← shrinkPlan dirPath filePath injected initClass badOracle false
     if minimal.steps.size > 2 then
       throw (IO.userError s!"shrink self-test expected <= 2 steps, got {minimal.steps.size}")
-    let minRes ← runPlanInChild dirPath filePath minimal badOracle
+    let minRes ← runPlanInChild dirPath filePath minimal badOracle false
     match minRes.mismatch? with
     | none => throw (IO.userError "shrink self-test minimal plan no longer fails")
     | some (_, mm) =>
@@ -1555,11 +1574,11 @@ def runShrinkSelfTest (seed : UInt64 := 0x123456789abcdef0) : IO Unit := do
       preLowerNofile := false
       preOuterSeccomp := false
       steps := #[.doMemfd bigName {}, .doPrctl .setNoNewPrivs, .doMemfd bigName {}] }
-    let pInit ← runPlanInChild dirPath filePath pPlan payloadOracle
+    let pInit ← runPlanInChild dirPath filePath pPlan payloadOracle false
     let pClass ← match pInit.mismatch? with
       | none => throw (IO.userError "shrink self-test payload probe failed to fail")
       | some (_, m) => pure (mismatchClassKey m)
-    let pMin ← shrinkPlan dirPath filePath pPlan pClass payloadOracle
+    let pMin ← shrinkPlan dirPath filePath pPlan pClass payloadOracle false
     if pMin.steps.size != 2 then
       throw (IO.userError s!"shrink self-test causal O:hid probe expected 2 steps, got {pMin.steps.size}")
     match (pMin.steps[0]? : Option FuzzStep), (pMin.steps[1]? : Option FuzzStep) with
@@ -1627,8 +1646,37 @@ private def runOuterSeccompSelfTest : IO Unit := do
   if stClose != 0 || msgClose != "OK" then
     throw (IO.userError s!"__NR_close seccomp self-test failed (status={stClose}, payload={msgClose})")
 
-/-- Execute `cfg.steps` real sandbox syscalls inside forked child episodes, verify every step against `Model.allowedStep`, and assert full matrix coverage for runs `>= 50000` steps. -/
+private def runHealthyModelOpsSelfCheck : IO Unit := do
+  let mut env := HealthyEnv.initial 2
+  let reqs : Array SandboxReq := #[
+    .landlockCreateRuleset none LANDLOCK_CREATE_RULESET_VERSION,
+    .landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE, handledAccessNet := LANDLOCK_ACCESS_NET_CONNECT_TCP }) 0,
+    .landlockAddRule 0 (.netPort 80 LANDLOCK_ACCESS_NET_CONNECT_TCP),
+    .prctl .setNoNewPrivs,
+    .landlockRestrictSelf 0,
+    .seccomp (.getActionAvail SECCOMP_RET_ALLOW) {} ByteArray.empty,
+    .setrlimit .nofile 0 64,
+    .memfdCreate "nf0".toUTF8 {},
+    .landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0,
+    .setrlimit .nofile 64 64,
+    .memfdCreate "ok".toUTF8 { cloexec := true, allowSealing := true }
+  ]
+  for req in reqs do
+    let (out, env') := (execSandboxReq healthyModelOps req).run env
+    let (mOut, ms') := (execSandboxReq modelOps req).run env.state
+    if out != mOut || env' != { env with state := ms' } then
+      throw (IO.userError s!"healthyModelOps modelOps divergence on {reqTag req}: out={encodeOutcome out} model={encodeOutcome mOut}")
+    match healthyStep env req out with
+    | some stepped =>
+      if stepped != env' || !env'.wf || env'.eintrBudget != 2 then
+        throw (IO.userError s!"healthyModelOps self-check divergence on {reqTag req}: out={encodeOutcome out}")
+      env := env'
+    | none =>
+      throw (IO.userError s!"healthyModelOps self-check rejected by healthyStep on {reqTag req}: out={encodeOutcome out}")
+
+/-- Execute `cfg.steps` real sandbox syscalls inside forked child episodes, verify every step against `Model.allowedStep` and `Model.healthyStep`, and assert full matrix coverage for runs `>= 50000` steps. -/
 def runFuzz (cfg : FuzzConfig := {}) : IO UInt32 := do
+  runHealthyModelOpsSelfCheck
   runOuterSeccompSelfTest
   if cfg.selfTestShrink then
     runShrinkSelfTest cfg.seed

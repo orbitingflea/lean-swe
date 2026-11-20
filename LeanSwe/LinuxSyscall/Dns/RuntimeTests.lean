@@ -52,7 +52,15 @@ def assume_dns_getaddrinfo_offlineAndScoped : IO Unit := do
   assertTrue "fe80::1%lo preserves non-zero scopeId" (rScoped.all fun a => a.isIpv6 && !a.isUnscoped)
 
   let rNumScope ← expectOk "fe80::1%305419896" (← getaddrinfo "fe80::1%305419896")
-  assertTrue "fe80::1%305419896 preserves multi-byte scopeId" (rNumScope.all fun a => a.isIpv6 && a.scopeId == 305419896)
+  assertTrue "fe80::1%305419896 allowedDnsOutcome" (allowedDnsOutcome "fe80::1%305419896" {} (.ok rNumScope))
+  assertTrue "fe80::1%305419896 preserves non-zero scopeId"
+    (!rNumScope.isEmpty && rNumScope.all fun a => a.isIpv6 && !a.isUnscoped)
+  let rGlobalNumScope ← expectOk "2001:db8::1%305419896" (← getaddrinfo "2001:db8::1%305419896")
+  assertTrue "2001:db8::1%305419896 always preserves exact multi-byte scopeId"
+    (rGlobalNumScope == [.ipv6 0x20 0x01 0x0d 0xb8 0 0 0 0 0 0 0 0 0 0 0 1 305419896])
+  let rLongZoneScope ← expectOk "fe80::1%0000000305419896" (← getaddrinfo "fe80::1%0000000305419896")
+  assertTrue "fe80::1%0000000305419896 (>= IFNAMSIZ) always preserves exact scopeId"
+    (rLongZoneScope == [.ipv6 0xfe 0x80 0 0 0 0 0 0 0 0 0 0 0 0 0 1 305419896])
 
   let rMapped ← expectOk "::ffff:127.0.0.1 ipv4" (← getaddrinfo "::ffff:127.0.0.1" { family := .ipv4, sockType := .stream })
   assertTrue "::ffff:127.0.0.1 ipv4 unwraps" (rMapped == [.ipv4 127 0 0 1])

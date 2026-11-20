@@ -443,7 +443,8 @@ theorem refine_memfdCreate (s : SandboxSysState) (hwf : s.wf = true)
           refine ⟨?_, hwf⟩
           cases hSec : s.seccompMayIntercept
           · simp [allowedStep, failsPureWrapperGuard, allowedStepCore, hNameOk, hConfF, hNotOver, hSec,
-              Errno.isTransientOsErrno, show Errno.EMFILE ≠ Errno.EACCES by decide,
+              isFdAllocTransientErrno, Errno.isCriticalOsErrno, Errno.isResourceLimitErrno,
+              show Errno.EMFILE ≠ Errno.EACCES by decide,
               show Errno.EMFILE ≠ Errno.EFAULT by decide]
           · exact allowedStep_seccomp_err s _ Errno.EMFILE (by simp [failsPureWrapperGuard, hNameOk])
               hSec (by decide) (by decide) (by decide)

@@ -495,11 +495,24 @@ private def outcomeClass : TimeRandOutcome → OutcomeClass
 private def checkTraceAgainstModel (initSt : TimeRandState) (trace : Array ReplayFuzzAction) :
     IO (Option MismatchClass) := do
   let mut st := initSt
+  let mut hEnv : HealthyEnv := { state := initSt, eintrBudget := trace.size }
   for entry in trace do
     let act ← resolveReplayAction entry
     let out ← execAction act
     match allowedStep st act.toReq out with
-    | some st' => st := st'
+    | some st' =>
+      if hEnv.wf && !isCriticalFault out then
+        match healthyStep hEnv act.toReq out with
+        | some hEnv' =>
+          if hEnv'.state != st' then
+            return some (reqSyscallKind act.toReq, outcomeClass out)
+          hEnv := hEnv'
+        | none => return some (reqSyscallKind act.toReq, outcomeClass out)
+      else
+        if (healthyStep hEnv act.toReq out).isSome then
+          return some (reqSyscallKind act.toReq, outcomeClass out)
+        hEnv := { hEnv with state := st' }
+      st := st'
     | none => return some (reqSyscallKind act.toReq, outcomeClass out)
   return none
 
@@ -746,7 +759,10 @@ private def checkSeccompTrace (initSt : TimeRandState) (eno mask : UInt32)
       | some _ => pure ()
       | none => return some cls
     match allowedStep st act.toReq out with
-    | some st' => st := st'
+    | some st' =>
+      if (healthyStep { state := st, eintrBudget := 2 } act.toReq out).isSome then
+        return some cls
+      st := st'
     | none => return some cls
   return none
 
@@ -1039,10 +1055,18 @@ private def runModelOpsSelfCheck : IO Unit := do
 private def stepModelOpsDifferential (st : TimeRandState) (req : TimeRandReq) :
     Option (MismatchClass × TimeRandState) :=
   let (boundedReq, out, st') := evalModelOpsReq st req
-  if allowedStep st boundedReq out == some st' then
-    none
-  else
+  if allowedStep st boundedReq out != some st' then
     some ((reqSyscallKind boundedReq, outcomeClass out), st')
+  else if !st.ambientSeccomp then
+    let h0 : HealthyEnv := { state := st, eintrBudget := 2 }
+    let (hOut, h1) := (execTimeRandReq healthyModelOps boundedReq).run h0
+    if hOut == out && healthyStep h0 boundedReq hOut == some h1 &&
+        h1.wf && h1.eintrBudget == 2 && h1.state == st' then
+      none
+    else
+      some ((reqSyscallKind boundedReq, outcomeClass hOut), h1.state)
+  else
+    none
 
 /-- Run the stateful `TimeRand` real-syscall fuzz loop for `steps` calls starting from `seedVal`. -/
 def fuzzTimeRand (steps : Nat) (seedVal : UInt64)
@@ -1068,6 +1092,7 @@ def fuzzTimeRand (steps : Nat) (seedVal : UInt64)
       crngReady := globalCrngReady }
     let modelEpInitSt := modelSt
     let mut st := epInitSt
+    let mut hEnv : HealthyEnv := { state := epInitSt, eintrBudget := epLen }
     let mut epTrace : Array ReplayFuzzAction := Array.mkEmpty epLen
     let mut lastMono? : Option Timespec := none
     let mut lastReal? : Option Timespec := none
@@ -1095,6 +1120,27 @@ def fuzzTimeRand (steps : Nat) (seedVal : UInt64)
       | _, _ => pure ()
       match allowedStep st act.toReq out with
       | some st' =>
+        if !isCriticalFault out then
+          match healthyStep hEnv act.toReq out with
+          | some hEnv' =>
+            if hEnv'.state != st' || !hEnv'.wf then
+              throw (IO.userError s!"TimeRand healthyStep state divergence at step {done}: req={repr act.toReq} out={repr out}")
+            if isEintrOutcome out then
+              if hEnv'.eintrBudget + 1 != hEnv.eintrBudget ||
+                  (healthyStep { hEnv with eintrBudget := 0 } act.toReq out).isSome then
+                throw (IO.userError s!"TimeRand healthyStep EINTR budget violation at step {done}: req={repr act.toReq}")
+            hEnv := hEnv'
+          | none =>
+            let origCls : MismatchClass := (reqSyscallKind act.toReq, outcomeClass out)
+            let shrunk ← shrinkFailingReplayTrace
+              (fun cand => do return (← checkTraceAgainstModel epInitSt cand) == some origCls) epTrace
+            throw (IO.userError
+              s!"TimeRand healthyStep violation at step {done} (seed={seedVal}, shrunk={repr shrunk}): req={repr act.toReq} out={repr out} env={repr hEnv}")
+        else
+          if (healthyStep hEnv act.toReq out).isSome then
+            throw (IO.userError
+              s!"TimeRand healthyStep accepted critical/unhealthy outcome at step {done}: req={repr act.toReq} out={repr out}")
+          hEnv := { hEnv with state := st' }
         st := st'
         globalMonoNs := max globalMonoNs st'.monoLowerBoundNs
         globalCrngReady := globalCrngReady || st'.crngReady

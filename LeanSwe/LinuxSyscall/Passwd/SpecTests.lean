@@ -364,6 +364,102 @@ def test_passwd_interface_wiringAndSoundness
   NondetTest.assert (validPasswdName name = true → name.size > MAX_PASSWD_NAME_BYTES →
     ops.getpwnam name = pure (.error Errno.ENAMETOOLONG))
 
+/-- `healthyStep` and `healthyModelOps` preserve `HealthyEnv.wf`, accept everyday NSS errors (`EMFILE`, `ERANGE`, `ENOENT`) and `EMFILE`-induced `[UNAVAIL=continue]` fallback on `HealthyEnv.initial` (`transientNssUnavail = true`) while enforcing strict determinism under `HealthyEnv.initial _ false`, rejecting curated critical faults (`ENOMEM`, `EIO`, `ENFILE`), `EFAULT`, invalid errnos, key/NUL violations, and ambient `seccomp`, strictly decrementing `eintrBudget` on `EINTR`, and deterministically returning present `PasswdEntry` records on `healthyModelOps` without consuming `eintrBudget`. -/
+def test_passwd_healthyStep_and_healthyModelOps
+    {runner} [NondetTest runner]
+    (ops : PasswdOpsM (StateM HealthyEnv) := healthyModelOps)
+    (step : HealthyEnv → PasswdReq → PasswdOutcome → Option HealthyEnv := healthyStep) :
+    runner Unit := do
+  let e1 := HealthyEnv.initial 1
+  let e0 := HealthyEnv.initial 0
+  let eStrict1 := HealthyEnv.initial 1 false
+  NondetTest.assert (e1.wf = true ∧ e0.wf = true ∧ eStrict1.wf = true)
+  NondetTest.assert (step { state := PasswdState.initial.withOuterSeccomp, eintrBudget := 1 }
+    (.getpwuid 0) .notFound = none)
+  NondetTest.assert (step e1 (.getpwuid 0) (.err Errno.EMFILE) = some e1 ∧
+    step e1 (.getpwuid 0) (.err Errno.ERANGE) = some e1 ∧
+    step e1 (.getpwuid 0) (.err Errno.ENOENT) = some e1)
+  NondetTest.assert (step e1 (.getpwuid 0) (.err Errno.ENOMEM) = none ∧
+    step e1 (.getpwuid 0) (.err Errno.EIO) = none ∧
+    step e1 (.getpwuid 0) (.err Errno.ENFILE) = none ∧
+    step e1 (.getpwuid 0) (.err Errno.EFAULT) = none)
+  let rootEtc : PasswdEntry :=
+    { name := asciiBytes ['r', 'o', 'o', 't']
+      uid := 0
+      gid := 0
+      gecos := asciiBytes ['r', 'o', 'o', 't']
+      homeDir := asciiBytes ['/', 'r', 'o', 'o', 't']
+      shell := asciiBytes ['/', 'b', 'i', 'n', '/', 'b', 'a', 's', 'h'] }
+  let rootSynth : PasswdEntry :=
+    { rootEtc with
+      gecos := asciiBytes ['S', 'u', 'p', 'e', 'r']
+      shell := asciiBytes ['/', 'b', 'i', 'n', '/', 's', 'h'] }
+  let rootWrongUid : PasswdEntry := { rootSynth with uid := 1 }
+  let e1Found : HealthyEnv :=
+    { e1 with state := { e1.state with byUid := setPasswdByUid e1.state.byUid 0 (some rootEtc) } }
+  let eStrictFound : HealthyEnv :=
+    { eStrict1 with state := { eStrict1.state with byUid := setPasswdByUid eStrict1.state.byUid 0 (some rootEtc) } }
+  NondetTest.assert (step e1 (.getpwuid 0) (.err Errno.EINTR) = some e0 ∧
+    step e0 (.getpwuid 0) (.err Errno.EINTR) = none ∧
+    step e1 (.getpwuid 0) (.found rootEtc) = some e1Found ∧
+    step e1Found (.getpwuid 0) (.found rootSynth) = some e1Found ∧
+    step e1Found (.getpwuid 0) .notFound = some e1Found ∧
+    step e1Found (.getpwuid 0) (.found rootWrongUid) = none ∧
+    step e1Found (.getpwnam (ByteArray.mk #[114, 0, 111])) .notFound = none ∧
+    step eStrict1 (.getpwuid 0) (.found rootEtc) = some eStrictFound ∧
+    step eStrictFound (.getpwuid 0) (.found rootSynth) = none ∧
+    step eStrictFound (.getpwuid 0) .notFound = none)
+  let env ← nondet HealthyEnv
+  assume (env.wf = true)
+  let uid ← nondet UInt32
+  let name ← nondet ByteArray
+  let entry ← nondet PasswdEntry
+  assume (validPasswdName name = true)
+  assume (name.size ≤ MAX_PASSWD_NAME_BYTES)
+  assume (entry.hasNoEmbeddedNul = true)
+  assume (entry.uid = uid)
+  assume (entry.name = name)
+  let (rUid, envUid) := (ops.getpwuid uid).run env
+  let (mUid, sUid) := (modelOps.getpwuid uid).run env.state
+  NondetTest.assert ((rUid, envUid) = (mUid, { env with state := sUid }) ∧
+    step env (.getpwuid uid) (outcomeOfEntryOpt rUid) = some envUid ∧
+    envUid.wf = true ∧ envUid.eintrBudget = env.eintrBudget)
+  let (rNam, envNam) := (ops.getpwnam name).run env
+  let (mNam, sNam) := (modelOps.getpwnam name).run env.state
+  NondetTest.assert ((rNam, envNam) = (mNam, { env with state := sNam }) ∧
+    step env (.getpwnam name) (outcomeOfEntryOpt rNam) = some envNam ∧
+    envNam.wf = true ∧ envNam.eintrBudget = env.eintrBudget)
+  let envPres : HealthyEnv :=
+    { env with
+      state := { env.state with
+                 byUid := setPasswdByUid env.state.byUid uid (some entry)
+                 byName := setPasswdByName env.state.byName name (some entry) } }
+  NondetTest.assert ((ops.getpwuid uid).run envPres = (.ok (some entry), envPres) ∧
+    (ops.getpwnam name).run envPres = (.ok (some entry), envPres))
+  let rawName ← nondet ByteArray
+  let (rRawNam, envRawNam) := (ops.getpwnam rawName).run env
+  let (mRawNam, sRawNam) := (modelOps.getpwnam rawName).run env.state
+  NondetTest.assert ((rRawNam, envRawNam) = (mRawNam, { env with state := sRawNam }) ∧
+    step env (.getpwnam rawName) (outcomeOfEntryOpt rRawNam) = some envRawNam ∧
+    envRawNam.wf = true ∧ envRawNam.eintrBudget = env.eintrBudget)
+  let anyEnv ← nondet HealthyEnv
+  let anyReq ← nondet PasswdReq
+  let anyOut ← nondet PasswdOutcome
+  NondetTest.assert (step anyEnv anyReq anyOut =
+    if !anyEnv.wf || isCriticalFault anyOut then
+      none
+    else
+      match allowedStep anyEnv.state anyReq anyOut with
+      | none => none
+      | some s' =>
+        if isEintrOutcome anyOut then
+          if anyEnv.eintrBudget > 0 then
+            some { state := s', eintrBudget := anyEnv.eintrBudget - 1 }
+          else
+            none
+        else
+          some { state := s', eintrBudget := anyEnv.eintrBudget })
+
 /-- Thin C-wrapper boundary assumptions for `LeanSwe.LinuxSyscall.Passwd` (`c/passwd_shim.c`), verified at runtime against host glibc/NSS. -/
 def externalAssumptions : List AssumptionObligation :=
   [ { name := "LeanSwe.LinuxSyscall.Passwd.assume_passwd_getpwuid_validAndMissingAndDeterministic"

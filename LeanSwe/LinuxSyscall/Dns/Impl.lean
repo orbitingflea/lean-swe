@@ -136,14 +136,21 @@ def mkDnsOpsM {m : Type → Type} [Monad m] (raw : PosixDnsOpsM m) : DnsOpsM m :
                                     errno? := none
                                     message := "Numeric literal resolution mismatch" }
               | none =>
-                match parseScopedNonNumericZone? host with
-                | some (baseAddr, zoneCs) =>
-                  if canSymbolicScopedOk hints baseAddr zoneCs &&
-                      matchesSymbolicScopedAddrs hints baseAddr addrs then
+                match parseHybridScopedNumericZone? host with
+                | some (baseAddr, sc) =>
+                  if matchesHybridScopedAddrs hints baseAddr sc addrs then
                     return .ok addrs
                   else
                     return .error (emptyPayloadError host hints)
-                | none => return .ok addrs
+                | none =>
+                  match parseScopedNonNumericZone? host with
+                  | some (baseAddr, zoneCs) =>
+                    if canSymbolicScopedOk hints baseAddr zoneCs &&
+                        matchesSymbolicScopedAddrs hints baseAddr addrs then
+                      return .ok addrs
+                    else
+                      return .error (emptyPayloadError host hints)
+                  | none => return .ok addrs
         | .error (rc, eno, msgBytes) => return .error (classifyGaiError host hints rc eno msgBytes) }
 
 /-- Construct an `IO` `DnsOps` bundle from `PosixDnsOps` hooks. -/
