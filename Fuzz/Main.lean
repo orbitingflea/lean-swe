@@ -6,6 +6,7 @@ import Fuzz.Dns.Suite
 import Fuzz.SelfTest
 import Fuzz.EnvVars.Suite
 import Fuzz.CryptoHash.Suite
+import LeanSwe.LinuxSyscall.Fuzz.Env
 
 namespace Fuzz.Main
 
@@ -227,11 +228,29 @@ private def printUsage : IO Unit := do
   IO.println "  --list-suites        List registered fuzz suites and exit"
   IO.println "  -h, --help           Show this help message"
 
+private def safeStream (fd : UInt32) (orig : IO.FS.Stream) : IO.FS.Stream := {
+  flush := do
+    if (← LeanSwe.LinuxSyscall.Fuzz.Env.fdKind fd) != 6 then orig.flush
+  read := orig.read
+  write := fun bs => do
+    if (← LeanSwe.LinuxSyscall.Fuzz.Env.fdKind fd) != 6 then orig.write bs
+  getLine := orig.getLine
+  putStr := fun s => do
+    if (← LeanSwe.LinuxSyscall.Fuzz.Env.fdKind fd) != 6 then orig.putStr s
+  isTty := orig.isTty
+}
+
 /-- Unified CLI entry point for `leanswe-fuzz`. -/
 def main (args : List String) : IO UInt32 := do
   match args with
   | "--cmdline-fuzz-worker" :: rest => return ← Fuzz.CmdLine.Subproc.workerMain rest
   | _ => pure ()
+  let origOut ← IO.getStdout
+  let origErr ← IO.getStderr
+  if (← LeanSwe.LinuxSyscall.Fuzz.Env.fdKind 1) == 6 then
+    let _ ← IO.setStdout (safeStream 1 origOut)
+  if (← LeanSwe.LinuxSyscall.Fuzz.Env.fdKind 2) == 6 then
+    let _ ← IO.setStderr (safeStream 2 origErr)
   let stdout ← IO.getStdout
   let stderr ← IO.getStderr
   match validateRegisteredSuites with

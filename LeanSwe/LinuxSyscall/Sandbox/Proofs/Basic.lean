@@ -214,7 +214,8 @@ private theorem mkRepBytes_size (n : Nat) : (mkRepBytes n).data.size = n := by
   rw [List.size_toArray, List.length_replicate]
 
 private theorem mkRepBytes_noNul (n : Nat) : hasEmbeddedNul (mkRepBytes n) = false := by
-  unfold hasEmbeddedNul mkRepBytes
+  rw [hasEmbeddedNul_eq_toList_any]
+  unfold mkRepBytes
   rw [List.toList_toArray]
   exact hasEmbeddedNul_mkRepBytes_97 n
 

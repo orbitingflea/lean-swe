@@ -31,7 +31,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap strace uidmap python3-zstandard zstd xz-utils gzip curl libssl-dev
+          sudo apt-get install -y --no-install-recommends bubblewrap strace uidmap python3-zstandard zstd xz-utils gzip curl libssl-dev xfsprogs btrfs-progs dosfstools exfatprogs
           [[ ! -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] || sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; U="$(id -un)"; for f in /etc/subuid /etc/subgid; do grep -q "^${U}:" "$f" 2>/dev/null || { S=$(awk -F: 'NF>=3 { if ($2+$3>m) m=$2+$3 } END { print m?m:100000 }' "$f" 2>/dev/null || echo 100000); flag=${f#/etc/sub}; sudo usermod "--add-sub${flag}s" "${S}-$((S+65535))" "$U"; }; done
           if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then
             echo "+memory +pids" | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null 2>&1 || true
@@ -170,7 +170,7 @@ jobs:
           fi
           (( FAILED_RUNS == 0 ))
           .lake/build/bin/lean-swe-test --timerand-strace-fault-check 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
-          { .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,LinuxSyscall.Poll,LinuxSyscall.Net,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns && .lake/build/bin/lean-swe-test --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite LinuxSyscall.Sandbox --suite LinuxSyscall.TimeRand --suite LinuxSyscall.Passwd --suite LinuxSyscall.Dns --suite LinuxSyscall.Poll --suite LinuxSyscall.Net --suite LinuxSyscall.Process 0<&- 1>&- 2>&-; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+          { .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,LinuxSyscall.Poll,LinuxSyscall.Net,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns,LinuxSyscall.Files; .lake/build/bin/lean-swe-test --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite LinuxSyscall.Sandbox --suite LinuxSyscall.TimeRand --suite LinuxSyscall.Passwd --suite LinuxSyscall.Dns --suite LinuxSyscall.Poll --suite LinuxSyscall.Net --suite LinuxSyscall.Process --suite LinuxSyscall.Files 0<&- 1>&- 2>&-; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
           { .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 1000000 --self-test-shrink; .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 250000 --random-seed --self-test-shrink; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
           [[ -x .lake/build/bin/leanswe-fuzz ]] || { echo "Missing .lake/build/bin/leanswe-fuzz" | tee -a "$RUNNER_TEMP/repeat_tests.log"; exit 1; }
           PYTHONUNBUFFERED=1 python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
@@ -178,6 +178,96 @@ jobs:
           { .lake/build/bin/lean-swe-test --poll-strace-fault-check && .lake/build/bin/lean-swe-test --net-strace-fault-check && .lake/build/bin/leanswe-world-fuzz --suite poll --steps 250000 --self-test-shrink && .lake/build/bin/leanswe-world-fuzz --suite poll --steps 750000 --random-seed --self-test-shrink; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
           { .lake/build/bin/leanswe-world-fuzz --suite net --steps 250000 --self-test-shrink --require-ns && .lake/build/bin/leanswe-world-fuzz --suite net --steps 750000 --random-seed --self-test-shrink --require-ns; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
           { .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process; .lake/build/bin/lean-swe-test --process-strace-fault-check; .lake/build/bin/leanswe-world-fuzz --suite process --steps 50000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-world-fuzz --suite process --steps 15000 --random-seed --self-test-shrink --require-ns; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+
+      - name: Run Files world-model differential fuzzer and strace fault injection
+        id: files_world_fuzz
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.lake_check.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/files_world_fuzz.log"
+          .lake/build/bin/lean-swe-test --files-strace-fault-check 2>&1 | tee "$LOG"
+          .lake/build/bin/leanswe-world-fuzz --suite files --steps 250000 --self-test-shrink --require-ns 2>&1 | tee -a "$LOG"
+          .lake/build/bin/leanswe-world-fuzz --suite files --steps 60000 --random-seed --require-ns 2>&1 | tee -a "$LOG"
+          command -v capsh >/dev/null 2>&1 || { echo "ERROR: missing capsh" >&2; exit 1; }
+          unshare -Urm sh -c '
+            set -e; T=$(mktemp -d /tmp/gh-ovl-daily.XXXXXX)
+            trap "for p in \"$T/ro/s1777/u65534\" \"$T/ro\" \"$T/mnt\" \"$T/ul_mnt\" \"$T/root/proc\" \"$T/root/dev\" \"$T/m\"; do umount -l \"\$p\" 2>/dev/null || true; done; rm -rf \"$T\"" EXIT
+            mkdir -p "$T/low" "$T/up" "$T/wk" "$T/mnt" "$T/x" "$T/m" "$T/ro_src" "$T/ro" "$T/ul_low/shrink" "$T/ul_up" "$T/ul_wk" "$T/ul_mnt" "$T/root/dev" "$T/root/proc" "$T/root/etc" "$T/root/sys/kernel/debug" "$T/out"
+            ./.lake/build/bin/leanswe-world-fuzz --seed-overlay-lower "$T/low" 400
+            mount -t overlay overlay -o "lowerdir=$T/low,upperdir=$T/up,workdir=$T/wk,userxattr" "$T/mnt"
+            mount -t tmpfs tmpfs "$T/m"
+            ./.lake/build/bin/leanswe-world-fuzz --worker-mode rw --host-protected --dir "$T/m" --steps 10000 --random-seed --assert-worker-hits < /dev/null
+            ./.lake/build/bin/leanswe-world-fuzz --worker-mode unlinked_cwd --host-protected --dir "$T/m" --steps 3000 --random-seed --assert-worker-hits < /dev/null
+            ./.lake/build/bin/leanswe-world-fuzz --worker-mode seccomp --host-protected --dir "$T/m" --steps 3000 --random-seed --assert-worker-hits < /dev/null
+            ./.lake/build/bin/leanswe-world-fuzz --seed-ro-tree "$T/ro_src"; : > "$T/ro_src/s1777/u65534"; mount --bind "$T/ro_src" "$T/ro"; mount -o remount,ro,bind "$T/ro"; mount --bind /etc/passwd "$T/ro/s1777/u65534"; mount -o remount,ro,bind "$T/ro/s1777/u65534"
+            ./.lake/build/bin/leanswe-world-fuzz --worker-mode ro_bind --host-protected --dir "$T/ro" --steps 3000 --random-seed --assert-worker-hits < /dev/null
+            mount --rbind /dev "$T/root/dev"; mount --rbind /proc "$T/root/proc"; cp /etc/passwd "$T/root/etc/passwd"; : > "$T/root/sys/kernel/cpu_byteorder"
+            ./.lake/build/bin/leanswe-world-fuzz --worker-mode chroot --host-protected --dir "$T/out" --chroot-dir "$T/root" --steps 3000 --random-seed --assert-worker-hits < /dev/null
+            i=0; while [ "$i" -lt 90 ]; do mkdir -p "$T/ul_low/ep-$i"; i=$((i+1)); done
+            j=0; while [ "$j" -lt 256 ]; do mkdir -p "$T/ul_low/shrink-$j"; j=$((j+1)); done
+            : > "$T/ul_low/.ovl_unlinked"; mount -t overlay overlay -o "lowerdir=$T/ul_low,upperdir=$T/ul_up,workdir=$T/ul_wk,userxattr" "$T/ul_mnt"
+            capsh --drop=cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid -- -c "./.lake/build/bin/leanswe-world-fuzz --worker-mode unlinked_cwd --host-protected --preseeded-eps --dir \"$T/ul_mnt\" --steps 3000 --random-seed --assert-worker-hits < /dev/null"
+            capsh --drop=cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid -- -c "./.lake/build/bin/leanswe-world-fuzz --worker-mode rw --host-protected --preseeded-eps --dir \"$T/mnt\" --cross-dir \"$T/x\" --steps 15000 --random-seed --assert-worker-hits < /dev/null"
+          ' 2>&1 | tee -a "$LOG"
+          sudo -n true 2>/dev/null || { echo "ERROR: passwordless sudo required for daily loopback FS audit" >&2; exit 1; }
+          LOOP_T=""; MULTI_T=""; P_SYM=$(sysctl -n fs.protected_symlinks); P_FIF=$(sysctl -n fs.protected_fifos); P_REG=$(sysctl -n fs.protected_regular)
+          cleanup_daily() {
+            [[ -z "$LOOP_T" || ! -d "$LOOP_T" ]] || { sudo umount "$LOOP_T/mnt" 2>/dev/null || true; rm -rf "$LOOP_T"; }
+            [[ -z "$MULTI_T" || ! -d "$MULTI_T" ]] || { for d in "$MULTI_T"/ro*; do sudo umount "$d" 2>/dev/null || true; done; sudo rm -rf "$MULTI_T"; }
+            sudo sysctl -w "fs.protected_symlinks=$P_SYM" "fs.protected_fifos=$P_FIF" "fs.protected_regular=$P_REG" >/dev/null 2>&1 || true
+          }
+          trap cleanup_daily EXIT
+          for fstype in ext4 xfs btrfs vfat exfat; do
+            command -v "mkfs.$fstype" >/dev/null 2>&1 || { echo "ERROR: missing mkfs.$fstype" >&2; exit 1; }
+            LOOP_T=$(mktemp -d /tmp/gh-loopfs.XXXXXX); truncate -s 320M "$LOOP_T/img"; "mkfs.$fstype" "$LOOP_T/img" >/dev/null 2>&1; mkdir -p "$LOOP_T/mnt"
+            MOUNT_OPTS="loop"; if [[ "$fstype" == "vfat" || "$fstype" == "exfat" ]]; then MOUNT_OPTS="loop,uid=$(id -u),gid=$(id -g)"; fi
+            sudo mount -o "$MOUNT_OPTS" "$LOOP_T/img" "$LOOP_T/mnt"
+            sudo chown "$(id -u):$(id -g)" "$LOOP_T/mnt" 2>/dev/null || true
+            .lake/build/bin/leanswe-world-fuzz --suite files --dir "$LOOP_T/mnt" --steps 5000 --random-seed 2>&1 | tee -a "$LOG"
+            .lake/build/bin/leanswe-world-fuzz --seed-ro-tree "$LOOP_T/mnt/ro_tree"
+            sudo umount "$LOOP_T/mnt"; sudo mount -o "$MOUNT_OPTS,ro" "$LOOP_T/img" "$LOOP_T/mnt"
+            .lake/build/bin/leanswe-world-fuzz --worker-mode ro_bind --dir "$LOOP_T/mnt/ro_tree" --steps 5000 --random-seed --assert-worker-hits 2>&1 | tee -a "$LOG"
+            cleanup_daily; LOOP_T=""
+          done
+          MULTI_T=$(mktemp -d /tmp/gh-multi.XXXXXX)
+          MYU=$(id -u); MYG=$(id -g); FU=$((MYU + 1)); FG=$((MYG + 1)); FU2=$((MYU + 2)); FG2=$((MYG + 2))
+          for idx in $(seq 1 9); do
+            PV=$((idx % 3)); PSYM=$((PV > 0 ? 1 : 0))
+            sudo sysctl -w "fs.protected_symlinks=$PSYM" "fs.protected_fifos=$PV" "fs.protected_regular=$PV" >/dev/null
+            .lake/build/bin/leanswe-world-fuzz --seed-ro-tree "$MULTI_T/c$idx"
+            for sd in s1777 s1002; do
+              sudo ln -s ../sub/a "$MULTI_T/c$idx/$sd/sym_other"
+              sudo chown -h "$FU:$FG" "$MULTI_T/c$idx/$sd/"*
+              sudo chown "$FU2:$FG2" "$MULTI_T/c$idx/$sd"
+            done
+            mkdir -p "$MULTI_T/ro$idx"
+            sudo mount --bind "$MULTI_T/c$idx" "$MULTI_T/ro$idx"; sudo mount -o remount,ro,bind "$MULTI_T/ro$idx"
+            .lake/build/bin/leanswe-world-fuzz --worker-mode ro_bind --dir "$MULTI_T/ro$idx" --steps 2000 --random-seed --assert-worker-hits 2>&1 | tee -a "$LOG"
+            sudo umount "$MULTI_T/ro$idx"
+            mkdir -p "$MULTI_T/rw$idx"
+            sudo python3 - "$MULTI_T/rw$idx" "$MYU" "$MYG" "$FU" "$FG" "$FU2" "$FG2" <<'PY'
+          import os, socket, sys
+          rw, myu, myg, fu, fg, fu2, fg2 = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]), int(sys.argv[7])
+          dirs = [f"{rw}/ep-{i}" for i in range(45)] + [f"{rw}/shrink-{i}" for i in range(256)]
+          for d in dirs:
+              os.makedirs(d, exist_ok=True)
+              os.chown(d, myu, myg)
+              gd = f"{d}/gd"
+              os.makedirs(gd, exist_ok=True)
+              os.chown(gd, myu, fg); os.chmod(gd, 0o2755)
+              for sd, sm in [("s1777", 0o1777), ("s1002", 0o1002)]:
+                  s = f"{d}/{sd}"
+                  os.makedirs(s, exist_ok=True)
+                  for fn, md, gg in [("reg666", 0o666, fg), ("f640", 0o640, myg), ("f604", 0o604, myg), ("g640", 0o640, fg), ("g604", 0o604, fg)]:
+                      open(f"{s}/{fn}", "w").write("sticky\n"); os.chown(f"{s}/{fn}", fu, gg); os.chmod(f"{s}/{fn}", md)
+                  os.mkfifo(f"{s}/fifo666"); os.chown(f"{s}/fifo666", fu, fg); os.chmod(f"{s}/fifo666", 0o666)
+                  os.symlink("../sub/a", f"{s}/sym_other"); os.lchown(f"{s}/sym_other", fu, fg)
+                  sk = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); os.chdir(s); sk.bind("sock666"); sk.close()
+                  os.chown(f"{s}/sock666", fu, fg); os.chmod(f"{s}/sock666", 0o666); os.chown(s, fu2, fg2); os.chmod(s, sm)
+          PY
+            .lake/build/bin/leanswe-world-fuzz --worker-mode rw --preseeded-eps --dir "$MULTI_T/rw$idx" --steps 2000 --random-seed --assert-worker-hits 2>&1 | tee -a "$LOG"
+          done
+          trap - EXIT; cleanup_daily
 
       - name: Open deduplicated GitHub issue on failure
         if: ${{ failure() && !cancelled() && github.ref == 'refs/heads/main' }}
@@ -188,48 +278,17 @@ jobs:
           OUT_CHECK: ${{ steps.lake_check.outcome }}
           OUT_MEM: ${{ steps.mem_check.outcome }}
           OUT_TEST: ${{ steps.repeat_tests.outcome }}
+          OUT_FILES_FUZZ: ${{ steps.files_world_fuzz.outcome }}
         run: |
           set -euo pipefail
-          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
-            --json number,title,url | python3 -c '
-          import json, sys
-          rows = [r for r in json.load(sys.stdin) if r["title"].startswith("[audit-daily] Daily audit gate failed")]
-          print(rows[0]["url"] if rows else "")
-          ')
-          if [[ -n "$EXISTING" ]]; then
-            echo "Open issue already exists ($EXISTING); skipping duplicate creation."
-            exit 0
-          fi
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title,url | python3 -c 'import json, sys; rows = [r for r in json.load(sys.stdin) if r["title"].startswith("[audit-daily] Daily audit gate failed")]; print(rows[0]["url"] if rows else "")')
+          [[ -n "$EXISTING" ]] && { echo "Open issue already exists ($EXISTING); skipping duplicate creation."; exit 0; }
           python3 -c '
           import os, pathlib, subprocess
-          sha = os.environ["GITHUB_SHA"]
-          short = sha[:8]
-          repo = os.environ["GITHUB_REPOSITORY"]
-          server = os.environ["GITHUB_SERVER_URL"]
-          run_id = os.environ["GITHUB_RUN_ID"]
-          out_setup = os.environ["OUT_SETUP"]
-          out_toolchain = os.environ["OUT_TOOLCHAIN"]
-          out_check = os.environ["OUT_CHECK"]
-          out_mem = os.environ["OUT_MEM"]
-          out_test = os.environ["OUT_TEST"]
-          run_url = f"{server}/{repo}/actions/runs/{run_id}"
-          temp = pathlib.Path(os.environ["RUNNER_TEMP"])
-          tails = []
-          for name in ("lake_check", "mem_check", "repeat_tests"):
-              p = temp / f"{name}.log"
-              if p.exists():
-                  lines = [ln[:320] for ln in p.read_text(encoding="utf-8", errors="replace").splitlines()[-60:]]
-                  tails.append(f"### {name} (last {len(lines)} lines)\n````text\n" + "\n".join(lines) + "\n````")
-          body = "\n\n".join([
-              f"Daily audit gate failed on `main` at `{sha}`.",
-              f"- Run: {run_url}",
-              f"- Outcomes: setup=`{out_setup}`, toolchain=`{out_toolchain}`, lake_check=`{out_check}`, mem_check=`{out_mem}`, repeat_tests=`{out_test}`",
-              *tails,
-          ]).replace("@", "@\u200b")
-          subprocess.run([
-              "gh", "issue", "create",
-              "--repo", repo,
-              "--title", f"[audit-daily] Daily audit gate failed on main ({short})",
-              "--body", body,
-          ], check=True)
+          e = os.environ; sha, repo, srv, rid = e["GITHUB_SHA"], e["GITHUB_REPOSITORY"], e["GITHUB_SERVER_URL"], e["GITHUB_RUN_ID"]
+          temp = pathlib.Path(e["RUNNER_TEMP"])
+          tails = [f"### {n} (last {len(ls)} lines)\n````text\n" + "\n".join(ls) + "\n````" for n in ("lake_check", "mem_check", "repeat_tests", "files_world_fuzz") if (temp / f"{n}.log").exists() for ls in [[ln[:320] for ln in (temp / f"{n}.log").read_text(encoding="utf-8", errors="replace").splitlines()[-60:]]]]
+          outcomes = ", ".join(f"{k}=`" + e[f"OUT_{k.upper()}"] + "`" for k in ("setup", "toolchain", "check", "mem", "test", "files_fuzz"))
+          body = "\n\n".join([f"Daily audit gate failed on `main` at `{sha}`.", f"- Run: {srv}/{repo}/actions/runs/{rid}", f"- Outcomes: {outcomes}", *tails]).replace("@", "@\u200b")
+          subprocess.run(["gh", "issue", "create", "--repo", repo, "--title", f"[audit-daily] Daily audit gate failed on main ({sha[:8]})", "--body", body], check=True)
           '

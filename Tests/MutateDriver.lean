@@ -35,6 +35,8 @@ import LeanSwe.ConnectProxy.RuntimeTests
 import LeanSwe.SlotPool.RuntimeTests
 import LeanSwe.LinuxSyscall.Sandbox.RuntimeTests
 import LeanSwe.LinuxSyscall.TimeRand.RuntimeTests
+import LeanSwe.LinuxSyscall.Files.Impl
+import LeanSwe.LinuxSyscall.Files.RuntimeTests
 import LeanSwe.LinuxSyscall.Passwd.RuntimeTests
 import LeanSwe.LinuxSyscall.Dns.RuntimeTests
 import LeanSwe.LinuxSyscall.Poll.Impl
@@ -454,6 +456,71 @@ private def runSqliteRawUnitTests : IO Unit := do
   checkB "mkRawOps close2 busy" (match rClose2 with | .error e => e.kind == .busy | .ok _ => false)
   checkB "mkRawOps close2 after finalize" (rClose2b == .ok ())
 
+private def runFilesMkOpsUnitTests : IO Unit := do
+  let sentinelErr := LinuxSyscall.Errno.ENOSYS
+  let raw : LinuxSyscall.Files.Internal.PosixFilesOps :=
+    { openat := fun _ _ _ _ => pure (.error sentinelErr)
+      openat2 := fun _ _ _ _ _ => pure (.error sentinelErr)
+      close := fun _ => pure (.error sentinelErr)
+      read := fun _ _ => pure (.error sentinelErr)
+      write := fun _ _ => pure (.error sentinelErr)
+      fstat := fun _ => pure (.error sentinelErr)
+      fstatat := fun _ _ _ => pure (.error sentinelErr)
+      faccessat := fun _ _ _ _ => pure (.error sentinelErr)
+      mkdirat := fun _ _ _ => pure (.error sentinelErr)
+      unlinkat := fun _ _ _ => pure (.error sentinelErr)
+      renameat2 := fun _ _ _ _ _ => pure (.error sentinelErr)
+      symlinkat := fun _ _ _ => pure (.error sentinelErr)
+      readlinkat := fun _ _ _ => pure (.error sentinelErr)
+      getdents64 := fun _ _ => pure (.error sentinelErr)
+      fchmodat := fun _ _ _ => pure (.error sentinelErr)
+      fchmod := fun _ _ => pure (.error sentinelErr)
+      flock := fun _ _ => pure (.error sentinelErr)
+      fcntl := fun _ _ _ => pure (.error sentinelErr)
+      fsync := fun _ => pure (.error sentinelErr)
+      getcwd := fun _ => pure (.error sentinelErr)
+      lseek := fun _ _ _ => pure (.error sentinelErr)
+      reopenReadOnly := fun _ => pure (.error sentinelErr)
+      dupStdio := fun _ => pure (.error sentinelErr) }
+  let ops := LinuxSyscall.Files.Internal.mkFilesOps raw
+  let nul := ByteArray.mk #[97, 0, 98]
+  let okP := "ok".toUTF8
+  let expectEinval {α : Type} (label : String) (act : IO (Except LinuxSyscall.Errno α)) : IO Unit := do
+    match ← act with
+    | .error e =>
+      if e != LinuxSyscall.Errno.EINVAL then
+        throw (IO.userError s!"mkFilesOps {label}: expected EINVAL, got {e}")
+    | .ok _ => throw (IO.userError s!"mkFilesOps {label}: expected EINVAL, got ok")
+  let expectEnosys {α : Type} (label : String) (act : IO (Except LinuxSyscall.Errno α)) : IO Unit := do
+    match ← act with
+    | .error e =>
+      if e != sentinelErr then
+        throw (IO.userError s!"mkFilesOps {label}: expected ENOSYS, got {e}")
+    | .ok _ => throw (IO.userError s!"mkFilesOps {label}: expected ENOSYS, got ok")
+  expectEinval "openat" (ops.openat none nul {} 0)
+  expectEnosys "openat pass" (ops.openat none okP {} 0)
+  expectEinval "openat2" (ops.openat2 none nul {})
+  expectEnosys "openat2 pass" (ops.openat2 none okP {})
+  expectEinval "fstatat" (ops.fstatat none nul {})
+  expectEinval "fstatat eaccess" (ops.fstatat none okP { eaccess := true })
+  expectEnosys "fstatat pass" (ops.fstatat none okP {})
+  expectEinval "faccessat" (ops.faccessat none nul {} {})
+  expectEnosys "faccessat pass" (ops.faccessat none okP {} {})
+  expectEinval "mkdirat" (ops.mkdirat none nul 0o755)
+  expectEnosys "mkdirat pass" (ops.mkdirat none okP 0o755)
+  expectEinval "unlinkat" (ops.unlinkat none nul false)
+  expectEnosys "unlinkat pass" (ops.unlinkat none okP false)
+  expectEinval "renameat2 old" (ops.renameat2 none nul none okP {})
+  expectEinval "renameat2 new" (ops.renameat2 none okP none nul {})
+  expectEnosys "renameat2 pass" (ops.renameat2 none okP none okP {})
+  expectEinval "symlinkat target" (ops.symlinkat nul none okP)
+  expectEinval "symlinkat link" (ops.symlinkat okP none nul)
+  expectEnosys "symlinkat pass" (ops.symlinkat okP none okP)
+  expectEinval "readlinkat" (ops.readlinkat none nul 64)
+  expectEnosys "readlinkat pass" (ops.readlinkat none okP 64)
+  expectEinval "fchmodat" (ops.fchmodat none nul 0o644)
+  expectEnosys "fchmodat pass" (ops.fchmodat none okP 0o644)
+
 private def runCmdLineMutateExtra : IO Unit := do
   let checkB (lbl : String) (ok : Bool) : IO Unit := do
     unless ok do throw (IO.userError s!"CMDLINE_MUTATE_EXTRA_FAIL: {lbl}")
@@ -854,7 +921,8 @@ private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("LinuxSyscall.Dns", do LinuxSyscall.Dns.RuntimeTests.runAll; return none, runDnsUnitTests),
   ("LinuxSyscall.Poll", do LinuxSyscall.Poll.RuntimeTests.runAll; return none, do LinuxSyscall.Poll.RuntimeTests.runStraceFaultCheck; runPollOpsUnitTests),
   ("LinuxSyscall.Net", do LinuxSyscall.Net.RuntimeTests.runAll; return none, do LinuxSyscall.Net.RuntimeTests.runStraceFaultCheck; runNetOpsUnitTests),
-  ("LinuxSyscall.Process", do LinuxSyscall.Process.RuntimeTests.runAll; return none, runProcessMutExtra)
+  ("LinuxSyscall.Process", do LinuxSyscall.Process.RuntimeTests.runAll; return none, runProcessMutExtra),
+  ("LinuxSyscall.Files", do LeanSwe.LinuxSyscall.Files.RuntimeTests.runAll; return none, runFilesMkOpsUnitTests)
 ]
 
 private structure MutateFlags where
@@ -909,6 +977,8 @@ def main (args : List String) : IO UInt32 := do
     return (← LinuxSyscall.Fuzz.ProcessFuzz.nsWorkerMain mode arg rest)
   | "--process-strace-worker" :: opName :: errName :: _ =>
     return (← LinuxSyscall.Process.RuntimeTests.probeMain ["--worker", opName, errName])
+  | "--files-strace-worker" :: rest =>
+    return (← LinuxSyscall.Files.RuntimeTests.probeMain ("--worker" :: rest))
   | _ =>
     let flags ← match parseFlags args with
       | .ok f => pure f

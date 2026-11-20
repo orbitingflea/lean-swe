@@ -53,6 +53,7 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
     "LinuxSyscall.Poll": pathlib.Path("LeanSwe/LinuxSyscall/Poll"),
     "LinuxSyscall.Net": pathlib.Path("LeanSwe/LinuxSyscall/Net"),
     "LinuxSyscall.Process": pathlib.Path("LeanSwe/LinuxSyscall/Process"),
+    "LinuxSyscall.Files": pathlib.Path("LeanSwe/LinuxSyscall/Files"),
 }
 
 C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
@@ -71,6 +72,7 @@ C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
     "fd_box.c": "leanswe_linux_fd_box",
     "poll_shim.c": "leanswe_linux_poll",
     "net_shim.c": "leanswe_linux_net",
+    "files_shim.c": "leanswe_linux_files",
 }
 
 SUITE_TO_C_SHIMS: dict[str, list[pathlib.Path]] = {
@@ -81,6 +83,7 @@ SUITE_TO_C_SHIMS: dict[str, list[pathlib.Path]] = {
     "LinuxSyscall.Poll": [pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.c"), pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.h"), pathlib.Path("LeanSwe/LinuxSyscall/c/poll_shim.c")],
     "LinuxSyscall.Net": [pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.c"), pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.h"), pathlib.Path("LeanSwe/LinuxSyscall/c/net_shim.c")],
     "LinuxSyscall.Process": [pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.c"), pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.h"), pathlib.Path("LeanSwe/LinuxSyscall/c/process_shim.c")],
+    "LinuxSyscall.Files": [pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.c"), pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.h"), pathlib.Path("LeanSwe/LinuxSyscall/c/files_shim.c")],
 }
 
 SANCOV_RT_C = r"""
@@ -175,9 +178,9 @@ def generate_lean_mutants(rel_path: pathlib.Path, text: str) -> list[Mutant]:
             cands.append(("BoolOp", line.replace("==", "!=", 1), "swap == to !="))
         if "||" in line:
             cands.append(("BoolOp", line.replace("||", "&&", 1), "swap || to &&"))
-        m_if = re.match(r"^(\s*)if\s+(.+?)\s+then(\s*|\s+.+)$", line)
-        if m_if and "msg.isEmpty" not in m_if.group(2) and m_if.group(2) != "false":
-            cands.append(("GuardDrop", f"{m_if.group(1)}if false then{m_if.group(3)}", "drop conditional guard"))
+        m_if = re.match(r"^(\s*(?:else\s+)?)if\s+(.+?)\s+then([^\n]*)(\n?)$", line)
+        if m_if and "msg.isEmpty" not in m_if.group(2) and m_if.group(2) != "false" and "else" not in m_if.group(3):
+            cands.append(("GuardDrop", f"{m_if.group(1)}if false then{m_if.group(3)}{m_if.group(4)}", "drop conditional guard"))
         if ".filter fun " in line:
             cands.append(("DropFilter", re.sub(r"\.filter\s+fun\s+[^)]+", "", line, count=1), "drop filter predicate"))
         if "if msg.isEmpty then fallback else msg" in line:
@@ -577,14 +580,10 @@ def main() -> int:
                     continue
                 for mname, cst, cout in measure_c_sancov(work, eval_modes, args.suite, ct, use_systemd, args.timeout):
                     print(f"C sancov [{mname}] ({cst}, {ct}): {cout}")
-        if args.c_cov_only:
-            return 0
-
+        if args.c_cov_only: return 0
         mutants: list[Mutant] = []
-        for rel in lean_targets:
-            mutants.extend(generate_lean_mutants(rel, (work / rel).read_text()))
-        for rel in c_targets:
-            mutants.extend(generate_c_mutants(rel, (work / rel).read_text()))
+        for rel in lean_targets: mutants.extend(generate_lean_mutants(rel, (work / rel).read_text()))
+        for rel in c_targets: mutants.extend(generate_c_mutants(rel, (work / rel).read_text()))
 
         per_mode_killed: dict[str, int] = {m: 0 for m in eval_modes}
         per_mode_survived: dict[str, list[Mutant]] = {m: [] for m in eval_modes}
