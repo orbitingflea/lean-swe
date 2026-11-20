@@ -72,6 +72,15 @@ private def netAuditModules : Array Name := #[
   `LeanSwe.LinuxSyscall.Net.Proofs
 ]
 
+private def processAuditModules : Array Name := #[
+  `LeanSwe.LinuxSyscall.Process.Types,
+  `LeanSwe.LinuxSyscall.Process.Model,
+  `LeanSwe.LinuxSyscall.Process.Impl,
+  `LeanSwe.LinuxSyscall.Process.Interface,
+  `LeanSwe.LinuxSyscall.Process.SpecTests,
+  `LeanSwe.LinuxSyscall.Process.Proofs
+]
+
 private def envVarsAuditModules : Array Name := #[
   `LeanSwe.EnvVars.Raw.Types,
   `LeanSwe.EnvVars.Raw.Model,
@@ -128,9 +137,10 @@ private def isAllowedClosureStdlibModule (m : Name) : Bool :=
   let r := m.getRoot
   if r == `Init then true
   else if r == `Std then
-    match m.components.drop 1 with
-    | sub :: _ => !forbiddenStdSubtrees.contains sub
-    | [] => true
+    m.components.take 3 == [`Std, `Internal, `ForIn] ||
+      match m.components.drop 1 with
+      | sub :: _ => !forbiddenStdSubtrees.contains sub
+      | [] => true
   else false
 
 private def nameLastStr (n : Name) : String :=
@@ -175,6 +185,13 @@ private def isAllowedNetClosureModule (m : Name) : Bool :=
     m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
     (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Net] &&
       nameLastStr m != "RuntimeTests" && nameLastStr m != "SpecMutants")
+
+private def isAllowedProcessClosureModule (m : Name) : Bool :=
+  m.getRoot == `Core ||
+    m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
+    (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Process] &&
+      let last := nameLastStr m
+      last != "RuntimeTests" && last != "SpecMutants")
 
 private def isAllowedEnvVarsClosureModule (m : Name) : Bool :=
   m.getRoot == `Core || envVarsAuditModules.contains m
@@ -221,6 +238,16 @@ private def allowedNetExternSyms : Std.HashMap Name String :=
     |>.insert `LeanSwe.LinuxSyscall.Net.rawSendmsg "leanswe_sys_sendmsg_scm"
     |>.insert `LeanSwe.LinuxSyscall.Net.rawRecvmsg "leanswe_sys_recvmsg_scm"
     |>.insert `LeanSwe.LinuxSyscall.Net.rawNetIoctl "leanswe_sys_net_ioctl"
+
+private def allowedProcessExternSyms : Std.HashMap Name String :=
+  Std.HashMap.emptyWithCapacity 8
+    |>.insert `LeanSwe.LinuxSyscall.Process.rawPipe2 "leanswe_sys_pipe2"
+    |>.insert `LeanSwe.LinuxSyscall.Process.rawWaitpid "leanswe_sys_waitpid"
+    |>.insert `LeanSwe.LinuxSyscall.Process.rawKill "leanswe_sys_kill"
+    |>.insert `LeanSwe.LinuxSyscall.Process.rawPidfdOpen "leanswe_sys_pidfd_open"
+    |>.insert `LeanSwe.LinuxSyscall.Process.rawPidfdSendSignal "leanswe_sys_pidfd_send_signal"
+    |>.insert `LeanSwe.LinuxSyscall.Process.rawGetpid "leanswe_sys_getpid"
+    |>.insert `LeanSwe.LinuxSyscall.Process.rawGetuid "leanswe_sys_getuid"
 
 private def allowedEnvVarsExternSyms : Std.HashMap Name String :=
   Std.HashMap.emptyWithCapacity 4
@@ -1789,6 +1816,7 @@ unsafe def main (args : List String) : IO UInt32 := do
   let dnsAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.Dns dnsAuditModules
   let pollAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.Poll pollAuditModules
   let netAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.Net netAuditModules
+  let procAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.Process processAuditModules
   let envAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.EnvVars envVarsAuditModules
   let chAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.CryptoHash cryptoHashAuditModules
   let trClosureErrs ← checkPackageTrustedClosure repoDir "TimeRand" trAuditMods
@@ -1806,12 +1834,15 @@ unsafe def main (args : List String) : IO UInt32 := do
   let netClosureErrs ← checkPackageTrustedClosure repoDir "Net" netAuditMods
     isAllowedNetClosureModule `LeanSwe.LinuxSyscall.Net.Interface allowedNetExternSyms true true
   IO.println s!"TRUSTED_CLOSURE: net_modules={netAuditMods.size} allowlist=Core+Common+Net externs={allowedNetExternSyms.size}"
+  let procClosureErrs ← checkPackageTrustedClosure repoDir "Process" procAuditMods
+    isAllowedProcessClosureModule `LeanSwe.LinuxSyscall.Process.Interface allowedProcessExternSyms true true
+  IO.println s!"TRUSTED_CLOSURE: process_modules={procAuditMods.size} allowlist=Core+Common+Process externs={allowedProcessExternSyms.size}"
   let envClosureErrs ← checkPackageTrustedClosure repoDir "EnvVars" envAuditMods
     isAllowedEnvVarsClosureModule `LeanSwe.EnvVars.Raw.Interface allowedEnvVarsExternSyms false
   let chClosureErrs ← checkPackageTrustedClosure repoDir "CryptoHash" chAuditMods
     isAllowedCryptoHashClosureModule `LeanSwe.CryptoHash.Raw.Interface allowedCryptoHashExternSyms false
   let sbxClosureErrs ← checkSandboxTrustedClosure env
-  errors := errors ++ axiomErrs ++ trClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sbxClosureErrs
+  errors := errors ++ axiomErrs ++ trClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sbxClosureErrs
 
   let mut withAssumeCount := 0
   for (m, pName) in promises do

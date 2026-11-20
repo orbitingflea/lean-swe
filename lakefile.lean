@@ -154,6 +154,34 @@ extern_lib «leanswe_connectproxy» pkg := do
   let name := nameToStaticLib "leanswe_connectproxy"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
+extern_lib «leanswe_linux_process_fuzz_env» pkg := do
+  let cDir := pkg.dir / "LeanSwe" / "LinuxSyscall" / "c"
+  let hdrJob ← inputTextFile (cDir / "fd_box.h")
+  let srcJob ← inputTextFile (cDir / "process_fuzz_env.c")
+  let deps := Job.collectArray #[hdrJob, srcJob]
+  let lean ← getLeanInstall
+  let oFile := pkg.buildDir / "c" / "linux_process_fuzz_env.o"
+  let oJob ← buildO oFile (deps.map fun _ => cDir / "process_fuzz_env.c")
+    #["-I", lean.includeDir.toString, "-I", cDir.toString]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
+  let fdBoxJob ← buildFdBoxObj pkg "proc_fuzz"
+  let name := nameToStaticLib "leanswe_linux_process_fuzz_env"
+  buildStaticLib (pkg.staticLibDir / name) #[oJob, fdBoxJob]
+
+extern_lib «leanswe_linux_process» pkg := do
+  let cDir := pkg.dir / "LeanSwe" / "LinuxSyscall" / "c"
+  let hdrJob ← inputTextFile (cDir / "fd_box.h")
+  let srcJob ← inputTextFile (cDir / "process_shim.c")
+  let deps := Job.collectArray #[hdrJob, srcJob]
+  let lean ← getLeanInstall
+  let oFile := pkg.buildDir / "c" / "linux_process_shim.o"
+  let oJob ← buildO oFile (deps.map fun _ => cDir / "process_shim.c")
+    #["-I", lean.includeDir.toString, "-I", cDir.toString]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
+  let fdBoxJob ← buildFdBoxObj pkg "proc"
+  let name := nameToStaticLib "leanswe_linux_process"
+  buildStaticLib (pkg.staticLibDir / name) #[oJob, fdBoxJob]
+
 extern_lib «leanswe_sandbox_fuzz_env» pkg := do
   let cDir := pkg.dir / "LeanSwe" / "LinuxSyscall" / "c"
   let hdrJob ← inputTextFile (cDir / "fd_box.h")

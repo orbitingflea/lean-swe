@@ -41,6 +41,8 @@ import LeanSwe.LinuxSyscall.Poll.Impl
 import LeanSwe.LinuxSyscall.Poll.RuntimeTests
 import LeanSwe.LinuxSyscall.Net.Impl
 import LeanSwe.LinuxSyscall.Net.RuntimeTests
+import LeanSwe.LinuxSyscall.Process.RuntimeTests
+import LeanSwe.LinuxSyscall.Fuzz.ProcessFuzz
 
 open LeanSwe
 open Core.PropCheck
@@ -718,6 +720,104 @@ private def runNetOpsUnitTests : IO Unit := do
   checkUnit "mkNetOpsM accept4/getsockname" (rAcc == .ok (9, goodAddr) && cAcc == 1 &&
     rGsn == .ok (LinuxSyscall.Net.SockAddr.unix "u".toUTF8) && cGsn == 1)
 
+private def runProcessMutExtra : IO Unit := do
+  let checkB (msg : String) (cond : Bool) : IO Unit := do
+    if !cond then
+      throw (IO.userError s!"process mutate-driver check failed: {msg}")
+  let pf0 : LinuxSyscall.Process.PipeFlags := { cloexec := false, nonblock := true, direct := true, notificationPipe := true }
+  checkB "PipeFlags.isValid valid" pf0.isValid
+  checkB "PipeFlags.toBits valid" (pf0.toBits == 0xe)
+  let pfBad : LinuxSyscall.Process.PipeFlags := { extraBits := 1 }
+  checkB "PipeFlags.isValid extraBits" (!pfBad.isValid)
+  checkB "PipeFlags.toBits extraBits" (pfBad.toBits == 0x11)
+  let wf0 : LinuxSyscall.Process.WaitFlags := { nohang := true, untraced := true, continued := true, wall := true, wclone := true, wnothread := true }
+  checkB "WaitFlags.isValid valid" wf0.isValid
+  checkB "WaitFlags.toBits valid" (wf0.toBits == 0x3f)
+  let wfBad : LinuxSyscall.Process.WaitFlags := { extraBits := 2 }
+  checkB "WaitFlags.isValid extraBits" (!wfBad.isValid)
+  checkB "WaitFlags.toBits extraBits" (wfBad.toBits == 0x80)
+  let pof0 : LinuxSyscall.Process.PidfdOpenFlags := { nonblock := true, thread := true }
+  checkB "PidfdOpenFlags.isValid valid" pof0.isValid
+  checkB "PidfdOpenFlags.toBits valid" (pof0.toBits == 0x3)
+  let pofBad : LinuxSyscall.Process.PidfdOpenFlags := { extraBits := 1 }
+  checkB "PidfdOpenFlags.isValid extraBits" (!pofBad.isValid)
+  checkB "PidfdOpenFlags.toBits extraBits" (pofBad.toBits == 0x4)
+  let psf0 : LinuxSyscall.Process.PidfdSignalFlags := { processGroup := true }
+  checkB "PidfdSignalFlags.isValid valid" psf0.isValid
+  checkB "PidfdSignalFlags.toBits valid" (psf0.toBits == 0x4)
+  checkB "PidfdSignalFlags.isValid exclusive" (!(LinuxSyscall.Process.PidfdSignalFlags.mk true true false 0).isValid)
+  let psfBad : LinuxSyscall.Process.PidfdSignalFlags := { extraBits := 1 }
+  checkB "PidfdSignalFlags.isValid extraBits" (!psfBad.isValid)
+  checkB "PidfdSignalFlags.toBits extraBits" (psfBad.toBits == 0x8)
+  checkB "Signal.sigkill toRaw" (LinuxSyscall.Process.Signal.sigkill.toRaw == (3, 0))
+  checkB "Signal.sigkill toLinuxNum" (LinuxSyscall.Process.Signal.sigkill.toLinuxNum == 9)
+  checkB "Signal.sigzero valid" (LinuxSyscall.Process.Signal.sigzero.isValid)
+  checkB "Signal.raw 32 nptl" (LinuxSyscall.Process.Signal.raw 32 |>.isNptlReserved)
+  checkB "Signal.raw 33 nptl" (LinuxSyscall.Process.Signal.raw 33 |>.isNptlReserved)
+  checkB "Signal.raw -1 invalid" (!(LinuxSyscall.Process.Signal.raw (-1)).isValid)
+  checkB "Signal.raw 65 invalid" (!(LinuxSyscall.Process.Signal.raw 65).isValid)
+  checkB "WaitResult.stillRunning" (LinuxSyscall.Process.WaitResult.ofRawWait4 (0, 0) == .stillRunning)
+  checkB "WaitResult.exited" (LinuxSyscall.Process.WaitResult.ofRawWait4 (42, 0x0700) == .exited 42 7)
+  checkB "WaitResult.signaled core" (LinuxSyscall.Process.WaitResult.ofRawWait4 (42, 0x8b) == .signaled 42 11 true)
+  checkB "WaitResult.stopped" (LinuxSyscall.Process.WaitResult.ofRawWait4 (42, 0x137f) == .stopped 42 19)
+  checkB "WaitResult.continued" (LinuxSyscall.Process.WaitResult.ofRawWait4 (42, 0xffff) == .continued 42)
+  checkB "pipe2 invalid extraBits EINVAL"
+    (match ← LinuxSyscall.Process.pipe2 pfBad with | .error e => e == LinuxSyscall.Errno.EINVAL | .ok _ => false)
+  checkB "pipe2 high extraBits EINVAL"
+    (match ← LinuxSyscall.Process.pipe2 { extraBits := 0x80000000 } with | .error e => e == LinuxSyscall.Errno.EINVAL | .ok _ => false)
+  if !(← LinuxSyscall.Fuzz.ProcessEnv.probeKernelWatchQueue) then
+    let notifOk ←
+      match ← LinuxSyscall.Process.pipe2 { notificationPipe := true } with
+      | .error e => pure (e == LinuxSyscall.Process.errnoENOPKG)
+      | .ok (r, w) =>
+        let _ ← LinuxSyscall.Fuzz.ProcessEnv.closeFd r
+        let _ ← LinuxSyscall.Fuzz.ProcessEnv.closeFd w
+        pure false
+    checkB "pipe2 notificationPipe ENOPKG" notifOk
+  checkB "waitpid invalid extraBits EINVAL" ((← LinuxSyscall.Process.waitpid 0 wfBad) == .error LinuxSyscall.Errno.EINVAL)
+  checkB "waitpid high extraBits EINVAL" ((← LinuxSyscall.Process.waitpid 0 { extraBits := 0x80000000 }) == .error LinuxSyscall.Errno.EINVAL)
+  match ← LinuxSyscall.Process.getpid with
+  | .ok selfPid =>
+    checkB "pidfd_open invalid extraBits EINVAL"
+      (match ← LinuxSyscall.Process.pidfd_open selfPid pofBad with | .error e => e == LinuxSyscall.Errno.EINVAL | .ok _ => false)
+    checkB "pidfd_open high extraBits EINVAL"
+      (match ← LinuxSyscall.Process.pidfd_open selfPid { extraBits := 0x80000000 } with | .error e => e == LinuxSyscall.Errno.EINVAL | .ok _ => false)
+    match ← LinuxSyscall.Process.pidfd_open selfPid {} with
+    | .ok pfd =>
+      checkB "pidfd_send_signal invalid extraBits EINVAL" ((← LinuxSyscall.Process.pidfd_send_signal pfd .sigzero psfBad) == .error LinuxSyscall.Errno.EINVAL)
+      checkB "pidfd_send_signal high extraBits EINVAL" ((← LinuxSyscall.Process.pidfd_send_signal pfd .sigzero { extraBits := 0x80000000 }) == .error LinuxSyscall.Errno.EINVAL)
+      checkB "pidfd_send_signal valid sigzero ok" ((← LinuxSyscall.Process.pidfd_send_signal pfd .sigzero {}) == .ok ())
+      checkB "pidfd_open self close ok" ((← LinuxSyscall.Fuzz.ProcessEnv.closeFd pfd) == .ok ())
+      checkB "pidfd_open double close EBADF" ((← LinuxSyscall.Fuzz.ProcessEnv.closeFd pfd) == .error LinuxSyscall.Errno.EBADF)
+      checkB "pidfd_send_signal closed EBADF" ((← LinuxSyscall.Process.pidfd_send_signal pfd .sigzero {}) == .error LinuxSyscall.Errno.EBADF)
+    | .error e => throw (IO.userError s!"pidfd_open self in MutateDriver failed: {e}")
+  | .error e => throw (IO.userError s!"getpid in MutateDriver failed: {e}")
+  match ← LinuxSyscall.Process.pipe2 { cloexec := true } with
+  | .ok (rd, wr) =>
+    match ← LinuxSyscall.Fuzz.ProcessEnv.getFdFlags rd, ← LinuxSyscall.Fuzz.ProcessEnv.getFdFlags wr with
+    | .ok (_, flR), .ok (_, flW) =>
+      checkB "pipe2 rd O_RDONLY" ((flR &&& 3) == 0)
+      checkB "pipe2 wr O_WRONLY" ((flW &&& 3) == 1)
+    | _, _ => throw (IO.userError "getFdFlags failed on pipe2 in MutateDriver")
+    checkB "pipe2 rd close ok" ((← LinuxSyscall.Fuzz.ProcessEnv.closeFd rd) == .ok ())
+    checkB "pipe2 wr close ok" ((← LinuxSyscall.Fuzz.ProcessEnv.closeFd wr) == .ok ())
+  | .error e => throw (IO.userError s!"pipe2 in MutateDriver failed: {e}")
+  match ← LinuxSyscall.Fuzz.ProcessEnv.spawnControlled (-1) false with
+  | .ok (cPid, _) =>
+    try
+      checkB "waitpid live child stillRunning" ((← LinuxSyscall.Process.waitpid cPid.toInt32 { nohang := true }) == .ok .stillRunning)
+      checkB "waitpid __WCLONE ECHILD on SIGCHLD child" ((← LinuxSyscall.Process.waitpid cPid.toInt32 { nohang := true, wclone := true }) == .error LinuxSyscall.Errno.ECHILD)
+    finally
+      LinuxSyscall.Fuzz.ProcessEnv.cleanupChild cPid
+  | .error e => throw (IO.userError s!"spawnControlled in MutateDriver failed: {e}")
+  for secErr in #[(1 : UInt32), 4, 5, 7, 9, 12, 28, 104, 116, 122, 4095] do
+    match ← LinuxSyscall.Fuzz.ProcessEnv.checkFdCloseSeccomp secErr with
+    | .ok true => pure ()
+    | other => throw (IO.userError s!"checkFdCloseSeccomp {secErr} failed in MutateDriver: {repr other}")
+  match ← LinuxSyscall.Fuzz.ProcessEnv.checkSeccompEfaultAbort with
+  | .ok true => pure ()
+  | other => throw (IO.userError s!"checkSeccompEfaultAbort failed in MutateDriver: {repr other}")
+
 private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("RegExp", do RegExp.RuntimeTests.runAll; smokeRegExp; return none, pure ()),
   ("Glob", do Glob.RuntimeTests.runAll; return none, pure ()),
@@ -753,7 +853,8 @@ private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("LinuxSyscall.Passwd", do LinuxSyscall.Passwd.RuntimeTests.runAll; return none, pure ()),
   ("LinuxSyscall.Dns", do LinuxSyscall.Dns.RuntimeTests.runAll; return none, runDnsUnitTests),
   ("LinuxSyscall.Poll", do LinuxSyscall.Poll.RuntimeTests.runAll; return none, do LinuxSyscall.Poll.RuntimeTests.runStraceFaultCheck; runPollOpsUnitTests),
-  ("LinuxSyscall.Net", do LinuxSyscall.Net.RuntimeTests.runAll; return none, do LinuxSyscall.Net.RuntimeTests.runStraceFaultCheck; runNetOpsUnitTests)
+  ("LinuxSyscall.Net", do LinuxSyscall.Net.RuntimeTests.runAll; return none, do LinuxSyscall.Net.RuntimeTests.runStraceFaultCheck; runNetOpsUnitTests),
+  ("LinuxSyscall.Process", do LinuxSyscall.Process.RuntimeTests.runAll; return none, runProcessMutExtra)
 ]
 
 private structure MutateFlags where
@@ -804,6 +905,10 @@ def main (args : List String) : IO UInt32 := do
     return (← LinuxSyscall.Net.RuntimeTests.probeMain rest)
   | "--net-strace-worker" :: rest =>
     return (← LinuxSyscall.Net.RuntimeTests.probeMain ("--worker" :: rest))
+  | "--suite" :: "process" :: "--ns-worker" :: mode :: arg :: rest =>
+    return (← LinuxSyscall.Fuzz.ProcessFuzz.nsWorkerMain mode arg rest)
+  | "--process-strace-worker" :: opName :: errName :: _ =>
+    return (← LinuxSyscall.Process.RuntimeTests.probeMain ["--worker", opName, errName])
   | _ =>
     let flags ← match parseFlags args with
       | .ok f => pure f

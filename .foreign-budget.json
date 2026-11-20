@@ -61,6 +61,14 @@
       "max_lines": 88,
       "legacy_unmigrated": false
     },
+    "LeanSwe/LinuxSyscall/c/process_fuzz_env.c": {
+      "max_lines": 960,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/LinuxSyscall/c/process_shim.c": {
+      "max_lines": 190,
+      "legacy_unmigrated": false
+    },
     "LeanSwe/Process/Raw/c/process_shim.c": {
       "max_lines": 960,
       "legacy_unmigrated": true
@@ -204,10 +212,16 @@
     },
     "LeanSwe/LinuxSyscall/c/net_shim.c::box_scm_fds": {
       "allow_array_copy_loop": true
+    },
+    "LeanSwe/LinuxSyscall/c/process_fuzz_env.c::wait_leader_zombie": {
+      "max_loops": 1
     }
   },
   "named_thread_helpers": [
     "LeanSwe/LinuxSyscall/c/sandbox_fuzz_env.c::leanswe_sbx_spawn_sync_thread",
-    "Fuzz/CmdLine/c/cmdline_fuzz_env.c::leanswe_cmdfuzz_run_on_1mib_stack"
+    "Fuzz/CmdLine/c/cmdline_fuzz_env.c::leanswe_cmdfuzz_run_on_1mib_stack",
+    "LeanSwe/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_spawn_thread",
+    "LeanSwe/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_spawn_sibling_child",
+    "LeanSwe/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_check_fd_close_seccomp"
   ]
 }
