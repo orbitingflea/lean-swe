@@ -37,6 +37,10 @@ import LeanSwe.LinuxSyscall.Sandbox.RuntimeTests
 import LeanSwe.LinuxSyscall.TimeRand.RuntimeTests
 import LeanSwe.LinuxSyscall.Passwd.RuntimeTests
 import LeanSwe.LinuxSyscall.Dns.RuntimeTests
+import LeanSwe.LinuxSyscall.Poll.Impl
+import LeanSwe.LinuxSyscall.Poll.RuntimeTests
+import LeanSwe.LinuxSyscall.Net.Impl
+import LeanSwe.LinuxSyscall.Net.RuntimeTests
 
 open LeanSwe
 open Core.PropCheck
@@ -608,6 +612,112 @@ private def runDnsUnitTests : IO Unit := do
   | .error e => checkB "dns mock non-utf8" (e.kind == .nameNotFound && e.gaiCode == LinuxSyscall.Dns.EAI_FAIL && e.message == "<non-utf8:2B>")
   | .ok _ => throw (IO.userError "dns mock non-utf8 unexpectedly succeeded")
 
+private def checkUnit (label : String) (ok : Bool) : IO Unit :=
+  unless ok do
+    throw (IO.userError s!"unit check failed: {label}")
+
+private def runPollOpsUnitTests : IO Unit := do
+  let mkMock (revBytes : ByteArray) (failPpoll? : Option LinuxSyscall.Errno := none) :
+      LinuxSyscall.Poll.PosixPollOpsM (StateM Nat) Nat :=
+    { ppoll := fun _ _ _ _ _ => do
+        modify (· + 1)
+        return match failPpoll? with
+          | some e => .error e
+          | none => .ok revBytes
+      eventfd2 := fun _ _ => do
+        modify (· + 1)
+        return .ok 7 }
+  let opsOk := LinuxSyscall.Poll.Internal.mkPollOpsM (mkMock (ByteArray.mk #[0x1f]))
+  let opsShort := LinuxSyscall.Poll.Internal.mkPollOpsM (mkMock ByteArray.empty)
+  let opsErr := LinuxSyscall.Poll.Internal.mkPollOpsM (mkMock ByteArray.empty (some LinuxSyscall.Errno.ENOSYS))
+  let (rNeg, cNeg) := (opsOk.ppoll #[(1, { pollin := true })] (some { sec := -1, nsec := 0 })).run 0
+  checkUnit "mkPollOpsM neg sec" (rNeg == .error LinuxSyscall.Errno.EINVAL && cNeg == 0)
+  let (rNsec, cNsec) := (opsOk.ppoll #[(1, { pollin := true })] (some { sec := 0, nsec := 1000000000 })).run 0
+  checkUnit "mkPollOpsM big nsec" (rNsec == .error LinuxSyscall.Errno.EINVAL && cNsec == 0)
+  let bigEntries := Array.replicate (LinuxSyscall.Poll.MAX_POLL_NFDS + 1) (1, { pollin := true })
+  let (rBig, cBig) := (opsOk.ppoll bigEntries none).run 0
+  checkUnit "mkPollOpsM max nfds" (rBig == .error LinuxSyscall.Errno.EINVAL && cBig == 0)
+  let (rMismatch, cMismatch) := (opsShort.ppoll #[(1, { pollin := true })] none).run 0
+  checkUnit "mkPollOpsM revBytes len mismatch" (rMismatch == .error LinuxSyscall.Errno.EIO && cMismatch == 1)
+  let (rRawErr, cRawErr) := (opsErr.ppoll #[(1, { pollin := true })] (some { sec := 1, nsec := 5 })).run 0
+  checkUnit "mkPollOpsM raw err prop" (rRawErr == .error LinuxSyscall.Errno.ENOSYS && cRawErr == 1)
+  let (rOk, cOk) := (opsOk.ppoll #[(1, { pollin := true })] (some { sec := 0, nsec := 0 })).run 0
+  checkUnit "mkPollOpsM ok" (rOk == .ok #[{ pollin := true, pollout := true, pollerr := true, pollhup := true, pollnval := true }] && cOk == 1)
+  let (rEfd, cEfd) := (opsOk.eventfd2 3 { nonblock := true, cloexec := true, semaphore := false }).run 0
+  checkUnit "mkPollOpsM eventfd2" (rEfd == .ok 7 && cEfd == 1)
+
+private def runNetOpsUnitTests : IO Unit := do
+  let sentinel := LinuxSyscall.Errno.ENOSYS
+  let mockRaw : LinuxSyscall.Net.PosixNetOpsM (StateM Nat) Nat :=
+    { socket := fun _ _ _ _ => modify (· + 1) *> pure (.error sentinel)
+      socketpair := fun _ _ _ => modify (· + 1) *> pure (.error sentinel)
+      bind := fun _ _ => modify (· + 1) *> pure (.error sentinel)
+      listen := fun _ _ => modify (· + 1) *> pure (.error sentinel)
+      accept4 := fun _ _ => modify (· + 1) *> pure (.ok (9, (0, LinuxSyscall.Net.INADDR_LOOPBACK, 0, 0, 8080, 0, 0, ByteArray.empty)))
+      connect := fun _ _ => modify (· + 1) *> pure (.error sentinel)
+      getsockopt := fun _ _ => modify (· + 1) *> pure (.ok 1)
+      setsockopt := fun _ _ _ => modify (· + 1) *> pure (.ok ())
+      getsockname := fun _ => modify (· + 1) *> pure (.ok (2, 0, 0, 0, 0, 0, 0, "u".toUTF8))
+      recvfrom := fun _ _ _ => modify (· + 1) *> pure (.ok "hi".toUTF8)
+      sendto := fun _ _ _ => modify (· + 1) *> pure (.ok 2)
+      shutdown := fun _ _ => modify (· + 1) *> pure (.ok ())
+      sendmsg := fun _ _ => modify (· + 1) *> pure (.error sentinel)
+      recvmsg := fun _ _ => modify (· + 1) *> pure (.error sentinel)
+      ioctl := fun _ _ _ _ => modify (· + 1) *> pure (.error sentinel) }
+  let ops := LinuxSyscall.Net.Internal.mkNetOpsM mockRaw
+  let (rSock1, cSock1) := (ops.socket .unix .stream {} 6).run 0
+  checkUnit "mkNetOpsM socket unix proto" (rSock1 == .error LinuxSyscall.Errno.EPROTONOSUPPORT && cSock1 == 0)
+  let (rSock2, cSock2) := (ops.socket .inet .stream {} 263).run 0
+  checkUnit "mkNetOpsM socket inet proto>=263" (rSock2 == .error LinuxSyscall.Errno.EINVAL && cSock2 == 0)
+  let (rSock3, cSock3) := (ops.socket .inet .stream {} 6).run 0
+  checkUnit "mkNetOpsM socket valid passthrough" (rSock3 == .error sentinel && cSock3 == 1)
+  let (rPair1, cPair1) := (ops.socketpair .inet .stream {}).run 0
+  checkUnit "mkNetOpsM socketpair inet" (rPair1 == .error LinuxSyscall.Errno.EOPNOTSUPP && cPair1 == 0)
+  let (rPair2, cPair2) := (ops.socketpair .unix .dgram {}).run 0
+  checkUnit "mkNetOpsM socketpair unix passthrough" (rPair2 == .error sentinel && cPair2 == 1)
+  let badUnix1 := LinuxSyscall.Net.SockAddr.unix ByteArray.empty
+  let badUnix2 := LinuxSyscall.Net.SockAddr.unix (ByteArray.mk #[65, 0, 66])
+  let badUnix3 := LinuxSyscall.Net.SockAddr.unix (ByteArray.mk (Array.replicate (LinuxSyscall.Net.UNIX_PATH_MAX + 1) 97))
+  let goodAddr := LinuxSyscall.Net.SockAddr.ipv4 LinuxSyscall.Net.INADDR_LOOPBACK 8080
+  let (rBind1, cBind1) := (ops.bind 1 badUnix1).run 0
+  let (rBind2, cBind2) := (ops.bind 1 badUnix2).run 0
+  let (rBind3, cBind3) := (ops.bind 1 badUnix3).run 0
+  let (rBindOk, cBindOk) := (ops.bind 1 goodAddr).run 0
+  checkUnit "mkNetOpsM bind guards" (rBind1 == .error LinuxSyscall.Errno.EINVAL && cBind1 == 0 &&
+    rBind2 == .error LinuxSyscall.Errno.EINVAL && cBind2 == 0 &&
+    rBind3 == .error LinuxSyscall.Errno.EINVAL && cBind3 == 0 &&
+    rBindOk == .error sentinel && cBindOk == 1)
+  let (rConn1, cConn1) := (ops.connect 1 badUnix1).run 0
+  let (rConn2, cConn2) := (ops.connect 1 badUnix2).run 0
+  let (rConnOk, cConnOk) := (ops.connect 1 goodAddr).run 0
+  checkUnit "mkNetOpsM connect guards" (rConn1 == .error LinuxSyscall.Errno.EINVAL && cConn1 == 0 &&
+    rConn2 == .error LinuxSyscall.Errno.EINVAL && cConn2 == 0 &&
+    rConnOk == .error sentinel && cConnOk == 1)
+  let (rSend0, cSend0) := (ops.sendmsg 1 #[]).run 0
+  let (rSend33, cSend33) := (ops.sendmsg 1 (Array.replicate (LinuxSyscall.Net.MAX_SCM_FDS + 1) 2)).run 0
+  let (rSendOk, cSendOk) := (ops.sendmsg 1 #[2]).run 0
+  checkUnit "mkNetOpsM sendmsg guards" (rSend0 == .error LinuxSyscall.Errno.EINVAL && cSend0 == 0 &&
+    rSend33 == .error LinuxSyscall.Errno.EINVAL && cSend33 == 0 &&
+    rSendOk == .error sentinel && cSendOk == 1)
+  let (rRecv0, cRecv0) := (ops.recvmsg 1 0).run 0
+  let (rRecv33, cRecv33) := (ops.recvmsg 1 (UInt32.ofNat (LinuxSyscall.Net.MAX_SCM_FDS + 1))).run 0
+  let (rRecvOk, cRecvOk) := (ops.recvmsg 1 4).run 0
+  checkUnit "mkNetOpsM recvmsg guards" (rRecv0 == .error LinuxSyscall.Errno.EINVAL && cRecv0 == 0 &&
+    rRecv33 == .error LinuxSyscall.Errno.EINVAL && cRecv33 == 0 &&
+    rRecvOk == .error sentinel && cRecvOk == 1)
+  let badIf1 := ByteArray.mk (Array.replicate LinuxSyscall.Net.IFNAMSIZ 97)
+  let badIf2 := ByteArray.mk #[108, 0, 111]
+  let (rIoctl1, cIoctl1) := (ops.ioctl 1 .getIfFlags badIf1).run 0
+  let (rIoctl2, cIoctl2) := (ops.ioctl 1 .getIfFlags badIf2).run 0
+  let (rIoctlOk, cIoctlOk) := (ops.ioctl 1 (.setIfFlags LinuxSyscall.Net.IFF_UP) "lo".toUTF8).run 0
+  checkUnit "mkNetOpsM ioctl guards" (rIoctl1 == .error LinuxSyscall.Errno.EINVAL && cIoctl1 == 0 &&
+    rIoctl2 == .error LinuxSyscall.Errno.EINVAL && cIoctl2 == 0 &&
+    rIoctlOk == .error sentinel && cIoctlOk == 1)
+  let (rAcc, cAcc) := (ops.accept4 1 {}).run 0
+  let (rGsn, cGsn) := (ops.getsockname 1).run 0
+  checkUnit "mkNetOpsM accept4/getsockname" (rAcc == .ok (9, goodAddr) && cAcc == 1 &&
+    rGsn == .ok (LinuxSyscall.Net.SockAddr.unix "u".toUTF8) && cGsn == 1)
+
 private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("RegExp", do RegExp.RuntimeTests.runAll; smokeRegExp; return none, pure ()),
   ("Glob", do Glob.RuntimeTests.runAll; return none, pure ()),
@@ -641,7 +751,9 @@ private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("LinuxSyscall.Sandbox", do LinuxSyscall.Sandbox.RuntimeTests.runAll; return none, pure ()),
   ("LinuxSyscall.TimeRand", do LinuxSyscall.TimeRand.RuntimeTests.runAll; return none, pure ()),
   ("LinuxSyscall.Passwd", do LinuxSyscall.Passwd.RuntimeTests.runAll; return none, pure ()),
-  ("LinuxSyscall.Dns", do LinuxSyscall.Dns.RuntimeTests.runAll; return none, runDnsUnitTests)
+  ("LinuxSyscall.Dns", do LinuxSyscall.Dns.RuntimeTests.runAll; return none, runDnsUnitTests),
+  ("LinuxSyscall.Poll", do LinuxSyscall.Poll.RuntimeTests.runAll; return none, do LinuxSyscall.Poll.RuntimeTests.runStraceFaultCheck; runPollOpsUnitTests),
+  ("LinuxSyscall.Net", do LinuxSyscall.Net.RuntimeTests.runAll; return none, do LinuxSyscall.Net.RuntimeTests.runStraceFaultCheck; runNetOpsUnitTests)
 ]
 
 private structure MutateFlags where
@@ -682,6 +794,16 @@ def main (args : List String) : IO UInt32 := do
     return (← Uuid.RuntimeTests.probeMain rest)
   | "--time-probe" :: rest =>
     return (← Time.RuntimeTests.probeMain rest)
+  | "--poll-strace-fault-check" :: rest =>
+    return (← LinuxSyscall.Poll.RuntimeTests.probeMain rest)
+  | "--poll-strace-worker" :: rest =>
+    return (← LinuxSyscall.Poll.RuntimeTests.probeMain ("--worker" :: rest))
+  | "--poll-strace-efd-worker" :: rest =>
+    return (← LinuxSyscall.Poll.RuntimeTests.probeMain ("--efd-worker" :: rest))
+  | "--net-strace-fault-check" :: rest =>
+    return (← LinuxSyscall.Net.RuntimeTests.probeMain rest)
+  | "--net-strace-worker" :: rest =>
+    return (← LinuxSyscall.Net.RuntimeTests.probeMain ("--worker" :: rest))
   | _ =>
     let flags ← match parseFlags args with
       | .ok f => pure f

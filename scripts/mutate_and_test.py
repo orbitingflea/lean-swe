@@ -50,6 +50,8 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
     "LinuxSyscall.TimeRand": pathlib.Path("LeanSwe/LinuxSyscall/TimeRand"),
     "LinuxSyscall.Passwd": pathlib.Path("LeanSwe/LinuxSyscall/Passwd"),
     "LinuxSyscall.Dns": pathlib.Path("LeanSwe/LinuxSyscall/Dns"),
+    "LinuxSyscall.Poll": pathlib.Path("LeanSwe/LinuxSyscall/Poll"),
+    "LinuxSyscall.Net": pathlib.Path("LeanSwe/LinuxSyscall/Net"),
 }
 
 C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
@@ -64,13 +66,18 @@ C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
     "psandbox_shim.c": "leanswe_psandbox",
     "cproxy_shim.c": "leanswe_connectproxy",
     "sandbox_shim.c": "leanswe_linux_sandbox",
+    "fd_box.c": "leanswe_linux_fd_box",
+    "poll_shim.c": "leanswe_linux_poll",
+    "net_shim.c": "leanswe_linux_net",
 }
 
-SUITE_TO_EXTRA_C: dict[str, list[pathlib.Path]] = {
+SUITE_TO_C_SHIMS: dict[str, list[pathlib.Path]] = {
     "LinuxSyscall.Sandbox": [pathlib.Path("LeanSwe/LinuxSyscall/c/sandbox_shim.c")],
     "LinuxSyscall.TimeRand": [pathlib.Path("LeanSwe/LinuxSyscall/c/timerand_shim.c")],
     "LinuxSyscall.Passwd": [pathlib.Path("LeanSwe/LinuxSyscall/c/passwd_shim.c")],
     "LinuxSyscall.Dns": [pathlib.Path("LeanSwe/LinuxSyscall/c/dns_shim.c")],
+    "LinuxSyscall.Poll": [pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.c"), pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.h"), pathlib.Path("LeanSwe/LinuxSyscall/c/poll_shim.c")],
+    "LinuxSyscall.Net": [pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.c"), pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.h"), pathlib.Path("LeanSwe/LinuxSyscall/c/net_shim.c")],
 }
 
 SANCOV_RT_C = r"""
@@ -165,7 +172,7 @@ def generate_lean_mutants(rel_path: pathlib.Path, text: str) -> list[Mutant]:
             cands.append(("BoolOp", line.replace("==", "!=", 1), "swap == to !="))
         if "||" in line:
             cands.append(("BoolOp", line.replace("||", "&&", 1), "swap || to &&"))
-        m_if = re.match(r"^(\s*)if\s+(.+?)\s+then(\s*)$", line)
+        m_if = re.match(r"^(\s*)if\s+(.+?)\s+then(\s*|\s+.+)$", line)
         if m_if and "msg.isEmpty" not in m_if.group(2) and m_if.group(2) != "false":
             cands.append(("GuardDrop", f"{m_if.group(1)}if false then{m_if.group(3)}", "drop conditional guard"))
         if ".filter fun " in line:
@@ -282,7 +289,8 @@ def generate_c_mutants(rel_path: pathlib.Path, text: str) -> list[Mutant]:
             if "!key_ok || !val_ok" in line:
                 cands.append(("DropUtf8Check", line.replace("!key_ok || !val_ok", "!key_ok"), "skip value UTF-8 validation"))
             cands.append(("DropGuard", _replace_if_condition(line), "drop C guard"))
-        for eno in ("EINVAL", "EMFILE", "ENFILE", "EACCES", "ENOENT", "EPERM", "EEXIST", "ENOTDIR", "EISDIR"):
+        for eno in ("EINVAL", "EMFILE", "ENFILE", "EACCES", "ENOENT", "EPERM", "EEXIST", "ENOTDIR", "EISDIR", "EBADF", "ENOTSOCK",
+                    "EAFNOSUPPORT", "EOPNOTSUPP", "ECONNREFUSED", "EPIPE", "EAGAIN", "ENOBUFS", "EPROTO", "EMSGSIZE", "ENOSYS"):
             if eno in line:
                 target_eno = "EIO" if eno != "EIO" else "EINVAL"
                 cands.append(("ErrnoSwap", line.replace(eno, target_eno, 1), f"swap {eno} to {target_eno}"))
@@ -345,12 +353,13 @@ def run_suite_mode(work: pathlib.Path, mode: str, suite: str, timeout_s: float =
 def resolve_targets(root: pathlib.Path, suite: str) -> tuple[list[pathlib.Path], list[pathlib.Path]]:
     """Collect Lean `Impl.lean` and C shim source targets for `suite`."""
     if suite == "all":
-        dirs = list(SUITE_TO_DIR.values())
+        suite_names = list(SUITE_TO_DIR.keys())
     else:
-        dirs = [SUITE_TO_DIR[suite]]
+        suite_names = [suite]
     lean_targets: list[pathlib.Path] = []
     c_targets: list[pathlib.Path] = []
-    for d in dirs:
+    for sname in suite_names:
+        d = SUITE_TO_DIR[sname]
         pkg_dir = root / d
         if pkg_dir.is_dir():
             child_suite_dirs = [
@@ -362,15 +371,17 @@ def resolve_targets(root: pathlib.Path, suite: str) -> tuple[list[pathlib.Path],
                 if any(lf.is_relative_to(cd) for cd in child_suite_dirs):
                     continue
                 lean_targets.append(lf.relative_to(root))
+        if sname in SUITE_TO_C_SHIMS:
+            for c_rel in SUITE_TO_C_SHIMS[sname]:
+                if (root / c_rel).is_file() and c_rel not in c_targets:
+                    c_targets.append(c_rel)
         c_dir = pkg_dir / "c"
         if c_dir.is_dir():
             for cf in sorted(c_dir.glob("*.c")):
                 if cf.name in C_SHIM_TO_EXTERN_LIB:
-                    c_targets.append(cf.relative_to(root))
-    for sk in (SUITE_TO_DIR if suite == "all" else (suite,)):
-        for rel_c in SUITE_TO_EXTRA_C.get(sk, []):
-            if (root / rel_c).is_file() and rel_c not in c_targets:
-                c_targets.append(rel_c)
+                    c_rel = cf.relative_to(root)
+                    if c_rel not in c_targets:
+                        c_targets.append(c_rel)
     return lean_targets, c_targets
 
 
@@ -431,7 +442,10 @@ def measure_c_sancov(
             '  let o2 ← inputBinFile (pkg.dir / ".cov_rt.o")\n'
             '  buildStaticLib (pkg.staticLibDir / name) #[o1, o2]\n'
         )
-        lf_lines = lf.read_text().splitlines(keepends=True)
+        lf_text = lf.read_text()
+        if c_target.name == "fd_box.c":
+            lf_text = lf_text.replace("#[oJob, fdBoxJob]", "#[oJob]")
+        lf_lines = lf_text.splitlines(keepends=True)
         patched: list[str] = []
         skip = False
         for ln in lf_lines:
@@ -528,7 +542,7 @@ def main() -> int:
         for fp_str in args.dry_run_files:
             fp = pathlib.Path(fp_str)
             txt = fp.read_text()
-            muts = generate_c_mutants(fp, txt) if fp.suffix == ".c" else generate_lean_mutants(fp, txt)
+            muts = generate_c_mutants(fp, txt) if fp.suffix in (".c", ".h") else generate_lean_mutants(fp, txt)
             tot += len(muts)
             print(f"{fp}: {len(muts)} mutants")
             for m in muts:

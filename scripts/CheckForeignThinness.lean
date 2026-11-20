@@ -534,19 +534,27 @@ private def checkPreprocTokens
     (relPath : String)
     (allTokens : Array CTok)
     (budget : ForeignBudget) : Array String := Id.run do
+  let allowPollInFile := budget.overrides.fold (init := false) fun acc key ov =>
+    acc || (ov.allowPoll && key.startsWith s!"{relPath}::")
   let mut errs : Array String := #[]
+  let mut curPreprocIsInclude : Bool := false
   let mut i := 0
   while i < allTokens.size do
     let tok := allTokens[i]!
     if tok.inPreproc then
+      let isDirectiveStart := i == 0 || allTokens[i - 1]!.preprocId != tok.preprocId
+      if isDirectiveStart then
+        curPreprocIsInclude :=
+          tok.kind == .hash && i + 1 < allTokens.size &&
+            allTokens[i + 1]!.preprocId == tok.preprocId &&
+            allTokens[i + 1]!.kind == .ident "include"
       if let .ident name := tok.kind then
         if name == "for" || name == "while" || name == "do" || name == "goto" then
           errs := errs.push s!"C_LOOP_FORBIDDEN: {relPath}:{tok.line} uses '{name}' in preprocessor directive"
         else if name == "pthread_create" then
           errs := errs.push s!"C_THICK_CONSTRUCT_FORBIDDEN: {relPath}:{tok.line} uses pthread_create in preprocessor directive"
-      if let some bad := isBannedThickToken allTokens i then
+      if let some bad := isBannedThickToken allTokens i (allowPollInFile && curPreprocIsInclude) then
         errs := errs.push s!"C_THICK_CONSTRUCT_FORBIDDEN: {relPath}:{tok.line} uses forbidden '{bad}' in preprocessor directive"
-      let isDirectiveStart := i == 0 || allTokens[i - 1]!.preprocId != tok.preprocId
       if isDirectiveStart && tok.kind == .hash && i + 1 < allTokens.size && allTokens[i + 1]!.preprocId == tok.preprocId then
         match allTokens[i + 1]!.kind with
         | .ident "include" =>

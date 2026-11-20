@@ -54,6 +54,24 @@ private def dnsAuditModules : Array Name := #[
   `LeanSwe.LinuxSyscall.Dns.Proofs
 ]
 
+private def pollAuditModules : Array Name := #[
+  `LeanSwe.LinuxSyscall.Poll.Types,
+  `LeanSwe.LinuxSyscall.Poll.Model,
+  `LeanSwe.LinuxSyscall.Poll.Impl,
+  `LeanSwe.LinuxSyscall.Poll.Interface,
+  `LeanSwe.LinuxSyscall.Poll.SpecTests,
+  `LeanSwe.LinuxSyscall.Poll.Proofs
+]
+
+private def netAuditModules : Array Name := #[
+  `LeanSwe.LinuxSyscall.Net.Types,
+  `LeanSwe.LinuxSyscall.Net.Model,
+  `LeanSwe.LinuxSyscall.Net.Impl,
+  `LeanSwe.LinuxSyscall.Net.Interface,
+  `LeanSwe.LinuxSyscall.Net.SpecTests,
+  `LeanSwe.LinuxSyscall.Net.Proofs
+]
+
 private def envVarsAuditModules : Array Name := #[
   `LeanSwe.EnvVars.Raw.Types,
   `LeanSwe.EnvVars.Raw.Model,
@@ -146,6 +164,18 @@ private def isAllowedDnsClosureModule (m : Name) : Bool :=
     m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
     dnsAuditModules.contains m
 
+private def isAllowedPollClosureModule (m : Name) : Bool :=
+  m.getRoot == `Core ||
+    m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
+    (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Poll] &&
+      nameLastStr m != "RuntimeTests" && nameLastStr m != "SpecMutants")
+
+private def isAllowedNetClosureModule (m : Name) : Bool :=
+  m.getRoot == `Core ||
+    m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
+    (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Net] &&
+      nameLastStr m != "RuntimeTests" && nameLastStr m != "SpecMutants")
+
 private def isAllowedEnvVarsClosureModule (m : Name) : Bool :=
   m.getRoot == `Core || envVarsAuditModules.contains m
 
@@ -168,6 +198,29 @@ private def allowedPasswdExternSyms : Std.HashMap Name String :=
 private def allowedDnsExternSyms : Std.HashMap Name String :=
   Std.HashMap.emptyWithCapacity 2
     |>.insert `LeanSwe.LinuxSyscall.Dns.rawGetaddrinfo "leanswe_sys_getaddrinfo"
+
+private def allowedPollExternSyms : Std.HashMap Name String :=
+  Std.HashMap.emptyWithCapacity 4
+    |>.insert `LeanSwe.LinuxSyscall.Poll.rawPpoll "leanswe_sys_ppoll"
+    |>.insert `LeanSwe.LinuxSyscall.Poll.rawEventfd2 "leanswe_sys_eventfd2"
+
+private def allowedNetExternSyms : Std.HashMap Name String :=
+  Std.HashMap.emptyWithCapacity 20
+    |>.insert `LeanSwe.LinuxSyscall.Net.rawSocket "leanswe_sys_socket"
+    |>.insert `LeanSwe.LinuxSyscall.Net.rawSocketpair "leanswe_sys_socketpair"
+    |>.insert `LeanSwe.LinuxSyscall.Net.rawBind "leanswe_sys_bind"
+    |>.insert `LeanSwe.LinuxSyscall.Net.rawListen "leanswe_sys_listen"
+    |>.insert `LeanSwe.LinuxSyscall.Net.rawAccept4 "leanswe_sys_accept4"
+    |>.insert `LeanSwe.LinuxSyscall.Net.rawConnect "leanswe_sys_connect"
+    |>.insert `LeanSwe.LinuxSyscall.Net.rawGetsockopt "leanswe_sys_getsockopt"
+    |>.insert `LeanSwe.LinuxSyscall.Net.rawSetsockopt "leanswe_sys_setsockopt"
+    |>.insert `LeanSwe.LinuxSyscall.Net.rawGetsockname "leanswe_sys_getsockname"
+    |>.insert `LeanSwe.LinuxSyscall.Net.rawRecvfrom "leanswe_sys_recvfrom"
+    |>.insert `LeanSwe.LinuxSyscall.Net.rawSendto "leanswe_sys_sendto"
+    |>.insert `LeanSwe.LinuxSyscall.Net.rawShutdown "leanswe_sys_shutdown"
+    |>.insert `LeanSwe.LinuxSyscall.Net.rawSendmsg "leanswe_sys_sendmsg_scm"
+    |>.insert `LeanSwe.LinuxSyscall.Net.rawRecvmsg "leanswe_sys_recvmsg_scm"
+    |>.insert `LeanSwe.LinuxSyscall.Net.rawNetIoctl "leanswe_sys_net_ioctl"
 
 private def allowedEnvVarsExternSyms : Std.HashMap Name String :=
   Std.HashMap.emptyWithCapacity 4
@@ -207,20 +260,24 @@ private def isForbiddenHostExtern (cName : Name) (cinfo : ConstantInfo) (extData
       | .opaque => false
 
 private def isCompilerGeneratedCtorIdx (env : Environment) (cName impl : Name) (cinfo : ConstantInfo) : IO Bool := do
-  if isPrivateName cName || cName.getString! != "ctorIdx" || impl != cName.str "_impl" then
+  if cName.getString! != "ctorIdx" || impl != cName.str "_impl" then
+    return false
+  let indName := cName.getPrefix
+  if cName != indName.str "ctorIdx" || isPrivateName cName != isPrivateName indName then
     return false
   if (Lean.declRangeExt.find? env impl).isSome then
     return false
-  if env.getModuleIdxFor? cName.getPrefix != env.getModuleIdxFor? cName then
+  if env.getModuleIdxFor? indName != env.getModuleIdxFor? cName ||
+      env.getModuleIdxFor? impl != env.getModuleIdxFor? cName then
     return false
-  let some (.inductInfo iv) := env.find? cName.getPrefix | return false
+  let some (.inductInfo iv) := env.find? indName | return false
   let some (.defnInfo implInfo) := env.find? impl | return false
   if iv.ctors.length <= 1 then
     return false
   if !(implInfo.value.getUsedConstants.contains `getObjTagNat) then
     return false
   if !(implInfo.value.getUsedConstants.all fun u =>
-      u == `getObjTagNat || u == cName.getPrefix || cinfo.type.getUsedConstants.contains u) then
+      u == `getObjTagNat || u == indName || cinfo.type.getUsedConstants.contains u) then
     return false
   let ctx : Core.Context := { fileName := "<ctorIdx>", fileMap := default, maxHeartbeats := 0 }
   let state : Core.State := { env }
@@ -353,7 +410,7 @@ private def isAllowedCompilerUnsafeDef (env : Environment) (cName : Name) (v : D
 
 private unsafe def checkPackageTrustedClosure (repoDir : System.FilePath) (pkgLabel : String) (auditModules : Array Name)
     (isAllowedMod : Name → Bool) (externMod : Name) (allowedExternSyms : Std.HashMap Name String)
-    (seedLinuxCommon : Bool := false) : IO (Array String) := do
+    (seedLinuxCommon : Bool := false) (allowIO : Bool := false) : IO (Array String) := do
   enableInitializersExecution
   let trEnv ← importModules (auditModules.map fun m => { module := m }) {} (loadExts := true)
   let csimpState := Lean.Compiler.CSimp.ext.getState trEnv
@@ -458,7 +515,8 @@ private unsafe def checkPackageTrustedClosure (repoDir : System.FilePath) (pkgLa
         let isExpectedInterfaceExtern :=
           cMod == externMod &&
           (cinfo matches .opaqueInfo _) &&
-          cinfo.type.getUsedConstants.contains ``BaseIO &&
+          (cinfo.type.getUsedConstants.contains ``BaseIO ||
+            (allowIO && cinfo.type.getUsedConstants.contains ``IO && isPrivateName cName)) &&
           match allowedExternSyms.get? userName, getExternAttrData? trEnv cName with
           | some expectedSym, some extData => extData.entries == [.standard `all expectedSym]
           | _, _ => false
@@ -487,6 +545,7 @@ private unsafe def checkPackageTrustedClosure (repoDir : System.FilePath) (pkgLa
     for u in extra do
       if !visited.contains (u, inStdImpl, fromSpecTests) then
         queue := queue.push (originMod, inStdImpl, fromSpecTests, u)
+  trEnv.freeRegions
   return errs
 
 private def returnsBaseIO (env : Environment) (ty : Expr) : IO Bool := do
@@ -785,9 +844,9 @@ private unsafe def checkSandboxTrustedClosure (env : Environment) : IO (Array St
       if !visited.contains u then
         queue := queue.push (originMod, u)
   let mut modImports : Std.HashMap Name (Array Name) := {}
-  for h : i in [0 : env.header.moduleNames.size] do
-    let m := env.header.moduleNames[i]
-    if let some data := env.header.moduleData[i]? then
+  for h : i in [0 : sbxEnv.header.moduleNames.size] do
+    let m := sbxEnv.header.moduleNames[i]
+    if let some data := sbxEnv.header.moduleData[i]? then
       modImports := modImports.insert m (data.imports.map (·.module))
   let isSandboxClosureAllowed (imp : Name) : Bool :=
     isSandboxStandardLibModule imp || isAllowedSandboxClosureModule imp
@@ -807,6 +866,7 @@ private unsafe def checkSandboxTrustedClosure (env : Environment) : IO (Array St
         sandboxSeen := sandboxSeen.insert imp
         sandboxQueue := sandboxQueue.push imp
   IO.println s!"TRUSTED_CLOSURE: sandbox_modules={sandboxSeen.size} discovered={discoveredMods.size} allowlist=Common+Sandbox externs={allowedSandboxExternSyms.size}"
+  sbxEnv.freeRegions
   return errs
 
 private def checkPasswdPrivateWiring (env : Environment) : IO (Array String) := do
@@ -1504,6 +1564,8 @@ unsafe def main (args : List String) : IO UInt32 := do
     | .ok cmds =>
       if cmds.any (hasAttrNameInStx #["export"]) then
         errors := errors.push s!"FORBIDDEN_EXPORT_ATTR: {relPath} uses @[export]"
+  if !importableExtraMods.isEmpty then
+    rtParseEnv.freeRegions
 
   let mut companionPromisesByMutMod : Std.HashMap Name (Std.HashSet Name) := {}
   for h : i in [0 : env.header.moduleNames.size] do
@@ -1724,6 +1786,8 @@ unsafe def main (args : List String) : IO UInt32 := do
   let trAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.TimeRand timeRandAuditModules
   let pwAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.Passwd passwdAuditModules
   let dnsAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.Dns dnsAuditModules
+  let pollAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.Poll pollAuditModules
+  let netAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.Net netAuditModules
   let envAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.EnvVars envVarsAuditModules
   let chAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.CryptoHash cryptoHashAuditModules
   let trClosureErrs ← checkPackageTrustedClosure repoDir "TimeRand" trAuditMods
@@ -1735,12 +1799,18 @@ unsafe def main (args : List String) : IO UInt32 := do
     isAllowedDnsClosureModule `LeanSwe.LinuxSyscall.Dns.Interface allowedDnsExternSyms true
   let dnsWiringErrs ← checkDnsInterfaceWiring env
   IO.println s!"TRUSTED_CLOSURE: dns_modules={dnsAuditMods.size} allowlist=Core+Common+Dns externs={allowedDnsExternSyms.size}"
+  let pollClosureErrs ← checkPackageTrustedClosure repoDir "Poll" pollAuditMods
+    isAllowedPollClosureModule `LeanSwe.LinuxSyscall.Poll.Interface allowedPollExternSyms true true
+  IO.println s!"TRUSTED_CLOSURE: poll_modules={pollAuditMods.size} allowlist=Core+Common+Poll externs={allowedPollExternSyms.size}"
+  let netClosureErrs ← checkPackageTrustedClosure repoDir "Net" netAuditMods
+    isAllowedNetClosureModule `LeanSwe.LinuxSyscall.Net.Interface allowedNetExternSyms true true
+  IO.println s!"TRUSTED_CLOSURE: net_modules={netAuditMods.size} allowlist=Core+Common+Net externs={allowedNetExternSyms.size}"
   let envClosureErrs ← checkPackageTrustedClosure repoDir "EnvVars" envAuditMods
     isAllowedEnvVarsClosureModule `LeanSwe.EnvVars.Raw.Interface allowedEnvVarsExternSyms false
   let chClosureErrs ← checkPackageTrustedClosure repoDir "CryptoHash" chAuditMods
     isAllowedCryptoHashClosureModule `LeanSwe.CryptoHash.Raw.Interface allowedCryptoHashExternSyms false
   let sbxClosureErrs ← checkSandboxTrustedClosure env
-  errors := errors ++ axiomErrs ++ trClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ envClosureErrs ++ chClosureErrs ++ sbxClosureErrs
+  errors := errors ++ axiomErrs ++ trClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sbxClosureErrs
 
   let mut withAssumeCount := 0
   for (m, pName) in promises do

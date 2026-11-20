@@ -241,4 +241,43 @@ def runForked (childAction : IO ByteArray) : IO (UInt32 × ByteArray) := do
       let payload := if data.isEmpty then ByteArray.empty else data.extract 1 data.size
       return (st, payload)
 
+private def pushU16LE (b : ByteArray) (v : UInt16) : ByteArray :=
+  (b.push (v &&& 0xff).toUInt8).push ((v >>> 8) &&& 0xff).toUInt8
+
+private def pushU32LE (b : ByteArray) (v : UInt32) : ByteArray :=
+  (((b.push (v &&& 0xff).toUInt8).push ((v >>> 8) &&& 0xff).toUInt8).push
+    ((v >>> 16) &&& 0xff).toUInt8).push ((v >>> 24) &&& 0xff).toUInt8
+
+private def pushBpfInsn (b : ByteArray) (code : UInt16) (jt jf : UInt8) (k : UInt32) : ByteArray :=
+  pushU32LE (((pushU16LE b code).push jt).push jf) k
+
+/-- Encode a portable `x86_64`+`aarch64` cBPF filter returning `SECCOMP_RET_ERRNO | err` for the listed syscall numbers. -/
+def encodeSeccompErrnoBpf (x86Nrs armNrs : Array UInt32) (err : Errno) : ByteArray := Id.run do
+  let nX := x86Nrs.size
+  let nA := armNrs.size
+  let mut b := ByteArray.empty
+  b := pushBpfInsn b 0x0020 0 0 4
+  b := pushBpfInsn b 0x0015 1 0 0xc000003e
+  b := pushBpfInsn b 0x0015 (UInt8.ofNat (2 + nX)) (UInt8.ofNat (3 + nX + nA)) 0xc00000b7
+  b := pushBpfInsn b 0x0020 0 0 0
+  for i in [:nX] do
+    b := pushBpfInsn b 0x0015 (UInt8.ofNat (2 + nX + nA - i)) 0 x86Nrs[i]!
+  b := pushBpfInsn b 0x0006 0 0 0x7fff0000
+  b := pushBpfInsn b 0x0020 0 0 0
+  for j in [:nA] do
+    b := pushBpfInsn b 0x0015 (UInt8.ofNat (nA - j)) 0 armNrs[j]!
+  b := pushBpfInsn b 0x0006 0 0 0x7fff0000
+  b := pushBpfInsn b 0x0006 0 0 (0x00050000 ||| (err &&& 0xffff))
+  return b
+
+/-- Parse serialized `HitStats` lines (`"bucket=count\n"`) emitted by a forked child worker. -/
+def decodeHitCounts (bytes : ByteArray) : List (String × Nat) :=
+  let txt := String.fromUTF8! bytes
+  (txt.splitOn "\n").filterMap fun line =>
+    if line.isEmpty then none
+    else
+      match line.splitOn "=" with
+      | [k, vStr] => vStr.toNat?.map (fun n => (k, n))
+      | _ => none
+
 end LeanSwe.LinuxSyscall.Fuzz.SandboxEnv
