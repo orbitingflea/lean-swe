@@ -1,3 +1,4 @@
+import Core.Refines
 import LeanSwe.RegExp.Interface
 import LeanSwe.RegExp.SpecTests
 
@@ -2353,5 +2354,20 @@ theorem proof_regex_splitBy_matchesModel :
   · exact False.elim hm
   · exact False.elim hm
   · simp [assert, hm]
+
+/-- Full public `Interface` refinement of `LeanSwe.RegExp` against `LeanSwe.RegExp.Model`. -/
+theorem refines_model :
+    Core.RefinesPure2 LeanSwe.RegExp.testPattern Model.allowedTestPattern ∧
+    Core.RefinesPure2 LeanSwe.RegExp.findFirst Model.allowedFindFirst ∧
+    Core.RefinesPure2 LeanSwe.RegExp.findAll Model.allowedFindAll ∧
+    Core.RefinesPure2 LeanSwe.RegExp.countMatches Model.allowedCountMatches ∧
+    Core.RefinesPure3 LeanSwe.RegExp.replaceAll Model.allowedReplaceAll ∧
+    Core.RefinesPure2 LeanSwe.RegExp.splitBy Model.allowedSplitBy :=
+  ⟨testPattern_matchesModel_props,
+   findFirst_matchesModel_props,
+   findAll_matchesModel_props,
+   countMatches_matchesModel_props,
+   replaceAll_matchesModel_props,
+   splitBy_matchesModel_props⟩
 
 end LeanSwe.RegExp.Proofs

@@ -1349,4 +1349,483 @@ def osExitCodeModel : IoStepOutcome UInt32 → UInt8
   | .threwIo (.terminatedBySignal sig) => 128 + sig
   | .threwIo _ => 1
 
+/-- Reference model for `CmdLine.renderVersion`. -/
+def renderVersionModel (name version : String) : String :=
+  s!"{name} {version}\n"
+
+/-- Allowed outcome relation for `CmdLine.renderHelp`. -/
+def allowedRenderHelp (rootSpec : CommandSpec) (subcommandPath : List String)
+    (out : Except CmdLineError String) : Prop :=
+  if !isValidSpec rootSpec then
+    out = .error { kind := .invalidSpec, message := s!"invalid command spec '{rootSpec.name}'" }
+  else
+    match findSubcommandPath rootSpec subcommandPath, out with
+    | .error e, .error e' => e' = e
+    | .ok _, .ok text => !text.isEmpty = true
+    | _, _ => False
+
+/-- Declarative surface phrase in a tokenized CLI argument list. -/
+inductive CliPhrase where
+  /-- Matched subcommand token `name`. -/
+  | subcommand (name : String)
+  /-- Positive boolean long flag `--<longName>` yielding `.bool true` for `optName`. -/
+  | longBoolTrue (longName optName : String)
+  /-- Negated boolean long flag `--no-<baseLong>` yielding `.bool false` for `optName`. -/
+  | longBoolNeg (baseLong optName : String)
+  /-- Inline boolean long flag `--<longName>=<rawVal>` yielding `.bool val` for `optName`. -/
+  | longBoolEq (longName rawVal optName : String) (val : Bool)
+  /-- Inline value long option `--<longName>=<rawVal>` yielding `val` for `optName`. -/
+  | longValEq (longName rawVal optName : String) (val : OptValue)
+  /-- Space-separated value long option `["--" ++ longName, rawVal]` yielding `val` for `optName`. -/
+  | longValSep (longName rawVal optName : String) (val : OptValue)
+  /-- Pure boolean short-flag cluster `'-' :: chars` yielding `.bool true` for `optNames`. -/
+  | shortBoolCluster (chars : List Char) (optNames : List String)
+  /-- Attached short option `'-' :: (prefixChars ++ (optChar :: rawVal))`. -/
+  | shortAttachedVal (prefixChars : List Char) (prefixOptNames : List String)
+      (optChar : Char) (rawVal : List Char) (optName : String) (val : OptValue)
+  /-- Space-separated short option `[String.ofList ('-' :: (prefixChars ++ [optChar])), rawVal]`. -/
+  | shortSepVal (prefixChars : List Char) (prefixOptNames : List String)
+      (optChar : Char) (rawVal optName : String) (val : OptValue)
+  /-- Bare positional argument token `tok` before `--`. -/
+  | positional (tok : String)
+  /-- End-of-options `--` marker followed by literal positional tail `tail`. -/
+  | dashDashTail (tail : List String)
+  deriving Repr, Inhabited
+
+/-- Surface CLI tokens synthesized by a single `CliPhrase`. -/
+def CliPhrase.tokens : CliPhrase → List String
+  | .subcommand name => [name]
+  | .longBoolTrue l _ => ["--" ++ l]
+  | .longBoolNeg b _ => ["--no-" ++ b]
+  | .longBoolEq l rv _ _ => ["--" ++ l ++ "=" ++ rv]
+  | .longValEq l rv _ _ => ["--" ++ l ++ "=" ++ rv]
+  | .longValSep l rv _ _ => ["--" ++ l, rv]
+  | .shortBoolCluster cs _ => [String.ofList ('-' :: cs)]
+  | .shortAttachedVal pcs _ oc rv _ _ => [String.ofList ('-' :: (pcs ++ (oc :: rv)))]
+  | .shortSepVal pcs _ oc rv _ _ => [String.ofList ('-' :: (pcs ++ [oc])), rv]
+  | .positional tok => [tok]
+  | .dashDashTail tail => "--" :: tail
+
+/-- Optional matched subcommand name contributed by a `CliPhrase`. -/
+def CliPhrase.subcmd? : CliPhrase → Option String
+  | .subcommand name => some name
+  | _ => none
+
+/-- Raw positional argument tokens contributed by a `CliPhrase`. -/
+def CliPhrase.posTokens : CliPhrase → List String
+  | .positional tok => [tok]
+  | .dashDashTail tail => tail
+  | _ => []
+
+/-- Forward `(optName, OptValue)` occurrences contributed by a `CliPhrase`. -/
+def CliPhrase.optEvents : CliPhrase → List (String × OptValue)
+  | .longBoolTrue _ oname => [(oname, .bool true)]
+  | .longBoolNeg _ oname => [(oname, .bool false)]
+  | .longBoolEq _ _ oname b => [(oname, .bool b)]
+  | .longValEq _ _ oname v => [(oname, v)]
+  | .longValSep _ _ oname v => [(oname, v)]
+  | .shortBoolCluster _ onames => onames.map (fun n => (n, .bool true))
+  | .shortAttachedVal _ pnames _ _ oname v => pnames.map (fun n => (n, .bool true)) ++ [(oname, v)]
+  | .shortSepVal _ pnames _ _ oname v => pnames.map (fun n => (n, .bool true)) ++ [(oname, v)]
+  | _ => []
+
+/-- Return `true` iff `tok` is not a multi-character dash flag (`""`, `"-"`, or non-`'-'` head). -/
+def isPlainCliTokenBool (tok : String) : Bool :=
+  match tok.toList with
+  | '-' :: _ :: _ => false
+  | _ => true
+
+/-- Check that `chars` and `optNames` align 1-to-1 with boolean short options in `visibleOpts`. -/
+def validShortBoolPrefixBool (visibleOpts : List OptSpec) : List Char → List String → Bool
+  | [], [] => true
+  | c :: cs, n :: ns =>
+    (match visibleOpts.find? (fun o => o.short == some c) with
+     | some o => o.kind == .bool && o.name == n
+     | none => false) &&
+    validShortBoolPrefixBool visibleOpts cs ns
+  | _, _ => false
+
+/-- Validate one `CliPhrase` against `(globals, effVer, curSpec, seenPos)`, returning `(nextGlobals, nextVer, nextSpec, nextSeenPos, mustEnd)`. -/
+def validSinglePhraseStep (validators : CustomValidators) (globals : List OptSpec)
+    (effVer : Option String) (curSpec : CommandSpec) (seenPos : Bool) :
+    CliPhrase → Option (List OptSpec × Option String × CommandSpec × Bool × Bool)
+  | .subcommand name =>
+    if !curSpec.subcommands.isEmpty && !seenPos then
+      match curSpec.subcommands.find? (fun s => s.name == name) with
+      | some sub => some (globals ++ curSpec.options, sub.version <|> effVer, sub, false, false)
+      | none => none
+    else
+      none
+  | .longBoolTrue l oname =>
+    match (globals ++ curSpec.options).find? (fun o => o.long == some l) with
+    | some o =>
+      if o.kind == .bool && o.name == oname then
+        some (globals, effVer, curSpec, seenPos, false)
+      else
+        none
+    | none => none
+  | .longBoolNeg b oname =>
+    match (globals ++ curSpec.options).find? (fun o => o.long == some b) with
+    | some o =>
+      if o.kind == .bool && !o.repeatable && o.name == oname then
+        some (globals, effVer, curSpec, seenPos, false)
+      else
+        none
+    | none => none
+  | .longBoolEq l rv oname val =>
+    match (globals ++ curSpec.options).find? (fun o => o.long == some l) with
+    | some o =>
+      if o.kind == .bool && o.name == oname && !(o.repeatable && !val) &&
+          parseBoolString rv == some val then
+        some (globals, effVer, curSpec, seenPos, false)
+      else
+        none
+    | none => none
+  | .longValEq l rv oname val | .longValSep l rv oname val =>
+    match (globals ++ curSpec.options).find? (fun o => o.long == some l) with
+    | some o =>
+      if o.kind != .bool && o.name == oname &&
+          (match parseOptValueWith o.kind rv validators with | .ok v => decide (v = val) | .error _ => false) then
+        some (globals, effVer, curSpec, seenPos, false)
+      else
+        none
+    | none => none
+  | .shortBoolCluster cs onames =>
+    if !cs.isEmpty && validShortBoolPrefixBool (globals ++ curSpec.options) cs onames then
+      some (globals, effVer, curSpec, seenPos, false)
+    else
+      none
+  | .shortAttachedVal pcs pnames oc rv oname val =>
+    if !rv.isEmpty && validShortBoolPrefixBool (globals ++ curSpec.options) pcs pnames then
+      match (globals ++ curSpec.options).find? (fun o => o.short == some oc) with
+      | some o =>
+        if o.kind != .bool && o.name == oname &&
+            (match parseOptValueWith o.kind (String.ofList rv) validators with | .ok v => decide (v = val) | .error _ => false) then
+          some (globals, effVer, curSpec, seenPos, false)
+        else
+          none
+      | none => none
+    else
+      none
+  | .shortSepVal pcs pnames oc rv oname val =>
+    if validShortBoolPrefixBool (globals ++ curSpec.options) pcs pnames then
+      match (globals ++ curSpec.options).find? (fun o => o.short == some oc) with
+      | some o =>
+        if o.kind != .bool && o.name == oname &&
+            (match parseOptValueWith o.kind rv validators with | .ok v => decide (v = val) | .error _ => false) then
+          some (globals, effVer, curSpec, seenPos, false)
+        else
+          none
+      | none => none
+    else
+      none
+  | .positional tok =>
+    if isPlainCliTokenBool tok && (curSpec.subcommands.isEmpty || seenPos) then
+      some (globals, effVer, curSpec, true, false)
+    else
+      none
+  | .dashDashTail tail =>
+    some (globals, effVer, curSpec, seenPos || !tail.isEmpty, true)
+
+/-- Check a complete `CliPhrase` derivation starting from `(globals, effVer, curSpec, seenPos)`. -/
+def checkCliPhrases (validators : CustomValidators) (globals : List OptSpec)
+    (effVer : Option String) (curSpec : CommandSpec) (seenPos : Bool) : List CliPhrase → Bool
+  | [] => true
+  | p :: rest =>
+    match validSinglePhraseStep validators globals effVer curSpec seenPos p with
+    | none => false
+    | some (nextGlobals, nextVer, nextSpec, nextSeenPos, mustEnd) =>
+      if mustEnd then rest.isEmpty
+      else checkCliPhrases validators nextGlobals nextVer nextSpec nextSeenPos rest
+
+/-- Traverse an open (pre-`--`) sequence of valid `CliPhrase`s, returning the active command context. -/
+def runOpenCliPhrases (validators : CustomValidators) (globals : List OptSpec)
+    (effVer : Option String) (curSpec : CommandSpec) (seenPos : Bool) :
+    List CliPhrase → Option (List OptSpec × Option String × CommandSpec × Bool)
+  | [] => some (globals, effVer, curSpec, seenPos)
+  | p :: rest =>
+    match validSinglePhraseStep validators globals effVer curSpec seenPos p with
+    | none => none
+    | some (nextGlobals, nextVer, nextSpec, nextSeenPos, mustEnd) =>
+      if mustEnd then none
+      else runOpenCliPhrases validators nextGlobals nextVer nextSpec nextSeenPos rest
+
+/-- Build per-option forward CLI value lists from `phrases` for `visibleOpts`. -/
+def cliOptsOfPhrases (visibleOpts : List OptSpec) (phrases : List CliPhrase) :
+    List (String × List OptValue) :=
+  let events := phrases.flatMap CliPhrase.optEvents
+  visibleOpts.filterMap fun opt =>
+    let vs := events.filterMap (fun p => if p.1 == opt.name then some p.2 else none)
+    if vs.isEmpty then none else some (opt.name, vs)
+
+/-- Return `true` iff `cs` begins with zero or more boolean short flags in `visibleOpts` followed by `target`. -/
+def hasShortPrefixBeforeCharBool (visibleOpts : List OptSpec) (target : Char) : List Char → Bool
+  | [] => false
+  | ch :: rest =>
+    if ch == target then true
+    else
+      match visibleOpts.find? (fun o => o.short == some ch) with
+      | some o => o.kind == .bool && hasShortPrefixBeforeCharBool visibleOpts target rest
+      | none => false
+
+/-- Return `true` iff `tok` triggers `--help` or `-h` under `(visibleOpts, shortHelp)`. -/
+def isHelpTriggerTokenBool (visibleOpts : List OptSpec) (shortHelp : Bool) (tok : String) : Bool :=
+  tok == "--help" ||
+  (shortHelp &&
+    match tok.toList with
+    | '-' :: c :: rest => c != '-' && hasShortPrefixBeforeCharBool visibleOpts 'h' (c :: rest)
+    | _ => false)
+
+/-- Return `true` iff `tok` triggers `--version` or `-V` under `(visibleOpts, shortVersion, effVer)`. -/
+def isVersionTriggerTokenBool (visibleOpts : List OptSpec) (shortVersion : Bool)
+    (effVer : Option String) (tok : String) : Bool :=
+  effVer.isSome &&
+  (tok == "--version" ||
+    (shortVersion &&
+      match tok.toList with
+      | '-' :: c :: rest => c != '-' && hasShortPrefixBeforeCharBool visibleOpts 'V' (c :: rest)
+      | _ => false))
+
+/-- Declarative existence of a valid pre-`--` phrase prefix in `args` ending at a help trigger token. -/
+def ExistsHelpInvocation (spec : CommandSpec) (validators : CustomValidators)
+    (args : List String) : Prop :=
+  ∃ (phrases : List CliPhrase) (triggerTok : String) (tail : List String)
+    (globals : List OptSpec) (effVer : Option String) (curSpec : CommandSpec) (seenPos : Bool),
+    runOpenCliPhrases validators [] spec.version spec false phrases =
+      some (globals, effVer, curSpec, seenPos) ∧
+    (phrases.map CliPhrase.tokens).flatten ++ (triggerTok :: tail) = args ∧
+    isHelpTriggerTokenBool (globals ++ curSpec.options) curSpec.shortHelp triggerTok = true
+
+/-- Declarative existence of a valid pre-`--` phrase prefix in `args` ending at a version trigger token. -/
+def ExistsVersionInvocation (spec : CommandSpec) (validators : CustomValidators)
+    (args : List String) : Prop :=
+  ∃ (phrases : List CliPhrase) (triggerTok : String) (tail : List String)
+    (globals : List OptSpec) (effVer : Option String) (curSpec : CommandSpec) (seenPos : Bool),
+    runOpenCliPhrases validators [] spec.version spec false phrases =
+      some (globals, effVer, curSpec, seenPos) ∧
+    (phrases.map CliPhrase.tokens).flatten ++ (triggerTok :: tail) = args ∧
+    isVersionTriggerTokenBool (globals ++ curSpec.options) curSpec.shortVersion effVer triggerTok = true
+
+/-- Declarative phrase-derivation and option/argument resolution relation for a valid `ParsedCmd`. -/
+def ValidParsedCmd (getEnv : String → Except CmdLineError (Option String))
+    (spec : CommandSpec) (args : List String) (validators : CustomValidators)
+    (parsed : ParsedCmd) : Prop :=
+  isValidSpec spec = true ∧
+  ∃ (globals : List OptSpec) (effVer : Option String) (targetSpec : CommandSpec),
+    findSubcommandPath spec parsed.subcommandPath = .ok (globals, effVer, targetSpec) ∧
+    targetSpec.subcommands.isEmpty = true ∧
+    ∃ phrases : List CliPhrase,
+      (phrases.map CliPhrase.tokens).flatten = args ∧
+      checkCliPhrases validators [] spec.version spec false phrases = true ∧
+      phrases.filterMap CliPhrase.subcmd? = parsed.subcommandPath ∧
+      phrases.flatMap CliPhrase.posTokens = parsed.rawPositionals ∧
+      resolveOptions (m := Id) getEnv (globals ++ targetSpec.options)
+        (cliOptsOfPhrases (globals ++ targetSpec.options) phrases) validators = .ok parsed.options ∧
+      resolveArgs targetSpec.args (phrases.flatMap CliPhrase.posTokens) validators = .ok parsed.args
+
+/-- Declarative specification for CLI parsing parameterized by environment lookup `getEnv`. -/
+def AllowedParseOutcome (getEnv : String → Except CmdLineError (Option String))
+    (spec : CommandSpec) (args : List String) (validators : CustomValidators)
+    (out : Except CmdLineError ParsedCmd) : Prop :=
+  if !isValidSpec spec then
+    out = .error { kind := .invalidSpec, message := s!"invalid command spec '{spec.name}'" }
+  else
+    match out with
+    | .ok parsed =>
+      ValidParsedCmd getEnv spec args validators parsed
+    | .error e =>
+      (¬(∃ parsed, ValidParsedCmd getEnv spec args validators parsed) ∧
+        ¬ExistsHelpInvocation spec validators args ∧
+        ¬ExistsVersionInvocation spec validators args ∧
+        ((∃ envKey : String, getEnv envKey = .error e) ∨
+          ((!e.message.isEmpty) = true ∧
+            e.kind ≠ .invalidSpec ∧ e.kind ≠ .helpRequested ∧
+            e.kind ≠ .versionRequested ∧ e.kind ≠ .eof ∧ e.kind ≠ .ioError))) ∨
+      (e.kind = .helpRequested ∧ (!e.message.isEmpty) = true ∧
+        ExistsHelpInvocation spec validators args) ∨
+      (e.kind = .versionRequested ∧ (!e.message.isEmpty) = true ∧
+        ExistsVersionInvocation spec validators args)
+
+/-- Allowed outcome relation for `CmdLine.parseWith` against `AllowedParseOutcome`. -/
+def allowedParseWith (spec : CommandSpec) (args : List String) (validators : CustomValidators)
+    (out : Except CmdLineError ParsedCmd) : Prop :=
+  AllowedParseOutcome (fun _ => .ok none) spec args validators out
+
+/-- Allowed outcome relation for `CmdLine.parse` (defaulting `validators := []`). -/
+def allowedParse (spec : CommandSpec) (args : List String)
+    (out : Except CmdLineError ParsedCmd) : Prop :=
+  allowedParseWith spec args [] out
+
+/-- Pure abstract state for monadic `CliOpsM` step refinement in `Core.RefinesStepFrom`. -/
+structure CliStepState where
+  /-- Queued input lines returned by `CliOpsM.readLine`. -/
+  stdinLines : List String := []
+  /-- Accumulated `stdout` text emitted via `CliOpsM.writeOut`. -/
+  stdout : String := ""
+  /-- Accumulated `stderr` text emitted via `CliOpsM.writeErr`. -/
+  stderr : String := ""
+  /-- Environment lookup entries queried via `CliOpsM.getEnv`. -/
+  env : List (String × Except CmdLineError (Option String)) := []
+  deriving Inhabited
+
+/-- Request sum for `CliOpsM` primitives in `Core.RefinesStepFrom`. -/
+inductive RawStepReq where
+  /-- Pop the next line from `stdin`. -/
+  | readLine
+  /-- Append text to `stdout`. -/
+  | writeOut (text : String)
+  /-- Append text to `stderr`. -/
+  | writeErr (text : String)
+  /-- Query environment variable `key`. -/
+  | getEnv (key : String)
+
+/-- Output sum for `CliOpsM` primitives in `Core.RefinesStepFrom`. -/
+inductive RawStepOut where
+  /-- Result of `CliOpsM.readLine`. -/
+  | line (res : Option String)
+  /-- Result of `CliOpsM.writeOut` or `writeErr`. -/
+  | unit
+  /-- Result of `CliOpsM.getEnv`. -/
+  | envVal (res : Except CmdLineError (Option String))
+
+/-- Total well-formedness guard on `CliStepState` for `Core.RefinesStepFrom`. -/
+def rawStepWf (_ : CliStepState) : Bool := true
+
+/-- Execute one `RawStepReq` against an arbitrary `CliOpsM (StateM W)`. -/
+def execRawStep {W : Type} (ops : CliOpsM (StateM W)) : RawStepReq → StateM W RawStepOut
+  | .readLine => .line <$> ops.readLine
+  | .writeOut text => ops.writeOut text *> pure .unit
+  | .writeErr text => ops.writeErr text *> pure .unit
+  | .getEnv key => .envVal <$> ops.getEnv key
+
+/-- Pure lookup of `key` in `CliStepState.env`. -/
+def lookupCliStepEnv (s : CliStepState) (key : String) : Except CmdLineError (Option String) :=
+  match s.env.find? (fun p => p.1 == key) with
+  | some p => p.2
+  | none => .ok none
+
+/-- Allowed raw single-step relation over `CliStepState`. -/
+def allowedRawStep (s : CliStepState) (req : RawStepReq) (out : RawStepOut)
+    (s' : CliStepState) : Prop :=
+  match req, out with
+  | .readLine, .line res =>
+    match s.stdinLines with
+    | [] => res = none ∧ s' = s
+    | hd :: tl => res = some hd ∧ s' = { s with stdinLines := tl }
+  | .writeOut text, .unit => s' = { s with stdout := s.stdout ++ text }
+  | .writeErr text, .unit => s' = { s with stderr := s.stderr ++ text }
+  | .getEnv key, .envVal res => res = lookupCliStepEnv s key ∧ s' = s
+  | _, _ => False
+
+/-- Pure single-step model of `CmdLineApiM.promptLine` over `CliStepState`. -/
+def stepCliPromptLine (s : CliStepState) (prompt : String) (default : Option String) :
+    Except CmdLineError String × CliStepState :=
+  let s1 := { s with stdout := s.stdout ++ prompt }
+  match s1.stdinLines with
+  | [] => (.error { kind := .eof, message := "unexpected end of input" }, s1)
+  | line :: rest =>
+    let s2 := { s1 with stdinLines := rest }
+    let trimmed := trimAscii line
+    if trimmed.isEmpty then
+      match default with
+      | some d => (.ok d, s2)
+      | none => (.ok "", s2)
+    else
+      (.ok trimmed, s2)
+
+/-- Pure single-step model of `CmdLineApiM.confirm` over `CliStepState`. -/
+def stepCliConfirm (s : CliStepState) (prompt : String) (default : Option Bool) :
+    Nat → Except CmdLineError Bool × CliStepState
+  | 0 => (.error { kind := .invalidValue, message := "exceeded maximum confirmation attempts" }, s)
+  | n + 1 =>
+    let s1 := { s with stdout := s.stdout ++ prompt }
+    match s1.stdinLines with
+    | [] => (.error { kind := .eof, message := "unexpected end of input" }, s1)
+    | line :: rest =>
+      let s2 := { s1 with stdinLines := rest }
+      let norm := asciiLower (trimAscii line)
+      if norm.isEmpty then
+        match default with
+        | some b => (.ok b, s2)
+        | none =>
+          match n with
+          | 0 => (.error { kind := .invalidValue, message := "exceeded maximum confirmation attempts" }, s2)
+          | _ + 1 => stepCliConfirm { s2 with stderr := s2.stderr ++ "Please answer yes or no.\n" } prompt default n
+      else if norm == "y" || norm == "yes" then
+        (.ok true, s2)
+      else if norm == "n" || norm == "no" then
+        (.ok false, s2)
+      else
+        match n with
+        | 0 => (.error { kind := .invalidValue, message := "exceeded maximum confirmation attempts" }, s2)
+        | _ + 1 => stepCliConfirm { s2 with stderr := s2.stderr ++ "Please answer yes or no.\n" } prompt default n
+
+/-- Request sum covering all effectful `CmdLineApiM` operations (`parseWithEnv`, `promptLine`, `confirm`, `runCli`, `runCliWith`). -/
+inductive PkgStepReq where
+  /-- `CmdLineApiM.parseWithEnv` request. -/
+  | parseWithEnv (spec : CommandSpec) (args : List String) (validators : CustomValidators)
+  /-- `CmdLineApiM.promptLine` request. -/
+  | promptLine (prompt : String) (default : Option String)
+  /-- `CmdLineApiM.confirm` request. -/
+  | confirm (prompt : String) (default : Option Bool) (maxAttempts : Nat)
+  /-- `CmdLineApiM.runCli` request with pure exit-code callback. -/
+  | runCli (spec : CommandSpec) (args : List String) (exitCode : UInt32)
+  /-- `CmdLineApiM.runCliWith` request with custom validators and pure exit-code callback. -/
+  | runCliWith (spec : CommandSpec) (args : List String) (validators : CustomValidators) (exitCode : UInt32)
+
+/-- Output sum for effectful `CmdLineApiM` transitions. -/
+inductive PkgStepOut where
+  /-- Result of `CmdLineApiM.parseWithEnv`. -/
+  | parsed (res : Except CmdLineError ParsedCmd)
+  /-- Result of `CmdLineApiM.promptLine`. -/
+  | line (res : Except CmdLineError String)
+  /-- Result of `CmdLineApiM.confirm`. -/
+  | confirmed (res : Except CmdLineError Bool)
+  /-- Result of `CmdLineApiM.runCli` or `runCliWith`. -/
+  | code (res : UInt32)
+
+/-- Execute one `PkgStepReq` against a `CmdLineApiM (StateM W)` bundle. -/
+def execPkgStep {W : Type} (api : CmdLineApiM (StateM W)) : PkgStepReq → StateM W PkgStepOut
+  | .parseWithEnv spec args validators => .parsed <$> api.parseWithEnv spec args validators
+  | .promptLine prompt default => .line <$> api.promptLine prompt default
+  | .confirm prompt default maxAttempts => .confirmed <$> api.confirm prompt default maxAttempts
+  | .runCli spec args exitCode => .code <$> api.runCli spec args (fun _ => pure exitCode)
+  | .runCliWith spec args validators exitCode =>
+    .code <$> api.runCliWith spec args validators (fun _ => pure exitCode)
+
+/-- Allowed outcome relation for `parseWithEnv` on `CliStepState` against `AllowedParseOutcome`. -/
+def allowedParseWithEnvStep (s : CliStepState) (spec : CommandSpec) (args : List String)
+    (validators : CustomValidators) (res : Except CmdLineError ParsedCmd) (s' : CliStepState) : Prop :=
+  s' = s ∧ AllowedParseOutcome (lookupCliStepEnv s) spec args validators res
+
+/-- Allowed outcome relation for `runCliWith` on `CliStepState` against `allowedParseWithEnvStep`. -/
+def allowedRunCliWithStep (s : CliStepState) (spec : CommandSpec) (args : List String)
+    (validators : CustomValidators) (exitCode code : UInt32) (s' : CliStepState) : Prop :=
+  ∃ outcome : Except CmdLineError ParsedCmd,
+    allowedParseWithEnvStep s spec args validators outcome s ∧
+    match outcome with
+    | .ok _ => code = exitCode ∧ s' = s
+    | .error e =>
+      match e.kind with
+      | .helpRequested | .versionRequested =>
+        code = 0 ∧ s' = { s with stdout := s.stdout ++ e.message }
+      | _ =>
+        code = 2 ∧ s' = { s with stderr := s.stderr ++ e.message ++ "\n" }
+
+/-- Allowed package-level single-step relation over `CliStepState`. -/
+def allowedPkgStep (s : CliStepState) (req : PkgStepReq) (out : PkgStepOut)
+    (s' : CliStepState) : Prop :=
+  match req, out with
+  | .parseWithEnv spec args validators, .parsed res =>
+    allowedParseWithEnvStep s spec args validators res s'
+  | .promptLine prompt default, .line res =>
+    (res, s') = stepCliPromptLine s prompt default
+  | .confirm prompt default maxAttempts, .confirmed res =>
+    (res, s') = stepCliConfirm s prompt default maxAttempts
+  | .runCli spec args exitCode, .code code =>
+    allowedRunCliWithStep s spec args [] exitCode code s'
+  | .runCliWith spec args validators exitCode, .code code =>
+    allowedRunCliWithStep s spec args validators exitCode code s'
+  | _, _ => False
+
 end LeanSwe.CmdLine.Model

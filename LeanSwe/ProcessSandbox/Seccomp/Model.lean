@@ -654,4 +654,17 @@ def decodeSeccompSyscall (arch : SeccompArch) (inp : SeccompData) : Option Guest
       | some op => some (.adminOp op)
       | none => none
 
+/-- Allowed BPF compilation contract for `Seccomp.compileSeccompBpf`. -/
+def allowedCompileSeccompBpf (arch : SeccompArch) (prog : Array SockFilter) : Prop :=
+  isValidLinuxSeccompProg prog = true ∧
+    ∀ inp : SeccompData,
+      evalBpf prog inp =
+        some (match decodeSeccompSyscall arch inp with
+          | none => SECCOMP_RET_ALLOW
+          | some .clone3Attempt => SECCOMP_RET_ERRNO_ENOSYS
+          | some (.anonUnixSocketpair .stream) => SECCOMP_RET_ALLOW
+          | some (.anonUnixSocketpair .seqpacket) => SECCOMP_RET_ALLOW
+          | some (.cloneProc _ false) => SECCOMP_RET_ALLOW
+          | some _ => SECCOMP_RET_ERRNO_EPERM)
+
 end LeanSwe.ProcessSandbox.Model

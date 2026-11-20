@@ -1,4 +1,5 @@
 import Core.NondetTest
+import Core.Refines
 import LeanSwe.Toml.Types
 import LeanSwe.Toml.Model
 import LeanSwe.Toml.Impl
@@ -283,5 +284,131 @@ theorem toml_getPath_never_immutableInlineTable (α : Type) [FromToml α] (t : T
 theorem toml_getPath_never_invalidUtf8OrControl (α : Type) [FromToml α] (t : TomlTable) (keys : List String) : Core.NeverErrorKindPure TomlError.kind .invalidUtf8OrControl (LeanSwe.Toml.getPath (α := α) t keys) := getPathAux_never_of .invalidUtf8OrControl (by decide) (by decide) (by decide) α [] t keys
 /-- `Toml.getPath` never returns `.numericOverflow`. -/
 theorem toml_getPath_never_numericOverflow (α : Type) [FromToml α] (t : TomlTable) (keys : List String) : Core.NeverErrorKindPure TomlError.kind .numericOverflow (LeanSwe.Toml.getPath (α := α) t keys) := getPathAux_never_of .numericOverflow (by decide) (by decide) (by decide) α [] t keys
+
+private theorem allowedParse_holds (raw : String) :
+    Model.allowedParse raw (LeanSwe.Toml.parse raw) := by
+  have hwf := proof_toml_parse_returnsWellFormedTable raw
+  have herr := proof_toml_onError_returnsNonEmptyMessage raw
+  dsimp only [Core.AllPass, Core.AllPassRun, test_toml_parse_returnsWellFormedTable,
+    test_toml_onError_returnsNonEmptyMessage, LeanSwe.Toml.defaultApi, makeTomlApi,
+    Core.NondetTest.nondet, Core.NondetTest.assert, bind, pure] at hwf herr
+  change Model.allowedParse raw (parseWithNum LeanSwe.NumParse.defaultApi raw)
+  cases hp : parseWithNum LeanSwe.NumParse.defaultApi raw with
+  | ok parsed =>
+    rw [hp] at hwf
+    refine ⟨hwf.1, fun doc tape hr => ?_⟩
+    have hrt := proof_toml_render_parse_roundTrip (doc, tape)
+    dsimp only [Core.AllPass, Core.AllPassRun, test_toml_render_parse_roundTrip,
+      LeanSwe.Toml.defaultApi, makeTomlApi, Core.NondetTest.nondet, Core.NondetTest.assume,
+      Core.NondetTest.assert, bind, pure] at hrt
+    rw [hr] at hrt
+    dsimp only at hrt
+    rw [hp] at hrt
+    exact hrt.1
+  | error e =>
+    rw [hp] at herr
+    refine ⟨herr.1, fun doc tape hr => ?_⟩
+    have hrt := proof_toml_render_parse_roundTrip (doc, tape)
+    dsimp only [Core.AllPass, Core.AllPassRun, test_toml_render_parse_roundTrip,
+      LeanSwe.Toml.defaultApi, makeTomlApi, Core.NondetTest.nondet, Core.NondetTest.assume,
+      Core.NondetTest.assert, bind, pure] at hrt
+    rw [hr] at hrt
+    dsimp only at hrt
+    rw [hp] at hrt
+    exact hrt.1
+
+private theorem nonEmptyMsg_ne_empty (msg : String) : nonEmptyMsg msg ≠ "" := by
+  unfold nonEmptyMsg
+  by_cases h : msg.isEmpty = true
+  · simp [h]
+  · simp only [h, Bool.false_eq_true, ↓reduceIte]
+    intro he
+    subst he
+    exact h rfl
+
+private theorem nonEmptyMsg_not_isEmpty (msg : String) : !(nonEmptyMsg msg).isEmpty = true := by
+  simp [nonEmptyMsg_ne_empty]
+
+private theorem allowedGetTable_holds (v : TomlValue) :
+    Model.allowedGetTable v (LeanSwe.Toml.getTable v) := by
+  cases v <;> simp [Model.allowedGetTable, LeanSwe.Toml.getTable, tomlGetTable, mkErr, nonEmptyMsg_ne_empty]
+
+private theorem allowedGetArray_holds (v : TomlValue) :
+    Model.allowedGetArray v (LeanSwe.Toml.getArray v) := by
+  cases v <;> simp [Model.allowedGetArray, LeanSwe.Toml.getArray, tomlGetArray, mkErr, nonEmptyMsg_ne_empty]
+
+private theorem allowedDecode_holds {α : Type} [FromToml α] (v : TomlValue) :
+    Model.allowedDecode v (LeanSwe.Toml.decode (α := α) v) := by
+  unfold Model.allowedDecode LeanSwe.Toml.decode tomlDecode
+  cases FromToml.fromToml (α := α) v <;> simp [nonEmptyMsg_ne_empty]
+
+private theorem allowedGetField_holds {α : Type} [FromToml α] (t : TomlTable) (key : String) :
+    Model.allowedGetField t key (LeanSwe.Toml.getField (α := α) t key) := by
+  unfold Model.allowedGetField LeanSwe.Toml.getField tomlGetField
+  cases lookupKey key t with
+  | none => simp [mkErr, nonEmptyMsg_ne_empty]
+  | some v =>
+    cases hf : FromToml.fromToml (α := α) v
+    · simp [hf, Except.isOk, Except.toBool, nonEmptyMsg_ne_empty]
+    · simp [hf]
+
+private theorem allowedGetOptField_holds {α : Type} [FromToml α] (t : TomlTable) (key : String) :
+    Model.allowedGetOptField t key (LeanSwe.Toml.getOptField (α := α) t key) := by
+  unfold Model.allowedGetOptField LeanSwe.Toml.getOptField tomlGetOptField
+  cases lookupKey key t with
+  | none => trivial
+  | some v =>
+    cases hf : FromToml.fromToml (α := α) v
+    · simp [hf, Except.isOk, Except.toBool, nonEmptyMsg_ne_empty]
+    · simp [hf]
+
+private theorem allowedGetPathAux_holds {α : Type} [FromToml α]
+    (revPrefix : List String) (t : TomlTable) (keys : List String) :
+    Model.allowedGetPathAux revPrefix t keys (tomlGetPathAux (α := α) revPrefix t keys) := by
+  induction keys generalizing revPrefix t with
+  | nil =>
+    unfold Model.allowedGetPathAux tomlGetPathAux
+    cases FromToml.fromToml (α := α) (.table t)
+    · simp [nonEmptyMsg_ne_empty]
+    · simp
+  | cons k rest ih =>
+    cases rest with
+    | nil =>
+      unfold Model.allowedGetPathAux tomlGetPathAux joinPath
+      cases lookupKey k t with
+      | none => simp [mkErr, nonEmptyMsg_ne_empty]
+      | some v =>
+        cases hf : FromToml.fromToml (α := α) v
+        · simp [hf, Except.isOk, Except.toBool, nonEmptyMsg_ne_empty]
+        · simp [hf]
+    | cons k' tl =>
+      unfold Model.allowedGetPathAux tomlGetPathAux joinPath
+      cases lookupKey k t with
+      | none => exact ⟨_, rfl, rfl, rfl, nonEmptyMsg_not_isEmpty _⟩
+      | some v =>
+        cases v with
+        | table sub => exact ih (k :: revPrefix) sub
+        | _ => exact ⟨_, rfl, rfl, rfl, nonEmptyMsg_not_isEmpty _⟩
+
+/-- Full public `Interface` refinement of `LeanSwe.Toml` against `LeanSwe.Toml.Model`. -/
+theorem refines_model :
+    Core.RefinesPure LeanSwe.Toml.parse Model.allowedParse ∧
+    Core.RefinesPure LeanSwe.Toml.format Model.allowedFormat ∧
+    Core.RefinesPure LeanSwe.Toml.getTable Model.allowedGetTable ∧
+    Core.RefinesPure LeanSwe.Toml.getArray Model.allowedGetArray ∧
+    (∀ {α : Type} [FromToml α], Core.RefinesPure (@LeanSwe.Toml.decode α _) (@Model.allowedDecode α _)) ∧
+    (∀ {α : Type} [ToToml α], Core.RefinesPureEq (@LeanSwe.Toml.encode α _) (@Model.encodeModel α _)) ∧
+    (∀ {α : Type} [FromToml α], Core.RefinesPure2 (@LeanSwe.Toml.getField α _) (@Model.allowedGetField α _)) ∧
+    (∀ {α : Type} [FromToml α], Core.RefinesPure2 (@LeanSwe.Toml.getOptField α _) (@Model.allowedGetOptField α _)) ∧
+    (∀ {α : Type} [FromToml α], Core.RefinesPure2 (@LeanSwe.Toml.getPath α _) (@Model.allowedGetPath α _)) :=
+  ⟨allowedParse_holds,
+   formatWithNum_allowedFormat LeanSwe.NumParse.defaultApi validNumApi_defaultApi,
+   allowedGetTable_holds,
+   allowedGetArray_holds,
+   fun v => allowedDecode_holds v,
+   fun _ => rfl,
+   fun t key => allowedGetField_holds t key,
+   fun t key => allowedGetOptField_holds t key,
+   fun t keys => allowedGetPathAux_holds [] t keys⟩
 
 end LeanSwe.Toml.Proofs
