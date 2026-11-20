@@ -3,6 +3,7 @@ import LeanSwe.LinuxSyscall.Fuzz.SandboxFuzz
 import LeanSwe.LinuxSyscall.Fuzz.TimeRandFuzz
 import LeanSwe.LinuxSyscall.Fuzz.PollFuzz
 import LeanSwe.LinuxSyscall.Fuzz.NetFuzz
+import LeanSwe.LinuxSyscall.Fuzz.ProcessFuzz
 
 namespace LeanSwe.LinuxSyscall.Fuzz.Main
 
@@ -10,7 +11,7 @@ open LeanSwe.LinuxSyscall.Fuzz
 
 /-- CLI options for `leanswe-world-fuzz`. -/
 structure FuzzCliOpts where
-  /-- Selected fuzz suite (`sandbox`, `timerand`, `poll`, `net`, or `all`). -/
+  /-- Selected fuzz suite (`sandbox`, `timerand`, `poll`, `net`, `process`, or `all`). -/
   suite : String := "sandbox"
   /-- Number of syscall steps to execute. -/
   steps : Nat := 1000000
@@ -24,6 +25,8 @@ structure FuzzCliOpts where
   requireMemfdStrict : Bool := false
   /-- Allow skipping `CLONE_NEWTIME` (`timens`) sub-episodes when unshare is unavailable. -/
   allowNoTimens : Bool := false
+  /-- Require `CLONE_NEWUSER`/`CLONE_NEWPID` namespaces in the `process` suite (`--require-ns`). -/
+  requireNs : Bool := false
   /-- Optional child-environment mode (`seccomp` or `timens`) used internally for forked sub-episodes. -/
   envChild? : Option String := none
   /-- Optional `errno` value (`1..4095`) for `--env-child seccomp`. -/
@@ -42,8 +45,6 @@ structure FuzzCliOpts where
   initNetnsDropCaps : Bool := false
   /-- Internal child flag: running inside netns with `CAP_NET_ADMIN` dropped. -/
   inNetns : Bool := false
-  /-- Require unprivileged user+net namespace probes to run instead of skipping. -/
-  requireNs : Bool := false
   deriving Repr
 
 private def parsePositiveNatArg (flag val : String) : Except String Nat :=
@@ -296,79 +297,94 @@ private def runNetSuite (opts : FuzzCliOpts) (effectiveSeed : UInt64)
 
 /-- CLI entrypoint for `leanswe-world-fuzz`. -/
 def main (args : List String) : IO UInt32 := do
-  let (outClosed, errClosed) ← sanitizeClosedStdio
-  let opts ← match parseCliArgs args with
-    | .ok o => pure o
-    | .error msg =>
-      IO.eprintln msg
-      return 2
-  if opts.suite != "sandbox" && opts.suite != "timerand" && opts.suite != "poll" && opts.suite != "net" && opts.suite != "all" then
-    IO.eprintln s!"UNKNOWN_SUITE: {opts.suite} (expected sandbox, timerand, poll, net, or all)"
-    return 2
-  let effectiveSeed ←
-    if opts.randomSeed then drawOsEntropySeed else pure opts.seed
-  if opts.netUsernsWorker then
-    if opts.suite != "net" then
-      IO.eprintln "--net-userns-worker requires --suite net"
-      return 2
-    NetFuzz.runUsernsLoDownProbe opts.steps effectiveSeed
-    return 0
-  if opts.pollSeccompWorker then
-    if opts.suite != "poll" then
-      IO.eprintln "--poll-seccomp-worker requires --suite poll"
-      return 2
-    PollFuzz.runSeccompWorker opts.seccompErrno
-    return 0
-  if opts.netSeccompWorker then
-    if opts.suite != "net" then
-      IO.eprintln "--net-seccomp-worker requires --suite net"
-      return 2
-    NetFuzz.runSeccompWorker opts.seccompErrno
-    return 0
-  if (opts.envChild?.isNone || opts.randomSeed) && !opts.inNetns && !opts.initNetnsDropCaps then
-    IO.println s!"SEED={effectiveSeed}"
-  match opts.suite with
-  | "sandbox" =>
-    if opts.envChild?.isSome then
-      IO.eprintln "--env-child is only supported for --suite timerand"
-      return 2
-    SandboxFuzz.runFuzz {
-      seed := effectiveSeed
-      steps := opts.steps
-      selfTestShrink := opts.selfTestShrink
-      requireMemfdStrict := opts.requireMemfdStrict
-    }
-  | "timerand" =>
-    runTimerandSuite opts effectiveSeed
-  | "poll" =>
-    if opts.envChild?.isSome then
-      IO.eprintln "--env-child is only supported for --suite timerand"
-      return 2
-    runPollSuite opts effectiveSeed
-    return 0
-  | "net" =>
-    if opts.envChild?.isSome then
-      IO.eprintln "--env-child is only supported for --suite timerand"
-      return 2
-    runNetSuite opts effectiveSeed outClosed errClosed
-    return 0
+  match args with
+  | "--suite" :: "process" :: "--ns-worker" :: mode :: arg :: rest =>
+    ProcessEnv.ensureStdio
+    ProcessFuzz.nsWorkerMain mode arg rest
+  | "--ns-worker" :: mode :: arg :: rest =>
+    ProcessEnv.ensureStdio
+    ProcessFuzz.nsWorkerMain mode arg rest
   | _ =>
-    if opts.envChild?.isSome then
-      IO.eprintln "--env-child is only supported for --suite timerand"
+    let (outClosed, errClosed) ← sanitizeClosedStdio
+    let opts ← match parseCliArgs args with
+      | .ok o => pure o
+      | .error msg =>
+        IO.eprintln msg
+        return 2
+    if opts.suite != "sandbox" && opts.suite != "timerand" && opts.suite != "poll" && opts.suite != "net" && opts.suite != "process" && opts.suite != "all" then
+      IO.eprintln s!"UNKNOWN_SUITE: {opts.suite} (expected sandbox, timerand, poll, net, process, or all)"
       return 2
-    let rc ← SandboxFuzz.runFuzz {
-      seed := effectiveSeed
-      steps := opts.steps
-      selfTestShrink := opts.selfTestShrink
-      requireMemfdStrict := opts.requireMemfdStrict
-    }
-    if rc != 0 then
-      return rc
-    let rc2 ← runTimerandSuite opts effectiveSeed
-    if rc2 != 0 then
-      return rc2
-    runPollSuite opts effectiveSeed
-    runNetSuite opts effectiveSeed outClosed errClosed
-    return 0
+    let effectiveSeed ←
+      if opts.randomSeed then drawOsEntropySeed else pure opts.seed
+    if opts.netUsernsWorker then
+      if opts.suite != "net" then
+        IO.eprintln "--net-userns-worker requires --suite net"
+        return 2
+      NetFuzz.runUsernsLoDownProbe opts.steps effectiveSeed
+      return 0
+    if opts.pollSeccompWorker then
+      if opts.suite != "poll" then
+        IO.eprintln "--poll-seccomp-worker requires --suite poll"
+        return 2
+      PollFuzz.runSeccompWorker opts.seccompErrno
+      return 0
+    if opts.netSeccompWorker then
+      if opts.suite != "net" then
+        IO.eprintln "--net-seccomp-worker requires --suite net"
+        return 2
+      NetFuzz.runSeccompWorker opts.seccompErrno
+      return 0
+    if (opts.envChild?.isNone || opts.randomSeed) && !opts.inNetns && !opts.initNetnsDropCaps then
+      IO.println s!"SEED={effectiveSeed}"
+    match opts.suite with
+    | "sandbox" =>
+      if opts.envChild?.isSome then
+        IO.eprintln "--env-child is only supported for --suite timerand"
+        return 2
+      SandboxFuzz.runFuzz {
+        seed := effectiveSeed
+        steps := opts.steps
+        selfTestShrink := opts.selfTestShrink
+        requireMemfdStrict := opts.requireMemfdStrict
+      }
+    | "timerand" =>
+      runTimerandSuite opts effectiveSeed
+    | "poll" =>
+      if opts.envChild?.isSome then
+        IO.eprintln "--env-child is only supported for --suite timerand"
+        return 2
+      runPollSuite opts effectiveSeed
+      return 0
+    | "net" =>
+      if opts.envChild?.isSome then
+        IO.eprintln "--env-child is only supported for --suite timerand"
+        return 2
+      runNetSuite opts effectiveSeed outClosed errClosed
+      return 0
+    | "process" =>
+      if opts.envChild?.isSome then
+        IO.eprintln "--env-child is only supported for --suite timerand"
+        return 2
+      ProcessEnv.ensureStdio
+      ProcessFuzz.runFuzz opts.steps effectiveSeed opts.selfTestShrink opts.requireNs
+    | _ =>
+      if opts.envChild?.isSome then
+        IO.eprintln "--env-child is only supported for --suite timerand"
+        return 2
+      let rc ← SandboxFuzz.runFuzz {
+        seed := effectiveSeed
+        steps := opts.steps
+        selfTestShrink := opts.selfTestShrink
+        requireMemfdStrict := opts.requireMemfdStrict
+      }
+      if rc != 0 then
+        return rc
+      let rc2 ← runTimerandSuite opts effectiveSeed
+      if rc2 != 0 then
+        return rc2
+      runPollSuite opts effectiveSeed
+      runNetSuite opts effectiveSeed outClosed errClosed
+      ProcessEnv.ensureStdio
+      ProcessFuzz.runFuzz opts.steps effectiveSeed opts.selfTestShrink opts.requireNs
 
 end LeanSwe.LinuxSyscall.Fuzz.Main

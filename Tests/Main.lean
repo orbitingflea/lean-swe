@@ -52,7 +52,8 @@ private def allSuites : Array (String × String × IO (Option String)) := #[
   ("LinuxSyscall.Passwd", "LeanSwe/LinuxSyscall/Passwd/RuntimeTests.lean", do LinuxSyscall.Passwd.RuntimeTests.runAll; return none),
   ("LinuxSyscall.Dns", "LeanSwe/LinuxSyscall/Dns/RuntimeTests.lean", do LinuxSyscall.Dns.RuntimeTests.runAll; return none),
   ("LinuxSyscall.Poll", "LeanSwe/LinuxSyscall/Poll/RuntimeTests.lean", do LinuxSyscall.Poll.RuntimeTests.runAll; return none),
-  ("LinuxSyscall.Net", "LeanSwe/LinuxSyscall/Net/RuntimeTests.lean", do LinuxSyscall.Net.RuntimeTests.runAll; return none)
+  ("LinuxSyscall.Net", "LeanSwe/LinuxSyscall/Net/RuntimeTests.lean", do LinuxSyscall.Net.RuntimeTests.runAll; return none),
+  ("LinuxSyscall.Process", "LeanSwe/LinuxSyscall/Process/RuntimeTests.lean", do LinuxSyscall.Process.RuntimeTests.runAll; return none)
 ]
 
 private def findUnregisteredRuntimeTests : IO (Array String) := do
@@ -145,6 +146,12 @@ def main (args : List String) : IO UInt32 := do
     return (← LinuxSyscall.Net.RuntimeTests.probeMain rest)
   | "--net-strace-worker" :: rest =>
     return (← LinuxSyscall.Net.RuntimeTests.probeMain ("--worker" :: rest))
+  | "--suite" :: "process" :: "--ns-worker" :: mode :: arg :: rest =>
+    return (← LinuxSyscall.Fuzz.ProcessFuzz.nsWorkerMain mode arg rest)
+  | "--process-strace-fault-check" :: rest =>
+    return (← LinuxSyscall.Process.RuntimeTests.probeMain rest)
+  | "--process-strace-worker" :: opName :: errName :: _ =>
+    return (← LinuxSyscall.Process.RuntimeTests.probeMain ["--worker", opName, errName])
   | _ =>
     let opts ← match parseMainOptions args with
       | .ok o => pure o

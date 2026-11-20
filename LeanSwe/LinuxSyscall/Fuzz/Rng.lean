@@ -17,6 +17,10 @@ def Rng.nextU64 (r : Rng) : UInt64 × Rng :=
   let z3 := z2 ^^^ (z2 >>> 31)
   (z3, { state := s })
 
+/-- Advance `Rng` by one SplitMix64 step and return the upper 32 bits as a `UInt32`. -/
+def Rng.nextU32 (r : Rng) : UInt32 × Rng :=
+  let (v, r') := r.nextU64
+  ((v >>> 32).toUInt32, r')
 /-- Return a pseudo-random `Nat` in `[0, bound)` (or `0` when `bound = 0`). -/
 def Rng.nextNat (r : Rng) (bound : Nat) : Nat × Rng :=
   let (v, r') := r.nextU64

@@ -54,8 +54,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap strace python3-zstandard zstd xz-utils gzip curl libssl-dev
-          [[ ! -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] || sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get install -y --no-install-recommends bubblewrap strace uidmap python3-zstandard zstd xz-utils gzip curl libssl-dev
+          [[ ! -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] || sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; U="$(id -un)"; for f in /etc/subuid /etc/subgid; do grep -q "^${U}:" "$f" 2>/dev/null || { S=$(awk -F: 'NF>=3 { if ($2+$3>m) m=$2+$3 } END { print m?m:100000 }' "$f" 2>/dev/null || echo 100000); flag=${f#/etc/sub}; sudo usermod "--add-sub${flag}s" "${S}-$((S+65535))" "$U"; }; done
           if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then
             echo "+memory +pids" | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null 2>&1 || true
             sudo mkdir -p /sys/fs/cgroup/leanswe/runner &&
@@ -144,10 +144,11 @@ jobs:
           else
             echo "::warning::sudo -n sysctl unavailable; skipping vm.memfd_noexec={1,2} strict checks"
           fi
-          .lake/build/bin/lean-swe-test --timerand-strace-fault-check; .lake/build/bin/lean-swe-test --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite LinuxSyscall.Sandbox --suite LinuxSyscall.TimeRand --suite LinuxSyscall.Passwd --suite LinuxSyscall.Dns --suite LinuxSyscall.Poll --suite LinuxSyscall.Net 0<&- 1>&- 2>&-
+          .lake/build/bin/lean-swe-test --timerand-strace-fault-check; .lake/build/bin/lean-swe-test --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite LinuxSyscall.Sandbox --suite LinuxSyscall.TimeRand --suite LinuxSyscall.Passwd --suite LinuxSyscall.Dns --suite LinuxSyscall.Poll --suite LinuxSyscall.Net --suite LinuxSyscall.Process 0<&- 1>&- 2>&-
           .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,LinuxSyscall.Poll,LinuxSyscall.Net,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns
-          .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --self-test-shrink
-          .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --random-seed --self-test-shrink
+          .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --self-test-shrink; .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --random-seed --self-test-shrink
+          .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process; .lake/build/bin/lean-swe-test --process-strace-fault-check; .lake/build/bin/leanswe-world-fuzz --suite process --steps 15000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-world-fuzz --suite process --steps 5000 --random-seed --self-test-shrink --require-ns
+          python3 -B -m unittest scripts/test_fuzz_changed.py
           if [[ "${GITHUB_EVENT_NAME}" == "pull_request" && -n "${BASE_SHA:-}" ]]; then
             python3 -B scripts/fuzz_changed.py --base "$BASE_SHA" --head HEAD --check-manifest --run --extra-arg=--self-test-shrink
           else

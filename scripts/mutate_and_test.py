@@ -52,11 +52,13 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
     "LinuxSyscall.Dns": pathlib.Path("LeanSwe/LinuxSyscall/Dns"),
     "LinuxSyscall.Poll": pathlib.Path("LeanSwe/LinuxSyscall/Poll"),
     "LinuxSyscall.Net": pathlib.Path("LeanSwe/LinuxSyscall/Net"),
+    "LinuxSyscall.Process": pathlib.Path("LeanSwe/LinuxSyscall/Process"),
 }
 
 C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
     "fs_shim.c": "leanswe_fs",
-    "process_shim.c": "leanswe_process",
+    "LeanSwe/Process/Raw/c/process_shim.c": "leanswe_process",
+    "LeanSwe/LinuxSyscall/c/process_shim.c": "leanswe_linux_process",
     "envvars_shim.c": "leanswe_envvars",
     "timerand_shim.c": "leanswe_linux_timerand",
     "passwd_shim.c": "leanswe_linux_passwd",
@@ -78,6 +80,7 @@ SUITE_TO_C_SHIMS: dict[str, list[pathlib.Path]] = {
     "LinuxSyscall.Dns": [pathlib.Path("LeanSwe/LinuxSyscall/c/dns_shim.c")],
     "LinuxSyscall.Poll": [pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.c"), pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.h"), pathlib.Path("LeanSwe/LinuxSyscall/c/poll_shim.c")],
     "LinuxSyscall.Net": [pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.c"), pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.h"), pathlib.Path("LeanSwe/LinuxSyscall/c/net_shim.c")],
+    "LinuxSyscall.Process": [pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.c"), pathlib.Path("LeanSwe/LinuxSyscall/c/fd_box.h"), pathlib.Path("LeanSwe/LinuxSyscall/c/process_shim.c")],
 }
 
 SANCOV_RT_C = r"""
@@ -285,12 +288,12 @@ def generate_c_mutants(rel_path: pathlib.Path, text: str) -> list[Mutant]:
                 cands.append(("CompSwap", line.replace(" > ", " >= ", 1), "loosen > to >="))
         if "if (" in line and "||" in line:
             cands.append(("BoolOp", line.replace("||", "&&", 1), "swap || to && in C guard"))
-        if not is_len_guard and "if (" in line and line.rstrip().endswith("{") and "NULL ==" not in line and "!= NULL" not in line and "== NULL" not in line:
+        if not is_len_guard and "if (" in line and (line.rstrip().endswith("{") or "return " in line) and "NULL ==" not in line and "!= NULL" not in line and "== NULL" not in line and "EFAULT" not in line:
             if "!key_ok || !val_ok" in line:
                 cands.append(("DropUtf8Check", line.replace("!key_ok || !val_ok", "!key_ok"), "skip value UTF-8 validation"))
             cands.append(("DropGuard", _replace_if_condition(line), "drop C guard"))
-        for eno in ("EINVAL", "EMFILE", "ENFILE", "EACCES", "ENOENT", "EPERM", "EEXIST", "ENOTDIR", "EISDIR", "EBADF", "ENOTSOCK",
-                    "EAFNOSUPPORT", "EOPNOTSUPP", "ECONNREFUSED", "EPIPE", "EAGAIN", "ENOBUFS", "EPROTO", "EMSGSIZE", "ENOSYS"):
+        for eno in ("EINVAL", "EMFILE", "ENFILE", "EACCES", "ENOENT", "EPERM", "EEXIST", "ENOTDIR", "EISDIR", "ENOMEM", "ESRCH", "ECHILD", "EBADF", "EBUSY",
+                    "ENOTSOCK", "EAFNOSUPPORT", "EOPNOTSUPP", "ECONNREFUSED", "EPIPE", "EAGAIN", "ENOBUFS", "EPROTO", "EMSGSIZE", "ENOSYS"):
             if eno in line:
                 target_eno = "EIO" if eno != "EIO" else "EINVAL"
                 cands.append(("ErrnoSwap", line.replace(eno, target_eno, 1), f"swap {eno} to {target_eno}"))
@@ -378,8 +381,8 @@ def resolve_targets(root: pathlib.Path, suite: str) -> tuple[list[pathlib.Path],
         c_dir = pkg_dir / "c"
         if c_dir.is_dir():
             for cf in sorted(c_dir.glob("*.c")):
-                if cf.name in C_SHIM_TO_EXTERN_LIB:
-                    c_rel = cf.relative_to(root)
+                c_rel = cf.relative_to(root)
+                if c_rel.as_posix() in C_SHIM_TO_EXTERN_LIB or cf.name in C_SHIM_TO_EXTERN_LIB:
                     if c_rel not in c_targets:
                         c_targets.append(c_rel)
     return lean_targets, c_targets
@@ -394,7 +397,7 @@ def measure_c_sancov(
     timeout_s: float = 30.0,
 ) -> list[tuple[str, str, str]]:
     """Compile a C shim with Clang `trace-pc-guard` and measure edge and line coverage."""
-    extern_lib = C_SHIM_TO_EXTERN_LIB.get(c_target.name)
+    extern_lib = C_SHIM_TO_EXTERN_LIB.get(c_target.as_posix()) or C_SHIM_TO_EXTERN_LIB.get(c_target.name)
     if not extern_lib:
         return [(m, "unsupported", f"no extern_lib mapping for {c_target.name}") for m in modes]
     if c_target.name in {"sqlite_shim.c", "psandbox_shim.c"}:
@@ -555,7 +558,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="leanswe-mut-") as td:
         work = pathlib.Path(td) / "ws"
-        shutil.copytree(REPO, work, ignore=shutil.ignore_patterns(".lake", ".git"))
+        shutil.copytree(REPO, work, symlinks=True, ignore=shutil.ignore_patterns(".lake", ".git"))
         eval_modes = ["baseline", "full"] if args.compare_modes else [args.mode]
         ok_init, t_init_bld = build_mutant(work, use_systemd)
         if not ok_init:
@@ -570,6 +573,8 @@ def main() -> int:
 
         if (args.with_c_cov or args.c_cov_only) and c_targets:
             for ct in c_targets:
+                if ct.suffix != ".c":
+                    continue
                 for mname, cst, cout in measure_c_sancov(work, eval_modes, args.suite, ct, use_systemd, args.timeout):
                     print(f"C sancov [{mname}] ({cst}, {ct}): {cout}")
         if args.c_cov_only:
