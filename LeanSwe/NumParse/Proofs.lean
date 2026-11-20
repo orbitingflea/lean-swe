@@ -1,3 +1,4 @@
+import Core.Refines
 import LeanSwe.NumParse.Proofs.IntProofs
 import LeanSwe.NumParse.Proofs.FloatExpProofs
 import LeanSwe.NumParse.Proofs.FloatParseProofs
@@ -73,5 +74,18 @@ theorem numparse_parseFloat_never_invalidSignForBase (s : String) :
 theorem numparse_parseFloat_never_overflow (s : String) :
     NeverErrorKindPure NumParseError.kind .overflow (LeanSwe.NumParse.parseFloat s) := by
   cases h : LeanSwe.NumParse.parseFloat s with | ok _ => trivial | error e => exact (parseFloat_err_ok s h).2
+
+/-- Full public `Interface` refinement of `LeanSwe.NumParse` against `LeanSwe.NumParse.Model`. -/
+theorem refines_model :
+    Core.RefinesPure LeanSwe.NumParse.parseInt Model.allowedParseInt ∧
+    Core.RefinesPure LeanSwe.NumParse.parseInt64 Model.allowedParseInt64 ∧
+    Core.RefinesPure LeanSwe.NumParse.formatInt Model.allowedFormatInt ∧
+    Core.RefinesPure LeanSwe.NumParse.parseFloat Model.allowedParseFloat ∧
+    Core.RefinesPure LeanSwe.NumParse.formatFloat Model.FloatFormatSpec :=
+  ⟨parseInt_spec,
+   parseInt64_spec,
+   parseIntModel_formatInt,
+   parseFloat_spec,
+   fun x => (proof_numparse_formatFloat_specAndRoundTrip x).1⟩
 
 end LeanSwe.NumParse.Proofs

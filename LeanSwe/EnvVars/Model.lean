@@ -58,4 +58,79 @@ def modelApi (s : Raw.Model.EnvironState) : EnvVarsApiM Id :=
     homeDir := homeDirModel s
     splitSearchPath := splitSearchPathModel }
 
+/-- Pure behavior model of `LeanSwe.EnvVars.mapRawError`. -/
+def mapRawErrorModel (err : EnvVarsRawError) : EnvVarsError :=
+  Raw.Model.mapRawErrorModel err
+
+/-- Request sum for raw `RawEnvVarsOpsM` transitions in `Core.RefinesStepFrom`. -/
+inductive RawStepReq where
+  /-- Normalize a raw OS error record. -/
+  | mapRawError (err : EnvVarsRawError)
+  /-- Read one raw environment entry by key. -/
+  | getEnv (key : String)
+  /-- Snapshot all raw environment entries. -/
+  | listEnv
+
+/-- Output sum for raw `RawEnvVarsOpsM` transitions in `Core.RefinesStepFrom`. -/
+inductive RawStepOut where
+  /-- Result of `RawEnvVarsOpsM.mapRawError`. -/
+  | mapped (err : EnvVarsError)
+  /-- Result of `RawEnvVarsOpsM.getEnv`. -/
+  | getEnv (res : Except EnvVarsRawError (Option String))
+  /-- Result of `RawEnvVarsOpsM.listEnv`. -/
+  | listEnv (res : Except EnvVarsRawError (Array (String × String)))
+
+/-- Total well-formedness guard on `Raw.Model.EnvironState` for `Core.RefinesStepFrom`. -/
+def rawStepWf (_ : Raw.Model.EnvironState) : Bool := true
+
+/-- Execute one `RawStepReq` against an arbitrary `RawEnvVarsOpsM (StateM W)`. -/
+def execRawStep {W : Type} (raw : RawEnvVarsOpsM (StateM W)) : RawStepReq → StateM W RawStepOut
+  | .mapRawError err => pure (.mapped (raw.mapRawError err))
+  | .getEnv key => .getEnv <$> raw.getEnv key
+  | .listEnv => .listEnv <$> raw.listEnv
+
+/-- Allowed raw single-step relation over `Raw.Model.EnvironState`. -/
+def allowedRawStep (s : Raw.Model.EnvironState) (req : RawStepReq) (out : RawStepOut)
+    (s' : Raw.Model.EnvironState) : Prop :=
+  s' = s ∧
+    match req, out with
+    | .mapRawError err, .mapped res => res = Raw.Model.mapRawErrorModel err
+    | .getEnv key, .getEnv res => res = Raw.Model.rawGetEnvModel s key
+    | .listEnv, .listEnv res => res = Raw.Model.rawListEnvModel s
+    | _, _ => False
+
+/-- Request sum covering all effectful `EnvVarsApiM` operations (`getEnv`, `listEnv`, `homeDir`). -/
+inductive PkgStepReq where
+  /-- Validated `EnvVarsApiM.getEnv` request. -/
+  | getEnv (key : String)
+  /-- `EnvVarsApiM.listEnv` request. -/
+  | listEnv
+  /-- `EnvVarsApiM.homeDir` request. -/
+  | homeDir
+
+/-- Output sum for effectful `EnvVarsApiM` transitions. -/
+inductive PkgStepOut where
+  /-- Result of `EnvVarsApiM.getEnv`. -/
+  | getEnv (res : Except EnvVarsError (Option String))
+  /-- Result of `EnvVarsApiM.listEnv`. -/
+  | listEnv (res : Except EnvVarsError (Array (String × String)))
+  /-- Result of `EnvVarsApiM.homeDir`. -/
+  | homeDir (res : Except EnvVarsError String)
+
+/-- Execute one `PkgStepReq` against an `EnvVarsApiM (StateM W)` bundle. -/
+def execPkgStep {W : Type} (api : EnvVarsApiM (StateM W)) : PkgStepReq → StateM W PkgStepOut
+  | .getEnv key => .getEnv <$> api.getEnv key
+  | .listEnv => .listEnv <$> api.listEnv
+  | .homeDir => .homeDir <$> api.homeDir
+
+/-- Allowed package-level single-step relation against `getEnvModel`, `listEnvModel`, and `homeDirModel`. -/
+def allowedPkgStep (s : Raw.Model.EnvironState) (req : PkgStepReq) (out : PkgStepOut)
+    (s' : Raw.Model.EnvironState) : Prop :=
+  s' = s ∧
+    match req, out with
+    | .getEnv key, .getEnv res => res = getEnvModel s key
+    | .listEnv, .listEnv res => res = listEnvModel s
+    | .homeDir, .homeDir res => res = homeDirModel s
+    | _, _ => False
+
 end LeanSwe.EnvVars.Model

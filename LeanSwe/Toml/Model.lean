@@ -924,4 +924,109 @@ def render (doc : TomlTable) (tape : RenderTape) : Option String :=
     let bodyLines ← renderTablePlan [] doc.toList tape.entries
     some (String.intercalate "\n" (hdrLines ++ bodyLines) ++ "\n")
 
+/-- Allowed outcome relation for `Toml.parse` against `WellFormedTable`, `render`, and `TomlTableEquiv`. -/
+def allowedParse (raw : String) (out : Except TomlError TomlTable) : Prop :=
+  match out with
+  | .ok parsed =>
+    WellFormedTable parsed ∧
+      ∀ doc tape, render doc tape = some raw → TomlTableEquiv doc parsed
+  | .error e =>
+    !e.message.isEmpty = true ∧
+      ∀ doc tape, render doc tape ≠ some raw
+
+/-- Check whether `sub` occurs as a contiguous character slice within `cs`. -/
+def hasCharSublist (sub : List Char) : List Char → Bool
+  | [] => sub.isEmpty
+  | c :: cs => sub.isPrefixOf (c :: cs) || hasCharSublist sub cs
+
+/-- Allowed outcome relation for `Toml.format` across all `TomlTable` inputs: empty tables format to `""`; non-empty well-formed tables emit a comment-free `render` output under some `RenderTape`; ill-formed non-empty tables still emit newline-terminated text containing every top-level rendered key. -/
+def allowedFormat (doc : TomlTable) (out : String) : Prop :=
+  if doc.toList.isEmpty then
+    out = ""
+  else if wellFormedTableBool doc then
+    ∃ tape : RenderTape, tape.headerComment = none ∧ render doc tape = some out
+  else
+    out.toList.reverse.head? = some '\n' ∧
+      ∀ k v, (k, v) ∈ doc.toList →
+        ∃ rk, renderKey k (if isValidBareKey k then .bare else .basic) = some rk ∧
+          hasCharSublist rk.toList out.toList = true
+
+/-- Allowed outcome relation for `Toml.getTable`. -/
+def allowedGetTable (v : TomlValue) (out : Except TomlError TomlTable) : Prop :=
+  match v, out with
+  | .table t, .ok res => res = t
+  | .table _, .error _ => False
+  | _, .ok _ => False
+  | _, .error e => e.kind = .typeMismatch ∧ e.path = none ∧ !e.message.isEmpty = true
+
+/-- Allowed outcome relation for `Toml.getArray`. -/
+def allowedGetArray (v : TomlValue) (out : Except TomlError (Array TomlValue)) : Prop :=
+  match v, out with
+  | .array xs, .ok res => res = xs
+  | .array _, .error _ => False
+  | _, .ok _ => False
+  | _, .error e => e.kind = .typeMismatch ∧ e.path = none ∧ !e.message.isEmpty = true
+
+/-- Allowed outcome relation for `Toml.decode` over `[FromToml α]`. -/
+def allowedDecode {α : Type} [FromToml α] (v : TomlValue) (out : Except TomlError α) : Prop :=
+  match FromToml.fromToml (α := α) v, out with
+  | .ok a, .ok b => b = a
+  | .error _, .error e => e.kind = .decodeError ∧ !e.message.isEmpty = true
+  | _, _ => False
+
+/-- Reference model for `Toml.encode` over `[ToToml α]`. -/
+def encodeModel {α : Type} [ToToml α] (x : α) : TomlValue :=
+  ToToml.toToml x
+
+/-- Allowed outcome relation for `Toml.getField` over `[FromToml α]`. -/
+def allowedGetField {α : Type} [FromToml α] (t : TomlTable) (key : String)
+    (out : Except TomlError α) : Prop :=
+  match lookupKey key t, out with
+  | none, .error e => e.kind = .missingField ∧ e.path = some key ∧ !e.message.isEmpty = true
+  | some v, .ok a => FromToml.fromToml v = .ok a
+  | some v, .error e =>
+    (FromToml.fromToml (α := α) v).isOk = false ∧
+      e.kind = .decodeError ∧ e.path = some key ∧ !e.message.isEmpty = true
+  | _, _ => False
+
+/-- Allowed outcome relation for `Toml.getOptField` over `[FromToml α]`. -/
+def allowedGetOptField {α : Type} [FromToml α] (t : TomlTable) (key : String)
+    (out : Except TomlError (Option α)) : Prop :=
+  match lookupKey key t, out with
+  | none, .ok none => True
+  | some v, .ok (some a) => FromToml.fromToml v = .ok a
+  | some v, .error e =>
+    (FromToml.fromToml (α := α) v).isOk = false ∧
+      e.kind = .decodeError ∧ e.path = some key ∧ !e.message.isEmpty = true
+  | _, _ => False
+
+/-- Recursively specify nested table path lookup and `FromToml` decoding along `keys`. -/
+def allowedGetPathAux {α : Type} [FromToml α] (revPrefix : List String) (t : TomlTable) :
+    List String → Except TomlError α → Prop
+  | [], out =>
+    match FromToml.fromToml (α := α) (.table t), out with
+    | .ok a, .ok b => b = a
+    | .error _, .error e => e.kind = .decodeError ∧ e.path = none ∧ !e.message.isEmpty = true
+    | _, _ => False
+  | [k], out =>
+    let full := String.intercalate "." (revPrefix.reverse ++ [k])
+    match lookupKey k t, out with
+    | none, .error e => e.kind = .missingField ∧ e.path = some full ∧ !e.message.isEmpty = true
+    | some v, .ok a => FromToml.fromToml v = .ok a
+    | some v, .error e =>
+      (FromToml.fromToml (α := α) v).isOk = false ∧
+        e.kind = .decodeError ∧ e.path = some full ∧ !e.message.isEmpty = true
+    | _, _ => False
+  | k :: k' :: rest, out =>
+    let full := String.intercalate "." (revPrefix.reverse ++ [k])
+    match lookupKey k t with
+    | none => ∃ e, out = .error e ∧ e.kind = .missingField ∧ e.path = some full ∧ !e.message.isEmpty = true
+    | some (.table sub) => allowedGetPathAux (k :: revPrefix) sub (k' :: rest) out
+    | some _ => ∃ e, out = .error e ∧ e.kind = .typeMismatch ∧ e.path = some full ∧ !e.message.isEmpty = true
+
+/-- Allowed outcome relation for `Toml.getPath` over `[FromToml α]`. -/
+def allowedGetPath {α : Type} [FromToml α] (t : TomlTable) (keys : List String)
+    (out : Except TomlError α) : Prop :=
+  allowedGetPathAux [] t keys out
+
 end LeanSwe.Toml.Model
