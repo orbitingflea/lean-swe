@@ -24,33 +24,33 @@ theorem proof_sqliteraw_mapRawError_mapsKnownKinds :
   intro raw
   cases raw with
   | cantOpen path? code detail =>
-    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps, Internal.mkRawOps,
-      Internal.mapRawError, assert]
+    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps,
+      Internal.mkRawOps, Internal.mapRawError, assert]
     exact ⟨⟨rfl, rfl, rfl, nonEmptyMsg_ne_empty _ _ (by decide)⟩, trivial⟩
   | busy code detail =>
-    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps, Internal.mkRawOps,
-      Internal.mapRawError, assert]
+    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps,
+      Internal.mkRawOps, Internal.mapRawError, assert]
     exact ⟨⟨rfl, rfl, rfl, nonEmptyMsg_ne_empty _ _ (by decide)⟩, trivial⟩
   | constraint code detail =>
-    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps, Internal.mkRawOps,
-      Internal.mapRawError, assert]
+    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps,
+      Internal.mkRawOps, Internal.mapRawError, assert]
     exact ⟨⟨rfl, rfl, rfl, nonEmptyMsg_ne_empty _ _ (by decide)⟩, trivial⟩
   | misuse code detail =>
-    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps, Internal.mkRawOps,
-      Internal.mapRawError, assert]
+    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps,
+      Internal.mkRawOps, Internal.mapRawError, assert]
     exact ⟨⟨rfl, rfl, rfl, nonEmptyMsg_ne_empty _ _ (by decide)⟩, trivial⟩
   | invalidArgument detail =>
-    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps, Internal.mkRawOps,
-      Internal.mapRawError, assert]
+    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps,
+      Internal.mkRawOps, Internal.mapRawError, assert]
     exact ⟨⟨rfl, rfl, rfl, nonEmptyMsg_ne_empty _ _ (by decide)⟩, trivial⟩
   | ioFailure code detail =>
-    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps, Internal.mkRawOps,
-      Internal.mapRawError, assert]
+    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps,
+      Internal.mkRawOps, Internal.mapRawError, assert]
     exact ⟨⟨rfl, rfl, rfl, nonEmptyMsg_ne_empty _ _
       (append_head_ne_empty "sqlite io failure (" (toString code ++ ")") (by decide))⟩, trivial⟩
   | sqliteCodeError code detail =>
-    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps, Internal.mkRawOps,
-      Internal.mapRawError, Internal.classifySqliteCode, assert]
+    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps,
+      Internal.mkRawOps, Internal.mapRawError, Internal.classifySqliteCode, assert]
     refine ⟨⟨?_, rfl, rfl, ?_⟩, trivial⟩
     · generalize (code &&& 0xFF).toNat = low
       match low with
@@ -64,8 +64,8 @@ theorem proof_sqliteraw_mapRawError_mapsKnownKinds :
     · exact nonEmptyMsg_ne_empty _ _
         (append_head_ne_empty "sqlite error (" (toString code ++ ")") (by decide))
   | userError detail =>
-    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps, Internal.mkRawOps,
-      Internal.mapRawError, assert]
+    dsimp only [test_sqliteraw_mapRawError_mapsKnownKinds, defaultOps,
+      Internal.mkRawOps, Internal.mapRawError, assert]
     exact ⟨⟨rfl, rfl, rfl, nonEmptyMsg_ne_empty _ _ (by decide)⟩, trivial⟩
 
 /-- Non-vacuity `CanReach` witness for `test_sqliteraw_mapRawError_mapsKnownKinds`. -/
@@ -91,6 +91,7 @@ theorem proof_sqliteraw_openDb_rejectsInvalidPathAndConfigWithoutCallingC :
   dsimp only [test_sqliteraw_openDb_rejectsInvalidPathAndConfigWithoutCallingC,
     Internal.mkRawOps, Internal.mapRawError, assert]
   dsimp only [Bind.bind, StateT.bind, bind, Pure.pure, StateT.pure, pure, StateT.run]
+  simp only [byteArray_size_eq_zero, hasZeroByteBa_zero]
   rcases hAssume with hEmpty | hNul | ⟨hRO, hCr⟩ | hGt
   · subst hEmpty
     exact ⟨⟨assert_invalidInput_record _, rfl, rfl, rfl⟩, trivial⟩
@@ -166,12 +167,13 @@ theorem proof_sqliteraw_openDb_computesExactOpenFlagsAndSetupOrder :
         ByteArray.ext (Array.toList_inj.mp (hEq.trans hCol))
       exact absurd hMemEq (by simpa [bne_iff_ne] using hNotMemStr)
   dsimp only [test_sqliteraw_openDb_computesExactOpenFlagsAndSetupOrder,
-    Internal.mkRawOps, Internal.setupConnection, Internal.shouldEnableWal, Internal.classifyPathBytes,
+    Internal.mkRawOps, Internal.setupConnection, Internal.shouldEnableWal,
     Internal.runSetupPragma, Internal.stepPragmaLoop, Internal.computeOpenFlags,
     Internal.insertRawDb, mockCOps, mockPrepareSuccess, rawDbToken, rawStmtToken, assert]
   dsimp only [Bind.bind, StateT.bind, bind, Pure.pure, StateT.pure, pure,
     StateT.run, tryFinally', MonadFinally.tryFinally']
-  simp only [hIsEmptyFalse, hHasZeroFalse, hNotComboFalse, Bool.false_eq_true, ↓reduceIte,
+  simp only [byteArray_size_eq_zero, hasZeroByteBa_zero, classifyPathBytesBa_eq, Internal.classifyPathBytes,
+    hIsEmptyFalse, hHasZeroFalse, hNotComboFalse, Bool.false_eq_true, ↓reduceIte,
     hNotGt, hNotMem, hStripNone]
   cases cfg.readOnly <;> cases cfg.createIfMissing <;> cases cfg.foreignKeys <;> cases cfg.walMode <;>
     (simp [hasLiveRawStmt]; try decide)
@@ -182,5 +184,46 @@ theorem reach_sqliteraw_openDb_computesExactOpenFlagsAndSetupOrder :
   ⟨"app.db", {}, ⟨by decide, by decide⟩, ⟨by decide, by decide⟩, ⟨by decide, by decide⟩,
     proof_sqliteraw_openDb_computesExactOpenFlagsAndSetupOrder "app.db" {}
       ⟨by decide, by decide⟩ ⟨by decide, by decide⟩ ⟨by decide, by decide⟩⟩
+
+/-- Wiring theorem: `Raw.defaultOps.mapRawError` is `Internal.mapRawError`. -/
+theorem raw_defaultOps_mapRawError : defaultOps.mapRawError = Internal.mapRawError := rfl
+
+/-- Wiring theorem: `Raw.mapRawError` delegates to `Raw.defaultOps.mapRawError`. -/
+theorem raw_mapRawError_eq (err : SqliteRawError) :
+    mapRawError err = defaultOps.mapRawError err := rfl
+
+/-- Wiring theorem: `Raw.openDb` delegates to `Raw.defaultOps.openDb`. -/
+theorem raw_openDb_eq (path : String) (cfg : OpenConfig) :
+    openDb path cfg = defaultOps.openDb path cfg := rfl
+
+/-- Default-argument wiring theorem: `Raw.openDb path` uses `{}` (`OpenConfig`). -/
+theorem raw_openDb_default_eq (path : String) :
+    openDb path = defaultOps.openDb path {} := rfl
+
+/-- Wiring theorem: `Raw.closeDb` delegates to `Raw.defaultOps.closeDb`. -/
+theorem raw_closeDb_eq (db : DbHandle) :
+    closeDb db = defaultOps.closeDb db := rfl
+
+/-- Wiring theorem: `Raw.prepare` delegates to `Raw.defaultOps.prepare`. -/
+theorem raw_prepare_eq (db : DbHandle) (sql : String) :
+    prepare db sql = defaultOps.prepare db sql := rfl
+
+/-- Wiring theorem: `Raw.bind` delegates to `Raw.defaultOps.bind`. -/
+theorem raw_bind_eq (stmt : StmtHandle) (params : Array SqliteValue) :
+    bind stmt params = defaultOps.bind stmt params := rfl
+
+/-- Wiring theorem: `Raw.step` delegates to `Raw.defaultOps.step`. -/
+theorem raw_step_eq (stmt : StmtHandle) :
+    step stmt = defaultOps.step stmt := rfl
+
+/-- Wiring theorem: `Raw.finalize` delegates to `Raw.defaultOps.finalize`. -/
+theorem raw_finalize_eq (stmt : StmtHandle) :
+    finalize stmt = defaultOps.finalize stmt := rfl
+
+/-- Wiring theorem: `Raw.activeDbCount` delegates to `Raw.defaultOps.activeDbCount`. -/
+theorem raw_activeDbCount_eq : activeDbCount = defaultOps.activeDbCount := rfl
+
+/-- Wiring theorem: `Raw.activeStmtCount` delegates to `Raw.defaultOps.activeStmtCount`. -/
+theorem raw_activeStmtCount_eq : activeStmtCount = defaultOps.activeStmtCount := rfl
 
 end LeanSwe.Sqlite.Raw.Proofs

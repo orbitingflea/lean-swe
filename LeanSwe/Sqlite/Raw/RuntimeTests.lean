@@ -604,6 +604,15 @@ def runAll : IO Unit := do
       "openDb missing parent fails with .notFound"
     assertTrue ((← Raw.activeDbCount) == 0) "activeDbCount unchanged after failed openDb"
 
+    let modeofUri := "file:" ++ tmp ++ "/modeof_probe.db?modeof=" ++ tmp ++ "/missing_modeof_ref"
+    match ← Raw.openDb modeofUri { walMode := false } with
+    | .ok h =>
+      let _ ← Raw.closeDb h
+      throw (IO.userError "ASSERTION FAILED: expected modeof missing ref to fail")
+    | .error eModeof =>
+      assertTrue (eModeof.kind == .ioError && eModeof.sqliteCode == some 1802)
+        s!"expected extended code 1802 on open_v2 modeof failure, got {repr eModeof}"
+
     let dbPath := tmp ++ "/raw_test.db"
     let db ← assertOk (← Raw.openDb dbPath {}) "openDb creates file"
     assertTrue ((← Raw.activeDbCount) == 1) "activeDbCount increments to 1"
@@ -634,9 +643,35 @@ def runAll : IO Unit := do
       "prepare duplicate INSERT"
     assertOk (← Raw.bind stDup #[.int 7, .text "dup", .real 1.0, .bytes ByteArray.empty, .null])
       "bind duplicate INSERT"
-    assertErrKind (← Raw.step stDup) .constraint "duplicate PRIMARY KEY yields .constraint"
-    let _ ← Raw.finalize stDup
+    let stepDupRes ← Raw.step stDup
+    match stepDupRes with
+    | .ok v => throw (IO.userError s!"ASSERTION FAILED: expected constraint error, got {repr v}")
+    | .error eDup =>
+      assertTrue (eDup.kind == .constraint && eDup.sqliteCode == some 1555 &&
+        (eDup.message.splitOn "kv.k").length > 1)
+        s!"expected extended code 1555 and kv.k detail on step, got {repr eDup}"
+    let finDupRes ← Raw.finalize stDup
+    match finDupRes with
+    | .ok () => throw (IO.userError "ASSERTION FAILED: expected sticky constraint error on finalize")
+    | .error eFin =>
+      assertTrue (eFin.kind == .constraint && eFin.sqliteCode == some 1555 &&
+        (eFin.message.splitOn "kv.k").length > 1)
+        s!"expected extended code 1555 and kv.k detail on finalize, got {repr eFin}"
     assertTrue ((← Raw.activeStmtCount) == 0) "activeStmtCount zero after constraint finalize"
+
+    let stI64 ← assertOk (← Raw.prepare db "SELECT ?, ?") "prepare int64 bounds"
+    assertOk (← Raw.bind stI64 #[.int Int64.maxValue, .int Int64.minValue]) "bind int64 bounds"
+    let rowI64 ← assertOk (← Raw.step stI64) "step int64 bounds"
+    assertTrue (rowI64 == .row #[.int Int64.maxValue, .int Int64.minValue])
+      s!"int64 bounds mismatch: {repr rowI64}"
+    assertOk (← Raw.finalize stI64) "finalize int64 bounds"
+
+    let stNulTxt ← assertOk (← Raw.prepare db "SELECT CAST(X'610062' AS TEXT)") "prepare embedded-NUL text"
+    let rowNulTxt ← assertOk (← Raw.step stNulTxt) "step embedded-NUL text"
+    let expNulTxt := String.ofList ['a', Char.ofNat 0, 'b']
+    assertTrue (rowNulTxt == .row #[.text expNulTxt])
+      s!"embedded-NUL text column truncated: {repr rowNulTxt}"
+    assertOk (← Raw.finalize stNulTxt) "finalize embedded-NUL text"
 
     let stSel ← assertOk (← Raw.prepare db "SELECT k, t, r, b, n FROM kv WHERE k = ?")
       "prepare SELECT"

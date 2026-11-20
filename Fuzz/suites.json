@@ -20,6 +20,7 @@
     "passwd": { "paths": ["Fuzz/Passwd/", "LeanSwe/LinuxSyscall/c/passwd_shim.c", "LeanSwe/LinuxSyscall/Common/", "LeanSwe/LinuxSyscall/Passwd/", "LeanSwe/LinuxSyscall/Sandbox/", "LeanSwe/LinuxSyscall/Fuzz/SandboxEnv.lean", "LeanSwe/LinuxSyscall/c/sandbox_shim.c", "LeanSwe/LinuxSyscall/c/sandbox_fuzz_env.c", "LeanSwe/LinuxSyscall/c/fd_box.h", "LeanSwe/LinuxSyscall/c/fd_box.c"] },
     "dns": { "paths": ["Fuzz/Dns/", "LeanSwe/LinuxSyscall/Dns/", "LeanSwe/LinuxSyscall/Common/", "LeanSwe/LinuxSyscall/c/dns_shim.c", "LeanSwe/LinuxSyscall/Sandbox/", "LeanSwe/LinuxSyscall/Fuzz/SandboxEnv.lean", "LeanSwe/LinuxSyscall/c/sandbox_shim.c", "LeanSwe/LinuxSyscall/c/sandbox_fuzz_env.c", "LeanSwe/LinuxSyscall/c/fd_box.h", "LeanSwe/LinuxSyscall/c/fd_box.c"] },
     "compress": { "paths": ["Fuzz/Compress/", "LeanSwe/Compress/", "LeanSwe/Process/", "LeanSwe/Fs/", "LeanSwe/Glob/"] },
-    "postfork": { "paths": ["Fuzz/PostFork/", "LeanSwe/LinuxSyscall/Common/", "LeanSwe/LinuxSyscall/c/fd_box.h", "LeanSwe/LinuxSyscall/c/fd_box.c", "LeanSwe/PostFork/"] }
+    "postfork": { "paths": ["Fuzz/PostFork/", "LeanSwe/LinuxSyscall/Common/", "LeanSwe/LinuxSyscall/c/fd_box.h", "LeanSwe/LinuxSyscall/c/fd_box.c", "LeanSwe/PostFork/"] },
+    "sqlite": { "paths": ["LeanSwe/Sqlite/", "Fuzz/Sqlite/"] }
   }
 }

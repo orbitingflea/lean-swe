@@ -106,7 +106,8 @@ theorem proof_sqliteraw_openDb_skipsWalOnMemoryAndReadOnlyTargets :
   dsimp only [Bind.bind, StateT.bind, bind, Pure.pure, StateT.pure, pure,
     StateT.run, tryFinally', MonadFinally.tryFinally']
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, trivial⟩
-  · simp only [hSymNotEmpty, hSymZero, hClassifySym, Bool.false_eq_true, ↓reduceIte]
+  · simp only [byteArray_size_eq_zero, hasZeroByteBa_zero, classifyPathBytesBa_eq,
+      hSymNotEmpty, hSymZero, hClassifySym, Bool.false_eq_true, ↓reduceIte]
     exact ⟨rfl, hNoWalCall⟩
   all_goals exact ⟨rfl, rfl⟩
 
@@ -148,7 +149,7 @@ theorem proof_sqliteraw_openClose_preservesActiveDbCountAndRejectsClosedOrBusy :
   have hBeq1 : (1 == unknownId) = false := beq_false_of_ne (Ne.symm hNe1)
   have hBeq2 : (2 == unknownId) = false := beq_false_of_ne (Ne.symm hNe2)
   have hSel1Ok : ("SELECT 1".utf8ByteSize < mockConsumedBytesUpToSemi "SELECT 1".toByteArray.data.toList ∨
-      Internal.isIgnorableSqlTail
+      Internal.scanSqlTail .normal
         (List.drop (mockConsumedBytesUpToSemi "SELECT 1".toByteArray.data.toList)
           "SELECT 1".toByteArray.data.toList) = false) ↔ False := by decide
   have hSel1Zero : Internal.hasZeroByte "SELECT 1".toByteArray.data.toList = false := by decide
@@ -164,7 +165,8 @@ theorem proof_sqliteraw_openClose_preservesActiveDbCountAndRejectsClosedOrBusy :
   dsimp only [Bind.bind, StateT.bind, bind, Pure.pure, StateT.pure, pure,
     StateT.run, tryFinally', MonadFinally.tryFinally']
   simp [Internal.mapRawError, Internal.nonEmptyMsg, Internal.lookupRawDb, Internal.lookupRawStmt,
-    Internal.eraseRawDb, Internal.eraseRawStmt, hasLiveRawStmt, hasLiveRawStmtForDb,
+    Internal.eraseRawDbAux, Internal.eraseRawStmtAux,
+    hasLiveRawStmt, hasLiveRawStmtForDb,
     hBeq1, hBeq2, hSel1Ok, hSel1Zero, hAct1Live, hAct2Live, hAct1Nil]
 
 /-- Non-vacuity `CanReach` witness for `test_sqliteraw_openClose_preservesActiveDbCountAndRejectsClosedOrBusy`. -/

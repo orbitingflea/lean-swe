@@ -29,7 +29,6 @@ def classifyRawCode (path? : Option String) (code : UInt32) (detail : String) : 
   | 14 => .cantOpen path? code detail
   | 19 => .constraint code detail
   | 21 => .misuse code detail
-  | 25 => .invalidArgument detail
   | 8 | 10 | 11 | 13 | 26 => .ioFailure code detail
   | _ => .sqliteCodeError code detail
 
@@ -77,6 +76,19 @@ def hasZeroByte : List UInt8 → Bool
   | [] => false
   | b :: bs => b == 0 || hasZeroByte bs
 
+/-- Structural helper for `hasZeroByteBa`. -/
+def hasZeroByteBaAux (bs : ByteArray) (idx : Nat) : Nat → Bool
+  | 0 => false
+  | rem + 1 =>
+    if h : idx < bs.size then
+      if bs[idx] == 0 then true else hasZeroByteBaAux bs (idx + 1) rem
+    else
+      false
+
+/-- Return `true` iff `bs` contains a zero byte (`0`) at or after `idx`, without list allocation. -/
+@[inline] def hasZeroByteBa (bs : ByteArray) (idx : Nat) : Bool :=
+  hasZeroByteBaAux bs idx (bs.size - idx)
+
 /-- Compute the `sqlite3_open_v2` bitmask (`SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_URI | ...`) for `cfg`. -/
 def computeOpenFlags (cfg : OpenConfig) : UInt32 :=
   let base := sqliteOpenFullMutex ||| sqliteOpenUri
@@ -108,68 +120,81 @@ inductive UriDecodeState where
   | sawPctHex (hiByte : UInt8) (hiVal : UInt8)
   deriving Repr, BEq, DecidableEq
 
-/-- Structurally recursive decoder for `%HH` percent-escapes in a SQLite URI segment,
-    truncating the segment on `%00` per `sqlite3ParseUri`. -/
-def decodeUriBytes : UriDecodeState → List UInt8 → List UInt8
-  | .normal, [] => []
-  | .sawPct, [] => [0x25]
-  | .sawPctHex hiByte _, [] => [0x25, hiByte]
+/-- Tail-recursive `%HH` decoder helper for `decodeUriBytes`. -/
+def decodeUriBytesAux (acc : List UInt8) : UriDecodeState → List UInt8 → List UInt8
+  | .normal, [] => acc.reverse
+  | .sawPct, [] => (0x25 :: acc).reverse
+  | .sawPctHex hiByte _, [] => (hiByte :: 0x25 :: acc).reverse
   | .normal, b :: bs =>
     if b == 0x25 then
-      decodeUriBytes .sawPct bs
+      decodeUriBytesAux acc .sawPct bs
     else
-      b :: decodeUriBytes .normal bs
+      decodeUriBytesAux (b :: acc) .normal bs
   | .sawPct, b :: bs =>
     match hexByteVal? b with
-    | some v1 => decodeUriBytes (.sawPctHex b v1) bs
+    | some v1 => decodeUriBytesAux acc (.sawPctHex b v1) bs
     | none =>
       if b == 0x25 then
-        0x25 :: decodeUriBytes .sawPct bs
+        decodeUriBytesAux (0x25 :: acc) .sawPct bs
       else
-        0x25 :: b :: decodeUriBytes .normal bs
+        decodeUriBytesAux (b :: 0x25 :: acc) .normal bs
   | .sawPctHex hiByte v1, b :: bs =>
     match hexByteVal? b with
     | some v2 =>
       let octet : UInt8 := (v1 <<< 4) ||| v2
       if octet == 0 then
-        []
+        acc.reverse
       else
-        octet :: decodeUriBytes .normal bs
+        decodeUriBytesAux (octet :: acc) .normal bs
     | none =>
       if b == 0x25 then
-        0x25 :: hiByte :: decodeUriBytes .sawPct bs
+        decodeUriBytesAux (hiByte :: 0x25 :: acc) .sawPct bs
       else
-        0x25 :: hiByte :: b :: decodeUriBytes .normal bs
+        decodeUriBytesAux (b :: hiByte :: 0x25 :: acc) .normal bs
+
+/-- Tail-recursive decoder for `%HH` percent-escapes in a SQLite URI segment,
+    truncating the segment on `%00` per `sqlite3ParseUri`. -/
+def decodeUriBytes (st : UriDecodeState) (bs : List UInt8) : List UInt8 :=
+  decodeUriBytesAux [] st bs
 
 /-- Decode `%HH` escapes in a SQLite URI path or query component. -/
 def decodeUriComponent (bs : List UInt8) : List UInt8 :=
   decodeUriBytes .normal bs
 
+/-- Tail-recursive helper for `takeBeforeByte`. -/
+def takeBeforeByteAux (delim : UInt8) (acc : List UInt8) : List UInt8 → List UInt8
+  | [] => acc.reverse
+  | b :: bs => if b == delim then acc.reverse else takeBeforeByteAux delim (b :: acc) bs
+
 /-- Take all bytes before the first occurrence of `delim`. -/
-def takeBeforeByte (delim : UInt8) : List UInt8 → List UInt8
-  | [] => []
-  | b :: bs => if b == delim then [] else b :: takeBeforeByte delim bs
+def takeBeforeByte (delim : UInt8) (bs : List UInt8) : List UInt8 :=
+  takeBeforeByteAux delim [] bs
+
+/-- Tail-recursive helper for `splitFirstByte`. -/
+def splitFirstByteAux (delim : UInt8) (acc : List UInt8) :
+    List UInt8 → List UInt8 × Option (List UInt8)
+  | [] => (acc.reverse, none)
+  | b :: bs =>
+    if b == delim then (acc.reverse, some bs)
+    else splitFirstByteAux delim (b :: acc) bs
 
 /-- Split a byte list at the first occurrence of `delim` into `(prefix, afterDelim?)`. -/
-def splitFirstByte (delim : UInt8) : List UInt8 → List UInt8 × Option (List UInt8)
-  | [] => ([], none)
+def splitFirstByte (delim : UInt8) (bs : List UInt8) : List UInt8 × Option (List UInt8) :=
+  splitFirstByteAux delim [] bs
+
+/-- Tail-recursive helper for `splitOnByte`. -/
+def splitOnByteAux (delim : UInt8) (cur : List UInt8) (acc : List (List UInt8)) :
+    List UInt8 → List (List UInt8)
+  | [] => (cur.reverse :: acc).reverse
   | b :: bs =>
     if b == delim then
-      ([], some bs)
+      splitOnByteAux delim [] (cur.reverse :: acc) bs
     else
-      let (pre, suf?) := splitFirstByte delim bs
-      (b :: pre, suf?)
+      splitOnByteAux delim (b :: cur) acc bs
 
 /-- Split a byte list on every occurrence of `delim`. -/
-def splitOnByte (delim : UInt8) : List UInt8 → List (List UInt8)
-  | [] => [[]]
-  | b :: bs =>
-    if b == delim then
-      [] :: splitOnByte delim bs
-    else
-      match splitOnByte delim bs with
-      | [] => [[b]]
-      | hd :: tl => (b :: hd) :: tl
+def splitOnByte (delim : UInt8) (bs : List UInt8) : List (List UInt8) :=
+  splitOnByteAux delim [] [] bs
 
 /-- Strip a leading lowercase `"file:"` scheme prefix from `bs` when present. -/
 def stripFileScheme : List UInt8 → Option (List UInt8)
@@ -202,20 +227,155 @@ def memoryModeBytes : List UInt8 :=
 def roModeBytes : List UInt8 :=
   [0x72, 0x6F]
 
-/-- Extract the effective (last) `mode=...` query parameter value from `&`-split URI query segments,
-    ignoring empty option names per `sqlite3ParseUri`. -/
-def extractLastUriMode : List (List UInt8) → Option (List UInt8)
-  | [] => none
+/-- Tail-recursive helper for `extractLastUriMode`. -/
+def extractLastUriModeAux (cur : Option (List UInt8)) : List (List UInt8) → Option (List UInt8)
+  | [] => cur
   | seg :: rest =>
-    match extractLastUriMode rest with
-    | some later => some later
-    | none =>
-      let (rawKey, rawVal?) := splitFirstByte 0x3D seg
-      let key := decodeUriComponent rawKey
+    let (rawKey, rawVal?) := splitFirstByte 0x3D seg
+    let key := decodeUriComponent rawKey
+    let next :=
       if key == modeKeyBytes then
         some (match rawVal? with | none => [] | some rv => decodeUriComponent rv)
+      else cur
+    extractLastUriModeAux next rest
+
+/-- Extract the effective (last) `mode=...` query parameter value from `&`-split URI query segments,
+    ignoring empty option names per `sqlite3ParseUri`. -/
+def extractLastUriMode (segs : List (List UInt8)) : Option (List UInt8) :=
+  extractLastUriModeAux none segs
+
+/-- Advance streaming pattern matcher on one decoded URI byte. -/
+@[inline] def feedUriMatchByte (rem? : Option (List UInt8)) (b : UInt8) : Option (List UInt8) :=
+  match rem? with
+  | some (p :: ps) => if b == p then some ps else none
+  | _ => none
+
+/-- Structural helper matching `%HH`-decoded bytes of `bs[idx ..< stop]` against `rem?` without list allocation. -/
+def decodeUriMatchBaAux (bs : ByteArray) (stop : Nat) :
+    UriDecodeState → Option (List UInt8) → Nat → Nat → Bool
+  | .normal, rem?, _, 0 => rem? == some []
+  | .sawPct, rem?, _, 0 => feedUriMatchByte rem? 0x25 == some []
+  | .sawPctHex hiByte _, rem?, _, 0 => feedUriMatchByte (feedUriMatchByte rem? 0x25) hiByte == some []
+  | st, rem?, idx, fuel + 1 =>
+    if h : idx < stop ∧ idx < bs.size then
+      let b := bs[idx]
+      match st with
+      | .normal =>
+        if b == 0x25 then
+          decodeUriMatchBaAux bs stop .sawPct rem? (idx + 1) fuel
+        else
+          decodeUriMatchBaAux bs stop .normal (feedUriMatchByte rem? b) (idx + 1) fuel
+      | .sawPct =>
+        match hexByteVal? b with
+        | some v1 => decodeUriMatchBaAux bs stop (.sawPctHex b v1) rem? (idx + 1) fuel
+        | none =>
+          if b == 0x25 then
+            decodeUriMatchBaAux bs stop .sawPct (feedUriMatchByte rem? 0x25) (idx + 1) fuel
+          else
+            decodeUriMatchBaAux bs stop .normal (feedUriMatchByte (feedUriMatchByte rem? 0x25) b) (idx + 1) fuel
+      | .sawPctHex hiByte v1 =>
+        match hexByteVal? b with
+        | some v2 =>
+          let octet : UInt8 := (v1 <<< 4) ||| v2
+          if octet == 0 then
+            rem? == some []
+          else
+            decodeUriMatchBaAux bs stop .normal (feedUriMatchByte rem? octet) (idx + 1) fuel
+        | none =>
+          if b == 0x25 then
+            decodeUriMatchBaAux bs stop .sawPct
+              (feedUriMatchByte (feedUriMatchByte rem? 0x25) hiByte) (idx + 1) fuel
+          else
+            decodeUriMatchBaAux bs stop .normal
+              (feedUriMatchByte (feedUriMatchByte (feedUriMatchByte rem? 0x25) hiByte) b) (idx + 1) fuel
+    else
+      match st with
+      | .normal => rem? == some []
+      | .sawPct => feedUriMatchByte rem? 0x25 == some []
+      | .sawPctHex hiByte _ => feedUriMatchByte (feedUriMatchByte rem? 0x25) hiByte == some []
+
+/-- Return `true` iff `decodeUriComponent` of `bs[start ..< stop]` equals `pat`, without list allocation. -/
+@[inline] def decodeUriMatchBa (bs : ByteArray) (start stop : Nat) (pat : List UInt8) : Bool :=
+  decodeUriMatchBaAux bs stop .normal (some pat) start (stop - start)
+
+/-- Return the first index `i ∈ [idx, stop)` with `bs[i] == delim`, or `stop` if absent. -/
+def findByteBeforeAux (bs : ByteArray) (delim : UInt8) (stop : Nat) (idx : Nat) : Nat → Nat
+  | 0 => stop
+  | fuel + 1 =>
+    if h : idx < stop ∧ idx < bs.size then
+      if bs[idx] == delim then idx else findByteBeforeAux bs delim stop (idx + 1) fuel
+    else
+      stop
+
+/-- Return the first index `i ∈ [idx, stop)` with `bs[i] == delim`, or `stop` if absent. -/
+@[inline] def findByteBefore (bs : ByteArray) (delim : UInt8) (idx stop : Nat) : Nat :=
+  findByteBeforeAux bs delim stop idx (stop - idx)
+
+/-- Advance past `"//..."` authority bytes up to `'/'` (`0x2F`) or `stop` without list allocation. -/
+@[inline] def stripAuthorityIdx (bs : ByteArray) (start stop : Nat) : Nat :=
+  if h : start + 1 < stop ∧ start + 1 < bs.size then
+    if bs[start] == 0x2F && bs[start + 1] == 0x2F then
+      findByteBefore bs 0x2F (start + 2) stop
+    else
+      start
+  else
+    start
+
+/-- Check exact equality of `bs` with `":memory:"` without list allocation. -/
+@[inline] def isExactColonMemoryBa (bs : ByteArray) : Bool :=
+  if h : bs.size == 8 then
+    let _ : 7 < bs.size := by simp only [beq_iff_eq] at h; omega
+    bs[0] == 0x3A && bs[1] == 0x6D && bs[2] == 0x65 && bs[3] == 0x6D &&
+      bs[4] == 0x6F && bs[5] == 0x72 && bs[6] == 0x79 && bs[7] == 0x3A
+  else
+    false
+
+/-- Check `"file:"` prefix on `bs` without list allocation. -/
+@[inline] def hasFileSchemeBa (bs : ByteArray) : Bool :=
+  if h : 4 < bs.size then
+    bs[0] == 0x66 && bs[1] == 0x69 && bs[2] == 0x6C && bs[3] == 0x65 && bs[4] == 0x3A
+  else
+    false
+
+/-- Scan `&`-separated query segments in `bs[idx ..< stop]` tracking `(lastModeIsMemory, lastModeIsRo)` without list allocation. -/
+def extractLastUriModeFlagsBaAux (bs : ByteArray) (stop : Nat) (cur : Bool × Bool) (idx : Nat) :
+    Nat → Bool × Bool
+  | 0 => cur
+  | fuel + 1 =>
+    let segStop := findByteBefore bs 0x26 idx stop
+    let eqIdx := findByteBefore bs 0x3D idx segStop
+    let next :=
+      if decodeUriMatchBa bs idx eqIdx modeKeyBytes then
+        if eqIdx < segStop then
+          let valStart := eqIdx + 1
+          (decodeUriMatchBa bs valStart segStop memoryModeBytes,
+           decodeUriMatchBa bs valStart segStop roModeBytes)
+        else
+          (false, false)
       else
-        none
+        cur
+    if segStop < stop then
+      extractLastUriModeFlagsBaAux bs stop next (segStop + 1) fuel
+    else
+      next
+
+/-- Classify a UTF-8 path/URI `ByteArray` into `(isMemoryTarget, isUriReadOnly)` without list allocation. -/
+def classifyPathBytesBa (bs : ByteArray) : Bool × Bool :=
+  if isExactColonMemoryBa bs then
+    (true, false)
+  else if !hasFileSchemeBa bs then
+    (false, false)
+  else
+    let fragStop := findByteBefore bs 0x23 5 bs.size
+    let pathStart := stripAuthorityIdx bs 5 fragStop
+    let qIdx := findByteBefore bs 0x3F pathStart fragStop
+    let isMemPath := decodeUriMatchBa bs pathStart qIdx colonMemoryColonBytes
+    let (isMemMode, isRoMode) :=
+      if qIdx < fragStop then
+        extractLastUriModeFlagsBaAux bs fragStop (false, false) (qIdx + 1) (fragStop - (qIdx + 1) + 1)
+      else
+        (false, false)
+    (isMemPath || isMemMode, isRoMode)
 
 /-- Classify a UTF-8 path/URI byte list into `(isMemoryTarget, isUriReadOnly)` matching `sqlite3ParseUri`. -/
 def classifyPathBytes (bs : List UInt8) : Bool × Bool :=
@@ -239,18 +399,18 @@ def classifyPathBytes (bs : List UInt8) : Bool × Bool :=
 /-- Return `true` iff `path` opens an in-memory SQLite database (`":memory:"`, `"file::memory:"`,
     or a `"file:..."` URI whose decoded filename is `":memory:"` or whose effective `mode` query parameter is `"memory"`). -/
 def isMemoryTarget (path : String) : Bool :=
-  (classifyPathBytes path.toUTF8.data.toList).1
+  (classifyPathBytesBa path.toUTF8).1
 
 /-- Return `true` iff `path` is a `"file:..."` SQLite URI whose effective `mode` query parameter is `"ro"`. -/
 def isUriReadOnly (path : String) : Bool :=
-  (classifyPathBytes path.toUTF8.data.toList).2
+  (classifyPathBytesBa path.toUTF8).2
 
 /-- Return `true` iff `openDb` should execute `PRAGMA journal_mode = WAL;` for `(path, cfg)`. -/
 def shouldEnableWal (path : String) (cfg : OpenConfig) : Bool :=
   if cfg.readOnly || !cfg.walMode then
     false
   else
-    let (isMem, isRo) := classifyPathBytes path.toUTF8.data.toList
+    let (isMem, isRo) := classifyPathBytesBa path.toUTF8
     !isMem && !isRo
 
 /-- Return `true` iff `b` is SQLite ASCII whitespace (`' '`, `'\t'`, `'\n'`, `'\f'`, `'\r'`). -/
@@ -259,8 +419,10 @@ def isSqlAsciiSpace (b : UInt8) : Bool :=
 
 /-- DFA state for scanning unconsumed SQL tail bytes after `sqlite3_prepare_v2`. -/
 inductive SqlTailScanState where
-  /-- Outside any SQL comment. -/
+  /-- Outside any SQL comment or whitespace run. -/
   | normal
+  /-- Inside an ASCII SQL whitespace run (`CC_SPACE`), where SQLite also consumes `0x0B`. -/
+  | inSpace
   /-- Saw a single `'-'` (`0x2D`) outside comments; next byte must be `'-'` (`0x2D`). -/
   | sawDash
   /-- Inside a `--` SQL line comment until `'\n'` (`0x0A`) or end of input. -/
@@ -271,26 +433,51 @@ inductive SqlTailScanState where
   | inBlockComment
   /-- Inside a `/* ... */` block comment immediately after seeing `'*'` (`0x2A`). -/
   | inBlockSawStar
+  /-- Saw leading UTF-8 BOM byte `0xEF`, expecting `0xBB`. -/
+  | sawBom1
+  /-- Saw UTF-8 BOM prefix `0xEF 0xBB`, expecting `0xBF`. -/
+  | sawBom2
   deriving Repr, BEq, DecidableEq
 
-/-- Structurally recursive scanner accepting only SQLite ASCII whitespace, `--` line comments,
-    and closed `/* ... */` block comments (rejecting unclosed block comments and trailing SQL tokens). -/
+/-- Structurally recursive scanner accepting only SQLite ASCII whitespace (`0x0B` only inside a
+    `CC_SPACE` run after `isSqlAsciiSpace` or `'\n'`), UTF-8 BOM (`0xEF 0xBB 0xBF`), `--` line
+    comments, and closed `/* ... */` block comments, rejecting unclosed block comments and trailing SQL tokens. -/
 def scanSqlTail : SqlTailScanState → List UInt8 → Bool
   | .normal, [] => true
+  | .inSpace, [] => true
   | .inLineComment, [] => true
   | .sawDash, [] => false
   | .sawSlash, [] => false
   | .inBlockComment, [] => false
   | .inBlockSawStar, [] => false
+  | .sawBom1, [] => false
+  | .sawBom2, [] => false
   | .normal, b :: bs =>
     if isSqlAsciiSpace b then
-      scanSqlTail .normal bs
+      scanSqlTail .inSpace bs
+    else if b == 0xEF then
+      scanSqlTail .sawBom1 bs
     else if b == 0x2D then
       scanSqlTail .sawDash bs
     else if b == 0x2F then
       scanSqlTail .sawSlash bs
     else
       false
+  | .inSpace, b :: bs =>
+    if isSqlAsciiSpace b || b == 0x0B then
+      scanSqlTail .inSpace bs
+    else if b == 0xEF then
+      scanSqlTail .sawBom1 bs
+    else if b == 0x2D then
+      scanSqlTail .sawDash bs
+    else if b == 0x2F then
+      scanSqlTail .sawSlash bs
+    else
+      false
+  | .sawBom1, b :: bs =>
+    if b == 0xBB then scanSqlTail .sawBom2 bs else false
+  | .sawBom2, b :: bs =>
+    if b == 0xBF then scanSqlTail .normal bs else false
   | .sawDash, b :: bs =>
     if b == 0x2D then
       scanSqlTail .inLineComment bs
@@ -298,7 +485,7 @@ def scanSqlTail : SqlTailScanState → List UInt8 → Bool
       false
   | .inLineComment, b :: bs =>
     if b == 0x0A then
-      scanSqlTail .normal bs
+      scanSqlTail .inSpace bs
     else
       scanSqlTail .inLineComment bs
   | .sawSlash, b :: bs =>
@@ -324,36 +511,92 @@ def scanSqlTail : SqlTailScanState → List UInt8 → Bool
 def isIgnorableSqlTail (tailBytes : List UInt8) : Bool :=
   scanSqlTail .normal tailBytes
 
+/-- Structural tail-recursive SQL tail lexer helper on `ByteArray`. -/
+def scanSqlTailBaAux (st : SqlTailScanState) (bs : ByteArray) (idx : Nat) : Nat → Bool
+  | 0 =>
+    match st with
+    | .normal | .inSpace | .inLineComment => true
+    | _ => false
+  | rem + 1 =>
+    if h : idx < bs.size then
+      let b := bs[idx]
+      let nextIdx := idx + 1
+      match st with
+      | .normal =>
+        if isSqlAsciiSpace b then scanSqlTailBaAux .inSpace bs nextIdx rem
+        else if b == 0xEF then scanSqlTailBaAux .sawBom1 bs nextIdx rem
+        else if b == 0x2D then scanSqlTailBaAux .sawDash bs nextIdx rem
+        else if b == 0x2F then scanSqlTailBaAux .sawSlash bs nextIdx rem
+        else false
+      | .inSpace =>
+        if isSqlAsciiSpace b || b == 0x0B then scanSqlTailBaAux .inSpace bs nextIdx rem
+        else if b == 0xEF then scanSqlTailBaAux .sawBom1 bs nextIdx rem
+        else if b == 0x2D then scanSqlTailBaAux .sawDash bs nextIdx rem
+        else if b == 0x2F then scanSqlTailBaAux .sawSlash bs nextIdx rem
+        else false
+      | .sawBom1 => if b == 0xBB then scanSqlTailBaAux .sawBom2 bs nextIdx rem else false
+      | .sawBom2 => if b == 0xBF then scanSqlTailBaAux .normal bs nextIdx rem else false
+      | .sawDash => if b == 0x2D then scanSqlTailBaAux .inLineComment bs nextIdx rem else false
+      | .inLineComment => if b == 0x0A then scanSqlTailBaAux .inSpace bs nextIdx rem else scanSqlTailBaAux .inLineComment bs nextIdx rem
+      | .sawSlash => if b == 0x2A then scanSqlTailBaAux .inBlockComment bs nextIdx rem else false
+      | .inBlockComment => if b == 0x2A then scanSqlTailBaAux .inBlockSawStar bs nextIdx rem else scanSqlTailBaAux .inBlockComment bs nextIdx rem
+      | .inBlockSawStar =>
+        if b == 0x2F then scanSqlTailBaAux .normal bs nextIdx rem
+        else if b == 0x2A then scanSqlTailBaAux .inBlockSawStar bs nextIdx rem
+        else scanSqlTailBaAux .inBlockComment bs nextIdx rem
+    else
+      match st with
+      | .normal | .inSpace | .inLineComment => true
+      | _ => false
+
+/-- Tail-recursive SQL tail lexer operating directly on `ByteArray` from byte index `idx`. -/
+@[inline] def scanSqlTailBa (st : SqlTailScanState) (bs : ByteArray) (idx : Nat) : Bool :=
+  scanSqlTailBaAux st bs idx (bs.size - idx)
+
 /-- Look up `dbId` in `dbs`. -/
 def lookupRawDb (dbId : UInt64) : List (UInt64 × RawDbHandle) → Option RawDbHandle
   | [] => none
   | (id, h) :: rest => if id == dbId then some h else lookupRawDb dbId rest
 
+/-- Tail-recursive helper for `eraseRawDb`. -/
+def eraseRawDbAux (dbId : UInt64) (acc : List (UInt64 × RawDbHandle)) :
+    List (UInt64 × RawDbHandle) → List (UInt64 × RawDbHandle)
+  | [] => acc.reverse
+  | (id, h) :: rest =>
+    if id == dbId then acc.reverse ++ rest
+    else eraseRawDbAux dbId ((id, h) :: acc) rest
+
 /-- Remove the first entry matching `dbId` from `dbs`. -/
-def eraseRawDb (dbId : UInt64) : List (UInt64 × RawDbHandle) → List (UInt64 × RawDbHandle)
-  | [] => []
-  | (id, h) :: rest => if id == dbId then rest else (id, h) :: eraseRawDb dbId rest
+def eraseRawDb (dbId : UInt64) (dbs : List (UInt64 × RawDbHandle)) : List (UInt64 × RawDbHandle) :=
+  eraseRawDbAux dbId [] dbs
 
 /-- Allocate a fresh `DbHandle` for `rawDb` in `t`. -/
 def insertRawDb (rawDb : RawDbHandle) (t : RawHandleTable) : DbHandle × RawHandleTable :=
   let id := t.nextDbId
-  ({ id := id }, { t with nextDbId := id + 1, dbs := t.dbs ++ [(id, rawDb)] })
+  ({ id := id }, { t with nextDbId := id + 1, dbs := (id, rawDb) :: t.dbs })
 
 /-- Look up `stmt` (matching both `id` and `dbId`) in `stmts`. -/
 def lookupRawStmt (stmt : StmtHandle) : List (StmtHandle × RawStmtHandle) → Option RawStmtHandle
   | [] => none
   | (sh, h) :: rest => if sh == stmt then some h else lookupRawStmt stmt rest
 
+/-- Tail-recursive helper for `eraseRawStmt`. -/
+def eraseRawStmtAux (stmt : StmtHandle) (acc : List (StmtHandle × RawStmtHandle)) :
+    List (StmtHandle × RawStmtHandle) → List (StmtHandle × RawStmtHandle)
+  | [] => acc.reverse
+  | (sh, h) :: rest =>
+    if sh == stmt then acc.reverse ++ rest
+    else eraseRawStmtAux stmt ((sh, h) :: acc) rest
+
 /-- Remove the first entry matching `stmt` from `stmts`. -/
-def eraseRawStmt (stmt : StmtHandle) : List (StmtHandle × RawStmtHandle) → List (StmtHandle × RawStmtHandle)
-  | [] => []
-  | (sh, h) :: rest => if sh == stmt then rest else (sh, h) :: eraseRawStmt stmt rest
+def eraseRawStmt (stmt : StmtHandle) (stmts : List (StmtHandle × RawStmtHandle)) : List (StmtHandle × RawStmtHandle) :=
+  eraseRawStmtAux stmt [] stmts
 
 /-- Allocate a fresh `StmtHandle` associated with `dbId` for `rawStmt` in `t`. -/
 def insertRawStmt (dbId : UInt64) (rawStmt : RawStmtHandle) (t : RawHandleTable) : StmtHandle × RawHandleTable :=
   let id := t.nextStmtId
   let sh : StmtHandle := { id := id, dbId := dbId }
-  (sh, { t with nextStmtId := id + 1, stmts := t.stmts ++ [(sh, rawStmt)] })
+  (sh, { t with nextStmtId := id + 1, stmts := (sh, rawStmt) :: t.stmts })
 
 /-- Return `true` iff `stmts` contains an active statement belonging to `dbId`. -/
 def hasActiveStmtForDb (dbId : UInt64) : List (StmtHandle × RawStmtHandle) → Bool
@@ -468,16 +711,17 @@ def decodeColumns {m : Type → Type} [Monad m] (cops : CSqliteOpsM m)
 
 /-- Construct a monad-generic `RawSqliteOpsM m` over thin 1-call `CSqliteOpsM m` hooks,
     enforcing all open-flag, URI, PRAGMA, single-statement comment/tail, handle-table, and UTF-8 policies in Lean. -/
-def mkRawOps {m : Type → Type} [Monad m] [MonadFinally m] (cops : CSqliteOpsM m) : RawSqliteOpsM m :=
+def mkRawOps {m : Type → Type} [Monad m] [MonadFinally m] (cops : CSqliteOpsM m)
+    (withStmtLock : {α : Type} → StmtHandle → m α → m α := fun _ act => act) : RawSqliteOpsM m :=
   { mapRawError := mapRawError
     openDb := fun path cfg => do
-      let pathByteList := path.toUTF8.data.toList
-      if pathByteList.isEmpty then
+      let pathBytes := path.toUTF8
+      if pathBytes.size == 0 then
         pure (.error (mapRawError (.invalidArgument "database path must not be empty")))
-      else if hasZeroByte pathByteList then
+      else if hasZeroByteBa pathBytes 0 then
         pure (.error (mapRawError (.invalidArgument "database path contains embedded NUL byte")))
       else if cfg.readOnly && cfg.createIfMissing then
-        pure (.error (mapRawError (.invalidArgument "cannot combine readOnly with createIfMissing")))
+        pure (.error (mapRawError (.invalidArgument "cannot combine readOnly = true with createIfMissing = true")))
       else if cfg.busyTimeoutMs > maxBusyTimeoutMs then
         pure (.error (mapRawError (.invalidArgument
           s!"busyTimeoutMs {cfg.busyTimeoutMs} exceeds maxBusyTimeoutMs ({maxBusyTimeoutMs})")))
@@ -516,78 +760,81 @@ def mkRawOps {m : Type → Type} [Monad m] [MonadFinally m] (cops : CSqliteOpsM 
           cops.modifyTable (fun t => ((), { t with dbs := eraseRawDb db.id t.dbs }))
           pure (.ok ())
     prepare := fun db sql => do
-      let sqlBytes := sql.toUTF8
-      let sqlByteList := sqlBytes.data.toList
-      if hasZeroByte sqlByteList then
-        pure (.error (mapRawError (.invalidArgument "SQL string contains embedded NUL byte")))
-      else if sqlBytes.size > maxSqlByteLen then
+      if sql.utf8ByteSize > maxSqlByteLen then
         pure (.error (mapRawError (.invalidArgument "SQL statement exceeds maximum byte length")))
       else
-        let rawDb? ← cops.modifyTable (fun t => (lookupRawDb db.id t.dbs, t))
-        match rawDb? with
-        | none => pure (.error (mapRawError (.misuse 21 "invalid or closed database handle")))
-        | some rawDb =>
-          match ← cops.prepareV2 rawDb sql with
-          | .error rawErr => pure (.error (mapRawError rawErr))
-          | .ok (none, _) => pure (.error (mapRawError (.misuse 21 "empty SQL statement")))
-          | .ok (some rawStmt, consumedByteLen) =>
-            let totalBytes := sqlBytes.size
-            let tailOk := consumedByteLen ≤ totalBytes &&
-              isIgnorableSqlTail (sqlByteList.drop consumedByteLen)
-            if !tailOk then
-              let _ ← cops.finalize rawStmt
-              pure (.error (mapRawError (.misuse 21 "multiple SQL statements are not allowed in prepare")))
-            else
-              let sh ← cops.modifyTable (insertRawStmt db.id rawStmt)
-              pure (.ok sh)
-    bind := fun stmt params => do
-      let rawStmt? ← cops.modifyTable (fun t => (lookupRawStmt stmt t.stmts, t))
-      match rawStmt? with
-      | none => pure (.error (mapRawError (.misuse 21 "invalid or finalized statement handle")))
-      | some rawStmt =>
-        match ← cops.reset rawStmt with
-        | .error rawErr => pure (.error (mapRawError rawErr))
-        | .ok () =>
-          match ← cops.clearBindings rawStmt with
+        let sqlBytes := sql.toUTF8
+        if hasZeroByteBa sqlBytes 0 then
+          pure (.error (mapRawError (.invalidArgument "SQL string contains embedded NUL byte")))
+        else
+          let rawDb? ← cops.modifyTable (fun t => (lookupRawDb db.id t.dbs, t))
+          match rawDb? with
+          | none => pure (.error (mapRawError (.misuse 21 "invalid or closed database handle")))
+          | some rawDb =>
+            match ← cops.prepareV2 rawDb sql with
+            | .error rawErr => pure (.error (mapRawError rawErr))
+            | .ok (none, _) => pure (.error (mapRawError (.misuse 21 "empty SQL statement")))
+            | .ok (some rawStmt, consumedByteLen) =>
+              let totalBytes := sqlBytes.size
+              let tailOk := consumedByteLen ≤ totalBytes &&
+                scanSqlTailBa .normal sqlBytes consumedByteLen
+              if !tailOk then
+                let _ ← cops.finalize rawStmt
+                pure (.error (mapRawError (.misuse 21 "multiple SQL statements are not allowed in prepare")))
+              else
+                let sh ← cops.modifyTable (insertRawStmt db.id rawStmt)
+                pure (.ok sh)
+    bind := fun stmt params =>
+      withStmtLock stmt do
+        let rawStmt? ← cops.modifyTable (fun t => (lookupRawStmt stmt t.stmts, t))
+        match rawStmt? with
+        | none => pure (.error (mapRawError (.misuse 21 "invalid or finalized statement handle")))
+        | some rawStmt =>
+          match ← cops.reset rawStmt with
           | .error rawErr => pure (.error (mapRawError rawErr))
           | .ok () =>
-            match ← cops.bindParamCount rawStmt with
+            match ← cops.clearBindings rawStmt with
             | .error rawErr => pure (.error (mapRawError rawErr))
-            | .ok expectedCount =>
-              if params.size != expectedCount.toNat then
-                pure (.error (mapRawError (.invalidArgument
-                  s!"parameter count mismatch: expected {expectedCount}, got {params.size}")))
-              else
-                bindLoop cops rawStmt params params.size
-    step := fun stmt => do
-      let rawStmt? ← cops.modifyTable (fun t => (lookupRawStmt stmt t.stmts, t))
-      match rawStmt? with
-      | none => pure (.error (mapRawError (.misuse 21 "invalid or finalized statement handle")))
-      | some rawStmt =>
-        match ← cops.step rawStmt with
-        | .error rawErr => pure (.error (mapRawError rawErr))
-        | .ok .done => pure (.ok .done)
-        | .ok .row =>
-          match ← cops.columnCount rawStmt with
+            | .ok () =>
+              match ← cops.bindParamCount rawStmt with
+              | .error rawErr => pure (.error (mapRawError rawErr))
+              | .ok expectedCount =>
+                if params.size != expectedCount.toNat then
+                  pure (.error (mapRawError (.invalidArgument
+                    s!"parameter count mismatch: expected {expectedCount}, got {params.size}")))
+                else
+                  bindLoop cops rawStmt params params.size
+    step := fun stmt =>
+      withStmtLock stmt do
+        let rawStmt? ← cops.modifyTable (fun t => (lookupRawStmt stmt t.stmts, t))
+        match rawStmt? with
+        | none => pure (.error (mapRawError (.misuse 21 "invalid or finalized statement handle")))
+        | some rawStmt =>
+          match ← cops.step rawStmt with
           | .error rawErr => pure (.error (mapRawError rawErr))
-          | .ok cnt =>
-            let colsRes ← decodeColumns cops rawStmt cnt.toNat cnt.toNat #[]
-            match colsRes with
-            | .error err => pure (.error err)
-            | .ok cols => pure (.ok (.row cols))
-    finalize := fun stmt => do
-      let rawStmt? ← cops.modifyTable (fun t => (lookupRawStmt stmt t.stmts, t))
-      match rawStmt? with
-      | none => pure (.error (mapRawError (.misuse 21 "invalid or already finalized statement handle")))
-      | some rawStmt =>
-        match ← cops.finalize rawStmt with
-        | .finalized stickyErr? =>
-          cops.modifyTable (fun t => ((), { t with stmts := eraseRawStmt stmt t.stmts }))
-          match stickyErr? with
-          | none => pure (.ok ())
-          | some rawErr => pure (.error (mapRawError rawErr))
-        | .rejected rawErr =>
-          pure (.error (mapRawError rawErr))
+          | .ok .done => pure (.ok .done)
+          | .ok .row =>
+            match ← cops.columnCount rawStmt with
+            | .error rawErr => pure (.error (mapRawError rawErr))
+            | .ok cnt =>
+              let colsRes ← decodeColumns cops rawStmt cnt.toNat cnt.toNat #[]
+              match colsRes with
+              | .error err => pure (.error err)
+              | .ok cols => pure (.ok (.row cols))
+    finalize := fun stmt =>
+      withStmtLock stmt do
+        let rawStmt? ← cops.modifyTable (fun t => (lookupRawStmt stmt t.stmts, t))
+        match rawStmt? with
+        | none => pure (.error (mapRawError (.misuse 21 "invalid or already finalized statement handle")))
+        | some rawStmt =>
+          match ← cops.finalize rawStmt with
+          | .finalized stickyErr? =>
+            cops.modifyTable (fun t => ((), { t with stmts := eraseRawStmt stmt t.stmts }))
+            match stickyErr? with
+            | none => pure (.ok ())
+            | some rawErr => pure (.error (mapRawError rawErr))
+          | .rejected rawErr =>
+            pure (.error (mapRawError rawErr))
     activeDbCount := cops.modifyTable (fun t => (t.dbs.length, t))
     activeStmtCount := cops.modifyTable (fun t => (t.stmts.length, t)) }
 

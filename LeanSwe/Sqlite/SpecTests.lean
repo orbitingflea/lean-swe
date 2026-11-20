@@ -1,6 +1,7 @@
 import Core.NondetTest
 import Core.Assumptions
 import LeanSwe.Sqlite.Types
+import LeanSwe.Sqlite.Model
 
 namespace LeanSwe.Sqlite
 
@@ -25,6 +26,14 @@ inductive MockFailMode where
   | failBegin (kind : SqliteErrorKind)
   /-- `COMMIT` statement fails during `step` with `kind`. -/
   | failCommit (kind : SqliteErrorKind)
+  /-- `ROLLBACK` statement fails during `step` with `kind`. -/
+  | failRollback (kind : SqliteErrorKind)
+  /-- `COMMIT` fails with `commitKind` and subsequent `ROLLBACK` fails with `rollbackKind`. -/
+  | failCommitThenRollback (commitKind rollbackKind : SqliteErrorKind)
+  /-- `closeDb` fails with `kind` after releasing the handle. -/
+  | failClose (kind : SqliteErrorKind)
+  /-- `finalize` fails with `kind` after releasing the handle. -/
+  | failFinalize (kind : SqliteErrorKind)
   deriving Repr, BEq, DecidableEq
 
 /-- In-flight prepared statement entry tracked inside `MockDb`. -/
@@ -67,16 +76,20 @@ structure MockDb where
   failMode : MockFailMode := .none
   deriving Repr, BEq
 
-private def strEq (a b : String) : Bool :=
+/-- Compare two strings by character list equality for decidable specification guards. -/
+def strEq (a b : String) : Bool :=
   a.toList == b.toList
 
-private def isBeginSql (sql : String) : Bool :=
+/-- Return `true` iff `sql` is one of the mock `BEGIN` control statements. -/
+def isBeginSql (sql : String) : Bool :=
   strEq sql "BEGIN" || strEq sql "BEGIN IMMEDIATE" || strEq sql "BEGIN TRANSACTION"
 
-private def isCommitSql (sql : String) : Bool :=
+/-- Return `true` iff `sql` is one of the mock `COMMIT` control statements. -/
+def isCommitSql (sql : String) : Bool :=
   strEq sql "COMMIT" || strEq sql "COMMIT TRANSACTION"
 
-private def isRollbackSql (sql : String) : Bool :=
+/-- Return `true` iff `sql` is one of the mock `ROLLBACK` control statements. -/
+def isRollbackSql (sql : String) : Bool :=
   strEq sql "ROLLBACK" || strEq sql "ROLLBACK TRANSACTION"
 
 private def isSelectSql (sql : String) : Bool :=
@@ -111,7 +124,10 @@ private def mockCloseDb (db : DbHandle) : MockDb → Except SqliteError Unit × 
     if !(openDbs.contains db.id) then
       (.error { kind := .misuse, message := "unknown db handle" }, s)
     else
-      (.ok (), ⟨nextDbId, nextStmtId, openDbs.filter (· != db.id), openStmts, inTx, comm, staged, qRows, bCalls, oCalled, fMode⟩)
+      let s1 : MockDb := ⟨nextDbId, nextStmtId, openDbs.filter (· != db.id), openStmts, inTx, comm, staged, qRows, bCalls, oCalled, fMode⟩
+      match fMode with
+      | .failClose k => (.error { kind := k, message := "mock close failure" }, s1)
+      | _ => (.ok (), s1)
 
 private def mockPrepare (db : DbHandle) (sql : String) : MockDb → Except SqliteError StmtHandle × MockDb
   | s@⟨nextDbId, nextStmtId, openDbs, openStmts, inTx, comm, staged, qRows, bCalls, oCalled, fMode⟩ =>
@@ -153,16 +169,21 @@ private def mockStep (stmt : StmtHandle) : MockDb → Except SqliteError StepRes
       else if isCommitSql st.sql then
         match fMode with
         | .failCommit k => (.error { kind := k, message := "mock commit failure" }, s)
+        | .failCommitThenRollback k _ => (.error { kind := k, message := "mock commit failure" }, s)
         | _ =>
           if !inTx then
             (.error { kind := .misuse, message := "no active transaction" }, s)
           else
             (.ok .done, ⟨nextDbId, nextStmtId, openDbs, openStmts, false, comm ++ staged, [], qRows, bCalls, oCalled, fMode⟩)
       else if isRollbackSql st.sql then
-        if !inTx then
-          (.error { kind := .misuse, message := "no active transaction" }, s)
-        else
-          (.ok .done, ⟨nextDbId, nextStmtId, openDbs, openStmts, false, comm, [], qRows, bCalls, oCalled, fMode⟩)
+        match fMode with
+        | .failRollback k => (.error { kind := k, message := "mock rollback failure" }, s)
+        | .failCommitThenRollback _ k => (.error { kind := k, message := "mock rollback failure" }, s)
+        | _ =>
+          if !inTx then
+            (.error { kind := .misuse, message := "no active transaction" }, s)
+          else
+            (.ok .done, ⟨nextDbId, nextStmtId, openDbs, openStmts, false, comm, [], qRows, bCalls, oCalled, fMode⟩)
       else
         match fMode with
         | .failStep k => (.error { kind := k, message := "mock step failure" }, s)
@@ -199,7 +220,10 @@ private def mockFinalize (stmt : StmtHandle) : MockDb → Except SqliteError Uni
     if !(openStmts.any (fun st => st.id == stmt.id && st.dbId == stmt.dbId)) then
       (.error { kind := .misuse, message := "unknown stmt handle" }, s)
     else
-      (.ok (), ⟨nextDbId, nextStmtId, openDbs, openStmts.filter (fun st => st.id != stmt.id), inTx, comm, staged, qRows, bCalls, oCalled, fMode⟩)
+      let s1 : MockDb := ⟨nextDbId, nextStmtId, openDbs, openStmts.filter (fun st => st.id != stmt.id), inTx, comm, staged, qRows, bCalls, oCalled, fMode⟩
+      match fMode with
+      | .failFinalize k => (.error { kind := k, message := "mock finalize failure" }, s1)
+      | _ => (.ok (), s1)
 
 /-- Pure `StateM MockDb` implementation of `RawSqliteOpsM` for specification checks. -/
 def mockRawOps : RawSqliteOpsM (StateM MockDb) :=
@@ -351,6 +375,41 @@ def test_sqlite_queryOne_returnsOptionalRow_andPreservesActiveStmtCount
   NondetTest.assert ((∃ e, outBusy.1 = .error e ∧ e.kind = .busy) ∧
     outBusy.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outBusy.2).1 = 0)
 
+/-- `withDb`, `exec`, `query`, and `queryOne` propagate `closeDb`/`finalize` cleanup failures on success while `withDb` and `withTransaction` preserve primary action and `COMMIT` errors over cleanup/`ROLLBACK` failures. -/
+def test_sqlite_cleanupFailuresPropagate
+    {runner} [NondetTest runner]
+    (mkApi : RawSqliteOpsM (StateM MockDb) → SqliteApiM (StateM MockDb)) : runner Unit := do
+  let failOnBody ← nondet Bool
+  let bodyErr ← nondet SqliteError
+  let api := mkApi mockRawOps
+  let sClose : MockDb := { failMode := .failClose .ioError }
+  let outDb := (api.withDb ":memory:" {} (fun _ =>
+    if failOnBody then pure (.error bodyErr) else pure (.ok "done"))).run sClose
+  if failOnBody then
+    NondetTest.assert (outDb.1 = .error bodyErr ∧
+      outDb.2.openDbs.length = 0 ∧ (api.activeDbCount.run outDb.2).1 = 0)
+  else
+    NondetTest.assert ((∃ e, outDb.1 = .error e ∧ e.kind = .ioError) ∧
+      outDb.2.openDbs.length = 0 ∧ (api.activeDbCount.run outDb.2).1 = 0)
+  let sFin : MockDb := { openDbs := [1], nextDbId := 2, failMode := .failFinalize .ioError }
+  let outExec := (api.exec { id := 1 } "DELETE FROM items" #[]).run sFin
+  NondetTest.assert ((∃ e, outExec.1 = .error e ∧ e.kind = .ioError) ∧
+    outExec.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outExec.2).1 = 0)
+  let outQuery := (api.query { id := 1 } "SELECT id FROM items" #[]).run sFin
+  NondetTest.assert ((∃ e, outQuery.1 = .error e ∧ e.kind = .ioError) ∧
+    outQuery.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outQuery.2).1 = 0)
+  let outQueryOne := (api.queryOne { id := 1 } "SELECT id FROM items" #[]).run sFin
+  NondetTest.assert ((∃ e, outQueryOne.1 = .error e ∧ e.kind = .ioError) ∧
+    outQueryOne.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outQueryOne.2).1 = 0)
+  let sRbErr : MockDb := { openDbs := [1], nextDbId := 2, failMode := .failRollback .ioError }
+  let outTxBodyRb := (api.withTransaction (α := String) { id := 1 } (fun _ => pure (.error bodyErr))).run sRbErr
+  NondetTest.assert (outTxBodyRb.1 = .error bodyErr ∧
+    outTxBodyRb.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outTxBodyRb.2).1 = 0)
+  let sComRbErr : MockDb := { openDbs := [1], nextDbId := 2, failMode := .failCommitThenRollback .busy .ioError }
+  let outTxComRb := (api.withTransaction (α := String) { id := 1 } (fun _ => pure (.ok "done"))).run sComRbErr
+  NondetTest.assert ((∃ e, outTxComRb.1 = .error e ∧ e.kind = .busy) ∧
+    outTxComRb.2.openStmts.length = 0 ∧ (api.activeStmtCount.run outTxComRb.2).1 = 0)
+
 private def txCommitBody (api : SqliteApiM (StateM MockDb)) (val : SqliteValue)
     (db : DbHandle) : StateM MockDb (Except SqliteError String) := fun s =>
   match (api.exec db "INSERT INTO items(v) VALUES (?)" #[val]).run s with
@@ -446,6 +505,78 @@ def test_sqlite_withDb_withTransaction_preservesAllHandles
   NondetTest.assert (out.1 = .ok ())
   NondetTest.assert (out.2.openDbs.length = 0 ∧ out.2.openStmts.length = 0)
   NondetTest.assert ((api.activeDbCount.run out.2).1 = 0 ∧ (api.activeStmtCount.run out.2).1 = 0)
+
+/-- `defaultApi` agrees unconditionally with `Model.mapRawError` and `Model.validateConfig` on all inputs. -/
+def test_sqlite_defaultApi_agreesWithModelValidator
+    {runner} [NondetTest runner] (api : SqliteApi) : runner Unit := do
+  let raw ← nondet SqliteRawError
+  let cfg ← nondet OpenConfig
+  NondetTest.assert (api.mapRawError raw = Model.mapRawError raw)
+  NondetTest.assert (api.validateConfig cfg = Model.validateConfig cfg)
+
+/-- Run the curated DDL/CRUD/constraint/FK/STRICT/rollback scenario against `api` in `Model.SqliteWorldState`. -/
+def modelApiCrudBlock (api : SqliteApiM (StateM Model.SqliteWorldState)) :
+    Except SqliteError (Except SqliteError Unit × Except SqliteError Unit × Except SqliteError Unit ×
+      Except SqliteError Unit × Except SqliteError Unit × Except SqliteError (Array SqliteRow) ×
+      Except SqliteError (Option SqliteRow) × Except SqliteError (Array SqliteRow)) ×
+      Model.SqliteWorldState :=
+  (api.withDb ":memory:" {} fun db => do
+    let _ ← api.exec db "CREATE TABLE p(id INTEGER PRIMARY KEY, u INT UNIQUE) STRICT" #[]
+    let _ ← api.exec db "CREATE TABLE c(id INTEGER PRIMARY KEY, pid INT NOT NULL REFERENCES p(id), tag TEXT) STRICT" #[]
+    let _ ← api.exec db "INSERT INTO p(id, u) VALUES (?, ?)" #[.int 1, .int 10]
+    let dupPk ← api.exec db "INSERT INTO p(id, u) VALUES (?, ?)" #[.int 1, .int 20]
+    let dupUk ← api.exec db "INSERT INTO p(id, u) VALUES (?, ?)" #[.int 2, .int 10]
+    let fkErr ← api.exec db "INSERT INTO c(id, pid, tag) VALUES (?, ?, ?)" #[.int 1, .int 99, .text "bad"]
+    let strictErr ← api.exec db "INSERT INTO c(id, pid, tag) VALUES (?, ?, ?)" #[.int 2, .int 1, .bytes ByteArray.empty]
+    let nullErr ← api.exec db "INSERT INTO c(id, pid, tag) VALUES (?, ?, ?)" #[.int 3, .null, .text "ok"]
+    let _ ← api.exec db "INSERT INTO c(id, pid, tag) VALUES (?, ?, ?)" #[.int 4, .int 1, .text "live"]
+    let _ ← api.withTransaction db fun txDb => do
+      let _ ← api.exec txDb "INSERT INTO p(id, u) VALUES (?, ?)" #[.int 2, .int 20]
+      pure (Except.error { kind := .constraint, message := "force rollback" } : Except SqliteError Unit)
+    let _ ← api.withTransaction db fun txDb =>
+      api.exec txDb "INSERT INTO p(id, u) VALUES (?, ?)" #[.int 3, .int 30]
+    let pRows ← api.query db "SELECT id, u FROM p WHERE id >= ? ORDER BY id DESC LIMIT ?" #[.int 1, .int 2]
+    let cOne ← api.queryOne db "SELECT tag FROM c WHERE id = ?" #[.int 4]
+    let _ ← api.exec db "UPDATE p SET u = ? WHERE id = ?" #[.int 31, .int 3]
+    let _ ← api.exec db "DELETE FROM c WHERE pid = ?" #[.int 1]
+    let _ ← api.exec db "DELETE FROM p WHERE id = ?" #[.int 1]
+    let pAfter ← api.query db "SELECT id, u FROM p ORDER BY id ASC" #[]
+    pure (.ok (dupPk, dupUk, fkErr, strictErr, nullErr, pRows, cOne, pAfter))).run {}
+
+/-- Run the dual-connection `.busy` and `readOnly` `.ioError` file-database scenario against `api`. -/
+def modelApiRoBusyBlock (api : SqliteApiM (StateM Model.SqliteWorldState)) :
+    Except SqliteError (Except SqliteError Unit × Except SqliteError Unit) × Model.SqliteWorldState :=
+  (api.withDb "/tmp/a.db" { walMode := false } fun db1 => do
+    let _ ← api.exec db1 "CREATE TABLE t(x INT)" #[]
+    let _ ← api.exec db1 "BEGIN IMMEDIATE" #[]
+    let busyRes ← api.withDb "/tmp/a.db" { walMode := false, busyTimeoutMs := 0 } fun db2 =>
+      api.exec db2 "INSERT INTO t VALUES (?)" #[.int 1]
+    let roRes ← api.withDb "/tmp/a.db" { readOnly := true, createIfMissing := false, walMode := false } fun dbRo =>
+      api.exec dbRo "INSERT INTO t VALUES (?)" #[.int 2]
+    let _ ← api.exec db1 "ROLLBACK" #[]
+    pure (.ok (busyRes, roRes))).run { existingDirs := ["/", "/tmp"] }
+
+/-- Pure `Model.modelApi` satisfies curated DDL/CRUD, constraint, FK, STRICT, transaction rollback,
+    `readOnly`, closed-handle `.misuse`, and dual-connection `.busy` semantics. -/
+def test_sqlite_modelApi_relationalCrudConstraintsAndRollback
+    {runner} [NondetTest runner] (api : SqliteApiM (StateM Model.SqliteWorldState)) : runner Unit := do
+  let resCrud := modelApiCrudBlock api
+  let resRoBusy := modelApiRoBusyBlock api
+  let closedRes := (api.exec { id := 999 } "SELECT 1" #[]).run {}
+  NondetTest.assert (match resCrud.1 with
+    | .ok (.error ePk, .error eUk, .error eFk, .error eSt, .error eNu, .ok pRows, .ok cOne, .ok pAfter) =>
+      ePk.kind == .constraint && eUk.kind == .constraint && eFk.kind == .constraint &&
+      eSt.kind == .constraint && eNu.kind == .constraint &&
+      pRows == #[#[.int 3, .int 30], #[.int 1, .int 10]] &&
+      cOne == some #[.text "live"] &&
+      pAfter == #[#[.int 3, .int 31]]
+    | _ => false)
+  NondetTest.assert (resCrud.2.conns.isEmpty ∧ resCrud.2.stmts.isEmpty)
+  NondetTest.assert (match resRoBusy.1 with
+    | .ok (.error eBusy, .error eRo) => eBusy.kind == .busy && eRo.kind == .ioError
+    | _ => false)
+  NondetTest.assert (resRoBusy.2.conns.isEmpty ∧ resRoBusy.2.stmts.isEmpty)
+  NondetTest.assert (∃ e, closedRes.1 = .error e ∧ e.kind = .misuse)
 
 /-- Complete 6-request × 6-kind error-coverage matrix for pure upper-layer `LeanSwe.Sqlite` (`SqliteErrorKind`). -/
 def errorCoverage : List (ErrorObligation SqliteErrorKind) :=

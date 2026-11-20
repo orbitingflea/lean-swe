@@ -9,6 +9,7 @@ import Fuzz.SelfTest
 import Fuzz.EnvVars.Suite
 import Fuzz.CryptoHash.Suite
 import LeanSwe.LinuxSyscall.Fuzz.Env
+import Fuzz.Sqlite.Suite
 
 namespace Fuzz.Main
 
@@ -41,7 +42,8 @@ private def registeredSuites : List FuzzSuite := [
   Fuzz.Passwd.suite,
   Fuzz.Dns.suite,
   Fuzz.Compress.suite,
-  Fuzz.PostFork.suite
+  Fuzz.PostFork.suite,
+  Fuzz.Sqlite.suite
 ]
 
 private def truncArg (s : String) (maxLen : Nat := 64) : String :=

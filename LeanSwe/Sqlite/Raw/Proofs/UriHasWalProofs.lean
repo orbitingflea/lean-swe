@@ -24,6 +24,7 @@ theorem uriHasWal_spec (path : String)
     mockCOps, mockPrepareSuccess, rawDbToken, rawStmtToken]
   simp only [Bind.bind, StateT.bind, Pure.pure, StateT.pure, pure,
     StateT.run, tryFinally', MonadFinally.tryFinally',
+    byteArray_size_eq_zero, hasZeroByteBa_zero,
     hBytes, hZero, hWal, Bool.false_eq_true, ↓reduceIte]
   simp [hasLiveRawStmt]
   exact Or.inr (Or.inr (Or.inr (Or.inl (by decide))))

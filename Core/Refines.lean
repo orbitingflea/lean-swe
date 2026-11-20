@@ -61,6 +61,29 @@ def RefinesStepFrom
     RefinesStep proj rawWf (execRaw raw) rawAllowed →
     RefinesStep (mapS ∘ proj) pkgWf (execPkg (mkApi raw)) pkgAllowed
 
+/-- Compositional single-step refinement lifting a verified `RawOps` step contract to a
+    `[MonadFinally m]`-polymorphic `mkApi`-built `PkgApi` step contract. Instantiating `m := StateM W`
+    uses the canonical `MonadFinally (StateM W)` instance and proves single-step refinement along
+    normal/returning (`some a`) control flow, while `IO` exception-cleanup ordering is enforced
+    parametrically by the caller-provided `[MonadFinally m]` inside `mkApi` with no hidden
+    assumptions. -/
+def RefinesStepFromFinally.{u₁, u₂}
+    {RawS PkgS : Type}
+    {RawOps : (Type → Type) → Type u₁}
+    {PkgApi : (Type → Type) → Type u₂}
+    {RawReq RawOut PkgReq PkgOut : Type}
+    (mapS : RawS → PkgS)
+    (rawWf : RawS → Bool)
+    (execRaw : {W : Type} → RawOps (StateM W) → RawReq → StateM W RawOut)
+    (rawAllowed : RawS → RawReq → RawOut → RawS → Prop)
+    (pkgWf : PkgS → Bool)
+    (mkApi : {m : Type → Type} → [Monad m] → [MonadFinally m] → RawOps m → PkgApi m)
+    (execPkg : {W : Type} → PkgApi (StateM W) → PkgReq → StateM W PkgOut)
+    (pkgAllowed : PkgS → PkgReq → PkgOut → PkgS → Prop) : Prop :=
+  ∀ {W : Type} (proj : W → RawS) (raw : RawOps (StateM W)),
+    RefinesStep proj rawWf (execRaw raw) rawAllowed →
+    RefinesStep (mapS ∘ proj) pkgWf (execPkg (mkApi raw)) pkgAllowed
+
 /-- Compositional single-step refinement lifting two verified capability contracts (`RawOps1`, `RawOps2`) to a `mkApi`-built `PkgApi` step contract. -/
 def RefinesStepFrom2.{u₁, u₂, u₃}
     {RawS PkgS : Type}
