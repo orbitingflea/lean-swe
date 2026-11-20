@@ -99,6 +99,10 @@ def isTransientOsErrno (e : Errno) : Bool :=
   e == EINTR || e == EIO || e == ENOMEM ||
   e == ENFILE || e == EMFILE || e == ENOSPC
 
+/-- Returns `true` iff `e` is a valid `SECCOMP_RET_ERRNO` data code (`1..4095`) excluding `EFAULT` (`14`, fail-loud pointer invariant). -/
+def isSafeSeccompErrno (e : Errno) : Bool :=
+  e != EFAULT && 1 ≤ e.toNat && e.toNat ≤ 4095
+
 /-- Human-readable symbolic name of a Linux `Errno` code for diagnostics and fuzzing logs. -/
 def name (e : Errno) : String :=
   match e.toNat with

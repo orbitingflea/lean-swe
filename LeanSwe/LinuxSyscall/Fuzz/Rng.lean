@@ -43,4 +43,29 @@ def Rng.pickArray {α : Type} (r : Rng) (xs : Array α) (fallback : α) : α × 
     let (idx, r') := r.nextNat xs.size
     (xs.getD idx fallback, r')
 
+/-- Greedy delta-minimization loop reducing a normalized trace via chunked deletion passes down to `chunk = 1`. -/
+def deltaShrink {α : Type} (init : α) (sizeOf : α → Nat) (dropRange : α → Nat → Nat → α)
+    (reproduces : α → IO Bool) : IO α := do
+  let mut cur := init
+  let mut chunk := max 1 (sizeOf cur / 2)
+  while true do
+    let mut progress := false
+    let mut i := 0
+    while i < sizeOf cur do
+      let n := sizeOf cur
+      let hi := min n (i + chunk)
+      let cand := dropRange cur i hi
+      if sizeOf cand < n then
+        if ← reproduces cand then
+          cur := cand
+          progress := true
+        else
+          i := i + chunk
+      else
+        i := i + chunk
+    if !progress then
+      if chunk <= 1 then
+        break
+      chunk := max 1 (chunk / 2)
+  return cur
 end LeanSwe.LinuxSyscall.Fuzz

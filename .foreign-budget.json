@@ -77,8 +77,28 @@
       "max_lines": 615,
       "legacy_unmigrated": false
     },
+    "LeanSwe/LinuxSyscall/c/fd_box.c": {
+      "max_lines": 40,
+      "legacy_unmigrated": false
+    },
     "LeanSwe/LinuxSyscall/c/fd_box.h": {
       "max_lines": 122,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/LinuxSyscall/c/net_fuzz_env.c": {
+      "max_lines": 45,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/LinuxSyscall/c/net_shim.c": {
+      "max_lines": 585,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/LinuxSyscall/c/poll_fuzz_env.c": {
+      "max_lines": 180,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/LinuxSyscall/c/poll_shim.c": {
+      "max_lines": 120,
       "legacy_unmigrated": false
     },
     "LeanSwe/LinuxSyscall/c/sandbox_shim.c": {
@@ -102,7 +122,7 @@
       "legacy_unmigrated": false
     },
     "scripts/mutate_and_test.py": {
-      "max_lines": 640,
+      "max_lines": 660,
       "legacy_unmigrated": false
     },
     "scripts/test_check_spec_change.py": {
@@ -154,6 +174,36 @@
     },
     "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c::mk_ossl_err_result": {
       "max_loops": 1
+    },
+    "LeanSwe/LinuxSyscall/c/poll_shim.c::pin_poll_fds": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/LinuxSyscall/c/poll_shim.c::unpin_poll_fds": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/LinuxSyscall/c/poll_shim.c::copy_poll_revents": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/LinuxSyscall/c/poll_shim.c::leanswe_sys_ppoll": {
+      "allow_poll": true
+    },
+    "LeanSwe/LinuxSyscall/c/net_shim.c::pin_scm_fds": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/LinuxSyscall/c/net_shim.c::unpin_scm_fds": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/LinuxSyscall/c/net_shim.c::close_raw_scm_fds": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/LinuxSyscall/c/net_shim.c::close_all_scm_fds": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/LinuxSyscall/c/net_shim.c::find_scm_rights_cmsg": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/LinuxSyscall/c/net_shim.c::box_scm_fds": {
+      "allow_array_copy_loop": true
     }
   },
   "named_thread_helpers": [

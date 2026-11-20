@@ -144,8 +144,8 @@ jobs:
           else
             echo "::warning::sudo -n sysctl unavailable; skipping vm.memfd_noexec={1,2} strict checks"
           fi
-          .lake/build/bin/lean-swe-test --timerand-strace-fault-check && .lake/build/bin/lean-swe-test --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite LinuxSyscall.Passwd --suite LinuxSyscall.Dns 0<&- 1>&- 2>&-
-          .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.TimeRand,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns
+          .lake/build/bin/lean-swe-test --timerand-strace-fault-check && .lake/build/bin/lean-swe-test --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite LinuxSyscall.Passwd --suite LinuxSyscall.Dns --suite LinuxSyscall.Poll --suite LinuxSyscall.Net 0<&- 1>&- 2>&-
+          .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.TimeRand,LinuxSyscall.Poll,LinuxSyscall.Net,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns
           .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --self-test-shrink
           .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --random-seed --self-test-shrink
           python3 -B -m unittest scripts/test_fuzz_changed.py
@@ -155,6 +155,7 @@ jobs:
             python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest
             .lake/build/bin/leanswe-fuzz --smoke --all --self-test-shrink
           fi
+          .lake/build/bin/lean-swe-test --poll-strace-fault-check; .lake/build/bin/lean-swe-test --net-strace-fault-check; .lake/build/bin/leanswe-world-fuzz --suite poll --steps 50000 --self-test-shrink; .lake/build/bin/leanswe-world-fuzz --suite poll --steps 50000 --random-seed --self-test-shrink; .lake/build/bin/leanswe-world-fuzz --suite net --steps 50000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-world-fuzz --suite net --seed 11262680905236430927 --steps 50000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-world-fuzz --suite net --steps 50000 --random-seed --self-test-shrink --require-ns
 
       - name: Check 1 GB private-memory cap on changed modules and reverse dependents
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -183,7 +184,7 @@ jobs:
           fi
 
       - name: Check spec promise theorem coverage
-        run: lake env lean -DwarningAsError=true --run scripts/CheckPromises.lean .lake/build/lib/lean
+        run: lake env lean -DwarningAsError=true --run scripts/CheckPromises.lean .lake/build/lib/lean .
 
       - name: Check assumptions and error coverage
         run: lake env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --allow-legacy --verify-log "$ASSUMP_LOG" --nonce "$ASSUMP_NONCE"

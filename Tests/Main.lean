@@ -50,7 +50,9 @@ private def allSuites : Array (String × String × IO (Option String)) := #[
   ("LinuxSyscall.Sandbox", "LeanSwe/LinuxSyscall/Sandbox/RuntimeTests.lean", do LinuxSyscall.Sandbox.RuntimeTests.runAll; return none),
   ("LinuxSyscall.TimeRand", "LeanSwe/LinuxSyscall/TimeRand/RuntimeTests.lean", do LinuxSyscall.TimeRand.RuntimeTests.runAll; return none),
   ("LinuxSyscall.Passwd", "LeanSwe/LinuxSyscall/Passwd/RuntimeTests.lean", do LinuxSyscall.Passwd.RuntimeTests.runAll; return none),
-  ("LinuxSyscall.Dns", "LeanSwe/LinuxSyscall/Dns/RuntimeTests.lean", do LinuxSyscall.Dns.RuntimeTests.runAll; return none)
+  ("LinuxSyscall.Dns", "LeanSwe/LinuxSyscall/Dns/RuntimeTests.lean", do LinuxSyscall.Dns.RuntimeTests.runAll; return none),
+  ("LinuxSyscall.Poll", "LeanSwe/LinuxSyscall/Poll/RuntimeTests.lean", do LinuxSyscall.Poll.RuntimeTests.runAll; return none),
+  ("LinuxSyscall.Net", "LeanSwe/LinuxSyscall/Net/RuntimeTests.lean", do LinuxSyscall.Net.RuntimeTests.runAll; return none)
 ]
 
 private def findUnregisteredRuntimeTests : IO (Array String) := do
@@ -133,6 +135,16 @@ def main (args : List String) : IO UInt32 := do
     return (← Uuid.RuntimeTests.probeMain rest)
   | "--time-probe" :: rest =>
     return (← Time.RuntimeTests.probeMain rest)
+  | "--poll-strace-fault-check" :: rest =>
+    return (← LinuxSyscall.Poll.RuntimeTests.probeMain rest)
+  | "--poll-strace-worker" :: rest =>
+    return (← LinuxSyscall.Poll.RuntimeTests.probeMain ("--worker" :: rest))
+  | "--poll-strace-efd-worker" :: rest =>
+    return (← LinuxSyscall.Poll.RuntimeTests.probeMain ("--efd-worker" :: rest))
+  | "--net-strace-fault-check" :: rest =>
+    return (← LinuxSyscall.Net.RuntimeTests.probeMain rest)
+  | "--net-strace-worker" :: rest =>
+    return (← LinuxSyscall.Net.RuntimeTests.probeMain ("--worker" :: rest))
   | _ =>
     let opts ← match parseMainOptions args with
       | .ok o => pure o

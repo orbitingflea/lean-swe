@@ -57,31 +57,6 @@ _Static_assert(sizeof(leanswe_ll_path_beneath_attr_t) == 12, "landlock_path_bene
 _Static_assert(sizeof(leanswe_ll_net_port_attr_t) == 16, "landlock_net_port_attr must be 16 bytes");
 _Static_assert(sizeof(struct sock_filter) == 8, "sock_filter must be 8 bytes");
 
-static lean_external_class *g_leanswe_fd_class = NULL;
-static pthread_once_t g_leanswe_fd_class_once = PTHREAD_ONCE_INIT;
-
-static void leanswe_fd_box_finalize(void *ptr) {
-  int saved = errno;
-  LeanFdBox *box = (LeanFdBox *)ptr;
-  if (box != NULL) {
-    if (!box->closed && box->fd >= 0) { close(box->fd); box->fd = -1; box->closed = 1; }
-    pthread_mutex_destroy(&box->mu);
-    free(box);
-  }
-  errno = saved;
-}
-
-static void leanswe_fd_box_foreach(void *ptr, b_lean_obj_arg f) { (void)ptr; (void)f; }
-
-static void leanswe_init_fd_class(void) {
-  g_leanswe_fd_class = lean_register_external_class(leanswe_fd_box_finalize, leanswe_fd_box_foreach);
-}
-
-LEAN_EXPORT lean_external_class *leanswe_get_fd_class(void) {
-  pthread_once(&g_leanswe_fd_class_once, leanswe_init_fd_class);
-  return g_leanswe_fd_class;
-}
-
 static int sbx_ba_to_cstr(b_lean_obj_arg ba, char *stack_buf, size_t cap,
                           const char **out_ptr, char **out_heap) {
   size_t len = lean_sarray_size(ba);
