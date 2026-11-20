@@ -53,7 +53,9 @@ private def allSuites : Array (String × String × IO (Option String)) := #[
   ("LinuxSyscall.Dns", "LeanSwe/LinuxSyscall/Dns/RuntimeTests.lean", do LinuxSyscall.Dns.RuntimeTests.runAll; return none),
   ("LinuxSyscall.Poll", "LeanSwe/LinuxSyscall/Poll/RuntimeTests.lean", do LinuxSyscall.Poll.RuntimeTests.runAll; return none),
   ("LinuxSyscall.Net", "LeanSwe/LinuxSyscall/Net/RuntimeTests.lean", do LinuxSyscall.Net.RuntimeTests.runAll; return none),
-  ("LinuxSyscall.Process", "LeanSwe/LinuxSyscall/Process/RuntimeTests.lean", do LinuxSyscall.Process.RuntimeTests.runAll; return none)
+  ("LinuxSyscall.Process", "LeanSwe/LinuxSyscall/Process/RuntimeTests.lean", do LinuxSyscall.Process.RuntimeTests.runAll; return none),
+  ("LinuxSyscall.Files", "LeanSwe/LinuxSyscall/Files/RuntimeTests.lean",
+    do LeanSwe.LinuxSyscall.Files.RuntimeTests.runAll; return none)
 ]
 
 private def findUnregisteredRuntimeTests : IO (Array String) := do
@@ -108,6 +110,21 @@ private def parseMainOptions : List String → Except String MainOptions
     return { opts with suites := parts.toArray ++ opts.suites }
   | flag :: _ => .error s!"UNKNOWN_FLAG: {flag}"
 
+private def safeStream (fd : UInt32) (orig : IO.FS.Stream) : IO.FS.Stream := {
+  flush := do
+    let k ← LeanSwe.LinuxSyscall.Fuzz.Env.fdKind fd
+    if k != 0 && k != 6 then orig.flush
+  read := orig.read
+  write := fun bs => do
+    let k ← LeanSwe.LinuxSyscall.Fuzz.Env.fdKind fd
+    if k != 0 && k != 6 then orig.write bs
+  getLine := orig.getLine
+  putStr := fun s => do
+    let k ← LeanSwe.LinuxSyscall.Fuzz.Env.fdKind fd
+    if k != 0 && k != 6 then orig.putStr s
+  isTty := orig.isTty
+}
+
 /-- Entrypoint running runtime tests for all `lean-swe` packages. -/
 def main (args : List String) : IO UInt32 := do
   match args with
@@ -152,7 +169,19 @@ def main (args : List String) : IO UInt32 := do
     return (← LinuxSyscall.Process.RuntimeTests.probeMain rest)
   | "--process-strace-worker" :: opName :: errName :: _ =>
     return (← LinuxSyscall.Process.RuntimeTests.probeMain ["--worker", opName, errName])
+  | "--files-strace-fault-check" :: rest =>
+    return (← LeanSwe.LinuxSyscall.Files.RuntimeTests.probeMain rest)
+  | "--files-strace-worker" :: rest =>
+    return (← LeanSwe.LinuxSyscall.Files.RuntimeTests.probeMain ("--worker" :: rest))
   | _ =>
+    let origOut ← IO.getStdout
+    let origErr ← IO.getStderr
+    let k1 ← LeanSwe.LinuxSyscall.Fuzz.Env.fdKind 1
+    if k1 == 0 || k1 == 6 then
+      let _ ← IO.setStdout (safeStream 1 origOut)
+    let k2 ← LeanSwe.LinuxSyscall.Fuzz.Env.fdKind 2
+    if k2 == 0 || k2 == 6 then
+      let _ ← IO.setStderr (safeStream 2 origErr)
     let opts ← match parseMainOptions args with
       | .ok o => pure o
       | .error msg =>

@@ -6,11 +6,11 @@
       "legacy_unmigrated": false
     },
     ".github/workflows/audit-daily.yml": {
-      "max_lines": 235,
+      "max_lines": 295,
       "legacy_unmigrated": false
     },
     ".github/workflows/audit.yml": {
-      "max_lines": 205,
+      "max_lines": 230,
       "legacy_unmigrated": false
     },
     "Fuzz/EnvVars/c/envvars_fuzz_env.c": {
@@ -107,6 +107,14 @@
     },
     "LeanSwe/LinuxSyscall/c/poll_shim.c": {
       "max_lines": 120,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/LinuxSyscall/c/files_shim.c": {
+      "max_lines": 660,
+      "legacy_unmigrated": false
+    },
+    "LeanSwe/LinuxSyscall/c/fuzz_env.c": {
+      "max_lines": 480,
       "legacy_unmigrated": false
     },
     "LeanSwe/LinuxSyscall/c/sandbox_shim.c": {

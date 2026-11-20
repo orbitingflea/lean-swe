@@ -19,7 +19,8 @@ private theorem mkRepBytes_size (n : Nat) : (mkRepBytes n).data.size = n := by
   rw [List.size_toArray, List.length_replicate]
 
 private theorem mkRepBytes_noNul (n : Nat) : hasEmbeddedNul (mkRepBytes n) = false := by
-  unfold hasEmbeddedNul mkRepBytes
+  rw [hasEmbeddedNul_eq_toList_any]
+  unfold mkRepBytes
   rw [List.toList_toArray]
   exact hasEmbeddedNul_mkRepBytes_97 n
 
@@ -106,34 +107,119 @@ theorem sandbox_ops_setrlimit_curMaxMonotonicAndNofile_allPass :
       get, getThe, MonadStateOf.get, set]
     exact ⟨⟨rfl, ⟨0, rfl⟩⟩, trivial⟩
 
+private def memfdEmptyRes : Except Errno HandleId × SandboxSysState :=
+  (modelOps.memfdCreate ByteArray.empty { cloexec := true, allowSealing := true }).run SandboxSysState.unprivileged
+
+private def memfdS1 : SandboxSysState := memfdEmptyRes.2
+
+private def memfdS2 : SandboxSysState :=
+  { memfdS1 with
+    fds := assocSet memfdS1.fds memfdS1.nextHid { kind := .memfd false true, cloexec := true }
+    nextHid := Nat.max memfdS1.nextHid (memfdS1.nextHid + 1)
+    memfdEnabled := true }
+
+private theorem memfdCreate_einval_eq (name : ByteArray)
+    (hBad : (hasEmbeddedNul name || decide (MFD_NAME_MAX < name.data.size)) = true) :
+    (modelOps.memfdCreate name {}).run SandboxSysState.unprivileged =
+      (.error Errno.EINVAL, SandboxSysState.unprivileged) := by
+  dsimp only [modelOps, StateT.run, Id.run, StateT.bind, StateT.pure,
+    Bind.bind, Pure.pure, get, getThe, MonadStateOf.get, StateT.get]
+  rw [hBad]
+  rfl
+
+private theorem memfdCreate_valid_eq (name : ByteArray) (flags : MemfdFlags) (s : SandboxSysState)
+    (hNul : hasEmbeddedNul name = false)
+    (hSz : decide (MFD_NAME_MAX < name.data.size) = false)
+    (hExec : flags.exec = false)
+    (hCur : s.rlimitNofile.curExact = false) :
+    (modelOps.memfdCreate name flags).run s =
+      (.ok s.nextHid,
+        { s with
+          fds := assocSet s.fds s.nextHid
+            { kind := .memfd flags.allowSealing flags.noexecSeal, cloexec := flags.cloexec }
+          nextHid := Nat.max s.nextHid (s.nextHid + 1)
+          memfdEnabled := true
+          memfdNoexecStrict? := s.memfdNoexecStrict? }) := by
+  dsimp only [modelOps, StateT.run, Id.run, StateT.bind, StateT.pure,
+    Bind.bind, Pure.pure, get, getThe, MonadStateOf.get, set, StateT.get, StateT.set]
+  simp only [hNul, hSz, hExec, hCur, Bool.false_or, Bool.and_false, Bool.false_and,
+    Bool.false_eq_true, ↓reduceIte]
+  rfl
+
+private theorem memfdCreate_249_eq :
+    (modelOps.memfdCreate (mkRepBytes 249) { cloexec := true, noexecSeal := true }).run memfdS1 =
+      (.ok memfdS1.nextHid, memfdS2) := by
+  have hSz : decide (MFD_NAME_MAX < (mkRepBytes 249).data.size) = false := by
+    rw [mkRepBytes_size]; decide
+  exact memfdCreate_valid_eq (mkRepBytes 249) { cloexec := true, noexecSeal := true } memfdS1
+    (mkRepBytes_noNul 249) hSz rfl rfl
+
+private theorem memfdCreate_rest_eq :
+    ((modelOps.memfdCreate (asciiBytes ['a']) { noexecSeal := true, exec := true }).run SandboxSysState.unprivileged).1 =
+        .error Errno.EINVAL ∧
+    (modelOps.memfdCreate ByteArray.empty { cloexec := true, allowSealing := true }).run SandboxSysState.unprivileged =
+        (.ok 0, memfdS1) ∧
+    ((modelOps.memfdCreate (asciiBytes ['e']) { cloexec := false, exec := true }).run memfdS2).1 =
+        .ok 2 :=
+  ⟨rfl, rfl, rfl⟩
+
+private theorem memfdCreate_conf_eq :
+    (modelOps.memfdCreate (asciiBytes ['a']) { noexecSeal := true, exec := true }).run
+      SandboxSysState.unprivileged =
+      (.error Errno.EINVAL,
+        ((modelOps.memfdCreate (asciiBytes ['a']) { noexecSeal := true, exec := true }).run
+          SandboxSysState.unprivileged).2) :=
+  rfl
+
+private theorem memfdCreate_exec_eq :
+    (modelOps.memfdCreate (asciiBytes ['e']) { cloexec := false, exec := true }).run memfdS2 =
+      (.ok 2,
+        ((modelOps.memfdCreate (asciiBytes ['e']) { cloexec := false, exec := true }).run
+          memfdS2).2) :=
+  rfl
+
 /-- `modelOps.memfdCreate` satisfies `test_sandbox_ops_memfdCreate_nameBoundsAndFlags` from `SandboxSysState.unprivileged`. -/
 theorem sandbox_ops_memfdCreate_nameBoundsAndFlags_allPass :
     AllPass (test_sandbox_ops_memfdCreate_nameBoundsAndFlags modelOps SandboxSysState.unprivileged) := by
   intro badNul hNul overMax hOver
-  have hOverB : decide (MFD_NAME_MAX < overMax.data.size) = true := decide_eq_true hOver
-  have h249Nul : hasEmbeddedNul (mkRepBytes 249) = false := mkRepBytes_noNul 249
-  have h249Sz : decide (MFD_NAME_MAX < (mkRepBytes 249).data.size) = false := by
-    rw [mkRepBytes_size]; decide
-  dsimp only [AllPass, test_sandbox_ops_memfdCreate_nameBoundsAndFlags, NondetTest.assert,
-    Bind.bind, Pure.pure, modelOps, SandboxSysState.unprivileged, StateT.run, Id.run,
-    StateT.bind, StateT.pure, get, getThe, MonadStateOf.get, set, StateT.get, StateT.set]
-  simp only [hNul, Bool.true_or, hOverB, Bool.or_true, h249Nul, h249Sz, Bool.false_or, ↓reduceIte]
-  refine ⟨⟨rfl, rfl⟩, ⟨rfl, rfl⟩, rfl, ⟨by decide, by decide, by decide⟩, trivial⟩
+  have hNulEq := memfdCreate_einval_eq badNul (by rw [hNul, Bool.true_or])
+  have hOverEq := memfdCreate_einval_eq overMax (by rw [decide_eq_true hOver, Bool.or_true])
+  dsimp only [AllPass, test_sandbox_ops_memfdCreate_nameBoundsAndFlags]
+  rw [hNulEq, hOverEq]
+  dsimp only [Id.run]
+  rw [memfdCreate_conf_eq]
+  dsimp only [Id.run]
+  rw [memfdCreate_rest_eq.2.1]
+  dsimp only [Id.run]
+  rw [memfdCreate_249_eq]
+  dsimp only [Id.run]
+  rw [memfdCreate_exec_eq]
+  dsimp only [Id.run, NondetTest.assert, Bind.bind, Pure.pure]
+  exact ⟨⟨rfl, rfl⟩, ⟨rfl, rfl⟩, rfl, ⟨by decide, by decide, by decide⟩, trivial⟩
+
+private theorem test_memfd_canReach_step (badNul overMax : ByteArray)
+    (hNul : hasEmbeddedNul badNul = true)
+    (hOver : overMax.data.size > MFD_NAME_MAX) :
+    CanReach (test_sandbox_ops_memfdCreate_nameBoundsAndFlags modelOps SandboxSysState.unprivileged) := by
+  have hNulEq := memfdCreate_einval_eq badNul (by rw [hNul, Bool.true_or])
+  have hOverEq := memfdCreate_einval_eq overMax (by rw [decide_eq_true hOver, Bool.or_true])
+  dsimp only [CanReach, CanReachRun, test_sandbox_ops_memfdCreate_nameBoundsAndFlags]
+  refine ⟨badNul, hNul, overMax, hOver, ?_⟩
+  rw [hNulEq, hOverEq]
+  dsimp only [Id.run]
+  rw [memfdCreate_conf_eq]
+  dsimp only [Id.run]
+  rw [memfdCreate_rest_eq.2.1]
+  dsimp only [Id.run]
+  rw [memfdCreate_249_eq]
+  dsimp only [Id.run]
+  rw [memfdCreate_exec_eq]
+  dsimp only [Id.run, NondetTest.assert, Bind.bind, Pure.pure]
+  exact ⟨⟨rfl, rfl⟩, ⟨rfl, rfl⟩, rfl, ⟨by decide, by decide, by decide⟩, trivial⟩
 
 /-- Reachability witness for `test_sandbox_ops_memfdCreate_nameBoundsAndFlags`. -/
 theorem sandbox_ops_memfdCreate_nameBoundsAndFlags_canReach :
-    CanReach (test_sandbox_ops_memfdCreate_nameBoundsAndFlags modelOps SandboxSysState.unprivileged) := by
-  refine ⟨ByteArray.mk #[0], by decide, mkRepBytes 250, ?_, ?_⟩
-  · rw [mkRepBytes_size]; decide
-  · have h250Sz : decide (MFD_NAME_MAX < (mkRepBytes 250).data.size) = true := by
-      rw [mkRepBytes_size]; decide
-    have h249Nul : hasEmbeddedNul (mkRepBytes 249) = false := mkRepBytes_noNul 249
-    have h249Sz : decide (MFD_NAME_MAX < (mkRepBytes 249).data.size) = false := by
-      rw [mkRepBytes_size]; decide
-    dsimp only [test_sandbox_ops_memfdCreate_nameBoundsAndFlags, CanReachRun, NondetTest.assert,
-      Bind.bind, Pure.pure, modelOps, SandboxSysState.unprivileged, StateT.run, Id.run,
-      StateT.bind, StateT.pure, get, getThe, MonadStateOf.get, set, StateT.get, StateT.set]
-    simp only [h250Sz, Bool.or_true, h249Nul, h249Sz, Bool.false_or, ↓reduceIte]
-    refine ⟨⟨rfl, rfl⟩, ⟨rfl, rfl⟩, rfl, ⟨by decide, by decide, by decide⟩, trivial⟩
+    CanReach (test_sandbox_ops_memfdCreate_nameBoundsAndFlags modelOps SandboxSysState.unprivileged) :=
+  test_memfd_canReach_step (ByteArray.mk #[0]) (mkRepBytes 250) rfl (by rw [mkRepBytes_size]; decide)
 
 end LeanSwe.LinuxSyscall.Sandbox

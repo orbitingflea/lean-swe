@@ -36,6 +36,16 @@ private def timeRandAuditModules : Array Name := #[
   `LeanSwe.LinuxSyscall.TimeRand.Proofs
 ]
 
+private def filesAuditModules : Array Name := #[
+  `LeanSwe.LinuxSyscall.Files.Types,
+  `LeanSwe.LinuxSyscall.Files.Model,
+  `LeanSwe.LinuxSyscall.Files.Seed,
+  `LeanSwe.LinuxSyscall.Files.Impl,
+  `LeanSwe.LinuxSyscall.Files.Interface,
+  `LeanSwe.LinuxSyscall.Files.SpecTests,
+  `LeanSwe.LinuxSyscall.Files.Proofs
+]
+
 private def passwdAuditModules : Array Name := #[
   `LeanSwe.LinuxSyscall.Passwd.Types,
   `LeanSwe.LinuxSyscall.Passwd.Model,
@@ -164,6 +174,12 @@ private def isAllowedTimeRandClosureModule (m : Name) : Bool :=
     m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
     timeRandAuditModules.contains m
 
+private def isAllowedFilesClosureModule (m : Name) : Bool :=
+  m.getRoot == `Core ||
+    m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
+    (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Files] &&
+      nameLastStr m != "RuntimeTests" && nameLastStr m != "SpecMutants")
+
 private def isAllowedPasswdClosureModule (m : Name) : Bool :=
   m.getRoot == `Core ||
     m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
@@ -206,6 +222,32 @@ private def allowedTimeRandExternSyms : Std.HashMap Name String :=
     |>.insert `LeanSwe.LinuxSyscall.TimeRand.rawClockGettime "leanswe_sys_clock_gettime"
     |>.insert `LeanSwe.LinuxSyscall.TimeRand.rawClockNanosleep "leanswe_sys_clock_nanosleep"
     |>.insert `LeanSwe.LinuxSyscall.TimeRand.rawGetrandom "leanswe_sys_getrandom"
+
+private def allowedFilesExternSyms : Std.HashMap Name String :=
+  Std.HashMap.emptyWithCapacity 32
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawOpenat "leanswe_sys_openat"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawOpenat2 "leanswe_sys_openat2"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawClose "leanswe_sys_close"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawRead "leanswe_sys_read"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawWrite "leanswe_sys_write"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawFstat "leanswe_sys_fstat"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawFstatat "leanswe_sys_fstatat"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawFaccessat "leanswe_sys_faccessat"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawMkdirat "leanswe_sys_mkdirat"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawUnlinkat "leanswe_sys_unlinkat"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawRenameat2 "leanswe_sys_renameat2"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawSymlinkat "leanswe_sys_symlinkat"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawReadlinkat "leanswe_sys_readlinkat"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawGetdents64 "leanswe_sys_getdents64"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawFchmodat "leanswe_sys_fchmodat"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawFchmod "leanswe_sys_fchmod"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawFlock "leanswe_sys_flock"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawFcntl "leanswe_sys_fcntl"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawFsync "leanswe_sys_fsync"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawGetcwd "leanswe_sys_getcwd"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawLseek "leanswe_sys_lseek"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawReopenReadOnly "leanswe_sys_reopen_readonly"
+    |>.insert `LeanSwe.LinuxSyscall.Files.rawDupStdio "leanswe_sys_dup_stdio"
 
 private def allowedPasswdExternSyms : Std.HashMap Name String :=
   Std.HashMap.emptyWithCapacity 4
@@ -541,6 +583,7 @@ private unsafe def checkPackageTrustedClosure (repoDir : System.FilePath) (pkgLa
           (getExternAttrData? trEnv cName).isNone
         let isExpectedInterfaceExtern :=
           cMod == externMod &&
+          (!allowIO || isPrivateName cName) &&
           (cinfo matches .opaqueInfo _) &&
           (cinfo.type.getUsedConstants.contains ``BaseIO ||
             (allowIO && cinfo.type.getUsedConstants.contains ``IO && isPrivateName cName)) &&
@@ -1812,6 +1855,7 @@ unsafe def main (args : List String) : IO UInt32 := do
   ).toIO ctx state
 
   let trAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.TimeRand timeRandAuditModules
+  let filesAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.Files filesAuditModules
   let pwAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.Passwd passwdAuditModules
   let dnsAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.Dns dnsAuditModules
   let pollAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.Poll pollAuditModules
@@ -1821,6 +1865,9 @@ unsafe def main (args : List String) : IO UInt32 := do
   let chAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.CryptoHash cryptoHashAuditModules
   let trClosureErrs ← checkPackageTrustedClosure repoDir "TimeRand" trAuditMods
     isAllowedTimeRandClosureModule `LeanSwe.LinuxSyscall.TimeRand.Interface allowedTimeRandExternSyms true
+  let filesClosureErrs ← checkPackageTrustedClosure repoDir "Files" filesAuditMods
+    isAllowedFilesClosureModule `LeanSwe.LinuxSyscall.Files.Interface allowedFilesExternSyms true true
+  IO.println s!"TRUSTED_CLOSURE: files_modules={filesAuditMods.size} allowlist=Common+Files externs={allowedFilesExternSyms.size}"
   let pwClosureErrs ← checkPackageTrustedClosure repoDir "Passwd" pwAuditMods
     isAllowedPasswdClosureModule `LeanSwe.LinuxSyscall.Passwd.Interface allowedPasswdExternSyms true
   let pwWiringErrs ← checkPasswdPrivateWiring env
@@ -1842,7 +1889,7 @@ unsafe def main (args : List String) : IO UInt32 := do
   let chClosureErrs ← checkPackageTrustedClosure repoDir "CryptoHash" chAuditMods
     isAllowedCryptoHashClosureModule `LeanSwe.CryptoHash.Raw.Interface allowedCryptoHashExternSyms false
   let sbxClosureErrs ← checkSandboxTrustedClosure env
-  errors := errors ++ axiomErrs ++ trClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sbxClosureErrs
+  errors := errors ++ axiomErrs ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sbxClosureErrs
 
   let mut withAssumeCount := 0
   for (m, pName) in promises do

@@ -67,6 +67,8 @@ def ENFILE : Errno := 23
 def EMFILE : Errno := 24
 /-- Inappropriate ioctl for device (`ENOTTY`, 25). -/
 def ENOTTY : Errno := 25
+/-- Text file busy (`ETXTBSY`, 26). -/
+def ETXTBSY : Errno := 26
 /-- File too large (`EFBIG`, 27). -/
 def EFBIG : Errno := 27
 /-- No space left on device (`ENOSPC`, 28). -/
@@ -91,6 +93,8 @@ def ENOTEMPTY : Errno := 39
 def ELOOP : Errno := 40
 /-- Operation not supported (`EOPNOTSUPP` / `ENOTSUP`, 95). -/
 def EOPNOTSUPP : Errno := 95
+/-- Stale file handle (`ESTALE`, 116). -/
+def ESTALE : Errno := 116
 /-- Operation canceled (`ECANCELED`, 125). -/
 def ECANCELED : Errno := 125
 
@@ -130,6 +134,7 @@ def name (e : Errno) : String :=
   | 23 => "ENFILE"
   | 24 => "EMFILE"
   | 25 => "ENOTTY"
+  | 26 => "ETXTBSY"
   | 27 => "EFBIG"
   | 28 => "ENOSPC"
   | 29 => "ESPIPE"
@@ -142,6 +147,7 @@ def name (e : Errno) : String :=
   | 39 => "ENOTEMPTY"
   | 40 => "ELOOP"
   | 95 => "EOPNOTSUPP"
+  | 116 => "ESTALE"
   | 125 => "ECANCELED"
   | n => s!"ERRNO({n})"
 
@@ -154,9 +160,53 @@ def RawFd : Type := RawFdPointed.type
 
 instance : Nonempty RawFd := RawFdPointed.property
 
+/-- Tail-recursive `ByteArray` index loop checking for an embedded `0x00` byte across `rem` remaining bytes from `i`. -/
+def hasEmbeddedNulLoop (b : ByteArray) (i : Nat) : Nat → Bool
+  | 0 => false
+  | rem + 1 =>
+    if h : i < b.size then
+      if b[i] == (0 : UInt8) then true
+      else hasEmbeddedNulLoop b (i + 1) rem
+    else false
+
 /-- Returns `true` iff `b` contains an embedded NUL (`0x00`) byte. -/
 def hasEmbeddedNul (b : ByteArray) : Bool :=
-  b.data.toList.any (· == (0 : UInt8))
+  hasEmbeddedNulLoop b 0 b.size
+
+private theorem hasEmbeddedNulLoop_eq_toList_drop_any (b : ByteArray) :
+    ∀ k i : Nat, i + k = b.size →
+      hasEmbeddedNulLoop b i k = (b.data.toList.drop i).any (· == (0 : UInt8))
+  | 0, i, hk => by
+    have hLen : b.data.toList.length ≤ i := by
+      rw [Array.length_toList]
+      exact Nat.le_of_eq hk.symm
+    unfold hasEmbeddedNulLoop
+    rw [List.drop_of_length_le hLen]
+    rfl
+  | k + 1, i, hk => by
+    have hlt : i < b.size := by omega
+    unfold hasEmbeddedNulLoop
+    simp only [hlt, ↓reduceDIte]
+    have hsz : i < b.data.toList.length := by
+      show i < b.data.size
+      exact hlt
+    have hdrop : b.data.toList.drop i = b[i] :: b.data.toList.drop (i + 1) := by
+      have hg : b.data.toList[i]'hsz = b[i] := rfl
+      rw [← hg]
+      exact List.drop_eq_getElem_cons hsz
+    rw [hdrop, List.any_cons]
+    cases hb : (b[i] == (0 : UInt8))
+    · simp only [Bool.false_eq_true, ↓reduceIte, Bool.false_or]
+      exact hasEmbeddedNulLoop_eq_toList_drop_any b k (i + 1) (by omega)
+    · simp only [↓reduceIte, Bool.true_or]
+
+/-- Equivalence between `hasEmbeddedNul` and `(b.data.toList.any (· == 0))` for proofs. -/
+theorem hasEmbeddedNul_eq_toList_any (b : ByteArray) :
+    hasEmbeddedNul b = b.data.toList.any (· == (0 : UInt8)) := by
+  unfold hasEmbeddedNul
+  have h := hasEmbeddedNulLoop_eq_toList_drop_any b b.size 0 (Nat.zero_add _)
+  rw [List.drop_zero] at h
+  exact h
 
 /-- Kernel-reducible ASCII byte-array literal helper from `List Char` (avoids opaque `@[extern]` string UTF-8 decoding in proofs). -/
 def asciiBytes (cs : List Char) : ByteArray :=
