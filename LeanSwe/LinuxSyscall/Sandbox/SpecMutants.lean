@@ -724,4 +724,49 @@ example : ¬ Core.AllPass (test_sandbox_model_modelOpsRefinesAllowedStep
     StateT.pure, pure, get, getThe, MonadState.get, MonadStateOf.get] at h0
   exact absurd h0.1 (by decide)
 
+example : ¬ Core.AllPass (test_sandbox_healthyStep_and_healthyModelOps
+    (isCrit := fun e => Errno.isCriticalOsErrno e || e == Errno.EMFILE)) := by
+  intro h
+  have h0 := h Errno.EMFILE
+  exact absurd h0.2.1 (by decide)
+
+example : ¬ Core.AllPass (test_sandbox_healthyStep_and_healthyModelOps
+    (step := fun env req out =>
+      match req, out with
+      | .setrlimit _ _ _, .err e =>
+        if e == Errno.EMFILE then some env else healthyStep env req out
+      | _, _ => healthyStep env req out)) := by
+  intro h
+  have h0 := h Errno.EINTR
+  exact absurd h0.2.2.2.2.2.2.2.1.1 (by decide)
+
+example : ¬ Core.AllPass (test_sandbox_healthyStep_and_healthyModelOps
+    (ops := { healthyModelOps with memfdCreate := fun _ _ => pure (.error Errno.EMFILE) })) := by
+  intro h
+  have h0 := h Errno.EINTR
+  cases h0.2.2.2.2.2.2.2.2.2.1.2.2.2
+
+example : ¬ Core.AllPass (test_sandbox_healthyStep_and_healthyModelOps
+    (ops := { healthyModelOps with
+      landlockCreateRuleset := fun attr? flags env =>
+        match attr? with
+        | none => healthyModelOps.landlockCreateRuleset none flags env
+        | some _ => (.error Errno.ENOSPC, env) })) := by
+  intro h
+  have h0 := (h Errno.EINTR).2.2.2.2.2.2.2.2.2.2 (HealthyEnv.initial 1) rfl
+    (.landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0)
+  have hEq := congrArg Prod.fst h0.1.1
+  exact absurd hEq (by decide)
+
+example : ¬ Core.AllPass (test_sandbox_healthyStep_and_healthyModelOps
+    (step := fun env req out =>
+      if decide (env.eintrBudget ≥ 2) && isEintrOutcome out then
+        (healthyStep env req out).map (fun env' => { env' with eintrBudget := env.eintrBudget })
+      else
+        healthyStep env req out)) := by
+  intro h
+  have hRest := (h Errno.EINTR).2.2.2.2.2.2.2.2.2.2 (HealthyEnv.initial 1) rfl (.prctl .setNoNewPrivs)
+  have hStep := (hRest.2 (HealthyEnv.initial 2) (.prctl .setNoNewPrivs) (.err Errno.EINTR)).1
+  exact absurd (congrArg (Option.map HealthyEnv.eintrBudget) hStep) (by decide)
+
 end LeanSwe.LinuxSyscall.Sandbox

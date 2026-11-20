@@ -373,6 +373,30 @@ private def straceWorker (opName errName : String) : IO UInt32 := do
     if isRandOp && allowedStep sReady req out != none then
       IO.eprintln s!"strace-worker ({opName}, {errName}): expected allowedStepCore to reject once crngReady = true"
       return 7
+    let h1 := HealthyEnv.initial 1
+    let h0 := HealthyEnv.initial 0
+    let hReady1 := HealthyEnv.initial 1 0 true
+    let hSec : HealthyEnv := { state := sSec, eintrBudget := 1 }
+    if (healthyStep hSec req out).isSome then
+      IO.eprintln s!"strace-worker ({opName}, {errName}): healthyStep accepted outer-seccomp state"
+      return 8
+    if isCriticalFault out then
+      if (healthyStep h1 req out).isSome then
+        IO.eprintln s!"strace-worker ({opName}, {errName}): healthyStep accepted critical fault"
+        return 9
+    else if expectPlainAllowed then
+      if e == Errno.EINTR then
+        if healthyStep h1 req out != some h0 || (healthyStep h0 req out).isSome then
+          IO.eprintln s!"strace-worker ({opName}, {errName}): healthyStep EINTR budget check failed"
+          return 10
+      else
+        if healthyStep h1 req out != some h1 || (healthyStep hReady1 req out).isSome then
+          IO.eprintln s!"strace-worker ({opName}, {errName}): healthyStep EAGAIN check failed"
+          return 11
+    else
+      if (healthyStep h1 req out).isSome then
+        IO.eprintln s!"strace-worker ({opName}, {errName}): healthyStep accepted disallowed error"
+        return 12
     return 0
   | .ok () =>
     IO.eprintln s!"strace-worker ({opName}): expected {Errno.name expected}, got ok"

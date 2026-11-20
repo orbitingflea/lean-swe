@@ -210,7 +210,7 @@ private def isNonEmptyNoNulHost (host : String) : Bool :=
   let cs := host.toList
   !cs.isEmpty && !cs.contains (Char.ofNat 0)
 
-/-- Parse pure platform-independent numeric IPv4 (`inet_aton`) or IPv6 (no zone or numeric `%<u32>` scope ID) literals. -/
+/-- Parse pure platform- and namespace-independent numeric IPv4 (`inet_aton`) or IPv6 (unscoped, non-link/multicast-local `%<u32>`, or `>= 16`-byte `%<u32>` exceeding `IFNAMSIZ`) literals. -/
 def parsePureNumericAddr? (host : String) : Option DnsAddr :=
   if !isNonEmptyNoNulHost host then none
   else
@@ -222,21 +222,45 @@ def parsePureNumericAddr? (host : String) : Option DnsAddr :=
       | some (mk, none) => mk 0
       | some (mk, some zoneCs) =>
         match parseNumericZone? zoneCs with
-        | some sc => mk sc
+        | some sc =>
+          match mk sc with
+          | some addr =>
+            if allowsSymbolicIpv6Zone addr && zoneCs.length < 16 then none
+            else some addr
+          | none => none
         | none => none
+
+/-- If `host` is a link- or node/link-local-multicast IPv6 literal (`allowsSymbolicIpv6Zone`) with a `1..15`-byte (`< IFNAMSIZ`) numeric `%<u32>` zone (where `glibc` checks `if_nametoindex` before falling back to numeric `strtoul`), return `(baseAddr, numericScopeId)`. -/
+def parseHybridScopedNumericZone? (host : String) : Option (DnsAddr × UInt32) :=
+  if !isNonEmptyNoNulHost host then none
+  else
+    match parseIpv4Aton? host with
+    | some _ => none
+    | none =>
+      match parseIpv6SplitZone? host with
+      | some (mk, some zoneCs) =>
+        if zoneCs.length < 16 then
+          match mk 0, parseNumericZone? zoneCs with
+          | some baseAddr, some sc =>
+            if allowsSymbolicIpv6Zone baseAddr then some (baseAddr, sc) else none
+          | _, _ => none
+        else none
+      | _ => none
 
 /-- If `host` is an IPv6 literal with an empty or non-`uint32` `%<zone>` suffix (`strchr('%')`), return its base address (`scopeId = 0`) and raw zone bytes. -/
 def parseScopedNonNumericZone? (host : String) : Option (DnsAddr × List Char) :=
   if !isNonEmptyNoNulHost host then none
   else
-    match parsePureNumericAddr? host with
+    match parseIpv4Aton? host with
     | some _ => none
     | none =>
       match parseIpv6SplitZone? host with
       | some (mk, some zoneCs) =>
-        match mk 0 with
-        | some baseAddr => some (baseAddr, zoneCs)
-        | none => none
+        if (parseNumericZone? zoneCs).isSome then none
+        else
+          match mk 0 with
+          | some baseAddr => some (baseAddr, zoneCs)
+          | none => none
       | _ => none
 
 /-- Return `true` iff `host` is a numeric IPv4 or IPv6 literal (including IPv6 literals with a `%zone` suffix). -/
@@ -276,7 +300,8 @@ def matchesSockTypeMultiplicity (hints : ResolveHints) (addrs : List DnsAddr) : 
   | .stream | .dgram => true
   | .any => checkSockTriples addrs
 
-private def withIpv6Scope (sc : UInt32) : DnsAddr → DnsAddr
+/-- Replace the `scopeId` of an `.ipv6` address with `sc` (identity on `.ipv4`). -/
+def withIpv6Scope (sc : UInt32) : DnsAddr → DnsAddr
   | .ipv6 b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 _ =>
     .ipv6 b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 sc
   | a => a
@@ -294,14 +319,24 @@ def matchesSymbolicScopedAddrs (hints : ResolveHints) (baseAddr : DnsAddr) (addr
     addrs == expandSockType hints [first]
   | none => false
 
+/-- Return `true` iff `addrs` matches either the fallback numeric `scopeId = sc` or a resolved symbolic `if_nametoindex` non-zero `scopeId` for a `< IFNAMSIZ` numeric-zoned link/multicast-local IPv6 literal under non-`.ipv4` hints. -/
+def matchesHybridScopedAddrs (hints : ResolveHints) (baseAddr : DnsAddr) (sc : UInt32)
+    (addrs : List DnsAddr) : Bool :=
+  hints.family != .ipv4 &&
+    (addrs == expandSockType hints [withIpv6Scope sc baseAddr] ||
+     matchesSymbolicScopedAddrs hints baseAddr addrs)
+
 /-- Return `true` iff `host` is a numeric or non-v4-mapped zoned IP literal whose address family conflicts with `hints.family` (`EAI_ADDRFAMILY`). -/
 def isNumericFamilyMismatch (host : String) (hints : ResolveHints) : Bool :=
   match parsePureNumericAddr? host with
   | some rawAddr => (mapAddrForHints hints rawAddr).isNone
   | none =>
-    match parseScopedNonNumericZone? host with
-    | some (baseAddr, _) => hints.family == .ipv4 && !isIpv4MappedAddr baseAddr
-    | none => false
+    match parseHybridScopedNumericZone? host with
+    | some _ => hints.family == .ipv4
+    | none =>
+      match parseScopedNonNumericZone? host with
+      | some (baseAddr, _) => hints.family == .ipv4 && !isIpv4MappedAddr baseAddr
+      | none => false
 
 private def isLocalhostAscii (host : String) : Bool :=
   let lowerCs := host.toList.map fun c =>
@@ -321,7 +356,7 @@ def emptyPayloadError (host : String) (hints : ResolveHints) : DnsError :=
   if isNumericFamilyMismatch host hints then
     { kind := .otherGai, gaiCode := EAI_ADDRFAMILY, errno? := none,
       message := "Address family for hostname not supported" }
-  else if (parsePureNumericAddr? host).isSome then
+  else if (parsePureNumericAddr? host).isSome || (parseHybridScopedNumericZone? host).isSome then
     { kind := .nameNotFound, gaiCode := EAI_FAIL, errno? := none,
       message := "Numeric literal resolution mismatch" }
   else if (parseScopedNonNumericZone? host).isSome then
@@ -354,11 +389,15 @@ def allowedDnsOutcome (host : String) (hints : ResolveHints := {})
          | some expAddr => addrs == expandSockType hints [expAddr]
          | none => false
        | none =>
-         match parseScopedNonNumericZone? host with
-         | some (baseAddr, zoneCs) =>
-           canSymbolicScopedOk hints baseAddr zoneCs &&
-           matchesSymbolicScopedAddrs hints baseAddr addrs
-         | none => true)
+         match parseHybridScopedNumericZone? host with
+         | some (baseAddr, sc) =>
+           matchesHybridScopedAddrs hints baseAddr sc addrs
+         | none =>
+           match parseScopedNonNumericZone? host with
+           | some (baseAddr, zoneCs) =>
+             canSymbolicScopedOk hints baseAddr zoneCs &&
+             matchesSymbolicScopedAddrs hints baseAddr addrs
+           | none => true)
     | .error err =>
       err.kind != .invalidHost &&
       isValidGaiCode err.gaiCode &&
@@ -397,18 +436,25 @@ def normalizeOracleOutcome (host : String) (hints : ResolveHints := {})
                      errno? := none
                      message := "Numeric literal resolution mismatch" }
       | none =>
-        match parseScopedNonNumericZone? host with
-        | some (baseAddr, zoneCs) =>
-          if canSymbolicScopedOk hints baseAddr zoneCs && !kept.isEmpty &&
-              matchesSymbolicScopedAddrs hints baseAddr kept then
+        match parseHybridScopedNumericZone? host with
+        | some (baseAddr, sc) =>
+          if !kept.isEmpty && matchesHybridScopedAddrs hints baseAddr sc kept then
             .ok kept
           else
             .error (emptyPayloadError host hints)
         | none =>
-          if kept.isEmpty then
-            .error (emptyPayloadError host hints)
-          else
-            .ok kept
+          match parseScopedNonNumericZone? host with
+          | some (baseAddr, zoneCs) =>
+            if canSymbolicScopedOk hints baseAddr zoneCs && !kept.isEmpty &&
+                matchesSymbolicScopedAddrs hints baseAddr kept then
+              .ok kept
+            else
+              .error (emptyPayloadError host hints)
+          | none =>
+            if kept.isEmpty then
+              .error (emptyPayloadError host hints)
+            else
+              .ok kept
     | .error err =>
       let code' := normalizeGaiCodeForHost host hints err.gaiCode
       let kind' := classifyGaiKind code'
@@ -450,7 +496,15 @@ def defaultOfflineOracle : DnsOracle :=
         match parsePureNumericAddr? host with
         | some addr => filterByFamily [addr]
         | none =>
-          match parseScopedNonNumericZone? host with
+          match parseHybridScopedNumericZone? host with
+          | some (baseAddr, sc) =>
+            if hints.family == .ipv4 then
+              .error { kind := .otherGai, gaiCode := EAI_ADDRFAMILY, errno? := none,
+                       message := "Address family for hostname not supported" }
+            else
+              filterByFamily [withIpv6Scope sc baseAddr]
+          | none =>
+            match parseScopedNonNumericZone? host with
           | some (baseAddr, zoneCs) =>
             if zoneCs == ['l', 'o'] && allowsSymbolicIpv6Zone baseAddr then
               if hints.family == .ipv4 then
@@ -486,5 +540,399 @@ def defaultOfflineOracle : DnsOracle :=
                        gaiCode := EAI_NONAME
                        errno? := none
                        message := "Name or service not known" } }
+
+/-- One DNS lookup request in a `Dns` world-model trace (`host` and `ResolveHints`). -/
+structure DnsReq where
+  /-- Hostname or numeric IP literal passed to `getaddrinfo`. -/
+  host : String
+  /-- Address-family and socket-type constraints. -/
+  hints : ResolveHints := {}
+  deriving Repr, DecidableEq, BEq, Hashable, Inhabited
+
+/-- Outcome observed at the `Dns` world-model boundary. -/
+abbrev DnsOutcome := Except DnsError (List DnsAddr)
+
+/-- Execute one `DnsReq` against a `DnsOpsM m` capability bundle. -/
+def execDnsReq {m : Type → Type} [Monad m]
+    (ops : DnsOpsM m) (req : DnsReq) : m DnsOutcome :=
+  ops.getaddrinfo req.host req.hints
+
+/-- Return `true` iff `out` is a curated catastrophic OS or allocator fault (`EAI_MEMORY`, or `EAI_SYSTEM` carrying `Errno.isCriticalOsErrno`). -/
+def isCriticalFault : DnsOutcome → Bool
+  | .ok _ => false
+  | .error err =>
+    err.gaiCode == EAI_MEMORY ||
+      (err.gaiCode == EAI_SYSTEM &&
+        match err.errno? with
+        | some eno => Errno.isCriticalOsErrno eno
+        | none => false)
+
+/-- Return `true` iff `out` is an interrupted syscall outcome (`EAI_SYSTEM` carrying `Errno.EINTR`). -/
+def isEintrOutcome : DnsOutcome → Bool
+  | .ok _ => false
+  | .error err => err.gaiCode == EAI_SYSTEM && err.errno? == some Errno.EINTR
+
+/-- Stateful DNS world model pairing a reference `DnsOracle` with optional ambient `seccomp` preemption. -/
+structure DnsState where
+  /-- Reference resolution oracle for non-numeric hostnames. -/
+  oracle : DnsOracle := defaultOfflineOracle
+  /-- Whether an ambient outer `seccomp` filter may preempt NSS or socket syscalls. -/
+  ambientSeccomp : Bool := false
+  deriving Inhabited
+
+/-- Initial `DnsState` backed by `oracle` with `ambientSeccomp = false`. -/
+def DnsState.initial (oracle : DnsOracle := defaultOfflineOracle) : DnsState :=
+  { oracle := oracle, ambientSeccomp := false }
+
+/-- Enable ambient outer `seccomp` preemption on a `DnsState`. -/
+def DnsState.withOuterSeccomp (s : DnsState := DnsState.initial) : DnsState :=
+  { s with ambientSeccomp := true }
+
+/-- Relational OS-level step checker for `LeanSwe.LinuxSyscall.Dns`: enforces `allowedDnsOutcome` and, when `ambientSeccomp = false`, requires pure and hybrid numeric IP literals (`parsePureNumericAddr?`, `parseHybridScopedNumericZone?`) to succeed on family match or fail with `EAI_ADDRFAMILY` on family mismatch unless a critical OS fault (`isCriticalFault`) occurs. -/
+def allowedStep (s : DnsState) (req : DnsReq) (out : DnsOutcome) : Option DnsState :=
+  if !allowedDnsOutcome req.host req.hints out then
+    none
+  else if !validateHost req.host || s.ambientSeccomp then
+    some s
+  else
+    match parsePureNumericAddr? req.host with
+    | some rawAddr =>
+      match mapAddrForHints req.hints rawAddr with
+      | some _ =>
+        match out with
+        | .ok _ => some s
+        | .error _ => if isCriticalFault out then some s else none
+      | none =>
+        match out with
+        | .ok _ => none
+        | .error err =>
+          if (err.gaiCode == EAI_ADDRFAMILY && err.errno? == none) || isCriticalFault out then
+            some s
+          else
+            none
+    | none =>
+      match parseHybridScopedNumericZone? req.host with
+      | none => some s
+      | some _ =>
+        if req.hints.family != .ipv4 then
+          match out with
+          | .ok _ => some s
+          | .error _ => if isCriticalFault out then some s else none
+        else
+          match out with
+          | .ok _ => none
+          | .error err =>
+            if (err.gaiCode == EAI_ADDRFAMILY && err.errno? == none) || isCriticalFault out then
+              some s
+            else
+              none
+
+/-- Healthy execution environment wrapping `DnsState` with a finite `EINTR` interruption budget (`ambientSeccomp = false`). -/
+structure HealthyEnv where
+  /-- Underlying `DnsState` world state. -/
+  state : DnsState := DnsState.initial
+  /-- Remaining bound on `EINTR` signal interruptions. -/
+  eintrBudget : Nat := 0
+  deriving Inhabited
+
+/-- Initial healthy `Dns` environment (`ambientSeccomp = false`, `eintrBudget`). -/
+def HealthyEnv.initial (eintrBudget : Nat := 0) (oracle : DnsOracle := defaultOfflineOracle) :
+    HealthyEnv :=
+  { state := DnsState.initial oracle, eintrBudget := eintrBudget }
+
+/-- Return `true` iff `env` has no ambient `seccomp` preemption. -/
+def HealthyEnv.wf (env : HealthyEnv) : Bool :=
+  !env.state.ambientSeccomp
+
+/-- Relational healthy-OS step checker for `LeanSwe.LinuxSyscall.Dns`, guaranteeing unconditional resolution of valid in-family numeric IP literals while allowing everyday DNS/NSS errors and bounded `EINTR` on hostnames and banning curated critical OS faults. -/
+def healthyStep (env : HealthyEnv) (req : DnsReq) (out : DnsOutcome) : Option HealthyEnv :=
+  if !env.wf || isCriticalFault out then
+    none
+  else
+    match allowedStep env.state req out with
+    | none => none
+    | some s' =>
+      if isEintrOutcome out then
+        if env.eintrBudget > 0 then
+          some { state := s', eintrBudget := env.eintrBudget - 1 }
+        else
+          none
+      else
+        some { state := s', eintrBudget := env.eintrBudget }
+
+/-- Healthy reference DNS resolution resolving pure and hybrid numeric IP literals directly (matching `glibc` `gaih_inet` `if_nametoindex`-before-`strtoul` precedence) and normalizing non-numeric oracle outcomes to exclude critical faults and `EINTR`. -/
+def healthyModelResolve (oracle : DnsOracle) (host : String) (hints : ResolveHints := {}) :
+    DnsOutcome :=
+  if !validateHost host then
+    .error invalidHostError
+  else
+    match parsePureNumericAddr? host with
+    | some rawAddr =>
+      match mapAddrForHints hints rawAddr with
+      | some expAddr => .ok (expandSockType hints [expAddr])
+      | none => .error (emptyPayloadError host hints)
+    | none =>
+      match parseHybridScopedNumericZone? host with
+      | some (baseAddr, sc) =>
+        if hints.family == .ipv4 then
+          .error (emptyPayloadError host hints)
+        else
+          match normalizeOracleOutcome host hints (oracle.lookup host hints) with
+          | .ok addrs => .ok addrs
+          | .error _ => .ok (expandSockType hints [withIpv6Scope sc baseAddr])
+      | none =>
+        let base := normalizeOracleOutcome host hints (oracle.lookup host hints)
+        if isCriticalFault base || isEintrOutcome base then
+          .error (emptyPayloadError host hints)
+        else
+          base
+
+/-- Reference `DnsOpsM (StateM HealthyEnv)` refining `healthyStep` across all hostnames and hints. -/
+def healthyModelOps : DnsOpsM (StateM HealthyEnv) :=
+  { getaddrinfo := fun host hints => do
+      let env ← get
+      return healthyModelResolve env.state.oracle host hints }
+
+/-- Universal healthy-world refinement predicate over an arbitrary state `W` projected via `proj`. -/
+def RefinesHealthyDnsAt {W : Type} (proj : W → HealthyEnv)
+    (ops : DnsOpsM (StateM W)) : Prop :=
+  ∀ (w : W) (req : DnsReq),
+    (proj w).wf = true →
+    let (out, w') := (execDnsReq ops req).run w
+    healthyStep (proj w) req out = some (proj w')
+
+/-- Universal healthy-world refinement predicate specialized to `StateM HealthyEnv`. -/
+abbrev RefinesHealthyDns (ops : DnsOpsM (StateM HealthyEnv)) : Prop :=
+  RefinesHealthyDnsAt id ops
+
+/-- Every host accepted by `parsePureNumericAddr?` is non-empty and free of embedded NUL bytes (`validateHost = true`). -/
+theorem validateHost_of_parsePureNumericAddr {host : String} {addr : DnsAddr}
+    (hP : parsePureNumericAddr? host = some addr) :
+    validateHost host = true := by
+  unfold parsePureNumericAddr? at hP
+  by_cases hne : isNonEmptyNoNulHost host = true
+  · unfold validateHost
+    unfold isNonEmptyNoNulHost at hne
+    simp only [Bool.and_eq_true, Bool.not_eq_true'] at hne ⊢
+    refine ⟨?_, ?_⟩
+    · cases hl : host.toList with
+      | nil => simp [hl] at hne
+      | cons _ _ =>
+        cases he : host.isEmpty
+        · rfl
+        · have : host = "" := String.isEmpty_iff.mp he
+          subst this; simp at hl
+    · cases hAny : host.toList.any (· == '\x00') with
+      | false => simp [String.any, hAny]
+      | true =>
+        rw [List.any_eq_true] at hAny
+        rcases hAny with ⟨c, hcMem, hcEq⟩
+        have hc0 : c = Char.ofNat 0 := eq_of_beq hcEq
+        subst hc0
+        have hCont : host.toList.contains (Char.ofNat 0) = true := List.contains_iff_mem.mpr hcMem
+        rw [hne.2] at hCont
+        contradiction
+  · simp [hne] at hP
+
+/-- Every host accepted by `parseHybridScopedNumericZone?` is non-empty and free of embedded NUL bytes (`validateHost = true`). -/
+theorem validateHost_of_parseHybridScopedNumericZone {host : String} {baseAddr : DnsAddr} {sc : UInt32}
+    (hH : parseHybridScopedNumericZone? host = some (baseAddr, sc)) :
+    validateHost host = true := by
+  unfold parseHybridScopedNumericZone? at hH
+  by_cases hne : isNonEmptyNoNulHost host = true
+  · unfold validateHost
+    unfold isNonEmptyNoNulHost at hne
+    simp only [Bool.and_eq_true, Bool.not_eq_true'] at hne ⊢
+    refine ⟨?_, ?_⟩
+    · cases hl : host.toList with
+      | nil => simp [hl] at hne
+      | cons _ _ =>
+        cases he : host.isEmpty
+        · rfl
+        · have : host = "" := String.isEmpty_iff.mp he
+          subst this; simp at hl
+    · cases hAny : host.toList.any (· == '\x00') with
+      | false => simp [String.any, hAny]
+      | true =>
+        rw [List.any_eq_true] at hAny
+        rcases hAny with ⟨c, hcMem, hcEq⟩
+        have hc0 : c = Char.ofNat 0 := eq_of_beq hcEq
+        subst hc0
+        have hCont : host.toList.contains (Char.ofNat 0) = true := List.contains_iff_mem.mpr hcMem
+        rw [hne.2] at hCont
+        contradiction
+  · simp [hne] at hH
+
+/-- Every `baseAddr` produced by `parseHybridScopedNumericZone?` satisfies `allowsSymbolicIpv6Zone baseAddr = true`. -/
+theorem allowsSymbolicIpv6Zone_of_parseHybridScopedNumericZone {host : String} {baseAddr : DnsAddr} {sc : UInt32}
+    (hH : parseHybridScopedNumericZone? host = some (baseAddr, sc)) :
+    allowsSymbolicIpv6Zone baseAddr = true := by
+  unfold parseHybridScopedNumericZone? at hH
+  by_cases hne : isNonEmptyNoNulHost host = true
+  · simp only [hne, Bool.not_true, Bool.false_eq_true, ↓reduceIte] at hH
+    cases h4 : parseIpv4Aton? host with
+    | some _ => simp [h4] at hH
+    | none =>
+      simp only [h4] at hH
+      cases h6 : parseIpv6SplitZone? host with
+      | none => simp [h6] at hH
+      | some p =>
+        rcases p with ⟨mk, z?⟩
+        cases z? with
+        | none => simp [h6] at hH
+        | some zoneCs =>
+          simp only [h6] at hH
+          by_cases hlen : zoneCs.length < 16
+          · simp only [hlen, ↓reduceIte] at hH
+            cases hm : mk 0 with
+            | none => simp [hm] at hH
+            | some bAddr =>
+              cases hn : parseNumericZone? zoneCs with
+              | none => simp [hm, hn] at hH
+              | some scVal =>
+                simp only [hm, hn] at hH
+                by_cases hAl : allowsSymbolicIpv6Zone bAddr = true
+                · simp only [hAl, ↓reduceIte, Option.some.injEq, Prod.mk.injEq] at hH
+                  rw [← hH.1]
+                  exact hAl
+                · simp [hAl] at hH
+          · simp [hlen] at hH
+  · simp [hne] at hH
+
+private theorem wordsToIpv6Addr_allowsSymbolic {ws : List Nat} {sc1 sc2 : UInt32} {a1 a2 : DnsAddr}
+    (h1 : wordsToIpv6Addr ws sc1 = some a1) (h2 : wordsToIpv6Addr ws sc2 = some a2) :
+    allowsSymbolicIpv6Zone a1 = allowsSymbolicIpv6Zone a2 := by
+  cases ws with | nil => simp [wordsToIpv6Addr] at h1 | cons w0 ws1 =>
+  cases ws1 with | nil => simp [wordsToIpv6Addr] at h1 | cons w1 ws2 =>
+  cases ws2 with | nil => simp [wordsToIpv6Addr] at h1 | cons w2 ws3 =>
+  cases ws3 with | nil => simp [wordsToIpv6Addr] at h1 | cons w3 ws4 =>
+  cases ws4 with | nil => simp [wordsToIpv6Addr] at h1 | cons w4 ws5 =>
+  cases ws5 with | nil => simp [wordsToIpv6Addr] at h1 | cons w5 ws6 =>
+  cases ws6 with | nil => simp [wordsToIpv6Addr] at h1 | cons w6 ws7 =>
+  cases ws7 with | nil => simp [wordsToIpv6Addr] at h1 | cons w7 ws8 =>
+  cases ws8 with
+  | cons _ _ => simp [wordsToIpv6Addr] at h1
+  | nil =>
+    simp only [wordsToIpv6Addr, Option.some.injEq] at h1 h2
+    subst h1; subst h2
+    rfl
+
+private theorem parseIpv6Core_exists_words {addrCs : List Char} {mkFn : UInt32 → Option DnsAddr}
+    (h : parseIpv6Core? addrCs = some mkFn) :
+    ∃ ws : List Nat, mkFn = wordsToIpv6Addr ws := by
+  unfold parseIpv6Core? at h
+  by_cases hBad : (addrCs.isEmpty || decide (addrCs.length > 64)) = true
+  · simp [hBad] at h
+  · simp only [hBad, Bool.false_eq_true, ↓reduceIte, Bind.bind, Option.bind] at h
+    cases hSplit : splitDoubleColonChars addrCs with
+    | nil => simp [hSplit] at h
+    | cons first rest =>
+      cases rest with
+      | nil =>
+        simp only [hSplit] at h
+        cases hP1 : parseIpv6Parts? true first with
+        | none => simp [hP1] at h
+        | some ws =>
+          simp only [hP1] at h
+          by_cases hne8 : (ws.length != 8) = true
+          · simp [hne8] at h
+          · simp only [hne8, Bool.false_eq_true, ↓reduceIte, Option.some.injEq] at h
+            exact ⟨ws, h.symm⟩
+      | cons second rest2 =>
+        cases rest2 with
+        | cons _ _ => simp [hSplit] at h
+        | nil =>
+          simp only [hSplit] at h
+          cases hL : parseIpv6Parts? false first with
+          | none => simp [hL] at h
+          | some lhs =>
+            simp only [hL] at h
+            cases hR : parseIpv6Parts? true second with
+            | none => simp [hR] at h
+            | some rhs =>
+              simp only [hR] at h
+              by_cases hge : lhs.length + rhs.length ≥ 8
+              · simp [hge] at h
+              · simp only [hge, ↓reduceIte, Option.some.injEq] at h
+                exact ⟨lhs ++ List.replicate (8 - (lhs.length + rhs.length)) 0 ++ rhs, h.symm⟩
+
+/-- `parsePureNumericAddr?` and `parseHybridScopedNumericZone?` are mutually exclusive: every hybrid numeric-scoped literal yields `parsePureNumericAddr? host = none`. -/
+theorem parsePureNumericAddr_none_of_parseHybridScopedNumericZone
+    {host : String} {baseAddr : DnsAddr} {sc : UInt32}
+    (hHyb : parseHybridScopedNumericZone? host = some (baseAddr, sc)) :
+    parsePureNumericAddr? host = none := by
+  unfold parseHybridScopedNumericZone? at hHyb
+  unfold parsePureNumericAddr?
+  by_cases hne : isNonEmptyNoNulHost host = true
+  · simp only [hne, Bool.not_true, Bool.false_eq_true, ↓reduceIte] at hHyb ⊢
+    cases h4 : parseIpv4Aton? host with
+    | some _ => simp [h4] at hHyb
+    | none =>
+      simp only [h4] at hHyb ⊢
+      cases h6 : parseIpv6SplitZone? host with
+      | none => simp [h6] at hHyb
+      | some p =>
+        rcases p with ⟨mk, z?⟩
+        cases z? with
+        | none => simp [h6] at hHyb
+        | some zoneCs =>
+          simp only [h6] at hHyb ⊢
+          by_cases hlen : zoneCs.length < 16
+          · simp only [hlen, ↓reduceIte] at hHyb
+            cases hm0 : mk 0 with
+            | none => simp [hm0] at hHyb
+            | some bAddr =>
+              cases hn : parseNumericZone? zoneCs with
+              | none => simp [hm0, hn] at hHyb
+              | some scVal =>
+                simp only [hm0, hn] at hHyb ⊢
+                by_cases hAl : allowsSymbolicIpv6Zone bAddr = true
+                · simp only [hAl, ↓reduceIte] at hHyb
+                  cases hms : mk scVal with
+                  | none => rfl
+                  | some addrSc =>
+                    dsimp only
+                    unfold parseIpv6SplitZone? at h6
+                    cases hCore : parseIpv6Core? (splitFirstZoneAux host.toList []).1 with
+                    | none => simp [hCore] at h6
+                    | some mkFn =>
+                      have hMkEq : mkFn = mk := by
+                        simp only [hCore, Option.some.injEq, Prod.mk.injEq] at h6
+                        exact h6.1
+                      subst hMkEq
+                      rcases parseIpv6Core_exists_words hCore with ⟨ws, hWs⟩
+                      rw [hWs] at hm0 hms
+                      have hEqAl := wordsToIpv6Addr_allowsSymbolic hm0 hms
+                      rw [← hEqAl]
+                      simp [hAl, hlen]
+                · simp [hAl] at hHyb
+          · simp [hlen] at hHyb
+  · simp [hne] at hHyb
+
+/-- Every non-numeric host (`isNumericHostLiteral host = false`) returns `none` under `parsePureNumericAddr?`. -/
+theorem parsePureNumericAddr_none_of_not_numericLiteral {host : String}
+    (hNonNum : isNumericHostLiteral host = false) :
+    parsePureNumericAddr? host = none := by
+  unfold isNumericHostLiteral at hNonNum
+  unfold parsePureNumericAddr?
+  by_cases hne : isNonEmptyNoNulHost host = true
+  · simp only [hne, Bool.true_and, Bool.or_eq_false_iff, Option.isSome_eq_false_iff,
+      Option.isNone_iff_eq_none] at hNonNum
+    simp [hne, hNonNum.1, hNonNum.2]
+  · have hneF : isNonEmptyNoNulHost host = false := Bool.eq_false_iff.mpr hne
+    simp [hneF]
+
+/-- Every non-numeric host (`isNumericHostLiteral host = false`) returns `none` under `parseHybridScopedNumericZone?`. -/
+theorem parseHybridScopedNumericZone_none_of_not_numericLiteral {host : String}
+    (hNonNum : isNumericHostLiteral host = false) :
+    parseHybridScopedNumericZone? host = none := by
+  unfold isNumericHostLiteral at hNonNum
+  unfold parseHybridScopedNumericZone?
+  by_cases hne : isNonEmptyNoNulHost host = true
+  · simp only [hne, Bool.true_and, Bool.or_eq_false_iff, Option.isSome_eq_false_iff,
+      Option.isNone_iff_eq_none] at hNonNum
+    simp [hne, hNonNum.1, hNonNum.2]
+  · have hneF : isNonEmptyNoNulHost host = false := Bool.eq_false_iff.mpr hne
+    simp [hneF]
 
 end LeanSwe.LinuxSyscall.Dns

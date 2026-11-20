@@ -7,6 +7,8 @@ import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Passwd.Types
 import LeanSwe.LinuxSyscall.Passwd.Model
 import LeanSwe.LinuxSyscall.Passwd.Interface
+import LeanSwe.LinuxSyscall.Sandbox.Interface
+import LeanSwe.LinuxSyscall.Fuzz.SandboxEnv
 
 namespace Fuzz.Passwd
 
@@ -235,8 +237,37 @@ private def checkEntryUtf8Accessors (e : PasswdEntry) : Except String Unit := do
   if !e.hasNoEmbeddedNul then
     throw "PASSWD_ENTRY_EMBEDDED_NUL"
 
-private def checkSingleOp (oracle : PyPwdOracle) (state : PasswdState) (op : PasswdFuzzOp) :
-    IO (Except String (PasswdState × List CoverageBucket)) := do
+private instance : BEq PasswdState where
+  beq a b :=
+    a.byUid.toList == b.byUid.toList &&
+    a.byName.toList == b.byName.toList &&
+    a.ambientSeccomp == b.ambientSeccomp &&
+    a.transientNssUnavail == b.transientNssUnavail
+
+private def checkSingleOp (oracle : PyPwdOracle) (state : PasswdState) (hEnv : HealthyEnv)
+    (op : PasswdFuzzOp) :
+    IO (Except String (PasswdState × HealthyEnv × List CoverageBucket)) := do
+  let stepHealthy (req : PasswdReq) (out : PasswdOutcome) (nxtState : PasswdState) :
+      Except String HealthyEnv :=
+    if !isCriticalFault out then
+      match healthyStep hEnv req out with
+      | some hEnv' =>
+        if !hEnv'.wf then
+          .error s!"PASSWD_HEALTHY_WF_VIOLATED op={repr op}"
+        else if hEnv'.state != nxtState then
+          .error s!"PASSWD_HEALTHY_STATE_DIVERGENCE op={repr op}"
+        else if isEintrOutcome out &&
+            (hEnv'.eintrBudget + 1 != hEnv.eintrBudget ||
+             (healthyStep { hEnv with eintrBudget := 0 } req out).isSome) then
+          .error s!"PASSWD_HEALTHY_EINTR_BUDGET_VIOLATED op={repr op}"
+        else
+          .ok hEnv'
+      | none => .error s!"PASSWD_HEALTHY_STEP_MISMATCH op={repr op} out={repr out}"
+    else
+      if (healthyStep hEnv req out).isSome then
+        .error s!"PASSWD_HEALTHY_CRITICAL_ACCEPTED op={repr op} out={repr out}"
+      else
+        .ok { hEnv with state := nxtState }
   let mut bkts : List CoverageBucket := []
   match op.kind with
   | .getpwuid =>
@@ -247,6 +278,9 @@ private def checkSingleOp (oracle : PyPwdOracle) (state : PasswdState) (op : Pas
     let out := outcomeOfEntryOpt res
     let some nxtState := allowedStep state (.getpwuid op.uid) out
       | return .error s!"PASSWD_MODEL_MISMATCH_UID op={repr op} out={repr out}"
+    let nxtHealthy ← match stepHealthy (.getpwuid op.uid) out nxtState with
+      | .error err => return .error err
+      | .ok h' => pure h'
     match res, pyRes with
     | .ok (some entry), .found pyEntry =>
       if entry != pyEntry then
@@ -266,13 +300,16 @@ private def checkSingleOp (oracle : PyPwdOracle) (state : PasswdState) (op : Pas
       if !isAllowedPasswdOsErrno e then
         return .error s!"PASSWD_UID_UNEXPECTED_ERRNO uid={op.uid} err={e.name}"
       bkts := bucket "getpwuid" s!"err.{e.name}" :: bkts
-    return .ok (nxtState, bkts)
+    return .ok (nxtState, nxtHealthy, bkts)
   | .getpwnam =>
     if !validPasswdName op.name then
       let res ← getpwnam op.name
       let out := outcomeOfEntryOpt res
       let some nxtState := allowedStep state (.getpwnam op.name) out
         | return .error s!"PASSWD_MODEL_MISMATCH_NAME op={repr op} out={repr out}"
+      let nxtHealthy ← match stepHealthy (.getpwnam op.name) out nxtState with
+        | .error err => return .error err
+        | .ok h' => pure h'
       match res with
       | .error e =>
         if e != Errno.EINVAL then
@@ -280,12 +317,15 @@ private def checkSingleOp (oracle : PyPwdOracle) (state : PasswdState) (op : Pas
         bkts := bucket "getpwnam" "err.EINVAL" :: bkts
       | other =>
         return .error s!"PASSWD_NAME_EXPECTED_EINVAL got={formatResEntry other}"
-      return .ok (nxtState, bkts)
+      return .ok (nxtState, nxtHealthy, bkts)
     else if op.name.size > MAX_PASSWD_NAME_BYTES then
       let res ← getpwnam op.name
       let out := outcomeOfEntryOpt res
       let some nxtState := allowedStep state (.getpwnam op.name) out
         | return .error s!"PASSWD_MODEL_MISMATCH_NAME op={repr op} out={repr out}"
+      let nxtHealthy ← match stepHealthy (.getpwnam op.name) out nxtState with
+        | .error err => return .error err
+        | .ok h' => pure h'
       match res with
       | .error e =>
         if e != Errno.ENAMETOOLONG then
@@ -293,7 +333,7 @@ private def checkSingleOp (oracle : PyPwdOracle) (state : PasswdState) (op : Pas
         bkts := bucket "getpwnam" "err.ENAMETOOLONG" :: bkts
       | other =>
         return .error s!"PASSWD_NAME_EXPECTED_ENAMETOOLONG got={formatResEntry other}"
-      return .ok (nxtState, bkts)
+      return .ok (nxtState, nxtHealthy, bkts)
     else
       let pyRes ← match ← queryPyName oracle op.name with
         | .error err => return .error err
@@ -302,6 +342,9 @@ private def checkSingleOp (oracle : PyPwdOracle) (state : PasswdState) (op : Pas
       let out := outcomeOfEntryOpt res
       let some nxtState := allowedStep state (.getpwnam op.name) out
         | return .error s!"PASSWD_MODEL_MISMATCH_NAME op={repr op} out={repr out}"
+      let nxtHealthy ← match stepHealthy (.getpwnam op.name) out nxtState with
+        | .error err => return .error err
+        | .ok h' => pure h'
       match res, pyRes with
       | .ok (some entry), .found pyEntry =>
         if entry != pyEntry then
@@ -321,17 +364,19 @@ private def checkSingleOp (oracle : PyPwdOracle) (state : PasswdState) (op : Pas
         if !isAllowedPasswdOsErrno e then
           return .error s!"PASSWD_NAME_UNEXPECTED_ERRNO err={e.name}"
         bkts := bucket "getpwnam" s!"err.{e.name}" :: bkts
-      return .ok (nxtState, bkts)
+      return .ok (nxtState, nxtHealthy, bkts)
 
 private def checkTrace (oracle : PyPwdOracle) (trace : Array PasswdFuzzOp) :
     IO (Except String (List CoverageBucket)) := do
   let mut state := PasswdState.initial
+  let mut hEnv : HealthyEnv := { state := PasswdState.initial, eintrBudget := trace.size }
   let mut bkts : List CoverageBucket := []
   for op in trace do
-    match ← checkSingleOp oracle state op with
+    match ← checkSingleOp oracle state hEnv op with
     | .error err => return .error err
-    | .ok (nxtState, stepBkts) =>
+    | .ok (nxtState, nxtHealthy, stepBkts) =>
       state := nxtState
+      hEnv := nxtHealthy
       bkts := stepBkts ++ bkts
   return .ok bkts
 
@@ -448,8 +493,34 @@ private def runInternalStep (curUid : UInt32) (curName : ByteArray)
   let (useNamMock, r4) := r3.nextBool
   let req := if useNamMock then PasswdReq.getpwnam (asciiName "mockuser") else PasswdReq.getpwuid curUid
   let res ← if useNamMock then mockOps.getpwnam (asciiName "mockuser") else mockOps.getpwuid curUid
-  let some _ := allowedStep PasswdState.initial req (outcomeOfEntryOpt res)
+  let mockOut := outcomeOfEntryOpt res
+  let some _ := allowedStep PasswdState.initial req mockOut
     | throw (IO.userError s!"INTERNAL_MOCK_MODEL_MISMATCH cutoff={cutoff} corrupt={corruptKind} got={formatResEntry res}")
+  let hInit := HealthyEnv.initial 1
+  if (corruptKind == 0 || corruptKind == 1) && cutoff <= 65536 then
+    if !isCriticalFault mockOut || (healthyStep hInit req mockOut).isSome then
+      throw (IO.userError s!"INTERNAL_MOCK_EIO_NOT_REJECTED_BY_HEALTHY got={formatResEntry res}")
+  else
+    if isCriticalFault mockOut || (healthyStep hInit req mockOut).isNone then
+      throw (IO.userError s!"INTERNAL_MOCK_HEALTHY_STEP_REJECTED cutoff={cutoff} corrupt={corruptKind} got={formatResEntry res}")
+  if (healthyStep hInit req (.err Errno.EMFILE)).isNone ||
+      (healthyStep hInit req (.err Errno.ENOMEM)).isSome ||
+      (healthyStep hInit req (.err Errno.ENFILE)).isSome then
+    throw (IO.userError "PASSWD_HEALTHY_CRITICAL_SPLIT_BROKEN")
+  let (hOut, hEnvAfter) := (execPasswdReq healthyModelOps req).run hInit
+  let (mOut, mSt) := (execPasswdReq modelOps req).run hInit.state
+  let stEq := hEnvAfter.state.byUid.toList == mSt.byUid.toList &&
+    hEnvAfter.state.byName.toList == mSt.byName.toList &&
+    hEnvAfter.state.ambientSeccomp == mSt.ambientSeccomp &&
+    hEnvAfter.state.transientNssUnavail == mSt.transientNssUnavail
+  if hOut != mOut || !stEq || (healthyStep hInit req hOut).isNone ||
+      hEnvAfter.eintrBudget != 1 || !hEnvAfter.wf then
+    throw (IO.userError "PASSWD_HEALTHY_MODEL_OPS_VIOLATED")
+  let badNamReq := PasswdReq.getpwnam (ByteArray.mk #[97, 0, 98])
+  let (badHOut, badHEnv) := (execPasswdReq healthyModelOps badNamReq).run hInit
+  let (badMOut, _) := (execPasswdReq modelOps badNamReq).run hInit.state
+  if badHOut != badMOut || badHOut != .err Errno.EINVAL || !badHEnv.wf || badHEnv.eintrBudget != 1 then
+    throw (IO.userError "PASSWD_HEALTHY_MODEL_OPS_INVALID_NAME_VIOLATED")
   match res with
   | .ok (some entry) =>
     if cutoff > 4096 then
@@ -572,9 +643,70 @@ private def requiredPasswdBuckets (hasPasswdFile : Bool) : Array CoverageBucket 
   else
     base
 
+private def runPasswdOsBoundaryChecks (curUid : UInt32) : IO Unit := do
+  for warmNss in [false, true] do
+    let (waitSt, payload) ← LeanSwe.LinuxSyscall.Fuzz.SandboxEnv.runForked do
+      let mut s := PasswdState.initial.withTransientNssUnavail
+      let mut h := HealthyEnv.initial 16
+      if warmNss then
+        for u in ([9999999, 0, 1, curUid] : List UInt32) do
+          let o := outcomeOfEntryOpt (← getpwuid u)
+          let some s' := allowedStep s (.getpwuid u) o
+            | return (s!"warm allowedStep uid={u} failed: {repr o}").toUTF8
+          s := s'
+          if !isCriticalFault o then
+            let some h' := healthyStep h (.getpwuid u) o
+              | return (s!"warm healthyStep uid={u} failed: {repr o}").toUTF8
+            h := h'
+        for nm in [asciiName "root", asciiName "daemon"] do
+          let o := outcomeOfEntryOpt (← getpwnam nm)
+          let some s' := allowedStep s (.getpwnam nm) o
+            | return (s!"warm allowedStep nam failed: {repr o}").toUTF8
+          s := s'
+          if !isCriticalFault o then
+            let some h' := healthyStep h (.getpwnam nm) o
+              | return (s!"warm healthyStep nam failed: {repr o}").toUTF8
+            h := h'
+      let (_, maxNofile) ← match ← LeanSwe.LinuxSyscall.Fuzz.SandboxEnv.getRlimit 2 with
+        | .ok p => pure p
+        | .error e => return (s!"getRlimit failed: {e}").toUTF8
+      let safeHigh := if maxNofile > 64 then 64 else maxNofile
+      match ← LeanSwe.LinuxSyscall.Sandbox.setrlimit .nofile 0 safeHigh with
+      | .ok () => pure ()
+      | .error e => return (s!"setrlimit nofile 0 failed: {e}").toUTF8
+      for u in ([0, 1, curUid, 9999999] : List UInt32) do
+        let o := outcomeOfEntryOpt (← getpwuid u)
+        if isCriticalFault o then
+          return (s!"RLIMIT_NOFILE=0 uid={u} critical fault: {repr o}").toUTF8
+        let some s' := allowedStep s (.getpwuid u) o
+          | return (s!"RLIMIT_NOFILE=0 allowedStep uid={u} failed: {repr o}").toUTF8
+        let some h' := healthyStep h (.getpwuid u) o
+          | return (s!"RLIMIT_NOFILE=0 healthyStep uid={u} failed: {repr o}").toUTF8
+        if !h'.wf then
+          return (s!"RLIMIT_NOFILE=0 wf violated uid={u}").toUTF8
+        s := s'
+        h := h'
+      for nm in [asciiName "root", asciiName "daemon", ByteArray.mk #[97, 0, 98], overCapName1048577] do
+        let o := outcomeOfEntryOpt (← getpwnam nm)
+        if isCriticalFault o then
+          return (s!"RLIMIT_NOFILE=0 nam sz={nm.size} critical fault: {repr o}").toUTF8
+        let some s' := allowedStep s (.getpwnam nm) o
+          | return (s!"RLIMIT_NOFILE=0 allowedStep nam sz={nm.size} failed: {repr o}").toUTF8
+        let some h' := healthyStep h (.getpwnam nm) o
+          | return (s!"RLIMIT_NOFILE=0 healthyStep nam sz={nm.size} failed: {repr o}").toUTF8
+        if !h'.wf then
+          return (s!"RLIMIT_NOFILE=0 wf violated nam sz={nm.size}").toUTF8
+        s := s'
+        h := h'
+      return "OK".toUTF8
+    let msg := (String.fromUTF8? payload).getD "invalid UTF-8"
+    if waitSt != 0 || msg != "OK" then
+      throw (IO.userError s!"PASSWD_RLIMIT_NOFILE_PARITY_FAILED warm={warmNss} status={waitSt} msg={msg}")
+
 private def runPasswdSuite (steps : Nat) (seedVal : UInt64) (isSmoke : Bool) : IO Unit := do
   let regPasswd ← hasRegularEtcPasswd
   let curUid ← readCurrentUid
+  runPasswdOsBoundaryChecks curUid
   let curName ← match ← getpwuid curUid with
     | .ok (some e) => pure e.name
     | _ => pure (asciiName "root")

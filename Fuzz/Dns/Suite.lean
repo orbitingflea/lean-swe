@@ -8,6 +8,8 @@ import LeanSwe.LinuxSyscall.Dns.Types
 import LeanSwe.LinuxSyscall.Dns.Model
 import LeanSwe.LinuxSyscall.Dns.Interface
 import LeanSwe.LinuxSyscall.Dns.Impl
+import LeanSwe.LinuxSyscall.Sandbox.Interface
+import LeanSwe.LinuxSyscall.Fuzz.SandboxEnv
 
 namespace Fuzz.Dns
 
@@ -179,6 +181,23 @@ private def evalProbeAgainstOracle (ops : DnsOps) (child : OracleChild) (probe :
       tag := "DNS_ALLOWED_OUTCOME_VIOLATED"
       detail := s!"host={repr probe.host} hints={repr probe.hints} res={repr leanRes}"
     }
+  let req : DnsReq := { host := probe.host, hints := probe.hints }
+  if (allowedStep DnsState.initial req leanRes).isNone then
+    return some {
+      tag := "DNS_ALLOWED_STEP_VIOLATED"
+      detail := s!"host={repr probe.host} hints={repr probe.hints} res={repr leanRes}"
+    }
+  if isCriticalFault leanRes then
+    if (healthyStep (HealthyEnv.initial 1) req leanRes).isSome then
+      return some {
+        tag := "DNS_HEALTHY_ACCEPTED_CRITICAL"
+        detail := s!"host={repr probe.host} hints={repr probe.hints} res={repr leanRes}"
+      }
+  else if (healthyStep (HealthyEnv.initial 1) req leanRes).isNone then
+    return some {
+      tag := "DNS_HEALTHY_STEP_VIOLATED"
+      detail := s!"host={repr probe.host} hints={repr probe.hints} res={repr leanRes}"
+    }
   if !validateHost probe.host then
     match leanRes with
     | .error e =>
@@ -199,7 +218,8 @@ private def evalProbeAgainstOracle (ops : DnsOps) (child : OracleChild) (probe :
         tag := "DNS_ADDR_MISMATCH"
         detail := s!"host={repr probe.host} hints={repr probe.hints} py={repr pyAddrs} lean={repr leanAddrs}"
       }
-    if probe.host.contains '%' && probe.hints.family != .ipv4 && !probe.host.endsWith "%0" then
+    if probe.host.contains '%' && probe.hints.family != .ipv4 &&
+        pyAddrs.any (fun a => a.isIpv6 && !a.isUnscoped) then
       if leanAddrs.isEmpty || !leanAddrs.any (fun a => a.isIpv6 && !a.isUnscoped) then
         return some {
           tag := "DNS_SCOPED_IPV6_LOST"
@@ -305,19 +325,48 @@ private def checkModelStep (rng : Rng) : IO Rng := do
   let (resOps, _) := (modelOps.getaddrinfo probe.host probe.hints).run oracle
   if !exceptDnsEq resOps resModel then
     throw (IO.userError s!"DNS_MODEL_OPS_DIVERGENCE probe={repr probe} ops={repr resOps} model={repr resModel}")
+  let hEnv0 : HealthyEnv := { state := { oracle := oracle, ambientSeccomp := false }, eintrBudget := 1 }
+  let (resHealthy, hEnv1) := (healthyModelOps.getaddrinfo probe.host probe.hints).run hEnv0
+  let expectExactModel := resModel.isOk ||
+    ((parsePureNumericAddr? probe.host).isNone &&
+      (parseHybridScopedNumericZone? probe.host).isNone &&
+      !isCriticalFault resModel && !isEintrOutcome resModel)
+  let stepOk := match healthyStep hEnv0 { host := probe.host, hints := probe.hints } resHealthy with
+    | some hNext =>
+      hNext.eintrBudget == hEnv1.eintrBudget &&
+        hNext.state.ambientSeccomp == hEnv1.state.ambientSeccomp
+    | none => false
+  if !stepOk || !hEnv1.wf || hEnv1.eintrBudget != hEnv0.eintrBudget ||
+      !exceptDnsEq resHealthy (healthyModelResolve oracle probe.host probe.hints) ||
+      (expectExactModel && !exceptDnsEq resHealthy resModel) then
+    throw (IO.userError s!"DNS_HEALTHY_MODEL_OPS_VIOLATED probe={repr probe} res={repr resHealthy}")
   let checkDefaultOfflineReal (host : String) (allowAgain : Bool) : IO Unit := do
     let mRes := modelResolve defaultOfflineOracle host probe.hints
     if !allowedDnsOutcome host probe.hints mRes then
       throw (IO.userError s!"DNS_OFFLINE_ORACLE_VIOLATED host={repr host} hints={repr probe.hints} res={repr mRes}")
     let realOff ← getaddrinfo host probe.hints
+    let isSymbolicScopedCand := match parseScopedNonNumericZone? host with
+      | some (baseAddr, zoneCs) => canSymbolicScopedOk probe.hints baseAddr zoneCs
+      | none => false
     match mRes, realOff with
     | .ok xs, .ok ys =>
-      if !addrMultisetEq xs ys then
+      if (parseHybridScopedNumericZone? host).isSome || isSymbolicScopedCand then
+        if !allowedDnsOutcome host probe.hints realOff ||
+            (healthyStep (HealthyEnv.initial 1) { host := host, hints := probe.hints } realOff).isNone then
+          throw (IO.userError s!"DNS_MODEL_REAL_HYBRID_MISMATCH host={repr host} hints={repr probe.hints} real={repr ys}")
+      else if !addrMultisetEq xs ys then
         throw (IO.userError s!"DNS_MODEL_REAL_ADDR_MISMATCH host={repr host} hints={repr probe.hints} model={repr xs} real={repr ys}")
     | .error e1, .error e2 =>
       if !(allowAgain && e2.gaiCode == EAI_AGAIN) then
         if e1.gaiCode != e2.gaiCode || e1.kind != e2.kind then
           throw (IO.userError s!"DNS_MODEL_REAL_ERR_MISMATCH host={repr host} hints={repr probe.hints} model={repr e1} real={repr e2}")
+    | .error _, .ok ys =>
+      if isSymbolicScopedCand then
+        if !allowedDnsOutcome host probe.hints realOff ||
+            (healthyStep (HealthyEnv.initial 1) { host := host, hints := probe.hints } realOff).isNone then
+          throw (IO.userError s!"DNS_MODEL_REAL_SCOPED_IFACE_MISMATCH host={repr host} hints={repr probe.hints} real={repr ys}")
+      else
+        throw (IO.userError s!"DNS_MODEL_REAL_STATUS_MISMATCH host={repr host} hints={repr probe.hints} model={repr mRes} real={repr realOff}")
     | _, _ =>
       throw (IO.userError s!"DNS_MODEL_REAL_STATUS_MISMATCH host={repr host} hints={repr probe.hints} model={repr mRes} real={repr realOff}")
   if !probe.slowLookup && probe.kind != .loopbackHost then
@@ -344,7 +393,11 @@ private def checkFormatRoundtripPair (addr : DnsAddr) (fmt : String) (hints : Re
   | .error e =>
     throw (IO.userError s!"DNS_FORMAT_ROUNDTRIP_ERR addr={repr addr} fmt={fmt} hints={repr hints} err={repr e}")
   | .ok addrs =>
-    if !addrMultisetEq expected addrs then
+    if (parseHybridScopedNumericZone? fmt).isSome then
+      if !allowedDnsOutcome fmt hints res ||
+          (healthyStep (HealthyEnv.initial 1) { host := fmt, hints := hints } res).isNone then
+        throw (IO.userError s!"DNS_FORMAT_ROUNDTRIP_HYBRID_MISMATCH fmt={fmt} got={repr addrs} hints={repr hints}")
+    else if !addrMultisetEq expected addrs then
       throw (IO.userError s!"DNS_FORMAT_ROUNDTRIP_MISMATCH expected={repr expected} got={repr addrs} hints={repr hints}")
   let mRes := modelResolve defaultOfflineOracle fmt hints
   match mRes with
@@ -407,6 +460,13 @@ private def checkMockedImplStep (rng : Rng) : IO Rng := do
   let res ← (Internal.mkDnsOps raw).getaddrinfo probe.host probe.hints
   if !allowedDnsOutcome probe.host probe.hints res then
     throw (IO.userError s!"DNS_MOCKED_IMPL_VIOLATED probe={repr probe} res={repr res}")
+  let req : DnsReq := { host := probe.host, hints := probe.hints }
+  if (allowedStep DnsState.initial.withOuterSeccomp req res).isNone then
+    throw (IO.userError s!"DNS_MOCKED_SECCOMP_STEP_VIOLATED probe={repr probe} res={repr res}")
+  if (healthyStep { state := DnsState.initial.withOuterSeccomp, eintrBudget := 1 } req res).isSome then
+    throw (IO.userError s!"DNS_MOCKED_HEALTHY_SECCOMP_ACCEPTED probe={repr probe} res={repr res}")
+  if isCriticalFault res && (healthyStep (HealthyEnv.initial 1) req res).isSome then
+    throw (IO.userError s!"DNS_MOCKED_HEALTHY_CRITICAL_ACCEPTED probe={repr probe} res={repr res}")
   return r5
 
 private def runConcurrentBatch (child : OracleChild) (rng : Rng) : IO Rng := do
@@ -438,11 +498,17 @@ private def runConcurrentBatch (child : OracleChild) (rng : Rng) : IO Rng := do
     let leanRes ← IO.ofExcept (← IO.wait tasks[idx]!)
     if !allowedDnsOutcome p.host p.hints leanRes then
       throw (IO.userError s!"DNS_CONCURRENT_OUTCOME_VIOLATED host={repr p.host} hints={repr p.hints} res={repr leanRes}")
+    let req : DnsReq := { host := p.host, hints := p.hints }
+    if (allowedStep DnsState.initial req leanRes).isNone then
+      throw (IO.userError s!"DNS_CONCURRENT_ALLOWED_STEP_VIOLATED host={repr p.host} hints={repr p.hints} res={repr leanRes}")
+    if !isCriticalFault leanRes && (healthyStep (HealthyEnv.initial 1) req leanRes).isNone then
+      throw (IO.userError s!"DNS_CONCURRENT_HEALTHY_STEP_VIOLATED host={repr p.host} hints={repr p.hints} res={repr leanRes}")
     match pyReply, leanRes with
     | PyDnsReply.ok pyAddrs, Except.ok leanAddrs =>
       if !addrMultisetEq pyAddrs leanAddrs then
         throw (IO.userError s!"DNS_CONCURRENT_ADDR_MISMATCH host={repr p.host} hints={repr p.hints} py={repr pyAddrs} lean={repr leanAddrs}")
-      if p.kind == .scopedIpv6 && p.hints.family != .ipv4 && !p.host.endsWith "%0" then
+      if p.kind == .scopedIpv6 && p.hints.family != .ipv4 &&
+          pyAddrs.any (fun a => a.isIpv6 && !a.isUnscoped) then
         if leanAddrs.isEmpty || !leanAddrs.any (fun a => a.isIpv6 && !a.isUnscoped) then
           throw (IO.userError s!"DNS_CONCURRENT_SCOPED_LOST host={repr p.host} lean={repr leanAddrs}")
     | PyDnsReply.err pyCode, Except.error e =>
@@ -502,6 +568,9 @@ private def deterministicWarmupProbes : Array DnsProbe := #[
   { kind := .ipv6Literal, host := "::", hints := { family := .ipv6, sockType := .dgram } },
   { kind := .loopbackHost, host := "localhost", hints := { family := .any, sockType := .stream } },
   { kind := .scopedIpv6, host := "fe80::1%lo", hints := { family := .ipv6, sockType := .stream } },
+  { kind := .scopedIpv6, host := "fe80::1%00", hints := { family := .ipv6, sockType := .stream } },
+  { kind := .scopedIpv6, host := "::1%00", hints := { family := .any, sockType := .stream } },
+  { kind := .scopedIpv6, host := "fe80::1%0000000000000001", hints := { family := .ipv6, sockType := .stream } },
   { kind := .scopedIpv6, host := "fe80::1%305419896", hints := { family := .any, sockType := .dgram } },
   { kind := .emptyHost, host := "" },
   { kind := .embeddedNul, host := "a\x00b" },
@@ -510,7 +579,63 @@ private def deterministicWarmupProbes : Array DnsProbe := #[
   { kind := .invalidDomain, host := "nonexistent.invalid.", slowLookup := true }
 ]
 
+private def runDnsOsBoundaryChecks (seedVal : UInt64) : IO Unit := do
+  let (waitSt, payload) ← LeanSwe.LinuxSyscall.Fuzz.SandboxEnv.runForked do
+    let (_, curMaxNofile) ← match ← LeanSwe.LinuxSyscall.Fuzz.SandboxEnv.getRlimit 2 with
+      | .ok p => pure p
+      | .error e => return (s!"getRlimit failed: {e}").toUTF8
+    let safeHigh := if curMaxNofile > 64 then 64 else curMaxNofile
+    match ← LeanSwe.LinuxSyscall.Sandbox.setrlimit .nofile 0 safeHigh with
+    | .ok () => pure ()
+    | .error _ => return "setrlimit nofile 0 failed".toUTF8
+    let mustOk : List (String × ResolveHints) := [
+      ("127.0.0.1", {}),
+      ("0177.0.0.1", { family := .ipv4, sockType := .any }),
+      ("::1", { family := .ipv6, sockType := .stream }),
+      ("::ffff:127.0.0.1", { family := .ipv4, sockType := .stream }),
+      ("fe80::1%1", { family := .ipv6, sockType := .stream }),
+      ("fe80::1%0", { family := .any, sockType := .stream }),
+      ("fe80::1%305419896", { family := .any, sockType := .dgram }),
+      ("2001:db8::1%305419896", { family := .ipv6, sockType := .stream })
+    ]
+    for (h, hints) in mustOk do
+      let r ← getaddrinfo h hints
+      match r with
+      | .error e => return (s!"RLIMIT_NOFILE=0 numeric {h} failed: {repr e}").toUTF8
+      | .ok _ =>
+        if (healthyStep (HealthyEnv.initial 1) { host := h, hints := hints } r).isNone then
+          return (s!"RLIMIT_NOFILE=0 numeric {h} rejected by healthyStep").toUTF8
+    for h in ["fe80::1%lo", "localhost", "nonexistent.invalid."] do
+      let r ← getaddrinfo h {}
+      if isCriticalFault r then
+        return (s!"RLIMIT_NOFILE=0 {h} triggered critical fault: {repr r}").toUTF8
+      if (healthyStep (HealthyEnv.initial 1) { host := h, hints := {} } r).isNone then
+        return (s!"RLIMIT_NOFILE=0 {h} rejected by healthyStep: {repr r}").toUTF8
+    return "OK".toUTF8
+  let msg := (String.fromUTF8? payload).getD "invalid UTF-8"
+  if waitSt != 0 || msg != "OK" then
+    throw (IO.userError s!"DNS_RLIMIT_NOFILE_PARITY_FAILED status={waitSt} msg={msg}")
+  let inSub ← IO.getEnv "LEANSWE_DNS_IN_NETNS_SUBCHECK"
+  if inSub != some "1" then
+    let probe ← IO.Process.output {
+      cmd := "unshare"
+      args := #["-r", "-n", "sh", "-c", "ip link add name 305419896 type dummy"]
+    }
+    if probe.exitCode == 0 then
+      let exe ← IO.appPath
+      let sub ← IO.Process.output {
+        cmd := "unshare"
+        args := #[
+          "-r", "-n", "sh", "-c",
+          "for iface in 305419896 99 0 00 000000305419896 4294967296; do ip link add name \"$iface\" type dummy || exit 1; done && LEANSWE_DNS_IN_NETNS_SUBCHECK=1 exec \"$1\" --suite dns --steps 120 --seed \"$2\"",
+          "_", exe.toString, toString seedVal.toNat
+        ]
+      }
+      if sub.exitCode != 0 then
+        throw (IO.userError s!"DNS_NETNS_NUMERIC_IFACE_SUBCHECK_FAILED exit={sub.exitCode} stdout={sub.stdout} stderr={sub.stderr}")
+
 private def runDnsDiffFuzz (steps : Nat) (seedVal : UInt64) (slowBudget : Nat) (slowEveryN : Nat) : IO Unit := do
+  runDnsOsBoundaryChecks seedVal
   let child ← spawnPythonOracle
   try
     let mut warmupTracker := CoverageTracker.empty

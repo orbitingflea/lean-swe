@@ -410,6 +410,14 @@ def failsPureWrapperGuard : SandboxReq → Bool
   | .memfdCreate name _ => hasEmbeddedNul name || name.data.size > MFD_NAME_MAX
   | _ => false
 
+/-- Returns `true` iff `e` is `EINTR` or a curated catastrophic host fault (`ENOMEM`, `EIO`, `ENFILE`). -/
+def isNonFdTransientErrno (e : Errno) : Bool :=
+  e == Errno.EINTR || Errno.isCriticalOsErrno e
+
+/-- Returns `true` iff `e` is `EINTR`, a curated catastrophic host fault (`ENOMEM`, `EIO`, `ENFILE`), or a visible resource limit (`EMFILE`, `ENOSPC`) on FD-allocating syscalls. -/
+def isFdAllocTransientErrno (e : Errno) : Bool :=
+  e == Errno.EINTR || Errno.isCriticalOsErrno e || Errno.isResourceLimitErrno e
+
 /-- Core relational transition checker prior to optional `seccomp` filter interception. -/
 def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutcome) : Option SandboxSysState :=
   match out with
@@ -423,19 +431,19 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
         else
           let canDisable := (e == Errno.EOPNOTSUPP || e == Errno.ENOSYS) && !hasLandlockEvidence s
           if flags == LANDLOCK_CREATE_RULESET_VERSION then
-            if canDisable || Errno.isTransientOsErrno e then some s else none
+            if canDisable || isNonFdTransientErrno e then some s else none
           else if flags == LANDLOCK_CREATE_RULESET_ERRATA then
             let errataEinvalOk := match s.landlockErrata? with
               | some (some _) => false
               | _ => true
-            if canDisable || Errno.isTransientOsErrno e then
+            if canDisable || isNonFdTransientErrno e then
               some s
             else if e == Errno.EINVAL && errataEinvalOk then
               some { s with landlockEnabled := true, landlockErrata? := some none }
             else
               none
           else
-            if canDisable || Errno.isTransientOsErrno e then some s
+            if canDisable || isNonFdTransientErrno e then some s
             else if e == Errno.EINVAL then some { s with landlockEnabled := true }
             else none
       | .landlockCreateRuleset (some attr) flags =>
@@ -447,21 +455,21 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
             some s
           else if attr.handledAccessFs == 0 && attr.handledAccessNet == 0 then
             if e == ENOMSG then some { s with landlockEnabled := true }
-            else if Errno.isTransientOsErrno e then some s
+            else if isNonFdTransientErrno e then some s
             else none
           else if (attr.handledAccessNet &&& ~~~LANDLOCK_ACCESS_NET_ALL) != 0 then
             if e == Errno.EINVAL then some { s with landlockEnabled := true }
-            else if Errno.isTransientOsErrno e then some s
+            else if isNonFdTransientErrno e then some s
             else none
           else
             match s.landlockAbi? with
             | some abi =>
               if (attr.handledAccessFs &&& ~~~landlockKnownFsMask abi) != 0 then
                 if e == Errno.EINVAL then some { s with landlockEnabled := true }
-                else if Errno.isTransientOsErrno e then some s
+                else if isNonFdTransientErrno e then some s
                 else none
               else
-                if Errno.isTransientOsErrno e then some s else none
+                if isFdAllocTransientErrno e then some s else none
             | none =>
               let knownMask := landlockKnownFsMask (maxU32 4 s.landlockMinAbi)
               if (attr.handledAccessFs &&& ~~~knownMask) != 0 then
@@ -470,10 +478,10 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
                     | none => s.landlockMaxAbi?
                     | some b => tightenMaxAbi s.landlockMaxAbi? b
                   some { s with landlockEnabled := true, landlockMaxAbi? := nextMax }
-                else if Errno.isTransientOsErrno e then some s
+                else if isFdAllocTransientErrno e then some s
                 else none
               else
-                if Errno.isTransientOsErrno e then some s else none
+                if isFdAllocTransientErrno e then some s else none
       | .landlockAddRule ruleset rule =>
         let canDisable := (e == Errno.EOPNOTSUPP || e == Errno.ENOSYS) && !hasLandlockEvidence s
         if canDisable then
@@ -482,60 +490,60 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
           match assocGet s.fds ruleset with
           | none =>
             if e == Errno.EBADF then some { s with landlockEnabled := true }
-            else if Errno.isTransientOsErrno e then some s
+            else if isNonFdTransientErrno e then some s
             else none
           | some rsDesc =>
             if rsDesc.oPath then
               if e == Errno.EBADF then some { s with landlockEnabled := true }
-              else if Errno.isTransientOsErrno e then some s
+              else if isNonFdTransientErrno e then some s
               else none
             else
               match rsDesc.kind with
               | .memfd _ _ | .hostPath _ | .pseudoFs =>
                 if e == EBADFD then some { s with landlockEnabled := true }
-                else if Errno.isTransientOsErrno e then some s
+                else if isNonFdTransientErrno e then some s
                 else none
               | .landlockRuleset handledFs handledNet =>
                 match rule with
                 | .pathBeneath parentHid allowedAccess =>
                   if allowedAccess == 0 then
                     if e == ENOMSG then some { s with landlockEnabled := true }
-                    else if Errno.isTransientOsErrno e then some s
+                    else if isNonFdTransientErrno e then some s
                     else none
                   else if (allowedAccess &&& ~~~handledFs) != 0 then
                     if e == Errno.EINVAL then some { s with landlockEnabled := true }
-                    else if Errno.isTransientOsErrno e then some s
+                    else if isNonFdTransientErrno e then some s
                     else none
                   else
                     match assocGet s.fds parentHid with
                     | none =>
                       if e == Errno.EBADF then some { s with landlockEnabled := true }
-                      else if Errno.isTransientOsErrno e then some s
+                      else if isNonFdTransientErrno e then some s
                       else none
                     | some pDesc =>
                       match pDesc.kind with
                       | .landlockRuleset _ _ | .memfd _ _ | .pseudoFs =>
                         if e == EBADFD then some { s with landlockEnabled := true }
-                        else if Errno.isTransientOsErrno e then some s
+                        else if isNonFdTransientErrno e then some s
                         else none
                       | .hostPath isDir =>
                         if !isDir && (allowedAccess &&& LANDLOCK_DIR_ONLY_FS_MASK) != 0 then
                           if e == Errno.EINVAL then some { s with landlockEnabled := true }
-                          else if Errno.isTransientOsErrno e then some s
+                          else if isNonFdTransientErrno e then some s
                           else none
                         else
-                          if Errno.isTransientOsErrno e then some s else none
+                          if isNonFdTransientErrno e then some s else none
                 | .netPort port allowedAccess =>
                   if allowedAccess == 0 then
                     if e == ENOMSG then some { s with landlockEnabled := true }
-                    else if Errno.isTransientOsErrno e then some s
+                    else if isNonFdTransientErrno e then some s
                     else none
                   else if (allowedAccess &&& ~~~handledNet) != 0 || port > 65535 then
                     if e == Errno.EINVAL then some { s with landlockEnabled := true }
-                    else if Errno.isTransientOsErrno e then some s
+                    else if isNonFdTransientErrno e then some s
                     else none
                   else
-                    if Errno.isTransientOsErrno e then some s else none
+                    if isNonFdTransientErrno e then some s else none
       | .landlockRestrictSelf ruleset =>
         let canDisable := (e == Errno.EOPNOTSUPP || e == Errno.ENOSYS) && !hasLandlockEvidence s
         if canDisable then
@@ -547,40 +555,40 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
           match assocGet s.fds ruleset with
           | none =>
             if e == Errno.EBADF then some sPass
-            else if Errno.isTransientOsErrno e then some s
+            else if isNonFdTransientErrno e then some s
             else none
           | some desc =>
             if desc.oPath then
               if e == Errno.EBADF then some sPass
-              else if Errno.isTransientOsErrno e then some s
+              else if isNonFdTransientErrno e then some s
               else none
             else
               match desc.kind with
               | .memfd _ _ | .hostPath _ | .pseudoFs =>
                 if e == EBADFD then some sPass
-                else if Errno.isTransientOsErrno e then some s
+                else if isNonFdTransientErrno e then some s
                 else none
               | .landlockRuleset _ _ =>
                 if e == Errno.E2BIG && (s.landlockLayers ≥ LANDLOCK_MAX_STACKED_LAYERS || !s.landlockLayersExact) then
                   some { sPass with
                     landlockLayers := LANDLOCK_MAX_STACKED_LAYERS
                     landlockLayersExact := true }
-                else if Errno.isTransientOsErrno e then
+                else if isNonFdTransientErrno e then
                   some s
                 else
                   none
         else
-          if Errno.isTransientOsErrno e then some s else none
+          if isNonFdTransientErrno e then some s else none
       | .seccomp (.getActionAvail action) flags _ =>
         if flags.toBits != 0 then
           if e == Errno.EINVAL then some s else none
         else
           let canDisable := e == Errno.ENOSYS && !hasSeccompEvidence s
           if isKnownSeccompAction action then
-            if canDisable || Errno.isTransientOsErrno e then some s else none
+            if canDisable || isNonFdTransientErrno e then some s else none
           else
             if e == Errno.EOPNOTSUPP then some { s with seccompEnabled := true }
-            else if canDisable || Errno.isTransientOsErrno e then some s
+            else if canDisable || isNonFdTransientErrno e then some s
             else none
       | .seccomp .setModeFilter flags filterBytes =>
         if !isValidSeccompFilterByteLen filterBytes.data.size ||
@@ -590,7 +598,7 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
           let canDisable := e == Errno.ENOSYS && !hasSeccompEvidence s
           if flags.waitKillableRecv then
             if e == Errno.EINVAL then some { s with seccompEnabled := true }
-            else if canDisable || Errno.isTransientOsErrno e then some s
+            else if canDisable || isNonFdTransientErrno e then some s
             else none
           else if canDisable then
             some s
@@ -601,32 +609,32 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
             match decodeSockFilters filterBytes with
             | none =>
               if e == Errno.EINVAL then some sPass
-              else if Errno.isTransientOsErrno e then some s
+              else if isNonFdTransientErrno e then some s
               else none
             | some prog =>
               if !checkSeccompBpf prog then
                 if e == Errno.EINVAL then some sPass
-                else if Errno.isTransientOsErrno e then some s
+                else if isNonFdTransientErrno e then some s
                 else none
               else
                 let tsyncEsrchOk := flags.tsync && flags.tsyncEsrch && e == Errno.ESRCH
                 if tsyncEsrchOk then some sPass
-                else if Errno.isTransientOsErrno e then some s
+                else if isNonFdTransientErrno e then some s
                 else none
           else
-            if Errno.isTransientOsErrno e then some s else none
+            if isNonFdTransientErrno e then some s else none
       | .prctl (.setPdeathsig sig) =>
         if sig > MAX_LINUX_SIGNAL then
-          if e == Errno.EINVAL || Errno.isTransientOsErrno e then some s else none
+          if e == Errno.EINVAL || isNonFdTransientErrno e then some s else none
         else
-          if Errno.isTransientOsErrno e then some s else none
+          if isNonFdTransientErrno e then some s else none
       | .prctl _ =>
-        if Errno.isTransientOsErrno e then some s else none
+        if isNonFdTransientErrno e then some s else none
       | .setrlimit res cur max =>
         if cur > max then
-          if e == Errno.EINVAL || Errno.isTransientOsErrno e then some s else none
+          if e == Errno.EINVAL || isNonFdTransientErrno e then some s else none
         else if res == .nofile && max > s.nofileNrOpenCeil then
-          if e == Errno.EPERM || Errno.isTransientOsErrno e then some s else none
+          if e == Errno.EPERM || isNonFdTransientErrno e then some s else none
         else
           let st := s.getRlimit res
           if e == Errno.EPERM then
@@ -648,7 +656,7 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
               some { s with nofileNrOpenCeil := nextCeil }
             else
               none
-          else if Errno.isTransientOsErrno e then
+          else if isNonFdTransientErrno e then
             some s
           else
             none
@@ -657,11 +665,11 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
           if e == Errno.EINVAL then some s else none
         else if flags.noexecSeal && flags.exec then
           if e == Errno.EINVAL then some { s with memfdEnabled := true }
-          else if Errno.isTransientOsErrno e || (e == Errno.ENOSYS && !hasMemfdEvidence s) then some s
+          else if isNonFdTransientErrno e || (e == Errno.ENOSYS && !hasMemfdEvidence s) then some s
           else none
         else if flags.exec && e == Errno.EACCES && s.memfdNoexecStrict? != some false then
           some { s with memfdEnabled := true, memfdNoexecStrict? := some true }
-        else if Errno.isTransientOsErrno e || (e == Errno.ENOSYS && !hasMemfdEvidence s) then
+        else if isFdAllocTransientErrno e || (e == Errno.ENOSYS && !hasMemfdEvidence s) then
           some s
         else
           none
@@ -1071,5 +1079,109 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
         memfdEnabled := true
         memfdNoexecStrict? := strict' }
       return .ok hid }
+
+instance : Inhabited SandboxSysState := ⟨SandboxSysState.initial⟩
+
+/-- Returns `true` iff `out` is a curated catastrophic OS fault (`ENOMEM`, `EIO`, `ENFILE`). -/
+def isCriticalFault : SandboxOutcome → Bool
+  | .err e => Errno.isCriticalOsErrno e
+  | _ => false
+
+/-- Returns `true` iff `out` is a transient signal interruption (`EINTR`). -/
+def isEintrOutcome : SandboxOutcome → Bool
+  | .err e => e == Errno.EINTR
+  | _ => false
+
+/-- Healthy execution environment wrapping `SandboxSysState` with a finite `EINTR` interruption budget (`seccompMayIntercept = false`). -/
+structure HealthyEnv where
+  /-- Underlying `Sandbox` relational world state. -/
+  state : SandboxSysState := SandboxSysState.initial
+  /-- Remaining bound on `EINTR` signal interruptions. -/
+  eintrBudget : Nat := 0
+  deriving Repr, DecidableEq, BEq, Inhabited
+
+/-- Initial healthy `Sandbox` environment (`SandboxSysState.initial`, `seccompMayIntercept = false`, `eintrBudget`). -/
+def HealthyEnv.initial (eintrBudget : Nat := 0) : HealthyEnv :=
+  { state := SandboxSysState.initial, eintrBudget := eintrBudget }
+
+/-- Returns `true` iff `env` has no intercepting `seccomp` filter (`seccompMayIntercept = false`) and `env.state` satisfies `SandboxSysState.wf`. -/
+def HealthyEnv.wf (env : HealthyEnv) : Bool :=
+  !env.state.seccompMayIntercept && env.state.wf
+
+/-- Relational healthy-OS step checker for `LeanSwe.LinuxSyscall.Sandbox`, capturing all legitimate Linux transitions, capability/Landlock/rlimit nondeterminism, everyday errors (`EMFILE`, `ENOSPC` on FD-allocating syscalls, `EINVAL`, `EPERM`, `EACCES`, `EBADF`, `EBADFD`, `E2BIG`, `EOPNOTSUPP`, `ENOSYS`, bounded `EINTR`), while banning curated critical OS faults (`ENOMEM`, `EIO`, `ENFILE`) and ambient `seccomp` preemption. -/
+def healthyStep (env : HealthyEnv) (req : SandboxReq) (out : SandboxOutcome) : Option HealthyEnv :=
+  if !env.wf || isCriticalFault out then
+    none
+  else
+    match allowedStep env.state req out with
+    | none => none
+    | some s' =>
+      if isEintrOutcome out then
+        if env.eintrBudget > 0 then
+          some { state := s', eintrBudget := env.eintrBudget - 1 }
+        else
+          none
+      else
+        some { state := s', eintrBudget := env.eintrBudget }
+
+/-- Reference `SandboxOpsM (StateM HealthyEnv) HandleId` lifting `modelOps` while preserving `eintrBudget`. -/
+def healthyModelOps : SandboxOpsM (StateM HealthyEnv) HandleId :=
+  { landlockCreateRuleset := fun attr? flags => do
+      let env ← get
+      let (res, s') := (modelOps.landlockCreateRuleset attr? flags).run env.state
+      set { env with state := s' }
+      return res
+    landlockAddRule := fun ruleset rule => do
+      let env ← get
+      let (res, s') := (modelOps.landlockAddRule ruleset rule).run env.state
+      set { env with state := s' }
+      return res
+    landlockRestrictSelf := fun ruleset => do
+      let env ← get
+      let (res, s') := (modelOps.landlockRestrictSelf ruleset).run env.state
+      set { env with state := s' }
+      return res
+    seccomp := fun op flags filterBytes => do
+      let env ← get
+      let (res, s') := (modelOps.seccomp op flags filterBytes).run env.state
+      set { env with state := s' }
+      return res
+    prctl := fun op => do
+      let env ← get
+      let (res, s') := (modelOps.prctl op).run env.state
+      set { env with state := s' }
+      return res
+    setrlimit := fun res cur max => do
+      let env ← get
+      let (outRes, s') := (modelOps.setrlimit res cur max).run env.state
+      set { env with state := s' }
+      return outRes
+    memfdCreate := fun name flags => do
+      let env ← get
+      let (res, s') := (modelOps.memfdCreate name flags).run env.state
+      set { env with state := s' }
+      return res }
+
+/-- Returns `true` iff `(req, out)` is a successful (`val == 0`) `seccomp(SECCOMP_SET_MODE_FILTER)` transition installing a non-allow-only BPF filter (`seccompMayIntercept = true`). -/
+def installsInterceptingSeccomp (req : SandboxReq) (out : SandboxOutcome) : Bool :=
+  match req, out with
+  | .seccomp .setModeFilter _ filterBytes, .u32 val =>
+    val == 0 &&
+      match decodeSockFilters filterBytes with
+      | some prog => !isAllowOnlySeccompFilter prog
+      | none => false
+  | _, _ => false
+
+/-- Universal healthy-world refinement predicate over an arbitrary state `W` projected via `proj`. -/
+def RefinesHealthySandboxAt {W : Type} (proj : W → HealthyEnv)
+    (ops : SandboxOpsM (StateM W) HandleId) : Prop :=
+  ∀ (w : W) (req : SandboxReq),
+    (proj w).wf = true →
+    let (out, w') := (execSandboxReq ops req).run w
+    healthyStep (proj w) req out = some (proj w')
+
+/-- Direct healthy-world refinement predicate over `StateM HealthyEnv`. -/
+abbrev RefinesHealthySandbox (ops : SandboxOpsM (StateM HealthyEnv) HandleId) : Prop :=
+  RefinesHealthySandboxAt id ops
 
 end LeanSwe.LinuxSyscall.Sandbox

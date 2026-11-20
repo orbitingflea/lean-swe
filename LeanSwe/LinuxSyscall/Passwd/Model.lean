@@ -253,4 +253,89 @@ def modelOps : PasswdOpsM (StateM PasswdState) :=
         else
           return .error Errno.EIO }
 
+/-- Execute one `PasswdReq` against a `PasswdOpsM m` capability bundle and decode its `PasswdOutcome`. -/
+def execPasswdReq {m : Type → Type} [Monad m]
+    (ops : PasswdOpsM m) (req : PasswdReq) : m PasswdOutcome :=
+  match req with
+  | .getpwuid uid => do
+    return outcomeOfEntryOpt (← ops.getpwuid uid)
+  | .getpwnam name => do
+    return outcomeOfEntryOpt (← ops.getpwnam name)
+
+/-- Return `true` iff `out` is a curated catastrophic OS fault (`ENOMEM`, `EIO`, `ENFILE`). -/
+def isCriticalFault : PasswdOutcome → Bool
+  | .err e => Errno.isCriticalOsErrno e
+  | _ => false
+
+/-- Return `true` iff `out` is an interrupted syscall outcome (`.err Errno.EINTR`). -/
+def isEintrOutcome : PasswdOutcome → Bool
+  | .err e => e == Errno.EINTR
+  | _ => false
+
+/-- Healthy execution environment wrapping `PasswdState` with a finite `EINTR` interruption budget (`ambientSeccomp = false`). -/
+structure HealthyEnv where
+  /-- Underlying `Passwd` NSS world state (`transientNssUnavail = true` by default so `EMFILE`-induced `glibc` `[UNAVAIL=continue]` fallback is accepted). -/
+  state : PasswdState := PasswdState.initial.withTransientNssUnavail
+  /-- Remaining bound on `EINTR` signal interruptions. -/
+  eintrBudget : Nat := 0
+  deriving Inhabited
+
+instance : Repr HealthyEnv where
+  reprPrec env _ :=
+    s!"\{ state := {repr env.state}, eintrBudget := {env.eintrBudget} }"
+
+/-- Initial healthy `Passwd` environment (`byUid = ∅`, `byName = ∅`, `ambientSeccomp = false`, `transientNssUnavail`, `eintrBudget`). Defaults `transientNssUnavail = true` so `EMFILE`-induced `glibc` `[UNAVAIL=continue]` fallback (`nss_systemd`) is accepted on a healthy host unless FD headroom (`transientNssUnavail = false`) is explicitly asserted. -/
+def HealthyEnv.initial (eintrBudget : Nat := 0) (transientNssUnavail : Bool := true) : HealthyEnv :=
+  { state := { PasswdState.initial with transientNssUnavail := transientNssUnavail }
+    eintrBudget := eintrBudget }
+
+/-- Enable transient NSS `[UNAVAIL=continue]` fallback on a `HealthyEnv`. -/
+def HealthyEnv.withTransientNssUnavail (env : HealthyEnv := HealthyEnv.initial) : HealthyEnv :=
+  { env with state := env.state.withTransientNssUnavail }
+
+/-- Return `true` iff `env` has no ambient `seccomp` preemption and `env.state` is well-formed. -/
+def HealthyEnv.wf (env : HealthyEnv) : Bool :=
+  !env.state.ambientSeccomp && env.state.isWellFormed
+
+/-- Relational healthy-OS step checker for `LeanSwe.LinuxSyscall.Passwd`, capturing all legitimate NSS outcomes, everyday errors (`EMFILE`, `ERANGE`, `ENOENT`, `EINVAL`, `ENAMETOOLONG`, bounded `EINTR`), and `[UNAVAIL=continue]` fallback while banning curated critical OS faults (`ENOMEM`, `EIO`, `ENFILE`) and ambient `seccomp`. -/
+def healthyStep (env : HealthyEnv) (req : PasswdReq) (out : PasswdOutcome) : Option HealthyEnv :=
+  if !env.wf || isCriticalFault out then
+    none
+  else
+    match allowedStep env.state req out with
+    | none => none
+    | some s' =>
+      if isEintrOutcome out then
+        if env.eintrBudget > 0 then
+          some { state := s', eintrBudget := env.eintrBudget - 1 }
+        else
+          none
+      else
+        some { state := s', eintrBudget := env.eintrBudget }
+
+/-- Reference `PasswdOpsM (StateM HealthyEnv)` lifting `modelOps` while preserving `eintrBudget`. -/
+def healthyModelOps : PasswdOpsM (StateM HealthyEnv) :=
+  { getpwuid := fun uid => do
+      let env ← get
+      let (res, s') := (modelOps.getpwuid uid).run env.state
+      set { env with state := s' }
+      return res
+    getpwnam := fun name => do
+      let env ← get
+      let (res, s') := (modelOps.getpwnam name).run env.state
+      set { env with state := s' }
+      return res }
+
+/-- Universal healthy-world refinement predicate over an arbitrary state `W` projected via `proj`. -/
+def RefinesHealthyPasswdAt {W : Type} (proj : W → HealthyEnv)
+    (ops : PasswdOpsM (StateM W)) : Prop :=
+  ∀ (w : W) (req : PasswdReq),
+    (proj w).wf = true →
+    let (out, w') := (execPasswdReq ops req).run w
+    healthyStep (proj w) req out = some (proj w')
+
+/-- Universal healthy-world refinement predicate specialized to `StateM HealthyEnv`. -/
+abbrev RefinesHealthyPasswd (ops : PasswdOpsM (StateM HealthyEnv)) : Prop :=
+  RefinesHealthyPasswdAt id ops
+
 end LeanSwe.LinuxSyscall.Passwd

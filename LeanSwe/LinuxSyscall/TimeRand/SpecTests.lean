@@ -279,6 +279,68 @@ def test_timerand_modelOps_soundAgainstAllowedStep
   let (rRand, sRand) := (ops.getrandom len flags).run s
   NondetTest.assert (step s (.getrandom len flags) (outcomeOfBytes rRand) = some sRand)
 
+/-- `healthyStep` and `healthyModelOps` preserve `HealthyEnv.wf`, strictly decrement `eintrBudget` on `EINTR` while rejecting `EINTR` at budget `0` and rejecting curated critical faults (`ENOMEM`, `EIO`, `ENFILE`), resource limits (`EMFILE`), and ambient `seccomp`, and ensure `clock_gettime` succeeds unconditionally on `healthyModelOps` without consuming `eintrBudget`. -/
+def test_timerand_healthyStep_and_healthyModelOps
+    {runner} [NondetTest runner]
+    (ops : TimeRandOpsM (StateM HealthyEnv) := healthyModelOps)
+    (step : HealthyEnv → TimeRandReq → TimeRandOutcome → Option HealthyEnv := healthyStep) :
+    runner Unit := do
+  let e1 := HealthyEnv.initial 1 0 false
+  let e0 := HealthyEnv.initial 0 0 false
+  let eReady1 := HealthyEnv.initial 1 0 true
+  let reqTs : Timespec := { sec := 0, nsec := 1000 }
+  NondetTest.assert (e1.wf = true ∧ e0.wf = true)
+  NondetTest.assert (step { state := TimeRandState.initial.withOuterSeccomp, eintrBudget := 1 }
+    (.clock_gettime .monotonic) (.timespec { sec := 0, nsec := 0 }) = none)
+  NondetTest.assert (step e1 (.clock_nanosleep .monotonic false reqTs) (.err Errno.EINTR) = some e0 ∧
+    step e0 (.clock_nanosleep .monotonic false reqTs) (.err Errno.EINTR) = none)
+  NondetTest.assert (step e1 (.getrandom 16 {}) (.err Errno.EINTR) = some e0 ∧
+    step e0 (.getrandom 16 {}) (.err Errno.EINTR) = none ∧
+    step eReady1 (.getrandom 16 {}) (.err Errno.EINTR) = none)
+  NondetTest.assert (step e1 (.clock_nanosleep .monotonic false reqTs) (.err Errno.ENOMEM) = none ∧
+    step e1 (.clock_nanosleep .monotonic false reqTs) (.err Errno.EIO) = none ∧
+    step e1 (.clock_nanosleep .monotonic false reqTs) (.err Errno.ENFILE) = none ∧
+    step e1 (.clock_nanosleep .monotonic false reqTs) (.err Errno.EMFILE) = none)
+  let env ← nondet HealthyEnv
+  assume (env.wf = true)
+  let clk ← nondet ClockId
+  let abstime ← nondet Bool
+  let sleepTs ← nondet Timespec
+  let len ← nondet UInt32
+  let flags ← nondet GrndFlags
+  let (rGet, envGet) := (ops.clock_gettime clk).run env
+  let (mGet, sGet) := (modelOps.clock_gettime clk).run env.state
+  NondetTest.assert ((rGet, envGet) = (mGet, { env with state := sGet }) ∧ (∃ ts, rGet = .ok ts) ∧
+    step env (.clock_gettime clk) (outcomeOfTimespec rGet) = some envGet ∧
+    envGet.wf = true ∧ envGet.eintrBudget = env.eintrBudget)
+  let (rSleep, envSleep) := (ops.clock_nanosleep clk abstime sleepTs).run env
+  let (mSleep, sSleep) := (modelOps.clock_nanosleep clk abstime sleepTs).run env.state
+  NondetTest.assert ((rSleep, envSleep) = (mSleep, { env with state := sSleep }) ∧
+    step env (.clock_nanosleep clk abstime sleepTs) (outcomeOfUnit rSleep) = some envSleep ∧
+    envSleep.wf = true ∧ envSleep.eintrBudget = env.eintrBudget)
+  let (rRand, envRand) := (ops.getrandom len flags).run env
+  let (mRand, sRand) := (modelOps.getrandom len flags).run env.state
+  NondetTest.assert ((rRand, envRand) = (mRand, { env with state := sRand }) ∧
+    step env (.getrandom len flags) (outcomeOfBytes rRand) = some envRand ∧
+    envRand.wf = true ∧ envRand.eintrBudget = env.eintrBudget)
+  let anyEnv ← nondet HealthyEnv
+  let anyReq ← nondet TimeRandReq
+  let anyOut ← nondet TimeRandOutcome
+  NondetTest.assert (step anyEnv anyReq anyOut =
+    if !anyEnv.wf || isCriticalFault anyOut then
+      none
+    else
+      match allowedStep anyEnv.state anyReq anyOut with
+      | none => none
+      | some s' =>
+        if isEintrOutcome anyOut then
+          if anyEnv.eintrBudget > 0 then
+            some { state := s', eintrBudget := anyEnv.eintrBudget - 1 }
+          else
+            none
+        else
+          some { state := s', eintrBudget := anyEnv.eintrBudget })
+
 /-- Thin C-wrapper boundary assumptions for `LeanSwe.LinuxSyscall.TimeRand` (`c/timerand_shim.c`), verified at runtime against the host Linux kernel with nonce logging. -/
 def externalAssumptions : List AssumptionObligation :=
   [ { name := "LeanSwe.LinuxSyscall.TimeRand.assume_timerand_clockGettime_realtimeAndMonotonic"

@@ -1475,7 +1475,8 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   let shouldForbidModuleInit (m : Name) : Bool :=
     m == `LeanSwe || isMutantModule m || nameLastStr m == "RuntimeTests" ||
-      nameLastStr m == "SpecTests" || nameLastStr m == "Proofs" || m.getRoot == `Core ||
+      nameLastStr m == "SpecTests" || (nameLastStr m).endsWith "Proofs" ||
+      m.components.contains `Proofs || m.getRoot == `Core ||
       m.components.take 2 == [`LeanSwe, `EnvVars] ||
       m.components.take 2 == [`LeanSwe, `CryptoHash] ||
       m.components.take 2 == [`LeanSwe, `LinuxSyscall]

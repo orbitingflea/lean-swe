@@ -366,4 +366,142 @@ example : ¬ Core.AllPass (test_passwd_interface_wiringAndSoundness
     rw [validPasswdName_overCapMutantName] at hRes
     simp [pure, instMonadEIO._aux_5, EST.pure, Errno.ENAMETOOLONG] at hRes
 
+example : ¬ Core.AllPass (test_passwd_healthyStep_and_healthyModelOps
+    (ops := { getpwuid := fun _ => pure (.error Errno.EMFILE)
+              getpwnam := fun name =>
+                if !validPasswdName name then pure (.error Errno.EINVAL)
+                else if name.size > MAX_PASSWD_NAME_BYTES then pure (.error Errno.ENAMETOOLONG)
+                else pure (.error Errno.EMFILE) })) := by
+  intro h
+  let e : PasswdEntry :=
+    { name := ByteArray.empty, uid := 0, gid := 0,
+      gecos := ByteArray.empty, homeDir := ByteArray.empty, shell := ByteArray.empty }
+  have hWf1 : (HealthyEnv.initial 1).wf = true := by
+    change (HealthyEnv.initial 0 true).wf = true
+    decide
+  have h0 := h.2.2.2.2.2 (HealthyEnv.initial 1) hWf1 0 ByteArray.empty e
+    (by decide) (by decide) (by decide) rfl rfl
+  have hPres := congrArg Prod.fst h0.2.2.1.1
+  cases hPres
+
+example : ¬ Core.AllPass (test_passwd_healthyStep_and_healthyModelOps
+    (step := fun env req out =>
+      healthyStep { env with state := { env.state with transientNssUnavail := false } } req out)) := by
+  intro h
+  have hSynth := h.2.2.2.2.1.2.2.2.1
+  dsimp only [healthyStep, isCriticalFault] at hSynth
+  have hAl :
+      allowedStep
+        { byUid := setPasswdByUid (HealthyEnv.initial 1).state.byUid 0
+            (some { name := asciiBytes ['r', 'o', 'o', 't'], uid := 0, gid := 0,
+                    gecos := asciiBytes ['r', 'o', 'o', 't'], homeDir := asciiBytes ['/', 'r', 'o', 'o', 't'],
+                    shell := asciiBytes ['/', 'b', 'i', 'n', '/', 'b', 'a', 's', 'h'] })
+          byName := (HealthyEnv.initial 1).state.byName
+          ambientSeccomp := (HealthyEnv.initial 1).state.ambientSeccomp
+          transientNssUnavail := false }
+        (.getpwuid 0)
+        (.found { name := asciiBytes ['r', 'o', 'o', 't'], uid := 0, gid := 0,
+                  gecos := asciiBytes ['S', 'u', 'p', 'e', 'r'], homeDir := asciiBytes ['/', 'r', 'o', 'o', 't'],
+                  shell := asciiBytes ['/', 'b', 'i', 'n', '/', 's', 'h'] }) = none := rfl
+  rw [hAl] at hSynth
+  simp only at hSynth
+  cases hSynth
+
+example : ¬ Core.AllPass (test_passwd_healthyStep_and_healthyModelOps
+    (step := fun env req out =>
+      match out with
+      | .err e => if e == Errno.EMFILE then none else healthyStep env req out
+      | _ => healthyStep env req out)) := by
+  intro h
+  have hEmf := h.2.2.1.1
+  dsimp [Errno.EMFILE] at hEmf
+  cases hEmf
+
+example : ¬ Core.AllPass (test_passwd_healthyStep_and_healthyModelOps
+    (step := fun env req out =>
+      if !env.wf then none
+      else (allowedStep env.state req out).map (fun s' => { state := s', eintrBudget := env.eintrBudget }))) := by
+  intro h
+  have hEio := h.2.2.2.1.2.1
+  have hWf1 : (HealthyEnv.initial 1).wf = true := by
+    change (HealthyEnv.initial 0 true).wf = true
+    decide
+  change (if !(HealthyEnv.initial 1).wf then none
+    else (allowedStep (HealthyEnv.initial 1).state (.getpwuid 0) (.err Errno.EIO)).map
+      (fun s' => ({ state := s', eintrBudget := (HealthyEnv.initial 1).eintrBudget } : HealthyEnv))) = none at hEio
+  rw [hWf1] at hEio
+  have hAl : allowedStep (HealthyEnv.initial 1).state (.getpwuid 0) (.err Errno.EIO) =
+      some (HealthyEnv.initial 1).state := rfl
+  rw [hAl] at hEio
+  cases hEio
+
+example : ¬ Core.AllPass (test_passwd_healthyStep_and_healthyModelOps
+    (ops := { getpwuid := fun uid env =>
+                match lookupPasswdByUid env.state.byUid uid with
+                | some _ => healthyModelOps.getpwuid uid env
+                | none => (.error Errno.EMFILE, env)
+              getpwnam := healthyModelOps.getpwnam })) := by
+  intro h
+  let e : PasswdEntry :=
+    { name := ByteArray.mk #[97], uid := 0, gid := 0,
+      gecos := ByteArray.empty, homeDir := ByteArray.empty, shell := ByteArray.empty }
+  have hWf1 : (HealthyEnv.initial 1).wf = true := by
+    change (HealthyEnv.initial 0).wf = true
+    decide
+  have h0 := h.2.2.2.2.2 (HealthyEnv.initial 1) hWf1 0 (ByteArray.mk #[97]) e
+    (by decide) (by decide) (by decide) rfl rfl
+  have hEq := congrArg Prod.fst h0.1.1
+  have hInitNone : lookupPasswdByUid (HealthyEnv.initial 1).state.byUid 0 = none := rfl
+  dsimp only [StateT.run, modelOps, Bind.bind, Pure.pure, StateT.bind, StateT.pure,
+    get, getThe, MonadStateOf.get, StateT.get, set, MonadStateOf.set, StateT.set] at hEq
+  rw [hInitNone] at hEq
+  cases hEq
+
+example : ¬ Core.AllPass (test_passwd_healthyStep_and_healthyModelOps
+    (ops := { getpwuid := healthyModelOps.getpwuid
+              getpwnam := fun name env =>
+                if !validPasswdName name || decide (name.size > MAX_PASSWD_NAME_BYTES) then
+                  (.ok none, env)
+                else
+                  healthyModelOps.getpwnam name env })) := by
+  intro h
+  let e : PasswdEntry :=
+    { name := ByteArray.empty, uid := 0, gid := 0,
+      gecos := ByteArray.empty, homeDir := ByteArray.empty, shell := ByteArray.empty }
+  have hWf1 : (HealthyEnv.initial 1).wf = true := by
+    change (HealthyEnv.initial 0).wf = true
+    decide
+  have hRest := h.2.2.2.2.2 (HealthyEnv.initial 1) hWf1 0 ByteArray.empty e
+    (by decide) (by decide) (by decide) rfl rfl
+  have hRaw := congrArg Prod.fst (hRest.2.2.2 (ByteArray.mk #[0])).1.1
+  have hvBad : validPasswdName (ByteArray.mk #[0]) = false := by decide
+  dsimp only [StateT.run, modelOps, Bind.bind, Pure.pure, StateT.bind, StateT.pure] at hRaw
+  rw [hvBad] at hRaw
+  cases hRaw
+
+example : ¬ Core.AllPass (test_passwd_healthyStep_and_healthyModelOps
+    (step := fun env req out =>
+      if decide (env.eintrBudget ≥ 2) && isEintrOutcome out then
+        (healthyStep env req out).map (fun env' => { env' with eintrBudget := env.eintrBudget })
+      else
+        healthyStep env req out)) := by
+  intro h
+  let e : PasswdEntry :=
+    { name := ByteArray.empty, uid := 0, gid := 0,
+      gecos := ByteArray.empty, homeDir := ByteArray.empty, shell := ByteArray.empty }
+  have hWf1 : (HealthyEnv.initial 1).wf = true := by
+    change (HealthyEnv.initial 0).wf = true
+    decide
+  have hRest := h.2.2.2.2.2 (HealthyEnv.initial 1) hWf1 0 ByteArray.empty e
+    (by decide) (by decide) (by decide) rfl rfl
+  have hStep := ((hRest.2.2.2 ByteArray.empty).2 (HealthyEnv.initial 2) (.getpwuid 0) (.err Errno.EINTR)).1
+  have hWf2 : (HealthyEnv.initial 2).wf = true := by
+    change (HealthyEnv.initial 0).wf = true
+    decide
+  have hAl : allowedStep (HealthyEnv.initial 2).state (.getpwuid 0) (.err Errno.EINTR) =
+      some (HealthyEnv.initial 2).state := rfl
+  dsimp only [healthyStep] at hStep
+  rw [hWf2, hAl] at hStep
+  exact absurd (congrArg (Option.map HealthyEnv.eintrBudget) hStep) (by decide)
+
 end LeanSwe.LinuxSyscall.Passwd
