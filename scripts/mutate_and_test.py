@@ -49,6 +49,7 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
     "LinuxSyscall.Sandbox": pathlib.Path("LeanSwe/LinuxSyscall/Sandbox"),
     "LinuxSyscall.TimeRand": pathlib.Path("LeanSwe/LinuxSyscall/TimeRand"),
     "LinuxSyscall.Passwd": pathlib.Path("LeanSwe/LinuxSyscall/Passwd"),
+    "LinuxSyscall.Dns": pathlib.Path("LeanSwe/LinuxSyscall/Dns"),
 }
 
 C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
@@ -57,6 +58,7 @@ C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
     "envvars_shim.c": "leanswe_envvars",
     "timerand_shim.c": "leanswe_linux_timerand",
     "passwd_shim.c": "leanswe_linux_passwd",
+    "dns_shim.c": "leanswe_linux_dns",
     "sqlite_shim.c": "leanswe_sqlite",
     "cryptohash_shim.c": "leanswe_cryptohash",
     "psandbox_shim.c": "leanswe_psandbox",
@@ -68,6 +70,7 @@ SUITE_TO_EXTRA_C: dict[str, list[pathlib.Path]] = {
     "LinuxSyscall.Sandbox": [pathlib.Path("LeanSwe/LinuxSyscall/c/sandbox_shim.c")],
     "LinuxSyscall.TimeRand": [pathlib.Path("LeanSwe/LinuxSyscall/c/timerand_shim.c")],
     "LinuxSyscall.Passwd": [pathlib.Path("LeanSwe/LinuxSyscall/c/passwd_shim.c")],
+    "LinuxSyscall.Dns": [pathlib.Path("LeanSwe/LinuxSyscall/c/dns_shim.c")],
 }
 
 SANCOV_RT_C = r"""
@@ -393,114 +396,117 @@ def measure_c_sancov(
 
     cov_ws = work / ".cov_ws"
     shutil.rmtree(cov_ws, ignore_errors=True)
-    shutil.copytree(work, cov_ws, symlinks=True)
+    try:
+        shutil.copytree(work, cov_ws, symlinks=True)
 
-    rt_c = cov_ws / ".sancov_rt.c"
-    rt_c.write_text(SANCOV_RT_C)
-    shim_o = cov_ws / ".cov_shim.o"
-    rt_o = cov_ws / ".cov_rt.o"
-    cov_log = cov_ws / "sancov_active.log"
+        rt_c = cov_ws / ".sancov_rt.c"
+        rt_c.write_text(SANCOV_RT_C)
+        shim_o = cov_ws / ".cov_shim.o"
+        rt_o = cov_ws / ".cov_rt.o"
+        cov_log = cov_ws / "sancov_active.log"
 
-    cflags_common = [
-        "-isystem", f"{lean_prefix}/include/clang",
-        "-I", f"{lean_prefix}/include",
-        "-O0", "-g", "-fPIC", "-Wall", "-Wextra", "-Werror",
-    ]
-    c1 = subprocess.run(
-        [str(clang), *cflags_common, "-fsanitize-coverage=trace-pc-guard", "-c", str(cov_ws / c_target), "-o", str(shim_o)],
-        capture_output=True, text=True,
-    )
-    if c1.returncode != 0:
-        return [(m, "shim clang err", c1.stderr[:300]) for m in modes]
-    c2 = subprocess.run(
-        [str(clang), *cflags_common, f'-DSANCOV_DEFAULT_LOG="{cov_log}"', "-c", str(rt_c), "-o", str(rt_o)],
-        capture_output=True, text=True,
-    )
-    if c2.returncode != 0:
-        return [(m, "rt clang err", c2.stderr[:300]) for m in modes]
-
-    lf = cov_ws / "lakefile.lean"
-    new_extern = (
-        f'extern_lib «{extern_lib}» pkg := do\n'
-        f'  let name := nameToStaticLib "{extern_lib}"\n'
-        '  let o1 ← inputBinFile (pkg.dir / ".cov_shim.o")\n'
-        '  let o2 ← inputBinFile (pkg.dir / ".cov_rt.o")\n'
-        '  buildStaticLib (pkg.staticLibDir / name) #[o1, o2]\n'
-    )
-    lf_lines = lf.read_text().splitlines(keepends=True)
-    patched: list[str] = []
-    skip = False
-    for ln in lf_lines:
-        if ln.startswith(f"extern_lib «{extern_lib}»"):
-            patched.append(new_extern)
-            skip = True
-        elif skip and (ln.startswith("@[") or ln.startswith("lean_exe") or ln.startswith("lean_lib") or ln.startswith("extern_lib")):
-            skip = False
-            patched.append(ln)
-        elif not skip:
-            patched.append(ln)
-    lf.write_text("".join(patched))
-    shutil.rmtree(cov_ws / ".lake/build", ignore_errors=True)
-    built, _ = build_mutant(cov_ws, use_systemd)
-    if not built:
-        return [(m, "cov link err", "lake build failed") for m in modes]
-
-    exe = cov_ws / ".lake/build/bin/lean-swe-mut-test"
-    elf_hdr = subprocess.run(["readelf", "-h", str(exe)], capture_output=True, text=True).stdout
-    results: list[tuple[str, str, str]] = []
-    for mode in modes:
-        if cov_log.exists():
-            cov_log.unlink()
-        env = dict(os.environ, LEANSWE_SANCOV_LOG=str(cov_log))
-        proc = subprocess.Popen(
-            [str(exe), "--mode", mode, "--suite", suite],
-            cwd=cov_ws,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
+        cflags_common = [
+            "-isystem", f"{lean_prefix}/include/clang",
+            "-I", f"{lean_prefix}/include",
+            "-O0", "-g", "-fPIC", "-Wall", "-Wextra", "-Werror",
+        ]
+        c1 = subprocess.run(
+            [str(clang), *cflags_common, "-fsanitize-coverage=trace-pc-guard", "-c", str(cov_ws / c_target), "-o", str(shim_o)],
+            capture_output=True, text=True,
         )
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
+        if c1.returncode != 0:
+            return [(m, "shim clang err", c1.stderr[:300]) for m in modes]
+        c2 = subprocess.run(
+            [str(clang), *cflags_common, f'-DSANCOV_DEFAULT_LOG="{cov_log}"', "-c", str(rt_c), "-o", str(rt_o)],
+            capture_output=True, text=True,
+        )
+        if c2.returncode != 0:
+            return [(m, "rt clang err", c2.stderr[:300]) for m in modes]
+
+        lf = cov_ws / "lakefile.lean"
+        new_extern = (
+            f'extern_lib «{extern_lib}» pkg := do\n'
+            f'  let name := nameToStaticLib "{extern_lib}"\n'
+            '  let o1 ← inputBinFile (pkg.dir / ".cov_shim.o")\n'
+            '  let o2 ← inputBinFile (pkg.dir / ".cov_rt.o")\n'
+            '  buildStaticLib (pkg.staticLibDir / name) #[o1, o2]\n'
+        )
+        lf_lines = lf.read_text().splitlines(keepends=True)
+        patched: list[str] = []
+        skip = False
+        for ln in lf_lines:
+            if ln.startswith(f"extern_lib «{extern_lib}»"):
+                patched.append(new_extern)
+                skip = True
+            elif skip and (ln.startswith("@[") or ln.startswith("lean_exe") or ln.startswith("lean_lib") or ln.startswith("extern_lib")):
+                skip = False
+                patched.append(ln)
+            elif not skip:
+                patched.append(ln)
+        lf.write_text("".join(patched))
+        shutil.rmtree(cov_ws / ".lake/build", ignore_errors=True)
+        built, _ = build_mutant(cov_ws, use_systemd)
+        if not built:
+            return [(m, "cov link err", "lake build failed") for m in modes]
+
+        exe = cov_ws / ".lake/build/bin/lean-swe-mut-test"
+        elf_hdr = subprocess.run(["readelf", "-h", str(exe)], capture_output=True, text=True).stdout
+        results: list[tuple[str, str, str]] = []
+        for mode in modes:
+            if cov_log.exists():
+                cov_log.unlink()
+            env = dict(os.environ, LEANSWE_SANCOV_LOG=str(cov_log))
+            proc = subprocess.Popen(
+                [str(exe), "--mode", mode, "--suite", suite],
+                cwd=cov_ws,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            proc.wait()
-            results.append((mode, "cov run timeout", f"timed out after {timeout_s}s"))
-            continue
-        if proc.returncode != 0:
-            results.append((mode, "cov run err", (stdout + stderr)[:300]))
-            continue
-        if not cov_log.exists():
-            results.append((mode, "no sancov log", ""))
-            continue
-        hit_ids: set[int] = set()
-        raw_pcs: set[str] = set()
-        rel_offs: set[str] = set()
-        total_guards = 0
-        for ln in cov_log.read_text().splitlines():
-            parts = ln.split()
-            if len(parts) == 4 and parts[0] == "HIT":
-                hit_ids.add(int(parts[1]))
-                raw_pcs.add(parts[2])
-                rel_offs.add(parts[3])
-            elif len(parts) == 2 and parts[0] == "TOTAL":
-                total_guards = max(total_guards, int(parts[1]))
-        addrs = sorted(rel_offs if "DYN" in elf_hdr else raw_pcs)
-        hit_lines: set[int] = set()
-        if addrs:
-            a2l = subprocess.run(["addr2line", "-e", str(exe), *addrs], capture_output=True, text=True)
-            for out_ln in a2l.stdout.splitlines():
-                if c_target.name in out_ln:
-                    m_ln = re.search(r":(\d+)", out_ln)
-                    if m_ln:
-                        hit_lines.add(int(m_ln.group(1)))
-        pct = (100.0 * len(hit_ids) / total_guards) if total_guards else 0.0
-        results.append((mode, "OK", f"edges={len(hit_ids)}/{total_guards} ({pct:.1f}%), hit_source_lines={len(hit_lines)} {sorted(hit_lines)[:15]}"))
-    return results
+                stdout, stderr = proc.communicate(timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait()
+                results.append((mode, "cov run timeout", f"timed out after {timeout_s}s"))
+                continue
+            if proc.returncode != 0:
+                results.append((mode, "cov run err", (stdout + stderr)[:300]))
+                continue
+            if not cov_log.exists():
+                results.append((mode, "no sancov log", ""))
+                continue
+            hit_ids: set[int] = set()
+            raw_pcs: set[str] = set()
+            rel_offs: set[str] = set()
+            total_guards = 0
+            for ln in cov_log.read_text().splitlines():
+                parts = ln.split()
+                if len(parts) == 4 and parts[0] == "HIT":
+                    hit_ids.add(int(parts[1]))
+                    raw_pcs.add(parts[2])
+                    rel_offs.add(parts[3])
+                elif len(parts) == 2 and parts[0] == "TOTAL":
+                    total_guards = max(total_guards, int(parts[1]))
+            addrs = sorted(rel_offs if "DYN" in elf_hdr else raw_pcs)
+            hit_lines: set[int] = set()
+            if addrs:
+                a2l = subprocess.run(["addr2line", "-e", str(exe), *addrs], capture_output=True, text=True)
+                for out_ln in a2l.stdout.splitlines():
+                    if c_target.name in out_ln:
+                        m_ln = re.search(r":(\d+)", out_ln)
+                        if m_ln:
+                            hit_lines.add(int(m_ln.group(1)))
+            pct = (100.0 * len(hit_ids) / total_guards) if total_guards else 0.0
+            results.append((mode, "OK", f"edges={len(hit_ids)}/{total_guards} ({pct:.1f}%), hit_source_lines={len(hit_lines)} {sorted(hit_lines)[:15]}"))
+        return results
+    finally:
+        shutil.rmtree(cov_ws, ignore_errors=True)
 
 
 def main() -> int:

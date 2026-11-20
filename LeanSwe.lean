@@ -315,6 +315,14 @@ import LeanSwe.LinuxSyscall.Passwd.SpecTests
 import LeanSwe.LinuxSyscall.Passwd.SpecMutants
 import LeanSwe.LinuxSyscall.Passwd.Proofs
 import LeanSwe.LinuxSyscall.Passwd.RuntimeTests
+import LeanSwe.LinuxSyscall.Dns.Types
+import LeanSwe.LinuxSyscall.Dns.Model
+import LeanSwe.LinuxSyscall.Dns.Impl
+import LeanSwe.LinuxSyscall.Dns.Interface
+import LeanSwe.LinuxSyscall.Dns.SpecTests
+import LeanSwe.LinuxSyscall.Dns.SpecMutants
+import LeanSwe.LinuxSyscall.Dns.Proofs
+import LeanSwe.LinuxSyscall.Dns.RuntimeTests
 import LeanSwe.LinuxSyscall.Fuzz.Rng
 import LeanSwe.LinuxSyscall.Fuzz.SandboxEnv
 import LeanSwe.LinuxSyscall.Fuzz.SandboxFuzz

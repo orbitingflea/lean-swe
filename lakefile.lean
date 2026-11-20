@@ -179,6 +179,16 @@ extern_lib «leanswe_linux_timerand» pkg := do
   let name := nameToStaticLib "leanswe_linux_timerand"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
+extern_lib «leanswe_linux_dns» pkg := do
+  let oFile := pkg.buildDir / "c" / "dns_shim.o"
+  let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "LinuxSyscall" / "c" / "dns_shim.c")
+  let lean ← getLeanInstall
+  let oJob ← buildO oFile srcJob
+    #["-I", lean.includeDir.toString]
+    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror"]
+  let name := nameToStaticLib "leanswe_linux_dns"
+  buildStaticLib (pkg.staticLibDir / name) #[oJob]
+
 extern_lib «leanswe_linux_timerand_fuzz» pkg := do
   let oFile := pkg.buildDir / "c" / "timerand_fuzz_sig.o"
   let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "LinuxSyscall" / "c" / "timerand_fuzz_sig.c")

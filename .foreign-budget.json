@@ -49,6 +49,10 @@
       "max_lines": 145,
       "legacy_unmigrated": false
     },
+    "LeanSwe/LinuxSyscall/c/dns_shim.c": {
+      "max_lines": 165,
+      "legacy_unmigrated": false
+    },
     "LeanSwe/LinuxSyscall/c/timerand_fuzz_sig.c": {
       "max_lines": 120,
       "legacy_unmigrated": false
@@ -98,7 +102,7 @@
       "legacy_unmigrated": false
     },
     "scripts/mutate_and_test.py": {
-      "max_lines": 635,
+      "max_lines": 640,
       "legacy_unmigrated": false
     },
     "scripts/test_check_spec_change.py": {
@@ -128,6 +132,15 @@
       "max_loops": 2
     },
     "Fuzz/EnvVars/c/envvars_fuzz_env.c::leanswe_fuzz_raw_end": {
+      "max_loops": 1
+    },
+    "LeanSwe/LinuxSyscall/c/dns_shim.c::dns_count_addrs": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/LinuxSyscall/c/dns_shim.c::dns_copy_addrs": {
+      "allow_array_copy_loop": true
+    },
+    "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c::capture_openssl_error": {
       "max_loops": 1
     },
     "Fuzz/CmdLine/c/cmdline_fuzz_env.c::wait_child_masked": {

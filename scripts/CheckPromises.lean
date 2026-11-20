@@ -45,6 +45,15 @@ private def passwdAuditModules : Array Name := #[
   `LeanSwe.LinuxSyscall.Passwd.Proofs
 ]
 
+private def dnsAuditModules : Array Name := #[
+  `LeanSwe.LinuxSyscall.Dns.Types,
+  `LeanSwe.LinuxSyscall.Dns.Model,
+  `LeanSwe.LinuxSyscall.Dns.Impl,
+  `LeanSwe.LinuxSyscall.Dns.Interface,
+  `LeanSwe.LinuxSyscall.Dns.SpecTests,
+  `LeanSwe.LinuxSyscall.Dns.Proofs
+]
+
 private def envVarsAuditModules : Array Name := #[
   `LeanSwe.EnvVars.Raw.Types,
   `LeanSwe.EnvVars.Raw.Model,
@@ -132,6 +141,11 @@ private def isAllowedPasswdClosureModule (m : Name) : Bool :=
     m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
     passwdAuditModules.contains m
 
+private def isAllowedDnsClosureModule (m : Name) : Bool :=
+  m.getRoot == `Core ||
+    m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
+    dnsAuditModules.contains m
+
 private def isAllowedEnvVarsClosureModule (m : Name) : Bool :=
   m.getRoot == `Core || envVarsAuditModules.contains m
 
@@ -150,6 +164,10 @@ private def allowedPasswdExternSyms : Std.HashMap Name String :=
   Std.HashMap.emptyWithCapacity 4
     |>.insert `LeanSwe.LinuxSyscall.Passwd.rawGetpwuidOnce "leanswe_sys_getpwuid_once"
     |>.insert `LeanSwe.LinuxSyscall.Passwd.rawGetpwnamOnce "leanswe_sys_getpwnam_once"
+
+private def allowedDnsExternSyms : Std.HashMap Name String :=
+  Std.HashMap.emptyWithCapacity 2
+    |>.insert `LeanSwe.LinuxSyscall.Dns.rawGetaddrinfo "leanswe_sys_getaddrinfo"
 
 private def allowedEnvVarsExternSyms : Std.HashMap Name String :=
   Std.HashMap.emptyWithCapacity 4
@@ -469,6 +487,137 @@ private unsafe def checkPackageTrustedClosure (repoDir : System.FilePath) (pkgLa
     for u in extra do
       if !visited.contains (u, inStdImpl, fromSpecTests) then
         queue := queue.push (originMod, inStdImpl, fromSpecTests, u)
+  return errs
+
+private def returnsBaseIO (env : Environment) (ty : Expr) : IO Bool := do
+  let ctx : Core.Context := { fileName := "<CheckPromises>", fileMap := default }
+  let state : Core.State := { env }
+  let (res, _) ← (Meta.MetaM.run' do
+    Meta.forallTelescope ty fun _ body => do
+      let raw := body.consumeMData
+      if raw.getAppFn == .const ``BaseIO [] then
+        return true
+      let b ← Meta.whnf raw
+      return b.isAppOfArity ``EIO 2 && b.appFn!.appArg!.consumeMData == .const ``Empty []
+  ).toIO ctx state
+  return res
+
+private partial def etaReduceExpr (e : Expr) : Expr :=
+  let cur := e.consumeMData
+  match cur with
+  | .lam n ty body bi =>
+    let body' := (etaReduceExpr body).consumeMData
+    match body' with
+    | .app fn (.bvar 0) =>
+      let fn' := fn.consumeMData
+      if !fn'.hasLooseBVar 0 then
+        etaReduceExpr (fn'.lowerLooseBVars 1 1)
+      else
+        .lam n ty body' bi
+    | _ => .lam n ty body' bi
+  | _ => cur
+
+private def checkDnsInterfaceWiring (trEnv : Environment) : IO (Array String) := do
+  let mut errs : Array String := #[]
+  let ifaceMod : Name := `LeanSwe.LinuxSyscall.Dns.Interface
+  let some ifaceIdx := trEnv.header.moduleNames.findIdx? (· == ifaceMod)
+    | return #[s!"TRUSTED_CLOSURE_DNS_WIRING: missing module {ifaceMod}"]
+  let some ifaceData := trEnv.header.moduleData[ifaceIdx]?
+    | return #[s!"TRUSTED_CLOSURE_DNS_WIRING: missing moduleData for {ifaceMod}"]
+  let findByUser (target : Name) : Array ConstantInfo :=
+    ifaceData.constants.filter fun c =>
+      ((privateToUserName? c.name).getD c.name) == target
+  let rawCands := findByUser `LeanSwe.LinuxSyscall.Dns.rawGetaddrinfo
+  let mut rawName? : Option Name := none
+  if rawCands.size != 1 then
+    errs := errs.push s!"TRUSTED_CLOSURE_DNS_WIRING: expected 1 rawGetaddrinfo in {ifaceMod}, found {rawCands.size}"
+  else if let some rc := rawCands[0]? then
+    if !isPrivateName rc.name then
+      errs := errs.push s!"TRUSTED_CLOSURE_DNS_WIRING: rawGetaddrinfo ({rc.name}) must be private"
+    else if !(rc matches .opaqueInfo _) then
+      errs := errs.push s!"TRUSTED_CLOSURE_DNS_WIRING: rawGetaddrinfo ({rc.name}) must be opaque"
+    else
+      match getExternAttrData? trEnv rc.name with
+      | some ed =>
+        if ed.entries != [.standard `all "leanswe_sys_getaddrinfo"] then
+          errs := errs.push s!"TRUSTED_CLOSURE_DNS_WIRING: rawGetaddrinfo extern mismatch"
+        if !(← returnsBaseIO trEnv rc.type) then
+          errs := errs.push s!"TRUSTED_CLOSURE_DNS_WIRING: rawGetaddrinfo must return BaseIO"
+        rawName? := some rc.name
+      | none =>
+        errs := errs.push s!"TRUSTED_CLOSURE_DNS_WIRING: rawGetaddrinfo missing @[extern]"
+  let posixCands := findByUser `LeanSwe.LinuxSyscall.Dns.posixDnsOpsBase
+  let mut posixName? : Option Name := none
+  if posixCands.size != 1 then
+    errs := errs.push s!"TRUSTED_CLOSURE_DNS_WIRING: expected 1 posixDnsOpsBase in {ifaceMod}, found {posixCands.size}"
+  else if let some pc := posixCands[0]? then
+    if !isPrivateName pc.name then
+      errs := errs.push s!"TRUSTED_CLOSURE_DNS_WIRING: posixDnsOpsBase ({pc.name}) must be private"
+    else if let .defnInfo dv := pc then
+      if dv.safety != .safe then
+        errs := errs.push s!"TRUSTED_CLOSURE_DNS_WIRING: posixDnsOpsBase must be safe"
+      else if let some rawName := rawName? then
+        let v := dv.value.consumeMData
+        if v.isAppOfArity `LeanSwe.LinuxSyscall.Dns.Internal.PosixDnsOpsM.mk 2 &&
+            v.appFn!.appArg!.consumeMData.isConstOf ``BaseIO &&
+            (etaReduceExpr v.appArg!).isConstOf rawName then
+          posixName? := some pc.name
+        else
+          errs := errs.push s!"TRUSTED_CLOSURE_DNS_WIRING: posixDnsOpsBase must wrap rawGetaddrinfo directly"
+    else
+      errs := errs.push s!"TRUSTED_CLOSURE_DNS_WIRING: posixDnsOpsBase must be def"
+  match trEnv.find? `LeanSwe.LinuxSyscall.Dns.defaultOpsBase with
+  | some (.defnInfo dv) =>
+    if dv.safety != .safe then
+      errs := errs.push "TRUSTED_CLOSURE_DNS_WIRING: defaultOpsBase must be safe"
+    else if let some posixName := posixName? then
+      let v := dv.value.consumeMData
+      if !(v.isAppOfArity `LeanSwe.LinuxSyscall.Dns.Internal.mkDnsOpsM 3 &&
+          v.appFn!.appFn!.appArg!.consumeMData.isConstOf ``BaseIO &&
+          (etaReduceExpr v.appArg!).isConstOf posixName) then
+        errs := errs.push "TRUSTED_CLOSURE_DNS_WIRING: defaultOpsBase must apply Internal.mkDnsOpsM to posixDnsOpsBase"
+  | _ =>
+    errs := errs.push "TRUSTED_CLOSURE_DNS_WIRING: missing defaultOpsBase"
+  match trEnv.find? `LeanSwe.LinuxSyscall.Dns.defaultOps with
+  | some (.defnInfo dv) =>
+    if dv.safety != .safe then
+      errs := errs.push "TRUSTED_CLOSURE_DNS_WIRING: defaultOps must be safe"
+    else
+      let v := dv.value.consumeMData
+      let okDefaultOps :=
+        if v.isAppOfArity `LeanSwe.LinuxSyscall.Dns.DnsOpsM.mk 2 &&
+            v.appFn!.appArg!.consumeMData.isConstOf ``IO then
+          match v.appArg!.consumeMData with
+          | .lam hn hty (.lam fn fty body fbi) hbi =>
+            let b := body.consumeMData
+            if b.isAppOfArity `liftM 5 &&
+                b.appFn!.appFn!.appFn!.appFn!.appArg!.consumeMData.isConstOf ``BaseIO &&
+                b.appFn!.appFn!.appFn!.appArg!.consumeMData.isConstOf ``IO then
+              let lifted := etaReduceExpr (.lam hn hty (.lam fn fty b.appArg! fbi) hbi)
+              lifted.isAppOfArity `LeanSwe.LinuxSyscall.Dns.DnsOpsM.getaddrinfo 2 &&
+                lifted.appFn!.appArg!.consumeMData.isConstOf ``BaseIO &&
+                lifted.appArg!.consumeMData.isConstOf `LeanSwe.LinuxSyscall.Dns.defaultOpsBase
+            else
+              false
+          | _ => false
+        else
+          false
+      if !okDefaultOps then
+        errs := errs.push "TRUSTED_CLOSURE_DNS_WIRING: defaultOps must lift defaultOpsBase.getaddrinfo directly"
+  | _ =>
+    errs := errs.push "TRUSTED_CLOSURE_DNS_WIRING: missing defaultOps"
+  match trEnv.find? `LeanSwe.LinuxSyscall.Dns.getaddrinfo with
+  | some (.defnInfo dv) =>
+    if dv.safety != .safe then
+      errs := errs.push "TRUSTED_CLOSURE_DNS_WIRING: getaddrinfo must be safe"
+    else
+      let reduced := etaReduceExpr dv.value
+      if !(reduced.isAppOfArity `LeanSwe.LinuxSyscall.Dns.DnsOpsM.getaddrinfo 2 &&
+          reduced.appFn!.appArg!.consumeMData.isConstOf ``IO &&
+          reduced.appArg!.consumeMData.isConstOf `LeanSwe.LinuxSyscall.Dns.defaultOps) then
+        errs := errs.push "TRUSTED_CLOSURE_DNS_WIRING: getaddrinfo must delegate directly to defaultOps.getaddrinfo"
+  | _ =>
+    errs := errs.push "TRUSTED_CLOSURE_DNS_WIRING: missing getaddrinfo"
   return errs
 
 private def sandboxAuditModules : Array Name := #[
@@ -1078,7 +1227,8 @@ private unsafe def countElaboratedNegatedAllPass
             modNeg := modNeg + 1
   return .ok modNeg
 
-private def parseModuleCommands (env : Environment) (path : System.FilePath) : IO (Except String (Array Syntax)) := do
+private def parseModuleCommands (env : Environment) (path : System.FilePath)
+    (allowMacroRecovery : Bool := false) : IO (Except String (Array Syntax)) := do
   unless ← path.pathExists do
     return .error s!"MISSING_SOURCE_FILE: {path}"
   let input ← IO.FS.readFile path
@@ -1097,7 +1247,7 @@ private def parseModuleCommands (env : Environment) (path : System.FilePath) : I
     if Parser.isTerminalCommand stx then
       break
     cmds := cmds.push stx
-  if msgs.hasErrors then
+  if msgs.hasErrors && !allowMacroRecovery then
     return .error s!"PARSE_ERROR: command parse error in {path}"
   return .ok cmds
 
@@ -1152,6 +1302,20 @@ private def moduleNameUnderRoot (rootDir entry : System.FilePath) (rootMod : Nam
 
 private def moduleNameUnderLeanSwe (leanSweDir entry : System.FilePath) : Name :=
   moduleNameUnderRoot leanSweDir entry `LeanSwe
+
+private partial def collectLeanRelFiles (dir : System.FilePath) (relPrefix : String) :
+    IO (Array (String × System.FilePath)) := do
+  let mut out : Array (String × System.FilePath) := #[]
+  let entries ← dir.readDir
+  let sorted := entries.qsort fun a b => a.fileName < b.fileName
+  for entry in sorted do
+    let rel := s!"{relPrefix}/{entry.fileName}"
+    if ← entry.path.isDir then
+      let sub ← collectLeanRelFiles entry.path rel
+      out := out ++ sub
+    else if entry.path.extension == some "lean" then
+      out := out.push (rel, entry.path)
+  return out
 
 private def moduleToOleanPath (libDir : System.FilePath) (modName : Name) : System.FilePath :=
   let parts := modName.components.map (·.toString)
@@ -1326,6 +1490,20 @@ unsafe def main (args : List String) : IO UInt32 := do
         if closureForbiddenMetaSyntaxKinds.any (hasSyntaxKind · stx) then
           errors := errors.push s!"FORBIDDEN_SYNTAX_IN_RUNTIMETESTS: {rtPath} uses forbidden meta/eval command"
           break
+
+  let mut auxFiles : Array (String × System.FilePath) := #[]
+  let testsDir := repoDir / "Tests"
+  if ← testsDir.pathExists then
+    auxFiles := auxFiles ++ (← collectLeanRelFiles testsDir "Tests")
+  let fuzzDir := repoDir / "Fuzz"
+  if ← fuzzDir.pathExists then
+    auxFiles := auxFiles ++ (← collectLeanRelFiles fuzzDir "Fuzz")
+  for (relPath, filePath) in auxFiles do
+    match ← parseModuleCommands rtParseEnv filePath (allowMacroRecovery := true) with
+    | .error _ => pure ()
+    | .ok cmds =>
+      if cmds.any (hasAttrNameInStx #["export"]) then
+        errors := errors.push s!"FORBIDDEN_EXPORT_ATTR: {relPath} uses @[export]"
 
   let mut companionPromisesByMutMod : Std.HashMap Name (Std.HashSet Name) := {}
   for h : i in [0 : env.header.moduleNames.size] do
@@ -1545,6 +1723,7 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   let trAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.TimeRand timeRandAuditModules
   let pwAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.Passwd passwdAuditModules
+  let dnsAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.LinuxSyscall.Dns dnsAuditModules
   let envAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.EnvVars envVarsAuditModules
   let chAuditMods := discoverPackageModules env importableExtraMods `LeanSwe.CryptoHash cryptoHashAuditModules
   let trClosureErrs ← checkPackageTrustedClosure repoDir "TimeRand" trAuditMods
@@ -1552,12 +1731,16 @@ unsafe def main (args : List String) : IO UInt32 := do
   let pwClosureErrs ← checkPackageTrustedClosure repoDir "Passwd" pwAuditMods
     isAllowedPasswdClosureModule `LeanSwe.LinuxSyscall.Passwd.Interface allowedPasswdExternSyms true
   let pwWiringErrs ← checkPasswdPrivateWiring env
+  let dnsClosureErrs ← checkPackageTrustedClosure repoDir "Dns" dnsAuditMods
+    isAllowedDnsClosureModule `LeanSwe.LinuxSyscall.Dns.Interface allowedDnsExternSyms true
+  let dnsWiringErrs ← checkDnsInterfaceWiring env
+  IO.println s!"TRUSTED_CLOSURE: dns_modules={dnsAuditMods.size} allowlist=Core+Common+Dns externs={allowedDnsExternSyms.size}"
   let envClosureErrs ← checkPackageTrustedClosure repoDir "EnvVars" envAuditMods
     isAllowedEnvVarsClosureModule `LeanSwe.EnvVars.Raw.Interface allowedEnvVarsExternSyms false
   let chClosureErrs ← checkPackageTrustedClosure repoDir "CryptoHash" chAuditMods
     isAllowedCryptoHashClosureModule `LeanSwe.CryptoHash.Raw.Interface allowedCryptoHashExternSyms false
   let sbxClosureErrs ← checkSandboxTrustedClosure env
-  errors := errors ++ axiomErrs ++ trClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ envClosureErrs ++ chClosureErrs ++ sbxClosureErrs
+  errors := errors ++ axiomErrs ++ trClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ envClosureErrs ++ chClosureErrs ++ sbxClosureErrs
 
   let mut withAssumeCount := 0
   for (m, pName) in promises do
