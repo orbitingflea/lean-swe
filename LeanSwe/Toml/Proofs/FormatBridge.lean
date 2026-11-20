@@ -495,4 +495,185 @@ theorem canReach_format_validAndRoundTrip (numApi : NumParseApi) (hnum : ValidNu
   dsimp only [test_toml_format_validAndRoundTrip, makeTomlApi, Core.NondetTest.assume, Core.NondetTest.nondet, NondetTest.assert, bind, pure]
   rw [hp]; exact ⟨heq, trivial⟩
 end
+
+private theorem isPrefixOf_append_self : ∀ (sub suf : List Char), sub.isPrefixOf (sub ++ suf) = true
+  | [], _ => rfl
+  | _ :: cs, suf => by simp [isPrefixOf_append_self cs suf]
+
+private theorem hasCharSublist_mid (sub : List Char) :
+    ∀ (pre suf : List Char), hasCharSublist sub (pre ++ sub ++ suf) = true
+  | [], suf => by
+    cases sub with
+    | nil => cases suf <;> simp [hasCharSublist]
+    | cons c cs => simp [hasCharSublist, isPrefixOf_append_self cs suf]
+  | c :: pre, suf => by
+    simp only [List.cons_append, hasCharSublist, Bool.or_eq_true]
+    exact Or.inr (hasCharSublist_mid sub pre suf)
+
+private theorem intercalate_nl_decomp :
+    ∀ (hd : String) (tl : List String),
+      (String.intercalate "\n" (hd :: tl)).toList =
+        hd.toList ++ tl.flatMap (fun s => '\n' :: s.toList)
+  | hd, [] => by simp [String.intercalate_singleton]
+  | hd, x :: xs => by
+    rw [String.intercalate_cons_cons, String.toList_append, String.toList_append,
+      intercalate_nl_decomp x xs]
+    simp [List.flatMap_cons, List.append_assoc]
+
+private theorem intercalate_mem_sublist {ln : String} {lines : List String} (hmem : ln ∈ lines)
+    {sub : List Char} (hsub : ∃ p s, ln.toList = p ++ sub ++ s) :
+    hasCharSublist sub (String.intercalate "\n" lines ++ "\n").toList = true := by
+  rcases hsub with ⟨p, s, hln⟩
+  cases lines with
+  | nil => nomatch hmem
+  | cons hd tl =>
+    rw [String.toList_append, intercalate_nl_decomp hd tl]
+    rcases List.mem_cons.mp hmem with rfl | htl
+    · rw [hln]
+      have hassoc : p ++ sub ++ s ++ tl.flatMap (fun x => '\n' :: x.toList) ++ "\n".toList =
+          p ++ sub ++ (s ++ tl.flatMap (fun x => '\n' :: x.toList) ++ "\n".toList) := by
+        simp [List.append_assoc]
+      rw [hassoc]
+      exact hasCharSublist_mid sub p _
+    · rcases List.mem_iff_append.mp htl with ⟨before, after, hsplit⟩
+      rw [hsplit, List.flatMap_append, List.flatMap_cons, hln]
+      have hassoc :
+          hd.toList ++ (before.flatMap (fun x => '\n' :: x.toList) ++
+            ('\n' :: (p ++ sub ++ s) ++ after.flatMap (fun x => '\n' :: x.toList))) ++ "\n".toList =
+          (hd.toList ++ before.flatMap (fun x => '\n' :: x.toList) ++ ('\n' :: p)) ++
+            sub ++ (s ++ after.flatMap (fun x => '\n' :: x.toList) ++ "\n".toList) := by
+        simp [List.append_assoc]
+      rw [hassoc]
+      exact hasCharSublist_mid sub _ _
+
+private theorem entry_emits_rendered_key (numApi : NumParseApi) (kvs : List (String × TomlValue))
+    {k : String} {v : TomlValue} (hm : (k, v) ∈ kvs) :
+    ∃ ln ∈ formatTableInlinePart numApi kvs ++ formatTableSectionPart numApi [] kvs,
+      ∃ p s, ln.toList = p ++ (formatKey k).toList ++ s := by
+  induction kvs with
+  | nil => nomatch hm
+  | cons kv rest ih =>
+    rcases kv with ⟨k0, v0⟩
+    rcases List.mem_cons.mp hm with hhead | htail
+    · injection hhead with hk hv
+      subst hk hv
+      cases v with
+      | table sub =>
+        cases sub with
+        | mk subList =>
+          refine ⟨"[" ++ formatKey k ++ "]", ?_, ['['], [']'], ?_⟩
+          · simp [formatTableInlinePart, formatTableSectionPart, String.intercalate_singleton]
+          · simp [String.toList_append]
+      | array xs =>
+        cases xs with
+        | mk xsList =>
+          by_cases haot : isNonEmptyTableArray ⟨xsList⟩ = true
+          · have haot0 := haot
+            cases xsList with
+            | nil => simp [isNonEmptyTableArray] at haot
+            | cons x0 xsTail =>
+              simp only [isNonEmptyTableArray, List.all_cons, Bool.and_eq_true] at haot
+              cases x0 with
+              | table elem =>
+                cases elem with
+                | mk elemList =>
+                  refine ⟨"[[" ++ formatKey k ++ "]]", ?_, ['[', '['], [']', ']'], ?_⟩
+                  · simp [formatTableInlinePart, formatTableSectionPart, haot0,
+                      formatAotElemList, String.intercalate_singleton]
+                  · simp [String.toList_append]
+              | _ => nomatch haot.2.1
+          · have haotF : isNonEmptyTableArray ⟨xsList⟩ = false := Bool.eq_false_iff.mpr haot
+            refine ⟨formatKey k ++ " = " ++ formatValueInline numApi (.array ⟨xsList⟩), ?_,
+              [], (" = " ++ formatValueInline numApi (.array ⟨xsList⟩)).toList, ?_⟩
+            · simp [formatTableInlinePart, haotF]
+            · simp [String.toList_append]
+      | string s =>
+        refine ⟨formatKey k ++ " = " ++ formatValueInline numApi (.string s), by simp [formatTableInlinePart],
+          [], (" = " ++ formatValueInline numApi (.string s)).toList, by simp [String.toList_append]⟩
+      | int n =>
+        refine ⟨formatKey k ++ " = " ++ formatValueInline numApi (.int n), by simp [formatTableInlinePart],
+          [], (" = " ++ formatValueInline numApi (.int n)).toList, by simp [String.toList_append]⟩
+      | float f =>
+        refine ⟨formatKey k ++ " = " ++ formatValueInline numApi (.float f), by simp [formatTableInlinePart],
+          [], (" = " ++ formatValueInline numApi (.float f)).toList, by simp [String.toList_append]⟩
+      | bool b =>
+        refine ⟨formatKey k ++ " = " ++ formatValueInline numApi (.bool b), by simp [formatTableInlinePart],
+          [], (" = " ++ formatValueInline numApi (.bool b)).toList, by simp [String.toList_append]⟩
+      | offsetDateTime d =>
+        refine ⟨formatKey k ++ " = " ++ formatValueInline numApi (.offsetDateTime d), by simp [formatTableInlinePart],
+          [], (" = " ++ formatValueInline numApi (.offsetDateTime d)).toList, by simp [String.toList_append]⟩
+      | localDateTime d =>
+        refine ⟨formatKey k ++ " = " ++ formatValueInline numApi (.localDateTime d), by simp [formatTableInlinePart],
+          [], (" = " ++ formatValueInline numApi (.localDateTime d)).toList, by simp [String.toList_append]⟩
+      | localDate d =>
+        refine ⟨formatKey k ++ " = " ++ formatValueInline numApi (.localDate d), by simp [formatTableInlinePart],
+          [], (" = " ++ formatValueInline numApi (.localDate d)).toList, by simp [String.toList_append]⟩
+      | localTime t =>
+        refine ⟨formatKey k ++ " = " ++ formatValueInline numApi (.localTime t), by simp [formatTableInlinePart],
+          [], (" = " ++ formatValueInline numApi (.localTime t)).toList, by simp [String.toList_append]⟩
+    · obtain ⟨ln, hlnMem, hsub⟩ := ih htail
+      refine ⟨ln, ?_, hsub⟩
+      rcases List.mem_append.mp hlnMem with hinl | hsec
+      · apply List.mem_append_left
+        cases v0 with
+        | table _ => simp [formatTableInlinePart, hinl]
+        | array xs =>
+          by_cases haot : isNonEmptyTableArray xs = true
+          · simp [formatTableInlinePart, haot, hinl]
+          · simp [formatTableInlinePart, Bool.eq_false_iff.mpr haot, hinl]
+        | _ => simp [formatTableInlinePart, hinl]
+      · apply List.mem_append_right
+        cases v0 with
+        | table sub =>
+          cases sub with
+          | mk subList => simp [formatTableSectionPart, hsec]
+        | array xs =>
+          cases xs with
+          | mk xsList =>
+            by_cases haot : isNonEmptyTableArray ⟨xsList⟩ = true
+            · simp [formatTableSectionPart, haot, hsec]
+            · simp [formatTableSectionPart, Bool.eq_false_iff.mpr haot, hsec]
+        | _ => simp [formatTableSectionPart, hsec]
+
+/-- `formatWithNum` satisfies `Model.allowedFormat` for any `ValidNumApi`. -/
+theorem formatWithNum_allowedFormat (numApi : NumParseApi) (hnum : ValidNumApi numApi)
+    (doc : TomlTable) : allowedFormat doc (formatWithNum numApi doc) := by
+  unfold allowedFormat
+  cases hdoc : doc.toList with
+  | nil =>
+    have hempty : doc = #[] := Array.ext' hdoc
+    subst hempty
+    simp [formatWithNum, formatSectionLines, formatTableInlinePart, formatTableSectionPart]
+  | cons kv rest =>
+    simp only [List.isEmpty_cons, Bool.false_eq_true, ↓reduceIte]
+    by_cases hwf : wellFormedTableBool doc = true
+    · simp only [hwf, ↓reduceIte]
+      unfold formatWithNum
+      cases hlines : formatSectionLines numApi [] doc with
+      | nil =>
+        have hnil := formatSectionLines_nil_eq_nil numApi [] doc hlines
+        rw [hdoc] at hnil; nomatch hnil
+      | cons hd tl =>
+        have hwf_p : noDupKeysBool doc.toList = true ∧ wellFormedValueBool.wellFormedTableListBool doc.toList = true := by
+          simpa [wellFormedTableBool, Bool.and_eq_true] using hwf
+        have hbp : renderTablePlan [] doc.toList (choosePlan numApi doc.toList) = some (hd :: tl) := by
+          have hp := choosePlan_exists_aux numApi (validNumApi_validFmt numApi hnum) doc.toList hwf_p.1 hwf_p.2 []
+          unfold formatSectionLines at hlines; rwa [hlines] at hp
+        exact ⟨⟨choosePlan numApi doc.toList, none⟩, rfl, by simp [render, hwf, hbp, bind, Option.bind]⟩
+    · simp only [hwf, Bool.false_eq_true, ↓reduceIte]
+      unfold formatWithNum
+      cases hlines : formatSectionLines numApi [] doc with
+      | nil =>
+        have hnil := formatSectionLines_nil_eq_nil numApi [] doc hlines
+        rw [hdoc] at hnil; nomatch hnil
+      | cons hd tl =>
+        refine ⟨?_, ?_⟩
+        · simp [String.toList_append, List.reverse_append]
+        · intro k v hmem
+          rw [← hdoc] at hmem
+          obtain ⟨ln, hlnMem, hsub⟩ := entry_emits_rendered_key numApi doc.toList hmem
+          unfold formatSectionLines at hlines
+          rw [hlines] at hlnMem
+          exact ⟨formatKey k, renderKey_chooseKeyStyle k, intercalate_mem_sublist hlnMem hsub⟩
+
 end LeanSwe.Toml.Proofs

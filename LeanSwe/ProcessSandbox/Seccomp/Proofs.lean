@@ -1,3 +1,4 @@
+import Core.Refines
 import LeanSwe.ProcessSandbox.Types
 import LeanSwe.ProcessSandbox.Model
 import LeanSwe.ProcessSandbox.Seccomp.Types
@@ -1196,5 +1197,86 @@ theorem eval_compiled_bad_arch_eperm (arch : SeccompArch) :
   dsimp only [Seccomp.compileSeccompBpf, Seccomp.defaultApi]
   rw [evalBpf_compileSeccompBpf_eq_model]
   cases arch <;> rfl
+
+private theorem seccompModelVerdict_eq_decoded (arch : SeccompArch) (inp : SeccompData) :
+    seccompModelVerdict arch inp =
+      (match decodeSeccompSyscall arch inp with
+        | none => SECCOMP_RET_ALLOW
+        | some .clone3Attempt => SECCOMP_RET_ERRNO_ENOSYS
+        | some (.anonUnixSocketpair .stream) => SECCOMP_RET_ALLOW
+        | some (.anonUnixSocketpair .seqpacket) => SECCOMP_RET_ALLOW
+        | some (.cloneProc _ false) => SECCOMP_RET_ALLOW
+        | some _ => SECCOMP_RET_ERRNO_EPERM) := by
+  unfold seccompModelVerdict decodeSeccompSyscall
+  by_cases hArch : inp.arch != auditArchOf arch
+  · simp [hArch]
+  · simp only [hArch, Bool.false_eq_true, ↓reduceIte]
+    by_cases hX32 : (arch == .x86_64 && decide (inp.nr ≥ X32_SYSCALL_BIT)) = true
+    · have hA : (arch == .x86_64) = true := (Bool.and_eq_true _ _).mp hX32 |>.1
+      have hN : inp.nr ≥ X32_SYSCALL_BIT := of_decide_eq_true ((Bool.and_eq_true _ _).mp hX32 |>.2)
+      simp [hA, hN]
+    · have hX32f : (arch == .x86_64 && decide (inp.nr ≥ X32_SYSCALL_BIT)) = false := Bool.eq_false_iff.mpr hX32
+      simp only [hX32f, Bool.false_eq_true, ↓reduceIte]
+      by_cases hC3 : inp.nr == (syscallNumbersFor arch).clone3
+      · simp [hC3]
+      · simp only [hC3, Bool.false_eq_true, ↓reduceIte]
+        by_cases hCl : inp.nr == (syscallNumbersFor arch).clone
+        · simp only [hCl, ↓reduceIte]
+          cases ((inp.args.a0.toUInt32 &&& CLONE_NEW_NS_MASK) != 0) <;> rfl
+        · simp only [hCl, Bool.false_eq_true, ↓reduceIte]
+          by_cases hSo : inp.nr == (syscallNumbersFor arch).socket
+          · simp only [hSo, ↓reduceIte]
+            by_cases hU : inp.args.a0.toUInt32 == LINUX_AF_UNIX
+            · simp [hU]
+            · by_cases hS : inp.args.a0.toUInt32 == LINUX_AF_SMC <;> simp [hU, hS]
+          · simp only [hSo, Bool.false_eq_true, ↓reduceIte]
+            by_cases hSp : inp.nr == (syscallNumbersFor arch).socketpair
+            · simp only [hSp, ↓reduceIte]
+              by_cases hU : inp.args.a0.toUInt32 == LINUX_AF_UNIX
+              · have hNotNe : (inp.args.a0.toUInt32 != LINUX_AF_UNIX) = false := by simp [bne, beq_iff_eq.mp hU]
+                by_cases hPr : inp.args.a2.toUInt32 == 0
+                · have hNotPr : (inp.args.a2.toUInt32 != 0) = false := by simp [bne, beq_iff_eq.mp hPr]
+                  by_cases hStr : (inp.args.a1.toUInt32 &&& LINUX_SOCK_TYPE_MASK_CLEAR_FLAGS) == LINUX_SOCK_STREAM
+                  · simp [hU, hNotNe, hPr, hNotPr, hStr]
+                  · by_cases hSeq : (inp.args.a1.toUInt32 &&& LINUX_SOCK_TYPE_MASK_CLEAR_FLAGS) == LINUX_SOCK_SEQPACKET <;>
+                      simp [hU, hNotNe, hPr, hNotPr, hStr, hSeq]
+                · have hNotPr : (inp.args.a2.toUInt32 != 0) = true := bne_iff_ne.mpr fun h => hPr (beq_iff_eq.mpr h)
+                  simp [hU, hNotNe, hPr, hNotPr]
+              · have hNe : (inp.args.a0.toUInt32 != LINUX_AF_UNIX) = true := bne_iff_ne.mpr fun h => hU (beq_iff_eq.mpr h)
+                simp [hU, hNe]
+            · simp only [hSp, Bool.false_eq_true, ↓reduceIte]
+              by_cases hSto : inp.nr == (syscallNumbersFor arch).sendto
+              · simp only [hSto, ↓reduceIte]
+                cases ((inp.args.a3.toUInt32 &&& LINUX_MSG_FASTOPEN) != 0) <;> rfl
+              · simp only [hSto, Bool.false_eq_true, ↓reduceIte]
+                by_cases hSm : inp.nr == (syscallNumbersFor arch).sendmsg
+                · simp only [hSm, ↓reduceIte]
+                  cases ((inp.args.a2.toUInt32 &&& LINUX_MSG_FASTOPEN) != 0) <;> rfl
+                · simp only [hSm, Bool.false_eq_true, ↓reduceIte]
+                  by_cases hSmm : inp.nr == (syscallNumbersFor arch).sendmmsg
+                  · simp only [hSmm, ↓reduceIte]
+                    cases ((inp.args.a3.toUInt32 &&& LINUX_MSG_FASTOPEN) != 0) <;> rfl
+                  · simp only [hSmm, Bool.false_eq_true, ↓reduceIte]
+                    have hSame := classifyDeniedSyscallNr_isSome_iff (syscallNumbersFor arch) inp.nr
+                    cases hCls : classifyDeniedSyscallNr (syscallNumbersFor arch) inp.nr with
+                    | none =>
+                      have hNot : (denySyscallNumbers (syscallNumbersFor arch)).contains inp.nr = false := by
+                        rw [← hSame, hCls]; rfl
+                      rw [hNot]; rfl
+                    | some op =>
+                      have hMem : (denySyscallNumbers (syscallNumbersFor arch)).contains inp.nr = true := by
+                        rw [← hSame, hCls]; rfl
+                      rw [hMem]
+                      cases op <;> rfl
+
+/-- Full public `Interface` refinement of `LeanSwe.ProcessSandbox.Seccomp` against `Model`. -/
+theorem refines_model :
+    Core.RefinesPure Seccomp.compileSeccompBpf allowedCompileSeccompBpf ∧
+    Core.RefinesPureEq Seccomp.encodeSeccompBpf encodeSeccompBpfModel :=
+  ⟨fun arch => ⟨compileSeccompBpf_valid arch, fun inp => by
+      dsimp only [Seccomp.compileSeccompBpf, Seccomp.defaultApi]
+      rw [evalBpf_compileSeccompBpf_eq_model]
+      exact congrArg some (seccompModelVerdict_eq_decoded arch inp)⟩,
+   encodeSeccompBpf_eq_model_pub⟩
 
 end LeanSwe.ProcessSandbox.Seccomp.Proofs

@@ -856,4 +856,46 @@ def splitByModel (pattern haystack : String) : Except RegexErrorKind (Array Stri
   let cs := haystack.toList
   (parseRegex pattern).map fun r => (splitSpans cs 0 (findAllIdx r cs)).toArray
 
+/-- Allowed outcome relation for `RegExp.testPattern` against `testPatternModel`. -/
+def allowedTestPattern (pattern haystack : String) (out : Except RegexError Bool) : Prop :=
+  match out, testPatternModel pattern haystack with
+  | .ok a, .ok b => a = b
+  | .error e, .error k => e.kind = k ∧ e.message ≠ ""
+  | _, _ => False
+
+/-- Allowed outcome relation for `RegExp.findFirst` against `findFirstModel`. -/
+def allowedFindFirst (pattern haystack : String) (out : Except RegexError (Option MatchSpan)) : Prop :=
+  match out, findFirstModel pattern haystack with
+  | .ok a, .ok b => a = b
+  | .error e, .error k => e.kind = k ∧ e.message ≠ ""
+  | _, _ => False
+
+/-- Allowed outcome relation for `RegExp.findAll` against `findAllModel`. -/
+def allowedFindAll (pattern haystack : String) (out : Except RegexError (Array MatchSpan)) : Prop :=
+  match out, findAllModel pattern haystack with
+  | .ok a, .ok b => a = b
+  | .error e, .error k => e.kind = k ∧ e.message ≠ ""
+  | _, _ => False
+
+/-- Allowed outcome relation for `RegExp.countMatches` against `countMatchesModel`. -/
+def allowedCountMatches (pattern haystack : String) (out : Except RegexError Nat) : Prop :=
+  match out, countMatchesModel pattern haystack with
+  | .ok a, .ok b => a = b
+  | .error e, .error k => e.kind = k ∧ e.message ≠ ""
+  | _, _ => False
+
+/-- Allowed outcome relation for `RegExp.replaceAll` against `replaceAllModel`. -/
+def allowedReplaceAll (pattern haystack replacement : String) (out : Except RegexError String) : Prop :=
+  match out, replaceAllModel pattern haystack replacement with
+  | .ok a, .ok b => a = b
+  | .error e, .error k => e.kind = k ∧ e.message ≠ ""
+  | _, _ => False
+
+/-- Allowed outcome relation for `RegExp.splitBy` against `splitByModel`. -/
+def allowedSplitBy (pattern haystack : String) (out : Except RegexError (Array String)) : Prop :=
+  match out, splitByModel pattern haystack with
+  | .ok a, .ok b => a = b
+  | .error e, .error k => e.kind = k ∧ e.message ≠ ""
+  | _, _ => False
+
 end LeanSwe.RegExp.Model

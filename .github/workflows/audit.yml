@@ -189,6 +189,9 @@ jobs:
       - name: Check assumptions and error coverage
         run: lake env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --allow-legacy --verify-log "$ASSUMP_LOG" --nonce "$ASSUMP_NONCE"
 
+      - name: Check assumptions self-tests
+        run: lake env lean -DwarningAsError=true --run scripts/CheckAssumptionsTest.lean
+
       - name: Check non-Lean thinness gate
         run: lake env lean -DwarningAsError=true --run scripts/CheckForeignThinness.lean .
 
