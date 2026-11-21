@@ -1,12 +1,11 @@
 import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Impl
-import LeanSwe.ConnectProxy.Raw.Interface
 
 namespace LeanSwe.ConnectProxy
 
-/-- Default `IO` HTTP `CONNECT` proxy API backed by `LeanSwe.ConnectProxy.Raw.defaultOps`. -/
+/-- Default `IO` HTTP `CONNECT` proxy API backed by `LeanSwe.LinuxSyscall.{Net,Poll,Dns,TimeRand}`. -/
 def defaultApi : ConnectProxyApi :=
-  Internal.mkApiM Raw.defaultOps
+  Internal.mkScopedApiM Internal.defaultScopedIoOps
 
 /-- Parse a strict IPv4 (`a.b.c.d`) or RFC 4291 IPv6 literal into `IpAddr`. -/
 @[inline] def parseIpAddr (s : String) : Except ProxyError IpAddr :=

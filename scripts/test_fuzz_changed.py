@@ -319,6 +319,8 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
             _git(src, "checkout", "--orphan", "cr-orphan"); _write_files(src, {"z.txt": "z\n"}); _commit_all(src, "cr", env_extra=cr_env)
             rcr = subprocess.run(["bash", "-c", script], cwd=src, env={**os.environ, "RECORDED_BASE": rec}, capture_output=True, text=True)
             self.assertEqual((rcr.returncode, rcr.stdout.strip()), (0, rec))
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_mutate_and_test_collects_sysbridge_and_relay_targets(self) -> None:
+        import importlib.util; s = importlib.util.spec_from_file_location("mutate_and_test", REPO_ROOT / "scripts/mutate_and_test.py"); assert s and s.loader; m = importlib.util.module_from_spec(s); sys.modules["mutate_and_test"] = m; s.loader.exec_module(m)
+        ts, _ = m.resolve_targets(REPO_ROOT, "ConnectProxy"); pt, _ = m.resolve_targets(REPO_ROOT, "Process")
+        self.assertEqual([t.as_posix() for t in ts], ["LeanSwe/ConnectProxy/Impl.lean", "LeanSwe/ConnectProxy/SysBridge.lean", "LeanSwe/ConnectProxy/Relay.lean"]); self.assertEqual([t.as_posix() for t in pt], ["LeanSwe/Process/Impl.lean"]); self.assertGreater(sum(len(m.generate_lean_mutants(t, (REPO_ROOT / t).read_text("utf-8"))) for t in ts), 50)
+if __name__ == "__main__": unittest.main()

@@ -1,10 +1,9 @@
+import Core.Assumptions
 import LeanSwe.ConnectProxy.Interface
-import LeanSwe.ConnectProxy.Raw.Interface
 
 namespace LeanSwe.ConnectProxy.RuntimeTests
 
 open LeanSwe.ConnectProxy
-open LeanSwe.ConnectProxy.Raw
 
 private def assertTrue (cond : Bool) (msg : String) : IO Unit := do
   if !cond then
@@ -23,10 +22,20 @@ private def assertErrKind {α : Type} (res : Except ProxyError α) (expected : P
     if e.kind != expected || e.message == "" then
       throw (IO.userError s!"ConnectProxy ASSERTION FAILED: {msg} (got {repr e}, expected {repr expected})")
 
+private def countSelfOpenFds : IO Nat := do
+  return (← (System.FilePath.mk "/proc/self/fd").readDir).size
+
+private def printlnSafe (msg : String) : IO Unit := do
+  try
+    IO.println msg
+  catch _ =>
+    pure ()
+
 private def runPy (script : String) (args : Array String := #[]) : IO String := do
   let out ← IO.Process.output {
     cmd := "python3"
     args := #["-c", script] ++ args
+    stdin := .null
   }
   if out.exitCode != 0 then
     throw (IO.userError s!"python3 failed (exit {out.exitCode}):\nstdout: {out.stdout}\nstderr: {out.stderr}")
@@ -303,6 +312,7 @@ private def testTunnelPipelineHalfCloseFailoverAndCurl : IO Unit := do
           "--http1.1",
           s!"http://127.0.0.1:{httpPort}/hello"
         ]
+        stdin := .null
       }
       assertTrue (curlOut.exitCode == 0 && curlOut.stdout == "hello-from-tunnel")
         s!"curl tunnel integration failed: exit={curlOut.exitCode} out={curlOut.stdout} err={curlOut.stderr}"
@@ -494,15 +504,31 @@ private def testCallbackErrorInFlightStopAndParallel : IO Unit := do
       allowedTargets := #[{ host := "127.0.0.1", port := hcPort }]
       ipPolicy := { base := .empty, extraAllows := #[allowLoopback] }
     }
+    let fdsBeforeErr ← countSelfOpenFds
+    let errPortRef ← IO.mkRef (0 : UInt16)
     let errRes ← withProxy cfg fun proxy => do
+      errPortRef.set proxy.port
       let _ ← runPy (
         "import socket, sys\n" ++
         "s = socket.create_connection(('127.0.0.1', int(sys.argv[1])), timeout=3)\n" ++
-        "s.sendall(b'CONNECT 127.0.0.1:')\n"
+        "s.sendall(b'CONNECT 127.0.0.1:')\n" ++
+        "s.close()\n"
       ) #[toString proxy.port]
       return (.error { kind := .ioError, message := "caller aborted" } : Except ProxyError Unit)
     assertErrKind errRes .ioError "withProxy callback error preserved"
-    assertTrue ((← Raw.activeProxyCount) == 0) "activeProxyCount == 0 after callback error"
+    let errPort ← errPortRef.get
+    let _ ← runPy (
+      "import socket, sys\n" ++
+      "try:\n" ++
+      "  s = socket.create_connection(('127.0.0.1', int(sys.argv[1])), timeout=1)\n" ++
+      "  s.close()\n" ++
+      "  raise AssertionError('listener still accepting after callback error')\n" ++
+      "except OSError:\n" ++
+      "  pass\n"
+    ) #[toString errPort]
+    let fdsAfterErr ← countSelfOpenFds
+    assertTrue (fdsAfterErr == fdsBeforeErr)
+      s!"proxy leaked FDs on callback error: before={fdsBeforeErr} after={fdsAfterErr}"
 
     let child ← IO.Process.spawn {
       cmd := "python3"
@@ -567,9 +593,487 @@ private def testCallbackErrorInFlightStopAndParallel : IO Unit := do
   finally
     stopServer hcSrv
 
+private def mkStartErrorOps (rawErr : ConnectProxyRawError) : RawConnectProxyOps :=
+  { mapRawError := Model.mapRawErrorPure
+    startProxy := fun _ _ _ => pure (.error (Model.mapRawErrorPure rawErr))
+    stopProxy := fun _ => pure (.ok #[])
+    activeProxyCount := pure 0 }
+
+/-- Verify `parseIpAddr` rejects wildcard, leading-zero octal, shorthand, and bracketed inputs with `.invalidInput`. -/
+def err_cproxy_parseIpAddr_invalidInput : IO Unit := do
+  for bad in ["10.1*", "010.0.0.1", "127.1", "[::1]"] do
+    assertErrKind (parseIpAddr bad) .invalidInput s!"parseIpAddr {bad}"
+
+/-- Verify `parseIpPrefix` rejects wildcard, non-zero host bits, and out-of-range prefix lengths with `.invalidInput`. -/
+def err_cproxy_parseIpPrefix_invalidInput : IO Unit := do
+  for bad in ["10.1*", "10.20.1.5/24", "10.0.0.0/33", "fe80::/129"] do
+    assertErrKind (parseIpPrefix bad) .invalidInput s!"parseIpPrefix {bad}"
+
+/-- Verify `parseConnectRequest` rejects non-CONNECT methods, malformed framing, and out-of-range ports with `.invalidInput`. -/
+def err_cproxy_parseConnectRequest_invalidInput : IO Unit := do
+  for bad in ["GET / HTTP/1.1\r\n\r\n", "CONNECT example.com:0 HTTP/1.1\r\n\r\n", "CONNECT example.com:443 HTTP/1.1\r\n"] do
+    assertErrKind (parseConnectRequest bad.toUTF8) .invalidInput s!"parseConnectRequest {repr bad}"
+
+/-- Verify `validateConfig` rejects zero limits, invalid CIDR masks, and port-0 target rules with `.invalidInput`. -/
+def err_cproxy_validateConfig_invalidInput : IO Unit := do
+  let badCfgs : List ProxyConfig :=
+    [ { limits := { maxHeaderBytes := 0 } }
+    , { limits := { maxConcurrentTunnels := 0 } }
+    , { allowedTargets := #[{ host := "example.com", port := 0 }] } ]
+  for bad in badCfgs do
+    assertErrKind (validateConfig bad) .invalidInput "validateConfig invalid"
+
+/-- Verify `withProxy` rejects invalid configurations with `.invalidInput` before opening any listener socket. -/
+def err_cproxy_withProxy_invalidInput : IO Unit := do
+  let res ← withProxy { limits := { maxHeaderBytes := 0 } } fun _ => pure (.ok ())
+  assertErrKind res .invalidInput "withProxy invalidInput"
+
+/-- Verify `withProxy` returns `.addressInUse` when binding an already-listening `127.0.0.1` port. -/
+def err_cproxy_withProxy_addressInUse : IO Unit := do
+  let outerRes ← withProxy { listenPort := 0 } fun p => do
+    let innerRes ← withProxy { listenPort := p.port } fun _ => pure (.ok ())
+    assertErrKind innerRes .addressInUse "withProxy EADDRINUSE"
+    return .ok p.port
+  let boundPort ← assertOk outerRes "outer withProxy for EADDRINUSE"
+  assertTrue (boundPort.1 != 0) "outer ephemeral port non-zero"
+
+/-- Verify `withProxy` surfaces `.permissionDenied` (`EACCES`) from listener startup via `Internal.mkApiM`. -/
+def err_cproxy_withProxy_permissionDenied : IO Unit := do
+  let ops := mkStartErrorOps (.permissionDenied 13 "permission denied binding listener")
+  let res ← (Internal.mkApiM ops).withProxy { listenPort := 80 } fun _ => pure (.ok ())
+  assertErrKind res .permissionDenied "withProxy permissionDenied"
+
+/-- Verify `withProxy` surfaces `.resourceExhausted` (`EMFILE`) from listener startup via `Internal.mkApiM`. -/
+def err_cproxy_withProxy_resourceExhausted : IO Unit := do
+  let ops := mkStartErrorOps (.resourceExhausted 24 "too many open files")
+  let res ← (Internal.mkApiM ops).withProxy { listenPort := 0 } fun _ => pure (.ok ())
+  assertErrKind res .resourceExhausted "withProxy resourceExhausted"
+
+/-- Verify `withProxy` propagates `.ioError` cleanly while tearing down the listener without leaking descriptors. -/
+def err_cproxy_withProxy_ioError : IO Unit := do
+  let fdsBefore ← countSelfOpenFds
+  let res ← withProxy (α := Unit) { listenPort := 0 } fun _ =>
+    pure (.error { kind := .ioError, message := "injected callback ioError" })
+  assertErrKind res .ioError "withProxy ioError"
+  let fdsAfter ← countSelfOpenFds
+  assertTrue (fdsAfter == fdsBefore)
+    s!"withProxy ioError leaked file descriptors: before={fdsBefore} after={fdsAfter}"
+
+/-- Registry of error-coverage runtime tests for `LeanSwe.ConnectProxy`. -/
+def registeredErrorTests : Array Core.RegisteredErrorTest := #[
+  ⟨"LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_parseIpAddr_invalidInput", .real,
+    err_cproxy_parseIpAddr_invalidInput⟩,
+  ⟨"LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_parseIpPrefix_invalidInput", .real,
+    err_cproxy_parseIpPrefix_invalidInput⟩,
+  ⟨"LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_parseConnectRequest_invalidInput", .real,
+    err_cproxy_parseConnectRequest_invalidInput⟩,
+  ⟨"LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_validateConfig_invalidInput", .real,
+    err_cproxy_validateConfig_invalidInput⟩,
+  ⟨"LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_withProxy_invalidInput", .real,
+    err_cproxy_withProxy_invalidInput⟩,
+  ⟨"LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_withProxy_addressInUse", .real,
+    err_cproxy_withProxy_addressInUse⟩,
+  ⟨"LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_withProxy_permissionDenied", .mocked,
+    err_cproxy_withProxy_permissionDenied⟩,
+  ⟨"LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_withProxy_resourceExhausted", .mocked,
+    err_cproxy_withProxy_resourceExhausted⟩,
+  ⟨"LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_withProxy_ioError", .real,
+    err_cproxy_withProxy_ioError⟩
+]
+
+private def rtSendAll (fd : LinuxSyscall.RawFd) (bs : ByteArray) : IO Unit := do
+  let mut off : Nat := 0
+  let mut steps : Nat := 0
+  while off < bs.size && steps < bs.size + 64 do
+    steps := steps + 1
+    let slice := if off == 0 then bs else bs.extract off bs.size
+    match ← LinuxSyscall.Net.sendto fd slice { nosignal := true } with
+    | .ok n =>
+      if n == 0 then
+        throw (IO.userError "rtSendAll unexpected zero write")
+      off := off + n.toNat
+    | .error e =>
+      if e != LinuxSyscall.Errno.EINTR then
+        throw (IO.userError s!"rtSendAll sendto failed errno={e}")
+
+private def rtConnectLoopback (port : UInt16) : IO LinuxSyscall.RawFd := do
+  match ← LinuxSyscall.Net.socket .inet .stream { cloexec := true } 0 with
+  | .error e => throw (IO.userError s!"rtConnectLoopback socket failed errno={e}")
+  | .ok fd =>
+    let addr := LinuxSyscall.Net.SockAddr.ipv4 LinuxSyscall.Net.INADDR_LOOPBACK port
+    match ← LinuxSyscall.Net.connect fd addr with
+    | .ok () => return fd
+    | .error e =>
+      let _ ← LinuxSyscall.Files.close fd
+      throw (IO.userError s!"rtConnectLoopback connect failed errno={e}")
+
+private def rtRecvHead (fd : LinuxSyscall.RawFd) (timeoutMs : Nat) : IO String := do
+  let mut acc := ByteArray.empty
+  let mut waited : Nat := 0
+  while waited < timeoutMs do
+    match ← LinuxSyscall.Poll.ppoll #[(fd, { pollin := true })] (some { sec := 0, nsec := 20000000 }) with
+    | .error e =>
+      if e != LinuxSyscall.Errno.EINTR then
+        throw (IO.userError s!"rtRecvHead ppoll failed errno={e}")
+    | .ok revs =>
+      let rev : LinuxSyscall.Poll.PollEvents := match revs[0]? with | some r => r | none => {}
+      if rev.pollin || rev.pollhup || rev.pollerr then
+        match ← LinuxSyscall.Net.recvfrom fd 1024 { dontwait := true } with
+        | .ok bs =>
+          if bs.size == 0 then
+            return String.fromUTF8! acc
+          acc := acc ++ bs
+          let s := String.fromUTF8! acc
+          if (s.splitOn "\r\n\r\n").length > 1 then
+            return s
+        | .error e =>
+          if e != LinuxSyscall.Errno.EINTR && e != LinuxSyscall.Errno.EAGAIN then
+            return String.fromUTF8! acc
+      else
+        waited := waited + 20
+  return String.fromUTF8! acc
+
+private def waitFlagTrue (flag : IO.Ref Bool) (maxMs : Nat) (label : String) : IO Unit := do
+  let mut waited : Nat := 0
+  while !(← flag.get) && waited < maxMs do
+    IO.sleep 5
+    waited := waited + 5
+  assertTrue (← flag.get) s!"timed out waiting for {label}"
+
+private def closeSocketpair (a b : LinuxSyscall.RawFd) : IO Unit := do
+  let _ ← LinuxSyscall.Files.close a
+  let _ ← LinuxSyscall.Files.close b
+
+private def monoMsNow : IO Nat := do
+  match ← LinuxSyscall.TimeRand.clock_gettime .monotonic with
+  | .ok ts => return SysBridge.timespecToMs ts
+  | .error e => throw (IO.userError s!"clock_gettime failed errno={e}")
+
+private def testPerJobDnsWakeupCancelAndEmfile : IO Unit := do
+  let fdsStart ← countSelfOpenFds
+
+  let cancelEntered ← IO.mkRef false
+  let cancelRelease ← IO.mkRef false
+  let (dummyA, dummyB) ← match ← LinuxSyscall.Net.socketpair .unix .stream { nonblock := true, cloexec := true } with
+    | .ok p => pure p
+    | .error e => throw (IO.userError s!"dummy socketpair failed errno={e}")
+  let mut slotOpt : Option SysBridge.IoDnsJob := none
+  try
+    let (slot', _) ← SysBridge.startDnsIo {} { phase := .done } #[] dummyA "cancel.invalid" 443
+      (dnsResolve := fun _ => do
+        cancelEntered.set true
+        let mut slept : Nat := 0
+        while !(← cancelRelease.get) && slept < 5000 do
+          IO.sleep 5
+          slept := slept + 5
+        return .ok [LinuxSyscall.Dns.DnsAddr.ipv4 127 0 0 1])
+    match slot'.phase with
+    | .dns _ _ _ job =>
+      slotOpt := some job
+      waitFlagTrue cancelEntered 2000 "cancelled DNS worker entry"
+      SysBridge.cancelDnsJobIo job
+      assertTrue ((← job.dnsRRef.get).isNone) "cancelDnsJobIo closed dnsR"
+      SysBridge.closeDnsReadFd job
+      cancelRelease.set true
+      let _ ← IO.wait job.task
+      let st ← job.stateRef.get
+      assertTrue st.cancelled "IoDnsJobState.cancelled recorded true"
+      assertTrue st.result?.isNone "cancelled DNS worker skipped writing result?"
+    | _ => throw (IO.userError "startDnsIo did not enter .dns phase")
+  finally
+    cancelRelease.set true
+    if let some job := slotOpt then
+      let _ ← IO.wait job.task
+    closeSocketpair dummyA dummyB
+  let fdsAfterCancel ← countSelfOpenFds
+  assertTrue (fdsAfterCancel == fdsStart)
+    s!"cancelDnsJobIo leaked FDs: before={fdsStart} after={fdsAfterCancel}"
+
+  let slowEntered ← IO.mkRef false
+  let slowRelease ← IO.mkRef false
+  let slowDone ← IO.mkRef false
+  let tbl ← IO.mkRef ({} : SysBridge.IoProxyTable)
+  let gatedResolve (host : String) : IO (Except LinuxSyscall.Dns.DnsError (List LinuxSyscall.Dns.DnsAddr)) := do
+    if host == "slow.example.invalid" then
+      slowEntered.set true
+      let mut waited : Nat := 0
+      while !(← slowRelease.get) && waited < 5000 do
+        IO.sleep 10
+        waited := waited + 10
+      slowDone.set true
+      return .ok [LinuxSyscall.Dns.DnsAddr.ipv4 93 184 216 34]
+    else
+      return .ok [LinuxSyscall.Dns.DnsAddr.ipv4 127 0 0 1]
+  let ops := SysBridge.mkIoRawOps tbl (dnsResolve := gatedResolve)
+  let cfg : ProxyConfig :=
+    { allowedTargets := #[
+        { host := "slow.example.invalid", port := 443 },
+        { host := "fast.example.invalid", port := 443 }
+      ]
+      ipPolicy := { base := .empty }
+      limits := { headerTimeoutMs := 5000, connectTimeoutMs := 5000, maxConcurrentTunnels := 4 } }
+  let vcfg ← assertOk (validateConfig cfg) "validate slow/fast config"
+  let proxy ← assertOk (← ops.startProxy vcfg
+      (Model.decideConnectHead vcfg.config) (Model.decideResolvedIps vcfg.config.ipPolicy))
+    "startProxy slow/fast"
+  let slowSock ← rtConnectLoopback proxy.port
+  let mut slowSockClosed := false
+  let mut stopped := false
+  try
+    rtSendAll slowSock "CONNECT slow.example.invalid:443 HTTP/1.1\r\n\r\n".toUTF8
+    waitFlagTrue slowEntered 2000 "slow DNS worker start"
+    let fastSock ← rtConnectLoopback proxy.port
+    try
+      rtSendAll fastSock "CONNECT fast.example.invalid:443 HTTP/1.1\r\n\r\n".toUTF8
+      let fastResp ← rtRecvHead fastSock 1500
+      assertTrue ((fastResp.splitOn "403 Forbidden").length > 1)
+        s!"fast slot did not wake independently while slow DNS blocked: {repr fastResp}"
+      assertTrue (!(← slowDone.get)) "slow DNS worker should still be blocked after fast slot finished"
+    finally
+      let _ ← LinuxSyscall.Files.close fastSock
+    let t0 ← monoMsNow
+    let evs ← assertOk (← ops.stopProxy proxy) "stopProxy while slow DNS blocked"
+    stopped := true
+    let t1 ← monoMsNow
+    let elapsed := t1 - t0
+    assertTrue (elapsed < 500)
+      s!"stopProxy blocked waiting on slow DNS worker: elapsed={elapsed}ms"
+    assertTrue (!(← slowDone.get)) "slow DNS worker should still be blocked when stopProxy returns"
+    assertTrue ((← ops.activeProxyCount) == 0) "activeProxyCount == 0 right after instant stop"
+    assertTrue (evs.any fun e => e.host == some "slow.example.invalid" && e.outcome == .failed && e.reason == some "proxy stopped")
+      s!"expected proxy stopped event for slow.example.invalid, got {repr evs}"
+    let _ ← LinuxSyscall.Files.close slowSock
+    slowSockClosed := true
+
+    let canaryA ← match ← LinuxSyscall.Net.socketpair .unix .stream { nonblock := true, cloexec := true } with
+      | .ok p => pure p
+      | .error e => throw (IO.userError s!"canaryA socketpair failed errno={e}")
+    let canaryB ← match ← LinuxSyscall.Net.socketpair .unix .stream { nonblock := true, cloexec := true } with
+      | .ok p => pure p
+      | .error e =>
+        closeSocketpair canaryA.1 canaryA.2
+        throw (IO.userError s!"canaryB socketpair failed errno={e}")
+    try
+      rtSendAll canaryA.2 "CANARY_A".toUTF8
+      rtSendAll canaryB.2 "CANARY_B".toUTF8
+      slowRelease.set true
+      waitFlagTrue slowDone 2000 "slow DNS worker post-stop exit"
+      IO.sleep 30
+      let gotA ← match ← LinuxSyscall.Net.recvfrom canaryA.1 64 { dontwait := true } with
+        | .ok bs => pure (String.fromUTF8! bs)
+        | .error e => throw (IO.userError s!"canaryA recv failed after slow DNS exit errno={e}")
+      let gotB ← match ← LinuxSyscall.Net.recvfrom canaryB.1 64 { dontwait := true } with
+        | .ok bs => pure (String.fromUTF8! bs)
+        | .error e => throw (IO.userError s!"canaryB recv failed after slow DNS exit errno={e}")
+      assertTrue (gotA == "CANARY_A" && gotB == "CANARY_B")
+        s!"fresh FD canary corrupted after post-stop DNS completion: A={repr gotA} B={repr gotB}"
+      let pollAfter ← match ← LinuxSyscall.Poll.ppoll #[(canaryA.1, { pollin := true }), (canaryB.1, { pollin := true })] (some { sec := 0, nsec := 0 }) with
+        | .ok rs => pure rs
+        | .error e => throw (IO.userError s!"canary ppoll failed errno={e}")
+      let rA : LinuxSyscall.Poll.PollEvents := match pollAfter[0]? with | some r => r | none => {}
+      let rB : LinuxSyscall.Poll.PollEvents := match pollAfter[1]? with | some r => r | none => {}
+      assertTrue (!rA.pollin && !rA.pollhup && !rA.pollerr && !rA.pollnval &&
+          !rB.pollin && !rB.pollhup && !rB.pollerr && !rB.pollnval)
+        s!"unexpected event on reused canary FDs: rA={repr rA} rB={repr rB}"
+    finally
+      closeSocketpair canaryA.1 canaryA.2
+      closeSocketpair canaryB.1 canaryB.2
+  finally
+    slowRelease.set true
+    if !slowSockClosed then
+      let _ ← LinuxSyscall.Files.close slowSock
+    if !stopped then
+      let _ ← ops.stopProxy proxy
+  let mut fdMatch := false
+  for _ in [:40] do
+    let curFds ← countSelfOpenFds
+    if curFds == fdsStart then
+      fdMatch := true
+      break
+    IO.sleep 10
+  let fdsAfterSlow ← countSelfOpenFds
+  assertTrue fdMatch
+    s!"slow DNS worker leaked dnsW FD after exit: before={fdsStart} after={fdsAfterSlow}"
+
+  let emTbl ← IO.mkRef ({} : SysBridge.IoProxyTable)
+  let emOps := SysBridge.mkIoRawOps emTbl
+    (mkWakePair := pure (.error LinuxSyscall.Errno.EMFILE))
+  let emCfg : ProxyConfig :=
+    { allowedTargets := #[{ host := "emfile.example.invalid", port := 443 }]
+      limits := { headerTimeoutMs := 1500, connectTimeoutMs := 1500, maxConcurrentTunnels := 2 } }
+  let emVcfg ← assertOk (validateConfig emCfg) "validate emfile config"
+  let emPrx ← assertOk (← emOps.startProxy emVcfg
+      (Model.decideConnectHead emVcfg.config) (Model.decideResolvedIps emVcfg.config.ipPolicy))
+    "startProxy emfile"
+  let emSock ← rtConnectLoopback emPrx.port
+  let emResp ← try
+      rtSendAll emSock "CONNECT emfile.example.invalid:443 HTTP/1.1\r\n\r\n".toUTF8
+      rtRecvHead emSock 1500
+    finally
+      let _ ← LinuxSyscall.Files.close emSock
+  let emEvs ← assertOk (← emOps.stopProxy emPrx) "stopProxy emfile"
+  assertTrue ((emResp.splitOn "503 Service Unavailable").length > 1)
+    s!"expected HTTP 503 on DNS wakeup socketpair EMFILE, got {repr emResp}"
+  assertTrue (emEvs.size == 1 && emEvs[0]!.outcome == .failed)
+    s!"expected single failed event on socketpair EMFILE, got {repr emEvs}"
+  let fdsEnd ← countSelfOpenFds
+  assertTrue (fdsEnd == fdsStart)
+    s!"socketpair EMFILE path leaked FDs: before={fdsStart} after={fdsEnd}"
+
+private def sendConnectThenResetViaPython
+    (port : UInt16) (host : String) (enteredFlag : IO.Ref Bool) : IO Unit := do
+  let script :=
+    "import select, socket, struct, sys\n" ++
+    "s = socket.create_connection(('127.0.0.1', int(sys.argv[1])), timeout=5)\n" ++
+    "req = f'CONNECT {sys.argv[2]}:443 HTTP/1.1\\r\\n\\r\\n'.encode('ascii')\n" ++
+    "s.sendall(req)\n" ++
+    "r, _, _ = select.select([sys.stdin], [], [], 5.0)\n" ++
+    "if r:\n" ++
+    "  sys.stdin.read(1)\n" ++
+    "s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))\n" ++
+    "s.close()\n"
+  let child ← IO.Process.spawn {
+    cmd := "python3"
+    args := #["-c", script, toString port, host]
+    stdin := .piped
+    stdout := .null
+    stderr := .null
+  }
+  let (stdinH, child2) ← child.takeStdin
+  try
+    waitFlagTrue enteredFlag 2000 s!"DNS worker entry for {host}"
+    stdinH.putStr "x"
+    stdinH.flush
+  finally
+    let rc ← child2.wait
+    if rc != 0 then
+      throw (IO.userError s!"RST client exited with code {rc}")
+
+private def waitForFdCount (target : Nat) (maxMs : Nat) (label : String) : IO Unit := do
+  let mut waited : Nat := 0
+  let mut cur ← countSelfOpenFds
+  while cur != target && waited < maxMs do
+    IO.sleep 10
+    waited := waited + 10
+    cur ← countSelfOpenFds
+  assertTrue (cur == target)
+    s!"{label}: expected open FDs {target}, got {cur}"
+
+private def testDetachedDnsWakeupAtMaxConcurrency : IO Unit := do
+  let fdsStart ← countSelfOpenFds
+
+  let slow1Entered ← IO.mkRef false
+  let slow1Release ← IO.mkRef false
+  let slow1Done ← IO.mkRef false
+  let fastCalled ← IO.mkRef false
+  let tbl ← IO.mkRef ({} : SysBridge.IoProxyTable)
+  let resolve1 (host : String) : IO (Except LinuxSyscall.Dns.DnsError (List LinuxSyscall.Dns.DnsAddr)) := do
+    if host == "detached-slow.example.invalid" then
+      slow1Entered.set true
+      let mut waited : Nat := 0
+      while !(← slow1Release.get) && waited < 5000 do
+        IO.sleep 5
+        waited := waited + 5
+      slow1Done.set true
+      return .ok [LinuxSyscall.Dns.DnsAddr.ipv4 93 184 216 34]
+    else
+      fastCalled.set true
+      return .ok [LinuxSyscall.Dns.DnsAddr.ipv4 127 0 0 1]
+  let ops := SysBridge.mkIoRawOps tbl (dnsResolve := resolve1)
+  let cfg : ProxyConfig :=
+    { allowedTargets := #[
+        { host := "detached-slow.example.invalid", port := 443 },
+        { host := "after-detached.example.invalid", port := 443 }
+      ]
+      ipPolicy := { base := .empty }
+      limits := { headerTimeoutMs := 5000, connectTimeoutMs := 5000, maxConcurrentTunnels := 1 } }
+  let vcfg ← assertOk (validateConfig cfg) "validate detached-dns max=1 config"
+  let proxy ← assertOk (← ops.startProxy vcfg
+      (Model.decideConnectHead vcfg.config) (Model.decideResolvedIps vcfg.config.ipPolicy))
+    "startProxy detached-dns max=1"
+  let mut stopped := false
+  try
+    sendConnectThenResetViaPython proxy.port "detached-slow.example.invalid" slow1Entered
+    IO.sleep 80
+    let c2 ← rtConnectLoopback proxy.port
+    let resp2 ← try
+        rtSendAll c2 "CONNECT after-detached.example.invalid:443 HTTP/1.1\r\n\r\n".toUTF8
+        IO.sleep 40
+        assertTrue (!(← fastCalled.get))
+          "maxConcurrentTunnels=1 must stay saturated while detached DNS task is active"
+        let tWake ← monoMsNow
+        slow1Release.set true
+        let r ← rtRecvHead c2 1500
+        let wakeMs := (← monoMsNow) - tWake
+        assertTrue (wakeMs < 1000)
+          s!"proxy failed to wake promptly after detached DNS completed: wakeMs={wakeMs} resp={repr r}"
+        pure r
+      finally
+        let _ ← LinuxSyscall.Files.close c2
+    assertTrue ((resp2.splitOn "403 Forbidden").length > 1)
+      s!"expected client 2 to receive 403 Forbidden after detached DNS wakeup, got {repr resp2}"
+    waitFlagTrue slow1Done 2000 "detached slow DNS completion"
+    let evs ← assertOk (← ops.stopProxy proxy) "stopProxy detached-dns max=1"
+    stopped := true
+    assertTrue (evs.any fun e => e.host == some "detached-slow.example.invalid" &&
+        e.outcome == .failed && e.reason == some "client disconnected")
+      s!"expected client disconnected event for detached slow DNS, got {repr evs}"
+    assertTrue (evs.any fun e => e.host == some "after-detached.example.invalid" &&
+        e.outcome == .denied)
+      s!"expected denied event for after-detached client, got {repr evs}"
+  finally
+    slow1Release.set true
+    if !stopped then
+      let _ ← ops.stopProxy proxy
+  waitForFdCount fdsStart 1000 "detached DNS wakeup FD cleanup"
+
+  let slow2Entered ← IO.mkRef false
+  let slow2Release ← IO.mkRef false
+  let slow2Done ← IO.mkRef false
+  let tbl2 ← IO.mkRef ({} : SysBridge.IoProxyTable)
+  let resolve2 (_host : String) : IO (Except LinuxSyscall.Dns.DnsError (List LinuxSyscall.Dns.DnsAddr)) := do
+    slow2Entered.set true
+    let mut waited : Nat := 0
+    while !(← slow2Release.get) && waited < 5000 do
+      IO.sleep 5
+      waited := waited + 5
+    slow2Done.set true
+    return .ok [LinuxSyscall.Dns.DnsAddr.ipv4 93 184 216 34]
+  let ops2 := SysBridge.mkIoRawOps tbl2 (dnsResolve := resolve2)
+  let cfg2 : ProxyConfig :=
+    { allowedTargets := #[{ host := "teardown-detached.example.invalid", port := 443 }]
+      limits := { headerTimeoutMs := 5000, connectTimeoutMs := 5000, maxConcurrentTunnels := 1 } }
+  let vcfg2 ← assertOk (validateConfig cfg2) "validate detached teardown config"
+  let proxy2 ← assertOk (← ops2.startProxy vcfg2
+      (Model.decideConnectHead vcfg2.config) (Model.decideResolvedIps vcfg2.config.ipPolicy))
+    "startProxy detached teardown"
+  let mut stopped2 := false
+  try
+    sendConnectThenResetViaPython proxy2.port "teardown-detached.example.invalid" slow2Entered
+    IO.sleep 80
+    let tStop ← monoMsNow
+    let evs2 ← assertOk (← ops2.stopProxy proxy2) "stopProxy with pending detached DNS"
+    stopped2 := true
+    let stopMs := (← monoMsNow) - tStop
+    assertTrue (stopMs < 500)
+      s!"stopProxy blocked waiting for detached DNS task: elapsed={stopMs}ms"
+    assertTrue (evs2.any fun e => e.host == some "teardown-detached.example.invalid" &&
+        e.outcome == .failed && e.reason == some "client disconnected")
+      s!"expected client disconnected event before stopProxy teardown, got {repr evs2}"
+    let fdsWhileSlow ← countSelfOpenFds
+    assertTrue (fdsWhileSlow ≤ fdsStart + 1)
+      s!"teardownIoLoopState must close detached dnsR immediately: base={fdsStart} cur={fdsWhileSlow}"
+    slow2Release.set true
+    waitFlagTrue slow2Done 2000 "detached teardown slow worker completion"
+  finally
+    slow2Release.set true
+    if !stopped2 then
+      let _ ← ops2.stopProxy proxy2
+  waitForFdCount fdsStart 1000 "detached DNS teardown FD cleanup"
+
 /-- Execute end-to-end OS network and Python differential runtime tests for `LeanSwe.ConnectProxy`. -/
 def runAll : IO Unit := do
-  assertTrue ((← Raw.activeProxyCount) == 0) "initial activeProxyCount == 0"
+  let fdsBefore ← countSelfOpenFds
   assertErrKind (← withProxy { limits := { maxHeaderBytes := 0 } } fun _ => pure (.ok ()))
     .invalidInput "withProxy invalid config rejected"
   runPythonIpaddressDifferential
@@ -577,7 +1081,12 @@ def runAll : IO Unit := do
   testDenialsPublicOnlyBansAndPostBody
   testLimitsTimeoutOversizeConcurrencyAnd502
   testCallbackErrorInFlightStopAndParallel
-  assertTrue ((← Raw.activeProxyCount) == 0) "final activeProxyCount == 0"
-  IO.println "PASS: LeanSwe.ConnectProxy runtime tests"
+  testPerJobDnsWakeupCancelAndEmfile
+  testDetachedDnsWakeupAtMaxConcurrency
+  Core.runRegisteredErrorTests registeredErrorTests
+  let fdsAfter ← countSelfOpenFds
+  assertTrue (fdsAfter == fdsBefore)
+    s!"ConnectProxy.RuntimeTests leaked file descriptors: before={fdsBefore} after={fdsAfter}"
+  printlnSafe "PASS: LeanSwe.ConnectProxy runtime tests"
 
 end LeanSwe.ConnectProxy.RuntimeTests
