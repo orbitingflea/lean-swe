@@ -2933,6 +2933,131 @@ private def runMulticastAndV6SelfShutTests : IO Unit := do
   ms4 ← mustStep "v4s.shutWr" ms4 (.shutdown 0 .wr) .unit
   assertTrue "v4s.soErr rejects ENETUNREACH" ((Net.allowedStep ms4 (.getsockopt 0 .error) (.u32 Errno.ENETUNREACH)).isNone)
 
+private def runPreShutCloseWaitLoFlapTests : IO Unit := do
+  let mustStep (lbl : String) (s : NetState) (req : NetReq) (out : NetOutcome) : IO NetState := do
+    match Net.allowedStep s req out with
+    | some s' => return s'
+    | none => throw (IO.userError s!"pre-shut closeWait lo-flap parity: model rejected {lbl}: req={repr req} out={repr out}")
+  let mustClose (lbl : String) (s : NetState) (hid : HandleId) : IO NetState := do
+    match s.closeHandle hid with
+    | .ok s' => return s'
+    | .error e => throw (IO.userError s!"pre-shut closeWait lo-flap closeHandle {lbl} failed: {e}")
+  let nbNoClo : SockFlags := { nonblock := true, cloexec := false }
+  let blkFlags : SockFlags := { nonblock := false, cloexec := true }
+  let s0 := NetState.initial true
+  let mut c ← mustStep "ci.s0" s0 (.socket .inet6 .stream nbNoClo 6) (.opened 0)
+  c ← mustStep "ci.sh0" c (.shutdown 0 .rdwr) (.err Errno.ENOTCONN)
+  c ← mustStep "ci.lis0" c (.listen 0 0) .unit
+  c ← mustStep "ci.gsn0" c (.getsockname 0) (.addr (.ipv6 0 0 55201 0 0))
+  c ← mustStep "ci.s1" c (.socket .inet .stream nbNoClo 0) (.opened 1)
+  c ← mustStep "ci.sh1pre" c (.shutdown 1 .rdwr) (.err Errno.ENOTCONN)
+  c ← mustStep "ci.conn1" c (.connect 1 (.ipv4 INADDR_LOOPBACK 55201)) (.err Errno.EINPROGRESS)
+  c ← mustStep "ci.acc" c (.accept4 0 nbFlags) (.accepted 2 (.ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 49153 0 0))
+  let cNoFlap1 ← mustStep "ci.noFlap.sh1" c (.shutdown 1 .rdwr) .unit
+  assertTrue "ci.noFlap.sh1.wr rejects unit" ((Net.allowedStep cNoFlap1 (.shutdown 1 .wr) .unit).isNone)
+  let cNoFlap2 ← mustStep "ci.noFlap.sh1.wr" cNoFlap1 (.shutdown 1 .wr) (.err Errno.ENOTCONN)
+  assertTrue "ci.noFlap.sh2.rd rejects unit" ((Net.allowedStep cNoFlap2 (.shutdown 2 .rd) .unit).isNone)
+  let _ ← mustStep "ci.noFlap.sh2.rd" cNoFlap2 (.shutdown 2 .rd) (.err Errno.ENOTCONN)
+  let cDown ← mustStep "ci.loDown" c (.ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname) (.u32 0)
+  let cDownSh ← mustStep "ci.sh1Down" cDown (.shutdown 1 .rdwr) .unit
+  assertTrue "ci.sh1Down queues single shutFin" (cDownSh.loPendingTcp.length == 1)
+  let cDownShDup ← mustStep "ci.sh1DownDup" cDownSh (.shutdown 1 .wr) .unit
+  assertTrue "ci.sh1DownDup does not duplicate shutFin" (cDownShDup.loPendingTcp.length == 1)
+  let cUp ← mustStep "ci.loUp" cDownSh (.ioctl 0 (.setIfFlags defaultLoFlags) loIfname) (.u32 0)
+  let c12Unit ← mustStep "ci.sh1Up.unit" cUp (.shutdown 1 .wr) .unit
+  let _ ← mustStep "ci.sh2Up.rd.unit" c12Unit (.shutdown 2 .rd) .unit
+  let _ ← mustStep "ci.sh2Up.wr.unit" c12Unit (.shutdown 2 .wr) .unit
+  let _ ← mustStep "ci.sh2Up.rdwr.unit" c12Unit (.shutdown 2 .rdwr) .unit
+  let c12Err ← mustStep "ci.sh1Up.enotconn" cUp (.shutdown 1 .wr) (.err Errno.ENOTCONN)
+  let _ ← mustStep "ci.sh2Up.enotconn" c12Err (.shutdown 2 .rd) (.err Errno.ENOTCONN)
+  let mut v4 ← mustStep "v4.s0" s0 (.socket .inet .stream nbFlags 0) (.opened 0)
+  v4 ← mustStep "v4.sh0" v4 (.shutdown 0 .wr) (.err Errno.ENOTCONN)
+  v4 ← mustStep "v4.lis0" v4 (.listen 0 4) .unit
+  v4 ← mustStep "v4.gsn0" v4 (.getsockname 0) (.addr (.ipv4 INADDR_ANY 55202))
+  v4 ← mustStep "v4.s1" v4 (.socket .inet .stream nbFlags 0) (.opened 1)
+  v4 ← mustStep "v4.sh1pre" v4 (.shutdown 1 .wr) (.err Errno.ENOTCONN)
+  v4 ← mustStep "v4.conn1" v4 (.connect 1 (.ipv4 INADDR_LOOPBACK 55202)) (.err Errno.EINPROGRESS)
+  v4 ← mustStep "v4.acc" v4 (.accept4 0 nbFlags) (.accepted 2 (.ipv4 INADDR_LOOPBACK 49154))
+  v4 ← mustStep "v4.loDown" v4 (.ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname) (.u32 0)
+  v4 ← mustStep "v4.sh1Down" v4 (.shutdown 1 .wr) .unit
+  v4 ← mustStep "v4.loUp" v4 (.ioctl 0 (.setIfFlags defaultLoFlags) loIfname) (.u32 0)
+  let _ ← mustStep "v4.sh2.unit" v4 (.shutdown 2 .rd) .unit
+  let _ ← mustStep "v4.rx2.eagain" v4 (.recvfrom 2 8 { dontwait := true }) (.err Errno.EAGAIN)
+  let _ ← mustStep "v4.rx2.eof" v4 (.recvfrom 2 8 { dontwait := true }) (.bytes ByteArray.empty)
+  let _ ← mustStep "v4.gso1.zero" v4 (.getsockopt 1 .error) (.u32 0)
+  assertTrue "v4.gso1 rejects ENETUNREACH" ((Net.allowedStep v4 (.getsockopt 1 .error) (.u32 Errno.ENETUNREACH)).isNone)
+  let mut v6 ← mustStep "v6.s0" s0 (.socket .inet6 .stream nbFlags 0) (.opened 0)
+  v6 ← mustStep "v6.sh0" v6 (.shutdown 0 .rdwr) (.err Errno.ENOTCONN)
+  v6 ← mustStep "v6.lis0" v6 (.listen 0 4) .unit
+  v6 ← mustStep "v6.gsn0" v6 (.getsockname 0) (.addr (.ipv6 0 0 55203 0 0))
+  v6 ← mustStep "v6.s1" v6 (.socket .inet6 .stream nbFlags 0) (.opened 1)
+  v6 ← mustStep "v6.sh1pre" v6 (.shutdown 1 .rdwr) (.err Errno.ENOTCONN)
+  v6 ← mustStep "v6.conn1" v6 (.connect 1 (.ipv6 0 1 55203 0 0)) (.err Errno.EINPROGRESS)
+  v6 ← mustStep "v6.acc" v6 (.accept4 0 nbFlags) (.accepted 2 (.ipv6 0 1 49155 0 0))
+  v6 ← mustStep "v6.loDown" v6 (.ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname) (.u32 0)
+  v6 ← mustStep "v6.sh1Down" v6 (.shutdown 1 .rdwr) .unit
+  let v6Err ← mustStep "v6.gso1.unreach" v6 (.getsockopt 1 .error) (.u32 Errno.ENETUNREACH)
+  let v6Up ← mustStep "v6.loUp" v6Err (.ioctl 0 (.setIfFlags defaultLoFlags) loIfname) (.u32 0)
+  let _ ← mustStep "v6.sh1.unit" v6Up (.shutdown 1 .wr) .unit
+  let _ ← mustStep "v6.sh2.unit" v6Up (.shutdown 2 .rd) .unit
+  let _ ← mustStep "v6.sh2.enotconn" v6Up (.shutdown 2 .rd) (.err Errno.ENOTCONN)
+  let _ ← mustStep "v6.bind1.einval" v6Up (.bind 1 (.ipv6 0 1 0 0 0)) (.err Errno.EINVAL)
+  let _ ← mustStep "v6.bind1.unit" v6Up (.bind 1 (.ipv6 0 1 0 0 0)) .unit
+  let mut mv ← mustStep "mv.s0" s0 (.socket .inet .stream nbFlags 0) (.opened 0)
+  mv ← mustStep "mv.sh0" mv (.shutdown 0 .rdwr) (.err Errno.ENOTCONN)
+  mv ← mustStep "mv.lis0" mv (.listen 0 4) .unit
+  mv ← mustStep "mv.gsn0" mv (.getsockname 0) (.addr (.ipv4 INADDR_ANY 55204))
+  mv ← mustStep "mv.s1" mv (.socket .inet6 .stream nbFlags 0) (.opened 1)
+  mv ← mustStep "mv.sh1pre" mv (.shutdown 1 .rdwr) (.err Errno.ENOTCONN)
+  mv ← mustStep "mv.conn1" mv (.connect 1 (.ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 55204 0 0)) (.err Errno.EINPROGRESS)
+  mv ← mustStep "mv.acc" mv (.accept4 0 nbFlags) (.accepted 2 (.ipv4 INADDR_LOOPBACK 49156))
+  mv ← mustStep "mv.loDown" mv (.ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname) (.u32 0)
+  mv ← mustStep "mv.sh1Down" mv (.shutdown 1 .rdwr) .unit
+  mv ← mustStep "mv.loUp" mv (.ioctl 0 (.setIfFlags defaultLoFlags) loIfname) (.u32 0)
+  let _ ← mustStep "mv.sh2.rdwr.unit" mv (.shutdown 2 .rdwr) .unit
+  let mut orp ← mustStep "orp.s0" s0 (.socket .inet .stream nbFlags 0) (.opened 0)
+  orp ← mustStep "orp.lis0" orp (.listen 0 4) .unit
+  orp ← mustStep "orp.gsn0" orp (.getsockname 0) (.addr (.ipv4 INADDR_ANY 55205))
+  orp ← mustStep "orp.s1" orp (.socket .inet .stream nbFlags 0) (.opened 1)
+  orp ← mustStep "orp.sh1pre" orp (.shutdown 1 .rdwr) (.err Errno.ENOTCONN)
+  orp ← mustStep "orp.conn1" orp (.connect 1 (.ipv4 INADDR_LOOPBACK 55205)) (.err Errno.EINPROGRESS)
+  orp ← mustStep "orp.acc" orp (.accept4 0 nbFlags) (.accepted 2 (.ipv4 INADDR_LOOPBACK 49157))
+  orp ← mustClose "orp.close2" orp 2
+  let orpDown ← mustStep "orp.loDown" orp (.ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname) (.u32 0)
+  let orpFlap ← mustStep "orp.loUp" orpDown (.ioctl 0 (.setIfFlags defaultLoFlags) loIfname) (.u32 0)
+  let _ ← mustStep "orp.noShut.conn2.unit" orpFlap (.connect 1 (.ipv4 INADDR_LOOPBACK 55205)) .unit
+  let _ ← mustStep "orp.noShut.sh1.rd.unit" orpFlap (.shutdown 1 .rd) .unit
+  assertTrue "orp.noShut.conn2 modelOps returns unit" ((stepNetCore orpFlap (.connect 1 (.ipv4 INADDR_LOOPBACK 55205)) none).map Prod.fst == some .unit)
+  assertTrue "orp.noShut.sh1.rd modelOps returns unit" ((stepNetCore orpFlap (.shutdown 1 .rd) none).map Prod.fst == some .unit)
+  let _ ← mustStep "orp.noShut.bind1.einval" orpFlap (.bind 1 (.ipv4 INADDR_LOOPBACK 0)) (.err Errno.EINVAL)
+  let orpShutDown ← mustStep "orp.shut.wrDown" orpDown (.shutdown 1 .wr) .unit
+  let orpShutUp ← mustStep "orp.shut.loUp" orpShutDown (.ioctl 0 (.setIfFlags defaultLoFlags) loIfname) (.u32 0)
+  assertTrue "orp.shut.sh1 modelOps returns ENOTCONN" ((stepNetCore orpShutUp (.shutdown 1 .rd) none).map Prod.fst == some (.err Errno.ENOTCONN))
+  let _ ← mustStep "orp.shut.sh1.unit" orpShutUp (.shutdown 1 .rd) .unit
+  let _ ← mustStep "orp.shut.sh1.enotconn" orpShutUp (.shutdown 1 .rd) (.err Errno.ENOTCONN)
+  let mut t6 ← mustStep "t6.s0" s0 (.socket .inet6 .stream blkFlags 0) (.opened 0)
+  t6 ← mustStep "t6.taint" t6 (.connect 0 (.ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 1 0 0)) (.err Errno.ECONNREFUSED)
+  t6 ← mustStep "t6.sh0" t6 (.shutdown 0 .rdwr) (.err Errno.ENOTCONN)
+  t6 ← mustStep "t6.lis0" t6 (.listen 0 4) .unit
+  t6 ← mustStep "t6.gsn0" t6 (.getsockname 0) (.addr (.ipv6 0 0 55206 0 0))
+  t6 ← mustStep "t6.s1" t6 (.socket .inet6 .stream nbFlags 0) (.opened 1)
+  t6 ← mustStep "t6.conn1" t6 (.connect 1 (.ipv6 0 1 55206 0 0)) (.err Errno.EINPROGRESS)
+  t6 ← mustStep "t6.acc" t6 (.accept4 0 nbFlags) (.accepted 2 (.ipv6 0 1 49158 0 0))
+  let _ ← mustStep "t6.rx1.eagain" t6 (.recvfrom 1 8 { dontwait := true }) (.err Errno.EAGAIN)
+  t6 ← mustStep "t6.loDown" t6 (.ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname) (.u32 0)
+  t6 ← mustStep "t6.sh1.wr" t6 (.shutdown 1 .wr) .unit
+  t6 ← mustStep "t6.loUp" t6 (.ioctl 0 (.setIfFlags defaultLoFlags) loIfname) (.u32 0)
+  let _ ← mustStep "t6.sh1.rd.unit" t6 (.shutdown 1 .rd) .unit
+  let _ ← mustStep "t6.sh2.rd.unit" t6 (.shutdown 2 .rd) .unit
+  let mut t6v4 ← mustStep "t6v4.s0" s0 (.socket .inet6 .stream blkFlags 0) (.opened 0)
+  t6v4 ← mustStep "t6v4.taint" t6v4 (.connect 0 (.ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 1 0 0)) (.err Errno.ECONNREFUSED)
+  t6v4 ← mustStep "t6v4.sh0" t6v4 (.shutdown 0 .wr) (.err Errno.ENOTCONN)
+  t6v4 ← mustStep "t6v4.lis0" t6v4 (.listen 0 4) .unit
+  t6v4 ← mustStep "t6v4.gsn0" t6v4 (.getsockname 0) (.addr (.ipv6 0 0 55207 0 0))
+  t6v4 ← mustStep "t6v4.s1" t6v4 (.socket .inet .stream nbFlags 0) (.opened 1)
+  t6v4 ← mustStep "t6v4.conn1" t6v4 (.connect 1 (.ipv4 INADDR_LOOPBACK 55207)) (.err Errno.EINPROGRESS)
+  let _ ← mustStep "t6v4.rx1.eof" t6v4 (.recvfrom 1 8 { dontwait := true }) (.bytes ByteArray.empty)
+
 /-- Run all registered assumptions, error-coverage tests, and kernel-parity regression suites. -/
 def runAll : IO Unit := do
   Core.runRegisteredAssumptions registeredAssumptions
@@ -2941,6 +3066,7 @@ def runAll : IO Unit := do
     runUnixScmAndConnectResetTests
     runDualStackShutdownAndUnixFsTests
     runMulticastAndV6SelfShutTests
+  runPreShutCloseWaitLoFlapTests
   runDefaultWrapperFlagsTests
   runStickyScopeMappedWildcardAndUntaintTests
   runMcastScopeAndSynResetTests

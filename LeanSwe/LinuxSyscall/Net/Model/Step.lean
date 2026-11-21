@@ -492,7 +492,7 @@ private def resetDisconnectedTcp (d : SockDesc) : SockDesc :=
         let w := match sa with | .ipv4 _ p => .ipv4 INADDR_ANY p | .ipv6 _ _ p fl _ => .ipv6 0 0 p fl 0 | _ => sa
         .unhashed w ep false
       | other => other
-    { d with shut := {}, tcpSelfSynPending := false, tcpCloseWaitRst := false, tcpShutRdwrRst := false, proto := .tcp fam nextBind .unconnected .idle taint }
+    { d with shut := {}, tcpSelfSynPending := false, tcpCloseWaitRst := false, tcpShutRdwrRst := false, tcpLastAck := false, proto := .tcp fam nextBind .unconnected .idle taint }
   | _ => d
 
 private def clearTcpShutRdwrRst (s : NetState) (selfFid : FileId) (d : SockDesc) : NetState :=
@@ -507,7 +507,7 @@ private def clearTcpCloseWaitRst (s : NetState) (selfFid : FileId) (d : SockDesc
   match d.proto with
   | .tcp fam bind ss (.closeWait _ pa _) taint =>
     setFileSocket s selfFid
-      { d with tcpCloseWaitRst := false, proto := .tcp fam bind.unhashUnlocked ss (.closedAfterConn pa .reset) taint }
+      { d with tcpCloseWaitRst := false, tcpLastAck := false, proto := .tcp fam bind.unhashUnlocked ss (.closedAfterConn pa .reset) taint }
   | _ => s
 
 /-- Consume pending `SHUT_RDWR` Nagle reset (`ECONNRESET`) on a TCP receive path, dropping any Nagle-discarded RX tail. -/
@@ -649,7 +649,7 @@ def stepBindInet (s0 : NetState) (hid : HandleId) (selfFid : FileId) (d0 : SockD
           | .tcp fam1 bind1 ss1 .idle taint1
           | .tcp fam1 bind1 ss1 (.finWait _ _) taint1
           | .tcp fam1 bind1 ss1 (.closeWait _ _ _) taint1 =>
-            some (setFileSocket s1 selfFid { d1 with soError := nextSoErr, tcpShutRdwrRst := false, tcpCloseWaitRst := false, proto := .tcp fam1 bind1 ss1 (.closedAfterConn target .reset) taint1 })
+            some (setFileSocket s1 selfFid { d1 with soError := nextSoErr, tcpShutRdwrRst := false, tcpCloseWaitRst := false, tcpLastAck := false, proto := .tcp fam1 bind1 ss1 (.closedAfterConn target .reset) taint1 })
           | _ => some s1
         | _, _ => some s1
       else none
@@ -1136,8 +1136,9 @@ def stepTcpConnectLookupListener (s : NetState) (selfFid : FileId) (d : SockDesc
               crossFamily := (matchKind != .sameFamily), peerRoutedV4 := nextMcastRouted }
           let s1 := setFileSocket s childFid childDesc
           let s2 := setFileSocket s1 lFid { lDesc with proto := .tcp lFam lBind lSs (.listen lBacklog (aq ++ [accEntry])) lTaint }
+          let lisTaintedNative := lFam == .v6 && lTaint && isNativeV6PeerAddr peerSaForLis
           let cliTcp : TcpState :=
-            if lDesc.shut.wr then .closeWait (some childFid) srvLocalSa false
+            if lDesc.shut.wr && !lisTaintedNative then .closeWait (some childFid) srvLocalSa false
             else .established (some childFid) srvLocalSa
           ({ s2 with nextFileId := childFid + 1 }, cliTcp)
       let sWithQueue := { sQueue with nextPort := nextPVal }
@@ -1482,7 +1483,7 @@ def stepGetsockopt (s : NetState) (hid : HandleId) (opt : SockOpt) (obs? : Optio
             else if (v == Errno.EPIPE || (v == Errno.ECONNRESET && d.tcpLoFinPending)) && d.tcpCloseWaitRst then
               match d.proto with
               | .tcp fam bind ss (.closeWait _ pa _) taint =>
-                some (.u32 v, setFileSocket s selfFid { d with tcpCloseWaitRst := false, proto := .tcp fam bind.unhashUnlocked ss (.closedAfterConn pa .reset) taint })
+                some (.u32 v, setFileSocket s selfFid { d with tcpCloseWaitRst := false, tcpLastAck := false, proto := .tcp fam bind.unhashUnlocked ss (.closedAfterConn pa .reset) taint })
               | _ => none
             else if v == Errno.ECONNRESET && d.tcpShutRdwrRst then
               some (.u32 v, clearTcpShutRdwrRst s selfFid d)
@@ -1592,7 +1593,7 @@ private def applyTcpCleanCloseRst (s : NetState) (selfFid : FileId) (d : SockDes
   match d.proto with
   | .tcp fam bind ss tcpState taint =>
     let err := match tcpState with | .closeWait .. => Errno.EPIPE | _ => Errno.ECONNRESET
-    let d' := { d with soError := err, proto := .tcp fam bind.unhashUnlocked ss (.closedAfterConn pa .reset) taint }
+    let d' := { d with soError := err, tcpLastAck := false, proto := .tcp fam bind.unhashUnlocked ss (.closedAfterConn pa .reset) taint }
     setFileSocket s selfFid d'
   | _ => s
 
@@ -2018,7 +2019,7 @@ def stepSendtoBody (s : NetState) (selfFid : FileId) (d : SockDesc)
               if d.tcpCloseWaitRst && (e == Errno.EPIPE || e == Errno.ECONNRESET) then
                 match d.proto with
                 | .tcp fam bind ss (.closeWait _ pa _) taint =>
-                  some (.err e, setFileSocket s selfFid { d with tcpCloseWaitRst := false, proto := .tcp fam bind.unhashUnlocked ss (.closedAfterConn pa .reset) taint })
+                  some (.err e, setFileSocket s selfFid { d with tcpCloseWaitRst := false, tcpLastAck := false, proto := .tcp fam bind.unhashUnlocked ss (.closedAfterConn pa .reset) taint })
                 | _ => none
               else if (isNb && e == Errno.EAGAIN) || isTransientNetErrno e then some (.err e, s) else none
             | some _ => none
@@ -2243,6 +2244,7 @@ def stepShutdown (s : NetState) (hid : HandleId) (how : ShutHow) (obs? : Option 
                 shut := nextShut
                 soError := if d.soError == 0 then Errno.EPIPE else d.soError
                 tcpCloseWaitRst := false
+                tcpLastAck := false
                 proto := .tcp fam bind.unhashUnlocked nextSockState (.closedAfterConn pa .reset) tainted }
           else s
         if doWr then
@@ -2265,12 +2267,12 @@ def stepShutdown (s : NetState) (hid : HandleId) (how : ShutHow) (obs? : Option 
           let nextBind := if finStuck then bind else bind.unhashUnlocked
           let nextReason : TcpCloseReason := if d.tcpCloseWaitRst then .selfShutRstPossible else .cleanFin
           let nextSelfTcp : TcpState := if finStuck then .closeWait pf? pa pcc else .closedAfterConn pa nextReason
-          let s1 := setFileSocket s selfFid { d with shut := nextShut, tcpLoSoftUnreach := nextSoftUnreach, tcpCloseWaitRst := finStuck && d.tcpCloseWaitRst, proto := .tcp fam nextBind nextSockState nextSelfTcp tainted }
+          let s1 := setFileSocket s selfFid { d with shut := nextShut, tcpLoSoftUnreach := nextSoftUnreach, tcpCloseWaitRst := finStuck && d.tcpCloseWaitRst, tcpLastAck := finStuck, proto := .tcp fam nextBind nextSockState nextSelfTcp tainted }
           let sOk := match pf? with
             | some peerFid =>
               if peerFid == selfFid || selfTaintedNative then s1
               else if !loUp then
-                if d.shut.wr then s1
+                if d.tcpLastAck then s1
                 else { s1 with loPendingTcp := s1.loPendingTcp ++ [.shutFin selfFid peerFid] }
               else
                 match lookupFileSocket s1 peerFid with
@@ -2281,7 +2283,7 @@ def stepShutdown (s : NetState) (hid : HandleId) (how : ShutHow) (obs? : Option 
                     if pfam == .v6 && ptaint && isNativeV6PeerAddr ppa then
                       setFileSocket s1 peerFid { pd with proto := .tcp pfam pbind psock (.closeWait (some selfFid) ppa false) ptaint }
                     else
-                      setFileSocket s1 peerFid { pd with proto := .tcp pfam pbind.unhashUnlocked psock (.closedAfterConn ppa .cleanFin) ptaint }
+                      setFileSocket s1 peerFid { pd with tcpLastAck := false, proto := .tcp pfam pbind.unhashUnlocked psock (.closedAfterConn ppa .cleanFin) ptaint }
                   | _ => s1
                 | .error _ => s1
             | none => s1
@@ -2427,7 +2429,7 @@ def stepSendmsg (s : NetState) (hid : HandleId) (fds : Array HandleId)
                   if d.tcpCloseWaitRst && (e == Errno.EPIPE || e == Errno.ECONNRESET) then
                     match d.proto with
                     | .tcp fam bind ss (.closeWait _ pa2 _) taint =>
-                      some (.err e, setFileSocket s selfFid { d with tcpCloseWaitRst := false, proto := .tcp fam bind.unhashUnlocked ss (.closedAfterConn pa2 .reset) taint })
+                      some (.err e, setFileSocket s selfFid { d with tcpCloseWaitRst := false, tcpLastAck := false, proto := .tcp fam bind.unhashUnlocked ss (.closedAfterConn pa2 .reset) taint })
                     | _ => none
                   else emitUnit obs? s sOk (if d.nonblock then [Errno.EAGAIN] else [])
                 | _ => emitUnit obs? s sOk (if d.nonblock then [Errno.EAGAIN] else [])
@@ -2637,7 +2639,7 @@ private def flushOneLoTcpEvent (s : NetState) : LoPendingTcpEvent → NetState
         | .tcp sfam sbind ssock (.established _ spa) staint
         | .tcp sfam sbind ssock (.finWait _ spa) staint
         | .tcp sfam sbind ssock (.closeWait _ spa _) staint =>
-          setFileSocket st srcFid { sd with tcpLoFinPending := true, proto := .tcp sfam sbind.unhashUnlocked ssock (.closedAfterConn spa .cleanFin) staint }
+          setFileSocket st srcFid { sd with tcpLoFinPending := true, tcpLastAck := false, proto := .tcp sfam sbind.unhashUnlocked ssock (.closedAfterConn spa .cleanFin) staint }
         | _ => st
       | .error _ => st
     let srcShutBoth := match lookupFileSocket s srcFid with
@@ -2651,11 +2653,21 @@ private def flushOneLoTcpEvent (s : NetState) : LoPendingTcpEvent → NetState
           (setFileSocket s peerFid { pd with tcpLoFinPending := true, tcpCloseWaitRst := pd.tcpCloseWaitRst || srcShutBoth, proto := .tcp pfam pbind psock (.closeWait (some srcFid) ppa false) ptaint })
           srcFid
       | .tcp pfam pbind psock (.finWait _ ppa) ptaint =>
-        let s2 := setFileSocket s peerFid { pd with tcpLoFinPending := true, proto := .tcp pfam pbind.unhashUnlocked psock (.closedAfterConn ppa .cleanFin) ptaint }
-        closeSrcClean s2
+        if pfam == .v6 && ptaint && isNativeV6PeerAddr ppa then
+          setTcpLoFinPending
+            (setFileSocket s peerFid { pd with tcpLoFinPending := true, proto := .tcp pfam pbind psock (.closeWait (some srcFid) ppa false) ptaint })
+            srcFid
+        else
+          let s2 := setFileSocket s peerFid { pd with tcpLoFinPending := true, proto := .tcp pfam pbind.unhashUnlocked psock (.closedAfterConn ppa .cleanFin) ptaint }
+          closeSrcClean s2
       | .tcp pfam pbind psock (.closeWait _ ppa _) ptaint =>
-        let s2 := setFileSocket s peerFid { pd with tcpLoFinPending := true, proto := .tcp pfam pbind.unhashUnlocked psock (.closedAfterConn ppa .cleanFin) ptaint }
-        closeSrcClean s2
+        if pfam == .v6 && ptaint && isNativeV6PeerAddr ppa then
+          setTcpLoFinPending
+            (setFileSocket s peerFid { pd with tcpLoFinPending := true, proto := .tcp pfam pbind psock (.closeWait (some srcFid) ppa false) ptaint })
+            srcFid
+        else
+          let s2 := setFileSocket s peerFid { pd with tcpLoFinPending := true, tcpLastAck := false, proto := .tcp pfam pbind.unhashUnlocked psock (.closedAfterConn ppa .cleanFin) ptaint }
+          closeSrcClean s2
       | .tcp _ _ _ (.closedAfterConn _ _) _ =>
         closeSrcClean s
       | _ => s
@@ -2664,10 +2676,10 @@ private def flushOneLoTcpEvent (s : NetState) : LoPendingTcpEvent → NetState
       | .ok sd =>
         match sd.proto with
         | .tcp sfam sbind ssock (.closeWait _ spa _) staint =>
-          setFileSocket s srcFid { sd with tcpLoFinPending := true, proto := .tcp sfam sbind.unhashUnlocked ssock (.closedAfterConn spa .cleanFin) staint }
+          setFileSocket s srcFid { sd with tcpLoFinPending := true, tcpLastAck := false, proto := .tcp sfam sbind.unhashUnlocked ssock (.closedAfterConn spa .cleanFin) staint }
         | .tcp sfam sbind ssock (.established _ spa) staint
         | .tcp sfam sbind ssock (.finWait _ spa) staint =>
-          setFileSocket s srcFid { sd with tcpLoFinPending := true, soError := Errno.ECONNRESET, proto := .tcp sfam sbind.unhashUnlocked ssock (.closedAfterConn spa .reset) staint }
+          setFileSocket s srcFid { sd with tcpLoFinPending := true, tcpLastAck := false, soError := Errno.ECONNRESET, proto := .tcp sfam sbind.unhashUnlocked ssock (.closedAfterConn spa .reset) staint }
         | _ => s
       | .error _ => s
   | .close _ peerFid hasUnread selfEstab selfFinWait selfCloseWait =>
@@ -2687,7 +2699,7 @@ private def flushLoPendingTcp (s : NetState) : NetState :=
   let orphanLastAckFins := s.files.filterMap fun (fid, entry) =>
     match entry with
     | .socket d =>
-      if d.shut.wr && !d.tcpLoStalledTx then
+      if d.tcpLastAck && !d.tcpLoStalledTx then
         match d.proto with
         | .tcp fam _ _ (.closeWait none pa true) tainted =>
           if fam == .v6 && tainted && isNativeV6PeerAddr pa then none else some (fid, pa)
@@ -2707,7 +2719,7 @@ private def flushLoPendingTcp (s : NetState) : NetState :=
         | .ok d =>
           match d.proto with
           | .tcp fam bind ss (.closeWait none _ true) tainted =>
-            setFileSocket acc fid { d with tcpLoFinPending := true, proto := .tcp fam bind.unhashUnlocked ss (.closedAfterConn pa .cleanFin) tainted }
+            setFileSocket acc fid { d with tcpLoFinPending := true, tcpLastAck := false, proto := .tcp fam bind.unhashUnlocked ss (.closedAfterConn pa .cleanFin) tainted }
           | _ => acc
         | .error _ => acc)
       s1
