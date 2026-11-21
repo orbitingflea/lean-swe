@@ -49,6 +49,9 @@ def isIpv4Loopback (ip : UInt32) : Bool :=
 def isIpv4McastOrBcast (ip : UInt32) : Bool :=
   (ip >>> 28) == 0xe || ip == 0xffffffff || ip == 0x7fffffff
 
+/-- IPv4 all-hosts multicast group `224.0.0.1` (`INADDR_ALLHOSTS_GROUP`), auto-joined on every up IPv4 interface. -/
+def INADDR_ALLHOSTS_GROUP : UInt32 := 0xe0000001
+
 /-- Returns `true` iff `ip` is IPv4 broadcast (`255.255.255.255` or `127.255.255.255`). -/
 def isIpv4Bcast (ip : UInt32) : Bool :=
   ip == 0xffffffff || ip == 0x7fffffff
@@ -591,7 +594,10 @@ def udpConnectedPeerMatches (senderDesc : SockDesc) (targetAddr receiverPeer : S
     | .ipv6 lhi llo lp fl sc =>
       if (lhi >>> 56) == 0xff then .ipv6 0 1 lp fl 0 else .ipv6 lhi llo lp fl sc
     | other => other
-  if (senderDesc.udpExtRoutedIp || senderDesc.tcpMcastRoutedIp) && isLoopbackTargetAddr receiverPeer then
+  let unpinnedExtV4 := !isLoopbackTargetAddr targetAddr &&
+    (senderDesc.domain == .inet || isIpv4MappedV6Addr targetAddr) &&
+    (!senderBind.isAddrLocked || senderDesc.inetSaddrZero || (senderBind.addr?.map isAddrLockedZeroInetSaddr).getD false)
+  if (senderDesc.udpExtRoutedIp || senderDesc.tcpMcastRoutedIp || unpinnedExtV4) && isLoopbackTargetAddr receiverPeer then
     false
   else
   let portOk (p1 p2 : UInt16) : Bool := p2 != 0 && !senderBind.isEphemeral && p1 == p2
@@ -615,6 +621,37 @@ def udpConnectedPeerMatches (senderDesc : SockDesc) (targetAddr receiverPeer : S
   | .ipv6 lhi llo lp _ _, .ipv4 pip pp =>
     portOk lp pp && v6MappedIpMatchesV4 lhi llo (resolveLoopbackTargetV4 pip)
   | _, _ => false
+
+/-- Extract the non-zero UDP destination port when `sa` targets IPv4 all-hosts multicast (`224.0.0.1` or `::ffff:224.0.0.1`). -/
+def ipv4AllHostsMcastPort? : SockAddr → Option UInt16
+  | .ipv4 ip p => if ip == INADDR_ALLHOSTS_GROUP && p != 0 then some p else none
+  | .ipv6 hi lo p _ _ =>
+    if mappedV4Addr? hi lo == some INADDR_ALLHOSTS_GROUP && p != 0 then some p else none
+  | .unix _ => none
+
+/-- Find all open bound `AF_INET` UDP sockets matching an IPv4 all-hosts multicast (`224.0.0.1`) send (`__udp4_lib_mcast_deliver`). -/
+def findBoundUdpMcastPeers (s : NetState) (senderDesc : SockDesc) (targetAddr : SockAddr) : List FileId :=
+  match ipv4AllHostsMcastPort? targetAddr with
+  | none => []
+  | some tp =>
+    s.files.filterMap fun (fid, entry) =>
+      match entry with
+      | .socket d =>
+        match d.proto with
+        | .udp .v4 bind connPeer? =>
+          if !(d.boundDevIf == 0 || d.boundDevIf == 1) then none
+          else
+            match bind.addr? with
+            | some (.ipv4 lip lp) =>
+              if lp == tp && (lip == INADDR_ALLHOSTS_GROUP || lip == INADDR_ANY) then
+                let connOk := match connPeer? with
+                  | some rp => udpConnectedPeerMatches senderDesc targetAddr rp
+                  | none => true
+                if connOk then some fid else none
+              else none
+            | _ => none
+        | _ => none
+      | .nonSocket => none
 
 /-- Find an open bound UDP peer socket matching `targetAddr` and sender's local endpoint. -/
 def findBoundUdpPeer (s : NetState) (senderDesc : SockDesc) (targetAddr : SockAddr) : Option (FileId × SockDesc) :=

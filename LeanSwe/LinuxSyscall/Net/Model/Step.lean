@@ -1463,6 +1463,8 @@ def stepGetsockopt (s : NetState) (hid : HandleId) (opt : SockOpt) (obs? : Optio
           | some (.u32 v) =>
             if v == 0 then some (.u32 0, s)
             else if v == Errno.ECONNRESET then some (.u32 v, resetSock)
+            else if v == Errno.ENETUNREACH && d.tcpLoSoftUnreach then
+              some (.u32 v, setFileSocket s selfFid { d with tcpLoSoftUnreach := false })
             else none
           | some (.err e) => if isTransientNetErrno e then some (.err e, s) else none
           | some _ => none
@@ -2061,20 +2063,26 @@ def stepSendtoBody (s : NetState) (selfFid : FileId) (d : SockDesc)
           emitErr obs? s Errno.ENETUNREACH extAlts (allowU32? := extU32?)
         else
           let loDownAlts := udpLoDownAlts s d
-          match findBoundUdpPeer s d targetAddr with
-          | some (peerFid, _) =>
-            let loUp := match s.loState with | .up _ => true | _ => false
-            let sOk := if loUp then deliverRx s peerFid { bytes := data } else s
+          let loUp := match s.loState with | .up _ => true | _ => false
+          match ipv4AllHostsMcastPort? targetAddr with
+          | some _ =>
+            let peers := findBoundUdpMcastPeers s d targetAddr
+            let sOk := if loUp then peers.foldl (fun acc fid => deliverRx acc fid { bytes := data }) s else s
             emitU32 obs? s (UInt32.ofNat data.size) sOk
               (loDownAlts ++ (if isNb then [Errno.EAGAIN] else []) ++ dgramTooBig)
           | none =>
-            let loUp := match s.loState with | .up _ => true | _ => false
-            let sOk :=
-              if loUp && isLoopbackTargetAddr targetAddr then
-                setFileSocket s selfFid { d with soError := Errno.ECONNREFUSED }
-              else s
-            emitU32 obs? s (UInt32.ofNat data.size) sOk
-              (loDownAlts ++ [Errno.ECONNREFUSED] ++ (if isNb then [Errno.EAGAIN] else []) ++ dgramTooBig)
+            match findBoundUdpPeer s d targetAddr with
+            | some (peerFid, _) =>
+              let sOk := if loUp then deliverRx s peerFid { bytes := data } else s
+              emitU32 obs? s (UInt32.ofNat data.size) sOk
+                (loDownAlts ++ (if isNb then [Errno.EAGAIN] else []) ++ dgramTooBig)
+            | none =>
+              let sOk :=
+                if loUp && isLoopbackTargetAddr targetAddr then
+                  setFileSocket s selfFid { d with soError := Errno.ECONNREFUSED }
+                else s
+              emitU32 obs? s (UInt32.ofNat data.size) sOk
+                (loDownAlts ++ [Errno.ECONNREFUSED] ++ (if isNb then [Errno.EAGAIN] else []) ++ dgramTooBig)
       | _ => emitErr obs? s Errno.EDESTADDRREQ
 
 /-- Model transition for `Net.sendto`. -/
@@ -2154,8 +2162,10 @@ def stepShutdown (s : NetState) (hid : HandleId) (how : ShutHow) (obs? : Option 
       | .established pf? pa =>
         let nextSockState := match sockState with | .connecting _ => .connected | other => other
         if nextShut.isBoth && pf? == some selfFid && !d.rxQueue.isEmpty then
+          let loUp := match s.loState with | .up _ => true | _ => false
+          let nextSoftUnreach := d.tcpLoSoftUnreach || (!loUp && doWr && d.domain == .inet6 && !isIpv4MappedV6Addr pa)
           let sOk := setFileSocket s selfFid
-            { d with shut := nextShut, tcpLoFinPending := true, proto := .tcp fam bind.unhashUnlocked nextSockState (.closedAfterConn pa .selfShutRstPossible) tainted }
+            { d with shut := nextShut, tcpLoFinPending := true, tcpLoSoftUnreach := nextSoftUnreach, proto := .tcp fam bind.unhashUnlocked nextSockState (.closedAfterConn pa .selfShutRstPossible) tainted }
           emitUnit obs? s sOk [Errno.ENOTCONN]
         else if doWr then
           let loUp := match s.loState with | .up _ => true | _ => false
@@ -2163,7 +2173,7 @@ def stepShutdown (s : NetState) (hid : HandleId) (how : ShutHow) (obs? : Option 
           let nextSelfTcp : TcpState := if pf? == some selfFid then .closedAfterConn pa .cleanFin else .finWait pf? pa
           let selfSynPend := d.tcpSelfSynPending || (pf? == some selfFid && match sockState with | .connecting _ => true | _ => false)
           let selfFinPend := d.tcpLoFinPending || (pf? == some selfFid) || (!loUp && pf?.isSome)
-          let nextSoftUnreach := d.tcpLoSoftUnreach || (!loUp && pf? != some selfFid && d.domain == .inet6 && !isIpv4MappedV6Addr pa)
+          let nextSoftUnreach := d.tcpLoSoftUnreach || (!loUp && d.domain == .inet6 && !isIpv4MappedV6Addr pa)
           let nextShutRst := d.tcpShutRdwrRst || (pf? != some selfFid && nextShut.isBoth && !d.rxQueue.isEmpty)
           let s1 := setFileSocket s selfFid { d with shut := nextShut, tcpSelfSynPending := selfSynPend, tcpLoFinPending := selfFinPend, tcpLoSoftUnreach := nextSoftUnreach, tcpShutRdwrRst := nextShutRst, proto := .tcp fam nextBind nextSockState nextSelfTcp tainted }
           let sOk := match pf? with
@@ -2251,7 +2261,7 @@ def stepShutdown (s : NetState) (hid : HandleId) (how : ShutHow) (obs? : Option 
                 | .error _ => false
             | none => false
           let finStuck := selfTaintedNative || (!loUp && pf? != some selfFid) || peerTaintedNative
-          let nextSoftUnreach := d.tcpLoSoftUnreach || (!loUp && !selfTaintedNative && pf? != some selfFid && d.domain == .inet6 && !isIpv4MappedV6Addr pa)
+          let nextSoftUnreach := d.tcpLoSoftUnreach || (!loUp && !selfTaintedNative && d.domain == .inet6 && !isIpv4MappedV6Addr pa)
           let nextBind := if finStuck then bind else bind.unhashUnlocked
           let nextReason : TcpCloseReason := if d.tcpCloseWaitRst then .selfShutRstPossible else .cleanFin
           let nextSelfTcp : TcpState := if finStuck then .closeWait pf? pa pcc else .closedAfterConn pa nextReason

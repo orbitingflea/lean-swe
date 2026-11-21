@@ -2850,6 +2850,89 @@ private def runShimAndFdBoxEdgeTests : IO Unit := do
       return ByteArray.empty
     assertTrue "forked net sigalrm child status" (stAlrm == 0)
 
+private def runMulticastAndV6SelfShutTests : IO Unit := do
+  let ops := defaultOps
+  let mustStep (lbl : String) (s : NetState) (req : NetReq) (out : NetOutcome) : IO NetState := do
+    match Net.allowedStep s req out with
+    | some s' => return s'
+    | none => throw (IO.userError s!"multicast/self-shut parity: model rejected {lbl}: req={repr req} out={repr out}")
+  let s0 := NetState.initial true
+  let tx ← assertOk "mcast224 tx" (← ops.socket .inet .dgram nbFlags 0)
+  let rxMcast ← assertOk "mcast224 rxMcast" (← ops.socket .inet .dgram nbFlags 0)
+  let rxAny ← assertOk "mcast224 rxAny" (← ops.socket .inet .dgram nbFlags 0)
+  let rxV6 ← assertOk "mcast224 rxV6" (← ops.socket .inet6 .dgram nbFlags 0)
+  try
+    assertOk "mcast224 tx bind" (← ops.bind tx (.ipv4 0x7f000002 0))
+    assertOk "mcast224 rxMcast reuse" (← ops.setsockopt rxMcast .reuseAddr 1)
+    assertOk "mcast224 rxAny reuse" (← ops.setsockopt rxAny .reuseAddr 1)
+    assertOk "mcast224 rxV6 reuse" (← ops.setsockopt rxV6 .reuseAddr 1)
+    assertOk "mcast224 rxMcast bind" (← ops.bind rxMcast (.ipv4 INADDR_ALLHOSTS_GROUP 0))
+    let .ipv4 _ mPort ← assertOk "mcast224 rxMcast gsn" (← ops.getsockname rxMcast)
+      | throw (IO.userError "mcast224 expected ipv4 gsn")
+    assertOk "mcast224 rxAny bind" (← ops.bind rxAny (.ipv4 INADDR_ANY mPort))
+    assertOk "mcast224 rxV6 bind" (← ops.bind rxV6 (.ipv6 0 0 mPort 0 0))
+    assertOk "mcast224 tx connect" (← ops.connect tx (.ipv4 INADDR_ALLHOSTS_GROUP mPort))
+    let payload := ByteArray.mk #[11, 22, 33]
+    let n1 ← assertOk "mcast224 send1" (← ops.sendto tx payload {})
+    assertTrue "mcast224 send1 len" (n1 == 3)
+    IO.sleep 2
+    let bMcast ← assertOk "mcast224 recv mcast" (← ops.recvfrom rxMcast 16 { dontwait := true })
+    let bAny ← assertOk "mcast224 recv any" (← ops.recvfrom rxAny 16 { dontwait := true })
+    assertTrue "mcast224 recv mcast eq" (bMcast == payload)
+    assertTrue "mcast224 recv any eq" (bAny == payload)
+    assertErr "mcast224 recv v6 eagain" (← ops.recvfrom rxV6 16 { dontwait := true }) Errno.EAGAIN
+    let n0 ← assertOk "mcast224 send0" (← ops.sendto tx ByteArray.empty {})
+    assertTrue "mcast224 send0 len" (n0 == 0)
+    IO.sleep 2
+    let bZero ← assertOk "mcast224 recv0" (← ops.recvfrom rxMcast 0 {})
+    assertTrue "mcast224 recv0 empty" (bZero.size == 0)
+    let mut ms ← mustStep "m.tx" s0 (.socket .inet .dgram nbFlags 0) (.opened 0)
+    ms ← mustStep "m.rxM" ms (.socket .inet .dgram nbFlags 0) (.opened 1)
+    ms ← mustStep "m.rxA" ms (.socket .inet .dgram nbFlags 0) (.opened 2)
+    ms ← mustStep "m.rx6" ms (.socket .inet6 .dgram nbFlags 0) (.opened 3)
+    ms ← mustStep "m.txB" ms (.bind 0 (.ipv4 0x7f000002 0)) .unit
+    ms ← mustStep "m.rxMR" ms (.setsockopt 1 .reuseAddr 1) .unit
+    ms ← mustStep "m.rxAR" ms (.setsockopt 2 .reuseAddr 1) .unit
+    ms ← mustStep "m.rx6R" ms (.setsockopt 3 .reuseAddr 1) .unit
+    ms ← mustStep "m.rxMB" ms (.bind 1 (.ipv4 INADDR_ALLHOSTS_GROUP 0)) .unit
+    ms ← mustStep "m.rxMG" ms (.getsockname 1) (.addr (.ipv4 INADDR_ALLHOSTS_GROUP mPort))
+    ms ← mustStep "m.rxAB" ms (.bind 2 (.ipv4 INADDR_ANY mPort)) .unit
+    ms ← mustStep "m.rx6B" ms (.bind 3 (.ipv6 0 0 mPort 0 0)) .unit
+    ms ← mustStep "m.txC" ms (.connect 0 (.ipv4 INADDR_ALLHOSTS_GROUP mPort)) .unit
+    ms ← mustStep "m.txS1" ms (.sendto 0 payload {}) (.u32 3)
+    ms ← mustStep "m.rxM1" ms (.recvfrom 1 16 { dontwait := true }) (.bytes bMcast)
+    ms ← mustStep "m.rxA1" ms (.recvfrom 2 16 { dontwait := true }) (.bytes bAny)
+    ms ← mustStep "m.rx6E" ms (.recvfrom 3 16 { dontwait := true }) (.err Errno.EAGAIN)
+    ms ← mustStep "m.txS0" ms (.sendto 0 ByteArray.empty {}) (.u32 0)
+    let _ ← mustStep "m.rxM0" ms (.recvfrom 1 0 {}) (.bytes bZero)
+  finally
+    safeClose rxV6
+    safeClose rxAny
+    safeClose rxMcast
+    safeClose tx
+  let mut ms6 ← mustStep "v6s.sock" s0 (.socket .inet6 .stream nbFlags 0) (.opened 0)
+  ms6 ← mustStep "v6s.bind" ms6 (.bind 0 (.ipv6 0 1 0 0 0)) .unit
+  ms6 ← mustStep "v6s.gsn" ms6 (.getsockname 0) (.addr (.ipv6 0 1 55101 0 0))
+  ms6 ← mustStep "v6s.conn" ms6 (.connect 0 (.ipv6 0 1 55101 0 0)) (.err Errno.EINPROGRESS)
+  let ms6Down ← mustStep "v6s.loDown" ms6 (.ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname) (.u32 0)
+  let ms6Shut ← mustStep "v6s.shutWr" ms6Down (.shutdown 0 .wr) .unit
+  let ms6Err1 ← mustStep "v6s.soErr1" ms6Shut (.getsockopt 0 .error) (.u32 Errno.ENETUNREACH)
+  assertTrue "v6s.soErr2 rejects ENETUNREACH" ((Net.allowedStep ms6Err1 (.getsockopt 0 .error) (.u32 Errno.ENETUNREACH)).isNone)
+  let _ ← mustStep "v6s.soErr2 zero" ms6Err1 (.getsockopt 0 .error) (.u32 0)
+  let ms6Tx ← mustStep "v6s.tx" ms6 (.sendto 0 (ByteArray.mk #[42, 43]) {}) (.u32 2)
+  let ms6RxDown ← mustStep "v6s.rxLoDown" ms6Tx (.ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname) (.u32 0)
+  let ms6Rdwr ← mustStep "v6s.shutRdwr" ms6RxDown (.shutdown 0 .rdwr) .unit
+  let ms6RdwrE1 ← mustStep "v6s.rdwrSoErr1" ms6Rdwr (.getsockopt 0 .error) (.u32 Errno.ENETUNREACH)
+  assertTrue "v6s.rdwrSoErr2 rejects ENETUNREACH" ((Net.allowedStep ms6RdwrE1 (.getsockopt 0 .error) (.u32 Errno.ENETUNREACH)).isNone)
+  let _ ← mustStep "v6s.rdwrSoErr2 zero" ms6RdwrE1 (.getsockopt 0 .error) (.u32 0)
+  let mut ms4 ← mustStep "v4s.sock" s0 (.socket .inet .stream nbFlags 0) (.opened 0)
+  ms4 ← mustStep "v4s.bind" ms4 (.bind 0 (.ipv4 INADDR_LOOPBACK 0)) .unit
+  ms4 ← mustStep "v4s.gsn" ms4 (.getsockname 0) (.addr (.ipv4 INADDR_LOOPBACK 55102))
+  ms4 ← mustStep "v4s.conn" ms4 (.connect 0 (.ipv4 INADDR_LOOPBACK 55102)) (.err Errno.EINPROGRESS)
+  ms4 ← mustStep "v4s.loDown" ms4 (.ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname) (.u32 0)
+  ms4 ← mustStep "v4s.shutWr" ms4 (.shutdown 0 .wr) .unit
+  assertTrue "v4s.soErr rejects ENETUNREACH" ((Net.allowedStep ms4 (.getsockopt 0 .error) (.u32 Errno.ENETUNREACH)).isNone)
+
 /-- Run all registered assumptions, error-coverage tests, and kernel-parity regression suites. -/
 def runAll : IO Unit := do
   Core.runRegisteredAssumptions registeredAssumptions
@@ -2857,6 +2940,7 @@ def runAll : IO Unit := do
   if ← isLoopbackUp defaultOps then
     runUnixScmAndConnectResetTests
     runDualStackShutdownAndUnixFsTests
+    runMulticastAndV6SelfShutTests
   runDefaultWrapperFlagsTests
   runStickyScopeMappedWildcardAndUntaintTests
   runMcastScopeAndSynResetTests
