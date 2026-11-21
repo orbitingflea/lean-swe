@@ -1,11 +1,12 @@
-import Fuzz.Common.Suite
-import Fuzz.Float.Suite
 import Fuzz.CmdLine.Suite
+import Fuzz.Common.Suite
+import Fuzz.CryptoHash.Suite
+import Fuzz.EnvVars.Suite
+import Fuzz.Float.Suite
+import Fuzz.Git.Suite
 import Fuzz.Passwd.Suite
 import Fuzz.Dns.Suite
 import Fuzz.SelfTest
-import Fuzz.EnvVars.Suite
-import Fuzz.CryptoHash.Suite
 import LeanSwe.LinuxSyscall.Fuzz.Env
 
 namespace Fuzz.Main
@@ -37,7 +38,8 @@ private def registeredSuites : List FuzzSuite := [
   Fuzz.EnvVars.suite,
   Fuzz.CryptoHash.suite,
   Fuzz.Passwd.suite,
-  Fuzz.Dns.suite
+  Fuzz.Dns.suite,
+  Fuzz.Git.suite
 ]
 
 private def truncArg (s : String) (maxLen : Nat := 64) : String :=
@@ -216,17 +218,37 @@ private def validateOptions (opts : CliOptions) : Except String (List FuzzSuite)
     throw "CONFLICTING_FLAGS: pass either --seed or --random-seed, not both"
   resolveSelectedSuites opts
 
+private def safePrintln (s : String) : IO Unit := do
+  try
+    IO.println s
+    (← IO.getStdout).flush
+  catch _ =>
+    pure ()
+
+private def safeEprintln (s : String) : IO Unit := do
+  try
+    IO.eprintln s
+    (← IO.getStderr).flush
+  catch _ =>
+    pure ()
+
+private def safeFlushStdout : IO Unit := do
+  try
+    (← IO.getStdout).flush
+  catch _ =>
+    pure ()
+
 private def printUsage : IO Unit := do
-  IO.println "Usage: leanswe-fuzz [OPTIONS]"
-  IO.println "  --smoke              Run fast deterministic smoke corpus and shrinker self-test"
-  IO.println "  --suite <name>       Run named fuzz suite (repeatable or comma-separated; supports --suite=<name>)"
-  IO.println "  --all                Run all registered fuzz suites (default if --suite omitted)"
-  IO.println "  --steps <N>          Number of fuzz steps per suite (supports --steps=<N>)"
-  IO.println "  --seed <u64>         Deterministic SplitMix64 seed (decimal or 0x hex; supports --seed=<u64>)"
-  IO.println "  --random-seed        Draw 64-bit seed from /dev/urandom and print SEED=<u64>"
-  IO.println "  --self-test-shrink   Run shrinker self-test before fuzzing"
-  IO.println "  --list-suites        List registered fuzz suites and exit"
-  IO.println "  -h, --help           Show this help message"
+  safePrintln "Usage: leanswe-fuzz [OPTIONS]"
+  safePrintln "  --smoke              Run fast deterministic smoke corpus and shrinker self-test"
+  safePrintln "  --suite <name>       Run named fuzz suite (repeatable or comma-separated; supports --suite=<name>)"
+  safePrintln "  --all                Run all registered fuzz suites (default if --suite omitted)"
+  safePrintln "  --steps <N>          Number of fuzz steps per suite (supports --steps=<N>)"
+  safePrintln "  --seed <u64>         Deterministic SplitMix64 seed (decimal or 0x hex; supports --seed=<u64>)"
+  safePrintln "  --random-seed        Draw 64-bit seed from /dev/urandom and print SEED=<u64>"
+  safePrintln "  --self-test-shrink   Run shrinker self-test before fuzzing"
+  safePrintln "  --list-suites        List registered fuzz suites and exit"
+  safePrintln "  -h, --help           Show this help message"
 
 private def safeStream (fd : UInt32) (orig : IO.FS.Stream) : IO.FS.Stream := {
   flush := do
@@ -251,67 +273,56 @@ def main (args : List String) : IO UInt32 := do
     let _ ← IO.setStdout (safeStream 1 origOut)
   if (← LeanSwe.LinuxSyscall.Fuzz.Env.fdKind 2) == 6 then
     let _ ← IO.setStderr (safeStream 2 origErr)
-  let stdout ← IO.getStdout
-  let stderr ← IO.getStderr
   match validateRegisteredSuites with
   | .ok () => pure ()
   | .error msg =>
-    IO.eprintln msg
-    stderr.flush
+    safeEprintln msg
     return 2
   let opts ← match parseArgs args with
     | .ok o => pure o
     | .error msg =>
-      IO.eprintln msg
-      stderr.flush
+      safeEprintln msg
       return 2
   let selected ← match validateOptions opts with
     | .ok ss => pure ss
     | .error msg =>
-      IO.eprintln msg
-      stderr.flush
+      safeEprintln msg
       return 2
   if opts.showHelp then
     printUsage
-    stdout.flush
     return 0
   if opts.listSuites then
     for s in registeredSuites do
-      IO.println s.name
-    stdout.flush
+      safePrintln s.name
     return 0
   let effectiveSeed ←
     if opts.hasRandomSeed then
       try
         drawOsEntropySeed
       catch e =>
-        IO.eprintln s!"ENTROPY_ERROR: {e}"
-        stderr.flush
+        safeEprintln s!"ENTROPY_ERROR: {e}"
         return 2
     else
       pure opts.config.seed
   let effectiveConfig : FuzzConfig := { opts.config with seed := effectiveSeed }
-  IO.println s!"SEED={effectiveSeed}"
-  stdout.flush
+  safePrintln s!"SEED={effectiveSeed}"
   let mut failedSuites : Array String := #[]
   for suite in selected do
     try
       if effectiveConfig.smoke || effectiveConfig.selfTestShrink then
         suite.selfTestShrink effectiveSeed
-        stdout.flush
+        safeFlushStdout
       if effectiveConfig.smoke then
         suite.runSmoke effectiveConfig
       else
         suite.runFuzz effectiveConfig
-      stdout.flush
+      safeFlushStdout
     catch e =>
-      stdout.flush
-      IO.eprintln s!"FUZZ_SUITE_FAILED suite={suite.name}: {e}"
-      stderr.flush
+      safeFlushStdout
+      safeEprintln s!"FUZZ_SUITE_FAILED suite={suite.name}: {e}"
       failedSuites := failedSuites.push suite.name
   if !failedSuites.isEmpty then
-    IO.eprintln s!"FUZZ_RUN_FAILED failed={failedSuites.size}/{selected.length} suites={",".intercalate failedSuites.toList} seed={effectiveSeed}"
-    stderr.flush
+    safeEprintln s!"FUZZ_RUN_FAILED failed={failedSuites.size}/{selected.length} suites={",".intercalate failedSuites.toList} seed={effectiveSeed}"
     return 1
   return 0
 

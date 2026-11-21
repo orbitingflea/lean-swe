@@ -59,7 +59,6 @@ theorem decodeUtf8Lossy_toUTF8 (s : String) :
     Impl.decodeUtf8Lossy s.toUTF8 = s := by
   unfold Impl.decodeUtf8Lossy
   rw [fromUTF8_toUTF8]
-  rfl
 
 /-- Shared proof helper `decodeUtf8Checked_toUTF8`. -/
 theorem decodeUtf8Checked_toUTF8 (s : String) :
@@ -76,13 +75,292 @@ theorem all_no_nul_of_list (xs : List String)
   have hmem : xs.toArray[i] ∈ xs := by simp
   exact List.all_eq_true.mp h _ hmem
 
+private def splitNulRecordsSpec (acc : List Char) : List Char → Option (List String)
+  | [] => if acc.isEmpty then some [] else none
+  | c :: cs =>
+    if c == Char.ofNat 0 then
+      if acc.isEmpty then none
+      else (splitNulRecordsSpec [] cs).map (String.ofList acc.reverse :: ·)
+    else
+      splitNulRecordsSpec (c :: acc) cs
+
+private def splitNulTokensAllowEmptySpec (acc : List Char) : List Char → Option (List String)
+  | [] => if acc.isEmpty then some [] else none
+  | c :: cs =>
+    if c == Char.ofNat 0 then
+      (splitNulTokensAllowEmptySpec [] cs).map (String.ofList acc.reverse :: ·)
+    else
+      splitNulTokensAllowEmptySpec (c :: acc) cs
+
+private def splitWorktreeStanzasSpec (cur : List String) : List String → Option (List (List String))
+  | [] => if cur.isEmpty then some [] else none
+  | "" :: rest =>
+    if cur.isEmpty then none
+    else (splitWorktreeStanzasSpec [] rest).map (cur.reverse :: ·)
+  | tok :: rest => splitWorktreeStanzasSpec (tok :: cur) rest
+
+private def parseWorktreeStanzasSpec : List (List String) → Except GitError (List WorktreeInfo)
+  | [] => .ok []
+  | st :: rest => do
+    let info ← parseWorktreeStanza st
+    let tail ← parseWorktreeStanzasSpec rest
+    .ok (info :: tail)
+
+private def parsePorcelainStatusSpec : List String → Except GitError (List StatusEntry)
+  | [] => .ok []
+  | recStr :: rest =>
+    match recStr.toList with
+    | x :: y :: ' ' :: pathChars =>
+      if pathChars.isEmpty || !isValidStatusPair x y then
+        .error { kind := .parseError, message := s!"invalid porcelain status entry: '{recStr}'" }
+      else
+        match statusCharToKind? x, statusCharToKind? y with
+        | some ix, some wt =>
+          let path := String.ofList pathChars
+          if x == 'R' || x == 'C' || y == 'R' || y == 'C' then
+            match rest with
+            | [] =>
+              .error { kind := .parseError, message := s!"truncated rename/copy status entry for '{path}'" }
+            | orig :: tail =>
+              (parsePorcelainStatusSpec tail).map
+                ({ indexStatus := ix, worktreeStatus := wt, path := path, origPath := some orig } :: ·)
+          else
+            (parsePorcelainStatusSpec rest).map
+              ({ indexStatus := ix, worktreeStatus := wt, path := path, origPath := none } :: ·)
+        | _, _ =>
+          .error { kind := .parseError, message := s!"invalid status characters in '{recStr}'" }
+    | _ =>
+      .error { kind := .parseError, message := s!"malformed porcelain status record: '{recStr}'" }
+
+private def parseDiffTokensSpec : List String → Except GitError (List DiffEntry)
+  | [] => .ok []
+  | tok :: rest =>
+    match tok.toList with
+    | ['A'] =>
+      match rest with
+      | path :: tail => (parseDiffTokensSpec tail).map ({ kind := .added, path := path } :: ·)
+      | [] => .error { kind := .parseError, message := "truncated A entry in git diff -z" }
+    | ['M'] =>
+      match rest with
+      | path :: tail => (parseDiffTokensSpec tail).map ({ kind := .modified, path := path } :: ·)
+      | [] => .error { kind := .parseError, message := "truncated M entry in git diff -z" }
+    | ['D'] =>
+      match rest with
+      | path :: tail => (parseDiffTokensSpec tail).map ({ kind := .deleted, path := path } :: ·)
+      | [] => .error { kind := .parseError, message := "truncated D entry in git diff -z" }
+    | ['T'] =>
+      match rest with
+      | path :: tail => (parseDiffTokensSpec tail).map ({ kind := .typeChanged, path := path } :: ·)
+      | [] => .error { kind := .parseError, message := "truncated T entry in git diff -z" }
+    | ['U'] =>
+      match rest with
+      | path :: tail => (parseDiffTokensSpec tail).map ({ kind := .unmerged, path := path } :: ·)
+      | [] => .error { kind := .parseError, message := "truncated U entry in git diff -z" }
+    | 'R' :: scoreChars =>
+      match parseSimilarityScore scoreChars, rest with
+      | some score, orig :: path :: tail =>
+        (parseDiffTokensSpec tail).map
+          ({ kind := .renamed score, path := path, origPath := some orig } :: ·)
+      | none, _ =>
+        .error { kind := .parseError, message := s!"invalid rename score in '{tok}'" }
+      | _, _ =>
+        .error { kind := .parseError, message := s!"truncated rename entry '{tok}' in git diff -z" }
+    | 'C' :: scoreChars =>
+      match parseSimilarityScore scoreChars, rest with
+      | some score, orig :: path :: tail =>
+        (parseDiffTokensSpec tail).map
+          ({ kind := .copied score, path := path, origPath := some orig } :: ·)
+      | none, _ =>
+        .error { kind := .parseError, message := s!"invalid copy score in '{tok}'" }
+      | _, _ =>
+        .error { kind := .parseError, message := s!"truncated copy entry '{tok}' in git diff -z" }
+    | _ =>
+      .error { kind := .parseError, message := s!"unknown git diff status token: '{tok}'" }
+
+private theorem splitNulRecordsLoop_eq (acc : List Char) (revOut : List String) (cs : List Char) :
+    splitNulRecordsLoop acc revOut cs = (splitNulRecordsSpec acc cs).map (revOut.reverse ++ ·) := by
+  induction cs generalizing acc revOut with
+  | nil =>
+    simp only [splitNulRecordsLoop, splitNulRecordsSpec]
+    split <;> simp [Option.map]
+  | cons c cs ih =>
+    simp only [splitNulRecordsLoop, splitNulRecordsSpec]
+    split
+    · split
+      · simp
+      · rw [ih [] (String.ofList acc.reverse :: revOut)]
+        cases splitNulRecordsSpec [] cs <;> simp [Option.map, List.reverse_cons, List.append_assoc]
+    · exact ih (c :: acc) revOut
+
+private theorem splitNulTokensAllowEmptyLoop_eq (acc : List Char) (revOut : List String)
+    (cs : List Char) :
+    splitNulTokensAllowEmptyLoop acc revOut cs =
+      (splitNulTokensAllowEmptySpec acc cs).map (revOut.reverse ++ ·) := by
+  induction cs generalizing acc revOut with
+  | nil =>
+    simp only [splitNulTokensAllowEmptyLoop, splitNulTokensAllowEmptySpec]
+    split <;> simp [Option.map]
+  | cons c cs ih =>
+    simp only [splitNulTokensAllowEmptyLoop, splitNulTokensAllowEmptySpec]
+    split
+    · rw [ih [] (String.ofList acc.reverse :: revOut)]
+      cases splitNulTokensAllowEmptySpec [] cs <;> simp [Option.map, List.reverse_cons, List.append_assoc]
+    · exact ih (c :: acc) revOut
+
+private theorem splitWorktreeStanzasLoop_tok (cur : List String) (revOut : List (List String))
+    (tok : String) (rest : List String) (hne : tok ≠ "") :
+    splitWorktreeStanzasLoop cur revOut (tok :: rest) =
+      splitWorktreeStanzasLoop (tok :: cur) revOut rest := by
+  conv => lhs; unfold splitWorktreeStanzasLoop
+  split <;> rename_i heq <;> cases heq
+  · exact absurd rfl hne
+  · rfl
+
+private theorem splitWorktreeStanzas_tok_local (cur : List String) (tok : String) (rest : List String)
+    (hne : tok ≠ "") :
+    splitWorktreeStanzasSpec cur (tok :: rest) = splitWorktreeStanzasSpec (tok :: cur) rest := by
+  conv => lhs; unfold splitWorktreeStanzasSpec
+  split <;> rename_i heq <;> cases heq
+  · exact absurd rfl hne
+  · rfl
+
+private theorem splitWorktreeStanzasLoop_eq (cur : List String) (revOut : List (List String))
+    (xs : List String) :
+    splitWorktreeStanzasLoop cur revOut xs =
+      (splitWorktreeStanzasSpec cur xs).map (revOut.reverse ++ ·) := by
+  induction xs generalizing cur revOut with
+  | nil =>
+    unfold splitWorktreeStanzasLoop splitWorktreeStanzasSpec
+    split <;> simp [Option.map]
+  | cons tok rest ih =>
+    by_cases htok : tok = ""
+    · subst htok
+      simp only [splitWorktreeStanzasLoop, splitWorktreeStanzasSpec]
+      split
+      · simp
+      · rw [ih [] (cur.reverse :: revOut)]
+        cases splitWorktreeStanzasSpec [] rest <;> simp [Option.map, List.reverse_cons, List.append_assoc]
+    · rw [splitWorktreeStanzasLoop_tok cur revOut tok rest htok,
+        splitWorktreeStanzas_tok_local cur tok rest htok]
+      exact ih (tok :: cur) revOut
+
+private theorem parseWorktreeStanzasLoop_eq (revOut : List WorktreeInfo) (xs : List (List String)) :
+    parseWorktreeStanzasLoop revOut xs =
+      (parseWorktreeStanzasSpec xs).map (revOut.reverse ++ ·) := by
+  induction xs generalizing revOut with
+  | nil => simp [parseWorktreeStanzasLoop, parseWorktreeStanzasSpec, Except.map]
+  | cons st rest ih =>
+    unfold parseWorktreeStanzasLoop parseWorktreeStanzasSpec
+    dsimp only [bind, Except.bind, pure, Except.pure]
+    cases parseWorktreeStanza st with
+    | error e => simp [Except.map]
+    | ok info =>
+      dsimp only
+      rw [ih (info :: revOut)]
+      cases parseWorktreeStanzasSpec rest <;> simp [Except.map, List.reverse_cons, List.append_assoc]
+
+private theorem parsePorcelainStatusLoop_eq (revOut : List StatusEntry) (xs : List String) :
+    parsePorcelainStatusLoop revOut xs =
+      (parsePorcelainStatusSpec xs).map (revOut.reverse ++ ·) := by
+  match xs with
+  | [] => simp [parsePorcelainStatusLoop, parsePorcelainStatusSpec, Except.map]
+  | recStr :: rest =>
+    unfold parsePorcelainStatusLoop parsePorcelainStatusSpec
+    split
+    · next x y pathChars heq =>
+      simp only [heq]
+      split
+      · simp [Except.map, *]
+      · split
+        · split
+          · cases rest with
+            | nil => simp [Except.map, *]
+            | cons orig tail =>
+              dsimp only
+              rw [parsePorcelainStatusLoop_eq _ tail]
+              cases parsePorcelainStatusSpec tail <;>
+                simp [Except.map, List.reverse_cons, List.append_assoc, *]
+          · rw [parsePorcelainStatusLoop_eq _ rest]
+            cases parsePorcelainStatusSpec rest <;>
+              simp [Except.map, List.reverse_cons, List.append_assoc, *]
+        · simp [Except.map, *]
+    · simp [Except.map, *]
+termination_by xs.length
+
+private theorem parseDiffTokensLoop_eq (revOut : List DiffEntry) (xs : List String) :
+    parseDiffTokensLoop revOut xs =
+      (parseDiffTokensSpec xs).map (revOut.reverse ++ ·) := by
+  match xs with
+  | [] => simp [parseDiffTokensLoop, parseDiffTokensSpec, Except.map]
+  | tok :: rest =>
+    unfold parseDiffTokensLoop parseDiffTokensSpec
+    split
+    · next heq =>
+      simp only [heq]
+      cases rest with
+      | nil => simp [Except.map]
+      | cons _ tail =>
+        dsimp only
+        rw [parseDiffTokensLoop_eq _ tail]
+        cases parseDiffTokensSpec tail <;> simp [Except.map, List.reverse_cons, List.append_assoc]
+    · next heq =>
+      simp only [heq]
+      cases rest with
+      | nil => simp [Except.map]
+      | cons _ tail =>
+        dsimp only
+        rw [parseDiffTokensLoop_eq _ tail]
+        cases parseDiffTokensSpec tail <;> simp [Except.map, List.reverse_cons, List.append_assoc]
+    · next heq =>
+      simp only [heq]
+      cases rest with
+      | nil => simp [Except.map]
+      | cons _ tail =>
+        dsimp only
+        rw [parseDiffTokensLoop_eq _ tail]
+        cases parseDiffTokensSpec tail <;> simp [Except.map, List.reverse_cons, List.append_assoc]
+    · next heq =>
+      simp only [heq]
+      cases rest with
+      | nil => simp [Except.map]
+      | cons _ tail =>
+        dsimp only
+        rw [parseDiffTokensLoop_eq _ tail]
+        cases parseDiffTokensSpec tail <;> simp [Except.map, List.reverse_cons, List.append_assoc]
+    · next heq =>
+      simp only [heq]
+      cases rest with
+      | nil => simp [Except.map]
+      | cons _ tail =>
+        dsimp only
+        rw [parseDiffTokensLoop_eq _ tail]
+        cases parseDiffTokensSpec tail <;> simp [Except.map, List.reverse_cons, List.append_assoc]
+    · next scoreChars heq =>
+      simp only [heq]
+      split
+      · rw [parseDiffTokensLoop_eq]
+        cases h : parseDiffTokensSpec _ <;>
+          simp [Except.map, List.reverse_cons, List.append_assoc, *]
+      · simp [Except.map, *]
+      · simp [Except.map, *]
+    · next scoreChars heq =>
+      simp only [heq]
+      split
+      · rw [parseDiffTokensLoop_eq]
+        cases h : parseDiffTokensSpec _ <;>
+          simp [Except.map, List.reverse_cons, List.append_assoc, *]
+      · simp [Except.map, *]
+      · simp [Except.map, *]
+    · simp [Except.map, *]
+termination_by xs.length
+
 private theorem splitNulRecordsAux_eof (acc cs : List Char)
     (hno : hasNulChar cs = false) (hne : ¬ (acc = [] ∧ cs = [])) :
-    splitNulRecordsAux acc cs = none := by
+    splitNulRecordsSpec acc cs = none := by
   induction cs generalizing acc with
   | nil =>
     have hacc : acc ≠ [] := fun h => hne ⟨h, rfl⟩
-    simp [splitNulRecordsAux, hacc]
+    simp [splitNulRecordsSpec, hacc]
   | cons c cs ih =>
     have hc : c ≠ Char.ofNat 0 := hasNulChar_eq_false_iff.mp hno c List.mem_cons_self
     have hcs : hasNulChar cs = false :=
@@ -90,15 +368,15 @@ private theorem splitNulRecordsAux_eof (acc cs : List Char)
         hasNulChar_eq_false_iff.mp hno x (List.mem_cons_of_mem c hx)
     have hne' : ¬ (c :: acc = [] ∧ cs = []) := fun ⟨h, _⟩ => by cases h
     have hbeq : (c == Char.ofNat 0) = false := beq_false_of_ne hc
-    simp [splitNulRecordsAux, hbeq, ih (c :: acc) hcs hne']
+    simp [splitNulRecordsSpec, hbeq, ih (c :: acc) hcs hne']
 
 private theorem toUTF8_nonempty_of_ne {s : String} (hne : s ≠ "") : s.toUTF8.isEmpty = false :=
   Bool.eq_false_iff.mpr fun hc => hne ((toUTF8_eq_empty_iff s).mp hc)
 
 private theorem splitNulRecordsAux_append_nul (acc cs rest : List Char)
     (hno : hasNulChar cs = false) (hne : ¬ (acc = [] ∧ cs = [])) :
-    splitNulRecordsAux acc (cs ++ Char.ofNat 0 :: rest) =
-      (splitNulRecordsAux [] rest).map (String.ofList (acc.reverse ++ cs) :: ·) := by
+    splitNulRecordsSpec acc (cs ++ Char.ofNat 0 :: rest) =
+      (splitNulRecordsSpec [] rest).map (String.ofList (acc.reverse ++ cs) :: ·) := by
   induction cs generalizing acc with
   | nil =>
     have hacc : acc ≠ [] := fun h => hne ⟨h, rfl⟩
@@ -106,7 +384,7 @@ private theorem splitNulRecordsAux_append_nul (acc cs rest : List Char)
       cases acc with
       | nil => contradiction
       | cons _ _ => rfl
-    simp [splitNulRecordsAux, hem]
+    simp [splitNulRecordsSpec, hem]
   | cons c cs ih =>
     have hc : c ≠ Char.ofNat 0 := hasNulChar_eq_false_iff.mp hno c List.mem_cons_self
     have hcs : hasNulChar cs = false :=
@@ -114,7 +392,7 @@ private theorem splitNulRecordsAux_append_nul (acc cs rest : List Char)
         hasNulChar_eq_false_iff.mp hno x (List.mem_cons_of_mem c hx)
     have hne' : ¬ (c :: acc = [] ∧ cs = []) := fun ⟨h, _⟩ => by cases h
     have hbeq : (c == Char.ofNat 0) = false := beq_false_of_ne hc
-    simp [splitNulRecordsAux, hbeq, ih (c :: acc) hcs hne', List.reverse_cons, List.append_assoc]
+    simp [splitNulRecordsSpec, hbeq, ih (c :: acc) hcs hne', List.reverse_cons, List.append_assoc]
 
 /-- Proof of `test_git_cleanGitEnv_stripsInheritedGitKeys` for `cleanGitEnv`. -/
 theorem proof_git_cleanGitEnv_stripsInheritedGitKeys :
@@ -124,38 +402,42 @@ theorem proof_git_cleanGitEnv_stripsInheritedGitKeys :
   refine ⟨?_, ⟨?_, ⟨?_, trivial⟩⟩⟩
   · simp only [List.all_eq_true]
     intro kv hkv
-    by_cases hgit : isGitKey kv.1 = true
-    · simp only [Bool.or_eq_true, Bool.not_eq_true', List.contains_iff_mem, List.mem_append,
+    by_cases hgit : (isGitKey kv.1 || isLocaleKey kv.1) = true
+    · simp only [Bool.or_eq_true, List.contains_iff_mem, List.mem_append,
         List.mem_map, List.mem_filter]
-      exact Or.inr (Or.inl (Or.inl ⟨kv, ⟨hkv, hgit⟩, rfl⟩))
-    · simp [hgit]
+      exact Or.inr (Or.inl (Or.inl ⟨kv, ⟨hkv, (Bool.or_eq_true _ _).mp hgit⟩, rfl⟩))
+    · simp only [Bool.or_eq_true] at hgit
+      have hng : isGitKey kv.1 = false := Bool.eq_false_iff.mpr (fun h => hgit (Or.inl h))
+      have hnl : isLocaleKey kv.1 = false := Bool.eq_false_iff.mpr (fun h => hgit (Or.inr h))
+      simp [hng, hnl]
   · simp only [List.all_eq_true, List.contains_iff_mem, List.mem_append]
     intro kv hkv
     exact Or.inl (Or.inr hkv)
-  · simp only [List.all_eq_true, Bool.or_eq_true, Bool.not_eq_true', beq_iff_eq, List.contains_iff_mem]
+  · simp only [List.all_eq_true, Bool.or_eq_true, Bool.and_eq_true, Bool.not_eq_true',
+      beq_iff_eq, List.contains_iff_mem]
     intro kv hkv
     simp only [List.mem_append, List.mem_map, List.mem_filter] at hkv
     rcases hkv with (⟨p, _, rfl⟩ | hdef) | ⟨_, hvalid⟩
     · exact Or.inl (Or.inl (Or.inr rfl))
     · exact Or.inl (Or.inr hdef)
     · simp only [Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true'] at hvalid
-      rcases hvalid with ⟨⟨_, _⟩, hgit | hallow⟩
-      · exact Or.inl (Or.inl (Or.inl hgit))
+      rcases hvalid with ⟨⟨⟨_, _⟩, hng | hallow⟩, hnl⟩
+      · exact Or.inl (Or.inl (Or.inl ⟨hng, hnl⟩))
       · exact Or.inr hallow
 
 /-- Proof of `test_git_cleanGitEnv_preservesValidNonGitExtra` for `cleanGitEnv`. -/
 theorem proof_git_cleanGitEnv_preservesValidNonGitExtra :
     AllPass (test_git_cleanGitEnv_preservesValidNonGitExtra (fun inh ext => cleanGitEnv inh ext)) := by
-  intro _inherited key val hKey hVal hNotGit
+  intro _inherited key val hKey hVal hNotGit hNotLocale
   simp only [cleanGitEnv, assert, List.contains_iff_mem,
     List.mem_append, List.mem_filter, List.mem_cons, List.not_mem_nil, or_false]
-  exact ⟨Or.inr ⟨trivial, by simp [hKey, hVal, hNotGit]⟩, trivial⟩
+  exact ⟨Or.inr ⟨trivial, by simp [hKey, hVal, hNotGit, hNotLocale]⟩, trivial⟩
 
 /-- Non-vacuity `CanReach` witness for `test_git_cleanGitEnv_preservesValidNonGitExtra`. -/
 theorem reach_git_cleanGitEnv_preservesValidNonGitExtra :
     CanReach (test_git_cleanGitEnv_preservesValidNonGitExtra (fun inh ext => cleanGitEnv inh ext)) :=
-  ⟨#[], "FOO", some "bar", rfl, rfl, rfl,
-    proof_git_cleanGitEnv_preservesValidNonGitExtra #[] "FOO" (some "bar") rfl rfl rfl⟩
+  ⟨#[], "FOO", some "bar", rfl, rfl, rfl, rfl,
+    proof_git_cleanGitEnv_preservesValidNonGitExtra #[] "FOO" (some "bar") rfl rfl rfl rfl⟩
 
 /-- Proof of `test_git_mkCommitId_validatesHexLengthAndChars` for `mkCommitId`. -/
 theorem proof_git_mkCommitId_validatesHexLengthAndChars :
@@ -174,7 +456,8 @@ theorem proof_git_mkRefName_rejectsUnsafeRefs :
   intro s hbad
   have hFalse : isValidRefNameStr s = false := by
     unfold isValidRefNameStr
-    rcases hbad with rfl | hhead | rfl | hdots
+    rcases hbad with rfl | rfl | hhead | rfl | hdots
+    · rfl
     · rfl
     · simp [hhead]
     · rfl
@@ -185,7 +468,7 @@ theorem proof_git_mkRefName_rejectsUnsafeRefs :
 /-- Non-vacuity `CanReach` witness for `test_git_mkRefName_rejectsUnsafeRefs`. -/
 theorem reach_git_mkRefName_rejectsUnsafeRefs :
     CanReach (test_git_mkRefName_rejectsUnsafeRefs mkRefName) := by
-  exact ⟨"-rf", Or.inr (Or.inl rfl), ⟨rfl, by decide⟩, trivial⟩
+  exact ⟨"-rf", Or.inr (Or.inr (Or.inl rfl)), ⟨rfl, by decide⟩, trivial⟩
 
 /-- Proof of `test_git_parsePorcelainStatusZ_framingAndEmpty` for `parsePorcelainStatusZ`. -/
 theorem proof_git_parsePorcelainStatusZ_framingAndEmpty :
@@ -197,8 +480,11 @@ theorem proof_git_parsePorcelainStatusZ_framingAndEmpty :
     unfold parsePorcelainStatusZ
     rw [toUTF8_nonempty_of_ne (by decide), fromUTF8_toUTF8]
     dsimp only
-    have hSplit : splitNulRecords " M a.txt" = none :=
-      splitNulRecordsAux_eof [] " M a.txt".toList (by decide) (by intro ⟨_, hc⟩; cases hc)
+    have hSplit : splitNulRecords " M a.txt" = none := by
+      unfold splitNulRecords
+      rw [splitNulRecordsLoop_eq,
+        splitNulRecordsAux_eof [] " M a.txt".toList (by decide) (by intro ⟨_, hc⟩; cases hc)]
+      rfl
     rw [hSplit]
     rfl
   exact ⟨hEmpty, ⟨{ kind := .parseError, message := "unterminated or empty record in git status -z output" },
@@ -235,8 +521,8 @@ private theorem parsePorcelainStatusZ_renameDestFirst_eq (src dst : String)
     simp [String.ofList_toList]
   have hSplit : splitNulRecords s = some ["R  " ++ dst, src] := by
     unfold splitNulRecords
-    rw [hsList, hSplit1, hSplit2]
-    simp [splitNulRecordsAux, hRPrefix, String.ofList_toList]
+    rw [splitNulRecordsLoop_eq, hsList, hSplit1, hSplit2]
+    simp [splitNulRecordsSpec, hRPrefix, String.ofList_toList]
   have hDstChars : dst.toList ≠ [] := fun hc => hdstNe (String.toList_injective hc)
   have hDstEmpty : dst.toList.isEmpty = false := by
     cases h : dst.toList with
@@ -248,19 +534,21 @@ private theorem parsePorcelainStatusZ_renameDestFirst_eq (src dst : String)
   rw [hEmptyFalse, fromUTF8_toUTF8]
   dsimp only
   rw [hSplit]
-  simp only [bind, Except.bind, pure, Except.pure, Bool.false_eq_true, ↓reduceIte]
-  have hRecs : parsePorcelainStatusRecords ["R  " ++ dst, src] =
+  simp only [bind, Except.bind, pure, Except.pure, Bool.false_eq_true, ↓reduceIte,
+    parsePorcelainStatusLoop_eq]
+  have hRecs : parsePorcelainStatusSpec ["R  " ++ dst, src] =
       .ok [{ indexStatus := some .renamed, worktreeStatus := none, path := dst, origPath := some src }] := by
-    unfold parsePorcelainStatusRecords
+    unfold parsePorcelainStatusSpec
     rw [hRecList]
     split
     · next x y pathChars heq =>
       cases heq
       have hPair : isValidStatusPair 'R' ' ' = true := by decide
-      have hEnd : parsePorcelainStatusRecords [] = .ok [] := rfl
+      have hEnd : parsePorcelainStatusSpec [] = .ok [] := rfl
       simp [hDstEmpty, hPair, statusCharToKind?, hEnd, Except.map, String.ofList_toList]
     · next h => exact absurd rfl (h 'R' ' ' dst.toList)
   rw [hRecs]
+  rfl
 
 /-- Proof of `test_git_parsePorcelainStatusZ_renameDestFirst` for `parsePorcelainStatusZ`. -/
 theorem proof_git_parsePorcelainStatusZ_renameDestFirst :
@@ -303,16 +591,17 @@ private theorem parseDiffNameStatusZ_renameSourceFirst_eq (src dst : String)
     (by intro ⟨_, hc⟩; apply hdstNe; exact String.toList_injective hc)
   have hSplit : splitNulRecords s = some ["R095", src, dst] := by
     unfold splitNulRecords
-    rw [hsList, hSplit1, hSplit2, hSplit3]
-    simp [splitNulRecordsAux, String.ofList_toList]
+    rw [splitNulRecordsLoop_eq, hsList, hSplit1, hSplit2, hSplit3]
+    simp [splitNulRecordsSpec, String.ofList_toList]
   unfold parseDiffNameStatusZ
   rw [hEmptyFalse, fromUTF8_toUTF8]
   dsimp only
   rw [hSplit]
-  simp only [bind, Except.bind, pure, Except.pure, Bool.false_eq_true, ↓reduceIte]
-  have hDiffs : parseDiffTokens ["R095", src, dst] =
+  simp only [bind, Except.bind, pure, Except.pure, Bool.false_eq_true, ↓reduceIte,
+    parseDiffTokensLoop_eq]
+  have hDiffs : parseDiffTokensSpec ["R095", src, dst] =
       .ok [{ kind := .renamed 95, path := dst, origPath := some src }] := by
-    unfold parseDiffTokens
+    unfold parseDiffTokensSpec
     rw [show ("R095" : String).toList = ['R', '0', '9', '5'] from by decide]
     split
     all_goals
@@ -321,10 +610,11 @@ private theorem parseDiffNameStatusZ_renameSourceFirst_eq (src dst : String)
       | (next scoreChars heq =>
           cases heq
           have hScore : parseSimilarityScore ['0', '9', '5'] = some 95 := by decide
-          have hEnd : parseDiffTokens [] = .ok [] := rfl
+          have hEnd : parseDiffTokensSpec [] = .ok [] := rfl
           simp [hScore, hEnd, Except.map])
       | (next _ _ _ _ _ hR _ => exact absurd rfl (hR ['0', '9', '5']))
   rw [hDiffs]
+  rfl
 
 /-- Proof of `test_git_parseDiffNameStatusZ_renameSourceFirst` for `parseDiffNameStatusZ`. -/
 theorem proof_git_parseDiffNameStatusZ_renameSourceFirst :
@@ -344,26 +634,26 @@ theorem reach_git_parseDiffNameStatusZ_renameSourceFirst :
 
 private theorem splitNulTokensAllowEmptyAux_append_nul (acc cs rest : List Char)
     (hno : hasNulChar cs = false) :
-    splitNulTokensAllowEmptyAux acc (cs ++ Char.ofNat 0 :: rest) =
-      (splitNulTokensAllowEmptyAux [] rest).map (String.ofList (acc.reverse ++ cs) :: ·) := by
+    splitNulTokensAllowEmptySpec acc (cs ++ Char.ofNat 0 :: rest) =
+      (splitNulTokensAllowEmptySpec [] rest).map (String.ofList (acc.reverse ++ cs) :: ·) := by
   induction cs generalizing acc with
-  | nil => simp [splitNulTokensAllowEmptyAux]
+  | nil => simp [splitNulTokensAllowEmptySpec]
   | cons c cs ih =>
     have hc : c ≠ Char.ofNat 0 := hasNulChar_eq_false_iff.mp hno c List.mem_cons_self
     have hcs : hasNulChar cs = false :=
       hasNulChar_eq_false_iff.mpr fun x hx => hasNulChar_eq_false_iff.mp hno x (List.mem_cons_of_mem c hx)
     have hbeq : (c == Char.ofNat 0) = false := beq_false_of_ne hc
-    simp [splitNulTokensAllowEmptyAux, hbeq, ih (c :: acc) hcs, List.reverse_cons, List.append_assoc]
+    simp [splitNulTokensAllowEmptySpec, hbeq, ih (c :: acc) hcs, List.reverse_cons, List.append_assoc]
 
 private theorem splitWorktreeStanzas_empty (cur rest : List String) (hne : cur.isEmpty = false) :
-    splitWorktreeStanzas cur ("" :: rest) = (splitWorktreeStanzas [] rest).map (cur.reverse :: ·) := by
-  conv => lhs; unfold splitWorktreeStanzas
+    splitWorktreeStanzasSpec cur ("" :: rest) = (splitWorktreeStanzasSpec [] rest).map (cur.reverse :: ·) := by
+  conv => lhs; unfold splitWorktreeStanzasSpec
   simp [hne]
 
 private theorem splitWorktreeStanzas_tok (cur : List String) (tok : String) (rest : List String)
     (hne : tok ≠ "") :
-    splitWorktreeStanzas cur (tok :: rest) = splitWorktreeStanzas (tok :: cur) rest := by
-  conv => lhs; unfold splitWorktreeStanzas
+    splitWorktreeStanzasSpec cur (tok :: rest) = splitWorktreeStanzasSpec (tok :: cur) rest := by
+  conv => lhs; unfold splitWorktreeStanzasSpec
   split <;> rename_i heq <;> cases heq
   · exact absurd rfl hne
   · rfl
@@ -513,32 +803,32 @@ private theorem parseWorktreeStanza_worktree (header path : String) (attrs : Lis
 private theorem parseWorktreeListPorcelain_ok_of (s : String) (toks : List String)
     (stanzas : List (List String)) (infos : List WorktreeInfo)
     (hNe : s.toUTF8.isEmpty = false)
-    (hToks : splitNulTokensAllowEmptyAux [] s.toList = some toks)
-    (hStz : splitWorktreeStanzas [] toks = some stanzas)
-    (hInfos : parseWorktreeStanzas stanzas = .ok infos) :
+    (hToks : splitNulTokensAllowEmptySpec [] s.toList = some toks)
+    (hStz : splitWorktreeStanzasSpec [] toks = some stanzas)
+    (hInfos : parseWorktreeStanzasSpec stanzas = .ok infos) :
     parseWorktreeListPorcelain s.toUTF8 = .ok infos.toArray := by
   unfold parseWorktreeListPorcelain
   rw [hNe, fromUTF8_toUTF8]
   dsimp only
-  rw [hToks]
-  dsimp only
-  rw [hStz]
-  dsimp only
-  rw [hInfos]
+  rw [splitNulTokensAllowEmptyLoop_eq, hToks]
+  dsimp only [Option.map, List.reverse_nil, List.nil_append]
+  rw [splitWorktreeStanzasLoop_eq, hStz]
+  dsimp only [Option.map, List.reverse_nil, List.nil_append]
+  rw [parseWorktreeStanzasLoop_eq, hInfos]
   rfl
 
 private theorem splitNulTokensAllowEmptyAux_step (a : String) (rest : List Char)
     (toks : List String)
     (hno : hasNulChar a.toList = false)
-    (hrest : splitNulTokensAllowEmptyAux [] rest = some toks) :
-    splitNulTokensAllowEmptyAux [] (a.toList ++ Char.ofNat 0 :: rest) = some (a :: toks) := by
+    (hrest : splitNulTokensAllowEmptySpec [] rest = some toks) :
+    splitNulTokensAllowEmptySpec [] (a.toList ++ Char.ofNat 0 :: rest) = some (a :: toks) := by
   rw [splitNulTokensAllowEmptyAux_append_nul [] a.toList rest hno, hrest]
   simp [String.ofList_toList]
 
 private theorem splitNulRecordsAux_step (a : String) (rest : List Char) (recs : List String)
     (hne : a ≠ "") (hno : hasNulChar a.toList = false)
-    (hrest : splitNulRecordsAux [] rest = some recs) :
-    splitNulRecordsAux [] (a.toList ++ Char.ofNat 0 :: rest) = some (a :: recs) := by
+    (hrest : splitNulRecordsSpec [] rest = some recs) :
+    splitNulRecordsSpec [] (a.toList ++ Char.ofNat 0 :: rest) = some (a :: recs) := by
   have hacs : ¬ (([] : List Char) = [] ∧ a.toList = []) := fun h => hne (String.toList_injective h.2)
   rw [splitNulRecordsAux_append_nul [] a.toList rest hno hacs, hrest]
   simp [String.ofList_toList]
@@ -546,16 +836,19 @@ private theorem splitNulRecordsAux_step (a : String) (rest : List Char) (recs : 
 private theorem parsePorcelainStatusZ_ok_of (s : String) (toks : List String)
     (recs : List StatusEntry)
     (hNe : s.toUTF8.isEmpty = false)
-    (hToks : splitNulRecordsAux [] s.toList = some toks)
-    (hRecs : parsePorcelainStatusRecords toks = .ok recs) :
+    (hToks : splitNulRecordsSpec [] s.toList = some toks)
+    (hRecs : parsePorcelainStatusSpec toks = .ok recs) :
     parsePorcelainStatusZ s.toUTF8 = .ok recs.toArray := by
   unfold parsePorcelainStatusZ
   rw [hNe, fromUTF8_toUTF8]
   dsimp only
-  have hSplit : splitNulRecords s = some toks := hToks
+  have hSplit : splitNulRecords s = some toks := by
+    unfold splitNulRecords
+    rw [splitNulRecordsLoop_eq, hToks]
+    rfl
   rw [hSplit]
   dsimp only [bind, Except.bind, pure, Except.pure]
-  rw [hRecs]
+  rw [parsePorcelainStatusLoop_eq, hRecs]
   rfl
 
 private theorem parsePorcelainStatusRecords_plain (tok path : String) (x y : Char)
@@ -564,10 +857,10 @@ private theorem parsePorcelainStatusRecords_plain (tok path : String) (x y : Cha
     (hNe : path.toList.isEmpty = false) (hPair : isValidStatusPair x y = true)
     (hx : statusCharToKind? x = some kx) (hy : statusCharToKind? y = some ky)
     (hxNot : x ≠ 'R' ∧ x ≠ 'C') (hyNot : y ≠ 'R' ∧ y ≠ 'C') :
-    parsePorcelainStatusRecords (tok :: rest) =
-      (parsePorcelainStatusRecords rest).map
+    parsePorcelainStatusSpec (tok :: rest) =
+      (parsePorcelainStatusSpec rest).map
         ({ indexStatus := kx, worktreeStatus := ky, path := path } :: ·) := by
-  conv => lhs; unfold parsePorcelainStatusRecords
+  conv => lhs; unfold parsePorcelainStatusSpec
   rw [hTok]
   split
   · next x' y' pathChars heq =>
@@ -581,10 +874,10 @@ private theorem parsePorcelainStatusRecords_rc (tok path orig : String) (x y : C
     (hNe : path.toList.isEmpty = false) (hPair : isValidStatusPair x y = true)
     (hx : statusCharToKind? x = some kx) (hy : statusCharToKind? y = some ky)
     (hRc : (x == 'R' || x == 'C') = true) :
-    parsePorcelainStatusRecords (tok :: orig :: rest) =
-      (parsePorcelainStatusRecords rest).map
+    parsePorcelainStatusSpec (tok :: orig :: rest) =
+      (parsePorcelainStatusSpec rest).map
         ({ indexStatus := kx, worktreeStatus := ky, path := path, origPath := some orig } :: ·) := by
-  conv => lhs; unfold parsePorcelainStatusRecords
+  conv => lhs; unfold parsePorcelainStatusSpec
   rw [hTok]
   split
   · next x' y' pathChars heq =>
@@ -602,16 +895,16 @@ theorem proof_git_parseWorktreeListPorcelain_bareUnbornLocked :
         "worktree /tmp/bare.git".toList ++ Char.ofNat 0 ::
         ("bare".toList ++ Char.ofNat 0 ::
         ("".toList ++ Char.ofNat 0 :: [])) := by decide
-    have hToksB : splitNulTokensAllowEmptyAux [] sb.toList =
+    have hToksB : splitNulTokensAllowEmptySpec [] sb.toList =
         some ["worktree /tmp/bare.git", "bare", ""] := by
       rw [hbList]
       rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
       rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
       rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
-      have hNil : splitNulTokensAllowEmptyAux [] [] = some [] := rfl
+      have hNil : splitNulTokensAllowEmptySpec [] [] = some [] := rfl
       rw [hNil]
       simp only [List.reverse_nil, List.nil_append, String.ofList_toList, Option.map]
-    have hStzB : splitWorktreeStanzas [] ["worktree /tmp/bare.git", "bare", ""] =
+    have hStzB : splitWorktreeStanzasSpec [] ["worktree /tmp/bare.git", "bare", ""] =
         some [["worktree /tmp/bare.git", "bare"]] := by
       rw [splitWorktreeStanzas_tok _ _ _ (by decide), splitWorktreeStanzas_tok _ _ _ (by decide)]
       rw [splitWorktreeStanzas_empty _ _ (by decide)]
@@ -621,9 +914,9 @@ theorem proof_git_parseWorktreeListPorcelain_bareUnbornLocked :
       rw [parseWorktreeStanza_worktree "worktree /tmp/bare.git" "/tmp/bare.git" ["bare"] (by decide) (by decide)]
       rw [parseWorktreeAttrs_bare]
       rfl
-    have hInfosB : parseWorktreeStanzas [["worktree /tmp/bare.git", "bare"]] =
+    have hInfosB : parseWorktreeStanzasSpec [["worktree /tmp/bare.git", "bare"]] =
         .ok [{ path := "/tmp/bare.git", head? := none, branch? := none, isBare := true }] := by
-      unfold parseWorktreeStanzas
+      unfold parseWorktreeStanzasSpec
       rw [hPBare]
       rfl
     exact parseWorktreeListPorcelain_ok_of "worktree /tmp/bare.git\x00bare\x00\x00"
@@ -658,7 +951,7 @@ theorem proof_git_parseWorktreeListPorcelain_bareUnbornLocked :
   unfold parseWorktreeListPorcelain
   rw [hEmptyFalse, fromUTF8_toUTF8]
   dsimp only
-  have hToks : splitNulTokensAllowEmptyAux [] s.toList =
+  have hToks : splitNulTokensAllowEmptySpec [] s.toList =
       some ["worktree /tmp/wt", "HEAD " ++ z40, "branch refs/heads/main", "locked", "prunable gone", ""] := by
     rw [hsList]
     rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
@@ -667,11 +960,11 @@ theorem proof_git_parseWorktreeListPorcelain_bareUnbornLocked :
     rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
     rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
     rw [splitNulTokensAllowEmptyAux_append_nul _ _ _ (by decide)]
-    have hNil : splitNulTokensAllowEmptyAux [] [] = some [] := rfl
+    have hNil : splitNulTokensAllowEmptySpec [] [] = some [] := rfl
     rw [hNil]
     simp only [List.reverse_nil, List.nil_append, String.ofList_toList, Option.map]
   let hzLine := "HEAD " ++ z40
-  have hStz : splitWorktreeStanzas []
+  have hStz : splitWorktreeStanzasSpec []
       ["worktree /tmp/wt", hzLine, "branch refs/heads/main", "locked", "prunable gone", ""] =
       some [["worktree /tmp/wt", hzLine, "branch refs/heads/main", "locked", "prunable gone"]] := by
     rw [splitWorktreeStanzas_tok _ _ _ (by decide), splitWorktreeStanzas_tok _ _ _ (head_str_ne_empty z40)]
@@ -695,18 +988,18 @@ theorem proof_git_parseWorktreeListPorcelain_bareUnbornLocked :
     rw [parseWorktreeAttrs_prunable_reason _ _ "prunable gone" "gone" _
       (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) (by decide)]
     rfl
-  have hInfos : parseWorktreeStanzas
+  have hInfos : parseWorktreeStanzasSpec
       [["worktree /tmp/wt", hzLine, "branch refs/heads/main", "locked", "prunable gone"]] =
       .ok [{ path := "/tmp/wt", head? := none, branch? := some { raw := "main" },
              isLocked := true, isPrunable := true, pruneReason := some "gone" }] := by
-    unfold parseWorktreeStanzas
+    unfold parseWorktreeStanzasSpec
     rw [hPWt]
     rfl
-  rw [hToks]
-  dsimp only
-  rw [hStz]
-  dsimp only
-  rw [hInfos]
+  rw [splitNulTokensAllowEmptyLoop_eq, hToks]
+  dsimp only [Option.map, List.reverse_nil, List.nil_append]
+  rw [splitWorktreeStanzasLoop_eq, hStz]
+  dsimp only [Option.map, List.reverse_nil, List.nil_append]
+  rw [parseWorktreeStanzasLoop_eq, hInfos]
   rfl
 
 
@@ -721,25 +1014,25 @@ theorem proof_test_git_status_parsesRealOutput :
       ("R  new name.txt".toList ++ Char.ofNat 0 ::
       ("old name.txt".toList ++ Char.ofNat 0 ::
       ("?? untrack.txt".toList ++ Char.ofNat 0 :: []))) := by decide
-  have h4 : splitNulRecordsAux [] ("?? untrack.txt".toList ++ Char.ofNat 0 :: []) = some ["?? untrack.txt"] :=
+  have h4 : splitNulRecordsSpec [] ("?? untrack.txt".toList ++ Char.ofNat 0 :: []) = some ["?? untrack.txt"] :=
     splitNulRecordsAux_step "?? untrack.txt" [] [] (by decide) (by decide) rfl
   have h3 := splitNulRecordsAux_step "old name.txt" _ _ (by decide) (by decide) h4
   have h2 := splitNulRecordsAux_step "R  new name.txt" _ _ (by decide) (by decide) h3
   have h1 := splitNulRecordsAux_step " M a b.txt" _ _ (by decide) (by decide) h2
-  have hToks : splitNulRecordsAux [] s.toList =
+  have hToks : splitNulRecordsSpec [] s.toList =
       some [" M a b.txt", "R  new name.txt", "old name.txt", "?? untrack.txt"] := by
     rw [hsList]; exact h1
-  have hRecs : parsePorcelainStatusRecords
+  have hRecs : parsePorcelainStatusSpec
       [" M a b.txt", "R  new name.txt", "old name.txt", "?? untrack.txt"] =
       .ok [ { indexStatus := none, worktreeStatus := some .modified, path := "a b.txt" },
             { indexStatus := some .renamed, worktreeStatus := none, path := "new name.txt", origPath := some "old name.txt" },
             { indexStatus := some .untracked, worktreeStatus := some .untracked, path := "untrack.txt" } ] := by
-    have hr3 : parsePorcelainStatusRecords ["?? untrack.txt"] =
+    have hr3 : parsePorcelainStatusSpec ["?? untrack.txt"] =
         .ok [{ indexStatus := some .untracked, worktreeStatus := some .untracked, path := "untrack.txt" }] := by
       rw [parsePorcelainStatusRecords_plain "?? untrack.txt" "untrack.txt" '?' '?' [] (some .untracked) (some .untracked)
         (by decide) (by decide) (by decide) rfl rfl ⟨by decide, by decide⟩ ⟨by decide, by decide⟩]
       rfl
-    have hr2 : parsePorcelainStatusRecords ["R  new name.txt", "old name.txt", "?? untrack.txt"] =
+    have hr2 : parsePorcelainStatusSpec ["R  new name.txt", "old name.txt", "?? untrack.txt"] =
         .ok [ { indexStatus := some .renamed, worktreeStatus := none, path := "new name.txt", origPath := some "old name.txt" },
               { indexStatus := some .untracked, worktreeStatus := some .untracked, path := "untrack.txt" } ] := by
       rw [parsePorcelainStatusRecords_rc "R  new name.txt" "new name.txt" "old name.txt" 'R' ' ' ["?? untrack.txt"]
@@ -783,7 +1076,7 @@ theorem proof_test_git_worktreeList_parsesRealOutput :
       ("detached".toList ++ Char.ofNat 0 ::
       ("".toList ++ Char.ofNat 0 :: []))))))) := by
     simp only [s, String.toList_append, h1, h2, h3, List.append_assoc, List.cons_append]
-  have ht8 : splitNulTokensAllowEmptyAux [] ("".toList ++ Char.ofNat 0 :: []) = some [""] :=
+  have ht8 : splitNulTokensAllowEmptySpec [] ("".toList ++ Char.ofNat 0 :: []) = some [""] :=
     splitNulTokensAllowEmptyAux_step "" [] [] (by decide) rfl
   have ht7 := splitNulTokensAllowEmptyAux_step "detached" _ _ (by decide) ht8
   have ht6 := splitNulTokensAllowEmptyAux_step ("HEAD " ++ sha) _ _ hHead ht7
@@ -792,7 +1085,7 @@ theorem proof_test_git_worktreeList_parsesRealOutput :
   have ht3 := splitNulTokensAllowEmptyAux_step "branch refs/heads/main" _ _ (by decide) ht4
   have ht2 := splitNulTokensAllowEmptyAux_step ("HEAD " ++ sha) _ _ hHead ht3
   have ht1 := splitNulTokensAllowEmptyAux_step "worktree /tmp/main" _ _ (by decide) ht2
-  have hToks : splitNulTokensAllowEmptyAux [] s.toList =
+  have hToks : splitNulTokensAllowEmptySpec [] s.toList =
       some ["worktree /tmp/main", "HEAD " ++ sha, "branch refs/heads/main", "", "worktree /tmp/wt", "HEAD " ++ sha, "detached", ""] := by
     rw [hsList]; exact ht1
   let haLine := "HEAD " ++ sha
@@ -804,7 +1097,7 @@ theorem proof_test_git_worktreeList_parsesRealOutput :
     unfold mkRefName
     rw [show isValidRefNameStr "main" = true from by decide]
     rfl
-  have hStz : splitWorktreeStanzas []
+  have hStz : splitWorktreeStanzasSpec []
       ["worktree /tmp/main", haLine, "branch refs/heads/main", "", "worktree /tmp/wt", haLine, "detached", ""] =
       some [["worktree /tmp/main", haLine, "branch refs/heads/main"],
             ["worktree /tmp/wt", haLine, "detached"]] := by
@@ -828,15 +1121,15 @@ theorem proof_test_git_worktreeList_parsesRealOutput :
     rw [parseWorktreeAttrs_head_commit _ _ sha { hex := sha } _ isAllZeros_rep40_a hCidA]
     rw [parseWorktreeAttrs_detached]
     rfl
-  have hInfos : parseWorktreeStanzas
+  have hInfos : parseWorktreeStanzasSpec
       [["worktree /tmp/main", haLine, "branch refs/heads/main"],
        ["worktree /tmp/wt", haLine, "detached"]] =
       .ok [{ path := "/tmp/main", head? := some { hex := sha }, branch? := some { raw := "main" } },
            { path := "/tmp/wt", head? := some { hex := sha }, branch? := none, isDetached := true }] := by
-    unfold parseWorktreeStanzas
+    unfold parseWorktreeStanzasSpec
     rw [hP1]
     dsimp only [bind, Except.bind, pure, Except.pure]
-    unfold parseWorktreeStanzas
+    unfold parseWorktreeStanzasSpec
     rw [hP2]
     rfl
   exact parseWorktreeListPorcelain_ok_of s _ _ _ hEmptyFalse hToks hStz hInfos
