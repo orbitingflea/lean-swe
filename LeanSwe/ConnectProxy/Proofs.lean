@@ -1,2 +1,8 @@
-import LeanSwe.ConnectProxy.Proofs.SecurityAndModel
+import LeanSwe.ConnectProxy.Proofs.IpPolicyProofs
+import LeanSwe.ConnectProxy.Proofs.ParserAndModelProofs
 import LeanSwe.ConnectProxy.Proofs.Lifecycle
+import LeanSwe.ConnectProxy.Proofs.HealthyWitness
+import LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs
+import LeanSwe.ConnectProxy.Proofs.SysBridgeProofs
+import LeanSwe.ConnectProxy.Proofs.LoopAndRelayProofs
+import LeanSwe.ConnectProxy.Proofs.HealthySpecProofs

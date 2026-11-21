@@ -43,7 +43,6 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
     "ProcessSandbox.Seccomp": pathlib.Path("LeanSwe/ProcessSandbox/Seccomp"),
     "ProcessSandbox.Raw": pathlib.Path("LeanSwe/ProcessSandbox/Raw"),
     "ProcessSandbox": pathlib.Path("LeanSwe/ProcessSandbox"),
-    "ConnectProxy.Raw": pathlib.Path("LeanSwe/ConnectProxy/Raw"),
     "ConnectProxy": pathlib.Path("LeanSwe/ConnectProxy"),
     "SlotPool": pathlib.Path("LeanSwe/SlotPool"),
     "LinuxSyscall.Sandbox": pathlib.Path("LeanSwe/LinuxSyscall/Sandbox"),
@@ -67,7 +66,6 @@ C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
     "sqlite_shim.c": "leanswe_sqlite",
     "cryptohash_shim.c": "leanswe_cryptohash",
     "psandbox_shim.c": "leanswe_psandbox",
-    "cproxy_shim.c": "leanswe_connectproxy",
     "sandbox_shim.c": "leanswe_linux_sandbox",
     "fd_box.c": "leanswe_linux_fd_box",
     "poll_shim.c": "leanswe_linux_poll",
@@ -357,7 +355,7 @@ def run_suite_mode(work: pathlib.Path, mode: str, suite: str, timeout_s: float =
 
 
 def resolve_targets(root: pathlib.Path, suite: str) -> tuple[list[pathlib.Path], list[pathlib.Path]]:
-    """Collect Lean `Impl.lean` and C shim source targets for `suite`."""
+    """Collect Lean runtime implementation (`*Impl.lean`, `*SysBridge.lean`, `*Relay.lean`) and C shim targets."""
     if suite == "all":
         suite_names = list(SUITE_TO_DIR.keys())
     else:
@@ -373,10 +371,13 @@ def resolve_targets(root: pathlib.Path, suite: str) -> tuple[list[pathlib.Path],
                 for sd in SUITE_TO_DIR.values()
                 if sd != d and (root / sd).is_relative_to(pkg_dir)
             ]
-            for lf in sorted(pkg_dir.rglob("*Impl.lean")):
-                if any(lf.is_relative_to(cd) for cd in child_suite_dirs):
-                    continue
-                lean_targets.append(lf.relative_to(root))
+            for pat in ("*Impl.lean", "*SysBridge.lean", "*Relay.lean"):
+                for lf in sorted(pkg_dir.rglob(pat)):
+                    if any(lf.is_relative_to(cd) for cd in child_suite_dirs):
+                        continue
+                    rel = lf.relative_to(root)
+                    if rel not in lean_targets:
+                        lean_targets.append(rel)
         if sname in SUITE_TO_C_SHIMS:
             for c_rel in SUITE_TO_C_SHIMS[sname]:
                 if (root / c_rel).is_file() and c_rel not in c_targets:

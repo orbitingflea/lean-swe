@@ -1,0 +1,421 @@
+import LeanSwe.LinuxSyscall.Common.Types
+import LeanSwe.LinuxSyscall.Net.Types
+import LeanSwe.LinuxSyscall.Poll.Types
+
+namespace LeanSwe.ConnectProxy.Relay
+
+open LeanSwe.LinuxSyscall
+open LeanSwe.LinuxSyscall.Net
+open LeanSwe.LinuxSyscall.Poll
+
+/-- Fixed byte capacity of each directional TCP relay buffer (`16 KiB`). -/
+def RING_CAP : Nat := 16384
+
+/-- Per-poll-tick non-blocking I/O iteration bound preventing unbounded spin with structural fuel. -/
+def MAX_RELAY_IO_STEPS : Nat := 256
+
+/-- Static HTTP `200 Connection Established` response header bytes. -/
+def reply200Bytes : ByteArray :=
+  asciiBytes ['H', 'T', 'T', 'P', '/', '1', '.', '1', ' ', '2', '0', '0', ' ',
+    'C', 'o', 'n', 'n', 'e', 'c', 't', 'i', 'o', 'n', ' ',
+    'E', 's', 't', 'a', 'b', 'l', 'i', 's', 'h', 'e', 'd', '\r', '\n', '\r', '\n']
+
+/-- Static HTTP `403 Forbidden` response header bytes. -/
+def reply403Bytes : ByteArray :=
+  asciiBytes ['H', 'T', 'T', 'P', '/', '1', '.', '1', ' ', '4', '0', '3', ' ',
+    'F', 'o', 'r', 'b', 'i', 'd', 'd', 'e', 'n', '\r', '\n',
+    'C', 'o', 'n', 't', 'e', 'n', 't', '-', 'L', 'e', 'n', 'g', 't', 'h', ':', ' ', '0',
+    '\r', '\n', '\r', '\n']
+
+/-- Static HTTP `502 Bad Gateway` response header bytes. -/
+def reply502Bytes : ByteArray :=
+  asciiBytes ['H', 'T', 'T', 'P', '/', '1', '.', '1', ' ', '5', '0', '2', ' ',
+    'B', 'a', 'd', ' ', 'G', 'a', 't', 'e', 'w', 'a', 'y', '\r', '\n',
+    'C', 'o', 'n', 't', 'e', 'n', 't', '-', 'L', 'e', 'n', 'g', 't', 'h', ':', ' ', '0',
+    '\r', '\n', '\r', '\n']
+
+/-- Bounded FIFO byte queue (`len ≤ RING_CAP`) for non-blocking stream relay. -/
+structure RingBuf where
+  /-- Backing byte slice containing unread bytes in `off .. buf.size`. -/
+  buf : ByteArray := ByteArray.empty
+  /-- Read cursor offset into `buf`. -/
+  off : Nat := 0
+  deriving DecidableEq, BEq, Inhabited
+
+/-- Number of unread bytes currently buffered in `rb`. -/
+def RingBuf.len (rb : RingBuf) : Nat :=
+  rb.buf.size - rb.off
+
+/-- Return `true` iff `rb` holds zero unread bytes. -/
+def RingBuf.isEmpty (rb : RingBuf) : Bool :=
+  rb.len == 0
+
+/-- Remaining capacity in bytes (`0 .. RING_CAP`) available for `push`. -/
+def RingBuf.writeAvail (rb : RingBuf) : Nat :=
+  RING_CAP - Nat.min rb.len RING_CAP
+
+/-- Logical FIFO list of unread bytes in `rb` (clamped at `RING_CAP` for arbitrary raw structs). -/
+def RingBuf.toList (rb : RingBuf) : List UInt8 :=
+  (rb.buf.data.toList.drop rb.off).take RING_CAP
+
+/-- Contiguous unread byte slice ready for `sendto`. -/
+def RingBuf.frontSlice (rb : RingBuf) : ByteArray :=
+  let n := Nat.min rb.len RING_CAP
+  if n == 0 then
+    ByteArray.empty
+  else if rb.off == 0 && rb.buf.size == n then
+    rb.buf
+  else
+    rb.buf.extract rb.off (rb.off + n)
+
+/-- Append up to `rb.writeAvail` bytes of `chunk` to the tail of `rb`, compacting any consumed prefix. -/
+def RingBuf.push (rb : RingBuf) (chunk : ByteArray) : RingBuf :=
+  let active := rb.frontSlice
+  let avail := RING_CAP - active.size
+  let takeN := Nat.min chunk.size avail
+  if takeN == 0 then
+    { buf := active, off := 0 }
+  else
+    let part := if takeN == chunk.size then chunk else chunk.extract 0 takeN
+    let combined := if active.size == 0 then part else active ++ part
+    { buf := combined, off := 0 }
+
+/-- Advance the read cursor by `n` bytes, resetting `buf` when fully drained. -/
+def RingBuf.consume (rb : RingBuf) (n : Nat) : RingBuf :=
+  let activeLen := Nat.min rb.len RING_CAP
+  if n >= activeLen then
+    { buf := ByteArray.empty, off := 0 }
+  else
+    { buf := rb.buf, off := rb.off + n }
+
+/-- Bidirectional TCP tunnel state with pipelined handshake tail and half-close tracking. -/
+structure RelayState (fd : Type) where
+  /-- Open client socket descriptor (`none` once closed). -/
+  clientFd? : Option fd := none
+  /-- Open upstream socket descriptor (`none` once closed). -/
+  upstreamFd? : Option fd := none
+  /-- Coalesced client payload bytes received after `\r\n\r\n` during handshake. -/
+  pendingPrefix : ByteArray := ByteArray.empty
+  /-- Offset of already-forwarded bytes within `pendingPrefix`. -/
+  pendingOff : Nat := 0
+  /-- Client-to-upstream `16 KiB` FIFO buffer. -/
+  c2u : RingBuf := {}
+  /-- Upstream-to-client `16 KiB` FIFO buffer (seeded with `200 Connection Established`). -/
+  u2c : RingBuf := {}
+  /-- `true` once client `recvfrom` has returned `0` (`EOF`). -/
+  cEof : Bool := false
+  /-- `true` once upstream `recvfrom` has returned `0` (`EOF`). -/
+  uEof : Bool := false
+  /-- `true` once `shutdown(clientFd, .wr)` has completed. -/
+  cWrClosed : Bool := false
+  /-- `true` once `shutdown(upstreamFd, .wr)` has completed. -/
+  uWrClosed : Bool := false
+
+/-- Initialize a `RelayState` with `200 Connection Established` queued to the client and any pipelined client tail queued to upstream. -/
+def RelayState.init {fd : Type} (clientFd upstreamFd : fd) (pipelinedPrefix : ByteArray) : RelayState fd :=
+  { clientFd? := some clientFd
+    upstreamFd? := some upstreamFd
+    pendingPrefix := pipelinedPrefix
+    pendingOff := 0
+    c2u := {}
+    u2c := ({} : RingBuf).push reply200Bytes
+    cEof := false
+    uEof := false
+    cWrClosed := false
+    uWrClosed := false }
+
+/-- Return `true` iff all pipelined post-`\r\n\r\n` handshake bytes have been flushed to `upstreamFd`. -/
+def RelayState.prefixFlushed {fd : Type} (st : RelayState fd) : Bool :=
+  st.pendingOff >= st.pendingPrefix.size
+
+/-- Return `true` iff both client and upstream descriptors have been closed. -/
+def RelayState.isClosed {fd : Type} (st : RelayState fd) : Bool :=
+  st.clientFd?.isNone && st.upstreamFd?.isNone
+
+/-- Compute requested `PollEvents` for `st.clientFd?` (`isEmpty = true` omits the descriptor from `ppoll`). -/
+def RelayState.clientPollEvents {fd : Type} (st : RelayState fd) : PollEvents :=
+  { pollin := (st.prefixFlushed || st.uWrClosed || st.upstreamFd?.isNone) && !st.cEof &&
+      (st.uWrClosed || st.upstreamFd?.isNone || st.c2u.writeAvail > 0)
+    pollout := !st.u2c.isEmpty && !st.cWrClosed }
+
+/-- Compute requested `PollEvents` for `st.upstreamFd?` (`isEmpty = true` omits the descriptor from `ppoll`). -/
+def RelayState.upstreamPollEvents {fd : Type} (st : RelayState fd) : PollEvents :=
+  { pollin := !st.uEof && st.u2c.writeAvail > 0
+    pollout := (!st.prefixFlushed || !st.c2u.isEmpty) && !st.uWrClosed }
+
+/-- Close an optional descriptor if present. -/
+def closeOptFd {m : Type → Type} [Monad m] {fd : Type}
+    (closeFd : fd → m Unit) : Option fd → m Unit
+  | some f => closeFd f
+  | none => pure ()
+
+/-- Close both endpoints of `st` and return the cleared `RelayState`. -/
+def closeRelayBoth {m : Type → Type} [Monad m] {fd : Type}
+    (closeFd : fd → m Unit) (st : RelayState fd) : m (RelayState fd) := do
+  closeOptFd closeFd st.clientFd?
+  closeOptFd closeFd st.upstreamFd?
+  return { st with
+    clientFd? := none
+    upstreamFd? := none
+    pendingPrefix := ByteArray.empty
+    pendingOff := 0 }
+
+/-- Non-blocking `sendto` loop advancing `off` across `bytes` until complete, `EAGAIN`, or hard error (`none`). -/
+def flushBytesNonblock {m : Type → Type} [Monad m] {fd : Type}
+    (net : NetOpsM m fd) (f : fd) (bytes : ByteArray) : Nat → Nat → m (Option Nat)
+  | 0, off => pure (some off)
+  | fuel + 1, off => do
+    if off >= bytes.size then
+      return some off
+    else
+      let slice := if off == 0 then bytes else bytes.extract off bytes.size
+      match ← net.sendto f slice { nosignal := true, dontwait := true } with
+      | .ok n =>
+        if n == 0 then return some off
+        else flushBytesNonblock net f bytes fuel (off + Nat.min n.toNat slice.size)
+      | .error e =>
+        if e == Errno.EINTR then
+          flushBytesNonblock net f bytes fuel off
+        else if e == Errno.EAGAIN then
+          return some off
+        else
+          return none
+
+/-- Non-blocking `recvfrom` loop filling `rb` until full, `EOF`/peer-reset (`eof = true`), `EAGAIN`, or invalid-descriptor error (`none`). -/
+def recvIntoRing {m : Type → Type} [Monad m] {fd : Type}
+    (net : NetOpsM m fd) (f : fd) : Nat → RingBuf → m (Option (RingBuf × Bool))
+  | 0, rb => pure (some (rb, false))
+  | fuel + 1, rb => do
+    let avail := rb.writeAvail
+    if avail == 0 then
+      return some (rb, false)
+    else
+      match ← net.recvfrom f (UInt32.ofNat avail) { dontwait := true } with
+      | .ok bs =>
+        if bs.size == 0 then
+          return some (rb, true)
+        else
+          recvIntoRing net f fuel (rb.push bs)
+      | .error e =>
+        if e == Errno.EINTR then
+          recvIntoRing net f fuel rb
+        else if e == Errno.EAGAIN then
+          return some (rb, false)
+        else if e == Errno.EBADF || e == Errno.EINVAL || e == Errno.ENOTSOCK then
+          return none
+        else
+          return some (rb, true)
+
+/-- Non-blocking `sendto` loop draining `rb` until empty, `EAGAIN`, or hard error (`none`). -/
+def flushRingNonblock {m : Type → Type} [Monad m] {fd : Type}
+    (net : NetOpsM m fd) (f : fd) : Nat → RingBuf → m (Option RingBuf)
+  | 0, rb => pure (some rb)
+  | fuel + 1, rb => do
+    if rb.isEmpty then
+      return some rb
+    else
+      let slice := rb.frontSlice
+      match ← net.sendto f slice { nosignal := true, dontwait := true } with
+      | .ok n =>
+        if n == 0 then return some rb
+        else flushRingNonblock net f fuel (rb.consume n.toNat)
+      | .error e =>
+        if e == Errno.EINTR then
+          flushRingNonblock net f fuel rb
+        else if e == Errno.EAGAIN then
+          return some rb
+        else
+          return none
+
+/-- Execute `shutdown(f, .wr)` retrying `EINTR` and tolerating already-disconnected peers (`ENOTCONN`/`ECONNRESET`/`EPIPE`). -/
+def shutdownWrClean {m : Type → Type} [Monad m] {fd : Type}
+    (net : NetOpsM m fd) (f : fd) : Nat → m Bool
+  | 0 => pure false
+  | fuel + 1 => do
+    match ← net.shutdown f .wr with
+    | .ok () => return true
+    | .error e =>
+      if e == Errno.EINTR then
+        shutdownWrClean net f fuel
+      else if e == Errno.ENOTCONN || e == Errno.ECONNRESET || e == Errno.EPIPE then
+        return true
+      else
+        return false
+
+/-- Drain unread inbound bytes from `f` after the peer write side has closed, returning `true` on `EOF` or socket error. -/
+def drainDeadPeerRx {m : Type → Type} [Monad m] {fd : Type}
+    (net : NetOpsM m fd) (f : fd) : Nat → m Bool
+  | 0 => pure false
+  | fuel + 1 => do
+    match ← net.recvfrom f 4096 { dontwait := true } with
+    | .ok bs =>
+      if bs.size == 0 then return true else drainDeadPeerRx net f fuel
+    | .error e =>
+      if e == Errno.EINTR then drainDeadPeerRx net f fuel
+      else if e == Errno.EAGAIN then return false
+      else return true
+
+/-- Phase 1 of `stepBidirectionalRelay`: flush pending pipelined client bytes before regular upstream writes. -/
+def stepRelayPrefix {m : Type → Type} [Monad m] {fd : Type}
+    (net : NetOpsM m fd) (st0 : RelayState fd) (uRev : PollEvents) : m (RelayState fd) := do
+  if !st0.prefixFlushed && !st0.uWrClosed && (uRev.pollout || uRev.pollerr || uRev.pollhup) then
+    match st0.upstreamFd? with
+    | some ufd =>
+      match ← flushBytesNonblock net ufd st0.pendingPrefix MAX_RELAY_IO_STEPS st0.pendingOff with
+      | none =>
+        return { st0 with
+          pendingPrefix := ByteArray.empty
+          pendingOff := 0
+          c2u := {}
+          uWrClosed := true }
+      | some nextOff =>
+        if nextOff >= st0.pendingPrefix.size then
+          return { st0 with pendingPrefix := ByteArray.empty, pendingOff := 0 }
+        else
+          return { st0 with pendingOff := nextOff }
+    | none => return st0
+  else
+    return st0
+
+/-- Phase 2 of `stepBidirectionalRelay`: drain readable client bytes into `c2u` (or discard unread upload bytes once upstream write closes so `closeFd` sends `FIN` rather than `TCP RST`). -/
+def stepRelayClientRx {m : Type → Type} [Monad m] {fd : Type}
+    (net : NetOpsM m fd) (st1 : RelayState fd) (cRev : PollEvents) : m (Option (RelayState fd)) := do
+  if !st1.cEof && (cRev.pollin || cRev.pollhup || cRev.pollerr) then
+    if st1.uWrClosed || st1.upstreamFd?.isNone then
+      match st1.clientFd? with
+      | some cfd =>
+        let eof' ← drainDeadPeerRx net cfd MAX_RELAY_IO_STEPS
+        return some { st1 with cEof := st1.cEof || eof' }
+      | none => return some st1
+    else if st1.prefixFlushed && st1.c2u.writeAvail > 0 then
+      match st1.clientFd? with
+      | some cfd =>
+        match ← recvIntoRing net cfd MAX_RELAY_IO_STEPS st1.c2u with
+        | none => return none
+        | some (c2u', eof') => return some { st1 with c2u := c2u', cEof := st1.cEof || eof' }
+      | none => return some st1
+    else
+      return some st1
+  else
+    return some st1
+
+/-- Phase 3 of `stepBidirectionalRelay`: drain readable upstream bytes into `u2c` (including unread payload before `TCP RST`). -/
+def stepRelayUpstreamRx {m : Type → Type} [Monad m] {fd : Type}
+    (net : NetOpsM m fd) (st2 : RelayState fd) (uRev : PollEvents) : m (Option (RelayState fd)) := do
+  if !st2.uEof && st2.u2c.writeAvail > 0 &&
+      (uRev.pollin || uRev.pollhup || uRev.pollerr) then
+    match st2.upstreamFd? with
+    | some ufd =>
+      match ← recvIntoRing net ufd MAX_RELAY_IO_STEPS st2.u2c with
+      | none => return none
+      | some (u2c', eof') => return some { st2 with u2c := u2c', uEof := st2.uEof || eof' }
+    | none => return some st2
+  else
+    return some st2
+
+/-- Phase 4 of `stepBidirectionalRelay`: flush `c2u` ring buffer toward upstream, tolerating peer write closure without losing `u2c`. -/
+def stepRelayUpstreamTx {m : Type → Type} [Monad m] {fd : Type}
+    (net : NetOpsM m fd) (st3 : RelayState fd) (uRev : PollEvents) : m (RelayState fd) := do
+  if st3.prefixFlushed && !st3.c2u.isEmpty && !st3.uWrClosed &&
+      (uRev.pollout || uRev.pollerr || uRev.pollhup) then
+    match st3.upstreamFd? with
+    | some ufd =>
+      match ← flushRingNonblock net ufd MAX_RELAY_IO_STEPS st3.c2u with
+      | none => return { st3 with c2u := {}, uWrClosed := true }
+      | some c2u' => return { st3 with c2u := c2u' }
+    | none => return st3
+  else
+    return st3
+
+/-- Phase 5 of `stepBidirectionalRelay`: flush `u2c` ring buffer toward client. -/
+def stepRelayClientTx {m : Type → Type} [Monad m] {fd : Type}
+    (net : NetOpsM m fd) (st4 : RelayState fd) (cRev : PollEvents) : m (Option (RelayState fd)) := do
+  if !st4.u2c.isEmpty && !st4.cWrClosed &&
+      (cRev.pollout || cRev.pollerr || cRev.pollhup) then
+    match st4.clientFd? with
+    | some cfd =>
+      match ← flushRingNonblock net cfd MAX_RELAY_IO_STEPS st4.u2c with
+      | none =>
+        if st4.prefixFlushed && st4.c2u.isEmpty then
+          return none
+        else
+          return some { st4 with u2c := {}, uEof := true, cWrClosed := true }
+      | some u2c' => return some { st4 with u2c := u2c' }
+    | none => return some st4
+  else
+    return some st4
+
+/-- Phase 6 of `stepBidirectionalRelay`: propagate client `EOF` via `shutdown(ufd, .wr)` once `c2u` and `pendingPrefix` drain. -/
+def stepRelayShutdownUpstream {m : Type → Type} [Monad m] {fd : Type}
+    (net : NetOpsM m fd) (st5 : RelayState fd) : m (Option (RelayState fd)) := do
+  if st5.cEof && st5.prefixFlushed && st5.c2u.isEmpty && !st5.uWrClosed then
+    match st5.upstreamFd? with
+    | some ufd =>
+      if ← shutdownWrClean net ufd MAX_RELAY_IO_STEPS then
+        return some { st5 with uWrClosed := true }
+      else
+        return none
+    | none => return some { st5 with uWrClosed := true }
+  else
+    return some st5
+
+/-- Phase 7 of `stepBidirectionalRelay`: propagate upstream `EOF` via `shutdown(cfd, .wr)` once `u2c` drains. -/
+def stepRelayShutdownClient {m : Type → Type} [Monad m] {fd : Type}
+    (net : NetOpsM m fd) (st6 : RelayState fd) : m (Option (RelayState fd)) := do
+  if st6.uEof && st6.u2c.isEmpty && !st6.cWrClosed then
+    match st6.clientFd? with
+    | some cfd =>
+      if ← shutdownWrClean net cfd MAX_RELAY_IO_STEPS then
+        return some { st6 with cWrClosed := true }
+      else
+        return none
+    | none => return some { st6 with cWrClosed := true }
+  else
+    return some st6
+
+/-- Close `optFd` iff `done = true`, returning the remaining open descriptor option. -/
+def reapIdleFd {m : Type → Type} [Monad m] {fd : Type}
+    (closeFd : fd → m Unit) (optFd : Option fd) (done : Bool) : m (Option fd) := do
+  match optFd with
+  | some d =>
+    if done then
+      closeFd d
+      return none
+    else
+      return some d
+  | none => return none
+
+/-- Phase 8 of `stepBidirectionalRelay`: close any side whose read and write directions have both completed. -/
+def stepRelayReapIdle {m : Type → Type} [Monad m] {fd : Type}
+    (closeFd : fd → m Unit) (st7 : RelayState fd) : m (RelayState fd) := do
+  let clientFd' ← reapIdleFd closeFd st7.clientFd? (st7.cEof && st7.cWrClosed)
+  let upstreamFd' ← reapIdleFd closeFd st7.upstreamFd? (st7.uEof && st7.uWrClosed)
+  return { st7 with clientFd? := clientFd', upstreamFd? := upstreamFd' }
+
+/-- Advance one poll tick of bidirectional TCP relay, preserving pipelined prefix ordering, directional half-close, and unread response bytes across peer `TCP RST`. -/
+def stepBidirectionalRelay {m : Type → Type} [Monad m] {fd : Type}
+    (net : NetOpsM m fd) (closeFd : fd → m Unit)
+    (st0 : RelayState fd) (cRev uRev : PollEvents) : m (RelayState fd) := do
+  if cRev.pollnval || uRev.pollnval then
+    closeRelayBoth closeFd st0
+  else
+    let st1 ← stepRelayPrefix net st0 uRev
+    match ← stepRelayClientRx net st1 cRev with
+    | none => closeRelayBoth closeFd st1
+    | some st2 =>
+      match ← stepRelayUpstreamRx net st2 uRev with
+      | none => closeRelayBoth closeFd st2
+      | some st3 =>
+        let st4 ← stepRelayUpstreamTx net st3 uRev
+        match ← stepRelayClientTx net st4 cRev with
+        | none => closeRelayBoth closeFd st4
+        | some st5 =>
+          match ← stepRelayShutdownUpstream net st5 with
+          | none => closeRelayBoth closeFd st5
+          | some st6 =>
+            match ← stepRelayShutdownClient net st6 with
+            | none => closeRelayBoth closeFd st6
+            | some st7 =>
+              stepRelayReapIdle closeFd st7
+
+end LeanSwe.ConnectProxy.Relay

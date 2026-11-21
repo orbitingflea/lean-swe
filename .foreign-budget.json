@@ -29,10 +29,6 @@
       "max_lines": 42,
       "legacy_unmigrated": false
     },
-    "LeanSwe/ConnectProxy/Raw/c/cproxy_shim.c": {
-      "max_lines": 1696,
-      "legacy_unmigrated": true
-    },
     "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c": {
       "max_lines": 185,
       "legacy_unmigrated": false

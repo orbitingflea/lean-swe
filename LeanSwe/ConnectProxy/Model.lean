@@ -3,7 +3,9 @@ import LeanSwe.ConnectProxy.Types
 namespace LeanSwe.ConnectProxy.Model
 
 open LeanSwe.ConnectProxy
-open LeanSwe.ConnectProxy.Raw
+
+export LeanSwe.ConnectProxy
+  (ConnectProxyRawError HeadDecision ResolveDecision RawConnectProxyOpsM RawConnectProxyOps)
 
 /-- Compute a 32-bit network-order bitmask with `prefixLen` leading `1` bits (`0` when `prefixLen = 0`). -/
 def ipv4Mask (prefixLen : Nat) : UInt32 :=
@@ -751,7 +753,7 @@ inductive ConnectAuthResult where
   | dnsFailed (host : String) (port : UInt16) (reason : String)
   deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Authorize an incoming HTTP head in two stages, calling `resolveHost` only when Stage 1 allows a non-literal domain. -/
+/-- Authorize an incoming HTTP head in two phases, calling `resolveHost` only when target admission allows a non-literal domain. -/
 def authorizeConnect
     (cfg : ProxyConfig)
     (head : ByteArray)

@@ -1,7 +1,11 @@
 import Core.NondetTest
 import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Model
+import LeanSwe.ConnectProxy.Relay
+import LeanSwe.ConnectProxy.SysBridge
+import LeanSwe.ConnectProxy.HealthySys
 import LeanSwe.ConnectProxy.SpecTests
+import LeanSwe.ConnectProxy.Proofs.HealthyWitness
 
 /-! Compile-time negative specification mutants for `LeanSwe.ConnectProxy`. -/
 
@@ -9,7 +13,6 @@ namespace LeanSwe.ConnectProxy
 
 open Core (NondetTest)
 open Core.NondetTest
-open LeanSwe.ConnectProxy.Raw
 open LeanSwe.ConnectProxy.Model
 
 private def referencePureApi : ConnectProxyApi :=
@@ -331,5 +334,127 @@ example : ¬ Core.AllPass (test_cproxy_withProxy_exceptionTriggersMonadFinallyTe
   have hStop := h0.2.1.2
   revert hStop
   decide
+
+example : ¬ Core.AllPass (test_cproxy_healthy_listenerBindLoopbackOnlyAndPortLaws
+    { HealthySys.realBridgeTarget with
+      createListener := fun _ _ => pure (.ok (3, 4, 5, 0)) }) := by
+  intro h
+  have h0 := h Proofs.sampleHealthySys Proofs.sampleHealthySys_refines
+    { filesEnv := { state := { LinuxSyscall.Files.FilesState.initial with fds := [] } } }
+    ⟨rfl, List.nodup_nil⟩ { config := {} }
+  exact h0.2.2.2.1.1 rfl
+
+example : ¬ Core.AllPass (test_cproxy_healthy_onHeadBeforeDnsAndVerifiedIpConnect
+    { HealthySys.realBridgeTarget with
+      handleCompleteHeadSync := fun _ _ _ _ slot evs _ _ _ =>
+        fun (w, tr) => ((slot, evs), (w, { tr with dnsQueries := tr.dnsQueries.push "leaked.invalid" })) }) := by
+  intro h
+  have h0 := h Proofs.sampleHealthySys Proofs.sampleHealthySys_refines
+    { filesEnv := { state := { LinuxSyscall.Files.FilesState.initial with fds := [] } } }
+    rfl { limits := { maxHeaderBytes := 0 } } (ByteArray.mk #[65]) ByteArray.empty 3 #[]
+  have hDec : Model.decideConnectHead { limits := { maxHeaderBytes := 0 } } (ByteArray.mk #[65]) =
+    .deny none none "request head exceeds maxHeaderBytes" := rfl
+  dsimp [test_cproxy_healthy_onHeadBeforeDnsAndVerifiedIpConnect, StateT.run, bind, assert] at h0
+  rw [hDec] at h0
+  have hEq : (#["leaked.invalid"] : Array String) = #[] := h0.2.2.1.1
+  cases hEq
+
+example : ¬ Core.AllPass (test_cproxy_healthy_admissionCapsUnderShortReadsAndEintr
+    { HealthySys.realBridgeTarget with
+      listenPollinEnabled := fun _ _ => true }) := by
+  intro h
+  have h0 := h Proofs.sampleHealthySys Proofs.sampleHealthySys_refines
+    { filesEnv := { state := { LinuxSyscall.Files.FilesState.initial with fds := [] } } }
+    rfl { limits := { maxConcurrentTunnels := 0 } } 3 4 0 1000 #[] ByteArray.empty {} #[]
+    ⟨Nat.zero_le _, Nat.zero_le _⟩
+  have hPollin : true = decide (0 < 0) := h0.1
+  cases hPollin
+
+example : ¬ Core.AllPass (test_cproxy_healthy_admissionCapsUnderShortReadsAndEintr
+    { HealthySys.realBridgeTarget with
+      stepHandshakeSync := fun _ _ _ _ slot evs cfd headBuf dl _ _ =>
+        pure ({ slot with phase := .handshake cfd headBuf dl }, evs) }) := by
+  intro h
+  have h0 := h Proofs.sampleHealthySys Proofs.sampleHealthySys_refines
+    { filesEnv := { state := { LinuxSyscall.Files.FilesState.initial with fds := [] } } }
+    rfl { limits := { maxHeaderBytes := 1 } } 3 4 0 1000 #[] (ByteArray.mk #[65]) { pollin := true } #[]
+    ⟨Nat.zero_le _, Nat.le_refl 1⟩
+  have hStay := (h0.2.2.1.2.1 4 (ByteArray.mk #[65]) 1000 rfl).2.1 rfl
+  exact Nat.lt_irrefl 1 hStay
+
+example : ¬ Core.AllPass (test_cproxy_healthy_relayByteConservationShortIoAndEintr
+    { HealthySys.realBridgeTarget with
+      recvIntoRing := fun _ _ _ _ => pure (some ({ buf := ByteArray.mk #[42], off := 0 }, false)) }) := by
+  intro h
+  have h0 := h Proofs.sampleHealthySys Proofs.sampleHealthySys_refines
+    { filesEnv := { state := { LinuxSyscall.Files.FilesState.initial with fds := [] } } }
+    rfl 3 4 0 {} ByteArray.empty (Nat.zero_le _)
+  have hCons : ({ buf := ByteArray.mk #[42], off := 0 } : Relay.RingBuf).toList =
+    ({} : Relay.RingBuf).toList ++ (#[] : Array UInt8).toList := h0.2.1.2.1
+  revert hCons
+  decide
+
+example : ¬ Core.AllPass (test_cproxy_healthy_relayByteConservationShortIoAndEintr
+    { HealthySys.realBridgeTarget with
+      recvIntoRing := fun _ _ _ _ => pure none }) := by
+  intro h
+  have h0 := h Proofs.sampleHealthySys Proofs.sampleHealthySys_refines
+    { filesEnv := { state := { LinuxSyscall.Files.FilesState.initial with fds := [] } } }
+    rfl 3 4 0 {} ByteArray.empty (Nat.zero_le _)
+  rcases h0.2.1 with ⟨_, hMem, _⟩
+  cases hMem
+
+example : ¬ Core.AllPass (test_cproxy_healthy_relayByteConservationShortIoAndEintr
+    { HealthySys.realBridgeTarget with
+      stepBidirectionalRelay := fun _ st _ _ =>
+        pure { st with pendingPrefix := ByteArray.empty, pendingOff := 0 } }) := by
+  intro h
+  have h0 := h Proofs.sampleHealthySys Proofs.sampleHealthySys_refines
+    { filesEnv := { state := { LinuxSyscall.Files.FilesState.initial with fds := [] } } }
+    rfl 3 4 0 {} (ByteArray.mk #[88]) (Nat.zero_le _)
+  have hPipe := (h0.2.2.2.2.1.2.1 rfl).1
+  revert hPipe
+  decide
+
+example : ¬ Core.AllPass (test_cproxy_healthy_relayByteConservationShortIoAndEintr
+    { HealthySys.realBridgeTarget with
+      stepBidirectionalRelay := fun _ st _ uRev =>
+        if uRev.pollerr then pure {} else pure st }) := by
+  intro h
+  have h0 := h Proofs.sampleHealthySys Proofs.sampleHealthySys_refines
+    { filesEnv := { state := { LinuxSyscall.Files.FilesState.initial with fds := [] } } }
+    rfl 3 4 0 {} ByteArray.empty (Nat.zero_le _)
+  rcases h0.2.2.2.2.2.1.2 with ⟨_, hMem, _⟩ | ⟨hFd, _⟩
+  · cases hMem
+  · cases hFd
+
+example : ¬ Core.AllPass (test_cproxy_healthy_withProxyAndStopClosesAllFds
+    { HealthySys.realBridgeTarget with
+      mkRawOps := fun _ =>
+        { startProxy := fun _ _ _ => pure (.error { kind := .ioError, message := "unused" })
+          stopProxy := fun _ => fun (w, tr) =>
+            (.ok #[], ({ w with proxyTable := { w.proxyTable with entries := [] } }, tr))
+          activeProxyCount := fun (w, tr) => (w.proxyTable.entries.length, (w, tr))
+          mapRawError := Model.mapRawErrorPure } }) := by
+  intro h
+  have h0 := h Proofs.sampleHealthySys Proofs.sampleHealthySys_refines
+    { filesEnv := { state := { LinuxSyscall.Files.FilesState.initial with fds := [] } } }
+    ⟨rfl, List.nodup_nil⟩ {} { config := {} } 3 4 5 #[] #[]
+  have hClosed := (h0.2.2.1 3 (List.Mem.head _)).1
+  cases hClosed
+
+example : ¬ Core.AllPass (test_cproxy_healthy_pollAndStepTickAndFallbackConnect
+    { HealthySys.realBridgeTarget with
+      pollAndStepTickSync := fun _ _ _ _ _ _ _ _ _ =>
+        fun (w, tr) => (.stopOrFatal, (w, { tr with pollOutcomes := #[some LinuxSyscall.Errno.EINTR] })) }) := by
+  intro h
+  have h0 := h Proofs.sampleHealthySys Proofs.sampleHealthySys_refines
+    { filesEnv := { state := { LinuxSyscall.Files.FilesState.initial with fds := [] } } }
+    ⟨rfl, List.nodup_nil⟩ {} 3 4 5 6 "example.com" 443 #[] 0 0 1000
+    ByteArray.empty ByteArray.empty {} {} false #[] #[]
+    ⟨Nat.zero_le _, fun _ hm => nomatch hm⟩
+  have hRetry : SysBridge.PollTickOutcome.stopOrFatal = .retryEintr :=
+    h0.2.2.2.1.2.1.mpr rfl
+  cases hRetry
 
 end LeanSwe.ConnectProxy
