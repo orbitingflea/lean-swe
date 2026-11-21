@@ -1,4 +1,4 @@
-namespace LeanSwe.LinuxSyscall.Fuzz
+namespace Fuzz.LinuxSyscall
 
 /-- Deterministic 64-bit SplitMix64 pseudo-random generator state. -/
 structure Rng where
@@ -72,4 +72,4 @@ def deltaShrink {α : Type} (init : α) (sizeOf : α → Nat) (dropRange : α �
         break
       chunk := max 1 (chunk / 2)
   return cur
-end LeanSwe.LinuxSyscall.Fuzz
+end Fuzz.LinuxSyscall

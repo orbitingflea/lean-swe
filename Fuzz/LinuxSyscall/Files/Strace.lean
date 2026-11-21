@@ -5,16 +5,14 @@ import LeanSwe.LinuxSyscall.Files.Seed
 import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.Files.Impl
 import LeanSwe.LinuxSyscall.Files.SpecTests
-import LeanSwe.LinuxSyscall.Fuzz.Env
-import LeanSwe.LinuxSyscall.Fuzz.SandboxEnv
+import Fuzz.LinuxSyscall.Env
+import Fuzz.LinuxSyscall.SandboxEnv
 import LeanSwe.LinuxSyscall.Sandbox.Interface
-import Core.Assumptions
 
-namespace LeanSwe.LinuxSyscall.Files.RuntimeTests
+namespace Fuzz.LinuxSyscall.Files.Strace
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Files
-open Core
 
 private def assertTrue (msg : String) (cond : Bool) : IO Unit := do
   if !cond then
@@ -71,7 +69,7 @@ private def woFlags : OpenFlags := { access := .wronly }
 private def dirFlags : OpenFlags := { access := .rdonly, directory := true }
 
 /-- Verify `openat` flag encoding and embedded-NUL `EINVAL` guard. -/
-def assume_files_openat_flagsAndNulGuard : IO Unit := withTempSandbox "a-openat" fun _ => do
+private def assume_files_openat_flagsAndNulGuard : IO Unit := withTempSandbox "a-openat" fun _ => do
   let ops := defaultOps
   let rNul ← ops.openat none (ByteArray.mk #[97, 0, 98]) rwCreatFlags 0o644
   assertErr "openat NUL" rNul Errno.EINVAL
@@ -81,7 +79,7 @@ def assume_files_openat_flagsAndNulGuard : IO Unit := withTempSandbox "a-openat"
   assertErr "openat O_EXCL" rExcl Errno.EEXIST
 
 /-- Verify `openat2` resolve flags and ABI struct passing. -/
-def assume_files_openat2_resolveFlagsAndAbi : IO Unit := withTempSandbox "a-openat2" fun _ => do
+private def assume_files_openat2_resolveFlagsAndAbi : IO Unit := withTempSandbox "a-openat2" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "openat2 create" (← ops.openat2 none "g.txt".toUTF8 { flags := rwCreatFlags, mode := 0o644, resolve := { beneath := true } })
   safeClose ops fd
@@ -89,7 +87,7 @@ def assume_files_openat2_resolveFlagsAndAbi : IO Unit := withTempSandbox "a-open
   assertErr "openat2 beneath" rEsc Errno.EXDEV
 
 /-- Verify `LeanFdBox` ABA-safe `EBADF` on double-close and `EBUSY` when pinned concurrently. -/
-def assume_files_close_abaSafeFdBox : IO Unit := withTempSandbox "a-close" fun _ => do
+private def assume_files_close_abaSafeFdBox : IO Unit := withTempSandbox "a-close" fun _ => do
   let ops := defaultOps
   let fd1 ← assertOk "open fd1" (← ops.openat none "lockf".toUTF8 rwCreatFlags 0o644)
   let fd2 ← assertOk "open fd2" (← ops.openat none "lockf".toUTF8 rwCreatFlags 0o644)
@@ -111,7 +109,7 @@ def assume_files_close_abaSafeFdBox : IO Unit := withTempSandbox "a-close" fun _
   safeClose ops fd1b
 
 /-- Verify `read` clamping to `16 MiB` and short-read behavior. -/
-def assume_files_read_clamped16MiBAndPartial : IO Unit := withTempSandbox "a-read" fun _ => do
+private def assume_files_read_clamped16MiBAndPartial : IO Unit := withTempSandbox "a-read" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "r.bin".toUTF8 rwCreatFlags 0o644)
   let _ ← assertOk "write" (← ops.write fd "abc".toUTF8)
@@ -122,7 +120,7 @@ def assume_files_read_clamped16MiBAndPartial : IO Unit := withTempSandbox "a-rea
   safeClose ops rfd
 
 /-- Verify `write` partial count return and `O_APPEND` positioning. -/
-def assume_files_write_partialAndAppend : IO Unit := withTempSandbox "a-write" fun _ => do
+private def assume_files_write_partialAndAppend : IO Unit := withTempSandbox "a-write" fun _ => do
   let ops := defaultOps
   let fd1 ← assertOk "open1" (← ops.openat none "w.bin".toUTF8 rwCreatFlags 0o644)
   let n1 ← assertOk "write1" (← ops.write fd1 "hi".toUTF8)
@@ -138,7 +136,7 @@ def assume_files_write_partialAndAppend : IO Unit := withTempSandbox "a-write" f
   safeClose ops fd3
 
 /-- Verify `fstat` portable `StatInfo` decoding. -/
-def assume_files_fstat_portableStatDecode : IO Unit := withTempSandbox "a-fstat" fun _ => do
+private def assume_files_fstat_portableStatDecode : IO Unit := withTempSandbox "a-fstat" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "st.bin".toUTF8 rwCreatFlags 0o640)
   let _ ← assertOk "write" (← ops.write fd "12345".toUTF8)
@@ -148,7 +146,7 @@ def assume_files_fstat_portableStatDecode : IO Unit := withTempSandbox "a-fstat"
   safeClose ops fd
 
 /-- Verify `fstatat` `AT_SYMLINK_NOFOLLOW` and `AT_EMPTY_PATH`. -/
-def assume_files_fstatat_nofollowAndEmptyPath : IO Unit := withTempSandbox "a-fstatat" fun _ => do
+private def assume_files_fstatat_nofollowAndEmptyPath : IO Unit := withTempSandbox "a-fstatat" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "t.bin".toUTF8 rwCreatFlags 0o644)
   let stEmpty ← assertOk "fstatat empty" (← ops.fstatat (some fd) ByteArray.empty { emptyPath := true })
@@ -159,7 +157,7 @@ def assume_files_fstatat_nofollowAndEmptyPath : IO Unit := withTempSandbox "a-fs
   assertTrue "symlink kind" (stLnk.kind == .symlink)
 
 /-- Verify `faccessat2` mode bits and `AT_EMPTY_PATH`. -/
-def assume_files_faccessat_modeBits : IO Unit := withTempSandbox "a-faccess" fun _ => do
+private def assume_files_faccessat_modeBits : IO Unit := withTempSandbox "a-faccess" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "acc.bin".toUTF8 rwCreatFlags 0o444)
   assertOk "faccessat F_OK" (← ops.faccessat none "acc.bin".toUTF8 {} {})
@@ -168,7 +166,7 @@ def assume_files_faccessat_modeBits : IO Unit := withTempSandbox "a-faccess" fun
   safeClose ops fd
 
 /-- Verify `mkdirat` mode and NUL guard. -/
-def assume_files_mkdirat_modeAndNulGuard : IO Unit := withTempSandbox "a-mkdir" fun _ => do
+private def assume_files_mkdirat_modeAndNulGuard : IO Unit := withTempSandbox "a-mkdir" fun _ => do
   let ops := defaultOps
   assertErr "mkdirat NUL" (← ops.mkdirat none (ByteArray.mk #[100, 0]) 0o755) Errno.EINVAL
   assertOk "mkdirat" (← ops.mkdirat none "sub".toUTF8 0o755)
@@ -176,14 +174,14 @@ def assume_files_mkdirat_modeAndNulGuard : IO Unit := withTempSandbox "a-mkdir" 
   assertTrue "sub is dir" (st.kind == .dir)
 
 /-- Verify `unlinkat` `AT_REMOVEDIR` flag. -/
-def assume_files_unlinkat_removeDirFlag : IO Unit := withTempSandbox "a-unlink" fun _ => do
+private def assume_files_unlinkat_removeDirFlag : IO Unit := withTempSandbox "a-unlink" fun _ => do
   let ops := defaultOps
   assertOk "mkdirat" (← ops.mkdirat none "d".toUTF8 0o755)
   assertErr "unlink dir without flag" (← ops.unlinkat none "d".toUTF8 false) Errno.EISDIR
   assertOk "unlink dir with flag" (← ops.unlinkat none "d".toUTF8 true)
 
 /-- Verify `renameat2` `RENAME_NOREPLACE` and `RENAME_EXCHANGE` ABI. -/
-def assume_files_renameat2_flagsAbi : IO Unit := withTempSandbox "a-rename" fun _ => do
+private def assume_files_renameat2_flagsAbi : IO Unit := withTempSandbox "a-rename" fun _ => do
   let ops := defaultOps
   let f1 ← assertOk "open1" (← ops.openat none "r1".toUTF8 rwCreatFlags 0o644)
   let _ ← assertOk "w1" (← ops.write f1 "one".toUTF8)
@@ -197,20 +195,20 @@ def assume_files_renameat2_flagsAbi : IO Unit := withTempSandbox "a-rename" fun 
   assertTrue "exchanged size=4" (st1.size == 4)
 
 /-- Verify `symlinkat` raw byte handling and NUL guard. -/
-def assume_files_symlinkat_rawBytesAndNulGuard : IO Unit := withTempSandbox "a-sym" fun _ => do
+private def assume_files_symlinkat_rawBytesAndNulGuard : IO Unit := withTempSandbox "a-sym" fun _ => do
   let ops := defaultOps
   assertErr "symlink target NUL" (← ops.symlinkat (ByteArray.mk #[97, 0]) none "l".toUTF8) Errno.EINVAL
   assertOk "symlinkat" (← ops.symlinkat "dest-raw".toUTF8 none "l".toUTF8)
 
 /-- Verify `readlinkat` clamped raw byte output. -/
-def assume_files_readlinkat_clampedRawBytes : IO Unit := withTempSandbox "a-readlink" fun _ => do
+private def assume_files_readlinkat_clampedRawBytes : IO Unit := withTempSandbox "a-readlink" fun _ => do
   let ops := defaultOps
   assertOk "symlinkat" (← ops.symlinkat "target-123".toUTF8 none "l".toUTF8)
   let got ← assertOk "readlinkat" (← ops.readlinkat none "l".toUTF8 64)
   assertTrue "target match" (got == "target-123".toUTF8)
 
 /-- Verify `getdents64` returns raw dirent bytes on open directories. -/
-def assume_files_getdents64_rawDirentBuffer : IO Unit := withTempSandbox "a-getdents" fun _ => do
+private def assume_files_getdents64_rawDirentBuffer : IO Unit := withTempSandbox "a-getdents" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open dir" (← ops.openat none ".".toUTF8 dirFlags 0)
   let buf ← assertOk "getdents64" (← ops.getdents64 fd 4096)
@@ -218,7 +216,7 @@ def assume_files_getdents64_rawDirentBuffer : IO Unit := withTempSandbox "a-getd
   safeClose ops fd
 
 /-- Verify `fchmodat` mode update and NUL guard. -/
-def assume_files_fchmodat_modeAndNulGuard : IO Unit := withTempSandbox "a-fchmodat" fun _ => do
+private def assume_files_fchmodat_modeAndNulGuard : IO Unit := withTempSandbox "a-fchmodat" fun _ => do
   let ops := defaultOps
   assertErr "fchmodat NUL" (← ops.fchmodat none (ByteArray.mk #[97, 0]) 0o600) Errno.EINVAL
   let fd ← assertOk "open" (← ops.openat none "m".toUTF8 rwCreatFlags 0o644)
@@ -228,7 +226,7 @@ def assume_files_fchmodat_modeAndNulGuard : IO Unit := withTempSandbox "a-fchmod
   assertTrue "mode=0600" ((st.mode &&& (0o777 : UInt32)) == (0o600 : UInt32))
 
 /-- Verify `fchmod` updates mode on an open FD. -/
-def assume_files_fchmod_modeUpdate : IO Unit := withTempSandbox "a-fchmod" fun _ => do
+private def assume_files_fchmod_modeUpdate : IO Unit := withTempSandbox "a-fchmod" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "fm".toUTF8 rwCreatFlags 0o644)
   assertOk "fchmod" (← ops.fchmod fd 0o640)
@@ -237,7 +235,7 @@ def assume_files_fchmod_modeUpdate : IO Unit := withTempSandbox "a-fchmod" fun _
   safeClose ops fd
 
 /-- Verify `flock` advisory lock flags and unlock. -/
-def assume_files_flock_advisoryLockFlags : IO Unit := withTempSandbox "a-flock" fun _ => do
+private def assume_files_flock_advisoryLockFlags : IO Unit := withTempSandbox "a-flock" fun _ => do
   let ops := defaultOps
   let f1 ← assertOk "open1" (← ops.openat none "fl".toUTF8 rwCreatFlags 0o644)
   let f2 ← assertOk "open2" (← ops.openat none "fl".toUTF8 rwCreatFlags 0o644)
@@ -249,7 +247,7 @@ def assume_files_flock_advisoryLockFlags : IO Unit := withTempSandbox "a-flock" 
   safeClose ops f1
 
 /-- Verify `fcntl` curated commands (`getFl`, `setFl`, `getFd`, `setFd`, `getSeals`). -/
-def assume_files_fcntl_curatedCommands : IO Unit := withTempSandbox "a-fcntl" fun _ => do
+private def assume_files_fcntl_curatedCommands : IO Unit := withTempSandbox "a-fcntl" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "fc".toUTF8 rwCreatFlags 0o644)
   let fl0 ← assertOk "getFl" (← ops.fcntl fd .getFl)
@@ -267,7 +265,7 @@ def assume_files_fcntl_curatedCommands : IO Unit := withTempSandbox "a-fcntl" fu
   safeClose ops fd
 
 /-- Verify `fsync` succeeds on a writable FD. -/
-def assume_files_fsync_fdSync : IO Unit := withTempSandbox "a-fsync" fun _ => do
+private def assume_files_fsync_fdSync : IO Unit := withTempSandbox "a-fsync" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "fs".toUTF8 rwCreatFlags 0o644)
   let _ ← assertOk "write" (← ops.write fd "sync".toUTF8)
@@ -275,14 +273,14 @@ def assume_files_fsync_fdSync : IO Unit := withTempSandbox "a-fsync" fun _ => do
   safeClose ops fd
 
 /-- Verify `getcwd` returns current working directory and rejects tiny buffers. -/
-def assume_files_getcwd_clampedBuffer : IO Unit := withTempSandbox "a-getcwd" fun dir => do
+private def assume_files_getcwd_clampedBuffer : IO Unit := withTempSandbox "a-getcwd" fun dir => do
   let ops := defaultOps
   assertErrOneOf "getcwd 1" (← ops.getcwd 1) [Errno.ERANGE, Errno.EINVAL]
   let cwd ← assertOk "getcwd 4096" (← ops.getcwd 4096)
   assertTrue "cwd matches dir" (cwd == dir.toString.toUTF8)
 
 /-- Verify `lseek` (`SEEK_SET`/`SEEK_CUR`/`SEEK_END`, negative `EINVAL`, `0o400` dir rewind), `O_NOCTTY`, and `O_PATH`. -/
-def assume_files_lseek_offsetAndDirRewind : IO Unit := withTempSandbox "a-lseek" fun _ => do
+private def assume_files_lseek_offsetAndDirRewind : IO Unit := withTempSandbox "a-lseek" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open reg" (← ops.openat none "f.txt".toUTF8
     { access := .rdwr, creat := true, excl := true, noctty := true } 0o644)
@@ -312,7 +310,7 @@ def assume_files_lseek_offsetAndDirRewind : IO Unit := withTempSandbox "a-lseek"
   safeClose ops dfd
 
 /-- Verify `reopenReadOnly` reopens unlinked files/memfds read-only at offset `0` and rejects `O_PATH` symlinks with `ELOOP`. -/
-def assume_files_reopenReadOnly_procSelfFd : IO Unit := withTempSandbox "a-reopen" fun _ => do
+private def assume_files_reopenReadOnly_procSelfFd : IO Unit := withTempSandbox "a-reopen" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open rw" (← ops.openat none "u.bin".toUTF8 rwCreatFlags 0o644)
   let _ ← assertOk "write" (← ops.write fd "secret".toUTF8)
@@ -328,14 +326,14 @@ def assume_files_reopenReadOnly_procSelfFd : IO Unit := withTempSandbox "a-reope
   safeClose ops sfd
 
 /-- Verify `dupStdio` duplicates valid stdio slots with `FD_CLOEXEC` (`>= 3`) without closing `0`/`1`/`2`. -/
-def assume_files_dupStdio_cloexecSlot : IO Unit := withTempSandbox "a-dupstdio" fun _ => do
+private def assume_files_dupStdio_cloexecSlot : IO Unit := withTempSandbox "a-dupstdio" fun _ => do
   let ops := defaultOps
   for slot in [StdioFd.stdin, StdioFd.stdout, StdioFd.stderr] do
     match ← ops.dupStdio slot with
     | .ok dfd =>
       let fl ← assertOk "fcntl getFd" (← ops.fcntl dfd .getFd)
       assertTrue "FD_CLOEXEC set" (fl == 1)
-      let rawFd ← Fuzz.Env.rawFdNum dfd
+      let rawFd ← Fuzz.LinuxSyscall.Env.rawFdNum dfd
       assertTrue "dupStdio rawFd >= 3" (rawFd >= 3 && rawFd != 0xffffffff)
       safeClose ops dfd
     | .error e =>
@@ -384,104 +382,104 @@ private def runMockTransient (opName : String) (act : FilesOps -> IO (Except Err
         throw (IO.userError s!"mock {opName} unexpected errno {e}")
 
 /-- Real `openat` `.notFound` test (`ENOENT`). -/
-def err_openat_notFound : IO Unit := withTempSandbox "eo-nf" fun _ => do
+private def err_openat_notFound : IO Unit := withTempSandbox "eo-nf" fun _ => do
   assertErr "openat ENOENT" (← defaultOps.openat none "missing".toUTF8 roFlags 0) Errno.ENOENT
 
 /-- Real `openat` `.badFd` test (`EBADF`). -/
-def err_openat_badFd : IO Unit := withTempSandbox "eo-bfd" fun _ => do
+private def err_openat_badFd : IO Unit := withTempSandbox "eo-bfd" fun _ => do
   let ops := defaultOps
   let cfd ← closedFd ops
   assertErr "openat EBADF" (← ops.openat (some cfd) "x".toUTF8 roFlags 0) Errno.EBADF
 
 /-- Real `openat` `.invalidArg` test (`EINVAL`). -/
-def err_openat_invalidArg : IO Unit := withTempSandbox "eo-inv" fun _ => do
+private def err_openat_invalidArg : IO Unit := withTempSandbox "eo-inv" fun _ => do
   assertErr "openat EINVAL" (← defaultOps.openat none (ByteArray.mk #[97, 0]) roFlags 0) Errno.EINVAL
 
 /-- Real `openat` `.stateConflict` test (`EEXIST`). -/
-def err_openat_stateConflict : IO Unit := withTempSandbox "eo-sc" fun _ => do
+private def err_openat_stateConflict : IO Unit := withTempSandbox "eo-sc" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "create" (← ops.openat none "ex".toUTF8 rwCreatFlags 0o644)
   safeClose ops fd
   assertErr "openat EEXIST" (← ops.openat none "ex".toUTF8 { access := .rdwr, creat := true, excl := true } 0o644) Errno.EEXIST
 
 /-- Real `openat` `.permissionDenied` test (`EACCES`). -/
-def err_openat_permissionDenied : IO Unit := withTempSandbox "eo-pd" fun _ => do
+private def err_openat_permissionDenied : IO Unit := withTempSandbox "eo-pd" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "create" (← ops.openat none "ro".toUTF8 rwCreatFlags 0o444)
   safeClose ops fd
   assertErr "openat EACCES" (← ops.openat none "ro".toUTF8 woFlags 0) Errno.EACCES
 
 /-- Mocked `openat` `.transientOrResource` test. -/
-def err_openat_transient : IO Unit :=
+private def err_openat_transient : IO Unit :=
   runMockTransient "openat" fun ops => ops.openat none "x".toUTF8 roFlags 0 >>= fun r => pure (r.map fun _ => ())
 
 /-- Real `openat2` `.notFound` test (`ENOENT`). -/
-def err_openat2_notFound : IO Unit := withTempSandbox "eo2-nf" fun _ => do
+private def err_openat2_notFound : IO Unit := withTempSandbox "eo2-nf" fun _ => do
   assertErr "openat2 ENOENT" (← defaultOps.openat2 none "missing".toUTF8 { flags := roFlags }) Errno.ENOENT
 
 /-- Real `openat2` `.badFd` test (`EBADF`). -/
-def err_openat2_badFd : IO Unit := withTempSandbox "eo2-bfd" fun _ => do
+private def err_openat2_badFd : IO Unit := withTempSandbox "eo2-bfd" fun _ => do
   let ops := defaultOps
   let cfd ← closedFd ops
   assertErr "openat2 EBADF" (← ops.openat2 (some cfd) "x".toUTF8 { flags := roFlags }) Errno.EBADF
 
 /-- Real `openat2` `.invalidArg` test (`EINVAL`). -/
-def err_openat2_invalidArg : IO Unit := withTempSandbox "eo2-inv" fun _ => do
+private def err_openat2_invalidArg : IO Unit := withTempSandbox "eo2-inv" fun _ => do
   assertErr "openat2 EINVAL" (← defaultOps.openat2 none "x".toUTF8 { flags := roFlags, resolve := { beneath := true, inRoot := true } }) Errno.EINVAL
 
 /-- Real `openat2` `.stateConflict` test (`EXDEV`). -/
-def err_openat2_stateConflict : IO Unit := withTempSandbox "eo2-sc" fun _ => do
+private def err_openat2_stateConflict : IO Unit := withTempSandbox "eo2-sc" fun _ => do
   assertErr "openat2 EXDEV" (← defaultOps.openat2 none "../x".toUTF8 { flags := roFlags, resolve := { beneath := true } }) Errno.EXDEV
 
 /-- Real `openat2` `.permissionDenied` test (`EACCES`). -/
-def err_openat2_permissionDenied : IO Unit := withTempSandbox "eo2-pd" fun _ => do
+private def err_openat2_permissionDenied : IO Unit := withTempSandbox "eo2-pd" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "create" (← ops.openat none "ro2".toUTF8 rwCreatFlags 0o444)
   safeClose ops fd
   assertErr "openat2 EACCES" (← ops.openat2 none "ro2".toUTF8 { flags := woFlags }) Errno.EACCES
 
 /-- Mocked `openat2` `.transientOrResource` test. -/
-def err_openat2_transient : IO Unit :=
+private def err_openat2_transient : IO Unit :=
   runMockTransient "openat2" fun ops => ops.openat2 none "x".toUTF8 { flags := roFlags } >>= fun r => pure (r.map fun _ => ())
 
 /-- Mocked `close` error test. -/
-def err_close_mocked : IO Unit := withTempSandbox "ec-m" fun _ => do
+private def err_close_mocked : IO Unit := withTempSandbox "ec-m" fun _ => do
   let fd ← assertOk "open" (← defaultOps.openat none "c".toUTF8 rwCreatFlags 0o644)
   safeClose defaultOps fd
   runMockTransient "close" fun ops => ops.close fd
 
 /-- Real `close` `.badFd` test (`EBADF`). -/
-def err_close_badFd : IO Unit := withTempSandbox "ec-bfd" fun _ => do
+private def err_close_badFd : IO Unit := withTempSandbox "ec-bfd" fun _ => do
   let cfd ← closedFd defaultOps
   assertErr "close EBADF" (← defaultOps.close cfd) Errno.EBADF
 
 /-- Mocked `read` error test. -/
-def err_read_mocked : IO Unit := withTempSandbox "er-m" fun _ => do
+private def err_read_mocked : IO Unit := withTempSandbox "er-m" fun _ => do
   let fd ← assertOk "open" (← defaultOps.openat none "r".toUTF8 rwCreatFlags 0o644)
   safeClose defaultOps fd
   runMockTransient "read" fun ops => ops.read fd 16 >>= fun r => pure (r.map fun _ => ())
 
 /-- Real `read` `.badFd` test (`EBADF`). -/
-def err_read_badFd : IO Unit := withTempSandbox "er-bfd" fun _ => do
+private def err_read_badFd : IO Unit := withTempSandbox "er-bfd" fun _ => do
   let ops := defaultOps
   let cfd ← closedFd ops
   assertErr "read EBADF" (← ops.read cfd 16) Errno.EBADF
 
 /-- Real `read` `.stateConflict` test (`EISDIR`). -/
-def err_read_stateConflict : IO Unit := withTempSandbox "er-sc" fun _ => do
+private def err_read_stateConflict : IO Unit := withTempSandbox "er-sc" fun _ => do
   let ops := defaultOps
   let dfd ← assertOk "opendir" (← ops.openat none ".".toUTF8 dirFlags 0)
   assertErr "read dir EISDIR" (← ops.read dfd 16) Errno.EISDIR
   safeClose ops dfd
 
 /-- Mocked `write` error test. -/
-def err_write_mocked : IO Unit := withTempSandbox "ew-m" fun _ => do
+private def err_write_mocked : IO Unit := withTempSandbox "ew-m" fun _ => do
   let fd ← assertOk "open" (← defaultOps.openat none "w".toUTF8 rwCreatFlags 0o644)
   safeClose defaultOps fd
   runMockTransient "write" fun ops => ops.write fd "x".toUTF8 >>= fun r => pure (r.map fun _ => ())
 
 /-- Real `write` `.badFd` test (`EBADF`). -/
-def err_write_badFd : IO Unit := withTempSandbox "ew-bfd" fun _ => do
+private def err_write_badFd : IO Unit := withTempSandbox "ew-bfd" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open ro" (← ops.openat none "ro".toUTF8 rwCreatFlags 0o644)
   safeClose ops fd
@@ -490,126 +488,126 @@ def err_write_badFd : IO Unit := withTempSandbox "ew-bfd" fun _ => do
   safeClose ops rfd
 
 /-- Mocked `fstat` error test. -/
-def err_fstat_mocked : IO Unit := withTempSandbox "efs-m" fun _ => do
+private def err_fstat_mocked : IO Unit := withTempSandbox "efs-m" fun _ => do
   let fd ← assertOk "open" (← defaultOps.openat none "fs".toUTF8 rwCreatFlags 0o644)
   safeClose defaultOps fd
   runMockTransient "fstat" fun ops => ops.fstat fd >>= fun r => pure (r.map fun _ => ())
 
 /-- Real `fstat` `.badFd` test (`EBADF`). -/
-def err_fstat_badFd : IO Unit := withTempSandbox "efs-bfd" fun _ => do
+private def err_fstat_badFd : IO Unit := withTempSandbox "efs-bfd" fun _ => do
   let cfd ← closedFd defaultOps
   assertErr "fstat EBADF" (← defaultOps.fstat cfd) Errno.EBADF
 
 /-- Real `fstatat` `.notFound` test (`ENOENT`). -/
-def err_fstatat_notFound : IO Unit := withTempSandbox "efsa-nf" fun _ => do
+private def err_fstatat_notFound : IO Unit := withTempSandbox "efsa-nf" fun _ => do
   assertErr "fstatat ENOENT" (← defaultOps.fstatat none "missing".toUTF8 {}) Errno.ENOENT
 
 /-- Real `fstatat` `.badFd` test (`EBADF`). -/
-def err_fstatat_badFd : IO Unit := withTempSandbox "efsa-bfd" fun _ => do
+private def err_fstatat_badFd : IO Unit := withTempSandbox "efsa-bfd" fun _ => do
   let cfd ← closedFd defaultOps
   assertErr "fstatat EBADF" (← defaultOps.fstatat (some cfd) "x".toUTF8 {}) Errno.EBADF
 
 /-- Real `fstatat` `.invalidArg` test (`EINVAL`). -/
-def err_fstatat_invalidArg : IO Unit := withTempSandbox "efsa-inv" fun _ => do
+private def err_fstatat_invalidArg : IO Unit := withTempSandbox "efsa-inv" fun _ => do
   assertErr "fstatat EINVAL" (← defaultOps.fstatat none (ByteArray.mk #[97, 0]) {}) Errno.EINVAL
 
 /-- Real `fstatat` `.stateConflict` test (`ENOTDIR`). -/
-def err_fstatat_stateConflict : IO Unit := withTempSandbox "efsa-sc" fun _ => do
+private def err_fstatat_stateConflict : IO Unit := withTempSandbox "efsa-sc" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "reg".toUTF8 rwCreatFlags 0o644)
   assertErr "fstatat ENOTDIR" (← ops.fstatat (some fd) "c".toUTF8 {}) Errno.ENOTDIR
   safeClose ops fd
 
 /-- Real `fstatat` `.permissionDenied` test (`EACCES`). -/
-def err_fstatat_permissionDenied : IO Unit := withTempSandbox "efsa-pd" fun _ => do
+private def err_fstatat_permissionDenied : IO Unit := withTempSandbox "efsa-pd" fun _ => do
   let ops := defaultOps
   assertOk "mkdir" (← ops.mkdirat none "d".toUTF8 0o755)
   assertOk "chmod 000" (← ops.fchmodat none "d".toUTF8 0o000)
   assertErr "fstatat EACCES" (← ops.fstatat none "d/c".toUTF8 {}) Errno.EACCES
 
 /-- Mocked `fstatat` `.transientOrResource` test. -/
-def err_fstatat_transient : IO Unit :=
+private def err_fstatat_transient : IO Unit :=
   runMockTransient "fstatat" fun ops => ops.fstatat none "x".toUTF8 {} >>= fun r => pure (r.map fun _ => ())
 
 /-- Real `faccessat` `.notFound` test (`ENOENT`). -/
-def err_faccessat_notFound : IO Unit := withTempSandbox "efa-nf" fun _ => do
+private def err_faccessat_notFound : IO Unit := withTempSandbox "efa-nf" fun _ => do
   assertErr "faccessat ENOENT" (← defaultOps.faccessat none "missing".toUTF8 {} {}) Errno.ENOENT
 
 /-- Real `faccessat` `.badFd` test (`EBADF`). -/
-def err_faccessat_badFd : IO Unit := withTempSandbox "efa-bfd" fun _ => do
+private def err_faccessat_badFd : IO Unit := withTempSandbox "efa-bfd" fun _ => do
   let cfd ← closedFd defaultOps
   assertErr "faccessat EBADF" (← defaultOps.faccessat (some cfd) "x".toUTF8 {} {}) Errno.EBADF
 
 /-- Real `faccessat` `.invalidArg` test (`EINVAL`). -/
-def err_faccessat_invalidArg : IO Unit := withTempSandbox "efa-inv" fun _ => do
+private def err_faccessat_invalidArg : IO Unit := withTempSandbox "efa-inv" fun _ => do
   assertErr "faccessat EINVAL" (← defaultOps.faccessat none (ByteArray.mk #[97, 0]) {} {}) Errno.EINVAL
 
 /-- Real `faccessat` `.stateConflict` test (`ENOTDIR`). -/
-def err_faccessat_stateConflict : IO Unit := withTempSandbox "efa-sc" fun _ => do
+private def err_faccessat_stateConflict : IO Unit := withTempSandbox "efa-sc" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "reg".toUTF8 rwCreatFlags 0o644)
   assertErr "faccessat ENOTDIR" (← ops.faccessat (some fd) "c".toUTF8 {} {}) Errno.ENOTDIR
   safeClose ops fd
 
 /-- Real `faccessat` `.permissionDenied` test (`EACCES`). -/
-def err_faccessat_permissionDenied : IO Unit := withTempSandbox "efa-pd" fun _ => do
+private def err_faccessat_permissionDenied : IO Unit := withTempSandbox "efa-pd" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "ro".toUTF8 rwCreatFlags 0o444)
   safeClose ops fd
   assertErr "faccessat EACCES" (← ops.faccessat none "ro".toUTF8 { write := true } {}) Errno.EACCES
 
 /-- Mocked `faccessat` `.transientOrResource` test. -/
-def err_faccessat_transient : IO Unit :=
+private def err_faccessat_transient : IO Unit :=
   runMockTransient "faccessat" fun ops => ops.faccessat none "x".toUTF8 {} {}
 
 /-- Real `mkdirat` `.notFound` test (`ENOENT`). -/
-def err_mkdirat_notFound : IO Unit := withTempSandbox "emk-nf" fun _ => do
+private def err_mkdirat_notFound : IO Unit := withTempSandbox "emk-nf" fun _ => do
   assertErr "mkdirat ENOENT" (← defaultOps.mkdirat none "no/child".toUTF8 0o755) Errno.ENOENT
 
 /-- Real `mkdirat` `.badFd` test (`EBADF`). -/
-def err_mkdirat_badFd : IO Unit := withTempSandbox "emk-bfd" fun _ => do
+private def err_mkdirat_badFd : IO Unit := withTempSandbox "emk-bfd" fun _ => do
   let cfd ← closedFd defaultOps
   assertErr "mkdirat EBADF" (← defaultOps.mkdirat (some cfd) "d".toUTF8 0o755) Errno.EBADF
 
 /-- Real `mkdirat` `.invalidArg` test (`EINVAL`). -/
-def err_mkdirat_invalidArg : IO Unit := withTempSandbox "emk-inv" fun _ => do
+private def err_mkdirat_invalidArg : IO Unit := withTempSandbox "emk-inv" fun _ => do
   assertErr "mkdirat EINVAL" (← defaultOps.mkdirat none (ByteArray.mk #[97, 0]) 0o755) Errno.EINVAL
 
 /-- Real `mkdirat` `.stateConflict` test (`EEXIST`). -/
-def err_mkdirat_stateConflict : IO Unit := withTempSandbox "emk-sc" fun _ => do
+private def err_mkdirat_stateConflict : IO Unit := withTempSandbox "emk-sc" fun _ => do
   assertOk "mkdir1" (← defaultOps.mkdirat none "d".toUTF8 0o755)
   assertErr "mkdirat EEXIST" (← defaultOps.mkdirat none "d".toUTF8 0o755) Errno.EEXIST
 
 /-- Real `mkdirat` `.permissionDenied` test (`EACCES`). -/
-def err_mkdirat_permissionDenied : IO Unit := withTempSandbox "emk-pd" fun _ => do
+private def err_mkdirat_permissionDenied : IO Unit := withTempSandbox "emk-pd" fun _ => do
   let ops := defaultOps
   assertOk "mkdir" (← ops.mkdirat none "d".toUTF8 0o555)
   assertErr "mkdirat EACCES" (← ops.mkdirat none "d/c".toUTF8 0o755) Errno.EACCES
 
 /-- Mocked `mkdirat` `.transientOrResource` test. -/
-def err_mkdirat_transient : IO Unit :=
+private def err_mkdirat_transient : IO Unit :=
   runMockTransient "mkdirat" fun ops => ops.mkdirat none "d".toUTF8 0o755
 
 /-- Real `unlinkat` `.notFound` test (`ENOENT`). -/
-def err_unlinkat_notFound : IO Unit := withTempSandbox "eul-nf" fun _ => do
+private def err_unlinkat_notFound : IO Unit := withTempSandbox "eul-nf" fun _ => do
   assertErr "unlinkat ENOENT" (← defaultOps.unlinkat none "missing".toUTF8 false) Errno.ENOENT
 
 /-- Real `unlinkat` `.badFd` test (`EBADF`). -/
-def err_unlinkat_badFd : IO Unit := withTempSandbox "eul-bfd" fun _ => do
+private def err_unlinkat_badFd : IO Unit := withTempSandbox "eul-bfd" fun _ => do
   let cfd ← closedFd defaultOps
   assertErr "unlinkat EBADF" (← defaultOps.unlinkat (some cfd) "x".toUTF8 false) Errno.EBADF
 
 /-- Real `unlinkat` `.invalidArg` test (`EINVAL`). -/
-def err_unlinkat_invalidArg : IO Unit := withTempSandbox "eul-inv" fun _ => do
+private def err_unlinkat_invalidArg : IO Unit := withTempSandbox "eul-inv" fun _ => do
   assertErr "unlinkat EINVAL" (← defaultOps.unlinkat none (ByteArray.mk #[97, 0]) false) Errno.EINVAL
 
 /-- Real `unlinkat` `.stateConflict` test (`EISDIR`). -/
-def err_unlinkat_stateConflict : IO Unit := withTempSandbox "eul-sc" fun _ => do
+private def err_unlinkat_stateConflict : IO Unit := withTempSandbox "eul-sc" fun _ => do
   assertOk "mkdir" (← defaultOps.mkdirat none "d".toUTF8 0o755)
   assertErr "unlinkat EISDIR" (← defaultOps.unlinkat none "d".toUTF8 false) Errno.EISDIR
 
 /-- Real `unlinkat` `.permissionDenied` test (`EACCES`). -/
-def err_unlinkat_permissionDenied : IO Unit := withTempSandbox "eul-pd" fun _ => do
+private def err_unlinkat_permissionDenied : IO Unit := withTempSandbox "eul-pd" fun _ => do
   let ops := defaultOps
   assertOk "mkdir" (← ops.mkdirat none "d".toUTF8 0o755)
   let fd ← assertOk "open" (← ops.openat none "d/f".toUTF8 rwCreatFlags 0o644)
@@ -618,24 +616,24 @@ def err_unlinkat_permissionDenied : IO Unit := withTempSandbox "eul-pd" fun _ =>
   assertErr "unlinkat EACCES" (← ops.unlinkat none "d/f".toUTF8 false) Errno.EACCES
 
 /-- Mocked `unlinkat` `.transientOrResource` test. -/
-def err_unlinkat_transient : IO Unit :=
+private def err_unlinkat_transient : IO Unit :=
   runMockTransient "unlinkat" fun ops => ops.unlinkat none "x".toUTF8 false
 
 /-- Real `renameat2` `.notFound` test (`ENOENT`). -/
-def err_renameat2_notFound : IO Unit := withTempSandbox "ern-nf" fun _ => do
+private def err_renameat2_notFound : IO Unit := withTempSandbox "ern-nf" fun _ => do
   assertErr "renameat2 ENOENT" (← defaultOps.renameat2 none "m".toUTF8 none "dst".toUTF8 {}) Errno.ENOENT
 
 /-- Real `renameat2` `.badFd` test (`EBADF`). -/
-def err_renameat2_badFd : IO Unit := withTempSandbox "ern-bfd" fun _ => do
+private def err_renameat2_badFd : IO Unit := withTempSandbox "ern-bfd" fun _ => do
   let cfd ← closedFd defaultOps
   assertErr "renameat2 EBADF" (← defaultOps.renameat2 (some cfd) "a".toUTF8 none "b".toUTF8 {}) Errno.EBADF
 
 /-- Real `renameat2` `.invalidArg` test (`EINVAL`). -/
-def err_renameat2_invalidArg : IO Unit := withTempSandbox "ern-inv" fun _ => do
+private def err_renameat2_invalidArg : IO Unit := withTempSandbox "ern-inv" fun _ => do
   assertErr "renameat2 EINVAL" (← defaultOps.renameat2 none "a".toUTF8 none "b".toUTF8 { noreplace := true, exchange := true }) Errno.EINVAL
 
 /-- Real `renameat2` `.stateConflict` test (`EEXIST`). -/
-def err_renameat2_stateConflict : IO Unit := withTempSandbox "ern-sc" fun _ => do
+private def err_renameat2_stateConflict : IO Unit := withTempSandbox "ern-sc" fun _ => do
   let ops := defaultOps
   let f1 ← assertOk "o1" (← ops.openat none "a".toUTF8 rwCreatFlags 0o644)
   safeClose ops f1
@@ -644,7 +642,7 @@ def err_renameat2_stateConflict : IO Unit := withTempSandbox "ern-sc" fun _ => d
   assertErr "renameat2 EEXIST" (← ops.renameat2 none "a".toUTF8 none "b".toUTF8 { noreplace := true }) Errno.EEXIST
 
 /-- Real `renameat2` `.permissionDenied` test (`EACCES`). -/
-def err_renameat2_permissionDenied : IO Unit := withTempSandbox "ern-pd" fun _ => do
+private def err_renameat2_permissionDenied : IO Unit := withTempSandbox "ern-pd" fun _ => do
   let ops := defaultOps
   assertOk "mkdir" (← ops.mkdirat none "d".toUTF8 0o755)
   let fd ← assertOk "open" (← ops.openat none "d/a".toUTF8 rwCreatFlags 0o644)
@@ -653,72 +651,72 @@ def err_renameat2_permissionDenied : IO Unit := withTempSandbox "ern-pd" fun _ =
   assertErr "renameat2 EACCES" (← ops.renameat2 none "d/a".toUTF8 none "d/b".toUTF8 {}) Errno.EACCES
 
 /-- Mocked `renameat2` `.transientOrResource` test. -/
-def err_renameat2_transient : IO Unit :=
+private def err_renameat2_transient : IO Unit :=
   runMockTransient "renameat2" fun ops => ops.renameat2 none "a".toUTF8 none "b".toUTF8 {}
 
 /-- Real `symlinkat` `.notFound` test (`ENOENT`). -/
-def err_symlinkat_notFound : IO Unit := withTempSandbox "esym-nf" fun _ => do
+private def err_symlinkat_notFound : IO Unit := withTempSandbox "esym-nf" fun _ => do
   assertErr "symlinkat ENOENT" (← defaultOps.symlinkat "tgt".toUTF8 none "no/lnk".toUTF8) Errno.ENOENT
 
 /-- Real `symlinkat` `.badFd` test (`EBADF`). -/
-def err_symlinkat_badFd : IO Unit := withTempSandbox "esym-bfd" fun _ => do
+private def err_symlinkat_badFd : IO Unit := withTempSandbox "esym-bfd" fun _ => do
   let cfd ← closedFd defaultOps
   assertErr "symlinkat EBADF" (← defaultOps.symlinkat "tgt".toUTF8 (some cfd) "lnk".toUTF8) Errno.EBADF
 
 /-- Real `symlinkat` `.invalidArg` test (`EINVAL`). -/
-def err_symlinkat_invalidArg : IO Unit := withTempSandbox "esym-inv" fun _ => do
+private def err_symlinkat_invalidArg : IO Unit := withTempSandbox "esym-inv" fun _ => do
   assertErr "symlinkat EINVAL" (← defaultOps.symlinkat (ByteArray.mk #[97, 0]) none "lnk".toUTF8) Errno.EINVAL
 
 /-- Real `symlinkat` `.stateConflict` test (`EEXIST`). -/
-def err_symlinkat_stateConflict : IO Unit := withTempSandbox "esym-sc" fun _ => do
+private def err_symlinkat_stateConflict : IO Unit := withTempSandbox "esym-sc" fun _ => do
   assertOk "sym1" (← defaultOps.symlinkat "t".toUTF8 none "l".toUTF8)
   assertErr "symlinkat EEXIST" (← defaultOps.symlinkat "t".toUTF8 none "l".toUTF8) Errno.EEXIST
 
 /-- Real `symlinkat` `.permissionDenied` test (`EACCES`). -/
-def err_symlinkat_permissionDenied : IO Unit := withTempSandbox "esym-pd" fun _ => do
+private def err_symlinkat_permissionDenied : IO Unit := withTempSandbox "esym-pd" fun _ => do
   assertOk "mkdir" (← defaultOps.mkdirat none "d".toUTF8 0o555)
   assertErr "symlinkat EACCES" (← defaultOps.symlinkat "t".toUTF8 none "d/l".toUTF8) Errno.EACCES
 
 /-- Mocked `symlinkat` `.transientOrResource` test. -/
-def err_symlinkat_transient : IO Unit :=
+private def err_symlinkat_transient : IO Unit :=
   runMockTransient "symlinkat" fun ops => ops.symlinkat "t".toUTF8 none "l".toUTF8
 
 /-- Real `readlinkat` `.notFound` test (`ENOENT`). -/
-def err_readlinkat_notFound : IO Unit := withTempSandbox "erl-nf" fun _ => do
+private def err_readlinkat_notFound : IO Unit := withTempSandbox "erl-nf" fun _ => do
   assertErr "readlinkat ENOENT" (← defaultOps.readlinkat none "missing".toUTF8 64) Errno.ENOENT
 
 /-- Real `readlinkat` `.badFd` test (`EBADF`). -/
-def err_readlinkat_badFd : IO Unit := withTempSandbox "erl-bfd" fun _ => do
+private def err_readlinkat_badFd : IO Unit := withTempSandbox "erl-bfd" fun _ => do
   let cfd ← closedFd defaultOps
   assertErr "readlinkat EBADF" (← defaultOps.readlinkat (some cfd) "l".toUTF8 64) Errno.EBADF
 
 /-- Real `readlinkat` `.invalidArg` test (`EINVAL`). -/
-def err_readlinkat_invalidArg : IO Unit := withTempSandbox "erl-inv" fun _ => do
+private def err_readlinkat_invalidArg : IO Unit := withTempSandbox "erl-inv" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "reg".toUTF8 rwCreatFlags 0o644)
   safeClose ops fd
   assertErr "readlinkat EINVAL" (← ops.readlinkat none "reg".toUTF8 64) Errno.EINVAL
 
 /-- Real `readlinkat` `.stateConflict` test (`ENOTDIR`). -/
-def err_readlinkat_stateConflict : IO Unit := withTempSandbox "erl-sc" fun _ => do
+private def err_readlinkat_stateConflict : IO Unit := withTempSandbox "erl-sc" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "reg".toUTF8 rwCreatFlags 0o644)
   assertErr "readlinkat ENOTDIR" (← ops.readlinkat (some fd) "x".toUTF8 64) Errno.ENOTDIR
   safeClose ops fd
 
 /-- Real `readlinkat` `.permissionDenied` test (`EACCES`). -/
-def err_readlinkat_permissionDenied : IO Unit := withTempSandbox "erl-pd" fun _ => do
+private def err_readlinkat_permissionDenied : IO Unit := withTempSandbox "erl-pd" fun _ => do
   let ops := defaultOps
   assertOk "mkdir" (← ops.mkdirat none "d".toUTF8 0o755)
   assertOk "chmod 000" (← ops.fchmodat none "d".toUTF8 0o000)
   assertErr "readlinkat EACCES" (← ops.readlinkat none "d/l".toUTF8 64) Errno.EACCES
 
 /-- Mocked `readlinkat` `.transientOrResource` test. -/
-def err_readlinkat_transient : IO Unit :=
+private def err_readlinkat_transient : IO Unit :=
   runMockTransient "readlinkat" fun ops => ops.readlinkat none "l".toUTF8 64 >>= fun r => pure (r.map fun _ => ())
 
 /-- Real `getdents64` `.notFound` test on an unlinked open directory (`ENOENT`). -/
-def err_getdents64_notFound : IO Unit := withTempSandbox "egd-nf" fun _ => do
+private def err_getdents64_notFound : IO Unit := withTempSandbox "egd-nf" fun _ => do
   let ops := defaultOps
   assertOk "mkdir" (← ops.mkdirat none "dead".toUTF8 0o755)
   let dfd ← assertOk "opendir" (← ops.openat none "dead".toUTF8 dirFlags 0)
@@ -727,52 +725,52 @@ def err_getdents64_notFound : IO Unit := withTempSandbox "egd-nf" fun _ => do
   safeClose ops dfd
 
 /-- Real `getdents64` `.badFd` test (`EBADF`). -/
-def err_getdents64_badFd : IO Unit := withTempSandbox "egd-bfd" fun _ => do
+private def err_getdents64_badFd : IO Unit := withTempSandbox "egd-bfd" fun _ => do
   let cfd ← closedFd defaultOps
   assertErr "getdents64 EBADF" (← defaultOps.getdents64 cfd 4096) Errno.EBADF
 
 /-- Real `getdents64` `.invalidArg` test (`EINVAL`). -/
-def err_getdents64_invalidArg : IO Unit := withTempSandbox "egd-inv" fun _ => do
+private def err_getdents64_invalidArg : IO Unit := withTempSandbox "egd-inv" fun _ => do
   let ops := defaultOps
   let dfd ← assertOk "opendir" (← ops.openat none ".".toUTF8 dirFlags 0)
   assertErr "getdents64 0 EINVAL" (← ops.getdents64 dfd 0) Errno.EINVAL
   safeClose ops dfd
 
 /-- Real `getdents64` `.stateConflict` test (`ENOTDIR`). -/
-def err_getdents64_stateConflict : IO Unit := withTempSandbox "egd-sc" fun _ => do
+private def err_getdents64_stateConflict : IO Unit := withTempSandbox "egd-sc" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open reg" (← ops.openat none "reg".toUTF8 rwCreatFlags 0o644)
   assertErr "getdents64 ENOTDIR" (← ops.getdents64 fd 4096) Errno.ENOTDIR
   safeClose ops fd
 
 /-- Mocked `getdents64` error test. -/
-def err_getdents64_mocked : IO Unit := withTempSandbox "egd-m" fun _ => do
+private def err_getdents64_mocked : IO Unit := withTempSandbox "egd-m" fun _ => do
   let dfd ← assertOk "opendir" (← defaultOps.openat none ".".toUTF8 dirFlags 0)
   safeClose defaultOps dfd
   runMockTransient "getdents64" fun ops => ops.getdents64 dfd 4096 >>= fun r => pure (r.map fun _ => ())
 
 /-- Real `fchmodat` `.notFound` test (`ENOENT`). -/
-def err_fchmodat_notFound : IO Unit := withTempSandbox "efca-nf" fun _ => do
+private def err_fchmodat_notFound : IO Unit := withTempSandbox "efca-nf" fun _ => do
   assertErr "fchmodat ENOENT" (← defaultOps.fchmodat none "missing".toUTF8 0o644) Errno.ENOENT
 
 /-- Real `fchmodat` `.badFd` test (`EBADF`). -/
-def err_fchmodat_badFd : IO Unit := withTempSandbox "efca-bfd" fun _ => do
+private def err_fchmodat_badFd : IO Unit := withTempSandbox "efca-bfd" fun _ => do
   let cfd ← closedFd defaultOps
   assertErr "fchmodat EBADF" (← defaultOps.fchmodat (some cfd) "x".toUTF8 0o644) Errno.EBADF
 
 /-- Real `fchmodat` `.invalidArg` test (`EINVAL`). -/
-def err_fchmodat_invalidArg : IO Unit := withTempSandbox "efca-inv" fun _ => do
+private def err_fchmodat_invalidArg : IO Unit := withTempSandbox "efca-inv" fun _ => do
   assertErr "fchmodat EINVAL" (← defaultOps.fchmodat none (ByteArray.mk #[97, 0]) 0o644) Errno.EINVAL
 
 /-- Real `fchmodat` `.stateConflict` test (`ENOTDIR`). -/
-def err_fchmodat_stateConflict : IO Unit := withTempSandbox "efca-sc" fun _ => do
+private def err_fchmodat_stateConflict : IO Unit := withTempSandbox "efca-sc" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "reg".toUTF8 rwCreatFlags 0o644)
   safeClose ops fd
   assertErr "fchmodat ENOTDIR" (← ops.fchmodat none "reg/c".toUTF8 0o644) Errno.ENOTDIR
 
 /-- Real `fchmodat` `.permissionDenied` test (`EACCES`). -/
-def err_fchmodat_permissionDenied : IO Unit := withTempSandbox "efca-pd" fun _ => do
+private def err_fchmodat_permissionDenied : IO Unit := withTempSandbox "efca-pd" fun _ => do
   let ops := defaultOps
   assertOk "mkdir" (← ops.mkdirat none "d".toUTF8 0o755)
   let fd ← assertOk "open" (← ops.openat none "d/f".toUTF8 rwCreatFlags 0o644)
@@ -781,33 +779,33 @@ def err_fchmodat_permissionDenied : IO Unit := withTempSandbox "efca-pd" fun _ =
   assertErr "fchmodat EACCES" (← ops.fchmodat none "d/f".toUTF8 0o600) Errno.EACCES
 
 /-- Mocked `fchmodat` `.transientOrResource` test. -/
-def err_fchmodat_transient : IO Unit :=
+private def err_fchmodat_transient : IO Unit :=
   runMockTransient "fchmodat" fun ops => ops.fchmodat none "x".toUTF8 0o644
 
 /-- Mocked `fchmod` error test. -/
-def err_fchmod_mocked : IO Unit := withTempSandbox "efc-m" fun _ => do
+private def err_fchmod_mocked : IO Unit := withTempSandbox "efc-m" fun _ => do
   let fd ← assertOk "open" (← defaultOps.openat none "f".toUTF8 rwCreatFlags 0o644)
   safeClose defaultOps fd
   runMockTransient "fchmod" fun ops => ops.fchmod fd 0o644
 
 /-- Real `fchmod` `.badFd` test (`EBADF`). -/
-def err_fchmod_badFd : IO Unit := withTempSandbox "efc-bfd" fun _ => do
+private def err_fchmod_badFd : IO Unit := withTempSandbox "efc-bfd" fun _ => do
   let cfd ← closedFd defaultOps
   assertErr "fchmod EBADF" (← defaultOps.fchmod cfd 0o644) Errno.EBADF
 
 /-- Mocked `flock` error test. -/
-def err_flock_mocked : IO Unit := withTempSandbox "efl-m" fun _ => do
+private def err_flock_mocked : IO Unit := withTempSandbox "efl-m" fun _ => do
   let fd ← assertOk "open" (← defaultOps.openat none "f".toUTF8 rwCreatFlags 0o644)
   safeClose defaultOps fd
   runMockTransient "flock" fun ops => ops.flock fd .unlock
 
 /-- Real `flock` `.badFd` test (`EBADF`). -/
-def err_flock_badFd : IO Unit := withTempSandbox "efl-bfd" fun _ => do
+private def err_flock_badFd : IO Unit := withTempSandbox "efl-bfd" fun _ => do
   let cfd ← closedFd defaultOps
   assertErr "flock EBADF" (← defaultOps.flock cfd .unlock) Errno.EBADF
 
 /-- Real `flock` `.stateConflict` test (`EAGAIN` / `EWOULDBLOCK`). -/
-def err_flock_stateConflict : IO Unit := withTempSandbox "efl-sc" fun _ => do
+private def err_flock_stateConflict : IO Unit := withTempSandbox "efl-sc" fun _ => do
   let ops := defaultOps
   let f1 ← assertOk "o1" (← ops.openat none "lk".toUTF8 rwCreatFlags 0o644)
   let f2 ← assertOk "o2" (← ops.openat none "lk".toUTF8 rwCreatFlags 0o644)
@@ -817,51 +815,51 @@ def err_flock_stateConflict : IO Unit := withTempSandbox "efl-sc" fun _ => do
   safeClose ops f1
 
 /-- Mocked `fcntl` error test. -/
-def err_fcntl_mocked : IO Unit := withTempSandbox "efc2-m" fun _ => do
+private def err_fcntl_mocked : IO Unit := withTempSandbox "efc2-m" fun _ => do
   let fd ← assertOk "open" (← defaultOps.openat none "f".toUTF8 rwCreatFlags 0o644)
   safeClose defaultOps fd
   runMockTransient "fcntl" fun ops => ops.fcntl fd .getFl >>= fun r => pure (r.map fun _ => ())
 
 /-- Real `fcntl` `.badFd` test (`EBADF`). -/
-def err_fcntl_badFd : IO Unit := withTempSandbox "efc2-bfd" fun _ => do
+private def err_fcntl_badFd : IO Unit := withTempSandbox "efc2-bfd" fun _ => do
   let cfd ← closedFd defaultOps
   assertErr "fcntl EBADF" (← defaultOps.fcntl cfd .getFl) Errno.EBADF
 
 /-- Real `fcntl` `.invalidArg` test (`EINVAL`). -/
-def err_fcntl_invalidArg : IO Unit := withTempSandbox "efc2-inv" fun _ => do
+private def err_fcntl_invalidArg : IO Unit := withTempSandbox "efc2-inv" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "fc".toUTF8 rwCreatFlags 0o644)
   assertErr "fcntl addSeals EINVAL" (← ops.fcntl fd (.addSeals 0x10000000)) Errno.EINVAL
   safeClose ops fd
 
 /-- Real `fcntl` `.permissionDenied` test (`EPERM` on `O_RDONLY` `F_ADD_SEALS`). -/
-def err_fcntl_permissionDenied : IO Unit := withTempSandbox "efc2-pd" fun _ => do
+private def err_fcntl_permissionDenied : IO Unit := withTempSandbox "efc2-pd" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "fcp".toUTF8 { access := .rdonly, creat := true } 0o644)
   assertErr "fcntl addSeals EPERM" (← ops.fcntl fd (.addSeals 1)) Errno.EPERM
   safeClose ops fd
 
 /-- Mocked `fsync` error test. -/
-def err_fsync_mocked : IO Unit := withTempSandbox "efsy-m" fun _ => do
+private def err_fsync_mocked : IO Unit := withTempSandbox "efsy-m" fun _ => do
   let fd ← assertOk "open" (← defaultOps.openat none "f".toUTF8 rwCreatFlags 0o644)
   safeClose defaultOps fd
   runMockTransient "fsync" fun ops => ops.fsync fd
 
 /-- Real `fsync` `.badFd` test (`EBADF`). -/
-def err_fsync_badFd : IO Unit := withTempSandbox "efsy-bfd" fun _ => do
+private def err_fsync_badFd : IO Unit := withTempSandbox "efsy-bfd" fun _ => do
   let cfd ← closedFd defaultOps
   assertErr "fsync EBADF" (← defaultOps.fsync cfd) Errno.EBADF
 
 /-- Mocked `getcwd` error test. -/
-def err_getcwd_mocked : IO Unit :=
+private def err_getcwd_mocked : IO Unit :=
   runMockTransient "getcwd" fun ops => ops.getcwd 64 >>= fun r => pure (r.map fun _ => ())
 
 /-- Real `getcwd` `.invalidArg` test (`ERANGE` / `EINVAL`). -/
-def err_getcwd_invalidArg : IO Unit := withTempSandbox "egc-inv" fun _ => do
+private def err_getcwd_invalidArg : IO Unit := withTempSandbox "egc-inv" fun _ => do
   assertErrOneOf "getcwd ERANGE/EINVAL" (← defaultOps.getcwd 0) [Errno.ERANGE, Errno.EINVAL]
 
 /-- Mocked `lseek` error test. -/
-def err_lseek_mocked : IO Unit :=
+private def err_lseek_mocked : IO Unit :=
   runMockTransient "lseek" fun ops => do
     let fd ← assertOk "open" (← defaultOps.openat none "ls".toUTF8 rwCreatFlags 0o644)
     let r ← ops.lseek fd 0 .seekSet
@@ -869,20 +867,20 @@ def err_lseek_mocked : IO Unit :=
     return r.map fun _ => ()
 
 /-- Real `lseek` `.badFd` test (`EBADF`). -/
-def err_lseek_badFd : IO Unit := withTempSandbox "els-bfd" fun _ => do
+private def err_lseek_badFd : IO Unit := withTempSandbox "els-bfd" fun _ => do
   let fd ← closedFd defaultOps
   assertErr "lseek EBADF" (← defaultOps.lseek fd 0 .seekSet) Errno.EBADF
 
 /-- Real `lseek` `.invalidArg` test (`EINVAL` on negative offset). -/
-def err_lseek_invalidArg : IO Unit := withTempSandbox "els-inv" fun _ => do
+private def err_lseek_invalidArg : IO Unit := withTempSandbox "els-inv" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "open" (← ops.openat none "f".toUTF8 rwCreatFlags 0o644)
   assertErr "lseek EINVAL" (← ops.lseek fd (-1) .seekSet) Errno.EINVAL
   safeClose ops fd
 
 /-- Real `lseek` `.transientOrResource` test (`ESPIPE` on FIFO). -/
-def err_lseek_transient : IO Unit := withTempSandbox "els-spipe" fun _ => do
-  let rc ← Fuzz.Env.mkfifo "p.fifo".toUTF8 0o644
+private def err_lseek_transient : IO Unit := withTempSandbox "els-spipe" fun _ => do
+  let rc ← Fuzz.LinuxSyscall.Env.mkfifo "p.fifo".toUTF8 0o644
   assertTrue "mkfifo" (rc == 0)
   let ops := defaultOps
   let fd ← assertOk "open fifo" (← ops.openat none "p.fifo".toUTF8 { access := .rdonly, nonblock := true } 0)
@@ -890,7 +888,7 @@ def err_lseek_transient : IO Unit := withTempSandbox "els-spipe" fun _ => do
   safeClose ops fd
 
 /-- Mocked `reopenReadOnly` error test. -/
-def err_reopenReadOnly_mocked : IO Unit :=
+private def err_reopenReadOnly_mocked : IO Unit :=
   runMockTransient "reopenReadOnly" fun ops => do
     let fd ← assertOk "open" (← defaultOps.openat none "ro".toUTF8 rwCreatFlags 0o644)
     let r ← ops.reopenReadOnly fd
@@ -898,12 +896,12 @@ def err_reopenReadOnly_mocked : IO Unit :=
     return r.map fun _ => ()
 
 /-- Real `reopenReadOnly` `.badFd` test (`EBADF`). -/
-def err_reopenReadOnly_badFd : IO Unit := withTempSandbox "ero-bfd" fun _ => do
+private def err_reopenReadOnly_badFd : IO Unit := withTempSandbox "ero-bfd" fun _ => do
   let fd ← closedFd defaultOps
   assertErr "reopenReadOnly EBADF" (← defaultOps.reopenReadOnly fd) Errno.EBADF
 
 /-- Real `reopenReadOnly` `.stateConflict` test (`ELOOP` on `O_PATH` symlink). -/
-def err_reopenReadOnly_stateConflict : IO Unit := withTempSandbox "ero-eloop" fun _ => do
+private def err_reopenReadOnly_stateConflict : IO Unit := withTempSandbox "ero-eloop" fun _ => do
   let ops := defaultOps
   assertOk "sym" (← ops.symlinkat "t".toUTF8 none "sym".toUTF8)
   let sfd ← assertOk "open O_PATH sym" (← ops.openat none "sym".toUTF8 { path := true, nofollow := true } 0)
@@ -911,7 +909,7 @@ def err_reopenReadOnly_stateConflict : IO Unit := withTempSandbox "ero-eloop" fu
   safeClose ops sfd
 
 /-- Real `reopenReadOnly` `.permissionDenied` test (`EACCES` on `0o000` `O_PATH`). -/
-def err_reopenReadOnly_permissionDenied : IO Unit := withTempSandbox "ero-eacces" fun _ => do
+private def err_reopenReadOnly_permissionDenied : IO Unit := withTempSandbox "ero-eacces" fun _ => do
   let ops := defaultOps
   let fd ← assertOk "creat" (← ops.openat none "c0".toUTF8 rwCreatFlags 0o644)
   assertOk "chmod 0" (← ops.fchmod fd 0o000)
@@ -921,8 +919,8 @@ def err_reopenReadOnly_permissionDenied : IO Unit := withTempSandbox "ero-eacces
   safeClose ops pfd
 
 /-- Real `reopenReadOnly` `.transientOrResource` test (`ENXIO` on UNIX socket `O_PATH`). -/
-def err_reopenReadOnly_transient : IO Unit := withTempSandbox "ero-enxio" fun _ => do
-  let rc ← Fuzz.Env.mksock "s.sock".toUTF8
+private def err_reopenReadOnly_transient : IO Unit := withTempSandbox "ero-enxio" fun _ => do
+  let rc ← Fuzz.LinuxSyscall.Env.mksock "s.sock".toUTF8
   assertTrue "mksock" (rc == 0)
   let ops := defaultOps
   let sfd ← assertOk "open O_PATH sock" (← ops.openat none "s.sock".toUTF8 { path := true } 0)
@@ -930,136 +928,8 @@ def err_reopenReadOnly_transient : IO Unit := withTempSandbox "ero-enxio" fun _ 
   safeClose ops sfd
 
 /-- Mocked `dupStdio` error test. -/
-def err_dupStdio_mocked : IO Unit :=
+private def err_dupStdio_mocked : IO Unit :=
   runMockTransient "dupStdio" fun ops => ops.dupStdio .stdin >>= fun r => pure (r.map fun _ => ())
-
-/-- Registered assumption runtime checks verified by `CheckAssumptions.lean`. -/
-def registeredAssumptions : Array Core.RegisteredAssumption := #[
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_openat_flagsAndNulGuard", assume_files_openat_flagsAndNulGuard⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_openat2_resolveFlagsAndAbi", assume_files_openat2_resolveFlagsAndAbi⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_close_abaSafeFdBox", assume_files_close_abaSafeFdBox⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_read_clamped16MiBAndPartial", assume_files_read_clamped16MiBAndPartial⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_write_partialAndAppend", assume_files_write_partialAndAppend⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_fstat_portableStatDecode", assume_files_fstat_portableStatDecode⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_fstatat_nofollowAndEmptyPath", assume_files_fstatat_nofollowAndEmptyPath⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_faccessat_modeBits", assume_files_faccessat_modeBits⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_mkdirat_modeAndNulGuard", assume_files_mkdirat_modeAndNulGuard⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_unlinkat_removeDirFlag", assume_files_unlinkat_removeDirFlag⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_renameat2_flagsAbi", assume_files_renameat2_flagsAbi⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_symlinkat_rawBytesAndNulGuard", assume_files_symlinkat_rawBytesAndNulGuard⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_readlinkat_clampedRawBytes", assume_files_readlinkat_clampedRawBytes⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_getdents64_rawDirentBuffer", assume_files_getdents64_rawDirentBuffer⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_fchmodat_modeAndNulGuard", assume_files_fchmodat_modeAndNulGuard⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_fchmod_modeUpdate", assume_files_fchmod_modeUpdate⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_flock_advisoryLockFlags", assume_files_flock_advisoryLockFlags⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_fcntl_curatedCommands", assume_files_fcntl_curatedCommands⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_fsync_fdSync", assume_files_fsync_fdSync⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_getcwd_clampedBuffer", assume_files_getcwd_clampedBuffer⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_lseek_offsetAndDirRewind", assume_files_lseek_offsetAndDirRewind⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_reopenReadOnly_procSelfFd", assume_files_reopenReadOnly_procSelfFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.assume_files_dupStdio_cloexecSlot", assume_files_dupStdio_cloexecSlot⟩
-]
-
-/-- Registered error-coverage runtime tests verified by `CheckAssumptions.lean`. -/
-def registeredErrorTests : Array Core.RegisteredErrorTest := #[
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_openat_notFound", .real, err_openat_notFound⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_openat_badFd", .real, err_openat_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_openat_invalidArg", .real, err_openat_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_openat_stateConflict", .real, err_openat_stateConflict⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_openat_permissionDenied", .real, err_openat_permissionDenied⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_openat_transient", .mocked, err_openat_transient⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_openat2_notFound", .real, err_openat2_notFound⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_openat2_badFd", .real, err_openat2_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_openat2_invalidArg", .real, err_openat2_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_openat2_stateConflict", .real, err_openat2_stateConflict⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_openat2_permissionDenied", .real, err_openat2_permissionDenied⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_openat2_transient", .mocked, err_openat2_transient⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_close_mocked", .mocked, err_close_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_close_badFd", .real, err_close_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_read_mocked", .mocked, err_read_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_read_badFd", .real, err_read_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_read_stateConflict", .real, err_read_stateConflict⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_write_mocked", .mocked, err_write_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_write_badFd", .real, err_write_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fstat_mocked", .mocked, err_fstat_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fstat_badFd", .real, err_fstat_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fstatat_notFound", .real, err_fstatat_notFound⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fstatat_badFd", .real, err_fstatat_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fstatat_invalidArg", .real, err_fstatat_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fstatat_stateConflict", .real, err_fstatat_stateConflict⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fstatat_permissionDenied", .real, err_fstatat_permissionDenied⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fstatat_transient", .mocked, err_fstatat_transient⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_faccessat_notFound", .real, err_faccessat_notFound⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_faccessat_badFd", .real, err_faccessat_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_faccessat_invalidArg", .real, err_faccessat_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_faccessat_stateConflict", .real, err_faccessat_stateConflict⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_faccessat_permissionDenied", .real, err_faccessat_permissionDenied⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_faccessat_transient", .mocked, err_faccessat_transient⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_mkdirat_notFound", .real, err_mkdirat_notFound⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_mkdirat_badFd", .real, err_mkdirat_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_mkdirat_invalidArg", .real, err_mkdirat_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_mkdirat_stateConflict", .real, err_mkdirat_stateConflict⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_mkdirat_permissionDenied", .real, err_mkdirat_permissionDenied⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_mkdirat_transient", .mocked, err_mkdirat_transient⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_unlinkat_notFound", .real, err_unlinkat_notFound⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_unlinkat_badFd", .real, err_unlinkat_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_unlinkat_invalidArg", .real, err_unlinkat_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_unlinkat_stateConflict", .real, err_unlinkat_stateConflict⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_unlinkat_permissionDenied", .real, err_unlinkat_permissionDenied⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_unlinkat_transient", .mocked, err_unlinkat_transient⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_renameat2_notFound", .real, err_renameat2_notFound⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_renameat2_badFd", .real, err_renameat2_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_renameat2_invalidArg", .real, err_renameat2_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_renameat2_stateConflict", .real, err_renameat2_stateConflict⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_renameat2_permissionDenied", .real, err_renameat2_permissionDenied⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_renameat2_transient", .mocked, err_renameat2_transient⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_symlinkat_notFound", .real, err_symlinkat_notFound⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_symlinkat_badFd", .real, err_symlinkat_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_symlinkat_invalidArg", .real, err_symlinkat_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_symlinkat_stateConflict", .real, err_symlinkat_stateConflict⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_symlinkat_permissionDenied", .real, err_symlinkat_permissionDenied⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_symlinkat_transient", .mocked, err_symlinkat_transient⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_readlinkat_notFound", .real, err_readlinkat_notFound⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_readlinkat_badFd", .real, err_readlinkat_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_readlinkat_invalidArg", .real, err_readlinkat_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_readlinkat_stateConflict", .real, err_readlinkat_stateConflict⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_readlinkat_permissionDenied", .real, err_readlinkat_permissionDenied⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_readlinkat_transient", .mocked, err_readlinkat_transient⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_getdents64_notFound", .real, err_getdents64_notFound⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_getdents64_badFd", .real, err_getdents64_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_getdents64_invalidArg", .real, err_getdents64_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_getdents64_stateConflict", .real, err_getdents64_stateConflict⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_getdents64_mocked", .mocked, err_getdents64_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fchmodat_notFound", .real, err_fchmodat_notFound⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fchmodat_badFd", .real, err_fchmodat_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fchmodat_invalidArg", .real, err_fchmodat_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fchmodat_stateConflict", .real, err_fchmodat_stateConflict⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fchmodat_permissionDenied", .real, err_fchmodat_permissionDenied⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fchmodat_transient", .mocked, err_fchmodat_transient⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fchmod_mocked", .mocked, err_fchmod_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fchmod_badFd", .real, err_fchmod_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_flock_mocked", .mocked, err_flock_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_flock_badFd", .real, err_flock_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_flock_stateConflict", .real, err_flock_stateConflict⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fcntl_mocked", .mocked, err_fcntl_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fcntl_badFd", .real, err_fcntl_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fcntl_invalidArg", .real, err_fcntl_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fcntl_permissionDenied", .real, err_fcntl_permissionDenied⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fsync_mocked", .mocked, err_fsync_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_fsync_badFd", .real, err_fsync_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_getcwd_mocked", .mocked, err_getcwd_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_getcwd_invalidArg", .real, err_getcwd_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_lseek_mocked", .mocked, err_lseek_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_lseek_badFd", .real, err_lseek_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_lseek_invalidArg", .real, err_lseek_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_lseek_transient", .real, err_lseek_transient⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_reopenReadOnly_mocked", .mocked, err_reopenReadOnly_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_reopenReadOnly_badFd", .real, err_reopenReadOnly_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_reopenReadOnly_stateConflict", .real, err_reopenReadOnly_stateConflict⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_reopenReadOnly_permissionDenied", .real, err_reopenReadOnly_permissionDenied⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_reopenReadOnly_transient", .real, err_reopenReadOnly_transient⟩,
-  ⟨"LeanSwe.LinuxSyscall.Files.RuntimeTests.err_dupStdio_mocked", .mocked, err_dupStdio_mocked⟩
-]
 
 private def runEdgeCaseReproducers : IO Unit := withTempSandbox "repro" fun _ => do
   let ops := defaultOps
@@ -1579,7 +1449,7 @@ private def runEnvFifoAndUmaskChecks
     st ← stepModelCheck "close fifo wr" st (.close hidFifoWr) .unit
   | _, _ => throw (IO.userError "failed to open fifo rd/wr")
 
-  let _ ← Fuzz.Env.umask 0o200
+  let _ ← Fuzz.LinuxSyscall.Env.umask 0o200
   let rUm ← ops.openat none "um_file".toUTF8 rwCreatFlags 0o644
   let hidUm := st.nextHid
   st ← stepModelCheck "umask file open" st (.openat none "um_file".toUTF8 rwCreatFlags 0o644) (errOrOkOut rUm fun _ => .opened hidUm)
@@ -1598,8 +1468,8 @@ private def runEnvFifoAndUmaskChecks
   assertTrue "sgid inherited on child dir" ((stSgidSub.mode &&& 0o2000) == 0o2000)
   st ← stepModelCheck "fstatat sgid_dir/sub" st (.fstatat none "sgid_dir/sub".toUTF8 {}) (.statted stSgidSub)
 
-  let _ ← Fuzz.Env.umask savedMask
-  assertEqErrno "setrlimit fsize 16" (← Fuzz.Env.setRlimitFsize 16 rlMax true) 0
+  let _ ← Fuzz.LinuxSyscall.Env.umask savedMask
+  assertEqErrno "setrlimit fsize 16" (← Fuzz.LinuxSyscall.Env.setRlimitFsize 16 rlMax true) 0
   let rLimFd ← assertOk "open rlim_f" (← ops.openat none "rlim_f".toUTF8 rwCreatFlags 0o644)
   let wPart ← assertOk "write to RLIMIT_FSIZE" (← ops.write rLimFd (ByteArray.mk (Array.replicate 64 (65 : UInt8))))
   assertTrue "partial write bounded by RLIMIT_FSIZE" (wPart == 16)
@@ -1611,7 +1481,7 @@ private def runEnvFifoAndUmaskChecks
 private def runEnvCrossAndDeadCwdChecks
     (ops : FilesOps) (dir ext4Dir : System.FilePath) (canVarTmp : Bool)
     (rlCur rlMax : UInt64) (st0 : FilesState) : IO Unit := do
-  let _ ← Fuzz.Env.setRlimitFsize rlCur rlMax false
+  let _ ← Fuzz.LinuxSyscall.Env.setRlimitFsize rlCur rlMax false
   let mut st := st0
   if canVarTmp then
     let crossDst := (ext4Dir / "moved").toString.toUTF8
@@ -1654,48 +1524,48 @@ private def runEnvCrossAndDeadCwdChecks
 /-- Run environment generalization reproducers across `/proc/self`, `/dev/full`, FIFOs, sockets, `umask`, `RLIMIT_FSIZE`, cross-mount `renameat2`, and unlinked CWD. -/
 def runEnvGeneralizationReproducers : IO Unit := withTempSandbox "env-gen" fun dir => do
   let ops := defaultOps
-  Fuzz.Env.ignoreSigpipe
+  Fuzz.LinuxSyscall.Env.ignoreSigpipe
   let dirStr := (← IO.FS.realPath dir).toString
   let dirBytes := dirStr.toUTF8
-  let in0 ← decodeProbeFdKind <$> Fuzz.Env.fdKind 0
-  let out1 ← decodeProbeFdKind <$> Fuzz.Env.fdKind 1
-  let err2 ← decodeProbeFdKind <$> Fuzz.Env.fdKind 2
-  let sealsOk ← Fuzz.Env.supportsSeals dirBytes
-  let savedMask ← Fuzz.Env.umask 0o022
-  let rlCur ← Fuzz.Env.getRlimitFsizeCur
-  let rlMax ← Fuzz.Env.getRlimitFsizeMax
+  let in0 ← decodeProbeFdKind <$> Fuzz.LinuxSyscall.Env.fdKind 0
+  let out1 ← decodeProbeFdKind <$> Fuzz.LinuxSyscall.Env.fdKind 1
+  let err2 ← decodeProbeFdKind <$> Fuzz.LinuxSyscall.Env.fdKind 2
+  let sealsOk ← Fuzz.LinuxSyscall.Env.supportsSeals dirBytes
+  let savedMask ← Fuzz.LinuxSyscall.Env.umask 0o022
+  let rlCur ← Fuzz.LinuxSyscall.Env.getRlimitFsizeCur
+  let rlMax ← Fuzz.LinuxSyscall.Env.getRlimitFsizeMax
   let varTmpBase : System.FilePath := "/var/tmp"
   let canVarTmp ← do
     if !(← varTmpBase.pathExists) then pure false
     else
-      let dShm ← Fuzz.Env.statDev dirBytes
-      let dVt ← Fuzz.Env.statDev varTmpBase.toString.toUTF8
+      let dShm ← Fuzz.LinuxSyscall.Env.statDev dirBytes
+      let dVt ← Fuzz.LinuxSyscall.Env.statDev varTmpBase.toString.toUTF8
       pure (dShm != 0 && dVt != 0 && dShm != dVt)
-  let pid ← Fuzz.Env.getPid
+  let pid ← Fuzz.LinuxSyscall.Env.getPid
   let ext4Dir := varTmpBase / s!"leanswe-files-ext4-{pid}"
   if canVarTmp then
     if ← ext4Dir.pathExists then IO.FS.removeDirAll ext4Dir
     IO.FS.createDirAll ext4Dir
   try
-    assertEqErrno "mkfifo env.fifo" (← Fuzz.Env.mkfifo "env.fifo".toUTF8 0o644) 0
-    assertEqErrno "chmod env.fifo 06755" (← Fuzz.Env.chmod "env.fifo".toUTF8 0o6755) 0
-    assertEqErrno "mksock env.sock" (← Fuzz.Env.mksock "env.sock".toUTF8) 0
+    assertEqErrno "mkfifo env.fifo" (← Fuzz.LinuxSyscall.Env.mkfifo "env.fifo".toUTF8 0o644) 0
+    assertEqErrno "chmod env.fifo 06755" (← Fuzz.LinuxSyscall.Env.chmod "env.fifo".toUTF8 0o6755) 0
+    assertEqErrno "mksock env.sock" (← Fuzz.LinuxSyscall.Env.mksock "env.sock".toUTF8) 0
     let hlSrc ← assertOk "open hl_src" (← ops.openat none "hl_src".toUTF8 rwCreatFlags 0o644)
     let _ ← assertOk "write hl_src" (← ops.write hlSrc "hard".toUTF8)
     safeClose ops hlSrc
-    assertEqErrno "hardlink hl_dst" (← Fuzz.Env.link "hl_src".toUTF8 "hl_dst".toUTF8) 0
+    assertEqErrno "hardlink hl_dst" (← Fuzz.LinuxSyscall.Env.link "hl_src".toUTF8 "hl_dst".toUTF8) 0
     let sgdFd ← assertOk "open sgd_dir" (← ops.openat none ".".toUTF8 dirFlags 0)
     safeClose ops sgdFd
     let sgdPath := dir / "sgid_dir"
     IO.FS.createDir sgdPath
-    assertEqErrno "chmod sgid_dir 02755" (← Fuzz.Env.chmod "sgid_dir".toUTF8 0o2755) 0
+    assertEqErrno "chmod sgid_dir 02755" (← Fuzz.LinuxSyscall.Env.chmod "sgid_dir".toUTF8 0o2755) 0
     let crossPathOpt := if canVarTmp then some ext4Dir.toString.toUTF8 else none
     let st0 := FilesState.withSeededTree {
       cwdPath := dirBytes
       cwdBound := true
       umask := 0o200
-      cwdKernelIno? := some (← Fuzz.Env.statIno dirBytes)
-      cwdKernelDev? := some (← Fuzz.Env.statDev dirBytes)
+      cwdKernelIno? := some (← Fuzz.LinuxSyscall.Env.statIno dirBytes)
+      cwdKernelDev? := some (← Fuzz.LinuxSyscall.Env.statDev dirBytes)
       crossMountPath? := crossPathOpt
       mountProfiles := [(0, { supportsSeals := sealsOk })]
       exeOwnedByUid := true
@@ -1717,8 +1587,8 @@ def runEnvGeneralizationReproducers : IO Unit := withTempSandbox "env-gen" fun d
     let st2 ← runEnvFifoAndUmaskChecks ops st1 savedMask rlMax
     runEnvCrossAndDeadCwdChecks ops dir ext4Dir canVarTmp rlCur rlMax st2
   finally
-    let _ ← Fuzz.Env.umask savedMask
-    let _ ← Fuzz.Env.setRlimitFsize rlCur rlMax false
+    let _ ← Fuzz.LinuxSyscall.Env.umask savedMask
+    let _ ← Fuzz.LinuxSyscall.Env.setRlimitFsize rlCur rlMax false
     IO.Process.setCurrentDir dir
     if canVarTmp then
       if ← ext4Dir.pathExists then IO.FS.removeDirAll ext4Dir
@@ -1726,21 +1596,21 @@ def runEnvGeneralizationReproducers : IO Unit := withTempSandbox "env-gen" fun d
 private def runMultiFsOverlayAndRoWorker (ovlDirStr roDirStr : String) : IO UInt32 := do
   let ops := defaultOps
   let savedCwd ← IO.Process.getCurrentDir
-  let savedMask ← Fuzz.Env.umask 0o022
+  let savedMask ← Fuzz.LinuxSyscall.Env.umask 0o022
   try
     let ovlDir : System.FilePath := ovlDirStr
     IO.Process.setCurrentDir ovlDir
     let ovlReal ← IO.FS.realPath ovlDir
-    let lowDev ← Fuzz.Env.statDev (ovlReal / "low_f").toString.toUTF8
-    let lowIno ← Fuzz.Env.statIno (ovlReal / "low_f").toString.toUTF8
-    let lowMode ← Fuzz.Env.statMode (ovlReal / "low_f").toString.toUTF8
-    let dMode ← Fuzz.Env.statMode (ovlReal / "d").toString.toUTF8
-    let dDev ← Fuzz.Env.statDev (ovlReal / "d").toString.toUTF8
-    let dIno ← Fuzz.Env.statIno (ovlReal / "d").toString.toUTF8
-    let hl1Mode ← Fuzz.Env.statMode (ovlReal / "hl_lo1").toString.toUTF8
-    let hl1Dev ← Fuzz.Env.statDev (ovlReal / "hl_lo1").toString.toUTF8
-    let hl1Ino ← Fuzz.Env.statIno (ovlReal / "hl_lo1").toString.toUTF8
-    let ovlMode ← Fuzz.Env.statMode ovlReal.toString.toUTF8
+    let lowDev ← Fuzz.LinuxSyscall.Env.statDev (ovlReal / "low_f").toString.toUTF8
+    let lowIno ← Fuzz.LinuxSyscall.Env.statIno (ovlReal / "low_f").toString.toUTF8
+    let lowMode ← Fuzz.LinuxSyscall.Env.statMode (ovlReal / "low_f").toString.toUTF8
+    let dMode ← Fuzz.LinuxSyscall.Env.statMode (ovlReal / "d").toString.toUTF8
+    let dDev ← Fuzz.LinuxSyscall.Env.statDev (ovlReal / "d").toString.toUTF8
+    let dIno ← Fuzz.LinuxSyscall.Env.statIno (ovlReal / "d").toString.toUTF8
+    let hl1Mode ← Fuzz.LinuxSyscall.Env.statMode (ovlReal / "hl_lo1").toString.toUTF8
+    let hl1Dev ← Fuzz.LinuxSyscall.Env.statDev (ovlReal / "hl_lo1").toString.toUTF8
+    let hl1Ino ← Fuzz.LinuxSyscall.Env.statIno (ovlReal / "hl_lo1").toString.toUTF8
+    let ovlMode ← Fuzz.LinuxSyscall.Env.statMode ovlReal.toString.toUTF8
     let mut ovlSt := FilesState.withSeededTree {
       cwdPath := ovlReal.toString.toUTF8
       cwdBound := true
@@ -1805,13 +1675,13 @@ private def runMultiFsOverlayAndRoWorker (ovlDirStr roDirStr : String) : IO UInt
     let roDir : System.FilePath := roDirStr
     IO.Process.setCurrentDir roDir
     let roReal ← IO.FS.realPath roDir
-    let roMode ← Fuzz.Env.statMode roReal.toString.toUTF8
-    let exMode ← Fuzz.Env.statMode (roReal / "existing").toString.toUTF8
-    let ro444Mode ← Fuzz.Env.statMode (roReal / "ro444").toString.toUTF8
+    let roMode ← Fuzz.LinuxSyscall.Env.statMode roReal.toString.toUTF8
+    let exMode ← Fuzz.LinuxSyscall.Env.statMode (roReal / "existing").toString.toUTF8
+    let ro444Mode ← Fuzz.LinuxSyscall.Env.statMode (roReal / "ro444").toString.toUTF8
     let roParent := roReal.parent.getD roReal
-    let roParentMode ← Fuzz.Env.statMode roParent.toString.toUTF8
-    let roParentMnt ← Fuzz.Env.statMntId roParent.toString.toUTF8
-    let roMnt ← Fuzz.Env.statMntId roReal.toString.toUTF8
+    let roParentMode ← Fuzz.LinuxSyscall.Env.statMode roParent.toString.toUTF8
+    let roParentMnt ← Fuzz.LinuxSyscall.Env.statMntId roParent.toString.toUTF8
+    let roMnt ← Fuzz.LinuxSyscall.Env.statMntId roReal.toString.toUTF8
     let roSt := FilesState.withSeededTree {
       cwdPath := roReal.toString.toUTF8
       cwdBound := true
@@ -1874,7 +1744,7 @@ private def runMultiFsOverlayAndRoWorker (ovlDirStr roDirStr : String) : IO UInt
     let _ ← stepModelCheck "ro fchmodat" roSt (.fchmodat none "existing".toUTF8 0o600) (errOrOkOut rRoChm fun _ => .unit)
     return 0
   finally
-    let _ ← Fuzz.Env.umask savedMask
+    let _ ← Fuzz.LinuxSyscall.Env.umask savedMask
     IO.Process.setCurrentDir savedCwd
 
 /-- Multi-filesystem real-Linux probes (`cgroup2` `/sys/fs/cgroup`, plus `unshare -Urm` `overlayfs` copy-up/rename `EXDEV` and `-o remount,ro,bind` `EROFS`). -/
@@ -1882,7 +1752,7 @@ def runMultiFsReproducers : IO Unit := do
   let ops := defaultOps
   let cgPath : System.FilePath := "/sys/fs/cgroup"
   if ← cgPath.pathExists then
-    let cgFs ← Fuzz.Env.statfsFsType "/sys/fs/cgroup".toUTF8
+    let cgFs ← Fuzz.LinuxSyscall.Env.statfsFsType "/sys/fs/cgroup".toUTF8
     if cgFs == (0x63677270 : UInt64) then
       let cfd ← assertOk "open /sys/fs/cgroup" (← ops.openat none "/sys/fs/cgroup".toUTF8 dirFlags 0)
       let cst ← assertOk "fstat /sys/fs/cgroup" (← ops.fstat cfd)
@@ -2054,25 +1924,25 @@ private def runPipeAndStickyChecks : IO Unit := do
 def runMagicLinkAndStickyReproducers : IO Unit := withTempSandbox "magic-link" fun dir => do
   let ops := defaultOps
   let dirStr := (← IO.FS.realPath dir).toString
-  let myUid ← Fuzz.Env.getUid
-  let myPid ← Fuzz.Env.getPid
-  let proc1Uid ← Fuzz.Env.statUid "/proc/1".toUTF8
+  let myUid ← Fuzz.LinuxSyscall.Env.getUid
+  let myPid ← Fuzz.LinuxSyscall.Env.getPid
+  let proc1Uid ← Fuzz.LinuxSyscall.Env.statUid "/proc/1".toUTF8
   let proc1Owned := (proc1Uid == myUid)
-  let in0 ← decodeProbeFdKind <$> Fuzz.Env.fdKind 0
-  let out1 ← decodeProbeFdKind <$> Fuzz.Env.fdKind 1
-  let err2 ← decodeProbeFdKind <$> Fuzz.Env.fdKind 2
-  let devNullDev ← Fuzz.Env.statDev "/dev/null".toUTF8
-  let devNullIno ← Fuzz.Env.statIno "/dev/null".toUTF8
-  let devZeroDev ← Fuzz.Env.statDev "/dev/zero".toUTF8
-  let devZeroIno ← Fuzz.Env.statIno "/dev/zero".toUTF8
-  let devFullDev ← Fuzz.Env.statDev "/dev/full".toUTF8
-  let devFullIno ← Fuzz.Env.statIno "/dev/full".toUTF8
-  let in0Dev ← Fuzz.Env.fdDev 0
-  let in0Ino ← Fuzz.Env.fdIno 0
-  let out1Dev ← Fuzz.Env.fdDev 1
-  let out1Ino ← Fuzz.Env.fdIno 1
-  let err2Dev ← Fuzz.Env.fdDev 2
-  let err2Ino ← Fuzz.Env.fdIno 2
+  let in0 ← decodeProbeFdKind <$> Fuzz.LinuxSyscall.Env.fdKind 0
+  let out1 ← decodeProbeFdKind <$> Fuzz.LinuxSyscall.Env.fdKind 1
+  let err2 ← decodeProbeFdKind <$> Fuzz.LinuxSyscall.Env.fdKind 2
+  let devNullDev ← Fuzz.LinuxSyscall.Env.statDev "/dev/null".toUTF8
+  let devNullIno ← Fuzz.LinuxSyscall.Env.statIno "/dev/null".toUTF8
+  let devZeroDev ← Fuzz.LinuxSyscall.Env.statDev "/dev/zero".toUTF8
+  let devZeroIno ← Fuzz.LinuxSyscall.Env.statIno "/dev/zero".toUTF8
+  let devFullDev ← Fuzz.LinuxSyscall.Env.statDev "/dev/full".toUTF8
+  let devFullIno ← Fuzz.LinuxSyscall.Env.statIno "/dev/full".toUTF8
+  let in0Dev ← Fuzz.LinuxSyscall.Env.fdDev 0
+  let in0Ino ← Fuzz.LinuxSyscall.Env.fdIno 0
+  let out1Dev ← Fuzz.LinuxSyscall.Env.fdDev 1
+  let out1Ino ← Fuzz.LinuxSyscall.Env.fdIno 1
+  let err2Dev ← Fuzz.LinuxSyscall.Env.fdDev 2
+  let err2Ino ← Fuzz.LinuxSyscall.Env.fdIno 2
   let lstatModeOr : ByteArray → Mode → IO Mode := fun p dflt => do
     match ← ops.fstatat none p { symlinkNofollow := true } with
     | .ok st => return st.mode
@@ -2083,7 +1953,7 @@ def runMagicLinkAndStickyReproducers : IO Unit := withTempSandbox "magic-link" f
   let st0 := FilesState.withSeededTree {
     cwdPath := dirStr.toUTF8
     cwdBound := true
-    cwdMode := ← Fuzz.Env.statMode dirStr.toUTF8
+    cwdMode := ← Fuzz.LinuxSyscall.Env.statMode dirStr.toUTF8
     proc1OwnedByUid := proc1Owned
     selfPidBytes := (toString myPid).toUTF8
     devNullKernelDev? := if devNullDev != 0 then some devNullDev else none
@@ -2092,16 +1962,16 @@ def runMagicLinkAndStickyReproducers : IO Unit := withTempSandbox "magic-link" f
     devZeroKernelIno? := if devZeroIno != 0 then some devZeroIno else none
     devFullKernelDev? := if devFullDev != 0 then some devFullDev else none
     devFullKernelIno? := if devFullIno != 0 then some devFullIno else none
-    stdinKind := in0.1, stdinDevKind? := in0.2, stdinMode := ← Fuzz.Env.fdMode 0,
-    stdinOwnedByUid := ((← Fuzz.Env.fdUid 0) == myUid),
+    stdinKind := in0.1, stdinDevKind? := in0.2, stdinMode := ← Fuzz.LinuxSyscall.Env.fdMode 0,
+    stdinOwnedByUid := ((← Fuzz.LinuxSyscall.Env.fdUid 0) == myUid),
     stdinKernelDev? := if in0Dev != 0 then some in0Dev else none,
     stdinKernelIno? := if in0Ino != 0 then some in0Ino else none,
-    stdoutKind := out1.1, stdoutDevKind? := out1.2, stdoutMode := ← Fuzz.Env.fdMode 1,
-    stdoutOwnedByUid := ((← Fuzz.Env.fdUid 1) == myUid),
+    stdoutKind := out1.1, stdoutDevKind? := out1.2, stdoutMode := ← Fuzz.LinuxSyscall.Env.fdMode 1,
+    stdoutOwnedByUid := ((← Fuzz.LinuxSyscall.Env.fdUid 1) == myUid),
     stdoutKernelDev? := if out1Dev != 0 then some out1Dev else none,
     stdoutKernelIno? := if out1Ino != 0 then some out1Ino else none,
-    stderrKind := err2.1, stderrDevKind? := err2.2, stderrMode := ← Fuzz.Env.fdMode 2,
-    stderrOwnedByUid := ((← Fuzz.Env.fdUid 2) == myUid),
+    stderrKind := err2.1, stderrDevKind? := err2.2, stderrMode := ← Fuzz.LinuxSyscall.Env.fdMode 2,
+    stderrOwnedByUid := ((← Fuzz.LinuxSyscall.Env.fdUid 2) == myUid),
     stderrKernelDev? := if err2Dev != 0 then some err2Dev else none,
     stderrKernelIno? := if err2Ino != 0 then some err2Ino else none,
     procFd0LinkMode := p0Link, procFd1LinkMode := p1Link, procFd2LinkMode := p2Link
@@ -2112,14 +1982,14 @@ def runMagicLinkAndStickyReproducers : IO Unit := withTempSandbox "magic-link" f
 
 private def runSeccompAndOverlayCopyUpReproducers : IO Unit := do
   let ops := defaultOps
-  let scStatus ← Fuzz.Env.forkForStatus
+  let scStatus ← Fuzz.LinuxSyscall.Env.forkForStatus
   if scStatus == 0 then
-    let nr ← Fuzz.Env.nrGetcwd
-    let scErr ← Fuzz.Env.installSeccompErrno nr Errno.EFAULT nr Errno.EFAULT (0xffffffff : UInt32) 0
+    let nr ← Fuzz.LinuxSyscall.Env.nrGetcwd
+    let scErr ← Fuzz.LinuxSyscall.Env.installSeccompErrno nr Errno.EFAULT nr Errno.EFAULT (0xffffffff : UInt32) 0
     if scErr != 0 then
-      Fuzz.Env.exitImmediate 77
+      Fuzz.LinuxSyscall.Env.exitImmediate 77
     let _ ← ops.getcwd 64
-    Fuzz.Env.exitImmediate 78
+    Fuzz.LinuxSyscall.Env.exitImmediate 78
   if scStatus == 2077 then
     IO.println "NOTE: skipping live seccomp EFAULT abort test (PR_SET_SECCOMP unsupported)"
   else
@@ -2141,7 +2011,7 @@ private def runSeccompAndOverlayCopyUpReproducers : IO Unit := do
 
   withTempSandbox "seccomp-ovl" fun tmpDir => do
     let dr ← IO.FS.realPath tmpDir
-    let dMode ← Fuzz.Env.statMode dr.toString.toUTF8
+    let dMode ← Fuzz.LinuxSyscall.Env.statMode dr.toString.toUTF8
     let mut eSt := FilesState.withSeededTree {
       cwdPath := dr.toString.toUTF8
       cwdBound := true
@@ -2157,9 +2027,9 @@ private def runSeccompAndOverlayCopyUpReproducers : IO Unit := do
     eSt ← stepModelCheck "closed fd AT_EMPTY_PATH | AT_EACCESS" eSt
       (.fstatat (some hidDir) ByteArray.empty { emptyPath := true, eaccess := true }) (.err Errno.EINVAL)
 
-    assertTrue "mkfifo p444.fifo" ((← Fuzz.Env.mkfifo "p444.fifo".toUTF8 0o444) == 0)
-    let _ ← Fuzz.Env.chmod "p444.fifo".toUTF8 0o444
-    let fMode ← Fuzz.Env.statMode "p444.fifo".toUTF8
+    assertTrue "mkfifo p444.fifo" ((← Fuzz.LinuxSyscall.Env.mkfifo "p444.fifo".toUTF8 0o444) == 0)
+    let _ ← Fuzz.LinuxSyscall.Env.chmod "p444.fifo".toUTF8 0o444
+    let fMode ← Fuzz.LinuxSyscall.Env.statMode "p444.fifo".toUTF8
     let rFifoTrunc ← ops.openat none "p444.fifo".toUTF8 { access := .rdonly, nonblock := true, trunc := true } 0
     assertErr "open 0444 FIFO O_RDONLY|O_TRUNC -> EACCES" rFifoTrunc Errno.EACCES
     let fifoSt := FilesState.withSeededTree {
@@ -2220,81 +2090,81 @@ private def runSeccompCloseAndOpathReproducers : IO Unit := do
   withTempSandbox "seccomp-close" fun tmpDir => do
     let dr ← IO.FS.realPath tmpDir
     IO.Process.setCurrentDir dr
-    assertTrue "mkfifo sc.fifo" ((← Fuzz.Env.mkfifo "sc.fifo".toUTF8 0o644) == 0)
-    let nrClose ← Fuzz.Env.nrClose
+    assertTrue "mkfifo sc.fifo" ((← Fuzz.LinuxSyscall.Env.mkfifo "sc.fifo".toUTF8 0o644) == 0)
+    let nrClose ← Fuzz.LinuxSyscall.Env.nrClose
     for injected in #[Errno.EPERM, Errno.EACCES, Errno.ENOSYS] do
-      let scStatus ← Fuzz.Env.forkForStatus
+      let scStatus ← Fuzz.LinuxSyscall.Env.forkForStatus
       if scStatus == 0 then
-        let scErr ← Fuzz.Env.installSeccompErrno nrClose injected nrClose injected (0xffffffff : UInt32) 0
+        let scErr ← Fuzz.LinuxSyscall.Env.installSeccompErrno nrClose injected nrClose injected (0xffffffff : UInt32) 0
         if scErr != 0 then
-          Fuzz.Env.exitImmediate 77
+          Fuzz.LinuxSyscall.Env.exitImmediate 77
         let st0 := (FilesState.withSeededTree {
           cwdPath := dr.toString.toUTF8
           cwdBound := true
           cwdEntries := [{ name := "sc.fifo".toUTF8, kind := .fifo, mode := 0o644, modeExact := true }]
         }).withOuterSeccomp true
         match ← ops.openat none "sc.fifo".toUTF8 { access := .rdonly, nonblock := true } 0 with
-        | .error _ => Fuzz.Env.exitImmediate 11
+        | .error _ => Fuzz.LinuxSyscall.Env.exitImmediate 11
         | .ok rfd =>
           let st1 ← match allowedStep st0 (.openat none "sc.fifo".toUTF8 { access := .rdonly, nonblock := true } 0) (.opened 0) with
             | some s => pure s
-            | none => Fuzz.Env.exitImmediate 12; pure st0
+            | none => Fuzz.LinuxSyscall.Env.exitImmediate 12; pure st0
           match ← ops.close rfd with
-          | .ok () => Fuzz.Env.exitImmediate 13
+          | .ok () => Fuzz.LinuxSyscall.Env.exitImmediate 13
           | .error ce =>
-            if ce != injected then Fuzz.Env.exitImmediate 14
+            if ce != injected then Fuzz.LinuxSyscall.Env.exitImmediate 14
           let st2 ← match allowedStep st1 (.close 0) (.err injected) with
             | some s => pure s
-            | none => Fuzz.Env.exitImmediate 15; pure st1
+            | none => Fuzz.LinuxSyscall.Env.exitImmediate 15; pure st1
           match ← ops.fstat rfd with
-          | .error _ => Fuzz.Env.exitImmediate 16
+          | .error _ => Fuzz.LinuxSyscall.Env.exitImmediate 16
           | .ok fst =>
             let _ ← match allowedStep st2 (.fstat 0) (.statted fst) with
               | some s => pure s
-              | none => Fuzz.Env.exitImmediate 17; pure st2
+              | none => Fuzz.LinuxSyscall.Env.exitImmediate 17; pure st2
           match ← ops.openat none "sc.fifo".toUTF8 { access := .wronly, nonblock := true } 0 with
-          | .error _ => Fuzz.Env.exitImmediate 18
+          | .error _ => Fuzz.LinuxSyscall.Env.exitImmediate 18
           | .ok wfd =>
             let st3 ← match allowedStep st2 (.openat none "sc.fifo".toUTF8 { access := .wronly, nonblock := true } 0) (.opened 1) with
               | some s => pure s
-              | none => Fuzz.Env.exitImmediate 19; pure st2
+              | none => Fuzz.LinuxSyscall.Env.exitImmediate 19; pure st2
             let _ := (rfd, wfd, st3)
-            Fuzz.Env.exitImmediate 0
+            Fuzz.LinuxSyscall.Env.exitImmediate 0
       if scStatus == 2077 then
         IO.println s!"NOTE: skipping live seccomp __NR_close={injected} FIFO test (PR_SET_SECCOMP unsupported)"
       else
         assertTrue s!"seccomp __NR_close={injected} + FIFO child failed with status={scStatus}" (scStatus == 2000)
-    let scEbusyStatus ← Fuzz.Env.forkForStatus
+    let scEbusyStatus ← Fuzz.LinuxSyscall.Env.forkForStatus
     if scEbusyStatus == 0 then
-      let scErr ← Fuzz.Env.installSeccompErrno nrClose Errno.EBUSY nrClose Errno.EBUSY (0xffffffff : UInt32) 0
-      if scErr != 0 then Fuzz.Env.exitImmediate 77
+      let scErr ← Fuzz.LinuxSyscall.Env.installSeccompErrno nrClose Errno.EBUSY nrClose Errno.EBUSY (0xffffffff : UInt32) 0
+      if scErr != 0 then Fuzz.LinuxSyscall.Env.exitImmediate 77
       match ← ops.openat none "sc.fifo".toUTF8 { access := .rdonly, nonblock := true } 0 with
-      | .error _ => Fuzz.Env.exitImmediate 11
+      | .error _ => Fuzz.LinuxSyscall.Env.exitImmediate 11
       | .ok rfd =>
         match ← ops.close rfd with
-        | .ok () => Fuzz.Env.exitImmediate 13
-        | .error ce => if ce != Errno.EBUSY then Fuzz.Env.exitImmediate 14
+        | .ok () => Fuzz.LinuxSyscall.Env.exitImmediate 13
+        | .error ce => if ce != Errno.EBUSY then Fuzz.LinuxSyscall.Env.exitImmediate 14
         match ← ops.fstat rfd with
-        | .ok _ => Fuzz.Env.exitImmediate 0
-        | .error _ => Fuzz.Env.exitImmediate 16
+        | .ok _ => Fuzz.LinuxSyscall.Env.exitImmediate 0
+        | .error _ => Fuzz.LinuxSyscall.Env.exitImmediate 16
     if scEbusyStatus == 2077 then
       IO.println "NOTE: skipping live seccomp __NR_close=EBUSY retained-box test (PR_SET_SECCOMP unsupported)"
     else
       assertTrue s!"seccomp __NR_close=EBUSY retained-box child failed with status={scEbusyStatus}" (scEbusyStatus == 2000)
 
-    let scEioStatus ← Fuzz.Env.forkForStatus
+    let scEioStatus ← Fuzz.LinuxSyscall.Env.forkForStatus
     if scEioStatus == 0 then
-      let scErr ← Fuzz.Env.installSeccompErrno nrClose Errno.EIO nrClose Errno.EIO (0xffffffff : UInt32) 0
-      if scErr != 0 then Fuzz.Env.exitImmediate 77
+      let scErr ← Fuzz.LinuxSyscall.Env.installSeccompErrno nrClose Errno.EIO nrClose Errno.EIO (0xffffffff : UInt32) 0
+      if scErr != 0 then Fuzz.LinuxSyscall.Env.exitImmediate 77
       match ← ops.openat none "sc.fifo".toUTF8 { access := .rdonly, nonblock := true } 0 with
-      | .error _ => Fuzz.Env.exitImmediate 11
+      | .error _ => Fuzz.LinuxSyscall.Env.exitImmediate 11
       | .ok rfd =>
         match ← ops.close rfd with
-        | .ok () => Fuzz.Env.exitImmediate 13
-        | .error ce => if ce != Errno.EIO then Fuzz.Env.exitImmediate 14
+        | .ok () => Fuzz.LinuxSyscall.Env.exitImmediate 13
+        | .error ce => if ce != Errno.EIO then Fuzz.LinuxSyscall.Env.exitImmediate 14
         match ← ops.fstat rfd with
-        | .error e => if e == Errno.EBADF then Fuzz.Env.exitImmediate 0 else Fuzz.Env.exitImmediate 16
-        | .ok _ => Fuzz.Env.exitImmediate 17
+        | .error e => if e == Errno.EBADF then Fuzz.LinuxSyscall.Env.exitImmediate 0 else Fuzz.LinuxSyscall.Env.exitImmediate 16
+        | .ok _ => Fuzz.LinuxSyscall.Env.exitImmediate 17
     if scEioStatus == 2077 then
       IO.println "NOTE: skipping live seccomp __NR_close=EIO closed-box test (PR_SET_SECCOMP unsupported)"
     else
@@ -2548,22 +2418,22 @@ private def runCachedOpenat2AndMappedChmod : IO Unit := do
 
 private def runSeccompDualFilterAndDetach : IO Unit := withTempSandbox "dual-seccomp" fun _ => do
   let ops := defaultOps
-  let nrClose ← Fuzz.Env.nrForSlot 2
-  let nrFcntl ← Fuzz.Env.nrForSlot 17
-  let scStatus ← Fuzz.Env.forkForStatus
+  let nrClose ← Fuzz.LinuxSyscall.Env.nrForSlot 2
+  let nrFcntl ← Fuzz.LinuxSyscall.Env.nrForSlot 17
+  let scStatus ← Fuzz.LinuxSyscall.Env.forkForStatus
   if scStatus == 0 then
     match ← ops.openat none "sc_probe".toUTF8 rwCreatFlags 0o644 with
-    | .error _ => Fuzz.Env.exitImmediate 71
+    | .error _ => Fuzz.LinuxSyscall.Env.exitImmediate 71
     | .ok fd =>
-      if (← Fuzz.Env.installSeccompErrno nrClose Errno.EPERM nrFcntl Errno.EBADF (0xffffffff : UInt32) 0) != 0 then
-        Fuzz.Env.exitImmediate 77
+      if (← Fuzz.LinuxSyscall.Env.installSeccompErrno nrClose Errno.EPERM nrFcntl Errno.EBADF (0xffffffff : UInt32) 0) != 0 then
+        Fuzz.LinuxSyscall.Env.exitImmediate 77
       match ← ops.close fd with
       | .error e =>
-        if e != Errno.EPERM then Fuzz.Env.exitImmediate 72
-      | .ok () => Fuzz.Env.exitImmediate 73
+        if e != Errno.EPERM then Fuzz.LinuxSyscall.Env.exitImmediate 72
+      | .ok () => Fuzz.LinuxSyscall.Env.exitImmediate 73
       match ← ops.fstat fd with
-      | .ok _ => Fuzz.Env.exitImmediate 0
-      | .error _ => Fuzz.Env.exitImmediate 74
+      | .ok _ => Fuzz.LinuxSyscall.Env.exitImmediate 0
+      | .error _ => Fuzz.LinuxSyscall.Env.exitImmediate 74
   if scStatus != 2000 then
     throw (IO.userError s!"fd_box dual-filter close(EPERM)+fcntl(EBADF) probe failed: status={scStatus}")
   let scSt0 := FilesState.withSeededTree {
@@ -3377,7 +3247,7 @@ private def runOverlayUnmappedAndProcFdReproducers : IO Unit := do
   let dtUnknownStub := mkDirentEntry "r".toUTF8 0
   if (allowedStep gdS0 (.getdents64 0 4096) (.bytes dtUnknownStub)).isNone then
     throw (IO.userError "allowedStep rejected DT_UNKNOWN (0) for valid child")
-  let mfd ← assertOk "memfd" (← Fuzz.Env.openMemfd)
+  let mfd ← assertOk "memfd" (← Fuzz.LinuxSyscall.Env.openMemfd)
   let _ ← assertOk "write memfd" (← defaultOps.write mfd "sealed-data".toUTF8)
   assertOk "seal" (← (defaultOps.fcntl mfd (.addSeals 0x1f)) >>= fun r => pure (r.map fun _ => ()))
   let _ ← assertOk "seek end" (← defaultOps.lseek mfd 0 .seekEnd)
@@ -3479,11 +3349,11 @@ private def runSgidStripAndSealReproducers : IO Unit := do
 
 private def runSharedOfdGetdentsChild (dirPath : String) : IO UInt32 := do
   IO.Process.setCurrentDir dirPath
-  let _ ← Fuzz.Env.closeRawFd 0
+  let _ ← Fuzz.LinuxSyscall.Env.closeRawFd 0
   let dfd ← match ← defaultOps.openat none ".".toUTF8 { access := .rdonly, directory := true, cloexec := false } 0 with
     | .ok f => pure f
     | .error _ => return 10
-  if (← Fuzz.Env.rawFdNum dfd) != 0 then
+  if (← Fuzz.LinuxSyscall.Env.rawFdNum dfd) != 0 then
     safeClose defaultOps dfd
     return 11
   let dupFd ← match ← defaultOps.dupStdio .stdin with
@@ -3592,13 +3462,13 @@ def runSharedOfdAndDirFdIntegrityChecks : IO Unit := withTempSandbox "dirfd_inte
 
   let emptyOfdBox := dirReal / "empty_ofd_box"
   IO.FS.createDirAll emptyOfdBox
-  let csStatus ← Fuzz.Env.forkForStatus
+  let csStatus ← Fuzz.LinuxSyscall.Env.forkForStatus
   if csStatus == 0 then
     let rc ← try runSharedOfdGetdentsChild emptyOfdBox.toString catch _ => pure 99
-    Fuzz.Env.exitImmediate rc
+    Fuzz.LinuxSyscall.Env.exitImmediate rc
   assertTrue s!"shared-OFD getdents64 cloexec child failed (status={csStatus})" (csStatus == 2000)
 
-  if let .ok mfd ← Fuzz.Env.openMemfd then
+  if let .ok mfd ← Fuzz.LinuxSyscall.Env.openMemfd then
     let _ ← defaultOps.write mfd "abc".toUTF8
     assertOk "fchmod memfd 0o4755" (← defaultOps.fchmod mfd 0o4755)
     let _ ← defaultOps.fcntl mfd (.addSeals 0x04)
@@ -3627,15 +3497,15 @@ def runSharedOfdAndDirFdIntegrityChecks : IO Unit := withTempSandbox "dirfd_inte
   IO.FS.createDirAll pfsMnt
   let pfsTrusted := dirReal / "pfs_trusted"
   IO.FS.writeFile pfsTrusted "TRUSTED"
-  let pfsStatus ← Fuzz.Env.forkForStatus
+  let pfsStatus ← Fuzz.LinuxSyscall.Env.forkForStatus
   if pfsStatus == 0 then
     let rc ← try
-      match ← Fuzz.SandboxEnv.setupMntNs pfsMnt.toString.toUTF8 with
+      match ← Fuzz.LinuxSyscall.SandboxEnv.setupMntNs pfsMnt.toString.toUTF8 with
       | .ok 0 =>
         match ← defaultOps.openat none pfsTrusted.toString.toUTF8 roFlags 0 with
         | .error _ => pure 2
         | .ok fd =>
-          let rawNum ← Fuzz.Env.rawFdNum fd
+          let rawNum ← Fuzz.LinuxSyscall.Env.rawFdNum fd
           if rawNum == 0xffffffff then
             safeClose defaultOps fd
             pure 2
@@ -3665,7 +3535,7 @@ def runSharedOfdAndDirFdIntegrityChecks : IO Unit := withTempSandbox "dirfd_inte
                   pure 5
       | _ => pure 77
     catch _ => pure 99
-    Fuzz.Env.exitImmediate rc
+    Fuzz.LinuxSyscall.Env.exitImmediate rc
   if pfsStatus != 2077 then
     assertTrue s!"spoofed /proc/thread-self/fd reopen child failed (status={pfsStatus})" (pfsStatus == 2000)
 
@@ -3696,7 +3566,7 @@ private def mkPatternBytes (n : Nat) (v : UInt8) : ByteArray :=
 
 private def runClosedStdioChild (dirStr : String) : IO UInt32 := do
   let ops := defaultOps
-  let _ ← Fuzz.Env.closeRawFd 0
+  let _ ← Fuzz.LinuxSyscall.Env.closeRawFd 0
   match ← ops.dupStdio .stdin with
   | .error e =>
     if e != Errno.EBADF then return 2
@@ -3707,7 +3577,7 @@ private def runClosedStdioChild (dirStr : String) : IO UInt32 := do
   let fd1 ← match ← ops.openat none p1 rwCreatFlags 0o644 with
     | .ok f => pure f
     | .error _ => return 4
-  if (← Fuzz.Env.rawFdNum fd1) != 0 then
+  if (← Fuzz.LinuxSyscall.Env.rawFdNum fd1) != 0 then
     safeClose ops fd1
     return 12
   match ← ops.write fd1 "hello".toUTF8 with
@@ -3752,14 +3622,14 @@ private def runClosedStdioChild (dirStr : String) : IO UInt32 := do
   let fd2 ← match ← ops.openat2 none p2 { flags := rwCreatFlags, mode := 0o644 } with
     | .ok f => pure f
     | .error _ => return 8
-  if (← Fuzz.Env.rawFdNum fd2) != 0 then
+  if (← Fuzz.LinuxSyscall.Env.rawFdNum fd2) != 0 then
     safeClose ops fd2
     return 17
   safeClose ops fd2
   let dFd0 ← match ← ops.openat none dirStr.toUTF8 dirFlags 0 with
     | .ok f => pure f
     | .error _ => return 9
-  if (← Fuzz.Env.rawFdNum dFd0) != 0 then
+  if (← Fuzz.LinuxSyscall.Env.rawFdNum dFd0) != 0 then
     safeClose ops dFd0
     return 18
   let dFdHi ← match ← ops.dupStdio .stdin with
@@ -3773,7 +3643,7 @@ private def runClosedStdioChild (dirStr : String) : IO UInt32 := do
     | .error _ =>
       safeClose ops dFdHi
       return 10
-  if (← Fuzz.Env.rawFdNum reFd0) != 0 then
+  if (← Fuzz.LinuxSyscall.Env.rawFdNum reFd0) != 0 then
     safeClose ops reFd0
     safeClose ops dFdHi
     return 20
@@ -3795,8 +3665,8 @@ private def runDoubleCloseChild (sentinelPath : String) : IO UInt32 := do
   match ← defaultOps.close fd with
   | .ok () => pure ()
   | .error _ => return 3
-  let nrClose ← Fuzz.Env.nrClose
-  let scErr ← Fuzz.Env.installSeccompErrno nrClose Errno.EPERM nrClose Errno.EPERM (0xffffffff : UInt32) 0
+  let nrClose ← Fuzz.LinuxSyscall.Env.nrClose
+  let scErr ← Fuzz.LinuxSyscall.Env.installSeccompErrno nrClose Errno.EPERM nrClose Errno.EPERM (0xffffffff : UInt32) 0
   if scErr != 0 then return 77
   match ← defaultOps.close fd with
   | .error e => return (if e == Errno.EBADF then 0 else 4)
@@ -3817,7 +3687,7 @@ def runDynamicFifoAndStdioReproducers : IO Unit := withTempSandbox "fifo-stdio" 
   let _ ← stepModelCheck "read big 64k" sBig1 (.read 0 65536) (.bytes chunk64k)
 
   let fifoPath := dirReal / "dyn_fifo.fifo"
-  let mkFifoRc ← Fuzz.Env.mkfifo fifoPath.toString.toUTF8 0o644
+  let mkFifoRc ← Fuzz.LinuxSyscall.Env.mkfifo fifoPath.toString.toUTF8 0o644
   if mkFifoRc == 0 then
     let sFifo := FilesState.withSeededTree {
       cwdPath := dirReal.toString.toUTF8
@@ -3830,18 +3700,18 @@ def runDynamicFifoAndStdioReproducers : IO Unit := withTempSandbox "fifo-stdio" 
 
   let csDir := dirReal / "cs"
   IO.FS.createDirAll csDir
-  let csStatus ← Fuzz.Env.forkForStatus
+  let csStatus ← Fuzz.LinuxSyscall.Env.forkForStatus
   if csStatus == 0 then
     let rc ← try runClosedStdioChild csDir.toString catch _ => pure 99
-    Fuzz.Env.exitImmediate rc
+    Fuzz.LinuxSyscall.Env.exitImmediate rc
   assertTrue s!"closed-stdio child failed (status={csStatus})" (csStatus == 2000)
 
   let sentinel := dirReal / "dc_sentinel"
   IO.FS.writeFile sentinel "x"
-  let dcStatus ← Fuzz.Env.forkForStatus
+  let dcStatus ← Fuzz.LinuxSyscall.Env.forkForStatus
   if dcStatus == 0 then
     let rc ← try runDoubleCloseChild sentinel.toString catch _ => pure 99
-    Fuzz.Env.exitImmediate rc
+    Fuzz.LinuxSyscall.Env.exitImmediate rc
   if dcStatus != 2077 then
     assertTrue s!"detached double-close issued kernel close(-1) (status={dcStatus})" (dcStatus == 2000)
 
@@ -3873,7 +3743,7 @@ def runDynamicFifoAndStdioReproducers : IO Unit := withTempSandbox "fifo-stdio" 
 
 @[noinline] private def openAndDropHandle (p : ByteArray) : IO UInt32 := do
   let fd ← assertOk "openAndDropHandle" (← defaultOps.openat none p roFlags 0)
-  Fuzz.Env.rawFdNum fd
+  Fuzz.LinuxSyscall.Env.rawFdNum fd
 
 private def encodeBpfInsn (code : UInt16) (jt jf : UInt8) (k : UInt32) : Array UInt8 :=
   #[UInt8.ofNat (code.toNat % 256), UInt8.ofNat ((code.toNat / 256) % 256),
@@ -3906,8 +3776,8 @@ private def runCloseEintrDetachChild (sentinelPath : ByteArray) : IO UInt32 := d
   let fd ← match ← defaultOps.openat none sentinelPath roFlags 0 with
     | .ok f => pure f
     | .error _ => return 2
-  let nrClose ← Fuzz.Env.nrClose
-  let scErr ← Fuzz.Env.installSeccompErrno nrClose Errno.EINTR nrClose Errno.EINTR (0xffffffff : UInt32) 0
+  let nrClose ← Fuzz.LinuxSyscall.Env.nrClose
+  let scErr ← Fuzz.LinuxSyscall.Env.installSeccompErrno nrClose Errno.EINTR nrClose Errno.EINTR (0xffffffff : UInt32) 0
   if scErr != 0 then return 77
   match ← defaultOps.close fd with
   | .error e => if e != Errno.EINTR then return 3
@@ -3931,11 +3801,11 @@ private def runDupStdioFloorChild (sentinelPath : ByteArray) : IO UInt32 := do
       safeClose defaultOps f1
       safeClose defaultOps f0
       return 4
-  let _ ← Fuzz.Env.closeRawFd 0
+  let _ ← Fuzz.LinuxSyscall.Env.closeRawFd 0
   let dupOut ← match ← defaultOps.dupStdio .stdout with
     | .ok d => pure d
     | .error _ => return 5
-  let rawNum ← Fuzz.Env.rawFdNum dupOut
+  let rawNum ← Fuzz.LinuxSyscall.Env.rawFdNum dupOut
   safeClose defaultOps dupOut
   safeClose defaultOps f2
   safeClose defaultOps f1
@@ -3943,18 +3813,18 @@ private def runDupStdioFloorChild (sentinelPath : ByteArray) : IO UInt32 := do
   return (if rawNum >= 3 then 0 else 6)
 
 private def runChrootSpoofChild (jailStr : String) : IO UInt32 := do
-  match ← Fuzz.SandboxEnv.enterUserns with
+  match ← Fuzz.LinuxSyscall.SandboxEnv.enterUserns with
   | .ok () => pure ()
   | .error _ => return 77
   IO.FS.createDirAll jailStr
-  let rc ← Fuzz.Env.chroot jailStr.toUTF8
+  let rc ← Fuzz.LinuxSyscall.Env.chroot jailStr.toUTF8
   if rc != 0 then return 77
   IO.Process.setCurrentDir "/"
   let fd ← match ← defaultOps.openat none "/trusted".toUTF8 rwCreatFlags 0o644 with
     | .ok f => pure f
     | .error _ => return 2
   let _ ← defaultOps.write fd "TRUSTED".toUTF8
-  let rawNum ← Fuzz.Env.rawFdNum fd
+  let rawNum ← Fuzz.LinuxSyscall.Env.rawFdNum fd
   let _ ← defaultOps.mkdirat none "/proc".toUTF8 0o755
   let _ ← defaultOps.mkdirat none "/proc/self".toUTF8 0o755
   let _ ← defaultOps.mkdirat none "/proc/self/fd".toUTF8 0o755
@@ -3977,7 +3847,7 @@ private def runChrootSpoofChild (jailStr : String) : IO UInt32 := do
     safeClose defaultOps fd
     return code1
   let _ ← defaultOps.unlinkat none spoofPath false
-  if (← Fuzz.Env.link "/trusted".toUTF8 spoofPath) != 0 then
+  if (← Fuzz.LinuxSyscall.Env.link "/trusted".toUTF8 spoofPath) != 0 then
     safeClose defaultOps fd
     return 6
   let code2 ← match ← defaultOps.reopenReadOnly fd with
@@ -3997,7 +3867,7 @@ private def runProcSpoofWorker (tmpDir : String) : IO UInt32 := do
   let fd ← match ← ops.openat none trustedPath.toUTF8 roFlags 0 with
     | .ok f => pure f
     | .error _ => return 2
-  let rawNum ← Fuzz.Env.rawFdNum fd
+  let rawNum ← Fuzz.LinuxSyscall.Env.rawFdNum fd
   let tsStr ← match ← ops.readlinkat none "/proc/thread-self".toUTF8 128 with
     | .ok b => pure (String.fromUTF8! b)
     | .error _ =>
@@ -4124,13 +3994,13 @@ def runCShimBoundaryProbes : IO Unit := withTempSandbox "cshim" fun dir => do
   safeClose defaultOps spFd
   let _ ← defaultOps.unlinkat none spPath false
 
-  let oldMask ← Fuzz.Env.umask 0
+  let oldMask ← Fuzz.LinuxSyscall.Env.umask 0
   let pSticky := (dirReal / "sticky1644").toString.toUTF8
   let stFd ← assertOk "openat 0o1644"
     (← defaultOps.openat none pSticky { access := .rdwr, creat := true, excl := true } 0o1644)
   let pStickyDir := (dirReal / "sticky_dir1755").toString.toUTF8
   assertOk "mkdirat 0o1755" (← defaultOps.mkdirat none pStickyDir 0o1755)
-  let _ ← Fuzz.Env.umask oldMask
+  let _ ← Fuzz.LinuxSyscall.Env.umask oldMask
   let stSticky ← assertOk "fstat 0o1644" (← defaultOps.fstat stFd)
   assertTrue s!"expected mode 0o1644, got {stSticky.mode}" (stSticky.mode == 0o1644)
   safeClose defaultOps stFd
@@ -4139,7 +4009,7 @@ def runCShimBoundaryProbes : IO Unit := withTempSandbox "cshim" fun dir => do
   assertOk "fchmodat 0o1750" (← defaultOps.fchmodat none pSticky 0o1750)
   let stFchmodAt ← assertOk "fstatat fchmodat 0o1750" (← defaultOps.fstatat none pSticky {})
   assertTrue s!"expected fchmodat mode 0o1750, got {stFchmodAt.mode}" (stFchmodAt.mode == 0o1750)
-  if (← Fuzz.Env.getUid) != 0 then
+  if (← Fuzz.LinuxSyscall.Env.getUid) != 0 then
     assertOk "fchmodat 0o200 wo" (← defaultOps.fchmodat none pSticky 0o200)
     assertErr "faccessat R_OK on 0o200 -> EACCES"
       (← defaultOps.faccessat none pSticky { read := true } {}) Errno.EACCES
@@ -4150,7 +4020,7 @@ def runCShimBoundaryProbes : IO Unit := withTempSandbox "cshim" fun dir => do
     (← defaultOps.openat2 none pNoSymLnk { flags := roFlags, resolve := { noSymlinks := true } }) Errno.ELOOP
 
   let pSock := (dirReal / "cshim.sock").toString.toUTF8
-  assertEqErrno "mksock cshim.sock" (← Fuzz.Env.mksock pSock) 0
+  assertEqErrno "mksock cshim.sock" (← Fuzz.LinuxSyscall.Env.mksock pSock) 0
   let stSockAt ← assertOk "fstatat socket" (← defaultOps.fstatat none pSock { symlinkNofollow := true })
   assertTrue s!"expected socket kind, got {repr stSockAt.kind}" (stSockAt.kind == .socket)
   let sockPathFd ← assertOk "openat O_PATH socket" (← defaultOps.openat none pSock { path := true } 0)
@@ -4165,8 +4035,8 @@ def runCShimBoundaryProbes : IO Unit := withTempSandbox "cshim" fun dir => do
       if !checkedBlk then
         let epBytes := entry.path.toString.toUTF8
         if let .ok bfd ← defaultOps.openat none epBytes { path := true, nofollow := true } 0 then
-          let rawB ← Fuzz.Env.rawFdNum bfd
-          let fm ← Fuzz.Env.fdMode rawB
+          let rawB ← Fuzz.LinuxSyscall.Env.rawFdNum bfd
+          let fm ← Fuzz.LinuxSyscall.Env.fdMode rawB
           if (fm &&& 0o170000) == 0o060000 then
             let stBlk ← assertOk "fstat blockDev" (← defaultOps.fstat bfd)
             assertTrue s!"expected blockDev kind, got {repr stBlk.kind}" (stBlk.kind == .blockDev)
@@ -4237,37 +4107,37 @@ def runCShimBoundaryProbes : IO Unit := withTempSandbox "cshim" fun dir => do
   safeClose defaultOps rfd
   safeClose defaultOps baseFd
 
-  let eaStatus ← Fuzz.Env.forkForStatus
+  let eaStatus ← Fuzz.LinuxSyscall.Env.forkForStatus
   if eaStatus == 0 then
     let rc ← try runAtEaccessSeccompChild sentinelBytes catch _ => pure 99
-    Fuzz.Env.exitImmediate rc
+    Fuzz.LinuxSyscall.Env.exitImmediate rc
   if eaStatus != 2077 then
     assertTrue s!"AT_EACCESS seccomp child failed (status={eaStatus})" (eaStatus == 2000)
 
-  let eiStatus ← Fuzz.Env.forkForStatus
+  let eiStatus ← Fuzz.LinuxSyscall.Env.forkForStatus
   if eiStatus == 0 then
     let rc ← try runCloseEintrDetachChild sentinelBytes catch _ => pure 99
-    Fuzz.Env.exitImmediate rc
+    Fuzz.LinuxSyscall.Env.exitImmediate rc
   if eiStatus != 2077 then
     assertTrue s!"close EINTR detach child failed (status={eiStatus})" (eiStatus == 2000)
 
-  let dsStatus ← Fuzz.Env.forkForStatus
+  let dsStatus ← Fuzz.LinuxSyscall.Env.forkForStatus
   if dsStatus == 0 then
     let rc ← try runDupStdioFloorChild sentinelBytes catch _ => pure 99
-    Fuzz.Env.exitImmediate rc
+    Fuzz.LinuxSyscall.Env.exitImmediate rc
   assertTrue s!"dupStdio >= 3 floor child failed (status={dsStatus})" (dsStatus == 2000)
 
-  let crStatus ← Fuzz.Env.forkForStatus
+  let crStatus ← Fuzz.LinuxSyscall.Env.forkForStatus
   if crStatus == 0 then
     let rc ← try runChrootSpoofChild (dirReal / "jail").toString catch _ => pure 99
-    Fuzz.Env.exitImmediate rc
+    Fuzz.LinuxSyscall.Env.exitImmediate rc
   if crStatus != 2077 then
     assertTrue s!"chroot spoofed /proc reopen child failed (status={crStatus})" (crStatus == 2000)
 
-  let gwStatus ← Fuzz.Env.forkForStatus
+  let gwStatus ← Fuzz.LinuxSyscall.Env.forkForStatus
   if gwStatus == 0 then
     let rc ← try runGetcwdUnboundLongChild dirReal catch _ => pure 99
-    Fuzz.Env.exitImmediate rc
+    Fuzz.LinuxSyscall.Env.exitImmediate rc
   assertTrue s!"getcwd(0) unbound ENAMETOOLONG child failed (status={gwStatus})" (gwStatus == 2000)
 
 private def runStatNsecReopenAndDetachChecks : IO Unit := withTempSandbox "nsec-reopen-detach" fun dir => do
@@ -4320,7 +4190,7 @@ private def runStatNsecReopenAndDetachChecks : IO Unit := withTempSandbox "nsec-
   let _ ← stepModelCheck "model renameat2 RENAME_EXCHANGE|RENAME_WHITEOUT -> EINVAL" sTs0
     (.renameat2 none "ts_check.txt".toUTF8 none "wo_dst.txt".toUTF8 { exchange := true, whiteout := true }) (.err Errno.EINVAL)
   IO.FS.writeFile (dirReal / "wo_src.txt") "wo\n"
-  let woMode ← Fuzz.Env.statMode "wo_src.txt".toUTF8
+  let woMode ← Fuzz.LinuxSyscall.Env.statMode "wo_src.txt".toUTF8
   let sWo0 := FilesState.withSeededTree {
     cwdPath := dirReal.toString.toUTF8
     cwdBound := true
@@ -4373,7 +4243,7 @@ private def runStatNsecReopenAndDetachChecks : IO Unit := withTempSandbox "nsec-
     (Files.allowedStep sExt2 (.fcntl 1 .getFd) (.u32 0) |>.isNone)
   assertTrue "evalModel reopenReadOnly external stdio getFd=1"
     (match (Files.evalModel sExt2 (.fcntl 1 .getFd)).1 with | .u32 v => v == 1 | _ => false)
-  if (← Fuzz.Env.fdKind 1) != 0 then
+  if (← Fuzz.LinuxSyscall.Env.fdKind 1) != 0 then
     let dupFd ← assertOk "live dupStdio stdout" (← ops.dupStdio .stdout)
     try
       match ← ops.reopenReadOnly dupFd with
@@ -4388,26 +4258,26 @@ private def runStatNsecReopenAndDetachChecks : IO Unit := withTempSandbox "nsec-
     finally
       safeClose ops dupFd
 
-  let nrClose ← Fuzz.Env.nrForSlot 2
-  let nrFcntl ← Fuzz.Env.nrForSlot 17
-  let nrFstat ← Fuzz.Env.nrForSlot 5
+  let nrClose ← Fuzz.LinuxSyscall.Env.nrForSlot 2
+  let nrFcntl ← Fuzz.LinuxSyscall.Env.nrForSlot 17
+  let nrFstat ← Fuzz.LinuxSyscall.Env.nrForSlot 5
   let detachPath := (dirReal / "detach_chk.txt").toString.toUTF8
   for injected in #[Errno.EINTR, Errno.EIO, Errno.ENOSPC, (122 : Errno), Errno.ENOMEM, Errno.ESTALE, (104 : Errno)] do
-    let scSt ← Fuzz.Env.forkForStatus
+    let scSt ← Fuzz.LinuxSyscall.Env.forkForStatus
     if scSt == 0 then
       match ← ops.openat none detachPath rwCreatFlags 0o644 with
-      | .error _ => Fuzz.Env.exitImmediate 78
+      | .error _ => Fuzz.LinuxSyscall.Env.exitImmediate 78
       | .ok pfd =>
-        if (← Fuzz.Env.installSeccompErrno nrClose injected nrFcntl Errno.EPERM nrFstat Errno.EPERM) != 0 then
-          Fuzz.Env.exitImmediate 77
+        if (← Fuzz.LinuxSyscall.Env.installSeccompErrno nrClose injected nrFcntl Errno.EPERM nrFstat Errno.EPERM) != 0 then
+          Fuzz.LinuxSyscall.Env.exitImmediate 77
         match ← ops.close pfd with
         | .error ce =>
-          if ce != injected then Fuzz.Env.exitImmediate 79
-        | .ok () => Fuzz.Env.exitImmediate 80
+          if ce != injected then Fuzz.LinuxSyscall.Env.exitImmediate 79
+        | .ok () => Fuzz.LinuxSyscall.Env.exitImmediate 80
         match ← ops.fstat pfd with
         | .error fe =>
-          if fe == Errno.EBADF then Fuzz.Env.exitImmediate 0 else Fuzz.Env.exitImmediate 81
-        | .ok _ => Fuzz.Env.exitImmediate 82
+          if fe == Errno.EBADF then Fuzz.LinuxSyscall.Env.exitImmediate 0 else Fuzz.LinuxSyscall.Env.exitImmediate 81
+        | .ok _ => Fuzz.LinuxSyscall.Env.exitImmediate 82
     if scSt != 2077 then
       assertTrue s!"fd_box.h failed to detach box on close errno={injected} (status={scSt})" (scSt == 2000)
 
@@ -4678,13 +4548,131 @@ private def runProtectedSymlinkWalkReproducers : IO Unit := do
   let _ ← stepModelCheck "ro_bind protSym=false sym_other W_OK -> EROFS" sRoOff
     (.faccessat none "s_unmap/sym_other".toUTF8 { write := true } {}) (.err Errno.EROFS)
 
-/-- Run all registered assumptions, error-coverage tests, and multi-call edge-case reproducers. -/
-def runAll : IO Unit := do
-  Fuzz.Env.pinClosedStdio
-  let savedMask ← Fuzz.Env.umask 0o022
+/-- Run all `Files` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke` and `lean-swe-mut-test`). -/
+def runChecks : IO Unit := do
+  Fuzz.LinuxSyscall.Env.pinClosedStdio
+  let savedMask ← Fuzz.LinuxSyscall.Env.umask 0o022
   try
-    Core.runRegisteredAssumptions registeredAssumptions
-    Core.runRegisteredErrorTests registeredErrorTests
+    assume_files_openat_flagsAndNulGuard
+    assume_files_openat2_resolveFlagsAndAbi
+    assume_files_close_abaSafeFdBox
+    assume_files_read_clamped16MiBAndPartial
+    assume_files_write_partialAndAppend
+    assume_files_fstat_portableStatDecode
+    assume_files_fstatat_nofollowAndEmptyPath
+    assume_files_faccessat_modeBits
+    assume_files_mkdirat_modeAndNulGuard
+    assume_files_unlinkat_removeDirFlag
+    assume_files_renameat2_flagsAbi
+    assume_files_symlinkat_rawBytesAndNulGuard
+    assume_files_readlinkat_clampedRawBytes
+    assume_files_getdents64_rawDirentBuffer
+    assume_files_fchmodat_modeAndNulGuard
+    assume_files_fchmod_modeUpdate
+    assume_files_flock_advisoryLockFlags
+    assume_files_fcntl_curatedCommands
+    assume_files_fsync_fdSync
+    assume_files_getcwd_clampedBuffer
+    assume_files_lseek_offsetAndDirRewind
+    assume_files_reopenReadOnly_procSelfFd
+    assume_files_dupStdio_cloexecSlot
+    err_openat_notFound
+    err_openat_badFd
+    err_openat_invalidArg
+    err_openat_stateConflict
+    err_openat_permissionDenied
+    err_openat_transient
+    err_openat2_notFound
+    err_openat2_badFd
+    err_openat2_invalidArg
+    err_openat2_stateConflict
+    err_openat2_permissionDenied
+    err_openat2_transient
+    err_close_mocked
+    err_close_badFd
+    err_read_mocked
+    err_read_badFd
+    err_read_stateConflict
+    err_write_mocked
+    err_write_badFd
+    err_fstat_mocked
+    err_fstat_badFd
+    err_fstatat_notFound
+    err_fstatat_badFd
+    err_fstatat_invalidArg
+    err_fstatat_stateConflict
+    err_fstatat_permissionDenied
+    err_fstatat_transient
+    err_faccessat_notFound
+    err_faccessat_badFd
+    err_faccessat_invalidArg
+    err_faccessat_stateConflict
+    err_faccessat_permissionDenied
+    err_faccessat_transient
+    err_mkdirat_notFound
+    err_mkdirat_badFd
+    err_mkdirat_invalidArg
+    err_mkdirat_stateConflict
+    err_mkdirat_permissionDenied
+    err_mkdirat_transient
+    err_unlinkat_notFound
+    err_unlinkat_badFd
+    err_unlinkat_invalidArg
+    err_unlinkat_stateConflict
+    err_unlinkat_permissionDenied
+    err_unlinkat_transient
+    err_renameat2_notFound
+    err_renameat2_badFd
+    err_renameat2_invalidArg
+    err_renameat2_stateConflict
+    err_renameat2_permissionDenied
+    err_renameat2_transient
+    err_symlinkat_notFound
+    err_symlinkat_badFd
+    err_symlinkat_invalidArg
+    err_symlinkat_stateConflict
+    err_symlinkat_permissionDenied
+    err_symlinkat_transient
+    err_readlinkat_notFound
+    err_readlinkat_badFd
+    err_readlinkat_invalidArg
+    err_readlinkat_stateConflict
+    err_readlinkat_permissionDenied
+    err_readlinkat_transient
+    err_getdents64_notFound
+    err_getdents64_badFd
+    err_getdents64_invalidArg
+    err_getdents64_stateConflict
+    err_getdents64_mocked
+    err_fchmodat_notFound
+    err_fchmodat_badFd
+    err_fchmodat_invalidArg
+    err_fchmodat_stateConflict
+    err_fchmodat_permissionDenied
+    err_fchmodat_transient
+    err_fchmod_mocked
+    err_fchmod_badFd
+    err_flock_mocked
+    err_flock_badFd
+    err_flock_stateConflict
+    err_fcntl_mocked
+    err_fcntl_badFd
+    err_fcntl_invalidArg
+    err_fcntl_permissionDenied
+    err_fsync_mocked
+    err_fsync_badFd
+    err_getcwd_mocked
+    err_getcwd_invalidArg
+    err_lseek_mocked
+    err_lseek_badFd
+    err_lseek_invalidArg
+    err_lseek_transient
+    err_reopenReadOnly_mocked
+    err_reopenReadOnly_badFd
+    err_reopenReadOnly_stateConflict
+    err_reopenReadOnly_permissionDenied
+    err_reopenReadOnly_transient
+    err_dupStdio_mocked
     runEdgeCaseReproducers
     runHardenedReproducers
     runMutantKillers
@@ -4707,9 +4695,8 @@ def runAll : IO Unit := do
     runStatNsecReopenAndDetachChecks
     runUnboxedDirentAndGetcwdChecks
     runProtectedSymlinkWalkReproducers
-    IO.println "PASS: LeanSwe.LinuxSyscall.Files runtime tests"
   finally
-    let _ ← Fuzz.Env.umask savedMask
+    let _ ← Fuzz.LinuxSyscall.Env.umask savedMask
 
 private def straceWorker (opName sentinelPath expectedErr : String) : IO UInt32 := do
   let expected : Errno := match expectedErr with
@@ -4931,9 +4918,9 @@ def runStraceFaultCheck : IO Unit := withTempSandbox "strace" fun dir => do
     if out.exitCode != 0 then
       throw (IO.userError s!"strace fault-injection failed for {opName}/{errName} (exit={out.exitCode}): {out.stderr}")
 
-/-- Handle CLI subcommands (`--files-strace-fault-check`, `--files-strace-worker`) for `Tests/Main.lean`. -/
+/-- Handle `--files-strace-fault-check` and `--files-strace-worker` subcommands dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`) and `lean-swe-mut-test`. -/
 def probeMain (args : List String) : IO UInt32 := do
-  Fuzz.Env.pinClosedStdio
+  Fuzz.LinuxSyscall.Env.pinClosedStdio
   match args with
   | [] =>
     runStraceFaultCheck
@@ -4944,7 +4931,7 @@ def probeMain (args : List String) : IO UInt32 := do
   | ["--worker", "--closed-stdio-check"] =>
     for slot in [StdioFd.stdin, StdioFd.stdout, StdioFd.stderr] do
       let slotIdx : UInt32 := match slot with | .stdin => 0 | .stdout => 1 | .stderr => 2
-      let slotKind ← Fuzz.Env.fdKind slotIdx
+      let slotKind ← Fuzz.LinuxSyscall.Env.fdKind slotIdx
       let dfd ← match ← defaultOps.dupStdio slot with
         | .ok f => pure f
         | .error _ => return 2
@@ -4974,4 +4961,4 @@ def probeMain (args : List String) : IO UInt32 := do
     IO.eprintln s!"unknown files strace args: {args}"
     return 1
 
-end LeanSwe.LinuxSyscall.Files.RuntimeTests
+end Fuzz.LinuxSyscall.Files.Strace

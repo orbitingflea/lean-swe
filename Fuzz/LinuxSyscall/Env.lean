@@ -1,6 +1,7 @@
 import LeanSwe.LinuxSyscall.Common.Types
+import LeanSwe.Fs.Raw.Interface
 
-namespace LeanSwe.LinuxSyscall.Fuzz.Env
+namespace Fuzz.LinuxSyscall.Env
 
 /-- Create a named FIFO node on disk, returning `0` on success or host `errno`. -/
 @[extern "leanswe_fuzz_mkfifo"]
@@ -324,4 +325,50 @@ def readSelfGids : IO (List UInt32) := do
   catch _ =>
     return []
 
-end LeanSwe.LinuxSyscall.Fuzz.Env
+/-- No-op `IO.FS.Stream` used when standard output or standard error is closed or occupied by runtime internal FDs. -/
+def nullOutStream : IO.FS.Stream where
+  flush := pure ()
+  read _ := pure ByteArray.empty
+  write _ := pure ()
+  getLine := pure ""
+  putStr _ := pure ()
+  isTty := pure false
+
+/-- Return `true` when raw descriptor `fd` is closed (`fdKind == 0`), an opaque kernel/runtime FD (`fdKind == 6`), or a libuv `eventfd`/`io_uring` `anon_inode`. -/
+def isStdioFdClosedOrUv (fd : UInt32) : IO Bool := do
+  let k ← fdKind fd
+  if k == 0 || k == 6 then
+    return true
+  match ← LeanSwe.Fs.Raw.defaultOps.readLink s!"/proc/self/fd/{fd}" with
+  | .error _ => return false
+  | .ok tgt =>
+    return tgt.startsWith "anon_inode:[event" || tgt.startsWith "anon_inode:[io_uring"
+
+private initialize savedStdioRef : IO.Ref (Option (IO.FS.Stream × IO.FS.Stream)) ← IO.mkRef none
+
+/-- Redirect Lean `stdout`/`stderr` to `nullOutStream` when FD `1` or `2` is closed or occupied by runtime `anon_inode` FDs, saving the original streams once and returning `(outClosed, errClosed)`. -/
+def sanitizeClosedStdio : IO (Bool × Bool) := do
+  let origOut ← IO.getStdout
+  let origErr ← IO.getStderr
+  let outClosed ← isStdioFdClosedOrUv 1
+  let errClosed ← isStdioFdClosedOrUv 2
+  if (outClosed || errClosed) && (← savedStdioRef.get).isNone then
+    savedStdioRef.set (some (origOut, origErr))
+  if outClosed then
+    let _ ← IO.setStdout nullOutStream
+  if errClosed then
+    let _ ← IO.setStderr nullOutStream
+  return (outClosed, errClosed)
+
+/-- Run `act` with the original unsanitized `stdout`/`stderr` streams restored when `sanitizeClosedStdio` redirected them, for test episodes that mutate OS FDs `0..2` directly via `dup2`/`close`. -/
+def withRawStdio {α : Type} (act : IO α) : IO α := do
+  match ← savedStdioRef.get with
+  | none => act
+  | some (origOut, origErr) =>
+    let prevOut ← IO.setStdout origOut
+    let prevErr ← IO.setStderr origErr
+    try act finally
+      let _ ← IO.setStdout prevOut
+      let _ ← IO.setStderr prevErr
+
+end Fuzz.LinuxSyscall.Env

@@ -34,18 +34,24 @@ import LeanSwe.ProcessSandbox.RuntimeTests
 import LeanSwe.ConnectProxy.Raw.RuntimeTests
 import LeanSwe.ConnectProxy.RuntimeTests
 import LeanSwe.SlotPool.RuntimeTests
-import LeanSwe.LinuxSyscall.Sandbox.RuntimeTests
-import LeanSwe.LinuxSyscall.TimeRand.RuntimeTests
 import LeanSwe.LinuxSyscall.Files.Impl
-import LeanSwe.LinuxSyscall.Files.RuntimeTests
-import LeanSwe.LinuxSyscall.Passwd.RuntimeTests
-import LeanSwe.LinuxSyscall.Dns.RuntimeTests
+import LeanSwe.LinuxSyscall.Files.Interface
+import LeanSwe.LinuxSyscall.Dns.Impl
+import LeanSwe.LinuxSyscall.Dns.Interface
 import LeanSwe.LinuxSyscall.Poll.Impl
-import LeanSwe.LinuxSyscall.Poll.RuntimeTests
 import LeanSwe.LinuxSyscall.Net.Impl
-import LeanSwe.LinuxSyscall.Net.RuntimeTests
-import LeanSwe.LinuxSyscall.Process.RuntimeTests
-import LeanSwe.LinuxSyscall.Fuzz.ProcessFuzz
+import LeanSwe.LinuxSyscall.Process.Interface
+import Fuzz.Passwd.Suite
+import Fuzz.Passwd.Checks
+import Fuzz.Dns.Suite
+import Fuzz.LinuxSyscall.Sandbox.Strace
+import Fuzz.LinuxSyscall.TimeRand.Strace
+import Fuzz.LinuxSyscall.Files.Strace
+import Fuzz.LinuxSyscall.Poll.Strace
+import Fuzz.LinuxSyscall.Net.Strace
+import Fuzz.LinuxSyscall.ProcessEnv
+import Fuzz.LinuxSyscall.Process.Fuzz
+import Fuzz.LinuxSyscall.Process.Strace
 import LeanSwe.PostFork.Aeneas.Model
 import LeanSwe.PostFork.Aeneas.Funs
 import LeanSwe.PostFork.RuntimeTests
@@ -1152,13 +1158,13 @@ private def runProcessMutExtra : IO Unit := do
     (match ← LinuxSyscall.Process.pipe2 pfBad with | .error e => e == LinuxSyscall.Errno.EINVAL | .ok _ => false)
   checkB "pipe2 high extraBits EINVAL"
     (match ← LinuxSyscall.Process.pipe2 { extraBits := 0x80000000 } with | .error e => e == LinuxSyscall.Errno.EINVAL | .ok _ => false)
-  if !(← LinuxSyscall.Fuzz.ProcessEnv.probeKernelWatchQueue) then
+  if !(← Fuzz.LinuxSyscall.ProcessEnv.probeKernelWatchQueue) then
     let notifOk ←
       match ← LinuxSyscall.Process.pipe2 { notificationPipe := true } with
       | .error e => pure (e == LinuxSyscall.Process.errnoENOPKG)
       | .ok (r, w) =>
-        let _ ← LinuxSyscall.Fuzz.ProcessEnv.closeFd r
-        let _ ← LinuxSyscall.Fuzz.ProcessEnv.closeFd w
+        let _ ← Fuzz.LinuxSyscall.ProcessEnv.closeFd r
+        let _ ← Fuzz.LinuxSyscall.ProcessEnv.closeFd w
         pure false
     checkB "pipe2 notificationPipe ENOPKG" notifOk
   checkB "waitpid invalid extraBits EINVAL" ((← LinuxSyscall.Process.waitpid 0 wfBad) == .error LinuxSyscall.Errno.EINVAL)
@@ -1174,34 +1180,34 @@ private def runProcessMutExtra : IO Unit := do
       checkB "pidfd_send_signal invalid extraBits EINVAL" ((← LinuxSyscall.Process.pidfd_send_signal pfd .sigzero psfBad) == .error LinuxSyscall.Errno.EINVAL)
       checkB "pidfd_send_signal high extraBits EINVAL" ((← LinuxSyscall.Process.pidfd_send_signal pfd .sigzero { extraBits := 0x80000000 }) == .error LinuxSyscall.Errno.EINVAL)
       checkB "pidfd_send_signal valid sigzero ok" ((← LinuxSyscall.Process.pidfd_send_signal pfd .sigzero {}) == .ok ())
-      checkB "pidfd_open self close ok" ((← LinuxSyscall.Fuzz.ProcessEnv.closeFd pfd) == .ok ())
-      checkB "pidfd_open double close EBADF" ((← LinuxSyscall.Fuzz.ProcessEnv.closeFd pfd) == .error LinuxSyscall.Errno.EBADF)
+      checkB "pidfd_open self close ok" ((← Fuzz.LinuxSyscall.ProcessEnv.closeFd pfd) == .ok ())
+      checkB "pidfd_open double close EBADF" ((← Fuzz.LinuxSyscall.ProcessEnv.closeFd pfd) == .error LinuxSyscall.Errno.EBADF)
       checkB "pidfd_send_signal closed EBADF" ((← LinuxSyscall.Process.pidfd_send_signal pfd .sigzero {}) == .error LinuxSyscall.Errno.EBADF)
     | .error e => throw (IO.userError s!"pidfd_open self in MutateDriver failed: {e}")
   | .error e => throw (IO.userError s!"getpid in MutateDriver failed: {e}")
   match ← LinuxSyscall.Process.pipe2 { cloexec := true } with
   | .ok (rd, wr) =>
-    match ← LinuxSyscall.Fuzz.ProcessEnv.getFdFlags rd, ← LinuxSyscall.Fuzz.ProcessEnv.getFdFlags wr with
+    match ← Fuzz.LinuxSyscall.ProcessEnv.getFdFlags rd, ← Fuzz.LinuxSyscall.ProcessEnv.getFdFlags wr with
     | .ok (_, flR), .ok (_, flW) =>
       checkB "pipe2 rd O_RDONLY" ((flR &&& 3) == 0)
       checkB "pipe2 wr O_WRONLY" ((flW &&& 3) == 1)
     | _, _ => throw (IO.userError "getFdFlags failed on pipe2 in MutateDriver")
-    checkB "pipe2 rd close ok" ((← LinuxSyscall.Fuzz.ProcessEnv.closeFd rd) == .ok ())
-    checkB "pipe2 wr close ok" ((← LinuxSyscall.Fuzz.ProcessEnv.closeFd wr) == .ok ())
+    checkB "pipe2 rd close ok" ((← Fuzz.LinuxSyscall.ProcessEnv.closeFd rd) == .ok ())
+    checkB "pipe2 wr close ok" ((← Fuzz.LinuxSyscall.ProcessEnv.closeFd wr) == .ok ())
   | .error e => throw (IO.userError s!"pipe2 in MutateDriver failed: {e}")
-  match ← LinuxSyscall.Fuzz.ProcessEnv.spawnControlled (-1) false with
+  match ← Fuzz.LinuxSyscall.ProcessEnv.spawnControlled (-1) false with
   | .ok (cPid, _) =>
     try
       checkB "waitpid live child stillRunning" ((← LinuxSyscall.Process.waitpid cPid.toInt32 { nohang := true }) == .ok .stillRunning)
       checkB "waitpid __WCLONE ECHILD on SIGCHLD child" ((← LinuxSyscall.Process.waitpid cPid.toInt32 { nohang := true, wclone := true }) == .error LinuxSyscall.Errno.ECHILD)
     finally
-      LinuxSyscall.Fuzz.ProcessEnv.cleanupChild cPid
+      Fuzz.LinuxSyscall.ProcessEnv.cleanupChild cPid
   | .error e => throw (IO.userError s!"spawnControlled in MutateDriver failed: {e}")
   for secErr in #[(1 : UInt32), 4, 5, 7, 9, 12, 28, 104, 116, 122, 4095] do
-    match ← LinuxSyscall.Fuzz.ProcessEnv.checkFdCloseSeccomp secErr with
+    match ← Fuzz.LinuxSyscall.ProcessEnv.checkFdCloseSeccomp secErr with
     | .ok true => pure ()
     | other => throw (IO.userError s!"checkFdCloseSeccomp {secErr} failed in MutateDriver: {repr other}")
-  match ← LinuxSyscall.Fuzz.ProcessEnv.checkSeccompEfaultAbort with
+  match ← Fuzz.LinuxSyscall.ProcessEnv.checkSeccompEfaultAbort with
   | .ok true => pure ()
   | other => throw (IO.userError s!"checkSeccompEfaultAbort failed in MutateDriver: {repr other}")
 
@@ -1869,14 +1875,14 @@ private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("ConnectProxy.Raw", do ConnectProxy.Raw.RuntimeTests.runAll; return none, pure ()),
   ("ConnectProxy", do ConnectProxy.RuntimeTests.runAll; return none, pure ()),
   ("SlotPool", do SlotPool.RuntimeTests.runAll; return none, pure ()),
-  ("LinuxSyscall.Sandbox", do LinuxSyscall.Sandbox.RuntimeTests.runAll; return none, pure ()),
-  ("LinuxSyscall.TimeRand", do LinuxSyscall.TimeRand.RuntimeTests.runAll; return none, pure ()),
-  ("LinuxSyscall.Passwd", do LinuxSyscall.Passwd.RuntimeTests.runAll; return none, pure ()),
-  ("LinuxSyscall.Dns", do LinuxSyscall.Dns.RuntimeTests.runAll; return none, runDnsUnitTests),
-  ("LinuxSyscall.Poll", do LinuxSyscall.Poll.RuntimeTests.runAll; return none, do LinuxSyscall.Poll.RuntimeTests.runStraceFaultCheck; runPollOpsUnitTests),
-  ("LinuxSyscall.Net", do LinuxSyscall.Net.RuntimeTests.runAll; return none, do LinuxSyscall.Net.RuntimeTests.runStraceFaultCheck; runNetOpsUnitTests),
-  ("LinuxSyscall.Process", do LinuxSyscall.Process.RuntimeTests.runAll; return none, runProcessMutExtra),
-  ("LinuxSyscall.Files", do LeanSwe.LinuxSyscall.Files.RuntimeTests.runAll; return none, runFilesMkOpsUnitTests),
+  ("LinuxSyscall.Sandbox", do Fuzz.LinuxSyscall.Sandbox.Strace.runChecks; return none, Fuzz.LinuxSyscall.Sandbox.Strace.runStraceFaultCheck),
+  ("LinuxSyscall.TimeRand", do Fuzz.LinuxSyscall.TimeRand.Strace.runChecks; return none, Fuzz.LinuxSyscall.TimeRand.Strace.runStraceFaultCheck),
+  ("LinuxSyscall.Passwd", do Fuzz.Passwd.suite.runSmoke { smoke := true }; return none, pure ()),
+  ("LinuxSyscall.Dns", do Fuzz.Dns.suite.runSmoke { smoke := true }; return none, runDnsUnitTests),
+  ("LinuxSyscall.Poll", do Fuzz.LinuxSyscall.Poll.Strace.runChecks; return none, do Fuzz.LinuxSyscall.Poll.Strace.runStraceFaultCheck; runPollOpsUnitTests),
+  ("LinuxSyscall.Net", do Fuzz.LinuxSyscall.Net.Strace.runChecks; return none, do Fuzz.LinuxSyscall.Net.Strace.runStraceFaultCheck; runNetOpsUnitTests),
+  ("LinuxSyscall.Process", do Fuzz.LinuxSyscall.Process.Strace.runChecks; return none, runProcessMutExtra),
+  ("LinuxSyscall.Files", do Fuzz.LinuxSyscall.Files.Strace.runChecks; return none, runFilesMkOpsUnitTests),
   ("PostFork", do PostFork.RuntimeTests.runAll; return none, runPostForkMutExtra)
 ]
 
@@ -1910,32 +1916,51 @@ def main (args : List String) : IO UInt32 := do
     return (← SlotPool.RuntimeTests.probeMain rest)
   | "--compress-probe" :: rest =>
     return (← Compress.RuntimeTests.probeMain rest)
-  | "--timerand-strace-fault-check" :: rest =>
-    return (← LinuxSyscall.TimeRand.RuntimeTests.probeMain rest)
-  | "--passwd-probe" :: rest =>
-    return (← LinuxSyscall.Passwd.RuntimeTests.probeMain rest)
   | "--uuid-probe" :: rest =>
     return (← Uuid.RuntimeTests.probeMain rest)
   | "--time-probe" :: rest =>
     return (← Time.RuntimeTests.probeMain rest)
+  | "--passwd-probe" :: rest =>
+    return (← Fuzz.Passwd.Checks.probeMain rest)
+  | "--sandbox-strace-worker" :: mode :: [] =>
+    Fuzz.LinuxSyscall.Sandbox.Strace.runStraceWorker mode
+    return 0
+  | "--sandbox-strace-fault-check" :: [] =>
+    Fuzz.LinuxSyscall.Sandbox.Strace.runStraceFaultCheck
+    IO.println "SANDBOX_STRACE_FAULT_CHECK_OK"
+    return 0
+  | "--timerand-strace-fault-check" :: rest =>
+    return (← Fuzz.LinuxSyscall.TimeRand.Strace.probeMain rest)
   | "--poll-strace-fault-check" :: rest =>
-    return (← LinuxSyscall.Poll.RuntimeTests.probeMain rest)
+    return (← Fuzz.LinuxSyscall.Poll.Strace.probeMain rest)
   | "--poll-strace-worker" :: rest =>
-    return (← LinuxSyscall.Poll.RuntimeTests.probeMain ("--worker" :: rest))
+    return (← Fuzz.LinuxSyscall.Poll.Strace.probeMain ("--worker" :: rest))
   | "--poll-strace-efd-worker" :: rest =>
-    return (← LinuxSyscall.Poll.RuntimeTests.probeMain ("--efd-worker" :: rest))
+    return (← Fuzz.LinuxSyscall.Poll.Strace.probeMain ("--efd-worker" :: rest))
   | "--net-strace-fault-check" :: rest =>
-    return (← LinuxSyscall.Net.RuntimeTests.probeMain rest)
+    return (← Fuzz.LinuxSyscall.Net.Strace.probeMain rest)
   | "--net-strace-worker" :: rest =>
-    return (← LinuxSyscall.Net.RuntimeTests.probeMain ("--worker" :: rest))
+    return (← Fuzz.LinuxSyscall.Net.Strace.probeMain ("--worker" :: rest))
   | "--suite" :: "process" :: "--ns-worker" :: mode :: arg :: rest =>
-    return (← LinuxSyscall.Fuzz.ProcessFuzz.nsWorkerMain mode arg rest)
+    Fuzz.LinuxSyscall.ProcessEnv.ensureStdio
+    return (← Fuzz.LinuxSyscall.ProcessFuzz.nsWorkerMain mode arg rest)
+  | "--ns-worker" :: mode :: arg :: rest =>
+    Fuzz.LinuxSyscall.ProcessEnv.ensureStdio
+    return (← Fuzz.LinuxSyscall.ProcessFuzz.nsWorkerMain mode arg rest)
   | "--process-strace-worker" :: opName :: errName :: _ =>
-    return (← LinuxSyscall.Process.RuntimeTests.probeMain ["--worker", opName, errName])
+    return (← Fuzz.LinuxSyscall.Process.Strace.probeMain ["--worker", opName, errName])
   | "--files-strace-worker" :: rest =>
-    return (← LinuxSyscall.Files.RuntimeTests.probeMain ("--worker" :: rest))
+    return (← Fuzz.LinuxSyscall.Files.Strace.probeMain ("--worker" :: rest))
   | "--postfork-probe" :: _ =>
     return (← runPostForkSubprocProbe)
+  | ["--suite", "dns", "--steps", stepsStr, "--seed", seedStr] =>
+    match stepsStr.toNat?, seedStr.toNat? with
+    | some n, some s =>
+      Fuzz.Dns.suite.runFuzz { steps := n, seed := UInt64.ofNat s }
+      return 0
+    | _, _ =>
+      IO.eprintln s!"invalid dns subcheck args: {stepsStr} {seedStr}"
+      return 2
   | _ =>
     let flags ← match parseFlags args with
       | .ok f => pure f

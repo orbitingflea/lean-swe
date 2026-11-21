@@ -1,7 +1,7 @@
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Process.Types
 
-namespace LeanSwe.LinuxSyscall.Fuzz.ProcessEnv
+namespace Fuzz.LinuxSyscall.ProcessEnv
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Process
@@ -170,4 +170,4 @@ opaque spawnSigPendingProbe : IO (Except Errno (UInt32 × RawFd))
 @[extern "leanswe_proc_fuzz_finish_sig_probe"]
 opaque finishSigPendingProbe (pid : UInt32) (sock : @& RawFd) : IO UInt64
 
-end LeanSwe.LinuxSyscall.Fuzz.ProcessEnv
+end Fuzz.LinuxSyscall.ProcessEnv

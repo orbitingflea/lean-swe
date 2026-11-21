@@ -4,11 +4,11 @@ import LeanSwe.LinuxSyscall.Net.Model
 import LeanSwe.LinuxSyscall.Net.Interface
 import LeanSwe.LinuxSyscall.Net.Impl
 import LeanSwe.LinuxSyscall.Sandbox.Interface
-import LeanSwe.LinuxSyscall.Fuzz.Rng
-import LeanSwe.LinuxSyscall.Fuzz.SandboxEnv
+import Fuzz.LinuxSyscall.Rng
+import Fuzz.LinuxSyscall.SandboxEnv
 import Std.Data.HashMap
 
-namespace LeanSwe.LinuxSyscall.Fuzz.NetFuzz
+namespace Fuzz.LinuxSyscall.NetFuzz
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Net
@@ -3294,4 +3294,4 @@ def runNetFuzz (totalSteps : Nat) (seed : UInt64 := 0x4e455446555a5a31)
     if ← rootDir.pathExists then
       IO.FS.removeDirAll rootDir
 
-end LeanSwe.LinuxSyscall.Fuzz.NetFuzz
+end Fuzz.LinuxSyscall.NetFuzz

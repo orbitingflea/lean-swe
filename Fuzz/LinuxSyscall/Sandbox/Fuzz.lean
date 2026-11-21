@@ -1,13 +1,13 @@
 import LeanSwe.LinuxSyscall.Sandbox.Interface
 import LeanSwe.LinuxSyscall.Sandbox.Model
-import LeanSwe.LinuxSyscall.Fuzz.Rng
-import LeanSwe.LinuxSyscall.Fuzz.SandboxEnv
+import Fuzz.LinuxSyscall.Rng
+import Fuzz.LinuxSyscall.SandboxEnv
 
-namespace LeanSwe.LinuxSyscall.Fuzz.SandboxFuzz
+namespace Fuzz.LinuxSyscall.SandboxFuzz
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Sandbox
-open LeanSwe.LinuxSyscall.Fuzz
+open Fuzz.LinuxSyscall
 
 private local instance : Repr ByteArray where
   reprPrec b _ := s!"ByteArray[{b.size}]"
@@ -1726,4 +1726,4 @@ def runFuzz (cfg : FuzzConfig := {}) : IO UInt32 := do
     IO.println s!"SANDBOX_FUZZ_OK: syscalls={totalSteps} episodes={episodes} seed={cfg.seed}"
     return 0
 
-end LeanSwe.LinuxSyscall.Fuzz.SandboxFuzz
+end Fuzz.LinuxSyscall.SandboxFuzz

@@ -4,15 +4,13 @@ import LeanSwe.LinuxSyscall.Process.Model
 import LeanSwe.LinuxSyscall.Process.Interface
 import LeanSwe.LinuxSyscall.Process.Impl
 import LeanSwe.LinuxSyscall.Process.SpecTests
-import LeanSwe.LinuxSyscall.Fuzz.ProcessEnv
-import Core.Assumptions
+import Fuzz.LinuxSyscall.ProcessEnv
 
-namespace LeanSwe.LinuxSyscall.Process.RuntimeTests
+namespace Fuzz.LinuxSyscall.Process.Strace
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Process
-open LeanSwe.LinuxSyscall.Fuzz
-open Core
+open Fuzz.LinuxSyscall
 
 private def assertTrue (msg : String) (cond : Bool) : IO Unit := do
   if !cond then
@@ -62,7 +60,7 @@ private def waitUntilReaped (pid : UInt32) : IO WaitResult := do
   throw (IO.userError s!"waitUntilReaped({pid}) timed out")
 
 /-- Verify `pipe2` atomic flags, `EINVAL` on extraBits, and ABA-safe `LeanFdBox` close. -/
-def assume_process_pipe2_atomicFlagsAndFdPair : IO Unit := do
+private def assume_process_pipe2_atomicFlagsAndFdPair : IO Unit := do
   assertErr "pipe2 extraBits=1" (← pipe2 { extraBits := 1 }) Errno.EINVAL
   assertErr "pipe2 extraBits=0x80000000" (← pipe2 { extraBits := 0x80000000 }) Errno.EINVAL
   for clo in [false, true] do
@@ -82,7 +80,7 @@ def assume_process_pipe2_atomicFlagsAndFdPair : IO Unit := do
       assertErr "double close wr" (← ProcessEnv.closeFd wr) Errno.EBADF
 
 /-- Verify `waitpid` `wait4` flag rejection, `INT32_MIN` `ESRCH`, exited/signaled/stopped/continued decoding, and reap. -/
-def assume_process_waitpid_wait4StatusAndReap : IO Unit := do
+private def assume_process_waitpid_wait4StatusAndReap : IO Unit := do
   let _ ← ProcessEnv.setSigchldAutoreap 0
   assertErr "waitpid invalid flag" (← waitpid (-1) { extraBits := 1 }) Errno.EINVAL
   assertErr "waitpid invalid high extraBits" (← waitpid (-1) { extraBits := 0x80000000 }) Errno.EINVAL
@@ -125,7 +123,7 @@ def assume_process_waitpid_wait4StatusAndReap : IO Unit := do
     ProcessEnv.cleanupChild pidRun
 
 /-- Verify `kill` signal encoding, invalid signal `EINVAL`, `SIGZERO` probes, ignored signals, and `-pgid` group routing. -/
-def assume_process_kill_signalAndGroupRouting : IO Unit := do
+private def assume_process_kill_signalAndGroupRouting : IO Unit := do
   let _ ← ProcessEnv.setSigchldAutoreap 0
   let selfPid ← assertOk "getpid" (← getpid)
   assertErr "kill sig 65" (← kill selfPid.toInt32 (.raw 65)) Errno.EINVAL
@@ -149,7 +147,7 @@ def assume_process_kill_signalAndGroupRouting : IO Unit := do
     ProcessEnv.cleanupChild cPid
 
 /-- Verify `pidfd_open` (`__NR = 434`), `EINVAL` validation, non-leader thread `ENOENT`, and zombie/post-reap behavior. -/
-def assume_process_pidfdOpen_nr434AndCloexec : IO Unit := do
+private def assume_process_pidfdOpen_nr434AndCloexec : IO Unit := do
   let _ ← ProcessEnv.setSigchldAutoreap 0
   let selfPid ← assertOk "getpid" (← getpid)
   assertErr "pidfd_open 0" (← pidfd_open 0 {}) Errno.EINVAL
@@ -189,7 +187,7 @@ def assume_process_pidfdOpen_nr434AndCloexec : IO Unit := do
     ProcessEnv.cleanupChild zPid
 
 /-- Verify `pidfd_send_signal` (`__NR = 424`), flag validation, pipe `EBADF`, and `PIDTYPE_PGID` delivery after leader reap/move. -/
-def assume_process_pidfdSendSignal_nr424AndReapRaceGuard : IO Unit := do
+private def assume_process_pidfdSendSignal_nr424AndReapRaceGuard : IO Unit := do
   let _ ← ProcessEnv.setSigchldAutoreap 0
   let (rd, wr) ← assertOk "pipe2 for badFd" (← pipe2 { cloexec := true })
   try
@@ -227,7 +225,7 @@ def assume_process_pidfdSendSignal_nr424AndReapRaceGuard : IO Unit := do
     ProcessEnv.cleanupChild leaderPid
 
 /-- Verify `getpid` returns bounded positive `1 ≤ pid ≤ 0x7fffffff` and stays constant across intervening syscalls. -/
-def assume_process_getpid_positiveAndStable : IO Unit := do
+private def assume_process_getpid_positiveAndStable : IO Unit := do
   let p1 ← assertOk "getpid 1" (← getpid)
   assertTrue s!"getpid positive bounded ({p1})" (1 ≤ p1 && p1 ≤ maxLinuxPid)
   let (rd, wr) ← assertOk "pipe2" (← pipe2 { cloexec := true })
@@ -240,7 +238,7 @@ def assume_process_getpid_positiveAndStable : IO Unit := do
   assertTrue s!"getpid stable ({p1} vs {p2})" (p1 == p2)
 
 /-- Verify `getuid` returns stable real UID across intervening syscalls. -/
-def assume_process_getuid_stableRealUid : IO Unit := do
+private def assume_process_getuid_stableRealUid : IO Unit := do
   let u1 ← assertOk "getuid 1" (← getuid)
   let p ← assertOk "getpid for getuid" (← getpid)
   assertOk "kill self SIGZERO" (← kill p.toInt32 .sigzero)
@@ -258,38 +256,38 @@ private def mkMockProcessOps (e : Errno) : ProcessOps :=
       getuid := return .error e }
 
 /-- Mocked error-coverage test for `pipe2` (`ESRCH`, `ECHILD`, `EBADF`, `EPERM`, `ENFILE`, `EMFILE`, `ENOMEM`, `EINTR`). -/
-def err_pipe2_mocked : IO Unit := do
+private def err_pipe2_mocked : IO Unit := do
   for e in [Errno.ESRCH, Errno.ECHILD, Errno.EBADF, Errno.EPERM, Errno.ENFILE, Errno.EMFILE, Errno.ENOMEM, Errno.EINTR] do
     let r ← (mkMockProcessOps e).pipe2 {}
     assertErr s!"mocked pipe2 {e}" r e
 
 /-- Real `pipe2` `invalidArg` error test (`EINVAL` on unsupported flag bits). -/
-def err_pipe2_invalidArg : IO Unit := do
+private def err_pipe2_invalidArg : IO Unit := do
   assertErr "real pipe2 extraBits=1" (← pipe2 { extraBits := 1 }) Errno.EINVAL
   assertErr "real pipe2 extraBits=0x80000000" (← pipe2 { extraBits := 0x80000000 }) Errno.EINVAL
 
 /-- Real `waitpid` `noSuchProcess` error test (`INT32_MIN` returns `ESRCH`). -/
-def err_waitpid_noSuchProcess : IO Unit := do
+private def err_waitpid_noSuchProcess : IO Unit := do
   assertErr "real waitpid INT32_MIN" (← waitpid Int32.minValue {}) Errno.ESRCH
 
 /-- Real `waitpid` `noChild` error test (`ECHILD` with no matching children). -/
-def err_waitpid_noChild : IO Unit := do
+private def err_waitpid_noChild : IO Unit := do
   let _ ← ProcessEnv.setSigchldAutoreap 0
   assertErr "real waitpid (-1) no children" (← waitpid (-1) {}) Errno.ECHILD
   assertErr "real waitpid nonexistent pid" (← waitpid 999999999 {}) Errno.ECHILD
 
 /-- Mocked error-coverage test for `waitpid` (`EBADF`, `EPERM`, `EINTR`, `ENOMEM`). -/
-def err_waitpid_mocked : IO Unit := do
+private def err_waitpid_mocked : IO Unit := do
   for e in [Errno.EBADF, Errno.EPERM, Errno.EACCES, Errno.EINTR, Errno.ENOMEM] do
     let r ← (mkMockProcessOps e).waitpid (-1) {}
     assertErr s!"mocked waitpid {e}" r e
 
 /-- Real `waitpid` `invalidArg` error test (`EINVAL` on unsupported option bits). -/
-def err_waitpid_invalidArg : IO Unit := do
+private def err_waitpid_invalidArg : IO Unit := do
   assertErr "real waitpid extraBits=1" (← waitpid (-1) { extraBits := 1 }) Errno.EINVAL
 
 /-- Real `kill` `noSuchProcess` error test (`ESRCH` on `INT32_MIN` and reaped child). -/
-def err_kill_noSuchProcess : IO Unit := do
+private def err_kill_noSuchProcess : IO Unit := do
   let _ ← ProcessEnv.setSigchldAutoreap 0
   assertErr "real kill INT32_MIN" (← kill Int32.minValue .sigzero) Errno.ESRCH
   let ((pid, _), _) ← assertOk "spawn zombie" (← ProcessEnv.spawnZombie (-1) false 0 false)
@@ -300,13 +298,13 @@ def err_kill_noSuchProcess : IO Unit := do
     ProcessEnv.cleanupChild pid
 
 /-- Mocked error-coverage test for `kill` (`ECHILD`, `EBADF`, `EINTR`, `ENOMEM`). -/
-def err_kill_mocked : IO Unit := do
+private def err_kill_mocked : IO Unit := do
   for e in [Errno.ECHILD, Errno.EBADF, Errno.EINTR, Errno.ENOMEM] do
     let r ← (mkMockProcessOps e).kill 1 .sigzero
     assertErr s!"mocked kill {e}" r e
 
 /-- Real `kill` `invalidArg` error test (`EINVAL` on out-of-range and NPTL-reserved `32`/`33` signals). -/
-def err_kill_invalidArg : IO Unit := do
+private def err_kill_invalidArg : IO Unit := do
   let selfPid ← assertOk "getpid" (← getpid)
   assertErr "real kill sig -1" (← kill selfPid.toInt32 (.raw (-1))) Errno.EINVAL
   assertErr "real kill sig 65" (← kill selfPid.toInt32 (.raw 65)) Errno.EINVAL
@@ -327,7 +325,7 @@ private def isSingleUidUserns : IO Bool := do
     return false
 
 /-- Real `kill` `permissionDenied` error test (`EPERM` on privileged init/kthreadd or userns `nobody`). -/
-def err_kill_permissionDenied : IO Unit := do
+private def err_kill_permissionDenied : IO Unit := do
   let self ← assertOk "getpid" (← getpid)
   for target in [(1 : Int32), (2 : Int32)] do
     if target != self.toInt32 then
@@ -349,7 +347,7 @@ def err_kill_permissionDenied : IO Unit := do
   throw (IO.userError "err_kill_permissionDenied: could not observe EPERM/EACCES on host or userns")
 
 /-- Real `pidfd_open` `noSuchProcess` error test (`ENOENT` on non-leader thread and `ESRCH` on reaped child). -/
-def err_pidfdOpen_noSuchProcess : IO Unit := do
+private def err_pidfdOpen_noSuchProcess : IO Unit := do
   let _ ← ProcessEnv.setSigchldAutoreap 0
   let (tid, (ctlWr, th)) ← assertOk "spawnThread" (← ProcessEnv.spawnThread)
   try
@@ -364,19 +362,19 @@ def err_pidfdOpen_noSuchProcess : IO Unit := do
     ProcessEnv.cleanupChild pid
 
 /-- Mocked error-coverage test for `pidfd_open` (`ECHILD`, `EBADF`, `EPERM`, `EMFILE`, `ENFILE`, `ENOMEM`). -/
-def err_pidfdOpen_mocked : IO Unit := do
+private def err_pidfdOpen_mocked : IO Unit := do
   for e in [Errno.ECHILD, Errno.EBADF, Errno.EPERM, Errno.EMFILE, Errno.ENFILE, Errno.ENOMEM] do
     let r ← (mkMockProcessOps e).pidfd_open 1 {}
     assertErr s!"mocked pidfd_open {e}" r e
 
 /-- Real `pidfd_open` `invalidArg` error test (`pid = 0` and unsupported flag bits). -/
-def err_pidfdOpen_invalidArg : IO Unit := do
+private def err_pidfdOpen_invalidArg : IO Unit := do
   let selfPid ← assertOk "getpid" (← getpid)
   assertErr "real pidfd_open 0" (← pidfd_open 0 {}) Errno.EINVAL
   assertErr "real pidfd_open extraBits=1" (← pidfd_open selfPid { extraBits := 1 }) Errno.EINVAL
 
 /-- Real `pidfd_send_signal` `noSuchProcess` error test (`ESRCH` after reap). -/
-def err_pidfdSendSignal_noSuchProcess : IO Unit := do
+private def err_pidfdSendSignal_noSuchProcess : IO Unit := do
   let _ ← ProcessEnv.setSigchldAutoreap 0
   let ((pid, _), _) ← assertOk "spawn zombie" (← ProcessEnv.spawnZombie (-1) false 1 false)
   try
@@ -390,7 +388,7 @@ def err_pidfdSendSignal_noSuchProcess : IO Unit := do
     ProcessEnv.cleanupChild pid
 
 /-- Mocked error-coverage test for `pidfd_send_signal` (`ECHILD`, `EINTR`, `ENOMEM`). -/
-def err_pidfdSendSignal_mocked : IO Unit := do
+private def err_pidfdSendSignal_mocked : IO Unit := do
   let (rd, wr) ← assertOk "pipe2 dummy fd" (← pipe2 { cloexec := true })
   try
     for e in [Errno.ECHILD, Errno.EINTR, Errno.ENOMEM] do
@@ -401,7 +399,7 @@ def err_pidfdSendSignal_mocked : IO Unit := do
     closeQuiet wr
 
 /-- Real `pidfd_send_signal` `badFd` error test (closed descriptor and non-pidfd pipe). -/
-def err_pidfdSendSignal_badFd : IO Unit := do
+private def err_pidfdSendSignal_badFd : IO Unit := do
   let selfPid ← assertOk "getpid" (← getpid)
   let pfd ← assertOk "pidfd_open self" (← pidfd_open selfPid {})
   closeQuiet pfd
@@ -415,7 +413,7 @@ def err_pidfdSendSignal_badFd : IO Unit := do
     closeQuiet wr
 
 /-- Real `pidfd_send_signal` `invalidArg` error test (unsupported flag bits, conflicting scope bits, invalid and NPTL-reserved `32`/`33` signals). -/
-def err_pidfdSendSignal_invalidArg : IO Unit := do
+private def err_pidfdSendSignal_invalidArg : IO Unit := do
   let selfPid ← assertOk "getpid" (← getpid)
   let pfd ← assertOk "pidfd_open self" (← pidfd_open selfPid {})
   try
@@ -429,7 +427,7 @@ def err_pidfdSendSignal_invalidArg : IO Unit := do
     closeQuiet pfd
 
 /-- Real `pidfd_send_signal` `permissionDenied` error test (`EPERM` targeting PID 1/2). -/
-def err_pidfdSendSignal_permissionDenied : IO Unit := do
+private def err_pidfdSendSignal_permissionDenied : IO Unit := do
   let self ← assertOk "getpid" (← getpid)
   for target in [(1 : UInt32), (2 : UInt32)] do
     if target != self then
@@ -453,13 +451,13 @@ def err_pidfdSendSignal_permissionDenied : IO Unit := do
   throw (IO.userError "err_pidfdSendSignal_permissionDenied: could not observe EPERM/EACCES")
 
 /-- Mocked error-coverage test for `getpid` (`ESRCH`, `ECHILD`, `EBADF`, `EINVAL`, `ENOMEM`, `EINTR`). -/
-def err_getpid_mocked : IO Unit := do
+private def err_getpid_mocked : IO Unit := do
   for e in [Errno.ESRCH, Errno.ECHILD, Errno.EBADF, Errno.EINVAL, Errno.ENOMEM, Errno.EINTR] do
     let r ← (mkMockProcessOps e).getpid
     assertErr s!"mocked getpid {e}" r e
 
 /-- Real `seccomp` `SECCOMP_RET_ERRNO | EPERM` error-coverage test for `getpid`. -/
-def err_getpid_seccomp : IO Unit := do
+private def err_getpid_seccomp : IO Unit := do
   let selfPid ← assertOk "getpid baseline" (← getpid)
   assertTrue "getpid positive" (selfPid > 0)
   let exe ← resolveSelfExe
@@ -470,13 +468,13 @@ def err_getpid_seccomp : IO Unit := do
   assertTrue s!"seccomp getpid worker failed (exit={out.exitCode}): {out.stderr}" (out.exitCode == 0)
 
 /-- Mocked error-coverage test for `getuid` (`ESRCH`, `ECHILD`, `EBADF`, `EINVAL`, `ENOMEM`, `EINTR`). -/
-def err_getuid_mocked : IO Unit := do
+private def err_getuid_mocked : IO Unit := do
   for e in [Errno.ESRCH, Errno.ECHILD, Errno.EBADF, Errno.EINVAL, Errno.ENOMEM, Errno.EINTR] do
     let r ← (mkMockProcessOps e).getuid
     assertErr s!"mocked getuid {e}" r e
 
 /-- Real `seccomp` `SECCOMP_RET_ERRNO | EPERM` error-coverage test for `getuid`. -/
-def err_getuid_seccomp : IO Unit := do
+private def err_getuid_seccomp : IO Unit := do
   let u1 ← assertOk "getuid baseline 1" (← getuid)
   let u2 ← assertOk "getuid baseline 2" (← getuid)
   assertTrue "getuid stable" (u1 == u2)
@@ -486,43 +484,6 @@ def err_getuid_seccomp : IO Unit := do
     args := #["--process-strace-worker", "seccomp-getuid", "EPERM"]
   }
   assertTrue s!"seccomp getuid worker failed (exit={out.exitCode}): {out.stderr}" (out.exitCode == 0)
-
-/-- Registered trust-boundary assumptions covering all 7 `LeanSwe.LinuxSyscall.Process` obligations. -/
-def registeredAssumptions : Array Core.RegisteredAssumption := #[
-  ⟨"LeanSwe.LinuxSyscall.Process.assume_process_pipe2_atomicFlagsAndFdPair", assume_process_pipe2_atomicFlagsAndFdPair⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.assume_process_waitpid_wait4StatusAndReap", assume_process_waitpid_wait4StatusAndReap⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.assume_process_kill_signalAndGroupRouting", assume_process_kill_signalAndGroupRouting⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.assume_process_pidfdOpen_nr434AndCloexec", assume_process_pidfdOpen_nr434AndCloexec⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.assume_process_pidfdSendSignal_nr424AndReapRaceGuard", assume_process_pidfdSendSignal_nr424AndReapRaceGuard⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.assume_process_getpid_positiveAndStable", assume_process_getpid_positiveAndStable⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.assume_process_getuid_stableRealUid", assume_process_getuid_stableRealUid⟩
-]
-
-/-- Registered error-coverage tests covering all 42 `(request × ProcessErrorKind)` obligations. -/
-def registeredErrorTests : Array Core.RegisteredErrorTest := #[
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pipe2_mocked", .mocked, err_pipe2_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pipe2_invalidArg", .real, err_pipe2_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_waitpid_noSuchProcess", .real, err_waitpid_noSuchProcess⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_waitpid_noChild", .real, err_waitpid_noChild⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_waitpid_mocked", .mocked, err_waitpid_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_waitpid_invalidArg", .real, err_waitpid_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_kill_noSuchProcess", .real, err_kill_noSuchProcess⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_kill_mocked", .mocked, err_kill_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_kill_invalidArg", .real, err_kill_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_kill_permissionDenied", .real, err_kill_permissionDenied⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdOpen_noSuchProcess", .real, err_pidfdOpen_noSuchProcess⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdOpen_mocked", .mocked, err_pidfdOpen_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdOpen_invalidArg", .real, err_pidfdOpen_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdSendSignal_noSuchProcess", .real, err_pidfdSendSignal_noSuchProcess⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdSendSignal_mocked", .mocked, err_pidfdSendSignal_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdSendSignal_badFd", .real, err_pidfdSendSignal_badFd⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdSendSignal_invalidArg", .real, err_pidfdSendSignal_invalidArg⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdSendSignal_permissionDenied", .real, err_pidfdSendSignal_permissionDenied⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getpid_mocked", .mocked, err_getpid_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getpid_seccomp", .real, err_getpid_seccomp⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getuid_mocked", .mocked, err_getuid_mocked⟩,
-  ⟨"LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getuid_seccomp", .real, err_getuid_seccomp⟩
-]
 
 private def assertModelOk {α : Type} [BEq α] (label : String)
     (res : Except Errno α × ProcessSysState) (expected : α) : IO Unit :=
@@ -982,12 +943,38 @@ def runEdgeCaseReproducers : IO Unit := do
   assertTrue "reapThreadGroup prunes shadowed duplicate PID entries"
     (assocGet sShadowReaped.procs 2300).isNone
 
-/-- Run all registered assumptions, error-coverage tests, and physical edge-case reproducers. -/
-def runAll : IO Unit := do
-  Core.runRegisteredAssumptions registeredAssumptions
-  Core.runRegisteredErrorTests registeredErrorTests
+/-- Run all `Process` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke` and `lean-swe-mut-test`). -/
+def runChecks : IO Unit := do
+  assume_process_pipe2_atomicFlagsAndFdPair
+  assume_process_waitpid_wait4StatusAndReap
+  assume_process_kill_signalAndGroupRouting
+  assume_process_pidfdOpen_nr434AndCloexec
+  assume_process_pidfdSendSignal_nr424AndReapRaceGuard
+  assume_process_getpid_positiveAndStable
+  assume_process_getuid_stableRealUid
+  err_pipe2_mocked
+  err_pipe2_invalidArg
+  err_waitpid_noSuchProcess
+  err_waitpid_noChild
+  err_waitpid_mocked
+  err_waitpid_invalidArg
+  err_kill_noSuchProcess
+  err_kill_mocked
+  err_kill_invalidArg
+  err_kill_permissionDenied
+  err_pidfdOpen_noSuchProcess
+  err_pidfdOpen_mocked
+  err_pidfdOpen_invalidArg
+  err_pidfdSendSignal_noSuchProcess
+  err_pidfdSendSignal_mocked
+  err_pidfdSendSignal_badFd
+  err_pidfdSendSignal_invalidArg
+  err_pidfdSendSignal_permissionDenied
+  err_getpid_mocked
+  err_getpid_seccomp
+  err_getuid_mocked
+  err_getuid_seccomp
   runEdgeCaseReproducers
-  IO.println "PASS: LeanSwe.LinuxSyscall.Process runtime tests"
 
 private def checkWorkerErr (opName : String) (s0 : ProcessSysState) (req : ProcessReq) (expected : Errno)
     {α : Type} (res : Except Errno α) : IO UInt32 := do
@@ -1165,7 +1152,7 @@ def runStraceFaultCheck : IO Unit := do
       if out.exitCode != 0 then
         throw (IO.userError s!"strace fault-injection failed for {sysName}/{errName} (when={whenIdx}, exit={out.exitCode}): {out.stderr}")
 
-/-- Handle `--process-strace-fault-check` and `--process-strace-worker` subcommands for `Tests/Main.lean`. -/
+/-- Handle `--process-strace-fault-check` and `--process-strace-worker` subcommands dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`) and `lean-swe-mut-test`. -/
 def probeMain (args : List String) : IO UInt32 := do
   match args with
   | [] =>
@@ -1178,4 +1165,4 @@ def probeMain (args : List String) : IO UInt32 := do
     IO.eprintln s!"unknown process strace args: {args}"
     return 1
 
-end LeanSwe.LinuxSyscall.Process.RuntimeTests
+end Fuzz.LinuxSyscall.Process.Strace

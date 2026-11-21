@@ -92,6 +92,10 @@ class FuzzChangedUnitTests(unittest.TestCase):
         by_name = {s.name: s for s in manifest.suites}
         self.assertIn("selftest", by_name); self.assertIn("float", by_name); self.assertIn("cmdline", by_name)
         self.assertIn("envvars", by_name); self.assertIn("cryptohash", by_name); self.assertIn("dns", by_name)
+        for ws, sub in (("sandbox", "Sandbox"), ("timerand", "TimeRand"), ("files", "Files"), ("process", "Process"), ("poll", "Poll"), ("net", "Net")):
+            self.assertIn(ws, by_name)
+            self.assertIn(f"Fuzz/LinuxSyscall/{sub}/", by_name[ws].paths)
+            self.assertIn(f"LeanSwe/LinuxSyscall/{sub}/", by_name[ws].paths)
         self.assertIn("Core/", manifest.common_paths)
         self.assertIn("passwd", by_name); self.assertIn("sqlite", by_name)
         self.assertIn("LeanSwe/LinuxSyscall/Passwd/", by_name["passwd"].paths)
@@ -102,9 +106,12 @@ class FuzzChangedUnitTests(unittest.TestCase):
         self.assertIn("LeanSwe/LinuxSyscall/c/fd_box.h", by_name["postfork"].paths)
         self.assertIn("Fuzz/SelfTest.lean", by_name["selftest"].paths)
         self.assertEqual(by_name["sqlite"].paths, ("LeanSwe/Sqlite/", "Fuzz/Sqlite/"))
+        self.assertIn("LeanSwe/LinuxSyscall/Sandbox/", by_name["files"].paths); self.assertIn("LeanSwe/LinuxSyscall/c/sandbox_shim.c", by_name["files"].paths)
+        audit = (REPO_ROOT / ".github" / "workflows" / "audit.yml").read_text(encoding="utf-8")
         daily = (REPO_ROOT / ".github" / "workflows" / "audit-daily.yml").read_text(encoding="utf-8")
+        self.assertNotIn("leanswe-world-fuzz", audit); self.assertNotIn("leanswe-world-fuzz", daily)
         self.assertIn("scripts/test_fuzz_changed.py", daily); self.assertIn("--check-manifest", daily)
-        self.assertIn("leanswe-fuzz --all ", daily); self.assertNotIn("leanswe-fuzz --suite float ", daily)
+        self.assertIn("leanswe-fuzz --all --exclude sandbox,timerand,files,process,poll,net ", daily); self.assertNotIn("leanswe-fuzz --suite float ", daily)
 
 class FuzzChangedGitIntegrationTests(unittest.TestCase):
     """End-to-end git history, symlink, submodule, locale, drift, and workflow tests."""

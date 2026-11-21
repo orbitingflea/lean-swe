@@ -4,6 +4,7 @@ import Fuzz.Common.Shrink
 import Fuzz.Common.Suite
 import Fuzz.CmdLine.Gen
 import Fuzz.CmdLine.Subproc
+import Fuzz.LinuxSyscall.Env
 import LeanSwe.CmdLine.Interface
 import LeanSwe.CmdLine.Model
 import LeanSwe.EnvVars.Raw.Interface
@@ -1003,16 +1004,17 @@ private def runEpisode (ops : Array CmdLineFuzzOp) (tracker : CoverageTracker) :
       stderr := { backing := .nullDev }
     }
   } : EpisodeCtx)
-  let mut t := tracker
-  let mut priorOutErr := false
   try
-    for op in ops do
-      let cur ← ctxRef.get
-      let (c', t', p') ← runSingleOp cur t priorOutErr op
-      ctxRef.set c'
-      t := t'
-      priorOutErr := p'
-    return t
+    Fuzz.LinuxSyscall.Env.withRawStdio do
+      let mut t := tracker
+      let mut priorOutErr := false
+      for op in ops do
+        let cur ← ctxRef.get
+        let (c', t', p') ← runSingleOp cur t priorOutErr op
+        ctxRef.set c'
+        t := t'
+        priorOutErr := p'
+      return t
   finally
     disarmSigalrmRaw 0
     let finalCtx ← ctxRef.get

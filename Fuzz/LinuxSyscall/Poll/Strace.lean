@@ -4,15 +4,13 @@ import LeanSwe.LinuxSyscall.Poll.Model
 import LeanSwe.LinuxSyscall.Poll.Interface
 import LeanSwe.LinuxSyscall.Poll.Impl
 import LeanSwe.LinuxSyscall.Poll.SpecTests
-import LeanSwe.LinuxSyscall.Fuzz.SandboxEnv
-import Core.Assumptions
+import Fuzz.LinuxSyscall.SandboxEnv
 
-namespace LeanSwe.LinuxSyscall.Poll.RuntimeTests
+namespace Fuzz.LinuxSyscall.Poll.Strace
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Poll
-open LeanSwe.LinuxSyscall.Fuzz
-open Core
+open Fuzz.LinuxSyscall
 
 @[extern "leanswe_poll_close_fd"]
 private opaque rawPollClose : @& RawFd → IO (Except Errno Unit)
@@ -90,7 +88,7 @@ private def straceInjectSpec (injectExpr workerFlag errName : String) : IO Unit 
     throw (IO.userError s!"strace {injectExpr} failed (exit={out.exitCode}): {out.stderr}")
 
 /-- Verify `ppoll(2)` FD pinning, `Timespec` encoding, `PollEvents` roundtrip, `POLLERR`/`POLLHUP`, and duplicate FD handling. -/
-def assume_poll_ppoll_fdPinTimespecAndEventsAbi : IO Unit := do
+private def assume_poll_ppoll_fdPinTimespecAndEventsAbi : IO Unit := do
   let ops := defaultOps
   let rEmpty ← ops.ppoll #[] (some { sec := 0, nsec := 0 })
   let emptyRev ← assertOk "ppoll empty" rEmpty
@@ -150,7 +148,7 @@ def assume_poll_ppoll_fdPinTimespecAndEventsAbi : IO Unit := do
   assertTrue "O_PATH POLLNVAL" (revNval == #[{ pollnval := true }])
 
 /-- Verify `eventfd2(2)` `initval` and `EFD_NONBLOCK`/`EFD_CLOEXEC`/`EFD_SEMAPHORE` ABI plus counter saturation. -/
-def assume_poll_eventfd2_flagsAndInitvalAbi : IO Unit := do
+private def assume_poll_eventfd2_flagsAndInitvalAbi : IO Unit := do
   let ops := defaultOps
   let eNorm ← assertOk "eventfd2 normal" (← ops.eventfd2 2 { nonblock := true, cloexec := true, semaphore := false })
   let eSem ← assertOk "eventfd2 sem" (← ops.eventfd2 2 { nonblock := true, cloexec := false, semaphore := true })
@@ -195,7 +193,7 @@ def assume_poll_eventfd2_flagsAndInitvalAbi : IO Unit := do
   assertErr "double close EBADF" (← rawPollClose cfd) Errno.EBADF
 
 /-- Real `ppoll` `.badFd` test (`EBADF` on closed `LeanFdBox` at index 0 and index 1). -/
-def err_ppoll_badFd : IO Unit := do
+private def err_ppoll_badFd : IO Unit := do
   let live ← assertOk "eventfd2 live" (← defaultOps.eventfd2 0 { nonblock := true, cloexec := true })
   let cfd ← closedEventFd
   try
@@ -205,7 +203,7 @@ def err_ppoll_badFd : IO Unit := do
     safeClose live
 
 /-- Real `ppoll` `.invalidArg` test (`EINVAL` on negative `tv_sec`, out-of-range `tv_nsec`, and `MAX_POLL_NFDS` plus wrapper `EIO` length guard). -/
-def err_ppoll_invalidArg : IO Unit := do
+private def err_ppoll_invalidArg : IO Unit := do
   let fd ← assertOk "eventfd2" (← defaultOps.eventfd2 0 { nonblock := true, cloexec := true })
   try
     assertErr "ppoll sec=-1" (← defaultOps.ppoll #[(fd, { pollin := true })] (some { sec := -1, nsec := 0 })) Errno.EINVAL
@@ -224,18 +222,18 @@ def err_ppoll_invalidArg : IO Unit := do
     safeClose fd
 
 /-- Real `ppoll` `.interrupted` test (`EINTR` via live `strace` fault injection). -/
-def err_ppoll_interrupted : IO Unit := do
+private def err_ppoll_interrupted : IO Unit := do
   let _ ← assertOk "ppoll sanity" (← defaultOps.ppoll #[] (some {}))
   straceInjectSpec "ppoll:error=EINTR" "--poll-strace-worker" "EINTR"
 
 /-- Mocked plus `strace` `ppoll` `.transientOrResource` test (`ENOMEM`). -/
-def err_ppoll_transient : IO Unit := do
+private def err_ppoll_transient : IO Unit := do
   runMockPollError "ppoll transient" Errno.ENOMEM .transientOrResource fun ops =>
     ops.ppoll #[] (some {}) >>= fun r => pure (r.map fun _ => ())
   straceInjectSpec "ppoll:error=ENOMEM" "--poll-strace-worker" "ENOMEM"
 
 /-- Mocked `eventfd2` non-transient error paths (`EBADF`, `EINVAL`, `EINTR`). -/
-def err_eventfd2_mocked : IO Unit := do
+private def err_eventfd2_mocked : IO Unit := do
   runMockPollError "eventfd2 EBADF" Errno.EBADF .badFd fun ops =>
     ops.eventfd2 0 {} >>= fun r => pure (r.map fun _ => ())
   runMockPollError "eventfd2 EINVAL" Errno.EINVAL .invalidArg fun ops =>
@@ -244,32 +242,10 @@ def err_eventfd2_mocked : IO Unit := do
     ops.eventfd2 0 {} >>= fun r => pure (r.map fun _ => ())
 
 /-- Mocked plus `strace` `eventfd2` `.transientOrResource` test (`ENFILE`). -/
-def err_eventfd2_transient : IO Unit := do
+private def err_eventfd2_transient : IO Unit := do
   runMockPollError "eventfd2 transient" Errno.ENFILE .transientOrResource fun ops =>
     ops.eventfd2 0 {} >>= fun r => pure (r.map fun _ => ())
   straceInjectSpec "eventfd2:error=ENFILE:when=2+" "--poll-strace-efd-worker" "ENFILE"
-
-/-- Registered `AssumptionObligation` runtime checks matching `Poll/SpecTests.lean` 1-to-1. -/
-def registeredAssumptions : Array RegisteredAssumption :=
-  #[ { specName := "LeanSwe.LinuxSyscall.Poll.assume_poll_ppoll_fdPinTimespecAndEventsAbi"
-       run := assume_poll_ppoll_fdPinTimespecAndEventsAbi }
-   , { specName := "LeanSwe.LinuxSyscall.Poll.assume_poll_eventfd2_flagsAndInitvalAbi"
-       run := assume_poll_eventfd2_flagsAndInitvalAbi } ]
-
-/-- Registered `(request × PollErrorKind)` error-coverage runtime tests matching `Poll/SpecTests.lean` 1-to-1. -/
-def registeredErrorTests : Array RegisteredErrorTest :=
-  #[ { testName := "LeanSwe.LinuxSyscall.Poll.RuntimeTests.err_ppoll_badFd"
-       mode := .real, run := err_ppoll_badFd }
-   , { testName := "LeanSwe.LinuxSyscall.Poll.RuntimeTests.err_ppoll_invalidArg"
-       mode := .real, run := err_ppoll_invalidArg }
-   , { testName := "LeanSwe.LinuxSyscall.Poll.RuntimeTests.err_ppoll_interrupted"
-       mode := .real, run := err_ppoll_interrupted }
-   , { testName := "LeanSwe.LinuxSyscall.Poll.RuntimeTests.err_ppoll_transient"
-       mode := .mocked, run := err_ppoll_transient }
-   , { testName := "LeanSwe.LinuxSyscall.Poll.RuntimeTests.err_eventfd2_mocked"
-       mode := .mocked, run := err_eventfd2_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Poll.RuntimeTests.err_eventfd2_transient"
-       mode := .mocked, run := err_eventfd2_transient } ]
 
 @[noinline] private def allocPipeReadDroppingWrite : IO RawFd := do
   let (pr, _pw) ← assertOk "finalizer open pipe" (← rawOpenPipe)
@@ -364,12 +340,17 @@ private def runFdBoxAndErrorKindTests : IO Unit := do
   for (code, wantKind) in errPairs do
     assertTrue s!"PollErrorKind.ofErrno {code}" (PollErrorKind.ofErrno code == wantKind)
 
-/-- Run all registered assumptions and error-coverage tests for `LeanSwe.LinuxSyscall.Poll`. -/
-def runAll : IO Unit := do
-  Core.runRegisteredAssumptions registeredAssumptions
-  Core.runRegisteredErrorTests registeredErrorTests
+/-- Run all `Poll` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke` and `lean-swe-mut-test`). -/
+def runChecks : IO Unit := do
+  assume_poll_ppoll_fdPinTimespecAndEventsAbi
+  assume_poll_eventfd2_flagsAndInitvalAbi
+  err_ppoll_badFd
+  err_ppoll_invalidArg
+  err_ppoll_interrupted
+  err_ppoll_transient
+  err_eventfd2_mocked
+  err_eventfd2_transient
   runFdBoxAndErrorKindTests
-  IO.println "PASS: LeanSwe.LinuxSyscall.Poll runtime tests"
 
 private def parseInjectedErrno (s : String) : Errno :=
   match s with
@@ -456,7 +437,7 @@ def runStraceFaultCheck : IO Unit := do
     straceInjectSpec s!"ppoll:error={errName}" "--poll-strace-worker" errName
     straceInjectSpec s!"eventfd2:error={errName}:when=2+" "--poll-strace-efd-worker" errName
 
-/-- Handle `--poll-strace-fault-check` and worker subcommands for `Tests/Main.lean` and `Tests/MutateDriver.lean`. -/
+/-- Handle `--poll-strace-fault-check` and worker subcommands dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`) and `lean-swe-mut-test`. -/
 def probeMain (args : List String) : IO UInt32 := do
   match args with
   | [] =>
@@ -469,4 +450,4 @@ def probeMain (args : List String) : IO UInt32 := do
     IO.eprintln s!"unknown poll strace args: {args}"
     return 1
 
-end LeanSwe.LinuxSyscall.Poll.RuntimeTests
+end Fuzz.LinuxSyscall.Poll.Strace
