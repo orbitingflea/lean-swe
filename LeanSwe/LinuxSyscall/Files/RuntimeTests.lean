@@ -4437,6 +4437,247 @@ private def runUnboxedDirentAndGetcwdChecks : IO Unit := do
   assertTrue "parseDirents64Strict round-trips mkTypedDirentStub"
     (parseDirents64Strict multiStub == some [(dotBytes, 4), (dotDotBytes, 4), ("leaf".toUTF8, 10)])
 
+private def runProtectedSymlinkWalkReproducers : IO Unit := do
+  let mkState (protSym : Bool) (isRo : Bool := false) : FilesState :=
+    FilesState.withSeededTree {
+      cwdPath := "/rt_psym".toUTF8
+      cwdMountId := 4
+      mountProfiles := [(4, { readOnly := isRo, supportsSeals := false })]
+      protectedRegular := 2
+      protectedFifos := 1
+      protectedSymlinks := protSym
+      inInitUserNs := false
+      cwdEntries := [
+        { name := "sub".toUTF8, kind := .dir, mode := 0o755, modeExact := true },
+        { relDir := ["sub".toUTF8], name := "a".toUTF8, kind := .reg, mode := 0o644, modeExact := true,
+          bytes := "init-a".toUTF8 },
+        { name := "s_unmap".toUTF8, kind := .dir, mode := 0o1777, modeExact := true,
+          ownedByUid := false, inGroup := false, ownerUid? := some 65534,
+          uidMapped := false, gidMapped := false },
+        { relDir := ["s_unmap".toUTF8], name := "sym_other".toUTF8, kind := .symlink, mode := 0o777,
+          symlinkTarget := "../sub/a".toUTF8,
+          ownedByUid := false, inGroup := false, ownerUid? := some 65534,
+          uidMapped := false, gidMapped := false },
+        { relDir := ["s_unmap".toUTF8], name := "sym_dir".toUTF8, kind := .symlink, mode := 0o777,
+          symlinkTarget := "../sub".toUTF8,
+          ownedByUid := false, inGroup := false, ownerUid? := some 65534,
+          uidMapped := false, gidMapped := false },
+        { relDir := ["s_unmap".toUTF8], name := "sym_miss".toUTF8, kind := .symlink, mode := 0o777,
+          symlinkTarget := "../missing".toUTF8,
+          ownedByUid := false, inGroup := false, ownerUid? := some 65534,
+          uidMapped := false, gidMapped := false },
+        { relDir := ["s_unmap".toUTF8], name := "sym_abs".toUTF8, kind := .symlink, mode := 0o777,
+          symlinkTarget := "/rt_psym/sub/a".toUTF8,
+          ownedByUid := false, inGroup := false, ownerUid? := some 65534,
+          uidMapped := false, gidMapped := false },
+        { relDir := ["s_unmap".toUTF8], name := "sym_owned".toUTF8, kind := .symlink, mode := 0o777,
+          symlinkTarget := "sym_other".toUTF8,
+          ownedByUid := true, inGroup := true, ownerUid? := some 0,
+          uidMapped := true, gidMapped := true },
+        { name := "s1777".toUTF8, kind := .dir, mode := 0o1777, modeExact := true,
+          ownedByUid := false, inGroup := false, ownerUid? := some 65534,
+          uidMapped := false, gidMapped := false },
+        { relDir := ["s1777".toUTF8], name := "sym_other".toUTF8, kind := .symlink, mode := 0o777,
+          symlinkTarget := "../sub/a".toUTF8,
+          ownedByUid := false, inGroup := false, ownerUid? := some 1,
+          uidMapped := true, gidMapped := true },
+        { name := "s_tag".toUTF8, kind := .dir, mode := 0o1777, modeExact := true,
+          ownedByUid := false, inGroup := false, ownerUid? := some 65534,
+          uidMapped := false, gidMapped := false, ownerUidTag? := some 2 },
+        { relDir := ["s_tag".toUTF8], name := "sym_same_tag".toUTF8, kind := .symlink, mode := 0o777,
+          symlinkTarget := "../sub/a".toUTF8,
+          ownedByUid := false, inGroup := false, ownerUid? := some 65534,
+          uidMapped := false, gidMapped := false, ownerUidTag? := some 2 },
+        { relDir := ["s_tag".toUTF8], name := "sym_diff_tag".toUTF8, kind := .symlink, mode := 0o777,
+          symlinkTarget := "../sub/a".toUTF8,
+          ownedByUid := false, inGroup := false, ownerUid? := some 65534,
+          uidMapped := false, gidMapped := false, ownerUidTag? := some 3 }
+      ]
+    }
+  let s0 := mkState true
+  let s1 ← stepModelCheck "asym symlink a -> s_unmap/sym_other" s0
+    (.symlinkat "s_unmap/sym_other".toUTF8 none "a".toUTF8) .unit
+  let _ ← stepModelCheck "asym exact shrunk faccessat(a/l, F_OK) -> ENOTDIR" s1
+    (.faccessat none "a/l".toUTF8 {} {}) (.err Errno.ENOTDIR)
+  assertTrue "asym faccessat(a/l, F_OK) rejects EACCES"
+    ((allowedStep s1 (.faccessat none "a/l".toUTF8 {} {}) (.err Errno.EACCES)).isNone)
+  let _ ← stepModelCheck "asym faccessat(a/l, W_OK, AT_EACCESS) -> ENOTDIR" s1
+    (.faccessat none "a/l".toUTF8 { write := true } { eaccess := true }) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "asym faccessat(a/l, R_OK) -> ENOTDIR" s1
+    (.faccessat none "a/l".toUTF8 { read := true } {}) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "asym faccessat(a/l, X_OK) -> ENOTDIR" s1
+    (.faccessat none "a/l".toUTF8 { exec := true } {}) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "asym faccessat(a/l, RWX, EACCESS|NOFOLLOW) -> ENOTDIR" s1
+    (.faccessat none "a/l".toUTF8 { read := true, write := true, exec := true }
+      { symlinkNofollow := true, eaccess := true }) (.err Errno.ENOTDIR)
+
+  let s2 ← stepModelCheck "asym symlink b -> s1777/sym_other" s1
+    (.symlinkat "s1777/sym_other".toUTF8 none "b".toUTF8) .unit
+  let s3 ← stepModelCheck "asym symlink ad -> s_unmap/sym_dir" s2
+    (.symlinkat "s_unmap/sym_dir".toUTF8 none "ad".toUTF8) .unit
+  let s4 ← stepModelCheck "asym symlink at -> s_unmap/sym_other/" s3
+    (.symlinkat "s_unmap/sym_other/".toUTF8 none "at".toUTF8) .unit
+  let s5 ← stepModelCheck "asym symlink al -> s_unmap/sym_other/l" s4
+    (.symlinkat "s_unmap/sym_other/l".toUTF8 none "al".toUTF8) .unit
+  let s6 ← stepModelCheck "asym symlink am -> s_unmap/sym_miss" s5
+    (.symlinkat "s_unmap/sym_miss".toUTF8 none "am".toUTF8) .unit
+
+  let _ ← stepModelCheck "trailing a -> EACCES" s6
+    (.faccessat none "a".toUTF8 {} {}) (.err Errno.EACCES)
+  assertTrue "trailing a rejects unit"
+    ((allowedStep s6 (.faccessat none "a".toUTF8 {} {}) .unit).isNone)
+  let _ ← stepModelCheck "trailing a/ NOFOLLOW -> EACCES" s6
+    (.faccessat none "a/".toUTF8 {} { symlinkNofollow := true }) (.err Errno.EACCES)
+  let _ ← stepModelCheck "trailing at (-> sym_other/) -> EACCES" s6
+    (.faccessat none "at".toUTF8 {} {}) (.err Errno.EACCES)
+  let _ ← stepModelCheck "non-trailing via al (-> sym_other/l) -> ENOTDIR" s6
+    (.faccessat none "al".toUTF8 {} {}) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "mapped-in-unmapped b/l -> ENOTDIR" s6
+    (.faccessat none "b/l".toUTF8 {} {}) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "mapped-in-unmapped trailing b -> EACCES" s6
+    (.faccessat none "b".toUTF8 {} {}) (.err Errno.EACCES)
+  let _ ← stepModelCheck "direct s_unmap/sym_other trailing -> EACCES" s6
+    (.faccessat none "s_unmap/sym_other".toUTF8 {} {}) (.err Errno.EACCES)
+  let _ ← stepModelCheck "direct s_unmap/sym_other NOFOLLOW -> unit" s6
+    (.faccessat none "s_unmap/sym_other".toUTF8 {} { symlinkNofollow := true }) .unit
+  let _ ← stepModelCheck "direct s_unmap/sym_other/ NOFOLLOW -> EACCES" s6
+    (.faccessat none "s_unmap/sym_other/".toUTF8 {} { symlinkNofollow := true }) (.err Errno.EACCES)
+  let _ ← stepModelCheck "direct s_unmap/sym_other/l -> ENOTDIR" s6
+    (.faccessat none "s_unmap/sym_other/l".toUTF8 {} {}) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "direct s_unmap/sym_other/. -> ENOTDIR" s6
+    (.faccessat none "s_unmap/sym_other/.".toUTF8 {} {}) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "direct s_unmap/sym_other/.. -> ENOTDIR" s6
+    (.faccessat none "s_unmap/sym_other/..".toUTF8 {} {}) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "sticky owned sym_owned -> trailing sym_other EACCES" s6
+    (.faccessat none "s_unmap/sym_owned".toUTF8 {} {}) (.err Errno.EACCES)
+  let _ ← stepModelCheck "sticky owned sym_owned/l -> ENOTDIR" s6
+    (.faccessat none "s_unmap/sym_owned/l".toUTF8 {} {}) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "dangling am trailing -> EACCES" s6
+    (.faccessat none "am".toUTF8 {} {}) (.err Errno.EACCES)
+  let _ ← stepModelCheck "dangling am/l -> ENOENT" s6
+    (.faccessat none "am/l".toUTF8 {} {}) (.err Errno.ENOENT)
+  let _ ← stepModelCheck "unmapped uidTag same allows trailing" s6
+    (.faccessat none "s_tag/sym_same_tag".toUTF8 {} {}) .unit
+  let _ ← stepModelCheck "unmapped uidTag diff blocks trailing -> EACCES" s6
+    (.faccessat none "s_tag/sym_diff_tag".toUTF8 {} {}) (.err Errno.EACCES)
+  let _ ← stepModelCheck "unmapped uidTag diff allows intermediate -> ENOTDIR" s6
+    (.faccessat none "s_tag/sym_diff_tag/l".toUTF8 {} {}) (.err Errno.ENOTDIR)
+
+  let _ ← stepModelCheck "dir symlink trailing -> EACCES" s6
+    (.faccessat none "s_unmap/sym_dir".toUTF8 {} {}) (.err Errno.EACCES)
+  let _ ← stepModelCheck "dir symlink intermediate sym_dir/a -> ok" s6
+    (.faccessat none "s_unmap/sym_dir/a".toUTF8 { read := true, write := true } {}) .unit
+  let _ ← stepModelCheck "dir symlink intermediate ad/a F_OK -> ok" s6
+    (.faccessat none "ad/a".toUTF8 {} {}) .unit
+  let _ ← stepModelCheck "dir symlink intermediate ad/a X_OK -> EACCES" s6
+    (.faccessat none "ad/a".toUTF8 { exec := true } {}) (.err Errno.EACCES)
+  let _ ← stepModelCheck "dir symlink intermediate ad/. -> ok" s6
+    (.faccessat none "ad/.".toUTF8 {} {}) .unit
+
+  let _ ← stepModelCheck "openat a/l O_RDONLY -> ENOTDIR" s6
+    (.openat none "a/l".toUTF8 { access := .rdonly } 0) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "openat a/l O_CREAT -> ENOTDIR" s6
+    (.openat none "a/l".toUTF8 { access := .rdwr, creat := true } 0o644) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "openat s_unmap/sym_dir/a O_RDONLY -> ok" s6
+    (.openat none "s_unmap/sym_dir/a".toUTF8 { access := .rdonly } 0) (.opened 0)
+  let _ ← stepModelCheck "openat s_unmap/sym_dir/new O_CREAT -> ok" s6
+    (.openat none "s_unmap/sym_dir/new".toUTF8 { access := .rdwr, creat := true } 0o644) (.opened 0)
+  let _ ← stepModelCheck "openat s_unmap/sym_other O_RDONLY -> EACCES" s6
+    (.openat none "s_unmap/sym_other".toUTF8 { access := .rdonly } 0) (.err Errno.EACCES)
+  let _ ← stepModelCheck "openat s_unmap/sym_other O_PATH -> EACCES" s6
+    (.openat none "s_unmap/sym_other".toUTF8 { path := true } 0) (.err Errno.EACCES)
+  let _ ← stepModelCheck "openat s_unmap/sym_other O_PATH|NOFOLLOW -> ok" s6
+    (.openat none "s_unmap/sym_other".toUTF8 { path := true, nofollow := true } 0) (.opened 0)
+  let _ ← stepModelCheck "openat s_unmap/sym_other/ O_PATH|NOFOLLOW -> EACCES" s6
+    (.openat none "s_unmap/sym_other/".toUTF8 { path := true, nofollow := true } 0) (.err Errno.EACCES)
+  let _ ← stepModelCheck "openat s_unmap/sym_other O_CREAT|O_EXCL -> EEXIST" s6
+    (.openat none "s_unmap/sym_other".toUTF8 { access := .rdwr, creat := true, excl := true } 0o644) (.err Errno.EEXIST)
+  let _ ← stepModelCheck "openat s_unmap/sym_other/ O_CREAT -> EISDIR" s6
+    (.openat none "s_unmap/sym_other/".toUTF8 { access := .rdwr, creat := true } 0o644) (.err Errno.EISDIR)
+  let _ ← stepModelCheck "openat s_unmap/sym_other/l O_CREAT -> ENOTDIR" s6
+    (.openat none "s_unmap/sym_other/l".toUTF8 { access := .rdwr, creat := true } 0o644) (.err Errno.ENOTDIR)
+
+  let _ ← stepModelCheck "openat2 trailing protected_symlinks before RESOLVE_NO_SYMLINKS -> EACCES" s6
+    (.openat2 none "s_unmap/sym_other".toUTF8 { resolve := { noSymlinks := true } }) (.err Errno.EACCES)
+  assertTrue "openat2 trailing protected_symlinks rejects ELOOP"
+    ((allowedStep s6 (.openat2 none "s_unmap/sym_other".toUTF8 { resolve := { noSymlinks := true } }) (.err Errno.ELOOP)).isNone)
+  let _ ← stepModelCheck "openat2 intermediate sym_other/l RESOLVE_NO_SYMLINKS -> ELOOP" s6
+    (.openat2 none "s_unmap/sym_other/l".toUTF8 { resolve := { noSymlinks := true } }) (.err Errno.ELOOP)
+  let _ ← stepModelCheck "openat2 trailing sym_abs RESOLVE_BENEATH -> EACCES" s6
+    (.openat2 none "s_unmap/sym_abs".toUTF8 { resolve := { beneath := true } }) (.err Errno.EACCES)
+  let _ ← stepModelCheck "openat2 intermediate sym_abs/l RESOLVE_BENEATH -> EXDEV" s6
+    (.openat2 none "s_unmap/sym_abs/l".toUTF8 { resolve := { beneath := true } }) (.err Errno.EXDEV)
+  let sDir ← stepModelCheck "open s_unmap dirfd" s6
+    (.openat none "s_unmap".toUTF8 { access := .rdonly, directory := true } 0) (.opened 0)
+  let _ ← stepModelCheck "openat2(s_unmap, sym_other, BENEATH) -> EACCES" sDir
+    (.openat2 (some 0) "sym_other".toUTF8 { resolve := { beneath := true } }) (.err Errno.EACCES)
+  let _ ← stepModelCheck "openat2(s_unmap, sym_other/l, BENEATH) -> EXDEV" sDir
+    (.openat2 (some 0) "sym_other/l".toUTF8 { resolve := { beneath := true } }) (.err Errno.EXDEV)
+
+  let _ ← stepModelCheck "fstatat a/l -> ENOTDIR" s6
+    (.fstatat none "a/l".toUTF8 {}) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "fstatat a/l NOFOLLOW -> ENOTDIR" s6
+    (.fstatat none "a/l".toUTF8 { symlinkNofollow := true }) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "fstatat a trailing -> EACCES" s6
+    (.fstatat none "a".toUTF8 {}) (.err Errno.EACCES)
+  let _ ← stepModelCheck "readlinkat a/l -> ENOTDIR" s6
+    (.readlinkat none "a/l".toUTF8 64) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "readlinkat s_unmap/sym_other -> target" s6
+    (.readlinkat none "s_unmap/sym_other".toUTF8 64) (.bytes "../sub/a".toUTF8)
+  let _ ← stepModelCheck "readlinkat s_unmap/sym_other/ -> EACCES" s6
+    (.readlinkat none "s_unmap/sym_other/".toUTF8 64) (.err Errno.EACCES)
+  let _ ← stepModelCheck "fchmodat a/l -> ENOTDIR" s6
+    (.fchmodat none "a/l".toUTF8 0o644) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "fchmodat s_unmap/sym_dir/a -> ok" s6
+    (.fchmodat none "s_unmap/sym_dir/a".toUTF8 0o600) .unit
+
+  let _ ← stepModelCheck "mkdirat a/l -> ENOTDIR" s6
+    (.mkdirat none "a/l".toUTF8 0o755) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "mkdirat s_unmap/sym_other/l -> ENOTDIR" s6
+    (.mkdirat none "s_unmap/sym_other/l".toUTF8 0o755) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "mkdirat ad/newd -> ok" s6
+    (.mkdirat none "ad/newd".toUTF8 0o755) .unit
+  let _ ← stepModelCheck "mkdirat s_unmap/sym_miss/l -> ENOENT" s6
+    (.mkdirat none "s_unmap/sym_miss/l".toUTF8 0o755) (.err Errno.ENOENT)
+  let _ ← stepModelCheck "unlinkat a/l -> ENOTDIR" s6
+    (.unlinkat none "a/l".toUTF8 false) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "unlinkat s_unmap/sym_other/l -> ENOTDIR" s6
+    (.unlinkat none "s_unmap/sym_other/l".toUTF8 false) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "symlinkat a/l -> ENOTDIR" s6
+    (.symlinkat "t".toUTF8 none "a/l".toUTF8) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "symlinkat ad/newl -> ok" s6
+    (.symlinkat "t".toUTF8 none "ad/newl".toUTF8) .unit
+  let _ ← stepModelCheck "renameat2 a/l -> x ENOTDIR" s6
+    (.renameat2 none "a/l".toUTF8 none "x".toUTF8 {}) (.err Errno.ENOTDIR)
+  let _ ← stepModelCheck "renameat2 sub/a -> a/l ENOTDIR" s6
+    (.renameat2 none "sub/a".toUTF8 none "a/l".toUTF8 {}) (.err Errno.ENOTDIR)
+
+  let mut chainSt := s0
+  chainSt ← stepModelCheck "chain l40" chainSt
+    (.symlinkat "s_unmap/sym_other".toUTF8 none "l40".toUTF8) .unit
+  for k in List.range 39 do
+    let i := 39 - k
+    chainSt ← stepModelCheck s!"chain l{i}" chainSt
+      (.symlinkat s!"l{i + 1}".toUTF8 none s!"l{i}".toUTF8) .unit
+  let _ ← stepModelCheck "39-hop chain into s_unmap/sym_other -> EACCES" chainSt
+    (.faccessat none "l2".toUTF8 {} {}) (.err Errno.EACCES)
+  let _ ← stepModelCheck "40-hop chain into s_unmap/sym_other -> ELOOP" chainSt
+    (.faccessat none "l1".toUTF8 {} {}) (.err Errno.ELOOP)
+
+  let sOff := mkState false
+  let _ ← stepModelCheck "protSym=false openat2 sym_other RESOLVE_NO_SYMLINKS -> ELOOP" sOff
+    (.openat2 none "s_unmap/sym_other".toUTF8 { resolve := { noSymlinks := true } }) (.err Errno.ELOOP)
+  let _ ← stepModelCheck "protSym=false readlinkat sym_other/ -> ENOTDIR" sOff
+    (.readlinkat none "s_unmap/sym_other/".toUTF8 64) (.err Errno.ENOTDIR)
+  let sRoProt := mkState true true
+  let _ ← stepModelCheck "ro_bind protSym=true sym_other W_OK -> EACCES" sRoProt
+    (.faccessat none "s_unmap/sym_other".toUTF8 { write := true } {}) (.err Errno.EACCES)
+  let _ ← stepModelCheck "ro_bind protSym=true sym_other/l W_OK -> ENOTDIR" sRoProt
+    (.faccessat none "s_unmap/sym_other/l".toUTF8 { write := true } {}) (.err Errno.ENOTDIR)
+  let sRoOff := mkState false true
+  let _ ← stepModelCheck "ro_bind protSym=false sym_other W_OK -> EROFS" sRoOff
+    (.faccessat none "s_unmap/sym_other".toUTF8 { write := true } {}) (.err Errno.EROFS)
+
 /-- Run all registered assumptions, error-coverage tests, and multi-call edge-case reproducers. -/
 def runAll : IO Unit := do
   Fuzz.Env.pinClosedStdio
@@ -4465,6 +4706,7 @@ def runAll : IO Unit := do
     runCShimBoundaryProbes
     runStatNsecReopenAndDetachChecks
     runUnboxedDirentAndGetcwdChecks
+    runProtectedSymlinkWalkReproducers
     IO.println "PASS: LeanSwe.LinuxSyscall.Files runtime tests"
   finally
     let _ ← Fuzz.Env.umask savedMask

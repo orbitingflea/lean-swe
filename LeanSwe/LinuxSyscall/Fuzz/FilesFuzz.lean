@@ -3965,6 +3965,77 @@ private def parseWorkerStats (stdout : String) : HitStats := Id.run do
     | _ => pure ()
   return { counts, kindCounts, totalSteps, totalEpisodes }
 
+private def runAsymSymlinkParityProbe (parityDir : System.FilePath)
+    (in0 out1 err2 : FileKind × Option SpecialDevKind) : IO Unit := do
+  let probeRecipe : EpisodeRecipe :=
+    { epUmask := 0o022, seedFifo := false, seedSock := false,
+      seedHardlinks := false, seedSymlinks := false, seedD255 := false, seedCross := false }
+  let trace : Array SymStep := #[
+    { allocId := none, req := .symlinkat "s_unmap/sym_other".toUTF8 none "a".toUTF8 },
+    { allocId := none, req := .faccessat none "a/l".toUTF8 {} {} },
+    { allocId := none, req := .faccessat none "a/l".toUTF8 { write := true } { eaccess := true } },
+    { allocId := none, req := .faccessat none "a/l".toUTF8 { read := true } {} },
+    { allocId := none, req := .faccessat none "a/l".toUTF8 { exec := true } {} },
+    { allocId := none, req := .faccessat none "a/l".toUTF8 {} { symlinkNofollow := true } },
+    { allocId := none, req := .faccessat none "a".toUTF8 {} {} },
+    { allocId := none, req := .faccessat none "a".toUTF8 {} { symlinkNofollow := true } },
+    { allocId := none, req := .faccessat none "a/".toUTF8 {} { symlinkNofollow := true } },
+    { allocId := none, req := .symlinkat "s1777/sym_other".toUTF8 none "b".toUTF8 },
+    { allocId := none, req := .faccessat none "b/l".toUTF8 {} {} },
+    { allocId := none, req := .faccessat none "b".toUTF8 {} {} },
+    { allocId := none, req := .symlinkat "s_unmap/sym_other/".toUTF8 none "at".toUTF8 },
+    { allocId := none, req := .faccessat none "at".toUTF8 {} {} },
+    { allocId := none, req := .symlinkat "s_unmap/sym_other/l".toUTF8 none "al".toUTF8 },
+    { allocId := none, req := .faccessat none "al".toUTF8 {} {} },
+    { allocId := none, req := .faccessat none "s_unmap/sym_other".toUTF8 {} {} },
+    { allocId := none, req := .faccessat none "s_unmap/sym_other".toUTF8 {} { symlinkNofollow := true } },
+    { allocId := none, req := .faccessat none "s_unmap/sym_other/".toUTF8 {} { symlinkNofollow := true } },
+    { allocId := none, req := .faccessat none "s_unmap/sym_other/l".toUTF8 {} {} },
+    { allocId := none, req := .faccessat none "s_unmap/sym_other/.".toUTF8 {} {} },
+    { allocId := none, req := .faccessat none "s_unmap/sym_other/..".toUTF8 {} {} },
+    { allocId := some 0, req := .openat none "s_unmap".toUTF8 { access := .rdonly, directory := true } 0 },
+    { allocId := none, req := .faccessat (some 0) "sym_other".toUTF8 {} {} },
+    { allocId := none, req := .faccessat (some 0) "sym_other/l".toUTF8 {} {} },
+    { allocId := some 1, req := .openat2 (some 0) "sym_other".toUTF8 { resolve := { beneath := true } } },
+    { allocId := some 2, req := .openat2 (some 0) "sym_other/l".toUTF8 { resolve := { beneath := true } } },
+    { allocId := some 3, req := .openat none "a/l".toUTF8 { access := .rdonly } 0 },
+    { allocId := some 4, req := .openat none "a/l".toUTF8 { access := .rdwr, creat := true } 0o644 },
+    { allocId := some 5, req := .openat none "s_unmap/sym_other".toUTF8 { access := .rdonly } 0 },
+    { allocId := some 6, req := .openat none "s_unmap/sym_other".toUTF8 { path := true, nofollow := true } 0 },
+    { allocId := some 7, req := .openat none "s_unmap/sym_other/".toUTF8 { path := true, nofollow := true } 0 },
+    { allocId := some 8, req := .openat none "s_unmap/sym_other".toUTF8 { access := .rdwr, creat := true, excl := true } 0o644 },
+    { allocId := some 9, req := .openat none "s_unmap/sym_other".toUTF8 { access := .rdwr, creat := true, nofollow := true } 0o644 },
+    { allocId := some 10, req := .openat none "s_unmap/sym_other/".toUTF8 { access := .rdwr, creat := true } 0o644 },
+    { allocId := some 11, req := .openat2 none "s_unmap/sym_other".toUTF8 { resolve := { noSymlinks := true } } },
+    { allocId := some 12, req := .openat2 none "s_unmap/sym_other/l".toUTF8 { resolve := { noSymlinks := true } } },
+    { allocId := some 13, req := .openat2 none "a/l".toUTF8 { resolve := { noSymlinks := true } } },
+    { allocId := none, req := .fstatat none "a/l".toUTF8 {} },
+    { allocId := none, req := .fstatat none "a/l".toUTF8 { symlinkNofollow := true } },
+    { allocId := none, req := .fstatat none "a".toUTF8 {} },
+    { allocId := none, req := .fstatat none "s_unmap/sym_other/".toUTF8 { symlinkNofollow := true } },
+    { allocId := none, req := .readlinkat none "a/l".toUTF8 64 },
+    { allocId := none, req := .readlinkat none "s_unmap/sym_other".toUTF8 64 },
+    { allocId := none, req := .readlinkat none "s_unmap/sym_other/".toUTF8 64 },
+    { allocId := none, req := .fchmodat none "a/l".toUTF8 0o644 },
+    { allocId := none, req := .fchmodat none "s_unmap/sym_other/l".toUTF8 0o644 },
+    { allocId := none, req := .mkdirat none "a/l".toUTF8 0o755 },
+    { allocId := none, req := .mkdirat none "s_unmap/sym_other/l".toUTF8 0o755 },
+    { allocId := none, req := .unlinkat none "a/l".toUTF8 false },
+    { allocId := none, req := .unlinkat none "s_unmap/sym_other/l".toUTF8 false },
+    { allocId := none, req := .symlinkat "t".toUTF8 none "a/l".toUTF8 },
+    { allocId := none, req := .symlinkat "t".toUTF8 none "s_unmap/sym_other/l".toUTF8 },
+    { allocId := none, req := .renameat2 none "a/l".toUTF8 none "x".toUTF8 {} },
+    { allocId := none, req := .renameat2 none "sub/a".toUTF8 none "a/l".toUTF8 {} }
+  ]
+  let r ← replayTrace parityDir trace allowedStep none
+    (fun d cd? => do
+      let (rcfg, _, _) ← materializeEpisode defaultOps d cd? false in0 out1 err2 probeRecipe
+        false false false false []
+      return rcfg)
+    id none false (pure ()) none true
+  if let some idx := r.mismatchIdx then
+    throw (IO.userError s!"asym symlink parity probe mismatch at step {idx}: req={repr r.mismatchReq} out={repr r.mismatchOut}")
+
 /-- Run stateful randomized episodes on a single target directory `baseDir`. -/
 def runFilesFuzzOnDir (totalSteps : Nat) (seed : UInt64) (selfTestShrink : Bool)
     (baseDir : System.FilePath := "/dev/shm")
@@ -4082,6 +4153,10 @@ def runFilesFuzzOnDir (totalSteps : Nat) (seed : UInt64) (selfTestShrink : Bool)
   try
     let shrinkDetail ←
       if selfTestShrink && !isRoSeeded && !chrootMode && !seccompMode then runShrinkSelfTest rootDir else pure ""
+    if isPreseededRwSticky then
+      let parityDir := rootDir / "parity-sym"
+      if ← (parityDir / "s_unmap" / "reg666").pathExists then
+        runAsymSymlinkParityProbe parityDir in0 out1 err2
     let startNs ← IO.monoNanosNow
     let mut rng := Rng.seed seed
     let mut stats : HitStats := {}
@@ -4923,7 +4998,7 @@ private def runMultiFsSuite (totalSteps : Nat) (seed : UInt64) (selfTestShrink :
           "os.makedirs(f\"{asym}/gd\", exist_ok=True); os.chown(f\"{asym}/gd\", 0, 1); os.chmod(f\"{asym}/gd\", 0o2755)\n" ++
           "with open(f\"{asym}/gd/sgid2640\", \"w\") as f: f.write(\"sgid\\n\")\n" ++
           "os.chown(f\"{asym}/gd/sgid2640\", 0, 1); os.chmod(f\"{asym}/gd/sgid2640\", 0o2640)\n" ++
-          "dirs = [f\"{rw}/ep-{i}\" for i in range(n_eps)] + [f\"{rw}/shrink-{i}\" for i in range(512)]\n" ++
+          "dirs = [f\"{rw}/ep-{i}\" for i in range(n_eps)] + [f\"{rw}/shrink-{i}\" for i in range(512)] + [f\"{rw}/parity-sym\"]\n" ++
           "for d in dirs:\n" ++
           "    seed_sticky(f\"{d}/s1777\"); seed_unmap(f\"{d}/s_unmap\")\n" ++
           "    os.makedirs(f\"{d}/gd\", exist_ok=True); os.chown(f\"{d}/gd\", 0, 1); os.chmod(f\"{d}/gd\", 0o2755)\n" ++

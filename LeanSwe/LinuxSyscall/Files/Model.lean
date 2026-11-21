@@ -821,8 +821,10 @@ inductive OpenTarget where
 
 /-- Mode parameterizing unified `walkPath`. -/
 inductive WalkMode where
-  /-- Normal path lookup (`resolvePath` / `resolveParentAndLeaf`). -/
+  /-- Normal path lookup (`resolvePath` / `resolveLookupOrExt`). -/
   | lookup (followFinal : Bool)
+  /-- Parent-directory lookup (`resolveParentAndLeaf` / Linux `path_parentat` / `link_path_walk`), where every component precedes a leaf and never takes the `WALK_TRAILING` `may_follow_link` check. -/
+  | parent
   /-- `openat` / `openat2` lookup tracking missing leaf in parent and `O_CREAT | O_EXCL` symlink stop. -/
   | openTarget (followFinal exclCreate hasCreat : Bool)
   deriving Repr, DecidableEq, BEq
@@ -905,7 +907,7 @@ def walkPath (s : FilesState) (rootIno : InodeId) (anchorMount : Nat) (resolve :
       let lf? := curDentry?.map (·.2)
       match mode with
       | .openTarget _ _ _ => (.ok (.existing curIno trailing true pIno? lf?), touchedDotDot)
-      | .lookup _ =>
+      | .lookup _ | .parent =>
         match assocGet s.inodes curIno with
         | none => (.error Errno.ENOENT, touchedDotDot)
         | some vn =>
@@ -934,7 +936,7 @@ def walkPath (s : FilesState) (rootIno : InodeId) (anchorMount : Nat) (resolve :
           else
             let isCreatTrail := match mode with
               | .openTarget _ _ hasCreat => rest.isEmpty && hasCreat && trailing
-              | .lookup _ => false
+              | .lookup _ | .parent => false
             if isCreatTrail then
               (.ok (.existing curIno true false (curDentry?.map (·.1)) (curDentry?.map (·.2))), touchedDotDot)
             else if dirVn.nlink == 0 || dd.lifecycle.isDead then (.error Errno.ENOENT, touchedDotDot)
@@ -947,7 +949,7 @@ def walkPath (s : FilesState) (rootIno : InodeId) (anchorMount : Nat) (resolve :
                 | .openTarget _ _ _ =>
                   if isFinal then (.ok (.missingInParent curIno seg trailing), touchedDotDot)
                   else (.error Errno.ENOENT, touchedDotDot)
-                | .lookup _ => (.error Errno.ENOENT, touchedDotDot)
+                | .lookup _ | .parent => (.error Errno.ENOENT, touchedDotDot)
               | some childIno =>
                 match assocGet s.inodes childIno with
                 | none => (.error Errno.ENOENT, touchedDotDot)
@@ -963,21 +965,27 @@ def walkPath (s : FilesState) (rootIno : InodeId) (anchorMount : Nat) (resolve :
                       else
                       let (stopHere, exclStop) := match mode with
                         | .lookup followFinal => (isFinal && !followFinal && !trailing, false)
+                        | .parent => (false, false)
                         | .openTarget followFinal exclCreate _ =>
                           (isFinal && (exclCreate || (!followFinal && !trailing)), isFinal && exclCreate)
+                      let isTrailingWalk := isFinal && match mode with
+                        | .parent => false
+                        | .lookup _ | .openTarget _ _ _ => true
                       if exclStop then
                         (.ok (.existing childIno trailing false (some curIno) (some seg)), touchedDotDot)
                       else if stopHere then
-                        match mode with
-                        | .lookup _ => (.ok (.existing childIno false false (some curIno) (some seg)), touchedDotDot)
-                        | .openTarget _ _ _ => (.ok (.existing childIno false false (some curIno) (some seg)), touchedDotDot)
+                        (.ok (.existing childIno false false (some curIno) (some seg)), touchedDotDot)
+                      else if symFuel == 0 then (.error Errno.ELOOP, touchedDotDot)
+                      else if isTrailingWalk && s.sysctls.protectedSymlinks &&
+                          (dirVn.mode &&& 0o1002) == 0o1002 && !childVn.owner.ownedByUid &&
+                          !sameKnownOwner childVn dirVn then
+                        (.error Errno.EACCES, touchedDotDot)
                       else if resolve.noSymlinks then (.error Errno.ELOOP, touchedDotDot)
                       else
                         match symTgt with
                         | .procMagic tgtIno fdHid? =>
                           if !childVn.owner.ownedByUid then (.error Errno.EACCES, touchedDotDot)
                           else if resolve.noMagiclinks then (.error Errno.ELOOP, touchedDotDot)
-                          else if symFuel == 0 then (.error Errno.ELOOP, touchedDotDot)
                           else
                             match resolveProcMagicTarget s tgtIno fdHid? with
                             | .error re =>
@@ -1006,7 +1014,7 @@ def walkPath (s : FilesState) (rootIno : InodeId) (anchorMount : Nat) (resolve :
                                     let pIno? := effDentry?.map (·.1)
                                     let lf? := effDentry?.map (·.2)
                                     match mode with
-                                    | .lookup _ =>
+                                    | .lookup _ | .parent =>
                                       if trailing && tgtVn.kind != .dir then (.error Errno.ENOTDIR, touchedDotDot)
                                       else (.ok (.existing effTgtIno trailing false pIno? lf? true fdHid?), touchedDotDot)
                                     | .openTarget _ _ _ => (.ok (.existing effTgtIno trailing false pIno? lf? true fdHid?), touchedDotDot)
@@ -1015,11 +1023,7 @@ def walkPath (s : FilesState) (rootIno : InodeId) (anchorMount : Nat) (resolve :
                                     walkPath s rootIno anchorMount resolve mode rootSet touchedDotDot effDentry? stepFuel (symFuel - 1)
                                       effTgtIno nextDepth rest trailing
                         | .path targetBytes =>
-                          if s.sysctls.protectedSymlinks &&
-                              (dirVn.mode &&& 0o1002) == 0o1002 && !childVn.owner.ownedByUid &&
-                              !sameKnownOwner childVn dirVn then (.error Errno.EACCES, touchedDotDot)
-                          else if symFuel == 0 then (.error Errno.ELOOP, touchedDotDot)
-                          else if targetBytes.size == 0 then (.error Errno.ENOENT, touchedDotDot)
+                          if targetBytes.size == 0 then (.error Errno.ENOENT, touchedDotDot)
                           else
                             match validatePathBytes targetBytes with
                             | .error e => (.error e, touchedDotDot)
@@ -1041,7 +1045,7 @@ def walkPath (s : FilesState) (rootIno : InodeId) (anchorMount : Nat) (resolve :
                                       let pIno? := nextDentry?.map (·.1)
                                       let lf? := nextDentry?.map (·.2)
                                       match mode with
-                                      | .lookup _ =>
+                                      | .lookup _ | .parent =>
                                         if combinedTrail && nvn.kind != .dir then (.error Errno.ENOTDIR, touchedDotDot)
                                         else (.ok (.existing nextIno combinedTrail false pIno? lf?), touchedDotDot)
                                       | .openTarget _ _ _ => (.ok (.existing nextIno combinedTrail false pIno? lf?), touchedDotDot)
@@ -1051,7 +1055,7 @@ def walkPath (s : FilesState) (rootIno : InodeId) (anchorMount : Nat) (resolve :
                     | _ =>
                       if isFinal then
                         match mode with
-                        | .lookup _ =>
+                        | .lookup _ | .parent =>
                           if trailing && childVn.kind != .dir then (.error Errno.ENOTDIR, touchedDotDot)
                           else (.ok (.existing childIno trailing false (some curIno) (some seg)), touchedDotDot)
                         | .openTarget _ _ _ =>
@@ -1187,7 +1191,7 @@ private def resolveParentOrExt (s : FilesState) (dir : Option HandleId) (path : 
       | [] => .ok (some (baseIno, slashBytes, true))
       | leaf :: revParent =>
         let parentSegs := revParent.reverse
-        let res ← (walkPath s startIno anchorMount resolve (.lookup true) (isAbs || resolve.inRoot) false none
+        let res ← (walkPath s startIno anchorMount resolve .parent (isAbs || resolve.inRoot) false none
           (parentSegs.length + (MAX_SYMLINKS + 1) * PATH_MAX + 32) MAX_SYMLINKS baseIno 0 parentSegs false).1
         match res with
         | .missingInParent _ _ _ => .error Errno.ENOENT
