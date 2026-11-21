@@ -4,15 +4,13 @@ import LeanSwe.LinuxSyscall.Net.Model
 import LeanSwe.LinuxSyscall.Net.Interface
 import LeanSwe.LinuxSyscall.Net.Impl
 import LeanSwe.LinuxSyscall.Net.SpecTests
-import LeanSwe.LinuxSyscall.Fuzz.SandboxEnv
-import Core.Assumptions
+import Fuzz.LinuxSyscall.SandboxEnv
 
-namespace LeanSwe.LinuxSyscall.Net.RuntimeTests
+namespace Fuzz.LinuxSyscall.Net.Strace
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Net
-open LeanSwe.LinuxSyscall.Fuzz
-open Core
+open Fuzz.LinuxSyscall
 
 @[extern "leanswe_net_close_fd"]
 private opaque rawNetClose : @& RawFd → IO (Except Errno Unit)
@@ -142,7 +140,7 @@ private def drainConnect (ops : NetOps) (lfd cfd : RawFd) (addr : SockAddr) : IO
   | none => throw (IO.userError "timed out waiting for loopback accept4")
 
 /-- Verify `socket(2)` domain/type/flags/protocol ABI (`AF_INET`, `AF_INET6`, `AF_UNIX`, and curated TCP/UDP rejection boundaries). -/
-def assume_net_socket_domainTypeFlagsAbi : IO Unit := do
+private def assume_net_socket_domainTypeFlagsAbi : IO Unit := do
   let ops := defaultOps
   assertErr "socket proto>=MAX" (← ops.socket .inet .stream {} IPPROTO_MAX) Errno.EINVAL
   assertErr "socket inet6 dgram proto>=MAX" (← ops.socket .inet6 .dgram {} 263) Errno.EINVAL
@@ -174,7 +172,7 @@ def assume_net_socket_domainTypeFlagsAbi : IO Unit := do
     safeClose s0
 
 /-- Verify `socketpair(2)` `AF_UNIX` stream/dgram/seqpacket creation and non-Unix rejection. -/
-def assume_net_socketpair_unixPairAbi : IO Unit := do
+private def assume_net_socketpair_unixPairAbi : IO Unit := do
   let ops := defaultOps
   assertErr "socketpair inet EOPNOTSUPP" (← ops.socketpair .inet .stream {}) Errno.EOPNOTSUPP
   assertErr "socketpair inet6 stream EOPNOTSUPP" (← ops.socketpair .inet6 .stream {}) Errno.EOPNOTSUPP
@@ -191,7 +189,7 @@ def assume_net_socketpair_unixPairAbi : IO Unit := do
     safeClose b
 
 /-- Verify `bind(2)` sockaddr translation across IPv4/IPv6/Unix and NUL/length guards. -/
-def assume_net_bind_sockaddrTranslationAndNulGuard : IO Unit := withTempSockDir "a-bind" fun path => do
+private def assume_net_bind_sockaddrTranslationAndNulGuard : IO Unit := withTempSockDir "a-bind" fun path => do
   let ops := defaultOps
   let s4 ← assertOk "socket4" (← ops.socket .inet .stream nbFlags 0)
   try
@@ -208,7 +206,7 @@ def assume_net_bind_sockaddrTranslationAndNulGuard : IO Unit := withTempSockDir 
     safeClose su
 
 /-- Verify `listen(2)` backlog handling on bound `AF_INET` and `AF_UNIX` listeners. -/
-def assume_net_listen_backlogAbi : IO Unit := do
+private def assume_net_listen_backlogAbi : IO Unit := do
   let ops := defaultOps
   let lfd ← assertOk "socket" (← ops.socket .inet .stream nbFlags 0)
   try
@@ -229,7 +227,7 @@ private def isLoopbackUp (ops : NetOps) : IO Bool := do
     safeClose fd
 
 /-- Verify `accept4(2)` peer address decoding and `SOCK_NONBLOCK`/`SOCK_CLOEXEC` flags. -/
-def assume_net_accept4_flagsAndPeerAddrDecode : IO Unit := do
+private def assume_net_accept4_flagsAndPeerAddrDecode : IO Unit := do
   let ops := defaultOps
   if ← isLoopbackUp ops then
     let (lfd, port) ← setupLoopbackListener ops
@@ -291,7 +289,7 @@ def assume_net_accept4_flagsAndPeerAddrDecode : IO Unit := do
         safeClose ul
 
 /-- Verify `connect(2)` non-blocking `EINPROGRESS`, `AF_INET6` `::ffff:127.0.0.1` dual-stack, and TCP self-connect. -/
-def assume_net_connect_nonblockAndSockaddrAbi : IO Unit := do
+private def assume_net_connect_nonblockAndSockaddrAbi : IO Unit := do
   let ops := defaultOps
   let l6 ← assertOk "socket6" (← ops.socket .inet6 .stream nbFlags 0)
   assertOk "setsockopt reuse" (← ops.setsockopt l6 .reuseAddr 1)
@@ -313,7 +311,7 @@ def assume_net_connect_nonblockAndSockaddrAbi : IO Unit := do
     safeClose l6
 
 /-- Verify `getsockopt(2)` `SO_ERROR` clear-on-read and `SO_REUSEADDR` ABI. -/
-def assume_net_getsockopt_soErrorAndReuseAddrAbi : IO Unit := do
+private def assume_net_getsockopt_soErrorAndReuseAddrAbi : IO Unit := do
   let ops := defaultOps
   let (lfd, port) ← setupLoopbackListener ops
   let cfd ← assertOk "client" (← ops.socket .inet .stream nbFlags 0)
@@ -332,7 +330,7 @@ def assume_net_getsockopt_soErrorAndReuseAddrAbi : IO Unit := do
     safeClose lfd
 
 /-- Verify `setsockopt(2)` `SO_REUSEADDR` enable/disable ABI. -/
-def assume_net_setsockopt_reuseAddrAbi : IO Unit := do
+private def assume_net_setsockopt_reuseAddrAbi : IO Unit := do
   let ops := defaultOps
   let fd ← assertOk "socket" (← ops.socket .inet .stream nbFlags 0)
   try
@@ -348,7 +346,7 @@ def assume_net_setsockopt_reuseAddrAbi : IO Unit := do
     safeClose fd
 
 /-- Verify `getsockname(2)` local address decoding across IPv4, IPv6, and Unix endpoints. -/
-def assume_net_getsockname_sockaddrDecode : IO Unit := withTempSockDir "a-gsn" fun path => do
+private def assume_net_getsockname_sockaddrDecode : IO Unit := withTempSockDir "a-gsn" fun path => do
   let ops := defaultOps
   let s4 ← assertOk "socket4" (← ops.socket .inet .dgram nbFlags 0)
   let s6 ← assertOk "socket6" (← ops.socket .inet6 .dgram nbFlags 0)
@@ -390,7 +388,7 @@ def assume_net_getsockname_sockaddrDecode : IO Unit := withTempSockDir "a-gsn" f
     safeClose su
 
 /-- Verify `recvfrom(2)` `MAX_READ_BYTES` clamping, `MSG_PEEK`, and partial reads. -/
-def assume_net_recvfrom_clamped16MiBAndMsgFlags : IO Unit := do
+private def assume_net_recvfrom_clamped16MiBAndMsgFlags : IO Unit := do
   let ops := defaultOps
   let (a, b) ← assertOk "socketpair" (← ops.socketpair .unix .stream nbFlags)
   try
@@ -416,7 +414,7 @@ def assume_net_recvfrom_clamped16MiBAndMsgFlags : IO Unit := do
     safeClose b
 
 /-- Verify `sendto(2)` `MSG_NOSIGNAL` / `MSG_DONTWAIT` flag encoding and partial send counts. -/
-def assume_net_sendto_msgFlagsAndPartialCount : IO Unit := do
+private def assume_net_sendto_msgFlagsAndPartialCount : IO Unit := do
   let ops := defaultOps
   let (a, b) ← assertOk "socketpair" (← ops.socketpair .unix .stream nbFlags)
   try
@@ -426,7 +424,7 @@ def assume_net_sendto_msgFlagsAndPartialCount : IO Unit := do
     safeClose a
 
 /-- Verify `shutdown(2)` `SHUT_RD` / `SHUT_WR` / `SHUT_RDWR` ABI tags and half-close semantics. -/
-def assume_net_shutdown_shutHowAbi : IO Unit := do
+private def assume_net_shutdown_shutHowAbi : IO Unit := do
   let ops := defaultOps
   let (a, b) ← assertOk "socketpair" (← ops.socketpair .unix .stream nbFlags)
   try
@@ -442,7 +440,7 @@ def assume_net_shutdown_shutHowAbi : IO Unit := do
     safeClose b
 
 /-- Verify `sendmsg(2)` `SCM_RIGHTS` batch encoding and bounds (`1..32`). -/
-def assume_net_sendmsg_scmRightsBatchAbi : IO Unit := do
+private def assume_net_sendmsg_scmRightsBatchAbi : IO Unit := do
   let ops := defaultOps
   let (a, b) ← assertOk "socketpair" (← ops.socketpair .unix .seqpacket nbFlags)
   let dummy ← assertOk "dummy sock" (← ops.socket .inet .dgram nbFlags 0)
@@ -467,7 +465,7 @@ def assume_net_sendmsg_scmRightsBatchAbi : IO Unit := do
     safeClose b
 
 /-- Verify `recvmsg(2)` `CMSG_LEN(maxFds * sizeof(int))` cap and excess-FD closing on 64-bit Linux. -/
-def assume_net_recvmsg_scmRightsCloexecAndCapAbi : IO Unit := do
+private def assume_net_recvmsg_scmRightsCloexecAndCapAbi : IO Unit := do
   let ops := defaultOps
   let (a, b) ← assertOk "socketpair" (← ops.socketpair .unix .seqpacket nbFlags)
   let f1 ← assertOk "f1" (← ops.socket .inet .dgram nbFlags 0)
@@ -509,7 +507,7 @@ def assume_net_recvmsg_scmRightsCloexecAndCapAbi : IO Unit := do
     safeClose b
 
 /-- Verify `ioctl(2)` `SIOCGIFFLAGS`/`SIOCSIFFLAGS` and `IFNAMSIZ` / NUL validation. -/
-def assume_net_ioctl_ifreqFlagsAndIfnameBounds : IO Unit := do
+private def assume_net_ioctl_ifreqFlagsAndIfnameBounds : IO Unit := do
   let ops := defaultOps
   let fd ← assertOk "dgram sock" (← ops.socket .inet .dgram nbFlags 0)
   try
@@ -535,12 +533,12 @@ def assume_net_ioctl_ifreqFlagsAndIfnameBounds : IO Unit := do
     safeClose fd
 
 /-- Real `socket` `.invalidArg` test (`EINVAL` and `ESOCKTNOSUPPORT`). -/
-def err_socket_invalidArg : IO Unit := do
+private def err_socket_invalidArg : IO Unit := do
   assertErr "socket high proto" (← defaultOps.socket .inet .stream {} IPPROTO_MAX) Errno.EINVAL
   assertErr "socket bad proto" (← defaultOps.socket .inet .stream {} IPPROTO_UDP) Errno.EPROTONOSUPPORT
 
 /-- Mocked `socket` non-transient error paths. -/
-def err_socket_mocked : IO Unit := do
+private def err_socket_mocked : IO Unit := do
   runMockNetError "socket badFd" Errno.EBADF .badFd (fun _ ops => ops.socket .inet .stream {} 0 >>= fun r => pure (r.map fun _ => ()))
   runMockNetError "socket addr" Errno.EADDRNOTAVAIL .addressError (fun _ ops => ops.socket .inet .stream {} 0 >>= fun r => pure (r.map fun _ => ()))
   runMockNetError "socket wb" Errno.EAGAIN .wouldBlockOrInProgress (fun _ ops => ops.socket .inet .stream {} 0 >>= fun r => pure (r.map fun _ => ()))
@@ -548,15 +546,15 @@ def err_socket_mocked : IO Unit := do
   runMockNetError "socket perm" Errno.EACCES .permissionDenied (fun _ ops => ops.socket .inet .stream {} 0 >>= fun r => pure (r.map fun _ => ()))
 
 /-- Mocked `socket` `.transientOrResource` test (`ENOBUFS`). -/
-def err_socket_transient : IO Unit :=
+private def err_socket_transient : IO Unit :=
   runMockNetError "socket transient" Errno.ENOBUFS .transientOrResource (fun _ ops => ops.socket .inet .stream {} 0 >>= fun r => pure (r.map fun _ => ()))
 
 /-- Real `socketpair` `.invalidArg` test (`EOPNOTSUPP`). -/
-def err_socketpair_invalidArg : IO Unit := do
+private def err_socketpair_invalidArg : IO Unit := do
   assertErr "socketpair inet" (← defaultOps.socketpair .inet .stream {}) Errno.EOPNOTSUPP
 
 /-- Mocked `socketpair` non-transient error paths. -/
-def err_socketpair_mocked : IO Unit := do
+private def err_socketpair_mocked : IO Unit := do
   runMockNetError "sp badFd" Errno.EBADF .badFd (fun _ ops => ops.socketpair .unix .stream {} >>= fun r => pure (r.map fun _ => ()))
   runMockNetError "sp addr" Errno.ENOENT .addressError (fun _ ops => ops.socketpair .unix .stream {} >>= fun r => pure (r.map fun _ => ()))
   runMockNetError "sp wb" Errno.EAGAIN .wouldBlockOrInProgress (fun _ ops => ops.socketpair .unix .stream {} >>= fun r => pure (r.map fun _ => ()))
@@ -564,11 +562,11 @@ def err_socketpair_mocked : IO Unit := do
   runMockNetError "sp perm" Errno.EPERM .permissionDenied (fun _ ops => ops.socketpair .unix .stream {} >>= fun r => pure (r.map fun _ => ()))
 
 /-- Mocked `socketpair` `.transientOrResource` test (`EMFILE`). -/
-def err_socketpair_transient : IO Unit :=
+private def err_socketpair_transient : IO Unit :=
   runMockNetError "sp transient" Errno.EMFILE .transientOrResource (fun _ ops => ops.socketpair .unix .stream {} >>= fun r => pure (r.map fun _ => ()))
 
 /-- Real `bind` `.badFd` test (`EBADF` and `ENOTSOCK`). -/
-def err_bind_badFd : IO Unit := do
+private def err_bind_badFd : IO Unit := do
   let cfd ← closedSockFd
   assertErr "bind closed" (← defaultOps.bind cfd (.ipv4 INADDR_LOOPBACK 0)) Errno.EBADF
   let ns ← assertOk "open nonsock" (← rawOpenNonsock)
@@ -578,7 +576,7 @@ def err_bind_badFd : IO Unit := do
     safeClose ns
 
 /-- Real `bind` `.invalidArg` test (`EINVAL` on link-local scope 0 and `EAFNOSUPPORT`). -/
-def err_bind_invalidArg : IO Unit := do
+private def err_bind_invalidArg : IO Unit := do
   let s6 ← assertOk "socket6" (← defaultOps.socket .inet6 .dgram nbFlags 0)
   try
     assertErr "bind fe80 scope 0" (← defaultOps.bind s6 (.ipv6 0xfe80000000000000 1 8080 0 0)) Errno.EINVAL
@@ -587,7 +585,7 @@ def err_bind_invalidArg : IO Unit := do
     safeClose s6
 
 /-- Real `bind` `.addressError` test (`EADDRINUSE` and `ENOENT`). -/
-def err_bind_addressError : IO Unit := do
+private def err_bind_addressError : IO Unit := do
   let (lfd, port) ← setupLoopbackListener defaultOps
   let s2 ← assertOk "socket2" (← defaultOps.socket .inet .stream nbFlags 0)
   try
@@ -597,7 +595,7 @@ def err_bind_addressError : IO Unit := do
     safeClose lfd
 
 /-- Real `bind` `.permissionDenied` test (`EACCES` on unprivileged low-port bind; mocked fallback when `CAP_NET_BIND_SERVICE` is held). -/
-def err_bind_permissionDenied : IO Unit := do
+private def err_bind_permissionDenied : IO Unit := do
   let fd ← assertOk "socket4" (← defaultOps.socket .inet .stream nbFlags 0)
   try
     match ← defaultOps.bind fd (.ipv4 INADDR_LOOPBACK 81) with
@@ -611,21 +609,21 @@ def err_bind_permissionDenied : IO Unit := do
     safeClose fd
 
 /-- Mocked `bind` non-transient error paths. -/
-def err_bind_mocked : IO Unit := do
+private def err_bind_mocked : IO Unit := do
   runMockNetError "bind wb" Errno.EAGAIN .wouldBlockOrInProgress (fun fd ops => ops.bind fd (.ipv4 INADDR_LOOPBACK 0))
   runMockNetError "bind cs" Errno.EISCONN .connectionState (fun fd ops => ops.bind fd (.ipv4 INADDR_LOOPBACK 0))
 
 /-- Mocked `bind` `.transientOrResource` test (`ENOMEM`). -/
-def err_bind_transient : IO Unit :=
+private def err_bind_transient : IO Unit :=
   runMockNetError "bind transient" Errno.ENOMEM .transientOrResource (fun fd ops => ops.bind fd (.ipv4 INADDR_LOOPBACK 0))
 
 /-- Real `listen` `.badFd` test (`EBADF`). -/
-def err_listen_badFd : IO Unit := do
+private def err_listen_badFd : IO Unit := do
   let cfd ← closedSockFd
   assertErr "listen closed" (← defaultOps.listen cfd 8) Errno.EBADF
 
 /-- Real `listen` `.invalidArg` test (`EOPNOTSUPP` on dgram and `EINVAL` on unbound unix). -/
-def err_listen_invalidArg : IO Unit := do
+private def err_listen_invalidArg : IO Unit := do
   let dg ← assertOk "dgram" (← defaultOps.socket .inet .dgram nbFlags 0)
   let us ← assertOk "unix stream" (← defaultOps.socket .unix .stream nbFlags 0)
   try
@@ -636,7 +634,7 @@ def err_listen_invalidArg : IO Unit := do
     safeClose us
 
 /-- Real `listen` `.addressError` test (`EADDRINUSE` across `SO_REUSEADDR` listeners). -/
-def err_listen_addressError : IO Unit := do
+private def err_listen_addressError : IO Unit := do
   let l1 ← assertOk "socket l1" (← defaultOps.socket .inet .stream nbFlags 0)
   let l2 ← assertOk "socket l2" (← defaultOps.socket .inet .stream nbFlags 0)
   try
@@ -654,22 +652,22 @@ def err_listen_addressError : IO Unit := do
     safeClose l1
 
 /-- Mocked `listen` non-transient error paths. -/
-def err_listen_mocked : IO Unit := do
+private def err_listen_mocked : IO Unit := do
   runMockNetError "listen wb" Errno.EAGAIN .wouldBlockOrInProgress (fun fd ops => ops.listen fd 8)
   runMockNetError "listen cs" Errno.EISCONN .connectionState (fun fd ops => ops.listen fd 8)
   runMockNetError "listen perm" Errno.EPERM .permissionDenied (fun fd ops => ops.listen fd 8)
 
 /-- Mocked `listen` `.transientOrResource` test (`ENOBUFS`). -/
-def err_listen_transient : IO Unit :=
+private def err_listen_transient : IO Unit :=
   runMockNetError "listen transient" Errno.ENOBUFS .transientOrResource (fun fd ops => ops.listen fd 8)
 
 /-- Real `accept4` `.badFd` test (`EBADF`). -/
-def err_accept4_badFd : IO Unit := do
+private def err_accept4_badFd : IO Unit := do
   let cfd ← closedSockFd
   assertErr "accept4 closed" (← defaultOps.accept4 cfd nbFlags) Errno.EBADF
 
 /-- Real `accept4` `.invalidArg` test (`EINVAL` on non-listening socket). -/
-def err_accept4_invalidArg : IO Unit := do
+private def err_accept4_invalidArg : IO Unit := do
   let s ← assertOk "socket" (← defaultOps.socket .inet .stream nbFlags 0)
   try
     assertErr "accept4 non-listening" (← defaultOps.accept4 s nbFlags) Errno.EINVAL
@@ -677,7 +675,7 @@ def err_accept4_invalidArg : IO Unit := do
     safeClose s
 
 /-- Real `accept4` `.wouldBlockOrInProgress` test (`EAGAIN` on empty non-blocking listener). -/
-def err_accept4_wouldBlock : IO Unit := do
+private def err_accept4_wouldBlock : IO Unit := do
   let (lfd, _) ← setupLoopbackListener defaultOps
   try
     assertErr "accept4 EAGAIN" (← defaultOps.accept4 lfd nbFlags) Errno.EAGAIN
@@ -685,22 +683,22 @@ def err_accept4_wouldBlock : IO Unit := do
     safeClose lfd
 
 /-- Mocked `accept4` non-transient error paths. -/
-def err_accept4_mocked : IO Unit := do
+private def err_accept4_mocked : IO Unit := do
   runMockNetError "accept4 addr" Errno.EADDRNOTAVAIL .addressError (fun fd ops => ops.accept4 fd nbFlags >>= fun r => pure (r.map fun _ => ()))
   runMockNetError "accept4 cs" Errno.ECONNABORTED .connectionState (fun fd ops => ops.accept4 fd nbFlags >>= fun r => pure (r.map fun _ => ()))
   runMockNetError "accept4 perm" Errno.EPERM .permissionDenied (fun fd ops => ops.accept4 fd nbFlags >>= fun r => pure (r.map fun _ => ()))
 
 /-- Mocked `accept4` `.transientOrResource` test (`EMFILE`). -/
-def err_accept4_transient : IO Unit :=
+private def err_accept4_transient : IO Unit :=
   runMockNetError "accept4 transient" Errno.EMFILE .transientOrResource (fun fd ops => ops.accept4 fd nbFlags >>= fun r => pure (r.map fun _ => ()))
 
 /-- Real `connect` `.badFd` test (`EBADF`). -/
-def err_connect_badFd : IO Unit := do
+private def err_connect_badFd : IO Unit := do
   let cfd ← closedSockFd
   assertErr "connect closed" (← defaultOps.connect cfd (.ipv4 INADDR_LOOPBACK 1)) Errno.EBADF
 
 /-- Real `connect` `.invalidArg` test (`EINVAL` on bad Unix path and `EAFNOSUPPORT`). -/
-def err_connect_invalidArg : IO Unit := do
+private def err_connect_invalidArg : IO Unit := do
   let s ← assertOk "socket" (← defaultOps.socket .inet .stream nbFlags 0)
   try
     assertErr "connect unix empty" (← defaultOps.connect s (.unix ByteArray.empty)) Errno.EINVAL
@@ -710,7 +708,7 @@ def err_connect_invalidArg : IO Unit := do
     safeClose s
 
 /-- Real `connect` `.addressError` test (`ENOENT` on missing `AF_UNIX` path). -/
-def err_connect_addressError : IO Unit := withTempSockDir "econn-enoent" fun miss => do
+private def err_connect_addressError : IO Unit := withTempSockDir "econn-enoent" fun miss => do
   let u ← assertOk "unix socket" (← defaultOps.socket .unix .stream nbFlags 0)
   try
     assertErr "connect missing unix" (← defaultOps.connect u (.unix miss)) Errno.ENOENT
@@ -718,7 +716,7 @@ def err_connect_addressError : IO Unit := withTempSockDir "econn-enoent" fun mis
     safeClose u
 
 /-- Real `connect` `.wouldBlockOrInProgress` test (`EINPROGRESS` on non-blocking loopback, or `ENETUNREACH` if `lo` is down). -/
-def err_connect_inProgress : IO Unit := do
+private def err_connect_inProgress : IO Unit := do
   let (lfd, port) ← setupLoopbackListener defaultOps
   let cfd ← assertOk "client" (← defaultOps.socket .inet .stream nbFlags 0)
   try
@@ -733,7 +731,7 @@ def err_connect_inProgress : IO Unit := do
     safeClose lfd
 
 /-- Real `connect` `.connectionState` test (`EISCONN` and `ECONNREFUSED`). -/
-def err_connect_connectionState : IO Unit := withTempSockDir "econn-cs" fun path => do
+private def err_connect_connectionState : IO Unit := withTempSockDir "econn-cs" fun path => do
   let srv ← assertOk "srv" (← defaultOps.socket .unix .stream nbFlags 0)
   let cli ← assertOk "cli" (← defaultOps.socket .unix .stream nbFlags 0)
   try
@@ -751,20 +749,20 @@ def err_connect_connectionState : IO Unit := withTempSockDir "econn-cs" fun path
     safeClose srv
 
 /-- Mocked `connect` `.permissionDenied` test (`EACCES`). -/
-def err_connect_mocked : IO Unit :=
+private def err_connect_mocked : IO Unit :=
   runMockNetError "connect perm" Errno.EACCES .permissionDenied (fun fd ops => ops.connect fd (.ipv4 INADDR_LOOPBACK 1))
 
 /-- Mocked `connect` `.transientOrResource` test (`EINTR`). -/
-def err_connect_transient : IO Unit :=
+private def err_connect_transient : IO Unit :=
   runMockNetError "connect transient" Errno.EINTR .transientOrResource (fun fd ops => ops.connect fd (.ipv4 INADDR_LOOPBACK 1))
 
 /-- Real `getsockopt` `.badFd` test (`EBADF`). -/
-def err_getsockopt_badFd : IO Unit := do
+private def err_getsockopt_badFd : IO Unit := do
   let cfd ← closedSockFd
   assertErr "getsockopt closed" (← defaultOps.getsockopt cfd .error) Errno.EBADF
 
 /-- Mocked `getsockopt` non-transient error paths. -/
-def err_getsockopt_mocked : IO Unit := do
+private def err_getsockopt_mocked : IO Unit := do
   runMockNetError "gso inv" Errno.ENOPROTOOPT .invalidArg (fun fd ops => ops.getsockopt fd .error >>= fun r => pure (r.map fun _ => ()))
   runMockNetError "gso addr" Errno.ENOENT .addressError (fun fd ops => ops.getsockopt fd .error >>= fun r => pure (r.map fun _ => ()))
   runMockNetError "gso wb" Errno.EAGAIN .wouldBlockOrInProgress (fun fd ops => ops.getsockopt fd .error >>= fun r => pure (r.map fun _ => ()))
@@ -772,16 +770,16 @@ def err_getsockopt_mocked : IO Unit := do
   runMockNetError "gso perm" Errno.EPERM .permissionDenied (fun fd ops => ops.getsockopt fd .error >>= fun r => pure (r.map fun _ => ()))
 
 /-- Mocked `getsockopt` `.transientOrResource` test (`ENOMEM`). -/
-def err_getsockopt_transient : IO Unit :=
+private def err_getsockopt_transient : IO Unit :=
   runMockNetError "gso transient" Errno.ENOMEM .transientOrResource (fun fd ops => ops.getsockopt fd .error >>= fun r => pure (r.map fun _ => ()))
 
 /-- Real `setsockopt` `.badFd` test (`EBADF`). -/
-def err_setsockopt_badFd : IO Unit := do
+private def err_setsockopt_badFd : IO Unit := do
   let cfd ← closedSockFd
   assertErr "setsockopt closed" (← defaultOps.setsockopt cfd .reuseAddr 1) Errno.EBADF
 
 /-- Mocked `setsockopt` non-transient error paths. -/
-def err_setsockopt_mocked : IO Unit := do
+private def err_setsockopt_mocked : IO Unit := do
   runMockNetError "sso inv" Errno.EINVAL .invalidArg (fun fd ops => ops.setsockopt fd .reuseAddr 1)
   runMockNetError "sso addr" Errno.ENOENT .addressError (fun fd ops => ops.setsockopt fd .reuseAddr 1)
   runMockNetError "sso wb" Errno.EAGAIN .wouldBlockOrInProgress (fun fd ops => ops.setsockopt fd .reuseAddr 1)
@@ -789,11 +787,11 @@ def err_setsockopt_mocked : IO Unit := do
   runMockNetError "sso perm" Errno.EPERM .permissionDenied (fun fd ops => ops.setsockopt fd .reuseAddr 1)
 
 /-- Mocked `setsockopt` `.transientOrResource` test (`ENOMEM`). -/
-def err_setsockopt_transient : IO Unit :=
+private def err_setsockopt_transient : IO Unit :=
   runMockNetError "sso transient" Errno.ENOMEM .transientOrResource (fun fd ops => ops.setsockopt fd .reuseAddr 1)
 
 /-- Real `getsockname` `.badFd` test (`EBADF` and `ENOTSOCK`). -/
-def err_getsockname_badFd : IO Unit := do
+private def err_getsockname_badFd : IO Unit := do
   let cfd ← closedSockFd
   assertErr "gsn closed" (← defaultOps.getsockname cfd) Errno.EBADF
   let ns ← assertOk "nonsock" (← rawOpenNonsock)
@@ -803,7 +801,7 @@ def err_getsockname_badFd : IO Unit := do
     safeClose ns
 
 /-- Mocked `getsockname` non-transient error paths. -/
-def err_getsockname_mocked : IO Unit := do
+private def err_getsockname_mocked : IO Unit := do
   runMockNetError "gsn inv" Errno.EINVAL .invalidArg (fun fd ops => ops.getsockname fd >>= fun r => pure (r.map fun _ => ()))
   runMockNetError "gsn addr" Errno.ENOENT .addressError (fun fd ops => ops.getsockname fd >>= fun r => pure (r.map fun _ => ()))
   runMockNetError "gsn wb" Errno.EAGAIN .wouldBlockOrInProgress (fun fd ops => ops.getsockname fd >>= fun r => pure (r.map fun _ => ()))
@@ -811,16 +809,16 @@ def err_getsockname_mocked : IO Unit := do
   runMockNetError "gsn perm" Errno.EPERM .permissionDenied (fun fd ops => ops.getsockname fd >>= fun r => pure (r.map fun _ => ()))
 
 /-- Mocked `getsockname` `.transientOrResource` test (`ENOBUFS`). -/
-def err_getsockname_transient : IO Unit :=
+private def err_getsockname_transient : IO Unit :=
   runMockNetError "gsn transient" Errno.ENOBUFS .transientOrResource (fun fd ops => ops.getsockname fd >>= fun r => pure (r.map fun _ => ()))
 
 /-- Real `recvfrom` `.badFd` test (`EBADF`). -/
-def err_recvfrom_badFd : IO Unit := do
+private def err_recvfrom_badFd : IO Unit := do
   let cfd ← closedSockFd
   assertErr "recvfrom closed" (← defaultOps.recvfrom cfd 8 {}) Errno.EBADF
 
 /-- Real `recvfrom` `.invalidArg` test (`EINVAL` on unconnected `AF_UNIX` stream). -/
-def err_recvfrom_invalidArg : IO Unit := do
+private def err_recvfrom_invalidArg : IO Unit := do
   let u ← assertOk "unix stream" (← defaultOps.socket .unix .stream nbFlags 0)
   try
     assertErr "recvfrom unconnected unix stream" (← defaultOps.recvfrom u 8 {}) Errno.EINVAL
@@ -828,7 +826,7 @@ def err_recvfrom_invalidArg : IO Unit := do
     safeClose u
 
 /-- Real `recvfrom` `.wouldBlockOrInProgress` test (`EAGAIN` on empty non-blocking pair). -/
-def err_recvfrom_wouldBlock : IO Unit := do
+private def err_recvfrom_wouldBlock : IO Unit := do
   let (a, b) ← assertOk "socketpair" (← defaultOps.socketpair .unix .stream nbFlags)
   try
     assertErr "recvfrom empty EAGAIN" (← defaultOps.recvfrom a 8 {}) Errno.EAGAIN
@@ -837,7 +835,7 @@ def err_recvfrom_wouldBlock : IO Unit := do
     safeClose b
 
 /-- Real `recvfrom` `.connectionState` test (`ENOTCONN` on unconnected TCP socket). -/
-def err_recvfrom_connectionState : IO Unit := do
+private def err_recvfrom_connectionState : IO Unit := do
   let s ← assertOk "tcp sock" (← defaultOps.socket .inet .stream nbFlags 0)
   try
     assertErr "recvfrom unconnected tcp ENOTCONN" (← defaultOps.recvfrom s 8 {}) Errno.ENOTCONN
@@ -845,21 +843,21 @@ def err_recvfrom_connectionState : IO Unit := do
     safeClose s
 
 /-- Mocked `recvfrom` non-transient error paths. -/
-def err_recvfrom_mocked : IO Unit := do
+private def err_recvfrom_mocked : IO Unit := do
   runMockNetError "recv addr" Errno.ENOENT .addressError (fun fd ops => ops.recvfrom fd 8 {} >>= fun r => pure (r.map fun _ => ()))
   runMockNetError "recv perm" Errno.EACCES .permissionDenied (fun fd ops => ops.recvfrom fd 8 {} >>= fun r => pure (r.map fun _ => ()))
 
 /-- Mocked `recvfrom` `.transientOrResource` test (`EINTR`). -/
-def err_recvfrom_transient : IO Unit :=
+private def err_recvfrom_transient : IO Unit :=
   runMockNetError "recv transient" Errno.EINTR .transientOrResource (fun fd ops => ops.recvfrom fd 8 {} >>= fun r => pure (r.map fun _ => ()))
 
 /-- Real `sendto` `.badFd` test (`EBADF`). -/
-def err_sendto_badFd : IO Unit := do
+private def err_sendto_badFd : IO Unit := do
   let cfd ← closedSockFd
   assertErr "sendto closed" (← defaultOps.sendto cfd (asciiBytes ['a']) { nosignal := true }) Errno.EBADF
 
 /-- Real `sendto` `.invalidArg` test (`EDESTADDRREQ` on unconnected UDP socket). -/
-def err_sendto_invalidArg : IO Unit := do
+private def err_sendto_invalidArg : IO Unit := do
   let u4 ← assertOk "udp sock" (← defaultOps.socket .inet .dgram nbFlags 0)
   try
     assertErr "sendto unconnected udp EDESTADDRREQ" (← defaultOps.sendto u4 (asciiBytes ['a']) { nosignal := true }) Errno.EDESTADDRREQ
@@ -867,7 +865,7 @@ def err_sendto_invalidArg : IO Unit := do
     safeClose u4
 
 /-- Real `sendto` `.wouldBlockOrInProgress` test (`EAGAIN` when send buffer fills). -/
-def err_sendto_wouldBlock : IO Unit := do
+private def err_sendto_wouldBlock : IO Unit := do
   let (a, b) ← assertOk "socketpair" (← defaultOps.socketpair .unix .stream nbFlags)
   try
     let big := ByteArray.mk (Array.replicate 65536 65)
@@ -887,7 +885,7 @@ def err_sendto_wouldBlock : IO Unit := do
     safeClose b
 
 /-- Real `sendto` `.connectionState` test (`EPIPE` on `SHUT_WR` stream socket). -/
-def err_sendto_connectionState : IO Unit := do
+private def err_sendto_connectionState : IO Unit := do
   let (a, b) ← assertOk "socketpair" (← defaultOps.socketpair .unix .stream nbFlags)
   try
     assertOk "shutdown wr" (← defaultOps.shutdown a .wr)
@@ -897,21 +895,21 @@ def err_sendto_connectionState : IO Unit := do
     safeClose b
 
 /-- Mocked `sendto` non-transient error paths. -/
-def err_sendto_mocked : IO Unit := do
+private def err_sendto_mocked : IO Unit := do
   runMockNetError "send addr" Errno.ENOENT .addressError (fun fd ops => ops.sendto fd (asciiBytes ['a']) {} >>= fun r => pure (r.map fun _ => ()))
   runMockNetError "send perm" Errno.EACCES .permissionDenied (fun fd ops => ops.sendto fd (asciiBytes ['a']) {} >>= fun r => pure (r.map fun _ => ()))
 
 /-- Mocked `sendto` `.transientOrResource` test (`ENOBUFS`). -/
-def err_sendto_transient : IO Unit :=
+private def err_sendto_transient : IO Unit :=
   runMockNetError "send transient" Errno.ENOBUFS .transientOrResource (fun fd ops => ops.sendto fd (asciiBytes ['a']) {} >>= fun r => pure (r.map fun _ => ()))
 
 /-- Real `shutdown` `.badFd` test (`EBADF`). -/
-def err_shutdown_badFd : IO Unit := do
+private def err_shutdown_badFd : IO Unit := do
   let cfd ← closedSockFd
   assertErr "shutdown closed" (← defaultOps.shutdown cfd .rdwr) Errno.EBADF
 
 /-- Real `shutdown` `.connectionState` test (`ENOTCONN` on unconnected socket). -/
-def err_shutdown_connectionState : IO Unit := do
+private def err_shutdown_connectionState : IO Unit := do
   let s ← assertOk "socket" (← defaultOps.socket .inet .stream nbFlags 0)
   try
     assertErr "shutdown unconnected ENOTCONN" (← defaultOps.shutdown s .rdwr) Errno.ENOTCONN
@@ -919,18 +917,18 @@ def err_shutdown_connectionState : IO Unit := do
     safeClose s
 
 /-- Mocked `shutdown` non-transient error paths. -/
-def err_shutdown_mocked : IO Unit := do
+private def err_shutdown_mocked : IO Unit := do
   runMockNetError "shut inv" Errno.EINVAL .invalidArg (fun fd ops => ops.shutdown fd .rd)
   runMockNetError "shut addr" Errno.ENOENT .addressError (fun fd ops => ops.shutdown fd .rd)
   runMockNetError "shut wb" Errno.EAGAIN .wouldBlockOrInProgress (fun fd ops => ops.shutdown fd .rd)
   runMockNetError "shut perm" Errno.EPERM .permissionDenied (fun fd ops => ops.shutdown fd .rd)
 
 /-- Mocked `shutdown` `.transientOrResource` test (`EINTR`). -/
-def err_shutdown_transient : IO Unit :=
+private def err_shutdown_transient : IO Unit :=
   runMockNetError "shut transient" Errno.EINTR .transientOrResource (fun fd ops => ops.shutdown fd .rd)
 
 /-- Real `sendmsg` `.badFd` test (`EBADF` on closed socket and closed SCM payload FD). -/
-def err_sendmsg_badFd : IO Unit := do
+private def err_sendmsg_badFd : IO Unit := do
   let (a, b) ← assertOk "socketpair" (← defaultOps.socketpair .unix .seqpacket nbFlags)
   let cfd ← closedSockFd
   try
@@ -941,7 +939,7 @@ def err_sendmsg_badFd : IO Unit := do
     safeClose b
 
 /-- Real `sendmsg` `.invalidArg` test (`EINVAL` on empty and oversized SCM batch). -/
-def err_sendmsg_invalidArg : IO Unit := do
+private def err_sendmsg_invalidArg : IO Unit := do
   let (a, b) ← assertOk "socketpair" (← defaultOps.socketpair .unix .seqpacket nbFlags)
   try
     assertErr "sendmsg empty" (← defaultOps.sendmsg a #[]) Errno.EINVAL
@@ -956,7 +954,7 @@ def err_sendmsg_invalidArg : IO Unit := do
     safeClose b
 
 /-- Real `sendmsg` `.connectionState` test (`ENOTCONN` on unconnected Unix and `EPIPE` on broken stream). -/
-def err_sendmsg_connectionState : IO Unit := do
+private def err_sendmsg_connectionState : IO Unit := do
   let u ← assertOk "unix" (← defaultOps.socket .unix .dgram nbFlags 0)
   try
     assertErr "sendmsg unconnected ENOTCONN" (← defaultOps.sendmsg u #[u]) Errno.ENOTCONN
@@ -964,22 +962,22 @@ def err_sendmsg_connectionState : IO Unit := do
     safeClose u
 
 /-- Mocked `sendmsg` non-transient error paths. -/
-def err_sendmsg_mocked : IO Unit := do
+private def err_sendmsg_mocked : IO Unit := do
   runMockNetError "sm addr" Errno.ENOENT .addressError (fun fd ops => ops.sendmsg fd #[fd])
   runMockNetError "sm wb" Errno.EAGAIN .wouldBlockOrInProgress (fun fd ops => ops.sendmsg fd #[fd])
   runMockNetError "sm perm" Errno.EPERM .permissionDenied (fun fd ops => ops.sendmsg fd #[fd])
 
 /-- Mocked `sendmsg` `.transientOrResource` test (`ENOMEM`). -/
-def err_sendmsg_transient : IO Unit :=
+private def err_sendmsg_transient : IO Unit :=
   runMockNetError "sm transient" Errno.ENOMEM .transientOrResource (fun fd ops => ops.sendmsg fd #[fd])
 
 /-- Real `recvmsg` `.badFd` test (`EBADF`). -/
-def err_recvmsg_badFd : IO Unit := do
+private def err_recvmsg_badFd : IO Unit := do
   let cfd ← closedSockFd
   assertErr "recvmsg closed" (← defaultOps.recvmsg cfd 1) Errno.EBADF
 
 /-- Real `recvmsg` `.invalidArg` test (`EINVAL` on `maxFds = 0`, `> 32`, and unconnected Unix stream). -/
-def err_recvmsg_invalidArg : IO Unit := do
+private def err_recvmsg_invalidArg : IO Unit := do
   let u ← assertOk "unix stream" (← defaultOps.socket .unix .stream nbFlags 0)
   try
     assertErr "recvmsg maxFds 0" (← defaultOps.recvmsg u 0) Errno.EINVAL
@@ -989,7 +987,7 @@ def err_recvmsg_invalidArg : IO Unit := do
     safeClose u
 
 /-- Real `recvmsg` `.wouldBlockOrInProgress` test (`EAGAIN`). -/
-def err_recvmsg_wouldBlock : IO Unit := do
+private def err_recvmsg_wouldBlock : IO Unit := do
   let (a, b) ← assertOk "socketpair" (← defaultOps.socketpair .unix .seqpacket nbFlags)
   try
     assertErr "recvmsg EAGAIN" (← defaultOps.recvmsg a 1) Errno.EAGAIN
@@ -998,7 +996,7 @@ def err_recvmsg_wouldBlock : IO Unit := do
     safeClose b
 
 /-- Real `recvmsg` `.connectionState` test (`ENOTCONN` on unconnected TCP socket). -/
-def err_recvmsg_connectionState : IO Unit := do
+private def err_recvmsg_connectionState : IO Unit := do
   let s ← assertOk "tcp" (← defaultOps.socket .inet .stream nbFlags 0)
   try
     assertErr "recvmsg unconnected tcp ENOTCONN" (← defaultOps.recvmsg s 1) Errno.ENOTCONN
@@ -1006,16 +1004,16 @@ def err_recvmsg_connectionState : IO Unit := do
     safeClose s
 
 /-- Mocked `recvmsg` non-transient error paths. -/
-def err_recvmsg_mocked : IO Unit := do
+private def err_recvmsg_mocked : IO Unit := do
   runMockNetError "rm addr" Errno.ENOENT .addressError (fun fd ops => ops.recvmsg fd 1 >>= fun r => pure (r.map fun _ => ()))
   runMockNetError "rm perm" Errno.EACCES .permissionDenied (fun fd ops => ops.recvmsg fd 1 >>= fun r => pure (r.map fun _ => ()))
 
 /-- Mocked `recvmsg` `.transientOrResource` test (`EMFILE`). -/
-def err_recvmsg_transient : IO Unit :=
+private def err_recvmsg_transient : IO Unit :=
   runMockNetError "rm transient" Errno.EMFILE .transientOrResource (fun fd ops => ops.recvmsg fd 1 >>= fun r => pure (r.map fun _ => ()))
 
 /-- Real `ioctl` `.badFd` test (`EBADF` and non-socket `ENOTTY`). -/
-def err_ioctl_badFd : IO Unit := do
+private def err_ioctl_badFd : IO Unit := do
   let cfd ← closedSockFd
   assertErr "ioctl closed" (← defaultOps.ioctl cfd .getIfFlags loIfname) Errno.EBADF
   let ns ← assertOk "nonsock" (← rawOpenNonsock)
@@ -1025,7 +1023,7 @@ def err_ioctl_badFd : IO Unit := do
     safeClose ns
 
 /-- Real `ioctl` `.invalidArg` test (`EINVAL` on embedded-NUL and `>= IFNAMSIZ` interface names). -/
-def err_ioctl_invalidArg : IO Unit := do
+private def err_ioctl_invalidArg : IO Unit := do
   let fd ← assertOk "sock" (← defaultOps.socket .inet .dgram nbFlags 0)
   try
     assertErr "ioctl NUL" (← defaultOps.ioctl fd .getIfFlags (ByteArray.mk #[108, 0])) Errno.EINVAL
@@ -1034,7 +1032,7 @@ def err_ioctl_invalidArg : IO Unit := do
     safeClose fd
 
 /-- Real `ioctl` `.addressError` test (`ENODEV` on missing or empty interface name). -/
-def err_ioctl_addressError : IO Unit := do
+private def err_ioctl_addressError : IO Unit := do
   let fd ← assertOk "sock" (← defaultOps.socket .inet .dgram nbFlags 0)
   try
     assertErr "ioctl empty ENODEV" (← defaultOps.ioctl fd .getIfFlags ByteArray.empty) Errno.ENODEV
@@ -1043,7 +1041,7 @@ def err_ioctl_addressError : IO Unit := do
     safeClose fd
 
 /-- Real `ioctl` `.permissionDenied` test (`EPERM`/`EACCES` on unprivileged `SIOCSIFFLAGS`; mocked fallback when `CAP_NET_ADMIN` is held). -/
-def err_ioctl_permissionDenied : IO Unit := do
+private def err_ioctl_permissionDenied : IO Unit := do
   let fd ← assertOk "sock" (← defaultOps.socket .inet .dgram nbFlags 0)
   try
     let curFlags ← assertOk "ioctl get flags" (← defaultOps.ioctl fd .getIfFlags loIfname)
@@ -1058,105 +1056,13 @@ def err_ioctl_permissionDenied : IO Unit := do
     safeClose fd
 
 /-- Mocked `ioctl` non-transient error paths. -/
-def err_ioctl_mocked : IO Unit := do
+private def err_ioctl_mocked : IO Unit := do
   runMockNetError "ioctl wb" Errno.EAGAIN .wouldBlockOrInProgress (fun fd ops => ops.ioctl fd .getIfFlags loIfname >>= fun r => pure (r.map fun _ => ()))
   runMockNetError "ioctl cs" Errno.ENETDOWN .connectionState (fun fd ops => ops.ioctl fd .getIfFlags loIfname >>= fun r => pure (r.map fun _ => ()))
 
 /-- Mocked `ioctl` `.transientOrResource` test (`ENOMEM`). -/
-def err_ioctl_transient : IO Unit :=
+private def err_ioctl_transient : IO Unit :=
   runMockNetError "ioctl transient" Errno.ENOMEM .transientOrResource (fun fd ops => ops.ioctl fd .getIfFlags loIfname >>= fun r => pure (r.map fun _ => ()))
-
-/-- Registered `AssumptionObligation` runtime checks matching `Net/SpecTests.lean` 1-to-1. -/
-def registeredAssumptions : Array RegisteredAssumption :=
-  #[ { specName := "LeanSwe.LinuxSyscall.Net.assume_net_socket_domainTypeFlagsAbi", run := assume_net_socket_domainTypeFlagsAbi }
-   , { specName := "LeanSwe.LinuxSyscall.Net.assume_net_socketpair_unixPairAbi", run := assume_net_socketpair_unixPairAbi }
-   , { specName := "LeanSwe.LinuxSyscall.Net.assume_net_bind_sockaddrTranslationAndNulGuard", run := assume_net_bind_sockaddrTranslationAndNulGuard }
-   , { specName := "LeanSwe.LinuxSyscall.Net.assume_net_listen_backlogAbi", run := assume_net_listen_backlogAbi }
-   , { specName := "LeanSwe.LinuxSyscall.Net.assume_net_accept4_flagsAndPeerAddrDecode", run := assume_net_accept4_flagsAndPeerAddrDecode }
-   , { specName := "LeanSwe.LinuxSyscall.Net.assume_net_connect_nonblockAndSockaddrAbi", run := assume_net_connect_nonblockAndSockaddrAbi }
-   , { specName := "LeanSwe.LinuxSyscall.Net.assume_net_getsockopt_soErrorAndReuseAddrAbi", run := assume_net_getsockopt_soErrorAndReuseAddrAbi }
-   , { specName := "LeanSwe.LinuxSyscall.Net.assume_net_setsockopt_reuseAddrAbi", run := assume_net_setsockopt_reuseAddrAbi }
-   , { specName := "LeanSwe.LinuxSyscall.Net.assume_net_getsockname_sockaddrDecode", run := assume_net_getsockname_sockaddrDecode }
-   , { specName := "LeanSwe.LinuxSyscall.Net.assume_net_recvfrom_clamped16MiBAndMsgFlags", run := assume_net_recvfrom_clamped16MiBAndMsgFlags }
-   , { specName := "LeanSwe.LinuxSyscall.Net.assume_net_sendto_msgFlagsAndPartialCount", run := assume_net_sendto_msgFlagsAndPartialCount }
-   , { specName := "LeanSwe.LinuxSyscall.Net.assume_net_shutdown_shutHowAbi", run := assume_net_shutdown_shutHowAbi }
-   , { specName := "LeanSwe.LinuxSyscall.Net.assume_net_sendmsg_scmRightsBatchAbi", run := assume_net_sendmsg_scmRightsBatchAbi }
-   , { specName := "LeanSwe.LinuxSyscall.Net.assume_net_recvmsg_scmRightsCloexecAndCapAbi", run := assume_net_recvmsg_scmRightsCloexecAndCapAbi }
-   , { specName := "LeanSwe.LinuxSyscall.Net.assume_net_ioctl_ifreqFlagsAndIfnameBounds", run := assume_net_ioctl_ifreqFlagsAndIfnameBounds } ]
-
-/-- Registered `(request × NetErrorKind)` error-coverage runtime tests matching `Net/SpecTests.lean` 1-to-1. -/
-def registeredErrorTests : Array RegisteredErrorTest :=
-  #[ { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_socket_invalidArg", mode := .real, run := err_socket_invalidArg }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_socket_mocked", mode := .mocked, run := err_socket_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_socket_transient", mode := .mocked, run := err_socket_transient }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_socketpair_invalidArg", mode := .real, run := err_socketpair_invalidArg }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_socketpair_mocked", mode := .mocked, run := err_socketpair_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_socketpair_transient", mode := .mocked, run := err_socketpair_transient }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_bind_badFd", mode := .real, run := err_bind_badFd }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_bind_invalidArg", mode := .real, run := err_bind_invalidArg }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_bind_addressError", mode := .real, run := err_bind_addressError }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_bind_permissionDenied", mode := .real, run := err_bind_permissionDenied }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_bind_mocked", mode := .mocked, run := err_bind_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_bind_transient", mode := .mocked, run := err_bind_transient }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_listen_badFd", mode := .real, run := err_listen_badFd }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_listen_invalidArg", mode := .real, run := err_listen_invalidArg }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_listen_addressError", mode := .real, run := err_listen_addressError }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_listen_mocked", mode := .mocked, run := err_listen_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_listen_transient", mode := .mocked, run := err_listen_transient }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_accept4_badFd", mode := .real, run := err_accept4_badFd }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_accept4_invalidArg", mode := .real, run := err_accept4_invalidArg }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_accept4_wouldBlock", mode := .real, run := err_accept4_wouldBlock }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_accept4_mocked", mode := .mocked, run := err_accept4_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_accept4_transient", mode := .mocked, run := err_accept4_transient }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_connect_badFd", mode := .real, run := err_connect_badFd }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_connect_invalidArg", mode := .real, run := err_connect_invalidArg }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_connect_addressError", mode := .real, run := err_connect_addressError }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_connect_inProgress", mode := .real, run := err_connect_inProgress }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_connect_connectionState", mode := .real, run := err_connect_connectionState }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_connect_mocked", mode := .mocked, run := err_connect_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_connect_transient", mode := .mocked, run := err_connect_transient }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_getsockopt_badFd", mode := .real, run := err_getsockopt_badFd }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_getsockopt_mocked", mode := .mocked, run := err_getsockopt_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_getsockopt_transient", mode := .mocked, run := err_getsockopt_transient }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_setsockopt_badFd", mode := .real, run := err_setsockopt_badFd }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_setsockopt_mocked", mode := .mocked, run := err_setsockopt_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_setsockopt_transient", mode := .mocked, run := err_setsockopt_transient }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_getsockname_badFd", mode := .real, run := err_getsockname_badFd }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_getsockname_mocked", mode := .mocked, run := err_getsockname_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_getsockname_transient", mode := .mocked, run := err_getsockname_transient }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_recvfrom_badFd", mode := .real, run := err_recvfrom_badFd }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_recvfrom_invalidArg", mode := .real, run := err_recvfrom_invalidArg }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_recvfrom_wouldBlock", mode := .real, run := err_recvfrom_wouldBlock }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_recvfrom_connectionState", mode := .real, run := err_recvfrom_connectionState }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_recvfrom_mocked", mode := .mocked, run := err_recvfrom_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_recvfrom_transient", mode := .mocked, run := err_recvfrom_transient }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_sendto_badFd", mode := .real, run := err_sendto_badFd }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_sendto_invalidArg", mode := .real, run := err_sendto_invalidArg }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_sendto_wouldBlock", mode := .real, run := err_sendto_wouldBlock }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_sendto_connectionState", mode := .real, run := err_sendto_connectionState }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_sendto_mocked", mode := .mocked, run := err_sendto_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_sendto_transient", mode := .mocked, run := err_sendto_transient }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_shutdown_badFd", mode := .real, run := err_shutdown_badFd }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_shutdown_connectionState", mode := .real, run := err_shutdown_connectionState }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_shutdown_mocked", mode := .mocked, run := err_shutdown_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_shutdown_transient", mode := .mocked, run := err_shutdown_transient }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_sendmsg_badFd", mode := .real, run := err_sendmsg_badFd }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_sendmsg_invalidArg", mode := .real, run := err_sendmsg_invalidArg }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_sendmsg_connectionState", mode := .real, run := err_sendmsg_connectionState }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_sendmsg_mocked", mode := .mocked, run := err_sendmsg_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_sendmsg_transient", mode := .mocked, run := err_sendmsg_transient }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_recvmsg_badFd", mode := .real, run := err_recvmsg_badFd }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_recvmsg_invalidArg", mode := .real, run := err_recvmsg_invalidArg }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_recvmsg_wouldBlock", mode := .real, run := err_recvmsg_wouldBlock }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_recvmsg_connectionState", mode := .real, run := err_recvmsg_connectionState }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_recvmsg_mocked", mode := .mocked, run := err_recvmsg_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_recvmsg_transient", mode := .mocked, run := err_recvmsg_transient }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_ioctl_badFd", mode := .real, run := err_ioctl_badFd }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_ioctl_invalidArg", mode := .real, run := err_ioctl_invalidArg }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_ioctl_addressError", mode := .real, run := err_ioctl_addressError }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_ioctl_permissionDenied", mode := .real, run := err_ioctl_permissionDenied }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_ioctl_mocked", mode := .mocked, run := err_ioctl_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Net.RuntimeTests.err_ioctl_transient", mode := .mocked, run := err_ioctl_transient } ]
 
 /-- Run live Linux regression checks covering abstract `AF_UNIX`, `SCM_RIGHTS`, and TCP connect-reset edge cases. -/
 private def runUnixScmAndConnectResetPart1 : IO Unit := do
@@ -3058,10 +2964,94 @@ private def runPreShutCloseWaitLoFlapTests : IO Unit := do
   t6v4 ← mustStep "t6v4.conn1" t6v4 (.connect 1 (.ipv4 INADDR_LOOPBACK 55207)) (.err Errno.EINPROGRESS)
   let _ ← mustStep "t6v4.rx1.eof" t6v4 (.recvfrom 1 8 { dontwait := true }) (.bytes ByteArray.empty)
 
-/-- Run all registered assumptions, error-coverage tests, and kernel-parity regression suites. -/
-def runAll : IO Unit := do
-  Core.runRegisteredAssumptions registeredAssumptions
-  Core.runRegisteredErrorTests registeredErrorTests
+/-- Run all `Net` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke` and `lean-swe-mut-test`). -/
+def runChecks : IO Unit := do
+  assume_net_socket_domainTypeFlagsAbi
+  assume_net_socketpair_unixPairAbi
+  assume_net_bind_sockaddrTranslationAndNulGuard
+  assume_net_listen_backlogAbi
+  assume_net_accept4_flagsAndPeerAddrDecode
+  assume_net_connect_nonblockAndSockaddrAbi
+  assume_net_getsockopt_soErrorAndReuseAddrAbi
+  assume_net_setsockopt_reuseAddrAbi
+  assume_net_getsockname_sockaddrDecode
+  assume_net_recvfrom_clamped16MiBAndMsgFlags
+  assume_net_sendto_msgFlagsAndPartialCount
+  assume_net_shutdown_shutHowAbi
+  assume_net_sendmsg_scmRightsBatchAbi
+  assume_net_recvmsg_scmRightsCloexecAndCapAbi
+  assume_net_ioctl_ifreqFlagsAndIfnameBounds
+  err_socket_invalidArg
+  err_socket_mocked
+  err_socket_transient
+  err_socketpair_invalidArg
+  err_socketpair_mocked
+  err_socketpair_transient
+  err_bind_badFd
+  err_bind_invalidArg
+  err_bind_addressError
+  err_bind_permissionDenied
+  err_bind_mocked
+  err_bind_transient
+  err_listen_badFd
+  err_listen_invalidArg
+  err_listen_addressError
+  err_listen_mocked
+  err_listen_transient
+  err_accept4_badFd
+  err_accept4_invalidArg
+  err_accept4_wouldBlock
+  err_accept4_mocked
+  err_accept4_transient
+  err_connect_badFd
+  err_connect_invalidArg
+  err_connect_addressError
+  err_connect_inProgress
+  err_connect_connectionState
+  err_connect_mocked
+  err_connect_transient
+  err_getsockopt_badFd
+  err_getsockopt_mocked
+  err_getsockopt_transient
+  err_setsockopt_badFd
+  err_setsockopt_mocked
+  err_setsockopt_transient
+  err_getsockname_badFd
+  err_getsockname_mocked
+  err_getsockname_transient
+  err_recvfrom_badFd
+  err_recvfrom_invalidArg
+  err_recvfrom_wouldBlock
+  err_recvfrom_connectionState
+  err_recvfrom_mocked
+  err_recvfrom_transient
+  err_sendto_badFd
+  err_sendto_invalidArg
+  err_sendto_wouldBlock
+  err_sendto_connectionState
+  err_sendto_mocked
+  err_sendto_transient
+  err_shutdown_badFd
+  err_shutdown_connectionState
+  err_shutdown_mocked
+  err_shutdown_transient
+  err_sendmsg_badFd
+  err_sendmsg_invalidArg
+  err_sendmsg_connectionState
+  err_sendmsg_mocked
+  err_sendmsg_transient
+  err_recvmsg_badFd
+  err_recvmsg_invalidArg
+  err_recvmsg_wouldBlock
+  err_recvmsg_connectionState
+  err_recvmsg_mocked
+  err_recvmsg_transient
+  err_ioctl_badFd
+  err_ioctl_invalidArg
+  err_ioctl_addressError
+  err_ioctl_permissionDenied
+  err_ioctl_mocked
+  err_ioctl_transient
   if ← isLoopbackUp defaultOps then
     runUnixScmAndConnectResetTests
     runDualStackShutdownAndUnixFsTests
@@ -3072,7 +3062,6 @@ def runAll : IO Unit := do
   runMcastScopeAndSynResetTests
   runTaintedAbortLastAckAndMcastRoutedTests
   runShimAndFdBoxEdgeTests
-  IO.println "PASS: LeanSwe.LinuxSyscall.Net runtime tests"
 
 private def parseInjectedErrno (s : String) : Errno :=
   match s with
@@ -3304,7 +3293,7 @@ def runStraceFaultCheck : IO Unit := do
       if out.exitCode != 0 then
         throw (IO.userError s!"net strace {syscallName} {errName} failed (exit={out.exitCode}): {out.stderr}")
 
-/-- Handle `--net-strace-fault-check` and worker subcommands for `Tests/Main.lean` and `Tests/MutateDriver.lean`. -/
+/-- Handle `--net-strace-fault-check` and `--net-strace-worker` subcommands dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`) and `lean-swe-mut-test`. -/
 def probeMain (args : List String) : IO UInt32 := do
   match args with
   | [] =>
@@ -3341,4 +3330,4 @@ def probeMain (args : List String) : IO UInt32 := do
     IO.eprintln s!"unknown net strace args: {args}"
     return 1
 
-end LeanSwe.LinuxSyscall.Net.RuntimeTests
+end Fuzz.LinuxSyscall.Net.Strace

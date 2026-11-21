@@ -1,9 +1,9 @@
 import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.LinuxSyscall.TimeRand.Model
 import LeanSwe.LinuxSyscall.TimeRand.Interface
-import LeanSwe.LinuxSyscall.Fuzz.Rng
+import Fuzz.LinuxSyscall.Rng
 
-namespace LeanSwe.LinuxSyscall.Fuzz
+namespace Fuzz.LinuxSyscall
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.TimeRand
@@ -1180,4 +1180,4 @@ def fuzzTimeRand (steps : Nat) (seedVal : UInt64)
   IO.println s!"FUZZ_SUMMARY suite=timerand steps={steps} episodes={episodes} elapsed_ms={elapsedMs} syscalls_per_sec={rate}"
   return { steps := steps, episodes := episodes, elapsedMs := elapsedMs, hits := hits }
 
-end LeanSwe.LinuxSyscall.Fuzz
+end Fuzz.LinuxSyscall

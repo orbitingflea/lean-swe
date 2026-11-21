@@ -1,16 +1,14 @@
-import Core.Assumptions
 import LeanSwe.LinuxSyscall.Dns.Impl
 import LeanSwe.LinuxSyscall.Dns.Interface
 import LeanSwe.LinuxSyscall.Dns.Model
 
-namespace LeanSwe.LinuxSyscall.Dns.RuntimeTests
+namespace Fuzz.Dns.Checks
 
-open Core
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Dns
 
 private def failWith {α : Type} (msg : String) : IO α :=
-  throw (IO.userError s!"Dns.RuntimeTests: {msg}")
+  throw (IO.userError s!"Dns.Checks: {msg}")
 
 private def assertTrue (label : String) (cond : Bool) : IO Unit := do
   if !cond then
@@ -34,7 +32,7 @@ private def mkMockRawOps (fn : String → UInt8 → UInt8 → Except (Int32 × U
   { getaddrinfo := fun host fam sock => pure (fn host fam sock) }
 
 /-- Runtime verification for `LeanSwe.LinuxSyscall.Dns.assume_dns_getaddrinfo_offlineAndScoped`. -/
-def assume_dns_getaddrinfo_offlineAndScoped : IO Unit := do
+private def assume_dns_getaddrinfo_offlineAndScoped : IO Unit := do
   let r4 ← expectOk "127.0.0.1" (← getaddrinfo "127.0.0.1")
   assertTrue "127.0.0.1 exact" (r4 == [.ipv4 127 0 0 1])
   assertTrue "127.0.0.1 allowed" (allowedDnsOutcome "127.0.0.1" {} (.ok r4))
@@ -109,7 +107,7 @@ def assume_dns_getaddrinfo_offlineAndScoped : IO Unit := do
     assertTrue "localhost only fails when /etc/hosts is absent" (!hostsExists)
 
 /-- Runtime verification for `LeanSwe.LinuxSyscall.Dns.assume_dns_getaddrinfo_hostGuardsAndHints`. -/
-def assume_dns_getaddrinfo_hostGuardsAndHints : IO Unit := do
+private def assume_dns_getaddrinfo_hostGuardsAndHints : IO Unit := do
   let eEmpty ← expectErrKind "empty host" .invalidHost (← getaddrinfo "")
   assertTrue "empty gaiCode EAI_NONAME" (eEmpty.gaiCode == EAI_NONAME)
   assertTrue "empty errno EINVAL" (eEmpty.errno? == some Errno.EINVAL)
@@ -143,28 +141,21 @@ def assume_dns_getaddrinfo_hostGuardsAndHints : IO Unit := do
     assertTrue "bad host EAI_NONAME" (e.kind == .nameNotFound && e.gaiCode == EAI_NONAME)
   | .ok _ => failWith "bad host unexpectedly resolved"
 
-/-- Registered assumption checks for `LeanSwe.LinuxSyscall.Dns`. -/
-def registeredAssumptions : Array RegisteredAssumption :=
-  #[ { specName := "LeanSwe.LinuxSyscall.Dns.assume_dns_getaddrinfo_offlineAndScoped"
-       run := assume_dns_getaddrinfo_offlineAndScoped }
-   , { specName := "LeanSwe.LinuxSyscall.Dns.assume_dns_getaddrinfo_hostGuardsAndHints"
-       run := assume_dns_getaddrinfo_hostGuardsAndHints } ]
-
 /-- Real offline host test for `DnsErrorKind.invalidHost` on `getaddrinfo`. -/
-def err_dns_getaddrinfo_invalidHost : IO Unit := do
+private def err_dns_getaddrinfo_invalidHost : IO Unit := do
   let e1 ← expectErrKind "getaddrinfo empty" .invalidHost (← getaddrinfo "")
   assertTrue "empty errno=EINVAL" (e1.errno? == some Errno.EINVAL)
   let e2 ← expectErrKind "getaddrinfo embedded NUL" .invalidHost (← getaddrinfo "bad\x00host")
   assertTrue "nul errno=EINVAL" (e2.errno? == some Errno.EINVAL)
 
 /-- Real offline-deterministic host test for `DnsErrorKind.nameNotFound` on `getaddrinfo` (zero DNS network dependency). -/
-def err_dns_getaddrinfo_nameNotFound : IO Unit := do
+private def err_dns_getaddrinfo_nameNotFound : IO Unit := do
   let e ← expectErrKind "bad host" .nameNotFound (← getaddrinfo "bad host")
   assertTrue "gaiCode == EAI_NONAME" (e.gaiCode == EAI_NONAME)
   assertTrue "message non-empty" (!e.message.isEmpty)
 
 /-- Mocked FFI boundary error-classification, family-mismatch, and malformed-payload tests for `getaddrinfo`. -/
-def err_dns_getaddrinfo_mocked : IO Unit := do
+private def err_dns_getaddrinfo_mocked : IO Unit := do
   let msg := "mock error".toUTF8
   let nodataOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .error (EAI_NODATA, 0, msg))
   let _ ← expectErrKind "mock nodata" .nameNotFound (← nodataOps.getaddrinfo "example.invalid.")
@@ -250,7 +241,7 @@ def err_dns_getaddrinfo_mocked : IO Unit := do
   assertTrue "mock malformed gaiCode=EAI_OVERFLOW" (eMal.gaiCode == EAI_OVERFLOW)
 
 /-- Real decoder test for `.otherGai` (`EAI_OVERFLOW`) on malformed inputs and large tail-recursive round-trips. -/
-def err_dns_decodeRecords_malformed : IO Unit := do
+private def err_dns_decodeRecords_malformed : IO Unit := do
   let eTrunc ← expectErrKind "truncated" .otherGai (Internal.decodeRecords (ByteArray.mk #[4, 127, 0]))
   assertTrue "truncated EAI_OVERFLOW" (eTrunc.gaiCode == EAI_OVERFLOW)
   let _ ← expectErrKind "bad tag" .otherGai
@@ -261,25 +252,13 @@ def err_dns_decodeRecords_malformed : IO Unit := do
   let decBulk ← expectOk "5000-record tail-rec round-trip" (Internal.decodeRecords (Internal.encodeRecords bulk))
   assertTrue "5000-record count" (decBulk.length == 5000)
 
-/-- Registered error-coverage tests for `LeanSwe.LinuxSyscall.Dns`. -/
-def registeredErrorTests : Array RegisteredErrorTest :=
-  #[ { testName := "LeanSwe.LinuxSyscall.Dns.RuntimeTests.err_dns_getaddrinfo_invalidHost"
-       mode := .real
-       run := err_dns_getaddrinfo_invalidHost }
-   , { testName := "LeanSwe.LinuxSyscall.Dns.RuntimeTests.err_dns_getaddrinfo_nameNotFound"
-       mode := .real
-       run := err_dns_getaddrinfo_nameNotFound }
-   , { testName := "LeanSwe.LinuxSyscall.Dns.RuntimeTests.err_dns_getaddrinfo_mocked"
-       mode := .mocked
-       run := err_dns_getaddrinfo_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Dns.RuntimeTests.err_dns_decodeRecords_malformed"
-       mode := .real
-       run := err_dns_decodeRecords_malformed } ]
+/-- Run all `Dns` real and mocked error-path regression checks. -/
+def runChecks : IO Unit := do
+  assume_dns_getaddrinfo_offlineAndScoped
+  assume_dns_getaddrinfo_hostGuardsAndHints
+  err_dns_getaddrinfo_invalidHost
+  err_dns_getaddrinfo_nameNotFound
+  err_dns_getaddrinfo_mocked
+  err_dns_decodeRecords_malformed
 
-/-- Run all `LeanSwe.LinuxSyscall.Dns` assumption checks and error-coverage tests. -/
-def runAll : IO Unit := do
-  Core.runRegisteredAssumptions registeredAssumptions
-  Core.runRegisteredErrorTests registeredErrorTests
-  IO.println "PASS: LeanSwe.LinuxSyscall.Dns runtime tests"
-
-end LeanSwe.LinuxSyscall.Dns.RuntimeTests
+end Fuzz.Dns.Checks

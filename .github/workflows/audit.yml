@@ -129,12 +129,12 @@ jobs:
         id: build
         run: |
           set -euo pipefail
-          lake exe cache get; LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail; LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail LeanSwe.PostFork.Verified lean-swe-mut-test leanswe-world-fuzz leanswe-fuzz
+          lake exe cache get; LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail; LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail LeanSwe.PostFork.Verified lean-swe-mut-test leanswe-fuzz
           actual_syms=$(nm -u .lake/build/lib/libleanswe_postfork_rust.a | awk '$1 ~ /^[Uuwv]$/ { print $2 }' | sort -u)
           expected_syms=$(printf '%s\n' __errno_location _exit chdir close dup2 execve fcntl open read setpgid syscall write | sort -u)
           expected_c_syms=$(printf '%s\n' leanswe_postfork_host_close_fd leanswe_postfork_host_fork_run leanswe_postfork_host_pipe_cloexec leanswe_postfork_host_probe_fd leanswe_postfork_host_probe_handle leanswe_postfork_host_read_once leanswe_postfork_host_setpgid leanswe_postfork_host_wait_once leanswe_postfork_host_write_once | sort -u)
           diff -u <(printf '%s\n' "$expected_syms") <(printf '%s\n' "$actual_syms"); diff -u <(printf '%s\n' leanswe_postfork_close_fds_above2_except leanswe_postfork_run_child) <(nm --defined-only .lake/build/lib/libleanswe_postfork_rust.a | awk '$2 ~ /^[A-Z]$/ { print $3 }' | sort -u); diff -u <(printf '%s\n' "$expected_c_syms") <(nm --defined-only .lake/build/lib/libleanswe_postfork.a | awk '$2 ~ /^[ABCDGRST]$/ { print $3 }' | sort -u)
-          for b in lean-swe-test lean-swe-mut-test leanswe-world-fuzz leanswe-fuzz; do readelf -d ".lake/build/bin/$b" | grep -qE 'BIND_NOW|NOW'; done
+          for b in lean-swe-test lean-swe-mut-test leanswe-fuzz; do readelf -d ".lake/build/bin/$b" | grep -qE 'BIND_NOW|NOW'; done
 
       - name: Save Lean packages cache
         if: >-
@@ -190,29 +190,29 @@ jobs:
           echo "ASSUMP_NONCE=$ASSUMP_NONCE" >> "$GITHUB_ENV"
           echo "ASSUMP_LOG=$ASSUMP_LOG" >> "$GITHUB_ENV"
           .lake/build/bin/lean-swe-test --assump-log "$ASSUMP_LOG" --assump-nonce "$ASSUMP_NONCE"
-          .lake/build/bin/lean-swe-test --sandbox-strace-fault-check; .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 100000 --self-test-shrink; .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink
+          .lake/build/bin/leanswe-fuzz --sandbox-strace-fault-check; .lake/build/bin/leanswe-fuzz --suite sandbox --steps 100000 --self-test-shrink; .lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink
           if sudo -n sysctl -n vm.memfd_noexec >/dev/null 2>&1; then
             OLD_MEMFD_NOEXEC=$(sudo -n sysctl -n vm.memfd_noexec)
             sudo -n unshare --pid --fork --mount-proc -- bash -ec '
               ulimit -Hc unlimited; if (( $1 == 2 )); then echo "MEMFD_NOEXEC_WARN: vm.memfd_noexec=2 enforced; skipping vm.memfd_noexec=1"; else
-                sysctl -w vm.memfd_noexec=1 >/dev/null; setpriv --reuid="$2" --regid="$3" --init-groups -- .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink; sysctl -w vm.memfd_noexec=2 >/dev/null
+                sysctl -w vm.memfd_noexec=1 >/dev/null; setpriv --reuid="$2" --regid="$3" --init-groups -- .lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink; sysctl -w vm.memfd_noexec=2 >/dev/null
               fi
-              setpriv --reuid="$2" --regid="$3" --init-groups -- .lake/build/bin/leanswe-world-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink --require-memfd-strict
+              setpriv --reuid="$2" --regid="$3" --init-groups -- .lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink --require-memfd-strict
               sysctl -w "vm.memfd_noexec=$1" >/dev/null 2>&1 || true' _ "$OLD_MEMFD_NOEXEC" "$(id -u)" "$(id -g)"
           else
             echo "::warning::sudo -n sysctl unavailable; skipping vm.memfd_noexec={1,2} strict checks"
           fi
-          .lake/build/bin/lean-swe-test --timerand-strace-fault-check; .lake/build/bin/lean-swe-test --files-strace-fault-check; .lake/build/bin/lean-swe-test --suite Compress --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite LinuxSyscall.Sandbox --suite LinuxSyscall.TimeRand --suite LinuxSyscall.Passwd --suite LinuxSyscall.Dns --suite LinuxSyscall.Poll --suite LinuxSyscall.Net --suite LinuxSyscall.Process --suite LinuxSyscall.Files --suite PostFork --suite Sqlite --suite Sqlite.Raw 0<&- 1>&- 2>&-
+          .lake/build/bin/leanswe-fuzz --timerand-strace-fault-check; .lake/build/bin/leanswe-fuzz --files-strace-fault-check; .lake/build/bin/lean-swe-test --suite Compress --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite PostFork --suite Sqlite --suite Sqlite.Raw 0<&- 1>&- 2>&-; .lake/build/bin/leanswe-fuzz --smoke --suite sandbox,timerand,files,process,poll,net,passwd,dns --self-test-shrink 0<&- 1>&- 2>&-
           .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,Compress,LinuxSyscall.Poll,LinuxSyscall.Net,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns,LinuxSyscall.Files,PostFork,Sqlite,Sqlite.Raw
-          .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --self-test-shrink; .lake/build/bin/leanswe-world-fuzz --suite timerand --steps 100000 --random-seed --self-test-shrink
-          .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process; .lake/build/bin/lean-swe-test --process-strace-fault-check; .lake/build/bin/leanswe-world-fuzz --suite process --steps 15000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-world-fuzz --suite process --steps 5000 --random-seed --self-test-shrink --require-ns
+          .lake/build/bin/leanswe-fuzz --suite timerand --steps 100000 --self-test-shrink; .lake/build/bin/leanswe-fuzz --suite timerand --steps 100000 --random-seed --self-test-shrink
+          .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process; .lake/build/bin/leanswe-fuzz --process-strace-fault-check; .lake/build/bin/leanswe-fuzz --suite process --steps 15000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-fuzz --suite process --steps 5000 --random-seed --self-test-shrink --require-ns
           python3 -B -m unittest scripts/test_fuzz_changed.py
           if [[ "${GITHUB_EVENT_NAME}" == "pull_request" && -n "${BASE_SHA:-}" ]]; then
             python3 -B scripts/fuzz_changed.py --base "$BASE_SHA" --head HEAD --check-manifest --run --extra-arg=--self-test-shrink
           else
             python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest; .lake/build/bin/leanswe-fuzz --smoke --all --self-test-shrink
           fi
-          .lake/build/bin/lean-swe-test --poll-strace-fault-check; .lake/build/bin/lean-swe-test --net-strace-fault-check; .lake/build/bin/leanswe-world-fuzz --suite poll --steps 50000 --self-test-shrink; .lake/build/bin/leanswe-world-fuzz --suite poll --steps 50000 --random-seed --self-test-shrink; .lake/build/bin/leanswe-world-fuzz --suite net --steps 50000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-world-fuzz --suite net --seed 11262680905236430927 --steps 50000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-world-fuzz --suite net --steps 50000 --random-seed --self-test-shrink --require-ns
+          .lake/build/bin/leanswe-fuzz --poll-strace-fault-check; .lake/build/bin/leanswe-fuzz --net-strace-fault-check; .lake/build/bin/leanswe-fuzz --suite poll --steps 50000 --self-test-shrink; .lake/build/bin/leanswe-fuzz --suite poll --steps 50000 --random-seed --self-test-shrink; .lake/build/bin/leanswe-fuzz --suite net --steps 50000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-fuzz --suite net --seed 11262680905236430927 --steps 50000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-fuzz --suite net --steps 50000 --random-seed --self-test-shrink --require-ns
           .lake/build/bin/leanswe-fuzz --suite postfork --steps 25000 --self-test-shrink; .lake/build/bin/leanswe-fuzz --suite postfork --steps 25000 --random-seed --self-test-shrink; .lake/build/bin/leanswe-fuzz --suite postfork --steps 500 --self-test-shrink 0<&- >/dev/null
 
       - name: Check 1 GB private-memory cap on changed modules and reverse dependents
@@ -256,23 +256,23 @@ jobs:
       - name: Run world-model differential fuzzer (Files)
         run: |
           set -euo pipefail
-          .lake/build/bin/leanswe-world-fuzz --suite files --steps 100000 --self-test-shrink --require-ns
-          .lake/build/bin/leanswe-world-fuzz --suite files --steps 50000 --random-seed --require-ns
+          .lake/build/bin/leanswe-fuzz --suite files --steps 100000 --self-test-shrink --require-ns
+          .lake/build/bin/leanswe-fuzz --suite files --steps 50000 --random-seed --require-ns
           command -v capsh >/dev/null 2>&1 || { echo "ERROR: missing capsh" >&2; exit 1; }
           unshare -Urm sh -c '
             set -e; T=$(mktemp -d /tmp/gh-ovl.XXXXXX)
             trap "for p in \"$T/ro/s1777/u65534\" \"$T/ro\" \"$T/mnt\" \"$T/ul_mnt\" \"$T/root/proc\" \"$T/root/dev\" \"$T/m\"; do umount -l \"\$p\" 2>/dev/null || true; done; rm -rf \"$T\"" EXIT
             mkdir -p "$T/low" "$T/up" "$T/wk" "$T/mnt" "$T/x" "$T/m" "$T/ro_src" "$T/ro" "$T/ul_low/shrink" "$T/ul_up" "$T/ul_wk" "$T/ul_mnt" "$T/root/dev" "$T/root/proc" "$T/root/etc" "$T/root/sys/kernel/debug" "$T/out"
-            ./.lake/build/bin/leanswe-world-fuzz --seed-overlay-lower "$T/low" 250; mount -t overlay overlay -o "lowerdir=$T/low,upperdir=$T/up,workdir=$T/wk,userxattr" "$T/mnt"; mount -t tmpfs tmpfs "$T/m"
-            ./.lake/build/bin/leanswe-world-fuzz --worker-mode rw --host-protected --dir "$T/m" --steps 5000 --assert-worker-hits < /dev/null
-            ./.lake/build/bin/leanswe-world-fuzz --worker-mode unlinked_cwd --host-protected --dir "$T/m" --steps 3000 --assert-worker-hits < /dev/null
-            ./.lake/build/bin/leanswe-world-fuzz --worker-mode seccomp --host-protected --dir "$T/m" --steps 3000 --assert-worker-hits < /dev/null
-            ./.lake/build/bin/leanswe-world-fuzz --seed-ro-tree "$T/ro_src"; : > "$T/ro_src/s1777/u65534"; mount --bind "$T/ro_src" "$T/ro"; mount -o remount,ro,bind "$T/ro"; mount --bind /etc/passwd "$T/ro/s1777/u65534"; mount -o remount,ro,bind "$T/ro/s1777/u65534"
-            ./.lake/build/bin/leanswe-world-fuzz --worker-mode ro_bind --host-protected --dir "$T/ro" --steps 3000 --assert-worker-hits < /dev/null
+            ./.lake/build/bin/leanswe-fuzz --seed-overlay-lower "$T/low" 250; mount -t overlay overlay -o "lowerdir=$T/low,upperdir=$T/up,workdir=$T/wk,userxattr" "$T/mnt"; mount -t tmpfs tmpfs "$T/m"
+            ./.lake/build/bin/leanswe-fuzz --worker-mode rw --host-protected --dir "$T/m" --steps 5000 --assert-worker-hits < /dev/null
+            ./.lake/build/bin/leanswe-fuzz --worker-mode unlinked_cwd --host-protected --dir "$T/m" --steps 3000 --assert-worker-hits < /dev/null
+            ./.lake/build/bin/leanswe-fuzz --worker-mode seccomp --host-protected --dir "$T/m" --steps 3000 --assert-worker-hits < /dev/null
+            ./.lake/build/bin/leanswe-fuzz --seed-ro-tree "$T/ro_src"; : > "$T/ro_src/s1777/u65534"; mount --bind "$T/ro_src" "$T/ro"; mount -o remount,ro,bind "$T/ro"; mount --bind /etc/passwd "$T/ro/s1777/u65534"; mount -o remount,ro,bind "$T/ro/s1777/u65534"
+            ./.lake/build/bin/leanswe-fuzz --worker-mode ro_bind --host-protected --dir "$T/ro" --steps 3000 --assert-worker-hits < /dev/null
             mount --rbind /dev "$T/root/dev"; mount --rbind /proc "$T/root/proc"; cp /etc/passwd "$T/root/etc/passwd"; : > "$T/root/sys/kernel/cpu_byteorder"
-            ./.lake/build/bin/leanswe-world-fuzz --worker-mode chroot --host-protected --dir "$T/out" --chroot-dir "$T/root" --steps 3000 --assert-worker-hits < /dev/null
+            ./.lake/build/bin/leanswe-fuzz --worker-mode chroot --host-protected --dir "$T/out" --chroot-dir "$T/root" --steps 3000 --assert-worker-hits < /dev/null
             i=0; while [ "$i" -lt 90 ]; do mkdir -p "$T/ul_low/ep-$i"; i=$((i+1)); done; j=0; while [ "$j" -lt 256 ]; do mkdir -p "$T/ul_low/shrink-$j"; j=$((j+1)); done
             : > "$T/ul_low/.ovl_unlinked"; mount -t overlay overlay -o "lowerdir=$T/ul_low,upperdir=$T/ul_up,workdir=$T/ul_wk,userxattr" "$T/ul_mnt"
-            capsh --drop=cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid -- -c "./.lake/build/bin/leanswe-world-fuzz --worker-mode unlinked_cwd --host-protected --preseeded-eps --dir \"$T/ul_mnt\" --steps 3000 --assert-worker-hits < /dev/null"
-            capsh --drop=cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid -- -c "./.lake/build/bin/leanswe-world-fuzz --worker-mode rw --host-protected --preseeded-eps --dir \"$T/mnt\" --cross-dir \"$T/x\" --steps 10000 --assert-worker-hits < /dev/null"
+            capsh --drop=cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid -- -c "./.lake/build/bin/leanswe-fuzz --worker-mode unlinked_cwd --host-protected --preseeded-eps --dir \"$T/ul_mnt\" --steps 3000 --assert-worker-hits < /dev/null"
+            capsh --drop=cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid -- -c "./.lake/build/bin/leanswe-fuzz --worker-mode rw --host-protected --preseeded-eps --dir \"$T/mnt\" --cross-dir \"$T/x\" --steps 10000 --assert-worker-hits < /dev/null"
           '

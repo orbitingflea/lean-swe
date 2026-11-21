@@ -1,5 +1,5 @@
 import Core.Assumptions
-import LeanSwe.LinuxSyscall.TimeRand.RuntimeTests
+import LeanSwe.LinuxSyscall.TestSupport.Seccomp
 import LeanSwe.Time.Interface
 
 namespace LeanSwe.Time.RuntimeTests
@@ -134,10 +134,10 @@ def registeredErrorTests : Array Core.RegisteredErrorTest :=
        run := err_time_parseUtcDate_invalidFormat } ]
 
 private def seccompWorker : IO UInt32 := do
-  let rc ← LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.installSeccompErrnoForTest
-    LeanSwe.LinuxSyscall.Errno.EPERM 7
+  let rc ← LeanSwe.LinuxSyscall.TestSupport.Seccomp.installTimeRandSeccompErrno
+    LeanSwe.LinuxSyscall.Errno.EPERM
   if rc != 0 then
-    IO.eprintln s!"time seccomp-worker: installSeccompErrnoForTest failed errno={rc}"
+    IO.eprintln s!"time seccomp-worker: installTimeRandSeccompErrno failed errno={rc}"
     return 1
   let ts ← nowTimestamp
   if ts != Timestamp.ofSecondsSinceUnixEpoch 0 then

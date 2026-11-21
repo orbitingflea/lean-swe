@@ -34,7 +34,7 @@
       "legacy_unmigrated": false
     },
     "Fuzz/suites.json": {
-      "max_lines": 28,
+      "max_lines": 34,
       "legacy_unmigrated": false
     },
     "LeanSwe/ConnectProxy/Raw/c/cproxy_shim.c": {
@@ -61,7 +61,7 @@
       "max_lines": 165,
       "legacy_unmigrated": false
     },
-    "LeanSwe/LinuxSyscall/c/timerand_fuzz_sig.c": {
+    "Fuzz/LinuxSyscall/c/timerand_fuzz_sig.c": {
       "max_lines": 120,
       "legacy_unmigrated": false
     },
@@ -69,7 +69,7 @@
       "max_lines": 88,
       "legacy_unmigrated": false
     },
-    "LeanSwe/LinuxSyscall/c/process_fuzz_env.c": {
+    "Fuzz/LinuxSyscall/c/process_fuzz_env.c": {
       "max_lines": 960,
       "legacy_unmigrated": false
     },
@@ -141,7 +141,7 @@
       "max_lines": 122,
       "legacy_unmigrated": false
     },
-    "LeanSwe/LinuxSyscall/c/net_fuzz_env.c": {
+    "Fuzz/LinuxSyscall/c/net_fuzz_env.c": {
       "max_lines": 45,
       "legacy_unmigrated": false
     },
@@ -149,7 +149,7 @@
       "max_lines": 585,
       "legacy_unmigrated": false
     },
-    "LeanSwe/LinuxSyscall/c/poll_fuzz_env.c": {
+    "Fuzz/LinuxSyscall/c/poll_fuzz_env.c": {
       "max_lines": 180,
       "legacy_unmigrated": false
     },
@@ -161,7 +161,7 @@
       "max_lines": 660,
       "legacy_unmigrated": false
     },
-    "LeanSwe/LinuxSyscall/c/fuzz_env.c": {
+    "Fuzz/LinuxSyscall/c/fuzz_env.c": {
       "max_lines": 480,
       "legacy_unmigrated": false
     },
@@ -169,7 +169,7 @@
       "max_lines": 292,
       "legacy_unmigrated": false
     },
-    "LeanSwe/LinuxSyscall/c/sandbox_fuzz_env.c": {
+    "Fuzz/LinuxSyscall/c/sandbox_fuzz_env.c": {
       "max_lines": 600,
       "legacy_unmigrated": false
     },
@@ -338,16 +338,16 @@
     "LeanSwe/LinuxSyscall/c/net_shim.c::box_scm_fds": {
       "allow_array_copy_loop": true
     },
-    "LeanSwe/LinuxSyscall/c/process_fuzz_env.c::wait_leader_zombie": {
+    "Fuzz/LinuxSyscall/c/process_fuzz_env.c::wait_leader_zombie": {
       "max_loops": 1
     }
   },
   "named_thread_helpers": [
-    "LeanSwe/LinuxSyscall/c/sandbox_fuzz_env.c::leanswe_sbx_spawn_sync_thread",
+    "Fuzz/LinuxSyscall/c/sandbox_fuzz_env.c::leanswe_sbx_spawn_sync_thread",
     "Fuzz/CmdLine/c/cmdline_fuzz_env.c::leanswe_cmdfuzz_run_on_1mib_stack",
-    "LeanSwe/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_spawn_thread",
-    "LeanSwe/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_spawn_sibling_child",
-    "LeanSwe/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_check_fd_close_seccomp",
+    "Fuzz/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_spawn_thread",
+    "Fuzz/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_spawn_sibling_child",
+    "Fuzz/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_check_fd_close_seccomp",
     "LeanSwe/PostFork/c/postfork_shim.c::pf_init_spawner_once"
   ]
 }

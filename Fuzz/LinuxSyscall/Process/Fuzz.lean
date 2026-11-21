@@ -4,10 +4,10 @@ import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Process.Model
 import LeanSwe.LinuxSyscall.Process.Interface
-import LeanSwe.LinuxSyscall.Fuzz.Rng
-import LeanSwe.LinuxSyscall.Fuzz.ProcessEnv
+import Fuzz.LinuxSyscall.Rng
+import Fuzz.LinuxSyscall.ProcessEnv
 
-namespace LeanSwe.LinuxSyscall.Fuzz.ProcessFuzz
+namespace Fuzz.LinuxSyscall.ProcessFuzz
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Process
@@ -2888,4 +2888,4 @@ def runFuzz (totalSteps : Nat) (seed : UInt64) (selfTestShrink : Bool) (requireN
     IO.eprintln covMsg
     return 1
 
-end LeanSwe.LinuxSyscall.Fuzz.ProcessFuzz
+end Fuzz.LinuxSyscall.ProcessFuzz

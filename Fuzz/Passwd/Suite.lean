@@ -3,12 +3,13 @@ import Fuzz.Common.Suite
 import Fuzz.Common.Shrink
 import Fuzz.Common.Coverage
 import Fuzz.Passwd.Gen
+import Fuzz.Passwd.Checks
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Passwd.Types
 import LeanSwe.LinuxSyscall.Passwd.Model
 import LeanSwe.LinuxSyscall.Passwd.Interface
 import LeanSwe.LinuxSyscall.Sandbox.Interface
-import LeanSwe.LinuxSyscall.Fuzz.SandboxEnv
+import Fuzz.LinuxSyscall.SandboxEnv
 
 namespace Fuzz.Passwd
 
@@ -645,7 +646,7 @@ private def requiredPasswdBuckets (hasPasswdFile : Bool) : Array CoverageBucket 
 
 private def runPasswdOsBoundaryChecks (curUid : UInt32) : IO Unit := do
   for warmNss in [false, true] do
-    let (waitSt, payload) ← LeanSwe.LinuxSyscall.Fuzz.SandboxEnv.runForked do
+    let (waitSt, payload) ← Fuzz.LinuxSyscall.SandboxEnv.runForked do
       let mut s := PasswdState.initial.withTransientNssUnavail
       let mut h := HealthyEnv.initial 16
       if warmNss then
@@ -667,7 +668,7 @@ private def runPasswdOsBoundaryChecks (curUid : UInt32) : IO Unit := do
             let some h' := healthyStep h (.getpwnam nm) o
               | return (s!"warm healthyStep nam failed: {repr o}").toUTF8
             h := h'
-      let (_, maxNofile) ← match ← LeanSwe.LinuxSyscall.Fuzz.SandboxEnv.getRlimit 2 with
+      let (_, maxNofile) ← match ← Fuzz.LinuxSyscall.SandboxEnv.getRlimit 2 with
         | .ok p => pure p
         | .error e => return (s!"getRlimit failed: {e}").toUTF8
       let safeHigh := if maxNofile > 64 then 64 else maxNofile
@@ -880,7 +881,9 @@ private def passwdShrinkSelfTest (seedVal : UInt64) : IO Unit := do
 def suite : FuzzSuite :=
   { name := "passwd"
     description := "Differential fuzzing of LinuxSyscall.Passwd (getpwuid, getpwnam, PasswdEntry UTF-8 accessors) against stateful NSS model, Python pwd (-I), and multi-threaded task checks"
-    runSmoke := fun cfg => runPasswdSuite (min cfg.steps 200) cfg.seed true
+    runSmoke := fun cfg => do
+      Fuzz.Passwd.Checks.runChecks
+      runPasswdSuite (min cfg.steps 200) cfg.seed true
     runFuzz := fun cfg => runPasswdSuite cfg.steps cfg.seed false
     selfTestShrink := passwdShrinkSelfTest }
 

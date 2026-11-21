@@ -1,5 +1,5 @@
 import Core.Assumptions
-import LeanSwe.LinuxSyscall.TimeRand.RuntimeTests
+import LeanSwe.LinuxSyscall.TestSupport.Seccomp
 import LeanSwe.Uuid.Interface
 
 namespace LeanSwe.Uuid.RuntimeTests
@@ -182,9 +182,9 @@ private def seccompWorker (errName : String) : IO UInt32 := do
     | do
         IO.eprintln s!"uuid seccomp-worker: unsupported errno {errName}"
         return 1
-  let rc ← LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.installSeccompErrnoForTest expected 7
+  let rc ← LeanSwe.LinuxSyscall.TestSupport.Seccomp.installTimeRandSeccompErrno expected
   if rc != 0 then
-    IO.eprintln s!"uuid seccomp-worker: installSeccompErrnoForTest failed errno={rc}"
+    IO.eprintln s!"uuid seccomp-worker: installTimeRandSeccompErrno failed errno={rc}"
     return 1
   match ← Uuid.getUuid with
   | .ok u =>

@@ -1,16 +1,14 @@
-import Core.Assumptions
 import LeanSwe.LinuxSyscall.Passwd.Impl
 import LeanSwe.LinuxSyscall.Passwd.Interface
 import LeanSwe.LinuxSyscall.Passwd.Model
 
-namespace LeanSwe.LinuxSyscall.Passwd.RuntimeTests
+namespace Fuzz.Passwd.Checks
 
-open Core
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Passwd
 
 private def failWith {α : Type} (msg : String) : IO α :=
-  throw (IO.userError s!"Passwd.RuntimeTests: {msg}")
+  throw (IO.userError s!"Passwd.Checks: {msg}")
 
 private def assertTrue (label : String) (cond : Bool) : IO Unit := do
   if !cond then
@@ -53,7 +51,7 @@ private def bytesToHex (ba : ByteArray) : String := Id.run do
     out := out.push (ch lo)
   return out
 
-/-- Child-process probe helper printing raw hex `pw_dir` for `uid` under overridden environment variables (e.g. `HOME=/tmp`). -/
+/-- Child-process probe helper dispatched for `--passwd-probe` by `leanswe-fuzz` and `lean-swe-mut-test`, printing raw hex `pw_dir` for `uid` under overridden environment variables (e.g. `HOME=/tmp`). -/
 def probeMain (args : List String) : IO UInt32 := do
   match args with
   | [uidStr] =>
@@ -160,7 +158,7 @@ private def checkGetpwuidBoundsAndExtra (regPasswd : Bool) : IO Unit := do
     assertTrue s!"0xFFFFFFFE unexpected error {Errno.name e}" (isAllowedPasswdOsErrno e)
 
 /-- Runtime verification for `LeanSwe.LinuxSyscall.Passwd.assume_passwd_getpwuid_validAndMissingAndDeterministic`. -/
-def assume_passwd_getpwuid_validAndMissingAndDeterministic : IO Unit := do
+private def assume_passwd_getpwuid_validAndMissingAndDeterministic : IO Unit := do
   let uid ← readCurrentUid
   let regPasswd ← hasRegularEtcPasswd
   let uidInEtc ← etcPasswdHasUid uid
@@ -235,7 +233,7 @@ private def checkOversizedGetpwnamCases : IO Unit := do
   expectErr "getpwnam(140 MiB + NUL) -> EINVAL" Errno.EINVAL (← getpwnam (huge140MiB.push 0))
 
 /-- Runtime verification for `LeanSwe.LinuxSyscall.Passwd.assume_passwd_getpwnam_validAndMissingAndInvalid`. -/
-def assume_passwd_getpwnam_validAndMissingAndInvalid : IO Unit := do
+private def assume_passwd_getpwnam_validAndMissingAndInvalid : IO Unit := do
   let regPasswd ← hasRegularEtcPasswd
   let rootInEtc ← etcPasswdHasUid 0
   let rootName := asciiBytes ['r', 'o', 'o', 't']
@@ -243,15 +241,8 @@ def assume_passwd_getpwnam_validAndMissingAndInvalid : IO Unit := do
   checkBasicGetpwnamCases
   checkOversizedGetpwnamCases
 
-/-- Registered assumption-obligation checks backed by real host glibc/NSS `getpwuid_r` and `getpwnam_r`. -/
-def registeredAssumptions : Array RegisteredAssumption :=
-  #[ { specName := "LeanSwe.LinuxSyscall.Passwd.assume_passwd_getpwuid_validAndMissingAndDeterministic"
-       run := assume_passwd_getpwuid_validAndMissingAndDeterministic }
-   , { specName := "LeanSwe.LinuxSyscall.Passwd.assume_passwd_getpwnam_validAndMissingAndInvalid"
-       run := assume_passwd_getpwnam_validAndMissingAndInvalid } ]
-
 /-- Verify mocked `getpwuid` bounded `ERANGE` retry (`4096 → ... → 65536`), error propagation across all 3 `PasswdErrorKind` buckets, and preservation of non-UTF-8 `homeDir` bytes in `PasswdEntry`. -/
-def err_passwd_getpwuid_mocked : IO Unit := do
+private def err_passwd_getpwuid_mocked : IO Unit := do
   for (eno, kind) in [ (Errno.EINVAL, PasswdErrorKind.invalidArg)
                      , (Errno.EPERM, PasswdErrorKind.permissionDenied)
                      , (Errno.EACCES, PasswdErrorKind.permissionDenied)
@@ -311,7 +302,7 @@ def err_passwd_getpwuid_mocked : IO Unit := do
   expectErr "getpwuid embedded NUL -> EIO" Errno.EIO (← opsUidNul.getpwuid 1000)
 
 /-- Verify real `getpwnam` rejects embedded NUL with `EINVAL`, accepts NUL-free `> 65536`-byte names without `EINVAL`, and rejects `> 1048576`-byte names with `ENAMETOOLONG`. -/
-def err_passwd_getpwnam_invalidArg : IO Unit := do
+private def err_passwd_getpwnam_invalidArg : IO Unit := do
   expectErr "getpwnam(NUL) -> EINVAL" Errno.EINVAL (← getpwnam (ByteArray.mk #[97, 0, 98]))
   let big := ByteArray.mk (Array.replicate 65537 (UInt8.ofNat 'x'.toNat))
   match ← getpwnam big with
@@ -323,7 +314,7 @@ def err_passwd_getpwnam_invalidArg : IO Unit := do
   assertTrue "EINVAL is invalidArg" (PasswdErrorKind.ofErrno Errno.EINVAL == .invalidArg)
 
 /-- Verify mocked `getpwnam` propagation for `permissionDenied` and `transientOrResource` plus `ERANGE` retry and postcondition `EIO` validation. -/
-def err_passwd_getpwnam_mocked : IO Unit := do
+private def err_passwd_getpwnam_mocked : IO Unit := do
   for (eno, kind) in [ (Errno.EPERM, PasswdErrorKind.permissionDenied)
                      , (Errno.EACCES, PasswdErrorKind.permissionDenied)
                      , (Errno.ERANGE, PasswdErrorKind.transientOrResource)
@@ -370,22 +361,12 @@ def err_passwd_getpwnam_mocked : IO Unit := do
   expectErr "mock getpwnam(NUL) short-circuits -> EINVAL" Errno.EINVAL
     (← opsRejectInvalid.getpwnam (ByteArray.mk #[97, 0, 98]))
 
-/-- Registered `(request × PasswdErrorKind)` error-coverage tests matching `Passwd/SpecTests.lean`. -/
-def registeredErrorTests : Array RegisteredErrorTest :=
-  #[ { testName := "LeanSwe.LinuxSyscall.Passwd.RuntimeTests.err_passwd_getpwuid_mocked"
-       mode := .mocked
-       run := err_passwd_getpwuid_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.Passwd.RuntimeTests.err_passwd_getpwnam_invalidArg"
-       mode := .real
-       run := err_passwd_getpwnam_invalidArg }
-   , { testName := "LeanSwe.LinuxSyscall.Passwd.RuntimeTests.err_passwd_getpwnam_mocked"
-       mode := .mocked
-       run := err_passwd_getpwnam_mocked } ]
+/-- Run all `Passwd` real and mocked error-path regression checks. -/
+def runChecks : IO Unit := do
+  assume_passwd_getpwuid_validAndMissingAndDeterministic
+  assume_passwd_getpwnam_validAndMissingAndInvalid
+  err_passwd_getpwuid_mocked
+  err_passwd_getpwnam_invalidArg
+  err_passwd_getpwnam_mocked
 
-/-- Run all `Passwd` assumption checks and error-coverage tests. -/
-def runAll : IO Unit := do
-  Core.runRegisteredAssumptions registeredAssumptions
-  Core.runRegisteredErrorTests registeredErrorTests
-  IO.println "PASS: LeanSwe.LinuxSyscall.Passwd runtime tests"
-
-end LeanSwe.LinuxSyscall.Passwd.RuntimeTests
+end Fuzz.Passwd.Checks

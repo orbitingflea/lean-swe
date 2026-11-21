@@ -4,12 +4,12 @@ import LeanSwe.LinuxSyscall.Files.Model
 import LeanSwe.LinuxSyscall.Files.Seed
 import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.Files.Impl
-import LeanSwe.LinuxSyscall.Files.RuntimeTests
-import LeanSwe.LinuxSyscall.Fuzz.Rng
-import LeanSwe.LinuxSyscall.Fuzz.Env
+import Fuzz.LinuxSyscall.Files.Strace
+import Fuzz.LinuxSyscall.Rng
+import Fuzz.LinuxSyscall.Env
 import Std.Data.HashMap
 
-namespace LeanSwe.LinuxSyscall.Fuzz.FilesFuzz
+namespace Fuzz.LinuxSyscall.FilesFuzz
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Files
@@ -3562,13 +3562,14 @@ private def spawnCrashWatcher (pid : String) (rootDir? : Option System.FilePath)
     | none => "true"
   let script :=
     s!"(while kill -0 {pid} 2>/dev/null; do sleep 0.2; done; {crossCleanup}{rootCleanup}) </dev/null >/dev/null 2>&1 &"
-  let _ ← IO.Process.spawn {
+  let watcher ← IO.Process.spawn {
     cmd := "sh"
     args := #["-c", script]
     stdin := .null
     stdout := .null
     stderr := .null
   }
+  let _ ← watcher.wait
 
 /-- Summary of a complete `Files` fuzzing campaign. -/
 structure FuzzReport where
@@ -3876,7 +3877,7 @@ private def pickCrossParent (baseReal : System.FilePath) (uniqTag : String) : IO
         if candMnt != 0 && baseMnt != 0 then candMnt != baseMnt
         else candDev != 0 && baseDev != 0 && candDev != baseDev
       if diffMount then
-        let probe := candReal / s!"leanswe-world-fuzz-cross-{uniqTag}"
+        let probe := candReal / s!"leanswe-fuzz-files-cross-{uniqTag}"
         try
           removeDirForced probe
           IO.FS.createDirAll probe
@@ -4102,7 +4103,7 @@ def runFilesFuzzOnDir (totalSteps : Nat) (seed : UInt64) (selfTestShrink : Bool)
     if isRoSeeded then baseReal
     else if chrootMode then System.FilePath.mk "."
     else if isPreseededUnlinked || isPreseededLower || isPreseededRwSticky then baseReal
-    else baseReal / s!"leanswe-world-fuzz-{uniqTag}"
+    else baseReal / s!"leanswe-fuzz-files-{uniqTag}"
   if !isRoSeeded && !chrootMode && !isPreseededUnlinked && !isPreseededLower && !isPreseededRwSticky then
     removeDirForced rootDir
     IO.FS.createDirAll rootDir
@@ -5059,10 +5060,10 @@ private def runMultiFsSuite (totalSteps : Nat) (seed : UInt64) (selfTestShrink :
 def runFilesFuzz (totalSteps : Nat) (seed : UInt64) (selfTestShrink : Bool)
     (baseDir : System.FilePath := "/dev/shm") (explicitDir : Bool := false)
     (requireNs : Bool := false) : IO FuzzReport := do
-  LeanSwe.LinuxSyscall.Files.RuntimeTests.runCShimBoundaryProbes
+  Fuzz.LinuxSyscall.Files.Strace.runCShimBoundaryProbes
   if explicitDir then
     runFilesFuzzOnDir totalSteps seed selfTestShrink baseDir
   else
     runMultiFsSuite totalSteps seed selfTestShrink baseDir requireNs
 
-end LeanSwe.LinuxSyscall.Fuzz.FilesFuzz
+end Fuzz.LinuxSyscall.FilesFuzz

@@ -4,12 +4,13 @@ import Fuzz.Common.Shrink
 import Fuzz.Common.Coverage
 import Fuzz.Common.Suite
 import Fuzz.Dns.Gen
+import Fuzz.Dns.Checks
 import LeanSwe.LinuxSyscall.Dns.Types
 import LeanSwe.LinuxSyscall.Dns.Model
 import LeanSwe.LinuxSyscall.Dns.Interface
 import LeanSwe.LinuxSyscall.Dns.Impl
 import LeanSwe.LinuxSyscall.Sandbox.Interface
-import LeanSwe.LinuxSyscall.Fuzz.SandboxEnv
+import Fuzz.LinuxSyscall.SandboxEnv
 
 namespace Fuzz.Dns
 
@@ -580,8 +581,8 @@ private def deterministicWarmupProbes : Array DnsProbe := #[
 ]
 
 private def runDnsOsBoundaryChecks (seedVal : UInt64) : IO Unit := do
-  let (waitSt, payload) ← LeanSwe.LinuxSyscall.Fuzz.SandboxEnv.runForked do
-    let (_, curMaxNofile) ← match ← LeanSwe.LinuxSyscall.Fuzz.SandboxEnv.getRlimit 2 with
+  let (waitSt, payload) ← Fuzz.LinuxSyscall.SandboxEnv.runForked do
+    let (_, curMaxNofile) ← match ← Fuzz.LinuxSyscall.SandboxEnv.getRlimit 2 with
       | .ok p => pure p
       | .error e => return (s!"getRlimit failed: {e}").toUTF8
     let safeHigh := if curMaxNofile > 64 then 64 else curMaxNofile
@@ -862,7 +863,8 @@ def runDnsSelfTestShrink (seedVal : UInt64) : IO Unit := do
 def suite : FuzzSuite := {
   name := "dns"
   description := "Differential DNS fuzz suite against Python socket.getaddrinfo, ResolveHints, scoped IPv6 sin6_scope_id, model/impl contracts, codec round-trips, and concurrency"
-  runSmoke := fun cfg =>
+  runSmoke := fun cfg => do
+    Fuzz.Dns.Checks.runChecks
     let smokeSteps := max 120 (min cfg.steps 160)
     runDnsDiffFuzz smokeSteps cfg.seed 12 10
   runFuzz := fun cfg =>

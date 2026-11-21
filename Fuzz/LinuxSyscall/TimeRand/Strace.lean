@@ -1,16 +1,14 @@
-import Core.Assumptions
 import LeanSwe.LinuxSyscall.TimeRand.Impl
 import LeanSwe.LinuxSyscall.TimeRand.Interface
 import LeanSwe.LinuxSyscall.TimeRand.Model
 
-namespace LeanSwe.LinuxSyscall.TimeRand.RuntimeTests
+namespace Fuzz.LinuxSyscall.TimeRand.Strace
 
-open Core
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.TimeRand
 
 private def failWith {α : Type} (msg : String) : IO α :=
-  throw (IO.userError s!"TimeRand.RuntimeTests: {msg}")
+  throw (IO.userError s!"TimeRand.Strace: {msg}")
 
 @[extern "leanswe_fuzz_install_seccomp_errno"]
 private opaque installSeccompErrnoRaw (eno : UInt32) (mask : UInt32) : BaseIO UInt32
@@ -20,10 +18,6 @@ private opaque rawClockGettimeForTest : UInt32 → BaseIO (Except Errno (Int64 �
 
 @[extern "leanswe_sys_clock_nanosleep"]
 private opaque rawClockNanosleepForTest : UInt32 → UInt8 → Int64 → UInt32 → BaseIO (Except Errno Unit)
-
-/-- Install a process-wide (`TSYNC`) `SECCOMP_RET_ERRNO` BPF filter in forked runtime-test children (`1 ≤ eno ≤ 4095`). -/
-def installSeccompErrnoForTest (eno : Errno) (mask : UInt32 := 7) : BaseIO UInt32 :=
-  installSeccompErrnoRaw eno mask
 
 private def assertTrue (label : String) (cond : Bool) : IO Unit := do
   if !cond then
@@ -49,7 +43,7 @@ private def mkMockRawOps (getRes : Except Errno (Int64 × UInt32))
     getrandom := fun _ _ => return randRes }
 
 /-- Runtime verification for `LeanSwe.LinuxSyscall.TimeRand.assume_timerand_clockGettime_realtimeAndMonotonic`. -/
-def assume_timerand_clockGettime_realtimeAndMonotonic : IO Unit := do
+private def assume_timerand_clockGettime_realtimeAndMonotonic : IO Unit := do
   let rt ← expectOk "clock_gettime realtime" (← clock_gettime .realtime)
   assertTrue "realtime valid nsec" rt.hasValidNsec
   let m0 ← expectOk "clock_gettime monotonic #0" (← clock_gettime .monotonic)
@@ -63,7 +57,7 @@ def assume_timerand_clockGettime_realtimeAndMonotonic : IO Unit := do
   assertTrue "monotonic after sleep ≥ prior + 10000" (m1.toNanosNat + 10000 ≤ m2.toNanosNat)
 
 /-- Runtime verification for `LeanSwe.LinuxSyscall.TimeRand.assume_timerand_clockNanosleep_relativeAndAbstime`. -/
-def assume_timerand_clockNanosleep_relativeAndAbstime : IO Unit := do
+private def assume_timerand_clockNanosleep_relativeAndAbstime : IO Unit := do
   let m0 ← expectOk "clock_gettime monotonic before rel sleep" (← clock_gettime .monotonic)
   expectOk "clock_nanosleep monotonic relative 5us"
     (← clock_nanosleep .monotonic false { sec := 0, nsec := 5000 })
@@ -84,7 +78,7 @@ def assume_timerand_clockNanosleep_relativeAndAbstime : IO Unit := do
     (← clock_nanosleep .realtime true rtDeadline)
 
 /-- Runtime verification for `LeanSwe.LinuxSyscall.TimeRand.assume_timerand_getrandom_exactAndFlags`. -/
-def assume_timerand_getrandom_exactAndFlags : IO Unit := do
+private def assume_timerand_getrandom_exactAndFlags : IO Unit := do
   let b0 ← expectOk "getrandom len=0" (← getrandom 0 {})
   assertTrue "getrandom len=0 empty" (b0.size == 0)
   let b16a ← expectOk "getrandom len=16 #1" (← getrandom 16 {})
@@ -106,17 +100,8 @@ def assume_timerand_getrandom_exactAndFlags : IO Unit := do
   expectErr "getrandom random && insecure -> EINVAL"
     Errno.EINVAL (← getrandom 16 { random := true, insecure := true })
 
-/-- Registered assumption-obligation checks backed by real Linux syscalls. -/
-def registeredAssumptions : Array RegisteredAssumption :=
-  #[ { specName := "LeanSwe.LinuxSyscall.TimeRand.assume_timerand_clockGettime_realtimeAndMonotonic"
-       run := assume_timerand_clockGettime_realtimeAndMonotonic }
-   , { specName := "LeanSwe.LinuxSyscall.TimeRand.assume_timerand_clockNanosleep_relativeAndAbstime"
-       run := assume_timerand_clockNanosleep_relativeAndAbstime }
-   , { specName := "LeanSwe.LinuxSyscall.TimeRand.assume_timerand_getrandom_exactAndFlags"
-       run := assume_timerand_getrandom_exactAndFlags } ]
-
 /-- Verify mocked `clock_gettime` error propagation across `invalidArg`, `wouldBlock`, `permissionDenied`, and `transientOrResource`. -/
-def err_clock_gettime_mocked : IO Unit := do
+private def err_clock_gettime_mocked : IO Unit := do
   for (eno, kind) in [ (Errno.EINVAL, TimeRandErrorKind.invalidArg)
                      , (Errno.EAGAIN, TimeRandErrorKind.wouldBlock)
                      , (Errno.EPERM, TimeRandErrorKind.permissionDenied)
@@ -127,7 +112,7 @@ def err_clock_gettime_mocked : IO Unit := do
     assertTrue s!"kind {Errno.name eno}" (TimeRandErrorKind.ofErrno eno == kind)
 
 /-- Verify real `clock_nanosleep` rejects invalid `Timespec`s (`sec < 0` and `nsec ≥ 10^9`) with `EINVAL`. -/
-def err_clock_nanosleep_invalidArg : IO Unit := do
+private def err_clock_nanosleep_invalidArg : IO Unit := do
   expectErr "clock_nanosleep negative sec -> EINVAL"
     Errno.EINVAL (← clock_nanosleep .monotonic false { sec := -1, nsec := 0 })
   expectErr "clock_nanosleep nsec >= 1e9 -> EINVAL"
@@ -135,7 +120,7 @@ def err_clock_nanosleep_invalidArg : IO Unit := do
   assertTrue "EINVAL is invalidArg" (TimeRandErrorKind.ofErrno Errno.EINVAL == .invalidArg)
 
 /-- Verify mocked `clock_nanosleep` propagation for `wouldBlock` (`EAGAIN`) and `permissionDenied` (`EPERM`/`EACCES`). -/
-def err_clock_nanosleep_mocked : IO Unit := do
+private def err_clock_nanosleep_mocked : IO Unit := do
   for (eno, kind) in [ (Errno.EAGAIN, TimeRandErrorKind.wouldBlock)
                      , (Errno.EPERM, TimeRandErrorKind.permissionDenied)
                      , (Errno.EACCES, TimeRandErrorKind.permissionDenied) ] do
@@ -145,7 +130,7 @@ def err_clock_nanosleep_mocked : IO Unit := do
     assertTrue s!"kind {Errno.name eno}" (TimeRandErrorKind.ofErrno eno == kind)
 
 /-- Verify mocked `clock_nanosleep` propagation for `EINTR`, `EIO`, and `ENOMEM` (`transientOrResource`). -/
-def err_clock_nanosleep_transient : IO Unit := do
+private def err_clock_nanosleep_transient : IO Unit := do
   for eno in [Errno.EINTR, Errno.EIO, Errno.ENOMEM] do
     let ops := Internal.mkTimeRandOps (mkMockRawOps (.ok (0, 0)) (.error eno) (.ok ByteArray.empty))
     expectErr s!"mock clock_nanosleep {Errno.name eno}" eno
@@ -153,7 +138,7 @@ def err_clock_nanosleep_transient : IO Unit := do
     assertTrue s!"kind {Errno.name eno}" (TimeRandErrorKind.ofErrno eno == .transientOrResource)
 
 /-- Verify real `getrandom` rejects `random && insecure` with `EINVAL` even when `len = 0`. -/
-def err_getrandom_invalidArg : IO Unit := do
+private def err_getrandom_invalidArg : IO Unit := do
   expectErr "getrandom random && insecure len=16 -> EINVAL"
     Errno.EINVAL (← getrandom 16 { random := true, insecure := true })
   expectErr "getrandom random && insecure len=0 -> EINVAL"
@@ -161,51 +146,24 @@ def err_getrandom_invalidArg : IO Unit := do
   assertTrue "EINVAL is invalidArg" (TimeRandErrorKind.ofErrno Errno.EINVAL == .invalidArg)
 
 /-- Verify mocked `getrandom` `EAGAIN` (`wouldBlock`) propagation when CRNG is unseeded. -/
-def err_getrandom_wouldBlock : IO Unit := do
+private def err_getrandom_wouldBlock : IO Unit := do
   let ops := Internal.mkTimeRandOps (mkMockRawOps (.ok (0, 0)) (.ok ()) (.error Errno.EAGAIN))
   expectErr "mock getrandom EAGAIN" Errno.EAGAIN (← ops.getrandom 16 { nonblock := true })
   assertTrue "EAGAIN is wouldBlock" (TimeRandErrorKind.ofErrno Errno.EAGAIN == .wouldBlock)
 
 /-- Verify mocked `getrandom` `EPERM` / `EACCES` (`permissionDenied`) propagation. -/
-def err_getrandom_mocked : IO Unit := do
+private def err_getrandom_mocked : IO Unit := do
   for eno in [Errno.EPERM, Errno.EACCES] do
     let ops := Internal.mkTimeRandOps (mkMockRawOps (.ok (0, 0)) (.ok ()) (.error eno))
     expectErr s!"mock getrandom {Errno.name eno}" eno (← ops.getrandom 16 {})
     assertTrue s!"kind {Errno.name eno}" (TimeRandErrorKind.ofErrno eno == .permissionDenied)
 
 /-- Verify mocked `getrandom` `EINTR`, `EIO`, and `ENOMEM` (`transientOrResource`) propagation. -/
-def err_getrandom_transient : IO Unit := do
+private def err_getrandom_transient : IO Unit := do
   for eno in [Errno.EINTR, Errno.EIO, Errno.ENOMEM] do
     let ops := Internal.mkTimeRandOps (mkMockRawOps (.ok (0, 0)) (.ok ()) (.error eno))
     expectErr s!"mock getrandom {Errno.name eno}" eno (← ops.getrandom 16 {})
     assertTrue s!"kind {Errno.name eno}" (TimeRandErrorKind.ofErrno eno == .transientOrResource)
-
-/-- Registered `(request × TimeRandErrorKind)` error-coverage tests matching `TimeRand/SpecTests.lean`. -/
-def registeredErrorTests : Array RegisteredErrorTest :=
-  #[ { testName := "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_clock_gettime_mocked"
-       mode := .mocked
-       run := err_clock_gettime_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_clock_nanosleep_invalidArg"
-       mode := .real
-       run := err_clock_nanosleep_invalidArg }
-   , { testName := "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_clock_nanosleep_mocked"
-       mode := .mocked
-       run := err_clock_nanosleep_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_clock_nanosleep_transient"
-       mode := .mocked
-       run := err_clock_nanosleep_transient }
-   , { testName := "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_getrandom_invalidArg"
-       mode := .real
-       run := err_getrandom_invalidArg }
-   , { testName := "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_getrandom_wouldBlock"
-       mode := .mocked
-       run := err_getrandom_wouldBlock }
-   , { testName := "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_getrandom_mocked"
-       mode := .mocked
-       run := err_getrandom_mocked }
-   , { testName := "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_getrandom_transient"
-       mode := .mocked
-       run := err_getrandom_transient } ]
 
 private def parseErrnoName? (s : String) : Option Errno :=
   match s with
@@ -295,13 +253,21 @@ private def checkRawInvalidTags : IO Unit := do
   expectErr "raw clock_nanosleep abstime=2 -> EINVAL"
     Errno.EINVAL (← rawClockNanosleepForTest 1 2 0 1)
 
-/-- Run all `TimeRand` assumption checks and error-coverage tests. -/
-def runAll : IO Unit := do
-  Core.runRegisteredAssumptions registeredAssumptions
-  Core.runRegisteredErrorTests registeredErrorTests
+/-- Run all `TimeRand` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke` and `lean-swe-mut-test`). -/
+def runChecks : IO Unit := do
+  assume_timerand_clockGettime_realtimeAndMonotonic
+  assume_timerand_clockNanosleep_relativeAndAbstime
+  assume_timerand_getrandom_exactAndFlags
+  err_clock_gettime_mocked
+  err_clock_nanosleep_invalidArg
+  err_clock_nanosleep_mocked
+  err_clock_nanosleep_transient
+  err_getrandom_invalidArg
+  err_getrandom_wouldBlock
+  err_getrandom_mocked
+  err_getrandom_transient
   checkRawInvalidTags
   checkOuterSeccompRuntime
-  IO.println "PASS: LeanSwe.LinuxSyscall.TimeRand runtime tests"
 
 private def straceWorker (opName errName : String) : IO UInt32 := do
   let some expected := parseErrnoName? errName
@@ -426,7 +392,7 @@ def runStraceFaultCheck : IO Unit := do
       if out.exitCode != 0 then
         throw (IO.userError s!"strace fault-injection failed for ({opName}, {errName}) exit={out.exitCode}: {out.stderr}")
 
-/-- CLI entrypoint for `--timerand-strace-fault-check`. -/
+/-- CLI entrypoint for `--timerand-strace-fault-check`, dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`) and `lean-swe-mut-test`. -/
 def probeMain (args : List String) : IO UInt32 := do
   match args with
   | [] =>
@@ -443,4 +409,4 @@ def probeMain (args : List String) : IO UInt32 := do
     IO.eprintln s!"unknown timerand strace args: {args}"
     return 1
 
-end LeanSwe.LinuxSyscall.TimeRand.RuntimeTests
+end Fuzz.LinuxSyscall.TimeRand.Strace

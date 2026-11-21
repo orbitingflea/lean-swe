@@ -7,11 +7,11 @@ import LeanSwe.LinuxSyscall.Net.Types
 import LeanSwe.LinuxSyscall.Net.Interface
 import LeanSwe.LinuxSyscall.Net.Impl
 import LeanSwe.LinuxSyscall.Sandbox.Interface
-import LeanSwe.LinuxSyscall.Fuzz.Rng
-import LeanSwe.LinuxSyscall.Fuzz.SandboxEnv
+import Fuzz.LinuxSyscall.Rng
+import Fuzz.LinuxSyscall.SandboxEnv
 import Std.Data.HashMap
 
-namespace LeanSwe.LinuxSyscall.Fuzz.PollFuzz
+namespace Fuzz.LinuxSyscall.PollFuzz
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Poll
@@ -329,9 +329,9 @@ private def genSymReq (r : Rng) (env : GenEnv) (s : PollState) (origNofile curNo
               match evalPollList s pairs.toList with
               | .error _ => true
               | .ok revs => revs.any (fun ev => !ev.isEmpty)
-        let (doAlrm, r6) := if !anyReady && !entries.isEmpty then r5.chance 1 40 else (false, r5)
+        let (doAlrm, r6) := if !anyReady && !entries.isEmpty then r5.chance 1 8 else (false, r5)
         if doAlrm then
-          (.ppoll entries (some { sec := 0, nsec := 50000000 }) true, r6)
+          (.ppoll entries (some { sec := 0, nsec := 250000000 }) true, r6)
         else
           let (tsOpt, r7) := genTimespec r6 anyReady
           (.ppoll entries tsOpt false, r7)
@@ -1871,4 +1871,4 @@ def runPollFuzz (totalSteps : Nat) (seed : UInt64 := 0x504f4c4c46555a5a)
     shrinkSelfTestDetail := shrinkDetail
   }
 
-end LeanSwe.LinuxSyscall.Fuzz.PollFuzz
+end Fuzz.LinuxSyscall.PollFuzz
