@@ -259,6 +259,8 @@ structure SockDesc where
   udpExtRoutedIp : Bool := false
   /-- `true` when a socket bound `127.255.255.255` or `::ffff:127.255.255.255` while `lo` was down (`RTN_LOCAL` source retained). -/
   tcpLoDownDirectedBcast : Bool := false
+  /-- `true` once `shutdown(SHUT_WR/RDWR)` sent a `FIN` from `TCP_CLOSE_WAIT` that stays in `TCP_LAST_ACK` (`lo` down or tainted IPv6). -/
+  tcpLastAck : Bool := false
   deriving DecidableEq, BEq
 
 /-- Construct a fresh `SockDesc` for `(domain, sockType)`. -/
@@ -526,6 +528,10 @@ def resetTcpPeerOnClose (s : NetState) (peerFid : FileId) (hasUnread : Bool)
           { pd with
             soError := if pd.soError == 0 then resetErr else pd.soError
             tcpShutRdwrRst := false
+            tcpLastAck :=
+              match ptcp with
+              | .established .. | .finWait .. | .closeWait .. => false
+              | _ => pd.tcpLastAck
             proto :=
               match ptcp with
               | .established _ pa | .finWait _ pa | .closeWait _ pa _ =>
@@ -565,9 +571,11 @@ def resetTcpPeerOnClose (s : NetState) (peerFid : FileId) (hasUnread : Bool)
             match nextPtcp with
             | .closeWait _ pa _ | .closedAfterConn pa _ => isNativeV6PeerAddr pa
             | _ => false
+        let nextLastAck := match nextPtcp with | .closeWait .. => pd.tcpLastAck | _ => false
         setFileSocket s peerFid
           { pd with
             tcpLoFinPending := pd.tcpLoFinPending || delayFin
+            tcpLastAck := nextLastAck
             proto := .tcp pfam nextPbind psock nextPtcp ptaint }
     | _ => s
   | .error _ => s
