@@ -504,16 +504,14 @@ def main (_ : List String) : IO UInt32 := do
          "    \"minicli\": { \"paths\": [\"Fuzz/MiniCli/\", \"LeanSwe/MiniCli/\"] }\n" ++
          "  }\n" ++
          "}\n")
-      writeFileCreatingParents (mr.root / "LeanSwe/Process/Raw/Interface.lean")
-        "namespace LeanSwe.Process.Raw\ndef runTool (cmd : String) : IO UInt32 := do let _ := cmd; return 0\nend LeanSwe.Process.Raw\n"
-      writeFileCreatingParents (mr.root / "LeanSwe/Process/Raw/SpecTests.lean")
-        "namespace LeanSwe.Process.Raw\nend LeanSwe.Process.Raw\n"
+      writeFileCreatingParents (mr.root / "LeanSwe/Process/SysBridge.lean")
+        "namespace LeanSwe.Process.SysBridge\ndef runTool (cmd : String) : IO UInt32 := do let _ := cmd; return 0\nend LeanSwe.Process.SysBridge\n"
       writeFileCreatingParents (mr.root / "LeanSwe/MiniCli/Types.lean")
         "namespace LeanSwe.MiniCli\ninductive CliErr\n  | toolFailed\n  deriving Repr, BEq, DecidableEq\nend LeanSwe.MiniCli\n"
       writeFileCreatingParents (mr.root / "LeanSwe/MiniCli/Model.lean")
         "import LeanSwe.MiniCli.Types\nnamespace LeanSwe.MiniCli.Model\ndef exitOk (code : UInt32) : Bool := code == 0\nend LeanSwe.MiniCli.Model\n"
       writeFileCreatingParents (mr.root / "LeanSwe/MiniCli/Impl.lean")
-        "import LeanSwe.Process.Raw.Interface\nimport LeanSwe.MiniCli.Types\nnamespace LeanSwe.MiniCli.Internal\ndef invokeImpl (arg : String) : IO (Except CliErr UInt32) := do\n  let rc ← LeanSwe.Process.Raw.runTool arg\n  if rc == 0 then return .ok 0 else return .error .toolFailed\nend LeanSwe.MiniCli.Internal\n"
+        "import LeanSwe.Process.SysBridge\nimport LeanSwe.MiniCli.Types\nnamespace LeanSwe.MiniCli.Internal\ndef invokeImpl (arg : String) : IO (Except CliErr UInt32) := do\n  let rc ← LeanSwe.Process.SysBridge.runTool arg\n  if rc == 0 then return .ok 0 else return .error .toolFailed\nend LeanSwe.MiniCli.Internal\n"
       writeFileCreatingParents (mr.root / "LeanSwe/MiniCli/Interface.lean")
         "import LeanSwe.MiniCli.Impl\nnamespace LeanSwe.MiniCli\ndef invoke (arg : String) : IO (Except CliErr UInt32) := Internal.invokeImpl arg\nend LeanSwe.MiniCli\n"
       writeFileCreatingParents (mr.root / "LeanSwe/MiniCli/SpecTests.lean")
@@ -535,8 +533,7 @@ def main (_ : List String) : IO UInt32 := do
       let ls ← IO.FS.readFile (mr.root / "LeanSwe.lean")
       writeFileCreatingParents (mr.root / "LeanSwe.lean")
         (ls ++
-         "import LeanSwe.Process.Raw.Interface\n" ++
-         "import LeanSwe.Process.Raw.SpecTests\n" ++
+         "import LeanSwe.Process.SysBridge\n" ++
          "import LeanSwe.MiniCli.Types\n" ++
          "import LeanSwe.MiniCli.Model\n" ++
          "import LeanSwe.MiniCli.Impl\n" ++
@@ -544,8 +541,7 @@ def main (_ : List String) : IO UInt32 := do
          "import LeanSwe.MiniCli.SpecTests\n" ++
          "import LeanSwe.MiniCli.Proofs\n")
       return #[
-        "LeanSwe/Process/Raw/Interface",
-        "LeanSwe/Process/Raw/SpecTests",
+        "LeanSwe/Process/SysBridge",
         "LeanSwe/MiniCli/Types",
         "LeanSwe/MiniCli/Model",
         "LeanSwe/MiniCli/Impl",

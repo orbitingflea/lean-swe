@@ -900,7 +900,7 @@ theorem performFork_sysOnly (raw : PosixHostOpsM IO RawFd) (hRaw : NoThrowOps ra
   rw [io_bind_eq]
   rcases hRaw.forkRun_ok (flagsOfSpec spec withBarrier) spec.forkMode syncRead? errWrite
       (Impl.Internal.stdioRefsArray spec.stdio) (openCloseFds ++ extraClose)
-      (FdPolicy.keepFds spec.fdPolicy) spec.cwd spec.path spec.argv (formatEnvEntries spec.env) w
+      (FdPolicy.keepFds spec.fdPolicy) spec.cwd spec.path spec.argv (formatEnvEntriesBytes spec.rawEnv spec.env) w
     with ⟨rf, w1, hf⟩
   rw [hf]
   dsimp only

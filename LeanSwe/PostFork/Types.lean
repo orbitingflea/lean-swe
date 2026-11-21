@@ -155,6 +155,11 @@ structure ChildSpecM (fd : Type) where
   cwd : Option String := none
   /-- Explicit `(key, value)` environment bindings formatted as `KEY=VALUE`. -/
   env : Array (String × String) := #[]
+  /-- Optional raw NUL-free byte-level `KEY=VALUE` entries prepended verbatim to `envp`
+      without UTF-8 decoding (used for raw inherited POSIX `environ(7)` slices). Any entry whose
+      key bytes before `'='` match a binding in `env` is omitted so explicit `env` values always
+      take precedence over `rawEnv` under first-match `getenv(3)`. -/
+  rawEnv : Array ByteArray := #[]
   /-- Standard descriptor (`0`, `1`, `2`) setup policy. -/
   stdio : StdioPlan fd := .inherit
   /-- Unkept descriptor (`> 2`) handling and kept-FD `FD_CLOEXEC` clearing policy. -/
@@ -167,7 +172,25 @@ structure ChildSpecM (fd : Type) where
   sigpipe : SigpipePolicy := .resetDefault
   /-- Host `fork()` thread policy (`.immortalThread` for `PR_SET_PDEATHSIG` children). -/
   forkMode : ForkMode := .direct
-  deriving Repr, BEq, DecidableEq
+  deriving BEq, DecidableEq
+
+instance {fd : Type} [Repr fd] : Repr (ChildSpecM fd) where
+  reprPrec s _ :=
+    Std.Format.bracket "{" (
+      Std.Format.joinSep [
+        "path := " ++ repr s.path,
+        "argv := " ++ repr s.argv,
+        "cwd := " ++ repr s.cwd,
+        "env := " ++ repr s.env,
+        "rawEnv := " ++ repr (s.rawEnv.map (·.toList)),
+        "stdio := " ++ repr s.stdio,
+        "fdPolicy := " ++ repr s.fdPolicy,
+        "closeFds := " ++ repr s.closeFds,
+        "processGroup := " ++ repr s.processGroup,
+        "sigpipe := " ++ repr s.sigpipe,
+        "forkMode := " ++ repr s.forkMode
+      ] (", " ++ Std.Format.line)
+    ) "}"
 
 /-- Real-world `IO` specialization of `ChildSpecM` using ABA-safe `RawFd` handles. -/
 abbrev ChildSpec := ChildSpecM RawFd

@@ -490,13 +490,14 @@ def test_postfork_hostOps_validationBarrierEintrAndWire
       { path := "/bin/echo"
         argv := #[ArgToken.ofLiteral "/bin/echo", ArgToken.ofHandle tokFd, ArgToken.procSelfFd tokFd, ArgToken.prefixedFd "--fd=" (.raw 5) "x"]
         env := #[("K", "V")]
+        rawEnv := #[ByteArray.mk #[0x4B, 0x3D, 0x78], ByteArray.mk #[0x52, 0x3D, 0x80, 0xFF]]
         processGroup := .newGroup
         forkMode := .immortalThread }).run {}
   NondetTest.assert
     (rTok = .ok { pid := 4242, pgid := some 4242 } ∧
       stTok.setpgidCalls = [(4242, 4242)] ∧
       stTok.spawnedArgv = #["/bin/echo", s!"{tokFd}", s!"/proc/self/fd/{tokFd}", "--fd=5x"] ∧
-      stTok.spawnedEnv = #["K=V"] ∧
+      stTok.spawnedEnv = #[ByteArray.mk #[0x52, 0x3D, 0x80, 0xFF, 0], ("K=V".toUTF8.push 0)] ∧
       stTok.spawnedForkMode = .immortalThread ∧
       stTok.spawnedFlags = LeanSwe.PostFork.Model.flagsOfSpec
         ({ path := "/bin/echo", argv := #[], processGroup := .newGroup } : ChildSpecM Int32) false)
@@ -680,7 +681,8 @@ def test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter
       LeanSwe.PostFork.Model.validateSpec ({ path := "/bin/true", argv := #[.fdDecimal (.raw (-1))] } : ChildSpecM Int32) = false ∧
       LeanSwe.PostFork.Model.validateSpec ({ path := "/bin/true", argv := #[.prefixedFd "p\x00" (.raw 3) "s"] } : ChildSpecM Int32) = false ∧
       LeanSwe.PostFork.Model.validateSpec ({ path := "/bin/true", argv := #[.prefixedFd "p" (.raw 3) "s\x00"] } : ChildSpecM Int32) = false ∧
-      LeanSwe.PostFork.Model.validateSpec ({ path := "/bin/true", argv := #[.prefixedFd "p" (.raw (-1)) "s"] } : ChildSpecM Int32) = false)
+      LeanSwe.PostFork.Model.validateSpec ({ path := "/bin/true", argv := #[.prefixedFd "p" (.raw (-1)) "s"] } : ChildSpecM Int32) = false ∧
+      LeanSwe.PostFork.Model.validateSpec ({ path := "/bin/true", argv := #[], rawEnv := #[ByteArray.mk #[0x41, 0x3D, 0x00]] } : ChildSpecM Int32) = false)
   let flat := flattenFn syncRead? errWrite stdioRefs closeRefs keepRefs argv
   NondetTest.assert
     (flat.metaSlots.size = 20 ∧

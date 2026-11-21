@@ -29,4 +29,8 @@ def defaultOps : RawEnvVarsOps :=
 @[inline] def listEnv : IO (Except EnvVarsRawError (Array (String × String))) :=
   defaultOps.listEnv
 
+/-- Snapshot raw NUL-free byte entries directly from `environ(7)` in order without UTF-8 decoding. -/
+@[inline] def listEnvironBytes : IO (Array ByteArray) :=
+  posixRawOps.listEnvironBytes
+
 end LeanSwe.EnvVars.Raw

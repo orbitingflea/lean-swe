@@ -21,7 +21,6 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
     "Glob": pathlib.Path("LeanSwe/Glob"),
     "Fs.Raw": pathlib.Path("LeanSwe/Fs/Raw"),
     "Fs": pathlib.Path("LeanSwe/Fs"),
-    "Process.Raw": pathlib.Path("LeanSwe/Process/Raw"),
     "Process": pathlib.Path("LeanSwe/Process"),
     "Time": pathlib.Path("LeanSwe/Time"),
     "Json": pathlib.Path("LeanSwe/Json"),
@@ -59,7 +58,6 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
 
 C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
     "fs_shim.c": "leanswe_fs",
-    "LeanSwe/Process/Raw/c/process_shim.c": "leanswe_process",
     "LeanSwe/LinuxSyscall/c/process_shim.c": "leanswe_linux_process",
     "envvars_shim.c": "leanswe_envvars",
     "timerand_shim.c": "leanswe_linux_timerand",

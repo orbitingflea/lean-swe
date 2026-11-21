@@ -22,7 +22,6 @@ private def allSuites : Array (String × String × IO (Option String)) := #[
   ("Glob", "LeanSwe/Glob/RuntimeTests.lean", do Glob.RuntimeTests.runAll; return none),
   ("Fs.Raw", "LeanSwe/Fs/Raw/RuntimeTests.lean", do Fs.Raw.RuntimeTests.runAll; return none),
   ("Fs", "LeanSwe/Fs/RuntimeTests.lean", do Fs.RuntimeTests.runAll; return none),
-  ("Process.Raw", "LeanSwe/Process/Raw/RuntimeTests.lean", do Process.Raw.RuntimeTests.runAll; return none),
   ("Process", "LeanSwe/Process/RuntimeTests.lean", do Process.RuntimeTests.runAll; return none),
   ("Time", "LeanSwe/Time/RuntimeTests.lean", do Time.RuntimeTests.runAll; return none),
   ("Json", "LeanSwe/Json/RuntimeTests.lean", do Json.RuntimeTests.runAll; return none),
@@ -140,6 +139,8 @@ def main (args : List String) : IO UInt32 := do
     return (← SlotPool.RuntimeTests.probeMain rest)
   | "--compress-probe" :: rest =>
     return (← Compress.RuntimeTests.probeMain rest)
+  | "--process-probe" :: rest =>
+    return (← Process.RuntimeTests.probeMain rest)
   | "--uuid-probe" :: rest =>
     return (← Uuid.RuntimeTests.probeMain rest)
   | "--time-probe" :: rest =>

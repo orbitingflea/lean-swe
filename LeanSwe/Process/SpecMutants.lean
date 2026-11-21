@@ -1,5 +1,7 @@
 import Core.NondetTest
 import LeanSwe.Process.Types
+import LeanSwe.Process.SysBridge
+import LeanSwe.Process.Impl
 import LeanSwe.Process.SpecTests
 
 /-! Compile-time negative specification mutants for `LeanSwe.Process`. -/
@@ -342,5 +344,100 @@ example : ¬ Core.AllPass (test_process_signaled_cleansUpAndErrors
   intro h
   have h0 := h 0 { program := "sleep" } rfl
   simp [StateT.run, assert] at h0
+
+example : ¬ Core.AllPass (test_process_sysBridge_resolveExecutablePath_relativeCwdAndPathRules
+    (fun files prog _ envPairs fuel =>
+      SysBridge.resolveExecutablePath files prog none envPairs fuel)) := by
+  intro ⟨h, _⟩
+  exact absurd h (by decide +kernel)
+
+example : ¬ Core.AllPass (test_process_sysBridge_validateWorkingDir_chdirSemantics
+    (fun _ _ _ => pure (.ok ()))) := by
+  intro ⟨h, _⟩
+  exact absurd h (by decide +kernel)
+
+example : ¬ Core.AllPass (test_process_sysBridge_streamPipes_shortReadWriteEagainEintrReassembly
+    (fun _ _ _ _ _ _ _ _ _ _ =>
+      pure (.ok (.eof "abc".toUTF8 ByteArray.empty)))) := by
+  intro ⟨h, _⟩
+  exact absurd h (by decide +kernel)
+
+example : ¬ Core.AllPass (test_process_sysBridge_streamPipes_drainsStdinAfterOutErrEof
+    (fun files _ timeRand stdin startMs timeoutMs? _ stepFuel st _ => do
+      let (inFdNext?, _, _, _, _) ←
+        SysBridge.stepStdinOpt files timeRand st.inFd? stdin startMs timeoutMs? st.stdinPos stepFuel
+      SysBridge.closeOpt files inFdNext?
+      SysBridge.closeOpt files st.outFd?
+      SysBridge.closeOpt files st.errFd?
+      return .ok (.eof ByteArray.empty ByteArray.empty))) := by
+  intro ⟨h, _⟩
+  exact absurd h (by decide +kernel)
+
+example : ¬ Core.AllPass (test_process_sysBridge_maxOutputBytes_truncatesKillsAndReaps
+    (fun deps tbl eintrFuel ioFuel =>
+      let base := SysBridge.mkRawOpsM deps tbl eintrFuel ioFuel
+      { base with killProcessGroup := fun _ => pure (.ok ()) })) := by
+  intro ⟨h, _⟩
+  exact absurd h (by decide +kernel)
+
+example : ¬ Core.AllPass (test_process_sysBridge_partialPipe2Failure_cleansUpAllocatedFds
+    (fun deps _ _ req => do
+      match ← deps.proc.pipe2 { cloexec := true } with
+      | .error e => return .error (SysBridge.mapErrno (some req.program) "pipe2" e)
+      | .ok (inR, inW) =>
+        match ← deps.proc.pipe2 { cloexec := true } with
+        | .error e =>
+          SysBridge.closeOpt deps.files (some inR)
+          SysBridge.closeOpt deps.files (some inW)
+          return .error (SysBridge.mapErrno (some req.program) "pipe2" e)
+        | .ok _ =>
+          match ← deps.proc.pipe2 { cloexec := true } with
+          | .error e =>
+            SysBridge.closeOpt deps.files (some inR)
+            SysBridge.closeOpt deps.files (some inW)
+            return .error (SysBridge.mapErrno (some req.program) "pipe2" e)
+          | .ok _ =>
+            return .ok { handleId := 0, pid := 1, pgid := 1 })) := by
+  intro ⟨h, _⟩
+  exact absurd h (by decide +kernel)
+
+/-- Mutant `mkApiM` corrupting `.signaled` signal number and swapping `stdout`/`stderr` is rejected by `test_process_mkApiM_preservesExactAwaitOutcomes`. -/
+theorem mutant_mkApiM_corruptedSignaledAndSwappedStreams_rejected :
+    ¬ Core.AllPass (test_process_mkApiM_preservesExactAwaitOutcomes
+      (fun raw =>
+        let base := Internal.mkApiM raw
+        { base with
+          run := fun req => do
+            match ← base.run req with
+            | .ok res => return .ok { res with stdout := res.stderr, stderr := res.stdout }
+            | .error e => return .error { e with signal := e.signal.map (· + 1) } })) := by
+  intro ⟨h, _⟩
+  exact absurd h (by decide +kernel)
+
+/-- Mutant `resolveExecutablePath` accepting `+x` FIFO inodes instead of continuing `PATH` search is rejected by `test_process_sysBridge_resolveExecutablePath_relativeCwdAndPathRules`. -/
+theorem mutant_resolveExecutablePath_acceptsFifo_rejected :
+    ¬ Core.AllPass (test_process_sysBridge_resolveExecutablePath_relativeCwdAndPathRules
+      (fun files prog cwd? _ _ => do
+        if prog.toList.contains '/' then
+          return .ok prog
+        let p := SysBridge.probePathBytes cwd? "fifobin" prog
+        match ← files.fstatat none p {} with
+        | .ok _ => return .ok ("fifobin/" ++ prog)
+        | .error e => return .error (SysBridge.mapErrno (some prog) "execvp" e))) := by
+  intro ⟨h, _⟩
+  exact absurd h (by decide +kernel)
+
+/-- Mutant `mkRawOpsM` sending `SIGKILL` to `0` on `pgid = 1` or skipping pre-`PATH` `cwd` validation is rejected by `test_process_sysBridge_spawnCwdIsolationKillPgid1AndChdirError`. -/
+theorem mutant_mkRawOpsM_pgid1KillZero_rejected :
+    ¬ Core.AllPass (test_process_sysBridge_spawnCwdIsolationKillPgid1AndChdirError
+      (fun deps tbl eintrFuel ioFuel =>
+        let base := SysBridge.mkRawOpsM deps tbl eintrFuel ioFuel
+        { base with
+          killProcessGroup := fun _ => do
+            let _ ← deps.proc.kill 0 .sigterm
+            let _ ← deps.proc.kill 0 .sigkill
+            return .ok () })) := by
+  intro ⟨h, _⟩
+  exact absurd h (by decide +kernel)
 
 end LeanSwe.Process

@@ -48,7 +48,8 @@ def specStringHygieneOk {fd : Type} (spec : ChildSpecM fd) : Bool :=
   let cwdOk := match spec.cwd with | some d => !LeanSwe.PostFork.Model.hasEmbeddedNulStr d | none => true
   let pathOk := !spec.path.isEmpty && !LeanSwe.PostFork.Model.hasEmbeddedNulStr spec.path
   let argvOk := spec.argv.all LeanSwe.PostFork.Model.ArgToken.isValid
-  let envOk := spec.env.all LeanSwe.PostFork.Model.isValidEnvBinding
+  let envOk := spec.env.all LeanSwe.PostFork.Model.isValidEnvBinding &&
+    spec.rawEnv.all LeanSwe.PostFork.Model.isValidRawEnvEntry
   pathOk && cwdOk && argvOk && envOk
 
 /-- Collect all `FdRef` entries referenced in `stdio`, `closeFds`, and `fdPolicy.keepFds`. -/

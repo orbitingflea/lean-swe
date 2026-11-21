@@ -104,7 +104,7 @@ private theorem spawn_largeArgs (extraArgCount : Nat) (fMode : ForkMode) (waitSt
       spawnedFlags := flagsOfSpec specLarge false
       spawnedForkMode := fMode
       spawnedArgv := largeArgs.map renderMockArgToken
-      spawnedEnv := formatEnvEntries specLarge.env
+      spawnedEnv := formatEnvEntriesBytes specLarge.rawEnv specLarge.env
       spawnedCloseRefs := #[FdRef.handle 10] }
   have hFork : (Impl.Internal.performFork mockPosixHostOps specLarge none 11 #[] #[FdRef.handle 10] false).run s1 =
       (.ok 4242, s2) := rfl
@@ -140,12 +140,13 @@ private theorem spawn_tokFd (tokFd : Int32) :
           argv := #[ArgToken.ofLiteral "/bin/echo", ArgToken.ofHandle tokFd,
             ArgToken.procSelfFd tokFd, ArgToken.prefixedFd "--fd=" (.raw 5) "x"]
           env := #[("K", "V")]
+          rawEnv := #[ByteArray.mk #[0x4B, 0x3D, 0x78], ByteArray.mk #[0x52, 0x3D, 0x80, 0xFF]]
           processGroup := .newGroup
           forkMode := .immortalThread }).run {} =
         (.ok { pid := 4242, pgid := some 4242 }, stTok) ∧
       stTok.setpgidCalls = [(4242, 4242)] ∧
       stTok.spawnedArgv = #["/bin/echo", s!"{tokFd}", s!"/proc/self/fd/{tokFd}", "--fd=5x"] ∧
-      stTok.spawnedEnv = #["K=V"] ∧
+      stTok.spawnedEnv = #[ByteArray.mk #[0x52, 0x3D, 0x80, 0xFF, 0], ("K=V".toUTF8.push 0)] ∧
       stTok.spawnedForkMode = .immortalThread ∧
       stTok.spawnedFlags = flagsOfSpec ({ path := "/bin/echo", argv := #[], processGroup := .newGroup } : ChildSpecM Int32) false := by
   let specTok : ChildSpecM Int32 :=
@@ -153,6 +154,7 @@ private theorem spawn_tokFd (tokFd : Int32) :
       argv := #[ArgToken.ofLiteral "/bin/echo", ArgToken.ofHandle tokFd,
         ArgToken.procSelfFd tokFd, ArgToken.prefixedFd "--fd=" (.raw 5) "x"]
       env := #[("K", "V")]
+      rawEnv := #[ByteArray.mk #[0x4B, 0x3D, 0x78], ByteArray.mk #[0x52, 0x3D, 0x80, 0xFF]]
       processGroup := .newGroup
       forkMode := .immortalThread }
   have hArgv :
@@ -172,9 +174,13 @@ private theorem spawn_tokFd (tokFd : Int32) :
     have hi0 : i = 0 := by have : i < 1 := hi; omega
     subst hi0
     simp [isValidEnvBinding, hasEmbeddedNulStr_K, hasEmbeddedNulStr_V]
+  have hRawEnv :
+      (#[ByteArray.mk #[0x4B, 0x3D, 0x78], ByteArray.mk #[0x52, 0x3D, 0x80, 0xFF]] : Array ByteArray).all
+        isValidRawEnvEntry = true := by
+    decide +kernel
   have hVal : validateSpec specTok = true := by
     simp only [specTok, validateSpec, validateSpecWith, disjointFdRefArrays_empty, FdPolicy.keepFds,
-      hasEmbeddedNulStr_echo, hArgv, hEnv, array_all_empty]
+      hasEmbeddedNulStr_echo, hArgv, hEnv, hRawEnv, array_all_empty]
     decide
   dsimp only [specTok] at hVal
   dsimp only [Impl.Internal.mkHostOps]
@@ -197,7 +203,7 @@ private theorem spawn_tokFd (tokFd : Int32) :
       spawnedFlags := flagsOfSpec specTok false
       spawnedForkMode := .immortalThread
       spawnedArgv := specTok.argv.map renderMockArgToken
-      spawnedEnv := formatEnvEntries specTok.env
+      spawnedEnv := formatEnvEntriesBytes specTok.rawEnv specTok.env
       spawnedCloseRefs := #[FdRef.handle 10] }
   have hFork : (Impl.Internal.performFork mockPosixHostOps specTok none 11 #[] #[FdRef.handle 10] false).run s1 =
       (.ok 4242, s2) := rfl
@@ -228,15 +234,7 @@ private theorem spawn_tokFd (tokFd : Int32) :
       · simp [renderMockArgToken, ArgToken.ofLiteral, ArgToken.ofHandle, ArgToken.procSelfFd]
         try decide
   · dsimp only [s4, s3, s2, specTok]
-    unfold formatEnvEntries
-    apply Array.ext_iff.mpr
-    refine ⟨by simp, fun i hi1 _ => ?_⟩
-    simp only [Array.size_map] at hi1
-    have hi0 : i = 0 := by have : i < 1 := hi1; omega
-    subst hi0
-    rw [Array.getElem_map]
-    exact (by decide : (match (("K", "V") : String × String) with
-      | (k, v) => toString k ++ toString "=" ++ toString v) = "K=V")
+    decide +kernel
 
 private theorem spawn_closedStdio99 :
     ∃ e st,
@@ -337,7 +335,7 @@ private theorem spawnWithBarrier_ok (waitSt : ChildWaitStatus) :
       spawnedFlags := flagsOfSpec specB true
       spawnedForkMode := .direct
       spawnedArgv := specB.argv.map renderMockArgToken
-      spawnedEnv := formatEnvEntries specB.env
+      spawnedEnv := formatEnvEntriesBytes specB.rawEnv specB.env
       spawnedCloseRefs := #[FdRef.handle 10, FdRef.handle 13] }
   have hFork : (Impl.Internal.performFork mockPosixHostOps specB (some 12) 11 #[] #[FdRef.handle 10, FdRef.handle 13] true).run s2 =
       (.ok 4242, s3) := rfl
@@ -348,7 +346,8 @@ private theorem spawnWithBarrier_ok (waitSt : ChildWaitStatus) :
   have hClose : (Impl.Internal.closeListQuiet mockPosixHostOps [11, 12]).run s3 = ((), s4) := rfl
   rw [stateT_bind_pure_pair _ _ _ _ _ hClose]
   have hArg0 : (#[] : Array (ArgToken Int32)).map renderMockArgToken = #[] := by simp
-  have hFmt0 : formatEnvEntries (#[] : Array (String × String)) = #[] := by simp [formatEnvEntries]
+  have hFmt0 : formatEnvEntriesBytes (#[] : Array ByteArray) (#[] : Array (String × String)) = #[] := by
+    simp [formatEnvEntriesBytes]
   dsimp only [s4, s3, s2, s1, stBar, specB, barMidState, pure, StateT.pure]
   rw [hArg0, hFmt0]
   rfl
@@ -582,7 +581,7 @@ private theorem spawn_wireFail (stage : FailureStage) (errVal : UInt32)
       spawnedFlags := flagsOfSpec specF false
       spawnedForkMode := .direct
       spawnedArgv := specF.argv.map renderMockArgToken
-      spawnedEnv := formatEnvEntries specF.env
+      spawnedEnv := formatEnvEntriesBytes specF.rawEnv specF.env
       spawnedCloseRefs := #[FdRef.handle 10] }
   have hFork : (Impl.Internal.performFork mockPosixHostOps specF none 11 #[] #[FdRef.handle 10] false).run s1 =
       (.ok 4242, s2) := rfl
@@ -651,7 +650,7 @@ private theorem spawn_wireTrunc :
       spawnedFlags := flagsOfSpec specF false
       spawnedForkMode := .direct
       spawnedArgv := specF.argv.map renderMockArgToken
-      spawnedEnv := formatEnvEntries specF.env
+      spawnedEnv := formatEnvEntriesBytes specF.rawEnv specF.env
       spawnedCloseRefs := #[FdRef.handle 10] }
   have hFork : (Impl.Internal.performFork mockPosixHostOps specF none 11 #[] #[FdRef.handle 10] false).run s1 =
       (.ok 4242, s2) := rfl

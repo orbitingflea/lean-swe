@@ -341,4 +341,80 @@ example : ¬ Core.AllPass (test_postfork_hostOps_validationBarrierEintrAndWire e
   rcases hSub.2.2.1.2 with ⟨_, _, hErr, _⟩
   cases hErr
 
+private def rawEnvDroppingBuilder :
+    LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 →
+      PostForkOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 := fun raw =>
+  let base := LeanSwe.PostFork.Impl.Internal.mkHostOps raw
+  { base with
+    spawn := fun spec => do
+      let _ ← raw.forkRun 0 spec.forkMode none 11 #[] #[] #[] spec.cwd spec.path spec.argv
+        (LeanSwe.PostFork.Model.formatEnvEntriesBytes #[] spec.env)
+      return .ok { pid := 4242, pgid := some 4242 } }
+
+example : ¬ Core.AllPass (test_postfork_hostOps_validationBarrierEintrAndWire rawEnvDroppingBuilder) := by
+  intro h
+  have hSub := (h { path := "", argv := #[] } .validate 1 (.exited 0) 0 3 .direct).2.2.2.1
+  have hSz := congrArg Array.size hSub.2.2.2.1
+  change (LeanSwe.PostFork.Model.formatEnvEntriesBytes #[] #[("K", "V")]).size = 2 at hSz
+  simp [LeanSwe.PostFork.Model.formatEnvEntriesBytes] at hSz
+
+private def rawEnvUncheckedNulBuilder :
+    LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 →
+      PostForkOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 := fun raw =>
+  let base := LeanSwe.PostFork.Impl.Internal.mkHostOps raw
+  { base with
+    spawn := fun spec =>
+      if spec.rawEnv.any (fun e => !LeanSwe.PostFork.Model.isValidRawEnvEntry e) then do
+        let _ ← raw.mkPipeCloexec
+        return .ok { pid := 4242, pgid := none }
+      else base.spawn spec }
+
+example : ¬ Core.AllPass (test_postfork_hostOps_validationBarrierEintrAndWire rawEnvUncheckedNulBuilder) := by
+  intro h
+  let badSpec : ChildSpecM Int32 :=
+    { path := "/bin/true", argv := #[], rawEnv := #[ByteArray.mk #[0x41, 0x3D, 0x00]] }
+  have hBad : (!LeanSwe.PostFork.Model.validateSpec badSpec) = true := by
+    have hNul : LeanSwe.PostFork.Model.isValidRawEnvEntry (ByteArray.mk #[0x41, 0x3D, 0x00]) = false := by
+      decide +kernel
+    simp [badSpec, LeanSwe.PostFork.Model.validateSpec, LeanSwe.PostFork.Model.validateSpecWith,
+      hNul, ← Array.all_toList]
+  have hAll := h badSpec .validate 1 (.exited 0) 0 3 .direct
+  dsimp [test_postfork_hostOps_validationBarrierEintrAndWire] at hAll
+  simp only [hBad, ↓reduceIte] at hAll
+  rcases hAll.1 with ⟨⟨_, hErr, _⟩, _⟩
+  have hIsOk :
+      ((rawEnvUncheckedNulBuilder LeanSwe.PostFork.Model.Internal.mockPosixHostOps).1 badSpec {}).1 =
+        .ok { pid := 4242, pgid := none } := by
+    have hNul : LeanSwe.PostFork.Model.isValidRawEnvEntry (ByteArray.mk #[0x41, 0x3D, 0x00]) = false := by
+      decide +kernel
+    change ((((rawEnvUncheckedNulBuilder LeanSwe.PostFork.Model.Internal.mockPosixHostOps).spawn badSpec).run {})).1 = _
+    simp [rawEnvUncheckedNulBuilder, badSpec, hNul,
+      LeanSwe.PostFork.Model.Internal.mockPosixHostOps, ← Array.any_toList]
+    rfl
+  rw [hIsOk] at hErr
+  cases hErr
+
+private def naiveFormatEnvEntriesBytes (rawEnv : Array ByteArray) (env : Array (String × String)) :
+    Array ByteArray :=
+  rawEnv.map (fun b => b.push 0) ++ env.map (fun (k, v) => s!"{k}={v}".toUTF8.push 0)
+
+private def rawEnvNoDedupBuilder :
+    LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 →
+      PostForkOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 := fun raw =>
+  let base := LeanSwe.PostFork.Impl.Internal.mkHostOps raw
+  { base with
+    spawn := fun spec => do
+      let _ ← raw.forkRun 0 spec.forkMode none 11 #[] #[] #[] spec.cwd spec.path spec.argv
+        (naiveFormatEnvEntriesBytes spec.rawEnv spec.env)
+      return .ok { pid := 4242, pgid := some 4242 } }
+
+example : ¬ Core.AllPass (test_postfork_hostOps_validationBarrierEintrAndWire rawEnvNoDedupBuilder) := by
+  intro h
+  have hSub := (h { path := "", argv := #[] } .validate 1 (.exited 0) 0 3 .direct).2.2.2.1
+  have hSz := congrArg Array.size hSub.2.2.2.1
+  change (naiveFormatEnvEntriesBytes
+    #[ByteArray.mk #[0x4B, 0x3D, 0x78], ByteArray.mk #[0x52, 0x3D, 0x80, 0xFF]]
+    #[("K", "V")]).size = 2 at hSz
+  simp [naiveFormatEnvEntriesBytes] at hSz
+
 end LeanSwe.PostFork

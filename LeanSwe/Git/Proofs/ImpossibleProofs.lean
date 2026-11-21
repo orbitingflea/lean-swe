@@ -1,7 +1,6 @@
 import Core.Assumptions
 import LeanSwe.EnvVars.Proofs
-import LeanSwe.Process.Raw.Impl
-import LeanSwe.Process.Raw.Interface
+import LeanSwe.Process.Proofs.EndToEnd
 import LeanSwe.Process.Impl
 import LeanSwe.Process.Interface
 import LeanSwe.Git.Types
@@ -30,102 +29,10 @@ private theorem envvars_listEnv_never_throws (w : Void IO.RealWorld) :
   | ok res w' => exact ⟨res, w', rfl⟩
   | error e w' => rw [hr] at h; exact False.elim h
 
-private theorem catchProc_never_throws {α : Type} (prog? : Option String) (act : IO α)
-    (w : Void IO.RealWorld) :
-    ∃ res w', LeanSwe.Process.Raw.Internal.catchProc prog? act w = EST.Out.ok res w' := by
-  have heq : LeanSwe.Process.Raw.Internal.catchProc prog? act w =
-      EST.bind
-        (EST.tryCatch
-          (EST.bind act fun x => EST.pure (Except.error (Except.ok x)))
-          (fun err => EST.pure (Except.error (Except.error (LeanSwe.Process.Raw.Internal.mapIoError prog? err)))))
-        (fun e => Except.rec (fun a => EST.pure a) (fun a => EST.pure a) e)
-        w := rfl
-  rw [heq]
-  cases h : act w with
-  | ok a s => exact ⟨.ok a, s, by simp [EST.bind, EST.tryCatch, EST.pure, h]⟩
-  | error e s => exact ⟨.error (LeanSwe.Process.Raw.Internal.mapIoError prog? e), s, by simp [EST.bind, EST.tryCatch, EST.pure, h]⟩
-
-private theorem process_defaultOps_spawn_never_throws (req : LeanSwe.Process.ExecRequest)
-    (w : Void IO.RealWorld) :
-    ∃ res w', LeanSwe.Process.Raw.defaultOps.spawn req w = EST.Out.ok res w' := by
-  dsimp only [LeanSwe.Process.Raw.defaultOps, LeanSwe.Process.Raw.Internal.mkRawOps]
-  split
-  · exact ⟨_, w, rfl⟩
-  · exact catchProc_never_throws (some req.program) _ w
-
-private theorem process_defaultOps_awaitOutput_never_throws (h : LeanSwe.Process.Raw.ProcessHandle)
-    (stdin : ByteArray) (timeoutMs? maxOutputBytes? : Option Nat) (w : Void IO.RealWorld) :
-    ∃ res w', LeanSwe.Process.Raw.defaultOps.awaitOutput h stdin timeoutMs? maxOutputBytes? w = EST.Out.ok res w' := by
-  dsimp only [LeanSwe.Process.Raw.defaultOps, LeanSwe.Process.Raw.Internal.mkRawOps]
-  exact catchProc_never_throws none _ w
-
-private theorem process_defaultOps_kill_never_throws (h : LeanSwe.Process.Raw.ProcessHandle)
-    (w : Void IO.RealWorld) :
-    ∃ res w', LeanSwe.Process.Raw.defaultOps.killProcessGroup h w = EST.Out.ok res w' := by
-  dsimp only [LeanSwe.Process.Raw.defaultOps, LeanSwe.Process.Raw.Internal.mkRawOps]
-  exact catchProc_never_throws none _ w
-
-private theorem process_defaultOps_reap_never_throws (h : LeanSwe.Process.Raw.ProcessHandle)
-    (w : Void IO.RealWorld) :
-    ∃ res w', LeanSwe.Process.Raw.defaultOps.reap h w = EST.Out.ok res w' := by
-  dsimp only [LeanSwe.Process.Raw.defaultOps, LeanSwe.Process.Raw.Internal.mkRawOps]
-  exact catchProc_never_throws none _ w
-
 private theorem process_run_never_throws (req : LeanSwe.Process.ExecRequest)
     (w : Void IO.RealWorld) :
-    ∃ res w', LeanSwe.Process.run req w = EST.Out.ok res w' := by
-  rw [show LeanSwe.Process.run req = LeanSwe.Process.Internal.run LeanSwe.Process.Raw.defaultOps req from rfl]
-  unfold LeanSwe.Process.Internal.run
-  cases hval : LeanSwe.Process.Internal.validateRequest req with
-  | error err => exact ⟨_, w, rfl⟩
-  | ok norm =>
-    dsimp only
-    rcases process_defaultOps_spawn_never_throws norm w with ⟨r1, w1, hw1⟩
-    rw [io_bind_ok _ _ _ hw1]
-    cases r1 with
-    | error err => exact ⟨_, w1, rfl⟩
-    | ok h =>
-      dsimp only
-      rcases process_defaultOps_awaitOutput_never_throws h norm.stdin norm.timeoutMs norm.maxOutputBytes w1 with ⟨r2, w2, hw2⟩
-      rw [io_bind_ok _ _ _ hw2]
-      cases r2 with
-      | error err =>
-        dsimp only
-        rcases process_defaultOps_kill_never_throws h w2 with ⟨rk, wk, hwk⟩
-        rw [io_bind_ok _ _ _ hwk]
-        rcases process_defaultOps_reap_never_throws h wk with ⟨rr, wr, hwr⟩
-        rw [io_bind_ok _ _ _ hwr]
-        exact ⟨_, wr, rfl⟩
-      | ok outcome =>
-        cases outcome with
-        | exited res =>
-          dsimp only
-          rcases process_defaultOps_reap_never_throws h w2 with ⟨rr, wr, hwr⟩
-          rw [io_bind_ok _ _ _ hwr]
-          cases rr with
-          | error _ => exact ⟨_, wr, rfl⟩
-          | ok _ => exact ⟨_, wr, rfl⟩
-        | signaled sig out err =>
-          dsimp only
-          rcases process_defaultOps_kill_never_throws h w2 with ⟨rk, wk, hwk⟩
-          rw [io_bind_ok _ _ _ hwk]
-          rcases process_defaultOps_reap_never_throws h wk with ⟨rr, wr, hwr⟩
-          rw [io_bind_ok _ _ _ hwr]
-          exact ⟨_, wr, rfl⟩
-        | timedOut out err =>
-          dsimp only
-          rcases process_defaultOps_kill_never_throws h w2 with ⟨rk, wk, hwk⟩
-          rw [io_bind_ok _ _ _ hwk]
-          rcases process_defaultOps_reap_never_throws h wk with ⟨rr, wr, hwr⟩
-          rw [io_bind_ok _ _ _ hwr]
-          exact ⟨_, wr, rfl⟩
-        | outputLimitExceeded out err =>
-          dsimp only
-          rcases process_defaultOps_kill_never_throws h w2 with ⟨rk, wk, hwk⟩
-          rw [io_bind_ok _ _ _ hwk]
-          rcases process_defaultOps_reap_never_throws h wk with ⟨rr, wr, hwr⟩
-          rw [io_bind_ok _ _ _ hwr]
-          exact ⟨_, wr, rfl⟩
+    ∃ res w', LeanSwe.Process.run req w = EST.Out.ok res w' :=
+  LeanSwe.Process.Proofs.process_run_never_throws req w
 
 private theorem defaultRawOps_listEnv_res (w : Void IO.RealWorld) :
     ∃ res w', LeanSwe.Git.defaultRawOps.listEnv w = EST.Out.ok res w' ∧
