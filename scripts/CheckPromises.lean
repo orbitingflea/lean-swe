@@ -1451,6 +1451,70 @@ private def moduleToOleanPath (libDir : System.FilePath) (modName : Name) : Syst
   let parts := modName.components.map (·.toString)
   (parts.foldl (fun p seg => p / seg) libDir).withExtension "olean"
 
+private def compressAuditModules : Array Name := #[
+  `LeanSwe.Compress.Types, `LeanSwe.Compress.Model, `LeanSwe.Compress.Impl,
+  `LeanSwe.Compress.Interface, `LeanSwe.Compress.SpecTests,
+  `LeanSwe.Compress.Proofs
+]
+
+private def isAllowedCompressDirectImport (m : Name) : Bool :=
+  isAllowedClosureStdlibModule m || m.getRoot == `Core ||
+    ((m.components.take 2 == [`LeanSwe, `Compress] || m.components.take 2 == [`LeanSwe, `Process]) &&
+      nameLastStr m != "RuntimeTests" && !isMutantModule m)
+
+private def checkCompressTrustedClosure
+    (repoDir : System.FilePath) (env : Environment) (extraMods : Array Name) : IO (Array String) := do
+  let compMods := discoverPackageModules env extraMods `LeanSwe.Compress compressAuditModules
+  let mut errs : Array String := #[]
+  for m in compMods do
+    let some mIdx := env.header.moduleNames.findIdx? (· == m)
+      | do errs := errs.push s!"TRUSTED_CLOSURE_COMPRESS_MISSING_MODULE: {m}"; continue
+    if let some attrErr ← checkClosureModuleAttrs repoDir env m .anonymous then
+      errs := errs.push attrErr
+    let some data := env.header.moduleData[mIdx]? | continue
+    for imp in data.imports do
+      if !isAllowedCompressDirectImport imp.module then
+        errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_IMPORT: {m} imports {imp.module}"
+    for c in data.constants do
+      if c matches .opaqueInfo _ || (getExternAttrData? env c.name).isSome then
+        errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_EXTERN: {c.name} in {m}"
+      if let .defnInfo v := c then
+        if v.safety != .safe && !(← isAllowedCompilerUnsafeDef env c.name v) then
+          errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_UNSAFE_DEF: {c.name} in {m}"
+      if let some impl := Lean.Compiler.getImplementedBy? env c.name then
+        if !(← isCompilerGeneratedCtorIdx env c.name impl c) then
+          errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_IMPL_BY: {c.name} -> {impl} in {m}"
+      for u in c.type.getUsedConstants ++ (c.value?.map (·.getUsedConstants) |>.getD #[]) do
+        let uMod := env.getModuleIdxFor? u |>.bind (env.header.moduleNames[·]?) |>.getD .anonymous
+        if !isProjectModule uMod then
+          if let some uInfo := env.find? u then
+            if let some extData := getExternAttrData? env u then
+              if isForbiddenHostExtern u uInfo extData then
+                errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_HOST_IO_EXTERN: {u} referenced by {c.name} in {m}"
+  let ctx : Core.Context := { fileName := "<CheckPromises.CompressWiring>", fileMap := default, maxHeartbeats := 0 }
+  let (wErrs, _) ← (Meta.MetaM.run' do
+    let mut mErrs : Array String := #[]
+    match env.find? `LeanSwe.Compress.defaultApi with
+    | some (.defnInfo dv) =>
+      let canon ← Meta.mkAppM `LeanSwe.Compress.Internal.mkApiM #[mkConst `LeanSwe.Process.Raw.defaultOps]
+      if dv.safety != .safe || dv.type.getUsedConstants.contains ``optParam ||
+          !(← Meta.withTransparency .none (Meta.isDefEq dv.value canon)) then
+        mErrs := mErrs.push "TRUSTED_CLOSURE_COMPRESS_WIRING: invalid defaultApi"
+    | _ => mErrs := mErrs.push "TRUSTED_CLOSURE_COMPRESS_WIRING: missing defaultApi"
+    for field in #[`compress, `decompress, `compressWith, `decompressWith, `isToolAvailable] do
+      let wName := Name.mkStr `LeanSwe.Compress field.getString!
+      let projName := Name.mkStr `LeanSwe.Compress.CompressApiM field.getString!
+      match env.find? wName with
+      | some (.defnInfo wv) =>
+        let red := etaReduceExpr wv.value
+        if wv.safety != .safe || wv.type.getUsedConstants.contains ``optParam ||
+            !(red.isAppOfArity projName 2 && red.appFn!.appArg!.consumeMData.isConstOf ``IO &&
+              red.appArg!.consumeMData.isConstOf `LeanSwe.Compress.defaultApi) then
+          mErrs := mErrs.push s!"TRUSTED_CLOSURE_COMPRESS_WIRING: invalid wrapper {wName}"
+      | _ => mErrs := mErrs.push s!"TRUSTED_CLOSURE_COMPRESS_WIRING: missing wrapper {wName}"
+    return mErrs).toIO ctx { env }
+  return errs ++ wErrs
+
 /-- Audit compiled `.olean` artifacts reachable from `LeanSwe` for promise coverage. -/
 unsafe def main (args : List String) : IO UInt32 := do
   if args.length > 2 then
@@ -1547,6 +1611,7 @@ unsafe def main (args : List String) : IO UInt32 := do
     m == `LeanSwe || isMutantModule m || nameLastStr m == "RuntimeTests" ||
       nameLastStr m == "SpecTests" || (nameLastStr m).endsWith "Proofs" ||
       m.components.contains `Proofs || m.getRoot == `Core ||
+      m.components.take 2 == [`LeanSwe, `Compress] ||
       m.components.take 2 == [`LeanSwe, `EnvVars] ||
       m.components.take 2 == [`LeanSwe, `CryptoHash] ||
       m.components.take 2 == [`LeanSwe, `LinuxSyscall]
@@ -1565,7 +1630,7 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   let rtParseEnv ← if !importableExtraMods.isEmpty then do
     enableInitializersExecution
-    let extraEnv ← importModules ((#[`LeanSwe] ++ importableExtraMods).map fun m => { module := m }) {} (loadExts := true)
+    let extraEnv ← importModules (importableExtraMods.map fun m => { module := m }) {} (loadExts := true)
     for h : i in [0 : extraEnv.header.moduleNames.size] do
       let m := extraEnv.header.moduleNames[i]
       if !isProjectModule m || visited.contains m then continue
@@ -1889,7 +1954,8 @@ unsafe def main (args : List String) : IO UInt32 := do
   let chClosureErrs ← checkPackageTrustedClosure repoDir "CryptoHash" chAuditMods
     isAllowedCryptoHashClosureModule `LeanSwe.CryptoHash.Raw.Interface allowedCryptoHashExternSyms false
   let sbxClosureErrs ← checkSandboxTrustedClosure env
-  errors := errors ++ axiomErrs ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sbxClosureErrs
+  let compClosureErrs ← checkCompressTrustedClosure repoDir env importableExtraMods
+  errors := errors ++ axiomErrs ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sbxClosureErrs ++ compClosureErrs
 
   let mut withAssumeCount := 0
   for (m, pName) in promises do

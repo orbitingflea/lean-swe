@@ -1,4 +1,5 @@
 import Fuzz.Common.Suite
+import Fuzz.Compress.Suite
 import Fuzz.Float.Suite
 import Fuzz.CmdLine.Suite
 import Fuzz.Passwd.Suite
@@ -37,7 +38,8 @@ private def registeredSuites : List FuzzSuite := [
   Fuzz.EnvVars.suite,
   Fuzz.CryptoHash.suite,
   Fuzz.Passwd.suite,
-  Fuzz.Dns.suite
+  Fuzz.Dns.suite,
+  Fuzz.Compress.suite
 ]
 
 private def truncArg (s : String) (maxLen : Nat := 64) : String :=
@@ -240,6 +242,21 @@ private def safeStream (fd : UInt32) (orig : IO.FS.Stream) : IO.FS.Stream := {
   isTty := orig.isTty
 }
 
+private def safeFlush (h : IO.FS.Stream) : IO Unit :=
+  try h.flush catch _ => pure ()
+
+private def safePrintln (s : String) : IO Unit := do
+  try
+    IO.println s
+    safeFlush (← IO.getStdout)
+  catch _ => pure ()
+
+private def safeEprintln (s : String) : IO Unit := do
+  try
+    IO.eprintln s
+    safeFlush (← IO.getStderr)
+  catch _ => pure ()
+
 /-- Unified CLI entry point for `leanswe-fuzz`. -/
 def main (args : List String) : IO UInt32 := do
   match args with
@@ -252,66 +269,57 @@ def main (args : List String) : IO UInt32 := do
   if (← LeanSwe.LinuxSyscall.Fuzz.Env.fdKind 2) == 6 then
     let _ ← IO.setStderr (safeStream 2 origErr)
   let stdout ← IO.getStdout
-  let stderr ← IO.getStderr
   match validateRegisteredSuites with
   | .ok () => pure ()
   | .error msg =>
-    IO.eprintln msg
-    stderr.flush
+    safeEprintln msg
     return 2
   let opts ← match parseArgs args with
     | .ok o => pure o
     | .error msg =>
-      IO.eprintln msg
-      stderr.flush
+      safeEprintln msg
       return 2
   let selected ← match validateOptions opts with
     | .ok ss => pure ss
     | .error msg =>
-      IO.eprintln msg
-      stderr.flush
+      safeEprintln msg
       return 2
   if opts.showHelp then
-    printUsage
-    stdout.flush
+    try printUsage catch _ => pure ()
+    safeFlush stdout
     return 0
   if opts.listSuites then
     for s in registeredSuites do
-      IO.println s.name
-    stdout.flush
+      safePrintln s.name
     return 0
   let effectiveSeed ←
     if opts.hasRandomSeed then
       try
         drawOsEntropySeed
       catch e =>
-        IO.eprintln s!"ENTROPY_ERROR: {e}"
-        stderr.flush
+        safeEprintln s!"ENTROPY_ERROR: {e}"
         return 2
     else
       pure opts.config.seed
   let effectiveConfig : FuzzConfig := { opts.config with seed := effectiveSeed }
-  IO.println s!"SEED={effectiveSeed}"
-  stdout.flush
+  safePrintln s!"SEED={effectiveSeed}"
   let mut failedSuites : Array String := #[]
   for suite in selected do
     try
       if effectiveConfig.smoke || effectiveConfig.selfTestShrink then
         suite.selfTestShrink effectiveSeed
-        stdout.flush
+        safeFlush stdout
       if effectiveConfig.smoke then
         suite.runSmoke effectiveConfig
       else
         suite.runFuzz effectiveConfig
-      stdout.flush
+      safeFlush stdout
     catch e =>
-      stdout.flush
-      IO.eprintln s!"FUZZ_SUITE_FAILED suite={suite.name}: {e}"
-      stderr.flush
+      safeFlush stdout
+      safeEprintln s!"FUZZ_SUITE_FAILED suite={suite.name}: {e}"
       failedSuites := failedSuites.push suite.name
   if !failedSuites.isEmpty then
-    IO.eprintln s!"FUZZ_RUN_FAILED failed={failedSuites.size}/{selected.length} suites={",".intercalate failedSuites.toList} seed={effectiveSeed}"
-    stderr.flush
+    safeEprintln s!"FUZZ_RUN_FAILED failed={failedSuites.size}/{selected.length} suites={",".intercalate failedSuites.toList} seed={effectiveSeed}"
     return 1
   return 0
 
