@@ -2,6 +2,7 @@
 build/
 .lint-cache/
 .agents/
+target/
 *.olean
 *.c.o.export
 *.o
