@@ -4,7 +4,6 @@ import LeanSwe.RegExp.RuntimeTests
 import LeanSwe.Glob.RuntimeTests
 import LeanSwe.Fs.Raw.RuntimeTests
 import LeanSwe.Fs.RuntimeTests
-import LeanSwe.Process.Raw.RuntimeTests
 import LeanSwe.Process.RuntimeTests
 import LeanSwe.Time.RuntimeTests
 import LeanSwe.Json.RuntimeTests
@@ -1324,7 +1323,7 @@ private def runCompressMutateExtra : IO Unit := do
       (match overMaxCal with | .error e => e.kind == .outputLimitExceeded && e.codec == some .gzip && e.exitCode == none && e.stderr == some "warn" | _ => false) &&
       (match compFailEmptySerr with | .error e => e.kind == .commandFailed && e.codec == some .zstd && e.exitCode == some 2 && e.stderr == none | _ => false) &&
       (match decFailBadUtf8Serr with | .error e => e.kind == .corruptData && e.codec == some .xz && e.exitCode == some 1 && e.stderr == none | _ => false))
-  let mkMockRaw (out : Process.Raw.ExecOutcome) : Process.RawProcessOpsM Id :=
+  let mkMockRaw (out : Process.ExecOutcome) : Process.RawProcessOpsM Id :=
     { mapRawError := fun _ => { kind := .ioError, message := "mock" }
       spawn := fun _ => .ok { handleId := 1, pid := 1, pgid := 1 }
       awaitOutput := fun _ _ _ _ => .ok out
@@ -1850,7 +1849,6 @@ private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("Glob", do Glob.RuntimeTests.runAll; return none, pure ()),
   ("Fs.Raw", do Fs.Raw.RuntimeTests.runAll; return none, pure ()),
   ("Fs", do Fs.RuntimeTests.runAll; return none, pure ()),
-  ("Process.Raw", do Process.Raw.RuntimeTests.runAll; return none, pure ()),
   ("Process", do Process.RuntimeTests.runAll; return none, pure ()),
   ("Time", do Time.RuntimeTests.runAll; return none, pure ()),
   ("Json", do Json.RuntimeTests.runAll; return none, pure ()),
@@ -1916,6 +1914,8 @@ def main (args : List String) : IO UInt32 := do
     return (← SlotPool.RuntimeTests.probeMain rest)
   | "--compress-probe" :: rest =>
     return (← Compress.RuntimeTests.probeMain rest)
+  | "--process-probe" :: rest =>
+    return (← Process.RuntimeTests.probeMain rest)
   | "--uuid-probe" :: rest =>
     return (← Uuid.RuntimeTests.probeMain rest)
   | "--time-probe" :: rest =>

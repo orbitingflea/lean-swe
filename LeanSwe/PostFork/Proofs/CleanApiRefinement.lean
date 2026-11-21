@@ -203,7 +203,8 @@ private theorem validateSpec_hygiene_rejections :
     LeanSwe.PostFork.Model.validateSpec ({ path := "/bin/true", argv := #[.fdDecimal (.raw (-1))] } : ChildSpecM Int32) = false ∧
     LeanSwe.PostFork.Model.validateSpec ({ path := "/bin/true", argv := #[.prefixedFd "p\x00" (.raw 3) "s"] } : ChildSpecM Int32) = false ∧
     LeanSwe.PostFork.Model.validateSpec ({ path := "/bin/true", argv := #[.prefixedFd "p" (.raw 3) "s\x00"] } : ChildSpecM Int32) = false ∧
-    LeanSwe.PostFork.Model.validateSpec ({ path := "/bin/true", argv := #[.prefixedFd "p" (.raw (-1)) "s"] } : ChildSpecM Int32) = false := by
+    LeanSwe.PostFork.Model.validateSpec ({ path := "/bin/true", argv := #[.prefixedFd "p" (.raw (-1)) "s"] } : ChildSpecM Int32) = false ∧
+    LeanSwe.PostFork.Model.validateSpec ({ path := "/bin/true", argv := #[], rawEnv := #[ByteArray.mk #[0x41, 0x3D, 0x00]] } : ChildSpecM Int32) = false := by
   have hNulAb : LeanSwe.PostFork.Model.hasEmbeddedNulStr "a\x00b" = true :=
     hasEmbeddedNulStr_of_get_zero "a\x00b" 1 (by decide) (by decide)
   have hNulDe : LeanSwe.PostFork.Model.hasEmbeddedNulStr "d\x00e" = true :=
@@ -227,11 +228,13 @@ private theorem validateSpec_hygiene_rejections :
   have hEmpty : ("" : String).isEmpty = true := rfl
   have hEqChr : ("A=B" : String).contains '=' = true := by simp [String.contains_char_eq]
   have hNeg1 : LeanSwe.PostFork.Model.FdRef.isNonneg (FdRef.raw (-1) : FdRef Int32) = false := by decide
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
+  have hBadRawEnv : LeanSwe.PostFork.Model.isValidRawEnvEntry (ByteArray.mk #[0x41, 0x3D, 0x00]) = false := by
+    decide +kernel
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
     simp only [LeanSwe.PostFork.Model.validateSpec, LeanSwe.PostFork.Model.validateSpecWith,
       LeanSwe.PostFork.Model.isValidEnvBinding, LeanSwe.PostFork.Model.ArgToken.isValid,
       hasEmbeddedNulStr_true, hNulAb, hNulDe, hNulK, hNulV, hNulX, hNulP, hNulS,
-      hCleanP, hCleanS, hCleanK, hEmpty, hEqChr, hNeg1,
+      hCleanP, hCleanS, hCleanK, hEmpty, hEqChr, hNeg1, hBadRawEnv,
       ← _root_.Array.all_toList, List.all_cons, List.all_nil,
       Bool.not_true, Bool.false_and, Bool.and_false]
 
@@ -255,7 +258,7 @@ private theorem spawn_closedRawCloseFilter_ok :
       spawnedFlags := LeanSwe.PostFork.Model.flagsOfSpec specC false
       spawnedForkMode := .direct
       spawnedArgv := specC.argv.map LeanSwe.PostFork.Model.Internal.renderMockArgToken
-      spawnedEnv := LeanSwe.PostFork.Model.formatEnvEntries specC.env
+      spawnedEnv := LeanSwe.PostFork.Model.formatEnvEntriesBytes specC.rawEnv specC.env
       spawnedCloseRefs := #[.raw 5, .handle 7, .handle 10] }
   let s3 := { s2 with callCount := 6, closedHandles := [11], closedFds := [11] }
   let s4 := { s3 with callCount := s3.callCount + 0 + 1, readEintrCount := 0 }
@@ -501,7 +504,7 @@ private theorem pipeCleanup_and_busyAbort_ok :
       spawnedFlags := LeanSwe.PostFork.Model.flagsOfSpec ({ path := "/bin/true", argv := #[] } : ChildSpecM Int32) false
       spawnedForkMode := .direct
       spawnedArgv := (#[] : _root_.Array (ArgToken Int32)).map LeanSwe.PostFork.Model.Internal.renderMockArgToken
-      spawnedEnv := LeanSwe.PostFork.Model.formatEnvEntries #[]
+      spawnedEnv := LeanSwe.PostFork.Model.formatEnvEntriesBytes #[] #[]
       spawnedCloseRefs := #[.handle 10] }
   let rd3 : LeanSwe.PostFork.Model.Internal.HostMockState := { rd2 with callCount := 3, closedHandles := [11], closedFds := [11] }
   let rd4 : LeanSwe.PostFork.Model.Internal.HostMockState := { rd3 with callCount := 4 }
@@ -551,7 +554,7 @@ private theorem pipeCleanup_and_busyAbort_ok :
       spawnedFlags := LeanSwe.PostFork.Model.flagsOfSpec ({ path := "/bin/false", argv := #[] } : ChildSpecM Int32) false
       spawnedForkMode := .direct
       spawnedArgv := (#[] : _root_.Array (ArgToken Int32)).map LeanSwe.PostFork.Model.Internal.renderMockArgToken
-      spawnedEnv := LeanSwe.PostFork.Model.formatEnvEntries #[]
+      spawnedEnv := LeanSwe.PostFork.Model.formatEnvEntriesBytes #[] #[]
       spawnedCloseRefs := #[.handle 10] }
   let wt3 : LeanSwe.PostFork.Model.Internal.HostMockState := { wt2 with callCount := 3, closedHandles := [11], closedFds := [11] }
   let wt4 : LeanSwe.PostFork.Model.Internal.HostMockState :=

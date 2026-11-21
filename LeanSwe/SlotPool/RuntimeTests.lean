@@ -3,7 +3,7 @@ import LeanSwe.Fs.Impl
 import LeanSwe.Fs.Interface
 import LeanSwe.Fs.Raw.Interface
 import LeanSwe.Process.Interface
-import LeanSwe.Process.Raw.Interface
+import LeanSwe.Process.SysBridge
 import LeanSwe.SlotPool.Interface
 import LeanSwe.SlotPool.Model
 import LeanSwe.TempDir.Interface
@@ -157,13 +157,13 @@ def probeMain (args : List String) : IO UInt32 := do
     return 3
 
 private def spawnProbe (exe : String) (args : Array String) : IO Process.ProcessHandle := do
-  match ← Process.Raw.spawn { program := exe, args := #["--slotpool-probe"] ++ args } with
+  match ← Process.SysBridge.spawn { program := exe, args := #["--slotpool-probe"] ++ args } with
   | .ok h => return h
   | .error e => throw (IO.userError s!"ASSERTION FAILED: spawn probe failed: {repr e}")
 
 private def awaitProbeZero (h : Process.ProcessHandle) (label : String) : IO Unit := do
-  let outcome ← Process.Raw.awaitOutput h ByteArray.empty (some 20000) none
-  let _ ← Process.Raw.reap h
+  let outcome ← Process.SysBridge.awaitOutput h ByteArray.empty (some 20000) none
+  let _ ← Process.SysBridge.reap h
   match outcome with
   | .ok (.exited out) =>
     if out.exitCode != 0 then
@@ -316,16 +316,16 @@ private def testMultiProcessDisjointSlotsAndSaturation (exe sandbox : String) : 
         awaitProbeZero h2 "hold child 2"
       finally
         let _ ← Fs.writeText stop2 "go"
-        let _ ← Process.Raw.killProcessGroup h2
-        let _ ← Process.Raw.reap h2
+        let _ ← Process.SysBridge.killProcessGroup h2
+        let _ ← Process.SysBridge.reap h2
     finally
       let _ ← Fs.writeText stop1 "go"
-      let _ ← Process.Raw.killProcessGroup h1
-      let _ ← Process.Raw.reap h1
+      let _ ← Process.SysBridge.killProcessGroup h1
+      let _ ← Process.SysBridge.reap h1
   finally
     let _ ← Fs.writeText stop0 "go"
-    let _ ← Process.Raw.killProcessGroup h0
-    let _ ← Process.Raw.reap h0
+    let _ ← Process.SysBridge.killProcessGroup h0
+    let _ ← Process.SysBridge.reap h0
 
   for i in List.range 3 do
     let lp := Model.slotLockPath Fs.join poolDir i
@@ -351,8 +351,8 @@ private def testMultiProcessConcurrentContention (exe sandbox : String) : IO Uni
         s!"worker {i} leased out-of-range slot {slotStr}"
   finally
     for (_, h, _) in handles do
-      let _ ← Process.Raw.killProcessGroup h
-      let _ ← Process.Raw.reap h
+      let _ ← Process.SysBridge.killProcessGroup h
+      let _ ← Process.SysBridge.reap h
 
   for i in List.range 2 do
     let lp := Model.slotLockPath Fs.join poolDir i
@@ -382,7 +382,7 @@ private def testSigkillWakeupWaitUpToAndWaitForever (exe sandbox : String) : IO 
       match ← Process.runCommand "kill" #["-9", toString hKill1.pid] with
       | .ok kout => assertTrue (kout.exitCode == 0) "kill -9 sigkill1 exit 0"
       | .error e => throw (IO.userError s!"kill -9 sigkill1 failed: {repr e}")
-      let _ ← Process.Raw.reap hKill1
+      let _ ← Process.SysBridge.reap hKill1
 
       waitForFile peer1Ready
       let peer1Slot ← assertFsOk (← Fs.readText peer1Ready) "read peer1Ready"
@@ -391,11 +391,11 @@ private def testSigkillWakeupWaitUpToAndWaitForever (exe sandbox : String) : IO 
       awaitProbeZero hPeer1 "waitForever peer1"
     finally
       let _ ← Fs.writeText peer1Stop "go"
-      let _ ← Process.Raw.killProcessGroup hPeer1
-      let _ ← Process.Raw.reap hPeer1
+      let _ ← Process.SysBridge.killProcessGroup hPeer1
+      let _ ← Process.SysBridge.reap hPeer1
   finally
-    let _ ← Process.Raw.killProcessGroup hKill1
-    let _ ← Process.Raw.reap hKill1
+    let _ ← Process.SysBridge.killProcessGroup hKill1
+    let _ ← Process.SysBridge.reap hKill1
 
   assertTrue (← assertFsOk (← Fs.isFile lock0) "isFile lock0") "lock0 preserved after SIGKILL + waitForever"
 
@@ -414,7 +414,7 @@ private def testSigkillWakeupWaitUpToAndWaitForever (exe sandbox : String) : IO 
       match ← Process.runCommand "kill" #["-9", toString hKill2.pid] with
       | .ok kout => assertTrue (kout.exitCode == 0) "kill -9 sigkill2 exit 0"
       | .error e => throw (IO.userError s!"kill -9 sigkill2 failed: {repr e}")
-      let _ ← Process.Raw.reap hKill2
+      let _ ← Process.SysBridge.reap hKill2
 
       waitForFile peer2Ready
       let peer2Slot ← assertFsOk (← Fs.readText peer2Ready) "read peer2Ready"
@@ -423,11 +423,11 @@ private def testSigkillWakeupWaitUpToAndWaitForever (exe sandbox : String) : IO 
       awaitProbeZero hPeer2 "waitUpTo peer2"
     finally
       let _ ← Fs.writeText peer2Stop "go"
-      let _ ← Process.Raw.killProcessGroup hPeer2
-      let _ ← Process.Raw.reap hPeer2
+      let _ ← Process.SysBridge.killProcessGroup hPeer2
+      let _ ← Process.SysBridge.reap hPeer2
   finally
-    let _ ← Process.Raw.killProcessGroup hKill2
-    let _ ← Process.Raw.reap hKill2
+    let _ ← Process.SysBridge.killProcessGroup hKill2
+    let _ ← Process.SysBridge.reap hKill2
 
   assertTrue (← assertFsOk (← Fs.isFile lock0) "isFile lock0") "lock0 preserved after SIGKILL + waitUpTo"
   assertTrue ((← Process.activeProcessCount) == 0) "all SIGKILL and peer processes reaped"
@@ -487,8 +487,8 @@ private def testUncreatedPoolDirRace (exe sandbox : String) : IO Unit := do
   finally
     let _ ← Fs.writeText goFile "go"
     for (_, h, _) in handles do
-      let _ ← Process.Raw.killProcessGroup h
-      let _ ← Process.Raw.reap h
+      let _ ← Process.SysBridge.killProcessGroup h
+      let _ ← Process.SysBridge.reap h
   assertTrue ((← Process.activeProcessCount) == 0) "all race-worker processes reaped"
 
 private def withSlotErrSandbox (act : String → IO Unit) : IO Unit := do

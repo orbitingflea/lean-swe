@@ -117,13 +117,15 @@ static int pf_resolve_vec(
   return 0;
 }
 
-static const char **pf_alloc_cstr_ptrs(b_lean_obj_arg arr) {
+static const char **pf_alloc_cstr_ptrs(b_lean_obj_arg arr, int *err_out) {
   size_t n = lean_array_size(arr);
   const char **ptrs = (const char **)calloc(n + 1, sizeof(const char *));
-  if (ptrs == NULL) return NULL;
-  for (size_t i = 0; i < n; i++) ptrs[i] = lean_string_cstr(lean_array_get_core(arr, i));
-  ptrs[n] = NULL;
-  return ptrs;
+  if (ptrs == NULL) { *err_out = ENOMEM; return NULL; }
+  for (size_t i = 0; i < n; i++) {
+    b_lean_obj_arg b = lean_array_get_core(arr, i); size_t sz = lean_sarray_size(b);
+    if (sz == 0 || lean_sarray_cptr(b)[sz - 1] != 0) { free((void *)ptrs); *err_out = EINVAL; return NULL; }
+    ptrs[i] = (const char *)lean_sarray_cptr(b);
+  } return ptrs;
 }
 
 static char *pf_format_fd_arg(const char *pfx, int32_t fd, const char *sfx) {
@@ -520,12 +522,12 @@ LEAN_EXPORT lean_obj_res leanswe_postfork_host_fork_run(
   int32_t sync_fd = pf_resolve_slot(ms[0], pinned, np), rep_fd = pf_resolve_slot(ms[1], pinned, np);
   char **owned = NULL;
   const char **argv = pf_alloc_arg_ptrs(pfxs, sfxs, (const int32_t *)(const void *)lean_sarray_cptr(arg_slots_ba), pinned, np, &owned);
-  const char **envp = pf_alloc_cstr_ptrs(envp_arr);
+  int env_err = 0; const char **envp = pf_alloc_cstr_ptrs(envp_arr, &env_err);
   int rc1 = pf_resolve_vec(cs, nc, pinned, np, flags, sync_fd, rep_fd, 1, &closes);
   int rc2 = pf_resolve_vec(rk, nk, pinned, np, 0u, -1, -1, 0, &keeps);
   if (argv == NULL || owned == NULL || envp == NULL || rc1 != 0 || rc2 != 0) {
     pf_free_arg_ptrs(argv, owned, n_args); free((void *)envp); free(closes); free(keeps);
-    pf_unpin_handles(handles, np, pinned); return pf_mk_err((uint32_t)ENOMEM);
+    pf_unpin_handles(handles, np, pinned); return pf_mk_err((uint32_t)(env_err ? env_err : ENOMEM));
   }
   LeanswePostForkChildArgs args = { flags, sync_fd, pf_resolve_slot(ms[2], pinned, np),
     pf_resolve_slot(ms[3], pinned, np), pf_resolve_slot(ms[4], pinned, np), rep_fd,

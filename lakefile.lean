@@ -103,16 +103,6 @@ extern_lib «leanswe_fs» pkg := do
   let name := nameToStaticLib "leanswe_fs"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
-extern_lib «leanswe_process» pkg := do
-  let oFile := pkg.buildDir / "c" / "process_shim.o"
-  let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "Process" / "Raw" / "c" / "process_shim.c")
-  let lean ← getLeanInstall
-  let oJob ← buildO oFile srcJob
-    #["-I", lean.includeDir.toString]
-    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror"]
-  let name := nameToStaticLib "leanswe_process"
-  buildStaticLib (pkg.staticLibDir / name) #[oJob]
-
 extern_lib «leanswe_envvars» pkg := do
   let oFile := pkg.buildDir / "c" / "envvars_shim.o"
   let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "EnvVars" / "Raw" / "c" / "envvars_shim.c")

@@ -152,9 +152,27 @@ def hasEmbeddedNulStr (s : String) : Bool :=
 def isValidEnvBinding (kv : String × String) : Bool :=
   !kv.1.isEmpty && !kv.1.contains '=' && !hasEmbeddedNulStr kv.1 && !hasEmbeddedNulStr kv.2
 
+/-- Return `true` iff raw byte slice `entry` contains no embedded NUL (`0x00`) byte. -/
+def isValidRawEnvEntry (entry : ByteArray) : Bool :=
+  !entry.toList.any (· == (0 : UInt8))
+
 /-- Format valid `(key, value)` bindings as `"KEY=VALUE"` C strings. -/
 def formatEnvEntries (env : Array (String × String)) : Array String :=
   env.map (fun (k, v) => s!"{k}={v}")
+
+/-- Return `true` iff raw `environ(7)` slice `entry` starts with `key ++ "="` (`0x3D`). -/
+def rawEnvHasKey (key entry : ByteArray) : Bool :=
+  if h : key.size < entry.size then
+    entry.extract 0 key.size == key && entry[key.size] == (0x3D : UInt8)
+  else
+    false
+
+/-- Encode raw NUL-free `rawEnv` slices followed by formatted `(key, value)` bindings as
+    NUL-terminated `ByteArray` C strings for `execve(2)`. Entries in `rawEnv` whose key before `'='`
+    matches an explicit `env` binding are filtered out so `env` takes precedence over `rawEnv`. -/
+def formatEnvEntriesBytes (rawEnv : Array ByteArray) (env : Array (String × String)) : Array ByteArray :=
+  let keptRaw := rawEnv.filter fun b => !env.any fun (k, _) => rawEnvHasKey k.toUTF8 b
+  keptRaw.map (fun b => b.push 0) ++ env.map (fun (k, v) => s!"{k}={v}".toUTF8.push 0)
 
 /-- Extract kept descriptor references from `FdPolicy`. -/
 def FdPolicy.keepFds {fd : Type} : FdPolicy fd → Array (FdRef fd)
@@ -216,7 +234,7 @@ def validateSpecWith {fd : Type} (eqFd : fd → fd → Bool) (spec : ChildSpecM 
   let cwdOk := match spec.cwd with | some d => !hasEmbeddedNulStr d | none => true
   let pathOk := !spec.path.isEmpty && !hasEmbeddedNulStr spec.path
   let argvOk := spec.argv.all ArgToken.isValid
-  let envOk := spec.env.all isValidEnvBinding
+  let envOk := spec.env.all isValidEnvBinding && spec.rawEnv.all isValidRawEnvEntry
   let keepFds := FdPolicy.keepFds spec.fdPolicy
   let closeOk := spec.closeFds.all FdRef.isNonneg
   let keepOk := keepFds.all FdRef.isNonneg
@@ -264,7 +282,7 @@ structure PosixHostOpsM (m : Type → Type) (fd : Type) where
   forkRun :
     UInt32 → ForkMode → Option fd → fd →
     Array (FdRef fd) → Array (FdRef fd) → Array (FdRef fd) →
-    Option String → String → Array (ArgToken fd) → Array String →
+    Option String → String → Array (ArgToken fd) → Array ByteArray →
     m (Except Errno Pid)
 
 /-- Predicate stating that all operations of `raw` in `IO` terminate without throwing an `IO.Error`. -/
@@ -359,8 +377,8 @@ structure HostMockState where
   spawnedForkMode : ForkMode := .direct
   /-- Resolved `argv` strings passed to `forkRun`. -/
   spawnedArgv : Array String := #[]
-  /-- Formatted `KEY=VALUE` environment entries passed to `forkRun`. -/
-  spawnedEnv : Array String := #[]
+  /-- NUL-terminated `KEY=VALUE` environment byte entries passed to `forkRun`. -/
+  spawnedEnv : Array ByteArray := #[]
   /-- `closeRefs` array passed to `forkRun`. -/
   spawnedCloseRefs : Array (FdRef Int32) := #[]
   /-- Whether `forkRun` has succeeded. -/

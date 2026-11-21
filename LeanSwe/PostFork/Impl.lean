@@ -314,7 +314,7 @@ def performFork
   let stdioArr := stdioRefsArray spec.stdio
   let closeArr := openCloseFds ++ extraClose
   let keepArr := FdPolicy.keepFds spec.fdPolicy
-  let envEntries := formatEnvEntries spec.env
+  let envEntries := formatEnvEntriesBytes spec.rawEnv spec.env
   match ← raw.forkRun
       flags spec.forkMode syncRead? errWrite stdioArr closeArr keepArr
       spec.cwd spec.path spec.argv envEntries with

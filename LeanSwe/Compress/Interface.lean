@@ -1,12 +1,12 @@
-import LeanSwe.Process.Raw.Interface
+import LeanSwe.Process.SysBridge
 import LeanSwe.Compress.Types
 import LeanSwe.Compress.Impl
 
 namespace LeanSwe.Compress
 
-/-- Default `CompressApi` backed by `LeanSwe.Process.Raw.defaultOps`. -/
+/-- Default `CompressApi` backed by `LeanSwe.Process.SysBridge.defaultOps`. -/
 def defaultApi : CompressApi :=
-  Internal.mkApiM LeanSwe.Process.Raw.defaultOps
+  Internal.mkApiM LeanSwe.Process.SysBridge.defaultOps
 
 /-- Compress `input` with `codec` using default `CompressOptions`. -/
 @[inline] def compress (codec : Codec) (input : ByteArray) :

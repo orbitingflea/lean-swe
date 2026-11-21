@@ -49,8 +49,6 @@ private def legacyExemptionAllowlist : Array Name := #[
   `LeanSwe.ConnectProxy.Raw,
   `LeanSwe.Fs,
   `LeanSwe.Fs.Raw,
-  `LeanSwe.Process,
-  `LeanSwe.Process.Raw,
   `LeanSwe.ProcessSandbox,
   `LeanSwe.ProcessSandbox.Raw
 ]
@@ -820,7 +818,7 @@ private def pkgNamespaceOfSpecWith (knownPkgs : Array Name) (modName : Name) : N
 
 private def isExternalBoundaryPkg (env : Environment) (knownPkgs : Array Name) (pkgNs : Name) : Bool :=
   let ifaceMod := Name.str pkgNs "Interface"
-  let isProcessPkg := pkgNs == `LeanSwe.Process || pkgNs == `LeanSwe.Process.Raw
+  let isProcessPkg := pkgNs == `LeanSwe.Process
   match env.header.moduleNames.findIdx? (· == ifaceMod) with
   | none => false
   | some idx =>
@@ -828,14 +826,14 @@ private def isExternalBoundaryPkg (env : Environment) (knownPkgs : Array Name) (
     | none => false
     | some md => Id.run do
       if !isProcessPkg && md.imports.any (fun imp =>
-          imp.module == `LeanSwe.Process.Interface || imp.module == `LeanSwe.Process.Raw.Interface) then
+          imp.module == `LeanSwe.Process.Interface || imp.module == `LeanSwe.Process.SysBridge) then
         return true
       let mut modImportsCli : Std.HashMap Name Bool := {}
       for h : mi in [0 : env.header.moduleNames.size] do
         let mName := env.header.moduleNames[mi]
         if let some mData := env.header.moduleData[mi]? then
           let usesProc := mData.imports.any fun imp =>
-            imp.module == `LeanSwe.Process.Interface || imp.module == `LeanSwe.Process.Raw.Interface
+            imp.module == `LeanSwe.Process.Interface || imp.module == `LeanSwe.Process.SysBridge
           modImportsCli := modImportsCli.insert mName usesProc
       let mut worklist : Array Name := #[]
       for c in md.constants do
@@ -852,7 +850,7 @@ private def isExternalBoundaryPkg (env : Environment) (knownPkgs : Array Name) (
           return true
         let cMod := moduleOfConst env cname
         if !isProcessPkg &&
-            (cMod == `LeanSwe.Process.Interface || cMod == `LeanSwe.Process.Raw.Interface) then
+            (cMod == `LeanSwe.Process.Interface || cMod == `LeanSwe.Process.SysBridge) then
           return true
         let isOwnedByPkg := cMod == ifaceMod ||
           (pkgNamespaceOfSpecWith knownPkgs cMod == pkgNs && !isSpecOrRuntimeOrProofsModule cMod)
@@ -1407,7 +1405,7 @@ private def hasDirectOwnExternInPkg (env : Environment) (knownPkgs : Array Name)
   return false
 
 private def usesExternalCliPkg (env : Environment) (knownPkgs : Array Name) (pkgNs : Name) : Bool := Id.run do
-  if pkgNs == `LeanSwe.Process || pkgNs == `LeanSwe.Process.Raw then
+  if pkgNs == `LeanSwe.Process then
     return false
   for h : mi in [0 : env.header.moduleNames.size] do
     let mName := env.header.moduleNames[mi]
@@ -1422,7 +1420,7 @@ private def usesExternalCliPkg (env : Environment) (knownPkgs : Array Name) (pkg
             | _ => c.type.getUsedConstants
           if used.any fun u =>
               let uMod := moduleOfConst env u
-              uMod == `LeanSwe.Process.Interface || uMod == `LeanSwe.Process.Raw.Interface then
+              uMod == `LeanSwe.Process.Interface || uMod == `LeanSwe.Process.SysBridge then
             return true
   return false
 

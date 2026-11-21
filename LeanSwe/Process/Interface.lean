@@ -1,12 +1,12 @@
 import LeanSwe.Process.Types
 import LeanSwe.Process.Impl
-import LeanSwe.Process.Raw.Interface
+import LeanSwe.Process.SysBridge
 
 namespace LeanSwe.Process
 
-/-- Default `ProcessApi` backed by `LeanSwe.Process.Raw.defaultOps`. -/
+/-- Default `ProcessApi` backed by `LeanSwe.Process.SysBridge.defaultOps`. -/
 def defaultApi : ProcessApi :=
-  Internal.mkApiM Raw.defaultOps
+  Internal.mkApiM SysBridge.defaultOps
 
 /-- Convert a raw OS error record into a normalized `ProcessError` with non-empty message. -/
 @[inline] def mapRawError (err : ProcessRawError) : ProcessError :=

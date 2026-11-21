@@ -1217,7 +1217,30 @@ private def checkPostForkAeneasWiring (env : Environment) : Array String := Id.r
       errs := errs.push s!"TRUSTED_CLOSURE_AENEAS_WIRING_MISMATCH: {apiConst} field #{i} mismatch ({exp})"
   return errs
 
+private def canonicalManagedProcessTargets : Std.HashSet Name :=
+  Std.HashSet.emptyWithCapacity 10
+    |>.insert `LeanSwe.Process.defaultApi
+    |>.insert `LeanSwe.Process.Proofs.healthySimApi
+    |>.insert `LeanSwe.Process.Internal.mkApiM
+    |>.insert `LeanSwe.Process.SysBridge.resolveExecutablePath
+    |>.insert `LeanSwe.Process.SysBridge.validateWorkingDir
+    |>.insert `LeanSwe.Process.SysBridge.streamPipesLoop
+    |>.insert `LeanSwe.Process.SysBridge.mkRawOpsM
+    |>.insert `LeanSwe.Process.SysBridge.spawnPure
+
+private def hasCanonicalProcessPromiseTarget (prog : Expr) : Bool :=
+  let args := prog.consumeMData.getAppArgs
+  if args.isEmpty then
+    false
+  else
+    let tgt := (etaReduceExpr args.back!).consumeMData.getAppFn.consumeMData
+    match tgt with
+    | .const tName _ => canonicalManagedProcessTargets.contains tName
+    | _ => false
+
 private def hasCanonicalPromiseTarget (fn : Name) (prog : Expr) : MetaM Bool := do
+  if fn.getPrefix == `LeanSwe.Process then
+    return hasCanonicalProcessPromiseTarget prog
   if fn.getPrefix != `LeanSwe.PostFork then return true
   let pa := prog.getAppArgs
   let chkMock (e : Expr) : MetaM Bool := do
@@ -1746,7 +1769,7 @@ private def checkCompressTrustedClosure
     let mut mErrs : Array String := #[]
     match env.find? `LeanSwe.Compress.defaultApi with
     | some (.defnInfo dv) =>
-      let canon ← Meta.mkAppM `LeanSwe.Compress.Internal.mkApiM #[mkConst `LeanSwe.Process.Raw.defaultOps]
+      let canon ← Meta.mkAppM `LeanSwe.Compress.Internal.mkApiM #[mkConst `LeanSwe.Process.SysBridge.defaultOps]
       if dv.safety != .safe || dv.type.getUsedConstants.contains ``optParam ||
           !(← Meta.withTransparency .none (Meta.isDefEq dv.value canon)) then
         mErrs := mErrs.push "TRUSTED_CLOSURE_COMPRESS_WIRING: invalid defaultApi"
@@ -1764,6 +1787,119 @@ private def checkCompressTrustedClosure
       | _ => mErrs := mErrs.push s!"TRUSTED_CLOSURE_COMPRESS_WIRING: missing wrapper {wName}"
     return mErrs).toIO ctx { env }
   return errs ++ wErrs
+
+private def isAllowedManagedProcessClosureModule (m : Name) : Bool :=
+  m.getRoot == `Core ||
+    (m.components.take 2 == [`LeanSwe, `Process] &&
+      m != `LeanSwe.Process.SpecTests &&
+      m != `LeanSwe.Process.SpecMutants &&
+      !m.components.contains `Proofs &&
+      !m.components.contains `RuntimeTests) ||
+    m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
+    (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Files] &&
+      m != `LeanSwe.LinuxSyscall.Files.RuntimeTests &&
+      m != `LeanSwe.LinuxSyscall.Files.SpecMutants &&
+      !m.components.contains `Proofs) ||
+    (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Process] &&
+      m != `LeanSwe.LinuxSyscall.Process.RuntimeTests &&
+      m != `LeanSwe.LinuxSyscall.Process.SpecMutants &&
+      !m.components.contains `Proofs) ||
+    (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Poll] &&
+      m != `LeanSwe.LinuxSyscall.Poll.RuntimeTests &&
+      m != `LeanSwe.LinuxSyscall.Poll.SpecMutants &&
+      !m.components.contains `Proofs) ||
+    (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `TimeRand] &&
+      m != `LeanSwe.LinuxSyscall.TimeRand.RuntimeTests &&
+      m != `LeanSwe.LinuxSyscall.TimeRand.SpecMutants &&
+      !m.components.contains `Proofs) ||
+    postForkAuditModules.contains m ||
+    (envVarsAuditModules.contains m &&
+      m != `LeanSwe.EnvVars.SpecTests &&
+      m != `LeanSwe.EnvVars.Raw.SpecTests &&
+      !m.components.contains `Proofs)
+
+private def checkManagedProcessClosure (env : Environment) : IO (Array String) := do
+  let mut errs : Array String := #[]
+  let seedMods : Array Name := #[
+    `LeanSwe.Process.Types,
+    `LeanSwe.Process.SysBridge,
+    `LeanSwe.Process.Impl,
+    `LeanSwe.Process.Interface
+  ]
+  let mut queue : Array (Name × Name) := #[]
+  for h : i in [0 : env.header.moduleNames.size] do
+    let m := env.header.moduleNames[i]
+    let some data := env.header.moduleData[i]? | continue
+    if m.components.take 2 == [`LeanSwe, `Process] then
+      for imp in data.imports do
+        if imp.module.components.take 3 == [`LeanSwe, `LinuxSyscall, `Net] ||
+            imp.module.components.take 3 == [`LeanSwe, `LinuxSyscall, `Sandbox] then
+          errs := errs.push s!"PROCESS_TRUSTED_CLOSURE_FORBIDDEN_IMPORT: {m} imports {imp.module}"
+      for c in data.constants do
+        if (getExternAttrData? env c.name).isSome then
+          errs := errs.push s!"PROCESS_FORBIDDEN_EXTERN: {c.name} in {m}"
+        if let some impl := Lean.Compiler.getImplementedBy? env c.name then
+          if !(← isCompilerGeneratedCtorIdx env c.name impl c) then
+            errs := errs.push s!"PROCESS_FORBIDDEN_IMPLEMENTED_BY: {c.name} -> {impl} in {m}"
+        if let .defnInfo v := c then
+          if v.safety != .safe then
+            if !(← isAllowedCompilerUnsafeDef env c.name v) then
+              errs := errs.push s!"PROCESS_FORBIDDEN_UNSAFE: {c.name} in {m}"
+        if (Lean.regularInitAttr.getParam? env c.name).isSome then
+          let allowedInit :=
+            m == `LeanSwe.Process.SysBridge &&
+            privateToUserName? c.name == some `LeanSwe.Process.SysBridge.gProcTable
+          if !allowedInit then
+            errs := errs.push s!"PROCESS_FORBIDDEN_INIT: {c.name} in {m}"
+    if seedMods.contains m then
+      for c in data.constants do
+        queue := queue.push (m, c.name)
+  let mut visited : Std.HashSet Name := {}
+  while !queue.isEmpty do
+    let (originMod, cName) := queue.back!
+    queue := queue.pop
+    if visited.contains cName then continue
+    visited := visited.insert cName
+    let some cinfo := env.find? cName | continue
+    let cMod := env.getModuleIdxFor? cName |>.bind (env.header.moduleNames[·]?) |>.getD .anonymous
+    if isProjectModule cMod then
+      if !isAllowedManagedProcessClosureModule cMod then
+        errs := errs.push s!"PROCESS_TRUSTED_CLOSURE_UNALLOWED_MODULE: {cName} in {cMod} reachable from {originMod}"
+      for u in cinfo.type.getUsedConstants do
+        if !visited.contains u then
+          queue := queue.push (originMod, u)
+      let val? := match cinfo with
+        | .defnInfo v => some v.value
+        | .opaqueInfo v => some v.value
+        | _ => none
+      if let some val := val? then
+        for u in val.getUsedConstants do
+          if !visited.contains u then
+            queue := queue.push (originMod, u)
+  match env.find? `LeanSwe.Process.defaultApi with
+  | some (.defnInfo dv) =>
+    let used := dv.value.getUsedConstants
+    if !used.contains `LeanSwe.Process.Internal.mkApiM ||
+        !used.contains `LeanSwe.Process.SysBridge.defaultOps then
+      errs := errs.push "PROCESS_INTERFACE_WIRING_MISMATCH: LeanSwe.Process.defaultApi must wire Internal.mkApiM to SysBridge.defaultOps"
+  | _ =>
+    errs := errs.push "PROCESS_INTERFACE_WIRING_MISMATCH: missing LeanSwe.Process.defaultApi"
+  match env.find? `LeanSwe.Process.Proofs.healthySimApi with
+  | some (.defnInfo dv) =>
+    let used := dv.value.getUsedConstants
+    if !used.contains `LeanSwe.Process.Internal.mkApiM ||
+        !used.contains `LeanSwe.Process.Proofs.healthySimRawOps then
+      errs := errs.push "PROCESS_PROOF_TARGET_WIRING_MISMATCH: healthySimApi must wire Internal.mkApiM to healthySimRawOps"
+  | _ =>
+    errs := errs.push "PROCESS_PROOF_TARGET_WIRING_MISMATCH: missing LeanSwe.Process.Proofs.healthySimApi"
+  for wrapper in #[`LeanSwe.Process.run, `LeanSwe.Process.runChecked, `LeanSwe.Process.activeProcessCount] do
+    match env.find? wrapper with
+    | some (.defnInfo dv) =>
+      if !dv.value.getUsedConstants.contains `LeanSwe.Process.defaultApi then
+        errs := errs.push s!"PROCESS_INTERFACE_WIRING_MISMATCH: {wrapper} must delegate to LeanSwe.Process.defaultApi"
+    | _ =>
+      errs := errs.push s!"PROCESS_INTERFACE_WIRING_MISMATCH: missing {wrapper}"
+  return errs
 
 /-- Audit compiled `.olean` artifacts reachable from `LeanSwe` for promise coverage. -/
 unsafe def main (args : List String) : IO UInt32 := do
@@ -2289,6 +2425,7 @@ unsafe def main (args : List String) : IO UInt32 := do
   IO.println s!"TRUSTED_CLOSURE: sqlite_modules={sqAuditMods.size} allowlist=Sqlite+Sqlite.Raw"
   let sbxClosureErrs ← checkSandboxTrustedClosure env
   let compClosureErrs ← checkCompressTrustedClosure repoDir env importableExtraMods
+  let managedProcErrs ← checkManagedProcessClosure env
   let pfClosureErrs ← checkPackageTrustedClosure repoDir "PostFork" postForkAuditModules
     isAllowedPostForkClosureModule `LeanSwe.PostFork.Interface allowedPostForkExternSyms true true true
 
@@ -2302,7 +2439,7 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   let promCount := prom1.size + prom2Count
   let withAssumeCount := wAss1 + wAss2
-  errors := errors ++ eErrs1 ++ eErrs2 ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sqClosureErrs ++ sbxClosureErrs ++ compClosureErrs ++ pfClosureErrs ++ pfWiringErrs ++ pfAeneasErrs
+  errors := errors ++ eErrs1 ++ eErrs2 ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sqClosureErrs ++ sbxClosureErrs ++ compClosureErrs ++ managedProcErrs ++ pfClosureErrs ++ pfWiringErrs ++ pfAeneasErrs
   IO.println s!"PROMISE_CHECK: spec_modules={specModCount} promises={promCount} with_assume={withAssumeCount} errors={errors.size}"
   if errors.isEmpty then
     return 0

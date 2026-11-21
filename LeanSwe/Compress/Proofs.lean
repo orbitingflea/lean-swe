@@ -868,52 +868,40 @@ private theorem io_tryCatch_eq {α : Type} (x : IO α) (h : IO.Error → IO α) 
   unfold EST.tryCatch
   cases x w <;> rfl
 
-private theorem catchProc_never_throws {α : Type} (prog? : Option String) (act : IO α)
-    (w : Void IO.RealWorld) :
-    ∃ r w', LeanSwe.Process.Raw.Internal.catchProc prog? act w = EST.Out.ok r w' := by
-  unfold LeanSwe.Process.Raw.Internal.catchProc
-  rw [io_bind_eq]
+private theorem catchProc_never_throws {α : Type} (prog? : Option String)
+    (act : IO (Except ProcessError α)) (w : Void IO.RealWorld) :
+    ∃ r w', LeanSwe.Process.SysBridge.catchProc prog? act w = EST.Out.ok r w' := by
+  have heq : LeanSwe.Process.SysBridge.catchProc prog? act w =
+      EST.tryCatch act
+        (fun err => EST.pure (.error (LeanSwe.Process.SysBridge.mapIoError prog? err))) w := rfl
+  rw [heq]
   cases h : act w with
-  | ok a w' =>
-    refine ⟨Except.ok a, w', ?_⟩
-    rw [io_tryCatch_eq, io_bind_eq, h]
-    rfl
+  | ok a w' => exact ⟨a, w', by simp [EST.tryCatch, h]⟩
   | error err w' =>
-    refine ⟨Except.error (LeanSwe.Process.Raw.Internal.mapIoError prog? err), w', ?_⟩
-    rw [io_tryCatch_eq, io_bind_eq, h]
-    rfl
+    exact ⟨.error (LeanSwe.Process.SysBridge.mapIoError prog? err), w',
+      by simp [EST.tryCatch, EST.pure, h]⟩
 
 private theorem defaultOps_spawn_never_throws (req : ExecRequest) (w : Void IO.RealWorld) :
-    ∃ r w', LeanSwe.Process.Raw.defaultOps.spawn req w = EST.Out.ok r w' := by
-  unfold LeanSwe.Process.Raw.defaultOps LeanSwe.Process.Raw.Internal.mkRawOps
-  dsimp only
-  split
-  · rw [io_pure_eq]; exact ⟨_, _, rfl⟩
-  · exact catchProc_never_throws _ _ w
+    ∃ r w', LeanSwe.Process.SysBridge.defaultOps.spawn req w = EST.Out.ok r w' :=
+  catchProc_never_throws (some req.program) _ w
 
-private theorem defaultOps_awaitOutput_never_throws (h : LeanSwe.Process.Raw.ProcessHandle)
+private theorem defaultOps_awaitOutput_never_throws (h : LeanSwe.Process.ProcessHandle)
     (stdin : ByteArray) (timeoutMs maxOut : Option Nat) (w : Void IO.RealWorld) :
-    ∃ r w', LeanSwe.Process.Raw.defaultOps.awaitOutput h stdin timeoutMs maxOut w = EST.Out.ok r w' := by
-  unfold LeanSwe.Process.Raw.defaultOps LeanSwe.Process.Raw.Internal.mkRawOps
-  dsimp only
-  exact catchProc_never_throws _ _ w
+    ∃ r w', LeanSwe.Process.SysBridge.defaultOps.awaitOutput h stdin timeoutMs maxOut w = EST.Out.ok r w' :=
+  catchProc_never_throws none _ w
 
-private theorem defaultOps_killProcessGroup_never_throws (h : LeanSwe.Process.Raw.ProcessHandle)
+private theorem defaultOps_killProcessGroup_never_throws (h : LeanSwe.Process.ProcessHandle)
     (w : Void IO.RealWorld) :
-    ∃ r w', LeanSwe.Process.Raw.defaultOps.killProcessGroup h w = EST.Out.ok r w' := by
-  unfold LeanSwe.Process.Raw.defaultOps LeanSwe.Process.Raw.Internal.mkRawOps
-  dsimp only
-  exact catchProc_never_throws _ _ w
+    ∃ r w', LeanSwe.Process.SysBridge.defaultOps.killProcessGroup h w = EST.Out.ok r w' :=
+  catchProc_never_throws none _ w
 
-private theorem defaultOps_reap_never_throws (h : LeanSwe.Process.Raw.ProcessHandle)
+private theorem defaultOps_reap_never_throws (h : LeanSwe.Process.ProcessHandle)
     (w : Void IO.RealWorld) :
-    ∃ r w', LeanSwe.Process.Raw.defaultOps.reap h w = EST.Out.ok r w' := by
-  unfold LeanSwe.Process.Raw.defaultOps LeanSwe.Process.Raw.Internal.mkRawOps
-  dsimp only
-  exact catchProc_never_throws _ _ w
+    ∃ r w', LeanSwe.Process.SysBridge.defaultOps.reap h w = EST.Out.ok r w' :=
+  catchProc_never_throws none _ w
 
 private theorem processRun_defaultOps_never_throws (req : ExecRequest) (w : Void IO.RealWorld) :
-    ∃ r w', LeanSwe.Process.Internal.run LeanSwe.Process.Raw.defaultOps req w = EST.Out.ok r w' := by
+    ∃ r w', LeanSwe.Process.Internal.run LeanSwe.Process.SysBridge.defaultOps req w = EST.Out.ok r w' := by
   unfold LeanSwe.Process.Internal.run
   cases hVal : LeanSwe.Process.Internal.validateRequest req with
   | error e =>
@@ -2065,19 +2053,19 @@ private theorem classifyExitResult_wellFormed_of_err (codec : Codec) (isDecompre
         simp only [hGhF, Bool.false_eq_true, ↓reduceIte] at h
         cases h
 
-/-- Wiring theorem: `Compress.defaultApi` is `Internal.mkApiM Raw.defaultOps`. -/
+/-- Wiring theorem: `Compress.defaultApi` is `Internal.mkApiM SysBridge.defaultOps`. -/
 theorem compress_defaultApi_eq :
-    Compress.defaultApi = Internal.mkApiM LeanSwe.Process.Raw.defaultOps := rfl
+    Compress.defaultApi = Internal.mkApiM LeanSwe.Process.SysBridge.defaultOps := rfl
 
-/-- Wiring theorem: `Compress.compressWith` delegates to `Internal.compressWith Raw.defaultOps`. -/
+/-- Wiring theorem: `Compress.compressWith` delegates to `Internal.compressWith SysBridge.defaultOps`. -/
 theorem compress_compressWith_eq (codec : Codec) (opts : CompressOptions) (input : ByteArray) :
     Compress.compressWith codec opts input =
-      Internal.compressWith LeanSwe.Process.Raw.defaultOps codec opts input := rfl
+      Internal.compressWith LeanSwe.Process.SysBridge.defaultOps codec opts input := rfl
 
-/-- Wiring theorem: `Compress.decompressWith` delegates to `Internal.decompressWith Raw.defaultOps`. -/
+/-- Wiring theorem: `Compress.decompressWith` delegates to `Internal.decompressWith SysBridge.defaultOps`. -/
 theorem compress_decompressWith_eq (codec : Codec) (opts : DecompressOptions) (input : ByteArray) :
     Compress.decompressWith codec opts input =
-      Internal.decompressWith LeanSwe.Process.Raw.defaultOps codec opts input := rfl
+      Internal.decompressWith LeanSwe.Process.SysBridge.defaultOps codec opts input := rfl
 
 /-- Wiring theorem: `Compress.compress` delegates to `Compress.compressWith codec {}`. -/
 theorem compress_compress_eq (codec : Codec) (input : ByteArray) :
@@ -2087,9 +2075,9 @@ theorem compress_compress_eq (codec : Codec) (input : ByteArray) :
 theorem compress_decompress_eq (codec : Codec) (input : ByteArray) :
     Compress.decompress codec input = Compress.decompressWith codec {} input := rfl
 
-/-- Wiring theorem: `Compress.isToolAvailable` delegates to `Internal.isToolAvailable Raw.defaultOps`. -/
+/-- Wiring theorem: `Compress.isToolAvailable` delegates to `Internal.isToolAvailable SysBridge.defaultOps`. -/
 theorem compress_isToolAvailable_eq (codec : Codec) :
-    Compress.isToolAvailable codec = Internal.isToolAvailable LeanSwe.Process.Raw.defaultOps codec := rfl
+    Compress.isToolAvailable codec = Internal.isToolAvailable LeanSwe.Process.SysBridge.defaultOps codec := rfl
 
 private theorem scriptedStage_run_error (stage : Nat) (pe : ProcessError)
     (req : ExecRequest) (hVal : LeanSwe.Process.Internal.validateRequest req = .ok req) :
@@ -2113,7 +2101,7 @@ private theorem scriptedStage_run_error (stage : Nat) (pe : ProcessError)
     simp only [h0, h1, Bool.false_eq_true, ↓reduceIte, hGe]
 
 private theorem scriptedStage_run_ok (stage : Nat)
-    (out : LeanSwe.Process.Raw.ExecOutcome) (req : ExecRequest) :
+    (out : LeanSwe.Process.ExecOutcome) (req : ExecRequest) :
     LeanSwe.Process.Internal.run (scriptedStageRawOpsId stage (.ok out)) req =
       LeanSwe.Process.Internal.run (scriptedRawOpsId (.ok out)) req := by
   cases out <;> rfl
@@ -2144,7 +2132,7 @@ private theorem framingErr_wellFormed (codec : Codec) (err? : Option ByteArray) 
 
 private theorem internalApi_compressWith_sound (env : Model.CompressEnv) (st₀ : Model.State)
     (codec : Codec) (opts : CompressOptions) (input : ByteArray) (stage : Nat)
-    (rawC : Except ProcessError LeanSwe.Process.Raw.ExecOutcome)
+    (rawC : Except ProcessError LeanSwe.Process.ExecOutcome)
     (hConf : rawCompressCallConforms env st₀ codec opts input rawC = true) :
     let res := (Internal.mkApiM (scriptedStageRawOpsId stage rawC)).compressWith codec opts input
     let st₁ := match res with | .ok c => st₀.record codec c input | .error _ => st₀
@@ -2341,7 +2329,7 @@ private theorem gzip_or_header_of_not_err {codec : Codec} {input : ByteArray}
 
 private theorem internalApi_decompressWith_sound (env : Model.CompressEnv) (st₀ : Model.State)
     (codec : Codec) (opts : DecompressOptions) (input : ByteArray) (stage : Nat)
-    (rawD : Except ProcessError LeanSwe.Process.Raw.ExecOutcome)
+    (rawD : Except ProcessError LeanSwe.Process.ExecOutcome)
     (hConf : rawDecompressCallConforms env st₀ codec opts input rawD = true) :
     let res := (Internal.mkApiM (scriptedStageRawOpsId stage rawD)).decompressWith codec opts input
     let st₁ := match res with | .ok o => st₀.record codec input o | .error _ => st₀
@@ -2372,20 +2360,20 @@ private theorem internalApi_decompressWith_sound (env : Model.CompressEnv) (st�
         have hResF : isResourceExhaustedProcessError pe = false := isResourceExhausted_of_kind (by rw [hpk]; intro hc; cases hc)
         have hk : (Internal.classifyProcessError codec pe).kind = .toolNotFound := by
           simpa [expectedProcessErrorKindFor, hResF, expectedProcessErrorKind, hpk] using hSpec.1
-        have hF : (Raw.ProcessErrorKind.notFound == .outputLimitExceeded ||
-            Raw.ProcessErrorKind.notFound == .timedOut) = false := rfl
+        have hF : (ProcessErrorKind.notFound == .outputLimitExceeded ||
+            ProcessErrorKind.notFound == .timedOut) = false := rfl
         simp [state_beq_self, hF, hS, hk, hWf, Model.allowedTransientError,
           show (CompressErrorKind.toolNotFound == CompressErrorKind.toolNotFound) = true from rfl]
       · have hS := toolStatus_eq_of_beq hCond
         have hResF : isResourceExhaustedProcessError pe = false := isResourceExhausted_of_kind (by rw [hpk]; intro hc; cases hc)
         have hk : (Internal.classifyProcessError codec pe).kind = .toolNotFound := by
           simpa [expectedProcessErrorKindFor, hResF, expectedProcessErrorKind, hpk] using hSpec.1
-        have hF : (Raw.ProcessErrorKind.permissionDenied == .outputLimitExceeded ||
-            Raw.ProcessErrorKind.permissionDenied == .timedOut) = false := rfl
+        have hF : (ProcessErrorKind.permissionDenied == .outputLimitExceeded ||
+            ProcessErrorKind.permissionDenied == .timedOut) = false := rfl
         simp [state_beq_self, hF, hS, hk, hWf, Model.allowedTransientError,
           show (CompressErrorKind.toolNotFound == CompressErrorKind.toolNotFound) = true from rfl]
-      · have hF : (Raw.ProcessErrorKind.invalidInput == .outputLimitExceeded ||
-            Raw.ProcessErrorKind.invalidInput == .timedOut) = false := rfl
+      · have hF : (ProcessErrorKind.invalidInput == .outputLimitExceeded ||
+            ProcessErrorKind.invalidInput == .timedOut) = false := rfl
         simp only [hF, Bool.false_and, Bool.false_eq_true, ↓reduceIte]
         by_cases hRes : isResourceExhaustedProcessError pe = true
         · simp only [hRes, ↓reduceIte] at hCond
@@ -2415,8 +2403,8 @@ private theorem internalApi_decompressWith_sound (env : Model.CompressEnv) (st�
         have hResF : isResourceExhaustedProcessError pe = false := isResourceExhausted_of_kind (by rw [hpk]; intro hc; cases hc)
         have hk : (Internal.classifyProcessError codec pe).kind = .timedOut := by
           simpa [expectedProcessErrorKindFor, hResF, expectedProcessErrorKind, hpk] using hSpec.1
-        have hTrm : (Raw.ProcessErrorKind.timedOut == .outputLimitExceeded ||
-            Raw.ProcessErrorKind.timedOut == .timedOut) = true := rfl
+        have hTrm : (ProcessErrorKind.timedOut == .outputLimitExceeded ||
+            ProcessErrorKind.timedOut == .timedOut) = true := rfl
         cases hLk : st₀.lookup codec input with
         | some expected =>
           simp only [hLk] at hLkFrm
@@ -2437,8 +2425,8 @@ private theorem internalApi_decompressWith_sound (env : Model.CompressEnv) (st�
         have hResF : isResourceExhaustedProcessError pe = false := isResourceExhausted_of_kind (by rw [hpk]; intro hc; cases hc)
         have hk : (Internal.classifyProcessError codec pe).kind = .outputLimitExceeded := by
           simpa [expectedProcessErrorKindFor, hResF, expectedProcessErrorKind, hpk] using hSpec.1
-        have hTrm : (Raw.ProcessErrorKind.outputLimitExceeded == .outputLimitExceeded ||
-            Raw.ProcessErrorKind.outputLimitExceeded == .timedOut) = true := rfl
+        have hTrm : (ProcessErrorKind.outputLimitExceeded == .outputLimitExceeded ||
+            ProcessErrorKind.outputLimitExceeded == .timedOut) = true := rfl
         cases hLk : st₀.lookup codec input with
         | some expected =>
           simp only [hLk] at hLkCond
@@ -2460,8 +2448,8 @@ private theorem internalApi_decompressWith_sound (env : Model.CompressEnv) (st�
         have hResF : isResourceExhaustedProcessError pe = false := isResourceExhausted_of_kind (by rw [hpk]; intro hc; cases hc)
         have hk : (Internal.classifyProcessError codec pe).kind = .commandFailed := by
           simpa [expectedProcessErrorKindFor, hResF, expectedProcessErrorKind, hpk] using hSpec.1
-        have hF : (Raw.ProcessErrorKind.terminatedBySignal == .outputLimitExceeded ||
-            Raw.ProcessErrorKind.terminatedBySignal == .timedOut) = false := rfl
+        have hF : (ProcessErrorKind.terminatedBySignal == .outputLimitExceeded ||
+            ProcessErrorKind.terminatedBySignal == .timedOut) = false := rfl
         simp only [hF, Bool.false_and, Bool.false_eq_true, ↓reduceIte, hS]
         cases hLk : st₀.lookup codec input <;>
           simp [state_beq_self, Model.allowedTransientError, hk, hWf, hSig, kind_beq_self]
@@ -2469,8 +2457,8 @@ private theorem internalApi_decompressWith_sound (env : Model.CompressEnv) (st�
       · have hResF : isResourceExhaustedProcessError pe = false := isResourceExhausted_of_kind (by rw [hpk]; intro hc; cases hc)
         have hk : (Internal.classifyProcessError codec pe).kind = .ioError := by
           simpa [expectedProcessErrorKindFor, hResF, expectedProcessErrorKind, hpk] using hSpec.1
-        have hF : (Raw.ProcessErrorKind.ioError == .outputLimitExceeded ||
-            Raw.ProcessErrorKind.ioError == .timedOut) = false := rfl
+        have hF : (ProcessErrorKind.ioError == .outputLimitExceeded ||
+            ProcessErrorKind.ioError == .timedOut) = false := rfl
         simp only [hF, Bool.false_and, Bool.false_eq_true, ↓reduceIte]
         rcases Bool.or_eq_true _ _ |>.mp hCond with hSt | hIo
         · have hS := toolStatus_eq_of_beq hSt
@@ -2497,8 +2485,8 @@ private theorem internalApi_decompressWith_sound (env : Model.CompressEnv) (st�
             stdout := out, stderr := err,
             message := toString "process '" ++ toString (Internal.mkDecompressRequest codec opts input).program ++ toString "' timed out" }
         dsimp only [Internal.classifyProcessError, isResourceExhaustedProcessError, Option.bind] at hWf
-        have hCond : (Raw.ProcessErrorKind.timedOut == Raw.ProcessErrorKind.outputLimitExceeded ||
-            Raw.ProcessErrorKind.timedOut == Raw.ProcessErrorKind.timedOut) = true := rfl
+        have hCond : (ProcessErrorKind.timedOut == ProcessErrorKind.outputLimitExceeded ||
+            ProcessErrorKind.timedOut == ProcessErrorKind.timedOut) = true := rfl
         cases hLk : st₀.lookup codec input with
         | some expected =>
           simp only [hLk] at hLkFrm
@@ -2527,8 +2515,8 @@ private theorem internalApi_decompressWith_sound (env : Model.CompressEnv) (st�
             message := toString "process '" ++ toString (Internal.mkDecompressRequest codec opts input).program ++ toString "' terminated by signal " ++ toString sig }
         dsimp only [Internal.classifyProcessError, isResourceExhaustedProcessError, Option.bind] at hWf
         simp only [toString] at hWf
-        have hCond : (Raw.ProcessErrorKind.terminatedBySignal == Raw.ProcessErrorKind.outputLimitExceeded ||
-            Raw.ProcessErrorKind.terminatedBySignal == Raw.ProcessErrorKind.timedOut) = false := rfl
+        have hCond : (ProcessErrorKind.terminatedBySignal == ProcessErrorKind.outputLimitExceeded ||
+            ProcessErrorKind.terminatedBySignal == ProcessErrorKind.timedOut) = false := rfl
         simp only [hS, hCond, Bool.false_and, Bool.false_eq_true, ↓reduceIte]
         cases hLk : st₀.lookup codec input <;>
           simp [state_beq_self, Model.allowedTransientError, Internal.classifyProcessError, hSig, kind_beq_self, toString, hWf]
@@ -2542,8 +2530,8 @@ private theorem internalApi_decompressWith_sound (env : Model.CompressEnv) (st�
             message := toString "process '" ++ toString (Internal.mkDecompressRequest codec opts input).program ++ toString "' exceeded output byte limit" }
         have hWf := classifyProcessError_wellFormed codec peOom
         dsimp only [peOom, Internal.classifyProcessError, isResourceExhaustedProcessError, Option.bind] at hWf
-        have hCond : (Raw.ProcessErrorKind.outputLimitExceeded == Raw.ProcessErrorKind.outputLimitExceeded ||
-            Raw.ProcessErrorKind.outputLimitExceeded == Raw.ProcessErrorKind.timedOut) = true := rfl
+        have hCond : (ProcessErrorKind.outputLimitExceeded == ProcessErrorKind.outputLimitExceeded ||
+            ProcessErrorKind.outputLimitExceeded == ProcessErrorKind.timedOut) = true := rfl
         cases hLk : st₀.lookup codec input with
         | some expected =>
           simp only [hLk] at hLkCond
@@ -2644,7 +2632,7 @@ private theorem internalApi_decompressWith_sound (env : Model.CompressEnv) (st�
     simp [state_beq_self, hKind, hWf, show (CompressErrorKind.invalidInput == CompressErrorKind.invalidInput) = true from rfl]
 
 private theorem internalApi_isToolAvailable_sound (env : Model.CompressEnv) (codec : Codec)
-    (stage : Nat) (rawV : Except ProcessError LeanSwe.Process.Raw.ExecOutcome)
+    (stage : Nat) (rawV : Except ProcessError LeanSwe.Process.ExecOutcome)
     (hConf : rawVersionCallConforms env codec rawV = true) :
     Model.allowedIsToolAvailable env codec
       ((Internal.mkApiM (scriptedStageRawOpsId stage rawV)).isToolAvailable codec) = true := by
@@ -2710,12 +2698,12 @@ theorem reach_compress_internalApi_soundAgainstAllowedOutcome :
       { toolStatus := fun _ => .available } Model.State.empty .zstd {} {} ByteArray.empty 0 0 0 _ _ _ _ _
       (by decide) (by decide) (by decide) (by decide) (by decide)⟩
 
-/-- Proof of `test_compress_publicApi_matchesDefaultOps` anchoring all public `Compress.*` entry points to `Internal.mkApiM Raw.defaultOps`. -/
+/-- Proof of `test_compress_publicApi_matchesDefaultOps` anchoring all public `Compress.*` entry points to `Internal.mkApiM SysBridge.defaultOps`. -/
 theorem proof_compress_publicApi_matchesDefaultOps :
     AllPass (test_compress_publicApi_matchesDefaultOps Internal.mkApiM
       Compress.defaultApi Compress.compress Compress.decompress
       Compress.compressWith Compress.decompressWith Compress.isToolAvailable
-      LeanSwe.Process.Raw.defaultOps) := by
+      LeanSwe.Process.SysBridge.defaultOps) := by
   intro codec copts dopts input
   dsimp only [test_compress_publicApi_matchesDefaultOps, bind, pure, assert]
   exact ⟨compress_defaultApi_eq, compress_compressWith_eq codec copts input,

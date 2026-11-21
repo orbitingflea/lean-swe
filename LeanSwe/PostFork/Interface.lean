@@ -37,7 +37,7 @@ private opaque rawForkRun :
     UInt32 → UInt32 →
     @& Array RawFd → @& ByteArray → @& ByteArray → @& ByteArray →
     @& Array String → @& Array String → @& ByteArray →
-    @& Option String → @& String → @& Array String →
+    @& Option String → @& String → @& Array ByteArray →
     BaseIO (Except Errno Pid)
 
 private def posixHostOps : LeanSwe.PostFork.Model.Internal.PosixHostOpsM IO RawFd where

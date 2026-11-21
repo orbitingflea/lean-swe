@@ -107,10 +107,10 @@ private def osRequiredBuckets : Array CoverageBucket := Id.run do
   return req
 
 private def mkEnvOps (extraEnv : Array (String × Option String)) (inherit : Bool := true) :
-    LeanSwe.Process.Raw.RawProcessOps :=
-  { LeanSwe.Process.Raw.defaultOps with
+    LeanSwe.Process.RawProcessOps :=
+  { LeanSwe.Process.SysBridge.defaultOps with
     spawn := fun req =>
-      LeanSwe.Process.Raw.defaultOps.spawn
+      LeanSwe.Process.SysBridge.defaultOps.spawn
         { req with env := extraEnv ++ req.env, inheritEnv := inherit } }
 
 private def mkEnvApi (extraEnv : Array (String × Option String)) (inherit : Bool := true) :
@@ -520,14 +520,14 @@ private def runOsSubPass (oracle : PyOracle) (tracker : CoverageTracker) : IO Co
   for (lbl, code) in rsrcErrnos do
     let pe : ProcessError := { kind := .invalidInput, errnoCode := some code, message := "spawn failed" }
     let rsrcApi : CompressApiM IO :=
-      LeanSwe.Compress.Internal.mkApiM { LeanSwe.Process.Raw.defaultOps with spawn := fun _ => pure (.error pe) }
+      LeanSwe.Compress.Internal.mkApiM { LeanSwe.Process.SysBridge.defaultOps with spawn := fun _ => pure (.error pe) }
     for c in allCodecs do
       tr ← runCheckedOsOp s!"{lbl}.comp.{codecTag c}" envIo rsrcApi (.compress c "hi".toUTF8) tr
       tr ← runCheckedOsOp s!"{lbl}.decW.{codecTag c}" envIo rsrcApi (.decompressWith c {} "hi".toUTF8 "osIo") tr
 
   let peNoErrno : ProcessError := { kind := .invalidInput, errnoCode := none, message := "cannot allocate memory" }
   let noErrnoMsgApi : CompressApiM IO :=
-    LeanSwe.Compress.Internal.mkApiM { LeanSwe.Process.Raw.defaultOps with spawn := fun _ => pure (.error peNoErrno) }
+    LeanSwe.Compress.Internal.mkApiM { LeanSwe.Process.SysBridge.defaultOps with spawn := fun _ => pure (.error peNoErrno) }
   let envLoop : Model.CompressEnv := { toolStatus := fun _ => .pathSymlinkLoop }
   tr ← runCheckedOsOp "noErrnoMsg.comp.zstd" envLoop noErrnoMsgApi (.compress .zstd "hi".toUTF8) tr
   tr ← runCheckedOsOp "noErrnoMsg.decW.zstd" envLoop noErrnoMsgApi (.decompressWith .zstd {} "hi".toUTF8 "osPrec") tr
@@ -536,13 +536,13 @@ private def runOsSubPass (oracle : PyOracle) (tracker : CoverageTracker) : IO Co
     let pe : ProcessError :=
       { kind := .invalidInput, errnoCode := some code, message := "/tmp/too many open files/zstd: invalid" }
     let precApi : CompressApiM IO :=
-      LeanSwe.Compress.Internal.mkApiM { LeanSwe.Process.Raw.defaultOps with spawn := fun _ => pure (.error pe) }
+      LeanSwe.Compress.Internal.mkApiM { LeanSwe.Process.SysBridge.defaultOps with spawn := fun _ => pure (.error pe) }
     tr ← runCheckedOsOp s!"{lbl}.comp.zstd" envLoop precApi (.compress .zstd "hi".toUTF8) tr
     tr ← runCheckedOsOp s!"{lbl}.decW.zstd" envLoop precApi (.decompressWith .zstd {} "hi".toUTF8 "osPrec") tr
 
   let validZstdEmpty := Model.encodeStored .zstd ByteArray.empty
-  let childStderrOps : LeanSwe.Process.Raw.RawProcessOps :=
-    { LeanSwe.Process.Raw.defaultOps with
+  let childStderrOps : LeanSwe.Process.RawProcessOps :=
+    { LeanSwe.Process.SysBridge.defaultOps with
       spawn := fun _ => pure (.ok { handleId := 1, pid := 1, pgid := 1 })
       awaitOutput := fun _ _ _ _ =>
         pure (.ok (.exited { exitCode := 1, stdout := ByteArray.empty, stderr := "\ngzip: memory_exhausted\n".toUTF8 }))
@@ -553,8 +553,8 @@ private def runOsSubPass (oracle : PyOracle) (tracker : CoverageTracker) : IO Co
   tr ← runCheckedOsOp "childStderr.comp" { allowExternalSignal := true } childStderrApi (.compress .gzip "hi".toUTF8) tr
   tr ← runCheckedOsOp "childStderr.dec" {} childStderrApi (.decompress .gzip "bad".toUTF8 "osChildStderr") tr
 
-  let ldEnoentOps : LeanSwe.Process.Raw.RawProcessOps :=
-    { LeanSwe.Process.Raw.defaultOps with
+  let ldEnoentOps : LeanSwe.Process.RawProcessOps :=
+    { LeanSwe.Process.SysBridge.defaultOps with
       spawn := fun _ => pure (.ok { handleId := 1, pid := 1, pgid := 1 })
       awaitOutput := fun _ _ _ _ =>
         pure (.ok (.exited {
@@ -568,8 +568,8 @@ private def runOsSubPass (oracle : PyOracle) (tracker : CoverageTracker) : IO Co
   tr ← runCheckedOsOp "childLdEnoent.comp" { allowExternalSignal := true } ldEnoentApi (.compress .zstd "hi".toUTF8) tr
   tr ← runCheckedOsOp "childLdEnoent.dec" {} ldEnoentApi (.decompress .zstd "bad".toUTF8 "osLdEnoent") tr
 
-  let memLimOps : LeanSwe.Process.Raw.RawProcessOps :=
-    { LeanSwe.Process.Raw.defaultOps with
+  let memLimOps : LeanSwe.Process.RawProcessOps :=
+    { LeanSwe.Process.SysBridge.defaultOps with
       spawn := fun _ => pure (.ok { handleId := 1, pid := 1, pgid := 1 })
       awaitOutput := fun _ _ _ _ =>
         pure (.ok (.exited { exitCode := 1, stdout := ByteArray.empty, stderr := "xz: (stdin): Memory usage limit reached\n".toUTF8 }))
@@ -579,8 +579,8 @@ private def runOsSubPass (oracle : PyOracle) (tracker : CoverageTracker) : IO Co
   tr ← runCheckedOsOp "xzMemlimitCorrupt" {} (LeanSwe.Compress.Internal.mkApiM memLimOps)
     (.decompress .xz "bad".toUTF8 "osMemlimit") tr
 
-  let timedOutOps : LeanSwe.Process.Raw.RawProcessOps :=
-    { LeanSwe.Process.Raw.defaultOps with
+  let timedOutOps : LeanSwe.Process.RawProcessOps :=
+    { LeanSwe.Process.SysBridge.defaultOps with
       spawn := fun _ => pure (.ok { handleId := 1, pid := 1, pgid := 1 })
       awaitOutput := fun _ _ _ _ =>
         pure (.error { kind := .timedOut, message := "process timed out" })
@@ -600,7 +600,7 @@ private def runOsSubPass (oracle : PyOracle) (tracker : CoverageTracker) : IO Co
 
   let normCheckOps (pe : ProcessError) : CompressApiM IO :=
     LeanSwe.Compress.Internal.mkApiM {
-      LeanSwe.Process.Raw.defaultOps with
+      LeanSwe.Process.SysBridge.defaultOps with
       spawn := fun _ => pure (.error pe) }
   tr ← runCheckedOsOp "normNotFoundStderr" { toolStatus := fun _ => .missingOrNonExec }
     (normCheckOps { kind := .notFound, stderr := some "not found\n".toUTF8, message := "missing" })
@@ -625,8 +625,8 @@ private def runOsSubPass (oracle : PyOracle) (tracker : CoverageTracker) : IO Co
   let seenGzipArgs ← IO.mkRef 0
   let seenGzipCompOpts ← IO.mkRef 0
   let badSanitizedEnv ← IO.mkRef 0
-  let inspectArgsOps : LeanSwe.Process.Raw.RawProcessOps :=
-    { LeanSwe.Process.Raw.defaultOps with
+  let inspectArgsOps : LeanSwe.Process.RawProcessOps :=
+    { LeanSwe.Process.SysBridge.defaultOps with
       spawn := fun req => do
         if req.env != wantSanitizedEnv || !req.inheritEnv then
           badSanitizedEnv.modify (· + 1)
@@ -648,7 +648,7 @@ private def runOsSubPass (oracle : PyOracle) (tracker : CoverageTracker) : IO Co
           seenGzipArgs.modify (· + 1)
           if req.args.contains "-9" && req.maxOutputBytes == some 6144 then
             seenGzipCompOpts.modify (· + 1)
-        LeanSwe.Process.Raw.defaultOps.spawn req }
+        LeanSwe.Process.SysBridge.defaultOps.spawn req }
   let inspectArgsApi := LeanSwe.Compress.Internal.mkApiM inspectArgsOps
   tr ← runCheckedOsOp "zstdNoProgress.comp" {} inspectArgsApi (.compress .zstd "hi".toUTF8) tr
   tr ← runCheckedOsOp "zstdCompOpts" {} inspectArgsApi

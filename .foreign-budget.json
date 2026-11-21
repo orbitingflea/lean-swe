@@ -117,10 +117,6 @@
       "max_lines": 250,
       "legacy_unmigrated": false
     },
-    "LeanSwe/Process/Raw/c/process_shim.c": {
-      "max_lines": 960,
-      "legacy_unmigrated": true
-    },
     "LeanSwe/ProcessSandbox/Raw/c/psandbox_init.c": {
       "max_lines": 1148,
       "legacy_unmigrated": true

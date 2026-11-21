@@ -1,8 +1,9 @@
 import LeanSwe.Process.Types
+import LeanSwe.Process.SysBridge
 import LeanSwe.Process.Interface
 import LeanSwe.Process.Impl
 import LeanSwe.Process.SpecTests
-import LeanSwe.Process.Raw.Impl
+import LeanSwe.Process.Proofs.EndToEnd
 
 namespace LeanSwe.Process.Proofs
 
@@ -11,8 +12,8 @@ open Core.NondetTest
 open LeanSwe.Process
 
 private theorem nonEmptyMsg_ne_empty (fallback msg : String) (hf : fallback ≠ "") :
-    Raw.Internal.nonEmptyMsg fallback msg ≠ "" := by
-  unfold Raw.Internal.nonEmptyMsg
+    SysBridge.nonEmptyMsg fallback msg ≠ "" := by
+  unfold SysBridge.nonEmptyMsg
   split
   · exact hf
   · next h =>
@@ -85,8 +86,8 @@ private theorem dedupEnvList_idempotent (xs : List (String × Option String)) :
 theorem proof_process_mapRawError_returnsNonEmptyMessage :
     AllPass (test_process_mapRawError_returnsNonEmptyMessage defaultApi) := by
   intro raw
-  simp only [defaultApi, Internal.mkApiM, Raw.defaultOps, Raw.Internal.mkRawOps,
-    Raw.Internal.mapRawError, assert]
+  simp only [defaultApi, Internal.mkApiM, SysBridge.defaultOps, SysBridge.mkRawOpsM,
+    SysBridge.mapRawError, assert]
   refine ⟨?_, trivial⟩
   cases raw with
   | executableNotFound prog _ _ =>
@@ -113,15 +114,15 @@ theorem proof_process_mapRawError_preservesKindAndFields :
     AllPass (test_process_mapRawError_preservesKindAndFields defaultApi) := by
   intro raw
   cases raw <;>
-    simp [defaultApi, Internal.mkApiM, Raw.defaultOps, Raw.Internal.mkRawOps,
-      Raw.Internal.mapRawError, assert]
+    simp [defaultApi, Internal.mkApiM, SysBridge.defaultOps, SysBridge.mkRawOpsM,
+      SysBridge.mapRawError, assert]
 
 /-- Non-vacuity `CanReach` witness for `test_process_mapRawError_preservesKindAndFields`. -/
 theorem reach_process_mapRawError_preservesKindAndFields :
     CanReach (test_process_mapRawError_preservesKindAndFields defaultApi) :=
   ⟨.userError "err", by
-    simp [defaultApi, Internal.mkApiM, Raw.defaultOps, Raw.Internal.mkRawOps,
-      Raw.Internal.mapRawError, assert]⟩
+    simp [defaultApi, Internal.mkApiM, SysBridge.defaultOps, SysBridge.mkRawOpsM,
+      SysBridge.mapRawError, assert]⟩
 
 private theorem toList_toArray {α : Type} (xs : List α) : xs.toArray.toList = xs := by
   simp
@@ -566,813 +567,335 @@ theorem reach_process_withTextInput_encodesUtf8 :
     CanReach (test_process_withTextInput_encodesUtf8 defaultApi) :=
   ⟨{ program := "cat" }, "hello", by simp [defaultApi, Internal.mkApiM, Internal.withTextInput, assert]⟩
 
-/-- Entry stored by `mockRawOps` for an active handle. -/
-structure MockProcEntry where
-  /-- Handle identifier. -/
-  handleId : Nat
-  /-- Program name passed to `spawn`. -/
-  program : String
-  /-- Whether the process group is still alive. -/
-  alive : Bool
-  deriving DecidableEq, Repr
-
-/-- Pure state model for `StateM MockProcState` proofs of `ProcessApiM`. -/
-structure MockProcState where
-  /-- Active handle table. -/
-  active : List MockProcEntry := []
-  deriving DecidableEq, Repr
-
-private def freshMockId (active : List MockProcEntry) : Nat :=
-  (active.foldl (fun m e => max m e.handleId) 0) + 1
-
-private theorem freshMockId_gt_all (active : List MockProcEntry) :
-    ∀ e ∈ active, e.handleId < freshMockId active := by
-  have hle : ∀ (xs : List MockProcEntry) (init : Nat),
-      init ≤ xs.foldl (fun m e => max m e.handleId) init ∧
-      ∀ e ∈ xs, e.handleId ≤ xs.foldl (fun m e => max m e.handleId) init := by
-    intro xs
-    induction xs with
-    | nil =>
-      intro init
-      exact ⟨Nat.le_refl _, fun _ h => by contradiction⟩
-    | cons x rest ih =>
-      intro init
-      obtain ⟨h1, h2⟩ := ih (max init x.handleId)
-      constructor
-      · exact Nat.le_trans (Nat.le_max_left _ _) h1
-      · intro e he
-        rcases List.mem_cons.mp he with rfl | he'
-        · exact Nat.le_trans (Nat.le_max_right _ _) h1
-        · exact h2 e he'
-  intro e he
-  have := (hle active 0).2 e he
-  unfold freshMockId
-  omega
-
-private theorem map_kill_fresh_mock (k : Nat) (xs : List MockProcEntry)
-    (hfresh : ∀ e ∈ xs, e.handleId < k) (p : String) (b : Bool) :
-    ({ handleId := k, program := p, alive := b } :: xs).map
-        (fun e => if e.handleId == k then { e with alive := false } else e) =
-      { handleId := k, program := p, alive := false } :: xs := by
-  simp only [List.map_cons, beq_self_eq_true, ↓reduceIte]
-  congr 1
-  induction xs with
-  | nil => rfl
-  | cons x rest ih =>
-    have hlt : x.handleId < k := hfresh x (by simp)
-    have hne : (x.handleId == k) = false := beq_false_of_ne (Nat.ne_of_lt hlt)
-    simp only [List.map_cons, hne, Bool.false_eq_true, ↓reduceIte]
-    congr 1
-    exact ih (fun e he => hfresh e (by simp [he]))
-
-private theorem filter_ne_fresh_mock (k : Nat) (xs : List MockProcEntry)
-    (hfresh : ∀ e ∈ xs, e.handleId < k) (p : String) (b : Bool) :
-    ({ handleId := k, program := p, alive := b } :: xs).filter (fun e => e.handleId != k) = xs := by
-  simp only [List.filter_cons, bne_self_eq_false, Bool.false_eq_true, ↓reduceIte]
-  induction xs with
-  | nil => rfl
-  | cons x rest ih =>
-    have hlt : x.handleId < k := hfresh x (by simp)
-    have hbne : (x.handleId != k) = true := bne_iff_ne.mpr (Nat.ne_of_lt hlt)
-    simp only [List.filter_cons, hbne, ↓reduceIte]
-    congr 1
-    exact ih (fun e he => hfresh e (by simp [he]))
-
-/-- Deterministic pure `RawProcessOpsM (StateM MockProcState)` backing `Process.Proofs`. -/
-def mockRawOps : RawProcessOpsM (StateM MockProcState) :=
-  { mapRawError := Raw.Internal.mapRawError
-    spawn := fun req => fun s =>
-      if req.program == "__spawn_err__" then
-        (.error (Raw.Internal.mapRawError (.executableNotFound req.program 2 "not found")), s)
-      else
-        let hid := freshMockId s.active
-        (.ok { handleId := hid, pid := Int.ofNat hid, pgid := Int.ofNat hid },
-         { active := { handleId := hid, program := req.program, alive := true } :: s.active })
-    awaitOutput := fun h _ timeoutMs maxOutputBytes => fun s =>
-      let prog :=
-        match s.active.find? (fun e => e.handleId == h.handleId) with
-        | some e => e.program
-        | none => ""
-      if timeoutMs.isSome && prog == "__timed_out__" then
-        (.ok (.timedOut ByteArray.empty ByteArray.empty), s)
-      else if maxOutputBytes.isSome && prog == "__output_limit__" then
-        (.ok (.outputLimitExceeded ByteArray.empty ByteArray.empty), s)
-      else if prog == "__signaled__" then
-        (.ok (.signaled 9 ByteArray.empty ByteArray.empty), s)
-      else if prog == "__io_err__" then
-        (.error (Raw.Internal.mapRawError (.otherError 5 "io error")), s)
-      else if prog == "__nonzero__" then
-        (.ok (.exited { exitCode := 1, stdout := ByteArray.empty, stderr := ByteArray.empty }),
-         { active := s.active.map (fun e => if e.handleId == h.handleId then { e with alive := false } else e) })
-      else
-        (.ok (.exited { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }),
-         { active := s.active.map (fun e => if e.handleId == h.handleId then { e with alive := false } else e) })
-    killProcessGroup := fun h => fun s =>
-      (.ok (), { active := s.active.map (fun e => if e.handleId == h.handleId then { e with alive := false } else e) })
-    reap := fun h => fun s =>
-      match s.active.find? (fun e => e.handleId == h.handleId) with
-      | none => (.ok (), s)
-      | some e =>
-        if e.alive then
-          (.error (Raw.Internal.mapRawError (.userError "cannot reap active process group")), s)
-        else
-          (.ok (), { active := s.active.filter (fun e => e.handleId != h.handleId) })
-    activeProcessCount := fun s => (s.active.length, s) }
-
-/-- Mock `ProcessApiM (StateM MockProcState)` constructed from `Internal.mkApiM mockRawOps`. -/
-def mockApi : ProcessApiM (StateM MockProcState) :=
-  Internal.mkApiM mockRawOps
-
-private theorem stateT_bind_apply {σ α β : Type} (x : StateM σ α) (f : α → StateM σ β) (s : σ) :
-    (x >>= f) s = f (x s).1 (x s).2 := by
-  dsimp only [Bind.bind, StateT.bind]
-  cases x s
-  simp
-
-private theorem stateT_bind_apply' {σ α β : Type} (x : StateM σ α) (f : α → StateM σ β) (s : σ) :
-    StateT.bind (m := Id) x f s = f (x s).1 (x s).2 := by
-  dsimp only [StateT.bind, Bind.bind]
-  cases x s
-  simp
-
-private theorem stateT_pure_apply {σ α : Type} (a : α) (s : σ) :
-    (StateT.pure (m := Id) a s : α × σ) = (a, s) := rfl
-
-private theorem stateT_map_apply {σ α β : Type} (f : α → β) (x : StateM σ α) (s : σ) :
-    (f <$> x) s = (f (x s).1, (x s).2) := by
-  dsimp only [Functor.map, StateT.map]
-  cases x s
-  rfl
-
-private theorem validateRequest_simple_ok (prog : String)
-    (hp : prog.isEmpty = false) (hn : '\x00' ∉ prog.toList)
-    (to maxOut : Option Nat) (hto : (to == some 0) = false) :
-    Internal.validateRequest { program := prog, timeoutMs := to, maxOutputBytes := maxOut } =
-      .ok { program := prog, timeoutMs := to, maxOutputBytes := maxOut } := by
-  simp [Internal.validateRequest, hp, hasNul_eq_false_of_not_mem hn, hto, Internal.dedupEnvList]
-
-private theorem validateRequest_ok_fields {req norm : ExecRequest}
-    (h : Internal.validateRequest req = .ok norm) :
-    norm.program = req.program ∧
-    norm.timeoutMs = req.timeoutMs ∧
-    norm.maxOutputBytes = req.maxOutputBytes := by
-  obtain ⟨_, _, _, _, _, _, rfl⟩ := validateRequest_ok_eq req norm h
-  exact ⟨rfl, rfl, rfl⟩
-
-private theorem mockApi_run_spawn_props (s₀ : MockProcState) (req : ExecRequest) :
-    (Internal.run mockRawOps req s₀).2.active = s₀.active ∧
-    (∀ err, (Internal.run mockRawOps req s₀).1 = .error err →
-      err.message ≠ "" ∧
-      (err.kind = .timedOut → req.timeoutMs.isSome = true ∧ err.program = some req.program) ∧
-      (err.kind = .outputLimitExceeded → req.maxOutputBytes.isSome = true ∧ err.program = some req.program) ∧
-      (err.kind = .terminatedBySignal → err.program = some req.program ∧ err.signal ≠ none)) ∧
-    (∀ out, (Internal.run mockRawOps req s₀).1 = .ok out →
-      out.stdout = ByteArray.empty ∧ out.stderr = ByteArray.empty) := by
-  cases hVal : Internal.validateRequest req with
-  | error e =>
-    have herr := validateRequest_error_msg_ne_empty req e hVal
-    simp only [Internal.run, hVal, StateT.pure, pure]
-    refine ⟨trivial, ?_, fun _ h => by contradiction⟩
-    intro err heq
-    injection heq with hEq
-    subst hEq
-    refine ⟨herr.2, ?_, ?_, ?_⟩ <;> intro hk <;> simp [herr.1] at hk
-  | ok norm =>
-    obtain ⟨hProg, hTout, hMax⟩ := validateRequest_ok_fields hVal
-    simp only [Internal.run, hVal]
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    by_cases hSp : (norm.program == "__spawn_err__") = true
-    · have hnf : ("not found" : String).isEmpty = false := by decide
-      simp only [mockRawOps, hSp, ↓reduceIte, Internal.ensureNonEmptyMsg,
-        Raw.Internal.mapRawError, Raw.Internal.nonEmptyMsg, hnf, Bool.false_eq_true]
-      dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-      refine ⟨rfl, ?_, fun _ h => by contradiction⟩
-      intro err heq
-      injection heq with hEq
-      subst hEq
-      refine ⟨by simp, ?_, ?_, ?_⟩ <;> intro hk <;> simp at hk
-    · have hgt : ∀ e ∈ s₀.active, e.handleId < freshMockId s₀.active :=
-        freshMockId_gt_all s₀.active
-      have hmap := map_kill_fresh_mock (freshMockId s₀.active) s₀.active hgt norm.program true
-      have hfltF := filter_ne_fresh_mock (freshMockId s₀.active) s₀.active hgt norm.program false
-      simp only [mockRawOps, hSp, Bool.false_eq_true, ↓reduceIte]
-      dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-      rw [List.find?_cons_of_pos (by simp)]
-      dsimp only
-      by_cases hT : (norm.timeoutMs.isSome && norm.program == "__timed_out__") = true
-      · simp only [hT, ↓reduceIte]
-        dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-        simp only [hmap, List.find?_cons_of_pos, beq_self_eq_true, Bool.false_eq_true, hfltF]
-        refine ⟨rfl, ?_, fun _ h => by contradiction⟩
-        intro err heq
-        injection heq with hEq
-        subst hEq
-        have hTis : norm.timeoutMs.isSome = true := (Bool.and_eq_true _ _ |>.mp hT).1
-        rw [hTout] at hTis
-        refine ⟨by simp [String.append_eq_empty_iff, toString], ?_, ?_, ?_⟩
-        · intro _; exact ⟨hTis, by simp [hProg]⟩
-        · intro hk; simp at hk
-        · intro hk; simp at hk
-      · simp only [hT, Bool.false_eq_true, ↓reduceIte]
-        by_cases hM : (norm.maxOutputBytes.isSome && norm.program == "__output_limit__") = true
-        · simp only [hM, ↓reduceIte]
-          dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-          simp only [hmap, List.find?_cons_of_pos, beq_self_eq_true, Bool.false_eq_true, hfltF]
-          refine ⟨rfl, ?_, fun _ h => by contradiction⟩
-          intro err heq
-          injection heq with hEq
-          subst hEq
-          have hMis : norm.maxOutputBytes.isSome = true := (Bool.and_eq_true _ _ |>.mp hM).1
-          rw [hMax] at hMis
-          refine ⟨by simp [String.append_eq_empty_iff, toString], ?_, ?_, ?_⟩
-          · intro hk; simp at hk
-          · intro _; exact ⟨hMis, by simp [hProg]⟩
-          · intro hk; simp at hk
-        · simp only [hM, Bool.false_eq_true, ↓reduceIte]
-          by_cases hS : (norm.program == "__signaled__") = true
-          · simp only [hS, ↓reduceIte]
-            dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-            simp only [hmap, List.find?_cons_of_pos, beq_self_eq_true, Bool.false_eq_true, hfltF]
-            refine ⟨rfl, ?_, fun _ h => by contradiction⟩
-            intro err heq
-            injection heq with hEq
-            subst hEq
-            refine ⟨by simp [String.append_eq_empty_iff, toString], ?_, ?_, ?_⟩
-            · intro hk; simp at hk
-            · intro hk; simp at hk
-            · intro _; exact ⟨by simp [hProg], by simp⟩
-          · simp only [hS, Bool.false_eq_true, ↓reduceIte]
-            by_cases hI : (norm.program == "__io_err__") = true
-            · have hio : ("io error" : String).isEmpty = false := by decide
-              simp only [hI, ↓reduceIte]
-              dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-              simp only [hmap, List.find?_cons_of_pos, beq_self_eq_true,
-                Bool.false_eq_true, hfltF, Internal.ensureNonEmptyMsg,
-                Raw.Internal.mapRawError, Raw.Internal.nonEmptyMsg, hio, ↓reduceIte]
-              refine ⟨trivial, ?_, fun _ h => by contradiction⟩
-              intro err heq
-              injection heq with hEq
-              subst hEq
-              refine ⟨by decide, ?_, ?_, ?_⟩ <;> intro hk <;> simp at hk
-            · simp only [hI, Bool.false_eq_true, ↓reduceIte]
-              by_cases hNZ : (norm.program == "__nonzero__") = true
-              · simp only [hNZ, ↓reduceIte]
-                dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-                simp only [hmap, List.find?_cons_of_pos, beq_self_eq_true,
-                  Bool.false_eq_true, hfltF]
-                refine ⟨rfl, fun _ h => by contradiction, ?_⟩
-                intro out heq
-                injection heq with hEq
-                subst hEq
-                exact ⟨rfl, rfl⟩
-              · simp only [hNZ, Bool.false_eq_true, ↓reduceIte]
-                dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-                simp only [hmap, List.find?_cons_of_pos, beq_self_eq_true,
-                  Bool.false_eq_true, hfltF]
-                refine ⟨rfl, fun _ h => by contradiction, ?_⟩
-                intro out heq
-                injection heq with hEq
-                subst hEq
-                exact ⟨rfl, rfl⟩
-
-/-- Proof of `test_process_run_invalidRequest_doesNotLeak` for `mockApi`. -/
+/-- Proof of `test_process_run_invalidRequest_doesNotLeak` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
 theorem proof_process_run_invalidRequest_doesNotLeak :
-    AllPass (test_process_run_invalidRequest_doesNotLeak mockApi) := by
-  intro s₀ req
-  simp only [mockApi, Internal.mkApiM]
-  cases hVal : Internal.validateRequest req with
-  | ok _ => simp [assume]
-  | error err =>
-    have herr := validateRequest_error_msg_ne_empty req err hVal
-    simp only [Internal.run, hVal, StateT.run, StateT.pure, pure, assert]
-    exact ⟨⟨⟨err, rfl, herr⟩, trivial⟩, trivial⟩
+    AllPass (test_process_run_invalidRequest_doesNotLeak healthySimApi) :=
+  healthySimApi_allStatefulSpecs.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_run_invalidRequest_doesNotLeak`. -/
 theorem reach_process_run_invalidRequest_doesNotLeak :
-    CanReach (test_process_run_invalidRequest_doesNotLeak mockApi) := by
-  refine ⟨{}, { program := "" }, ?_⟩
-  dsimp only [mockApi, Internal.mkApiM, Internal.run, StateT.run]
-  simp +decide [Internal.validateRequest]
-  simp +decide [StateT.pure, Pure.pure, pure, assert]
+    CanReach (test_process_run_invalidRequest_doesNotLeak healthySimApi) :=
+  ⟨{}, { program := "" }, proof_process_run_invalidRequest_doesNotLeak {} { program := "" }⟩
 
-/-- Proof of `test_process_run_usesNormalizedRequest` for `mockApi`. -/
+/-- Proof of `test_process_run_usesNormalizedRequest` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
 theorem proof_process_run_usesNormalizedRequest :
-    AllPass (test_process_run_usesNormalizedRequest mockApi) := by
-  intro s₀ req
-  simp only [mockApi, Internal.mkApiM]
-  cases hVal : Internal.validateRequest req with
-  | error _ => simp [assume]
-  | ok norm =>
-    have hIdem := proof_process_validateRequest_idempotent req
-    simp only [defaultApi, Internal.mkApiM, hVal, assert] at hIdem
-    have hNorm : Internal.validateRequest norm = .ok norm := hIdem.1
-    simp [Internal.run, hVal, hNorm, assert]
+    AllPass (test_process_run_usesNormalizedRequest healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_run_usesNormalizedRequest`. -/
 theorem reach_process_run_usesNormalizedRequest :
-    CanReach (test_process_run_usesNormalizedRequest mockApi) := by
-  let req : ExecRequest := { program := "echo" }
-  have hVal : Internal.validateRequest req = .ok req :=
-    validateRequest_simple_ok "echo" (by decide) (by decide) none none (by decide)
-  refine ⟨{}, req, ?_⟩
-  simp only [mockApi, Internal.mkApiM, hVal, assert]
-  exact ⟨trivial, trivial⟩
+    CanReach (test_process_run_usesNormalizedRequest healthySimApi) :=
+  ⟨{}, { program := "/bin/true" }, proof_process_run_usesNormalizedRequest {} { program := "/bin/true" }⟩
 
-/-- Proof of `test_process_runCommand_eq_runMkCommandRequest` for `mockApi`. -/
+/-- Proof of `test_process_runCommand_eq_runMkCommandRequest` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
 theorem proof_process_runCommand_eq_runMkCommandRequest :
-    AllPass (test_process_runCommand_eq_runMkCommandRequest mockApi) := by
-  intro s₀ prog args
-  simp [mockApi, Internal.mkApiM, assert]
+    AllPass (test_process_runCommand_eq_runMkCommandRequest healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.2.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_runCommand_eq_runMkCommandRequest`. -/
 theorem reach_process_runCommand_eq_runMkCommandRequest :
-    CanReach (test_process_runCommand_eq_runMkCommandRequest mockApi) :=
-  ⟨{}, "echo", #["a"], by simp [mockApi, Internal.mkApiM, assert]⟩
+    CanReach (test_process_runCommand_eq_runMkCommandRequest healthySimApi) :=
+  ⟨{}, "/bin/true", #["a"], proof_process_runCommand_eq_runMkCommandRequest {} "/bin/true" #["a"]⟩
 
-/-- Proof of `test_process_runCommandChecked_eq_runCheckedMkCommandRequest` for `mockApi`. -/
+/-- Proof of `test_process_runCommandChecked_eq_runCheckedMkCommandRequest` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
 theorem proof_process_runCommandChecked_eq_runCheckedMkCommandRequest :
-    AllPass (test_process_runCommandChecked_eq_runCheckedMkCommandRequest mockApi) := by
-  intro s₀ prog args
-  simp [mockApi, Internal.mkApiM, assert]
+    AllPass (test_process_runCommandChecked_eq_runCheckedMkCommandRequest healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.2.2.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_runCommandChecked_eq_runCheckedMkCommandRequest`. -/
 theorem reach_process_runCommandChecked_eq_runCheckedMkCommandRequest :
-    CanReach (test_process_runCommandChecked_eq_runCheckedMkCommandRequest mockApi) :=
-  ⟨{}, "echo", #["a"], by simp [mockApi, Internal.mkApiM, assert]⟩
+    CanReach (test_process_runCommandChecked_eq_runCheckedMkCommandRequest healthySimApi) :=
+  ⟨{}, "/bin/true", #["a"], proof_process_runCommandChecked_eq_runCheckedMkCommandRequest {} "/bin/true" #["a"]⟩
 
-/-- Proof of `test_process_run_allowsNonZeroExit_and_runChecked_rejectsIt` for `mockApi`. -/
+/-- Proof of `test_process_run_allowsNonZeroExit_and_runChecked_rejectsIt` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
 theorem proof_process_run_allowsNonZeroExit_and_runChecked_rejectsIt :
-    AllPass (test_process_run_allowsNonZeroExit_and_runChecked_rejectsIt mockApi) := by
-  intro s₀ req
-  simp only [mockApi, Internal.mkApiM]
-  cases hRun : Internal.run mockRawOps req s₀ with
-  | mk res s₁ =>
-    have hRunS : StateT.run (Internal.run mockRawOps req) s₀ = (res, s₁) := hRun
-    rw [hRunS]
-    cases res with
-    | error _ => simp [assume]
-    | ok out =>
-      intro hnz
-      have hbeq : (out.exitCode == 0) = false := beq_false_of_ne hnz
-      simp only [Internal.runChecked, StateT.run, stateT_bind_apply, hRun, hbeq,
-        Bool.false_eq_true, ↓reduceIte, StateT.pure, pure, assert]
-      refine ⟨⟨⟨_, rfl, rfl, rfl, rfl, rfl, rfl, ?_⟩, trivial⟩, trivial⟩
-      simp [String.append_eq_empty_iff, toString]
+    AllPass (test_process_run_allowsNonZeroExit_and_runChecked_rejectsIt healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.2.2.2.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_run_allowsNonZeroExit_and_runChecked_rejectsIt`. -/
 theorem reach_process_run_allowsNonZeroExit_and_runChecked_rejectsIt :
-    CanReach (test_process_run_allowsNonZeroExit_and_runChecked_rejectsIt mockApi) := by
-  let req : ExecRequest := { program := "__nonzero__" }
-  let resOk : ExecResult := { exitCode := 1, stdout := ByteArray.empty, stderr := ByteArray.empty }
-  let errNZ : ProcessError :=
-    { kind := .nonZeroExit
-      program := some "__nonzero__"
-      exitCode := some 1
-      stdout := some ByteArray.empty
-      stderr := some ByteArray.empty
-      message := "process '__nonzero__' exited with status 1" }
-  have h1 : (mockApi.run req).run {} = (.ok resOk, {}) := by
-    have hVal : Internal.validateRequest req = .ok req :=
-      validateRequest_simple_ok "__nonzero__" (by decide) (by decide) none none (by decide)
-    simp only [mockApi, Internal.mkApiM, Internal.run, hVal, mockRawOps, freshMockId, StateT.run]
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide [req]
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide [resOk]
-    dsimp only [StateT.pure, Pure.pure]
-  have h2 : (mockApi.runChecked req).run {} = (.error errNZ, {}) := by
-    have hm : toString "process '" ++ toString "__nonzero__" ++ toString "' exited with status " ++
-        Int.repr 1 = "process '__nonzero__' exited with status 1" := by decide
-    simp only [mockApi, Internal.mkApiM] at h1 ⊢
-    simp +decide [Internal.runChecked, StateT.run, stateT_bind_apply, StateT.pure, Pure.pure, pure,
-      show Internal.run mockRawOps req {} = (.ok resOk, {}) from h1, resOk, errNZ, req, hm]
+    CanReach (test_process_run_allowsNonZeroExit_and_runChecked_rejectsIt healthySimApi) := by
+  let req : ExecRequest := { program := "/bin/exit1", inheritEnv := false }
   refine ⟨{}, req, ?_⟩
-  simp only [h1, h2, assume, assert]
-  exact ⟨by decide, ⟨⟨errNZ, rfl, rfl, rfl, rfl, rfl, rfl, by decide⟩, trivial⟩, trivial⟩
-
-/-- Proof of `test_process_runChecked_zeroExit_matchesRun` for `mockApi`. -/
-theorem proof_process_runChecked_zeroExit_matchesRun :
-    AllPass (test_process_runChecked_zeroExit_matchesRun mockApi) := by
-  intro s₀ req
-  simp only [mockApi, Internal.mkApiM]
-  cases hRun : Internal.run mockRawOps req s₀ with
+  have hAll := proof_process_run_allowsNonZeroExit_and_runChecked_rejectsIt {} req
+  dsimp only [AllPass, CanReach, test_process_run_allowsNonZeroExit_and_runChecked_rejectsIt, nondet, bind] at hAll ⊢
+  cases hRun : (healthySimApi.run req).run {} with
   | mk res s₁ =>
-    have hRunS : StateT.run (Internal.run mockRawOps req) s₀ = (res, s₁) := hRun
-    rw [hRunS]
     cases res with
-    | error _ => simp [assume]
+    | error _ =>
+      have hOk : ((healthySimApi.run req).run {}).1.isOk = true := by decide +kernel
+      rw [hRun] at hOk; cases hOk
     | ok out =>
-      intro hz
-      simp [Internal.runChecked, StateT.run, stateT_bind_apply, StateT.pure, pure, hRun, hz, assert]
+      have hNz : out.exitCode ≠ 0 := by
+        have hb : (match ((healthySimApi.run req).run {}).1 with | .ok o => o.exitCode != 0 | .error _ => false) = true := by
+          decide +kernel
+        rw [hRun] at hb; exact bne_iff_ne.mp hb
+      cases hChk : (healthySimApi.runChecked req).run {} with
+      | mk cr s₂ =>
+        rw [hRun, hChk] at hAll
+        dsimp only [assume, assert] at hAll ⊢
+        exact ⟨hNz, hAll hNz⟩
+
+/-- Proof of `test_process_runChecked_zeroExit_matchesRun` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
+theorem proof_process_runChecked_zeroExit_matchesRun :
+    AllPass (test_process_runChecked_zeroExit_matchesRun healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.2.2.2.2.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_runChecked_zeroExit_matchesRun`. -/
 theorem reach_process_runChecked_zeroExit_matchesRun :
-    CanReach (test_process_runChecked_zeroExit_matchesRun mockApi) := by
-  let req : ExecRequest := { program := "ok" }
-  let resOk : ExecResult := { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }
-  have h1 : (mockApi.run req).run {} = (.ok resOk, {}) := by
-    have hVal : Internal.validateRequest req = .ok req :=
-      validateRequest_simple_ok "ok" (by decide) (by decide) none none (by decide)
-    simp only [mockApi, Internal.mkApiM, Internal.run, hVal, mockRawOps, freshMockId, StateT.run]
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide [req]
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide [resOk]
-    dsimp only [StateT.pure, Pure.pure]
-  have h2 : (mockApi.runChecked req).run {} = (.ok resOk, {}) := by
-    simp only [mockApi, Internal.mkApiM] at h1 ⊢
-    simp [Internal.runChecked, StateT.run, stateT_bind_apply, StateT.pure, Pure.pure, pure,
-      show Internal.run mockRawOps req {} = (.ok resOk, {}) from h1, resOk]
+    CanReach (test_process_runChecked_zeroExit_matchesRun healthySimApi) := by
+  let req : ExecRequest := { program := "/bin/true", inheritEnv := false }
   refine ⟨{}, req, ?_⟩
-  simp [h1, h2, assume, assert, resOk, Bind.bind]
-
-/-- Proof of `test_process_runChecked_propagatesRunError` for `mockApi`. -/
-theorem proof_process_runChecked_propagatesRunError :
-    AllPass (test_process_runChecked_propagatesRunError mockApi) := by
-  intro s₀ req
-  simp only [mockApi, Internal.mkApiM]
-  cases hRun : Internal.run mockRawOps req s₀ with
+  have hAll := proof_process_runChecked_zeroExit_matchesRun {} req
+  dsimp only [AllPass, CanReach, test_process_runChecked_zeroExit_matchesRun, nondet, bind] at hAll ⊢
+  cases hRun : (healthySimApi.run req).run {} with
   | mk res s₁ =>
-    have hRunS : StateT.run (Internal.run mockRawOps req) s₀ = (res, s₁) := hRun
-    rw [hRunS]
     cases res with
-    | ok _ => simp [assume]
-    | error err =>
-      simp only [Internal.runChecked, StateT.run, stateT_bind_apply, hRun, StateT.pure, pure,
-        assert]
-      trivial
+    | error _ =>
+      have hOk : ((healthySimApi.run req).run {}).1.isOk = true := by decide +kernel
+      rw [hRun] at hOk; cases hOk
+    | ok out =>
+      have hZ : out.exitCode = 0 := by
+        have hb : (match ((healthySimApi.run req).run {}).1 with | .ok o => o.exitCode == 0 | .error _ => false) = true := by
+          decide +kernel
+        rw [hRun] at hb; exact beq_iff_eq.mp hb
+      rw [hRun] at hAll
+      dsimp only [assume, assert] at hAll ⊢
+      exact ⟨hZ, hAll hZ⟩
+
+/-- Proof of `test_process_runChecked_propagatesRunError` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
+theorem proof_process_runChecked_propagatesRunError :
+    AllPass (test_process_runChecked_propagatesRunError healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.2.2.2.2.2.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_runChecked_propagatesRunError`. -/
 theorem reach_process_runChecked_propagatesRunError :
-    CanReach (test_process_runChecked_propagatesRunError mockApi) := by
-  let req : ExecRequest := { program := "__spawn_err__" }
-  let errSp : ProcessError :=
-    { kind := .notFound
-      program := some "__spawn_err__"
-      errnoCode := some 2
-      message := "not found" }
-  have h1 : (mockApi.run req).run {} = (.error errSp, {}) := by
-    have hVal : Internal.validateRequest req = .ok req :=
-      validateRequest_simple_ok "__spawn_err__" (by decide) (by decide) none none (by decide)
-    simp only [mockApi, Internal.mkApiM, Internal.run, hVal, mockRawOps,
-      Internal.ensureNonEmptyMsg, Raw.Internal.mapRawError, Raw.Internal.nonEmptyMsg, StateT.run]
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide [req, errSp]
-    dsimp only [StateT.pure, Pure.pure]
-  have h2 : (mockApi.runChecked req).run {} = (.error errSp, {}) := by
-    simp only [mockApi, Internal.mkApiM] at h1 ⊢
-    simp [Internal.runChecked, StateT.run, stateT_bind_apply, StateT.pure, Pure.pure, pure,
-      show Internal.run mockRawOps req {} = (.error errSp, {}) from h1]
-  refine ⟨{}, req, ?_⟩
-  simp [h1, h2, assert]
+    CanReach (test_process_runChecked_propagatesRunError healthySimApi) :=
+  ⟨{}, { program := "" }, proof_process_runChecked_propagatesRunError {} { program := "" }⟩
 
-/-- Proof of `test_process_run_neverLeaksProcesses` for `mockApi`. -/
+/-- Proof of `test_process_run_neverLeaksProcesses` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
 theorem proof_process_run_neverLeaksProcesses :
-    AllPass (test_process_run_neverLeaksProcesses mockApi) := by
-  intro s₀ req
-  have hAct := (mockApi_run_spawn_props s₀ req).1
-  simp only [mockApi, Internal.mkApiM, mockRawOps, StateT.run, assert]
-  exact ⟨congrArg List.length hAct, trivial⟩
-
-private theorem mockApi_run_ok_eq :
-    (mockApi.run { program := "ok" }).run {} =
-      (.ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }, {}) := by
-  have hVal : Internal.validateRequest { program := "ok" } = .ok { program := "ok" } :=
-    validateRequest_simple_ok "ok" (by decide) (by decide) none none (by decide)
-  simp only [mockApi, Internal.mkApiM, Internal.run, hVal, mockRawOps, freshMockId, StateT.run]
-  dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-  simp +decide
-  dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-  simp +decide
-  dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-  simp +decide
-  dsimp only [StateT.pure, Pure.pure]
+    AllPass (test_process_run_neverLeaksProcesses healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.2.2.2.2.2.2.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_run_neverLeaksProcesses`. -/
 theorem reach_process_run_neverLeaksProcesses :
-    CanReach (test_process_run_neverLeaksProcesses mockApi) := by
-  refine ⟨{}, { program := "ok" }, ?_⟩
-  dsimp only
-  rw [mockApi_run_ok_eq]
-  simp [mockApi, Internal.mkApiM, mockRawOps, StateT.run, assert]
+    CanReach (test_process_run_neverLeaksProcesses healthySimApi) :=
+  ⟨{}, { program := "" }, proof_process_run_neverLeaksProcesses {} { program := "" }⟩
 
-/-- Proof of `test_process_runChecked_neverLeaksProcesses` for `mockApi`. -/
+/-- Proof of `test_process_runChecked_neverLeaksProcesses` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
 theorem proof_process_runChecked_neverLeaksProcesses :
-    AllPass (test_process_runChecked_neverLeaksProcesses mockApi) := by
-  intro s₀ req
-  have hAct := (mockApi_run_spawn_props s₀ req).1
-  simp only [mockApi, Internal.mkApiM, Internal.runChecked, StateT.run, stateT_bind_apply]
-  cases hRun : Internal.run mockRawOps req s₀ with
-  | mk res s₁ =>
-    rw [hRun] at hAct
-    cases res with
-    | error _ =>
-      simp only [mockRawOps, StateT.pure, pure, assert]
-      exact ⟨congrArg List.length hAct, trivial⟩
-    | ok out =>
-      dsimp only
-      split <;> (simp only [mockRawOps, StateT.pure, pure, assert]; exact ⟨congrArg List.length hAct, trivial⟩)
+    AllPass (test_process_runChecked_neverLeaksProcesses healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.2.2.2.2.2.2.2.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_runChecked_neverLeaksProcesses`. -/
 theorem reach_process_runChecked_neverLeaksProcesses :
-    CanReach (test_process_runChecked_neverLeaksProcesses mockApi) := by
-  refine ⟨{}, { program := "ok" }, ?_⟩
-  dsimp only
-  simp only [mockApi, Internal.mkApiM, Internal.runChecked, StateT.run, stateT_bind_apply]
-  have h1 : Internal.run mockRawOps { program := "ok" } {} =
-      (.ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }, {}) :=
-    mockApi_run_ok_eq
-  rw [h1]
-  simp +decide [StateT.pure, Pure.pure, pure, assert]
+    CanReach (test_process_runChecked_neverLeaksProcesses healthySimApi) :=
+  ⟨{}, { program := "" }, proof_process_runChecked_neverLeaksProcesses {} { program := "" }⟩
 
-/-- Proof of `test_process_timeout_cleansUpAndErrors` for `mockApi`. -/
+/-- Proof of `test_process_timeout_cleansUpAndErrors` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
 theorem proof_process_timeout_cleansUpAndErrors :
-    AllPass (test_process_timeout_cleansUpAndErrors mockApi) := by
-  intro s₀ req _
-  have hProps := mockApi_run_spawn_props s₀ req
-  simp only [mockApi, Internal.mkApiM]
-  cases hRun : Internal.run mockRawOps req s₀ with
-  | mk res s₁ =>
-    have hRunS : StateT.run (Internal.run mockRawOps req) s₀ = (res, s₁) := hRun
-    rw [hRunS]
-    cases res with
-    | ok _ => simp [assume]
-    | error err =>
-      intro hk
-      rw [hRun] at hProps
-      have hT := (hProps.2.1 err rfl).2.1 hk
-      simp only [mockRawOps, StateT.run, assert]
-      exact ⟨⟨hT.2, (hProps.2.1 err rfl).1, congrArg List.length hProps.1⟩, trivial⟩
+    AllPass (test_process_timeout_cleansUpAndErrors healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.2.2.2.2.2.2.2.2.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_timeout_cleansUpAndErrors`. -/
 theorem reach_process_timeout_cleansUpAndErrors :
-    CanReach (test_process_timeout_cleansUpAndErrors mockApi) := by
-  let req : ExecRequest := { program := "__timed_out__", timeoutMs := some 10 }
-  let errTO : ProcessError :=
-    { kind := .timedOut
-      program := some "__timed_out__"
-      stdout := some ByteArray.empty
-      stderr := some ByteArray.empty
-      message := "process '__timed_out__' timed out" }
-  have h1 : (mockApi.run req).run {} = (.error errTO, {}) := by
-    have hVal : Internal.validateRequest req = .ok req :=
-      validateRequest_simple_ok "__timed_out__" (by decide) (by decide) (some 10) none (by decide)
-    simp only [mockApi, Internal.mkApiM, Internal.run, hVal, mockRawOps, freshMockId, StateT.run]
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide [req]
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    have hm : toString "process '" ++ toString "__timed_out__" ++ toString "' timed out" =
-        "process '__timed_out__' timed out" := by decide
-    simp +decide [errTO, hm]
-  refine ⟨{}, req, by decide, ?_⟩
-  simp only [mockApi, Internal.mkApiM, StateT.run] at h1 ⊢
-  rw [h1]
-  simp [mockRawOps, assume, assert, errTO, Bind.bind, req]
-
-/-- Proof of `test_process_run_noTimeout_neverTimesOut` for `mockApi`. -/
-theorem proof_process_run_noTimeout_neverTimesOut :
-    AllPass (test_process_run_noTimeout_neverTimesOut mockApi) := by
-  intro s₀ req hNone
-  have hProps := mockApi_run_spawn_props s₀ req
-  simp only [mockApi, Internal.mkApiM]
-  cases hRun : Internal.run mockRawOps req s₀ with
+    CanReach (test_process_timeout_cleansUpAndErrors healthySimApi) := by
+  let req : ExecRequest := { program := "/bin/hang", inheritEnv := false, timeoutMs := some 1 }
+  have hNe : req.timeoutMs ≠ none := by decide
+  refine ⟨{}, req, ?_⟩
+  have hAll := proof_process_timeout_cleansUpAndErrors {} req hNe
+  dsimp only [AllPass, CanReach, test_process_timeout_cleansUpAndErrors, nondet, bind] at hAll ⊢
+  refine ⟨hNe, ?_⟩
+  cases hRun : (healthySimApi.run req).run {} with
   | mk res s₁ =>
-    have hRunS : StateT.run (Internal.run mockRawOps req) s₀ = (res, s₁) := hRun
-    rw [hRunS]
     cases res with
-    | ok _ => trivial
+    | ok _ =>
+      have hErr : ((healthySimApi.run req).run {}).1.isOk = false := by decide +kernel
+      rw [hRun] at hErr; cases hErr
     | error err =>
-      rw [hRun] at hProps
-      simp only [assert]
-      refine ⟨?_, trivial⟩
-      intro hk
-      have hTis := ((hProps.2.1 err rfl).2.1 hk).1
-      simp [hNone] at hTis
+      have hK : err.kind = .timedOut := by
+        have hb : (match ((healthySimApi.run req).run {}).1 with | .error e => decide (e.kind = .timedOut) | .ok _ => false) = true := by
+          decide +kernel
+        rw [hRun] at hb; exact of_decide_eq_true hb
+      rw [hRun] at hAll
+      dsimp only [assume, assert] at hAll ⊢
+      exact ⟨hK, hAll hK⟩
+
+/-- Proof of `test_process_run_noTimeout_neverTimesOut` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
+theorem proof_process_run_noTimeout_neverTimesOut :
+    AllPass (test_process_run_noTimeout_neverTimesOut healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.2.2.2.2.2.2.2.2.2.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_run_noTimeout_neverTimesOut`. -/
 theorem reach_process_run_noTimeout_neverTimesOut :
-    CanReach (test_process_run_noTimeout_neverTimesOut mockApi) := by
-  let req : ExecRequest := { program := "ok", timeoutMs := none }
-  refine ⟨{}, req, rfl, ?_⟩
-  dsimp only
-  rw [show (mockApi.run req).run {} = _ from mockApi_run_ok_eq]
-  simp [Pure.pure, pure]
+    CanReach (test_process_run_noTimeout_neverTimesOut healthySimApi) :=
+  ⟨{}, { program := "", timeoutMs := none }, rfl,
+    proof_process_run_noTimeout_neverTimesOut {} { program := "", timeoutMs := none } rfl⟩
 
-/-- Proof of `test_process_outputLimit_cleansUpAndErrors` for `mockApi`. -/
+/-- Proof of `test_process_outputLimit_cleansUpAndErrors` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
 theorem proof_process_outputLimit_cleansUpAndErrors :
-    AllPass (test_process_outputLimit_cleansUpAndErrors mockApi) := by
-  intro s₀ req _
-  have hProps := mockApi_run_spawn_props s₀ req
-  simp only [mockApi, Internal.mkApiM]
-  cases hRun : Internal.run mockRawOps req s₀ with
-  | mk res s₁ =>
-    have hRunS : StateT.run (Internal.run mockRawOps req) s₀ = (res, s₁) := hRun
-    rw [hRunS]
-    cases res with
-    | ok _ => simp [assume]
-    | error err =>
-      intro hk
-      rw [hRun] at hProps
-      have hM := (hProps.2.1 err rfl).2.2.1 hk
-      simp only [mockRawOps, StateT.run, assert]
-      exact ⟨⟨hM.2, (hProps.2.1 err rfl).1, congrArg List.length hProps.1⟩, trivial⟩
+    AllPass (test_process_outputLimit_cleansUpAndErrors healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.2.2.2.2.2.2.2.2.2.2.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_outputLimit_cleansUpAndErrors`. -/
 theorem reach_process_outputLimit_cleansUpAndErrors :
-    CanReach (test_process_outputLimit_cleansUpAndErrors mockApi) := by
-  let req : ExecRequest := { program := "__output_limit__", maxOutputBytes := some 10 }
-  let errOL : ProcessError :=
-    { kind := .outputLimitExceeded
-      program := some "__output_limit__"
-      stdout := some ByteArray.empty
-      stderr := some ByteArray.empty
-      message := "process '__output_limit__' exceeded output byte limit" }
-  have h1 : (mockApi.run req).run {} = (.error errOL, {}) := by
-    have hVal : Internal.validateRequest req = .ok req :=
-      validateRequest_simple_ok "__output_limit__" (by decide) (by decide) none (some 10) (by decide)
-    simp only [mockApi, Internal.mkApiM, Internal.run, hVal, mockRawOps, freshMockId, StateT.run]
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide [req]
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    have hm : toString "process '" ++ toString "__output_limit__" ++
-        toString "' exceeded output byte limit" =
-        "process '__output_limit__' exceeded output byte limit" := by decide
-    simp +decide [errOL, hm]
-  refine ⟨{}, req, by decide, ?_⟩
-  simp only [mockApi, Internal.mkApiM, StateT.run] at h1 ⊢
-  rw [h1]
-  simp [mockRawOps, assume, assert, errOL, Bind.bind, req]
-
-/-- Proof of `test_process_run_noOutputLimit_neverExceedsLimit` for `mockApi`. -/
-theorem proof_process_run_noOutputLimit_neverExceedsLimit :
-    AllPass (test_process_run_noOutputLimit_neverExceedsLimit mockApi) := by
-  intro s₀ req hNone
-  have hProps := mockApi_run_spawn_props s₀ req
-  simp only [mockApi, Internal.mkApiM]
-  cases hRun : Internal.run mockRawOps req s₀ with
+    CanReach (test_process_outputLimit_cleansUpAndErrors healthySimApi) := by
+  let req : ExecRequest := { program := "/bin/bigout", inheritEnv := false, maxOutputBytes := some 4 }
+  have hNe : req.maxOutputBytes ≠ none := by decide
+  refine ⟨{}, req, ?_⟩
+  have hAll := proof_process_outputLimit_cleansUpAndErrors {} req hNe
+  dsimp only [AllPass, CanReach, test_process_outputLimit_cleansUpAndErrors, nondet, bind] at hAll ⊢
+  refine ⟨hNe, ?_⟩
+  cases hRun : (healthySimApi.run req).run {} with
   | mk res s₁ =>
-    have hRunS : StateT.run (Internal.run mockRawOps req) s₀ = (res, s₁) := hRun
-    rw [hRunS]
     cases res with
-    | ok _ => trivial
+    | ok _ =>
+      have hErr : ((healthySimApi.run req).run {}).1.isOk = false := by decide +kernel
+      rw [hRun] at hErr; cases hErr
     | error err =>
-      rw [hRun] at hProps
-      simp only [assert]
-      refine ⟨?_, trivial⟩
-      intro hk
-      have hMis := ((hProps.2.1 err rfl).2.2.1 hk).1
-      simp [hNone] at hMis
+      have hK : err.kind = .outputLimitExceeded := by
+        have hb : (match ((healthySimApi.run req).run {}).1 with | .error e => decide (e.kind = .outputLimitExceeded) | .ok _ => false) = true := by
+          decide +kernel
+        rw [hRun] at hb; exact of_decide_eq_true hb
+      rw [hRun] at hAll
+      dsimp only [assume, assert] at hAll ⊢
+      exact ⟨hK, hAll hK⟩
+
+/-- Proof of `test_process_run_noOutputLimit_neverExceedsLimit` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
+theorem proof_process_run_noOutputLimit_neverExceedsLimit :
+    AllPass (test_process_run_noOutputLimit_neverExceedsLimit healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.2.2.2.2.2.2.2.2.2.2.2.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_run_noOutputLimit_neverExceedsLimit`. -/
 theorem reach_process_run_noOutputLimit_neverExceedsLimit :
-    CanReach (test_process_run_noOutputLimit_neverExceedsLimit mockApi) := by
-  let req : ExecRequest := { program := "ok", maxOutputBytes := none }
-  refine ⟨{}, req, rfl, ?_⟩
-  dsimp only
-  rw [show (mockApi.run req).run {} = _ from mockApi_run_ok_eq]
-  simp [Pure.pure, pure]
+    CanReach (test_process_run_noOutputLimit_neverExceedsLimit healthySimApi) :=
+  ⟨{}, { program := "", maxOutputBytes := none }, rfl,
+    proof_process_run_noOutputLimit_neverExceedsLimit {} { program := "", maxOutputBytes := none } rfl⟩
 
-/-- Proof of `test_process_run_respectsMaxOutputBytes` for `mockApi`. -/
+/-- Proof of `test_process_run_respectsMaxOutputBytes` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
 theorem proof_process_run_respectsMaxOutputBytes :
-    AllPass (test_process_run_respectsMaxOutputBytes mockApi) := by
-  intro s₀ req limit _
-  have hProps := mockApi_run_spawn_props s₀ req
-  simp only [mockApi, Internal.mkApiM]
-  cases hRun : Internal.run mockRawOps req s₀ with
-  | mk res s₁ =>
-    have hRunS : StateT.run (Internal.run mockRawOps req) s₀ = (res, s₁) := hRun
-    rw [hRunS]
-    cases res with
-    | error _ => simp [assume]
-    | ok out =>
-      rw [hRun] at hProps
-      have ⟨ho, he⟩ := hProps.2.2 out rfl
-      simp [ho, he, assert]
+    AllPass (test_process_run_respectsMaxOutputBytes healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.2.2.2.2.2.2.2.2.2.2.2.2.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_run_respectsMaxOutputBytes`. -/
 theorem reach_process_run_respectsMaxOutputBytes :
-    CanReach (test_process_run_respectsMaxOutputBytes mockApi) := by
-  let req : ExecRequest := { program := "ok", maxOutputBytes := some 10 }
-  let resOk : ExecResult := { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }
-  have h1 : (mockApi.run req).run {} = (.ok resOk, {}) := by
-    have hVal : Internal.validateRequest req = .ok req :=
-      validateRequest_simple_ok "ok" (by decide) (by decide) none (some 10) (by decide)
-    simp only [mockApi, Internal.mkApiM, Internal.run, hVal, mockRawOps, freshMockId, StateT.run]
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide [req]
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide [resOk]
-    dsimp only [StateT.pure, Pure.pure]
+    CanReach (test_process_run_respectsMaxOutputBytes healthySimApi) := by
+  let req : ExecRequest := { program := "/bin/true", inheritEnv := false, maxOutputBytes := some 10 }
   refine ⟨{}, req, 10, rfl, ?_⟩
-  simp [h1, assert, resOk]
-
-/-- Proof of `test_process_signaled_cleansUpAndErrors` for `mockApi`. -/
-theorem proof_process_signaled_cleansUpAndErrors :
-    AllPass (test_process_signaled_cleansUpAndErrors mockApi) := by
-  intro s₀ req
-  have hProps := mockApi_run_spawn_props s₀ req
-  simp only [mockApi, Internal.mkApiM]
-  cases hRun : Internal.run mockRawOps req s₀ with
+  have hAll := proof_process_run_respectsMaxOutputBytes {} req 10 rfl
+  dsimp only [AllPass, CanReach, test_process_run_respectsMaxOutputBytes, nondet, bind] at hAll ⊢
+  cases hRun : (healthySimApi.run req).run {} with
   | mk res s₁ =>
-    have hRunS : StateT.run (Internal.run mockRawOps req) s₀ = (res, s₁) := hRun
-    rw [hRunS]
     cases res with
-    | ok _ => simp [assume]
-    | error err =>
-      intro hk
-      rw [hRun] at hProps
-      have hS := (hProps.2.1 err rfl).2.2.2 hk
-      simp only [mockRawOps, StateT.run, assert]
-      exact ⟨⟨hS.1, hS.2, (hProps.2.1 err rfl).1, congrArg List.length hProps.1⟩, trivial⟩
+    | error _ =>
+      have hOk : ((healthySimApi.run req).run {}).1.isOk = true := by decide +kernel
+      rw [hRun] at hOk; cases hOk
+    | ok out =>
+      rw [hRun] at hAll
+      exact hAll
+
+/-- Proof of `test_process_signaled_cleansUpAndErrors` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
+theorem proof_process_signaled_cleansUpAndErrors :
+    AllPass (test_process_signaled_cleansUpAndErrors healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_signaled_cleansUpAndErrors`. -/
 theorem reach_process_signaled_cleansUpAndErrors :
-    CanReach (test_process_signaled_cleansUpAndErrors mockApi) := by
-  let req : ExecRequest := { program := "__signaled__" }
-  let errSig : ProcessError :=
-    { kind := .terminatedBySignal
-      program := some "__signaled__"
-      signal := some 9
-      stdout := some ByteArray.empty
-      stderr := some ByteArray.empty
-      message := "process '__signaled__' terminated by signal 9" }
-  have h1 : (mockApi.run req).run {} = (.error errSig, {}) := by
-    have hVal : Internal.validateRequest req = .ok req :=
-      validateRequest_simple_ok "__signaled__" (by decide) (by decide) none none (by decide)
-    simp only [mockApi, Internal.mkApiM, Internal.run, hVal, mockRawOps, freshMockId, StateT.run]
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide [req]
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    simp +decide
-    dsimp only [StateT.bind, StateT.pure, StateT.map, Bind.bind, Pure.pure, Functor.map]
-    have hm : toString "process '" ++ toString "__signaled__" ++ toString "' terminated by signal " ++
-        Int.repr 9 = "process '__signaled__' terminated by signal 9" := by decide
-    simp +decide [errSig, hm]
+    CanReach (test_process_signaled_cleansUpAndErrors healthySimApi) := by
+  let req : ExecRequest := { program := "/bin/sig9", inheritEnv := false }
   refine ⟨{}, req, ?_⟩
-  simp only [mockApi, Internal.mkApiM, StateT.run] at h1 ⊢
-  rw [h1]
-  simp [mockRawOps, assume, assert, errSig, Bind.bind, req]
-
-/-- Proof of `test_process_run_onError_returnsNonEmptyMessage` for `mockApi`. -/
-theorem proof_process_run_onError_returnsNonEmptyMessage :
-    AllPass (test_process_run_onError_returnsNonEmptyMessage mockApi) := by
-  intro s₀ req
-  have hProps := mockApi_run_spawn_props s₀ req
-  simp only [mockApi, Internal.mkApiM]
-  cases hRun : Internal.run mockRawOps req s₀ with
+  have hAll := proof_process_signaled_cleansUpAndErrors {} req
+  dsimp only [AllPass, CanReach, test_process_signaled_cleansUpAndErrors, nondet, bind] at hAll ⊢
+  cases hRun : (healthySimApi.run req).run {} with
   | mk res s₁ =>
-    have hRunS : StateT.run (Internal.run mockRawOps req) s₀ = (res, s₁) := hRun
-    rw [hRunS]
     cases res with
-    | ok _ => simp [assume]
+    | ok _ =>
+      have hErr : ((healthySimApi.run req).run {}).1.isOk = false := by decide +kernel
+      rw [hRun] at hErr; cases hErr
     | error err =>
-      rw [hRun] at hProps
-      simp [(hProps.2.1 err rfl).1, assert]
+      have hK : err.kind = .terminatedBySignal := by
+        have hb : (match ((healthySimApi.run req).run {}).1 with | .error e => decide (e.kind = .terminatedBySignal) | .ok _ => false) = true := by
+          decide +kernel
+        rw [hRun] at hb; exact of_decide_eq_true hb
+      rw [hRun] at hAll
+      dsimp only [assume, assert] at hAll ⊢
+      exact ⟨hK, hAll hK⟩
+
+/-- Proof of `test_process_run_onError_returnsNonEmptyMessage` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
+theorem proof_process_run_onError_returnsNonEmptyMessage :
+    AllPass (test_process_run_onError_returnsNonEmptyMessage healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1
 
 /-- Non-vacuity `CanReach` witness for `test_process_run_onError_returnsNonEmptyMessage`. -/
 theorem reach_process_run_onError_returnsNonEmptyMessage :
-    CanReach (test_process_run_onError_returnsNonEmptyMessage mockApi) := by
-  let req : ExecRequest := { program := "" }
-  refine ⟨{}, req, ?_⟩
-  dsimp only [mockApi, Internal.mkApiM, Internal.run, StateT.run]
-  simp +decide [Internal.validateRequest, req]
-  simp +decide [StateT.pure, Pure.pure, pure, assert]
+    CanReach (test_process_run_onError_returnsNonEmptyMessage healthySimApi) :=
+  ⟨{}, { program := "" }, proof_process_run_onError_returnsNonEmptyMessage {} { program := "" }⟩
 
-/-- Proof of `test_process_runChecked_onError_returnsNonEmptyMessage` for `mockApi`. -/
+/-- Proof of `test_process_runChecked_onError_returnsNonEmptyMessage` via `SysBridge.mkRawOpsM` (`healthySimApi`). -/
 theorem proof_process_runChecked_onError_returnsNonEmptyMessage :
-    AllPass (test_process_runChecked_onError_returnsNonEmptyMessage mockApi) := by
-  intro s₀ req
-  have hProps := mockApi_run_spawn_props s₀ req
-  simp only [mockApi, Internal.mkApiM, Internal.runChecked, StateT.run, stateT_bind_apply]
-  cases hRun : Internal.run mockRawOps req s₀ with
-  | mk res s₁ =>
-    cases res with
-    | error err =>
-      rw [hRun] at hProps
-      simp only [StateT.pure, pure, assert]
-      exact ⟨(hProps.2.1 err rfl).1, trivial⟩
-    | ok out =>
-      dsimp only
-      split
-      · simp [StateT.pure, pure, assume]
-      · simp [StateT.pure, pure, String.append_eq_empty_iff, toString, assert]
+    AllPass (test_process_runChecked_onError_returnsNonEmptyMessage healthySimApi) :=
+  healthySimApi_allStatefulSpecs.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2
 
 /-- Non-vacuity `CanReach` witness for `test_process_runChecked_onError_returnsNonEmptyMessage`. -/
 theorem reach_process_runChecked_onError_returnsNonEmptyMessage :
-    CanReach (test_process_runChecked_onError_returnsNonEmptyMessage mockApi) := by
-  let req : ExecRequest := { program := "" }
-  refine ⟨{}, req, ?_⟩
-  simp [mockApi, Internal.mkApiM, Internal.runChecked, Internal.run, Internal.validateRequest,
-    StateT.run, stateT_bind_apply, StateT.pure, pure, assert, String.isEmpty, req]
+    CanReach (test_process_runChecked_onError_returnsNonEmptyMessage healthySimApi) :=
+  ⟨{}, { program := "" }, proof_process_runChecked_onError_returnsNonEmptyMessage {} { program := "" }⟩
+
+/-- Proof of `test_process_sysBridge_resolveExecutablePath_relativeCwdAndPathRules` for `SysBridge.resolveExecutablePath`. -/
+theorem proof_process_sysBridge_resolveExecutablePath_relativeCwdAndPathRules :
+    AllPass (test_process_sysBridge_resolveExecutablePath_relativeCwdAndPathRules
+      (@SysBridge.resolveExecutablePath (StateM PathProbeState) _ Nat)) := by
+  refine ⟨?_, trivial⟩
+  decide +kernel
+
+/-- Proof of `test_process_sysBridge_validateWorkingDir_chdirSemantics` for `SysBridge.validateWorkingDir`. -/
+theorem proof_process_sysBridge_validateWorkingDir_chdirSemantics :
+    AllPass (test_process_sysBridge_validateWorkingDir_chdirSemantics
+      (@SysBridge.validateWorkingDir (StateM PathProbeState) _ Nat)) := by
+  refine ⟨?_, trivial⟩
+  decide +kernel
+
+/-- Proof of `test_process_sysBridge_streamPipes_shortReadWriteEagainEintrReassembly` for `SysBridge.streamPipesLoop`. -/
+theorem proof_process_sysBridge_streamPipes_shortReadWriteEagainEintrReassembly :
+    AllPass (test_process_sysBridge_streamPipes_shortReadWriteEagainEintrReassembly
+      (@SysBridge.streamPipesLoop (StateM PipeScriptState) _ Nat)) := by
+  refine ⟨?_, trivial⟩
+  decide +kernel
+
+/-- Proof of `test_process_sysBridge_streamPipes_drainsStdinAfterOutErrEof` for `SysBridge.streamPipesLoop`. -/
+theorem proof_process_sysBridge_streamPipes_drainsStdinAfterOutErrEof :
+    AllPass (test_process_sysBridge_streamPipes_drainsStdinAfterOutErrEof
+      (@SysBridge.streamPipesLoop (StateM PipeScriptState) _ Nat)) := by
+  refine ⟨?_, trivial⟩
+  decide +kernel
+
+/-- Proof of `test_process_sysBridge_maxOutputBytes_truncatesKillsAndReaps` for `SysBridge.mkRawOpsM`. -/
+theorem proof_process_sysBridge_maxOutputBytes_truncatesKillsAndReaps :
+    AllPass (test_process_sysBridge_maxOutputBytes_truncatesKillsAndReaps
+      (@SysBridge.mkRawOpsM (StateM CapSimState) _ Nat)) := by
+  refine ⟨?_, trivial⟩
+  decide +kernel
+
+/-- Proof of `test_process_sysBridge_partialPipe2Failure_cleansUpAllocatedFds` for `SysBridge.spawnPure`. -/
+theorem proof_process_sysBridge_partialPipe2Failure_cleansUpAllocatedFds :
+    AllPass (test_process_sysBridge_partialPipe2Failure_cleansUpAllocatedFds
+      (@SysBridge.spawnPure (StateM PipeFailSimState) _ Nat)) := by
+  refine ⟨?_, trivial⟩
+  decide +kernel
+
+/-- Proof of `test_process_mkApiM_preservesExactAwaitOutcomes` for `Internal.mkApiM`. -/
+theorem proof_process_mkApiM_preservesExactAwaitOutcomes :
+    AllPass (test_process_mkApiM_preservesExactAwaitOutcomes
+      (@Internal.mkApiM (StateM OutcomeScriptState) _)) := by
+  refine ⟨?_, trivial⟩
+  decide +kernel
+
+/-- Proof of `test_process_sysBridge_spawnCwdIsolationKillPgid1AndChdirError` for `SysBridge.mkRawOpsM`. -/
+theorem proof_process_sysBridge_spawnCwdIsolationKillPgid1AndChdirError :
+    AllPass (test_process_sysBridge_spawnCwdIsolationKillPgid1AndChdirError
+      (@SysBridge.mkRawOpsM (StateM SpawnAuditState) _ Nat)) := by
+  refine ⟨?_, trivial⟩
+  decide +kernel
 
 end LeanSwe.Process.Proofs
