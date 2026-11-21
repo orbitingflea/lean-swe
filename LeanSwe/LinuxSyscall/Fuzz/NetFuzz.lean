@@ -2102,11 +2102,47 @@ private def runUsernsLoParityProbe (baseDir : System.FilePath) : IO Unit := do
      , { allocIds := #[], req := .connect 1 (.crossFamilyTo 2) }
      , { allocIds := #[], req := .getsockname 1 }
      ]
+  let trUdpAllHostsMcastLoopback : Array SymStep :=
+    #[ { allocIds := #[0], req := .socket .inet .dgram nb 0 }
+     , { allocIds := #[], req := .ioctl 0 (.setIfFlags defaultLoFlags) loIfname }
+     , { allocIds := #[], req := .bind 0 (.fixed (.ipv4 0x7f000002 0)) }
+     , { allocIds := #[1], req := .socket .inet .dgram nb 0 }
+     , { allocIds := #[], req := .bind 1 (.fixed (.ipv4 INADDR_ALLHOSTS_GROUP 0)) }
+     , { allocIds := #[], req := .getsockname 1 }
+     , { allocIds := #[], req := .connect 0 (.sameLocalOf 1 none) }
+     , { allocIds := #[], req := .sendto 0 (ByteArray.mk #[1, 2, 3]) {} }
+     , { allocIds := #[], req := .recvfrom 1 16 { dontwait := true } }
+     , { allocIds := #[], req := .sendto 0 ByteArray.empty {} }
+     , { allocIds := #[], req := .recvfrom 1 0 {} }
+     ]
+  let trV6SelfConnectLoDownShutSoError : Array SymStep :=
+    #[ { allocIds := #[0], req := .socket .inet6 .stream nb 0 }
+     , { allocIds := #[], req := .ioctl 0 (.setIfFlags defaultLoFlags) loIfname }
+     , { allocIds := #[], req := .bind 0 (.fixed (.ipv6 0 1 0 0 0)) }
+     , { allocIds := #[], req := .getsockname 0 }
+     , { allocIds := #[], req := .connect 0 (.sameLocalOf 0 none) }
+     , { allocIds := #[], req := .ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname }
+     , { allocIds := #[], req := .shutdown 0 .wr }
+     , { allocIds := #[], req := .getsockopt 0 .error }
+     , { allocIds := #[], req := .getsockopt 0 .error }
+     ]
+  let trV6SelfConnectLoDownShutRdwrRxSoError : Array SymStep :=
+    #[ { allocIds := #[0], req := .socket .inet6 .stream nb 0 }
+     , { allocIds := #[], req := .ioctl 0 (.setIfFlags defaultLoFlags) loIfname }
+     , { allocIds := #[], req := .bind 0 (.fixed (.ipv6 0 1 0 0 0)) }
+     , { allocIds := #[], req := .getsockname 0 }
+     , { allocIds := #[], req := .connect 0 (.sameLocalOf 0 none) }
+     , { allocIds := #[], req := .sendto 0 (ByteArray.mk #[42, 43]) {} }
+     , { allocIds := #[], req := .ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname }
+     , { allocIds := #[], req := .shutdown 0 .rdwr }
+     , { allocIds := #[], req := .getsockopt 0 .error }
+     , { allocIds := #[], req := .getsockopt 0 .error }
+     ]
   let (rc, payload) ← SandboxEnv.runForked do
     match ← SandboxEnv.unshareExtra 2 with
     | .error e => return s!"UNSHARE_ERR:{e}".toUTF8
     | .ok () => pure ()
-    let traces := #[trClosingShut, trTaintedV6LoDown, trCloseWaitRstEpipe, trSelfShutFlushRx, trMappedDirBcastGsn]
+    let traces := #[trClosingShut, trTaintedV6LoDown, trCloseWaitRstEpipe, trSelfShutFlushRx, trMappedDirBcastGsn, trUdpAllHostsMcastLoopback, trV6SelfConnectLoDownShutSoError, trV6SelfConnectLoDownShutRdwrRxSoError]
     for h : idx in [:traces.size] do
       let pDir := baseDir / s!"parity-{idx}"
       let r ← replayTrace pDir traces[idx] true allowedStep true false

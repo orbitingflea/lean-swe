@@ -1256,9 +1256,13 @@ private theorem stepSendto_body_none_sound (s : NetState) (selfFid : FileId) (d 
                   by_cases hbdi : (d.boundDevIf != 0 && d.boundDevIf != 1) = true
                   · simp only [hbdi, ↓reduceIte] at h ⊢; exact emitErr_none_sound h
                   · simp only [hbdi, Bool.false_eq_true, ↓reduceIte] at h ⊢
-                    cases hf : findBoundUdpPeer s d targetAddr with
-                    | some _ => simp only [hf] at h ⊢; exact emitU32_none_sound h
-                    | none => simp only [hf] at h ⊢; exact emitU32_none_sound h
+                    cases hm : ipv4AllHostsMcastPort? targetAddr with
+                    | some _ => simp only [hm] at h ⊢; exact emitU32_none_sound h
+                    | none =>
+                      simp only [hm] at h ⊢
+                      cases hf : findBoundUdpPeer s d targetAddr with
+                      | some _ => simp only [hf] at h ⊢; exact emitU32_none_sound h
+                      | none => simp only [hf] at h ⊢; exact emitU32_none_sound h
 
 private theorem stepSendto_none_sound {s : NetState} {hid : HandleId} {data : ByteArray} {flags : MsgFlags}
     {out : NetOutcome} {s' : NetState}
