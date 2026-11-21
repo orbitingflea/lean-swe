@@ -146,7 +146,7 @@ private theorem resolveOpenTarget_longSeg {p : ByteArray}
     · next hErr => change Except.ok PUnit.unit = Except.error _ at hErr; cases hErr
     · simp only [hNonEmpty, Bool.false_eq_true, Bool.false_and, Bool.true_and, Bool.and_false,
         Bool.not_false, ↓reduceIte, resolveStartDir, inodeMountId, FilesState.initial, assocGet]
-      rw [hFuel, walkPath.eq_4]
+      rw [hFuel, walkPath.eq_5]
       simp only [assocGet, hasVNodePermIn, hasVNodePerm, hasOwnerPerm, ProcessCred.capableWrtInode,
         DirLifecycle.isDead, hNotDot, hNotDotDot, hGt', Bool.false_eq_true, ↓reduceIte,
         Bool.and_false, Bool.and_true, Bool.not_false, Bool.true_and, List.isEmpty]
