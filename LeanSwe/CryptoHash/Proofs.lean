@@ -1,3 +1,4 @@
+import Core.Refines
 import LeanSwe.CryptoHash.Model
 import LeanSwe.CryptoHash.Interface
 import LeanSwe.CryptoHash.SpecTests
@@ -1571,5 +1572,145 @@ theorem reach_cryptohash_mkApi_matchesModel :
   exact ⟨.sha256, ByteArray.empty, ByteArray.empty, d, "", ByteArray.empty, ByteArray.empty,
     .invalidArgument "",
     cryptohash_mkApi_matchesModel .sha256 ByteArray.empty ByteArray.empty d "" ByteArray.empty ByteArray.empty (.invalidArgument "")⟩
+
+private theorem mapRawError_eq_model (err : CryptoHashRawError) :
+    LeanSwe.CryptoHash.mapRawError err = Model.mapRawErrorModel err := by
+  cases err <;> rfl
+
+private theorem refinesStepFrom_mkApiM :
+    Core.RefinesStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
+      Model.rawStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep := by
+  intro W proj raw hRaw w req _
+  cases req with
+  | hash alg msg =>
+    have hStep := hRaw w (.digestRaw alg msg) rfl
+    dsimp only [Model.execRawStep, Model.allowedRawStep, Functor.map, StateT.map, Bind.bind,
+      StateT.bind, Pure.pure, StateT.pure, StateT.run] at hStep
+    dsimp only [Model.execPkgStep, Internal.mkApiM, Internal.hashM, Functor.map, StateT.map,
+      Bind.bind, StateT.bind, Pure.pure, StateT.pure, StateT.run, Function.comp]
+    cases hd : raw.digestRaw alg msg w with
+    | mk res w' =>
+      simp only [hd] at hStep ⊢
+      rcases hStep with ⟨_, rfl⟩
+      have hsz : ((Raw.Model.digestBytesModel alg msg).size != digestLen alg) = false :=
+        bne_eq_false_iff_eq.mpr (digestBytesModel_size alg msg)
+      simp [Model.allowedPkgStep, Model.hashModel, Pure.pure, StateT.pure, hsz]
+  | sha256 msg =>
+    have hStep := hRaw w (.digestRaw .sha256 msg) rfl
+    dsimp only [Model.execRawStep, Model.allowedRawStep, Functor.map, StateT.map, Bind.bind,
+      StateT.bind, Pure.pure, StateT.pure, StateT.run] at hStep
+    dsimp only [Model.execPkgStep, Internal.mkApiM, Internal.hashM, Functor.map, StateT.map,
+      Bind.bind, StateT.bind, Pure.pure, StateT.pure, StateT.run, Function.comp]
+    cases hd : raw.digestRaw .sha256 msg w with
+    | mk res w' =>
+      simp only [hd] at hStep ⊢
+      rcases hStep with ⟨_, rfl⟩
+      have hsz : ((Raw.Model.digestBytesModel .sha256 msg).size != digestLen .sha256) = false :=
+        bne_eq_false_iff_eq.mpr (digestBytesModel_size .sha256 msg)
+      simp [Model.allowedPkgStep, Model.sha256Model, Model.hashModel, Pure.pure, StateT.pure, hsz]
+  | sha512 msg =>
+    have hStep := hRaw w (.digestRaw .sha512 msg) rfl
+    dsimp only [Model.execRawStep, Model.allowedRawStep, Functor.map, StateT.map, Bind.bind,
+      StateT.bind, Pure.pure, StateT.pure, StateT.run] at hStep
+    dsimp only [Model.execPkgStep, Internal.mkApiM, Internal.hashM, Functor.map, StateT.map,
+      Bind.bind, StateT.bind, Pure.pure, StateT.pure, StateT.run, Function.comp]
+    cases hd : raw.digestRaw .sha512 msg w with
+    | mk res w' =>
+      simp only [hd] at hStep ⊢
+      rcases hStep with ⟨_, rfl⟩
+      have hsz : ((Raw.Model.digestBytesModel .sha512 msg).size != digestLen .sha512) = false :=
+        bne_eq_false_iff_eq.mpr (digestBytesModel_size .sha512 msg)
+      simp [Model.allowedPkgStep, Model.sha512Model, Model.hashModel, Pure.pure, StateT.pure, hsz]
+  | hmacSha256 key msg =>
+    have hStep := hRaw w (.hmacSha256Raw key msg) rfl
+    dsimp only [Model.execRawStep, Model.allowedRawStep, Functor.map, StateT.map, Bind.bind,
+      StateT.bind, Pure.pure, StateT.pure, StateT.run] at hStep
+    dsimp only [Model.execPkgStep, Internal.mkApiM, Internal.hmacSha256M, Functor.map, StateT.map,
+      Bind.bind, StateT.bind, Pure.pure, StateT.pure, StateT.run, Function.comp]
+    cases hh : raw.hmacSha256Raw key msg w with
+    | mk res w' =>
+      simp only [hh] at hStep ⊢
+      rcases hStep with ⟨_, rfl⟩
+      have hsz : ((Raw.Model.hmacSha256Bytes key msg).size != 32) = false :=
+        bne_eq_false_iff_eq.mpr (hmacSha256Bytes_size key msg)
+      simp [Model.allowedPkgStep, Model.hmacSha256Model, Pure.pure, StateT.pure, hsz]
+  | verifyHmacSha256 key msg expected =>
+    dsimp only [Model.execPkgStep, Internal.mkApiM, Internal.verifyHmacSha256M, Internal.hmacSha256M,
+      Internal.ctEqM, Functor.map, StateT.map, Bind.bind, StateT.bind, Pure.pure, StateT.pure,
+      Id.instMonad, StateT.run, Function.comp]
+    cases halg : expected.alg with
+    | sha512 =>
+      have hta : (Raw.HashAlg.sha512 != Raw.HashAlg.sha256) = true := rfl
+      simp only [hta, ↓reduceIte, StateT.pure, Pure.pure, Model.allowedPkgStep,
+        Model.verifyHmacSha256Model, id]
+      rw [halg]
+      simp [hta]
+    | sha256 =>
+      have hfa : (Raw.HashAlg.sha256 != Raw.HashAlg.sha256) = false := rfl
+      simp only [hfa, Bool.false_eq_true, ↓reduceIte]
+      by_cases hlen : expected.bytes.size = 32
+      · have hfl : (expected.bytes.size != 32) = false := bne_eq_false_iff_eq.mpr hlen
+        simp only [hfl, Bool.false_eq_true, ↓reduceIte, StateT.bind]
+        have hStep1 := hRaw w (.hmacSha256Raw key msg) rfl
+        dsimp only [Model.execRawStep, Model.allowedRawStep, Functor.map, StateT.map, Bind.bind,
+          StateT.bind, Pure.pure, StateT.pure, StateT.run] at hStep1
+        cases hh : raw.hmacSha256Raw key msg w with
+        | mk res1 w1 =>
+          simp only [hh] at hStep1 ⊢
+          rcases hStep1 with ⟨_, rfl⟩
+          have hsz : ((Raw.Model.hmacSha256Bytes key msg).size != 32) = false :=
+            bne_eq_false_iff_eq.mpr (hmacSha256Bytes_size key msg)
+          have hsz2 : ((Raw.Model.hmacSha256Bytes key msg).size != expected.bytes.size) = false := by
+            rw [hmacSha256Bytes_size, hlen]; rfl
+          simp only [hsz, hsz2, Bool.false_eq_true, ↓reduceIte, Bind.bind, StateT.pure, Pure.pure]
+          have hStep2 := hRaw w1 (.ctEqualRaw (Raw.Model.hmacSha256Bytes key msg) expected.bytes) rfl
+          dsimp only [Model.execRawStep, Model.allowedRawStep, Functor.map, StateT.map, Bind.bind,
+            StateT.bind, Pure.pure, StateT.pure, StateT.run] at hStep2
+          cases hc : raw.ctEqualRaw (Raw.Model.hmacSha256Bytes key msg) expected.bytes w1 with
+          | mk res2 w2 =>
+            simp only [hc] at hStep2 ⊢
+            rcases hStep2 with ⟨_, rfl⟩
+            simp only [Model.allowedPkgStep, Model.verifyHmacSha256Model, Raw.Model.ctEqualRawModel, id]
+            rw [halg]
+            simp [hfa, hfl]
+            exact (hmacSha256Bytes_size key msg).trans hlen.symm
+      · have htl : (expected.bytes.size != 32) = true := bne_iff_ne.mpr hlen
+        simp only [htl, ↓reduceIte, StateT.pure, Pure.pure, Model.allowedPkgStep,
+          Model.verifyHmacSha256Model, id]
+        rw [halg]
+        simp [hfa]
+  | ctEq a b =>
+    dsimp only [Model.execPkgStep, Internal.mkApiM, Internal.ctEqM, Functor.map, StateT.map,
+      Bind.bind, StateT.bind, Pure.pure, StateT.pure, Id.instMonad, StateT.run, Function.comp]
+    by_cases hsz : a.size = b.size
+    · have hf : (a.size != b.size) = false := bne_eq_false_iff_eq.mpr hsz
+      simp only [hf, Bool.false_eq_true, ↓reduceIte]
+      have hStep := hRaw w (.ctEqualRaw a b) rfl
+      dsimp only [Model.execRawStep, Model.allowedRawStep, Functor.map, StateT.map, Bind.bind,
+        StateT.bind, Pure.pure, StateT.pure, StateT.run] at hStep
+      cases hc : raw.ctEqualRaw a b w with
+      | mk res w' =>
+        simp only [hc] at hStep ⊢
+        rcases hStep with ⟨_, rfl⟩
+        simp [Model.allowedPkgStep, Model.ctEqModel, Raw.Model.ctEqualRawModel, hf]
+    · have ht : (a.size != b.size) = true := bne_iff_ne.mpr hsz
+      have hne : (a == b) = false := by
+        cases hab : a == b
+        · rfl
+        · exact absurd (congrArg ByteArray.size (eq_of_beq hab)) hsz
+      simp only [ht, ↓reduceIte, StateT.pure, Pure.pure, Model.allowedPkgStep, Model.ctEqModel, id]
+      simp [hne]
+
+/-- Full public `Interface` refinement of `LeanSwe.CryptoHash` against `LeanSwe.CryptoHash.Model`. -/
+theorem refines_model :
+    Core.RefinesPureEq LeanSwe.CryptoHash.mapRawError Model.mapRawErrorModel ∧
+    Core.RefinesPureEq LeanSwe.CryptoHash.toHex Model.toHexModel ∧
+    Core.RefinesPureEq2 LeanSwe.CryptoHash.fromHex Model.fromHexModel ∧
+    Core.RefinesStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
+      Model.rawStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep :=
+  ⟨mapRawError_eq_model,
+   fun _ => (toHexModel_eq ▸ rfl),
+   fun _ _ => (fromHexModel_eq ▸ rfl),
+   refinesStepFrom_mkApiM⟩
 
 end LeanSwe.CryptoHash.Proofs

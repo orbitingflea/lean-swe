@@ -6,11 +6,11 @@
       "legacy_unmigrated": false
     },
     ".github/workflows/audit-daily.yml": {
-      "max_lines": 295,
+      "max_lines": 301,
       "legacy_unmigrated": false
     },
     ".github/workflows/audit.yml": {
-      "max_lines": 230,
+      "max_lines": 233,
       "legacy_unmigrated": false
     },
     "Fuzz/EnvVars/c/envvars_fuzz_env.c": {

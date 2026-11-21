@@ -789,4 +789,23 @@ def FloatFormatSpec (x : Float) (s : String) : Prop :=
       | .ok y => y.toBits = x.toBits
       | .error _ => False
 
+/-- Allowed outcome relation for `NumParse.parseInt` against `parseIntModel`. -/
+def allowedParseInt (s : String) (out : Except NumParseError Int) : Prop :=
+  out.mapError NumParseError.kind = parseIntModel s ∧
+    ∀ e, out = .error e → e.message ≠ ""
+
+/-- Allowed outcome relation for `NumParse.parseInt64` against `parseInt64Model`. -/
+def allowedParseInt64 (s : String) (out : Except NumParseError Int64) : Prop :=
+  out.mapError NumParseError.kind = parseInt64Model s ∧
+    ∀ e, out = .error e → e.message ≠ ""
+
+/-- Allowed outcome relation for `NumParse.formatInt` against `parseIntModel`. -/
+def allowedFormatInt (n : Int) (out : String) : Prop :=
+  !out.contains '_' ∧ parseIntModel out = .ok n
+
+/-- Allowed outcome relation for `NumParse.parseFloat` against `parseFloatModel`. -/
+def allowedParseFloat (s : String) (out : Except NumParseError Float) : Prop :=
+  out.mapError NumParseError.kind = parseFloatModel s ∧
+    ∀ e, out = .error e → e.message ≠ ""
+
 end LeanSwe.NumParse.Model

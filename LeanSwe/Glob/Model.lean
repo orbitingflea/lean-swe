@@ -344,4 +344,32 @@ def escapeCharsModel : List Char → List Char
 def escapeModel (literal : String) : String :=
   String.ofList (escapeCharsModel literal.toList)
 
+/-- Allowed outcome relation for `Glob.validate` against `validateModel`. -/
+def allowedValidate (pattern : String) (out : Except GlobError Unit) : Prop :=
+  match out, validateModel pattern with
+  | .ok (), .ok () => True
+  | .error e, .error k => e.kind = k ∧ e.message ≠ ""
+  | _, _ => False
+
+/-- Allowed outcome relation for `Glob.isMatch` against `isMatchModel`. -/
+def allowedIsMatch (pattern path : String) (out : Except GlobError Bool) : Prop :=
+  match out, isMatchModel pattern path with
+  | .ok b1, .ok b2 => b1 = b2
+  | .error e, .error k => e.kind = k ∧ e.message ≠ ""
+  | _, _ => False
+
+/-- Allowed outcome relation for `Glob.filter` against `filterModel`. -/
+def allowedFilter (pattern : String) (paths : Array String) (out : Except GlobError (Array String)) : Prop :=
+  match out, filterModel pattern paths with
+  | .ok a1, .ok a2 => a1 = a2
+  | .error e, .error k => e.kind = k ∧ e.message ≠ ""
+  | _, _ => False
+
+/-- Allowed outcome relation for `Glob.countMatches` against `countMatchesModel`. -/
+def allowedCountMatches (pattern : String) (paths : Array String) (out : Except GlobError Nat) : Prop :=
+  match out, countMatchesModel pattern paths with
+  | .ok n1, .ok n2 => n1 = n2
+  | .error e, .error k => e.kind = k ∧ e.message ≠ ""
+  | _, _ => False
+
 end LeanSwe.Glob.Model

@@ -84,6 +84,12 @@ jobs:
           set -euo pipefail
           lake env lean -DwarningAsError=true --run scripts/CheckPromises.lean .lake/build/lib/lean .
 
+      - name: Check assumptions self-tests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.lake_check.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          lake env lean -DwarningAsError=true --run scripts/CheckAssumptionsTest.lean
+
       - name: Check non-Lean thinness gate
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.lake_check.outcome == 'success' }}
         run: |

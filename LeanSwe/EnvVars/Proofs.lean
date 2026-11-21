@@ -1,3 +1,4 @@
+import Core.Refines
 import LeanSwe.EnvVars.Model
 import LeanSwe.EnvVars.Interface
 import LeanSwe.EnvVars.SpecTests
@@ -778,5 +779,102 @@ theorem proof_envvars_mkApi_matchesModel :
         by_cases hv : v = ""
         · subst hv; simp
         · simp
+
+private theorem mapRawError_eq_model (err : EnvVarsRawError) :
+    LeanSwe.EnvVars.mapRawError err = Model.mapRawErrorModel err := by
+  cases err <;> rfl
+
+private theorem refinesStepFrom_mkApiM :
+    Core.RefinesStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
+      Model.rawStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep := by
+  intro W proj raw hRaw w req _
+  have hMap : ∀ e, raw.mapRawError e = Raw.Model.mapRawErrorModel e := fun e => by
+    have h := hRaw w (.mapRawError e) rfl
+    exact h.2
+  cases req with
+  | getEnv key =>
+    dsimp only [Model.execPkgStep, Internal.mkApiM, Functor.map, StateT.map, Bind.bind, StateT.bind,
+      Pure.pure, StateT.pure, StateT.run, Function.comp]
+    rw [isValidKey_eq_model]
+    cases hk : Raw.Model.isValidPosixKeyModel key with
+    | false =>
+      simp only [Bool.not_false, ↓reduceIte, StateT.pure, Pure.pure, Model.allowedPkgStep,
+        Model.getEnvModel, id]
+      rw [hk]
+      simp
+    | true =>
+      simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, StateT.bind]
+      have hStep := hRaw w (.getEnv key) rfl
+      dsimp only [Model.execRawStep, Functor.map, StateT.map, Bind.bind, StateT.bind,
+        Pure.pure, StateT.pure, StateT.run, Model.allowedRawStep] at hStep
+      cases hg : raw.getEnv key w with
+      | mk res w' =>
+        simp only [hg] at hStep ⊢
+        rcases hStep with ⟨hw', hres⟩
+        subst hres
+        cases hm : Raw.Model.rawGetEnvModel (proj w) key with
+        | error err =>
+          simp [Bind.bind, StateT.pure, Pure.pure, Model.allowedPkgStep, Model.getEnvModel,
+            Except.mapError, hk, hm, hMap, hw']
+        | ok val =>
+          simp [Bind.bind, StateT.pure, Pure.pure, Model.allowedPkgStep, Model.getEnvModel,
+            Except.mapError, hk, hm, hw']
+  | listEnv =>
+    dsimp only [Model.execPkgStep, Internal.mkApiM, Functor.map, StateT.map, Bind.bind, StateT.bind,
+      Pure.pure, StateT.pure, StateT.run, Function.comp]
+    have hStep := hRaw w .listEnv rfl
+    dsimp only [Model.execRawStep, Functor.map, StateT.map, Bind.bind, StateT.bind,
+      Pure.pure, StateT.pure, StateT.run, Model.allowedRawStep] at hStep
+    cases hl : raw.listEnv w with
+    | mk res w' =>
+      simp only [hl] at hStep ⊢
+      rcases hStep with ⟨hw', hres⟩
+      subst hres
+      cases hm : Raw.Model.rawListEnvModel (proj w) with
+      | error err =>
+        simp only [StateT.pure, Pure.pure, Model.allowedPkgStep, Model.listEnvModel, Except.mapError, id]
+        rw [hm, hMap, hw']
+        exact ⟨rfl, rfl⟩
+      | ok entries =>
+        simp only [StateT.pure, Pure.pure, Model.allowedPkgStep, Model.listEnvModel, Except.mapError, id]
+        rw [hm, hw']
+        exact ⟨rfl, rfl⟩
+  | homeDir =>
+    dsimp only [Model.execPkgStep, Internal.mkApiM, Functor.map, StateT.map, Bind.bind, StateT.bind,
+      Pure.pure, StateT.pure, StateT.run, Function.comp]
+    have hStep := hRaw w (.getEnv "HOME") rfl
+    dsimp only [Model.execRawStep, Functor.map, StateT.map, Bind.bind, StateT.bind,
+      Pure.pure, StateT.pure, StateT.run, Model.allowedRawStep] at hStep
+    cases hg : raw.getEnv "HOME" w with
+    | mk res w' =>
+      simp only [hg] at hStep ⊢
+      rcases hStep with ⟨hw', hres⟩
+      subst hres
+      cases hm : Raw.Model.rawGetEnvModel (proj w) "HOME" with
+      | error err =>
+        simp only [StateT.pure, Pure.pure, Model.allowedPkgStep, Model.homeDirModel, id]
+        rw [hm, hMap, hw']
+        exact ⟨rfl, rfl⟩
+      | ok v? =>
+        cases v? with
+        | none =>
+          simp only [StateT.pure, Pure.pure, Model.allowedPkgStep, Model.homeDirModel, id]
+          rw [hm, hw']
+          exact ⟨rfl, rfl⟩
+        | some v =>
+          by_cases hv : v = ""
+          · subst hv
+            simp [StateT.pure, Pure.pure, Model.allowedPkgStep, Model.homeDirModel, hm, hw']
+          · simp [StateT.pure, Pure.pure, Model.allowedPkgStep, Model.homeDirModel, hm, hw']
+
+/-- Full public `Interface` refinement of `LeanSwe.EnvVars` against `LeanSwe.EnvVars.Model`. -/
+theorem refines_model :
+    Core.RefinesPureEq LeanSwe.EnvVars.mapRawError Model.mapRawErrorModel ∧
+    Core.RefinesPureEq LeanSwe.EnvVars.splitSearchPath Model.splitSearchPathModel ∧
+    Core.RefinesStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
+      Model.rawStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep :=
+  ⟨mapRawError_eq_model,
+   fun path => (splitSearchPathModel_eq path).symm,
+   refinesStepFrom_mkApiM⟩
 
 end LeanSwe.EnvVars.Proofs

@@ -91,4 +91,91 @@ def modelApi : CryptoHashApiM Id :=
     fromHex := fromHexModel
     ctEq := ctEqModel }
 
+/-- Pure behavior model of `LeanSwe.CryptoHash.mapRawError`. -/
+def mapRawErrorModel (err : CryptoHashRawError) : CryptoHashError :=
+  Raw.Model.mapRawErrorModel err
+
+/-- Request sum for raw `RawCryptoHashOpsM` transitions in `Core.RefinesStepFrom`. -/
+inductive RawStepReq where
+  /-- Normalize a raw error record. -/
+  | mapRawError (err : CryptoHashRawError)
+  /-- Compute raw digest bytes for `(alg, msg)`. -/
+  | digestRaw (alg : HashAlg) (msg : ByteArray)
+  /-- Compute raw 32-byte HMAC-SHA256 bytes for `(key, msg)`. -/
+  | hmacSha256Raw (key msg : ByteArray)
+  /-- Compare equal-length byte slices in constant time. -/
+  | ctEqualRaw (a b : ByteArray)
+
+/-- Output sum for raw `RawCryptoHashOpsM` transitions in `Core.RefinesStepFrom`. -/
+inductive RawStepOut where
+  /-- Result of `RawCryptoHashOpsM.mapRawError`. -/
+  | mapped (err : CryptoHashError)
+  /-- Result of `RawCryptoHashOpsM.digestRaw` or `hmacSha256Raw`. -/
+  | bytes (res : Except CryptoHashError ByteArray)
+  /-- Result of `RawCryptoHashOpsM.ctEqualRaw`. -/
+  | eqRes (res : Except CryptoHashError Bool)
+
+/-- Total well-formedness guard on `Unit` state for `Core.RefinesStepFrom`. -/
+def rawStepWf (_ : Unit) : Bool := true
+
+/-- Execute one `RawStepReq` against an arbitrary `RawCryptoHashOpsM (StateM W)`. -/
+def execRawStep {W : Type} (raw : RawCryptoHashOpsM (StateM W)) : RawStepReq → StateM W RawStepOut
+  | .mapRawError err => pure (.mapped (raw.mapRawError err))
+  | .digestRaw alg msg => .bytes <$> raw.digestRaw alg msg
+  | .hmacSha256Raw key msg => .bytes <$> raw.hmacSha256Raw key msg
+  | .ctEqualRaw a b => .eqRes <$> raw.ctEqualRaw a b
+
+/-- Allowed raw single-step relation over `Unit` state. -/
+def allowedRawStep (s : Unit) (req : RawStepReq) (out : RawStepOut) (s' : Unit) : Prop :=
+  s' = s ∧
+    match req, out with
+    | .mapRawError err, .mapped res => res = Raw.Model.mapRawErrorModel err
+    | .digestRaw alg msg, .bytes res => res = .ok (Raw.Model.digestBytesModel alg msg)
+    | .hmacSha256Raw key msg, .bytes res => res = .ok (Raw.Model.hmacSha256Bytes key msg)
+    | .ctEqualRaw a b, .eqRes res => res = Raw.Model.ctEqualRawModel a b
+    | _, _ => False
+
+/-- Request sum covering all effectful `CryptoHashApiM` operations. -/
+inductive PkgStepReq where
+  /-- `CryptoHashApiM.hash` request. -/
+  | hash (alg : HashAlg) (msg : ByteArray)
+  /-- `CryptoHashApiM.sha256` request. -/
+  | sha256 (msg : ByteArray)
+  /-- `CryptoHashApiM.sha512` request. -/
+  | sha512 (msg : ByteArray)
+  /-- `CryptoHashApiM.hmacSha256` request. -/
+  | hmacSha256 (key msg : ByteArray)
+  /-- `CryptoHashApiM.verifyHmacSha256` request. -/
+  | verifyHmacSha256 (key msg : ByteArray) (expected : Digest)
+  /-- `CryptoHashApiM.ctEq` request. -/
+  | ctEq (a b : ByteArray)
+
+/-- Output sum for effectful `CryptoHashApiM` transitions. -/
+inductive PkgStepOut where
+  /-- Digest result of `hash`, `sha256`, `sha512`, or `hmacSha256`. -/
+  | digest (res : Except CryptoHashError Digest)
+  /-- Boolean result of `verifyHmacSha256` or `ctEq`. -/
+  | flag (res : Except CryptoHashError Bool)
+
+/-- Execute one `PkgStepReq` against a `CryptoHashApiM (StateM W)` bundle. -/
+def execPkgStep {W : Type} (api : CryptoHashApiM (StateM W)) : PkgStepReq → StateM W PkgStepOut
+  | .hash alg msg => .digest <$> api.hash alg msg
+  | .sha256 msg => .digest <$> api.sha256 msg
+  | .sha512 msg => .digest <$> api.sha512 msg
+  | .hmacSha256 key msg => .digest <$> api.hmacSha256 key msg
+  | .verifyHmacSha256 key msg expected => .flag <$> api.verifyHmacSha256 key msg expected
+  | .ctEq a b => .flag <$> api.ctEq a b
+
+/-- Allowed package-level single-step relation against `LeanSwe.CryptoHash.Model`. -/
+def allowedPkgStep (s : Unit) (req : PkgStepReq) (out : PkgStepOut) (s' : Unit) : Prop :=
+  s' = s ∧
+    match req, out with
+    | .hash alg msg, .digest res => res = hashModel alg msg
+    | .sha256 msg, .digest res => res = sha256Model msg
+    | .sha512 msg, .digest res => res = sha512Model msg
+    | .hmacSha256 key msg, .digest res => res = hmacSha256Model key msg
+    | .verifyHmacSha256 key msg expected, .flag res => res = verifyHmacSha256Model key msg expected
+    | .ctEq a b, .flag res => res = ctEqModel a b
+    | _, _ => False
+
 end LeanSwe.CryptoHash.Model

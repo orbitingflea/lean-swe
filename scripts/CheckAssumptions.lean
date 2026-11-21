@@ -1,14 +1,15 @@
 import Lean
 
 /-!
-Hardened checkable-assumptions and error-coverage gate audit for `lean-swe` compiled `.olean` artifacts.
+Hardened checkable-assumptions, error-coverage, and `Core.Refines` model-refinement gate audit
+for `lean-swe` compiled `.olean` artifacts.
 
 Enforces:
 1. Complete module & axiom hygiene:
    - Every `.lean` file under `LeanSwe/` must be transitively imported by `LeanSwe`.
    - Zero custom `axiom` declarations anywhere in `Core`, `LeanSwe`, or `Tests.Main`.
    - Standard axioms only (`propext`, `Classical.choice`, `Quot.sound`) on all `assume_*`, `CanReach`,
-     upper-layer consumer theorems, and `.provedImpossible` theorems.
+     upper-layer consumer theorems, `.provedImpossible` theorems, and `refines_model` theorems.
 2. Zero prose-only, renamed, or hidden assumptions across non-`Proofs` project modules:
    - No `EmpiricalAssumptions` constant anywhere.
    - No `Prop`-typed inductive/structure field in any non-`Proofs` project module.
@@ -19,14 +20,21 @@ Enforces:
 3. Pure vs External-Boundary separation:
    - Pure modules without `@[extern]`, host `IO` syscalls, or external CLI invocations must declare zero
      `assume_*`, zero `externalAssumptions`, and zero `registeredAssumptions`.
-   - External-boundary modules declare `externalAssumptions : List AssumptionObligation` linking each
-     obligation to a real `<pkgNs>.Interface`/`Impl` `subject` and 1-to-1 to a named `RuntimeTests` probe.
+   - External-boundary modules with `RuntimeTests` declare `externalAssumptions : List AssumptionObligation`
+     linking each obligation to a real `<pkgNs>.Interface`/`Impl` `subject` and 1-to-1 to a named `RuntimeTests` probe.
    - Formal `assume_*` predicates in `SpecTests` are allowed only when `formalPred? = some name`,
      non-trivial over the boundary parameter (`isMeaningfulBoundaryProp`), satisfiable via `Core.CanReach`,
      and consumed as a used `Prop` hypothesis (after zeta and beta reduction) in an upper-layer `Proofs` theorem.
-4. Runtime linking, active execution, non-noop checks, and nonce-log anti-forgery across `Tests.Main` and `RuntimeTests`.
+4. Runtime linking, active execution, non-noop checks, and nonce-log anti-forgery across `Tests.Main` and `RuntimeTests`,
+   with clean `RuntimeTests` retirement support when a package provides `<pkgNs>.Model` (and `Fuzz/suites.json`
+   coverage for external-boundary or runtime-`Float` packages) while preserving unconditional `errorCoverage`,
+   `externalAssumptions` subject/predicate, and axiom checks.
 5. Error coverage completeness & canonical `.provedImpossible` shape (`Core.NeverErrorKind{IO,BaseIO,Pure}`).
-6. Supports `--verify-log <path> [--nonce <token>]` and `--allow-legacy [<Csv>]` for phased migration.
+6. `Core.Refines` model-refinement completeness (`<pkgNs>.Proofs.refines_model` via `RefinesPure*`,
+   `RefinesPureEq*`, `RefinesStep*`, `RefinesStepFrom*` with bare-constant pinning and non-trivial `allowed`
+   relations across the full public `<pkgNs>.Interface` surface; `deferredRefinesModelPackages` tracks
+   `LeanSwe.Tar` and `LeanSwe.SlotPool` pending their dedicated follow-up PR).
+7. Supports `--verify-log <path> [--nonce <token>]` and `--allow-legacy [<Csv>]` for phased migration.
 -/
 
 open Lean Meta
@@ -44,6 +52,11 @@ private def legacyExemptionAllowlist : Array Name := #[
   `LeanSwe.ProcessSandbox,
   `LeanSwe.ProcessSandbox.Raw
 ]
+
+private def deferredRefinesModelPackages : Std.HashSet Name :=
+  Std.HashSet.emptyWithCapacity 4
+    |>.insert `LeanSwe.Tar
+    |>.insert `LeanSwe.SlotPool
 
 private def forbiddenTestMainConsts : Std.HashSet Name :=
   Std.HashSet.emptyWithCapacity 16
@@ -263,21 +276,71 @@ private partial def classifyBranchNode?
               return some (false, subs)
   return none
 
-private partial def hasStaticDeadBranchExpr (env : Environment) (e : Expr) : MetaM Bool := do
+private def isSmallClosedExpr (e : Expr) : Bool :=
+  !e.hasFVar && !e.hasLooseBVars && e.approxDepth.toNat <= 16
+
+private def runBoundedMeta {α : Type} (fallback : α) (act : MetaM α) : MetaM α :=
+  Lean.tryCatchRuntimeEx
+    (try
+      Core.withCurrHeartbeats <|
+        withTheReader Core.Context
+          (fun c => { c with maxHeartbeats := 500000, maxRecDepth := min c.maxRecDepth 2048 }) act
+    catch _ =>
+      pure fallback)
+    (fun _ => pure fallback)
+
+private inductive DeadBranchResult where
+  | clean
+  | hasDeadBranch
+  | inconclusive (reason : String)
+
+private partial def hasStaticDeadBranchExprAux
+    (env : Environment)
+    (bestFuelRef : IO.Ref (Std.HashMap Expr Nat))
+    (fuel : Nat)
+    (e : Expr) : MetaM DeadBranchResult := do
+  if fuel == 0 then return .inconclusive "AST depth budget exhausted"
   let cur := e.consumeMData
+  if (← bestFuelRef.get).getD cur 0 >= fuel then return .clean
+  bestFuelRef.modify (·.insert cur fuel)
   if cur.isLambda then
-    return ← lambdaTelescope cur fun _ body => hasStaticDeadBranchExpr env body
+    return ← lambdaTelescope cur fun _ body => hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) body
   if let some (isStatic, subs) ← classifyBranchNode? env cur then
-    if isStatic then return true
+    if isStatic then return .hasDeadBranch
     for s in subs do
-      if ← hasStaticDeadBranchExpr env s then return true
-    return false
+      match ← hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) s with
+      | .clean => pure ()
+      | bad => return bad
+    return .clean
   match cur with
-  | .app f a => return (← hasStaticDeadBranchExpr env f) || (← hasStaticDeadBranchExpr env a)
-  | .letE _ _ v b _ =>
-    return (← hasStaticDeadBranchExpr env v) || (← hasStaticDeadBranchExpr env (b.instantiate1 v))
-  | .proj _ _ s => hasStaticDeadBranchExpr env s
-  | _ => return false
+  | .app f a =>
+    match ← hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) f with
+    | .clean => hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) a
+    | bad => return bad
+  | .letE n t v b _ =>
+    match ← hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) v with
+    | .clean =>
+      if isSmallClosedExpr v then
+        hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) (b.instantiate1 v)
+      else
+        withLocalDeclD n t fun x =>
+          hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) (b.instantiate1 x)
+    | bad => return bad
+  | .proj _ _ s => hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) s
+  | _ => return .clean
+
+private def hasStaticDeadBranchExpr (env : Environment) (fuel : Nat) (e : Expr) : MetaM DeadBranchResult :=
+  Lean.tryCatchRuntimeEx
+    (try
+      Core.withCurrHeartbeats <|
+        withTheReader Core.Context
+          (fun c => { c with maxHeartbeats := 5000000, maxRecDepth := max c.maxRecDepth 4096 }) do
+          let bestFuelRef ← IO.mkRef (Std.HashMap.emptyWithCapacity (α := Expr) (β := Nat) 128)
+          hasStaticDeadBranchExprAux env bestFuelRef fuel e
+    catch ex => do
+      return .inconclusive (← ex.toMessageData.toString))
+    (fun ex => do
+      return .inconclusive (← ex.toMessageData.toString))
 
 private structure DeadBranchCache where
   cleanConsts : Std.HashSet Name := {}
@@ -285,15 +348,17 @@ private structure DeadBranchCache where
 
 private partial def hasStaticDeadBranchTransitive
     (env : Environment)
+    (fuel : Nat)
     (cache : DeadBranchCache)
-    (start : Name) : MetaM (Bool × DeadBranchCache) := do
-  let mut queue : List Name := [start]
+    (start : Name) : MetaM (DeadBranchResult × DeadBranchCache) := do
+  let mut queue : Array Name := #[start]
+  let mut qIdx : Nat := 0
   let mut seen : Std.HashSet Name := {}
   let mut cleanConsts := cache.cleanConsts
   let cleanSubgraphs := cache.cleanSubgraphs
-  while !queue.isEmpty do
-    let cur := queue.head!
-    queue := queue.tail!
+  while qIdx < queue.size do
+    let cur := queue[qIdx]!
+    qIdx := qIdx + 1
     if seen.contains cur || cleanSubgraphs.contains cur then continue
     seen := seen.insert cur
     let modName := moduleOfConst env cur
@@ -306,13 +371,31 @@ private partial def hasStaticDeadBranchTransitive
       | _ => none
     if let some body := body? then
       if (cur.getString!.splitOn "match_").length <= 1 && !cleanConsts.contains cur then
-        if ← hasStaticDeadBranchExpr env body then
-          return (true, { cleanConsts, cleanSubgraphs })
-        cleanConsts := cleanConsts.insert cur
+        match ← hasStaticDeadBranchExpr env fuel body with
+        | .clean => cleanConsts := cleanConsts.insert cur
+        | .hasDeadBranch => return (.hasDeadBranch, { cleanConsts, cleanSubgraphs })
+        | .inconclusive reason => return (.inconclusive s!"{cur}: {reason}", { cleanConsts, cleanSubgraphs })
       for u in body.getUsedConstants do
         if !seen.contains u && !cleanSubgraphs.contains u then
-          queue := u :: queue
-  return (false, { cleanConsts, cleanSubgraphs := cleanSubgraphs.insert start })
+          queue := queue.push u
+  let nextSubgraphs := seen.fold (init := cleanSubgraphs) fun s v => s.insert v
+  return (.clean, { cleanConsts, cleanSubgraphs := nextSubgraphs })
+
+private partial def stripDeadPureLets (e : Expr) : Expr :=
+  match e.consumeMData with
+  | .letE n t v b nonDep =>
+    if !b.hasLooseBVar 0 then
+      stripDeadPureLets (b.lowerLooseBVars 1 1)
+    else
+      let b' := stripDeadPureLets b
+      if !b'.hasLooseBVar 0 then
+        b'.lowerLooseBVars 1 1
+      else
+        .letE n t (stripDeadPureLets v) b' nonDep
+  | .lam n t b bi => .lam n t (stripDeadPureLets b) bi
+  | .app f a => .app (stripDeadPureLets f) (stripDeadPureLets a)
+  | .proj tn idx s => .proj tn idx (stripDeadPureLets s)
+  | cur => cur
 
 private partial def stripInertBindings (env : Environment) (rtMod : Name) (e : Expr) : Expr :=
   let cur := e.consumeMData
@@ -322,7 +405,9 @@ private partial def stripInertBindings (env : Environment) (rtMod : Name) (e : E
   else if cur.isAppOfArity ``Bind.bind 6 || cur.isAppOfArity ``bind 6 then
     let args := cur.getAppArgs
     let act := stripInertBindings env rtMod args[4]!
-    let cont := stripInertBindings env rtMod args[5]!
+    let cont := match args[5]!.consumeMData with
+      | .lam n t b bi => Expr.lam n t (stripInertBindings env rtMod b) bi
+      | other => stripInertBindings env rtMod other
     let actClean := act.consumeMData
     if actClean.isAppOfArity ``Pure.pure 4 || actClean.isAppOfArity ``pure 4 then
       let v := actClean.appArg!
@@ -339,50 +424,101 @@ private partial def stripInertBindings (env : Environment) (rtMod : Name) (e : E
       mkAppN cur.getAppFn (args.set! 4 act |>.set! 5 cont)
   else
     match cur with
-    | .letE _ _ v b _ => stripInertBindings env rtMod (b.instantiate1 v)
+    | .letE n t v b nonDep =>
+      if !b.hasLooseBVar 0 then
+        stripInertBindings env rtMod (b.lowerLooseBVars 1 1)
+      else if isSmallClosedExpr v then
+        stripInertBindings env rtMod (b.instantiate1 v)
+      else
+        let b' := stripInertBindings env rtMod b
+        if !b'.hasLooseBVar 0 then
+          b'.lowerLooseBVars 1 1
+        else
+          .letE n t (stripInertBindings env rtMod v) b' nonDep
     | .lam n t b bi => .lam n t (stripInertBindings env rtMod b) bi
     | .app f a => .app (stripInertBindings env rtMod f) (stripInertBindings env rtMod a)
     | .proj tn idx s => .proj tn idx (stripInertBindings env rtMod s)
     | _ => cur
 
-private partial def exprContainsActiveTarget
-    (env : Environment)
-    (pred : Name → Bool)
-    (e : Expr) : MetaM (Option (Array Name)) := do
-  let rec collect (raw : Expr) (acc : Array Name) : MetaM (Option (Array Name)) := do
-    let cur := raw.consumeMData
-    if cur.isLambda then
-      return ← lambdaTelescope cur fun _ body => collect body acc
-    if let some (_, subs) ← classifyBranchNode? env cur then
-      let mut curAcc := acc
-      for s in subs do
-        let some nextAcc ← collect s curAcc | return none
-        curAcc := nextAcc
-      return some curAcc
-    match cur with
-    | .const c _ =>
-      if pred c then return none
-      return some (acc.push c)
-    | .app f a =>
-      let some r1 ← collect f acc | return none
-      collect a r1
-    | .letE _ _ v b _ =>
-      let some r1 ← collect v acc | return none
-      collect (b.instantiate1 v) r1
-    | .proj _ _ s => collect s acc
-    | _ => return some acc
-  collect e #[]
+private structure ActiveCallCache where
+  directPlain : Std.HashMap Name (Array Name) := {}
+  directStripped : Std.HashMap (Name × Name) (Array Name) := {}
+  reachesThrow : Std.HashMap Name Bool := {}
 
-private partial def usesPredConstActive
+private partial def exprActiveDirectConsts
     (env : Environment)
+    (e : Expr) : MetaM (Array Name) :=
+  runBoundedMeta #[] do
+    let bestFuelRef ← IO.mkRef (Std.HashMap.emptyWithCapacity (α := Expr) (β := Nat) 128)
+    let outSetRef ← IO.mkRef (Std.HashSet.emptyWithCapacity (α := Name) 32)
+    let rec collect (fuel : Nat) (raw : Expr) : MetaM Unit := do
+      if fuel == 0 then return
+      let cur := raw.consumeMData
+      if (← bestFuelRef.get).getD cur 0 >= fuel then return
+      bestFuelRef.modify (·.insert cur fuel)
+      if cur.isLambda then
+        lambdaTelescope cur fun _ body =>
+          collect (fuel - 1) body
+        return
+      if let some (_, subs) ← classifyBranchNode? env cur then
+        for s in subs do
+          collect (fuel - 1) s
+        return
+      match cur with
+      | .const c _ => outSetRef.modify (·.insert c)
+      | .app f a =>
+        collect (fuel - 1) f
+        collect (fuel - 1) a
+      | .letE n t v b _ =>
+        collect (fuel - 1) v
+        if isSmallClosedExpr v then
+          collect (fuel - 1) (b.instantiate1 v)
+        else
+          withLocalDeclD n t fun x =>
+            collect (fuel - 1) (b.instantiate1 x)
+      | .proj _ _ s => collect (fuel - 1) s
+      | _ => pure ()
+    collect 4096 e
+    return (← outSetRef.get).toArray
+
+private def constActiveDirectConsts
+    (env : Environment)
+    (cacheRef : IO.Ref ActiveCallCache)
+    (stripRtMod? : Option Name)
+    (cur : Name)
+    (rawBody : Expr) : MetaM (Array Name) := do
+  let cache ← cacheRef.get
+  match stripRtMod? with
+  | none =>
+    if let some hit := cache.directPlain.get? cur then
+      return hit
+    let used ← exprActiveDirectConsts env rawBody
+    cacheRef.modify fun c => { c with directPlain := c.directPlain.insert cur used }
+    return used
+  | some rtMod =>
+    let keyMod :=
+      if rawBody.getUsedConstants.any (fun k => moduleOfConst env k == rtMod) then rtMod
+      else Name.anonymous
+    let key := (cur, keyMod)
+    if let some hit := cache.directStripped.get? key then
+      return hit
+    let stripped := stripInertBindings env keyMod (stripDeadPureLets rawBody)
+    let used ← exprActiveDirectConsts env stripped
+    cacheRef.modify fun c => { c with directStripped := c.directStripped.insert key used }
+    return used
+
+private partial def usesPredConstActiveCached
+    (env : Environment)
+    (cacheRef : IO.Ref ActiveCallCache)
     (stripRtMod? : Option Name)
     (pred : Name → Bool)
     (start : Name) : MetaM Bool := do
-  let mut queue : List Name := [start]
+  let mut queue : Array Name := #[start]
+  let mut qIdx : Nat := 0
   let mut seen : Std.HashSet Name := {}
-  while !queue.isEmpty do
-    let cur := queue.head!
-    queue := queue.tail!
+  while qIdx < queue.size do
+    let cur := queue[qIdx]!
+    qIdx := qIdx + 1
     if cur != start && pred cur then return true
     if seen.contains cur then continue
     seen := seen.insert cur
@@ -393,30 +529,81 @@ private partial def usesPredConstActive
       | some (.opaqueInfo ov) => some ov.value
       | _ => none
     if let some rawBody := body? then
-      let body := match stripRtMod? with
-        | some rtMod => stripInertBindings env rtMod rawBody
-        | none => rawBody
-      match ← exprContainsActiveTarget env pred body with
-      | none => return true
-      | some used =>
-        for u in used do
-          if !seen.contains u then
-            queue := u :: queue
+      let used ← constActiveDirectConsts env cacheRef stripRtMod? cur rawBody
+      if used.any pred then return true
+      for u in used do
+        if !seen.contains u then
+          queue := queue.push u
   return false
+
+private def usesAnyConstActiveCached
+    (env : Environment)
+    (cacheRef : IO.Ref ActiveCallCache)
+    (targets : Std.HashSet Name)
+    (start : Name) : MetaM Bool :=
+  usesPredConstActiveCached env cacheRef none (fun c => targets.contains c) start
 
 private def usesAnyConstActive
     (env : Environment)
     (targets : Std.HashSet Name)
-    (start : Name) : MetaM Bool :=
-  usesPredConstActive env none (fun c => targets.contains c) start
+    (start : Name) : MetaM Bool := do
+  let cacheRef ← IO.mkRef ({} : ActiveCallCache)
+  usesAnyConstActiveCached env cacheRef targets start
 
-private def usesPackageImplConstActive
+private def usesThrowTargetsActive
     (env : Environment)
+    (cacheRef : IO.Ref ActiveCallCache)
+    (throwTargets : Std.HashSet Name)
+    (start : Name) : MetaM Bool := do
+  if let some res := (← cacheRef.get).reachesThrow.get? start then
+    return res
+  let mut queue : Array Name := #[start]
+  let mut qIdx : Nat := 0
+  let mut seen : Std.HashSet Name := {}
+  while qIdx < queue.size do
+    let cur := queue[qIdx]!
+    qIdx := qIdx + 1
+    if cur != start && throwTargets.contains cur then
+      cacheRef.modify fun c => { c with reachesThrow := c.reachesThrow.insert start true }
+      return true
+    if seen.contains cur then continue
+    seen := seen.insert cur
+    if cur != start then
+      if let some cached := (← cacheRef.get).reachesThrow.get? cur then
+        if cached then
+          cacheRef.modify fun c => { c with reachesThrow := c.reachesThrow.insert start true }
+          return true
+        else
+          continue
+    let modName := moduleOfConst env cur
+    if !isProjectOrTestModule modName then continue
+    let body? := match env.find? cur with
+      | some (.defnInfo dv) => some dv.value
+      | some (.opaqueInfo ov) => some ov.value
+      | _ => none
+    if let some rawBody := body? then
+      let used ← constActiveDirectConsts env cacheRef none cur rawBody
+      if used.any throwTargets.contains then
+        cacheRef.modify fun c =>
+          { c with reachesThrow := c.reachesThrow.insert cur true |>.insert start true }
+        return true
+      for u in used do
+        if !seen.contains u then
+          queue := queue.push u
+  cacheRef.modify fun c =>
+    let m := seen.fold (init := c.reachesThrow) fun acc v =>
+      if throwTargets.contains v then acc else acc.insert v false
+    { c with reachesThrow := m }
+  return false
+
+private def usesPackageImplConstActiveCached
+    (env : Environment)
+    (cacheRef : IO.Ref ActiveCallCache)
     (pkgNs rtMod : Name)
     (start : Name) : MetaM Bool :=
   let ifaceMod := Name.str pkgNs "Interface"
   let implMod := Name.str pkgNs "Impl"
-  usesPredConstActive env (some rtMod)
+  usesPredConstActiveCached env cacheRef (some rtMod)
     (fun c =>
       let m := moduleOfConst env c
       (m == ifaceMod || m == implMod) && !isCompilerAux c)
@@ -425,47 +612,54 @@ private def usesPackageImplConstActive
 private partial def exprContainsAnyFVar (fvars : Std.HashSet FVarId) (e : Expr) : Bool :=
   e.hasAnyFVar (fun fv => fvars.contains fv)
 
-private partial def isStaticFalseProp (e : Expr) : MetaM Bool := do
-  let p := (← whnf e).consumeMData
-  if p.isConstOf ``False then return true
-  if p.isAppOfArity ``Not 1 then
-    let inner := (← whnf p.appArg!).consumeMData
-    if inner.isConstOf ``True then return true
-    if inner.isAppOfArity ``Eq 3 then
-      let args := inner.getAppArgs
+private partial def isStaticFalseProp (e : Expr) : MetaM Bool :=
+  runBoundedMeta false do
+    let p := (← whnf e).consumeMData
+    if p.isConstOf ``False then return true
+    if p.isAppOfArity ``Not 1 then
+      let inner := (← whnf p.appArg!).consumeMData
+      if inner.isConstOf ``True then return true
+      if inner.isAppOfArity ``Eq 3 then
+        let args := inner.getAppArgs
+        if args[1]! == args[2]! || (← isDefEq args[1]! args[2]!) then return true
+    if !p.hasFVar && !p.hasLooseBVars then
+      let decFalse ← runBoundedMeta false <|
+        withTheReader Core.Context (fun c => { c with maxRecDepth := min c.maxRecDepth 1024 }) do
+          let inst ← synthInstance (mkApp (mkConst ``Decidable) p)
+          let b ← withTransparency .all (whnf (mkApp2 (mkConst ``decide) p inst))
+          return b.consumeMData.isConstOf ``Bool.false
+      if decFalse then return true
+    return false
+
+private partial def isStaticTrueProp (e : Expr) : MetaM Bool :=
+  runBoundedMeta false do
+    let p := (← whnf e).consumeMData
+    if p.isConstOf ``True then return true
+    if p.isAppOfArity ``And 2 then
+      return (← isStaticTrueProp p.appFn!.appArg!) && (← isStaticTrueProp p.appArg!)
+    if p.isAppOfArity ``Not 1 then
+      return ← isStaticFalseProp p.appArg!
+    if p.isAppOfArity ``Eq 3 then
+      let args := p.getAppArgs
       if args[1]! == args[2]! || (← isDefEq args[1]! args[2]!) then return true
-  if !p.hasFVar && !p.hasLooseBVars then
-    try
-      let inst ← synthInstance (mkApp (mkConst ``Decidable) p)
-      let r ← withTransparency .all (whnf inst)
-      if r.consumeMData.getAppFn.consumeMData.isConstOf ``Decidable.isFalse then return true
-    catch _ => pure ()
-  return false
+    if !p.hasFVar && !p.hasLooseBVars then
+      let decTrue ← runBoundedMeta false <|
+        withTheReader Core.Context (fun c => { c with maxRecDepth := min c.maxRecDepth 1024 }) do
+          let inst ← synthInstance (mkApp (mkConst ``Decidable) p)
+          let b ← withTransparency .all (whnf (mkApp2 (mkConst ``decide) p inst))
+          return b.consumeMData.isConstOf ``Bool.true
+      if decTrue then return true
+    return false
 
-private partial def isStaticTrueProp (e : Expr) : MetaM Bool := do
-  let p := (← whnf e).consumeMData
-  if p.isConstOf ``True then return true
-  if p.isAppOfArity ``Not 1 then
-    return ← isStaticFalseProp p.appArg!
-  if p.isAppOfArity ``Eq 3 then
-    let args := p.getAppArgs
-    if args[1]! == args[2]! || (← isDefEq args[1]! args[2]!) then return true
-  if !p.hasFVar && !p.hasLooseBVars then
-    try
-      let inst ← synthInstance (mkApp (mkConst ``Decidable) p)
-      let r ← withTransparency .all (whnf inst)
-      if r.consumeMData.getAppFn.consumeMData.isConstOf ``Decidable.isTrue then return true
-    catch _ => pure ()
-  return false
-
-private def isNegationPair (a b : Expr) : MetaM Bool := do
-  let a' := (← whnf a).consumeMData
-  let b' := (← whnf b).consumeMData
-  if b'.isAppOfArity ``Not 1 then
-    if ← isDefEq a' b'.appArg! then return true
-  if a'.isAppOfArity ``Not 1 then
-    if ← isDefEq b' a'.appArg! then return true
-  return false
+private def isNegationPair (a b : Expr) : MetaM Bool :=
+  runBoundedMeta false do
+    let a' := (← whnf a).consumeMData
+    let b' := (← whnf b).consumeMData
+    if b'.isAppOfArity ``Not 1 then
+      if ← isDefEq a' b'.appArg! then return true
+    if a'.isAppOfArity ``Not 1 then
+      if ← isDefEq b' a'.appArg! then return true
+    return false
 
 private partial def isMeaningfulBoundaryProp
     (boundaryFVars assertBoundFVars : Std.HashSet FVarId)
@@ -1122,12 +1316,1025 @@ private def parseLogFile (logPath : System.FilePath) (expectedNonce? : Option St
       badLines := badLines + 1
   return (assumpPass, errPass, badLines, sawInit, sawClose)
 
+
+private def suiteCoversPackage (suiteKey : String) (dirPats : Array String) (pkg : Name) : Bool := Id.run do
+  let comps := pkg.components.map (·.toString)
+  let rest0 := match comps with
+    | "LeanSwe" :: tail => tail
+    | _ => []
+  let rest :=
+    if rest0.length >= 2 && rest0.getLast! == "Raw" then rest0.dropLast
+    else rest0
+  if rest.isEmpty then return false
+  let restSlash := "/".intercalate rest
+  let restUnder := "_".intercalate rest
+  let lastSeg := rest.getLast!
+  if !dirPats.contains s!"LeanSwe/{restSlash}/" then
+    return false
+  let normKey (s : String) : String :=
+    ((s.toLower.replace "_" "").replace "-" "")
+  let sk := suiteKey.toLower
+  let suiteMatchesPkg :=
+    sk == lastSeg.toLower ||
+    sk == restSlash.toLower ||
+    sk == restUnder.toLower ||
+    normKey sk == normKey lastSeg ||
+    normKey sk == normKey restUnder
+  if !suiteMatchesPkg then
+    return false
+  let wantFuzzRest := s!"fuzz/{restSlash.toLower}/"
+  let wantFuzzLast := s!"fuzz/{lastSeg.toLower}/"
+  return dirPats.any fun p =>
+    let pl := p.toLower
+    pl == wantFuzzRest || pl == wantFuzzLast ||
+      normKey pl == normKey wantFuzzRest || normKey pl == normKey wantFuzzLast
+
+private def parseFuzzCoveredPackages (repoDir : System.FilePath) (knownPkgs : Array Name) :
+    IO (Except String (Std.HashSet Name)) := do
+  let manifestPath := repoDir / "Fuzz" / "suites.json"
+  if !(← manifestPath.pathExists) then
+    return .ok {}
+  let raw ← IO.FS.readFile manifestPath
+  match Lean.Json.parse raw with
+  | .error err => return .error s!"MALFORMED_FUZZ_MANIFEST: {err}"
+  | .ok j =>
+    let .ok (.obj kvs) := j.getObjVal? "suites"
+      | return .error "MALFORMED_FUZZ_MANIFEST: missing 'suites' object"
+    let mut covered : Std.HashSet Name := {}
+    for p in kvs do
+      let .ok (.arr pathElems) := p.2.getObjVal? "paths"
+        | return .error s!"MALFORMED_FUZZ_MANIFEST: suite '{p.1}' missing 'paths' array"
+      let mut dirPats : Array String := #[]
+      for pe in pathElems do
+        let .str s := pe
+          | return .error s!"MALFORMED_FUZZ_MANIFEST: suite '{p.1}' path entry must be string"
+        if s.endsWith "/" then
+          dirPats := dirPats.push s
+      for pkg in knownPkgs do
+        if suiteCoversPackage p.1 dirPats pkg then
+          covered := covered.insert pkg
+    return .ok covered
+
+private def usesRuntimeFloat (env : Environment) (knownPkgs : Array Name) (pkgNs : Name) : Bool := Id.run do
+  for h : mi in [0 : env.header.moduleNames.size] do
+    let mName := env.header.moduleNames[mi]
+    if mName.getRoot == `LeanSwe && pkgNamespaceOfSpecWith knownPkgs mName == pkgNs &&
+        !isSpecOrRuntimeOrProofsModule mName && mName.getString! != "Model" then
+      if let some md := env.header.moduleData[mi]? then
+        for c in md.constants do
+          let used := match c with
+            | .defnInfo dv => dv.type.getUsedConstants ++ dv.value.getUsedConstants
+            | .opaqueInfo ov => ov.type.getUsedConstants ++ ov.value.getUsedConstants
+            | _ => c.type.getUsedConstants
+          if used.any fun u =>
+              let uMod := moduleOfConst env u
+              uMod.getRoot == `Init && !uMod.toString.startsWith "Init.Data.Float.Model" &&
+                (u == ``Float || u.toString.startsWith "Float.") &&
+                (u == ``Float || Lean.isExtern env u) then
+            return true
+  return false
+
+private def hasDirectOwnExternInPkg (env : Environment) (knownPkgs : Array Name) (pkgNs : Name) : Bool := Id.run do
+  for h : mi in [0 : env.header.moduleNames.size] do
+    let mName := env.header.moduleNames[mi]
+    if mName.getRoot == `LeanSwe && pkgNamespaceOfSpecWith knownPkgs mName == pkgNs &&
+        !isSpecOrRuntimeOrProofsModule mName && mName.getString! != "Model" then
+      if let some md := env.header.moduleData[mi]? then
+        if md.constants.any (fun c => Lean.isExtern env c.name) then
+          return true
+  return false
+
+private def buildTransitiveImportFn (env : Environment) : Name → Std.HashSet Name := Id.run do
+  let mut adj : Std.HashMap Name (Array Name) := {}
+  for h : i in [0 : env.header.moduleNames.size] do
+    let m := env.header.moduleNames[i]
+    if let some md := env.header.moduleData[i]? then
+      adj := adj.insert m (md.imports.map (·.module))
+  return fun root => Id.run do
+    let mut work : Array Name := adj.getD root #[]
+    let mut seen : Std.HashSet Name := {}
+    while !work.isEmpty do
+      let cur := work.back!
+      work := work.pop
+      if seen.contains cur then continue
+      seen := seen.insert cur
+      for nxt in adj.getD cur #[] do
+        if !seen.contains nxt then
+          work := work.push nxt
+    return seen
+
+private def kernelDefEq (a b : Expr) : MetaM Bool :=
+  runBoundedMeta false do
+    Meta.withNewMCtxDepth do
+      withTheReader Core.Context (fun c => { c with maxRecDepth := min c.maxRecDepth 1024 }) do
+        withTransparency .all <| isDefEq a b
+
+private def isDefEqPropAtom (e : Expr) : MetaM Bool := do
+  let p := e.consumeMData
+  if p.isAppOfArity ``Eq 3 then
+    if (p.getArg! 1).consumeMData == (p.getArg! 2).consumeMData then return true
+    return ← kernelDefEq (p.getArg! 1) (p.getArg! 2)
+  if p.isAppOfArity ``Iff 2 then
+    if (p.getArg! 0).consumeMData == (p.getArg! 1).consumeMData then return true
+    return ← kernelDefEq (p.getArg! 0) (p.getArg! 1)
+  return false
+
+private partial def exprAstNodesAtMost (limit : Nat) (e : Expr) : Option Nat :=
+  if limit == 0 then none
+  else
+    match e with
+    | .app f a => do
+      let nf ← exprAstNodesAtMost (limit - 1) f
+      let na ← exprAstNodesAtMost (limit - 1 - nf) a
+      some (1 + nf + na)
+    | .lam _ t b _ | .forallE _ t b _ => do
+      let nt ← exprAstNodesAtMost (limit - 1) t
+      let nb ← exprAstNodesAtMost (limit - 1 - nt) b
+      some (1 + nt + nb)
+    | .letE _ t v b _ => do
+      let nt ← exprAstNodesAtMost (limit - 1) t
+      let nv ← exprAstNodesAtMost (limit - 1 - nt) v
+      let nb ← exprAstNodesAtMost (limit - 1 - nt - nv) b
+      some (1 + nt + nv + nb)
+    | .mdata _ b | .proj _ _ b => do
+      let nb ← exprAstNodesAtMost (limit - 1) b
+      some (1 + nb)
+    | _ => some 1
+
+private def stripOptParamType (t : Expr) : Expr :=
+  let c := t.consumeMData
+  if c.isAppOfArity ``optParam 2 then c.appFn!.appArg! else t
+
+private def constHasTypeToTypeBinder (env : Environment) (fnName : Name) : Bool := Id.run do
+  let some (.defnInfo dv) := env.find? fnName | return false
+  let isTypeToType (e : Expr) : Bool :=
+    match e.consumeMData with
+    | .forallE _ (.sort (.succ .zero)) (.sort (.succ .zero)) _ => true
+    | _ => false
+  let mut t := dv.type.consumeMData
+  while t.isForall do
+    if let .forallE _ dom body _ := t then
+      if isTypeToType dom then return true
+      t := body.consumeMData
+    else
+      break
+  return false
+
+private partial def isProvablyInhabitedDataType (env : Environment) (fuel : Nat) (ty : Expr) : MetaM Bool := do
+  if fuel == 0 then return false
+  if ← isProp ty then return false
+  let c := ty.consumeMData
+  if c == .sort (.succ .zero) then return true
+  if let .forallE _ (.sort (.succ .zero)) (.sort (.succ .zero)) _ := c then return true
+  let l0 := [Level.succ Level.zero]
+  if (← withLCtx {} #[] (runBoundedMeta none (some <$> synthInstance (mkApp (mkConst ``Inhabited l0) ty)))).isSome then
+    return true
+  if (← withLCtx {} #[] (runBoundedMeta none (some <$> synthInstance (mkApp (mkConst ``Nonempty l0) ty)))).isSome then
+    return true
+  let w := (← runBoundedMeta ty (whnf ty)).consumeMData
+  if w.isConstOf ``Empty || w.isConstOf ``PEmpty then return false
+  if w.isForall then
+    return ← forallTelescope w fun _ ret => isProvablyInhabitedDataType env (fuel - 1) ret
+  let .const indName lvls := w.getAppFn.consumeMData | return false
+  let some (.inductInfo iv) := env.find? indName | return false
+  if iv.numIndices > 0 || iv.ctors.isEmpty then return false
+  let indArgs := w.getAppArgs
+  if indArgs.size < iv.numParams then return false
+  let params := indArgs.extract 0 iv.numParams
+  for ctorName in iv.ctors do
+    if let some (.ctorInfo _) := env.find? ctorName then
+      let ctorApp := mkAppN (mkConst ctorName lvls) params
+      let ctorTy ← inferType ctorApp
+      let okCtor ← forallTelescope ctorTy fun fxs _ => do
+        for fx in fxs do
+          let fTy ← inferType fx
+          if ← isProp fTy then
+            if !(← isStaticTrueProp fTy) then return false
+          else
+            if !(← isProvablyInhabitedDataType env (fuel - 1) fTy) then return false
+        return true
+      if okCtor then return true
+  return false
+
+private def areOuterDataBindersInhabited (env : Environment) (xs : Array Expr) : MetaM Bool := do
+  let mut subst : Array (Expr × Expr) := #[]
+  for x in xs do
+    let xTyRaw ← inferType x
+    if ← isProp xTyRaw then continue
+    let xTy := if subst.isEmpty then xTyRaw else xTyRaw.replace fun u =>
+      (subst.find? (fun (fr, _) => fr == u)).map Prod.snd
+    let xc := xTy.consumeMData
+    if xc == .sort (.succ .zero) then
+      subst := subst.push (x, mkConst ``Nat)
+    else if let .const clsName _ := xc.getAppFn.consumeMData then
+      if Lean.isClass env clsName then
+        match ← withLCtx {} #[] (runBoundedMeta none (some <$> synthInstance xTy)) with
+        | some inst => subst := subst.push (x, inst)
+        | none => return false
+      else if !(← isProvablyInhabitedDataType env 8 xTy) then
+        return false
+    else if !(← isProvablyInhabitedDataType env 8 xTy) then
+      return false
+  return true
+
+private def isAllowedImplicitEtaDomain (env : Environment) (dom : Expr) : Bool :=
+  let c := dom.consumeMData
+  if c == .sort (.succ .zero) then true
+  else if let .forallE _ (.sort (.succ .zero)) (.sort (.succ .zero)) _ := c then true
+  else
+    match c.getAppFn.consumeMData with
+    | .const clsName _ => Lean.isClass env clsName
+    | _ => false
+
+private def checkBareConstArg
+    (env : Environment)
+    (outerAllowedFVars : Std.HashSet FVarId)
+    (allowId : Bool)
+    (rawArg : Expr) : MetaM (Option Name) := do
+  let clean := rawArg.consumeMData
+  if allowId && clean.isAppOfArity ``id 1 then
+    return some ``id
+  let checkAppBody (allowedFVars : Std.HashSet FVarId) (body : Expr) : Option Name := Id.run do
+    let bc := body.consumeMData
+    let .const fn _ := bc.getAppFn.consumeMData | return none
+    if isCompilerAux fn then return none
+    let mut seenFVs : Std.HashSet FVarId := {}
+    for a in bc.getAppArgs do
+      let ac := a.consumeMData
+      let .fvar fv := ac | return none
+      if !allowedFVars.contains fv || seenFVs.contains fv then
+        return none
+      seenFVs := seenFVs.insert fv
+    return some fn
+  if clean.isLambda then
+    lambdaTelescope clean fun lxs body => do
+      let mut allowed := outerAllowedFVars
+      for lx in lxs do
+        let bi ← lx.fvarId!.getBinderInfo
+        if bi == .default then return none
+        let dom ← inferType lx
+        if !isAllowedImplicitEtaDomain env dom then return none
+        allowed := allowed.insert lx.fvarId!
+      return checkAppBody allowed body
+  else
+    return checkAppBody outerAllowedFVars clean
+
+private partial def collectDirectStructFields (env : Environment) (e : Expr) (acc : Std.HashSet (Name × Nat) := {}) :
+    Std.HashSet (Name × Nat) :=
+  let c := e.consumeMData
+  match c with
+  | .proj stName idx inner =>
+    collectDirectStructFields env inner (acc.insert (stName, idx))
+  | .const fn _ =>
+    if env.isProjectionFn fn && fn.isStr then
+      let stName := fn.getPrefix
+      if Lean.isStructure env stName then
+        let fldName := Name.mkSimple fn.getString!
+        match (Lean.getStructureFields env stName).findIdx? (· == fldName) with
+        | some idx => acc.insert (stName, idx)
+        | none => acc
+      else acc
+    else acc
+  | .app f a =>
+    collectDirectStructFields env a (collectDirectStructFields env f acc)
+  | .lam _ t b _ | .forallE _ t b _ =>
+    collectDirectStructFields env b (collectDirectStructFields env t acc)
+  | .letE _ t v b _ =>
+    collectDirectStructFields env b (collectDirectStructFields env v (collectDirectStructFields env t acc))
+  | .mdata _ inner =>
+    collectDirectStructFields env inner acc
+  | _ => acc
+
+private def collectUsedStructFieldsTransitive
+    (env : Environment)
+    (allowedMods : Std.HashSet Name)
+    (skipConsts : Std.HashSet Name)
+    (rootFn : Name) : Std.HashSet (Name × Nat) := Id.run do
+  let mut work : Array Name := #[rootFn]
+  let mut seen : Std.HashSet Name := {}
+  let mut fields : Std.HashSet (Name × Nat) := {}
+  while !work.isEmpty do
+    let cur := work.back!
+    work := work.pop
+    if seen.contains cur || skipConsts.contains cur then continue
+    seen := seen.insert cur
+    if cur != rootFn && !allowedMods.contains (moduleOfConst env cur) then continue
+    if let some (.defnInfo dv) := env.find? cur then
+      fields := collectDirectStructFields env dv.value fields
+      for u in dv.value.getUsedConstants do
+        if !seen.contains u && !skipConsts.contains u && allowedMods.contains (moduleOfConst env u) then
+          work := work.push u
+  return fields
+
+private def collectCoveredMkApiImplHelpers
+    (env : Environment)
+    (implMod mkApiFn : Name)
+    (execFields : Std.HashSet (Name × Nat)) : MetaM (Std.HashSet Name) := do
+  let some (.defnInfo dv) := env.find? mkApiFn | return {}
+  lambdaTelescope dv.value fun _ body => do
+    let bc := body.consumeMData
+    let .const ctorName _ := bc.getAppFn.consumeMData | return {}
+    let some (.ctorInfo ci) := env.find? ctorName | return {}
+    let stName := ci.induct
+    let cArgs := bc.getAppArgs
+    let mut helpers : Std.HashSet Name := {}
+    for fldIdx in [0 : ci.numFields] do
+      if execFields.contains (stName, fldIdx) && ci.numParams + fldIdx < cArgs.size then
+        for u in cArgs[ci.numParams + fldIdx]!.getUsedConstants do
+          if moduleOfConst env u == implMod && !isCompilerAux u then
+            helpers := helpers.insert u
+    return helpers
+
+private def constTransitivelyTouchesSweImplOrIfaceCached
+    (env : Environment)
+    (cleanRef : IO.Ref (Std.HashSet Name))
+    (start : Name) : IO Bool := do
+  let clean0 ← cleanRef.get
+  if clean0.contains start then return false
+  let mut work : Array Name := #[start]
+  let mut seen : Std.HashSet Name := {}
+  while !work.isEmpty do
+    let cur := work.back!
+    work := work.pop
+    if seen.contains cur || clean0.contains cur then continue
+    seen := seen.insert cur
+    let m := moduleOfConst env cur
+    if m.getRoot == `LeanSwe && m.isStr && (m.getString! == "Interface" || m.getString! == "Impl") then
+      return true
+    if !isProjectModule m then continue
+    if let some cinfo := env.find? cur then
+      let deps : Array Name := match cinfo with
+        | .defnInfo dv => dv.type.getUsedConstants ++ dv.value.getUsedConstants
+        | .opaqueInfo ov => ov.type.getUsedConstants ++ ov.value.getUsedConstants
+        | _ => cinfo.type.getUsedConstants
+      for u in deps do
+        if !seen.contains u && !clean0.contains u then
+          work := work.push u
+  cleanRef.modify fun s => seen.fold (init := s) fun acc v => acc.insert v
+  return false
+
+private def isCapabilityBundleConst
+    (env : Environment)
+    (knownPkgs : Array Name)
+    (pkg cName : Name)
+    (ty : Expr) : MetaM Bool := do
+  if cName != Name.str pkg "defaultApi" && cName != Name.str pkg "defaultOps" then
+    return false
+  forallTelescope ty fun fxs ret => do
+    for fx in fxs do
+      if (← fx.fvarId!.getBinderInfo) == .default then return false
+    let rc := ret.consumeMData
+    if rc.isAppOfArity ``IO 1 || rc.isAppOfArity ``BaseIO 1 || rc.isAppOfArity ``EIO 2 then
+      return false
+    let rw := (← whnf ret).consumeMData
+    let .const stName _ := rw.getAppFn.consumeMData | return false
+    if !Lean.isStructure env stName then return false
+    return pkgNamespaceOfSpecWith knownPkgs (moduleOfConst env stName) == pkg
+
+private def isEffectfulInterfaceOp (env : Environment) (ty : Expr) (cName : Name) : MetaM Bool := do
+  if constHasTypeToTypeBinder env cName then return true
+  forallTelescope ty fun fxs ret => do
+    let rc := ret.consumeMData
+    if rc.isAppOfArity ``IO 1 || rc.isAppOfArity ``BaseIO 1 ||
+        rc.isAppOfArity ``EIO 2 || rc.isAppOfArity ``EStateM 3 ||
+        rc.isAppOfArity ``StateT 3 || rc.isAppOfArity ``StateM 2 then
+      return true
+    if let .fvar fv := rc.getAppFn.consumeMData then
+      if fxs.any (·.fvarId! == fv) then return true
+    let rw := (← whnf ret).consumeMData
+    return rw.isAppOfArity ``EIO 2 || rw.isAppOfArity ``EStateM 3
+
+private def checkWfNotVacuous (env : Environment) (sTy : Expr) (wfFn : Name) : MetaM Bool := do
+  let some (.defnInfo _) := env.find? wfFn | return false
+  if !(← isProvablyInhabitedDataType env 8 sTy) then return false
+  withLocalDeclD `_wfState sTy fun s => do
+    let app := mkApp (mkConst wfFn) s
+    let w ← runBoundedMeta app (withTransparency .all (whnf app))
+    if w.consumeMData.isConstOf ``Bool.false then return false
+    let eqTrue := mkApp3 (mkConst ``Eq [Level.succ Level.zero]) (mkConst ``Bool) app (mkConst ``Bool.true)
+    if ← isStaticFalseProp eqTrue then return false
+    return true
+
+private def isTrivialPayloadType (ty : Expr) : MetaM Bool := do
+  if ← isProp ty then return true
+  let w := (← runBoundedMeta ty (whnf ty)).consumeMData
+  return w.isConstOf ``Unit || w.isConstOf ``PUnit || w.isConstOf ``Empty || w.isConstOf ``PEmpty
+
+private partial def stripSyntacticReflAtoms (e : Expr) : Expr :=
+  let c := e.consumeMData
+  if c.isAppOfArity ``Eq 3 && (c.getArg! 1).consumeMData == (c.getArg! 2).consumeMData then
+    mkConst ``True
+  else if c.isAppOfArity ``Iff 2 && (c.getArg! 0).consumeMData == (c.getArg! 1).consumeMData then
+    mkConst ``True
+  else
+    match e with
+    | .app f a => .app (stripSyntacticReflAtoms f) (stripSyntacticReflAtoms a)
+    | .lam n t b bi => .lam n (stripSyntacticReflAtoms t) (stripSyntacticReflAtoms b) bi
+    | .forallE n t b bi => .forallE n (stripSyntacticReflAtoms t) (stripSyntacticReflAtoms b) bi
+    | .letE n t v b nd => .letE n (stripSyntacticReflAtoms t) (stripSyntacticReflAtoms v) (stripSyntacticReflAtoms b) nd
+    | .mdata md b => .mdata md (stripSyntacticReflAtoms b)
+    | .proj tn idx s => .proj tn idx (stripSyntacticReflAtoms s)
+    | _ => e
+
+private partial def reduceMatchersBounded (fuel : Nat) (e : Expr) : MetaM Expr := do
+  if fuel == 0 then return e
+  let b := (← runBoundedMeta e (Core.betaReduce e)).headBeta.consumeMData
+  match ← runBoundedMeta ReduceMatcherResult.notMatcher (Meta.reduceMatcher? b) with
+  | .reduced b' => reduceMatchersBounded (fuel - 1) b'
+  | _ =>
+    match b with
+    | .app f a =>
+      let f' ← reduceMatchersBounded (fuel - 1) f
+      let a' ← reduceMatchersBounded (fuel - 1) a
+      let appE := (Expr.app f' a').headBeta
+      match ← runBoundedMeta ReduceMatcherResult.notMatcher (Meta.reduceMatcher? appE) with
+      | .reduced r => reduceMatchersBounded (fuel - 1) r
+      | _ => return appE
+    | .lam n t body bi =>
+      withLocalDecl n bi t fun x => do
+        let body' ← reduceMatchersBounded (fuel - 1) (body.instantiate1 x)
+        mkLambdaFVars #[x] body'
+    | .forallE n t body bi =>
+      withLocalDecl n bi t fun x => do
+        let body' ← reduceMatchersBounded (fuel - 1) (body.instantiate1 x)
+        mkForallFVars #[x] body'
+    | .letE _ _ v body _ =>
+      if !body.hasLooseBVar 0 then
+        reduceMatchersBounded (fuel - 1) (body.lowerLooseBVars 1 1)
+      else if isSmallClosedExpr v then
+        reduceMatchersBounded (fuel - 1) (body.instantiate1 v)
+      else
+        return b
+    | _ => return b
+
+private def expandModelPropRels (env : Environment) (modelMods : Std.HashSet Name) (extraFn : Name) (e : Expr) : MetaM Expr := do
+  let shouldUnfold (fn : Name) : Bool :=
+    fn == extraFn ||
+      (modelMods.contains (moduleOfConst env fn) && !isCompilerAux fn &&
+        match env.find? fn with
+        | some (.defnInfo dv) =>
+          dv.type.getForallBody.consumeMData == .sort .zero && (exprAstNodesAtMost 4096 dv.value).isSome
+        | _ => false)
+  let d ← runBoundedMeta e (Meta.deltaExpand e shouldUnfold (allowOpaque := false))
+  let r ← reduceMatchersBounded 16 d
+  return stripSyntacticReflAtoms r
+
+private def checkWrappedPayloadSensitive
+    (env : Environment)
+    (modelMods : Std.HashSet Name)
+    (mkPred : Expr → MetaM Expr)
+    (unfoldFn : Name)
+    (ty : Expr) : MetaM Bool := do
+  let ow := (← runBoundedMeta ty (whnf ty)).consumeMData
+  if ow.isAppOfArity ``Except 2 then
+    let lvls := ow.getAppFn.consumeMData.constLevels!
+    let errTy := ow.appFn!.appArg!
+    let okTy := ow.appArg!
+    if !(← isTrivialPayloadType okTy) then
+      return ← withLocalDeclD `_refOk1 okTy fun v1 =>
+        withLocalDeclD `_refOk2 okTy fun v2 => do
+          let pOk1 ← mkPred (mkApp3 (mkConst ``Except.ok lvls) errTy okTy v1)
+          let pOk2 ← mkPred (mkApp3 (mkConst ``Except.ok lvls) errTy okTy v2)
+          let expOk1 ← expandModelPropRels env modelMods unfoldFn pOk1
+          if !expOk1.hasAnyFVar (· == v1.fvarId!) then return false
+          if (← isDefEqPropAtom expOk1) || (← isStaticTrueProp expOk1) then return false
+          if ← kernelDefEq pOk1 pOk2 then return false
+          return true
+  else if ow.isAppOfArity ``Option 1 then
+    let lvls := ow.getAppFn.consumeMData.constLevels!
+    let valTy := ow.appArg!
+    if !(← isTrivialPayloadType valTy) then
+      return ← withLocalDeclD `_refSome1 valTy fun v1 =>
+        withLocalDeclD `_refSome2 valTy fun v2 => do
+          let pSm1 ← mkPred (mkApp2 (mkConst ``Option.some lvls) valTy v1)
+          let pSm2 ← mkPred (mkApp2 (mkConst ``Option.some lvls) valTy v2)
+          let expSm1 ← expandModelPropRels env modelMods unfoldFn pSm1
+          if !expSm1.hasAnyFVar (· == v1.fvarId!) then return false
+          if (← isDefEqPropAtom expSm1) || (← isStaticTrueProp expSm1) then return false
+          if ← kernelDefEq pSm1 pSm2 then return false
+          return true
+  return true
+
+private partial def hasVacuousInputBranch (fuel : Nat) (outFV : FVarId) (isConjPart : Bool) (e : Expr) : MetaM Bool := do
+  if fuel == 0 then return false
+  let c := e.consumeMData
+  if !c.hasAnyFVar (· == outFV) then
+    return true
+  if c.isAppOfArity ``And 2 then
+    return (← hasVacuousInputBranch (fuel - 1) outFV true c.appFn!.appArg!) ||
+      (← hasVacuousInputBranch (fuel - 1) outFV true c.appArg!)
+  if c.isAppOfArity ``ite 5 then
+    let cond := c.getArg! 1
+    let tBr := c.getArg! 3
+    let eBr := c.getArg! 4
+    if !cond.hasAnyFVar (· == outFV) then
+      return (← hasVacuousInputBranch (fuel - 1) outFV isConjPart tBr) ||
+        (← hasVacuousInputBranch (fuel - 1) outFV isConjPart eBr)
+  if c.isAppOfArity ``dite 5 then
+    let cond := c.getArg! 1
+    let tLam := c.getArg! 3
+    let eLam := c.getArg! 4
+    if !cond.hasAnyFVar (· == outFV) then
+      let badT ← withLocalDeclD `_ditePos cond fun hp =>
+        hasVacuousInputBranch (fuel - 1) outFV isConjPart ((Expr.app tLam hp).headBeta)
+      if badT then return true
+      let negCond := mkApp (mkConst ``Not) cond
+      return ← withLocalDeclD `_diteNeg negCond fun hn =>
+        hasVacuousInputBranch (fuel - 1) outFV isConjPart ((Expr.app eLam hn).headBeta)
+  if let .forallE n dom body bi := c then
+    if !dom.hasAnyFVar (· == outFV) then
+      if ← isProp dom then
+        if !isConjPart && !(← isStaticTrueProp dom) then
+          return true
+      return ← withLocalDecl n bi dom fun hx =>
+        hasVacuousInputBranch (fuel - 1) outFV isConjPart (body.instantiate1 hx)
+  return ← isDefEqPropAtom c
+
+private partial def collectAllInputImplicationGuards (fuel : Nat) (outFV : FVarId) (e : Expr) :
+    MetaM (Option (Array Expr)) := do
+  if fuel == 0 then return none
+  let c := e.consumeMData
+  if c.isAppOfArity ``And 2 then
+    let some gl ← collectAllInputImplicationGuards (fuel - 1) outFV c.appFn!.appArg! | return none
+    let some gr ← collectAllInputImplicationGuards (fuel - 1) outFV c.appArg! | return none
+    return some (gl ++ gr)
+  if let .forallE _ dom _ _ := c then
+    if !dom.hasAnyFVar (· == outFV) && !dom.hasLooseBVars then
+      if ← isProp dom then
+        return some #[dom]
+  return none
+
+private def groundSamplesForType (ty : Expr) : MetaM (Option (Array Expr)) := do
+  let w := (← runBoundedMeta ty (whnf ty)).consumeMData
+  let mkNatLitTyped (t : Expr) (n : Nat) : MetaM (Option Expr) := do
+    let instTy := mkApp2 (mkConst ``OfNat [Level.zero]) t (mkRawNatLit n)
+    match ← withLCtx {} #[] (runBoundedMeta none (some <$> synthInstance instTy)) with
+    | some inst => pure (some (mkApp3 (mkConst ``OfNat.ofNat [Level.zero]) t (mkRawNatLit n) inst))
+    | none => pure none
+  if w.isConstOf ``Nat || w.isConstOf ``Int ||
+      w.isConstOf ``UInt8 || w.isConstOf ``UInt16 ||
+      w.isConstOf ``UInt32 || w.isConstOf ``UInt64 || w.isConstOf ``USize then
+    if let some v0 ← mkNatLitTyped w 0 then
+      if let some v1 ← mkNatLitTyped w 1 then
+        if let some v2 ← mkNatLitTyped w 2 then
+          return some #[v0, v1, v2]
+  if w.isConstOf ``String then
+    return some #[mkStrLit "", mkStrLit "a", mkStrLit "b"]
+  if w.isConstOf ``Bool then
+    return some #[mkConst ``Bool.false, mkConst ``Bool.true]
+  return none
+
+private def checkPureAllowedNonTrivial
+    (env : Environment)
+    (modelMods : Std.HashSet Name)
+    (specSubst : Expr)
+    (specFn : Name)
+    (inTysSubst : Array Expr)
+    (outTySubst : Expr) : MetaM Bool := do
+  let mut allGroundSamples : Option (Array (Array Expr)) := some #[]
+  for inTy in inTysSubst do
+    if let some arr := allGroundSamples then
+      match ← groundSamplesForType inTy with
+      | some sVals => allGroundSamples := some (arr.push sVals)
+      | none => allGroundSamples := none
+  let rec withInputs (idx : Nat) (acc : Array Expr) : MetaM Bool := do
+    if h : idx < inTysSubst.size then
+      withLocalDeclD (Name.num `_refIn idx) inTysSubst[idx] fun v =>
+        withInputs (idx + 1) (acc.push v)
+    else
+      withLocalDeclD `_refOut1 outTySubst fun y1 =>
+      withLocalDeclD `_refOut2 outTySubst fun y2 => do
+        let p1 := (mkAppN specSubst (acc.push y1)).headBeta
+        let p2 := (mkAppN specSubst (acc.push y2)).headBeta
+        let exp1 ← expandModelPropRels env modelMods specFn p1
+        if !exp1.hasAnyFVar (· == y1.fvarId!) then return false
+        if ← hasVacuousInputBranch 32 y1.fvarId! false exp1 then return false
+        for k in [0 : inTysSubst.size] do
+          if !(← isTrivialPayloadType inTysSubst[k]!) then
+            if !exp1.hasAnyFVar (· == acc[k]!.fvarId!) then return false
+        if ← kernelDefEq p1 p2 then return false
+        let u1 := (← runBoundedMeta p1 (Meta.deltaExpand p1 (· == specFn) (allowOpaque := false))).headBeta
+        if (← isDefEqPropAtom p1) || (← isStaticTrueProp p1) ||
+            (← isDefEqPropAtom u1) || (← isStaticTrueProp u1) ||
+            (← isDefEqPropAtom exp1) || (← isStaticTrueProp exp1) then
+          return false
+        if let some guards ← collectAllInputImplicationGuards 16 y1.fvarId! exp1 then
+          if let some sampleGrid := allGroundSamples then
+            if !sampleGrid.isEmpty then
+              for si in [0 : 3] do
+                let sampleInputs := sampleGrid.map fun sVals => sVals[Nat.min si (sVals.size - 1)]!
+                let substIn (g : Expr) : Expr :=
+                  g.replace fun u => Id.run do
+                    for k in [0 : acc.size] do
+                      if u == acc[k]! then return some sampleInputs[k]!
+                    return none
+                let mut anyGuardPossible := false
+                for g in guards do
+                  if !(← isStaticFalseProp (substIn g)) then
+                    anyGuardPossible := true
+                    break
+                if !anyGuardPossible then
+                  return false
+        let u1w := (← runBoundedMeta u1 (whnf u1)).consumeMData
+        if u1w.isAppOfArity ``Or 2 then
+          if ← isNegationPair u1w.appFn!.appArg! u1w.appArg! then return false
+        if outTySubst.consumeMData.isConstOf ``Bool then
+          let pT := (mkAppN specSubst (acc.push (mkConst ``Bool.true))).headBeta
+          let pF := (mkAppN specSubst (acc.push (mkConst ``Bool.false))).headBeta
+          if (← isStaticTrueProp pT) && (← isStaticTrueProp pF) then return false
+        if !(← checkWrappedPayloadSensitive env modelMods (fun y => pure (mkAppN specSubst (acc.push y)).headBeta) specFn outTySubst) then
+          return false
+        return true
+  withInputs 0 #[]
+
+private def checkStepAllowedNonTrivial
+    (env : Environment)
+    (modelMods : Std.HashSet Name)
+    (allowedArg : Expr)
+    (allowedFn : Name)
+    (sTy reqTy outTy : Expr) : MetaM Bool := do
+  withLocalDeclD `_stPre sTy fun s =>
+  withLocalDeclD `_stReq reqTy fun req =>
+  withLocalDeclD `_stOut1 outTy fun o1 =>
+  withLocalDeclD `_stOut2 outTy fun o2 =>
+  withLocalDeclD `_stPost1 sTy fun s1' =>
+  withLocalDeclD `_stPost2 sTy fun s2' => do
+    let p1 := (mkApp4 allowedArg s req o1 s1').headBeta
+    let p2 := (mkApp4 allowedArg s req o2 s2').headBeta
+    let exp1 ← expandModelPropRels env modelMods allowedFn p1
+    if !exp1.hasAnyFVar (· == o1.fvarId!) && !exp1.hasAnyFVar (· == s1'.fvarId!) then
+      return false
+    if !(← isTrivialPayloadType reqTy) then
+      if !exp1.hasAnyFVar (· == req.fvarId!) then return false
+    if ← kernelDefEq p1 p2 then return false
+    let u1 := (← runBoundedMeta p1 (Meta.deltaExpand p1 (· == allowedFn) (allowOpaque := false))).headBeta
+    if (← isDefEqPropAtom p1) || (← isStaticTrueProp p1) ||
+        (← isDefEqPropAtom u1) || (← isStaticTrueProp u1) ||
+        (← isDefEqPropAtom exp1) || (← isStaticTrueProp exp1) then
+      return false
+    let u1w := (← runBoundedMeta u1 (whnf u1)).consumeMData
+    if u1w.isAppOfArity ``Or 2 then
+      if ← isNegationPair u1w.appFn!.appArg! u1w.appArg! then return false
+    if !(← checkWrappedPayloadSensitive env modelMods (fun o => pure (mkApp4 allowedArg s req o s1').headBeta) allowedFn outTy) then
+      return false
+    let ow := (← runBoundedMeta outTy (whnf outTy)).consumeMData
+    if let .const outIndName outLvls := ow.getAppFn.consumeMData then
+      if isProjectModule (moduleOfConst env outIndName) then
+        if let some (.inductInfo iv) := env.find? outIndName then
+          if iv.numParams == 0 && iv.numIndices == 0 then
+            for ctorName in iv.ctors do
+              if let some (.ctorInfo ci) := env.find? ctorName then
+                if ci.numFields == 1 then
+                  let ctorConst := mkConst ctorName outLvls
+                  let cTy ← inferType ctorConst
+                  if let .forallE _ fldTy _ _ := (← runBoundedMeta cTy (whnf cTy)).consumeMData then
+                    if !(← checkWrappedPayloadSensitive env modelMods
+                        (fun inner => pure (mkApp4 allowedArg s req (mkApp ctorConst inner) s1').headBeta)
+                        allowedFn fldTy) then
+                      return false
+    return true
+
+private def checkRefinesModelTheorem
+    (env : Environment)
+    (transImpsOf : Name → Std.HashSet Name)
+    (knownPkgs : Array Name)
+    (pkg : Name)
+    (modelMods : Std.HashSet Name)
+    (axCacheIn : AxCache) : MetaM (Array String × AxCache) := do
+  let mut errs : Array String := #[]
+  let mut axCache := axCacheIn
+  let topProofMod := Name.str pkg "Proofs"
+  let thmName := Name.str topProofMod "refines_model"
+  let ifaceMod := Name.str pkg "Interface"
+  let implMod := Name.str pkg "Impl"
+
+  for mMod in modelMods do
+    for imp in transImpsOf mMod do
+      if imp.getRoot == `LeanSwe && imp.isStr && (imp.getString! == "Interface" || imp.getString! == "Impl") then
+        errs := errs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {mMod} transitively imports {imp}"
+
+  let some (.thmInfo tv) := env.find? thmName
+    | return (#[s!"MISSING_REFINES_MODEL: {pkg} lacks public theorem {thmName}"], axCache)
+  if isPrivateName thmName || moduleOfConst env thmName != topProofMod then
+    return (#[s!"MISSING_REFINES_MODEL: {thmName} must be a public theorem in {topProofMod}"], axCache)
+
+  let (badAx?, nextAx) ← checkAxiomsOk axCache thmName
+  axCache := nextAx
+  if let some badAx := badAx? then
+    errs := errs.push s!"UNALLOWED_AXIOM_IN_THEOREM: {thmName} uses [{badAx}]"
+
+  let coveredPureOpsRef ← IO.mkRef ({} : Std.HashSet Name)
+  let coveredStepOpsRef ← IO.mkRef ({} : Std.HashSet Name)
+  let coveredExecFieldsRef ← IO.mkRef ({} : Std.HashSet (Name × Nat))
+  let coveredImplHelpersRef ← IO.mkRef ({} : Std.HashSet Name)
+  let coveredCapBuildersRef ← IO.mkRef ({} : Std.HashSet Name)
+  let safeModelConstsRef ← IO.mkRef ({} : Std.HashSet Name)
+
+  let conjErrs ← forallTelescope tv.type fun outerXs topBody => do
+    let mut localErrs : Array String := #[]
+    for ox in outerXs do
+      if ← isProp (← inferType ox) then
+        return #[s!"CONDITIONAL_REFINES_MODEL: {thmName} has Prop hypothesis"]
+    if !outerXs.isEmpty then
+      if !(← areOuterDataBindersInhabited env outerXs) then
+        return #[s!"UNINHABITED_BINDER_IN_REFINES_MODEL: {thmName} has uninhabited outer binder"]
+      return #[s!"INVALID_REFINES_ATOM_BINDER: {thmName} must bind typeclass parameters per conjunct, not at outer theorem level"]
+
+    for conj in collectConclusionAtoms topBody do
+      let atomErrs ← forallTelescope conj fun axs atomBody => do
+        let mut aErrs : Array String := #[]
+        let mut typeFVars : Array Expr := #[]
+        let mut instBinds : Array (Expr × Expr) := #[]
+        let mut allowedAtomFVs : Std.HashSet FVarId := {}
+        for ax in axs do
+          let axTy ← inferType ax
+          if ← isProp axTy then
+            return #[s!"CONDITIONAL_REFINES_MODEL: {thmName} conjunct has Prop hypothesis"]
+          let bi ← ax.fvarId!.getBinderInfo
+          let axTyClean := axTy.consumeMData
+          if (bi == .implicit || bi == .strictImplicit) && axTyClean == .sort (.succ .zero) then
+            typeFVars := typeFVars.push ax
+            allowedAtomFVs := allowedAtomFVs.insert ax.fvarId!
+          else if bi == .instImplicit then
+            match axTyClean.getAppFn.consumeMData with
+            | .const clsName _ =>
+              if Lean.isClass env clsName &&
+                  axTyClean.getAppArgs.all (fun ca => typeFVars.any (· == ca.consumeMData)) &&
+                  !axTyClean.getAppArgs.isEmpty then
+                instBinds := instBinds.push (ax, axTyClean)
+                allowedAtomFVs := allowedAtomFVs.insert ax.fvarId!
+              else
+                return #[s!"INVALID_REFINES_ATOM_BINDER: {thmName} has unsupported binder {axTyClean}"]
+            | _ =>
+              return #[s!"INVALID_REFINES_ATOM_BINDER: {thmName} has non-class binder {axTyClean}"]
+          else
+            return #[s!"INVALID_REFINES_ATOM_BINDER: {thmName} has explicit or non-Type binder in conjunct"]
+
+        let mut substPairs : Array (Expr × Expr) := #[]
+        let candidateWitnessTys : Array Expr := #[mkConst ``String, mkConst ``Nat, mkConst ``Bool, mkConst ``Int]
+        for tfv in typeFVars do
+          let mut foundWitness? : Option (Expr × Array (Expr × Expr)) := none
+          for candTy in candidateWitnessTys do
+            if foundWitness?.isSome then break
+            let trialSubst := substPairs.push (tfv, candTy)
+            let mut allInstOk := true
+            let mut instSubst : Array (Expr × Expr) := #[]
+            for (instVar, instTy) in instBinds do
+              if instTy.hasAnyFVar (· == tfv.fvarId!) then
+                let instTyGround := instTy.replace fun u =>
+                  (trialSubst.find? (fun (fr, _) => fr == u)).map Prod.snd
+                match ← withLCtx {} #[] (runBoundedMeta none (some <$> synthInstance instTyGround)) with
+                | some instVal => instSubst := instSubst.push (instVar, instVal)
+                | none => allInstOk := false
+            if allInstOk then
+              foundWitness? := some (candTy, instSubst)
+          match foundWitness? with
+          | some (wTy, wInsts) => substPairs := (substPairs.push (tfv, wTy)) ++ wInsts
+          | none =>
+            return #[s!"NON_INHABITED_TYPECLASS_IN_REFINES_MODEL: {thmName} quantifies over a typeclass without String/Nat/Bool/Int instance"]
+
+        let applySubst (e : Expr) : Expr :=
+          if substPairs.isEmpty then e
+          else e.replace fun u => (substPairs.find? (fun (fr, _) => fr == u)).map Prod.snd
+
+        let ab := atomBody.consumeMData
+        let pureInfo? : Option (Bool × Array Expr × Expr × Expr × Expr) :=
+          if ab.isAppOfArity `Core.RefinesPure 4 then
+            let args := ab.getAppArgs; some (false, #[args[0]!], args[1]!, args[2]!, args[3]!)
+          else if ab.isAppOfArity `Core.RefinesPure2 5 then
+            let args := ab.getAppArgs; some (false, #[args[0]!, args[1]!], args[2]!, args[3]!, args[4]!)
+          else if ab.isAppOfArity `Core.RefinesPure3 6 then
+            let args := ab.getAppArgs; some (false, #[args[0]!, args[1]!, args[2]!], args[3]!, args[4]!, args[5]!)
+          else if ab.isAppOfArity `Core.RefinesPure4 7 then
+            let args := ab.getAppArgs; some (false, #[args[0]!, args[1]!, args[2]!, args[3]!], args[4]!, args[5]!, args[6]!)
+          else if ab.isAppOfArity `Core.RefinesPureEq 4 then
+            let args := ab.getAppArgs; some (true, #[args[0]!], args[1]!, args[2]!, args[3]!)
+          else if ab.isAppOfArity `Core.RefinesPureEq2 5 then
+            let args := ab.getAppArgs; some (true, #[args[0]!, args[1]!], args[2]!, args[3]!, args[4]!)
+          else if ab.isAppOfArity `Core.RefinesPureEq3 6 then
+            let args := ab.getAppArgs; some (true, #[args[0]!, args[1]!, args[2]!], args[3]!, args[4]!, args[5]!)
+          else if ab.isAppOfArity `Core.RefinesPureEq4 7 then
+            let args := ab.getAppArgs; some (true, #[args[0]!, args[1]!, args[2]!, args[3]!], args[4]!, args[5]!, args[6]!)
+          else none
+
+        if let some (isEqKind, inTys, outTy, implArg, specArg) := pureInfo? then
+          let some implFn ← checkBareConstArg env allowedAtomFVs false implArg
+            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare impl argument in {thmName}"]
+          let some specFn ← checkBareConstArg env allowedAtomFVs false specArg
+            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare model/allowed argument in {thmName}"]
+          if isPrivateName implFn || moduleOfConst env implFn != ifaceMod then
+            aErrs := aErrs.push s!"NON_INTERFACE_IMPL_IN_REFINES: {implFn} in {thmName} is not a public constant in {ifaceMod}"
+          if isPrivateName specFn || !modelMods.contains (moduleOfConst env specFn) then
+            aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {specFn} in {thmName} is not a public constant in {pkg}.Model"
+          if ← constTransitivelyTouchesSweImplOrIfaceCached env safeModelConstsRef specFn then
+            aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {specFn} in {thmName} transitively references Interface/Impl"
+          let inTysSubst := inTys.map (fun t => applySubst (stripOptParamType t))
+          let outTySubst := applySubst (stripOptParamType outTy)
+          for inTyS in inTysSubst do
+            if !(← isProvablyInhabitedDataType env 8 inTyS) then
+              aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited input domain for {implFn} in {thmName}"
+          if isEqKind then
+            if ← isProp outTySubst then
+              aErrs := aErrs.push s!"TRIVIAL_CODOMAIN_IN_REFINES: Prop codomain in RefinesPureEq for {implFn} in {thmName}"
+            else
+              let ow := (← whnf outTySubst).consumeMData
+              if ow.isConstOf ``Unit || ow.isConstOf ``PUnit then
+                aErrs := aErrs.push s!"TRIVIAL_CODOMAIN_IN_REFINES: Unit codomain in RefinesPureEq for {implFn} in {thmName}"
+          else
+            let specSubst := applySubst specArg
+            if !(← checkPureAllowedNonTrivial env modelMods specSubst specFn inTysSubst outTySubst) then
+              aErrs := aErrs.push s!"TRIVIAL_ALLOWED_IN_REFINES: {specFn} for {implFn} in {thmName} is output-insensitive or tautological"
+          if aErrs.isEmpty then
+            coveredPureOpsRef.modify (·.insert implFn)
+          return aErrs
+
+        let stepInfo? : Option (Expr × Expr × Expr × Expr × Expr × Expr × Expr × Expr) :=
+          if ab.isAppOfArity `Core.RefinesStep 8 then
+            let args := ab.getAppArgs
+            some (args[0]!, args[1]!, args[2]!, args[3]!, args[4]!, args[5]!, args[6]!, args[7]!)
+          else if ab.isAppOfArity `Core.RefinesStepId 6 then
+            let args := ab.getAppArgs
+            let sTy := args[0]!
+            some (sTy, sTy, args[1]!, args[2]!, mkApp (mkConst ``id [Level.succ Level.zero]) sTy, args[3]!, args[4]!, args[5]!)
+          else none
+
+        if let some (wTy, sTy, reqTy, outTy, projArg, wfArg, stepArg, allowedArg) := stepInfo? then
+          if !axs.isEmpty then
+            return #[s!"INVALID_REFINES_ATOM_BINDER: {thmName} RefinesStep conjunct cannot have binders"]
+          let some projFn ← checkBareConstArg env {} true projArg
+            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare proj argument in {thmName}"]
+          let some wfFn ← checkBareConstArg env {} false wfArg
+            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare wf argument in {thmName}"]
+          let some stepFn ← checkBareConstArg env {} false stepArg
+            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare step argument in {thmName}"]
+          let some allowedFn ← checkBareConstArg env {} false allowedArg
+            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare allowed argument in {thmName}"]
+          if projFn != ``id && (isPrivateName projFn || !modelMods.contains (moduleOfConst env projFn)) then
+            aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {projFn} in {thmName} must be id or a public Model constant"
+          if isPrivateName wfFn || !modelMods.contains (moduleOfConst env wfFn) then
+            aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {wfFn} in {thmName} is not a public constant in {pkg}.Model"
+          if isPrivateName allowedFn || !modelMods.contains (moduleOfConst env allowedFn) then
+            aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {allowedFn} in {thmName} is not a public constant in {pkg}.Model"
+          let stepMod := moduleOfConst env stepFn
+          if isPrivateName stepFn || modelMods.contains stepMod || (stepMod != ifaceMod && stepMod != implMod) then
+            aErrs := aErrs.push s!"NON_INTERFACE_IMPL_IN_REFINES: {stepFn} in {thmName} must be a public constant in {ifaceMod} or {implMod}"
+          for mFn in #[wfFn, allowedFn] do
+            if ← constTransitivelyTouchesSweImplOrIfaceCached env safeModelConstsRef mFn then
+              aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {mFn} in {thmName} transitively references Interface/Impl"
+          if projFn != ``id && (← constTransitivelyTouchesSweImplOrIfaceCached env safeModelConstsRef projFn) then
+            aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {projFn} in {thmName} transitively references Interface/Impl"
+          if !(← isProvablyInhabitedDataType env 8 wTy) || !(← isProvablyInhabitedDataType env 8 sTy) ||
+              !(← isProvablyInhabitedDataType env 8 reqTy) then
+            aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited state/request domain in RefinesStep of {thmName}"
+          if !(← checkWfNotVacuous env sTy wfFn) then
+            aErrs := aErrs.push s!"VACUOUS_WF_IN_REFINES: {wfFn} in {thmName} is identically false or refutable"
+          if !(← checkStepAllowedNonTrivial env modelMods allowedArg allowedFn sTy reqTy outTy) then
+            aErrs := aErrs.push s!"TRIVIAL_ALLOWED_IN_REFINES: {allowedFn} in {thmName} is output/state-insensitive or tautological"
+          if aErrs.isEmpty then
+            if stepMod == ifaceMod then
+              coveredStepOpsRef.modify (·.insert stepFn)
+            else if stepMod == implMod then
+              coveredImplHelpersRef.modify (·.insert stepFn)
+          return aErrs
+
+        let stepFromInfo? : Option (Expr × Expr × Expr × Expr × Expr × Expr × Expr × Expr × Expr × Array (Expr × Expr × Expr × Expr)) :=
+          if ab.isAppOfArity `Core.RefinesStepFrom 16 then
+            let args := ab.getAppArgs
+            some (args[0]!, args[1]!, args[6]!, args[7]!, args[8]!, args[9]!, args[12]!, args[13]!, args[14]!,
+              #[(args[4]!, args[5]!, args[10]!, args[11]!), (args[6]!, args[7]!, args[14]!, args[15]!)])
+          else if ab.isAppOfArity `Core.RefinesStepFrom2 21 then
+            let args := ab.getAppArgs
+            some (args[0]!, args[1]!, args[9]!, args[10]!, args[11]!, args[12]!, args[17]!, args[18]!, args[19]!,
+              #[(args[5]!, args[6]!, args[13]!, args[14]!),
+                (args[7]!, args[8]!, args[15]!, args[16]!),
+                (args[9]!, args[10]!, args[19]!, args[20]!)])
+          else none
+
+        if let some (rawSTy, pkgSTy, pkgReqTy, _pkgOutTy, mapSArg, rawWfArg, pkgWfArg, mkApiArg, execPkgArg, stepLegs) := stepFromInfo? then
+          if !axs.isEmpty then
+            return #[s!"INVALID_REFINES_ATOM_BINDER: {thmName} RefinesStepFrom conjunct cannot have binders"]
+          let some mapSFn ← checkBareConstArg env {} true mapSArg
+            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare mapS argument in {thmName}"]
+          let some rawWfFn ← checkBareConstArg env {} false rawWfArg
+            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare rawWf argument in {thmName}"]
+          let some pkgWfFn ← checkBareConstArg env {} false pkgWfArg
+            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare pkgWf argument in {thmName}"]
+          let some mkApiFn ← checkBareConstArg env {} false mkApiArg
+            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare mkApi argument in {thmName}"]
+          let some execPkgFn ← checkBareConstArg env {} false execPkgArg
+            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare execPkg argument in {thmName}"]
+          if mapSFn != ``id && (isPrivateName mapSFn || !modelMods.contains (moduleOfConst env mapSFn)) then
+            aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {mapSFn} in {thmName} must be id or a public Model constant"
+          if mapSFn != ``id && (← constTransitivelyTouchesSweImplOrIfaceCached env safeModelConstsRef mapSFn) then
+            aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {mapSFn} in {thmName} transitively references Interface/Impl"
+          for mFn in #[rawWfFn, pkgWfFn, execPkgFn] do
+            if isPrivateName mFn || !modelMods.contains (moduleOfConst env mFn) then
+              aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {mFn} in {thmName} is not a public constant in {pkg}.Model"
+            if ← constTransitivelyTouchesSweImplOrIfaceCached env safeModelConstsRef mFn then
+              aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {mFn} in {thmName} transitively references Interface/Impl"
+          let mkApiMod := moduleOfConst env mkApiFn
+          if isPrivateName mkApiFn || modelMods.contains mkApiMod || (mkApiMod != ifaceMod && mkApiMod != implMod) then
+            aErrs := aErrs.push s!"NON_INTERFACE_IMPL_IN_REFINES: {mkApiFn} in {thmName} must be a public constant in {ifaceMod} or {implMod}"
+          for dTy in #[rawSTy, pkgSTy, pkgReqTy] do
+            if !(← isProvablyInhabitedDataType env 8 dTy) then
+              aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited state/request domain in RefinesStepFrom of {thmName}"
+          if !(← checkWfNotVacuous env rawSTy rawWfFn) then
+            aErrs := aErrs.push s!"VACUOUS_WF_IN_REFINES: {rawWfFn} in {thmName} is identically false or refutable"
+          if !(← checkWfNotVacuous env pkgSTy pkgWfFn) then
+            aErrs := aErrs.push s!"VACUOUS_WF_IN_REFINES: {pkgWfFn} in {thmName} is identically false or refutable"
+          for idx in [0 : stepLegs.size] do
+            let (legReqTy, legOutTy, legExecArg, legAllowedArg) := stepLegs[idx]!
+            let isPkgLeg := idx + 1 == stepLegs.size
+            let legSTy := if isPkgLeg then pkgSTy else rawSTy
+            let some legExecFn ← checkBareConstArg env {} false legExecArg
+              | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare exec argument in {thmName}"]
+            let some legAllowedFn ← checkBareConstArg env {} false legAllowedArg
+              | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare allowed argument in {thmName}"]
+            for mFn in #[legExecFn, legAllowedFn] do
+              if isPrivateName mFn || !modelMods.contains (moduleOfConst env mFn) then
+                aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {mFn} in {thmName} is not a public constant in {pkg}.Model"
+              if ← constTransitivelyTouchesSweImplOrIfaceCached env safeModelConstsRef mFn then
+                aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {mFn} in {thmName} transitively references Interface/Impl"
+            if !(← isProvablyInhabitedDataType env 8 legReqTy) then
+              aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited state/request domain in RefinesStepFrom of {thmName}"
+            if !(← checkStepAllowedNonTrivial env modelMods legAllowedArg legAllowedFn legSTy legReqTy legOutTy) then
+              aErrs := aErrs.push s!"TRIVIAL_ALLOWED_IN_REFINES: {legAllowedFn} in {thmName} is output/state-insensitive or tautological"
+          if aErrs.isEmpty then
+            let execFlds := collectUsedStructFieldsTransitive env modelMods {} execPkgFn
+            if execFlds.isEmpty then
+              aErrs := aErrs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: {execPkgFn} in {thmName} projects zero capability fields"
+            else
+              coveredCapBuildersRef.modify (·.insert mkApiFn)
+              for fld in execFlds do
+                coveredExecFieldsRef.modify (·.insert fld)
+              for h in (← collectCoveredMkApiImplHelpers env implMod mkApiFn execFlds) do
+                coveredImplHelpersRef.modify (·.insert h)
+          return aErrs
+
+        return #[s!"INVALID_REFINES_CONJUNCT: unsupported conjunct head {ab.getAppFn} in {thmName}"]
+      localErrs := localErrs ++ atomErrs
+    return localErrs
+
+  let coveredPureOps ← coveredPureOpsRef.get
+  let coveredStepOps ← coveredStepOpsRef.get
+  let coveredExecFields ← coveredExecFieldsRef.get
+  let coveredImplHelpers ← coveredImplHelpersRef.get
+  let coveredCapBuilders ← coveredCapBuildersRef.get
+
+  errs := errs ++ conjErrs
+  if errs.isEmpty then
+    if let some ifaceIdx := env.header.moduleNames.findIdx? (· == ifaceMod) then
+      if let some ifaceData := env.header.moduleData[ifaceIdx]? then
+        let skipBundles : Std.HashSet Name :=
+          Std.HashSet.emptyWithCapacity 2 |>.insert (Name.str pkg "defaultApi") |>.insert (Name.str pkg "defaultOps")
+        let ifaceSingleton : Std.HashSet Name := Std.HashSet.emptyWithCapacity 1 |>.insert ifaceMod
+        let mut sawAnyIfaceOp := false
+        let mut sawAnyEffectfulOp := false
+        for c in ifaceData.constants do
+          let .defnInfo dv := c | continue
+          if isPrivateName c.name || isCompilerAux c.name || env.isProjectionFn c.name then continue
+          if (← Meta.isInstance c.name) || (← isClassInstanceOrAux env c.name c.type) then continue
+          if ← isCapabilityBundleConst env knownPkgs pkg c.name c.type then continue
+          sawAnyIfaceOp := true
+          if ← isEffectfulInterfaceOp env c.type c.name then
+            sawAnyEffectfulOp := true
+            let opFields := collectUsedStructFieldsTransitive env ifaceSingleton skipBundles c.name
+            let coveredByFields := !opFields.isEmpty && opFields.all coveredExecFields.contains
+            let usedBody := dv.value.getUsedConstants
+            let coveredByHelper := usedBody.any coveredImplHelpers.contains
+            let coveredByBuilder := coveredCapBuilders.contains c.name || usedBody.any coveredCapBuilders.contains
+            if !coveredStepOps.contains c.name && !coveredByFields && !coveredByHelper && !coveredByBuilder then
+              errs := errs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: effectful Interface operation {c.name} is not covered by {thmName}"
+          else
+            if !coveredPureOps.contains c.name then
+              errs := errs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: pure Interface operation {c.name} is missing from {thmName}"
+        if sawAnyEffectfulOp && !coveredCapBuilders.isEmpty then
+          if let some (.defnInfo defApiDv) := env.find? (Name.str pkg "defaultApi") then
+            let defApiUsed := defApiDv.value.getUsedConstants
+            let wiredToCap := defApiUsed.any fun u =>
+              coveredCapBuilders.contains u ||
+                (moduleOfConst env u == ifaceMod &&
+                  match env.find? u with
+                  | some (.defnInfo udv) => udv.value.getUsedConstants.any coveredCapBuilders.contains
+                  | _ => false)
+            if !wiredToCap then
+              errs := errs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: {Name.str pkg "defaultApi"} is not wired to mkApi in {thmName}"
+        if !sawAnyIfaceOp then
+          errs := errs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: {ifaceMod} exposes zero public operations"
+      else
+        errs := errs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: missing module data for {ifaceMod}"
+    else
+      errs := errs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: {ifaceMod} is not imported"
+
+  return (errs, axCache)
+
 private structure CliConfig where
   libDir : System.FilePath := ".lake/build/lib/lean"
   repoDir : System.FilePath := "."
   logPath? : Option System.FilePath := none
   nonce? : Option String := none
   legacyAllowlist : Std.HashSet Name := {}
+  deadBranchFuel : Nat := 4096
   argError? : Option String := none
 
 private def parseCsvAllowlist (csv : String) (init : Std.HashSet Name) : Std.HashSet Name :=
@@ -1149,6 +2356,11 @@ private def parseArgs (args : List String) : CliConfig :=
     | ["--verify-log"] => { cfg with argError? := some "MISSING_VERIFY_LOG_VALUE: --verify-log requires a path" }
     | "--nonce" :: nc :: rest => go { cfg with nonce? := some nc } pos rest
     | ["--nonce"] => { cfg with argError? := some "MISSING_NONCE_VALUE: --nonce requires a non-empty argument" }
+    | "--dead-branch-fuel" :: nf :: rest =>
+      match nf.toNat? with
+      | some n => go { cfg with deadBranchFuel := n } pos rest
+      | none => { cfg with argError? := some s!"INVALID_DEAD_BRANCH_FUEL: {nf}" }
+    | ["--dead-branch-fuel"] => { cfg with argError? := some "MISSING_DEAD_BRANCH_FUEL: --dead-branch-fuel requires a Nat" }
     | "--allow-legacy" :: arg :: tail =>
       if arg.isEmpty then
         go { cfg with legacyAllowlist := {} } pos tail
@@ -1171,8 +2383,8 @@ private def parseArgs (args : List String) : CliConfig :=
   termination_by xs => xs.length
   go {} 0 args
 
-/-- Audit compiled `.olean` artifacts for hardened checkable assumptions and error coverage. -/
-def main (args : List String) : IO UInt32 := do
+/-- Audit compiled `.olean` artifacts for hardened checkable assumptions, error coverage, and `Core.Refines`. -/
+unsafe def main (args : List String) : IO UInt32 := do
   let cfg := parseArgs args
   if let some err := cfg.argError? then
     IO.eprintln err
@@ -1181,15 +2393,27 @@ def main (args : List String) : IO UInt32 := do
     IO.eprintln "EMPTY_NONCE_FORBIDDEN: --nonce must be non-empty"
     return 1
   let libDir := cfg.libDir
-  let repoDir := cfg.repoDir
+  let repoDir ←
+    if cfg.repoDir == System.FilePath.mk "." && !(← (cfg.repoDir / "LeanSwe.lean").pathExists) &&
+        (← (libDir / ".." / ".." / ".." / ".." / "LeanSwe.lean").pathExists) then
+      IO.FS.realPath (libDir / ".." / ".." / ".." / "..")
+    else
+      pure cfg.repoDir
   unless ← (libDir / "LeanSwe.olean").pathExists do
     IO.eprintln s!"MISSING_OLEAN: LeanSwe ({libDir / "LeanSwe.olean"})"
     return 1
-  unless ← (libDir / "Tests" / "Main.olean").pathExists do
-    IO.eprintln s!"MISSING_OLEAN: Tests.Main ({libDir / "Tests" / "Main.olean"})"
+  let leanSweDir := repoDir / "LeanSwe"
+  unless ← leanSweDir.pathExists do
+    IO.eprintln s!"MISSING_SOURCE_DIR: {leanSweDir}"
     return 1
+  let hasTestsMainOlean ← (libDir / "Tests" / "Main.olean").pathExists
+  Lean.enableInitializersExecution
   initSearchPath (← findSysroot) [libDir]
-  let env ← importModules #[{ module := `LeanSwe }, { module := `Tests.Main }] {}
+  let rootImports :=
+    if hasTestsMainOlean then #[{ module := `LeanSwe }, { module := `Tests.Main }]
+    else #[{ module := `LeanSwe }]
+  let env ← importModules rootImports {} (loadExts := true)
+  let transImpsOf := buildTransitiveImportFn env
 
   let mut visited : Std.HashSet Name := {}
   let mut knownPkgs : Array Name := #[]
@@ -1200,13 +2424,25 @@ def main (args : List String) : IO UInt32 := do
         knownPkgs := knownPkgs.push p
 
   let mut errors : Array String := #[]
-  let leanSweDir := repoDir / "LeanSwe"
-  if ← leanSweDir.pathExists then
-    for entry in (← System.FilePath.walkDir leanSweDir) do
-      if entry.extension == some "lean" then
-        let modName := moduleNameUnderLeanSwe leanSweDir entry
-        if !visited.contains modName then
-          errors := errors.push s!"UNIMPORTED_MODULE: {entry} (module {modName} not imported by LeanSwe)"
+  let mut diskRtPkgs : Std.HashSet Name := {}
+  for entry in (← System.FilePath.walkDir leanSweDir) do
+    if entry.extension == some "lean" then
+      let modName := moduleNameUnderLeanSwe leanSweDir entry
+      if !visited.contains modName then
+        errors := errors.push s!"UNIMPORTED_MODULE: {entry} (module {modName} not imported by LeanSwe)"
+      if entry.fileName == some "RuntimeTests.lean" then
+        diskRtPkgs := diskRtPkgs.insert (pkgNamespaceOfSpecWith knownPkgs modName)
+
+  let anyHasRt := knownPkgs.any fun p => visited.contains (Name.str p "RuntimeTests") || diskRtPkgs.contains p
+  if anyHasRt && !hasTestsMainOlean then
+    IO.eprintln s!"MISSING_OLEAN: Tests.Main ({libDir / "Tests" / "Main.olean"})"
+    return 1
+
+  let fuzzCoveredPkgs ← match ← parseFuzzCoveredPackages repoDir knownPkgs with
+    | .ok s => pure s
+    | .error err =>
+      errors := errors.push err
+      pure ({} : Std.HashSet Name)
 
   let mut specModules : Array Name := #[]
   let mut formalAssumptions : Array (Name × Name) := #[]
@@ -1437,17 +2673,75 @@ def main (args : List String) : IO UInt32 := do
       if !assumpUpperConsumed.contains aName then
         errs := errs.push s!"UNUSED_FORMAL_ASSUMPTION: {aName} in {m} is not consumed as a hypothesis by any upper-layer Proofs theorem"
 
-    if env.contains `main then
-      let (deadMain, dbCache') ← hasStaticDeadBranchTransitive env dbCache `main
-      dbCache := dbCache'
-      if deadMain then
-        errs := errs.push "DEAD_CONDITIONAL_IN_RUNNER: main in Tests.Main"
-      unless ← usesAnyConstActive env (Std.HashSet.emptyWithCapacity 1 |>.insert `Core.initAssumpLog) `main do
-        errs := errs.push "MISSING_ASSUMP_LOG_INIT: main does not call Core.initAssumpLog"
-      unless ← usesAnyConstActive env (Std.HashSet.emptyWithCapacity 1 |>.insert `Core.closeAssumpLog) `main do
-        errs := errs.push "MISSING_ASSUMP_LOG_CLOSE: main does not call Core.closeAssumpLog"
-    else
-      errs := errs.push "MISSING_MAIN: Tests.Main lacks main"
+
+    let activeCacheRef ← IO.mkRef ({} : ActiveCallCache)
+    if hasTestsMainOlean || anyHasRt then
+      if env.contains `main then
+        let (deadMain, dbCache') ← hasStaticDeadBranchTransitive env cfg.deadBranchFuel dbCache `main
+        dbCache := dbCache'
+        match deadMain with
+        | .clean => pure ()
+        | .hasDeadBranch => errs := errs.push "DEAD_CONDITIONAL_IN_RUNNER: main in Tests.Main"
+        | .inconclusive reason => errs := errs.push s!"INCONCLUSIVE_DEAD_BRANCH_CHECK: main in Tests.Main ({reason})"
+        unless ← usesAnyConstActiveCached env activeCacheRef (Std.HashSet.emptyWithCapacity 1 |>.insert `Core.initAssumpLog) `main do
+          errs := errs.push "MISSING_ASSUMP_LOG_INIT: main does not call Core.initAssumpLog"
+        unless ← usesAnyConstActiveCached env activeCacheRef (Std.HashSet.emptyWithCapacity 1 |>.insert `Core.closeAssumpLog) `main do
+          errs := errs.push "MISSING_ASSUMP_LOG_CLOSE: main does not call Core.closeAssumpLog"
+      else
+        errs := errs.push "MISSING_MAIN: Tests.Main lacks main"
+
+    for pkg in knownPkgs do
+      if cfg.legacyAllowlist.contains pkg then continue
+      let rtMod := Name.str pkg "RuntimeTests"
+      let hasRt := visited.contains rtMod || diskRtPkgs.contains pkg
+      let isRetired := !hasRt
+      let inSuites := fuzzCoveredPkgs.contains pkg
+      let isExtPkg := isExternalBoundaryPkg env knownPkgs pkg
+      let isFloatPkg := usesRuntimeFloat env knownPkgs pkg
+      if deferredRefinesModelPackages.contains pkg && env.contains (Name.str (Name.str pkg "Proofs") "refines_model") then
+        errs := errs.push s!"STALE_REFINES_DEFERRAL: {pkg} defines Proofs.refines_model; remove from deferredRefinesModelPackages"
+      if isRetired && (isExtPkg || isFloatPkg) && !inSuites then
+        errs := errs.push s!"MISSING_FUZZ_SUITE: retired external-boundary package {pkg} is absent from Fuzz/suites.json"
+      let modelMod := Name.str pkg "Model"
+      let hasModel := visited.contains modelMod
+      let hasDirectOwnExtern := hasDirectOwnExternInPkg env knownPkgs pkg
+      let deferredExternalModel := !isRetired && isExtPkg && !inSuites
+      let deferredSplitRefinesModel := !isRetired && !inSuites && deferredRefinesModelPackages.contains pkg
+      let needsRefinesModel :=
+        !hasDirectOwnExtern && !deferredSplitRefinesModel &&
+          (isRetired || inSuites || (hasModel && !deferredExternalModel))
+      if isRetired || needsRefinesModel then
+        let mut modelMods : Std.HashSet Name := {}
+        let modelPfx := modelMod.toString ++ "."
+        for mCand in env.header.moduleNames do
+          if isProjectModule mCand then
+            if mCand == modelMod || mCand.toString.startsWith modelPfx ||
+                (pkgNamespaceOfSpecWith knownPkgs mCand == pkg && mCand.getString! == "Model") then
+              modelMods := modelMods.insert mCand
+        if !hasModel then
+          errs := errs.push s!"MISSING_MODEL_MODULE: {modelMod} for {pkg} is not imported by LeanSwe"
+        else
+          let mut modelDefCount := 0
+          for mMod in modelMods do
+            if let some mIdx := env.header.moduleNames.findIdx? (· == mMod) then
+              if let some mData := env.header.moduleData[mIdx]? then
+                for c in mData.constants do
+                  if let .defnInfo _ := c then
+                    if !isPrivateName c.name && !isCompilerAux c.name && !env.isProjectionFn c.name &&
+                        !(← Meta.isInstance c.name) && !(← isClassInstanceOrAux env c.name c.type) then
+                      let isGenuineModelFn ← forallTelescopeReducing c.type fun xs ret => do
+                        if xs.isEmpty then return false
+                        let rc := (← whnf ret).consumeMData
+                        return !rc.isSort && !rc.isProp &&
+                          !rc.isConstOf ``Unit && !rc.isConstOf ``PUnit && !rc.isConstOf ``True
+                      if isGenuineModelFn then
+                        modelDefCount := modelDefCount + 1
+          if modelDefCount == 0 then
+            errs := errs.push s!"EMPTY_OR_STUB_MODEL: {modelMod} for {pkg} defines zero non-trivial public computational functions"
+        if needsRefinesModel then
+          let (refErrs, nextAx) ← checkRefinesModelTheorem env transImpsOf knownPkgs pkg modelMods axCache
+          axCache := nextAx
+          errs := errs ++ refErrs
 
     let throwTargets : Std.HashSet Name :=
       Std.HashSet.emptyWithCapacity 6
@@ -1461,69 +2755,77 @@ def main (args : List String) : IO UInt32 := do
       let pkgNs := pkgNamespaceOfSpecWith knownPkgs specMod
       let isExtPkg := isExternalBoundaryPkg env knownPkgs pkgNs
       let rtMod := Name.str pkgNs "RuntimeTests"
-      if !visited.contains rtMod then
-        errs := errs.push s!"MISSING_RUNTIMETESTS_MODULE: {rtMod} for {specMod}"
-        continue
-      let candidateRunAll := Name.str rtMod "runAll"
-      let candidateRunAllOutcome := Name.str rtMod "runAllOutcome"
-      let mut candidates : Array Name := #[]
-      if env.contains candidateRunAllOutcome then
-        candidates := candidates.push candidateRunAllOutcome
-      if env.contains candidateRunAll then
-        candidates := candidates.push candidateRunAll
-      let mut activeEntry? : Option Name := none
-      for cand in candidates do
-        if ← usesAnyConstActive env (Std.HashSet.emptyWithCapacity 1 |>.insert cand) `main then
-          activeEntry? := some cand
-          break
-      let runAllName := activeEntry?.getD (candidates[0]?.getD candidateRunAll)
-      if candidates.isEmpty then
-        errs := errs.push s!"MISSING_RUNALL: {rtMod} lacks runAll / runAllOutcome"
-      else
-        let (deadRunAll, dbCache') ← hasStaticDeadBranchTransitive env dbCache runAllName
-        dbCache := dbCache'
-        if deadRunAll then
-          errs := errs.push s!"DEAD_CONDITIONAL_IN_RUNNER: {runAllName}"
-        if activeEntry?.isNone then
-          errs := errs.push s!"UNREGISTERED_RUNTIMETESTS_IN_MAIN: {runAllName} not actively invoked from main"
+      let hasRt := visited.contains rtMod || diskRtPkgs.contains pkgNs
+      let mut runAllName := Name.str rtMod "runAll"
+      if hasRt then
+        if !visited.contains rtMod then
+          errs := errs.push s!"MISSING_RUNTIMETESTS_MODULE: {rtMod} for {specMod}"
+          continue
+        let candidateRunAll := Name.str rtMod "runAll"
+        let candidateRunAllOutcome := Name.str rtMod "runAllOutcome"
+        let mut candidates : Array Name := #[]
+        if env.contains candidateRunAllOutcome then
+          candidates := candidates.push candidateRunAllOutcome
+        if env.contains candidateRunAll then
+          candidates := candidates.push candidateRunAll
+        let mut activeEntry? : Option Name := none
+        for cand in candidates do
+          if ← usesAnyConstActiveCached env activeCacheRef (Std.HashSet.emptyWithCapacity 1 |>.insert cand) `main then
+            activeEntry? := some cand
+            break
+        runAllName := activeEntry?.getD (candidates[0]?.getD candidateRunAll)
+        if candidates.isEmpty then
+          errs := errs.push s!"MISSING_RUNALL: {rtMod} lacks runAll / runAllOutcome"
+        else
+          let (deadRunAll, dbCache') ← hasStaticDeadBranchTransitive env cfg.deadBranchFuel dbCache runAllName
+          dbCache := dbCache'
+          match deadRunAll with
+          | .clean => pure ()
+          | .hasDeadBranch => errs := errs.push s!"DEAD_CONDITIONAL_IN_RUNNER: {runAllName}"
+          | .inconclusive reason => errs := errs.push s!"INCONCLUSIVE_DEAD_BRANCH_CHECK: {runAllName} ({reason})"
+          if activeEntry?.isNone then
+            errs := errs.push s!"UNREGISTERED_RUNTIMETESTS_IN_MAIN: {runAllName} not actively invoked from main"
 
       let extAssumpConst := Name.str pkgNs "externalAssumptions"
       let regAssumpConst := Name.str rtMod "registeredAssumptions"
       if !isExtPkg then
         if env.contains extAssumpConst then
           errs := errs.push s!"PURE_MODULE_ASSUMPTION_FORBIDDEN: {extAssumpConst} in pure module {specMod}"
-        if env.contains regAssumpConst then
+        if hasRt && env.contains regAssumpConst then
           errs := errs.push s!"PURE_MODULE_ASSUMPTION_FORBIDDEN: {regAssumpConst} in pure module {rtMod}"
-      else
+      else if hasRt || env.contains extAssumpConst then
         let mut regAssumpMap : Std.HashMap String Name := {}
-        if let some (.defnInfo dv) := env.find? regAssumpConst then
-          unless ← usesAnyConstActive env (Std.HashSet.emptyWithCapacity 1 |>.insert regAssumpConst) runAllName do
-            errs := errs.push s!"REGISTERED_ASSUMPTIONS_NOT_RUN: {runAllName} does not actively execute {regAssumpConst}"
-          if let some elems ← extractArrayElems dv.value then
-            for elem in elems do
-              if let some (specName, runFn) ← parseRegisteredAssumption elem then
-                let runClean := runFn.consumeMData
-                if let .const fnName _ := runClean then
-                  if moduleOfConst env fnName != rtMod || fnName.getString! != specName.toName.getString! then
-                    errs := errs.push s!"RUNTIME_ASSUMPTION_NAME_MISMATCH: {specName} bound to {fnName}"
+        if hasRt then
+          if let some (.defnInfo dv) := env.find? regAssumpConst then
+            unless ← usesAnyConstActiveCached env activeCacheRef (Std.HashSet.emptyWithCapacity 1 |>.insert regAssumpConst) runAllName do
+              errs := errs.push s!"REGISTERED_ASSUMPTIONS_NOT_RUN: {runAllName} does not actively execute {regAssumpConst}"
+            if let some elems ← extractArrayElems dv.value then
+              for elem in elems do
+                if let some (specName, runFn) ← parseRegisteredAssumption elem then
+                  let runClean := runFn.consumeMData
+                  if let .const fnName _ := runClean then
+                    if moduleOfConst env fnName != rtMod || fnName.getString! != specName.toName.getString! then
+                      errs := errs.push s!"RUNTIME_ASSUMPTION_NAME_MISMATCH: {specName} bound to {fnName}"
+                    else
+                      let (deadFn, dbCache') ← hasStaticDeadBranchTransitive env cfg.deadBranchFuel dbCache fnName
+                      dbCache := dbCache'
+                      match deadFn with
+                      | .clean => pure ()
+                      | .hasDeadBranch => errs := errs.push s!"DEAD_CONDITIONAL_IN_TEST: {fnName}"
+                      | .inconclusive reason => errs := errs.push s!"INCONCLUSIVE_DEAD_BRANCH_CHECK: {fnName} ({reason})"
+                      unless ← usesThrowTargetsActive env activeCacheRef throwTargets fnName do
+                        errs := errs.push s!"TRIVIAL_RUNTIME_ASSUMPTION: {fnName} has no active failure/throw path"
+                      unless ← usesPackageImplConstActiveCached env activeCacheRef pkgNs rtMod fnName do
+                        errs := errs.push s!"MISSING_PACKAGE_REF_IN_TEST: {fnName} does not actively invoke {pkgNs} Interface/Impl"
+                      regAssumpMap := regAssumpMap.insert specName fnName
                   else
-                    let (deadFn, dbCache') ← hasStaticDeadBranchTransitive env dbCache fnName
-                    dbCache := dbCache'
-                    if deadFn then
-                      errs := errs.push s!"DEAD_CONDITIONAL_IN_TEST: {fnName}"
-                    unless ← usesAnyConstActive env throwTargets fnName do
-                      errs := errs.push s!"TRIVIAL_RUNTIME_ASSUMPTION: {fnName} has no active failure/throw path"
-                    unless ← usesPackageImplConstActive env pkgNs rtMod fnName do
-                      errs := errs.push s!"MISSING_PACKAGE_REF_IN_TEST: {fnName} does not actively invoke {pkgNs} Interface/Impl"
-                    regAssumpMap := regAssumpMap.insert specName fnName
+                    errs := errs.push s!"RUNTIME_ASSUMPTION_NOT_NAMED_CONST: {specName} in {regAssumpConst}"
                 else
-                  errs := errs.push s!"RUNTIME_ASSUMPTION_NOT_NAMED_CONST: {specName} in {regAssumpConst}"
-              else
-                errs := errs.push s!"MALFORMED_REGISTERED_ASSUMPTION: in {regAssumpConst}"
+                  errs := errs.push s!"MALFORMED_REGISTERED_ASSUMPTION: in {regAssumpConst}"
+            else
+              errs := errs.push s!"UNPARSEABLE_REGISTERED_ASSUMPTIONS: {regAssumpConst}"
           else
-            errs := errs.push s!"UNPARSEABLE_REGISTERED_ASSUMPTIONS: {regAssumpConst}"
-        else
-          errs := errs.push s!"MISSING_REGISTERED_ASSUMPTIONS: {regAssumpConst}"
+            errs := errs.push s!"MISSING_REGISTERED_ASSUMPTIONS: {regAssumpConst}"
 
         let mut listedFormalPreds : Std.HashSet Name := {}
         if let some (.defnInfo extDv) := env.find? extAssumpConst then
@@ -1549,16 +2851,21 @@ def main (args : List String) : IO UInt32 := do
                   errs := errs.push s!"MISSING_FORMAL_ASSUMPTION_PRED: {fpStr} for {obName} in {extAssumpConst}"
                 else
                   listedFormalPreds := listedFormalPreds.insert obConst
-              if !regAssumpMap.contains obName then
-                errs := errs.push s!"MISSING_ASSUMPTION_TEST: {obName} not registered in {regAssumpConst}"
-              expAssumps := expAssumps.push obName
+              if hasRt then
+                if !regAssumpMap.contains obName then
+                  errs := errs.push s!"MISSING_ASSUMPTION_TEST: {obName} not registered in {regAssumpConst}"
+                expAssumps := expAssumps.push obName
           else
             errs := errs.push s!"UNPARSEABLE_EXTERNAL_ASSUMPTIONS: {extAssumpConst}"
-        else
+        else if hasRt then
           errs := errs.push s!"MISSING_EXTERNAL_ASSUMPTIONS: {extAssumpConst}"
 
         for (m, aName) in formalAssumptions do
           if m == specMod && !listedFormalPreds.contains aName then
+            errs := errs.push s!"UNLISTED_FORMAL_ASSUMPTION: {aName} missing from {extAssumpConst}"
+      else
+        for (m, aName) in formalAssumptions do
+          if m == specMod then
             errs := errs.push s!"UNLISTED_FORMAL_ASSUMPTION: {aName} missing from {extAssumpConst}"
 
       let ifaceMod := Name.str pkgNs "Interface"
@@ -1580,13 +2887,14 @@ def main (args : List String) : IO UInt32 := do
       let regErrConst := Name.str rtMod "registeredErrorTests"
       let errCovConst := Name.str pkgNs "errorCoverage"
       if !isExtPkg && fallibleReqs.isEmpty && !hasAnyFallibleIfaceSurface then
-        if let some (.defnInfo dv) := env.find? regErrConst then
-          match ← extractArrayElems dv.value with
-          | some elems =>
-            if !elems.isEmpty then
-              errs := errs.push s!"PURE_TOTAL_ERROR_TESTS_FORBIDDEN: {regErrConst} must be empty when {pkgNs} has no fallible codomains"
-          | none =>
-            errs := errs.push s!"UNPARSEABLE_REGISTERED_ERROR_TESTS: {regErrConst}"
+        if hasRt then
+          if let some (.defnInfo dv) := env.find? regErrConst then
+            match ← extractArrayElems dv.value with
+            | some elems =>
+              if !elems.isEmpty then
+                errs := errs.push s!"PURE_TOTAL_ERROR_TESTS_FORBIDDEN: {regErrConst} must be empty when {pkgNs} has no fallible codomains"
+            | none =>
+              errs := errs.push s!"UNPARSEABLE_REGISTERED_ERROR_TESTS: {regErrConst}"
         if let some (.defnInfo dv) := env.find? errCovConst then
           match ← extractListElems dv.value with
           | some elems =>
@@ -1596,34 +2904,37 @@ def main (args : List String) : IO UInt32 := do
             errs := errs.push s!"UNPARSEABLE_ERROR_COVERAGE: {errCovConst}"
       else
         let mut regErrMap : Std.HashMap String (Name × Name) := {}
-        if let some (.defnInfo dv) := env.find? regErrConst then
-          unless ← usesAnyConstActive env (Std.HashSet.emptyWithCapacity 1 |>.insert regErrConst) runAllName do
-            errs := errs.push s!"REGISTERED_ERROR_TESTS_NOT_RUN: {runAllName} does not actively execute {regErrConst}"
-          if let some elems ← extractArrayElems dv.value then
-            for elem in elems do
-              if let some (tName, modeCtor, runFn) ← parseRegisteredErrorTest elem then
-                let runClean := runFn.consumeMData
-                if let .const fnName _ := runClean then
-                  if moduleOfConst env fnName != rtMod || fnName.toString != tName then
-                    errs := errs.push s!"ERROR_TEST_NAME_MISMATCH: {tName} bound to {fnName}"
+        if hasRt then
+          if let some (.defnInfo dv) := env.find? regErrConst then
+            unless ← usesAnyConstActiveCached env activeCacheRef (Std.HashSet.emptyWithCapacity 1 |>.insert regErrConst) runAllName do
+              errs := errs.push s!"REGISTERED_ERROR_TESTS_NOT_RUN: {runAllName} does not actively execute {regErrConst}"
+            if let some elems ← extractArrayElems dv.value then
+              for elem in elems do
+                if let some (tName, modeCtor, runFn) ← parseRegisteredErrorTest elem then
+                  let runClean := runFn.consumeMData
+                  if let .const fnName _ := runClean then
+                    if moduleOfConst env fnName != rtMod || fnName.toString != tName then
+                      errs := errs.push s!"ERROR_TEST_NAME_MISMATCH: {tName} bound to {fnName}"
+                    else
+                      let (deadErrFn, dbCache') ← hasStaticDeadBranchTransitive env cfg.deadBranchFuel dbCache fnName
+                      dbCache := dbCache'
+                      match deadErrFn with
+                      | .clean => pure ()
+                      | .hasDeadBranch => errs := errs.push s!"DEAD_CONDITIONAL_IN_TEST: {fnName}"
+                      | .inconclusive reason => errs := errs.push s!"INCONCLUSIVE_DEAD_BRANCH_CHECK: {fnName} ({reason})"
+                      unless ← usesThrowTargetsActive env activeCacheRef throwTargets fnName do
+                        errs := errs.push s!"TRIVIAL_ERROR_TEST: {fnName} has no active failure/throw path"
+                      unless ← usesPackageImplConstActiveCached env activeCacheRef pkgNs rtMod fnName do
+                        errs := errs.push s!"MISSING_PACKAGE_REF_IN_TEST: {fnName} does not actively invoke {pkgNs} Interface/Impl"
+                      regErrMap := regErrMap.insert tName (modeCtor, fnName)
                   else
-                    let (deadErrFn, dbCache') ← hasStaticDeadBranchTransitive env dbCache fnName
-                    dbCache := dbCache'
-                    if deadErrFn then
-                      errs := errs.push s!"DEAD_CONDITIONAL_IN_TEST: {fnName}"
-                    unless ← usesAnyConstActive env throwTargets fnName do
-                      errs := errs.push s!"TRIVIAL_ERROR_TEST: {fnName} has no active failure/throw path"
-                    unless ← usesPackageImplConstActive env pkgNs rtMod fnName do
-                      errs := errs.push s!"MISSING_PACKAGE_REF_IN_TEST: {fnName} does not actively invoke {pkgNs} Interface/Impl"
-                    regErrMap := regErrMap.insert tName (modeCtor, fnName)
+                    errs := errs.push s!"ERROR_TEST_NOT_NAMED_CONST: {tName} in {regErrConst}"
                 else
-                  errs := errs.push s!"ERROR_TEST_NOT_NAMED_CONST: {tName} in {regErrConst}"
-              else
-                errs := errs.push s!"MALFORMED_REGISTERED_ERROR_TEST: in {regErrConst}"
+                  errs := errs.push s!"MALFORMED_REGISTERED_ERROR_TEST: in {regErrConst}"
+            else
+              errs := errs.push s!"UNPARSEABLE_REGISTERED_ERROR_TESTS: {regErrConst}"
           else
-            errs := errs.push s!"UNPARSEABLE_REGISTERED_ERROR_TESTS: {regErrConst}"
-        else
-          errs := errs.push s!"MISSING_REGISTERED_ERROR_TESTS: {regErrConst}"
+            errs := errs.push s!"MISSING_REGISTERED_ERROR_TESTS: {regErrConst}"
 
         if let some (.defnInfo dv) := env.find? errCovConst then
           let enumName? ← do
@@ -1660,7 +2971,7 @@ def main (args : List String) : IO UInt32 := do
                 errs := errs.push s!"UNALLOWED_AXIOM_IN_THEOREM: {thmName} uses [{badAx}]"
               if let some shapeErr ← checkProvedImpossibleTheorem env tv req.toName kindCtor enumName then
                 errs := errs.push s!"{shapeErr} ({thmName})"
-            else
+            else if hasRt || !fuzzCoveredPkgs.contains pkgNs then
               let some (regMode, _) := regErrMap.get? targetStr
                 | errs := errs.push s!"MISSING_ERROR_TEST: {targetStr} for ({req}, {kindCtor}) not in {regErrConst}"; continue
               if regMode != tag then

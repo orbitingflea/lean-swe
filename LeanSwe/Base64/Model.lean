@@ -202,4 +202,25 @@ def expectedEncodedLength (opts : EncodeOptions) (byteLen : Nat) : Nat :=
 def expectedPaddingCount (opts : EncodeOptions) (byteLen : Nat) : Nat :=
   if opts.pad then (3 - byteLen % 3) % 3 else 0
 
+/-- Reference model for `Base64.encode` under `defaultEncodeOptions`. -/
+def encodeDefaultModel (bs : ByteArray) : String :=
+  encodeModel defaultEncodeOptions bs
+
+/-- Reference model for `Base64.encodeUrl` under `urlEncodeOptions`. -/
+def encodeUrlModel (bs : ByteArray) : String :=
+  encodeModel urlEncodeOptions bs
+
+/-- Allowed outcome relation for `Base64.decodeWith` against `decodeModel`. -/
+def allowedDecodeWith (opts : DecodeOptions) (s : String) (out : Except Base64Error ByteArray) : Prop :=
+  out.mapError (fun e => (e.kind, e.offset)) = decodeModel opts s ∧
+    ∀ e, out = .error e → e.message ≠ ""
+
+/-- Allowed outcome relation for `Base64.decode` against `decodeModel defaultDecodeOptions`. -/
+def allowedDecode (s : String) (out : Except Base64Error ByteArray) : Prop :=
+  allowedDecodeWith defaultDecodeOptions s out
+
+/-- Allowed outcome relation for `Base64.decodeUrl` against `decodeModel urlDecodeOptions`. -/
+def allowedDecodeUrl (s : String) (out : Except Base64Error ByteArray) : Prop :=
+  allowedDecodeWith urlDecodeOptions s out
+
 end LeanSwe.Base64.Model

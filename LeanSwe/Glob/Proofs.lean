@@ -1,3 +1,4 @@
+import Core.Refines
 import LeanSwe.Glob.Interface
 import LeanSwe.Glob.SpecTests
 
@@ -1289,6 +1290,37 @@ theorem proof_glob_escape_matchesModel :
     AllPass (test_glob_escape_matchesModel defaultApi) := by
   intro literal
   simp [defaultApi, escape, Internal.escape, Model.escapeModel, escapeChars_eq_model, assert]
+
+/-- Full public `Interface` refinement of `LeanSwe.Glob` against `LeanSwe.Glob.Model`. -/
+theorem refines_model :
+    Core.RefinesPure LeanSwe.Glob.validate Model.allowedValidate ∧
+    Core.RefinesPure2 LeanSwe.Glob.isMatch Model.allowedIsMatch ∧
+    Core.RefinesPure2 LeanSwe.Glob.filter Model.allowedFilter ∧
+    Core.RefinesPure2 LeanSwe.Glob.countMatches Model.allowedCountMatches ∧
+    Core.RefinesPureEq LeanSwe.Glob.escape Model.escapeModel := by
+  refine ⟨fun pat => ?_, fun pat path => ?_, fun pat paths => ?_, fun pat paths => ?_,
+    fun literal => (proof_glob_escape_matchesModel literal).1⟩
+  · have h := proof_glob_validate_matchesModel pat
+    dsimp only [AllPass, AllPassRun, test_glob_validate_matchesModel, defaultApi,
+      LeanSwe.Glob.validate, Model.allowedValidate, nondet, bind, pure, assert] at h ⊢
+    cases hx : Internal.validate pat <;> cases hm : Model.validateModel pat <;>
+      simp [hx, hm] at h ⊢
+    exact h
+  · have h := proof_glob_isMatch_matchesModel pat path
+    dsimp only [AllPass, AllPassRun, test_glob_isMatch_matchesModel, defaultApi,
+      LeanSwe.Glob.isMatch, Model.allowedIsMatch, nondet, bind, pure, assert] at h ⊢
+    cases hx : Internal.isMatch pat path <;> cases hm : Model.isMatchModel pat path <;>
+      simp [hx, hm] at h ⊢ <;> exact h
+  · have h := proof_glob_filter_matchesModel pat paths
+    dsimp only [AllPass, AllPassRun, test_glob_filter_matchesModel, defaultApi,
+      LeanSwe.Glob.filter, Model.allowedFilter, nondet, bind, pure, assert] at h ⊢
+    cases hx : Internal.filter pat paths <;> cases hm : Model.filterModel pat paths <;>
+      simp [hx, hm] at h ⊢ <;> exact h
+  · have h := proof_glob_countMatches_matchesModel pat paths
+    dsimp only [AllPass, AllPassRun, test_glob_countMatches_matchesModel, defaultApi,
+      LeanSwe.Glob.countMatches, Model.allowedCountMatches, nondet, bind, pure, assert] at h ⊢
+    cases hx : Internal.countMatches pat paths <;> cases hm : Model.countMatchesModel pat paths <;>
+      simp [hx, hm] at h ⊢ <;> exact h
 
 end LeanSwe.Glob.Proofs
 
