@@ -939,6 +939,76 @@ private unsafe def checkSandboxTrustedClosure (env : Environment) : IO (Array St
   sbxEnv.freeRegions
   return errs
 
+private def isAllowedGitDirectImport (srcMod imp : Name) : Bool :=
+  if !isProjectModule imp then isAllowedProjectDirectImport imp
+  else if imp.getRoot == `Core then true
+  else match srcMod with
+  | `LeanSwe.Git.Types => false
+  | `LeanSwe.Git.Model => imp == `LeanSwe.Git.Types
+  | `LeanSwe.Git.Impl => imp == `LeanSwe.Git.Types || imp == `LeanSwe.Git.Model
+  | `LeanSwe.Git.Interface =>
+    imp ∈ [`LeanSwe.Git.Types, `LeanSwe.Git.Model, `LeanSwe.Git.Impl,
+      `LeanSwe.Process.Types, `LeanSwe.Process.Interface, `LeanSwe.EnvVars.Types, `LeanSwe.EnvVars.Interface]
+  | `LeanSwe.Git.SpecTests => imp ∈ [`LeanSwe.Git.Types, `LeanSwe.Git.Model, `LeanSwe.Git.Impl, `LeanSwe.Git.Interface]
+  | _ => if srcMod == `LeanSwe.Git.Proofs || srcMod.components.contains `Proofs then
+      let p := imp.components.take 2; p == [`LeanSwe, `Git] || p == [`LeanSwe, `Process] || p == [`LeanSwe, `EnvVars]
+    else false
+
+private def checkGitTrustedClosure (env : Environment) (extraMods : Array Name) : IO (Array String) := do
+  let gitMods := discoverPackageModules env extraMods `LeanSwe.Git
+    #[`LeanSwe.Git.Types, `LeanSwe.Git.Model, `LeanSwe.Git.Impl, `LeanSwe.Git.Interface, `LeanSwe.Git.SpecTests, `LeanSwe.Git.Proofs]
+  let csimpState := Lean.Compiler.CSimp.ext.getState env
+  let mut errs : Array String := #[]
+  let mut stdVisited : Std.HashSet (Name × Bool) := {}
+  let mut stdQueue : Array (Name × Bool × Name) := #[]
+  for m in gitMods do
+    let some modIdx := env.header.moduleNames.findIdx? (· == m) | do errs := errs.push s!"TRUSTED_CLOSURE_MISSING_GIT_MODULE: {m}"; continue
+    let some data := env.header.moduleData[modIdx]? | continue
+    for imp in data.imports do
+      if !isAllowedGitDirectImport m imp.module then errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_IMPORT: {m} imports {imp.module}"
+    for c in data.constants do
+      if c matches .opaqueInfo _ || (getExternAttrData? env c.name).isSome then errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_EXTERN: {c.name} in {m}"
+      if let some impl := Lean.Compiler.getImplementedBy? env c.name then
+        if !(← isCompilerGeneratedCtorIdx env c.name impl c) then errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_IMPL_BY: {c.name} -> {impl} in {m}"
+      if let .defnInfo dv := c then
+        if dv.safety != .safe && !(← isAllowedCompilerUnsafeDef env c.name dv) then errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_UNSAFE_DEF: {c.name} in {m}"
+      for u in c.type.getUsedConstants ++ (c.value?.map (·.getUsedConstants) |>.getD #[]) do
+        let uMod := env.getModuleIdxFor? u |>.bind (env.header.moduleNames[·]?) |>.getD .anonymous
+        if !isProjectModule uMod then
+          if !stdVisited.contains (u, false) then stdQueue := stdQueue.push (m, false, u)
+        else if uMod != m && !isAllowedGitDirectImport m uMod &&
+            !(m == `LeanSwe.Git.Interface && (uMod == `LeanSwe.Process.Raw.Types || uMod == `LeanSwe.EnvVars.Raw.Types)) then
+          errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_REF: {c.name} in {m} references {u} in {uMod}"
+        else if m == `LeanSwe.Git.Interface && (uMod == `LeanSwe.Process.Interface || uMod == `LeanSwe.EnvVars.Interface) &&
+            u != `LeanSwe.Process.run && u != `LeanSwe.EnvVars.listEnv then
+          errs := errs.push s!"TRUSTED_CLOSURE_GIT_WIRING: {c.name} in {m} references {u}"
+  while !stdQueue.isEmpty do
+    let (originMod, inStdImpl, cName) := stdQueue.back!; stdQueue := stdQueue.pop
+    if stdVisited.contains (cName, inStdImpl) then continue
+    stdVisited := stdVisited.insert (cName, inStdImpl)
+    let some cinfo := env.find? cName | continue
+    if cinfo matches .axiomInfo _ then
+      if !allowedAxioms.contains cName && !(inStdImpl && cName == `lcProof) then errs := errs.push s!"TRUSTED_CLOSURE_AXIOM_FORBIDDEN: {cName} reachable from {originMod}"
+      continue
+    let cMod := env.getModuleIdxFor? cName |>.bind (env.header.moduleNames[·]?) |>.getD .anonymous
+    if isProjectModule cMod then continue
+    if let some impl := Lean.Compiler.getImplementedBy? env cName then
+      if !stdVisited.contains (impl, true) then stdQueue := stdQueue.push (originMod, true, impl)
+    if let some e := csimpState.map.find? cName then
+      if !stdVisited.contains (e.toDeclName, true) then stdQueue := stdQueue.push (originMod, true, e.toDeclName)
+    if let some ext := getExternAttrData? env cName then
+      if isForbiddenHostExtern cName cinfo ext then errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_HOST_IO_EXTERN: {cName} in {cMod} reachable from {originMod}"
+    let extra : List Name := match cinfo with | .ctorInfo v => [v.induct] | .recInfo v => v.all | .inductInfo v => v.all ++ v.ctors | _ => []
+    for u in cinfo.type.getUsedConstants ++ (cinfo.value?.map (·.getUsedConstants) |>.getD #[]) ++ extra.toArray do
+      if !stdVisited.contains (u, inStdImpl) then stdQueue := stdQueue.push (originMod, inStdImpl, u)
+  for fn in [`LeanSwe.Git.defaultRawOps, `LeanSwe.Git.defaultApi] do
+    if (env.getModuleIdxFor? fn |>.bind (env.header.moduleNames[·]?)) != some `LeanSwe.Git.Interface || !(env.find? fn matches some (.defnInfo _)) then
+      errs := errs.push s!"TRUSTED_CLOSURE_GIT_WIRING: {fn} must be a safe def in LeanSwe.Git.Interface"
+  if let some (.defnInfo dv) := env.find? `LeanSwe.Git.defaultApi then
+    if !dv.value.consumeMData.getAppFn.consumeMData.isConstOf `LeanSwe.Git.Impl.mkApiM then
+      errs := errs.push "TRUSTED_CLOSURE_GIT_WIRING: defaultApi must call LeanSwe.Git.Impl.mkApiM"
+  return errs
+
 private def checkPasswdPrivateWiring (env : Environment) : IO (Array String) := do
   let mut privRawUid? : Option Name := none
   let mut privRawNam? : Option Name := none
@@ -1549,7 +1619,8 @@ unsafe def main (args : List String) : IO UInt32 := do
       m.components.contains `Proofs || m.getRoot == `Core ||
       m.components.take 2 == [`LeanSwe, `EnvVars] ||
       m.components.take 2 == [`LeanSwe, `CryptoHash] ||
-      m.components.take 2 == [`LeanSwe, `LinuxSyscall]
+      m.components.take 2 == [`LeanSwe, `LinuxSyscall] ||
+      m.components.take 2 == [`LeanSwe, `Git]
 
   let rootLeanSwePath := repoDir / "LeanSwe.lean"
   match ← parseModuleCommands env rootLeanSwePath with
@@ -1889,7 +1960,8 @@ unsafe def main (args : List String) : IO UInt32 := do
   let chClosureErrs ← checkPackageTrustedClosure repoDir "CryptoHash" chAuditMods
     isAllowedCryptoHashClosureModule `LeanSwe.CryptoHash.Raw.Interface allowedCryptoHashExternSyms false
   let sbxClosureErrs ← checkSandboxTrustedClosure env
-  errors := errors ++ axiomErrs ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sbxClosureErrs
+  let gitClosureErrs ← checkGitTrustedClosure env importableExtraMods
+  errors := errors ++ axiomErrs ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sbxClosureErrs ++ gitClosureErrs
 
   let mut withAssumeCount := 0
   for (m, pName) in promises do

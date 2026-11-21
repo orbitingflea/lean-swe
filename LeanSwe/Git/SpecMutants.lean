@@ -11,11 +11,10 @@ open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.Git.Model
 
-example : cleanGitEnv #[("GIT_DIR", "/bad"), ("HOME", "/var/u")] #[("GIT_TERMINAL_PROMPT", some "1"), ("GIT_AUTHOR_NAME", some "A"), ("FOO", some "bar")] =
-    #[("GIT_DIR", none),
-      ("GIT_TERMINAL_PROMPT", some "0"), ("GIT_CONFIG_COUNT", some "1"),
-      ("GIT_CONFIG_KEY_0", some "safe.bareRepository"), ("GIT_CONFIG_VALUE_0", some "all"),
-      ("GIT_AUTHOR_NAME", some "A"), ("FOO", some "bar")] := by
+example : cleanGitEnv #[("GIT_DIR", "/bad"), ("HOME", "/var/u")]
+      #[("GIT_TERMINAL_PROMPT", some "1"), ("GIT_AUTHOR_NAME", some "A"), ("FOO", some "bar")] =
+    #[("GIT_DIR", none)] ++ defaultGitSafetyEnv.toArray ++
+      #[("GIT_AUTHOR_NAME", some "A"), ("FOO", some "bar")] := by
   cbv
 
 example : parsePorcelainStatusZ "R  dest.txt\x00src.txt\x00".toUTF8 =
@@ -26,49 +25,55 @@ example : parseDiffNameStatusZ "R100\x00src.txt\x00dest.txt\x00".toUTF8 =
     .ok #[{ kind := .renamed 100, path := "dest.txt", origPath := some "src.txt" }] := by
   cbv
 
-example : isValidRepoState
-    { rootPath := "/repo"
+example : isValidRepoInstance
+    { commonDir := "/repo/.git".toUTF8
       commits := [
         { id := mkSyntheticCommitId 0, parents := [] },
         { id := mkSyntheticCommitId 1, parents := [mkSyntheticCommitId 0] },
         { id := mkSyntheticCommitId 2, parents := [mkSyntheticCommitId 0] }
       ]
-      branches := [
-        ({ raw := "main" }, mkSyntheticCommitId 1),
-        ({ raw := "feat" }, mkSyntheticCommitId 2)
+      refs := [
+        ("refs/heads/main", mkSyntheticCommitId 1),
+        ("refs/heads/feat", mkSyntheticCommitId 2)
       ]
       worktrees := [
-        { path := "/repo", head := .attached { raw := "main" } (some (mkSyntheticCommitId 1)) }
+        { rootPath := "/repo".toUTF8, head := .symbolic { raw := "main" } }
       ] } = true := by
   cbv
 
 example : mergeBase?
-    { rootPath := "/repo"
+    { commonDir := "/repo/.git".toUTF8
       commits := [
         { id := mkSyntheticCommitId 0, parents := [] },
         { id := mkSyntheticCommitId 1, parents := [mkSyntheticCommitId 0] },
         { id := mkSyntheticCommitId 2, parents := [mkSyntheticCommitId 0] }
       ]
-      branches := []
-      worktrees := [{ path := "/repo", head := .detached (mkSyntheticCommitId 1) }] }
+      refs := []
+      worktrees := [{ rootPath := "/repo".toUTF8, head := .detached (mkSyntheticCommitId 1) }] }
     (mkSyntheticCommitId 1) (mkSyntheticCommitId 2) = some (mkSyntheticCommitId 0) := by
   cbv
 
-private def stubGitApi : GitApiM (StateM RepoState) :=
+private def stubGitApi : GitApiM (StateM GitRepoState) :=
   let stubErr : GitError := { kind := .commandFailed, message := "stub" }
   { isRepo := fun _ s => (.ok true, s)
     repoRoot := fun p s => (.ok p, s)
     commonDir := fun p s => (.ok (p ++ "/.git"), s)
     headCommit? := fun _ s =>
-      match s.worktrees.head? with
-      | some w => (.ok (headCommitOfSlot w.head), s)
+      match s.repos.head? with
+      | some r =>
+        match r.worktrees.head? with
+        | some w => (.ok (headCommitOfSymbolic r w.head), s)
+        | none => (.ok none, s)
       | none => (.ok none, s)
     headBranch? := fun _ s =>
-      match s.worktrees.head? with
-      | some w =>
-        match w.head with
-        | .attached b _ => (.ok (some b), s)
-        | .detached _ => (.ok none, s)
+      match s.repos.head? with
+      | some r =>
+        match r.worktrees.head? with
+        | some w =>
+          match w.head with
+          | .symbolic b => (.ok (some b), s)
+          | .detached _ => (.ok none, s)
+        | none => (.ok none, s)
       | none => (.ok none, s)
     headState := fun _ s => (.error stubErr, s)
     revParseCommit := fun _ _ s => (.error { kind := .invalidRef, message := "unborn" }, s)
@@ -80,8 +85,9 @@ private def stubGitApi : GitApiM (StateM RepoState) :=
     showFile? := fun _ _ _ s => (.ok none, s)
     init := fun path _ b? s =>
       (.ok (), { s with
-        rootPath := path
-        worktrees := [{ path := path, head := .attached (b?.getD { raw := "main" }) none }] })
+        repos := [{
+          commonDir := (path ++ "/.git").toUTF8
+          worktrees := [{ rootPath := path.toUTF8, head := .symbolic (b?.getD { raw := "main" }) }] }] })
     clone := fun _ _ _ s => (.ok (), s)
     add := fun _ _ _ s => (.ok (), s)
     commit := fun _ _ s => (.error { kind := .nothingToCommit, message := "nothing to commit" }, s)
@@ -137,7 +143,7 @@ example : ¬ Core.AllPass (test_git_cleanGitEnv_stripsInheritedGitKeys fun _ ext
 
 example : ¬ Core.AllPass (test_git_cleanGitEnv_preservesValidNonGitExtra fun _ _ => #[]) := by
   intro h
-  have h0 := h #[] "FOO" (some "bar") (by decide) (by decide) (by decide)
+  have h0 := h #[] "FOO" (some "bar") (by decide) (by decide) (by decide) (by decide)
   simp [assert] at h0
 
 example : ¬ Core.AllPass (test_git_mkCommitId_validatesHexLengthAndChars fun s => .ok { hex := s }) := by
@@ -148,7 +154,7 @@ example : ¬ Core.AllPass (test_git_mkCommitId_validatesHexLengthAndChars fun s 
 
 example : ¬ Core.AllPass (test_git_mkRefName_rejectsUnsafeRefs fun s => .ok { raw := s }) := by
   intro h
-  have h0 := h "-rf" (Or.inr (Or.inl rfl))
+  have h0 := h "-rf" (Or.inr (Or.inr (Or.inl rfl)))
   simp [assert] at h0
 
 example : ¬ Core.AllPass (test_git_parsePorcelainStatusZ_framingAndEmpty fun _ => .ok #[]) := by
@@ -178,10 +184,10 @@ example : ¬ Core.AllPass (test_git_model_isAncestor_reflexiveAndGuarded fun _ _
   intro h
   dsimp [test_git_model_isAncestor_reflexiveAndGuarded, Core.AllPass, bind, assert] at h
   let c0 : CommitId := { hex := "0000000000000000000000000000000000000000" }
-  let s : RepoState := {
-    rootPath := "/repo"
+  let s : RepoInstance := {
+    commonDir := "/repo/.git".toUTF8
     commits := [{ id := c0, parents := [] }]
-    worktrees := [{ path := "/repo", head := .detached c0 }]
+    worktrees := [{ rootPath := "/repo".toUTF8, head := .detached c0 }]
   }
   have hHas : hasCommit s c0 = true := by cbv
   have h0 := h s c0 c0
@@ -195,24 +201,24 @@ example : ¬ Core.AllPass (test_git_model_isAncestor_transitiveAndMergeBaseValid
   let c0 : CommitId := { hex := "0000000000000000000000000000000000000000" }
   let c1 : CommitId := { hex := "0000000000000000000000000000000000000001" }
   let c2 : CommitId := { hex := "0000000000000000000000000000000000000002" }
-  let s : RepoState := {
-    rootPath := "/repo"
+  let s : RepoInstance := {
+    commonDir := "/repo/.git".toUTF8
     commits := [
       { id := c0, parents := [] },
       { id := c1, parents := [c0] },
       { id := c2, parents := [c1] }
     ]
-    worktrees := [{ path := "/repo", head := .detached c2 }]
+    worktrees := [{ rootPath := "/repo".toUTF8, head := .detached c2 }]
   }
-  have hValid : ValidRepoState s := by cbv
+  have hValid : isValidRepoInstance s = true := by cbv
   have h0 := (h s c0 c1 c2 hValid).1
   cbv at h0
 
 example : ¬ Core.AllPass (test_git_api_unbornHead_behavior
     { stubGitApi with revParseCommit := fun _ _ s => (.error { kind := .notARepo, message := "bad" }, s) }) := by
   intro h
-  let s0 : RepoState := { rootPath := "/repo" }
-  have h0 := h s0 "/repo" { raw := "main" } (by decide) rfl
+  let s0 : GitRepoState := {}
+  have h0 := h s0 "/repo" { raw := "main" } rfl rfl (by decide) rfl
   simp [stubGitApi, StateT.run, bind, assert] at h0
 
 example : ¬ Core.AllPass (test_git_api_commit_emptyVsAllowEmpty
@@ -221,15 +227,19 @@ example : ¬ Core.AllPass (test_git_api_commit_emptyVsAllowEmpty
   intro h
   let c0 : CommitId := { hex := "0000000000000000000000000000000000000000" }
   let b : RefName := { raw := "main" }
-  let wt : WorktreeSlot := { path := "/repo", head := .attached b (some c0) }
-  let s0 : RepoState := {
-    rootPath := "/repo"
+  let wt : WorktreeSlot := { rootPath := "/repo".toUTF8, head := .symbolic b }
+  let repo : RepoInstance := {
+    commonDir := "/repo/.git".toUTF8
     commits := [{ id := c0, parents := [] }]
-    branches := [(b, c0)]
+    refs := [("refs/heads/main", c0)]
     worktrees := [wt]
   }
-  have hValid : ValidRepoState s0 := by cbv
-  have h0 := h s0 wt hValid ⟨rfl, rfl, rfl, rfl⟩
+  let s0 : GitRepoState := {
+    vfs := .dir true true [("repo".toUTF8, .dir true true [])]
+    repos := [repo]
+  }
+  have hValid : isValidGitRepoState s0 = true := by cbv
+  have h0 := h s0 repo wt c0 b hValid ⟨rfl, rfl, rfl, rfl⟩ ⟨rfl, rfl⟩ ⟨rfl, rfl⟩ rfl
   simp [bind, StateT.run, assert] at h0
 
 example : ¬ Core.AllPass (test_git_api_worktreeAdd_branchInUseRejected
@@ -238,15 +248,19 @@ example : ¬ Core.AllPass (test_git_api_worktreeAdd_branchInUseRejected
   intro h
   let c0 : CommitId := { hex := "0000000000000000000000000000000000000000" }
   let b : RefName := { raw := "main" }
-  let wt : WorktreeSlot := { path := "/repo", head := .attached b (some c0) }
-  let s0 : RepoState := {
-    rootPath := "/repo"
+  let wt : WorktreeSlot := { rootPath := "/repo".toUTF8, head := .symbolic b }
+  let repo : RepoInstance := {
+    commonDir := "/repo/.git".toUTF8
     commits := [{ id := c0, parents := [] }]
-    branches := [(b, c0)]
+    refs := [("refs/heads/main", c0)]
     worktrees := [wt]
   }
-  have hValid : ValidRepoState s0 := by cbv
-  have h0 := h s0 wt b c0 "/wt2" hValid ⟨rfl, rfl⟩ ⟨by decide, by decide⟩ (by decide)
+  let s0 : GitRepoState := {
+    vfs := .dir true true [("repo".toUTF8, .dir true true [])]
+    repos := [repo]
+  }
+  have hValid : isValidGitRepoState s0 = true := by cbv
+  have h0 := h s0 repo wt b c0 hValid ⟨rfl, rfl, rfl, rfl⟩ ⟨rfl, rfl⟩ ⟨rfl, rfl⟩ (by decide)
   simp [StateT.run, assert] at h0
 
 example : ¬ Core.AllPass (test_git_api_checkout_dirtyWorktreeRejected
@@ -254,28 +268,40 @@ example : ¬ Core.AllPass (test_git_api_checkout_dirtyWorktreeRejected
       checkout := fun _ _ _ s => (.ok (), s) }) := by
   intro h
   let c0 : CommitId := { hex := "0000000000000000000000000000000000000000" }
-  let b : RefName := { raw := "main" }
+  let c1 : CommitId := { hex := "0000000000000000000000000000000000000001" }
+  let bMain : RefName := { raw := "main" }
+  let bFeat : RefName := { raw := "feat" }
+  let e0 : GitTreeEntry := { kind := .regular false, bytes := "v0".toUTF8 }
+  let e1 : GitTreeEntry := { kind := .regular false, bytes := "v1".toUTF8 }
   let wt : WorktreeSlot := {
-    path := "/repo"
-    head := .attached b (some c0)
-    unstaged := [("a.txt", some "dirty")]
+    rootPath := "/repo".toUTF8
+    head := .symbolic bMain
+    index := { entries := [("a.txt".toUTF8, e0)] }
   }
-  let s0 : RepoState := {
-    rootPath := "/repo"
-    commits := [{ id := c0, parents := [] }]
-    branches := [(b, c0)]
+  let repo : RepoInstance := {
+    commonDir := "/repo/.git".toUTF8
+    commits := [
+      { id := c0, parents := [], tree := [("a.txt".toUTF8, e0)] },
+      { id := c1, parents := [c0], tree := [("a.txt".toUTF8, e1)] }
+    ]
+    refs := [("refs/heads/main", c0), ("refs/heads/feat", c1)]
     worktrees := [wt]
   }
-  have hValid : ValidRepoState s0 := by cbv
-  have h0 := h s0 wt b c0 hValid ⟨rfl, rfl, rfl⟩ (List.Mem.head _)
+  let s0 : GitRepoState := {
+    vfs := .dir true true [("repo".toUTF8, .dir true true [("a.txt".toUTF8, .file false "dirty".toUTF8)])]
+    repos := [repo]
+  }
+  have hValid : isValidGitRepoState s0 = true := by cbv
+  have h0 := h s0 repo wt bMain bFeat c0 c1 hValid ⟨rfl, rfl, rfl, rfl⟩ ⟨rfl, rfl⟩
+    ⟨rfl, rfl⟩ ⟨by decide, by decide⟩ rfl rfl rfl rfl
   simp [StateT.run, assert] at h0
 
 example : ¬ Core.AllPass (test_git_api_withWorktree_cleanupAndErrorPrecedence stubRawMkApi) := by
   intro h
-  have h0 := h "/repo" "/wt" true true ⟨by decide, by decide⟩
+  have h0 := h "/repo" "/wt" true true ⟨by cbv, by cbv⟩
   dsimp [test_git_api_withWorktree_cleanupAndErrorPrecedence, stubRawMkApi, mockRawOps,
     StateT.run, bind, StateT.bind, pure, StateT.pure, assert] at h0
-  cases h0.1
+  omega
 
 example : ¬ Core.AllPass (test_git_raw_mkApi_isolationAndGuards stubRawMkApi) := by
   intro h
@@ -284,6 +310,27 @@ example : ¬ Core.AllPass (test_git_raw_mkApi_isolationAndGuards stubRawMkApi) :
   rcases h with ⟨⟨e, he, hkind⟩, _⟩
   cases he
   cases hkind
+
+example : ¬ Core.AllPass (test_git_raw_mkApi_queryAndParserDelegation stubRawMkApi) := by
+  intro h
+  dsimp [test_git_raw_mkApi_queryAndParserDelegation, stubRawMkApi, mockRawOps, Core.AllPass,
+    StateT.run, bind, StateT.bind, pure, StateT.pure, assert] at h
+  rcases h with ⟨⟨hrr, _⟩, _⟩
+  cases hrr
+
+example : ¬ Core.AllPass (test_git_raw_mkApi_mutationAndFlagDelegation stubRawMkApi) := by
+  intro h
+  dsimp [test_git_raw_mkApi_mutationAndFlagDelegation, stubRawMkApi, mockRawOps, Core.AllPass,
+    StateT.run, bind, StateT.bind, pure, StateT.pure, assert] at h
+  rcases h with ⟨⟨hir, _⟩, _⟩
+  cases hir
+
+example : ¬ Core.AllPass (test_git_raw_mkApi_extendedFlagAndCommitDelegation stubRawMkApi) := by
+  intro h
+  dsimp [test_git_raw_mkApi_extendedFlagAndCommitDelegation, stubRawMkApi, mockRawOps, Core.AllPass,
+    StateT.run, bind, StateT.bind, pure, StateT.pure, assert] at h
+  rcases h with ⟨⟨hcm, _⟩, _⟩
+  cases hcm
 
 example : ¬ Core.AllPass (test_git_status_parsesRealOutput fun _ => .ok #[]) := by
   intro h
@@ -296,5 +343,28 @@ example : ¬ Core.AllPass (test_git_worktreeList_parsesRealOutput fun _ => .ok #
   dsimp [test_git_worktreeList_parsesRealOutput, Core.AllPass, assert] at h
   have hlen := congrArg Array.size (Except.ok.inj h.1)
   simp at hlen
+
+example : ¬ Core.AllPass (test_git_api_resetDiffFetchDeleteAndSwitch_semantics stubGitApi) := by
+  intro h
+  dsimp [test_git_api_resetDiffFetchDeleteAndSwitch_semantics, stubGitApi, Core.AllPass,
+    StateT.run, bind, StateT.bind, pure, StateT.pure, assert] at h
+  rcases h with ⟨⟨_, _, hSoftSt⟩, _⟩
+  have hlen := congrArg Array.size (Except.ok.inj hSoftSt)
+  simp at hlen
+
+example : ¬ Core.AllPass (test_git_raw_mkApi_forceAndShortShaGuards stubRawMkApi) := by
+  intro h
+  dsimp [test_git_raw_mkApi_forceAndShortShaGuards, stubRawMkApi, mockRawOps, Core.AllPass,
+    StateT.run, bind, StateT.bind, pure, StateT.pure, assert] at h
+  rcases h with ⟨⟨hsw, _⟩, _⟩
+  cases hsw
+
+example : ¬ Core.AllPass (test_git_raw_mkApi_secondaryShortShaAnd40HexWorktreeGuards stubRawMkApi) := by
+  intro h
+  dsimp [test_git_raw_mkApi_secondaryShortShaAnd40HexWorktreeGuards, stubRawMkApi, mockRawOps,
+    Core.AllPass, StateT.run, bind, StateT.bind, pure, StateT.pure, assert] at h
+  rcases h with ⟨⟨e, he, hkind, _⟩, _⟩
+  cases he
+  cases hkind
 
 end LeanSwe.Git

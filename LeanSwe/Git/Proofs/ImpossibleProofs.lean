@@ -164,7 +164,7 @@ private theorem defaultRawOps_execGit_res (envOverrides : Array (String × Optio
 private theorem runGitRaw_res (req : GitRawRequest) (w : Void IO.RealWorld) :
     ∃ res w', LeanSwe.Git.Impl.runGitRaw LeanSwe.Git.defaultRawOps req w = EST.Out.ok res w' ∧
       ∀ e, res = .error e →
-        (e.kind = .invalidPath ∧ req.cwd.isSome = true) ∨
+        (e.kind = .invalidPath ∧ ∃ p, req.cwd = some p ∧ LeanSwe.Git.Model.isValidPathArg p = false) ∨
         e.kind = .invalidInput ∨
         e.kind = .timeout ∨
         e.kind = .commandFailed := by
@@ -180,7 +180,10 @@ private theorem runGitRaw_res (req : GitRawRequest) (w : Void IO.RealWorld) :
       simp only [LeanSwe.Git.Impl.validateCwd?, hreq] at hcwd
       split at hcwd
       · cases hcwd
-      · cases hcwd; exact Or.inl ⟨rfl, rfl⟩
+      · cases hcwd
+        rename_i hinv
+        have hinvF : LeanSwe.Git.Model.isValidPathArg p = false := Bool.eq_false_iff.mpr hinv
+        exact Or.inl ⟨rfl, p, rfl, hinvF⟩
   | ok _ =>
     dsimp only
     cases henv : LeanSwe.Git.Impl.validateExtraEnv req.extraEnv with
@@ -217,13 +220,18 @@ private theorem classifyError_kinds (cmd : String) (out : GitRawOutput) :
     (LeanSwe.Git.Impl.classifyError cmd out).kind ≠ .invalidPath ∧
     (LeanSwe.Git.Impl.classifyError cmd out).kind ≠ .parseError := by
   dsimp only [LeanSwe.Git.Impl.classifyError]
-  repeat' (split; try exact ⟨by decide, by decide⟩)
-  exact ⟨by decide, by decide⟩
+  by_cases hBlank : (LeanSwe.Git.Impl.trimAsciiWhitespace (LeanSwe.Git.Impl.decodeUtf8Lossy out.stderr)).isEmpty = true
+  · simp only [hBlank, ↓reduceIte]
+    repeat' (split; try exact ⟨by decide, by decide⟩)
+    exact ⟨by decide, by decide⟩
+  · simp only [hBlank, Bool.false_eq_true, ↓reduceIte]
+    repeat' (split; try exact ⟨by decide, by decide⟩)
+    exact ⟨by decide, by decide⟩
 
 private theorem runGitChecked_res (cmd : String) (req : GitRawRequest) (w : Void IO.RealWorld) :
     ∃ res w', LeanSwe.Git.Impl.runGitChecked LeanSwe.Git.defaultRawOps cmd req w = EST.Out.ok res w' ∧
       ∀ e, res = .error e →
-        (req.cwd = none → e.kind ≠ .invalidPath) ∧
+        (req.cwd.elim True (fun p => LeanSwe.Git.Model.isValidPathArg p = true) → e.kind ≠ .invalidPath) ∧
         e.kind ≠ .parseError := by
   unfold LeanSwe.Git.Impl.runGitChecked
   rcases runGitRaw_res req w with ⟨r, w1, hw1, hkr⟩
@@ -233,8 +241,9 @@ private theorem runGitChecked_res (cmd : String) (req : GitRawRequest) (w : Void
     dsimp only
     refine ⟨_, w1, rfl, fun _ he => ?_⟩
     cases he
-    rcases hkr e rfl with ⟨h1, h2⟩ | h | h | h
-    · exact ⟨fun hnone => by simp [hnone] at h2, by rw [h1]; decide⟩
+    rcases hkr e rfl with ⟨h1, p, hp, hinv⟩ | h | h | h
+    · refine ⟨fun hvalid => ?_, by rw [h1]; decide⟩
+      simp [hp, hinv] at hvalid
     · exact ⟨fun _ => by rw [h]; decide, by rw [h]; decide⟩
     · exact ⟨fun _ => by rw [h]; decide, by rw [h]; decide⟩
     · exact ⟨fun _ => by rw [h]; decide, by rw [h]; decide⟩
@@ -275,7 +284,7 @@ private theorem bind_runGitChecked_no_cwd (cmd : String) (req : GitRawRequest)
   | error e =>
     refine ⟨_, w1, rfl, fun _ he => ?_⟩
     cases he
-    exact ⟨(hkr e rfl).1 hcwd, (hkr e rfl).2⟩
+    exact ⟨(hkr e rfl).1 (by simp [hcwd]), (hkr e rfl).2⟩
   | ok _ => exact ⟨_, w1, rfl, fun _ h => by cases h⟩
 
 private theorem neverErrorKindIO_of_ok {α : Type} (kind : GitErrorKind)
@@ -289,13 +298,256 @@ private theorem neverErrorKindIO_of_ok {α : Type} (kind : GitErrorKind)
   | ok _ => trivial
   | error e => exact hk e rfl
 
+private theorem validateFsPathArg_kinds (p : String) (e : GitError)
+    (h : LeanSwe.Git.Model.validateFsPathArg p = .error e) :
+    e.kind = .invalidPath ∨ e.kind = .invalidInput := by
+  unfold LeanSwe.Git.Model.validateFsPathArg at h
+  split at h
+  · cases h; exact Or.inl rfl
+  · split at h
+    · cases h; exact Or.inr rfl
+    · cases h
+
 private theorem validateRepoPath_never (repoPath : String) (e : GitError)
     (h : LeanSwe.Git.Impl.validateRepoPath repoPath = .error e) :
-    e.kind = .invalidPath := by
-  unfold LeanSwe.Git.Impl.validateRepoPath at h
+    e.kind ≠ .notARepo ∧ e.kind ≠ .parseError := by
+  rcases validateFsPathArg_kinds repoPath e h with hk | hk <;> rw [hk] <;> exact ⟨by decide, by decide⟩
+
+private theorem validateCloneEndpoint_kind (p : String) (e : GitError)
+    (h : LeanSwe.Git.Model.validateCloneEndpoint p = .error e) :
+    e.kind = .invalidInput := by
+  unfold LeanSwe.Git.Model.validateCloneEndpoint at h
+  split at h
+  · cases h; rfl
+  · cases h
+
+private theorem validateCloneEndpoint_isValidPathArg (p : String)
+    (h : LeanSwe.Git.Model.validateCloneEndpoint p = .ok ()) :
+    LeanSwe.Git.Model.isValidPathArg p = true := by
+  unfold LeanSwe.Git.Model.validateCloneEndpoint at h
   split at h
   · cases h
-  · cases h; rfl
+  · next hcond =>
+    cases hv : LeanSwe.Git.Model.isValidPathArg p
+    · exfalso; apply hcond; simp [hv]
+    · rfl
+
+private theorem validateRelRepoPath_kind (p : String) (e : GitError)
+    (h : LeanSwe.Git.Model.validateRelRepoPath p = .error e) :
+    e.kind = .invalidPath ∨ e.kind = .invalidInput := by
+  unfold LeanSwe.Git.Model.validateRelRepoPath at h
+  split at h
+  · cases h; exact Or.inl rfl
+  · dsimp only at h
+    split at h
+    · cases h; exact Or.inl rfl
+    · split at h
+      · cases h; exact Or.inr rfl
+      · cases h
+
+private theorem mem_of_mem_dropWhile {α : Type} {p : α → Bool} {xs : List α} {x : α}
+    (h : x ∈ xs.dropWhile p) : x ∈ xs := by
+  induction xs with
+  | nil => simp at h
+  | cons a as ih =>
+    simp only [List.dropWhile] at h
+    split at h
+    · exact List.mem_cons_of_mem a (ih h)
+    · exact h
+
+private theorem validateRelRepoPaths_forM_kind (paths : List String) (e : GitError)
+    (h : paths.forM LeanSwe.Git.Model.validateRelRepoPath = Except.error e) :
+    e.kind = .invalidPath ∨ e.kind = .invalidInput := by
+  induction paths with
+  | nil => cases h
+  | cons p ps ih =>
+    dsimp only [List.forM] at h
+    cases hv : LeanSwe.Git.Model.validateRelRepoPath p with
+    | error err =>
+      simp only [hv, Bind.bind, Except.bind] at h
+      cases h
+      exact validateRelRepoPath_kind p e hv
+    | ok _ =>
+      simp only [hv, Bind.bind, Except.bind] at h
+      exact ih h
+
+private theorem validateRelRepoPaths_never_parseError (paths : Array String) (e : GitError)
+    (h : LeanSwe.Git.Model.validateRelRepoPaths paths = .error e) :
+    e.kind ≠ .parseError := by
+  unfold LeanSwe.Git.Model.validateRelRepoPaths at h
+  cases hloop : paths.toList.forM LeanSwe.Git.Model.validateRelRepoPath with
+  | error err =>
+    simp only [hloop, Bind.bind, Except.bind] at h
+    cases h
+    rcases validateRelRepoPaths_forM_kind paths.toList e hloop with hk | hk <;> rw [hk] <;> decide
+  | ok _ =>
+    simp only [hloop, Bind.bind, Except.bind] at h
+    split at h
+    · cases h; decide
+    · cases h
+
+private theorem hasNulChar_iff_mem (cs : List Char) :
+    LeanSwe.Git.Model.hasNulChar cs = false ↔ ∀ c ∈ cs, c ≠ Char.ofNat 0 := by
+  induction cs with
+  | nil => simp [LeanSwe.Git.Model.hasNulChar]
+  | cons c cs ih =>
+    simp only [LeanSwe.Git.Model.hasNulChar, Bool.or_eq_false_iff, beq_eq_false_iff_ne, ne_eq,
+      List.mem_cons, forall_eq_or_imp, ih]
+
+private theorem isValidPathArg_of_list (cs : List Char) (hne : cs ≠ [])
+    (hnul : ∀ c ∈ cs, c ≠ Char.ofNat 0) :
+    LeanSwe.Git.Model.isValidPathArg (String.ofList cs) = true := by
+  unfold LeanSwe.Git.Model.isValidPathArg
+  rw [String.toList_ofList]
+  have h1 : (!cs.isEmpty) = true := by cases cs with | nil => contradiction | cons _ _ => rfl
+  have h2 : (!LeanSwe.Git.Model.hasNulChar cs) = true := by
+    rw [Bool.not_eq_true']
+    exact (hasNulChar_iff_mem cs).mpr hnul
+  simp [h1, h2]
+
+private theorem parentPrefixChars_preserves (cs p : List Char)
+    (hnul : ∀ c ∈ cs, c ≠ Char.ofNat 0)
+    (h : LeanSwe.Git.Model.parentPrefixChars? cs = some p) :
+    p ≠ [] ∧ ∀ c ∈ p, c ≠ Char.ofNat 0 := by
+  unfold LeanSwe.Git.Model.parentPrefixChars? at h
+  cases hdrop : cs.reverse.dropWhile (· != '/') with
+  | nil => simp [hdrop] at h
+  | cons d rest =>
+    by_cases hslash : d = '/'
+    · subst hslash
+      simp only [hdrop, beq_self_eq_true, ↓reduceIte] at h
+      split at h
+      · split at h
+        · cases h
+          refine ⟨by decide, fun c hc => ?_⟩
+          have hc' : c = '/' := by simpa using hc
+          rw [hc']
+          decide
+        · cases h
+      · cases h
+        rename_i hns
+        refine ⟨fun hemp => hns (by rw [List.reverse_eq_nil_iff] at hemp; rw [hemp]; rfl), fun c hc => ?_⟩
+        have hcrev : c ∈ rest.dropWhile (· == '/') := List.mem_reverse.mp hc
+        have hc_rest : c ∈ rest := mem_of_mem_dropWhile hcrev
+        have hc_drop : c ∈ cs.reverse.dropWhile (· != '/') := by
+          rw [hdrop]; exact List.mem_cons_of_mem _ hc_rest
+        have hc_rev : c ∈ cs.reverse := mem_of_mem_dropWhile hc_drop
+        exact hnul c (List.mem_reverse.mp hc_rev)
+    · have hbeq : (d == '/') = false := beq_false_of_ne hslash
+      simp only [hdrop, hbeq, Bool.false_eq_true, ↓reduceIte] at h
+      cases h
+
+private theorem ancestorLoop_valid (revPref : List Char) (acc : List String) (cs : List Char)
+    (hacc : ∀ x ∈ acc, LeanSwe.Git.Model.isValidPathArg x = true)
+    (hnulRev : ∀ c ∈ revPref, c ≠ Char.ofNat 0)
+    (hnulCs : ∀ c ∈ cs, c ≠ Char.ofNat 0) :
+    ∀ x ∈ LeanSwe.Git.Model.ancestorLoop revPref acc cs,
+      LeanSwe.Git.Model.isValidPathArg x = true := by
+  induction cs generalizing revPref acc with
+  | nil =>
+    intro x hx
+    unfold LeanSwe.Git.Model.ancestorLoop at hx
+    dsimp only at hx
+    by_cases hEmpty : revPref.isEmpty = true
+    · simp [hEmpty] at hx
+      exact hacc x hx
+    · have hEmptyF : revPref.isEmpty = false := Bool.eq_false_iff.mpr hEmpty
+      simp only [hEmptyF, Bool.false_eq_true, ↓reduceIte] at hx
+      by_cases hHead : (acc.head? == some (String.ofList revPref.reverse)) = true
+      · simp [hHead] at hx
+        exact hacc x hx
+      · have hHeadF : (acc.head? == some (String.ofList revPref.reverse)) = false := Bool.eq_false_iff.mpr hHead
+        simp only [hHeadF, Bool.false_eq_true, ↓reduceIte, List.mem_cons] at hx
+        rcases hx with rfl | hx'
+        · apply isValidPathArg_of_list
+          · cases revPref <;> simp_all
+          · intro c hc
+            exact hnulRev c (List.mem_reverse.mp hc)
+        · exact hacc x hx'
+  | cons c rest ih =>
+    intro x hx
+    by_cases hslash : c = '/'
+    · subst hslash
+      unfold LeanSwe.Git.Model.ancestorLoop at hx
+      dsimp only at hx
+      apply ih ('/' :: revPref) _ _ ?_ ?_ x hx
+      · intro y hy
+        by_cases hSkip : (revPref.isEmpty || revPref.head? == some '/') = true
+        · simp [hSkip] at hy
+          exact hacc y hy
+        · have hSkipF : (revPref.isEmpty || revPref.head? == some '/') = false := Bool.eq_false_iff.mpr hSkip
+          simp only [hSkipF, Bool.false_eq_true, ↓reduceIte, List.mem_cons] at hy
+          rcases hy with rfl | hy'
+          · apply isValidPathArg_of_list
+            · cases revPref <;> simp_all
+            · intro ch hch
+              exact hnulRev ch (List.mem_reverse.mp hch)
+          · exact hacc y hy'
+      · intro ch hch
+        rcases List.mem_cons.mp hch with rfl | hch'
+        · decide
+        · exact hnulRev ch hch'
+      · intro ch hch
+        exact hnulCs ch (List.mem_cons_of_mem _ hch)
+    · have hc0 : c ≠ Char.ofNat 0 := hnulCs c List.mem_cons_self
+      have hLoop : LeanSwe.Git.Model.ancestorLoop revPref acc (c :: rest) =
+          LeanSwe.Git.Model.ancestorLoop (c :: revPref) acc rest := by
+        conv => lhs; unfold LeanSwe.Git.Model.ancestorLoop
+        split
+        · contradiction
+        · simp_all
+        · simp_all
+      rw [hLoop] at hx
+      apply ih (c :: revPref) acc hacc _ (fun ch hch => hnulCs ch (List.mem_cons_of_mem _ hch)) x hx
+      intro ch hch
+      rcases List.mem_cons.mp hch with rfl | hch'
+      · exact hc0
+      · exact hnulRev ch hch'
+
+private theorem ancestorCandidates_valid (p : String)
+    (hp : LeanSwe.Git.Model.isValidPathArg p = true) :
+    ∀ x ∈ LeanSwe.Git.Model.ancestorCandidates p, LeanSwe.Git.Model.isValidPathArg x = true := by
+  intro x hx
+  unfold LeanSwe.Git.Model.isValidPathArg at hp
+  simp only [Bool.and_eq_true, Bool.not_eq_true'] at hp
+  have hpnul : ∀ c ∈ p.toList, c ≠ Char.ofNat 0 := (hasNulChar_iff_mem p.toList).mp hp.2
+  have hnlnul : ∀ c ∈ (LeanSwe.Git.Model.stripTrailingSlashes p).toList, c ≠ Char.ofNat 0 := by
+    intro c hc
+    unfold LeanSwe.Git.Model.stripTrailingSlashes at hc
+    dsimp only at hc
+    split at hc
+    · split at hc
+      · have hc' : c = '/' := by simpa using hc
+        rw [hc']; decide
+      · simp at hc
+    · rw [String.toList_ofList] at hc
+      exact hpnul c (List.mem_reverse.mp (mem_of_mem_dropWhile (List.mem_reverse.mp hc)))
+  unfold LeanSwe.Git.Model.ancestorCandidates at hx
+  dsimp only at hx
+  cases hstrip : (LeanSwe.Git.Model.stripTrailingSlashes p).toList with
+  | nil =>
+    rw [hstrip] at hx
+    cases hx
+  | cons hd tl =>
+    rw [hstrip] at hx hnlnul
+    by_cases hslash : hd = '/'
+    · subst hslash
+      apply ancestorLoop_valid ['/'] ["/"] tl _ _ _ x hx
+      · intro y hy
+        have hy' : y = "/" := by simpa using hy
+        rw [hy']; decide
+      · intro c hc
+        have hc' : c = '/' := by simpa using hc
+        rw [hc']; decide
+      · intro c hc
+        exact hnlnul c (List.mem_cons_of_mem _ hc)
+    · split at hx
+      · contradiction
+      · simp_all
+      · apply ancestorLoop_valid [] ["."] (hd :: tl) _ (fun _ hc => by cases hc) hnlnul x hx
+        intro y hy
+        have hy' : y = "." := by simpa using hy
+        rw [hy']; decide
 
 private theorem isRepo_res (repoPath : String) (w : Void IO.RealWorld) :
     ∃ res w', LeanSwe.Git.isRepo repoPath w = EST.Out.ok res w' ∧
@@ -305,11 +557,7 @@ private theorem isRepo_res (repoPath : String) (w : Void IO.RealWorld) :
   cases hv : LeanSwe.Git.Impl.validateRepoPath repoPath with
   | error e =>
     dsimp only
-    refine ⟨_, w, rfl, fun _ he => ?_⟩
-    cases he
-    have hk := validateRepoPath_never repoPath e hv
-    rw [hk]
-    exact ⟨by decide, by decide⟩
+    exact ⟨_, w, rfl, fun _ he => by cases he; exact validateRepoPath_never repoPath e hv⟩
   | ok _ =>
     dsimp only
     rcases runGitRaw_res { cwd := some repoPath, args := #["rev-parse", "--git-dir"] } w with
@@ -362,8 +610,7 @@ theorem git_isAncestor_never_parseError (repoPath : String) (ancestor descendant
   cases hv : LeanSwe.Git.Impl.validateRepoPath repoPath with
   | error e =>
     dsimp only
-    refine ⟨_, w, rfl, fun _ he => ?_⟩
-    cases he; rw [validateRepoPath_never repoPath e hv]; decide
+    exact ⟨_, w, rfl, fun _ he => by cases he; exact (validateRepoPath_never repoPath e hv).2⟩
   | ok _ =>
     dsimp only
     split
@@ -396,68 +643,83 @@ theorem git_init_never_parseError (path : String) (bare : Bool) (initialBranch? 
   rw [show Git.init path bare initialBranch? =
       LeanSwe.Git.Impl.initImpl LeanSwe.Git.defaultRawOps path bare initialBranch? from rfl]
   unfold LeanSwe.Git.Impl.initImpl
-  split
-  · refine ⟨_, w, rfl, fun _ he => ?_⟩
-    cases he; dsimp only; decide
-  · cases initialBranch? with
-    | none =>
-      dsimp only
+  cases hv : LeanSwe.Git.Impl.validateRepoPath path with
+  | error e =>
+    dsimp only
+    exact ⟨_, w, rfl, fun _ he => by cases he; exact (validateRepoPath_never path e hv).2⟩
+  | ok _ =>
+    dsimp only
+    let runAfter : Array String → IO (Except GitError Unit) := fun bArgs =>
+      LeanSwe.Git.Impl.runGitChecked LeanSwe.Git.defaultRawOps "init"
+        { cwd := none, args := #["init"] ++ (if bare then #["--bare"] else #[]) ++ bArgs ++ #["--", path] } >>= fun r =>
+        match r with
+        | Except.error e => pure (Except.error e)
+        | Except.ok _ => pure (Except.ok ())
+    have hrun : ∀ bArgs, ∃ res w', runAfter bArgs w = EST.Out.ok res w' ∧ ∀ e, res = .error e → e.kind ≠ .parseError := by
+      intro bArgs
       exact bind_runGitChecked_never_parseError "init" _ w
+    cases initialBranch? with
+    | none => exact hrun #[]
     | some b =>
       dsimp only
       split
-      · dsimp only
-        exact bind_runGitChecked_never_parseError "init" _ w
-      · refine ⟨_, w, rfl, fun _ he => ?_⟩
-        cases he; dsimp only; decide
-
-private theorem clone_io_cases (source target : String) (opts : CloneOptions) :
-    (Git.clone source target opts =
-      pure (Except.error { kind := .invalidInput, message := "invalid clone source or target" })) ∨
-    (Git.clone source target opts =
-      pure (Except.error { kind := .invalidInput, message := "clone depth must be positive" })) ∨
-    (∃ (b : String), Git.clone source target opts = pure (Except.error ({ kind := .invalidRef, message := toString "invalid clone branch: '" ++ toString b ++ toString "'" } : GitError))) ∨
-    (∃ args, Git.clone source target opts =
-      (LeanSwe.Git.Impl.runGitChecked LeanSwe.Git.defaultRawOps "clone" { args := args } >>= fun r =>
-        match r with
-        | Except.error e => pure (Except.error e)
-        | Except.ok _ => pure (Except.ok ()))) := by
-  dsimp only [Git.clone, LeanSwe.Git.defaultApi, LeanSwe.Git.Impl.mkApiM]
-  unfold LeanSwe.Git.Impl.cloneImpl
-  split
-  · exact Or.inl rfl
-  · cases hd : opts.depth? with
-    | none =>
-      dsimp only
-      cases opts.branch? with
-      | none => exact Or.inr (Or.inr (Or.inr ⟨_, rfl⟩))
-      | some b =>
-        dsimp only
-        by_cases hb : LeanSwe.Git.Model.isValidRefNameStr b = true
-        · simp [hb]; exact Or.inr (Or.inr (Or.inr ⟨_, rfl⟩))
-        · simp [hb]; exact Or.inr (Or.inr (Or.inl ⟨b, rfl⟩))
-    | some d =>
-      cases d with
-      | zero => exact Or.inr (Or.inl rfl)
-      | succ n =>
-        dsimp only
-        cases opts.branch? with
-        | none => exact Or.inr (Or.inr (Or.inr ⟨_, rfl⟩))
-        | some b =>
-          dsimp only
-          by_cases hb : LeanSwe.Git.Model.isValidRefNameStr b = true
-          · simp [hb]; exact Or.inr (Or.inr (Or.inr ⟨_, rfl⟩))
-          · simp [hb]; exact Or.inr (Or.inr (Or.inl ⟨b, rfl⟩))
+      · exact hrun #["-b", b.raw]
+      · exact ⟨_, w, rfl, fun _ he => by cases he; dsimp only; decide⟩
 
 private theorem clone_res (source target : String) (opts : CloneOptions)
     (w : Void IO.RealWorld) :
     ∃ res w', Git.clone source target opts w = EST.Out.ok res w' ∧
       ∀ e, res = .error e → e.kind ≠ .invalidPath ∧ e.kind ≠ .parseError := by
-  rcases clone_io_cases source target opts with h | h | ⟨b, h⟩ | ⟨args, h⟩
-  · rw [h]; refine ⟨_, w, rfl, fun _ he => ?_⟩; cases he; dsimp only; exact ⟨by decide, by decide⟩
-  · rw [h]; refine ⟨_, w, rfl, fun _ he => ?_⟩; cases he; dsimp only; exact ⟨by decide, by decide⟩
-  · rw [h]; refine ⟨_, w, rfl, fun _ he => ?_⟩; cases he; dsimp only; exact ⟨by decide, by decide⟩
-  · rw [h]; exact bind_runGitChecked_no_cwd "clone" _ rfl w
+  rw [show Git.clone source target opts =
+      LeanSwe.Git.Impl.cloneImpl LeanSwe.Git.defaultRawOps source target opts from rfl]
+  unfold LeanSwe.Git.Impl.cloneImpl
+  cases hs : LeanSwe.Git.Model.validateCloneEndpoint source with
+  | error e =>
+    dsimp only
+    exact ⟨_, w, rfl, fun _ he => by cases he; rw [validateCloneEndpoint_kind source e hs]; exact ⟨by decide, by decide⟩⟩
+  | ok _ =>
+    cases ht : LeanSwe.Git.Model.validateCloneEndpoint target with
+    | error e =>
+      dsimp only
+      exact ⟨_, w, rfl, fun _ he => by cases he; rw [validateCloneEndpoint_kind target e ht]; exact ⟨by decide, by decide⟩⟩
+    | ok _ =>
+      dsimp only
+      let afterBranch : Array String → Array String → IO (Except GitError Unit) := fun depthArgs bArgs =>
+        LeanSwe.Git.Impl.runGitChecked LeanSwe.Git.defaultRawOps "clone"
+          { cwd := none, args := #["clone"] ++ (if opts.bare then #["--bare"] else #[]) ++
+              (if opts.singleBranch then #["--single-branch"] else #[]) ++
+              depthArgs ++ bArgs ++ #["--", source, target] } >>= fun r =>
+          match r with
+          | Except.error e => pure (Except.error e)
+          | Except.ok _ => pure (Except.ok ())
+      have hafter : ∀ depthArgs bArgs, ∃ res w', afterBranch depthArgs bArgs w = EST.Out.ok res w' ∧
+          ∀ e, res = .error e → e.kind ≠ .invalidPath ∧ e.kind ≠ .parseError := by
+        intro depthArgs bArgs
+        exact bind_runGitChecked_no_cwd "clone" _ rfl w
+      have hbody : ∀ depthArgs, ∃ res w',
+          (match
+              match opts.branch? with
+              | none => Except.ok #[]
+              | some b =>
+                if LeanSwe.Git.Model.isValidRefNameStr b then Except.ok #["--branch", b]
+                else Except.error ({ kind := GitErrorKind.invalidRef, message := s!"invalid clone branch: '{b}'" } : GitError) with
+            | Except.error e => pure (Except.error e)
+            | Except.ok bArgs => afterBranch depthArgs bArgs) w = EST.Out.ok res w' ∧
+          ∀ e : GitError, res = Except.error e → e.kind ≠ GitErrorKind.invalidPath ∧ e.kind ≠ GitErrorKind.parseError := by
+        intro depthArgs
+        cases opts.branch? with
+        | none => exact hafter depthArgs #[]
+        | some b =>
+          dsimp only
+          split
+          · exact hafter depthArgs #["--branch", b]
+          · exact ⟨_, w, rfl, fun _ he => by cases he; dsimp only; exact ⟨by decide, by decide⟩⟩
+      cases hd : opts.depth? with
+      | none => exact hbody #[]
+      | some d =>
+        cases d with
+        | zero => exact ⟨_, w, rfl, fun _ he => by cases he; exact ⟨by decide, by decide⟩⟩
+        | succ n => exact hbody #["--depth", toString (n + 1)]
 
 /-- `Git.clone` does not run with a `cwd` and maps path checks to `.invalidInput`, so it never fails with `.invalidPath`. -/
 theorem git_clone_never_invalidPath (source target : String) (opts : CloneOptions)
@@ -486,16 +748,13 @@ theorem git_add_never_parseError (repoPath : String) (paths : Array String) (all
   cases hv : LeanSwe.Git.Impl.validateRepoPath repoPath with
   | error e =>
     dsimp only
-    refine ⟨_, w, rfl, fun _ he => ?_⟩
-    cases he; rw [validateRepoPath_never repoPath e hv]; decide
+    exact ⟨_, w, rfl, fun _ he => by cases he; exact (validateRepoPath_never repoPath e hv).2⟩
   | ok _ =>
     dsimp only
     split
-    · refine ⟨_, w, rfl, fun _ he => ?_⟩
-      cases he; dsimp only; decide
+    · exact ⟨_, w, rfl, fun _ he => by cases he; decide⟩
     · split
-      · refine ⟨_, w, rfl, fun _ he => ?_⟩
-        cases he; dsimp only; decide
+      · exact ⟨_, w, rfl, fun _ he => by cases he; decide⟩
       · exact bind_runGitChecked_never_parseError "add" _ w
 
 /-- `Git.createBranch` never fails with `.parseError`. -/
@@ -510,13 +769,11 @@ theorem git_createBranch_never_parseError (repoPath : String) (branch : RefName)
   cases hv : LeanSwe.Git.Impl.validateRepoPath repoPath with
   | error e =>
     dsimp only
-    refine ⟨_, w, rfl, fun _ he => ?_⟩
-    cases he; rw [validateRepoPath_never repoPath e hv]; decide
+    exact ⟨_, w, rfl, fun _ he => by cases he; exact (validateRepoPath_never repoPath e hv).2⟩
   | ok _ =>
     dsimp only
     split
-    · refine ⟨_, w, rfl, fun _ he => ?_⟩
-      cases he; dsimp only; decide
+    · exact ⟨_, w, rfl, fun _ he => by cases he; dsimp only; decide⟩
     · cases startPoint? with
       | none =>
         dsimp only
@@ -524,10 +781,8 @@ theorem git_createBranch_never_parseError (repoPath : String) (branch : RefName)
       | some sp =>
         dsimp only
         split
-        · dsimp only
-          exact bind_runGitChecked_never_parseError "branch" _ w
-        · refine ⟨_, w, rfl, fun _ he => ?_⟩
-          cases he; dsimp only; decide
+        · exact bind_runGitChecked_never_parseError "branch" _ w
+        · exact ⟨_, w, rfl, fun _ he => by cases he; dsimp only; decide⟩
 
 /-- `Git.deleteBranch` never fails with `.parseError`. -/
 theorem git_deleteBranch_never_parseError (repoPath : String) (branch : RefName) (force : Bool)
@@ -541,13 +796,11 @@ theorem git_deleteBranch_never_parseError (repoPath : String) (branch : RefName)
   cases hv : LeanSwe.Git.Impl.validateRepoPath repoPath with
   | error e =>
     dsimp only
-    refine ⟨_, w, rfl, fun _ he => ?_⟩
-    cases he; rw [validateRepoPath_never repoPath e hv]; decide
+    exact ⟨_, w, rfl, fun _ he => by cases he; exact (validateRepoPath_never repoPath e hv).2⟩
   | ok _ =>
     dsimp only
     split
-    · refine ⟨_, w, rfl, fun _ he => ?_⟩
-      cases he; dsimp only; decide
+    · exact ⟨_, w, rfl, fun _ he => by cases he; dsimp only; decide⟩
     · exact bind_runGitChecked_never_parseError "branch" _ w
 
 /-- `Git.checkout` never fails with `.parseError`. -/
@@ -561,32 +814,25 @@ theorem git_checkout_never_parseError (repoPath : String) (target : CheckoutTarg
   cases hv : LeanSwe.Git.Impl.validateRepoPath repoPath with
   | error e =>
     dsimp only
-    refine ⟨_, w, rfl, fun _ he => ?_⟩
-    cases he; rw [validateRepoPath_never repoPath e hv]; decide
+    exact ⟨_, w, rfl, fun _ he => by cases he; exact (validateRepoPath_never repoPath e hv).2⟩
   | ok _ =>
     dsimp only
     cases target with
     | branch b =>
       dsimp only
       split
-      · dsimp only
-        exact bind_runGitChecked_never_parseError "checkout" _ w
-      · refine ⟨_, w, rfl, fun _ he => ?_⟩
-        cases he; dsimp only; decide
+      · exact bind_runGitChecked_never_parseError "checkout" _ w
+      · exact ⟨_, w, rfl, fun _ he => by cases he; dsimp only; decide⟩
     | commit cid =>
       dsimp only
       split
-      · dsimp only
-        exact bind_runGitChecked_never_parseError "checkout" _ w
-      · refine ⟨_, w, rfl, fun _ he => ?_⟩
-        cases he; dsimp only; decide
+      · exact bind_runGitChecked_never_parseError "checkout" _ w
+      · exact ⟨_, w, rfl, fun _ he => by cases he; dsimp only; decide⟩
     | ref spec =>
       dsimp only
       split
-      · dsimp only
-        exact bind_runGitChecked_never_parseError "checkout" _ w
-      · refine ⟨_, w, rfl, fun _ he => ?_⟩
-        cases he; dsimp only; decide
+      · exact bind_runGitChecked_never_parseError "checkout" _ w
+      · exact ⟨_, w, rfl, fun _ he => by cases he; dsimp only; decide⟩
 
 /-- `Git.switch` never fails with `.parseError`. -/
 theorem git_switch_never_parseError (repoPath : String) (branch : RefName) (create : Bool)
@@ -600,16 +846,13 @@ theorem git_switch_never_parseError (repoPath : String) (branch : RefName) (crea
   cases hv : LeanSwe.Git.Impl.validateRepoPath repoPath with
   | error e =>
     dsimp only
-    refine ⟨_, w, rfl, fun _ he => ?_⟩
-    cases he; rw [validateRepoPath_never repoPath e hv]; decide
+    exact ⟨_, w, rfl, fun _ he => by cases he; exact (validateRepoPath_never repoPath e hv).2⟩
   | ok _ =>
     dsimp only
     split
-    · refine ⟨_, w, rfl, fun _ he => ?_⟩
-      cases he; dsimp only; decide
+    · exact ⟨_, w, rfl, fun _ he => by cases he; dsimp only; decide⟩
     · split
-      · refine ⟨_, w, rfl, fun _ he => ?_⟩
-        cases he; dsimp only; decide
+      · exact ⟨_, w, rfl, fun _ he => by cases he; decide⟩
       · cases startPoint? with
         | none =>
           dsimp only
@@ -617,10 +860,8 @@ theorem git_switch_never_parseError (repoPath : String) (branch : RefName) (crea
         | some sp =>
           dsimp only
           split
-          · dsimp only
-            exact bind_runGitChecked_never_parseError "switch" _ w
-          · refine ⟨_, w, rfl, fun _ he => ?_⟩
-            cases he; dsimp only; decide
+          · exact bind_runGitChecked_never_parseError "switch" _ w
+          · exact ⟨_, w, rfl, fun _ he => by cases he; dsimp only; decide⟩
 
 /-- `Git.reset` never fails with `.parseError`. -/
 theorem git_reset_never_parseError (repoPath : String) (mode : ResetMode) (rev : String)
@@ -633,14 +874,41 @@ theorem git_reset_never_parseError (repoPath : String) (mode : ResetMode) (rev :
   cases hv : LeanSwe.Git.Impl.validateRepoPath repoPath with
   | error e =>
     dsimp only
-    refine ⟨_, w, rfl, fun _ he => ?_⟩
-    cases he; rw [validateRepoPath_never repoPath e hv]; decide
+    exact ⟨_, w, rfl, fun _ he => by cases he; exact (validateRepoPath_never repoPath e hv).2⟩
   | ok _ =>
     dsimp only
     split
-    · refine ⟨_, w, rfl, fun _ he => ?_⟩
-      cases he; dsimp only; decide
+    · exact ⟨_, w, rfl, fun _ he => by cases he; dsimp only; decide⟩
     · exact bind_runGitChecked_never_parseError "reset" _ w
+
+private theorem checkGlobHeadShadow_never_parseError (repoPath remote : String)
+    (pf : LeanSwe.Git.Model.ParsedFetchRefspec) (w : Void IO.RealWorld) :
+    ∃ res w',
+      LeanSwe.Git.Impl.checkGlobHeadShadow LeanSwe.Git.defaultRawOps repoPath remote pf w =
+        EST.Out.ok res w' ∧
+      ∀ e, res = .error e → e.kind ≠ .parseError := by
+  unfold LeanSwe.Git.Impl.checkGlobHeadShadow
+  split
+  · exact ⟨_, w, rfl, fun _ h => by cases h⟩
+  · rcases runGitChecked_res "rev-parse"
+        { cwd := some repoPath, args := #["rev-parse", "--git-dir"] } w with
+      ⟨r1, w1, hw1, hkr1⟩
+    rw [io_bind_ok _ _ _ hw1]
+    cases r1 with
+    | error e => exact ⟨_, w1, rfl, fun _ he => by cases he; exact (hkr1 e rfl).2⟩
+    | ok _ =>
+      dsimp only
+      rcases runGitChecked_res "ls-remote"
+          { cwd := some repoPath, args := #["ls-remote", "--refs", "--", remote, pf.src ++ "/*"] } w1 with
+        ⟨r2, w2, hw2, hkr2⟩
+      rw [io_bind_ok _ _ _ hw2]
+      cases r2 with
+      | error e => exact ⟨_, w2, rfl, fun _ he => by cases he; exact (hkr2 e rfl).2⟩
+      | ok lsOut =>
+        dsimp only
+        cases LeanSwe.Git.Impl.findGlobShadowHit (pf.src ++ "/") ((pf.dst?.getD pf.src) ++ "/") lsOut.stdout with
+        | some _ => exact ⟨_, w2, rfl, fun _ he => by cases he; dsimp only; decide⟩
+        | none => exact ⟨_, w2, rfl, fun _ h => by cases h⟩
 
 /-- `Git.fetch` never fails with `.parseError`. -/
 theorem git_fetch_never_parseError (repoPath remote : String) (refspec? : Option String)
@@ -653,24 +921,115 @@ theorem git_fetch_never_parseError (repoPath remote : String) (refspec? : Option
   cases hv : LeanSwe.Git.Impl.validateRepoPath repoPath with
   | error e =>
     dsimp only
-    refine ⟨_, w, rfl, fun _ he => ?_⟩
-    cases he; rw [validateRepoPath_never repoPath e hv]; decide
+    exact ⟨_, w, rfl, fun _ he => by cases he; exact (validateRepoPath_never repoPath e hv).2⟩
   | ok _ =>
     dsimp only
     split
-    · refine ⟨_, w, rfl, fun _ he => ?_⟩
-      cases he; dsimp only; decide
+    · exact ⟨_, w, rfl, fun _ he => by cases he; dsimp only; decide⟩
     · cases refspec? with
       | none =>
         dsimp only
         exact bind_runGitChecked_never_parseError "fetch" _ w
       | some r =>
         dsimp only
+        cases LeanSwe.Git.Model.parseFetchRefspec? r with
+        | none =>
+          dsimp only
+          exact ⟨_, w, rfl, fun _ he => by cases he; dsimp only; decide⟩
+        | some pf =>
+          dsimp only
+          rcases checkGlobHeadShadow_never_parseError repoPath remote pf w with ⟨rs, w1, hw1, hks⟩
+          rw [io_bind_ok _ _ _ hw1]
+          cases rs with
+          | error e => exact ⟨_, w1, rfl, fun _ he => by cases he; exact hks e rfl⟩
+          | ok u =>
+            cases u
+            dsimp only
+            exact bind_runGitChecked_never_parseError "fetch" _ w1
+
+private theorem runGitRaw_never_parseError {e : GitError} {req : GitRawRequest}
+    (h : (e.kind = .invalidPath ∧ ∃ p, req.cwd = some p ∧ LeanSwe.Git.Model.isValidPathArg p = false) ∨
+         e.kind = .invalidInput ∨ e.kind = .timeout ∨ e.kind = .commandFailed) :
+    e.kind ≠ .parseError := by
+  rcases h with ⟨hk, _⟩ | hk | hk | hk <;> rw [hk] <;> decide
+
+private theorem worktreeAddMaybe40HexBranch_never_parseError (repoPath : String)
+    (opts : WorktreeAddOptions) (t : String) (defaultArgs : Array String) (w : Void IO.RealWorld) :
+    ∃ res w',
+      LeanSwe.Git.Impl.worktreeAddMaybe40HexBranch LeanSwe.Git.defaultRawOps repoPath opts t defaultArgs w =
+        EST.Out.ok res w' ∧
+      ∀ e, res = .error e → e.kind ≠ .parseError := by
+  unfold LeanSwe.Git.Impl.worktreeAddMaybe40HexBranch
+  rcases runGitRaw_res { cwd := some repoPath, args := #["rev-parse", "-q", "--verify", t ++ "^{commit}"] } w with
+    ⟨r1, w1, hw1, hkr1⟩
+  rw [io_bind_ok _ _ _ hw1]
+  cases r1 with
+  | error e => exact ⟨_, w1, rfl, fun _ he => by cases he; exact runGitRaw_never_parseError (hkr1 e rfl)⟩
+  | ok revOut =>
+    dsimp only
+    split
+    · exact bind_runGitChecked_never_parseError "worktree" _ w1
+    · rcases runGitRaw_res { cwd := some repoPath, args := #["show-ref", "--verify", "--quiet", "refs/heads/" ++ t] } w1 with
+        ⟨r2, w2, hw2, hkr2⟩
+      rw [io_bind_ok _ _ _ hw2]
+      cases r2 with
+      | error e => exact ⟨_, w2, rfl, fun _ he => by cases he; exact runGitRaw_never_parseError (hkr2 e rfl)⟩
+      | ok refOut =>
+        dsimp only
         split
-        · dsimp only
-          exact bind_runGitChecked_never_parseError "fetch" _ w
-        · refine ⟨_, w, rfl, fun _ he => ?_⟩
-          cases he; dsimp only; decide
+        · exact bind_runGitChecked_never_parseError "worktree" _ w2
+        · rcases runGitChecked_res "worktree" { cwd := some repoPath, args := #["worktree", "list", "--porcelain"] } w2 with
+            ⟨r3, w3, hw3, hkr3⟩
+          rw [io_bind_ok _ _ _ hw3]
+          cases r3 with
+          | error e => exact ⟨_, w3, rfl, fun _ he => by cases he; exact (hkr3 e rfl).2⟩
+          | ok wtOut =>
+            dsimp only
+            split
+            · exact ⟨_, w3, rfl, fun _ he => by cases he; simp⟩
+            · split
+              · exact ⟨_, w3, rfl, fun _ he => by cases he; simp⟩
+              · split
+                · rcases runGitRaw_res { cwd := LeanSwe.Git.Impl.joinProbeCwd (some repoPath) opts.path, args := #["version"] } w3 with
+                      ⟨r4, w4, hw4, hkr4⟩
+                  rw [io_bind_ok _ _ _ hw4]
+                  cases r4 with
+                  | error e =>
+                    dsimp only
+                    split
+                    · exact ⟨_, w4, rfl, fun _ he => by cases he; exact runGitRaw_never_parseError (hkr4 e rfl)⟩
+                    · dsimp only
+                      simp only [Bool.false_eq_true, ↓reduceIte]
+                      exact ⟨_, w4, rfl, fun _ he => by cases he; simp⟩
+                  | ok dirOut =>
+                    dsimp only
+                    split
+                    · exact ⟨_, w4, rfl, fun _ he => by cases he; simp⟩
+                    · exact ⟨_, w4, rfl, fun _ he => by cases he; simp⟩
+                · rcases runGitChecked_res "worktree"
+                      { cwd := some repoPath,
+                        args := #["worktree", "add"] ++ (if opts.force then #["--force"] else #[]) ++
+                          #["--detach", "--", opts.path, "refs/heads/" ++ t] } w3 with
+                      ⟨r4, w4, hw4, hkr4⟩
+                  rw [io_bind_ok _ _ _ hw4]
+                  cases r4 with
+                  | error e => exact ⟨_, w4, rfl, fun _ he => by cases he; exact (hkr4 e rfl).2⟩
+                  | ok _ =>
+                    dsimp only
+                    rcases runGitChecked_res "symbolic-ref"
+                        { cwd := LeanSwe.Git.Impl.joinProbeCwd (some repoPath) opts.path,
+                          args := #["symbolic-ref", "HEAD", "refs/heads/" ++ t] } w4 with
+                        ⟨r5, w5, hw5, hkr5⟩
+                    rw [io_bind_ok _ _ _ hw5]
+                    cases r5 with
+                    | ok _ => exact ⟨_, w5, rfl, fun _ h => by cases h⟩
+                    | error se =>
+                      dsimp only
+                      rcases runGitChecked_res "worktree"
+                          { cwd := some repoPath, args := #["worktree", "remove", "--force", "--", opts.path] } w5 with
+                          ⟨_, w6, hw6, _⟩
+                      rw [io_bind_ok _ _ _ hw6]
+                      exact ⟨_, w6, rfl, fun _ he => by cases he; exact (hkr5 se rfl).2⟩
 
 /-- `Git.worktreeAdd` never fails with `.parseError`. -/
 theorem git_worktreeAdd_never_parseError (repoPath : String) (opts : WorktreeAddOptions)
@@ -683,47 +1042,70 @@ theorem git_worktreeAdd_never_parseError (repoPath : String) (opts : WorktreeAdd
   cases hv : LeanSwe.Git.Impl.validateRepoPath repoPath with
   | error e =>
     dsimp only
-    refine ⟨_, w, rfl, fun _ he => ?_⟩
-    cases he; rw [validateRepoPath_never repoPath e hv]; decide
+    exact ⟨_, w, rfl, fun _ he => by cases he; exact (validateRepoPath_never repoPath e hv).2⟩
   | ok _ =>
-    dsimp only
-    split
-    · refine ⟨_, w, rfl, fun _ he => ?_⟩
-      cases he; dsimp only; decide
-    · split
-      · refine ⟨_, w, rfl, fun _ he => ?_⟩
-        cases he; dsimp only; decide
-      · cases opts.newBranch? with
-        | none =>
-          dsimp only
-          cases opts.target? with
+    cases hv2 : LeanSwe.Git.Impl.validateRepoPath opts.path with
+    | error e =>
+      dsimp only
+      exact ⟨_, w, rfl, fun _ he => by cases he; exact (validateRepoPath_never opts.path e hv2).2⟩
+    | ok _ =>
+      dsimp only
+      split
+      · exact ⟨_, w, rfl, fun _ he => by cases he; decide⟩
+      · have hAfter : ∀ (bArgs : Array String), ∃ res w',
+            (match
+                match opts.target? with
+                | none => Except.ok #[]
+                | some t =>
+                  if LeanSwe.Git.Model.isValidStrictRevSpec t then Except.ok #[t]
+                  else Except.error ({ kind := GitErrorKind.invalidInput, message := s!"invalid worktree target: '{t}'" } : GitError) with
+              | Except.error e => pure (Except.error e)
+              | Except.ok tArgs => do
+                let args :=
+                  #["worktree", "add"] ++
+                  (if opts.force then #["--force"] else #[]) ++
+                  (if opts.detach then #["--detach"] else #[]) ++
+                  bArgs ++ #["--", opts.path] ++ tArgs
+                if !opts.detach && bArgs.isEmpty then
+                  match opts.target? with
+                  | some t =>
+                    if LeanSwe.Git.Model.isValidCommitIdStr t && t.length == 40 then
+                      LeanSwe.Git.Impl.worktreeAddMaybe40HexBranch LeanSwe.Git.defaultRawOps repoPath opts t args
+                    else
+                      match ← LeanSwe.Git.Impl.runGitChecked LeanSwe.Git.defaultRawOps "worktree" { cwd := some repoPath, args := args } with
+                      | Except.error e => return Except.error e
+                      | Except.ok _ => return Except.ok ()
+                  | none =>
+                    match ← LeanSwe.Git.Impl.runGitChecked LeanSwe.Git.defaultRawOps "worktree" { cwd := some repoPath, args := args } with
+                    | Except.error e => return Except.error e
+                    | Except.ok _ => return Except.ok ()
+                else
+                  match ← LeanSwe.Git.Impl.runGitChecked LeanSwe.Git.defaultRawOps "worktree" { cwd := some repoPath, args := args } with
+                  | Except.error e => return Except.error e
+                  | Except.ok _ => return Except.ok ()) w = EST.Out.ok res w' ∧
+            ∀ e : GitError, res = Except.error e → e.kind ≠ GitErrorKind.parseError := by
+          intro bArgs
+          cases ht : opts.target? with
           | none =>
             dsimp only
-            exact bind_runGitChecked_never_parseError "worktree" _ w
+            split <;> exact bind_runGitChecked_never_parseError "worktree" _ w
           | some t =>
             dsimp only
             split
             · dsimp only
-              exact bind_runGitChecked_never_parseError "worktree" _ w
-            · refine ⟨_, w, rfl, fun _ he => ?_⟩
-              cases he; dsimp only; decide
+              split
+              · split
+                · exact worktreeAddMaybe40HexBranch_never_parseError repoPath opts t _ w
+                · exact bind_runGitChecked_never_parseError "worktree" _ w
+              · exact bind_runGitChecked_never_parseError "worktree" _ w
+            · exact ⟨_, w, rfl, fun _ he => by cases he; dsimp only; decide⟩
+        cases opts.newBranch? with
+        | none => exact hAfter #[]
         | some b =>
           dsimp only
           split
-          · dsimp only
-            cases opts.target? with
-            | none =>
-              dsimp only
-              exact bind_runGitChecked_never_parseError "worktree" _ w
-            | some t =>
-              dsimp only
-              split
-              · dsimp only
-                exact bind_runGitChecked_never_parseError "worktree" _ w
-              · refine ⟨_, w, rfl, fun _ he => ?_⟩
-                cases he; dsimp only; decide
-          · refine ⟨_, w, rfl, fun _ he => ?_⟩
-            cases he; dsimp only; decide
+          · exact hAfter #["-b", b.raw]
+          · exact ⟨_, w, rfl, fun _ he => by cases he; dsimp only; decide⟩
 
 /-- `Git.worktreeRemove` never fails with `.parseError`. -/
 theorem git_worktreeRemove_never_parseError (repoPath wtPath : String) (force : Bool)
@@ -736,13 +1118,14 @@ theorem git_worktreeRemove_never_parseError (repoPath wtPath : String) (force : 
   cases hv : LeanSwe.Git.Impl.validateRepoPath repoPath with
   | error e =>
     dsimp only
-    refine ⟨_, w, rfl, fun _ he => ?_⟩
-    cases he; rw [validateRepoPath_never repoPath e hv]; decide
+    exact ⟨_, w, rfl, fun _ he => by cases he; exact (validateRepoPath_never repoPath e hv).2⟩
   | ok _ =>
-    dsimp only
-    split
-    · refine ⟨_, w, rfl, fun _ he => ?_⟩
-      cases he; dsimp only; decide
-    · exact bind_runGitChecked_never_parseError "worktree" _ w
+    cases hv2 : LeanSwe.Git.Impl.validateRepoPath wtPath with
+    | error e =>
+      dsimp only
+      exact ⟨_, w, rfl, fun _ he => by cases he; exact (validateRepoPath_never wtPath e hv2).2⟩
+    | ok _ =>
+      dsimp only
+      exact bind_runGitChecked_never_parseError "worktree" _ w
 
 end LeanSwe.Git.Proofs

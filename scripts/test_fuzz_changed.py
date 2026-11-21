@@ -93,12 +93,18 @@ class FuzzChangedUnitTests(unittest.TestCase):
         self.assertIn("selftest", by_name); self.assertIn("float", by_name); self.assertIn("cmdline", by_name)
         self.assertIn("envvars", by_name); self.assertIn("cryptohash", by_name); self.assertIn("dns", by_name)
         self.assertIn("Core/", manifest.common_paths)
-        self.assertIn("passwd", by_name)
+        self.assertIn("passwd", by_name); self.assertIn("git", by_name)
+        for req_git_path in ("LeanSwe/Git/", "LeanSwe/Process/", "LeanSwe/EnvVars/", "LeanSwe/Fs/", "Fuzz/Git/"):
+            self.assertIn(req_git_path, by_name["git"].paths)
         self.assertIn("LeanSwe/LinuxSyscall/Passwd/", by_name["passwd"].paths)
         self.assertIn("LeanSwe/LinuxSyscall/c/passwd_shim.c", by_name["passwd"].paths)
         self.assertIn("LeanSwe/LinuxSyscall/Common/", by_name["passwd"].paths)
         self.assertIn("Fuzz/SelfTest.lean", by_name["selftest"].paths)
+        audit = (REPO_ROOT / ".github" / "workflows" / "audit.yml").read_text(encoding="utf-8")
         daily = (REPO_ROOT / ".github" / "workflows" / "audit-daily.yml").read_text(encoding="utf-8")
+        for wf_text in (audit, daily):
+            self.assertIn("--suite Git ", wf_text)
+            self.assertIn(",Git,", wf_text)
         self.assertIn("scripts/test_fuzz_changed.py", daily); self.assertIn("--check-manifest", daily)
         self.assertIn("leanswe-fuzz --all ", daily); self.assertNotIn("leanswe-fuzz --suite float ", daily)
 
