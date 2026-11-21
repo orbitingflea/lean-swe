@@ -3,7 +3,9 @@ import LeanSwe.ConnectProxy.Types
 namespace LeanSwe.ConnectProxy.Model
 
 open LeanSwe.ConnectProxy
-open LeanSwe.ConnectProxy.Raw
+
+export LeanSwe.ConnectProxy
+  (ConnectProxyRawError HeadDecision ResolveDecision RawConnectProxyOpsM RawConnectProxyOps)
 
 /-- Compute a 32-bit network-order bitmask with `prefixLen` leading `1` bits (`0` when `prefixLen = 0`). -/
 def ipv4Mask (prefixLen : Nat) : UInt32 :=
@@ -751,7 +753,7 @@ inductive ConnectAuthResult where
   | dnsFailed (host : String) (port : UInt16) (reason : String)
   deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Authorize an incoming HTTP head in two stages, calling `resolveHost` only when Stage 1 allows a non-literal domain. -/
+/-- Authorize an incoming HTTP head in two phases, calling `resolveHost` only when target admission allows a non-literal domain. -/
 def authorizeConnect
     (cfg : ProxyConfig)
     (head : ByteArray)
@@ -1035,7 +1037,24 @@ def mockRawProxyOps : RawConnectProxyOpsM (StateM MockProxySimState) :=
         | none => (.ok s.lastStoppedEvents, sClean)
     activeProxyCount := fun s => (s.activeHandles.length, s) }
 
-/-- Reference pure `withProxy` bracketed execution model over `RawConnectProxyOpsM m`. -/
+/-- Start, run `action`, and guarantee `stopProxy` teardown via `[MonadFinally m]` for an already-validated `ValidProxyConfig`. -/
+def withValidProxyModel {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
+    (ops : RawConnectProxyOpsM m)
+    (vcfg : ValidProxyConfig)
+    (action : RunningProxy → m (Except ProxyError α)) :
+    m (Except ProxyError (α × Array ConnectEvent)) := do
+  let onHead := decideConnectHead vcfg.config
+  let onResolved := decideResolvedIps vcfg.config.ipPolicy
+  match ← ops.startProxy vcfg onHead onResolved with
+  | .error err => return .error err
+  | .ok proxy =>
+    let (actRes, stopRes) ← tryFinally' (action proxy) (fun _ => ops.stopProxy proxy)
+    match actRes, stopRes with
+    | .error ae, _ => return .error ae
+    | .ok _, .error se => return .error se
+    | .ok a, .ok evs => return .ok (a, evs)
+
+/-- Validate `cfg`, then run `withValidProxyModel ops vcfg action`. -/
 def withProxyModel {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
     (ops : RawConnectProxyOpsM m)
     (cfg : ProxyConfig)
@@ -1043,17 +1062,7 @@ def withProxyModel {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
     m (Except ProxyError (α × Array ConnectEvent)) := do
   match validateConfig cfg with
   | .error err => return .error err
-  | .ok vcfg =>
-    let onHead := decideConnectHead vcfg.config
-    let onResolved := decideResolvedIps vcfg.config.ipPolicy
-    match ← ops.startProxy vcfg onHead onResolved with
-    | .error err => return .error err
-    | .ok proxy =>
-      let (actRes, stopRes) ← tryFinally' (action proxy) (fun _ => ops.stopProxy proxy)
-      match actRes, stopRes with
-      | .error ae, _ => return .error ae
-      | .ok _, .error se => return .error se
-      | .ok a, .ok evs => return .ok (a, evs)
+  | .ok vcfg => withValidProxyModel ops vcfg action
 
 /-- Lift `mockRawProxyOps` into `ExceptT String (StateM MockProxySimState)` for `MonadFinally` exception/cancellation specs. -/
 def mockRawProxyOpsEx : RawConnectProxyOpsM (ExceptT String (StateM MockProxySimState)) :=
@@ -1070,5 +1079,55 @@ def mockRawProxyOpsEx : RawConnectProxyOpsM (ExceptT String (StateM MockProxySim
       ExceptT.mk (fun s =>
         let (n, s') := mockRawProxyOps.activeProxyCount.run s
         (.ok n, s')) }
+
+/-- Single-step `withProxy` request input for `Core.RefinesStepFrom` capability refinement. -/
+structure ProxyStepReq where
+  /-- Candidate proxy configuration supplied to `withProxy`. -/
+  cfg : ProxyConfig := {}
+  /-- Caller callback port offset returned alongside recorded `ConnectEvent`s. -/
+  tag : UInt16 := 0
+  deriving Repr, BEq, DecidableEq, Inhabited
+
+/-- Single-step pre-validated `withProxy` request input for `ScopedProxyOpsM` inside `Core.RefinesStepFrom`. -/
+structure ProxyRawStepReq where
+  /-- Validated proxy configuration supplied to `ScopedProxyOpsM.withProxy`. -/
+  vcfg : ValidProxyConfig := { config := {} }
+  /-- Caller callback port offset returned alongside recorded `ConnectEvent`s. -/
+  tag : UInt16 := 0
+  deriving Repr, BEq, DecidableEq, Inhabited
+
+/-- Well-formedness guard on `MockProxySimState` requiring a non-zero fallback ephemeral port. -/
+def proxyStepWf (s : MockProxySimState) : Bool :=
+  decide (s.ephemeralPort != 0)
+
+/-- Execute one scoped `withProxy` step directly against `ScopedProxyOpsM (StateM W)`. -/
+def execRawStep {W : Type} (ops : ScopedProxyOpsM (StateM W)) (req : ProxyRawStepReq) :
+    StateM W (Except ProxyError (UInt16 × Array ConnectEvent)) :=
+  ops.withProxy req.vcfg (fun p => pure (.ok (p.port + req.tag)))
+
+/-- Execute one scoped `withProxy` step through `ConnectProxyApiM (StateM W)`. -/
+def execPkgStep {W : Type} (api : ConnectProxyApiM (StateM W)) (req : ProxyStepReq) :
+    StateM W (Except ProxyError (UInt16 × Array ConnectEvent)) :=
+  api.withProxy req.cfg (fun p => pure (.ok (p.port + req.tag)))
+
+/-- Relational postcondition for a pre-validated `ScopedProxyOpsM` step over `MockProxySimState`. -/
+def allowedRawStep (s : MockProxySimState) (req : ProxyRawStepReq)
+    (out : Except ProxyError (UInt16 × Array ConnectEvent)) (s' : MockProxySimState) : Prop :=
+  s'.ephemeralPort = s.ephemeralPort ∧
+  match out with
+  | .error err => err.message ≠ ""
+  | .ok (val, evs) =>
+    ∃ boundPort : UInt16,
+      boundPort ≠ 0 ∧
+      (req.vcfg.config.listenPort ≠ 0 → boundPort = req.vcfg.config.listenPort) ∧
+      val = boundPort + req.tag ∧
+      ∀ ev ∈ evs.toList, (ev.outcome = .allowed → ev.reason = none)
+
+/-- Relational postcondition for a `ConnectProxyApiM` `withProxy` step gated by a single `validateConfig`. -/
+def allowedPkgStep (s : MockProxySimState) (req : ProxyStepReq)
+    (out : Except ProxyError (UInt16 × Array ConnectEvent)) (s' : MockProxySimState) : Prop :=
+  match validateConfig req.cfg with
+  | .error err => out = .error err ∧ s' = s
+  | .ok vcfg => allowedRawStep s { vcfg, tag := req.tag } out s'
 
 end LeanSwe.ConnectProxy.Model

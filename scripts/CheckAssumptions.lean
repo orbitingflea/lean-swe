@@ -45,8 +45,6 @@ private def allowedAxioms : Std.HashSet Name :=
   Std.HashSet.emptyWithCapacity 4 |>.insert ``propext |>.insert ``Classical.choice |>.insert ``Quot.sound
 
 private def legacyExemptionAllowlist : Array Name := #[
-  `LeanSwe.ConnectProxy,
-  `LeanSwe.ConnectProxy.Raw,
   `LeanSwe.Fs,
   `LeanSwe.Fs.Raw,
   `LeanSwe.ProcessSandbox,

@@ -1,12 +1,15 @@
 import Core.NondetTest
+import Core.Assumptions
 import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Model
+import LeanSwe.ConnectProxy.Relay
+import LeanSwe.ConnectProxy.SysBridge
+import LeanSwe.ConnectProxy.HealthySys
 
 namespace LeanSwe.ConnectProxy
 
-open Core (NondetTest)
+open Core (NondetTest ErrorObligation)
 open Core.NondetTest
-open LeanSwe.ConnectProxy.Raw
 open LeanSwe.ConnectProxy.Model
 
 /-- Builder assembling a pure `ConnectProxyApiM m` from injected `RawConnectProxyOpsM m`. -/
@@ -390,13 +393,371 @@ def test_cproxy_withProxy_exceptionTriggersMonadFinallyTeardown
   NondetTest.assert (s₁.startCalls = s₀.startCalls + 1 ∧ s₁.stopCalls = s₀.stopCalls + 1)
   NondetTest.assert (s₁.activeHandles = s₀.activeHandles)
 
-/-- External runtime and differential-oracle assumptions grounded in `RuntimeTests.lean`. -/
-structure EmpiricalAssumptions where
-  /-- Differential equivalence against Python 3 `ipaddress`: for IPv4 `ip.is_global and not ip.is_multicast`, for `::ffff:0:0/96` and `64:ff9b::/96` `v4.is_global and not v4.is_multicast`, and for all other IPv6 `ip.is_global and not ip.is_multicast and not ip.is_site_local and not ip.is_reserved` (verified with 0 mismatches across all 65,536 `/16` prefixes). -/
-  pythonIpaddressDifferentialEquivalence : Prop
-  /-- Real loopback TCP upstream tunnel (`IpBase.empty` + `extraAllows := #[127.0.0.1/32]`) relays bidirectional bytes (including coalesced post-`\r\n\r\n` tunnel bytes and directional half-close) cleanly via `curl` and raw sockets, returning `(value, events)` in memory with zero temporary files. -/
-  loopbackTunnelAndCurlIntegration : Prop
-  /-- Real HTTP client probing confirms `403 Forbidden` (without `TCP RST` clobbering) on plain `GET`/`POST`, unlisted `(host, port)`, and banned/private IPs, `502 Bad Gateway` on unreachable upstream, multi-IP fallback when the first verified candidate fails `connect()`, header timeout/size rejection, decision/completion `ConnectEvent` order, and parallel collision-free `listenPort = 0` runs on `127.0.0.1`. -/
-  httpStatusCodesLimitsFallbackAndParallelEphemeralPorts : Prop
+/-- Over any `sys` refining `RefinesHealthyCProxySys`, `createListener` binds strictly to `127.0.0.1` (`INADDR_LOOPBACK`), makes zero DNS or `connect` calls, preserves `proxyTable` and `wf`, resolves a non-zero loopback port (`listenPort = 0` or exact `listenPort`) on `.ok`, and deterministically closes every opened descriptor via `files.close` on `.error`. -/
+def test_cproxy_healthy_listenerBindLoopbackOnlyAndPortLaws
+    {runner} [NondetTest runner] (bridge : HealthySys.SysBridgeTarget) : runner Unit := do
+  let sys ← nondet (SysBridge.CProxySysOpsM (StateM HealthySys.HealthySysWorld) Nat)
+  assume (HealthySys.RefinesHealthyCProxySys sys)
+  let w₀ ← nondet HealthySys.HealthySysWorld
+  assume (w₀.wf = true ∧ (w₀.filesEnv.state.fds.map Prod.fst).Nodup)
+  let vcfg ← nondet ValidProxyConfig
+  let (res, (w₁, tr₁)) := (bridge.createListener (SysBridge.instrumentSysOps sys) vcfg).run (w₀, {})
+  NondetTest.assert (w₁.wf = true ∧ w₁.proxyTable = w₀.proxyTable)
+  NondetTest.assert (tr₁.dnsQueries = #[] ∧ tr₁.dialedAddrs = #[])
+  NondetTest.assert (∀ sa ∈ tr₁.boundAddrs.toList,
+    sa = .ipv4 LinuxSyscall.Net.INADDR_LOOPBACK vcfg.config.listenPort)
+  match res with
+  | .ok (_, _, _, boundPort) =>
+    NondetTest.assert (boundPort ≠ 0 ∧ (vcfg.config.listenPort = 0 ∨ boundPort = vcfg.config.listenPort))
+  | .error err =>
+    NondetTest.assert (err.message ≠ "" ∧
+      (w₀.netEnv.eintrBudget ≤ SysBridge.MAX_EINTR_RETRIES → err.errnoCode ≠ some LinuxSyscall.Errno.EINTR))
+    NondetTest.assert (∀ fd ∈ tr₁.openedFds.toList,
+      fd ∈ tr₁.closedFds.toList ∧ LinuxSyscall.Files.assocGet w₁.filesEnv.state.fds fd = none)
+
+/-- Over any `sys` refining `RefinesHealthyCProxySys`, Stage-1 `onHead` gates before DNS (`0` DNS and `0` `connect` calls on denied heads), literal IP targets make `0` DNS calls, domain targets make at most `1` DNS query (`#[host]`, no re-resolution), scoped IPv6 records (`scopeId != 0`) are excluded, every dialed `SockAddr` comes from an `allowsIp`-verified unbanned IP, and pipelined post-`\r\n\r\n` bytes plus `200 Connection Established` are conserved into `.connecting`/`.relay`. -/
+def test_cproxy_healthy_onHeadBeforeDnsAndVerifiedIpConnect
+    {runner} [NondetTest runner] (bridge : HealthySys.SysBridgeTarget) : runner Unit := do
+  let sys ← nondet (SysBridge.CProxySysOpsM (StateM HealthySys.HealthySysWorld) Nat)
+  assume (HealthySys.RefinesHealthyCProxySys sys)
+  let w₀ ← nondet HealthySys.HealthySysWorld
+  assume (w₀.wf = true)
+  let cfg ← nondet ProxyConfig
+  let headBytes ← nondet ByteArray
+  let pipelined ← nondet ByteArray
+  let cfd ← nondet Nat
+  let events ← nondet (Array ConnectEvent)
+  let initSlot : SysBridge.ClientSlot Nat Unit := { phase := .handshake cfd headBytes 1000 }
+  let ((slot₁, events₁), (w₁, tr₁)) :=
+    (bridge.handleCompleteHeadSync (SysBridge.instrumentSysOps sys) cfg.limits
+      (Model.decideConnectHead cfg) (Model.decideResolvedIps cfg.ipPolicy)
+      initSlot events cfd headBytes pipelined).run (w₀, {})
+  NondetTest.assert (w₁.wf = true)
+  NondetTest.assert (
+    (∀ st, slot₁.phase = .relay st →
+      st.pendingPrefix = pipelined ∧ st.pendingOff = 0 ∧ st.u2c.toList = Relay.reply200Bytes.data.toList) ∧
+    (∀ c u h p cs ci le dl, slot₁.phase = .connecting c u h p cs ci le dl →
+      slot₁.pipelined = pipelined))
+  match Model.decideConnectHead cfg headBytes with
+  | .deny _ _ _ =>
+    NondetTest.assert (tr₁.dnsQueries = #[] ∧ tr₁.dialedAddrs = #[] ∧ events₁.size = events.size + 1)
+  | .needResolve _ port (some litIp) =>
+    NondetTest.assert (tr₁.dnsQueries = #[])
+    NondetTest.assert (∀ sa ∈ tr₁.dialedAddrs.toList,
+      sa = SysBridge.ipAddrToDialSockAddr litIp port ∧
+      Model.allowsIp cfg.ipPolicy litIp = true ∧
+      Model.isBannedByPrefixes cfg.ipPolicy.extraBans (SysBridge.effectiveDialIp litIp) = false)
+  | .needResolve host port none =>
+    NondetTest.assert (tr₁.dnsQueries = #[host])
+    let (dnsRes, _) := (sys.dns.getaddrinfo host { family := .any, sockType := .stream }).run w₀
+    match dnsRes with
+    | .error _ =>
+      NondetTest.assert (tr₁.dialedAddrs = #[])
+    | .ok addrs =>
+      NondetTest.assert (∀ sa ∈ tr₁.dialedAddrs.toList,
+        ∃ ip, sa = SysBridge.ipAddrToDialSockAddr ip port ∧
+          Model.allowsIp cfg.ipPolicy ip = true ∧
+          Model.isBannedByPrefixes cfg.ipPolicy.extraBans (SysBridge.effectiveDialIp ip) = false ∧
+          ∃ a ∈ addrs, a.scopeId = 0 ∧ SysBridge.dnsAddrToIpAddr? a = some ip)
+
+/-- Over any `sys` refining `RefinesHealthyCProxySys`, listener `POLLIN` interest disables at `maxConcurrentTunnels`, `acceptNewClients` enforces `slots.size ≤ maxConcurrentTunnels` while retrying `EINTR` until cap or non-`EINTR` `accept4` error, and `stepHandshakeSync` enforces `headBuf.size ≤ maxHeaderBytes` (strict `< maxHeaderBytes` after readable wakeups), exact handshake byte conservation, `EINTR` retry progress, and refusal event emission on `maxHeaderBytes`/timeout/EOF. -/
+def test_cproxy_healthy_admissionCapsUnderShortReadsAndEintr
+    {runner} [NondetTest runner] (bridge : HealthySys.SysBridgeTarget) : runner Unit := do
+  let sys ← nondet (SysBridge.CProxySysOpsM (StateM HealthySys.HealthySysWorld) Nat)
+  assume (HealthySys.RefinesHealthyCProxySys sys)
+  let w₀ ← nondet HealthySys.HealthySysWorld
+  assume (w₀.wf = true)
+  let cfg ← nondet ProxyConfig
+  let lfd ← nondet Nat
+  let cfd ← nondet Nat
+  let nowMs ← nondet Nat
+  let dlMs ← nondet Nat
+  let slots ← nondet (Array (SysBridge.ClientSlot Nat Unit))
+  let headBuf ← nondet ByteArray
+  let cRev ← nondet LinuxSyscall.Poll.PollEvents
+  let events ← nondet (Array ConnectEvent)
+  assume (slots.size ≤ cfg.limits.maxConcurrentTunnels ∧ headBuf.size ≤ cfg.limits.maxHeaderBytes)
+  NondetTest.assert (bridge.listenPollinEnabled slots.size cfg.limits.maxConcurrentTunnels =
+    decide (slots.size < cfg.limits.maxConcurrentTunnels))
+  let (slots', (w₁, tr₁)) :=
+    (bridge.acceptNewClients (SysBridge.instrumentSysOps sys) cfg.limits lfd nowMs slots).run (w₀, {})
+  NondetTest.assert (w₁.wf = true ∧ slots'.size ≤ cfg.limits.maxConcurrentTunnels ∧
+    (w₀.netEnv.eintrBudget + (cfg.limits.maxConcurrentTunnels - slots.size) ≤ SysBridge.MAX_ACCEPT_BATCH →
+      slots'.size = cfg.limits.maxConcurrentTunnels ∨ tr₁.netErrs.size > 0))
+  let initSlot : SysBridge.ClientSlot Nat Unit := { phase := .handshake cfd headBuf dlMs }
+  let ((slot', events'), (w₂, tr₂)) :=
+    (bridge.stepHandshakeSync (SysBridge.instrumentSysOps sys) cfg.limits
+      (Model.decideConnectHead cfg) (Model.decideResolvedIps cfg.ipPolicy)
+      initSlot events cfd headBuf dlMs cRev nowMs).run (w₀, {})
+  NondetTest.assert (w₂.wf = true ∧
+    (∀ cfd' buf' dl', slot'.phase = .handshake cfd' buf' dl' →
+      buf'.size ≤ cfg.limits.maxHeaderBytes ∧
+      ((cRev.pollin || cRev.pollhup || cRev.pollerr || cRev.pollnval) = true →
+        buf'.size < cfg.limits.maxHeaderBytes) ∧
+      buf'.data.toList = headBuf.data.toList ++ tr₂.recvBytes.toList ∧
+      (cRev.pollin = true ∧
+          w₀.netEnv.eintrBudget + (cfg.limits.maxHeaderBytes - headBuf.size) < SysBridge.MAX_HANDSHAKE_STEPS →
+        LinuxSyscall.Errno.EAGAIN ∈ tr₂.netErrs.toList)) ∧
+    ((∀ cfd' buf' dl', slot'.phase ≠ .handshake cfd' buf' dl') →
+      (∃ c u h p cs ci le dl, slot'.phase = .connecting c u h p cs ci le dl) ∨
+      events'.size = events.size + 1))
+
+/-- Over any `sys` refining `RefinesHealthyCProxySys`, `recvIntoRing`, `flushRingNonblock`, and `stepBidirectionalRelay` maintain `len ≤ RING_CAP` (`16 KiB`), exact FIFO byte conservation across short `recvfrom`/`sendto` chunks and `EINTR` retries, pipelined `pendingPrefix` ordering, and response preservation across peer `TCP RST` (`POLLIN | POLLERR | POLLHUP`). -/
+def test_cproxy_healthy_relayByteConservationShortIoAndEintr
+    {runner} [NondetTest runner] (bridge : HealthySys.SysBridgeTarget) : runner Unit := do
+  let sys ← nondet (SysBridge.CProxySysOpsM (StateM HealthySys.HealthySysWorld) Nat)
+  assume (HealthySys.RefinesHealthyCProxySys sys)
+  let w₀ ← nondet HealthySys.HealthySysWorld
+  assume (w₀.wf = true)
+  let fd ← nondet Nat
+  let ufd ← nondet Nat
+  let fuel ← nondet Nat
+  let rb ← nondet Relay.RingBuf
+  let pipelined ← nondet ByteArray
+  assume (rb.len ≤ Relay.RING_CAP)
+  let (rxRes, (w₁, tr₁)) := (bridge.recvIntoRing (SysBridge.instrumentSysOps sys).net fd fuel rb).run (w₀, {})
+  NondetTest.assert (w₁.wf = true)
+  match rxRes with
+  | none =>
+    NondetTest.assert (∃ e ∈ tr₁.netErrs.toList,
+      e = LinuxSyscall.Errno.EBADF ∨ e = LinuxSyscall.Errno.EINVAL ∨ e = LinuxSyscall.Errno.ENOTSOCK)
+  | some (rb', eof) =>
+    NondetTest.assert (rb'.len ≤ Relay.RING_CAP ∧ rb'.toList = rb.toList ++ tr₁.recvBytes.toList ∧
+      (w₀.netEnv.eintrBudget + (Relay.RING_CAP - rb.len) ≤ fuel →
+        rb'.writeAvail = 0 ∨ eof = true ∨ tr₁.netErrs.size > 0))
+  let (txRes, (w₂, tr₂)) := (bridge.flushRingNonblock (SysBridge.instrumentSysOps sys).net fd fuel rb).run (w₀, {})
+  NondetTest.assert (w₂.wf = true)
+  match txRes with
+  | none =>
+    NondetTest.assert (∃ e ∈ tr₂.netErrs.toList, e ≠ LinuxSyscall.Errno.EAGAIN)
+  | some rb' =>
+    NondetTest.assert (rb'.len ≤ Relay.RING_CAP ∧ tr₂.sentBytes.toList ++ rb'.toList = rb.toList ∧
+      (w₀.netEnv.eintrBudget + rb.len ≤ fuel →
+        rb'.isEmpty = true ∨ LinuxSyscall.Errno.EAGAIN ∈ tr₂.netErrs.toList ∨ tr₂.sawZeroSend = true))
+  let (stPipe, (w₃, tr₃)) :=
+    (bridge.stepBidirectionalRelay (SysBridge.instrumentSysOps sys)
+      (Relay.RelayState.init fd ufd pipelined) {} { pollout := true }).run (w₀, {})
+  NondetTest.assert (w₃.wf = true ∧
+    (stPipe.uWrClosed = false →
+      tr₃.sentBytes.toList ++
+        (stPipe.pendingPrefix.extract stPipe.pendingOff stPipe.pendingPrefix.size).data.toList =
+        pipelined.data.toList ∧
+      (w₀.netEnv.eintrBudget + pipelined.size ≤ Relay.MAX_RELAY_IO_STEPS →
+        stPipe.prefixFlushed = true ∨ LinuxSyscall.Errno.EAGAIN ∈ tr₃.netErrs.toList ∨ tr₃.sawZeroSend = true)) ∧
+    (stPipe.uWrClosed = true →
+      stPipe.clientFd? = some fd ∧ stPipe.u2c.toList = Relay.reply200Bytes.data.toList))
+  let (stRst, (w₄, tr₄)) :=
+    (bridge.stepBidirectionalRelay (SysBridge.instrumentSysOps sys)
+      (Relay.RelayState.init fd ufd ByteArray.empty)
+      {} { pollin := true, pollerr := true, pollhup := true }).run (w₀, {})
+  NondetTest.assert (w₄.wf = true ∧
+    ((∃ e ∈ tr₄.netErrs.toList,
+        e = LinuxSyscall.Errno.EBADF ∨ e = LinuxSyscall.Errno.EINVAL ∨ e = LinuxSyscall.Errno.ENOTSOCK) ∨
+      (stRst.clientFd? = some fd ∧ stRst.u2c.toList = Relay.reply200Bytes.data.toList ++ tr₄.recvBytes.toList)))
+
+/-- Over any `sys` refining `RefinesHealthyCProxySys`, `stopProxy` and `withProxy` deterministically close `listenFd`, `wakeR`, `wakeW`, and all active `slotOpenFds` via `files.close` (removing every closed handle from `FilesState.fds`), emit `"proxy stopped"` once per undecided slot, conserve `activeProxyCount`, and reject double `stopProxy` with `.invalidInput`. -/
+def test_cproxy_healthy_withProxyAndStopClosesAllFds
+    {runner} [NondetTest runner] (bridge : HealthySys.SysBridgeTarget) : runner Unit := do
+  let sys ← nondet (SysBridge.CProxySysOpsM (StateM HealthySys.HealthySysWorld) Nat)
+  assume (HealthySys.RefinesHealthyCProxySys sys)
+  let w₀ ← nondet HealthySys.HealthySysWorld
+  assume (w₀.wf = true ∧ (w₀.filesEnv.state.fds.map Prod.fst).Nodup)
+  let cfg ← nondet ProxyConfig
+  let vcfg ← nondet ValidProxyConfig
+  let lfd ← nondet Nat
+  let wakeR ← nondet Nat
+  let wakeW ← nondet Nat
+  let slots ← nondet (Array (SysBridge.ClientSlot Nat Unit))
+  let events ← nondet (Array ConnectEvent)
+  let rawOps := bridge.mkRawOps (SysBridge.instrumentSysOps sys)
+  let hid := SysBridge.freshSyncHandleId w₀.proxyTable
+  let activeEntry : SysBridge.SyncProxyEntry Nat :=
+    { handleId := hid
+      port := 8080
+      vcfg := vcfg
+      listenFd := lfd
+      wakeR := wakeR
+      wakeW := wakeW
+      slots := slots
+      events := events }
+  let wActive : HealthySys.HealthySysWorld :=
+    { w₀ with proxyTable := { nextHandleId := hid + 1, entries := activeEntry :: w₀.proxyTable.entries } }
+  let proxy : RunningProxy := { handleId := hid, port := 8080 }
+  let (stopRes, (w₁, tr₁)) := (rawOps.stopProxy proxy).run (wActive, {})
+  NondetTest.assert (w₁.wf = true ∧ (rawOps.activeProxyCount.run (w₁, tr₁)).1 = w₀.proxyTable.entries.length)
+  NondetTest.assert (∃ finalEvs,
+    stopRes = .ok finalEvs ∧
+    finalEvs.size = events.size + (slots.toList.filter (fun s => !s.eventEmitted)).length)
+  NondetTest.assert (∀ fd ∈ ([lfd, wakeR, wakeW] ++ (slots.toList.flatMap HealthySys.slotOpenFds)),
+    fd ∈ tr₁.closedFds.toList ∧ LinuxSyscall.Files.assocGet w₁.filesEnv.state.fds fd = none)
+  let (dblRes, (w₁d, tr₁d)) := (rawOps.stopProxy proxy).run (w₁, tr₁)
+  NondetTest.assert ((∃ err, dblRes = .error err ∧ err.kind = .invalidInput ∧ err.message ≠ "") ∧
+    (rawOps.activeProxyCount.run (w₁d, tr₁d)).1 = w₀.proxyTable.entries.length)
+  let (_, (w₂, tr₂)) := (Model.withProxyModel rawOps cfg (fun p => pure (.ok p.port))).run (w₀, {})
+  NondetTest.assert (w₂.wf = true ∧ (rawOps.activeProxyCount.run (w₂, tr₂)).1 = w₀.proxyTable.entries.length)
+  NondetTest.assert (∀ fd ∈ tr₂.openedFds.toList,
+    fd ∈ tr₂.closedFds.toList ∧ LinuxSyscall.Files.assocGet w₂.filesEnv.state.fds fd = none)
+
+/-- Over any `sys` refining `RefinesHealthyCProxySys`, `buildPollBatchSync` constructs kernel-valid `ppoll` batches, `stepSlotSync` on `.connecting` and `.closingReply` enforces zero DNS re-resolution, verified-candidate-only fallback dialing, pipelined byte conservation on `SO_ERROR = 0`, and deterministic FD release on timeout/error/disconnect, and `pollAndStepTickSync` preserves `wf`, `maxConcurrentTunnels`, finished-slot pruning, and `EINTR` retry discipline. -/
+def test_cproxy_healthy_pollAndStepTickAndFallbackConnect
+    {runner} [NondetTest runner] (bridge : HealthySys.SysBridgeTarget) : runner Unit := do
+  let sys ← nondet (SysBridge.CProxySysOpsM (StateM HealthySys.HealthySysWorld) Nat)
+  assume (HealthySys.RefinesHealthyCProxySys sys)
+  let w₀ ← nondet HealthySys.HealthySysWorld
+  assume (w₀.wf = true ∧ (w₀.filesEnv.state.fds.map Prod.fst).Nodup)
+  let cfg ← nondet ProxyConfig
+  let wakeR ← nondet Nat
+  let lfd ← nondet Nat
+  let cfd ← nondet Nat
+  let ufd ← nondet Nat
+  let host ← nondet String
+  let port ← nondet UInt16
+  let candidates ← nondet (Array IpAddr)
+  let candIdx ← nondet Nat
+  let nowMs ← nondet Nat
+  let dlMs ← nondet Nat
+  let pipelined ← nondet ByteArray
+  let replyBytes ← nondet ByteArray
+  let cRev ← nondet LinuxSyscall.Poll.PollEvents
+  let uRev ← nondet LinuxSyscall.Poll.PollEvents
+  let stopFlag ← nondet Bool
+  let slots ← nondet (Array (SysBridge.ClientSlot Nat Unit))
+  let events ← nondet (Array ConnectEvent)
+  assume (slots.size ≤ cfg.limits.maxConcurrentTunnels ∧
+    ∀ ip ∈ candidates.toList, Model.allowsIp cfg.ipPolicy ip = true)
+  let (reqs, indices, timeout?) :=
+    bridge.buildPollBatchSync wakeR lfd cfg.limits.maxConcurrentTunnels nowMs slots
+  NondetTest.assert (reqs[0]? = some (wakeR, { pollin := true }) ∧
+    reqs[1]? = some (lfd, { pollin := decide (slots.size < cfg.limits.maxConcurrentTunnels) }) ∧
+    indices.size = slots.size ∧
+    ∀ ts, timeout? = some ts → ts.isValid = true)
+  let connSlot : SysBridge.ClientSlot Nat Unit :=
+    { phase := .connecting cfd ufd host port candidates candIdx none dlMs
+      pipelined := pipelined
+      target? := some (host, port) }
+  let ((connSlot', connEvs'), (wC, trC)) :=
+    (bridge.stepSlotSync (SysBridge.instrumentSysOps sys) cfg.limits
+      (Model.decideConnectHead cfg) (Model.decideResolvedIps cfg.ipPolicy)
+      connSlot events cRev uRev nowMs).run (w₀, {})
+  NondetTest.assert (wC.wf = true ∧ trC.dnsQueries = #[] ∧
+    (∀ sa ∈ trC.dialedAddrs.toList,
+      ∃ ip ∈ candidates.toList,
+        sa = SysBridge.ipAddrToDialSockAddr ip port ∧
+        Model.allowsIp cfg.ipPolicy ip = true ∧
+        Model.isBannedByPrefixes cfg.ipPolicy.extraBans (SysBridge.effectiveDialIp ip) = false) ∧
+    (∀ st, connSlot'.phase = .relay st →
+      st.pendingPrefix = pipelined ∧ st.pendingOff = 0 ∧
+      st.u2c.toList = Relay.reply200Bytes.data.toList ∧
+      connEvs'.size = events.size + 1) ∧
+    ((cRev.pollerr || cRev.pollhup || cRev.pollnval) = true →
+      ufd ∈ trC.closedFds.toList ∧ cfd ∈ trC.closedFds.toList ∧
+      LinuxSyscall.Files.assocGet wC.filesEnv.state.fds ufd = none ∧
+      LinuxSyscall.Files.assocGet wC.filesEnv.state.fds cfd = none) ∧
+    ((cRev.pollerr || cRev.pollhup || cRev.pollnval) = false ∧
+        (uRev.pollout || uRev.pollerr || uRev.pollhup || uRev.pollnval) = false ∧
+        nowMs ≥ dlMs →
+      ufd ∈ trC.closedFds.toList))
+  let closeSlot : SysBridge.ClientSlot Nat Unit :=
+    { phase := .closingReply (some cfd) replyBytes 0 false 0 dlMs }
+  let ((closeSlot', _), (wCl, trCl)) :=
+    (bridge.stepSlotSync (SysBridge.instrumentSysOps sys) cfg.limits
+      (Model.decideConnectHead cfg) (Model.decideResolvedIps cfg.ipPolicy)
+      closeSlot events cRev uRev nowMs).run (w₀, {})
+  NondetTest.assert (wCl.wf = true ∧
+    (nowMs ≥ dlMs → closeSlot'.phase = .done) ∧
+    (closeSlot'.phase = .done →
+      cfd ∈ trCl.closedFds.toList ∧
+      LinuxSyscall.Files.assocGet wCl.filesEnv.state.fds cfd = none))
+  let (tickOut, (wT, trT)) :=
+    (bridge.pollAndStepTickSync (SysBridge.instrumentSysOps sys) cfg.limits
+      (Model.decideConnectHead cfg) (Model.decideResolvedIps cfg.ipPolicy)
+      stopFlag wakeR lfd slots events).run (w₀, {})
+  NondetTest.assert (wT.wf = true ∧
+    (tickOut = .retryEintr ↔ trT.pollOutcomes = #[some LinuxSyscall.Errno.EINTR]) ∧
+    (stopFlag = true → tickOut = .retryEintr ∨ tickOut = .stopOrFatal) ∧
+    (stopFlag = false ∧ trT.pollOutcomes = #[none] →
+      ∃ nextSlots nextEvs, tickOut = .stepped nextSlots nextEvs) ∧
+    (∀ nextSlots nextEvs, tickOut = .stepped nextSlots nextEvs →
+      stopFlag = false ∧
+      nextSlots.size ≤ cfg.limits.maxConcurrentTunnels ∧
+      ∀ s ∈ nextSlots.toList, s.isFinished = false))
+
+/-- Declared error-coverage matrix for public fallible `LeanSwe.ConnectProxy` requests (`ProxyErrorKind`). -/
+def errorCoverage : List (ErrorObligation ProxyErrorKind) :=
+  [ { request := "LeanSwe.ConnectProxy.parseIpAddr"
+      errorKind := .invalidInput
+      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_parseIpAddr_invalidInput" .real }
+  , { request := "LeanSwe.ConnectProxy.parseIpAddr"
+      errorKind := .addressInUse
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpAddr_never_addressInUse" }
+  , { request := "LeanSwe.ConnectProxy.parseIpAddr"
+      errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpAddr_never_permissionDenied" }
+  , { request := "LeanSwe.ConnectProxy.parseIpAddr"
+      errorKind := .resourceExhausted
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpAddr_never_resourceExhausted" }
+  , { request := "LeanSwe.ConnectProxy.parseIpAddr"
+      errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpAddr_never_ioError" }
+  , { request := "LeanSwe.ConnectProxy.parseIpPrefix"
+      errorKind := .invalidInput
+      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_parseIpPrefix_invalidInput" .real }
+  , { request := "LeanSwe.ConnectProxy.parseIpPrefix"
+      errorKind := .addressInUse
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpPrefix_never_addressInUse" }
+  , { request := "LeanSwe.ConnectProxy.parseIpPrefix"
+      errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpPrefix_never_permissionDenied" }
+  , { request := "LeanSwe.ConnectProxy.parseIpPrefix"
+      errorKind := .resourceExhausted
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpPrefix_never_resourceExhausted" }
+  , { request := "LeanSwe.ConnectProxy.parseIpPrefix"
+      errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpPrefix_never_ioError" }
+  , { request := "LeanSwe.ConnectProxy.parseConnectRequest"
+      errorKind := .invalidInput
+      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_parseConnectRequest_invalidInput" .real }
+  , { request := "LeanSwe.ConnectProxy.parseConnectRequest"
+      errorKind := .addressInUse
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseConnectRequest_never_addressInUse" }
+  , { request := "LeanSwe.ConnectProxy.parseConnectRequest"
+      errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseConnectRequest_never_permissionDenied" }
+  , { request := "LeanSwe.ConnectProxy.parseConnectRequest"
+      errorKind := .resourceExhausted
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseConnectRequest_never_resourceExhausted" }
+  , { request := "LeanSwe.ConnectProxy.parseConnectRequest"
+      errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseConnectRequest_never_ioError" }
+  , { request := "LeanSwe.ConnectProxy.validateConfig"
+      errorKind := .invalidInput
+      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_validateConfig_invalidInput" .real }
+  , { request := "LeanSwe.ConnectProxy.validateConfig"
+      errorKind := .addressInUse
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_validateConfig_never_addressInUse" }
+  , { request := "LeanSwe.ConnectProxy.validateConfig"
+      errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_validateConfig_never_permissionDenied" }
+  , { request := "LeanSwe.ConnectProxy.validateConfig"
+      errorKind := .resourceExhausted
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_validateConfig_never_resourceExhausted" }
+  , { request := "LeanSwe.ConnectProxy.validateConfig"
+      errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_validateConfig_never_ioError" }
+  , { request := "LeanSwe.ConnectProxy.withProxy"
+      errorKind := .invalidInput
+      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_withProxy_invalidInput" .real }
+  , { request := "LeanSwe.ConnectProxy.withProxy"
+      errorKind := .addressInUse
+      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_withProxy_addressInUse" .real }
+  , { request := "LeanSwe.ConnectProxy.withProxy"
+      errorKind := .permissionDenied
+      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_withProxy_permissionDenied" .mocked }
+  , { request := "LeanSwe.ConnectProxy.withProxy"
+      errorKind := .resourceExhausted
+      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_withProxy_resourceExhausted" .mocked }
+  , { request := "LeanSwe.ConnectProxy.withProxy"
+      errorKind := .ioError
+      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_withProxy_ioError" .real } ]
 
 end LeanSwe.ConnectProxy
