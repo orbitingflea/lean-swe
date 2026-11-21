@@ -44,7 +44,6 @@ private def allSuites : Array (String × String × IO (Option String)) := #[
   ("ProcessSandbox.Seccomp", "LeanSwe/ProcessSandbox/Seccomp/RuntimeTests.lean", do ProcessSandbox.Seccomp.RuntimeTests.runAll; return none),
   ("ProcessSandbox.Raw", "LeanSwe/ProcessSandbox/Raw/RuntimeTests.lean", ProcessSandbox.Raw.RuntimeTests.runAllOutcome),
   ("ProcessSandbox", "LeanSwe/ProcessSandbox/RuntimeTests.lean", ProcessSandbox.RuntimeTests.runAllOutcome),
-  ("ConnectProxy.Raw", "LeanSwe/ConnectProxy/Raw/RuntimeTests.lean", do ConnectProxy.Raw.RuntimeTests.runAll; return none),
   ("ConnectProxy", "LeanSwe/ConnectProxy/RuntimeTests.lean", do ConnectProxy.RuntimeTests.runAll; return none),
   ("SlotPool", "LeanSwe/SlotPool/RuntimeTests.lean", do SlotPool.RuntimeTests.runAll; return none),
   ("LinuxSyscall.Sandbox", "LeanSwe/LinuxSyscall/Sandbox/RuntimeTests.lean", do LinuxSyscall.Sandbox.RuntimeTests.runAll; return none),

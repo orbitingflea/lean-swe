@@ -307,5 +307,16 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
             rcr = subprocess.run(["bash", "-c", script], cwd=src, env={**os.environ, "RECORDED_BASE": rec}, capture_output=True, text=True)
             self.assertEqual((rcr.returncode, rcr.stdout.strip()), (0, rec))
 
+    def test_mutate_and_test_collects_sysbridge_and_relay_targets(self) -> None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("mutate_and_test", REPO_ROOT / "scripts" / "mutate_and_test.py")
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec); sys.modules["mutate_and_test"] = mod; spec.loader.exec_module(mod)
+        lean_targets, _ = mod.resolve_targets(REPO_ROOT, "ConnectProxy")
+        rels = [t.as_posix() for t in lean_targets]
+        self.assertEqual(rels, ["LeanSwe/ConnectProxy/Impl.lean", "LeanSwe/ConnectProxy/SysBridge.lean", "LeanSwe/ConnectProxy/Relay.lean"])
+        sites = sum(len(mod.generate_lean_mutants(t, (REPO_ROOT / t).read_text(encoding="utf-8"))) for t in lean_targets)
+        self.assertGreater(sites, 50)
+
 if __name__ == "__main__":
     unittest.main()

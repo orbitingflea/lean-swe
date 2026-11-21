@@ -2,99 +2,23 @@ import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Model
 import LeanSwe.ConnectProxy.Impl
 import LeanSwe.ConnectProxy.SpecTests
+import LeanSwe.ConnectProxy.Proofs.ParserAndModelProofs
 
 namespace LeanSwe.ConnectProxy.Proofs
 
 open Core
 open Core.NondetTest
 open LeanSwe.ConnectProxy
-open LeanSwe.ConnectProxy.Raw
 open LeanSwe.ConnectProxy.Model
 
-private theorem sappend_nonempty (a b : String) (hb : b ≠ "") : a ++ b ≠ "" := by
-  intro h
-  exact hb (String.append_eq_empty_iff.mp h).2
-
-private theorem normalizeTargetHost_err_props {raw : String} {err : ProxyError}
-    (h : normalizeTargetHost raw = .error err) :
-    err.kind = .invalidInput ∧ err.message ≠ "" := by
-  unfold normalizeTargetHost at h
-  dsimp only at h
-  split at h
-  · injection h with hE; subst hE; exact ⟨rfl, by decide⟩
-  · split at h
-    · injection h with hE; subst hE; exact ⟨rfl, sappend_nonempty _ _ (by decide)⟩
-    · split at h
-      · split at h
-        · split at h
-          · split at h
-            · injection h with hE; subst hE; exact ⟨rfl, sappend_nonempty _ _ (by decide)⟩
-            · split at h
-              · cases h
-              · injection h with hE; subst hE; exact ⟨rfl, sappend_nonempty _ _ (by decide)⟩
-          · injection h with hE; subst hE; exact ⟨rfl, sappend_nonempty _ _ (by decide)⟩
-        · injection h with hE; subst hE; exact ⟨rfl, sappend_nonempty _ _ (by decide)⟩
-      · split at h
-        · cases h
-        · split at h
-          · cases h
-          · injection h with hE; subst hE; exact ⟨rfl, sappend_nonempty _ _ (by decide)⟩
-
-private theorem mapExceptList_err_props :
-    ∀ (rs : List TargetRule) {err : ProxyError},
-      mapExceptList normalizeTargetRule rs = .error err →
-      err.kind = .invalidInput ∧ err.message ≠ ""
-  | [], _, h => nomatch h
-  | r :: rest, _, h => by
-    simp only [mapExceptList, bind, Except.bind] at h
-    cases hr : normalizeTargetRule r with
-    | error er =>
-      rw [hr] at h; injection h with hE; subst hE
-      unfold normalizeTargetRule at hr
-      split at hr
-      · injection hr with hE; subst hE; exact ⟨rfl, by decide⟩
-      · split at hr
-        · cases hr
-        · rename_i eh hHost
-          injection hr with hE; subst hE
-          exact normalizeTargetHost_err_props hHost
-    | ok nr =>
-      rw [hr] at h; dsimp at h
-      cases hRest : mapExceptList normalizeTargetRule rest with
-      | error er => rw [hRest] at h; injection h with hE; subst hE; exact mapExceptList_err_props rest hRest
-      | ok nrs => rw [hRest] at h; cases h
-
-private theorem validateConfig_err_props {cfg : ProxyConfig} {err : ProxyError}
-    (h : validateConfig cfg = .error err) :
-    err.kind = .invalidInput ∧ err.message ≠ "" := by
-  unfold validateConfig at h
-  split at h
-  · injection h with hE; subst hE; exact ⟨rfl, by decide⟩
-  · split at h
-    · injection h with hE; subst hE; exact ⟨rfl, by decide⟩
-    · split at h
-      · injection h with hE; subst hE; exact ⟨rfl, by decide⟩
-      · split at h
-        · injection h with hE; subst hE; exact ⟨rfl, by decide⟩
-        · split at h
-          · injection h with hE; subst hE; exact ⟨rfl, by decide⟩
-          · split at h
-            · injection h with hE; subst hE; exact ⟨rfl, by decide⟩
-            · simp only [bind, Except.bind] at h
-              split at h
-              · rename_i e' hMap
-                injection h with hE; subst hE
-                exact mapExceptList_err_props _ hMap
-              · cases h
-
 private theorem validateConfig_props {cfg : ProxyConfig} {vcfg : ValidProxyConfig}
-    (h : validateConfig cfg = .ok vcfg) :
+    (h : Model.validateConfig cfg = .ok vcfg) :
     vcfg.config.listenPort = cfg.listenPort ∧
     (vcfg.config.limits.maxHeaderBytes == 0 ||
      vcfg.config.limits.headerTimeoutMs == 0 ||
      vcfg.config.limits.connectTimeoutMs == 0 ||
      vcfg.config.limits.maxConcurrentTunnels == 0) = false := by
-  unfold validateConfig at h
+  unfold Model.validateConfig at h
   split at h <;> try cases h
   rename_i h1
   split at h <;> try cases h

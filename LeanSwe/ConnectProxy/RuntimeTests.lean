@@ -1,10 +1,8 @@
 import LeanSwe.ConnectProxy.Interface
-import LeanSwe.ConnectProxy.Raw.Interface
 
 namespace LeanSwe.ConnectProxy.RuntimeTests
 
 open LeanSwe.ConnectProxy
-open LeanSwe.ConnectProxy.Raw
 
 private def assertTrue (cond : Bool) (msg : String) : IO Unit := do
   if !cond then
@@ -23,10 +21,20 @@ private def assertErrKind {α : Type} (res : Except ProxyError α) (expected : P
     if e.kind != expected || e.message == "" then
       throw (IO.userError s!"ConnectProxy ASSERTION FAILED: {msg} (got {repr e}, expected {repr expected})")
 
+private def countSelfOpenFds : IO Nat := do
+  return (← (System.FilePath.mk "/proc/self/fd").readDir).size
+
+private def printlnSafe (msg : String) : IO Unit := do
+  try
+    IO.println msg
+  catch _ =>
+    pure ()
+
 private def runPy (script : String) (args : Array String := #[]) : IO String := do
   let out ← IO.Process.output {
     cmd := "python3"
     args := #["-c", script] ++ args
+    stdin := .null
   }
   if out.exitCode != 0 then
     throw (IO.userError s!"python3 failed (exit {out.exitCode}):\nstdout: {out.stdout}\nstderr: {out.stderr}")
@@ -303,6 +311,7 @@ private def testTunnelPipelineHalfCloseFailoverAndCurl : IO Unit := do
           "--http1.1",
           s!"http://127.0.0.1:{httpPort}/hello"
         ]
+        stdin := .null
       }
       assertTrue (curlOut.exitCode == 0 && curlOut.stdout == "hello-from-tunnel")
         s!"curl tunnel integration failed: exit={curlOut.exitCode} out={curlOut.stdout} err={curlOut.stderr}"
@@ -494,15 +503,31 @@ private def testCallbackErrorInFlightStopAndParallel : IO Unit := do
       allowedTargets := #[{ host := "127.0.0.1", port := hcPort }]
       ipPolicy := { base := .empty, extraAllows := #[allowLoopback] }
     }
+    let fdsBeforeErr ← countSelfOpenFds
+    let errPortRef ← IO.mkRef (0 : UInt16)
     let errRes ← withProxy cfg fun proxy => do
+      errPortRef.set proxy.port
       let _ ← runPy (
         "import socket, sys\n" ++
         "s = socket.create_connection(('127.0.0.1', int(sys.argv[1])), timeout=3)\n" ++
-        "s.sendall(b'CONNECT 127.0.0.1:')\n"
+        "s.sendall(b'CONNECT 127.0.0.1:')\n" ++
+        "s.close()\n"
       ) #[toString proxy.port]
       return (.error { kind := .ioError, message := "caller aborted" } : Except ProxyError Unit)
     assertErrKind errRes .ioError "withProxy callback error preserved"
-    assertTrue ((← Raw.activeProxyCount) == 0) "activeProxyCount == 0 after callback error"
+    let errPort ← errPortRef.get
+    let _ ← runPy (
+      "import socket, sys\n" ++
+      "try:\n" ++
+      "  s = socket.create_connection(('127.0.0.1', int(sys.argv[1])), timeout=1)\n" ++
+      "  s.close()\n" ++
+      "  raise AssertionError('listener still accepting after callback error')\n" ++
+      "except OSError:\n" ++
+      "  pass\n"
+    ) #[toString errPort]
+    let fdsAfterErr ← countSelfOpenFds
+    assertTrue (fdsAfterErr == fdsBeforeErr)
+      s!"proxy leaked FDs on callback error: before={fdsBeforeErr} after={fdsAfterErr}"
 
     let child ← IO.Process.spawn {
       cmd := "python3"
@@ -569,7 +594,7 @@ private def testCallbackErrorInFlightStopAndParallel : IO Unit := do
 
 /-- Execute end-to-end OS network and Python differential runtime tests for `LeanSwe.ConnectProxy`. -/
 def runAll : IO Unit := do
-  assertTrue ((← Raw.activeProxyCount) == 0) "initial activeProxyCount == 0"
+  let fdsBefore ← countSelfOpenFds
   assertErrKind (← withProxy { limits := { maxHeaderBytes := 0 } } fun _ => pure (.ok ()))
     .invalidInput "withProxy invalid config rejected"
   runPythonIpaddressDifferential
@@ -577,7 +602,9 @@ def runAll : IO Unit := do
   testDenialsPublicOnlyBansAndPostBody
   testLimitsTimeoutOversizeConcurrencyAnd502
   testCallbackErrorInFlightStopAndParallel
-  assertTrue ((← Raw.activeProxyCount) == 0) "final activeProxyCount == 0"
-  IO.println "PASS: LeanSwe.ConnectProxy runtime tests"
+  let fdsAfter ← countSelfOpenFds
+  assertTrue (fdsAfter == fdsBefore)
+    s!"ConnectProxy.RuntimeTests leaked file descriptors: before={fdsBefore} after={fdsAfter}"
+  printlnSafe "PASS: LeanSwe.ConnectProxy runtime tests"
 
 end LeanSwe.ConnectProxy.RuntimeTests
