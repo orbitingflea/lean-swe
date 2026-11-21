@@ -20,7 +20,7 @@ structure CompressOptions where
   timeoutMs : Nat := 30000
   /-- Optional maximum allowed input size in bytes; `none` disables the input size cap. -/
   maxInputBytes : Option Nat := none
-  /-- Maximum combined captured `stdout + stderr` bytes enforced at the `LeanSwe.Process` pipe boundary (must be greater than `0`). -/
+  /-- Maximum allowed `stdout` bytes returned on success (must be greater than `0`); `LeanSwe.Process` enforces `maxOutputBytes + 4096` combined `stdout + stderr` pipe bytes to accommodate diagnostic `stderr`. -/
   maxOutputBytes : Nat := 64 * 1024 * 1024
   deriving Repr, BEq, DecidableEq, Inhabited
 
@@ -30,7 +30,7 @@ structure DecompressOptions where
   timeoutMs : Nat := 30000
   /-- Optional maximum allowed compressed input size in bytes; `none` disables the input size cap. -/
   maxInputBytes : Option Nat := none
-  /-- Maximum combined captured `stdout + stderr` bytes enforced at the `LeanSwe.Process` pipe boundary to guard against decompression bombs (must be greater than `0`). -/
+  /-- Maximum allowed `stdout` bytes returned on success to guard against decompression bombs (must be greater than `0`); `LeanSwe.Process` enforces `maxOutputBytes + 4096` combined `stdout + stderr` pipe bytes to accommodate diagnostic `stderr`. -/
   maxOutputBytes : Nat := 64 * 1024 * 1024
   deriving Repr, BEq, DecidableEq, Inhabited
 
@@ -42,7 +42,7 @@ inductive CompressErrorKind where
   | invalidInput
   /-- Compressed input has invalid magic, is truncated, fails CRC/checksum validation, or has trailing non-zero garbage. -/
   | corruptData
-  /-- Decompression bomb or captured `stdout + stderr` exceeded `maxOutputBytes`. -/
+  /-- Decompression bomb or captured output exceeded limits (`stdout.size > maxOutputBytes` or combined `stdout + stderr > maxOutputBytes + 4096`). -/
   | outputLimitExceeded
   /-- Codec subprocess exceeded `timeoutMs`. -/
   | timedOut

@@ -13,13 +13,28 @@ def codecProgram : Codec → String
   | .xz => "xz"
   | .gzip => "gzip"
 
-/-- Explicit environment removals clearing inherited codec configuration variables while keeping `PATH`. -/
+/-- Explicit environment removals clearing inherited codec configuration variables and pinning `LC_ALL=C` while keeping `PATH`. -/
 def codecSanitizedEnv : Array (String × Option String) :=
   #[("XZ_OPT", none),
     ("XZ_DEFAULTS", none),
     ("ZSTD_CLEVEL", none),
     ("ZSTD_NBTHREADS", none),
-    ("GZIP", none)]
+    ("GZIP", none),
+    ("LC_ALL", some "C")]
+
+/-- Pipe buffer slack beyond `maxOutputBytes` passed to `LeanSwe.Process`. -/
+def stderrPipeSlack : Nat := 4096
+
+/-- Return `true` iff `code` is a POSIX `errno` that `LeanSwe.Process.Raw` surfaces as `.invalidInput`
+    for OS resource exhaustion (`IO.Error.resourceExhausted`) or `PATH` `ENAMETOOLONG` (`36`). -/
+def isResourceOrPathIoErrno (code : UInt32) : Bool :=
+  code == 7 || code == 11 || code == 12 || code == 23 || code == 24 ||
+  code == 28 || code == 31 || code == 36 || code == 37 || code == 63 ||
+  code == 90 || code == 105
+
+/-- O(1) RFC 1952 `.gzip` header check (`1f 8b 08` and at least 18 bytes) so GNU `gzip -d` rejects legacy `.Z`/pack/lzh/PKZIP containers at byte 0. -/
+def hasGzipHeader (input : ByteArray) : Bool :=
+  input.size ≥ 18 && input.get! 0 == 0x1F && input.get! 1 == 0x8B && input.get! 2 == 0x08
 
 /-- Decode raw stderr bytes as `none` when empty or invalid UTF-8, and `some s` otherwise. -/
 def decodeStderr (bs : ByteArray) : Option String :=
@@ -102,8 +117,8 @@ def mkCompressArgs (codec : Codec) (opts : CompressOptions) : Array String :=
 
 /-- Build the direct `execvp` argument array for decompression. -/
 def mkDecompressArgs : Codec → Array String
-  | .zstd => #["-d", "-c", "-q", "--no-progress"]
-  | .xz => #["-d", "-c", "-q"]
+  | .zstd => #["-d", "-c", "-q", "--no-progress", "--format=zstd"]
+  | .xz => #["-d", "-c", "-q", "-T1", "--format=xz"]
   | .gzip => #["-d", "-c", "-n"]
 
 /-- Build the `ExecRequest` for `compressWith`. -/
@@ -115,7 +130,7 @@ def mkCompressRequest (codec : Codec) (opts : CompressOptions) (input : ByteArra
     inheritEnv := true
     stdin := input
     timeoutMs := some opts.timeoutMs
-    maxOutputBytes := some opts.maxOutputBytes }
+    maxOutputBytes := some (opts.maxOutputBytes + stderrPipeSlack) }
 
 /-- Build the `ExecRequest` for `decompressWith`. -/
 def mkDecompressRequest (codec : Codec) (opts : DecompressOptions) (input : ByteArray) : ExecRequest :=
@@ -126,7 +141,7 @@ def mkDecompressRequest (codec : Codec) (opts : DecompressOptions) (input : Byte
     inheritEnv := true
     stdin := input
     timeoutMs := some opts.timeoutMs
-    maxOutputBytes := some opts.maxOutputBytes }
+    maxOutputBytes := some (opts.maxOutputBytes + stderrPipeSlack) }
 
 /-- Build the `ExecRequest` for `isToolAvailable`. -/
 def mkToolVersionRequest (codec : Codec) : ExecRequest :=
@@ -139,31 +154,46 @@ def mkToolVersionRequest (codec : Codec) : ExecRequest :=
     timeoutMs := some 5000
     maxOutputBytes := some 65536 }
 
+/-- Return `true` iff a `.invalidInput` `ProcessError` originated from an OS resource or `PATH` `Errno`. -/
+def isResourceExhaustedProcessError (pe : ProcessError) : Bool :=
+  pe.kind == .invalidInput &&
+  match pe.errnoCode with
+  | some code => isResourceOrPathIoErrno code
+  | none => false
+
 /-- Map a `ProcessError` from `LeanSwe.Process` into a normalized `CompressError`. -/
 def classifyProcessError (codec : Codec) (pe : ProcessError) : CompressError :=
   let kind : CompressErrorKind :=
     match pe.kind with
     | .notFound => .toolNotFound
     | .permissionDenied => .toolNotFound
-    | .invalidInput => .invalidInput
+    | .invalidInput => if isResourceExhaustedProcessError pe then .ioError else .invalidInput
     | .timedOut => .timedOut
     | .outputLimitExceeded => .outputLimitExceeded
     | .terminatedBySignal => .commandFailed
     | .nonZeroExit => .commandFailed
     | .ioError => .ioError
+  let exitCode? : Option Int :=
+    match kind with
+    | .commandFailed =>
+      match pe.exitCode with
+      | some c => if c != 0 then some c else none
+      | none => none
+    | _ => none
   let fallback := codecProgram codec ++ " process invocation failed"
   { kind := kind
     codec := some codec
-    exitCode := pe.exitCode
-    stderr := pe.stderr.bind decodeStderr
+    exitCode := exitCode?
+    stderr :=
+      match kind with
+      | .toolNotFound | .invalidInput => none
+      | _ => pe.stderr.bind decodeStderr
     message := nonEmptyMsg fallback pe.message }
 
 /-- Classify a completed `ExecResult` for compression (`isDecompress = false`) or decompression (`isDecompress = true`). -/
-def classifyExitResult (codec : Codec) (isDecompress : Bool) (res : ExecResult) :
-    Except CompressError ByteArray :=
-  if res.exitCode == 0 then
-    .ok res.stdout
-  else
+def classifyExitResult (codec : Codec) (isDecompress : Bool) (maxOut : Nat) (input : ByteArray)
+    (res : ExecResult) : Except CompressError ByteArray :=
+  if res.exitCode != 0 then
     let errStr? := decodeStderr res.stderr
     let kind : CompressErrorKind := if isDecompress then .corruptData else .commandFailed
     let fallback :=
@@ -181,6 +211,30 @@ def classifyExitResult (codec : Codec) (isDecompress : Bool) (res : ExecResult) 
         exitCode := some res.exitCode
         stderr := errStr?
         message := msg }
+  else if res.stdout.size > maxOut then
+    if isDecompress && codec == .gzip && !hasGzipHeader input then
+      .error
+        { kind := .corruptData
+          codec := some codec
+          exitCode := none
+          stderr := none
+          message := codecProgram codec ++ " compressed stream failed gzip header check" }
+    else
+      .error
+        { kind := .outputLimitExceeded
+          codec := some codec
+          exitCode := none
+          stderr := decodeStderr res.stderr
+          message := codecProgram codec ++ " output exceeded maxOutputBytes" }
+  else if isDecompress && codec == .gzip && !hasGzipHeader input then
+    .error
+      { kind := .corruptData
+        codec := some codec
+        exitCode := none
+        stderr := none
+        message := codecProgram codec ++ " compressed stream failed gzip header check" }
+  else
+    .ok res.stdout
 
 /-- Compress `input` with `codec` and `opts` via `raw`. -/
 def compressWith {m : Type → Type} [Monad m] (raw : RawProcessOpsM m)
@@ -192,7 +246,7 @@ def compressWith {m : Type → Type} [Monad m] (raw : RawProcessOpsM m)
     let req := mkCompressRequest codec opts input
     match ← LeanSwe.Process.Internal.run raw req with
     | .error pe => return .error (classifyProcessError codec pe)
-    | .ok res => return classifyExitResult codec false res
+    | .ok res => return classifyExitResult codec false opts.maxOutputBytes input res
 
 /-- Decompress `input` with `codec` and `opts` via `raw`. -/
 def decompressWith {m : Type → Type} [Monad m] (raw : RawProcessOpsM m)
@@ -203,8 +257,17 @@ def decompressWith {m : Type → Type} [Monad m] (raw : RawProcessOpsM m)
   | .ok () =>
     let req := mkDecompressRequest codec opts input
     match ← LeanSwe.Process.Internal.run raw req with
-    | .error pe => return .error (classifyProcessError codec pe)
-    | .ok res => return classifyExitResult codec true res
+    | .error pe =>
+      if (pe.kind == .outputLimitExceeded || pe.kind == .timedOut) && codec == .gzip && !hasGzipHeader input then
+        return .error
+          { kind := .corruptData
+            codec := some codec
+            exitCode := none
+            stderr := pe.stderr.bind decodeStderr
+            message := codecProgram codec ++ " compressed stream failed gzip header check" }
+      else
+        return .error (classifyProcessError codec pe)
+    | .ok res => return classifyExitResult codec true opts.maxOutputBytes input res
 
 /-- Return `true` iff the binary for `codec` succeeds on `--version` via `raw`. -/
 def isToolAvailable {m : Type → Type} [Monad m] (raw : RawProcessOpsM m)
