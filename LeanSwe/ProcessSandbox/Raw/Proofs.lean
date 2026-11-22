@@ -106,7 +106,7 @@ theorem reach_psandboxRaw_isValidSandboxHandleId_bounds :
 theorem proof_psandboxRaw_mapRawError_returnsNonEmptyMessage :
     AllPass (test_psandboxRaw_mapRawError_returnsNonEmptyMessage defaultOps) := by
   intro raw
-  simp only [defaultOps, Internal.mkRawOps, Internal.mapRawError, assert]
+  simp only [defaultOps, Internal.mapRawError, assert]
   refine ⟨?_, trivial⟩
   cases raw with
   | unavailable _ _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
@@ -127,12 +127,12 @@ theorem reach_psandboxRaw_mapRawError_returnsNonEmptyMessage :
 theorem proof_psandboxRaw_mapRawError_preservesKindAndFields :
     AllPass (test_psandboxRaw_mapRawError_preservesKindAndFields defaultOps) := by
   intro raw
-  cases raw <;> simp [defaultOps, Internal.mkRawOps, Internal.mapRawError, assert]
+  cases raw <;> simp [defaultOps, Internal.mapRawError, assert]
 
 /-- Non-vacuity `CanReach` witness for `test_psandboxRaw_mapRawError_preservesKindAndFields`. -/
 theorem reach_psandboxRaw_mapRawError_preservesKindAndFields :
     CanReach (test_psandboxRaw_mapRawError_preservesKindAndFields defaultOps) :=
-  ⟨.userError "err", by simp [defaultOps, Internal.mkRawOps, Internal.mapRawError, assert]⟩
+  ⟨.userError "err", by simp [defaultOps, Internal.mapRawError, assert]⟩
 
 /-- Pure `StateM` model state for verifying `RawProcessSandboxOpsM` lifecycle contracts. -/
 structure MockRawState where
@@ -222,7 +222,7 @@ theorem proof_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed :
   · intro raw hne
     have h0 : raw ≠ 0xc000003e := hne.1
     have h1 : raw ≠ 0xc00000b7 := hne.2
-    simp only [defaultOps, Internal.mkRawOps, Internal.decodeHostAuditArch,
+    simp only [defaultOps, Internal.decodeHostAuditArch,
       LeanSwe.ProcessSandbox.Model.seccompArchOfAudit?,
       LeanSwe.ProcessSandbox.Model.AUDIT_ARCH_X86_64,
       LeanSwe.ProcessSandbox.Model.AUDIT_ARCH_AARCH64]
@@ -235,7 +235,7 @@ theorem proof_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed :
 theorem reach_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed :
     CanReach (test_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed defaultOps) := by
   refine ⟨rfl, rfl, 0, ⟨by decide, by decide⟩, ?_⟩
-  simp [defaultOps, Internal.mkRawOps, Internal.decodeHostAuditArch,
+  simp [defaultOps, Internal.decodeHostAuditArch,
     LeanSwe.ProcessSandbox.Model.seccompArchOfAudit?,
     LeanSwe.ProcessSandbox.Model.AUDIT_ARCH_X86_64,
     LeanSwe.ProcessSandbox.Model.AUDIT_ARCH_AARCH64,
@@ -718,7 +718,7 @@ private theorem encodePlan_defaultPlan_ok (seccompBytes : ByteArray)
   have hp3 := fun ba => pushStr_literal_ok ba "PATH" (by decide) (by decide)
   have hp4 := fun ba => pushStr_literal_ok ba "/usr/bin:/bin" (by decide) (by decide)
   have hp5 := fun ba => pushStr_literal_ok ba "/tmp" (by decide) (by decide)
-  simp [defaultOps, Internal.mkRawOps, Internal.encodePlan, Internal.encodePlanPrefix, h5,
+  simp [defaultOps, Internal.encodePlan, Internal.encodePlanPrefix, h5,
     hp1, hp3, hp4, hp5, ← Array.forIn_toList, List.forIn_cons, List.forIn_nil,
     bind, Except.bind, pure, Except.pure]
 

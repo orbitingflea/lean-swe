@@ -1972,6 +1972,45 @@ private def checkManagedProcessClosure (env : Environment) : IO (Array String) :
       errs := errs.push s!"PROCESS_INTERFACE_WIRING_MISMATCH: missing {wrapper}"
   return errs
 
+private def checkProcessSandboxHostClosure (env : Environment) : IO (Array String) := do
+  let mut errs : Array String := #[]
+  for h : i in [0 : env.header.moduleNames.size] do
+    let m := env.header.moduleNames[i]
+    let some data := env.header.moduleData[i]? | continue
+    if m.components.take 2 == [`LeanSwe, `ProcessSandbox] then
+      for c in data.constants do
+        if (getExternAttrData? env c.name).isSome then
+          errs := errs.push s!"PSANDBOX_FORBIDDEN_EXTERN: {c.name} in {m}"
+        if let some impl := Lean.Compiler.getImplementedBy? env c.name then
+          if !(← isCompilerGeneratedCtorIdx env c.name impl c) then
+            errs := errs.push s!"PSANDBOX_FORBIDDEN_IMPLEMENTED_BY: {c.name} -> {impl} in {m}"
+        if let .defnInfo v := c then
+          if v.safety != .safe then
+            if !(← isAllowedCompilerUnsafeDef env c.name v) then
+              errs := errs.push s!"PSANDBOX_FORBIDDEN_UNSAFE: {c.name} in {m}"
+        if (Lean.regularInitAttr.getParam? env c.name).isSome then
+          let allowedInit :=
+            m == `LeanSwe.ProcessSandbox.Host.SysBridge &&
+            privateToUserName? c.name == some `LeanSwe.ProcessSandbox.Host.SysBridge.gHostTable
+          if !allowedInit then
+            errs := errs.push s!"PSANDBOX_FORBIDDEN_INIT: {c.name} in {m}"
+        let usesBaseMutex (e : Expr) : Bool :=
+          e.getUsedConstants.any fun u => u.components.take 2 == [`Std, `BaseMutex]
+        let val? : Option Expr := match c with
+          | .defnInfo v => some v.value
+          | .thmInfo v => some v.value
+          | .opaqueInfo v => some v.value
+          | _ => none
+        if usesBaseMutex c.type || (val?.map usesBaseMutex |>.getD false) then
+          errs := errs.push s!"PSANDBOX_FORBIDDEN_BASEMUTEX: {c.name} in {m} references Std.BaseMutex"
+  match env.find? `LeanSwe.ProcessSandbox.Raw.defaultOps with
+  | some (.defnInfo dv) =>
+    if !dv.value.getUsedConstants.contains `LeanSwe.ProcessSandbox.Host.SysBridge.defaultOps then
+      errs := errs.push "PSANDBOX_INTERFACE_WIRING_MISMATCH: LeanSwe.ProcessSandbox.Raw.defaultOps must delegate to Host.SysBridge.defaultOps"
+  | _ =>
+    errs := errs.push "PSANDBOX_INTERFACE_WIRING_MISMATCH: missing LeanSwe.ProcessSandbox.Raw.defaultOps"
+  return errs
+
 private def connectProxyRequiredModules : Array Name := #[
   `LeanSwe.ConnectProxy.Types,
   `LeanSwe.ConnectProxy.Model,
@@ -2990,6 +3029,7 @@ unsafe def main (args : List String) : IO UInt32 := do
   let sbxClosureErrs ← checkSandboxTrustedClosure env
   let compClosureErrs ← checkCompressTrustedClosure repoDir env importableExtraMods
   let managedProcErrs ← checkManagedProcessClosure env
+  let psandboxHostErrs ← checkProcessSandboxHostClosure env
   let pfClosureErrs ← checkPackageTrustedClosure repoDir "PostFork" postForkAuditModules
     isAllowedPostForkClosureModule `LeanSwe.PostFork.Interface allowedPostForkExternSyms true true true
   let gitClosureErrs ← checkGitTrustedClosure env importableExtraMods
@@ -3005,7 +3045,7 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   let promCount := prom1.size + prom2Count
   let withAssumeCount := wAss1 + wAss2
-  errors := errors ++ eErrs1 ++ eErrs2 ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sqClosureErrs ++ sbxClosureErrs ++ compClosureErrs ++ managedProcErrs ++ pfClosureErrs ++ pfWiringErrs ++ pfAeneasErrs ++ gitClosureErrs ++ cproxyClosureErrs
+  errors := errors ++ eErrs1 ++ eErrs2 ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sqClosureErrs ++ sbxClosureErrs ++ compClosureErrs ++ managedProcErrs ++ psandboxHostErrs ++ pfClosureErrs ++ pfWiringErrs ++ pfAeneasErrs ++ gitClosureErrs ++ cproxyClosureErrs
   IO.println s!"PROMISE_CHECK: spec_modules={specModCount} promises={promCount} with_assume={withAssumeCount} errors={errors.size}"
   if errors.isEmpty then
     return 0

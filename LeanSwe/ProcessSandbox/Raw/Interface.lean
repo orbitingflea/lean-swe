@@ -1,69 +1,15 @@
 import LeanSwe.ProcessSandbox.Raw.Types
 import LeanSwe.ProcessSandbox.Raw.Impl
+import LeanSwe.ProcessSandbox.Host.SysBridge
 
 namespace LeanSwe.ProcessSandbox.Raw
 
-@[extern "leanswe_psandbox_host_arch"]
-private opaque rawHostArch : IO UInt32
-
-@[extern "leanswe_psandbox_preflight"]
-private opaque rawPreflight : Bool → Bool → IO (UInt8 × UInt32 × String × String)
-
-@[extern "leanswe_psandbox_discover_preset"]
-private opaque rawDiscoverPreset :
-  IO (UInt8 × UInt32 × String × Array (UInt8 × String × String) × Array String × Array String)
-
-@[extern "leanswe_psandbox_seal_plan"]
-private opaque rawSealPlan : @& ByteArray → IO (UInt8 × UInt32 × String × String × UInt64)
-
-@[extern "leanswe_psandbox_close_plan"]
-private opaque rawClosePlan : UInt64 → IO (UInt8 × UInt32 × String × String)
-
-@[extern "leanswe_psandbox_spawn_box"]
-private opaque rawSpawnBox : UInt64 → IO (UInt8 × UInt32 × String × String × UInt64 × UInt32 × UInt32 × UInt32)
-
-@[extern "leanswe_psandbox_start_forwarders"]
-private opaque rawStartForwarders :
-  UInt64 → @& Array UInt16 → @& Array UInt16 → IO (UInt8 × UInt32 × String × String × UInt64)
-
-@[extern "leanswe_psandbox_stop_forwarders"]
-private opaque rawStopForwarders : UInt64 → IO (UInt8 × UInt32 × String × String)
-
-@[extern "leanswe_psandbox_read_output"]
-private opaque rawReadOutput :
-  UInt64 → @& ByteArray → UInt64 → Bool → UInt64 →
-  IO (UInt8 × UInt32 × String × String × UInt8 × UInt32 × ByteArray × ByteArray)
-
-@[extern "leanswe_psandbox_kill_pg"]
-private opaque rawKillPg : UInt64 → IO (UInt8 × UInt32 × String × String)
-
-@[extern "leanswe_psandbox_pidfd_kill"]
-private opaque rawPidfdKill : UInt64 → IO (UInt8 × UInt32 × String × String)
-
-@[extern "leanswe_psandbox_reap_box"]
-private opaque rawReapBox : UInt64 → IO (UInt8 × UInt32 × String × String)
-
-@[extern "leanswe_psandbox_active_counts"]
-private opaque rawActiveCounts : IO (Nat × Nat × Nat)
-
-private def posixRawOps : Internal.PosixRawOps :=
-  { hostArch := rawHostArch
-    preflight := rawPreflight
-    discoverPreset := rawDiscoverPreset
-    sealPlan := rawSealPlan
-    closePlan := rawClosePlan
-    spawnBox := rawSpawnBox
-    startForwarders := rawStartForwarders
-    stopForwarders := rawStopForwarders
-    readOutput := rawReadOutput
-    killPg := rawKillPg
-    pidfdKill := rawPidfdKill
-    reapBox := rawReapBox
-    activeCounts := rawActiveCounts }
-
-/-- Default OS sandbox primitive operations backed by `c/psandbox_shim.c` and `c/psandbox_init.c`. -/
+/-- Default OS sandbox primitive operations backed by pure Lean `Host.SysBridge` and embedded `leanswe-psandbox-init`. -/
 def defaultOps : RawProcessSandboxOps :=
-  Internal.mkRawOps posixRawOps
+  { Host.SysBridge.defaultOps with
+    mapRawError := Internal.mapRawError
+    decodeHostAuditArch := Internal.decodeHostAuditArch
+    encodePlan := Internal.encodePlan }
 
 /-- Normalize a `SandboxRawError` into a `SandboxError` with a non-empty diagnostic message. -/
 @[inline] def mapRawError (err : SandboxRawError) : SandboxError :=

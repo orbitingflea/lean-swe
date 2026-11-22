@@ -64,7 +64,6 @@ C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
     "dns_shim.c": "leanswe_linux_dns",
     "sqlite_shim.c": "leanswe_sqlite",
     "cryptohash_shim.c": "leanswe_cryptohash",
-    "psandbox_shim.c": "leanswe_psandbox",
     "sandbox_shim.c": "leanswe_linux_sandbox",
     "fd_box.c": "leanswe_linux_fd_box",
     "poll_shim.c": "leanswe_linux_poll",
@@ -403,7 +402,7 @@ def measure_c_sancov(
     extern_lib = C_SHIM_TO_EXTERN_LIB.get(c_target.as_posix()) or C_SHIM_TO_EXTERN_LIB.get(c_target.name)
     if not extern_lib:
         return [(m, "unsupported", f"no extern_lib mapping for {c_target.name}") for m in modes]
-    if c_target.name in {"sqlite_shim.c", "psandbox_shim.c"}:
+    if c_target.name == "sqlite_shim.c":
         return [(m, "skipped", f"{c_target.name} requires multi-object/generated header linkage") for m in modes]
 
     lean_prefix = subprocess.check_output(["lean", "--print-prefix"], text=True).strip()
