@@ -17,6 +17,20 @@ Checks:
 5. Qualifying theorems have no hypothesis (`Prop` binder) and all qualifying theorems plus all
    `SpecMutants` declarations/examples use only standard axioms
    (`propext`, `Classical.choice`, `Quot.sound`) with zero `sorry`/`admit`/`native_decide`.
+6. One-way transitive `.olean` import-DAG ratchet and no-proof-content audit covering `LeanSwe`,
+   `LeanSwe.PostFork.Verified`, and any extra unimported modules:
+   - Within-package transitive checks (`Types`/`Model`/`SpecTests`/`Properties` cannot import
+     `Impl`/`SysBridge`/`Interface`/`Proofs`; `Impl`/`SysBridge`/`Interface` cannot import
+     `Proofs`/`SpecTests`/`Properties`/`SpecMutants`/`RuntimeTests`).
+   - Cross-package checks: direct imports target only another package's `Types`, `Model`, or
+     `Interface` (no `Impl`/`SysBridge`/`Proofs`/`SpecTests`/`TestSupport`), with constant-level
+     indirect reach-in and `.Internal.` reach-in checks on non-proof modules.
+   - `namespace <Pkg>.Model` inside `*.Proofs*` ban over `.olean` constant tables (excluding
+     strictly verified lazy compiler-generated aux lemmas for existing non-proof `Model` decls).
+   - No `*.Proofs*` constants in `SpecTests`/`Properties` (`type` or `value`), in exported
+     `refines_model` / `obeys_model` theorem signatures, or in qualifying `AllPass` / `CanReach`
+     theorem signatures, enforced with a strict shrinking ratchet allowlist (fails on both new
+     violations and stale allowlist entries).
 -/
 
 open Lean Meta
@@ -2497,6 +2511,533 @@ private def checkConnectProxyTrustedClosure
   IO.println s!"TRUSTED_CLOSURE: bundle=LeanSwe.ConnectProxy modules={cproxyMods.size} visited={seenConst.size} errors={errs.size}"
   return errs
 
+private inductive DagModuleRole where
+  | types
+  | model
+  | specTests
+  | impl
+  | sysBridge
+  | iface
+  | proofs
+  | specMutants
+  | runtimeTests
+  | testSupport
+  | umbrella
+  | other
+  deriving BEq, Inhabited
+
+private def DagModuleRole.label : DagModuleRole → String
+  | .types => "Types"
+  | .model => "Model"
+  | .specTests => "SpecTests"
+  | .impl => "Impl"
+  | .sysBridge => "SysBridge"
+  | .iface => "Interface"
+  | .proofs => "Proofs"
+  | .specMutants => "SpecMutants"
+  | .runtimeTests => "RuntimeTests"
+  | .testSupport => "TestSupport"
+  | .umbrella => "Umbrella"
+  | .other => "Other"
+
+private def dagPkgMarkerSegs : Array String := #[
+  "Types", "Model", "Impl", "Interface", "SpecTests", "Properties",
+  "SpecMutants", "RuntimeTests", "Proofs", "SysBridge"
+]
+
+private def dagSubdirExcludeSegs : Array Name := #[
+  `Proofs, `Model, `SpecTests, `Properties, `SpecMutants, `RuntimeTests,
+  `Impl, `Interface, `SysBridge, `Cases, `Helpers, `Host, `Aeneas, `TestSupport
+]
+
+private def isNamePrefixComps (pfx comps : List Name) : Bool :=
+  pfx.length <= comps.length && comps.take pfx.length == pfx
+
+private def discoverDagPackages (modNames : Array Name) : Array Name := Id.run do
+  let mut seen : Std.HashSet Name := {}
+  let mut pkgs : Array Name := #[]
+  for m in modNames do
+    if m.getRoot != `LeanSwe || m == `LeanSwe then
+      continue
+    match m with
+    | .str p seg =>
+      if dagPkgMarkerSegs.contains seg && p.getRoot == `LeanSwe && p != `LeanSwe then
+        if !(p.components.any dagSubdirExcludeSegs.contains) && !seen.contains p then
+          seen := seen.insert p
+          pkgs := pkgs.push p
+    | _ => pure ()
+  return pkgs.qsort fun a b =>
+    let la := a.components.length
+    let lb := b.components.length
+    if la != lb then la > lb else a.toString < b.toString
+
+private def dagPkgOf (knownPkgs : Array Name) (m : Name) : Name := Id.run do
+  if m == `LeanSwe then
+    return `LeanSwe
+  let mc := m.components
+  for p in knownPkgs do
+    if isNamePrefixComps p.components mc then
+      return p
+  if mc.take 2 == [`LeanSwe, `LinuxSyscall] && mc.length >= 3 then
+    return Name.str `LeanSwe.LinuxSyscall mc[2]!.getString!
+  if mc.length >= 2 then
+    return Name.str `LeanSwe mc[1]!.getString!
+  return m
+
+private def dagRoleOf (knownPkgs : Array Name) (m : Name) : DagModuleRole :=
+  if m == `LeanSwe then .umbrella
+  else if m.getRoot != `LeanSwe then .other
+  else if cryptoHashVectorModules.contains m then .proofs
+  else
+    let pkg := dagPkgOf knownPkgs m
+    if pkg == `LeanSwe.LinuxSyscall.TestSupport then .testSupport
+    else
+      let rem := m.components.drop pkg.components.length
+      if rem.isEmpty then .umbrella
+      else
+        let head := rem.head!
+        let headStr := head.toString
+        let last := rem.getLast!
+        let lastStr := last.toString
+        if rem.contains `Proofs || headStr.endsWith "Proofs" || lastStr.endsWith "Proofs" ||
+            head == `Verified || last == `Verified then
+          .proofs
+        else if head == `SpecMutants || rem.contains `SpecMutants then
+          .specMutants
+        else if head == `RuntimeTests || rem.contains `RuntimeTests then
+          .runtimeTests
+        else if head == `SpecTests || head == `Properties ||
+            rem.contains `SpecTests || rem.contains `Properties then
+          .specTests
+        else if head == `Types then
+          .types
+        else if head == `Model || rem == [`Helpers, `Model] || rem == [`Cases, `Model] ||
+            m == `LeanSwe.LinuxSyscall.Files.Seed then
+          .model
+        else if head == `Interface then
+          .iface
+        else if head == `SysBridge then
+          .sysBridge
+        else if head == `Host then
+          if last == `SysBridge then .sysBridge else .impl
+        else if rem.contains `Aeneas then
+          if last == `Types || last == `TypesExternal then .types
+          else if last == `Model then .model
+          else .impl
+        else if head == `Impl || head == `Relay || head == `HealthySys || head == `InitData then
+          .impl
+        else
+          .other
+
+private def isLazyAuxModelSuffix (s : String) : Bool :=
+  s == "eq_def" || s == "eq_unfold" || s == "splitter" || s == "elim" ||
+    s == "congr_simp" || s == "fun_cases" || s == "induct" || s == "induct_unfolding" ||
+    s == "sizeOf_spec" || s == "inj" || s == "injEq" || s == "noConfusion" ||
+    s == "noConfusionType" || s == "below" || s == "brecOn" || s == "else_eq" ||
+    (s.startsWith "eq_" && !(s.drop 3).isEmpty && (s.drop 3).all Char.isDigit) ||
+    (s.startsWith "congr_eq_" && !(s.drop 9).isEmpty && (s.drop 9).all Char.isDigit) ||
+    (s.startsWith "match_" && !(s.drop 6).isEmpty && (s.drop 6).all Char.isDigit) ||
+    (s.startsWith "_sparseCasesOn_" && !(s.drop 15).isEmpty && (s.drop 15).all Char.isDigit) ||
+    (s.startsWith "_proof_" && !(s.drop 7).isEmpty && (s.drop 7).all Char.isDigit)
+
+private def isModelNamespaceDeclName (uName : Name) : Bool :=
+  let comps := uName.components
+  if comps.head? != some `LeanSwe then false
+  else
+    let rec scan : List Name → Bool
+      | [] => false
+      | seg :: rest =>
+        if seg == `Proofs || seg.toString.endsWith "Proofs" then false
+        else if seg == `Model then true
+        else scan rest
+    scan (comps.drop 1)
+
+private def hasNonProofUserDeclPrefix (nonProofUsers : Std.HashSet Name) (u : Name) : Bool :=
+  let rec go : Nat → Name → Bool
+    | 0, _ | _, .anonymous => false
+    | k + 1, .str p _ => if nonProofUsers.contains p then true else go k p
+    | k + 1, .num p _ => go k p
+  go 8 u
+
+private def isCompilerLazyModelAux (env : Environment) (nonProofUsers : Std.HashSet Name) (c : ConstantInfo) : Bool :=
+  if (Lean.declRangeExt.find? env c.name).isSome then false
+  else
+    let u := (privateToUserName? c.name).getD c.name
+    isLazyAuxModelSuffix u.getString! && hasNonProofUserDeclPrefix nonProofUsers u
+
+private def stableConstLabel (n : Name) : String :=
+  match privateToUserName? n with
+  | some u => s!"private:{u}"
+  | none => n.toString
+
+private def computeLeanSweTransImports (env : Environment) : Array (Std.HashSet Nat) := Id.run do
+  let n := env.header.moduleNames.size
+  let mut idxMap : Std.HashMap Name Nat := Std.HashMap.emptyWithCapacity n
+  for h : i in [0 : n] do
+    idxMap := idxMap.insert env.header.moduleNames[i] i
+  let mut adj : Array (Array Nat) := Array.replicate n #[]
+  for i in [0 : n] do
+    let m := env.header.moduleNames[i]!
+    if !isProjectModule m || m == `LeanSwe then continue
+    let some data := env.header.moduleData[i]? | continue
+    let mut deps : Array Nat := #[]
+    for imp in data.imports do
+      if let some j := idxMap.get? imp.module then
+        let jm := env.header.moduleNames[j]!
+        if isProjectModule jm && jm != `LeanSwe then
+          deps := deps.push j
+    adj := adj.set! i deps
+  let mut trans : Array (Std.HashSet Nat) := Array.replicate n {}
+  for i in [0 : n] do
+    let m := env.header.moduleNames[i]!
+    if m.getRoot != `LeanSwe || m == `LeanSwe then continue
+    let mut visited : Std.HashSet Nat := {}
+    let mut leanSweSeen : Std.HashSet Nat := {}
+    let mut stack : Array Nat := adj[i]!
+    while !stack.isEmpty do
+      let j := stack.back!
+      stack := stack.pop
+      if visited.contains j then continue
+      visited := visited.insert j
+      if env.header.moduleNames[j]!.getRoot == `LeanSwe then
+        leanSweSeen := leanSweSeen.insert j
+      for k in adj[j]! do
+        if !visited.contains k then
+          stack := stack.push k
+    trans := trans.set! i leanSweSeen
+  return trans
+
+private structure DagAuditReport where
+  violations : Std.HashMap String String := {}
+  sigProofCounts : Std.HashMap String (Nat × Array String) := {}
+  checkedModules : Nat := 0
+
+private def recordDagViolation (m : Std.HashMap String String) (key msg : String) :
+    Std.HashMap String String :=
+  if m.contains key then m else m.insert key msg
+
+private def recordSigProofHit (m : Std.HashMap String (Nat × Array String)) (key thmName : String) :
+    Std.HashMap String (Nat × Array String) :=
+  match m.get? key with
+  | some (cnt, sample) =>
+    let sample' := if sample.size < 3 && !sample.contains thmName then sample.push thmName else sample
+    m.insert key (cnt + 1, sample')
+  | none => m.insert key (1, #[thmName])
+
+private def auditImportDagEnv
+    (env : Environment)
+    (includeMod : Name → Bool)
+    (allPassMap canReachMap : Std.HashMap Name (Array Name))
+    (scanPublicAllPassDirect : Bool := false) : DagAuditReport := Id.run do
+  let knownPkgs := discoverDagPackages env.header.moduleNames
+  let trans := computeLeanSweTransImports env
+  let mut nonProofUsers : Std.HashSet Name := {}
+  for h : i in [0 : env.header.moduleNames.size] do
+    let m := env.header.moduleNames[i]
+    if m.getRoot != `LeanSwe || m == `LeanSwe then continue
+    if dagRoleOf knownPkgs m == .proofs then continue
+    let some data := env.header.moduleData[i]? | continue
+    for c in data.constants do
+      let u := (privateToUserName? c.name).getD c.name
+      nonProofUsers := nonProofUsers.insert u
+  let mut qualifyingThms : Std.HashSet Name := {}
+  for (_, ts) in allPassMap.toList do
+    for t in ts do
+      qualifyingThms := qualifyingThms.insert t
+  for (_, ts) in canReachMap.toList do
+    for t in ts do
+      qualifyingThms := qualifyingThms.insert t
+  let modOf (c : Name) : Name :=
+    env.getModuleIdxFor? c |>.bind (env.header.moduleNames[·]?) |>.getD .anonymous
+  let mut violations : Std.HashMap String String := {}
+  let mut sigCounts : Std.HashMap String (Nat × Array String) := {}
+  let mut checkedModules : Nat := 0
+  for h : i in [0 : env.header.moduleNames.size] do
+    let m := env.header.moduleNames[i]
+    if m.getRoot != `LeanSwe || m == `LeanSwe || !includeMod m then continue
+    let some data := env.header.moduleData[i]? | continue
+    checkedModules := checkedModules + 1
+    let pkgM := dagPkgOf knownPkgs m
+    let roleM := dagRoleOf knownPkgs m
+    for j in trans[i]! do
+      let t := env.header.moduleNames[j]!
+      if t == m then continue
+      let pkgT := dagPkgOf knownPkgs t
+      let roleT := dagRoleOf knownPkgs t
+      if pkgM == pkgT then
+        if (roleM == .types || roleM == .model || roleM == .specTests) &&
+            (roleT == .impl || roleT == .sysBridge || roleT == .iface || roleT == .proofs ||
+             roleT == .specMutants || roleT == .runtimeTests || roleT == .testSupport || roleT == .other) then
+          let key := s!"WITHIN|{m}|{t}"
+          let msg := s!"DAG_WITHIN_VIOLATION: {m} ({roleM.label}) transitively imports same-package {t} ({roleT.label})"
+          violations := recordDagViolation violations key msg
+        if (roleM == .impl || roleM == .sysBridge || roleM == .iface) &&
+            (roleT == .proofs || roleT == .specTests || roleT == .specMutants || roleT == .runtimeTests) then
+          let key := s!"WITHIN|{m}|{t}"
+          let msg := s!"DAG_WITHIN_VIOLATION: {m} ({roleM.label}) transitively imports same-package {t} ({roleT.label})"
+          violations := recordDagViolation violations key msg
+      else
+        if (roleM == .types || roleM == .model || roleM == .impl || roleM == .sysBridge || roleM == .iface) &&
+            (roleT == .proofs || roleT == .specTests || roleT == .specMutants || roleT == .runtimeTests) then
+          let key := s!"TRANS_LEAK|{m}|{t}"
+          let msg := s!"DAG_TRANS_LEAK: {m} ({roleM.label}) transitively imports cross-package {t} ({roleT.label})"
+          violations := recordDagViolation violations key msg
+        if roleM == .specTests && (roleT == .proofs || roleT == .specMutants || roleT == .runtimeTests) then
+          let key := s!"TRANS_LEAK|{m}|{t}"
+          let msg := s!"DAG_TRANS_LEAK: {m} ({roleM.label}) transitively imports cross-package {t} ({roleT.label})"
+          violations := recordDagViolation violations key msg
+    let mut directCrossNonPublic : Std.HashSet Name := {}
+    for imp in data.imports do
+      let t := imp.module
+      if t.getRoot != `LeanSwe || t == `LeanSwe then continue
+      let pkgT := dagPkgOf knownPkgs t
+      let roleT := dagRoleOf knownPkgs t
+      if pkgM != pkgT && roleT != .types && roleT != .model && roleT != .iface then
+        directCrossNonPublic := directCrossNonPublic.insert t
+        let key := s!"CROSS|{m}|{t}"
+        let msg := s!"DAG_CROSS_IMPORT_VIOLATION: {m} ({roleM.label}) directly imports cross-package {t} ({roleT.label}; only Types/Model/Interface allowed)"
+        violations := recordDagViolation violations key msg
+    for c in data.constants do
+      let uName := (privateToUserName? c.name).getD c.name
+      if roleM == .proofs && isModelNamespaceDeclName uName && !isCompilerLazyModelAux env nonProofUsers c then
+        let key := s!"PROOF_NS_MODEL|{m}|{uName}"
+        let msg := s!"PROOF_MODEL_NS_FORBIDDEN: {m} defines {stableConstLabel c.name} inside Model namespace"
+        violations := recordDagViolation violations key msg
+      let usedTy := c.type.getUsedConstants
+      let usedVal := match c with
+        | .defnInfo v => v.value.getUsedConstants
+        | .opaqueInfo v => v.value.getUsedConstants
+        | .thmInfo v => v.value.getUsedConstants
+        | _ => #[]
+      if roleM == .specTests then
+        for u in usedTy ++ usedVal do
+          let um := modOf u
+          if um.getRoot == `LeanSwe && dagRoleOf knownPkgs um == .proofs then
+            let uLbl := stableConstLabel u
+            let key := s!"SPEC_PROOF_CONST|{m}|{stableConstLabel c.name}|{um}|{uLbl}"
+            let msg := s!"PROOF_CONST_IN_SPEC: {stableConstLabel c.name} in {m} references proof constant {uLbl} from {um}"
+            violations := recordDagViolation violations key msg
+      if roleM != .specMutants && roleM != .runtimeTests &&
+          !isPrivateName c.name && !c.name.isInternalOrNum && !env.isProjectionFn c.name then
+        let short := c.name.getString!
+        let isRefinesOrObeys := short == "refines_model" || short == "obeys_model"
+        if isRefinesOrObeys then
+          let mut seenU : Std.HashSet String := {}
+          for u in c.type.getUsedConstants do
+            let um := modOf u
+            if um.getRoot == `LeanSwe && dagRoleOf knownPkgs um == .proofs then
+              let uLbl := stableConstLabel u
+              if !seenU.contains uLbl then
+                seenU := seenU.insert uLbl
+                let key := s!"REFINES_PROOF_CONST|{c.name}|{um}|{uLbl}"
+                let msg := s!"PROOF_CONST_IN_SIGNATURE: {c.name} in {m} uses proof constant {uLbl} from {um}"
+                violations := recordDagViolation violations key msg
+        else if let .thmInfo v := c then
+          let isTrackedPromiseThm :=
+            qualifyingThms.contains c.name ||
+            (scanPublicAllPassDirect && v.type.getUsedConstants.any fun k => k == `Core.AllPass || k == `Core.CanReach)
+          if isTrackedPromiseThm then
+            let mut seenU : Std.HashSet String := {}
+            for u in v.type.getUsedConstants do
+              let um := modOf u
+              if um.getRoot == `LeanSwe && dagRoleOf knownPkgs um == .proofs then
+                let uLbl := stableConstLabel u
+                let sKey := s!"{m}|{um}|{uLbl}"
+                if !seenU.contains sKey then
+                  seenU := seenU.insert sKey
+                  sigCounts := recordSigProofHit sigCounts sKey c.name.toString
+      if roleM != .proofs then
+        for u in usedTy ++ usedVal do
+          let um := modOf u
+          if um.getRoot == `LeanSwe && um != `LeanSwe then
+            let pkgU := dagPkgOf knownPkgs um
+            if pkgU != pkgM then
+              let roleU := dagRoleOf knownPkgs um
+              if roleU != .types && roleU != .model && roleU != .iface then
+                if !directCrossNonPublic.contains um then
+                  let key := s!"CROSS_REF|{m}|{um}"
+                  let msg := s!"DAG_CROSS_REACHIN_VIOLATION: {m} ({roleM.label}) reaches into cross-package {um} ({roleU.label}) via {stableConstLabel c.name} -> {stableConstLabel u}"
+                  violations := recordDagViolation violations key msg
+              else
+                let uUser := (privateToUserName? u).getD u
+                if uUser.components.contains `Internal then
+                  let key := s!"CROSS_INTERNAL|{m}|{um}|{uUser}"
+                  let msg := s!"DAG_CROSS_INTERNAL_REACHIN: {m} ({roleM.label}) references cross-package internal constant {uUser} in {um}"
+                  violations := recordDagViolation violations key msg
+  return { violations, sigProofCounts := sigCounts, checkedModules }
+
+/-- Shrinking ratchet allowlist of pre-existing import-DAG violations seeded at commit `84750ac`
+(after removing the unused `import LeanSwe.LinuxSyscall.Net.Interface` from
+`LeanSwe/LinuxSyscall/Net/Model/State.lean`). Every entry must stay active; removing a listed
+violation forces removing its entry from this table, and any new violation fails the audit gate. -/
+private def importDagAllowlist : Array String := #[
+  "CROSS|LeanSwe.CmdLine.Proofs.ErrorBounds|LeanSwe.EnvVars.Proofs",
+  "CROSS|LeanSwe.Compress.Impl|LeanSwe.Process.Impl",
+  "CROSS|LeanSwe.Compress.Interface|LeanSwe.Process.SysBridge",
+  "CROSS|LeanSwe.ConnectProxy.Proofs.HealthyWitness|LeanSwe.LinuxSyscall.Dns.Proofs",
+  "CROSS|LeanSwe.ConnectProxy.Proofs.HealthyWitness|LeanSwe.LinuxSyscall.TimeRand.Proofs",
+  "CROSS|LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs|LeanSwe.LinuxSyscall.Dns.Proofs",
+  "CROSS|LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs|LeanSwe.LinuxSyscall.Net.Proofs.HealthyStep",
+  "CROSS|LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs|LeanSwe.LinuxSyscall.Poll.Proofs",
+  "CROSS|LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs|LeanSwe.NetRelay.Proofs",
+  "CROSS|LeanSwe.CryptoHash.Proofs|LeanSwe.CryptoHash.Raw.Proofs",
+  "CROSS|LeanSwe.EnvVars.Proofs|LeanSwe.EnvVars.Raw.Proofs",
+  "CROSS|LeanSwe.Fs.Model|LeanSwe.Fs.Raw.Impl",
+  "CROSS|LeanSwe.Fs.Proofs.PurePathProofs|LeanSwe.Fs.Raw.Proofs",
+  "CROSS|LeanSwe.Fs.Proofs.RawDirOps|LeanSwe.Fs.Raw.SpecTests",
+  "CROSS|LeanSwe.Fs.Proofs.SubtreeCore|LeanSwe.Fs.Raw.SpecTests",
+  "CROSS|LeanSwe.Fs.Proofs|LeanSwe.Fs.Raw.Proofs",
+  "CROSS|LeanSwe.Fs.RuntimeTests|LeanSwe.Process.SysBridge",
+  "CROSS|LeanSwe.Git.Proofs.ImpossibleProofs|LeanSwe.EnvVars.Proofs",
+  "CROSS|LeanSwe.Git.Proofs.ImpossibleProofs|LeanSwe.Process.Impl",
+  "CROSS|LeanSwe.Git.Proofs.ImpossibleProofs|LeanSwe.Process.Proofs.EndToEnd",
+  "CROSS|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.LinuxSyscall.Files.Proofs",
+  "CROSS|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.LinuxSyscall.Process.Proofs",
+  "CROSS|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.LinuxSyscall.TimeRand.Proofs",
+  "CROSS|LeanSwe.Process.Proofs.HealthyStep|LeanSwe.LinuxSyscall.Files.Proofs.HealthyStep",
+  "CROSS|LeanSwe.Process.Proofs.HealthyStep|LeanSwe.LinuxSyscall.Process.Proofs.HealthyStep",
+  "CROSS|LeanSwe.ProcessSandbox.Host.Bwrap|LeanSwe.ProcessSandbox.Raw.Impl",
+  "CROSS|LeanSwe.ProcessSandbox.Host.StreamIo|LeanSwe.Process.SysBridge",
+  "CROSS|LeanSwe.ProcessSandbox.Host.StreamIo|LeanSwe.ProcessSandbox.Raw.Impl",
+  "CROSS|LeanSwe.ProcessSandbox.Host.SysBridge|LeanSwe.ProcessSandbox.Raw.Impl",
+  "CROSS|LeanSwe.ProcessSandbox.Impl|LeanSwe.ProcessSandbox.Seccomp.Impl",
+  "CROSS|LeanSwe.ProcessSandbox.Proofs.SeccompApiProofs|LeanSwe.ProcessSandbox.Seccomp.Impl",
+  "CROSS|LeanSwe.ProcessSandbox.Proofs.SeccompApiProofs|LeanSwe.ProcessSandbox.Seccomp.Proofs",
+  "CROSS|LeanSwe.ProcessSandbox.Proofs.SeccompBytesLemma|LeanSwe.ProcessSandbox.Seccomp.Impl",
+  "CROSS|LeanSwe.ProcessSandbox.Raw.Interface|LeanSwe.ProcessSandbox.Host.SysBridge",
+  "CROSS|LeanSwe.ProcessSandbox.Raw.RuntimeTests|LeanSwe.ProcessSandbox.Host.Bwrap",
+  "CROSS|LeanSwe.SlotPool.RuntimeTests|LeanSwe.Fs.Impl",
+  "CROSS|LeanSwe.SlotPool.RuntimeTests|LeanSwe.Process.SysBridge",
+  "CROSS|LeanSwe.Sqlite.Proofs|LeanSwe.Sqlite.Raw.Proofs",
+  "CROSS|LeanSwe.TempDir.RuntimeTests|LeanSwe.Process.SysBridge",
+  "CROSS|LeanSwe.Time.RuntimeTests|LeanSwe.LinuxSyscall.TestSupport.Seccomp",
+  "CROSS|LeanSwe.Toml.Proofs.Core|LeanSwe.NumParse.SpecTests",
+  "CROSS|LeanSwe.Toml.Proofs.FormatBridge|LeanSwe.NumParse.SpecTests",
+  "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.Proofs",
+  "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.SpecTests",
+  "CROSS|LeanSwe.Uuid.RuntimeTests|LeanSwe.LinuxSyscall.TestSupport.Seccomp",
+  "CROSS_REF|LeanSwe.Compress.RuntimeTests|LeanSwe.Process.SysBridge",
+  "WITHIN|LeanSwe.ConnectProxy.SpecTests|LeanSwe.ConnectProxy.HealthySys",
+  "WITHIN|LeanSwe.ConnectProxy.SpecTests|LeanSwe.ConnectProxy.Relay",
+  "WITHIN|LeanSwe.ConnectProxy.SpecTests|LeanSwe.ConnectProxy.SysBridge",
+  "WITHIN|LeanSwe.Fs.Model|LeanSwe.Fs.Impl",
+  "WITHIN|LeanSwe.Fs.SpecTests|LeanSwe.Fs.Impl",
+  "WITHIN|LeanSwe.LinuxSyscall.Files.SpecTests|LeanSwe.LinuxSyscall.Files.Impl",
+  "WITHIN|LeanSwe.LinuxSyscall.Files.SpecTests|LeanSwe.LinuxSyscall.Files.Interface",
+  "WITHIN|LeanSwe.LinuxSyscall.Passwd.SpecTests|LeanSwe.LinuxSyscall.Passwd.Impl",
+  "WITHIN|LeanSwe.LinuxSyscall.Passwd.SpecTests|LeanSwe.LinuxSyscall.Passwd.Interface",
+  "WITHIN|LeanSwe.LinuxSyscall.Process.SpecTests|LeanSwe.LinuxSyscall.Process.Impl",
+  "WITHIN|LeanSwe.LinuxSyscall.Process.SpecTests|LeanSwe.LinuxSyscall.Process.Interface",
+  "WITHIN|LeanSwe.PostFork.Aeneas.Model|LeanSwe.PostFork.Aeneas.FunsExternal",
+  "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Aeneas.Api",
+  "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Aeneas.Bridge",
+  "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Aeneas.Funs",
+  "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Aeneas.FunsExternal",
+  "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Impl",
+  "WITHIN|LeanSwe.Process.SpecTests|LeanSwe.Process.SysBridge"
+]
+
+/-- Shrinking ratchet allowlist of pre-existing `*.Proofs*`-defined constants referenced in
+qualifying `Core.AllPass`/`Core.CanReach` promised theorem signatures (`thmMod|proofMod|const`,
+paired with the exact active theorem count at `84750ac`). Any new constant, increased count, or
+stale/lower count fails the gate so the table strictly shrinks as proof-local mock helpers move
+into `Model.lean`. -/
+private def sigProofConstAllowlist : Array (String × Nat) := #[
+  ("LeanSwe.Fs.Proofs.AtomicWriteProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.VfsState", 48),
+  ("LeanSwe.Fs.Proofs.AtomicWriteProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.vfsApi", 6),
+  ("LeanSwe.Fs.Proofs.AtomicWriteProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.vfsOps", 42),
+  ("LeanSwe.Fs.Proofs.CopyTreeProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.VfsState", 14),
+  ("LeanSwe.Fs.Proofs.CopyTreeProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.vfsApi", 14),
+  ("LeanSwe.Fs.Proofs.LockProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.VfsState", 26),
+  ("LeanSwe.Fs.Proofs.LockProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.vfsApi", 26),
+  ("LeanSwe.LinuxSyscall.Files.Proofs.ExecCases|LeanSwe.LinuxSyscall.Files.Proofs.ExecCases|LeanSwe.LinuxSyscall.Files.lroState", 1),
+  ("LeanSwe.LinuxSyscall.Files.Proofs|LeanSwe.LinuxSyscall.Files.Proofs.ExecCases|LeanSwe.LinuxSyscall.Files.lroState", 2),
+  ("LeanSwe.LinuxSyscall.Net.Proofs.CodecsAndBounds|LeanSwe.LinuxSyscall.Net.Proofs.CodecsAndBounds|private:LeanSwe.LinuxSyscall.Net.dummyRawNetOps", 1),
+  ("LeanSwe.LinuxSyscall.Poll.Proofs|LeanSwe.LinuxSyscall.Poll.Proofs|private:LeanSwe.LinuxSyscall.Poll.dummyRawPollOps", 1),
+  ("LeanSwe.LinuxSyscall.Sandbox.Proofs.Ops|LeanSwe.LinuxSyscall.Sandbox.Proofs.Ops|private:LeanSwe.LinuxSyscall.Sandbox.unprivInitWithHostFds", 1),
+  ("LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.healthySimApi", 1),
+  ("LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.Process.Proofs.HealthySimState", 1),
+  ("LeanSwe.Process.Proofs|LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.healthySimApi", 34),
+  ("LeanSwe.Process.Proofs|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.Process.Proofs.HealthySimState", 34),
+  ("LeanSwe.ProcessSandbox.Raw.Proofs|LeanSwe.ProcessSandbox.Raw.Proofs|LeanSwe.ProcessSandbox.Raw.Proofs.MockRawState", 8),
+  ("LeanSwe.ProcessSandbox.Raw.Proofs|LeanSwe.ProcessSandbox.Raw.Proofs|LeanSwe.ProcessSandbox.Raw.Proofs.mockRawOps", 8),
+  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.TempDirMockState", 6),
+  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockEnv", 4),
+  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockEnvEx", 2),
+  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockFs", 6),
+  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockFsEx", 2),
+  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockTime", 4),
+  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockTimeEx", 2),
+  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockUuid", 6),
+  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockUuidEx", 2),
+  ("LeanSwe.TempDir.Proofs.WithTempDirProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.TempDirMockState", 14),
+  ("LeanSwe.TempDir.Proofs.WithTempDirProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockEnv", 14),
+  ("LeanSwe.TempDir.Proofs.WithTempDirProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockFs", 14),
+  ("LeanSwe.TempDir.Proofs.WithTempDirProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockTime", 14),
+  ("LeanSwe.TempDir.Proofs.WithTempDirProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockUuid", 14),
+  ("LeanSwe.TempDir.Proofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.TempDirMockState", 10),
+  ("LeanSwe.TempDir.Proofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockEnv", 10),
+  ("LeanSwe.TempDir.Proofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockFs", 10),
+  ("LeanSwe.TempDir.Proofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockTime", 10),
+  ("LeanSwe.TempDir.Proofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockUuid", 10)
+]
+
+private def mergeDagReports (a b : DagAuditReport) : DagAuditReport := Id.run do
+  let mut v := a.violations
+  for (k, msg) in b.violations.toList do
+    v := recordDagViolation v k msg
+  let mut sc := a.sigProofCounts
+  for (k, (cnt, samples)) in b.sigProofCounts.toList do
+    sc := match sc.get? k with
+      | some (prev, pSamples) =>
+        let merged := samples.foldl (fun acc s => if acc.size < 3 && !acc.contains s then acc.push s else acc) pSamples
+        sc.insert k (prev + cnt, merged)
+      | none => sc.insert k (cnt, samples)
+  return { violations := v, sigProofCounts := sc, checkedModules := a.checkedModules + b.checkedModules }
+
+private def evaluateDagRatchetWith
+    (allowEdges : Array String)
+    (allowSigs : Array (String × Nat))
+    (rep : DagAuditReport) : Array String := Id.run do
+  let mut errs : Array String := #[]
+  let mut allowSet : Std.HashSet String := {}
+  for entry in allowEdges do
+    if allowSet.contains entry then
+      errs := errs.push s!"DUPLICATE_DAG_ALLOWLIST_ENTRY: {entry}"
+    allowSet := allowSet.insert entry
+  let obsKeys := (rep.violations.toList.map (·.1)).toArray.qsort (· < ·)
+  for k in obsKeys do
+    if !allowSet.contains k then
+      errs := errs.push s!"{rep.violations.getD k k} [key={k}]"
+  for entry in allowEdges do
+    if !rep.violations.contains entry then
+      errs := errs.push s!"STALE_IMPORT_DAG_ALLOWLIST: {entry} no longer occurs; remove it from importDagAllowlist"
+  let mut sigAllowMap : Std.HashMap String Nat := {}
+  for (k, expCnt) in allowSigs do
+    if sigAllowMap.contains k then
+      errs := errs.push s!"DUPLICATE_SIG_PROOF_ALLOWLIST_ENTRY: {k}"
+    sigAllowMap := sigAllowMap.insert k expCnt
+  let obsSigKeys := (rep.sigProofCounts.toList.map (·.1)).toArray.qsort (· < ·)
+  for k in obsSigKeys do
+    let (obsCnt, samples) := rep.sigProofCounts.getD k (0, #[])
+    match sigAllowMap.get? k with
+    | none =>
+      let sampleStr := String.intercalate ", " samples.toList
+      errs := errs.push s!"PROOF_CONST_IN_SIGNATURE: {k} count={obsCnt} (e.g. {sampleStr})"
+    | some expCnt =>
+      if obsCnt > expCnt then
+        let sampleStr := String.intercalate ", " samples.toList
+        errs := errs.push s!"PROOF_CONST_IN_SIGNATURE_GREW: {k} count={obsCnt} exceeds allowlisted {expCnt} (e.g. {sampleStr})"
+      else if obsCnt < expCnt then
+        errs := errs.push s!"STALE_SIG_PROOF_ALLOWLIST: {k} observed count={obsCnt} < allowlisted {expCnt}; shrink sigProofConstAllowlist"
+  for (k, expCnt) in allowSigs do
+    if !rep.sigProofCounts.contains k then
+      errs := errs.push s!"STALE_SIG_PROOF_ALLOWLIST: {k} (expected count={expCnt}) no longer occurs; remove it from sigProofConstAllowlist"
+  return errs
+
+private def evaluateDagRatchet (rep : DagAuditReport) : Array String :=
+  evaluateDagRatchetWith importDagAllowlist sigProofConstAllowlist rep
+
 /-- Audit compiled `.olean` artifacts reachable from `LeanSwe` for promise coverage. -/
 unsafe def main (args : List String) : IO UInt32 := do
   let isWorker := args.head? == some "--internal-postfork-worker"
@@ -2807,14 +3348,20 @@ unsafe def main (args : List String) : IO UInt32 := do
     for modName in pfEnv.header.moduleNames do
       if isPostForkVerifiedMod modName then
         IO.println s!"PFW_MOD:{modName}"
-    let (eErrs2, sCnt2, sMods2, mutOk2, prom2, _ap2, _cr2, wAss2) ← auditEnvPhase pfEnv true
+    let (eErrs2, sCnt2, sMods2, mutOk2, prom2, ap2, cr2, wAss2) ← auditEnvPhase pfEnv true
     let pfAeneasErrs := checkPostForkAeneasWiring pfEnv
+    let pfDagRep := auditImportDagEnv pfEnv isPostForkVerifiedMod ap2 cr2
     for m in sMods2 do
       IO.println s!"PFW_SPEC:{m}"
     for m in mutOk2 do
       IO.println s!"PFW_MUT:{m}"
     for err in eErrs2 ++ pfAeneasErrs do
       IO.println s!"PFW_ERR:{err}"
+    for (k, msg) in pfDagRep.violations.toList do
+      IO.println s!"PFW_DAG_V:{k}\t{msg}"
+    for (k, (cnt, samples)) in pfDagRep.sigProofCounts.toList do
+      IO.println s!"PFW_DAG_S:{k}\t{cnt}\t{String.intercalate "," samples.toList}"
+    IO.println s!"PFW_DAG_MODS:{pfDagRep.checkedModules}"
     IO.println s!"PFW_STATS:{sCnt2}:{prom2.size}:{wAss2}"
     return 0
 
@@ -2834,11 +3381,31 @@ unsafe def main (args : List String) : IO UInt32 := do
   let mut prom2Count : Nat := 0
   let mut wAss2 : Nat := 0
   let mut pfAeneasErrs : Array String := #[]
+  let mut pfDagRep : DagAuditReport := {}
   for ln in workerOut.stdout.splitOn "\n" do
     if ln.startsWith "PFW_MOD:" then pfModNames := pfModNames.insert (ln.drop 8).toString
     else if ln.startsWith "PFW_SPEC:" then sMods2 := sMods2.push (ln.drop 9).toString
     else if ln.startsWith "PFW_MUT:" then mutOk2 := mutOk2.insert (ln.drop 8).toString
     else if ln.startsWith "PFW_ERR:" then eErrs2 := eErrs2.push (ln.drop 8).toString
+    else if ln.startsWith "PFW_DAG_V:" then
+      let body := (ln.drop 10).toString
+      match body.splitOn "\t" with
+      | k :: rest =>
+        let msg := String.intercalate "\t" rest
+        pfDagRep := { pfDagRep with violations := recordDagViolation pfDagRep.violations k msg }
+      | [] => pure ()
+    else if ln.startsWith "PFW_DAG_S:" then
+      let body := (ln.drop 10).toString
+      match body.splitOn "\t" with
+      | [k, cntStr, sampleCsv] =>
+        let cnt := cntStr.toNat!
+        let samples := (sampleCsv.splitOn ",").filter (!·.isEmpty) |>.toArray
+        let prev := pfDagRep.sigProofCounts.getD k (0, #[])
+        let merged := samples.foldl (fun acc s => if acc.size < 3 && !acc.contains s then acc.push s else acc) prev.2
+        pfDagRep := { pfDagRep with sigProofCounts := pfDagRep.sigProofCounts.insert k (prev.1 + cnt, merged) }
+      | _ => pure ()
+    else if ln.startsWith "PFW_DAG_MODS:" then
+      pfDagRep := { pfDagRep with checkedModules := (ln.drop 13).toString.toNat! }
     else if ln.startsWith "PFW_STATS:" then
       match (ln.drop 10).toString.splitOn ":" with
       | [a, b, c] =>
@@ -2908,7 +3475,7 @@ unsafe def main (args : List String) : IO UInt32 := do
         errors := errors.push metaErr
         break
 
-  let rtParseEnv ← if !importableExtraMods.isEmpty then do
+  let (rtParseEnv, extraDagRep) ← if !importableExtraMods.isEmpty then do
     enableInitializersExecution
     let extraEnv ← importModules (importableExtraMods.map fun m => { module := m }) {} (loadExts := true)
     for h : i in [0 : extraEnv.header.moduleNames.size] do
@@ -2945,9 +3512,11 @@ unsafe def main (args : List String) : IO UInt32 := do
           if let some metaErr := checkForbiddenMetaOrAttr extraPath stx then
             errors := errors.push metaErr
             break
-    pure extraEnv
+    let exDag := auditImportDagEnv extraEnv
+      (fun m => !visited.contains m && !isPostForkVerifiedMod m) {} {} true
+    pure (extraEnv, exDag)
   else
-    pure env
+    pure (env, {})
 
   for rtMod in runtimeTestMods do
     if rtMod == `LeanSwe.PostFork.RuntimeTests then
@@ -3038,6 +3607,12 @@ unsafe def main (args : List String) : IO UInt32 := do
   let gitClosureErrs ← checkGitTrustedClosure env importableExtraMods
   let cproxyClosureErrs ← checkConnectProxyTrustedClosure env repoDir ap1 cr1
 
+  let mainDagRep := auditImportDagEnv env (fun m => !isPostForkVerifiedMod m) ap1 cr1
+  let combinedDagRep := mergeDagReports (mergeDagReports mainDagRep pfDagRep) extraDagRep
+  let dagErrs := evaluateDagRatchet combinedDagRep
+  let totalSigHits := combinedDagRep.sigProofCounts.fold (init := 0) fun acc _ (cnt, _) => acc + cnt
+  IO.println s!"IMPORT_DAG_CHECK: modules={combinedDagRep.checkedModules} edges_obs={combinedDagRep.violations.size} edges_allow={importDagAllowlist.size} sig_keys_obs={combinedDagRep.sigProofCounts.size} sig_hits_obs={totalSigHits} sig_allow={sigProofConstAllowlist.size} errors={dagErrs.size}"
+
   let specModCount := sCnt1 + sCnt2
   let specModStrs := (sMods1.map (·.toString)) ++ sMods2
   let mutOkAll : Std.HashSet String := mutOk1.fold (fun acc m => acc.insert m.toString) mutOk2
@@ -3048,7 +3623,7 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   let promCount := prom1.size + prom2Count
   let withAssumeCount := wAss1 + wAss2
-  errors := errors ++ eErrs1 ++ eErrs2 ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sqClosureErrs ++ sbxClosureErrs ++ compClosureErrs ++ managedProcErrs ++ psandboxHostErrs ++ pfClosureErrs ++ pfWiringErrs ++ pfAeneasErrs ++ gitClosureErrs ++ cproxyClosureErrs
+  errors := errors ++ eErrs1 ++ eErrs2 ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sqClosureErrs ++ sbxClosureErrs ++ compClosureErrs ++ managedProcErrs ++ psandboxHostErrs ++ pfClosureErrs ++ pfWiringErrs ++ pfAeneasErrs ++ gitClosureErrs ++ cproxyClosureErrs ++ dagErrs
   IO.println s!"PROMISE_CHECK: spec_modules={specModCount} promises={promCount} with_assume={withAssumeCount} errors={errors.size}"
   if errors.isEmpty then
     return 0
