@@ -80,13 +80,13 @@ class FuzzChangedUnitTests(unittest.TestCase):
         self.assertLess(time.monotonic() - t0, 0.2)
 
     def test_build_smoke_command(self) -> None:
-        self.assertEqual(fuzz_changed.build_smoke_command(".lake/build/bin/leanswe-fuzz", ["envvars", "cryptohash"], ["--self-test-shrink"]),
-                         [".lake/build/bin/leanswe-fuzz", "--smoke", "--suite", "envvars", "--suite", "cryptohash", "--self-test-shrink"])
+        self.assertEqual(fuzz_changed.build_smoke_command("harness/.lake/build/bin/leanswe-fuzz", ["envvars", "cryptohash"], ["--self-test-shrink"]),
+                         ["harness/.lake/build/bin/leanswe-fuzz", "--smoke", "--suite", "envvars", "--suite", "cryptohash", "--self-test-shrink"])
 
     def test_real_repo_manifest_and_workflows(self) -> None:
-        manifest = fuzz_changed.load_manifest(REPO_ROOT / "Fuzz" / "suites.json")
+        manifest = fuzz_changed.load_manifest(REPO_ROOT / "harness" / "Fuzz" / "suites.json")
         self.assertEqual(manifest.version, 1)
-        self.assertNotIn("Fuzz/SelfTest.lean", manifest.common_paths)
+        self.assertNotIn("harness/Fuzz/SelfTest.lean", manifest.common_paths)
         self.assertIn(".github/workflows/audit.yml", manifest.common_paths)
         self.assertIn(".github/actions/install-lean/action.yml", manifest.common_paths)
         by_name = {s.name: s for s in manifest.suites}
@@ -94,19 +94,19 @@ class FuzzChangedUnitTests(unittest.TestCase):
         self.assertIn("envvars", by_name); self.assertIn("cryptohash", by_name); self.assertIn("dns", by_name)
         for ws, sub in (("sandbox", "Sandbox"), ("timerand", "TimeRand"), ("files", "Files"), ("process", "Process"), ("poll", "Poll"), ("net", "Net")):
             self.assertIn(ws, by_name)
-            self.assertIn(f"Fuzz/LinuxSyscall/{sub}/", by_name[ws].paths)
+            self.assertIn(f"harness/Fuzz/LinuxSyscall/{sub}/", by_name[ws].paths)
             self.assertIn(f"LeanSwe/LinuxSyscall/{sub}/", by_name[ws].paths)
         self.assertIn("Core/", manifest.common_paths)
         self.assertIn("passwd", by_name); self.assertIn("sqlite", by_name); self.assertIn("git", by_name)
-        self.assertTrue({"LeanSwe/Git/", "LeanSwe/Process/", "LeanSwe/EnvVars/", "LeanSwe/Fs/", "Fuzz/Git/"}.issubset(by_name["git"].paths))
+        self.assertTrue({"LeanSwe/Git/", "LeanSwe/Process/", "LeanSwe/EnvVars/", "LeanSwe/Fs/", "harness/Fuzz/Git/"}.issubset(by_name["git"].paths))
         self.assertIn("LeanSwe/LinuxSyscall/Passwd/", by_name["passwd"].paths)
         self.assertIn("LeanSwe/LinuxSyscall/c/passwd_shim.c", by_name["passwd"].paths)
         self.assertIn("LeanSwe/LinuxSyscall/Common/", by_name["passwd"].paths)
         self.assertIn("postfork", by_name)
         self.assertIn("LeanSwe/LinuxSyscall/Common/", by_name["postfork"].paths)
         self.assertIn("LeanSwe/LinuxSyscall/c/fd_box.h", by_name["postfork"].paths)
-        self.assertIn("Fuzz/SelfTest.lean", by_name["selftest"].paths)
-        self.assertEqual(by_name["sqlite"].paths, ("LeanSwe/Sqlite/", "Fuzz/Sqlite/"))
+        self.assertIn("harness/Fuzz/SelfTest.lean", by_name["selftest"].paths)
+        self.assertEqual(by_name["sqlite"].paths, ("LeanSwe/Sqlite/", "harness/Fuzz/Sqlite/"))
         self.assertIn("LeanSwe/LinuxSyscall/Sandbox/", by_name["files"].paths); self.assertIn("LeanSwe/LinuxSyscall/c/sandbox_shim.c", by_name["files"].paths)
         audit = (REPO_ROOT / ".github" / "workflows" / "audit.yml").read_text(encoding="utf-8")
         daily = (REPO_ROOT / ".github" / "workflows" / "audit-daily.yml").read_text(encoding="utf-8")
@@ -121,7 +121,7 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
     def _init_repo(self, tmp: Path) -> tuple[Path, str]:
         repo = tmp / "repo"; repo.mkdir(); _git(repo, "init", "-b", "main")
         _write_files(repo, {
-            "Fuzz/suites.json": json.dumps(SAMPLE_MANIFEST, indent=2) + "\n",
+            "harness/Fuzz/suites.json": json.dumps(SAMPLE_MANIFEST, indent=2) + "\n",
             "Fuzz/Common/Rng.lean": "def rng := 1\n", "Fuzz/Main.lean": "def main := 0\n",
             "LeanSwe/EnvVars/Impl.lean": "def envImpl := 1\n", "LeanSwe/EnvVars/Model.lean": "def envModel := 1\n",
             "LeanSwe/EnvVars/Proofs.lean": "theorem envProof : True := trivial\n",
@@ -174,17 +174,17 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
             repo, base = self._init_repo(Path(tmpdir))
             _git(repo, "checkout", "-b", "add-suite", base)
             m_add = copy.deepcopy(SAMPLE_MANIFEST); m_add["suites"]["sqlite"] = {"paths": ["LeanSwe/Sqlite/Model.lean", "Fuzz/Sqlite/"]}
-            _write_files(repo, {"Fuzz/suites.json": json.dumps(m_add) + "\n", "Fuzz/Sqlite/Suite.lean": "def s := 1\n"})
+            _write_files(repo, {"harness/Fuzz/suites.json": json.dumps(m_add) + "\n", "Fuzz/Sqlite/Suite.lean": "def s := 1\n"})
             add_sha = _commit_all(repo, "add sqlite")
 
             _git(repo, "checkout", "-b", "rem-common", base)
             m_rem = copy.deepcopy(SAMPLE_MANIFEST); m_rem["common_paths"] = ["Fuzz/Common/"]
-            _write_files(repo, {"Fuzz/suites.json": json.dumps(m_rem) + "\n", "Fuzz/Main.lean": "def main := 42\n"})
+            _write_files(repo, {"harness/Fuzz/suites.json": json.dumps(m_rem) + "\n", "Fuzz/Main.lean": "def main := 42\n"})
             rem_sha = _commit_all(repo, "drop main from common")
 
             _git(repo, "checkout", "-b", "del-suite", base)
             m_del = copy.deepcopy(SAMPLE_MANIFEST); del m_del["suites"]["envvars"]
-            _write_files(repo, {"Fuzz/suites.json": json.dumps(m_del) + "\n", "LeanSwe/EnvVars/Impl.lean": "def envImpl := 99\n"})
+            _write_files(repo, {"harness/Fuzz/suites.json": json.dumps(m_del) + "\n", "LeanSwe/EnvVars/Impl.lean": "def envImpl := 99\n"})
             del_sha = _commit_all(repo, "delete envvars suite")
 
             _git(repo, "checkout", base)
@@ -195,14 +195,14 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
             rc_ok, out_ok, err_ok = self._run_cli(["--repo", str(repo), "--base", base, "--head", del_sha, "--allow-deleted-suites"])
             self.assertEqual((rc_ok, out_ok.splitlines()), (0, [])); self.assertIn("FUZZ_CHANGED_WARN:", err_ok)
 
-            sub = repo / "Fuzz"
-            self.assertEqual(self._run_cli(["--repo", str(sub), "--manifest", str(repo / "Fuzz/suites.json"), "--base", base, "--head", add_sha])[:2], (0, "sqlite\n"))
-            (repo / ".lake/build/bin").mkdir(parents=True)
-            _make_script(repo / ".lake/build/bin/leanswe-fuzz", 'if [ "$1" = "--list-suites" ]; then printf "envvars\\ncryptohash\\n"; fi')
+            sub = repo / "harness/Fuzz"
+            self.assertEqual(self._run_cli(["--repo", str(sub), "--manifest", str(repo / "harness/Fuzz/suites.json"), "--base", base, "--head", add_sha])[:2], (0, "sqlite\n"))
+            (repo / "harness/.lake/build/bin").mkdir(parents=True)
+            _make_script(repo / "harness/.lake/build/bin/leanswe-fuzz", 'if [ "$1" = "--list-suites" ]; then printf "envvars\\ncryptohash\\n"; fi')
             self.assertEqual(self._run_cli(["--repo", str(sub), "--manifest", "suites.json", "--base", base, "--head", base, "--check-manifest"])[0], 0)
             self.assertEqual(self._run_cli(["--repo", str(sub), "--manifest", "suites.json", "--base", base, "--head", rem_sha, "--run"])[0], 0)
             link_sub = Path(tmpdir) / "link_to_fuzz"; os.symlink(str(sub), link_sub)
-            _write_files(repo, {"Fuzz/suites.json": json.dumps(SAMPLE_MANIFEST) + "\n"})
+            _write_files(repo, {"harness/Fuzz/suites.json": json.dumps(SAMPLE_MANIFEST) + "\n"})
             for m_arg in (["--repo", str(link_sub), "--manifest", "suites.json"], ["--repo", str(repo), "--manifest", str(link_sub / "suites.json")], ["--repo", str(repo), "--manifest", "../link_to_fuzz/suites.json"]):
                 rc_ls, _, err_ls = self._run_cli([*m_arg, "--base", base, "--head", del_sha])
                 self.assertEqual(rc_ls, 2, m_arg); self.assertIn("deleted from manifest: envvars", err_ls)
@@ -215,7 +215,7 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
             m["suites"]["sub_noslash"] = {"paths": ["Fuzz/submod"]}
             m["suites"]["dirlink"] = {"paths": ["Fuzz/LinkedDir/"]}
             m["suites"]["dirdeep"] = {"paths": ["Fuzz/LinkedDir/Inner.lean"]}
-            _write_files(repo, {"Fuzz/suites.json": json.dumps(m) + "\n", "Shared/common.lean": "def c := 1\n", "SharedDir/x.lean": "def x := 1\n", "RealLinked/Inner.lean": "def i := 1\n"})
+            _write_files(repo, {"harness/Fuzz/suites.json": json.dumps(m) + "\n", "Shared/common.lean": "def c := 1\n", "SharedDir/x.lean": "def x := 1\n", "RealLinked/Inner.lean": "def i := 1\n"})
             os.symlink("../../Shared/common.lean", repo / "Fuzz/EnvVars/link.lean"); os.symlink("../../SharedDir", repo / "Fuzz/EnvVars/linkdir")
             os.symlink("../../Fuzz/submod/inner.lean", repo / "Fuzz/EnvVars/sublink.lean"); os.symlink("../RealLinked", repo / "Fuzz/LinkedDir")
             _git(repo, "add", "-A"); _git(repo, "update-index", "--add", "--cacheinfo", f"160000,{base},Fuzz/submod")
@@ -249,16 +249,16 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
             repo, base = self._init_repo(Path(tmpdir))
             bad_manifest = Path(tmpdir) / "outside.json"
             bad_manifest.write_text(json.dumps({"version": 1, "suites": {"other": {"paths": ["nope"]}}}), encoding="utf-8")
-            (repo / "Fuzz/suites.json").unlink(); os.symlink(str(bad_manifest), repo / "Fuzz/suites.json")
+            (repo / "harness/Fuzz/suites.json").unlink(); os.symlink(str(bad_manifest), repo / "harness/Fuzz/suites.json")
             _git(repo, "checkout", "-b", "edit-only", base); _write_files(repo, {"LeanSwe/EnvVars/Impl.lean": "def envImpl := 9\n"})
             _git(repo, "add", "LeanSwe/EnvVars/Impl.lean"); _git(repo, "commit", "-m", "edit env"); edit_sha = _git(repo, "rev-parse", "HEAD")
             self.assertEqual(self._run_cli(["--repo", str(repo), "--base", base, "--head", edit_sha])[:2], (0, "envvars\n"))
-            (repo / "Fuzz/suites.json").unlink(); _git(repo, "checkout", "--", "Fuzz/suites.json")
+            (repo / "harness/Fuzz/suites.json").unlink(); _git(repo, "checkout", "--", "harness/Fuzz/suites.json")
 
-            _git(repo, "checkout", "-b", "symlink-manifest", base); _write_files(repo, {"Fuzz/real_old.json": json.dumps(SAMPLE_MANIFEST) + "\n"})
-            (repo / "Fuzz/suites.json").unlink(); os.symlink("real_old.json", repo / "Fuzz/suites.json"); sym_base = _commit_all(repo, "symlink manifest")
-            (repo / "Fuzz/suites.json").unlink(); (repo / "Fuzz/real_old.json").unlink()
-            _write_files(repo, {"Fuzz/suites.json": json.dumps(SAMPLE_MANIFEST) + "\n"}); sym_head = _commit_all(repo, "regular manifest")
+            _git(repo, "checkout", "-b", "symlink-manifest", base); _write_files(repo, {"harness/Fuzz/real_old.json": json.dumps(SAMPLE_MANIFEST) + "\n"})
+            (repo / "harness/Fuzz/suites.json").unlink(); os.symlink("real_old.json", repo / "harness/Fuzz/suites.json"); sym_base = _commit_all(repo, "symlink manifest")
+            (repo / "harness/Fuzz/suites.json").unlink(); (repo / "harness/Fuzz/real_old.json").unlink()
+            _write_files(repo, {"harness/Fuzz/suites.json": json.dumps(SAMPLE_MANIFEST) + "\n"}); sym_head = _commit_all(repo, "regular manifest")
             for co in (sym_base, sym_head):
                 _git(repo, "checkout", co)
                 rc_s, out_s, err_s = self._run_cli(["--repo", str(repo), "--base", sym_base, "--head", sym_head])
@@ -266,10 +266,10 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
             rc_sh, _, err_sh = self._run_cli(["--repo", str(repo), "--base", sym_head, "--head", sym_base])
             self.assertEqual(rc_sh, 2); self.assertIn("not a regular file blob", err_sh)
 
-            _git(repo, "checkout", "-b", "upgrade", base); _write_files(repo, {"Fuzz/suites.json": json.dumps({"version": 0, "suites": {}}) + "\n"})
+            _git(repo, "checkout", "-b", "upgrade", base); _write_files(repo, {"harness/Fuzz/suites.json": json.dumps({"version": 0, "suites": {}}) + "\n"})
             old_v0 = _commit_all(repo, "v0")
             m_utf8 = copy.deepcopy(SAMPLE_MANIFEST); m_utf8["suites"]["envvars"]["description"] = "em-dash \u2014 ok"
-            _write_files(repo, {"Fuzz/suites.json": json.dumps(m_utf8, ensure_ascii=False) + "\n"}); new_v1 = _commit_all(repo, "v1")
+            _write_files(repo, {"harness/Fuzz/suites.json": json.dumps(m_utf8, ensure_ascii=False) + "\n"}); new_v1 = _commit_all(repo, "v1")
             env_c = {**os.environ, "LC_ALL": "C", "PYTHONCOERCECLOCALE": "0", "PYTHONUTF8": "0"}
             subp = subprocess.run([sys.executable, "-B", str(REPO_ROOT / "scripts/fuzz_changed.py"), "--repo", str(repo), "--base", old_v0, "--head", new_v1], env=env_c, capture_output=True, text=True)
             self.assertEqual((subp.returncode, subp.stdout.splitlines()), (0, ["envvars", "cryptohash"]), subp.stderr)

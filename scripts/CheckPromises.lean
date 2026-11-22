@@ -2884,7 +2884,7 @@ unsafe def main (args : List String) : IO UInt32 := do
     if !(← entry.isDir) && entry.extension == some "lean" then
       let modName := moduleNameUnderRoot coreDir entry `Core
       extraProjectMods := pushDiscovered modName extraProjectMods
-      if !visited.contains modName && modName != `Core.PropCheck then
+      if !visited.contains modName then
         errors := errors.push s!"UNIMPORTED_CORE_MODULE: {entry} (module {modName} is not imported by LeanSwe)"
 
   let mut importableExtraMods : Array Name := #[]
@@ -2973,12 +2973,12 @@ unsafe def main (args : List String) : IO UInt32 := do
           break
 
   let mut auxFiles : Array (String × System.FilePath) := #[]
-  let testsDir := repoDir / "Tests"
+  let testsDir := repoDir / "harness" / "Tests"
   if ← testsDir.pathExists then
-    auxFiles := auxFiles ++ (← collectLeanRelFiles testsDir "Tests")
-  let fuzzDir := repoDir / "Fuzz"
+    auxFiles := auxFiles ++ (← collectLeanRelFiles testsDir "harness/Tests")
+  let fuzzDir := repoDir / "harness" / "Fuzz"
   if ← fuzzDir.pathExists then
-    auxFiles := auxFiles ++ (← collectLeanRelFiles fuzzDir "Fuzz")
+    auxFiles := auxFiles ++ (← collectLeanRelFiles fuzzDir "harness/Fuzz")
   for (relPath, filePath) in auxFiles do
     match ← parseModuleCommands rtParseEnv filePath (allowMacroRecovery := true) with
     | .error _ => pure ()

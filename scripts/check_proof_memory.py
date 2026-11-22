@@ -65,10 +65,10 @@ def discover_lean_files(repo_root: Path) -> list[str]:
         files = [line.strip() for line in out.splitlines() if line.strip()]
     except (subprocess.CalledProcessError, FileNotFoundError):
         files = [str(p.relative_to(repo_root)) for p in repo_root.rglob("*.lean") if not p.is_symlink()]
-    excluded_prefixes = (".lake/", "build/")
+    excluded_prefixes = (".lake/", "build/", "harness/.lake/", "harness/build/")
     return sorted(
         f for f in files
-        if f != "lakefile.lean"
+        if f not in ("lakefile.lean", "harness/lakefile.lean")
         and not any(f.startswith(pfx) for pfx in excluded_prefixes)
         and not (repo_root / f).is_symlink()
     )
@@ -145,7 +145,7 @@ def expand_with_revdeps(repo_root: Path, target_files: list[str]) -> list[str]:
     """Expand target_files with all transitive reverse-import dependents in the repo."""
     all_files = discover_lean_files(repo_root)
     mod_to_file = {
-        (f[:-5] if f.endswith(".lean") else f).replace("/", "."): f
+        ((f[8:] if f.startswith("harness/") else f)[:-5] if f.endswith(".lean") else f).replace("/", "."): f
         for f in all_files
     }
     rev_deps: dict[str, list[str]] = {f: [] for f in all_files}
@@ -341,15 +341,12 @@ def main(argv: list[str] | None = None) -> int:
 
     env = load_lake_env(repo_root)
     env["LEAN_NUM_THREADS"] = "1"
+    h_lib = repo_root / "harness" / ".lake" / "build" / "lib" / "lean"
+    h_env = {**env, "LEAN_PATH": f"{h_lib}:{env['LEAN_PATH']}" if env.get("LEAN_PATH") else str(h_lib)}
     lean_bin = shutil.which("lean", path=env.get("PATH")) or "lean"
-
+    env_for = lambda f: h_env if f.startswith("harness/") else env
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        rows = list(
-            pool.map(
-                lambda f: measure_file(lean_bin, env, repo_root, f, args.poll_interval, limit_mb),
-                files,
-            )
-        )
+        rows = list(pool.map(lambda f: measure_file(lean_bin, env_for(f), repo_root, f, args.poll_interval, limit_mb), files))
 
     ranked = sorted(
         rows,

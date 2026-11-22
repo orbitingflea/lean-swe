@@ -27,7 +27,7 @@ Enforces:
      and consumed as a used `Prop` hypothesis (after zeta and beta reduction) in an upper-layer `Proofs` theorem.
 4. Runtime linking, active execution, non-noop checks, and nonce-log anti-forgery across `Tests.Main` and `RuntimeTests`,
    with clean `RuntimeTests` retirement support: impure external-boundary or runtime-`Float` packages require `<pkgNs>.Model`
-   and `Fuzz/suites.json` coverage upon retirement, while pure/composed Lean packages may retire `RuntimeTests` without
+   and `harness/Fuzz/suites.json` coverage upon retirement, while pure/composed Lean packages may retire `RuntimeTests` without
    `<pkgNs>.Model` (relying on `SpecTests` + `Proofs`), preserving unconditional `errorCoverage`, `externalAssumptions`
    subject/predicate, and axiom checks.
 5. Error coverage completeness & canonical `.provedImpossible` shape (`Core.NeverErrorKind{IO,BaseIO,Pure}`).
@@ -1340,8 +1340,8 @@ private def suiteCoversPackage (suiteKey : String) (dirPats : Array String) (pkg
     normKey sk == normKey restUnder
   if !suiteMatchesPkg then
     return false
-  let wantFuzzRest := s!"fuzz/{restSlash.toLower}/"
-  let wantFuzzLast := s!"fuzz/{lastSeg.toLower}/"
+  let wantFuzzRest := s!"harness/fuzz/{restSlash.toLower}/"
+  let wantFuzzLast := s!"harness/fuzz/{lastSeg.toLower}/"
   return dirPats.any fun p =>
     let pl := p.toLower
     pl == wantFuzzRest || pl == wantFuzzLast ||
@@ -1349,7 +1349,7 @@ private def suiteCoversPackage (suiteKey : String) (dirPats : Array String) (pkg
 
 private def parseFuzzCoveredPackages (repoDir : System.FilePath) (knownPkgs : Array Name) :
     IO (Except String (Std.HashSet Name)) := do
-  let manifestPath := repoDir / "Fuzz" / "suites.json"
+  let manifestPath := repoDir / "harness" / "Fuzz" / "suites.json"
   if !(← manifestPath.pathExists) then
     return .ok {}
   let raw ← IO.FS.readFile manifestPath
@@ -2425,14 +2425,16 @@ unsafe def main (args : List String) : IO UInt32 := do
   unless ← leanSweDir.pathExists do
     IO.eprintln s!"MISSING_SOURCE_DIR: {leanSweDir}"
     return 1
-  let hasTestsMainOlean ← (libDir / "Tests" / "Main.olean").pathExists
+  let harnessLibDir := repoDir / "harness" / ".lake" / "build" / "lib" / "lean"
+  let hasTestsMainOlean ← (harnessLibDir / "Tests" / "Main.olean").pathExists
   let hasPostForkVerifiedSrc ← (leanSweDir / "PostFork" / "Verified.lean").pathExists
   if hasPostForkVerifiedSrc then
     unless ← (libDir / "LeanSwe" / "PostFork" / "Verified.olean").pathExists do
       IO.eprintln s!"MISSING_OLEAN: LeanSwe.PostFork.Verified ({libDir / "LeanSwe" / "PostFork" / "Verified.olean"})"
       return 1
   Lean.enableInitializersExecution
-  initSearchPath (← findSysroot) [libDir]
+  let searchDirs := if hasTestsMainOlean then [harnessLibDir, libDir] else [libDir]
+  initSearchPath (← findSysroot) searchDirs
   let mut rootImports : Array Import := #[{ module := `LeanSwe }]
   if hasTestsMainOlean then
     rootImports := rootImports.push { module := `Tests.Main }
@@ -2461,7 +2463,7 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   let anyHasRt := knownPkgs.any fun p => visited.contains (Name.str p "RuntimeTests") || diskRtPkgs.contains p
   if anyHasRt && !hasTestsMainOlean then
-    IO.eprintln s!"MISSING_OLEAN: Tests.Main ({libDir / "Tests" / "Main.olean"})"
+    IO.eprintln s!"MISSING_OLEAN: Tests.Main ({harnessLibDir / "Tests" / "Main.olean"})"
     return 1
 
   let fuzzCoveredPkgs ← match ← parseFuzzCoveredPackages repoDir knownPkgs with
@@ -2728,7 +2730,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       if deferredRefinesModelPackages.contains pkg && env.contains (Name.str (Name.str pkg "Proofs") "refines_model") then
         errs := errs.push s!"STALE_REFINES_DEFERRAL: {pkg} defines Proofs.refines_model; remove from deferredRefinesModelPackages"
       if isRetired && isImpureBoundary && !inSuites then
-        errs := errs.push s!"MISSING_FUZZ_SUITE: retired external-boundary package {pkg} is absent from Fuzz/suites.json"
+        errs := errs.push s!"MISSING_FUZZ_SUITE: retired external-boundary package {pkg} is absent from harness/Fuzz/suites.json"
       let modelMod := Name.str pkg "Model"
       let hasModel := visited.contains modelMod
       let hasRefinesThm := env.contains (Name.str (Name.str pkg "Proofs") "refines_model")

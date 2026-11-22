@@ -57,10 +57,10 @@ private structure MiniRepo where
 private def defaultSuitesJson : String :=
   "{\n" ++
   "  \"version\": 1,\n" ++
-  "  \"common_paths\": [\"Core/\", \"Fuzz/Main.lean\"],\n" ++
+  "  \"common_paths\": [\"Core/\", \"harness/Fuzz/Main.lean\"],\n" ++
   "  \"suites\": {\n" ++
-  "    \"selftest\": { \"paths\": [\"Fuzz/SelfTest.lean\"] },\n" ++
-  "    \"minifloat\": { \"paths\": [\"Fuzz/MiniFloat/\", \"LeanSwe/MiniFloat/\"] }\n" ++
+  "    \"selftest\": { \"paths\": [\"harness/Fuzz/SelfTest.lean\"] },\n" ++
+  "    \"minifloat\": { \"paths\": [\"harness/Fuzz/MiniFloat/\", \"LeanSwe/MiniFloat/\"] }\n" ++
   "  }\n" ++
   "}\n"
 
@@ -72,7 +72,7 @@ private def setupBaselineMiniRepo (baseDir realRepo realLibAbs : System.FilePath
   symlinkCoreLib realLibAbs libDir
   let leanPath := s!"{libDir}:{realLibAbs}"
 
-  writeFileCreatingParents (root / "Fuzz/suites.json") defaultSuitesJson
+  writeFileCreatingParents (root / "harness/Fuzz/suites.json") defaultSuitesJson
   writeFileCreatingParents (root / "Core/Assumptions.lean") (← IO.FS.readFile (realRepo / "Core/Assumptions.lean"))
   writeFileCreatingParents (root / "Core/NondetTest.lean") (← IO.FS.readFile (realRepo / "Core/NondetTest.lean"))
   writeFileCreatingParents (root / "Core/Refines.lean") (← IO.FS.readFile (realRepo / "Core/Refines.lean"))
@@ -106,7 +106,7 @@ private def setupBaselineMiniRepo (baseDir realRepo realLibAbs : System.FilePath
   writeFileCreatingParents (root / "LeanSwe.lean")
     "import Core.NondetTest\nimport Core.Assumptions\nimport Core.Refines\nimport LeanSwe.MiniPure.Types\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Impl\nimport LeanSwe.MiniPure.Interface\nimport LeanSwe.MiniPure.SpecTests\nimport LeanSwe.MiniPure.Proofs\nimport LeanSwe.MiniFloat.Types\nimport LeanSwe.MiniFloat.Model\nimport LeanSwe.MiniFloat.Impl\nimport LeanSwe.MiniFloat.Interface\nimport LeanSwe.MiniFloat.SpecTests\nimport LeanSwe.MiniFloat.Proofs\n"
 
-  writeFileCreatingParents (root / "Tests/Main.lean")
+  writeFileCreatingParents (root / "harness/Tests/Main.lean")
     "import Core.Assumptions\nimport LeanSwe\ndef main (_ : List String) : IO UInt32 := do\n  Core.initAssumpLog \"a\" \"b\"\n  Core.closeAssumpLog\n  return 0\n"
 
   let buildOrder := #[
@@ -122,11 +122,12 @@ private def setupBaselineMiniRepo (baseDir realRepo realLibAbs : System.FilePath
     "LeanSwe/MiniFloat/Interface",
     "LeanSwe/MiniFloat/SpecTests",
     "LeanSwe/MiniFloat/Proofs",
-    "LeanSwe",
-    "Tests/Main"
+    "LeanSwe"
   ]
   for m in buildOrder do
     compileLeanMod root leanPath (root / s!"{m}.lean") (libDir / s!"{m}.olean")
+  compileLeanMod (root / "harness") leanPath (root / "harness/Tests/Main.lean")
+    (root / "harness/.lake/build/lib/lean/Tests/Main.olean")
 
   return { root, libDir, leanPath }
 
@@ -166,7 +167,11 @@ private def runMutantCase
   }
   let recompileMods ← mutate mr
   for m in recompileMods do
-    compileLeanMod mr.root mr.leanPath (mr.root / s!"{m}.lean") (mr.libDir / s!"{m}.olean")
+    if m == "Tests/Main" then
+      compileLeanMod (mr.root / "harness") mr.leanPath (mr.root / "harness/Tests/Main.lean")
+        (mr.root / "harness/.lake/build/lib/lean/Tests/Main.olean")
+    else
+      compileLeanMod mr.root mr.leanPath (mr.root / s!"{m}.lean") (mr.libDir / s!"{m}.olean")
   expectFailureCode bin caseName expectedCode mr.libDir mr.root
   IO.FS.removeDirAll caseDir
 
@@ -188,7 +193,11 @@ private def runPositiveCase
   }
   let recompileMods ← mutate mr
   for m in recompileMods do
-    compileLeanMod mr.root mr.leanPath (mr.root / s!"{m}.lean") (mr.libDir / s!"{m}.olean")
+    if m == "Tests/Main" then
+      compileLeanMod (mr.root / "harness") mr.leanPath (mr.root / "harness/Tests/Main.lean")
+        (mr.root / "harness/.lake/build/lib/lean/Tests/Main.olean")
+    else
+      compileLeanMod mr.root mr.leanPath (mr.root / s!"{m}.lean") (mr.libDir / s!"{m}.olean")
   let out ← runCmd bin.toString #[mr.libDir.toString, mr.root.toString, "--allow-legacy"]
   let combined := out.stdout ++ "\n" ++ out.stderr
   if out.exitCode != 0 || (combined.splitOn "errors=0").length <= 1 then
@@ -479,14 +488,14 @@ def main (_ : List String) : IO UInt32 := do
       return #["LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
 
     runMutantCase base tmpRoot bin "pure_pkg_with_model_in_fuzz_suites_still_requires_refines" "MISSING_REFINES_MODEL" fun mr => do
-      writeFileCreatingParents (mr.root / "Fuzz/suites.json")
+      writeFileCreatingParents (mr.root / "harness/Fuzz/suites.json")
         ("{\n" ++
          "  \"version\": 1,\n" ++
-         "  \"common_paths\": [\"Core/\", \"Fuzz/Main.lean\"],\n" ++
+         "  \"common_paths\": [\"Core/\", \"harness/Fuzz/Main.lean\"],\n" ++
          "  \"suites\": {\n" ++
-         "    \"selftest\": { \"paths\": [\"Fuzz/SelfTest.lean\"] },\n" ++
-         "    \"minifloat\": { \"paths\": [\"Fuzz/MiniFloat/\", \"LeanSwe/MiniFloat/\"] },\n" ++
-         "    \"minipure\": { \"paths\": [\"Fuzz/MiniPure/\", \"LeanSwe/MiniPure/\"] }\n" ++
+         "    \"selftest\": { \"paths\": [\"harness/Fuzz/SelfTest.lean\"] },\n" ++
+         "    \"minifloat\": { \"paths\": [\"harness/Fuzz/MiniFloat/\", \"LeanSwe/MiniFloat/\"] },\n" ++
+         "    \"minipure\": { \"paths\": [\"harness/Fuzz/MiniPure/\", \"LeanSwe/MiniPure/\"] }\n" ++
          "  }\n" ++
          "}\n")
       writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
@@ -494,14 +503,14 @@ def main (_ : List String) : IO UInt32 := do
       return #["LeanSwe/MiniPure/Proofs", "LeanSwe"]
 
     runPositiveCase base tmpRoot bin "external_cli_boundary_with_model_ok" fun mr => do
-      writeFileCreatingParents (mr.root / "Fuzz/suites.json")
+      writeFileCreatingParents (mr.root / "harness/Fuzz/suites.json")
         ("{\n" ++
          "  \"version\": 1,\n" ++
-         "  \"common_paths\": [\"Core/\", \"Fuzz/Main.lean\"],\n" ++
+         "  \"common_paths\": [\"Core/\", \"harness/Fuzz/Main.lean\"],\n" ++
          "  \"suites\": {\n" ++
-         "    \"selftest\": { \"paths\": [\"Fuzz/SelfTest.lean\"] },\n" ++
-         "    \"minifloat\": { \"paths\": [\"Fuzz/MiniFloat/\", \"LeanSwe/MiniFloat/\"] },\n" ++
-         "    \"minicli\": { \"paths\": [\"Fuzz/MiniCli/\", \"LeanSwe/MiniCli/\"] }\n" ++
+         "    \"selftest\": { \"paths\": [\"harness/Fuzz/SelfTest.lean\"] },\n" ++
+         "    \"minifloat\": { \"paths\": [\"harness/Fuzz/MiniFloat/\", \"LeanSwe/MiniFloat/\"] },\n" ++
+         "    \"minicli\": { \"paths\": [\"harness/Fuzz/MiniCli/\", \"LeanSwe/MiniCli/\"] }\n" ++
          "  }\n" ++
          "}\n")
       writeFileCreatingParents (mr.root / "LeanSwe/Process/SysBridge.lean")
@@ -563,14 +572,14 @@ def main (_ : List String) : IO UInt32 := do
       return #["LeanSwe/MiniFloat/SpecTests", "LeanSwe/MiniFloat/Proofs", "LeanSwe"]
 
     runMutantCase base tmpRoot bin "retired_impure_extern_without_model_forbidden" "MISSING_MODEL_MODULE" fun mr => do
-      writeFileCreatingParents (mr.root / "Fuzz/suites.json")
+      writeFileCreatingParents (mr.root / "harness/Fuzz/suites.json")
         ("{\n" ++
          "  \"version\": 1,\n" ++
-         "  \"common_paths\": [\"Core/\", \"Fuzz/Main.lean\"],\n" ++
+         "  \"common_paths\": [\"Core/\", \"harness/Fuzz/Main.lean\"],\n" ++
          "  \"suites\": {\n" ++
-         "    \"selftest\": { \"paths\": [\"Fuzz/SelfTest.lean\"] },\n" ++
-         "    \"minifloat\": { \"paths\": [\"Fuzz/MiniFloat/\", \"LeanSwe/MiniFloat/\"] },\n" ++
-         "    \"minisub\": { \"paths\": [\"Fuzz/MiniSub/\", \"LeanSwe/LinuxSyscall/MiniSub/\"] }\n" ++
+         "    \"selftest\": { \"paths\": [\"harness/Fuzz/SelfTest.lean\"] },\n" ++
+         "    \"minifloat\": { \"paths\": [\"harness/Fuzz/MiniFloat/\", \"LeanSwe/MiniFloat/\"] },\n" ++
+         "    \"minisub\": { \"paths\": [\"harness/Fuzz/MiniSub/\", \"LeanSwe/LinuxSyscall/MiniSub/\"] }\n" ++
          "  }\n" ++
          "}\n")
       writeFileCreatingParents (mr.root / "LeanSwe/LinuxSyscall/MiniSub/Types.lean")
@@ -612,17 +621,17 @@ def main (_ : List String) : IO UInt32 := do
       ]
 
     runMutantCase base tmpRoot bin "retired_boundary_without_fuzz_suite" "MISSING_FUZZ_SUITE" fun mr => do
-      writeFileCreatingParents (mr.root / "Fuzz/suites.json")
-        "{\n  \"version\": 1,\n  \"common_paths\": [\"Core/\"],\n  \"suites\": {\n    \"selftest\": { \"paths\": [\"Fuzz/SelfTest.lean\"] }\n  }\n}\n"
+      writeFileCreatingParents (mr.root / "harness/Fuzz/suites.json")
+        "{\n  \"version\": 1,\n  \"common_paths\": [\"Core/\"],\n  \"suites\": {\n    \"selftest\": { \"paths\": [\"harness/Fuzz/SelfTest.lean\"] }\n  }\n}\n"
       return #[]
 
     runMutantCase base tmpRoot bin "trigger_only_path_in_other_fuzz_suite" "MISSING_FUZZ_SUITE" fun mr => do
-      writeFileCreatingParents (mr.root / "Fuzz/suites.json")
+      writeFileCreatingParents (mr.root / "harness/Fuzz/suites.json")
         ("{\n" ++
          "  \"version\": 1,\n" ++
          "  \"common_paths\": [\"Core/\"],\n" ++
          "  \"suites\": {\n" ++
-         "    \"cmdline\": { \"paths\": [\"Fuzz/CmdLine/\", \"LeanSwe/CmdLine/\", \"LeanSwe/MiniFloat/\"] }\n" ++
+         "    \"cmdline\": { \"paths\": [\"harness/Fuzz/CmdLine/\", \"LeanSwe/CmdLine/\", \"LeanSwe/MiniFloat/\"] }\n" ++
          "  }\n" ++
          "}\n")
       return #[]
@@ -652,14 +661,14 @@ def main (_ : List String) : IO UInt32 := do
       return #["LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
 
     runPositiveCase base tmpRoot bin "retired_subpkg_fuzz_suite_ok" fun mr => do
-      writeFileCreatingParents (mr.root / "Fuzz/suites.json")
+      writeFileCreatingParents (mr.root / "harness/Fuzz/suites.json")
         ("{\n" ++
          "  \"version\": 1,\n" ++
-         "  \"common_paths\": [\"Core/\", \"Fuzz/Main.lean\"],\n" ++
+         "  \"common_paths\": [\"Core/\", \"harness/Fuzz/Main.lean\"],\n" ++
          "  \"suites\": {\n" ++
-         "    \"selftest\": { \"paths\": [\"Fuzz/SelfTest.lean\"] },\n" ++
-         "    \"minifloat\": { \"paths\": [\"Fuzz/MiniFloat/\", \"LeanSwe/MiniFloat/\"] },\n" ++
-         "    \"minisub\": { \"paths\": [\"Fuzz/MiniSub/\", \"LeanSwe/LinuxSyscall/MiniSub/\"] }\n" ++
+         "    \"selftest\": { \"paths\": [\"harness/Fuzz/SelfTest.lean\"] },\n" ++
+         "    \"minifloat\": { \"paths\": [\"harness/Fuzz/MiniFloat/\", \"LeanSwe/MiniFloat/\"] },\n" ++
+         "    \"minisub\": { \"paths\": [\"harness/Fuzz/MiniSub/\", \"LeanSwe/LinuxSyscall/MiniSub/\"] }\n" ++
          "  }\n" ++
          "}\n")
       writeFileCreatingParents (mr.root / "LeanSwe/LinuxSyscall/MiniSub/Types.lean")
@@ -706,14 +715,14 @@ def main (_ : List String) : IO UInt32 := do
       ]
 
     runMutantCase base tmpRoot bin "retired_boundary_missing_error_coverage" "MISSING_ERROR_COVERAGE" fun mr => do
-      writeFileCreatingParents (mr.root / "Fuzz/suites.json")
+      writeFileCreatingParents (mr.root / "harness/Fuzz/suites.json")
         ("{\n" ++
          "  \"version\": 1,\n" ++
-         "  \"common_paths\": [\"Core/\", \"Fuzz/Main.lean\"],\n" ++
+         "  \"common_paths\": [\"Core/\", \"harness/Fuzz/Main.lean\"],\n" ++
          "  \"suites\": {\n" ++
-         "    \"selftest\": { \"paths\": [\"Fuzz/SelfTest.lean\"] },\n" ++
-         "    \"minifloat\": { \"paths\": [\"Fuzz/MiniFloat/\", \"LeanSwe/MiniFloat/\"] },\n" ++
-         "    \"minisub\": { \"paths\": [\"Fuzz/MiniSub/\", \"LeanSwe/LinuxSyscall/MiniSub/\"] }\n" ++
+         "    \"selftest\": { \"paths\": [\"harness/Fuzz/SelfTest.lean\"] },\n" ++
+         "    \"minifloat\": { \"paths\": [\"harness/Fuzz/MiniFloat/\", \"LeanSwe/MiniFloat/\"] },\n" ++
+         "    \"minisub\": { \"paths\": [\"harness/Fuzz/MiniSub/\", \"LeanSwe/LinuxSyscall/MiniSub/\"] }\n" ++
          "  }\n" ++
          "}\n")
       writeFileCreatingParents (mr.root / "LeanSwe/LinuxSyscall/MiniSub/Types.lean")
@@ -775,7 +784,7 @@ def main (_ : List String) : IO UInt32 := do
       writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/RuntimeTests.lean") rtBody
       let ls ← IO.FS.readFile (mr.root / "LeanSwe.lean")
       writeFileCreatingParents (mr.root / "LeanSwe.lean") (ls ++ "import LeanSwe.MiniPure.RuntimeTests\n")
-      writeFileCreatingParents (mr.root / "Tests/Main.lean")
+      writeFileCreatingParents (mr.root / "harness/Tests/Main.lean")
         "import Core.Assumptions\nimport LeanSwe\ndef main (_ : List String) : IO UInt32 := do\n  Core.initAssumpLog \"a\" \"b\"\n  LeanSwe.MiniPure.RuntimeTests.runAll\n  Core.closeAssumpLog\n  return 0\n"
       return #[
         "LeanSwe/MiniPure/Types",

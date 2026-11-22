@@ -1,4 +1,3 @@
-import Core.PropCheck
 import LeanSwe.PostFork.Interface
 import LeanSwe.PostFork.Impl
 import LeanSwe.PostFork.SpecTests

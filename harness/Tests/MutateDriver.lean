@@ -1,4 +1,4 @@
-import Core.PropCheck
+import Tests.PropCheck
 import LeanSwe.RegExp.Interface
 import LeanSwe.RegExp.RuntimeTests
 import LeanSwe.Glob.RuntimeTests
@@ -110,7 +110,7 @@ private def mutPfReadProcThreads : IO Nat := do
   throw (IO.userError "Threads: missing in /proc/self/status")
 
 open LeanSwe
-open Core.PropCheck
+open Tests.PropCheck
 
 private local instance {ε α : Type} [BEq ε] [BEq α] : BEq (Except ε α) where
   beq

@@ -1,4 +1,3 @@
-import Core.PropCheck
 import LeanSwe.PostFork.SpecTests
 import LeanSwe.PostFork.Aeneas.Model
 import LeanSwe.PostFork.Aeneas.Api

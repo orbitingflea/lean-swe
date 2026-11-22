@@ -1,6 +1,4 @@
-import Core.NondetTest
-
-namespace Core.PropCheck
+namespace Tests.PropCheck
 
 /-- Simple deterministic pseudo-RNG (LCG) for reproducible runtime property testing. -/
 structure Rng where
@@ -44,4 +42,4 @@ def checkFor (name : String) (trials : Nat := 60)
     throw (IO.userError s!"PropCheck `{name}` had 0 passing trials (all {stats.discarded} discarded by assume)")
   return stats
 
-end Core.PropCheck
+end Tests.PropCheck

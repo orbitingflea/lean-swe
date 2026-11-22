@@ -16,7 +16,7 @@ structure FuzzConfig where
 
 /-- Pluggable differential fuzzing suite descriptor registered in `Fuzz.Main`. -/
 structure FuzzSuite where
-  /-- Unique CLI suite identifier (for `--suite <name>` and `Fuzz/suites.json`). -/
+  /-- Unique CLI suite identifier (for `--suite <name>` and `harness/Fuzz/suites.json`). -/
   name : String
   /-- Short human-readable summary of the boundary covered by this suite. -/
   description : String := ""

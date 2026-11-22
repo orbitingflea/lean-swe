@@ -1,5 +1,4 @@
 import Std.Data.TreeSet
-import Core.PropCheck
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Process.Model

@@ -321,7 +321,7 @@ def has_systemd_scope() -> bool:
 def build_mutant(work: pathlib.Path, use_systemd: bool) -> tuple[bool, float]:
     """Build `lean-swe-mut-test` without `Proofs`."""
     t0 = time.monotonic()
-    cmd = ["lake", "build", "--wfail", "lean-swe-mut-test"]
+    cmd = ["lake", "-d", "harness", "build", "--wfail", "lean-swe-mut-test"]
     if use_systemd:
         cmd = ["systemd-run", "--user", "--scope", "-p", "MemoryMax=12G", *cmd]
     env = dict(os.environ)
@@ -333,7 +333,7 @@ def build_mutant(work: pathlib.Path, use_systemd: bool) -> tuple[bool, float]:
 def run_suite_mode(work: pathlib.Path, mode: str, suite: str, timeout_s: float = 30.0) -> tuple[str, float]:
     """Run already-built `lean-swe-mut-test` with `--mode <mode> --suite <suite>`."""
     t0 = time.monotonic()
-    exe = work / ".lake/build/bin/lean-swe-mut-test"
+    exe = work / "harness/.lake/build/bin/lean-swe-mut-test"
     proc = subprocess.Popen(
         [str(exe), "--mode", mode, "--suite", suite],
         cwd=work,
@@ -465,11 +465,12 @@ def measure_c_sancov(
                 patched.append(ln)
         lf.write_text("".join(patched))
         shutil.rmtree(cov_ws / ".lake/build", ignore_errors=True)
+        shutil.rmtree(cov_ws / "harness/.lake/build", ignore_errors=True)
         built, _ = build_mutant(cov_ws, use_systemd)
         if not built:
             return [(m, "cov link err", "lake build failed") for m in modes]
 
-        exe = cov_ws / ".lake/build/bin/lean-swe-mut-test"
+        exe = cov_ws / "harness/.lake/build/bin/lean-swe-mut-test"
         elf_hdr = subprocess.run(["readelf", "-h", str(exe)], capture_output=True, text=True).stdout
         results: list[tuple[str, str, str]] = []
         for mode in modes:
