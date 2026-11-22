@@ -97,7 +97,8 @@ class FuzzChangedUnitTests(unittest.TestCase):
             self.assertIn(f"Fuzz/LinuxSyscall/{sub}/", by_name[ws].paths)
             self.assertIn(f"LeanSwe/LinuxSyscall/{sub}/", by_name[ws].paths)
         self.assertIn("Core/", manifest.common_paths)
-        self.assertIn("passwd", by_name); self.assertIn("sqlite", by_name)
+        self.assertIn("passwd", by_name); self.assertIn("sqlite", by_name); self.assertIn("git", by_name)
+        self.assertTrue({"LeanSwe/Git/", "LeanSwe/Process/", "LeanSwe/EnvVars/", "LeanSwe/Fs/", "Fuzz/Git/"}.issubset(by_name["git"].paths))
         self.assertIn("LeanSwe/LinuxSyscall/Passwd/", by_name["passwd"].paths)
         self.assertIn("LeanSwe/LinuxSyscall/c/passwd_shim.c", by_name["passwd"].paths)
         self.assertIn("LeanSwe/LinuxSyscall/Common/", by_name["passwd"].paths)
@@ -110,6 +111,7 @@ class FuzzChangedUnitTests(unittest.TestCase):
         audit = (REPO_ROOT / ".github" / "workflows" / "audit.yml").read_text(encoding="utf-8")
         daily = (REPO_ROOT / ".github" / "workflows" / "audit-daily.yml").read_text(encoding="utf-8")
         self.assertNotIn("leanswe-world-fuzz", audit); self.assertNotIn("leanswe-world-fuzz", daily)
+        for wf in (audit, daily): self.assertIn("--suite Git ", wf); self.assertIn(",Git,", wf)
         self.assertIn("scripts/test_fuzz_changed.py", daily); self.assertIn("--check-manifest", daily)
         self.assertIn("leanswe-fuzz --all --exclude sandbox,timerand,files,process,poll,net ", daily); self.assertNotIn("leanswe-fuzz --suite float ", daily)
 

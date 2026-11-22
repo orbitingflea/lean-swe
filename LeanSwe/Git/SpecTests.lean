@@ -9,7 +9,7 @@ open Core (NondetTest AssumptionObligation ErrorObligation)
 open Core.NondetTest
 open LeanSwe.Git.Model
 
-/-- `cleanGitEnv` emits explicit `none` removals for every inherited `GIT_*` key and restricts surviving `GIT_*` entries to safety defaults or the author/committer allowlist. -/
+/-- `cleanGitEnv` emits explicit `none` removals for inherited `GIT_*`/locale keys and restricts surviving `GIT_*`/locale entries to safety defaults or the author/committer allowlist. -/
 def test_git_cleanGitEnv_stripsInheritedGitKeys
     {runner} [NondetTest runner]
     (sanitize : Array (String × String) → Array (String × Option String) → Array (String × Option String)) :
@@ -19,12 +19,12 @@ def test_git_cleanGitEnv_stripsInheritedGitKeys
   let out := sanitize inherited extra
   let outList := out.toList
   NondetTest.assert (inherited.toList.all fun kv =>
-    !isGitKey kv.1 || outList.contains (kv.1, none))
+    (!isGitKey kv.1 && !isLocaleKey kv.1) || outList.contains (kv.1, none))
   NondetTest.assert (defaultGitSafetyEnv.all fun kv => outList.contains kv)
   NondetTest.assert (outList.all fun kv =>
-    !isGitKey kv.1 || kv.2 == none || defaultGitSafetyEnv.contains kv || isAllowedExtraGitKey kv.1)
+    (!isGitKey kv.1 && !isLocaleKey kv.1) || kv.2 == none || defaultGitSafetyEnv.contains kv || isAllowedExtraGitKey kv.1)
 
-/-- `cleanGitEnv` preserves valid non-`GIT_*` extra environment entries. -/
+/-- `cleanGitEnv` preserves valid non-`GIT_*`, non-locale extra environment entries. -/
 def test_git_cleanGitEnv_preservesValidNonGitExtra
     {runner} [NondetTest runner]
     (sanitize : Array (String × String) → Array (String × Option String) → Array (String × Option String)) :
@@ -35,6 +35,7 @@ def test_git_cleanGitEnv_preservesValidNonGitExtra
   assume (isValidEnvKey key = true)
   assume (isValidEnvVal? val = true)
   assume (isGitKey key = false)
+  assume (isLocaleKey key = false)
   let out := sanitize inherited #[(key, val)]
   NondetTest.assert (out.toList.contains (key, val))
 
@@ -48,11 +49,11 @@ def test_git_mkCommitId_validatesHexLengthAndChars
   | .error err =>
     NondetTest.assert (err.kind = .invalidRef ∧ err.message ≠ "" ∧ isValidCommitIdStr s = false)
 
-/-- `mkRefName` rejects unsafe ref names (leading `'-'`, `".."`, `"@{"`, control chars, `.lock`) with `.invalidRef`. -/
+/-- `mkRefName` rejects unsafe ref names (`"HEAD"`, `"@"`, leading `'-'`, `".."`, `"@{"`, control chars, `.lock`) with `.invalidRef`. -/
 def test_git_mkRefName_rejectsUnsafeRefs
     {runner} [NondetTest runner] (buildRef : String → Except GitError RefName) : runner Unit := do
   let s ← nondet String
-  assume (s = "" ∨ s.toList.head? = some '-' ∨ s = "@" ∨ hasSubstrChars ['.', '.'] s.toList = true)
+  assume (s = "" ∨ s = "HEAD" ∨ s.toList.head? = some '-' ∨ s = "@" ∨ hasSubstrChars ['.', '.'] s.toList = true)
   match buildRef s with
   | .ok _ => NondetTest.assert False
   | .error err => NondetTest.assert (err.kind = .invalidRef ∧ err.message ≠ "")
@@ -124,11 +125,11 @@ def test_git_parseWorktreeListPorcelain_bareUnbornLocked
     pruneReason := some "gone"
   }])
 
-/-- `isAncestor` is reflexive on existing commits and `false` if either commit is absent from `RepoState`. -/
+/-- `isAncestor` is reflexive on existing commits and `false` if either commit is absent from `RepoInstance`. -/
 def test_git_model_isAncestor_reflexiveAndGuarded
     {runner} [NondetTest runner]
-    (ancFn : RepoState → CommitId → CommitId → Bool) : runner Unit := do
-  let s ← nondet RepoState
+    (ancFn : RepoInstance → CommitId → CommitId → Bool) : runner Unit := do
+  let s ← nondet RepoInstance
   let a ← nondet CommitId
   let b ← nondet CommitId
   if hasCommit s a then
@@ -136,30 +137,32 @@ def test_git_model_isAncestor_reflexiveAndGuarded
   else
     NondetTest.assert (ancFn s a b = false ∧ ancFn s b a = false)
 
-/-- On any `ValidRepoState`, `isAncestor` is transitive and `mergeBase?` returns an ancestor of both inputs. -/
+/-- On any well-formed `RepoInstance`, `isAncestor` is transitive and `mergeBase?` returns an ancestor of both inputs. -/
 def test_git_model_isAncestor_transitiveAndMergeBaseValid
     {runner} [NondetTest runner]
-    (ancFn : RepoState → CommitId → CommitId → Bool)
-    (mbFn : RepoState → CommitId → CommitId → Option CommitId) : runner Unit := do
-  let s ← nondet RepoState
+    (ancFn : RepoInstance → CommitId → CommitId → Bool)
+    (mbFn : RepoInstance → CommitId → CommitId → Option CommitId) : runner Unit := do
+  let s ← nondet RepoInstance
   let a ← nondet CommitId
   let b ← nondet CommitId
   let c ← nondet CommitId
-  assume (ValidRepoState s)
+  assume (isValidRepoInstance s = true)
   if ancFn s a b && ancFn s b c then
     NondetTest.assert (ancFn s a c = true)
   match mbFn s a b with
   | none => pure ()
   | some m => NondetTest.assert (ancFn s m a = true ∧ ancFn s m b = true)
 
-/-- Initializing a repo gives an unborn `HEAD` (`headCommit? = none`, `headBranch? = some branch`), and `revParseCommit "HEAD"` fails with `.invalidRef`. -/
+/-- Initializing a fresh repo gives an unborn `HEAD` (`headCommit? = none`, `headBranch? = some branch`), and `revParseCommit "HEAD"` fails with `.invalidRef`. -/
 def test_git_api_unbornHead_behavior
-    {S : Type} {runner} [NondetTest runner]
-    (api : GitApiM (StateM S)) : runner Unit := do
-  let s₀ ← nondet S
+    {runner} [NondetTest runner]
+    (api : GitApiM (StateM GitRepoState)) : runner Unit := do
+  let s₀ ← nondet GitRepoState
   let path ← nondet String
   let branch ← nondet RefName
-  assume (isValidPathArg path = true)
+  assume (s₀ = {})
+  assume (path = "/repo")
+  assume (isValidRefNameStr branch.raw = true)
   let (initRes, s₁) := (api.init path false (some branch)).run s₀
   assume (initRes = .ok ())
   let (hcRes, _) := (api.headCommit? path).run s₁
@@ -169,51 +172,67 @@ def test_git_api_unbornHead_behavior
   NondetTest.assert (hbRes = .ok (some branch))
   NondetTest.assert (∃ e, rpRes = .error e ∧ e.kind = .invalidRef ∧ e.message ≠ "")
 
-/-- `commit` fails with `.nothingToCommit` when nothing is staged and `allowEmpty = false`, and succeeds when `allowEmpty = true`. -/
+/-- `commit` fails with `.nothingToCommit` when index matches `HEAD` and `allowEmpty = false`, and succeeds when `allowEmpty = true`. -/
 def test_git_api_commit_emptyVsAllowEmpty
-    {runner} [NondetTest runner] (api : GitApiM (StateM RepoState)) : runner Unit := do
-  let s₀ ← nondet RepoState
+    {runner} [NondetTest runner] (api : GitApiM (StateM GitRepoState)) : runner Unit := do
+  let s₀ ← nondet GitRepoState
+  let repo ← nondet RepoInstance
   let wt ← nondet WorktreeSlot
-  assume (ValidRepoState s₀)
-  assume (s₀.worktrees = [wt] ∧ wt.isBare = false ∧ wt.staged = [] ∧ wt.conflicts = [])
+  let c0 ← nondet CommitId
+  let b ← nondet RefName
+  assume (isValidGitRepoState s₀ = true)
+  assume (s₀.repos = [repo] ∧ !repo.isBare ∧ repo.commonDir = "/repo/.git".toUTF8 ∧ repo.worktrees = [wt])
+  assume (wt.rootPath = "/repo".toUTF8 ∧ s₀.vfs = .dir true true [("repo".toUTF8, .dir true true [])])
+  assume (wt.head = .symbolic b ∧ findBranchCommit? repo b = some c0)
+  assume (wt.index = { entries := treeOfCommit repo c0, conflicts := [], hasMergeHead := false })
   let (emptyRes, sEmpty) :=
-    (api.commit wt.path { message := "empty", allowEmpty := false }).run s₀
+    (api.commit "/repo" { message := "empty", allowEmpty := false }).run s₀
   let (okRes, sOk) :=
-    (api.commit wt.path { message := "allow", allowEmpty := true }).run s₀
+    (api.commit "/repo" { message := "allow", allowEmpty := true }).run s₀
   NondetTest.assert (∃ e, emptyRes = .error e ∧ e.kind = .nothingToCommit ∧ sEmpty = s₀)
   match okRes with
   | .error _ => NondetTest.assert False
   | .ok cid =>
-    let (hcRes, _) := (api.headCommit? wt.path).run sOk
+    let (hcRes, _) := (api.headCommit? "/repo").run sOk
     NondetTest.assert (hcRes = .ok (some cid))
 
 /-- `worktreeAdd` rejects checking out a branch already attached in another worktree with `.branchInUse`. -/
 def test_git_api_worktreeAdd_branchInUseRejected
-    {runner} [NondetTest runner] (api : GitApiM (StateM RepoState)) : runner Unit := do
-  let s₀ ← nondet RepoState
-  let mainWt ← nondet WorktreeSlot
+    {runner} [NondetTest runner] (api : GitApiM (StateM GitRepoState)) : runner Unit := do
+  let s₀ ← nondet GitRepoState
+  let repo ← nondet RepoInstance
+  let wt ← nondet WorktreeSlot
   let b ← nondet RefName
   let c ← nondet CommitId
-  let newWtPath ← nondet String
-  assume (ValidRepoState s₀)
-  assume (s₀.worktrees = [mainWt] ∧ mainWt.head = .attached b (some c))
-  assume (isValidPathArg newWtPath = true ∧ newWtPath ≠ mainWt.path)
-  assume (isValidRefNameStr b.raw = true)
+  assume (isValidGitRepoState s₀ = true)
+  assume (s₀.repos = [repo] ∧ !repo.isBare ∧ repo.commonDir = "/repo/.git".toUTF8 ∧ repo.worktrees = [wt])
+  assume (wt.rootPath = "/repo".toUTF8 ∧ s₀.vfs = .dir true true [("repo".toUTF8, .dir true true [])])
+  assume (wt.head = .symbolic b ∧ findBranchCommit? repo b = some c)
+  assume (isValidRefNameStr b.raw = true ∧ !isValidCommitIdStr b.raw)
   let (res, s₁) :=
-    (api.worktreeAdd mainWt.path { path := newWtPath, target? := some b.raw }).run s₀
+    (api.worktreeAdd "/repo" { path := "/wt2", target? := some b.raw }).run s₀
   NondetTest.assert (∃ e, res = .error e ∧ e.kind = .branchInUse ∧ s₁ = s₀)
 
-/-- `checkout` refuses dirty worktrees with `.dirtyWorktree` when `force = false`. -/
+/-- `checkout` refuses dirty worktrees with `.dirtyWorktree` when `force = false` and target tree differs on the dirty path. -/
 def test_git_api_checkout_dirtyWorktreeRejected
-    {runner} [NondetTest runner] (api : GitApiM (StateM RepoState)) : runner Unit := do
-  let s₀ ← nondet RepoState
-  let mainWt ← nondet WorktreeSlot
-  let b ← nondet RefName
-  let c ← nondet CommitId
-  assume (ValidRepoState s₀)
-  assume (s₀.worktrees = [mainWt] ∧ !mainWt.isBare ∧ isWorktreeDirty mainWt = true)
-  assume ((b, c) ∈ s₀.branches)
-  let (res, s₁) := (api.checkout mainWt.path (.branch b) false).run s₀
+    {runner} [NondetTest runner] (api : GitApiM (StateM GitRepoState)) : runner Unit := do
+  let s₀ ← nondet GitRepoState
+  let repo ← nondet RepoInstance
+  let wt ← nondet WorktreeSlot
+  let bMain ← nondet RefName
+  let bFeat ← nondet RefName
+  let c0 ← nondet CommitId
+  let c1 ← nondet CommitId
+  assume (isValidGitRepoState s₀ = true)
+  assume (s₀.repos = [repo] ∧ !repo.isBare ∧ repo.commonDir = "/repo/.git".toUTF8 ∧ repo.worktrees = [wt])
+  assume (wt.rootPath = "/repo".toUTF8 ∧ wt.head = .symbolic bMain)
+  assume (findBranchCommit? repo bMain = some c0 ∧ findBranchCommit? repo bFeat = some c1)
+  assume (bMain ≠ bFeat ∧ isValidRefNameStr bFeat.raw = true)
+  assume (treeOfCommit repo c0 = [("a.txt".toUTF8, { kind := .regular false, bytes := "v0".toUTF8 })])
+  assume (treeOfCommit repo c1 = [("a.txt".toUTF8, { kind := .regular false, bytes := "v1".toUTF8 })])
+  assume (wt.index = { entries := [("a.txt".toUTF8, { kind := .regular false, bytes := "v0".toUTF8 })] })
+  assume (s₀.vfs = .dir true true [("repo".toUTF8, .dir true true [("a.txt".toUTF8, .file false "dirty".toUTF8)])])
+  let (res, s₁) := (api.checkout "/repo" (.branch bFeat) false).run s₀
   NondetTest.assert (∃ e, res = .error e ∧ e.kind = .dirtyWorktree ∧ s₁ = s₀)
 
 /-- `withWorktree` runs cleanup on both `.ok` and `.error` action outcomes, preserving action errors over cleanup errors and surfacing cleanup errors only when action succeeded. -/
@@ -225,9 +244,9 @@ def test_git_api_withWorktree_cleanupAndErrorPrecedence
   let wtPath ← nondet String
   let actOk ← nondet Bool
   let cleanOk ← nondet Bool
-  assume (isValidPathArg repoPath = true ∧ isValidPathArg wtPath = true)
-  let handlerFn : GitRawRequest → Nat → Except GitError GitRawOutput := fun _ idx =>
-    if idx == 0 then
+  assume (validateFsPathArg repoPath = .ok () ∧ validateFsPathArg wtPath = .ok ())
+  let handlerFn : GitRawRequest → Nat → Except GitError GitRawOutput := fun req _ =>
+    if req.args[1]? == some "add" then
       .ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }
     else if cleanOk then
       .ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }
@@ -248,13 +267,13 @@ def test_git_api_withWorktree_cleanupAndErrorPrecedence
   else
     NondetTest.assert (res = .error actErr)
 
-/-- `Impl.mkApiM` strips inherited `GIT_*` keys on every call, classifies stdout-only `"nothing to commit"`, returns `none` for directories in `showFile?`, and blocks option injection. -/
+/-- `Impl.mkApiM` strips inherited `GIT_*` and locale keys on every call, classifies stdout-only `"nothing to commit"`, returns `none` for directories in `showFile?`, and blocks option injection. -/
 def test_git_raw_mkApi_isolationAndGuards
     {runner} [NondetTest runner]
     (mkApi : RawGitOpsM (StateM GitCliMockState) → GitApiM (StateM GitCliMockState)) :
     runner Unit := do
   let st₀ : GitCliMockState :=
-    { inheritedEnv := #[("GIT_DIR", "/evil/.git"), ("GIT_TERMINAL_PROMPT", "1"), ("PATH", "/usr/bin")]
+    { inheritedEnv := #[("GIT_DIR", "/evil/.git"), ("LC_ALL", "fr_FR.UTF-8"), ("GIT_TERMINAL_PROMPT", "1"), ("PATH", "/usr/bin")]
       handler := fun req _ =>
         if req.args.toList.contains "commit" then
           .ok { exitCode := 1, stdout := "nothing to commit, working tree clean\n".toUTF8, stderr := ByteArray.empty }
@@ -273,12 +292,216 @@ def test_git_raw_mkApi_isolationAndGuards
   NondetTest.assert (∃ e, cRes = .error e ∧ e.kind = .nothingToCommit)
   NondetTest.assert (stCommit.recordedEnvs.all fun env =>
     env.toList.contains ("GIT_DIR", none) ∧
+    env.toList.contains ("LC_ALL", none) ∧
+    env.toList.contains ("LC_ALL", some "C") ∧
     env.toList.contains ("GIT_TERMINAL_PROMPT", some "0") ∧
+    env.toList.contains ("GIT_LITERAL_PATHSPECS", some "1") ∧
     env.toList.contains ("GIT_CONFIG_VALUE_0", some "all"))
   NondetTest.assert (sRes = .ok none ∧ stShow.callCount = 2)
   NondetTest.assert (∃ e, fRes = .error e ∧ e.kind = .invalidInput ∧ stFetch.callCount = 0)
   NondetTest.assert (∃ e, aRes = .error e ∧ e.kind = .invalidInput ∧ stAdd.callCount = 0)
   NondetTest.assert (∃ e, colonRes = .error e ∧ e.kind = .invalidInput ∧ stColon.callCount = 0)
+
+/-- `Impl.mkApiM` delegates `repoRoot`, `commonDir`, `headBranch?`, `headState`, `mergeBase?`, `status`, `diffNameStatus`, and `listWorktrees` to `ops.execGit` and the pure `Model.parse*` parsers rather than returning hardcoded constants. -/
+def test_git_raw_mkApi_queryAndParserDelegation
+    {runner} [NondetTest runner]
+    (mkApi : RawGitOpsM (StateM GitCliMockState) → GitApiM (StateM GitCliMockState)) :
+    runner Unit := do
+  let rootStr := "/mock/root"
+  let commStr := "/mock/root/.git"
+  let sha1 := String.ofList (List.replicate 40 '1')
+  let sha2 := String.ofList (List.replicate 40 '2')
+  let sha0 := String.ofList (List.replicate 40 '0')
+  let statusBytes := " M a.txt\x00?? b.txt\x00".toUTF8
+  let diffBytes := "R090\x00old.txt\x00new.txt\x00".toUTF8
+  let wtBytes := ("worktree " ++ rootStr ++ "\x00HEAD " ++ sha1 ++ "\x00branch refs/heads/topic\x00\x00").toUTF8
+  let st₀ : GitCliMockState :=
+    { handler := fun req _ =>
+        if req.args.toList.contains "--show-toplevel" then
+          .ok { exitCode := 0, stdout := (rootStr ++ "\n").toUTF8, stderr := ByteArray.empty }
+        else if req.args.toList.contains "--git-common-dir" then
+          .ok { exitCode := 0, stdout := (commStr ++ "\n").toUTF8, stderr := ByteArray.empty }
+        else if req.args.toList.contains "symbolic-ref" then
+          .ok { exitCode := 0, stdout := "refs/heads/topic\n".toUTF8, stderr := ByteArray.empty }
+        else if req.args.toList.contains "--verify" then
+          .ok { exitCode := 0, stdout := (sha1 ++ "\n").toUTF8, stderr := ByteArray.empty }
+        else if req.args.toList.contains "merge-base" then
+          .ok { exitCode := 0, stdout := (sha0 ++ "\n").toUTF8, stderr := ByteArray.empty }
+        else if req.args.toList.contains "--porcelain=v1" then
+          .ok { exitCode := 0, stdout := statusBytes, stderr := ByteArray.empty }
+        else if req.args.toList.contains "--name-status" then
+          .ok { exitCode := 0, stdout := diffBytes, stderr := ByteArray.empty }
+        else if req.args.toList.contains "worktree" then
+          .ok { exitCode := 0, stdout := wtBytes, stderr := ByteArray.empty }
+        else
+          .ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty } }
+  let api := mkApi mockRawOps
+  let (rrRes, stRr) := (api.repoRoot "/repo").run st₀
+  let (cdRes, stCd) := (api.commonDir "/repo").run st₀
+  let (hbRes, stHb) := (api.headBranch? "/repo").run st₀
+  let (hsRes, stHs) := (api.headState "/repo").run st₀
+  let (mbRes, stMb) := (api.mergeBase? "/repo" { hex := sha1 } { hex := sha2 }).run st₀
+  let (stRes, stSt) := (api.status "/repo").run st₀
+  let (dfRes, stDf) := (api.diffNameStatus "/repo" "HEAD" none #[]).run st₀
+  let (wtRes, stWt) := (api.listWorktrees "/repo").run st₀
+  NondetTest.assert (rrRes = .ok rootStr ∧ stRr.callCount = 1)
+  NondetTest.assert (cdRes = .ok commStr ∧ stCd.callCount = 1)
+  NondetTest.assert (hbRes = .ok (some { raw := "topic" }) ∧ stHb.callCount = 1)
+  NondetTest.assert (hsRes = .ok (.attached { raw := "topic" } (some { hex := sha1 })) ∧ stHs.callCount = 2)
+  NondetTest.assert (mbRes = .ok (some { hex := sha0 }) ∧ stMb.callCount = 1)
+  NondetTest.assert (stRes = parsePorcelainStatusZ statusBytes ∧ stSt.callCount = 1)
+  NondetTest.assert (dfRes = parseDiffNameStatusZ diffBytes ∧ stDf.callCount = 1)
+  NondetTest.assert (wtRes = parseWorktreeListPorcelain wtBytes ∧ stWt.callCount = 1)
+
+/-- `Impl.mkApiM` delegates remaining query and mutation operations (`isRepo`, `headCommit?`,
+    `revParseCommit`, `isAncestor`, `showFile?` blob read, `init`, `clone`, `add`, `createBranch`,
+    `deleteBranch`, `checkout`, `switch`, `reset`, and `fetch`) with exact CLI flags. -/
+def test_git_raw_mkApi_mutationAndFlagDelegation
+    {runner} [NondetTest runner]
+    (mkApi : RawGitOpsM (StateM GitCliMockState) → GitApiM (StateM GitCliMockState)) :
+    runner Unit := do
+  let sha1 := String.ofList (List.replicate 40 '1')
+  let sha2 := String.ofList (List.replicate 40 '2')
+  let stOk : GitCliMockState :=
+    { handler := fun req _ =>
+        if req.args == #["cat-file", "-t", sha1 ++ ":f.txt"] then
+          .ok { exitCode := 0, stdout := "blob\n".toUTF8, stderr := ByteArray.empty }
+        else if req.args == #["cat-file", "blob", sha1 ++ ":f.txt"] then
+          .ok { exitCode := 0, stdout := "hello".toUTF8, stderr := ByteArray.empty }
+        else if req.args.toList.contains "--verify" && !req.args.toList.contains "show-ref" then
+          .ok { exitCode := 0, stdout := (sha1 ++ "\n").toUTF8, stderr := ByteArray.empty }
+        else
+          .ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty } }
+  let stExit1 : GitCliMockState :=
+    { handler := fun _ _ =>
+        .ok { exitCode := 1, stdout := ByteArray.empty, stderr := ByteArray.empty } }
+  let api := mkApi mockRawOps
+  let (irRes, stIr) := (api.isRepo "/repo").run stOk
+  let (hcRes, stHc) := (api.headCommit? "/repo").run stOk
+  let (rpRes, stRp) := (api.revParseCommit "/repo" "HEAD").run stOk
+  let (iaTrue, _) := (api.isAncestor "/repo" { hex := sha1 } { hex := sha2 }).run stOk
+  let (iaFalse, _) := (api.isAncestor "/repo" { hex := sha1 } { hex := sha2 }).run stExit1
+  let (sfRes, stSf) := (api.showFile? "/repo" "HEAD" "f.txt").run stOk
+  let (inRes, stIn) := (api.init "/newrepo" true (some { raw := "dev" })).run stOk
+  let (clRes, stCl) := (api.clone "/src" "/dst" { bare := true, singleBranch := true, depth? := some 1, branch? := some "dev" }).run stOk
+  let (adRes, stAd) := (api.add "/repo" #["a.txt"] true).run stOk
+  let (cbRes, stCb) := (api.createBranch "/repo" { raw := "feat" } (some "HEAD") true).run stOk
+  let (dbF, stDbF) := (api.deleteBranch "/repo" { raw := "feat" } true).run stOk
+  let (dbS, stDbS) := (api.deleteBranch "/repo" { raw := "feat" } false).run stOk
+  let (coRes, stCo) := (api.checkout "/repo" (.branch { raw := "feat" }) true).run stOk
+  let (swRes, stSw) := (api.switch "/repo" { raw := "feat" } true (some "HEAD") true).run stOk
+  let (rsM, stRsM) := (api.reset "/repo" .mixed "HEAD").run stOk
+  let (rsH, stRsH) := (api.reset "/repo" .hard "HEAD").run stOk
+  let (feRes, stFe) := (api.fetch "/repo" "origin" (some "HEAD") true).run stOk
+  NondetTest.assert (irRes = .ok true ∧ stIr.callCount = 1)
+  NondetTest.assert (hcRes = .ok (some { hex := sha1 }) ∧ stHc.callCount = 1)
+  NondetTest.assert (rpRes = .ok { hex := sha1 } ∧ stRp.callCount = 1)
+  NondetTest.assert (iaTrue = .ok true ∧ iaFalse = .ok false)
+  NondetTest.assert (sfRes = .ok (some "hello".toUTF8) ∧ stSf.callCount = 3)
+  NondetTest.assert (inRes = .ok () ∧ stIn.recordedRequests.getLast? = some { cwd := none, args := #["init", "--bare", "-b", "dev", "--", "/newrepo"] })
+  NondetTest.assert (clRes = .ok () ∧ stCl.recordedRequests.getLast? = some { cwd := none, args := #["clone", "--bare", "--single-branch", "--depth", "1", "--branch", "dev", "--", "/src", "/dst"] })
+  NondetTest.assert (adRes = .ok () ∧ stAd.recordedRequests.getLast? = some { cwd := some "/repo", args := #["add", "--all", "--", "a.txt"] })
+  NondetTest.assert (cbRes = .ok () ∧ stCb.recordedRequests.getLast? = some { cwd := some "/repo", args := #["branch", "-f", "--", "feat", "HEAD"] })
+  NondetTest.assert (dbF = .ok () ∧ stDbF.recordedRequests.getLast? = some { cwd := some "/repo", args := #["branch", "-D", "--", "feat"] })
+  NondetTest.assert (dbS = .ok () ∧ stDbS.recordedRequests.getLast? = some { cwd := some "/repo", args := #["branch", "-d", "--", "feat"] })
+  NondetTest.assert (coRes = .ok () ∧ stCo.recordedRequests.getLast? = some { cwd := some "/repo", args := #["checkout", "--force", "feat", "--"] })
+  NondetTest.assert (swRes = .ok () ∧ stSw.recordedRequests.getLast? = some { cwd := some "/repo", args := #["switch", "--force", "-C", "feat", "HEAD"] })
+  NondetTest.assert (rsM = .ok () ∧ stRsM.recordedRequests.getLast? = some { cwd := some "/repo", args := #["reset", "--mixed", "HEAD", "--"] })
+  NondetTest.assert (rsH = .ok () ∧ stRsH.recordedRequests.getLast? = some { cwd := some "/repo", args := #["reset", "--hard", "HEAD", "--"] })
+  NondetTest.assert (feRes = .ok () ∧ stFe.recordedRequests.getLast? = some { cwd := some "/repo", args := #["fetch", "--prune", "origin", "HEAD"] })
+
+/-- `mkApiM` delegates `commit` (`-m` message, `--allow-empty`, author/committer env), `reset .soft`, `diffNameStatus`, `worktreeAdd`, `worktreeRemove`, and non-force flag variants accurately to `RawGitOpsM`. -/
+def test_git_raw_mkApi_extendedFlagAndCommitDelegation
+    {runner} [NondetTest runner]
+    (mkApi : RawGitOpsM (StateM GitCliMockState) → GitApiM (StateM GitCliMockState)) :
+    runner Unit := do
+  let sha1 := String.ofList (List.replicate 40 '1')
+  let stOk : GitCliMockState :=
+    { handler := fun req _ =>
+        if req.args.toList.contains "--verify" && !req.args.toList.contains "show-ref" then
+          .ok { exitCode := 0, stdout := (sha1 ++ "\n").toUTF8, stderr := ByteArray.empty }
+        else
+          .ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty } }
+  let api := mkApi mockRawOps
+  let (cmFull, stCmFull) := (api.commit "/repo"
+    { message := "msg\nbody"
+      allowEmpty := true
+      authorName := some "Alice"
+      authorEmail := some "alice@example.com" }).run stOk
+  let (cmPlain, stCmPlain) := (api.commit "/repo"
+    { message := "plain", allowEmpty := false }).run stOk
+  let (rsS, stRsS) := (api.reset "/repo" .soft "HEAD").run stOk
+  let (df2, stDf2) := (api.diffNameStatus "/repo" "HEAD" (some "HEAD~1") #["a.txt", "sub/b.txt"]).run stOk
+  let (df1, stDf1) := (api.diffNameStatus "/repo" "HEAD" none #[]).run stOk
+  let (waF, stWaF) := (api.worktreeAdd "/repo"
+    { path := "/wt1", newBranch? := some { raw := "wtbr" }, target? := some "HEAD", force := true }).run stOk
+  let (waD, stWaD) := (api.worktreeAdd "/repo"
+    { path := "/wt2", detach := true }).run stOk
+  let (wrF, stWrF) := (api.worktreeRemove "/repo" "/wt1" true).run stOk
+  let (wrS, stWrS) := (api.worktreeRemove "/repo" "/wt1" false).run stOk
+  let (coC0, stCoC0) := (api.checkout "/repo" (.commit { hex := sha1 }) false).run stOk
+  let (coC1, stCoC1) := (api.checkout "/repo" (.commit { hex := sha1 }) true).run stOk
+  let (coR, stCoR) := (api.checkout "/repo" (.ref "HEAD~1") false).run stOk
+  let (coB, stCoB) := (api.checkout "/repo" (.branch { raw := "feat" }) false).run stOk
+  let (swC, stSwC) := (api.switch "/repo" { raw := "feat" } true none false).run stOk
+  let (swE, stSwE) := (api.switch "/repo" { raw := "feat" } false none false).run stOk
+  let (adP, stAdP) := (api.add "/repo" #["a.txt"] false).run stOk
+  let (adA, stAdA) := (api.add "/repo" #[] true).run stOk
+  let (inP, stInP) := (api.init "/newrepo" false none).run stOk
+  let (clP, stClP) := (api.clone "/src" "/dst" {}).run stOk
+  let (cbP, stCbP) := (api.createBranch "/repo" { raw := "feat" } none false).run stOk
+  let (feP, stFeP) := (api.fetch "/repo" "origin" none false).run stOk
+  NondetTest.assert (cmFull = .ok { hex := sha1 } ∧ stCmFull.recordedRequests[0]? = some
+    { cwd := some "/repo"
+      args := #["commit", "--no-gpg-sign", "-m", "msg\nbody", "--allow-empty"]
+      extraEnv := #[
+        ("GIT_AUTHOR_NAME", some "Alice"),
+        ("GIT_COMMITTER_NAME", some "Alice"),
+        ("GIT_AUTHOR_EMAIL", some "alice@example.com"),
+        ("GIT_COMMITTER_EMAIL", some "alice@example.com")
+      ] })
+  NondetTest.assert (cmPlain = .ok { hex := sha1 } ∧ stCmPlain.recordedRequests[0]? = some
+    { cwd := some "/repo"
+      args := #["commit", "--no-gpg-sign", "-m", "plain"]
+      extraEnv := #[] })
+  NondetTest.assert (rsS = .ok () ∧ stRsS.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["reset", "--soft", "HEAD", "--"] })
+  NondetTest.assert (df2 = .ok #[] ∧ stDf2.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["diff", "--name-status", "-z", "HEAD", "HEAD~1", "--", "a.txt", "sub/b.txt"] })
+  NondetTest.assert (df1 = .ok #[] ∧ stDf1.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["diff", "--name-status", "-z", "HEAD", "--"] })
+  NondetTest.assert (waF = .ok () ∧ stWaF.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["worktree", "add", "--force", "-b", "wtbr", "--", "/wt1", "HEAD"] })
+  NondetTest.assert (waD = .ok () ∧ stWaD.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["worktree", "add", "--detach", "--", "/wt2"] })
+  NondetTest.assert (wrF = .ok () ∧ stWrF.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["worktree", "remove", "--force", "--", "/wt1"] })
+  NondetTest.assert (wrS = .ok () ∧ stWrS.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["worktree", "remove", "--", "/wt1"] })
+  NondetTest.assert (coC0 = .ok () ∧ stCoC0.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["checkout", "--detach", sha1, "--"] })
+  NondetTest.assert (coC1 = .ok () ∧ stCoC1.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["checkout", "--force", "--detach", sha1, "--"] })
+  NondetTest.assert (coR = .ok () ∧ stCoR.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["checkout", "HEAD~1", "--"] })
+  NondetTest.assert (coB = .ok () ∧ stCoB.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["checkout", "feat", "--"] })
+  NondetTest.assert (swC = .ok () ∧ stSwC.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["switch", "-c", "feat"] })
+  NondetTest.assert (swE = .ok () ∧ stSwE.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["switch", "feat"] })
+  NondetTest.assert (adP = .ok () ∧ stAdP.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["add", "--", "a.txt"] })
+  NondetTest.assert (adA = .ok () ∧ stAdA.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["add", "--all"] })
+  NondetTest.assert (inP = .ok () ∧ stInP.recordedRequests.getLast? =
+    some { cwd := none, args := #["init", "--", "/newrepo"] })
+  NondetTest.assert (clP = .ok () ∧ stClP.recordedRequests.getLast? =
+    some { cwd := none, args := #["clone", "--", "/src", "/dst"] })
+  NondetTest.assert (cbP = .ok () ∧ stCbP.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["branch", "--", "feat"] })
+  NondetTest.assert (feP = .ok () ∧ stFeP.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["fetch", "origin"] })
 
 /-- `parsePorcelainStatusZ` round-trips NUL-delimited `git status --porcelain=v1 -z` records including spaces and destination-first renames. -/
 def test_git_status_parsesRealOutput
@@ -301,6 +524,146 @@ def test_git_worktreeList_parsesRealOutput
     { path := "/tmp/main", head? := some { hex := sha }, branch? := some { raw := "main" } },
     { path := "/tmp/wt", head? := some { hex := sha }, branch? := none, isDetached := true }
   ])
+
+/-- `evalGitApi` distinguishes `reset .soft` (retaining staged index) from `reset .mixed` (resetting index while keeping working tree), honors `diffNameStatus` pathspec filters, prunes deleted remote-tracking refs under `fetch` iff `prune = true`, rejects safe `deleteBranch` (`force = false`) on unmerged branches with `.commandFailed`, and rejects `switch` (`create = true`, `force = false`) on existing branches with `.alreadyExists`. -/
+def test_git_api_resetDiffFetchDeleteAndSwitch_semantics
+    {runner} [NondetTest runner] (api : GitApiM (StateM GitRepoState)) : runner Unit := do
+  let c0 : CommitId := { hex := String.ofList (List.replicate 40 '0') }
+  let c1 : CommitId := { hex := String.ofList (List.replicate 40 '1') }
+  let eA0 : GitTreeEntry := { kind := .regular false, bytes := "v0".toUTF8 }
+  let eA1 : GitTreeEntry := { kind := .regular false, bytes := "v1".toUTF8 }
+  let eSub : GitTreeEntry := { kind := .regular false, bytes := "sub1".toUTF8 }
+  let tree0 : List (ByteArray × GitTreeEntry) := [("a.txt".toUTF8, eA0)]
+  let tree1 : List (ByteArray × GitTreeEntry) := [("a.txt".toUTF8, eA1), ("sub/b.txt".toUTF8, eSub)]
+  let sResetDiff : GitRepoState :=
+    { vfs := .dir true true [("repo".toUTF8, .dir true true [
+        (".git".toUTF8, .dir true true []),
+        ("a.txt".toUTF8, .file false "v1".toUTF8),
+        ("sub".toUTF8, .dir true true [("b.txt".toUTF8, .file false "sub1".toUTF8)])
+      ])]
+      repos := [{
+        commonDir := "/repo/.git".toUTF8
+        commits := [
+          { id := c0, parents := [], tree := tree0 },
+          { id := c1, parents := [c0], tree := tree1 }
+        ]
+        refs := [("refs/heads/main", c1)]
+        worktrees := [{ rootPath := "/repo".toUTF8, head := .symbolic { raw := "main" }, index := { entries := tree1 } }]
+      }] }
+  let (softRes, sAfterSoft) := (api.reset "/repo" .soft c0.hex).run sResetDiff
+  let (softHc, _) := (api.headCommit? "/repo").run sAfterSoft
+  let (softSt, _) := (api.status "/repo").run sAfterSoft
+  let (mixRes, sAfterMix) := (api.reset "/repo" .mixed c0.hex).run sResetDiff
+  let (mixHc, _) := (api.headCommit? "/repo").run sAfterMix
+  let (mixSt, _) := (api.status "/repo").run sAfterMix
+  let (diffSub, _) := (api.diffNameStatus "/repo" c0.hex (some c1.hex) #["sub"]).run sResetDiff
+  NondetTest.assert (softRes = .ok () ∧ softHc = .ok (some c0) ∧ softSt = .ok #[
+    { indexStatus := some .modified, worktreeStatus := none, path := "a.txt" },
+    { indexStatus := some .added, worktreeStatus := none, path := "sub/b.txt" }
+  ])
+  NondetTest.assert (mixRes = .ok () ∧ mixHc = .ok (some c0) ∧ mixSt = .ok #[
+    { indexStatus := none, worktreeStatus := some .modified, path := "a.txt" },
+    { indexStatus := some .untracked, worktreeStatus := some .untracked, path := "sub/" }
+  ])
+  NondetTest.assert (diffSub = .ok #[{ kind := .added, path := "sub/b.txt", origPath := none }])
+
+  let sFetch : GitRepoState :=
+    { vfs := .dir true true [
+        ("origin".toUTF8, .dir true true [(".git".toUTF8, .dir true true [])]),
+        ("clone".toUTF8, .dir true true [(".git".toUTF8, .dir true true [])])
+      ]
+      repos := [
+        { commonDir := "/origin/.git".toUTF8
+          commits := [{ id := c0, parents := [], tree := tree0 }]
+          refs := [("refs/heads/main", c0)]
+          worktrees := [{ rootPath := "/origin".toUTF8, head := .symbolic { raw := "main" }, index := { entries := tree0 } }] },
+        { commonDir := "/clone/.git".toUTF8
+          commits := [{ id := c0, parents := [], tree := tree0 }]
+          refs := [("refs/heads/main", c0), ("refs/remotes/origin/main", c0), ("refs/remotes/origin/stale", c0)]
+          remotes := [{ name := "origin", url := "/origin", fetchSpecs := ["+refs/heads/*:refs/remotes/origin/*"] }]
+          worktrees := [{ rootPath := "/clone".toUTF8, head := .symbolic { raw := "main" }, index := { entries := tree0 } }] }
+      ] }
+  let (fNoPrune, sNoPrune) := (api.fetch "/clone" "origin" none false).run sFetch
+  let (rpKept, _) := (api.revParseCommit "/clone" "origin/stale").run sNoPrune
+  let (fPrune, sPruned) := (api.fetch "/clone" "origin" none true).run sFetch
+  let (rpGone, _) := (api.revParseCommit "/clone" "origin/stale").run sPruned
+  let (rpMain, _) := (api.revParseCommit "/clone" "origin/main").run sPruned
+  NondetTest.assert (fNoPrune = .ok () ∧ rpKept = .ok c0)
+  NondetTest.assert (fPrune = .ok () ∧ rpMain = .ok c0 ∧ ∃ e, rpGone = .error e ∧ e.kind = .invalidRef)
+
+  let sBranch : GitRepoState :=
+    { vfs := .dir true true [("repo".toUTF8, .dir true true [
+        (".git".toUTF8, .dir true true []),
+        ("a.txt".toUTF8, .file false "v0".toUTF8)
+      ])]
+      repos := [{
+        commonDir := "/repo/.git".toUTF8
+        commits := [
+          { id := c0, parents := [], tree := tree0 },
+          { id := c1, parents := [c0], tree := tree0 }
+        ]
+        refs := [("refs/heads/main", c0), ("refs/heads/topic", c1)]
+        worktrees := [{ rootPath := "/repo".toUTF8, head := .symbolic { raw := "main" }, index := { entries := tree0 } }]
+      }] }
+  let (delSafe, sDelSafe) := (api.deleteBranch "/repo" { raw := "topic" } false).run sBranch
+  let (delForce, sDelForce) := (api.deleteBranch "/repo" { raw := "topic" } true).run sBranch
+  let (rpDelTopic, _) := (api.revParseCommit "/repo" "topic").run sDelForce
+  let (swCreateDup, sSwDup) := (api.switch "/repo" { raw := "topic" } true none false).run sBranch
+  let (swCreateForce, sSwForce) := (api.switch "/repo" { raw := "topic" } true none true).run sBranch
+  let (hsAfterSwF, _) := (api.headState "/repo").run sSwForce
+  NondetTest.assert (∃ e, delSafe = .error e ∧ e.kind = .commandFailed ∧ sDelSafe = sBranch)
+  NondetTest.assert (delForce = .ok () ∧ ∃ e, rpDelTopic = .error e ∧ e.kind = .invalidRef)
+  NondetTest.assert (∃ e, swCreateDup = .error e ∧ e.kind = .alreadyExists ∧ sSwDup = sBranch)
+  NondetTest.assert (swCreateForce = .ok () ∧ hsAfterSwF = .ok (.attached { raw := "topic" } (some c0)))
+
+/-- `mkApiM` forwards `--force` on existing-branch `switch`, `.ref` `checkout`, and detached `worktreeAdd`, supports default basename `worktreeAdd`, and delegates general revision specs (including short SHAs and `HEAD@{0}`) directly to `git`. -/
+def test_git_raw_mkApi_forceAndShortShaGuards
+    {runner} [NondetTest runner]
+    (mkApi : RawGitOpsM (StateM GitCliMockState) → GitApiM (StateM GitCliMockState)) : runner Unit := do
+  let sha1 := String.ofList (List.replicate 40 '1')
+  let stOk : GitCliMockState :=
+    { handler := fun req _ =>
+        if req.args.toList.contains "--verify" && !req.args.toList.contains "show-ref" then
+          .ok { exitCode := 0, stdout := (sha1 ++ "\n").toUTF8, stderr := ByteArray.empty }
+        else
+          .ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty } }
+  let api := mkApi mockRawOps
+  let (swEF, stSwEF) := (api.switch "/repo" { raw := "feat" } false none true).run stOk
+  let (coRF, stCoRF) := (api.checkout "/repo" (.ref "HEAD~1") true).run stOk
+  let (waDF, stWaDF) := (api.worktreeAdd "/repo" { path := "/wt3", detach := true, force := true }).run stOk
+  let (waDef, stWaDef) := (api.worktreeAdd "/repo" { path := "/wt_def" }).run stOk
+  let (rsRefOk, stRsRefOk) := (api.reset "/repo" .hard "feat~1").run stOk
+  let (rpShort, _) := (api.revParseCommit "/repo" "1111111").run stOk
+  let (rsShort, stRsShort) := (api.reset "/repo" .hard "1111111").run stOk
+  let (coShort, stCoShort) := (api.checkout "/repo" (.ref "1111111") false).run stOk
+  let (swShort, stSwShort) := (api.switch "/repo" { raw := "newbr" } true (some "1111111") false).run stOk
+  let (cbShort, stCbShort) := (api.createBranch "/repo" { raw := "newbr" } (some "1111111") false).run stOk
+  let (dfShort, stDfShort) := (api.diffNameStatus "/repo" "1111111" none #[]).run stOk
+  let (waShort, stWaShort) := (api.worktreeAdd "/repo" { path := "/wt4", newBranch? := some { raw := "wtb" }, target? := some "1111111" }).run stOk
+  let (rpReflog, _) := (api.revParseCommit "/repo" "HEAD@{0}").run stOk
+  NondetTest.assert (swEF = .ok () ∧ stSwEF.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["switch", "--force", "feat"] })
+  NondetTest.assert (coRF = .ok () ∧ stCoRF.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["checkout", "--force", "HEAD~1", "--"] })
+  NondetTest.assert (waDF = .ok () ∧ stWaDF.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["worktree", "add", "--force", "--detach", "--", "/wt3"] })
+  NondetTest.assert (waDef = .ok () ∧ stWaDef.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["worktree", "add", "--", "/wt_def"] })
+  NondetTest.assert (rsRefOk = .ok () ∧ stRsRefOk.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["reset", "--hard", "feat~1", "--"] })
+  NondetTest.assert (rpShort = .ok { hex := sha1 } ∧ rpReflog = .ok { hex := sha1 })
+  NondetTest.assert (rsShort = .ok () ∧ stRsShort.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["reset", "--hard", "1111111", "--"] })
+  NondetTest.assert (coShort = .ok () ∧ stCoShort.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["checkout", "1111111", "--"] })
+  NondetTest.assert (swShort = .ok () ∧ stSwShort.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["switch", "-c", "newbr", "1111111"] })
+  NondetTest.assert (cbShort = .ok () ∧ stCbShort.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["branch", "--", "newbr", "1111111"] })
+  NondetTest.assert (dfShort = .ok #[] ∧ stDfShort.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["diff", "--name-status", "-z", "1111111", "--"] })
+  NondetTest.assert (waShort = .ok () ∧ stWaShort.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["worktree", "add", "-b", "wtb", "--", "/wt4", "1111111"] })
 
 /-- External `git` CLI subprocess boundary assumptions (`git >= 2.30`) verified at runtime in
     `LeanSwe.Git.RuntimeTests` with nonce-authenticated logging. -/
@@ -1343,5 +1706,29 @@ def errorCoverage : List (ErrorObligation GitErrorKind) :=
   , { request := "LeanSwe.Git.withWorktree"
       errorKind := .parseError
       justification := .tested "LeanSwe.Git.RuntimeTests.err_git_withWorktree_parseError" .real } ]
+
+/-- `mkApiM` delegates secondary revision parameters (`diffNameStatus` `revB?` and `showFile?` `rev`) and 40-hex `worktreeAdd` targets directly to stock `git` without extra subprocess probes. -/
+def test_git_raw_mkApi_secondaryShortShaAnd40HexWorktreeGuards
+    {runner} [NondetTest runner]
+    (mkApi : RawGitOpsM (StateM GitCliMockState) → GitApiM (StateM GitCliMockState)) : runner Unit := do
+  let sha1 := String.ofList (List.replicate 40 '1')
+  let br40 := String.ofList (List.replicate 40 'f')
+  let mkHandler : GitRawRequest → Nat → Except GitError GitRawOutput :=
+    fun req _ =>
+      if req.args.toList.contains "--verify" && !req.args.toList.contains "show-ref" then
+        .ok { exitCode := 0, stdout := (sha1 ++ "\n").toUTF8, stderr := ByteArray.empty }
+      else
+        .ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }
+  let st : GitCliMockState := { handler := mkHandler }
+  let api := mkApi mockRawOps
+  let (wa40Ok, stWa40) := (api.worktreeAdd "/repo" { path := "/wt40", target? := some br40 }).run st
+  let (dfBShort, stDfB) := (api.diffNameStatus "/repo" "HEAD" (some "1111111") #[]).run st
+  let (sfShort, stSf) := (api.showFile? "/repo" "1111111" "f.txt").run st
+  NondetTest.assert (wa40Ok = .ok () ∧ stWa40.recordedRequests =
+    [{ cwd := some "/repo", args := #["worktree", "add", "--", "/wt40", br40] }])
+  NondetTest.assert (dfBShort = .ok #[] ∧ stDfB.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["diff", "--name-status", "-z", "HEAD", "1111111", "--"] })
+  NondetTest.assert (sfShort = .ok none ∧ stSf.recordedRequests.getLast? =
+    some { cwd := some "/repo", args := #["cat-file", "-t", sha1 ++ ":f.txt"] })
 
 end LeanSwe.Git

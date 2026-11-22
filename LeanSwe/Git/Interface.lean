@@ -96,7 +96,7 @@ def mergeBase? (repoPath : String) (a b : CommitId) : IO (Except GitError (Optio
 def status (repoPath : String) : IO (Except GitError (Array StatusEntry)) :=
   defaultApi.status repoPath
 
-/-- Return file change summaries between `revA` and optional `revB?` (or working tree). -/
+/-- Return file change summaries between `revA` and optional `revB?` (or working tree). Paths are matched literally via `GIT_LITERAL_PATHSPECS=1`; wildcards like `*`/`?`/`[`/`\` and leading `:` magic prefixes are NOT expanded; directories like `.` and `src/` still diff all contents. -/
 def diffNameStatus (repoPath revA : String) (revB? : Option String := none)
     (paths : Array String := #[]) : IO (Except GitError (Array DiffEntry)) :=
   defaultApi.diffNameStatus repoPath revA revB? paths
@@ -118,7 +118,7 @@ def init (path : String) (bare : Bool := false) (initialBranch? : Option RefName
 def clone (source target : String) (opts : CloneOptions := {}) : IO (Except GitError Unit) :=
   defaultApi.clone source target opts
 
-/-- Stage explicit `paths` or all changes (`all = true`). -/
+/-- Stage explicit `paths` or all changes (`all = true`). Paths are matched literally via `GIT_LITERAL_PATHSPECS=1`; wildcards like `*`/`?`/`[`/`\` and leading `:` magic prefixes are NOT expanded; directories like `.` and `src/` still stage all contents. -/
 def add (repoPath : String) (paths : Array String := #[]) (all : Bool := false) :
     IO (Except GitError Unit) :=
   defaultApi.add repoPath paths all
