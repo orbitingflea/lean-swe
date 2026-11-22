@@ -1086,6 +1086,39 @@ private def isProcFd0Target (path : ByteArray) : Bool :=
   bytesEq path ("/proc/self/fd/0".toUTF8) ||
   bytesEq path ("/proc/1/fd/0".toUTF8)
 
+private def isManagedProcFd0Target (s : FilesState) (path : ByteArray) : Bool :=
+  if !isProcFd0Target path then false
+  else
+    let isSelfFd0 := bytesEq path ("/proc/self/fd/0".toUTF8) ||
+      match inspectPathTarget s {} none "/proc/self".toUTF8 false with
+      | some (_, _, some sv) => bytesEq sv.symlinkTarget ("1".toUTF8)
+      | _ => false
+    if isSelfFd0 && s.managedStdioMap.any (fun (slot, _) => slot == .stdin) then true
+    else match inspectPathTarget s {} none path false with
+      | some (_, _, some linkVn) =>
+        match linkVn.data with
+        | .symlink (.procMagic _ (some _)) => true
+        | _ => false
+      | _ => false
+
+private def isExternalProcFd0Target (s : FilesState) (path : ByteArray) : Bool :=
+  if !isProcFd0Target path || isManagedProcFd0Target s path then false
+  else match inspectPathTarget s {} none path false with
+    | some (_, _, some linkVn) =>
+      match linkVn.data with
+      | .symlink (.procMagic _ none) => true
+      | _ => false
+    | _ => false
+
+private def isClosedProcFd0Target (s : FilesState) (path : ByteArray) : Bool :=
+  if !isProcFd0Target path || isManagedProcFd0Target s path then false
+  else match inspectPathTarget s {} none path false with
+    | some (parentIno, none, none) =>
+      match assocGet s.inodes parentIno with
+      | some pvn => pvn.isPseudo
+      | none => false
+    | _ => false
+
 private def isStdoutStderrTarget (path : ByteArray) : Bool :=
   let p1 := "/proc/self/fd/1".toUTF8
   let p2 := "/proc/self/fd/2".toUTF8
@@ -1159,8 +1192,9 @@ private def mutTargetAllowed (s : FilesState) (env : GenEnv) (ownedRootIno : Ino
         if inOwned then true
         else if allowSafeCharDev && isSafeCharDevTarget s env dir path followFinal inRoot beneath then true
         else
+          let isManagedFd0 := !inRoot && !beneath && isManagedProcFd0Target s path
           let isEpisodeProcFd :=
-            ((decodeSymProcFd path0).bind fun (sid, _) => env.procFdMap.get? sid).isSome &&
+            (((decodeSymProcFd path0).bind fun (sid, _) => env.procFdMap.get? sid).isSome || isManagedFd0) &&
             dir.isNone && !inRoot && !beneath
           let isOwnedTarget := match targetVn? with
             | some vn =>
@@ -1176,7 +1210,8 @@ private def mutTargetAllowed (s : FilesState) (env : GenEnv) (ownedRootIno : Ino
               | none => false
           if isOwnedTarget then true
           else if allowHostMut then
-            if isProcFd0Target path then safeStdin
+            if !inRoot && !beneath && isExternalProcFd0Target s path then safeStdin
+            else if !inRoot && !beneath && isClosedProcFd0Target s path then true
             else
               match targetVn? with
               | some vn =>
@@ -1418,7 +1453,8 @@ private def genSymReq (rng : Rng) (env : GenEnv) (s : FilesState)
       let effPath := resolveSymProcFdPath env.procFdMap path
       let flags1 :=
         if isStdoutStderrTarget effPath || isTargetStdoutStderr s env dir effPath followLast ||
-            isTargetExternalStdio s env dir effPath followLast || (isProcFd0Target effPath && !safeStdin) then
+            isTargetExternalStdio s env dir effPath followLast ||
+            (isExternalProcFd0Target s effPath && !safeStdin) then
           { flags0 with access := .rdonly, creat := false, trunc := false, nonblock := true }
         else if targetMayBlock s env dir effPath followLast flags0.access then
           { flags0 with nonblock := true }
@@ -1453,7 +1489,8 @@ private def genSymReq (rng : Rng) (env : GenEnv) (s : FilesState)
     let effPath := resolveSymProcFdPath env.procFdMap path
     let flags1 :=
       if isStdoutStderrTarget effPath || isTargetStdoutStderr s env dir effPath followLast resolve.inRoot resolve.beneath ||
-          isTargetExternalStdio s env dir effPath followLast resolve.inRoot resolve.beneath || (isProcFd0Target effPath && !safeStdin) then
+          isTargetExternalStdio s env dir effPath followLast resolve.inRoot resolve.beneath ||
+          (!resolve.inRoot && !resolve.beneath && isExternalProcFd0Target s effPath && !safeStdin) then
         { flags0 with access := .rdonly, creat := false, trunc := false, nonblock := true }
       else if targetMayBlock s env dir effPath followLast flags0.access resolve.inRoot resolve.beneath then
         { flags0 with nonblock := true }
@@ -1992,27 +2029,42 @@ private def unlinkChildrenRaw (dirFd : RawFd) : Nat → IO Unit
               unlinkChildrenRaw cfd depth
               let _ ← ops.close cfd
               let _ ← ops.unlinkat (some dirFd) name true
-            | .error _ =>
-              let _ ← ops.fchmodat (some dirFd) name 0o700
-              match ← ops.openat (some dirFd) name { access := .rdonly, directory := true, nofollow := true } 0 with
-              | .ok cfd =>
-                unlinkChildrenRaw cfd depth
-                let _ ← ops.close cfd
-                let _ ← ops.unlinkat (some dirFd) name true
-              | .error _ =>
+            | .error oe =>
+              if oe == Errno.EACCES then
+                let _ ← ops.fchmodat (some dirFd) name 0o700
+                match ← ops.openat (some dirFd) name { access := .rdonly, directory := true, nofollow := true } 0 with
+                | .ok cfd =>
+                  unlinkChildrenRaw cfd depth
+                  let _ ← ops.close cfd
+                  let _ ← ops.unlinkat (some dirFd) name true
+                | .error _ =>
+                  let _ ← ops.unlinkat (some dirFd) name true
+                  let _ ← ops.unlinkat (some dirFd) name false
+              else
                 let _ ← ops.unlinkat (some dirFd) name true
                 let _ ← ops.unlinkat (some dirFd) name false
 
 private def unlinkTreeRaw (dirBytes : ByteArray) : IO Unit := do
   let ops := defaultOps
-  let _ ← ops.fchmodat none dirBytes 0o700
-  match ← ops.openat none dirBytes { access := .rdonly, directory := true, nofollow := true } 0 with
+  let openDir := ops.openat none dirBytes { access := .rdonly, directory := true, nofollow := true } 0
+  match ← openDir with
   | .ok dfd =>
     unlinkChildrenRaw dfd 64
     let _ ← ops.close dfd
     let _ ← ops.unlinkat none dirBytes true
-  | .error _ =>
-    let _ ← ops.unlinkat none dirBytes false
+  | .error oe =>
+    if oe == Errno.EACCES then
+      let _ ← ops.fchmodat none dirBytes 0o700
+      match ← openDir with
+      | .ok dfd =>
+        unlinkChildrenRaw dfd 64
+        let _ ← ops.close dfd
+        let _ ← ops.unlinkat none dirBytes true
+      | .error _ =>
+        let _ ← ops.unlinkat none dirBytes true
+        let _ ← ops.unlinkat none dirBytes false
+    else
+      let _ ← ops.unlinkat none dirBytes false
 
 private def removeDirForced (dir : System.FilePath) : IO Unit := do
   if ← dir.pathExists then
@@ -2025,6 +2077,7 @@ private def removeDirForced (dir : System.FilePath) : IO Unit := do
           let _ ← IO.Process.output {
             cmd := "sh"
             args := #["-c", "chmod -R u+rwx \"$1\" 2>/dev/null || true; rm -rf \"$1\" 2>/dev/null || true", "_", dir.toString]
+            stdin := .null
           }
 
 private def cleanupEpisodeDir (ops : FilesOps) (openRfds : Array RawFd)
@@ -3588,6 +3641,128 @@ structure FuzzReport where
   /-- Non-empty only when `--self-test-shrink` ran. -/
   shrinkSelfTestDetail : String := ""
 
+private def runClosedStdinGuardRegression (rootDir : System.FilePath) : IO Unit := do
+  let epCfg : SeedTreeConfig := {
+    cwdPath := "/dev/shm/fuzz-root/ep-2".toUTF8
+    cwdBound := true
+    cwdMode := 0o755
+    cwdParentMode := 0o755
+    cwdParentOwnedByUid := true
+    mountProfiles := [(4, { supportsSeals := true })]
+    selfPidBytes := "42".toUTF8
+    stdinKind := .reg
+    stdinDevKind? := none
+    stdinMode := 0o644
+    stdinOwnedByUid := true
+    exeOwnedByUid := true
+    cwdEntries := [
+      { name := "sub".toUTF8, kind := .dir, mode := 0o755 },
+      { relDir := ["sub".toUTF8], name := "a".toUTF8, kind := .reg, mode := 0o644 }
+    ]
+  }
+  let extSt := FilesState.withSeededTree epCfg
+  let extEnv : GenEnv := {}
+  if !mutTargetAllowed extSt extEnv extSt.cwdIno none true true none "/proc/self/fd/0".toUTF8 true then
+    throw (IO.userError "closed_stdin regression: external safeStdin /proc/self/fd/0 was rejected")
+  if mutTargetAllowed extSt extEnv extSt.cwdIno none true false none "/proc/self/fd/0".toUTF8 true then
+    throw (IO.userError "closed_stdin regression: external unsafe /proc/self/fd/0 was allowed")
+  let closedSt := applyClosedStdioToState 0 1 1 extSt
+  if !mutTargetAllowed closedSt extEnv closedSt.cwdIno none true false none "/proc/self/fd/0".toUTF8 true then
+    throw (IO.userError "closed_stdin regression: detached closed /proc/self/fd/0 should be allowed (ENOENT)")
+  let parentIno := (assocGet closedSt.inodes closedSt.cwdIno).map (·.parentIno) |>.getD 0
+  let parentDesc0 : OpenDesc := { ino := parentIno, access := .rdonly, isPathFd := true, cloexec := true }
+  let (stPar0, parentDesc) := bindFreeStdioSlot closedSt 0 parentDesc0
+  let stPar := ({ stPar0 with fds := assocSet stPar0.fds 0 parentDesc, nextHid := 1 }).attachProcFdLink "0".toUTF8 parentIno 0 0o500
+  let envFd0 : GenEnv := { allFds := #[(0, 0)], openFds := #[(0, 0)], procFdMap := ({} : Std.HashMap SymFd Nat).insert 0 0 }
+  if mutTargetAllowed stPar envFd0 stPar.cwdIno none true false none "/proc/self/fd/0".toUTF8 true then
+    throw (IO.userError "closed_stdin regression: recycled fd 0 -> rootDir allowed with safeStdin=false")
+  if mutTargetAllowed stPar envFd0 stPar.cwdIno none true true none "/proc/self/fd/0".toUTF8 true then
+    throw (IO.userError "closed_stdin regression: recycled fd 0 -> rootDir allowed with safeStdin=true")
+  if mutTargetAllowed stPar envFd0 stPar.cwdIno none true true none "/proc/self/fd/@0".toUTF8 true then
+    throw (IO.userError "closed_stdin regression: recycled /proc/self/fd/@0 -> rootDir allowed")
+  if !mutTargetAllowed stPar envFd0 stPar.cwdIno none true false none "/proc/self/fd/0".toUTF8 false then
+    throw (IO.userError "closed_stdin regression: followFinal=false pseudo magic link unexpectedly rejected")
+  let exeIno := match inspectPathTarget closedSt extEnv none "/proc/self/exe".toUTF8 true with
+    | some (_, some ino, _) => ino
+    | _ => 0
+  let (stExe0, exeDesc) := bindFreeStdioSlot closedSt 0 { ino := exeIno, access := .rdonly, isPathFd := true, cloexec := true }
+  let stExe := ({ stExe0 with fds := assocSet stExe0.fds 0 exeDesc, nextHid := 1 }).attachProcFdLink "0".toUTF8 exeIno 0 0o500
+  if mutTargetAllowed stExe envFd0 stExe.cwdIno none true true none "/proc/self/fd/0".toUTF8 true then
+    throw (IO.userError "closed_stdin regression: recycled fd 0 -> /proc/self/exe allowed")
+  let pid1Closed := applyClosedStdioToState 0 1 1 (FilesState.withSeededTree { epCfg with selfPidBytes := "1".toUTF8 })
+  let p1Parent := (assocGet pid1Closed.inodes pid1Closed.cwdIno).map (·.parentIno) |>.getD 0
+  let (stP10, p1Desc) := bindFreeStdioSlot pid1Closed 0 { ino := p1Parent, access := .rdonly, isPathFd := true, cloexec := true }
+  let stP1 := ({ stP10 with fds := assocSet stP10.fds 0 p1Desc, nextHid := 1 }).attachProcFdLink "0".toUTF8 p1Parent 0 0o500
+  if mutTargetAllowed stP1 envFd0 stP1.cwdIno none true true none "/proc/1/fd/0".toUTF8 true then
+    throw (IO.userError "closed_stdin regression: PID 1 recycled /proc/1/fd/0 -> rootDir allowed")
+  let subAIno := match inspectPathTarget closedSt extEnv none "sub/a".toUTF8 true with
+    | some (_, some ino, _) => ino
+    | _ => 0
+  let (stSub0, subDesc) := bindFreeStdioSlot closedSt 0 { ino := subAIno, access := .rdwr, cloexec := true }
+  let stSub := ({ stSub0 with fds := assocSet stSub0.fds 0 subDesc, nextHid := 1 }).attachProcFdLink "0".toUTF8 subAIno 0 0o700
+  if !mutTargetAllowed stSub envFd0 stSub.cwdIno none true false none "/proc/self/fd/0".toUTF8 true then
+    throw (IO.userError "closed_stdin regression: recycled fd 0 -> sub/a rejected")
+  let (stMem0, memHid) := addMemfdToState closedSt 0o777 0 none none none true true
+  let memIno := (assocGet stMem0.fds memHid).map (·.ino) |>.getD 0
+  let stMem := stMem0.attachProcFdLink "0".toUTF8 memIno memHid 0o700
+  if !mutTargetAllowed stMem envFd0 stMem.cwdIno none true false none "/proc/self/fd/0".toUTF8 true then
+    throw (IO.userError "closed_stdin regression: recycled fd 0 -> memfd rejected")
+  let sentFile := rootDir / "chmod-sentinel"
+  let lockDir := rootDir / "chmod-0000-ep"
+  try
+    removeDirForced sentFile
+    removeDirForced lockDir
+    IO.FS.writeFile sentFile "keep\n"
+    let _ ← Env.chmod sentFile.toString.toUTF8 0o644
+    IO.FS.createDirAll (lockDir / "sub")
+    IO.FS.writeFile (lockDir / "sub" / "leaf") "x\n"
+    let _ ← defaultOps.symlinkat sentFile.toString.toUTF8 none (lockDir / "lnk_sent").toString.toUTF8
+    let _ ← Env.chmod (lockDir / "sub").toString.toUTF8 0o000
+    let _ ← Env.chmod lockDir.toString.toUTF8 0o7000
+    removeDirForced lockDir
+    if ← lockDir.pathExists then
+      throw (IO.userError "closed_stdin regression: removeDirForced left 0o7000 dir behind")
+    if (← Env.statMode sentFile.toString.toUTF8) != 0o644 then
+      throw (IO.userError "closed_stdin regression: removeDirForced modified symlink target mode")
+    let topLink := rootDir / "chmod-sentinel-link"
+    let _ ← defaultOps.symlinkat sentFile.toString.toUTF8 none topLink.toString.toUTF8
+    unlinkTreeRaw topLink.toString.toUTF8
+    if (← defaultOps.fstatat none topLink.toString.toUTF8 { symlinkNofollow := true }).isOk then
+      throw (IO.userError "closed_stdin regression: unlinkTreeRaw left top-level symlink behind")
+    if (← Env.statMode sentFile.toString.toUTF8) != 0o644 then
+      throw (IO.userError "closed_stdin regression: unlinkTreeRaw modified top-level symlink target mode")
+  finally
+    removeDirForced (rootDir / "chmod-sentinel-link")
+    removeDirForced lockDir
+    removeDirForced sentFile
+  let reproDir := rootDir / "closed-stdin-seed-6107754422894804096"
+  try
+    removeDirForced reproDir
+    IO.FS.createDirAll reproDir
+    let _ ← Env.chmod reproDir.toString.toUTF8 0o755
+    let exe ← IO.appPath
+    let out ← IO.Process.output {
+      cmd := exe.toString
+      args := #[
+        "--worker-mode", "rw", "--close-fd0", "--dir", reproDir.toString,
+        "--steps", "1666", "--seed", "6107754422894805005"
+      ]
+      stdin := .null
+    }
+    if out.exitCode != 0 then
+      throw (IO.userError s!"closed_stdin seed 6107754422894804096 regression failed (exit={out.exitCode}):\n{out.stdout}\n{out.stderr}")
+    let dupBadFdHit := (out.stdout.splitOn "\n").any fun raw =>
+      match raw.trimAscii.toString.splitOn " " with
+      | ["WORKER_STAT_KIND", "dupStdio:badFd", nStr] => nStr.toNat?.getD 0 > 0
+      | _ => false
+    if !dupBadFdHit then
+      throw (IO.userError "closed_stdin seed 6107754422894804096 regression recorded 0 dupStdio:badFd hits")
+    let reproMode ← Env.statMode reproDir.toString.toUTF8
+    if reproMode != 0o755 then
+      throw (IO.userError s!"closed_stdin regression: base dir mode altered to {reproMode}")
+  finally
+    removeDirForced reproDir
+
 /-- Verify greedy delta-minimization and handle-ID renumbering using a generated trace and synthetic oracle fault. -/
 def runShrinkSelfTest (rootDir : System.FilePath) : IO String := do
   let mut rng := Rng.seed 0x534852494e4b4d49
@@ -3858,7 +4033,8 @@ def runShrinkSelfTest (rootDir : System.FilePath) : IO String := do
       throw (IO.userError s!"shrink self-test (access/whence): unexpected shape ({repr shrunkAccSeek})")
   | _, _ =>
     throw (IO.userError s!"shrink self-test (access/whence): unexpected size ({repr shrunkAccSeek})")
-  return s!"shrinker reduced {rawTrace.size} -> {shrunk.size} steps, preSeeded=1 {coupledTrace.size} -> {shrunkPre.size} steps (payload {bigData.size}B -> {shrunkPayloadLen}B, multi-arg/reopen/rlimit/dirfd ok)"
+  runClosedStdinGuardRegression rootDir
+  return s!"shrinker reduced {rawTrace.size} -> {shrunk.size} steps, preSeeded=1 {coupledTrace.size} -> {shrunkPre.size} steps (payload {bigData.size}B -> {shrunkPayloadLen}B, multi-arg/reopen/rlimit/dirfd/closed-stdin ok)"
 
 private def pickCrossParent (baseReal : System.FilePath) (uniqTag : String) : IO (Option System.FilePath) := do
   let baseBytes := baseReal.toString.toUTF8
@@ -3881,6 +4057,7 @@ private def pickCrossParent (baseReal : System.FilePath) (uniqTag : String) : IO
         try
           removeDirForced probe
           IO.FS.createDirAll probe
+          let _ ← Env.chmod probe.toString.toUTF8 0o755
           if candFs != 0 && baseFs != 0 && candFs != baseFs then
             if let some fb := bestFallback then
               removeDirForced fb
@@ -4107,6 +4284,7 @@ def runFilesFuzzOnDir (totalSteps : Nat) (seed : UInt64) (selfTestShrink : Bool)
   if !isRoSeeded && !chrootMode && !isPreseededUnlinked && !isPreseededLower && !isPreseededRwSticky then
     removeDirForced rootDir
     IO.FS.createDirAll rootDir
+    let _ ← Env.chmod rootDir.toString.toUTF8 0o755
   let crossRoot? ←
     if isRoSeeded || chrootMode then pure crossOverride?
     else if let some co := crossOverride? then pure (some co)
@@ -4136,9 +4314,9 @@ def runFilesFuzzOnDir (totalSteps : Nat) (seed : UInt64) (selfTestShrink : Bool)
   let out1 := decodeProbeFdKind out1Code
   let err2 := decodeProbeFdKind err2Code
   let safeStdin :=
-    in0Code == 0 ||
-    (in0.1 == .charDev && in0.2 == some .nullDev) ||
-    (in0.1 == .reg && Env.isIdMapped uidRanges myUid && (← Env.fdUid 0) == myUid)
+    in0Code != 0 &&
+    ((in0.1 == .charDev && in0.2 == some .nullDev) ||
+     (in0.1 == .reg && Env.isIdMapped uidRanges myUid && (← Env.fdUid 0) == myUid))
   let savedCwd ←
     if chrootMode then pure (System.FilePath.mk ".")
     else IO.Process.getCurrentDir
@@ -4920,7 +5098,7 @@ private def runMultiFsSuite (totalSteps : Nat) (seed : UInt64) (selfTestShrink :
       let umRest := unmapSteps - umHalf
       let unmapScript :=
         "set -e; T=$(mktemp -d /tmp/lswf-unmap.XXXXXX); trap 'rm -rf \"$T\"' EXIT; " ++
-        "mkdir -p \"$T/um\" \"$T/u\"; " ++
+        "mkdir -p \"$T/um\" \"$T/u\"; chmod 0755 \"$T/u\"; " ++
         "unshare --user --map-user=0 --mount sh -c " ++
           "'mount -t tmpfs tmpfs \"$2\" && \"$1\" --worker-mode ro_bind --host-protected --dir \"$2\" --steps \"$3\" --seed \"$4\" < /dev/null' " ++
           "_ \"$1\" \"$T/um\" \"$2\" \"$3\"; " ++
