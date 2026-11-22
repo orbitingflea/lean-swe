@@ -746,7 +746,7 @@ private def closeSocketpair (a b : LinuxSyscall.RawFd) : IO Unit := do
 
 private def monoMsNow : IO Nat := do
   match ← LinuxSyscall.TimeRand.clock_gettime .monotonic with
-  | .ok ts => return SysBridge.timespecToMs ts
+  | .ok ts => return LinuxSyscall.TimeRand.timespecToMs ts
   | .error e => throw (IO.userError s!"clock_gettime failed errno={e}")
 
 private def testPerJobDnsWakeupCancelAndEmfile : IO Unit := do

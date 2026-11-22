@@ -366,9 +366,9 @@ example : ¬ Core.AllPass (test_process_sysBridge_streamPipes_drainsStdinAfterOu
     (fun files _ timeRand stdin startMs timeoutMs? _ stepFuel st _ => do
       let (inFdNext?, _, _, _, _) ←
         SysBridge.stepStdinOpt files timeRand st.inFd? stdin startMs timeoutMs? st.stdinPos stepFuel
-      SysBridge.closeOpt files inFdNext?
-      SysBridge.closeOpt files st.outFd?
-      SysBridge.closeOpt files st.errFd?
+      LinuxSyscall.Files.closeOpt files inFdNext?
+      LinuxSyscall.Files.closeOpt files st.outFd?
+      LinuxSyscall.Files.closeOpt files st.errFd?
       return .ok (.eof ByteArray.empty ByteArray.empty))) := by
   intro ⟨h, _⟩
   exact absurd h (by decide +kernel)
@@ -387,14 +387,14 @@ example : ¬ Core.AllPass (test_process_sysBridge_partialPipe2Failure_cleansUpAl
       | .ok (inR, inW) =>
         match ← deps.proc.pipe2 { cloexec := true } with
         | .error e =>
-          SysBridge.closeOpt deps.files (some inR)
-          SysBridge.closeOpt deps.files (some inW)
+          LinuxSyscall.Files.closeOpt deps.files (some inR)
+          LinuxSyscall.Files.closeOpt deps.files (some inW)
           return .error (SysBridge.mapErrno (some req.program) "pipe2" e)
         | .ok _ =>
           match ← deps.proc.pipe2 { cloexec := true } with
           | .error e =>
-            SysBridge.closeOpt deps.files (some inR)
-            SysBridge.closeOpt deps.files (some inW)
+            LinuxSyscall.Files.closeOpt deps.files (some inR)
+            LinuxSyscall.Files.closeOpt deps.files (some inW)
             return .error (SysBridge.mapErrno (some req.program) "pipe2" e)
           | .ok _ =>
             return .ok { handleId := 0, pid := 1, pgid := 1 })) := by

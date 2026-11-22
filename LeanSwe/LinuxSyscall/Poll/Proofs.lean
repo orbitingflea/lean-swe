@@ -471,4 +471,23 @@ theorem allowedStep_healthy_tight
   · have hPos : env.eintrBudget > 0 := hBudget hEi
     simp [hPos]
 
+/-- `msToPollTimespec` produces a kernel-valid `Poll.Timespec` (`0 ≤ sec` and `nsec < 1_000_000_000`) for every `ms : Nat`. -/
+theorem msToPollTimespec_isValid (ms : Nat) :
+    (msToPollTimespec ms).isValid = true := by
+  unfold msToPollTimespec Timespec.isValid NANOS_PER_SEC
+  dsimp only
+  simp only [Bool.and_eq_true, decide_eq_true_eq, Int.ofNat_eq_natCast]
+  have hCap : Nat.min (ms / 1000) 9223372036854775807 ≤ 9223372036854775807 :=
+    Nat.min_le_right _ _
+  refine ⟨?_, ?_⟩
+  · rw [Int64.le_iff_toInt_le, Int64.toInt_ofInt, Int.bmod_eq_of_le]
+    · have : (0 : Int64).toInt = 0 := rfl; omega
+    · change -9223372036854775808 ≤ (↑(Nat.min (ms / 1000) 9223372036854775807) : Int); omega
+    · change (↑(Nat.min (ms / 1000) 9223372036854775807) : Int) < 9223372036854775808; omega
+  · have hMod : ms % 1000 < 1000 := Nat.mod_lt ms (by decide)
+    rw [UInt32.lt_iff_toNat_lt, UInt32.toNat_ofNat',
+      Nat.mod_eq_of_lt (by change ms % 1000 * 1000000 < 4294967296; omega)]
+    have : (1000000000 : UInt32).toNat = 1000000000 := rfl
+    omega
+
 end LeanSwe.LinuxSyscall.Poll

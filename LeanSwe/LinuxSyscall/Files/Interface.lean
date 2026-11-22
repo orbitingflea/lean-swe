@@ -217,4 +217,20 @@ def defaultOps : FilesOps :=
 @[inline] def dupStdio (slot : StdioFd) : IO (Except Errno RawFd) :=
   defaultOps.dupStdio slot
 
+/-- Best-effort close of an optional `fd` handle (`EINTR` is not retried per Linux `close(2)` semantics). -/
+def closeOpt {m : Type → Type} [Monad m] {fd : Type}
+    (files : FilesOpsM m fd) : Option fd → m Unit
+  | none => pure ()
+  | some h => do
+    let _ ← files.close h
+    pure ()
+
+/-- Set `O_NONBLOCK` on an optional descriptor `fd` if present via `fcntl(F_SETFL)`. -/
+def setNonblockingOpt {m : Type → Type} [Monad m] {fd : Type}
+    (files : FilesOpsM m fd) : Option fd → m Unit
+  | none => pure ()
+  | some h => do
+    let _ ← files.fcntl h (.setFl true false)
+    pure ()
+
 end LeanSwe.LinuxSyscall.Files

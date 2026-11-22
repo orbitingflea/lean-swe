@@ -69,4 +69,24 @@ def defaultOps : ProcessOps :=
 @[inline] def getuid : IO (Except Errno UInt32) :=
   defaultOps.getuid
 
+/-- Maximum valid positive signed 32-bit Linux `pid_t` (`0x7fffffff`). -/
+def MAX_LINUX_PID : UInt32 := 0x7fffffff
+
+/-- Compute safe `kill(2)` target for isolated process group `pgid` (never returning `-1`). -/
+def killTargetOfPgid (pgid : UInt32) : Int32 :=
+  if pgid == 1 then 1 else -(pgid.toInt32)
+
+/-- Blocking `waitpid` reap loop ignoring `ECHILD` and retrying `EINTR` up to `fuel` attempts (`error none` = budget exhausted). -/
+def waitpidReapLoop {m : Type → Type} [Monad m] {fd : Type}
+    (proc : ProcessOpsM m fd) (pid : Int32) :
+    Nat → m (Except (Option Errno) Unit)
+  | 0 => pure (.error none)
+  | fuel + 1 => do
+    match ← proc.waitpid pid {} with
+    | .ok _ => return .ok ()
+    | .error e =>
+      if e == Errno.EINTR then waitpidReapLoop proc pid fuel
+      else if e == Errno.ECHILD then return .ok ()
+      else return .error (some e)
+
 end LeanSwe.LinuxSyscall.Process

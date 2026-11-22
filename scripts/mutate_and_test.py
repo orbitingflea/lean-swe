@@ -43,6 +43,7 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
     "ProcessSandbox.Raw": pathlib.Path("LeanSwe/ProcessSandbox/Raw"),
     "ProcessSandbox": pathlib.Path("LeanSwe/ProcessSandbox"),
     "ConnectProxy": pathlib.Path("LeanSwe/ConnectProxy"),
+    "NetRelay": pathlib.Path("LeanSwe/NetRelay"),
     "SlotPool": pathlib.Path("LeanSwe/SlotPool"),
     "LinuxSyscall.Sandbox": pathlib.Path("LeanSwe/LinuxSyscall/Sandbox"),
     "LinuxSyscall.TimeRand": pathlib.Path("LeanSwe/LinuxSyscall/TimeRand"),

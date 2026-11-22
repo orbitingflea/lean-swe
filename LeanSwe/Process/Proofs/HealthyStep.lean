@@ -11,6 +11,7 @@ import LeanSwe.LinuxSyscall.TimeRand.Model
 import LeanSwe.PostFork.Types
 import LeanSwe.PostFork.Model
 import LeanSwe.Process.Types
+import LeanSwe.LinuxSyscall.Process.Interface
 import LeanSwe.Process.SysBridge
 
 namespace LeanSwe.Process.Proofs
@@ -255,7 +256,7 @@ structure RefinesHealthyPostFork {S fd : Type}
   spawn_healthy : ∀ s spec,
     let r := (ops.spawn spec).run s
     (∀ child, r.1 = .ok child →
-      1 ≤ child.pid ∧ child.pid ≤ MAX_LINUX_PID ∧
+      1 ≤ child.pid ∧ child.pid ≤ LinuxSyscall.Process.MAX_LINUX_PID ∧
       (spec.processGroup = .newGroup → child.pgid = some child.pid)) ∧
     (∀ err, r.1 = .error err →
       (∀ e, err.errno = some e → Errno.isCriticalOsErrno e = false) ∧

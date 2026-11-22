@@ -1,12 +1,12 @@
 import LeanSwe.Base64.Interface
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Files.Types
+import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.Net.Types
 import LeanSwe.LinuxSyscall.Poll.Types
 import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Sandbox.Types
 import LeanSwe.PostFork.Types
-import LeanSwe.Process.SysBridge
 import LeanSwe.ProcessSandbox.InitData
 import LeanSwe.ProcessSandbox.Raw.Types
 import LeanSwe.ProcessSandbox.Raw.Impl
@@ -16,7 +16,6 @@ import LeanSwe.ProcessSandbox.Host.Preset
 namespace LeanSwe.ProcessSandbox.Host.Bwrap
 
 open LeanSwe.LinuxSyscall
-open LeanSwe.Process.SysBridge
 open LeanSwe.ProcessSandbox.Raw
 open LeanSwe.ProcessSandbox.Host.Cgroup
 open LeanSwe.ProcessSandbox.Host.Preset
@@ -178,7 +177,7 @@ def filterAbsoluteBwrapDirs (dirs : List String) : List String :=
 
 /-- Extract only absolute, non-empty, NUL-free directory entries from raw `PATH` bytes (discarding empty `""`/`"."` segments and all relative paths). -/
 def absoluteBwrapPathDirs (rawPath : ByteArray) : List String :=
-  filterAbsoluteBwrapDirs ((splitPosixPathBytes rawPath).filterMap String.fromUTF8?)
+  filterAbsoluteBwrapDirs ((splitByte (0x3A : UInt8) rawPath).filterMap String.fromUTF8?)
 
 /-- Join an absolute directory `dir` with `"bwrap"`, normalizing `"/"` to `"/bwrap"`. -/
 def bwrapCandidatePath (dir : String) : String :=
@@ -220,12 +219,12 @@ def createSealedMemfd {m : Type → Type} [Monad m] {fd : Type}
     let wrRes ← if data.size > 0 then writeAllFd files h data 0 eintrFuel else pure (.ok ())
     match wrRes with
     | .error e =>
-      closeOpt files (some h)
+      Files.closeOpt files (some h)
       return .error e
     | .ok () =>
       match ← retryEintr (files.fcntl h (.addSeals F_SEAL_ALL)) eintrFuel with
       | .error e =>
-        closeOpt files (some h)
+        Files.closeOpt files (some h)
         return .error e
       | .ok _ => return .ok h
 
@@ -239,13 +238,13 @@ def openThreeDevNull {m : Type → Type} [Monad m] {fd : Type}
   | .ok d0 =>
     match ← openOne with
     | .error e =>
-      closeOpt files (some d0)
+      Files.closeOpt files (some d0)
       return .error e
     | .ok d1 =>
       match ← openOne with
       | .error e =>
-        closeOpt files (some d0)
-        closeOpt files (some d1)
+        Files.closeOpt files (some d0)
+        Files.closeOpt files (some d1)
         return .error e
       | .ok d2 =>
         return .ok (d0, d1, d2)
@@ -276,18 +275,18 @@ def probeBwrapNamespaces {m : Type → Type} [Monad m] {fd : Type}
   | .ok (d0, d1, d2) =>
     match ← createSealedMemfd sandbox files "leanswe-psandbox-probe" initBytes eintrFuel with
     | .error e =>
-      closeOpt files (some d0)
-      closeOpt files (some d1)
-      closeOpt files (some d2)
+      Files.closeOpt files (some d0)
+      Files.closeOpt files (some d1)
+      Files.closeOpt files (some d2)
       return .error e
     | .ok initMemfd =>
       let initFdRes ← retryEintr (files.reopenReadOnly initMemfd) eintrFuel
-      closeOpt files (some initMemfd)
+      Files.closeOpt files (some initMemfd)
       match initFdRes with
       | .error e =>
-        closeOpt files (some d0)
-        closeOpt files (some d1)
-        closeOpt files (some d2)
+        Files.closeOpt files (some d0)
+        Files.closeOpt files (some d1)
+        Files.closeOpt files (some d2)
         return .error e
       | .ok initFd =>
         let sysEntries ← discoverSystemEntries files eintrFuel
@@ -304,10 +303,10 @@ def probeBwrapNamespaces {m : Type → Type} [Monad m] {fd : Type}
           forkMode := .immortalThread
         }
         let spawnRes ← postFork.spawn childSpec
-        closeOpt files (some d0)
-        closeOpt files (some d1)
-        closeOpt files (some d2)
-        closeOpt files (some initFd)
+        Files.closeOpt files (some d0)
+        Files.closeOpt files (some d1)
+        Files.closeOpt files (some d2)
+        Files.closeOpt files (some initFd)
         match spawnRes with
         | .error pfErr =>
           return .error (pfErr.errno.getD Errno.EPERM)
@@ -318,7 +317,7 @@ def probeBwrapNamespaces {m : Type → Type} [Monad m] {fd : Type}
 def closeFdArray {m : Type → Type} [Monad m] {fd : Type}
     (files : Files.FilesOpsM m fd) (fds : Array fd) : m Unit := do
   for h in fds do
-    closeOpt files (some h)
+    Files.closeOpt files (some h)
 
 /-- Receive exactly `expected` listener descriptors over `ctrlFd` in `<= 32`-FD `SCM_RIGHTS` batches while watching `statusFd` for early init failure. -/
 def recvFdsScmLoop {m : Type → Type} [Monad m] {fd : Type}
@@ -411,7 +410,7 @@ def drainStderrSnippetLoop {m : Type → Type} [Monad m] {fd : Type}
 def drainStderrSnippet {m : Type → Type} [Monad m] {fd : Type}
     (files : Files.FilesOpsM m fd) (stderrFd : fd)
     (maxBytes : Nat := 255) (fuel : Nat := 16) : m String := do
-  setNonblockingOpt files (some stderrFd)
+  Files.setNonblockingOpt files (some stderrFd)
   let raw ← drainStderrSnippetLoop files stderrFd maxBytes #[] 0 fuel
   return trimTrailingNewlines (String.fromUTF8? raw |>.getD "")
 

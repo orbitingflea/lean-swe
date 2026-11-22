@@ -1,18 +1,17 @@
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Net.Types
 import LeanSwe.LinuxSyscall.Poll.Types
+import LeanSwe.NetRelay.Types
+import LeanSwe.NetRelay.Interface
 
 namespace LeanSwe.ConnectProxy.Relay
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Net
 open LeanSwe.LinuxSyscall.Poll
+open LeanSwe.NetRelay
 
-/-- Fixed byte capacity of each directional TCP relay buffer (`16 KiB`). -/
-def RING_CAP : Nat := 16384
-
-/-- Per-poll-tick non-blocking I/O iteration bound preventing unbounded spin with structural fuel. -/
-def MAX_RELAY_IO_STEPS : Nat := 256
+export LeanSwe.NetRelay (RING_CAP MAX_RELAY_IO_STEPS RingBuf)
 
 /-- Static HTTP `200 Connection Established` response header bytes. -/
 def reply200Bytes : ByteArray :=
@@ -40,60 +39,6 @@ def reply503Bytes : ByteArray :=
     'S', 'e', 'r', 'v', 'i', 'c', 'e', ' ', 'U', 'n', 'a', 'v', 'a', 'i', 'l', 'a', 'b', 'l', 'e', '\r', '\n',
     'C', 'o', 'n', 't', 'e', 'n', 't', '-', 'L', 'e', 'n', 'g', 't', 'h', ':', ' ', '0',
     '\r', '\n', '\r', '\n']
-
-/-- Bounded FIFO byte queue (`len ≤ RING_CAP`) for non-blocking stream relay. -/
-structure RingBuf where
-  /-- Backing byte slice containing unread bytes in `off .. buf.size`. -/
-  buf : ByteArray := ByteArray.empty
-  /-- Read cursor offset into `buf`. -/
-  off : Nat := 0
-  deriving DecidableEq, BEq, Inhabited
-
-/-- Number of unread bytes currently buffered in `rb`. -/
-def RingBuf.len (rb : RingBuf) : Nat :=
-  rb.buf.size - rb.off
-
-/-- Return `true` iff `rb` holds zero unread bytes. -/
-def RingBuf.isEmpty (rb : RingBuf) : Bool :=
-  rb.len == 0
-
-/-- Remaining capacity in bytes (`0 .. RING_CAP`) available for `push`. -/
-def RingBuf.writeAvail (rb : RingBuf) : Nat :=
-  RING_CAP - Nat.min rb.len RING_CAP
-
-/-- Logical FIFO list of unread bytes in `rb` (clamped at `RING_CAP` for arbitrary raw structs). -/
-def RingBuf.toList (rb : RingBuf) : List UInt8 :=
-  (rb.buf.data.toList.drop rb.off).take RING_CAP
-
-/-- Contiguous unread byte slice ready for `sendto`. -/
-def RingBuf.frontSlice (rb : RingBuf) : ByteArray :=
-  let n := Nat.min rb.len RING_CAP
-  if n == 0 then
-    ByteArray.empty
-  else if rb.off == 0 && rb.buf.size == n then
-    rb.buf
-  else
-    rb.buf.extract rb.off (rb.off + n)
-
-/-- Append up to `rb.writeAvail` bytes of `chunk` to the tail of `rb`, compacting any consumed prefix. -/
-def RingBuf.push (rb : RingBuf) (chunk : ByteArray) : RingBuf :=
-  let active := rb.frontSlice
-  let avail := RING_CAP - active.size
-  let takeN := Nat.min chunk.size avail
-  if takeN == 0 then
-    { buf := active, off := 0 }
-  else
-    let part := if takeN == chunk.size then chunk else chunk.extract 0 takeN
-    let combined := if active.size == 0 then part else active ++ part
-    { buf := combined, off := 0 }
-
-/-- Advance the read cursor by `n` bytes, resetting `buf` when fully drained. -/
-def RingBuf.consume (rb : RingBuf) (n : Nat) : RingBuf :=
-  let activeLen := Nat.min rb.len RING_CAP
-  if n >= activeLen then
-    { buf := ByteArray.empty, off := 0 }
-  else
-    { buf := rb.buf, off := rb.off + n }
 
 /-- Bidirectional TCP tunnel state with pipelined handshake tail and half-close tracking. -/
 structure RelayState (fd : Type) where
@@ -150,12 +95,6 @@ def RelayState.upstreamPollEvents {fd : Type} (st : RelayState fd) : PollEvents 
   { pollin := !st.uEof && st.u2c.writeAvail > 0
     pollout := (!st.prefixFlushed || !st.c2u.isEmpty) && !st.uWrClosed }
 
-/-- Close an optional descriptor if present. -/
-def closeOptFd {m : Type → Type} [Monad m] {fd : Type}
-    (closeFd : fd → m Unit) : Option fd → m Unit
-  | some f => closeFd f
-  | none => pure ()
-
 /-- Close both endpoints of `st` and return the cleared `RelayState`. -/
 def closeRelayBoth {m : Type → Type} [Monad m] {fd : Type}
     (closeFd : fd → m Unit) (st : RelayState fd) : m (RelayState fd) := do
@@ -166,101 +105,6 @@ def closeRelayBoth {m : Type → Type} [Monad m] {fd : Type}
     upstreamFd? := none
     pendingPrefix := ByteArray.empty
     pendingOff := 0 }
-
-/-- Non-blocking `sendto` loop advancing `off` across `bytes` until complete, `EAGAIN`, or hard error (`none`). -/
-def flushBytesNonblock {m : Type → Type} [Monad m] {fd : Type}
-    (net : NetOpsM m fd) (f : fd) (bytes : ByteArray) : Nat → Nat → m (Option Nat)
-  | 0, off => pure (some off)
-  | fuel + 1, off => do
-    if off >= bytes.size then
-      return some off
-    else
-      let slice := if off == 0 then bytes else bytes.extract off bytes.size
-      match ← net.sendto f slice { nosignal := true, dontwait := true } with
-      | .ok n =>
-        if n == 0 then return some off
-        else flushBytesNonblock net f bytes fuel (off + Nat.min n.toNat slice.size)
-      | .error e =>
-        if e == Errno.EINTR then
-          flushBytesNonblock net f bytes fuel off
-        else if e == Errno.EAGAIN then
-          return some off
-        else
-          return none
-
-/-- Non-blocking `recvfrom` loop filling `rb` until full, `EOF`/peer-reset (`eof = true`), `EAGAIN`, or invalid-descriptor error (`none`). -/
-def recvIntoRing {m : Type → Type} [Monad m] {fd : Type}
-    (net : NetOpsM m fd) (f : fd) : Nat → RingBuf → m (Option (RingBuf × Bool))
-  | 0, rb => pure (some (rb, false))
-  | fuel + 1, rb => do
-    let avail := rb.writeAvail
-    if avail == 0 then
-      return some (rb, false)
-    else
-      match ← net.recvfrom f (UInt32.ofNat avail) { dontwait := true } with
-      | .ok bs =>
-        if bs.size == 0 then
-          return some (rb, true)
-        else
-          recvIntoRing net f fuel (rb.push bs)
-      | .error e =>
-        if e == Errno.EINTR then
-          recvIntoRing net f fuel rb
-        else if e == Errno.EAGAIN then
-          return some (rb, false)
-        else if e == Errno.EBADF || e == Errno.EINVAL || e == Errno.ENOTSOCK then
-          return none
-        else
-          return some (rb, true)
-
-/-- Non-blocking `sendto` loop draining `rb` until empty, `EAGAIN`, or hard error (`none`). -/
-def flushRingNonblock {m : Type → Type} [Monad m] {fd : Type}
-    (net : NetOpsM m fd) (f : fd) : Nat → RingBuf → m (Option RingBuf)
-  | 0, rb => pure (some rb)
-  | fuel + 1, rb => do
-    if rb.isEmpty then
-      return some rb
-    else
-      let slice := rb.frontSlice
-      match ← net.sendto f slice { nosignal := true, dontwait := true } with
-      | .ok n =>
-        if n == 0 then return some rb
-        else flushRingNonblock net f fuel (rb.consume n.toNat)
-      | .error e =>
-        if e == Errno.EINTR then
-          flushRingNonblock net f fuel rb
-        else if e == Errno.EAGAIN then
-          return some rb
-        else
-          return none
-
-/-- Execute `shutdown(f, .wr)` retrying `EINTR` and tolerating already-disconnected peers (`ENOTCONN`/`ECONNRESET`/`EPIPE`). -/
-def shutdownWrClean {m : Type → Type} [Monad m] {fd : Type}
-    (net : NetOpsM m fd) (f : fd) : Nat → m Bool
-  | 0 => pure false
-  | fuel + 1 => do
-    match ← net.shutdown f .wr with
-    | .ok () => return true
-    | .error e =>
-      if e == Errno.EINTR then
-        shutdownWrClean net f fuel
-      else if e == Errno.ENOTCONN || e == Errno.ECONNRESET || e == Errno.EPIPE then
-        return true
-      else
-        return false
-
-/-- Drain unread inbound bytes from `f` after the peer write side has closed, returning `true` on `EOF` or socket error. -/
-def drainDeadPeerRx {m : Type → Type} [Monad m] {fd : Type}
-    (net : NetOpsM m fd) (f : fd) : Nat → m Bool
-  | 0 => pure false
-  | fuel + 1 => do
-    match ← net.recvfrom f 4096 { dontwait := true } with
-    | .ok bs =>
-      if bs.size == 0 then return true else drainDeadPeerRx net f fuel
-    | .error e =>
-      if e == Errno.EINTR then drainDeadPeerRx net f fuel
-      else if e == Errno.EAGAIN then return false
-      else return true
 
 /-- Phase 1 of `stepBidirectionalRelay`: flush pending pipelined client bytes before regular upstream writes. -/
 def stepRelayPrefix {m : Type → Type} [Monad m] {fd : Type}

@@ -16,7 +16,6 @@ import LeanSwe.LinuxSyscall.Passwd.Interface
 import LeanSwe.PostFork.Types
 import LeanSwe.PostFork.Interface
 import LeanSwe.EnvVars.Raw.Interface
-import LeanSwe.Process.SysBridge
 import LeanSwe.ProcessSandbox.Raw.Types
 import LeanSwe.ProcessSandbox.Raw.Impl
 import LeanSwe.ProcessSandbox.Host.Cgroup
@@ -28,7 +27,6 @@ import LeanSwe.ProcessSandbox.Host.StreamIo
 namespace LeanSwe.ProcessSandbox.Host.SysBridge
 
 open LeanSwe.LinuxSyscall
-open LeanSwe.Process.SysBridge
 open LeanSwe.ProcessSandbox.Raw
 open LeanSwe.ProcessSandbox.Host.Cgroup
 open LeanSwe.ProcessSandbox.Host.Preset
@@ -401,7 +399,7 @@ def preflightPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
                 | none =>
                   return .ok ()
     | .ok (.ruleset h) =>
-      closeOpt deps.files (some h)
+      Files.closeOpt deps.files (some h)
       return .error (Internal.mapRawError (.unavailable (some Errno.ENOSYS) "Landlock ABI >= 4 is required"))
 
 /-- Pure capability-parameterized implementation of `RawProcessSandboxOpsM.discoverHostPreset`. -/
@@ -435,13 +433,13 @@ def sealPlanPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
       | .ok planMemfd =>
         match ← createSealedMemfd deps.sandbox deps.files "leanswe-psandbox-init" initBytes eintrFuel with
         | .error e =>
-          closeOpt deps.files (some planMemfd)
+          Files.closeOpt deps.files (some planMemfd)
           return .error (Internal.mapRawError (.ioError none e "failed to seal init memfd"))
         | .ok initMemfd =>
           match ← createSealedMemfd deps.sandbox deps.files "leanswe-psandbox-hosts" SYNTHETIC_HOSTS_BYTES eintrFuel with
           | .error e =>
-            closeOpt deps.files (some planMemfd)
-            closeOpt deps.files (some initMemfd)
+            Files.closeOpt deps.files (some planMemfd)
+            Files.closeOpt deps.files (some initMemfd)
             return .error (Internal.mapRawError (.ioError none e "failed to seal hosts memfd"))
           | .ok hostsMemfd =>
             let slot : PlanSlotM fd := {
@@ -452,9 +450,9 @@ def sealPlanPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
             }
             match ← tbl.insertPlan slot with
             | none =>
-              closeOpt deps.files (some planMemfd)
-              closeOpt deps.files (some initMemfd)
-              closeOpt deps.files (some hostsMemfd)
+              Files.closeOpt deps.files (some planMemfd)
+              Files.closeOpt deps.files (some initMemfd)
+              Files.closeOpt deps.files (some hostsMemfd)
               return .error (Internal.mapRawError (.ioError none Errno.ENOMEM "plan handle table exhausted"))
             | some hid =>
               return .ok { handleId := hid }
@@ -469,9 +467,9 @@ def closePlanPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
   | none =>
     return .error (Internal.mapRawError (.invalidArgument none (some Errno.EINVAL) "invalid or closed plan handle"))
   | some slot =>
-    closeOpt deps.files (some slot.planMemfd)
-    closeOpt deps.files (some slot.initMemfd)
-    closeOpt deps.files (some slot.hostsMemfd)
+    Files.closeOpt deps.files (some slot.planMemfd)
+    Files.closeOpt deps.files (some slot.initMemfd)
+    Files.closeOpt deps.files (some slot.hostsMemfd)
     return .ok ()
 
 /-- Precheck every user bind-mount `hostPath` via `stat` before creating cgroups or spawning `bwrap`. -/
@@ -500,10 +498,10 @@ def rollbackRunningChild {m : Type → Type} [Monad m] {fd : Type}
   | none => pure ()
   if !cgDir.isEmpty then
     let _ ← writeTextFile files (cgroupSubfile cgDir "cgroup.kill") "1" eintrFuel
-  if childPid > 0 && childPid ≤ MAX_LINUX_PID then
-    let _ ← reapWaitLoop proc childPid.toInt32 eintrFuel
+  if childPid > 0 && childPid ≤ LinuxSyscall.Process.MAX_LINUX_PID then
+    let _ ← LinuxSyscall.Process.waitpidReapLoop proc childPid.toInt32 eintrFuel
     pure ()
-  closeOpt files pidfd?
+  Files.closeOpt files pidfd?
   let _ ← cleanupCgroupDir files timeRand cgDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS eintrFuel
   pure ()
 
@@ -530,19 +528,19 @@ def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
         | .ok (inR, inW) =>
           match ← retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel with
           | .error e =>
-            closeOpt deps.files (some inR); closeOpt deps.files (some inW)
+            Files.closeOpt deps.files (some inR); Files.closeOpt deps.files (some inW)
             return .error (Internal.mapRawError (.ioError none e "pipe2 failed"))
           | .ok (outR, outW) =>
             match ← retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel with
             | .error e =>
-              closeOpt deps.files (some inR); closeOpt deps.files (some inW)
-              closeOpt deps.files (some outR); closeOpt deps.files (some outW)
+              Files.closeOpt deps.files (some inR); Files.closeOpt deps.files (some inW)
+              Files.closeOpt deps.files (some outR); Files.closeOpt deps.files (some outW)
               return .error (Internal.mapRawError (.ioError none e "pipe2 failed"))
             | .ok (errR, errW) =>
               let closeStdioPipes : m Unit := do
-                closeOpt deps.files (some inR); closeOpt deps.files (some inW)
-                closeOpt deps.files (some outR); closeOpt deps.files (some outW)
-                closeOpt deps.files (some errR); closeOpt deps.files (some errW)
+                Files.closeOpt deps.files (some inR); Files.closeOpt deps.files (some inW)
+                Files.closeOpt deps.files (some outR); Files.closeOpt deps.files (some outW)
+                Files.closeOpt deps.files (some errR); Files.closeOpt deps.files (some errW)
               match ← retryEintr (deps.files.reopenReadOnly pslot.initMemfd) eintrFuel with
               | .error e =>
                 closeStdioPipes
@@ -550,18 +548,18 @@ def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
               | .ok initFd =>
                 match ← retryEintr (deps.files.reopenReadOnly pslot.hostsMemfd) eintrFuel with
                 | .error e =>
-                  closeOpt deps.files (some initFd); closeStdioPipes
+                  Files.closeOpt deps.files (some initFd); closeStdioPipes
                   return .error (Internal.mapRawError (.ioError none e "failed to reopen sealed hosts memfd"))
                 | .ok hostsFd =>
                   match ← retryEintr (deps.files.reopenReadOnly pslot.planMemfd) eintrFuel with
                   | .error e =>
-                    closeOpt deps.files (some hostsFd); closeOpt deps.files (some initFd); closeStdioPipes
+                    Files.closeOpt deps.files (some hostsFd); Files.closeOpt deps.files (some initFd); closeStdioPipes
                     return .error (Internal.mapRawError (.ioError none e "failed to reopen sealed plan memfd"))
                   | .ok planFd =>
                     let closeBaseFds : m Unit := do
-                      closeOpt deps.files (some planFd)
-                      closeOpt deps.files (some hostsFd)
-                      closeOpt deps.files (some initFd)
+                      Files.closeOpt deps.files (some planFd)
+                      Files.closeOpt deps.files (some hostsFd)
+                      Files.closeOpt deps.files (some initFd)
                       closeStdioPipes
                     match ← retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel with
                     | .error e =>
@@ -570,7 +568,7 @@ def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
                     | .ok (statusR, statusW) =>
                       match ← retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel with
                       | .error e =>
-                        closeOpt deps.files (some statusR); closeOpt deps.files (some statusW); closeBaseFds
+                        Files.closeOpt deps.files (some statusR); Files.closeOpt deps.files (some statusW); closeBaseFds
                         return .error (Internal.mapRawError (.ioError none e "pipe2 failed"))
                       | .ok (goR, goW) =>
                         let nFwds := plan.portForwards.size
@@ -583,17 +581,17 @@ def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
                             pure (Except.ok none)
                         match ctrlRes with
                         | .error e =>
-                          closeOpt deps.files (some goR); closeOpt deps.files (some goW)
-                          closeOpt deps.files (some statusR); closeOpt deps.files (some statusW)
+                          Files.closeOpt deps.files (some goR); Files.closeOpt deps.files (some goW)
+                          Files.closeOpt deps.files (some statusR); Files.closeOpt deps.files (some statusW)
                           closeBaseFds
                           return .error (Internal.mapRawError (.ioError none e "socketpair failed"))
                         | .ok ctrlPair? =>
                           let ctrlR? := ctrlPair?.map Prod.fst
                           let ctrlW? := ctrlPair?.map Prod.snd
                           let closeAllPreFork : m Unit := do
-                            closeOpt deps.files ctrlR?; closeOpt deps.files ctrlW?
-                            closeOpt deps.files (some goR); closeOpt deps.files (some goW)
-                            closeOpt deps.files (some statusR); closeOpt deps.files (some statusW)
+                            Files.closeOpt deps.files ctrlR?; Files.closeOpt deps.files ctrlW?
+                            Files.closeOpt deps.files (some goR); Files.closeOpt deps.files (some goW)
+                            Files.closeOpt deps.files (some statusR); Files.closeOpt deps.files (some statusW)
                             closeBaseFds
                           match ← deps.proc.getpid with
                           | .error e =>
@@ -659,22 +657,22 @@ def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
                                   return .error (Internal.mapRawError (.unavailable pfErr.errno s!"failed to fork bwrap: {pfErr.message}"))
                                 | .ok pending =>
                                   let closeChildSides : m Unit := do
-                                    closeOpt deps.files (some initFd)
-                                    closeOpt deps.files (some hostsFd)
-                                    closeOpt deps.files (some planFd)
-                                    closeOpt deps.files (some inR)
-                                    closeOpt deps.files (some outW)
-                                    closeOpt deps.files (some errW)
-                                    closeOpt deps.files (some statusW)
-                                    closeOpt deps.files (some goR)
-                                    closeOpt deps.files ctrlW?
+                                    Files.closeOpt deps.files (some initFd)
+                                    Files.closeOpt deps.files (some hostsFd)
+                                    Files.closeOpt deps.files (some planFd)
+                                    Files.closeOpt deps.files (some inR)
+                                    Files.closeOpt deps.files (some outW)
+                                    Files.closeOpt deps.files (some errW)
+                                    Files.closeOpt deps.files (some statusW)
+                                    Files.closeOpt deps.files (some goR)
+                                    Files.closeOpt deps.files ctrlW?
                                   let closeParentSides : m Unit := do
-                                    closeOpt deps.files (some inW)
-                                    closeOpt deps.files (some outR)
-                                    closeOpt deps.files (some errR)
-                                    closeOpt deps.files (some statusR)
-                                    closeOpt deps.files (some goW)
-                                    closeOpt deps.files ctrlR?
+                                    Files.closeOpt deps.files (some inW)
+                                    Files.closeOpt deps.files (some outR)
+                                    Files.closeOpt deps.files (some errR)
+                                    Files.closeOpt deps.files (some statusR)
+                                    Files.closeOpt deps.files (some goW)
+                                    Files.closeOpt deps.files ctrlR?
                                   match ← retryEintr (deps.proc.pidfd_open pending.pid {}) eintrFuel with
                                   | .error e =>
                                     let _ ← deps.postFork.abortBarrier pending
@@ -685,7 +683,7 @@ def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
                                     match ← writeTextFile deps.files (cgroupSubfile cgDir "cgroup.procs") (toString pending.pid) eintrFuel with
                                     | .error e =>
                                       let _ ← deps.postFork.abortBarrier pending
-                                      closeOpt deps.files (some pidfd)
+                                      Files.closeOpt deps.files (some pidfd)
                                       closeChildSides; closeParentSides
                                       let _ ← cleanupCgroupDir deps.files deps.timeRand cgDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS eintrFuel
                                       return .error (Internal.mapRawError (.unavailable (some e) s!"failed to attach child to cgroup.procs: {Errno.name e}"))
@@ -694,7 +692,7 @@ def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
                                       closeChildSides
                                       match relRes with
                                       | .error pfErr =>
-                                        closeOpt deps.files (some pidfd)
+                                        Files.closeOpt deps.files (some pidfd)
                                         closeParentSides
                                         let _ ← cleanupCgroupDir deps.files deps.timeRand cgDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS eintrFuel
                                         return .error (Internal.mapRawError (.unavailable pfErr.errno s!"execvp bwrap failed: {pfErr.message}"))
@@ -703,15 +701,15 @@ def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
                                           match ctrlR? with
                                           | some cr =>
                                             let r ← recvFdsScm deps.files deps.net deps.poll cr statusR nFwds
-                                            closeOpt deps.files (some cr)
+                                            Files.closeOpt deps.files (some cr)
                                             pure r
                                           | none => pure (.ok #[])
                                         match recvRes with
                                         | .error e =>
                                           let snip ← drainStderrSnippet deps.files errR
-                                          closeOpt deps.files (some inW); closeOpt deps.files (some outR)
-                                          closeOpt deps.files (some errR); closeOpt deps.files (some statusR)
-                                          closeOpt deps.files (some goW)
+                                          Files.closeOpt deps.files (some inW); Files.closeOpt deps.files (some outR)
+                                          Files.closeOpt deps.files (some errR); Files.closeOpt deps.files (some statusR)
+                                          Files.closeOpt deps.files (some goW)
                                           rollbackRunningChild deps.files deps.proc deps.timeRand child.pid (some pidfd) cgDir eintrFuel
                                           let msg := if snip.isEmpty then "failed to receive box port listener descriptors" else s!"sandbox setup failed: {snip}"
                                           return .error (Internal.mapRawError (.unavailable (some e) msg))
@@ -721,11 +719,11 @@ def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
                                           | some msg =>
                                             if msg.kind == PS_STATUS_READY then
                                               let pgid := child.pgid.getD child.pid
-                                              if child.pid == 0 || child.pid > MAX_LINUX_PID || pgid == 0 || pgid > MAX_LINUX_PID then
+                                              if child.pid == 0 || child.pid > LinuxSyscall.Process.MAX_LINUX_PID || pgid == 0 || pgid > LinuxSyscall.Process.MAX_LINUX_PID then
                                                 closeFdArray deps.files listenerFds
-                                                closeOpt deps.files (some inW); closeOpt deps.files (some outR)
-                                                closeOpt deps.files (some errR); closeOpt deps.files (some statusR)
-                                                closeOpt deps.files (some goW)
+                                                Files.closeOpt deps.files (some inW); Files.closeOpt deps.files (some outR)
+                                                Files.closeOpt deps.files (some errR); Files.closeOpt deps.files (some statusR)
+                                                Files.closeOpt deps.files (some goW)
                                                 rollbackRunningChild deps.files deps.proc deps.timeRand child.pid (some pidfd) cgDir eintrFuel
                                                 return .error (Internal.mapRawError (.unavailable none "invalid child pid/pgid"))
                                               let bslot : BoxSlotM fd := {
@@ -745,9 +743,9 @@ def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
                                               match ← tbl.insertBox bslot with
                                               | none =>
                                                 closeFdArray deps.files listenerFds
-                                                closeOpt deps.files (some inW); closeOpt deps.files (some outR)
-                                                closeOpt deps.files (some errR); closeOpt deps.files (some statusR)
-                                                closeOpt deps.files (some goW)
+                                                Files.closeOpt deps.files (some inW); Files.closeOpt deps.files (some outR)
+                                                Files.closeOpt deps.files (some errR); Files.closeOpt deps.files (some statusR)
+                                                Files.closeOpt deps.files (some goW)
                                                 rollbackRunningChild deps.files deps.proc deps.timeRand child.pid (some pidfd) cgDir eintrFuel
                                                 return .error (Internal.mapRawError (.ioError none Errno.ENOMEM "box handle table exhausted"))
                                               | some bhid =>
@@ -765,9 +763,9 @@ def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
                                                 else
                                                   readErr?.getD Errno.EPERM
                                               closeFdArray deps.files listenerFds
-                                              closeOpt deps.files (some inW); closeOpt deps.files (some outR)
-                                              closeOpt deps.files (some errR); closeOpt deps.files (some statusR)
-                                              closeOpt deps.files (some goW)
+                                              Files.closeOpt deps.files (some inW); Files.closeOpt deps.files (some outR)
+                                              Files.closeOpt deps.files (some errR); Files.closeOpt deps.files (some statusR)
+                                              Files.closeOpt deps.files (some goW)
                                               rollbackRunningChild deps.files deps.proc deps.timeRand child.pid (some pidfd) cgDir eintrFuel
                                               let msgTxt := if snip.isEmpty then s!"sandbox init failed before execvp: {Errno.name eCode}" else s!"sandbox init failed before execvp: {snip}"
                                               return .error (Internal.mapRawError (.unavailable (some eCode) msgTxt))
@@ -775,9 +773,9 @@ def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
                                             let snip ← drainStderrSnippet deps.files errR
                                             let eCode : Errno := readErr?.getD Errno.EPERM
                                             closeFdArray deps.files listenerFds
-                                            closeOpt deps.files (some inW); closeOpt deps.files (some outR)
-                                            closeOpt deps.files (some errR); closeOpt deps.files (some statusR)
-                                            closeOpt deps.files (some goW)
+                                            Files.closeOpt deps.files (some inW); Files.closeOpt deps.files (some outR)
+                                            Files.closeOpt deps.files (some errR); Files.closeOpt deps.files (some statusR)
+                                            Files.closeOpt deps.files (some goW)
                                             rollbackRunningChild deps.files deps.proc deps.timeRand child.pid (some pidfd) cgDir eintrFuel
                                             let msgTxt := if snip.isEmpty then s!"sandbox init failed before execvp: {Errno.name eCode}" else s!"sandbox init failed before execvp: {snip}"
                                             return .error (Internal.mapRawError (.unavailable (some eCode) msgTxt))
@@ -868,18 +866,18 @@ def reapBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
   | none =>
     return .error (Internal.mapRawError (.invalidArgument none (some Errno.EINVAL) "invalid or reaped box handle"))
   | some bslot =>
-    closeOpt deps.files bslot.stdinFd?
-    closeOpt deps.files bslot.stdoutFd?
-    closeOpt deps.files bslot.stderrFd?
-    closeOpt deps.files bslot.statusFd?
-    closeOpt deps.files bslot.goFd?
+    Files.closeOpt deps.files bslot.stdinFd?
+    Files.closeOpt deps.files bslot.stdoutFd?
+    Files.closeOpt deps.files bslot.stderrFd?
+    Files.closeOpt deps.files bslot.statusFd?
+    Files.closeOpt deps.files bslot.goFd?
     closeFdArray deps.files bslot.listenerFds
     if !bslot.cgroupDir.isEmpty then
       let _ ← writeTextFile deps.files (cgroupSubfile bslot.cgroupDir "cgroup.kill") "1" eintrFuel
-    if bslot.pid > 0 && bslot.pid ≤ MAX_LINUX_PID then
-      let _ ← reapWaitLoop deps.proc bslot.pid.toInt32 eintrFuel
+    if bslot.pid > 0 && bslot.pid ≤ LinuxSyscall.Process.MAX_LINUX_PID then
+      let _ ← LinuxSyscall.Process.waitpidReapLoop deps.proc bslot.pid.toInt32 eintrFuel
       pure ()
-    closeOpt deps.files (some bslot.pidfd)
+    Files.closeOpt deps.files (some bslot.pidfd)
     match ← cleanupCgroupDir deps.files deps.timeRand bslot.cgroupDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS eintrFuel with
     | .ok () => return .ok ()
     | .error e =>
@@ -954,7 +952,7 @@ def ioHostSysDeps : HostSysDepsM IO RawFd IoForwarderHandle where
   startFwdTask := startIoForwarder
   stopFwdTask := stopIoForwarder
 
-/-- Default `IO` `RawProcessSandboxOps` bundle implemented in pure Lean over `LinuxSyscall.*`, `PostFork`, `EnvVars.Raw`, `ConnectProxy.Relay`, and `Process.SysBridge`. -/
+/-- Default `IO` `RawProcessSandboxOps` bundle implemented in pure Lean over `LinuxSyscall.*`, `PostFork`, `EnvVars.Raw`, and `NetRelay`. -/
 def defaultOps : RawProcessSandboxOps :=
   let core := mkRawOpsM ioHostSysDeps ioHostTableOps
   { mapRawError := Internal.mapRawError

@@ -6,6 +6,8 @@ import LeanSwe.LinuxSyscall.Dns.Model
 import LeanSwe.LinuxSyscall.TimeRand.Model
 import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Model
+import LeanSwe.NetRelay.Types
+import LeanSwe.NetRelay.Interface
 import LeanSwe.ConnectProxy.Relay
 import LeanSwe.ConnectProxy.SysBridge
 
@@ -141,13 +143,13 @@ structure SysBridgeTarget where
   /-- Non-blocking `recvfrom` loop into `RingBuf`. -/
   recvIntoRing :
     Net.NetOpsM (StateM (HealthySysWorld × SysAuditTrace Nat)) Nat →
-    Nat → Nat → Relay.RingBuf →
-    StateM (HealthySysWorld × SysAuditTrace Nat) (Option (Relay.RingBuf × Bool))
+    Nat → Nat → NetRelay.RingBuf →
+    StateM (HealthySysWorld × SysAuditTrace Nat) (Option (NetRelay.RingBuf × Bool))
   /-- Non-blocking `sendto` loop draining `RingBuf`. -/
   flushRingNonblock :
     Net.NetOpsM (StateM (HealthySysWorld × SysAuditTrace Nat)) Nat →
-    Nat → Nat → Relay.RingBuf →
-    StateM (HealthySysWorld × SysAuditTrace Nat) (Option Relay.RingBuf)
+    Nat → Nat → NetRelay.RingBuf →
+    StateM (HealthySysWorld × SysAuditTrace Nat) (Option NetRelay.RingBuf)
   /-- One non-blocking bidirectional tunnel relay tick (`pendingPrefix`, `c2u`, `u2c`, half-close, peer reset drain). -/
   stepBidirectionalRelay :
     CProxySysOpsM (StateM (HealthySysWorld × SysAuditTrace Nat)) Nat →
@@ -195,8 +197,8 @@ def realBridgeTarget : SysBridgeTarget :=
     stepHandshakeSync := fun sys limits onHead onResolved slot evs cfd hb dl rev now =>
       SysBridge.stepHandshake sys limits onHead onResolved
         (SysBridge.startDnsSync sys limits onResolved) slot evs cfd hb dl rev now
-    recvIntoRing := fun net fd fuel rb => Relay.recvIntoRing net fd fuel rb
-    flushRingNonblock := fun net fd fuel rb => Relay.flushRingNonblock net fd fuel rb
+    recvIntoRing := fun net fd fuel rb => NetRelay.recvIntoRing net fd fuel rb
+    flushRingNonblock := fun net fd fuel rb => NetRelay.flushRingNonblock net fd fuel rb
     stepBidirectionalRelay := fun sys st cRev uRev =>
       Relay.stepBidirectionalRelay sys.net sys.closeFd st cRev uRev
     stepSlotSync := fun sys limits onHead onResolved slot evs cRev uRev nowMs =>

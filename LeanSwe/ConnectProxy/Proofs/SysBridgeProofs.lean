@@ -3,6 +3,8 @@ import LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs
 namespace LeanSwe.ConnectProxy.Proofs
 
 open LeanSwe.LinuxSyscall
+open LeanSwe.NetRelay
+open LeanSwe.NetRelay.Proofs
 open LeanSwe.ConnectProxy
 open LeanSwe.ConnectProxy.Model
 open LeanSwe.ConnectProxy.Relay
@@ -102,8 +104,9 @@ theorem startNextConnectAux_of_eq {dnsJob : Type}
           dsimp only at hn ⊢
           cases sr <;> exact ⟨⟨(wf_iff_parts wx').mpr hn.2.1, hdq, hda, hne, hcf⟩, Or.inr trivial⟩)
         MAX_EINTR_RETRIES (w, tr) ⟨hWf, rfl, rfl, rfl, rfl⟩
-      have hSRun' : (retryEintr MAX_EINTR_RETRIES
-        ((instrumentSysOps sys).net.socket sa.domain .stream { nonblock := true, cloexec := true } 0)).run (w, tr) = (rSock, (w1, tr1)) := hSRun
+      have hSRun' : (retryEintr
+        ((instrumentSysOps sys).net.socket sa.domain .stream { nonblock := true, cloexec := true } 0)
+        MAX_EINTR_RETRIES).run (w, tr) = (rSock, (w1, tr1)) := hSRun
       rw [hSRun'] at hSock; clear hSRun hSRun'
       dsimp only at hSock
       rcases hSock.1 with ⟨hWf1, hDq1, hDa1, hNe1, hCf1⟩
@@ -828,7 +831,7 @@ private theorem closeOptFd_instrumented_laws
     (hRef : RefinesHealthyCProxySys sys)
     (optFd : Option Nat) (w : HealthySysWorld) (tr : SysAuditTrace Nat)
     (hWf : w.wf = true) :
-    let (_, (w', tr')) := (Relay.closeOptFd (instrumentSysOps sys).closeFd optFd).run (w, tr)
+    let (_, (w', tr')) := (NetRelay.closeOptFd (instrumentSysOps sys).closeFd optFd).run (w, tr)
     w'.wf = true ∧
     w'.proxyTable = w.proxyTable ∧
     (∀ x ∈ tr.closedFds.toList, x ∈ tr'.closedFds.toList) ∧
@@ -838,10 +841,10 @@ private theorem closeOptFd_instrumented_laws
       ∀ d, optFd = some d → d ∈ tr'.closedFds.toList ∧ Files.assocGet w'.filesEnv.state.fds d = none) := by
   cases optFd with
   | none =>
-    dsimp only [Relay.closeOptFd, StateT.run, pure, StateT.pure]
+    dsimp only [NetRelay.closeOptFd, StateT.run, pure, StateT.pure]
     exact ⟨hWf, rfl, fun _ h => h, fun _ h => h, fun hNd => ⟨hNd, fun _ h => nomatch h⟩⟩
   | some d =>
-    unfold Relay.closeOptFd
+    unfold NetRelay.closeOptFd NetRelay.Internal.closeOptFd
     have hCl := healthy_closeFd_instrumented_laws sys hRef w tr d hWf
     dsimp only [StateT.run] at hCl ⊢
     rcases hR : (instrumentSysOps sys).closeFd d (w, tr) with ⟨_, wt'⟩
@@ -936,12 +939,12 @@ private theorem healthy_teardownSlot_laws
     dsimp only
     rw [stateT_bind_run, stateT_bind_run]
     have h1 := closeOptFd_instrumented_laws sys hRef st.clientFd? w tr hWf
-    rcases hR1 : (Relay.closeOptFd (instrumentSysOps sys).closeFd st.clientFd?).run (w, tr) with ⟨_, w1, tr1⟩
+    rcases hR1 : (NetRelay.closeOptFd (instrumentSysOps sys).closeFd st.clientFd?).run (w, tr) with ⟨_, w1, tr1⟩
     rw [hR1] at h1
     dsimp only at h1 ⊢
     rw [stateT_bind_run]
     have h2 := closeOptFd_instrumented_laws sys hRef st.upstreamFd? w1 tr1 h1.1
-    rcases hR2 : (Relay.closeOptFd (instrumentSysOps sys).closeFd st.upstreamFd?).run (w1, tr1) with ⟨_, w2, tr2⟩
+    rcases hR2 : (NetRelay.closeOptFd (instrumentSysOps sys).closeFd st.upstreamFd?).run (w1, tr1) with ⟨_, w2, tr2⟩
     rw [hR2] at h2
     dsimp only [stateT_pure_run] at h2 ⊢
     refine ⟨h2.1, h2.2.1.trans h1.2.1, hEmitSz,
@@ -968,7 +971,7 @@ private theorem healthy_teardownSlot_laws
     dsimp only
     rw [stateT_bind_run]
     have h1 := closeOptFd_instrumented_laws sys hRef cfd? w tr hWf
-    rcases hR1 : (Relay.closeOptFd (instrumentSysOps sys).closeFd cfd?).run (w, tr) with ⟨_, w1, tr1⟩
+    rcases hR1 : (NetRelay.closeOptFd (instrumentSysOps sys).closeFd cfd?).run (w, tr) with ⟨_, w1, tr1⟩
     rw [hR1] at h1
     dsimp only [stateT_pure_run] at h1 ⊢
     refine ⟨h1.1, h1.2.1, hEmitSz, h1.2.2.1, h1.2.2.2.1, fun hNd => ?_⟩
@@ -1070,7 +1073,7 @@ private theorem closeFd_openedFds_eq
 private theorem closeOptFd_openedFds_eq
     (sys : CProxySysOpsM (StateM HealthySysWorld) Nat)
     (optFd : Option Nat) (w : HealthySysWorld) (tr : SysAuditTrace Nat) :
-    ((Relay.closeOptFd (instrumentSysOps sys).closeFd optFd).run (w, tr)).2.2.openedFds = tr.openedFds := by
+    ((NetRelay.closeOptFd (instrumentSysOps sys).closeFd optFd).run (w, tr)).2.2.openedFds = tr.openedFds := by
   cases optFd with
   | none => rfl
   | some d => exact closeFd_openedFds_eq sys d w tr
@@ -1104,15 +1107,15 @@ private theorem teardownSlot_openedFds_eq
     unfold Relay.closeRelayBoth
     dsimp only; rw [stateT_bind_run, stateT_bind_run]
     have h1 := closeOptFd_openedFds_eq sys st.clientFd? w tr
-    rcases hR1 : (Relay.closeOptFd (instrumentSysOps sys).closeFd st.clientFd?).run (w, tr) with ⟨_, w1, tr1⟩
+    rcases hR1 : (NetRelay.closeOptFd (instrumentSysOps sys).closeFd st.clientFd?).run (w, tr) with ⟨_, w1, tr1⟩
     rw [hR1] at h1; dsimp only at h1 ⊢; rw [stateT_bind_run]
     have h2 := closeOptFd_openedFds_eq sys st.upstreamFd? w1 tr1
-    rcases hR2 : (Relay.closeOptFd (instrumentSysOps sys).closeFd st.upstreamFd?).run (w1, tr1) with ⟨_, w2, tr2⟩
+    rcases hR2 : (NetRelay.closeOptFd (instrumentSysOps sys).closeFd st.upstreamFd?).run (w1, tr1) with ⟨_, w2, tr2⟩
     rw [hR2] at h2; dsimp only [stateT_pure_run] at h2 ⊢; exact h2.trans h1
   | closingReply cfd? _ _ _ _ _ =>
     dsimp only; rw [stateT_bind_run]
     have h1 := closeOptFd_openedFds_eq sys cfd? w tr
-    rcases hR1 : (Relay.closeOptFd (instrumentSysOps sys).closeFd cfd?).run (w, tr) with ⟨_, w1, tr1⟩
+    rcases hR1 : (NetRelay.closeOptFd (instrumentSysOps sys).closeFd cfd?).run (w, tr) with ⟨_, w1, tr1⟩
     rw [hR1] at h1; dsimp only [stateT_pure_run] at h1 ⊢; exact h1
   | done => rfl
 
@@ -1130,32 +1133,6 @@ private theorem teardownAllSlotsList_openedFds_eq
     rw [hR1] at h1
     dsimp only at h1 ⊢
     exact (teardownAllSlotsList_openedFds_eq sys rest ev1 w1 tr1).trans h1
-
-private theorem retryEintr_invariant {W α : Type}
-    (I : W → Prop)
-    (Post : Except Errno α → W → Prop)
-    (act : StateM W (Except Errno α))
-    (hStep : ∀ w, I w →
-      let (r, w') := act.run w
-      (r = .error Errno.EINTR → I w') ∧ Post r w') :
-    ∀ (fuel : Nat) (w : W), I w →
-      let (r, w') := (retryEintr fuel act).run w
-      Post r w'
-  | 0, w, hI => (hStep w hI).2
-  | fuel + 1, w, hI => by
-    have h0 := hStep w hI
-    dsimp only [retryEintr, StateT.run, bind, StateT.bind, pure, StateT.pure, Id.run] at h0 ⊢
-    rcases hAct : act w with ⟨r0, w1⟩
-    rw [hAct] at h0
-    dsimp only at h0 ⊢
-    rcases r0 with e | v
-    · by_cases hEi : (e == Errno.EINTR) = true
-      · simp only [hEi, ↓reduceIte]
-        exact retryEintr_invariant I Post act hStep fuel w1 (h0.1 (congrArg Except.error (beq_iff_eq.mp hEi)))
-      · have hEiF : (e == Errno.EINTR) = false := Bool.eq_false_iff.mpr hEi
-        simp only [hEiF, Bool.false_eq_true, ↓reduceIte]
-        exact h0.2
-    · exact h0.2
 
 private theorem closeLfdAndReturnErr_of_eq
     (sys : CProxySysOpsM (StateM HealthySysWorld) Nat)
@@ -1303,8 +1280,9 @@ theorem healthy_createListener_instrumented_laws
           exact ⟨(fun hBad => nomatch hBad), fun _ => Nat.le_of_eq (hBud.2 (fun hc => nomatch hc)),
                  ⟨hwx', hn.2.2.1.trans htbl, fun h0 => hn.2.2.2 (hnd h0), hdq, hda, hba, by rw [hop]⟩⟩)
       MAX_EINTR_RETRIES (w₀, tr₀) ⟨hWf₀, rfl, id, rfl, rfl, rfl, rfl⟩
-    have hR1' : (retryEintr MAX_EINTR_RETRIES
-      ((instrumentSysOps sys).net.socket .inet .stream { nonblock := true, cloexec := true } 0)).run (w₀, tr₀) = (r1, (w1, tr1)) := hR1
+    have hR1' : (retryEintr
+      ((instrumentSysOps sys).net.socket .inet .stream { nonblock := true, cloexec := true } 0)
+      MAX_EINTR_RETRIES).run (w₀, tr₀) = (r1, (w1, tr1)) := hR1
     rw [hR1'] at hSock; clear hR1 hR1'
     dsimp only at hSock
     rcases hSock with ⟨⟨hWf1, hTbl1, hNd1, hDq1, hDa1, hBa1, hOp1⟩, hBudLe1, hNoEi1⟩
@@ -1343,7 +1321,7 @@ theorem healthy_createListener_instrumented_laws
             | error e => exact Nat.le_of_eq (hBud.2 (fun hc => by injection hc with he; exact hNe (congrArg Except.error he)))
         )
         MAX_EINTR_RETRIES (w1, tr1) ⟨hWf1, hTbl1, hNd1, rfl⟩
-      have hR2' : (retryEintr MAX_EINTR_RETRIES ((instrumentSysOps sys).net.setsockopt lfd .reuseAddr 1)).run (w1, tr1) = (r2, (w2, tr2)) := hR2
+      have hR2' : (retryEintr ((instrumentSysOps sys).net.setsockopt lfd .reuseAddr 1) MAX_EINTR_RETRIES).run (w1, tr1) = (r2, (w2, tr2)) := hR2
       rw [hR2'] at hSetOpt; clear hR2 hR2'
       dsimp only at hSetOpt
       rcases hSetOpt with ⟨⟨hWf2, hTbl2, hNd2, hTr2⟩, hBudLe2, hNoEi2⟩
@@ -1400,7 +1378,7 @@ theorem healthy_createListener_instrumented_laws
               | ok _ => exact Nat.le_of_eq (hBud.2 (fun hc => nomatch hc))
               | error e => exact Nat.le_of_eq (hBud.2 (fun hc => by injection hc with he; exact hNe (congrArg Except.error he))))
           MAX_EINTR_RETRIES (w2, tr1) ⟨hWf2, hTbl2, hNd2, hDq1, hDa1, fun sa hm => Or.inl (hBa1 ▸ hm), hOp1⟩
-        have hR3' : (retryEintr MAX_EINTR_RETRIES ((instrumentSysOps sys).net.bind lfd bindAddr)).run (w2, tr1) = (r3, (w3, tr3)) := hR3
+        have hR3' : (retryEintr ((instrumentSysOps sys).net.bind lfd bindAddr) MAX_EINTR_RETRIES).run (w2, tr1) = (r3, (w3, tr3)) := hR3
         rw [hR3'] at hBind; clear hR3 hR3'
         dsimp only at hBind
         rcases hBind with ⟨⟨hWf3, hTbl3, hNd3, hDq3, hDa3, hBa3, hOp3⟩, hBudLe3, hNoEi3⟩
@@ -1438,7 +1416,7 @@ theorem healthy_createListener_instrumented_laws
                 | ok _ => exact Nat.le_of_eq (hBud.2 (fun hc => nomatch hc))
                 | error e => exact Nat.le_of_eq (hBud.2 (fun hc => by injection hc with he; exact hNe (congrArg Except.error he))))
             MAX_EINTR_RETRIES (w3, tr3) ⟨hWf3, hTbl3, hNd3, rfl⟩
-          have hR4' : (retryEintr MAX_EINTR_RETRIES ((instrumentSysOps sys).net.listen lfd 128)).run (w3, tr3) = (r4, (w4, tr4)) := hR4
+          have hR4' : (retryEintr ((instrumentSysOps sys).net.listen lfd 128) MAX_EINTR_RETRIES).run (w3, tr3) = (r4, (w4, tr4)) := hR4
           rw [hR4'] at hListen; clear hR4 hR4'
           dsimp only at hListen
           rcases hListen with ⟨⟨hWf4, hTbl4, hNd4, hTr4⟩, hBudLe4, hNoEi4⟩
@@ -1477,7 +1455,7 @@ theorem healthy_createListener_instrumented_laws
                   | ok _ => exact Nat.le_of_eq (hBud.2 (fun hc => nomatch hc))
                   | error e => exact Nat.le_of_eq (hBud.2 (fun hc => by injection hc with he; exact hNe (congrArg Except.error he))))
               MAX_EINTR_RETRIES (w4, tr3) ⟨hWf4, hTbl4, hNd4, rfl⟩
-            have hR5' : (retryEintr MAX_EINTR_RETRIES ((instrumentSysOps sys).net.getsockname lfd)).run (w4, tr3) = (r5, (w5, tr5)) := hR5
+            have hR5' : (retryEintr ((instrumentSysOps sys).net.getsockname lfd) MAX_EINTR_RETRIES).run (w4, tr3) = (r5, (w5, tr5)) := hR5
             rw [hR5'] at hGs; clear hR5 hR5'
             dsimp only at hGs
             rcases hGs with ⟨⟨hWf5, hTbl5, hNd5, hTr5⟩, hBudLe5, hNoEi5⟩
@@ -1555,8 +1533,9 @@ theorem healthy_createListener_instrumented_laws
                         exact ⟨(fun hBad => nomatch hBad), fun _ => Nat.le_of_eq (hBud.2 (fun hc => nomatch hc)),
                                ⟨hwx', hn.2.2.1.trans htbl, fun h0 => hn.2.2.2 (hnd h0), hdq, hda, hba, by rw [hop]⟩⟩)
                     MAX_EINTR_RETRIES (w5, tr3) ⟨hWf5, hTbl5, hNd5, hDq3, hDa3, hBa3, hOp3⟩
-                  have hR6' : (retryEintr MAX_EINTR_RETRIES
-                    ((instrumentSysOps sys).net.socketpair .unix .stream { nonblock := true, cloexec := true })).run (w5, tr3) = (r6, (w6, tr6)) := hR6
+                  have hR6' : (retryEintr
+                    ((instrumentSysOps sys).net.socketpair .unix .stream { nonblock := true, cloexec := true })
+                    MAX_EINTR_RETRIES).run (w5, tr3) = (r6, (w6, tr6)) := hR6
                   rw [hR6'] at hPair; clear hR6 hR6'
                   dsimp only at hPair
                   rcases hPair with ⟨⟨hWf6, hTbl6, hNd6, hDq6, hDa6, hBa6, hOp6⟩, _, hNoEi6⟩

@@ -11,6 +11,8 @@ import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.LinuxSyscall.TimeRand.Interface
 import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Model
+import LeanSwe.NetRelay.Types
+import LeanSwe.NetRelay.Interface
 import LeanSwe.ConnectProxy.Relay
 
 namespace LeanSwe.ConnectProxy.SysBridge
@@ -137,19 +139,6 @@ def findCrlfCrlf (bs : ByteArray) (start : Nat := 0) : Option Nat :=
   else
     findCrlfCrlfAux bs (bs.size - start) start
 
-/-- Convert a `TimeRand.Timespec` reading to non-negative milliseconds. -/
-def timespecToMs (ts : TimeRand.Timespec) : Nat :=
-  Int.toNat ts.sec.toInt * 1000 + ts.nsec.toNat / 1000000
-
-/-- Convert a relative timeout in milliseconds to a valid `Poll.Timespec` (`nsec < 1_000_000_000`). -/
-def msToPollTimespec (ms : Nat) : Poll.Timespec :=
-  let wholeSec := ms / 1000
-  if wholeSec > 2147483647 then
-    { sec := 2147483647, nsec := 0 }
-  else
-    { sec := Int64.ofInt (Int.ofNat wholeSec)
-      nsec := UInt32.ofNat ((ms % 1000) * 1000000) }
-
 /-- Generic OS syscall capability bundle consumed by `LeanSwe.ConnectProxy.SysBridge`. -/
 structure CProxySysOpsM (m : Type → Type) (fd : Type) where
   /-- Curated Linux file descriptor close (`close`). -/
@@ -183,21 +172,11 @@ def CProxySysOpsM.closeFd {m : Type → Type} [Monad m] {fd : Type}
     (sys : CProxySysOpsM m fd) (d : fd) : m Unit :=
   closeSysFdAux sys d 64
 
-/-- Retry `act` up to `fuel` additional times when it returns `.error Errno.EINTR`. -/
-def retryEintr {m : Type → Type} [Monad m] {α : Type} :
-    Nat → m (Except Errno α) → m (Except Errno α)
-  | 0, act => act
-  | fuel + 1, act => do
-    match ← act with
-    | .error e =>
-      if e == Errno.EINTR then retryEintr fuel act else return .error e
-    | .ok v => return .ok v
-
 /-- Query `CLOCK_MONOTONIC` in milliseconds via `sys.timeRand`, falling back to `0` on unexpected error. -/
 def monoNowMs {m : Type → Type} [Monad m] {fd : Type}
     (sys : CProxySysOpsM m fd) : m Nat := do
-  match ← retryEintr MAX_EINTR_RETRIES (sys.timeRand.clock_gettime .monotonic) with
-  | .ok ts => return timespecToMs ts
+  match ← retryEintr (sys.timeRand.clock_gettime .monotonic) MAX_EINTR_RETRIES with
+  | .ok ts => return TimeRand.timespecToMs ts
   | .error _ => return 0
 
 /-- Drain all pending wakeup bytes from non-blocking `wakeR`. -/
@@ -220,27 +199,27 @@ def createListener {m : Type → Type} [Monad m] {fd : Type}
   | .error err => return .error err
   | .ok _ =>
     let reqPort := vcfg.config.listenPort
-    match ← retryEintr MAX_EINTR_RETRIES
-        (sys.net.socket .inet .stream { nonblock := true, cloexec := true } 0) with
+    match ← retryEintr
+        (sys.net.socket .inet .stream { nonblock := true, cloexec := true } 0) MAX_EINTR_RETRIES with
     | .error e => return .error (errnoToProxyError reqPort e)
     | .ok lfd =>
-      match ← retryEintr MAX_EINTR_RETRIES (sys.net.setsockopt lfd .reuseAddr 1) with
+      match ← retryEintr (sys.net.setsockopt lfd .reuseAddr 1) MAX_EINTR_RETRIES with
       | .error e =>
         sys.closeFd lfd
         return .error (errnoToProxyError reqPort e)
       | .ok () =>
         let bindAddr := Net.SockAddr.ipv4 Net.INADDR_LOOPBACK reqPort
-        match ← retryEintr MAX_EINTR_RETRIES (sys.net.bind lfd bindAddr) with
+        match ← retryEintr (sys.net.bind lfd bindAddr) MAX_EINTR_RETRIES with
         | .error e =>
           sys.closeFd lfd
           return .error (errnoToProxyError reqPort e)
         | .ok () =>
-          match ← retryEintr MAX_EINTR_RETRIES (sys.net.listen lfd 128) with
+          match ← retryEintr (sys.net.listen lfd 128) MAX_EINTR_RETRIES with
           | .error e =>
             sys.closeFd lfd
             return .error (errnoToProxyError reqPort e)
           | .ok () =>
-            match ← retryEintr MAX_EINTR_RETRIES (sys.net.getsockname lfd) with
+            match ← retryEintr (sys.net.getsockname lfd) MAX_EINTR_RETRIES with
             | .error e =>
               sys.closeFd lfd
               return .error (errnoToProxyError reqPort e)
@@ -258,8 +237,8 @@ def createListener {m : Type → Type} [Monad m] {fd : Type}
                 sys.closeFd lfd
                 return .error (Model.mapRawErrorPure (.otherError Errno.EINVAL "getsockname returned invalid loopback port"))
               | some boundPort =>
-                match ← retryEintr MAX_EINTR_RETRIES
-                    (sys.net.socketpair .unix .stream { nonblock := true, cloexec := true }) with
+                match ← retryEintr
+                    (sys.net.socketpair .unix .stream { nonblock := true, cloexec := true }) MAX_EINTR_RETRIES with
                 | .error e =>
                   sys.closeFd lfd
                   return .error (errnoToProxyError reqPort e)
@@ -342,13 +321,13 @@ def enterClosingReply {m : Type → Type} [Monad m] {fd dnsJob : Type}
   let closeMs := Nat.min limits.headerTimeoutMs CLOSING_TIMEOUT_MAX_MS
   let deadlineMs := now + closeMs
   let slotCleared := { slot with pipelined := ByteArray.empty }
-  match ← Relay.flushBytesNonblock sys.net clientFd replyBytes MAX_CLOSING_STEPS 0 with
+  match ← NetRelay.flushBytesNonblock sys.net clientFd replyBytes MAX_CLOSING_STEPS 0 with
   | none =>
     sys.closeFd clientFd
     return { slotCleared with phase := .done }
   | some sentOff =>
     if sentOff >= replyBytes.size then
-      if ← Relay.shutdownWrClean sys.net clientFd 16 then
+      if ← NetRelay.shutdownWrClean sys.net clientFd 16 then
         return { slotCleared with
           phase := .closingReply (some clientFd) replyBytes sentOff true 0 deadlineMs }
       else
@@ -391,8 +370,8 @@ def startNextConnectAux {m : Type → Type} [Monad m] {fd dnsJob : Type}
     if h : candIdx < candidates.size then
       let ip := candidates[candIdx]'h
       let sa := ipAddrToDialSockAddr ip port
-      match ← retryEintr MAX_EINTR_RETRIES
-          (sys.net.socket sa.domain .stream { nonblock := true, cloexec := true } 0) with
+      match ← retryEintr
+          (sys.net.socket sa.domain .stream { nonblock := true, cloexec := true } 0) MAX_EINTR_RETRIES with
       | .error e =>
         startNextConnectAux sys limits slot events clientFd host port candidates fuel (candIdx + 1) (some e)
       | .ok ufd =>
@@ -596,7 +575,7 @@ def stepConnecting {m : Type → Type} [Monad m] {fd dnsJob : Type}
     return ({ slot1 with phase := .done, pipelined := ByteArray.empty }, events1)
   else if uRev.pollout || uRev.pollerr || uRev.pollhup || uRev.pollnval then
     let soErr : Errno ← do
-      match ← retryEintr MAX_EINTR_RETRIES (sys.net.getsockopt upstreamFd .error) with
+      match ← retryEintr (sys.net.getsockopt upstreamFd .error) MAX_EINTR_RETRIES with
       | .ok code => pure code
       | .error e => pure e
     if soErr == 0 && uRev.pollout && !uRev.pollerr && !uRev.pollnval then
@@ -643,11 +622,11 @@ def closingSendStep {m : Type → Type} [Monad m] {fd : Type}
     if cRev.pollerr || cRev.pollhup || cRev.pollnval then
       return none
     else if cRev.pollout then
-      match ← Relay.flushBytesNonblock net cfd replyBytes MAX_CLOSING_STEPS replyOff with
+      match ← NetRelay.flushBytesNonblock net cfd replyBytes MAX_CLOSING_STEPS replyOff with
       | none => return none
       | some nextOff =>
         if nextOff >= replyBytes.size then
-          if ← Relay.shutdownWrClean net cfd 16 then
+          if ← NetRelay.shutdownWrClean net cfd 16 then
             return some (nextOff, true)
           else
             return none
@@ -752,7 +731,7 @@ def teardownSlot {m : Type → Type} [Monad m] {fd dnsJob : Type}
   | .relay st =>
     let _ ← Relay.closeRelayBoth sys.closeFd st
   | .closingReply cfd? .. =>
-    Relay.closeOptFd sys.closeFd cfd?
+    NetRelay.closeOptFd sys.closeFd cfd?
   | .done => pure ()
   return events1
 
@@ -992,7 +971,7 @@ def buildPollBatchM {m : Type → Type} [Monad m] {fd dnsJob : Type}
   let initReqs : Array (fd × Poll.PollEvents) := #[(wakeR, { pollin := true }), (listenFd, listenEv)]
   let (reqs, indices, minRem?) ←
     buildPollBatchAux pollDnsReady nowMs slots.toList initReqs (Array.emptyWithCapacity slots.size) initMinRem? dnsWatchFd
-  return (reqs, indices, minRem?.map msToPollTimespec)
+  return (reqs, indices, minRem?.map Poll.msToPollTimespec)
 
 /-- Execute one polymorphic client slot transition after `ppoll` returns `revents`. -/
 def stepSlotM {m : Type → Type} [Monad m] {fd dnsJob : Type}
@@ -1464,7 +1443,7 @@ def startDnsIo
     (mkWakePair : IO (Except Errno (RawFd × RawFd)) :=
       Net.defaultOps.socketpair .unix .stream { nonblock := true, cloexec := true }) :
     IO (ClientSlot RawFd IoDnsJob × Array ConnectEvent) := do
-  match ← retryEintr MAX_EINTR_RETRIES mkWakePair with
+  match ← retryEintr mkWakePair MAX_EINTR_RETRIES with
   | .error e =>
     let msg := s!"dns wakeup socketpair failed: errno {e}"
     let (slot1, events1) :=
@@ -1524,7 +1503,7 @@ def teardownIoLoopState (stateRef : IO.Ref IoLoopState) : IO (Array ConnectEvent
     teardownAllSlotsList defaultIoSysOps cancelDnsJobIo st.slots.toList st.events
   for job in st.dnsTasks do
     cancelDnsJobIo job
-  Relay.closeOptFd defaultIoSysOps.closeFd st.listenFd?
+  NetRelay.closeOptFd defaultIoSysOps.closeFd st.listenFd?
   return finalEvents
 
 /-- Fuel-bounded dedicated `IO` event loop wrapping the verified generic `pollAndStepTickM` step, monitoring both active `.dns` slots and detached in-flight DNS jobs via their private wakeup sockets (`dnsR`). -/
@@ -1713,8 +1692,9 @@ def mkIoRawOps (tableRef : IO.Ref IoProxyTable)
           try
             match wakeW? with
             | some w =>
-              let _ ← retryEintr MAX_EINTR_RETRIES
+              let _ ← retryEintr
                 (Net.defaultOps.sendto w (ByteArray.mk #[1]) { nosignal := true, dontwait := true })
+                MAX_EINTR_RETRIES
             | none => pure ()
             let waitRes ← IO.wait entry.loopTask
             match waitRes with
@@ -1722,8 +1702,8 @@ def mkIoRawOps (tableRef : IO.Ref IoProxyTable)
             | .error err =>
               return .error (Model.mapRawErrorPure (.userError (toString err)))
           finally
-            Relay.closeOptFd defaultIoSysOps.closeFd wakeR?
-            Relay.closeOptFd defaultIoSysOps.closeFd wakeW?
+            NetRelay.closeOptFd defaultIoSysOps.closeFd wakeR?
+            NetRelay.closeOptFd defaultIoSysOps.closeFd wakeW?
             tableRef.modify fun tbl =>
               { tbl with entries := tbl.entries.filter (fun e => e.handleId != proxy.handleId) }
       catch err =>

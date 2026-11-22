@@ -1,6 +1,8 @@
 import Core.NondetTest
 import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Model
+import LeanSwe.NetRelay.Types
+import LeanSwe.NetRelay.Interface
 import LeanSwe.ConnectProxy.Relay
 import LeanSwe.ConnectProxy.SysBridge
 import LeanSwe.ConnectProxy.HealthySys
@@ -389,8 +391,8 @@ example : ¬ Core.AllPass (test_cproxy_healthy_relayByteConservationShortIoAndEi
   have h0 := h Proofs.sampleHealthySys Proofs.sampleHealthySys_refines
     { filesEnv := { state := { LinuxSyscall.Files.FilesState.initial with fds := [] } } }
     rfl 3 4 0 {} ByteArray.empty (Nat.zero_le _)
-  have hCons : ({ buf := ByteArray.mk #[42], off := 0 } : Relay.RingBuf).toList =
-    ({} : Relay.RingBuf).toList ++ (#[] : Array UInt8).toList := h0.2.1.2.1
+  have hCons : ({ buf := ByteArray.mk #[42], off := 0 } : NetRelay.RingBuf).toList =
+    ({} : NetRelay.RingBuf).toList ++ (#[] : Array UInt8).toList := h0.2.1.2.1
   revert hCons
   decide
 
