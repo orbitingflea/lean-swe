@@ -514,7 +514,7 @@ def test_cproxy_healthy_relayByteConservationShortIoAndEintr
   let fuel ← nondet Nat
   let rb ← nondet Relay.RingBuf
   let pipelined ← nondet ByteArray
-  assume (rb.len ≤ Relay.RING_CAP)
+  assume (rb.len ≤ rb.cap)
   let (rxRes, (w₁, tr₁)) := (bridge.recvIntoRing (SysBridge.instrumentSysOps sys).net fd fuel rb).run (w₀, {})
   NondetTest.assert (w₁.wf = true)
   match rxRes with
@@ -522,8 +522,9 @@ def test_cproxy_healthy_relayByteConservationShortIoAndEintr
     NondetTest.assert (∃ e ∈ tr₁.netErrs.toList,
       e = LinuxSyscall.Errno.EBADF ∨ e = LinuxSyscall.Errno.EINVAL ∨ e = LinuxSyscall.Errno.ENOTSOCK)
   | some (rb', eof) =>
-    NondetTest.assert (rb'.len ≤ Relay.RING_CAP ∧ rb'.toList = rb.toList ++ tr₁.recvBytes.toList ∧
-      (w₀.netEnv.eintrBudget + (Relay.RING_CAP - rb.len) ≤ fuel →
+    NondetTest.assert (rb'.len ≤ rb.cap ∧ rb'.toList = rb.toList ++ tr₁.recvBytes.toList ∧
+      rb'.cap = rb.cap ∧
+      (w₀.netEnv.eintrBudget + (rb.cap - rb.len) ≤ fuel →
         rb'.writeAvail = 0 ∨ eof = true ∨ tr₁.netErrs.size > 0))
   let (txRes, (w₂, tr₂)) := (bridge.flushRingNonblock (SysBridge.instrumentSysOps sys).net fd fuel rb).run (w₀, {})
   NondetTest.assert (w₂.wf = true)
@@ -531,7 +532,8 @@ def test_cproxy_healthy_relayByteConservationShortIoAndEintr
   | none =>
     NondetTest.assert (∃ e ∈ tr₂.netErrs.toList, e ≠ LinuxSyscall.Errno.EAGAIN)
   | some rb' =>
-    NondetTest.assert (rb'.len ≤ Relay.RING_CAP ∧ tr₂.sentBytes.toList ++ rb'.toList = rb.toList ∧
+    NondetTest.assert (rb'.len ≤ rb.cap ∧ tr₂.sentBytes.toList ++ rb'.toList = rb.toList ∧
+      rb'.cap = rb.cap ∧
       (w₀.netEnv.eintrBudget + rb.len ≤ fuel →
         rb'.isEmpty = true ∨ LinuxSyscall.Errno.EAGAIN ∈ tr₂.netErrs.toList ∨ tr₂.sawZeroSend = true))
   let (stPipe, (w₃, tr₃)) :=

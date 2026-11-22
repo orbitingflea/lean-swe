@@ -99,8 +99,8 @@ theorem mapPostForkError_kind_and_msg (req : ExecRequest) (pfErr : PostFork.Post
 
 /-- `killTargetOfPgid` never returns `-1` (`kill(-1, sig)` process-wide broadcast is impossible for every `UInt32`). -/
 theorem killTargetOfPgid_ne_neg_one (pgid : UInt32) :
-    SysBridge.killTargetOfPgid pgid ≠ (-1 : Int32) := by
-  unfold SysBridge.killTargetOfPgid
+    LinuxSyscall.Process.killTargetOfPgid pgid ≠ (-1 : Int32) := by
+  unfold LinuxSyscall.Process.killTargetOfPgid
   by_cases h1 : pgid == 1
   · simp [h1]
   · simp only [h1, Bool.false_eq_true, ↓reduceIte]
@@ -148,12 +148,12 @@ private theorem closeOpt_optFdOf {S fd : Type}
     (x : fd) (fdAt : Bool → List fd)
     (hErase : ∀ st, openFds st = fdAt true → openFds ((files.close x).run st).2 = fdAt false)
     (b : Bool) (s : S) (hOpen : openFds s = fdAt b) :
-    let r := (SysBridge.closeOpt files (optFdOf x b)).run s
+    let r := (Files.closeOpt files (optFdOf x b)).run s
     getTbl r.2 = getTbl s ∧ openFds r.2 = fdAt false := by
   cases b
   · exact ⟨rfl, hOpen⟩
   · dsimp only [optFdOf]
-    unfold SysBridge.closeOpt
+    unfold Files.closeOpt
     rw [stateT_bind_eq]
     exact ⟨hCloseT s x, hErase s hOpen⟩
 
@@ -178,11 +178,11 @@ private theorem closeStreamState_pipePrefix {S fd : Type} [DecidableEq fd]
   obtain ⟨hT1, hO1⟩ := closeOpt_optFdOf getTbl openFds files hCloseT inW
     (fun b => pipePrefix errR outR inW bErr bOut b base)
     (fun s0 hs0 => by rw [hCloseO, hs0, pipePrefix_erase_in hEI hOI]) bIn s hOpen
-  let s1 := ((SysBridge.closeOpt files (optFdOf inW bIn)).run s).2
+  let s1 := ((Files.closeOpt files (optFdOf inW bIn)).run s).2
   obtain ⟨hT2, hO2⟩ := closeOpt_optFdOf getTbl openFds files hCloseT outR
     (fun b => pipePrefix errR outR inW bErr b false base)
     (fun s0 hs0 => by rw [hCloseO, hs0, pipePrefix_erase_out hEO]) bOut s1 hO1
-  let s2 := ((SysBridge.closeOpt files (optFdOf outR bOut)).run s1).2
+  let s2 := ((Files.closeOpt files (optFdOf outR bOut)).run s1).2
   obtain ⟨hT3, hO3⟩ := closeOpt_optFdOf getTbl openFds files hCloseT errR
     (fun b => pipePrefix errR outR inW b false false base)
     (fun s0 hs0 => by rw [hCloseO, hs0, pipePrefix_erase_err]) bErr s2 hO2
@@ -193,11 +193,11 @@ private theorem retryEintr_frame {S β α : Type}
     (act : StateM S (Except Errno α))
     (hFrame : ∀ s, proj (act.run s).2 = proj s)
     (fuel : Nat) (s : S) :
-    proj ((SysBridge.retryEintr act fuel).run s).2 = proj s := by
+    proj ((LinuxSyscall.retryEintr act fuel).run s).2 = proj s := by
   induction fuel generalizing s with
   | zero => exact hFrame s
   | succ f ih =>
-    unfold SysBridge.retryEintr
+    unfold LinuxSyscall.retryEintr
     rw [stateT_bind_eq]
     cases hRes : (act.run s).1 with
     | ok v =>
@@ -222,7 +222,7 @@ private theorem retryEintr_pipe2_spec {S fd : Type}
       (∀ rf wf, r.1 = .ok (rf, wf) →
         rf ≠ wf ∧ rf ∉ openFds s ∧ wf ∉ openFds s ∧ openFds r.2 = wf :: rf :: openFds s))
     (fuel : Nat) (s : S) :
-    let r := (SysBridge.retryEintr act fuel).run s
+    let r := (LinuxSyscall.retryEintr act fuel).run s
     getTbl r.2 = getTbl s ∧
     (∀ e, r.1 = .error e → openFds r.2 = openFds s) ∧
     (∀ rf wf, r.1 = .ok (rf, wf) →
@@ -231,7 +231,7 @@ private theorem retryEintr_pipe2_spec {S fd : Type}
   induction fuel generalizing s with
   | zero => exact hPipe s
   | succ f ih =>
-    unfold SysBridge.retryEintr
+    unfold LinuxSyscall.retryEintr
     rw [stateT_bind_eq]
     obtain ⟨hT, hErr, hOk⟩ := hPipe s
     cases hR : (act.run s).1 with
@@ -315,7 +315,7 @@ private theorem searchPathDirs_spec {S β fd : Type}
     rw [stateT_bind_eq]
     have hF1 := retryEintr_frame proj (files.fstatat none pathBytes {})
       (fun st => hStat st none pathBytes {}) eintrFuel s
-    cases hR1 : (SysBridge.retryEintr (files.fstatat none pathBytes {}) eintrFuel).run s with
+    cases hR1 : (LinuxSyscall.retryEintr (files.fstatat none pathBytes {}) eintrFuel).run s with
     | mk r1 s1 =>
       rw [hR1] at hF1
       cases r1 with
@@ -345,7 +345,7 @@ private theorem searchPathDirs_spec {S β fd : Type}
           have hF2 := retryEintr_frame proj
             (files.faccessat none pathBytes { exec := true } { eaccess := true })
             (fun st0 => hAcc st0 none pathBytes { exec := true } { eaccess := true }) eintrFuel s1
-          cases hR2 : (SysBridge.retryEintr (files.faccessat none pathBytes { exec := true } { eaccess := true }) eintrFuel).run s1 with
+          cases hR2 : (LinuxSyscall.retryEintr (files.faccessat none pathBytes { exec := true } { eaccess := true }) eintrFuel).run s1 with
           | mk r2 s2 =>
             rw [hR2] at hF2
             cases r2 with
@@ -417,7 +417,7 @@ private theorem validateWorkingDir_spec {S β fd : Type}
       rw [stateT_bind_eq]
       have hF1 := retryEintr_frame proj (files.fstatat none cwdBytes {})
         (fun st => hStat st none cwdBytes {}) eintrFuel s
-      cases hR1 : (SysBridge.retryEintr (files.fstatat none cwdBytes {}) eintrFuel).run s with
+      cases hR1 : (LinuxSyscall.retryEintr (files.fstatat none cwdBytes {}) eintrFuel).run s with
       | mk r1 s1 =>
         rw [hR1] at hF1
         cases r1 with
@@ -437,7 +437,7 @@ private theorem validateWorkingDir_spec {S β fd : Type}
             have hF2 := retryEintr_frame proj
               (files.faccessat none cwdBytes { exec := true } { eaccess := true })
               (fun st0 => hAcc st0 none cwdBytes { exec := true } { eaccess := true }) eintrFuel s1
-            cases hR2 : (SysBridge.retryEintr (files.faccessat none cwdBytes { exec := true } { eaccess := true }) eintrFuel).run s1 with
+            cases hR2 : (LinuxSyscall.retryEintr (files.faccessat none cwdBytes { exec := true } { eaccess := true }) eintrFuel).run s1 with
             | mk r2 s2 =>
               rw [hR2] at hF2
               cases r2 with
@@ -462,8 +462,8 @@ private theorem foldl_append_size (xs : List ByteArray) (acc : ByteArray) :
 
 /-- `concatChunks chunks cap` has exact byte length equal to the sum of chunk sizes. -/
 theorem concatChunks_size (chunks : Array ByteArray) (cap : Nat) :
-    (SysBridge.concatChunks chunks cap).size = (chunks.toList.map ByteArray.size).sum := by
-  unfold SysBridge.concatChunks
+    (LinuxSyscall.concatChunks chunks cap).size = (chunks.toList.map ByteArray.size).sum := by
+  unfold LinuxSyscall.concatChunks
   rw [foldl_append_size, emptyCap_size, Nat.zero_add]
 
 private theorem monoNowMs_spec {S α : Type}
@@ -471,65 +471,48 @@ private theorem monoNowMs_spec {S α : Type}
     (timeRand : TimeRand.TimeRandOpsM (StateM S))
     (hCg : ∀ s clk, proj ((timeRand.clock_gettime clk).run s).2 = proj s)
     (s : S) :
-    let r := (SysBridge.monoNowMs timeRand).run s
-    proj r.2 = proj s ∧
-    (∀ err, r.1 = .error err →
-      err.message ≠ "" ∧
-      err.kind ≠ .timedOut ∧ err.kind ≠ .outputLimitExceeded ∧ err.kind ≠ .terminatedBySignal) := by
-  dsimp only
-  unfold SysBridge.monoNowMs
+    proj ((TimeRand.monoNowMs timeRand).run s).2 = proj s := by
+  unfold TimeRand.monoNowMs
   rw [stateT_bind_eq]
-  cases hR : ((timeRand.clock_gettime .monotonic).run s).1 with
-  | ok ts =>
-    dsimp only [pure, StateT.pure, StateT.run]
-    exact ⟨hCg s .monotonic, (by intro _ h; cases h)⟩
-  | error e =>
-    dsimp only [pure, StateT.pure, StateT.run]
-    refine ⟨hCg s .monotonic, ?_⟩
-    intro err hEq
-    injection hEq with hE
-    rw [← hE]
-    exact mapErrno_kind_and_msg none "clock_gettime" e
+  cases ((timeRand.clock_gettime .monotonic).run s).1 with
+  | ok _ => exact hCg s .monotonic
+  | error _ => exact hCg s .monotonic
 
 private theorem checkTimedOut_spec {S α : Type}
     (proj : S → α)
     (timeRand : TimeRand.TimeRandOpsM (StateM S))
     (hCg : ∀ s clk, proj ((timeRand.clock_gettime clk).run s).2 = proj s)
     (startMs : Nat) (timeoutMs? : Option Nat) (s : S) :
-    let r := (SysBridge.checkTimedOut timeRand startMs timeoutMs?).run s
+    let r := (TimeRand.checkTimedOut timeRand startMs timeoutMs?).run s
     proj r.2 = proj s ∧
     (timeoutMs? = none → r.1 = .ok (false, 0)) ∧
-    (∀ rem, r.1 = .ok (true, rem) → timeoutMs?.isSome = true) ∧
-    (∀ err, r.1 = .error err →
-      err.message ≠ "" ∧
-      err.kind ≠ .timedOut ∧ err.kind ≠ .outputLimitExceeded ∧ err.kind ≠ .terminatedBySignal) := by
+    (∀ rem, r.1 = .ok (true, rem) → timeoutMs?.isSome = true) := by
   dsimp only
   cases timeoutMs? with
   | none =>
-    dsimp only [SysBridge.checkTimedOut, pure, StateT.pure, StateT.run]
-    exact ⟨rfl, fun _ => rfl, (by intro _ h; cases h), (by intro _ h; cases h)⟩
+    dsimp only [TimeRand.checkTimedOut, pure, StateT.pure, StateT.run]
+    exact ⟨rfl, fun _ => rfl, (by intro _ h; cases h)⟩
   | some timeoutMs =>
-    unfold SysBridge.checkTimedOut
+    unfold TimeRand.checkTimedOut
     rw [stateT_bind_eq]
-    obtain ⟨hF, hErr⟩ := monoNowMs_spec proj timeRand hCg s
-    cases hM : ((SysBridge.monoNowMs timeRand).run s).1 with
-    | error e =>
+    have hF := monoNowMs_spec proj timeRand hCg s
+    cases ((TimeRand.monoNowMs timeRand).run s).1 with
+    | error _ =>
       dsimp only [pure, StateT.pure, StateT.run]
-      exact ⟨hF, (by intro h; cases h), (by intro _ h; cases h),
-        fun err he => hErr err (by injection he with hE; rw [← hE]; exact hM)⟩
-    | ok nowMs =>
+      exact ⟨hF, (by intro h; cases h), (by intro _ h; cases h)⟩
+    | ok _ =>
       dsimp only
       split <;>
         (dsimp only [pure, StateT.pure, StateT.run]
-         exact ⟨hF, (by intro h; cases h), fun _ _ => rfl, (by intro _ h; cases h)⟩)
+         exact ⟨hF, (by intro h; cases h), fun _ _ => rfl⟩)
 
 private theorem sleepMonoMs_frame {S α : Type}
     (proj : S → α)
     (timeRand : TimeRand.TimeRandOpsM (StateM S))
     (hNs : ∀ s clk abs req, proj ((timeRand.clock_nanosleep clk abs req).run s).2 = proj s)
     (ms : Nat) (s : S) :
-    proj ((SysBridge.sleepMonoMs timeRand ms).run s).2 = proj s := by
-  unfold SysBridge.sleepMonoMs
+    proj ((TimeRand.sleepMonoMs timeRand ms).run s).2 = proj s := by
+  unfold TimeRand.sleepMonoMs
   rw [stateT_bind_eq]
   exact hNs s _ _ _
 
@@ -588,13 +571,13 @@ private theorem writeStdinStep_spec {S fd : Type}
       injection hEq with hSub; injection hSub with hN _
       exact ⟨false, hN.symm, hO⟩
     · rw [stateT_bind_eq]
-      obtain ⟨hFcP, _, hTo, hEc⟩ := checkTimedOut_spec proj timeRand hCgP startMs timeoutMs? s
-      have hFcT : getTbl ((SysBridge.checkTimedOut timeRand startMs timeoutMs?).run s).2 = getTbl s :=
+      obtain ⟨hFcP, _, hTo⟩ := checkTimedOut_spec proj timeRand hCgP startMs timeoutMs? s
+      have hFcT : getTbl ((TimeRand.checkTimedOut timeRand startMs timeoutMs?).run s).2 = getTbl s :=
         congrArg Prod.fst hFcP
-      have hFcO : openFds ((SysBridge.checkTimedOut timeRand startMs timeoutMs?).run s).2 = fdAt true :=
+      have hFcO : openFds ((TimeRand.checkTimedOut timeRand startMs timeoutMs?).run s).2 = fdAt true :=
         (congrArg Prod.snd hFcP).trans hOpen
-      let s1 := ((SysBridge.checkTimedOut timeRand startMs timeoutMs?).run s).2
-      cases hCt : ((SysBridge.checkTimedOut timeRand startMs timeoutMs?).run s).1 with
+      let s1 := ((TimeRand.checkTimedOut timeRand startMs timeoutMs?).run s).2
+      cases hCt : ((TimeRand.checkTimedOut timeRand startMs timeoutMs?).run s).1 with
       | error e =>
         dsimp only
         rw [stateT_bind_eq]
@@ -604,7 +587,7 @@ private theorem writeStdinStep_spec {S fd : Type}
         intro err hEq
         injection hEq with hE
         rw [← hE]
-        exact ⟨hO, hEc e hCt⟩
+        exact ⟨hO, mapErrno_kind_and_msg none "clock_gettime" e⟩
       | ok pair =>
         rcases pair with ⟨isTo, rem⟩
         cases isTo
@@ -717,13 +700,13 @@ private theorem drainPipeStep_spec {S fd : Type}
       subst hCh hLen
       exact ⟨⟨true, hFd.symm, hOpen⟩, hSum, hCap⟩
     · rw [stateT_bind_eq]
-      obtain ⟨hFcP, _, hTo, hEc⟩ := checkTimedOut_spec proj timeRand hCgP startMs timeoutMs? s
-      have hFcT : getTbl ((SysBridge.checkTimedOut timeRand startMs timeoutMs?).run s).2 = getTbl s :=
+      obtain ⟨hFcP, _, hTo⟩ := checkTimedOut_spec proj timeRand hCgP startMs timeoutMs? s
+      have hFcT : getTbl ((TimeRand.checkTimedOut timeRand startMs timeoutMs?).run s).2 = getTbl s :=
         congrArg Prod.fst hFcP
-      have hFcO : openFds ((SysBridge.checkTimedOut timeRand startMs timeoutMs?).run s).2 = fdAt true :=
+      have hFcO : openFds ((TimeRand.checkTimedOut timeRand startMs timeoutMs?).run s).2 = fdAt true :=
         (congrArg Prod.snd hFcP).trans hOpen
-      let s1 := ((SysBridge.checkTimedOut timeRand startMs timeoutMs?).run s).2
-      cases hCt : ((SysBridge.checkTimedOut timeRand startMs timeoutMs?).run s).1 with
+      let s1 := ((TimeRand.checkTimedOut timeRand startMs timeoutMs?).run s).2
+      cases hCt : ((TimeRand.checkTimedOut timeRand startMs timeoutMs?).run s).1 with
       | error e =>
         dsimp only
         rw [stateT_bind_eq]
@@ -734,7 +717,7 @@ private theorem drainPipeStep_spec {S fd : Type}
         intro err hEq
         injection hEq with hE
         rw [← hE]
-        exact ⟨hO, hEc e hCt⟩
+        exact ⟨hO, mapErrno_kind_and_msg none "clock_gettime" e⟩
       | ok pair =>
         rcases pair with ⟨isTo, rem⟩
         cases isTo
@@ -923,14 +906,14 @@ private theorem streamPipesLoop_spec {S fd : Type} [DecidableEq fd]
       rw [← hO1, ← hE1, concatChunks_size, concatChunks_size, hOutSum, hErrSum]
       exact hCap lim hLim
     · rw [stateT_bind_eq]
-      obtain ⟨hFcP, _, hTo, hEc⟩ := checkTimedOut_spec proj timeRand hCgP startMs timeoutMs? s
-      have hFcT : getTbl ((SysBridge.checkTimedOut timeRand startMs timeoutMs?).run s).2 = getTbl s :=
+      obtain ⟨hFcP, _, hTo⟩ := checkTimedOut_spec proj timeRand hCgP startMs timeoutMs? s
+      have hFcT : getTbl ((TimeRand.checkTimedOut timeRand startMs timeoutMs?).run s).2 = getTbl s :=
         congrArg Prod.fst hFcP
-      have hFcO : openFds ((SysBridge.checkTimedOut timeRand startMs timeoutMs?).run s).2 =
+      have hFcO : openFds ((TimeRand.checkTimedOut timeRand startMs timeoutMs?).run s).2 =
           pipePrefix errR outR inW bErr bOut bIn base :=
         (congrArg Prod.snd hFcP).trans hOpen
-      let s1 := ((SysBridge.checkTimedOut timeRand startMs timeoutMs?).run s).2
-      cases hCt : ((SysBridge.checkTimedOut timeRand startMs timeoutMs?).run s).1 with
+      let s1 := ((TimeRand.checkTimedOut timeRand startMs timeoutMs?).run s).2
+      cases hCt : ((TimeRand.checkTimedOut timeRand startMs timeoutMs?).run s).1 with
       | error e =>
         dsimp only
         rw [stateT_bind_eq]
@@ -942,14 +925,14 @@ private theorem streamPipesLoop_spec {S fd : Type} [DecidableEq fd]
         intro err hEq
         injection hEq with hE
         rw [← hE]
-        exact hEc e hCt
+        exact mapErrno_kind_and_msg none "clock_gettime" e
       | ok pair =>
         rcases pair with ⟨isTo, remMs⟩
         cases isTo
         · dsimp only
           rw [stateT_bind_eq]
           let pollTimeout? : Option Poll.Timespec :=
-            timeoutMs?.map fun _ => SysBridge.msToPollTimespec remMs
+            timeoutMs?.map fun _ => Poll.msToPollTimespec remMs
           let pollRun := (poll.ppoll (SysBridge.buildPollEntries st) pollTimeout?).run s1
           have hPollFrame := hPoll s1 (SysBridge.buildPollEntries st) pollTimeout?
           have hFpT : getTbl pollRun.2 = getTbl s := hPollFrame.1.trans hFcT
@@ -1044,7 +1027,7 @@ private theorem streamPipesLoop_spec {S fd : Type} [DecidableEq fd]
                 obtain ⟨hTOut, hOOut⟩ := closeOpt_optFdOf getTbl openFds files hCloseT outR
                   (fun b => pipePrefix errR outR inW bErr b false base)
                   (fun s0 hs0 => by rw [hCloseO, hs0, pipePrefix_erase_out hEO]) bOut s2 hOs2
-                let s2a := ((SysBridge.closeOpt files (optFdOf outR bOut)).run s2).2
+                let s2a := ((Files.closeOpt files (optFdOf outR bOut)).run s2).2
                 obtain ⟨hTErr, hOErr⟩ := closeOpt_optFdOf getTbl openFds files hCloseT errR
                   (fun b => pipePrefix errR outR inW b false false base)
                   (fun s0 hs0 => by rw [hCloseO, hs0, pipePrefix_erase_err]) bErr s2a hOOut
@@ -1105,8 +1088,8 @@ private theorem streamPipesLoop_spec {S fd : Type} [DecidableEq fd]
                   have hCloseInAndErr : ∀ st0,
                       openFds st0 = pipePrefix errR outR inW bErr false bIn' base →
                       getTbl st0 = getTbl s →
-                      let rEnd := ((SysBridge.closeOpt files st.errFd?).run
-                        ((SysBridge.closeOpt files inFdNext?).run st0).2)
+                      let rEnd := ((Files.closeOpt files st.errFd?).run
+                        ((Files.closeOpt files inFdNext?).run st0).2)
                       getTbl rEnd.2 = getTbl s ∧ openFds rEnd.2 = base := by
                     intro st0 hO0 hT0
                     rw [hInNext, hErr]
@@ -1207,8 +1190,8 @@ private theorem streamPipesLoop_spec {S fd : Type} [DecidableEq fd]
                     have hCloseInAndOut : ∀ st0,
                         openFds st0 = pipePrefix errR outR inW false bOut' bIn' base →
                         getTbl st0 = getTbl s →
-                        let rEnd := ((SysBridge.closeOpt files outFdNext?).run
-                          ((SysBridge.closeOpt files inFdNext?).run st0).2)
+                        let rEnd := ((Files.closeOpt files outFdNext?).run
+                          ((Files.closeOpt files inFdNext?).run st0).2)
                         getTbl rEnd.2 = getTbl s ∧ openFds rEnd.2 = base := by
                       intro st0 hO0 hT0
                       rw [hInNext, hOutNext]
@@ -1409,20 +1392,21 @@ private theorem waitTimedLoop_spec {S β fd : Type}
       | stillRunning =>
         dsimp only
         rw [stateT_bind_eq]
-        obtain ⟨hFc, _, _, hEc⟩ := checkTimedOut_spec proj timeRand hCg startMs (some timeoutMs) s1
-        let s2 := ((SysBridge.checkTimedOut timeRand startMs (some timeoutMs)).run s1).2
-        cases hCt : ((SysBridge.checkTimedOut timeRand startMs (some timeoutMs)).run s1).1 with
+        obtain ⟨hFc, _, _⟩ := checkTimedOut_spec proj timeRand hCg startMs (some timeoutMs) s1
+        let s2 := ((TimeRand.checkTimedOut timeRand startMs (some timeoutMs)).run s1).2
+        cases hCt : ((TimeRand.checkTimedOut timeRand startMs (some timeoutMs)).run s1).1 with
         | error e =>
           dsimp only [pure, StateT.pure, StateT.run]
           refine ⟨hFc.trans hFw, (by intro _ _ h; cases h), (by intro _ _ _ h; cases h), ?_⟩
-          intro err hEq; injection hEq with hE; rw [← hE]; exact hEc e hCt
+          intro err hEq; injection hEq with hE; rw [← hE]
+          exact mapErrno_kind_and_msg none "clock_gettime" e
         | ok pair =>
           rcases pair with ⟨isTo, remMs⟩
           cases isTo
           · dsimp only
             rw [stateT_bind_eq]
             have hFs := sleepMonoMs_frame proj timeRand hNs (Nat.min remMs 5) s2
-            obtain ⟨hFi, hEx, hNoLim, hEi⟩ := ih ((SysBridge.sleepMonoMs timeRand (Nat.min remMs 5)).run s2).2
+            obtain ⟨hFi, hEx, hNoLim, hEi⟩ := ih ((TimeRand.sleepMonoMs timeRand (Nat.min remMs 5)).run s2).2
             exact ⟨hFi.trans (hFs.trans (hFc.trans hFw)), hEx, hNoLim, hEi⟩
           · dsimp only [pure, StateT.pure, StateT.run]
             exact ⟨hFc.trans hFw, (by intro _ _ h; cases h), (by intro _ _ _ h; cases h), (by intro _ h; cases h)⟩
@@ -1473,7 +1457,7 @@ private theorem killGraceProbeLoop_frame {S β fd : Type}
     unfold SysBridge.killGraceProbeLoop
     rw [stateT_bind_eq, stateT_bind_eq]
     have hFs := sleepMonoMs_frame proj timeRand hNs 5 s
-    let s1 := ((SysBridge.sleepMonoMs timeRand 5).run s).2
+    let s1 := ((TimeRand.sleepMonoMs timeRand 5).run s).2
     have hFk := hKill s1 target .sigzero
     let s2 := ((proc.kill target .sigzero).run s1).2
     cases ((proc.kill target .sigzero).run s1).1 with
@@ -1509,11 +1493,11 @@ private theorem killProcessGroupPure_frame {S β fd : Type}
     split
     · rfl
     · rw [stateT_bind_eq]
-      let target := SysBridge.killTargetOfPgid pgid
+      let target := LinuxSyscall.Process.killTargetOfPgid pgid
       have hF1 := retryEintr_frame proj (deps.proc.kill target .sigterm)
         (fun st => hKill st target .sigterm) eintrFuel s
-      let s1 := ((SysBridge.retryEintr (deps.proc.kill target .sigterm) eintrFuel).run s).2
-      cases ((SysBridge.retryEintr (deps.proc.kill target .sigterm) eintrFuel).run s).1 with
+      let s1 := ((LinuxSyscall.retryEintr (deps.proc.kill target .sigterm) eintrFuel).run s).2
+      cases ((LinuxSyscall.retryEintr (deps.proc.kill target .sigterm) eintrFuel).run s).1 with
       | error e =>
         dsimp only
         split <;> exact hF1
@@ -1529,52 +1513,32 @@ private theorem killProcessGroupPure_frame {S β fd : Type}
           rw [stateT_bind_eq]
           have hF2 := retryEintr_frame proj (deps.proc.kill target .sigkill)
             (fun st => hKill st target .sigkill) eintrFuel s2
-          cases ((SysBridge.retryEintr (deps.proc.kill target .sigkill) eintrFuel).run s2).1 with
+          cases ((LinuxSyscall.retryEintr (deps.proc.kill target .sigkill) eintrFuel).run s2).1 with
           | error e =>
             dsimp only
             split <;> exact hF2.trans (hFg.trans hF1)
           | ok _ =>
             exact hF2.trans (hFg.trans hF1)
 
-private theorem reapWaitLoop_spec {S β fd : Type}
+private theorem reapWaitLoop_frame {S β fd : Type}
     (proj : S → β)
     (proc : LinuxSyscall.Process.ProcessOpsM (StateM S) fd)
     (hWait : ∀ s pid fl, proj ((proc.waitpid pid fl).run s).2 = proj s)
     (pid : Int32) (fuel : Nat) (s : S) :
-    let r := (SysBridge.reapWaitLoop proc pid fuel).run s
-    proj r.2 = proj s ∧
-    (∀ err, r.1 = .error err →
-      err.kind ≠ .timedOut ∧ err.kind ≠ .outputLimitExceeded ∧ err.kind ≠ .terminatedBySignal) := by
-  dsimp only
+    proj ((LinuxSyscall.Process.waitpidReapLoop proc pid fuel).run s).2 = proj s := by
   induction fuel generalizing s with
-  | zero =>
-    unfold SysBridge.reapWaitLoop
-    dsimp only [pure, StateT.pure, StateT.run]
-    refine ⟨rfl, ?_⟩
-    intro err hEq; injection hEq with hE; rw [← hE]
-    refine ⟨?_, ?_, ?_⟩ <;> simp [SysBridge.mapRawError]
+  | zero => rfl
   | succ f ih =>
-    unfold SysBridge.reapWaitLoop
+    unfold LinuxSyscall.Process.waitpidReapLoop
     rw [stateT_bind_eq]
     have hFw := hWait s pid {}
-    let s1 := ((proc.waitpid pid {}).run s).2
     cases ((proc.waitpid pid {}).run s).1 with
-    | ok _ =>
-      dsimp only [pure, StateT.pure, StateT.run]
-      exact ⟨hFw, (by intro _ h; cases h)⟩
-    | error e =>
+    | ok _ => exact hFw
+    | error _ =>
       dsimp only
       split
-      · obtain ⟨hFi, hEi⟩ := ih s1
-        exact ⟨hFi.trans hFw, hEi⟩
-      · split
-        · dsimp only [pure, StateT.pure, StateT.run]
-          exact ⟨hFw, (by intro _ h; cases h)⟩
-        · dsimp only [pure, StateT.pure, StateT.run]
-          refine ⟨hFw, ?_⟩
-          intro err hEq; injection hEq with hE; rw [← hE]
-          have hM := mapErrno_kind_and_msg none "waitpid" e
-          exact ⟨hM.2.1, hM.2.2.1, hM.2.2.2⟩
+      · exact (ih _).trans hFw
+      · split <;> exact hFw
 
 private theorem reapPure_head_slot_none_spec {S fd : Type}
     (getTbl : S → ProcTableState fd)
@@ -1614,16 +1578,35 @@ private theorem reapPure_head_slot_none_spec {S fd : Type}
   have hGs1 : getTbl s1 = { nextId := nextId, slots := rest } := hGetSet s _
   have hOs1 : openFds s1 = openFds s := hOpenSet s _
   rw [hFdsNone.1, hFdsNone.2.1, hFdsNone.2.2]
-  dsimp only [SysBridge.closeOpt]
+  dsimp only [Files.closeOpt]
   rw [stateT_bind_eq, stateT_bind_eq, stateT_bind_eq]
   dsimp only [pure, StateT.pure, StateT.run]
   split
-  · obtain ⟨hFrP, hEr⟩ := reapWaitLoop_spec proj deps.proc hWaitP slot.pid.toInt32 eintrFuel s1
-    have hFrT : getTbl ((SysBridge.reapWaitLoop deps.proc slot.pid.toInt32 eintrFuel).run s1).2 =
-        { nextId := nextId, slots := rest } := (congrArg Prod.fst hFrP).trans hGs1
-    have hFrO : openFds ((SysBridge.reapWaitLoop deps.proc slot.pid.toInt32 eintrFuel).run s1).2 =
-        openFds s := (congrArg Prod.snd hFrP).trans hOs1
-    exact ⟨congrArg (fun t => t.slots.length) hFrT, hFrO, hEr⟩
+  · have hFrP := reapWaitLoop_frame proj deps.proc hWaitP slot.pid.toInt32 eintrFuel s1
+    dsimp only [StateT.run] at hFrP
+    rcases hW : LinuxSyscall.Process.waitpidReapLoop deps.proc slot.pid.toInt32 eintrFuel s1 with ⟨wRes, sW⟩
+    rw [hW] at hFrP
+    have hFrT : getTbl sW = { nextId := nextId, slots := rest } := (congrArg Prod.fst hFrP).trans hGs1
+    have hFrO : openFds sW = openFds s := (congrArg Prod.snd hFrP).trans hOs1
+    dsimp only [bind, StateT.bind, StateT.run]
+    change _ ∧ _ ∧ _
+    have hW' : LinuxSyscall.Process.waitpidReapLoop deps.proc slot.pid.toInt32 eintrFuel
+        (setTbl s { nextId := nextId, slots := rest }) = (wRes, sW) := hW
+    rw [hW']
+    cases wRes with
+    | ok _ =>
+      exact ⟨congrArg (fun t => t.slots.length) hFrT, hFrO, (by intro _ h; cases h)⟩
+    | error oe =>
+      cases oe with
+      | none =>
+        refine ⟨congrArg (fun t => t.slots.length) hFrT, hFrO, ?_⟩
+        intro err hEq; injection hEq with hE; rw [← hE]
+        refine ⟨?_, ?_, ?_⟩ <;> simp [SysBridge.mapRawError]
+      | some e =>
+        refine ⟨congrArg (fun t => t.slots.length) hFrT, hFrO, ?_⟩
+        intro err hEq; injection hEq with hE; rw [← hE]
+        have hM := mapErrno_kind_and_msg none "waitpid" e
+        exact ⟨hM.2.1, hM.2.2.1, hM.2.2.2⟩
   · dsimp only [pure, StateT.pure, StateT.run]
     exact ⟨congrArg (fun t => t.slots.length) hGs1, hOs1, (by intro _ h; cases h)⟩
 
@@ -1687,10 +1670,10 @@ theorem mkRawOpsM_satisfies_RawProcessLaws {S fd : Type} [DecidableEq fd]
   have hCloseO : ∀ s h, openFds ((deps.files.close h).run s).2 = (openFds s).erase h :=
     fun s h => (hDeps.close_frame s h).2.1
   have hCloseSome : ∀ (x : fd) (st : S),
-      let r := (SysBridge.closeOpt deps.files (some x)).run st
+      let r := (Files.closeOpt deps.files (some x)).run st
       getTbl r.2 = getTbl st ∧ openFds r.2 = (openFds st).erase x := by
     intro x st
-    unfold SysBridge.closeOpt
+    unfold Files.closeOpt
     rw [stateT_bind_eq]
     exact ⟨hCloseT st x, hCloseO st x⟩
   have hReadTO : ∀ s h c, getTbl ((deps.files.read h c).run s).2 = getTbl s ∧
@@ -1724,7 +1707,7 @@ theorem mkRawOpsM_satisfies_RawProcessLaws {S fd : Type} [DecidableEq fd]
   have hNsP : ∀ s clk abs r, proj ((deps.timeRand.clock_nanosleep clk abs r).run s).2 = proj s :=
     fun s clk abs r => Prod.ext (hNsTO s clk abs r).1 (hNsTO s clk abs r).2
   have hPipeRetry : ∀ s,
-      let r := (SysBridge.retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel).run s
+      let r := (LinuxSyscall.retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel).run s
       getTbl r.2 = getTbl s ∧
       (∀ e, r.1 = .error e → openFds r.2 = openFds s) ∧
       (∀ rf wf, r.1 = .ok (rf, wf) →
@@ -1824,9 +1807,9 @@ theorem mkRawOpsM_satisfies_RawProcessLaws {S fd : Type} [DecidableEq fd]
               refine ⟨hFs2, hOs2, mapRawError_message_ne_empty _, ?_, ?_, ?_⟩ <;> simp [SysBridge.mapRawError]
             · rw [stateT_bind_eq]
               obtain ⟨hTp1, hEp1, hOkp1⟩ := hPipeRetry s2
-              let s3 := ((SysBridge.retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel).run s2).2
+              let s3 := ((LinuxSyscall.retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel).run s2).2
               have hFs3 : getTbl s3 = getTbl s₀ := hTp1.trans hFs2
-              cases hP1 : ((SysBridge.retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel).run s2).1 with
+              cases hP1 : ((LinuxSyscall.retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel).run s2).1 with
               | error e1 =>
                 dsimp only [pure, StateT.pure, StateT.run]
                 refine ⟨?_, (by intro _ h; cases h)⟩
@@ -1839,9 +1822,9 @@ theorem mkRawOpsM_satisfies_RawProcessLaws {S fd : Type} [DecidableEq fd]
                 dsimp only
                 rw [stateT_bind_eq]
                 obtain ⟨hTp2, hEp2, hOkp2⟩ := hPipeRetry s3
-                let s4 := ((SysBridge.retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel).run s3).2
+                let s4 := ((LinuxSyscall.retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel).run s3).2
                 have hFs4 : getTbl s4 = getTbl s₀ := hTp2.trans hFs3
-                cases hP2 : ((SysBridge.retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel).run s3).1 with
+                cases hP2 : ((LinuxSyscall.retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel).run s3).1 with
                 | error e2 =>
                   dsimp only
                   rw [stateT_bind_eq, stateT_bind_eq]
@@ -1849,8 +1832,8 @@ theorem mkRawOpsM_satisfies_RawProcessLaws {S fd : Type} [DecidableEq fd]
                   have hOs4 : openFds s4 = inW :: inR :: openFds s₀ := (hEp2 e2 hP2).trans hOp1
                   obtain ⟨hTc1, hOc1⟩ := hCloseSome inR s4
                   obtain ⟨hTc2, hOc2⟩ := hCloseSome inW _
-                  have hOEnd : openFds ((SysBridge.closeOpt deps.files (some inW)).run
-                      ((SysBridge.closeOpt deps.files (some inR)).run s4).2).2 = openFds s₀ := by
+                  have hOEnd : openFds ((Files.closeOpt deps.files (some inW)).run
+                      ((Files.closeOpt deps.files (some inR)).run s4).2).2 = openFds s₀ := by
                     rw [hOc2, hOc1, hOs4, erase_two_fresh hNe1]
                   refine ⟨?_, (by intro _ h; cases h)⟩
                   intro err hEq; injection hEq with hE; subst hE
@@ -1862,9 +1845,9 @@ theorem mkRawOpsM_satisfies_RawProcessLaws {S fd : Type} [DecidableEq fd]
                   dsimp only
                   rw [stateT_bind_eq]
                   obtain ⟨hTp3, hEp3, hOkp3⟩ := hPipeRetry s4
-                  let s5 := ((SysBridge.retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel).run s4).2
+                  let s5 := ((LinuxSyscall.retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel).run s4).2
                   have hFs5 : getTbl s5 = getTbl s₀ := hTp3.trans hFs4
-                  cases hP3 : ((SysBridge.retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel).run s4).1 with
+                  cases hP3 : ((LinuxSyscall.retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel).run s4).1 with
                   | error e3 =>
                     dsimp only
                     rw [stateT_bind_eq, stateT_bind_eq, stateT_bind_eq, stateT_bind_eq]
@@ -1874,10 +1857,10 @@ theorem mkRawOpsM_satisfies_RawProcessLaws {S fd : Type} [DecidableEq fd]
                     obtain ⟨hTc2, hOc2⟩ := hCloseSome inW _
                     obtain ⟨hTc3, hOc3⟩ := hCloseSome outR _
                     obtain ⟨hTc4, hOc4⟩ := hCloseSome outW _
-                    have hOEnd : openFds ((SysBridge.closeOpt deps.files (some outW)).run
-                        ((SysBridge.closeOpt deps.files (some outR)).run
-                          ((SysBridge.closeOpt deps.files (some inW)).run
-                            ((SysBridge.closeOpt deps.files (some inR)).run s5).2).2).2).2 = openFds s₀ := by
+                    have hOEnd : openFds ((Files.closeOpt deps.files (some outW)).run
+                        ((Files.closeOpt deps.files (some outR)).run
+                          ((Files.closeOpt deps.files (some inW)).run
+                            ((Files.closeOpt deps.files (some inR)).run s5).2).2).2).2 = openFds s₀ := by
                       rw [hOc4, hOc3, hOc2, hOc1, hOs5, erase_four_fresh hNe1 hNe2 hNr2 hNw2]
                     refine ⟨?_, (by intro _ h; cases h)⟩
                     intro err hEq; injection hEq with hE; subst hE
@@ -1906,9 +1889,9 @@ theorem mkRawOpsM_satisfies_RawProcessLaws {S fd : Type} [DecidableEq fd]
                     obtain ⟨hTcC1, hOcC1⟩ := hCloseSome inR spf.2
                     obtain ⟨hTcC2, hOcC2⟩ := hCloseSome outW _
                     obtain ⟨hTcC3, hOcC3⟩ := hCloseSome errW _
-                    let s6 := ((SysBridge.closeOpt deps.files (some errW)).run
-                      ((SysBridge.closeOpt deps.files (some outW)).run
-                        ((SysBridge.closeOpt deps.files (some inR)).run spf.2).2).2).2
+                    let s6 := ((Files.closeOpt deps.files (some errW)).run
+                      ((Files.closeOpt deps.files (some outW)).run
+                        ((Files.closeOpt deps.files (some inR)).run spf.2).2).2).2
                     have hFcChild : getTbl s6 = getTbl s₀ :=
                       hTcC3.trans (hTcC2.trans (hTcC1.trans (hFpfT.trans hFs5)))
                     obtain ⟨hChildErase, hEO, hEI, hOI⟩ :=
@@ -1924,9 +1907,9 @@ theorem mkRawOpsM_satisfies_RawProcessLaws {S fd : Type} [DecidableEq fd]
                       obtain ⟨hTcP1, hOcP1⟩ := hCloseSome inW s6
                       obtain ⟨hTcP2, hOcP2⟩ := hCloseSome outR _
                       obtain ⟨hTcP3, hOcP3⟩ := hCloseSome errR _
-                      have hOPar : openFds ((SysBridge.closeOpt deps.files (some errR)).run
-                          ((SysBridge.closeOpt deps.files (some outR)).run
-                            ((SysBridge.closeOpt deps.files (some inW)).run s6).2).2).2 = openFds s₀ := by
+                      have hOPar : openFds ((Files.closeOpt deps.files (some errR)).run
+                          ((Files.closeOpt deps.files (some outR)).run
+                            ((Files.closeOpt deps.files (some inW)).run s6).2).2).2 = openFds s₀ := by
                         rw [hOcP3, hOcP2, hOcP1, hOcChild, erase_parent_ends_three hEO hEI hOI]
                       refine ⟨?_, (by intro _ h; cases h)⟩
                       intro err hEq; injection hEq with hE; subst hE
@@ -1935,16 +1918,16 @@ theorem mkRawOpsM_satisfies_RawProcessLaws {S fd : Type} [DecidableEq fd]
                     | ok child =>
                       dsimp only
                       let rawPgid := child.pgid.getD child.pid
-                      by_cases hBadPid : (child.pid == 0 || child.pid > MAX_LINUX_PID || rawPgid == 0 || rawPgid > MAX_LINUX_PID) = true
+                      by_cases hBadPid : (child.pid == 0 || child.pid > LinuxSyscall.Process.MAX_LINUX_PID || rawPgid == 0 || rawPgid > LinuxSyscall.Process.MAX_LINUX_PID) = true
                       · rw [ite_eq_left hBadPid]
                         rw [stateT_bind_eq, stateT_bind_eq, stateT_bind_eq]
                         dsimp only [pure, StateT.pure, StateT.run]
                         obtain ⟨hTcP1, hOcP1⟩ := hCloseSome inW s6
                         obtain ⟨hTcP2, hOcP2⟩ := hCloseSome outR _
                         obtain ⟨hTcP3, hOcP3⟩ := hCloseSome errR _
-                        have hOPar : openFds ((SysBridge.closeOpt deps.files (some errR)).run
-                            ((SysBridge.closeOpt deps.files (some outR)).run
-                              ((SysBridge.closeOpt deps.files (some inW)).run s6).2).2).2 = openFds s₀ := by
+                        have hOPar : openFds ((Files.closeOpt deps.files (some errR)).run
+                            ((Files.closeOpt deps.files (some outR)).run
+                              ((Files.closeOpt deps.files (some inW)).run s6).2).2).2 = openFds s₀ := by
                           rw [hOcP3, hOcP2, hOcP1, hOcChild, erase_parent_ends_three hEO hEI hOI]
                         refine ⟨?_, (by intro _ h; cases h)⟩
                         intro err hEq; injection hEq with hE; rw [← hE]
@@ -2056,7 +2039,7 @@ theorem mkRawOpsM_satisfies_RawProcessLaws {S fd : Type} [DecidableEq fd]
       · obtain ⟨hTi, hOi⟩ := closeOpt_optFdOf getTbl openFds deps.files hCloseT inW
           (fun b => pipePrefix errR outR inW true true b (openFds s₀))
           (fun sx hsx => by rw [hCloseO, hsx, pipePrefix_erase_in hEI hOI]) true s₂ hOpen₂
-        refine ⟨false, none, ((SysBridge.closeOpt deps.files (optFdOf inW true)).run s₂).2,
+        refine ⟨false, none, ((Files.closeOpt deps.files (optFdOf inW true)).run s₂).2,
           ?_, hTi, rfl, hOi⟩
         rw [stateT_bind_eq]; rfl
       · dsimp only [optFdOf]
@@ -2068,10 +2051,10 @@ theorem mkRawOpsM_satisfies_RawProcessLaws {S fd : Type} [DecidableEq fd]
     dsimp only
     have hSetupOut :
         ∃ s₄,
-          (SysBridge.setNonblockingOpt deps.files slot.stdoutFd?).run s₃ = ((), s₄) ∧
+          (Files.setNonblockingOpt deps.files slot.stdoutFd?).run s₃ = ((), s₄) ∧
           getTbl s₄ = getTbl s₂ ∧
           openFds s₄ = pipePrefix errR outR inW true true bIn₀ (openFds s₀) := by
-      unfold SysBridge.setNonblockingOpt
+      unfold Files.setNonblockingOpt
       rw [hSlotOut]
       dsimp only [optFdOf]
       refine ⟨((deps.files.fcntl outR (.setFl true false)).run s₃).2,
@@ -2082,10 +2065,10 @@ theorem mkRawOpsM_satisfies_RawProcessLaws {S fd : Type} [DecidableEq fd]
     dsimp only
     have hSetupErr :
         ∃ s₅,
-          (SysBridge.setNonblockingOpt deps.files slot.stderrFd?).run s₄ = ((), s₅) ∧
+          (Files.setNonblockingOpt deps.files slot.stderrFd?).run s₄ = ((), s₅) ∧
           getTbl s₅ = getTbl s₂ ∧
           openFds s₅ = pipePrefix errR outR inW true true bIn₀ (openFds s₀) := by
-      unfold SysBridge.setNonblockingOpt
+      unfold Files.setNonblockingOpt
       rw [hSlotErr]
       dsimp only [optFdOf]
       refine ⟨((deps.files.fcntl errR (.setFl true false)).run s₄).2,
@@ -2105,9 +2088,22 @@ theorem mkRawOpsM_satisfies_RawProcessLaws {S fd : Type} [DecidableEq fd]
       cases req.timeoutMs with
       | none => exact ⟨.ok 0, s₅, rfl, hFs₅, hOpen₅, (by intro _ h; cases h)⟩
       | some _ =>
-        obtain ⟨hFmP, hEm⟩ := monoNowMs_spec proj deps.timeRand hCgP s₅
-        exact ⟨_, _, rfl, (congrArg Prod.fst hFmP).trans hFs₅,
-          (congrArg Prod.snd hFmP).trans hOpen₅, fun err he => (hEm err he).2⟩
+        have hFmP := monoNowMs_spec proj deps.timeRand hCgP s₅
+        rcases hM : (TimeRand.monoNowMs deps.timeRand).run s₅ with ⟨mRes, sM⟩
+        rw [hM] at hFmP
+        cases mRes with
+        | ok ms =>
+          exact ⟨.ok ms, sM, by rw [stateT_bind_eq, hM]; rfl,
+            (congrArg Prod.fst hFmP).trans hFs₅,
+            (congrArg Prod.snd hFmP).trans hOpen₅, (by intro _ h; cases h)⟩
+        | error e =>
+          exact ⟨.error (SysBridge.mapErrno none "clock_gettime" e), sM,
+            by rw [stateT_bind_eq, hM]; rfl,
+            (congrArg Prod.fst hFmP).trans hFs₅,
+            (congrArg Prod.snd hFmP).trans hOpen₅,
+            fun err he => by
+              injection he with hE; rw [← hE]
+              exact (mapErrno_kind_and_msg none "clock_gettime" e).2⟩
     rcases hStartStep with ⟨startRes, s₆, hRunStart, hFs₆, hOpen₆, hErrStart⟩
     rw [stateT_bind_eq, hRunStart]
     dsimp only
@@ -2125,9 +2121,9 @@ theorem mkRawOpsM_satisfies_RawProcessLaws {S fd : Type} [DecidableEq fd]
       obtain ⟨hTc3, hOc3⟩ := closeOpt_optFdOf getTbl openFds deps.files hCloseT errR
         (fun b => pipePrefix errR outR inW b false false (openFds s₀))
         (fun sx hsx => by rw [hCloseO, hsx, pipePrefix_erase_err]) true _ hOc2
-      let sEndErr := ((SysBridge.closeOpt deps.files (optFdOf errR true)).run
-        ((SysBridge.closeOpt deps.files (optFdOf outR true)).run
-          ((SysBridge.closeOpt deps.files (optFdOf inW bIn₀)).run s₆).2).2).2
+      let sEndErr := ((Files.closeOpt deps.files (optFdOf errR true)).run
+        ((Files.closeOpt deps.files (optFdOf outR true)).run
+          ((Files.closeOpt deps.files (optFdOf inW bIn₀)).run s₆).2).2).2
       have hTblEnd : getTbl sEndErr = { nextId := h.handleId + 1, slots := (h.handleId, slotTaken) :: restTaken } :=
         hTc3.trans (hTc2.trans (hTc1.trans (hFs₆.trans hTbl₂)))
       obtain ⟨hLenEnd, hOpenEnd, _⟩ := hKillAndReapNone sEndErr slotTaken restTaken (h.handleId + 1)

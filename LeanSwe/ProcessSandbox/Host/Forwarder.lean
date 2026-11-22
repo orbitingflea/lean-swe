@@ -5,14 +5,13 @@ import LeanSwe.LinuxSyscall.Poll.Types
 import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.Net.Interface
 import LeanSwe.LinuxSyscall.Poll.Interface
-import LeanSwe.ConnectProxy.Relay
-import LeanSwe.Process.SysBridge
+import LeanSwe.NetRelay.Types
+import LeanSwe.NetRelay.Interface
 
 namespace LeanSwe.ProcessSandbox.Host.Forwarder
 
 open LeanSwe.LinuxSyscall
-open LeanSwe.ConnectProxy
-open LeanSwe.Process.SysBridge
+open LeanSwe.NetRelay
 
 /-- Maximum number of simultaneous active TCP port-forward relay connections per box (`128`). -/
 def MAX_RELAY_SLOTS : Nat := 128
@@ -41,10 +40,10 @@ structure ForwardRelayConn (fd : Type) where
   boxShutdownWr : Bool := false
   /-- `true` once `shutdown(hostFd, SHUT_WR)` has been invoked. -/
   hostShutdownWr : Bool := false
-  /-- Box-to-host `16 KiB` FIFO ring buffer reused from `LeanSwe.ConnectProxy.Relay`. -/
-  b2h : Relay.RingBuf := {}
-  /-- Host-to-box `16 KiB` FIFO ring buffer reused from `LeanSwe.ConnectProxy.Relay`. -/
-  h2b : Relay.RingBuf := {}
+  /-- Box-to-host `16 KiB` FIFO ring buffer from `LeanSwe.NetRelay`. -/
+  b2h : RingBuf := {}
+  /-- Host-to-box `16 KiB` FIFO ring buffer from `LeanSwe.NetRelay`. -/
+  h2b : RingBuf := {}
 
 /-- Compute requested `PollEvents` for `c.boxFd` (`isEmpty = true` omits the descriptor from `ppoll`). -/
 def ForwardRelayConn.boxPollEvents {fd : Type} (c : ForwardRelayConn fd) : Poll.PollEvents :=
@@ -82,7 +81,7 @@ def stepRelayConnect {m : Type → Type} [Monad m] {fd : Type}
   else
     return some c
 
-/-- Advance one poll tick for a single `ForwardRelayConn`, reusing `ConnectProxy.Relay` `16 KiB` ring operations and directional `SHUT_WR` half-close. -/
+/-- Advance one poll tick for a single `ForwardRelayConn`, reusing `LeanSwe.NetRelay` `16 KiB` ring operations and directional `SHUT_WR` half-close. -/
 def stepForwardRelay {m : Type → Type} [Monad m] {fd : Type}
     (net : Net.NetOpsM m fd) (closeFd : fd → m Unit)
     (c0 : ForwardRelayConn fd) (bRev hRev : Poll.PollEvents) :
@@ -97,7 +96,7 @@ def stepForwardRelay {m : Type → Type} [Monad m] {fd : Type}
   | some c1 =>
     let c2? ←
       if !c1.boxEofIn && (bRev.pollin || bRev.pollhup || bRev.pollerr) then
-        match ← Relay.recvIntoRing net c1.boxFd Relay.MAX_RELAY_IO_STEPS c1.b2h with
+        match ← recvIntoRing net c1.boxFd MAX_RELAY_IO_STEPS c1.b2h with
         | none => pure none
         | some (b2h', eof') => pure (some { c1 with b2h := b2h', boxEofIn := c1.boxEofIn || eof' })
       else
@@ -109,7 +108,7 @@ def stepForwardRelay {m : Type → Type} [Monad m] {fd : Type}
     | some c2 =>
       let c3? ←
         if !c2.hostConnecting && !c2.hostEofIn && (hRev.pollin || hRev.pollhup || hRev.pollerr) then
-          match ← Relay.recvIntoRing net c2.hostFd Relay.MAX_RELAY_IO_STEPS c2.h2b with
+          match ← recvIntoRing net c2.hostFd MAX_RELAY_IO_STEPS c2.h2b with
           | none => pure none
           | some (h2b', eof') => pure (some { c2 with h2b := h2b', hostEofIn := c2.hostEofIn || eof' })
         else
@@ -123,7 +122,7 @@ def stepForwardRelay {m : Type → Type} [Monad m] {fd : Type}
           if !c3.hostConnecting then
             let b2hRes? ←
               if !c3.b2h.isEmpty then
-                Relay.flushRingNonblock net c3.hostFd Relay.MAX_RELAY_IO_STEPS c3.b2h
+                flushRingNonblock net c3.hostFd MAX_RELAY_IO_STEPS c3.b2h
               else
                 pure (some c3.b2h)
             match b2hRes? with
@@ -131,7 +130,7 @@ def stepForwardRelay {m : Type → Type} [Monad m] {fd : Type}
             | some b2h' =>
               let c3a := { c3 with b2h := b2h' }
               if c3a.boxEofIn && c3a.b2h.isEmpty && !c3a.hostShutdownWr then
-                let _ ← Relay.shutdownWrClean net c3a.hostFd Relay.MAX_RELAY_IO_STEPS
+                let _ ← shutdownWrClean net c3a.hostFd MAX_RELAY_IO_STEPS
                 pure (some { c3a with hostShutdownWr := true })
               else
                 pure (some c3a)
@@ -144,7 +143,7 @@ def stepForwardRelay {m : Type → Type} [Monad m] {fd : Type}
         | some c4 =>
           let h2bRes? ←
             if !c4.h2b.isEmpty then
-              Relay.flushRingNonblock net c4.boxFd Relay.MAX_RELAY_IO_STEPS c4.h2b
+              flushRingNonblock net c4.boxFd MAX_RELAY_IO_STEPS c4.h2b
             else
               pure (some c4.h2b)
           match h2bRes? with
@@ -155,7 +154,7 @@ def stepForwardRelay {m : Type → Type} [Monad m] {fd : Type}
             let c5 := { c4 with h2b := h2b' }
             let c6 ←
               if c5.hostEofIn && c5.h2b.isEmpty && !c5.boxShutdownWr then do
-                let _ ← Relay.shutdownWrClean net c5.boxFd Relay.MAX_RELAY_IO_STEPS
+                let _ ← shutdownWrClean net c5.boxFd MAX_RELAY_IO_STEPS
                 pure { c5 with boxShutdownWr := true }
               else
                 pure c5

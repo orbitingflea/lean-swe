@@ -30,6 +30,7 @@ import LeanSwe.Tar.RuntimeTests
 import LeanSwe.ProcessSandbox.Seccomp.RuntimeTests
 import LeanSwe.ProcessSandbox.Raw.RuntimeTests
 import LeanSwe.ProcessSandbox.RuntimeTests
+import LeanSwe.NetRelay.Interface
 import LeanSwe.ConnectProxy.Interface
 import LeanSwe.ConnectProxy.RuntimeTests
 import LeanSwe.SlotPool.RuntimeTests
@@ -2121,6 +2122,36 @@ private def scriptedCProxySys : ConnectProxy.SysBridge.CProxySysOpsM (StateM Scr
         clock_nanosleep := fun _ _ _ => pure (.ok ())
         getrandom := fun _ _ => pure (.ok ByteArray.empty) } }
 
+private def runNetRelayUnitTests : IO Unit := do
+  let rb0 : NetRelay.RingBuf := { cap := 3 }
+  let rb1 := rb0.push (ByteArray.mk #[10, 20, 30, 40])
+  checkUnit "netRelay push clamp and cap preserved"
+    (rb1.cap == 3 && rb1.len == 3 && rb1.writeAvail == 0 && rb1.toList == [10, 20, 30] &&
+      rb1.frontSlice.data.toList == [10, 20, 30])
+  let rb2 := rb1.consume 2
+  checkUnit "netRelay consume preserves cap and unread suffix"
+    (rb2.cap == 3 && rb2.len == 1 && rb2.writeAvail == 2 && rb2.toList == [30])
+  let rb3 := rb2.consume 5
+  checkUnit "netRelay consume full drain resets buf and keeps cap"
+    (rb3.cap == 3 && rb3.isEmpty && rb3.toList == [])
+  let rxInit : ScriptedCProxyState :=
+    { rxQueue := [.error LinuxSyscall.Errno.EINTR, .ok (ByteArray.mk #[1, 2]),
+                  .ok (ByteArray.mk #[3, 4])] }
+  let (rxRes, _) := (NetRelay.recvIntoRing scriptedCProxySys.net 7 8 { cap := 3 }).run rxInit
+  checkUnit "netRelay recvIntoRing custom cap EINTR"
+    (match rxRes with
+     | some (rb', eof) => !eof && rb'.cap == 3 && rb'.toList == [1, 2, 3]
+     | none => false)
+  let (fbRes, fbSt) := (NetRelay.flushBytesNonblock scriptedCProxySys.net 7 ("WXYZ".toUTF8) 8 1).run
+    { txQueue := [.error LinuxSyscall.Errno.EINTR, .ok 2, .error LinuxSyscall.Errno.EAGAIN] }
+  checkUnit "netRelay flushBytesNonblock EINTR short write"
+    (fbRes == some 3 && fbSt.sentLog == "XY".toUTF8)
+  let (shOk, _) := (NetRelay.shutdownWrClean scriptedCProxySys.net 7 4).run {}
+  checkUnit "netRelay shutdownWrClean ok" shOk
+  let (drOk, _) := (NetRelay.drainDeadPeerRx scriptedCProxySys.net 7 4).run
+    { rxQueue := [.error LinuxSyscall.Errno.EINTR, .ok ByteArray.empty] }
+  checkUnit "netRelay drainDeadPeerRx EINTR + EOF" drOk
+
 private def runConnectProxyScriptedTests : IO Unit := do
   checkUnit "cproxy listenPollEvents cap"
     ((ConnectProxy.SysBridge.listenPollEvents 0 2).pollin == true &&
@@ -2130,7 +2161,7 @@ private def runConnectProxyScriptedTests : IO Unit := do
   let rxInit : ScriptedCProxyState :=
     { rxQueue := [.ok (ByteArray.mk #[65]), .error LinuxSyscall.Errno.EINTR,
                   .ok (ByteArray.mk #[66, 67]), .error LinuxSyscall.Errno.ECONNRESET] }
-  let (rxOut, _) := (ConnectProxy.Relay.recvIntoRing scriptedCProxySys.net 7 8 {}).run rxInit
+  let (rxOut, _) := (NetRelay.recvIntoRing scriptedCProxySys.net 7 8 {}).run rxInit
   match rxOut with
   | some (rb', eof) =>
     checkUnit "cproxy recvIntoRing EINTR + ECONNRESET preserves bytes"
@@ -2139,8 +2170,8 @@ private def runConnectProxyScriptedTests : IO Unit := do
     throw (IO.userError "recvIntoRing unexpectedly dropped bytes on EINTR/ECONNRESET")
   let txInit : ScriptedCProxyState :=
     { txQueue := [.error LinuxSyscall.Errno.EINTR, .ok 2, .error LinuxSyscall.Errno.EINTR, .ok 2] }
-  let rb0 := ({} : ConnectProxy.Relay.RingBuf).push ("ABCD".toUTF8)
-  let (txOut, txSt) := (ConnectProxy.Relay.flushRingNonblock scriptedCProxySys.net 7 8 rb0).run txInit
+  let rb0 := ({} : NetRelay.RingBuf).push ("ABCD".toUTF8)
+  let (txOut, txSt) := (NetRelay.flushRingNonblock scriptedCProxySys.net 7 8 rb0).run txInit
   checkUnit "cproxy flushRingNonblock EINTR + short writes"
     (txOut.map (·.isEmpty) == some true && txSt.sentLog == "ABCD".toUTF8)
   let pipeInit : ScriptedCProxyState :=
@@ -2404,6 +2435,7 @@ private def allSuites : Array (String × IO (Option String) × IO Unit) := #[
   ("ProcessSandbox.Raw", ProcessSandbox.Raw.RuntimeTests.runAllOutcome, pure ()),
   ("ProcessSandbox", ProcessSandbox.RuntimeTests.runAllOutcome, pure ()),
   ("ConnectProxy", do ConnectProxy.RuntimeTests.runAll; return none, do runConnectProxyUnitTests; runConnectProxyMutateExtra),
+  ("NetRelay", do runNetRelayUnitTests; return none, pure ()),
   ("SlotPool", do SlotPool.RuntimeTests.runAll; return none, pure ()),
   ("LinuxSyscall.Sandbox", do Fuzz.LinuxSyscall.Sandbox.Strace.runChecks; return none, Fuzz.LinuxSyscall.Sandbox.Strace.runStraceFaultCheck),
   ("LinuxSyscall.TimeRand", do Fuzz.LinuxSyscall.TimeRand.Strace.runChecks; return none, Fuzz.LinuxSyscall.TimeRand.Strace.runStraceFaultCheck),

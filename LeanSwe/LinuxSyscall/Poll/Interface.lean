@@ -30,4 +30,14 @@ def defaultOps : PollOps :=
     IO (Except Errno RawFd) :=
   defaultOps.eventfd2 initval flags
 
+/-- Return `true` iff a `ppoll(2)` `revents` entry signals readiness, hangup, error, or invalid descriptor. -/
+def pollEvReady (wantOut : Bool) (ev : PollEvents) : Bool :=
+  (if wantOut then ev.pollout else ev.pollin) || ev.pollhup || ev.pollerr || ev.pollnval
+
+/-- Convert a relative timeout in milliseconds to a valid `Poll.Timespec` (`0 ≤ sec ≤ Int64.max`, `nsec < 1_000_000_000`). -/
+def msToPollTimespec (ms : Nat) : Timespec :=
+  let clampedSec := Nat.min (ms / 1000) 9223372036854775807
+  let remNs := (ms % 1000) * 1000000
+  { sec := Int64.ofInt (Int.ofNat clampedSec), nsec := UInt32.ofNat remNs }
+
 end LeanSwe.LinuxSyscall.Poll

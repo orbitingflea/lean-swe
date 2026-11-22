@@ -3,6 +3,8 @@ import LeanSwe.ConnectProxy.Proofs.SysBridgeProofs
 namespace LeanSwe.ConnectProxy.Proofs
 
 open LeanSwe.LinuxSyscall
+open LeanSwe.NetRelay
+open LeanSwe.NetRelay.Proofs
 open LeanSwe.ConnectProxy
 open LeanSwe.ConnectProxy.Model
 open LeanSwe.ConnectProxy.Relay
@@ -47,12 +49,12 @@ private theorem closeOptFd_wf_poll_netErrs
     (hRef : RefinesHealthyCProxySys sys)
     (optFd : Option Nat) (w : HealthySysWorld) (tr : SysAuditTrace Nat)
     (hWf : w.wf = true) :
-    let (_, (w', tr')) := (Relay.closeOptFd (instrumentSysOps sys).closeFd optFd).run (w, tr)
+    let (_, (w', tr')) := (NetRelay.closeOptFd (instrumentSysOps sys).closeFd optFd).run (w, tr)
     w'.wf = true ∧ tr'.pollOutcomes = tr.pollOutcomes ∧ tr'.netErrs = tr.netErrs := by
   cases optFd with
   | none => exact ⟨hWf, rfl, rfl⟩
   | some d =>
-    unfold Relay.closeOptFd
+    unfold NetRelay.closeOptFd NetRelay.Internal.closeOptFd
     have hCl := healthy_closeFd_instrumented_laws sys hRef w tr d hWf
     rcases hR : ((instrumentSysOps sys).closeFd d).run (w, tr) with ⟨_, w', tr'⟩
     rw [hR] at hCl
@@ -69,12 +71,12 @@ private theorem closeRelayBoth_wf_poll_netErrs
   unfold Relay.closeRelayBoth
   rw [stateT_bind_run]
   have h1 := closeOptFd_wf_poll_netErrs sys hRef st.clientFd? w tr hWf
-  rcases hR1 : (Relay.closeOptFd (instrumentSysOps sys).closeFd st.clientFd?).run (w, tr) with ⟨_, w1, tr1⟩
+  rcases hR1 : (NetRelay.closeOptFd (instrumentSysOps sys).closeFd st.clientFd?).run (w, tr) with ⟨_, w1, tr1⟩
   rw [hR1] at h1
   dsimp only at h1 ⊢
   rw [stateT_bind_run]
   have h2 := closeOptFd_wf_poll_netErrs sys hRef st.upstreamFd? w1 tr1 h1.1
-  rcases hR2 : (Relay.closeOptFd (instrumentSysOps sys).closeFd st.upstreamFd?).run (w1, tr1) with ⟨_, w2, tr2⟩
+  rcases hR2 : (NetRelay.closeOptFd (instrumentSysOps sys).closeFd st.upstreamFd?).run (w1, tr1) with ⟨_, w2, tr2⟩
   rw [hR2] at h2
   dsimp only [stateT_pure_run] at h2 ⊢
   exact ⟨h2.1, h2.2.1.trans h1.2.1, h2.2.2.trans h1.2.2⟩
@@ -94,19 +96,20 @@ private theorem recvIntoRing_wf_poll
     (fd : Nat) :
     ∀ (fuel : Nat) (rb : RingBuf) (w : HealthySysWorld) (tr : SysAuditTrace Nat),
       w.wf = true →
-      ((Relay.recvIntoRing (instrumentSysOps sys).net fd fuel rb).run (w, tr)).2.1.wf = true ∧
-      ((Relay.recvIntoRing (instrumentSysOps sys).net fd fuel rb).run (w, tr)).2.2.pollOutcomes = tr.pollOutcomes
+      ((NetRelay.recvIntoRing (instrumentSysOps sys).net fd fuel rb).run (w, tr)).2.1.wf = true ∧
+      ((NetRelay.recvIntoRing (instrumentSysOps sys).net fd fuel rb).run (w, tr)).2.2.pollOutcomes = tr.pollOutcomes
   | 0, _, w, _, hWf => ⟨hWf, rfl⟩
   | fuel + 1, rb, w, tr, hWf => by
-    unfold Relay.recvIntoRing
-    by_cases hAv0 : (rb.writeAvail == 0) = true
+    unfold NetRelay.recvIntoRing NetRelay.Internal.recvIntoRing
+    by_cases hAv0 : (NetRelay.Internal.ringBufWriteAvail rb == 0) = true
     · simp only [hAv0, ↓reduceIte]; exact ⟨hWf, rfl⟩
     · simp only [Bool.eq_false_iff.mpr hAv0, Bool.false_eq_true, ↓reduceIte]
-      have hNet := hRef.2.1 w (.recvfrom fd (UInt32.ofNat rb.writeAvail) { dontwait := true }) ((wf_iff_parts w).mp hWf)
+      let reqCap := Nat.min (NetRelay.Internal.ringBufWriteAvail rb) MAX_READ_BYTES.toNat
+      have hNet := hRef.2.1 w (.recvfrom fd (UInt32.ofNat reqCap) { dontwait := true }) ((wf_iff_parts w).mp hWf)
       dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
       dsimp only [StateT.run, bind, StateT.bind, pure, StateT.pure, Id.run]
       rw [inst_net_recvfrom]
-      rcases hR : sys.net.recvfrom fd (UInt32.ofNat rb.writeAvail) { dontwait := true } w with ⟨r, w1⟩
+      rcases hR : sys.net.recvfrom fd (UInt32.ofNat reqCap) { dontwait := true } w with ⟨r, w1⟩
       rw [hR] at hNet
       dsimp only at hNet ⊢
       have hWf1 : w1.wf = true := (wf_iff_parts w1).mpr hNet.2.1
@@ -115,7 +118,8 @@ private theorem recvIntoRing_wf_poll
         by_cases h0 : (bs.size == 0) = true
         · simp only [h0, ↓reduceIte]; exact ⟨hWf1, rfl⟩
         · simp only [Bool.eq_false_iff.mpr h0, Bool.false_eq_true, ↓reduceIte]
-          exact recvIntoRing_wf_poll sys hRef fd fuel (rb.push bs) w1 _ hWf1
+          let chunk := if bs.size ≤ reqCap then bs else bs.extract 0 reqCap
+          exact recvIntoRing_wf_poll sys hRef fd fuel (rb.push chunk) w1 _ hWf1
       | error e =>
         by_cases hEi : (e == Errno.EINTR) = true
         · simp only [hEi, ↓reduceIte]
@@ -132,19 +136,19 @@ private theorem flushRingNonblock_wf_poll
     (fd : Nat) :
     ∀ (fuel : Nat) (rb : RingBuf) (w : HealthySysWorld) (tr : SysAuditTrace Nat),
       w.wf = true →
-      ((Relay.flushRingNonblock (instrumentSysOps sys).net fd fuel rb).run (w, tr)).2.1.wf = true ∧
-      ((Relay.flushRingNonblock (instrumentSysOps sys).net fd fuel rb).run (w, tr)).2.2.pollOutcomes = tr.pollOutcomes
+      ((NetRelay.flushRingNonblock (instrumentSysOps sys).net fd fuel rb).run (w, tr)).2.1.wf = true ∧
+      ((NetRelay.flushRingNonblock (instrumentSysOps sys).net fd fuel rb).run (w, tr)).2.2.pollOutcomes = tr.pollOutcomes
   | 0, _, w, _, hWf => ⟨hWf, rfl⟩
   | fuel + 1, rb, w, tr, hWf => by
-    unfold Relay.flushRingNonblock
-    by_cases hEmp : rb.isEmpty = true
+    unfold NetRelay.flushRingNonblock NetRelay.Internal.flushRingNonblock
+    by_cases hEmp : NetRelay.Internal.ringBufIsEmpty rb = true
     · simp only [hEmp, ↓reduceIte]; exact ⟨hWf, rfl⟩
     · simp only [Bool.eq_false_iff.mpr hEmp, Bool.false_eq_true, ↓reduceIte]
-      have hNet := hRef.2.1 w (.sendto fd rb.frontSlice { nosignal := true, dontwait := true }) ((wf_iff_parts w).mp hWf)
+      have hNet := hRef.2.1 w (.sendto fd (NetRelay.Internal.ringBufFrontSlice rb) { nosignal := true, dontwait := true }) ((wf_iff_parts w).mp hWf)
       dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
       dsimp only [StateT.run, bind, StateT.bind, pure, StateT.pure, Id.run]
       rw [inst_net_sendto]
-      rcases hR : sys.net.sendto fd rb.frontSlice { nosignal := true, dontwait := true } w with ⟨r, w1⟩
+      rcases hR : sys.net.sendto fd (NetRelay.Internal.ringBufFrontSlice rb) { nosignal := true, dontwait := true } w with ⟨r, w1⟩
       rw [hR] at hNet
       dsimp only at hNet ⊢
       have hWf1 : w1.wf = true := (wf_iff_parts w1).mpr hNet.2.1
@@ -165,10 +169,10 @@ private theorem flushBytesNonblock_pollOutcomes_eq
     (sys : CProxySysOpsM (StateM HealthySysWorld) Nat)
     (fd : Nat) (bytes : ByteArray) :
     ∀ (fuel off : Nat) (w : HealthySysWorld) (tr : SysAuditTrace Nat),
-      ((Relay.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel off).run (w, tr)).2.2.pollOutcomes = tr.pollOutcomes
+      ((NetRelay.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel off).run (w, tr)).2.2.pollOutcomes = tr.pollOutcomes
   | 0, _, _, _ => rfl
   | fuel + 1, off, w, tr => by
-    unfold Relay.flushBytesNonblock
+    unfold NetRelay.flushBytesNonblock NetRelay.Internal.flushBytesNonblock
     by_cases hGe : off ≥ bytes.size
     · simp only [hGe, ↓reduceIte]; rfl
     · simp only [hGe, ↓reduceIte]
@@ -195,11 +199,11 @@ private theorem drainDeadPeerRx_wf_poll
     (fd : Nat) :
     ∀ (fuel : Nat) (w : HealthySysWorld) (tr : SysAuditTrace Nat),
       w.wf = true →
-      ((Relay.drainDeadPeerRx (instrumentSysOps sys).net fd fuel).run (w, tr)).2.1.wf = true ∧
-      ((Relay.drainDeadPeerRx (instrumentSysOps sys).net fd fuel).run (w, tr)).2.2.pollOutcomes = tr.pollOutcomes
+      ((NetRelay.drainDeadPeerRx (instrumentSysOps sys).net fd fuel).run (w, tr)).2.1.wf = true ∧
+      ((NetRelay.drainDeadPeerRx (instrumentSysOps sys).net fd fuel).run (w, tr)).2.2.pollOutcomes = tr.pollOutcomes
   | 0, w, _, hWf => ⟨hWf, rfl⟩
   | fuel + 1, w, tr, hWf => by
-    unfold Relay.drainDeadPeerRx
+    unfold NetRelay.drainDeadPeerRx NetRelay.Internal.drainDeadPeerRx
     have hNet := hRef.2.1 w (.recvfrom fd 4096 { dontwait := true }) ((wf_iff_parts w).mp hWf)
     dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
     dsimp only [StateT.run, bind, StateT.bind, pure, StateT.pure, Id.run]
@@ -223,48 +227,48 @@ private theorem drainDeadPeerRx_wf_poll
 
 private theorem pres_drainDeadPeerRx (sys : CProxySysOpsM (StateM HealthySysWorld) Nat)
     (hRef : RefinesHealthyCProxySys sys) (tr₀ : SysAuditTrace Nat) (fd fuel : Nat) :
-    PreservesWfPoll tr₀ (Relay.drainDeadPeerRx (instrumentSysOps sys).net fd fuel) := by
+    PreservesWfPoll tr₀ (NetRelay.drainDeadPeerRx (instrumentSysOps sys).net fd fuel) := by
   intro w tr hw hp
   have hL := drainDeadPeerRx_wf_poll sys hRef fd fuel w tr hw
-  rcases hR : (Relay.drainDeadPeerRx (instrumentSysOps sys).net fd fuel).run (w, tr) with ⟨_, w', tr'⟩
+  rcases hR : (NetRelay.drainDeadPeerRx (instrumentSysOps sys).net fd fuel).run (w, tr) with ⟨_, w', tr'⟩
   rw [hR] at hL
   exact ⟨hL.1, hL.2.trans hp⟩
 
 private theorem pres_recvIntoRing (sys : CProxySysOpsM (StateM HealthySysWorld) Nat)
     (hRef : RefinesHealthyCProxySys sys) (tr₀ : SysAuditTrace Nat) (fd fuel : Nat) (rb : RingBuf) :
-    PreservesWfPoll tr₀ (Relay.recvIntoRing (instrumentSysOps sys).net fd fuel rb) := by
+    PreservesWfPoll tr₀ (NetRelay.recvIntoRing (instrumentSysOps sys).net fd fuel rb) := by
   intro w tr hw hp
   have hL := recvIntoRing_wf_poll sys hRef fd fuel rb w tr hw
-  rcases hR : (Relay.recvIntoRing (instrumentSysOps sys).net fd fuel rb).run (w, tr) with ⟨_, w', tr'⟩
+  rcases hR : (NetRelay.recvIntoRing (instrumentSysOps sys).net fd fuel rb).run (w, tr) with ⟨_, w', tr'⟩
   rw [hR] at hL
   exact ⟨hL.1, hL.2.trans hp⟩
 
 private theorem pres_flushRing (sys : CProxySysOpsM (StateM HealthySysWorld) Nat)
     (hRef : RefinesHealthyCProxySys sys) (tr₀ : SysAuditTrace Nat) (fd fuel : Nat) (rb : RingBuf) :
-    PreservesWfPoll tr₀ (Relay.flushRingNonblock (instrumentSysOps sys).net fd fuel rb) := by
+    PreservesWfPoll tr₀ (NetRelay.flushRingNonblock (instrumentSysOps sys).net fd fuel rb) := by
   intro w tr hw hp
   have hL := flushRingNonblock_wf_poll sys hRef fd fuel rb w tr hw
-  rcases hR : (Relay.flushRingNonblock (instrumentSysOps sys).net fd fuel rb).run (w, tr) with ⟨_, w', tr'⟩
+  rcases hR : (NetRelay.flushRingNonblock (instrumentSysOps sys).net fd fuel rb).run (w, tr) with ⟨_, w', tr'⟩
   rw [hR] at hL
   exact ⟨hL.1, hL.2.trans hp⟩
 
 private theorem pres_flushBytes (sys : CProxySysOpsM (StateM HealthySysWorld) Nat)
     (hRef : RefinesHealthyCProxySys sys) (tr₀ : SysAuditTrace Nat)
     (fd : Nat) (bytes : ByteArray) (fuel off : Nat) :
-    PreservesWfPoll tr₀ (Relay.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel off) := by
+    PreservesWfPoll tr₀ (NetRelay.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel off) := by
   intro w tr hw hp
   have hL := flushBytesNonblock_instrumented_laws sys hRef fd bytes fuel off w tr hw
   have hPo := flushBytesNonblock_pollOutcomes_eq sys fd bytes fuel off w tr
-  rcases hR : (Relay.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel off).run (w, tr) with ⟨_, w', tr'⟩
+  rcases hR : (NetRelay.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel off).run (w, tr) with ⟨_, w', tr'⟩
   rw [hR] at hL hPo
   exact ⟨hL.1, hPo.trans hp⟩
 
 private theorem pres_shutdownWr (sys : CProxySysOpsM (StateM HealthySysWorld) Nat)
     (hRef : RefinesHealthyCProxySys sys) (tr₀ : SysAuditTrace Nat) (fd fuel : Nat) :
-    PreservesWfPoll tr₀ (Relay.shutdownWrClean (instrumentSysOps sys).net fd fuel) := by
+    PreservesWfPoll tr₀ (NetRelay.shutdownWrClean (instrumentSysOps sys).net fd fuel) := by
   intro w tr hw hp
   have hs := shutdownWrClean_instrumented_laws sys hRef fd fuel w tr hw
-  rcases hR : (Relay.shutdownWrClean (instrumentSysOps sys).net fd fuel).run (w, tr) with ⟨_, w', tr'⟩
+  rcases hR : (NetRelay.shutdownWrClean (instrumentSysOps sys).net fd fuel).run (w, tr) with ⟨_, w', tr'⟩
   rw [hR] at hs
   exact ⟨hs.1, (congrArg SysAuditTrace.pollOutcomes hs.2.1).trans hp⟩
 
@@ -424,21 +428,6 @@ private theorem init_u2c_len_le_cap :
     (({} : RingBuf).push Relay.reply200Bytes).len ≤ RING_CAP := by
   decide
 
-private theorem ringBuf_not_empty_of_nonempty_toList (rb : RingBuf) (h : rb.toList ≠ []) :
-    rb.isEmpty = false := by
-  unfold RingBuf.isEmpty
-  apply Bool.eq_false_iff.mpr
-  intro hEq
-  have hLen0 : rb.len = 0 := beq_iff_eq.mp hEq
-  unfold RingBuf.toList RingBuf.len at *
-  have hDropNil : rb.buf.data.toList.drop rb.off = [] := by
-    apply List.eq_nil_of_length_eq_zero
-    have : (rb.buf.data.toList.drop rb.off).length = rb.buf.size - rb.off := by simp
-    have : RING_CAP = 16384 := rfl
-    omega
-  rw [hDropNil] at h
-  exact h rfl
-
 private theorem stateT_bind_app {σ₁ σ₂ α β : Type}
     {x : StateM (σ₁ × σ₂) α} {k : α → StateM (σ₁ × σ₂) β}
     {w w' : σ₁} {tr tr' : σ₂} {res : β}
@@ -520,7 +509,7 @@ private theorem stepBidirectionalRelay_pipe_of_u2c
     dsimp only [st0] at hPfx
     simp only [hPf, Bool.not_false, Bool.true_and, Bool.or_false, ↓reduceIte, ← hFuel] at hPfx
     obtain ⟨flRes, wFl, trFl, hFRun, hPfx⟩ := stateT_bind_app hPfx
-    have hFRun' : (Relay.flushBytesNonblock (instrumentSysOps sys).net ufd pipelined fuel 0).run (w₀, {}) = (flRes, (wFl, trFl)) := hFRun
+    have hFRun' : (NetRelay.flushBytesNonblock (instrumentSysOps sys).net ufd pipelined fuel 0).run (w₀, {}) = (flRes, (wFl, trFl)) := hFRun
     rw [hFRun'] at hFl; dsimp only at hFl
     cases flRes with
     | none =>
@@ -628,7 +617,7 @@ private theorem stepBidirectionalRelay_rst_of_u2c
     (fd ufd : Nat) (u2c0 : RingBuf) (replyList : List UInt8)
     (hReplyNE : replyList ≠ [])
     (hAvPos : decide (u2c0.writeAvail > 0) = true)
-    (hCap : u2c0.len ≤ RING_CAP)
+    (hCap : u2c0.len ≤ u2c0.cap)
     (hU2cList : u2c0.toList = replyList)
     (fuel : Nat) (hFuel : fuel = Relay.MAX_RELAY_IO_STEPS)
     (w₀ : HealthySysWorld)
@@ -674,7 +663,7 @@ private theorem stepBidirectionalRelay_rst_of_u2c
   dsimp only at hUrx
   simp only [Bool.not_false, hAvPos, Bool.true_and, Bool.true_or, ↓reduceIte, ← hFuel] at hUrx
   obtain ⟨rxRes, wRx, trRx, hRR, hUrx⟩ := stateT_bind_app hUrx
-  have hRR' : (Relay.recvIntoRing (instrumentSysOps sys).net ufd fuel u2c0).run (w₀, {}) = (rxRes, (wRx, trRx)) := hRR
+  have hRR' : (NetRelay.recvIntoRing (instrumentSysOps sys).net ufd fuel u2c0).run (w₀, {}) = (rxRes, (wRx, trRx)) := hRR
   rw [hRR'] at hRx; dsimp only at hRx
   cases rxRes with
   | none =>
@@ -696,7 +685,7 @@ private theorem stepBidirectionalRelay_rst_of_u2c
     injection hUrx with hs3 hwt3; injection hwt3 with hw1 ht1
     subst hs3; subst hw1; subst ht1
     dsimp only at hRun
-    rcases hRx.2.2.2 with ⟨_, ⟨rxDelta, hRecvEq, hU2cEq⟩, _⟩
+    rcases hRx.2.2.2 with ⟨_, _, ⟨rxDelta, hRecvEq, hU2cEq⟩, _⟩
     simp only [List.nil_append] at hRecvEq
     rw [hU2cList] at hU2cEq
     have hU2cNonEmpty : u2c'.isEmpty = false := by
@@ -975,7 +964,7 @@ theorem buildPollBatchSync_laws
     dsimp only [Option.map] at hTs
     injection hTs with hEq
     subst hEq
-    exact msToPollTimespec_isValid ms
+    exact Poll.msToPollTimespec_isValid ms
 
 private theorem drainWakeSocket_laws
     (sys : CProxySysOpsM (StateM HealthySysWorld) Nat)
@@ -1087,7 +1076,7 @@ private theorem closingSendStep_laws
       · obtain ⟨flRes, w1a, tr1a, hFl, hRun⟩ := stateT_bind_app hRun
         have hL := flushBytesNonblock_instrumented_laws sys hRef cfd replyBytes MAX_CLOSING_STEPS replyOff w tr hWf
         have hPo := flushBytesNonblock_pollOutcomes_eq sys cfd replyBytes MAX_CLOSING_STEPS replyOff w tr
-        have hFl' : (Relay.flushBytesNonblock (instrumentSysOps sys).net cfd replyBytes MAX_CLOSING_STEPS replyOff).run (w, tr) = (flRes, (w1a, tr1a)) := hFl
+        have hFl' : (NetRelay.flushBytesNonblock (instrumentSysOps sys).net cfd replyBytes MAX_CLOSING_STEPS replyOff).run (w, tr) = (flRes, (w1a, tr1a)) := hFl
         rw [hFl'] at hL hPo; dsimp only at hL hPo
         cases flRes with
         | none =>
@@ -1099,7 +1088,7 @@ private theorem closingSendStep_laws
           split at hRun
           · obtain ⟨okS, w1b, tr1b, hSh, hRun⟩ := stateT_bind_eq hRun
             have hShL := shutdownWrClean_instrumented_laws sys hRef cfd 16 w1a tr1a hL.1
-            have hSh' : (Relay.shutdownWrClean (instrumentSysOps sys).net cfd 16).run (w1a, tr1a) = (okS, (w1b, tr1b)) := hSh
+            have hSh' : (NetRelay.shutdownWrClean (instrumentSysOps sys).net cfd 16).run (w1a, tr1a) = (okS, (w1b, tr1b)) := hSh
             rw [hSh'] at hShL; dsimp only at hShL
             cases okS
             · simp only [Bool.false_eq_true, ↓reduceIte, stateT_pure_run] at hRun
@@ -1234,7 +1223,7 @@ private theorem enterClosingReply_wf_poll_of_eq {dnsJob : Type}
   obtain ⟨flRes, w2, tr2, hF, hRun⟩ := stateT_bind_eq hRun
   have hPo2 := flushBytesNonblock_pollOutcomes_eq sys cfd (if code == 403 then Relay.reply403Bytes else if code == 503 then Relay.reply503Bytes else Relay.reply502Bytes) MAX_CLOSING_STEPS 0 w1 tr1
   have hFl2 := flushBytesNonblock_of_eq sys hRef cfd _ MAX_CLOSING_STEPS 0 w1 w2 tr1 tr2 flRes hWf1 hF
-  have hF' : (Relay.flushBytesNonblock (instrumentSysOps sys).net cfd (if code == 403 then Relay.reply403Bytes else if code == 503 then Relay.reply503Bytes else Relay.reply502Bytes) MAX_CLOSING_STEPS 0).run (w1, tr1) = (flRes, (w2, tr2)) := hF
+  have hF' : (NetRelay.flushBytesNonblock (instrumentSysOps sys).net cfd (if code == 403 then Relay.reply403Bytes else if code == 503 then Relay.reply503Bytes else Relay.reply502Bytes) MAX_CLOSING_STEPS 0).run (w1, tr1) = (flRes, (w2, tr2)) := hF
   rw [hF'] at hPo2; dsimp only at hPo2; clear hF hF'
   have hPo20 : tr2.pollOutcomes = tr.pollOutcomes := hPo2.trans (congrArg _ hTr1)
   refine ⟨hWfOut, ?_⟩
@@ -1325,8 +1314,9 @@ private theorem startNextConnectAux_pollOutcomes_of_eq {dnsJob : Type}
           rw [hS] at hn; cases sr <;> exact ⟨⟨(wf_iff_parts wx').mpr hn.2.1, hpo⟩, Or.inr trivial⟩)
         MAX_EINTR_RETRIES (w, tr) ⟨hWf, rfl⟩
       dsimp only [sa] at hSock
-      have hSR' : (retryEintr MAX_EINTR_RETRIES ((instrumentSysOps sys).net.socket
-        (ipAddrToDialSockAddr (candidates[candIdx]'hLt) port).domain .stream { nonblock := true, cloexec := true } 0)).run (w, tr) = (rSock, (w1, tr1)) := hSR
+      have hSR' : (retryEintr ((instrumentSysOps sys).net.socket
+        (ipAddrToDialSockAddr (candidates[candIdx]'hLt) port).domain .stream { nonblock := true, cloexec := true } 0)
+        MAX_EINTR_RETRIES).run (w, tr) = (rSock, (w1, tr1)) := hSR
       rw [hSR'] at hSock; dsimp only at hSock
       cases rSock with
       | error e =>
@@ -1451,7 +1441,7 @@ theorem healthy_stepConnecting_laws {dnsJob : Type}
           rcases hG : sys.net.getsockopt ufd .error wx with ⟨gr, wx'⟩
           rw [hG] at hn; exact ⟨⟨(wf_iff_parts wx').mpr hn.2.1, htrx⟩, Or.inr trivial⟩)
         MAX_EINTR_RETRIES (w₀, tr₀) ⟨hWf₀, rfl⟩
-      have hGR' : (retryEintr MAX_EINTR_RETRIES ((instrumentSysOps sys).net.getsockopt ufd .error)).run (w₀, tr₀) = (gRes, (w1, tr1)) := hGR
+      have hGR' : (retryEintr ((instrumentSysOps sys).net.getsockopt ufd .error) MAX_EINTR_RETRIES).run (w₀, tr₀) = (gRes, (w1, tr1)) := hGR
       rw [hGR'] at hGs; dsimp only at hGs
       rcases hGs.1 with ⟨hWf1, hTr1Eq⟩
       rw [hTr1Eq] at hRun

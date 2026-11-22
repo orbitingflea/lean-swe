@@ -3,9 +3,13 @@ import LeanSwe.LinuxSyscall.Files.Model
 import LeanSwe.LinuxSyscall.Net.Model
 import LeanSwe.LinuxSyscall.Net.Proofs.HealthyStep
 import LeanSwe.LinuxSyscall.Poll.Model
+import LeanSwe.LinuxSyscall.Poll.Proofs
 import LeanSwe.LinuxSyscall.Dns.Model
 import LeanSwe.LinuxSyscall.Dns.Proofs
 import LeanSwe.LinuxSyscall.TimeRand.Model
+import LeanSwe.NetRelay.Types
+import LeanSwe.NetRelay.Interface
+import LeanSwe.NetRelay.Proofs
 import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Model
 import LeanSwe.ConnectProxy.Relay
@@ -19,6 +23,8 @@ import LeanSwe.ConnectProxy.Proofs.ParserAndModelProofs
 namespace LeanSwe.ConnectProxy.Proofs
 
 open LeanSwe.LinuxSyscall
+open LeanSwe.NetRelay
+open LeanSwe.NetRelay.Proofs
 open LeanSwe.ConnectProxy
 open LeanSwe.ConnectProxy.Model
 open LeanSwe.ConnectProxy.Relay
@@ -566,7 +572,7 @@ theorem retryEintr_preserves {W α : Type}
       let (r, w') := act.run w
       P w' ∧ (r = .error Errno.EINTR ∨ Q r w')) :
     ∀ (fuel : Nat) (w : W), P w →
-      let (r, w') := (retryEintr fuel act).run w
+      let (r, w') := (retryEintr act fuel).run w
       P w' ∧ (r = .error Errno.EINTR ∨ Q r w')
   | 0, w, hw => hStep w hw
   | fuel + 1, w, hw => by
@@ -616,7 +622,7 @@ theorem retryEintr_budget_laws {W α : Type}
       (r ≠ .error Errno.EINTR → budget w' ≤ budget w) ∧
       Post r w') :
     ∀ (fuel : Nat) (w : W), I w →
-      let (r, w') := (retryEintr fuel act).run w
+      let (r, w') := (retryEintr act fuel).run w
       Post r w' ∧ budget w' ≤ budget w ∧ (budget w ≤ fuel → r ≠ .error Errno.EINTR)
   | 0, w, hI => by
     have h0 := hStep w hI
@@ -644,7 +650,7 @@ theorem retryEintr_budget_laws {W α : Type}
         obtain ⟨hI1, hPos, hDec⟩ := h0.1 hEqEi
         have hSub := retryEintr_budget_laws budget I Post act hStep fuel w1 hI1
         dsimp only [StateT.run] at hSub ⊢
-        rcases hRec : retryEintr fuel act w1 with ⟨rFin, wFin⟩
+        rcases hRec : retryEintr act fuel w1 with ⟨rFin, wFin⟩
         rw [hRec] at hSub
         dsimp only at hSub ⊢
         refine ⟨hSub.1, by omega, fun hBud => hSub.2.2 (by omega)⟩
@@ -730,175 +736,6 @@ theorem errnoToProxyError_laws (port : UInt16) (e : Errno) :
   · rintro (rfl | rfl) <;> rfl
   · rintro (rfl | rfl | rfl) <;> rfl
 
-/-- `Relay.RingBuf.frontSlice` never exceeds `Relay.RING_CAP` (`16384` bytes). -/
-theorem ringBuf_frontSlice_size_le_cap (rb : RingBuf) :
-    rb.frontSlice.size ≤ RING_CAP := by
-  unfold RingBuf.frontSlice RingBuf.len
-  simp only [nat_min_eq_min]
-  split
-  · simp [RING_CAP]
-  · split
-    · rename_i hEq
-      simp only [Bool.and_eq_true, beq_iff_eq] at hEq
-      omega
-    · simp only [ByteArray.size_extract]
-      omega
-
-/-- `Relay.RingBuf.push` maintains the capacity invariant `len ≤ RING_CAP` across all chunk sizes. -/
-theorem ringBuf_push_len_le_cap (rb : RingBuf) (chunk : ByteArray) :
-    (rb.push chunk).len ≤ RING_CAP := by
-  have hAct : rb.frontSlice.size ≤ RING_CAP := ringBuf_frontSlice_size_le_cap rb
-  unfold RingBuf.push RingBuf.len
-  simp only [nat_min_eq_min]
-  split
-  · simpa [RingBuf.len] using hAct
-  · split
-    · split
-      · rename_i hEq; rw [beq_iff_eq] at hEq; dsimp only; omega
-      · dsimp only; simp only [ByteArray.size_extract]; omega
-    · split
-      · rename_i hEq; rw [beq_iff_eq] at hEq; dsimp only; simp only [ByteArray.size_append]; omega
-      · dsimp only; simp only [ByteArray.size_append, ByteArray.size_extract]; omega
-
-/-- `Relay.RingBuf.consume` maintains `len ≤ RING_CAP` for every well-formed buffer (`rb.len ≤ RING_CAP`). -/
-theorem ringBuf_consume_len_le_cap (rb : RingBuf) (n : Nat) (h : rb.len ≤ RING_CAP) :
-    (rb.consume n).len ≤ RING_CAP := by
-  unfold RingBuf.consume RingBuf.len at *
-  simp only [nat_min_eq_min] at *
-  split
-  · simp [RING_CAP]
-  · dsimp only; omega
-
-private theorem byteArray_extract_toList (b : ByteArray) (i j : Nat) :
-    (b.extract i j).data.toList = (b.data.toList.drop i).take (j - i) := by
-  rw [ByteArray.data_extract, Array.toList_extract, List.extract_eq_take_drop]
-
-/-- `Relay.RingBuf.frontSlice` exposes the exact logical FIFO byte stream `rb.toList`. -/
-theorem ringBuf_frontSlice_toList (rb : RingBuf) :
-    rb.frontSlice.data.toList = rb.toList := by
-  unfold RingBuf.frontSlice RingBuf.toList RingBuf.len
-  simp only [nat_min_eq_min]
-  split
-  · rename_i hZero
-    have hEq0 : min (rb.buf.size - rb.off) RING_CAP = 0 := beq_iff_eq.mp hZero
-    have hDropLen : (rb.buf.data.toList.drop rb.off).length = rb.buf.size - rb.off := by simp
-    rcases Nat.min_eq_zero_iff.mp hEq0 with hLen0 | hCap0
-    · have hNil : rb.buf.data.toList.drop rb.off = [] :=
-        List.eq_nil_of_length_eq_zero (by omega)
-      rw [hNil]
-      rfl
-    · simp [RING_CAP] at hCap0
-  · split
-    · rename_i hFast
-      simp only [Bool.and_eq_true, beq_iff_eq] at hFast
-      rcases hFast with ⟨hOff0, hSzEq⟩
-      rw [hOff0, List.drop_zero]
-      have hLe : rb.buf.data.toList.length ≤ RING_CAP := by
-        have : rb.buf.size ≤ RING_CAP := by omega
-        simpa using this
-      exact (List.take_of_length_le hLe).symm
-    · rw [byteArray_extract_toList]
-      have hSub : rb.off + min (rb.buf.size - rb.off) RING_CAP - rb.off =
-          min (rb.buf.size - rb.off) RING_CAP := by omega
-      rw [hSub]
-      have hDropLen : (rb.buf.data.toList.drop rb.off).length = rb.buf.size - rb.off := by simp
-      by_cases hLe : rb.buf.size - rb.off ≤ RING_CAP
-      · rw [Nat.min_eq_left hLe]
-        rw [List.take_of_length_le (by omega), List.take_of_length_le (by omega)]
-      · rw [Nat.min_eq_right (by omega)]
-
-/-- `Relay.RingBuf.push` preserves exact FIFO byte order across arbitrary short `recvfrom` chunks (`(rb.push chunk).toList = rb.toList ++ chunk.take avail`). -/
-theorem ringBuf_push_toList (rb : RingBuf) (chunk : ByteArray) :
-    (rb.push chunk).toList =
-      rb.toList ++ chunk.data.toList.take (RING_CAP - rb.toList.length) := by
-  have hFront := ringBuf_frontSlice_toList rb
-  have hFrontSz : rb.frontSlice.size = rb.toList.length := by
-    simpa using congrArg List.length hFront
-  have hCap : rb.frontSlice.size ≤ RING_CAP := ringBuf_frontSlice_size_le_cap rb
-  unfold RingBuf.push
-  simp only [nat_min_eq_min]
-  by_cases hTake0 : (min chunk.size (RING_CAP - rb.frontSlice.size) == 0) = true
-  · simp only [hTake0, ↓reduceIte]
-    change (rb.frontSlice.data.toList.drop 0).take RING_CAP = _
-    rw [List.drop_zero]
-    have hEq0 : min chunk.size (RING_CAP - rb.frontSlice.size) = 0 := beq_iff_eq.mp hTake0
-    have hTakeNil : chunk.data.toList.take (RING_CAP - rb.toList.length) = [] := by
-      rw [← hFrontSz]
-      rcases Nat.min_eq_zero_iff.mp hEq0 with hc0 | ha0
-      · have hNil : chunk.data.toList = [] :=
-          List.eq_nil_of_length_eq_zero (by simpa using hc0)
-        simp [hNil]
-      · simp [ha0]
-    rw [hTakeNil, List.append_nil, hFront]
-    exact List.take_of_length_le (by omega)
-  · have hTakeF : (min chunk.size (RING_CAP - rb.frontSlice.size) == 0) = false :=
-      Bool.eq_false_iff.mpr hTake0
-    simp only [hTakeF, Bool.false_eq_true, ↓reduceIte]
-    let takeN := min chunk.size (RING_CAP - rb.frontSlice.size)
-    let part := if takeN == chunk.size then chunk else chunk.extract 0 takeN
-    have hPartList : part.data.toList = chunk.data.toList.take (RING_CAP - rb.toList.length) := by
-      dsimp only [part, takeN]
-      rw [← hFrontSz]
-      by_cases hAll : (min chunk.size (RING_CAP - rb.frontSlice.size) == chunk.size) = true
-      · simp only [hAll, ↓reduceIte]
-        have hLe : chunk.size ≤ RING_CAP - rb.frontSlice.size := by
-          have := beq_iff_eq.mp hAll; omega
-        exact (List.take_of_length_le (by simpa using hLe)).symm
-      · have hAllF : (min chunk.size (RING_CAP - rb.frontSlice.size) == chunk.size) = false :=
-          Bool.eq_false_iff.mpr hAll
-        simp only [hAllF, Bool.false_eq_true, ↓reduceIte, byteArray_extract_toList, List.drop_zero, Nat.sub_zero]
-        have hLt : RING_CAP - rb.frontSlice.size < chunk.size := by
-          have hNe : min chunk.size (RING_CAP - rb.frontSlice.size) ≠ chunk.size :=
-            fun h => hAll (beq_iff_eq.mpr h)
-          omega
-        rw [Nat.min_eq_right (Nat.le_of_lt hLt)]
-    have hPartLen : part.data.toList.length ≤ RING_CAP - rb.frontSlice.size := by
-      rw [hPartList, List.length_take, hFrontSz]; omega
-    by_cases hAct0 : (rb.frontSlice.size == 0) = true
-    · simp only [hAct0, ↓reduceIte]
-      change (part.data.toList.drop 0).take RING_CAP = _
-      rw [List.drop_zero]
-      have hNil : rb.toList = [] :=
-        List.eq_nil_of_length_eq_zero (by have := beq_iff_eq.mp hAct0; omega)
-      rw [hNil, List.nil_append]
-      rw [List.take_of_length_le (by omega)]
-      simpa [hNil] using hPartList
-    · have hActF : (rb.frontSlice.size == 0) = false := Bool.eq_false_iff.mpr hAct0
-      simp only [hActF, Bool.false_eq_true, ↓reduceIte]
-      change ((rb.frontSlice ++ part).data.toList.drop 0).take RING_CAP = _
-      rw [List.drop_zero]
-      have hAppList : (rb.frontSlice ++ part).data.toList = rb.frontSlice.data.toList ++ part.data.toList := by
-        simp [ByteArray.data_append]
-      rw [hAppList, List.take_of_length_le (by rw [List.length_append, hFront]; omega), hFront, hPartList]
-
-/-- `Relay.RingBuf.consume` drops the exact `n` sent bytes from the front of `rb.toList` across arbitrary short `sendto` completions. -/
-theorem ringBuf_consume_toList (rb : RingBuf) (n : Nat) (hCap : rb.len ≤ RING_CAP) :
-    (rb.consume n).toList = rb.toList.drop n := by
-  have hDropLen : (rb.buf.data.toList.drop rb.off).length = rb.len := by
-    unfold RingBuf.len; simp
-  have hToListEq : rb.toList = rb.buf.data.toList.drop rb.off := by
-    unfold RingBuf.toList
-    exact List.take_of_length_le (by omega)
-  unfold RingBuf.consume
-  dsimp only
-  split
-  · rename_i hGe
-    simp only [nat_min_eq_min] at hGe
-    rw [hToListEq]
-    have hNil : (rb.buf.data.toList.drop rb.off).drop n = [] := by
-      apply List.drop_eq_nil_of_le
-      omega
-    rw [hNil]
-    rfl
-  · rename_i hLt
-    simp only [nat_min_eq_min] at hLt
-    rw [hToListEq]
-    unfold RingBuf.toList
-    rw [← List.drop_drop]
-    apply List.take_of_length_le
-    rw [List.length_drop, hDropLen]
-    omega
-
 private theorem accepted_slice_toList (bs : ByteArray) (lim : Nat) :
     let k := Nat.min lim bs.size
     (if k == bs.size then bs.data else (bs.extract 0 k).data).toList =
@@ -915,21 +752,15 @@ private theorem accepted_slice_toList (bs : ByteArray) (lim : Nat) :
       omega
     rw [Nat.min_eq_left (Nat.le_of_lt hLt)]
 
-private theorem ringBuf_toList_length_of_le_cap (rb : RingBuf) (hCap : rb.len ≤ RING_CAP) :
-    rb.toList.length = rb.len := by
-  have hDropLen : (rb.buf.data.toList.drop rb.off).length = rb.len := by unfold RingBuf.len; simp
-  unfold RingBuf.toList
-  rw [List.length_take, hDropLen, Nat.min_eq_right hCap]
-
-/-- Relational RX FIFO conservation and `EINTR` progress: over ANY `sys` refining `RefinesHealthyCProxySys`, `Relay.recvIntoRing` preserves `w'.wf`, rejects with `none` only on invalid-descriptor errors (`EBADF`/`EINVAL`/`ENOTSOCK`), maintains `rb'.len ≤ RING_CAP` and exact byte order `rb'.toList = rb.toList ++ rxDelta`, and progresses until full, `EOF`/peer-reset, or non-`EINTR` `netErrs` whenever `eintrBudget + (RING_CAP - rb.len) ≤ fuel`. -/
+/-- Relational RX FIFO conservation and `EINTR` progress: over ANY `sys` refining `RefinesHealthyCProxySys`, `NetRelay.recvIntoRing` preserves `w'.wf`, rejects with `none` only on invalid-descriptor errors (`EBADF`/`EINVAL`/`ENOTSOCK`), preserves `rb.cap`, maintains `rb'.len ≤ rb.cap` and exact byte order `rb'.toList = rb.toList ++ rxDelta`, and progresses until full, `EOF`/peer-reset, or non-`EINTR` `netErrs` whenever `eintrBudget + (rb.cap - rb.len) ≤ fuel`. -/
 theorem healthy_recvIntoRing_laws
     (sys : CProxySysOpsM (StateM HealthySysWorld) Nat)
     (hRef : RefinesHealthyCProxySys sys)
     (fd : Nat) :
     ∀ (fuel : Nat) (rb : RingBuf) (w : HealthySysWorld) (tr : SysAuditTrace Nat),
       w.wf = true →
-      rb.len ≤ RING_CAP →
-      let (res, (w', tr')) := (Relay.recvIntoRing (instrumentSysOps sys).net fd fuel rb).run (w, tr)
+      rb.len ≤ rb.cap →
+      let (res, (w', tr')) := (NetRelay.recvIntoRing (instrumentSysOps sys).net fd fuel rb).run (w, tr)
       w'.wf = true ∧
       (∀ e ∈ tr.netErrs.toList, e ∈ tr'.netErrs.toList) ∧
       tr.netErrs.size ≤ tr'.netErrs.size ∧
@@ -938,46 +769,52 @@ theorem healthy_recvIntoRing_laws
         ∃ e ∈ tr'.netErrs.toList,
           e ∈ tr.netErrs.toList ∨ (e = Errno.EBADF ∨ e = Errno.EINVAL ∨ e = Errno.ENOTSOCK)
       | some (rb', eof) =>
-        rb'.len ≤ RING_CAP ∧
+        rb'.len ≤ rb.cap ∧
+        rb'.cap = rb.cap ∧
         (∃ rxDelta : List UInt8,
           tr'.recvBytes.toList = tr.recvBytes.toList ++ rxDelta ∧
           rb'.toList = rb.toList ++ rxDelta) ∧
-        (w.netEnv.eintrBudget + (RING_CAP - rb.len) ≤ fuel →
+        (w.netEnv.eintrBudget + (rb.cap - rb.len) ≤ fuel →
           rb'.writeAvail = 0 ∨ eof = true ∨ tr.netErrs.size < tr'.netErrs.size)
   | 0, rb, w, tr, hWf, hCap => by
-    dsimp only [Relay.recvIntoRing, StateT.run, pure, StateT.pure]
-    refine ⟨hWf, fun _ h => h, Nat.le_refl _, hCap, ⟨[], by simp, by simp⟩, fun hFuel => ?_⟩
-    unfold RingBuf.writeAvail
+    dsimp only [NetRelay.recvIntoRing, NetRelay.Internal.recvIntoRing, StateT.run, pure, StateT.pure]
+    refine ⟨hWf, fun _ h => h, Nat.le_refl _, hCap, rfl, ⟨[], by simp, by simp⟩, fun hFuel => ?_⟩
+    unfold RingBuf.writeAvail NetRelay.Internal.ringBufWriteAvail NetRelay.Internal.ringBufLen
     simp only [nat_min_eq_min]
+    have hLenEq : rb.buf.size - rb.off = rb.len := rfl
     omega
   | fuel + 1, rb, w, tr, hWf, hCap => by
-    unfold Relay.recvIntoRing
-    by_cases hAv0 : (rb.writeAvail == 0) = true
+    unfold NetRelay.recvIntoRing NetRelay.Internal.recvIntoRing
+    by_cases hAv0 : (NetRelay.Internal.ringBufWriteAvail rb == 0) = true
     · simp only [hAv0, ↓reduceIte]
       dsimp only [StateT.run, pure, StateT.pure]
-      exact ⟨hWf, fun _ h => h, Nat.le_refl _, hCap, ⟨[], by simp, by simp⟩,
+      exact ⟨hWf, fun _ h => h, Nat.le_refl _, hCap, rfl, ⟨[], by simp, by simp⟩,
         fun _ => Or.inl (beq_iff_eq.mp hAv0)⟩
-    · have hAvF : (rb.writeAvail == 0) = false := Bool.eq_false_iff.mpr hAv0
+    · have hAvF : (NetRelay.Internal.ringBufWriteAvail rb == 0) = false := Bool.eq_false_iff.mpr hAv0
       simp only [hAvF, Bool.false_eq_true, ↓reduceIte]
       dsimp only [StateT.run, bind, StateT.bind, pure, StateT.pure, Id.run]
-      let avail := rb.writeAvail
-      let want := UInt32.ofNat avail
+      let avail := NetRelay.Internal.ringBufWriteAvail rb
+      let reqCap := Nat.min avail MAX_READ_BYTES.toNat
+      let want := UInt32.ofNat reqCap
       have hAvailPos : avail > 0 := by
-        have hNe : rb.writeAvail ≠ 0 := fun hc => hAv0 (beq_iff_eq.mpr hc)
+        have hNe : NetRelay.Internal.ringBufWriteAvail rb ≠ 0 := fun hc => hAv0 (beq_iff_eq.mpr hc)
         omega
-      have hAvailLe : avail ≤ RING_CAP := by
-        unfold avail RingBuf.writeAvail; omega
-      have hWantToNat : want.toNat = avail := by
-        have hLt : avail < UInt32.size := by
-          have : RING_CAP = 16384 := rfl
-          change avail < 4294967296; omega
+      have hMaxVal : MAX_READ_BYTES.toNat = 16777216 := rfl
+      have hReqCapPos : reqCap > 0 := by
+        dsimp only [reqCap]; simp only [nat_min_eq_min]; omega
+      have hReqCapLeAvail : reqCap ≤ avail := Nat.min_le_left _ _
+      have hWantToNat : want.toNat = reqCap := by
+        have hLt : reqCap < UInt32.size := by
+          have : reqCap ≤ MAX_READ_BYTES.toNat := Nat.min_le_right _ _
+          change reqCap < 4294967296; omega
         exact UInt32.toNat_ofNat_of_lt hLt
       have hTlLen : rb.toList.length = rb.len := ringBuf_toList_length_of_le_cap rb hCap
-      have hAvailEq : avail = RING_CAP - rb.toList.length := by
-        unfold avail RingBuf.writeAvail
+      have hAvailEq : avail = rb.cap - rb.toList.length := by
+        unfold avail NetRelay.Internal.ringBufWriteAvail NetRelay.Internal.ringBufLen
         simp only [nat_min_eq_min]
-        rw [Nat.min_eq_left hCap, hTlLen]
-      have hLtCap : rb.len < RING_CAP := by omega
+        have hLenEq : rb.buf.size - rb.off = rb.len := rfl
+        rw [hLenEq, Nat.min_eq_left hCap, hTlLen]
+      have hLtCap : rb.len < rb.cap := by omega
       have hNet := hRef.2.1 w (.recvfrom fd want { dontwait := true }) ((wf_iff_parts w).mp hWf)
       dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
       rw [inst_net_recvfrom]
@@ -996,25 +833,43 @@ theorem healthy_recvIntoRing_laws
           have hSzEq : bs.size = 0 := beq_iff_eq.mp hSz0
           have hEmpty : bs.data.toList = [] :=
             List.eq_nil_of_length_eq_zero (by simpa using hSzEq)
-          refine ⟨hWf1, fun _ h => h, Nat.le_refl _, hCap, ⟨[], ?_, by simp⟩, fun _ => Or.inr (Or.inl rfl)⟩
+          refine ⟨hWf1, fun _ h => h, Nat.le_refl _, hCap, rfl, ⟨[], ?_, by simp⟩, fun _ => Or.inr (Or.inl rfl)⟩
           simp [hSzEq, hEmpty]
         · have hSzF : (bs.size == 0) = false := Bool.eq_false_iff.mpr hSz0
           simp only [hSzF, Bool.false_eq_true, ↓reduceIte]
           have hBsPos : bs.size > 0 := by
             have hNe : bs.size ≠ 0 := fun hc => hSz0 (beq_iff_eq.mpr hc)
             omega
+          let chunk := if bs.size ≤ reqCap then bs else bs.extract 0 reqCap
+          have hChunkToList : chunk.data.toList = bs.data.toList.take reqCap := by
+            dsimp only [chunk]
+            by_cases hLe : bs.size ≤ reqCap
+            · simp only [hLe, ↓reduceIte]
+              exact (List.take_of_length_le (by simpa using hLe)).symm
+            · simp only [hLe, ↓reduceIte, byteArray_extract_toList, List.drop_zero, Nat.sub_zero]
+          have hChunkSz : chunk.size = min bs.size reqCap := by
+            have h1 : chunk.data.toList.length = chunk.size := by simp
+            rw [← h1, hChunkToList, List.length_take]
+            have h2 : bs.data.toList.length = bs.size := by simp
+            rw [h2, Nat.min_comm]
+          have hChunkTake : chunk.data.toList.take (rb.cap - rb.toList.length) = chunk.data.toList := by
+            apply List.take_of_length_le
+            have h1 : chunk.data.toList.length = chunk.size := by simp
+            omega
           let tr1 := { tr with recvBytes := tr.recvBytes ++
             (let k := Nat.min bs.size want.toNat; if k == bs.size then bs.data else (bs.extract 0 k).data) }
-          have hPushCap : (rb.push bs).len ≤ RING_CAP := ringBuf_push_len_le_cap rb bs
-          have hPushGt : (rb.push bs).len > rb.len := by
-            have hL1 := ringBuf_toList_length_of_le_cap (rb.push bs) hPushCap
-            have hL2 := congrArg List.length (ringBuf_push_toList rb bs)
-            rw [hL1, List.length_append, List.length_take, hTlLen] at hL2
-            have hBsListLen : bs.data.toList.length = bs.size := by simp
+          have hPushCapEq : (rb.push chunk).cap = rb.cap := ringBuf_push_cap rb chunk
+          have hPushCap : (rb.push chunk).len ≤ (rb.push chunk).cap := by
+            rw [hPushCapEq]; exact ringBuf_push_len_le_cap rb chunk
+          have hPushGt : (rb.push chunk).len > rb.len := by
+            have hL1 := ringBuf_toList_length_of_le_cap (rb.push chunk) hPushCap
+            have hL2 := congrArg List.length (ringBuf_push_toList rb chunk)
+            rw [hL1, List.length_append, hChunkTake, hTlLen] at hL2
+            have hLenChunk : chunk.data.toList.length = chunk.size := by simp
             omega
-          have hSub := healthy_recvIntoRing_laws sys hRef fd fuel (rb.push bs) w1 tr1 hWf1 hPushCap
-          dsimp only [StateT.run] at hSub ⊢
-          rcases hRes : Relay.recvIntoRing (instrumentSysOps sys).net fd fuel (rb.push bs) (w1, tr1) with ⟨res2, wt2⟩
+          have hSub := healthy_recvIntoRing_laws sys hRef fd fuel (rb.push chunk) w1 tr1 hWf1 hPushCap
+          dsimp only [NetRelay.recvIntoRing, RingBuf.push, StateT.run] at hSub ⊢
+          rcases hRes : NetRelay.Internal.recvIntoRing (instrumentSysOps sys).net fd fuel (NetRelay.Internal.ringBufPush rb chunk) (w1, tr1) with ⟨res2, wt2⟩
           rcases wt2 with ⟨w2, tr2⟩
           rw [hRes] at hSub
           dsimp only [tr1] at hSub ⊢
@@ -1023,19 +878,28 @@ theorem healthy_recvIntoRing_laws
           | none => exact hSub.2.2.2
           | some pair =>
             rcases pair with ⟨rb2, eof2⟩
-            rcases hSub.2.2.2 with ⟨hCap2, ⟨delta2, hTr2, hRb2⟩, hProg2⟩
+            rcases hSub.2.2.2 with ⟨hCap2, hCapEq2, ⟨delta2, hTr2, hRb2⟩, hProg2⟩
             have hChunkEq :
                 (let k := Nat.min bs.size want.toNat; if k == bs.size then bs.data else (bs.extract 0 k).data).toList =
-                  bs.data.toList.take (RING_CAP - rb.toList.length) := by
+                  chunk.data.toList := by
               have hAcc := accepted_slice_toList bs want.toNat
               dsimp only at hAcc ⊢
               have hMinComm : Nat.min bs.size want.toNat = Nat.min want.toNat bs.size := by
                 simp only [nat_min_eq_min]; exact Nat.min_comm ..
-              rw [hMinComm, hAcc, hWantToNat, hAvailEq]
-            refine ⟨hCap2, ⟨bs.data.toList.take (RING_CAP - rb.toList.length) ++ delta2, ?_, ?_⟩, fun hFuel => ?_⟩
+              rw [hMinComm, hAcc, hWantToNat, hChunkToList]
+            refine ⟨hPushCapEq ▸ hCap2, hCapEq2.trans hPushCapEq,
+              ⟨chunk.data.toList ++ delta2, ?_, ?_⟩, fun hFuel => ?_⟩
             · rw [hTr2, Array.toList_append, hChunkEq, List.append_assoc]
-            · rw [hRb2, ringBuf_push_toList, List.append_assoc]
-            · exact hProg2 (by omega)
+            · change rb2.toList = rb.toList ++ (chunk.data.toList ++ delta2)
+              have hP := ringBuf_push_toList rb chunk
+              rw [hChunkTake] at hP
+              calc rb2.toList
+                _ = (rb.push chunk).toList ++ delta2 := hRb2
+                _ = (rb.toList ++ chunk.data.toList) ++ delta2 := by rw [hP]
+                _ = rb.toList ++ (chunk.data.toList ++ delta2) := List.append_assoc ..
+            · exact hProg2 (by
+                change w1.netEnv.eintrBudget + ((rb.push chunk).cap - (rb.push chunk).len) ≤ fuel
+                rw [hPushCapEq]; omega)
       | error e =>
         by_cases hEi : (e == Errno.EINTR) = true
         · simp only [hEi, ↓reduceIte]
@@ -1043,8 +907,8 @@ theorem healthy_recvIntoRing_laws
             congrArg Net.NetOutcome.err (beq_iff_eq.mp hEi)
           obtain ⟨hPosB, hDecB⟩ := hBud.1 hEqEi
           have hSub := healthy_recvIntoRing_laws sys hRef fd fuel rb w1 tr hWf1 hCap
-          dsimp only [StateT.run] at hSub ⊢
-          rcases hRes : Relay.recvIntoRing (instrumentSysOps sys).net fd fuel rb (w1, tr) with ⟨res2, wt2⟩
+          dsimp only [NetRelay.recvIntoRing, StateT.run] at hSub ⊢
+          rcases hRes : NetRelay.Internal.recvIntoRing (instrumentSysOps sys).net fd fuel rb (w1, tr) with ⟨res2, wt2⟩
           rcases wt2 with ⟨w2, tr2⟩
           rw [hRes] at hSub
           dsimp only at hSub ⊢
@@ -1053,7 +917,8 @@ theorem healthy_recvIntoRing_laws
           | none => exact hSub.2.2.2
           | some pair =>
             rcases pair with ⟨rb2, eof2⟩
-            exact ⟨hSub.2.2.2.1, hSub.2.2.2.2.1, fun hFuel => hSub.2.2.2.2.2 (by omega)⟩
+            exact ⟨hSub.2.2.2.1, hSub.2.2.2.2.1, hSub.2.2.2.2.2.1,
+              fun hFuel => hSub.2.2.2.2.2.2 (by omega)⟩
         · have hEiF : (e == Errno.EINTR) = false := Bool.eq_false_iff.mpr hEi
           simp only [hEiF, Bool.false_eq_true, ↓reduceIte]
           have hMono : ∀ x ∈ tr.netErrs.toList, x ∈ (tr.netErrs.push e).toList := by
@@ -1062,7 +927,7 @@ theorem healthy_recvIntoRing_laws
           by_cases hAg : (e == Errno.EAGAIN) = true
           · simp only [hAg, ↓reduceIte]
             dsimp only [StateT.run, pure, StateT.pure]
-            exact ⟨hWf1, hMono, Nat.le_of_lt hSzLt, hCap, ⟨[], by simp, by simp⟩,
+            exact ⟨hWf1, hMono, Nat.le_of_lt hSzLt, hCap, rfl, ⟨[], by simp, by simp⟩,
               fun _ => Or.inr (Or.inr hSzLt)⟩
           · have hAgF : (e == Errno.EAGAIN) = false := Bool.eq_false_iff.mpr hAg
             simp only [hAgF, Bool.false_eq_true, ↓reduceIte]
@@ -1079,18 +944,18 @@ theorem healthy_recvIntoRing_laws
                 Bool.eq_false_iff.mpr hBadFd
               simp only [hBadFdF, Bool.false_eq_true, ↓reduceIte]
               dsimp only [StateT.run, pure, StateT.pure]
-              exact ⟨hWf1, hMono, Nat.le_of_lt hSzLt, hCap, ⟨[], by simp, by simp⟩,
+              exact ⟨hWf1, hMono, Nat.le_of_lt hSzLt, hCap, rfl, ⟨[], by simp, by simp⟩,
                 fun _ => Or.inr (Or.inl rfl)⟩
 
-/-- Relational TX FIFO conservation and `EINTR` progress: over ANY `sys` refining `RefinesHealthyCProxySys`, `Relay.flushRingNonblock` preserves `w'.wf`, returns `none` only on non-`EAGAIN` `netErrs`, maintains `rb'.len ≤ RING_CAP` and `txDelta ++ rb'.toList = rb.toList`, and progresses until empty, `EAGAIN`, or zero-send whenever `eintrBudget + rb.len ≤ fuel`. -/
+/-- Relational TX FIFO conservation and `EINTR` progress: over ANY `sys` refining `RefinesHealthyCProxySys`, `NetRelay.flushRingNonblock` preserves `w'.wf`, returns `none` only on non-`EAGAIN` `netErrs`, preserves `rb.cap`, maintains `rb'.len ≤ rb.cap` and `txDelta ++ rb'.toList = rb.toList`, and progresses until empty, `EAGAIN`, or zero-send whenever `eintrBudget + rb.len ≤ fuel`. -/
 theorem healthy_flushRingNonblock_laws
     (sys : CProxySysOpsM (StateM HealthySysWorld) Nat)
     (hRef : RefinesHealthyCProxySys sys)
     (fd : Nat) :
     ∀ (fuel : Nat) (rb : RingBuf) (w : HealthySysWorld) (tr : SysAuditTrace Nat),
       w.wf = true →
-      rb.len ≤ RING_CAP →
-      let (res, (w', tr')) := (Relay.flushRingNonblock (instrumentSysOps sys).net fd fuel rb).run (w, tr)
+      rb.len ≤ rb.cap →
+      let (res, (w', tr')) := (NetRelay.flushRingNonblock (instrumentSysOps sys).net fd fuel rb).run (w, tr)
       w'.wf = true ∧
       (∀ e ∈ tr.netErrs.toList, e ∈ tr'.netErrs.toList) ∧
       (tr.sawZeroSend = true → tr'.sawZeroSend = true) ∧
@@ -1098,36 +963,38 @@ theorem healthy_flushRingNonblock_laws
       | none =>
         ∃ e ∈ tr'.netErrs.toList, e ∈ tr.netErrs.toList ∨ e ≠ Errno.EAGAIN
       | some rb' =>
-        rb'.len ≤ RING_CAP ∧
+        rb'.len ≤ rb.cap ∧
+        rb'.cap = rb.cap ∧
         (∃ txDelta : List UInt8,
           tr'.sentBytes.toList = tr.sentBytes.toList ++ txDelta ∧
           txDelta ++ rb'.toList = rb.toList) ∧
         (w.netEnv.eintrBudget + rb.len ≤ fuel →
           rb'.isEmpty = true ∨ Errno.EAGAIN ∈ tr'.netErrs.toList ∨ tr'.sawZeroSend = true)
   | 0, rb, w, tr, hWf, hCap => by
-    dsimp only [Relay.flushRingNonblock, StateT.run, pure, StateT.pure]
-    refine ⟨hWf, fun _ h => h, id, hCap, ⟨[], by simp, by simp⟩, fun hFuel => ?_⟩
+    dsimp only [NetRelay.flushRingNonblock, NetRelay.Internal.flushRingNonblock, StateT.run, pure, StateT.pure]
+    refine ⟨hWf, fun _ h => h, id, hCap, rfl, ⟨[], by simp, by simp⟩, fun hFuel => ?_⟩
     have hLen0 : rb.len = 0 := by omega
-    exact Or.inl (by unfold RingBuf.isEmpty; exact beq_iff_eq.mpr hLen0)
+    exact Or.inl (by unfold RingBuf.isEmpty NetRelay.Internal.ringBufIsEmpty; exact beq_iff_eq.mpr hLen0)
   | fuel + 1, rb, w, tr, hWf, hCap => by
-    unfold Relay.flushRingNonblock
-    by_cases hEmp : rb.isEmpty = true
+    unfold NetRelay.flushRingNonblock NetRelay.Internal.flushRingNonblock
+    by_cases hEmp : NetRelay.Internal.ringBufIsEmpty rb = true
     · simp only [hEmp, ↓reduceIte]
       dsimp only [StateT.run, pure, StateT.pure]
-      exact ⟨hWf, fun _ h => h, id, hCap, ⟨[], by simp, by simp⟩, fun _ => Or.inl hEmp⟩
-    · have hEmpF : rb.isEmpty = false := Bool.eq_false_iff.mpr hEmp
+      exact ⟨hWf, fun _ h => h, id, hCap, rfl, ⟨[], by simp, by simp⟩, fun _ => Or.inl hEmp⟩
+    · have hEmpF : NetRelay.Internal.ringBufIsEmpty rb = false := Bool.eq_false_iff.mpr hEmp
       simp only [hEmpF, Bool.false_eq_true, ↓reduceIte]
       dsimp only [StateT.run, bind, StateT.bind, pure, StateT.pure, Id.run]
       have hLenPos : rb.len > 0 := by
-        unfold RingBuf.isEmpty at hEmp
+        unfold NetRelay.Internal.ringBufIsEmpty at hEmp
         have hNe : rb.len ≠ 0 := fun hc => hEmp (beq_iff_eq.mpr hc)
         omega
-      let slice := rb.frontSlice
+      let slice := NetRelay.Internal.ringBufFrontSlice rb
       have hSlicePos : slice.size > 0 := by
-        have hEq1 := congrArg List.length (ringBuf_frontSlice_toList rb)
+        have hEq1 : slice.data.toList.length = rb.toList.length :=
+          congrArg List.length (ringBuf_frontSlice_toList rb)
         have hEq2 := ringBuf_toList_length_of_le_cap rb hCap
         have hSz : slice.data.toList.length = slice.size := by simp
-        rw [← hSz]; dsimp only [slice]; rw [hEq1, hEq2]; exact hLenPos
+        rw [← hSz, hEq1, hEq2]; exact hLenPos
       have hNet := hRef.2.1 w (.sendto fd slice { nosignal := true, dontwait := true }) ((wf_iff_parts w).mp hWf)
       dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
       rw [inst_net_sendto]
@@ -1144,16 +1011,17 @@ theorem healthy_flushRingNonblock_laws
         let accepted := if k == slice.size then slice.data else (slice.extract 0 k).data
         have hAccList : accepted.toList = rb.toList.take n.toNat := by
           have hAcc := accepted_slice_toList slice n.toNat
-          dsimp only [accepted, k, slice] at hAcc ⊢
-          rw [hAcc, ringBuf_frontSlice_toList]
+          have hFront : slice.data.toList = rb.toList := ringBuf_frontSlice_toList rb
+          dsimp only [accepted, k]
+          rw [hAcc, hFront]
         by_cases hn0 : (n == 0) = true
         · simp only [hn0, ↓reduceIte, Bool.true_and]
           dsimp only [StateT.run, pure, StateT.pure]
           have hnZ : n.toNat = 0 := by have := beq_iff_eq.mp hn0; subst this; rfl
-          have hZeroTrue : (tr.sawZeroSend || decide (rb.frontSlice.size > 0)) = true := by
-            have hd : decide (rb.frontSlice.size > 0) = true := decide_eq_true hSlicePos
+          have hZeroTrue : (tr.sawZeroSend || decide (slice.size > 0)) = true := by
+            have hd : decide (slice.size > 0) = true := decide_eq_true hSlicePos
             rw [hd, Bool.or_true]
-          refine ⟨hWf1, fun _ h => h, fun _ => hZeroTrue, hCap, ⟨[], ?_, by simp⟩,
+          refine ⟨hWf1, fun _ h => h, fun _ => hZeroTrue, hCap, rfl, ⟨[], ?_, by simp⟩,
             fun _ => Or.inr (Or.inr hZeroTrue)⟩
           rw [Array.toList_append, hAccList, hnZ]
           simp
@@ -1163,7 +1031,9 @@ theorem healthy_flushRingNonblock_laws
             have hNe : n ≠ 0 := fun hc => hn0 (beq_iff_eq.mpr hc)
             exact Nat.pos_of_ne_zero (fun hz => hNe (by rw [← @UInt32.ofNat_toNat n, hz]; rfl))
           let tr1 := { tr with sentBytes := tr.sentBytes ++ accepted }
-          have hConsCap : (rb.consume n.toNat).len ≤ RING_CAP := ringBuf_consume_len_le_cap rb n.toNat hCap
+          have hConsCapEq : (rb.consume n.toNat).cap = rb.cap := ringBuf_consume_cap rb n.toNat
+          have hConsCap : (rb.consume n.toNat).len ≤ (rb.consume n.toNat).cap := by
+            rw [hConsCapEq]; exact ringBuf_consume_len_le_cap rb n.toNat hCap
           have hConsLt : (rb.consume n.toNat).len < rb.len := by
             have hL1 := ringBuf_toList_length_of_le_cap (rb.consume n.toNat) hConsCap
             have hL2 := congrArg List.length (ringBuf_consume_toList rb n.toNat hCap)
@@ -1171,8 +1041,8 @@ theorem healthy_flushRingNonblock_laws
             rw [hL1, List.length_drop, hL0] at hL2
             omega
           have hSub := healthy_flushRingNonblock_laws sys hRef fd fuel (rb.consume n.toNat) w1 tr1 hWf1 hConsCap
-          dsimp only [StateT.run, tr1] at hSub ⊢
-          rcases hRes : Relay.flushRingNonblock (instrumentSysOps sys).net fd fuel (rb.consume n.toNat) (w1, tr1) with ⟨res2, wt2⟩
+          dsimp only [NetRelay.flushRingNonblock, RingBuf.consume, StateT.run, tr1] at hSub ⊢
+          rcases hRes : NetRelay.Internal.flushRingNonblock (instrumentSysOps sys).net fd fuel (NetRelay.Internal.ringBufConsume rb n.toNat) (w1, tr1) with ⟨res2, wt2⟩
           rcases wt2 with ⟨w2, tr2⟩
           dsimp only [tr1] at hRes
           rw [hRes] at hSub
@@ -1181,12 +1051,18 @@ theorem healthy_flushRingNonblock_laws
           cases res2 with
           | none => exact hSub.2.2.2
           | some rb2 =>
-            rcases hSub.2.2.2 with ⟨hCap2, ⟨delta2, hTr2, hRb2⟩, hProg2⟩
-            refine ⟨hCap2, ⟨rb.toList.take n.toNat ++ delta2, ?_, ?_⟩, fun hFuel => ?_⟩
+            rcases hSub.2.2.2 with ⟨hCap2, hCapEq2, ⟨delta2, hTr2, hRb2⟩, hProg2⟩
+            refine ⟨hConsCapEq ▸ hCap2, hCapEq2.trans hConsCapEq,
+              ⟨rb.toList.take n.toNat ++ delta2, ?_, ?_⟩, fun hFuel => ?_⟩
             · rw [hTr2, Array.toList_append, hAccList, List.append_assoc]
-            · rw [List.append_assoc, hRb2, ringBuf_consume_toList rb n.toNat hCap]
+            · have hC : (rb.consume n.toNat).toList = rb.toList.drop n.toNat :=
+                ringBuf_consume_toList rb n.toNat hCap
+              have hEq : delta2 ++ rb2.toList = (rb.consume n.toNat).toList := hRb2
+              rw [List.append_assoc, hEq, hC]
               exact List.take_append_drop n.toNat rb.toList
-            · exact hProg2 (by omega)
+            · exact hProg2 (by
+                change w1.netEnv.eintrBudget + (rb.consume n.toNat).len ≤ fuel
+                omega)
       | error e =>
         by_cases hEi : (e == Errno.EINTR) = true
         · simp only [hEi, ↓reduceIte]
@@ -1194,8 +1070,8 @@ theorem healthy_flushRingNonblock_laws
             congrArg Net.NetOutcome.err (beq_iff_eq.mp hEi)
           obtain ⟨hPosB, hDecB⟩ := hBud.1 hEqEi
           have hSub := healthy_flushRingNonblock_laws sys hRef fd fuel rb w1 tr hWf1 hCap
-          dsimp only [StateT.run] at hSub ⊢
-          rcases hRes : Relay.flushRingNonblock (instrumentSysOps sys).net fd fuel rb (w1, tr) with ⟨res2, wt2⟩
+          dsimp only [NetRelay.flushRingNonblock, StateT.run] at hSub ⊢
+          rcases hRes : NetRelay.Internal.flushRingNonblock (instrumentSysOps sys).net fd fuel rb (w1, tr) with ⟨res2, wt2⟩
           rcases wt2 with ⟨w2, tr2⟩
           rw [hRes] at hSub
           dsimp only at hSub ⊢
@@ -1203,7 +1079,8 @@ theorem healthy_flushRingNonblock_laws
           cases res2 with
           | none => exact hSub.2.2.2
           | some rb2 =>
-            exact ⟨hSub.2.2.2.1, hSub.2.2.2.2.1, fun hFuel => hSub.2.2.2.2.2 (by omega)⟩
+            exact ⟨hSub.2.2.2.1, hSub.2.2.2.2.1, hSub.2.2.2.2.2.1,
+              fun hFuel => hSub.2.2.2.2.2.2 (by omega)⟩
         · have hEiF : (e == Errno.EINTR) = false := Bool.eq_false_iff.mpr hEi
           simp only [hEiF, Bool.false_eq_true, ↓reduceIte]
           have hMono : ∀ x ∈ tr.netErrs.toList, x ∈ (tr.netErrs.push e).toList := by
@@ -1213,31 +1090,13 @@ theorem healthy_flushRingNonblock_laws
             dsimp only [StateT.run, pure, StateT.pure]
             have hInAg : Errno.EAGAIN ∈ (tr.netErrs.push e).toList := by
               rw [beq_iff_eq.mp hAg]; simp [Array.toList_push]
-            exact ⟨hWf1, hMono, id, hCap, ⟨[], by simp, by simp⟩,
+            exact ⟨hWf1, hMono, id, hCap, rfl, ⟨[], by simp, by simp⟩,
               fun _ => Or.inr (Or.inl hInAg)⟩
           · have hAgF : (e == Errno.EAGAIN) = false := Bool.eq_false_iff.mpr hAg
             simp only [hAgF, Bool.false_eq_true, ↓reduceIte]
             dsimp only [StateT.run, pure, StateT.pure]
             have hNeAg : e ≠ Errno.EAGAIN := fun hc => hAg (beq_iff_eq.mpr hc)
             exact ⟨hWf1, hMono, id, e, by simp [Array.toList_push], Or.inr hNeAg⟩
-
-/-- `SysBridge.msToPollTimespec` produces a kernel-valid `Poll.Timespec` (`0 ≤ sec` and `nsec < 1_000_000_000`) for every `ms : Nat`. -/
-theorem msToPollTimespec_isValid (ms : Nat) :
-    (msToPollTimespec ms).isValid = true := by
-  unfold msToPollTimespec Poll.Timespec.isValid Poll.NANOS_PER_SEC
-  dsimp only
-  split
-  · decide
-  · simp only [Bool.and_eq_true, decide_eq_true_eq, Int.ofNat_eq_natCast]
-    refine ⟨?_, ?_⟩
-    · rw [Int64.le_iff_toInt_le, Int64.toInt_ofInt, Int.bmod_eq_of_le]
-      · have : (0 : Int64).toInt = 0 := rfl; omega
-      · change -9223372036854775808 ≤ (↑(ms / 1000) : Int); omega
-      · change (↑(ms / 1000) : Int) < 9223372036854775808; omega
-    · have hMod : ms % 1000 < 1000 := Nat.mod_lt ms (by decide)
-      rw [UInt32.lt_iff_toNat_lt, UInt32.toNat_ofNat', Nat.mod_eq_of_lt (by change ms % 1000 * 1000000 < 4294967296; omega)]
-      have : (1000000000 : UInt32).toNat = 1000000000 := rfl
-      omega
 
 /-- `SysBridge.dnsAddrToIpAddr?` rejects every scoped IPv6 address (`scopeId != 0`), preventing link-local `%iface` confusion. -/
 theorem dnsAddrToIpAddr_rejects_scoped (a : Dns.DnsAddr) (ip : IpAddr)
@@ -1343,26 +1202,19 @@ theorem monoNowMs_instrumented_laws
       exact ⟨⟨(wf_iff_parts _).mpr ht.2.1, htrx⟩, Or.inr trivial⟩)
     MAX_EINTR_RETRIES (w, tr) ⟨hWf, rfl⟩
   dsimp only [StateT.run, bind, StateT.bind, pure, StateT.pure, Id.run] at hStep ⊢
-  rcases hRun : retryEintr MAX_EINTR_RETRIES ((instrumentSysOps sys).timeRand.clock_gettime .monotonic) (w, tr) with ⟨r, wt1⟩
+  rcases hRun : retryEintr ((instrumentSysOps sys).timeRand.clock_gettime .monotonic) MAX_EINTR_RETRIES (w, tr) with ⟨r, wt1⟩
   rw [hRun] at hStep
   dsimp only at hStep ⊢
   cases r <;> exact hStep.1
 
-/-- Internal SysBridge helper lemma `byteArray_extract_end_toList`. -/
-theorem byteArray_extract_end_toList (b : ByteArray) (off : Nat) :
-    (b.extract off b.size).data.toList = b.data.toList.drop off := by
-  rw [byteArray_extract_toList]
-  have hLen : (b.data.toList.drop off).length = b.size - off := by simp
-  exact List.take_of_length_le (by omega)
-
-/-- Relational TX slice conservation and `EINTR` progress for `Relay.flushBytesNonblock`. -/
+/-- Relational TX slice conservation and `EINTR` progress for `NetRelay.flushBytesNonblock`. -/
 theorem flushBytesNonblock_instrumented_laws
     (sys : CProxySysOpsM (StateM HealthySysWorld) Nat)
     (hRef : RefinesHealthyCProxySys sys)
     (fd : Nat) (bytes : ByteArray) :
     ∀ (fuel off : Nat) (w : HealthySysWorld) (tr : SysAuditTrace Nat),
       w.wf = true →
-      let (res, (w', tr')) := (Relay.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel off).run (w, tr)
+      let (res, (w', tr')) := (NetRelay.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel off).run (w, tr)
       w'.wf = true ∧
       tr'.dnsQueries = tr.dnsQueries ∧
       tr'.dialedAddrs = tr.dialedAddrs ∧
@@ -1379,10 +1231,10 @@ theorem flushBytesNonblock_instrumented_laws
         (w.netEnv.eintrBudget + (bytes.size - off) ≤ fuel →
           nextOff ≥ bytes.size ∨ Errno.EAGAIN ∈ tr'.netErrs.toList ∨ tr'.sawZeroSend = true)
   | 0, off, w, tr, hWf => by
-    dsimp only [Relay.flushBytesNonblock, StateT.run, pure, StateT.pure]
+    dsimp only [NetRelay.flushBytesNonblock, NetRelay.Internal.flushBytesNonblock, StateT.run, pure, StateT.pure]
     exact ⟨hWf, rfl, rfl, rfl, id, fun _ h => h, id, ⟨[], by simp, by simp⟩, fun hFuel => Or.inl (by omega)⟩
   | fuel + 1, off, w, tr, hWf => by
-    unfold Relay.flushBytesNonblock
+    unfold NetRelay.flushBytesNonblock NetRelay.Internal.flushBytesNonblock
     by_cases hGe : off ≥ bytes.size
     · simp only [hGe, ↓reduceIte]
       dsimp only [StateT.run, pure, StateT.pure]
@@ -1451,8 +1303,8 @@ theorem flushBytesNonblock_instrumented_laws
           let tr1 := { tr with sentBytes := tr.sentBytes ++ accepted }
           have hSub := flushBytesNonblock_instrumented_laws sys hRef fd bytes fuel (off + step) w1 tr1 hWf1
           dsimp only [step, slice] at hStepPos
-          dsimp only [StateT.run, tr1, step, accepted, k, slice] at hSub ⊢
-          rcases hRes : Relay.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel (off + step) (w1, tr1) with ⟨res2, wt2⟩
+          dsimp only [NetRelay.flushBytesNonblock, StateT.run, tr1, step, accepted, k, slice] at hSub ⊢
+          rcases hRes : NetRelay.Internal.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel (off + step) (w1, tr1) with ⟨res2, wt2⟩
           rcases wt2 with ⟨w2, tr2⟩
           dsimp only [tr1, step, accepted, k, slice] at hRes
           rw [hRes] at hSub
@@ -1475,8 +1327,8 @@ theorem flushBytesNonblock_instrumented_laws
             congrArg Net.NetOutcome.err (beq_iff_eq.mp hEi)
           obtain ⟨hPosB, hDecB⟩ := hBud.1 hEqEi
           have hSub := flushBytesNonblock_instrumented_laws sys hRef fd bytes fuel off w1 tr hWf1
-          dsimp only [StateT.run] at hSub ⊢
-          rcases hRes : Relay.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel off (w1, tr) with ⟨res2, wt2⟩
+          dsimp only [NetRelay.flushBytesNonblock, StateT.run] at hSub ⊢
+          rcases hRes : NetRelay.Internal.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel off (w1, tr) with ⟨res2, wt2⟩
           rcases wt2 with ⟨w2, tr2⟩
           rw [hRes] at hSub
           dsimp only at hSub ⊢
@@ -1508,12 +1360,12 @@ theorem shutdownWrClean_instrumented_laws
     (fd : Nat) :
     ∀ (fuel : Nat) (w : HealthySysWorld) (tr : SysAuditTrace Nat),
       w.wf = true →
-      let (_, (w', tr')) := (Relay.shutdownWrClean (instrumentSysOps sys).net fd fuel).run (w, tr)
+      let (_, (w', tr')) := (NetRelay.shutdownWrClean (instrumentSysOps sys).net fd fuel).run (w, tr)
       w'.wf = true ∧ tr' = tr ∧
       ((w.filesEnv.state.fds.map Prod.fst).Nodup → (w'.filesEnv.state.fds.map Prod.fst).Nodup)
   | 0, w, tr, hWf => ⟨hWf, rfl, id⟩
   | fuel + 1, w, tr, hWf => by
-    unfold Relay.shutdownWrClean
+    unfold NetRelay.shutdownWrClean NetRelay.Internal.shutdownWrClean
     dsimp only [StateT.run, bind, StateT.bind, pure, StateT.pure, Id.run]
     have hNet := hRef.2.1 w (.shutdown fd .wr) ((wf_iff_parts w).mp hWf)
     dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
@@ -1529,8 +1381,8 @@ theorem shutdownWrClean_instrumented_laws
       by_cases hEi : (e == Errno.EINTR) = true
       · simp only [hEi, ↓reduceIte]
         have hSub := shutdownWrClean_instrumented_laws sys hRef fd fuel w1 tr hWf1
-        dsimp only [StateT.run] at hSub ⊢
-        rcases hRes : Relay.shutdownWrClean (instrumentSysOps sys).net fd fuel (w1, tr) with ⟨b2, wt2⟩
+        dsimp only [NetRelay.shutdownWrClean, StateT.run] at hSub ⊢
+        rcases hRes : NetRelay.Internal.shutdownWrClean (instrumentSysOps sys).net fd fuel (w1, tr) with ⟨b2, wt2⟩
         rcases wt2 with ⟨w2, tr2⟩
         rw [hRes] at hSub
         exact ⟨hSub.1, hSub.2.1, fun h0 => hSub.2.2 (hNd1 h0)⟩
@@ -1559,11 +1411,11 @@ theorem flushBytesNonblock_of_eq
     (fd : Nat) (bytes : ByteArray) (fuel off : Nat)
     (w w1 : HealthySysWorld) (tr tr1 : SysAuditTrace Nat) (res : Option Nat)
     (hWf : w.wf = true)
-    (hRun : StateT.run (Relay.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel off) (w, tr) = (res, (w1, tr1))) :
+    (hRun : StateT.run (NetRelay.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel off) (w, tr) = (res, (w1, tr1))) :
     w1.wf = true ∧ tr1.dnsQueries = tr.dnsQueries ∧ tr1.dialedAddrs = tr.dialedAddrs ∧
     tr1.closedFds = tr.closedFds ∧ (∀ e ∈ tr.netErrs.toList, e ∈ tr1.netErrs.toList) := by
   have h := flushBytesNonblock_instrumented_laws sys hRef fd bytes fuel off w tr hWf
-  have hRun' : (Relay.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel off).run (w, tr) = (res, (w1, tr1)) := hRun
+  have hRun' : (NetRelay.flushBytesNonblock (instrumentSysOps sys).net fd bytes fuel off).run (w, tr) = (res, (w1, tr1)) := hRun
   rw [hRun'] at h
   exact ⟨h.1, h.2.1, h.2.2.1, h.2.2.2.1, h.2.2.2.2.2.1⟩
 
@@ -1586,10 +1438,10 @@ theorem shutdownWrClean_of_eq
     (hRef : RefinesHealthyCProxySys sys)
     (fd fuel : Nat) (w w1 : HealthySysWorld) (tr tr1 : SysAuditTrace Nat) (okS : Bool)
     (hWf : w.wf = true)
-    (hRun : StateT.run (Relay.shutdownWrClean (instrumentSysOps sys).net fd fuel) (w, tr) = (okS, (w1, tr1))) :
+    (hRun : StateT.run (NetRelay.shutdownWrClean (instrumentSysOps sys).net fd fuel) (w, tr) = (okS, (w1, tr1))) :
     w1.wf = true ∧ tr1 = tr := by
   have h := shutdownWrClean_instrumented_laws sys hRef fd fuel w tr hWf
-  have hRun' : (Relay.shutdownWrClean (instrumentSysOps sys).net fd fuel).run (w, tr) = (okS, (w1, tr1)) := hRun
+  have hRun' : (NetRelay.shutdownWrClean (instrumentSysOps sys).net fd fuel).run (w, tr) = (okS, (w1, tr1)) := hRun
   rw [hRun'] at h
   exact ⟨h.1, h.2.1⟩
 

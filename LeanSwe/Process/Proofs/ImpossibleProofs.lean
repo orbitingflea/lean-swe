@@ -7,6 +7,7 @@ import LeanSwe.Process.Interface
 namespace LeanSwe.Process.Proofs
 
 open Core
+open LeanSwe.LinuxSyscall
 open LeanSwe.Process
 open LeanSwe.Process.SysBridge
 
@@ -273,29 +274,21 @@ private theorem spawnPure_ioSysDeps_sat (tbl : ProcTableOpsM IO LinuxSyscall.Raw
                     · apply sat_seq; intro _
                       exact sat_pure trivial
 
-private theorem monoNowMs_sat (tr : LinuxSyscall.TimeRand.TimeRandOpsM IO) :
-    SatisfiesIO basicErrOrOk (monoNowMs tr) := by
-  unfold monoNowMs
-  apply sat_seq; intro r
-  cases r with
-  | ok _ => exact sat_pure trivial
-  | error e => exact sat_pure (mapErrno_basic _ _ e)
-
 private theorem checkTimedOut_sat (tr : LinuxSyscall.TimeRand.TimeRandOpsM IO)
     (startMs : Nat) (timeoutMs? : Option Nat) :
     SatisfiesIO (fun r => match r with
-      | .error e => isBasicErrKind e
+      | .error _ => True
       | .ok (b, _) => timeoutMs? = none → b = false)
-      (checkTimedOut tr startMs timeoutMs?) := by
+      (LinuxSyscall.TimeRand.checkTimedOut tr startMs timeoutMs?) := by
   cases timeoutMs? with
   | none =>
-    unfold checkTimedOut
+    unfold LinuxSyscall.TimeRand.checkTimedOut
     exact sat_pure (fun _ => rfl)
   | some timeoutMs =>
-    unfold checkTimedOut
-    refine sat_bind (monoNowMs_sat tr) fun r hr => ?_
+    unfold LinuxSyscall.TimeRand.checkTimedOut LinuxSyscall.TimeRand.monoNowMs
+    apply sat_seq; intro r
     cases r with
-    | error e => exact sat_pure hr
+    | error _ => exact sat_pure trivial
     | ok _ =>
       dsimp only
       split <;> exact sat_pure (fun h => by cases h)
@@ -305,7 +298,12 @@ private theorem readStartMsOpt_sat (tr : LinuxSyscall.TimeRand.TimeRandOpsM IO)
     SatisfiesIO basicErrOrOk (readStartMsOpt tr timeoutMs?) := by
   cases timeoutMs? with
   | none => exact sat_pure trivial
-  | some _ => exact monoNowMs_sat tr
+  | some _ =>
+    unfold readStartMsOpt LinuxSyscall.TimeRand.monoNowMs
+    apply sat_seq; intro r
+    cases r with
+    | ok _ => exact sat_pure trivial
+    | error e => exact sat_pure (mapErrno_basic _ _ e)
 
 private theorem writeStdinStep_sat {fd : Type}
     (files : LinuxSyscall.Files.FilesOpsM IO fd) (tr : LinuxSyscall.TimeRand.TimeRandOpsM IO)
@@ -327,7 +325,7 @@ private theorem writeStdinStep_sat {fd : Type}
     · apply sat_seq; intro _; exact sat_pure (fun _ => rfl)
     · refine sat_bind (checkTimedOut_sat tr startMs timeoutMs?) fun r1 hr1 => ?_
       cases r1 with
-      | error e => apply sat_seq; intro _; exact sat_pure hr1
+      | error e => apply sat_seq; intro _; exact sat_pure (mapErrno_basic _ _ e)
       | ok pair =>
         rcases pair with ⟨b, _⟩
         cases b with
@@ -369,7 +367,7 @@ private theorem drainPipeStep_sat {fd : Type}
     · exact sat_pure trivial
     · refine sat_bind (checkTimedOut_sat tr startMs timeoutMs?) fun r1 hr1 => ?_
       cases r1 with
-      | error e => apply sat_seq; intro _; exact sat_pure hr1
+      | error e => apply sat_seq; intro _; exact sat_pure (mapErrno_basic _ _ e)
       | ok pair =>
         rcases pair with ⟨b, _⟩
         cases b with
@@ -456,7 +454,7 @@ private theorem streamPipesLoop_sat {fd : Type}
     · exact sat_pure trivial
     · refine sat_bind (checkTimedOut_sat tr startMs timeoutMs?) fun r1 hr1 => ?_
       cases r1 with
-      | error e => apply sat_seq; intro _; exact sat_pure hr1
+      | error e => apply sat_seq; intro _; exact sat_pure (mapErrno_basic _ _ e)
       | ok pair =>
         rcases pair with ⟨b, remMs⟩
         cases b with
@@ -591,7 +589,7 @@ private theorem waitTimedLoop_sat {fd : Type}
       | stillRunning =>
         refine sat_bind (checkTimedOut_sat tr startMs (some timeoutMs)) fun rc hrc => ?_
         cases rc with
-        | error e => exact sat_pure hrc
+        | error e => exact sat_pure (mapErrno_basic _ _ e)
         | ok pair =>
           rcases pair with ⟨b, remMs⟩
           cases b with
@@ -681,24 +679,6 @@ private theorem awaitOutputPure_sat {fd : Type}
                 | timedOut _ _ => exact sat_pure (fun hc => by cases hc)
                 | outputLimitExceeded _ _ => exact False.elim hrwt
 
-private theorem reapWaitLoop_sat {fd : Type}
-    (proc : LinuxSyscall.Process.ProcessOpsM IO fd) (pid : Int32) (fuel : Nat) :
-    SatisfiesIO basicErrOrOk (reapWaitLoop proc pid fuel) := by
-  induction fuel with
-  | zero => exact sat_pure (basic_io rfl)
-  | succ f ih =>
-    unfold reapWaitLoop
-    apply sat_seq; intro r
-    cases r with
-    | ok _ => exact sat_pure trivial
-    | error e =>
-      dsimp only
-      split
-      · exact ih
-      · split
-        · exact sat_pure trivial
-        · exact sat_pure (mapErrno_basic _ _ e)
-
 private theorem reapPure_sat {fd : Type}
     (deps : SysDepsM IO fd) (tbl : ProcTableOpsM IO fd) (eintrFuel : Nat) (h : ProcessHandle) :
     SatisfiesIO basicErrOrOk (reapPure deps tbl eintrFuel h) := by
@@ -709,7 +689,13 @@ private theorem reapPure_sat {fd : Type}
   | some slot =>
     apply sat_seq; intro _; apply sat_seq; intro _; apply sat_seq; intro _
     split
-    · exact reapWaitLoop_sat deps.proc slot.pid.toInt32 eintrFuel
+    · apply sat_seq; intro r
+      cases r with
+      | ok _ => exact sat_pure trivial
+      | error oe =>
+        cases oe with
+        | none => exact sat_pure (basic_io rfl)
+        | some e => exact sat_pure (mapErrno_basic _ _ e)
     · exact sat_pure trivial
 
 private theorem io_bind_ok {α β : Type} (x : IO α) (f : α → IO β) (w : Void IO.RealWorld)

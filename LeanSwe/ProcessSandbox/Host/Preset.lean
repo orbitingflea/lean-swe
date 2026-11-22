@@ -2,14 +2,12 @@ import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Passwd.Types
-import LeanSwe.Process.SysBridge
 import LeanSwe.ProcessSandbox.Raw.Types
 import LeanSwe.ProcessSandbox.Host.Cgroup
 
 namespace LeanSwe.ProcessSandbox.Host.Preset
 
 open LeanSwe.LinuxSyscall
-open LeanSwe.Process.SysBridge
 open LeanSwe.ProcessSandbox.Raw
 open LeanSwe.ProcessSandbox.Host.Cgroup
 

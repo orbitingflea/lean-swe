@@ -181,9 +181,9 @@ theorem allPass_healthy_relayByteConservationShortIoAndEintr :
   have hRst := healthy_stepBidirectionalRelay_rst_laws sys hRef fd ufd w₀ hWf₀
   dsimp only [test_cproxy_healthy_relayByteConservationShortIoAndEintr, realBridgeTarget,
     AllPass, bind, pure, assume, assert] at hRx hTx hPipe hRst ⊢
-  rcases hRR : (Relay.recvIntoRing (instrumentSysOps sys).net fd fuel rb).run (w₀, {}) with ⟨rxRes, w₁, tr₁⟩
+  rcases hRR : (NetRelay.recvIntoRing (instrumentSysOps sys).net fd fuel rb).run (w₀, {}) with ⟨rxRes, w₁, tr₁⟩
   rw [hRR] at hRx
-  rcases hRT : (Relay.flushRingNonblock (instrumentSysOps sys).net fd fuel rb).run (w₀, {}) with ⟨txRes, w₂, tr₂⟩
+  rcases hRT : (NetRelay.flushRingNonblock (instrumentSysOps sys).net fd fuel rb).run (w₀, {}) with ⟨txRes, w₂, tr₂⟩
   rw [hRT] at hTx
   rcases hRP : (Relay.stepBidirectionalRelay (instrumentSysOps sys).net (instrumentSysOps sys).closeFd
     (Relay.RelayState.init fd ufd pipelined) {} { pollout := true }).run (w₀, {}) with ⟨stPipe, w₃, tr₃⟩
@@ -204,26 +204,26 @@ theorem allPass_healthy_relayByteConservationShortIoAndEintr :
         · cases hTxNil
         · exact ⟨⟨eTx, heTxMem, hTxNe⟩, hPipe, hRst, trivial⟩
       | some rbTx =>
-        rcases hTx.2.2.2 with ⟨hLenTx, ⟨txDelta, hSentEq, hConsTx⟩, hProgTx⟩
+        rcases hTx.2.2.2 with ⟨hLenTx, hCapTx, ⟨txDelta, hSentEq, hConsTx⟩, hProgTx⟩
         simp only [List.nil_append] at hSentEq
         rw [← hSentEq] at hConsTx
-        exact ⟨⟨hLenTx, hConsTx, hProgTx⟩, hPipe, hRst, trivial⟩
+        exact ⟨⟨hLenTx, hConsTx, hCapTx, hProgTx⟩, hPipe, hRst, trivial⟩
   | some pair =>
     rcases pair with ⟨rb', eof⟩
-    rcases hRx.2.2.2 with ⟨hLen, ⟨rxDelta, hRecvEq, hCons⟩, hProg⟩
+    rcases hRx.2.2.2 with ⟨hLen, hCapRx, ⟨rxDelta, hRecvEq, hCons⟩, hProg⟩
     simp only [List.nil_append] at hRecvEq
     rw [← hRecvEq] at hCons
-    refine ⟨⟨hLen, hCons, hProg⟩, hTx.1, ?_⟩
+    refine ⟨⟨hLen, hCons, hCapRx, hProg⟩, hTx.1, ?_⟩
     cases txRes with
     | none =>
       rcases hTx.2.2.2 with ⟨eTx, heTxMem, hTxNil | hTxNe⟩
       · cases hTxNil
       · exact ⟨⟨eTx, heTxMem, hTxNe⟩, hPipe, hRst, trivial⟩
     | some rbTx =>
-      rcases hTx.2.2.2 with ⟨hLenTx, ⟨txDelta, hSentEq, hConsTx⟩, hProgTx⟩
+      rcases hTx.2.2.2 with ⟨hLenTx, hCapTx, ⟨txDelta, hSentEq, hConsTx⟩, hProgTx⟩
       simp only [List.nil_append] at hSentEq
       rw [← hSentEq] at hConsTx
-      exact ⟨⟨hLenTx, hConsTx, hProgTx⟩, hPipe, hRst, trivial⟩
+      exact ⟨⟨hLenTx, hConsTx, hCapTx, hProgTx⟩, hPipe, hRst, trivial⟩
 
 /-- `test_cproxy_healthy_relayByteConservationShortIoAndEintr` is non-vacuously reachable. -/
 theorem canReach_healthy_relayByteConservationShortIoAndEintr :

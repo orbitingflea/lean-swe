@@ -2075,6 +2075,9 @@ private def isAllowedConnectProxyNonProofProjectMod (m : Name) : Bool :=
         !rest.contains `RuntimeTests && !rest.contains `SpecMutants &&
         !rest.contains `Proofs && !rest.contains `SpecTests
     | [] => false
+  else if m == `LeanSwe.NetRelay.Types || m == `LeanSwe.NetRelay.Model ||
+      m == `LeanSwe.NetRelay.Impl || m == `LeanSwe.NetRelay.Interface then
+    true
   else if m.components.take 2 == [`LeanSwe, `ConnectProxy] then
     m != `LeanSwe.ConnectProxy.SpecMutants &&
       nameLastStr m != "RuntimeTests" &&
@@ -2356,8 +2359,8 @@ private def checkConnectProxyWiring (env : Environment) : Array String := Id.run
         (peelLambdas args[4]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.SysBridge.buildPollBatchSync &&
         (peelLambdas args[5]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.SysBridge.stepHandshake &&
         args[5]!.getUsedConstants.contains `LeanSwe.ConnectProxy.SysBridge.startDnsSync &&
-        (peelLambdas args[6]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.Relay.recvIntoRing &&
-        (peelLambdas args[7]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.Relay.flushRingNonblock &&
+        (peelLambdas args[6]!).getAppFn.consumeMData.constName? == some `LeanSwe.NetRelay.recvIntoRing &&
+        (peelLambdas args[7]!).getAppFn.consumeMData.constName? == some `LeanSwe.NetRelay.flushRingNonblock &&
         (peelLambdas args[8]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.Relay.stepBidirectionalRelay &&
         (peelLambdas args[9]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.SysBridge.stepSyncSlot &&
         (peelLambdas args[10]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.SysBridge.pollAndStepTickSync &&

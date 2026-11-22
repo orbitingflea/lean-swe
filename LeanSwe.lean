@@ -373,6 +373,13 @@ import LeanSwe.PostFork.Model
 import LeanSwe.PostFork.Impl
 import LeanSwe.PostFork.Interface
 import LeanSwe.PostFork.RuntimeTests
+import LeanSwe.NetRelay.Types
+import LeanSwe.NetRelay.Model
+import LeanSwe.NetRelay.Impl
+import LeanSwe.NetRelay.Interface
+import LeanSwe.NetRelay.SpecTests
+import LeanSwe.NetRelay.SpecMutants
+import LeanSwe.NetRelay.Proofs
 import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Model
 import LeanSwe.ConnectProxy.Relay

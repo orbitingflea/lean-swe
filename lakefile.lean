@@ -38,6 +38,7 @@ lean_lib LeanSwe where
     .submodules `LeanSwe.Glob,
     .submodules `LeanSwe.Json,
     .submodules `LeanSwe.LinuxSyscall,
+    .submodules `LeanSwe.NetRelay,
     .submodules `LeanSwe.NumParse,
     .one `LeanSwe.PostFork.Types,
     .one `LeanSwe.PostFork.Model,

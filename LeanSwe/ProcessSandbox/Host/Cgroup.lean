@@ -1,12 +1,12 @@
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Files.Types
+import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.TimeRand.Types
-import LeanSwe.Process.SysBridge
+import LeanSwe.LinuxSyscall.TimeRand.Interface
 
 namespace LeanSwe.ProcessSandbox.Host.Cgroup
 
 open LeanSwe.LinuxSyscall
-open LeanSwe.Process.SysBridge
 
 /-- Maximum number of `cgroup.events` poll iterations (`200 × 2 ms`) during cgroup teardown. -/
 def CGROUP_POLL_STEPS : Nat := 200
@@ -129,7 +129,7 @@ def writeTextFile {m : Type → Type} [Monad m] {fd : Type}
   | .error e => return .error e
   | .ok h =>
     let res ← writeAllFd files h text.toUTF8 0 eintrFuel
-    closeOpt files (some h)
+    Files.closeOpt files (some h)
     return res
 
 /-- Read up to `maxBytes` from open descriptor `h` until `EOF` or cap, retrying `EINTR`. -/
@@ -162,7 +162,7 @@ def readSmallFile {m : Type → Type} [Monad m] {fd : Type}
   | .error e => return .error e
   | .ok h =>
     let res ← readBoundedLoop files h maxBytes #[] 0 eintrFuel
-    closeOpt files (some h)
+    Files.closeOpt files (some h)
     return res
 
 /-- Read `/proc/self/cgroup` and resolve the delegated parent directory under `/sys/fs/cgroup`. -/
@@ -230,10 +230,10 @@ def pollCgroupUnpopulated {m : Type → Type} [Monad m] {fd : Type}
         if isPopulatedZero text then
           pure ()
         else do
-          sleepMonoMs timeRand CGROUP_RETRY_SLEEP_MS
+          TimeRand.sleepMonoMs timeRand CGROUP_RETRY_SLEEP_MS
           pollCgroupUnpopulated files timeRand eventsPath eintrFuel steps
       | none =>
-        sleepMonoMs timeRand CGROUP_RETRY_SLEEP_MS
+        TimeRand.sleepMonoMs timeRand CGROUP_RETRY_SLEEP_MS
         pollCgroupUnpopulated files timeRand eventsPath eintrFuel steps
 
 /-- Retry `rmdir` (`unlinkat removeDir := true`) on `EBUSY` or `EINTR` up to `steps` additional times. -/
@@ -251,7 +251,7 @@ def retryRmdirCgroup {m : Type → Type} [Monad m] {fd : Type}
       if e == Errno.ENOENT then
         return .ok ()
       else if e == Errno.EBUSY || e == Errno.EINTR then
-        sleepMonoMs timeRand CGROUP_RETRY_SLEEP_MS
+        TimeRand.sleepMonoMs timeRand CGROUP_RETRY_SLEEP_MS
         retryRmdirCgroup files timeRand cgDirBytes steps
       else
         return .error e

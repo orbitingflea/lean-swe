@@ -33,15 +33,6 @@ def isInvalidEnvEntry (kv : String × Option String) : Bool :=
 def ensureNonEmptyMsg (fallback : String) (err : ProcessError) : ProcessError :=
   if err.message.isEmpty then { err with message := fallback } else err
 
-/-- Default bounded retry budget for `EINTR` on single blocking syscalls. -/
-def DEFAULT_EINTR_FUEL : Nat := 256
-
-/-- Default fuel bound for non-blocking pipe streaming and timeout polling loops (`2^32`). -/
-def DEFAULT_IO_FUEL : Nat := UInt32.size
-
-/-- Maximum valid positive signed 32-bit Linux `pid_t` (`0x7fffffff`). -/
-def MAX_LINUX_PID : UInt32 := 0x7fffffff
-
 /-- Per-read chunk size (`8192` bytes) when draining child `stdout` / `stderr` pipes. -/
 def PIPE_READ_CHUNK : UInt32 := 8192
 
@@ -278,24 +269,6 @@ def stateProcTableOps {S fd : Type}
     let s ← get
     return (getTbl s).slots.length
 
-/-- Retry an `Except Errno α` action across `Errno.EINTR` up to `fuel` attempts. -/
-def retryEintr {m : Type → Type} [Monad m] {α : Type}
-    (act : m (Except Errno α)) : Nat → m (Except Errno α)
-  | 0 => act
-  | fuel + 1 => do
-    match ← act with
-    | .error e =>
-      if e == Errno.EINTR then retryEintr act fuel else return .error e
-    | .ok v => return .ok v
-
-/-- Best-effort close of an optional `fd` handle (`EINTR` is NOT retried per Linux `close(2)` semantics). -/
-def closeOpt {m : Type → Type} [Monad m] {fd : Type}
-    (files : Files.FilesOpsM m fd) : Option fd → m Unit
-  | none => pure ()
-  | some h => do
-    let _ ← files.close h
-    pure ()
-
 /-- Return `true` iff raw byte slice `b` contains an embedded NUL (`0x00`) byte. -/
 def hasByteNul (b : ByteArray) : Bool :=
   b.toList.any (· == (0 : UInt8))
@@ -330,22 +303,10 @@ def findEnvPathRaw (envBytes : Array ByteArray) : Option ByteArray :=
     else
       none
 
-/-- Tail-recursive splitter for raw colon-separated (`0x3A`) `PATH` bytes mapping every empty
-    segment (`""`, leading/trailing/adjacent `:`) to `"."` per POSIX `execvp(3)`. -/
-def splitPosixPathBytesAcc (curRev : List UInt8) (accRev : List ByteArray) : List UInt8 → List ByteArray
-  | [] =>
-    let seg := if curRev.isEmpty then ".".toUTF8 else ByteArray.mk curRev.reverse.toArray
-    (seg :: accRev).reverse
-  | b :: bs =>
-    if b == (0x3A : UInt8) then
-      let seg := if curRev.isEmpty then ".".toUTF8 else ByteArray.mk curRev.reverse.toArray
-      splitPosixPathBytesAcc [] (seg :: accRev) bs
-    else
-      splitPosixPathBytesAcc (b :: curRev) accRev bs
-
 /-- Split a raw `PATH` value on `:` (`0x3A`), replacing every empty segment with `"."` per POSIX `execvp(3)`. -/
 def splitPosixPathBytes (rawPath : ByteArray) : List ByteArray :=
-  splitPosixPathBytesAcc [] [] rawPath.toList
+  (splitByte (0x3A : UInt8) rawPath).map fun seg =>
+    if seg.size == 0 then ".".toUTF8 else seg
 
 /-- Compute host filesystem path bytes probed by `searchPathDirs` for `dir` and `program` under `cwd?`. -/
 def probePathBytes (cwd? : Option String) (dir program : String) : ByteArray :=
@@ -495,16 +456,16 @@ def spawnPure {m : Type → Type} [Monad m] {fd : Type}
         | .ok (inR, inW) =>
           match ← retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel with
           | .error e2 =>
-            closeOpt deps.files (some inR)
-            closeOpt deps.files (some inW)
+            Files.closeOpt deps.files (some inR)
+            Files.closeOpt deps.files (some inW)
             return .error (mapErrno (some req.program) "pipe2" e2)
           | .ok (outR, outW) =>
             match ← retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel with
             | .error e3 =>
-              closeOpt deps.files (some inR)
-              closeOpt deps.files (some inW)
-              closeOpt deps.files (some outR)
-              closeOpt deps.files (some outW)
+              Files.closeOpt deps.files (some inR)
+              Files.closeOpt deps.files (some inW)
+              Files.closeOpt deps.files (some outR)
+              Files.closeOpt deps.files (some outW)
               return .error (mapErrno (some req.program) "pipe2" e3)
             | .ok (errR, errW) =>
               let childSpec : PostFork.ChildSpecM fd :=
@@ -520,21 +481,21 @@ def spawnPure {m : Type → Type} [Monad m] {fd : Type}
                   sigpipe := .resetDefault
                   forkMode := .direct }
               let spawnRes ← deps.postFork.spawn childSpec
-              closeOpt deps.files (some inR)
-              closeOpt deps.files (some outW)
-              closeOpt deps.files (some errW)
+              Files.closeOpt deps.files (some inR)
+              Files.closeOpt deps.files (some outW)
+              Files.closeOpt deps.files (some errW)
               match spawnRes with
               | .error pfErr =>
-                closeOpt deps.files (some inW)
-                closeOpt deps.files (some outR)
-                closeOpt deps.files (some errR)
+                Files.closeOpt deps.files (some inW)
+                Files.closeOpt deps.files (some outR)
+                Files.closeOpt deps.files (some errR)
                 return .error (mapPostForkError req pfErr)
               | .ok child =>
                 let rawPgid := child.pgid.getD child.pid
-                if child.pid == 0 || child.pid > MAX_LINUX_PID || rawPgid == 0 || rawPgid > MAX_LINUX_PID then
-                  closeOpt deps.files (some inW)
-                  closeOpt deps.files (some outR)
-                  closeOpt deps.files (some errR)
+                if child.pid == 0 || child.pid > LinuxSyscall.Process.MAX_LINUX_PID || rawPgid == 0 || rawPgid > LinuxSyscall.Process.MAX_LINUX_PID then
+                  Files.closeOpt deps.files (some inW)
+                  Files.closeOpt deps.files (some outR)
+                  Files.closeOpt deps.files (some errR)
                   return .error (mapRawError (.userError "spawned child returned out-of-range PID"))
                 let hid ← tbl.insertSlot
                   { pid := child.pid
@@ -547,50 +508,6 @@ def spawnPure {m : Type → Type} [Monad m] {fd : Type}
                   { handleId := hid
                     pid := Int.ofNat child.pid.toNat
                     pgid := Int.ofNat rawPgid.toNat }
-
-/-- Flatten `chunks` into a single `ByteArray` in `O(totalBytes)`. -/
-def concatChunks (chunks : Array ByteArray) (totalCap : Nat) : ByteArray :=
-  chunks.toList.foldl (· ++ ·) (ByteArray.emptyWithCapacity totalCap)
-
-/-- Read `CLOCK_MONOTONIC` in milliseconds. -/
-def monoNowMs {m : Type → Type} [Monad m]
-    (timeRand : TimeRand.TimeRandOpsM m) : m (Except ProcessError Nat) := do
-  match ← timeRand.clock_gettime .monotonic with
-  | .ok ts =>
-    let ms := ts.sec.toInt.toNat * 1000 + ts.nsec.toNat / 1000000
-    return .ok ms
-  | .error e =>
-    return .error (mapErrno none "clock_gettime" e)
-
-/-- Check whether `timeoutMs?` has expired relative to `startMs`. -/
-def checkTimedOut {m : Type → Type} [Monad m]
-    (timeRand : TimeRand.TimeRandOpsM m) (startMs : Nat) :
-    Option Nat → m (Except ProcessError (Bool × Nat))
-  | none => pure (.ok (false, 0))
-  | some timeoutMs => do
-    match ← monoNowMs timeRand with
-    | .error e => return .error e
-    | .ok nowMs =>
-      let elapsed := nowMs - startMs
-      if elapsed ≥ timeoutMs then
-        return .ok (true, 0)
-      else
-        return .ok (false, timeoutMs - elapsed)
-
-/-- Convert a remaining millisecond budget into a valid relative `Poll.Timespec`. -/
-def msToPollTimespec (ms : Nat) : Poll.Timespec :=
-  let clampedSec := Nat.min (ms / 1000) TimeRand.MAX_TIMESPEC_SEC
-  let remNs := (ms % 1000) * 1000000
-  { sec := Int64.ofInt (Int.ofNat clampedSec), nsec := UInt32.ofNat remNs }
-
-/-- Sleep on `CLOCK_MONOTONIC` for `ms` milliseconds, ignoring `EINTR`. -/
-def sleepMonoMs {m : Type → Type} [Monad m]
-    (timeRand : TimeRand.TimeRandOpsM m) (ms : Nat) : m Unit := do
-  let clampedSec := Nat.min (ms / 1000) TimeRand.MAX_TIMESPEC_SEC
-  let remNs := (ms % 1000) * 1000000
-  let _ ← timeRand.clock_nanosleep .monotonic false
-    { sec := Int64.ofInt (Int.ofNat clampedSec), nsec := UInt32.ofNat remNs }
-  pure ()
 
 /-- Outcome of draining or writing one non-blocking pipe during a single streaming round. -/
 inductive PipeStepResult (fd : Type) where
@@ -610,21 +527,21 @@ def writeStdinStep {m : Type → Type} [Monad m] {fd : Type}
     Nat → Bool → Nat → m (Except ProcessError (Option fd × Nat × Bool × Bool))
   | pos, prog, 0 =>
     if pos ≥ stdin.size then do
-      closeOpt files (some inFd)
+      Files.closeOpt files (some inFd)
       return .ok (none, pos, prog, false)
     else
       return .ok (some inFd, pos, prog, false)
   | pos, prog, fuel + 1 => do
     if pos ≥ stdin.size then
-      closeOpt files (some inFd)
+      Files.closeOpt files (some inFd)
       return .ok (none, pos, true, false)
     else
-      match ← checkTimedOut timeRand startMs timeoutMs? with
+      match ← TimeRand.checkTimedOut timeRand startMs timeoutMs? with
       | .error e =>
-        closeOpt files (some inFd)
-        return .error e
+        Files.closeOpt files (some inFd)
+        return .error (mapErrno none "clock_gettime" e)
       | .ok (true, _) =>
-        closeOpt files (some inFd)
+        Files.closeOpt files (some inFd)
         return .ok (none, pos, prog, true)
       | .ok (false, _) =>
         let endIdx := Nat.min stdin.size (pos + STDIN_WRITE_CHUNK)
@@ -632,12 +549,12 @@ def writeStdinStep {m : Type → Type} [Monad m] {fd : Type}
         match ← files.write inFd slice with
         | .ok n =>
           if n == 0 then
-            closeOpt files (some inFd)
+            Files.closeOpt files (some inFd)
             return .ok (none, pos, prog, false)
           else
             let pos' := pos + n.toNat
             if pos' ≥ stdin.size then
-              closeOpt files (some inFd)
+              Files.closeOpt files (some inFd)
               return .ok (none, pos', true, false)
             else
               writeStdinStep files timeRand inFd stdin startMs timeoutMs? pos' true fuel
@@ -647,7 +564,7 @@ def writeStdinStep {m : Type → Type} [Monad m] {fd : Type}
           else if e == Errno.EAGAIN then
             return .ok (some inFd, pos, prog, false)
           else
-            closeOpt files (some inFd)
+            Files.closeOpt files (some inFd)
             return .ok (none, pos, true, false)
 
 /-- Drain up to `STREAM_FAIRNESS_BYTES` from non-blocking `pipeFd` in one round, enforcing `timeoutMs?` and `maxOutputBytes?`. -/
@@ -661,18 +578,18 @@ def drainPipeStep {m : Type → Type} [Monad m] {fd : Type}
   | chunks, curLen, iterBytes, prog, fuel + 1 => do
     if iterBytes ≥ STREAM_FAIRNESS_BYTES then
       return .cont (some pipeFd) chunks curLen prog
-    match ← checkTimedOut timeRand startMs timeoutMs? with
+    match ← TimeRand.checkTimedOut timeRand startMs timeoutMs? with
     | .error e =>
-      closeOpt files (some pipeFd)
-      return .ioErr e
+      Files.closeOpt files (some pipeFd)
+      return .ioErr (mapErrno none "clock_gettime" e)
     | .ok (true, _) =>
-      closeOpt files (some pipeFd)
+      Files.closeOpt files (some pipeFd)
       return .timedOut
     | .ok (false, _) =>
       match ← files.read pipeFd PIPE_READ_CHUNK with
       | .ok chunk =>
         if chunk.size == 0 then
-          closeOpt files (some pipeFd)
+          Files.closeOpt files (some pipeFd)
           return .cont none chunks curLen true
         else
           let total := curLen + otherLen
@@ -686,7 +603,7 @@ def drainPipeStep {m : Type → Type} [Monad m] {fd : Type}
                   (chunks.push pre, curLen + pre.size)
                 else
                   (chunks, curLen)
-              closeOpt files (some pipeFd)
+              Files.closeOpt files (some pipeFd)
               return .limitExceeded chunks' curLen'
             else
               drainPipeStep files timeRand pipeFd otherLen startMs timeoutMs? maxOutputBytes?
@@ -701,7 +618,7 @@ def drainPipeStep {m : Type → Type} [Monad m] {fd : Type}
         else if e == Errno.EAGAIN then
           return .cont (some pipeFd) chunks curLen prog
         else
-          closeOpt files (some pipeFd)
+          Files.closeOpt files (some pipeFd)
           return .ioErr (mapErrno none "read" e)
 
 /-- Outcome of the pipe-streaming phase prior to `waitpid`. -/
@@ -736,9 +653,9 @@ structure StreamLoopState (fd : Type) where
 /-- Close all still-open parent pipe handles in `st`. -/
 def closeStreamState {m : Type → Type} [Monad m] {fd : Type}
     (files : Files.FilesOpsM m fd) (st : StreamLoopState fd) : m Unit := do
-  closeOpt files st.inFd?
-  closeOpt files st.outFd?
-  closeOpt files st.errFd?
+  Files.closeOpt files st.inFd?
+  Files.closeOpt files st.outFd?
+  Files.closeOpt files st.errFd?
 
 /-- Build the `ppoll(2)` descriptor request array matching open pipe handles in `st`
     (`stdin` watches `POLLOUT`; `stdout` and `stderr` watch `POLLIN`). -/
@@ -753,22 +670,18 @@ def buildPollEntries {fd : Type} (st : StreamLoopState fd) : Array (fd × Poll.P
   | some h => a1.push (h, { pollin := true })
   | none => a1
 
-/-- Return `true` iff a `ppoll(2)` `revents` entry indicates readiness, hangup, error, or invalid descriptor. -/
-def pollEvReady (wantOut : Bool) (ev : Poll.PollEvents) : Bool :=
-  (if wantOut then ev.pollout else ev.pollin) || ev.pollhup || ev.pollerr || ev.pollnval
-
 /-- Extract `(inReady, outReady, errReady)` from `ppoll(2)` `revents` aligned with `buildPollEntries st`. -/
 def decodeReadyFlags {fd : Type} (st : StreamLoopState fd) (revents : Array Poll.PollEvents) :
     Bool × Bool × Bool :=
   let (inReady, i1) := match st.inFd? with
     | none => (false, 0)
-    | some _ => (match revents[0]? with | some ev => pollEvReady true ev | none => true, 1)
+    | some _ => (match revents[0]? with | some ev => Poll.pollEvReady true ev | none => true, 1)
   let (outReady, i2) := match st.outFd? with
     | none => (false, i1)
-    | some _ => (match revents[i1]? with | some ev => pollEvReady false ev | none => true, i1 + 1)
+    | some _ => (match revents[i1]? with | some ev => Poll.pollEvReady false ev | none => true, i1 + 1)
   let errReady := match st.errFd? with
     | none => false
-    | some _ => match revents[i2]? with | some ev => pollEvReady false ev | none => true
+    | some _ => match revents[i2]? with | some ev => Poll.pollEvReady false ev | none => true
   (inReady, outReady, errReady)
 
 /-- Execute one non-blocking `stdin` write round if `inFd?` is still open. -/
@@ -834,16 +747,16 @@ def streamPipesLoop {m : Type → Type} [Monad m] {fd : Type}
   | st, fuel + 1 => do
     if st.inFd?.isNone && st.outFd?.isNone && st.errFd?.isNone then
       return .ok (.eof (concatChunks st.outChunks st.outLen) (concatChunks st.errChunks st.errLen))
-    match ← checkTimedOut timeRand startMs timeoutMs? with
+    match ← TimeRand.checkTimedOut timeRand startMs timeoutMs? with
     | .error e =>
       closeStreamState files st
-      return .error e
+      return .error (mapErrno none "clock_gettime" e)
     | .ok (true, _) =>
       closeStreamState files st
       return .ok (.timedOut (concatChunks st.outChunks st.outLen) (concatChunks st.errChunks st.errLen))
     | .ok (false, remMs) =>
       let pollTimeout? : Option Poll.Timespec :=
-        timeoutMs?.map fun _ => msToPollTimespec remMs
+        timeoutMs?.map fun _ => Poll.msToPollTimespec remMs
       match ← poll.ppoll (buildPollEntries st) pollTimeout? with
       | .error e =>
         if e == Errno.EINTR then
@@ -860,30 +773,30 @@ def streamPipesLoop {m : Type → Type} [Monad m] {fd : Type}
             stepStdinIfReady inReady files timeRand st.inFd? stdin startMs timeoutMs? st.stdinPos stepFuel
           match inErr? with
           | some e =>
-            closeOpt files st.outFd?
-            closeOpt files st.errFd?
+            Files.closeOpt files st.outFd?
+            Files.closeOpt files st.errFd?
             return .error e
           | none =>
             if inTimedOut then
-              closeOpt files inFdNext?
-              closeOpt files st.outFd?
-              closeOpt files st.errFd?
+              Files.closeOpt files inFdNext?
+              Files.closeOpt files st.outFd?
+              Files.closeOpt files st.errFd?
               return .ok (.timedOut (concatChunks st.outChunks st.outLen) (concatChunks st.errChunks st.errLen))
             let outStep ←
               stepDrainIfReady outReady files timeRand st.outFd? st.errLen startMs timeoutMs? maxOutputBytes?
                 st.outChunks st.outLen stepFuel
             match outStep with
             | .ioErr e =>
-              closeOpt files inFdNext?
-              closeOpt files st.errFd?
+              Files.closeOpt files inFdNext?
+              Files.closeOpt files st.errFd?
               return .error e
             | .timedOut =>
-              closeOpt files inFdNext?
-              closeOpt files st.errFd?
+              Files.closeOpt files inFdNext?
+              Files.closeOpt files st.errFd?
               return .ok (.timedOut (concatChunks st.outChunks st.outLen) (concatChunks st.errChunks st.errLen))
             | .limitExceeded outChunks' outLen' =>
-              closeOpt files inFdNext?
-              closeOpt files st.errFd?
+              Files.closeOpt files inFdNext?
+              Files.closeOpt files st.errFd?
               return .ok (.limitExceeded (concatChunks outChunks' outLen') (concatChunks st.errChunks st.errLen))
             | .cont outFdNext? outChunks' outLen' _ =>
               let errStep ←
@@ -891,16 +804,16 @@ def streamPipesLoop {m : Type → Type} [Monad m] {fd : Type}
                   st.errChunks st.errLen stepFuel
               match errStep with
               | .ioErr e =>
-                closeOpt files inFdNext?
-                closeOpt files outFdNext?
+                Files.closeOpt files inFdNext?
+                Files.closeOpt files outFdNext?
                 return .error e
               | .timedOut =>
-                closeOpt files inFdNext?
-                closeOpt files outFdNext?
+                Files.closeOpt files inFdNext?
+                Files.closeOpt files outFdNext?
                 return .ok (.timedOut (concatChunks outChunks' outLen') (concatChunks st.errChunks st.errLen))
               | .limitExceeded errChunks' errLen' =>
-                closeOpt files inFdNext?
-                closeOpt files outFdNext?
+                Files.closeOpt files inFdNext?
+                Files.closeOpt files outFdNext?
                 return .ok (.limitExceeded (concatChunks outChunks' outLen') (concatChunks errChunks' errLen'))
               | .cont errFdNext? errChunks' errLen' _ =>
                 if inFdNext?.isNone && outFdNext?.isNone && errFdNext?.isNone then
@@ -948,11 +861,11 @@ def waitTimedLoop {m : Type → Type} [Monad m] {fd : Type}
   | fuel + 1 => do
     match ← proc.waitpid pid { nohang := true } with
     | .ok .stillRunning =>
-      match ← checkTimedOut timeRand startMs (some timeoutMs) with
-      | .error e => return .error e
+      match ← TimeRand.checkTimedOut timeRand startMs (some timeoutMs) with
+      | .error e => return .error (mapErrno none "clock_gettime" e)
       | .ok (true, _) => return .ok (false, .timedOut stdout stderr)
       | .ok (false, remMs) =>
-        sleepMonoMs timeRand (Nat.min remMs 5)
+        TimeRand.sleepMonoMs timeRand (Nat.min remMs 5)
         waitTimedLoop proc timeRand pid startMs timeoutMs stdout stderr fuel
     | .ok wr =>
       return .ok (true, decodeWaitOutcome wr stdout stderr)
@@ -964,19 +877,11 @@ def waitTimedLoop {m : Type → Type} [Monad m] {fd : Type}
       else
         return .error (mapErrno none "waitpid" e)
 
-/-- Set `O_NONBLOCK` on `fd?` if present. -/
-def setNonblockingOpt {m : Type → Type} [Monad m] {fd : Type}
-    (files : Files.FilesOpsM m fd) : Option fd → m Unit
-  | none => pure ()
-  | some h => do
-    let _ ← files.fcntl h (.setFl true false)
-    pure ()
-
 /-- Close `inFd0?` immediately when `stdin` is empty, or set `O_NONBLOCK` and retain it otherwise. -/
 def setupStdinPipe {m : Type → Type} [Monad m] {fd : Type}
     (files : Files.FilesOpsM m fd) (stdin : ByteArray) (inFd0? : Option fd) : m (Option fd) :=
   if stdin.size == 0 then do
-    closeOpt files inFd0?
+    Files.closeOpt files inFd0?
     pure none
   else
     match inFd0? with
@@ -989,7 +894,10 @@ def setupStdinPipe {m : Type → Type} [Monad m] {fd : Type}
 def readStartMsOpt {m : Type → Type} [Monad m]
     (timeRand : TimeRand.TimeRandOpsM m) : Option Nat → m (Except ProcessError Nat)
   | none => pure (.ok 0)
-  | some _ => monoNowMs timeRand
+  | some _ => do
+    match ← TimeRand.monoNowMs timeRand with
+    | .ok ms => return .ok ms
+    | .error e => return .error (mapErrno none "clock_gettime" e)
 
 /-- Pure capability-parameterized implementation of `RawProcessOpsM.awaitOutput`. -/
 def awaitOutputPure {m : Type → Type} [Monad m] {fd : Type}
@@ -1001,13 +909,13 @@ def awaitOutputPure {m : Type → Type} [Monad m] {fd : Type}
     return .error (mapRawError (.userError "invalid process handle"))
   | some (pid, inFd0?, outFd0?, errFd0?) =>
     let inFd? ← setupStdinPipe deps.files stdin inFd0?
-    setNonblockingOpt deps.files outFd0?
-    setNonblockingOpt deps.files errFd0?
+    Files.setNonblockingOpt deps.files outFd0?
+    Files.setNonblockingOpt deps.files errFd0?
     match ← readStartMsOpt deps.timeRand timeoutMs? with
     | .error e =>
-      closeOpt deps.files inFd?
-      closeOpt deps.files outFd0?
-      closeOpt deps.files errFd0?
+      Files.closeOpt deps.files inFd?
+      Files.closeOpt deps.files outFd0?
+      Files.closeOpt deps.files errFd0?
       return .error e
     | .ok startMs =>
       let initSt : StreamLoopState fd :=
@@ -1044,17 +952,13 @@ def awaitOutputPure {m : Type → Type} [Monad m] {fd : Type}
               return .error (mapRawError (.userError "process handle vanished"))
             return .ok outcome
 
-/-- Compute safe `kill(2)` target for isolated process group `pgid` (never returning `-1`). -/
-def killTargetOfPgid (pgid : UInt32) : Int32 :=
-  if pgid == 1 then 1 else -(pgid.toInt32)
-
 /-- 5-step × 5ms grace probe loop between `SIGTERM` and `SIGKILL` (`true` if group already vanished). -/
 def killGraceProbeLoop {m : Type → Type} [Monad m] {fd : Type}
     (proc : LinuxSyscall.Process.ProcessOpsM m fd) (timeRand : TimeRand.TimeRandOpsM m)
     (target : Int32) : Nat → m Bool
   | 0 => pure false
   | steps + 1 => do
-    sleepMonoMs timeRand 5
+    TimeRand.sleepMonoMs timeRand 5
     match ← proc.kill target .sigzero with
     | .error e =>
       if e == Errno.ESRCH then return true
@@ -1069,9 +973,9 @@ def killProcessGroupPure {m : Type → Type} [Monad m] {fd : Type}
   match ← tbl.lookupPgid h.handleId with
   | none => return .ok ()
   | some pgid =>
-    if pgid == 0 || pgid > MAX_LINUX_PID then
+    if pgid == 0 || pgid > LinuxSyscall.Process.MAX_LINUX_PID then
       return .ok ()
-    let target := killTargetOfPgid pgid
+    let target := LinuxSyscall.Process.killTargetOfPgid pgid
     match ← retryEintr (deps.proc.kill target .sigterm) eintrFuel with
     | .error e =>
       if e == Errno.ESRCH then return .ok ()
@@ -1087,19 +991,6 @@ def killProcessGroupPure {m : Type → Type} [Monad m] {fd : Type}
       | .ok () =>
         return .ok ()
 
-/-- Reap blocking `waitpid` loop ignoring `ECHILD` and retrying `EINTR` up to `fuel`. -/
-def reapWaitLoop {m : Type → Type} [Monad m] {fd : Type}
-    (proc : LinuxSyscall.Process.ProcessOpsM m fd) (pid : Int32) :
-    Nat → m (Except ProcessError Unit)
-  | 0 => pure (.error (mapRawError (.userError "reap waitpid EINTR retry budget exhausted")))
-  | fuel + 1 => do
-    match ← proc.waitpid pid {} with
-    | .ok _ => return .ok ()
-    | .error e =>
-      if e == Errno.EINTR then reapWaitLoop proc pid fuel
-      else if e == Errno.ECHILD then return .ok ()
-      else return .error (mapErrno none "waitpid" e)
-
 /-- Pure capability-parameterized implementation of `RawProcessOpsM.reap`. -/
 def reapPure {m : Type → Type} [Monad m] {fd : Type}
     (deps : SysDepsM m fd) (tbl : ProcTableOpsM m fd) (eintrFuel : Nat)
@@ -1107,11 +998,14 @@ def reapPure {m : Type → Type} [Monad m] {fd : Type}
   match ← tbl.detachSlot h.handleId with
   | none => return .ok ()
   | some slot =>
-    closeOpt deps.files slot.stdinFd?
-    closeOpt deps.files slot.stdoutFd?
-    closeOpt deps.files slot.stderrFd?
-    if !slot.waited && slot.pid > 0 && slot.pid ≤ MAX_LINUX_PID then
-      reapWaitLoop deps.proc slot.pid.toInt32 eintrFuel
+    Files.closeOpt deps.files slot.stdinFd?
+    Files.closeOpt deps.files slot.stdoutFd?
+    Files.closeOpt deps.files slot.stderrFd?
+    if !slot.waited && slot.pid > 0 && slot.pid ≤ LinuxSyscall.Process.MAX_LINUX_PID then
+      match ← LinuxSyscall.Process.waitpidReapLoop deps.proc slot.pid.toInt32 eintrFuel with
+      | .ok () => return .ok ()
+      | .error none => return .error (mapRawError (.userError "reap waitpid EINTR retry budget exhausted"))
+      | .error (some e) => return .error (mapErrno none "waitpid" e)
     else
       return .ok ()
 

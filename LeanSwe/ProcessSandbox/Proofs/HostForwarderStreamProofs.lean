@@ -5,7 +5,6 @@ import LeanSwe.ProcessSandbox.Proofs.HostBwrapProofs
 namespace LeanSwe.ProcessSandbox.Proofs.HostForwarderStream
 
 open LeanSwe.LinuxSyscall
-open LeanSwe.ConnectProxy
 open LeanSwe.ProcessSandbox.Raw
 open LeanSwe.ProcessSandbox.Host.Bwrap
 open LeanSwe.ProcessSandbox.Host.Forwarder

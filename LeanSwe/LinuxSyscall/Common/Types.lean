@@ -220,4 +220,38 @@ def Errno.isCriticalOsErrno (e : Errno) : Bool :=
 def Errno.isResourceLimitErrno (e : Errno) : Bool :=
   e == Errno.EMFILE || e == Errno.ENOSPC
 
+/-- Default bounded retry budget for `EINTR` on single blocking syscalls. -/
+def DEFAULT_EINTR_FUEL : Nat := 256
+
+/-- Default fuel bound for non-blocking pipe streaming and timeout polling loops (`2^32`). -/
+def DEFAULT_IO_FUEL : Nat := UInt32.size
+
+/-- Retry an `Except Errno α` action across `Errno.EINTR` up to `fuel` additional attempts. -/
+def retryEintr {m : Type → Type} [Monad m] {α : Type}
+    (act : m (Except Errno α)) : Nat → m (Except Errno α)
+  | 0 => act
+  | fuel + 1 => do
+    match ← act with
+    | .error e =>
+      if e == Errno.EINTR then retryEintr act fuel else return .error e
+    | .ok v => return .ok v
+
+/-- Flatten `chunks` into a single `ByteArray` in `O(totalBytes)`. -/
+def concatChunks (chunks : Array ByteArray) (totalCap : Nat) : ByteArray :=
+  chunks.toList.foldl (· ++ ·) (ByteArray.emptyWithCapacity totalCap)
+
+/-- Tail-recursive byte-slice splitter accumulating segments delimited by `sep`. -/
+def splitByteAcc (sep : UInt8) (curRev : List UInt8) (accRev : List ByteArray) :
+    List UInt8 → List ByteArray
+  | [] => (ByteArray.mk curRev.reverse.toArray :: accRev).reverse
+  | b :: bs =>
+    if b == sep then
+      splitByteAcc sep [] (ByteArray.mk curRev.reverse.toArray :: accRev) bs
+    else
+      splitByteAcc sep (b :: curRev) accRev bs
+
+/-- Split `b` on every occurrence of byte `sep`, preserving empty segments. -/
+def splitByte (sep : UInt8) (b : ByteArray) : List ByteArray :=
+  splitByteAcc sep [] [] b.toList
+
 end LeanSwe.LinuxSyscall

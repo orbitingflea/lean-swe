@@ -1,8 +1,12 @@
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Files.Types
+import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.Poll.Types
+import LeanSwe.LinuxSyscall.Poll.Interface
 import LeanSwe.LinuxSyscall.Process.Types
+import LeanSwe.LinuxSyscall.Process.Interface
 import LeanSwe.LinuxSyscall.TimeRand.Types
+import LeanSwe.LinuxSyscall.TimeRand.Interface
 import LeanSwe.Process.SysBridge
 import LeanSwe.ProcessSandbox.Raw.Types
 import LeanSwe.ProcessSandbox.Raw.Impl
@@ -106,18 +110,18 @@ def readInitStatusStep {m : Type → Type} [Monad m] {fd : Type}
   | buf, 0 => pure (some statusFd, buf, decodeInitStatusMsg buf)
   | buf, fuel + 1 => do
     if buf.size >= 8 then
-      closeOpt files (some statusFd)
+      Files.closeOpt files (some statusFd)
       return (none, buf, decodeInitStatusMsg buf)
     let want := 8 - buf.size
     match ← files.read statusFd (UInt32.ofNat want) with
     | .ok bs =>
       if bs.size == 0 then
-        closeOpt files (some statusFd)
+        Files.closeOpt files (some statusFd)
         return (none, buf, none)
       else
         let buf' := buf ++ bs
         if buf'.size >= 8 then
-          closeOpt files (some statusFd)
+          Files.closeOpt files (some statusFd)
           return (none, buf', decodeInitStatusMsg buf')
         else
           readInitStatusStep files statusFd buf' fuel
@@ -127,7 +131,7 @@ def readInitStatusStep {m : Type → Type} [Monad m] {fd : Type}
       else if e == Errno.EAGAIN then
         return (some statusFd, buf, none)
       else
-        closeOpt files (some statusFd)
+        Files.closeOpt files (some statusFd)
         return (none, buf, none)
 
 /-- Mutable 4-FD state carried across `readBoxStreamLoop` iterations. -/
@@ -158,10 +162,10 @@ structure BoxStreamState (fd : Type) where
 /-- Close all still-open descriptors in `BoxStreamState`. -/
 def closeBoxStreamState {m : Type → Type} [Monad m] {fd : Type}
     (files : Files.FilesOpsM m fd) (st : BoxStreamState fd) : m Unit := do
-  closeOpt files st.inFd?
-  closeOpt files st.outFd?
-  closeOpt files st.errFd?
-  closeOpt files st.statusFd?
+  Files.closeOpt files st.inFd?
+  Files.closeOpt files st.outFd?
+  Files.closeOpt files st.errFd?
+  Files.closeOpt files st.statusFd?
 
 /-- Build the 4-FD `ppoll(2)` descriptor array for `st` (`stdin` `POLLOUT`; `stdout`, `stderr`, `status` `POLLIN`). -/
 def buildBoxPollEntries {fd : Type} (st : BoxStreamState fd) : Array (fd × Poll.PollEvents) :=
@@ -178,13 +182,13 @@ def decodeBoxReadyFlags {fd : Type} (st : BoxStreamState fd) (revents : Array Po
     | some _ => (some (revents[0]?.getD ({} : Poll.PollEvents)), 1)
   let (outReady, i2) := match st.outFd? with
     | none => (false, i1)
-    | some _ => (match revents[i1]? with | some ev => pollEvReady false ev | none => true, i1 + 1)
+    | some _ => (match revents[i1]? with | some ev => Poll.pollEvReady false ev | none => true, i1 + 1)
   let (errReady, i3) := match st.errFd? with
     | none => (false, i2)
-    | some _ => (match revents[i2]? with | some ev => pollEvReady false ev | none => true, i2 + 1)
+    | some _ => (match revents[i2]? with | some ev => Poll.pollEvReady false ev | none => true, i2 + 1)
   let stReady := match st.statusFd? with
     | none => false
-    | some _ => match revents[i3]? with | some ev => pollEvReady false ev | none => true
+    | some _ => match revents[i3]? with | some ev => Poll.pollEvReady false ev | none => true
   (inRev?, outReady, errReady, stReady)
 
 /-- Classify the completed stream phase into `Except SandboxError SandboxResult` for `Host.SysBridge` / `Host.StreamIo`. -/
@@ -231,19 +235,19 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
     return .error (Internal.mapRawError (.ioError none Errno.EIO "sandbox I/O loop fuel exhausted"))
   | st, fuel + 1 => do
     if st.outFd?.isNone && st.errFd?.isNone && st.statusFd?.isNone then
-      closeOpt files st.inFd?
+      Files.closeOpt files st.inFd?
       return classifyBoxStreamResult program cwd false false st.statusMsg?
         (concatChunks st.outChunks st.outLen) (concatChunks st.errChunks st.errLen)
-    match ← checkTimedOut timeRand startMs (some timeoutMs) with
+    match ← TimeRand.checkTimedOut timeRand startMs (some timeoutMs) with
     | .error e =>
       closeBoxStreamState files st
-      return .error (processErrToSandboxErr e)
+      return .error (Internal.mapRawError (.ioError none e s!"clock_gettime: {Errno.name e}"))
     | .ok (true, _) =>
       closeBoxStreamState files st
       return classifyBoxStreamResult program cwd true false st.statusMsg?
         (concatChunks st.outChunks st.outLen) (concatChunks st.errChunks st.errLen)
     | .ok (false, remMs) =>
-      match ← poll.ppoll (buildBoxPollEntries st) (some (msToPollTimespec remMs)) with
+      match ← poll.ppoll (buildBoxPollEntries st) (some (Poll.msToPollTimespec remMs)) with
       | .error e =>
         if e == Errno.EINTR then
           readBoxStreamLoop files poll timeRand program cwd stdin startMs timeoutMs maxOutputBytes? stepFuel st fuel
@@ -252,12 +256,12 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
           return .error (Internal.mapRawError (.ioError none e s!"ppoll: {Errno.name e}"))
       | .ok revents =>
         let (inRev?, outReady, errReady, stReady) := decodeBoxReadyFlags st revents
-        let inAny := match inRev? with | some ev => pollEvReady true ev | none => false
+        let inAny := match inRev? with | some ev => Poll.pollEvReady true ev | none => false
         if !inAny && !outReady && !errReady && !stReady then
-          match ← checkTimedOut timeRand startMs (some timeoutMs) with
+          match ← TimeRand.checkTimedOut timeRand startMs (some timeoutMs) with
           | .error e =>
             closeBoxStreamState files st
-            return .error (processErrToSandboxErr e)
+            return .error (Internal.mapRawError (.ioError none e s!"clock_gettime: {Errno.name e}"))
           | .ok (true, _) =>
             closeBoxStreamState files st
             return classifyBoxStreamResult program cwd true false st.statusMsg?
@@ -269,7 +273,7 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
             match st.inFd?, inRev? with
             | some inFd, some ev =>
               if ev.pollerr || ev.pollhup || ev.pollnval then
-                closeOpt files (some inFd)
+                Files.closeOpt files (some inFd)
                 pure (none, st.stdinPos, false, none)
               else if ev.pollout then
                 match ← writeStdinStep files timeRand inFd stdin startMs (some timeoutMs) st.stdinPos false stepFuel with
@@ -280,16 +284,16 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
             | inFd?, _ => pure (inFd?, st.stdinPos, false, none)
           match inErr? with
           | some e =>
-            closeOpt files st.outFd?
-            closeOpt files st.errFd?
-            closeOpt files st.statusFd?
+            Files.closeOpt files st.outFd?
+            Files.closeOpt files st.errFd?
+            Files.closeOpt files st.statusFd?
             return .error e
           | none =>
             if inTimedOut then
-              closeOpt files inFdNext?
-              closeOpt files st.outFd?
-              closeOpt files st.errFd?
-              closeOpt files st.statusFd?
+              Files.closeOpt files inFdNext?
+              Files.closeOpt files st.outFd?
+              Files.closeOpt files st.errFd?
+              Files.closeOpt files st.statusFd?
               return classifyBoxStreamResult program cwd true false st.statusMsg?
                 (concatChunks st.outChunks st.outLen) (concatChunks st.errChunks st.errLen)
             let outStep ←
@@ -303,20 +307,20 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
                 pure (.cont st.outFd? st.outChunks st.outLen false)
             match outStep with
             | .ioErr e =>
-              closeOpt files inFdNext?
-              closeOpt files st.errFd?
-              closeOpt files st.statusFd?
+              Files.closeOpt files inFdNext?
+              Files.closeOpt files st.errFd?
+              Files.closeOpt files st.statusFd?
               return .error (processErrToSandboxErr e)
             | .timedOut =>
-              closeOpt files inFdNext?
-              closeOpt files st.errFd?
-              closeOpt files st.statusFd?
+              Files.closeOpt files inFdNext?
+              Files.closeOpt files st.errFd?
+              Files.closeOpt files st.statusFd?
               return classifyBoxStreamResult program cwd true false st.statusMsg?
                 (concatChunks st.outChunks st.outLen) (concatChunks st.errChunks st.errLen)
             | .limitExceeded outChunks' outLen' =>
-              closeOpt files inFdNext?
-              closeOpt files st.errFd?
-              closeOpt files st.statusFd?
+              Files.closeOpt files inFdNext?
+              Files.closeOpt files st.errFd?
+              Files.closeOpt files st.statusFd?
               return classifyBoxStreamResult program cwd false true st.statusMsg?
                 (concatChunks outChunks' outLen') (concatChunks st.errChunks st.errLen)
             | .cont outFdNext? outChunks' outLen' _ =>
@@ -331,20 +335,20 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
                   pure (.cont st.errFd? st.errChunks st.errLen false)
               match errStep with
               | .ioErr e =>
-                closeOpt files inFdNext?
-                closeOpt files outFdNext?
-                closeOpt files st.statusFd?
+                Files.closeOpt files inFdNext?
+                Files.closeOpt files outFdNext?
+                Files.closeOpt files st.statusFd?
                 return .error (processErrToSandboxErr e)
               | .timedOut =>
-                closeOpt files inFdNext?
-                closeOpt files outFdNext?
-                closeOpt files st.statusFd?
+                Files.closeOpt files inFdNext?
+                Files.closeOpt files outFdNext?
+                Files.closeOpt files st.statusFd?
                 return classifyBoxStreamResult program cwd true false st.statusMsg?
                   (concatChunks outChunks' outLen') (concatChunks st.errChunks st.errLen)
               | .limitExceeded errChunks' errLen' =>
-                closeOpt files inFdNext?
-                closeOpt files outFdNext?
-                closeOpt files st.statusFd?
+                Files.closeOpt files inFdNext?
+                Files.closeOpt files outFdNext?
+                Files.closeOpt files st.statusFd?
                 return classifyBoxStreamResult program cwd false true st.statusMsg?
                   (concatChunks outChunks' outLen') (concatChunks errChunks' errLen')
               | .cont errFdNext? errChunks' errLen' _ =>
@@ -361,10 +365,10 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
                   | some msg => msg.kind == PS_STATUS_EXEC_ERR || msg.kind == PS_STATUS_INIT_ERR
                   | none => false
                 if stopEarly then
-                  closeOpt files inFdNext?
-                  closeOpt files outFdNext?
-                  closeOpt files errFdNext?
-                  closeOpt files stFdNext?
+                  Files.closeOpt files inFdNext?
+                  Files.closeOpt files outFdNext?
+                  Files.closeOpt files errFdNext?
+                  Files.closeOpt files stFdNext?
                   return classifyBoxStreamResult program cwd false false stMsgNext?
                     (concatChunks outChunks' outLen') (concatChunks errChunks' errLen')
                 else
@@ -394,19 +398,19 @@ def readBoxOutputCore {m : Type → Type} [Monad m] {fd : Type}
   match goFd0? with
   | some goFd =>
     let _ ← writeAllFd files goFd (ByteArray.mk #[0x47]) 0 eintrFuel
-    closeOpt files (some goFd)
+    Files.closeOpt files (some goFd)
   | none => pure ()
   let inFd? ← setupStdinPipe files stdin inFd0?
-  setNonblockingOpt files outFd0?
-  setNonblockingOpt files errFd0?
-  setNonblockingOpt files statusFd0?
-  match ← monoNowMs timeRand with
+  Files.setNonblockingOpt files outFd0?
+  Files.setNonblockingOpt files errFd0?
+  Files.setNonblockingOpt files statusFd0?
+  match ← TimeRand.monoNowMs timeRand with
   | .error e =>
-    closeOpt files inFd?
-    closeOpt files outFd0?
-    closeOpt files errFd0?
-    closeOpt files statusFd0?
-    return .error (processErrToSandboxErr e)
+    Files.closeOpt files inFd?
+    Files.closeOpt files outFd0?
+    Files.closeOpt files errFd0?
+    Files.closeOpt files statusFd0?
+    return .error (Internal.mapRawError (.ioError none e s!"clock_gettime: {Errno.name e}"))
   | .ok startMs =>
     let effTimeout := Nat.max 1 timeoutMs
     let initSt : BoxStreamState fd := {
@@ -421,9 +425,9 @@ def readBoxOutputCore {m : Type → Type} [Monad m] {fd : Type}
 def killBoxPg {m : Type → Type} [Monad m] {fd : Type}
     (proc : LinuxSyscall.Process.ProcessOpsM m fd) (pgid : UInt32)
     (eintrFuel : Nat := DEFAULT_EINTR_FUEL) : m (Except SandboxError Unit) := do
-  if pgid == 0 || pgid > MAX_LINUX_PID then
+  if pgid == 0 || pgid > LinuxSyscall.Process.MAX_LINUX_PID then
     return .ok ()
-  match ← retryEintr (proc.kill (killTargetOfPgid pgid) .sigkill) eintrFuel with
+  match ← retryEintr (proc.kill (LinuxSyscall.Process.killTargetOfPgid pgid) .sigkill) eintrFuel with
   | .ok () => return .ok ()
   | .error e =>
     if e == Errno.ESRCH then return .ok ()

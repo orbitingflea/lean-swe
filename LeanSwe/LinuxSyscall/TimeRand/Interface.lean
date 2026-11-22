@@ -36,4 +36,38 @@ def defaultOps : TimeRandOps :=
 @[inline] def getrandom (len : UInt32) (flags : GrndFlags := {}) : IO (Except Errno ByteArray) :=
   defaultOps.getrandom len flags
 
+/-- Convert a non-negative `TimeRand.Timespec` reading to milliseconds. -/
+def timespecToMs (ts : Timespec) : Nat :=
+  ts.sec.toInt.toNat * 1000 + ts.nsec.toNat / 1000000
+
+/-- Read `CLOCK_MONOTONIC` in milliseconds via `timeRand.clock_gettime`. -/
+def monoNowMs {m : Type → Type} [Monad m] (timeRand : TimeRandOpsM m) : m (Except Errno Nat) := do
+  match ← timeRand.clock_gettime .monotonic with
+  | .ok ts => return .ok (timespecToMs ts)
+  | .error e => return .error e
+
+/-- Check whether optional deadline `timeoutMs?` has expired relative to `startMs` (`(expired, remainingMs)`). -/
+def checkTimedOut {m : Type → Type} [Monad m]
+    (timeRand : TimeRandOpsM m) (startMs : Nat) :
+    Option Nat → m (Except Errno (Bool × Nat))
+  | none => pure (.ok (false, 0))
+  | some timeoutMs => do
+    match ← monoNowMs timeRand with
+    | .error e => return .error e
+    | .ok nowMs =>
+      let elapsed := nowMs - startMs
+      if elapsed ≥ timeoutMs then
+        return .ok (true, 0)
+      else
+        return .ok (false, timeoutMs - elapsed)
+
+/-- Sleep on `CLOCK_MONOTONIC` for `ms` milliseconds, returning on `EINTR` without retrying. -/
+def sleepMonoMs {m : Type → Type} [Monad m]
+    (timeRand : TimeRandOpsM m) (ms : Nat) : m Unit := do
+  let clampedSec := Nat.min (ms / 1000) MAX_TIMESPEC_SEC
+  let remNs := (ms % 1000) * 1000000
+  let _ ← timeRand.clock_nanosleep .monotonic false
+    { sec := Int64.ofInt (Int.ofNat clampedSec), nsec := UInt32.ofNat remNs }
+  pure ()
+
 end LeanSwe.LinuxSyscall.TimeRand
