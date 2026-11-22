@@ -301,7 +301,7 @@ structure GitApiM (m : Type → Type) where
   mergeBase? : String → CommitId → CommitId → m (Except GitError (Option CommitId))
   /-- Return working-tree and index status entries via `git status --porcelain=v1 -z`. -/
   status : String → m (Except GitError (Array StatusEntry))
-  /-- Return file change summaries between `revA` and `revB?` (or working tree when `none`). -/
+  /-- Return file change summaries between `revA` and `revB?` (or working tree when `none`). Path arguments are matched literally via `GIT_LITERAL_PATHSPECS=1`: wildcards (`*`, `?`, `[`, `\`) and leading `:` magic prefixes are NOT expanded; directories (e.g. `.` and `src/`) still diff all contents inside them. -/
   diffNameStatus : String → String → Option String → Array String → m (Except GitError (Array DiffEntry))
   /-- List main and linked worktrees via `git worktree list --porcelain -z`. -/
   listWorktrees : String → m (Except GitError (Array WorktreeInfo))
@@ -311,7 +311,7 @@ structure GitApiM (m : Type → Type) where
   init : String → Bool → Option RefName → m (Except GitError Unit)
   /-- Clone a repository non-interactively from `source` to `target`. -/
   clone : String → String → CloneOptions → m (Except GitError Unit)
-  /-- Stage explicit paths or all changes in the repository. -/
+  /-- Stage explicit paths or all changes in the repository. Path arguments are matched literally via `GIT_LITERAL_PATHSPECS=1`: wildcards (`*`, `?`, `[`, `\`) and leading `:` magic prefixes are NOT expanded; directories (e.g. `.` and `src/`) still stage all contents inside them. -/
   add : String → Array String → Bool → m (Except GitError Unit)
   /-- Create a commit with `CommitOptions` and return the resulting `CommitId`. -/
   commit : String → CommitOptions → m (Except GitError CommitId)

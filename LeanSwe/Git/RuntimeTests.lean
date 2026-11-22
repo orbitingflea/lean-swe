@@ -1,4 +1,5 @@
 import Core.Assumptions
+import LeanSwe.Git.Impl
 import LeanSwe.Git.Interface
 import LeanSwe.TempDir.Interface
 import LeanSwe.Process.Interface
@@ -2221,6 +2222,40 @@ private def runIntegrationSmoke : IO Unit := do
     assertOk (← Git.checkout repo (.branch mainRef) false) "checkout main after switch -C"
     assertOk (← Git.reset repo .hard "HEAD") "reset --hard"
 
+    let diffFiltered ← assertOk (← Git.diffNameStatus repo c1.hex (some c2.hex) #["subdir"])
+      "diffNameStatus with path filter"
+    assertTrue (diffFiltered.size == 1 && diffFiltered[0]!.path == "subdir/nested.txt")
+      "diffNameStatus path filter restricts output to subdir/nested.txt"
+
+    let customMsg := "subject line\n\ndetailed body"
+    let cCustom ← assertOk (← Git.commit repo
+      { message := customMsg
+        allowEmpty := true
+        authorName := some "Alice Verifier"
+        authorEmail := some "alice@verifier.invalid" }) "commit custom author/message"
+    let logOut ← runProcRaw "git"
+      #["log", "-1", "--format=%an|%ae|%cn|%ce|%B", cCustom.hex] (some repo)
+    let logStr := (String.fromUTF8? logOut.stdout).getD ""
+    assertTrue (logStr.startsWith "Alice Verifier|alice@verifier.invalid|Alice Verifier|alice@verifier.invalid|subject line\n\ndetailed body")
+      "commit records exact author, committer, and cleaned message"
+
+    assertOk (← Git.reset repo .soft c1.hex) "reset --soft to c1"
+    let stAfterSoft ← assertOk (← Git.status repo) "status after reset --soft"
+    assertTrue (stAfterSoft.size == 2 && stAfterSoft.all (fun e => e.indexStatus == some .added && e.worktreeStatus == none))
+      "reset --soft preserves index entries as staged additions"
+    assertOk (← Git.reset repo .mixed c1.hex) "reset --mixed to c1"
+    let stAfterMixed ← assertOk (← Git.status repo) "status after reset --mixed"
+    assertTrue (stAfterMixed.any (fun e => e.indexStatus == some .untracked))
+      "reset --mixed unstages entries while preserving working tree files"
+    assertOk (← Git.reset repo .hard c2.hex) "reset --hard back to c2"
+
+    let wtForcePath := root ++ "/wt-force"
+    assertOk (← Git.worktreeAdd repo { path := wtForcePath, detach := true }) "worktreeAdd detach"
+    IO.FS.writeFile (wtForcePath ++ "/dirty.txt") "untracked\n"
+    assertErrKind (← Git.worktreeRemove repo wtForcePath false) .dirtyWorktree
+      "worktreeRemove without force rejects dirty worktree"
+    assertOk (← Git.worktreeRemove repo wtForcePath true) "worktreeRemove --force removes dirty worktree"
+
     let wtBracketPath := root ++ "/wt-bracket"
     let bracketOk ← assertOk
       (← Git.withWorktree repo { path := wtBracketPath, detach := true } fun path => do
@@ -2239,11 +2274,633 @@ private def runIntegrationSmoke : IO Unit := do
     assertTrue ((← assertOk (← Git.listWorktrees repo) "listWorktrees after withWorktree error").size == 1)
       "withWorktree cleaned up on error"
 
+    let shortPrefix := String.ofList (c2.hex.toList.take 7)
+    let rpShortOld ← assertOk (← Git.revParseCommit repo shortPrefix) "revParseCommit resolves short SHA"
+    assertTrue (rpShortOld == c2) "revParseCommit short SHA matches c2"
+    assertOk (← Git.reset repo .hard shortPrefix) "reset accepts short SHA"
+    assertOk (← Git.checkout repo (.ref shortPrefix) false) "checkout .ref accepts short SHA"
+    assertOk (← Git.checkout repo (.branch mainRef) false) "checkout back to main"
+    assertOk (← Git.switch repo { raw := "short-sw" } true (some shortPrefix) false)
+      "switch startPoint accepts short SHA"
+    assertOk (← Git.switch repo mainRef false none false) "switch back to main"
+    assertOk (← Git.deleteBranch repo { raw := "short-sw" } true) "cleanup short-sw"
+    assertOk (← Git.createBranch repo { raw := "short-br" } (some shortPrefix) false)
+      "createBranch startPoint accepts short SHA"
+    assertOk (← Git.deleteBranch repo { raw := "short-br" } true) "cleanup short-br"
+    let _ ← assertOk (← Git.diffNameStatus repo shortPrefix none #[]) "diffNameStatus accepts short SHA"
+    let _ ← assertOk (← Git.diffNameStatus repo "HEAD" (some shortPrefix) #[]) "diffNameStatus revB accepts short SHA"
+    let _ ← assertOk (← Git.showFile? repo shortPrefix "a b.txt") "showFile? accepts short SHA"
+    let wtShortPath := root ++ "/wt-short"
+    assertOk (← Git.worktreeAdd repo { path := wtShortPath, newBranch? := some { raw := "wt-sh" }, target? := some shortPrefix })
+      "worktreeAdd target accepts short SHA"
+    assertOk (← Git.worktreeRemove repo wtShortPath true) "cleanup wt-short"
+    assertOk (← Git.deleteBranch repo { raw := "wt-sh" } true) "cleanup wt-sh"
+
+    let forceBr : RefName := { raw := "force-target" }
+    assertOk (← Git.switch repo forceBr true (some c1.hex) false) "create force-target at c1"
+    IO.FS.writeFile (repo ++ "/only-ft.txt") "ft\n"
+    assertOk (← Git.add repo #["only-ft.txt"] false) "stage only-ft"
+    let _ ← assertOk (← Git.commit repo (testAuthorOpts "ft commit" false)) "commit ft"
+    assertOk (← Git.switch repo mainRef false none false) "switch back to main"
+    IO.FS.writeFile (repo ++ "/only-ft.txt") "untracked-collision\n"
+    assertErrKind (← Git.switch repo forceBr false none false) .dirtyWorktree
+      "switch existing without force rejects collision"
+    assertOk (← Git.switch repo forceBr false none true) "switch existing with force overwrites collision"
+    assertErrKind (← Git.switch repo mainRef true none false) .alreadyExists
+      "switch -c on existing branch fails with alreadyExists"
+    IO.FS.writeFile (repo ++ "/a b.txt") "dirty-for-ref-co\n"
+    assertErrKind (← Git.checkout repo (.ref mainRef.raw) false) .dirtyWorktree
+      "checkout .ref without force rejects dirty file"
+    assertOk (← Git.checkout repo (.ref mainRef.raw) true) "checkout .ref with force overwrites dirty file"
+    assertErrKind (← Git.deleteBranch repo forceBr false) .commandFailed
+      "deleteBranch without force rejects unmerged branch"
+    assertOk (← Git.deleteBranch repo forceBr true) "deleteBranch with force deletes unmerged branch"
+
+private def runExtendedParityAndGuardSmoke : IO Unit :=
+  withTempDirIO fun root => do
+    let repo := root ++ "/repo"
+    let c1 ← initCommittedRepo repo
+    let mainRef : RefName := { raw := "main" }
+
+    let br40Raw := String.ofList (List.replicate 40 'f')
+    let br40Ref : RefName := { raw := br40Raw }
+    assertOk (← Git.createBranch repo br40Ref (some c1.hex) false) "create 40-hex local branch"
+    let wt40Path := root ++ "/wt-hex40"
+    assertErrKind (← Git.worktreeAdd repo { path := wt40Path, target? := some br40Raw }) .invalidRef
+      "stock git worktreeAdd rejects ambiguous bare 40-hex branch not equal to a commit object"
+    assertOk (← Git.worktreeAdd repo { path := wt40Path, target? := some ("refs/heads/" ++ br40Raw) })
+      "worktreeAdd accepts explicit refs/heads/<40-hex> detached target"
+    assertOk (← Git.worktreeRemove repo wt40Path false) "remove refs/heads/<40-hex> worktree"
+    assertOk (← Git.deleteBranch repo br40Ref true) "delete 40-hex local branch"
+
+    let fetchDstDir := root ++ "/fetch-dst-qualify"
+    assertOk (← Git.init fetchDstDir false (some mainRef)) "init fetchDstDir"
+    IO.FS.writeFile (fetchDstDir ++ "/seed.txt") "seed\n"
+    assertOk (← Git.add fetchDstDir #[] true) "stage seed"
+    let _ ← assertOk (← Git.commit fetchDstDir (testAuthorOpts "seed" false)) "commit seed"
+    IO.FS.writeFile (repo ++ "/f2.txt") "second\n"
+    assertOk (← Git.add repo #["f2.txt"] false) "stage f2"
+    let _ ← assertOk (← Git.commit repo (testAuthorOpts "c2" false)) "commit c2"
+    assertErrKind (← Git.fetch fetchDstDir repo (some "main:heads/main") false) .commandFailed
+      "fetch main:heads/main refuses checked-out main"
+    assertOk (← Git.fetch fetchDstDir repo (some (c1.hex ++ ":tags/qual-tag")) false)
+      "fetch into tags/qual-tag"
+    assertErrKind (← Git.fetch fetchDstDir repo (some "main:tags/qual-tag") false) .commandFailed
+      "fetch non-force refuses clobbering existing tags/qual-tag"
+    assertOk (← Git.fetch fetchDstDir repo (some "main:remotes/origin/qual") false)
+      "fetch into remotes/origin/qual"
+    let _ ← assertOk (← Git.revParseCommit fetchDstDir "refs/remotes/origin/qual")
+      "revParseCommit refs/remotes/origin/qual"
+
+    let cleanSubBr : RefName := { raw := "cleanns/ok" }
+    assertOk (← Git.createBranch repo cleanSubBr (some c1.hex) false) "create cleanns/ok branch"
+    let unbornFetchDir := root ++ "/fetch-unborn-glob"
+    assertOk (← Git.init unbornFetchDir false (some mainRef)) "init unbornFetchDir"
+    assertOk (← Git.fetch unbornFetchDir repo (some "+refs/heads/cleanns/*:refs/heads/*") false)
+      "fetch benign glob into refs/heads/*"
+    let rpCleanOk ← assertOk (← Git.revParseCommit unbornFetchDir "refs/heads/ok")
+      "revParseCommit refs/heads/ok after benign glob"
+    assertTrue (rpCleanOk == c1) "benign glob fetched commit matches"
+
+    let ur1 ← assertOk (← Git.defaultRawOps.execGit (Model.cleanGitEnv #[] #[])
+      { cwd := some repo, args := #["update-ref", "refs/pull/42/head", c1.hex] }) "update-ref refs/pull/42/head"
+    assertTrue (ur1.exitCode == 0) "update-ref refs/pull/42/head exitCode=0"
+    assertOk (← Git.createBranch repo { raw := "feat-alpha" } (some c1.hex) false) "create feat-alpha"
+    assertOk (← Git.fetch unbornFetchDir repo (some "+refs/pull/*/head:refs/remotes/origin/pr/*") false)
+      "fetch generalized single-star refs/pull/*/head"
+    let rpPr42 ← assertOk (← Git.revParseCommit unbornFetchDir "refs/remotes/origin/pr/42")
+      "revParseCommit refs/remotes/origin/pr/42"
+    assertTrue (rpPr42 == c1) "refs/remotes/origin/pr/42 matches c1"
+    assertOk (← Git.fetch unbornFetchDir repo (some "refs/heads/feat*:refs/remotes/origin/feat*") false)
+      "fetch generalized single-star refs/heads/feat*"
+    let rpFeat ← assertOk (← Git.revParseCommit unbornFetchDir "refs/remotes/origin/feat-alpha")
+      "revParseCommit refs/remotes/origin/feat-alpha"
+    assertTrue (rpFeat == c1) "refs/remotes/origin/feat-alpha matches c1"
+    let ur2 ← assertOk (← Git.defaultRawOps.execGit (Model.cleanGitEnv #[] #[])
+      { cwd := some repo, args := #["update-ref", "-d", "refs/pull/42/head"] }) "delete refs/pull/42/head"
+    assertTrue (ur2.exitCode == 0) "update-ref -d refs/pull/42/head exitCode=0"
+    assertOk (← Git.fetch unbornFetchDir repo (some "+refs/pull/*/head:refs/remotes/origin/pr/*") true)
+      "fetch --prune generalized single-star refs/pull/*/head"
+    assertErrKind (← Git.revParseCommit unbornFetchDir "refs/remotes/origin/pr/42") .invalidRef
+      "pruned refs/remotes/origin/pr/42 removed"
+
+    let seg255 := repeatCharStr 'a' 255
+    let seg256 := repeatCharStr 'a' 256
+    assertTrue (Model.validateFsPathArg ("/tmp/" ++ seg255)).isOk "validateFsPathArg accepts 255-byte segment"
+    assertErrKind (Model.validateFsPathArg ("/tmp/" ++ seg256)) .invalidInput "validateFsPathArg rejects 256-byte segment"
+    assertTrue (Model.validateCloneEndpoint ("/tmp/" ++ seg255)).isOk "validateCloneEndpoint accepts 255-byte segment"
+    assertErrKind (Model.validateCloneEndpoint ("/tmp/" ++ seg256)) .invalidInput "validateCloneEndpoint rejects 256-byte segment"
+    assertTrue (Model.validateRelRepoPath ("sub/" ++ seg255)).isOk "validateRelRepoPath accepts 255-byte segment"
+    assertErrKind (Model.validateRelRepoPath ("sub/" ++ seg256)) .invalidInput "validateRelRepoPath rejects 256-byte segment"
+    assertTrue (!Model.isValidRefNameStr (repeatCharStr 'r' 241)) "ref component keeps 240-byte headroom"
+
+    let renRepo := root ++ "/fuzzy-ren"
+    assertOk (← Git.init renRepo false (some mainRef)) "init fuzzy-ren"
+    let renLines := "r01\nr02\nr03\nr04\nr05\nr06\nr07\nr08\nr09\nr10\n"
+    let renEdited := "r01-edited\nr02\nr03\nr04\nr05\nr06\nr07\nr08\nr09\nr10\n"
+    IO.FS.writeFile (renRepo ++ "/old.txt") renLines
+    assertOk (← Git.add renRepo #["old.txt"] false) "add old.txt"
+    let _ ← assertOk (← Git.commit renRepo (testAuthorOpts "ren-base" false)) "commit ren-base"
+    IO.FS.removeFile (renRepo ++ "/old.txt")
+    IO.FS.writeFile (renRepo ++ "/new.txt") renEdited
+    assertOk (← Git.add renRepo #[] true) "stage edited move"
+    let stRen ← assertOk (← Git.status renRepo) "status fuzzy rename"
+    assertTrue (stRen.any fun e => e.indexStatus == some .renamed && e.path == "new.txt" && e.origPath == some "old.txt")
+      "status uses default git fuzzy rename detection"
+    let expStUnpaired : Array StatusEntry := #[
+      { indexStatus := some .added, worktreeStatus := none, path := "new.txt" },
+      { indexStatus := some .deleted, worktreeStatus := none, path := "old.txt" }
+    ]
+    assertTrue (Model.statusEntriesMatchUpToRenames expStUnpaired stRen)
+      "statusEntriesMatchUpToRenames accepts fuzzy rename"
+    assertTrue (!Model.statusEntriesMatchUpToRenames expStUnpaired #[{ indexStatus := some .modified, worktreeStatus := none, path := "new.txt" }])
+      "statusEntriesMatchUpToRenames rejects non-matching kind"
+    let dfRen ← assertOk (← Git.diffNameStatus renRepo "HEAD") "diffNameStatus fuzzy rename"
+    assertTrue (dfRen.any fun e => match e.kind with | .renamed s => s < 100 && e.path == "new.txt" && e.origPath == some "old.txt" | _ => false)
+      "diffNameStatus uses default git fuzzy rename detection (<100%)"
+    let expDfUnpaired : Array DiffEntry := #[
+      { kind := .added, path := "new.txt", origPath := none },
+      { kind := .deleted, path := "old.txt", origPath := none }
+    ]
+    assertTrue (Model.diffEntriesMatchUpToRenames expDfUnpaired dfRen)
+      "diffEntriesMatchUpToRenames accepts fuzzy rename"
+    assertTrue (!Model.diffEntriesMatchUpToRenames expDfUnpaired #[{ kind := .renamed 101, path := "new.txt", origPath := some "old.txt" }])
+      "diffEntriesMatchUpToRenames rejects score > 100"
+
+    let nestedTop := root ++ "/nested-top"
+    let nestedMid := nestedTop ++ "/sub1"
+    let nestedLeaf := nestedMid ++ "/sub2"
+    IO.FS.createDirAll nestedLeaf
+    assertOk (← Git.init nestedLeaf false (some mainRef)) "init nestedLeaf"
+    IO.FS.writeFile (nestedLeaf ++ "/leaf.txt") "leaf\n"
+    assertOk (← Git.add nestedLeaf #[] true) "add nestedLeaf"
+    let _ ← assertOk (← Git.commit nestedLeaf (testAuthorOpts "leaf commit" false)) "commit nestedLeaf"
+    assertOk (← Git.init nestedMid false (some mainRef)) "init nestedMid"
+    assertOk (← Git.add nestedMid #[] true) "add nestedMid"
+    let _ ← assertOk (← Git.commit nestedMid (testAuthorOpts "mid commit" false)) "commit nestedMid"
+    assertOk (← Git.init nestedTop false (some mainRef)) "init nestedTop"
+    assertOk (← Git.add nestedTop #[] true) "add nestedTop"
+    let _ ← assertOk (← Git.commit nestedTop (testAuthorOpts "top commit" false)) "commit nestedTop"
+    IO.FS.writeFile (nestedLeaf ++ "/untracked.txt") "untracked\n"
+    let topSt ← assertOk (← Git.status nestedTop) "status on 3-level nested gitlinks"
+    assertTrue (topSt.size == 1 && topSt[0]?.map (·.path) == some "sub1")
+      "status reports nested untracked dirt on sub1"
+    let topDf ← assertOk (← Git.diffNameStatus nestedTop "HEAD" none #[])
+      "diffNameStatus on 3-level nested gitlinks"
+    assertTrue topDf.isEmpty "diffNameStatus ignores untracked files in nested submodules"
+
+    let v2Root := root ++ "/v2-checks"
+    let v2Repo := v2Root ++ "/repo"
+    let v2WtDef := v2Root ++ "/wt-def"
+    let v2Clone := v2Root ++ "/clone"
+    IO.FS.createDirAll v2Repo
+    assertOk (← Git.init v2Repo false (some mainRef)) "v2 init"
+    IO.FS.writeFile (v2Repo ++ "/a.txt") "v2\n"
+    assertOk (← Git.add v2Repo #["a.txt"] false) "v2 add"
+    let cV2 ← assertOk (← Git.commit v2Repo (testAuthorOpts "  pad  \n  \n\n\nline2 \t \r\n\n  " false)) "v2 commit"
+    let catOut ← assertOk (← Git.defaultRawOps.execGit (Model.cleanGitEnv #[] #[]) { cwd := some v2Repo, args := #["cat-file", "commit", cV2.hex] }) "v2 cat-file"
+    let catStr := String.fromUTF8? catOut.stdout |>.getD ""
+    assertTrue (catStr.endsWith "\n\n  pad\n\nline2\n") "v2 commit message cleanup matches git -m"
+    assertErrKind (← Git.commit v2Repo (testAuthorOpts "   \n" true)) .commandFailed "v2 whitespace-only allowEmpty fails"
+    let shortV2 := String.ofList (cV2.hex.toList.take 7)
+    let rpReflog ← assertOk (← Git.revParseCommit v2Repo "HEAD@{0}") "v2 revParse reflog"
+    let rpShort ← assertOk (← Git.revParseCommit v2Repo shortV2) "v2 revParse short sha"
+    assertTrue (rpReflog == cV2 && rpShort == cV2) "v2 extended revParseCommit matches commit"
+    let sfReflog ← assertOk (← Git.showFile? v2Repo "HEAD@{0}" "a.txt") "v2 showFile? reflog"
+    assertTrue (sfReflog == some "v2\n".toUTF8) "v2 showFile? reflog content"
+    let dfTree ← assertOk (← Git.diffNameStatus v2Repo "HEAD^{tree}" none #[]) "v2 diffNameStatus tree rev"
+    assertTrue dfTree.isEmpty "v2 diffNameStatus tree rev empty"
+    assertErrKind (← Git.revParseCommit v2Repo "HEAD^{tree}") .invalidRef "v2 revParseCommit rejects tree object"
+    assertOk (← Git.worktreeAdd v2Repo { path := v2WtDef }) "v2 default basename worktreeAdd"
+    let wtDefBr ← assertOk (← Git.headBranch? v2WtDef) "v2 default basename branch"
+    assertTrue (wtDefBr == some { raw := "wt-def" }) "v2 default basename branch name"
+    let dwimBr : RefName := { raw := "dwim-br" }
+    assertOk (← Git.createBranch v2Repo dwimBr (some cV2.hex) false) "v2 create dwim-br"
+    assertOk (← Git.clone v2Repo v2Clone {}) "v2 clone"
+    assertOk (← Git.checkout v2Clone (.branch dwimBr) false) "v2 remote dwim checkout"
+    assertTrue ((← assertOk (← Git.headBranch? v2Clone) "v2 dwim checkout head") == some dwimBr) "v2 dwim checkout branch"
+    assertOk (← Git.switch v2Clone mainRef false none false) "v2 switch main"
+    assertOk (← Git.deleteBranch v2Clone dwimBr true) "v2 delete local dwim-br"
+    assertOk (← Git.switch v2Clone dwimBr false none false) "v2 remote dwim switch"
+    assertTrue ((← assertOk (← Git.headBranch? v2Clone) "v2 dwim switch head") == some dwimBr) "v2 dwim switch branch"
+    let br40 := String.ofList (List.replicate 40 'e')
+    assertOk (← Git.createBranch v2Repo { raw := br40 } (some cV2.hex) false) "v2 create 40-hex branch"
+    let wa40Res ← Git.worktreeAdd v2Repo { path := v2Root ++ "/wt40-readonly", target? := some br40 }
+    assertErrKind wa40Res .invalidRef "v2 stock git rejects bare 40-hex branch name"
+    assertTrue (!(← System.FilePath.pathExists (v2Root ++ "/wt40-readonly"))) "v2 40-hex rejection is read-only"
+    let v2Sub := v2Repo ++ "/sub"
+    IO.FS.createDirAll v2Sub
+    IO.FS.writeFile (v2Repo ++ "/pdot.txt") "dot1\n"
+    IO.FS.writeFile (v2Sub ++ "/s.txt") "sub1\n"
+    assertOk (← Git.add v2Repo #["."] false) "v2 add dot"
+    let cDot ← assertOk (← Git.commit v2Repo (testAuthorOpts "dot commit" false)) "v2 commit dot"
+    IO.FS.writeFile (v2Repo ++ "/pdot.txt") "dot2\n"
+    IO.FS.writeFile (v2Sub ++ "/s.txt") "sub2\n"
+    let dfDot ← assertOk (← Git.diffNameStatus v2Repo "HEAD" none #["."]) "v2 diff dot"
+    let dfDir ← assertOk (← Git.diffNameStatus v2Repo "HEAD" none #["sub/"]) "v2 diff dir/"
+    let dfAbs ← assertOk (← Git.diffNameStatus v2Repo "HEAD" none #[v2Repo ++ "/pdot.txt"]) "v2 diff abs in-repo"
+    assertTrue (dfDot.size == 2) "v2 diff dot finds both files"
+    assertTrue (dfDir.size == 1 && dfDir[0]?.map (·.path) == some "sub/s.txt") "v2 diff dir/ filters sub"
+    assertTrue (dfAbs.size == 1 && dfAbs[0]?.map (·.path) == some "pdot.txt") "v2 diff abs in-repo filters pdot.txt"
+    assertOk (← Git.add v2Repo #["sub/"] false) "v2 add dir/"
+    assertOk (← Git.add v2Repo #[v2Repo ++ "/pdot.txt"] false) "v2 add abs in-repo"
+    let cAbs ← assertOk (← Git.commit v2Repo (testAuthorOpts "abs+dir" false)) "v2 commit abs+dir"
+    assertTrue (cAbs != cDot) "v2 abs+dir advanced commit"
+
+private def runLiteralPathspecAndSpoofSmoke : IO Unit :=
+  withTempDirIO fun root => do
+    let repo := root ++ "/lit-repo"
+    let _ ← initCommittedRepo repo
+    IO.FS.writeFile (repo ++ "/a1.txt") "sibling\n"
+    IO.FS.writeFile (repo ++ "/a[12].txt") "bracket\n"
+    assertOk (← Git.add repo #["a[12].txt"] false) "add literal a[12].txt"
+    let stAfterBracket ← assertOk (← Git.status repo) "status after add a[12].txt"
+    let stagedBracket := stAfterBracket.any fun e => e.path == "a[12].txt" && e.indexStatus == some .added
+    let untrackedA1 := stAfterBracket.any fun e => e.path == "a1.txt" && e.indexStatus == some .untracked && e.worktreeStatus == some .untracked
+    assertTrue stagedBracket "a[12].txt must be staged literally"
+    assertTrue untrackedA1 "sibling a1.txt must remain untracked under GIT_LITERAL_PATHSPECS=1"
+    assertOk (← Git.add repo #["."] false) "add dot stages both a[12].txt and a1.txt"
+    let stAfterDot ← assertOk (← Git.status repo) "status after add ."
+    assertTrue (stAfterDot.any fun e => e.path == "a1.txt" && e.indexStatus == some .added) "a1.txt staged by add ."
+    let _ ← assertOk (← Git.commit repo (testAuthorOpts "lit-bracket" false)) "commit bracket pair"
+
+    let litPaths : Array String := #["b*.txt", "c?.txt", "d\\e.txt", ":colon.txt", ":(top)x.txt", "-dash.txt"]
+    for lp in litPaths do
+      assertTrue (!Model.isExtendedPathspec lp) s!"literal pathspec {lp} must not be extended"
+      IO.FS.writeFile (repo ++ "/" ++ lp) "v1\n"
+    assertOk (← Git.add repo litPaths false) "add literal special-char filenames"
+    let _ ← assertOk (← Git.commit repo (testAuthorOpts "lit-specials" false)) "commit special-char filenames"
+    for lp in litPaths do
+      IO.FS.writeFile (repo ++ "/" ++ lp) "v2\n"
+    let litDiff ← assertOk (← Git.diffNameStatus repo "HEAD" none litPaths) "diff literal special-char filenames"
+    assertTrue (litDiff.size == litPaths.size) "diff returns every modified literal special-char file"
+    assertErrKind (← Git.add repo #["*.txt"] false) .notFound "missing literal *.txt is notFound"
+    assertErrKind (← Git.add repo #[":(exclude)a1.txt"] false) .notFound "missing literal :(exclude) is notFound"
+    assertErrKind (← Git.add repo #["-f"] false) .notFound "missing literal -f is notFound"
+    let missDiff ← assertOk (← Git.diffNameStatus repo "HEAD" none #[":(exclude)a[12].txt", "*.txt", "-f"]) "diff missing literals empty"
+    assertTrue missDiff.isEmpty "diff missing literal special pathspecs empty"
+    assertErrKind (← Git.add repo #["already exists.txt"] false) .notFound "spoofed phrase already exists.txt missing is notFound"
+    assertErrKind (← Git.add repo #["not a git repository.txt"] false) .notFound "spoofed phrase not a git repository.txt missing is notFound"
+
 /-- Execute end-to-end real `git` repository runtime verification tests for `LeanSwe.Git`. -/
 def runAll : IO Unit := do
   runIntegrationSmoke
+  runExtendedParityAndGuardSmoke
+  runLiteralPathspecAndSpoofSmoke
   Core.runRegisteredAssumptions registeredAssumptions
   Core.runRegisteredErrorTests registeredErrorTests
   IO.println "PASS: LeanSwe.Git runtime tests"
+
+/-- Execute in-process unit probes for `LeanSwe.Git.Impl` helpers, error classification, and guard paths (`--mode full` mutation coverage). -/
+def runMutateExtra : IO Unit := do
+  assertTrue (Impl.asciiLower "AbC!1" == "abc!1") "asciiLower"
+  assertTrue (Impl.containsSubstrCI "NoT a GiT" "fatal: NOT A GIT repo") "containsSubstrCI true"
+  assertTrue (!Impl.containsSubstrCI "xyz" "abc") "containsSubstrCI false"
+  assertTrue (Impl.trimTrailingNewlines "hi\r\n\n\r" == "hi") "trimTrailingNewlines"
+  assertTrue (Impl.stripSingleTrailingLf "hi\r\n" == "hi\r") "stripSingleTrailingLf crlf"
+  assertTrue (Impl.stripSingleTrailingLf "hi\n" == "hi") "stripSingleTrailingLf lf"
+  assertTrue (Impl.stripSingleTrailingLf "hi" == "hi") "stripSingleTrailingLf plain"
+  assertTrue (Impl.trimAsciiWhitespace " \t\r\n x \n\t " == "x") "trimAsciiWhitespace"
+  assertTrue (Impl.ensureNonEmptyMsg "fb" "  \n " == "fb") "ensureNonEmptyMsg fallback"
+  assertTrue (Impl.ensureNonEmptyMsg "fb" " ok " == "ok") "ensureNonEmptyMsg ok"
+
+  assertTrue (Impl.decodeUtf8Lossy "abc".toUTF8 == "abc") "utf8 valid ascii"
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xC2, 0x80]) == "\u0080") "utf8 2-byte min"
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xDF, 0xBF]) == "\u07FF") "utf8 2-byte max"
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xE0, 0xA0, 0x80]) == "\u0800") "utf8 3-byte E0 min"
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xED, 0x9F, 0xBF]) == "\uD7FF") "utf8 3-byte ED max"
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xF0, 0x90, 0x80, 0x80]) == String.singleton (Char.ofNat 0x10000)) "utf8 4-byte F0 min"
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xF4, 0x8F, 0xBF, 0xBF]) == String.singleton (Char.ofNat 0x10FFFF)) "utf8 4-byte F4 max"
+  let badSeqs : Array (ByteArray × String) := #[
+    (ByteArray.mk #[0x80], "\uFFFD"),
+    (ByteArray.mk #[0xC1, 0x80], "\uFFFD\uFFFD"),
+    (ByteArray.mk #[0xC2], "\uFFFD"),
+    (ByteArray.mk #[0xC2, 0x41], "\uFFFDA"),
+    (ByteArray.mk #[0xE0, 0x9F, 0x80], "\uFFFD\uFFFD\uFFFD"),
+    (ByteArray.mk #[0xED, 0xA0, 0x80], "\uFFFD\uFFFD\uFFFD"),
+    (ByteArray.mk #[0xE2, 0x82], "\uFFFD\uFFFD"),
+    (ByteArray.mk #[0xE2, 0x41, 0x80], "\uFFFDA\uFFFD"),
+    (ByteArray.mk #[0xE2, 0x82, 0x41], "\uFFFD\uFFFDA"),
+    (ByteArray.mk #[0xF0, 0x8F, 0x80, 0x80], "\uFFFD\uFFFD\uFFFD\uFFFD"),
+    (ByteArray.mk #[0xF4, 0x90, 0x80, 0x80], "\uFFFD\uFFFD\uFFFD\uFFFD"),
+    (ByteArray.mk #[0xF0, 0x90, 0x80], "\uFFFD\uFFFD\uFFFD"),
+    (ByteArray.mk #[0xF0, 0x41, 0x80, 0x80], "\uFFFDA\uFFFD\uFFFD"),
+    (ByteArray.mk #[0xF0, 0x90, 0x41, 0x80], "\uFFFD\uFFFDA\uFFFD"),
+    (ByteArray.mk #[0xF0, 0x90, 0x80, 0x41], "\uFFFD\uFFFD\uFFFDA"),
+    (ByteArray.mk #[0xF5, 0x80, 0x80, 0x80], "\uFFFD\uFFFD\uFFFD\uFFFD")
+  ]
+  for (bs, exp) in badSeqs do
+    assertTrue (Impl.decodeUtf8Lossy bs == exp) s!"decodeUtf8Lossy {repr bs.data}"
+    assertErrKind (Impl.decodeUtf8Checked bs) .parseError "decodeUtf8Checked invalid"
+  assertTrue ((← assertOk (Impl.decodeUtf8Checked "ok".toUTF8) "decodeUtf8Checked ok") == "ok") "decodeUtf8Checked ok"
+
+  assertTrue ((Impl.validateExtraEnv #[("FOO", some "bar")]).isOk) "validateExtraEnv ok"
+  assertErrKind (Impl.validateExtraEnv #[("", some "x")]) .invalidInput "validateExtraEnv empty key"
+  assertErrKind (Impl.validateExtraEnv #[("A", some "x\x00y")]) .invalidInput "validateExtraEnv nul val"
+  assertTrue ((Impl.validateCwd? none).isOk) "validateCwd none"
+  assertTrue ((Impl.validateCwd? (some "/tmp")).isOk) "validateCwd /tmp"
+  assertErrKind (Impl.validateCwd? (some "")) .invalidPath "validateCwd empty"
+  assertErrKind (Impl.validateCwd? (some "a\x00b")) .invalidPath "validateCwd nul"
+
+  let classifyCases : Array (String × String × GitErrorKind) := #[
+    ("fatal: not a git repository (or any parent)", "", .notARepo),
+    ("fatal: this operation must be run in a work tree", "", .notARepo),
+    ("fatal: not allowed in a bare repository", "", .notARepo),
+    ("", "nothing to commit, working tree clean\n", .nothingToCommit),
+    ("no changes added to commit", "", .nothingToCommit),
+    ("nothing added to commit", "", .nothingToCommit),
+    ("fatal: 'feat' is already used by worktree at '/wt'", "", .branchInUse),
+    ("fatal: 'feat' is already checked out at '/wt'", "", .branchInUse),
+    ("error: used by worktree", "", .branchInUse),
+    ("error: Your local changes would be overwritten by checkout", "", .dirtyWorktree),
+    ("error: untracked working tree files would be removed by checkout", "", .dirtyWorktree),
+    ("error: contains modified or untracked files", "", .dirtyWorktree),
+    ("error: the branch 'not a git repository' is not fully merged", "", .commandFailed),
+    ("fatal: unresolved conflict", "", .conflict),
+    ("CONFLICT (content): Merge conflict in conflict.txt", "", .conflict),
+    ("error: fix conflicts and then commit the result", "", .conflict),
+    ("error: Committing is not possible because you have unmerged files.", "", .conflict),
+    ("fatal: branch 'feat' already exists", "", .alreadyExists),
+    ("fatal: '/wt' is already registered", "", .alreadyExists),
+    ("fatal: ambiguous argument 'foo': unknown revision", "", .invalidRef),
+    ("fatal: ambiguous object name: 'refs/heads/foo'", "", .invalidRef),
+    ("fatal: a branch is expected, got tag 'v1'", "", .invalidRef),
+    ("fatal: not a valid object name: 'x'", "", .invalidRef),
+    ("fatal: does not have any commits yet", "", .invalidRef),
+    ("error: pathspec 'missing' did not match any file(s)", "", .notFound),
+    ("fatal: '/x' is not a working tree", "", .notFound),
+    ("fatal: couldn't find remote ref refs/heads/missing", "", .notFound),
+    ("error: branch 'missing' not found", "", .notFound),
+    ("error: failed", "U\tnot a git repository.txt\n", .commandFailed),
+    ("fatal: not a git repository: 'x' is not fully merged", "", .notARepo),
+    ("error: pathspec 'not a git repository' did not match any file(s)", "", .notFound),
+    ("fatal: branch 'already exists' not found", "", .notFound),
+    ("error: unable to index file 'not a git repository'", "", .commandFailed),
+    ("error: open(\"not a git repository\"): Permission denied", "", .commandFailed),
+    ("The following paths are ignored by one of your .gitignore files:\nnot a git repository\nhint: Use -f", "", .commandFailed),
+    ("The following paths are ignored by one of your .gitignore files:\nfoo\nhint: stop\nfatal: not a git repository", "", .notARepo),
+    ("fatal: invalid reference: 'not a git repository'", "", .invalidRef),
+    ("fatal: couldn't find remote ref 'not a git repository'", "", .notFound),
+    ("fatal: not a valid object name: 'not a git repository'", "", .invalidRef),
+    ("error: '\"not a git repository\"'", "", .commandFailed),
+    ("error: \"'not a git repository'\"", "", .commandFailed),
+    ("error: \"escaped\\\"still not a git repository\" end", "", .commandFailed),
+    ("error: cannot delete branch 'main' used by worktree at '/tmp/repoA'\n", "", .branchInUse),
+    ("error: \"foo\" not a git repository", "", .notARepo),
+    ("The following paths are ignored by one of your .gitignore files:\nfoo\nnot a git repository", "", .commandFailed),
+    ("The following paths are ignored by one of your .gitignore files:\nfoo\nerror: not a git repository", "", .notARepo),
+    ("The following paths are ignored by one of your .gitignore files:\nfoo\nwarning: not a git repository", "", .notARepo),
+    ("The following paths are ignored by one of your .gitignore files:\nfoo\n\tnot a git repository\nhint: stop\nnot a git repository", "", .notARepo),
+    ("The following paths are ignored by one of your .gitignore files:\nfoo\n\tnot a git repository", "", .commandFailed),
+    ("   hint: not a git repository\nerror: failed\n", "", .commandFailed),
+    ("error: failed\n\tnot a git repository\n", "", .commandFailed),
+    ("  Cloning into 'dst'...\nfatal: not a git repository\nraw: Permission denied\n", "", .notARepo),
+    ("Preparing worktree (detached HEAD)\nfatal: not a git repository\nraw: Permission denied\n", "", .notARepo),
+    ("From /src\nfatal: not a git repository\nraw: Permission denied\n", "", .notARepo),
+    ("Switched to branch 'main'\nfatal: not a git repository\nraw: Permission denied\n", "", .notARepo),
+    ("Already on 'main'\nfatal: not a git repository\nraw: Permission denied\n", "", .notARepo),
+    ("HEAD is now at 1234567\nfatal: not a git repository\nraw: Permission denied\n", "", .notARepo),
+    ("Branch 'main' set up\nfatal: not a git repository\nraw: Permission denied\n", "", .notARepo),
+    ("warning: could not open directory 'sub/': Permission denied\nerror: The following untracked working tree files would be overwritten by checkout:\n\ta':b.txt\nAborting\n", "", .dirtyWorktree),
+    ("warning: unable to access 'sub/.gitattributes': Permission denied\nfatal: not a git repository: '/bad': Permission denied\n", "", .notARepo),
+    ("warning: could not open directory 'sub/': Permission denied\nfatal: pathspec 'missing' did not match any files\n", "", .notFound),
+    ("error: would lose untracked files in 'sub'", "", .dirtyWorktree),
+    ("error: local changes to the following files", "", .dirtyWorktree),
+    ("error: uncommitted changes", "", .dirtyWorktree),
+    ("error: Merge conflict in file.txt", "", .conflict),
+    ("error: unmerged path file.txt", "", .conflict),
+    ("error: 'file.txt' is unmerged", "", .conflict),
+    ("error: file.txt: needs merge", "", .conflict),
+    ("error: you need to resolve your current index first", "", .conflict),
+    ("fatal: unknown revision", "", .invalidRef),
+    ("fatal: not a valid commit name abc", "", .invalidRef),
+    ("fatal: Needed a single revision", "", .invalidRef),
+    ("fatal: not a valid branch point: 'abc'", "", .invalidRef),
+    ("fatal: could not parse object 'abc'", "", .invalidRef),
+    ("fatal: bad revision 'abc'", "", .invalidRef),
+    ("fatal: bad object abc", "", .invalidRef),
+    ("fatal: failed to resolve 'HEAD'", "", .invalidRef),
+    ("fatal: unable to read tree abc", "", .invalidRef),
+    ("fatal: reference is not a tree: abc", "", .invalidRef),
+    ("fatal: '/missing' does not exist", "", .notFound),
+    ("fatal: '/wt' is not a valid worktree", "", .notFound),
+    ("fatal: No such file or directory", "", .notFound),
+    ("", "", .commandFailed)
+  ]
+  for (errS, outS, expKind) in classifyCases do
+    let ge := Impl.classifyError "git-test" { exitCode := 1, stdout := outS.toUTF8, stderr := errS.toUTF8 }
+    assertTrue (ge.kind == expKind && !ge.message.isEmpty)
+      s!"classifyError ({repr errS}, {repr outS}) expected {repr expKind}, got {repr ge}"
+  let geCommitWarn := Impl.classifyError "commit" {
+    exitCode := 1
+    stdout := "On branch main\nnothing to commit\n".toUTF8
+    stderr := "warning: could not open directory 'sub/': Permission denied\n".toUTF8 }
+  assertTrue (geCommitWarn.kind == .nothingToCommit) "classifyError commit warning + stdout nothingToCommit"
+  let geCommitWarn2 := Impl.classifyError "commit" {
+    exitCode := 1
+    stdout := "no changes added to commit\n".toUTF8
+    stderr := "warning: unable to unlink 'sub/a fatal: spoof': Permission denied\n".toUTF8 }
+  assertTrue (geCommitWarn2.kind == .nothingToCommit) "classifyError commit warning + stdout no changes added"
+  let geCommitWarn3 := Impl.classifyError "commit" {
+    exitCode := 1
+    stdout := "nothing added to commit\n".toUTF8
+    stderr := "warning: could not open directory 'sub/': Permission denied\n".toUTF8 }
+  assertTrue (geCommitWarn3.kind == .nothingToCommit) "classifyError commit warning + stdout nothing added"
+  let geCommitErr := Impl.classifyError "commit" {
+    exitCode := 1
+    stdout := "On branch main\nnothing to commit\n".toUTF8
+    stderr := "error: failed\n".toUTF8 }
+  assertTrue (geCommitErr.kind == .commandFailed) "classifyError commit error ignores stdout"
+
+  let mkIdOps (f : Array String → GitRawRequest → Except GitError GitRawOutput) : RawGitOpsM Id :=
+    { listEnv := pure (.ok #[("GIT_DIR", "/bad"), ("FOO", "bar")])
+      execGit := fun _ req => f req.args req }
+  let nulOps := mkIdOps (fun _ _ => .ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty })
+  assertErrKind (Id.run (Impl.runGitRaw nulOps { args := #["status", "bad\x00arg"] })) .invalidInput "runGitRaw nul arg"
+  assertErrKind (Id.run (Impl.runGitRaw nulOps { cwd := some "", args := #["status"] })) .invalidPath "runGitRaw empty cwd"
+  assertErrKind (Id.run (Impl.runGitRaw nulOps { extraEnv := #[("", some "1")], args := #["status"] })) .invalidInput "runGitRaw bad env"
+  let listErrOps : RawGitOpsM Id :=
+    { listEnv := pure (.error { kind := .commandFailed, message := "env fail" })
+      execGit := fun _ _ => .ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty } }
+  assertErrKind (Id.run (Impl.runGitRaw listErrOps { args := #["status"] })) .commandFailed "runGitRaw listEnv err"
+
+  let notRepoOps := mkIdOps (fun _ _ =>
+    .ok { exitCode := 128, stdout := ByteArray.empty, stderr := "fatal: not a git repository".toUTF8 })
+  assertTrue (!(← assertOk (Id.run (Impl.isRepoImpl notRepoOps "/nonrepo")) "isRepo notARepo")) "isRepo notARepo false"
+  assertErrKind (Id.run (Impl.headCommitImpl notRepoOps "/nonrepo")) .notARepo "headCommit notARepo"
+  assertErrKind (Id.run (Impl.headBranchImpl notRepoOps "/nonrepo")) .notARepo "headBranch notARepo"
+  let detachedUnbornOps := mkIdOps (fun args _ =>
+    if args.toList.contains "symbolic-ref" || args.toList.contains "--verify" then
+      .ok { exitCode := 1, stdout := ByteArray.empty, stderr := ByteArray.empty }
+    else .ok { exitCode := 0, stdout := ".git\n".toUTF8, stderr := ByteArray.empty })
+  assertErrKind (Id.run (Impl.headStateImpl detachedUnbornOps "/repo")) .invalidRef "headState detached no commit"
+  let cid1 : CommitId := { hex := String.ofList (List.replicate 40 'a') }
+  let badCid : CommitId := { hex := "bad" }
+  assertErrKind (Id.run (Impl.isAncestorImpl nulOps "/repo" badCid cid1)) .invalidRef "isAncestor badCid"
+  assertErrKind (Id.run (Impl.mergeBaseImpl nulOps "/repo" badCid cid1)) .invalidRef "mergeBase badCid"
+  assertErrKind (Id.run (Impl.mergeBaseImpl nulOps "/repo" cid1 cid1)) .invalidRef "mergeBase empty stdout"
+  let exit1BlankOps := mkIdOps (fun _ _ => .ok { exitCode := 1, stdout := ByteArray.empty, stderr := ByteArray.empty })
+  assertTrue (!(← assertOk (Id.run (Impl.isAncestorImpl exit1BlankOps "/repo" cid1 cid1)) "isAncestor exit1")) "isAncestor exit1 blank"
+  assertTrue ((← assertOk (Id.run (Impl.mergeBaseImpl exit1BlankOps "/repo" cid1 cid1)) "mergeBase exit1")).isNone "mergeBase exit1 blank"
+  assertErrKind (Id.run (Impl.revParseCommitImpl exit1BlankOps "/repo" "HEAD")) .invalidRef "revParseCommit exit1 blank"
+  assertErrKind (Id.run (Impl.createBranchImpl nulOps "/repo" { raw := "-bad" } none false)) .invalidRef "createBranch bad ref"
+  assertErrKind (Id.run (Impl.deleteBranchImpl nulOps "/repo" { raw := "-bad" } false)) .invalidRef "deleteBranch bad ref"
+  assertErrKind (Id.run (Impl.switchImpl nulOps "/repo" { raw := "-bad" } false none false)) .invalidRef "switch bad ref"
+  assertErrKind (Id.run (Impl.checkoutImpl nulOps "/repo" (.branch { raw := "-bad" }) false)) .invalidRef "checkout bad ref"
+  assertErrKind (Id.run (Impl.checkoutImpl nulOps "/repo" (.commit badCid) false)) .invalidRef "checkout bad cid"
+  assertErrKind (Id.run (Impl.resetImpl nulOps "/repo" .hard "bad..rev")) .invalidInput "reset bad rev"
+  assertErrKind (Id.run (Impl.fetchImpl nulOps "/repo" "-u" none false)) .invalidInput "fetch bad remote"
+  assertErrKind (Id.run (Impl.fetchImpl nulOps "/repo" "origin" (some "-bad") false)) .invalidInput "fetch bad refspec"
+  assertErrKind (Id.run (Impl.worktreeAddImpl nulOps "/repo" { path := "" })) .invalidPath "worktreeAdd bad path"
+  assertErrKind (Id.run (Impl.worktreeAddImpl nulOps "/repo" { path := "/wt", newBranch? := some { raw := "-bad" } })) .invalidRef "worktreeAdd bad branch"
+  assertErrKind (Id.run (Impl.worktreeRemoveImpl nulOps "/repo" "" false)) .invalidPath "worktreeRemove bad path"
+  assertErrKind (Id.run (Impl.initImpl nulOps "/repo" false (some { raw := "-bad" }))) .invalidRef "init bad branch"
+  assertErrKind (Id.run (Impl.cloneImpl nulOps "" "/dst" {})) .invalidInput "clone bad src"
+  assertErrKind (Id.run (Impl.cloneImpl nulOps "/src" "" {})) .invalidInput "clone bad dst"
+  assertErrKind (Id.run (Impl.cloneImpl nulOps "/src" "/dst" { branch? := some "-bad" })) .invalidRef "clone bad branch"
+  assertErrKind (Id.run (Impl.commitImpl nulOps "/repo" { message := "ok", authorName := some "a\x00b" })) .invalidInput "commit bad author"
+  assertErrKind (Id.run (Impl.addImpl nulOps "/repo" #[] false)) .invalidInput "add empty paths"
+  assertErrKind (Id.run (Impl.addImpl nulOps "/repo" #[""] false)) .invalidPath "add empty pathspec"
+
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xC3, 0xA9, 0xFF]) == "é\uFFFD") "decodeUtf8 valid 2b + invalid"
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xC3, 0x41]) == "\uFFFDA") "decodeUtf8 bad 2b cont"
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xE2, 0x82, 0xAC, 0xFF]) == "€\uFFFD") "decodeUtf8 valid 3b + invalid"
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xE2, 0xA0, 0x80, 0xFF]) == "\u2800\uFFFD") "decodeUtf8 valid 3b b1 > 0x9F + invalid"
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xF1, 0x90, 0x80, 0x80, 0xFF]) == String.singleton (Char.ofNat 0x50000) ++ "\uFFFD") "decodeUtf8 valid 4b b1 > 0x8F + invalid"
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xE0, 0x80, 0x80, 0xFF]) == "\uFFFD\uFFFD\uFFFD\uFFFD") "decodeUtf8 overlong 3b"
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xED, 0xA0, 0x80, 0xFF]) == "\uFFFD\uFFFD\uFFFD\uFFFD") "decodeUtf8 surrogate 3b"
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xF0, 0x9F, 0x98, 0x80, 0xFF]) == "😀\uFFFD") "decodeUtf8 valid 4b + invalid"
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xF0, 0x80, 0x80, 0x80, 0xFF]) == "\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD") "decodeUtf8 overlong 4b"
+  assertTrue (Impl.decodeUtf8Lossy (ByteArray.mk #[0xF4, 0x90, 0x80, 0x80, 0xFF]) == "\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD") "decodeUtf8 out of range 4b"
+
+  let nonRepoTargetOps := mkIdOps (fun args _ =>
+    if args.toList.contains "rev-parse" then
+      .ok { exitCode := 128, stdout := ByteArray.empty, stderr := "fatal: not a git repository".toUTF8 }
+    else .ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty })
+  assertTrue ((Id.run (Impl.cloneImpl nonRepoTargetOps "/src" "/dst" { branch? := some "main" })).isOk) "clone valid branch"
+  assertTrue ((Id.run (Impl.addImpl nonRepoTargetOps "/repo" #["."] false)).isOk) "add dot delegated"
+  assertTrue ((Id.run (Impl.addImpl nonRepoTargetOps "/repo" #["src/"] false)).isOk) "add dir trailing slash delegated"
+  assertTrue ((Id.run (Impl.addImpl nonRepoTargetOps "/repo" #["/repo/a.txt"] false)).isOk) "add abs in-repo delegated"
+  let showNotRepoOps := mkIdOps (fun args _ =>
+    if args.toList.contains "cat-file" then
+      .ok { exitCode := 128, stdout := ByteArray.empty, stderr := "fatal: not a git repository".toUTF8 }
+    else .ok { exitCode := 0, stdout := (cid1.hex ++ "\n").toUTF8, stderr := ByteArray.empty })
+  assertErrKind (Id.run (Impl.showFileImpl showNotRepoOps "/nonrepo" "HEAD" "a.txt")) .notARepo "showFile cat-file notARepo"
+  let showTreeOps := mkIdOps (fun args _ =>
+    if args.toList.contains "-t" then
+      .ok { exitCode := 0, stdout := "tree\n".toUTF8, stderr := ByteArray.empty }
+    else .ok { exitCode := 0, stdout := (cid1.hex ++ "\n").toUTF8, stderr := ByteArray.empty })
+  assertTrue ((← assertOk (Id.run (Impl.showFileImpl showTreeOps "/repo" "HEAD" "dir")) "showFile tree")).isNone "showFile tree none"
+  let coMissingBranchOps := mkIdOps (fun _ _ =>
+    .ok { exitCode := 1, stdout := ByteArray.empty, stderr := "error: pathspec 'v1' did not match any file(s) known to git\n".toUTF8 })
+  assertErrKind (Id.run (Impl.checkoutImpl coMissingBranchOps "/repo" (.branch { raw := "v1" }) false)) .invalidRef "checkout missing branch"
+  assertTrue ((Id.run (Impl.worktreeAddImpl nonRepoTargetOps "/repo" { path := "/wt" })).isOk) "worktreeAdd default basename ok"
+  assertTrue ((Id.run (Impl.worktreeAddImpl nonRepoTargetOps "/repo" { path := "/wt", newBranch? := some { raw := "feat" } })).isOk) "worktreeAdd newBranch ok"
+  let masterState : Model.GitRepoState := { defaultInitBranch := { raw := "master" } }
+  let (clSelfRes, clSelfSt) := Model.evalGitApi.clone "file:///mock/bare" "/mock/bare" {} masterState
+  assertTrue (clSelfRes.isOk) "clone self-target honors defaultInitBranch"
+  assertTrue
+    (match (Model.evalGitApi.headState "/mock/bare" clSelfSt).1 with
+    | .ok (.attached br none) => br.raw == "master"
+    | _ => false)
+    "clone self-target attaches defaultInitBranch master"
+  let (_, stSrc1) := Model.evalGitApi.init "/src" false (some { raw := "main" }) masterState
+  let (c1Res, stSrc2) := Model.evalGitApi.commit "/src" { message := "c1", allowEmpty := true } stSrc1
+  let c1 ← assertOk c1Res "mock commit c1"
+  let (_, stSrc3) := Model.evalGitApi.createBranch "/src" { raw := "aaa" } none false stSrc2
+  let (_, stSrc4) := Model.evalGitApi.checkout "/src" (.commit c1) false stSrc3
+  let (clDetRes, stDst1) := Model.evalGitApi.clone "file:///src" "/dst" {} stSrc4
+  assertTrue clDetRes.isOk "clone detached aaa/main under master ok"
+  assertTrue
+    (match (Model.evalGitApi.headState "/dst" stDst1).1 with
+    | .ok (.attached br _) => br.raw == "aaa"
+    | _ => false)
+    "clone detached aaa/main under master selects aaa"
+  let dst1SymOk :=
+    match stDst1.repos.find? (fun r => r.commonDir == "/dst/.git".toUTF8) with
+    | some r => r.symRefs.contains ("refs/remotes/origin/HEAD", "refs/remotes/origin/aaa")
+    | none => false
+  assertTrue dst1SymOk "clone detached aaa/main sets origin/HEAD to aaa"
+  let (_, stF1) := Model.evalGitApi.init "/src2" false (some { raw := "aaa" }) masterState
+  let (clEmp2, stF2) := Model.evalGitApi.clone "file:///src2" "/dst2" {} stF1
+  assertTrue clEmp2.isOk "clone empty src2 ok"
+  let (c2Res, stF3) := Model.evalGitApi.commit "/src2" { message := "c2", allowEmpty := true } stF2
+  let c2 ← assertOk c2Res "mock commit c2"
+  let (_, stF4) := Model.evalGitApi.createBranch "/src2" { raw := "master" } none false stF3
+  let (_, stF5) := Model.evalGitApi.checkout "/src2" (.commit c2) false stF4
+  let (feAmbig, stF6) := Model.evalGitApi.fetch "/dst2" "origin" none false stF5
+  assertTrue feAmbig.isOk "fetch detached aaa/master ok"
+  let dst2NoSym :=
+    match stF6.repos.find? (fun r => r.commonDir == "/dst2/.git".toUTF8) with
+    | some r => !r.symRefs.any (fun p => p.1 == "refs/remotes/origin/HEAD")
+    | none => false
+  assertTrue dst2NoSym "fetch detached aaa/master omits origin/HEAD"
+  let (_, stU1) := Model.evalGitApi.init "/src3" false (some { raw := "aaa" }) masterState
+  let (clEmp3, stU2) := Model.evalGitApi.clone "file:///src3" "/dst3" {} stU1
+  assertTrue clEmp3.isOk "clone empty src3 ok"
+  let (c3Res, stU3) := Model.evalGitApi.commit "/src3" { message := "c3", allowEmpty := true } stU2
+  let c3 ← assertOk c3Res "mock commit c3"
+  let (_, stU4) := Model.evalGitApi.checkout "/src3" (.commit c3) false stU3
+  let (feUniq, stU5) := Model.evalGitApi.fetch "/dst3" "origin" none false stU4
+  assertTrue feUniq.isOk "fetch detached unique aaa ok"
+  let dst3HasSym :=
+    match stU5.repos.find? (fun r => r.commonDir == "/dst3/.git".toUTF8) with
+    | some r => r.symRefs.contains ("refs/remotes/origin/HEAD", "refs/remotes/origin/aaa")
+    | none => false
+  assertTrue dst3HasSym "fetch detached unique aaa sets origin/HEAD"
+  let stdoutNotRepoExit1Ops := mkIdOps (fun args _ =>
+    if args == #["rev-parse", "--git-dir"] then
+      .ok { exitCode := 0, stdout := ".git\n".toUTF8, stderr := ByteArray.empty }
+    else
+      .ok { exitCode := 1, stdout := "fatal: not a git repository\n".toUTF8, stderr := ByteArray.empty })
+  assertErrKind (Id.run (Impl.headCommitImpl stdoutNotRepoExit1Ops "/nonrepo")) .notARepo "headCommit stdout notARepo exit1"
+  assertErrKind (Id.run (Impl.headBranchImpl stdoutNotRepoExit1Ops "/nonrepo")) .notARepo "headBranch stdout notARepo exit1"
+  assertErrKind (Id.run (Impl.revParseCommitImpl stdoutNotRepoExit1Ops "/nonrepo" "HEAD")) .notARepo "revParseCommit stdout notARepo exit1"
+  assertErrKind (Id.run (Impl.checkoutImpl stdoutNotRepoExit1Ops "/nonrepo" (.branch { raw := "main" }) false)) .notARepo "checkout show-ref stdout notARepo exit1"
+
+  assertTrue ((Impl.classifyError "checkout"
+    { exitCode := 1, stdout := ByteArray.empty
+      stderr := ("error: open(\"a.txt\"): Permission denied\nerror: The following untracked working tree files would be overwritten by checkout:\n\tz\"):w.txt\nAborting\n").toUTF8 }).kind == .dirtyWorktree)
+    "classifyError open span stops at diagnostic line"
+  assertTrue ((Impl.classifyError "checkout"
+    { exitCode := 128, stdout := ByteArray.empty
+      stderr := ("warning: unable to create file a/b: Permission denied\nfatal: not a git repository: '/bad': Permission denied\n").toUTF8 }).kind == .notARepo)
+    "classifyError unable-to-create span stops at diagnostic line"
+  assertTrue ((Impl.classifyError "add"
+    { exitCode := 128, stdout := ByteArray.empty
+      stderr := ("fatal: cannot mkdir /ro/sub: Permission denied\nfatal: pathspec 'x:y' did not match any files\n").toUTF8 }).kind == .notFound)
+    "classifyError cannot-mkdir span stops at diagnostic line"
+  assertTrue ((Impl.classifyError "checkout"
+    { exitCode := 1, stdout := ByteArray.empty
+      stderr := ("warning: Remote branch old not found in upstream origin\nerror: The following untracked working tree files would be overwritten by checkout:\n\tfoo not found\nAborting\n").toUTF8 }).kind == .dirtyWorktree)
+    "classifyError remote-branch span stops at diagnostic line"
+  assertTrue ((Impl.classifyError "add"
+    { exitCode := 1, stdout := ByteArray.empty
+      stderr := ("error: open(\"not a git repository\"): Permission denied\nThe following paths are ignored by one of your .gitignore files:\nz\"):w.ign\nfatal: no files added\n").toUTF8 }).kind == .commandFailed)
+    "classifyError open span stops at ignored header"
+
+  let (_, stLit0) := Model.evalGitApi.init "/lit" false (some { raw := "main" }) masterState
+  let (_, stLit1) := Model.evalGitApi.commit "/lit" { message := "seed", allowEmpty := true } stLit0
+  for p in #["a[12].txt", "b*.txt", "c?.txt", "d\\e.txt", ":colon.txt", ":(top)x.txt", "-dash.txt", ":(exclude)a.txt", "*.txt", "-f"] do
+    assertTrue (!Model.isExtendedPathspec p) s!"isExtendedPathspec literal {p}"
+    assertTrue (Model.canNormalizeAddPathspecs stLit1 "/lit" #[p] false) s!"canNormalizeAddPathspecs literal {p}"
+    assertTrue (Model.canNormalizeAddPathspecs stLit1 "/lit" #["/lit/" ++ p] false) s!"canNormalizeAddPathspecs abs literal {p}"
+    assertTrue (Model.allowsDiffNameStatus stLit1 "/lit" "HEAD" none #[p] (.ok #[]))
+      s!"allowsDiffNameStatus exact empty on missing {p}"
+    assertTrue (!Model.allowsDiffNameStatus stLit1 "/lit" "HEAD" none #[p]
+      (.ok #[{ kind := .modified, path := "bogus.txt" }]))
+      s!"allowsDiffNameStatus rejects bogus entry for literal {p}"
+    assertTrue (!(Model.allowsAdd stLit1 "/lit" #[p] false none
+      (.error { kind := .commandFailed, message := "wrong" })).1)
+      s!"allowsAdd rejects commandFailed when literal {p} is missing"
+    assertTrue ((Model.allowsAdd stLit1 "/lit" #[p] false none
+      (.error { kind := .notFound, message := "missing" })).1)
+      s!"allowsAdd accepts notFound when literal {p} is missing"
+  for p in #["/outside/x", "../up", "a//b", ".git/HEAD", "", String.ofList (List.replicate 260 'x')] do
+    assertTrue (Model.isExtendedPathspec p) s!"isExtendedPathspec non-normalizable {p}"
+  assertTrue (Model.allowsCliErrorKind false .notFound .notFound) "allowsCliErrorKind strict equal"
+  assertTrue (!Model.allowsCliErrorKind false .notFound .notARepo) "allowsCliErrorKind strict rejects mismatch"
+  assertTrue (Model.allowsCliErrorKind true .notFound .notARepo) "allowsCliErrorKind spoofable permits CLI error"
+  assertTrue (!Model.allowsCliErrorKind true .invalidInput .commandFailed) "allowsCliErrorKind never relaxes invalidInput"
 
 end LeanSwe.Git.RuntimeTests

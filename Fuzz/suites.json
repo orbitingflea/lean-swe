@@ -1,18 +1,6 @@
 {
   "version": 1,
-  "common_paths": [
-    ".github/actions/install-lean/action.yml",
-    ".github/workflows/audit.yml",
-    "Core/",
-    "Fuzz/Common/",
-    "Fuzz/LinuxSyscall/Env.lean",
-    "Fuzz/LinuxSyscall/c/fuzz_env.c",
-    "Fuzz/Main.lean",
-    "lake-manifest.json",
-    "lakefile.lean",
-    "lean-toolchain",
-    "scripts/fuzz_changed.py"
-  ],
+  "common_paths": [".github/actions/install-lean/action.yml", ".github/workflows/audit.yml", "Core/", "Fuzz/Common/", "Fuzz/LinuxSyscall/Env.lean", "Fuzz/LinuxSyscall/c/fuzz_env.c", "Fuzz/Main.lean", "lake-manifest.json", "lakefile.lean", "lean-toolchain", "scripts/fuzz_changed.py"],
   "suites": {
     "selftest": { "paths": ["Fuzz/SelfTest.lean"] },
     "float": { "paths": ["Fuzz/Float/", "LeanSwe/NumParse/", "LeanSwe/Toml/"] },
@@ -24,6 +12,7 @@
     "compress": { "paths": ["Fuzz/Compress/", "LeanSwe/Compress/", "LeanSwe/Process/", "LeanSwe/Fs/", "LeanSwe/Glob/"] },
     "postfork": { "paths": ["Fuzz/PostFork/", "LeanSwe/LinuxSyscall/Common/", "LeanSwe/LinuxSyscall/c/fd_box.h", "LeanSwe/LinuxSyscall/c/fd_box.c", "LeanSwe/PostFork/"] },
     "sqlite": { "paths": ["LeanSwe/Sqlite/", "Fuzz/Sqlite/"] },
+    "git": { "paths": ["LeanSwe/Git/", "LeanSwe/Process/", "LeanSwe/EnvVars/", "LeanSwe/Fs/", "LeanSwe/Glob/", "LeanSwe/TempDir/", "LeanSwe/Time/", "LeanSwe/Uuid/", "LeanSwe/LinuxSyscall/Common/", "LeanSwe/LinuxSyscall/TimeRand/", "LeanSwe/LinuxSyscall/c/timerand_shim.c", "Fuzz/Git/"] },
     "sandbox": { "paths": ["Fuzz/LinuxSyscall/Sandbox/", "Fuzz/LinuxSyscall/Main.lean", "Fuzz/LinuxSyscall/Rng.lean", "Fuzz/LinuxSyscall/SandboxEnv.lean", "LeanSwe/LinuxSyscall/Common/", "LeanSwe/LinuxSyscall/Sandbox/", "LeanSwe/LinuxSyscall/TestSupport/Seccomp.lean", "LeanSwe/LinuxSyscall/c/sandbox_shim.c", "Fuzz/LinuxSyscall/c/sandbox_fuzz_env.c", "LeanSwe/LinuxSyscall/c/fd_box.h", "LeanSwe/LinuxSyscall/c/fd_box.c"] },
     "timerand": { "paths": ["Fuzz/LinuxSyscall/TimeRand/", "Fuzz/LinuxSyscall/Main.lean", "Fuzz/LinuxSyscall/Rng.lean", "LeanSwe/LinuxSyscall/Common/", "LeanSwe/LinuxSyscall/TimeRand/", "LeanSwe/LinuxSyscall/c/timerand_shim.c", "Fuzz/LinuxSyscall/c/timerand_fuzz_sig.c"] },
     "files": { "paths": ["Fuzz/LinuxSyscall/Files/", "Fuzz/LinuxSyscall/Main.lean", "Fuzz/LinuxSyscall/Rng.lean", "Fuzz/LinuxSyscall/Env.lean", "Fuzz/LinuxSyscall/SandboxEnv.lean", "LeanSwe/LinuxSyscall/Common/", "LeanSwe/LinuxSyscall/Files/", "LeanSwe/LinuxSyscall/Sandbox/", "LeanSwe/LinuxSyscall/TestSupport/Seccomp.lean", "LeanSwe/LinuxSyscall/c/files_shim.c", "LeanSwe/LinuxSyscall/c/sandbox_shim.c", "Fuzz/LinuxSyscall/c/fuzz_env.c", "Fuzz/LinuxSyscall/c/sandbox_fuzz_env.c", "LeanSwe/LinuxSyscall/c/fd_box.h", "LeanSwe/LinuxSyscall/c/fd_box.c"] },

@@ -10,6 +10,7 @@ import Fuzz.SelfTest
 import Fuzz.EnvVars.Suite
 import Fuzz.CryptoHash.Suite
 import Fuzz.Sqlite.Suite
+import Fuzz.Git.Suite
 import Fuzz.LinuxSyscall.Env
 import Fuzz.LinuxSyscall.Main
 
@@ -51,6 +52,7 @@ private def registeredSuites (world : WorldOptions) (outClosed errClosed : Bool)
   , Fuzz.Compress.suite
   , Fuzz.PostFork.suite
   , Fuzz.Sqlite.suite
+  , Fuzz.Git.suite
   ] ++ Fuzz.LinuxSyscall.Main.suites world outClosed errClosed
 
 private def truncArg (s : String) (maxLen : Nat := 64) : String :=

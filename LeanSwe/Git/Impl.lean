@@ -18,9 +18,45 @@ def asciiLower (s : String) : String :=
 def containsSubstrCI (needle haystack : String) : Bool :=
   hasSubstrChars (asciiLower needle).toList (asciiLower haystack).toList
 
-/-- Decode `ByteArray` as UTF-8, substituting an empty string if invalid. -/
+private def decodeUtf8LossyLoop : Nat → ByteArray → Nat → List Char → List Char
+  | 0, _, _, acc => acc.reverse
+  | fuel + 1, bs, i, acc =>
+    if i >= bs.size then acc.reverse
+    else
+      let b0 := bs[i]!.toNat
+      let isCont (k : Nat) : Bool :=
+        if h : k < bs.size then
+          let b := bs[k].toNat
+          0x80 ≤ b && b ≤ 0xBF
+        else false
+      if b0 < 0x80 then
+        decodeUtf8LossyLoop fuel bs (i + 1) (Char.ofNat b0 :: acc)
+      else if 0xC2 ≤ b0 && b0 ≤ 0xDF && isCont (i + 1) then
+        let cp := ((b0 &&& 0x1F) <<< 6) ||| (bs[i + 1]!.toNat &&& 0x3F)
+        decodeUtf8LossyLoop fuel bs (i + 2) (Char.ofNat cp :: acc)
+      else if 0xE0 ≤ b0 && b0 ≤ 0xEF && isCont (i + 1) && isCont (i + 2) then
+        let b1 := bs[i + 1]!.toNat
+        let ok := (b0 != 0xE0 || b1 ≥ 0xA0) && (b0 != 0xED || b1 ≤ 0x9F)
+        if ok then
+          let cp := ((b0 &&& 0x0F) <<< 12) ||| ((b1 &&& 0x3F) <<< 6) ||| (bs[i + 2]!.toNat &&& 0x3F)
+          decodeUtf8LossyLoop fuel bs (i + 3) (Char.ofNat cp :: acc)
+        else decodeUtf8LossyLoop fuel bs (i + 1) ('\uFFFD' :: acc)
+      else if 0xF0 ≤ b0 && b0 ≤ 0xF4 && isCont (i + 1) && isCont (i + 2) && isCont (i + 3) then
+        let b1 := bs[i + 1]!.toNat
+        let ok := (b0 != 0xF0 || b1 ≥ 0x90) && (b0 != 0xF4 || b1 ≤ 0x8F)
+        if ok then
+          let cp := ((b0 &&& 0x07) <<< 18) ||| ((b1 &&& 0x3F) <<< 12) |||
+            ((bs[i + 2]!.toNat &&& 0x3F) <<< 6) ||| (bs[i + 3]!.toNat &&& 0x3F)
+          decodeUtf8LossyLoop fuel bs (i + 4) (Char.ofNat cp :: acc)
+        else decodeUtf8LossyLoop fuel bs (i + 1) ('\uFFFD' :: acc)
+      else
+        decodeUtf8LossyLoop fuel bs (i + 1) ('\uFFFD' :: acc)
+
+/-- Decode `ByteArray` as UTF-8, replacing invalid byte sequences with U+FFFD (`''`). -/
 def decodeUtf8Lossy (bytes : ByteArray) : String :=
-  (String.fromUTF8? bytes).getD ""
+  match String.fromUTF8? bytes with
+  | some s => s
+  | none => String.ofList (decodeUtf8LossyLoop bytes.size bytes 0 [])
 
 /-- Decode `ByteArray` as UTF-8, failing with `.parseError` if invalid. -/
 def decodeUtf8Checked (bytes : ByteArray) : Except GitError String :=
@@ -32,6 +68,13 @@ def decodeUtf8Checked (bytes : ByteArray) : Except GitError String :=
 def trimTrailingNewlines (s : String) : String :=
   let rev := s.toList.reverse.dropWhile (fun c => c == '\n' || c == '\r')
   String.ofList rev.reverse
+
+/-- Strip a single trailing ASCII LF (`'\n'`) character from `s`, preserving trailing `'\r'`. -/
+def stripSingleTrailingLf (s : String) : String :=
+  if s.endsWith "\n" then
+    let bs := s.toUTF8
+    (String.fromUTF8? (bs.extract 0 (bs.size - 1))).getD s
+  else s
 
 /-- Strip leading and trailing ASCII whitespace from `s`. -/
 def trimAsciiWhitespace (s : String) : String :=
@@ -59,54 +102,108 @@ def validateCwd? : Option String → Except GitError Unit
     else
       .error { kind := .invalidPath, message := "invalid working directory path" }
 
-/-- Classify a non-zero `git` subprocess result using both `stderr` and `stdout`. -/
+private def isAsciiAlnumChar (c : Char) : Bool :=
+  ('a' ≤ c && c ≤ 'z') || ('A' ≤ c && c ≤ 'Z') || ('0' ≤ c && c ≤ '9')
+
+private def maskQuotedLineAux (prevAlnum inSingle inDouble esc : Bool)
+    (acc : List Char) : List Char → List Char
+  | [] => acc.reverse
+  | c :: rest =>
+    if inDouble then
+      if esc then maskQuotedLineAux false false true false acc rest
+      else if c == '\\' then maskQuotedLineAux false false true true acc rest
+      else if c == '"' then maskQuotedLineAux false false false false ('"' :: acc) rest
+      else maskQuotedLineAux false false true false acc rest
+    else if inSingle then
+      let isApos := prevAlnum && (rest.head?.any isAsciiAlnumChar)
+      if c == '\'' && !isApos then
+        maskQuotedLineAux false false false false ('\'' :: acc) rest
+      else
+        maskQuotedLineAux (isAsciiAlnumChar c) true false false acc rest
+    else if c == '"' then
+      maskQuotedLineAux false false true false ('"' :: acc) rest
+    else if c == '\'' && !(prevAlnum && rest.head?.any isAsciiAlnumChar) then
+      maskQuotedLineAux false true false false ('\'' :: acc) rest
+    else
+      maskQuotedLineAux (isAsciiAlnumChar c) false false false (c :: acc) rest
+
+private def isDiagPrefixLower (cs : List Char) : Bool :=
+  startsWithChars "fatal:".toList cs || startsWithChars "error:".toList cs ||
+  startsWithChars "warning:".toList cs || startsWithChars "hint:".toList cs
+
+private def filterDiagLinesAux (skipIgnored : Bool) (acc : List String) : List String → List String
+  | [] => acc.reverse
+  | ln :: rest =>
+    let low := ln.toList.map asciiLowerChar
+    let dropTab := low.head? == some '\t'
+    let trimmedLow := low.dropWhile (· == ' ')
+    let isHint := startsWithChars "hint:".toList trimmedLow
+    let startsIgn := startsWithChars "the following paths are ignored".toList trimmedLow
+    if startsIgn then
+      filterDiagLinesAux true (String.ofList low :: acc) rest
+    else if skipIgnored then
+      if isHint then filterDiagLinesAux false acc rest
+      else if isDiagPrefixLower low then
+        filterDiagLinesAux false (String.ofList (maskQuotedLineAux false false false false [] low) :: acc) rest
+      else filterDiagLinesAux true acc rest
+    else if dropTab || isHint then
+      filterDiagLinesAux false acc rest
+    else
+      let masked := String.ofList (maskQuotedLineAux false false false false [] low)
+      filterDiagLinesAux false (masked :: acc) rest
+
+/-- Normalize `git` diagnostic output to lowercase, masking quoted inline arguments and dropping `hint:` and tab-indented path lines. -/
+def sanitizeLowerForClassify (s : String) : List Char :=
+  let kept := filterDiagLinesAux false [] (s.splitOn "\n")
+  ("\n".intercalate kept).toList
+
+private def hasLowerSubstr (needle : String) (hayLower : List Char) : Bool :=
+  hasSubstrChars needle.toList hayLower
+
+private def hasFatalOrErrorChars (lower : List Char) : Bool :=
+  hasLowerSubstr "fatal:" lower || hasLowerSubstr "error:" lower
+
+/-- Classify a non-zero `git` subprocess result using `stderr`, falling back to `stdout` when `stderr` is blank. -/
 def classifyError (cmd : String) (out : GitRawOutput) : GitError :=
   let errText := decodeUtf8Lossy out.stderr
   let outText := decodeUtf8Lossy out.stdout
-  let combined := errText ++ "\n" ++ outText
+  let errBlank := (trimAsciiWhitespace errText).isEmpty
+  let diagSource := if errBlank then outText else errText
+  let combinedLower := sanitizeLowerForClassify diagSource
+  let hasAny (ps : List String) (cs : List Char) : Bool := ps.any (hasLowerSubstr · cs)
+  let commitNothingOut :=
+    !errBlank && cmd == "commit" && !hasFatalOrErrorChars combinedLower &&
+      hasAny ["nothing to commit", "no changes added to commit", "nothing added to commit"]
+        (sanitizeLowerForClassify outText)
   let kind :=
-    if containsSubstrCI "not a git repository" combined ||
-       containsSubstrCI "must be run in a work tree" combined then
+    if hasAny ["not a git repository", "must be run in a work tree", "not allowed in a bare repository"] combinedLower then
       .notARepo
-    else if containsSubstrCI "nothing to commit" combined ||
-            containsSubstrCI "no changes added to commit" combined ||
-            containsSubstrCI "nothing added to commit" combined then
+    else if commitNothingOut ||
+        hasAny ["nothing to commit", "no changes added to commit", "nothing added to commit"] combinedLower then
       .nothingToCommit
-    else if containsSubstrCI "is already used by worktree" combined ||
-            containsSubstrCI "is already checked out" combined ||
-            (containsSubstrCI "cannot delete branch" combined &&
-              containsSubstrCI "used by worktree" combined) then
+    else if hasAny ["is already used by worktree", "is already checked out", "used by worktree"] combinedLower then
       .branchInUse
-    else if containsSubstrCI "would be overwritten by" combined ||
-            containsSubstrCI "local changes" combined ||
-            containsSubstrCI "uncommitted changes" combined ||
-            containsSubstrCI "contains modified or untracked files" combined then
+    else if hasAny ["would be overwritten by", "would lose untracked files", "would be removed by",
+        "local changes", "uncommitted changes", "contains modified or untracked files"] combinedLower then
       .dirtyWorktree
-    else if containsSubstrCI "conflict" combined ||
-            containsSubstrCI "unmerged" combined ||
-            containsSubstrCI "needs merge" combined then
+    else if hasAny ["unresolved conflict", "merge conflict", "conflict (", "fix conflicts",
+        "unmerged files", "unmerged path", "is unmerged", "needs merge",
+        "resolve your current index first"] combinedLower then
       .conflict
-    else if containsSubstrCI "already exists" combined then
+    else if hasAny ["already exists", "already registered"] combinedLower then
       .alreadyExists
-    else if containsSubstrCI "unknown revision" combined ||
-            containsSubstrCI "ambiguous argument" combined ||
-            containsSubstrCI "not a valid object name" combined ||
-            containsSubstrCI "not a valid commit name" combined ||
-            containsSubstrCI "needed a single revision" combined ||
-            containsSubstrCI "not a valid branch point" combined ||
-            containsSubstrCI "could not parse object" combined ||
-            containsSubstrCI "bad revision" combined ||
-            containsSubstrCI "invalid reference" combined ||
-            containsSubstrCI "unable to read tree" combined ||
-            containsSubstrCI "reference is not a tree" combined ||
-            containsSubstrCI "does not have any commits yet" combined ||
-            containsSubstrCI "not a valid branch name" combined then
+    else if hasAny ["unknown revision", "ambiguous argument", "ambiguous object name",
+        "matched multiple", "a branch is expected", "expected commit type",
+        "not a valid object name", "not a valid commit name", "needed a single revision",
+        "not a valid branch point", "could not parse object", "bad revision", "bad object",
+        "failed to resolve", "invalid reference", "unable to read tree",
+        "reference is not a tree", "does not have any commits yet", "not a valid branch name"] combinedLower ||
+        (cmd == "checkout" && hasLowerSubstr "pathspec" combinedLower && hasLowerSubstr "did not match" combinedLower) then
       .invalidRef
-    else if (containsSubstrCI "pathspec" combined && containsSubstrCI "did not match" combined) ||
-            containsSubstrCI "does not exist" combined ||
-            containsSubstrCI "not a valid worktree" combined ||
-            containsSubstrCI "no such file or directory" combined ||
-            (containsSubstrCI "branch" combined && containsSubstrCI "not found" combined) then
+    else if (hasLowerSubstr "pathspec" combinedLower && hasLowerSubstr "did not match" combinedLower) ||
+        hasAny ["does not exist", "not a valid worktree", "is not a working tree",
+          "couldn't find remote ref", "no such file or directory"] combinedLower ||
+        (hasLowerSubstr "branch" combinedLower && hasLowerSubstr "not found" combinedLower) then
       .notFound
     else
       .commandFailed
@@ -148,12 +245,9 @@ def runGitChecked {m : Type → Type} [Monad m] (ops : RawGitOpsM m) (cmd : Stri
     else
       return .error (classifyError cmd out)
 
-/-- Validate a repository directory path argument. -/
+/-- Validate a repository directory path argument (`invalidPath` or `invalidInput`). -/
 def validateRepoPath (repoPath : String) : Except GitError Unit :=
-  if isValidPathArg repoPath then
-    .ok ()
-  else
-    .error { kind := .invalidPath, message := "invalid repository path" }
+  validateFsPathArg repoPath
 
 /-- Probe whether `repoPath` is inside a Git repository (`notARepo` maps to `false`). -/
 def isRepoImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m) (repoPath : String) :
@@ -185,7 +279,7 @@ def repoRootImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m) (repoPath : 
     | .ok out =>
       match decodeUtf8Checked out.stdout with
       | .error e => return .error e
-      | .ok s => return .ok (trimTrailingNewlines s)
+      | .ok s => return .ok (stripSingleTrailingLf s)
 
 /-- Resolve the absolute shared `.git` common directory across all worktrees. -/
 def commonDirImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m) (repoPath : String) :
@@ -199,7 +293,7 @@ def commonDirImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m) (repoPath :
     | .ok out =>
       match decodeUtf8Checked out.stdout with
       | .error e => return .error e
-      | .ok s => return .ok (trimTrailingNewlines s)
+      | .ok s => return .ok (stripSingleTrailingLf s)
 
 /-- Resolve `HEAD` commit ID, returning `none` when the repository is on an unborn branch. -/
 def headCommitImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m) (repoPath : String) :
@@ -237,14 +331,16 @@ def headBranchImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m) (repoPath 
   | .error e => return .error e
   | .ok () =>
     match ← runGitRaw ops
-        { cwd := some repoPath, args := #["symbolic-ref", "--quiet", "--short", "HEAD"] } with
+        { cwd := some repoPath, args := #["symbolic-ref", "--quiet", "HEAD"] } with
     | .error e => return .error e
     | .ok out =>
       if out.exitCode == 0 then
         match decodeUtf8Checked out.stdout with
         | .error e => return .error e
         | .ok s =>
-          match mkRefName (trimTrailingNewlines s) with
+          let raw := trimTrailingNewlines s
+          let stripped := if raw.startsWith "refs/heads/" then String.ofList (raw.toList.drop 11) else raw
+          match mkRefName stripped with
           | .error e => return .error e
           | .ok ref => return .ok (some ref)
       else
@@ -294,7 +390,8 @@ def revParseCommitImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
         let err := classifyError "rev-parse" out
         if err.kind == .notARepo then
           return .error err
-        else if err.kind == .commandFailed && trimAsciiWhitespace (decodeUtf8Lossy out.stderr) == "" then
+        else if err.kind == .commandFailed &&
+            !hasFatalOrErrorChars (sanitizeLowerForClassify (decodeUtf8Lossy out.stderr)) then
           return .error
             { kind := .invalidRef
               command := some "rev-parse"
@@ -317,7 +414,8 @@ def isAncestorImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
     | .ok out =>
       if out.exitCode == 0 then
         return .ok true
-      else if out.exitCode == 1 && trimAsciiWhitespace (decodeUtf8Lossy out.stderr) == "" then
+      else if out.exitCode == 1 && (classifyError "merge-base" out).kind == .commandFailed &&
+          !hasFatalOrErrorChars (sanitizeLowerForClassify (decodeUtf8Lossy out.stderr)) then
         return .ok false
       else
         return .error (classifyError "merge-base" out)
@@ -341,19 +439,20 @@ def mergeBaseImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
           match mkCommitId (trimTrailingNewlines s) with
           | .error e => return .error e
           | .ok cid => return .ok (some cid)
-      else if out.exitCode == 1 && trimAsciiWhitespace (decodeUtf8Lossy out.stderr) == "" then
+      else if out.exitCode == 1 && (classifyError "merge-base" out).kind == .commandFailed &&
+          !hasFatalOrErrorChars (sanitizeLowerForClassify (decodeUtf8Lossy out.stderr)) then
         return .ok none
       else
         return .error (classifyError "merge-base" out)
 
-/-- Query `git status --porcelain=v1 -z` and parse all entries. -/
+/-- Query `git status --porcelain=v1 --untracked-files=normal -z` and parse all entries. -/
 def statusImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m) (repoPath : String) :
     m (Except GitError (Array StatusEntry)) := do
   match validateRepoPath repoPath with
   | .error e => return .error e
   | .ok () =>
     match ← runGitChecked ops "status"
-        { cwd := some repoPath, args := #["status", "--porcelain=v1", "-z"] } with
+        { cwd := some repoPath, args := #["status", "--porcelain=v1", "--untracked-files=normal", "-z"] } with
     | .error e => return .error e
     | .ok out => return parsePorcelainStatusZ out.stdout
 
@@ -403,85 +502,84 @@ def showFileImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
   | .ok () =>
     if !isValidStrictRevSpec rev then
       return .error { kind := .invalidInput, message := s!"invalid revision: '{rev}'" }
-    if !isValidRelRepoPath relPath then
-      return .error { kind := .invalidPath, message := s!"invalid repository relative path: '{relPath}'" }
-    match ← revParseCommitImpl ops repoPath rev with
+    match validateRelRepoPath relPath with
     | .error e => return .error e
-    | .ok cid =>
-      let spec := s!"{cid.hex}:{relPath}"
-      match ← runGitRaw ops { cwd := some repoPath, args := #["cat-file", "-t", spec] } with
+    | .ok () =>
+      match ← revParseCommitImpl ops repoPath rev with
       | .error e => return .error e
-      | .ok typeOut =>
-        if typeOut.exitCode != 0 then
-          let err := classifyError "cat-file" typeOut
-          if err.kind == .notARepo then
-            return .error err
-          else
-            return .ok none
-        else
-          match decodeUtf8Checked typeOut.stdout with
-          | .error e => return .error e
-          | .ok objType =>
-            if trimAsciiWhitespace objType != "blob" then
+      | .ok cid =>
+        let spec := s!"{cid.hex}:{relPath}"
+        match ← runGitRaw ops { cwd := some repoPath, args := #["cat-file", "-t", spec] } with
+        | .error e => return .error e
+        | .ok typeOut =>
+          if typeOut.exitCode != 0 then
+            let errText := decodeUtf8Lossy typeOut.stderr
+            if errText.startsWith s!"fatal: path '{relPath}' " then
               return .ok none
+            let err := classifyError "cat-file" typeOut
+            if err.kind == .notARepo then
+              return .error err
             else
-              match ← runGitChecked ops "cat-file"
-                  { cwd := some repoPath, args := #["cat-file", "blob", spec] } with
-              | .error e => return .error e
-              | .ok blobOut => return .ok (some blobOut.stdout)
+              return .ok none
+          else
+            match decodeUtf8Checked typeOut.stdout with
+            | .error e => return .error e
+            | .ok objType =>
+              if trimAsciiWhitespace objType != "blob" then
+                return .ok none
+              else
+                match ← runGitChecked ops "cat-file"
+                    { cwd := some repoPath, args := #["cat-file", "blob", spec] } with
+                | .error e => return .error e
+                | .ok blobOut => return .ok (some blobOut.stdout)
 
 /-- Initialize a new repository at `path`. -/
 def initImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
     (path : String) (bare : Bool) (initialBranch? : Option RefName) : m (Except GitError Unit) := do
-  if !isValidPathArg path then
-    return .error { kind := .invalidPath, message := "invalid repository init path" }
-  let branchArgs : Except GitError (Array String) :=
-    match initialBranch? with
-    | none => .ok #[]
-    | some b =>
-      if isValidRefNameStr b.raw then
-        .ok #["-b", b.raw]
-      else
-        .error { kind := .invalidRef, message := s!"invalid initial branch name: '{b.raw}'" }
-  match branchArgs with
+  match validateRepoPath path with
   | .error e => return .error e
-  | .ok bArgs =>
-    let args := #["init"] ++ (if bare then #["--bare"] else #[]) ++ bArgs ++ #["--", path]
-    match ← runGitChecked ops "init" { cwd := none, args := args } with
+  | .ok () =>
+    let branchArgs : Except GitError (Array String) :=
+      match initialBranch? with
+      | none => .ok #[]
+      | some b =>
+        if isValidRefNameStr b.raw then .ok #["-b", b.raw]
+        else .error { kind := .invalidRef, message := s!"invalid initial branch name: '{b.raw}'" }
+    match branchArgs with
     | .error e => return .error e
-    | .ok _ => return .ok ()
+    | .ok bArgs =>
+      let args := #["init"] ++ (if bare then #["--bare"] else #[]) ++ bArgs ++ #["--", path]
+      match ← runGitChecked ops "init" { cwd := none, args := args } with
+      | .error e => return .error e
+      | .ok _ => return .ok ()
 
 /-- Clone a repository non-interactively from `source` to `target`. -/
 def cloneImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
     (source target : String) (opts : CloneOptions) : m (Except GitError Unit) := do
-  if !isValidPathArg source || !isValidPathArg target || source.toList.head? == some '-' then
-    return .error { kind := .invalidInput, message := "invalid clone source or target" }
-  match opts.depth? with
-  | some 0 => return .error { kind := .invalidInput, message := "clone depth must be positive" }
-  | _ => pure ()
-  let branchArgs : Except GitError (Array String) :=
-    match opts.branch? with
-    | none => .ok #[]
-    | some b =>
-      if isValidRefNameStr b then
-        .ok #["--branch", b]
-      else
-        .error { kind := .invalidRef, message := s!"invalid clone branch: '{b}'" }
-  match branchArgs with
-  | .error e => return .error e
-  | .ok bArgs =>
-    let depthArgs :=
-      match opts.depth? with
-      | none => #[]
-      | some d => #["--depth", toString d]
-    let args :=
-      #["clone"] ++
-      (if opts.bare then #["--bare"] else #[]) ++
-      (if opts.singleBranch then #["--single-branch"] else #[]) ++
-      depthArgs ++ bArgs ++ #["--", source, target]
-    match ← runGitChecked ops "clone" { cwd := none, args := args } with
+  match validateCloneEndpoint source, validateCloneEndpoint target with
+  | .error e, _ => return .error e
+  | _, .error e => return .error e
+  | .ok (), .ok () =>
+    match opts.depth? with
+    | some 0 => return .error { kind := .invalidInput, message := "clone depth must be positive" }
+    | _ => pure ()
+    let branchArgs : Except GitError (Array String) :=
+      match opts.branch? with
+      | none => .ok #[]
+      | some b =>
+        if isValidRefNameStr b then .ok #["--branch", b]
+        else .error { kind := .invalidRef, message := s!"invalid clone branch: '{b}'" }
+    match branchArgs with
     | .error e => return .error e
-    | .ok _ => return .ok ()
+    | .ok bArgs =>
+      let depthArgs := match opts.depth? with | none => #[] | some d => #["--depth", toString d]
+      let args :=
+        #["clone"] ++ (if opts.bare then #["--bare"] else #[]) ++
+        (if opts.singleBranch then #["--single-branch"] else #[]) ++
+        depthArgs ++ bArgs ++ #["--", source, target]
+      match ← runGitChecked ops "clone" { cwd := none, args := args } with
+      | .error e => return .error e
+      | .ok _ => return .ok ()
 
 /-- Stage explicit paths or all changes (`all = true`). -/
 def addImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
@@ -502,42 +600,27 @@ def addImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
     | .error e => return .error e
     | .ok _ => return .ok ()
 
-/-- Create a commit with validated message and optional author/committer environment overrides. -/
+/-- Create a commit with validated message and optional author/committer overrides. -/
 def commitImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
     (repoPath : String) (opts : CommitOptions) : m (Except GitError CommitId) := do
   match validateRepoPath repoPath with
   | .error e => return .error e
   | .ok () =>
-    if opts.message.isEmpty || hasNulChar opts.message.toList then
-      return .error { kind := .invalidInput, message := "commit message must be non-empty without NUL bytes" }
-    let nameEnv : Except GitError (Array (String × Option String)) :=
-      match opts.authorName with
-      | none => .ok #[]
-      | some n =>
-        if isValidEnvVal? (some n) then
-          .ok #[("GIT_AUTHOR_NAME", some n), ("GIT_COMMITTER_NAME", some n)]
-        else
-          .error { kind := .invalidInput, message := "invalid author name" }
-    match nameEnv with
+    match validateCommitOptions opts with
     | .error e => return .error e
-    | .ok nEnv =>
-      let emailEnv : Except GitError (Array (String × Option String)) :=
-        match opts.authorEmail with
-        | none => .ok #[]
-        | some em =>
-          if isValidEnvVal? (some em) then
-            .ok #[("GIT_AUTHOR_EMAIL", some em), ("GIT_COMMITTER_EMAIL", some em)]
-          else
-            .error { kind := .invalidInput, message := "invalid author email" }
-      match emailEnv with
+    | .ok () =>
+      let nEnv := match opts.authorName with
+        | none => #[]
+        | some n => #[("GIT_AUTHOR_NAME", some n), ("GIT_COMMITTER_NAME", some n)]
+      let eEnv := match opts.authorEmail with
+        | none => #[]
+        | some em => #[("GIT_AUTHOR_EMAIL", some em), ("GIT_COMMITTER_EMAIL", some em)]
+      let args := #["commit", "--no-gpg-sign", "-m", opts.message] ++
+        (if opts.allowEmpty then #["--allow-empty"] else #[])
+      match ← runGitChecked ops "commit"
+          { cwd := some repoPath, args := args, extraEnv := nEnv ++ eEnv } with
       | .error e => return .error e
-      | .ok eEnv =>
-        let args := #["commit", "--no-gpg-sign", "-m", opts.message] ++
-          (if opts.allowEmpty then #["--allow-empty"] else #[])
-        match ← runGitChecked ops "commit"
-            { cwd := some repoPath, args := args, extraEnv := nEnv ++ eEnv } with
-        | .error e => return .error e
-        | .ok _ => revParseCommitImpl ops repoPath "HEAD"
+      | .ok _ => revParseCommitImpl ops repoPath "HEAD"
 
 /-- Create (or reset with `force = true`) a local branch. -/
 def createBranchImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
@@ -688,40 +771,34 @@ def worktreeAddImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
   match validateRepoPath repoPath with
   | .error e => return .error e
   | .ok () =>
-    if !isValidPathArg opts.path then
-      return .error { kind := .invalidPath, message := "invalid worktree path" }
-    if opts.detach && opts.newBranch?.isSome then
-      return .error { kind := .invalidInput, message := "worktreeAdd cannot combine detach and newBranch" }
-    let branchArgs : Except GitError (Array String) :=
-      match opts.newBranch? with
-      | none => .ok #[]
-      | some b =>
-        if isValidRefNameStr b.raw then
-          .ok #["-b", b.raw]
-        else
-          .error { kind := .invalidRef, message := s!"invalid branch name: '{b.raw}'" }
-    match branchArgs with
+    match validateRepoPath opts.path with
     | .error e => return .error e
-    | .ok bArgs =>
-      let targetArgs : Except GitError (Array String) :=
-        match opts.target? with
+    | .ok () =>
+      if opts.detach && opts.newBranch?.isSome then
+        return .error { kind := .invalidInput, message := "worktreeAdd cannot combine detach and newBranch" }
+      let branchArgs : Except GitError (Array String) :=
+        match opts.newBranch? with
         | none => .ok #[]
-        | some t =>
-          if isValidStrictRevSpec t then
-            .ok #[t]
-          else
-            .error { kind := .invalidInput, message := s!"invalid worktree target: '{t}'" }
-      match targetArgs with
+        | some b =>
+          if isValidRefNameStr b.raw then .ok #["-b", b.raw]
+          else .error { kind := .invalidRef, message := s!"invalid branch name: '{b.raw}'" }
+      match branchArgs with
       | .error e => return .error e
-      | .ok tArgs =>
-        let args :=
-          #["worktree", "add"] ++
-          (if opts.force then #["--force"] else #[]) ++
-          (if opts.detach then #["--detach"] else #[]) ++
-          bArgs ++ #["--", opts.path] ++ tArgs
-        match ← runGitChecked ops "worktree" { cwd := some repoPath, args := args } with
+      | .ok bArgs =>
+        let targetArgs : Except GitError (Array String) :=
+          match opts.target? with
+          | none => .ok #[]
+          | some t =>
+            if isValidStrictRevSpec t then .ok #[t]
+            else .error { kind := .invalidInput, message := s!"invalid worktree target: '{t}'" }
+        match targetArgs with
         | .error e => return .error e
-        | .ok _ => return .ok ()
+        | .ok tArgs =>
+          let args := #["worktree", "add"] ++ (if opts.force then #["--force"] else #[]) ++
+            (if opts.detach then #["--detach"] else #[]) ++ bArgs ++ #["--", opts.path] ++ tArgs
+          match ← runGitChecked ops "worktree" { cwd := some repoPath, args := args } with
+          | .error e => return .error e
+          | .ok _ => return .ok ()
 
 /-- Remove a linked worktree via `git worktree remove`. -/
 def worktreeRemoveImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
@@ -729,15 +806,13 @@ def worktreeRemoveImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
   match validateRepoPath repoPath with
   | .error e => return .error e
   | .ok () =>
-    if !isValidPathArg wtPath then
-      return .error { kind := .invalidPath, message := "invalid worktree path" }
-    let args :=
-      #["worktree", "remove"] ++
-      (if force then #["--force"] else #[]) ++
-      #["--", wtPath]
-    match ← runGitChecked ops "worktree" { cwd := some repoPath, args := args } with
+    match validateRepoPath wtPath with
     | .error e => return .error e
-    | .ok _ => return .ok ()
+    | .ok () =>
+      let args := #["worktree", "remove"] ++ (if force then #["--force"] else #[]) ++ #["--", wtPath]
+      match ← runGitChecked ops "worktree" { cwd := some repoPath, args := args } with
+      | .error e => return .error e
+      | .ok _ => return .ok ()
 
 /-- Bracketed temporary worktree helper guaranteeing `worktreeRemove` cleanup via `MonadFinally`. -/
 def withWorktreeImpl {m : Type → Type} [Monad m] [MonadFinally m] (ops : RawGitOpsM m)
