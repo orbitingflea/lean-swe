@@ -67,7 +67,9 @@ jobs:
         if: steps.setup.outcome == 'success'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
-          path: ./.lake/build
+          path: |
+            ./.lake/build
+            ./harness/.lake/build
           key: lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain') }}-${{ github.sha }}
           restore-keys: |
             lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain') }}-
@@ -77,15 +79,12 @@ jobs:
         run: |
           python3 -c '
           from pathlib import Path
-          for root in ("Core", "LeanSwe", "Fuzz"):
-              lib_root = Path(".lake/build/lib/lean") / root
-              if not lib_root.exists():
-                  continue
-              for olean in list(lib_root.rglob("*.olean")):
-                  rel = olean.relative_to(".lake/build/lib/lean").with_suffix(".lean")
-                  if not rel.is_file():
-                      for ext in (".olean", ".olean.hash", ".olean.server", ".olean.private", ".ilean", ".ilean.hash", ".trace"):
-                          olean.with_suffix(ext).unlink(missing_ok=True)
+          for lib, base, roots in ((Path(".lake/build/lib/lean"), Path("."), ("Core", "LeanSwe", "Fuzz", "Tests")), (Path("harness/.lake/build/lib/lean"), Path("harness"), ("Fuzz", "Tests"))):
+              for r in roots:
+                  if not (lr := lib / r).exists(): continue
+                  for o in list(lr.rglob("*.olean")):
+                      if not (base / o.relative_to(lib).with_suffix(".lean")).is_file():
+                          for ext in (".olean", ".olean.hash", ".olean.server", ".olean.private", ".ilean", ".ilean.hash", ".trace"): o.with_suffix(ext).unlink(missing_ok=True)
           '
 
       - name: Install Lean toolchain
@@ -131,12 +130,13 @@ jobs:
           set -euo pipefail
           lake exe cache get 2>&1 | tee "$RUNNER_TEMP/lake_check.log"
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake check 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail LeanSwe.PostFork.Verified lean-swe-mut-test leanswe-fuzz 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail LeanSwe.PostFork.Verified 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d harness build --wfail lean-swe-test lean-swe-mut-test leanswe-fuzz 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
           actual_syms=$(nm -u .lake/build/lib/libleanswe_postfork_rust.a | awk '$1 ~ /^[Uuwv]$/ { print $2 }' | sort -u)
           expected_syms=$(printf '%s\n' __errno_location _exit chdir close dup2 execve fcntl open read setpgid syscall write | sort -u)
           expected_c_syms=$(printf '%s\n' leanswe_postfork_host_close_fd leanswe_postfork_host_fork_run leanswe_postfork_host_pipe_cloexec leanswe_postfork_host_probe_fd leanswe_postfork_host_probe_handle leanswe_postfork_host_read_once leanswe_postfork_host_setpgid leanswe_postfork_host_wait_once leanswe_postfork_host_write_once | sort -u)
           { diff -u <(printf '%s\n' "$expected_syms") <(printf '%s\n' "$actual_syms") && diff -u <(printf '%s\n' leanswe_postfork_close_fds_above2_except leanswe_postfork_run_child) <(nm --defined-only .lake/build/lib/libleanswe_postfork_rust.a | awk '$2 ~ /^[A-Z]$/ { print $3 }' | sort -u) && diff -u <(printf '%s\n' "$expected_c_syms") <(nm --defined-only .lake/build/lib/libleanswe_postfork.a | awk '$2 ~ /^[ABCDGRST]$/ { print $3 }' | sort -u); } 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
-          { for b in lean-swe-test lean-swe-mut-test leanswe-fuzz; do readelf -d ".lake/build/bin/$b" | grep -qE 'BIND_NOW|NOW'; done; } 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
+          { for b in lean-swe-test lean-swe-mut-test leanswe-fuzz; do readelf -d "harness/.lake/build/bin/$b" | grep -qE 'BIND_NOW|NOW'; done; } 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
 
       - name: Save Lean packages cache
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.lake-pkgs-cache.outputs.cache-hit != 'true' && steps.lake_check.outcome == 'success' }}
@@ -149,7 +149,9 @@ jobs:
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.lake-cache.outputs.cache-hit != 'true' && steps.lake_check.outcome == 'success' }}
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
         with:
-          path: ./.lake/build
+          path: |
+            ./.lake/build
+            ./harness/.lake/build
           key: lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain') }}-${{ github.sha }}
 
       - name: Check 1 GB private-memory cap on all modules
@@ -192,7 +194,7 @@ jobs:
           set -euo pipefail
           N="${INPUT_TEST_RUNS:-${DAILY_TEST_RUNS:-5}}"
           if [[ ! "$N" =~ ^[1-9][0-9]*$ ]]; then echo "Invalid test repetition count N=$N" | tee "$RUNNER_TEMP/repeat_tests.log"; exit 2; fi
-          if [[ ! -x .lake/build/bin/lean-swe-test ]]; then echo "Missing .lake/build/bin/lean-swe-test after lake check" | tee "$RUNNER_TEMP/repeat_tests.log"; exit 1; fi
+          if [[ ! -x harness/.lake/build/bin/lean-swe-test ]]; then echo "Missing harness/.lake/build/bin/lean-swe-test after lake check" | tee "$RUNNER_TEMP/repeat_tests.log"; exit 1; fi
           if [[ -f /sys/fs/cgroup/leanswe/runner/cgroup.procs ]]; then printf '%s\n' "$$" | sudo -n tee /sys/fs/cgroup/leanswe/runner/cgroup.procs >/dev/null || true; fi
           python3 -c '
           import ctypes, os, pathlib, subprocess
@@ -220,7 +222,7 @@ jobs:
             RUN_LOG="$RUNNER_TEMP/assump-run-${i}.log"
             rm -f "$RUN_LOG"
             set +e
-            LEANSWE_SUMMARY_LABEL="Run $i of $N" .lake/build/bin/lean-swe-test --assump-log "$RUN_LOG" --assump-nonce "$RUN_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
+            LEANSWE_SUMMARY_LABEL="Run $i of $N" harness/.lake/build/bin/lean-swe-test --assump-log "$RUN_LOG" --assump-nonce "$RUN_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
             RC=$?
             if (( RC == 0 )); then
               if [[ -z "$FIRST_NONCE" ]]; then
@@ -235,15 +237,15 @@ jobs:
             if (( RC != 0 )); then FAILED_RUNS=$((FAILED_RUNS + 1)); fi
           done
           if (( FAILED_RUNS == 0 )); then
-            .lake/build/bin/leanswe-fuzz --sandbox-strace-fault-check 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
-            .lake/build/bin/leanswe-fuzz --suite sandbox --steps 1000000 --self-test-shrink 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"; .lake/build/bin/leanswe-fuzz --suite sandbox --steps 250000 --random-seed --self-test-shrink 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+            harness/.lake/build/bin/leanswe-fuzz --sandbox-strace-fault-check 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+            harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 1000000 --self-test-shrink 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"; harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 250000 --random-seed --self-test-shrink 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
             if sudo -n sysctl -n vm.memfd_noexec >/dev/null 2>&1; then
               OLD_MEMFD_NOEXEC=$(sudo -n sysctl -n vm.memfd_noexec)
               sudo -n unshare --pid --fork --mount-proc -- bash -ec '
                 ulimit -Hc unlimited; if (( $1 == 2 )); then echo "MEMFD_NOEXEC_WARN: vm.memfd_noexec=2 enforced; skipping vm.memfd_noexec=1"; else
-                  sysctl -w vm.memfd_noexec=1 >/dev/null; setpriv --reuid="$2" --regid="$3" --init-groups -- .lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink; sysctl -w vm.memfd_noexec=2 >/dev/null
+                  sysctl -w vm.memfd_noexec=1 >/dev/null; setpriv --reuid="$2" --regid="$3" --init-groups -- harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink; sysctl -w vm.memfd_noexec=2 >/dev/null
                 fi
-                setpriv --reuid="$2" --regid="$3" --init-groups -- .lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink --require-memfd-strict
+                setpriv --reuid="$2" --regid="$3" --init-groups -- harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink --require-memfd-strict
                 sysctl -w "vm.memfd_noexec=$1" >/dev/null 2>&1 || true' _ "$OLD_MEMFD_NOEXEC" "$(id -u)" "$(id -g)" 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
             else
               echo "::warning::sudo -n sysctl unavailable; skipping vm.memfd_noexec={1,2} strict checks" | tee -a "$RUNNER_TEMP/repeat_tests.log"
@@ -255,16 +257,16 @@ jobs:
             printf '\n**%s**\n\n' "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
           fi
           (( FAILED_RUNS == 0 ))
-          .lake/build/bin/leanswe-fuzz --timerand-strace-fault-check 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
-          { .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,Compress,LinuxSyscall.Poll,LinuxSyscall.Net,Git,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns,LinuxSyscall.Files,PostFork,Sqlite,Sqlite.Raw; .lake/build/bin/lean-swe-test --suite Git --suite Compress --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite PostFork --suite Sqlite --suite Sqlite.Raw 0<&- 1>&- 2>&-; .lake/build/bin/leanswe-fuzz --smoke --suite sandbox,timerand,files,process,poll,net,passwd,dns --self-test-shrink 0<&- 1>&- 2>&-; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
-          { .lake/build/bin/leanswe-fuzz --suite timerand --steps 1000000 --self-test-shrink; .lake/build/bin/leanswe-fuzz --suite timerand --steps 250000 --random-seed --self-test-shrink; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
-          [[ -x .lake/build/bin/leanswe-fuzz ]] || { echo "Missing .lake/build/bin/leanswe-fuzz" | tee -a "$RUNNER_TEMP/repeat_tests.log"; exit 1; }
+          harness/.lake/build/bin/leanswe-fuzz --timerand-strace-fault-check 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+          { harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,Compress,LinuxSyscall.Poll,LinuxSyscall.Net,Git,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns,LinuxSyscall.Files,PostFork,Sqlite,Sqlite.Raw; harness/.lake/build/bin/lean-swe-test --suite Git --suite Compress --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite PostFork --suite Sqlite --suite Sqlite.Raw 0<&- 1>&- 2>&-; harness/.lake/build/bin/leanswe-fuzz --smoke --suite sandbox,timerand,files,process,poll,net,passwd,dns --self-test-shrink 0<&- 1>&- 2>&-; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+          { harness/.lake/build/bin/leanswe-fuzz --suite timerand --steps 1000000 --self-test-shrink; harness/.lake/build/bin/leanswe-fuzz --suite timerand --steps 250000 --random-seed --self-test-shrink; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+          [[ -x harness/.lake/build/bin/leanswe-fuzz ]] || { echo "Missing harness/.lake/build/bin/leanswe-fuzz" | tee -a "$RUNNER_TEMP/repeat_tests.log"; exit 1; }
           PYTHONUNBUFFERED=1 python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
-          stdbuf -oL -eL .lake/build/bin/leanswe-fuzz --all --exclude sandbox,timerand,files,process,poll,net --steps 50000 --random-seed --self-test-shrink 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
-          { .lake/build/bin/leanswe-fuzz --poll-strace-fault-check; .lake/build/bin/leanswe-fuzz --net-strace-fault-check; .lake/build/bin/leanswe-fuzz --suite poll --steps 250000 --self-test-shrink; .lake/build/bin/leanswe-fuzz --suite poll --steps 750000 --random-seed --self-test-shrink; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
-          { .lake/build/bin/leanswe-fuzz --suite net --steps 250000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-fuzz --suite net --steps 750000 --random-seed --self-test-shrink --require-ns; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
-          { .lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process; .lake/build/bin/leanswe-fuzz --process-strace-fault-check; .lake/build/bin/leanswe-fuzz --suite process --steps 50000 --self-test-shrink --require-ns; .lake/build/bin/leanswe-fuzz --suite process --steps 15000 --random-seed --self-test-shrink --require-ns; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
-          { .lake/build/bin/leanswe-fuzz --suite postfork --steps 100000 --self-test-shrink; .lake/build/bin/leanswe-fuzz --suite postfork --steps 50000 --random-seed --self-test-shrink; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+          stdbuf -oL -eL harness/.lake/build/bin/leanswe-fuzz --all --exclude sandbox,timerand,files,process,poll,net --steps 50000 --random-seed --self-test-shrink 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+          { harness/.lake/build/bin/leanswe-fuzz --poll-strace-fault-check; harness/.lake/build/bin/leanswe-fuzz --net-strace-fault-check; harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 250000 --self-test-shrink; harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 750000 --random-seed --self-test-shrink; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+          { harness/.lake/build/bin/leanswe-fuzz --suite net --steps 250000 --self-test-shrink --require-ns; harness/.lake/build/bin/leanswe-fuzz --suite net --steps 750000 --random-seed --self-test-shrink --require-ns; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+          { harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process; harness/.lake/build/bin/leanswe-fuzz --process-strace-fault-check; harness/.lake/build/bin/leanswe-fuzz --suite process --steps 50000 --self-test-shrink --require-ns; harness/.lake/build/bin/leanswe-fuzz --suite process --steps 15000 --random-seed --self-test-shrink --require-ns; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+          { harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 100000 --self-test-shrink; harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 50000 --random-seed --self-test-shrink; } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
 
       - name: Run Files world-model differential fuzzer and strace fault injection
         id: files_world_fuzz
@@ -272,29 +274,29 @@ jobs:
         run: |
           set -euo pipefail
           LOG="$RUNNER_TEMP/files_world_fuzz.log"
-          .lake/build/bin/leanswe-fuzz --files-strace-fault-check 2>&1 | tee "$LOG"
-          .lake/build/bin/leanswe-fuzz --suite files --steps 250000 --self-test-shrink --require-ns 2>&1 | tee -a "$LOG"
-          .lake/build/bin/leanswe-fuzz --suite files --steps 60000 --random-seed --require-ns 2>&1 | tee -a "$LOG"
+          harness/.lake/build/bin/leanswe-fuzz --files-strace-fault-check 2>&1 | tee "$LOG"
+          harness/.lake/build/bin/leanswe-fuzz --suite files --steps 250000 --self-test-shrink --require-ns 2>&1 | tee -a "$LOG"
+          harness/.lake/build/bin/leanswe-fuzz --suite files --steps 60000 --random-seed --require-ns 2>&1 | tee -a "$LOG"
           command -v capsh >/dev/null 2>&1 || { echo "ERROR: missing capsh" >&2; exit 1; }
           unshare -Urm sh -c '
             set -e; T=$(mktemp -d /tmp/gh-ovl-daily.XXXXXX)
             trap "for p in \"$T/ro/s1777/u65534\" \"$T/ro\" \"$T/mnt\" \"$T/ul_mnt\" \"$T/root/proc\" \"$T/root/dev\" \"$T/m\"; do umount -l \"\$p\" 2>/dev/null || true; done; rm -rf \"$T\"" EXIT
             mkdir -p "$T/low" "$T/up" "$T/wk" "$T/mnt" "$T/x" "$T/m" "$T/ro_src" "$T/ro" "$T/ul_low/shrink" "$T/ul_up" "$T/ul_wk" "$T/ul_mnt" "$T/root/dev" "$T/root/proc" "$T/root/etc" "$T/root/sys/kernel/debug" "$T/out"
-            ./.lake/build/bin/leanswe-fuzz --seed-overlay-lower "$T/low" 400
+            ./harness/.lake/build/bin/leanswe-fuzz --seed-overlay-lower "$T/low" 400
             mount -t overlay overlay -o "lowerdir=$T/low,upperdir=$T/up,workdir=$T/wk,userxattr" "$T/mnt"
             mount -t tmpfs tmpfs "$T/m"
-            ./.lake/build/bin/leanswe-fuzz --worker-mode rw --host-protected --dir "$T/m" --steps 10000 --random-seed --assert-worker-hits < /dev/null
-            ./.lake/build/bin/leanswe-fuzz --worker-mode unlinked_cwd --host-protected --dir "$T/m" --steps 3000 --random-seed --assert-worker-hits < /dev/null
-            ./.lake/build/bin/leanswe-fuzz --worker-mode seccomp --host-protected --dir "$T/m" --steps 3000 --random-seed --assert-worker-hits < /dev/null
-            ./.lake/build/bin/leanswe-fuzz --seed-ro-tree "$T/ro_src"; : > "$T/ro_src/s1777/u65534"; mount --bind "$T/ro_src" "$T/ro"; mount -o remount,ro,bind "$T/ro"; mount --bind /etc/passwd "$T/ro/s1777/u65534"; mount -o remount,ro,bind "$T/ro/s1777/u65534"
-            ./.lake/build/bin/leanswe-fuzz --worker-mode ro_bind --host-protected --dir "$T/ro" --steps 3000 --random-seed --assert-worker-hits < /dev/null
+            ./harness/.lake/build/bin/leanswe-fuzz --worker-mode rw --host-protected --dir "$T/m" --steps 10000 --random-seed --assert-worker-hits < /dev/null
+            ./harness/.lake/build/bin/leanswe-fuzz --worker-mode unlinked_cwd --host-protected --dir "$T/m" --steps 3000 --random-seed --assert-worker-hits < /dev/null
+            ./harness/.lake/build/bin/leanswe-fuzz --worker-mode seccomp --host-protected --dir "$T/m" --steps 3000 --random-seed --assert-worker-hits < /dev/null
+            ./harness/.lake/build/bin/leanswe-fuzz --seed-ro-tree "$T/ro_src"; : > "$T/ro_src/s1777/u65534"; mount --bind "$T/ro_src" "$T/ro"; mount -o remount,ro,bind "$T/ro"; mount --bind /etc/passwd "$T/ro/s1777/u65534"; mount -o remount,ro,bind "$T/ro/s1777/u65534"
+            ./harness/.lake/build/bin/leanswe-fuzz --worker-mode ro_bind --host-protected --dir "$T/ro" --steps 3000 --random-seed --assert-worker-hits < /dev/null
             mount --rbind /dev "$T/root/dev"; mount --rbind /proc "$T/root/proc"; cp /etc/passwd "$T/root/etc/passwd"; : > "$T/root/sys/kernel/cpu_byteorder"
-            ./.lake/build/bin/leanswe-fuzz --worker-mode chroot --host-protected --dir "$T/out" --chroot-dir "$T/root" --steps 3000 --random-seed --assert-worker-hits < /dev/null
+            ./harness/.lake/build/bin/leanswe-fuzz --worker-mode chroot --host-protected --dir "$T/out" --chroot-dir "$T/root" --steps 3000 --random-seed --assert-worker-hits < /dev/null
             i=0; while [ "$i" -lt 90 ]; do mkdir -p "$T/ul_low/ep-$i"; i=$((i+1)); done
             j=0; while [ "$j" -lt 256 ]; do mkdir -p "$T/ul_low/shrink-$j"; j=$((j+1)); done
             : > "$T/ul_low/.ovl_unlinked"; mount -t overlay overlay -o "lowerdir=$T/ul_low,upperdir=$T/ul_up,workdir=$T/ul_wk,userxattr" "$T/ul_mnt"
-            capsh --drop=cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid -- -c "./.lake/build/bin/leanswe-fuzz --worker-mode unlinked_cwd --host-protected --preseeded-eps --dir \"$T/ul_mnt\" --steps 3000 --random-seed --assert-worker-hits < /dev/null"
-            capsh --drop=cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid -- -c "./.lake/build/bin/leanswe-fuzz --worker-mode rw --host-protected --preseeded-eps --dir \"$T/mnt\" --cross-dir \"$T/x\" --steps 15000 --random-seed --assert-worker-hits < /dev/null"
+            capsh --drop=cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid -- -c "./harness/.lake/build/bin/leanswe-fuzz --worker-mode unlinked_cwd --host-protected --preseeded-eps --dir \"$T/ul_mnt\" --steps 3000 --random-seed --assert-worker-hits < /dev/null"
+            capsh --drop=cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid -- -c "./harness/.lake/build/bin/leanswe-fuzz --worker-mode rw --host-protected --preseeded-eps --dir \"$T/mnt\" --cross-dir \"$T/x\" --steps 15000 --random-seed --assert-worker-hits < /dev/null"
           ' 2>&1 | tee -a "$LOG"
           sudo -n true 2>/dev/null || { echo "ERROR: passwordless sudo required for daily loopback FS audit" >&2; exit 1; }
           LOOP_T=""; MULTI_T=""; P_SYM=$(sysctl -n fs.protected_symlinks); P_FIF=$(sysctl -n fs.protected_fifos); P_REG=$(sysctl -n fs.protected_regular)
@@ -310,10 +312,10 @@ jobs:
             MOUNT_OPTS="loop"; if [[ "$fstype" == "vfat" || "$fstype" == "exfat" ]]; then MOUNT_OPTS="loop,uid=$(id -u),gid=$(id -g)"; fi
             sudo mount -o "$MOUNT_OPTS" "$LOOP_T/img" "$LOOP_T/mnt"
             sudo chown "$(id -u):$(id -g)" "$LOOP_T/mnt" 2>/dev/null || true
-            .lake/build/bin/leanswe-fuzz --suite files --dir "$LOOP_T/mnt" --steps 5000 --random-seed 2>&1 | tee -a "$LOG"
-            .lake/build/bin/leanswe-fuzz --seed-ro-tree "$LOOP_T/mnt/ro_tree"
+            harness/.lake/build/bin/leanswe-fuzz --suite files --dir "$LOOP_T/mnt" --steps 5000 --random-seed 2>&1 | tee -a "$LOG"
+            harness/.lake/build/bin/leanswe-fuzz --seed-ro-tree "$LOOP_T/mnt/ro_tree"
             sudo umount "$LOOP_T/mnt"; sudo mount -o "$MOUNT_OPTS,ro" "$LOOP_T/img" "$LOOP_T/mnt"
-            .lake/build/bin/leanswe-fuzz --worker-mode ro_bind --dir "$LOOP_T/mnt/ro_tree" --steps 5000 --random-seed --assert-worker-hits 2>&1 | tee -a "$LOG"
+            harness/.lake/build/bin/leanswe-fuzz --worker-mode ro_bind --dir "$LOOP_T/mnt/ro_tree" --steps 5000 --random-seed --assert-worker-hits 2>&1 | tee -a "$LOG"
             cleanup_daily; LOOP_T=""
           done
           MULTI_T=$(mktemp -d /tmp/gh-multi.XXXXXX)
@@ -321,7 +323,7 @@ jobs:
           for idx in $(seq 1 9); do
             PV=$((idx % 3)); PSYM=$((PV > 0 ? 1 : 0))
             sudo sysctl -w "fs.protected_symlinks=$PSYM" "fs.protected_fifos=$PV" "fs.protected_regular=$PV" >/dev/null
-            .lake/build/bin/leanswe-fuzz --seed-ro-tree "$MULTI_T/c$idx"
+            harness/.lake/build/bin/leanswe-fuzz --seed-ro-tree "$MULTI_T/c$idx"
             for sd in s1777 s1002; do
               sudo ln -s ../sub/a "$MULTI_T/c$idx/$sd/sym_other"
               sudo chown -h "$FU:$FG" "$MULTI_T/c$idx/$sd/"*
@@ -329,7 +331,7 @@ jobs:
             done
             mkdir -p "$MULTI_T/ro$idx"
             sudo mount --bind "$MULTI_T/c$idx" "$MULTI_T/ro$idx"; sudo mount -o remount,ro,bind "$MULTI_T/ro$idx"
-            .lake/build/bin/leanswe-fuzz --worker-mode ro_bind --dir "$MULTI_T/ro$idx" --steps 2000 --random-seed --assert-worker-hits 2>&1 | tee -a "$LOG"
+            harness/.lake/build/bin/leanswe-fuzz --worker-mode ro_bind --dir "$MULTI_T/ro$idx" --steps 2000 --random-seed --assert-worker-hits 2>&1 | tee -a "$LOG"
             sudo umount "$MULTI_T/ro$idx"
             mkdir -p "$MULTI_T/rw$idx"
             sudo python3 - "$MULTI_T/rw$idx" "$MYU" "$MYG" "$FU" "$FG" "$FU2" "$FG2" <<'PY'
@@ -352,7 +354,7 @@ jobs:
                   sk = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); os.chdir(s); sk.bind("sock666"); sk.close()
                   os.chown(f"{s}/sock666", fu, fg); os.chmod(f"{s}/sock666", 0o666); os.chown(s, fu2, fg2); os.chmod(s, sm)
           PY
-            .lake/build/bin/leanswe-fuzz --worker-mode rw --preseeded-eps --dir "$MULTI_T/rw$idx" --steps 2000 --random-seed --assert-worker-hits 2>&1 | tee -a "$LOG"
+            harness/.lake/build/bin/leanswe-fuzz --worker-mode rw --preseeded-eps --dir "$MULTI_T/rw$idx" --steps 2000 --random-seed --assert-worker-hits 2>&1 | tee -a "$LOG"
           done
           trap - EXIT; cleanup_daily
 

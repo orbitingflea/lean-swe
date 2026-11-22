@@ -49,15 +49,21 @@ private def allSuites : Array (String × String × IO (Option String)) := #[
 ]
 
 private def findUnregisteredRuntimeTests : IO (Array String) := do
-  let leanSweDir : System.FilePath := "LeanSwe"
-  unless ← leanSweDir.pathExists do
-    return #[]
+  let (leanSweDir, stripPfx) ← do
+    if ← (System.FilePath.mk "LeanSwe").pathExists then
+      pure (System.FilePath.mk "LeanSwe", "")
+    else if ← (System.FilePath.mk "../LeanSwe").pathExists then
+      pure (System.FilePath.mk "../LeanSwe", "../")
+    else
+      return #[]
   let registered := allSuites.map (fun (_, path, _) => path)
   let mut unregistered : Array String := #[]
   for entry in (← System.FilePath.walkDir leanSweDir) do
     if entry.fileName == some "RuntimeTests.lean" then
-      if !registered.contains entry.toString then
-        unregistered := unregistered.push entry.toString
+      let s := entry.toString
+      let rel := if stripPfx.isEmpty then s else (s.drop stripPfx.length).toString
+      if !registered.contains rel then
+        unregistered := unregistered.push rel
   return unregistered.qsort (· < ·)
 
 private def formatStepSummary (label : Option String) (passed : Nat)

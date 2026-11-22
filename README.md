@@ -17,7 +17,8 @@ Each package lives under `LeanSwe/<Package>/` in a six-part layout:
 
 ```bash
 lake build
-lake test
+lake -d harness build
+lake -d harness test
 ```
 
 ## License

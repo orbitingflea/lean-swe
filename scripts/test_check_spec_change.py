@@ -428,7 +428,7 @@ class ImportHygieneUnitTests(unittest.TestCase):
             "private import all LeanSwe.Foo.Impl",
             "import all «LeanSwe».Foo.Impl",
             "import all\n  -- multiline intra-repo import all\n  LeanSwe.Bar.Impl",
-            "import all Core.PropCheck",
+            "import all Core.NondetTest",
             "import all Fuzz.Common.Rng",
             "import all Tests.Main",
             "import all LeanSwe",

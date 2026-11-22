@@ -13,27 +13,27 @@
       "max_lines": 280,
       "legacy_unmigrated": false
     },
-    "Fuzz/EnvVars/c/envvars_fuzz_env.c": {
+    "harness/Fuzz/EnvVars/c/envvars_fuzz_env.c": {
       "max_lines": 135,
       "legacy_unmigrated": false
     },
-    "Fuzz/Float/c/float_oracle.c": {
+    "harness/Fuzz/Float/c/float_oracle.c": {
       "max_lines": 560,
       "legacy_unmigrated": false
     },
-    "Fuzz/CmdLine/c/cmdline_fuzz_env.c": {
+    "harness/Fuzz/CmdLine/c/cmdline_fuzz_env.c": {
       "max_lines": 480,
       "legacy_unmigrated": false
     },
-    "Fuzz/PostFork/c/postfork_fuzz.c": {
+    "harness/Fuzz/PostFork/c/postfork_fuzz.c": {
       "max_lines": 415,
       "legacy_unmigrated": false
     },
-    "Fuzz/PostFork/c/postfork_probe.c": {
+    "harness/Fuzz/PostFork/c/postfork_probe.c": {
       "max_lines": 180,
       "legacy_unmigrated": false
     },
-    "Fuzz/suites.json": {
+    "harness/Fuzz/suites.json": {
       "max_lines": 34,
       "legacy_unmigrated": false
     },
@@ -57,7 +57,7 @@
       "max_lines": 165,
       "legacy_unmigrated": false
     },
-    "Fuzz/LinuxSyscall/c/timerand_fuzz_sig.c": {
+    "harness/Fuzz/LinuxSyscall/c/timerand_fuzz_sig.c": {
       "max_lines": 120,
       "legacy_unmigrated": false
     },
@@ -65,7 +65,7 @@
       "max_lines": 88,
       "legacy_unmigrated": false
     },
-    "Fuzz/LinuxSyscall/c/process_fuzz_env.c": {
+    "harness/Fuzz/LinuxSyscall/c/process_fuzz_env.c": {
       "max_lines": 960,
       "legacy_unmigrated": false
     },
@@ -129,7 +129,7 @@
       "max_lines": 122,
       "legacy_unmigrated": false
     },
-    "Fuzz/LinuxSyscall/c/net_fuzz_env.c": {
+    "harness/Fuzz/LinuxSyscall/c/net_fuzz_env.c": {
       "max_lines": 45,
       "legacy_unmigrated": false
     },
@@ -137,7 +137,7 @@
       "max_lines": 585,
       "legacy_unmigrated": false
     },
-    "Fuzz/LinuxSyscall/c/poll_fuzz_env.c": {
+    "harness/Fuzz/LinuxSyscall/c/poll_fuzz_env.c": {
       "max_lines": 180,
       "legacy_unmigrated": false
     },
@@ -149,7 +149,7 @@
       "max_lines": 660,
       "legacy_unmigrated": false
     },
-    "Fuzz/LinuxSyscall/c/fuzz_env.c": {
+    "harness/Fuzz/LinuxSyscall/c/fuzz_env.c": {
       "max_lines": 480,
       "legacy_unmigrated": false
     },
@@ -157,7 +157,7 @@
       "max_lines": 292,
       "legacy_unmigrated": false
     },
-    "Fuzz/LinuxSyscall/c/sandbox_fuzz_env.c": {
+    "harness/Fuzz/LinuxSyscall/c/sandbox_fuzz_env.c": {
       "max_lines": 600,
       "legacy_unmigrated": false
     },
@@ -236,43 +236,43 @@
     "LeanSwe/PostFork/c/postfork_shim.c::pf_spawn_via_spawner": {
       "max_loops": 1
     },
-    "Fuzz/PostFork/c/postfork_fuzz.c::pf_dump_close_bits": {
+    "harness/Fuzz/PostFork/c/postfork_fuzz.c::pf_dump_close_bits": {
       "max_loops": 1
     },
-    "Fuzz/PostFork/c/postfork_fuzz.c::pf_wait_eintr": {
+    "harness/Fuzz/PostFork/c/postfork_fuzz.c::pf_wait_eintr": {
       "max_loops": 1
     },
-    "Fuzz/PostFork/c/postfork_fuzz.c::pf_alloc_strs": {
+    "harness/Fuzz/PostFork/c/postfork_fuzz.c::pf_alloc_strs": {
       "allow_array_copy_loop": true
     },
-    "Fuzz/PostFork/c/postfork_probe.c::write_exact": {
+    "harness/Fuzz/PostFork/c/postfork_probe.c::write_exact": {
       "max_loops": 1
     },
-    "Fuzz/PostFork/c/postfork_probe.c::count_open_fds_proc": {
+    "harness/Fuzz/PostFork/c/postfork_probe.c::count_open_fds_proc": {
       "max_loops": 1
     },
-    "Fuzz/PostFork/c/postfork_probe.c::count_str_vec": {
+    "harness/Fuzz/PostFork/c/postfork_probe.c::count_str_vec": {
       "max_loops": 1
     },
-    "Fuzz/PostFork/c/postfork_probe.c::dump_str_vec": {
+    "harness/Fuzz/PostFork/c/postfork_probe.c::dump_str_vec": {
       "max_loops": 1
     },
-    "Fuzz/PostFork/c/postfork_probe.c::dump_argv": {
+    "harness/Fuzz/PostFork/c/postfork_probe.c::dump_argv": {
       "allow_array_copy_loop": true
     },
-    "Fuzz/PostFork/c/postfork_probe.c::count_open_fds": {
+    "harness/Fuzz/PostFork/c/postfork_probe.c::count_open_fds": {
       "max_loops": 1
     },
-    "Fuzz/PostFork/c/postfork_probe.c::dump_open_fds": {
+    "harness/Fuzz/PostFork/c/postfork_probe.c::dump_open_fds": {
       "max_loops": 1
     },
     "LeanSwe/EnvVars/Raw/c/envvars_shim.c::leanswe_envvars_environ": {
       "allow_array_copy_loop": true
     },
-    "Fuzz/EnvVars/c/envvars_fuzz_env.c::leanswe_fuzz_host_snapshot": {
+    "harness/Fuzz/EnvVars/c/envvars_fuzz_env.c::leanswe_fuzz_host_snapshot": {
       "max_loops": 2
     },
-    "Fuzz/EnvVars/c/envvars_fuzz_env.c::leanswe_fuzz_raw_end": {
+    "harness/Fuzz/EnvVars/c/envvars_fuzz_env.c::leanswe_fuzz_raw_end": {
       "max_loops": 1
     },
     "LeanSwe/LinuxSyscall/c/dns_shim.c::dns_count_addrs": {
@@ -284,7 +284,7 @@
     "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c::capture_openssl_error": {
       "max_loops": 1
     },
-    "Fuzz/CmdLine/c/cmdline_fuzz_env.c::wait_child_masked": {
+    "harness/Fuzz/CmdLine/c/cmdline_fuzz_env.c::wait_child_masked": {
       "max_loops": 1
     },
     "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c::ossl_iso_restore_segs": {
@@ -326,16 +326,16 @@
     "LeanSwe/LinuxSyscall/c/net_shim.c::box_scm_fds": {
       "allow_array_copy_loop": true
     },
-    "Fuzz/LinuxSyscall/c/process_fuzz_env.c::wait_leader_zombie": {
+    "harness/Fuzz/LinuxSyscall/c/process_fuzz_env.c::wait_leader_zombie": {
       "max_loops": 1
     }
   },
   "named_thread_helpers": [
-    "Fuzz/LinuxSyscall/c/sandbox_fuzz_env.c::leanswe_sbx_spawn_sync_thread",
-    "Fuzz/CmdLine/c/cmdline_fuzz_env.c::leanswe_cmdfuzz_run_on_1mib_stack",
-    "Fuzz/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_spawn_thread",
-    "Fuzz/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_spawn_sibling_child",
-    "Fuzz/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_check_fd_close_seccomp",
+    "harness/Fuzz/LinuxSyscall/c/sandbox_fuzz_env.c::leanswe_sbx_spawn_sync_thread",
+    "harness/Fuzz/CmdLine/c/cmdline_fuzz_env.c::leanswe_cmdfuzz_run_on_1mib_stack",
+    "harness/Fuzz/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_spawn_thread",
+    "harness/Fuzz/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_spawn_sibling_child",
+    "harness/Fuzz/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_check_fd_close_seccomp",
     "LeanSwe/PostFork/c/postfork_shim.c::pf_init_spawner_once"
   ]
 }

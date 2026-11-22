@@ -1,4 +1,3 @@
-import Core.PropCheck
 import LeanSwe.PostFork.SpecTests
 import LeanSwe.PostFork.Proofs.RunChildPre
 import LeanSwe.PostFork.Proofs.HostOrchBase

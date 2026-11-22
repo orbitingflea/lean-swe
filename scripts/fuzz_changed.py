@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hash-based PR deduplicator selecting changed Fuzz suites from Fuzz/suites.json."""
+"""Hash-based PR deduplicator selecting changed Fuzz suites from harness/Fuzz/suites.json."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def _validate_path_list(raw: Any, label: str, *, allow_empty: bool = True) -> tu
     return tuple(cleaned)
 
 def parse_manifest_text(raw_text: str) -> SuiteManifest:
-    """Parse and validate a Fuzz/suites.json document."""
+    """Parse and validate a harness/Fuzz/suites.json document."""
     try: data = json.loads(raw_text, object_pairs_hook=_reject_duplicate_keys)
     except json.JSONDecodeError as exc: raise ValueError(f"Invalid manifest JSON: {exc}") from exc
     if not isinstance(data, dict): raise ValueError("Manifest root must be a JSON object")
@@ -333,9 +333,9 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint for hash-based PR suite deduplication."""
     p = argparse.ArgumentParser(description="Hash-based PR deduplicator for LeanSwe Fuzz suites.")
     p.add_argument("--base", required=True); p.add_argument("--head", default="HEAD")
-    p.add_argument("--manifest", default="Fuzz/suites.json"); p.add_argument("--repo", default=".")
+    p.add_argument("--manifest", default="harness/Fuzz/suites.json"); p.add_argument("--repo", default=".")
     p.add_argument("--format", choices=("lines", "json", "hashes"), default="lines")
-    p.add_argument("--run", action="store_true"); p.add_argument("--runner", default=".lake/build/bin/leanswe-fuzz")
+    p.add_argument("--run", action="store_true"); p.add_argument("--runner", default="harness/.lake/build/bin/leanswe-fuzz")
     p.add_argument("--dry-run", action="store_true"); p.add_argument("--extra-arg", action="append", default=[])
     p.add_argument("--check-manifest", action="store_true"); p.add_argument("--allow-deleted-suites", action="store_true")
     args = p.parse_args(argv)

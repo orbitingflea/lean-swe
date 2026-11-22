@@ -381,8 +381,8 @@ private def findProbeBin : IO String := do
   let appDir := (← IO.appPath).parent
   let candidate : String := match appDir with
     | some d => (d / "leanswe-postfork-probe").toString
-    | none => ".lake/build/bin/leanswe-postfork-probe"
-  let raw := if ← System.FilePath.pathExists ⟨candidate⟩ then candidate else ".lake/build/bin/leanswe-postfork-probe"
+    | none => "harness/.lake/build/bin/leanswe-postfork-probe"
+  let raw := if ← System.FilePath.pathExists ⟨candidate⟩ then candidate else "harness/.lake/build/bin/leanswe-postfork-probe"
   return (← IO.FS.realPath ⟨raw⟩).toString
 
 private structure FuzzScratch where

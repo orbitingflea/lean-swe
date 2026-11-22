@@ -22,6 +22,8 @@ private def staticMetadataFiles : Std.HashSet String :=
     |>.insert "README.md"
     |>.insert "lean-toolchain"
     |>.insert "lake-manifest.json"
+    |>.insert "harness/lean-toolchain"
+    |>.insert "harness/lake-manifest.json"
     |>.insert ".proof-memory.json"
     |>.insert ".foreign-budget.json"
 
@@ -1339,13 +1341,13 @@ private def checkNonAeneasRustFile (relPath : String) (bytes : ByteArray) : Arra
 private def isAllowedLeanSourcePath (relPath : String) : Bool :=
   if !relPath.endsWith ".lean" then
     false
-  else if relPath == "lakefile.lean" || relPath == "LeanSwe.lean" then
+  else if relPath == "lakefile.lean" || relPath == "harness/lakefile.lean" || relPath == "LeanSwe.lean" then
     true
   else if !(relPath.splitOn "/").contains "c" && (
       relPath.startsWith "Core/" ||
       relPath.startsWith "LeanSwe/" ||
-      relPath.startsWith "Tests/" ||
-      relPath.startsWith "Fuzz/") then
+      relPath.startsWith "harness/Tests/" ||
+      relPath.startsWith "harness/Fuzz/") then
     true
   else
     relPath.startsWith "scripts/Check" && (relPath.splitOn "/").length == 2
