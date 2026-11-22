@@ -1,5 +1,4 @@
 import LeanSwe.LinuxSyscall.Net.Types
-import LeanSwe.LinuxSyscall.Net.Interface
 
 namespace LeanSwe.LinuxSyscall.Net
 

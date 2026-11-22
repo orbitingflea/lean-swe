@@ -3,13 +3,17 @@ import Lean
 /-!
 Non-Lean thinness CI gate (`scripts/CheckForeignThinness.lean`).
 
-Enforces two rules against `.foreign-budget.json`:
+Enforces three rules against `.foreign-budget.json` and `harness/`:
 1. Every git-tracked non-Lean file outside static metadata must be registered in
    `.foreign-budget.json` (`files` or `vendored_files`), with `actual_lines <= max_lines`
    and exact SHA-256 verification on `vendored_files`.
 2. Every non-`legacy_unmigrated` `.c`/`.h` file in `files` is lexed (stripping comments,
    string/char literals, and tracking preprocessor tokens) and checked per extracted function
    against complexity, branch, loop, and thick-logic bans unless explicitly overridden.
+3. `harness/lean-toolchain` matches root `lean-toolchain` byte-for-byte, and
+   `harness/lake-manifest.json` maintains exact parity with root `lake-manifest.json`
+   (`packagesDir == "../.lake/packages"`, root path dep to `".."`, and exact match on
+   `name`, `type`, `url`, `rev`, `inputRev`, `subDir`, `scope` for every inherited entry).
 -/
 
 open Lean
@@ -1352,6 +1356,164 @@ private def isAllowedLeanSourcePath (relPath : String) : Bool :=
   else
     relPath.startsWith "scripts/Check" && (relPath.splitOn "/").length == 2
 
+private def harnessManifestParityFields : Array String :=
+  #["name", "type", "url", "rev", "inputRev", "subDir", "scope"]
+
+private def fmtOptJson (val? : Option Json) : String :=
+  match val? with
+  | none => "<missing>"
+  | some j => j.compress
+
+private def previewToolchainBytes (bytes : ByteArray) : String :=
+  let s := (String.fromUTF8? bytes).getD s!"<non-utf8:{bytes.size}B>"
+  s!"{repr s} ({bytes.size}B)"
+
+private def checkHarnessToolchainParity (repoDir : System.FilePath) : IO (Array String) := do
+  let rootTcPath := repoDir / "lean-toolchain"
+  let harnessTcPath := repoDir / "harness" / "lean-toolchain"
+  let mut errs : Array String := #[]
+  unless ← rootTcPath.pathExists do
+    errs := errs.push s!"HARNESS_TOOLCHAIN_MISSING: missing root toolchain file {rootTcPath}"
+  unless ← harnessTcPath.pathExists do
+    errs := errs.push s!"HARNESS_TOOLCHAIN_MISSING: missing harness toolchain file {harnessTcPath}"
+  if !errs.isEmpty then
+    return errs
+  let rootBytes ← IO.FS.readBinFile rootTcPath
+  let harnessBytes ← IO.FS.readBinFile harnessTcPath
+  if rootBytes.isEmpty then
+    errs := errs.push s!"HARNESS_TOOLCHAIN_INVALID: {rootTcPath} is empty"
+  if rootBytes.data != harnessBytes.data then
+    errs := errs.push s!"HARNESS_TOOLCHAIN_MISMATCH: harness/lean-toolchain differs from lean-toolchain byte-for-byte (root={previewToolchainBytes rootBytes}, harness={previewToolchainBytes harnessBytes})"
+  return errs
+
+private def checkHarnessManifestParity (repoDir : System.FilePath) : IO (Array String × Nat) := do
+  let rootManPath := repoDir / "lake-manifest.json"
+  let harnessManPath := repoDir / "harness" / "lake-manifest.json"
+  let mut errs : Array String := #[]
+  unless ← rootManPath.pathExists do
+    errs := errs.push s!"HARNESS_MANIFEST_MISSING: missing root manifest {rootManPath}"
+  unless ← harnessManPath.pathExists do
+    errs := errs.push s!"HARNESS_MANIFEST_MISSING: missing harness manifest {harnessManPath}"
+  if !errs.isEmpty then
+    return (errs, 0)
+  let rootJson ← match Json.parse (← IO.FS.readFile rootManPath) with
+    | .ok j@(.obj _) => pure j
+    | .ok _ => return (#[s!"HARNESS_MANIFEST_ERROR: {rootManPath} root must be a JSON object"], 0)
+    | .error e => return (#[s!"HARNESS_MANIFEST_ERROR: invalid JSON in {rootManPath} ({e})"], 0)
+  let harnessJson ← match Json.parse (← IO.FS.readFile harnessManPath) with
+    | .ok j@(.obj _) => pure j
+    | .ok _ => return (#[s!"HARNESS_MANIFEST_ERROR: {harnessManPath} root must be a JSON object"], 0)
+    | .error e => return (#[s!"HARNESS_MANIFEST_ERROR: invalid JSON in {harnessManPath} ({e})"], 0)
+
+  let hPkgDir? := (harnessJson.getObjVal? "packagesDir").toOption
+  match hPkgDir? with
+  | some (.str "../.lake/packages") => pure ()
+  | other =>
+    errs := errs.push s!"HARNESS_MANIFEST_PACKAGES_DIR_MISMATCH: harness/lake-manifest.json packagesDir must be \"../.lake/packages\", got {fmtOptJson other}"
+
+  let rVer? := (rootJson.getObjVal? "version").toOption
+  let hVer? := (harnessJson.getObjVal? "version").toOption
+  if rVer?.map Json.compress != hVer?.map Json.compress then
+    errs := errs.push s!"HARNESS_MANIFEST_FIELD_MISMATCH: manifest 'version' differs (root={fmtOptJson rVer?}, harness={fmtOptJson hVer?})"
+
+  let rFixed? := (rootJson.getObjVal? "fixedToolchain").toOption
+  let hFixed? := (harnessJson.getObjVal? "fixedToolchain").toOption
+  if rFixed?.map Json.compress != hFixed?.map Json.compress then
+    errs := errs.push s!"HARNESS_MANIFEST_FIELD_MISMATCH: manifest 'fixedToolchain' differs (root={fmtOptJson rFixed?}, harness={fmtOptJson hFixed?})"
+
+  let rootPkgName ← match rootJson.getObjValAs? String "name" with
+    | .ok s => pure s
+    | .error _ =>
+      errs := errs.push "HARNESS_MANIFEST_ERROR: lake-manifest.json missing string field 'name'"
+      pure ""
+
+  let rootPkgsArr ← match rootJson.getObjVal? "packages" with
+    | .ok (.arr a) => pure a
+    | _ => return (errs.push "HARNESS_MANIFEST_ERROR: lake-manifest.json missing array field 'packages'", 0)
+  let harnessPkgsArr ← match harnessJson.getObjVal? "packages" with
+    | .ok (.arr a) => pure a
+    | _ => return (errs.push "HARNESS_MANIFEST_ERROR: harness/lake-manifest.json missing array field 'packages'", 0)
+
+  let mut rootPkgs : Std.HashMap String Json := {}
+  let mut rootPkgOrder : Array String := #[]
+  for entry in rootPkgsArr do
+    match entry with
+    | .obj _ =>
+      match entry.getObjValAs? String "name" with
+      | .ok pkgName =>
+        if pkgName.isEmpty then
+          errs := errs.push "HARNESS_MANIFEST_ERROR: lake-manifest.json has package entry with empty 'name'"
+        else if rootPkgs.contains pkgName then
+          errs := errs.push s!"HARNESS_MANIFEST_DUPLICATE_PACKAGE: duplicate package '{pkgName}' in lake-manifest.json"
+        else
+          rootPkgs := rootPkgs.insert pkgName entry
+          rootPkgOrder := rootPkgOrder.push pkgName
+      | .error _ =>
+        errs := errs.push "HARNESS_MANIFEST_ERROR: lake-manifest.json package entry missing string 'name'"
+    | _ =>
+      errs := errs.push "HARNESS_MANIFEST_ERROR: lake-manifest.json package entries must be JSON objects"
+
+  let mut seenHarness : Std.HashSet String := {}
+  let mut seenInherited : Std.HashSet String := {}
+  let mut sawRootPathDep := false
+  let mut checkedInherited : Nat := 0
+  for entry in harnessPkgsArr do
+    let .obj _ := entry
+      | do
+          errs := errs.push "HARNESS_MANIFEST_ERROR: harness/lake-manifest.json package entries must be JSON objects"
+          continue
+    let pkgName ← match entry.getObjValAs? String "name" with
+      | .ok s => pure s
+      | .error _ =>
+        errs := errs.push "HARNESS_MANIFEST_ERROR: harness/lake-manifest.json package entry missing string 'name'"
+        continue
+    if pkgName.isEmpty then
+      errs := errs.push "HARNESS_MANIFEST_ERROR: harness/lake-manifest.json has package entry with empty 'name'"
+      continue
+    if seenHarness.contains pkgName then
+      errs := errs.push s!"HARNESS_MANIFEST_DUPLICATE_PACKAGE: duplicate package '{pkgName}' in harness/lake-manifest.json"
+      continue
+    seenHarness := seenHarness.insert pkgName
+    let inherited ← match parseJsonBoolField entry "inherited" with
+      | .ok b => pure b
+      | .error e =>
+        errs := errs.push s!"HARNESS_MANIFEST_ERROR: harness/lake-manifest.json package '{pkgName}' {e}"
+        continue
+    if inherited then
+      checkedInherited := checkedInherited + 1
+      seenInherited := seenInherited.insert pkgName
+      match rootPkgs.get? pkgName with
+      | none =>
+        errs := errs.push s!"HARNESS_MANIFEST_EXTRA_PACKAGE: inherited package '{pkgName}' in harness/lake-manifest.json is absent from root lake-manifest.json"
+      | some rootEntry =>
+        for field in harnessManifestParityFields do
+          let rVal? := (rootEntry.getObjVal? field).toOption
+          let hVal? := (entry.getObjVal? field).toOption
+          if rVal?.map Json.compress != hVal?.map Json.compress then
+            errs := errs.push s!"HARNESS_MANIFEST_FIELD_MISMATCH: package '{pkgName}' field '{field}' differs (root={fmtOptJson rVal?}, harness={fmtOptJson hVal?})"
+        if (entry.getObjValAs? String "type").toOption == some "git" then
+          for reqField in harnessManifestParityFields do
+            if (entry.getObjVal? reqField).toOption.isNone then
+              errs := errs.push s!"HARNESS_MANIFEST_ERROR: git package '{pkgName}' missing field '{reqField}'"
+    else if !rootPkgName.isEmpty && pkgName == rootPkgName then
+      sawRootPathDep := true
+      let ty? := (entry.getObjValAs? String "type").toOption
+      let dir? := (entry.getObjValAs? String "dir").toOption
+      let copy? := (entry.getObjVal? "copy").toOption
+      if ty? != some "path" || dir? != some ".." || copy? != some (.bool false) then
+        errs := errs.push s!"HARNESS_MANIFEST_ROOT_DEP_MISMATCH: package '{pkgName}' in harness/lake-manifest.json must have type=\"path\", dir=\"..\", copy=false"
+    else
+      errs := errs.push s!"HARNESS_MANIFEST_UNEXPECTED_PACKAGE: non-inherited package '{pkgName}' in harness/lake-manifest.json must not bypass root manifest"
+
+  if !rootPkgName.isEmpty && !sawRootPathDep then
+    errs := errs.push s!"HARNESS_MANIFEST_MISSING_ROOT_DEP: harness/lake-manifest.json missing path dependency '{rootPkgName}' pointing to \"..\""
+
+  for rootName in rootPkgOrder.qsort (· < ·) do
+    if !seenInherited.contains rootName then
+      errs := errs.push s!"HARNESS_MANIFEST_MISSING_PACKAGE: root package '{rootName}' is missing from inherited entries in harness/lake-manifest.json"
+
+  return (errs, checkedInherited)
+
 /-- Audit tracked non-Lean files and non-legacy C code against `.foreign-budget.json`. -/
 def main (args : List String) : IO UInt32 := do
   let repoDir : System.FilePath := args.headD "."
@@ -1438,6 +1600,12 @@ def main (args : List String) : IO UInt32 := do
   for (vendPath, _) in budget.vendored do
     if !seenVendored.contains vendPath then
       errors := errors.push s!"VENDORED_HASH_MISMATCH: vendored file {vendPath} is not tracked by git"
+
+  let tcErrs ← checkHarnessToolchainParity repoDir
+  let (manErrs, harnessPkgsChecked) ← checkHarnessManifestParity repoDir
+  let parityErrs := tcErrs ++ manErrs
+  errors := errors ++ parityErrs
+  IO.println s!"HARNESS_PARITY_CHECK: inherited_packages={harnessPkgsChecked} errors={parityErrs.size}"
 
   IO.println s!"FOREIGN_THINNESS_CHECK: tracked_foreign={trackedForeign} checked_c_files={checkedCFiles} checked_c_funcs={checkedCFuncs} legacy_c_files={legacyCFiles} errors={errors.size}"
   if errors.isEmpty then
