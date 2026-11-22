@@ -94,7 +94,7 @@ theorem startNextConnectAux_of_eq {dnsJob : Type}
         ((instrumentSysOps sys).net.socket sa.domain .stream { nonblock := true, cloexec := true } 0)
         (fun (wx, trx) ⟨hwx, hdq, hda, hne, hcf⟩ => by
           have hn := hRef.2.1 wx (.socket sa.domain .stream { nonblock := true, cloexec := true } 0) ((wf_iff_parts wx).mp hwx)
-          dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hn
+          dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hn
           dsimp only [StateT.run]
           rw [inst_net_socket]
           rcases hS : sys.net.socket sa.domain .stream { nonblock := true, cloexec := true } 0 wx with ⟨sr, wx'⟩
@@ -125,7 +125,7 @@ theorem startNextConnectAux_of_eq {dnsJob : Type}
         clear hConnRun
         rw [inst_net_connect sys ufd sa w1 tr1] at hConnRun'
         have hConn := hRef.2.1 w1 (.connect ufd sa) ((wf_iff_parts w1).mp hWf1)
-        dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hConn
+        dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hConn
         rcases hCRun : sys.net.connect ufd sa w1 with ⟨rConn0, w20⟩
         rw [hCRun] at hConn hConnRun'
         dsimp only at hConn hConnRun'
@@ -294,7 +294,7 @@ private theorem healthy_handleCompleteHeadSync_of_eq
       rw [inst_dns_getaddrinfo sys host { family := .any, sockType := .stream } w₀ tr₀] at hDnsRun'
       have hDns := hRef.2.2.2.1 w₀ { host := host, hints := { family := .any, sockType := .stream } }
         ((wf_iff_parts w₀).mp hWf₀)
-      dsimp only [execDnsReq, Dns.execDnsReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
+      dsimp only [Dns.execDnsReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
         pure, Pure.pure, StateT.pure, Id.run] at hDns
       rcases hDRun : (sys.dns.getaddrinfo host { family := .any, sockType := .stream }).run w₀ with ⟨dnsRes, wDns0⟩
       have hDRun' : sys.dns.getaddrinfo host { family := .any, sockType := .stream } w₀ = (dnsRes, wDns0) := hDRun
@@ -435,14 +435,14 @@ theorem healthy_acceptNewClientsAux_laws {dnsJob : Type}
     · simp only [hCap, ↓reduceIte]
       dsimp only [StateT.run, bind, StateT.bind, pure, StateT.pure, Id.run]
       have hNet := hRef.2.1 w (.accept4 listenFd { nonblock := true, cloexec := true }) ((wf_iff_parts w).mp hWf)
-      dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
+      dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
         pure, Pure.pure, StateT.pure, Id.run] at hNet
       rw [inst_net_accept4]
       rcases hRun : sys.net.accept4 listenFd { nonblock := true, cloexec := true } w with ⟨res, w1⟩
       rw [hRun] at hNet
       dsimp only at hNet ⊢
       have hWf1 : w1.wf = true := (wf_iff_parts w1).mpr hNet.2.1
-      have hBud := healthyNetStep_eintrBudget w.netEnv w1.netEnv (.accept4 listenFd { nonblock := true, cloexec := true }) (netOutcomeAccepted res) hNet.1
+      have hBud := healthyNetStep_eintrBudget w.netEnv w1.netEnv (.accept4 listenFd { nonblock := true, cloexec := true }) (Net.outcomeOfAccepted res) hNet.1
       cases res with
       | ok pair =>
         rcases pair with ⟨cfd, peerSa⟩
@@ -472,7 +472,7 @@ theorem healthy_acceptNewClientsAux_laws {dnsJob : Type}
       | error e =>
         by_cases hEi : (e == Errno.EINTR) = true
         · simp only [hEi, ↓reduceIte]
-          have hEqEi : netOutcomeAccepted (.error e) = .err Errno.EINTR :=
+          have hEqEi : Net.outcomeOfAccepted (.error e) = .err Errno.EINTR :=
             congrArg Net.NetOutcome.err (beq_iff_eq.mp hEi)
           obtain ⟨hPosB, hDecB⟩ := hBud.1 hEqEi
           have hSub := healthy_acceptNewClientsAux_laws sys hRef limits listenFd nowMs fuel slots w1 tr hWf1 hLe
@@ -552,7 +552,7 @@ private theorem healthy_stepHandshakeReadAux_of_eq
       clear hRecvRun
       rw [inst_net_recvfrom sys clientFd want { dontwait := true } w tr] at hRecvRun'
       have hNet := hRef.2.1 w (.recvfrom clientFd want { dontwait := true }) ((wf_iff_parts w).mp hWf)
-      dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
+      dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
         pure, Pure.pure, StateT.pure, Id.run] at hNet
       rcases hRNet : sys.net.recvfrom clientFd want { dontwait := true } w with ⟨recvRes, w1⟩
       rw [hRNet] at hNet hRecvRun'
@@ -560,13 +560,13 @@ private theorem healthy_stepHandshakeReadAux_of_eq
       injection hRecvRun' with hrr hwt; injection hwt with hwe hte
       subst hrr; subst hwe; subst hte
       have hWf1 : w1.wf = true := (wf_iff_parts w1).mpr hNet.2.1
-      have hBud := healthyNetStep_eintrBudget w.netEnv w1.netEnv (.recvfrom clientFd want { dontwait := true }) (netOutcomeBytes recvRes) hNet.1
+      have hBud := healthyNetStep_eintrBudget w.netEnv w1.netEnv (.recvfrom clientFd want { dontwait := true }) (Net.outcomeOfBytes recvRes) hNet.1
       cases recvRes with
       | error e =>
         dsimp only at hRun
         by_cases hEi : (e == Errno.EINTR) = true
         · simp only [hEi, ↓reduceIte] at hRun
-          have hEqEi : netOutcomeBytes (.error e) = .err Errno.EINTR :=
+          have hEqEi : Net.outcomeOfBytes (.error e) = .err Errno.EINTR :=
             congrArg Net.NetOutcome.err (beq_iff_eq.mp hEi)
           obtain ⟨hPosB, hDecB⟩ := hBud.1 hEqEi
           have hSub := healthy_stepHandshakeReadAux_of_eq sys hRef cfg slot events clientFd deadlineMs fuel headBuf w1 w' tr tr' slot' ev' hWf1 hLe hRun
@@ -1281,7 +1281,7 @@ theorem healthy_createListener_instrumented_laws
       ((instrumentSysOps sys).net.socket .inet .stream { nonblock := true, cloexec := true } 0)
       (fun ⟨wx, trx⟩ ⟨hwx, htbl, hnd, hdq, hda, hba, hop⟩ => by
         have hn := hRef.2.1 wx (.socket .inet .stream { nonblock := true, cloexec := true } 0) ((wf_iff_parts wx).mp hwx)
-        dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
+        dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
           pure, Pure.pure, StateT.pure, Id.run] at hn
         dsimp only [StateT.run]
         rw [inst_net_socket]
@@ -1289,14 +1289,14 @@ theorem healthy_createListener_instrumented_laws
         rw [hS] at hn
         dsimp only at hn ⊢
         have hwx' : wx'.wf = true := (wf_iff_parts wx').mpr hn.2.1
-        have hBud := healthyNetStep_eintrBudget wx.netEnv wx'.netEnv (.socket .inet .stream { nonblock := true, cloexec := true } 0) (netOutcomeOpened sr) hn.1
+        have hBud := healthyNetStep_eintrBudget wx.netEnv wx'.netEnv (.socket .inet .stream { nonblock := true, cloexec := true } 0) (Net.outcomeOfOpened sr) hn.1
         cases sr with
         | error e =>
           dsimp only
           refine ⟨fun hEi => ?_, fun hNe => ?_, ⟨hwx', hn.2.2.1.trans htbl, fun h0 => hn.2.2.2 (hnd h0), hdq, hda, hba, hop⟩⟩
           · injection hEi with he; subst he
             exact ⟨⟨hwx', hn.2.2.1.trans htbl, fun h0 => hn.2.2.2 (hnd h0), hdq, hda, hba, hop⟩, hBud.1 rfl⟩
-          · have hNeOut : netOutcomeOpened (.error e) ≠ .err Errno.EINTR := fun hc => by injection hc with he; exact hNe (congrArg Except.error he)
+          · have hNeOut : Net.outcomeOfOpened (.error e) ≠ .err Errno.EINTR := fun hc => by injection hc with he; exact hNe (congrArg Except.error he)
             exact Nat.le_of_eq (hBud.2 hNeOut)
         | ok lfd =>
           dsimp only
@@ -1326,7 +1326,7 @@ theorem healthy_createListener_instrumented_laws
         ((instrumentSysOps sys).net.setsockopt lfd .reuseAddr 1)
         (fun ⟨wx, trx⟩ ⟨hwx, htbl, hnd, htr⟩ => by
           have hn := hRef.2.1 wx (.setsockopt lfd .reuseAddr 1) ((wf_iff_parts wx).mp hwx)
-          dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
+          dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
             pure, Pure.pure, StateT.pure, Id.run] at hn
           dsimp only [StateT.run]
           rw [inst_net_setsockopt]
@@ -1335,7 +1335,7 @@ theorem healthy_createListener_instrumented_laws
           dsimp only at hn ⊢
           have hP : wx'.wf = true ∧ wx'.proxyTable = w₀.proxyTable ∧ (fdsNd w₀ → fdsNd wx') ∧ trx = tr1 :=
             ⟨(wf_iff_parts wx').mpr hn.2.1, hn.2.2.1.trans htbl, fun h0 => hn.2.2.2 (hnd h0), htr⟩
-          have hBud := healthyNetStep_eintrBudget wx.netEnv wx'.netEnv (.setsockopt lfd .reuseAddr 1) (netOutcomeUnit sr) hn.1
+          have hBud := healthyNetStep_eintrBudget wx.netEnv wx'.netEnv (.setsockopt lfd .reuseAddr 1) (Net.outcomeOfUnit sr) hn.1
           refine ⟨fun hEi => ⟨hP, ?_⟩, fun hNe => ?_, hP⟩
           · cases sr with | ok _ => cases hEi | error e => injection hEi with he; subst he; exact hBud.1 rfl
           · cases sr with
@@ -1374,7 +1374,7 @@ theorem healthy_createListener_instrumented_laws
           ((instrumentSysOps sys).net.bind lfd bindAddr)
           (fun ⟨wx, trx⟩ ⟨hwx, htbl, hnd, hdq, hda, hba, hop⟩ => by
             have hn := hRef.2.1 wx (.bind lfd bindAddr) ((wf_iff_parts wx).mp hwx)
-            dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
+            dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
               pure, Pure.pure, StateT.pure, Id.run] at hn
             dsimp only [StateT.run]
             rw [inst_net_bind]
@@ -1393,7 +1393,7 @@ theorem healthy_createListener_instrumented_laws
                 trx.openedFds = tr₀.openedFds.push lfd :=
               ⟨(wf_iff_parts wx').mpr hn.2.1, hn.2.2.1.trans htbl, fun h0 => hn.2.2.2 (hnd h0),
                 hdq, hda, hBaNext, hop⟩
-            have hBud := healthyNetStep_eintrBudget wx.netEnv wx'.netEnv (.bind lfd bindAddr) (netOutcomeUnit sr) hn.1
+            have hBud := healthyNetStep_eintrBudget wx.netEnv wx'.netEnv (.bind lfd bindAddr) (Net.outcomeOfUnit sr) hn.1
             refine ⟨fun hEi => ⟨hP, ?_⟩, fun hNe => ?_, hP⟩
             · cases sr with | ok _ => cases hEi | error e => injection hEi with he; subst he; exact hBud.1 rfl
             · cases sr with
@@ -1422,7 +1422,7 @@ theorem healthy_createListener_instrumented_laws
             ((instrumentSysOps sys).net.listen lfd 128)
             (fun ⟨wx, trx⟩ ⟨hwx, htbl, hnd, htr⟩ => by
               have hn := hRef.2.1 wx (.listen lfd 128) ((wf_iff_parts wx).mp hwx)
-              dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
+              dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
                 pure, Pure.pure, StateT.pure, Id.run] at hn
               dsimp only [StateT.run]
               rw [inst_net_listen]
@@ -1431,7 +1431,7 @@ theorem healthy_createListener_instrumented_laws
               dsimp only at hn ⊢
               have hP : wx'.wf = true ∧ wx'.proxyTable = w₀.proxyTable ∧ (fdsNd w₀ → fdsNd wx') ∧ trx = tr3 :=
                 ⟨(wf_iff_parts wx').mpr hn.2.1, hn.2.2.1.trans htbl, fun h0 => hn.2.2.2 (hnd h0), htr⟩
-              have hBud := healthyNetStep_eintrBudget wx.netEnv wx'.netEnv (.listen lfd 128) (netOutcomeUnit sr) hn.1
+              have hBud := healthyNetStep_eintrBudget wx.netEnv wx'.netEnv (.listen lfd 128) (Net.outcomeOfUnit sr) hn.1
               refine ⟨fun hEi => ⟨hP, ?_⟩, fun hNe => ?_, hP⟩
               · cases sr with | ok _ => cases hEi | error e => injection hEi with he; subst he; exact hBud.1 rfl
               · cases sr with
@@ -1461,7 +1461,7 @@ theorem healthy_createListener_instrumented_laws
               ((instrumentSysOps sys).net.getsockname lfd)
               (fun ⟨wx, trx⟩ ⟨hwx, htbl, hnd, htr⟩ => by
                 have hn := hRef.2.1 wx (.getsockname lfd) ((wf_iff_parts wx).mp hwx)
-                dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
+                dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
                   pure, Pure.pure, StateT.pure, Id.run] at hn
                 dsimp only [StateT.run]
                 rw [inst_net_getsockname]
@@ -1470,7 +1470,7 @@ theorem healthy_createListener_instrumented_laws
                 dsimp only at hn ⊢
                 have hP : wx'.wf = true ∧ wx'.proxyTable = w₀.proxyTable ∧ (fdsNd w₀ → fdsNd wx') ∧ trx = tr3 :=
                   ⟨(wf_iff_parts wx').mpr hn.2.1, hn.2.2.1.trans htbl, fun h0 => hn.2.2.2 (hnd h0), htr⟩
-                have hBud := healthyNetStep_eintrBudget wx.netEnv wx'.netEnv (.getsockname lfd) (netOutcomeAddr sr) hn.1
+                have hBud := healthyNetStep_eintrBudget wx.netEnv wx'.netEnv (.getsockname lfd) (Net.outcomeOfAddr sr) hn.1
                 refine ⟨fun hEi => ⟨hP, ?_⟩, fun hNe => ?_, hP⟩
                 · cases sr with | ok _ => cases hEi | error e => injection hEi with he; subst he; exact hBud.1 rfl
                 · cases sr with
@@ -1533,7 +1533,7 @@ theorem healthy_createListener_instrumented_laws
                     ((instrumentSysOps sys).net.socketpair .unix .stream { nonblock := true, cloexec := true })
                     (fun ⟨wx, trx⟩ ⟨hwx, htbl, hnd, hdq, hda, hba, hop⟩ => by
                       have hn := hRef.2.1 wx (.socketpair .unix .stream { nonblock := true, cloexec := true }) ((wf_iff_parts wx).mp hwx)
-                      dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
+                      dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, StateT.bind,
                         pure, Pure.pure, StateT.pure, Id.run] at hn
                       dsimp only [StateT.run]
                       rw [inst_net_socketpair]
@@ -1541,7 +1541,7 @@ theorem healthy_createListener_instrumented_laws
                       rw [hS] at hn
                       dsimp only at hn ⊢
                       have hwx' : wx'.wf = true := (wf_iff_parts wx').mpr hn.2.1
-                      have hBud := healthyNetStep_eintrBudget wx.netEnv wx'.netEnv (.socketpair .unix .stream { nonblock := true, cloexec := true }) (netOutcomePair sr) hn.1
+                      have hBud := healthyNetStep_eintrBudget wx.netEnv wx'.netEnv (.socketpair .unix .stream { nonblock := true, cloexec := true }) (Net.outcomeOfPair sr) hn.1
                       cases sr with
                       | error e =>
                         dsimp only

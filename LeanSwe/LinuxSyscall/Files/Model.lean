@@ -4187,4 +4187,121 @@ def FilesState.detachProcFdLink (s : FilesState) (fdName : ByteArray) : FilesSta
       | _ => s
     | none => s
 
+/-- Convert `Except Errno Unit` into `FilesOutcome`. -/
+def outcomeOfUnit : Except Errno Unit → FilesOutcome
+  | .ok () => .unit
+  | .error e => .err e
+
+/-- Convert `Except Errno HandleId` into `FilesOutcome`. -/
+def outcomeOfOpened : Except Errno HandleId → FilesOutcome
+  | .ok h => .opened h
+  | .error e => .err e
+
+/-- Convert `Except Errno ByteArray` into `FilesOutcome`. -/
+def outcomeOfBytes : Except Errno ByteArray → FilesOutcome
+  | .ok b => .bytes b
+  | .error e => .err e
+
+/-- Convert `Except Errno UInt32` into `FilesOutcome`. -/
+def outcomeOfU32 : Except Errno UInt32 → FilesOutcome
+  | .ok v => .u32 v
+  | .error e => .err e
+
+/-- Convert `Except Errno UInt64` into `FilesOutcome`. -/
+def outcomeOfU64 : Except Errno UInt64 → FilesOutcome
+  | .ok v => .u64 v
+  | .error e => .err e
+
+/-- Convert `Except Errno StatInfo` into `FilesOutcome`. -/
+def outcomeOfStatted : Except Errno StatInfo → FilesOutcome
+  | .ok st => .statted st
+  | .error e => .err e
+
+/-- Return `true` iff `out` is a curated catastrophic OS fault (`ENOMEM`, `EIO`, `ENFILE`). -/
+def isCriticalFault : FilesOutcome → Bool
+  | .err e => Errno.isCriticalOsErrno e
+  | _ => false
+
+/-- Return `true` iff `out` is an interrupted syscall outcome (`.err Errno.EINTR`). -/
+def isEintrOutcome : FilesOutcome → Bool
+  | .err e => e == Errno.EINTR
+  | _ => false
+
+/-- Return `true` iff `req` is `.close` and `out` is `.err Errno.EBUSY` (excluded in sequential single-thread `healthyStep`). -/
+def isCloseEbusy (req : FilesReq) (out : FilesOutcome) : Bool :=
+  match req, out with
+  | .close _, .err e => e == Errno.EBUSY
+  | _, _ => false
+
+/-- Healthy execution environment wrapping `FilesState` with a finite `EINTR` interruption budget (`ambientSeccomp = false`). -/
+structure HealthyEnv where
+  /-- Underlying `Files` world state. -/
+  state : FilesState := FilesState.initial
+  /-- Remaining bound on `EINTR` signal interruptions (`0` forbids `EINTR`). -/
+  eintrBudget : Nat := 0
+  deriving BEq, Inhabited
+
+/-- Initial healthy `Files` environment with optional `eintrBudget`. -/
+def HealthyEnv.initial (eintrBudget : Nat := 0) : HealthyEnv :=
+  { state := FilesState.initial, eintrBudget := eintrBudget }
+
+/-- Return `true` iff `env` has no ambient `seccomp` `SECCOMP_RET_ERRNO` filter interception. -/
+def HealthyEnv.wf (env : HealthyEnv) : Bool :=
+  !env.state.ambientSeccomp
+
+/-- Relational healthy-OS step checker for `LeanSwe.LinuxSyscall.Files`, excluding critical OS faults, ambient `seccomp`, and `.close`/`EBUSY` while bounding `EINTR` via `eintrBudget`. -/
+def healthyStep (env : HealthyEnv) (req : FilesReq) (out : FilesOutcome) : Option HealthyEnv :=
+  if !env.wf || isCriticalFault out || isCloseEbusy req out then
+    none
+  else
+    match allowedStep env.state req out with
+    | none => none
+    | some s' =>
+      if isEintrOutcome out then
+        if env.eintrBudget > 0 then
+          some { state := s', eintrBudget := env.eintrBudget - 1 }
+        else
+          none
+      else
+        some { state := s', eintrBudget := env.eintrBudget }
+
+/-- Execute one `FilesReq` against a `FilesOpsM m HandleId` capability bundle and decode its `FilesOutcome`. -/
+def execFilesReq {m : Type → Type} [Monad m]
+    (ops : FilesOpsM m HandleId) : FilesReq → m FilesOutcome
+  | .openat d p fl md => outcomeOfOpened <$> ops.openat d p fl md
+  | .openat2 d p how => outcomeOfOpened <$> ops.openat2 d p how
+  | .close h => outcomeOfUnit <$> ops.close h
+  | .read h n => outcomeOfBytes <$> ops.read h n
+  | .write h bs => outcomeOfU32 <$> ops.write h bs
+  | .fstat h => outcomeOfStatted <$> ops.fstat h
+  | .fstatat d p fl => outcomeOfStatted <$> ops.fstatat d p fl
+  | .faccessat d p mk fl => outcomeOfUnit <$> ops.faccessat d p mk fl
+  | .mkdirat d p md => outcomeOfUnit <$> ops.mkdirat d p md
+  | .unlinkat d p rd => outcomeOfUnit <$> ops.unlinkat d p rd
+  | .renameat2 od op nd np fl => outcomeOfUnit <$> ops.renameat2 od op nd np fl
+  | .symlinkat t d lp => outcomeOfUnit <$> ops.symlinkat t d lp
+  | .readlinkat d p c => outcomeOfBytes <$> ops.readlinkat d p c
+  | .getdents64 h c => outcomeOfBytes <$> ops.getdents64 h c
+  | .fchmodat d p md => outcomeOfUnit <$> ops.fchmodat d p md
+  | .fchmod h md => outcomeOfUnit <$> ops.fchmod h md
+  | .flock h op => outcomeOfUnit <$> ops.flock h op
+  | .fcntl h cmd => outcomeOfU32 <$> ops.fcntl h cmd
+  | .fsync h => outcomeOfUnit <$> ops.fsync h
+  | .getcwd c => outcomeOfBytes <$> ops.getcwd c
+  | .lseek h off wh => outcomeOfU64 <$> ops.lseek h off wh
+  | .reopenReadOnly h => outcomeOfOpened <$> ops.reopenReadOnly h
+  | .dupStdio sl => outcomeOfOpened <$> ops.dupStdio sl
+
+/-- Universal healthy-world refinement predicate over an arbitrary state `W` projected via `proj`. -/
+def RefinesHealthyFilesAt {W : Type} (proj : W → HealthyEnv)
+    (ops : FilesOpsM (StateM W) HandleId) : Prop :=
+  ∀ (w : W) (req : FilesReq),
+    (proj w).wf = true →
+    let (out, w') := (execFilesReq ops req).run w
+    healthyStep (proj w) req out = some (proj w')
+
+/-- Direct healthy-world refinement predicate specialized to `StateM HealthyEnv`. -/
+abbrev RefinesHealthyFiles (ops : FilesOpsM (StateM HealthyEnv) HandleId) : Prop :=
+  RefinesHealthyFilesAt id ops
+
 end LeanSwe.LinuxSyscall.Files

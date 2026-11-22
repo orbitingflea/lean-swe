@@ -273,4 +273,74 @@ def modelOps : PollOpsM (StateM PollState) HandleId :=
       | some (.err e, s') => set s'; return .error e
       | _ => return .error Errno.EINVAL }
 
+/-- Convert `Except Errno (Array PollEvents)` into `PollOutcome`. -/
+def outcomeOfPolled : Except Errno (Array PollEvents) → PollOutcome
+  | .ok rev => .polled rev
+  | .error e => .err e
+
+/-- Convert `Except Errno HandleId` into `PollOutcome`. -/
+def outcomeOfOpened : Except Errno HandleId → PollOutcome
+  | .ok h => .opened h
+  | .error e => .err e
+
+/-- Return `true` iff `out` is a curated catastrophic OS fault (`ENOMEM`, `EIO`, `ENFILE`). -/
+def isCriticalFault : PollOutcome → Bool
+  | .err e => Errno.isCriticalOsErrno e
+  | _ => false
+
+/-- Return `true` iff `out` is an interrupted syscall outcome (`.err Errno.EINTR`). -/
+def isEintrOutcome : PollOutcome → Bool
+  | .err e => e == Errno.EINTR
+  | _ => false
+
+/-- Healthy execution environment wrapping `PollState` with a finite `EINTR` interruption budget (`ambientSeccomp = false`). -/
+structure HealthyEnv where
+  /-- Underlying `Poll` world state. -/
+  state : PollState := PollState.initial
+  /-- Remaining bound on `EINTR` signal interruptions (`0` forbids `EINTR`). -/
+  eintrBudget : Nat := 0
+  deriving Repr, DecidableEq, BEq, Inhabited
+
+/-- Initial healthy `Poll` environment with optional `eintrBudget`. -/
+def HealthyEnv.initial (eintrBudget : Nat := 0) : HealthyEnv :=
+  { state := PollState.initial, eintrBudget := eintrBudget }
+
+/-- Return `true` iff `env` has no ambient `seccomp` `SECCOMP_RET_ERRNO` filter interception. -/
+def HealthyEnv.wf (env : HealthyEnv) : Bool :=
+  !env.state.ambientSeccomp
+
+/-- Relational healthy-OS step checker for `LeanSwe.LinuxSyscall.Poll`, excluding critical OS faults and ambient `seccomp` while bounding `EINTR` via `eintrBudget`. -/
+def healthyStep (env : HealthyEnv) (req : PollReq) (out : PollOutcome) : Option HealthyEnv :=
+  if !env.wf || isCriticalFault out then
+    none
+  else
+    match allowedStep env.state req out with
+    | none => none
+    | some s' =>
+      if isEintrOutcome out then
+        if env.eintrBudget > 0 then
+          some { state := s', eintrBudget := env.eintrBudget - 1 }
+        else
+          none
+      else
+        some { state := s', eintrBudget := env.eintrBudget }
+
+/-- Execute one `PollReq` against a `PollOpsM m HandleId` capability bundle and decode its `PollOutcome`. -/
+def execPollReq {m : Type → Type} [Monad m]
+    (ops : PollOpsM m HandleId) : PollReq → m PollOutcome
+  | .ppoll fds to? => outcomeOfPolled <$> ops.ppoll fds to?
+  | .eventfd2 iv fl => outcomeOfOpened <$> ops.eventfd2 iv fl
+
+/-- Universal healthy-world refinement predicate over an arbitrary state `W` projected via `proj`. -/
+def RefinesHealthyPollAt {W : Type} (proj : W → HealthyEnv)
+    (ops : PollOpsM (StateM W) HandleId) : Prop :=
+  ∀ (w : W) (req : PollReq),
+    (proj w).wf = true →
+    let (out, w') := (execPollReq ops req).run w
+    healthyStep (proj w) req out = some (proj w')
+
+/-- Direct healthy-world refinement predicate specialized to `StateM HealthyEnv`. -/
+abbrev RefinesHealthyPoll (ops : PollOpsM (StateM HealthyEnv) HandleId) : Prop :=
+  RefinesHealthyPollAt id ops
+
 end LeanSwe.LinuxSyscall.Poll

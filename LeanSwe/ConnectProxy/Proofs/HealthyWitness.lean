@@ -48,12 +48,12 @@ def sampleHealthyFilesOps : Files.FilesOpsM (StateM HealthySysWorld) Nat :=
 private theorem sampleHealthyFilesOps_close (w : HealthySysWorld) (h : Nat)
     (hWf : w.filesEnv.wf = true) :
     let (r, w') := (sampleHealthyFilesOps.close h).run w
-    healthyFilesStep w.filesEnv (.close h) (filesOutcomeUnit r) = some w'.filesEnv ∧
+    Files.healthyStep w.filesEnv (.close h) (Files.outcomeOfUnit r) = some w'.filesEnv ∧
     w'.filesEnv.wf = true := by
   have hNotWf : (!w.filesEnv.wf) = false := by simp [hWf]
-  unfold filesOutcomeUnit healthyFilesStep isFilesCriticalFault isCriticalOsErrno
-    isFilesCloseEbusy Files.allowedStep Files.allowedCloseStep Files.verifyStep
-    Files.isOutcomeErr isFilesEintrOutcome
+  unfold Files.outcomeOfUnit Files.healthyStep Files.isCriticalFault Errno.isCriticalOsErrno
+    Files.isCloseEbusy Files.allowedStep Files.allowedCloseStep Files.verifyStep
+    Files.isOutcomeErr Files.isEintrOutcome
   dsimp only [sampleHealthyFilesOps, liftFilesOp, Files.modelOps, Files.runOp, Files.evalModel,
     Files.evalReq, Files.precheckNul, StateT.run, bind, StateT.bind, pure, StateT.pure,
     get, getThe, MonadStateOf.get, StateT.get, set, StateT.set, Id.run]
@@ -63,7 +63,7 @@ private theorem sampleHealthyFilesOps_close (w : HealthySysWorld) (h : Nat)
     exact ⟨rfl, hWf⟩
   | some desc =>
     have hWfNext : ({ w.filesEnv with state := Files.closeDescInState w.filesEnv.state h desc }).wf = true := by
-      unfold FilesHealthyEnv.wf at hWf ⊢
+      unfold Files.HealthyEnv.wf at hWf ⊢
       unfold Files.closeDescInState
       exact hWf
     exact ⟨rfl, hWfNext⟩
@@ -72,7 +72,7 @@ private theorem sampleHealthyFilesOps_close (w : HealthySysWorld) (h : Nat)
 def chosenSockFallbackErrno (soErr : Errno) : Errno :=
   if soErr == Errno.ENOSPC then Errno.ENOBUFS else Errno.ENOSPC
 
-/-- Everyday non-critical, non-`EINTR` fallback errno accepted by `healthyNetStep` on any `NetState`. -/
+/-- Everyday non-critical, non-`EINTR` fallback errno accepted by `Net.healthyStep` on any `NetState`. -/
 def fallbackNetErrno (s : Net.NetState) (req : Net.NetReq) : Errno :=
   match Net.preCheckNet req with
   | some err => err
@@ -109,7 +109,7 @@ def fallbackNetErrno (s : Net.NetState) (req : Net.NetReq) : Errno :=
 
 private theorem preCheckNet_safe (req : Net.NetReq) (err : Errno)
     (h : Net.preCheckNet req = some err) :
-    isCriticalOsErrno err = false ∧ (err == Errno.EINTR) = false := by
+    Errno.isCriticalOsErrno err = false ∧ (err == Errno.EINTR) = false := by
   unfold Net.preCheckNet Net.validateSocketArgs Net.validateSocketpairArgs at h
   cases req <;> simp only at h
   all_goals
@@ -138,7 +138,7 @@ private theorem lookupFileSocket_err_safe (s : Net.NetState) (fid : Net.FileId) 
 private theorem chosen_cases (soErr : Errno) :
     (chosenSockFallbackErrno soErr = Errno.ENOSPC ∨ chosenSockFallbackErrno soErr = Errno.ENOBUFS) ∧
     (chosenSockFallbackErrno soErr == soErr) = false ∧
-    isCriticalOsErrno (chosenSockFallbackErrno soErr) = false ∧
+    Errno.isCriticalOsErrno (chosenSockFallbackErrno soErr) = false ∧
     (chosenSockFallbackErrno soErr == Errno.EINTR) = false := by
   unfold chosenSockFallbackErrno
   by_cases h : (soErr == Errno.ENOSPC) = true
@@ -1299,12 +1299,12 @@ private theorem emitErr_self_eq (s : Net.NetState) (e : Errno) (alTr : Bool) :
   rw [beq_self_eq_true, Bool.true_or]
   rfl
 
-private theorem fallbackNetErrno_healthy (env : NetHealthyEnv) (req : Net.NetReq)
+private theorem fallbackNetErrno_healthy (env : Net.HealthyEnv) (req : Net.NetReq)
     (hWf : env.wf = true) :
-    ∃ env', healthyNetStep env req (.err (fallbackNetErrno env.state req)) = some env' ∧
+    ∃ env', Net.healthyStep env req (.err (fallbackNetErrno env.state req)) = some env' ∧
       env'.wf = true := by
   have hCore :
-      isCriticalOsErrno (fallbackNetErrno env.state req) = false ∧
+      Errno.isCriticalOsErrno (fallbackNetErrno env.state req) = false ∧
       (fallbackNetErrno env.state req == Errno.EINTR) = false ∧
       ∃ s', Net.stepNetCore env.state req (some (.err (fallbackNetErrno env.state req))) =
         some (.err (fallbackNetErrno env.state req), s') ∧
@@ -1562,9 +1562,9 @@ private theorem fallbackNetErrno_healthy (env : NetHealthyEnv) (req : Net.NetReq
   rcases hCore with ⟨hCrit, hEi, s', hStep, hSec⟩
   have hNotWf : (!env.wf) = false := by simp [hWf]
   refine ⟨{ state := s', eintrBudget := env.eintrBudget }, ?_, ?_⟩
-  · simp [healthyNetStep, hNotWf, isNetCriticalFault, hCrit, Net.allowedStep, hStep,
-      isNetEintrOutcome, hEi]
-  · unfold NetHealthyEnv.wf at hWf ⊢
+  · simp [Net.healthyStep, hNotWf, Net.isCriticalFault, hCrit, Net.allowedStep, hStep,
+      Net.isEintrOutcome, hEi]
+  · unfold Net.HealthyEnv.wf at hWf ⊢
     rw [hSec]; exact hWf
 
 private def runSampleNetOp {α : Type}
@@ -1575,14 +1575,14 @@ private def runSampleNetOp {α : Type}
   let env := w.netEnv
   let fbErr := fallbackNetErrno env.state req
   let runFb (_ : Unit) : Except Errno α × HealthySysWorld :=
-    match healthyNetStep env req (.err fbErr) with
+    match Net.healthyStep env req (.err fbErr) with
     | some envFb => (.error fbErr, { w with netEnv := envFb })
     | none => (.error fbErr, w)
   match Net.stepNetCore env.state req none with
   | some (candOut, _) =>
     match unpack candOut with
     | some candRes =>
-      match healthyNetStep env req (pack candRes) with
+      match Net.healthyStep env req (pack candRes) with
       | some env' =>
         if env'.wf then (candRes, { w with netEnv := env' })
         else runFb ()
@@ -1597,7 +1597,7 @@ private theorem runSampleNetOp_healthy {α : Type}
     (hPackErr : ∀ e, pack (.error e) = .err e)
     (w : HealthySysWorld)
     (hWf : w.netEnv.wf = true) :
-    healthyNetStep w.netEnv req (pack ((runSampleNetOp req pack unpack).run w).1) =
+    Net.healthyStep w.netEnv req (pack ((runSampleNetOp req pack unpack).run w).1) =
       some ((runSampleNetOp req pack unpack).run w).2.netEnv ∧
     ((runSampleNetOp req pack unpack).run w).2.netEnv.wf = true ∧
     ((runSampleNetOp req pack unpack).run w).2.filesEnv = w.filesEnv ∧
@@ -1609,11 +1609,11 @@ private theorem runSampleNetOp_healthy {α : Type}
   unfold runSampleNetOp
   dsimp only [StateT.run, Id.run]
   let fbPair : Except Errno α × HealthySysWorld :=
-    match healthyNetStep w.netEnv req (.err (fallbackNetErrno w.netEnv.state req)) with
+    match Net.healthyStep w.netEnv req (.err (fallbackNetErrno w.netEnv.state req)) with
     | some ef => (.error (fallbackNetErrno w.netEnv.state req), { w with netEnv := ef })
     | none => (.error (fallbackNetErrno w.netEnv.state req), w)
   have hFbBranch :
-      healthyNetStep w.netEnv req (pack fbPair.1) = some fbPair.2.netEnv ∧
+      Net.healthyStep w.netEnv req (pack fbPair.1) = some fbPair.2.netEnv ∧
       fbPair.2.netEnv.wf = true ∧
       fbPair.2.filesEnv = w.filesEnv ∧
       fbPair.2.pollEnv = w.pollEnv ∧
@@ -1633,69 +1633,69 @@ private theorem runSampleNetOp_healthy {α : Type}
     | none => exact hFbBranch
     | some candRes =>
       dsimp only
-      cases hStep : healthyNetStep w.netEnv req (pack candRes) with
+      cases hStep : Net.healthyStep w.netEnv req (pack candRes) with
       | none => exact hFbBranch
       | some env' =>
         dsimp only
         by_cases hNextWf : env'.wf = true
         · have hIf : (if env'.wf = true then (candRes, { w with netEnv := env' }) else fbPair) =
               (candRes, { w with netEnv := env' }) := by simp [hNextWf]
-          change healthyNetStep w.netEnv req (pack (if env'.wf = true then (candRes, { w with netEnv := env' }) else fbPair).1) = _ ∧ _
+          change Net.healthyStep w.netEnv req (pack (if env'.wf = true then (candRes, { w with netEnv := env' }) else fbPair).1) = _ ∧ _
           rw [hIf]; dsimp only
           exact ⟨hStep, hNextWf, rfl, rfl, rfl, rfl, rfl⟩
         · have hNextWfF : env'.wf = false := Bool.eq_false_iff.mpr hNextWf
           have hIf : (if env'.wf = true then (candRes, { w with netEnv := env' }) else fbPair) = fbPair := by
             simp [hNextWfF]
-          change healthyNetStep w.netEnv req (pack (if env'.wf = true then (candRes, { w with netEnv := env' }) else fbPair).1) = _ ∧ _
+          change Net.healthyStep w.netEnv req (pack (if env'.wf = true then (candRes, { w with netEnv := env' }) else fbPair).1) = _ ∧ _
           rw [hIf]
           exact hFbBranch
 
 /-- Sample `NetOpsM` executing `Net.stepNetCore` with verified healthy fallback. -/
 def sampleHealthyNetOps : Net.NetOpsM (StateM HealthySysWorld) Nat :=
   { socket := fun dom st fl p =>
-      runSampleNetOp (.socket dom st fl p) netOutcomeOpened
+      runSampleNetOp (.socket dom st fl p) Net.outcomeOfOpened
         (fun | .opened h => some (.ok h) | .err e => some (.error e) | _ => none)
     socketpair := fun dom st fl =>
-      runSampleNetOp (.socketpair dom st fl) netOutcomePair
+      runSampleNetOp (.socketpair dom st fl) Net.outcomeOfPair
         (fun | .pair a b => some (.ok (a, b)) | .err e => some (.error e) | _ => none)
     bind := fun h sa =>
-      runSampleNetOp (.bind h sa) netOutcomeUnit
+      runSampleNetOp (.bind h sa) Net.outcomeOfUnit
         (fun | .unit => some (.ok ()) | .err e => some (.error e) | _ => none)
     listen := fun h bl =>
-      runSampleNetOp (.listen h bl) netOutcomeUnit
+      runSampleNetOp (.listen h bl) Net.outcomeOfUnit
         (fun | .unit => some (.ok ()) | .err e => some (.error e) | _ => none)
     accept4 := fun h fl =>
-      runSampleNetOp (.accept4 h fl) netOutcomeAccepted
+      runSampleNetOp (.accept4 h fl) Net.outcomeOfAccepted
         (fun | .accepted c sa => some (.ok (c, sa)) | .err e => some (.error e) | _ => none)
     connect := fun h sa =>
-      runSampleNetOp (.connect h sa) netOutcomeUnit
+      runSampleNetOp (.connect h sa) Net.outcomeOfUnit
         (fun | .unit => some (.ok ()) | .err e => some (.error e) | _ => none)
     getsockopt := fun h opt =>
-      runSampleNetOp (.getsockopt h opt) netOutcomeU32
+      runSampleNetOp (.getsockopt h opt) Net.outcomeOfU32
         (fun | .u32 v => some (.ok v) | .err e => some (.error e) | _ => none)
     setsockopt := fun h opt val =>
-      runSampleNetOp (.setsockopt h opt val) netOutcomeUnit
+      runSampleNetOp (.setsockopt h opt val) Net.outcomeOfUnit
         (fun | .unit => some (.ok ()) | .err e => some (.error e) | _ => none)
     getsockname := fun h =>
-      runSampleNetOp (.getsockname h) netOutcomeAddr
+      runSampleNetOp (.getsockname h) Net.outcomeOfAddr
         (fun | .addr sa => some (.ok sa) | .err e => some (.error e) | _ => none)
     recvfrom := fun h n fl =>
-      runSampleNetOp (.recvfrom h n fl) netOutcomeBytes
+      runSampleNetOp (.recvfrom h n fl) Net.outcomeOfBytes
         (fun | .bytes bs => some (.ok bs) | .err e => some (.error e) | _ => none)
     sendto := fun h bs fl =>
-      runSampleNetOp (.sendto h bs fl) netOutcomeU32
+      runSampleNetOp (.sendto h bs fl) Net.outcomeOfU32
         (fun | .u32 v => some (.ok v) | .err e => some (.error e) | _ => none)
     shutdown := fun h how =>
-      runSampleNetOp (.shutdown h how) netOutcomeUnit
+      runSampleNetOp (.shutdown h how) Net.outcomeOfUnit
         (fun | .unit => some (.ok ()) | .err e => some (.error e) | _ => none)
     sendmsg := fun h fds =>
-      runSampleNetOp (.sendmsg h fds) netOutcomeUnit
+      runSampleNetOp (.sendmsg h fds) Net.outcomeOfUnit
         (fun | .unit => some (.ok ()) | .err e => some (.error e) | _ => none)
     recvmsg := fun h mf =>
-      runSampleNetOp (.recvmsg h mf) netOutcomeFds
+      runSampleNetOp (.recvmsg h mf) Net.outcomeOfFds
         (fun | .fds fs => some (.ok fs) | .err e => some (.error e) | _ => none)
     ioctl := fun h op ifn =>
-      runSampleNetOp (.ioctl h op ifn) netOutcomeU32
+      runSampleNetOp (.ioctl h op ifn) Net.outcomeOfU32
         (fun | .u32 v => some (.ok v) | .err e => some (.error e) | _ => none) }
 
 private def fallbackPollErrno (s : Poll.PollState) : Poll.PollReq → Errno
@@ -1735,15 +1735,15 @@ private theorem preCheckPoll_ppoll_err (entries : Array (Poll.HandleId × Poll.P
     · injection hb with he; exact he.symm
   exact hCond _ hPre
 
-private theorem fallbackPollErrno_healthy (env : PollHealthyEnv) (req : Poll.PollReq)
+private theorem fallbackPollErrno_healthy (env : Poll.HealthyEnv) (req : Poll.PollReq)
     (hWf : env.wf = true) :
-    healthyPollStep env req (.err (fallbackPollErrno env.state req)) = some env := by
+    Poll.healthyStep env req (.err (fallbackPollErrno env.state req)) = some env := by
   have hNotWf : (!env.wf) = false := by simp [hWf]
   cases req with
   | eventfd2 iv fl =>
-    unfold fallbackPollErrno healthyPollStep isPollCriticalFault Poll.allowedStep Poll.stepPollCore isPollEintrOutcome
+    unfold fallbackPollErrno Poll.healthyStep Poll.isCriticalFault Poll.allowedStep Poll.stepPollCore Poll.isEintrOutcome
     rw [hNotWf]
-    have h1 : isCriticalOsErrno Errno.EMFILE = false := by decide
+    have h1 : Errno.isCriticalOsErrno Errno.EMFILE = false := by decide
     have h2 : (Errno.EMFILE.isTransientOsErrno || Errno.EMFILE == Errno.ENODEV) = true := by decide
     have h3 : (Errno.EMFILE == Errno.EINTR) = false := by decide
     simp [h1, h2, h3]
@@ -1754,10 +1754,10 @@ private theorem fallbackPollErrno_healthy (env : PollHealthyEnv) (req : Poll.Pol
     | some preErr =>
       have hEq : preErr = Errno.EINVAL := preCheckPoll_ppoll_err entries timeout preErr hPre
       subst hEq
-      unfold healthyPollStep isPollCriticalFault Poll.allowedStep Poll.stepPollCore isPollEintrOutcome
+      unfold Poll.healthyStep Poll.isCriticalFault Poll.allowedStep Poll.stepPollCore Poll.isEintrOutcome
       dsimp only
       rw [hNotWf, hPre]
-      have h1 : isCriticalOsErrno Errno.EINVAL = false := by decide
+      have h1 : Errno.isCriticalOsErrno Errno.EINVAL = false := by decide
       have h3 : (Errno.EINVAL == Errno.EINTR) = false := by decide
       simp [h1, h3]
     | none =>
@@ -1766,18 +1766,18 @@ private theorem fallbackPollErrno_healthy (env : PollHealthyEnv) (req : Poll.Pol
       | error pinErr =>
         have hEq : pinErr = Errno.EBADF := evalPollListAux_err_ebadf env.state entries.toList [] pinErr hPin
         subst hEq
-        unfold healthyPollStep isPollCriticalFault Poll.allowedStep Poll.stepPollCore isPollEintrOutcome
+        unfold Poll.healthyStep Poll.isCriticalFault Poll.allowedStep Poll.stepPollCore Poll.isEintrOutcome
         dsimp only
         rw [hNotWf, hPre, hPin]
-        have h1 : isCriticalOsErrno Errno.EBADF = false := by decide
+        have h1 : Errno.isCriticalOsErrno Errno.EBADF = false := by decide
         have h3 : (Errno.EBADF == Errno.EINTR) = false := by decide
         simp [h1, h3]
       | ok revList =>
         dsimp only
-        unfold healthyPollStep isPollCriticalFault Poll.allowedStep Poll.stepPollCore isPollEintrOutcome
+        unfold Poll.healthyStep Poll.isCriticalFault Poll.allowedStep Poll.stepPollCore Poll.isEintrOutcome
         dsimp only
         rw [hNotWf, hPre, hPin]
-        have h1 : isCriticalOsErrno Errno.EMFILE = false := by decide
+        have h1 : Errno.isCriticalOsErrno Errno.EMFILE = false := by decide
         have h2 : Errno.EMFILE.isTransientOsErrno = true := by decide
         have h3 : (Errno.EMFILE == Errno.EINTR) = false := by decide
         simp [h1, h2, h3]
@@ -1793,7 +1793,7 @@ private def runSamplePollOp {α : Type}
   | some (candOut, _) =>
     match unpack candOut with
     | some candRes =>
-      match healthyPollStep env req (pack candRes) with
+      match Poll.healthyStep env req (pack candRes) with
       | some env' =>
         if env'.wf then (candRes, { w with pollEnv := env' })
         else (.error fbErr, w)
@@ -1804,10 +1804,10 @@ private def runSamplePollOp {α : Type}
 /-- Sample `PollOpsM` executing `Poll.stepPollCore` with verified healthy fallback. -/
 def sampleHealthyPollOps : Poll.PollOpsM (StateM HealthySysWorld) Nat :=
   { ppoll := fun fds to? =>
-      runSamplePollOp (.ppoll fds to?) pollOutcomePolled
+      runSamplePollOp (.ppoll fds to?) Poll.outcomeOfPolled
         (fun | .polled rev => some (.ok rev) | .err e => some (.error e) | _ => none)
     eventfd2 := fun iv fl =>
-      runSamplePollOp (.eventfd2 iv fl) pollOutcomeOpened
+      runSamplePollOp (.eventfd2 iv fl) Poll.outcomeOfOpened
         (fun | .opened h => some (.ok h) | .err e => some (.error e) | _ => none) }
 
 /-- Sample `DnsOpsM` lifting canonical `Dns.healthyModelOps` onto `HealthySysWorld.dnsEnv`. -/
@@ -1848,7 +1848,7 @@ theorem sampleHealthySys_refines : RefinesHealthyCProxySys sampleHealthySys := b
         (pack : Except Errno α → Net.NetOutcome)
         (unpack : Net.NetOutcome → Option (Except Errno α)),
         (∀ e, pack (.error e) = .err e) →
-        healthyNetStep w.netEnv r (pack ((runSampleNetOp r pack unpack).run w).1) =
+        Net.healthyStep w.netEnv r (pack ((runSampleNetOp r pack unpack).run w).1) =
           some ((runSampleNetOp r pack unpack).run w).2.netEnv ∧
         (((runSampleNetOp r pack unpack).run w).2.filesEnv.wf = true ∧
          ((runSampleNetOp r pack unpack).run w).2.netEnv.wf = true ∧
@@ -1870,7 +1870,7 @@ theorem sampleHealthySys_refines : RefinesHealthyCProxySys sampleHealthySys := b
         (pack : Except Errno α → Poll.PollOutcome)
         (unpack : Poll.PollOutcome → Option (Except Errno α)),
         (∀ e, pack (.error e) = .err e) →
-        healthyPollStep w.pollEnv r (pack ((runSamplePollOp r pack unpack).run w).1) =
+        Poll.healthyStep w.pollEnv r (pack ((runSamplePollOp r pack unpack).run w).1) =
           some ((runSamplePollOp r pack unpack).run w).2.pollEnv ∧
         (((runSamplePollOp r pack unpack).run w).2.filesEnv.wf = true ∧
          ((runSamplePollOp r pack unpack).run w).2.netEnv.wf = true ∧
@@ -1881,7 +1881,7 @@ theorem sampleHealthySys_refines : RefinesHealthyCProxySys sampleHealthySys := b
         ((w.filesEnv.state.fds.map Prod.fst).Nodup →
           (((runSamplePollOp r pack unpack).run w).2.filesEnv.state.fds.map Prod.fst).Nodup) := by
       intro α r pack unpack hPE
-      have hFb : healthyPollStep w.pollEnv r (pack (.error (fallbackPollErrno w.pollEnv.state r))) = some w.pollEnv := by
+      have hFb : Poll.healthyStep w.pollEnv r (pack (.error (fallbackPollErrno w.pollEnv.state r))) = some w.pollEnv := by
         rw [hPE]; exact fallbackPollErrno_healthy w.pollEnv r hWf.2.2.1
       unfold runSamplePollOp
       dsimp only [StateT.run, Id.run]
@@ -1893,7 +1893,7 @@ theorem sampleHealthySys_refines : RefinesHealthyCProxySys sampleHealthySys := b
         | none => exact ⟨hFb, hWf, rfl, id⟩
         | some candRes =>
           dsimp only
-          cases hSt : healthyPollStep w.pollEnv r (pack candRes) with
+          cases hSt : Poll.healthyStep w.pollEnv r (pack candRes) with
           | none => exact ⟨hFb, hWf, rfl, id⟩
           | some env' =>
             dsimp only
@@ -1901,7 +1901,7 @@ theorem sampleHealthySys_refines : RefinesHealthyCProxySys sampleHealthySys := b
             · have hIf : (if env'.wf = true then (candRes, { w with pollEnv := env' })
                   else (.error (fallbackPollErrno w.pollEnv.state r), w)) =
                   (candRes, { w with pollEnv := env' }) := by simp [hNextWf]
-              change healthyPollStep w.pollEnv r (pack (if env'.wf = true then (candRes, { w with pollEnv := env' })
+              change Poll.healthyStep w.pollEnv r (pack (if env'.wf = true then (candRes, { w with pollEnv := env' })
                   else (.error (fallbackPollErrno w.pollEnv.state r), w)).1) = _ ∧ _
               rw [hIf]; dsimp only
               exact ⟨hSt, ⟨hWf.1, hWf.2.1, hNextWf, hWf.2.2.2.1, hWf.2.2.2.2⟩, rfl, id⟩
@@ -1909,7 +1909,7 @@ theorem sampleHealthySys_refines : RefinesHealthyCProxySys sampleHealthySys := b
               have hIf : (if env'.wf = true then (candRes, { w with pollEnv := env' })
                   else (.error (fallbackPollErrno w.pollEnv.state r), w)) =
                   (.error (fallbackPollErrno w.pollEnv.state r), w) := by simp [hNextWfF]
-              change healthyPollStep w.pollEnv r (pack (if env'.wf = true then (candRes, { w with pollEnv := env' })
+              change Poll.healthyStep w.pollEnv r (pack (if env'.wf = true then (candRes, { w with pollEnv := env' })
                   else (.error (fallbackPollErrno w.pollEnv.state r), w)).1) = _ ∧ _
               rw [hIf]; dsimp only
               exact ⟨hFb, hWf, rfl, id⟩
@@ -1928,7 +1928,7 @@ theorem sampleHealthySys_refines : RefinesHealthyCProxySys sampleHealthySys := b
     | clock_gettime clk =>
       rcases hRun : (TimeRand.healthyModelOps.clock_gettime clk).run w.timeEnv with ⟨res, e'⟩
       have hRun0 : TimeRand.healthyModelOps.clock_gettime clk w.timeEnv = (res, e') := hRun
-      dsimp only [execTimeRandReq, TimeRand.execTimeRandReq, sampleHealthySys, sampleHealthyTimeOps, liftTimeOp,
+      dsimp only [TimeRand.execTimeRandReq, sampleHealthySys, sampleHealthyTimeOps, liftTimeOp,
         Bind.bind, StateT.bind, Pure.pure, StateT.pure, StateT.run, Id.run] at hT ⊢
       rw [hRun0] at hT ⊢
       dsimp only at hT ⊢
@@ -1937,7 +1937,7 @@ theorem sampleHealthySys_refines : RefinesHealthyCProxySys sampleHealthySys := b
     | clock_nanosleep clk abs ts =>
       rcases hRun : (TimeRand.healthyModelOps.clock_nanosleep clk abs ts).run w.timeEnv with ⟨res, e'⟩
       have hRun0 : TimeRand.healthyModelOps.clock_nanosleep clk abs ts w.timeEnv = (res, e') := hRun
-      dsimp only [execTimeRandReq, TimeRand.execTimeRandReq, sampleHealthySys, sampleHealthyTimeOps, liftTimeOp,
+      dsimp only [TimeRand.execTimeRandReq, sampleHealthySys, sampleHealthyTimeOps, liftTimeOp,
         Bind.bind, StateT.bind, Pure.pure, StateT.pure, StateT.run, Id.run] at hT ⊢
       rw [hRun0] at hT ⊢
       dsimp only at hT ⊢
@@ -1946,7 +1946,7 @@ theorem sampleHealthySys_refines : RefinesHealthyCProxySys sampleHealthySys := b
     | getrandom len fl =>
       rcases hRun : (TimeRand.healthyModelOps.getrandom len fl).run w.timeEnv with ⟨res, e'⟩
       have hRun0 : TimeRand.healthyModelOps.getrandom len fl w.timeEnv = (res, e') := hRun
-      dsimp only [execTimeRandReq, TimeRand.execTimeRandReq, sampleHealthySys, sampleHealthyTimeOps, liftTimeOp,
+      dsimp only [TimeRand.execTimeRandReq, sampleHealthySys, sampleHealthyTimeOps, liftTimeOp,
         Bind.bind, StateT.bind, Pure.pure, StateT.pure, StateT.run, Id.run] at hT ⊢
       rw [hRun0] at hT ⊢
       dsimp only at hT ⊢

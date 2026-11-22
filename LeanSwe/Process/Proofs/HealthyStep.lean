@@ -2,8 +2,10 @@ import Core.NondetTest
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Process.Model
+import LeanSwe.LinuxSyscall.Process.Proofs.HealthyStep
 import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Files.Model
+import LeanSwe.LinuxSyscall.Files.Proofs.HealthyStep
 import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.LinuxSyscall.TimeRand.Model
 import LeanSwe.PostFork.Types
@@ -18,225 +20,12 @@ open LeanSwe.Process
 open LeanSwe.Process.SysBridge
 
 /-!
-Canonical relational `healthyStep` definitions, tightness and `close` descriptor-erasure theorems,
-per-layer `RefinesHealthy*At` contracts, `refinesHealthySysDeps_of_components`, and `RawProcessLaws`
-with full process-slot and OS pipe file-descriptor (`openFds`) conservation.
+`Files.close` descriptor-erasure lemma over canonical `LinuxSyscall.Files.healthyStep`,
+`Process`-scoped bridge refinement contracts (`RefinesHealthyProcOpsAt`,
+`RefinesHealthyFilesOpsAt`, `RefinesHealthyPostFork`, `RefinesHealthySysDeps`),
+`refinesHealthySysDeps_of_components`, and `RawProcessLaws` with full process-slot and
+OS pipe file-descriptor (`openFds`) conservation.
 -/
-
-/-- Curated catastrophic host OS faults (`ENOMEM`, `EIO`, `ENFILE`) excluded by `healthyStep`. -/
-def isCriticalOsErrno (e : Errno) : Bool :=
-  e == Errno.ENOMEM || e == Errno.EIO || e == Errno.ENFILE
-
-/-- Everyday process/filesystem resource-limit errnos (`EMFILE`, `ENOSPC`) retained inside `healthyStep`. -/
-def isResourceLimitErrno (e : Errno) : Bool :=
-  e == Errno.EMFILE || e == Errno.ENOSPC
-
-/-- Everyday resource-limit errnos (`EMFILE`, `ENOSPC`) are strictly disjoint from `isCriticalOsErrno`. -/
-theorem resourceLimit_disjoint_criticalOs (e : Errno)
-    (h : isResourceLimitErrno e = true) :
-    isCriticalOsErrno e = false := by
-  simp only [isResourceLimitErrno, Bool.or_eq_true, beq_iff_eq] at h
-  rcases h with rfl | rfl <;> decide
-
-/-- Return `true` iff `(req, out)` is `.close _` failing with `Errno.EBUSY` (impossible in sequential `StateM` where `in_flight = 0`). -/
-def isFilesCloseEbusy (req : LinuxSyscall.Files.FilesReq) (out : LinuxSyscall.Files.FilesOutcome) : Bool :=
-  match req, out with
-  | .close _, .err code => code == Errno.EBUSY
-  | _, _ => false
-
-/-- Healthy kernel environment pairing a model state `state` with a finite `EINTR` budget. -/
-structure HealthyEnv (Sys : Type) where
-  /-- Underlying syscall model state (`ambientSeccomp = false`). -/
-  state : Sys
-  /-- Remaining bounded `EINTR` retry budget. -/
-  eintrBudget : Nat := 0
-  deriving Repr, DecidableEq, Inhabited
-
-/-- Relational `healthyStep` for `LinuxSyscall.Process`: refines `allowedStep` without `ambientSeccomp` or `isCriticalOsErrno`, consuming `eintrBudget` on `EINTR`. -/
-def healthyProcessStep (s : LinuxSyscall.Process.ProcessSysState) (eintrBudget : Nat)
-    (req : LinuxSyscall.Process.ProcessReq) (out : LinuxSyscall.Process.ProcessOutcome) :
-    Option (LinuxSyscall.Process.ProcessSysState × Nat) :=
-  if s.ambientSeccomp then none
-  else
-    match LinuxSyscall.Process.allowedStep s req out with
-    | none => none
-    | some s' =>
-      match out with
-      | .err code =>
-        if isCriticalOsErrno code then none
-        else if code == Errno.EINTR then
-          if eintrBudget == 0 then none else some (s', eintrBudget - 1)
-        else
-          some (s', eintrBudget)
-      | _ => some (s', eintrBudget)
-
-/-- Soundness: every `healthyProcessStep` transition is a valid `LinuxSyscall.Process.allowedStep` transition with non-increasing `EINTR` budget. -/
-theorem healthyProcessStep_implies_allowedStep
-    {s s' : LinuxSyscall.Process.ProcessSysState} {b b' : Nat}
-    {req : LinuxSyscall.Process.ProcessReq} {out : LinuxSyscall.Process.ProcessOutcome}
-    (h : healthyProcessStep s b req out = some (s', b')) :
-    LinuxSyscall.Process.allowedStep s req out = some s' ∧
-    s.ambientSeccomp = false ∧
-    b' ≤ b ∧
-    (∀ code, out = .err code → isCriticalOsErrno code = false ∧ (code = Errno.EINTR → b' < b)) := by
-  unfold healthyProcessStep at h
-  cases hSec : s.ambientSeccomp
-  · simp only [hSec, Bool.false_eq_true, ↓reduceIte] at h
-    cases hStep : LinuxSyscall.Process.allowedStep s req out with
-    | none => simp [hStep] at h
-    | some st =>
-      simp only [hStep] at h
-      cases out with
-      | err code =>
-        simp only at h
-        cases hCrit : isCriticalOsErrno code
-        · simp only [hCrit, Bool.false_eq_true, ↓reduceIte] at h
-          by_cases hEi : code = Errno.EINTR
-          · subst hEi
-            simp only [beq_self_eq_true, ↓reduceIte] at h
-            cases b with
-            | zero => simp at h
-            | succ n =>
-              simp only [Nat.add_one_ne_zero, beq_iff_eq, ↓reduceIte,
-                Option.some.injEq, Prod.mk.injEq] at h
-              obtain ⟨rfl, rfl⟩ := h
-              refine ⟨rfl, rfl, by omega, ?_⟩
-              intro c hc
-              injection hc with hEq
-              subst hEq
-              exact ⟨hCrit, fun _ => by omega⟩
-          · have hEiF : (code == Errno.EINTR) = false := beq_false_of_ne hEi
-            simp only [hEiF, Bool.false_eq_true, ↓reduceIte, Option.some.injEq, Prod.mk.injEq] at h
-            obtain ⟨rfl, rfl⟩ := h
-            refine ⟨rfl, rfl, Nat.le_refl _, ?_⟩
-            intro c hc
-            injection hc with hEq
-            subst hEq
-            exact ⟨hCrit, fun hContra => absurd hContra hEi⟩
-        · simp [hCrit] at h
-      | piped _ _ | waited _ | opened _ | u32 _ | unit =>
-        simp only [Option.some.injEq, Prod.mk.injEq] at h
-        obtain ⟨rfl, rfl⟩ := h
-        exact ⟨rfl, rfl, Nat.le_refl _, fun _ hc => by cases hc⟩
-  · simp [hSec] at h
-
-/-- Tightness by construction: every non-critical `LinuxSyscall.Process.allowedStep` transition under `ambientSeccomp = false` (with positive budget on `EINTR`) is accepted by `healthyProcessStep`. -/
-theorem allowedStep_healthyProcess_tight
-    {s s' : LinuxSyscall.Process.ProcessSysState} {b : Nat}
-    {req : LinuxSyscall.Process.ProcessReq} {out : LinuxSyscall.Process.ProcessOutcome}
-    (hHealthy : s.ambientSeccomp = false)
-    (hNoCrit : ∀ code, out = .err code → isCriticalOsErrno code = false ∧ (code = Errno.EINTR → 0 < b))
-    (hStep : LinuxSyscall.Process.allowedStep s req out = some s') :
-    ∃ b', healthyProcessStep s b req out = some (s', b') := by
-  unfold healthyProcessStep
-  simp only [hHealthy, Bool.false_eq_true, ↓reduceIte, hStep]
-  cases out with
-  | err code =>
-    obtain ⟨hCrit, hBud⟩ := hNoCrit code rfl
-    simp only [hCrit, Bool.false_eq_true, ↓reduceIte]
-    by_cases hEi : code = Errno.EINTR
-    · subst hEi
-      have hPos := hBud rfl
-      have hNe : (b == 0) = false := beq_false_of_ne (by omega)
-      simp [hNe]
-    · simp [beq_false_of_ne hEi]
-  | piped _ _ | waited _ | opened _ | u32 _ | unit =>
-    exact ⟨b, rfl⟩
-
-/-- Canonical relational `healthyStep` for `LinuxSyscall.Files`: refines `allowedStep` without `ambientSeccomp`, `isCriticalOsErrno`, or `.close`/`EBUSY` (`isFilesCloseEbusy`), consuming `eintrBudget` on `EINTR` while retaining all short `read`/`write` and everyday errors (`EMFILE`, `ENOSPC`, `EAGAIN`, `EPIPE`, `ENOENT`, `EACCES`). -/
-def healthyFilesStep (s : LinuxSyscall.Files.FilesState) (eintrBudget : Nat)
-    (req : LinuxSyscall.Files.FilesReq) (out : LinuxSyscall.Files.FilesOutcome) :
-    Option (LinuxSyscall.Files.FilesState × Nat) :=
-  if s.ambientSeccomp || isFilesCloseEbusy req out then none
-  else
-    match LinuxSyscall.Files.allowedStep s req out with
-    | none => none
-    | some s' =>
-      match out with
-      | .err code =>
-        if isCriticalOsErrno code then none
-        else if code == Errno.EINTR then
-          if eintrBudget == 0 then none else some (s', eintrBudget - 1)
-        else
-          some (s', eintrBudget)
-      | _ => some (s', eintrBudget)
-
-/-- Soundness: every `healthyFilesStep` transition refines `LinuxSyscall.Files.allowedStep` with `ambientSeccomp = false`, `isFilesCloseEbusy = false`, and non-increasing `EINTR` budget. -/
-theorem healthyFilesStep_implies_allowedStep
-    {s s' : LinuxSyscall.Files.FilesState} {b b' : Nat}
-    {req : LinuxSyscall.Files.FilesReq} {out : LinuxSyscall.Files.FilesOutcome}
-    (h : healthyFilesStep s b req out = some (s', b')) :
-    LinuxSyscall.Files.allowedStep s req out = some s' ∧
-    s.ambientSeccomp = false ∧
-    isFilesCloseEbusy req out = false ∧
-    b' ≤ b ∧
-    (∀ code, out = .err code → isCriticalOsErrno code = false ∧ (code = Errno.EINTR → b' < b)) := by
-  unfold healthyFilesStep at h
-  cases hSec : s.ambientSeccomp
-  · cases hBusy : isFilesCloseEbusy req out
-    · simp only [hSec, hBusy, Bool.or_self, Bool.false_eq_true, ↓reduceIte] at h
-      cases hStep : LinuxSyscall.Files.allowedStep s req out with
-      | none => simp [hStep] at h
-      | some st =>
-        simp only [hStep] at h
-        cases out with
-        | err code =>
-          simp only at h
-          cases hCrit : isCriticalOsErrno code
-          · simp only [hCrit, Bool.false_eq_true, ↓reduceIte] at h
-            by_cases hEi : code = Errno.EINTR
-            · subst hEi
-              simp only [beq_self_eq_true, ↓reduceIte] at h
-              cases b with
-              | zero => simp at h
-              | succ n =>
-                simp only [Nat.add_one_ne_zero, beq_iff_eq, ↓reduceIte,
-                  Option.some.injEq, Prod.mk.injEq] at h
-                obtain ⟨rfl, rfl⟩ := h
-                refine ⟨rfl, rfl, rfl, by omega, ?_⟩
-                intro c hc
-                injection hc with hEq
-                subst hEq
-                exact ⟨hCrit, fun _ => by omega⟩
-            · have hEiF : (code == Errno.EINTR) = false := beq_false_of_ne hEi
-              simp only [hEiF, Bool.false_eq_true, ↓reduceIte, Option.some.injEq, Prod.mk.injEq] at h
-              obtain ⟨rfl, rfl⟩ := h
-              refine ⟨rfl, rfl, rfl, Nat.le_refl _, ?_⟩
-              intro c hc
-              injection hc with hEq
-              subst hEq
-              exact ⟨hCrit, fun hContra => absurd hContra hEi⟩
-          · simp [hCrit] at h
-        | opened _ | unit | bytes _ | u32 _ | u64 _ | statted _ =>
-          simp only [Option.some.injEq, Prod.mk.injEq] at h
-          obtain ⟨rfl, rfl⟩ := h
-          exact ⟨rfl, rfl, rfl, Nat.le_refl _, fun _ hc => by cases hc⟩
-    · simp [hSec, hBusy] at h
-  · simp [hSec] at h
-
-/-- Tightness by construction: every non-critical, non-close-`EBUSY` `LinuxSyscall.Files.allowedStep` transition under `ambientSeccomp = false` (with positive budget on `EINTR`) is accepted by `healthyFilesStep`. -/
-theorem allowedStep_healthyFiles_tight
-    {s s' : LinuxSyscall.Files.FilesState} {b : Nat}
-    {req : LinuxSyscall.Files.FilesReq} {out : LinuxSyscall.Files.FilesOutcome}
-    (hHealthy : s.ambientSeccomp = false)
-    (hNoBusy : isFilesCloseEbusy req out = false)
-    (hNoCrit : ∀ code, out = .err code → isCriticalOsErrno code = false ∧ (code = Errno.EINTR → 0 < b))
-    (hStep : LinuxSyscall.Files.allowedStep s req out = some s') :
-    ∃ b', healthyFilesStep s b req out = some (s', b') := by
-  unfold healthyFilesStep
-  simp only [hHealthy, hNoBusy, Bool.or_self, Bool.false_eq_true, ↓reduceIte, hStep]
-  cases out with
-  | err code =>
-    obtain ⟨hCrit, hBud⟩ := hNoCrit code rfl
-    simp only [hCrit, Bool.false_eq_true, ↓reduceIte]
-    by_cases hEi : code = Errno.EINTR
-    · subst hEi
-      have hPos := hBud rfl
-      have hNe : (b == 0) = false := beq_false_of_ne (by omega)
-      simp [hNe]
-    · simp [beq_false_of_ne hEi]
-  | opened _ | unit | bytes _ | u32 _ | u64 _ | statted _ =>
-    exact ⟨b, rfl⟩
 
 /-- `Files.assocGet xs k = none` holds iff `k ∉ xs.map Prod.fst`. -/
 theorem assocGet_none_iff_not_mem_fst {α β : Type} [DecidableEq α]
@@ -351,16 +140,16 @@ theorem map_fst_assocSet_of_mem {α β : Type} [DecidableEq α]
       rw [ih hMemRest ((k', v') :: acc)]
       simp [List.reverse_cons, List.map_append]
 
-/-- Under canonical `healthyFilesStep` (excluding `.close`/`EBUSY` and `ambientSeccomp`), **every** `.close hid` transition erases `hid` from `s.fds.map Prod.fst`! -/
+/-- Under canonical `LinuxSyscall.Files.healthyStep` (excluding `.close`/`EBUSY` and `ambientSeccomp`), every `.close hid` transition erases `hid` from `state.fds.map Prod.fst`. -/
 theorem healthyFilesStep_close_fds
-    {s s' : LinuxSyscall.Files.FilesState} {b b' : Nat}
+    {env env' : LinuxSyscall.Files.HealthyEnv}
     {hid : LinuxSyscall.Files.HandleId} {out : LinuxSyscall.Files.FilesOutcome}
-    (h : healthyFilesStep s b (.close hid) out = some (s', b')) :
-    s'.fds.map Prod.fst = (s.fds.map Prod.fst).erase hid := by
-  obtain ⟨hStep, hSec, hNoBusy, _, _⟩ := healthyFilesStep_implies_allowedStep h
+    (h : LinuxSyscall.Files.healthyStep env (.close hid) out = some env') :
+    env'.state.fds.map Prod.fst = (env.state.fds.map Prod.fst).erase hid := by
+  obtain ⟨hStep, _, hSec, _, hNoBusy, _, _, _⟩ := LinuxSyscall.Files.healthyStep_implies_allowedStep h
   unfold LinuxSyscall.Files.allowedStep LinuxSyscall.Files.allowedCloseStep at hStep
   dsimp only at hStep
-  cases hGet : LinuxSyscall.Files.assocGet s.fds hid with
+  cases hGet : LinuxSyscall.Files.assocGet env.state.fds hid with
   | none =>
     rw [hGet] at hStep
     unfold LinuxSyscall.Files.verifyStep at hStep
@@ -368,8 +157,8 @@ theorem healthyFilesStep_close_fds
     by_cases hEb : LinuxSyscall.Files.isOutcomeErr out Errno.EBADF = true
     · rw [ite_eq_left hEb] at hStep
       injection hStep with hEq
-      subst hEq
-      have hNotMem := (assocGet_none_iff_not_mem_fst s.fds hid).mp hGet
+      rw [← hEq]
+      have hNotMem := (assocGet_none_iff_not_mem_fst env.state.fds hid).mp hGet
       exact (List.erase_of_not_mem hNotMem).symm
     · rw [ite_eq_right hEb] at hStep
       cases hStep
@@ -378,12 +167,12 @@ theorem healthyFilesStep_close_fds
     cases out with
     | unit =>
       simp only [Option.some.injEq] at hStep
-      subst hStep
-      have hFds : (LinuxSyscall.Files.closeDescInState s hid desc).fds =
-          LinuxSyscall.Files.assocErase s.fds hid := rfl
+      rw [← hStep]
+      have hFds : (LinuxSyscall.Files.closeDescInState env.state hid desc).fds =
+          LinuxSyscall.Files.assocErase env.state.fds hid := rfl
       rw [hFds, map_fst_assocErase]
     | err e =>
-      dsimp only [isFilesCloseEbusy] at hNoBusy
+      dsimp only [LinuxSyscall.Files.isCloseEbusy] at hNoBusy
       simp only [hNoBusy, hSec, Bool.not_false, Bool.and_true, Bool.false_and,
         Bool.false_eq_true, ↓reduceIte] at hStep
       cases hK : LinuxSyscall.Files.isKernelCloseErr e
@@ -391,217 +180,73 @@ theorem healthyFilesStep_close_fds
       · simp only [hK, ↓reduceIte] at hStep
         cases hEb : e == Errno.EBADF
         · simp only [hEb, Bool.false_eq_true, ↓reduceIte, Option.some.injEq] at hStep
-          subst hStep
-          exact map_fst_assocErase s.fds hid
+          rw [← hStep]
+          exact map_fst_assocErase env.state.fds hid
         · simp [hEb] at hStep
     | opened _ | bytes _ | u32 _ | u64 _ | statted _ =>
       cases hStep
 
-/-- Relational `healthyStep` for `LinuxSyscall.TimeRand`: refines `allowedStep` without `ambientSeccomp` or `isCriticalOsErrno`, consuming `eintrBudget` on `EINTR`. -/
-def healthyTimeRandStep (s : LinuxSyscall.TimeRand.TimeRandState) (eintrBudget : Nat)
-    (req : LinuxSyscall.TimeRand.TimeRandReq) (out : LinuxSyscall.TimeRand.TimeRandOutcome) :
-    Option (LinuxSyscall.TimeRand.TimeRandState × Nat) :=
-  if s.ambientSeccomp then none
-  else
-    match LinuxSyscall.TimeRand.allowedStep s req out with
-    | none => none
-    | some s' =>
-      match out with
-      | .err code =>
-        if isCriticalOsErrno code then none
-        else if code == Errno.EINTR then
-          if eintrBudget == 0 then none else some (s', eintrBudget - 1)
-        else
-          some (s', eintrBudget)
-      | _ => some (s', eintrBudget)
-
-/-- Soundness: every `healthyTimeRandStep` transition refines `LinuxSyscall.TimeRand.allowedStep` with non-increasing `EINTR` budget. -/
-theorem healthyTimeRandStep_implies_allowedStep
-    {s s' : LinuxSyscall.TimeRand.TimeRandState} {b b' : Nat}
-    {req : LinuxSyscall.TimeRand.TimeRandReq} {out : LinuxSyscall.TimeRand.TimeRandOutcome}
-    (h : healthyTimeRandStep s b req out = some (s', b')) :
-    LinuxSyscall.TimeRand.allowedStep s req out = some s' ∧
-    s.ambientSeccomp = false ∧
-    b' ≤ b ∧
-    (∀ code, out = .err code → isCriticalOsErrno code = false ∧ (code = Errno.EINTR → b' < b)) := by
-  unfold healthyTimeRandStep at h
-  cases hSec : s.ambientSeccomp
-  · simp only [hSec, Bool.false_eq_true, ↓reduceIte] at h
-    cases hStep : LinuxSyscall.TimeRand.allowedStep s req out with
-    | none => simp [hStep] at h
-    | some st =>
-      simp only [hStep] at h
-      cases out with
-      | err code =>
-        simp only at h
-        cases hCrit : isCriticalOsErrno code
-        · simp only [hCrit, Bool.false_eq_true, ↓reduceIte] at h
-          by_cases hEi : code = Errno.EINTR
-          · subst hEi
-            simp only [beq_self_eq_true, ↓reduceIte] at h
-            cases b with
-            | zero => simp at h
-            | succ n =>
-              simp only [Nat.add_one_ne_zero, beq_iff_eq, ↓reduceIte,
-                Option.some.injEq, Prod.mk.injEq] at h
-              obtain ⟨rfl, rfl⟩ := h
-              refine ⟨rfl, rfl, by omega, ?_⟩
-              intro c hc
-              injection hc with hEq
-              subst hEq
-              exact ⟨hCrit, fun _ => by omega⟩
-          · have hEiF : (code == Errno.EINTR) = false := beq_false_of_ne hEi
-            simp only [hEiF, Bool.false_eq_true, ↓reduceIte, Option.some.injEq, Prod.mk.injEq] at h
-            obtain ⟨rfl, rfl⟩ := h
-            refine ⟨rfl, rfl, Nat.le_refl _, ?_⟩
-            intro c hc
-            injection hc with hEq
-            subst hEq
-            exact ⟨hCrit, fun hContra => absurd hContra hEi⟩
-        · simp [hCrit] at h
-      | unit | timespec _ | bytes _ =>
-        simp only [Option.some.injEq, Prod.mk.injEq] at h
-        obtain ⟨rfl, rfl⟩ := h
-        exact ⟨rfl, rfl, Nat.le_refl _, fun _ hc => by cases hc⟩
-  · simp [hSec] at h
-
-/-- Tightness by construction: every non-critical `LinuxSyscall.TimeRand.allowedStep` transition under `ambientSeccomp = false` (with positive budget on `EINTR`) is accepted by `healthyTimeRandStep`. -/
-theorem allowedStep_healthyTimeRand_tight
-    {s s' : LinuxSyscall.TimeRand.TimeRandState} {b : Nat}
-    {req : LinuxSyscall.TimeRand.TimeRandReq} {out : LinuxSyscall.TimeRand.TimeRandOutcome}
-    (hHealthy : s.ambientSeccomp = false)
-    (hNoCrit : ∀ code, out = .err code → isCriticalOsErrno code = false ∧ (code = Errno.EINTR → 0 < b))
-    (hStep : LinuxSyscall.TimeRand.allowedStep s req out = some s') :
-    ∃ b', healthyTimeRandStep s b req out = some (s', b') := by
-  unfold healthyTimeRandStep
-  simp only [hHealthy, Bool.false_eq_true, ↓reduceIte, hStep]
-  cases out with
-  | err code =>
-    obtain ⟨hCrit, hBud⟩ := hNoCrit code rfl
-    simp only [hCrit, Bool.false_eq_true, ↓reduceIte]
-    by_cases hEi : code = Errno.EINTR
-    · subst hEi
-      have hPos := hBud rfl
-      have hNe : (b == 0) = false := beq_false_of_ne (by omega)
-      simp [hNe]
-    · simp [beq_false_of_ne hEi]
-  | unit | timespec _ | bytes _ =>
-    exact ⟨b, rfl⟩
-
-/-- Under `healthyTimeRandStep`, `clock_gettime` never fails with `.err` (since `ambientSeccomp = false`). -/
-theorem healthyTimeRandStep_clock_gettime_never_err
-    (s : LinuxSyscall.TimeRand.TimeRandState) (b : Nat)
-    (clk : LinuxSyscall.TimeRand.ClockId) (e : Errno) :
-    healthyTimeRandStep s b (.clock_gettime clk) (.err e) = none := by
-  unfold healthyTimeRandStep
-  cases hSec : s.ambientSeccomp
-  · simp [LinuxSyscall.TimeRand.allowedStep, LinuxSyscall.TimeRand.allowedStepCore, hSec]
-  · simp
-
-/-- Universal refinement predicate for `LinuxSyscall.Process.ProcessOpsM (StateM S) fd` against `healthyProcessStep`. -/
-structure RefinesHealthyProcessAt {S fd : Type}
-    (proj : S → HealthyEnv LinuxSyscall.Process.ProcessSysState)
+/-- Scoped refinement predicate for the `ProcessOpsM` subset (`pipe2`, `waitpid`, `kill`) consumed by `Process.SysBridge`, stated directly against canonical `LinuxSyscall.Process.healthyStep`. -/
+structure RefinesHealthyProcOpsAt {S fd : Type}
+    (proj : S → LinuxSyscall.Process.HealthyEnv)
     (toHid : fd → LinuxSyscall.Process.HandleId)
     (ops : LinuxSyscall.Process.ProcessOpsM (StateM S) fd) : Prop where
-  /-- `pipe2` transitions via `healthyProcessStep` and yields distinct descriptors on `.ok`. -/
-  pipe2_healthy : ∀ s flags, (proj s).state.ambientSeccomp = false →
+  /-- `pipe2` transitions via canonical `LinuxSyscall.Process.healthyStep`. -/
+  pipe2_healthy : ∀ s flags, (proj s).wf = true →
     let r := (ops.pipe2 flags).run s
     let out : LinuxSyscall.Process.ProcessOutcome :=
       match r.1 with | .ok (rf, wf) => .piped (toHid rf) (toHid wf) | .error e => .err e
-    healthyProcessStep (proj s).state (proj s).eintrBudget (.pipe2 flags) out =
-      some ((proj r.2).state, (proj r.2).eintrBudget) ∧
-    (proj r.2).state.ambientSeccomp = false
-  /-- `waitpid` transitions via `healthyProcessStep`. -/
-  waitpid_healthy : ∀ s pid flags, (proj s).state.ambientSeccomp = false →
+    LinuxSyscall.Process.healthyStep (proj s) (.pipe2 flags) out = some (proj r.2)
+  /-- `waitpid` transitions via canonical `LinuxSyscall.Process.healthyStep`. -/
+  waitpid_healthy : ∀ s pid flags, (proj s).wf = true →
     let r := (ops.waitpid pid flags).run s
     let out : LinuxSyscall.Process.ProcessOutcome :=
       match r.1 with | .ok wr => .waited wr | .error e => .err e
-    healthyProcessStep (proj s).state (proj s).eintrBudget (.waitpid pid flags) out =
-      some ((proj r.2).state, (proj r.2).eintrBudget) ∧
-    (proj r.2).state.ambientSeccomp = false
-  /-- `kill` transitions via `healthyProcessStep`. -/
-  kill_healthy : ∀ s target sig, (proj s).state.ambientSeccomp = false →
+    LinuxSyscall.Process.healthyStep (proj s) (.waitpid pid flags) out = some (proj r.2)
+  /-- `kill` transitions via canonical `LinuxSyscall.Process.healthyStep`. -/
+  kill_healthy : ∀ s target sig, (proj s).wf = true →
     let r := (ops.kill target sig).run s
     let out : LinuxSyscall.Process.ProcessOutcome :=
       match r.1 with | .ok () => .unit | .error e => .err e
-    healthyProcessStep (proj s).state (proj s).eintrBudget (.kill target sig) out =
-      some ((proj r.2).state, (proj r.2).eintrBudget) ∧
-    (proj r.2).state.ambientSeccomp = false
+    LinuxSyscall.Process.healthyStep (proj s) (.kill target sig) out = some (proj r.2)
 
-/-- Universal refinement predicate for `LinuxSyscall.Files.FilesOpsM (StateM S) fd` against canonical `healthyFilesStep` on all operations consumed by `SysBridge`. -/
-structure RefinesHealthyFilesAt {S fd : Type}
-    (proj : S → HealthyEnv LinuxSyscall.Files.FilesState)
+/-- Scoped refinement predicate for the `FilesOpsM` subset (`close`, `read`, `write`, `fstatat`, `faccessat`, `fcntl`) consumed by `Process.SysBridge`, stated directly against canonical `LinuxSyscall.Files.healthyStep`. -/
+structure RefinesHealthyFilesOpsAt {S fd : Type}
+    (proj : S → LinuxSyscall.Files.HealthyEnv)
     (toHid : fd → LinuxSyscall.Files.HandleId)
     (ops : LinuxSyscall.Files.FilesOpsM (StateM S) fd) : Prop where
-  /-- `close` transitions via `healthyFilesStep` (which excludes `EBUSY` and erases `toHid h` from `fds`). -/
-  close_healthy : ∀ s h, (proj s).state.ambientSeccomp = false →
+  /-- `close` transitions via canonical `LinuxSyscall.Files.healthyStep` (excluding `EBUSY` and erasing `toHid h` from `fds`). -/
+  close_healthy : ∀ s h, (proj s).wf = true →
     let r := (ops.close h).run s
-    let out : LinuxSyscall.Files.FilesOutcome :=
-      match r.1 with | .ok () => .unit | .error e => .err e
-    healthyFilesStep (proj s).state (proj s).eintrBudget (.close (toHid h)) out =
-      some ((proj r.2).state, (proj r.2).eintrBudget) ∧
-    (proj r.2).state.ambientSeccomp = false
-  /-- `read` transitions via `healthyFilesStep` (permitting short pipe reads `0 ≤ chunk.size ≤ cap`, `EAGAIN`, and bounded `EINTR`). -/
-  read_healthy : ∀ s h cap, (proj s).state.ambientSeccomp = false →
+    LinuxSyscall.Files.healthyStep (proj s) (.close (toHid h))
+      (LinuxSyscall.Files.outcomeOfUnit r.1) = some (proj r.2)
+  /-- `read` transitions via canonical `LinuxSyscall.Files.healthyStep` (permitting short pipe reads `0 ≤ chunk.size ≤ cap`, `EAGAIN`, and bounded `EINTR`). -/
+  read_healthy : ∀ s h cap, (proj s).wf = true →
     let r := (ops.read h cap).run s
-    let out : LinuxSyscall.Files.FilesOutcome :=
-      match r.1 with | .ok bs => .bytes bs | .error e => .err e
-    healthyFilesStep (proj s).state (proj s).eintrBudget (.read (toHid h) cap) out =
-      some ((proj r.2).state, (proj r.2).eintrBudget) ∧
-    (proj r.2).state.ambientSeccomp = false ∧
+    LinuxSyscall.Files.healthyStep (proj s) (.read (toHid h) cap)
+      (LinuxSyscall.Files.outcomeOfBytes r.1) = some (proj r.2) ∧
     (∀ bs, r.1 = .ok bs → bs.size ≤ cap.toNat)
-  /-- `write` transitions via `healthyFilesStep` (permitting short pipe writes `0 ≤ n ≤ data.size`, `EAGAIN`, `EPIPE`, and bounded `EINTR`). -/
-  write_healthy : ∀ s h data, (proj s).state.ambientSeccomp = false →
+  /-- `write` transitions via canonical `LinuxSyscall.Files.healthyStep` (permitting short pipe writes `0 ≤ n ≤ data.size`, `EAGAIN`, `EPIPE`, and bounded `EINTR`). -/
+  write_healthy : ∀ s h data, (proj s).wf = true →
     let r := (ops.write h data).run s
-    let out : LinuxSyscall.Files.FilesOutcome :=
-      match r.1 with | .ok n => .u32 n | .error e => .err e
-    healthyFilesStep (proj s).state (proj s).eintrBudget (.write (toHid h) data) out =
-      some ((proj r.2).state, (proj r.2).eintrBudget) ∧
-    (proj r.2).state.ambientSeccomp = false ∧
+    LinuxSyscall.Files.healthyStep (proj s) (.write (toHid h) data)
+      (LinuxSyscall.Files.outcomeOfU32 r.1) = some (proj r.2) ∧
     (∀ n, r.1 = .ok n → n.toNat ≤ data.size)
-  /-- `fstatat` transitions via `healthyFilesStep`. -/
-  fstatat_healthy : ∀ s dir path flags, (proj s).state.ambientSeccomp = false →
+  /-- `fstatat` transitions via canonical `LinuxSyscall.Files.healthyStep`. -/
+  fstatat_healthy : ∀ s dir path flags, (proj s).wf = true →
     let r := (ops.fstatat dir path flags).run s
-    let out : LinuxSyscall.Files.FilesOutcome :=
-      match r.1 with | .ok st => .statted st | .error e => .err e
-    healthyFilesStep (proj s).state (proj s).eintrBudget (.fstatat (dir.map toHid) path flags) out =
-      some ((proj r.2).state, (proj r.2).eintrBudget) ∧
-    (proj r.2).state.ambientSeccomp = false
-  /-- `faccessat` transitions via `healthyFilesStep`. -/
-  faccessat_healthy : ∀ s dir path mask flags, (proj s).state.ambientSeccomp = false →
+    LinuxSyscall.Files.healthyStep (proj s) (.fstatat (dir.map toHid) path flags)
+      (LinuxSyscall.Files.outcomeOfStatted r.1) = some (proj r.2)
+  /-- `faccessat` transitions via canonical `LinuxSyscall.Files.healthyStep`. -/
+  faccessat_healthy : ∀ s dir path mask flags, (proj s).wf = true →
     let r := (ops.faccessat dir path mask flags).run s
-    let out : LinuxSyscall.Files.FilesOutcome :=
-      match r.1 with | .ok () => .unit | .error e => .err e
-    healthyFilesStep (proj s).state (proj s).eintrBudget (.faccessat (dir.map toHid) path mask flags) out =
-      some ((proj r.2).state, (proj r.2).eintrBudget) ∧
-    (proj r.2).state.ambientSeccomp = false
-  /-- `fcntl` transitions via `healthyFilesStep`. -/
-  fcntl_healthy : ∀ s h cmd, (proj s).state.ambientSeccomp = false →
+    LinuxSyscall.Files.healthyStep (proj s) (.faccessat (dir.map toHid) path mask flags)
+      (LinuxSyscall.Files.outcomeOfUnit r.1) = some (proj r.2)
+  /-- `fcntl` transitions via canonical `LinuxSyscall.Files.healthyStep`. -/
+  fcntl_healthy : ∀ s h cmd, (proj s).wf = true →
     let r := (ops.fcntl h cmd).run s
-    let out : LinuxSyscall.Files.FilesOutcome :=
-      match r.1 with | .ok v => .u32 v | .error e => .err e
-    healthyFilesStep (proj s).state (proj s).eintrBudget (.fcntl (toHid h) cmd) out =
-      some ((proj r.2).state, (proj r.2).eintrBudget) ∧
-    (proj r.2).state.ambientSeccomp = false
-
-/-- Universal refinement predicate for `LinuxSyscall.TimeRand.TimeRandOpsM (StateM S)` against `healthyTimeRandStep`. -/
-structure RefinesHealthyTimeRandAt {S : Type}
-    (proj : S → HealthyEnv LinuxSyscall.TimeRand.TimeRandState)
-    (ops : LinuxSyscall.TimeRand.TimeRandOpsM (StateM S)) : Prop where
-  /-- `clock_gettime` transitions via `healthyTimeRandStep` (always succeeding when `ambientSeccomp = false`). -/
-  clock_gettime_healthy : ∀ s clk, (proj s).state.ambientSeccomp = false →
-    let r := (ops.clock_gettime clk).run s
-    healthyTimeRandStep (proj s).state (proj s).eintrBudget (.clock_gettime clk)
-      (LinuxSyscall.TimeRand.outcomeOfTimespec r.1) =
-      some ((proj r.2).state, (proj r.2).eintrBudget) ∧
-    (proj r.2).state.ambientSeccomp = false
-  /-- `clock_nanosleep` transitions via `healthyTimeRandStep`. -/
-  clock_nanosleep_healthy : ∀ s clk abs req, (proj s).state.ambientSeccomp = false →
-    let r := (ops.clock_nanosleep clk abs req).run s
-    healthyTimeRandStep (proj s).state (proj s).eintrBudget (.clock_nanosleep clk abs req)
-      (LinuxSyscall.TimeRand.outcomeOfUnit r.1) =
-      some ((proj r.2).state, (proj r.2).eintrBudget) ∧
-    (proj r.2).state.ambientSeccomp = false
+    LinuxSyscall.Files.healthyStep (proj s) (.fcntl (toHid h) cmd)
+      (LinuxSyscall.Files.outcomeOfU32 r.1) = some (proj r.2)
 
 /-- Universal refinement predicate for `PostFork.PostForkOpsM (StateM S) fd` under a healthy kernel. -/
 structure RefinesHealthyPostFork {S fd : Type}
@@ -613,8 +258,8 @@ structure RefinesHealthyPostFork {S fd : Type}
       1 ≤ child.pid ∧ child.pid ≤ MAX_LINUX_PID ∧
       (spec.processGroup = .newGroup → child.pgid = some child.pid)) ∧
     (∀ err, r.1 = .error err →
-      (∀ e, err.errno = some e → isCriticalOsErrno e = false) ∧
-      (∀ cf, err.childFailure = some cf → isCriticalOsErrno cf.errno = false))
+      (∀ e, err.errno = some e → Errno.isCriticalOsErrno e = false) ∧
+      (∀ cf, err.childFailure = some cf → Errno.isCriticalOsErrno cf.errno = false))
 
 /-- Combined healthy-kernel refinement, descriptor-freshness, `close`-erasure, and table-lens contract for `SysBridge.SysDepsM (StateM S) fd`. -/
 structure RefinesHealthySysDeps {S fd : Type} [DecidableEq fd]
@@ -630,62 +275,62 @@ structure RefinesHealthySysDeps {S fd : Type} [DecidableEq fd]
   pipe2_frame : ∀ s flags,
     let r := (deps.proc.pipe2 flags).run s
     getTbl r.2 = getTbl s ∧
-    (∀ e, r.1 = .error e → openFds r.2 = openFds s ∧ isCriticalOsErrno e = false) ∧
+    (∀ e, r.1 = .error e → openFds r.2 = openFds s ∧ Errno.isCriticalOsErrno e = false) ∧
     (∀ rf wf, r.1 = .ok (rf, wf) →
       rf ≠ wf ∧ rf ∉ openFds s ∧ wf ∉ openFds s ∧ openFds r.2 = wf :: rf :: openFds s)
-  /-- `proc.waitpid` preserves `getTbl` and `openFds` and never fails with `isCriticalOsErrno`. -/
+  /-- `proc.waitpid` preserves `getTbl` and `openFds` and never fails with `Errno.isCriticalOsErrno`. -/
   waitpid_frame : ∀ s pid flags,
     let r := (deps.proc.waitpid pid flags).run s
     getTbl r.2 = getTbl s ∧ openFds r.2 = openFds s ∧
-    (∀ e, r.1 = .error e → isCriticalOsErrno e = false)
-  /-- `proc.kill` preserves `getTbl` and `openFds` and never fails with `isCriticalOsErrno`. -/
+    (∀ e, r.1 = .error e → Errno.isCriticalOsErrno e = false)
+  /-- `proc.kill` preserves `getTbl` and `openFds` and never fails with `Errno.isCriticalOsErrno`. -/
   kill_frame : ∀ s target sig,
     let r := (deps.proc.kill target sig).run s
     getTbl r.2 = getTbl s ∧ openFds r.2 = openFds s ∧
-    (∀ e, r.1 = .error e → isCriticalOsErrno e = false)
-  /-- `files.close` preserves `getTbl`, erases `h` from `openFds` (`openFds r.2 = (openFds s).erase h`), and never fails with `isCriticalOsErrno`. -/
+    (∀ e, r.1 = .error e → Errno.isCriticalOsErrno e = false)
+  /-- `files.close` preserves `getTbl`, erases `h` from `openFds` (`openFds r.2 = (openFds s).erase h`), and never fails with `Errno.isCriticalOsErrno`. -/
   close_frame : ∀ s h,
     let r := (deps.files.close h).run s
     getTbl r.2 = getTbl s ∧
     openFds r.2 = (openFds s).erase h ∧
-    (∀ e, r.1 = .error e → isCriticalOsErrno e = false)
-  /-- `files.read` preserves `getTbl` and `openFds`, obeys `bs.size ≤ cap.toNat`, and never fails with `isCriticalOsErrno`. -/
+    (∀ e, r.1 = .error e → Errno.isCriticalOsErrno e = false)
+  /-- `files.read` preserves `getTbl` and `openFds`, obeys `bs.size ≤ cap.toNat`, and never fails with `Errno.isCriticalOsErrno`. -/
   read_frame : ∀ s h cap,
     let r := (deps.files.read h cap).run s
     getTbl r.2 = getTbl s ∧ openFds r.2 = openFds s ∧
     (∀ bs, r.1 = .ok bs → bs.size ≤ cap.toNat) ∧
-    (∀ e, r.1 = .error e → isCriticalOsErrno e = false)
-  /-- `files.write` preserves `getTbl` and `openFds`, obeys `n.toNat ≤ data.size`, and never fails with `isCriticalOsErrno`. -/
+    (∀ e, r.1 = .error e → Errno.isCriticalOsErrno e = false)
+  /-- `files.write` preserves `getTbl` and `openFds`, obeys `n.toNat ≤ data.size`, and never fails with `Errno.isCriticalOsErrno`. -/
   write_frame : ∀ s h data,
     let r := (deps.files.write h data).run s
     getTbl r.2 = getTbl s ∧ openFds r.2 = openFds s ∧
     (∀ n, r.1 = .ok n → n.toNat ≤ data.size) ∧
-    (∀ e, r.1 = .error e → isCriticalOsErrno e = false)
-  /-- `files.fstatat` preserves `getTbl` and `openFds` and never fails with `isCriticalOsErrno`. -/
+    (∀ e, r.1 = .error e → Errno.isCriticalOsErrno e = false)
+  /-- `files.fstatat` preserves `getTbl` and `openFds` and never fails with `Errno.isCriticalOsErrno`. -/
   fstatat_frame : ∀ s dir path flags,
     let r := (deps.files.fstatat dir path flags).run s
     getTbl r.2 = getTbl s ∧ openFds r.2 = openFds s ∧
-    (∀ e, r.1 = .error e → isCriticalOsErrno e = false)
-  /-- `files.faccessat` preserves `getTbl` and `openFds` and never fails with `isCriticalOsErrno`. -/
+    (∀ e, r.1 = .error e → Errno.isCriticalOsErrno e = false)
+  /-- `files.faccessat` preserves `getTbl` and `openFds` and never fails with `Errno.isCriticalOsErrno`. -/
   faccessat_frame : ∀ s dir path mask flags,
     let r := (deps.files.faccessat dir path mask flags).run s
     getTbl r.2 = getTbl s ∧ openFds r.2 = openFds s ∧
-    (∀ e, r.1 = .error e → isCriticalOsErrno e = false)
-  /-- `files.fcntl` preserves `getTbl` and `openFds` and never fails with `isCriticalOsErrno`. -/
+    (∀ e, r.1 = .error e → Errno.isCriticalOsErrno e = false)
+  /-- `files.fcntl` preserves `getTbl` and `openFds` and never fails with `Errno.isCriticalOsErrno`. -/
   fcntl_frame : ∀ s h cmd,
     let r := (deps.files.fcntl h cmd).run s
     getTbl r.2 = getTbl s ∧ openFds r.2 = openFds s ∧
-    (∀ e, r.1 = .error e → isCriticalOsErrno e = false)
-  /-- `poll.ppoll` preserves `getTbl` and `openFds` and never fails with `isCriticalOsErrno`. -/
+    (∀ e, r.1 = .error e → Errno.isCriticalOsErrno e = false)
+  /-- `poll.ppoll` preserves `getTbl` and `openFds` and never fails with `Errno.isCriticalOsErrno`. -/
   ppoll_frame : ∀ s entries timeout,
     let r := (deps.poll.ppoll entries timeout).run s
     getTbl r.2 = getTbl s ∧ openFds r.2 = openFds s ∧
-    (∀ e, r.1 = .error e → isCriticalOsErrno e = false)
-  /-- `timeRand.clock_gettime` preserves `getTbl` and `openFds` and never fails with `isCriticalOsErrno`. -/
+    (∀ e, r.1 = .error e → Errno.isCriticalOsErrno e = false)
+  /-- `timeRand.clock_gettime` preserves `getTbl` and `openFds` and never fails with `Errno.isCriticalOsErrno`. -/
   clock_gettime_frame : ∀ s clk,
     let r := (deps.timeRand.clock_gettime clk).run s
     getTbl r.2 = getTbl s ∧ openFds r.2 = openFds s ∧
-    (∀ e, r.1 = .error e → isCriticalOsErrno e = false)
+    (∀ e, r.1 = .error e → Errno.isCriticalOsErrno e = false)
   /-- `timeRand.clock_nanosleep` preserves `getTbl` and `openFds`. -/
   clock_nanosleep_frame : ∀ s clk abs req,
     let r := (deps.timeRand.clock_nanosleep clk abs req).run s
@@ -703,21 +348,21 @@ structure RefinesHealthySysDeps {S fd : Type} [DecidableEq fd]
     (∀ e, r.1 = .error e →
       e.kind ≠ .timedOut ∧ e.kind ≠ .outputLimitExceeded ∧ e.kind ≠ .terminatedBySignal)
 
-/-- Composition theorem deriving `RefinesHealthySysDeps` (including `close_frame`'s `openFds r.2 = (openFds s).erase h` directly from canonical `healthyFilesStep` without `.close`/`EBUSY`) over shared `HandleId` (`Nat`). -/
+/-- Composition theorem deriving `RefinesHealthySysDeps` (including `close_frame`'s `openFds r.2 = (openFds s).erase h` directly from canonical `LinuxSyscall.Files.healthyStep` without `.close`/`EBUSY`) over shared `HandleId` (`Nat`). -/
 theorem refinesHealthySysDeps_of_components {S : Type}
     (getTbl : S → ProcTableState LinuxSyscall.Files.HandleId)
     (setTbl : S → ProcTableState LinuxSyscall.Files.HandleId → S)
-    (projProc : S → HealthyEnv LinuxSyscall.Process.ProcessSysState)
-    (projFiles : S → HealthyEnv LinuxSyscall.Files.FilesState)
-    (projTime : S → HealthyEnv LinuxSyscall.TimeRand.TimeRandState)
+    (projProc : S → LinuxSyscall.Process.HealthyEnv)
+    (projFiles : S → LinuxSyscall.Files.HealthyEnv)
+    (projTime : S → LinuxSyscall.TimeRand.HealthyEnv)
     (deps : SysDepsM (StateM S) LinuxSyscall.Files.HandleId)
-    (hSec : ∀ s : S,
-      (projProc s).state.ambientSeccomp = false ∧
-      (projFiles s).state.ambientSeccomp = false ∧
-      (projTime s).state.ambientSeccomp = false)
-    (hProc : RefinesHealthyProcessAt projProc id deps.proc)
-    (hFiles : RefinesHealthyFilesAt projFiles id deps.files)
-    (hTime : RefinesHealthyTimeRandAt projTime deps.timeRand)
+    (hWf : ∀ s : S,
+      (projProc s).wf = true ∧
+      (projFiles s).wf = true ∧
+      (projTime s).wf = true)
+    (hProc : RefinesHealthyProcOpsAt projProc id deps.proc)
+    (hFiles : RefinesHealthyFilesOpsAt projFiles id deps.files)
+    (hTime : LinuxSyscall.TimeRand.RefinesHealthyTimeRandAt projTime deps.timeRand)
     (hPostFork : RefinesHealthyPostFork deps.postFork)
     (hGetSet : ∀ s t, getTbl (setTbl s t) = t)
     (hOpenSet : ∀ s t,
@@ -762,7 +407,7 @@ theorem refinesHealthySysDeps_of_components {S : Type}
       let r := (deps.poll.ppoll entries timeout).run s
       getTbl r.2 = getTbl s ∧
       (projFiles r.2).state.fds.map Prod.fst = (projFiles s).state.fds.map Prod.fst ∧
-      (∀ e, r.1 = .error e → isCriticalOsErrno e = false))
+      (∀ e, r.1 = .error e → Errno.isCriticalOsErrno e = false))
     (hCgLens : ∀ s clk,
       let r := (deps.timeRand.clock_gettime clk).run s
       getTbl r.2 = getTbl s ∧
@@ -786,65 +431,87 @@ theorem refinesHealthySysDeps_of_components {S : Type}
   openFds_set := hOpenSet
   pipe2_frame s flags := by
     obtain ⟨hT, hE, hO⟩ := hPipeLens s flags
-    obtain ⟨hSt, _⟩ := hProc.pipe2_healthy s flags (hSec s).1
+    have hSt := hProc.pipe2_healthy s flags (hWf s).1
     refine ⟨hT, ?_, hO⟩
     intro e he
-    exact ⟨hE e he, ((healthyProcessStep_implies_allowedStep hSt).2.2.2 e (by simp [he])).1⟩
+    refine ⟨hE e he, ?_⟩
+    have hCrit := (LinuxSyscall.Process.healthyStep_implies_allowedStep hSt).2.2.2.1
+    simpa [he, LinuxSyscall.Process.isCriticalFault] using hCrit
   waitpid_frame s pid flags := by
     obtain ⟨hT, hO⟩ := hWaitLens s pid flags
-    obtain ⟨hSt, _⟩ := hProc.waitpid_healthy s pid flags (hSec s).1
+    have hSt := hProc.waitpid_healthy s pid flags (hWf s).1
     refine ⟨hT, hO, ?_⟩
     intro e he
-    exact ((healthyProcessStep_implies_allowedStep hSt).2.2.2 e (by simp [he])).1
+    have hCrit := (LinuxSyscall.Process.healthyStep_implies_allowedStep hSt).2.2.2.1
+    simpa [he, LinuxSyscall.Process.isCriticalFault] using hCrit
   kill_frame s target sig := by
     obtain ⟨hT, hO⟩ := hKillLens s target sig
-    obtain ⟨hSt, _⟩ := hProc.kill_healthy s target sig (hSec s).1
+    have hSt := hProc.kill_healthy s target sig (hWf s).1
     refine ⟨hT, hO, ?_⟩
     intro e he
-    exact ((healthyProcessStep_implies_allowedStep hSt).2.2.2 e (by simp [he])).1
+    have hCrit := (LinuxSyscall.Process.healthyStep_implies_allowedStep hSt).2.2.2.1
+    simpa [he, LinuxSyscall.Process.isCriticalFault] using hCrit
   close_frame s h := by
-    obtain ⟨hSt, _⟩ := hFiles.close_healthy s h (hSec s).2.1
+    have hSt := hFiles.close_healthy s h (hWf s).2.1
     refine ⟨hCloseTblLens s h, healthyFilesStep_close_fds hSt, ?_⟩
     intro e he
-    exact ((healthyFilesStep_implies_allowedStep hSt).2.2.2.2 e (by simp [he])).1
+    have hCrit := (LinuxSyscall.Files.healthyStep_implies_allowedStep hSt).2.2.2.1
+    simpa [he, LinuxSyscall.Files.outcomeOfUnit, LinuxSyscall.Files.isCriticalFault] using hCrit
   read_frame s h cap := by
     obtain ⟨hT, hO⟩ := hReadLens s h cap
-    obtain ⟨hSt, _, hSz⟩ := hFiles.read_healthy s h cap (hSec s).2.1
+    obtain ⟨hSt, hSz⟩ := hFiles.read_healthy s h cap (hWf s).2.1
     refine ⟨hT, hO, hSz, ?_⟩
     intro e he
-    exact ((healthyFilesStep_implies_allowedStep hSt).2.2.2.2 e (by simp [he])).1
+    have hCrit := (LinuxSyscall.Files.healthyStep_implies_allowedStep hSt).2.2.2.1
+    simpa [he, LinuxSyscall.Files.outcomeOfBytes, LinuxSyscall.Files.isCriticalFault] using hCrit
   write_frame s h data := by
     obtain ⟨hT, hO⟩ := hWriteLens s h data
-    obtain ⟨hSt, _, hSz⟩ := hFiles.write_healthy s h data (hSec s).2.1
+    obtain ⟨hSt, hSz⟩ := hFiles.write_healthy s h data (hWf s).2.1
     refine ⟨hT, hO, hSz, ?_⟩
     intro e he
-    exact ((healthyFilesStep_implies_allowedStep hSt).2.2.2.2 e (by simp [he])).1
+    have hCrit := (LinuxSyscall.Files.healthyStep_implies_allowedStep hSt).2.2.2.1
+    simpa [he, LinuxSyscall.Files.outcomeOfU32, LinuxSyscall.Files.isCriticalFault] using hCrit
   fstatat_frame s dir path flags := by
     obtain ⟨hT, hO⟩ := hStatLens s dir path flags
-    obtain ⟨hSt, _⟩ := hFiles.fstatat_healthy s dir path flags (hSec s).2.1
+    have hSt := hFiles.fstatat_healthy s dir path flags (hWf s).2.1
     refine ⟨hT, hO, ?_⟩
     intro e he
-    exact ((healthyFilesStep_implies_allowedStep hSt).2.2.2.2 e (by simp [he])).1
+    have hCrit := (LinuxSyscall.Files.healthyStep_implies_allowedStep hSt).2.2.2.1
+    simpa [he, LinuxSyscall.Files.outcomeOfStatted, LinuxSyscall.Files.isCriticalFault] using hCrit
   faccessat_frame s dir path mask flags := by
     obtain ⟨hT, hO⟩ := hAccLens s dir path mask flags
-    obtain ⟨hSt, _⟩ := hFiles.faccessat_healthy s dir path mask flags (hSec s).2.1
+    have hSt := hFiles.faccessat_healthy s dir path mask flags (hWf s).2.1
     refine ⟨hT, hO, ?_⟩
     intro e he
-    exact ((healthyFilesStep_implies_allowedStep hSt).2.2.2.2 e (by simp [he])).1
+    have hCrit := (LinuxSyscall.Files.healthyStep_implies_allowedStep hSt).2.2.2.1
+    simpa [he, LinuxSyscall.Files.outcomeOfUnit, LinuxSyscall.Files.isCriticalFault] using hCrit
   fcntl_frame s h cmd := by
     obtain ⟨hT, hO⟩ := hFcntlLens s h cmd
-    obtain ⟨hSt, _⟩ := hFiles.fcntl_healthy s h cmd (hSec s).2.1
+    have hSt := hFiles.fcntl_healthy s h cmd (hWf s).2.1
     refine ⟨hT, hO, ?_⟩
     intro e he
-    exact ((healthyFilesStep_implies_allowedStep hSt).2.2.2.2 e (by simp [he])).1
+    have hCrit := (LinuxSyscall.Files.healthyStep_implies_allowedStep hSt).2.2.2.1
+    simpa [he, LinuxSyscall.Files.outcomeOfU32, LinuxSyscall.Files.isCriticalFault] using hCrit
   ppoll_frame := hPollLens
   clock_gettime_frame s clk := by
     obtain ⟨hT, hO⟩ := hCgLens s clk
-    obtain ⟨hSt, _⟩ := hTime.clock_gettime_healthy s clk (hSec s).2.2
+    have hSt := hTime s (.clock_gettime clk) (hWf s).2.2
     refine ⟨hT, hO, ?_⟩
     intro e he
-    exact ((healthyTimeRandStep_implies_allowedStep hSt).2.2.2 e
-      (by simp [LinuxSyscall.TimeRand.outcomeOfTimespec, he])).1
+    dsimp only [LinuxSyscall.TimeRand.execTimeRandReq, Bind.bind, StateT.bind,
+      Pure.pure, StateT.pure, StateT.run, Id.run] at hSt
+    cases hRun : (deps.timeRand.clock_gettime clk).run s with
+    | mk res s' =>
+      have hRes : res = .error e := by
+        simpa [hRun] using he
+      subst hRes
+      have hRunFn : deps.timeRand.clock_gettime clk s = (.error e, s') := hRun
+      rw [hRunFn] at hSt
+      dsimp only [LinuxSyscall.TimeRand.outcomeOfTimespec] at hSt
+      unfold LinuxSyscall.TimeRand.healthyStep at hSt
+      cases hCrit : Errno.isCriticalOsErrno e
+      · rfl
+      · simp [LinuxSyscall.TimeRand.isCriticalFault, hCrit] at hSt
   clock_nanosleep_frame := hNsLens
   postFork_healthy := hPostFork
   postFork_frame := hPfLens

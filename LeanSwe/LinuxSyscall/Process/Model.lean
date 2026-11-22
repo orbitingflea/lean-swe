@@ -2356,4 +2356,83 @@ structure RawPosixShimSound (raw : PosixProcessOpsM (StateM ProcessSysState) Han
     let r := raw.getuid.run s
     allowedStep s .getuid (match r.1 with | .ok u => .u32 u | .error e => .err e) = some r.2
 
+/-- Convert `Except Errno (HandleId × HandleId)` into `ProcessOutcome`. -/
+def outcomeOfPiped : Except Errno (HandleId × HandleId) → ProcessOutcome
+  | .ok (rHid, wHid) => .piped rHid wHid
+  | .error e => .err e
+
+/-- Convert `Except Errno WaitResult` into `ProcessOutcome`. -/
+def outcomeOfWaited : Except Errno WaitResult → ProcessOutcome
+  | .ok wr => .waited wr
+  | .error e => .err e
+
+/-- Convert `Except Errno Unit` into `ProcessOutcome`. -/
+def outcomeOfUnit : Except Errno Unit → ProcessOutcome
+  | .ok () => .unit
+  | .error e => .err e
+
+/-- Convert `Except Errno HandleId` into `ProcessOutcome`. -/
+def outcomeOfOpened : Except Errno HandleId → ProcessOutcome
+  | .ok hid => .opened hid
+  | .error e => .err e
+
+/-- Convert `Except Errno UInt32` into `ProcessOutcome`. -/
+def outcomeOfU32 : Except Errno UInt32 → ProcessOutcome
+  | .ok v => .u32 v
+  | .error e => .err e
+
+/-- Return `true` iff `out` is a curated catastrophic OS fault (`ENOMEM`, `EIO`, `ENFILE`). -/
+def isCriticalFault : ProcessOutcome → Bool
+  | .err e => Errno.isCriticalOsErrno e
+  | _ => false
+
+/-- Return `true` iff `out` is an interrupted syscall outcome (`.err Errno.EINTR`). -/
+def isEintrOutcome : ProcessOutcome → Bool
+  | .err e => e == Errno.EINTR
+  | _ => false
+
+/-- Healthy execution environment wrapping `ProcessSysState` with a finite `EINTR` interruption budget (`ambientSeccomp = false`). -/
+structure HealthyEnv where
+  /-- Underlying `Process` world state. -/
+  state : ProcessSysState := ProcessSysState.initial
+  /-- Remaining bound on `EINTR` signal interruptions (`0` forbids `EINTR`). -/
+  eintrBudget : Nat := 0
+  deriving Repr, DecidableEq, Inhabited
+
+/-- Initial healthy `Process` environment with optional `eintrBudget`. -/
+def HealthyEnv.initial (eintrBudget : Nat := 0) : HealthyEnv :=
+  { state := ProcessSysState.initial, eintrBudget := eintrBudget }
+
+/-- Return `true` iff `env` has no ambient `seccomp` `SECCOMP_RET_ERRNO` filter interception. -/
+def HealthyEnv.wf (env : HealthyEnv) : Bool :=
+  !env.state.ambientSeccomp
+
+/-- Relational healthy-OS step checker for `LeanSwe.LinuxSyscall.Process`, excluding critical OS faults and ambient `seccomp` while bounding `EINTR` via `eintrBudget`. -/
+def healthyStep (env : HealthyEnv) (req : ProcessReq) (out : ProcessOutcome) : Option HealthyEnv :=
+  if !env.wf || isCriticalFault out then
+    none
+  else
+    match allowedStep env.state req out with
+    | none => none
+    | some s' =>
+      if isEintrOutcome out then
+        if env.eintrBudget > 0 then
+          some { state := s', eintrBudget := env.eintrBudget - 1 }
+        else
+          none
+      else
+        some { state := s', eintrBudget := env.eintrBudget }
+
+/-- Universal healthy-world refinement predicate over an arbitrary state `W` projected via `proj`. -/
+def RefinesHealthyProcessAt {W : Type} (proj : W → HealthyEnv)
+    (ops : ProcessOpsM (StateM W) HandleId) : Prop :=
+  ∀ (w : W) (req : ProcessReq),
+    (proj w).wf = true →
+    let (out, w') := (execProcessReq ops req).run w
+    healthyStep (proj w) req out = some (proj w')
+
+/-- Direct healthy-world refinement predicate specialized to `StateM HealthyEnv`. -/
+abbrev RefinesHealthyProcess (ops : ProcessOpsM (StateM HealthyEnv) HandleId) : Prop :=
+  RefinesHealthyProcessAt id ops
+
 end LeanSwe.LinuxSyscall.Process

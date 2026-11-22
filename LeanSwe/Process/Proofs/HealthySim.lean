@@ -16,100 +16,58 @@ open LeanSwe.Process.SysBridge
 @[simp] private theorem stateM_modifyGet_run {S α : Type} (f : S → α × S) (s : S) :
     (modifyGet f : StateM S α).run s = f s := rfl
 
-/-- `healthySimDeps.timeRand` refines `healthyTimeRandStep` via `projSimTime` and `TimeRand.modelOps`. -/
+private theorem liftTimeOp_healthy {α : Type}
+    (s : HealthySimState) (req : TimeRand.TimeRandReq)
+    (act : StateM TimeRand.TimeRandState α) (pack : α → TimeRand.TimeRandOutcome)
+    (hRef : let (r, ts') := act (toSimTimeState s)
+      TimeRand.healthyStep (projSimTime s) req (pack r) = some { state := ts', eintrBudget := 0 }) :
+    let (r, ts') := act (toSimTimeState s)
+    TimeRand.healthyStep (projSimTime s) req (pack r) =
+      some (projSimTime { s with timeState := ts' }) := by
+  cases hRun : act (toSimTimeState s) with
+  | mk res ts' =>
+    rw [hRun] at hRef
+    have hWf' := (TimeRand.Proofs.healthyStep_implies_allowedStep (projSimTime s)
+      { state := ts', eintrBudget := 0 } req (pack res) hRef).2.2.1
+    have hToEq : toSimTimeState { s with timeState := ts' } = ts' := by
+      cases ts'; simp [toSimTimeState, TimeRand.HealthyEnv.wf] at hWf' ⊢; exact hWf'
+    dsimp only [projSimTime]
+    rw [hToEq]
+    exact hRef
+
+/-- `healthySimDeps.timeRand` refines canonical `TimeRand.healthyStep` via `projSimTime` and `TimeRand.healthyModelOps`. -/
 theorem healthySimDeps_timeRand_refinesHealthy :
-    RefinesHealthyTimeRandAt projSimTime healthySimDeps.timeRand where
-  clock_gettime_healthy s clk _ := by
-    have hSound : TimeRand.allowedStep (toSimTimeState s) (.clock_gettime clk)
-        (TimeRand.outcomeOfTimespec ((TimeRand.modelOps.clock_gettime clk).run (toSimTimeState s)).1) =
-        some ((TimeRand.modelOps.clock_gettime clk).run (toSimTimeState s)).2 :=
-      (TimeRand.Proofs.proof_timerand_modelOps_soundAgainstAllowedStep
-        (toSimTimeState s) clk false {} 0 {}).1
-    dsimp only [healthySimDeps, stateM_modifyGet_run, projSimTime]
-    cases hRun : (TimeRand.modelOps.clock_gettime clk).run (toSimTimeState s) with
-    | mk res ts' =>
-      rw [hRun] at hSound
-      dsimp only at hSound ⊢
-      have hRunUnf := hRun
-      unfold TimeRand.modelOps StateT.run at hRunUnf
-      dsimp only [Bind.bind, Pure.pure, StateT.bind, StateT.pure,
-        get, MonadState.get, getThe, MonadStateOf.get, StateT.get,
-        set, MonadState.set, MonadStateOf.set, StateT.set] at hRunUnf
-      have hProps : ts'.ambientSeccomp = false ∧ (∀ code, TimeRand.outcomeOfTimespec res = .err code → False) := by
-        cases clk with
-        | realtime =>
-          dsimp only at hRunUnf
-          cases hEp : TimeRand.Timespec.ofEpochNanos? (toSimTimeState s).realtimeNs <;>
-            (rw [hEp] at hRunUnf; dsimp only [StateT.pure, Pure.pure] at hRunUnf;
-             injection hRunUnf with hR hS; rw [← hR, ← hS]; exact ⟨rfl, fun _ hc => by cases hc⟩)
-        | monotonic =>
-          dsimp only at hRunUnf
-          cases hMn : TimeRand.Timespec.ofNanosNat? (toSimTimeState s).monoLowerBoundNs with
-          | none =>
-            rw [hMn] at hRunUnf; dsimp only [StateT.pure, Pure.pure] at hRunUnf
-            injection hRunUnf with hR hS; rw [← hR, ← hS]; exact ⟨rfl, fun _ hc => by cases hc⟩
-          | some ts =>
-            rw [hMn] at hRunUnf; dsimp only [StateT.bind, StateT.pure, StateT.set, Bind.bind, Pure.pure] at hRunUnf
-            injection hRunUnf with hR hS; rw [← hR, ← hS]; exact ⟨rfl, fun _ hc => by cases hc⟩
-      obtain ⟨hSec', hNoErr⟩ := hProps
-      have hToEq : toSimTimeState { s with timeState := ts' } = ts' := by
-        cases ts'; simp [toSimTimeState] at hSec' ⊢; exact hSec'
-      refine ⟨?_, rfl⟩
-      unfold healthyTimeRandStep
-      have hSec0 : (toSimTimeState s).ambientSeccomp = false := rfl
-      rw [hSec0, hSound, hToEq]
-      cases hOut : TimeRand.outcomeOfTimespec res with
-      | timespec _ | unit | bytes _ => rfl
-      | err code => exact False.elim (hNoErr code hOut)
-  clock_nanosleep_healthy s clk abs req _ := by
-    have hSound : TimeRand.allowedStep (toSimTimeState s) (.clock_nanosleep clk abs req)
-        (TimeRand.outcomeOfUnit ((TimeRand.modelOps.clock_nanosleep clk abs req).run (toSimTimeState s)).1) =
-        some ((TimeRand.modelOps.clock_nanosleep clk abs req).run (toSimTimeState s)).2 :=
-      (TimeRand.Proofs.proof_timerand_modelOps_soundAgainstAllowedStep
-        (toSimTimeState s) clk abs req 0 {}).2.1
-    dsimp only [healthySimDeps, stateM_modifyGet_run, projSimTime]
-    cases hRun : (TimeRand.modelOps.clock_nanosleep clk abs req).run (toSimTimeState s) with
-    | mk res ts' =>
-      rw [hRun] at hSound
-      dsimp only at hSound ⊢
-      have hRunUnf := hRun
-      unfold TimeRand.modelOps StateT.run at hRunUnf
-      dsimp only [Bind.bind, Pure.pure, StateT.bind, StateT.pure,
-        get, MonadState.get, getThe, MonadStateOf.get, StateT.get,
-        set, MonadState.set, MonadStateOf.set, StateT.set] at hRunUnf
-      by_cases hVal : req.isValid = true
-      · simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte] at hRunUnf
-        have hSec' : ts'.ambientSeccomp = false := by
-          cases clk <;>
-            (dsimp only [StateT.bind, StateT.pure, StateT.set, Bind.bind, Pure.pure] at hRunUnf;
-             injection hRunUnf with _ hS; rw [← hS]; rfl)
-        have hOk : res = .ok () := by
-          cases clk <;>
-            (dsimp only [StateT.bind, StateT.pure, StateT.set, Bind.bind, Pure.pure] at hRunUnf;
-             injection hRunUnf with hR _; exact hR.symm)
-        subst hOk
-        have hToEq : toSimTimeState { s with timeState := ts' } = ts' := by
-          cases ts'; simp [toSimTimeState] at hSec' ⊢; exact hSec'
-        refine ⟨?_, rfl⟩
-        unfold healthyTimeRandStep
-        have hSec0 : (toSimTimeState s).ambientSeccomp = false := rfl
-        rw [hSec0]
-        dsimp only [Bool.false_eq_true, ↓reduceIte, TimeRand.outcomeOfUnit] at hSound ⊢
-        rw [hSound, hToEq]
-        rfl
-      · have hValF : req.isValid = false := Bool.eq_false_iff.mpr hVal
-        simp only [hValF, Bool.not_false, ↓reduceIte] at hRunUnf
-        dsimp only [StateT.pure, Pure.pure] at hRunUnf
-        injection hRunUnf with hR hS
-        subst hR hS
-        refine ⟨?_, rfl⟩
-        unfold healthyTimeRandStep
-        have hSec0 : (toSimTimeState s).ambientSeccomp = false := rfl
-        rw [hSec0]
-        dsimp only [TimeRand.outcomeOfUnit] at hSound ⊢
-        rw [hSound]
-        simp [toSimTimeState, isCriticalOsErrno, Errno.EINVAL, Errno.EINTR,
-          Errno.ENOMEM, Errno.EIO, Errno.ENFILE]
+    TimeRand.RefinesHealthyTimeRandAt projSimTime healthySimDeps.timeRand := by
+  intro s req hWf
+  have hRef := TimeRand.Proofs.healthyModelOps_refinesHealthyTimeRand (projSimTime s) req hWf
+  cases req with
+  | clock_gettime clk =>
+    exact liftTimeOp_healthy s (.clock_gettime clk) (TimeRand.modelOps.clock_gettime clk)
+      TimeRand.outcomeOfTimespec (by
+        cases hRun : TimeRand.modelOps.clock_gettime clk (toSimTimeState s) with
+        | mk res ts' =>
+          dsimp only [TimeRand.execTimeRandReq, TimeRand.healthyModelOps, projSimTime,
+            StateT.run, Bind.bind, StateT.bind, Pure.pure, StateT.pure,
+            get, getThe, MonadStateOf.get, StateT.get, set, MonadStateOf.set, StateT.set] at hRef ⊢
+          rw [hRun] at hRef; exact hRef)
+  | clock_nanosleep clk abs reqTs =>
+    exact liftTimeOp_healthy s (.clock_nanosleep clk abs reqTs)
+      (TimeRand.modelOps.clock_nanosleep clk abs reqTs) TimeRand.outcomeOfUnit (by
+        cases hRun : TimeRand.modelOps.clock_nanosleep clk abs reqTs (toSimTimeState s) with
+        | mk res ts' =>
+          dsimp only [TimeRand.execTimeRandReq, TimeRand.healthyModelOps, projSimTime,
+            StateT.run, Bind.bind, StateT.bind, Pure.pure, StateT.pure,
+            get, getThe, MonadStateOf.get, StateT.get, set, MonadStateOf.set, StateT.set] at hRef ⊢
+          rw [hRun] at hRef; exact hRef)
+  | getrandom len flags =>
+    exact liftTimeOp_healthy s (.getrandom len flags) (TimeRand.modelOps.getrandom len flags)
+      TimeRand.outcomeOfBytes (by
+        cases hRun : TimeRand.modelOps.getrandom len flags (toSimTimeState s) with
+        | mk res ts' =>
+          dsimp only [TimeRand.execTimeRandReq, TimeRand.healthyModelOps, projSimTime,
+            StateT.run, Bind.bind, StateT.bind, Pure.pure, StateT.pure,
+            get, getThe, MonadStateOf.get, StateT.get, set, MonadStateOf.set, StateT.set] at hRef ⊢
+          rw [hRun] at hRef; exact hRef)
 
 /-- `healthySimDeps.postFork` satisfies `RefinesHealthyPostFork`. -/
 theorem healthySimDeps_postFork_refinesHealthy :
@@ -122,7 +80,7 @@ theorem healthySimDeps_postFork_refinesHealthy :
     rw [← hC]
     exact ⟨by decide, by decide, fun _ => rfl⟩
 
-/-- `healthySimDeps` satisfies `RefinesHealthySysDeps` via `refinesHealthySysDeps_of_components` (deriving `close` FD erasure directly from canonical `healthyFilesStep`). -/
+/-- `healthySimDeps` satisfies `RefinesHealthySysDeps` via `refinesHealthySysDeps_of_components` (deriving `close` FD erasure directly from canonical `Files.healthyStep`). -/
 theorem healthySimDeps_refinesHealthy :
     RefinesHealthySysDeps
       (fun s : HealthySimState => s.tbl)
