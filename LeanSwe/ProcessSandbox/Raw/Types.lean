@@ -335,7 +335,7 @@ structure BoxHandle where
   pid : Int
   /-- Dedicated host process group ID covering the sandbox launcher (`> 0`). -/
   pgid : Int
-  /-- Race-free Linux `pidfd` descriptor tracking the sandbox root (`≥ 0`). -/
+  /-- Non-negative `pidfd` field (`≥ 0`). Under the pure-Lean host bridge (`ProcessSandbox.Host.SysBridge`), the live Linux `pidfd` `RawFd` stays encapsulated in the host box table and this field holds a `0` placeholder (this placeholder field is scheduled for removal when `LeanSwe.ProcessSandbox.Raw` is retired). -/
   pidfd : Int
   deriving Repr, BEq, DecidableEq, Inhabited
 

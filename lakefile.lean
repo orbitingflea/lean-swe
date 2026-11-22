@@ -24,6 +24,7 @@ lean_lib Core where
 
 @[default_target]
 lean_lib LeanSwe where
+  extraDepTargets := #[`«leanswe-psandbox-init-data»]
   globs := #[
     .one `LeanSwe,
     .submodules `LeanSwe.Base64,
@@ -61,6 +62,13 @@ lean_lib LeanSwe where
     .submodules `LeanSwe.Toml,
     .submodules `LeanSwe.Uuid
   ]
+
+@[default_target]
+lean_lib LeanSweProcessSandboxInitData where
+  srcDir := ".lake/build/gen"
+  roots := #[`LeanSwe.ProcessSandbox.InitData]
+  globs := #[.one `LeanSwe.ProcessSandbox.InitData]
+  extraDepTargets := #[`«leanswe-psandbox-init-data»]
 
 @[default_target]
 lean_lib «LeanSwe.PostFork.AeneasGen» where
@@ -149,45 +157,61 @@ extern_lib «leanswe_cryptohash» pkg := do
   let name := nameToStaticLib "leanswe_cryptohash"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
-extern_lib «leanswe_psandbox» pkg := do
-  let lean ← getLeanInstall
+private def base64Table : ByteArray :=
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".toUTF8
+
+private def encodeBase64Lake (bs : ByteArray) : String := Id.run do
+  let n := bs.size
+  let mut out := ByteArray.emptyWithCapacity (((n + 2) / 3) * 4)
+  let mut i := 0
+  while i + 2 < n do
+    let b0 := bs[i]!.toNat
+    let b1 := bs[i + 1]!.toNat
+    let b2 := bs[i + 2]!.toNat
+    out := out.push base64Table[b0 >>> 2]!
+    out := out.push base64Table[((b0 &&& 3) <<< 4) ||| (b1 >>> 4)]!
+    out := out.push base64Table[((b1 &&& 15) <<< 2) ||| (b2 >>> 6)]!
+    out := out.push base64Table[b2 &&& 63]!
+    i := i + 3
+  let rem := n - i
+  if rem == 1 then
+    let b0 := bs[i]!.toNat
+    out := out.push base64Table[b0 >>> 2]!
+    out := out.push base64Table[(b0 &&& 3) <<< 4]!
+    out := out.push '='.toNat.toUInt8
+    out := out.push '='.toNat.toUInt8
+  else if rem == 2 then
+    let b0 := bs[i]!.toNat
+    let b1 := bs[i + 1]!.toNat
+    out := out.push base64Table[b0 >>> 2]!
+    out := out.push base64Table[((b0 &&& 3) <<< 4) ||| (b1 >>> 4)]!
+    out := out.push base64Table[(b1 &&& 15) <<< 2]!
+    out := out.push '='.toNat.toUInt8
+  return String.fromUTF8! out
+
+/-- Compile `psandbox_init.c` into `.lake/build/c/leanswe-psandbox-init` and generate `.lake/build/gen/LeanSwe/ProcessSandbox/InitData.lean`. -/
+target «leanswe-psandbox-init-data» pkg : System.FilePath := do
   let cDir := pkg.dir / "LeanSwe" / "ProcessSandbox" / "Raw" / "c"
-  let outDir := pkg.buildDir / "c"
   let initSrcJob ← inputTextFile (cDir / "psandbox_init.c")
-  let initBin := outDir / "leanswe-psandbox-init"
-  let initBinJob ← buildFileAfterDep initBin initSrcJob fun srcFile => do
+  let initBin := pkg.buildDir / "c" / "leanswe-psandbox-init"
+  let genFile := pkg.buildDir / "gen" / "LeanSwe" / "ProcessSandbox" / "InitData.lean"
+  buildFileAfterDep genFile initSrcJob fun srcFile => do
     createParentDirs initBin
+    let cc := ((← IO.getEnv "CC").filter (!·.isEmpty)).getD "cc"
     proc {
-      cmd := "cc"
+      cmd := cc
       args := #["-O2", "-Wall", "-Wextra", "-Werror", srcFile.toString, "-o", initBin.toString]
     }
-  let embedH := outDir / "psandbox_init_embed.h"
-  let embedHJob ← buildFileAfterDep embedH initBinJob fun binFile => do
-    let bytes ← IO.FS.readBinFile binFile
-    createParentDirs embedH
-    let h ← IO.FS.Handle.mk embedH .write
-    h.putStr "static const unsigned char g_psandbox_init_elf[] = {\n"
-    let mut i : Nat := 0
-    while i < bytes.size do
-      if i % 16 == 0 then
-        h.putStr "  "
-      h.putStr s!"{bytes[i]!.toNat},"
-      if i % 16 == 15 || i + 1 == bytes.size then
-        h.putStr "\n"
-      else
-        h.putStr " "
-      i := i + 1
-    h.putStr "};\n"
-    h.putStr s!"static const size_t g_psandbox_init_elf_len = {bytes.size}u;\n"
-    h.flush
-  let shimSrcJob ← inputTextFile (cDir / "psandbox_shim.c")
-  let shimDeps := Job.collectArray #[shimSrcJob, embedHJob]
-  let shimO := outDir / "psandbox_shim.o"
-  let shimOJob ← buildO shimO (shimDeps.map fun _ => cDir / "psandbox_shim.c")
-    #["-I", lean.includeDir.toString, "-I", outDir.toString]
-    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror"]
-  let name := nameToStaticLib "leanswe_psandbox"
-  buildStaticLib (pkg.staticLibDir / name) #[shimOJob]
+    let bytes ← IO.FS.readBinFile initBin
+    let b64 := encodeBase64Lake bytes
+    createParentDirs genFile
+    let content :=
+      "namespace LeanSwe.ProcessSandbox.InitData\n\n" ++
+      "/-- Base64-encoded ELF bytes of the compiled `leanswe-psandbox-init` helper binary. -/\n" ++
+      "def initBinaryBase64 : String :=\n" ++
+      "  \"" ++ b64 ++ "\"\n\n" ++
+      "end LeanSwe.ProcessSandbox.InitData\n"
+    IO.FS.writeFile genFile content
 
 extern_lib «leanswe_linux_process_fuzz_env» pkg := do
   let cDir := pkg.dir / "LeanSwe" / "LinuxSyscall" / "c"
