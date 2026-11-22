@@ -310,6 +310,7 @@ import LeanSwe.LinuxSyscall.Files.Seed
 import LeanSwe.LinuxSyscall.Files.Impl
 import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.Files.SpecTests
+import LeanSwe.LinuxSyscall.Files.Proofs.HealthyStep
 import LeanSwe.LinuxSyscall.Files.Proofs
 import LeanSwe.LinuxSyscall.Files.SpecMutants
 import LeanSwe.LinuxSyscall.Passwd.Types
@@ -337,6 +338,7 @@ import LeanSwe.LinuxSyscall.Net.Types
 import LeanSwe.LinuxSyscall.Net.Model.State
 import LeanSwe.LinuxSyscall.Net.Model.Addr
 import LeanSwe.LinuxSyscall.Net.Model.Step
+import LeanSwe.LinuxSyscall.Net.Model.HealthyStep
 import LeanSwe.LinuxSyscall.Net.Model
 import LeanSwe.LinuxSyscall.Net.Impl
 import LeanSwe.LinuxSyscall.Net.Interface
@@ -346,6 +348,7 @@ import LeanSwe.LinuxSyscall.Net.Proofs.CodecsAndBounds
 import LeanSwe.LinuxSyscall.Net.Proofs.OpsLifecycle
 import LeanSwe.LinuxSyscall.Net.Proofs.StateTransitions
 import LeanSwe.LinuxSyscall.Net.Proofs.ModelSoundness
+import LeanSwe.LinuxSyscall.Net.Proofs.HealthyStep
 import LeanSwe.LinuxSyscall.Net.Proofs
 import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Process.Model
@@ -362,6 +365,7 @@ import LeanSwe.LinuxSyscall.Process.Proofs.ModelSoundnessKill
 import LeanSwe.LinuxSyscall.Process.Proofs.ModelSoundnessPidfd
 import LeanSwe.LinuxSyscall.Process.Proofs.ModelSoundnessReq
 import LeanSwe.LinuxSyscall.Process.Proofs.ModelSoundness
+import LeanSwe.LinuxSyscall.Process.Proofs.HealthyStep
 import LeanSwe.LinuxSyscall.Process.Proofs
 import LeanSwe.LinuxSyscall.TestSupport.Seccomp
 import LeanSwe.PostFork.Types

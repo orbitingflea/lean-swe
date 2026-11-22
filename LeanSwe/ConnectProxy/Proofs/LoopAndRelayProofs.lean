@@ -103,7 +103,7 @@ private theorem recvIntoRing_wf_poll
     · simp only [hAv0, ↓reduceIte]; exact ⟨hWf, rfl⟩
     · simp only [Bool.eq_false_iff.mpr hAv0, Bool.false_eq_true, ↓reduceIte]
       have hNet := hRef.2.1 w (.recvfrom fd (UInt32.ofNat rb.writeAvail) { dontwait := true }) ((wf_iff_parts w).mp hWf)
-      dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
+      dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
       dsimp only [StateT.run, bind, StateT.bind, pure, StateT.pure, Id.run]
       rw [inst_net_recvfrom]
       rcases hR : sys.net.recvfrom fd (UInt32.ofNat rb.writeAvail) { dontwait := true } w with ⟨r, w1⟩
@@ -141,7 +141,7 @@ private theorem flushRingNonblock_wf_poll
     · simp only [hEmp, ↓reduceIte]; exact ⟨hWf, rfl⟩
     · simp only [Bool.eq_false_iff.mpr hEmp, Bool.false_eq_true, ↓reduceIte]
       have hNet := hRef.2.1 w (.sendto fd rb.frontSlice { nosignal := true, dontwait := true }) ((wf_iff_parts w).mp hWf)
-      dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
+      dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
       dsimp only [StateT.run, bind, StateT.bind, pure, StateT.pure, Id.run]
       rw [inst_net_sendto]
       rcases hR : sys.net.sendto fd rb.frontSlice { nosignal := true, dontwait := true } w with ⟨r, w1⟩
@@ -201,7 +201,7 @@ private theorem drainDeadPeerRx_wf_poll
   | fuel + 1, w, tr, hWf => by
     unfold Relay.drainDeadPeerRx
     have hNet := hRef.2.1 w (.recvfrom fd 4096 { dontwait := true }) ((wf_iff_parts w).mp hWf)
-    dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
+    dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
     dsimp only [StateT.run, bind, StateT.bind, pure, StateT.pure, Id.run]
     rw [inst_net_recvfrom]
     rcases hR : sys.net.recvfrom fd 4096 { dontwait := true } w with ⟨r, w1⟩
@@ -990,7 +990,7 @@ private theorem drainWakeSocket_laws
     unfold drainWakeSocket
     dsimp only [StateT.run, bind, StateT.bind, pure, StateT.pure, Id.run]
     have hNet := hRef.2.1 w (.recvfrom wakeR 256 { dontwait := true }) ((wf_iff_parts w).mp hWf)
-    dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
+    dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
     rw [inst_net_recvfrom]
     rcases hRun : sys.net.recvfrom wakeR 256 { dontwait := true } w with ⟨r, w1⟩
     rw [hRun] at hNet
@@ -1025,7 +1025,7 @@ private theorem drainClosingClient_laws
     unfold drainClosingClient
     dsimp only [StateT.run, bind, StateT.bind, pure, StateT.pure, Id.run]
     have hNet := hRef.2.1 w (.recvfrom cfd 1024 { dontwait := true }) ((wf_iff_parts w).mp hWf)
-    dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
+    dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
     rw [inst_net_recvfrom]
     rcases hRun : sys.net.recvfrom cfd 1024 { dontwait := true } w with ⟨r, w1⟩
     rw [hRun] at hNet
@@ -1319,7 +1319,7 @@ private theorem startNextConnectAux_pollOutcomes_of_eq {dnsJob : Type}
         ((instrumentSysOps sys).net.socket sa.domain .stream { nonblock := true, cloexec := true } 0)
         (fun (wx, trx) ⟨hwx, hpo⟩ => by
           have hn := hRef.2.1 wx (.socket sa.domain .stream { nonblock := true, cloexec := true } 0) ((wf_iff_parts wx).mp hwx)
-          dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hn
+          dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hn
           dsimp only [StateT.run]; rw [inst_net_socket]
           rcases hS : sys.net.socket sa.domain .stream { nonblock := true, cloexec := true } 0 wx with ⟨sr, wx'⟩
           rw [hS] at hn; cases sr <;> exact ⟨⟨(wf_iff_parts wx').mpr hn.2.1, hpo⟩, Or.inr trivial⟩)
@@ -1335,7 +1335,7 @@ private theorem startNextConnectAux_pollOutcomes_of_eq {dnsJob : Type}
         dsimp only at hRun
         obtain ⟨rc, w2, tr2, hCR, hRun⟩ := stateT_bind_eq hRun
         have hn := hRef.2.1 w1 (.connect ufd sa) ((wf_iff_parts w1).mp hSock.1.1)
-        dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hn
+        dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hn
         have hCR' : (instrumentSysOps sys).net.connect ufd sa (w1, tr1) = (rc, (w2, tr2)) := hCR
         rw [inst_net_connect] at hCR'
         rcases hSysC : sys.net.connect ufd sa w1 with ⟨rcSys, w2Sys⟩
@@ -1446,7 +1446,7 @@ theorem healthy_stepConnecting_laws {dnsJob : Type}
         ((instrumentSysOps sys).net.getsockopt ufd .error)
         (fun (wx, trx) ⟨hwx, htrx⟩ => by
           have hn := hRef.2.1 wx (.getsockopt ufd .error) ((wf_iff_parts wx).mp hwx)
-          dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hn
+          dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hn
           dsimp only [StateT.run]; rw [inst_net_getsockopt]
           rcases hG : sys.net.getsockopt ufd .error wx with ⟨gr, wx'⟩
           rw [hG] at hn; exact ⟨⟨(wf_iff_parts wx').mpr hn.2.1, htrx⟩, Or.inr trivial⟩)
@@ -1569,7 +1569,7 @@ private theorem handleCompleteHead_wf_poll_of_eq
       dsimp only [startDnsSync] at hRun
       obtain ⟨dnsRes, w1, tr1, hD, hRun⟩ := stateT_bind_eq hRun
       have hDns := hRef.2.2.2.1 w { host := host, hints := { family := .any, sockType := .stream } } ((wf_iff_parts w).mp hWf)
-      dsimp only [execDnsReq, Dns.execDnsReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hDns
+      dsimp only [Dns.execDnsReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hDns
       have hD' : (instrumentSysOps sys).dns.getaddrinfo host { family := .any, sockType := .stream } (w, tr) = (dnsRes, (w1, tr1)) := hD
       rw [inst_dns_getaddrinfo] at hD'
       rcases hSysD : sys.dns.getaddrinfo host { family := .any, sockType := .stream } w with ⟨dSys, w1Sys⟩
@@ -1620,7 +1620,7 @@ private theorem stepHandshakeReadAux_wf_poll_of_eq
       clear hR
       rw [inst_net_recvfrom sys cfd want { dontwait := true } w tr] at hR'
       have hNet := hRef.2.1 w (.recvfrom cfd want { dontwait := true }) ((wf_iff_parts w).mp hWf)
-      dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
+      dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
       rcases hRNet : sys.net.recvfrom cfd want { dontwait := true } w with ⟨rSys, w1Sys⟩
       rw [hRNet] at hNet hR'; dsimp only at hNet hR'
       injection hR' with hrr hwt; injection hwt with hw1 ht1
@@ -2043,7 +2043,7 @@ theorem healthy_pollAndStepTickSync_laws
   clear hPRun
   rw [inst_poll_ppoll] at hPRun'
   have hPoll := hRef.2.2.1 w1 (.ppoll bRes.1 bRes.2.2) ((wf_iff_parts w1).mp hWf1)
-  dsimp only [execPollReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hPoll
+  dsimp only [Poll.execPollReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hPoll
   rcases hSysP : sys.poll.ppoll bRes.1 bRes.2.2 w1 with ⟨pSys, w2Sys⟩
   rw [hSysP] at hPoll hPRun'; dsimp only at hPoll hPRun'
   injection hPRun' with hp hwt; injection hwt with hw2 ht2

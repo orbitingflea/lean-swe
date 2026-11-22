@@ -1,6 +1,7 @@
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Files.Model
 import LeanSwe.LinuxSyscall.Net.Model
+import LeanSwe.LinuxSyscall.Net.Proofs.HealthyStep
 import LeanSwe.LinuxSyscall.Poll.Model
 import LeanSwe.LinuxSyscall.Dns.Model
 import LeanSwe.LinuxSyscall.Dns.Proofs
@@ -34,47 +35,47 @@ Relational `healthyStep` refinement and behavioral invariant proofs for `LeanSwe
 
 /-- Everyday network, signal, permission, and per-process resource errnos (`EINTR`, `EAGAIN`, `EMFILE`, `ENOSPC`, `EADDRINUSE`, `EACCES`, `EPERM`, `ECONNREFUSED`, `ETIMEDOUT`, `ENETUNREACH`, `EHOSTUNREACH`, `EPIPE`, `ECONNRESET`, `ENOTCONN`, `EINVAL`) are never classified as catastrophic OS faults, and `EMFILE`/`ENOSPC` are classified as everyday resource limits. -/
 theorem everyday_errnos_not_critical :
-    isResourceLimitErrno Errno.EMFILE = true ∧
-    isResourceLimitErrno Errno.ENOSPC = true ∧
-    isCriticalOsErrno Errno.EINTR = false ∧
-    isCriticalOsErrno Errno.EAGAIN = false ∧
-    isCriticalOsErrno Errno.EMFILE = false ∧
-    isCriticalOsErrno Errno.ENOSPC = false ∧
-    isCriticalOsErrno Errno.EADDRINUSE = false ∧
-    isCriticalOsErrno Errno.EACCES = false ∧
-    isCriticalOsErrno Errno.EPERM = false ∧
-    isCriticalOsErrno Errno.ECONNREFUSED = false ∧
-    isCriticalOsErrno Errno.ETIMEDOUT = false ∧
-    isCriticalOsErrno Errno.ENETUNREACH = false ∧
-    isCriticalOsErrno Errno.EHOSTUNREACH = false ∧
-    isCriticalOsErrno Errno.EPIPE = false ∧
-    isCriticalOsErrno Errno.ECONNRESET = false ∧
-    isCriticalOsErrno Errno.ENOTCONN = false ∧
-    isCriticalOsErrno Errno.EINVAL = false := by
+    Errno.isResourceLimitErrno Errno.EMFILE = true ∧
+    Errno.isResourceLimitErrno Errno.ENOSPC = true ∧
+    Errno.isCriticalOsErrno Errno.EINTR = false ∧
+    Errno.isCriticalOsErrno Errno.EAGAIN = false ∧
+    Errno.isCriticalOsErrno Errno.EMFILE = false ∧
+    Errno.isCriticalOsErrno Errno.ENOSPC = false ∧
+    Errno.isCriticalOsErrno Errno.EADDRINUSE = false ∧
+    Errno.isCriticalOsErrno Errno.EACCES = false ∧
+    Errno.isCriticalOsErrno Errno.EPERM = false ∧
+    Errno.isCriticalOsErrno Errno.ECONNREFUSED = false ∧
+    Errno.isCriticalOsErrno Errno.ETIMEDOUT = false ∧
+    Errno.isCriticalOsErrno Errno.ENETUNREACH = false ∧
+    Errno.isCriticalOsErrno Errno.EHOSTUNREACH = false ∧
+    Errno.isCriticalOsErrno Errno.EPIPE = false ∧
+    Errno.isCriticalOsErrno Errno.ECONNRESET = false ∧
+    Errno.isCriticalOsErrno Errno.ENOTCONN = false ∧
+    Errno.isCriticalOsErrno Errno.EINVAL = false := by
   decide
 
-/-- Compositional bundle-refinement bridge: independent subsystem implementations refining `RefinesHealthyFiles` (`RefinesHealthyFilesAt`), `RefinesHealthyNet` (`RefinesHealthyNetAt`), `RefinesHealthyPoll` (`RefinesHealthyPollAt`), `RefinesHealthyDns` (`RefinesHealthyDnsAt`), and `RefinesHealthyTimeRand` (`RefinesHealthyTimeRandAt`) lift cleanly onto `HealthySysWorld` to satisfy `RefinesHealthyCProxySys` (`RefinesHealthyCProxySysAt`). -/
+/-- Compositional bundle-refinement bridge: independent subsystem implementations refining `Files.RefinesHealthyFiles` (`Files.RefinesHealthyFilesAt`), `Net.RefinesHealthyNet` (`Net.RefinesHealthyNetAt`), `Poll.RefinesHealthyPoll` (`Poll.RefinesHealthyPollAt`), `Dns.RefinesHealthyDns` (`Dns.RefinesHealthyDnsAt`), and `TimeRand.RefinesHealthyTimeRand` (`TimeRand.RefinesHealthyTimeRandAt`) lift cleanly onto `HealthySysWorld` to satisfy `RefinesHealthyCProxySys` (`RefinesHealthyCProxySysAt`). -/
 theorem refinesHealthyBundles_implies_cproxySys
-    (filesOps : Files.FilesOpsM (StateM FilesHealthyEnv) Files.HandleId)
-    (netOps : Net.NetOpsM (StateM NetHealthyEnv) Net.HandleId)
-    (pollOps : Poll.PollOpsM (StateM PollHealthyEnv) Poll.HandleId)
-    (dnsOps : Dns.DnsOpsM (StateM DnsHealthyEnv))
-    (timeOps : TimeRand.TimeRandOpsM (StateM TimeRandHealthyEnv))
-    (hFiles : RefinesHealthyFiles filesOps)
-    (hNet : RefinesHealthyNet netOps)
-    (hPoll : RefinesHealthyPoll pollOps)
-    (hDns : RefinesHealthyDns dnsOps)
-    (hTime : RefinesHealthyTimeRand timeOps)
-    (hFilesWf : ∀ env req out env', healthyFilesStep env req out = some env' → env'.wf = true)
-    (hNetWf : ∀ env req out env', healthyNetStep env req out = some env' → env'.wf = true)
-    (hPollWf : ∀ env req out env', healthyPollStep env req out = some env' → env'.wf = true)
-    (hDnsWf : ∀ env req out env', healthyDnsStep env req out = some env' → env'.wf = true)
-    (hTimeWf : ∀ env req out env', healthyTimeRandStep env req out = some env' → env'.wf = true) :
-    RefinesHealthyFilesAt id filesOps ∧
-    RefinesHealthyNetAt id netOps ∧
-    RefinesHealthyPollAt id pollOps ∧
-    RefinesHealthyDnsAt id dnsOps ∧
-    RefinesHealthyTimeRandAt id timeOps ∧
+    (filesOps : Files.FilesOpsM (StateM Files.HealthyEnv) Files.HandleId)
+    (netOps : Net.NetOpsM (StateM Net.HealthyEnv) Net.HandleId)
+    (pollOps : Poll.PollOpsM (StateM Poll.HealthyEnv) Poll.HandleId)
+    (dnsOps : Dns.DnsOpsM (StateM Dns.HealthyEnv))
+    (timeOps : TimeRand.TimeRandOpsM (StateM TimeRand.HealthyEnv))
+    (hFiles : Files.RefinesHealthyFiles filesOps)
+    (hNet : Net.RefinesHealthyNet netOps)
+    (hPoll : Poll.RefinesHealthyPoll pollOps)
+    (hDns : Dns.RefinesHealthyDns dnsOps)
+    (hTime : TimeRand.RefinesHealthyTimeRand timeOps)
+    (hFilesWf : ∀ env req out env', Files.healthyStep env req out = some env' → env'.wf = true)
+    (hNetWf : ∀ env req out env', Net.healthyStep env req out = some env' → env'.wf = true)
+    (hPollWf : ∀ env req out env', Poll.healthyStep env req out = some env' → env'.wf = true)
+    (hDnsWf : ∀ env req out env', Dns.healthyStep env req out = some env' → env'.wf = true)
+    (hTimeWf : ∀ env req out env', TimeRand.healthyStep env req out = some env' → env'.wf = true) :
+    Files.RefinesHealthyFilesAt id filesOps ∧
+    Net.RefinesHealthyNetAt id netOps ∧
+    Poll.RefinesHealthyPollAt id pollOps ∧
+    Dns.RefinesHealthyDnsAt id dnsOps ∧
+    TimeRand.RefinesHealthyTimeRandAt id timeOps ∧
     RefinesHealthyCProxySys
       { files :=
           { openat := fun d p fl m w => let (r, e') := (filesOps.openat d p fl m).run w.filesEnv; (r, { w with filesEnv := e' })
@@ -130,26 +131,26 @@ theorem refinesHealthyBundles_implies_cproxySys
   refine ⟨?_, ?_, ?_, ?_, ?_, fun _ _ => rfl, fun _ _ => ⟨id, id⟩⟩
   · intro w h hWf
     have hStep := hFiles w.filesEnv (.close h) hWf.1
-    dsimp only [execFilesReq, Functor.map, StateT.map, StateT.run, Id.run] at hStep ⊢
+    dsimp only [Files.execFilesReq, Functor.map, StateT.map, StateT.run, Id.run] at hStep ⊢
     exact ⟨hStep, ⟨hFilesWf _ _ _ _ hStep, hWf.2.1, hWf.2.2.1, hWf.2.2.2.1, hWf.2.2.2.2⟩, rfl⟩
   · intro w req hWf
     have hStep := hNet w.netEnv req hWf.2.1
     cases req <;>
-      (dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, Id.run] at hStep ⊢;
+      (dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, Id.run] at hStep ⊢;
        exact ⟨hStep, ⟨hWf.1, hNetWf _ _ _ _ hStep, hWf.2.2.1, hWf.2.2.2.1, hWf.2.2.2.2⟩, rfl, id⟩)
   · intro w req hWf
     have hStep := hPoll w.pollEnv req hWf.2.2.1
     cases req <;>
-      (dsimp only [execPollReq, Functor.map, StateT.map, StateT.run, Id.run] at hStep ⊢;
+      (dsimp only [Poll.execPollReq, Functor.map, StateT.map, StateT.run, Id.run] at hStep ⊢;
        exact ⟨hStep, ⟨hWf.1, hWf.2.1, hPollWf _ _ _ _ hStep, hWf.2.2.2.1, hWf.2.2.2.2⟩, rfl, id⟩)
   · intro w req hWf
     have hStep := hDns w.dnsEnv req hWf.2.2.2.1
-    dsimp only [execDnsReq, StateT.run, Id.run] at hStep ⊢
+    dsimp only [Dns.execDnsReq, StateT.run, Id.run] at hStep ⊢
     exact ⟨hStep, ⟨hWf.1, hWf.2.1, hWf.2.2.1, hDnsWf _ _ _ _ hStep, hWf.2.2.2.2⟩, rfl, id⟩
   · intro w req hWf
     have hStep := hTime w.timeEnv req hWf.2.2.2.2
     cases req <;>
-      (dsimp only [execTimeRandReq, Functor.map, StateT.map, StateT.run, Id.run] at hStep ⊢;
+      (dsimp only [TimeRand.execTimeRandReq, Functor.map, StateT.map, StateT.run, Id.run] at hStep ⊢;
        exact ⟨hStep, ⟨hWf.1, hWf.2.1, hWf.2.2.1, hWf.2.2.2.1, hTimeWf _ _ _ _ hStep⟩, rfl, id⟩)
 
 private theorem assocGet_append {α β : Type} [BEq α] (xs ys : List (α × β)) (j : α) :
@@ -485,14 +486,14 @@ theorem healthy_closeFd_instrumented_laws
     subst hr
     apply Bool.eq_false_iff.mpr
     intro hB
-    simp [healthyFilesStep, filesOutcomeUnit, isFilesCloseEbusy, hB] at hStep
+    simp [Files.healthyStep, Files.outcomeOfUnit, Files.isCloseEbusy, hB] at hStep
   have hFdsRel :
       w'.filesEnv.state.fds = w.filesEnv.state.fds ∧ Files.assocGet w.filesEnv.state.fds d = none ∨
       w'.filesEnv.state.fds = Files.assocErase w.filesEnv.state.fds d := by
-    unfold healthyFilesStep at hStep
+    unfold Files.healthyStep at hStep
     split at hStep
     · cases hStep
-    · cases hAllow : Files.allowedStep w.filesEnv.state (.close d) (filesOutcomeUnit r) with
+    · cases hAllow : Files.allowedStep w.filesEnv.state (.close d) (Files.outcomeOfUnit r) with
       | none => rw [hAllow] at hStep; cases hStep
       | some sMid =>
         rw [hAllow] at hStep
@@ -500,9 +501,9 @@ theorem healthy_closeFd_instrumented_laws
         have hsEq : w'.filesEnv.state = sMid := by
           split at hStep
           · split at hStep
-            · injection hStep with heq; exact (congrArg FilesHealthyEnv.state heq).symm
+            · injection hStep with heq; exact (congrArg Files.HealthyEnv.state heq).symm
             · cases hStep
-          · injection hStep with heq; exact (congrArg FilesHealthyEnv.state heq).symm
+          · injection hStep with heq; exact (congrArg Files.HealthyEnv.state heq).symm
         rw [hsEq]
         unfold Files.allowedStep Files.allowedCloseStep at hAllow
         dsimp only at hAllow
@@ -520,15 +521,15 @@ theorem healthy_closeFd_instrumented_laws
           dsimp only at hAllow
           have hNoSec : w.filesEnv.state.ambientSeccomp = false := by
             have hw0 := ((wf_iff_parts w).mp hWf).1
-            unfold FilesHealthyEnv.wf at hw0
+            unfold Files.HealthyEnv.wf at hw0
             simpa using hw0
           cases r with
           | ok _ =>
-            dsimp only [filesOutcomeUnit] at hAllow
+            dsimp only [Files.outcomeOfUnit] at hAllow
             injection hAllow with hs; subst hs
             exact Or.inr rfl
           | error e =>
-            dsimp only [filesOutcomeUnit] at hAllow
+            dsimp only [Files.outcomeOfUnit] at hAllow
             have hNb := hNotBusy e rfl
             simp only [hNb, Bool.false_eq_true, ↓reduceIte, hNoSec, Bool.false_and] at hAllow
             split at hAllow
@@ -590,56 +591,18 @@ theorem retryEintr_preserves {W α : Type}
         · cases hBad
         · exact hQ)⟩
 
-/-- Exact `eintrBudget` accounting across a single `healthyNetStep`: `EINTR` requires `eintrBudget > 0` and decrements it by `1`; all other outcomes preserve `eintrBudget`. -/
-theorem healthyNetStep_eintrBudget (env env' : NetHealthyEnv) (req : Net.NetReq) (out : Net.NetOutcome)
-    (h : healthyNetStep env req out = some env') :
+/-- Exact `eintrBudget` accounting across a single `Net.healthyStep`: `EINTR` requires `eintrBudget > 0` and decrements it by `1`; all other outcomes preserve `eintrBudget`. -/
+theorem healthyNetStep_eintrBudget (env env' : Net.HealthyEnv) (req : Net.NetReq) (out : Net.NetOutcome)
+    (h : Net.healthyStep env req out = some env') :
     (out = .err Errno.EINTR → env.eintrBudget > 0 ∧ env'.eintrBudget = env.eintrBudget - 1) ∧
     (out ≠ .err Errno.EINTR → env'.eintrBudget = env.eintrBudget) := by
-  unfold healthyNetStep at h
-  split at h
-  · cases h
-  · cases hAl : Net.allowedStep env.state req out with
-    | none => rw [hAl] at h; cases h
-    | some s' =>
-      rw [hAl] at h
-      dsimp only at h
-      refine ⟨fun hEi => ?_, fun hNe => ?_⟩
-      · subst hEi
-        simp only [isNetEintrOutcome, beq_self_eq_true, ↓reduceIte] at h
-        split at h
-        · rename_i hPos
-          injection h with heq
-          exact ⟨hPos, (congrArg NetHealthyEnv.eintrBudget heq).symm⟩
-        · cases h
-      · have hFalse : isNetEintrOutcome out = false := by
-          cases out with
-          | err e =>
-            dsimp only [isNetEintrOutcome]
-            apply Bool.eq_false_iff.mpr
-            intro hEq
-            exact hNe (congrArg Net.NetOutcome.err (beq_iff_eq.mp hEq))
-          | _ => rfl
-        simp only [hFalse, Bool.false_eq_true, ↓reduceIte] at h
-        injection h with heq
-        exact (congrArg NetHealthyEnv.eintrBudget heq).symm
-
-/-- `healthyPollStep` requires `env.eintrBudget > 0` whenever `out = .err Errno.EINTR`. -/
-theorem healthyPollStep_eintrBudget (env env' : PollHealthyEnv) (req : Poll.PollReq) (out : Poll.PollOutcome)
-    (h : healthyPollStep env req out = some env')
-    (hEi : out = .err Errno.EINTR) :
-    env.eintrBudget > 0 := by
-  subst hEi
-  unfold healthyPollStep at h
-  split at h
-  · cases h
-  · cases hAl : Poll.allowedStep env.state req (.err Errno.EINTR) with
-    | none => rw [hAl] at h; cases h
-    | some s' =>
-      rw [hAl] at h
-      simp only [isPollEintrOutcome, beq_self_eq_true, ↓reduceIte] at h
-      split at h
-      · assumption
-      · cases h
+  have ⟨_, _, _, _, _, hEi, hNe⟩ := Net.healthyStep_implies_allowedStep h
+  refine ⟨fun hEq => hEi (by subst hEq; rfl), fun hNeOut => hNe ?_⟩
+  cases out with
+  | err e =>
+    exact Bool.eq_false_iff.mpr fun hB =>
+      hNeOut (congrArg Net.NetOutcome.err (beq_iff_eq.mp hB))
+  | _ => rfl
 
 /-- Generic `retryEintr` progress law with `eintrBudget` metric: when `budget w ≤ fuel`, `retryEintr fuel act` never returns `.error Errno.EINTR` and preserves `budget w' ≤ budget w`. -/
 theorem retryEintr_budget_laws {W α : Type}
@@ -1016,13 +979,13 @@ theorem healthy_recvIntoRing_laws
         rw [Nat.min_eq_left hCap, hTlLen]
       have hLtCap : rb.len < RING_CAP := by omega
       have hNet := hRef.2.1 w (.recvfrom fd want { dontwait := true }) ((wf_iff_parts w).mp hWf)
-      dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
+      dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
       rw [inst_net_recvfrom]
       rcases hRun : sys.net.recvfrom fd want { dontwait := true } w with ⟨r, w1⟩
       rw [hRun] at hNet
       dsimp only at hNet ⊢
       have hWf1 : w1.wf = true := (wf_iff_parts w1).mpr hNet.2.1
-      have hBud := healthyNetStep_eintrBudget w.netEnv w1.netEnv (.recvfrom fd want { dontwait := true }) (netOutcomeBytes r) hNet.1
+      have hBud := healthyNetStep_eintrBudget w.netEnv w1.netEnv (.recvfrom fd want { dontwait := true }) (Net.outcomeOfBytes r) hNet.1
       cases r with
       | ok bs =>
         have hBudEq : w1.netEnv.eintrBudget = w.netEnv.eintrBudget :=
@@ -1076,7 +1039,7 @@ theorem healthy_recvIntoRing_laws
       | error e =>
         by_cases hEi : (e == Errno.EINTR) = true
         · simp only [hEi, ↓reduceIte]
-          have hEqEi : netOutcomeBytes (.error e) = .err Errno.EINTR :=
+          have hEqEi : Net.outcomeOfBytes (.error e) = .err Errno.EINTR :=
             congrArg Net.NetOutcome.err (beq_iff_eq.mp hEi)
           obtain ⟨hPosB, hDecB⟩ := hBud.1 hEqEi
           have hSub := healthy_recvIntoRing_laws sys hRef fd fuel rb w1 tr hWf1 hCap
@@ -1166,13 +1129,13 @@ theorem healthy_flushRingNonblock_laws
         have hSz : slice.data.toList.length = slice.size := by simp
         rw [← hSz]; dsimp only [slice]; rw [hEq1, hEq2]; exact hLenPos
       have hNet := hRef.2.1 w (.sendto fd slice { nosignal := true, dontwait := true }) ((wf_iff_parts w).mp hWf)
-      dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
+      dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
       rw [inst_net_sendto]
       rcases hRun : sys.net.sendto fd slice { nosignal := true, dontwait := true } w with ⟨r, w1⟩
       rw [hRun] at hNet
       dsimp only at hNet ⊢
       have hWf1 : w1.wf = true := (wf_iff_parts w1).mpr hNet.2.1
-      have hBud := healthyNetStep_eintrBudget w.netEnv w1.netEnv (.sendto fd slice { nosignal := true, dontwait := true }) (netOutcomeU32 r) hNet.1
+      have hBud := healthyNetStep_eintrBudget w.netEnv w1.netEnv (.sendto fd slice { nosignal := true, dontwait := true }) (Net.outcomeOfU32 r) hNet.1
       cases r with
       | ok n =>
         have hBudEq : w1.netEnv.eintrBudget = w.netEnv.eintrBudget :=
@@ -1227,7 +1190,7 @@ theorem healthy_flushRingNonblock_laws
       | error e =>
         by_cases hEi : (e == Errno.EINTR) = true
         · simp only [hEi, ↓reduceIte]
-          have hEqEi : netOutcomeU32 (.error e) = .err Errno.EINTR :=
+          have hEqEi : Net.outcomeOfU32 (.error e) = .err Errno.EINTR :=
             congrArg Net.NetOutcome.err (beq_iff_eq.mp hEi)
           obtain ⟨hPosB, hDecB⟩ := hBud.1 hEqEi
           have hSub := healthy_flushRingNonblock_laws sys hRef fd fuel rb w1 tr hWf1 hCap
@@ -1370,7 +1333,7 @@ theorem monoNowMs_instrumented_laws
     ((instrumentSysOps sys).timeRand.clock_gettime .monotonic)
     (fun (wx, trx) ⟨hwx, htrx⟩ => by
       have ht := hRef.2.2.2.2.1 wx (.clock_gettime .monotonic) ((wf_iff_parts wx).mp hwx)
-      dsimp only [execTimeRandReq, TimeRand.execTimeRandReq, Functor.map, StateT.map, StateT.run,
+      dsimp only [TimeRand.execTimeRandReq, Functor.map, StateT.map, StateT.run,
         bind, Bind.bind, StateT.bind, pure, Pure.pure, StateT.pure, Id.run] at ht
       dsimp only [StateT.run]
       rw [inst_time_gettime]
@@ -1439,14 +1402,14 @@ theorem flushBytesNonblock_instrumented_laws
         rw [← h1, hSliceList, h2]
       have hSlicePos : slice.size > 0 := by omega
       have hNet := hRef.2.1 w (.sendto fd slice { nosignal := true, dontwait := true }) ((wf_iff_parts w).mp hWf)
-      dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
+      dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
       rw [inst_net_sendto]
       rcases hRun : sys.net.sendto fd slice { nosignal := true, dontwait := true } w with ⟨r, w1⟩
       rw [hRun] at hNet
       dsimp only at hNet ⊢
       have hWf1 : w1.wf = true := (wf_iff_parts w1).mpr hNet.2.1
       have hNd1 : (w.filesEnv.state.fds.map Prod.fst).Nodup → (w1.filesEnv.state.fds.map Prod.fst).Nodup := hNet.2.2.2
-      have hBud := healthyNetStep_eintrBudget w.netEnv w1.netEnv (.sendto fd slice { nosignal := true, dontwait := true }) (netOutcomeU32 r) hNet.1
+      have hBud := healthyNetStep_eintrBudget w.netEnv w1.netEnv (.sendto fd slice { nosignal := true, dontwait := true }) (Net.outcomeOfU32 r) hNet.1
       cases r with
       | ok n =>
         have hBudEq : w1.netEnv.eintrBudget = w.netEnv.eintrBudget := hBud.2 (fun hc => nomatch hc)
@@ -1508,7 +1471,7 @@ theorem flushBytesNonblock_instrumented_laws
       | error e =>
         by_cases hEi : (e == Errno.EINTR) = true
         · simp only [hEi, ↓reduceIte]
-          have hEqEi : netOutcomeU32 (.error e) = .err Errno.EINTR :=
+          have hEqEi : Net.outcomeOfU32 (.error e) = .err Errno.EINTR :=
             congrArg Net.NetOutcome.err (beq_iff_eq.mp hEi)
           obtain ⟨hPosB, hDecB⟩ := hBud.1 hEqEi
           have hSub := flushBytesNonblock_instrumented_laws sys hRef fd bytes fuel off w1 tr hWf1
@@ -1553,7 +1516,7 @@ theorem shutdownWrClean_instrumented_laws
     unfold Relay.shutdownWrClean
     dsimp only [StateT.run, bind, StateT.bind, pure, StateT.pure, Id.run]
     have hNet := hRef.2.1 w (.shutdown fd .wr) ((wf_iff_parts w).mp hWf)
-    dsimp only [execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
+    dsimp only [Net.execNetReq, Functor.map, StateT.map, StateT.run, bind, Bind.bind, pure, Pure.pure, Id.run] at hNet
     rw [inst_net_shutdown]
     rcases hRun : sys.net.shutdown fd .wr w with ⟨r, w1⟩
     rw [hRun] at hNet

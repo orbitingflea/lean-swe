@@ -11,7 +11,7 @@ Constructs `HealthySimState` and `healthySimDeps` directly over `LinuxSyscall.Pr
 `LinuxSyscall.Files` (with genuine `evalModel`-backed `fstat`, `fstatat`, and `faccessat`),
 and `LinuxSyscall.TimeRand.modelOps`, and proves `RefinesHealthySysDeps` via
 `refinesHealthySysDeps_of_components` (deriving `close` FD erasure from canonical
-`healthyFilesStep` without `.close`/`EBUSY`).
+`Files.healthyStep` without `.close`/`EBUSY`).
 -/
 
 namespace LeanSwe.Process.Proofs
@@ -131,15 +131,15 @@ def toSimTimeState (s : HealthySimState) : TimeRand.TimeRandState :=
   { s.timeState with ambientSeccomp := false }
 
 /-- `HealthyEnv` projection for `LinuxSyscall.Process`. -/
-def projSimProc (s : HealthySimState) : HealthyEnv LinuxSyscall.Process.ProcessSysState :=
+def projSimProc (s : HealthySimState) : LinuxSyscall.Process.HealthyEnv :=
   { state := toSimProcState s, eintrBudget := 0 }
 
 /-- `HealthyEnv` projection for `LinuxSyscall.Files`. -/
-def projSimFiles (s : HealthySimState) : HealthyEnv Files.FilesState :=
+def projSimFiles (s : HealthySimState) : Files.HealthyEnv :=
   { state := toSimFilesState s.simFds, eintrBudget := 0 }
 
 /-- `HealthyEnv` projection for `LinuxSyscall.TimeRand`. -/
-def projSimTime (s : HealthySimState) : HealthyEnv TimeRand.TimeRandState :=
+def projSimTime (s : HealthySimState) : TimeRand.HealthyEnv :=
   { state := toSimTimeState s, eintrBudget := 0 }
 
 /-- Upper bound across association-list keys in `xs` starting from `init`. -/
@@ -410,7 +410,7 @@ private theorem evalModelWaitpid_child100
     (s : HealthySimState) (pid : Int32) (flags : LinuxSyscall.Process.WaitFlags) :
     let ps := toSimProcState s
     let (res, ps') := LinuxSyscall.Process.evalModelWaitpid ps pid flags
-    (∀ e, res = .error e → isCriticalOsErrno e = false ∧ e ≠ Errno.EINTR) ∧
+    (∀ e, res = .error e → Errno.isCriticalOsErrno e = false ∧ e ≠ Errno.EINTR) ∧
     toSimProcState { s with child100? := if ps'.procs.isEmpty then none else s.child100? } = ps' := by
   dsimp only
   cases hCh : s.child100? with
@@ -504,7 +504,7 @@ private theorem evalKill_child100
     (ps : LinuxSyscall.Process.ProcessSysState) (target : Int32) (sig : LinuxSyscall.Process.Signal)
     (hProcs : ps.procs = [] ∨ ∃ z, ps.procs = [(100, child100Entry z)]) :
     (∀ e, LinuxSyscall.Process.evalKill ps target sig = .error e →
-      isCriticalOsErrno e = false ∧ e ≠ Errno.EINTR ∧
+      Errno.isCriticalOsErrno e = false ∧ e ≠ Errno.EINTR ∧
       (e = Errno.ESRCH → LinuxSyscall.Process.esrchKillNext ps target = ps)) ∧
     (∀ st, LinuxSyscall.Process.evalKill ps target sig = .ok st → st = ps) := by
   have hReapSingle : ∀ pid, LinuxSyscall.Process.reapExitDeadSingleTarget ps pid = ps := by
@@ -570,7 +570,7 @@ private theorem evalKill_child100
       · rfl
   have hGroup : ∀ pgid,
       (∀ e, LinuxSyscall.Process.evalKillProcessGroup ps pgid sig = .error e →
-        isCriticalOsErrno e = false ∧ e ≠ Errno.EINTR) ∧
+        Errno.isCriticalOsErrno e = false ∧ e ≠ Errno.EINTR) ∧
       (∀ st, LinuxSyscall.Process.evalKillProcessGroup ps pgid sig = .ok st → st = ps) := by
     intro pgid
     unfold LinuxSyscall.Process.evalKillProcessGroup
@@ -588,7 +588,7 @@ private theorem evalKill_child100
             rw [hApply]
   have hSingle : ∀ tpid,
       (∀ e, LinuxSyscall.Process.deliverSignalToTarget ps tpid sig false = .error e →
-        isCriticalOsErrno e = false ∧ e ≠ Errno.EINTR) ∧
+        Errno.isCriticalOsErrno e = false ∧ e ≠ Errno.EINTR) ∧
       (∀ st, LinuxSyscall.Process.deliverSignalToTarget ps tpid sig false = .ok st → st = ps) := by
     intro tpid
     unfold LinuxSyscall.Process.deliverSignalToTarget
@@ -674,17 +674,18 @@ private theorem evalKill_child100
                 · injection hOk with hEq; subst hEq; rw [hApply]
             · exact (hGroup _).2 st hOk
 
-/-- `healthySimDeps.proc` refines `healthyProcessStep` via `projSimProc`. -/
+/-- `healthySimDeps.proc` refines canonical `LinuxSyscall.Process.healthyStep` via `projSimProc`. -/
 theorem healthySimDeps_proc_refinesHealthy :
-    RefinesHealthyProcessAt projSimProc id healthySimDeps.proc where
+    RefinesHealthyProcOpsAt projSimProc id healthySimDeps.proc where
   pipe2_healthy s flags _ := by
     dsimp only [healthySimDeps, stateM_modifyGet_run, projSimProc, id]
-    refine ⟨?_, rfl⟩
     by_cases hVal : flags.isValid = true
     · by_cases hNotif : flags.notificationPipe = true
       · simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte, hNotif]
-        unfold healthyProcessStep LinuxSyscall.Process.allowedStep LinuxSyscall.Process.validateReqBeforeKernel
-        have hCrit65 : isCriticalOsErrno LinuxSyscall.Process.errnoENOPKG = false := by decide
+        unfold LinuxSyscall.Process.healthyStep LinuxSyscall.Process.HealthyEnv.wf
+          LinuxSyscall.Process.isCriticalFault LinuxSyscall.Process.isEintrOutcome
+          LinuxSyscall.Process.allowedStep LinuxSyscall.Process.validateReqBeforeKernel
+        have hCrit65 : Errno.isCriticalOsErrno LinuxSyscall.Process.errnoENOPKG = false := by decide
         have hNeEi65 : (LinuxSyscall.Process.errnoENOPKG == Errno.EINTR) = false := by decide
         simp [toSimProcState, LinuxSyscall.Process.ProcessSysState.initial, hVal, hNotif,
           hCrit65, hNeEi65]
@@ -698,19 +699,23 @@ theorem healthySimDeps_proc_refinesHealthy :
           proc_assocGet_none_of_gt_maxKey s.procFds s.procNextHid (base + 2) (by omega)
         have hNe : ((base + 1 : Files.HandleId) != (base + 2 : Files.HandleId)) = true :=
           bne_iff_ne.mpr (by omega)
-        unfold healthyProcessStep LinuxSyscall.Process.allowedStep LinuxSyscall.Process.validateReqBeforeKernel
+        unfold LinuxSyscall.Process.healthyStep LinuxSyscall.Process.HealthyEnv.wf
+          LinuxSyscall.Process.isCriticalFault LinuxSyscall.Process.isEintrOutcome
+          LinuxSyscall.Process.allowedStep LinuxSyscall.Process.validateReqBeforeKernel
         dsimp only
         have hSec : (toSimProcState s).ambientSeccomp = false := rfl
         have hFds : (toSimProcState s).fds = s.procFds := rfl
         rw [hSec]
-        simp only [Bool.false_eq_true, ↓reduceIte]
+        simp only [Bool.not_false, Bool.not_true, Bool.or_self, Bool.false_eq_true, ↓reduceIte]
         rw [hVal, hNotifF, hFds, hNe, hNoneR, hNoneW]
         simp [LinuxSyscall.Process.commitPipeFds, toSimProcState, LinuxSyscall.Process.ProcessSysState.initial]
     · have hValF : flags.isValid = false := Bool.eq_false_iff.mpr hVal
       simp only [hValF, Bool.not_false, ↓reduceIte]
-      unfold healthyProcessStep LinuxSyscall.Process.allowedStep LinuxSyscall.Process.validateReqBeforeKernel
+      unfold LinuxSyscall.Process.healthyStep LinuxSyscall.Process.HealthyEnv.wf
+        LinuxSyscall.Process.isCriticalFault LinuxSyscall.Process.isEintrOutcome
+        LinuxSyscall.Process.allowedStep LinuxSyscall.Process.validateReqBeforeKernel
       simp [toSimProcState, LinuxSyscall.Process.ProcessSysState.initial, hValF,
-        isCriticalOsErrno, Errno.EINVAL, Errno.EINTR, Errno.ENOMEM, Errno.EIO, Errno.ENFILE]
+        Errno.isCriticalOsErrno, Errno.EINVAL, Errno.EINTR, Errno.ENOMEM, Errno.EIO, Errno.ENFILE]
   waitpid_healthy s pid flags _ := by
     have hSound := LinuxSyscall.Process.modelOps_execProcessReq_sound (toSimProcState s) (.waitpid pid flags)
     have hPres := evalModelWaitpid_child100 s pid flags
@@ -737,20 +742,19 @@ theorem healthySimDeps_proc_refinesHealthy :
       rw [hEv] at hPres
       obtain ⟨hNoCrit, hStEq⟩ := hPres
       dsimp only at hSound ⊢
-      refine ⟨?_, rfl⟩
-      unfold healthyProcessStep
+      unfold LinuxSyscall.Process.healthyStep LinuxSyscall.Process.HealthyEnv.wf
+        LinuxSyscall.Process.isCriticalFault LinuxSyscall.Process.isEintrOutcome
       have hSec : (toSimProcState s).ambientSeccomp = false := rfl
-      rw [hSec]
       cases res with
       | ok wr =>
         dsimp only at hSound ⊢
-        rw [hSound, hStEq]
+        rw [hSec, hSound, hStEq]
         rfl
       | error e =>
         obtain ⟨hCrit, hNeEi⟩ := hNoCrit e rfl
-        dsimp only at hSound ⊢
-        rw [hSound, hCrit, beq_false_of_ne hNeEi, hStEq]
-        rfl
+        dsimp only at hSound hStEq ⊢
+        simp only [hSec, hCrit, hSound, beq_false_of_ne hNeEi, hStEq,
+          Bool.not_false, Bool.not_true, Bool.or_self, Bool.false_eq_true, ↓reduceIte]
   kill_healthy s target sig _ := by
     have hSound := LinuxSyscall.Process.modelOps_execProcessReq_sound (toSimProcState s) (.kill target sig)
     have hProcsShape : (toSimProcState s).procs = [] ∨ ∃ z, (toSimProcState s).procs = [(100, child100Entry z)] := by
@@ -778,10 +782,9 @@ theorem healthySimDeps_proc_refinesHealthy :
       cases res <;> exact hSound
     have hRun : LinuxSyscall.Process.modelOps.kill target sig (toSimProcState s) = (res, ps') := hEvRun
     dsimp only
-    refine ⟨?_, rfl⟩
-    unfold healthyProcessStep
+    unfold LinuxSyscall.Process.healthyStep LinuxSyscall.Process.HealthyEnv.wf
+      LinuxSyscall.Process.isCriticalFault LinuxSyscall.Process.isEintrOutcome
     have hSec : (toSimProcState s).ambientSeccomp = false := rfl
-    rw [hSec]
     have hKillUnf : LinuxSyscall.Process.modelOps.kill target sig (toSimProcState s) =
         match LinuxSyscall.Process.validateReqBeforeKernel (toSimProcState s) (.kill target sig) with
         | some e => (.error e, toSimProcState s)
@@ -818,10 +821,9 @@ theorem healthySimDeps_proc_refinesHealthy :
         · cases hPre
       subst hPreEq
       dsimp only at hSound2 ⊢
-      rw [hSound2]
-      have hCrit22 : isCriticalOsErrno Errno.EINVAL = false := by decide
+      have hCrit22 : Errno.isCriticalOsErrno Errno.EINVAL = false := by decide
       have hNeEi22 : (Errno.EINVAL == Errno.EINTR) = false := by decide
-      simp [hCrit22, hNeEi22]
+      simp [hSec, hCrit22, hSound2, hNeEi22]
     | none =>
       rw [hPre] at hRun
       dsimp only at hRun
@@ -834,7 +836,7 @@ theorem healthySimDeps_proc_refinesHealthy :
         have hEq := hKillOk st hEv
         subst hEq
         dsimp only at hSound2 ⊢
-        rw [hSound2]
+        rw [hSec, hSound2]
         rfl
       | error e =>
         rw [hEv] at hRun
@@ -848,7 +850,6 @@ theorem healthySimDeps_proc_refinesHealthy :
           · rfl
         subst hNextEq
         dsimp only at hSound2 ⊢
-        rw [hSound2, hCrit, beq_false_of_ne hNeEi]
-        rfl
+        simp [hSec, hCrit, hSound2, beq_false_of_ne hNeEi]
 
 end LeanSwe.Process.Proofs
