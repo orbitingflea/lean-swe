@@ -30,7 +30,7 @@ structure NonLockFsOpsM (m : Type → Type) where
   stat : Bool → String → m (Except FsError FileStat)
   /-- List immediate entry names inside a directory. -/
   readDir : String → m (Except FsError (Array String))
-  /-- Create a single directory, failing if parent is absent or path exists. -/
+  /-- Create a single directory (`0o777` subject to process `umask`), failing if parent is absent or path exists. -/
   createDir : String → m (Except FsError Unit)
   /-- Remove an empty directory. -/
   removeDir : String → m (Except FsError Unit)
@@ -38,11 +38,11 @@ structure NonLockFsOpsM (m : Type → Type) where
   unlinkFile : String → m (Except FsError Unit)
   /-- Read entire binary file (regular files only; rejects directories, FIFOs, and special files). -/
   readBytes : String → m (Except FsError ByteArray)
-  /-- Write or overwrite binary file. -/
+  /-- Write or overwrite binary file (`0o666` subject to process `umask` when created). -/
   writeBytes : String → ByteArray → m (Except FsError Unit)
-  /-- Atomically create a new regular file without following symlinks (`O_CREAT | O_EXCL | O_NOFOLLOW`), failing with `.alreadyExists` if any entry exists. -/
+  /-- Atomically create a new regular file without following symlinks (`O_CREAT | O_EXCL | O_NOFOLLOW`, `0o644` subject to process `umask`), failing with `.alreadyExists` if any entry exists. -/
   createFileNew : String → ByteArray → m (Except FsError Unit)
-  /-- Append UTF-8 text to a file, creating it if absent. -/
+  /-- Append UTF-8 text to a file, creating it if absent (`0o666` subject to process `umask`). -/
   appendText : String → String → m (Except FsError Unit)
   /-- Rename or replace a file or directory. -/
   rename : String → String → m (Except FsError Unit)
@@ -61,7 +61,7 @@ structure NonLockFsOpsM (m : Type → Type) where
 
 /-- Minimal single-step filesystem primitives parameterized over effect monad `m` and lock handle type `lockH`. -/
 structure RawFsOpsM (m : Type → Type) (lockH : Type := LockHandle) extends NonLockFsOpsM m where
-  /-- Open `path` and acquire an advisory `flock(2)` lock (`shared` or `exclusive`). -/
+  /-- Open `path` and acquire an advisory `flock(2)` lock (`shared` or `exclusive`, `0o644` subject to process `umask` when created). -/
   acquireLock : String → LockMode → Bool → Bool → m (Except FsError lockH)
   /-- Unlock and close an acquired lock handle. -/
   releaseLock : lockH → m (Except FsError Unit)
@@ -863,100 +863,6 @@ def vfsOps : RawFsOpsM (StateM VfsState) :=
       vfsAcquireLockPure st path mode createIfMissing nonBlocking
     releaseLock := fun handle st => vfsReleaseLockPure st handle }
 
-/-- Reference ambient `FsApiM (StateM VfsState)` built directly from `vfsOps` without importing `Impl`. -/
-def vfsApi : FsApiM (StateM VfsState) :=
-  { join := join
-    joinMany := joinMany
-    normPath := normPath
-    parent := parent
-    name := name
-    stem := stem
-    suffix := suffix
-    suffixes := suffixes
-    withName := withName
-    withSuffix := withSuffix
-    isAbsolute := isAbsolute
-    relativeTo := relativeTo
-    mapRawError := vfsOps.mapRawError
-    readText := fun p => do
-      match ← vfsOps.readBytes p with
-      | .error e => return .error e
-      | .ok bs =>
-        match String.fromUTF8? bs with
-        | some s => return .ok s
-        | none => return .error { kind := .invalidInput, path := some p, message := s!"invalid UTF-8 in file: {p}" }
-    writeText := fun p c => vfsOps.writeBytes p c.toUTF8
-    appendText := vfsOps.appendText
-    readBytes := vfsOps.readBytes
-    writeBytes := vfsOps.writeBytes
-    atomicWriteBytes := fun p bs => vfsOps.writeBytes p bs
-    atomicWriteText := fun p c => vfsOps.writeBytes p c.toUTF8
-    touch := fun p _ => vfsOps.writeBytes p ByteArray.empty
-    mkdir := fun p _ _ => vfsOps.createDir p
-    unlink := fun p _ => vfsOps.unlinkFile p
-    rmdir := vfsOps.removeDir
-    rmtree := fun p _ => vfsOps.removeDir p
-    rename := vfsOps.rename
-    copyFile := fun src dst => do
-      match ← vfsOps.readBytes src with
-      | .error e => return .error e
-      | .ok bs => vfsOps.writeBytes dst bs
-    copyTree := fun _ _ _ => pure (.error { kind := .unsupported, message := "unsupported in vfsApi reference" })
-    pathExists := fun p => do
-      match ← vfsOps.stat true p with
-      | .ok _ => return .ok true
-      | .error _ => return .ok false
-    isFile := fun p => do
-      match ← vfsOps.stat true p with
-      | .ok st => return .ok (st.kind == .file)
-      | .error _ => return .ok false
-    isDir := fun p => do
-      match ← vfsOps.stat true p with
-      | .ok st => return .ok (st.kind == .dir)
-      | .error _ => return .ok false
-    isSymlink := fun p => do
-      match ← vfsOps.stat false p with
-      | .ok st => return .ok (st.kind == .symlink)
-      | .error _ => return .ok false
-    stat := vfsOps.stat true
-    lstat := vfsOps.stat false
-    chmod := vfsOps.chmod
-    symlink := vfsOps.symlink
-    readLink := vfsOps.readLink
-    resolve := vfsOps.realPath
-    cwd := vfsOps.cwd
-    listDir := fun p => do
-      match ← vfsOps.readDir p with
-      | .error e => return .error e
-      | .ok names => return .ok (names.toList.mergeSort (· ≤ ·)).toArray
-    walk := fun _ => pure (.ok #[])
-    glob := fun _ _ => pure (.ok #[])
-    rglob := fun _ _ => pure (.ok #[])
-    withFileLock := fun p mode cim act => do
-      match ← vfsOps.acquireLock p mode cim false with
-      | .error e => return .error e
-      | .ok h =>
-        let r ← act
-        let rel ← vfsOps.releaseLock h
-        match r with
-        | .error e => return .error e
-        | .ok a =>
-          match rel with
-          | .ok () => return .ok a
-          | .error re => return .error re
-    tryWithFileLock := fun p mode cim act => do
-      match ← vfsOps.acquireLock p mode cim true with
-      | .error e => if e.kind == .wouldBlock then return .ok none else return .error e
-      | .ok h =>
-        let r ← act
-        let rel ← vfsOps.releaseLock h
-        match r with
-        | .error e => return .error e
-        | .ok a =>
-          match rel with
-          | .ok () => return .ok (some a)
-          | .error re => return .error re }
-
 private def maxDirId : List (Nat × List String) → Nat
   | [] => 0
   | (i, _) :: rest => max i (maxDirId rest)
@@ -1040,7 +946,8 @@ private theorem nat_toString_digits (n : Nat) (c : Char) (hMem : c ∈ (toString
   · rcases d with _ | _ | _ | _ | _ | _ | _ | _ | _ | _ | d
     all_goals first | decide | omega
 
-private theorem validSeg_dotT (n : Nat) : validSeg (".t." ++ toString n) = true := by
+/-- Every decimal-suffixed `.t.<n>` temporary filename satisfies `validSeg`. -/
+theorem validSeg_dotT (n : Nat) : validSeg (".t." ++ toString n) = true := by
   have hNoSlash : (".t." ++ toString n).toList.contains '/' = false := by
     refine Bool.eq_false_iff.mpr ?_
     intro hm
@@ -1687,7 +1594,7 @@ def SpecMkdirVisibleAndRmtreeNotFound (mkSubtree : SubtreeBuilder (StateM VfsSta
     rRes = .ok () ∧
     (∃ e, (sub.lstat { segments := [child] } |>.run st₁).1 = .error e ∧ e.kind = .notFound))
 
-/-- Frozen theorem specification: on symlink-free traversable subpaths under `pos`, `SubtreeM.readRegular` and `SubtreeM.lstat` agree with ambient `vfsApi.readBytes` and `vfsApi.lstat`. -/
+/-- Frozen theorem specification: on symlink-free traversable subpaths under `pos`, `SubtreeM.readRegular` and `SubtreeM.lstat` agree with ambient `vfsOps.readBytes` and `vfsOps.stat false`. -/
 def SpecSubtreeAgreesWithAmbientOnSymlinkFree (mkSubtree : SubtreeBuilder (StateM VfsState)) : Prop :=
   ∀ (st : VfsState) (dh : DirHandle) (pos : List String) (rel : RelPath) (bs : ByteArray) (fm : Nat),
     lookupDir st dh = some pos →
@@ -1705,7 +1612,7 @@ def SpecSubtreeAgreesWithAmbientOnSymlinkFree (mkSubtree : SubtreeBuilder (State
     (fm / 256) % 2 = 1 →
     let fullPath := pathOfSegs (pos ++ rel.segments.map (·.val))
     let sub := mkSubtree vfsDirOps dh
-    (sub.readRegular rel |>.run st).1 = (vfsApi.readBytes fullPath |>.run st).1 ∧
-    (sub.lstat rel |>.run st).1 = (vfsApi.lstat fullPath |>.run st).1
+    (sub.readRegular rel |>.run st).1 = (vfsOps.readBytes fullPath |>.run st).1 ∧
+    (sub.lstat rel |>.run st).1 = (vfsOps.stat false fullPath |>.run st).1
 
 end LeanSwe.Fs.Model

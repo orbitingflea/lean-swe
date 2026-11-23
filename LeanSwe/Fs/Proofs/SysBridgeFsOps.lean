@@ -18,9 +18,9 @@ theorem createFileNewPure_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
       FsWorldTrace (proj s) tr (proj p.2) ∧
       match p.1 with
       | .ok () => WriteFileTrace none path.toUTF8 createNewOpenFlags 0o644 bytes tr
-      | .error e => nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPathModel path = false ∧ e.kind = .invalidInput)) := by
+      | .error e => nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput)) := by
   unfold SysBridge.createFileNewPure
-  by_cases hVal : SysBridge.isValidRawPath path = true
+  by_cases hVal : isValidRawPath path = true
   · simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     have hOp := retryEintr_single_req (cap.files.openat none path.toUTF8 createNewOpenFlags 0o644)
       (.openat none path.toUTF8 createNewOpenFlags 0o644) outcomeOfOpened
@@ -75,10 +75,9 @@ theorem createFileNewPure_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
                  traceFds_nonFd_step (by cases uRes <;> rfl) rfl, by omega⟩
               exact ⟨hUn'.1, hUn'.2.2.trans (hTmp2.trans hTmp1), _,
                 fsWorldTrace_append hTrOWC hTrU, hOutW, Or.inl (by simp)⟩
-  · have hValF : isValidRawPathModel path = false := Bool.eq_false_iff.mpr hVal
-    have hValF' : SysBridge.isValidRawPath path = false := hValF
-    simp only [hValF', Bool.not_false, ↓reduceIte, Pure.pure, StateT.pure, StateT.run]
-    exact ⟨hWf, trivial, [], fsWorldTrace_nil hWf, nonLockErrOk_mapErrno _ _ _, Or.inr ⟨hValF, rfl⟩⟩
+  · have hValF : isValidRawPath path = false := Bool.eq_false_iff.mpr hVal
+    simp only [hValF, Bool.not_false, ↓reduceIte, Pure.pure, StateT.pure, StateT.run]
+    exact ⟨hWf, trivial, [], fsWorldTrace_nil hWf, nonLockErrOk_mapErrno _ _ _, Or.inr ⟨trivial, rfl⟩⟩
 
 /-- Trace specification for `SysBridge.readDirPure`. -/
 theorem readDirPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
@@ -175,10 +174,10 @@ theorem acquireLockPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFi
     | .error e =>
       ∃ tr,
         FsWorldTrace (proj s) tr (proj p.2) ∧
-        ((nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPathModel path = false ∧ e.kind = .invalidInput))) ∨
+        ((nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput))) ∨
          (e.kind = .wouldBlock ∧ nonBlocking = true ∧ TryLockContendedTrace none path.toUTF8 mode tr)) := by
   unfold SysBridge.acquireLockPure
-  by_cases hVal : SysBridge.isValidRawPath path = true
+  by_cases hVal : isValidRawPath path = true
   · simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     let baseFlags : OpenFlags := { access := .rdonly, nofollow := true, cloexec := true, nonblock := true }
     let creatFlags : OpenFlags := { access := .rdonly, creat := true, nofollow := true, cloexec := true, nonblock := true }
@@ -211,7 +210,7 @@ theorem acquireLockPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFi
             (.flock h (lockModeToFlockOp mode nonBlocking), .unit) ∈ trLock
         | .error e =>
           ∃ tr, FsWorldTrace (proj s) tr (proj p.2) ∧
-            ((nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPathModel path = false ∧ e.kind = .invalidInput))) ∨
+            ((nonLockErrOk e ∧ (tr ≠ [] ∨ (true = false ∧ e.kind = .invalidInput))) ∨
              (e.kind = .wouldBlock ∧ nonBlocking = true ∧ TryLockContendedTrace none path.toUTF8 mode tr)) := by
       intro sX fdRes trOpen hWfX hTmpX hStX hFdX
       cases fdRes with
@@ -298,9 +297,8 @@ theorem acquireLockPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFi
           exact hAfterOpen (sX := s1) (fdRes := .error e1)
             (trOpen := trR1 ++ [(.openat none path.toUTF8 baseFlags 0, .err e1)])
             hWf1 hTmp1 hSt1 ⟨hFd1, by simp⟩
-  · have hValF : isValidRawPathModel path = false := Bool.eq_false_iff.mpr hVal
-    have hValF' : SysBridge.isValidRawPath path = false := hValF
-    simp only [hValF', Bool.not_false, ↓reduceIte, Pure.pure, StateT.pure, StateT.run]
-    exact ⟨hWf, trivial, [], fsWorldTrace_nil hWf, Or.inl ⟨nonLockErrOk_mapErrno _ _ _, Or.inr ⟨hValF, rfl⟩⟩⟩
+  · have hValF : isValidRawPath path = false := Bool.eq_false_iff.mpr hVal
+    simp only [hValF, Bool.not_false, ↓reduceIte, Pure.pure, StateT.pure, StateT.run]
+    exact ⟨hWf, trivial, [], fsWorldTrace_nil hWf, Or.inl ⟨nonLockErrOk_mapErrno _ _ _, Or.inr ⟨trivial, rfl⟩⟩⟩
 
 end LeanSwe.Fs.Proofs

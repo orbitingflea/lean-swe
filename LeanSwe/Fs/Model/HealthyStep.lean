@@ -51,11 +51,6 @@ def toFileStat (st : StatInfo) : FileStat :=
     accessedSec := st.atimeSec
     accessedNsec := st.atimeNsec.toNat }
 
-/-- Model path validity predicate matching `SysBridge.isValidRawPath`. -/
-def isValidRawPathModel (path : String) : Bool :=
-  let cs := path.toList
-  !cs.isEmpty && !(Char.ofNat 0 ∈ cs) && !(cs.length > 1 && cs.getLast? == some '/')
-
 /-- Canonical open flags for non-blocking regular-file reads (`O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY`). -/
 def readOpenFlags : OpenFlags :=
   { access := .rdonly, nonblock := true, cloexec := true, noctty := true }
@@ -160,9 +155,9 @@ def StatTrace (dir : Option HandleId) (path : ByteArray) (follow : Bool)
 def FstatTrace (h : HandleId) (st : FileStat) (tr : List KernelStep) : Prop :=
   ∃ rawSt, (.fstat h, .statted rawSt) ∈ tr ∧ st = toFileStat rawSt
 
-/-- Trace witness that `mkdirat` succeeded on `(dir, path)` with mode `0o755`. -/
-def MkdirTrace (dir : Option HandleId) (path : ByteArray) (tr : List KernelStep) : Prop :=
-  (.mkdirat dir path 0o755, .unit) ∈ tr
+/-- Trace witness that `mkdirat` succeeded on `(dir, path)` with `mode`. -/
+def MkdirTrace (dir : Option HandleId) (path : ByteArray) (mode : UInt32) (tr : List KernelStep) : Prop :=
+  (.mkdirat dir path mode, .unit) ∈ tr
 
 /-- Trace witness that `unlinkat` succeeded on `(dir, path, removeDir)`. -/
 def UnlinkTrace (dir : Option HandleId) (path : ByteArray) (removeDir : Bool)
@@ -428,17 +423,17 @@ def allowedScopedRawFsStep (w : FsWorld) (req : ScopedRawFsStepReq)
   | .unit res =>
     ∃ tr, FsWorldTrace w tr w' ∧ w'.tempSeq = w.tempSeq ∧
       match req, res with
-      | .createDir path, .ok () => MkdirTrace none path.toUTF8 tr
+      | .createDir path, .ok () => MkdirTrace none path.toUTF8 0o777 tr
       | .removeDir path, .ok () => UnlinkTrace none path.toUTF8 true tr
       | .unlinkFile path, .ok () => UnlinkTrace none path.toUTF8 false tr
-      | .writeBytes path data, .ok () => WriteFileTrace none path.toUTF8 writeOpenFlags 0o644 data tr
+      | .writeBytes path data, .ok () => WriteFileTrace none path.toUTF8 writeOpenFlags 0o666 data tr
       | .createFileNew path data, .ok () => WriteFileTrace none path.toUTF8 createNewOpenFlags 0o644 data tr
-      | .appendText path content, .ok () => WriteFileTrace none path.toUTF8 appendOpenFlags 0o644 content.toUTF8 tr
+      | .appendText path content, .ok () => WriteFileTrace none path.toUTF8 appendOpenFlags 0o666 content.toUTF8 tr
       | .rename src dst, .ok () => RenameTrace none src.toUTF8 none dst.toUTF8 tr
       | .chmod path mode, .ok () => ChmodTrace none path.toUTF8 mode tr
       | .symlink target linkPath, .ok () => SymlinkTrace target.toUTF8 none linkPath.toUTF8 tr
       | .createFileNew path _, .error e =>
-        nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPathModel path = false ∧ e.kind = .invalidInput))
+        nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput))
       | .createDir _, .error e | .removeDir _, .error e | .unlinkFile _, .error e
       | .writeBytes _ _, .error e | .appendText _ _, .error e | .rename _ _, .error e
       | .chmod _ _, .error e | .symlink _ _, .error e =>
@@ -451,7 +446,7 @@ def allowedScopedRawFsStep (w : FsWorld) (req : ScopedRawFsStepReq)
         match res with
         | .ok bs => ReadRegularTrace none path.toUTF8 readOpenFlags bs tr
         | .error e =>
-          nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPathModel path = false ∧ e.kind = .invalidInput))
+          nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput))
     | _ => False
   | .str res =>
     ∃ tr, FsWorldTrace w tr w' ∧ w'.tempSeq = w.tempSeq ∧
@@ -475,7 +470,7 @@ def allowedScopedRawFsStep (w : FsWorld) (req : ScopedRawFsStepReq)
         match res with
         | .ok v => actRes = .ok v ∧ FileLockTrace none path.toUTF8 mode false true tr
         | .error e =>
-          (nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPathModel path = false ∧ e.kind = .invalidInput))) ∨
+          (nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput))) ∨
           (actRes = .error e ∧ FileLockTrace none path.toUTF8 mode false false tr)
     | _ => False
   | .tryLockVal res =>
@@ -486,7 +481,7 @@ def allowedScopedRawFsStep (w : FsWorld) (req : ScopedRawFsStepReq)
         | .ok none => TryLockContendedTrace none path.toUTF8 mode tr
         | .ok (some v) => actRes = .ok v ∧ FileLockTrace none path.toUTF8 mode true true tr
         | .error e =>
-          (nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPathModel path = false ∧ e.kind = .invalidInput))) ∨
+          (nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput))) ∨
           (actRes = .error e ∧ FileLockTrace none path.toUTF8 mode true false tr)
     | _ => False
 
@@ -626,7 +621,7 @@ def AtomicWriteTrace (w w' : FsWorld) (path : String) (data : ByteArray) (tr : L
 
 /-- Behavioral trace witness for `mkdir path _ existOk`: either `mkdirat` created `path`, or `existOk = true` and `fstatat` confirmed an existing directory. -/
 def MkdirOkTrace (path : String) (existOk : Bool) (tr : List KernelStep) : Prop :=
-  MkdirTrace none path.toUTF8 tr ∨
+  MkdirTrace none path.toUTF8 0o777 tr ∨
   (existOk = true ∧ ∃ rawSt nf, (.fstatat none path.toUTF8 { symlinkNofollow := nf }, .statted rawSt) ∈ tr ∧ rawSt.kind = .dir)
 
 /-- Behavioral trace witness that `root` was verified as a directory and scanned via `openat(O_DIRECTORY)` + `getdents64` EOF. -/
@@ -641,21 +636,21 @@ def allowedFsStep (w : FsWorld) (req : FsStepReq) (out : FsStepOut) (w' : FsWorl
     ∃ tr, FsWorldTrace w tr w' ∧
       match req, res with
       | .writeText path content, .ok () =>
-        WriteFileTrace none path.toUTF8 writeOpenFlags 0o644 content.toUTF8 tr
+        WriteFileTrace none path.toUTF8 writeOpenFlags 0o666 content.toUTF8 tr
       | .appendText path content, .ok () =>
-        WriteFileTrace none path.toUTF8 appendOpenFlags 0o644 content.toUTF8 tr
+        WriteFileTrace none path.toUTF8 appendOpenFlags 0o666 content.toUTF8 tr
       | .writeBytes path data, .ok () =>
-        WriteFileTrace none path.toUTF8 writeOpenFlags 0o644 data tr
+        WriteFileTrace none path.toUTF8 writeOpenFlags 0o666 data tr
       | .atomicWriteBytes path data, .ok () =>
         AtomicWriteTrace w w' path data tr
       | .atomicWriteText path content, .ok () =>
         AtomicWriteTrace w w' path content.toUTF8 tr
       | .touch path existOk, .ok () =>
         (existOk = true ∧ ∃ tr1 tr2, tr = tr1 ++ tr2 ∧
-          WriteFileTrace none path.toUTF8 appendOpenFlags 0o644 ByteArray.empty tr2) ∨
+          WriteFileTrace none path.toUTF8 appendOpenFlags 0o666 ByteArray.empty tr2) ∨
         (∃ tr1 tr2, tr = tr1 ++ tr2 ∧
           (.fstatat none path.toUTF8 { symlinkNofollow := true }, .err Errno.ENOENT) ∈ tr1 ∧
-          WriteFileTrace none path.toUTF8 writeOpenFlags 0o644 ByteArray.empty tr2)
+          WriteFileTrace none path.toUTF8 writeOpenFlags 0o666 ByteArray.empty tr2)
       | .mkdir path _ existOk, .ok () =>
         MkdirOkTrace path existOk tr
       | .unlink path missingOk, .ok () =>
@@ -672,7 +667,7 @@ def allowedFsStep (w : FsWorld) (req : FsStepReq) (out : FsStepOut) (w' : FsWorl
         ∃ bs tr1 tr2 tr3,
           tr = tr1 ++ tr2 ++ tr3 ∧
           ReadRegularTrace none src.toUTF8 readOpenFlags bs tr2 ∧
-          WriteFileTrace none dst.toUTF8 writeOpenFlags 0o644 bs tr3
+          WriteFileTrace none dst.toUTF8 writeOpenFlags 0o666 bs tr3
       | .copyTree src dst dirsExistOk, .ok () =>
         (∃ rawSt, (.fstatat none src.toUTF8 { symlinkNofollow := false }, .statted rawSt) ∈ tr ∧ rawSt.kind = .dir) ∧
         MkdirOkTrace dst dirsExistOk tr
@@ -725,7 +720,7 @@ def allowedFsStep (w : FsWorld) (req : FsStepReq) (out : FsStepOut) (w' : FsWorl
         match res with
         | .ok bs => ReadRegularTrace none path.toUTF8 readOpenFlags bs tr
         | .error e =>
-          nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPathModel path = false ∧ e.kind = .invalidInput))
+          nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput))
     | _ => False
   | .str res =>
     ∃ tr, FsWorldTrace w tr w' ∧
@@ -736,7 +731,7 @@ def allowedFsStep (w : FsWorld) (req : FsStepReq) (out : FsStepOut) (w' : FsWorl
       | .resolve _, .ok s => RealPathTrace s tr
       | .cwd, .ok s => GetcwdTrace s tr
       | .readText path, .error e =>
-        nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPathModel path = false ∧ e.kind = .invalidInput))
+        nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput))
       | .readLink _, .error e | .cwd, .error e => nonLockErrOk e ∧ tr ≠ []
       | .resolve path, .error e =>
         nonLockErrOk e ∧ (tr ≠ [] ∨ (path = "" ∧ e.kind = .notFound) ∨ e.kind = .invalidInput)
@@ -770,7 +765,7 @@ def allowedFsStep (w : FsWorld) (req : FsStepReq) (out : FsStepOut) (w' : FsWorl
         match res with
         | .ok v => actRes = .ok v ∧ FileLockTrace none path.toUTF8 mode false true tr
         | .error e =>
-          (nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPathModel path = false ∧ e.kind = .invalidInput))) ∨
+          (nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput))) ∨
           (actRes = .error e ∧ FileLockTrace none path.toUTF8 mode false false tr)
     | _ => False
   | .tryLockVal res =>
@@ -781,7 +776,7 @@ def allowedFsStep (w : FsWorld) (req : FsStepReq) (out : FsStepOut) (w' : FsWorl
         | .ok none => TryLockContendedTrace none path.toUTF8 mode tr
         | .ok (some v) => actRes = .ok v ∧ FileLockTrace none path.toUTF8 mode true true tr
         | .error e =>
-          (nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPathModel path = false ∧ e.kind = .invalidInput))) ∨
+          (nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput))) ∨
           (actRes = .error e ∧ FileLockTrace none path.toUTF8 mode true false tr)
     | _ => False
 
@@ -877,7 +872,7 @@ def SubtreeConfinedTrace (rootPath : String) (tr : List KernelStep)
 /-- Confined trace witness for any `withSubtree` error: either invalid root path before opening, failed `openat(O_DIRECTORY)` of `rootPath`, or a confined execution that closed `rootDh`. -/
 def SubtreeErrTrace (rootPath : String) (e : FsError) (tr : List KernelStep) : Prop :=
   nonLockErrOk e ∧
-  ((tr = [] ∧ isValidRawPathModel rootPath = false ∧ e.kind = .invalidInput) ∨
+  ((tr = [] ∧ isValidRawPath rootPath = false ∧ e.kind = .invalidInput) ∨
    (tr ≠ [] ∧ ∀ s ∈ tr, ∃ o, s = (.openat none rootPath.toUTF8 dirOpenFlags 0, o)) ∨
    SubtreeConfinedTrace rootPath tr (fun _ _ => True))
 
@@ -925,7 +920,7 @@ def allowedSubtreeStep (w : FsWorld) (req : SubtreeStepReq)
           match splitLastAux rel.segments [] with
           | none => existOk = true ∧ ∃ rawSt, (.fstat rootDh, .statted rawSt) ∈ trInner ∧ rawSt.kind = .dir
           | some (_, leaf) =>
-            ∃ d, MkdirTrace (some d) leaf.val.toUTF8 trInner ∨
+            ∃ d, MkdirTrace (some d) leaf.val.toUTF8 0o755 trInner ∨
               (existOk = true ∧ ∃ rawSt, (.fstatat (some d) leaf.val.toUTF8 { symlinkNofollow := true }, .statted rawSt) ∈ trInner ∧ rawSt.kind = .dir)
       | .unlink rel missingOk, .ok () =>
         SubtreeConfinedTrace req.rootPath tr fun _ trInner =>

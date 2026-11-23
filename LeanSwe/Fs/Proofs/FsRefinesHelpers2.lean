@@ -173,7 +173,7 @@ theorem copyFileImplM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFs
       | .ok () =>
         ∃ bs tr1 tr2 tr3, tr = tr1 ++ tr2 ++ tr3 ∧
           ReadRegularTrace none src.toUTF8 readOpenFlags bs tr2 ∧
-          WriteFileTrace none dst.toUTF8 writeOpenFlags 0o644 bs tr3
+          WriteFileTrace none dst.toUTF8 writeOpenFlags 0o666 bs tr3
       | .error e => nonLockErrOk e ∧ tr ≠ [] := by
   unfold Internal.copyFileImplM
   have hS := scoped_stat hOps true src hWf

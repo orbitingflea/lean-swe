@@ -2,7 +2,6 @@ import Core.Refines
 import Core.Assumptions
 import LeanSwe.Fs.Interface
 import LeanSwe.Fs.Model
-import LeanSwe.Fs.Proofs.SysBridgeCore
 
 namespace LeanSwe.Fs.Proofs
 
@@ -58,7 +57,7 @@ theorem refinesPure_relativeTo : Core.RefinesPureEq2 LeanSwe.Fs.relativeTo LeanS
 
 /-- Pure refinement for `Fs.mapRawError`. -/
 theorem refinesPure_mapRawError : Core.RefinesPureEq LeanSwe.Fs.mapRawError LeanSwe.Fs.Model.mapRawError :=
-  fun raw => sysBridge_mapRawError_eq raw
+  fun _ => rfl
 
 private theorem withName_never_of (k : FsErrorKind) (hk : k ≠ .invalidInput) (path newName : String) :
     Core.NeverErrorKindPure FsError.kind k (LeanSwe.Fs.withName path newName) := by

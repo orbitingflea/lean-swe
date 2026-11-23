@@ -316,7 +316,7 @@ theorem dirOps_createDirAt_trace {W : Type} {proj : W → FsWorld} {cap : Health
       TraceFds held tr held ∧
       (∀ step ∈ tr, SubtreeConfinedReq step.1) ∧
       match p.1 with
-      | .ok () => MkdirTrace (some dirFd) name.val.toUTF8 tr
+      | .ok () => MkdirTrace (some dirFd) name.val.toUTF8 0o755 tr
       | .error e => nonLockErrOk e := by
   have hMk := retryEintr_single_req (cap.files.mkdirat (some dirFd) name.val.toUTF8 0o755)
     (.mkdirat (some dirFd) name.val.toUTF8 0o755) outcomeOfUnit

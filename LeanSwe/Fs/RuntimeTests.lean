@@ -3,6 +3,7 @@ import LeanSwe.Fs.Interface
 import LeanSwe.Fs.SysBridge
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Files.Types
+import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.Process.Interface
 import LeanSwe.Process.SysBridge
 
@@ -1001,7 +1002,7 @@ private def errnoForKind : FsErrorKind → Option LinuxSyscall.Errno
 
 private def mkErrScopedOps (kind : FsErrorKind) : Model.ScopedRawFsOpsM IO :=
   let err : FsError := { kind := kind, path := some "/mock", message := s!"injected {reprStr kind}" }
-  { mapRawError := SysBridge.mapRawError
+  { mapRawError := Fs.Model.mapRawError
     stat := fun _ _ => pure (.error err)
     readDir := fun _ => pure (.error err)
     createDir := fun _ => pure (.error err)
@@ -2151,6 +2152,114 @@ def registeredErrorTests : Array Core.RegisteredErrorTest :=
     :: []
   )
 
+private def parseOctalUmask (status : String) : Option Nat := Id.run do
+  for line in status.splitOn "\n" do
+    if line.startsWith "Umask:" then
+      let raw := (line.drop "Umask:".length).trimAscii.toString
+      if raw.isEmpty then return none
+      let mut acc : Nat := 0
+      for c in raw.toList do
+        if '0' ≤ c && c ≤ '7' then
+          acc := acc * 8 + (c.toNat - '0'.toNat)
+        else
+          return none
+      return some acc
+  return none
+
+private def testCreationModesAndUmask (tmp : String) : IO Unit := do
+  let logRef : IO.Ref (Array (String × UInt32)) ← IO.mkRef #[]
+  let nonceRef : IO.Ref Nat ← IO.mkRef 1
+  let base := LinuxSyscall.Files.defaultOps
+  let spyFiles : LinuxSyscall.Files.FilesOpsM IO LinuxSyscall.RawFd :=
+    { base with
+      mkdirat := fun dir path mode => do
+        logRef.modify (·.push ("mkdirat", mode))
+        base.mkdirat dir path mode
+      openat := fun dir path flags mode => do
+        if flags.creat then
+          logRef.modify (·.push ("openat", mode))
+        base.openat dir path flags mode }
+  let nextNonce : IO Nat := nonceRef.modifyGet fun n => (n, n + 1)
+  let spyApi := Fs.Internal.mkApiM (Fs.SysBridge.mkRawFsOpsM spyFiles nextNonce)
+  let spyOpener := Fs.Internal.mkSubtreeOpenerM (Fs.SysBridge.mkRawDirOpsM spyFiles nextNonce)
+  let spyRoot := Fs.join tmp "mode_spy"
+  assertOk (← spyApi.mkdir spyRoot false false) "spy mkdir"
+  assertTrue ((← logRef.get) == #[("mkdirat", 0o777)]) "ambient mkdir passes 0o777 to mkdirat"
+  logRef.set #[]
+  assertOk (← spyApi.writeText (Fs.join spyRoot "wt.txt") "hello") "spy writeText"
+  assertTrue ((← logRef.get) == #[("openat", 0o666)]) "ambient writeText passes 0o666 to openat"
+  logRef.set #[]
+  assertOk (← spyApi.writeBytes (Fs.join spyRoot "wb.bin") ("abc".toUTF8)) "spy writeBytes"
+  assertTrue ((← logRef.get) == #[("openat", 0o666)]) "ambient writeBytes passes 0o666 to openat"
+  logRef.set #[]
+  assertOk (← spyApi.appendText (Fs.join spyRoot "ap.txt") "more") "spy appendText"
+  assertTrue ((← logRef.get) == #[("openat", 0o666)]) "ambient appendText passes 0o666 to openat"
+  logRef.set #[]
+  assertOk (← spyApi.touch (Fs.join spyRoot "tc.txt") true) "spy touch create"
+  assertTrue ((← logRef.get) == #[("openat", 0o666)]) "ambient touch create passes 0o666 to openat"
+  logRef.set #[]
+  assertOk (← spyApi.touch (Fs.join spyRoot "tc.txt") true) "spy touch existing"
+  assertTrue ((← logRef.get) == #[("openat", 0o666)]) "ambient touch existing passes 0o666 to openat"
+  logRef.set #[]
+  assertOk (← spyApi.atomicWriteBytes (Fs.join spyRoot "aw.bin") ("atom".toUTF8)) "spy atomicWriteBytes"
+  assertTrue ((← logRef.get) == #[("openat", 0o644)]) "ambient atomicWriteBytes preserves historical 0o644"
+  logRef.set #[]
+  assertOk (← spyApi.withFileLock (Fs.join spyRoot "lk.lock") .exclusive true (pure (.ok ()))) "spy withFileLock"
+  assertTrue ((← logRef.get) == #[("openat", 0o644)]) "ambient withFileLock preserves historical 0o644"
+  logRef.set #[]
+  let rSubDir ← assertOk (RelPath.parse "subd") "parse subd"
+  let rSubFile ← assertOk (RelPath.parse "subf") "parse subf"
+  let rSubLock ← assertOk (RelPath.parse "subl") "parse subl"
+  assertOk (← spyOpener.withSubtree spyRoot fun sub => do
+    match ← sub.mkdir rSubDir false false with
+    | .error e => return .error e
+    | .ok () =>
+      match ← sub.atomicWriteBytes rSubFile ("sub".toUTF8) with
+      | .error e => return .error e
+      | .ok () => sub.withFileLock rSubLock .exclusive true (pure (.ok ()))) "spy withSubtree"
+  assertTrue ((← logRef.get) == #[("mkdirat", 0o755), ("openat", 0o644), ("openat", 0o644)])
+    "confined subtree preserves historical 0o755/0o644 modes"
+  let status ← assertOk (← Fs.readText "/proc/self/status") "read /proc/self/status for Umask"
+  match parseOctalUmask status with
+  | none => throw (IO.userError "ASSERTION FAILED: missing Umask field in /proc/self/status")
+  | some mask =>
+    let expectPerm (baseMode : Nat) : Nat := baseMode &&& (0o777 - (baseMode &&& (mask &&& 0o777)))
+    let uRoot := Fs.join tmp "mode_umask"
+    assertOk (← Fs.mkdir uRoot false false) "umask Fs.mkdir"
+    let stDir ← assertOk (← Fs.stat uRoot) "stat uRoot"
+    assertTrue ((stDir.mode &&& 0o777) == expectPerm 0o777)
+      s!"Fs.mkdir perm {stDir.mode &&& 0o777} matches 0o777 & ~umask ({expectPerm 0o777})"
+    let fWt := Fs.join uRoot "wt.txt"
+    assertOk (← Fs.writeText fWt "x") "umask Fs.writeText"
+    let stWt ← assertOk (← Fs.stat fWt) "stat fWt"
+    assertTrue ((stWt.mode &&& 0o777) == expectPerm 0o666)
+      s!"Fs.writeText perm {stWt.mode &&& 0o777} matches 0o666 & ~umask ({expectPerm 0o666})"
+    let fAp := Fs.join uRoot "ap.txt"
+    assertOk (← Fs.appendText fAp "y") "umask Fs.appendText"
+    let stAp ← assertOk (← Fs.stat fAp) "stat fAp"
+    assertTrue ((stAp.mode &&& 0o777) == expectPerm 0o666)
+      s!"Fs.appendText perm {stAp.mode &&& 0o777} matches 0o666 & ~umask ({expectPerm 0o666})"
+    let fAw := Fs.join uRoot "aw.txt"
+    assertOk (← Fs.atomicWriteBytes fAw ("z".toUTF8)) "umask Fs.atomicWriteBytes"
+    let stAw ← assertOk (← Fs.stat fAw) "stat fAw"
+    assertTrue ((stAw.mode &&& 0o777) == expectPerm 0o644)
+      s!"Fs.atomicWriteBytes perm {stAw.mode &&& 0o777} matches 0o644 & ~umask ({expectPerm 0o644})"
+    let fLk := Fs.join uRoot "lk.lock"
+    assertOk (← Fs.withFileLock fLk .exclusive true (pure (.ok ()))) "umask Fs.withFileLock"
+    let stLk ← assertOk (← Fs.stat fLk) "stat fLk"
+    assertTrue ((stLk.mode &&& 0o777) == expectPerm 0o644)
+      s!"Fs.withFileLock perm {stLk.mode &&& 0o777} matches 0o644 & ~umask ({expectPerm 0o644})"
+    assertOk (← Fs.withSubtree uRoot fun sub => do
+      match ← sub.mkdir rSubDir false false with
+      | .error e => return .error e
+      | .ok () => sub.atomicWriteBytes rSubFile ("s".toUTF8)) "umask withSubtree"
+    let stSubDir ← assertOk (← Fs.stat (Fs.join uRoot "subd")) "stat subd"
+    assertTrue ((stSubDir.mode &&& 0o777) == expectPerm 0o755)
+      s!"Subtree.mkdir perm {stSubDir.mode &&& 0o777} matches 0o755 & ~umask ({expectPerm 0o755})"
+    let stSubFile ← assertOk (← Fs.stat (Fs.join uRoot "subf")) "stat subf"
+    assertTrue ((stSubFile.mode &&& 0o777) == expectPerm 0o644)
+      s!"Subtree.atomicWriteBytes perm {stSubFile.mode &&& 0o777} matches 0o644 & ~umask ({expectPerm 0o644})"
+
 /-- Execute all pure path and real filesystem runtime checks for `LeanSwe.Fs`. -/
 def runAll : IO Unit := do
   Core.runRegisteredErrorTests registeredErrorTests
@@ -2163,6 +2272,7 @@ def runAll : IO Unit := do
     testAmbientSafety tmp
     testWithSubtree tmp
     testSysBridgeEdgeCases tmp
+    testCreationModesAndUmask tmp
   IO.println "PASS: LeanSwe.Fs runtime tests"
 
 end LeanSwe.Fs.RuntimeTests

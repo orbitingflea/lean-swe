@@ -330,7 +330,7 @@ theorem spec_atomicWriteReadRegularRoundTrip : SpecAtomicWriteReadRegularRoundTr
       simp only [hXF, Bool.false_eq_true, ↓reduceIte, hLeaf₁]
       exact ⟨vfsToStat (.file bytes 420), rfl, rfl, rfl, rfl⟩
 
-/-- On symlink-free paths inside the depth bound, `sub.readRegular` and `sub.lstat` match `vfsApi.readBytes` and `vfsApi.lstat`. -/
+/-- On symlink-free paths inside the depth bound, `sub.readRegular` and `sub.lstat` match `vfsOps.readBytes` and `vfsOps.stat false`. -/
 theorem spec_subtreeAgreesWithAmbientOnSymlinkFree : SpecSubtreeAgreesWithAmbientOnSymlinkFree Internal.subtreeOpsM := by
   intro st dh pos rel bs fm hLd hInv hPosValid hRelNe hLen hRelAnc hPosAnc hLeafFile hFilePerm fullPath sub
   have hSegsNe : rel.segments ≠ [] := fun h0 => hRelNe (by cases rel; simp_all [RelPath.root])
@@ -456,12 +456,11 @@ theorem spec_subtreeAgreesWithAmbientOnSymlinkFree : SpecSubtreeAgreesWithAmbien
     change vfsResolveSegs st.nodes (pathOfSegs []) (pos ++ rel.segments.map (·.val)) followLast 1024 = _
     rw [vfsResolveSegs_steps st.nodes (pos ++ rel.segments.map (·.val)) followLast 1024 [] hFuelFull
       (fun _ h => by cases h) hFullValid hInterFull, List.nil_append, hFuelRem, vfsResolveSegs.eq_2, hNode]
-  have hReadRHS : (vfsApi.readBytes fullP st).1 = .ok bs := by
+  have hReadRHS : (vfsOps.readBytes fullP st).1 = .ok bs := by
     change vfsReadBytesPure st fullP = .ok bs
     unfold vfsReadBytesPure
     simp only [hValidRaw, Bool.not_true, Bool.false_eq_true, ↓reduceIte, hResAny true]
-  have hLstatRHS : (vfsApi.lstat fullP st).1 = .ok (vfsToStat (.file bs fm)) := by
-    change (StateT.run (vfsOps.stat false fullP) st).1 = .ok (vfsToStat (.file bs fm))
+  have hLstatRHS : (vfsOps.stat false fullP st).1 = .ok (vfsToStat (.file bs fm)) := by
     change vfsStatPure st false fullP = .ok (vfsToStat (.file bs fm))
     unfold vfsStatPure
     rw [hResAny false]

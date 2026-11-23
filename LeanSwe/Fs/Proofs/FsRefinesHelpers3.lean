@@ -281,7 +281,7 @@ theorem globImplM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM
   unfold Internal.globImplM
   have hMapGlob : ∀ (ge : LeanSwe.Glob.GlobError),
       nonLockErrOk (Internal.mapGlobError pattern ge) ∧ (Internal.mapGlobError pattern ge).kind = .invalidInput := by
-    intro ge; simp only [Internal.mapGlobError, Internal.nonEmptyMsg, nonLockErrOk]
+    intro ge; simp only [Internal.mapGlobError, Model.nonEmptyMsg, nonLockErrOk]
     refine ⟨⟨?_, by decide⟩, trivial⟩
     by_cases hE : ge.message.isEmpty = true
     · simp [hE]
@@ -472,9 +472,9 @@ theorem touchImplM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOps
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧
       match r.1 with
       | .ok () =>
-        (existOk = true ∧ ∃ tr1 tr2, tr = tr1 ++ tr2 ∧ WriteFileTrace none path.toUTF8 appendOpenFlags 0o644 ByteArray.empty tr2) ∨
+        (existOk = true ∧ ∃ tr1 tr2, tr = tr1 ++ tr2 ∧ WriteFileTrace none path.toUTF8 appendOpenFlags 0o666 ByteArray.empty tr2) ∨
         (∃ tr1 tr2, tr = tr1 ++ tr2 ∧ (.fstatat none path.toUTF8 { symlinkNofollow := true }, .err Errno.ENOENT) ∈ tr1 ∧
-          WriteFileTrace none path.toUTF8 writeOpenFlags 0o644 ByteArray.empty tr2)
+          WriteFileTrace none path.toUTF8 writeOpenFlags 0o666 ByteArray.empty tr2)
       | .error e => nonLockErrOk e ∧ tr ≠ [] := by
   unfold Internal.touchImplM
   have hS := scoped_stat hOps false path hWf
@@ -497,9 +497,9 @@ theorem touchImplM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOps
             ∃ tr, FsWorldTrace (proj s) tr (proj q.2) ∧
               match q.1 with
               | .ok () =>
-                (True ∧ ∃ trA trB, tr = trA ++ trB ∧ WriteFileTrace none path.toUTF8 appendOpenFlags 0o644 ByteArray.empty trB) ∨
+                (True ∧ ∃ trA trB, tr = trA ++ trB ∧ WriteFileTrace none path.toUTF8 appendOpenFlags 0o666 ByteArray.empty trB) ∨
                 (∃ trA trB, tr = trA ++ trB ∧ (.fstatat none path.toUTF8 { symlinkNofollow := true }, .err Errno.ENOENT) ∈ trA ∧
-                  WriteFileTrace none path.toUTF8 writeOpenFlags 0o644 ByteArray.empty trB)
+                  WriteFileTrace none path.toUTF8 writeOpenFlags 0o666 ByteArray.empty trB)
               | .error e => nonLockErrOk e ∧ tr ≠ [] := by
           intro sX trP hTrP hNeP
           have hAp := scoped_appendText hOps path "" hTrP.1
