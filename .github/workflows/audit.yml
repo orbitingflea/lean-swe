@@ -7,6 +7,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      fuzz_suites:
+        description: 'Comma-separated fuzz suites to run (e.g. net,poll). Empty skips fuzzing; no all/* wildcard.'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: >-
@@ -192,7 +198,7 @@ jobs:
             ./harness/.lake/build
           key: lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain') }}-${{ github.sha }}
 
-      - name: Run runtime test suites
+      - name: Run post-build audit checks in parallel
         run: |
           set -euo pipefail
           if [[ -f /sys/fs/cgroup/leanswe/runner/cgroup.procs ]]; then
@@ -216,52 +222,218 @@ jobs:
               with open(s, "a", encoding="utf-8") as f:
                   f.write(f"`{line}`\n\n")
           '
+          OWN_LOG_DIR=""
+          if [[ -n "${RUNNER_TEMP:-}" ]]; then
+            LOG_DIR="$RUNNER_TEMP"
+            mkdir -p "$LOG_DIR"
+          else
+            OWN_LOG_DIR=$(mktemp -d /tmp/audit-lanes.XXXXXX)
+            LOG_DIR="$OWN_LOG_DIR"
+          fi
+          LANE_STATE_DIR=$(mktemp -d "$LOG_DIR/audit-state.XXXXXX")
+          LAKE_ENV_FILE="$LANE_STATE_DIR/lake.env"
+          ASSUMP_LOG="$LANE_STATE_DIR/assump.log"
+          LANE_PIDS=()
+          cleanup_parallel() {
+            local p
+            if (( ${#LANE_PIDS[@]} > 0 )); then
+              for p in "${LANE_PIDS[@]}"; do
+                kill "$p" 2>/dev/null || true
+              done
+              wait "${LANE_PIDS[@]}" 2>/dev/null || true
+              LANE_PIDS=()
+            fi
+            rm -rf "$LANE_STATE_DIR"
+            [[ -z "$OWN_LOG_DIR" ]] || rm -rf "$OWN_LOG_DIR"
+          }
+          trap cleanup_parallel EXIT
+          trap 'cleanup_parallel; exit 130' INT
+          trap 'cleanup_parallel; exit 143' TERM
           ASSUMP_NONCE=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
-          ASSUMP_LOG="${RUNNER_TEMP:-/tmp}/assump-${GITHUB_RUN_ID:-local}.log"
+          [[ "$ASSUMP_NONCE" =~ ^[0-9a-f]{32}$ ]] || { echo "ASSUMP_NONCE_ERROR: invalid nonce" >&2; exit 2; }
           rm -f "$ASSUMP_LOG"
-          echo "ASSUMP_NONCE=$ASSUMP_NONCE" >> "$GITHUB_ENV"
-          echo "ASSUMP_LOG=$ASSUMP_LOG" >> "$GITHUB_ENV"
-          harness/.lake/build/bin/lean-swe-test --assump-log "$ASSUMP_LOG" --assump-nonce "$ASSUMP_NONCE"
-          harness/.lake/build/bin/lean-swe-test --suite Git --suite Compress --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite PostFork --suite Sqlite --suite Sqlite.Raw 0<&- 1>&- 2>&-
-          harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,Compress,LinuxSyscall.Poll,LinuxSyscall.Net,Git,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns,LinuxSyscall.Files,PostFork,Sqlite,Sqlite.Raw
-          harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process
+          # Capture lake env once before launching lanes to avoid concurrent .lake/config lock contention.
+          lake env python3 -c '
+          import os, re, shlex
+          for k, v in sorted(os.environ.items()):
+              if k == "LEAN_RECURSION_COUNT": continue
+              if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k) and (k.startswith(("ELAN", "LAKE", "LEAN")) or k in ("PATH", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH")):
+                  print(f"export {k}={shlex.quote(v)}")
+          ' > "$LAKE_ENV_FILE"
+          [[ -s "$LAKE_ENV_FILE" ]] || { echo "LAKE_ENV_ERROR: failed to capture lake env" >&2; exit 2; }
+          run_lean_gate() {
+            ( set -euo pipefail; source "$LAKE_ENV_FILE"; exec env LEAN_NUM_THREADS=1 lean -DwarningAsError=true --run "$@" )
+          }
+          lane_1() {
+            run_lean_gate scripts/CheckAssumptionsTest.lean
+          }
+          lane_2() {
+            run_lean_gate scripts/CheckPromises.lean .lake/build/lib/lean .
+          }
+          lane_3() {
+            harness/.lake/build/bin/lean-swe-test --assump-log "$ASSUMP_LOG" --assump-nonce "$ASSUMP_NONCE"
+            [[ -s "$ASSUMP_LOG" ]] || { echo "ASSUMP_LOG_ERROR: missing or empty assumption log" >&2; return 1; }
+            run_lean_gate scripts/CheckAssumptions.lean --allow-legacy --verify-log "$ASSUMP_LOG" --nonce "$ASSUMP_NONCE"
+            rm -f "$ASSUMP_LOG"
+            harness/.lake/build/bin/lean-swe-test --suite Git --suite Compress --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite PostFork --suite Sqlite --suite Sqlite.Raw 0<&- 1>&- 2>&-
+          }
+          lane_4() {
+            # Run Sqlite.Raw (~4.7 GiB transient RSS) and Compress (~1.8 GiB) in separate short-lived processes
+            # first so their heap arenas are returned to the kernel before Lanes 2/3 peak with Mathlib/Aeneas loaded.
+            harness/.lake/build/bin/lean-swe-mut-test --mode full --suite Sqlite.Raw
+            harness/.lake/build/bin/lean-swe-mut-test --mode full --suite Compress
+            harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,LinuxSyscall.Poll,LinuxSyscall.Net,Git,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns,LinuxSyscall.Files,PostFork,Sqlite
+            harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process
+            run_lean_gate scripts/CheckForeignThinness.lean .
+          }
+          LANE_LABELS=(
+            "Lane 1: CheckAssumptionsTest"
+            "Lane 2: CheckPromises"
+            "Lane 3: lean-swe-test + CheckAssumptions + closed-stdio"
+            "Lane 4: lean-swe-mut-test + CheckForeignThinness"
+          )
+          LANE_LOGS=()
+          LANE_TFILES=()
+          WALL_T0="$SECONDS"
+          for i in 1 2 3 4; do
+            log="$LOG_DIR/lane-${i}.log"
+            tf="$LANE_STATE_DIR/lane-${i}.sec"
+            rm -f "$log" "$tf"
+            LANE_LOGS+=("$log")
+            LANE_TFILES+=("$tf")
+            (
+              trap - INT TERM
+              set -euo pipefail
+              _t0="$SECONDS"
+              _tf="$tf"
+              trap 'printf "%s\n" "$((SECONDS - _t0))" > "$_tf" 2>/dev/null || true' EXIT
+              "lane_${i}"
+            ) </dev/null >"$log" 2>&1 &
+            LANE_PIDS+=("$!")
+          done
+          FAIL_RC=0
+          LANE_RCS=()
+          for idx in 0 1 2 3; do
+            rc=0
+            wait "${LANE_PIDS[$idx]}" || rc=$?
+            LANE_RCS+=("$rc")
+            if (( rc != 0 && FAIL_RC == 0 )); then
+              FAIL_RC=$rc
+            fi
+          done
+          LANE_PIDS=()
+          WALL_SEC="$((SECONDS - WALL_T0))"
+          for idx in 0 1 2 3; do
+            rc="${LANE_RCS[$idx]}"
+            dur="unknown"
+            if [[ -s "${LANE_TFILES[$idx]}" ]]; then
+              raw_dur="$(< "${LANE_TFILES[$idx]}")"
+              if [[ "$raw_dur" =~ ^[0-9]+$ ]]; then
+                dur="${raw_dur}s"
+              fi
+            fi
+            status="PASS"
+            if (( rc >= 129 && rc <= 192 )); then
+              status="FAIL(rc=${rc},sig=$((rc - 128)))"
+            elif (( rc != 0 )); then
+              status="FAIL(rc=${rc})"
+            fi
+            echo "::group::${LANE_LABELS[$idx]} [${status}, ${dur}]"
+            if [[ -s "${LANE_LOGS[$idx]}" ]]; then
+              cat "${LANE_LOGS[$idx]}"
+              [[ "$(tail -c 1 "${LANE_LOGS[$idx]}" | wc -l)" -eq 1 ]] || echo
+            fi
+            echo "::endgroup::"
+            if (( rc != 0 )); then
+              echo "::error::${LANE_LABELS[$idx]} failed (${status}, ${dur})"
+            fi
+          done
+          echo "PARALLEL_AUDIT_GATES: wall=${WALL_SEC}s l1_rc=${LANE_RCS[0]} l2_rc=${LANE_RCS[1]} l3_rc=${LANE_RCS[2]} l4_rc=${LANE_RCS[3]}"
+          exit "$FAIL_RC"
 
-      - name: Run changed fuzz suites
+      - name: Run opt-in fuzz suites
         id: fuzz_gate
         env:
-          PUSH_BEFORE: ${{ github.event.before }}
+          PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          INPUT_FUZZ_SUITES: ${{ inputs.fuzz_suites }}
         run: |
           set -euo pipefail
           FUZZ_BIN="harness/.lake/build/bin/leanswe-fuzz"
-          DIFF_BASE=""
-          if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" && "${BASE_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
-            DIFF_BASE="$BASE_SHA"
-          elif [[ "${GITHUB_EVENT_NAME:-}" == "push" && "${PUSH_BEFORE:-}" =~ ^[0-9a-f]{40}$ && "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]]; then
-            git rev-parse --verify --quiet "${PUSH_BEFORE}^{commit}" >/dev/null 2>&1 || git fetch --no-tags --depth=1 origin -- "$PUSH_BEFORE" 2>/dev/null || true
-            if git rev-parse --verify --quiet "${PUSH_BEFORE}^{commit}" >/dev/null 2>&1; then
-              DIFF_BASE="$PUSH_BEFORE"
-            fi
-          fi
-          if [[ -n "$DIFF_BASE" ]]; then
-            CHANGED_RAW=$(python3 -B scripts/fuzz_changed.py --base "$DIFF_BASE" --head HEAD --check-manifest --runner "$FUZZ_BIN" --format lines)
-            echo "FUZZ_GATE: mode=diff base=$DIFF_BASE"
-          else
-            python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest --runner "$FUZZ_BIN" >/dev/null
-            CHANGED_RAW=$("$FUZZ_BIN" --list-suites)
-            [[ -n "$CHANGED_RAW" ]] || { echo "FUZZ_GATE_ERROR: empty --list-suites output" >&2; exit 2; }
-            echo "FUZZ_GATE: mode=full event=${GITHUB_EVENT_NAME:-unknown}"
-          fi
-          CHANGED_SET=","
+          python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest --runner "$FUZZ_BIN" >/dev/null
+          VALID_RAW=$("$FUZZ_BIN" --list-suites)
+          [[ -n "$VALID_RAW" ]] || { echo "FUZZ_GATE_ERROR: empty --list-suites output" >&2; exit 2; }
+          SELECTED_RAW=$(python3 -B -c '
+          import json, os, sys
+          valid = list(dict.fromkeys(ln.strip() for ln in sys.argv[1].splitlines() if ln.strip()))
+          valid_set, valid_csv = set(valid), ",".join(valid)
+          order = {s: i for i, s in enumerate(valid)}
+          ev = os.environ.get("GITHUB_EVENT_NAME", "")
+          selected = []
+          def fail(msg):
+              print(f"FUZZ_GATE_ERROR: {msg} (valid suites: {valid_csv})", file=sys.stderr)
+              sys.exit(2)
+          if ev == "pull_request":
+              raw = os.environ.get("PR_LABELS_JSON", "").strip()
+              if raw in ("", "null"):
+                  labels = []
+              else:
+                  try:
+                      labels = json.loads(raw)
+                  except json.JSONDecodeError as e:
+                      fail(f"invalid PR_LABELS_JSON: {e}")
+                  if not isinstance(labels, list) or not all(isinstance(x, str) for x in labels):
+                      fail("PR_LABELS_JSON must be a JSON array of strings")
+              seen = set()
+              for lbl in labels:
+                  low = lbl.strip().lower()
+                  if low == "run-fuzz":
+                      fail(f"bare label {lbl!r} is forbidden; use explicit run-fuzz:<suite> labels")
+                  if low.startswith("run-fuzz:"):
+                      if not lbl.startswith("run-fuzz:"):
+                          fail(f"invalid prefix casing/whitespace in fuzz label {lbl!r}")
+                      name = lbl[len("run-fuzz:"):]
+                      if not name or not name.strip() or name.strip().lower() in ("all", "*"):
+                          fail(f"wildcard/empty fuzz label {lbl!r} is forbidden; use explicit run-fuzz:<suite> labels")
+                      if name not in valid_set:
+                          fail(f"unknown fuzz suite label {lbl!r}")
+                      if name not in seen:
+                          seen.add(name)
+                          selected.append(name)
+          elif ev == "workflow_dispatch":
+              raw = os.environ.get("INPUT_FUZZ_SUITES", "").strip()
+              if raw:
+                  seen = set()
+                  for tok in raw.split(","):
+                      name = tok.strip()
+                      if not name:
+                          fail(f"empty suite entry in fuzz_suites {raw!r}")
+                      if name.lower() in ("all", "*"):
+                          fail(f"wildcard/all token {name!r} is forbidden in fuzz_suites")
+                      if name not in valid_set:
+                          fail(f"unknown fuzz suite {name!r} in fuzz_suites")
+                      if name in seen:
+                          fail(f"duplicate fuzz suite {name!r} in fuzz_suites")
+                      seen.add(name)
+                      selected.append(name)
+          elif ev == "push":
+              pass
+          else:
+              fail(f"unsupported GITHUB_EVENT_NAME={ev!r}")
+          selected.sort(key=order.__getitem__)
+          if selected:
+              print("\n".join(selected))
+          ' "$VALID_RAW")
+          SELECTED_SET=","
           LIGHT_ARGS=()
           STDIO_ARGS=()
-          has_suite() { [[ "$CHANGED_SET" == *",$1,"* ]]; }
+          has_suite() { [[ "$SELECTED_SET" == *",$1,"* ]]; }
           while IFS= read -r _s; do
             [[ -n "$_s" ]] || continue
             [[ "$_s" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "FUZZ_GATE_ERROR: invalid suite '$_s'" >&2; exit 2; }
             if has_suite "$_s"; then
               continue
             fi
-            CHANGED_SET+="${_s},"
+            SELECTED_SET+="${_s},"
             case "$_s" in
               sandbox|timerand|files|process|poll|net|postfork) ;;
               *) LIGHT_ARGS+=(--suite "$_s") ;;
@@ -269,10 +441,10 @@ jobs:
             case "$_s" in
               sandbox|timerand|files|process|poll|net|passwd|dns) STDIO_ARGS+=(--suite "$_s") ;;
             esac
-          done <<< "$CHANGED_RAW"
-          SUMMARY="${CHANGED_SET#,}"
+          done <<< "$SELECTED_RAW"
+          SUMMARY="${SELECTED_SET#,}"
           SUMMARY="${SUMMARY%,}"
-          echo "FUZZ_GATE: changed_suites=${SUMMARY:-none}"
+          echo "FUZZ_GATE: mode=opt-in event=${GITHUB_EVENT_NAME:-unknown} selected_suites=${SUMMARY:-none}"
           if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
             echo "run_files=$(has_suite files && echo true || echo false)" >> "$GITHUB_OUTPUT"
           fi
@@ -331,46 +503,8 @@ jobs:
             "$FUZZ_BIN" --suite postfork --steps 500 --self-test-shrink 0<&- >/dev/null
           fi
 
-      - name: Check 1 GB private-memory cap on changed modules and reverse dependents
-        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-        env:
-          PUSH_BEFORE: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          DIFF_BASE="${BASE_SHA:-}"
-          if [[ -z "$DIFF_BASE" && "$PUSH_BEFORE" =~ ^[0-9a-f]{40}$ && "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]]; then
-            if git fetch --no-tags --depth=1 origin -- "$PUSH_BEFORE" 2>/dev/null; then
-              DIFF_BASE="$PUSH_BEFORE"
-            fi
-          fi
-          if [[ -z "$DIFF_BASE" ]]; then
-            echo "MEMORY_CHECK: no comparison base available; skipping incremental memory check"
-            exit 0
-          fi
-          mapfile -t CHANGED_LEAN < <(
-            git diff --name-only --diff-filter=ACMR "$DIFF_BASE" HEAD -- '*.lean' \
-              | grep -vxF -e 'lakefile.lean' -e 'harness/lakefile.lean' || true
-          )
-          if (( ${#CHANGED_LEAN[@]} == 0 )); then
-            echo "MEMORY_CHECK: skipped (0 module .lean files changed against $DIFF_BASE)"
-          else
-            python3 -B scripts/check_proof_memory.py --with-revdeps --jobs "$LEAN_JOBS" -- "${CHANGED_LEAN[@]}"
-          fi
-
-      - name: Check spec promise theorem coverage
-        run: lake env lean -DwarningAsError=true --run scripts/CheckPromises.lean .lake/build/lib/lean .
-
-      - name: Check assumptions and error coverage
-        run: lake env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --allow-legacy --verify-log "$ASSUMP_LOG" --nonce "$ASSUMP_NONCE"
-
-      - name: Check assumptions self-tests
-        run: lake env lean -DwarningAsError=true --run scripts/CheckAssumptionsTest.lean
-
-      - name: Check non-Lean thinness gate
-        run: lake env lean -DwarningAsError=true --run scripts/CheckForeignThinness.lean .
-
       - name: Run world-model differential fuzzer (Files)
-        if: success() && steps.fuzz_gate.outputs.run_files != 'false'
+        if: success() && steps.fuzz_gate.outcome == 'success' && steps.fuzz_gate.outputs.run_files == 'true'
         run: |
           set -euo pipefail
           harness/.lake/build/bin/leanswe-fuzz --files-strace-fault-check
