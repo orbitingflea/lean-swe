@@ -52,7 +52,7 @@ private def decodeUtf8LossyLoop : Nat → ByteArray → Nat → List Char → Li
       else
         decodeUtf8LossyLoop fuel bs (i + 1) ('\uFFFD' :: acc)
 
-/-- Decode `ByteArray` as UTF-8, replacing invalid byte sequences with U+FFFD (`''`). -/
+/-- Decode `ByteArray` as UTF-8, replacing each byte outside a valid UTF-8 sequence with the Unicode replacement character `U+FFFD` (`'\uFFFD'`). -/
 def decodeUtf8Lossy (bytes : ByteArray) : String :=
   match String.fromUTF8? bytes with
   | some s => s
@@ -163,7 +163,32 @@ private def hasLowerSubstr (needle : String) (hayLower : List Char) : Bool :=
 private def hasFatalOrErrorChars (lower : List Char) : Bool :=
   hasLowerSubstr "fatal:" lower || hasLowerSubstr "error:" lower
 
-/-- Classify a non-zero `git` subprocess result using `stderr`, falling back to `stdout` when `stderr` is blank. -/
+/-- Classify a non-zero `git` subprocess result into a structured `GitError`.
+
+Lossily decodes `out.stderr` and `out.stdout` via `decodeUtf8Lossy`, selects `stderr` as the
+primary diagnostic source when non-blank (after `trimAsciiWhitespace`) or falls back to `stdout`
+when `stderr` is blank, and normalizes it with `sanitizeLowerForClassify`.
+
+Error kinds are matched in precedence order:
+1. `.notARepo`: repository, work-tree, or bare-repository errors in the primary diagnostic source.
+2. `.nothingToCommit`: `"nothing to commit"`, `"no changes added to commit"`, or
+   `"nothing added to commit"` in the primary diagnostic source, or, even when `stderr` is
+   non-blank, in sanitized `stdout` when `cmd == "commit"` and sanitized `stderr` contains neither
+   `"fatal:"` nor `"error:"` (`commitNothingOut`).
+3. `.branchInUse`: branch already checked out or used by a worktree.
+4. `.dirtyWorktree`: uncommitted/local changes or untracked files that would be overwritten, lost,
+   or removed.
+5. `.conflict`: unresolved/merge conflicts or unmerged index files/paths.
+6. `.alreadyExists`: target already exists or is already registered.
+7. `.invalidRef`: invalid, unknown, ambiguous, or unborn revision/object/branch diagnostics, or
+   `pathspec` + `did not match` when `cmd == "checkout"`.
+8. `.notFound`: `pathspec` + `did not match` (for commands other than `checkout`), missing
+   file/worktree/remote ref diagnostics, or `branch` + `not found`.
+9. `.commandFailed`: fallback when none of the above match.
+
+Populates `stderr` with `some` decoded `out.stderr` whenever non-empty (else `none`), and sets
+`message` to trimmed `stderr` if non-blank, else trimmed `stdout` if non-blank, else
+`s!"git {cmd} failed with exit code {out.exitCode}"`. -/
 def classifyError (cmd : String) (out : GitRawOutput) : GitError :=
   let errText := decodeUtf8Lossy out.stderr
   let outText := decodeUtf8Lossy out.stdout

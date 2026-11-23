@@ -1,6 +1,21 @@
 {
   "version": 1,
-  "common_paths": [".github/actions/install-lean/action.yml", ".github/workflows/audit.yml", "Core/", "harness/Fuzz/Common/", "harness/Fuzz/LinuxSyscall/Env.lean", "harness/Fuzz/LinuxSyscall/c/fuzz_env.c", "harness/Fuzz/Main.lean", "harness/lake-manifest.json", "harness/lakefile.lean", "harness/lean-toolchain", "lake-manifest.json", "lakefile.lean", "lean-toolchain", "scripts/fuzz_changed.py"],
+  "common_paths": [
+    ".github/actions/install-lean/action.yml",
+    ".github/workflows/audit.yml",
+    "Core/",
+    "harness/Fuzz/Common/",
+    "harness/Fuzz/LinuxSyscall/Env.lean",
+    "harness/Fuzz/LinuxSyscall/c/fuzz_env.c",
+    "harness/Fuzz/Main.lean",
+    "harness/lake-manifest.json",
+    "harness/lakefile.lean",
+    "harness/lean-toolchain",
+    "lake-manifest.json",
+    "lakefile.lean",
+    "lean-toolchain",
+    "scripts/fuzz_changed.py"
+  ],
   "suites": {
     "selftest": { "paths": ["harness/Fuzz/SelfTest.lean"] },
     "float": { "paths": ["harness/Fuzz/Float/", "LeanSwe/NumParse/", "LeanSwe/Toml/"] },
