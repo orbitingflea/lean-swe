@@ -494,10 +494,125 @@ def registeredErrorTests : Array Core.RegisteredErrorTest :=
    , { testName := "LeanSwe.TempDir.RuntimeTests.err_tempdir_cleanupStaleTempDirs_ioError"
        mode := .real, run := err_tempdir_cleanupStaleTempDirs_ioError } ]
 
+private def assertTempDirInvalidInput {α : Type} (res : Except TempDirError α)
+    (expectedPath : Option String) (expectedMsg? : Option String) (msg : String) : IO Unit := do
+  match res with
+  | .ok _ =>
+    throw (IO.userError s!"ASSERTION FAILED: {msg} (expected TempDirError .invalidInput, got ok)")
+  | .error e =>
+    let msgOk := match expectedMsg? with
+      | some m => e.message == m
+      | none => !e.message.isEmpty
+    if e.kind != .invalidInput || e.path != expectedPath || !msgOk then
+      throw (IO.userError s!"ASSERTION FAILED: {msg} (got {repr e}, expected invalidInput path={repr expectedPath})")
+
+private def testFsInvalidInputPreserved (sandbox : String) : IO Unit := do
+  let fsStatInv : Fs.FsApi :=
+    { Fs.defaultApi with
+      stat := fun p => pure (.error { kind := .invalidInput, path := some p, message := "stat: EINVAL" }) }
+  let apiStatInv := TempDir.mkApiM fsStatInv Time.defaultOps Uuid.defaultApi EnvVars.defaultApi
+  assertTempDirInvalidInput (← apiStatInv.withTempDir (some sandbox) "p-" fun _ => pure (.ok ()))
+    (some sandbox) (some "stat: EINVAL") "withTempDir preserves Fs invalidInput from stat"
+  assertTempDirInvalidInput (← apiStatInv.withLockedTempDir (some sandbox) "p-" fun _ => pure (.ok ()))
+    (some sandbox) (some "stat: EINVAL") "withLockedTempDir preserves Fs invalidInput from stat"
+  assertTempDirInvalidInput (← apiStatInv.cleanupStaleTempDirs (some sandbox) "p-" 0)
+    (some sandbox) (some "stat: EINVAL") "cleanupStaleTempDirs preserves Fs invalidInput from stat"
+
+  let fsStatInvEmptyMsg : Fs.FsApi :=
+    { Fs.defaultApi with
+      stat := fun _ => pure (.error { kind := .invalidInput, path := none, message := "" }) }
+  let apiStatInvEmpty := TempDir.mkApiM fsStatInvEmptyMsg Time.defaultOps Uuid.defaultApi EnvVars.defaultApi
+  assertTempDirInvalidInput (← apiStatInvEmpty.withTempDir (some sandbox) "p-" fun _ => pure (.ok ()))
+    none none "withTempDir preserves Fs invalidInput with non-empty fallback message"
+  assertTempDirInvalidInput (← apiStatInvEmpty.withLockedTempDir (some sandbox) "p-" fun _ => pure (.ok ()))
+    none none "withLockedTempDir preserves Fs invalidInput with non-empty fallback message"
+  assertTempDirInvalidInput (← apiStatInvEmpty.cleanupStaleTempDirs (some sandbox) "p-" 0)
+    none none "cleanupStaleTempDirs preserves Fs invalidInput with non-empty fallback message"
+
+  let fixedU ← match ← Uuid.getUuid with
+    | .ok v => pure v
+    | .error e => throw (IO.userError s!"Uuid.getUuid failed: {repr e}")
+  let fixedUuid : Uuid.UuidApi := { Uuid.defaultApi with getUuid := pure (.ok fixedU) }
+  let expectedDir := Fs.join sandbox ("inv-" ++ Uuid.toString fixedU)
+  let expectedLock := Fs.join expectedDir ".lock"
+
+  let fsMkdirInv : Fs.FsApi :=
+    { Fs.defaultApi with
+      mkdir := fun p _ _ => pure (.error { kind := .invalidInput, path := some p, message := "mkdir: ENAMETOOLONG" }) }
+  let apiMkdirInv := TempDir.mkApiM fsMkdirInv Time.defaultOps fixedUuid EnvVars.defaultApi
+  assertTempDirInvalidInput (← apiMkdirInv.withTempDir (some sandbox) "inv-" fun _ => pure (.ok ()))
+    (some expectedDir) (some "mkdir: ENAMETOOLONG") "withTempDir preserves Fs invalidInput from mkdir"
+  assertTempDirInvalidInput (← apiMkdirInv.withLockedTempDir (some sandbox) "inv-" fun _ => pure (.ok ()))
+    (some expectedDir) (some "mkdir: ENAMETOOLONG") "withLockedTempDir preserves Fs invalidInput from mkdir"
+
+  let fsChmodInv : Fs.FsApi :=
+    { Fs.defaultApi with
+      chmod := fun p _ => pure (.error { kind := .invalidInput, path := some p, message := "chmod: EINVAL" }) }
+  let apiChmodInv := TempDir.mkApiM fsChmodInv Time.defaultOps fixedUuid EnvVars.defaultApi
+  assertTempDirInvalidInput (← apiChmodInv.withTempDir (some sandbox) "inv-" fun _ => pure (.ok ()))
+    (some expectedDir) (some "chmod: EINVAL") "withTempDir preserves Fs invalidInput from chmod"
+  assertTrue (!(← assertFsOk (← Fs.pathExists expectedDir) "pathExists after chmod invalidInput"))
+    "withTempDir rolled back dir after chmod invalidInput"
+
+  let fsLockInv : Fs.FsApi :=
+    { Fs.defaultApi with
+      withFileLock := fun p _ _ _ => pure (.error { kind := .invalidInput, path := some p, message := "flock: EINVAL" }) }
+  let apiLockInv := TempDir.mkApiM fsLockInv Time.defaultOps fixedUuid EnvVars.defaultApi
+  assertTempDirInvalidInput (← apiLockInv.withLockedTempDir (some sandbox) "inv-" fun _ => pure (.ok ()))
+    (some expectedLock) (some "flock: EINVAL") "withLockedTempDir preserves Fs invalidInput from withFileLock"
+  assertTrue (!(← assertFsOk (← Fs.pathExists expectedDir) "pathExists after lock invalidInput"))
+    "withLockedTempDir cleaned up dir after lock invalidInput"
+
+  let fsRmtreeInv : Fs.FsApi :=
+    { Fs.defaultApi with
+      rmtree := fun p _ => pure (.error { kind := .invalidInput, path := some p, message := "rmtree: EINVAL" }) }
+  let apiRmtreeInv := TempDir.mkApiM fsRmtreeInv Time.defaultOps fixedUuid EnvVars.defaultApi
+  assertTempDirInvalidInput (← apiRmtreeInv.withTempDir (some sandbox) "inv-" fun _ => pure (.ok ()))
+    (some expectedDir) (some "rmtree: EINVAL") "withTempDir preserves Fs invalidInput from rmtree"
+  assertFsOk (← Fs.rmtree expectedDir true) "clean up dir left by mocked rmtree invalidInput"
+
+  let fsListDirInv : Fs.FsApi :=
+    { Fs.defaultApi with
+      listDir := fun p => pure (.error { kind := .invalidInput, path := some p, message := "listDir: EINVAL" }) }
+  let apiListDirInv := TempDir.mkApiM fsListDirInv Time.defaultOps Uuid.defaultApi EnvVars.defaultApi
+  assertTempDirInvalidInput (← apiListDirInv.cleanupStaleTempDirs (some sandbox) "p-" 0)
+    (some sandbox) (some "listDir: EINVAL") "cleanupStaleTempDirs preserves Fs invalidInput from listDir"
+
+  let invSweepRoot := Fs.join sandbox "inv-sweep"
+  let invChild := Fs.join invSweepRoot "inv-child"
+  assertFsOk (← Fs.mkdir invSweepRoot false false) "create invSweepRoot"
+  assertFsOk (← Fs.mkdir invChild false false) "create invChild"
+  let fsSweepLstatInv : Fs.FsApi :=
+    { Fs.defaultApi with
+      lstat := fun p =>
+        if p == invChild then
+          pure (.error { kind := .invalidInput, path := some p, message := "lstat: EINVAL" })
+        else
+          Fs.defaultApi.lstat p }
+  let apiSweepLstatInv := TempDir.mkApiM fsSweepLstatInv Time.defaultOps Uuid.defaultApi EnvVars.defaultApi
+  let invRep ← assertTempDirOk (← apiSweepLstatInv.cleanupStaleTempDirs (some invSweepRoot) "inv-" 0)
+    "cleanupStaleTempDirs records child Fs invalidInput into failed"
+  assertTrue (invRep.failed == #[{ kind := .invalidInput, path := some invChild, message := "lstat: EINVAL" }])
+    "cleanupStaleTempDirs preserves child Fs invalidInput kind, path, and message in report.failed"
+
+  let longSeg := String.ofList (List.replicate 300 'a')
+  assertTempDirErrKind (← TempDir.withTempDir (some sandbox) longSeg fun _ => pure (.ok ()))
+    .invalidInput "withTempDir maps OS ENAMETOOLONG prefix to invalidInput"
+  assertTempDirErrKind (← TempDir.withLockedTempDir (some sandbox) longSeg fun _ => pure (.ok ()))
+    .invalidInput "withLockedTempDir maps OS ENAMETOOLONG prefix to invalidInput"
+  let longRoot := Fs.join sandbox longSeg
+  assertTempDirInvalidInput (← TempDir.withTempDir (some longRoot) "p-" fun _ => pure (.ok ()))
+    (some longRoot) none "withTempDir maps OS ENAMETOOLONG root to invalidInput"
+  assertTempDirInvalidInput (← TempDir.withLockedTempDir (some longRoot) "p-" fun _ => pure (.ok ()))
+    (some longRoot) none "withLockedTempDir maps OS ENAMETOOLONG root to invalidInput"
+  assertTempDirInvalidInput (← TempDir.cleanupStaleTempDirs (some longRoot) "p-" 0)
+    (some longRoot) none "cleanupStaleTempDirs maps OS ENAMETOOLONG root to invalidInput"
+
 /-- Execute all runtime OS tests for `LeanSwe.TempDir`. -/
 def runAll : IO Unit := do
   Core.runRegisteredErrorTests registeredErrorTests
   let res ← TempDir.withTempDir none "lean-swe-tempdir-sandbox-" fun sandbox => do
+    testFsInvalidInputPreserved sandbox
     testWithTempDirLifecycle sandbox
     testWithLockedTempDirAndRootResolution sandbox
     testCleanupStaleTempDirsOS sandbox
