@@ -1653,42 +1653,55 @@ private def nonProjectReducibilityStatus (env : Environment) (cName : Name) : Re
             st := s
   return st
 
-private def relaxProjectIrreducibles : CoreM Unit := do
-  let env ← getEnv
-  let mut toRestore : Array (Name × ReducibilityStatus) := #[]
-  for h : i in [0 : env.header.moduleNames.size] do
-    if isProjectOrTestModule env.header.moduleNames[i] then
-      for (cName, status) in Lean.reducibilityCoreExt.getModuleEntries env i do
-        if status == .irreducible && (← isIrreducible cName) then
-          toRestore := toRestore.push (cName, .semireducible)
-      for entry in Lean.reducibilityExtraExt.ext.getModuleEntries env i do
-        if let .global (cName, .irreducible) := entry then
-          if (← isIrreducible cName) then
-            let origStatus :=
-              if isProjectOrTestModule (moduleOfConst env cName) then
-                .semireducible
-              else
-                nonProjectReducibilityStatus env cName
-            toRestore := toRestore.push (cName, origStatus)
-  for (cName, status) in toRestore do
-    setReducibilityStatus cName status
+/-- Build a copy of the current `Environment` with project-applied `@[irreducible]` attributes
+relaxed back to their pre-project reducibility status, leaving the ambient `CoreM` environment
+and stdlib `@[irreducible]` barriers unchanged. -/
+private def mkRelaxedProjectIrreduciblesEnv : CoreM Environment := do
+  let (_, relaxedEnv) ← withoutModifyingEnv' do
+    let env ← getEnv
+    let mut toRestore : Array (Name × ReducibilityStatus) := #[]
+    for h : i in [0 : env.header.moduleNames.size] do
+      if isProjectOrTestModule env.header.moduleNames[i] then
+        for (cName, status) in Lean.reducibilityCoreExt.getModuleEntries env i do
+          if status == .irreducible && (← isIrreducible cName) then
+            toRestore := toRestore.push (cName, .semireducible)
+        for entry in Lean.reducibilityExtraExt.ext.getModuleEntries env i do
+          if let .global (cName, .irreducible) := entry then
+            if (← isIrreducible cName) then
+              let origStatus :=
+                if isProjectOrTestModule (moduleOfConst env cName) then
+                  .semireducible
+                else
+                  nonProjectReducibilityStatus env cName
+              if origStatus != .irreducible then
+                toRestore := toRestore.push (cName, origStatus)
+    for (cName, status) in toRestore do
+      setReducibilityStatus cName status
+  return relaxedEnv
 
-private def kernelDefEq (a b : Expr) : MetaM BoundedBool := do
-  match ← runBoundedMeta
-      (Meta.withNewMCtxDepth <| Meta.withTransparency .default <| isDefEq a b)
-      (maxRecDepth := 1024) with
-  | .ok true => return .isTrue
-  | .ok false => return .isFalse
-  | .error r => return .inconclusive r
+/-- Bounded Meta-level definitional-equality check for `Core.Refines` triviality gates.
+Temporarily runs `Meta.isDefEq` at `.default` transparency under `relaxedEnv` with a fresh
+`MetaM` cache so project `@[irreducible]` definitions (and cross-module global `[irreducible]`
+attributes applied in project modules) unfold while preserving stdlib `@[irreducible]` barriers,
+full Lean WHNF/defeq caching, and the unmodified ambient `CoreM`/`MetaM` environment and caches
+outside this check. -/
+private def boundedMetaDefEq (relaxedEnv : Environment) (a b : Expr) : MetaM BoundedBool := do
+  Meta.withFreshCache <| withEnv relaxedEnv do
+    match ← runBoundedMeta
+        (Meta.withNewMCtxDepth <| Meta.withTransparency .default <| isDefEq a b)
+        (maxRecDepth := 1024) with
+    | .ok true => return .isTrue
+    | .ok false => return .isFalse
+    | .error r => return .inconclusive r
 
-private def isDefEqPropAtom (e : Expr) : MetaM BoundedBool := do
+private def isDefEqPropAtom (relaxedEnv : Environment) (e : Expr) : MetaM BoundedBool := do
   let p := e.consumeMData
   if p.isAppOfArity ``Eq 3 then
     if (p.getArg! 1).consumeMData == (p.getArg! 2).consumeMData then return .isTrue
-    return ← kernelDefEq (p.getArg! 1) (p.getArg! 2)
+    return ← boundedMetaDefEq relaxedEnv (p.getArg! 1) (p.getArg! 2)
   if p.isAppOfArity ``Iff 2 then
     if (p.getArg! 0).consumeMData == (p.getArg! 1).consumeMData then return .isTrue
-    return ← kernelDefEq (p.getArg! 0) (p.getArg! 1)
+    return ← boundedMetaDefEq relaxedEnv (p.getArg! 0) (p.getArg! 1)
   return .isFalse
 
 private partial def exprAstNodesAtMost (limit : Nat) (e : Expr) : Option Nat :=
@@ -2064,13 +2077,13 @@ private def expandModelPropRels (env : Environment) (modelMods : Std.HashSet Nam
     | .error reason => return .error reason
     | .ok r => return .ok (stripSyntacticReflAtoms r)
 
-private def isTrivialPropExpr (e : Expr) : MetaM BoundedBool := do
-  match ← isDefEqPropAtom e with
+private def isTrivialPropExpr (relaxedEnv : Environment) (e : Expr) : MetaM BoundedBool := do
+  match ← isDefEqPropAtom relaxedEnv e with
   | .isFalse => isStaticTrueProp e
   | other => return other
 
 private def checkWrappedPayloadSensitive
-    (env : Environment)
+    (env relaxedEnv : Environment)
     (modelMods : Std.HashSet Name)
     (mkPred : Expr → MetaM Expr)
     (unfoldFn : Name)
@@ -2094,11 +2107,11 @@ private def checkWrappedPayloadSensitive
             | .ok e => pure e
             | .error r => return .inconclusive r
           if !expOk1.hasAnyFVar (· == v1.fvarId!) then return .isFalse
-          match ← isTrivialPropExpr expOk1 with
+          match ← isTrivialPropExpr relaxedEnv expOk1 with
           | .isFalse => pure ()
           | .isTrue => return .isFalse
           | .inconclusive r => return .inconclusive r
-          match ← kernelDefEq pOk1 pOk2 with
+          match ← boundedMetaDefEq relaxedEnv pOk1 pOk2 with
           | .isFalse => return .isTrue
           | .isTrue => return .isFalse
           | .inconclusive r => return .inconclusive r
@@ -2117,33 +2130,37 @@ private def checkWrappedPayloadSensitive
             | .ok e => pure e
             | .error r => return .inconclusive r
           if !expSm1.hasAnyFVar (· == v1.fvarId!) then return .isFalse
-          match ← isTrivialPropExpr expSm1 with
+          match ← isTrivialPropExpr relaxedEnv expSm1 with
           | .isFalse => pure ()
           | .isTrue => return .isFalse
           | .inconclusive r => return .inconclusive r
-          match ← kernelDefEq pSm1 pSm2 with
+          match ← boundedMetaDefEq relaxedEnv pSm1 pSm2 with
           | .isFalse => return .isTrue
           | .isTrue => return .isFalse
           | .inconclusive r => return .inconclusive r
   return .isTrue
 
-private partial def hasVacuousInputBranch (fuel : Nat) (outFV : FVarId) (isConjPart : Bool) (e : Expr) :
-    MetaM BoundedBool := do
+private partial def hasVacuousInputBranch
+    (relaxedEnv : Environment)
+    (fuel : Nat)
+    (outFV : FVarId)
+    (isConjPart : Bool)
+    (e : Expr) : MetaM BoundedBool := do
   if fuel == 0 then return .isFalse
   let c := e.consumeMData
   if !c.hasAnyFVar (· == outFV) then
     return .isTrue
   if c.isAppOfArity ``And 2 then
-    match ← hasVacuousInputBranch (fuel - 1) outFV true c.appFn!.appArg! with
-    | .isFalse => return ← hasVacuousInputBranch (fuel - 1) outFV true c.appArg!
+    match ← hasVacuousInputBranch relaxedEnv (fuel - 1) outFV true c.appFn!.appArg! with
+    | .isFalse => return ← hasVacuousInputBranch relaxedEnv (fuel - 1) outFV true c.appArg!
     | other => return other
   if c.isAppOfArity ``ite 5 then
     let cond := c.getArg! 1
     let tBr := c.getArg! 3
     let eBr := c.getArg! 4
     if !cond.hasAnyFVar (· == outFV) then
-      match ← hasVacuousInputBranch (fuel - 1) outFV isConjPart tBr with
-      | .isFalse => return ← hasVacuousInputBranch (fuel - 1) outFV isConjPart eBr
+      match ← hasVacuousInputBranch relaxedEnv (fuel - 1) outFV isConjPart tBr with
+      | .isFalse => return ← hasVacuousInputBranch relaxedEnv (fuel - 1) outFV isConjPart eBr
       | other => return other
   if c.isAppOfArity ``dite 5 then
     let cond := c.getArg! 1
@@ -2151,12 +2168,12 @@ private partial def hasVacuousInputBranch (fuel : Nat) (outFV : FVarId) (isConjP
     let eLam := c.getArg! 4
     if !cond.hasAnyFVar (· == outFV) then
       let resT ← withLocalDeclD `_ditePos cond fun hp =>
-        hasVacuousInputBranch (fuel - 1) outFV isConjPart ((Expr.app tLam hp).headBeta)
+        hasVacuousInputBranch relaxedEnv (fuel - 1) outFV isConjPart ((Expr.app tLam hp).headBeta)
       match resT with
       | .isFalse =>
         let negCond := mkApp (mkConst ``Not) cond
         return ← withLocalDeclD `_diteNeg negCond fun hn =>
-          hasVacuousInputBranch (fuel - 1) outFV isConjPart ((Expr.app eLam hn).headBeta)
+          hasVacuousInputBranch relaxedEnv (fuel - 1) outFV isConjPart ((Expr.app eLam hn).headBeta)
       | other => return other
   if let .forallE n dom body bi := c then
     if !dom.hasAnyFVar (· == outFV) then
@@ -2167,8 +2184,8 @@ private partial def hasVacuousInputBranch (fuel : Nat) (outFV : FVarId) (isConjP
           | .isFalse => return .isTrue
           | .inconclusive r => return .inconclusive r
       return ← withLocalDecl n bi dom fun hx =>
-        hasVacuousInputBranch (fuel - 1) outFV isConjPart (body.instantiate1 hx)
-  return ← isDefEqPropAtom c
+        hasVacuousInputBranch relaxedEnv (fuel - 1) outFV isConjPart (body.instantiate1 hx)
+  return ← isDefEqPropAtom relaxedEnv c
 
 private partial def collectAllInputImplicationGuards (fuel : Nat) (outFV : FVarId) (e : Expr) :
     MetaM (Option (Array Expr)) := do
@@ -2209,7 +2226,7 @@ private def groundSamplesForType (ty : Expr) : MetaM (Except String (Option (Arr
   return .ok none
 
 private def checkPureAllowedNonTrivial
-    (env : Environment)
+    (env relaxedEnv : Environment)
     (modelMods : Std.HashSet Name)
     (specSubst : Expr)
     (specFn : Name)
@@ -2235,7 +2252,7 @@ private def checkPureAllowedNonTrivial
           | .ok e => pure e
           | .error r => return .inconclusive r
         if !exp1.hasAnyFVar (· == y1.fvarId!) then return .isFalse
-        match ← hasVacuousInputBranch 32 y1.fvarId! false exp1 with
+        match ← hasVacuousInputBranch relaxedEnv 32 y1.fvarId! false exp1 with
         | .isFalse => pure ()
         | .isTrue => return .isFalse
         | .inconclusive r => return .inconclusive r
@@ -2245,7 +2262,7 @@ private def checkPureAllowedNonTrivial
           | .isTrue => pure ()
           | .isFalse =>
             if !exp1.hasAnyFVar (· == acc[k]!.fvarId!) then return .isFalse
-        match ← kernelDefEq p1 p2 with
+        match ← boundedMetaDefEq relaxedEnv p1 p2 with
         | .isFalse => pure ()
         | .isTrue => return .isFalse
         | .inconclusive r => return .inconclusive r
@@ -2254,7 +2271,7 @@ private def checkPureAllowedNonTrivial
           | .error r => return .inconclusive r
         let u1 := u1Raw.headBeta
         for cand in #[p1, u1, exp1] do
-          match ← isTrivialPropExpr cand with
+          match ← isTrivialPropExpr relaxedEnv cand with
           | .isFalse => pure ()
           | .isTrue => return .isFalse
           | .inconclusive r => return .inconclusive r
@@ -2293,12 +2310,12 @@ private def checkPureAllowedNonTrivial
           | .inconclusive r, _ | _, .inconclusive r => return .inconclusive r
           | .isTrue, .isTrue => return .isFalse
           | _, _ => pure ()
-        checkWrappedPayloadSensitive env modelMods
+        checkWrappedPayloadSensitive env relaxedEnv modelMods
           (fun y => pure (mkAppN specSubst (acc.push y)).headBeta) specFn outTySubst
   withInputs 0 #[]
 
 private def checkStepAllowedNonTrivial
-    (env : Environment)
+    (env relaxedEnv : Environment)
     (modelMods : Std.HashSet Name)
     (allowedArg : Expr)
     (allowedFn : Name)
@@ -2321,7 +2338,7 @@ private def checkStepAllowedNonTrivial
     | .isTrue => pure ()
     | .isFalse =>
       if !exp1.hasAnyFVar (· == req.fvarId!) then return .isFalse
-    match ← kernelDefEq p1 p2 with
+    match ← boundedMetaDefEq relaxedEnv p1 p2 with
     | .isFalse => pure ()
     | .isTrue => return .isFalse
     | .inconclusive r => return .inconclusive r
@@ -2330,7 +2347,7 @@ private def checkStepAllowedNonTrivial
       | .error r => return .inconclusive r
     let u1 := u1Raw.headBeta
     for cand in #[p1, u1, exp1] do
-      match ← isTrivialPropExpr cand with
+      match ← isTrivialPropExpr relaxedEnv cand with
       | .isFalse => pure ()
       | .isTrue => return .isFalse
       | .inconclusive r => return .inconclusive r
@@ -2342,7 +2359,7 @@ private def checkStepAllowedNonTrivial
       | .isFalse => pure ()
       | .isTrue => return .isFalse
       | .inconclusive r => return .inconclusive r
-    match ← checkWrappedPayloadSensitive env modelMods
+    match ← checkWrappedPayloadSensitive env relaxedEnv modelMods
         (fun o => pure (mkApp4 allowedArg s req o s1').headBeta) allowedFn outTy with
     | .isTrue => pure ()
     | other => return other
@@ -2362,7 +2379,7 @@ private def checkStepAllowedNonTrivial
                     | .ok w => pure w.consumeMData
                     | .error r => return .inconclusive r
                   if let .forallE _ fldTy _ _ := cTyW then
-                    match ← checkWrappedPayloadSensitive env modelMods
+                    match ← checkWrappedPayloadSensitive env relaxedEnv modelMods
                         (fun inner => pure (mkApp4 allowedArg s req (mkApp ctorConst inner) s1').headBeta)
                         allowedFn fldTy with
                     | .isTrue => pure ()
@@ -2370,7 +2387,7 @@ private def checkStepAllowedNonTrivial
     return .isTrue
 
 private def checkRefinesModelTheorem
-    (env : Environment)
+    (env relaxedEnv : Environment)
     (transImpsOf : Name → Std.HashSet Name)
     (knownPkgs : Array Name)
     (pkg : Name)
@@ -2517,7 +2534,7 @@ private def checkRefinesModelTheorem
                 aErrs := aErrs.push s!"TRIVIAL_CODOMAIN_IN_REFINES: Unit codomain in RefinesPureEq for {implFn} in {thmName}"
           else
             let specSubst := applySubst specArg
-            match ← checkPureAllowedNonTrivial env modelMods specSubst specFn inTysSubst outTySubst with
+            match ← checkPureAllowedNonTrivial env relaxedEnv modelMods specSubst specFn inTysSubst outTySubst with
             | .isTrue => pure ()
             | .isFalse =>
               aErrs := aErrs.push s!"TRIVIAL_ALLOWED_IN_REFINES: {specFn} for {implFn} in {thmName} is output-insensitive or tautological"
@@ -2571,7 +2588,7 @@ private def checkRefinesModelTheorem
             aErrs := aErrs.push s!"VACUOUS_WF_IN_REFINES: {wfFn} in {thmName} is identically false or refutable"
           | .inconclusive reason =>
             aErrs := aErrs.push s!"INCONCLUSIVE_REFINES_CHECK: {wfFn} in {thmName} ({reason})"
-          match ← checkStepAllowedNonTrivial env modelMods allowedArg allowedFn sTy reqTy outTy with
+          match ← checkStepAllowedNonTrivial env relaxedEnv modelMods allowedArg allowedFn sTy reqTy outTy with
           | .isTrue => pure ()
           | .isFalse =>
             aErrs := aErrs.push s!"TRIVIAL_ALLOWED_IN_REFINES: {allowedFn} in {thmName} is output/state-insensitive or tautological"
@@ -2653,7 +2670,7 @@ private def checkRefinesModelTheorem
                 aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {mFn} in {thmName} transitively references Interface/Impl"
             if !(← isProvablyInhabitedDataType env 8 legReqTy) then
               aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited state/request domain in RefinesStepFrom of {thmName}"
-            match ← checkStepAllowedNonTrivial env modelMods legAllowedArg legAllowedFn legSTy legReqTy legOutTy with
+            match ← checkStepAllowedNonTrivial env relaxedEnv modelMods legAllowedArg legAllowedFn legSTy legReqTy legOutTy with
             | .isTrue => pure ()
             | .isFalse =>
               aErrs := aErrs.push s!"TRIVIAL_ALLOWED_IN_REFINES: {legAllowedFn} in {thmName} is output/state-insensitive or tautological"
@@ -2935,7 +2952,6 @@ unsafe def main (args : List String) : IO UInt32 := do
   let ctx : Core.Context := { fileName := "<CheckAssumptions>", fileMap := default, maxHeartbeats := 0, maxRecDepth := 8192 }
   let state : Core.State := { env }
   let ((metaErrs, expectedAssumpNames, expectedErrorTests), _) ← (Meta.MetaM.run' do
-    relaxProjectIrreducibles
     let mut errs : Array String := #[]
     let mut expAssumps : Array String := #[]
     let mut expErrTests : Array (String × String) := #[]
@@ -3107,6 +3123,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       else
         errs := errs.push "MISSING_MAIN: Tests.Main lacks main"
 
+    let relaxedEnv ← mkRelaxedProjectIrreduciblesEnv
     for pkg in knownPkgs do
       if cfg.legacyAllowlist.contains pkg then continue
       let rtMod := Name.str pkg "RuntimeTests"
@@ -3162,7 +3179,7 @@ unsafe def main (args : List String) : IO UInt32 := do
           if modelDefCount == 0 then
             errs := errs.push s!"EMPTY_OR_STUB_MODEL: {modelMod} for {pkg} defines zero non-trivial public computational functions"
         if needsRefinesModel then
-          let (refErrs, nextAx) ← checkRefinesModelTheorem env transImpsOf knownPkgs pkg modelMods axCache
+          let (refErrs, nextAx) ← checkRefinesModelTheorem env relaxedEnv transImpsOf knownPkgs pkg modelMods axCache
           axCache := nextAx
           errs := errs ++ refErrs
 
