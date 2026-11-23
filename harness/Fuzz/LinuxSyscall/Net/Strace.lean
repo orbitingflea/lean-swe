@@ -3120,6 +3120,121 @@ private def runV6SelfShutBindLoDownTests : IO Unit := do
   let _ ← mustStep "unp mapped ::ffff:127.0.0.1:0 unit" unp (.bind 0 mappedLoZero) .unit
   let _ ← mustStep "unp mapped ::ffff:127.0.0.1:0 EADDRNOTAVAIL" unp (.bind 0 mappedLoZero) (.err Errno.EADDRNOTAVAIL)
 
+private def runTcpDisconnectRxPurgeTests : IO Unit := do
+  let mustStep (lbl : String) (s : NetState) (req : NetReq) (out : NetOutcome) : IO NetState := do
+    match Net.allowedStep s req out with
+    | some s' => return s'
+    | none => throw (IO.userError s!"tcp disconnect rx purge: model rejected {lbl}: req={repr req} out={repr out}")
+  let mustReject (lbl : String) (s : NetState) (req : NetReq) (out : NetOutcome) : IO Unit :=
+    assertTrue s!"tcp disconnect rx purge: {lbl} should reject" ((Net.allowedStep s req out).isNone)
+  let s0 := NetState.initial true
+  let blkFlags : SockFlags := { nonblock := false, cloexec := true }
+  let p0 : UInt16 := 44100
+  let p1 : UInt16 := 51234
+  let p1b : UInt16 := 51235
+  let lisAddr6 : SockAddr := .ipv6 0 0 p0 0 0
+  let dstV4 : SockAddr := .ipv4 INADDR_LOOPBACK p0
+  let cliV4 : SockAddr := .ipv4 INADDR_LOOPBACK p1
+  let peerV6Mapped : SockAddr := .ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) p1 0 0
+  let peerV6Mapped2 : SockAddr := .ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) p1b 0 0
+  let b206 : ByteArray := ByteArray.mk #[206]
+  let b170 : ByteArray := ByteArray.mk #[170]
+  let b99 : ByteArray := ByteArray.mk #[99]
+  let mkPostRst (nbClient completeEarly : Bool) : IO NetState := do
+    let mut st ← mustStep "s0" s0 (.socket .inet6 .stream blkFlags 0) (.opened 0)
+    st ← mustStep "s1" st (.socket .inet .stream { nonblock := nbClient, cloexec := true } 0) (.opened 1)
+    st ← mustStep "lis" st (.listen 0 0) .unit
+    st ← mustStep "gsn0" st (.getsockname 0) (.addr lisAddr6)
+    st ← mustStep "conn1" st (.connect 1 dstV4) (if nbClient then .err Errno.EINPROGRESS else .unit)
+    st ← mustStep "gsn1" st (.getsockname 1) (.addr cliV4)
+    st ← mustStep "acc" st (.accept4 0 nbFlags) (.accepted 2 peerV6Mapped)
+    if completeEarly then
+      st ← mustStep "conn1.early" st (.connect 1 dstV4) .unit
+    st ← mustStep "send2" st (.sendto 2 b206 {}) (.u32 1)
+    st ← assertOk "close2" (NetState.closeHandle st 2)
+    mustStep "send1" st (.sendto 1 b170 {}) (.u32 1)
+  let st1 ← mkPostRst true false
+  mustReject "pre-conn rx(0) rejects ENOTCONN" st1 (.recvfrom 1 0 {}) (.err Errno.ENOTCONN)
+  mustReject "pre-conn rx(1024) rejects ENOTCONN" st1 (.recvfrom 1 1024 { dontwait := true }) (.err Errno.ENOTCONN)
+  let _ ← mustStep "pre-conn rx(0) empty" st1 (.recvfrom 1 0 {}) (.bytes ByteArray.empty)
+  let _ ← mustStep "pre-conn rx(1024) 206" st1 (.recvfrom 1 1024 { dontwait := true }) (.bytes b206)
+  let stDisc ← mustStep "conn1.self EPIPE" st1 (.connect 1 cliV4) (.err Errno.EPIPE)
+  let _ ← mustStep "post-disc rx(0) ENOTCONN" stDisc (.recvfrom 1 0 {}) (.err Errno.ENOTCONN)
+  let _ ← mustStep "post-disc rx(1024,dw) ENOTCONN" stDisc (.recvfrom 1 1024 { dontwait := true }) (.err Errno.ENOTCONN)
+  let _ ← mustStep "post-disc rx(1024,blk) ENOTCONN" stDisc (.recvfrom 1 1024 {}) (.err Errno.ENOTCONN)
+  let _ ← mustStep "post-disc recvmsg ENOTCONN" stDisc (.recvmsg 1 1) (.err Errno.ENOTCONN)
+  mustReject "post-disc rx(0) rejects empty" stDisc (.recvfrom 1 0 {}) (.bytes ByteArray.empty)
+  mustReject "post-disc rx(1024) rejects stale 206" stDisc (.recvfrom 1 1024 { dontwait := true }) (.bytes b206)
+  mustReject "post-disc rx(1024) rejects empty" stDisc (.recvfrom 1 1024 { dontwait := true }) (.bytes ByteArray.empty)
+  mustReject "post-disc rx(1024) rejects EAGAIN" stDisc (.recvfrom 1 1024 { dontwait := true }) (.err Errno.EAGAIN)
+  mustReject "post-disc recvmsg rejects empty fds" stDisc (.recvmsg 1 1) (.fds #[])
+  let mut stRec ← mustStep "reconn" stDisc (.connect 1 dstV4) (.err Errno.EINPROGRESS)
+  stRec ← mustStep "reconn.acc" stRec (.accept4 0 nbFlags) (.accepted 3 peerV6Mapped2)
+  mustReject "reconn pre-send rx rejects stale 206" stRec (.recvfrom 1 16 { dontwait := true }) (.bytes b206)
+  let _ ← mustStep "reconn pre-send rx EAGAIN" stRec (.recvfrom 1 16 { dontwait := true }) (.err Errno.EAGAIN)
+  stRec ← mustStep "reconn send3 99" stRec (.sendto 3 b99 {}) (.u32 1)
+  mustReject "reconn post-send rx rejects stale 206" stRec (.recvfrom 1 16 { dontwait := true }) (.bytes b206)
+  let _ ← mustStep "reconn post-send rx 99" stRec (.recvfrom 1 16 { dontwait := true }) (.bytes b99)
+  let stSo ← mustStep "soErr EPIPE" st1 (.getsockopt 1 .error) (.u32 Errno.EPIPE)
+  mustReject "post-soErr pre-conn rx(0) rejects ENOTCONN" stSo (.recvfrom 1 0 {}) (.err Errno.ENOTCONN)
+  mustReject "post-soErr pre-conn rx(16) rejects ENOTCONN" stSo (.recvfrom 1 16 { dontwait := true }) (.err Errno.ENOTCONN)
+  let _ ← mustStep "post-soErr pre-conn rx(0) empty" stSo (.recvfrom 1 0 {}) (.bytes ByteArray.empty)
+  let _ ← mustStep "post-soErr pre-conn rx(16,peek) 206" stSo (.recvfrom 1 16 { dontwait := true, peek := true }) (.bytes b206)
+  let stAb ← mustStep "post-soErr conn ECONNABORTED" stSo (.connect 1 cliV4) (.err Errno.ECONNABORTED)
+  let _ ← mustStep "post-abort rx(0) ENOTCONN" stAb (.recvfrom 1 0 {}) (.err Errno.ENOTCONN)
+  let _ ← mustStep "post-abort rx(16) ENOTCONN" stAb (.recvfrom 1 16 { dontwait := true }) (.err Errno.ENOTCONN)
+  mustReject "post-abort rx(16) rejects stale 206" stAb (.recvfrom 1 16 { dontwait := true }) (.bytes b206)
+  mustReject "post-abort rx(0) rejects empty" stAb (.recvfrom 1 0 {}) (.bytes ByteArray.empty)
+  let mut stUnr ← mustStep "unr.s0" s0 (.socket .inet6 .stream blkFlags 0) (.opened 0)
+  stUnr ← mustStep "unr.s1" stUnr (.socket .inet .stream nbFlags 0) (.opened 1)
+  stUnr ← mustStep "unr.lis" stUnr (.listen 0 0) .unit
+  stUnr ← mustStep "unr.gsn0" stUnr (.getsockname 0) (.addr lisAddr6)
+  stUnr ← mustStep "unr.conn1" stUnr (.connect 1 dstV4) (.err Errno.EINPROGRESS)
+  stUnr ← mustStep "unr.gsn1" stUnr (.getsockname 1) (.addr cliV4)
+  stUnr ← mustStep "unr.acc" stUnr (.accept4 0 nbFlags) (.accepted 2 peerV6Mapped)
+  stUnr ← mustStep "unr.send2" stUnr (.sendto 2 b206 {}) (.u32 1)
+  stUnr ← mustStep "unr.send1" stUnr (.sendto 1 b170 {}) (.u32 1)
+  stUnr ← assertOk "unr.close2" (NetState.closeHandle stUnr 2)
+  let stUnrDisc ← mustStep "unr.conn ECONNRESET" stUnr (.connect 1 dstV4) (.err Errno.ECONNRESET)
+  let _ ← mustStep "unr post-disc rx(0) ENOTCONN" stUnrDisc (.recvfrom 1 0 {}) (.err Errno.ENOTCONN)
+  let _ ← mustStep "unr post-disc rx(16) ENOTCONN" stUnrDisc (.recvfrom 1 16 { dontwait := true }) (.err Errno.ENOTCONN)
+  mustReject "unr post-disc rx(16) rejects stale 206" stUnrDisc (.recvfrom 1 16 { dontwait := true }) (.bytes b206)
+  mustReject "unr post-disc rx(0) rejects empty" stUnrDisc (.recvfrom 1 0 {}) (.bytes ByteArray.empty)
+  let dstV6 : SockAddr := .ipv6 0 1 44101 0 0
+  let peerV6 : SockAddr := .ipv6 0 1 51236 0 0
+  let mut stV6 ← mustStep "v6.s0" s0 (.socket .inet6 .stream blkFlags 0) (.opened 0)
+  stV6 ← mustStep "v6.bind" stV6 (.bind 0 (.ipv6 0 1 0 0 0)) .unit
+  stV6 ← mustStep "v6.gsn0" stV6 (.getsockname 0) (.addr dstV6)
+  stV6 ← mustStep "v6.lis" stV6 (.listen 0 4) .unit
+  stV6 ← mustStep "v6.s1" stV6 (.socket .inet6 .stream nbFlags 0) (.opened 1)
+  stV6 ← mustStep "v6.conn1" stV6 (.connect 1 dstV6) (.err Errno.EINPROGRESS)
+  stV6 ← mustStep "v6.acc" stV6 (.accept4 0 nbFlags) (.accepted 2 peerV6)
+  stV6 ← mustStep "v6.send2" stV6 (.sendto 2 b206 {}) (.u32 1)
+  stV6 ← mustStep "v6.loDown" stV6 (.ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname) (.u32 0)
+  stV6 ← mustStep "v6.send1.down" stV6 (.sendto 1 b170 {}) (.u32 1)
+  stV6 ← mustStep "v6.loUp" stV6 (.ioctl 0 (.setIfFlags defaultLoFlags) loIfname) (.u32 0)
+  stV6 ← assertOk "v6.close2" (NetState.closeHandle stV6 2)
+  let stV6Disc ← mustStep "v6.conn ECONNRESET" stV6 (.connect 1 dstV6) (.err Errno.ECONNRESET)
+  mustReject "v6 post-disc soErr rejects stale ENETUNREACH" stV6Disc (.getsockopt 1 .error) (.u32 Errno.ENETUNREACH)
+  let _ ← mustStep "v6 post-disc soErr 0" stV6Disc (.getsockopt 1 .error) (.u32 0)
+  let _ ← mustStep "v6 post-disc rx(16) ENOTCONN" stV6Disc (.recvfrom 1 16 { dontwait := true }) (.err Errno.ENOTCONN)
+  mustReject "v6 post-disc rx(16) rejects stale 206" stV6Disc (.recvfrom 1 16 { dontwait := true }) (.bytes b206)
+  mustReject "v6 post-disc rx(16) rejects EAGAIN" stV6Disc (.recvfrom 1 16 { dontwait := true }) (.err Errno.EAGAIN)
+  let stBlk ← mkPostRst false false
+  mustReject "blk conn rejects EPIPE" stBlk (.connect 1 cliV4) (.err Errno.EPIPE)
+  let stBlkC ← mustStep "blk conn EISCONN" stBlk (.connect 1 cliV4) (.err Errno.EISCONN)
+  mustReject "blk post-EISCONN rx(1024) rejects ENOTCONN" stBlkC (.recvfrom 1 1024 { dontwait := true }) (.err Errno.ENOTCONN)
+  mustReject "blk post-EISCONN rx(0) rejects ENOTCONN" stBlkC (.recvfrom 1 0 {}) (.err Errno.ENOTCONN)
+  let _ ← mustStep "blk post-EISCONN rx(1024) 206" stBlkC (.recvfrom 1 1024 { dontwait := true }) (.bytes b206)
+  let stDone ← mkPostRst true true
+  let stDoneC ← mustStep "early-done conn EISCONN" stDone (.connect 1 cliV4) (.err Errno.EISCONN)
+  mustReject "early-done post-EISCONN rx(1024) rejects ENOTCONN" stDoneC (.recvfrom 1 1024 { dontwait := true }) (.err Errno.ENOTCONN)
+  let _ ← mustStep "early-done post-EISCONN rx(1024) 206" stDoneC (.recvfrom 1 1024 { dontwait := true }) (.bytes b206)
+  let stSh ← mustStep "shutRd ENOTCONN" st1 (.shutdown 1 .rd) (.err Errno.ENOTCONN)
+  let stShC ← mustStep "post-shutRd conn EINVAL" stSh (.connect 1 cliV4) (.err Errno.EINVAL)
+  mustReject "post-shutRd EINVAL rx(1024) rejects ENOTCONN" stShC (.recvfrom 1 1024 { dontwait := true }) (.err Errno.ENOTCONN)
+  let _ ← mustStep "post-shutRd EINVAL rx(1024) 206" stShC (.recvfrom 1 1024 { dontwait := true }) (.bytes b206)
+
 /-- Run all `Net` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke` and `lean-swe-mut-test`). -/
 def runChecks : IO Unit := do
   assume_net_socket_domainTypeFlagsAbi
@@ -3214,6 +3329,7 @@ def runChecks : IO Unit := do
     runMulticastAndV6SelfShutTests
   runPreShutCloseWaitLoFlapTests
   runV6SelfShutBindLoDownTests
+  runTcpDisconnectRxPurgeTests
   runDefaultWrapperFlagsTests
   runStickyScopeMappedWildcardAndUntaintTests
   runMcastScopeAndSynResetTests

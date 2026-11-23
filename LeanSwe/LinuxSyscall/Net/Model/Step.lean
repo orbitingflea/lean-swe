@@ -492,7 +492,17 @@ private def resetDisconnectedTcp (d : SockDesc) : SockDesc :=
         let w := match sa with | .ipv4 _ p => .ipv4 INADDR_ANY p | .ipv6 _ _ p fl _ => .ipv6 0 0 p fl 0 | _ => sa
         .unhashed w ep false
       | other => other
-    { d with shut := {}, tcpSelfSynPending := false, tcpCloseWaitRst := false, tcpShutRdwrRst := false, tcpLastAck := false, proto := .tcp fam nextBind .unconnected .idle taint }
+    { d with
+      shut := {}
+      rxQueue := []
+      tcpLoStalledTx := false
+      tcpLoFinPending := false
+      tcpLoSoftUnreach := false
+      tcpSelfSynPending := false
+      tcpCloseWaitRst := false
+      tcpShutRdwrRst := false
+      tcpLastAck := false
+      proto := .tcp fam nextBind .unconnected .idle taint }
   | _ => d
 
 private def clearTcpShutRdwrRst (s : NetState) (selfFid : FileId) (d : SockDesc) : NetState :=
