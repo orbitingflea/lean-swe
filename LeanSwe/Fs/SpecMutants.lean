@@ -975,7 +975,7 @@ example : ¬ Core.AllPass (test_fs_subtree_agreesWithAmbientOnSymlinkFree_matche
       simp [vfsChildPath, VfsState.nodes, vfsTreeNodes, hc, hs, st, stateWithRootHandle, nodeAt, vfsTreeGet, vfsTreeTopNode]
     rw [hf]
     rfl
-  simp [stubMkSubtree, stubSubtree, StateT.run, StateT.pure, Pure.pure, pure, vfsApi, vfsOps, vfsReadBytesPure, hfull, hnorm, hsegs, hres] at hread
+  simp [stubMkSubtree, stubSubtree, StateT.run, StateT.pure, Pure.pure, pure, vfsOps, vfsReadBytesPure, hfull, hnorm, hsegs, hres] at hread
   cases hread
 
 example : ¬ Core.AllPass (test_fs_subtree_closedHandle_refusesAllOps

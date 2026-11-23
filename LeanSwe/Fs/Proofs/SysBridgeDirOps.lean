@@ -48,9 +48,9 @@ theorem openDirPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesC
       | .error e =>
         TraceFds [] trOpen [] ∧
         nonLockErrOk e ∧
-        ((trOpen = [] ∧ isValidRawPathModel rootPath = false ∧ e.kind = .invalidInput) ∨ trOpen ≠ []) := by
+        ((trOpen = [] ∧ isValidRawPath rootPath = false ∧ e.kind = .invalidInput) ∨ trOpen ≠ []) := by
   unfold SysBridge.openDirPure
-  by_cases hVal : SysBridge.isValidRawPath rootPath = true
+  by_cases hVal : isValidRawPath rootPath = true
   · simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     have hOp := retryEintr_single_req (cap.files.openat none rootPath.toUTF8 dirOpenFlags 0)
       (.openat none rootPath.toUTF8 dirOpenFlags 0) outcomeOfOpened
@@ -79,10 +79,10 @@ theorem openDirPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesC
         simp only [Pure.pure, StateT.pure]
         exact ⟨hWf1, hTmp1, _, hStO, hAllSteps,
           traceFds_append hFdR (traceFds_open_step rfl rfl), by simp [outcomeOfOpened]⟩
-  · have hValF : SysBridge.isValidRawPath rootPath = false := Bool.eq_false_iff.mpr hVal
+  · have hValF : isValidRawPath rootPath = false := Bool.eq_false_iff.mpr hVal
     simp only [hValF, Bool.not_false, ↓reduceIte, Pure.pure, StateT.pure, StateT.run]
     exact ⟨hWf, trivial, [], HealthyFilesSteps.nil _, (fun _ hm => nomatch hm),
-      TraceFds.nil [], nonLockErrOk_mapErrno _ _ _, Or.inl ⟨rfl, hValF, rfl⟩⟩
+      TraceFds.nil [], nonLockErrOk_mapErrno _ _ _, Or.inl ⟨rfl, trivial, rfl⟩⟩
 
 /-- Confined trace specification for `SysBridge.openDirAtPure`. -/
 theorem openDirAtPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}

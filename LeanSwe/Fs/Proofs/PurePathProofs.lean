@@ -360,8 +360,8 @@ namespace LeanSwe.Fs.Proofs
 open LeanSwe.Fs.ProofsInternal
 
 private theorem nonEmptyMsg_ne_empty (fallback msg : String) (hf : fallback ≠ "") :
-    SysBridge.nonEmptyMsg fallback msg ≠ "" := by
-  unfold SysBridge.nonEmptyMsg
+    Model.nonEmptyMsg fallback msg ≠ "" := by
+  unfold Model.nonEmptyMsg
   split
   · exact hf
   · next h =>
@@ -378,7 +378,7 @@ theorem proof_fs_mapRawError_returnsNonEmptyMessage :
     AllPass (test_fs_mapRawError_returnsNonEmptyMessage defaultApi) := by
   intro raw
   simp only [defaultApi, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM,
-    SysBridge.defaultOps, SysBridge.mkRawFsOpsM, SysBridge.mapRawError, assert]
+    SysBridge.defaultOps, SysBridge.mkRawFsOpsM, Model.mapRawError, assert]
   refine ⟨?_, trivial⟩
   cases raw with
   | noFileOrDirectory p _ _ =>
@@ -398,7 +398,7 @@ theorem proof_fsraw_mapRawError_wouldBlock :
     AllPass (test_fsraw_mapRawError_wouldBlock defaultApi) := by
   intro path? errno detail
   simp only [defaultApi, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM,
-    SysBridge.defaultOps, SysBridge.mkRawFsOpsM, SysBridge.mapRawError, assert]
+    SysBridge.defaultOps, SysBridge.mkRawFsOpsM, Model.mapRawError, assert]
   refine ⟨⟨trivial, trivial, trivial, nonEmptyMsg_ne_empty _ _ (by decide)⟩, trivial⟩
 
 /-- Non-vacuity `CanReach` witness for `test_fsraw_mapRawError_wouldBlock`. -/

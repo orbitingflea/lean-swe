@@ -112,7 +112,7 @@ theorem scoped_createDir {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOps
     let r := (ops.createDir path).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
       match r.1 with
-      | .ok () => MkdirTrace none path.toUTF8 tr
+      | .ok () => MkdirTrace none path.toUTF8 0o777 tr
       | .error e => nonLockErrOk e ∧ tr ≠ [] := by
   have h := hOps s (.createDir path) hWf
   simp only [execScopedRawFsStep, Functor.map, StateT.map, StateT.run, Bind.bind, Pure.pure, allowedScopedRawFsStep] at h ⊢
@@ -152,7 +152,7 @@ theorem scoped_readBytes {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOps
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
       match r.1 with
       | .ok bs => ReadRegularTrace none path.toUTF8 readOpenFlags bs tr
-      | .error e => nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPathModel path = false ∧ e.kind = .invalidInput)) := by
+      | .error e => nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput)) := by
   have h := hOps s (.readBytes path) hWf
   simp only [execScopedRawFsStep, Functor.map, StateT.map, StateT.run, Bind.bind, Pure.pure, allowedScopedRawFsStep] at h ⊢
   cases hEq : (ops.readBytes path s); rw [hEq] at h; exact h
@@ -164,7 +164,7 @@ theorem scoped_writeBytes {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOp
     let r := (ops.writeBytes path data).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
       match r.1 with
-      | .ok () => WriteFileTrace none path.toUTF8 writeOpenFlags 0o644 data tr
+      | .ok () => WriteFileTrace none path.toUTF8 writeOpenFlags 0o666 data tr
       | .error e => nonLockErrOk e ∧ tr ≠ [] := by
   have h := hOps s (.writeBytes path data) hWf
   simp only [execScopedRawFsStep, Functor.map, StateT.map, StateT.run, Bind.bind, Pure.pure, allowedScopedRawFsStep] at h ⊢
@@ -178,7 +178,7 @@ theorem scoped_createFileNew {W : Type} {proj : W → FsWorld} {ops : ScopedRawF
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
       match r.1 with
       | .ok () => WriteFileTrace none path.toUTF8 createNewOpenFlags 0o644 data tr
-      | .error e => nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPathModel path = false ∧ e.kind = .invalidInput)) := by
+      | .error e => nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput)) := by
   have h := hOps s (.createFileNew path data) hWf
   simp only [execScopedRawFsStep, Functor.map, StateT.map, StateT.run, Bind.bind, Pure.pure, allowedScopedRawFsStep] at h ⊢
   cases hEq : (ops.createFileNew path data s) with | mk r _ => rw [hEq] at h; dsimp only at h ⊢; cases r with | ok u => cases u; exact h | error _ => exact h
@@ -190,7 +190,7 @@ theorem scoped_appendText {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOp
     let r := (ops.appendText path content).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
       match r.1 with
-      | .ok () => WriteFileTrace none path.toUTF8 appendOpenFlags 0o644 content.toUTF8 tr
+      | .ok () => WriteFileTrace none path.toUTF8 appendOpenFlags 0o666 content.toUTF8 tr
       | .error e => nonLockErrOk e ∧ tr ≠ [] := by
   have h := hOps s (.appendText path content) hWf
   simp only [execScopedRawFsStep, Functor.map, StateT.map, StateT.run, Bind.bind, Pure.pure, allowedScopedRawFsStep] at h ⊢

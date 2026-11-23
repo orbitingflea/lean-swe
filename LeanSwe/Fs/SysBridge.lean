@@ -10,72 +10,7 @@ namespace LeanSwe.Fs.SysBridge
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Files
 open LeanSwe.Fs
-open LeanSwe.Fs.Model (RawFsOpsM RawFsOps RawDirOpsM RawDirOps)
-
-/-- Return `msg` if non-empty, or `fallback` otherwise. -/
-def nonEmptyMsg (fallback msg : String) : String :=
-  if msg.isEmpty then fallback else msg
-
-/-- Classify common Linux `errno` codes used across `otherError` and `inappropriateType`. -/
-def classifyErrno (code : UInt32) (defaultKind : FsErrorKind) : FsErrorKind :=
-  match code.toNat with
-  | 1 | 13 | 30 => .permissionDenied
-  | 2 => .notFound
-  | 17 => .alreadyExists
-  | 20 => .notADirectory
-  | 21 => .isADirectory
-  | 22 | 36 => .invalidInput
-  | 38 | 95 => .unsupported
-  | 39 | 66 => .notEmpty
-  | _ => defaultKind
-
-/-- Convert a pure `FsRawError` record into a normalized `FsError` with non-empty message. -/
-def mapRawError : FsRawError → FsError
-  | .noFileOrDirectory path code detail =>
-    { kind := .notFound
-      path := some path
-      errnoCode := some code
-      message := nonEmptyMsg s!"no such file or directory: {path}" detail }
-  | .alreadyExists path? code detail =>
-    { kind := .alreadyExists
-      path := path?
-      errnoCode := some code
-      message := nonEmptyMsg "file or directory already exists" detail }
-  | .permissionDenied path? code detail =>
-    { kind := .permissionDenied
-      path := path?
-      errnoCode := some code
-      message := nonEmptyMsg "permission denied" detail }
-  | .inappropriateType path? code detail =>
-    { kind := classifyErrno code .ioError
-      path := path?
-      errnoCode := some code
-      message := nonEmptyMsg "inappropriate file type" detail }
-  | .invalidArgument path? code detail =>
-    { kind := .invalidInput
-      path := path?
-      errnoCode := some code
-      message := nonEmptyMsg "invalid argument" detail }
-  | .wouldBlock path? code detail =>
-    { kind := .wouldBlock
-      path := path?
-      errnoCode := some code
-      message := nonEmptyMsg "resource temporarily unavailable" detail }
-  | .unsupportedOperation code detail =>
-    { kind := .unsupported
-      path := none
-      errnoCode := some code
-      message := nonEmptyMsg "unsupported filesystem operation" detail }
-  | .otherError code detail =>
-    { kind := classifyErrno code .ioError
-      path := none
-      errnoCode := some code
-      message := nonEmptyMsg s!"os error {code}" detail }
-  | .userError detail =>
-    { kind := .ioError
-      path := none
-      errnoCode := none
-      message := nonEmptyMsg "filesystem error" detail }
+open LeanSwe.Fs.Model (RawFsOpsM RawFsOps RawDirOpsM RawDirOps mapRawError isValidRawPath validSeg_dotT)
 
 /-- Map a Linux `Errno` honestly into `FsError` (`EMFILE`/`ENFILE` map to `.ioError`; never returns `.wouldBlock`). -/
 def mapErrno (path? : Option String) (ctx : String) (e : Errno) : FsError :=
@@ -94,11 +29,6 @@ def mapErrno (path? : Option String) (ctx : String) (e : Errno) : FsError :=
     errnoCode := some e
     message := s!"{ctx}: {Errno.name e}" }
 
-/-- Return `true` iff `path` is non-empty, NUL-free, and lacks a non-root trailing `'/'`. -/
-def isValidRawPath (path : String) : Bool :=
-  let cs := path.toList
-  !cs.isEmpty && !(Char.ofNat 0 ∈ cs) && !(cs.length > 1 && cs.getLast? == some '/')
-
 /-- Convert Linux `StatInfo` into `FileStat`. -/
 def statInfoToFileStat (st : StatInfo) : FileStat :=
   let kind : EntryKind :=
@@ -114,70 +44,6 @@ def statInfoToFileStat (st : StatInfo) : FileStat :=
     modifiedNsec := st.mtimeNsec.toNat
     accessedSec := st.atimeSec
     accessedNsec := st.atimeNsec.toNat }
-
-private theorem toDigitsCore_mem_digit_or_acc (fuel base n : Nat) (acc : List Char) (c : Char)
-    (hBase : base = 10) (hMem : c ∈ Nat.toDigitsCore base fuel n acc) :
-    c ∈ acc ∨ ∃ d < 10, c = Nat.digitChar d := by
-  induction fuel generalizing n acc with
-  | zero =>
-    simp [Nat.toDigitsCore] at hMem
-    exact Or.inl hMem
-  | succ f ih =>
-    unfold Nat.toDigitsCore at hMem
-    dsimp only at hMem
-    split at hMem
-    · simp only [List.mem_cons] at hMem
-      rcases hMem with rfl | hAcc
-      · exact Or.inr ⟨n % base, by subst hBase; exact Nat.mod_lt _ (by decide), rfl⟩
-      · exact Or.inl hAcc
-    · rcases ih (n / base) (Nat.digitChar (n % base) :: acc) hMem with hAcc | hDig
-      · simp only [List.mem_cons] at hAcc
-        rcases hAcc with rfl | hOld
-        · exact Or.inr ⟨n % base, by subst hBase; exact Nat.mod_lt _ (by decide), rfl⟩
-        · exact Or.inl hOld
-      · exact Or.inr hDig
-
-private theorem nat_toString_digits (n : Nat) (c : Char) (hMem : c ∈ (toString n).toList) :
-    c ≠ '/' ∧ c ≠ Char.ofNat 0 := by
-  have hDig : c ∈ Nat.toDigits 10 n := by simpa [toString, Nat.repr] using hMem
-  unfold Nat.toDigits at hDig
-  rcases toDigitsCore_mem_digit_or_acc (n + 1) 10 n [] c rfl hDig with hc | ⟨d, hd, rfl⟩
-  · simp at hc
-  · rcases d with _ | _ | _ | _ | _ | _ | _ | _ | _ | _ | d
-    all_goals first | decide | omega
-
-/-- Every decimal-suffixed `.t.<n>` temporary filename satisfies `validSeg`. -/
-theorem validSeg_dotT (n : Nat) : validSeg (".t." ++ toString n) = true := by
-  have hNoSlash : (".t." ++ toString n).toList.contains '/' = false := by
-    refine Bool.eq_false_iff.mpr ?_
-    intro hm
-    have hMem : '/' ∈ (".t." ++ toString n).toList := List.contains_iff_mem.mp hm
-    rw [String.toList_append, show ".t.".toList = ['.', 't', '.'] by decide, List.mem_append] at hMem
-    rcases hMem with hP | hN
-    · simp at hP
-    · exact (nat_toString_digits n '/' hN).1 rfl
-  have hNoNul : (".t." ++ toString n).toList.contains (Char.ofNat 0) = false := by
-    refine Bool.eq_false_iff.mpr ?_
-    intro hm
-    have hMem : Char.ofNat 0 ∈ (".t." ++ toString n).toList := List.contains_iff_mem.mp hm
-    rw [String.toList_append, show ".t.".toList = ['.', 't', '.'] by decide, List.mem_append] at hMem
-    rcases hMem with hP | hN
-    · simp at hP
-    · exact (nat_toString_digits n (Char.ofNat 0) hN).2 rfl
-  have hNeEmpty : (!(".t." ++ toString n).toList.isEmpty) = true := by
-    rw [String.toList_append, show ".t.".toList = ['.', 't', '.'] by decide]
-    simp
-  have hNeDot : ((".t." ++ toString n).toList != ['.']) = true := by
-    rw [String.toList_append, show ".t.".toList = ['.', 't', '.'] by decide]
-    simp
-  have hNeDotDot : ((".t." ++ toString n).toList != ['.', '.']) = true := by
-    rw [String.toList_append, show ".t.".toList = ['.', 't', '.'] by decide]
-    simp
-  change (!(".t." ++ toString n).toList.isEmpty && !(".t." ++ toString n).toList.contains '/' &&
-    !(".t." ++ toString n).toList.contains (Char.ofNat 0) &&
-    (".t." ++ toString n).toList != ['.'] && (".t." ++ toString n).toList != ['.', '.']) = true
-  rw [hNeEmpty, hNoSlash, hNoNul, hNeDot, hNeDotDot]
-  rfl
 
 /-- Parse and deduplicate raw OS directory entry names into `EntryName` values. -/
 def parseUniqueEntryNames (raw : Array String) : Except FsError (Array EntryName) := do
@@ -568,7 +434,7 @@ def readBytesPure {m : Type → Type} [Monad m] {fd : Type}
     else
       return .error (mapErrno (some path) "open" e)
 
-/-- Exclusively create a new regular file without following symlinks (`O_CREAT | O_EXCL | O_NOFOLLOW`), unlinking on write failure. -/
+/-- Exclusively create a new regular file without following symlinks (`O_CREAT | O_EXCL | O_NOFOLLOW`, `0o644` masked by `umask` matching historical `createFileNew`), unlinking on write failure. -/
 def createFileNewPure {m : Type → Type} [Monad m] {fd : Type}
     (files : FilesOpsM m fd) (path : String) (bytes : ByteArray)
     (eintrFuel : Nat := DEFAULT_EINTR_FUEL) : m (Except FsError Unit) := do
@@ -585,7 +451,7 @@ def createFileNewPure {m : Type → Type} [Monad m] {fd : Type}
       let _ ← files.unlinkat none path.toUTF8 false
       return .error err
 
-/-- Open `path` without following symlinks and acquire an advisory `flock(2)` lock returning `fd` directly. -/
+/-- Open `path` without following symlinks and acquire an advisory `flock(2)` lock returning `fd` directly (`0o644` masked by `umask` when `createIfMissing = true`, matching historical `acquireLock`). -/
 def acquireLockPure {m : Type → Type} [Monad m] {fd : Type}
     (files : FilesOpsM m fd) (path : String) (mode : LockMode) (createIfMissing nonBlocking : Bool)
     (eintrFuel : Nat := DEFAULT_EINTR_FUEL) : m (Except FsError fd) := do
@@ -640,7 +506,7 @@ def removeDirAtOpt {m : Type → Type} [Monad m] {fd : Type}
     else
       return .error (mapErrno (some path) "rmdir" e)
 
-/-- Build a parametric `RawFsOpsM m fd` bundle purely over `FilesOpsM m fd` and monotonic nonce source `nextNonce`. -/
+/-- Build a parametric `RawFsOpsM m fd` bundle purely over `FilesOpsM m fd` and monotonic nonce source `nextNonce` (`createDir` uses `0o777` and `writeBytes`/`appendText` use `0o666` masked by process `umask`, while `createFileNew`/`acquireLock` preserve historical `0o644`). -/
 def mkRawFsOpsM {m : Type → Type} [Monad m] {fd : Type}
     (files : FilesOpsM m fd) (nextNonce : m Nat)
     (eintrFuel : Nat := DEFAULT_EINTR_FUEL) (streamFuel : Nat := DEFAULT_STREAM_FUEL) :
@@ -652,7 +518,7 @@ def mkRawFsOpsM {m : Type → Type} [Monad m] {fd : Type}
       | .error e => return .error (mapErrno (some path) "stat" e)
     readDir := fun path => readDirPure files path eintrFuel streamFuel
     createDir := fun path => do
-      match ← retryEintr (files.mkdirat none path.toUTF8 0o755) eintrFuel with
+      match ← retryEintr (files.mkdirat none path.toUTF8 0o777) eintrFuel with
       | .ok () => return .ok ()
       | .error e => return .error (mapErrno (some path) "mkdir" e)
     removeDir := fun path => removeDirAtOpt files none path eintrFuel
@@ -664,14 +530,14 @@ def mkRawFsOpsM {m : Type → Type} [Monad m] {fd : Type}
     writeBytes := fun path bytes => do
       let flags : OpenFlags :=
         { access := .wronly, creat := true, trunc := true, cloexec := true }
-      match ← retryEintr (files.openat none path.toUTF8 flags 0o644) eintrFuel with
+      match ← retryEintr (files.openat none path.toUTF8 flags 0o666) eintrFuel with
       | .error e => return .error (mapErrno (some path) "open" e)
       | .ok h => writeAllAndClose files h path bytes eintrFuel
     createFileNew := fun path bytes => createFileNewPure files path bytes eintrFuel
     appendText := fun path content => do
       let flags : OpenFlags :=
         { access := .wronly, creat := true, append := true, cloexec := true }
-      match ← retryEintr (files.openat none path.toUTF8 flags 0o644) eintrFuel with
+      match ← retryEintr (files.openat none path.toUTF8 flags 0o666) eintrFuel with
       | .error e => return .error (mapErrno (some path) "open" e)
       | .ok h => writeAllAndClose files h path content.toUTF8 eintrFuel
     rename := fun src dst => do
@@ -772,7 +638,7 @@ def readRegularAtPure {m : Type → Type} [Monad m] {fd : Type}
     else
       return .error (mapErrno (some name.val) "openat" e)
 
-/-- Atomically create a new regular file `name` under `dirFd` (`O_CREAT | O_EXCL | O_NOFOLLOW`, `0o644`), unlinking on write failure. -/
+/-- Atomically create a new regular file `name` under `dirFd` (`O_CREAT | O_EXCL | O_NOFOLLOW`, `0o644` masked by `umask` matching `RawDirOpsM.createFileAt`), unlinking on write failure. -/
 def createFileAtPure {m : Type → Type} [Monad m] {fd : Type}
     (files : FilesOpsM m fd) (dirFd : fd) (name : EntryName)
     (bytes : ByteArray) (eintrFuel : Nat := DEFAULT_EINTR_FUEL) : m (Except FsError Unit) := do
@@ -787,7 +653,7 @@ def createFileAtPure {m : Type → Type} [Monad m] {fd : Type}
       let _ ← files.unlinkat (some dirFd) name.val.toUTF8 false
       return .error err
 
-/-- Open child `name` under `dirFd` without following symlinks and acquire an advisory `flock(2)` lock returning `fd` directly. -/
+/-- Open child `name` under `dirFd` without following symlinks and acquire an advisory `flock(2)` lock returning `fd` directly (`0o644` masked by `umask` when `createIfMissing = true`, matching `RawDirOpsM.acquireLockAt`). -/
 def acquireLockAtPure {m : Type → Type} [Monad m] {fd : Type}
     (files : FilesOpsM m fd) (dirFd : fd) (name : EntryName)
     (mode : LockMode) (createIfMissing nonBlocking : Bool)
@@ -810,7 +676,7 @@ def acquireLockAtPure {m : Type → Type} [Monad m] {fd : Type}
       return .error (mapErrno (some name.val) "openat" e)
   | .ok h => finishLockFd files h name.val mode nonBlocking eintrFuel
 
-/-- Build a parametric `RawDirOpsM m fd fd` bundle purely over `FilesOpsM m fd` and temporary sequence source `nextTempSeq`. -/
+/-- Build a parametric `RawDirOpsM m fd fd` bundle purely over `FilesOpsM m fd` and temporary sequence source `nextTempSeq` (`createDirAt` preserves historical `0o755` and `createFileAt`/`acquireLockAt` preserve `0o644`, all masked by process `umask`). -/
 def mkRawDirOpsM {m : Type → Type} [Monad m] {fd : Type}
     (files : FilesOpsM m fd) (nextTempSeq : m Nat)
     (eintrFuel : Nat := DEFAULT_EINTR_FUEL) (streamFuel : Nat := DEFAULT_STREAM_FUEL) :

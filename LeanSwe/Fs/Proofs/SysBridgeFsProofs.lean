@@ -438,9 +438,9 @@ theorem readBytesPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFile
       FsWorldTrace (proj s) tr (proj p.2) ∧
       match p.1 with
       | .ok bs => ReadRegularTrace none path.toUTF8 readOpenFlags bs tr
-      | .error e => nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPathModel path = false ∧ e.kind = .invalidInput)) := by
+      | .error e => nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput)) := by
   unfold SysBridge.readBytesPure
-  by_cases hVal : SysBridge.isValidRawPath path = true
+  by_cases hVal : isValidRawPath path = true
   · simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     have hOp := retryEintr_single_req (cap.files.openat none path.toUTF8 readOpenFlags 0)
       (.openat none path.toUTF8 readOpenFlags 0) outcomeOfOpened
@@ -534,9 +534,8 @@ theorem readBytesPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFile
                     nonLockErrOk_mapErrno _ _ _, Or.inl (by simp)⟩
         · simp only [hNx, Bool.false_eq_true, ↓reduceIte, Pure.pure, StateT.pure]
           exact ⟨hWf1, hTmp1, _, hTrO, nonLockErrOk_mapErrno _ _ _, Or.inl (by simp)⟩
-  · have hValF : isValidRawPathModel path = false := Bool.eq_false_iff.mpr hVal
-    have hValF' : SysBridge.isValidRawPath path = false := hValF
-    simp only [hValF', Bool.not_false, ↓reduceIte, Pure.pure, StateT.pure, StateT.run]
-    exact ⟨hWf, trivial, [], fsWorldTrace_nil hWf, nonLockErrOk_mapErrno _ _ _, Or.inr ⟨hValF, rfl⟩⟩
+  · have hValF : isValidRawPath path = false := Bool.eq_false_iff.mpr hVal
+    simp only [hValF, Bool.not_false, ↓reduceIte, Pure.pure, StateT.pure, StateT.run]
+    exact ⟨hWf, trivial, [], fsWorldTrace_nil hWf, nonLockErrOk_mapErrno _ _ _, Or.inr ⟨trivial, rfl⟩⟩
 
 end LeanSwe.Fs.Proofs

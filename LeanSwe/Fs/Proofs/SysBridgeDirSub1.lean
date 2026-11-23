@@ -407,7 +407,7 @@ theorem subtree_mkdir_step {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
       match splitLastAux rel.segments [] with
       | none => existOk = true ∧ ∃ rawSt, (.fstat rootDh, .statted rawSt) ∈ trInner ∧ rawSt.kind = .dir
       | some (_, leaf) =>
-        ∃ d, MkdirTrace (some d) leaf.val.toUTF8 trInner ∨
+        ∃ d, MkdirTrace (some d) leaf.val.toUTF8 0o755 trInner ∨
           (existOk = true ∧ ∃ rawSt, (.fstatat (some d) leaf.val.toUTF8 { symlinkNofollow := true }, .statted rawSt) ∈ trInner ∧ rawSt.kind = .dir))
     (fun e _ _ => nonLockErrOk e)
     (fun _ dh tr1 tr2 h => by
@@ -464,7 +464,7 @@ theorem subtree_mkdir_step {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
               (∀ step ∈ tr, SubtreeConfinedReq step.1) ∧
               match q.1 with
               | .ok () =>
-                MkdirTrace (some parDh) pair.2.val.toUTF8 tr ∨
+                MkdirTrace (some parDh) pair.2.val.toUTF8 0o755 tr ∨
                 (existOk = true ∧ ∃ rawSt, (.fstatat (some parDh) pair.2.val.toUTF8 { symlinkNofollow := true }, .statted rawSt) ∈ tr ∧ rawSt.kind = .dir)
               | .error e => nonLockErrOk e := by
           intro parDh held sX hWX
@@ -528,7 +528,7 @@ theorem subtree_mkdir_step {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
                       | mk r1 _ => cases r1 with | error _ => rfl | ok _ => rfl
                     · simp only [hEx, Bool.false_eq_true, ↓reduceIte])
           · have hMw := mkdirWalkM_trace hCap
-              (fun parDh tr => MkdirTrace (some parDh) pair.2.val.toUTF8 tr ∨
+              (fun parDh tr => MkdirTrace (some parDh) pair.2.val.toUTF8 0o755 tr ∨
                 (existOk = true ∧ ∃ rawSt, (.fstatat (some parDh) pair.2.val.toUTF8 { symlinkNofollow := true }, .statted rawSt) ∈ tr ∧ rawSt.kind = .dir))
               leafAct hLeaf true dh [dh] pair.1 hW0
             cases hRm : (Internal.mkdirWalkM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) true dh pair.1 leafAct s0) with
@@ -562,7 +562,7 @@ theorem subtree_mkdir_step {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
                       | mk r1 _ => cases r1 with | error _ => rfl | ok _ => rfl
                     · simp only [hEx, Bool.false_eq_true, ↓reduceIte])
           · have hWd := walkDescendAuxM_trace hCap (fun _ => none)
-              (fun parDh _ tr => MkdirTrace (some parDh) pair.2.val.toUTF8 tr ∨
+              (fun parDh _ tr => MkdirTrace (some parDh) pair.2.val.toUTF8 0o755 tr ∨
                 (existOk = true ∧ ∃ rawSt, (.fstatat (some parDh) pair.2.val.toUTF8 { symlinkNofollow := true }, .statted rawSt) ∈ tr ∧ rawSt.kind = .dir))
               (fun e _ => nonLockErrOk e) (fun _ _ _ _ h => h) (fun _ _ h _ => h) leafAct
               (fun parDh held sX hWX => by

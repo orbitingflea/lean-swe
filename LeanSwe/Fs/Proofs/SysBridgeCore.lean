@@ -8,11 +8,6 @@ open LeanSwe.LinuxSyscall.Files
 open LeanSwe.Fs
 open LeanSwe.Fs.Model
 
-/-- `SysBridge.mapRawError` agrees identically with `Model.mapRawError`. -/
-theorem sysBridge_mapRawError_eq (raw : FsRawError) :
-    SysBridge.mapRawError raw = Model.mapRawError raw := by
-  cases raw <;> rfl
-
 /-- `SysBridge.statInfoToFileStat` agrees definitionally with `Model.toFileStat`. -/
 theorem sysBridge_statInfoToFileStat_eq (st : StatInfo) :
     SysBridge.statInfoToFileStat st = Model.toFileStat st := rfl

@@ -7,16 +7,12 @@ namespace LeanSwe.Fs.Internal
 open LeanSwe.Fs
   (FsErrorKind FsError EntryKind FileStat WalkEntry FsRawError LockMode FsApi FsApiM
    EntryName RelPath SubtreeM SubtreeOpenerM)
-open LeanSwe.Fs.Model (NonLockFsOpsM RawFsOpsM RawDirOpsM ScopedRawFsOpsM)
+open LeanSwe.Fs.Model (NonLockFsOpsM RawFsOpsM RawDirOpsM ScopedRawFsOpsM nonEmptyMsg isValidRawPath)
 
 export LeanSwe.Fs.Model
   (isAbsChars isAbsolute join joinMany splitCharList joinSlashChars collapseChars normPath
    cleanCharSegments splitLastAux splitParentName parent name splitRevAtDot splitNameSuffix
    stem suffix suffixes validFileName validSuffix joinParentName withName withSuffix relativeTo)
-
-/-- Return `fallback` when `msg` is empty, otherwise `msg`. -/
-def nonEmptyMsg (fallback msg : String) : String :=
-  if msg.isEmpty then fallback else msg
 
 /-- Construct a `GlobError` mapped into `FsError`. -/
 def mapGlobError (pattern : String) (err : LeanSwe.Glob.GlobError) : FsError :=
@@ -284,10 +280,6 @@ def touchImplM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
       ops.writeBytes path ByteArray.empty
     else
       return .error e
-
-private def isValidRawPath (path : String) : Bool :=
-  let cs := path.toList
-  !cs.isEmpty && !(Char.ofNat 0 ∈ cs) && !(cs.length > 1 && cs.getLast? == some '/')
 
 /-- Checks whether `path` ends with a raw `.` or `..` final segment before normalization. -/
 def hasDotFinalSegment (path : String) : Bool :=

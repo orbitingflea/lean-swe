@@ -46,7 +46,7 @@ theorem refinesScopedRawFs_of_refinesFilesCap
   | mapRawError raw =>
     simp only [execScopedRawFsStep, Internal.toScopedRawFsOpsM, SysBridge.mkRawFsOpsM,
       Pure.pure, StateT.pure, StateT.run, allowedScopedRawFsStep]
-    exact ⟨fsWorldTrace_nil hWf, trivial, sysBridge_mapRawError_eq raw⟩
+    exact ⟨fsWorldTrace_nil hWf, trivial, trivial⟩
   | stat follow path =>
     simp only [execScopedRawFsStep, Internal.toScopedRawFsOpsM, SysBridge.mkRawFsOpsM,
       Functor.map, StateT.map, StateT.run]
@@ -83,17 +83,17 @@ theorem refinesScopedRawFs_of_refinesFilesCap
   | createDir path =>
     simp only [execScopedRawFsStep, Internal.toScopedRawFsOpsM, SysBridge.mkRawFsOpsM,
       Functor.map, StateT.map, StateT.run]
-    have hMk := retryEintr_single_req (cap.files.mkdirat none path.toUTF8 0o755)
-      (.mkdirat none path.toUTF8 0o755) outcomeOfUnit
-      (fun s' hW => cap_method_step hCap (.mkdirat none path.toUTF8 0o755)
-        (cap.files.mkdirat none path.toUTF8 0o755) outcomeOfUnit rfl hW)
+    have hMk := retryEintr_single_req (cap.files.mkdirat none path.toUTF8 0o777)
+      (.mkdirat none path.toUTF8 0o777) outcomeOfUnit
+      (fun s' hW => cap_method_step hCap (.mkdirat none path.toUTF8 0o777)
+        (cap.files.mkdirat none path.toUTF8 0o777) outcomeOfUnit rfl hW)
       (fun _ => rfl) DEFAULT_EINTR_FUEL hWf
-    cases hR : (retryEintr (cap.files.mkdirat none path.toUTF8 0o755) DEFAULT_EINTR_FUEL s) with
+    cases hR : (retryEintr (cap.files.mkdirat none path.toUTF8 0o777) DEFAULT_EINTR_FUEL s) with
     | mk res s1 =>
       rw [StateT.run] at hMk; rw [hR] at hMk; dsimp only at hMk
       obtain ⟨hWf1, hTmp1, trR, hSt1, hAll1⟩ := hMk
       simp only [Bind.bind, StateT.bind, hR]
-      have hTr1 : FsWorldTrace (proj s) (trR ++ [(.mkdirat none path.toUTF8 0o755, outcomeOfUnit res)]) (proj s1) :=
+      have hTr1 : FsWorldTrace (proj s) (trR ++ [(.mkdirat none path.toUTF8 0o777, outcomeOfUnit res)]) (proj s1) :=
         ⟨hWf1, hSt1, traceFds_append (traceFds_eintr_retries (fun _ hc => by cases hc) hAll1)
           (traceFds_nonFd_step (by cases res <;> rfl) rfl), by omega⟩
       cases res with
@@ -150,12 +150,12 @@ theorem refinesScopedRawFs_of_refinesFilesCap
   | writeBytes path data =>
     simp only [execScopedRawFsStep, Internal.toScopedRawFsOpsM, SysBridge.mkRawFsOpsM,
       Functor.map, StateT.map, StateT.run]
-    have hOp := retryEintr_single_req (cap.files.openat none path.toUTF8 writeOpenFlags 0o644)
-      (.openat none path.toUTF8 writeOpenFlags 0o644) outcomeOfOpened
-      (fun s' hW => cap_method_step hCap (.openat none path.toUTF8 writeOpenFlags 0o644)
-        (cap.files.openat none path.toUTF8 writeOpenFlags 0o644) outcomeOfOpened rfl hW)
+    have hOp := retryEintr_single_req (cap.files.openat none path.toUTF8 writeOpenFlags 0o666)
+      (.openat none path.toUTF8 writeOpenFlags 0o666) outcomeOfOpened
+      (fun s' hW => cap_method_step hCap (.openat none path.toUTF8 writeOpenFlags 0o666)
+        (cap.files.openat none path.toUTF8 writeOpenFlags 0o666) outcomeOfOpened rfl hW)
       (fun _ => rfl) DEFAULT_EINTR_FUEL hWf
-    cases hR : (retryEintr (cap.files.openat none path.toUTF8 writeOpenFlags 0o644) DEFAULT_EINTR_FUEL s) with
+    cases hR : (retryEintr (cap.files.openat none path.toUTF8 writeOpenFlags 0o666) DEFAULT_EINTR_FUEL s) with
     | mk oRes s1 =>
       rw [StateT.run] at hOp; rw [hR] at hOp; dsimp only at hOp
       obtain ⟨hWf1, hTmp1, trR, hStO, hAllO⟩ := hOp
@@ -168,7 +168,7 @@ theorem refinesScopedRawFs_of_refinesFilesCap
         exact ⟨_, ⟨hWf1, hStO, traceFds_append hFdR (traceFds_nonFd_step rfl rfl), by omega⟩,
           hTmp1, nonLockErrOk_mapErrno _ _ _, by simp⟩
       | ok h =>
-        let trOpen := trR ++ [(.openat none path.toUTF8 writeOpenFlags 0o644, .opened h)]
+        let trOpen := trR ++ [(.openat none path.toUTF8 writeOpenFlags 0o666, .opened h)]
         have hFdO : TraceFds [] trOpen [h] := traceFds_append hFdR (traceFds_open_step rfl rfl)
         have hWr := writeAllAndClose_trace hCap h path data [] DEFAULT_EINTR_FUEL hWf1
         cases hRw : (SysBridge.writeAllAndClose cap.files h path data DEFAULT_EINTR_FUEL s1) with
@@ -198,12 +198,12 @@ theorem refinesScopedRawFs_of_refinesFilesCap
   | appendText path content =>
     simp only [execScopedRawFsStep, Internal.toScopedRawFsOpsM, SysBridge.mkRawFsOpsM,
       Functor.map, StateT.map, StateT.run]
-    have hOp := retryEintr_single_req (cap.files.openat none path.toUTF8 appendOpenFlags 0o644)
-      (.openat none path.toUTF8 appendOpenFlags 0o644) outcomeOfOpened
-      (fun s' hW => cap_method_step hCap (.openat none path.toUTF8 appendOpenFlags 0o644)
-        (cap.files.openat none path.toUTF8 appendOpenFlags 0o644) outcomeOfOpened rfl hW)
+    have hOp := retryEintr_single_req (cap.files.openat none path.toUTF8 appendOpenFlags 0o666)
+      (.openat none path.toUTF8 appendOpenFlags 0o666) outcomeOfOpened
+      (fun s' hW => cap_method_step hCap (.openat none path.toUTF8 appendOpenFlags 0o666)
+        (cap.files.openat none path.toUTF8 appendOpenFlags 0o666) outcomeOfOpened rfl hW)
       (fun _ => rfl) DEFAULT_EINTR_FUEL hWf
-    cases hR : (retryEintr (cap.files.openat none path.toUTF8 appendOpenFlags 0o644) DEFAULT_EINTR_FUEL s) with
+    cases hR : (retryEintr (cap.files.openat none path.toUTF8 appendOpenFlags 0o666) DEFAULT_EINTR_FUEL s) with
     | mk oRes s1 =>
       rw [StateT.run] at hOp; rw [hR] at hOp; dsimp only at hOp
       obtain ⟨hWf1, hTmp1, trR, hStO, hAllO⟩ := hOp
@@ -216,7 +216,7 @@ theorem refinesScopedRawFs_of_refinesFilesCap
         exact ⟨_, ⟨hWf1, hStO, traceFds_append hFdR (traceFds_nonFd_step rfl rfl), by omega⟩,
           hTmp1, nonLockErrOk_mapErrno _ _ _, by simp⟩
       | ok h =>
-        let trOpen := trR ++ [(.openat none path.toUTF8 appendOpenFlags 0o644, .opened h)]
+        let trOpen := trR ++ [(.openat none path.toUTF8 appendOpenFlags 0o666, .opened h)]
         have hFdO : TraceFds [] trOpen [h] := traceFds_append hFdR (traceFds_open_step rfl rfl)
         have hWr := writeAllAndClose_trace hCap h path content.toUTF8 [] DEFAULT_EINTR_FUEL hWf1
         cases hRw : (SysBridge.writeAllAndClose cap.files h path content.toUTF8 DEFAULT_EINTR_FUEL s1) with

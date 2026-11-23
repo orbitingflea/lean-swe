@@ -1191,7 +1191,7 @@ def test_fs_subtree_mkdirVisibleAndRmtreeNotFound_holds
     {runner} [NondetTest runner] (mkSubtree : SubtreeBuilder (StateM VfsState)) : runner Unit :=
   NondetTest.assert (SpecMkdirVisibleAndRmtreeNotFound mkSubtree)
 
-/-- On symlink-free traversable subtrees, `SubtreeM.readRegular` and `SubtreeM.lstat` match ambient `vfsApi` (`SpecSubtreeAgreesWithAmbientOnSymlinkFree`). -/
+/-- On symlink-free traversable subtrees, `SubtreeM.readRegular` and `SubtreeM.lstat` match ambient `vfsOps` (`SpecSubtreeAgreesWithAmbientOnSymlinkFree`). -/
 def test_fs_subtree_agreesWithAmbientOnSymlinkFree_matchesFsApi
     {runner} [NondetTest runner] (mkSubtree : SubtreeBuilder (StateM VfsState)) : runner Unit :=
   NondetTest.assert (SpecSubtreeAgreesWithAmbientOnSymlinkFree mkSubtree)
