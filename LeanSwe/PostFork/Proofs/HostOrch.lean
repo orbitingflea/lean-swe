@@ -16,7 +16,7 @@ open Core
 open LeanSwe.LinuxSyscall
 open LeanSwe.PostFork
 open LeanSwe.PostFork.Model
-open LeanSwe.PostFork.Model.Internal
+open LeanSwe.PostFork.Impl.Internal
 open LeanSwe.PostFork.Impl
 
 section HostOrchestrator
@@ -828,7 +828,7 @@ private theorem neverErrorKindIO_of_ne {α : Type}
 /-- Proof that `LeanSwe.PostFork.spawnWithBarrier` never fails with `.childFailed`. -/
 theorem spawnWithBarrier_never_childFailed (spec : ChildSpec) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO PostForkError.kind .childFailed (LeanSwe.PostFork.spawnWithBarrier spec) w := by
-  rcases LeanSwe.PostFork.Internal.defaultOps_exists_noThrow with ⟨raw, hDef, hRaw⟩
+  rcases LeanSwe.PostFork.Proofs.defaultOps_exists_noThrow with ⟨raw, hDef, hRaw⟩
   apply neverErrorKindIO_of_ne _ w .childFailed
   unfold LeanSwe.PostFork.spawnWithBarrier
   rw [hDef]
@@ -913,7 +913,7 @@ theorem spawnWithBarrier_never_childFailed (spec : ChildSpec) (w : Void IO.RealW
 /-- Proof that `LeanSwe.PostFork.releaseBarrier` never fails with `.invalidInput`. -/
 theorem releaseBarrier_never_invalidInput (p : PendingChild) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO PostForkError.kind .invalidInput (LeanSwe.PostFork.releaseBarrier p) w := by
-  rcases LeanSwe.PostFork.Internal.defaultOps_exists_noThrow with ⟨raw, hDef, hRaw⟩
+  rcases LeanSwe.PostFork.Proofs.defaultOps_exists_noThrow with ⟨raw, hDef, hRaw⟩
   apply neverErrorKindIO_of_ne _ w .invalidInput
   unfold LeanSwe.PostFork.releaseBarrier
   rw [hDef]
@@ -987,7 +987,7 @@ theorem releaseBarrier_never_invalidInput (p : PendingChild) (w : Void IO.RealWo
 
 private theorem abortBarrier_sysOnly (p : PendingChild) (w : Void IO.RealWorld) :
     ∃ r w', LeanSwe.PostFork.abortBarrier p w = .ok r w' ∧ (∀ e, r = .error e → e.kind = .sysError) := by
-  rcases LeanSwe.PostFork.Internal.defaultOps_exists_noThrow with ⟨raw, hDef, hRaw⟩
+  rcases LeanSwe.PostFork.Proofs.defaultOps_exists_noThrow with ⟨raw, hDef, hRaw⟩
   unfold LeanSwe.PostFork.abortBarrier
   rw [hDef]
   dsimp only [Impl.Internal.mkHostOps]

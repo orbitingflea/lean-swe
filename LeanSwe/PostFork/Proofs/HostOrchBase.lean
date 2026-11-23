@@ -4,7 +4,7 @@ import LeanSwe.PostFork.SpecTests
 
 /-!
 Foundation lemmas for `LeanSwe.PostFork.Impl.Internal.mkHostOps` on
-`Model.Internal.mockPosixHostOps`, plus `NoThrowOps` / error-kind invariant
+`LeanSwe.PostFork.mockPosixHostOps`, plus `NoThrowOps` / error-kind invariant
 lemmas for `LeanSwe.PostFork` host operations.
 -/
 
@@ -13,8 +13,30 @@ namespace LeanSwe.PostFork.Proofs
 open LeanSwe.LinuxSyscall
 open LeanSwe.PostFork
 open LeanSwe.PostFork.Model
-open LeanSwe.PostFork.Model.Internal
 open LeanSwe.PostFork.Impl
+open LeanSwe.PostFork.Impl.Internal
+
+/-- Predicate stating that all operations of `raw` in `IO` terminate without throwing an `IO.Error`. -/
+structure NoThrowOps (raw : PosixHostOpsM IO RawFd) : Prop where
+  /-- `probeFdOpen` never throws an `IO.Error`. -/
+  probeFdOpen_ok : ∀ n w, ∃ r w', raw.probeFdOpen n w = .ok r w'
+  /-- `probeHandleOpen` never throws an `IO.Error`. -/
+  probeHandleOpen_ok : ∀ h w, ∃ r w', raw.probeHandleOpen h w = .ok r w'
+  /-- `mkPipeCloexec` never throws an `IO.Error`. -/
+  mkPipeCloexec_ok : ∀ w, ∃ r w', raw.mkPipeCloexec w = .ok r w'
+  /-- `closeFd` never throws an `IO.Error`. -/
+  closeFd_ok : ∀ h w, ∃ r w', raw.closeFd h w = .ok r w'
+  /-- `setpgidOnce` never throws an `IO.Error`. -/
+  setpgidOnce_ok : ∀ p g w, ∃ r w', raw.setpgidOnce p g w = .ok r w'
+  /-- `writeOnce` never throws an `IO.Error`. -/
+  writeOnce_ok : ∀ h d o l w, ∃ r w', raw.writeOnce h d o l w = .ok r w'
+  /-- `readOnce` never throws an `IO.Error`. -/
+  readOnce_ok : ∀ h c w, ∃ r w', raw.readOnce h c w = .ok r w'
+  /-- `waitOnce` never throws an `IO.Error`. -/
+  waitOnce_ok : ∀ p w, ∃ r w', raw.waitOnce p w = .ok r w'
+  /-- `forkRun` never throws an `IO.Error`. -/
+  forkRun_ok : ∀ fl fm sr ew std cl kp cwd path argv env w,
+    ∃ r w', raw.forkRun fl fm sr ew std cl kp cwd path argv env w = .ok r w'
 
 section HostOrchestratorBase
 
@@ -968,6 +990,30 @@ theorem awaitExecOrFailure_never_invalidInput (raw : PosixHostOpsM IO RawFd) (hR
         exact ⟨.error err, w3, rfl, fun e he hKind => by cases he; have hSys := hrw err rfl; rw [hSys] at hKind; cases hKind⟩
       | ok wst =>
         exact ⟨.error _, w3, rfl, fun e he hKind => by cases he; cases hKind⟩
+
+private theorem baseIO_lift_noThrow {α : Type} (act : BaseIO α) (w : Void IO.RealWorld) :
+    ∃ r w', (liftM act : IO α) w = .ok r w' := by
+  simp only [liftM, monadLift, MonadLiftT.monadLift, MonadLift.monadLift, BaseIO.toEIO]
+  cases act w with
+  | mk a s => exact ⟨a, s, rfl⟩
+
+/-- Pure `Prop` witness that `defaultOps` wraps a non-throwing `PosixHostOpsM IO RawFd` table (`Exists` cannot eliminate into `Type` or `IO`). -/
+theorem defaultOps_exists_noThrow :
+    ∃ raw : LeanSwe.PostFork.Impl.Internal.PosixHostOpsM IO RawFd,
+      LeanSwe.PostFork.defaultOps = LeanSwe.PostFork.Impl.Internal.mkHostOps raw ∧
+      NoThrowOps raw := by
+  unfold LeanSwe.PostFork.defaultOps
+  refine ⟨_, rfl, ?_⟩
+  exact
+    { probeFdOpen_ok := fun _ w => baseIO_lift_noThrow _ w
+      probeHandleOpen_ok := fun _ w => baseIO_lift_noThrow _ w
+      mkPipeCloexec_ok := fun w => baseIO_lift_noThrow _ w
+      closeFd_ok := fun _ w => baseIO_lift_noThrow _ w
+      setpgidOnce_ok := fun _ _ w => baseIO_lift_noThrow _ w
+      writeOnce_ok := fun _ _ _ _ w => baseIO_lift_noThrow _ w
+      readOnce_ok := fun _ _ w => baseIO_lift_noThrow _ w
+      waitOnce_ok := fun _ w => baseIO_lift_noThrow _ w
+      forkRun_ok := fun _ _ _ _ _ _ _ _ _ _ _ w => baseIO_lift_noThrow _ w }
 
 end HostIoInvariants
 
