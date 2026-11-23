@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit and git-integration tests for spec-lock rules, `.foreign-budget.json` ratchet, and Lean import policy in check_spec_change.py."""
+"""Unit and git-integration tests for spec-lock rules and `.foreign-budget.json` ratchet in check_spec_change.py."""
 
 from __future__ import annotations
 
@@ -326,245 +326,20 @@ class ForeignBudgetRatchetCliTests(unittest.TestCase):
             res_del_ok = self._run_cli(repo, "HEAD~1", "HEAD", "--label", "add-foreign-lang")
             self.assertEqual(res_del_ok.returncode, 0, res_del_ok.stderr)
 
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-class ImportHygieneUnitTests(unittest.TestCase):
-    """Unit tests for `check_import_hygiene` against the Lean import policy."""
-
-    def test_umbrella_mathlib_rejected(self) -> None:
-        cases = [
-            "import Mathlib",
-            "import Mathlib\n",
-            "public import Mathlib\n",
-            "meta import Mathlib\n",
-            "private import Mathlib\n",
-            "public meta import Mathlib\n",
-            "import «Mathlib»\n",
-            "import Mathlib -- trailing comment\n",
-            "import Mathlib--no-space comment\n",
-            "import Mathlib /- trailing block -/\n",
-            "import /- inline -/ Mathlib\n",
-            "import\n  Mathlib\n",
-            "import Mathlib import LeanSwe.Json.Types\n",
-            "import Aeneas import Mathlib\n",
-            "import Mathlib .Data.Nat.Basic\n",
-            "import Mathlib. Data.Nat.Basic\n",
-            "import Mathlib\n.Data.Nat.Basic\n",
-            "import Mathlib/- c -/.Data.Nat.Basic\n",
-            "\ufeffimport Mathlib\r\n",
-        ]
-        for src in cases:
-            with self.subTest(src=src):
-                errs = check_spec_change.check_import_hygiene(src, "Demo.lean")
-                self.assertTrue(errs, f"expected violation for {src!r}")
-                self.assertIn("umbrella import 'Mathlib'", errs[0])
-
-    def test_external_import_all_rejected(self) -> None:
-        cases = [
-            ("import all Mathlib.Data.Nat.Basic\n", "Mathlib.Data.Nat.Basic"),
-            ("public import all Batteries.Foo\n", "Batteries.Foo"),
-            ("meta import all Std.Data.HashMap\n", "Std.Data.HashMap"),
-            ("private import all Init.Core\n", "Init.Core"),
-            ("public meta import all Lean.Meta\n", "Lean.Meta"),
-            ("import all Aeneas\n", "Aeneas"),
-            ("import all Aesop\n", "Aesop"),
-            ("import all «Mathlib».Data.Nat.Basic\n", "Mathlib.Data.Nat.Basic"),
-            ("import all LeanSweExtra.Foo\n", "LeanSweExtra.Foo"),
-            ("import all CoreExtra\n", "CoreExtra"),
-            ("import all FuzzExtra.Suite\n", "FuzzExtra.Suite"),
-            ("import all TestsExtra.Main\n", "TestsExtra.Main"),
-            ("import all «LeanSwe.Foo»\n", "LeanSwe.Foo"),
-            ("import /- c -/ all\n  -- comment\n  Batteries.Data.List\n", "Batteries.Data.List"),
-        ]
-        for src, mod in cases:
-            with self.subTest(src=src):
-                errs = check_spec_change.check_import_hygiene(src, "Demo.lean")
-                self.assertEqual(len(errs), 1, f"unexpected errors for {src!r}: {errs}")
-                self.assertIn(f"disallowed external 'import all {mod}'", errs[0])
-
-    def test_import_all_mathlib_reports_both_and_dangling_import_all(self) -> None:
-        both = check_spec_change.check_import_hygiene("module\nimport all Mathlib\n", "Demo.lean")
-        self.assertEqual(len(both), 2)
-        self.assertIn("Demo.lean:2:", both[0])
-        self.assertIn("import all Mathlib", both[0])
-        self.assertIn("umbrella import 'Mathlib'", both[1])
-
-        dangling = check_spec_change.check_import_hygiene(
-            "public import all\npublic import Mathlib\n", "Demo.lean"
-        )
-        self.assertEqual(len(dangling), 2)
-        self.assertIn("Demo.lean:1: disallowed dangling 'import all'", dangling[0])
-        self.assertIn("Demo.lean:2: disallowed umbrella import 'Mathlib'", dangling[1])
-        self.assertEqual(len(check_spec_change.check_import_hygiene("import all\n", "Demo.lean")), 1)
-        self.assertEqual(len(check_spec_change.check_import_hygiene("import all\n.Foo\n", "Demo.lean")), 1)
-
-    def test_allowed_submodules_intra_repo_import_all_and_prefix_collisions(self) -> None:
-        allowed_src = "\n".join([
-            "module",
-            "import Mathlib.Data.Nat.Basic",
-            "public import Mathlib.Tactic.Ring",
-            "meta import Mathlib.Logic.Basic",
-            "import «Mathlib».Data.Nat.Basic",
-            "import Mathlib.«Data».Nat.Basic",
-            "import Mathlib.all",
-            "import MathlibExtra",
-            "import Mathlib_Extra",
-            "import Mathlib'",
-            "import Mathlib1",
-            "import Mathlib₁",
-            "import My.Mathlib",
-            "import LeanSwe.Mathlib",
-            "import Aeneas",
-            "import Lean",
-            "import Lake",
-            "import all.Foo",
-            "import all.Mathlib",
-            "import «all»",
-            "import all LeanSwe.Foo.Impl",
-            "public import all LeanSwe.Foo.Impl",
-            "meta import all LeanSwe.Foo.Impl",
-            "private import all LeanSwe.Foo.Impl",
-            "import all «LeanSwe».Foo.Impl",
-            "import all\n  -- multiline intra-repo import all\n  LeanSwe.Bar.Impl",
-            "import all Core.NondetTest",
-            "import all Fuzz.Common.Rng",
-            "import all Tests.Main",
-            "import all LeanSwe",
-            "import all Core",
-        ])
-        self.assertEqual(check_spec_change.check_import_hygiene(allowed_src, "Ok.lean"), [])
-
-    def test_comments_docstrings_strings_and_non_command_tokens_ignored(self) -> None:
-        safe_src = '\n'.join([
-            "-- never write `import Mathlib` or `import all Mathlib.Foo`",
-            "/- block comment: import Mathlib; public import all Batteries.Foo -/",
-            "/- outer /- nested comment -/ import Mathlib\n   import all Aeneas -/",
-            "/-- Doc comment: never use `import Mathlib` or `import all Std.Time`. -/",
-            "/-! Module doc: avoid `import Mathlib` and `meta import all Lean.Meta`. -/",
-            "import LeanSwe.PostFork.Types -- don't write import Mathlib",
-            'def s1 : String := "import Mathlib\\nimport all Batteries.Foo"',
-            'def s2 : String := "\nimport Mathlib\nimport all Mathlib.Foo\n"',
-            'def s3 : String := "escaped \\" import Mathlib"',
-            'def s4 (x : String) : String := s!"{x} import Mathlib import all Aeneas"',
-            'def s5 : String := r#"import Mathlib\nimport all Mathlib.Foo"#',
-            'def s6 : String := r##" "import Mathlib" "##',
-            "def c1 : Char := '\"'",
-            'def s7 : String := "import Mathlib"',
-            "def f (x : Nat) := obj.import Mathlib",
-            "def n := `import",
-            "def q := ``import",
-            "def «import» := Mathlib",
-            "def quoted := (import Mathlib)",
-        ])
-        self.assertEqual(check_spec_change.check_import_hygiene(safe_src, "Safe.lean"), [])
-
-        after_esc = '\n'.join([
-            "-- comment with unclosed /-",
-            'def s := "a\\\\"',
-            'def r := r#"import Mathlib"#',
-            "import Mathlib",
-            "import all Batteries.Foo",
-        ])
-        errs = check_spec_change.check_import_hygiene(after_esc, "After.lean")
-        self.assertEqual(len(errs), 2)
-        self.assertIn("After.lean:4:", errs[0])
-        self.assertIn("After.lean:5:", errs[1])
-
-    def test_real_repo_imports_clean(self) -> None:
-        checked, violations = check_spec_change.check_repo_imports(REPO_ROOT)
-        self.assertGreaterEqual(checked, 400)
-        self.assertEqual(violations, [])
-
-
-class ImportHygieneCliTests(unittest.TestCase):
-    """Git-integration CLI tests ensuring import lint runs unconditionally."""
-
-    def _run_cli(self, repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-        script = Path(__file__).resolve().parent / "check_spec_change.py"
-        env = {k: v for k, v in os.environ.items() if k != "GITHUB_EVENT_PATH"}
-        return subprocess.run(
-            [sys.executable, "-B", str(script), *args],
-            cwd=repo,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-
-    def _init_repo(self, tmp: str) -> Path:
-        repo = Path(tmp)
-        _git(repo, "init")
-        _git(repo, "config", "user.name", "Test")
-        _git(repo, "config", "user.email", "test@example.com")
-        (repo / "LeanSwe" / "Demo").mkdir(parents=True)
-        (repo / "LeanSwe" / "Demo" / "Impl.lean").write_text("import Core.Types\ndef x := 1\n", encoding="utf-8")
-        (repo / "LeanSwe" / "Demo" / "Types.lean").write_text("def t := 1\n", encoding="utf-8")
-        _git(repo, "add", ".")
-        _git(repo, "commit", "-m", "base")
-        return repo
-
-    def test_pr_mode_rejects_disallowed_imports_even_with_all_labels_and_new_package(self) -> None:
+    def test_cli_requires_base_and_rejects_removed_check_imports_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._init_repo(tmp)
-            (repo / "LeanSwe" / "Demo" / "Impl.lean").write_text("import Mathlib\ndef x := 1\n", encoding="utf-8")
-            (repo / "LeanSwe" / "Fresh").mkdir(parents=True)
-            (repo / "LeanSwe" / "Fresh" / "Types.lean").write_text(
-                "public import all Batteries.Foo\ndef f := 1\n", encoding="utf-8"
-            )
-            _git(repo, "add", ".")
-            _git(repo, "commit", "-m", "bad imports")
-
-            res = self._run_cli(
-                repo, "--base", "HEAD~1", "--head", "HEAD", "--label", "spec-add,spec-change,add-foreign-lang"
-            )
-            self.assertNotEqual(res.returncode, 0)
-            self.assertIn("IMPORT_POLICY_VIOLATION: LeanSwe/Demo/Impl.lean:1:", res.stderr)
-            self.assertIn("IMPORT_POLICY_VIOLATION: LeanSwe/Fresh/Types.lean:1:", res.stderr)
-
-            checked, violations = check_spec_change.check_repo_imports(repo)
-            self.assertEqual(checked, 3)
-            self.assertTrue(any("LeanSwe/Demo/Impl.lean:1:" in v for v in violations))
-            self.assertTrue(any("LeanSwe/Fresh/Types.lean:1:" in v for v in violations))
-
-    def test_pr_mode_allows_intra_repo_import_all_submodules_deletes_and_symlinks(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = self._init_repo(tmp)
-            (repo / "LeanSwe" / "Demo" / "Proofs.lean").write_text(
-                "module\nimport Mathlib.Data.Nat.Basic\nimport all LeanSwe.Demo.Impl\n", encoding="utf-8"
-            )
-            os.symlink("Types.lean", repo / "LeanSwe" / "Demo" / "Link.lean")
-            _git(repo, "rm", "LeanSwe/Demo/Impl.lean")
-            _git(repo, "add", "LeanSwe/Demo/Proofs.lean", "LeanSwe/Demo/Link.lean")
-            _git(repo, "commit", "-m", "valid imports, delete, and symlink")
-
-            res = self._run_cli(repo, "--base", "HEAD~1", "--head", "HEAD")
-            self.assertEqual(res.returncode, 0, res.stderr)
-            self.assertIn("IMPORT_POLICY_CHECK: ok (checked=1 errors=0)", res.stdout)
-
-            checked, violations = check_spec_change.check_repo_imports(repo)
-            self.assertEqual((checked, violations), (2, []))
-
-    def test_rename_non_checked_out_head_and_missing_base(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = self._init_repo(tmp)
-            (repo / "note.txt").write_text("import Mathlib\n", encoding="utf-8")
-            _git(repo, "add", "note.txt")
-            _git(repo, "commit", "-m", "add txt")
-            base_sha = _git(repo, "rev-parse", "HEAD")
-
-            _git(repo, "checkout", "-q", "-b", "rename-bad")
-            _git(repo, "mv", "note.txt", "Bad.lean")
-            _git(repo, "commit", "-m", "rename txt to lean")
-            bad_sha = _git(repo, "rev-parse", "HEAD")
-            _git(repo, "checkout", "-q", base_sha)
-
-            res_diff = self._run_cli(repo, "--base", base_sha, "--head", bad_sha)
-            self.assertNotEqual(res_diff.returncode, 0)
-            self.assertIn("IMPORT_POLICY_VIOLATION: Bad.lean:1:", res_diff.stderr)
-
-            self.assertEqual(self._run_cli(repo).returncode, 2)
-            self.assertEqual(self._run_cli(repo, "--check-imports").returncode, 2)
+            script = Path(__file__).resolve().parent / "check_spec_change.py"
+            env = {k: v for k, v in os.environ.items() if k != "GITHUB_EVENT_PATH"}
+            for args in ([], ["--check-imports"]):
+                res = subprocess.run(
+                    [sys.executable, "-B", str(script), *args],
+                    cwd=repo,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(res.returncode, 2)
 
 
 class SpecSubdirLockTests(unittest.TestCase):

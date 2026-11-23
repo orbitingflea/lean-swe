@@ -109,6 +109,12 @@ jobs:
       - name: Install Lean toolchain
         uses: ./.github/actions/install-lean
 
+      - name: Check Lean import policy
+        run: |
+          set -euo pipefail
+          lean -DwarningAsError=true --run scripts/CheckImports.lean --self-test
+          lean -DwarningAsError=true --run scripts/CheckImports.lean .
+
       - name: Install Rust toolchain, Charon, and Aeneas
         run: |
           set -euo pipefail
