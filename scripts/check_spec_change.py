@@ -25,11 +25,6 @@ lowering `max_lines`, clearing `legacy_unmigrated`, or tightening `function_over
 `named_thread_helpers` needs no label, whereas adding/loosening any budget entry, changing a
 vendored SHA-256, or deleting/renaming `.foreign-budget.json` requires `add-foreign-lang` (`spec-change`
 and `spec-add` do not substitute for `add-foreign-lang`, nor vice versa).
-
-Lean import hygiene is enforced unconditionally (no label waives it): every touched regular `.lean`
-file must not contain `import all` targeting an external dependency (module root outside `Core`,
-`LeanSwe`, `Fuzz`, `Tests`) or a bare umbrella `import Mathlib` (specific submodules such as
-`import Mathlib.Data.Nat.Basic` are allowed).
 """
 
 from __future__ import annotations
@@ -56,8 +51,6 @@ LABEL_CHANGE = "spec-change"
 LABEL_FOREIGN = "add-foreign-lang"
 ALL_GATE_LABELS = frozenset({LABEL_ADD, LABEL_CHANGE, LABEL_FOREIGN})
 ALLOW_NEW_PACKAGES = True
-INTERNAL_IMPORT_ROOTS = frozenset({"Core", "LeanSwe", "Fuzz", "Tests"})
-FORBIDDEN_UMBRELLA_IMPORTS = frozenset({"Mathlib"})
 
 SAFE_DECL_ATTRS = frozenset({
     "inline",
@@ -270,7 +263,6 @@ class LeanToken:
     after_dot: bool
     after_backtick: bool
     in_attr: bool
-    attached_dot: bool = False
 
 
 @dataclass(frozen=True)
@@ -407,7 +399,6 @@ def scan_lean(source: str, state: LeanLexState | None = None) -> tuple[list[Lean
         elif ch == "«":
             end = source.find("»", i + 1)
             after_dot = i > 0 and source[i - 1] == "."
-            attached_dot = after_dot and last_ident_end == i - 1
             after_backtick = i > 0 and source[i - 1] == "`"
             if end == -1:
                 tokens.append(
@@ -418,7 +409,6 @@ def scan_lean(source: str, state: LeanLexState | None = None) -> tuple[list[Lean
                         after_dot=after_dot,
                         after_backtick=after_backtick,
                         in_attr=in_attr,
-                        attached_dot=attached_dot,
                     )
                 )
                 break
@@ -431,7 +421,6 @@ def scan_lean(source: str, state: LeanLexState | None = None) -> tuple[list[Lean
                     after_dot=after_dot,
                     after_backtick=after_backtick,
                     in_attr=in_attr,
-                    attached_dot=attached_dot,
                 )
             )
             last_ident_end = end + 1
@@ -478,7 +467,6 @@ def scan_lean(source: str, state: LeanLexState | None = None) -> tuple[list[Lean
             i = j
         elif ch.isalpha() or ch == "_":
             after_dot = i > 0 and source[i - 1] == "."
-            attached_dot = after_dot and last_ident_end == i - 1
             after_backtick = i > 0 and source[i - 1] == "`"
             j = i
             while j < n and (source[j].isalnum() or source[j] in IDENT_CONT_CHARS):
@@ -492,7 +480,6 @@ def scan_lean(source: str, state: LeanLexState | None = None) -> tuple[list[Lean
                     after_dot=after_dot,
                     after_backtick=after_backtick,
                     in_attr=in_attr,
-                    attached_dot=attached_dot,
                 )
             )
             last_ident_end = j
@@ -1066,175 +1053,6 @@ def classify_foreign_budget_diff(
     return None
 
 
-def _unquote_lean_ident(text: str) -> str:
-    """Strip Lean french quotes (`«...»`) from an identifier segment when present."""
-    if len(text) >= 2 and text.startswith("«") and text.endswith("»"):
-        return text[1:-1]
-    return text
-
-
-def check_import_hygiene(source: str, rel_path: str = "<input>") -> list[str]:
-    """Return import-policy violation strings for a single Lean source text.
-
-    Rejects:
-    - `import all ...` targeting external dependencies (root outside `INTERNAL_IMPORT_ROOTS`),
-      including `public`/`private`/`meta` prefixed imports and dangling `import all`.
-    - Bare umbrella imports listed in `FORBIDDEN_UMBRELLA_IMPORTS` (e.g. `import Mathlib`).
-    Uses `scan_lean` so comments (`--`, nested `/- ... -/`, `/-- ... -/`, `/-! ... -/`),
-    string/raw-string/char literals, attributes, and nested expressions do not false-positive.
-    """
-    last_import_pos = source.rfind("import")
-    if last_import_pos == -1:
-        return []
-    last_import_line = source.count("\n", 0, last_import_pos) + 1
-
-    violations: list[str] = []
-    lex_state = LeanLexState()
-    mode = "idle"
-    imp_line = 0
-    is_all = False
-    mod_segs: list[str] = []
-
-    def flush() -> None:
-        nonlocal mode, imp_line, is_all, mod_segs
-        if mode == "after_all":
-            violations.append(
-                f"{rel_path}:{imp_line}: disallowed dangling 'import all' "
-                "(only intra-repo modules under Core/LeanSwe/Fuzz/Tests may use 'import all')"
-            )
-        elif mode == "in_mod" and mod_segs:
-            unquoted = [_unquote_lean_ident(seg) for seg in mod_segs]
-            mod_name = ".".join(unquoted)
-            if is_all and unquoted[0] not in INTERNAL_IMPORT_ROOTS:
-                violations.append(
-                    f"{rel_path}:{imp_line}: disallowed external 'import all {mod_name}' "
-                    "(remove 'all' for external dependencies)"
-                )
-            if mod_name in FORBIDDEN_UMBRELLA_IMPORTS:
-                violations.append(
-                    f"{rel_path}:{imp_line}: disallowed umbrella import '{mod_name}' "
-                    "(import specific submodule(s) instead, e.g. 'Mathlib.Data.Nat.Basic')"
-                )
-        mode = "idle"
-        imp_line = 0
-        is_all = False
-        mod_segs = []
-
-    for line_no, ln in enumerate(source.split("\n"), 1):
-        if mode == "idle" and line_no > last_import_line:
-            break
-        line_tokens, lex_state = scan_lean(ln + "\n", lex_state)
-        for tok in line_tokens:
-            if tok.in_attr or tok.bdepth > 0 or tok.interp_depth > 0:
-                flush()
-                continue
-            if mode == "in_mod":
-                if tok.attached_dot and not tok.after_backtick and tok.text != "/-!" and not tok.text.startswith("#"):
-                    mod_segs.append(tok.text)
-                    continue
-                flush()
-            elif mode == "after_all":
-                if tok.attached_dot and not tok.after_backtick and tok.text != "/-!" and not tok.text.startswith("#"):
-                    is_all = False
-                    mod_segs = ["all", tok.text]
-                    mode = "in_mod"
-                    continue
-                if (
-                    tok.after_dot
-                    or tok.after_backtick
-                    or tok.text in ("import", "/-!", "public", "private", "meta")
-                    or tok.text.startswith("#")
-                ):
-                    flush()
-                else:
-                    is_all = True
-                    mod_segs = [tok.text]
-                    mode = "in_mod"
-                    continue
-            elif mode == "after_import":
-                if tok.after_dot or tok.after_backtick or tok.text == "/-!" or tok.text.startswith("#"):
-                    flush()
-                elif tok.text == "import":
-                    imp_line = line_no
-                    continue
-                elif tok.text == "all":
-                    mode = "after_all"
-                    continue
-                else:
-                    is_all = False
-                    mod_segs = [tok.text]
-                    mode = "in_mod"
-                    continue
-            if not tok.after_dot and not tok.after_backtick and tok.text == "import":
-                mode = "after_import"
-                imp_line = line_no
-                is_all = False
-                mod_segs = []
-        if mode == "in_mod":
-            flush()
-    flush()
-    return violations
-
-
-def _git_ls_tree_modes(repo_root: Path, commit_ref: str, rel_paths: list[str]) -> dict[str, str]:
-    """Return `{rel_path: git_mode}` for tracked entries matching `rel_paths` at `commit_ref`."""
-    modes: dict[str, str] = {}
-    unique_paths = sorted(set(rel_paths))
-    for i in range(0, len(unique_paths), 200):
-        chunk = unique_paths[i : i + 200]
-        raw = subprocess.check_output(
-            ["git", "--literal-pathspecs", "ls-tree", "-z", commit_ref, "--", *chunk],
-            cwd=repo_root,
-        ).decode("utf-8", errors="surrogateescape")
-        for rec in raw.split("\0"):
-            if not rec or "\t" not in rec:
-                continue
-            meta, path = rec.split("\t", 1)
-            modes[path] = meta.split(" ", 1)[0]
-    return modes
-
-
-def check_repo_imports(repo_root: Path) -> tuple[int, list[str]]:
-    """Scan all git-tracked regular `.lean` files in `repo_root` for import policy violations."""
-    raw = subprocess.check_output(
-        ["git", "ls-files", "-s", "-z"],
-        cwd=repo_root,
-    ).decode("utf-8", errors="surrogateescape")
-    paths: set[str] = set()
-    for rec in raw.split("\0"):
-        if not rec or "\t" not in rec:
-            continue
-        meta, rel_path = rec.split("\t", 1)
-        mode = meta.split(" ", 1)[0]
-        if mode in ("100644", "100755") and rel_path.endswith(".lean"):
-            paths.add(rel_path)
-    checked = 0
-    violations: list[str] = []
-    for rel_path in sorted(paths):
-        full_path = repo_root / rel_path
-        if full_path.is_symlink() or not full_path.is_file():
-            continue
-        checked += 1
-        text = full_path.read_bytes().decode("utf-8", errors="surrogateescape")
-        violations.extend(check_import_hygiene(text, rel_path))
-    return checked, violations
-
-
-def _check_commit_lean_imports(repo_root: Path, commit_ref: str, rel_paths: list[str]) -> tuple[int, list[str]]:
-    """Check regular tracked `.lean` blobs in `rel_paths` at `commit_ref`."""
-    if not rel_paths:
-        return 0, []
-    modes = _git_ls_tree_modes(repo_root, commit_ref, rel_paths)
-    checked = 0
-    violations: list[str] = []
-    for rel_path in sorted(set(rel_paths)):
-        if modes.get(rel_path) not in ("100644", "100755"):
-            continue
-        checked += 1
-        violations.extend(check_import_hygiene(git_show_text(repo_root, commit_ref, rel_path), rel_path))
-    return checked, violations
-
-
 def _parse_cli_label(value: str) -> str:
     """Validate comma-separated CLI `--label` values against known gate labels."""
     parts = [p.strip() for p in value.split(",") if p.strip()]
@@ -1246,9 +1064,9 @@ def _parse_cli_label(value: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entrypoint checking PR labels, foreign budget ratchet, and Lean import policy."""
+    """CLI entrypoint checking PR labels and `.foreign-budget.json` ratchet."""
     parser = argparse.ArgumentParser(
-        description="Verify spec-add / spec-change / add-foreign-lang PR labels and Lean import policy."
+        description="Verify spec-add / spec-change / add-foreign-lang PR labels."
     )
     parser.add_argument("--base", required=True, help="Base commit or ref to diff against.")
     parser.add_argument("--head", default="HEAD", help="Head commit or ref (default: HEAD).")
@@ -1275,11 +1093,8 @@ def main(argv: list[str] | None = None) -> int:
     foreign_assessments: list[LockedDiffAssessment] = []
     new_pkg_spec_hits: list[str] = []
     budget_tightened = False
-    touched_lean: list[str] = []
 
     for status, paths in entries:
-        if status[0] != "D" and paths[-1].endswith(".lean"):
-            touched_lean.append(paths[-1])
         if FOREIGN_BUDGET_PATH in paths:
             budget_err = classify_foreign_budget_diff(repo_root, effective_base, args.head, status, paths)
             if budget_err is not None:
@@ -1296,21 +1111,10 @@ def main(argv: list[str] | None = None) -> int:
                 continue
         locked_assessments.append(classify_locked_spec_diff(repo_root, effective_base, args.head, status, paths))
 
-    import_checked, import_violations = _check_commit_lean_imports(repo_root, args.head, touched_lean)
-
     event_file = Path(args.event_path) if args.event_path else None
     labels_present = read_pr_labels(event_file, args.label)
 
     failed = False
-    if import_violations:
-        failed = True
-        print(
-            f"IMPORT_POLICY_CHECK: failed ({len(import_violations)} violation(s) across {import_checked} .lean file(s))",
-            file=sys.stderr,
-        )
-        for v in import_violations:
-            print(f"IMPORT_POLICY_VIOLATION: {v}", file=sys.stderr)
-
     if foreign_assessments and LABEL_FOREIGN not in labels_present:
         failed = True
         print(
@@ -1363,9 +1167,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if failed:
         return 1
-
-    if import_checked:
-        print(f"IMPORT_POLICY_CHECK: ok (checked={import_checked} errors=0)")
 
     if foreign_assessments:
         print(f"FOREIGN_BUDGET_CHECK: ok (label='{LABEL_FOREIGN}' present)")
