@@ -55,7 +55,15 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap strace uidmap python3-zstandard zstd xz-utils gzip curl libssl-dev
-          [[ ! -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] || sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; U="$(id -un)"; for f in /etc/subuid /etc/subgid; do grep -q "^${U}:" "$f" 2>/dev/null || { S=$(awk -F: 'NF>=3 { if ($2+$3>m) m=$2+$3 } END { print m?m:100000 }' "$f" 2>/dev/null || echo 100000); flag=${f#/etc/sub}; sudo usermod "--add-sub${flag}s" "${S}-$((S+65535))" "$U"; }; done
+          [[ ! -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] || sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          U="$(id -un)"
+          for f in /etc/subuid /etc/subgid; do
+            if ! grep -q "^${U}:" "$f" 2>/dev/null; then
+              S=$(awk -F: 'NF>=3 { if ($2+$3>m) m=$2+$3 } END { print m?m:100000 }' "$f" 2>/dev/null || echo 100000)
+              flag=${f#/etc/sub}
+              sudo usermod "--add-sub${flag}s" "${S}-$((S+65535))" "$U"
+            fi
+          done
           if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then
             echo "+memory +pids" | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null 2>&1 || true
             sudo mkdir -p /sys/fs/cgroup/leanswe/runner &&
@@ -119,21 +127,38 @@ jobs:
       - name: Verify PostFork and ProcessSandbox.Init Rust builds and Charon/Aeneas 0-diff extraction
         run: |
           set -euo pipefail
-          rm -rf "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/psi-regen"; mkdir -p "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/psi-regen"; export CARGO_TARGET_DIR="$RUNNER_TEMP/pf-cargo-target"
-          (cd LeanSwe/PostFork/rust && cargo build --locked --release --features standalone && charon cargo --preset aeneas --opaque postfork::sys --dest-file "$RUNNER_TEMP/pf-regen/postfork.llbc"); (cd LeanSwe/ProcessSandbox/Init/rust && cargo build --locked --offline --release --bin psandbox-init --features standalone && charon cargo --preset aeneas --opaque psandbox_init::init_sys --dest-file "$RUNNER_TEMP/psi-regen/psandbox_init.llbc" -- --lib)
-          aeneas -backend lean -split-files -subdir LeanSwe.PostFork.Aeneas -use-lean-modules false -dest "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/pf-regen/postfork.llbc"; aeneas -backend lean -split-files -subdir LeanSwe.ProcessSandbox.Init.Aeneas -use-lean-modules false -dest "$RUNNER_TEMP/psi-regen" "$RUNNER_TEMP/psi-regen/psandbox_init.llbc"
-          diff -u LeanSwe/PostFork/Aeneas/Types.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Types.lean"; diff -u LeanSwe/PostFork/Aeneas/Funs.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Funs.lean"; diff -u LeanSwe/ProcessSandbox/Init/Aeneas/Types.lean "$RUNNER_TEMP/psi-regen/LeanSwe.ProcessSandbox.Init.Aeneas/Types.lean"; diff -u LeanSwe/ProcessSandbox/Init/Aeneas/Funs.lean "$RUNNER_TEMP/psi-regen/LeanSwe.ProcessSandbox.Init.Aeneas/Funs.lean"
+          rm -rf "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/psi-regen"
+          mkdir -p "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/psi-regen"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/pf-cargo-target"
+          (cd LeanSwe/PostFork/rust && cargo build --locked --release --features standalone && charon cargo --preset aeneas --opaque postfork::sys --dest-file "$RUNNER_TEMP/pf-regen/postfork.llbc")
+          (cd LeanSwe/ProcessSandbox/Init/rust && cargo build --locked --offline --release --bin psandbox-init --features standalone && charon cargo --preset aeneas --opaque psandbox_init::init_sys --dest-file "$RUNNER_TEMP/psi-regen/psandbox_init.llbc" -- --lib)
+          aeneas -backend lean -split-files -subdir LeanSwe.PostFork.Aeneas -use-lean-modules false -dest "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/pf-regen/postfork.llbc"
+          aeneas -backend lean -split-files -subdir LeanSwe.ProcessSandbox.Init.Aeneas -use-lean-modules false -dest "$RUNNER_TEMP/psi-regen" "$RUNNER_TEMP/psi-regen/psandbox_init.llbc"
+          diff -u LeanSwe/PostFork/Aeneas/Types.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Types.lean"
+          diff -u LeanSwe/PostFork/Aeneas/Funs.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Funs.lean"
+          diff -u LeanSwe/ProcessSandbox/Init/Aeneas/Types.lean "$RUNNER_TEMP/psi-regen/LeanSwe.ProcessSandbox.Init.Aeneas/Types.lean"
+          diff -u LeanSwe/ProcessSandbox/Init/Aeneas/Funs.lean "$RUNNER_TEMP/psi-regen/LeanSwe.ProcessSandbox.Init.Aeneas/Funs.lean"
 
       - name: Build Lean libraries and tests
         id: build
         run: |
           set -euo pipefail
-          lake exe cache get; LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail; LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail LeanSwe.PostFork.Verified LeanSwe.ProcessSandbox.Init.Verified; LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d harness build --wfail lean-swe-test lean-swe-mut-test leanswe-fuzz
+          lake exe cache get
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail LeanSwe.PostFork.Verified LeanSwe.ProcessSandbox.Init.Verified
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d harness build --wfail lean-swe-test lean-swe-mut-test leanswe-fuzz
           actual_syms=$(nm -u .lake/build/lib/libleanswe_postfork_rust.a | awk '$1 ~ /^[Uuwv]$/ { print $2 }' | sort -u)
           expected_syms=$(printf '%s\n' __errno_location _exit chdir close dup2 execve fcntl open read setpgid syscall write | sort -u)
           expected_c_syms=$(printf '%s\n' leanswe_postfork_host_close_fd leanswe_postfork_host_fork_run leanswe_postfork_host_pipe_cloexec leanswe_postfork_host_probe_fd leanswe_postfork_host_probe_handle leanswe_postfork_host_read_once leanswe_postfork_host_setpgid leanswe_postfork_host_wait_once leanswe_postfork_host_write_once | sort -u)
-          diff -u <(printf '%s\n' "$expected_syms") <(printf '%s\n' "$actual_syms"); diff -u <(printf '%s\n' leanswe_postfork_close_fds_above2_except leanswe_postfork_run_child) <(nm --defined-only .lake/build/lib/libleanswe_postfork_rust.a | awk '$2 ~ /^[A-Z]$/ { print $3 }' | sort -u); diff -u <(printf '%s\n' "$expected_c_syms") <(nm --defined-only .lake/build/lib/libleanswe_postfork.a | awk '$2 ~ /^[ABCDGRST]$/ { print $3 }' | sort -u)
-          for b in lean-swe-test lean-swe-mut-test leanswe-fuzz; do readelf -d "harness/.lake/build/bin/$b" | grep -E '^[[:space:]]*0x[0-9a-fA-F]+[[:space:]]+(\(BIND_NOW\)([[:space:]]|$)|\(FLAGS\)[[:space:]](.*[[:space:]])?BIND_NOW([[:space:]]|$)|\(FLAGS_1\)[[:space:]](.*[[:space:]])?NOW([[:space:]]|$))' >/dev/null || { echo "ERROR: harness/.lake/build/bin/$b missing ELF BIND_NOW" >&2; exit 1; }; done
+          diff -u <(printf '%s\n' "$expected_syms") <(printf '%s\n' "$actual_syms")
+          diff -u <(printf '%s\n' leanswe_postfork_close_fds_above2_except leanswe_postfork_run_child) <(nm --defined-only .lake/build/lib/libleanswe_postfork_rust.a | awk '$2 ~ /^[A-Z]$/ { print $3 }' | sort -u)
+          diff -u <(printf '%s\n' "$expected_c_syms") <(nm --defined-only .lake/build/lib/libleanswe_postfork.a | awk '$2 ~ /^[ABCDGRST]$/ { print $3 }' | sort -u)
+          for b in lean-swe-test lean-swe-mut-test leanswe-fuzz; do
+            readelf -d "harness/.lake/build/bin/$b" | grep -E '^[[:space:]]*0x[0-9a-fA-F]+[[:space:]]+(\(BIND_NOW\)([[:space:]]|$)|\(FLAGS\)[[:space:]](.*[[:space:]])?BIND_NOW([[:space:]]|$)|\(FLAGS_1\)[[:space:]](.*[[:space:]])?NOW([[:space:]]|$))' >/dev/null || {
+              echo "ERROR: harness/.lake/build/bin/$b missing ELF BIND_NOW" >&2
+              exit 1
+            }
+          done
 
       - name: Save Lean packages cache
         if: >-
@@ -191,30 +216,54 @@ jobs:
           echo "ASSUMP_NONCE=$ASSUMP_NONCE" >> "$GITHUB_ENV"
           echo "ASSUMP_LOG=$ASSUMP_LOG" >> "$GITHUB_ENV"
           harness/.lake/build/bin/lean-swe-test --assump-log "$ASSUMP_LOG" --assump-nonce "$ASSUMP_NONCE"
-          harness/.lake/build/bin/leanswe-fuzz --sandbox-strace-fault-check; harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 100000 --self-test-shrink; harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink
+          harness/.lake/build/bin/leanswe-fuzz --sandbox-strace-fault-check
+          harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 100000 --self-test-shrink
+          harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink
           if sudo -n sysctl -n vm.memfd_noexec >/dev/null 2>&1; then
             OLD_MEMFD_NOEXEC=$(sudo -n sysctl -n vm.memfd_noexec)
             sudo -n unshare --pid --fork --mount-proc -- bash -ec '
-              ulimit -Hc unlimited; if (( $1 == 2 )); then echo "MEMFD_NOEXEC_WARN: vm.memfd_noexec=2 enforced; skipping vm.memfd_noexec=1"; else
-                sysctl -w vm.memfd_noexec=1 >/dev/null; setpriv --reuid="$2" --regid="$3" --init-groups -- harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink; sysctl -w vm.memfd_noexec=2 >/dev/null
+              ulimit -Hc unlimited
+              if (( $1 == 2 )); then
+                echo "MEMFD_NOEXEC_WARN: vm.memfd_noexec=2 enforced; skipping vm.memfd_noexec=1"
+              else
+                sysctl -w vm.memfd_noexec=1 >/dev/null
+                setpriv --reuid="$2" --regid="$3" --init-groups -- harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink
+                sysctl -w vm.memfd_noexec=2 >/dev/null
               fi
               setpriv --reuid="$2" --regid="$3" --init-groups -- harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink --require-memfd-strict
-              sysctl -w "vm.memfd_noexec=$1" >/dev/null 2>&1 || true' _ "$OLD_MEMFD_NOEXEC" "$(id -u)" "$(id -g)"
+              sysctl -w "vm.memfd_noexec=$1" >/dev/null 2>&1 || true
+            ' _ "$OLD_MEMFD_NOEXEC" "$(id -u)" "$(id -g)"
           else
             echo "::warning::sudo -n sysctl unavailable; skipping vm.memfd_noexec={1,2} strict checks"
           fi
-          harness/.lake/build/bin/leanswe-fuzz --timerand-strace-fault-check; harness/.lake/build/bin/leanswe-fuzz --files-strace-fault-check; harness/.lake/build/bin/lean-swe-test --suite Git --suite Compress --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite PostFork --suite Sqlite --suite Sqlite.Raw 0<&- 1>&- 2>&-; harness/.lake/build/bin/leanswe-fuzz --smoke --suite sandbox,timerand,files,process,poll,net,passwd,dns --self-test-shrink 0<&- 1>&- 2>&-
+          harness/.lake/build/bin/leanswe-fuzz --timerand-strace-fault-check
+          harness/.lake/build/bin/leanswe-fuzz --files-strace-fault-check
+          harness/.lake/build/bin/lean-swe-test --suite Git --suite Compress --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite PostFork --suite Sqlite --suite Sqlite.Raw 0<&- 1>&- 2>&-
+          harness/.lake/build/bin/leanswe-fuzz --smoke --suite sandbox,timerand,files,process,poll,net,passwd,dns --self-test-shrink 0<&- 1>&- 2>&-
           harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,Compress,LinuxSyscall.Poll,LinuxSyscall.Net,Git,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns,LinuxSyscall.Files,PostFork,Sqlite,Sqlite.Raw
-          harness/.lake/build/bin/leanswe-fuzz --suite timerand --steps 100000 --self-test-shrink; harness/.lake/build/bin/leanswe-fuzz --suite timerand --steps 100000 --random-seed --self-test-shrink
-          harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process; harness/.lake/build/bin/leanswe-fuzz --process-strace-fault-check; harness/.lake/build/bin/leanswe-fuzz --suite process --steps 15000 --self-test-shrink --require-ns; harness/.lake/build/bin/leanswe-fuzz --suite process --steps 5000 --random-seed --self-test-shrink --require-ns
+          harness/.lake/build/bin/leanswe-fuzz --suite timerand --steps 100000 --self-test-shrink
+          harness/.lake/build/bin/leanswe-fuzz --suite timerand --steps 100000 --random-seed --self-test-shrink
+          harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process
+          harness/.lake/build/bin/leanswe-fuzz --process-strace-fault-check
+          harness/.lake/build/bin/leanswe-fuzz --suite process --steps 15000 --self-test-shrink --require-ns
+          harness/.lake/build/bin/leanswe-fuzz --suite process --steps 5000 --random-seed --self-test-shrink --require-ns
           python3 -B -m unittest scripts/test_fuzz_changed.py
           if [[ "${GITHUB_EVENT_NAME}" == "pull_request" && -n "${BASE_SHA:-}" ]]; then
             python3 -B scripts/fuzz_changed.py --base "$BASE_SHA" --head HEAD --check-manifest --run --extra-arg=--self-test-shrink
           else
-            python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest; harness/.lake/build/bin/leanswe-fuzz --smoke --all --self-test-shrink
+            python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest
+            harness/.lake/build/bin/leanswe-fuzz --smoke --all --self-test-shrink
           fi
-          harness/.lake/build/bin/leanswe-fuzz --poll-strace-fault-check; harness/.lake/build/bin/leanswe-fuzz --net-strace-fault-check; harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 50000 --self-test-shrink; harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 50000 --random-seed --self-test-shrink; harness/.lake/build/bin/leanswe-fuzz --suite net --steps 50000 --self-test-shrink --require-ns; harness/.lake/build/bin/leanswe-fuzz --suite net --seed 11262680905236430927 --steps 50000 --self-test-shrink --require-ns; harness/.lake/build/bin/leanswe-fuzz --suite net --steps 50000 --random-seed --self-test-shrink --require-ns
-          harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 25000 --self-test-shrink; harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 25000 --random-seed --self-test-shrink; harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 500 --self-test-shrink 0<&- >/dev/null
+          harness/.lake/build/bin/leanswe-fuzz --poll-strace-fault-check
+          harness/.lake/build/bin/leanswe-fuzz --net-strace-fault-check
+          harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 50000 --self-test-shrink
+          harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 50000 --random-seed --self-test-shrink
+          harness/.lake/build/bin/leanswe-fuzz --suite net --steps 50000 --self-test-shrink --require-ns
+          harness/.lake/build/bin/leanswe-fuzz --suite net --seed 11262680905236430927 --steps 50000 --self-test-shrink --require-ns
+          harness/.lake/build/bin/leanswe-fuzz --suite net --steps 50000 --random-seed --self-test-shrink --require-ns
+          harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 25000 --self-test-shrink
+          harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 25000 --random-seed --self-test-shrink
+          harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 500 --self-test-shrink 0<&- >/dev/null
 
       - name: Check 1 GB private-memory cap on changed modules and reverse dependents
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
