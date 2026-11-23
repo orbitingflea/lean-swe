@@ -2168,6 +2168,17 @@ private def sameMountKey (aMnt aDev bMnt bDev : UInt64) : Bool :=
   if aMnt != 0 && bMnt != 0 then aMnt == bMnt
   else aDev != 0 && aDev == bDev
 
+private def internMountProfile (mntId : UInt64) (dev : UInt64) (prof : MountProfile)
+    (nextMid : Nat) (entries : List MountIdEntry)
+    (profiles : List (Nat × MountProfile)) :
+    Nat × Nat × List MountIdEntry × List (Nat × MountProfile) :=
+  match entries.find? (fun e => sameMountKey e.mntId e.dev mntId dev) with
+  | some e => (e.mid, nextMid, entries, profiles)
+  | none =>
+    let entries' := entries ++ [{ mntId, dev, mid := nextMid }]
+    let profiles' := profiles ++ [(nextMid, prof)]
+    (nextMid, nextMid + 1, entries', profiles')
+
 private def internMountById (path : ByteArray) (mntId : UInt64) (dev : UInt64)
     (sealsHint : Bool) (nextMid : Nat) (entries : List MountIdEntry)
     (profiles : List (Nat × MountProfile)) :
@@ -2176,9 +2187,7 @@ private def internMountById (path : ByteArray) (mntId : UInt64) (dev : UInt64)
   | some e => return (e.mid, nextMid, entries, profiles)
   | none =>
     let prof ← mountProfileForPath path sealsHint
-    let entries' := entries ++ [{ mntId, dev, mid := nextMid }]
-    let profiles' := profiles ++ [(nextMid, prof)]
-    return (nextMid, nextMid + 1, entries', profiles')
+    return internMountProfile mntId dev prof nextMid entries profiles
 
 private def strictAncestors (p : System.FilePath) : List System.FilePath :=
   let rec go (fuel : Nat) (cur : System.FilePath) (acc : List System.FilePath) : List System.FilePath :=
@@ -2388,25 +2397,36 @@ private def inspectExistingEntries (epWork : System.FilePath)
       }]
   return (entries, nextMid, mountEntries, mountProfiles)
 
+private structure OuterEntryProbe where
+  entry : SeedEntry
+  mntId : UInt64
+  dev : UInt64
+  profile : MountProfile
+
 private def probeOuterEntry (relDir : List ByteArray) (name : ByteArray)
     (absPath : String) (kind : FileKind) (myUid : UInt32)
-    (uidRanges gidRanges : List (UInt32 × UInt32)) (selfGids : List UInt32) : IO (Option SeedEntry) := do
+    (uidRanges gidRanges : List (UInt32 × UInt32)) (selfGids : List UInt32) : IO (Option OuterEntryProbe) := do
   let p := absPath.toUTF8
   let m ← Env.statMode p
   let dev ← Env.statDev p
   let ino ← Env.statIno p
   if m == 0 && ino == 0 then return none
+  let mntId ← Env.statMntId p
+  let profile ← mountProfileForPath p false
   let ug ← Env.statUidGid p
   let (uMap, gMap, gInGrp, uid) := mappedFlags uidRanges gidRanges selfGids ug
   return some {
-    relDir, name, kind, mode := m, modeExact := true,
-    kernelDev? := if dev != 0 then some dev else none,
-    kernelIno? := if ino != 0 then some ino else none,
-    ownedByUid := uMap && (uid == myUid),
-    inGroup := gInGrp,
-    ownerUid? := if uid != 0xffffffff then some uid else none,
-    uidMapped := uMap, gidMapped := gMap,
-    dynamicMeta := true
+    entry := {
+      relDir, name, kind, mode := m, modeExact := true,
+      kernelDev? := if dev != 0 then some dev else none,
+      kernelIno? := if ino != 0 then some ino else none,
+      ownedByUid := uMap && (uid == myUid),
+      inGroup := gInGrp,
+      ownerUid? := if uid != 0xffffffff then some uid else none,
+      uidMapped := uMap, gidMapped := gMap,
+      dynamicMeta := true
+    }
+    mntId, dev, profile
   }
 
 private def unlinkSeededCwd (s : FilesState) : FilesState :=
@@ -2463,7 +2483,7 @@ private def materializeEpisode (ops : FilesOps) (epDir : System.FilePath)
     (in0 out1 err2 : FileKind × Option SpecialDevKind) (recipe : EpisodeRecipe)
     (isRoSeeded : Bool := false) (chrootUnreachable : Bool := false)
     (ambientSeccomp : Bool := false) (unlinkedCwd : Bool := false)
-    (chrootOuterEntries : List SeedEntry := []) :
+    (chrootOuterProbes : List OuterEntryProbe := []) :
     IO (SeedTreeConfig × Option System.FilePath × Option String) := do
   let _ ← Env.umask 0o022
   if chrootUnreachable then
@@ -2565,9 +2585,15 @@ private def materializeEpisode (ops : FilesOps) (epDir : System.FilePath)
   let (rootUidMapped, rootGidMapped, rootInGroup, rootUid) := mappedFlags uidRanges gidRanges selfGids rootUg
   let rootOwned ← probeOwnedByUid ops selfUMap rootUidMapped rootUid myUid "/".toUTF8 rootMode true false
   let sysMnt ← Env.statMntId "/sys".toUTF8
+  let sysDev ← Env.statDev "/sys".toUTF8
+  let sysMountId := if sameMountKey sysMnt sysDev rootMnt rootDev then 0 else 3
   let rootProf ← mountProfileForPath "/".toUTF8 false
   let mut mountEntries : List MountIdEntry := [{ mntId := rootMnt, dev := rootDev, mid := 0 }]
   let mut mountProfiles : List (Nat × MountProfile) := [(0, rootProf)]
+  if sysMountId != 0 && (sysMnt != 0 || sysDev != 0) then
+    let sysProf ← mountProfileForPath "/sys".toUTF8 false
+    mountEntries := mountEntries ++ [{ mntId := sysMnt, dev := sysDev, mid := sysMountId }]
+    mountProfiles := mountProfiles ++ [(sysMountId, sysProf)]
   let mut nextMid : Nat := 4
 
   let devNullMnt ← Env.statMntId "/dev/null".toUTF8
@@ -2622,6 +2648,14 @@ private def materializeEpisode (ops : FilesOps) (epDir : System.FilePath)
       prevIno := aIno
       curRel := curRel ++ "/..".toUTF8
     chrootOutsideAncestors := ancArr.toList
+
+  let mut chrootOuterEntries : List SeedEntry := []
+  if chrootUnreachable then
+    for op in chrootOuterProbes do
+      let (oMid, nmO, meO, mpO) :=
+        internMountProfile op.mntId op.dev op.profile nextMid mountEntries mountProfiles
+      nextMid := nmO; mountEntries := meO; mountProfiles := mpO
+      chrootOuterEntries := chrootOuterEntries ++ [{ op.entry with mountId? := some oMid }]
 
   let internStdFdMount := fun (fdPath : ByteArray) (dev : UInt64)
       (nextMid0 : Nat) (mountProfiles0 : List (Nat × MountProfile)) => do
@@ -2994,7 +3028,7 @@ private def materializeEpisode (ops : FilesOps) (epDir : System.FilePath)
     selfUidMapped? := some selfUMap
     selfGidMapped? := some selfGMap
     rootOwnerUid? := if rootUid != 0xffffffff then some rootUid else none
-    sysMountId := if sysMnt == rootMnt then 0 else 3
+    sysMountId := sysMountId
     hostSyntheticOwnedByUid := chrootUnreachable
     crossMountPath? := crossPathOpt
     crossMountMode := crossMode
@@ -4236,7 +4270,7 @@ def runFilesFuzzOnDir (totalSteps : Nat) (seed : UInt64) (selfTestShrink : Bool)
   let uidRanges ← Env.readIdMap "/proc/self/uid_map"
   let gidRanges ← Env.readIdMap "/proc/self/gid_map"
   let selfGids ← Env.readSelfGids
-  let mut chrootOuterEntries : List SeedEntry := []
+  let mut chrootOuterEntries : List OuterEntryProbe := []
   if chrootMode then
     let probes : Array (List ByteArray × String × String × FileKind) := #[
       ([], "etc", "/etc", .dir),

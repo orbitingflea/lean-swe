@@ -1747,6 +1747,39 @@ private def runMultiFsOverlayAndRoWorker (ovlDirStr roDirStr : String) : IO UInt
     let _ ← Fuzz.LinuxSyscall.Env.umask savedMask
     IO.Process.setCurrentDir savedCwd
 
+private def runChrootOuterXdevWorker (outDir chrootRoot : String) : IO UInt32 := do
+  let ops := defaultOps
+  let epDir := System.FilePath.mk outDir / "ep"
+  IO.FS.createDirAll epDir
+  IO.Process.setCurrentDir epDir
+  let rc ← Fuzz.LinuxSyscall.Env.chroot chrootRoot.toUTF8
+  if rc != 0 then
+    IO.eprintln s!"chroot({chrootRoot}) failed with errno={rc}"
+    return 1
+  let longName := ByteArray.mk (Array.replicate 256 (97 : UInt8))
+  let exFlags : RenameFlags := { exchange := true }
+  let rSys ← ops.renameat2 none longName none "../../../../sys/kernel/cpu_byteorder".toUTF8 exFlags
+  assertErr "chroot outer renameat2(a*256 -> ../../../../sys/kernel/cpu_byteorder, EXCHANGE) -> EXDEV" rSys Errno.EXDEV
+  let rInner ← ops.renameat2 none longName none "/sys/kernel/cpu_byteorder".toUTF8 exFlags
+  assertErr "chroot inner renameat2(a*256 -> /sys/kernel/cpu_byteorder, EXCHANGE) -> ENAMETOOLONG" rInner Errno.ENAMETOOLONG
+  let etcMnt ← Fuzz.LinuxSyscall.Env.statMntId "../../../../etc".toUTF8
+  let cwdMnt ← Fuzz.LinuxSyscall.Env.statMntId ".".toUTF8
+  let etcDev ← Fuzz.LinuxSyscall.Env.statDev "../../../../etc".toUTF8
+  let cwdDev ← Fuzz.LinuxSyscall.Env.statDev ".".toUTF8
+  let sameEtc := if etcMnt != 0 && cwdMnt != 0 then etcMnt == cwdMnt else etcDev != 0 && etcDev == cwdDev
+  let rEtc ← ops.renameat2 none longName none "../../../../etc/passwd".toUTF8 exFlags
+  if sameEtc then
+    assertErr "chroot outer same-mount renameat2(a*256 -> ../../../../etc/passwd, EXCHANGE) -> ENAMETOOLONG" rEtc Errno.ENAMETOOLONG
+  else
+    assertErr "chroot outer cross-mount renameat2(a*256 -> ../../../../etc/passwd, EXCHANGE) -> EXDEV" rEtc Errno.EXDEV
+  let rEtcSys ← ops.renameat2 none "../../../../etc/passwd".toUTF8 none "../../../../sys/kernel/cpu_byteorder".toUTF8 exFlags
+  assertErr "chroot outer renameat2(etc/passwd -> sys/kernel/cpu_byteorder, EXCHANGE) -> EXDEV" rEtcSys Errno.EXDEV
+  let rNoXdev ← ops.openat2 none "../../../../sys/kernel/cpu_byteorder".toUTF8 {
+    flags := { access := .rdonly, cloexec := true }, resolve := { noXdev := true }
+  }
+  assertErr "chroot outer openat2(../../../../sys/kernel/cpu_byteorder, RESOLVE_NO_XDEV) -> EXDEV" rNoXdev Errno.EXDEV
+  return 0
+
 /-- Multi-filesystem real-Linux probes (`cgroup2` `/sys/fs/cgroup`, plus `unshare -Urm` `overlayfs` copy-up/rename `EXDEV` and `-o remount,ro,bind` `EROFS`). -/
 def runMultiFsReproducers : IO Unit := do
   let ops := defaultOps
@@ -1791,6 +1824,22 @@ def runMultiFsReproducers : IO Unit := do
     }
     if out.exitCode != 0 then
       throw (IO.userError s!"multifs overlay/ro worker failed (exit={out.exitCode}): {out.stdout}\n{out.stderr}")
+    if (← (System.FilePath.mk "/sys/kernel/cpu_byteorder").pathExists) &&
+        (← (System.FilePath.mk "/var/tmp").pathExists) then
+      let chrootScript :=
+        "set -e; " ++
+        "OUT=$(mktemp -d /var/tmp/lscx-out.XXXXXX); " ++
+        "ROOT=$(mktemp -d /var/tmp/lscx-root.XXXXXX); " ++
+        "trap 'rm -rf \"$OUT\" \"$ROOT\"' EXIT; " ++
+        "mkdir -p \"$ROOT/sys/kernel\"; " ++
+        "printf 'little\\n' > \"$ROOT/sys/kernel/cpu_byteorder\"; chmod 0444 \"$ROOT/sys/kernel/cpu_byteorder\"; " ++
+        "capsh --drop=cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid -- -c '\"$1\" --files-strace-worker --chroot-xdev \"$2\" \"$3\"' _ \"$1\" \"$OUT\" \"$ROOT\""
+      let cout ← IO.Process.output {
+        cmd := "unshare"
+        args := #["-Urm", "sh", "-c", chrootScript, "_", exe.toString]
+      }
+      if cout.exitCode != 0 then
+        throw (IO.userError s!"chroot outer xdev worker failed (exit={cout.exitCode}): {cout.stdout}\n{cout.stderr}")
 
 /-- Deterministic magic-link and boundary reproducers covering magic-link `openat2`/`/proc/1`, `getcwd` boundaries, `unlinkat "/"`, `FUSE_SUPER_MAGIC`, `/proc`/`/dev` aliasing, pipe ring, and sticky-bit rules. -/
 private def runMagicLinkProcChecks (ops : FilesOps) (st0 : FilesState) (proc1Owned : Bool) : IO FilesState := do
@@ -2061,6 +2110,61 @@ private def runSeccompAndOverlayCopyUpReproducers : IO Unit := do
   let unreachOuter := FilesState.withSeededTree { cwdPath := "/outside/ep".toUTF8, chrootUnreachable := true }
   let _ ← stepModelCheck "chroot outside ../../../../etc/passwd faccessat" unreachOuter
     (.faccessat none "../../../../etc/passwd".toUTF8 { read := true } {}) .unit
+  let longName256 := ByteArray.mk (Array.replicate 256 (97 : UInt8))
+  let exFlags : RenameFlags := { exchange := true }
+  let unreachSameMount := FilesState.withSeededTree {
+    cwdPath := "/ep".toUTF8
+    cwdMountId := 0
+    cwdParentMountId := 0
+    sysMountId := 0
+    hostSyntheticOwnedByUid := true
+    chrootUnreachable := true
+    chrootOutsideAncestors := [
+      (0o755, true, 0, none, none),
+      (0o755, true, 0, none, none),
+      (0o1777, false, 0, none, none),
+      (0o755, false, 0, none, none)
+    ]
+  }
+  let _ ← stepModelCheck "chroot outside renameat2(a*256 -> ../../../../sys/kernel/cpu_byteorder, EXCHANGE) -> EXDEV"
+    unreachSameMount (.renameat2 none longName256 none "../../../../sys/kernel/cpu_byteorder".toUTF8 exFlags) (.err Errno.EXDEV)
+  assertTrue "chroot outside renameat2(a*256 -> ../../../../sys/kernel/cpu_byteorder) rejects ENAMETOOLONG"
+    ((allowedStep unreachSameMount (.renameat2 none longName256 none "../../../../sys/kernel/cpu_byteorder".toUTF8 exFlags) (.err Errno.ENAMETOOLONG)).isNone)
+  let _ ← stepModelCheck "chroot outside same-mount renameat2(a*256 -> ../../../../etc/passwd, EXCHANGE) -> ENAMETOOLONG"
+    unreachSameMount (.renameat2 none longName256 none "../../../../etc/passwd".toUTF8 exFlags) (.err Errno.ENAMETOOLONG)
+  let _ ← stepModelCheck "chroot outside renameat2(etc/passwd -> sys/kernel/cpu_byteorder, EXCHANGE) -> EXDEV"
+    unreachSameMount (.renameat2 none "../../../../etc/passwd".toUTF8 none "../../../../sys/kernel/cpu_byteorder".toUTF8 exFlags) (.err Errno.EXDEV)
+  let _ ← stepModelCheck "chroot inner renameat2(a*256 -> /sys/kernel/cpu_byteorder, EXCHANGE) -> ENAMETOOLONG"
+    unreachSameMount (.renameat2 none longName256 none "/sys/kernel/cpu_byteorder".toUTF8 exFlags) (.err Errno.ENAMETOOLONG)
+  let _ ← stepModelCheck "chroot outside openat2(../../../../sys/kernel/cpu_byteorder, noXdev) -> EXDEV"
+    unreachSameMount (.openat2 none "../../../../sys/kernel/cpu_byteorder".toUTF8 { resolve := { noXdev := true } }) (.err Errno.EXDEV)
+  let _ ← stepModelCheck "chroot outside openat2(../../../../etc/passwd, noXdev) succeeds"
+    unreachSameMount (.openat2 none "../../../../etc/passwd".toUTF8 { resolve := { noXdev := true } }) (.opened 0)
+  let unreachSplitMount := FilesState.withSeededTree {
+    cwdPath := "/ep".toUTF8
+    cwdMountId := 0
+    cwdParentMountId := 0
+    sysMountId := 0
+    hostSyntheticOwnedByUid := true
+    chrootUnreachable := true
+    chrootOutsideAncestors := [
+      (0o755, true, 0, none, none),
+      (0o755, true, 0, none, none),
+      (0o1777, false, 0, none, none),
+      (0o755, false, 5, none, none)
+    ]
+    chrootOuterEntries := [
+      { name := "etc".toUTF8, kind := .dir, mode := 0o755, ownedByUid := false, mountId? := some 5, dynamicMeta := true },
+      { relDir := ["etc".toUTF8], name := "passwd".toUTF8, kind := .reg, mode := 0o644, ownedByUid := false, mountId? := some 5, dynamicMeta := true },
+      { name := "sys".toUTF8, kind := .dir, mode := 0o555, ownedByUid := false, mountId? := some 6, dynamicMeta := true },
+      { relDir := ["sys".toUTF8], name := "kernel".toUTF8, kind := .dir, mode := 0o755, ownedByUid := false, mountId? := some 6, dynamicMeta := true },
+      { relDir := ["sys".toUTF8, "kernel".toUTF8], name := "cpu_byteorder".toUTF8, kind := .reg, mode := 0o444, ownedByUid := false, mountId? := some 6, dynamicMeta := true }
+    ]
+  }
+  let _ ← stepModelCheck "chroot split-mount renameat2(etc/passwd -> sys/kernel/cpu_byteorder, EXCHANGE) -> EXDEV"
+    unreachSplitMount (.renameat2 none "../../../../etc/passwd".toUTF8 none "../../../../sys/kernel/cpu_byteorder".toUTF8 exFlags) (.err Errno.EXDEV)
+  let _ ← stepModelCheck "chroot split-mount renameat2(a*256 -> ../../../../etc/passwd, EXCHANGE) -> EXDEV"
+    unreachSplitMount (.renameat2 none longName256 none "../../../../etc/passwd".toUTF8 exFlags) (.err Errno.EXDEV)
 
   let ovlModel0 := FilesState.withSeededTree {
     cwdPath := "/ovl".toUTF8
@@ -4951,6 +5055,8 @@ def probeMain (args : List String) : IO UInt32 := do
     return 0
   | ["--worker", "--multifs", ovlDir, roDir] =>
     runMultiFsOverlayAndRoWorker ovlDir roDir
+  | ["--worker", "--chroot-xdev", outDir, chrootRoot] =>
+    runChrootOuterXdevWorker outDir chrootRoot
   | ["--worker", "--unmapped-userns", tmpDir] =>
     runUnmappedUsernsWorker tmpDir
   | ["--worker", opName, sentinel, errName] =>

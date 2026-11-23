@@ -403,6 +403,7 @@ private def seedApplyEntriesAux (s : FilesState) (baseIno baseMountId : Nat)
           let exVn' := { exVn with
             mode := e.mode
             modeExact := e.modeExact && posix
+            mountId := e.mountId?.getD exVn.mountId
             kernelId := {
               dev? := e.kernelDev?.orElse (fun _ => exVn.kernelId.dev?)
               ino? := e.kernelIno?.orElse (fun _ => exVn.kernelId.ino?)
@@ -544,12 +545,12 @@ private def seedApplyOuterEntries (s : FilesState) (outRootIno : InodeId)
     (entries : List SeedEntry) : FilesState :=
   let (reused, rest) := entries.partition fun e =>
     e.relDir.isEmpty && e.kernelDev?.isSome && e.kernelIno?.isSome &&
-    s.inodes.any fun (_, vn) =>
-      vn.parentIno == outRootIno && vn.kind == e.kind &&
+    s.inodes.any fun (ino, vn) =>
+      ino != outRootIno && vn.parentIno == outRootIno && vn.kind == e.kind &&
       vn.kernelId.dev? == e.kernelDev? && vn.kernelId.ino? == e.kernelIno?
   let s1 := reused.foldl (fun st e =>
-    match st.inodes.find? (fun (_, vn) =>
-        vn.parentIno == outRootIno && vn.kind == e.kind &&
+    match st.inodes.find? (fun (ino, vn) =>
+        ino != outRootIno && vn.parentIno == outRootIno && vn.kind == e.kind &&
         vn.kernelId.dev? == e.kernelDev? && vn.kernelId.ino? == e.kernelIno?) with
     | none => st
     | some (existingIno, existingVn) =>
@@ -557,6 +558,7 @@ private def seedApplyOuterEntries (s : FilesState) (outRootIno : InodeId)
         { existingVn with
           mode := e.mode
           modeExact := e.modeExact
+          mountId := e.mountId?.getD existingVn.mountId
           owner := {
             ownedByUid := e.ownedByUid
             inGroup := e.inGroup
@@ -567,7 +569,7 @@ private def seedApplyOuterEntries (s : FilesState) (outRootIno : InodeId)
           origin := if e.dynamicMeta then .hostDynamic else .managed e.mayCopyUp }
       let st1 := { st with inodes := assocSet st.inodes existingIno existingVn' }
       seedAttachChild st1 outRootIno e.name existingIno false) s
-  seedApplyEntries s1 outRootIno 0 rest
+  seedApplyEntries s1 outRootIno (inodeMountId s1 outRootIno) rest
 
 /-- Build a seeded `FilesState` modeling host ancestors, `/dev/{null,zero,full}`, `/proc/self/*`, `/sys/kernel/*`, `umask`, cross-mount dirs, and pre-populated scratch entries. -/
 def FilesState.withSeededTree (cfg : SeedTreeConfig := {}) : FilesState :=
@@ -922,9 +924,9 @@ def FilesState.withSeededTree (cfg : SeedTreeConfig := {}) : FilesState :=
         if cfg.chrootOuterEntries.isEmpty then
           [ { name := asciiBytes ['e', 't', 'c'], kind := .dir, mode := 0o755, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, dynamicMeta := true },
             { relDir := [asciiBytes ['e', 't', 'c']], name := asciiBytes ['p', 'a', 's', 's', 'w', 'd'], kind := .reg, mode := 0o644, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, dynamicMeta := true },
-            { name := asciiBytes ['s', 'y', 's'], kind := .dir, mode := 0o555, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, dynamicMeta := true },
-            { relDir := [asciiBytes ['s', 'y', 's']], name := asciiBytes ['k', 'e', 'r', 'n', 'e', 'l'], kind := .dir, mode := 0o755, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, dynamicMeta := true },
-            { relDir := [asciiBytes ['s', 'y', 's'], asciiBytes ['k', 'e', 'r', 'n', 'e', 'l']], name := asciiBytes ['c', 'p', 'u', '_', 'b', 'y', 't', 'e', 'o', 'r', 'd', 'e', 'r'], kind := .reg, mode := 0o444, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, dynamicMeta := true },
+            { name := asciiBytes ['s', 'y', 's'], kind := .dir, mode := 0o555, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, mountId? := some 3, dynamicMeta := true },
+            { relDir := [asciiBytes ['s', 'y', 's']], name := asciiBytes ['k', 'e', 'r', 'n', 'e', 'l'], kind := .dir, mode := 0o755, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, mountId? := some 3, dynamicMeta := true },
+            { relDir := [asciiBytes ['s', 'y', 's'], asciiBytes ['k', 'e', 'r', 'n', 'e', 'l']], name := asciiBytes ['c', 'p', 'u', '_', 'b', 'y', 't', 'e', 'o', 'r', 'd', 'e', 'r'], kind := .reg, mode := 0o444, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, mountId? := some 3, dynamicMeta := true },
             { name := asciiBytes ['t', 'm', 'p'], kind := .dir, mode := 0o1777, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, dynamicMeta := true } ]
         else cfg.chrootOuterEntries
       seedApplyOuterEntries s5 outRootIno outerEntries
