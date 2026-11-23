@@ -6,6 +6,7 @@ namespace LeanSwe.Fs.Proofs
 open Core
 open Core.NondetTest
 open LeanSwe.Fs
+open LeanSwe.Fs.Model (RawFsOpsM RawDirOpsM)
 open LeanSwe.Fs.ProofsInternal
 
 private theorem vfsResolveSegs_dir_child (nodes : String → Option VfsNode)
@@ -295,7 +296,7 @@ private theorem vfsCreateDir_sets_isDir (path : String) (s₀ s₁ : VfsState)
                   513 1024 "/" (parSegs ++ [lastSeg]) true (vfsChildPath parCanon lastSeg, .dir 0o755)
                   (by omega) hChildStep
                 rw [← hAllSegs] at h1024
-                dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run, bind, StateT.bind, pure, StateT.pure]
+                dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run, bind, StateT.bind, pure, StateT.pure]
                 rw [hNodesEq, h1024]
                 rfl
 
@@ -304,12 +305,12 @@ private theorem vfsCreateDir_sets_isDir (path : String) (s₀ s₁ : VfsState)
 theorem proof_fs_vfs_mkdir_existingFails :
     AllPass (test_fs_vfs_mkdir_existingFails vfsApi) := by
   intro s₀ path parents hOk
-  dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run] at hOk
+  dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run] at hOk
   cases hRes : vfsResolveSegs s₀.nodes "/" (vfsSplitSegs (vfsAbsNorm s₀.cwd path)) false 1024 with
   | error e => simp [hRes, Except.isOk, Except.toBool] at hOk
   | ok p =>
     rcases p with ⟨canon, nd⟩
-    dsimp only [vfsApi, Internal.mkApiM, Internal.mkdirImplM, vfsOps, vfsStatPure, StateT.run,
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.mkdirImplM, vfsOps, vfsStatPure, StateT.run,
       bind, StateT.bind, pure, Pure.pure, StateT.pure, assert]
     rw [hRes]
     simp only [Bool.false_and, Bool.false_eq_true, ↓reduceIte, StateT.pure]
@@ -347,7 +348,7 @@ private theorem vfsLstat_broken_symlink :
     have hBrk : st.nodes "/broken" = some (.symlink "/nope" 0o777) := rfl
     rw [hBrk]
     rfl
-  dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+  dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
   rw [hCwd, hAbs, hSegs, hRes]
   rfl
 
@@ -367,12 +368,12 @@ theorem reach_fs_vfs_mkdir_existingFails :
 theorem proof_fs_vfs_touch_existingFails :
     AllPass (test_fs_vfs_touch_existingFails vfsApi) := by
   intro s₀ path hOk
-  dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run] at hOk
+  dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run] at hOk
   cases hRes : vfsResolveSegs s₀.nodes "/" (vfsSplitSegs (vfsAbsNorm s₀.cwd path)) false 1024 with
   | error e => simp [hRes, Except.isOk, Except.toBool] at hOk
   | ok p =>
     rcases p with ⟨canon, nd⟩
-    dsimp only [vfsApi, Internal.mkApiM, Internal.touchImplM, vfsOps, vfsStatPure, StateT.run,
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.touchImplM, vfsOps, vfsStatPure, StateT.run,
       bind, StateT.bind, pure, Pure.pure, StateT.pure, assert]
     rw [hRes]
     simp only [Bool.not_false, ↓reduceIte, StateT.pure]
@@ -394,10 +395,10 @@ theorem reach_fs_vfs_touch_existingFails :
 theorem proof_fs_vfs_walk_preservesStatError :
     AllPass (test_fs_vfs_walk_preservesStatError vfsApi) := by
   intro s₀ root
-  dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+  dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
   cases hRes : vfsResolveSegs s₀.nodes "/" (vfsSplitSegs (vfsAbsNorm s₀.cwd root)) true 1024 with
   | error err =>
-    dsimp only [vfsApi, Internal.mkApiM, Internal.walkImplM, vfsOps, vfsStatPure, StateT.run,
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.walkImplM, vfsOps, vfsStatPure, StateT.run,
       bind, StateT.bind, pure, Pure.pure, StateT.pure, assert]
     rw [hRes]
     simp [Pure.pure, StateT.pure]
@@ -406,7 +407,7 @@ theorem proof_fs_vfs_walk_preservesStatError :
     dsimp only
     by_cases hNotDir : ((vfsToStat nd).kind != .dir) = true
     · simp only [hNotDir, ↓reduceIte]
-      dsimp only [vfsApi, Internal.mkApiM, Internal.walkImplM, vfsOps, vfsStatPure, StateT.run,
+      dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.walkImplM, vfsOps, vfsStatPure, StateT.run,
         bind, StateT.bind, pure, Pure.pure, StateT.pure, assert]
       rw [hRes]
       simp only [hNotDir, ↓reduceIte, StateT.pure]
@@ -429,10 +430,10 @@ theorem reach_fs_vfs_walk_preservesStatError :
 
 
 private theorem mkdirImpl_parents_ok {S : Type} (ops : RawFsOpsM (StateM S)) (path : String) (s₀ : S)
-    (hMk : ((Internal.mkdirImplM ops path true false).run s₀).1 = .ok ()) :
+    (hMk : ((Internal.mkdirImplM ops.toNonLockFsOpsM path true false).run s₀).1 = .ok ()) :
     ∃ s_mid,
       ((ops.createDir path).run s_mid).1 = .ok () ∧
-      ((Internal.mkdirImplM ops path true false).run s₀).2 = ((ops.createDir path).run s_mid).2 := by
+      ((Internal.mkdirImplM ops.toNonLockFsOpsM path true false).run s₀).2 = ((ops.createDir path).run s_mid).2 := by
   dsimp only [Internal.mkdirImplM, StateT.run, bind, StateT.bind, pure, StateT.pure] at hMk ⊢
   cases hPre : ops.stat false path s₀ with
   | mk resPre sPre =>
@@ -448,7 +449,7 @@ private theorem mkdirImpl_parents_ok {S : Type} (ops : RawFsOpsM (StateM S)) (pa
         cases hMk
       · have hNfFalse : (e.kind != .notFound) = false := Bool.eq_false_iff.mpr hNf
         simp only [hNfFalse, Bool.false_eq_true, ↓reduceIte, Bool.not_true] at hMk ⊢
-        cases hAnc : Internal.ensureAncestorsM ops (Internal.ancestorChain path path.toList.length) sPre with
+        cases hAnc : Internal.ensureAncestorsM ops.toNonLockFsOpsM (Internal.ancestorChain path path.toList.length) sPre with
         | mk ancRes s_mid =>
           dsimp only [StateT.bind] at hMk ⊢
           rw [hAnc] at hMk ⊢
@@ -463,10 +464,10 @@ private theorem mkdirImpl_parents_ok {S : Type} (ops : RawFsOpsM (StateM S)) (pa
 theorem proof_fs_vfs_mkdir_parentsCreatesDir :
     AllPass (test_fs_vfs_mkdir_parentsCreatesDir vfsApi) := by
   intro s₀ path hRes
-  have hMk : ((Internal.mkdirImplM vfsOps path true false).run s₀).1 = .ok () := hRes
+  have hMk : ((Internal.mkdirImplM vfsOps.toNonLockFsOpsM path true false).run s₀).1 = .ok () := hRes
   rcases mkdirImpl_parents_ok vfsOps path s₀ hMk with ⟨s_mid, hCr, hSnd⟩
   dsimp only [assert]
-  change ((vfsApi.isDir path).run ((Internal.mkdirImplM vfsOps path true false).run s₀).2).1 = .ok true ∧ True
+  change ((vfsApi.isDir path).run ((Internal.mkdirImplM vfsOps.toNonLockFsOpsM path true false).run s₀).2).1 = .ok true ∧ True
   rw [hSnd]
   exact ⟨vfsCreateDir_sets_isDir path s_mid _ (Prod.ext hCr rfl), trivial⟩
 
@@ -522,7 +523,7 @@ theorem reach_fs_vfs_mkdir_parentsCreatesDir :
     dsimp only [vfsCreateDirPure]
     rw [hCwd, hAbs, hSegs, hPreA]
     dsimp only
-    rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+    rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte]
     rw [hPar]
     dsimp only
@@ -531,11 +532,11 @@ theorem reach_fs_vfs_mkdir_parentsCreatesDir :
     rw [hC1, show ((0o755 / 128) % 2 == 0 || (0o755 / 64) % 2 == 0) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte]
     rw [show st.nodes "/a" = none from rfl]
-  have hAnc : Internal.ensureAncestorsM vfsOps ["/a"] st = (.ok (), stA) := by
+  have hAnc : Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM ["/a"] st = (.ok (), stA) := by
     dsimp only [Internal.ensureAncestorsM, Internal.ensureDirM, StateT.run, bind, StateT.bind, pure, StateT.pure]
     rw [show vfsOps.stat true "/a" st = (vfsStatPure st true "/a", st) from rfl, hStatA]
     dsimp only
-    rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from rfl]
+    rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from rfl]
     simp only [Bool.false_eq_true, ↓reduceIte, StateT.bind]
     rw [show vfsOps.createDir "/a" st = vfsCreateDirPure st "/a" from rfl, hCreA]
     rfl
@@ -561,7 +562,7 @@ theorem reach_fs_vfs_mkdir_parentsCreatesDir :
     dsimp only [vfsOps, vfsCreateDirPure, StateT.run]
     rw [hCwdA, hAbs, hSegs, hPreB]
     dsimp only
-    rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+    rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte]
     rw [hPar]
     dsimp only
@@ -572,14 +573,14 @@ theorem reach_fs_vfs_mkdir_parentsCreatesDir :
     rw [show stA.nodes "/a/b" = none from rfl]
   have hChain : Internal.ancestorChain "/a/b" "/a/b".toList.length = ["/a"] := by decide
   have hMk : ((vfsApi.mkdir "/a/b" true false).run st).1 = .ok () := by
-    change ((Internal.mkdirImplM vfsOps "/a/b" true false).run st).1 = .ok ()
+    change ((Internal.mkdirImplM vfsOps.toNonLockFsOpsM "/a/b" true false).run st).1 = .ok ()
     dsimp only [Internal.mkdirImplM, StateT.run, bind, StateT.bind, pure, StateT.pure]
     rw [show vfsOps.stat false "/a/b" st = (vfsStatPure st false "/a/b", st) from rfl, hPre]
     dsimp only
-    rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+    rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte, Bool.not_true]
-    rw [hChain, show StateT.bind (Internal.ensureAncestorsM vfsOps ["/a"]) = fun k s =>
-      match Internal.ensureAncestorsM vfsOps ["/a"] s with | (a, s') => k a s' from rfl]
+    rw [hChain, show StateT.bind (Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM ["/a"]) = fun k s =>
+      match Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM ["/a"] s with | (a, s') => k a s' from rfl]
     dsimp only
     rw [hAnc]
     exact hCreB
@@ -672,9 +673,9 @@ private theorem vfsResolveSegs_abs_root_realPath (s₀ : VfsState) (stRoot : Fil
   have hAbs : vfsAbsNorm s₀.cwd "/" = "/" := by
     rw [vfsAbsNorm_abs _ _ (by decide)]; decide
   have hSegs : vfsSplitSegs "/" = [] := by decide
-  dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run] at hRes
+  dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run] at hRes
   rw [hAbs, hSegs] at hRes
-  dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run] at hStat
+  dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run] at hStat
   rw [hAbs, hSegs] at hStat
   cases hR : vfsResolveSegs s₀.nodes "/" [] true 1024 with
   | error _ => simp [hR] at hRes
@@ -717,7 +718,7 @@ private theorem copyTree_selfCopyRejected_exec (s₀ : VfsState) (src dst : Stri
       (child != ".") = true ∧ (child != "..") = true ∧ dst = c ++ "/" ++ child ∧ ((vfsApi.resolve dst).run s₀).1.isOk = false) :
     ∃ e, (vfsApi.copyTree src dst false).run s₀ = (.error e, s₀) ∧ e.kind = .invalidInput := by
   have hAllValid := vfsSplitSegs_normPath_valid (if Internal.isAbsolute src then src else Internal.join s₀.cwd src)
-  dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run] at hResSrc
+  dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run] at hResSrc
   cases hRS : vfsResolveSegs s₀.nodes "/" (vfsSplitSegs (vfsAbsNorm s₀.cwd src)) true 1024 with
   | error _ => simp [hRS] at hResSrc
   | ok rp =>
@@ -730,8 +731,8 @@ private theorem copyTree_selfCopyRejected_exec (s₀ : VfsState) (src dst : Stri
     have hCNorm : Internal.normPath c = c := by
       have hAnd : (Internal.isAbsolute c && (Internal.normPath c == c)) = true := hCCanon
       exact beq_iff_eq.mp (Bool.and_eq_true _ _ |>.mp hAnd).2
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run] at hStat
-    dsimp only [vfsApi, Internal.mkApiM, Internal.copyTreeImplM, StateT.run, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run] at hStat
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.copyTreeImplM, StateT.run, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure]
     rw [show vfsOps.stat true src s₀ = (vfsStatPure s₀ true src, s₀) from rfl]
     change (match (vfsStatPure s₀ true src, s₀) with | (a, s) => _)
     have hStatP : vfsStatPure s₀ true src = .ok st := hStat
@@ -865,7 +866,7 @@ theorem reach_fs_vfs_copyTree_selfCopyRejected :
     have hAbs : vfsAbsNorm "/" "/src" = "/src" := by decide
     have hSegs : vfsSplitSegs "/src" = ["src"] := by decide
     have hChild : vfsChildPath "/" "src" = "/src" := by decide
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run]
     rw [show st.cwd = "/" from rfl, hAbs, hSegs]
     unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
     rw [show ((0o755 / 64) % 2 == 0) = false from by decide]; simp only [Bool.false_eq_true, ↓reduceIte]; rw [hChild]
@@ -874,7 +875,7 @@ theorem reach_fs_vfs_copyTree_selfCopyRejected :
     have hAbs : vfsAbsNorm "/" "/src" = "/src" := by decide
     have hSegs : vfsSplitSegs "/src" = ["src"] := by decide
     have hChild : vfsChildPath "/" "src" = "/src" := by decide
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     rw [show st.cwd = "/" from rfl, hAbs, hSegs]
     unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
     rw [show ((0o755 / 64) % 2 == 0) = false from by decide]; simp only [Bool.false_eq_true, ↓reduceIte]; rw [hChild]
@@ -980,7 +981,7 @@ private theorem lstat_root_child_none (s₀ : VfsState) (m : Nat) (seg : String)
     (hChild : vfsChildPath "/" seg = "/" ++ seg)
     (hFail : ((vfsApi.lstat ("/" ++ seg)).run s₀).1.isOk = false) :
     s₀.nodes ("/" ++ seg) = none := by
-  dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run] at hFail
+  dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run] at hFail
   rw [hSegs] at hFail
   cases hN : s₀.nodes ("/" ++ seg) with
   | none => rfl
@@ -1005,10 +1006,10 @@ private theorem copyTree_pre_checks_ok {S : Type} (ops : RawFsOpsM (StateM S))
     (hRp : (ops.realPath src).run s₀ = (.ok c, s₀))
     (hAbsDst : Internal.isAbsolute dst = true)
     (hNormDst : Internal.normPath dst = dst)
-    (hApprox : (Internal.resolveApproxGoM ops dst [] (dst.toList.length + 1)).run s₀ = (dstCanon, s₀))
+    (hApprox : (Internal.resolveApproxGoM ops.toNonLockFsOpsM dst [] (dst.toList.length + 1)).run s₀ = (dstCanon, s₀))
     (hGuard : (dstCanon == c || c == "/" || (c.toList ++ ['/']).isPrefixOf dstCanon.toList) = false) :
-    (Internal.copyTreeImplM ops src dst dirsExistOk).run s₀ =
-      (Internal.copyTreeGoM ops src dst dirsExistOk [] 4096).run s₀ := by
+    (Internal.copyTreeImplM ops.toNonLockFsOpsM src dst dirsExistOk).run s₀ =
+      (Internal.copyTreeGoM ops.toNonLockFsOpsM src dst dirsExistOk [] 4096).run s₀ := by
   dsimp only [Internal.copyTreeImplM, StateT.run, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure]
   rw [show ops.stat true src s₀ = (ops.stat true src).run s₀ from rfl, hStat]
   have hNotDirF : (stSrc.kind != .dir) = false := by rw [hKind]; decide
@@ -1069,7 +1070,7 @@ theorem proof_fs_vfs_copyTree_createsMissingParents :
   have hNameCopy : Internal.name "/new_parent/copy" = some "copy" := by decide
   have hParNP : Internal.parent "/new_parent" = some "/" := by decide
   have hNameNP : Internal.name "/new_parent" = some "new_parent" := by decide
-  have hApprox : (Internal.resolveApproxGoM vfsOps "/new_parent/copy" [] ("/new_parent/copy".toList.length + 1)).run s₀ =
+  have hApprox : (Internal.resolveApproxGoM vfsOps.toNonLockFsOpsM "/new_parent/copy" [] ("/new_parent/copy".toList.length + 1)).run s₀ =
       ("/new_parent/copy", s₀) := by
     rw [show ("/new_parent/copy".toList.length + 1) = 17 from by decide]
     unfold Internal.resolveApproxGoM
@@ -1132,7 +1133,7 @@ theorem proof_fs_vfs_copyTree_createsMissingParents :
     dsimp only [vfsCreateDirPure]
     rw [hAbs, show vfsSplitSegs "/new_parent" = ["new_parent"] from by decide, hPreNP]
     dsimp only
-    rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+    rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte]
     rw [hPar]; dsimp only; rw [hParRoot]; dsimp only
     rw [show (stRoot.mode / 128 % 2 == 0 || stRoot.mode / 64 % 2 == 0) = false from by simp [hWrite, hExec]]
@@ -1157,18 +1158,18 @@ theorem proof_fs_vfs_copyTree_createsMissingParents :
     dsimp only [vfsCreateDirPure]
     rw [hAbs, show vfsSplitSegs "/new_parent/copy" = ["new_parent", "copy"] from by decide, hPreC]
     dsimp only
-    rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+    rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte]
     rw [hPar]; dsimp only; rw [hParNP']; dsimp only
     rw [show (0o755 / 128 % 2 == 0 || 0o755 / 64 % 2 == 0) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte, show vfsChildPath "/new_parent" "copy" = "/new_parent/copy" from by decide]
     rw [hSt1CopyNone]
     simp [st₂, show vfsSplitSegs "/new_parent/copy" = ["new_parent", "copy"] from by decide]
-  have hMkDst : Internal.mkdirImplM vfsOps "/new_parent/copy" true false s₀ = (.ok (), st₂) := by
+  have hMkDst : Internal.mkdirImplM vfsOps.toNonLockFsOpsM "/new_parent/copy" true false s₀ = (.ok (), st₂) := by
     dsimp only [Internal.mkdirImplM, bind, StateT.bind, pure, StateT.pure]
     rw [show vfsOps.stat false "/new_parent/copy" s₀ = (vfsStatPure s₀ false "/new_parent/copy", s₀) from rfl, hStatCopyBad]
     dsimp only
-    rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+    rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte, Bool.not_true]
     rw [show Internal.ancestorChain "/new_parent/copy" "/new_parent/copy".toList.length = ["/new_parent"] from by decide]
     have hStatNPBad : vfsStatPure s₀ true "/new_parent" =
@@ -1178,26 +1179,26 @@ theorem proof_fs_vfs_copyTree_createsMissingParents :
       unfold vfsResolveSegs; rw [hRootNode]; dsimp only; rw [hExec]
       simp only [Bool.false_eq_true, ↓reduceIte, show vfsChildPath "/" "new_parent" = "/new_parent" from by decide]
       unfold vfsResolveSegs; rw [hNPNone]; rfl
-    have hAnc : Internal.ensureAncestorsM vfsOps ["/new_parent"] s₀ = (.ok (), st₁) := by
+    have hAnc : Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM ["/new_parent"] s₀ = (.ok (), st₁) := by
       dsimp only [Internal.ensureAncestorsM, Internal.ensureDirM, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure]
       rw [show vfsOps.stat true "/new_parent" s₀ = (vfsStatPure s₀ true "/new_parent", s₀) from rfl, hStatNPBad]
       dsimp only
-      rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+      rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
       simp only [Bool.false_eq_true, ↓reduceIte]
       dsimp only [Bind.bind, StateT.bind, StateT.pure]
       rw [show vfsOps.createDir "/new_parent" s₀ = vfsCreateDirPure s₀ "/new_parent" from rfl, hCreNP]
       rfl
     have hBindAnc :
-        StateT.bind (Internal.ensureAncestorsM vfsOps ["/new_parent"])
+        StateT.bind (Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM ["/new_parent"])
           (fun x => match x with | .error ae => pure (.error ae) | .ok () => vfsOps.createDir "/new_parent/copy") s₀ =
         vfsOps.createDir "/new_parent/copy" st₁ := by
       dsimp only [Bind.bind, StateT.bind]
       rw [hAnc]
-    change (StateT.bind (Internal.ensureAncestorsM vfsOps ["/new_parent"])
+    change (StateT.bind (Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM ["/new_parent"])
       (fun x => match x with | .error ae => pure (.error ae) | .ok () => vfsOps.createDir "/new_parent/copy") s₀) = (.ok (), st₂)
     rw [hBindAnc]
     exact hCreCopy
-  have hCopyExec : (Internal.copyTreeImplM vfsOps src "/new_parent/copy" false).run s₀ = (.ok (), st₂) := by
+  have hCopyExec : (Internal.copyTreeImplM vfsOps.toNonLockFsOpsM src "/new_parent/copy" false).run s₀ = (.ok (), st₂) := by
     rw [hPre]
     unfold Internal.copyTreeGoM
     dsimp only [StateT.run, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure]
@@ -1212,8 +1213,8 @@ theorem proof_fs_vfs_copyTree_createsMissingParents :
     rw [hVfsRpSrc]
     simp only [List.mem_nil_iff, ↓reduceIte]
     dsimp only [Bind.bind, StateT.bind, StateT.pure]
-    have hListEq : Internal.listDirSortedM vfsOps src s₀ = (.ok #[], s₀) := by
-      dsimp only [vfsApi, Internal.mkApiM, Internal.listDirSortedM, vfsOps, StateT.run, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure] at hListSrc ⊢
+    have hListEq : Internal.listDirSortedM vfsOps.toNonLockFsOpsM src s₀ = (.ok #[], s₀) := by
+      dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.listDirSortedM, vfsOps, StateT.run, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure] at hListSrc ⊢
       cases hRd : vfsReadDirPure s₀ src with
       | error _ =>
         simp [hRd, StateT.pure] at hListSrc
@@ -1227,7 +1228,7 @@ theorem proof_fs_vfs_copyTree_createsMissingParents :
     rw [hMkDst]
     dsimp only [Internal.forEachChildM, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure]
   have hIsDirNP : ((vfsApi.isDir "/new_parent").run st₂).1 = .ok true := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run, bind, StateT.bind, pure, StateT.pure]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run, bind, StateT.bind, pure, StateT.pure]
     have hResNP : vfsResolveSegs st₂.nodes "/" (vfsSplitSegs (vfsAbsNorm st₂.cwd "/new_parent")) true 1024 =
         .ok ("/new_parent", .dir 0o755) := by
       have hSegs : vfsSplitSegs (vfsAbsNorm st₂.cwd "/new_parent") = ["new_parent"] := by
@@ -1245,7 +1246,7 @@ theorem proof_fs_vfs_copyTree_createsMissingParents :
   have hIsDirCopy : ((vfsApi.isDir "/new_parent/copy").run st₂).1 = .ok true := by
     change ((vfsApi.isDir "/new_parent/copy").run st₂).1 = .ok true
     exact vfsCreateDir_sets_isDir "/new_parent/copy" st₁ st₂ hCreCopy
-  dsimp only [vfsApi, Internal.mkApiM]
+  dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM]
   rw [hCopyExec]
   exact ⟨⟨rfl, hIsDirNP, hIsDirCopy⟩, trivial⟩
 
@@ -1259,17 +1260,17 @@ theorem reach_fs_vfs_copyTree_createsMissingParents :
       cwd := "/"
       nonce := 0 }
   have hStatRoot : ((vfsApi.stat "/").run st).1 = .ok (vfsToStat (.dir 0o755)) := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/" = "/" := by decide
     have hS : vfsSplitSegs "/" = [] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]
   have hResRoot : ((vfsApi.resolve "/").run st).1 = .ok "/" := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/" = "/" := by decide
     have hS : vfsSplitSegs "/" = [] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]
   have hStatSrc : ((vfsApi.stat "/src").run st).1 = .ok (vfsToStat (.dir 0o755)) := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/src" = "/src" := by decide
     have hS : vfsSplitSegs "/src" = ["src"] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -1277,7 +1278,7 @@ theorem reach_fs_vfs_copyTree_createsMissingParents :
     rw [show vfsChildPath "/" "src" = "/src" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/src" = some (.dir 0o755) from rfl]
   have hResSrc : ((vfsApi.resolve "/src").run st).1 = .ok "/src" := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/src" = "/src" := by decide
     have hS : vfsSplitSegs "/src" = ["src"] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -1285,7 +1286,7 @@ theorem reach_fs_vfs_copyTree_createsMissingParents :
     rw [show vfsChildPath "/" "src" = "/src" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/src" = some (.dir 0o755) from rfl]
   have hListSrc : ((vfsApi.listDir "/src").run st).1 = .ok #[] := by
-    dsimp only [vfsApi, Internal.mkApiM, Internal.listDirSortedM, vfsOps, vfsReadDirPure, StateT.run,
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.listDirSortedM, vfsOps, vfsReadDirPure, StateT.run,
       bind, StateT.bind, pure, StateT.pure]
     have hA : vfsAbsNorm st.cwd "/src" = "/src" := by decide
     have hS : vfsSplitSegs "/src" = ["src"] := by decide
@@ -1307,7 +1308,7 @@ theorem reach_fs_vfs_copyTree_createsMissingParents :
       show ("/src" ++ "/").toList = "/src/".toList from by decide,
       hPre0, Bool.true_and, Bool.false_and, List.mergeSort_nil]
   have hLstatNP : ((vfsApi.lstat "/new_parent").run st).1.isOk = false := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/new_parent" = "/new_parent" := by decide
     have hS : vfsSplitSegs "/new_parent" = ["new_parent"] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -1315,7 +1316,7 @@ theorem reach_fs_vfs_copyTree_createsMissingParents :
     rw [show vfsChildPath "/" "new_parent" = "/new_parent" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/new_parent" = none from rfl]; rfl
   have hStatNP : ((vfsApi.stat "/new_parent").run st).1.isOk = false := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/new_parent" = "/new_parent" := by decide
     have hS : vfsSplitSegs "/new_parent" = ["new_parent"] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -1323,7 +1324,7 @@ theorem reach_fs_vfs_copyTree_createsMissingParents :
     rw [show vfsChildPath "/" "new_parent" = "/new_parent" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/new_parent" = none from rfl]; rfl
   have hLstatCopy : ((vfsApi.lstat "/new_parent/copy").run st).1.isOk = false := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/new_parent/copy" = "/new_parent/copy" := by decide
     have hS : vfsSplitSegs "/new_parent/copy" = ["new_parent", "copy"] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -1374,7 +1375,7 @@ theorem proof_fs_vfs_copyTree_loopRejected :
     unfold vfsResolveSegs; rw [hRootNode]; dsimp only; rw [hExec]
     simp only [Bool.false_eq_true, ↓reduceIte, show vfsChildPath "/" "loop_dst" = "/loop_dst" from by decide]
     unfold vfsResolveSegs; rw [hLoopNone]; rfl
-  have hApprox : (Internal.resolveApproxGoM vfsOps "/loop_dst" [] ("/loop_dst".toList.length + 1)).run s₀ =
+  have hApprox : (Internal.resolveApproxGoM vfsOps.toNonLockFsOpsM "/loop_dst" [] ("/loop_dst".toList.length + 1)).run s₀ =
       ("/loop_dst", s₀) := by
     rw [show ("/loop_dst".toList.length + 1) = 10 from by decide]
     unfold Internal.resolveApproxGoM
@@ -1403,8 +1404,8 @@ theorem proof_fs_vfs_copyTree_loopRejected :
     rw [show vfsRealPathPure s₀ src = .ok c from hResSrc]
   have hPre := copyTree_pre_checks_ok vfsOps src "/loop_dst" false s₀ stSrc c "/loop_dst"
     hStatS0 hSrcKind hRpS0 (by decide) (by decide) hApprox hGuard
-  have hListEq : (Internal.listDirSortedM vfsOps src).run s₀ = (.ok #["self"], s₀) := by
-    dsimp only [vfsApi, Internal.mkApiM, Internal.listDirSortedM, vfsOps, StateT.run, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure] at hListSrc ⊢
+  have hListEq : (Internal.listDirSortedM vfsOps.toNonLockFsOpsM src).run s₀ = (.ok #["self"], s₀) := by
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.listDirSortedM, vfsOps, StateT.run, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure] at hListSrc ⊢
     cases hRd : vfsReadDirPure s₀ src with
     | error _ =>
       simp [hRd, StateT.pure] at hListSrc
@@ -1434,27 +1435,27 @@ theorem proof_fs_vfs_copyTree_loopRejected :
     dsimp only [vfsCreateDirPure]
     rw [hAbs, show vfsSplitSegs "/loop_dst" = ["loop_dst"] from by decide, hPreL]
     dsimp only
-    rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+    rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte]
     rw [hPar]; dsimp only; rw [hParRoot]; dsimp only
     rw [show (stRoot.mode / 128 % 2 == 0 || stRoot.mode / 64 % 2 == 0) = false from by simp [hWrite, hExec]]
     simp only [Bool.false_eq_true, ↓reduceIte, show vfsChildPath "/" "loop_dst" = "/loop_dst" from by decide]
     rw [hLoopNone]
     simp [st₁, show vfsSplitSegs "/loop_dst" = ["loop_dst"] from by decide]
-  have hMkLoop : Internal.mkdirImplM vfsOps "/loop_dst" true false s₀ = (.ok (), st₁) := by
+  have hMkLoop : Internal.mkdirImplM vfsOps.toNonLockFsOpsM "/loop_dst" true false s₀ = (.ok (), st₁) := by
     dsimp only [Internal.mkdirImplM, bind, StateT.bind, pure, StateT.pure]
     rw [show vfsOps.stat false "/loop_dst" s₀ = (vfsStatPure s₀ false "/loop_dst", s₀) from rfl, hStatLoopBad]
     dsimp only
-    rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+    rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte, Bool.not_true]
     rw [show Internal.ancestorChain "/loop_dst" "/loop_dst".toList.length = [] from by decide]
-    change StateT.bind (Internal.ensureAncestorsM vfsOps [])
+    change StateT.bind (Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM [])
       (fun x => match x with | .error ae => pure (.error ae) | .ok () => vfsOps.createDir "/loop_dst") s₀ = (.ok (), st₁)
-    have hAncNil : Internal.ensureAncestorsM vfsOps [] s₀ = (.ok (), s₀) := rfl
+    have hAncNil : Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM [] s₀ = (.ok (), s₀) := rfl
     simp [StateT.bind, hAncNil]
     exact hCreLoop
   have hSelfStatSt1 : vfsStatPure st₁ true (Internal.join src "self") = .ok stSelf := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run] at hStatSelf ⊢
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run] at hStatSelf ⊢
     cases hR : vfsResolveSegs s₀.nodes "/" (vfsSplitSegs (vfsAbsNorm s₀.cwd (Internal.join src "self"))) true 1024 with
     | error _ => simp [hR] at hStatSelf
     | ok p =>
@@ -1464,7 +1465,7 @@ theorem proof_fs_vfs_copyTree_loopRejected :
       rw [hSt1Nodes, hPres]
       simpa [hR] using hStatSelf
   have hSelfRpSt1 : vfsRealPathPure st₁ (Internal.join src "self") = .ok c := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run] at hResSelf ⊢
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run] at hResSelf ⊢
     cases hR : vfsResolveSegs s₀.nodes "/" (vfsSplitSegs (vfsAbsNorm s₀.cwd (Internal.join src "self"))) true 1024 with
     | error _ => simp [hR] at hResSelf
     | ok p =>
@@ -1473,7 +1474,7 @@ theorem proof_fs_vfs_copyTree_loopRejected :
       dsimp only [st₁]
       rw [hSt1Nodes, hPres]
       simpa [hR] using hResSelf
-  have hCopyExec : (Internal.copyTreeImplM vfsOps src "/loop_dst" false).run s₀ =
+  have hCopyExec : (Internal.copyTreeImplM vfsOps.toNonLockFsOpsM src "/loop_dst" false).run s₀ =
       (.error { kind := .invalidInput, path := some (Internal.join src "self"), message := s!"symlink directory loop: {Internal.join src "self"}" }, st₁) := by
     rw [hPre]
     unfold Internal.copyTreeGoM
@@ -1509,7 +1510,7 @@ theorem proof_fs_vfs_copyTree_loopRejected :
         hSelfRpSt1]
     simp only [List.mem_singleton, ↓reduceIte]
     rfl
-  dsimp only [vfsApi, Internal.mkApiM]
+  dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM]
   rw [hCopyExec]
   exact ⟨⟨_, rfl, rfl⟩, trivial⟩
 
@@ -1526,17 +1527,17 @@ theorem reach_fs_vfs_copyTree_loopRejected :
       cwd := "/"
       nonce := 0 }
   have hStatRoot : ((vfsApi.stat "/").run st).1 = .ok (vfsToStat (.dir 0o755)) := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/" = "/" := by decide
     have hS : vfsSplitSegs "/" = [] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]
   have hResRoot : ((vfsApi.resolve "/").run st).1 = .ok "/" := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/" = "/" := by decide
     have hS : vfsSplitSegs "/" = [] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]
   have hStatSrc : ((vfsApi.stat "/src").run st).1 = .ok (vfsToStat (.dir 0o755)) := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/src" = "/src" := by decide
     have hS : vfsSplitSegs "/src" = ["src"] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -1544,7 +1545,7 @@ theorem reach_fs_vfs_copyTree_loopRejected :
     rw [show vfsChildPath "/" "src" = "/src" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/src" = some (.dir 0o755) from rfl]
   have hResSrc : ((vfsApi.resolve "/src").run st).1 = .ok "/src" := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/src" = "/src" := by decide
     have hS : vfsSplitSegs "/src" = ["src"] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -1573,17 +1574,17 @@ theorem reach_fs_vfs_copyTree_loopRejected :
     rw [show vfsChildPath "/" "src" = "/src" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/src" = some (.dir 0o755) from rfl]
   have hResSelf : ((vfsApi.resolve (vfsApi.join "/src" "self")).run st).1 = .ok "/src" := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run]
     have hSelf : vfsResolveSegs st.nodes "/" (vfsSplitSegs (vfsAbsNorm st.cwd (Internal.join "/src" "self"))) true 1024 =
         .ok ("/src", .dir 0o755) := hSelfResolve
     rw [hSelf]
   have hStatSelf : ((vfsApi.stat (vfsApi.join "/src" "self")).run st).1 = .ok (vfsToStat (.dir 0o755)) := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     have hSelf : vfsResolveSegs st.nodes "/" (vfsSplitSegs (vfsAbsNorm st.cwd (Internal.join "/src" "self"))) true 1024 =
         .ok ("/src", .dir 0o755) := hSelfResolve
     rw [hSelf]
   have hListSrc : ((vfsApi.listDir "/src").run st).1 = .ok #["self"] := by
-    dsimp only [vfsApi, Internal.mkApiM, Internal.listDirSortedM, vfsOps, vfsReadDirPure, StateT.run,
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.listDirSortedM, vfsOps, vfsReadDirPure, StateT.run,
       bind, StateT.bind, pure, StateT.pure]
     have hA : vfsAbsNorm st.cwd "/src" = "/src" := by decide
     have hS : vfsSplitSegs "/src" = ["src"] := by decide
@@ -1612,7 +1613,7 @@ theorem reach_fs_vfs_copyTree_loopRejected :
       show String.ofList "self".toList = "self" from by decide,
       Bool.true_and, Bool.false_and, List.mergeSort_singleton]
   have hLstatLoop : ((vfsApi.lstat "/loop_dst").run st).1.isOk = false := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/loop_dst" = "/loop_dst" := by decide
     have hS : vfsSplitSegs "/loop_dst" = ["loop_dst"] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -1633,10 +1634,10 @@ theorem reach_fs_vfs_copyTree_loopRejected :
 
 private def buggyMkdirR1I01 (path : String) (parents existOk : Bool) : StateM VfsState (Except FsError Unit) := do
   if !parents then
-    Internal.mkdirImplM vfsOps path parents existOk
+    Internal.mkdirImplM vfsOps.toNonLockFsOpsM path parents existOk
   else
     let ancs := Internal.ancestorChain path path.toList.length
-    match ← Internal.ensureAncestorsM vfsOps ancs with
+    match ← Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM ancs with
     | .error ae => return .error ae
     | .ok () =>
       match ← vfsOps.createDir path with
@@ -1669,7 +1670,7 @@ example : ¬ AllPass (test_fs_vfs_mkdir_existingFails { vfsApi with mkdir := bug
     rw [show st.cwd = "/" from rfl, hAbs, hSegs, hRes]
     rfl
   change (match ((do
-    let x ← Internal.ensureAncestorsM vfsOps []
+    let x ← Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM []
     match x with
     | .error ae => return .error ae
     | .ok () =>
@@ -1679,7 +1680,7 @@ example : ¬ AllPass (test_fs_vfs_mkdir_existingFails { vfsApi with mkdir := bug
         if e.kind == .alreadyExists then return .ok () else return .error e :
           StateM VfsState (Except FsError Unit)).run st) with
     | (res, _) => _) at hFail
-  have hAnc : Internal.ensureAncestorsM vfsOps [] st = (.ok (), st) := rfl
+  have hAnc : Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM [] st = (.ok (), st) := rfl
   simp only [StateT.run, bind, StateT.bind, pure, hAnc,
     show vfsOps.createDir "/broken" st = vfsCreateDirPure st "/broken" from rfl, hCre, assert] at hFail
   rcases hFail with ⟨⟨⟨e, he, _⟩, _⟩, _⟩
@@ -1692,7 +1693,7 @@ private def buggyCopyTreeR1I02 (src dst : String) (dirsExistOk : Bool) : StateM 
   | .ok st =>
     if st.kind != .dir then
       return .error { kind := .notADirectory, path := some src, message := s!"not a directory: {src}" }
-    Internal.mkdirImplM vfsOps dst false dirsExistOk
+    Internal.mkdirImplM vfsOps.toNonLockFsOpsM dst false dirsExistOk
 
 
 example : ¬ AllPass (test_fs_vfs_copyTree_createsMissingParents { vfsApi with copyTree := buggyCopyTreeR1I02 }) := by
@@ -1703,17 +1704,17 @@ example : ¬ AllPass (test_fs_vfs_copyTree_createsMissingParents { vfsApi with c
       cwd := "/"
       nonce := 0 }
   have hStatRoot : ((vfsApi.stat "/").run st).1 = .ok (vfsToStat (.dir 0o755)) := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     rw [show st.cwd = "/" from rfl, show vfsAbsNorm "/" "/" = "/" from by decide,
         show vfsSplitSegs "/" = [] from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]
   have hResRoot : ((vfsApi.resolve "/").run st).1 = .ok "/" := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run]
     rw [show st.cwd = "/" from rfl, show vfsAbsNorm "/" "/" = "/" from by decide,
         show vfsSplitSegs "/" = [] from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]
   have hStatSrc : ((vfsApi.stat "/src").run st).1 = .ok (vfsToStat (.dir 0o755)) := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     rw [show st.cwd = "/" from rfl, show vfsAbsNorm "/" "/src" = "/src" from by decide,
         show vfsSplitSegs "/src" = ["src"] from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -1721,7 +1722,7 @@ example : ¬ AllPass (test_fs_vfs_copyTree_createsMissingParents { vfsApi with c
     rw [show vfsChildPath "/" "src" = "/src" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/src" = some (.dir 0o755) from rfl]
   have hResSrc : ((vfsApi.resolve "/src").run st).1 = .ok "/src" := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run]
     rw [show st.cwd = "/" from rfl, show vfsAbsNorm "/" "/src" = "/src" from by decide,
         show vfsSplitSegs "/src" = ["src"] from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -1729,7 +1730,7 @@ example : ¬ AllPass (test_fs_vfs_copyTree_createsMissingParents { vfsApi with c
     rw [show vfsChildPath "/" "src" = "/src" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/src" = some (.dir 0o755) from rfl]
   have hListSrc : ((vfsApi.listDir "/src").run st).1 = .ok #[] := by
-    dsimp only [vfsApi, Internal.mkApiM, Internal.listDirSortedM, vfsOps, vfsReadDirPure, StateT.run,
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.listDirSortedM, vfsOps, vfsReadDirPure, StateT.run,
       bind, StateT.bind, pure, StateT.pure]
     rw [show st.cwd = "/" from rfl, show vfsAbsNorm "/" "/src" = "/src" from by decide,
         show vfsSplitSegs "/src" = ["src"] from by decide]
@@ -1751,7 +1752,7 @@ example : ¬ AllPass (test_fs_vfs_copyTree_createsMissingParents { vfsApi with c
       show ("/src" ++ "/").toList = "/src/".toList from by decide,
       hPre0, Bool.true_and, Bool.false_and, List.mergeSort_nil]
   have hLstatNP : ((vfsApi.lstat "/new_parent").run st).1.isOk = false := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     rw [show st.cwd = "/" from rfl, show vfsAbsNorm "/" "/new_parent" = "/new_parent" from by decide,
         show vfsSplitSegs "/new_parent" = ["new_parent"] from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -1759,7 +1760,7 @@ example : ¬ AllPass (test_fs_vfs_copyTree_createsMissingParents { vfsApi with c
     rw [show vfsChildPath "/" "new_parent" = "/new_parent" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/new_parent" = none from rfl]; rfl
   have hStatNP : ((vfsApi.stat "/new_parent").run st).1.isOk = false := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     rw [show st.cwd = "/" from rfl, show vfsAbsNorm "/" "/new_parent" = "/new_parent" from by decide,
         show vfsSplitSegs "/new_parent" = ["new_parent"] from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -1767,7 +1768,7 @@ example : ¬ AllPass (test_fs_vfs_copyTree_createsMissingParents { vfsApi with c
     rw [show vfsChildPath "/" "new_parent" = "/new_parent" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/new_parent" = none from rfl]; rfl
   have hLstatCopy : ((vfsApi.lstat "/new_parent/copy").run st).1.isOk = false := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     rw [show st.cwd = "/" from rfl, show vfsAbsNorm "/" "/new_parent/copy" = "/new_parent/copy" from by decide,
         show vfsSplitSegs "/new_parent/copy" = ["new_parent", "copy"] from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -1797,7 +1798,7 @@ example : ¬ AllPass (test_fs_vfs_copyTree_createsMissingParents { vfsApi with c
     rw [show st.cwd = "/" from rfl, show vfsAbsNorm "/" "/new_parent/copy" = "/new_parent/copy" from by decide,
         show vfsSplitSegs "/new_parent/copy" = ["new_parent", "copy"] from by decide, hPreCopy]
     dsimp only
-    rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+    rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte]
     rw [show Internal.splitLastAux ["new_parent", "copy"] [] = some (["new_parent"], "copy") from by decide]
     dsimp only
@@ -1818,7 +1819,7 @@ example : ¬ AllPass (test_fs_vfs_copyTree_createsMissingParents { vfsApi with c
         show vfsSplitSegs "/new_parent/copy" = ["new_parent", "copy"] from by decide, hPreCopy]
   rw [hStCopy] at hFail
   dsimp only at hFail
-  rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide] at hFail
+  rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide] at hFail
   simp only [Bool.false_eq_true, ↓reduceIte, Bool.not_false] at hFail
   change (match (vfsCreateDirPure st "/new_parent/copy") with | (res, s₁) => _) at hFail
   dsimp only [vfsOps] at hFail
@@ -1888,10 +1889,10 @@ example : ¬ AllPass (test_fs_vfs_touch_existingFails { vfsApi with touch := bug
     rw [show ((0o755 / 128) % 2 == 0 || (0o755 / 64) % 2 == 0) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte,
       show vfsChildPath "/" "broken" = "/broken" from by decide, hFollowRes]
-  dsimp only [vfsApi, Internal.mkApiM, buggyTouchR1I03, StateT.run, bind, StateT.bind, pure, StateT.pure, assert] at hFail
+  dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, buggyTouchR1I03, StateT.run, bind, StateT.bind, pure, StateT.pure, assert] at hFail
   rw [show vfsOps.stat true "/broken" st = (vfsStatPure st true "/broken", st) from rfl, hStatFollow] at hFail
   dsimp only at hFail
-  rw [show (Raw.FsErrorKind.notFound == Raw.FsErrorKind.notFound) = true from by decide] at hFail
+  rw [show (FsErrorKind.notFound == FsErrorKind.notFound) = true from by decide] at hFail
   simp only [↓reduceIte] at hFail
   rw [show vfsOps.writeBytes "/broken" ByteArray.empty st = vfsWriteBytesPure st "/broken" ByteArray.empty from rfl] at hFail
   cases hW : vfsWriteBytesPure st "/broken" ByteArray.empty with
@@ -1914,10 +1915,10 @@ private def buggyCopyTreeGoNoLoopM (src dst : String) (dirsExistOk : Bool) : Nat
       match ← vfsOps.realPath src with
       | .error e => return .error e
       | .ok _ =>
-        match ← Internal.listDirSortedM vfsOps src with
+        match ← Internal.listDirSortedM vfsOps.toNonLockFsOpsM src with
         | .error e => return .error e
         | .ok names =>
-          match ← Internal.mkdirImplM vfsOps dst true dirsExistOk with
+          match ← Internal.mkdirImplM vfsOps.toNonLockFsOpsM dst true dirsExistOk with
           | .error e => return .error e
           | .ok () =>
             Internal.forEachChildM (fun n => do
@@ -1968,7 +1969,7 @@ private theorem vfsResolveSegs_never_invalidInput (nodes : String → Option Vfs
 
 
 private theorem vfsOps_mkdir_never_invalidInput (path : String) (parents existOk : Bool) (st : VfsState) (e : FsError)
-    (hErr : (Internal.mkdirImplM vfsOps path parents existOk st).1 = .error e) : e.kind ≠ .invalidInput := by
+    (hErr : (Internal.mkdirImplM vfsOps.toNonLockFsOpsM path parents existOk st).1 = .error e) : e.kind ≠ .invalidInput := by
   have hStatNe : ∀ f p s err, (vfsOps.stat f p s).1 = .error err → err.kind ≠ .invalidInput := by
     intro f p s err hs
     dsimp only [vfsOps, vfsStatPure] at hs
@@ -2007,7 +2008,7 @@ private theorem vfsOps_mkdir_never_invalidInput (path : String) (parents existOk
                 cases hEx : s.nodes (vfsChildPath parCanon lastSeg) with
                 | some _ => simp [hEx] at hc; cases hc; intro hk; cases hk
                 | none => simp [hEx] at hc
-  have hEnsureNe : ∀ p s err, (Internal.ensureDirM vfsOps p s).1 = .error err → err.kind ≠ .invalidInput := by
+  have hEnsureNe : ∀ p s err, (Internal.ensureDirM vfsOps.toNonLockFsOpsM p s).1 = .error err → err.kind ≠ .invalidInput := by
     intro p s err hd
     dsimp only [Internal.ensureDirM, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure] at hd
     cases hSt : vfsOps.stat true p s with
@@ -2063,13 +2064,13 @@ private theorem vfsOps_mkdir_never_invalidInput (path : String) (parents existOk
                       dsimp only [StateT.pure, Pure.pure, pure] at hd
                       simp only [Except.error.injEq] at hd; rw [← hd]; intro hk; cases hk
               · simp [hAe, StateT.pure] at hd; cases hd; exact hCreE
-  have hAncNe : ∀ ancs s err, (Internal.ensureAncestorsM vfsOps ancs s).1 = .error err → err.kind ≠ .invalidInput := by
+  have hAncNe : ∀ ancs s err, (Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM ancs s).1 = .error err → err.kind ≠ .invalidInput := by
     intro ancs; induction ancs with
     | nil => intro _ _ h; simp [Internal.ensureAncestorsM, pure, StateT.pure] at h
     | cons a rest ih =>
       intro s err ha
       simp only [Internal.ensureAncestorsM, Bind.bind, bind, StateT.bind, Pure.pure, pure] at ha
-      cases hE : Internal.ensureDirM vfsOps a s with
+      cases hE : Internal.ensureDirM vfsOps.toNonLockFsOpsM a s with
       | mk r s' =>
         rw [hE] at ha
         cases r with
@@ -2077,7 +2078,7 @@ private theorem vfsOps_mkdir_never_invalidInput (path : String) (parents existOk
           dsimp only [StateT.pure, Pure.pure, pure] at ha
           cases ha; exact hEnsureNe a s err (congrArg Prod.fst hE)
         | ok _ => exact ih s' err ha
-  have hCreExistNe : ∀ p s err, (Internal.createDirExistOkM vfsOps p s).1 = .error err → err.kind ≠ .invalidInput := by
+  have hCreExistNe : ∀ p s err, (Internal.createDirExistOkM vfsOps.toNonLockFsOpsM p s).1 = .error err → err.kind ≠ .invalidInput := by
     intro p s err hce
     dsimp only [Internal.createDirExistOkM, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure] at hce
     cases hC : vfsOps.createDir p s with
@@ -2152,7 +2153,7 @@ private theorem vfsOps_mkdir_never_invalidInput (path : String) (parents existOk
         · have hPF : (!parents) = false := Bool.eq_false_iff.mpr hP
           simp only [hPF, Bool.false_eq_true, ↓reduceIte] at hErr
           dsimp only [Bind.bind, StateT.bind, StateT.pure] at hErr
-          cases hAnc : Internal.ensureAncestorsM vfsOps (Internal.ancestorChain path path.toList.length) sPre with
+          cases hAnc : Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM (Internal.ancestorChain path path.toList.length) sPre with
           | mk ra sa =>
             rw [hAnc] at hErr
             cases ra with
@@ -2351,7 +2352,7 @@ private theorem vfsCreateDirPure_noFileTree (st : VfsState) (p : String) (ht : N
 
 
 private theorem vfsEnsureDirM_noFileTree (anc : String) (st : VfsState) (ht : NoFileTree st.tree) :
-    NoFileTree (Internal.ensureDirM vfsOps anc st).2.tree := by
+    NoFileTree (Internal.ensureDirM vfsOps.toNonLockFsOpsM anc st).2.tree := by
   unfold Internal.ensureDirM
   dsimp only [Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure]
   cases hSt : vfsOps.stat true anc st with
@@ -2390,15 +2391,15 @@ private theorem vfsEnsureDirM_noFileTree (anc : String) (st : VfsState) (ht : No
 
 
 private theorem vfsEnsureAncestorsM_noFileTree (ps : List String) (st : VfsState) (ht : NoFileTree st.tree) :
-    NoFileTree (Internal.ensureAncestorsM vfsOps ps st).2.tree := by
+    NoFileTree (Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM ps st).2.tree := by
   induction ps generalizing st with
   | nil => exact ht
   | cons p rest ih =>
     simp only [Internal.ensureAncestorsM, Bind.bind, bind, StateT.bind]
-    cases hEd : Internal.ensureDirM vfsOps p st with
+    cases hEd : Internal.ensureDirM vfsOps.toNonLockFsOpsM p st with
     | mk rd s1 =>
       have ht1 : NoFileTree s1.tree := by
-        have hS1Eq : s1 = (Internal.ensureDirM vfsOps p st).2 := (congrArg Prod.snd hEd).symm
+        have hS1Eq : s1 = (Internal.ensureDirM vfsOps.toNonLockFsOpsM p st).2 := (congrArg Prod.snd hEd).symm
         rw [hS1Eq]; exact vfsEnsureDirM_noFileTree p st ht
       cases rd with
       | error _ => exact ht1
@@ -2406,7 +2407,7 @@ private theorem vfsEnsureAncestorsM_noFileTree (ps : List String) (st : VfsState
 
 
 private theorem vfsCreateDirExistOkM_noFileTree (p : String) (st : VfsState) (ht : NoFileTree st.tree) :
-    NoFileTree (Internal.createDirExistOkM vfsOps p st).2.tree := by
+    NoFileTree (Internal.createDirExistOkM vfsOps.toNonLockFsOpsM p st).2.tree := by
   unfold Internal.createDirExistOkM
   dsimp only [Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure]
   cases hC : vfsOps.createDir p st with
@@ -2433,7 +2434,7 @@ private theorem vfsCreateDirExistOkM_noFileTree (p : String) (st : VfsState) (ht
 
 
 private theorem vfsMkdirImplM_noFileTree (p : String) (parents existOk : Bool) (st : VfsState) (ht : NoFileTree st.tree) :
-    NoFileTree (Internal.mkdirImplM vfsOps p parents existOk st).2.tree := by
+    NoFileTree (Internal.mkdirImplM vfsOps.toNonLockFsOpsM p parents existOk st).2.tree := by
   unfold Internal.mkdirImplM
   dsimp only [Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure]
   cases hSt : vfsOps.stat false p st with
@@ -2473,10 +2474,10 @@ private theorem vfsMkdirImplM_noFileTree (p : String) (parents existOk : Bool) (
             exact vfsCreateDirExistOkM_noFileTree p s1 (by subst hs1; exact ht)
         · have hPF : (!parents) = false := Bool.eq_false_iff.mpr hP
           simp only [hPF, Bool.false_eq_true, ↓reduceIte, Bind.bind, bind, StateT.bind]
-          cases hAnc : Internal.ensureAncestorsM vfsOps (Internal.ancestorChain p p.toList.length) s1 with
+          cases hAnc : Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM (Internal.ancestorChain p p.toList.length) s1 with
           | mk ra sa =>
             have hta : NoFileTree sa.tree := by
-              have hSaEq : sa = (Internal.ensureAncestorsM vfsOps (Internal.ancestorChain p p.toList.length) s1).2 :=
+              have hSaEq : sa = (Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM (Internal.ancestorChain p p.toList.length) s1).2 :=
                 (congrArg Prod.snd hAnc).symm
               rw [hSaEq]; exact vfsEnsureAncestorsM_noFileTree (Internal.ancestorChain p p.toList.length) s1 (by subst hs1; exact ht)
             cases ra with
@@ -2505,7 +2506,7 @@ private theorem buggyCopyTreeGoNoLoopM_never_invalidInput :
     cases hR : vfsResolveSegs s.nodes "/" (vfsSplitSegs (vfsAbsNorm s.cwd p)) true 1024 with
     | ok _ => simp [hR] at hr
     | error err' => simp [hR] at hr; cases hr; exact vfsResolveSegs_never_invalidInput _ _ _ _ _ _ hR
-  have hListNe : ∀ p s err, (Internal.listDirSortedM vfsOps p s).1 = .error err → err.kind ≠ .invalidInput := by
+  have hListNe : ∀ p s err, (Internal.listDirSortedM vfsOps.toNonLockFsOpsM p s).1 = .error err → err.kind ≠ .invalidInput := by
     intro p s err hl
     dsimp only [Internal.listDirSortedM, vfsOps, vfsReadDirPure, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure] at hl
     cases hR : vfsResolveSegs s.nodes "/" (vfsSplitSegs (vfsAbsNorm s.cwd p)) true 1024 with
@@ -2550,10 +2551,10 @@ private theorem buggyCopyTreeGoNoLoopM_never_invalidInput :
               exact ⟨by subst hs2; subst hs1; exact ht, fun eOut h => by cases h; exact hRpNe src s1 _ (congrArg Prod.fst hRp)⟩
             | ok _ =>
               dsimp only [Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure]
-              cases hLs : Internal.listDirSortedM vfsOps src s2 with
+              cases hLs : Internal.listDirSortedM vfsOps.toNonLockFsOpsM src s2 with
               | mk rl s3 =>
                 have hs3 : s3 = s2 := by
-                  have hSnd : s3 = (Internal.listDirSortedM vfsOps src s2).2 := (congrArg Prod.snd hLs).symm
+                  have hSnd : s3 = (Internal.listDirSortedM vfsOps.toNonLockFsOpsM src s2).2 := (congrArg Prod.snd hLs).symm
                   rw [hSnd]
                   dsimp only [Internal.listDirSortedM, vfsOps, Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure]
                   cases vfsReadDirPure s2 src <;> rfl
@@ -2563,10 +2564,10 @@ private theorem buggyCopyTreeGoNoLoopM_never_invalidInput :
                   exact ⟨by subst hs3; subst hs2; subst hs1; exact ht, fun eOut h => by cases h; exact hListNe src s2 _ (congrArg Prod.fst hLs)⟩
                 | ok names =>
                   dsimp only [Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure]
-                  cases hMk : Internal.mkdirImplM vfsOps dst true dirsExistOk s3 with
+                  cases hMk : Internal.mkdirImplM vfsOps.toNonLockFsOpsM dst true dirsExistOk s3 with
                   | mk rm s4 =>
                     have ht4 : NoFileTree s4.tree := by
-                      have hEq : s4 = (Internal.mkdirImplM vfsOps dst true dirsExistOk s3).2 := (congrArg Prod.snd hMk).symm
+                      have hEq : s4 = (Internal.mkdirImplM vfsOps.toNonLockFsOpsM dst true dirsExistOk s3).2 := (congrArg Prod.snd hMk).symm
                       rw [hEq]; apply vfsMkdirImplM_noFileTree
                       subst hs3; subst hs2; subst hs1; exact ht
                     cases rm with
@@ -2643,17 +2644,17 @@ private theorem reach_fs_vfs_copyTree_loopRejected_noFile :
           · simp [hS2] at hGet
       · simp [hS] at hGet
   have hStatRoot : ((vfsApi.stat "/").run st).1 = .ok (vfsToStat (.dir 0o755)) := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/" = "/" := by decide
     have hS : vfsSplitSegs "/" = [] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]
   have hResRoot : ((vfsApi.resolve "/").run st).1 = .ok "/" := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/" = "/" := by decide
     have hS : vfsSplitSegs "/" = [] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]
   have hStatSrc : ((vfsApi.stat "/src").run st).1 = .ok (vfsToStat (.dir 0o755)) := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/src" = "/src" := by decide
     have hS : vfsSplitSegs "/src" = ["src"] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -2661,7 +2662,7 @@ private theorem reach_fs_vfs_copyTree_loopRejected_noFile :
     rw [show vfsChildPath "/" "src" = "/src" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/src" = some (.dir 0o755) from rfl]
   have hResSrc : ((vfsApi.resolve "/src").run st).1 = .ok "/src" := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/src" = "/src" := by decide
     have hS : vfsSplitSegs "/src" = ["src"] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -2690,17 +2691,17 @@ private theorem reach_fs_vfs_copyTree_loopRejected_noFile :
     rw [show vfsChildPath "/" "src" = "/src" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/src" = some (.dir 0o755) from rfl]
   have hResSelf : ((vfsApi.resolve (vfsApi.join "/src" "self")).run st).1 = .ok "/src" := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run]
     have hSelf : vfsResolveSegs st.nodes "/" (vfsSplitSegs (vfsAbsNorm st.cwd (Internal.join "/src" "self"))) true 1024 =
         .ok ("/src", .dir 0o755) := hSelfResolve
     rw [hSelf]
   have hStatSelf : ((vfsApi.stat (vfsApi.join "/src" "self")).run st).1 = .ok (vfsToStat (.dir 0o755)) := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     have hSelf : vfsResolveSegs st.nodes "/" (vfsSplitSegs (vfsAbsNorm st.cwd (Internal.join "/src" "self"))) true 1024 =
         .ok ("/src", .dir 0o755) := hSelfResolve
     rw [hSelf]
   have hListSrc : ((vfsApi.listDir "/src").run st).1 = .ok #["self"] := by
-    dsimp only [vfsApi, Internal.mkApiM, Internal.listDirSortedM, vfsOps, vfsReadDirPure, StateT.run,
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.listDirSortedM, vfsOps, vfsReadDirPure, StateT.run,
       bind, StateT.bind, pure, StateT.pure]
     have hA : vfsAbsNorm st.cwd "/src" = "/src" := by decide
     have hS : vfsSplitSegs "/src" = ["src"] := by decide
@@ -2729,7 +2730,7 @@ private theorem reach_fs_vfs_copyTree_loopRejected_noFile :
       show String.ofList "self".toList = "self" from by decide,
       Bool.true_and, Bool.false_and, List.mergeSort_singleton]
   have hLstatLoop : ((vfsApi.lstat "/loop_dst").run st).1.isOk = false := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     have hA : vfsAbsNorm st.cwd "/loop_dst" = "/loop_dst" := by decide
     have hS : vfsSplitSegs "/loop_dst" = ["loop_dst"] := by decide
     rw [hA, hS]; unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
@@ -2756,7 +2757,7 @@ example : ¬ AllPass (test_fs_vfs_copyTree_loopRejected
 
 private def buggyWalkR2I01 (root : String) : StateM VfsState (Except FsError (Array WalkEntry)) := do
   match ← vfsOps.stat true root with
-  | .ok _ => Internal.walkImplM vfsOps root
+  | .ok _ => Internal.walkImplM vfsOps.toNonLockFsOpsM root
   | .error _ => return .error { kind := .notFound, path := some root, message := s!"not found: {root}" }
 
 
@@ -2775,7 +2776,7 @@ example : ¬ AllPass (test_fs_vfs_walk_preservesStatError { vfsApi with walk := 
         show vfsAbsNorm "/" "/locked" = "/locked" from by decide,
         show vfsSplitSegs "/locked" = ["locked"] from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o000) from rfl]; rfl
-  dsimp only [vfsApi, Internal.mkApiM, buggyWalkR2I01, StateT.run, bind, StateT.bind, pure, StateT.pure, assert] at hFail
+  dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, buggyWalkR2I01, StateT.run, bind, StateT.bind, pure, StateT.pure, assert] at hFail
   rw [show vfsOps.stat true "/locked" st = (vfsStatPure st true "/locked", st) from rfl, hStatPerm] at hFail
   simp only at hFail
   rcases hFail with ⟨⟨⟨e, he, hk⟩, _⟩, _⟩
@@ -2807,7 +2808,7 @@ example : ¬ AllPass (test_fs_suffixes_doubleDot { defaultApi with suffixes := b
 
 
 private def buggyCopyTreeR3I02 (src dst : String) (dirsExistOk : Bool) : StateM VfsState (Except FsError Unit) :=
-  Internal.copyTreeGoM vfsOps src dst dirsExistOk [] 4096
+  Internal.copyTreeGoM vfsOps.toNonLockFsOpsM src dst dirsExistOk [] 4096
 
 
 example : ¬ AllPass (test_fs_vfs_copyTree_selfCopyRejected { vfsApi with copyTree := buggyCopyTreeR3I02 }) := by
@@ -2818,7 +2819,7 @@ example : ¬ AllPass (test_fs_vfs_copyTree_selfCopyRejected { vfsApi with copyTr
       cwd := "/"
       nonce := 0 }
   have hStatSrc : ((vfsApi.stat "/src").run st).1 = .ok (vfsToStat (.dir 0o755)) := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     rw [show st.cwd = "/" from rfl,
         show vfsAbsNorm "/" "/src" = "/src" from by decide,
         show vfsSplitSegs "/src" = ["src"] from by decide]
@@ -2827,7 +2828,7 @@ example : ¬ AllPass (test_fs_vfs_copyTree_selfCopyRejected { vfsApi with copyTr
     rw [show vfsChildPath "/" "src" = "/src" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/src" = some (.dir 0o755) from rfl]
   have hResSrc : ((vfsApi.resolve "/src").run st).1 = .ok "/src" := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run]
     rw [show st.cwd = "/" from rfl,
         show vfsAbsNorm "/" "/src" = "/src" from by decide,
         show vfsSplitSegs "/src" = ["src"] from by decide]
@@ -2836,7 +2837,7 @@ example : ¬ AllPass (test_fs_vfs_copyTree_selfCopyRejected { vfsApi with copyTr
     rw [show vfsChildPath "/" "src" = "/src" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/src" = some (.dir 0o755) from rfl]
   have hResDstBad : ((vfsApi.resolve "/src/sub").run st).1.isOk = false := by
-    dsimp only [vfsApi, Internal.mkApiM, vfsOps, vfsRealPathPure, StateT.run]
+    dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsRealPathPure, StateT.run]
     rw [show st.cwd = "/" from rfl,
         show vfsAbsNorm "/" "/src/sub" = "/src/sub" from by decide,
         show vfsSplitSegs "/src/sub" = ["src", "sub"] from by decide]
@@ -2852,7 +2853,7 @@ example : ¬ AllPass (test_fs_vfs_copyTree_selfCopyRejected { vfsApi with copyTr
     ⟨"/src", hResSrc, by decide, by decide, hResSrc,
       Or.inr ⟨"sub", by decide, by decide, by decide, by decide, rfl, hResDstBad⟩⟩
   have hSubNone : st.nodes "/src/sub" = none := rfl
-  have hListSrc : (Internal.listDirSortedM vfsOps "/src").run st = (.ok #[], st) := by
+  have hListSrc : (Internal.listDirSortedM vfsOps.toNonLockFsOpsM "/src").run st = (.ok #[], st) := by
     dsimp only [Internal.listDirSortedM, vfsOps, vfsReadDirPure, StateT.run, bind, StateT.bind, pure, StateT.pure]
     rw [show st.cwd = "/" from rfl, show vfsAbsNorm "/" "/src" = "/src" from by decide,
         show vfsSplitSegs "/src" = ["src"] from by decide]
@@ -2877,7 +2878,7 @@ example : ¬ AllPass (test_fs_vfs_copyTree_selfCopyRejected { vfsApi with copyTr
     { st with
       tree := vfsTreeSet st.tree ["src", "sub"] (some (vfsEmptyDir 0o755))
       keys := "/src/sub" :: st.keys }
-  have hMkSub : Internal.mkdirImplM vfsOps "/src/sub" true false st = (.ok (), stSub) := by
+  have hMkSub : Internal.mkdirImplM vfsOps.toNonLockFsOpsM "/src/sub" true false st = (.ok (), stSub) := by
     have hPreSub : vfsStatPure st false "/src/sub" =
         .error { kind := .notFound, path := some "/src/sub", message := "no such file or directory: /src/sub" } := by
       dsimp only [vfsStatPure]
@@ -2891,7 +2892,7 @@ example : ¬ AllPass (test_fs_vfs_copyTree_selfCopyRejected { vfsApi with copyTr
       rw [show vfsChildPath "/src" "sub" = "/src/sub" from by decide]
       unfold vfsResolveSegs; rw [hSubNone]; rfl
     have hStSrcOk : vfsStatPure st true "/src" = .ok (vfsToStat (.dir 0o755)) := hStatSrc
-    have hAnc : Internal.ensureAncestorsM vfsOps ["/src"] st = (.ok (), st) := by
+    have hAnc : Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM ["/src"] st = (.ok (), st) := by
       dsimp only [Internal.ensureAncestorsM, Internal.ensureDirM, bind, StateT.bind, pure, StateT.pure]
       rw [show vfsOps.stat true "/src" st = (vfsStatPure st true "/src", st) from rfl, hStSrcOk]
       rfl
@@ -2915,7 +2916,7 @@ example : ¬ AllPass (test_fs_vfs_copyTree_selfCopyRejected { vfsApi with copyTr
       rw [show vfsAbsNorm st.cwd "/src/sub" = "/src/sub" from by decide,
           show vfsSplitSegs "/src/sub" = ["src", "sub"] from by decide, hPreSub']
       dsimp only
-      rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+      rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
       simp only [Bool.false_eq_true, ↓reduceIte, hParSub]
       rw [hParSrc]; dsimp only
       rw [show ((0o755 / 128) % 2 == 0 || (0o755 / 64) % 2 == 0) = false from by decide]
@@ -2924,16 +2925,16 @@ example : ¬ AllPass (test_fs_vfs_copyTree_selfCopyRejected { vfsApi with copyTr
     dsimp only [Internal.mkdirImplM, bind, StateT.bind, pure, StateT.pure]
     rw [show vfsOps.stat false "/src/sub" st = (vfsStatPure st false "/src/sub", st) from rfl, hPreSub]
     dsimp only
-    rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+    rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte, Bool.not_true,
         show Internal.ancestorChain "/src/sub" "/src/sub".toList.length = ["/src"] from by decide]
     have hBindSub :
-        StateT.bind (Internal.ensureAncestorsM vfsOps ["/src"])
+        StateT.bind (Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM ["/src"])
           (fun x => match x with | .error ae => pure (.error ae) | .ok () => vfsOps.createDir "/src/sub") st =
         vfsOps.createDir "/src/sub" st := by
       dsimp only [Bind.bind, StateT.bind]
       rw [hAnc]
-    change StateT.bind (Internal.ensureAncestorsM vfsOps ["/src"])
+    change StateT.bind (Internal.ensureAncestorsM vfsOps.toNonLockFsOpsM ["/src"])
       (fun x => match x with | .error ae => pure (.error ae) | .ok () => vfsOps.createDir "/src/sub") st = (.ok (), stSub)
     rw [hBindSub]
     exact hCre

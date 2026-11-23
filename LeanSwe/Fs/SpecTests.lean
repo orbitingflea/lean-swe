@@ -1,4 +1,5 @@
 import Core.NondetTest
+import Core.Assumptions
 import LeanSwe.Fs.Types
 import LeanSwe.Fs.Model
 
@@ -6,7 +7,6 @@ namespace LeanSwe.Fs
 
 open Core (NondetTest)
 open Core.NondetTest
-open LeanSwe.Fs.Raw
 open LeanSwe.Fs.Model hiding isValidRawPath
 
 /-- Builder function assembling an `FsApiM m` from injected `RawFsOpsM m` primitives. -/
@@ -662,23 +662,6 @@ def test_fs_vfs_readBytes_invalidPathRejected
   let (res, s₁) := (api.readBytes path).run s₀
   NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ s₁ = s₀)
 
-/-- External trust boundary assumptions for `LeanSwe.Fs` ambient OS behavior grounded in `RuntimeTests.lean`. -/
-structure EmpiricalAssumptions where
-  /-- `Fs.readBytes` and `Fs.readText` delegate to `Raw.readBytes` (`O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY` + `fstat` + `fcntl` clear `O_NONBLOCK`), immediately returning `.invalidInput` without blocking on FIFOs (`mkfifo`), Unix domain sockets (`ENXIO`), or device nodes (`!S_ISREG`), `.isADirectory` on directories, and following symlinks to regular files. -/
-  readBytesNonBlockingRejectsFifoAndSpecialFiles : Prop
-  /-- `Fs.readBytes` and `Fs.readText` reject `""`, embedded NUL bytes, and non-root trailing `/` with `.invalidInput`. -/
-  readBytesValidatesPath : Prop
-  /-- `Fs.atomicWriteBytes` and `Fs.atomicWriteText` create sibling `.tmp.<nonce>` files via `Raw.createFileNew` (`O_CREAT | O_EXCL | O_NOFOLLOW`), never following pre-planted `.tmp` symlinks, and replace targets atomically via `rename`. -/
-  atomicWriteUsesExclusiveNoFollowTempFile : Prop
-  /-- `withSubtree` and `SubtreeM` delegate to `openat`/`*at` with `O_NOFOLLOW`/`AT_SYMLINK_NOFOLLOW`, never follow ancestor or leaf symlinks (except `openDir` on initial `rootPath`), pin directory descriptors across concurrent external renames, use refcounted `DirSlot` (`0 < handleId < UInt64.size`, atomic `closing` under mutex, releasing the ref before blocking `flock`), and refuse closed or forged handles with `.invalidInput`. -/
-  subtreeAtSyscallsRefuseSymlinksAndPinDescriptors : Prop
-  /-- `SubtreeM.atomicWriteBytes` creates `.t.<nonce>` files via `createFileAt` (`O_CREAT | O_EXCL | O_NOFOLLOW`, `0o644` subject to process `umask`) and replaces targets atomically via `renameAt`; `SubtreeM.mkdir` creates directories via `createDirAt` (`mkdirat(..., 0o755)` subject to process `umask`, assuming `umask` preserves owner `0o700` on newly created `parents = true` ancestors); `symlinkAt` rejects empty or NUL-containing targets upfront (`.invalidInput`); and `withFileLock`/`tryWithFileLock` release acquired locks even on `.error` callbacks. -/
-  subtreeDefaultModesAndLockCleanup : Prop
-  /-- A hard crash or `SIGKILL` during `atomicWriteBytes` may leave an orphan `.t.<nonce>` file in the parent directory; OS non-UTF8 filenames unrepresentable as `EntryName`/`String` lie outside the Lean model (`RuntimeTests.lean` grounds `.t.<nonce>` cleanup and 255-byte `ENAMETOOLONG` handling). -/
-  subtreeCrashMayLeaveOrphanTempAndNonUtf8OutsideModel : Prop
-  /-- `walk` and `rmtree` perform bounded fresh descent (`maxDepth = 4096`) in $O(1)$ open descriptors, failing loudly with `.ioError` above depth `4096` without `rmtree` rollback on partial failure; `VfsState.locks` tracks canonical paths while Linux `flock` binds open-file-description inodes (unlinking or `atomicWriteBytes`-replacing an actively locked path detaches the old inode on POSIX). -/
-  subtreeBoundedDescentAndFlockInodeSemantics : Prop
-
 /-- `withSubtree` validates `root` (including owner read+search on directories), refuses non-directory/unreadable roots without running `action`, and always closes its handle (preserving `openDirs`) on both `.ok` and `.error`. -/
 def test_fs_withSubtree_validatesRootAndAlwaysClosesHandle
     {runner} [NondetTest runner] (mkOpener : SubtreeOpenerBuilder (StateM VfsState)) : runner Unit := do
@@ -1212,5 +1195,786 @@ def test_fs_subtree_mkdirVisibleAndRmtreeNotFound_holds
 def test_fs_subtree_agreesWithAmbientOnSymlinkFree_matchesFsApi
     {runner} [NondetTest runner] (mkSubtree : SubtreeBuilder (StateM VfsState)) : runner Unit :=
   NondetTest.assert (SpecSubtreeAgreesWithAmbientOnSymlinkFree mkSubtree)
+
+/-- Mapping a `.wouldBlock` raw error preserves `.wouldBlock` kind, path, errno, and non-empty message. -/
+def test_fsraw_mapRawError_wouldBlock
+    {runner} [NondetTest runner] (api : FsApi) : runner Unit := do
+  let path? ← nondet (Option String)
+  let errno ← nondet UInt32
+  let detail ← nondet String
+  let err := api.mapRawError (.wouldBlock path? errno detail)
+  NondetTest.assert (err.kind = .wouldBlock ∧ err.path = path? ∧ err.errnoCode = some errno ∧ err.message ≠ "")
+
+/-- `EntryName.parse s` succeeds iff `validSeg s = true` and otherwise fails with `.invalidInput` and non-empty message. -/
+def test_fsraw_entryName_parse_acceptsValidAndRejectsUnsafe
+    {runner} [NondetTest runner]
+    (parseName : String → Except FsError EntryName := EntryName.parse) : runner Unit := do
+  let s ← nondet String
+  match parseName s with
+  | .ok n => NondetTest.assert (validSeg s = true ∧ n.val = s)
+  | .error e => NondetTest.assert (validSeg s = false ∧ e.kind = .invalidInput ∧ e.message ≠ "")
+
+/-- `RelPath.parse` rejects `""`, leading `/`, trailing `/`, `//`, `.`, `..`, and NUL with `.invalidInput`, accepts valid multi-segment paths like `"a/b"`, and `RelPath.parseRoot "."` returns `RelPath.root`. -/
+def test_fsraw_relPath_parse_rejectsUnsafeAndParseRootMapsDot
+    {runner} [NondetTest runner]
+    (parseRel : String → Except FsError RelPath := RelPath.parse)
+    (parseRelRoot : String → Except FsError RelPath := RelPath.parseRoot) : runner Unit := do
+  let seg ← nondet String
+  let bads := ["", "/" ++ seg, seg ++ "/", ".", "..", "a//b", "a/./b", "a/../b", "a" ++ String.ofList [Char.ofNat 0] ++ "b"]
+  NondetTest.assert (bads.all fun p =>
+    match parseRel p with
+    | .error e => e.kind == .invalidInput && e.message != ""
+    | .ok _ => false)
+  NondetTest.assert (match parseRel "a/b" with
+    | .ok rel => rel.segments.map (·.val) == ["a", "b"]
+    | .error _ => false)
+  NondetTest.assert (parseRelRoot "." = .ok RelPath.root)
+  NondetTest.assert (seg = "." ∨ parseRelRoot seg = parseRel seg)
+
+/-- Calling `ops.createFileNew` on a missing child under writable `"/"` creates a regular file with exact `bytes`. -/
+def test_fsraw_createFileNew_createsMissingWithExactBytes
+    {S : Type} {runner} [NondetTest runner] (ops : RawFsOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let child ← nondet String
+  let bytes ← nondet ByteArray
+  assume (isSingleValidName child = true)
+  let path := "/" ++ child
+  assume (∃ stRoot, ((ops.stat false "/").run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir ∧
+    (stRoot.mode / 128) % 2 = 1 ∧ (stRoot.mode / 64) % 2 = 1)
+  assume (∃ e, ((ops.stat false path).run s₀).1 = .error e ∧ e.kind = .notFound)
+  let (res, s₁) := (ops.createFileNew path bytes).run s₀
+  NondetTest.assert (res = .ok ())
+  NondetTest.assert (∃ st, ((ops.stat false path).run s₁).1 = .ok st ∧
+    st.kind = .file ∧ st.byteSize = bytes.size)
+  NondetTest.assert (((ops.readBytes path).run s₁).1 = .ok bytes)
+
+/-- Calling `ops.createFileNew` on any existing entry (file, directory, or symlink including dangling links) fails with `.alreadyExists` and leaves state unchanged. -/
+def test_fsraw_createFileNew_existingRejected
+    {S : Type} {runner} [NondetTest runner] (ops : RawFsOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let path ← nondet String
+  let bytes ← nondet ByteArray
+  assume (isValidRawPath path = true)
+  assume (((ops.stat false path).run s₀).1.isOk = true)
+  let (res, s₁) := (ops.createFileNew path bytes).run s₀
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .alreadyExists) ∧ s₁ = s₀)
+
+/-- Calling `ops.createFileNew` with an empty path, embedded NUL byte, or non-root trailing `/` fails with `.invalidInput` and leaves state unchanged. -/
+def test_fsraw_createFileNew_invalidPathRejected
+    {S : Type} {runner} [NondetTest runner] (ops : RawFsOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let path ← nondet String
+  let bytes ← nondet ByteArray
+  assume (isValidRawPath path = false)
+  let (res, s₁) := (ops.createFileNew path bytes).run s₀
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ s₁ = s₀)
+
+/-- Calling `ops.createFileNew` under a missing parent directory fails with `.notFound` without creating parent directories. -/
+def test_fsraw_createFileNew_missingParentRejected
+    {S : Type} {runner} [NondetTest runner] (ops : RawFsOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let d ← nondet String
+  let f ← nondet String
+  let bytes ← nondet ByteArray
+  assume (isSingleValidName d = true ∧ isSingleValidName f = true)
+  assume (∃ e, ((ops.stat false ("/" ++ d)).run s₀).1 = .error e ∧ e.kind = .notFound)
+  let (res, s₁) := (ops.createFileNew ("/" ++ d ++ "/" ++ f) bytes).run s₀
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .notFound) ∧ s₁ = s₀)
+
+/-- Calling `ops.readBytes` on a symlink whose target is a regular file follows the symlink and returns the file bytes without mutating state. -/
+def test_fsraw_readBytes_followsSymlinkToRegularFile
+    {S : Type} {runner} [NondetTest runner] (ops : RawFsOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let path ← nondet String
+  assume (isValidRawPath path = true)
+  assume (∃ lst, ((ops.stat false path).run s₀).1 = .ok lst ∧ lst.kind = .symlink)
+  assume (∃ st, ((ops.stat true path).run s₀).1 = .ok st ∧ st.kind = .file)
+  let (res, s₁) := (ops.readBytes path).run s₀
+  NondetTest.assert ((∃ bs, res = .ok bs ∧
+    (∃ st, ((ops.stat true path).run s₀).1 = .ok st ∧ bs.size = st.byteSize)) ∧ s₁ = s₀)
+
+/-- Writing `bytes` with `ops.createFileNew`, symlinking to it, and calling `ops.readBytes` on the symlink returns exact `bytes` without mutating state. -/
+def test_fsraw_readBytes_roundTripsExactBytesThroughSymlink
+    {S : Type} {runner} [NondetTest runner] (ops : RawFsOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let tgtName ← nondet String
+  let symName ← nondet String
+  let bytes ← nondet ByteArray
+  assume (isSingleValidName tgtName = true ∧ isSingleValidName symName = true ∧ tgtName ≠ symName)
+  let tgt := "/" ++ tgtName
+  let sym := "/" ++ symName
+  assume (∃ stRoot, ((ops.stat false "/").run s₀).1 = .ok stRoot ∧ stRoot.kind = .dir ∧
+    (stRoot.mode / 128) % 2 = 1 ∧ (stRoot.mode / 64) % 2 = 1)
+  assume (∃ e1, ((ops.stat false tgt).run s₀).1 = .error e1 ∧ e1.kind = .notFound)
+  assume (∃ e2, ((ops.stat false sym).run s₀).1 = .error e2 ∧ e2.kind = .notFound)
+  let (r1, s₁) := (ops.createFileNew tgt bytes).run s₀
+  assume (r1 = .ok ())
+  let (r2, s₂) := (ops.symlink tgt sym).run s₁
+  assume (r2 = .ok ())
+  let (r3, s₃) := (ops.readBytes sym).run s₂
+  NondetTest.assert (r3 = .ok bytes ∧ s₃ = s₂)
+
+/-- Calling `ops.readBytes` on a directory fails with `.isADirectory` and on a missing valid path preserves the `stat` error without mutating state. -/
+def test_fsraw_readBytes_dirAndMissingRejected
+    {S : Type} {runner} [NondetTest runner] (ops : RawFsOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let path ← nondet String
+  assume (isValidRawPath path = true)
+  match ((ops.stat true path).run s₀).1 with
+  | .error err =>
+    let (res, s₁) := (ops.readBytes path).run s₀
+    NondetTest.assert ((∃ e, res = .error e ∧ e.kind = err.kind) ∧ s₁ = s₀)
+  | .ok st =>
+    if st.kind == .dir then
+      let (res, s₁) := (ops.readBytes path).run s₀
+      NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .isADirectory) ∧ s₁ = s₀)
+    else
+      pure ()
+
+/-- Calling `ops.readBytes` with an empty path, embedded NUL byte, or non-root trailing `/` fails with `.invalidInput` and leaves state unchanged. -/
+def test_fsraw_readBytes_invalidPathRejected
+    {S : Type} {runner} [NondetTest runner] (ops : RawFsOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let path ← nondet String
+  assume (isValidRawPath path = false)
+  let (res, s₁) := (ops.readBytes path).run s₀
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ s₁ = s₀)
+
+/-- Calling `ops.openDirAt dh child` when `lstatAt dh child` is a symlink fails with `.invalidInput` and preserves state. -/
+def test_fsraw_rawDirOps_openDirAt_refusesSymlinkAndPreservesState
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let dh ← nondet DirHandle
+  let child ← nondet EntryName
+  assume (∃ st, ((ops.lstatAt dh child).run s₀).1 = .ok st ∧ st.kind = .symlink)
+  let (res, s₁) := (ops.openDirAt dh child).run s₀
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ s₁ = s₀)
+
+/-- Calling `ops.readRegularAt dh child` on a symlink fails with `.invalidInput` and on a directory fails with `.isADirectory`, leaving state unchanged. -/
+def test_fsraw_rawDirOps_readRegularAt_refusesSymlinkAndDir
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let dh ← nondet DirHandle
+  let child ← nondet EntryName
+  match ((ops.lstatAt dh child).run s₀).1 with
+  | .error _ => pure ()
+  | .ok st =>
+    if st.kind == .symlink then
+      let (res, s₁) := (ops.readRegularAt dh child).run s₀
+      NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ s₁ = s₀)
+    else if st.kind == .dir then
+      let (res, s₁) := (ops.readRegularAt dh child).run s₀
+      NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .isADirectory) ∧ s₁ = s₀)
+    else
+      pure ()
+
+/-- Calling `ops.createFileAt` rejects existing entries (including symlinks) with `.alreadyExists` and creates missing regular files with exact bytes and mode `0o644`. -/
+def test_fsraw_rawDirOps_createFileAt_exclusiveNoFollow
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let dh ← nondet DirHandle
+  let child ← nondet EntryName
+  let bytes ← nondet ByteArray
+  assume (∃ dSt, ((ops.fstatDir dh).run s₀).1 = .ok dSt ∧ dSt.kind = .dir ∧
+    (dSt.mode / 128) % 2 = 1 ∧ (dSt.mode / 64) % 2 = 1)
+  match ((ops.lstatAt dh child).run s₀).1 with
+  | .ok _ =>
+    let (res, s₁) := (ops.createFileAt dh child bytes).run s₀
+    NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .alreadyExists) ∧ s₁ = s₀)
+  | .error err =>
+    assume (err.kind = .notFound)
+    let (res, s₁) := (ops.createFileAt dh child bytes).run s₀
+    NondetTest.assert (res = .ok ())
+    NondetTest.assert (∃ st, ((ops.lstatAt dh child).run s₁).1 = .ok st ∧
+      st.kind = .file ∧ st.byteSize = bytes.size ∧ st.mode = 0o644)
+    NondetTest.assert (((ops.readRegularAt dh child).run s₁).1 = .ok bytes)
+
+/-- Calling `ops.createDirAt` rejects existing entries (including symlinks) with `.alreadyExists` and creates missing directories with mode `0o755`. -/
+def test_fsraw_rawDirOps_createDirAt_createsOrRejectsExisting
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let dh ← nondet DirHandle
+  let child ← nondet EntryName
+  assume (∃ dSt, ((ops.fstatDir dh).run s₀).1 = .ok dSt ∧ dSt.kind = .dir ∧
+    (dSt.mode / 128) % 2 = 1 ∧ (dSt.mode / 64) % 2 = 1)
+  match ((ops.lstatAt dh child).run s₀).1 with
+  | .ok _ =>
+    let (res, s₁) := (ops.createDirAt dh child).run s₀
+    NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .alreadyExists) ∧ s₁ = s₀)
+  | .error err =>
+    assume (err.kind = .notFound)
+    let (res, s₁) := (ops.createDirAt dh child).run s₀
+    NondetTest.assert (res = .ok ())
+    NondetTest.assert (∃ st, ((ops.lstatAt dh child).run s₁).1 = .ok st ∧
+      st.kind = .dir ∧ st.mode = 0o755)
+
+/-- Calling `ops.unlinkAt` checks symlink vs directory flags, enforces empty-dir removal vs non-empty `.notEmpty`, and reports `.notFound` on missing entries. -/
+def test_fsraw_rawDirOps_unlinkAt_dirFlagSemantics
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let dh ← nondet DirHandle
+  let child ← nondet EntryName
+  assume (∃ dSt, ((ops.fstatDir dh).run s₀).1 = .ok dSt ∧ dSt.kind = .dir ∧
+    (dSt.mode / 128) % 2 = 1 ∧ (dSt.mode / 64) % 2 = 1)
+  match ((ops.lstatAt dh child).run s₀).1 with
+  | .ok st =>
+    if st.kind == .symlink then
+      let (rDir, sDir) := (ops.unlinkAt dh child true).run s₀
+      NondetTest.assert ((∃ e, rDir = .error e ∧ e.kind = .notADirectory) ∧ sDir = s₀)
+      let (rUnlink, sUnlink) := (ops.unlinkAt dh child false).run s₀
+      NondetTest.assert (rUnlink = .ok () ∧
+        ∃ e, ((ops.lstatAt dh child).run sUnlink).1 = .error e ∧ e.kind = .notFound)
+    else if st.kind == .dir then
+      let (rFile, sFile) := (ops.unlinkAt dh child false).run s₀
+      NondetTest.assert ((∃ e, rFile = .error e ∧ e.kind = .isADirectory) ∧ sFile = s₀)
+    else
+      pure ()
+  | .error lErr =>
+    if lErr.kind == .notFound then
+      let (rFile, sFile) := (ops.unlinkAt dh child false).run s₀
+      NondetTest.assert ((∃ e, rFile = .error e ∧ e.kind = .notFound) ∧ sFile = s₀)
+      let (rDir, sDir) := (ops.unlinkAt dh child true).run s₀
+      NondetTest.assert ((∃ e, rDir = .error e ∧ e.kind = .notFound) ∧ sDir = s₀)
+    else
+      pure ()
+  let (openRes, sRoot) := (ops.openDir "/").run s₀
+  match openRes with
+  | .error _ => pure ()
+  | .ok rootDh =>
+    let inner ← nondet EntryName
+    match ((ops.fstatDir rootDh).run sRoot).1, ((ops.lstatAt rootDh child).run sRoot).1 with
+    | .ok rSt, .error mErr =>
+      if rSt.kind == .dir && (rSt.mode / 128) % 2 == 1 && (rSt.mode / 64) % 2 == 1 && mErr.kind == .notFound then
+        let (rMk1, s₁) := (ops.createDirAt rootDh child).run sRoot
+        NondetTest.assert (rMk1 = .ok ())
+        let (rRmEmpty, s₂) := (ops.unlinkAt rootDh child true).run s₁
+        NondetTest.assert (rRmEmpty = .ok () ∧
+          ∃ e, ((ops.lstatAt rootDh child).run s₂).1 = .error e ∧ e.kind = .notFound)
+        let (rMk2, s₃) := (ops.createDirAt rootDh child).run sRoot
+        NondetTest.assert (rMk2 = .ok ())
+        let (rOpen, s₄) := (ops.openDirAt rootDh child).run s₃
+        match rOpen with
+        | .error _ =>
+          let _ := (ops.closeDir rootDh).run s₄
+          NondetTest.assert False
+        | .ok childDh =>
+          let (rCf, s₅) := (ops.createFileAt childDh inner ByteArray.empty).run s₄
+          NondetTest.assert (rCf = .ok ())
+          let (rCl, s₆) := (ops.closeDir childDh).run s₅
+          NondetTest.assert (rCl = .ok ())
+          let (rNotEmpty, s₇) := (ops.unlinkAt rootDh child true).run s₆
+          let _ := (ops.closeDir rootDh).run s₇
+          NondetTest.assert ((∃ e, rNotEmpty = .error e ∧ e.kind = .notEmpty) ∧ s₇ = s₆)
+      else
+        let _ := (ops.closeDir rootDh).run sRoot
+        pure ()
+    | _, _ =>
+      let _ := (ops.closeDir rootDh).run sRoot
+      pure ()
+
+/-- Closing an opened `DirHandle` via `ops.closeDir` invalidates it for all subsequent `*at` primitives (including asymmetric `renameAt` arguments) and zero-ID handles are rejected with `.invalidInput`. -/
+def test_fsraw_rawDirOps_closedHandleRejected
+    {S : Type} {runner} [NondetTest runner]
+    (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let root ← nondet String
+  let child ← nondet EntryName
+  let bytes ← nondet ByteArray
+  let forgedZero : DirHandle := { handleId := 0, rootPath := "/" }
+  NondetTest.assert (∃ e, (ops.fstatDir forgedZero |>.run s₀).1 = .error e ∧ e.kind = .invalidInput)
+  NondetTest.assert (∃ e, (ops.closeDir forgedZero |>.run s₀).1 = .error e ∧ e.kind = .invalidInput)
+  let (openRes, s₁) := (ops.openDir root).run s₀
+  match openRes with
+  | .error _ => pure ()
+  | .ok dh =>
+    let (liveRes, s₁') := (ops.openDir root).run s₁
+    let (closeRes, s₂) := (ops.closeDir dh).run s₁'
+    NondetTest.assert (closeRes = .ok ())
+    NondetTest.assert (∃ e, (ops.fstatDir dh |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.lstatAt dh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.readDirAt dh |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.openDirAt dh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.createDirAt dh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.readRegularAt dh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.createFileAt dh child bytes |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.renameAt dh child dh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.unlinkAt dh child false |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.symlinkAt "t" dh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.acquireLockAt dh child .exclusive false true |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    NondetTest.assert (∃ e, (ops.closeDir dh |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+    match liveRes with
+    | .ok liveDh =>
+      if liveDh.handleId != dh.handleId then
+        NondetTest.assert (∃ e, (ops.renameAt dh child liveDh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+        NondetTest.assert (∃ e, (ops.renameAt liveDh child dh child |>.run s₂).1 = .error e ∧ e.kind = .invalidInput)
+      else
+        pure ()
+    | .error _ => pure ()
+
+/-- Calling `ops.fstatDir` on an opened directory handle succeeds with `kind = .dir` and does not mutate state. -/
+def test_fsraw_rawDirOps_fstatDir_validReturnsDir
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let root ← nondet String
+  let (openRes, s₁) := (ops.openDir root).run s₀
+  match openRes with
+  | .error _ => pure ()
+  | .ok dh =>
+    let (res, s₂) := (ops.fstatDir dh).run s₁
+    let _ := (ops.closeDir dh).run s₂
+    NondetTest.assert ((∃ st, res = .ok st ∧ st.kind = .dir) ∧ s₂ = s₁)
+
+/-- Calling `ops.readDirAt` returns duplicate-free (`Nodup`) `EntryName` entries and leaves state unchanged. -/
+def test_fsraw_rawDirOps_readDirAt_sortedUnique
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let dh ← nondet DirHandle
+  let (res, s₁) := (ops.readDirAt dh).run s₀
+  match res with
+  | .error _ => NondetTest.assert (s₁ = s₀)
+  | .ok entries =>
+    NondetTest.assert (entries.toList.Nodup ∧ s₁ = s₀)
+
+/-- Calling `ops.renameAt` moves regular files across open handles, rejects missing sources with `.notFound`, and rejects file/directory kind mismatches (and directory-into-descendant `.invalidInput`). -/
+def test_fsraw_rawDirOps_renameAt_moveAndTypeMismatch
+    {S : Type} {runner} [NondetTest runner]
+    (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let srcDh ← nondet DirHandle
+  let srcName ← nondet EntryName
+  let dstDh ← nondet DirHandle
+  let dstName ← nondet EntryName
+  assume (∃ dSt, ((ops.fstatDir srcDh).run s₀).1 = .ok dSt ∧ dSt.kind = .dir ∧
+    (dSt.mode / 128) % 2 = 1 ∧ (dSt.mode / 64) % 2 = 1)
+  assume (∃ dSt, ((ops.fstatDir dstDh).run s₀).1 = .ok dSt ∧ dSt.kind = .dir ∧
+    (dSt.mode / 128) % 2 = 1 ∧ (dSt.mode / 64) % 2 = 1)
+  match ((ops.lstatAt srcDh srcName).run s₀).1 with
+  | .error sErr =>
+    if sErr.kind == .notFound then
+      let (res, s₁) := (ops.renameAt srcDh srcName dstDh dstName).run s₀
+      NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .notFound) ∧ s₁ = s₀)
+    else
+      pure ()
+  | .ok srcSt =>
+    match ((ops.lstatAt dstDh dstName).run s₀).1 with
+    | .ok dstSt =>
+      if srcSt.kind == .dir && dstSt.kind == .file then
+        let (res, s₁) := (ops.renameAt srcDh srcName dstDh dstName).run s₀
+        if srcDh.handleId == dstDh.handleId then
+          NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .notADirectory) ∧ s₁ = s₀)
+        else
+          NondetTest.assert ((∃ e, res = .error e ∧ (e.kind = .notADirectory ∨ e.kind = .invalidInput)) ∧ s₁ = s₀)
+      else if srcSt.kind == .file && dstSt.kind == .dir then
+        let (res, s₁) := (ops.renameAt srcDh srcName dstDh dstName).run s₀
+        NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .isADirectory) ∧ s₁ = s₀)
+      else
+        pure ()
+    | .error dErr =>
+      if dErr.kind == .notFound && srcSt.kind == .file && (srcDh.handleId != dstDh.handleId || srcName != dstName) then
+        let (res, s₁) := (ops.renameAt srcDh srcName dstDh dstName).run s₀
+        NondetTest.assert (res = .ok ())
+        NondetTest.assert (∃ st, ((ops.lstatAt dstDh dstName).run s₁).1 = .ok st ∧ st.kind = .file)
+        NondetTest.assert (∃ e, ((ops.lstatAt srcDh srcName).run s₁).1 = .error e ∧ e.kind = .notFound)
+      else
+        pure ()
+
+/-- Calling `ops.symlinkAt` rejects empty or NUL-containing `target` strings with `.invalidInput` and creates a `.symlink` entry when missing and writable. -/
+def test_fsraw_rawDirOps_symlinkAt_validAndRejectsInvalidTarget
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let dh ← nondet DirHandle
+  let child ← nondet EntryName
+  let target ← nondet String
+  if target.isEmpty || target.contains (Char.ofNat 0) then
+    let (res, s₁) := (ops.symlinkAt target dh child).run s₀
+    NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput) ∧ s₁ = s₀)
+  else
+    assume (∃ dSt, ((ops.fstatDir dh).run s₀).1 = .ok dSt ∧ dSt.kind = .dir ∧
+      (dSt.mode / 128) % 2 = 1 ∧ (dSt.mode / 64) % 2 = 1)
+    match ((ops.lstatAt dh child).run s₀).1 with
+    | .error err =>
+      if err.kind == .notFound then
+        let (res, s₁) := (ops.symlinkAt target dh child).run s₀
+        NondetTest.assert (res = .ok () ∧
+          ∃ st, ((ops.lstatAt dh child).run s₁).1 = .ok st ∧ st.kind = .symlink)
+      else
+        pure ()
+    | .ok _ => pure ()
+
+/-- Successive calls to `ops.freshTempName` produce distinct valid `EntryName` values. -/
+def test_fsraw_rawDirOps_freshTempName_distinctAndValid
+    {S : Type} {runner} [NondetTest runner] (ops : RawDirOpsM (StateM S)) : runner Unit := do
+  let s₀ ← nondet S
+  let (n₁, s₁) := ops.freshTempName.run s₀
+  let (n₂, _) := ops.freshTempName.run s₁
+  NondetTest.assert (validSeg n₁.val = true ∧ validSeg n₂.val = true ∧ n₁ ≠ n₂)
+
+
+set_option maxRecDepth 2048 in
+/-- Complete `36 × 10` `(request, errorKind)` coverage matrix across all 36 fallible `LeanSwe.Fs` entrypoints (`FsErrorKind`). -/
+def errorCoverage : List (Core.ErrorObligation FsErrorKind) :=
+  (
+    { request := "LeanSwe.Fs.withName", errorKind := .notFound, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withName_never_notFound" }
+    :: { request := "LeanSwe.Fs.withName", errorKind := .alreadyExists, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withName_never_alreadyExists" }
+    :: { request := "LeanSwe.Fs.withName", errorKind := .permissionDenied, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withName_never_permissionDenied" }
+    :: { request := "LeanSwe.Fs.withName", errorKind := .isADirectory, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withName_never_isADirectory" }
+    :: { request := "LeanSwe.Fs.withName", errorKind := .notADirectory, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withName_never_notADirectory" }
+    :: { request := "LeanSwe.Fs.withName", errorKind := .notEmpty, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withName_never_notEmpty" }
+    :: { request := "LeanSwe.Fs.withName", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withName_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.withName", errorKind := .unsupported, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withName_never_unsupported" }
+    :: { request := "LeanSwe.Fs.withName", errorKind := .wouldBlock, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withName_never_wouldBlock" }
+    :: { request := "LeanSwe.Fs.withName", errorKind := .ioError, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withName_never_ioError" }
+    :: { request := "LeanSwe.Fs.withSuffix", errorKind := .notFound, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withSuffix_never_notFound" }
+    :: { request := "LeanSwe.Fs.withSuffix", errorKind := .alreadyExists, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withSuffix_never_alreadyExists" }
+    :: { request := "LeanSwe.Fs.withSuffix", errorKind := .permissionDenied, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withSuffix_never_permissionDenied" }
+    :: { request := "LeanSwe.Fs.withSuffix", errorKind := .isADirectory, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withSuffix_never_isADirectory" }
+    :: { request := "LeanSwe.Fs.withSuffix", errorKind := .notADirectory, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withSuffix_never_notADirectory" }
+    :: { request := "LeanSwe.Fs.withSuffix", errorKind := .notEmpty, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withSuffix_never_notEmpty" }
+    :: { request := "LeanSwe.Fs.withSuffix", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withSuffix_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.withSuffix", errorKind := .unsupported, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withSuffix_never_unsupported" }
+    :: { request := "LeanSwe.Fs.withSuffix", errorKind := .wouldBlock, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withSuffix_never_wouldBlock" }
+    :: { request := "LeanSwe.Fs.withSuffix", errorKind := .ioError, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_withSuffix_never_ioError" }
+    :: { request := "LeanSwe.Fs.relativeTo", errorKind := .notFound, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_relativeTo_never_notFound" }
+    :: { request := "LeanSwe.Fs.relativeTo", errorKind := .alreadyExists, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_relativeTo_never_alreadyExists" }
+    :: { request := "LeanSwe.Fs.relativeTo", errorKind := .permissionDenied, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_relativeTo_never_permissionDenied" }
+    :: { request := "LeanSwe.Fs.relativeTo", errorKind := .isADirectory, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_relativeTo_never_isADirectory" }
+    :: { request := "LeanSwe.Fs.relativeTo", errorKind := .notADirectory, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_relativeTo_never_notADirectory" }
+    :: { request := "LeanSwe.Fs.relativeTo", errorKind := .notEmpty, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_relativeTo_never_notEmpty" }
+    :: { request := "LeanSwe.Fs.relativeTo", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_relativeTo_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.relativeTo", errorKind := .unsupported, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_relativeTo_never_unsupported" }
+    :: { request := "LeanSwe.Fs.relativeTo", errorKind := .wouldBlock, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_relativeTo_never_wouldBlock" }
+    :: { request := "LeanSwe.Fs.relativeTo", errorKind := .ioError, justification := .provedImpossible "LeanSwe.Fs.Proofs.fs_relativeTo_never_ioError" }
+    :: { request := "LeanSwe.Fs.readText", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readText_notFound" .real }
+    :: { request := "LeanSwe.Fs.readText", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.readText", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readText_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.readText", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readText_isADirectory" .real }
+    :: { request := "LeanSwe.Fs.readText", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readText_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.readText", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.readText", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readText_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.readText", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.readText", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.readText", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readText_ioError" .real }
+    :: { request := "LeanSwe.Fs.writeText", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeText_notFound" .real }
+    :: { request := "LeanSwe.Fs.writeText", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.writeText", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeText_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.writeText", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeText_isADirectory" .real }
+    :: { request := "LeanSwe.Fs.writeText", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeText_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.writeText", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.writeText", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeText_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.writeText", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.writeText", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.writeText", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeText_ioError" .real }
+    :: { request := "LeanSwe.Fs.appendText", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_appendText_notFound" .real }
+    :: { request := "LeanSwe.Fs.appendText", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_appendText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.appendText", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_appendText_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.appendText", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_appendText_isADirectory" .real }
+    :: { request := "LeanSwe.Fs.appendText", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_appendText_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.appendText", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_appendText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.appendText", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_appendText_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.appendText", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_appendText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.appendText", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_appendText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.appendText", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_appendText_ioError" .real }
+    :: { request := "LeanSwe.Fs.readBytes", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_notFound" .real }
+    :: { request := "LeanSwe.Fs.readBytes", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.readBytes", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.readBytes", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_isADirectory" .real }
+    :: { request := "LeanSwe.Fs.readBytes", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.readBytes", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.readBytes", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.readBytes", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.readBytes", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.readBytes", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_ioError" .real }
+    :: { request := "LeanSwe.Fs.writeBytes", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_notFound" .real }
+    :: { request := "LeanSwe.Fs.writeBytes", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.writeBytes", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.writeBytes", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_isADirectory" .real }
+    :: { request := "LeanSwe.Fs.writeBytes", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.writeBytes", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.writeBytes", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.writeBytes", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.writeBytes", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.writeBytes", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_ioError" .real }
+    :: { request := "LeanSwe.Fs.atomicWriteBytes", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_notFound" .real }
+    :: { request := "LeanSwe.Fs.atomicWriteBytes", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.atomicWriteBytes", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.atomicWriteBytes", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_isADirectory" .real }
+    :: { request := "LeanSwe.Fs.atomicWriteBytes", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.atomicWriteBytes", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.atomicWriteBytes", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.atomicWriteBytes", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.atomicWriteBytes", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.atomicWriteBytes", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_ioError" .real }
+    :: { request := "LeanSwe.Fs.atomicWriteText", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_notFound" .real }
+    :: { request := "LeanSwe.Fs.atomicWriteText", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.atomicWriteText", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.atomicWriteText", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_isADirectory" .real }
+    :: { request := "LeanSwe.Fs.atomicWriteText", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.atomicWriteText", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.atomicWriteText", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.atomicWriteText", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.atomicWriteText", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.atomicWriteText", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_ioError" .real }
+    :: { request := "LeanSwe.Fs.touch", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_touch_notFound" .real }
+    :: { request := "LeanSwe.Fs.touch", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_touch_alreadyExists" .real }
+    :: { request := "LeanSwe.Fs.touch", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_touch_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.touch", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_touch_isADirectory" .real }
+    :: { request := "LeanSwe.Fs.touch", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_touch_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.touch", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_touch_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.touch", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_touch_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.touch", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_touch_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.touch", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_touch_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.touch", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_touch_ioError" .real }
+    :: { request := "LeanSwe.Fs.mkdir", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_notFound" .real }
+    :: { request := "LeanSwe.Fs.mkdir", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_alreadyExists" .real }
+    :: { request := "LeanSwe.Fs.mkdir", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.mkdir", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.mkdir", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.mkdir", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.mkdir", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.mkdir", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.mkdir", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.mkdir", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_ioError" .real }
+    :: { request := "LeanSwe.Fs.unlink", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_unlink_notFound" .real }
+    :: { request := "LeanSwe.Fs.unlink", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_unlink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.unlink", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_unlink_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.unlink", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_unlink_isADirectory" .real }
+    :: { request := "LeanSwe.Fs.unlink", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_unlink_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.unlink", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_unlink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.unlink", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_unlink_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.unlink", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_unlink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.unlink", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_unlink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.unlink", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_unlink_ioError" .real }
+    :: { request := "LeanSwe.Fs.rmdir", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_notFound" .real }
+    :: { request := "LeanSwe.Fs.rmdir", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rmdir", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.rmdir", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rmdir", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.rmdir", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_notEmpty" .real }
+    :: { request := "LeanSwe.Fs.rmdir", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.rmdir", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rmdir", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rmdir", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_ioError" .real }
+    :: { request := "LeanSwe.Fs.rmtree", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_notFound" .real }
+    :: { request := "LeanSwe.Fs.rmtree", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rmtree", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.rmtree", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rmtree", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.rmtree", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rmtree", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.rmtree", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rmtree", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rmtree", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_ioError" .real }
+    :: { request := "LeanSwe.Fs.rename", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rename_notFound" .real }
+    :: { request := "LeanSwe.Fs.rename", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rename_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rename", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rename_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.rename", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rename_isADirectory" .real }
+    :: { request := "LeanSwe.Fs.rename", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rename_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.rename", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rename_notEmpty" .real }
+    :: { request := "LeanSwe.Fs.rename", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rename_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.rename", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rename_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rename", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rename_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rename", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rename_ioError" .real }
+    :: { request := "LeanSwe.Fs.copyFile", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_notFound" .real }
+    :: { request := "LeanSwe.Fs.copyFile", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.copyFile", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.copyFile", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_isADirectory" .real }
+    :: { request := "LeanSwe.Fs.copyFile", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.copyFile", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.copyFile", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.copyFile", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.copyFile", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.copyFile", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_ioError" .real }
+    :: { request := "LeanSwe.Fs.copyTree", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_notFound" .real }
+    :: { request := "LeanSwe.Fs.copyTree", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_alreadyExists" .real }
+    :: { request := "LeanSwe.Fs.copyTree", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.copyTree", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.copyTree", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.copyTree", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.copyTree", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.copyTree", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.copyTree", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.copyTree", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_ioError" .real }
+    :: { request := "LeanSwe.Fs.pathExists", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_notFound" .real }
+    :: { request := "LeanSwe.Fs.pathExists", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.pathExists", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.pathExists", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.pathExists", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.pathExists", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.pathExists", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.pathExists", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.pathExists", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.pathExists", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_ioError" .real }
+    :: { request := "LeanSwe.Fs.isFile", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isFile_notFound" .real }
+    :: { request := "LeanSwe.Fs.isFile", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isFile_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.isFile", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isFile_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.isFile", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isFile_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.isFile", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isFile_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.isFile", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isFile_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.isFile", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isFile_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.isFile", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isFile_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.isFile", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isFile_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.isFile", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isFile_ioError" .real }
+    :: { request := "LeanSwe.Fs.isDir", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isDir_notFound" .real }
+    :: { request := "LeanSwe.Fs.isDir", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isDir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.isDir", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isDir_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.isDir", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isDir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.isDir", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isDir_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.isDir", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isDir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.isDir", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isDir_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.isDir", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isDir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.isDir", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isDir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.isDir", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isDir_ioError" .real }
+    :: { request := "LeanSwe.Fs.isSymlink", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_notFound" .real }
+    :: { request := "LeanSwe.Fs.isSymlink", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.isSymlink", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.isSymlink", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.isSymlink", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.isSymlink", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.isSymlink", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.isSymlink", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.isSymlink", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.isSymlink", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_ioError" .real }
+    :: { request := "LeanSwe.Fs.stat", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_stat_notFound" .real }
+    :: { request := "LeanSwe.Fs.stat", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_stat_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.stat", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_stat_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.stat", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_stat_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.stat", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_stat_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.stat", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_stat_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.stat", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_stat_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.stat", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_stat_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.stat", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_stat_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.stat", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_stat_ioError" .real }
+    :: { request := "LeanSwe.Fs.lstat", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_lstat_notFound" .real }
+    :: { request := "LeanSwe.Fs.lstat", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_lstat_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.lstat", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_lstat_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.lstat", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_lstat_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.lstat", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_lstat_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.lstat", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_lstat_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.lstat", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_lstat_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.lstat", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_lstat_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.lstat", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_lstat_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.lstat", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_lstat_ioError" .real }
+    :: { request := "LeanSwe.Fs.chmod", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_chmod_notFound" .real }
+    :: { request := "LeanSwe.Fs.chmod", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_chmod_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.chmod", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_chmod_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.chmod", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_chmod_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.chmod", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_chmod_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.chmod", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_chmod_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.chmod", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_chmod_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.chmod", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_chmod_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.chmod", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_chmod_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.chmod", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_chmod_ioError" .real }
+    :: { request := "LeanSwe.Fs.symlink", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_symlink_notFound" .real }
+    :: { request := "LeanSwe.Fs.symlink", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_symlink_alreadyExists" .real }
+    :: { request := "LeanSwe.Fs.symlink", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_symlink_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.symlink", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_symlink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.symlink", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_symlink_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.symlink", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_symlink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.symlink", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_symlink_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.symlink", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_symlink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.symlink", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_symlink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.symlink", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_symlink_ioError" .real }
+    :: { request := "LeanSwe.Fs.readLink", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readLink_notFound" .real }
+    :: { request := "LeanSwe.Fs.readLink", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readLink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.readLink", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readLink_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.readLink", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readLink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.readLink", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readLink_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.readLink", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readLink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.readLink", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readLink_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.readLink", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readLink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.readLink", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readLink_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.readLink", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_readLink_ioError" .real }
+    :: { request := "LeanSwe.Fs.resolve", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_resolve_notFound" .real }
+    :: { request := "LeanSwe.Fs.resolve", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_resolve_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.resolve", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_resolve_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.resolve", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_resolve_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.resolve", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_resolve_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.resolve", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_resolve_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.resolve", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_resolve_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.resolve", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_resolve_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.resolve", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_resolve_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.resolve", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_resolve_ioError" .real }
+    :: { request := "LeanSwe.Fs.cwd", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_cwd_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.cwd", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_cwd_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.cwd", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_cwd_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.cwd", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_cwd_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.cwd", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_cwd_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.cwd", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_cwd_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.cwd", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_cwd_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.cwd", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_cwd_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.cwd", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_cwd_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.cwd", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_cwd_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.listDir", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_listDir_notFound" .real }
+    :: { request := "LeanSwe.Fs.listDir", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_listDir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.listDir", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_listDir_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.listDir", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_listDir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.listDir", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_listDir_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.listDir", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_listDir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.listDir", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_listDir_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.listDir", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_listDir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.listDir", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_listDir_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.listDir", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_listDir_ioError" .real }
+    :: { request := "LeanSwe.Fs.walk", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_walk_notFound" .real }
+    :: { request := "LeanSwe.Fs.walk", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_walk_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.walk", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_walk_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.walk", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_walk_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.walk", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_walk_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.walk", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_walk_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.walk", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_walk_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.walk", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_walk_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.walk", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_walk_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.walk", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_walk_ioError" .real }
+    :: { request := "LeanSwe.Fs.glob", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_glob_notFound" .real }
+    :: { request := "LeanSwe.Fs.glob", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_glob_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.glob", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_glob_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.glob", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_glob_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.glob", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_glob_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.glob", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_glob_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.glob", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_glob_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.glob", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_glob_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.glob", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_glob_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.glob", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_glob_ioError" .real }
+    :: { request := "LeanSwe.Fs.rglob", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rglob_notFound" .real }
+    :: { request := "LeanSwe.Fs.rglob", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rglob_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rglob", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rglob_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.rglob", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rglob_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rglob", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rglob_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.rglob", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rglob_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rglob", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rglob_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.rglob", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rglob_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rglob", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rglob_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.rglob", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_rglob_ioError" .real }
+    :: { request := "LeanSwe.Fs.withFileLock", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_notFound" .real }
+    :: { request := "LeanSwe.Fs.withFileLock", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.withFileLock", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.withFileLock", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_isADirectory" .real }
+    :: { request := "LeanSwe.Fs.withFileLock", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.withFileLock", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.withFileLock", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.withFileLock", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.withFileLock", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.withFileLock", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.tryWithFileLock", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_notFound" .real }
+    :: { request := "LeanSwe.Fs.tryWithFileLock", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.tryWithFileLock", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.tryWithFileLock", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_isADirectory" .real }
+    :: { request := "LeanSwe.Fs.tryWithFileLock", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.tryWithFileLock", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.tryWithFileLock", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.tryWithFileLock", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.tryWithFileLock", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.tryWithFileLock", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.withSubtree", errorKind := .notFound, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_notFound" .real }
+    :: { request := "LeanSwe.Fs.withSubtree", errorKind := .alreadyExists, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.withSubtree", errorKind := .permissionDenied, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_permissionDenied" .real }
+    :: { request := "LeanSwe.Fs.withSubtree", errorKind := .isADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.withSubtree", errorKind := .notADirectory, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_notADirectory" .real }
+    :: { request := "LeanSwe.Fs.withSubtree", errorKind := .notEmpty, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.withSubtree", errorKind := .invalidInput, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_invalidInput" .real }
+    :: { request := "LeanSwe.Fs.withSubtree", errorKind := .unsupported, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.withSubtree", errorKind := .wouldBlock, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_mocked" .mocked }
+    :: { request := "LeanSwe.Fs.withSubtree", errorKind := .ioError, justification := .tested "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_ioError" .real }
+    :: []
+  )
 
 end LeanSwe.Fs

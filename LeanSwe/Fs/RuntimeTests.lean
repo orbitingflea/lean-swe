@@ -1,4 +1,8 @@
+import Core.Assumptions
 import LeanSwe.Fs.Interface
+import LeanSwe.Fs.SysBridge
+import LeanSwe.LinuxSyscall.Common.Types
+import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.Process.Interface
 import LeanSwe.Process.SysBridge
 
@@ -391,7 +395,7 @@ private def testAmbientSafety (tmp : String) : IO Unit := do
     let _ ← Fs.unlink readyPath true
     let _ ← Fs.unlink stopPath true
 
-  let detApi := Fs.Internal.mkApiM { Raw.defaultOps with monotonicNonce := pure 777 }
+  let detApi := Fs.Internal.mkApiM { SysBridge.defaultOps with monotonicNonce := pure 777 }
   let prePlanted := Fs.join workDir ".payload.bin.tmp.777"
   assertOk (← Fs.symlink symVictim prePlanted) "pre-plant tmp symlink"
   assertErrKind (← detApi.atomicWriteBytes binTarget (ByteArray.mk #[1, 2])) .alreadyExists
@@ -404,7 +408,7 @@ private def testAmbientSafety (tmp : String) : IO Unit := do
   assertOk (← Fs.unlink prePlanted) "unlink prePlanted"
 
   let failRenameApi := Fs.Internal.mkApiM
-    { Raw.defaultOps with
+    { SysBridge.defaultOps with
       monotonicNonce := pure 888
       rename := fun _ _ => pure (.error { kind := .permissionDenied, message := "injected rename error" }) }
   let expectedTmp := Fs.join workDir ".payload.bin.tmp.888"
@@ -418,20 +422,20 @@ private def testAmbientSafety (tmp : String) : IO Unit := do
 private def testWithSubtreeExtra (root : String) : IO Unit := do
   let payload := ByteArray.mk #[1, 2, 3, 4]
   let rExtra ← Fs.withSubtree root fun sub => do
-    let rUnlinkMissPre ← assertOk (Raw.RelPath.parse "no_such_dir/no_such_file") "parse no_such_dir/no_such_file"
+    let rUnlinkMissPre ← assertOk (RelPath.parse "no_such_dir/no_such_file") "parse no_such_dir/no_such_file"
     assertOk (← sub.unlink rUnlinkMissPre true) "unlink missing intermediate missingOk=true"
     assertErrKind (← sub.unlink rUnlinkMissPre false) .notFound "unlink missing intermediate missingOk=false"
 
-    let rRoSub ← assertOk (Raw.RelPath.parse "ro_sub") "parse ro_sub"
-    let rRoInner ← assertOk (Raw.RelPath.parse "ro_sub/entry.txt") "parse ro_sub/entry.txt"
+    let rRoSub ← assertOk (RelPath.parse "ro_sub") "parse ro_sub"
+    let rRoInner ← assertOk (RelPath.parse "ro_sub/entry.txt") "parse ro_sub/entry.txt"
     assertOk (← sub.mkdir rRoSub false false) "mkdir ro_sub"
     assertOk (← sub.atomicWriteBytes rRoInner payload) "write ro_sub/entry.txt"
-    assertOk (← Raw.chmod (Fs.join root "ro_sub") 0o400) "chmod 0400 ro_sub"
+    assertOk (← Fs.chmod (Fs.join root "ro_sub") 0o400) "chmod 0400 ro_sub"
     let roListed1 ← assertOk (← sub.listDir rRoSub) "listDir 0400 ro_sub"
     let roListed2 ← assertOk (← sub.listDir rRoSub) "listDir 0400 ro_sub twice"
     assertTrue (roListed1.map (·.val) == #["entry.txt"] && roListed2.map (·.val) == #["entry.txt"])
       "listDir succeeds on 0400 subdirectory"
-    assertOk (← Raw.chmod (Fs.join root "ro_sub") 0o755) "restore chmod 0755 ro_sub"
+    assertOk (← Fs.chmod (Fs.join root "ro_sub") 0o755) "restore chmod 0755 ro_sub"
     assertOk (← sub.rmtree rRoSub false) "cleanup ro_sub"
     return .ok ()
   assertOk rExtra "withSubtree extra checks"
@@ -456,12 +460,12 @@ private def testWithSubtree (tmp : String) : IO Unit := do
 
   let noExecDir := Fs.join tmp "no_exec_root"
   assertOk (← Fs.mkdir noExecDir false false) "mkdir no_exec_root"
-  assertOk (← Raw.chmod noExecDir 0o400) "chmod 0400 no_exec_root"
+  assertOk (← Fs.chmod noExecDir 0o400) "chmod 0400 no_exec_root"
   assertErrKind (← Fs.withSubtree noExecDir fun _ => do
     ranRef.set true
     return .ok ()) .permissionDenied "withSubtree refuses directory lacking owner search bit"
   assertTrue (!(← ranRef.get)) "0400 root never runs action"
-  assertOk (← Raw.chmod noExecDir 0o755) "restore chmod 0755 no_exec_root"
+  assertOk (← Fs.chmod noExecDir 0o755) "restore chmod 0755 no_exec_root"
   assertOk (← Fs.rmdir noExecDir) "rmdir no_exec_root"
 
   let escaped ← try
@@ -479,31 +483,31 @@ private def testWithSubtree (tmp : String) : IO Unit := do
   assertOk (← Fs.writeBytes pOutside outsideBytes) "write outside.bin"
 
   let rUnit ← Fs.withSubtree root fun sub => do
-    let rootStat ← assertOk (← sub.lstat Raw.RelPath.root) "sub.lstat .root"
+    let rootStat ← assertOk (← sub.lstat RelPath.root) "sub.lstat .root"
     assertTrue (rootStat.kind == .dir) "rootStat kind == .dir"
-    assertOk (← sub.mkdir Raw.RelPath.root false true) "mkdir .root existOk=true"
-    assertErrKind (← sub.mkdir Raw.RelPath.root false false) .alreadyExists "mkdir .root existOk=false"
-    assertErrKind (← sub.readRegular Raw.RelPath.root) .isADirectory "readRegular .root"
+    assertOk (← sub.mkdir RelPath.root false true) "mkdir .root existOk=true"
+    assertErrKind (← sub.mkdir RelPath.root false false) .alreadyExists "mkdir .root existOk=false"
+    assertErrKind (← sub.readRegular RelPath.root) .isADirectory "readRegular .root"
     let payload := ByteArray.mk #[1, 2, 3, 4]
-    assertErrKind (← sub.atomicWriteBytes Raw.RelPath.root payload) .invalidInput "atomicWriteBytes .root"
-    assertErrKind (← sub.unlink Raw.RelPath.root true) .invalidInput "unlink .root"
-    assertErrKind (← sub.rmdir Raw.RelPath.root) .invalidInput "rmdir .root"
-    assertErrKind (← sub.rmtree Raw.RelPath.root true) .invalidInput "rmtree .root"
-    assertErrKind (← sub.symlink "x" Raw.RelPath.root) .invalidInput "symlink .root"
-    assertErrKind (← sub.withFileLock Raw.RelPath.root .exclusive true (pure (.ok ()))) .invalidInput
+    assertErrKind (← sub.atomicWriteBytes RelPath.root payload) .invalidInput "atomicWriteBytes .root"
+    assertErrKind (← sub.unlink RelPath.root true) .invalidInput "unlink .root"
+    assertErrKind (← sub.rmdir RelPath.root) .invalidInput "rmdir .root"
+    assertErrKind (← sub.rmtree RelPath.root true) .invalidInput "rmtree .root"
+    assertErrKind (← sub.symlink "x" RelPath.root) .invalidInput "symlink .root"
+    assertErrKind (← sub.withFileLock RelPath.root .exclusive true (pure (.ok ()))) .invalidInput
       "withFileLock .root"
-    assertErrKind (← sub.tryWithFileLock Raw.RelPath.root .exclusive true (pure (.ok ()))) .invalidInput
+    assertErrKind (← sub.tryWithFileLock RelPath.root .exclusive true (pure (.ok ()))) .invalidInput
       "tryWithFileLock .root"
 
-    let rNested ← assertOk (Raw.RelPath.parse "a/b/c") "parse a/b/c"
-    let rParentA ← assertOk (Raw.RelPath.parse "a") "parse a"
-    let rParentB ← assertOk (Raw.RelPath.parse "a/b") "parse a/b"
+    let rNested ← assertOk (RelPath.parse "a/b/c") "parse a/b/c"
+    let rParentA ← assertOk (RelPath.parse "a") "parse a"
+    let rParentB ← assertOk (RelPath.parse "a/b") "parse a/b"
     assertErrKind (← sub.mkdir rNested false false) .notFound "mkdir parents=false missing intermediate"
     assertOk (← sub.mkdir rNested true false) "mkdir parents=true nested"
     assertOk (← sub.mkdir rNested false true) "mkdir existOk=true existing dir"
     assertErrKind (← sub.mkdir rNested false false) .alreadyExists "mkdir existOk=false existing dir"
 
-    let rData ← assertOk (Raw.RelPath.parse "a/b/c/data.bin") "parse data.bin"
+    let rData ← assertOk (RelPath.parse "a/b/c/data.bin") "parse data.bin"
     assertOk (← sub.atomicWriteBytes rData payload) "atomicWriteBytes nested"
     let got ← assertOk (← sub.readRegular rData) "readRegular nested"
     assertTrue (got == payload) "readRegular roundtrip"
@@ -511,12 +515,12 @@ private def testWithSubtree (tmp : String) : IO Unit := do
     assertTrue (stData.kind == .file && stData.byteSize == payload.size) "lstat data.bin metadata"
     assertErrKind (← sub.mkdir rData false true) .alreadyExists "mkdir existOk=true rejects existing regular file"
 
-    let max255Rel ← assertOk (Raw.RelPath.parse ("a/" ++ String.ofList (List.replicate 255 'z'))) "parse 255 leaf"
+    let max255Rel ← assertOk (RelPath.parse ("a/" ++ String.ofList (List.replicate 255 'z'))) "parse 255 leaf"
     assertOk (← sub.atomicWriteBytes max255Rel payload) "atomicWriteBytes 255-byte leaf"
     assertTrue ((← assertOk (← sub.readRegular max255Rel) "readRegular 255 leaf") == payload) "readRegular 255"
     assertOk (← sub.unlink max255Rel false) "unlink 255 leaf"
 
-    let rSymLeaf ← assertOk (Raw.RelPath.parse "sym_leaf") "parse sym_leaf"
+    let rSymLeaf ← assertOk (RelPath.parse "sym_leaf") "parse sym_leaf"
     assertOk (← sub.symlink pOutside rSymLeaf) "symlink sym_leaf"
     let stSym ← assertOk (← sub.lstat rSymLeaf) "lstat sym_leaf"
     assertTrue (stSym.kind == .symlink) "sym_leaf is symlink"
@@ -538,8 +542,8 @@ private def testWithSubtree (tmp : String) : IO Unit := do
       "replaced leaf symlink content"
     assertOkBytesEq (← Fs.readBytes pOutside) outsideBytes "outside symlink target preserved after replacement"
 
-    let rSymDir ← assertOk (Raw.RelPath.parse "sym_dir") "parse sym_dir"
-    let rSymDirSub ← assertOk (Raw.RelPath.parse "sym_dir/sub") "parse sym_dir/sub"
+    let rSymDir ← assertOk (RelPath.parse "sym_dir") "parse sym_dir"
+    let rSymDirSub ← assertOk (RelPath.parse "sym_dir/sub") "parse sym_dir/sub"
     assertOk (← sub.symlink "a" rSymDir) "symlink sym_dir -> a"
     assertErrKind (← sub.lstat rSymDirSub) .invalidInput "lstat refuses ancestor symlink"
     assertErrKind (← sub.readRegular rSymDirSub) .invalidInput "readRegular refuses ancestor symlink"
@@ -555,14 +559,14 @@ private def testWithSubtree (tmp : String) : IO Unit := do
       "withFileLock refuses ancestor symlink"
     assertErrKind (← sub.tryWithFileLock rSymDirSub .exclusive true (pure (.ok ()))) .invalidInput
       "tryWithFileLock refuses ancestor symlink"
-    assertErrKind (← sub.lstat (← assertOk (Raw.RelPath.parse "a/b/sub_missing") "parse")) .notFound
+    assertErrKind (← sub.lstat (← assertOk (RelPath.parse "a/b/sub_missing") "parse")) .notFound
       "a/b untouched"
 
-    let listedRoot ← assertOk (← sub.listDir Raw.RelPath.root) "listDir .root"
+    let listedRoot ← assertOk (← sub.listDir RelPath.root) "listDir .root"
     assertTrue (List.Pairwise (fun x y => x.val < y.val) listedRoot.toList) "listDir strictly sorted"
     assertTrue (listedRoot.map (·.val) == #["a", "sym_dir", "sym_leaf"]) "listDir entries match"
 
-    let walked ← assertOk (← sub.walk Raw.RelPath.root) "walk .root"
+    let walked ← assertOk (← sub.walk RelPath.root) "walk .root"
     match walked.toList with
     | e0 :: _ =>
       assertTrue (e0.root == ".") "walk starts at ."
@@ -580,7 +584,7 @@ private def testWithSubtree (tmp : String) : IO Unit := do
     let listedB ← assertOk (← sub.listDir rParentB) "listDir a/b after dir atomicWrite failure"
     assertTrue (listedB.map (·.val) == #["c"]) "no leaked .t temp file after EISDIR"
 
-    let rLock ← assertOk (Raw.RelPath.parse "a/work.lock") "parse work.lock"
+    let rLock ← assertOk (RelPath.parse "a/work.lock") "parse work.lock"
     let lockRes : Except FsError Unit ← sub.withFileLock rLock .exclusive true do
       let contended ← assertOk (← sub.tryWithFileLock rLock .exclusive false do
         ranRef.set true
@@ -598,40 +602,40 @@ private def testWithSubtree (tmp : String) : IO Unit := do
 
     assertErrKind (← sub.rmdir rParentA) .notEmpty "rmdir non-empty a"
     assertErrKind (← sub.unlink rParentA false) .isADirectory "unlink dir fails isADirectory"
-    assertOk (← sub.rmtree (← assertOk (Raw.RelPath.parse "absent_dir") "parse") true) "rmtree ignoreMissing=true"
-    assertErrKind (← sub.rmtree (← assertOk (Raw.RelPath.parse "absent_dir") "parse") false) .notFound
+    assertOk (← sub.rmtree (← assertOk (RelPath.parse "absent_dir") "parse") true) "rmtree ignoreMissing=true"
+    assertErrKind (← sub.rmtree (← assertOk (RelPath.parse "absent_dir") "parse") false) .notFound
       "rmtree ignoreMissing=false"
     assertErrKind (← sub.rmtree rSymLeaf false) .notADirectory "rmtree regular file"
     assertOk (← sub.rmtree rParentA false) "rmtree a"
     assertErrKind (← sub.lstat rParentA) .notFound "a notFound after rmtree"
 
     if isNonRoot then
-      let rPart ← assertOk (Raw.RelPath.parse "part") "parse part"
-      let rPart1 ← assertOk (Raw.RelPath.parse "part/1_file") "parse part/1_file"
-      let rPart2 ← assertOk (Raw.RelPath.parse "part/2_dir") "parse part/2_dir"
+      let rPart ← assertOk (RelPath.parse "part") "parse part"
+      let rPart1 ← assertOk (RelPath.parse "part/1_file") "parse part/1_file"
+      let rPart2 ← assertOk (RelPath.parse "part/2_dir") "parse part/2_dir"
       assertOk (← sub.mkdir rPart false false) "mkdir part"
       assertOk (← sub.atomicWriteBytes rPart1 payload) "write part/1_file"
       assertOk (← sub.mkdir rPart2 false false) "mkdir part/2_dir"
-      assertOk (← Raw.chmod (Fs.join root "part/2_dir") 0o000) "chmod 0000 part/2_dir"
+      assertOk (← Fs.chmod (Fs.join root "part/2_dir") 0o000) "chmod 0000 part/2_dir"
       assertErrKind (← sub.rmtree rPart false) .permissionDenied "rmtree propagates child permissionDenied"
       assertErrKind (← sub.lstat rPart1) .notFound "partial sibling unlinks preserved without rollback"
-      assertOk (← Raw.chmod (Fs.join root "part/2_dir") 0o755) "restore chmod part/2_dir"
+      assertOk (← Fs.chmod (Fs.join root "part/2_dir") 0o755) "restore chmod part/2_dir"
       assertOk (← sub.rmtree rPart false) "cleanup part"
 
-      let rUnrd ← assertOk (Raw.RelPath.parse "unreadable") "parse unreadable"
+      let rUnrd ← assertOk (RelPath.parse "unreadable") "parse unreadable"
       assertOk (← sub.mkdir rUnrd false false) "mkdir unreadable"
-      assertOk (← Raw.chmod (Fs.join root "unreadable") 0o111) "chmod 0111 unreadable"
+      assertOk (← Fs.chmod (Fs.join root "unreadable") 0o111) "chmod 0111 unreadable"
       assertErrKind (← sub.walk rUnrd) .permissionDenied "walk propagates permissionDenied"
-      assertOk (← Raw.chmod (Fs.join root "unreadable") 0o755) "restore unreadable chmod"
+      assertOk (← Fs.chmod (Fs.join root "unreadable") 0o755) "restore unreadable chmod"
       assertOk (← sub.rmdir rUnrd) "cleanup unreadable"
 
     let movedRoot := Fs.join tmp "subroot_moved"
     assertOk (← Fs.rename root movedRoot) "external rename of open subtree root"
-    let rPinnedFile ← assertOk (Raw.RelPath.parse "pinned.txt") "parse pinned.txt"
+    let rPinnedFile ← assertOk (RelPath.parse "pinned.txt") "parse pinned.txt"
     assertOk (← sub.atomicWriteBytes rPinnedFile payload) "write inside moved subtree via pinned descriptor"
     assertOkBytesEq (← Fs.readBytes (Fs.join movedRoot "pinned.txt")) payload "read back from renamed path"
 
-    let fifoRel ← assertOk (Raw.RelPath.parse "sub.fifo") "parse sub.fifo"
+    let fifoRel ← assertOk (RelPath.parse "sub.fifo") "parse sub.fifo"
     match ← Process.runCommand "mkfifo" #[Fs.join movedRoot "sub.fifo"] with
     | .ok out => assertTrue (out.exitCode == 0) "mkfifo sub.fifo"
     | .error e => throw (IO.userError s!"mkfifo failed: {repr e}")
@@ -642,21 +646,21 @@ private def testWithSubtree (tmp : String) : IO Unit := do
   let _ ← assertOk rUnit "withSubtree main checks"
 
   let movedRoot := Fs.join tmp "subroot_moved"
-  let failRenameOps : RawDirOps :=
-    { Fs.defaultDirOps with
-      freshTempName := pure (Raw.EntryName.lit ".t.fail_tmp")
+  let failRenameOps :=
+    { SysBridge.defaultDirOps with
+      freshTempName := pure (EntryName.lit ".t.fail_tmp")
       renameAt := fun _ _ _ _ => pure (.error { kind := .ioError, message := "injected rename error" }) }
   let failOpener := Fs.Internal.mkSubtreeOpenerM failRenameOps
   let rInjected ← failOpener.withSubtree movedRoot fun sub => do
-    sub.atomicWriteBytes (← assertOk (Raw.RelPath.parse "target.bin") "parse") (ByteArray.mk #[5])
+    sub.atomicWriteBytes (← assertOk (RelPath.parse "target.bin") "parse") (ByteArray.mk #[5])
   assertErrKind rInjected .ioError "atomicWriteBytes propagates rename error"
   assertOkEq (← Fs.pathExists (Fs.join movedRoot ".t.fail_tmp")) false "atomicWriteBytes cleans .t temp on error"
 
-  let collideOps : RawDirOps :=
-    { Fs.defaultDirOps with freshTempName := pure (Raw.EntryName.lit ".t.collide") }
+  let collideOps :=
+    { SysBridge.defaultDirOps with freshTempName := pure (EntryName.lit ".t.collide") }
   assertOk (← Fs.writeText (Fs.join movedRoot ".t.collide") "held") "plant .t.collide"
   let rCollide ← (Fs.Internal.mkSubtreeOpenerM collideOps).withSubtree movedRoot fun sub => do
-    sub.atomicWriteBytes (← assertOk (Raw.RelPath.parse "never.bin") "parse") (ByteArray.mk #[5])
+    sub.atomicWriteBytes (← assertOk (RelPath.parse "never.bin") "parse") (ByteArray.mk #[5])
   assertErrKind rCollide .alreadyExists "atomicWriteBytes returns alreadyExists after 16 collisions"
   assertOkEq (← Fs.pathExists (Fs.join movedRoot "never.bin")) false "never.bin absent after collision exhaustion"
 
@@ -664,11 +668,1492 @@ private def testWithSubtree (tmp : String) : IO Unit := do
   assertOk (← Fs.rmtree movedRoot) "cleanup subroot_moved"
   assertOk (← Fs.unlink pOutside) "cleanup outside.bin"
 
+private def mkErrFilesOps (eno : LinuxSyscall.Errno) : LinuxSyscall.Files.FilesOpsM IO Unit :=
+  { openat := fun _ _ _ _ => pure (.error eno)
+    openat2 := fun _ _ _ => pure (.error eno)
+    close := fun _ => pure (.ok ())
+    read := fun _ _ => pure (.error eno)
+    write := fun _ _ => pure (.error eno)
+    fstat := fun _ => pure (.error eno)
+    fstatat := fun _ _ _ => pure (.error eno)
+    faccessat := fun _ _ _ _ => pure (.error eno)
+    mkdirat := fun _ _ _ => pure (.error eno)
+    unlinkat := fun _ _ _ => pure (.error eno)
+    renameat2 := fun _ _ _ _ _ => pure (.error eno)
+    symlinkat := fun _ _ _ => pure (.error eno)
+    readlinkat := fun _ _ _ => pure (.error eno)
+    getdents64 := fun _ _ => pure (.error eno)
+    fchmodat := fun _ _ _ => pure (.error eno)
+    fchmod := fun _ _ => pure (.error eno)
+    flock := fun _ _ => pure (.error eno)
+    fcntl := fun _ _ => pure (.error eno)
+    fsync := fun _ => pure (.error eno)
+    getcwd := fun _ => pure (.error eno)
+    lseek := fun _ _ _ => pure (.error eno)
+    reopenReadOnly := fun _ => pure (.error eno)
+    dupStdio := fun _ => pure (.error eno) }
+
+private def testSysBridgeEdgeCases (tmp : String) : IO Unit := do
+  for eno in #[LinuxSyscall.Errno.EMFILE, LinuxSyscall.Errno.ENFILE] do
+    let mockFiles := mkErrFilesOps eno
+    let rawOps := SysBridge.mkRawFsOpsM mockFiles (pure 1)
+    let rawDir := SysBridge.mkRawDirOpsM mockFiles (pure 1)
+    assertErrKind (← rawOps.readBytes "/x") .ioError "EMFILE/ENFILE readBytes -> .ioError"
+    assertErrKind (← rawOps.createFileNew "/x" ByteArray.empty) .ioError "EMFILE/ENFILE createFileNew -> .ioError"
+    assertErrKind (← rawOps.readDir "/x") .ioError "EMFILE/ENFILE readDir -> .ioError"
+    assertErrKind (← rawOps.acquireLock "/x" .exclusive true true) .ioError "EMFILE/ENFILE acquireLock -> .ioError"
+    assertErrKind (← rawDir.openDir "/x") .ioError "EMFILE/ENFILE openDir -> .ioError"
+    assertErrKind (← rawDir.openDirAt () (EntryName.lit "a")) .ioError "EMFILE/ENFILE openDirAt -> .ioError"
+    assertErrKind (← rawDir.readRegularAt () (EntryName.lit "a")) .ioError "EMFILE/ENFILE readRegularAt -> .ioError"
+    assertErrKind (← rawDir.createFileAt () (EntryName.lit "a") ByteArray.empty) .ioError "EMFILE/ENFILE createFileAt -> .ioError"
+    assertErrKind (← rawDir.acquireLockAt () (EntryName.lit "a") .exclusive true true) .ioError "EMFILE/ENFILE acquireLockAt -> .ioError"
+
+  let bigBytes := ByteArray.mk (Array.replicate 140000 0xCD)
+  let bigPath := Fs.join tmp "big_multichunk.bin"
+  assertOk (← Fs.atomicWriteBytes bigPath bigBytes) "atomicWriteBytes 140KB"
+  assertOkBytesEq (← Fs.readBytes bigPath) bigBytes "readBytes 140KB exact"
+  assertOk (← Fs.unlink bigPath) "unlink big_multichunk.bin"
+
+  let concDir := Fs.join tmp "conc_readdir"
+  assertOk (← Fs.mkdir concDir) "mkdir conc_readdir"
+  for i in List.range 40 do
+    assertOk (← Fs.writeText (Fs.join concDir s!"f_{i}.txt") "x") s!"create f_{i}"
+  let rConc ← Fs.withSubtree concDir fun sub => do
+    let mut tasks : Array (Task (Except IO.Error (Except FsError (Array EntryName)))) := #[]
+    for _ in List.range 8 do
+      let t ← IO.asTask (prio := .dedicated) (sub.listDir RelPath.root)
+      tasks := tasks.push t
+    for t in tasks do
+      match ← IO.wait t with
+      | .error ioErr => throw ioErr
+      | .ok rList =>
+        let xs ← assertOk rList "concurrent sub.listDir"
+        assertTrue (xs.size == 40) s!"concurrent listDir count 40 (got {xs.size})"
+    return .ok ()
+  assertOk rConc "concurrent readDirAt via withSubtree"
+  assertOk (← Fs.rmtree concDir) "cleanup conc_readdir"
+
+  let loopA := Fs.join tmp "loop_a"
+  let loopB := Fs.join tmp "loop_b"
+  assertOk (← Fs.symlink loopB loopA) "symlink loop_a -> loop_b"
+  assertOk (← Fs.symlink loopA loopB) "symlink loop_b -> loop_a"
+  assertErrKind (← Fs.resolve loopA) .ioError "resolve symlink loop returns ioError (ELOOP)"
+  let regF := Fs.join tmp "not_a_dir.txt"
+  assertOk (← Fs.writeText regF "hi") "write not_a_dir.txt"
+  assertErrKind (← Fs.resolve (regF ++ "/")) .notADirectory "resolve trailing slash on file returns notADirectory"
+  assertOkEq (← Fs.resolve "/") "/" "resolve root returns /"
+  assertOk (← Fs.unlink regF) "unlink not_a_dir.txt"
+  assertOk (← Fs.unlink loopA) "unlink loop_a"
+  assertOk (← Fs.unlink loopB) "unlink loop_b"
+
+  let n1 ← SysBridge.defaultOps.monotonicNonce
+  let n2 ← SysBridge.defaultOps.monotonicNonce
+  let n3 ← SysBridge.defaultOps.monotonicNonce
+  assertTrue (n1 > 65536 && n1 < n2 && n2 < n3)
+    s!"monotonicNonce must be strictly increasing and avoid raw low counter (got {n1}, {n2}, {n3})"
+  let staleTarget := Fs.join tmp "stale_atomic.bin"
+  let staleTmp1 := Fs.join tmp ".stale_atomic.bin.tmp.1"
+  let staleTmp2 := Fs.join tmp ".stale_atomic.bin.tmp.2"
+  assertOk (← Fs.writeText staleTmp1 "stale1") "plant stale .tmp.1"
+  assertOk (← Fs.writeText staleTmp2 "stale2") "plant stale .tmp.2"
+  assertOk (← Fs.atomicWriteBytes staleTarget (ByteArray.mk #[7, 8, 9])) "atomicWriteBytes ignores stale .tmp.1/.tmp.2"
+  assertOkBytesEq (← Fs.readBytes staleTarget) (ByteArray.mk #[7, 8, 9]) "stale_atomic.bin bytes"
+  assertOkEq (← Fs.readText staleTmp1) "stale1" "stale .tmp.1 preserved"
+  assertOkEq (← Fs.readText staleTmp2) "stale2" "stale .tmp.2 preserved"
+  assertOk (← Fs.unlink staleTarget) "cleanup stale_atomic.bin"
+  assertOk (← Fs.unlink staleTmp1) "cleanup stale .tmp.1"
+  assertOk (← Fs.unlink staleTmp2) "cleanup stale .tmp.2"
+  let tn1 ← SysBridge.defaultDirOps.freshTempName
+  let tn2 ← SysBridge.defaultDirOps.freshTempName
+  assertTrue (tn1 != tn2 && tn1.val != ".t.1" && tn1.val != ".t.2" && tn2.val != ".t.1" && tn2.val != ".t.2")
+    s!"freshTempName must be distinct and avoid raw low counter (got {tn1.val}, {tn2.val})"
+  let staleSubDir := Fs.join tmp "stale_sub_root"
+  assertOk (← Fs.mkdir staleSubDir) "mkdir stale_sub_root"
+  assertOk (← Fs.writeText (Fs.join staleSubDir ".t.1") "stale_t1") "plant stale .t.1"
+  assertOk (← Fs.writeText (Fs.join staleSubDir ".t.2") "stale_t2") "plant stale .t.2"
+  let rStaleSub ← Fs.withSubtree staleSubDir fun sub => do
+    let rel ← assertOk (RelPath.parse "out.bin") "parse out.bin"
+    sub.atomicWriteBytes rel (ByteArray.mk #[42])
+  assertOk rStaleSub "withSubtree atomicWriteBytes ignores stale .t.1/.t.2"
+  assertOkBytesEq (← Fs.readBytes (Fs.join staleSubDir "out.bin")) (ByteArray.mk #[42]) "out.bin bytes"
+  assertOk (← Fs.rmtree staleSubDir) "cleanup stale_sub_root"
+
 private def withTempDir {α : Type} (f : String → IO α) : IO α :=
   IO.FS.withTempDir fun dir => f dir.toString
 
+private def nulPath : String :=
+  "a" ++ String.singleton (Char.ofNat 0) ++ "b"
+
+private def runRealNotFound {α : Type} (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    assertErrKind (← act (Fs.join tmp "missing_entry")) .notFound "real notFound"
+
+private def runRealNotFoundChild {α : Type} (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    assertErrKind (← act (Fs.joinMany #[tmp, "missing_dir", "child"])) .notFound "real notFound child"
+
+private def runRealPermDeniedFile {α : Type} (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    let f := Fs.join tmp "no_read.txt"
+    assertOk (← Fs.writeText f "secret") "create no_read.txt"
+    assertOk (← Fs.chmod f 0o000) "chmod 0o000 file"
+    try
+      assertErrKind (← act f) .permissionDenied "real permissionDenied file"
+    finally
+      let _ ← Fs.chmod f 0o644
+
+private def runRealPermDeniedDir {α : Type} (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    let d := Fs.join tmp "no_access_dir"
+    assertOk (← Fs.mkdir d false false) "create no_access_dir"
+    assertOk (← Fs.chmod d 0o000) "chmod 0o000 dir"
+    try
+      assertErrKind (← act d) .permissionDenied "real permissionDenied dir"
+    finally
+      let _ ← Fs.chmod d 0o755
+
+private def runRealPermDeniedDirWrite {α : Type} (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    let d := Fs.join tmp "ro_dir"
+    assertOk (← Fs.mkdir d false false) "create ro_dir"
+    assertOk (← Fs.chmod d 0o555) "chmod 0o555 dir"
+    try
+      assertErrKind (← act (Fs.join d "child")) .permissionDenied "real permissionDenied dir write"
+    finally
+      let _ ← Fs.chmod d 0o755
+
+private def runRealPermDeniedDirChild {α : Type} (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    let d := Fs.join tmp "sealed_dir"
+    let f := Fs.join d "child"
+    assertOk (← Fs.mkdir d false false) "create sealed_dir"
+    assertOk (← Fs.writeText f "x") "create child"
+    assertOk (← Fs.chmod d 0o000) "chmod 0o000 sealed_dir"
+    try
+      assertErrKind (← act f) .permissionDenied "real permissionDenied dir child"
+    finally
+      let _ ← Fs.chmod d 0o755
+
+private def runRealPermDeniedExistingChild {α : Type} (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    let d := Fs.join tmp "ro_parent"
+    let f := Fs.join d "child"
+    assertOk (← Fs.mkdir d false false) "create ro_parent"
+    assertOk (← Fs.writeText f "x") "create child"
+    assertOk (← Fs.chmod d 0o555) "chmod 0o555 ro_parent"
+    try
+      assertErrKind (← act f) .permissionDenied "real permissionDenied existing child"
+    finally
+      let _ ← Fs.chmod d 0o755
+
+private def runRealPermDeniedExistingSubdir {α : Type} (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    let d := Fs.join tmp "ro_parent_sub"
+    let sub := Fs.join d "sub"
+    assertOk (← Fs.mkdir sub true false) "create ro_parent_sub/sub"
+    assertOk (← Fs.chmod d 0o555) "chmod 0o555 ro_parent_sub"
+    try
+      assertErrKind (← act sub) .permissionDenied "real permissionDenied existing subdir"
+    finally
+      let _ ← Fs.chmod d 0o755
+
+private def runRealPermDeniedNonEmptyDir {α : Type} (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    let d := Fs.join tmp "ro_tree"
+    assertOk (← Fs.mkdir d false false) "create ro_tree"
+    assertOk (← Fs.writeText (Fs.join d "leaf") "x") "create leaf"
+    assertOk (← Fs.chmod d 0o555) "chmod 0o555 ro_tree"
+    try
+      assertErrKind (← act d) .permissionDenied "real permissionDenied non-empty dir"
+    finally
+      let _ ← Fs.chmod d 0o755
+
+private def runRealIsADir {α : Type} (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    let d := Fs.join tmp "some_dir"
+    assertOk (← Fs.mkdir d false false) "create some_dir"
+    assertErrKind (← act d) .isADirectory "real isADirectory"
+
+private def runRealNotADirChild {α : Type} (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    let f := Fs.join tmp "reg_file"
+    assertOk (← Fs.writeText f "x") "create reg_file"
+    assertErrKind (← act (f ++ "/child")) .notADirectory "real notADirectory child"
+
+private def runRealNotADirFile {α : Type} (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    let f := Fs.join tmp "reg_file"
+    assertOk (← Fs.writeText f "x") "create reg_file"
+    assertErrKind (← act f) .notADirectory "real notADirectory file"
+
+private def runRealInvalidNul {α : Type} (act : String → IO (Except FsError α)) : IO Unit := do
+  assertErrKind (← act nulPath) .invalidInput "real invalidInput NUL"
+
+private def runRealEloop {α : Type} (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    let loop := Fs.join tmp "eloop"
+    assertOk (← Fs.symlink loop loop) "create ELOOP symlink"
+    assertErrKind (← act loop) .ioError "real ioError ELOOP"
+
+private def runRealEloopChild {α : Type} (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    let loop := Fs.join tmp "eloop"
+    assertOk (← Fs.symlink loop loop) "create ELOOP symlink"
+    assertErrKind (← act (loop ++ "/child")) .ioError "real ioError ELOOP child"
+
+private def runRealExistingFileErr {α : Type} (expected : FsErrorKind)
+    (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    let f := Fs.join tmp "existing_file"
+    assertOk (← Fs.writeText f "x") "create existing_file"
+    assertErrKind (← act f) expected "real existing file err"
+
+private def runRealExistingDirErr {α : Type} (expected : FsErrorKind)
+    (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    let d := Fs.join tmp "existing_dir"
+    assertOk (← Fs.mkdir d false false) "create existing_dir"
+    assertErrKind (← act d) expected "real existing dir err"
+
+private def runRealNonEmptyDirErr {α : Type} (expected : FsErrorKind)
+    (act : String → IO (Except FsError α)) : IO Unit :=
+  withTempDir fun tmp => do
+    let d := Fs.join tmp "nonempty_dir"
+    assertOk (← Fs.mkdir d false false) "create nonempty_dir"
+    assertOk (← Fs.writeText (Fs.join d "a") "x") "create a"
+    assertErrKind (← act d) expected "real non-empty dir err"
+
+private def runRealRenameFileOntoDir : IO Unit :=
+  withTempDir fun tmp => do
+    let f := Fs.join tmp "src_file"
+    let d := Fs.join tmp "dst_dir"
+    assertOk (← Fs.writeText f "x") "create src_file"
+    assertOk (← Fs.mkdir d false false) "create dst_dir"
+    assertErrKind (← Fs.rename f d) .isADirectory "rename file onto dir"
+
+private def runRealRenameDirOntoFile : IO Unit :=
+  withTempDir fun tmp => do
+    let d := Fs.join tmp "src_dir"
+    let f := Fs.join tmp "dst_file"
+    assertOk (← Fs.mkdir d false false) "create src_dir"
+    assertOk (← Fs.writeText f "x") "create dst_file"
+    assertErrKind (← Fs.rename d f) .notADirectory "rename dir onto file"
+
+private def runRealRenameDirOntoNonEmptyDir : IO Unit :=
+  withTempDir fun tmp => do
+    let src := Fs.join tmp "src_dir"
+    let dst := Fs.join tmp "dst_dir"
+    assertOk (← Fs.mkdir src false false) "create src_dir"
+    assertOk (← Fs.mkdir dst false false) "create dst_dir"
+    assertOk (← Fs.writeText (Fs.join dst "keep") "x") "create keep"
+    assertErrKind (← Fs.rename src dst) .notEmpty "rename dir onto non-empty dir"
+
+private def runRealCopyTreeExistingDst : IO Unit :=
+  withTempDir fun tmp => do
+    let src := Fs.join tmp "src_dir"
+    let dst := Fs.join tmp "dst_dir"
+    assertOk (← Fs.mkdir src false false) "create src_dir"
+    assertOk (← Fs.mkdir dst false false) "create dst_dir"
+    assertErrKind (← Fs.copyTree src dst false) .alreadyExists "copyTree existing dst"
+
+private def runRealPredNotFound (act : String → IO (Except FsError Bool)) : IO Unit :=
+  withTempDir fun tmp => do
+    assertOkEq (← act (Fs.join tmp "missing_pred")) false "real pred notFound"
+
+private def runRealPredPermDenied (act : String → IO (Except FsError Bool)) : IO Unit :=
+  withTempDir fun tmp => do
+    let d := Fs.join tmp "sealed_pred_dir"
+    let f := Fs.join d "child"
+    assertOk (← Fs.mkdir d false false) "create sealed_pred_dir"
+    assertOk (← Fs.writeText f "x") "create child"
+    assertOk (← Fs.chmod d 0o000) "chmod 0o000 sealed_pred_dir"
+    try
+      assertOkEq (← act f) false "real pred permissionDenied"
+    finally
+      let _ ← Fs.chmod d 0o755
+
+private def runRealPredNotADir (act : String → IO (Except FsError Bool)) : IO Unit :=
+  withTempDir fun tmp => do
+    let f := Fs.join tmp "reg_pred"
+    assertOk (← Fs.writeText f "x") "create reg_pred"
+    assertOkEq (← act (f ++ "/child")) false "real pred notADirectory"
+
+private def runRealPredInvalidNul (act : String → IO (Except FsError Bool)) : IO Unit := do
+  assertOkEq (← act nulPath) false "real pred invalidInput NUL"
+
+private def runRealPredEloop (act : String → IO (Except FsError Bool)) : IO Unit :=
+  withTempDir fun tmp => do
+    let loop := Fs.join tmp "eloop_pred"
+    assertOk (← Fs.symlink loop loop) "create ELOOP pred symlink"
+    assertOkEq (← act (loop ++ "/child")) false "real pred ioError ELOOP"
+
+private def errnoForKind : FsErrorKind → Option LinuxSyscall.Errno
+  | .notFound => some LinuxSyscall.Errno.ENOENT
+  | .alreadyExists => some LinuxSyscall.Errno.EEXIST
+  | .permissionDenied => some LinuxSyscall.Errno.EACCES
+  | .isADirectory => some LinuxSyscall.Errno.EISDIR
+  | .notADirectory => some LinuxSyscall.Errno.ENOTDIR
+  | .notEmpty => some LinuxSyscall.Errno.ENOTEMPTY
+  | .invalidInput => some LinuxSyscall.Errno.EINVAL
+  | .unsupported => some LinuxSyscall.Errno.ENOSYS
+  | .wouldBlock => none
+  | .ioError => some LinuxSyscall.Errno.EMFILE
+
+private def mkErrScopedOps (kind : FsErrorKind) : Model.ScopedRawFsOpsM IO :=
+  let err : FsError := { kind := kind, path := some "/mock", message := s!"injected {reprStr kind}" }
+  { mapRawError := SysBridge.mapRawError
+    stat := fun _ _ => pure (.error err)
+    readDir := fun _ => pure (.error err)
+    createDir := fun _ => pure (.error err)
+    removeDir := fun _ => pure (.error err)
+    unlinkFile := fun _ => pure (.error err)
+    readBytes := fun _ => pure (.error err)
+    writeBytes := fun _ _ => pure (.error err)
+    createFileNew := fun _ _ => pure (.error err)
+    appendText := fun _ _ => pure (.error err)
+    rename := fun _ _ => pure (.error err)
+    chmod := fun _ _ => pure (.error err)
+    symlink := fun _ _ => pure (.error err)
+    readLink := fun _ => pure (.error err)
+    realPath := fun _ => pure (.error err)
+    cwd := pure (.error err)
+    monotonicNonce := pure 1
+    withFileLock := fun _ _ _ _ => pure (.error err)
+    tryWithFileLock := fun _ _ _ _ =>
+      if kind == .wouldBlock then pure (.ok none) else pure (.error err) }
+
+private def mkMockApiForKind (kind : FsErrorKind) : FsApi :=
+  match errnoForKind kind with
+  | some eno =>
+    Fs.Internal.mkApiFromScopedRawM
+      (Fs.Internal.toScopedRawFsOpsM (SysBridge.mkRawFsOpsM (mkErrFilesOps eno) (pure 1)))
+  | none =>
+    Fs.Internal.mkApiFromScopedRawM (mkErrScopedOps kind)
+
+private def runMockErrKinds {α : Type} (kinds : Array FsErrorKind)
+    (act : FsApi → IO (Except FsError α)) : IO Unit := do
+  for k in kinds do
+    assertErrKind (← act (mkMockApiForKind k)) k s!"mocked {reprStr k}"
+
+private def runMockErrKindsScoped {α : Type} (kinds : Array FsErrorKind)
+    (act : FsApi → IO (Except FsError α)) : IO Unit := do
+  for k in kinds do
+    let api := Fs.Internal.mkApiFromScopedRawM (mkErrScopedOps k)
+    assertErrKind (← act api) k s!"mocked scoped {reprStr k}"
+
+private def runMockPredKinds (kinds : Array FsErrorKind)
+    (act : FsApi → IO (Except FsError Bool)) : IO Unit := do
+  for k in kinds do
+    assertOkEq (← act (mkMockApiForKind k)) false s!"mocked pred {reprStr k}"
+
+private def runMockTryLockWouldBlock : IO Unit := do
+  let wbErr : FsError := { kind := .wouldBlock, path := some "/mock/lock", message := "injected wouldBlock" }
+  let rawContended : Model.RawFsOpsM IO Unit :=
+    { SysBridge.mkRawFsOpsM (mkErrFilesOps LinuxSyscall.Errno.EIO) (pure 1) with
+      acquireLock := fun _ _ _ _ => pure (.error wbErr)
+      releaseLock := fun _ => pure (.ok ()) }
+  let apiContended := Fs.Internal.mkApiFromScopedRawM (Fs.Internal.toScopedRawFsOpsM rawContended)
+  assertOkEq (← apiContended.tryWithFileLock "/mock/lock" .exclusive false (pure (.ok ()))) none
+    "tryWithFileLock contended wouldBlock returns ok none"
+  let rawOk : Model.RawFsOpsM IO Unit :=
+    { SysBridge.mkRawFsOpsM (mkErrFilesOps LinuxSyscall.Errno.EIO) (pure 1) with
+      acquireLock := fun _ _ _ _ => pure (.ok ())
+      releaseLock := fun _ => pure (.ok ()) }
+  let apiOk := Fs.Internal.mkApiFromScopedRawM (Fs.Internal.toScopedRawFsOpsM rawOk)
+  assertErrKind (← apiOk.tryWithFileLock "/mock/lock" .exclusive false (pure (.error wbErr) : IO (Except FsError Unit)))
+    .wouldBlock "tryWithFileLock propagates action wouldBlock"
+
+private def runMockSubtreeKinds (kinds : Array FsErrorKind) : IO Unit := do
+  for k in kinds do
+    let rawDir :=
+      match errnoForKind k with
+      | some eno => SysBridge.mkRawDirOpsM (mkErrFilesOps eno) (pure 1)
+      | none =>
+        { SysBridge.mkRawDirOpsM (mkErrFilesOps LinuxSyscall.Errno.EIO) (pure 1) with
+          openDir := fun _ =>
+            pure (.error { kind := k, path := some "/mock/root", message := s!"injected {reprStr k}" }) }
+    let opener := Fs.Internal.mkSubtreeOpenerM rawDir
+    assertErrKind (← opener.withSubtree "/mock/root" (fun _ => pure (.ok ()))) k s!"mocked subtree {reprStr k}"
+
+/-- Real error-coverage test for `LeanSwe.Fs.withName` returning `.invalidInput`. -/
+def err_fs_withName_invalidInput : IO Unit :=
+  assertErrKind (Fs.withName "/" "x") .invalidInput "withName invalidInput"
+
+/-- Real error-coverage test for `LeanSwe.Fs.withSuffix` returning `.invalidInput`. -/
+def err_fs_withSuffix_invalidInput : IO Unit :=
+  assertErrKind (Fs.withSuffix "a/b.txt" "lean") .invalidInput "withSuffix invalidInput"
+
+/-- Real error-coverage test for `LeanSwe.Fs.relativeTo` returning `.invalidInput`. -/
+def err_fs_relativeTo_invalidInput : IO Unit :=
+  assertErrKind (Fs.relativeTo "/x/y" "/a/b") .invalidInput "relativeTo invalidInput"
+
+/-- Real error-coverage test for `LeanSwe.Fs.readText` on `.notFound`. -/
+def err_fs_readText_notFound : IO Unit :=
+  runRealNotFound Fs.readText
+
+/-- Real error-coverage test for `LeanSwe.Fs.readText` on `.permissionDenied`. -/
+def err_fs_readText_permissionDenied : IO Unit :=
+  runRealPermDeniedFile Fs.readText
+
+/-- Real error-coverage test for `LeanSwe.Fs.readText` on `.isADirectory`. -/
+def err_fs_readText_isADirectory : IO Unit :=
+  runRealIsADir Fs.readText
+
+/-- Real error-coverage test for `LeanSwe.Fs.readText` on `.notADirectory`. -/
+def err_fs_readText_notADirectory : IO Unit :=
+  runRealNotADirChild Fs.readText
+
+/-- Real error-coverage test for `LeanSwe.Fs.readText` on `.invalidInput`. -/
+def err_fs_readText_invalidInput : IO Unit :=
+  runRealInvalidNul Fs.readText
+
+/-- Real error-coverage test for `LeanSwe.Fs.readText` on `.ioError`. -/
+def err_fs_readText_ioError : IO Unit :=
+  runRealEloop Fs.readText
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.readText` covering remaining `FsErrorKind` values. -/
+def err_fs_readText_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .notEmpty, .unsupported, .wouldBlock] (fun api => api.readText "/mock/file")
+
+/-- Real error-coverage test for `LeanSwe.Fs.writeText` on `.notFound`. -/
+def err_fs_writeText_notFound : IO Unit :=
+  runRealNotFoundChild (fun p => Fs.writeText p "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.writeText` on `.permissionDenied`. -/
+def err_fs_writeText_permissionDenied : IO Unit :=
+  runRealPermDeniedDirWrite (fun p => Fs.writeText p "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.writeText` on `.isADirectory`. -/
+def err_fs_writeText_isADirectory : IO Unit :=
+  runRealIsADir (fun p => Fs.writeText p "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.writeText` on `.notADirectory`. -/
+def err_fs_writeText_notADirectory : IO Unit :=
+  runRealNotADirChild (fun p => Fs.writeText p "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.writeText` on `.invalidInput`. -/
+def err_fs_writeText_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.writeText p "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.writeText` on `.ioError`. -/
+def err_fs_writeText_ioError : IO Unit :=
+  runRealEloop (fun p => Fs.writeText p "x")
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.writeText` covering remaining `FsErrorKind` values. -/
+def err_fs_writeText_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .notEmpty, .unsupported, .wouldBlock] (fun api => api.writeText "/mock/file" "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.appendText` on `.notFound`. -/
+def err_fs_appendText_notFound : IO Unit :=
+  runRealNotFoundChild (fun p => Fs.appendText p "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.appendText` on `.permissionDenied`. -/
+def err_fs_appendText_permissionDenied : IO Unit :=
+  runRealPermDeniedDirWrite (fun p => Fs.appendText p "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.appendText` on `.isADirectory`. -/
+def err_fs_appendText_isADirectory : IO Unit :=
+  runRealIsADir (fun p => Fs.appendText p "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.appendText` on `.notADirectory`. -/
+def err_fs_appendText_notADirectory : IO Unit :=
+  runRealNotADirChild (fun p => Fs.appendText p "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.appendText` on `.invalidInput`. -/
+def err_fs_appendText_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.appendText p "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.appendText` on `.ioError`. -/
+def err_fs_appendText_ioError : IO Unit :=
+  runRealEloop (fun p => Fs.appendText p "x")
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.appendText` covering remaining `FsErrorKind` values. -/
+def err_fs_appendText_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .notEmpty, .unsupported, .wouldBlock] (fun api => api.appendText "/mock/file" "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.readBytes` on `.notFound`. -/
+def err_fs_readBytes_notFound : IO Unit :=
+  runRealNotFound Fs.readBytes
+
+/-- Real error-coverage test for `LeanSwe.Fs.readBytes` on `.permissionDenied`. -/
+def err_fs_readBytes_permissionDenied : IO Unit :=
+  runRealPermDeniedFile Fs.readBytes
+
+/-- Real error-coverage test for `LeanSwe.Fs.readBytes` on `.isADirectory`. -/
+def err_fs_readBytes_isADirectory : IO Unit :=
+  runRealIsADir Fs.readBytes
+
+/-- Real error-coverage test for `LeanSwe.Fs.readBytes` on `.notADirectory`. -/
+def err_fs_readBytes_notADirectory : IO Unit :=
+  runRealNotADirChild Fs.readBytes
+
+/-- Real error-coverage test for `LeanSwe.Fs.readBytes` on `.invalidInput`. -/
+def err_fs_readBytes_invalidInput : IO Unit :=
+  runRealInvalidNul Fs.readBytes
+
+/-- Real error-coverage test for `LeanSwe.Fs.readBytes` on `.ioError`. -/
+def err_fs_readBytes_ioError : IO Unit :=
+  runRealEloop Fs.readBytes
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.readBytes` covering remaining `FsErrorKind` values. -/
+def err_fs_readBytes_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .notEmpty, .unsupported, .wouldBlock] (fun api => api.readBytes "/mock/file")
+
+/-- Real error-coverage test for `LeanSwe.Fs.writeBytes` on `.notFound`. -/
+def err_fs_writeBytes_notFound : IO Unit :=
+  runRealNotFoundChild (fun p => Fs.writeBytes p (ByteArray.mk #[1]))
+
+/-- Real error-coverage test for `LeanSwe.Fs.writeBytes` on `.permissionDenied`. -/
+def err_fs_writeBytes_permissionDenied : IO Unit :=
+  runRealPermDeniedDirWrite (fun p => Fs.writeBytes p (ByteArray.mk #[1]))
+
+/-- Real error-coverage test for `LeanSwe.Fs.writeBytes` on `.isADirectory`. -/
+def err_fs_writeBytes_isADirectory : IO Unit :=
+  runRealIsADir (fun p => Fs.writeBytes p (ByteArray.mk #[1]))
+
+/-- Real error-coverage test for `LeanSwe.Fs.writeBytes` on `.notADirectory`. -/
+def err_fs_writeBytes_notADirectory : IO Unit :=
+  runRealNotADirChild (fun p => Fs.writeBytes p (ByteArray.mk #[1]))
+
+/-- Real error-coverage test for `LeanSwe.Fs.writeBytes` on `.invalidInput`. -/
+def err_fs_writeBytes_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.writeBytes p (ByteArray.mk #[1]))
+
+/-- Real error-coverage test for `LeanSwe.Fs.writeBytes` on `.ioError`. -/
+def err_fs_writeBytes_ioError : IO Unit :=
+  runRealEloop (fun p => Fs.writeBytes p (ByteArray.mk #[1]))
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.writeBytes` covering remaining `FsErrorKind` values. -/
+def err_fs_writeBytes_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .notEmpty, .unsupported, .wouldBlock] (fun api => api.writeBytes "/mock/file" (ByteArray.mk #[1]))
+
+/-- Real error-coverage test for `LeanSwe.Fs.atomicWriteBytes` on `.notFound`. -/
+def err_fs_atomicWriteBytes_notFound : IO Unit :=
+  runRealNotFoundChild (fun p => Fs.atomicWriteBytes p (ByteArray.mk #[1]))
+
+/-- Real error-coverage test for `LeanSwe.Fs.atomicWriteBytes` on `.permissionDenied`. -/
+def err_fs_atomicWriteBytes_permissionDenied : IO Unit :=
+  runRealPermDeniedDirWrite (fun p => Fs.atomicWriteBytes p (ByteArray.mk #[1]))
+
+/-- Real error-coverage test for `LeanSwe.Fs.atomicWriteBytes` on `.isADirectory`. -/
+def err_fs_atomicWriteBytes_isADirectory : IO Unit :=
+  runRealIsADir (fun p => Fs.atomicWriteBytes p (ByteArray.mk #[1]))
+
+/-- Real error-coverage test for `LeanSwe.Fs.atomicWriteBytes` on `.notADirectory`. -/
+def err_fs_atomicWriteBytes_notADirectory : IO Unit :=
+  runRealNotADirChild (fun p => Fs.atomicWriteBytes p (ByteArray.mk #[1]))
+
+/-- Real error-coverage test for `LeanSwe.Fs.atomicWriteBytes` on `.invalidInput`. -/
+def err_fs_atomicWriteBytes_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.atomicWriteBytes p (ByteArray.mk #[1]))
+
+/-- Real error-coverage test for `LeanSwe.Fs.atomicWriteBytes` on `.ioError`. -/
+def err_fs_atomicWriteBytes_ioError : IO Unit :=
+  runRealEloopChild (fun p => Fs.atomicWriteBytes p (ByteArray.mk #[1]))
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.atomicWriteBytes` covering remaining `FsErrorKind` values. -/
+def err_fs_atomicWriteBytes_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .notEmpty, .unsupported, .wouldBlock] (fun api => api.atomicWriteBytes "/mock/file" (ByteArray.mk #[1]))
+
+/-- Real error-coverage test for `LeanSwe.Fs.atomicWriteText` on `.notFound`. -/
+def err_fs_atomicWriteText_notFound : IO Unit :=
+  runRealNotFoundChild (fun p => Fs.atomicWriteText p "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.atomicWriteText` on `.permissionDenied`. -/
+def err_fs_atomicWriteText_permissionDenied : IO Unit :=
+  runRealPermDeniedDirWrite (fun p => Fs.atomicWriteText p "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.atomicWriteText` on `.isADirectory`. -/
+def err_fs_atomicWriteText_isADirectory : IO Unit :=
+  runRealIsADir (fun p => Fs.atomicWriteText p "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.atomicWriteText` on `.notADirectory`. -/
+def err_fs_atomicWriteText_notADirectory : IO Unit :=
+  runRealNotADirChild (fun p => Fs.atomicWriteText p "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.atomicWriteText` on `.invalidInput`. -/
+def err_fs_atomicWriteText_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.atomicWriteText p "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.atomicWriteText` on `.ioError`. -/
+def err_fs_atomicWriteText_ioError : IO Unit :=
+  runRealEloopChild (fun p => Fs.atomicWriteText p "x")
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.atomicWriteText` covering remaining `FsErrorKind` values. -/
+def err_fs_atomicWriteText_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .notEmpty, .unsupported, .wouldBlock] (fun api => api.atomicWriteText "/mock/file" "x")
+
+/-- Real error-coverage test for `LeanSwe.Fs.touch` on `.notFound`. -/
+def err_fs_touch_notFound : IO Unit :=
+  runRealNotFoundChild (fun p => Fs.touch p true)
+
+/-- Real error-coverage test for `LeanSwe.Fs.touch` on `.alreadyExists`. -/
+def err_fs_touch_alreadyExists : IO Unit :=
+  runRealExistingFileErr .alreadyExists (fun p => Fs.touch p false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.touch` on `.permissionDenied`. -/
+def err_fs_touch_permissionDenied : IO Unit :=
+  runRealPermDeniedDirWrite (fun p => Fs.touch p true)
+
+/-- Real error-coverage test for `LeanSwe.Fs.touch` on `.isADirectory`. -/
+def err_fs_touch_isADirectory : IO Unit :=
+  runRealIsADir (fun p => Fs.touch p true)
+
+/-- Real error-coverage test for `LeanSwe.Fs.touch` on `.notADirectory`. -/
+def err_fs_touch_notADirectory : IO Unit :=
+  runRealNotADirChild (fun p => Fs.touch p true)
+
+/-- Real error-coverage test for `LeanSwe.Fs.touch` on `.invalidInput`. -/
+def err_fs_touch_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.touch p true)
+
+/-- Real error-coverage test for `LeanSwe.Fs.touch` on `.ioError`. -/
+def err_fs_touch_ioError : IO Unit :=
+  runRealEloopChild (fun p => Fs.touch p true)
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.touch` covering remaining `FsErrorKind` values. -/
+def err_fs_touch_mocked : IO Unit :=
+  runMockErrKinds #[.notEmpty, .unsupported, .wouldBlock] (fun api => api.touch "/mock/file" false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.mkdir` on `.notFound`. -/
+def err_fs_mkdir_notFound : IO Unit :=
+  runRealNotFoundChild (fun p => Fs.mkdir p false false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.mkdir` on `.alreadyExists`. -/
+def err_fs_mkdir_alreadyExists : IO Unit :=
+  runRealExistingDirErr .alreadyExists (fun p => Fs.mkdir p false false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.mkdir` on `.permissionDenied`. -/
+def err_fs_mkdir_permissionDenied : IO Unit :=
+  runRealPermDeniedDirWrite (fun p => Fs.mkdir p false false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.mkdir` on `.notADirectory`. -/
+def err_fs_mkdir_notADirectory : IO Unit :=
+  runRealNotADirChild (fun p => Fs.mkdir p false false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.mkdir` on `.invalidInput`. -/
+def err_fs_mkdir_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.mkdir p false false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.mkdir` on `.ioError`. -/
+def err_fs_mkdir_ioError : IO Unit :=
+  runRealEloopChild (fun p => Fs.mkdir p false false)
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.mkdir` covering remaining `FsErrorKind` values. -/
+def err_fs_mkdir_mocked : IO Unit :=
+  runMockErrKinds #[.isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.mkdir "/mock/dir" false false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.unlink` on `.notFound`. -/
+def err_fs_unlink_notFound : IO Unit :=
+  runRealNotFound (fun p => Fs.unlink p false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.unlink` on `.permissionDenied`. -/
+def err_fs_unlink_permissionDenied : IO Unit :=
+  runRealPermDeniedExistingChild (fun p => Fs.unlink p false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.unlink` on `.isADirectory`. -/
+def err_fs_unlink_isADirectory : IO Unit :=
+  runRealIsADir (fun p => Fs.unlink p false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.unlink` on `.notADirectory`. -/
+def err_fs_unlink_notADirectory : IO Unit :=
+  runRealNotADirChild (fun p => Fs.unlink p false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.unlink` on `.invalidInput`. -/
+def err_fs_unlink_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.unlink p false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.unlink` on `.ioError`. -/
+def err_fs_unlink_ioError : IO Unit :=
+  runRealEloopChild (fun p => Fs.unlink p false)
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.unlink` covering remaining `FsErrorKind` values. -/
+def err_fs_unlink_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .notEmpty, .unsupported, .wouldBlock] (fun api => api.unlink "/mock/file" false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.rmdir` on `.notFound`. -/
+def err_fs_rmdir_notFound : IO Unit :=
+  runRealNotFound Fs.rmdir
+
+/-- Real error-coverage test for `LeanSwe.Fs.rmdir` on `.permissionDenied`. -/
+def err_fs_rmdir_permissionDenied : IO Unit :=
+  runRealPermDeniedExistingSubdir Fs.rmdir
+
+/-- Real error-coverage test for `LeanSwe.Fs.rmdir` on `.notADirectory`. -/
+def err_fs_rmdir_notADirectory : IO Unit :=
+  runRealNotADirFile Fs.rmdir
+
+/-- Real error-coverage test for `LeanSwe.Fs.rmdir` on `.notEmpty`. -/
+def err_fs_rmdir_notEmpty : IO Unit :=
+  runRealNonEmptyDirErr .notEmpty Fs.rmdir
+
+/-- Real error-coverage test for `LeanSwe.Fs.rmdir` on `.invalidInput`. -/
+def err_fs_rmdir_invalidInput : IO Unit :=
+  runRealInvalidNul Fs.rmdir
+
+/-- Real error-coverage test for `LeanSwe.Fs.rmdir` on `.ioError`. -/
+def err_fs_rmdir_ioError : IO Unit :=
+  runRealEloopChild Fs.rmdir
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.rmdir` covering remaining `FsErrorKind` values. -/
+def err_fs_rmdir_mocked : IO Unit :=
+  do
+    runMockErrKinds #[.isADirectory, .unsupported] (fun api => api.rmdir "/mock/dir")
+    runMockErrKindsScoped #[.alreadyExists, .wouldBlock] (fun api => api.rmdir "/mock/dir")
+
+/-- Real error-coverage test for `LeanSwe.Fs.rmtree` on `.notFound`. -/
+def err_fs_rmtree_notFound : IO Unit :=
+  runRealNotFound (fun p => Fs.rmtree p false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.rmtree` on `.permissionDenied`. -/
+def err_fs_rmtree_permissionDenied : IO Unit :=
+  runRealPermDeniedNonEmptyDir (fun p => Fs.rmtree p false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.rmtree` on `.notADirectory`. -/
+def err_fs_rmtree_notADirectory : IO Unit :=
+  runRealNotADirFile (fun p => Fs.rmtree p false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.rmtree` on `.invalidInput`. -/
+def err_fs_rmtree_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.rmtree p false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.rmtree` on `.ioError`. -/
+def err_fs_rmtree_ioError : IO Unit :=
+  runRealEloopChild (fun p => Fs.rmtree p false)
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.rmtree` covering remaining `FsErrorKind` values. -/
+def err_fs_rmtree_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.rmtree "/mock/dir" false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.rename` on `.notFound`. -/
+def err_fs_rename_notFound : IO Unit :=
+  runRealNotFound (fun p => Fs.rename p (p ++ "_dst"))
+
+/-- Real error-coverage test for `LeanSwe.Fs.rename` on `.permissionDenied`. -/
+def err_fs_rename_permissionDenied : IO Unit :=
+  runRealPermDeniedExistingChild (fun p => Fs.rename p (p ++ "_dst"))
+
+/-- Real error-coverage test for `LeanSwe.Fs.rename` on `.isADirectory`. -/
+def err_fs_rename_isADirectory : IO Unit :=
+  runRealRenameFileOntoDir
+
+/-- Real error-coverage test for `LeanSwe.Fs.rename` on `.notADirectory`. -/
+def err_fs_rename_notADirectory : IO Unit :=
+  runRealRenameDirOntoFile
+
+/-- Real error-coverage test for `LeanSwe.Fs.rename` on `.notEmpty`. -/
+def err_fs_rename_notEmpty : IO Unit :=
+  runRealRenameDirOntoNonEmptyDir
+
+/-- Real error-coverage test for `LeanSwe.Fs.rename` on `.invalidInput`. -/
+def err_fs_rename_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.rename p "/tmp/unused_dst")
+
+/-- Real error-coverage test for `LeanSwe.Fs.rename` on `.ioError`. -/
+def err_fs_rename_ioError : IO Unit :=
+  runRealEloopChild (fun p => Fs.rename p (p ++ "_dst"))
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.rename` covering remaining `FsErrorKind` values. -/
+def err_fs_rename_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .unsupported, .wouldBlock] (fun api => api.rename "/mock/src" "/mock/dst")
+
+/-- Real error-coverage test for `LeanSwe.Fs.copyFile` on `.notFound`. -/
+def err_fs_copyFile_notFound : IO Unit :=
+  runRealNotFound (fun p => Fs.copyFile p (p ++ "_dst"))
+
+/-- Real error-coverage test for `LeanSwe.Fs.copyFile` on `.permissionDenied`. -/
+def err_fs_copyFile_permissionDenied : IO Unit :=
+  runRealPermDeniedFile (fun p => Fs.copyFile p (p ++ "_dst"))
+
+/-- Real error-coverage test for `LeanSwe.Fs.copyFile` on `.isADirectory`. -/
+def err_fs_copyFile_isADirectory : IO Unit :=
+  runRealIsADir (fun p => Fs.copyFile p (p ++ "_dst"))
+
+/-- Real error-coverage test for `LeanSwe.Fs.copyFile` on `.notADirectory`. -/
+def err_fs_copyFile_notADirectory : IO Unit :=
+  runRealNotADirChild (fun p => Fs.copyFile p (p ++ "_dst"))
+
+/-- Real error-coverage test for `LeanSwe.Fs.copyFile` on `.invalidInput`. -/
+def err_fs_copyFile_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.copyFile p "/tmp/unused_dst")
+
+/-- Real error-coverage test for `LeanSwe.Fs.copyFile` on `.ioError`. -/
+def err_fs_copyFile_ioError : IO Unit :=
+  runRealEloop (fun p => Fs.copyFile p (p ++ "_dst"))
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.copyFile` covering remaining `FsErrorKind` values. -/
+def err_fs_copyFile_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .notEmpty, .unsupported, .wouldBlock] (fun api => api.copyFile "/mock/src" "/mock/dst")
+
+/-- Real error-coverage test for `LeanSwe.Fs.copyTree` on `.notFound`. -/
+def err_fs_copyTree_notFound : IO Unit :=
+  runRealNotFound (fun p => Fs.copyTree p (p ++ "_dst") false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.copyTree` on `.alreadyExists`. -/
+def err_fs_copyTree_alreadyExists : IO Unit :=
+  runRealCopyTreeExistingDst
+
+/-- Real error-coverage test for `LeanSwe.Fs.copyTree` on `.permissionDenied`. -/
+def err_fs_copyTree_permissionDenied : IO Unit :=
+  runRealPermDeniedDir (fun p => Fs.copyTree p (p ++ "_dst") false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.copyTree` on `.notADirectory`. -/
+def err_fs_copyTree_notADirectory : IO Unit :=
+  runRealNotADirFile (fun p => Fs.copyTree p (p ++ "_dst") false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.copyTree` on `.invalidInput`. -/
+def err_fs_copyTree_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.copyTree p "/tmp/unused_dst" false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.copyTree` on `.ioError`. -/
+def err_fs_copyTree_ioError : IO Unit :=
+  runRealEloop (fun p => Fs.copyTree p (p ++ "_dst") false)
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.copyTree` covering remaining `FsErrorKind` values. -/
+def err_fs_copyTree_mocked : IO Unit :=
+  runMockErrKinds #[.isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.copyTree "/mock/src" "/mock/dst" false)
+
+/-- Real error-coverage test for `LeanSwe.Fs.pathExists` on `.notFound`. -/
+def err_fs_pathExists_notFound : IO Unit :=
+  runRealPredNotFound Fs.pathExists
+
+/-- Real error-coverage test for `LeanSwe.Fs.pathExists` on `.permissionDenied`. -/
+def err_fs_pathExists_permissionDenied : IO Unit :=
+  runRealPredPermDenied Fs.pathExists
+
+/-- Real error-coverage test for `LeanSwe.Fs.pathExists` on `.notADirectory`. -/
+def err_fs_pathExists_notADirectory : IO Unit :=
+  runRealPredNotADir Fs.pathExists
+
+/-- Real error-coverage test for `LeanSwe.Fs.pathExists` on `.invalidInput`. -/
+def err_fs_pathExists_invalidInput : IO Unit :=
+  runRealPredInvalidNul Fs.pathExists
+
+/-- Real error-coverage test for `LeanSwe.Fs.pathExists` on `.ioError`. -/
+def err_fs_pathExists_ioError : IO Unit :=
+  runRealPredEloop Fs.pathExists
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.pathExists` covering remaining `FsErrorKind` values. -/
+def err_fs_pathExists_mocked : IO Unit :=
+  runMockPredKinds #[.alreadyExists, .isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.pathExists "/mock/path")
+
+/-- Real error-coverage test for `LeanSwe.Fs.isFile` on `.notFound`. -/
+def err_fs_isFile_notFound : IO Unit :=
+  runRealPredNotFound Fs.isFile
+
+/-- Real error-coverage test for `LeanSwe.Fs.isFile` on `.permissionDenied`. -/
+def err_fs_isFile_permissionDenied : IO Unit :=
+  runRealPredPermDenied Fs.isFile
+
+/-- Real error-coverage test for `LeanSwe.Fs.isFile` on `.notADirectory`. -/
+def err_fs_isFile_notADirectory : IO Unit :=
+  runRealPredNotADir Fs.isFile
+
+/-- Real error-coverage test for `LeanSwe.Fs.isFile` on `.invalidInput`. -/
+def err_fs_isFile_invalidInput : IO Unit :=
+  runRealPredInvalidNul Fs.isFile
+
+/-- Real error-coverage test for `LeanSwe.Fs.isFile` on `.ioError`. -/
+def err_fs_isFile_ioError : IO Unit :=
+  runRealPredEloop Fs.isFile
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.isFile` covering remaining `FsErrorKind` values. -/
+def err_fs_isFile_mocked : IO Unit :=
+  runMockPredKinds #[.alreadyExists, .isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.isFile "/mock/path")
+
+/-- Real error-coverage test for `LeanSwe.Fs.isDir` on `.notFound`. -/
+def err_fs_isDir_notFound : IO Unit :=
+  runRealPredNotFound Fs.isDir
+
+/-- Real error-coverage test for `LeanSwe.Fs.isDir` on `.permissionDenied`. -/
+def err_fs_isDir_permissionDenied : IO Unit :=
+  runRealPredPermDenied Fs.isDir
+
+/-- Real error-coverage test for `LeanSwe.Fs.isDir` on `.notADirectory`. -/
+def err_fs_isDir_notADirectory : IO Unit :=
+  runRealPredNotADir Fs.isDir
+
+/-- Real error-coverage test for `LeanSwe.Fs.isDir` on `.invalidInput`. -/
+def err_fs_isDir_invalidInput : IO Unit :=
+  runRealPredInvalidNul Fs.isDir
+
+/-- Real error-coverage test for `LeanSwe.Fs.isDir` on `.ioError`. -/
+def err_fs_isDir_ioError : IO Unit :=
+  runRealPredEloop Fs.isDir
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.isDir` covering remaining `FsErrorKind` values. -/
+def err_fs_isDir_mocked : IO Unit :=
+  runMockPredKinds #[.alreadyExists, .isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.isDir "/mock/path")
+
+/-- Real error-coverage test for `LeanSwe.Fs.isSymlink` on `.notFound`. -/
+def err_fs_isSymlink_notFound : IO Unit :=
+  runRealPredNotFound Fs.isSymlink
+
+/-- Real error-coverage test for `LeanSwe.Fs.isSymlink` on `.permissionDenied`. -/
+def err_fs_isSymlink_permissionDenied : IO Unit :=
+  runRealPredPermDenied Fs.isSymlink
+
+/-- Real error-coverage test for `LeanSwe.Fs.isSymlink` on `.notADirectory`. -/
+def err_fs_isSymlink_notADirectory : IO Unit :=
+  runRealPredNotADir Fs.isSymlink
+
+/-- Real error-coverage test for `LeanSwe.Fs.isSymlink` on `.invalidInput`. -/
+def err_fs_isSymlink_invalidInput : IO Unit :=
+  runRealPredInvalidNul Fs.isSymlink
+
+/-- Real error-coverage test for `LeanSwe.Fs.isSymlink` on `.ioError`. -/
+def err_fs_isSymlink_ioError : IO Unit :=
+  runRealPredEloop Fs.isSymlink
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.isSymlink` covering remaining `FsErrorKind` values. -/
+def err_fs_isSymlink_mocked : IO Unit :=
+  runMockPredKinds #[.alreadyExists, .isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.isSymlink "/mock/path")
+
+/-- Real error-coverage test for `LeanSwe.Fs.stat` on `.notFound`. -/
+def err_fs_stat_notFound : IO Unit :=
+  runRealNotFound Fs.stat
+
+/-- Real error-coverage test for `LeanSwe.Fs.stat` on `.permissionDenied`. -/
+def err_fs_stat_permissionDenied : IO Unit :=
+  runRealPermDeniedDirChild Fs.stat
+
+/-- Real error-coverage test for `LeanSwe.Fs.stat` on `.notADirectory`. -/
+def err_fs_stat_notADirectory : IO Unit :=
+  runRealNotADirChild Fs.stat
+
+/-- Real error-coverage test for `LeanSwe.Fs.stat` on `.invalidInput`. -/
+def err_fs_stat_invalidInput : IO Unit :=
+  runRealInvalidNul Fs.stat
+
+/-- Real error-coverage test for `LeanSwe.Fs.stat` on `.ioError`. -/
+def err_fs_stat_ioError : IO Unit :=
+  runRealEloop Fs.stat
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.stat` covering remaining `FsErrorKind` values. -/
+def err_fs_stat_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.stat "/mock/path")
+
+/-- Real error-coverage test for `LeanSwe.Fs.lstat` on `.notFound`. -/
+def err_fs_lstat_notFound : IO Unit :=
+  runRealNotFound Fs.lstat
+
+/-- Real error-coverage test for `LeanSwe.Fs.lstat` on `.permissionDenied`. -/
+def err_fs_lstat_permissionDenied : IO Unit :=
+  runRealPermDeniedDirChild Fs.lstat
+
+/-- Real error-coverage test for `LeanSwe.Fs.lstat` on `.notADirectory`. -/
+def err_fs_lstat_notADirectory : IO Unit :=
+  runRealNotADirChild Fs.lstat
+
+/-- Real error-coverage test for `LeanSwe.Fs.lstat` on `.invalidInput`. -/
+def err_fs_lstat_invalidInput : IO Unit :=
+  runRealInvalidNul Fs.lstat
+
+/-- Real error-coverage test for `LeanSwe.Fs.lstat` on `.ioError`. -/
+def err_fs_lstat_ioError : IO Unit :=
+  runRealEloopChild Fs.lstat
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.lstat` covering remaining `FsErrorKind` values. -/
+def err_fs_lstat_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.lstat "/mock/path")
+
+/-- Real error-coverage test for `LeanSwe.Fs.chmod` on `.notFound`. -/
+def err_fs_chmod_notFound : IO Unit :=
+  runRealNotFound (fun p => Fs.chmod p 0o644)
+
+/-- Real error-coverage test for `LeanSwe.Fs.chmod` on `.permissionDenied`. -/
+def err_fs_chmod_permissionDenied : IO Unit :=
+  runRealPermDeniedDirChild (fun p => Fs.chmod p 0o644)
+
+/-- Real error-coverage test for `LeanSwe.Fs.chmod` on `.notADirectory`. -/
+def err_fs_chmod_notADirectory : IO Unit :=
+  runRealNotADirChild (fun p => Fs.chmod p 0o644)
+
+/-- Real error-coverage test for `LeanSwe.Fs.chmod` on `.invalidInput`. -/
+def err_fs_chmod_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.chmod p 0o644)
+
+/-- Real error-coverage test for `LeanSwe.Fs.chmod` on `.ioError`. -/
+def err_fs_chmod_ioError : IO Unit :=
+  runRealEloop (fun p => Fs.chmod p 0o644)
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.chmod` covering remaining `FsErrorKind` values. -/
+def err_fs_chmod_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.chmod "/mock/path" 0o644)
+
+/-- Real error-coverage test for `LeanSwe.Fs.symlink` on `.notFound`. -/
+def err_fs_symlink_notFound : IO Unit :=
+  runRealNotFoundChild (fun p => Fs.symlink "target" p)
+
+/-- Real error-coverage test for `LeanSwe.Fs.symlink` on `.alreadyExists`. -/
+def err_fs_symlink_alreadyExists : IO Unit :=
+  runRealExistingFileErr .alreadyExists (fun p => Fs.symlink "target" p)
+
+/-- Real error-coverage test for `LeanSwe.Fs.symlink` on `.permissionDenied`. -/
+def err_fs_symlink_permissionDenied : IO Unit :=
+  runRealPermDeniedDirWrite (fun p => Fs.symlink "target" p)
+
+/-- Real error-coverage test for `LeanSwe.Fs.symlink` on `.notADirectory`. -/
+def err_fs_symlink_notADirectory : IO Unit :=
+  runRealNotADirChild (fun p => Fs.symlink "target" p)
+
+/-- Real error-coverage test for `LeanSwe.Fs.symlink` on `.invalidInput`. -/
+def err_fs_symlink_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.symlink "target" p)
+
+/-- Real error-coverage test for `LeanSwe.Fs.symlink` on `.ioError`. -/
+def err_fs_symlink_ioError : IO Unit :=
+  runRealEloopChild (fun p => Fs.symlink "target" p)
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.symlink` covering remaining `FsErrorKind` values. -/
+def err_fs_symlink_mocked : IO Unit :=
+  runMockErrKinds #[.isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.symlink "target" "/mock/lnk")
+
+/-- Real error-coverage test for `LeanSwe.Fs.readLink` on `.notFound`. -/
+def err_fs_readLink_notFound : IO Unit :=
+  runRealNotFound Fs.readLink
+
+/-- Real error-coverage test for `LeanSwe.Fs.readLink` on `.permissionDenied`. -/
+def err_fs_readLink_permissionDenied : IO Unit :=
+  runRealPermDeniedDirChild Fs.readLink
+
+/-- Real error-coverage test for `LeanSwe.Fs.readLink` on `.notADirectory`. -/
+def err_fs_readLink_notADirectory : IO Unit :=
+  runRealNotADirChild Fs.readLink
+
+/-- Real error-coverage test for `LeanSwe.Fs.readLink` on `.invalidInput`. -/
+def err_fs_readLink_invalidInput : IO Unit :=
+  runRealExistingFileErr .invalidInput Fs.readLink
+
+/-- Real error-coverage test for `LeanSwe.Fs.readLink` on `.ioError`. -/
+def err_fs_readLink_ioError : IO Unit :=
+  runRealEloopChild Fs.readLink
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.readLink` covering remaining `FsErrorKind` values. -/
+def err_fs_readLink_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.readLink "/mock/lnk")
+
+/-- Real error-coverage test for `LeanSwe.Fs.resolve` on `.notFound`. -/
+def err_fs_resolve_notFound : IO Unit :=
+  runRealNotFound Fs.resolve
+
+/-- Real error-coverage test for `LeanSwe.Fs.resolve` on `.permissionDenied`. -/
+def err_fs_resolve_permissionDenied : IO Unit :=
+  runRealPermDeniedDirChild Fs.resolve
+
+/-- Real error-coverage test for `LeanSwe.Fs.resolve` on `.notADirectory`. -/
+def err_fs_resolve_notADirectory : IO Unit :=
+  runRealNotADirChild Fs.resolve
+
+/-- Real error-coverage test for `LeanSwe.Fs.resolve` on `.invalidInput`. -/
+def err_fs_resolve_invalidInput : IO Unit :=
+  runRealInvalidNul Fs.resolve
+
+/-- Real error-coverage test for `LeanSwe.Fs.resolve` on `.ioError`. -/
+def err_fs_resolve_ioError : IO Unit :=
+  runRealEloop Fs.resolve
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.resolve` covering remaining `FsErrorKind` values. -/
+def err_fs_resolve_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.resolve "/mock/path")
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.cwd` covering remaining `FsErrorKind` values. -/
+def err_fs_cwd_mocked : IO Unit :=
+  runMockErrKinds #[.notFound, .alreadyExists, .permissionDenied, .isADirectory, .notADirectory, .notEmpty, .invalidInput, .unsupported, .wouldBlock, .ioError] (fun api => api.cwd)
+
+/-- Real error-coverage test for `LeanSwe.Fs.listDir` on `.notFound`. -/
+def err_fs_listDir_notFound : IO Unit :=
+  runRealNotFound Fs.listDir
+
+/-- Real error-coverage test for `LeanSwe.Fs.listDir` on `.permissionDenied`. -/
+def err_fs_listDir_permissionDenied : IO Unit :=
+  runRealPermDeniedDir Fs.listDir
+
+/-- Real error-coverage test for `LeanSwe.Fs.listDir` on `.notADirectory`. -/
+def err_fs_listDir_notADirectory : IO Unit :=
+  runRealNotADirFile Fs.listDir
+
+/-- Real error-coverage test for `LeanSwe.Fs.listDir` on `.invalidInput`. -/
+def err_fs_listDir_invalidInput : IO Unit :=
+  runRealInvalidNul Fs.listDir
+
+/-- Real error-coverage test for `LeanSwe.Fs.listDir` on `.ioError`. -/
+def err_fs_listDir_ioError : IO Unit :=
+  runRealEloop Fs.listDir
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.listDir` covering remaining `FsErrorKind` values. -/
+def err_fs_listDir_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.listDir "/mock/dir")
+
+/-- Real error-coverage test for `LeanSwe.Fs.walk` on `.notFound`. -/
+def err_fs_walk_notFound : IO Unit :=
+  runRealNotFound Fs.walk
+
+/-- Real error-coverage test for `LeanSwe.Fs.walk` on `.permissionDenied`. -/
+def err_fs_walk_permissionDenied : IO Unit :=
+  runRealPermDeniedDir Fs.walk
+
+/-- Real error-coverage test for `LeanSwe.Fs.walk` on `.notADirectory`. -/
+def err_fs_walk_notADirectory : IO Unit :=
+  runRealNotADirFile Fs.walk
+
+/-- Real error-coverage test for `LeanSwe.Fs.walk` on `.invalidInput`. -/
+def err_fs_walk_invalidInput : IO Unit :=
+  runRealInvalidNul Fs.walk
+
+/-- Real error-coverage test for `LeanSwe.Fs.walk` on `.ioError`. -/
+def err_fs_walk_ioError : IO Unit :=
+  runRealEloop Fs.walk
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.walk` covering remaining `FsErrorKind` values. -/
+def err_fs_walk_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.walk "/mock/dir")
+
+/-- Real error-coverage test for `LeanSwe.Fs.glob` on `.notFound`. -/
+def err_fs_glob_notFound : IO Unit :=
+  runRealNotFound (fun p => Fs.glob p "*.txt")
+
+/-- Real error-coverage test for `LeanSwe.Fs.glob` on `.permissionDenied`. -/
+def err_fs_glob_permissionDenied : IO Unit :=
+  runRealPermDeniedDir (fun p => Fs.glob p "*.txt")
+
+/-- Real error-coverage test for `LeanSwe.Fs.glob` on `.notADirectory`. -/
+def err_fs_glob_notADirectory : IO Unit :=
+  runRealNotADirFile (fun p => Fs.glob p "*.txt")
+
+/-- Real error-coverage test for `LeanSwe.Fs.glob` on `.invalidInput`. -/
+def err_fs_glob_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.glob p "*.txt")
+
+/-- Real error-coverage test for `LeanSwe.Fs.glob` on `.ioError`. -/
+def err_fs_glob_ioError : IO Unit :=
+  runRealEloop (fun p => Fs.glob p "*.txt")
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.glob` covering remaining `FsErrorKind` values. -/
+def err_fs_glob_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.glob "/mock/dir" "*.txt")
+
+/-- Real error-coverage test for `LeanSwe.Fs.rglob` on `.notFound`. -/
+def err_fs_rglob_notFound : IO Unit :=
+  runRealNotFound (fun p => Fs.rglob p "*.txt")
+
+/-- Real error-coverage test for `LeanSwe.Fs.rglob` on `.permissionDenied`. -/
+def err_fs_rglob_permissionDenied : IO Unit :=
+  runRealPermDeniedDir (fun p => Fs.rglob p "*.txt")
+
+/-- Real error-coverage test for `LeanSwe.Fs.rglob` on `.notADirectory`. -/
+def err_fs_rglob_notADirectory : IO Unit :=
+  runRealNotADirFile (fun p => Fs.rglob p "*.txt")
+
+/-- Real error-coverage test for `LeanSwe.Fs.rglob` on `.invalidInput`. -/
+def err_fs_rglob_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.rglob p "*.txt")
+
+/-- Real error-coverage test for `LeanSwe.Fs.rglob` on `.ioError`. -/
+def err_fs_rglob_ioError : IO Unit :=
+  runRealEloop (fun p => Fs.rglob p "*.txt")
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.rglob` covering remaining `FsErrorKind` values. -/
+def err_fs_rglob_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .isADirectory, .notEmpty, .unsupported, .wouldBlock] (fun api => api.rglob "/mock/dir" "*.txt")
+
+/-- Real error-coverage test for `LeanSwe.Fs.withFileLock` on `.notFound`. -/
+def err_fs_withFileLock_notFound : IO Unit :=
+  runRealNotFound (fun p => Fs.withFileLock p .exclusive false (pure (.ok ())))
+
+/-- Real error-coverage test for `LeanSwe.Fs.withFileLock` on `.permissionDenied`. -/
+def err_fs_withFileLock_permissionDenied : IO Unit :=
+  runRealPermDeniedDirWrite (fun p => Fs.withFileLock p .exclusive true (pure (.ok ())))
+
+/-- Real error-coverage test for `LeanSwe.Fs.withFileLock` on `.isADirectory`. -/
+def err_fs_withFileLock_isADirectory : IO Unit :=
+  runRealIsADir (fun p => Fs.withFileLock p .exclusive false (pure (.ok ())))
+
+/-- Real error-coverage test for `LeanSwe.Fs.withFileLock` on `.notADirectory`. -/
+def err_fs_withFileLock_notADirectory : IO Unit :=
+  runRealNotADirChild (fun p => Fs.withFileLock p .exclusive false (pure (.ok ())))
+
+/-- Real error-coverage test for `LeanSwe.Fs.withFileLock` on `.invalidInput`. -/
+def err_fs_withFileLock_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.withFileLock p .exclusive false (pure (.ok ())))
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.withFileLock` covering remaining `FsErrorKind` values. -/
+def err_fs_withFileLock_mocked : IO Unit :=
+  runMockErrKinds #[.alreadyExists, .notEmpty, .unsupported, .wouldBlock, .ioError] (fun api => api.withFileLock "/mock/lock" .exclusive false (pure (.ok ())))
+
+/-- Real error-coverage test for `LeanSwe.Fs.tryWithFileLock` on `.notFound`. -/
+def err_fs_tryWithFileLock_notFound : IO Unit :=
+  runRealNotFound (fun p => Fs.tryWithFileLock p .exclusive false (pure (.ok ())))
+
+/-- Real error-coverage test for `LeanSwe.Fs.tryWithFileLock` on `.permissionDenied`. -/
+def err_fs_tryWithFileLock_permissionDenied : IO Unit :=
+  runRealPermDeniedDirWrite (fun p => Fs.tryWithFileLock p .exclusive true (pure (.ok ())))
+
+/-- Real error-coverage test for `LeanSwe.Fs.tryWithFileLock` on `.isADirectory`. -/
+def err_fs_tryWithFileLock_isADirectory : IO Unit :=
+  runRealIsADir (fun p => Fs.tryWithFileLock p .exclusive false (pure (.ok ())))
+
+/-- Real error-coverage test for `LeanSwe.Fs.tryWithFileLock` on `.notADirectory`. -/
+def err_fs_tryWithFileLock_notADirectory : IO Unit :=
+  runRealNotADirChild (fun p => Fs.tryWithFileLock p .exclusive false (pure (.ok ())))
+
+/-- Real error-coverage test for `LeanSwe.Fs.tryWithFileLock` on `.invalidInput`. -/
+def err_fs_tryWithFileLock_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.tryWithFileLock p .exclusive false (pure (.ok ())))
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.tryWithFileLock` covering remaining `FsErrorKind` values. -/
+def err_fs_tryWithFileLock_mocked : IO Unit :=
+  do
+    runMockErrKinds #[.alreadyExists, .notEmpty, .unsupported, .ioError] (fun api => api.tryWithFileLock "/mock/lock" .exclusive false (pure (.ok ())))
+    runMockTryLockWouldBlock
+
+/-- Real error-coverage test for `LeanSwe.Fs.withSubtree` on `.notFound`. -/
+def err_fs_withSubtree_notFound : IO Unit :=
+  runRealNotFound (fun p => Fs.withSubtree p (fun _ => pure (.ok ())))
+
+/-- Real error-coverage test for `LeanSwe.Fs.withSubtree` on `.permissionDenied`. -/
+def err_fs_withSubtree_permissionDenied : IO Unit :=
+  runRealPermDeniedDir (fun p => Fs.withSubtree p (fun _ => pure (.ok ())))
+
+/-- Real error-coverage test for `LeanSwe.Fs.withSubtree` on `.notADirectory`. -/
+def err_fs_withSubtree_notADirectory : IO Unit :=
+  runRealNotADirFile (fun p => Fs.withSubtree p (fun _ => pure (.ok ())))
+
+/-- Real error-coverage test for `LeanSwe.Fs.withSubtree` on `.invalidInput`. -/
+def err_fs_withSubtree_invalidInput : IO Unit :=
+  runRealInvalidNul (fun p => Fs.withSubtree p (fun _ => pure (.ok ())))
+
+/-- Real error-coverage test for `LeanSwe.Fs.withSubtree` on `.ioError`. -/
+def err_fs_withSubtree_ioError : IO Unit :=
+  runRealEloop (fun p => Fs.withSubtree p (fun _ => pure (.ok ())))
+
+/-- Mocked error-coverage test for `LeanSwe.Fs.withSubtree` covering remaining `FsErrorKind` values. -/
+def err_fs_withSubtree_mocked : IO Unit :=
+  runMockSubtreeKinds #[.alreadyExists, .isADirectory, .notEmpty, .unsupported, .wouldBlock]
+
+set_option maxRecDepth 2048 in
+/-- Registered error-coverage tests for `LeanSwe.Fs.errorCoverage`. -/
+def registeredErrorTests : Array Core.RegisteredErrorTest :=
+  List.toArray (
+    { testName := "LeanSwe.Fs.RuntimeTests.err_fs_withName_invalidInput", mode := .real, run := err_fs_withName_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_withSuffix_invalidInput", mode := .real, run := err_fs_withSuffix_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_relativeTo_invalidInput", mode := .real, run := err_fs_relativeTo_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readText_notFound", mode := .real, run := err_fs_readText_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readText_permissionDenied", mode := .real, run := err_fs_readText_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readText_isADirectory", mode := .real, run := err_fs_readText_isADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readText_notADirectory", mode := .real, run := err_fs_readText_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readText_invalidInput", mode := .real, run := err_fs_readText_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readText_ioError", mode := .real, run := err_fs_readText_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readText_mocked", mode := .mocked, run := err_fs_readText_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_writeText_notFound", mode := .real, run := err_fs_writeText_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_writeText_permissionDenied", mode := .real, run := err_fs_writeText_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_writeText_isADirectory", mode := .real, run := err_fs_writeText_isADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_writeText_notADirectory", mode := .real, run := err_fs_writeText_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_writeText_invalidInput", mode := .real, run := err_fs_writeText_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_writeText_ioError", mode := .real, run := err_fs_writeText_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_writeText_mocked", mode := .mocked, run := err_fs_writeText_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_appendText_notFound", mode := .real, run := err_fs_appendText_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_appendText_permissionDenied", mode := .real, run := err_fs_appendText_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_appendText_isADirectory", mode := .real, run := err_fs_appendText_isADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_appendText_notADirectory", mode := .real, run := err_fs_appendText_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_appendText_invalidInput", mode := .real, run := err_fs_appendText_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_appendText_ioError", mode := .real, run := err_fs_appendText_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_appendText_mocked", mode := .mocked, run := err_fs_appendText_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_notFound", mode := .real, run := err_fs_readBytes_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_permissionDenied", mode := .real, run := err_fs_readBytes_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_isADirectory", mode := .real, run := err_fs_readBytes_isADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_notADirectory", mode := .real, run := err_fs_readBytes_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_invalidInput", mode := .real, run := err_fs_readBytes_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_ioError", mode := .real, run := err_fs_readBytes_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readBytes_mocked", mode := .mocked, run := err_fs_readBytes_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_notFound", mode := .real, run := err_fs_writeBytes_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_permissionDenied", mode := .real, run := err_fs_writeBytes_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_isADirectory", mode := .real, run := err_fs_writeBytes_isADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_notADirectory", mode := .real, run := err_fs_writeBytes_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_invalidInput", mode := .real, run := err_fs_writeBytes_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_ioError", mode := .real, run := err_fs_writeBytes_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_writeBytes_mocked", mode := .mocked, run := err_fs_writeBytes_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_notFound", mode := .real, run := err_fs_atomicWriteBytes_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_permissionDenied", mode := .real, run := err_fs_atomicWriteBytes_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_isADirectory", mode := .real, run := err_fs_atomicWriteBytes_isADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_notADirectory", mode := .real, run := err_fs_atomicWriteBytes_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_invalidInput", mode := .real, run := err_fs_atomicWriteBytes_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_ioError", mode := .real, run := err_fs_atomicWriteBytes_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteBytes_mocked", mode := .mocked, run := err_fs_atomicWriteBytes_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_notFound", mode := .real, run := err_fs_atomicWriteText_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_permissionDenied", mode := .real, run := err_fs_atomicWriteText_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_isADirectory", mode := .real, run := err_fs_atomicWriteText_isADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_notADirectory", mode := .real, run := err_fs_atomicWriteText_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_invalidInput", mode := .real, run := err_fs_atomicWriteText_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_ioError", mode := .real, run := err_fs_atomicWriteText_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_atomicWriteText_mocked", mode := .mocked, run := err_fs_atomicWriteText_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_touch_notFound", mode := .real, run := err_fs_touch_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_touch_alreadyExists", mode := .real, run := err_fs_touch_alreadyExists }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_touch_permissionDenied", mode := .real, run := err_fs_touch_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_touch_isADirectory", mode := .real, run := err_fs_touch_isADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_touch_notADirectory", mode := .real, run := err_fs_touch_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_touch_invalidInput", mode := .real, run := err_fs_touch_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_touch_ioError", mode := .real, run := err_fs_touch_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_touch_mocked", mode := .mocked, run := err_fs_touch_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_notFound", mode := .real, run := err_fs_mkdir_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_alreadyExists", mode := .real, run := err_fs_mkdir_alreadyExists }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_permissionDenied", mode := .real, run := err_fs_mkdir_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_notADirectory", mode := .real, run := err_fs_mkdir_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_invalidInput", mode := .real, run := err_fs_mkdir_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_ioError", mode := .real, run := err_fs_mkdir_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_mkdir_mocked", mode := .mocked, run := err_fs_mkdir_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_unlink_notFound", mode := .real, run := err_fs_unlink_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_unlink_permissionDenied", mode := .real, run := err_fs_unlink_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_unlink_isADirectory", mode := .real, run := err_fs_unlink_isADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_unlink_notADirectory", mode := .real, run := err_fs_unlink_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_unlink_invalidInput", mode := .real, run := err_fs_unlink_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_unlink_ioError", mode := .real, run := err_fs_unlink_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_unlink_mocked", mode := .mocked, run := err_fs_unlink_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_notFound", mode := .real, run := err_fs_rmdir_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_permissionDenied", mode := .real, run := err_fs_rmdir_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_notADirectory", mode := .real, run := err_fs_rmdir_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_notEmpty", mode := .real, run := err_fs_rmdir_notEmpty }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_invalidInput", mode := .real, run := err_fs_rmdir_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_ioError", mode := .real, run := err_fs_rmdir_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rmdir_mocked", mode := .mocked, run := err_fs_rmdir_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_notFound", mode := .real, run := err_fs_rmtree_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_permissionDenied", mode := .real, run := err_fs_rmtree_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_notADirectory", mode := .real, run := err_fs_rmtree_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_invalidInput", mode := .real, run := err_fs_rmtree_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_ioError", mode := .real, run := err_fs_rmtree_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rmtree_mocked", mode := .mocked, run := err_fs_rmtree_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rename_notFound", mode := .real, run := err_fs_rename_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rename_permissionDenied", mode := .real, run := err_fs_rename_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rename_isADirectory", mode := .real, run := err_fs_rename_isADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rename_notADirectory", mode := .real, run := err_fs_rename_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rename_notEmpty", mode := .real, run := err_fs_rename_notEmpty }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rename_invalidInput", mode := .real, run := err_fs_rename_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rename_ioError", mode := .real, run := err_fs_rename_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rename_mocked", mode := .mocked, run := err_fs_rename_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_notFound", mode := .real, run := err_fs_copyFile_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_permissionDenied", mode := .real, run := err_fs_copyFile_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_isADirectory", mode := .real, run := err_fs_copyFile_isADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_notADirectory", mode := .real, run := err_fs_copyFile_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_invalidInput", mode := .real, run := err_fs_copyFile_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_ioError", mode := .real, run := err_fs_copyFile_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_copyFile_mocked", mode := .mocked, run := err_fs_copyFile_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_notFound", mode := .real, run := err_fs_copyTree_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_alreadyExists", mode := .real, run := err_fs_copyTree_alreadyExists }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_permissionDenied", mode := .real, run := err_fs_copyTree_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_notADirectory", mode := .real, run := err_fs_copyTree_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_invalidInput", mode := .real, run := err_fs_copyTree_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_ioError", mode := .real, run := err_fs_copyTree_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_copyTree_mocked", mode := .mocked, run := err_fs_copyTree_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_notFound", mode := .real, run := err_fs_pathExists_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_permissionDenied", mode := .real, run := err_fs_pathExists_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_notADirectory", mode := .real, run := err_fs_pathExists_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_invalidInput", mode := .real, run := err_fs_pathExists_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_ioError", mode := .real, run := err_fs_pathExists_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_pathExists_mocked", mode := .mocked, run := err_fs_pathExists_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isFile_notFound", mode := .real, run := err_fs_isFile_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isFile_permissionDenied", mode := .real, run := err_fs_isFile_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isFile_notADirectory", mode := .real, run := err_fs_isFile_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isFile_invalidInput", mode := .real, run := err_fs_isFile_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isFile_ioError", mode := .real, run := err_fs_isFile_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isFile_mocked", mode := .mocked, run := err_fs_isFile_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isDir_notFound", mode := .real, run := err_fs_isDir_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isDir_permissionDenied", mode := .real, run := err_fs_isDir_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isDir_notADirectory", mode := .real, run := err_fs_isDir_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isDir_invalidInput", mode := .real, run := err_fs_isDir_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isDir_ioError", mode := .real, run := err_fs_isDir_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isDir_mocked", mode := .mocked, run := err_fs_isDir_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_notFound", mode := .real, run := err_fs_isSymlink_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_permissionDenied", mode := .real, run := err_fs_isSymlink_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_notADirectory", mode := .real, run := err_fs_isSymlink_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_invalidInput", mode := .real, run := err_fs_isSymlink_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_ioError", mode := .real, run := err_fs_isSymlink_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_isSymlink_mocked", mode := .mocked, run := err_fs_isSymlink_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_stat_notFound", mode := .real, run := err_fs_stat_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_stat_permissionDenied", mode := .real, run := err_fs_stat_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_stat_notADirectory", mode := .real, run := err_fs_stat_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_stat_invalidInput", mode := .real, run := err_fs_stat_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_stat_ioError", mode := .real, run := err_fs_stat_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_stat_mocked", mode := .mocked, run := err_fs_stat_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_lstat_notFound", mode := .real, run := err_fs_lstat_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_lstat_permissionDenied", mode := .real, run := err_fs_lstat_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_lstat_notADirectory", mode := .real, run := err_fs_lstat_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_lstat_invalidInput", mode := .real, run := err_fs_lstat_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_lstat_ioError", mode := .real, run := err_fs_lstat_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_lstat_mocked", mode := .mocked, run := err_fs_lstat_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_chmod_notFound", mode := .real, run := err_fs_chmod_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_chmod_permissionDenied", mode := .real, run := err_fs_chmod_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_chmod_notADirectory", mode := .real, run := err_fs_chmod_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_chmod_invalidInput", mode := .real, run := err_fs_chmod_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_chmod_ioError", mode := .real, run := err_fs_chmod_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_chmod_mocked", mode := .mocked, run := err_fs_chmod_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_symlink_notFound", mode := .real, run := err_fs_symlink_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_symlink_alreadyExists", mode := .real, run := err_fs_symlink_alreadyExists }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_symlink_permissionDenied", mode := .real, run := err_fs_symlink_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_symlink_notADirectory", mode := .real, run := err_fs_symlink_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_symlink_invalidInput", mode := .real, run := err_fs_symlink_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_symlink_ioError", mode := .real, run := err_fs_symlink_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_symlink_mocked", mode := .mocked, run := err_fs_symlink_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readLink_notFound", mode := .real, run := err_fs_readLink_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readLink_permissionDenied", mode := .real, run := err_fs_readLink_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readLink_notADirectory", mode := .real, run := err_fs_readLink_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readLink_invalidInput", mode := .real, run := err_fs_readLink_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readLink_ioError", mode := .real, run := err_fs_readLink_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_readLink_mocked", mode := .mocked, run := err_fs_readLink_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_resolve_notFound", mode := .real, run := err_fs_resolve_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_resolve_permissionDenied", mode := .real, run := err_fs_resolve_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_resolve_notADirectory", mode := .real, run := err_fs_resolve_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_resolve_invalidInput", mode := .real, run := err_fs_resolve_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_resolve_ioError", mode := .real, run := err_fs_resolve_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_resolve_mocked", mode := .mocked, run := err_fs_resolve_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_cwd_mocked", mode := .mocked, run := err_fs_cwd_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_listDir_notFound", mode := .real, run := err_fs_listDir_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_listDir_permissionDenied", mode := .real, run := err_fs_listDir_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_listDir_notADirectory", mode := .real, run := err_fs_listDir_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_listDir_invalidInput", mode := .real, run := err_fs_listDir_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_listDir_ioError", mode := .real, run := err_fs_listDir_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_listDir_mocked", mode := .mocked, run := err_fs_listDir_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_walk_notFound", mode := .real, run := err_fs_walk_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_walk_permissionDenied", mode := .real, run := err_fs_walk_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_walk_notADirectory", mode := .real, run := err_fs_walk_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_walk_invalidInput", mode := .real, run := err_fs_walk_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_walk_ioError", mode := .real, run := err_fs_walk_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_walk_mocked", mode := .mocked, run := err_fs_walk_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_glob_notFound", mode := .real, run := err_fs_glob_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_glob_permissionDenied", mode := .real, run := err_fs_glob_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_glob_notADirectory", mode := .real, run := err_fs_glob_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_glob_invalidInput", mode := .real, run := err_fs_glob_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_glob_ioError", mode := .real, run := err_fs_glob_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_glob_mocked", mode := .mocked, run := err_fs_glob_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rglob_notFound", mode := .real, run := err_fs_rglob_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rglob_permissionDenied", mode := .real, run := err_fs_rglob_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rglob_notADirectory", mode := .real, run := err_fs_rglob_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rglob_invalidInput", mode := .real, run := err_fs_rglob_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rglob_ioError", mode := .real, run := err_fs_rglob_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_rglob_mocked", mode := .mocked, run := err_fs_rglob_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_notFound", mode := .real, run := err_fs_withFileLock_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_permissionDenied", mode := .real, run := err_fs_withFileLock_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_isADirectory", mode := .real, run := err_fs_withFileLock_isADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_notADirectory", mode := .real, run := err_fs_withFileLock_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_invalidInput", mode := .real, run := err_fs_withFileLock_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_withFileLock_mocked", mode := .mocked, run := err_fs_withFileLock_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_notFound", mode := .real, run := err_fs_tryWithFileLock_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_permissionDenied", mode := .real, run := err_fs_tryWithFileLock_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_isADirectory", mode := .real, run := err_fs_tryWithFileLock_isADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_notADirectory", mode := .real, run := err_fs_tryWithFileLock_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_invalidInput", mode := .real, run := err_fs_tryWithFileLock_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_tryWithFileLock_mocked", mode := .mocked, run := err_fs_tryWithFileLock_mocked }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_notFound", mode := .real, run := err_fs_withSubtree_notFound }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_permissionDenied", mode := .real, run := err_fs_withSubtree_permissionDenied }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_notADirectory", mode := .real, run := err_fs_withSubtree_notADirectory }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_invalidInput", mode := .real, run := err_fs_withSubtree_invalidInput }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_ioError", mode := .real, run := err_fs_withSubtree_ioError }
+    :: { testName := "LeanSwe.Fs.RuntimeTests.err_fs_withSubtree_mocked", mode := .mocked, run := err_fs_withSubtree_mocked }
+    :: []
+  )
+
 /-- Execute all pure path and real filesystem runtime checks for `LeanSwe.Fs`. -/
 def runAll : IO Unit := do
+  Core.runRegisteredErrorTests registeredErrorTests
   testPurePaths
   withTempDir fun tmp => do
     let moved ← assertOk (← testFilesAndDirs tmp) "testFilesAndDirs"
@@ -677,6 +2162,7 @@ def runAll : IO Unit := do
     testLocksMultiProcess tmp
     testAmbientSafety tmp
     testWithSubtree tmp
+    testSysBridgeEdgeCases tmp
   IO.println "PASS: LeanSwe.Fs runtime tests"
 
 end LeanSwe.Fs.RuntimeTests

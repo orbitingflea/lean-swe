@@ -2,7 +2,7 @@ import LeanSwe.Fs.Proofs.SubtreeWalkHelpers
 
 namespace LeanSwe.Fs.Proofs
 
-open Core LeanSwe.Fs LeanSwe.Fs.Raw LeanSwe.Fs.Model
+open Core LeanSwe.Fs LeanSwe.Fs.Model
 
 /-- Splitting `pre ++ [leaf]` on its last element returns `some (pre, leaf)`. -/
 theorem subtreeSplitLastAux_append_singleton (pre : List EntryName) (leaf : EntryName) :
@@ -333,7 +333,7 @@ theorem spec_atomicWriteReadRegularRoundTrip : SpecAtomicWriteReadRegularRoundTr
 /-- On symlink-free paths inside the depth bound, `sub.readRegular` and `sub.lstat` match `vfsApi.readBytes` and `vfsApi.lstat`. -/
 theorem spec_subtreeAgreesWithAmbientOnSymlinkFree : SpecSubtreeAgreesWithAmbientOnSymlinkFree Internal.subtreeOpsM := by
   intro st dh pos rel bs fm hLd hInv hPosValid hRelNe hLen hRelAnc hPosAnc hLeafFile hFilePerm fullPath sub
-  have hSegsNe : rel.segments ≠ [] := fun h0 => hRelNe (by cases rel; simp_all [Raw.RelPath.root])
+  have hSegsNe : rel.segments ≠ [] := fun h0 => hRelNe (by cases rel; simp_all [RelPath.root])
   rcases splitLastAux_prefix_of_append_ne_nil [] rel.segments hSegsNe with
     ⟨pre, leaf, tail, hSplit, hPreEq, hRest⟩
   simp only [List.nil_append] at hPreEq hSplit

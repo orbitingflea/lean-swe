@@ -2,7 +2,7 @@ import LeanSwe.Fs.Proofs.SubtreeModelSpecs
 
 namespace LeanSwe.Fs.Proofs
 
-open Core LeanSwe.Fs LeanSwe.Fs.Raw LeanSwe.Fs.Model
+open Core LeanSwe.Fs LeanSwe.Fs.Model
 
 /-- Empty VFS state rooted at `"/"` with no open handles. -/
 def emptyVfsState : VfsState :=

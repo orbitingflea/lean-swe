@@ -6,6 +6,7 @@ namespace LeanSwe.Fs.Proofs
 open Core
 open Core.NondetTest
 open LeanSwe.Fs
+open LeanSwe.Fs.Model (RawFsOpsM RawDirOpsM)
 open LeanSwe.Fs.ProofsInternal
 
 private theorem vfsTreeGet_set_leaf :
@@ -383,7 +384,7 @@ private theorem vfsStat_root_dir_node (s₀ : VfsState) (stRoot : FileStat)
 
 /-- Proof of `test_fsraw_createFileNew_createsMissingWithExactBytes` on `vfsOps`. -/
 theorem proof_fsraw_createFileNew_createsMissingWithExactBytes :
-    AllPass (Raw.test_fsraw_createFileNew_createsMissingWithExactBytes vfsOps) := by
+    AllPass (test_fsraw_createFileNew_createsMissingWithExactBytes vfsOps) := by
   intro s₀ child bytes hValid ⟨stRoot, hRootStat, hRootKind, hRootW, hRootX⟩ ⟨eNf, hStatNf, hKindNf⟩
   change ((!child.toList.isEmpty && !decide ('/' ∈ child.toList) &&
     !decide (Char.ofNat 0 ∈ child.toList) && (child != ".") && (child != "..")) = true) at hValid
@@ -469,7 +470,7 @@ theorem proof_fsraw_createFileNew_createsMissingWithExactBytes :
 
 /-- Non-vacuity `CanReach` witness for `test_fsraw_createFileNew_createsMissingWithExactBytes`. -/
 theorem reach_fsraw_createFileNew_createsMissingWithExactBytes :
-    CanReach (Raw.test_fsraw_createFileNew_createsMissingWithExactBytes vfsOps) := by
+    CanReach (test_fsraw_createFileNew_createsMissingWithExactBytes vfsOps) := by
   let st : VfsState := { tree := .dir 0o755 (fun _ => none), keys := [], cwd := "/", nonce := 0 }
   have hRoot : ∃ stRoot, ((vfsOps.stat false "/").run st).1 = .ok stRoot ∧ stRoot.kind = .dir ∧
       (stRoot.mode / 128) % 2 = 1 ∧ (stRoot.mode / 64) % 2 = 1 := by
@@ -490,7 +491,7 @@ theorem reach_fsraw_createFileNew_createsMissingWithExactBytes :
 
 /-- Proof of `test_fsraw_createFileNew_existingRejected` on `vfsOps`. -/
 theorem proof_fsraw_createFileNew_existingRejected :
-    AllPass (Raw.test_fsraw_createFileNew_existingRejected vfsOps) := by
+    AllPass (test_fsraw_createFileNew_existingRejected vfsOps) := by
   intro s₀ path bytes hValid hExists
   change isValidRawPath path = true at hValid
   dsimp only [vfsOps, vfsStatPure, StateT.run] at hExists
@@ -503,7 +504,7 @@ theorem proof_fsraw_createFileNew_existingRejected :
 
 /-- Non-vacuity `CanReach` witness for `test_fsraw_createFileNew_existingRejected`. -/
 theorem reach_fsraw_createFileNew_existingRejected :
-    CanReach (Raw.test_fsraw_createFileNew_existingRejected vfsOps) := by
+    CanReach (test_fsraw_createFileNew_existingRejected vfsOps) := by
   let st : VfsState := { tree := .dir 0o755 (fun _ => none), keys := ["/"], cwd := "/", nonce := 0 }
   have hEx : ((vfsOps.stat false "/").run st).1.isOk = true := by
     dsimp only [vfsOps, vfsStatPure, StateT.run]
@@ -514,7 +515,7 @@ theorem reach_fsraw_createFileNew_existingRejected :
 
 /-- Proof of `test_fsraw_createFileNew_invalidPathRejected` on `vfsOps`. -/
 theorem proof_fsraw_createFileNew_invalidPathRejected :
-    AllPass (Raw.test_fsraw_createFileNew_invalidPathRejected vfsOps) := by
+    AllPass (test_fsraw_createFileNew_invalidPathRejected vfsOps) := by
   intro s₀ path bytes hInvalid
   change isValidRawPath path = false at hInvalid
   dsimp only [vfsOps, StateT.run, assert]
@@ -524,14 +525,14 @@ theorem proof_fsraw_createFileNew_invalidPathRejected :
 
 /-- Non-vacuity `CanReach` witness for `test_fsraw_createFileNew_invalidPathRejected`. -/
 theorem reach_fsraw_createFileNew_invalidPathRejected :
-    CanReach (Raw.test_fsraw_createFileNew_invalidPathRejected vfsOps) := by
+    CanReach (test_fsraw_createFileNew_invalidPathRejected vfsOps) := by
   let st : VfsState := { tree := .dir 0o755 (fun _ => none), keys := [], cwd := "/", nonce := 0 }
   exact ⟨st, "", ByteArray.empty, by decide,
     proof_fsraw_createFileNew_invalidPathRejected st "" ByteArray.empty (by decide)⟩
 
 /-- Proof of `test_fsraw_createFileNew_missingParentRejected` on `vfsOps`. -/
 theorem proof_fsraw_createFileNew_missingParentRejected :
-    AllPass (Raw.test_fsraw_createFileNew_missingParentRejected vfsOps) := by
+    AllPass (test_fsraw_createFileNew_missingParentRejected vfsOps) := by
   intro s₀ d f bytes ⟨hDv, hFv⟩ ⟨eNf, hStatNf, hKindNf⟩
   change ((!d.toList.isEmpty && !decide ('/' ∈ d.toList) &&
     !decide (Char.ofNat 0 ∈ d.toList) && (d != ".") && (d != "..")) = true) at hDv
@@ -641,7 +642,7 @@ theorem proof_fsraw_createFileNew_missingParentRejected :
 
 /-- Non-vacuity `CanReach` witness for `test_fsraw_createFileNew_missingParentRejected`. -/
 theorem reach_fsraw_createFileNew_missingParentRejected :
-    CanReach (Raw.test_fsraw_createFileNew_missingParentRejected vfsOps) := by
+    CanReach (test_fsraw_createFileNew_missingParentRejected vfsOps) := by
   let st : VfsState := { tree := .dir 0o755 (fun _ => none), keys := [], cwd := "/", nonce := 0 }
   have hMissing : ∃ e, ((vfsOps.stat false "/d").run st).1 = .error e ∧ e.kind = .notFound := by
     refine ⟨{ kind := .notFound, path := some "/d", message := "no such file or directory: /d" }, ?_, rfl⟩
@@ -656,7 +657,7 @@ theorem reach_fsraw_createFileNew_missingParentRejected :
 
 /-- Proof of `test_fsraw_readBytes_followsSymlinkToRegularFile` on `vfsOps`. -/
 theorem proof_fsraw_readBytes_followsSymlinkToRegularFile :
-    AllPass (Raw.test_fsraw_readBytes_followsSymlinkToRegularFile vfsOps) := by
+    AllPass (test_fsraw_readBytes_followsSymlinkToRegularFile vfsOps) := by
   intro s₀ path hValid _ ⟨stTgt, hStatTgt, hTgtFile⟩
   change isValidRawPath path = true at hValid
   dsimp only [vfsOps, vfsStatPure, StateT.run] at hStatTgt
@@ -678,7 +679,7 @@ theorem proof_fsraw_readBytes_followsSymlinkToRegularFile :
 
 /-- Non-vacuity `CanReach` witness for `test_fsraw_readBytes_followsSymlinkToRegularFile`. -/
 theorem reach_fsraw_readBytes_followsSymlinkToRegularFile :
-    CanReach (Raw.test_fsraw_readBytes_followsSymlinkToRegularFile vfsOps) := by
+    CanReach (test_fsraw_readBytes_followsSymlinkToRegularFile vfsOps) := by
   let st : VfsState :=
     { tree := .dir 0o755 (fun s =>
         if s == "f" then some (.file (ByteArray.mk #[1, 2]) 0o644)
@@ -714,7 +715,7 @@ theorem reach_fsraw_readBytes_followsSymlinkToRegularFile :
 
 /-- Proof of `test_fsraw_readBytes_roundTripsExactBytesThroughSymlink` on `vfsOps`. -/
 theorem proof_fsraw_readBytes_roundTripsExactBytesThroughSymlink :
-    AllPass (Raw.test_fsraw_readBytes_roundTripsExactBytesThroughSymlink vfsOps) := by
+    AllPass (test_fsraw_readBytes_roundTripsExactBytesThroughSymlink vfsOps) := by
   intro s₀ tgtName symName bytes ⟨hTv, hSv, hNeName⟩
     ⟨stRoot, hRootStat, hRootKind, hRootW, hRootX⟩
     ⟨e1, hTgtNf, hTgtKind⟩ ⟨e2, hSymNf, hSymKind⟩
@@ -815,7 +816,7 @@ theorem proof_fsraw_readBytes_roundTripsExactBytesThroughSymlink :
     dsimp only [vfsOps]
     rw [hSAbs, hSSplit, hResSNf₁]
     dsimp only
-    rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+    rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte, ← hSSplit]
     rfl
   have hNodes₂ : s₂.nodes = fun k =>
@@ -905,7 +906,7 @@ theorem proof_fsraw_readBytes_roundTripsExactBytesThroughSymlink :
 
 /-- Non-vacuity `CanReach` witness for `test_fsraw_readBytes_roundTripsExactBytesThroughSymlink`. -/
 theorem reach_fsraw_readBytes_roundTripsExactBytesThroughSymlink :
-    CanReach (Raw.test_fsraw_readBytes_roundTripsExactBytesThroughSymlink vfsOps) := by
+    CanReach (test_fsraw_readBytes_roundTripsExactBytesThroughSymlink vfsOps) := by
   let st : VfsState := { tree := .dir 0o755 (fun _ => none), keys := [], cwd := "/", nonce := 0 }
   have hRoot : ∃ stRoot, ((vfsOps.stat false "/").run st).1 = .ok stRoot ∧ stRoot.kind = .dir ∧
       (stRoot.mode / 128) % 2 = 1 ∧ (stRoot.mode / 64) % 2 = 1 := by
@@ -956,7 +957,7 @@ theorem reach_fsraw_readBytes_roundTripsExactBytesThroughSymlink :
 
 /-- Proof of `test_fsraw_readBytes_dirAndMissingRejected` on `vfsOps`. -/
 theorem proof_fsraw_readBytes_dirAndMissingRejected :
-    AllPass (Raw.test_fsraw_readBytes_dirAndMissingRejected vfsOps) := by
+    AllPass (test_fsraw_readBytes_dirAndMissingRejected vfsOps) := by
   intro s₀ path hValid
   change isValidRawPath path = true at hValid
   dsimp only [vfsOps, vfsStatPure, vfsReadBytesPure, StateT.run, assert]
@@ -972,7 +973,7 @@ theorem proof_fsraw_readBytes_dirAndMissingRejected :
       exact ⟨⟨⟨_, rfl, rfl⟩, trivial⟩, trivial⟩
     | file bs m =>
       dsimp only [vfsToStat]
-      rw [show (Raw.EntryKind.file == Raw.EntryKind.dir) = false from rfl]
+      rw [show (EntryKind.file == EntryKind.dir) = false from rfl]
       simp
       trivial
     | symlink tgt m =>
@@ -980,13 +981,13 @@ theorem proof_fsraw_readBytes_dirAndMissingRejected :
 
 /-- Non-vacuity `CanReach` witness for `test_fsraw_readBytes_dirAndMissingRejected`. -/
 theorem reach_fsraw_readBytes_dirAndMissingRejected :
-    CanReach (Raw.test_fsraw_readBytes_dirAndMissingRejected vfsOps) := by
+    CanReach (test_fsraw_readBytes_dirAndMissingRejected vfsOps) := by
   let st : VfsState := { tree := .dir 0o755 (fun _ => none), keys := [], cwd := "/", nonce := 0 }
   exact ⟨st, "/", by decide, proof_fsraw_readBytes_dirAndMissingRejected st "/" (by decide)⟩
 
 /-- Proof of `test_fsraw_readBytes_invalidPathRejected` on `vfsOps`. -/
 theorem proof_fsraw_readBytes_invalidPathRejected :
-    AllPass (Raw.test_fsraw_readBytes_invalidPathRejected vfsOps) := by
+    AllPass (test_fsraw_readBytes_invalidPathRejected vfsOps) := by
   intro s₀ path hInvalid
   change isValidRawPath path = false at hInvalid
   dsimp only [vfsOps, vfsReadBytesPure, StateT.run, assert]
@@ -995,7 +996,7 @@ theorem proof_fsraw_readBytes_invalidPathRejected :
 
 /-- Non-vacuity `CanReach` witness for `test_fsraw_readBytes_invalidPathRejected`. -/
 theorem reach_fsraw_readBytes_invalidPathRejected :
-    CanReach (Raw.test_fsraw_readBytes_invalidPathRejected vfsOps) := by
+    CanReach (test_fsraw_readBytes_invalidPathRejected vfsOps) := by
   let st : VfsState := { tree := .dir 0o755 (fun _ => none), keys := [], cwd := "/", nonce := 0 }
   exact ⟨st, "", by decide, proof_fsraw_readBytes_invalidPathRejected st "" (by decide)⟩
 
@@ -1428,7 +1429,7 @@ private theorem atomicWriteBytes_step_ok {S : Type} (ops : RawFsOpsM (StateM S))
     (hCreate : (ops.createFileNew tmpPath bytes).run s₂ = (.ok (), s₃))
     (hRename : (ops.rename tmpPath path).run s₃ = (.ok (), s₄)) :
     ((Internal.mkApiM ops).atomicWriteBytes path bytes).run s₀ = (.ok (), s₄) := by
-  dsimp only [Internal.mkApiM, Internal.atomicWriteBytesImplM, StateT.run]
+  dsimp only [Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.atomicWriteBytesImplM, StateT.run]
   rw [hValid]
   simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, beq_false_of_ne hNeRoot]
   dsimp only [Bind.bind, StateT.bind]
@@ -1562,17 +1563,17 @@ private theorem atomicWriteBytes_vfs_step (s₀ : VfsState) (path : String) (byt
     rcases hParSimple with ⟨rfl, rfl⟩ | ⟨d, rm, rfl, rfl, hRootD, hRootExec⟩
     · simp only [List.nil_append, vfsResolveSegs, hParNodeOk, hExec, Bool.false_eq_true, ↓reduceIte]
       change (match s₀.nodes tmpKey with
-        | none => Except.error { kind := Raw.FsErrorKind.notFound, path := some tmpKey, message := s!"no such file or directory: {tmpKey}" }
+        | none => Except.error { kind := FsErrorKind.notFound, path := some tmpKey, message := s!"no such file or directory: {tmpKey}" }
         | some (.symlink t m) => Except.ok (tmpKey, VfsNode.symlink t m)
-        | some n => Except.ok (tmpKey, n) : Except Raw.FsError (String × VfsNode)) = _
+        | some n => Except.ok (tmpKey, n) : Except FsError (String × VfsNode)) = _
       rw [hTmpNone]
     · have hChildD : vfsChildPath "/" d = "/" ++ d := by simp [vfsChildPath]
       simp only [List.cons_append, List.nil_append, vfsResolveSegs, hRootD, hRootExec, Bool.false_eq_true, ↓reduceIte,
         hChildD, hParNodeOk, hExec]
       change (match s₀.nodes tmpKey with
-        | none => Except.error { kind := Raw.FsErrorKind.notFound, path := some tmpKey, message := s!"no such file or directory: {tmpKey}" }
+        | none => Except.error { kind := FsErrorKind.notFound, path := some tmpKey, message := s!"no such file or directory: {tmpKey}" }
         | some (.symlink t m) => Except.ok (tmpKey, VfsNode.symlink t m)
-        | some n => Except.ok (tmpKey, n) : Except Raw.FsError (String × VfsNode)) = _
+        | some n => Except.ok (tmpKey, n) : Except FsError (String × VfsNode)) = _
       rw [hTmpNone]
   let sNonce : VfsState := { s₀ with nonce := s₀.nonce + 1 }
   let tr1 := vfsTreeSet s₀.tree (vfsSplitSegs tmpKey) (some (.file bytes 0o644))
@@ -1584,7 +1585,7 @@ private theorem atomicWriteBytes_vfs_step (s₀ : VfsState) (path : String) (byt
     rw [show sNonce.cwd = s₀.cwd from rfl, show sNonce.nodes = s₀.nodes from rfl,
         hAbsTmp, (vfsChildPath_valid parCanon tmpName hParCanon.1 hTmpValid).2, hParCanon.2, hTmpStatNf]
     dsimp only
-    rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+    rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte, splitLastAux_append_singleton_str]
     rw [hPar1024]
     dsimp only
@@ -2274,7 +2275,7 @@ theorem proof_fs_vfs_atomicWriteBytes_writesAtomically :
     have hC : vfsChildPath "/" child = "/" ++ child := by simp [vfsChildPath]
     rw [hC] at hCanonC hSplitC
     rw [show vfsSplitSegs "/" = [] by decide, List.nil_append] at hSplitC
-    dsimp only [Internal.mkApiM, vfsOps, vfsStatPure, StateT.run]
+    dsimp only [Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
     rw [vfsAbsNorm_canon s₁.cwd ("/" ++ child) hCanonC, hSplitC]
     unfold vfsResolveSegs
     rw [hRoot₁]
@@ -2390,7 +2391,7 @@ theorem proof_fs_vfs_atomicWriteBytes_rejectsPrePlantedTmpAndPreservesTarget :
   have hParName := parent_name_slash_child child hChildValid
   have hStep : ((Internal.mkApiM vfsOps).atomicWriteBytes ("/" ++ child) newBytes).run s₀ =
       (.error { kind := .alreadyExists, path := some tmpPath, message := s!"already exists: {tmpPath}" }, sNonce) := by
-    dsimp only [Internal.mkApiM, Internal.atomicWriteBytesImplM, StateT.run]
+    dsimp only [Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.atomicWriteBytesImplM, StateT.run]
     rw [hValidTarget]
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, beq_false_of_ne hNeRoot]
     dsimp only [Bind.bind, StateT.bind, StateT.run]
@@ -2507,7 +2508,7 @@ theorem proof_fs_vfs_atomicWriteBytes_renameErrorCleansUpTmpAndPreservesTarget :
     unfold vfsResolveSegs
     rw [hTmpNone]
     dsimp only
-    rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+    rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte]
     rw [show Internal.splitLastAux [tmpName] [] = some ([], tmpName) from rfl]
     dsimp only
@@ -2558,7 +2559,7 @@ theorem proof_fs_vfs_atomicWriteBytes_renameErrorCleansUpTmpAndPreservesTarget :
   have hParName := parent_name_slash_child child hChildValid
   have hStep : ((Internal.mkApiM { vfsOps with rename := fun _ _ => pure (.error renameErr) }).atomicWriteBytes ("/" ++ child) newBytes).run s₀ =
       (.error renameErr, sFinal) := by
-    dsimp only [Internal.mkApiM, Internal.atomicWriteBytesImplM, StateT.run]
+    dsimp only [Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.atomicWriteBytesImplM, StateT.run]
     rw [hValidTarget]
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, beq_false_of_ne hNeRoot]
     dsimp only [Bind.bind, StateT.bind, StateT.run]
@@ -2677,7 +2678,7 @@ theorem proof_fs_vfs_atomicWriteText_writesAtomically :
     change ((vfsOps.readBytes ("/" ++ child)).run s₁).1 = .ok content.toUTF8
     exact vfsReadBytes_root_child_ok s₁ child content.toUTF8 stR.mode 0o644 hChildValid hPathRaw hRoot₁ hRx hFile₁
   have hReadT₁ : (((Internal.mkApiM vfsOps).readText ("/" ++ child)).run s₁).1 = .ok content := by
-    dsimp only [Internal.mkApiM, Internal.readTextImplM, StateT.run, Bind.bind, StateT.bind, Pure.pure, StateT.pure]
+    dsimp only [Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.readTextImplM, StateT.run, Bind.bind, StateT.bind, Pure.pure, StateT.pure]
     have hRb : vfsOps.readBytes ("/" ++ child) s₁ = (.ok content.toUTF8, s₁) := by
       dsimp only [vfsOps, StateT.run] at hReadB₁ ⊢
       exact Prod.ext hReadB₁ rfl
@@ -2761,7 +2762,7 @@ theorem proof_fs_vfs_atomicWriteBytes_invalidPathRejected :
     AllPass (test_fs_vfs_atomicWriteBytes_invalidPathRejected Internal.mkApiM vfsOps) := by
   intro s₀ path bytes hInvalid
   have hInv : Internal.isValidAtomicTargetPath path = false := hInvalid
-  dsimp only [Internal.mkApiM, Internal.atomicWriteBytesImplM, StateT.run, Pure.pure, StateT.pure]
+  dsimp only [Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.atomicWriteBytesImplM, StateT.run, Pure.pure, StateT.pure]
   rw [hInv]
   exact ⟨⟨⟨_, rfl, rfl⟩, rfl⟩, trivial⟩
 
@@ -2791,7 +2792,7 @@ theorem proof_fs_vfs_atomicWriteBytes_dirRejected :
     AllPass (test_fs_vfs_atomicWriteBytes_dirRejected Internal.mkApiM vfsOps) := by
   intro s₀ path bytes hValid hDir
   have hV : Internal.isValidAtomicTargetPath path = true := hValid
-  dsimp only [Internal.mkApiM, Internal.atomicWriteBytesImplM, StateT.run, Pure.pure, StateT.pure]
+  dsimp only [Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.atomicWriteBytesImplM, StateT.run, Pure.pure, StateT.pure]
   rw [hV]
   simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
   rcases hDir with rfl | ⟨st, hSt, hK⟩
@@ -2809,7 +2810,7 @@ theorem proof_fs_vfs_atomicWriteBytes_dirRejected :
       dsimp only [vfsOps, StateT.run] at hSt ⊢
       rw [hSt]
       dsimp only
-      rw [hK, show (Raw.EntryKind.dir == .dir) = true from by decide]
+      rw [hK, show (EntryKind.dir == .dir) = true from by decide]
       simp only [↓reduceIte]
       exact ⟨⟨⟨_, rfl, rfl⟩, rfl⟩, trivial⟩
 
@@ -2839,7 +2840,7 @@ theorem proof_fs_vfs_atomicWriteBytes_upfrontStatErrorPropagated :
     AllPass (test_fs_vfs_atomicWriteBytes_upfrontStatErrorPropagated Internal.mkApiM vfsOps) := by
   intro s₀ path bytes ⟨hValid, hNeRoot⟩ ⟨stErr, hErr, hNotNf⟩
   have hV : Internal.isValidAtomicTargetPath path = true := hValid
-  dsimp only [Internal.mkApiM, Internal.atomicWriteBytesImplM, StateT.run, Pure.pure, StateT.pure]
+  dsimp only [Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.atomicWriteBytesImplM, StateT.run, Pure.pure, StateT.pure]
   rw [hV, beq_false_of_ne hNeRoot]
   simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
   dsimp only [Bind.bind, Pure.pure, StateT.bind, StateT.pure]
@@ -3108,7 +3109,7 @@ private theorem nestedParentAndRelative_step0 (s₀ : VfsState) (dirName child :
     rw [hTmpChild0Eq, hChild0, beq_false_of_ne (show nestedTmp ≠ "/" ++ dirName ++ "/" ++ child from hTmp0NeNested)]
     simp
   have hRead0 : (((Internal.mkApiM vfsOps).readBytes nestedPath).run s₁).1 = .ok bytes := by
-    dsimp only [Internal.mkApiM, vfsOps, vfsReadBytesPure, StateT.run]
+    dsimp only [Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsReadBytesPure, StateT.run]
     rw [hPath0Raw]
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     rw [show vfsAbsNorm s₁.cwd nestedPath = "/" ++ dirName ++ "/" ++ child from hAbs0 s₁.cwd, hSplit0]
@@ -3338,7 +3339,7 @@ private theorem nestedParentAndRelative_step1 (s₁ : VfsState) (child : String)
     have hC1 : vfsChildPath "/" child = "/" ++ child := by simp [vfsChildPath]
     rw [hC1] at hSplitC1
     rw [show vfsSplitSegs "/" = [] by decide, List.nil_append] at hSplitC1
-    dsimp only [Internal.mkApiM, vfsOps, vfsReadBytesPure, StateT.run]
+    dsimp only [Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsReadBytesPure, StateT.run]
     rw [hRelRaw, hCwd2Val]
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte,
       vfsAbsNorm_root_bare_child child hChildValid, hSplitC1]
@@ -3578,14 +3579,14 @@ private theorem roundTripsExactBytesThroughSymlink_exec (s₀ : VfsState)
   let tr2 := vfsTreeSet s₁.tree (vfsSplitSegs ("/" ++ symName)) (some (.symlink ("/" ++ tgtName) 0o777))
   let s₂ : VfsState := { s₁ with tree := tr2, keys := ("/" ++ symName) :: s₁.keys }
   have hSymStep : ((Internal.mkApiM vfsOps).symlink ("/" ++ tgtName) ("/" ++ symName)).run s₁ = (.ok (), s₂) := by
-    dsimp only [Internal.mkApiM, vfsOps, StateT.run]
+    dsimp only [Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, StateT.run]
     rw [vfsAbsNorm_canon s₁.cwd ("/" ++ symName) hCanonS, hSplitS]
     unfold vfsResolveSegs
     rw [hRoot₁]; dsimp only; rw [hRexec, hCS]; simp only [Bool.false_eq_true, ↓reduceIte]
     unfold vfsResolveSegs
     rw [hSymNone₁]
     dsimp only
-    rw [show (Raw.FsErrorKind.notFound != Raw.FsErrorKind.notFound) = false from by decide]
+    rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte]
     dsimp only [s₂, tr2]
     rw [hSplitS]
@@ -3611,7 +3612,7 @@ private theorem roundTripsExactBytesThroughSymlink_exec (s₀ : VfsState)
   rw [hCTgt] at hCanonTgt hSplitTgt
   rw [show vfsSplitSegs "/" = [] by decide, List.nil_append] at hSplitTgt
   have hRead₂ : (((Internal.mkApiM vfsOps).readBytes ("/" ++ symName)).run s₂).1 = .ok bytes := by
-    dsimp only [Internal.mkApiM, vfsOps, vfsReadBytesPure, StateT.run]
+    dsimp only [Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsReadBytesPure, StateT.run]
     rw [hSymRaw, vfsAbsNorm_canon s₂.cwd ("/" ++ symName) hCanonS, hSplitS]
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     unfold vfsResolveSegs; rw [hRoot₂]; dsimp only; rw [hRexec, hCS]; simp only [Bool.false_eq_true, ↓reduceIte]
@@ -3784,7 +3785,7 @@ example : ¬ AllPass (test_fs_vfs_atomicWriteBytes_renameErrorCleansUpTmpAndPres
     rw [show (((0o755 / 128) % 2 == 0) || ((0o755 / 64) % 2 == 0)) = false from by decide,
       show vfsChildPath "/" ".f.tmp.0" = "/.f.tmp.0" from by decide]
     rfl
-  dsimp only [Internal.mkApiM, StateT.run, Bind.bind, Pure.pure, StateT.bind, StateT.pure, vfsOps, assert] at hPass
+  dsimp only [Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, StateT.run, Bind.bind, Pure.pure, StateT.bind, StateT.pure, vfsOps, assert] at hPass
   rw [show Internal.isValidAtomicTargetPath ("/" ++ "f") = true from by decide,
     show ("/" ++ "f" == "/") = false from by decide] at hPass
   simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte] at hPass

@@ -126,16 +126,6 @@ private def buildFdBoxObj (pkg : NPackage __name__) (tag : String) : FetchM (Job
     #["-I", lean.includeDir.toString, "-I", cDir.toString]
     #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
 
-extern_lib «leanswe_fs» pkg := do
-  let oFile := pkg.buildDir / "c" / "fs_shim.o"
-  let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "Fs" / "Raw" / "c" / "fs_shim.c")
-  let lean ← getLeanInstall
-  let oJob ← buildO oFile srcJob
-    #["-I", lean.includeDir.toString]
-    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror"]
-  let name := nameToStaticLib "leanswe_fs"
-  buildStaticLib (pkg.staticLibDir / name) #[oJob]
-
 extern_lib «leanswe_envvars» pkg := do
   let oFile := pkg.buildDir / "c" / "envvars_shim.o"
   let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "EnvVars" / "Raw" / "c" / "envvars_shim.c")

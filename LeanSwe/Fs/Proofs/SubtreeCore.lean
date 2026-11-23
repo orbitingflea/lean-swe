@@ -1,12 +1,10 @@
 import LeanSwe.Fs.Model
 import LeanSwe.Fs.Impl
-import LeanSwe.Fs.Raw.SpecTests
 import LeanSwe.Fs.SpecTests
 
 namespace LeanSwe.Fs.Proofs
 
 open LeanSwe.Fs
-open LeanSwe.Fs.Raw
 open LeanSwe.Fs.Model
 
 /-- Mirror of `Model.maxDirId` for induction over `openDirs`. -/

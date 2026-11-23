@@ -16,7 +16,6 @@ open Tests.Mutate
 private def allSuites : Array MutateSuite := #[
   Codecs.regExpSuite,
   Codecs.globSuite,
-  FsAndProcess.fsRawSuite,
   FsAndProcess.fsSuite,
   FsAndProcess.processSuite,
   Codecs.timeSuite,

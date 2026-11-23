@@ -3,7 +3,6 @@ import LeanSwe.Fs.Proofs.SubtreeCore
 namespace LeanSwe.Fs.Proofs
 
 open LeanSwe.Fs
-open LeanSwe.Fs.Raw
 open LeanSwe.Fs.Model
 
 /-- State transition relation for an interleaved subtree step confined inside `pos` without leaking open handles or locks. -/
@@ -794,12 +793,69 @@ private theorem mkdirWalkM_owned {pos : List String} {env : VfsState → VfsStat
             · simp only [hNf, Bool.false_eq_true, ↓reduceIte, StateT.pure] at hs
               cases hs)
     have hNextPre : pos <+: curPos ++ [seg.val] := List.IsPrefix.trans hPreCur (List.prefix_append _ _)
+    have hWalkEq : ∀ (b : Bool) s, Internal.mkdirWalkM ops b cur (seg :: rest) leafAct s =
+        ((if b then step else Internal.bracketCloseDirM ops cur step) >>= fun r =>
+          match r with
+          | .error e => pure (.error e)
+          | .ok nextDh => Internal.mkdirWalkM ops false nextDh rest leafAct) s := by
+      intro b s
+      cases b
+      · simp only [Internal.mkdirWalkM, Internal.bracketCloseDirM, tryFinally', step,
+          Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure, Bool.false_eq_true, ↓reduceIte]
+        cases ops.openDirAt cur seg s with
+        | mk r1 s1 =>
+          cases r1 with
+          | ok _ => rfl
+          | error e =>
+            by_cases hnf : (e.kind == FsErrorKind.notFound) = true
+            · simp only [hnf, ↓reduceIte, StateT.bind]
+              cases ops.createDirAt cur seg s1 with
+              | mk rc s2 =>
+                dsimp only [Id.instMonad, Bind.bind, bind]
+                cases rc with
+                | ok u =>
+                  cases u; dsimp only
+                  cases ops.openDirAt cur seg s2 with
+                  | mk r2 s3 => cases ops.closeDir cur s3; cases r2 <;> rfl
+                | error ce =>
+                  dsimp only
+                  by_cases hae : (ce.kind == FsErrorKind.alreadyExists) = true
+                  · simp only [hae, ↓reduceIte]
+                    cases ops.openDirAt cur seg s2 with
+                    | mk r2 s3 => cases ops.closeDir cur s3; cases r2 <;> rfl
+                  · simp only [hae, Bool.false_eq_true, ↓reduceIte]; rfl
+            · simp only [hnf, Bool.false_eq_true, ↓reduceIte]; rfl
+      · simp only [Internal.mkdirWalkM, step,
+          Bind.bind, bind, StateT.bind, Pure.pure, pure, ↓reduceIte]
+        cases ops.openDirAt cur seg s with
+        | mk r1 s1 =>
+          cases r1 with
+          | ok _ => rfl
+          | error e =>
+            by_cases hnf : (e.kind == FsErrorKind.notFound) = true
+            · simp only [hnf, ↓reduceIte, StateT.bind]
+              cases ops.createDirAt cur seg s1 with
+              | mk rc s2 =>
+                dsimp only [Id.instMonad, Bind.bind, bind]
+                cases rc with
+                | ok u =>
+                  cases u; dsimp only
+                  cases ops.openDirAt cur seg s2 with
+                  | mk r2 s3 => cases r2 <;> rfl
+                | error ce =>
+                  dsimp only
+                  by_cases hae : (ce.kind == FsErrorKind.alreadyExists) = true
+                  · simp only [hae, ↓reduceIte]
+                    cases ops.openDirAt cur seg s2 with
+                    | mk r2 s3 => cases r2 <;> rfl
+                  · simp only [hae, Bool.false_eq_true, ↓reduceIte]; rfl
+            · simp only [hnf, Bool.false_eq_true, ↓reduceIte]; rfl
     cases isRoot
     · simp only [Bool.false_eq_true, ↓reduceIte] at hStepProof
-      dsimp only [Internal.mkdirWalkM, bind, StateT.bind, pure, StateT.pure, Bool.false_eq_true, ↓reduceIte]
-      change match ((Internal.bracketCloseDirM ops cur step >>= fun r =>
-          match r with | .error e => StateT.pure (.error e) | .ok nextDh => Internal.mkdirWalkM ops false nextDh rest leafAct) s0) with
-        | (_, sOut) => SameOutside pos s0 sOut ∧ sOut.openDirs = baseDirs ∧ sOut.locks = s0.locks
+      rw [show Internal.mkdirWalkM (interleave env vfsDirOps) false cur (seg :: rest) leafAct s0 =
+          ((Internal.bracketCloseDirM ops cur step >>= fun r =>
+            match r with | .error e => pure (.error e) | .ok nextDh => Internal.mkdirWalkM ops false nextDh rest leafAct) s0) from by
+        simpa using hWalkEq false s0]
       dsimp only [bind, StateT.bind]
       cases hRun : (Internal.bracketCloseDirM ops cur step) s0 with
       | mk r s1 =>
@@ -816,10 +872,10 @@ private theorem mkdirWalkM_owned {pos : List String} {env : VfsState → VfsStat
             rw [hWalk] at ihOut
             exact ⟨SameOutside_trans hOut1 ihOut.1, ihOut.2.1, ihOut.2.2.trans hLocks1⟩
     · simp only [↓reduceIte] at hStepProof
-      dsimp only [Internal.mkdirWalkM, bind, StateT.bind, pure, StateT.pure, ↓reduceIte]
-      change match ((step >>= fun r =>
-          match r with | .error e => StateT.pure (.error e) | .ok nextDh => Internal.mkdirWalkM ops false nextDh rest leafAct) s0) with
-        | (_, sOut) => SameOutside pos s0 sOut ∧ sOut.openDirs = baseDirs ∧ sOut.locks = s0.locks
+      rw [show Internal.mkdirWalkM (interleave env vfsDirOps) true cur (seg :: rest) leafAct s0 =
+          ((step >>= fun r =>
+            match r with | .error e => pure (.error e) | .ok nextDh => Internal.mkdirWalkM ops false nextDh rest leafAct) s0) from by
+        simpa using hWalkEq true s0]
       dsimp only [bind, StateT.bind]
       cases hRun : step s0 with
       | mk r s1 =>

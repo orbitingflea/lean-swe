@@ -1,11 +1,10 @@
 import LeanSwe.Fs.Proofs.SubtreeCore
 import LeanSwe.Fs.Proofs.SubtreeIsolation
-import LeanSwe.Fs.Raw.SpecTests
 import LeanSwe.Fs.SpecTests
 
 namespace LeanSwe.Fs.Proofs
 
-open Core LeanSwe.Fs LeanSwe.Fs.Raw LeanSwe.Fs.Model
+open Core LeanSwe.Fs LeanSwe.Fs.Model
 
 private theorem lookupDir_zero (st : VfsState) (p : String) :
     lookupDir st { handleId := 0, rootPath := p } = none := rfl

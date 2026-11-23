@@ -1,6 +1,5 @@
 import LeanSwe.Fs.Interface
 import LeanSwe.Fs.SpecTests
-import LeanSwe.Fs.Raw.Proofs
 
 open Core
 open Core.NondetTest
@@ -360,12 +359,149 @@ namespace LeanSwe.Fs.Proofs
 
 open LeanSwe.Fs.ProofsInternal
 
+private theorem nonEmptyMsg_ne_empty (fallback msg : String) (hf : fallback ≠ "") :
+    SysBridge.nonEmptyMsg fallback msg ≠ "" := by
+  unfold SysBridge.nonEmptyMsg
+  split
+  · exact hf
+  · next h =>
+    intro hem
+    subst hem
+    simp [String.isEmpty] at h
+
+private theorem append_head_ne_empty (pre rest : String) (hp : pre ≠ "") :
+    pre ++ rest ≠ "" := by
+  simp [String.append_eq_empty_iff, hp]
+
 /-- Proof of `test_fs_mapRawError_returnsNonEmptyMessage` for `defaultApi`. -/
 theorem proof_fs_mapRawError_returnsNonEmptyMessage :
     AllPass (test_fs_mapRawError_returnsNonEmptyMessage defaultApi) := by
   intro raw
-  simpa [defaultApi, Internal.mkApiM] using
-    Fs.Raw.Proofs.proof_fsraw_mapRawError_returnsNonEmptyMessage raw
+  simp only [defaultApi, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM,
+    SysBridge.defaultOps, SysBridge.mkRawFsOpsM, SysBridge.mapRawError, assert]
+  refine ⟨?_, trivial⟩
+  cases raw with
+  | noFileOrDirectory p _ _ =>
+    exact nonEmptyMsg_ne_empty _ _ (append_head_ne_empty "no such file or directory: " p (by decide))
+  | alreadyExists _ _ _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
+  | permissionDenied _ _ _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
+  | inappropriateType _ _ _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
+  | invalidArgument _ _ _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
+  | unsupportedOperation _ _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
+  | otherError code _ =>
+    exact nonEmptyMsg_ne_empty _ _ (append_head_ne_empty "os error " (toString code) (by decide))
+  | wouldBlock _ _ _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
+  | userError _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
+
+/-- Proof of `test_fsraw_mapRawError_wouldBlock` for `defaultApi`. -/
+theorem proof_fsraw_mapRawError_wouldBlock :
+    AllPass (test_fsraw_mapRawError_wouldBlock defaultApi) := by
+  intro path? errno detail
+  simp only [defaultApi, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM,
+    SysBridge.defaultOps, SysBridge.mkRawFsOpsM, SysBridge.mapRawError, assert]
+  refine ⟨⟨trivial, trivial, trivial, nonEmptyMsg_ne_empty _ _ (by decide)⟩, trivial⟩
+
+/-- Non-vacuity `CanReach` witness for `test_fsraw_mapRawError_wouldBlock`. -/
+theorem reach_fsraw_mapRawError_wouldBlock :
+    CanReach (test_fsraw_mapRawError_wouldBlock defaultApi) :=
+  ⟨some "/tmp/a.lock", 11, "", proof_fsraw_mapRawError_wouldBlock (some "/tmp/a.lock") 11 ""⟩
+
+private theorem parseRelSegments_err_of_mem_invalid (rawPath : String) :
+    ∀ segs : List (List Char),
+      (∃ seg ∈ segs, validSeg (String.ofList seg) = false) →
+      ∃ e, parseRelSegments rawPath segs = .error e ∧ e.kind = .invalidInput ∧ e.message ≠ ""
+  | [], ⟨_, hMem, _⟩ => nomatch hMem
+  | s :: rest, ⟨t, hMem, hBad⟩ => by
+    unfold parseRelSegments
+    by_cases hv : validSeg (String.ofList s) = true
+    · simp only [hv, ↓reduceDIte]
+      rcases List.mem_cons.mp hMem with rfl | hTail
+      · simp [hv] at hBad
+      · rcases parseRelSegments_err_of_mem_invalid rawPath rest ⟨t, hTail, hBad⟩ with ⟨e, he, hk, hm⟩
+        exact ⟨e, by simp [he], hk, hm⟩
+    · simp only [hv]
+      refine ⟨_, rfl, rfl, ?_⟩
+      intro hem
+      simp only [String.append_eq_empty_iff] at hem
+      exact absurd hem.1.1.1.1 (by decide)
+
+private theorem splitSlashRaw_append_slash :
+    ∀ xs : List Char, ∃ a rest, splitSlashRaw (xs ++ ['/']) = a :: rest ∧ [] ∈ rest
+  | [] => ⟨[], [[]], rfl, List.Mem.head _⟩
+  | c :: cs => by
+    rcases splitSlashRaw_append_slash cs with ⟨a, rest, hEq, hMem⟩
+    by_cases hc : c = '/'
+    · subst hc
+      refine ⟨[], a :: rest, ?_, List.Mem.tail _ hMem⟩
+      simp [splitSlashRaw, hEq]
+    · have hBeq : (c == '/') = false := beq_false_of_ne hc
+      refine ⟨c :: a, rest, ?_, hMem⟩
+      simp [splitSlashRaw, hBeq, hEq]
+
+private theorem parse_leadingSlash_invalid (seg : String) :
+    ∃ e, RelPath.parse ("/" ++ seg) = .error e ∧ e.kind = .invalidInput ∧ e.message ≠ "" := by
+  unfold RelPath.parse
+  have hList : ("/" ++ seg).toList = '/' :: seg.toList := by simp
+  rw [hList]
+  have hSplit : splitSlashRaw ('/' :: seg.toList) = [] :: splitSlashRaw seg.toList := by
+    simp [splitSlashRaw]
+  rw [hSplit]
+  rcases parseRelSegments_err_of_mem_invalid ("/" ++ seg) ([] :: splitSlashRaw seg.toList)
+      ⟨[], List.Mem.head _, by decide⟩ with ⟨e, he, hk, hm⟩
+  exact ⟨e, by simp [he], hk, hm⟩
+
+private theorem parse_trailingSlash_invalid (seg : String) :
+    ∃ e, RelPath.parse (seg ++ "/") = .error e ∧ e.kind = .invalidInput ∧ e.message ≠ "" := by
+  unfold RelPath.parse
+  have hList : (seg ++ "/").toList = seg.toList ++ ['/'] := by simp
+  rw [hList]
+  rcases splitSlashRaw_append_slash seg.toList with ⟨a, rest, hEq, hMem⟩
+  rw [hEq]
+  rcases parseRelSegments_err_of_mem_invalid (seg ++ "/") (a :: rest)
+      ⟨[], List.Mem.tail _ hMem, by decide⟩ with ⟨e, he, hk, hm⟩
+  exact ⟨e, by simp [he], hk, hm⟩
+
+/-- Proof of `test_fsraw_entryName_parse_acceptsValidAndRejectsUnsafe`. -/
+theorem proof_fsraw_entryName_parse_acceptsValidAndRejectsUnsafe :
+    AllPass (test_fsraw_entryName_parse_acceptsValidAndRejectsUnsafe EntryName.parse) := by
+  intro s
+  dsimp only [test_fsraw_entryName_parse_acceptsValidAndRejectsUnsafe, EntryName.parse]
+  by_cases h : validSeg s = true
+  · simp [h, assert]
+  · simp only [h, assert]
+    refine ⟨⟨trivial, rfl, ?_⟩, trivial⟩
+    intro hem
+    simp only [String.append_eq_empty_iff] at hem
+    exact absurd hem.1.1 (by decide)
+
+/-- Non-vacuity `CanReach` witness for `test_fsraw_entryName_parse_acceptsValidAndRejectsUnsafe`. -/
+theorem reach_fsraw_entryName_parse_acceptsValidAndRejectsUnsafe :
+    CanReach (test_fsraw_entryName_parse_acceptsValidAndRejectsUnsafe EntryName.parse) :=
+  ⟨"file.txt", proof_fsraw_entryName_parse_acceptsValidAndRejectsUnsafe "file.txt"⟩
+
+/-- Proof of `test_fsraw_relPath_parse_rejectsUnsafeAndParseRootMapsDot`. -/
+theorem proof_fsraw_relPath_parse_rejectsUnsafeAndParseRootMapsDot :
+    AllPass (test_fsraw_relPath_parse_rejectsUnsafeAndParseRootMapsDot RelPath.parse RelPath.parseRoot) := by
+  intro seg
+  dsimp only [test_fsraw_relPath_parse_rejectsUnsafeAndParseRootMapsDot, assert]
+  refine ⟨?_, ⟨?_, ⟨?_, ⟨?_, trivial⟩⟩⟩⟩
+  · rcases parse_leadingSlash_invalid seg with ⟨e1, he1, hk1, hm1⟩
+    rcases parse_trailingSlash_invalid seg with ⟨e2, he2, hk2, hm2⟩
+    have hm1b : (e1.message != "") = true := by simp [hm1]
+    have hm2b : (e2.message != "") = true := by simp [hm2]
+    simp only [List.all_cons, List.all_nil, Bool.and_true, Bool.and_eq_true, he1, hk1, hm1b, he2, hk2, hm2b]
+    exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+  · rfl
+  · rfl
+  · unfold RelPath.parseRoot
+    by_cases hs : seg = "."
+    · left; exact hs
+    · right; simp [hs]
+
+/-- Non-vacuity `CanReach` witness for `test_fsraw_relPath_parse_rejectsUnsafeAndParseRootMapsDot`. -/
+theorem reach_fsraw_relPath_parse_rejectsUnsafeAndParseRootMapsDot :
+    CanReach (test_fsraw_relPath_parse_rejectsUnsafeAndParseRootMapsDot RelPath.parse RelPath.parseRoot) :=
+  ⟨"foo", proof_fsraw_relPath_parse_rejectsUnsafeAndParseRootMapsDot "foo"⟩
 
 
 private theorem splitCharList_append_tail_no_slash (a b : List Char) (hno : '/' ∉ b) :
@@ -399,7 +535,7 @@ private theorem joinSlashChars_ne_nil {s : List Char} {tl : List (List Char)} (h
 theorem proof_fs_normPath_neverEmpty :
     AllPass (test_fs_normPath_neverEmpty defaultApi) := by
   intro path
-  simp only [defaultApi, Internal.mkApiM, assert]
+  simp only [defaultApi, Internal.mkApiFromScopedRawM, assert]
   refine ⟨?_, trivial⟩
   unfold Internal.normPath
   cases hAbs : Internal.isAbsChars path.toList
@@ -428,7 +564,7 @@ theorem proof_fs_normPath_neverEmpty :
 theorem proof_fs_normPath_idempotent :
     AllPass (test_fs_normPath_idempotent defaultApi) := by
   intro path
-  simp only [defaultApi, Internal.mkApiM, assert]
+  simp only [defaultApi, Internal.mkApiFromScopedRawM, assert]
   refine ⟨?_, trivial⟩
   conv => rhs; unfold Internal.normPath
   cases hAbs : Internal.isAbsChars path.toList
@@ -509,7 +645,7 @@ private theorem join_absOverridesBase (base sub : String) :
 theorem proof_fs_join_absOverridesBase :
     AllPass (test_fs_join_absOverridesBase defaultApi) := by
   intro base sub
-  simp only [defaultApi, Internal.mkApiM, assume, assert]
+  simp only [defaultApi, Internal.mkApiFromScopedRawM, assume, assert]
   intro h
   exact ⟨join_absOverridesBase base sub h, trivial⟩
 
@@ -550,7 +686,7 @@ private theorem cleanCharSegments_joinParentName (par? : Option String) (newName
 theorem proof_fs_withName_updatesName :
     AllPass (test_fs_withName_updatesName defaultApi) := by
   intro path newName
-  simp only [defaultApi, Internal.mkApiM]
+  simp only [defaultApi, Internal.mkApiFromScopedRawM]
   unfold Internal.withName
   split
   · simp [assume]
@@ -592,7 +728,7 @@ private theorem splitRevAtDot_append_noDot (revTail revStem : List Char) (hno : 
 theorem proof_fs_withSuffix_updatesSuffix :
     AllPass (test_fs_withSuffix_updatesSuffix defaultApi) := by
   intro path ext
-  simp only [defaultApi, Internal.mkApiM, assume]
+  simp only [defaultApi, Internal.mkApiFromScopedRawM, assume]
   intro hHead hNoDotTail
   cases hSufCall : Internal.withSuffix path ext with
   | error _ => simp
@@ -625,7 +761,7 @@ theorem proof_fs_withSuffix_updatesSuffix :
         have hNotAllDots : stemPart.toList.all (· == '.') = false := by
           cases hd : stemPart.toList.all (· == '.') <;> simp_all
         have hNameEq := proof_fs_withName_updatesName path (stemPart ++ ext)
-        simp only [defaultApi, Internal.mkApiM, hSufCall, assert] at hNameEq
+        simp only [defaultApi, Internal.mkApiFromScopedRawM, hSufCall, assert] at hNameEq
         unfold Internal.suffix
         rw [hNameEq.1]
         dsimp only
@@ -690,7 +826,7 @@ theorem reach_fs_withName_updatesName :
   refine ⟨"a/b.txt", "c.lean", ?_⟩
   have h := proof_fs_withName_updatesName "a/b.txt" "c.lean"
   have hw : Internal.withName "a/b.txt" "c.lean" = .ok "a/c.lean" := rfl
-  simp [defaultApi, Internal.mkApiM, hw, assert] at h ⊢
+  simp [defaultApi, Internal.mkApiFromScopedRawM, hw, assert] at h ⊢
   exact h
 
 
@@ -700,7 +836,7 @@ theorem reach_fs_withSuffix_updatesSuffix :
   refine ⟨"a/b.txt", ".lean", by decide, by decide, ?_⟩
   have h := proof_fs_withSuffix_updatesSuffix "a/b.txt" ".lean" (by decide) (by decide)
   have hs : Internal.withSuffix "a/b.txt" ".lean" = .ok "a/b.lean" := rfl
-  simp [defaultApi, Internal.mkApiM, hs, assert] at h ⊢
+  simp [defaultApi, Internal.mkApiFromScopedRawM, hs, assert] at h ⊢
   exact h
 
 
@@ -718,7 +854,7 @@ private theorem splitCharList_dot_concat (bs suf : List Char) (hno : '.' ∉ bs)
 theorem proof_fs_suffixes_doubleDot :
     AllPass (test_fs_suffixes_doubleDot defaultApi) := by
   intro base hNe hNoDot hNoSlash
-  simp only [defaultApi, Internal.mkApiM, assert]
+  simp only [defaultApi, Internal.mkApiFromScopedRawM, assert]
   refine ⟨?_, trivial⟩
   cases hBase : base.toList with
   | nil => exact absurd hBase hNe

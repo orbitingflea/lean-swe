@@ -1,5 +1,5 @@
 import LeanSwe.LinuxSyscall.Common.Types
-import LeanSwe.Fs.Raw.Interface
+import LeanSwe.Fs.Interface
 
 namespace Fuzz.LinuxSyscall.Env
 
@@ -339,7 +339,7 @@ def isStdioFdClosedOrUv (fd : UInt32) : IO Bool := do
   let k ← fdKind fd
   if k == 0 || k == 6 then
     return true
-  match ← LeanSwe.Fs.Raw.defaultOps.readLink s!"/proc/self/fd/{fd}" with
+  match ← LeanSwe.Fs.readLink s!"/proc/self/fd/{fd}" with
   | .error _ => return false
   | .ok tgt =>
     return tgt.startsWith "anon_inode:[event" || tgt.startsWith "anon_inode:[io_uring"
