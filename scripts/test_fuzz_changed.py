@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import copy, io, json, os, shlex, stat, subprocess, sys, tempfile, time, unittest
+import copy, io, json, os, re, shlex, stat, subprocess, sys, tempfile, time, unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -114,6 +114,179 @@ class FuzzChangedUnitTests(unittest.TestCase):
         for wf in (audit, daily): self.assertIn("--suite Git ", wf); self.assertIn(",Git,", wf); self.assertIn("python3 -B -m unittest discover -s scripts -p 'test_*.py'", wf)
         self.assertNotIn("test -f scripts/test_fuzz_changed.py", daily); self.assertIn("--check-manifest", daily)
         self.assertIn("leanswe-fuzz --all --exclude sandbox,timerand,files,process,poll,net ", daily); self.assertNotIn("leanswe-fuzz --suite float ", daily)
+        for req in (
+            "--sandbox-strace-fault-check",
+            "vm.memfd_noexec",
+            "--timerand-strace-fault-check",
+            "--files-strace-fault-check",
+            "--process-strace-fault-check",
+            "--poll-strace-fault-check",
+            "--net-strace-fault-check",
+            "--seed 11262680905236430927 --steps 50000 --self-test-shrink --require-ns",
+            "--suite postfork --steps 500 --self-test-shrink 0<&- >/dev/null",
+        ):
+            self.assertIn(req, daily, f"missing from audit-daily.yml: {req}")
+            self.assertIn(req, audit, f"missing from audit.yml: {req}")
+        self.assertIn("if: success() && steps.fuzz_gate.outputs.run_files != 'false'", audit)
+
+    def test_real_repo_manifest_transitive_closure(self) -> None:
+        manifest = fuzz_changed.load_manifest(REPO_ROOT / "harness" / "Fuzz" / "suites.json")
+        by_name = {s.name: s for s in manifest.suites}
+        for pat in manifest.common_paths:
+            self.assertTrue((REPO_ROOT / pat).exists(), f"missing common_path: {pat}")
+        for s in manifest.suites:
+            for pat in s.paths:
+                self.assertTrue((REPO_ROOT / pat).exists(), f"missing {s.name} path: {pat}")
+
+        def parse_lean_imports(path: Path) -> list[str]:
+            mods: list[str] = []
+            block_depth = 0
+            for line in path.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if block_depth > 0 or s.startswith("/-"):
+                    i = 0
+                    while i < len(line):
+                        if line[i : i + 2] == "/-":
+                            block_depth += 1; i += 2
+                        elif line[i : i + 2] == "-/" and block_depth > 0:
+                            block_depth -= 1; i += 2
+                        else:
+                            i += 1
+                    continue
+                if not s or s.startswith("--") or s in ("prelude", "module"):
+                    continue
+                m = re.match(r"^(?:(?:private|public|meta)\s+)*import\s+(?:all\s+)?([A-Za-z0-9_.]+)\b", s)
+                if m:
+                    mods.append(m.group(1))
+                else:
+                    break
+            return mods
+
+        def resolve_mod(mod: str) -> str | None:
+            rel = mod.replace(".", "/") + ".lean"
+            if (REPO_ROOT / rel).is_file():
+                return rel
+            if (REPO_ROOT / "harness" / rel).is_file():
+                return f"harness/{rel}"
+            return None
+
+        sym_to_c: dict[str, set[str]] = {}
+        c_roots = (REPO_ROOT / "LeanSwe", REPO_ROOT / "harness" / "Fuzz")
+        for base in c_roots:
+            for p in sorted(list(base.rglob("*.c")) + list(base.rglob("*.h"))):
+                rel_p = p.relative_to(REPO_ROOT)
+                if "target" in rel_p.parts or p.name in ("sqlite3.c", "sqlite3.h"):
+                    continue
+                txt = p.read_text(encoding="utf-8", errors="replace")
+                rel = rel_p.as_posix()
+                for m in re.finditer(r"^[A-Za-z_][^\n;{}]*?\b(leanswe_[A-Za-z0-9_]+)\s*\([^{;]*?\)\s*\{", txt, re.M | re.S):
+                    sym_to_c.setdefault(m.group(1), set()).add(rel)
+
+        def expand_native(seeds: set[str]) -> set[str]:
+            out: set[str] = set()
+            stack = list(seeds)
+            root_real = REPO_ROOT.resolve()
+            while stack:
+                cur = stack.pop()
+                if cur in out:
+                    continue
+                out.add(cur)
+                if cur.endswith(("sqlite3.c", "sqlite3.h")):
+                    continue
+                fp = REPO_ROOT / cur
+                if not fp.is_file():
+                    continue
+                txt = fp.read_text(encoding="utf-8", errors="replace")
+                for m in re.finditer(r'^\s*#\s*include\s+"([^"]+)"', txt, re.M):
+                    tgt = (fp.parent / m.group(1)).resolve().relative_to(root_real).as_posix()
+                    if (REPO_ROOT / tgt).is_file() and tgt not in out:
+                        stack.append(tgt)
+                if cur.endswith("fd_box.h"):
+                    stack.append("LeanSwe/LinuxSyscall/c/fd_box.c")
+                if cur.endswith("sqlite3.h"):
+                    stack.append("LeanSwe/Sqlite/Raw/c/sqlite3.c")
+                if cur.endswith(("postfork_shim.c", "postfork_fuzz.c")):
+                    for rs in (REPO_ROOT / "LeanSwe/PostFork/rust").rglob("*"):
+                        if rs.is_file():
+                            rrel = rs.relative_to(REPO_ROOT)
+                            if "target" not in rrel.parts:
+                                stack.append(rrel.as_posix())
+            return out
+
+        def transitive_deps(lean_seeds: list[str]) -> tuple[set[str], set[str]]:
+            seen_lean: set[str] = set()
+            stack = list(lean_seeds)
+            while stack:
+                cur = stack.pop()
+                if cur in seen_lean:
+                    continue
+                seen_lean.add(cur)
+                for mod in parse_lean_imports(REPO_ROOT / cur):
+                    dep = resolve_mod(mod)
+                    if dep is not None and dep not in seen_lean:
+                        stack.append(dep)
+            c_seeds: set[str] = set()
+            for lf in seen_lean:
+                txt = (REPO_ROOT / lf).read_text(encoding="utf-8")
+                for m in re.finditer(r'@\[extern\s+"(leanswe_[A-Za-z0-9_]+)"\]', txt):
+                    sym = m.group(1)
+                    self.assertIn(sym, sym_to_c, f"unmapped extern {sym} in {lf}")
+                    c_seeds |= sym_to_c[sym]
+            return seen_lean, expand_native(c_seeds)
+
+        def is_covered(rel: str, pats: tuple[str, ...]) -> bool:
+            return any(fuzz_changed.path_matches_pattern(rel, pat) for pat in pats)
+
+        suite_roots = {
+            "selftest": ["harness/Fuzz/SelfTest.lean"],
+            **{
+                s: sorted(p.relative_to(REPO_ROOT).as_posix() for p in (REPO_ROOT / d).rglob("*.lean"))
+                for s, d in (
+                    ("float", "harness/Fuzz/Float"), ("cmdline", "harness/Fuzz/CmdLine"),
+                    ("envvars", "harness/Fuzz/EnvVars"), ("cryptohash", "harness/Fuzz/CryptoHash"),
+                    ("passwd", "harness/Fuzz/Passwd"), ("dns", "harness/Fuzz/Dns"),
+                    ("compress", "harness/Fuzz/Compress"), ("postfork", "harness/Fuzz/PostFork"),
+                    ("sqlite", "harness/Fuzz/Sqlite"), ("git", "harness/Fuzz/Git"),
+                    ("sandbox", "harness/Fuzz/LinuxSyscall/Sandbox"), ("timerand", "harness/Fuzz/LinuxSyscall/TimeRand"),
+                    ("files", "harness/Fuzz/LinuxSyscall/Files"), ("process", "harness/Fuzz/LinuxSyscall/Process"),
+                    ("poll", "harness/Fuzz/LinuxSyscall/Poll"), ("net", "harness/Fuzz/LinuxSyscall/Net"),
+                )
+            },
+        }
+        self.assertEqual(set(suite_roots.keys()), set(by_name.keys()))
+        mapped_files = set().union(*suite_roots.values())
+        unmapped = {
+            p.relative_to(REPO_ROOT).as_posix() for p in (REPO_ROOT / "harness/Fuzz").rglob("*.lean")
+        } - mapped_files
+        self.assertEqual(
+            unmapped,
+            {
+                "harness/Fuzz/Common/Coverage.lean", "harness/Fuzz/Common/Rng.lean",
+                "harness/Fuzz/Common/Shrink.lean", "harness/Fuzz/Common/Suite.lean",
+                "harness/Fuzz/LinuxSyscall/Env.lean", "harness/Fuzz/LinuxSyscall/Main.lean",
+                "harness/Fuzz/LinuxSyscall/ProcessEnv.lean", "harness/Fuzz/LinuxSyscall/Rng.lean",
+                "harness/Fuzz/LinuxSyscall/SandboxEnv.lean", "harness/Fuzz/Main.lean",
+            },
+        )
+        main_imports = {resolve_mod(m) for m in parse_lean_imports(REPO_ROOT / "harness/Fuzz/Main.lean")}
+        self.assertTrue(main_imports <= mapped_files | {"harness/Fuzz/Common/Suite.lean", "harness/Fuzz/LinuxSyscall/Env.lean", "harness/Fuzz/LinuxSyscall/Main.lean"}, main_imports)
+        ls_main_imports = {resolve_mod(m) for m in parse_lean_imports(REPO_ROOT / "harness/Fuzz/LinuxSyscall/Main.lean")}
+        self.assertTrue(ls_main_imports <= mapped_files | {"harness/Fuzz/Common/Suite.lean", "harness/Fuzz/LinuxSyscall/Env.lean", "harness/Fuzz/LinuxSyscall/ProcessEnv.lean", "LeanSwe/Fs/Interface.lean", "LeanSwe/LinuxSyscall/Files/SpecTests.lean"}, ls_main_imports)
+
+        common_lean, common_native = transitive_deps(["harness/Fuzz/LinuxSyscall/Env.lean", "harness/Fuzz/Common/Suite.lean"])
+        common_native |= expand_native({"harness/Fuzz/LinuxSyscall/c/fuzz_env.c"})
+        self.assertEqual(sorted(f for f in common_lean if not is_covered(f, manifest.common_paths)), [])
+        self.assertEqual(sorted(f for f in common_native if not is_covered(f, manifest.common_paths)), [])
+        for proof_path in ("LeanSwe/Fs/Proofs/Foo.lean", "LeanSwe/LinuxSyscall/Files/Proofs/Foo.lean", "LeanSwe/LinuxSyscall/TimeRand/Proofs.lean"):
+            self.assertFalse(is_covered(proof_path, manifest.common_paths), proof_path)
+
+        extra_roots = {"files": ["LeanSwe/LinuxSyscall/Files/SpecTests.lean"], "poll": ["LeanSwe/Fs/Interface.lean"], "net": ["LeanSwe/Fs/Interface.lean"]}
+        for sname, seeds in suite_roots.items():
+            pats = manifest.common_paths + by_name[sname].paths
+            s_lean, s_native = transitive_deps(seeds + extra_roots.get(sname, []))
+            miss_l = sorted(f for f in (s_lean | common_lean) if not is_covered(f, pats))
+            miss_n = sorted(f for f in (s_native | common_native) if not is_covered(f, pats))
+            self.assertEqual((miss_l, miss_n), ([], []), f"suite {sname!r} missing deps in suites.json")
 
 class FuzzChangedGitIntegrationTests(unittest.TestCase):
     """End-to-end git history, symlink, submodule, locale, drift, and workflow tests."""
@@ -319,6 +492,212 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
             _git(src, "checkout", "--orphan", "cr-orphan"); _write_files(src, {"z.txt": "z\n"}); _commit_all(src, "cr", env_extra=cr_env)
             rcr = subprocess.run(["bash", "-c", script], cwd=src, env={**os.environ, "RECORDED_BASE": rec}, capture_output=True, text=True)
             self.assertEqual((rcr.returncode, rcr.stdout.strip()), (0, rec))
+    def test_audit_yml_fuzz_gate_dispatch_and_syntax(self) -> None:
+        def extract_run_blocks(path: Path) -> list[tuple[str, str]]:
+            lines = path.read_text(encoding="utf-8").splitlines()
+            blocks: list[tuple[str, str]] = []
+            cur_name = "<step>"
+            i = 0
+            while i < len(lines):
+                stripped = lines[i].lstrip()
+                if lines[i].startswith("      - name: "):
+                    cur_name = lines[i].split(": ", 1)[1].strip()
+                elif stripped in ("run: |", "run: |-"):
+                    indent = len(lines[i]) - len(stripped) + 2
+                    body: list[str] = []
+                    i += 1
+                    while i < len(lines) and (lines[i] == "" or lines[i].startswith(" " * indent)):
+                        body.append(lines[i][indent:] if len(lines[i]) >= indent else "")
+                        i += 1
+                    blocks.append((cur_name, "\n".join(body) + "\n"))
+                    continue
+                elif stripped.startswith("run: "):
+                    blocks.append((cur_name, stripped[5:] + "\n"))
+                i += 1
+            return blocks
+
+        for wf_name in ("audit.yml", "audit-daily.yml"):
+            blocks = extract_run_blocks(REPO_ROOT / ".github" / "workflows" / wf_name)
+            self.assertGreater(len(blocks), 5)
+            for step_name, script in blocks:
+                chk = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True)
+                self.assertEqual(chk.returncode, 0, f"{wf_name} step {step_name!r}: {chk.stderr}")
+
+        audit_blocks = dict(extract_run_blocks(REPO_ROOT / ".github" / "workflows" / "audit.yml"))
+        gate_script = audit_blocks["Run changed fuzz suites"]
+        all_suites = [
+            "selftest", "float", "cmdline", "envvars", "cryptohash", "passwd", "dns",
+            "compress", "postfork", "sqlite", "git", "sandbox", "timerand", "files",
+            "process", "poll", "net",
+        ]
+        manifest = {"version": 1, "common_paths": [], "suites": {s: {"paths": [f"s/{s}/"]} for s in all_suites}}
+        runner_body = "\n".join([
+            f"#!{sys.executable}",
+            "import json, os, sys",
+            "args = sys.argv[1:]",
+            "if args == ['--list-suites']:",
+            "    print(os.environ['FAKE_SUITES'])",
+            "    sys.exit(0)",
+            "closed = []",
+            "for fd in (0, 1, 2):",
+            "    try: os.fstat(fd)",
+            "    except OSError: closed.append(fd)",
+            "with open(os.environ['FAKE_LOG'], 'a', encoding='utf-8') as f:",
+            "    f.write(json.dumps({'args': args, 'closed': closed}) + '\\n')",
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            fake_bin = root / "bin"; fake_bin.mkdir()
+            _make_script(fake_bin / "sudo", "exit 1")
+            repo = root / "repo"; repo.mkdir(); _git(repo, "init", "-b", "main")
+            _git(repo, "config", "uploadpack.allowAnySHA1InWant", "true")
+            base_files = {
+                ".gitignore": "harness/.lake/\n",
+                "harness/Fuzz/suites.json": json.dumps(manifest) + "\n",
+                "README.md": "v0\n",
+                **{f"s/{s}/f.lean": "def x := 0\n" for s in all_suites},
+            }
+            _write_files(repo, base_files)
+            (repo / "scripts").mkdir(exist_ok=True)
+            (repo / "scripts/fuzz_changed.py").write_text((REPO_ROOT / "scripts/fuzz_changed.py").read_text(encoding="utf-8"), encoding="utf-8")
+            base_sha = _commit_all(repo, "base")
+
+            def make_runner(target_repo: Path) -> None:
+                rp = target_repo / "harness/.lake/build/bin/leanswe-fuzz"
+                rp.parent.mkdir(parents=True, exist_ok=True)
+                rp.write_text(runner_body + "\n", encoding="utf-8")
+                rp.chmod(rp.stat().st_mode | stat.S_IEXEC)
+
+            make_runner(repo)
+
+            def run_gate(cwd: Path, event: str, base: str = "", before: str = "", suites_out: list[str] | None = None) -> tuple[int, str, str, list[dict[str, object]], dict[str, str]]:
+                log_p = root / "calls.jsonl"; log_p.unlink(missing_ok=True)
+                out_p = root / "gh_out.txt"; out_p.unlink(missing_ok=True)
+                env = {
+                    **os.environ,
+                    "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+                    "GITHUB_EVENT_NAME": event,
+                    "GITHUB_OUTPUT": str(out_p),
+                    "FAKE_LOG": str(log_p),
+                    "FAKE_SUITES": "\n".join(all_suites if suites_out is None else suites_out),
+                }
+                if base:
+                    env["BASE_SHA"] = base
+                else:
+                    env.pop("BASE_SHA", None)
+                env["PUSH_BEFORE"] = before
+                proc = subprocess.run(["bash", "-c", gate_script], cwd=cwd, env=env, capture_output=True, text=True)
+                calls = [json.loads(ln) for ln in log_p.read_text(encoding="utf-8").splitlines() if ln.strip()] if log_p.exists() else []
+                outs = dict(ln.split("=", 1) for ln in out_p.read_text(encoding="utf-8").splitlines() if "=" in ln) if out_p.exists() else {}
+                return proc.returncode, proc.stdout, proc.stderr, calls, outs
+
+            # Unrelated change: skips every fuzz command and files step.
+            _git(repo, "checkout", "-b", "docs", base_sha); _write_files(repo, {"README.md": "v1\n"}); _commit_all(repo, "docs")
+            rc, out, err, calls, outs = run_gate(repo, "pull_request", base=base_sha)
+            self.assertEqual((rc, calls, outs), (0, [], {"run_files": "false"}), err)
+            self.assertIn("changed_suites=none", out)
+
+            # Single heavy suite (net): runs closed-stdio smoke for net + net heavy block only (no open-stdio --smoke double-run).
+            _git(repo, "checkout", "-b", "net_only", base_sha); _write_files(repo, {"s/net/f.lean": "def x := 1\n"}); _commit_all(repo, "net")
+            rc, _, err, calls, outs = run_gate(repo, "pull_request", base=base_sha)
+            self.assertEqual((rc, outs), (0, {"run_files": "false"}), err)
+            self.assertEqual(calls, [
+                {"args": ["--smoke", "--suite", "net", "--self-test-shrink"], "closed": [0, 1, 2]},
+                {"args": ["--net-strace-fault-check"], "closed": []},
+                {"args": ["--suite", "net", "--steps", "50000", "--self-test-shrink", "--require-ns"], "closed": []},
+                {"args": ["--suite", "net", "--seed", "11262680905236430927", "--steps", "50000", "--self-test-shrink", "--require-ns"], "closed": []},
+                {"args": ["--suite", "net", "--steps", "50000", "--random-seed", "--self-test-shrink", "--require-ns"], "closed": []},
+            ])
+
+            # Light non-stdio suite (sqlite): open-stdio smoke only.
+            _git(repo, "checkout", "-b", "sql_only", base_sha); _write_files(repo, {"s/sqlite/f.lean": "def x := 1\n"}); _commit_all(repo, "sql")
+            rc, _, err, calls, outs = run_gate(repo, "pull_request", base=base_sha)
+            self.assertEqual((rc, calls, outs), (0, [{"args": ["--smoke", "--suite", "sqlite", "--self-test-shrink"], "closed": []}], {"run_files": "false"}), err)
+
+            # Light stdio suite (passwd): both closed-stdio and open-stdio smoke, no heavy suites.
+            _git(repo, "checkout", "-b", "pw_only", base_sha); _write_files(repo, {"s/passwd/f.lean": "def x := 1\n"}); _commit_all(repo, "pw")
+            rc, _, err, calls, outs = run_gate(repo, "pull_request", base=base_sha)
+            self.assertEqual((rc, outs), (0, {"run_files": "false"}), err)
+            self.assertEqual(calls, [
+                {"args": ["--smoke", "--suite", "passwd", "--self-test-shrink"], "closed": [0, 1, 2]},
+                {"args": ["--smoke", "--suite", "passwd", "--self-test-shrink"], "closed": []},
+            ])
+
+            # Heavy files suite: sets run_files=true and runs only closed-stdio smoke inside gate step.
+            _git(repo, "checkout", "-b", "files_only", base_sha); _write_files(repo, {"s/files/f.lean": "def x := 1\n"}); _commit_all(repo, "files")
+            rc, _, err, calls, outs = run_gate(repo, "pull_request", base=base_sha)
+            self.assertEqual((rc, calls, outs), (0, [{"args": ["--smoke", "--suite", "files", "--self-test-shrink"], "closed": [0, 1, 2]}], {"run_files": "true"}), err)
+
+            # Heavy postfork suite: stdin closed on 500-step check, no open/closed --smoke double-run.
+            _git(repo, "checkout", "-b", "pf_only", base_sha); _write_files(repo, {"s/postfork/f.lean": "def x := 1\n"}); _commit_all(repo, "pf")
+            rc, _, err, calls, outs = run_gate(repo, "pull_request", base=base_sha)
+            self.assertEqual((rc, outs), (0, {"run_files": "false"}), err)
+            self.assertEqual(calls, [
+                {"args": ["--suite", "postfork", "--steps", "25000", "--self-test-shrink"], "closed": []},
+                {"args": ["--suite", "postfork", "--steps", "25000", "--random-seed", "--self-test-shrink"], "closed": []},
+                {"args": ["--suite", "postfork", "--steps", "500", "--self-test-shrink"], "closed": [0]},
+            ])
+
+            # Push on shallow clone fetches github.event.before from origin and diffs against it.
+            _git(repo, "checkout", "main"); _write_files(repo, {"s/poll/f.lean": "def x := 1\n"}); _commit_all(repo, "poll")
+            shallow = root / "shallow"
+            _git(root, "clone", "--depth=1", f"file://{repo}", str(shallow))
+            make_runner(shallow)
+            rc, out, err, calls, outs = run_gate(shallow, "push", before=base_sha)
+            self.assertEqual((rc, outs), (0, {"run_files": "false"}), err)
+            self.assertIn(f"mode=diff base={base_sha}", out)
+            self.assertEqual([c["args"] for c in calls], [
+                ["--smoke", "--suite", "poll", "--self-test-shrink"],
+                ["--poll-strace-fault-check"],
+                ["--suite", "poll", "--steps", "50000", "--self-test-shrink"],
+                ["--suite", "poll", "--steps", "50000", "--random-seed", "--self-test-shrink"],
+            ])
+
+            # Fail-closed fallbacks -> mode=full (zero/missing/unreachable push before, dispatch, PR without BASE_SHA ignoring synchronize PUSH_BEFORE).
+            head_sha = _git(shallow, "rev-parse", "HEAD")
+            for ev, bef in (("push", ""), ("push", "0" * 40), ("push", "f" * 40), ("workflow_dispatch", ""), ("pull_request", head_sha)):
+                rc, out, err, calls, outs = run_gate(shallow, ev, before=bef)
+                self.assertEqual((rc, outs), (0, {"run_files": "true"}), (ev, bef, err))
+                self.assertIn("mode=full", out)
+                args_list = [c["args"] for c in calls]
+                self.assertIn(["--sandbox-strace-fault-check"], args_list)
+                self.assertIn(["--timerand-strace-fault-check"], args_list)
+                self.assertIn(["--process-strace-fault-check"], args_list)
+                self.assertIn(["--poll-strace-fault-check"], args_list)
+                self.assertIn(["--net-strace-fault-check"], args_list)
+                self.assertIn(["--suite", "postfork", "--steps", "25000", "--self-test-shrink"], args_list)
+                light_call = next(c for c in calls if c["args"][0] == "--smoke" and c["closed"] == [])
+                self.assertEqual(
+                    light_call["args"],
+                    ["--smoke", "--suite", "selftest", "--suite", "float", "--suite", "cmdline", "--suite", "envvars",
+                     "--suite", "cryptohash", "--suite", "passwd", "--suite", "dns", "--suite", "compress",
+                     "--suite", "sqlite", "--suite", "git", "--self-test-shrink"],
+                )
+                stdio_call = next(c for c in calls if c["args"][0] == "--smoke" and c["closed"] == [0, 1, 2])
+                self.assertEqual(
+                    stdio_call["args"],
+                    ["--smoke", "--suite", "passwd", "--suite", "dns", "--suite", "sandbox", "--suite", "timerand",
+                     "--suite", "files", "--suite", "process", "--suite", "poll", "--suite", "net", "--self-test-shrink"],
+                )
+
+            # Single heavy suites (sandbox, timerand, process) each trigger only their own heavy block + closed-stdio smoke.
+            for suite_name, flag in (("sandbox", "--sandbox-strace-fault-check"), ("timerand", "--timerand-strace-fault-check"), ("process", "--process-strace-fault-check")):
+                _git(repo, "checkout", "-b", f"{suite_name}_only", base_sha)
+                _write_files(repo, {f"s/{suite_name}/f.lean": "def x := 1\n"})
+                _commit_all(repo, suite_name)
+                rc, out, err, calls, outs = run_gate(repo, "pull_request", base=base_sha)
+                self.assertEqual((rc, outs), (0, {"run_files": "false"}), (suite_name, err))
+                self.assertEqual(calls[0], {"args": ["--smoke", "--suite", suite_name, "--self-test-shrink"], "closed": [0, 1, 2]})
+                self.assertEqual(calls[1]["args"], [flag])
+                self.assertEqual(len(calls), 4, (suite_name, calls))
+                self.assertEqual("vm.memfd_noexec" in out, suite_name == "sandbox")
+
+            # Fail-closed errors: unresolvable PR BASE_SHA and manifest drift abort with no fuzz calls.
+            rc_bad, _, err_bad, calls_bad, _ = run_gate(repo, "pull_request", base="e" * 40)
+            self.assertEqual((rc_bad, calls_bad), (2, []), err_bad)
+            rc_dr, _, err_dr, calls_dr, _ = run_gate(shallow, "workflow_dispatch", suites_out=all_suites[:-1])
+            self.assertEqual((rc_dr, calls_dr), (2, []), err_dr)
+
     def test_mutate_and_test_collects_sysbridge_and_relay_targets(self) -> None:
         import importlib.util; s = importlib.util.spec_from_file_location("mutate_and_test", REPO_ROOT / "scripts/mutate_and_test.py"); assert s and s.loader; m = importlib.util.module_from_spec(s); sys.modules["mutate_and_test"] = m; s.loader.exec_module(m)
         ts, _ = m.resolve_targets(REPO_ROOT, "ConnectProxy"); pt, _ = m.resolve_targets(REPO_ROOT, "Process")
