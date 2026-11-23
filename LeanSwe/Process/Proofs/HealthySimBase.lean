@@ -177,7 +177,7 @@ def healthySimDeps : SysDepsM (StateM HealthySimState) Files.HandleId where
         if !flags.isValid then
           (.error Errno.EINVAL, s)
         else if flags.notificationPipe then
-          (.error LinuxSyscall.Process.errnoENOPKG, s)
+          (.error Errno.ENOPKG, s)
         else
           let base := Nat.max (maxKey s.procFds s.procNextHid) (maxKey s.simFds 10)
           let rHid : Files.HandleId := base + 1
@@ -686,8 +686,8 @@ theorem healthySimDeps_proc_refinesHealthy :
         unfold LinuxSyscall.Process.healthyStep LinuxSyscall.Process.HealthyEnv.wf
           LinuxSyscall.Process.isCriticalFault LinuxSyscall.Process.isEintrOutcome
           LinuxSyscall.Process.allowedStep LinuxSyscall.Process.validateReqBeforeKernel
-        have hCrit65 : Errno.isCriticalOsErrno LinuxSyscall.Process.errnoENOPKG = false := by decide
-        have hNeEi65 : (LinuxSyscall.Process.errnoENOPKG == Errno.EINTR) = false := by decide
+        have hCrit65 : Errno.isCriticalOsErrno Errno.ENOPKG = false := by decide
+        have hNeEi65 : (Errno.ENOPKG == Errno.EINTR) = false := by decide
         simp [toSimProcState, LinuxSyscall.Process.ProcessSysState.initial, hVal, hNotif,
           hCrit65, hNeEi65]
       · have hNotifF : flags.notificationPipe = false := Bool.eq_false_iff.mpr hNotif

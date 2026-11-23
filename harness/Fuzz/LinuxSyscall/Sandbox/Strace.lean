@@ -107,7 +107,7 @@ private def assume_sandbox_landlockCreateRuleset_versionAndRuleset : IO Unit := 
   assertErr (← landlockCreateRuleset none 0) Errno.EINVAL "null attr with flags=0"
   assertErr (← landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 1)
     Errno.EINVAL "attr with nonzero flags"
-  assertErr (← landlockCreateRuleset (some {}) 0) ENOMSG "empty ruleset attr"
+  assertErr (← landlockCreateRuleset (some {}) 0) Errno.ENOMSG "empty ruleset attr"
   let netAttr : LandlockRulesetAttr := {
     handledAccessFs := LANDLOCK_ACCESS_FS_READ_FILE ||| LANDLOCK_ACCESS_FS_READ_DIR
     handledAccessNet := LANDLOCK_ACCESS_NET_CONNECT_TCP
@@ -148,13 +148,13 @@ private def assume_sandbox_landlockAddRule_pathBeneathAndNetPort : IO Unit := do
         assertErr (← landlockAddRule rs (.pathBeneath fileOpath LANDLOCK_ACCESS_FS_READ_DIR))
           Errno.EINVAL "dir access on regular file"
         assertErr (← landlockAddRule rs (.pathBeneath mfd LANDLOCK_ACCESS_FS_READ_FILE))
-          EBADFD "memfd parentFd must fail EBADFD"
+          Errno.EBADFD "memfd parentFd must fail EBADFD"
         assertErr (← landlockAddRule rs (.pathBeneath pipeFd LANDLOCK_ACCESS_FS_READ_FILE))
-          EBADFD "pipe parentFd must fail EBADFD"
+          Errno.EBADFD "pipe parentFd must fail EBADFD"
         assertErr (← landlockAddRule mfd (.pathBeneath dirOpath LANDLOCK_ACCESS_FS_READ_DIR))
-          EBADFD "memfd ruleset must fail EBADFD"
+          Errno.EBADFD "memfd ruleset must fail EBADFD"
         assertErr (← landlockAddRule pipeFd (.pathBeneath dirOpath LANDLOCK_ACCESS_FS_READ_DIR))
-          EBADFD "pipe ruleset must fail EBADFD"
+          Errno.EBADFD "pipe ruleset must fail EBADFD"
         assertTrue ((← landlockAddRule rs (.netPort 0 LANDLOCK_ACCESS_NET_CONNECT_TCP)) == .ok ())
           "NET_PORT 0 failed"
         assertTrue ((← landlockAddRule rs (.netPort 65535 LANDLOCK_ACCESS_NET_CONNECT_TCP)) == .ok ())
@@ -191,7 +191,7 @@ private def assume_sandbox_landlockRestrictSelf_nnpAndLayerCap : IO Unit := do
     let mfd ← match ← memfdCreate "ll-mfd".toUTF8 {} with
       | .ok f => pure f
       | .error e => throw (IO.userError s!"memfdCreate failed: {e}")
-    assertErr (← landlockRestrictSelf mfd) EBADFD "restrict_self on memfd must fail EBADFD"
+    assertErr (← landlockRestrictSelf mfd) Errno.EBADFD "restrict_self on memfd must fail EBADFD"
     closeFdChecked mfd
     closeFdChecked rs
     assertErr (← landlockRestrictSelf rs) Errno.EBADF "restrict_self on closed rs must fail EBADF"
@@ -393,7 +393,7 @@ private def assume_sandbox_memfdCreate_nameBoundsAndSeals : IO Unit := do
 private def err_landlockCreateRuleset_invalidArg : IO Unit := do
   assertErr (← landlockCreateRuleset none 0) Errno.EINVAL "null attr flags=0"
   assertErr (← landlockCreateRuleset none 7) Errno.EINVAL "null attr invalid query flags"
-  assertErr (← landlockCreateRuleset (some {}) 0) ENOMSG "empty masks"
+  assertErr (← landlockCreateRuleset (some {}) 0) Errno.ENOMSG "empty masks"
 
 /-- Real error test for `landlockCreateRuleset` (`EMFILE` under `RLIMIT_NOFILE=0`). -/
 private def err_landlockCreateRuleset_transientOrResource : IO Unit := do
@@ -421,8 +421,8 @@ private def err_landlockAddRule_badFd : IO Unit := do
       | .error e => throw (IO.userError s!"memfdCreate closed: {e}")
     closeFdChecked closedFd
     try
-      assertErr (← landlockAddRule mfd (.pathBeneath dirFd LANDLOCK_ACCESS_FS_READ_DIR)) EBADFD "non-ruleset fd"
-      assertErr (← landlockAddRule rs (.pathBeneath mfd LANDLOCK_ACCESS_FS_READ_DIR)) EBADFD "memfd parent"
+      assertErr (← landlockAddRule mfd (.pathBeneath dirFd LANDLOCK_ACCESS_FS_READ_DIR)) Errno.EBADFD "non-ruleset fd"
+      assertErr (← landlockAddRule rs (.pathBeneath mfd LANDLOCK_ACCESS_FS_READ_DIR)) Errno.EBADFD "memfd parent"
       assertErr (← landlockAddRule closedFd (.pathBeneath dirFd LANDLOCK_ACCESS_FS_READ_DIR)) Errno.EBADF "closed ruleset"
     finally
       closeFdChecked rs
@@ -440,7 +440,7 @@ private def err_landlockAddRule_invalidArg : IO Unit := do
     let fileFd ← openHostOrThrow filePath 3 "file O_PATH"
     try
       assertErr (← landlockAddRule rs (.pathBeneath fileFd LANDLOCK_ACCESS_FS_READ_DIR)) Errno.EINVAL "dir bit on file"
-      assertErr (← landlockAddRule rs (.pathBeneath fileFd 0)) ENOMSG "empty access mask"
+      assertErr (← landlockAddRule rs (.pathBeneath fileFd 0)) Errno.ENOMSG "empty access mask"
       assertErr (← landlockAddRule rs (.netPort 65536 LANDLOCK_ACCESS_NET_CONNECT_TCP)) Errno.EINVAL "port > 65535"
     finally
       closeFdChecked rs
@@ -453,7 +453,7 @@ private def err_landlockRestrictSelf_badFd : IO Unit := do
     let mfd ← match ← memfdCreate "m".toUTF8 {} with
       | .ok f => pure f
       | .error e => throw (IO.userError s!"memfdCreate: {e}")
-    assertErr (← landlockRestrictSelf mfd) EBADFD "memfd"
+    assertErr (← landlockRestrictSelf mfd) Errno.EBADFD "memfd"
     closeFdChecked mfd
     assertErr (← landlockRestrictSelf mfd) Errno.EBADF "closed fd"
 

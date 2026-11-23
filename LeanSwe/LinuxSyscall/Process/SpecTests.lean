@@ -1223,14 +1223,14 @@ def test_process_model_subthreadGroupExitCloneFlagsSigcontAndWatchQueue
 
   let (pNotifOff, _) := (ops.pipe2 { notificationPipe := true }).run s0
   let (pNotifOn, _) := (ops.pipe2 { notificationPipe := true }).run (s0.withWatchQueueSupported true)
-  NondetTest.assert (pNotifOff = .error errnoENOPKG ∧ pNotifOn = .ok (0, 1))
-  NondetTest.assert ((step s0 (.pipe2 { notificationPipe := true }) (.err errnoENOPKG)).isSome)
+  NondetTest.assert (pNotifOff = .error Errno.ENOPKG ∧ pNotifOn = .ok (0, 1))
+  NondetTest.assert ((step s0 (.pipe2 { notificationPipe := true }) (.err Errno.ENOPKG)).isSome)
   NondetTest.assert ((step s0 (.pipe2 { notificationPipe := true }) (.err Errno.EPERM)).isNone ∧
     (step s0 (.pipe2 { notificationPipe := true }) (.err Errno.EINVAL)).isNone ∧
     (step sSessPerm (.kill (-1) .sigterm) (.err Errno.EPERM)).isNone ∧
     (step sSessPerm (.kill (-1) .sigterm) .unit).isSome)
   NondetTest.assert ((step s0 (.pipe2 { notificationPipe := true }) (.piped 0 1)).isNone)
-  NondetTest.assert ((step (s0.withWatchQueueSupported true) (.pipe2 { notificationPipe := true }) (.err errnoENOPKG)).isNone)
+  NondetTest.assert ((step (s0.withWatchQueueSupported true) (.pipe2 { notificationPipe := true }) (.err Errno.ENOPKG)).isNone)
 
   let (_, sCoreTerm) := (ops.kill 2600 .sigterm).run (s0.spawnRunningChild 2600 2600)
   let (_, sCoreQuit) := (ops.kill 2600 (.raw 3)).run (s0.spawnRunningChild 2600 2600)

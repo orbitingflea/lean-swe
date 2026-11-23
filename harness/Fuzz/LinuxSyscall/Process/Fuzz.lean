@@ -2657,7 +2657,7 @@ private def runShimEdgeSmoke : IO (Except String Unit) := do
     | .ok (r, w) => let _ ← ProcessEnv.closeFd r; let _ ← ProcessEnv.closeFd w; return .error "MISMATCH pipe2 cls=extra_bits got=ok"
   if !(← ProcessEnv.probeKernelWatchQueue) then
     match ← pipe2 { notificationPipe := true } with
-    | .error e => if e != errnoENOPKG then return .error s!"MISMATCH pipe2 cls=notif_enopkg got={e}"
+    | .error e => if e != Errno.ENOPKG then return .error s!"MISMATCH pipe2 cls=notif_enopkg got={e}"
     | .ok (r, w) => let _ ← ProcessEnv.closeFd r; let _ ← ProcessEnv.closeFd w; return .error "MISMATCH pipe2 cls=notif_enopkg got=ok"
   for badWaitBits in #[(1 : UInt32), 0x04000000, 0x80000000] do
     match ← waitpid (-1) { extraBits := badWaitBits } with

@@ -91,8 +91,66 @@ def ENOSYS : Errno := 38
 def ENOTEMPTY : Errno := 39
 /-- Too many levels of symbolic links (`ELOOP`, 40). -/
 def ELOOP : Errno := 40
+/-- No message of desired type (`ENOMSG`, 42). Returned by Landlock on empty access masks. -/
+def ENOMSG : Errno := 42
+/-- Package not installed (`ENOPKG`, 65). Returned by `pipe2(..., O_NOTIFICATION_PIPE)` when kernel `CONFIG_WATCH_QUEUE` is disabled. -/
+def ENOPKG : Errno := 65
+/-- Protocol error (`EPROTO`, 71). -/
+def EPROTO : Errno := 71
+/-- File descriptor in bad state (`EBADFD`, 77). Returned by Landlock on non-ruleset or pseudo-FS descriptors. -/
+def EBADFD : Errno := 77
+/-- Socket operation on non-socket (`ENOTSOCK`, 88). -/
+def ENOTSOCK : Errno := 88
+/-- Destination address required (`EDESTADDRREQ`, 89). -/
+def EDESTADDRREQ : Errno := 89
+/-- Message too long (`EMSGSIZE`, 90). -/
+def EMSGSIZE : Errno := 90
+/-- Protocol wrong type for socket (`EPROTOTYPE`, 91). -/
+def EPROTOTYPE : Errno := 91
+/-- Protocol not available (`ENOPROTOOPT`, 92). -/
+def ENOPROTOOPT : Errno := 92
+/-- Protocol not supported (`EPROTONOSUPPORT`, 93). -/
+def EPROTONOSUPPORT : Errno := 93
+/-- Socket type not supported (`ESOCKTNOSUPPORT`, 94). -/
+def ESOCKTNOSUPPORT : Errno := 94
 /-- Operation not supported (`EOPNOTSUPP` / `ENOTSUP`, 95). -/
 def EOPNOTSUPP : Errno := 95
+/-- Protocol family not supported (`EPFNOSUPPORT`, 96). -/
+def EPFNOSUPPORT : Errno := 96
+/-- Address family not supported by protocol (`EAFNOSUPPORT`, 97). -/
+def EAFNOSUPPORT : Errno := 97
+/-- Address already in use (`EADDRINUSE`, 98). -/
+def EADDRINUSE : Errno := 98
+/-- Cannot assign requested address (`EADDRNOTAVAIL`, 99). -/
+def EADDRNOTAVAIL : Errno := 99
+/-- Network is down (`ENETDOWN`, 100). -/
+def ENETDOWN : Errno := 100
+/-- Network is unreachable (`ENETUNREACH`, 101). -/
+def ENETUNREACH : Errno := 101
+/-- Software caused connection abort (`ECONNABORTED`, 103). -/
+def ECONNABORTED : Errno := 103
+/-- Connection reset by peer (`ECONNRESET`, 104). -/
+def ECONNRESET : Errno := 104
+/-- No buffer space available (`ENOBUFS`, 105). -/
+def ENOBUFS : Errno := 105
+/-- Transport endpoint is already connected (`EISCONN`, 106). -/
+def EISCONN : Errno := 106
+/-- Transport endpoint is not connected (`ENOTCONN`, 107). -/
+def ENOTCONN : Errno := 107
+/-- Cannot send after transport endpoint shutdown (`ESHUTDOWN`, 108). -/
+def ESHUTDOWN : Errno := 108
+/-- Too many references: cannot splice (`ETOOMANYREFS`, 109). -/
+def ETOOMANYREFS : Errno := 109
+/-- Connection timed out (`ETIMEDOUT`, 110). -/
+def ETIMEDOUT : Errno := 110
+/-- Connection refused (`ECONNREFUSED`, 111). -/
+def ECONNREFUSED : Errno := 111
+/-- No route to host (`EHOSTUNREACH`, 113). -/
+def EHOSTUNREACH : Errno := 113
+/-- Operation already in progress (`EALREADY`, 114). -/
+def EALREADY : Errno := 114
+/-- Operation now in progress (`EINPROGRESS`, 115). -/
+def EINPROGRESS : Errno := 115
 /-- Stale file handle (`ESTALE`, 116). -/
 def ESTALE : Errno := 116
 /-- Operation canceled (`ECANCELED`, 125). -/
@@ -146,7 +204,36 @@ def name (e : Errno) : String :=
   | 38 => "ENOSYS"
   | 39 => "ENOTEMPTY"
   | 40 => "ELOOP"
+  | 42 => "ENOMSG"
+  | 65 => "ENOPKG"
+  | 71 => "EPROTO"
+  | 77 => "EBADFD"
+  | 88 => "ENOTSOCK"
+  | 89 => "EDESTADDRREQ"
+  | 90 => "EMSGSIZE"
+  | 91 => "EPROTOTYPE"
+  | 92 => "ENOPROTOOPT"
+  | 93 => "EPROTONOSUPPORT"
+  | 94 => "ESOCKTNOSUPPORT"
   | 95 => "EOPNOTSUPP"
+  | 96 => "EPFNOSUPPORT"
+  | 97 => "EAFNOSUPPORT"
+  | 98 => "EADDRINUSE"
+  | 99 => "EADDRNOTAVAIL"
+  | 100 => "ENETDOWN"
+  | 101 => "ENETUNREACH"
+  | 103 => "ECONNABORTED"
+  | 104 => "ECONNRESET"
+  | 105 => "ENOBUFS"
+  | 106 => "EISCONN"
+  | 107 => "ENOTCONN"
+  | 108 => "ESHUTDOWN"
+  | 109 => "ETOOMANYREFS"
+  | 110 => "ETIMEDOUT"
+  | 111 => "ECONNREFUSED"
+  | 113 => "EHOSTUNREACH"
+  | 114 => "EALREADY"
+  | 115 => "EINPROGRESS"
   | 116 => "ESTALE"
   | 125 => "ECANCELED"
   | n => s!"ERRNO({n})"

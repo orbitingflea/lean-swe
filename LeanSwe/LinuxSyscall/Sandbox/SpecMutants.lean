@@ -84,16 +84,16 @@ example : ¬ Core.AllPass (test_sandbox_errno_classificationAndConstants
 
 example : ¬ Core.AllPass (test_sandbox_errno_classificationAndConstants
     Errno.isTransientOsErrno
-    (fun e => if e == ENOMSG then .permissionDenied else SandboxErrorKind.ofErrno e)) := by
+    (fun e => if e == Errno.ENOMSG then .permissionDenied else SandboxErrorKind.ofErrno e)) := by
   intro h
-  have h0 := h ENOMSG
+  have h0 := h Errno.ENOMSG
   exact absurd h0.2.2.2.1 (by decide)
 
 example : ¬ Core.AllPass (test_sandbox_errno_classificationAndConstants
     Errno.isTransientOsErrno
-    (fun e => if e == EBADFD then .invalidArg else SandboxErrorKind.ofErrno e)) := by
+    (fun e => if e == Errno.EBADFD then .invalidArg else SandboxErrorKind.ofErrno e)) := by
   intro h
-  have h0 := h EBADFD
+  have h0 := h Errno.EBADFD
   exact absurd h0.2.2.2.1 (by decide)
 
 example : ¬ Core.AllPass (test_sandbox_errno_classificationAndConstants
@@ -459,7 +459,7 @@ example : ¬ Core.AllPass (test_sandbox_ops_landlock_rulesetAddRuleAndRestrictSe
   dsimp only [Core.AllPass, test_sandbox_ops_landlock_rulesetAddRuleAndRestrictSelf,
     Bind.bind, assert, pure] at h
   have hEm : (Except.error Errno.EINVAL : Except Errno (LandlockCreateResult HandleId)) =
-      Except.error ENOMSG := h.2.2.2.1.1
+      Except.error Errno.ENOMSG := h.2.2.2.1.1
   injection hEm with hCode
   exact absurd hCode (by decide)
 
@@ -469,7 +469,7 @@ example : ¬ Core.AllPass (test_sandbox_ops_landlock_rulesetAddRuleAndRestrictSe
         match attr?, flags with
         | none, 1 => pure (.ok (.version 9))
         | none, _ => pure (.error Errno.EINVAL)
-        | some { handledAccessFs := 0, handledAccessNet := 0 }, 0 => pure (.error ENOMSG)
+        | some { handledAccessFs := 0, handledAccessNet := 0 }, 0 => pure (.error Errno.ENOMSG)
         | some a, 0 =>
           if (a.handledAccessFs &&& ~~~LANDLOCK_ACCESS_FS_V4_ALL) != 0 ||
              (a.handledAccessNet &&& ~~~LANDLOCK_ACCESS_NET_ALL) != 0 then
@@ -479,23 +479,23 @@ example : ¬ Core.AllPass (test_sandbox_ops_landlock_rulesetAddRuleAndRestrictSe
         | some _, _ => pure (.error Errno.EINVAL)
       landlockAddRule := fun rs rule =>
         if rs == 999 then pure (.error Errno.EBADF)
-        else if rs == 1 || rs == 102 then pure (.error EBADFD)
+        else if rs == 1 || rs == 102 then pure (.error Errno.EBADFD)
         else
           match rule with
           | .pathBeneath p acc =>
-            if acc == 0 then pure (.error ENOMSG)
+            if acc == 0 then pure (.error Errno.ENOMSG)
             else if (acc &&& LANDLOCK_ACCESS_FS_WRITE_FILE) != 0 then pure (.error Errno.EINVAL)
             else if p == 999 then pure (.error Errno.EBADF)
-            else if p == 1 || p == 102 || p == 0 then pure (.error EBADFD)
+            else if p == 1 || p == 102 || p == 0 then pure (.error Errno.EBADFD)
             else if p == 101 && (acc &&& LANDLOCK_DIR_ONLY_FS_MASK) != 0 then pure (.error Errno.EINVAL)
             else pure (.ok ())
           | .netPort port acc =>
-            if acc == 0 then pure (.error ENOMSG)
+            if acc == 0 then pure (.error Errno.ENOMSG)
             else if acc == LANDLOCK_ACCESS_NET_BIND_TCP || port > 65535 then pure (.error Errno.EINVAL)
             else pure (.ok ())
       landlockRestrictSelf := fun rs =>
         if rs == 999 then pure (.error Errno.EBADF)
-        else if rs == 1 || rs == 102 then pure (.error EBADFD)
+        else if rs == 1 || rs == 102 then pure (.error Errno.EBADFD)
         else pure (.ok ()) } () 100 101 102) := by
   intro h
   dsimp only [Core.AllPass, test_sandbox_ops_landlock_rulesetAddRuleAndRestrictSelf,
@@ -688,7 +688,7 @@ example : ¬ Core.AllPass (test_sandbox_model_allowedStep_environmentFreeAndOPat
     (fun s req out =>
       match req, out with
       | .landlockAddRule rs _, .err e =>
-        if rs == 50 && e == EBADFD then none else allowedStep s req out
+        if rs == 50 && e == Errno.EBADFD then none else allowedStep s req out
       | _, _ => allowedStep s req out)) := by
   intro h
   dsimp only [Core.AllPass, test_sandbox_model_allowedStep_environmentFreeAndOPath,
@@ -700,7 +700,7 @@ example : ¬ Core.AllPass (test_sandbox_model_allowedStep_environmentFreeAndOPat
       match req, out with
       | .landlockAddRule rs _, .err e =>
         if rs == 53 then
-          if e == EBADFD then some s else none
+          if e == Errno.EBADFD then some s else none
         else allowedStep s req out
       | _, _ => allowedStep s req out)) := by
   intro h
