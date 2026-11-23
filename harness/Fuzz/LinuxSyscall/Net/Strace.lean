@@ -3246,6 +3246,83 @@ private def runTcpDisconnectRxPurgeTests : IO Unit := do
   mustReject "post-shutRd EINVAL rx(1024) rejects ENOTCONN" stShC (.recvfrom 1 1024 { dontwait := true }) (.err Errno.ENOTCONN)
   let _ ← mustStep "post-shutRd EINVAL rx(1024) 206" stShC (.recvfrom 1 1024 { dontwait := true }) (.bytes b206)
 
+private def runUdpWildcardPeerResolveTests : IO Unit := do
+  let mustStep (lbl : String) (s : NetState) (req : NetReq) (out : NetOutcome) : IO NetState := do
+    match Net.allowedStep s req out with
+    | some s' => return s'
+    | none => throw (IO.userError s!"udp wildcard peer resolve: model rejected {lbl}: req={repr req} out={repr out}")
+  let mustReject (lbl : String) (s : NetState) (req : NetReq) (out : NetOutcome) : IO Unit :=
+    assertTrue s!"udp wildcard peer resolve: {lbl} should reject" ((Net.allowedStep s req out).isNone)
+  let s0 := NetState.initial true
+  let blkFlags : SockFlags := { nonblock := false, cloexec := true }
+  let p0 : UInt16 := 44200
+  let p1 : UInt16 := 44201
+  let v4m0 (p : UInt16) (sc : UInt32 := 0) : SockAddr := .ipv6 0 (ipv4ToMappedV6Lo INADDR_ANY) p 0 sc
+  let v4m1 (p : UInt16) : SockAddr := .ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) p 0 0
+  let v4m2 (p : UInt16) : SockAddr := .ipv6 0 (ipv4ToMappedV6Lo 0x7f000002) p 0 0
+  let mut st ← mustStep "249.s0" s0 (.socket .inet6 .dgram blkFlags 0) (.opened 0)
+  st ← mustStep "249.bind0" st (.bind 0 (v4m0 0 7)) .unit
+  st ← mustStep "249.gsn0" st (.getsockname 0) (.addr (v4m0 p0))
+  st ← mustStep "249.s1" st (.socket .inet .dgram nbFlags 0) (.opened 1)
+  st ← mustStep "249.bind1" st (.bind 1 (.ipv4 0x7f000002 0)) .unit
+  st ← mustStep "249.gsn1" st (.getsockname 1) (.addr (.ipv4 0x7f000002 p1))
+  st ← mustStep "249.conn1" st (.connect 1 (.ipv4 INADDR_ANY p0)) .unit
+  let stUnconnSend ← mustStep "249.unconn.send1" st (.sendto 1 (asciiBytes ['u']) {}) (.u32 1)
+  let _ ← mustStep "249.unconn.recv0" stUnconnSend (.recvfrom 0 8 { dontwait := true }) (.bytes (asciiBytes ['u']))
+  mustReject "249.unconn.send1 rejects ECONNREFUSED" stUnconnSend (.sendto 1 ByteArray.empty {}) (.err Errno.ECONNREFUSED)
+  st ← mustStep "249.conn0" st (.connect 0 (v4m2 p1)) .unit
+  st ← mustStep "249.gsn0.post" st (.getsockname 0) (.addr (v4m1 p0))
+  let stTx1 ← mustStep "249.send1.1" st (.sendto 1 ByteArray.empty {}) (.u32 0)
+  let _ ← mustStep "249.send1.2 ECONNREFUSED" stTx1 (.sendto 1 ByteArray.empty {}) (.err Errno.ECONNREFUSED)
+  mustReject "249.recv0 rejects empty delivery" stTx1 (.recvfrom 0 8 { dontwait := true }) (.bytes ByteArray.empty)
+  let _ ← mustStep "249.recv0 EAGAIN" stTx1 (.recvfrom 0 8 { dontwait := true }) (.err Errno.EAGAIN)
+  let stTx0 ← mustStep "249.send0.1" st (.sendto 0 (asciiBytes ['x']) { dontwait := true }) (.u32 1)
+  let _ ← mustStep "249.send0.2 ECONNREFUSED" stTx0 (.sendto 0 (asciiBytes ['x']) { dontwait := true }) (.err Errno.ECONNREFUSED)
+  mustReject "249.recv1 rejects x" stTx0 (.recvfrom 1 8 { dontwait := true }) (.bytes (asciiBytes ['x']))
+  let stMatch ← mustStep "249.reconn1.127.0.0.1" st (.connect 1 (.ipv4 INADDR_LOOPBACK p0)) .unit
+  let stMatch1 ← mustStep "249.match.send1" stMatch (.sendto 1 (asciiBytes ['a']) {}) (.u32 1)
+  mustReject "249.match.send1 rejects ECONNREFUSED" stMatch1 (.sendto 1 ByteArray.empty {}) (.err Errno.ECONNREFUSED)
+  let stMatch2 ← mustStep "249.match.recv0" stMatch1 (.recvfrom 0 8 { dontwait := true }) (.bytes (asciiBytes ['a']))
+  let stMatch3 ← mustStep "249.match.send0" stMatch2 (.sendto 0 (asciiBytes ['b']) { dontwait := true }) (.u32 1)
+  let _ ← mustStep "249.match.recv1" stMatch3 (.recvfrom 1 8 { dontwait := true }) (.bytes (asciiBytes ['b']))
+  let mut sv4 ← mustStep "v4.s0" s0 (.socket .inet .dgram nbFlags 0) (.opened 0)
+  sv4 ← mustStep "v4.bind0" sv4 (.bind 0 (.ipv4 INADDR_LOOPBACK p0)) .unit
+  sv4 ← mustStep "v4.s1" sv4 (.socket .inet .dgram nbFlags 0) (.opened 1)
+  sv4 ← mustStep "v4.bind1" sv4 (.bind 1 (.ipv4 0x7f000002 p1)) .unit
+  sv4 ← mustStep "v4.conn1" sv4 (.connect 1 (.ipv4 INADDR_ANY p0)) .unit
+  let sv4Tx ← mustStep "v4.miss.send1" sv4 (.sendto 1 (asciiBytes ['m']) {}) (.u32 1)
+  let _ ← mustStep "v4.miss.send2 ECONNREFUSED" sv4Tx (.sendto 1 ByteArray.empty {}) (.err Errno.ECONNREFUSED)
+  mustReject "v4.miss.recv0 rejects m" sv4Tx (.recvfrom 0 8 { dontwait := true }) (.bytes (asciiBytes ['m']))
+  let mut sv6 ← mustStep "v6.s0" s0 (.socket .inet6 .dgram nbFlags 0) (.opened 0)
+  sv6 ← mustStep "v6.bind0" sv6 (.bind 0 (v4m1 p0)) .unit
+  sv6 ← mustStep "v6.s1" sv6 (.socket .inet6 .dgram nbFlags 0) (.opened 1)
+  sv6 ← mustStep "v6.bind1" sv6 (.bind 1 (v4m2 p1)) .unit
+  let sv6Miss ← mustStep "v6.conn.v4m0" sv6 (.connect 1 (v4m0 p0)) .unit
+  let sv6MissTx ← mustStep "v6.miss.send1" sv6Miss (.sendto 1 (asciiBytes ['k']) {}) (.u32 1)
+  let _ ← mustStep "v6.miss.send2 ECONNREFUSED" sv6MissTx (.sendto 1 ByteArray.empty {}) (.err Errno.ECONNREFUSED)
+  mustReject "v6.miss.recv0 rejects k" sv6MissTx (.recvfrom 0 8 { dontwait := true }) (.bytes (asciiBytes ['k']))
+  let sv6Any ← mustStep "v6.conn.any6" sv6 (.connect 1 (.ipv6 0 0 p0 0 0)) .unit
+  let sv6AnyTx ← mustStep "v6.any6.send1" sv6Any (.sendto 1 (asciiBytes ['k']) {}) (.u32 1)
+  let _ ← mustStep "v6.any6.recv0" sv6AnyTx (.recvfrom 0 8 { dontwait := true }) (.bytes (asciiBytes ['k']))
+  mustReject "v6.any6.send2 rejects ECONNREFUSED" sv6AnyTx (.sendto 1 ByteArray.empty {}) (.err Errno.ECONNREFUSED)
+  let mut sNs ← mustStep "ns.s0" (NetState.initialNetns true) (.socket .inet .dgram nbFlags 0) (.opened 0)
+  sNs ← mustStep "ns.bind0.down" sNs (.bind 0 (.ipv4 0x7f000002 p1)) .unit
+  sNs ← mustStep "ns.loUp" sNs (.ioctl 0 (.setIfFlags defaultLoFlags) loIfname) (.u32 0)
+  sNs ← mustStep "ns.s1" sNs (.socket .inet .dgram nbFlags 0) (.opened 1)
+  sNs ← mustStep "ns.bind1" sNs (.bind 1 (.ipv4 INADDR_LOOPBACK p0)) .unit
+  sNs ← mustStep "ns.conn0" sNs (.connect 0 (.ipv4 INADDR_ANY p0)) .unit
+  let sNsTx ← mustStep "ns.send0" sNs (.sendto 0 (asciiBytes ['n']) {}) (.u32 1)
+  let _ ← mustStep "ns.recv1" sNsTx (.recvfrom 1 8 { dontwait := true }) (.bytes (asciiBytes ['n']))
+  mustReject "ns.send0 rejects ECONNREFUSED" sNsTx (.sendto 0 ByteArray.empty {}) (.err Errno.ECONNREFUSED)
+  let mut sMc ← mustStep "mc.s0" s0 (.socket .inet .dgram nbFlags 0) (.opened 0)
+  sMc ← mustStep "mc.bind0" sMc (.bind 0 (.ipv4 INADDR_ALLHOSTS_GROUP p1)) .unit
+  sMc ← mustStep "mc.s1" sMc (.socket .inet .dgram nbFlags 0) (.opened 1)
+  sMc ← mustStep "mc.bind1" sMc (.bind 1 (.ipv4 INADDR_LOOPBACK p0)) .unit
+  sMc ← mustStep "mc.conn0" sMc (.connect 0 (.ipv4 INADDR_ANY p0)) .unit
+  let sMcTx ← mustStep "mc.send0" sMc (.sendto 0 (asciiBytes ['c']) {}) (.u32 1)
+  let _ ← mustStep "mc.recv1" sMcTx (.recvfrom 1 8 { dontwait := true }) (.bytes (asciiBytes ['c']))
+  mustReject "mc.send0 rejects ECONNREFUSED" sMcTx (.sendto 0 ByteArray.empty {}) (.err Errno.ECONNREFUSED)
+
 /-- Run all `Net` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke` and `lean-swe-mut-test`). -/
 def runChecks : IO Unit := do
   assume_net_socket_domainTypeFlagsAbi
@@ -3341,6 +3418,7 @@ def runChecks : IO Unit := do
   runPreShutCloseWaitLoFlapTests
   runV6SelfShutBindLoDownTests
   runTcpDisconnectRxPurgeTests
+  runUdpWildcardPeerResolveTests
   runDefaultWrapperFlagsTests
   runStickyScopeMappedWildcardAndUntaintTests
   runMcastScopeAndSynResetTests

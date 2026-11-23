@@ -938,24 +938,20 @@ def isDirectedLoopBcastAddr : SockAddr → Bool
   | .ipv6 hi lo _ _ _ => mappedV4Addr? hi lo == some 0x7fffffff
   | _ => false
 
-/-- Map an IPv4 target (or `[::]` on an IPv4-mapped socket) onto `::ffff:a.b.c.d` when connecting an `AF_INET6` UDP socket. -/
-def normalizeUdpTarget (dom : SockDomain) (rawAddr : SockAddr) (cliSa? : Option SockAddr := none) : SockAddr :=
-  match dom, rawAddr with
-  | .inet6, .ipv4 ip p => .ipv6 0 (ipv4ToMappedV6Lo ip) p 0 0
-  | .inet6, .ipv6 0 0 tp fl sc =>
-    match cliSa? with
-    | some (.ipv6 chi clo _ _ _) =>
-      if (mappedV4Addr? chi clo).isSome then
-        .ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) tp fl sc
-      else rawAddr
-    | _ => rawAddr
-  | _, _ => rawAddr
+/-- Map an IPv4 target onto `::ffff:a.b.c.d` for `AF_INET6` UDP sockets and resolve wildcard `0.0.0.0`, `::ffff:0.0.0.0`, and `[::]` (when client local IP is `::ffff:*`) against the bound source address (`__ip_route_output_key_hash`). -/
+def normalizeUdpTarget (dom : SockDomain) (rawAddr : SockAddr)
+    (cliSa? : Option SockAddr := none) (inetSaddrZero : Bool := false) : SockAddr :=
+  let mapped :=
+    match dom, rawAddr with
+    | .inet6, .ipv4 ip p => .ipv6 0 (ipv4ToMappedV6Lo ip) p 0 0
+    | _, _ => rawAddr
+  resolveTargetAddrForClient (if inetSaddrZero then none else cliSa?) mapped
 
 /-- Model transition helper for UDP `connect`. -/
 def stepUdpConnect (s0 : NetState) (selfFid : FileId) (d0 : SockDesc)
     (fam : InetFamily) (bind : InetBind) (rawAddr : SockAddr) (obs? : Option NetOutcome) :
     Option (NetOutcome × NetState) :=
-  let addr := normalizeUdpTarget d0.domain rawAddr bind.addr?
+  let addr := normalizeUdpTarget d0.domain rawAddr bind.addr? d0.inetSaddrZero
   let scopeAlts0 := if sockAddrHasScope rawAddr || d0.boundDevIf != 0 then [Errno.ENODEV] else []
   let scConflict := match ipv6ScopedIfindex? .dgram addr with
     | some sc => d0.boundDevIf != 0 && d0.boundDevIf != sc

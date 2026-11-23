@@ -424,7 +424,7 @@ private theorem stepUdpConnect_none_sound {s : NetState} {selfFid : FileId} {d :
     (h : stepUdpConnect s selfFid d fam bind rawAddr none = some (out, s')) :
     stepUdpConnect s selfFid d fam bind rawAddr (some out) = some (out, s') := by
   unfold stepUdpConnect at h ⊢
-  generalize had : normalizeUdpTarget d.domain rawAddr bind.addr? = addr at h ⊢
+  generalize had : normalizeUdpTarget d.domain rawAddr bind.addr? d.inetSaddrZero = addr at h ⊢
   dsimp only at h ⊢
   by_cases hdom : (addr.domain != d.domain) = true
   · simp only [hdom, ↓reduceIte] at h ⊢
