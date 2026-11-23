@@ -1610,7 +1610,7 @@ def main (_ : List String) : IO UInt32 := do
          "def runAll : IO Unit := Core.runRegisteredErrorTests registeredErrorTests\n" ++
          "end LeanSwe.MiniPure.RuntimeTests\n")
 
-    runMutantCase base tmpRoot bin "deep_tautology_kernel_defeq_refines_rejected" "TRIVIAL_ALLOWED_IN_REFINES" fun mr => do
+    runMutantCase base tmpRoot bin "irreducible_tautology_defeq_refines_rejected" "TRIVIAL_ALLOWED_IN_REFINES" fun mr => do
       writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
         ("import LeanSwe.MiniPure.Types\n" ++
          "namespace LeanSwe.MiniPure.Model\n" ++
@@ -1618,7 +1618,8 @@ def main (_ : List String) : IO UInt32 := do
          "def deepAdd : Nat → Nat → Nat\n" ++
          "  | 0, x => x\n" ++
          "  | k + 1, x => (deepAdd k x) + 0\n" ++
-         "def sneakyAllowed (n y : Nat) : Prop := deepAdd 1500 (n + y) = n + y\n" ++
+         "@[irreducible] def hideAdd (k x : Nat) : Nat := deepAdd k x\n" ++
+         "def sneakyAllowed (n y : Nat) : Prop := hideAdd 15 (n + y) = n + y\n" ++
          "end LeanSwe.MiniPure.Model\n")
       writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
         ("import Core.Refines\n" ++
@@ -1629,7 +1630,30 @@ def main (_ : List String) : IO UInt32 := do
          "  | k + 1, x => by simp [Model.deepAdd, deepAdd_eq k x]\n" ++
          "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
          "theorem refines_model : Core.RefinesPure LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.sneakyAllowed :=\n" ++
-         "  fun n => deepAdd_eq 1500 (n + LeanSwe.MiniPure.eval n)\n" ++
+         "  fun n => by unfold LeanSwe.MiniPure.Model.sneakyAllowed LeanSwe.MiniPure.Model.hideAdd; exact deepAdd_eq 15 (n + LeanSwe.MiniPure.eval n)\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #["LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
+
+    runMutantCase base tmpRoot bin "very_deep_defeq_refines_inconclusive_no_hang" "INCONCLUSIVE_REFINES_CHECK" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def deepAdd : Nat → Nat → Nat\n" ++
+         "  | 0, x => x\n" ++
+         "  | k + 1, x => (deepAdd k x) + 0\n" ++
+         "def sneakyAllowed (n y : Nat) : Prop := deepAdd 1000000000 (n + y) = n + y\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Refines\n" ++
+         "import LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "private theorem deepAdd_eq : ∀ k x : Nat, Model.deepAdd k x = x\n" ++
+         "  | 0, _ => rfl\n" ++
+         "  | k + 1, x => by simp [Model.deepAdd, deepAdd_eq k x]\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem refines_model : Core.RefinesPure LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.sneakyAllowed :=\n" ++
+         "  fun n => deepAdd_eq 1000000000 (n + LeanSwe.MiniPure.eval n)\n" ++
          "end LeanSwe.MiniPure.Proofs\n")
       return #["LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
 

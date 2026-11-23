@@ -915,11 +915,6 @@ private def isExactStandardExtern (extData? : Option ExternAttrData) (expectedSy
     | _ => false
   | none => false
 
-private def isPropInductiveType : Expr → Bool
-  | .sort .zero => true
-  | .forallE _ _ b _ => isPropInductiveType b
-  | _ => false
-
 private unsafe def checkSandboxTrustedClosure (env : Environment) : IO (Array String) := do
   let mut discoveredMods : Array Name := #[]
   for m in env.header.moduleNames do
@@ -980,20 +975,7 @@ private unsafe def checkSandboxTrustedClosure (env : Environment) : IO (Array St
       if !isAllowedSandboxClosureModule cMod then
         errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_MODULE: {cName} in {cMod} reachable from {originMod}"
       if let some implName := Lean.Compiler.getImplementedBy? sbxEnv cName then
-        let isCtorIdxImpl :=
-          cName.isStr && cName.getString! == "ctorIdx" &&
-          implName == Name.str cName "_impl" &&
-          (match sbxEnv.find? cName.getPrefix, sbxEnv.find? implName with
-           | some (.inductInfo iv), some (.defnInfo implVal) =>
-             let ivMod := sbxEnv.getModuleIdxFor? iv.name |>.bind (sbxEnv.header.moduleNames[·]?) |>.getD .anonymous
-             !isPropInductiveType iv.type && cMod == ivMod &&
-               implVal.value.getUsedConstants.all (fun u =>
-                 let uMod := sbxEnv.getModuleIdxFor? u |>.bind (sbxEnv.header.moduleNames[·]?) |>.getD .anonymous
-                 isSandboxStandardLibModule uMod || u == `optParam ||
-                   u == `LeanSwe.LinuxSyscall.RawFd ||
-                   (match sbxEnv.find? u with | some (.inductInfo _) => true | _ => false))
-           | _, _ => false)
-        if !isCtorIdxImpl then
+        if !(← isCompilerGeneratedCtorIdx sbxEnv cName implName cinfo) then
           errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_IMPLEMENTED_BY: {cName} in {cMod} implemented_by {implName}"
         if !visited.contains implName then
           queue := queue.push (originMod, implName)
