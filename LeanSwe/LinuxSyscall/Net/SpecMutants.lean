@@ -775,4 +775,22 @@ example : ¬ Core.AllPass (test_net_model_taintedAbortLastAckAndMcastRouted
   intro h
   exact absurd h.2.2.2.2.2.2.2.2.2.2.1 (by decide)
 
+example : ¬ Core.AllPass (test_net_ops_socketAndSocketpairMatrix
+    { stubNetOps with
+      socket := fun dom typ _ proto =>
+        if dom == .unix && proto == PF_UNIX then pure (Except.error Errno.EPROTONOSUPPORT)
+        else
+          match validateSocketArgs dom typ proto with
+          | some e => pure (Except.error e)
+          | none => pure (Except.ok 0)
+      socketpair := fun dom typ _ =>
+        match validateSocketpairArgs dom typ with
+        | some e => pure (Except.error e)
+        | none => pure (Except.ok (0, 1)) } ()) := by
+  intro h
+  dsimp only [Core.AllPass, test_net_ops_socketAndSocketpairMatrix,
+    stubNetOps, validateSocketArgs, validateSocketpairArgs, Bind.bind, assert, StateT.run, pure, StateT.pure] at h
+  rcases h.2.2.2.2.2.2.2.2.2.2.1.1 with ⟨_, hBad⟩
+  cases hBad
+
 end LeanSwe.LinuxSyscall.Net

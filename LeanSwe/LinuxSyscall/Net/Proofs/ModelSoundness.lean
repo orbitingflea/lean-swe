@@ -1306,112 +1306,86 @@ private theorem stepSendmsg_none_sound {s : NetState} {hid : HandleId} {fds : Ar
           exact emitErr_none_sound h
         · simp only [hdom, Bool.false_eq_true, ↓reduceIte] at h ⊢
           cases hso : consumePendingSoError d with
-        | some p =>
-          simp only [hso] at h ⊢
-          rcases h with ⟨rfl, rfl⟩
-          simp [isAsyncConnectErrno]
-        | none =>
-          simp only [hso] at h ⊢
-          by_cases hest : (!isEstablished d) = true
-          · simp only [hest, ↓reduceIte] at h ⊢
-            exact emitErr_none_sound h
-          · simp only [hest, Bool.false_eq_true, ↓reduceIte] at h ⊢
-            by_cases hseq : (d.domain == .unix && d.sockType == .seqpacket) = true
-            · simp only [hseq, ↓reduceIte] at h ⊢
-              cases hpr : d.proto with
-              | unixStream isSeq bp conn =>
-                simp only [hpr] at h ⊢
-                cases conn with
-                | connected pf? psw pwb pwb2 prGc =>
-                  cases pwb2 with
-                  | true =>
-                    dsimp only at h ⊢
-                    exact emitErr_none_sound h
-                  | false =>
+          | some p =>
+            simp only [hso] at h ⊢
+            rcases h with ⟨rfl, rfl⟩
+            simp
+          | none =>
+            simp only [hso] at h ⊢
+            by_cases hest : (!isEstablished d) = true
+            · simp only [hest, ↓reduceIte] at h ⊢
+              exact emitErr_none_sound h
+            · simp only [hest, Bool.false_eq_true, ↓reduceIte] at h ⊢
+              by_cases hseq : (d.sockType == .seqpacket) = true
+              · simp only [hseq, ↓reduceIte] at h ⊢
+                cases hpr : d.proto with
+                | unixStream isSeq bp conn =>
+                  simp only [hpr] at h ⊢
+                  cases conn with
+                  | connected pf? psw pwb pwb2 prGc =>
+                    cases pwb2 with
+                    | true =>
+                      dsimp only at h ⊢
+                      exact emitErr_none_sound h
+                    | false =>
+                      dsimp only at h ⊢
+                      (split at h <;> split <;> try contradiction)
+                      · exact emitErr_none_sound h
+                      · cases pwb with
+                        | true => dsimp only at h ⊢; exact emitErr_none_sound h
+                        | false =>
+                          cases pf? with
+                          | none => dsimp only at h ⊢; exact emitErr_none_sound h
+                          | some _ => dsimp only at h ⊢; exact emitUnit_none_sound h
+                  | _ =>
                     dsimp only at h ⊢
                     (split at h <;> split <;> try contradiction)
                     · exact emitErr_none_sound h
-                    · cases pwb with
-                      | true => dsimp only at h ⊢; exact emitErr_none_sound h
-                      | false =>
-                        cases pf? with
-                        | none => dsimp only at h ⊢; exact emitErr_none_sound h
-                        | some _ => dsimp only at h ⊢; exact emitUnit_none_sound h
+                    · exact emitErr_none_sound h
                 | _ =>
-                  dsimp only at h ⊢
+                  simp only [hpr] at h ⊢
                   (split at h <;> split <;> try contradiction)
                   · exact emitErr_none_sound h
                   · exact emitErr_none_sound h
-              | _ =>
-                simp only [hpr] at h ⊢
-                (split at h <;> split <;> try contradiction)
-                · exact emitErr_none_sound h
-                · exact emitErr_none_sound h
-            · simp only [hseq, Bool.false_eq_true, ↓reduceIte] at h ⊢
-              by_cases hwr : d.shut.wr = true
-              · simp only [hwr, ↓reduceIte] at h ⊢
-                exact emitErr_none_sound h
-              · simp only [hwr, Bool.false_eq_true, ↓reduceIte] at h ⊢
-                cases hdisc : disconnectUnixDgramIfPeerClosed s d with
-                | some dDisc =>
-                  simp only [hdisc] at h ⊢
+              · simp only [hseq, Bool.false_eq_true, ↓reduceIte] at h ⊢
+                by_cases hwr : d.shut.wr = true
+                · simp only [hwr, ↓reduceIte] at h ⊢
                   exact emitErr_none_sound h
-                | none =>
-                  simp only [hdisc] at h ⊢
-                  cases hpr : d.proto with
-                  | unixDgram _ peer? =>
-                    simp only [hpr] at h ⊢
-                    cases peer? with
-                    | none => exact emitErr_none_sound h
-                    | some p =>
-                      cases hlkp : lookupFileSocket s p.1 with
-                      | error _ => simp only [hlkp] at h ⊢; exact emitErr_none_sound h
-                      | ok _ =>
-                        simp only [hlkp] at h ⊢
-                        (split at h <;> split <;> try contradiction)
-                        · exact emitErr_none_sound h
-                        · (split at h <;> split <;> try contradiction)
-                          · exact emitErr_none_sound h
-                          · exact emitUnit_none_sound h
-                  | unixStream _ _ conn =>
-                    simp only [hpr] at h ⊢
-                    cases conn with
-                    | connected peer? _ pwb _ _ =>
+                · simp only [hwr, Bool.false_eq_true, ↓reduceIte] at h ⊢
+                  cases hdisc : disconnectUnixDgramIfPeerClosed s d with
+                  | some dDisc =>
+                    simp only [hdisc] at h ⊢
+                    exact emitErr_none_sound h
+                  | none =>
+                    simp only [hdisc] at h ⊢
+                    cases hpr : d.proto with
+                    | unixDgram _ peer? =>
+                      simp only [hpr] at h ⊢
                       cases peer? with
                       | none => exact emitErr_none_sound h
-                      | some _ =>
-                        dsimp only at h ⊢
-                        (split at h <;> split <;> try contradiction)
-                        · exact emitErr_none_sound h
-                        · exact emitUnit_none_sound h
-                    | _ => exact emitErr_none_sound h
-                  | udp _ _ target? =>
-                    simp only [hpr] at h ⊢
-                    cases target? with
-                    | none => exact emitErr_none_sound h
-                    | some targetAddr =>
-                      cases hbp : findBoundUdpPeer s d targetAddr with
-                      | some _ => simp only [hbp] at h ⊢; exact emitUnit_none_sound h
-                      | none => simp only [hbp] at h ⊢; exact emitUnit_none_sound h
-                  | tcp _ _ _ tcpState _ =>
-                    simp only [hpr] at h ⊢
-                    cases tcpState with
-                    | established _ _ | finWait _ _ =>
-                      dsimp only at h ⊢
-                      rcases h with ⟨rfl, rfl⟩
-                      rfl
-                    | closeWait pf? pa pcc =>
-                      cases pcc with
-                      | false =>
-                        cases pf? <;> dsimp only at h ⊢ <;> rcases h with ⟨rfl, rfl⟩ <;> rfl
-                      | true =>
-                        cases pf? with
-                        | some _ => exact emitErr_none_sound h
-                        | none =>
+                      | some p =>
+                        cases hlkp : lookupFileSocket s p.1 with
+                        | error _ => simp only [hlkp] at h ⊢; exact emitErr_none_sound h
+                        | ok _ =>
+                          simp only [hlkp] at h ⊢
+                          (split at h <;> split <;> try contradiction)
+                          · exact emitErr_none_sound h
+                          · (split at h <;> split <;> try contradiction)
+                            · exact emitErr_none_sound h
+                            · exact emitUnit_none_sound h
+                    | unixStream _ _ conn =>
+                      simp only [hpr] at h ⊢
+                      cases conn with
+                      | connected peer? _ pwb _ _ =>
+                        cases peer? with
+                        | none => exact emitErr_none_sound h
+                        | some _ =>
                           dsimp only at h ⊢
-                          rcases h with ⟨rfl, rfl⟩
-                          rfl
-                    | _ => exact emitErr_none_sound h
+                          (split at h <;> split <;> try contradiction)
+                          · exact emitErr_none_sound h
+                          · exact emitUnit_none_sound h
+                      | _ => exact emitErr_none_sound h
+                    | _ => simp only [hpr] at h ⊢; exact emitErr_none_sound h
     · simp only [hl, Bool.not_false, ↓reduceIte] at h ⊢
       exact emitErr_none_sound h
 

@@ -142,7 +142,7 @@ def defaultOps : NetOps :=
 @[inline] def sendmsg (fd : RawFd) (fds : Array RawFd) : IO (Except Errno Unit) :=
   defaultOps.sendmsg fd fds
 
-/-- Receive up to `maxFds` (`1..32`) `RawFd` handles with `MSG_CMSG_CLOEXEC` via `SCM_RIGHTS` `recvmsg(2)` (`net_shim.c` sets `msg_controllen = CMSG_LEN(maxFds * sizeof(int))`, closes all received FDs on `MSG_CTRUNC`, and returns `EPROTO`). -/
+/-- Receive up to `maxFds` (`1..32`) `RawFd` handles with `MSG_CMSG_CLOEXEC` via `SCM_RIGHTS` `recvmsg(2)`. `net_shim.c` reads through a 1-byte dummy `iovec`, so each completed call consumes and discards 1 byte of stream payload (`SOCK_STREAM`, or `0` bytes at EOF) or truncates and discards one entire datagram/seqpacket message (`SOCK_DGRAM`/`SOCK_SEQPACKET`), matching `popRecvmsgUnit` in the model (`#[]` when no `SCM_RIGHTS` ancillary data is present). Sets `msg_controllen = CMSG_LEN(maxFds * sizeof(int))`, and on `MSG_CTRUNC` (or `> maxFds` received descriptors) closes all received FDs and returns `EPROTO`. -/
 @[inline] def recvmsg (fd : RawFd) (maxFds : UInt32) : IO (Except Errno (Array RawFd)) :=
   defaultOps.recvmsg fd maxFds
 
