@@ -136,7 +136,7 @@ jobs:
           expected_syms=$(printf '%s\n' __errno_location _exit chdir close dup2 execve fcntl open read setpgid syscall write | sort -u)
           expected_c_syms=$(printf '%s\n' leanswe_postfork_host_close_fd leanswe_postfork_host_fork_run leanswe_postfork_host_pipe_cloexec leanswe_postfork_host_probe_fd leanswe_postfork_host_probe_handle leanswe_postfork_host_read_once leanswe_postfork_host_setpgid leanswe_postfork_host_wait_once leanswe_postfork_host_write_once | sort -u)
           { diff -u <(printf '%s\n' "$expected_syms") <(printf '%s\n' "$actual_syms") && diff -u <(printf '%s\n' leanswe_postfork_close_fds_above2_except leanswe_postfork_run_child) <(nm --defined-only .lake/build/lib/libleanswe_postfork_rust.a | awk '$2 ~ /^[A-Z]$/ { print $3 }' | sort -u) && diff -u <(printf '%s\n' "$expected_c_syms") <(nm --defined-only .lake/build/lib/libleanswe_postfork.a | awk '$2 ~ /^[ABCDGRST]$/ { print $3 }' | sort -u); } 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
-          { for b in lean-swe-test lean-swe-mut-test leanswe-fuzz; do readelf -d "harness/.lake/build/bin/$b" | grep -qE 'BIND_NOW|NOW'; done; } 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
+          { for b in lean-swe-test lean-swe-mut-test leanswe-fuzz; do readelf -d "harness/.lake/build/bin/$b" | grep -E '^[[:space:]]*0x[0-9a-fA-F]+[[:space:]]+(\(BIND_NOW\)([[:space:]]|$)|\(FLAGS\)[[:space:]](.*[[:space:]])?BIND_NOW([[:space:]]|$)|\(FLAGS_1\)[[:space:]](.*[[:space:]])?NOW([[:space:]]|$))' >/dev/null || { echo "ERROR: harness/.lake/build/bin/$b missing ELF BIND_NOW" >&2; exit 1; }; done; } 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
 
       - name: Save Lean packages cache
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.lake-pkgs-cache.outputs.cache-hit != 'true' && steps.lake_check.outcome == 'success' }}
@@ -372,14 +372,54 @@ jobs:
           OUT_FILES_FUZZ: ${{ steps.files_world_fuzz.outcome }}
         run: |
           set -euo pipefail
-          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title,url | python3 -c 'import json, sys; rows = [r for r in json.load(sys.stdin) if r["title"].startswith("[audit-daily] Daily audit gate failed")]; print(rows[0]["url"] if rows else "")')
-          [[ -n "$EXISTING" ]] && { echo "Open issue already exists ($EXISTING); skipping duplicate creation."; exit 0; }
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
+            --json number,title,url | python3 -c '
+          import json, sys
+          rows = [r for r in json.load(sys.stdin) if r["title"].startswith("[audit-daily] Daily audit gate failed")]
+          print(rows[0]["url"] if rows else "")
+          ')
+          if [[ -n "$EXISTING" ]]; then
+            echo "Open issue already exists ($EXISTING); skipping duplicate creation."
+            exit 0
+          fi
           python3 -c '
           import os, pathlib, subprocess
-          e = os.environ; sha, repo, srv, rid = e["GITHUB_SHA"], e["GITHUB_REPOSITORY"], e["GITHUB_SERVER_URL"], e["GITHUB_RUN_ID"]
-          temp = pathlib.Path(e["RUNNER_TEMP"])
-          tails = [f"### {n} (last {len(ls)} lines)\n````text\n" + "\n".join(ls) + "\n````" for n in ("lake_check", "mem_check", "repeat_tests", "files_world_fuzz") if (temp / f"{n}.log").exists() for ls in [[ln[:320] for ln in (temp / f"{n}.log").read_text(encoding="utf-8", errors="replace").splitlines()[-60:]]]]
-          outcomes = ", ".join(f"{k}=`" + e[f"OUT_{k.upper()}"] + "`" for k in ("setup", "toolchain", "rust", "extract", "check", "mem", "test", "files_fuzz"))
-          body = "\n\n".join([f"Daily audit gate failed on `main` at `{sha}`.", f"- Run: {srv}/{repo}/actions/runs/{rid}", f"- Outcomes: {outcomes}", *tails]).replace("@", "@\u200b")
-          subprocess.run(["gh", "issue", "create", "--repo", repo, "--title", f"[audit-daily] Daily audit gate failed on main ({sha[:8]})", "--body", body], check=True)
+          sha = os.environ["GITHUB_SHA"]
+          short = sha[:8]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          server = os.environ["GITHUB_SERVER_URL"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          outcomes = ", ".join(
+              f"{label}=`{os.environ[env_key]}`"
+              for label, env_key in (
+                  ("setup", "OUT_SETUP"),
+                  ("toolchain", "OUT_TOOLCHAIN"),
+                  ("rust", "OUT_RUST"),
+                  ("extract", "OUT_EXTRACT"),
+                  ("lake_check", "OUT_CHECK"),
+                  ("mem_check", "OUT_MEM"),
+                  ("repeat_tests", "OUT_TEST"),
+                  ("files_fuzz", "OUT_FILES_FUZZ"),
+              )
+          )
+          run_url = f"{server}/{repo}/actions/runs/{run_id}"
+          temp = pathlib.Path(os.environ["RUNNER_TEMP"])
+          tails = []
+          for name in ("lake_check", "mem_check", "repeat_tests", "files_world_fuzz"):
+              p = temp / f"{name}.log"
+              if p.exists():
+                  lines = [ln[:320] for ln in p.read_text(encoding="utf-8", errors="replace").splitlines()[-60:]]
+                  tails.append(f"### {name} (last {len(lines)} lines)\n````text\n" + "\n".join(lines) + "\n````")
+          body = "\n\n".join([
+              f"Daily audit gate failed on `main` at `{sha}`.",
+              f"- Run: {run_url}",
+              f"- Outcomes: {outcomes}",
+              *tails,
+          ]).replace("@", "@\u200b")
+          subprocess.run([
+              "gh", "issue", "create",
+              "--repo", repo,
+              "--title", f"[audit-daily] Daily audit gate failed on main ({short})",
+              "--body", body,
+          ], check=True)
           '

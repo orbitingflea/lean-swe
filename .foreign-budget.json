@@ -6,7 +6,7 @@
       "legacy_unmigrated": false
     },
     ".github/workflows/audit-daily.yml": {
-      "max_lines": 385,
+      "max_lines": 425,
       "legacy_unmigrated": false
     },
     ".github/workflows/audit.yml": {
