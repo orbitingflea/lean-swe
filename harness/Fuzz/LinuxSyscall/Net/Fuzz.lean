@@ -2389,11 +2389,86 @@ private def runUsernsLoParityProbe (baseDir : System.FilePath) : IO Unit := do
      , { allocIds := #[], req := .bind 2 (.sameLocalOf 0 none) }
      , { allocIds := #[], req := .getsockname 2 }
      ]
+  let trConnectResetPurgesRx : Array SymStep :=
+    #[ { allocIds := #[0], req := .socket .inet6 .stream blk 0 }
+     , { allocIds := #[], req := .ioctl 0 (.setIfFlags defaultLoFlags) loIfname }
+     , { allocIds := #[1], req := .socket .inet .stream nb 0 }
+     , { allocIds := #[], req := .listen 0 0 }
+     , { allocIds := #[], req := .getsockname 0 }
+     , { allocIds := #[], req := .connect 1 (.crossFamilyTo 0) }
+     , { allocIds := #[], req := .getsockname 1 }
+     , { allocIds := #[2], req := .accept4 0 nb }
+     , { allocIds := #[], req := .sendto 2 (ByteArray.mk #[206]) {} }
+     , { allocIds := #[], req := .close 2 }
+     , { allocIds := #[], req := .sendto 1 (ByteArray.mk #[170]) {} }
+     , { allocIds := #[], req := .connect 1 (.tcpSelfConnect 1) }
+     , { allocIds := #[], req := .recvfrom 1 0 {} }
+     , { allocIds := #[], req := .recvfrom 1 1024 { dontwait := true } }
+     , { allocIds := #[], req := .recvmsg 1 1 }
+     , { allocIds := #[], req := .connect 1 (.crossFamilyTo 0) }
+     , { allocIds := #[3], req := .accept4 0 nb }
+     , { allocIds := #[], req := .recvfrom 1 16 { dontwait := true } }
+     , { allocIds := #[], req := .sendto 3 (ByteArray.mk #[99]) {} }
+     , { allocIds := #[], req := .recvfrom 1 16 { dontwait := true } }
+     ]
+  let trConnectResetSoErrorAndUnreadRst : Array SymStep :=
+    #[ { allocIds := #[0], req := .socket .inet6 .stream blk 0 }
+     , { allocIds := #[], req := .ioctl 0 (.setIfFlags defaultLoFlags) loIfname }
+     , { allocIds := #[], req := .listen 0 4 }
+     , { allocIds := #[], req := .getsockname 0 }
+     , { allocIds := #[1], req := .socket .inet .stream nb 0 }
+     , { allocIds := #[], req := .connect 1 (.crossFamilyTo 0) }
+     , { allocIds := #[], req := .getsockname 1 }
+     , { allocIds := #[2], req := .accept4 0 nb }
+     , { allocIds := #[], req := .sendto 2 (ByteArray.mk #[206]) {} }
+     , { allocIds := #[], req := .close 2 }
+     , { allocIds := #[], req := .sendto 1 (ByteArray.mk #[170]) {} }
+     , { allocIds := #[], req := .getsockopt 1 .error }
+     , { allocIds := #[], req := .recvfrom 1 16 { dontwait := true, peek := true } }
+     , { allocIds := #[], req := .connect 1 (.tcpSelfConnect 1) }
+     , { allocIds := #[], req := .recvfrom 1 0 {} }
+     , { allocIds := #[], req := .recvfrom 1 1024 { dontwait := true } }
+     , { allocIds := #[3], req := .socket .inet .stream nb 0 }
+     , { allocIds := #[], req := .connect 3 (.crossFamilyTo 0) }
+     , { allocIds := #[], req := .getsockname 3 }
+     , { allocIds := #[4], req := .accept4 0 nb }
+     , { allocIds := #[], req := .sendto 4 (ByteArray.mk #[206]) {} }
+     , { allocIds := #[], req := .sendto 3 (ByteArray.mk #[170]) {} }
+     , { allocIds := #[], req := .close 4 }
+     , { allocIds := #[], req := .connect 3 (.tcpSelfConnect 3) }
+     , { allocIds := #[], req := .recvfrom 3 0 {} }
+     , { allocIds := #[], req := .recvfrom 3 16 { dontwait := true } }
+     ]
+  let trConnectResetNegControls : Array SymStep :=
+    #[ { allocIds := #[0], req := .socket .inet6 .stream blk 0 }
+     , { allocIds := #[], req := .ioctl 0 (.setIfFlags defaultLoFlags) loIfname }
+     , { allocIds := #[], req := .listen 0 4 }
+     , { allocIds := #[], req := .getsockname 0 }
+     , { allocIds := #[1], req := .socket .inet .stream blk 0 }
+     , { allocIds := #[], req := .connect 1 (.crossFamilyTo 0) }
+     , { allocIds := #[], req := .getsockname 1 }
+     , { allocIds := #[2], req := .accept4 0 nb }
+     , { allocIds := #[], req := .sendto 2 (ByteArray.mk #[206]) {} }
+     , { allocIds := #[], req := .close 2 }
+     , { allocIds := #[], req := .sendto 1 (ByteArray.mk #[170]) {} }
+     , { allocIds := #[], req := .connect 1 (.tcpSelfConnect 1) }
+     , { allocIds := #[], req := .recvfrom 1 1024 { dontwait := true } }
+     , { allocIds := #[3], req := .socket .inet .stream nb 0 }
+     , { allocIds := #[], req := .connect 3 (.crossFamilyTo 0) }
+     , { allocIds := #[], req := .getsockname 3 }
+     , { allocIds := #[4], req := .accept4 0 nb }
+     , { allocIds := #[], req := .sendto 4 (ByteArray.mk #[206]) {} }
+     , { allocIds := #[], req := .close 4 }
+     , { allocIds := #[], req := .sendto 3 (ByteArray.mk #[170]) {} }
+     , { allocIds := #[], req := .shutdown 3 .rd }
+     , { allocIds := #[], req := .connect 3 (.tcpSelfConnect 3) }
+     , { allocIds := #[], req := .recvfrom 3 1024 { dontwait := true } }
+     ]
   let (rc, payload) ← SandboxEnv.runForked do
     match ← SandboxEnv.unshareExtra 2 with
     | .error e => return s!"UNSHARE_ERR:{e}".toUTF8
     | .ok () => pure ()
-    let traces := #[trV6MappedAndNativeLoNeverUp, trClosingShut, trTaintedV6LoDown, trCloseWaitRstEpipe, trSelfShutFlushRx, trMappedDirBcastGsn, trUdpAllHostsMcastLoopback, trV6SelfConnectLoDownShutSoError, trV6SelfConnectLoDownShutRdwrRxSoError, trPreShutCrossV6LoFlap, trPreShutV4LoFlap, trPreShutV6NativeLoFlap, trPreShutV6MappedToV4LoFlap, trPreShutOrphanCloseLoFlap, trPreShutOrphanShutLoFlap, trTaintedV6PreShutLisLoFlap, trV6SelfShutBindLoDown, trV6SelfShutBindPort0LoDown, trV6RefusedSynSentBindLoDown, trV4SelfShutBindLoDown, trV6MappedSelfShutBindLoDown, trV6MappedSelfShutBindPort0LoDown, trV6SelfShutBindMappedLoDown, trV6RefusedSynSentBindMappedLoDown, trV6PortLockedSelfShutBindLoDown, trV6ShutRdwrPeerRstBindLoDown]
+    let traces := #[trV6MappedAndNativeLoNeverUp, trClosingShut, trTaintedV6LoDown, trCloseWaitRstEpipe, trSelfShutFlushRx, trMappedDirBcastGsn, trUdpAllHostsMcastLoopback, trV6SelfConnectLoDownShutSoError, trV6SelfConnectLoDownShutRdwrRxSoError, trPreShutCrossV6LoFlap, trPreShutV4LoFlap, trPreShutV6NativeLoFlap, trPreShutV6MappedToV4LoFlap, trPreShutOrphanCloseLoFlap, trPreShutOrphanShutLoFlap, trTaintedV6PreShutLisLoFlap, trV6SelfShutBindLoDown, trV6SelfShutBindPort0LoDown, trV6RefusedSynSentBindLoDown, trV4SelfShutBindLoDown, trV6MappedSelfShutBindLoDown, trV6MappedSelfShutBindPort0LoDown, trV6SelfShutBindMappedLoDown, trV6RefusedSynSentBindMappedLoDown, trV6PortLockedSelfShutBindLoDown, trV6ShutRdwrPeerRstBindLoDown, trConnectResetPurgesRx, trConnectResetSoErrorAndUnreadRst, trConnectResetNegControls]
     for h : idx in [:traces.size] do
       let pDir := baseDir / s!"parity-{idx}"
       let r ← replayTrace pDir traces[idx] true allowedStep true false
