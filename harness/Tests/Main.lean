@@ -1,15 +1,8 @@
 import Core.Assumptions
 import LeanSwe
+import Tests.Common
 
 open LeanSwe
-
-private def smokeRegExp : IO Unit := do
-  match RegExp.findAll "[0-9]+" "a1b22" with
-  | .ok xs =>
-    if xs.map (·.matched) != #["1", "22"] then
-      throw (IO.userError s!"unexpected RegExp.findAll result: {repr xs}")
-  | .error e =>
-    throw (IO.userError s!"unexpected RegExp.findAll error: {e.message}")
 
 private def escapeWorkflowCmd (s : String) : String :=
   ((s.replace "%" "%25").replace "\r" "%0D").replace "\n" "%0A"
@@ -18,7 +11,7 @@ private def singleLine (s : String) : String :=
   (s.replace "\r" " ").replace "\n" " "
 
 private def allSuites : Array (String × String × IO (Option String)) := #[
-  ("RegExp", "LeanSwe/RegExp/RuntimeTests.lean", do RegExp.RuntimeTests.runAll; smokeRegExp; return none),
+  ("RegExp", "LeanSwe/RegExp/RuntimeTests.lean", do RegExp.RuntimeTests.runAll; Tests.Common.smokeRegExp; return none),
   ("Glob", "LeanSwe/Glob/RuntimeTests.lean", do Glob.RuntimeTests.runAll; return none),
   ("Fs.Raw", "LeanSwe/Fs/Raw/RuntimeTests.lean", do Fs.Raw.RuntimeTests.runAll; return none),
   ("Fs", "LeanSwe/Fs/RuntimeTests.lean", do Fs.RuntimeTests.runAll; return none),
@@ -100,10 +93,7 @@ private def parseMainOptions : List String → Except String MainOptions
     return { opts with nonce? := some nc }
   | "--suite" :: s :: rest => do
     let opts ← parseMainOptions rest
-    let parts := (s.splitOn ",").filterMap fun item =>
-      let t := item.trimAscii.toString
-      if t.isEmpty then none else some t
-    return { opts with suites := parts.toArray ++ opts.suites }
+    return { opts with suites := Tests.Common.parseSuiteCsv s ++ opts.suites }
   | flag :: _ => .error s!"UNKNOWN_FLAG: {flag}"
 
 private def nullOutStream : IO.FS.Stream where
@@ -133,85 +123,64 @@ private def sanitizeClosedStdio : IO Unit := do
 
 /-- Entrypoint running runtime tests for all `lean-swe` packages. -/
 def main (args : List String) : IO UInt32 := do
-  match args with
-  | "--envvars-raw-probe" :: rest =>
-    return (← EnvVars.Raw.RuntimeTests.probeMain rest)
-  | "--envvars-probe" :: rest =>
-    return (← EnvVars.RuntimeTests.probeMain rest)
-  | "--cmdline-probe" :: rest =>
-    return (← CmdLine.RuntimeTests.probeMain rest)
-  | "--slotpool-probe" :: rest =>
-    return (← SlotPool.RuntimeTests.probeMain rest)
-  | "--compress-probe" :: rest =>
-    return (← Compress.RuntimeTests.probeMain rest)
-  | "--process-probe" :: rest =>
-    return (← Process.RuntimeTests.probeMain rest)
-  | "--uuid-probe" :: rest =>
-    return (← Uuid.RuntimeTests.probeMain rest)
-  | "--time-probe" :: rest =>
-    return (← Time.RuntimeTests.probeMain rest)
-  | _ =>
-    sanitizeClosedStdio
-    let opts ← match parseMainOptions args with
-      | .ok o => pure o
-      | .error msg =>
-        IO.eprintln msg
-        return 2
-    match opts.logPath?, opts.nonce? with
-    | some _, none | none, some _ =>
-      IO.eprintln "INVALID_ARGS: --assump-log and --assump-nonce must be provided together"
+  if let some probe := Tests.Common.findRuntimeProbe? args then
+    return (← probe)
+  sanitizeClosedStdio
+  let opts ← match parseMainOptions args with
+    | .ok o => pure o
+    | .error msg =>
+      IO.eprintln msg
       return 2
-    | _, _ => pure ()
-    let knownNames := allSuites.map (fun (name, _, _) => name)
-    let filterAll := opts.suites.isEmpty || opts.suites.contains "all"
-    if !filterAll then
-      for s in opts.suites do
-        if !knownNames.contains s then
-          IO.eprintln s!"UNKNOWN_SUITE: {s}"
-          return 2
-    let unregistered ← findUnregisteredRuntimeTests
-    if !unregistered.isEmpty then
-      for path in unregistered do
-        IO.eprintln s!"UNREGISTERED_RUNTIMETESTS: {path}"
-      return 1
-    let inGitHubActions := (← IO.getEnv "GITHUB_ACTIONS") == some "true"
-    match opts.logPath?, opts.nonce? with
-    | some lp, some nc => Core.initAssumpLog lp nc
-    | _, _ => pure ()
-    let selectedSuites :=
-      if filterAll then allSuites
-      else allSuites.filter fun (name, _, _) => opts.suites.contains name
-    let mut passed : Nat := 0
-    let mut skipped : Array (String × String) := #[]
-    let mut failed : Array (String × String) := #[]
-    for (name, _, action) in selectedSuites do
-      try
-        match ← action with
-        | none =>
-          passed := passed + 1
-        | some reason =>
-          let cleanReason := singleLine reason
-          IO.println s!"SKIP: {name} ({cleanReason})"
-          if inGitHubActions then
-            let msg := escapeWorkflowCmd s!"{name}: {cleanReason}"
-            IO.println s!"::notice title=Skipped runtime test suite::{msg}"
-          skipped := skipped.push (name, cleanReason)
-      catch err =>
-        let cleanErr := singleLine err.toString
-        IO.eprintln s!"FAIL: {name} ({cleanErr})"
-        failed := failed.push (name, cleanErr)
-    Core.closeAssumpLog
-    IO.println s!"TEST_SUMMARY: passed={passed} skipped={skipped.size} failed={failed.size}"
-    for (name, reason) in skipped do
-      IO.println s!"SKIPPED_SUITE: {name} | {reason}"
-    for (name, msg) in failed do
-      IO.eprintln s!"FAILED_SUITE: {name} | {msg}"
-    let summaryLabel ← IO.getEnv "LEANSWE_SUMMARY_LABEL"
-    Core.appendStepSummary (formatStepSummary summaryLabel passed skipped failed)
-    if !failed.isEmpty then
-      return 1
-    if skipped.isEmpty then
-      IO.println "ALL_LEAN_SWE_TESTS_PASSED"
-    else
-      IO.println "LEAN_SWE_TESTS_PASSED_WITH_SKIPS"
-    return 0
+  match opts.logPath?, opts.nonce? with
+  | some _, none | none, some _ =>
+    IO.eprintln "INVALID_ARGS: --assump-log and --assump-nonce must be provided together"
+    return 2
+  | _, _ => pure ()
+  let selectedSuites ← match Tests.Common.selectNamedSuites allSuites (fun (name, _, _) => name) opts.suites with
+    | .ok xs => pure xs
+    | .error msg =>
+      IO.eprintln msg
+      return 2
+  let unregistered ← findUnregisteredRuntimeTests
+  if !unregistered.isEmpty then
+    for path in unregistered do
+      IO.eprintln s!"UNREGISTERED_RUNTIMETESTS: {path}"
+    return 1
+  let inGitHubActions := (← IO.getEnv "GITHUB_ACTIONS") == some "true"
+  match opts.logPath?, opts.nonce? with
+  | some lp, some nc => Core.initAssumpLog lp nc
+  | _, _ => pure ()
+  let mut passed : Nat := 0
+  let mut skipped : Array (String × String) := #[]
+  let mut failed : Array (String × String) := #[]
+  for (name, _, action) in selectedSuites do
+    try
+      match ← action with
+      | none =>
+        passed := passed + 1
+      | some reason =>
+        let cleanReason := singleLine reason
+        IO.println s!"SKIP: {name} ({cleanReason})"
+        if inGitHubActions then
+          let msg := escapeWorkflowCmd s!"{name}: {cleanReason}"
+          IO.println s!"::notice title=Skipped runtime test suite::{msg}"
+        skipped := skipped.push (name, cleanReason)
+    catch err =>
+      let cleanErr := singleLine err.toString
+      IO.eprintln s!"FAIL: {name} ({cleanErr})"
+      failed := failed.push (name, cleanErr)
+  Core.closeAssumpLog
+  IO.println s!"TEST_SUMMARY: passed={passed} skipped={skipped.size} failed={failed.size}"
+  for (name, reason) in skipped do
+    IO.println s!"SKIPPED_SUITE: {name} | {reason}"
+  for (name, msg) in failed do
+    IO.eprintln s!"FAILED_SUITE: {name} | {msg}"
+  let summaryLabel ← IO.getEnv "LEANSWE_SUMMARY_LABEL"
+  Core.appendStepSummary (formatStepSummary summaryLabel passed skipped failed)
+  if !failed.isEmpty then
+    return 1
+  if skipped.isEmpty then
+    IO.println "ALL_LEAN_SWE_TESTS_PASSED"
+  else
+    IO.println "LEAN_SWE_TESTS_PASSED_WITH_SKIPS"
+  return 0

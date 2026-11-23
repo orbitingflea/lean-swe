@@ -23,8 +23,8 @@ lean_lib Fuzz where
   globs := #[.submodules `Fuzz]
 
 lean_lib Tests where
-  roots := #[`Tests.PropCheck]
-  globs := #[.one `Tests.PropCheck]
+  roots := #[`Tests.PropCheck, `Tests.Common]
+  globs := #[.one `Tests.PropCheck, .one `Tests.Common, .submodules `Tests.Mutate]
 
 private def rootLeanSwePkg : FetchM Package := do
   let some pkg ← findPackageByName? `«lean-swe»
