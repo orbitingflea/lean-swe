@@ -639,10 +639,9 @@ private def runOsSubPass (oracle : PyOracle) (tracker : CoverageTracker) : IO Co
             if req.args.contains "-7" && req.args.contains "-T2" && req.maxOutputBytes == some 6144 then
               seenZstdCompOpts.modify (· + 1)
         if req.program == "xz" then
-          if req.args.contains "-d" && req.args.contains "-T1" &&
-             req.args.contains "--format=xz" && !req.args.contains "--memlimit-decompress=65MiB" then
+          if req.args == #["-d", "-c", "-q", "-T1", "--format=xz"] then
             seenXzDec.modify (· + 1)
-          else if req.args.contains "-3" && req.args.contains "-T2" && req.maxOutputBytes == some 6144 then
+          else if req.args == #["-c", "-q", "-3", "-T2"] && req.maxOutputBytes == some 6144 then
             seenXzCompOpts.modify (· + 1)
         if req.program == "gzip" && req.args.contains "-n" then
           seenGzipArgs.modify (· + 1)

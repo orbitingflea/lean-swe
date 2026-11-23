@@ -22,21 +22,25 @@ private def runCompressMutateExtra : IO Unit := do
   checkB "zstd decompress args"
     (Compress.Internal.mkDecompressArgs .zstd ==
       #["-d", "-c", "-q", "--no-progress", "--format=zstd"])
-  checkB "xz decompress args memlimit"
+  checkB "xz decompress args"
     (Compress.Internal.mkDecompressArgs .xz ==
       #["-d", "-c", "-q", "-T1", "--format=xz"])
   checkB "gzip decompress args"
     (Compress.Internal.mkDecompressArgs .gzip == #["-d", "-c", "-n"])
+  let gzMin20 := ByteArray.mk #[0x1F, 0x8B, 0x08, 0, 0, 0, 0, 0, 0x02, 0x03, 0x03, 0x00, 0, 0, 0, 0, 0, 0, 0, 0]
+  checkB "hasGzipHeader 19 vs 20 boundary"
+    (Compress.Internal.hasGzipHeader gzMin20 == true &&
+      Compress.Internal.hasGzipHeader (gzMin20.extract 0 19) == false)
   let cReq := Compress.Internal.mkCompressRequest .zstd { timeoutMs := 77, maxOutputBytes := 128 } ("ab".toUTF8)
   checkB "compress req slack+env"
     (cReq.program == "zstd" && cReq.cwd == none && cReq.env == Compress.codecSanitizedEnv &&
       cReq.inheritEnv == true && cReq.stdin == "ab".toUTF8 && cReq.timeoutMs == some 77 &&
-      cReq.maxOutputBytes == some (128 + Compress.stderrPipeSlack))
+      cReq.maxOutputBytes == some (128 + 4096))
   let dReq := Compress.Internal.mkDecompressRequest .xz { timeoutMs := 88, maxOutputBytes := 256 } ("cd".toUTF8)
   checkB "decompress req slack+env"
     (dReq.program == "xz" && dReq.cwd == none && dReq.env == Compress.codecSanitizedEnv &&
       dReq.inheritEnv == true && dReq.stdin == "cd".toUTF8 && dReq.timeoutMs == some 88 &&
-      dReq.maxOutputBytes == some (256 + Compress.stderrPipeSlack))
+      dReq.maxOutputBytes == some (256 + 4096))
   let vReq := Compress.Internal.mkToolVersionRequest .gzip
   checkB "version req env+limits"
     (vReq.program == "gzip" && vReq.args == #["--version"] && vReq.cwd == none &&
