@@ -479,7 +479,7 @@ class ImportHygieneUnitTests(unittest.TestCase):
 
 
 class ImportHygieneCliTests(unittest.TestCase):
-    """Git-integration CLI tests ensuring import lint runs unconditionally and via `--check-imports`."""
+    """Git-integration CLI tests ensuring import lint runs unconditionally."""
 
     def _run_cli(self, repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
         script = Path(__file__).resolve().parent / "check_spec_change.py"
@@ -522,10 +522,10 @@ class ImportHygieneCliTests(unittest.TestCase):
             self.assertIn("IMPORT_POLICY_VIOLATION: LeanSwe/Demo/Impl.lean:1:", res.stderr)
             self.assertIn("IMPORT_POLICY_VIOLATION: LeanSwe/Fresh/Types.lean:1:", res.stderr)
 
-            res_all = self._run_cli(repo, "--check-imports")
-            self.assertNotEqual(res_all.returncode, 0)
-            self.assertIn("LeanSwe/Demo/Impl.lean:1:", res_all.stderr)
-            self.assertIn("LeanSwe/Fresh/Types.lean:1:", res_all.stderr)
+            checked, violations = check_spec_change.check_repo_imports(repo)
+            self.assertEqual(checked, 3)
+            self.assertTrue(any("LeanSwe/Demo/Impl.lean:1:" in v for v in violations))
+            self.assertTrue(any("LeanSwe/Fresh/Types.lean:1:" in v for v in violations))
 
     def test_pr_mode_allows_intra_repo_import_all_submodules_deletes_and_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -542,9 +542,8 @@ class ImportHygieneCliTests(unittest.TestCase):
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertIn("IMPORT_POLICY_CHECK: ok (checked=1 errors=0)", res.stdout)
 
-            res_all = self._run_cli(repo, "--check-imports")
-            self.assertEqual(res_all.returncode, 0, res_all.stderr)
-            self.assertIn("IMPORT_POLICY_CHECK: ok (checked=2 errors=0)", res_all.stdout)
+            checked, violations = check_spec_change.check_repo_imports(repo)
+            self.assertEqual((checked, violations), (2, []))
 
     def test_rename_non_checked_out_head_and_missing_base(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -564,17 +563,8 @@ class ImportHygieneCliTests(unittest.TestCase):
             self.assertNotEqual(res_diff.returncode, 0)
             self.assertIn("IMPORT_POLICY_VIOLATION: Bad.lean:1:", res_diff.stderr)
 
-            res_both = self._run_cli(repo, "--base", base_sha, "--head", bad_sha, "--check-imports")
-            self.assertNotEqual(res_both.returncode, 0)
-            self.assertIn("IMPORT_POLICY_VIOLATION: Bad.lean:1:", res_both.stderr)
-
-            res_no_base = self._run_cli(repo)
-            self.assertEqual(res_no_base.returncode, 2)
-
-    def test_real_repo_cli_check_imports(self) -> None:
-        res = self._run_cli(REPO_ROOT, "--check-imports")
-        self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertIn("IMPORT_POLICY_CHECK: ok", res.stdout)
+            self.assertEqual(self._run_cli(repo).returncode, 2)
+            self.assertEqual(self._run_cli(repo, "--check-imports").returncode, 2)
 
 
 class SpecSubdirLockTests(unittest.TestCase):
