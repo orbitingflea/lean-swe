@@ -34,6 +34,7 @@ def sortStrings : List String → List String
 def mapFsError (err : FsError) : TempDirError :=
   let kind :=
     match err.kind with
+    | .invalidInput => TempDirErrorKind.invalidInput
     | .notFound => TempDirErrorKind.notFound
     | .alreadyExists => TempDirErrorKind.alreadyExists
     | .permissionDenied => TempDirErrorKind.permissionDenied
