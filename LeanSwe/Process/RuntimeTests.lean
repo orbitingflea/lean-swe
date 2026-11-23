@@ -22,15 +22,44 @@ private def assertErrKind {α : Type} (res : Except ProcessError α) (expected :
     if e.kind != expected || e.message == "" then
       throw (IO.userError s!"ASSERTION FAILED: {msg} (got {repr e}, expected {repr expected})")
 
-private def isPidDead (pidStr : String) : IO Bool := do
-  for _ in List.range 30 do
-    match ← Process.runCommand "/usr/bin/kill" #["-0", pidStr] with
-    | .ok r =>
-      if r.exitCode != 0 then
+private def assertThrows {α : Type} (action : IO α) (msg : String) : IO Unit := do
+  let threw ← try
+    let _ ← action
+    pure false
+  catch _ =>
+    pure true
+  assertTrue threw msg
+
+private def parsePositivePid (pidStr : String) : IO Int32 := do
+  match pidStr.toNat? with
+  | none =>
+    throw (IO.userError s!"ASSERTION FAILED: invalid PID string '{pidStr}'")
+  | some n =>
+    if n == 0 || n > LinuxSyscall.Process.MAX_LINUX_PID.toNat then
+      throw (IO.userError s!"ASSERTION FAILED: PID out of valid positive range: '{pidStr}'")
+    return (UInt32.ofNat n).toInt32
+
+private def isPidDeadWith
+    (killFn : Int32 → LinuxSyscall.Process.Signal → IO (Except LinuxSyscall.Errno Unit))
+    (attempts : Nat) (sleepMs : UInt32) (pidStr : String) : IO Bool := do
+  let pid ← parsePositivePid pidStr
+  for i in List.range attempts do
+    match ← killFn pid .sigzero with
+    | .ok () => pure ()
+    | .error e =>
+      if e == LinuxSyscall.Errno.ESRCH then
         return true
-    | .error _ => return true
-    IO.sleep 15
+      else if e == LinuxSyscall.Errno.EPERM then
+        pure ()
+      else
+        throw (IO.userError
+          s!"ASSERTION FAILED: kill({pid}, 0) failed unexpectedly with {LinuxSyscall.Errno.name e} ({e})")
+    if i + 1 < attempts && sleepMs > 0 then
+      IO.sleep sleepMs
   return false
+
+private def isPidDead (pidStr : String) : IO Bool :=
+  isPidDeadWith LinuxSyscall.Process.kill 30 15 pidStr
 
 private def withTempNonExecFile (k : System.FilePath → IO Unit) : IO Unit := do
   let tmpDir ← IO.FS.createTempDir
@@ -362,6 +391,56 @@ private def testLiveTimeoutPreservesPriorOutput : IO Unit := do
       s!"live timeout did not preserve output written prior to timeout: {repr err}"
   assertTrue ((← Process.activeProcessCount) == 0) "activeProcessCount == 0 after live timeout"
 
+/-- Unit and live OS checks verifying `isPidDead` / `isPidDeadWith` reject invalid PIDs, treat `.ok ()` and `EPERM` as alive, return `true` only on `ESRCH`, and throw on unexpected syscall errors. -/
+private def testIsPidDeadChecks : IO Unit := do
+  let invalidPids : List String := [
+    "", "not_a_pid", "0", "-1", "-42", "123abc", " 1", "1 ",
+    toString (LinuxSyscall.Process.MAX_LINUX_PID.toNat + 1)
+  ]
+  for bad in invalidPids do
+    let called ← IO.mkRef false
+    assertThrows (isPidDeadWith (fun _ _ => do called.set true; return .error LinuxSyscall.Errno.ESRCH) 1 0 bad)
+      s!"isPidDeadWith should reject invalid PID '{bad}'"
+    assertTrue (!(← called.get)) s!"isPidDeadWith should not invoke kill on invalid PID '{bad}'"
+    assertThrows (isPidDead bad) s!"isPidDead should reject invalid PID '{bad}'"
+
+  let okCalls ← IO.mkRef (0 : Nat)
+  let okDead ← isPidDeadWith (fun pid sig => do
+    assertTrue (pid == (42 : Int32) && sig == .sigzero) "isPidDeadWith passes parsed pid and sigzero (.ok)"
+    okCalls.modify (· + 1)
+    return .ok ()) 3 0 "42"
+  assertTrue (!okDead && (← okCalls.get) == 3) "isPidDeadWith treats .ok () as alive across all attempts"
+
+  let epermCalls ← IO.mkRef (0 : Nat)
+  let epermDead ← isPidDeadWith (fun pid sig => do
+    assertTrue (pid == (42 : Int32) && sig == .sigzero) "isPidDeadWith passes parsed pid and sigzero (EPERM)"
+    epermCalls.modify (· + 1)
+    return .error LinuxSyscall.Errno.EPERM) 3 0 "42"
+  assertTrue (!epermDead && (← epermCalls.get) == 3) "isPidDeadWith treats EPERM as alive across all attempts"
+
+  let transitionCalls ← IO.mkRef (0 : Nat)
+  let transitionDead ← isPidDeadWith (fun pid sig => do
+    assertTrue (pid == (42 : Int32) && sig == .sigzero) "isPidDeadWith passes parsed pid and sigzero (transition)"
+    let n ← transitionCalls.modifyGet fun c => (c, c + 1)
+    if n == 0 then return .ok ()
+    else if n == 1 then return .error LinuxSyscall.Errno.EPERM
+    else return .error LinuxSyscall.Errno.ESRCH) 5 0 "42"
+  assertTrue (transitionDead && (← transitionCalls.get) == 3) "isPidDeadWith returns true immediately on ESRCH"
+
+  for unexpected in [LinuxSyscall.Errno.EINVAL, LinuxSyscall.Errno.ENOSYS, LinuxSyscall.Errno.EACCES] do
+    let errCalls ← IO.mkRef (0 : Nat)
+    assertThrows (isPidDeadWith (fun _ _ => do errCalls.modify (· + 1); pure (.error unexpected)) 3 0 "42")
+      s!"isPidDeadWith should throw on unexpected errno {LinuxSyscall.Errno.name unexpected}"
+    assertTrue ((← errCalls.get) == 1)
+      s!"isPidDeadWith should fail immediately on unexpected errno {LinuxSyscall.Errno.name unexpected}"
+
+  let selfPid ← match ← LinuxSyscall.Process.getpid with
+    | .ok p => pure p
+    | .error e =>
+      throw (IO.userError s!"ASSERTION FAILED: getpid failed with {LinuxSyscall.Errno.name e} ({e})")
+  assertTrue (!(← isPidDead (toString selfPid)))
+    s!"isPidDead should report live self PID {selfPid} as not dead"
+
 /-- Execute end-to-end OS runtime verification tests for `LeanSwe.Process`. -/
 def runAll : IO Unit := do
   assertTrue ((← Process.activeProcessCount) == 0) "initial Process.activeProcessCount == 0"
@@ -369,6 +448,7 @@ def runAll : IO Unit := do
   Core.runRegisteredErrorTests registeredErrorTests
   testPartialDrainTimeoutPreservesChunks
   testLiveTimeoutPreservesPriorOutput
+  testIsPidDeadChecks
 
   let tmpDir ← IO.FS.createTempDir
   try
