@@ -145,9 +145,6 @@ private def checkPostHeaderLeadingImport (relPath : String) (bytes : ByteArray) 
       let lineNo := (fileMap.toPosition ⟨openPos - baseOffset⟩).line
       return some s!"{relPath}:{lineNo}: malformed module header: unterminated block comment"
     | .ok nextPos =>
-      if nextPos < bytes.size && bytes[nextPos]! == 0 then
-        let lineNo := (fileMap.toPosition ⟨nextPos - baseOffset⟩).line
-        return some s!"{relPath}:{lineNo}: disallowed NUL byte (0x00) at header boundary"
       if isBomAt bytes nextPos then
         let lineNo := (fileMap.toPosition ⟨nextPos - baseOffset⟩).line
         return some s!"{relPath}:{lineNo}: disallowed UTF-8 BOM (U+FEFF) at header boundary"
@@ -189,6 +186,18 @@ private def cleanMessageText (msg : Message) : IO String := do
   let raw := (← msg.data.toString).trimAscii.toString
   return raw.replace "\r\n" " " |>.replace "\n" " "
 
+private def firstNulLine? (bytes : ByteArray) (rawSrc : String) : Option Nat := Id.run do
+  if !rawSrc.contains "\x00" then
+    return none
+  let mut line : Nat := 1
+  for i in [0 : bytes.size] do
+    let b := bytes[i]!
+    if b == 0 then
+      return some line
+    if b == 10 then
+      line := line + 1
+  return some 1
+
 private def checkSourceWithBytes (relPath : String) (bytes : ByteArray) (rawSrc : String) : IO (Nat × Array String) := do
   let mut violations : Array String := #[]
   let bomBytes := countLeadingUtf8BomBytes bytes
@@ -200,6 +209,9 @@ private def checkSourceWithBytes (relPath : String) (bytes : ByteArray) (rawSrc 
   if hadBom then
     violations := violations.push
       s!"{relPath}:1: disallowed leading UTF-8 BOM (U+FEFF); Lean files must be UTF-8 without BOM"
+  if let some nulLine := firstNulLine? bytes rawSrc then
+    violations := violations.push
+      s!"{relPath}:{nulLine}: disallowed embedded NUL byte (0x00)"
 
   let inputCtx := Parser.mkInputContext src relPath
   let (stx, pst, msgs) ← Parser.parseHeader inputCtx
@@ -338,30 +350,51 @@ private structure CheckSummary where
   violations : Array String := #[]
   errors : Array String := #[]
 
-private def checkTargetPath (target : System.FilePath) : IO CheckSummary := do
-  let md? ← isRegularFileSymlinkSafe target
-  match md? with
+private def resolveTopLevelTarget (target : System.FilePath) :
+    IO (Except String (System.FilePath × IO.FS.FileType)) := do
+  match ← isRegularFileSymlinkSafe target with
   | none =>
-    return { errors := #[s!"target path not found or unreadable: {target}"] }
+    return .error s!"target path not found or unreadable: {target}"
   | some .symlink =>
-    return {}
-  | some .other =>
+    let resolved ← try
+      IO.FS.realPath target
+    catch e =>
+      return .error s!"failed to resolve target symlink '{target}': {e}"
+    match ← isRegularFileSymlinkSafe resolved with
+    | some .file => return .ok (resolved, .file)
+    | some .dir => return .ok (resolved, .dir)
+    | some .other => return .ok (resolved, .other)
+    | some .symlink =>
+      return .error s!"target symlink '{target}' did not resolve past symlink '{resolved}'"
+    | none =>
+      return .error s!"target symlink '{target}' resolves to missing or unreadable path '{resolved}'"
+  | some fileType =>
+    return .ok (target, fileType)
+
+private def checkTargetPath (target : System.FilePath) : IO CheckSummary := do
+  let (resolvedTarget, targetType) ← match ← resolveTopLevelTarget target with
+    | .ok resolved => pure resolved
+    | .error err => return { errors := #[err] }
+  match targetType with
+  | .symlink =>
+    return { errors := #[s!"target symlink '{target}' could not be resolved"] }
+  | .other =>
     return { errors := #[s!"target path is neither regular file nor directory: {target}"] }
-  | some .file =>
+  | .file =>
     let bytes ← try
-      IO.FS.readBinFile target
+      IO.FS.readBinFile resolvedTarget
     catch e =>
       return { errors := #[s!"failed to read '{target}': {e}"] }
     let (impCount, viols) ← checkFileBytes target.toString bytes
     return { checked := 1, imports := impCount, violations := viols }
-  | some .dir =>
-    let isGitRoot ← (target / ".git").pathExists
+  | .dir =>
+    let isGitRoot ← (resolvedTarget / ".git").pathExists
     let relPaths ← if isGitRoot then
-      match ← gitListLeanFiles target with
+      match ← gitListLeanFiles resolvedTarget with
       | .ok ps => pure ps
       | .error e => return { errors := #[e] }
     else
-      match ← walkDirLeanFiles target with
+      match ← walkDirLeanFiles resolvedTarget with
       | .ok ps => pure ps
       | .error e => return { errors := #[e] }
     let mut checked := 0
@@ -369,7 +402,7 @@ private def checkTargetPath (target : System.FilePath) : IO CheckSummary := do
     let mut violations : Array String := #[]
     let mut errors : Array String := #[]
     for relPath in relPaths do
-      let fullPath := target / relPath
+      let fullPath := resolvedTarget / relPath
       match ← isRegularFileSymlinkSafe fullPath with
       | some .file =>
         checked := checked + 1
@@ -588,7 +621,8 @@ private def runSelfTests : IO UInt32 := do
   let badUtf8Cases : Array (String × ByteArray) := #[
     ("invalid_ff_fe", ByteArray.mk #[0xFF, 0xFE, 0x0A]),
     ("truncated_multibyte", ByteArray.mk #[0xE2, 0x82]),
-    ("overlong_nul", ByteArray.mk #[0xC0, 0x80])
+    ("overlong_nul", ByteArray.mk #[0xC0, 0x80]),
+    ("nul_then_invalid_ff", ByteArray.mk #[0x00, 0xFF])
   ]
   for (label, bs) in badUtf8Cases do
     let (_, errs) ← checkFileBytes "Bad.lean" bs
@@ -600,7 +634,7 @@ private def runSelfTests : IO UInt32 := do
   let nulBytes := ByteArray.mk (#[0x00] ++ "import Mathlib\n".toUTF8.data)
   let (_, nulErrs) ← checkFileBytes "Nul.lean" nulBytes
   assertTrue "nul_byte_rejected"
-    (nulErrs.size == 1 && containsSubstr nulErrs[0]! "NUL byte")
+    (nulErrs.size == 1 && containsSubstr nulErrs[0]! "Nul.lean:1:" && containsSubstr nulErrs[0]! "NUL byte")
     s!"got {nulErrs}"
   checks := checks + 1
 
@@ -613,14 +647,62 @@ private def runSelfTests : IO UInt32 := do
 
   let nulMidImp := ByteArray.mk ("import ".toUTF8.data ++ #[0x00] ++ "Mathlib\n".toUTF8.data)
   let (_, nulMidErrs) ← checkFileBytes "Nul3.lean" nulMidImp
-  assertTrue "nul_mid_import_rejected" (!nulMidErrs.isEmpty) s!"got {nulMidErrs}"
+  assertTrue "nul_mid_import_rejected"
+    (nulMidErrs.any (containsSubstr · "NUL byte") &&
+      nulMidErrs.any (containsSubstr · "malformed module header"))
+    s!"got {nulMidErrs}"
   checks := checks + 1
 
   let nulInComment := ByteArray.mk ("/- a".toUTF8.data ++ #[0x00] ++ "b -/\nimport Mathlib\n".toUTF8.data)
   let (_, nulCmtErrs) ← checkFileBytes "Nul4.lean" nulInComment
-  assertTrue "nul_in_comment_catches_import"
-    (nulCmtErrs.size == 1 && containsSubstr nulCmtErrs[0]! "umbrella import 'Mathlib'")
+  assertTrue "nul_in_comment_catches_nul_and_import"
+    (nulCmtErrs.size == 2 &&
+      containsSubstr nulCmtErrs[0]! "Nul4.lean:1:" &&
+      containsSubstr nulCmtErrs[0]! "NUL byte" &&
+      containsSubstr nulCmtErrs[1]! "Nul4.lean:2:" &&
+      containsSubstr nulCmtErrs[1]! "umbrella import 'Mathlib'")
     s!"got {nulCmtErrs}"
+  checks := checks + 1
+
+  let nulBodyCases : Array (String × String × ByteArray) := #[
+    ("body", "NulBody.lean:3:",
+      ByteArray.mk ("import Core.Types\ndef x := 1\n".toUTF8.data ++ #[0x00] ++ "\ndef y := 2\n".toUTF8.data)),
+    ("block_comment_ok_import", "NulCmt.lean:1:",
+      ByteArray.mk ("/- a".toUTF8.data ++ #[0x00] ++ "b -/\nimport Core.Types\n".toUTF8.data)),
+    ("line_comment_ok_import", "NulLineCmt.lean:1:",
+      ByteArray.mk ("-- a".toUTF8.data ++ #[0x00] ++ "b\nimport Core.Types\n".toUTF8.data)),
+    ("string_literal", "NulStr.lean:2:",
+      ByteArray.mk ("import Core.Types\ndef s : String := \"".toUTF8.data ++ #[0x00] ++ "\"\n".toUTF8.data)),
+    ("trailing_eof", "NulEof.lean:2:",
+      ByteArray.mk ("import Core.Types\n".toUTF8.data ++ #[0x00])),
+    ("quoted_ident", "NulIdent.lean:1:",
+      ByteArray.mk ("import «foo".toUTF8.data ++ #[0x00] ++ "bar»\n".toUTF8.data)),
+    ("only_nul", "NulOnly.lean:1:",
+      ByteArray.mk #[0x00])
+  ]
+  for (label, expectedLoc, bs) in nulBodyCases do
+    let fileName := (expectedLoc.splitOn ":").head!
+    let (_, errs) ← checkFileBytes fileName bs
+    assertTrue s!"nul_embedded:{label}"
+      (errs.size == 1 && containsSubstr errs[0]! expectedLoc && containsSubstr errs[0]! "NUL byte")
+      s!"got {errs}"
+    checks := checks + 1
+
+  let nulAfterBomAndBad := ByteArray.mk
+    (#[0xEF, 0xBB, 0xBF] ++ "import Mathlib\ndef x := 1\n".toUTF8.data ++ #[0x00] ++ "\n".toUTF8.data)
+  let (_, nulBomErrs) ← checkFileBytes "NulBom.lean" nulAfterBomAndBad
+  assertTrue "nul_after_bom_and_bad_import"
+    (nulBomErrs.size == 3 &&
+      containsSubstr nulBomErrs[0]! "NulBom.lean:1:" && containsSubstr nulBomErrs[0]! "UTF-8 BOM" &&
+      containsSubstr nulBomErrs[1]! "NulBom.lean:3:" && containsSubstr nulBomErrs[1]! "NUL byte" &&
+      containsSubstr nulBomErrs[2]! "NulBom.lean:1:" && containsSubstr nulBomErrs[2]! "umbrella import 'Mathlib'")
+    s!"got {nulBomErrs}"
+  checks := checks + 1
+
+  let (_, nulSrcErrs) ← checkSourceText "NulSrc.lean" "import Core.Types\ndef x := 1\n\x00\ndef y := 2\n"
+  assertTrue "nul_in_body_via_source_text"
+    (nulSrcErrs.size == 1 && containsSubstr nulSrcErrs[0]! "NulSrc.lean:3:" && containsSubstr nulSrcErrs[0]! "NUL byte")
+    s!"got {nulSrcErrs}"
   checks := checks + 1
 
   let (_, bomAfterImpErrs) ← checkSourceText "Bom2.lean" "import Core.Types\n\uFEFFimport Mathlib\n"
@@ -743,6 +825,8 @@ private def runSelfTests : IO UInt32 := do
     writeFileCreatingParents (walkDir / "LeanSwe/PostFork/rust/target/Bad.lean") "import Mathlib\n"
     runCmdOk tmpRoot "ln" #["-s", (outsideDir / "BadOutside.lean").toString, (walkDir / "Link.lean").toString]
     runCmdOk tmpRoot "ln" #["-s", outsideDir.toString, (walkDir / "LinkDir").toString]
+    runCmdOk tmpRoot "ln" #["-s", ".", (walkDir / "SelfLoop").toString]
+    runCmdOk tmpRoot "ln" #["-s", (tmpRoot / "missing-inside.lean").toString, (walkDir / "BrokenInside.lean").toString]
 
     let plainOk ← checkTargetPath walkDir
     assertTrue "walk_skips_build_dirs_and_symlinks"
@@ -750,18 +834,56 @@ private def runSelfTests : IO UInt32 := do
       s!"checked={plainOk.checked} viols={plainOk.violations} errs={plainOk.errors}"
     checks := checks + 1
 
+    let plainLink := tmpRoot / "plain-link"
+    let plainLinkChain := tmpRoot / "plain-link-chain"
+    let plainRelLink := tmpRoot / "plain-rel-link"
+    runCmdOk tmpRoot "ln" #["-s", walkDir.toString, plainLink.toString]
+    runCmdOk tmpRoot "ln" #["-s", plainLink.toString, plainLinkChain.toString]
+    runCmdOk tmpRoot "ln" #["-s", "plain", plainRelLink.toString]
+
+    let plainLinkOk ← checkTargetPath plainLink
+    assertTrue "top_level_dir_symlink_clean_and_skips_internal_symlinks"
+      (plainLinkOk.checked == 2 && plainLinkOk.violations.isEmpty && plainLinkOk.errors.isEmpty)
+      s!"checked={plainLinkOk.checked} viols={plainLinkOk.violations} errs={plainLinkOk.errors}"
+    checks := checks + 1
+
+    let plainChainOk ← checkTargetPath plainLinkChain
+    assertTrue "top_level_dir_symlink_chain_clean"
+      (plainChainOk.checked == 2 && plainChainOk.violations.isEmpty && plainChainOk.errors.isEmpty)
+      s!"checked={plainChainOk.checked} viols={plainChainOk.violations} errs={plainChainOk.errors}"
+    checks := checks + 1
+
+    let plainRelOk ← checkTargetPath plainRelLink
+    assertTrue "top_level_dir_relative_symlink_clean"
+      (plainRelOk.checked == 2 && plainRelOk.violations.isEmpty && plainRelOk.errors.isEmpty)
+      s!"checked={plainRelOk.checked} viols={plainRelOk.violations} errs={plainRelOk.errors}"
+    checks := checks + 1
+
     writeFileCreatingParents (walkDir / "LeanSwe/Demo/Bad.lean") "import Mathlib\n"
     writeBinCreatingParents (walkDir / "LeanSwe/Demo/BadUtf8.lean") (ByteArray.mk #[0xFF, 0xFE])
     writeBinCreatingParents (walkDir / "LeanSwe/Demo/Bom.lean")
       (ByteArray.mk (#[0xEF, 0xBB, 0xBF] ++ "import Core.Types\n".toUTF8.data))
+    writeBinCreatingParents (walkDir / "LeanSwe/Demo/NulBody.lean")
+      (ByteArray.mk ("import Core.Types\ndef x := 1\n".toUTF8.data ++ #[0x00] ++ "\ndef y := 2\n".toUTF8.data))
     let plainBad ← checkTargetPath walkDir
-    assertTrue "walk_catches_bad_utf8_and_bom"
-      (plainBad.checked == 5 &&
-        plainBad.violations.size == 3 &&
+    assertTrue "walk_catches_bad_utf8_bom_and_nul"
+      (plainBad.checked == 6 &&
+        plainBad.violations.size == 4 &&
         plainBad.violations.any (containsSubstr · "LeanSwe/Demo/Bad.lean:1:") &&
         plainBad.violations.any (containsSubstr · "LeanSwe/Demo/BadUtf8.lean:1:") &&
-        plainBad.violations.any (containsSubstr · "LeanSwe/Demo/Bom.lean:1:"))
+        plainBad.violations.any (containsSubstr · "LeanSwe/Demo/Bom.lean:1:") &&
+        plainBad.violations.any (fun v => containsSubstr v "LeanSwe/Demo/NulBody.lean:3:" && containsSubstr v "NUL byte"))
       s!"checked={plainBad.checked} viols={plainBad.violations}"
+    checks := checks + 1
+
+    let plainLinkBad ← checkTargetPath plainLink
+    assertTrue "top_level_dir_symlink_catches_violations"
+      (plainLinkBad.checked == 6 &&
+        plainLinkBad.errors.isEmpty &&
+        plainLinkBad.violations.size == 4 &&
+        plainLinkBad.violations.any (containsSubstr · "LeanSwe/Demo/Bad.lean:1:") &&
+        plainLinkBad.violations.any (containsSubstr · "LeanSwe/Demo/NulBody.lean:3:"))
+      s!"checked={plainLinkBad.checked} viols={plainLinkBad.violations} errs={plainLinkBad.errors}"
     checks := checks + 1
 
     let singleOk ← checkTargetPath (walkDir / "Core/Types.lean")
@@ -769,6 +891,81 @@ private def runSelfTests : IO UInt32 := do
       (singleOk.checked == 1 && singleOk.violations.isEmpty && singleOk.errors.isEmpty)
       s!"checked={singleOk.checked} viols={singleOk.violations}"
     checks := checks + 1
+
+    let singleFileLinkOk := tmpRoot / "ok-file-link.lean"
+    let singleFileLinkRel := tmpRoot / "ok-file-rel.lean"
+    let singleFileLinkBad := tmpRoot / "bad-file-link.lean"
+    let singleFileLinkBadChain := tmpRoot / "bad-file-chain.lean"
+    runCmdOk tmpRoot "ln" #["-s", (walkDir / "Core/Types.lean").toString, singleFileLinkOk.toString]
+    runCmdOk tmpRoot "ln" #["-s", "plain/Core/Types.lean", singleFileLinkRel.toString]
+    runCmdOk tmpRoot "ln" #["-s", (outsideDir / "BadOutside.lean").toString, singleFileLinkBad.toString]
+    runCmdOk tmpRoot "ln" #["-s", singleFileLinkBad.toString, singleFileLinkBadChain.toString]
+
+    let symOkRes ← checkTargetPath singleFileLinkOk
+    assertTrue "top_level_file_symlink_ok"
+      (symOkRes.checked == 1 && symOkRes.violations.isEmpty && symOkRes.errors.isEmpty)
+      s!"checked={symOkRes.checked} viols={symOkRes.violations} errs={symOkRes.errors}"
+    checks := checks + 1
+
+    let symRelOkRes ← checkTargetPath singleFileLinkRel
+    assertTrue "top_level_file_relative_symlink_ok"
+      (symRelOkRes.checked == 1 && symRelOkRes.violations.isEmpty && symRelOkRes.errors.isEmpty)
+      s!"checked={symRelOkRes.checked} viols={symRelOkRes.violations} errs={symRelOkRes.errors}"
+    checks := checks + 1
+
+    let symBadRes ← checkTargetPath singleFileLinkBad
+    assertTrue "top_level_file_symlink_violation"
+      (symBadRes.checked == 1 &&
+        symBadRes.errors.isEmpty &&
+        symBadRes.violations.size == 1 &&
+        containsSubstr symBadRes.violations[0]! s!"{singleFileLinkBad}:1:" &&
+        containsSubstr symBadRes.violations[0]! "umbrella import 'Mathlib'")
+      s!"checked={symBadRes.checked} viols={symBadRes.violations} errs={symBadRes.errors}"
+    checks := checks + 1
+
+    let symBadChainRes ← checkTargetPath singleFileLinkBadChain
+    assertTrue "top_level_file_symlink_chain_violation"
+      (symBadChainRes.checked == 1 &&
+        symBadChainRes.errors.isEmpty &&
+        symBadChainRes.violations.size == 1 &&
+        containsSubstr symBadChainRes.violations[0]! "umbrella import 'Mathlib'")
+      s!"checked={symBadChainRes.checked} viols={symBadChainRes.violations} errs={symBadChainRes.errors}"
+    checks := checks + 1
+
+    let brokenLink := tmpRoot / "broken-link.lean"
+    runCmdOk tmpRoot "ln" #["-s", (tmpRoot / "does-not-exist.lean").toString, brokenLink.toString]
+    let brokenRes ← checkTargetPath brokenLink
+    assertTrue "top_level_broken_symlink_errors"
+      (brokenRes.checked == 0 &&
+        !brokenRes.errors.isEmpty &&
+        containsSubstr brokenRes.errors[0]! brokenLink.toString)
+      s!"checked={brokenRes.checked} errs={brokenRes.errors}"
+    checks := checks + 1
+
+    let brokenDirLink := tmpRoot / "broken-dir-link"
+    runCmdOk tmpRoot "ln" #["-s", (tmpRoot / "does-not-exist-dir").toString, brokenDirLink.toString]
+    let brokenDirRes ← checkTargetPath brokenDirLink
+    assertTrue "top_level_broken_dir_symlink_errors"
+      (brokenDirRes.checked == 0 && !brokenDirRes.errors.isEmpty)
+      s!"checked={brokenDirRes.checked} errs={brokenDirRes.errors}"
+    checks := checks + 1
+
+    let loopLink := tmpRoot / "loop-link"
+    runCmdOk tmpRoot "ln" #["-s", "loop-link", loopLink.toString]
+    let loopRes ← checkTargetPath loopLink
+    assertTrue "top_level_cyclic_symlink_errors"
+      (loopRes.checked == 0 && !loopRes.errors.isEmpty)
+      s!"checked={loopRes.checked} errs={loopRes.errors}"
+    checks := checks + 1
+
+    if ← (⟨"/dev/null"⟩ : System.FilePath).pathExists then
+      let devNullLink := tmpRoot / "devnull-link"
+      runCmdOk tmpRoot "ln" #["-s", "/dev/null", devNullLink.toString]
+      let devNullRes ← checkTargetPath devNullLink
+      assertTrue "top_level_non_regular_symlink_errors"
+        (devNullRes.checked == 0 && !devNullRes.errors.isEmpty)
+        s!"checked={devNullRes.checked} errs={devNullRes.errors}"
+      checks := checks + 1
 
     let missingRes ← checkTargetPath (tmpRoot / "nonexistent.lean")
     assertTrue "missing_target_errors" (!missingRes.errors.isEmpty) s!"errs={missingRes.errors}"
@@ -789,11 +986,20 @@ private def runSelfTests : IO UInt32 := do
 
     writeFileCreatingParents (repoDir / ".lake/packages/bad/Bad.lean") "import Mathlib\n"
     writeFileCreatingParents (repoDir / "harness/.lake/build/Bad.lean") "import Mathlib\n"
+    runCmdOk repoDir "ln" #["-s", (outsideDir / "BadOutside.lean").toString, (repoDir / "LeanSwe/Demo/UntrackedLink.lean").toString]
 
     let repoOk ← checkTargetPath repoDir
     assertTrue "git_repo_clean_and_symlink_skipped"
       (repoOk.checked == 2 && repoOk.violations.isEmpty && repoOk.errors.isEmpty)
       s!"checked={repoOk.checked} viols={repoOk.violations} errs={repoOk.errors}"
+    checks := checks + 1
+
+    let repoLink := tmpRoot / "repo-link"
+    runCmdOk tmpRoot "ln" #["-s", repoDir.toString, repoLink.toString]
+    let repoLinkOk ← checkTargetPath repoLink
+    assertTrue "top_level_git_repo_symlink_clean"
+      (repoLinkOk.checked == 2 && repoLinkOk.violations.isEmpty && repoLinkOk.errors.isEmpty)
+      s!"checked={repoLinkOk.checked} viols={repoLinkOk.violations} errs={repoLinkOk.errors}"
     checks := checks + 1
 
     writeFileCreatingParents (repoDir / "LeanSwe/Fresh/Types.lean")
@@ -809,6 +1015,16 @@ private def runSelfTests : IO UInt32 := do
         repoBad.violations.any (containsSubstr · "LeanSwe/Fresh/Types.lean:2:") &&
         repoBad.violations.any (containsSubstr · ".lake/packages/bad/Bad.lean:1:"))
       s!"checked={repoBad.checked} viols={repoBad.violations}"
+    checks := checks + 1
+
+    let repoLinkBad ← checkTargetPath repoLink
+    assertTrue "top_level_git_repo_symlink_catches_violations"
+      (repoLinkBad.checked == 4 &&
+        repoLinkBad.errors.isEmpty &&
+        repoLinkBad.violations.any (containsSubstr · "LeanSwe/Demo/Types.lean:1:") &&
+        repoLinkBad.violations.any (containsSubstr · "LeanSwe/Fresh/Types.lean:2:") &&
+        repoLinkBad.violations.any (containsSubstr · ".lake/packages/bad/Bad.lean:1:"))
+      s!"checked={repoLinkBad.checked} viols={repoLinkBad.violations} errs={repoLinkBad.errors}"
     checks := checks + 1
   finally
     removeDirForce tmpRoot
