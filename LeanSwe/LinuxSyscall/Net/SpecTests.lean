@@ -113,7 +113,8 @@ def test_net_flags_and_sockaddr_codecs
     encAddr (.ipv6 1 2 443 3 4) = (1, 0, 1, 2, 443, 3, 4, ByteArray.mk #[]) ∧
     encAddr (.unix (ByteArray.mk #[0, 97])) = (2, 0, 0, 0, 0, 0, 0, ByteArray.mk #[0, 97]))
   NondetTest.assert (IPPROTO_TCP = 6 ∧ IPPROTO_UDP = 17 ∧ IPPROTO_MAX = 263 ∧
-    UNIX_PATH_MAX = 108 ∧ IFNAMSIZ = 16 ∧ MAX_SCM_FDS = 32 ∧ MAX_READ_BYTES = 16777216)
+    UNIX_PATH_MAX = 108 ∧ IFNAMSIZ = 16 ∧ MAX_SCM_FDS = 32 ∧ MAX_READ_BYTES = 16777216 ∧
+    PF_UNIX = 1)
 
 /-- `bind`/`connect` reject invalid `AF_UNIX` paths, `sendmsg`/`recvmsg` reject `0` or `> 32` `SCM_RIGHTS` FD counts, and `ioctl` rejects embedded-NUL or `>= IFNAMSIZ` (`16`) interface names with `Errno.EINVAL` without mutating state. -/
 def test_net_ops_boundaryValidation_einval
@@ -145,7 +146,7 @@ def test_net_ops_boundaryValidation_einval
   NondetTest.assert ((ops.ioctl h op nulBytes).run s₀ = (.error Errno.EINVAL, s₀))
   NondetTest.assert ((ops.ioctl h op longIf).run s₀ = (.error Errno.EINVAL, s₀))
 
-/-- `socket` and `socketpair` enforce curated `Net` domain/type/protocol rules (`EINVAL` for `proto >= 263`, `ESOCKTNOSUPPORT` on `AF_INET`/`AF_INET6` `SOCK_SEQPACKET`, `EPROTONOSUPPORT` on unsupported/mismatched protocols including `262`/`132`/`1`/`58`/`115`, `EOPNOTSUPP`/`ESOCKTNOSUPPORT` on non-`AF_UNIX` `socketpair`). -/
+/-- `socket` and `socketpair` enforce curated `Net` domain/type/protocol rules (`EINVAL` for `proto >= 263`, `ESOCKTNOSUPPORT` on `AF_INET`/`AF_INET6` `SOCK_SEQPACKET`, `PF_UNIX` (`1`) accepted alongside `0` on `AF_UNIX`, `EPROTONOSUPPORT` on unsupported/mismatched protocols including `2` on `AF_UNIX` and `262`/`132`/`1`/`58`/`115`, `EOPNOTSUPP`/`ESOCKTNOSUPPORT` on non-`AF_UNIX` `socketpair`). -/
 def test_net_ops_socketAndSocketpairMatrix
     {S fd : Type} {runner} [NondetTest runner]
     (ops : NetOpsM (StateM S) fd) (s₀ : S) : runner Unit := do
@@ -186,6 +187,14 @@ def test_net_ops_socketAndSocketpairMatrix
     (ops.socketpair .inet6 .stream {}).run s₀ = (.error Errno.EOPNOTSUPP, s₀) ∧
     (ops.socketpair .inet .dgram {}).run s₀ = (.error Errno.EOPNOTSUPP, s₀) ∧
     (ops.socketpair .inet6 .dgram {}).run s₀ = (.error Errno.EOPNOTSUPP, s₀))
+  let (rOkUxS, _) := (ops.socket .unix .stream {} PF_UNIX).run s₀
+  let (rOkUxD, _) := (ops.socket .unix .dgram {} PF_UNIX).run s₀
+  let (rOkUxQ, _) := (ops.socket .unix .seqpacket {} PF_UNIX).run s₀
+  NondetTest.assert (
+    (∃ h, rOkUxS = .ok h) ∧ (∃ h, rOkUxD = .ok h) ∧ (∃ h, rOkUxQ = .ok h) ∧
+    (ops.socket .unix .stream {} 2).run s₀ = (.error Errno.EPROTONOSUPPORT, s₀) ∧
+    (ops.socket .unix .dgram {} 2).run s₀ = (.error Errno.EPROTONOSUPPORT, s₀) ∧
+    (ops.socket .unix .seqpacket {} 2).run s₀ = (.error Errno.EPROTONOSUPPORT, s₀))
 
 /-- IPv4 loopback `socket` -> `setsockopt(SO_REUSEADDR)` -> ephemeral `bind(port=0)` -> `getsockname` -> `listen` -> empty `accept4` (`EAGAIN`) -> duplicate listener `bind` (`EADDRINUSE`) -> non-blocking `connect` (`EINPROGRESS` -> `getsockopt SO_ERROR` -> `connect` completion -> `EISCONN`) -> `accept4` inherits `SO_REUSEADDR`. -/
 def test_net_ops_loopbackBindListenAndConnectLifecycle

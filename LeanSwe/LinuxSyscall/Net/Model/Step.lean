@@ -2364,7 +2364,7 @@ def stepShutdown (s : NetState) (hid : HandleId) (how : ShutHow) (obs? : Option 
           | none => s1
         emitUnit obs? s sOk [Errno.ENOTCONN]
 
-/-- Model transition for `Net.sendmsg`. -/
+/-- Model transition for `AF_UNIX` `SCM_RIGHTS` `Net.sendmsg` (rejects non-`AF_UNIX` sockets with `EOPNOTSUPP`, matching `check_unix_socket_domain` in `net_shim.c`). -/
 def stepSendmsg (s : NetState) (hid : HandleId) (fds : Array HandleId)
     (obs? : Option NetOutcome) : Option (NetOutcome × NetState) :=
   match lookupHandleFileId s hid with
@@ -2380,118 +2380,64 @@ def stepSendmsg (s : NetState) (hid : HandleId) (fds : Array HandleId)
       if d.domain != .unix then
         emitErr obs? s Errno.EOPNOTSUPP []
       else
-      let body : Option (NetOutcome × NetState) :=
-        if !isEstablished d then
-          let connPend := match d.proto with | .tcp _ _ (.connecting _) _ _ => true | _ => false
-          let selfRst := match d.proto with | .tcp _ _ _ (.closedAfterConn _ .selfShutRstPossible) _ => true | _ => false
-          let canon := if d.domain == .unix then Errno.ENOTCONN else Errno.EDESTADDRREQ
-          let alts := [Errno.ENOTCONN, Errno.EPIPE, Errno.EDESTADDRREQ] ++ (if connPend && d.nonblock then [Errno.EAGAIN] else []) ++ (if selfRst then [Errno.ECONNRESET] else [])
-          emitErr obs? s canon alts (fun e =>
+        match consumePendingSoError d with
+        | some (pendErr, dCleared) =>
+          let sCleared := setFileSocket s selfFid dCleared
+          match obs? with
+          | none => some (.err pendErr, sCleared)
+          | some (.err e) =>
+            if e == pendErr then some (.err e, sCleared)
+            else if d.shut.wr && e == Errno.EPIPE then some (.err e, sCleared)
+            else if isTransientNetErrno e then some (.err e, s)
+            else none
+          | _ => none
+        | none =>
+          if !isEstablished d then
+            emitErr obs? s Errno.ENOTCONN [Errno.EPIPE]
+          else if d.sockType == .seqpacket then
             match d.proto with
-            | .tcp fam bind ss (.closedAfterConn pa .selfShutRstPossible) taint =>
-              if e == Errno.ECONNRESET then setFileSocket s selfFid { d with proto := .tcp fam bind ss (.closedAfterConn pa .reset) taint } else s
-            | _ => autobindUdp s selfFid d)
-        else if d.domain == .unix && d.sockType == .seqpacket then
-          match d.proto with
-          | .unixStream isSeq bp (.connected pf? psw pwb true prGc) =>
-            let sClr := setFileSocket s selfFid { d with proto := .unixStream isSeq bp (.connected pf? psw pwb false false) }
-            let alts := if prGc then [Errno.EPIPE, Errno.ESHUTDOWN] else []
-            emitErr obs? s Errno.ECONNRESET alts (fun e => if e == Errno.ECONNRESET || prGc then sClr else s)
-          | _ =>
-            if d.shut.wr then emitErr obs? s Errno.EPIPE [Errno.ESHUTDOWN]
-            else
+            | .unixStream isSeq bp (.connected pf? psw pwb true prGc) =>
+              let sClr := setFileSocket s selfFid { d with proto := .unixStream isSeq bp (.connected pf? psw pwb false false) }
+              let alts := if prGc then [Errno.EPIPE, Errno.ESHUTDOWN] else []
+              emitErr obs? s Errno.ECONNRESET alts (fun e => if e == Errno.ECONNRESET || prGc then sClr else s)
+            | _ =>
+              if d.shut.wr then emitErr obs? s Errno.EPIPE [Errno.ESHUTDOWN]
+              else
+                match d.proto with
+                | .unixStream _ _ (.connected _ _ true _ _) => emitErr obs? s Errno.EPIPE [Errno.ECONNRESET]
+                | .unixStream _ _ (.connected (some peerFid) ..) =>
+                  let scmFids := fds.toList.filterMap (lookupHandleFileId s)
+                  let unit : RxUnit := { bytes := ByteArray.mk #[0], scm := scmFids, isScmDummy := true }
+                  emitUnit obs? s (deliverRx s peerFid unit) ((if d.nonblock then [Errno.EAGAIN] else []) ++ [Errno.ETOOMANYREFS])
+                | _ => emitErr obs? s Errno.EPIPE [Errno.ECONNRESET]
+          else if d.shut.wr then
+            emitErr obs? s Errno.EPIPE [Errno.ESHUTDOWN]
+          else
+            match disconnectUnixDgramIfPeerClosed s d with
+            | some dDisc =>
+              emitErr obs? s Errno.ECONNREFUSED []
+                (fun e => if isTransientNetErrno e then s else releaseRxScm (setFileSocket s selfFid dDisc) d.rxQueue)
+            | none =>
               match d.proto with
-              | .unixStream _ _ (.connected _ _ true _ _) => emitErr obs? s Errno.EPIPE [Errno.ECONNRESET]
-              | .unixStream _ _ (.connected (some peerFid) ..) =>
-                let scmFids := fds.toList.filterMap (lookupHandleFileId s)
-                let unit : RxUnit := { bytes := ByteArray.mk #[0], scm := scmFids, isScmDummy := true }
-                emitUnit obs? s (deliverRx s peerFid unit) ((if d.nonblock then [Errno.EAGAIN] else []) ++ [Errno.ETOOMANYREFS])
-              | _ => emitErr obs? s Errno.EPIPE [Errno.ECONNRESET]
-        else if d.shut.wr then
-          emitErr obs? s Errno.EPIPE [Errno.ESHUTDOWN]
-        else
-          match disconnectUnixDgramIfPeerClosed s d with
-          | some dDisc =>
-            emitErr obs? s Errno.ECONNREFUSED []
-              (fun e => if isTransientNetErrno e then s else releaseRxScm (setFileSocket s selfFid dDisc) d.rxQueue)
-          | none =>
-            match d.proto with
-            | .unixDgram _ (some (peerFid, _)) =>
-              match lookupFileSocket s peerFid with
-              | .ok pd =>
-                if isUnixDgramPeerBusy selfFid pd then emitErr obs? s Errno.EPERM
-                else if pd.shut.rd then emitErr obs? s Errno.EPIPE
+              | .unixDgram _ (some (peerFid, _)) =>
+                match lookupFileSocket s peerFid with
+                | .ok pd =>
+                  if isUnixDgramPeerBusy selfFid pd then emitErr obs? s Errno.EPERM
+                  else if pd.shut.rd then emitErr obs? s Errno.EPIPE
+                  else
+                    let scmFids := fds.toList.filterMap (lookupHandleFileId s)
+                    let unit : RxUnit := { bytes := ByteArray.mk #[0], scm := scmFids, isScmDummy := true }
+                    emitUnit obs? s (deliverRx s peerFid unit) ((if d.nonblock then [Errno.EAGAIN] else []) ++ [Errno.ETOOMANYREFS])
+                | .error _ => emitErr obs? s Errno.ECONNREFUSED
+              | .unixStream _ _ (.connected (some peerFid) _ pwb _ _) =>
+                if pwb then emitErr obs? s Errno.EPIPE [Errno.ECONNRESET]
                 else
                   let scmFids := fds.toList.filterMap (lookupHandleFileId s)
                   let unit : RxUnit := { bytes := ByteArray.mk #[0], scm := scmFids, isScmDummy := true }
                   emitUnit obs? s (deliverRx s peerFid unit) ((if d.nonblock then [Errno.EAGAIN] else []) ++ [Errno.ETOOMANYREFS])
-              | .error _ => emitErr obs? s Errno.ECONNREFUSED
-            | .unixStream _ _ (.connected (some peerFid) _ pwb _ _) =>
-              if pwb then emitErr obs? s Errno.EPIPE [Errno.ECONNRESET]
-              else
-                let scmFids := fds.toList.filterMap (lookupHandleFileId s)
-                let unit : RxUnit := { bytes := ByteArray.mk #[0], scm := scmFids, isScmDummy := true }
-                emitUnit obs? s (deliverRx s peerFid unit) ((if d.nonblock then [Errno.EAGAIN] else []) ++ [Errno.ETOOMANYREFS])
-            | .unixStream _ _ (.connected none ..) =>
-              emitErr obs? s Errno.EPIPE [Errno.ECONNRESET]
-            | .udp _ _ (some targetAddr) =>
-              let unit : RxUnit := { bytes := ByteArray.mk #[0], scm := [], isScmDummy := true }
-              let loDownAlts := udpLoDownAlts s d
-              match findBoundUdpPeer s d targetAddr with
-              | some (peerFid, _) =>
-                let loUp := match s.loState with | .up _ => true | _ => false
-                let sOk := if loUp then deliverRx s peerFid unit else s
-                emitUnit obs? s sOk (loDownAlts ++ (if d.nonblock then [Errno.EAGAIN] else []))
-              | none =>
-                let loUp := match s.loState with | .up _ => true | _ => false
-                let sOk :=
-                  if loUp && isLoopbackTargetAddr targetAddr then
-                    setFileSocket s selfFid { d with soError := Errno.ECONNREFUSED }
-                  else s
-                emitUnit obs? s sOk (loDownAlts ++ [Errno.ECONNREFUSED] ++ (if d.nonblock then [Errno.EAGAIN] else []))
-            | .tcp _ _ _ (.closeWait none pa true) _ =>
-              let sSent := applyTcpCleanCloseRst s selfFid d pa
-              match obs? with
-              | none => some (.unit, sSent)
-              | some .unit => some (.unit, sSent)
-              | some (.err e) =>
-                if e == Errno.EPIPE || e == Errno.ECONNRESET || (d.nonblock && e == Errno.EAGAIN) || isTransientNetErrno e then
-                  some (.err e, s)
-                else none
-              | some _ => none
-            | .tcp _ _ _ tcpState _ =>
-              match tcpState with
-              | .established pf? pa | .finWait pf? pa | .closeWait pf? pa false =>
-                let unit : RxUnit := { bytes := ByteArray.mk #[0], scm := [], isScmDummy := true }
-                let sOk := tcpDeliverOrPeerRst s selfFid d pf? pa unit
-                match obs? with
-                | some (.err e) =>
-                  if d.tcpCloseWaitRst && (e == Errno.EPIPE || e == Errno.ECONNRESET) then
-                    match d.proto with
-                    | .tcp fam bind ss (.closeWait _ pa2 _) taint =>
-                      some (.err e, setFileSocket s selfFid { d with tcpCloseWaitRst := false, tcpLastAck := false, proto := .tcp fam bind.unhashUnlocked ss (.closedAfterConn pa2 .reset) taint })
-                    | _ => none
-                  else emitUnit obs? s sOk (if d.nonblock then [Errno.EAGAIN] else [])
-                | _ => emitUnit obs? s sOk (if d.nonblock then [Errno.EAGAIN] else [])
-              | _ => emitErr obs? s Errno.EPIPE [Errno.ECONNRESET]
-            | _ => emitErr obs? s Errno.ENOTCONN
-      match consumePendingSoError d with
-      | some (pendErr, dCleared) =>
-        let isOptionalDgram := d.domain != .unix && d.sockType == .dgram && pendErr == Errno.ECONNREFUSED
-        let isConnPending := match d.proto with | .tcp _ _ (.connecting _) _ _ => true | _ => false
-        let sCleared := setFileSocket s selfFid dCleared
-        match obs? with
-        | none => some (.err pendErr, sCleared)
-        | some (.err e) =>
-          if isAsyncConnectErrno pendErr e d then some (.err e, sCleared)
-          else if d.shut.wr && e == Errno.EPIPE then
-            some (.err e, if d.tcpLoFinPending && pendErr != Errno.EPIPE then s else sCleared)
-          else if isConnPending && d.nonblock && e == Errno.EAGAIN then some (.err e, s)
-          else if isTransientNetErrno e then some (.err e, s)
-          else if isOptionalDgram then body
-          else none
-        | _ => if isOptionalDgram then body else none
-      | none => body
+              | .unixStream _ _ (.connected none ..) =>
+                emitErr obs? s Errno.EPIPE [Errno.ECONNRESET]
+              | _ => emitErr obs? s Errno.ENOTCONN
 
 /-- Model transition body helper for `Net.recvmsg`. -/
 def stepRecvmsgBody (s : NetState) (selfFid : FileId) (d : SockDesc)

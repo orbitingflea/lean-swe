@@ -154,21 +154,32 @@ private def assume_net_socket_domainTypeFlagsAbi : IO Unit := do
   assertErr "socket inet l2tp rejected" (← ops.socket .inet .dgram nbFlags 115) Errno.EPROTONOSUPPORT
   assertErr "socket inet dgram tcp rejected" (← ops.socket .inet .dgram nbFlags IPPROTO_TCP) Errno.EPROTONOSUPPORT
   assertErr "socket inet6 dgram tcp rejected" (← ops.socket .inet6 .dgram nbFlags IPPROTO_TCP) Errno.EPROTONOSUPPORT
-  assertErr "socket unix nonzero proto" (← ops.socket .unix .stream {} 1) Errno.EPROTONOSUPPORT
+  assertErr "socket unix stream proto=2 rejected" (← ops.socket .unix .stream {} 2) Errno.EPROTONOSUPPORT
+  assertErr "socket unix dgram proto=2 rejected" (← ops.socket .unix .dgram {} 2) Errno.EPROTONOSUPPORT
+  assertErr "socket unix seqpacket proto=2 rejected" (← ops.socket .unix .seqpacket {} 2) Errno.EPROTONOSUPPORT
   assertErr "socket unix dgram nonzero proto" (← ops.socket .unix .dgram {} IPPROTO_UDP) Errno.EPROTONOSUPPORT
   let s4 ← assertOk "socket inet4" (← ops.socket .inet .stream nbFlags 0)
   let s6 ← assertOk "socket inet6" (← ops.socket .inet6 .dgram { nonblock := false, cloexec := true } IPPROTO_UDP)
   let su ← assertOk "socket unix" (← ops.socket .unix .seqpacket { nonblock := true, cloexec := false } 0)
+  let suPfS ← assertOk "socket unix stream PF_UNIX" (← ops.socket .unix .stream {} PF_UNIX)
+  let suPfD ← assertOk "socket unix dgram PF_UNIX" (← ops.socket .unix .dgram nbFlags PF_UNIX)
+  let suPfQ ← assertOk "socket unix seqpacket PF_UNIX" (← ops.socket .unix .seqpacket { nonblock := true, cloexec := false } PF_UNIX)
   let s0 ← assertOk "socket plain" (← ops.socket .inet .stream { nonblock := false, cloexec := false } 0)
   try
     assertTrue "s4 cloexec+nonblock" ((← assertOk "s4 flags" (← rawNetGetFdFlags s4)) == 3)
     assertTrue "s6 cloexec only" ((← assertOk "s6 flags" (← rawNetGetFdFlags s6)) == 1)
     assertTrue "su nonblock only" ((← assertOk "su flags" (← rawNetGetFdFlags su)) == 2)
+    assertTrue "suPfS cloexec only" ((← assertOk "suPfS flags" (← rawNetGetFdFlags suPfS)) == 1)
+    assertTrue "suPfD cloexec+nonblock" ((← assertOk "suPfD flags" (← rawNetGetFdFlags suPfD)) == 3)
+    assertTrue "suPfQ nonblock only" ((← assertOk "suPfQ flags" (← rawNetGetFdFlags suPfQ)) == 2)
     assertTrue "s0 no flags" ((← assertOk "s0 flags" (← rawNetGetFdFlags s0)) == 0)
   finally
     safeClose s4
     safeClose s6
     safeClose su
+    safeClose suPfS
+    safeClose suPfD
+    safeClose suPfQ
     safeClose s0
 
 /-- Verify `socketpair(2)` `AF_UNIX` stream/dgram/seqpacket creation and non-Unix rejection. -/

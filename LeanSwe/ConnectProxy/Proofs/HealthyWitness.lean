@@ -1060,11 +1060,7 @@ private theorem stepSendmsg_spc (s : Net.NetState) (hid : Net.HandleId) (selfFid
   rw [hFid]; dsimp only
   simp only [hAllLive, Bool.false_eq_true, ↓reduceIte]
   rw [hSock]; dsimp only
-  have hTr : Net.isTransientNetErrno e = true := by rcases hSpc with rfl | rfl <;> decide
   have hNotPipe : (e == Errno.EPIPE) = false := by rcases hSpc with rfl | rfl <;> decide
-  have hNotAg : (e == Errno.EAGAIN) = false := by rcases hSpc with rfl | rfl <;> decide
-  have hNoRst : (e == Errno.EPIPE || e == Errno.ECONNRESET) = false := by
-    rcases hSpc with rfl | rfl <;> decide
   split
   · exact ⟨s, emitErr_spc s e _ _ _ none none hSpc (by rcases hSpc with rfl | rfl <;> decide)
       (by rcases hSpc with rfl | rfl <;> decide), rfl⟩
@@ -1073,19 +1069,18 @@ private theorem stepSendmsg_spc (s : Net.NetState) (hid : Net.HandleId) (selfFid
       rcases pair with ⟨pendErr, dClr⟩
       have hEqSo := consumePending_eq_soError d pendErr dClr hCons
       subst hEqSo
-      have hAsync := asyncConnect_false_of_chosen d d.soError e hSpc hNeSo
       refine ⟨s, ?_, rfl⟩
-      simp only [hAsync, hNotPipe, hNotAg, Bool.and_false, Bool.false_eq_true, ↓reduceIte]
+      have hTr : Net.isTransientNetErrno e = true := by rcases hSpc with rfl | rfl <;> decide
+      simp only [hNeSo, hNotPipe, Bool.and_false, Bool.false_eq_true, ↓reduceIte]
+      rw [hTr]; rfl
     | none =>
       refine ⟨s, ?_, rfl⟩
-      have hUld := udpLoDownAlts_not_spc s d e hSpc
       by_cases h1 : (!Net.isEstablished d) = true
       · simp only [h1, ↓reduceIte]
-        apply emitErr_spc s e _ _ _ _ _ hSpc
-        · split <;> (rcases hSpc with rfl | rfl <;> decide)
-        · repeat (first | apply list_not_contains_spc | split | (rcases hSpc with rfl | rfl <;> decide))
+        exact emitErr_spc s e _ _ _ _ _ hSpc (by rcases hSpc with rfl | rfl <;> decide)
+          (by rcases hSpc with rfl | rfl <;> decide)
       · simp only [h1, Bool.false_eq_true, ↓reduceIte]
-        by_cases h2 : (d.domain == .unix && d.sockType == .seqpacket) = true
+        by_cases h2 : (d.sockType == .seqpacket) = true
         · simp only [h2, ↓reduceIte]
           cases d.proto with
           | unixStream isSeq bp conn =>
@@ -1160,51 +1155,8 @@ private theorem stepSendmsg_spc (s : Net.NetState) (hid : Net.HandleId) (selfFid
                       apply list_not_contains_spc _ (by rcases hSpc with rfl | rfl <;> decide)
                       split <;> (rcases hSpc with rfl | rfl <;> decide)
                 | _ => exact emitErr_spc s e _ _ _ _ _ hSpc (by rcases hSpc with rfl | rfl <;> decide) rfl
-              | udp _ _ targetAddr? =>
-                cases targetAddr? with
-                | none => exact emitErr_spc s e _ _ _ _ _ hSpc (by rcases hSpc with rfl | rfl <;> decide) rfl
-                | some targetAddr =>
-                  dsimp only
-                  cases Net.findBoundUdpPeer s d targetAddr with
-                  | some _ =>
-                    dsimp only
-                    apply emitUnit_spc s _ e _ _ hSpc
-                    apply list_not_contains_spc hUld
-                    split <;> (rcases hSpc with rfl | rfl <;> decide)
-                  | none =>
-                    dsimp only
-                    apply emitUnit_spc s _ e _ _ hSpc
-                    apply list_not_contains_spc (list_not_contains_spc hUld (by rcases hSpc with rfl | rfl <;> decide))
-                    split <;> (rcases hSpc with rfl | rfl <;> decide)
-              | tcp _ _ _ tcpState _ =>
-                cases tcpState with
-                | established _ _ | finWait _ _ =>
-                  dsimp only
-                  rw [show (d.tcpCloseWaitRst && (e == Errno.EPIPE || e == Errno.ECONNRESET)) = false by
-                    rw [hNoRst, Bool.and_false]]
-                  simp only [Bool.false_eq_true, ↓reduceIte]
-                  apply emitUnit_spc s _ e _ _ hSpc
-                  split <;> (rcases hSpc with rfl | rfl <;> decide)
-                | closeWait pf? pa pcc =>
-                  cases pcc with
-                  | false =>
-                    dsimp only
-                    rw [show (d.tcpCloseWaitRst && (e == Errno.EPIPE || e == Errno.ECONNRESET)) = false by
-                      rw [hNoRst, Bool.and_false]]
-                    simp only [Bool.false_eq_true, ↓reduceIte]
-                    apply emitUnit_spc s _ e _ _ hSpc
-                    split <;> (rcases hSpc with rfl | rfl <;> decide)
-                  | true =>
-                    cases pf? with
-                    | none =>
-                      dsimp only
-                      simp only [hTr, Bool.or_true, ↓reduceIte]
-                    | some _ =>
-                      exact emitErr_spc s e _ _ _ _ _ hSpc (by rcases hSpc with rfl | rfl <;> decide)
-                        (by rcases hSpc with rfl | rfl <;> decide)
-                | _ =>
-                  exact emitErr_spc s e _ _ _ _ _ hSpc (by rcases hSpc with rfl | rfl <;> decide)
-                    (by rcases hSpc with rfl | rfl <;> decide)
+              | udp _ _ _ | tcp _ _ _ _ _ =>
+                exact emitErr_spc s e _ _ _ _ _ hSpc (by rcases hSpc with rfl | rfl <;> decide) rfl
 
 private theorem stepRecvmsgBody_spc (s : Net.NetState) (selfFid : Net.FileId) (d : Net.SockDesc)
     (maxFds : UInt32) (e : Errno)

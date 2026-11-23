@@ -277,10 +277,11 @@ private def genProto (r : Rng) (dom : SockDomain) (st : SockType) : UInt32 × Rn
   else if k == 5 then
     if dom != .unix && st == .dgram then (IPPROTO_UDP, r1)
     else if dom != .unix && st == .stream then (IPPROTO_TCP, r1)
+    else if dom == .unix then (PF_UNIX, r1)
     else (0, r1)
   else
     r1.pickArray
-      #[0, 1, IPPROTO_TCP, IPPROTO_UDP, 58, 115, 132, 262, IPPROTO_MAX, 999] 0
+      #[0, PF_UNIX, 2, IPPROTO_TCP, IPPROTO_UDP, 58, 115, 132, 262, IPPROTO_MAX, 999] 0
 
 private def largePayload65508 : ByteArray := ByteArray.mk (Array.replicate 65508 0x41)
 private def largePayload65528 : ByteArray := ByteArray.mk (Array.replicate 65528 0x42)

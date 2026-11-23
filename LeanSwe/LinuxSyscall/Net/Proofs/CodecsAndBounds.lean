@@ -152,7 +152,7 @@ theorem net_flags_and_sockaddr_codecs_allPass :
     ⟨rfl, rfl, rfl, rfl, rfl⟩, rfl, rfl, rfl, rfl,
     by unfold SockAddr.isValidTarget; simp [hasEmbeddedNul_eq_toList_any]; decide,
     rfl, rfl, rfl,
-    ⟨rfl, rfl⟩, ⟨rfl, rfl, rfl⟩, ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩, trivial⟩
+    ⟨rfl, rfl⟩, ⟨rfl, rfl, rfl⟩, ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩, trivial⟩
 
 private theorem isValidTarget_unix_empty :
     SockAddr.isValidTarget (.unix (ByteArray.mk #[])) = false := by

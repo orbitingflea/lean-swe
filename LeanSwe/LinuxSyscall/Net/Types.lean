@@ -91,6 +91,9 @@ def INADDR_LOOPBACK : UInt32 := 0x7f000001
 /-- Default / automatic socket protocol selector (`0`). -/
 def IPPROTO_IP : UInt32 := 0
 
+/-- Unix-domain socket protocol selector (`PF_UNIX`, `1`), accepted alongside `0` by Linux `unix_create` for `socket(AF_UNIX, type, proto)`. -/
+def PF_UNIX : UInt32 := 1
+
 /-- Transmission Control Protocol number (`IPPROTO_TCP`, `6`). -/
 def IPPROTO_TCP : UInt32 := 6
 
@@ -210,11 +213,11 @@ def SockAddr.isValidTarget : SockAddr → Bool
     path.size > 0 && path.size ≤ UNIX_PATH_MAX &&
       (path.data[0]? == some 0 || !hasEmbeddedNul path)
 
-/-- Validate `(domain, sockType, proto)` for curated `Net.socket` scope (`TCP`, `UDP`, and `AF_UNIX` only), returning exact Linux errno before C shim / kernel entry. -/
+/-- Validate `(domain, sockType, proto)` for curated `Net.socket` scope (`TCP`, `UDP`, and `AF_UNIX` accepting `0` or `PF_UNIX`), returning exact Linux errno before C shim / kernel entry. -/
 def validateSocketArgs (domain : SockDomain) (sockType : SockType) (proto : UInt32) : Option Errno :=
   match domain with
   | .unix =>
-    if proto == 0 then none
+    if proto == 0 || proto == PF_UNIX then none
     else some Errno.EPROTONOSUPPORT
   | .inet | .inet6 =>
     if proto >= IPPROTO_MAX then some Errno.EINVAL
@@ -391,7 +394,7 @@ structure NetOpsM (m : Type → Type) (fd : Type) where
   shutdown : fd → ShutHow → m (Except Errno Unit)
   /-- Pass `1..32` open file descriptors over an `AF_UNIX` socket via `SCM_RIGHTS` `sendmsg(2)` (rejects non-`AF_UNIX` sockets with `EOPNOTSUPP`). -/
   sendmsg : fd → Array fd → m (Except Errno Unit)
-  /-- Receive up to `maxFds` (`1..32`) file descriptors with `MSG_CMSG_CLOEXEC` via `SCM_RIGHTS` `recvmsg(2)` (`net_shim.c` sets `msg_controllen = CMSG_LEN(maxFds * sizeof(int))`, closes all received FDs on `MSG_CTRUNC`, and returns `EPROTO`). -/
+  /-- Receive up to `maxFds` (`1..32`) file descriptors with `MSG_CMSG_CLOEXEC` via `SCM_RIGHTS` `recvmsg(2)`. `net_shim.c` reads through a 1-byte dummy `iovec`, so each completed call consumes and discards 1 byte of stream payload (`SOCK_STREAM`, or `0` bytes at EOF) or truncates and discards one entire datagram/seqpacket message (`SOCK_DGRAM`/`SOCK_SEQPACKET`), matching `popRecvmsgUnit` in the model (`#[]` when no `SCM_RIGHTS` ancillary data is present). Sets `msg_controllen = CMSG_LEN(maxFds * sizeof(int))`, and on `MSG_CTRUNC` (or `> maxFds` received descriptors) closes all received FDs and returns `EPROTO`. -/
   recvmsg : fd → UInt32 → m (Except Errno (Array fd))
   /-- Execute a curated network interface `ioctl(2)` (`SIOCGIFFLAGS`, `SIOCSIFFLAGS`). -/
   ioctl : fd → NetIoctlOp → ByteArray → m (Except Errno UInt32)
