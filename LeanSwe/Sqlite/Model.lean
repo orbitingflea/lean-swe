@@ -6695,7 +6695,9 @@ def stmtInsertIpkTarget? (st : SqliteWorldState) (stmt : StmtHandle) : Option (S
 
 /-- Execute a curated SQL statement relationally against `actualRows` when `sql` is an `INSERT`,
     verifying exact explicit rowids, unused `Int64` auto-rowids (strictly increasing for
-    `AUTOINCREMENT`), bit-exact non-rowid columns, uniqueness, and foreign keys before advancing state. -/
+    `AUTOINCREMENT`), bit-exact non-rowid columns, uniqueness, and foreign keys before advancing state.
+    Returns `(.ok (), some stFin)` with the finalized post-state on witness acceptance, and
+    `(.error e, none)` without advancing state on any prepare, bind, witness-step, or finalize failure. -/
 def stepInsertRelational (st : SqliteWorldState) (db : DbHandle) (sql : String)
     (params : Array SqliteValue) (actualRows : List SqliteRow) :
     Except SqliteError Unit × Option SqliteWorldState :=
@@ -6705,9 +6707,7 @@ def stepInsertRelational (st : SqliteWorldState) (db : DbHandle) (sql : String)
   | .ok stmtH =>
     let (bindRes, stBind) := modelRawOps.bind stmtH params stPrep
     match bindRes with
-    | .error e =>
-      let _ := (modelRawOps.finalize stmtH stBind)
-      (.error e, none)
+    | .error e => (.error e, none)
     | .ok () =>
       let (stepRes, stStep?) := stepRawRelational stmtH (.ok .done) stBind (some actualRows)
       match stepRes, stStep? with

@@ -62,11 +62,13 @@ def RefinesStepFrom
     RefinesStep (mapS ∘ proj) pkgWf (execPkg (mkApi raw)) pkgAllowed
 
 /-- Compositional single-step refinement lifting a verified `RawOps` step contract to a
-    `[MonadFinally m]`-polymorphic `mkApi`-built `PkgApi` step contract. Instantiating `m := StateM W`
-    uses the canonical `MonadFinally (StateM W)` instance and proves single-step refinement along
-    normal/returning (`some a`) control flow, while `IO` exception-cleanup ordering is enforced
-    parametrically by the caller-provided `[MonadFinally m]` inside `mkApi` with no hidden
-    assumptions. -/
+    `[MonadFinally m]`-polymorphic `mkApi`-built `PkgApi` step contract. This proposition only
+    quantifies over `m := StateM W` (using the canonical `MonadFinally (StateM W)` instance, which
+    has no exceptions and always passes `some a` to finalizers), so it establishes single-step
+    refinement solely along normal/returning control flow. It does not require `mkApi` to call
+    `MonadFinally.tryFinally'` or prove exception-path (`none`) cleanup under `IO`; exception-safety
+    and `IO` cleanup ordering must be verified separately (for example via exception-capable monad
+    proofs, runtime/mutation tests, and inspection of `mkApi`'s `MonadFinally` usage). -/
 def RefinesStepFromFinally.{u₁, u₂}
     {RawS PkgS : Type}
     {RawOps : (Type → Type) → Type u₁}
