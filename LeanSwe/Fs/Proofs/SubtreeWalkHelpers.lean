@@ -4,7 +4,7 @@ import LeanSwe.Fs.Proofs.RawDirOps
 
 namespace LeanSwe.Fs.Proofs
 
-open Core LeanSwe.Fs LeanSwe.Fs.Raw LeanSwe.Fs.Model
+open Core LeanSwe.Fs LeanSwe.Fs.Model
 
 private theorem splitLastAux_eq_some_of_ne_nil (xs acc : List EntryName) (hNe : xs ≠ []) :
     ∃ pre leaf, Internal.splitLastAux xs acc = some (pre, leaf) ∧ acc.reverse ++ xs = pre ++ [leaf] := by
@@ -601,8 +601,17 @@ theorem walkDescendAuxM_cons {α : Type} (ops : RawDirOpsM (StateM VfsState))
         let rNext ← Internal.bracketCloseDirM ops cur (ops.openDirAt cur s)
         match rNext with
         | .error e => pure (.error e)
-        | .ok nextDh => Internal.walkDescendAuxM ops false nextDh rest act) :=
-  rfl
+        | .ok nextDh => Internal.walkDescendAuxM ops false nextDh rest act) := by
+  funext st
+  cases isRoot
+  · simp only [Internal.walkDescendAuxM, Internal.bracketCloseDirM, tryFinally',
+      Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure, Bool.false_eq_true, ↓reduceIte]
+    cases ops.openDirAt cur s st with
+    | mk r s1 => cases ops.closeDir cur s1; cases r <;> rfl
+  · simp only [Internal.walkDescendAuxM,
+      Bind.bind, bind, StateT.bind, Pure.pure, pure, ↓reduceIte]
+    cases ops.openDirAt cur s st with
+    | mk r _ => cases r <;> rfl
 
 private theorem state_bind_pure_eq {α β : Type} (x : StateM VfsState α) (f : α → StateM VfsState β) (st : VfsState) :
     (x >>= f) st = f (x st).1 (x st).2 := by
@@ -742,8 +751,61 @@ theorem mkdirWalkM_cons (ops : RawDirOpsM (StateM VfsState))
         let rNext ← Internal.bracketCloseDirM ops cur step
         match rNext with
         | .error e => pure (.error e)
-        | .ok nextDh => Internal.mkdirWalkM ops false nextDh rest act) :=
-  rfl
+        | .ok nextDh => Internal.mkdirWalkM ops false nextDh rest act) := by
+  funext st
+  cases isRoot
+  · simp only [Internal.mkdirWalkM, Internal.bracketCloseDirM, tryFinally',
+      Bind.bind, bind, StateT.bind, Pure.pure, pure, StateT.pure, Bool.false_eq_true, ↓reduceIte]
+    cases ops.openDirAt cur s st with
+    | mk r1 s1 =>
+      cases r1 with
+      | ok _ => cases ops.closeDir cur s1; rfl
+      | error e =>
+        by_cases hnf : (e.kind == FsErrorKind.notFound) = true
+        · simp only [hnf, ↓reduceIte, StateT.bind]
+          cases ops.createDirAt cur s s1 with
+          | mk rc s2 =>
+            dsimp only [Id.instMonad, Bind.bind, bind]
+            cases rc with
+            | ok u =>
+              cases u; dsimp only
+              cases ops.openDirAt cur s s2 with
+              | mk r2 s3 => cases ops.closeDir cur s3; cases r2 <;> rfl
+            | error ce =>
+              dsimp only
+              by_cases hae : (ce.kind == FsErrorKind.alreadyExists) = true
+              · simp only [hae, ↓reduceIte]
+                cases ops.openDirAt cur s s2 with
+                | mk r2 s3 => cases ops.closeDir cur s3; cases r2 <;> rfl
+              · simp only [hae, Bool.false_eq_true, ↓reduceIte]
+                cases ops.closeDir cur s2; rfl
+        · simp only [hnf, Bool.false_eq_true, ↓reduceIte]
+          cases ops.closeDir cur s1; rfl
+  · simp only [Internal.mkdirWalkM,
+      Bind.bind, bind, StateT.bind, Pure.pure, pure, ↓reduceIte]
+    cases ops.openDirAt cur s st with
+    | mk r1 s1 =>
+      cases r1 with
+      | ok _ => rfl
+      | error e =>
+        by_cases hnf : (e.kind == FsErrorKind.notFound) = true
+        · simp only [hnf, ↓reduceIte, StateT.bind]
+          cases ops.createDirAt cur s s1 with
+          | mk rc s2 =>
+            dsimp only [Id.instMonad, Bind.bind, bind]
+            cases rc with
+            | ok u =>
+              cases u; dsimp only
+              cases ops.openDirAt cur s s2 with
+              | mk r2 s3 => cases r2 <;> rfl
+            | error ce =>
+              dsimp only
+              by_cases hae : (ce.kind == FsErrorKind.alreadyExists) = true
+              · simp only [hae, ↓reduceIte]
+                cases ops.openDirAt cur s s2 with
+                | mk r2 s3 => cases r2 <;> rfl
+              · simp only [hae, Bool.false_eq_true, ↓reduceIte]; rfl
+        · simp only [hnf, Bool.false_eq_true, ↓reduceIte]; rfl
 
 /-- Refusing an ancestor symlink in `mkdirWalkM` yields `.invalidInput` and leaves `nodes`, `locks`, and `openDirs` clean. -/
 theorem mkdirWalkM_symlink_err (pre tail : List EntryName)

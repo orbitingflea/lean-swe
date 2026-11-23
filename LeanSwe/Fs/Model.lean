@@ -1,13 +1,391 @@
 import LeanSwe.Fs.Types
-import LeanSwe.Fs.Impl
-import LeanSwe.Fs.Raw.Impl
 
 namespace LeanSwe.Fs.Model
 
 open LeanSwe.Fs
-open LeanSwe.Fs.Raw
 
-/-- Builder function constructing a `SubtreeM m` from `RawDirOpsM m` and an open root `DirHandle`. -/
+/-- Virtual advisory lock handle used by the pure in-memory `VfsState` model. -/
+structure LockHandle where
+  /-- Model-local lock identifier in `VfsState.locks`. -/
+  handleId : Nat
+  /-- Target lock file path passed to `acquireLock`. -/
+  path : String
+  /-- Advisory lock mode held by this handle. -/
+  mode : LockMode
+  deriving Repr, BEq, DecidableEq
+
+/-- Virtual open directory handle used by the pure in-memory `VfsState` model. -/
+structure DirHandle where
+  /-- Model-local directory handle identifier in `VfsState.openDirs`. -/
+  handleId : Nat
+  /-- Root directory path passed when opening the handle. -/
+  rootPath : String
+  deriving Repr, BEq, DecidableEq
+
+/-- Minimal single-step non-lock filesystem primitives parameterized over effect monad `m`. -/
+structure NonLockFsOpsM (m : Type → Type) where
+  /-- Convert a raw OS error record into a normalized `FsError` with non-empty message. -/
+  mapRawError : FsRawError → FsError
+  /-- Inspect metadata (`follow = true` follows symlinks; `false` inspects links). -/
+  stat : Bool → String → m (Except FsError FileStat)
+  /-- List immediate entry names inside a directory. -/
+  readDir : String → m (Except FsError (Array String))
+  /-- Create a single directory, failing if parent is absent or path exists. -/
+  createDir : String → m (Except FsError Unit)
+  /-- Remove an empty directory. -/
+  removeDir : String → m (Except FsError Unit)
+  /-- Remove a file or symbolic link. -/
+  unlinkFile : String → m (Except FsError Unit)
+  /-- Read entire binary file (regular files only; rejects directories, FIFOs, and special files). -/
+  readBytes : String → m (Except FsError ByteArray)
+  /-- Write or overwrite binary file. -/
+  writeBytes : String → ByteArray → m (Except FsError Unit)
+  /-- Atomically create a new regular file without following symlinks (`O_CREAT | O_EXCL | O_NOFOLLOW`), failing with `.alreadyExists` if any entry exists. -/
+  createFileNew : String → ByteArray → m (Except FsError Unit)
+  /-- Append UTF-8 text to a file, creating it if absent. -/
+  appendText : String → String → m (Except FsError Unit)
+  /-- Rename or replace a file or directory. -/
+  rename : String → String → m (Except FsError Unit)
+  /-- Set POSIX permission mode bits (`chmod`). -/
+  chmod : String → Nat → m (Except FsError Unit)
+  /-- Create symbolic link `(target, linkPath)`. -/
+  symlink : String → String → m (Except FsError Unit)
+  /-- Read symbolic link target path. -/
+  readLink : String → m (Except FsError String)
+  /-- Resolve canonical absolute path. -/
+  realPath : String → m (Except FsError String)
+  /-- Return current working directory. -/
+  cwd : m (Except FsError String)
+  /-- Return a monotonic nonce for temporary sibling filenames. -/
+  monotonicNonce : m Nat
+
+/-- Minimal single-step filesystem primitives parameterized over effect monad `m` and lock handle type `lockH`. -/
+structure RawFsOpsM (m : Type → Type) (lockH : Type := LockHandle) extends NonLockFsOpsM m where
+  /-- Open `path` and acquire an advisory `flock(2)` lock (`shared` or `exclusive`). -/
+  acquireLock : String → LockMode → Bool → Bool → m (Except FsError lockH)
+  /-- Unlock and close an acquired lock handle. -/
+  releaseLock : lockH → m (Except FsError Unit)
+
+instance {m : Type → Type} {lockH : Type} : CoeOut (RawFsOpsM m lockH) (NonLockFsOpsM m) where
+  coe := RawFsOpsM.toNonLockFsOpsM
+
+/-- Concrete `IO` single-step filesystem primitive bundle. -/
+abbrev RawFsOps (lockH : Type := LockHandle) := RawFsOpsM IO lockH
+
+/-- Scoped single-step filesystem primitive bundle replacing raw `acquireLock`/`releaseLock` with bracketed lock operations (no exposed handle parameter). -/
+structure ScopedRawFsOpsM (m : Type → Type) extends NonLockFsOpsM m where
+  /-- Acquire an advisory `flock`, execute `action`, and release the lock on exit. -/
+  withFileLock : {α : Type} → String → LockMode → Bool → m (Except FsError α) → m (Except FsError α)
+  /-- Non-blocking `withFileLock`, returning `.ok none` without running `action` when blocked. -/
+  tryWithFileLock :
+    {α : Type} → String → LockMode → Bool → m (Except FsError α) → m (Except FsError (Option α))
+
+/-- Single-step directory-descriptor (`*at`) primitives refusing symlinks, parameterized over effect monad `m` and handle types `dirH`, `lockH`. -/
+structure RawDirOpsM (m : Type → Type) (dirH : Type := DirHandle) (lockH : Type := LockHandle) where
+  /-- Open `root` directory (`O_RDONLY | O_DIRECTORY | O_CLOEXEC`) returning a pinned directory handle. -/
+  openDir : String → m (Except FsError dirH)
+  /-- Open immediate child directory `name` under `dh` without following symlinks (`O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`). -/
+  openDirAt : dirH → EntryName → m (Except FsError dirH)
+  /-- Close an open directory handle. -/
+  closeDir : dirH → m (Except FsError Unit)
+  /-- Inspect metadata of the open directory referenced by `dh` (`fstat`). -/
+  fstatDir : dirH → m (Except FsError FileStat)
+  /-- Inspect metadata of immediate child `name` under `dh` without following symlinks (`fstatat(..., AT_SYMLINK_NOFOLLOW)`). -/
+  lstatAt : dirH → EntryName → m (Except FsError FileStat)
+  /-- List unsorted immediate entry names inside `dh` (excluding `.` and `..`). -/
+  readDirAt : dirH → m (Except FsError (Array EntryName))
+  /-- Create immediate child directory `name` under `dh` (`0o755` subject to process `umask`). -/
+  createDirAt : dirH → EntryName → m (Except FsError Unit)
+  /-- Read entire regular file `name` under `dh` without following symlinks or blocking on special files. -/
+  readRegularAt : dirH → EntryName → m (Except FsError ByteArray)
+  /-- Atomically create a new regular file `name` under `dh` (`O_CREAT | O_EXCL | O_NOFOLLOW`, `0o644` subject to process `umask`). -/
+  createFileAt : dirH → EntryName → ByteArray → m (Except FsError Unit)
+  /-- Atomically rename `(srcDh, srcName)` to `(dstDh, dstName)` (`renameat`). -/
+  renameAt : dirH → EntryName → dirH → EntryName → m (Except FsError Unit)
+  /-- Remove child entry (`isDir = false`) or empty child directory (`isDir = true` via `AT_REMOVEDIR`) under `dh`. -/
+  unlinkAt : dirH → EntryName → Bool → m (Except FsError Unit)
+  /-- Create symbolic link `(target, linkDh, linkName)` (`symlinkat`). -/
+  symlinkAt : String → dirH → EntryName → m (Except FsError Unit)
+  /-- Open child `name` under `dh` without following symlinks and acquire an advisory `flock(2)` lock (`0o644` if created). -/
+  acquireLockAt : dirH → EntryName → LockMode → Bool → Bool → m (Except FsError lockH)
+  /-- Unlock and close an acquired lock handle. -/
+  releaseLock : lockH → m (Except FsError Unit)
+  /-- Generate a short target-independent temporary sibling `EntryName` (such as `.t.<nonce>`). -/
+  freshTempName : m EntryName
+
+/-- Concrete `IO` single-step directory-descriptor primitive bundle. -/
+abbrev RawDirOps (dirH : Type := DirHandle) (lockH : Type := LockHandle) := RawDirOpsM IO dirH lockH
+
+/-- Return `msg` if non-empty, or `fallback` otherwise. -/
+def nonEmptyMsg (fallback msg : String) : String :=
+  if msg.isEmpty then fallback else msg
+
+/-- Classify common Linux `errno` codes used across `otherError` and `inappropriateType`. -/
+def classifyErrno (code : UInt32) (defaultKind : FsErrorKind) : FsErrorKind :=
+  match code.toNat with
+  | 1 | 13 | 30 => .permissionDenied
+  | 2 => .notFound
+  | 17 => .alreadyExists
+  | 20 => .notADirectory
+  | 21 => .isADirectory
+  | 22 | 36 => .invalidInput
+  | 38 | 95 => .unsupported
+  | 39 | 66 => .notEmpty
+  | _ => defaultKind
+
+/-- Pure specification of `mapRawError`, converting raw OS error records into normalized `FsError` values. -/
+def mapRawError : FsRawError → FsError
+  | .noFileOrDirectory path code detail =>
+    { kind := .notFound
+      path := some path
+      errnoCode := some code
+      message := nonEmptyMsg s!"no such file or directory: {path}" detail }
+  | .alreadyExists path? code detail =>
+    { kind := .alreadyExists
+      path := path?
+      errnoCode := some code
+      message := nonEmptyMsg "file or directory already exists" detail }
+  | .permissionDenied path? code detail =>
+    { kind := .permissionDenied
+      path := path?
+      errnoCode := some code
+      message := nonEmptyMsg "permission denied" detail }
+  | .inappropriateType path? code detail =>
+    { kind := classifyErrno code .ioError
+      path := path?
+      errnoCode := some code
+      message := nonEmptyMsg "inappropriate file type" detail }
+  | .invalidArgument path? code detail =>
+    { kind := .invalidInput
+      path := path?
+      errnoCode := some code
+      message := nonEmptyMsg "invalid argument" detail }
+  | .wouldBlock path? code detail =>
+    { kind := .wouldBlock
+      path := path?
+      errnoCode := some code
+      message := nonEmptyMsg "resource temporarily unavailable" detail }
+  | .unsupportedOperation code detail =>
+    { kind := .unsupported
+      path := none
+      errnoCode := some code
+      message := nonEmptyMsg "unsupported filesystem operation" detail }
+  | .otherError code detail =>
+    { kind := classifyErrno code .ioError
+      path := none
+      errnoCode := some code
+      message := nonEmptyMsg s!"os error {code}" detail }
+  | .userError detail =>
+    { kind := .ioError
+      path := none
+      errnoCode := none
+      message := nonEmptyMsg "filesystem error" detail }
+
+/-- Return `true` iff character list starts with `/`. -/
+def isAbsChars : List Char → Bool
+  | '/' :: _ => true
+  | _ => false
+
+/-- Return `true` iff `path` begins with `/`. -/
+def isAbsolute (path : String) : Bool :=
+  isAbsChars path.toList
+
+/-- Join two path strings using `/` (`Path.joinpath`). -/
+def join (base sub : String) : String :=
+  if isAbsolute sub then sub
+  else if base.isEmpty then sub
+  else if base.toList.getLast? == some '/' then base ++ sub
+  else base ++ "/" ++ sub
+
+/-- Join an array of path strings left-to-right. -/
+def joinMany (parts : Array String) : String :=
+  parts.foldl join ""
+
+/-- Split `cs` on `sep`, always producing a non-empty list of segments. -/
+def splitCharList (sep : Char) : List Char → List (List Char)
+  | [] => [[]]
+  | c :: cs =>
+    if c == sep then
+      [] :: splitCharList sep cs
+    else
+      match splitCharList sep cs with
+      | [] => [[c]]
+      | seg :: rest => (c :: seg) :: rest
+
+/-- Join path segments using `/` separators. -/
+def joinSlashChars : List (List Char) → List Char
+  | [] => []
+  | [s] => s
+  | s :: rest => s ++ '/' :: joinSlashChars rest
+
+/-- Collapse slash-separated path character segments lexically. -/
+def collapseChars (abs : Bool) : List (List Char) → List (List Char) → List (List Char)
+  | [], acc => acc.reverse
+  | seg :: rest, acc =>
+    if seg.isEmpty || seg == ['.'] then
+      collapseChars abs rest acc
+    else if seg == ['.', '.'] then
+      match acc with
+      | top :: tail =>
+        if top != ['.', '.'] then collapseChars abs rest tail
+        else collapseChars abs rest (if abs then acc else ['.', '.'] :: acc)
+      | [] =>
+        collapseChars abs rest (if abs then [] else [['.', '.']])
+    else
+      collapseChars abs rest (seg :: acc)
+
+/-- Lexically normalize `.` and `..` segments and redundant `/` (`os.path.normpath`). -/
+def normPath (path : String) : String :=
+  let cs := path.toList
+  let abs := isAbsChars cs
+  let parts := collapseChars abs (splitCharList '/' cs) []
+  if abs then
+    String.ofList ('/' :: joinSlashChars parts)
+  else if parts.isEmpty then
+    "."
+  else
+    String.ofList (joinSlashChars parts)
+
+/-- Split `path` into non-empty `/` character segments (excluding `.`), tracking `abs`. -/
+def cleanCharSegments (path : String) : Bool × List (List Char) :=
+  let cs := path.toList
+  (isAbsChars cs, (splitCharList '/' cs).filter fun s => !s.isEmpty && s != ['.'])
+
+/-- Split a non-empty list into `(init, last)`. -/
+def splitLastAux {α : Type} : List α → List α → Option (List α × α)
+  | [], _ => none
+  | [x], acc => some (acc.reverse, x)
+  | x :: rest, acc => splitLastAux rest (x :: acc)
+
+/-- Split `path` into optional parent string and final component name. -/
+def splitParentName (path : String) : Option (Option String × String) :=
+  let (abs, parts) := cleanCharSegments path
+  match splitLastAux parts [] with
+  | none => none
+  | some ([], last) =>
+    some (if abs then some "/" else none, String.ofList last)
+  | some (front, last) =>
+    let joined := joinSlashChars front
+    let prefixStr := String.ofList (if abs then '/' :: joined else joined)
+    some (some prefixStr, String.ofList last)
+
+/-- Return parent directory path, or `none` when at root or single bare component. -/
+def parent (path : String) : Option String :=
+  match splitParentName path with
+  | none => none
+  | some (p?, _) => p?
+
+/-- Return the final path component name, if any. -/
+def name (path : String) : Option String :=
+  match splitParentName path with
+  | none => none
+  | some (_, last) => some last
+
+/-- Split reversed character list at the first `.` separator. -/
+def splitRevAtDot : List Char → Option (List Char × List Char)
+  | [] => none
+  | '.' :: rest => some (rest, [])
+  | c :: rest =>
+    match splitRevAtDot rest with
+    | none => none
+    | some (pref, suf) => some (pref, c :: suf)
+
+/-- Split a single filename into `(stem, suffix)` using Python `Path` conventions. -/
+def splitNameSuffix (fileName : String) : String × String :=
+  match splitRevAtDot fileName.toList.reverse with
+  | none => (fileName, "")
+  | some (revPref, revSuf) =>
+    if revPref.isEmpty || revSuf.isEmpty || revPref.all (· == '.') then
+      (fileName, "")
+    else
+      (String.ofList revPref.reverse, "." ++ String.ofList revSuf.reverse)
+
+/-- Return the final path component without its last suffix (`Path.stem`). -/
+def stem (path : String) : Option String :=
+  (name path).map fun n => (splitNameSuffix n).1
+
+/-- Return the last `.ext` suffix of filename, or `""` when none (`Path.suffix`). -/
+def suffix (path : String) : String :=
+  match name path with
+  | none => ""
+  | some n => (splitNameSuffix n).2
+
+/-- Return all `.ext` suffixes of filename (`Path.suffixes`). -/
+def suffixes (path : String) : Array String :=
+  match name path with
+  | none => #[]
+  | some n =>
+    match n.toList.reverse with
+    | '.' :: _ => #[]
+    | _ =>
+      let stripped := n.toList.dropWhile (· == '.')
+      match splitCharList '.' stripped with
+      | [] | [_] => #[]
+      | _ :: exts => (exts.map fun cs => "." ++ String.ofList cs).toArray
+
+/-- Return `true` iff `s` is a valid non-empty single path segment name. -/
+def validFileName (s : String) : Bool :=
+  let cs := s.toList
+  !cs.isEmpty && !('/' ∈ cs) && cs != ['.'] && cs != ['.', '.']
+
+/-- Return `true` iff `s` is empty or a valid non-empty suffix starting with `.`. -/
+def validSuffix (s : String) : Bool :=
+  match s.toList with
+  | [] => true
+  | '.' :: rest => !rest.isEmpty && !('/' ∈ rest) && rest != ['.']
+  | _ => false
+
+/-- Join optional normalized parent prefix with a valid filename `newName`. -/
+def joinParentName : Option String → String → String
+  | none, newName => newName
+  | some "/", newName => "/" ++ newName
+  | some par, newName => par ++ "/" ++ newName
+
+/-- Replace the final path component (`Path.with_name`). -/
+def withName (path newName : String) : Except FsError String :=
+  if !validFileName newName then
+    .error { kind := .invalidInput, path := some path, message := s!"invalid filename: '{newName}'" }
+  else
+    match splitParentName path with
+    | none =>
+      .error { kind := .invalidInput, path := some path, message := "path has an empty name" }
+    | some (par?, _) => .ok (joinParentName par? newName)
+
+/-- Replace or strip the last suffix (`Path.with_suffix`). -/
+def withSuffix (path newSuffix : String) : Except FsError String :=
+  if !validSuffix newSuffix then
+    .error { kind := .invalidInput, path := some path, message := s!"invalid suffix: '{newSuffix}'" }
+  else
+    match splitParentName path with
+    | none =>
+      .error { kind := .invalidInput, path := some path, message := "path has an empty name" }
+    | some (_, oldName) =>
+      let (stemPart, _) := splitNameSuffix oldName
+      if stemPart.isEmpty || stemPart.toList.all (· == '.') then
+        .error { kind := .invalidInput, path := some path, message := "cannot change suffix of dot-only name" }
+      else
+        withName path (stemPart ++ newSuffix)
+
+private def stripPrefixParts : List (List Char) → List (List Char) → Option (List (List Char))
+  | [], rest => some rest
+  | b :: bs, p :: ps =>
+    if b == p then stripPrefixParts bs ps else none
+  | _ :: _, [] => none
+
+/-- Compute lexical path of `path` relative to `base` (`Path.relative_to`). -/
+def relativeTo (path base : String) : Except FsError String :=
+  let (absP, pParts) := cleanCharSegments (normPath path)
+  let (absB, bParts) := cleanCharSegments (normPath base)
+  if absP != absB then
+    .error { kind := .invalidInput, path := some path, message := s!"'{path}' is not in the subpath of '{base}'" }
+  else
+    match stripPrefixParts bParts pParts with
+    | none =>
+      .error { kind := .invalidInput, path := some path, message := s!"'{path}' is not in the subpath of '{base}'" }
+    | some [] => .ok "."
+    | some rel => .ok (String.ofList (joinSlashChars rel))
+
+/-- Builder function constructing a `SubtreeM m` from `RawDirOpsM m` and an open root handle. -/
 abbrev SubtreeBuilder (m : Type → Type) :=
   RawDirOpsM m → DirHandle → SubtreeM m
 
@@ -99,19 +477,19 @@ structure VfsState where
 
 /-- Normalize `path` against `cwd` into a canonical absolute path string. -/
 def vfsAbsNorm (cwd path : String) : String :=
-  Internal.normPath (if Internal.isAbsolute path then path else Internal.join cwd path)
+  normPath (if isAbsolute path then path else join cwd path)
 
 /-- Split an absolute normalized path into non-empty path segments. -/
 def vfsSplitSegs (absNorm : String) : List String :=
   match absNorm.toList with
   | '/' :: rest =>
-    (Internal.splitCharList '/' rest).filterMap fun cs =>
+    (splitCharList '/' rest).filterMap fun cs =>
       if cs.isEmpty then none else some (String.ofList cs)
   | _ => []
 
 /-- Return `true` iff `k` is a normalized absolute path string. -/
 def isCanonPath (k : String) : Bool :=
-  Internal.isAbsolute k && (Internal.normPath k == k)
+  isAbsolute k && (normPath k == k)
 
 /-- Look up a canonical path in `VfsTree`. -/
 def vfsTreeNodes (t : VfsTree) (k : String) : Option VfsNode :=
@@ -142,8 +520,8 @@ def vfsResolveSegs (nodes : String → Option VfsNode) (cur : String)
       | none => .error { kind := .notFound, path := some cur, message := s!"no such file or directory: {cur}" }
       | some (.symlink target m) =>
         if followLast then
-          let par := (Internal.parent cur).getD "/"
-          let nextAbs := Internal.normPath (if Internal.isAbsolute target then target else Internal.join par target)
+          let par := (parent cur).getD "/"
+          let nextAbs := normPath (if isAbsolute target then target else join par target)
           vfsResolveSegs nodes "/" (vfsSplitSegs nextAbs) true fuel
         else
           .ok (cur, .symlink target m)
@@ -157,8 +535,8 @@ def vfsResolveSegs (nodes : String → Option VfsNode) (cur : String)
         else
           vfsResolveSegs nodes (vfsChildPath cur seg) rest followLast fuel
       | some (.symlink target _) =>
-        let par := (Internal.parent cur).getD "/"
-        let nextAbs := Internal.normPath (if Internal.isAbsolute target then target else Internal.join par target)
+        let par := (parent cur).getD "/"
+        let nextAbs := normPath (if isAbsolute target then target else join par target)
         vfsResolveSegs nodes "/" (vfsSplitSegs nextAbs ++ seg :: rest) followLast fuel
       | some (.file _ _) =>
         .error { kind := .notADirectory, path := some cur, message := s!"not a directory: {cur}" }
@@ -196,7 +574,7 @@ def vfsCreateDirPure (st : VfsState) (path : String) : Except FsError Unit × Vf
     if e.kind != .notFound then
       (.error e, st)
     else
-      match Internal.splitLastAux (vfsSplitSegs abs) [] with
+      match splitLastAux (vfsSplitSegs abs) [] with
       | none =>
         (.error { kind := .notFound, path := some path, message := s!"invalid path: {path}" }, st)
       | some (parSegs, lastSeg) =>
@@ -239,7 +617,7 @@ def vfsReadDirPure (st : VfsState) (path : String) : Except FsError (Array Strin
 def vfsWriteBytesPure (st : VfsState) (path : String) (bs : ByteArray) :
     Except FsError Unit × VfsState :=
   let abs := vfsAbsNorm st.cwd path
-  match Internal.splitLastAux (vfsSplitSegs abs) [] with
+  match splitLastAux (vfsSplitSegs abs) [] with
   | none => (.error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }, st)
   | some (parSegs, lastSeg) =>
     match vfsResolveSegs st.nodes "/" parSegs true 512 with
@@ -302,7 +680,7 @@ def vfsAcquireLockPure (st : VfsState) (path : String) (mode : LockMode)
       else if !createIfMissing then
         (.error e, st)
       else
-        match Internal.splitLastAux (vfsSplitSegs abs) [] with
+        match splitLastAux (vfsSplitSegs abs) [] with
         | none =>
           (.error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }, st)
         | some (parSegs, lastSeg) =>
@@ -367,7 +745,7 @@ def vfsCreateFileNewPure (st : VfsState) (path : String) (bs : ByteArray) :
       if e.kind != .notFound then
         (.error e, st)
       else
-        match Internal.splitLastAux (vfsSplitSegs abs) [] with
+        match splitLastAux (vfsSplitSegs abs) [] with
         | none =>
           (.error { kind := .alreadyExists, path := some path, message := s!"already exists: {path}" }, st)
         | some (parSegs, lastSeg) =>
@@ -396,7 +774,7 @@ def vfsRenamePure (st : VfsState) (src dst : String) : Except FsError Unit × Vf
     match vfsResolveSegs st.nodes "/" (vfsSplitSegs srcAbs) false 1024 with
     | .error e => (.error e, st)
     | .ok (srcCanon, srcNode) =>
-      match Internal.splitLastAux (vfsSplitSegs dstAbs) [] with
+      match splitLastAux (vfsSplitSegs dstAbs) [] with
       | none => (.error { kind := .isADirectory, path := some dst, message := s!"is a directory: {dst}" }, st)
       | some (dstParSegs, dstLastSeg) =>
         match vfsResolveSegs st.nodes "/" dstParSegs true 512 with
@@ -423,7 +801,7 @@ def vfsRenamePure (st : VfsState) (src dst : String) : Except FsError Unit × Vf
 
 /-- Pure single-step `RawFsOpsM (StateM VfsState)` backed by `VfsState`. -/
 def vfsOps : RawFsOpsM (StateM VfsState) :=
-  { mapRawError := Fs.Raw.Internal.mapRawError
+  { mapRawError := mapRawError
     stat := fun follow path st => (vfsStatPure st follow path, st)
     readDir := fun path st => (vfsReadDirPure st path, st)
     createDir := fun path st => vfsCreateDirPure st path
@@ -485,9 +863,99 @@ def vfsOps : RawFsOpsM (StateM VfsState) :=
       vfsAcquireLockPure st path mode createIfMissing nonBlocking
     releaseLock := fun handle st => vfsReleaseLockPure st handle }
 
-/-- Generic `FsApiM (StateM VfsState)` built directly from `Internal.mkApiM vfsOps`. -/
+/-- Reference ambient `FsApiM (StateM VfsState)` built directly from `vfsOps` without importing `Impl`. -/
 def vfsApi : FsApiM (StateM VfsState) :=
-  Internal.mkApiM vfsOps
+  { join := join
+    joinMany := joinMany
+    normPath := normPath
+    parent := parent
+    name := name
+    stem := stem
+    suffix := suffix
+    suffixes := suffixes
+    withName := withName
+    withSuffix := withSuffix
+    isAbsolute := isAbsolute
+    relativeTo := relativeTo
+    mapRawError := vfsOps.mapRawError
+    readText := fun p => do
+      match ← vfsOps.readBytes p with
+      | .error e => return .error e
+      | .ok bs =>
+        match String.fromUTF8? bs with
+        | some s => return .ok s
+        | none => return .error { kind := .invalidInput, path := some p, message := s!"invalid UTF-8 in file: {p}" }
+    writeText := fun p c => vfsOps.writeBytes p c.toUTF8
+    appendText := vfsOps.appendText
+    readBytes := vfsOps.readBytes
+    writeBytes := vfsOps.writeBytes
+    atomicWriteBytes := fun p bs => vfsOps.writeBytes p bs
+    atomicWriteText := fun p c => vfsOps.writeBytes p c.toUTF8
+    touch := fun p _ => vfsOps.writeBytes p ByteArray.empty
+    mkdir := fun p _ _ => vfsOps.createDir p
+    unlink := fun p _ => vfsOps.unlinkFile p
+    rmdir := vfsOps.removeDir
+    rmtree := fun p _ => vfsOps.removeDir p
+    rename := vfsOps.rename
+    copyFile := fun src dst => do
+      match ← vfsOps.readBytes src with
+      | .error e => return .error e
+      | .ok bs => vfsOps.writeBytes dst bs
+    copyTree := fun _ _ _ => pure (.error { kind := .unsupported, message := "unsupported in vfsApi reference" })
+    pathExists := fun p => do
+      match ← vfsOps.stat true p with
+      | .ok _ => return .ok true
+      | .error _ => return .ok false
+    isFile := fun p => do
+      match ← vfsOps.stat true p with
+      | .ok st => return .ok (st.kind == .file)
+      | .error _ => return .ok false
+    isDir := fun p => do
+      match ← vfsOps.stat true p with
+      | .ok st => return .ok (st.kind == .dir)
+      | .error _ => return .ok false
+    isSymlink := fun p => do
+      match ← vfsOps.stat false p with
+      | .ok st => return .ok (st.kind == .symlink)
+      | .error _ => return .ok false
+    stat := vfsOps.stat true
+    lstat := vfsOps.stat false
+    chmod := vfsOps.chmod
+    symlink := vfsOps.symlink
+    readLink := vfsOps.readLink
+    resolve := vfsOps.realPath
+    cwd := vfsOps.cwd
+    listDir := fun p => do
+      match ← vfsOps.readDir p with
+      | .error e => return .error e
+      | .ok names => return .ok (names.toList.mergeSort (· ≤ ·)).toArray
+    walk := fun _ => pure (.ok #[])
+    glob := fun _ _ => pure (.ok #[])
+    rglob := fun _ _ => pure (.ok #[])
+    withFileLock := fun p mode cim act => do
+      match ← vfsOps.acquireLock p mode cim false with
+      | .error e => return .error e
+      | .ok h =>
+        let r ← act
+        let rel ← vfsOps.releaseLock h
+        match r with
+        | .error e => return .error e
+        | .ok a =>
+          match rel with
+          | .ok () => return .ok a
+          | .error re => return .error re
+    tryWithFileLock := fun p mode cim act => do
+      match ← vfsOps.acquireLock p mode cim true with
+      | .error e => if e.kind == .wouldBlock then return .ok none else return .error e
+      | .ok h =>
+        let r ← act
+        let rel ← vfsOps.releaseLock h
+        match r with
+        | .error e => return .error e
+        | .ok a =>
+          match rel with
+          | .ok () => return .ok (some a)
+          | .error re => return .error re }
 
 private def maxDirId : List (Nat × List String) → Nat
   | [] => 0

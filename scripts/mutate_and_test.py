@@ -19,7 +19,6 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 SUITE_TO_DIR: dict[str, pathlib.Path] = {
     "RegExp": pathlib.Path("LeanSwe/RegExp"),
     "Glob": pathlib.Path("LeanSwe/Glob"),
-    "Fs.Raw": pathlib.Path("LeanSwe/Fs/Raw"),
     "Fs": pathlib.Path("LeanSwe/Fs"),
     "Process": pathlib.Path("LeanSwe/Process"),
     "Time": pathlib.Path("LeanSwe/Time"),
@@ -57,7 +56,6 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
 }
 
 C_SHIM_TO_EXTERN_LIB: dict[str, str] = {
-    "fs_shim.c": "leanswe_fs",
     "LeanSwe/LinuxSyscall/c/process_shim.c": "leanswe_linux_process",
     "envvars_shim.c": "leanswe_envvars",
     "timerand_shim.c": "leanswe_linux_timerand",

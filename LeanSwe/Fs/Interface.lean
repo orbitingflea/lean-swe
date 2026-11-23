@@ -1,12 +1,27 @@
 import LeanSwe.Fs.Types
+import LeanSwe.Fs.Model.HealthyStep
 import LeanSwe.Fs.Impl
-import LeanSwe.Fs.Raw.Interface
+import LeanSwe.Fs.SysBridge
 
 namespace LeanSwe.Fs
 
-/-- Default `FsApi` backed by `LeanSwe.Fs.Raw.defaultOps`. -/
+namespace Internal
+
+/-- Build a generic `FsApiM m` directly over a `HealthyFilesCapM m` (`LinuxSyscall.Files`) capability bundle. -/
+def mkApiFromHealthyFilesM {m : Type → Type} [Monad m] [MonadFinally m]
+    (cap : Model.HealthyFilesCapM m) : FsApiM m :=
+  mkApiFromScopedRawM (toScopedRawFsOpsM (SysBridge.mkRawFsOpsM cap.files cap.nextTempSeq))
+
+/-- Construct a `SubtreeOpenerM m` directly over a `HealthyFilesCapM m` (`LinuxSyscall.Files`) capability bundle. -/
+def mkSubtreeOpenerFromHealthyFilesM {m : Type → Type} [Monad m] [MonadFinally m]
+    (cap : Model.HealthyFilesCapM m) : SubtreeOpenerM m :=
+  mkSubtreeOpenerM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq)
+
+end Internal
+
+/-- Default `FsApi` backed by `LeanSwe.Fs.SysBridge.defaultOps`. -/
 def defaultApi : FsApi :=
-  Internal.mkApiM Raw.defaultOps
+  Internal.mkApiFromScopedRawM (Internal.toScopedRawFsOpsM SysBridge.defaultOps)
 
 /-- Join two paths using `/` (`Path.joinpath`). -/
 @[inline] def join (base sub : String) : String :=
@@ -193,17 +208,9 @@ def defaultApi : FsApi :=
     IO (Except FsError (Option α)) :=
   defaultApi.tryWithFileLock path mode createIfMissing action
 
-/-- Default single-step directory-descriptor operations (`RawDirOps`) backed by `c/fs_shim.c`. -/
-def defaultDirOps : RawDirOps :=
-  Raw.defaultDirOps
-
-/-- Default `SubtreeOpener` backed by `defaultDirOps`. -/
-def defaultSubtreeOpener : SubtreeOpener :=
-  Internal.mkSubtreeOpenerM defaultDirOps
-
 /-- Open `rootPath` once as a confined directory handle, execute `action`, and always close the handle on exit. -/
 @[inline] def withSubtree {α : Type} (rootPath : String)
     (action : Subtree → IO (Except FsError α)) : IO (Except FsError α) :=
-  defaultSubtreeOpener.withSubtree rootPath action
+  (Internal.mkSubtreeOpenerM SysBridge.defaultDirOps).withSubtree rootPath action
 
 end LeanSwe.Fs

@@ -1,14 +1,21 @@
 import LeanSwe.Fs.Types
-import LeanSwe.Fs.Raw.Types
+import LeanSwe.Fs.Model
 import LeanSwe.Glob.Interface
 
 namespace LeanSwe.Fs.Internal
 
 open LeanSwe.Fs
-  (FsErrorKind FsError EntryKind FileStat WalkEntry FsRawError LockMode LockHandle RawFsOpsM FsApi FsApiM
-   DirHandle EntryName RelPath RawDirOpsM SubtreeM SubtreeOpenerM)
+  (FsErrorKind FsError EntryKind FileStat WalkEntry FsRawError LockMode FsApi FsApiM
+   EntryName RelPath SubtreeM SubtreeOpenerM)
+open LeanSwe.Fs.Model (NonLockFsOpsM RawFsOpsM RawDirOpsM ScopedRawFsOpsM)
 
-private def nonEmptyMsg (fallback msg : String) : String :=
+export LeanSwe.Fs.Model
+  (isAbsChars isAbsolute join joinMany splitCharList joinSlashChars collapseChars normPath
+   cleanCharSegments splitLastAux splitParentName parent name splitRevAtDot splitNameSuffix
+   stem suffix suffixes validFileName validSuffix joinParentName withName withSuffix relativeTo)
+
+/-- Return `fallback` when `msg` is empty, otherwise `msg`. -/
+def nonEmptyMsg (fallback msg : String) : String :=
   if msg.isEmpty then fallback else msg
 
 /-- Construct a `GlobError` mapped into `FsError`. -/
@@ -18,212 +25,8 @@ def mapGlobError (pattern : String) (err : LeanSwe.Glob.GlobError) : FsError :=
     errnoCode := none
     message := nonEmptyMsg "invalid glob pattern" err.message }
 
-/-- Return `true` iff character list starts with `/`. -/
-def isAbsChars : List Char → Bool
-  | '/' :: _ => true
-  | _ => false
-
-/-- Return `true` iff `path` begins with `/`. -/
-def isAbsolute (path : String) : Bool :=
-  isAbsChars path.toList
-
-/-- Join two path strings using `/` (`Path.joinpath`). -/
-def join (base sub : String) : String :=
-  if isAbsolute sub then sub
-  else if base.isEmpty then sub
-  else if base.toList.getLast? == some '/' then base ++ sub
-  else base ++ "/" ++ sub
-
-/-- Join an array of path strings left-to-right. -/
-def joinMany (parts : Array String) : String :=
-  parts.foldl join ""
-
-/-- Split `cs` on `sep`, always producing a non-empty list of segments. -/
-def splitCharList (sep : Char) : List Char → List (List Char)
-  | [] => [[]]
-  | c :: cs =>
-    if c == sep then
-      [] :: splitCharList sep cs
-    else
-      match splitCharList sep cs with
-      | [] => [[c]]
-      | seg :: rest => (c :: seg) :: rest
-
-/-- Join path segments using `/` separators. -/
-def joinSlashChars : List (List Char) → List Char
-  | [] => []
-  | [s] => s
-  | s :: rest => s ++ '/' :: joinSlashChars rest
-
-/-- Collapse slash-separated path character segments lexically. -/
-def collapseChars (abs : Bool) : List (List Char) → List (List Char) → List (List Char)
-  | [], acc => acc.reverse
-  | seg :: rest, acc =>
-    if seg.isEmpty || seg == ['.'] then
-      collapseChars abs rest acc
-    else if seg == ['.', '.'] then
-      match acc with
-      | top :: tail =>
-        if top != ['.', '.'] then collapseChars abs rest tail
-        else collapseChars abs rest (if abs then acc else ['.', '.'] :: acc)
-      | [] =>
-        collapseChars abs rest (if abs then [] else [['.', '.']])
-    else
-      collapseChars abs rest (seg :: acc)
-
-/-- Lexically normalize `.` and `..` segments and redundant `/` (`os.path.normpath`). -/
-def normPath (path : String) : String :=
-  let cs := path.toList
-  let abs := isAbsChars cs
-  let parts := collapseChars abs (splitCharList '/' cs) []
-  if abs then
-    String.ofList ('/' :: joinSlashChars parts)
-  else if parts.isEmpty then
-    "."
-  else
-    String.ofList (joinSlashChars parts)
-
-/-- Split `path` into non-empty `/` character segments (excluding `.`), tracking `abs`. -/
-def cleanCharSegments (path : String) : Bool × List (List Char) :=
-  let cs := path.toList
-  (isAbsChars cs, (splitCharList '/' cs).filter fun s => !s.isEmpty && s != ['.'])
-
-/-- Split a non-empty list into `(init, last)`. -/
-def splitLastAux {α : Type} : List α → List α → Option (List α × α)
-  | [], _ => none
-  | [x], acc => some (acc.reverse, x)
-  | x :: rest, acc => splitLastAux rest (x :: acc)
-
-/-- Split `path` into optional parent string and final component name. -/
-def splitParentName (path : String) : Option (Option String × String) :=
-  let (abs, parts) := cleanCharSegments path
-  match splitLastAux parts [] with
-  | none => none
-  | some ([], last) =>
-    some (if abs then some "/" else none, String.ofList last)
-  | some (front, last) =>
-    let joined := joinSlashChars front
-    let prefixStr := String.ofList (if abs then '/' :: joined else joined)
-    some (some prefixStr, String.ofList last)
-
-/-- Return parent directory path, or `none` when at root or single bare component. -/
-def parent (path : String) : Option String :=
-  match splitParentName path with
-  | none => none
-  | some (p?, _) => p?
-
-/-- Return the final path component name, if any. -/
-def name (path : String) : Option String :=
-  match splitParentName path with
-  | none => none
-  | some (_, last) => some last
-
-/-- Split reversed character list at the first `.` separator. -/
-def splitRevAtDot : List Char → Option (List Char × List Char)
-  | [] => none
-  | '.' :: rest => some (rest, [])
-  | c :: rest =>
-    match splitRevAtDot rest with
-    | none => none
-    | some (pref, suf) => some (pref, c :: suf)
-
-/-- Split a single filename into `(stem, suffix)` using Python `Path` conventions. -/
-def splitNameSuffix (fileName : String) : String × String :=
-  match splitRevAtDot fileName.toList.reverse with
-  | none => (fileName, "")
-  | some (revPref, revSuf) =>
-    if revPref.isEmpty || revSuf.isEmpty || revPref.all (· == '.') then
-      (fileName, "")
-    else
-      (String.ofList revPref.reverse, "." ++ String.ofList revSuf.reverse)
-
-/-- Return the final path component without its last suffix (`Path.stem`). -/
-def stem (path : String) : Option String :=
-  (name path).map fun n => (splitNameSuffix n).1
-
-/-- Return the last `.ext` suffix of filename, or `""` when none (`Path.suffix`). -/
-def suffix (path : String) : String :=
-  match name path with
-  | none => ""
-  | some n => (splitNameSuffix n).2
-
-/-- Return all `.ext` suffixes of filename (`Path.suffixes`). -/
-def suffixes (path : String) : Array String :=
-  match name path with
-  | none => #[]
-  | some n =>
-    match n.toList.reverse with
-    | '.' :: _ => #[]
-    | _ =>
-      let stripped := n.toList.dropWhile (· == '.')
-      match splitCharList '.' stripped with
-      | [] | [_] => #[]
-      | _ :: exts => (exts.map fun cs => "." ++ String.ofList cs).toArray
-
-/-- Return `true` iff `s` is a valid non-empty single path segment name. -/
-def validFileName (s : String) : Bool :=
-  let cs := s.toList
-  !cs.isEmpty && !('/' ∈ cs) && cs != ['.'] && cs != ['.', '.']
-
-/-- Return `true` iff `s` is empty or a valid non-empty suffix starting with `.`. -/
-def validSuffix (s : String) : Bool :=
-  match s.toList with
-  | [] => true
-  | '.' :: rest => !rest.isEmpty && !('/' ∈ rest) && rest != ['.']
-  | _ => false
-
-/-- Join optional normalized parent prefix with a valid filename `newName`. -/
-def joinParentName : Option String → String → String
-  | none, newName => newName
-  | some "/", newName => "/" ++ newName
-  | some par, newName => par ++ "/" ++ newName
-
-/-- Replace the final path component (`Path.with_name`). -/
-def withName (path newName : String) : Except FsError String :=
-  if !validFileName newName then
-    .error { kind := .invalidInput, path := some path, message := s!"invalid filename: '{newName}'" }
-  else
-    match splitParentName path with
-    | none =>
-      .error { kind := .invalidInput, path := some path, message := "path has an empty name" }
-    | some (par?, _) => .ok (joinParentName par? newName)
-
-/-- Replace or strip the last suffix (`Path.with_suffix`). -/
-def withSuffix (path newSuffix : String) : Except FsError String :=
-  if !validSuffix newSuffix then
-    .error { kind := .invalidInput, path := some path, message := s!"invalid suffix: '{newSuffix}'" }
-  else
-    match splitParentName path with
-    | none =>
-      .error { kind := .invalidInput, path := some path, message := "path has an empty name" }
-    | some (_, oldName) =>
-      let (stemPart, _) := splitNameSuffix oldName
-      if stemPart.isEmpty || stemPart.toList.all (· == '.') then
-        .error { kind := .invalidInput, path := some path, message := "cannot change suffix of dot-only name" }
-      else
-        withName path (stemPart ++ newSuffix)
-
-private def stripPrefixParts : List (List Char) → List (List Char) → Option (List (List Char))
-  | [], rest => some rest
-  | b :: bs, p :: ps =>
-    if b == p then stripPrefixParts bs ps else none
-  | _ :: _, [] => none
-
-/-- Compute lexical path of `path` relative to `base` (`Path.relative_to`). -/
-def relativeTo (path base : String) : Except FsError String :=
-  let (absP, pParts) := cleanCharSegments (normPath path)
-  let (absB, bParts) := cleanCharSegments (normPath base)
-  if absP != absB then
-    .error { kind := .invalidInput, path := some path, message := s!"'{path}' is not in the subpath of '{base}'" }
-  else
-    match stripPrefixParts bParts pParts with
-    | none =>
-      .error { kind := .invalidInput, path := some path, message := s!"'{path}' is not in the subpath of '{base}'" }
-    | some [] => .ok "."
-    | some rel => .ok (String.ofList (joinSlashChars rel))
-
 /-- Read and sort immediate child entry names in `path`. -/
-def listDirSortedM {m : Type → Type} [Monad m] (ops : RawFsOpsM m) (path : String) :
+def listDirSortedM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m) (path : String) :
     m (Except FsError (Array String)) := do
   match ← ops.readDir path with
   | .error e => return .error e
@@ -239,7 +42,7 @@ def ancestorChain (p : String) : Nat → List String
     | some par => ancestorChain par n ++ [par]
 
 /-- Ensure ancestor directory `anc` exists as a directory. -/
-def ensureDirM {m : Type → Type} [Monad m] (ops : RawFsOpsM m) (anc : String) :
+def ensureDirM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m) (anc : String) :
     m (Except FsError Unit) := do
   match ← ops.stat true anc with
   | .ok st =>
@@ -264,7 +67,7 @@ def ensureDirM {m : Type → Type} [Monad m] (ops : RawFsOpsM m) (anc : String) 
           return .error ce
 
 /-- Ensure a top-down list of ancestor directories exist. -/
-def ensureAncestorsM {m : Type → Type} [Monad m] (ops : RawFsOpsM m) :
+def ensureAncestorsM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m) :
     List String → m (Except FsError Unit)
   | [] => return .ok ()
   | anc :: rest => do
@@ -273,7 +76,7 @@ def ensureAncestorsM {m : Type → Type} [Monad m] (ops : RawFsOpsM m) :
     | .ok () => ensureAncestorsM ops rest
 
 /-- Create leaf directory `path`, tolerating concurrent `.alreadyExists` when `path` resolves to a directory. -/
-def createDirExistOkM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+def createDirExistOkM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (path : String) : m (Except FsError Unit) := do
   match ← ops.createDir path with
   | .ok () => return .ok ()
@@ -290,8 +93,8 @@ def createDirExistOkM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
       | .error _ =>
         return .error ce
 
-/-- Generic `mkdir` implementation over `RawFsOpsM m`. -/
-def mkdirImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+/-- Generic `mkdir` implementation over `NonLockFsOpsM m`. -/
+def mkdirImplM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (path : String) (parents existOk : Bool) : m (Except FsError Unit) := do
   match ← ops.stat false path with
   | .ok st =>
@@ -319,7 +122,8 @@ def mkdirImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
       | .error ae => return .error ae
       | .ok () => if existOk then createDirExistOkM ops path else ops.createDir path
 
-private def unlinkImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+/-- Generic `unlink` implementation over `NonLockFsOpsM m`. -/
+def unlinkImplM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (path : String) (missingOk : Bool) : m (Except FsError Unit) := do
   match ← ops.stat false path with
   | .error e =>
@@ -342,7 +146,8 @@ def forEachChildM {m : Type → Type} [Monad m]
     | .error e => return .error e
     | .ok () => forEachChildM f rest
 
-private def rmtreeGoM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+/-- Bounded recursive worker for `rmtreeImplM`. -/
+def rmtreeGoM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (dir : String) : Nat → m (Except FsError Unit)
   | 0 => return .error { kind := .ioError, path := some dir, message := s!"maximum directory depth exceeded: {dir}" }
   | fuel + 1 => do
@@ -359,7 +164,8 @@ private def rmtreeGoM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
       | .error e => return .error e
       | .ok () => ops.removeDir dir
 
-private def rmtreeImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+/-- Generic `rmtree` implementation over `NonLockFsOpsM m`. -/
+def rmtreeImplM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (path : String) (ignoreMissing : Bool) : m (Except FsError Unit) := do
   match ← ops.stat false path with
   | .error e =>
@@ -373,7 +179,8 @@ private def rmtreeImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
     else
       rmtreeGoM ops path 4096
 
-private def copyFileImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+/-- Generic `copyFile` implementation over `NonLockFsOpsM m`. -/
+def copyFileImplM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (src dst : String) : m (Except FsError Unit) := do
   match ← ops.stat true src with
   | .error e => return .error e
@@ -385,7 +192,7 @@ private def copyFileImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
     | .ok bytes => ops.writeBytes dst bytes
 
 /-- Resolve the deepest existing ancestor of `cur` and append uncreated suffix segments. -/
-def resolveApproxGoM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+def resolveApproxGoM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (cur : String) (tail : List String) : Nat → m String
   | 0 => return tail.foldl join cur
   | fuel + 1 => do
@@ -397,7 +204,7 @@ def resolveApproxGoM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
       | _, _ => return tail.foldl join cur
 
 /-- Bounded recursive worker for `copyTreeImplM`. -/
-def copyTreeGoM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+def copyTreeGoM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (src dst : String) (dirsExistOk : Bool) (visited : List String) : Nat → m (Except FsError Unit)
   | 0 => return .error { kind := .ioError, path := some src, message := s!"maximum directory depth exceeded: {src}" }
   | fuel + 1 => do
@@ -429,8 +236,8 @@ def copyTreeGoM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
                 else
                   copyFileImplM ops sChild dChild) names.toList
 
-/-- Generic `copyTree` implementation over `RawFsOpsM m` with cycle and self-copy guards. -/
-def copyTreeImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+/-- Generic `copyTree` implementation over `NonLockFsOpsM m` with cycle and self-copy guards. -/
+def copyTreeImplM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (src dst : String) (dirsExistOk : Bool) : m (Except FsError Unit) := do
   match ← ops.stat true src with
   | .error e => return .error e
@@ -452,8 +259,8 @@ def copyTreeImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
         return .error { kind := .invalidInput, path := some dst, message := s!"cannot copy directory into itself: {dst}" }
       copyTreeGoM ops src dst dirsExistOk [] 4096
 
-/-- Generic `touch` implementation over `RawFsOpsM m`. -/
-def touchImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+/-- Generic `touch` implementation over `NonLockFsOpsM m`. -/
+def touchImplM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (path : String) (existOk : Bool) : m (Except FsError Unit) := do
   match ← ops.stat false path with
   | .ok st =>
@@ -494,7 +301,7 @@ def isValidAtomicTargetPath (path : String) : Bool :=
   isValidRawPath path && !hasDotFinalSegment path
 
 /-- Writes `bytes` to a sibling temp file with a fresh nonce and renames it atomically to `path`. -/
-def atomicWriteSiblingM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+def atomicWriteSiblingM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (path : String) (bytes : ByteArray) : m (Except FsError Unit) := do
   let parentDir := (parent path).getD "."
   let baseName := (name path).getD "tmp"
@@ -509,8 +316,8 @@ def atomicWriteSiblingM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
       return .error e
     | .ok () => return .ok ()
 
-/-- Implements `FsApiM.atomicWriteBytes` cleanly over raw filesystem ops. -/
-def atomicWriteBytesImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+/-- Implements `FsApiM.atomicWriteBytes` cleanly over non-lock raw filesystem ops. -/
+def atomicWriteBytesImplM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (path : String) (bytes : ByteArray) : m (Except FsError Unit) := do
   if !isValidAtomicTargetPath path then
     return .error { kind := .invalidInput, path := some path, message := s!"invalid target path: {path}" }
@@ -529,11 +336,13 @@ def atomicWriteBytesImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
       else
         atomicWriteSiblingM ops path bytes
 
-private def atomicWriteTextImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+/-- Generic `atomicWriteText` implementation over `NonLockFsOpsM m`. -/
+def atomicWriteTextImplM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (path content : String) : m (Except FsError Unit) :=
   atomicWriteBytesImplM ops path content.toUTF8
 
-private def walkGoM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+/-- Bounded recursive worker for `walkImplM`. -/
+def walkGoM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (root relRoot : String) (acc : Array WalkEntry) : Nat → m (Except FsError (Array WalkEntry))
   | 0 => return .error { kind := .ioError, path := some root, message := s!"maximum directory depth exceeded: {root}" }
   | fuel + 1 => do
@@ -561,8 +370,8 @@ private def walkGoM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
         | .ok out' => out := out'
       return .ok out
 
-/-- Generic `walk` implementation over `RawFsOpsM m`. -/
-def walkImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+/-- Generic `walk` implementation over `NonLockFsOpsM m`. -/
+def walkImplM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (root : String) : m (Except FsError (Array WalkEntry)) := do
   match ← ops.stat true root with
   | .error e => return .error e
@@ -571,7 +380,8 @@ def walkImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
       return .error { kind := .notADirectory, path := some root, message := s!"not a directory: {root}" }
     walkGoM ops root "." #[] 4096
 
-private def globImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+/-- Generic `glob` implementation over `NonLockFsOpsM m`. -/
+def globImplM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (root pattern : String) : m (Except FsError (Array String)) := do
   match LeanSwe.Glob.validate pattern with
   | .error e => return .error (mapGlobError pattern e)
@@ -589,15 +399,16 @@ private def globImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
           candidates := candidates.push rel
       match LeanSwe.Glob.filter pattern candidates with
       | .error e => return .error (mapGlobError pattern e)
-      | .ok matched => return .ok (matched.qsort (· < ·))
+      | .ok matched => return .ok (matched.toList.mergeSort (· ≤ ·)).toArray
 
-private def rglobImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+/-- Generic `rglob` implementation over `NonLockFsOpsM m`. -/
+def rglobImplM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (root pattern : String) : m (Except FsError (Array String)) :=
   let fullPat := if pattern == "**" || pattern.startsWith "**/" then pattern else "**/" ++ pattern
   globImplM ops root fullPat
 
-/-- Generic `readText` implementation over `RawFsOpsM m`. -/
-def readTextImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
+/-- Generic `readText` implementation over `NonLockFsOpsM m`. -/
+def readTextImplM {m : Type → Type} [Monad m] (ops : NonLockFsOpsM m)
     (path : String) : m (Except FsError String) := do
   match ← ops.readBytes path with
   | .error e => return .error e
@@ -608,7 +419,7 @@ def readTextImplM {m : Type → Type} [Monad m] (ops : RawFsOpsM m)
 
 /-- Run `action` under `handle`, always calling `ops.releaseLock handle` afterward. -/
 def bracketLockM {m : Type → Type} [Monad m] [MonadFinally m]
-    (ops : RawFsOpsM m) {α : Type} (handle : LockHandle)
+    {lockH : Type} (ops : RawFsOpsM m lockH) {α : Type} (handle : lockH)
     (action : m (Except FsError α)) : m (Except FsError α) := do
   let (actRes, relRes) ← tryFinally' action (fun _ => ops.releaseLock handle)
   match actRes with
@@ -620,7 +431,7 @@ def bracketLockM {m : Type → Type} [Monad m] [MonadFinally m]
 
 /-- Acquire `mode` advisory lock on `path`, run `action`, and unlock/close afterward. -/
 def withFileLockImplM {m : Type → Type} [Monad m] [MonadFinally m]
-    (ops : RawFsOpsM m) {α : Type} (path : String) (mode : LockMode)
+    {lockH : Type} (ops : RawFsOpsM m lockH) {α : Type} (path : String) (mode : LockMode)
     (createIfMissing : Bool) (action : m (Except FsError α)) : m (Except FsError α) := do
   match ← ops.acquireLock path mode createIfMissing false with
   | .error e => return .error e
@@ -628,7 +439,7 @@ def withFileLockImplM {m : Type → Type} [Monad m] [MonadFinally m]
 
 /-- Try non-blocking `mode` lock on `path`; return `.ok none` on `.wouldBlock`, else run `action`. -/
 def tryWithFileLockImplM {m : Type → Type} [Monad m] [MonadFinally m]
-    (ops : RawFsOpsM m) {α : Type} (path : String) (mode : LockMode)
+    {lockH : Type} (ops : RawFsOpsM m lockH) {α : Type} (path : String) (mode : LockMode)
     (createIfMissing : Bool) (action : m (Except FsError α)) : m (Except FsError (Option α)) := do
   match ← ops.acquireLock path mode createIfMissing true with
   | .error e =>
@@ -641,8 +452,17 @@ def tryWithFileLockImplM {m : Type → Type} [Monad m] [MonadFinally m]
     | .ok a => return .ok (some a)
     | .error e => return .error e
 
-/-- Build a generic `FsApiM m` from injected single-step `RawFsOpsM m` primitives. -/
-def mkApiM {m : Type → Type} [Monad m] [MonadFinally m] (ops : RawFsOpsM m) : FsApiM m :=
+/-- Project `RawFsOpsM m lockH` into `ScopedRawFsOpsM m` by bracketing `acquireLock`/`releaseLock`. -/
+def toScopedRawFsOpsM {m : Type → Type} [Monad m] [MonadFinally m] {lockH : Type}
+    (ops : RawFsOpsM m lockH) : ScopedRawFsOpsM m :=
+  { toNonLockFsOpsM := ops.toNonLockFsOpsM
+    withFileLock := withFileLockImplM ops
+    tryWithFileLock := tryWithFileLockImplM ops }
+
+/-- Build a generic `FsApiM m` from handle-free `ScopedRawFsOpsM m` primitives. -/
+def mkApiFromScopedRawM {m : Type → Type} [Monad m] [MonadFinally m]
+    (ops : ScopedRawFsOpsM m) : FsApiM m :=
+  let base := ops.toNonLockFsOpsM
   { join := join
     joinMany := joinMany
     normPath := normPath
@@ -655,61 +475,65 @@ def mkApiM {m : Type → Type} [Monad m] [MonadFinally m] (ops : RawFsOpsM m) : 
     withSuffix := withSuffix
     isAbsolute := isAbsolute
     relativeTo := relativeTo
-    mapRawError := ops.mapRawError
-    readText := readTextImplM ops
-    writeText := fun p c => ops.writeBytes p c.toUTF8
-    appendText := ops.appendText
-    readBytes := ops.readBytes
-    writeBytes := ops.writeBytes
-    atomicWriteBytes := atomicWriteBytesImplM ops
-    atomicWriteText := atomicWriteTextImplM ops
-    touch := touchImplM ops
-    mkdir := mkdirImplM ops
-    unlink := unlinkImplM ops
-    rmdir := ops.removeDir
-    rmtree := rmtreeImplM ops
-    rename := ops.rename
-    copyFile := copyFileImplM ops
-    copyTree := copyTreeImplM ops
+    mapRawError := base.mapRawError
+    readText := readTextImplM base
+    writeText := fun p c => base.writeBytes p c.toUTF8
+    appendText := base.appendText
+    readBytes := base.readBytes
+    writeBytes := base.writeBytes
+    atomicWriteBytes := atomicWriteBytesImplM base
+    atomicWriteText := atomicWriteTextImplM base
+    touch := touchImplM base
+    mkdir := mkdirImplM base
+    unlink := unlinkImplM base
+    rmdir := base.removeDir
+    rmtree := rmtreeImplM base
+    rename := base.rename
+    copyFile := copyFileImplM base
+    copyTree := copyTreeImplM base
     pathExists := fun p => do
-      match ← ops.stat true p with
+      match ← base.stat true p with
       | .ok _ => return .ok true
       | .error _ => return .ok false
     isFile := fun p => do
-      match ← ops.stat true p with
+      match ← base.stat true p with
       | .ok st => return .ok (st.kind == .file)
       | .error _ => return .ok false
     isDir := fun p => do
-      match ← ops.stat true p with
+      match ← base.stat true p with
       | .ok st => return .ok (st.kind == .dir)
       | .error _ => return .ok false
     isSymlink := fun p => do
-      match ← ops.stat false p with
+      match ← base.stat false p with
       | .ok st => return .ok (st.kind == .symlink)
       | .error _ => return .ok false
-    stat := ops.stat true
-    lstat := ops.stat false
-    chmod := ops.chmod
-    symlink := ops.symlink
-    readLink := ops.readLink
-    resolve := ops.realPath
-    cwd := ops.cwd
-    listDir := listDirSortedM ops
-    walk := walkImplM ops
-    glob := globImplM ops
-    rglob := rglobImplM ops
-    withFileLock := withFileLockImplM ops
-    tryWithFileLock := tryWithFileLockImplM ops }
+    stat := base.stat true
+    lstat := base.stat false
+    chmod := base.chmod
+    symlink := base.symlink
+    readLink := base.readLink
+    resolve := base.realPath
+    cwd := base.cwd
+    listDir := listDirSortedM base
+    walk := walkImplM base
+    glob := globImplM base
+    rglob := rglobImplM base
+    withFileLock := ops.withFileLock
+    tryWithFileLock := ops.tryWithFileLock }
+
+/-- Build a generic `FsApiM m` from injected single-step `RawFsOpsM m` primitives. -/
+def mkApiM {m : Type → Type} [Monad m] [MonadFinally m] {lockH : Type} (ops : RawFsOpsM m lockH) : FsApiM m :=
+  mkApiFromScopedRawM (toScopedRawFsOpsM ops)
 
 /-- Execute `action` and unconditionally close `dh`, preserving `action`'s return value. -/
 def bracketCloseDirM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
-    (ops : RawDirOpsM m) (dh : DirHandle) (action : m α) : m α := do
+    {dirH lockH : Type} (ops : RawDirOpsM m dirH lockH) (dh : dirH) (action : m α) : m α := do
   let (res, _) ← tryFinally' action (fun _ => ops.closeDir dh)
   pure res
 
 /-- Execute `action` while holding `lockHandle`, always releasing `lockHandle` afterward. -/
 def bracketDirLockM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
-    (ops : RawDirOpsM m) (lockHandle : LockHandle) (action : m (Except FsError α)) :
+    {dirH lockH : Type} (ops : RawDirOpsM m dirH lockH) (lockHandle : lockH) (action : m (Except FsError α)) :
     m (Except FsError α) := do
   let (actRes, relRes) ← tryFinally' action (fun _ => ops.releaseLock lockHandle)
   match actRes with
@@ -721,8 +545,8 @@ def bracketDirLockM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
 
 /-- Descend from open handle `cur` through `segs`, passing the reached handle to `act` and always closing every non-root intermediate handle (`isRoot = false`). -/
 def walkDescendAuxM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
-    (ops : RawDirOpsM m) (isRoot : Bool) (cur : DirHandle) :
-    List EntryName → (DirHandle → m (Except FsError α)) → m (Except FsError α)
+    {dirH lockH : Type} (ops : RawDirOpsM m dirH lockH) (isRoot : Bool) (cur : dirH) :
+    List EntryName → (dirH → m (Except FsError α)) → m (Except FsError α)
   | [], act =>
     if isRoot then
       act cur
@@ -740,21 +564,21 @@ def walkDescendAuxM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
 
 /-- Descend through `segs` from root directory handle `dh` using `O(1)` open handles and closing every handle opened during descent. -/
 def walkDescendM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
-    (ops : RawDirOpsM m) (dh : DirHandle) (segs : List EntryName)
-    (act : DirHandle → m (Except FsError α)) : m (Except FsError α) :=
+    {dirH lockH : Type} (ops : RawDirOpsM m dirH lockH) (dh : dirH) (segs : List EntryName)
+    (act : dirH → m (Except FsError α)) : m (Except FsError α) :=
   walkDescendAuxM ops true dh segs act
 
 /-- Ensure intermediate parent directories exist (`0o755`) along `segs` without following symlinks, then run `leafAct` on the final parent handle. -/
 def mkdirWalkM {m : Type → Type} [Monad m] [MonadFinally m]
-    (ops : RawDirOpsM m) (isRoot : Bool) (cur : DirHandle) :
-    List EntryName → (DirHandle → m (Except FsError Unit)) → m (Except FsError Unit)
+    {dirH lockH : Type} (ops : RawDirOpsM m dirH lockH) (isRoot : Bool) (cur : dirH) :
+    List EntryName → (dirH → m (Except FsError Unit)) → m (Except FsError Unit)
   | [], leafAct =>
     if isRoot then
       leafAct cur
     else
       bracketCloseDirM ops cur (leafAct cur)
   | seg :: rest, leafAct => do
-    let step : m (Except FsError DirHandle) := do
+    let step : m (Except FsError dirH) := do
       match ← ops.openDirAt cur seg with
       | .ok nextDh => pure (.ok nextDh)
       | .error e =>
@@ -776,8 +600,8 @@ def mkdirWalkM {m : Type → Type} [Monad m] [MonadFinally m]
     | .ok nextDh => mkdirWalkM ops false nextDh rest leafAct
 
 /-- Retry temporary sibling creation up to `attempts` times on `.alreadyExists`, atomically rename onto `leaf`, and clean up the temporary file on rename failure. -/
-def atomicWriteAtAuxM {m : Type → Type} [Monad m] (ops : RawDirOpsM m)
-    (parDh : DirHandle) (leaf : EntryName) (bytes : ByteArray) : Nat → m (Except FsError Unit)
+def atomicWriteAtAuxM {m : Type → Type} [Monad m] {dirH lockH : Type} (ops : RawDirOpsM m dirH lockH)
+    (parDh : dirH) (leaf : EntryName) (bytes : ByteArray) : Nat → m (Except FsError Unit)
   | 0 =>
     pure (.error { kind := .alreadyExists, path := some leaf.val, message := "temporary file name collision limit exceeded" })
   | attempts + 1 => do
@@ -800,7 +624,7 @@ def atomicWriteAtAuxM {m : Type → Type} [Monad m] (ops : RawDirOpsM m)
   names.toList.mergeSort (fun a b => a.val ≤ b.val)
 
 /-- Classify sorted child names under `dirDh` via `lstatAt` into directory names and non-directory filenames without descending into symlinks. -/
-def classifyChildrenM {m : Type → Type} [Monad m] (ops : RawDirOpsM m) (dirDh : DirHandle) :
+def classifyChildrenM {m : Type → Type} [Monad m] {dirH lockH : Type} (ops : RawDirOpsM m dirH lockH) (dirDh : dirH) :
     List EntryName → List EntryName → List String → m (Except FsError (List EntryName × List String))
   | [], dirsAcc, filesAcc => pure (.ok (dirsAcc.reverse, filesAcc.reverse))
   | n :: rest, dirsAcc, filesAcc => do
@@ -815,7 +639,7 @@ def classifyChildrenM {m : Type → Type} [Monad m] (ops : RawDirOpsM m) (dirDh 
 mutual
   /-- Traverse sorted subdirectories in pre-order DFS starting from `(relSegs, relLabel)`. -/
   def walkChildrenM {m : Type → Type} [Monad m] [MonadFinally m]
-      (ops : RawDirOpsM m) (rootDh : DirHandle) (relSegs : List EntryName)
+      {dirH lockH : Type} (ops : RawDirOpsM m dirH lockH) (rootDh : dirH) (relSegs : List EntryName)
       (relLabel : String) (fuel : Nat) (acc : Array WalkEntry) :
       List EntryName → m (Except FsError (Array WalkEntry))
     | [] => pure (.ok acc)
@@ -827,7 +651,7 @@ mutual
 
   /-- Bounded pre-order directory walk using `O(1)` open handles and `fuel` depth limit. -/
   def walkRecM {m : Type → Type} [Monad m] [MonadFinally m]
-      (ops : RawDirOpsM m) (rootDh : DirHandle)
+      {dirH lockH : Type} (ops : RawDirOpsM m dirH lockH) (rootDh : dirH)
       (relSegs : List EntryName) (relLabel : String) (acc : Array WalkEntry) :
       Nat → m (Except FsError (Array WalkEntry))
     | 0 =>
@@ -848,7 +672,7 @@ mutual
 end
 
 /-- Unlink leading non-directory entries in `items` while holding one open directory handle, stopping before the first directory child `d` and returning remaining items so `dirDh` is closed before recursing. -/
-def rmtreeNonDirPrefixM {m : Type → Type} [Monad m] (ops : RawDirOpsM m) (dirDh : DirHandle) :
+def rmtreeNonDirPrefixM {m : Type → Type} [Monad m] {dirH lockH : Type} (ops : RawDirOpsM m dirH lockH) (dirDh : dirH) :
     List EntryName → m (Except FsError (Option (EntryName × List EntryName)))
   | [] => pure (.ok none)
   | c :: rest => do
@@ -868,7 +692,7 @@ def rmtreeNonDirPrefixM {m : Type → Type} [Monad m] (ops : RawDirOpsM m) (dirD
 
 /-- Process remaining entries inside directory `dirSegs` in bounded batches, closing open directory handles before calling `subDirFn` on any child directory. -/
 def rmtreeProcessM {m : Type → Type} [Monad m] [MonadFinally m]
-    (ops : RawDirOpsM m) (rootDh : DirHandle) (dirSegs : List EntryName)
+    {dirH lockH : Type} (ops : RawDirOpsM m dirH lockH) (rootDh : dirH) (dirSegs : List EntryName)
     (subDirFn : EntryName → m (Except FsError Unit)) :
     Nat → List EntryName → m (Except FsError Unit)
   | _, [] => pure (.ok ())
@@ -886,7 +710,7 @@ def rmtreeProcessM {m : Type → Type} [Monad m] [MonadFinally m]
 
 /-- Recursively delete child directory `leaf` under `parSegs` with bounded recursion depth `fuel` and `O(1)` open handles. -/
 def rmtreeDirAtM {m : Type → Type} [Monad m] [MonadFinally m]
-    (ops : RawDirOpsM m) (rootDh : DirHandle) (parSegs : List EntryName) (leaf : EntryName) :
+    {dirH lockH : Type} (ops : RawDirOpsM m dirH lockH) (rootDh : dirH) (parSegs : List EntryName) (leaf : EntryName) :
     Nat → m (Except FsError Unit)
   | 0 =>
     pure (.error { kind := .ioError, path := some leaf.val, message := s!"maximum directory recursion depth exceeded: {leaf.val}" })
@@ -903,7 +727,7 @@ def rmtreeDirAtM {m : Type → Type} [Monad m] [MonadFinally m]
 
 /-- Implement `SubtreeM m` operations confined to open root directory handle `dh`. -/
 def subtreeOpsM {m : Type → Type} [Monad m] [MonadFinally m]
-    (ops : RawDirOpsM m) (dh : DirHandle) : SubtreeM m :=
+    {dirH lockH : Type} (ops : RawDirOpsM m dirH lockH) (dh : dirH) : SubtreeM m :=
   { lstat := fun rel =>
       match splitLastAux rel.segments [] with
       | none => ops.fstatDir dh
@@ -936,7 +760,7 @@ def subtreeOpsM {m : Type → Type} [Monad m] [MonadFinally m]
           else
             pure (.error { kind := .alreadyExists, path := some ".", message := "directory already exists: ." })
       | some (pre, leaf) =>
-        let leafAct : DirHandle → m (Except FsError Unit) := fun parDh => do
+        let leafAct : dirH → m (Except FsError Unit) := fun parDh => do
           match ← ops.createDirAt parDh leaf with
           | .ok () => pure (.ok ())
           | .error e =>
@@ -1023,7 +847,7 @@ def subtreeOpsM {m : Type → Type} [Monad m] [MonadFinally m]
 
 /-- Open `rootPath` once via `ops.openDir`, validate it is a directory with owner read+search (`0o500`), execute `action`, and always close the handle on exit. -/
 def withSubtreeM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
-    (ops : RawDirOpsM m) (rootPath : String)
+    {dirH lockH : Type} (ops : RawDirOpsM m dirH lockH) (rootPath : String)
     (action : SubtreeM m → m (Except FsError α)) : m (Except FsError α) := do
   match ← ops.openDir rootPath with
   | .error e => pure (.error e)
@@ -1041,7 +865,7 @@ def withSubtreeM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]
 
 /-- Build a `SubtreeOpenerM m` backed by `ops`. -/
 def mkSubtreeOpenerM {m : Type → Type} [Monad m] [MonadFinally m]
-    (ops : RawDirOpsM m) : SubtreeOpenerM m :=
+    {dirH lockH : Type} (ops : RawDirOpsM m dirH lockH) : SubtreeOpenerM m :=
   { withSubtree := withSubtreeM ops }
 
 end LeanSwe.Fs.Internal

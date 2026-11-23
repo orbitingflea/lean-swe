@@ -3,7 +3,7 @@ import LeanSwe.ProcessSandbox.Seccomp.Model
 import LeanSwe.ProcessSandbox.Seccomp.Interface
 import LeanSwe.ProcessSandbox.Raw.Interface
 import LeanSwe.Process.Interface
-import LeanSwe.Fs.Raw.Interface
+import LeanSwe.Fs.Interface
 
 namespace LeanSwe.ProcessSandbox.RuntimeTests
 
@@ -754,7 +754,7 @@ def runAllOutcome : IO (Option String) := do
       "missing cwd"
     let noExec := tmpDir / "noexec_script"
     IO.FS.writeFile noExec "#!/bin/sh\necho nope\n"
-    let _ ← assertOk (← LeanSwe.Fs.Raw.chmod noExec.toString 0o644) "chmod 0644"
+    let _ ← assertOk (← LeanSwe.Fs.chmod noExec.toString 0o644) "chmod 0644"
     assertErrKind (← ProcessSandbox.run {
       program := "/box/noexec"
       mounts := #[.readOnly noExec.toString "/box/noexec"]
@@ -793,10 +793,10 @@ def runAllOutcome : IO (Option String) := do
     }) "double-forked grandchild killed and reaped"
     assertTrue (dfRes.outcome == .exited 0 &&
       String.fromUTF8! dfRes.stdout == "PARENT_EXITED\n") "parent exited cleanly"
-    let lh ← match ← LeanSwe.Fs.Raw.acquireLock flockFile.toString .exclusive true true with
-      | .ok h => pure h
-      | .error e => throw (IO.userError s!"double-forked grandchild still holds flock: {e.message}")
-    let _ ← LeanSwe.Fs.Raw.releaseLock lh
+    match ← LeanSwe.Fs.tryWithFileLock flockFile.toString .exclusive true (pure (.ok ())) with
+    | .ok (some ()) => pure ()
+    | .ok none => throw (IO.userError "double-forked grandchild still holds flock")
+    | .error e => throw (IO.userError s!"double-forked grandchild flock check failed: {e.message}")
 
     assertTrue ((← ProcessSandbox.Raw.activeResourceCounts) == baseCounts)
       "final ProcessSandbox activeResourceCounts == 0"

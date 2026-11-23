@@ -2,7 +2,7 @@ import LeanSwe.Fs.Proofs.SubtreeTestHelpers
 
 namespace LeanSwe.Fs.Proofs
 
-open Core Core.NondetTest LeanSwe.Fs LeanSwe.Fs.Raw LeanSwe.Fs.Model
+open Core Core.NondetTest LeanSwe.Fs LeanSwe.Fs.Model
 
 private theorem entryName_ext {a b : EntryName} (h : a.val = b.val) : a = b := by
   cases a; cases b; cases h; rfl

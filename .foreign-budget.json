@@ -45,10 +45,6 @@
       "max_lines": 46,
       "legacy_unmigrated": false
     },
-    "LeanSwe/Fs/Raw/c/fs_shim.c": {
-      "max_lines": 1011,
-      "legacy_unmigrated": true
-    },
     "LeanSwe/LinuxSyscall/c/passwd_shim.c": {
       "max_lines": 145,
       "legacy_unmigrated": false

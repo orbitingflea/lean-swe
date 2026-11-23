@@ -13,7 +13,6 @@ private def singleLine (s : String) : String :=
 private def allSuites : Array (String × String × IO (Option String)) := #[
   ("RegExp", "LeanSwe/RegExp/RuntimeTests.lean", do RegExp.RuntimeTests.runAll; Tests.Common.smokeRegExp; return none),
   ("Glob", "LeanSwe/Glob/RuntimeTests.lean", do Glob.RuntimeTests.runAll; return none),
-  ("Fs.Raw", "LeanSwe/Fs/Raw/RuntimeTests.lean", do Fs.Raw.RuntimeTests.runAll; return none),
   ("Fs", "LeanSwe/Fs/RuntimeTests.lean", do Fs.RuntimeTests.runAll; return none),
   ("Process", "LeanSwe/Process/RuntimeTests.lean", do Process.RuntimeTests.runAll; return none),
   ("Time", "LeanSwe/Time/RuntimeTests.lean", do Time.RuntimeTests.runAll; return none),

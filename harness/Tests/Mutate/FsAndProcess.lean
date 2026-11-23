@@ -1,5 +1,4 @@
 import Tests.Common
-import LeanSwe.Fs.Raw.RuntimeTests
 import LeanSwe.Fs.RuntimeTests
 import LeanSwe.Process.RuntimeTests
 import LeanSwe.Git.RuntimeTests
@@ -94,10 +93,6 @@ private def runGitMutateExtra : IO Unit := do
     (peTimeout.kind == .timeout && peTimeout.command == some "fetch" && peTimeout.exitCode == some 124 &&
       peTimeout.stderr == some "t" && !peTimeout.message.isEmpty &&
       peInv.kind == .invalidInput && evErr.kind == .commandFailed && !evErr.message.isEmpty)
-
-/-- Mutation test suite for `LeanSwe.Fs.Raw`. -/
-def fsRawSuite : MutateSuite :=
-  { name := "Fs.Raw", runBase := do Fs.Raw.RuntimeTests.runAll; return none }
 
 /-- Mutation test suite for `LeanSwe.Fs`. -/
 def fsSuite : MutateSuite :=

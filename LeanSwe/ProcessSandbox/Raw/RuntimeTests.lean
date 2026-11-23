@@ -1,7 +1,7 @@
 import LeanSwe.ProcessSandbox.Raw.Interface
 import LeanSwe.ProcessSandbox.Host.Bwrap
 import LeanSwe.ProcessSandbox.Model
-import LeanSwe.Fs.Raw.Interface
+import LeanSwe.Fs.Interface
 import LeanSwe.LinuxSyscall.Files.Interface
 
 namespace LeanSwe.ProcessSandbox.Raw.RuntimeTests
@@ -142,7 +142,7 @@ def runAllOutcome : IO (Option String) := do
       let _ ← Raw.closePlan phMiss
 
     IO.FS.createDirAll (noAccessDir / "sub")
-    let _ ← assertOk (← LeanSwe.Fs.Raw.chmod noAccessDir.toString 0o000) "chmod 0000 parent"
+    let _ ← assertOk (← LeanSwe.Fs.chmod noAccessDir.toString 0o000) "chmod 0000 parent"
     let validPerm ← match validateSpecPure
         { program := "/bin/true", mounts := #[.readOnly (noAccessDir / "sub").toString "/mnt"] } with
       | .ok v => pure v
@@ -153,7 +153,7 @@ def runAllOutcome : IO (Option String) := do
         "spawnBox unsearchable hostPath -> permissionDenied"
     finally
       let _ ← Raw.closePlan phPerm
-      let _ ← LeanSwe.Fs.Raw.chmod noAccessDir.toString 0o700
+      let _ ← LeanSwe.Fs.chmod noAccessDir.toString 0o700
 
     let roParent := tmpDir / "ro_parent"
     IO.FS.createDirAll roParent
@@ -258,7 +258,7 @@ def runAllOutcome : IO (Option String) := do
     IO.FS.createDirAll fakeBwrapDir
     let fakeBwrap := fakeBwrapDir / "bwrap"
     IO.FS.writeFile fakeBwrap "#!/bin/sh\nexit 0\n"
-    let _ ← assertOk (← LeanSwe.Fs.Raw.chmod fakeBwrap.toString 0o755) "chmod 0755 fake bwrap"
+    let _ ← assertOk (← LeanSwe.Fs.chmod fakeBwrap.toString 0o755) "chmod 0755 fake bwrap"
     let realResolved ← Host.Bwrap.resolveBwrapPath LeanSwe.LinuxSyscall.Files.defaultOps
       (pure (some s!":/nonexistent:.:rel/dir:{fakeBwrapDir}:/usr/bin".toUTF8))
     assertTrue (realResolved == some fakeBwrap.toString)
@@ -266,7 +266,7 @@ def runAllOutcome : IO (Option String) := do
 
     assertTrue ((← Raw.activeResourceCounts) == baseCounts) "final Raw.activeResourceCounts == 0"
   finally
-    let _ ← LeanSwe.Fs.Raw.chmod noAccessDir.toString 0o700
+    let _ ← LeanSwe.Fs.chmod noAccessDir.toString 0o700
     IO.FS.removeDirAll tmpDir
   IO.println "PASS: LeanSwe.ProcessSandbox.Raw runtime tests"
   return none

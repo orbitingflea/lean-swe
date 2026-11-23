@@ -1,5 +1,5 @@
 import Fuzz.Common.Suite
-import LeanSwe.Fs.Raw.Interface
+import LeanSwe.Fs.Interface
 import LeanSwe.LinuxSyscall.Files.SpecTests
 import Fuzz.LinuxSyscall.Env
 import Fuzz.LinuxSyscall.Files.Fuzz
@@ -182,7 +182,7 @@ private def printAndAssertHits (suiteName : String) (expectedNames : Array Strin
         throw (IO.userError s!"{suiteName} fuzzer coverage assertion failed: required errno {requiredErr} had 0 hits")
 
 private def countSelfFds : IO Nat := do
-  match ← LeanSwe.Fs.Raw.defaultOps.readDir "/proc/self/fd" with
+  match ← LeanSwe.Fs.listDir "/proc/self/fd" with
   | .ok names => return names.size
   | .error _ => return 0
 

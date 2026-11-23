@@ -3,6 +3,7 @@ import LeanSwe.Fs.Proofs.PurePathProofs
 open Core
 open Core.NondetTest
 open LeanSwe.Fs
+open LeanSwe.Fs.Model (LockHandle RawFsOpsM RawFsOps RawDirOpsM RawDirOps)
 
 namespace LeanSwe.Fs.Proofs
 
@@ -471,7 +472,7 @@ open LeanSwe.Fs.ProofsInternal
 
 /-- Pure single-step `RawFsOpsM (StateM VfsState)` backed by `VfsState`. -/
 def vfsOps : RawFsOpsM (StateM VfsState) :=
-  { mapRawError := Fs.Raw.Internal.mapRawError
+  { mapRawError := Model.mapRawError
     stat := fun follow path st => (vfsStatPure st follow path, st)
     readDir := fun path st => (vfsReadDirPure st path, st)
     createDir := fun path st => vfsCreateDirPure st path

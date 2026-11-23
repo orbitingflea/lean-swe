@@ -1,7 +1,7 @@
 import Core.Assumptions
 import LeanSwe.Fs.Impl
 import LeanSwe.Fs.Interface
-import LeanSwe.Fs.Raw.Interface
+import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.Process.Interface
 import LeanSwe.Process.SysBridge
 import LeanSwe.SlotPool.Interface
@@ -100,15 +100,38 @@ private def runConcurrentWorkerProbe (poolDir : String) (totalSlots : Nat)
   let cfg : PoolConfig := { poolDir := poolDir, totalSlots := totalSlots, pollIntervalMs := 10 }
   let res ← SlotPool.withSlot cfg .waitForever fun slotIdx => do
     let activeMarker := Fs.join activeDir s!"slot-{slotIdx}.active"
-    match ← Fs.Raw.createFileNew activeMarker (ByteArray.mk #[49]) with
-    | .error fe =>
-      return .error { kind := .ioError, path := some activeMarker, message := s!"mutual exclusion violation on slot {slotIdx}: {fe.message}" }
-    | .ok () =>
-      IO.sleep 35
-      let _ ← Fs.unlink activeMarker false
-      match ← Fs.atomicWriteText doneFile (toString slotIdx) with
-      | .error fe => return .error (Model.mapFsError fe)
-      | .ok () => return .ok slotIdx
+    let exclFlags : LinuxSyscall.Files.OpenFlags :=
+      { access := .wronly, creat := true, excl := true, nofollow := true, cloexec := true }
+    match ← LinuxSyscall.Files.openat none activeMarker.toUTF8 exclFlags 0o644 with
+    | .error eno =>
+      return .error { kind := .ioError, path := some activeMarker, message := s!"mutual exclusion violation on slot {slotIdx}: {LinuxSyscall.Errno.name eno}" }
+    | .ok hMarker =>
+      let writeRes ← LinuxSyscall.Files.write hMarker (ByteArray.mk #[49])
+      let closeRes ← LinuxSyscall.Files.close hMarker
+      let markerRes : Except SlotPoolError Unit :=
+        match writeRes with
+        | .error eno =>
+          .error { kind := .ioError, path := some activeMarker, message := s!"failed to write marker on slot {slotIdx}: {LinuxSyscall.Errno.name eno}" }
+        | .ok n =>
+          if n != 1 then
+            .error { kind := .ioError, path := some activeMarker, message := s!"short write ({n}/1 bytes) on slot {slotIdx} marker" }
+          else
+            match closeRes with
+            | .error eno =>
+              .error { kind := .ioError, path := some activeMarker, message := s!"failed to close marker on slot {slotIdx}: {LinuxSyscall.Errno.name eno}" }
+            | .ok () => .ok ()
+      match markerRes with
+      | .error err =>
+        let _ ← Fs.unlink activeMarker true
+        return .error err
+      | .ok () =>
+        IO.sleep 35
+        match ← Fs.unlink activeMarker false with
+        | .error fe => return .error (Model.mapFsError fe)
+        | .ok () =>
+          match ← Fs.atomicWriteText doneFile (toString slotIdx) with
+          | .error fe => return .error (Model.mapFsError fe)
+          | .ok () => return .ok slotIdx
   match res with
   | .ok (.leased _ _) => return 0
   | .ok .noSlot =>
@@ -433,28 +456,45 @@ private def testSigkillWakeupWaitUpToAndWaitForever (exe sandbox : String) : IO 
   assertTrue ((← Process.activeProcessCount) == 0) "all SIGKILL and peer processes reaped"
 
 private def testUncreatedPoolDirRace (exe sandbox : String) : IO Unit := do
-  let raw := Fs.Raw.defaultOps
   let raceDir := Fs.join sandbox "toctou-dir-pool"
   let raceFileDir := Fs.join sandbox "toctou-file-pool"
   let statCallsRef ← IO.mkRef (0 : Nat)
-  let dirRacingOps : Fs.RawFsOps :=
-    { raw with
-      createDir := fun p => do
-        if p == raceDir then
-          let _ ← raw.createDir p
-          return .error { kind := .alreadyExists, path := some p, message := "simulated concurrent mkdir" }
-        else if p == raceFileDir then
-          let _ ← Fs.writeText p "not-a-dir"
-          return .error { kind := .alreadyExists, path := some p, message := "simulated concurrent file" }
-        else
-          raw.createDir p
+  let dirRacingOps : Fs.Model.RawFsOpsM IO Unit :=
+    { mapRawError := Fs.mapRawError
       stat := fun follow p => do
         if p == raceDir then
           let n ← statCallsRef.modifyGet fun c => (c, c + 1)
           if n == 0 then
             return .error { kind := .notFound, path := some p, message := "initial stat before peer mkdir" }
-        raw.stat follow p }
-  let racingPoolApi := SlotPool.mkApiM (Fs.Internal.mkApiM dirRacingOps) Time.defaultOps
+        if follow then Fs.stat p else Fs.lstat p
+      readDir := Fs.listDir
+      createDir := fun p => do
+        if p == raceDir then
+          let _ ← Fs.mkdir p false false
+          return .error { kind := .alreadyExists, path := some p, message := "simulated concurrent mkdir" }
+        else if p == raceFileDir then
+          let _ ← Fs.writeText p "not-a-dir"
+          return .error { kind := .alreadyExists, path := some p, message := "simulated concurrent file" }
+        else
+          Fs.mkdir p false false
+      removeDir := Fs.rmdir
+      unlinkFile := fun p => Fs.unlink p false
+      readBytes := Fs.readBytes
+      writeBytes := Fs.writeBytes
+      createFileNew := fun _ _ => pure (.error { kind := .unsupported, message := "unused" })
+      appendText := Fs.appendText
+      rename := Fs.rename
+      chmod := Fs.chmod
+      symlink := Fs.symlink
+      readLink := Fs.readLink
+      realPath := Fs.resolve
+      cwd := Fs.cwd
+      monotonicNonce := pure 0
+      acquireLock := fun _ _ _ _ => pure (.error { kind := .unsupported, message := "unused" })
+      releaseLock := fun _ => pure (.ok ()) }
+  let racingFsApi : Fs.FsApi :=
+    { Fs.defaultApi with mkdir := (Fs.Internal.mkApiM dirRacingOps).mkdir }
+  let racingPoolApi := SlotPool.mkApiM racingFsApi Time.defaultOps
   let dirOut ← assertSlotOk
     (← racingPoolApi.withSlot { poolDir := raceDir, totalSlots := 1, pollIntervalMs := 10 } .noWait fun idx =>
       return .ok (idx + 7))
