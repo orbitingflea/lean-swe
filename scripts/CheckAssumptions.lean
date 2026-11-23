@@ -1636,18 +1636,47 @@ private def buildTransitiveImportFn (env : Environment) : Name → Std.HashSet N
           work := work.push nxt
     return seen
 
+private def nonProjectReducibilityStatus (env : Environment) (cName : Name) : ReducibilityStatus := Id.run do
+  let mut st : ReducibilityStatus :=
+    match env.getModuleIdxFor? cName with
+    | some defIdx =>
+      match (Lean.reducibilityCoreExt.getModuleEntries env defIdx).binSearch
+          (cName, .semireducible) (fun a b => Name.quickLt a.1 b.1) with
+      | some (_, s) => s
+      | none => .semireducible
+    | none => .semireducible
+  for h : i in [0 : env.header.moduleNames.size] do
+    if !isProjectOrTestModule env.header.moduleNames[i] then
+      for entry in Lean.reducibilityExtraExt.ext.getModuleEntries env i do
+        if let .global (n, s) := entry then
+          if n == cName then
+            st := s
+  return st
+
+private def relaxProjectIrreducibles : CoreM Unit := do
+  let env ← getEnv
+  let mut toRestore : Array (Name × ReducibilityStatus) := #[]
+  for h : i in [0 : env.header.moduleNames.size] do
+    if isProjectOrTestModule env.header.moduleNames[i] then
+      for (cName, status) in Lean.reducibilityCoreExt.getModuleEntries env i do
+        if status == .irreducible && (← isIrreducible cName) then
+          toRestore := toRestore.push (cName, .semireducible)
+      for entry in Lean.reducibilityExtraExt.ext.getModuleEntries env i do
+        if let .global (cName, .irreducible) := entry then
+          if (← isIrreducible cName) then
+            let origStatus :=
+              if isProjectOrTestModule (moduleOfConst env cName) then
+                .semireducible
+              else
+                nonProjectReducibilityStatus env cName
+            toRestore := toRestore.push (cName, origStatus)
+  for (cName, status) in toRestore do
+    setReducibilityStatus cName status
+
 private def kernelDefEq (a b : Expr) : MetaM BoundedBool := do
-  if !a.hasMVar && !b.hasMVar then
-    let env ← getEnv
-    let lctx ← getLCtx
-    let opts ← getOptions
-    let res ← runBoundedMeta (do pure (Lean.Kernel.isDefEq env lctx a b)) (maxRecDepth := 1024)
-    match res with
-    | .ok (.ok true) => return .isTrue
-    | .ok (.ok false) => return .isFalse
-    | .ok (.error kex) => return .inconclusive (← (kex.toMessageData opts).toString)
-    | .error r => return .inconclusive r
-  match ← runBoundedMeta (Meta.withNewMCtxDepth (withTransparency .all <| isDefEq a b)) (maxRecDepth := 1024) with
+  match ← runBoundedMeta
+      (Meta.withNewMCtxDepth <| Meta.withTransparency .default <| isDefEq a b)
+      (maxRecDepth := 1024) with
   | .ok true => return .isTrue
   | .ok false => return .isFalse
   | .error r => return .inconclusive r
@@ -2264,10 +2293,8 @@ private def checkPureAllowedNonTrivial
           | .inconclusive r, _ | _, .inconclusive r => return .inconclusive r
           | .isTrue, .isTrue => return .isFalse
           | _, _ => pure ()
-        match ← checkWrappedPayloadSensitive env modelMods
-            (fun y => pure (mkAppN specSubst (acc.push y)).headBeta) specFn outTySubst with
-        | .isTrue => return .isTrue
-        | other => return other
+        checkWrappedPayloadSensitive env modelMods
+          (fun y => pure (mkAppN specSubst (acc.push y)).headBeta) specFn outTySubst
   withInputs 0 #[]
 
 private def checkStepAllowedNonTrivial
@@ -2908,6 +2935,7 @@ unsafe def main (args : List String) : IO UInt32 := do
   let ctx : Core.Context := { fileName := "<CheckAssumptions>", fileMap := default, maxHeartbeats := 0, maxRecDepth := 8192 }
   let state : Core.State := { env }
   let ((metaErrs, expectedAssumpNames, expectedErrorTests), _) ← (Meta.MetaM.run' do
+    relaxProjectIrreducibles
     let mut errs : Array String := #[]
     let mut expAssumps : Array String := #[]
     let mut expErrTests : Array (String × String) := #[]
