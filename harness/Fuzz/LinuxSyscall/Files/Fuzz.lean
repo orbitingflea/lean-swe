@@ -859,7 +859,7 @@ private def isOpenDirHandle (s : FilesState) (hid : HandleId) : Bool :=
 private def isUnlinkedOpenDirHandle (s : FilesState) (hid : HandleId) : Bool :=
   match assocGet s.fds hid with
   | some desc =>
-    !desc.isPathFd &&
+    !desc.isPathFd && !desc.isExternalStdio &&
     match assocGet s.inodes desc.ino with
     | some vn => vn.kind == .dir && (vn.nlink == 0 || vn.isDeadDir)
     | none => false
@@ -1268,14 +1268,39 @@ private def findOpenEmptyCwdChildName (s : FilesState) : Option ByteArray :=
   match assocGet s.inodes s.cwdIno with
   | none => none
   | some cwdVn =>
-    cwdVn.children.findSome? fun (name, cino) =>
+    if cwdVn.isDeadDir || isReadOnlyMount s cwdVn.mountId || !hasVNodePermIn s cwdVn false true true then none
+    else cwdVn.children.findSome? fun (name, cino) =>
       match assocGet s.inodes cino with
       | some cvn =>
         if cvn.kind == .dir && cvn.children.isEmpty && cvn.nlink > 0 &&
-            s.fds.any (fun (_, desc) => !desc.isPathFd && desc.ino == cino) then
+            !cvn.isPseudo && !cvn.isDynamic && cvn.owner.ownedByUid && !isReadOnlyMount s cvn.mountId &&
+            s.fds.any (fun (_, desc) => !desc.isPathFd && !desc.isExternalStdio && desc.ino == cino) then
           some name
         else none
       | none => none
+
+private def findUnopenedEmptyCwdChildName (s : FilesState) : Option ByteArray :=
+  match assocGet s.inodes s.cwdIno with
+  | none => none
+  | some cwdVn =>
+    if cwdVn.isDeadDir || isReadOnlyMount s cwdVn.mountId || !hasVNodePermIn s cwdVn false true true then none
+    else cwdVn.children.findSome? fun (name, cino) =>
+      match assocGet s.inodes cino with
+      | some cvn =>
+        if cvn.kind == .dir && cvn.children.isEmpty && cvn.nlink > 0 &&
+            !cvn.isPseudo && !cvn.isDynamic && cvn.owner.ownedByUid &&
+            hasVNodePermIn s cvn true false true && !isReadOnlyMount s cvn.mountId &&
+            !(s.fds.any (fun (_, desc) => !desc.isPathFd && !desc.isExternalStdio && desc.ino == cino)) then
+          some name
+        else none
+      | none => none
+
+private def canOpenUnlinkedCwd (s : FilesState) : Bool :=
+  match assocGet s.inodes s.cwdIno with
+  | some cwdVn =>
+    cwdVn.kind == .dir && (cwdVn.nlink == 0 || cwdVn.isDeadDir) &&
+    hasVNodePermIn s cwdVn true false true
+  | none => false
 
 private def findSymlinkChildName (s : FilesState) : Option ByteArray :=
   match assocGet s.inodes s.cwdIno with
@@ -1409,6 +1434,8 @@ private def genSymReq (rng : Rng) (env : GenEnv) (s : FilesState)
     match assocGet s.fds hid with
     | some od => isUnlinkedCopyUpDesc s od
     | none => false
+  let unlinkedDirFds := env.openFds.filter fun (_, hid) =>
+    isUnlinkedOpenDirHandle s hid
   let (opSlot, r1a) := rng.nextNat 28
   let opIdx0 :=
     if opSlot < 23 then opSlot
@@ -1431,14 +1458,22 @@ private def genSymReq (rng : Rng) (env : GenEnv) (s : FilesState)
     if !s.freeStdioSlots.isEmpty then r1c.chance 1 3 else (false, r1c)
   let (preferOvlFchmod, r1e) :=
     if ovlHot && !unlinkedCopyUpFds.isEmpty then r1d.chance 1 14 else (false, r1d)
-  let (preferOvlUnlink, r1) :=
+  let (preferOvlUnlink, r1f) :=
     if ovlHot && !preferOvlFchmod && unlinkedCopyUpFds.isEmpty && (findOpenMayCopyUpChild s).isSome then
       r1e.chance 1 5
     else (false, r1e)
+  let (preferUnlinkedGetdents, r1g) :=
+    if !unlinkedDirFds.isEmpty then r1f.chance 1 20 else (false, r1f)
+  let (preferUnlinkOpenEmptyDir, r1) :=
+    if !preferUnlinkedGetdents && unlinkedDirFds.isEmpty && (findOpenEmptyCwdChildName s).isSome then
+      r1g.chance 1 16
+    else (false, r1g)
   let opIdx :=
     if preferFreeDup then 22
     else if preferOvlFchmod then 15
     else if preferOvlUnlink then 9
+    else if preferUnlinkedGetdents then 13
+    else if preferUnlinkOpenEmptyDir then 9
     else if env.allFds.isEmpty then
       let initOps := #[0, 1, 6, 7, 8, 9, 10, 11, 12, 14, 19, 22]
       initOps.getD (opIdx0 % initOps.size) 0
@@ -1483,10 +1518,14 @@ private def genSymReq (rng : Rng) (env : GenEnv) (s : FilesState)
     let (preferOpathSock, r1s0) := r1f.chance 1 12
     let (preferOpathSym, r1s0b) := r1s0.chance 1 12
     let (preferExeBusy, r1s1) := r1s0b.chance 1 48
-    let (preferOvlLowerOpen, r1s) :=
+    let (preferOvlLowerOpen, r1s2) :=
       if ovlHot && unlinkedCopyUpFds.isEmpty && (findOpenMayCopyUpChild s).isNone then
         r1s1.chance 1 4
       else (false, r1s1)
+    let (preferUnlinkedDirOpen, r1s) :=
+      if unlinkedDirFds.isEmpty && (canOpenUnlinkedCwd s || (findOpenEmptyCwdChildName s).isNone) then
+        r1s2.chance 1 12
+      else (false, r1s2)
     if preferExeBusy && allowHostMut && canProbeProcSelfExe s then
       (.openat none "/proc/self/exe".toUTF8 { access := .wronly, cloexec := true } 0, r1s)
     else
@@ -1505,6 +1544,14 @@ private def genSymReq (rng : Rng) (env : GenEnv) (s : FilesState)
       | true, some (ovlName, isDir) =>
         (.openat none ovlName { access := .rdonly, directory := isDir, cloexec := true } 0, r1s)
       | _, _ =>
+      match preferUnlinkedDirOpen && canOpenUnlinkedCwd s,
+            preferUnlinkedDirOpen && isOwnedInode s ownedRootIno crossIno? s.cwdIno,
+            findUnopenedEmptyCwdChildName s with
+      | true, _, _ =>
+        (.openat none ".".toUTF8 { access := .rdonly, directory := true, cloexec := true } 0, r1s)
+      | false, true, some emptyName =>
+        (.openat none emptyName { access := .rdonly, directory := true, cloexec := true } 0, r1s)
+      | _, _, _ =>
       let ((dir0, hasDir), r2) := pickDirArg r1s env
       let (flags0, r3) := genOpenFlags r2
       let (useSimple, r3b) := r3.chance 1 3
@@ -1663,7 +1710,8 @@ private def genSymReq (rng : Rng) (env : GenEnv) (s : FilesState)
     let (mode, r5) := genMode r4
     (.mkdirat dir path mode, r5)
   | 9 =>
-    let (preferEmptyOpen, r1b) := if ovlHot then r1.chance 2 3 else r1.chance 1 3
+    let (preferEmptyOpen, r1b) :=
+      if ovlHot || preferUnlinkOpenEmptyDir then r1.chance 2 3 else r1.chance 1 3
     match preferEmptyOpen, findOpenMayCopyUpChild s, findOpenEmptyCwdChildName s with
     | true, some (name, isDir), _ =>
       (.unlinkat none name isDir, r1b)
