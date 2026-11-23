@@ -128,6 +128,18 @@ private def runCmdLineMutateExtra : IO Unit := do
   let mockConfBad := (CmdLine.Internal.confirm mockOps "c?" none 1).run ["bad"]
   checkB "confirm bad 1 msg" (mockConfBad.1 == .error { kind := .invalidValue, message := "exceeded maximum confirmation attempts" })
   checkB "stripCrLf" (CmdLine.Internal.stripTrailingNewline "ab\r\n" == "ab" && CmdLine.Internal.stripTrailingNewline "ab\r" == "ab" && CmdLine.Internal.stripTrailingNewline "ab\n" == "ab")
+  let checkIoMap (e : LinuxSyscall.Errno) (pred : IO.Error → Bool) (lbl : String) : IO Unit :=
+    checkB s!"errnoToIoError_{lbl}" (pred (CmdLine.SysBridge.errnoToIoError e))
+  checkIoMap LinuxSyscall.Errno.EINTR (fun | .interrupted _ 4 _ => true | _ => false) "EINTR"
+  checkIoMap LinuxSyscall.Errno.EIO (fun | .hardwareFault 5 _ => true | _ => false) "EIO"
+  checkIoMap LinuxSyscall.Errno.EBADF (fun | .invalidArgument _ 9 _ => true | _ => false) "EBADF"
+  checkIoMap LinuxSyscall.Errno.EAGAIN (fun | .resourceExhausted _ 11 _ => true | _ => false) "EAGAIN"
+  checkIoMap LinuxSyscall.Errno.EISDIR (fun | .inappropriateType _ 21 _ => true | _ => false) "EISDIR"
+  checkIoMap LinuxSyscall.Errno.EMFILE (fun | .resourceExhausted _ 24 _ => true | _ => false) "EMFILE"
+  checkIoMap LinuxSyscall.Errno.EFBIG (fun | .resourceExhausted _ 27 _ => true | _ => false) "EFBIG"
+  checkIoMap LinuxSyscall.Errno.ENOSPC (fun | .resourceExhausted _ 28 _ => true | _ => false) "ENOSPC"
+  checkIoMap LinuxSyscall.Errno.EPIPE (fun | .resourceVanished 32 _ => true | _ => false) "EPIPE"
+  checkIoMap LinuxSyscall.Errno.ENOSYS (fun | .otherError 38 s => !s.isEmpty | _ => false) "ENOSYS"
 
 /-- Mutation test suite for `LeanSwe.CmdLine`. -/
 def cmdLineSuite : MutateSuite :=

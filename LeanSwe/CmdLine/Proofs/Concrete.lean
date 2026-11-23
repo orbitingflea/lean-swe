@@ -201,4 +201,47 @@ theorem canReach_runCliWith_customValidator : CanReach (test_cmdline_runCliWith_
 /-- Proof that `parseWithEnv` under `pureIdCliOps` agrees universally with `parseWith`. -/
 theorem allPass_parseWithEnv_unsetEnvMatchesParseWith :
     Core.AllPass (test_cmdline_parseWithEnv_unsetEnvMatchesParseWith defaultApi Internal.mkApiM) := fun _ _ _ => ⟨rfl, trivial⟩
+
+private theorem mkFilesCliOps_eintr_case (k : Nat) (hk : k ≤ 8) :
+    let ops := SysBridge.mkFilesCliOpsM (m := ScriptedCliM) scriptedStdioFilesOps (fun _ => pure (.ok none))
+    let sRead : ScriptedStdioState :=
+      { readQueue :=
+          [.ok (ByteArray.mk #[0x68]), .ok (ByteArray.mk #[0x69])] ++
+          List.replicate k (.error LeanSwe.LinuxSyscall.Errno.EINTR) ++
+          [.ok (ByteArray.mk #[0x0D]), .ok (ByteArray.mk #[0x0A]), .ok (ByteArray.mk #[0x5A])] }
+    let (rLine, sRead') := (ops.readLine : StateM ScriptedStdioState _).run sRead
+    (match rLine with | .ok v => v == some "hi" | .error _ => false) = true ∧
+      sRead'.openFds = [] ∧ sRead'.dupCount = 1 ∧ sRead'.readQueue.length = 1 := by
+  rcases hk with _ | ⟨_ | ⟨_ | ⟨_ | ⟨_ | ⟨_ | ⟨_ | ⟨_ | ⟨_ | hbad⟩⟩⟩⟩⟩⟩⟩⟩
+  · cbv
+  · cbv
+  · cbv
+  · cbv
+  · cbv
+  · cbv
+  · cbv
+  · cbv
+  · cbv
+
+/-- `test_cmdline_mkFilesCliOps_eintrPartialWriteAndEof` holds universally for `SysBridge.mkFilesCliOpsM`. -/
+theorem allPass_mkFilesCliOps_eintrPartialWriteAndEof :
+    Core.AllPass (test_cmdline_mkFilesCliOps_eintrPartialWriteAndEof SysBridge.mkFilesCliOpsM) := by
+  intro k hk
+  have hc := mkFilesCliOps_eintr_case k hk
+  refine ⟨hc.1, hc.2, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, trivial⟩
+  · cbv
+  · cbv
+  · cbv
+  · cbv
+  · cbv
+  · cbv
+  · cbv
+  · cbv
+
+/-- `test_cmdline_mkFilesCliOps_eintrPartialWriteAndEof` is non-vacuously reachable. -/
+theorem canReach_mkFilesCliOps_eintrPartialWriteAndEof :
+    Core.CanReach (test_cmdline_mkFilesCliOps_eintrPartialWriteAndEof SysBridge.mkFilesCliOpsM) := by
+  refine ⟨1, by decide, ?_⟩
+  exact allPass_mkFilesCliOps_eintrPartialWriteAndEof 1 (by decide)
+
 end LeanSwe.CmdLine.Proofs

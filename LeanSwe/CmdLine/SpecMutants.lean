@@ -121,6 +121,17 @@ example : ¬ Core.AllPass (test_cmdline_parseWithEnv_unsetEnvMatchesParseWith
   have h0 := h { name := "app" } [] []
   simp [stubCmdLineApiM, assert] at h0
 
+example : ¬ Core.AllPass (test_cmdline_mkFilesCliOps_eintrPartialWriteAndEof
+    (fun _ getEnvFn =>
+      { readLine := throwThe IO.Error (.interrupted "" 4 "eintr aborted")
+        writeOut := fun _ => pure ()
+        writeErr := fun _ => pure ()
+        getEnv := getEnvFn })) := by
+  intro h
+  have h0 := h 1 (by decide)
+  rcases h0 with ⟨h1, _⟩
+  cases h1
+
 example : Model.isValidSpec
     { name := "cli"
       version := some "1.0.0"

@@ -1303,7 +1303,7 @@ def mkApiM {m : Type → Type} [Monad m] (ops : CliOpsM m) : CmdLineApiM m :=
     runCli := fun spec args handler => runCli ops spec args handler
     runCliWith := fun spec args validators handler => runCliWith ops spec args validators handler }
 
-/-- Strip trailing `\r` and `\n` characters from a line read via `IO.FS.Stream.getLine`. -/
+/-- Strip trailing `\r` and `\n` characters from a line read from standard input. -/
 def stripTrailingNewline (s : String) : String :=
   String.ofList (s.toList.reverse.dropWhile (fun c => c == '\n' || c == '\r')).reverse
 

@@ -609,15 +609,26 @@ where
 def stripTrailingNewlineModel (s : String) : String :=
   String.ofList (s.toList.reverse.dropWhile (fun c => c == '\n' || c == '\r')).reverse
 
-/-- Underlying stream semantics active on a `StdioChannelState`. -/
-inductive StreamBackend where
-  /-- Standard OS `FILE*` stream (`IO.getStdin`/`Stdout`/`Stderr`). -/
-  | osFileStar
-  /-- Thread-local in-memory `IO.FS.Stream.ofBuffer` (strict UTF-8, no sticky `ferror`). -/
-  | leanOfBuffer
-  /-- Unbuffered `LinuxSyscall.Files` 1-byte read / full-write backend. -/
-  | linuxSyscallFiles
+/-- Bounded retry count on transient `EINTR` (`4`) for single `read(2)` / `write(2)` calls
+    (shared with `SysBridge.stdioEintrFuel`). Up to `64` consecutive `EINTR` deliveries are retried
+    transparently while preserving accumulated bytes; exceeding this budget propagates `.interrupted`. -/
+def stdioEintrRetryLimit : Nat := 64
+
+/-- Pending signal interruption pattern (without `SA_RESTART`) attached to a `StdioChannelState`. -/
+inductive PendingInterrupt where
+  /-- No pending signal interruption. -/
+  | none
+  /-- Finite burst of `count` consecutive `EINTR` deliveries (`count ≤ stdioEintrRetryLimit` retries absorb it). -/
+  | transient (count : Nat)
+  /-- Repeating periodic `EINTR` delivery stream (exhausts all `stdioEintrRetryLimit` retries and throws `.interrupted`). -/
+  | repeating
   deriving Repr, BEq, DecidableEq, Inhabited
+
+/-- Return `true` iff `p` exhausts the `stdioEintrRetryLimit` (`64`) retry budget on a blocking syscall. -/
+def PendingInterrupt.exhaustsRetries : PendingInterrupt → Bool
+  | .none => false
+  | .transient count => count > stdioEintrRetryLimit
+  | .repeating => true
 
 /-- Physical OS descriptor backing for `stdin`/`stdout`/`stderr`. -/
 inductive FdBacking where
@@ -647,24 +658,12 @@ inductive FdBacking where
 structure StdioChannelState where
   /-- Kernel descriptor backing attached to this stdio slot. -/
   backing : FdBacking := .nullDev
-  /-- Stream backend (`osFileStar` for Stage A `defaultOps`). -/
-  backend : StreamBackend := .osFileStar
-  /-- Glibc `FILE*` sticky `_IO_ERR_SEEN` flag poisoned by prior read error. -/
-  stickyReadErr : Bool := false
-  /-- Pending injected signal interruption (`some 4` for `EINTR` without `SA_RESTART`). -/
-  pendingInterrupt? : Option UInt32 := none
-  /-- Accumulated bytes actually flushed/written to kernel sink. -/
+  /-- Pending injected `EINTR` signal pattern (without `SA_RESTART`). -/
+  pendingInterrupt : PendingInterrupt := .none
+  /-- Accumulated bytes actually written to the kernel sink. -/
   writtenBytes : ByteArray := ByteArray.empty
-  /-- In-memory buffer backing `StreamBackend.leanOfBuffer` (`IO.FS.Stream.ofBuffer`), isolated from OS FDs. -/
-  memBuffer : ByteArray := ByteArray.empty
-  /-- Current byte cursor within `memBuffer` for `StreamBackend.leanOfBuffer`. -/
-  memPos : Nat := 0
   /-- Whether `SIGXFSZ` is ignored (`SIG_IGN`) rather than terminating with `SIG_DFL` on `RLIMIT_FSIZE`. -/
   sigxfszIgnored : Bool := false
-  /-- Buffered bytes already pulled into glibc `FILE*` read buffer (`StreamBackend.osFileStar`). -/
-  stdioBuf : ByteArray := ByteArray.empty
-  /-- Glibc `FILE*` sticky `_IO_EOF_SEEN` flag latched when EOF occurs while `_IO_ERR_SEEN` is active. -/
-  stickyEof : Bool := false
   deriving BEq, DecidableEq, Inhabited
 
 /-- Pure OS-world state for modeling all impure `LeanSwe.CmdLine` entry points. -/
@@ -677,9 +676,9 @@ structure StdioWorld where
   stderr : StdioChannelState := { backing := .pipe ByteArray.empty false false false 65536 }
   /-- Raw POSIX `environ` entries (`KEY=VAL` byte arrays, preserving duplicates and invalid UTF-8). -/
   rawEnviron : List ByteArray := []
-  /-- Whether `SIGPIPE` is ignored (`true` in Lean 4 runtime even when inherited as `SIG_DFL`). -/
+  /-- Whether `SIGPIPE` is ignored/shielded (`true` under `LinuxSyscall.Files.write`). -/
   sigpipeIgnored : Bool := true
-  /-- Last thread-local `errno` value observable when sticky `ferror` triggers without a fresh syscall error. -/
+  /-- Last kernel `errno` observed from a failing `IO` step (`0` initially). -/
   lastErrno : UInt32 := 0
   deriving BEq, DecidableEq, Inhabited
 
@@ -699,16 +698,12 @@ inductive StdioErrClass where
   | fileTooLarge
   /-- `ENOSPC` (`28`: `/dev/full` or full tmpfs). -/
   | noSpace
-  /-- `EPIPE` (`32`: broken pipe with `SIGPIPE = SIG_IGN`). -/
+  /-- `EPIPE` (`32`: broken pipe with `SIGPIPE` shielded). -/
   | brokenPipe
-  /-- Sticky `ferror` on glibc `FILE*` where next call consumed a line then failed. -/
-  | stickyReadError
   /-- Blocking operation in single-threaded state (open empty pipe/PTY or `/dev/full` stream read). -/
   | blocked
   /-- Process terminated by an uncaught signal (e.g., `SIGXFSZ` `25` on `RLIMIT_FSIZE`). -/
   | terminatedBySignal (sig : UInt8)
-  /-- Strict UTF-8 error thrown by `IO.FS.Stream.ofBuffer`. -/
-  | invalidUtf8Buffer
   deriving Repr, BEq, DecidableEq, Inhabited
 
 /-- Map `StdioErrClass` to its Linux `errno` code (`0` if not an `errno`-backed failure). -/
@@ -722,19 +717,6 @@ def stdioErrClassToErrno : StdioErrClass → UInt32
   | .noSpace => 28
   | .brokenPipe => 32
   | _ => 0
-
-/-- Map stale thread-local `lastErrno` observable under sticky `ferror` back to `StdioErrClass`. -/
-def stdioErrClassOfErrno (err : UInt32) : StdioErrClass :=
-  match err with
-  | 4 => .interrupted
-  | 5 => .hardwareFault
-  | 9 => .badFd
-  | 11 => .wouldBlock
-  | 21 => .isDirectory
-  | 27 => .fileTooLarge
-  | 28 => .noSpace
-  | 32 => .brokenPipe
-  | _ => .stickyReadError
 
 /-- Outcome of an `IO` step, explicitly separating normal return values from uncaught `IO.Error` throws. -/
 inductive IoStepOutcome (α : Type) where
@@ -785,26 +767,6 @@ where
       else
         none
 
-/-- Split `memBuffer` from `startPos` matching Lean 4 `IO.FS.Stream.ofBuffer.getLine`:
-    stops *before* `0x00` (without advancing `nextPos` past `0x00`) or *after* `0x0A`. -/
-def splitBufferLineBytes (bs : ByteArray) (startPos : Nat := 0) : ByteArray × Nat :=
-  go startPos (bs.size - startPos + 1)
-where
-  go (i fuel : Nat) : ByteArray × Nat :=
-    match fuel with
-    | 0 => (bs.extract startPos bs.size, bs.size)
-    | fuel' + 1 =>
-      if _ : i < bs.size then
-        let b := bs[i]
-        if b == 0x00 then
-          (bs.extract startPos i, i)
-        else if b == 0x0A then
-          (bs.extract startPos (i + 1), i + 1)
-        else
-          go (i + 1) fuel'
-      else
-        (bs.extract startPos bs.size, bs.size)
-
 /-- Canonical Linux `n_tty` (`ICANON | ICRNL`) input feeder: translates `0x0D` to `0x0A`,
     splits completed lines, and flushes `partialLine` or emits `none` on `^D` (`0x04`). -/
 def ptyFeedBytes (segments : List (Option ByteArray)) (pendingLine : ByteArray) (bs : ByteArray) :
@@ -832,29 +794,19 @@ where
       else
         (accRev, cur)
 
-/-- Consume canonical PTY slave segments on `fgets`, splitting on interior `0x0A` and returning `hitCtrlDEof`. -/
+/-- Consume canonical PTY slave segments, splitting on interior `0x0A` and stopping on `none` (`^D`). -/
 def consumePtySegments (acc : ByteArray) :
-    List (Option ByteArray) → Option (ByteArray × List (Option ByteArray) × Bool)
+    List (Option ByteArray) → Option (ByteArray × List (Option ByteArray))
   | [] => none
-  | none :: rest => some (acc, rest, true)
+  | none :: rest => some (acc, rest)
   | some chunk :: rest =>
     let combined := acc ++ chunk
     match splitLineBytes combined with
     | some (lineBs, rem) =>
       let rest' := if rem.isEmpty then rest else some rem :: rest
-      some (lineBs, rest', false)
+      some (lineBs, rest')
     | none =>
       consumePtySegments combined rest
-
-/-- Decode raw line bytes for `backend`: strict UTF-8 for `.leanOfBuffer`, Lean lossy UTF-8 for OS streams. -/
-def decodeStreamLineBytes (backend : StreamBackend) (bs : ByteArray) : IoStepOutcome String :=
-  match backend with
-  | .leanOfBuffer =>
-    match decodeUtf8Strict? bs with
-    | some s => .returned s
-    | none => .threwIo .invalidUtf8Buffer
-  | .osFileStar | .linuxSyscallFiles =>
-    .returned (decodeUtf8LossyLean bs)
 
 /-- Update `w.lastErrno` when an `IO` step throws a kernel `errno`-backed error. -/
 def updateWorldErrno {α : Type} (w : StdioWorld) (out : IoStepOutcome α) : StdioWorld :=
@@ -864,169 +816,62 @@ def updateWorldErrno {α : Type} (w : StdioWorld) (out : IoStepOutcome α) : Std
     let code := stdioErrClassToErrno err
     if code != 0 then { w with lastErrno := code } else w
 
-/-- Pull up to 4096-byte (`__fbufsize`) chunks from a regular file until LF or EOF. -/
-def pullRegFileChunks (bytes : ByteArray) (curPos : Nat) (curBuf : ByteArray) (fuel : Nat) :
-    Option (ByteArray × ByteArray) × Nat × ByteArray :=
-  match fuel with
-  | 0 => (none, curPos, curBuf)
-  | fuel' + 1 =>
-    if curPos >= bytes.size then
-      (none, curPos, curBuf)
-    else
-      let nextPos := min bytes.size (curPos + 4096)
-      let avail := curBuf ++ bytes.extract curPos nextPos
-      match splitLineBytes avail with
-      | some pair => (some pair, nextPos, ByteArray.empty)
-      | none =>
-        if nextPos >= bytes.size then
-          (none, bytes.size, avail)
-        else
-          pullRegFileChunks bytes nextPos avail fuel'
-
-/-- Pull up to 4096-byte (`__fbufsize`) chunks from a pipe until LF or drained. -/
-def pullPipeChunks (curBuf remPending : ByteArray) (fuel : Nat) :
-    Option (ByteArray × ByteArray) × ByteArray × ByteArray :=
-  match fuel with
-  | 0 => (none, remPending, curBuf)
-  | fuel' + 1 =>
-    if remPending.isEmpty then
-      (none, ByteArray.empty, curBuf)
-    else
-      let pull := min 4096 remPending.size
-      let avail := curBuf ++ remPending.extract 0 pull
-      let restPending := remPending.extract pull remPending.size
-      match splitLineBytes avail with
-      | some pair => (some pair, restPending, ByteArray.empty)
-      | none => pullPipeChunks avail restPending fuel'
-
-/-- Pure transition of `IO.getStdin.getLine` on `StdioWorld`. -/
+/-- Pure transition of reading one raw line from `stdin` on `StdioWorld` via unbuffered `LinuxSyscall.Files`.
+    On a blocking open pipe or PTY, transient `EINTR` bursts with `count ≤ stdioEintrRetryLimit` (`64`) are
+    absorbed; `repeating` or `transient count` with `count > stdioEintrRetryLimit` throws `.interrupted`. -/
 def stepRawGetLine (w : StdioWorld) : IoStepOutcome String × StdioWorld :=
   let ch := w.stdin
-  if ch.backend == .leanOfBuffer then
-    let (lineBs, nextPos) := splitBufferLineBytes ch.memBuffer ch.memPos
-    let ch' := { ch with memPos := nextPos }
-    (decodeStreamLineBytes .leanOfBuffer lineBs, { w with stdin := ch' })
-  else
-    let sticky := ch.backend == .osFileStar && ch.stickyReadErr
-    let stickyErr := stdioErrClassOfErrno w.lastErrno
-    match (if ch.backend == .osFileStar then splitLineBytes ch.stdioBuf else none) with
-    | some (lineBs, restBuf) =>
-      let ch' := { ch with stdioBuf := restBuf }
-      let w' := { w with stdin := ch' }
-      if sticky then (.threwIo stickyErr, w') else (decodeStreamLineBytes ch.backend lineBs, w')
+  match ch.backing with
+  | .closedFd | .wrongMode =>
+    (.threwIo .badFd, { w with lastErrno := 9 })
+  | .dirFd =>
+    (.threwIo .isDirectory, { w with lastErrno := 21 })
+  | .nullDev =>
+    (.returned "", w)
+  | .fullDev =>
+    (.threwIo .blocked, w)
+  | .regFile bytes pos fsizeLimit? =>
+    let avail := bytes.extract pos bytes.size
+    let (lineBs, newPos) :=
+      match splitLineBytes avail with
+      | some (l, _) => (l, pos + l.size)
+      | none => (avail, max pos bytes.size)
+    let ch' := { ch with backing := .regFile bytes newPos fsizeLimit? }
+    (.returned (decodeUtf8LossyLean lineBs), { w with stdin := ch' })
+  | .pipe pending writersClosed nonblock readersClosed cap =>
+    match splitLineBytes pending with
+    | some (lineBs, rest) =>
+      let ch' := { ch with backing := .pipe rest writersClosed nonblock readersClosed cap }
+      (.returned (decodeUtf8LossyLean lineBs), { w with stdin := ch' })
     | none =>
-      if ch.backend == .osFileStar && ch.stickyEof then
-        if sticky then
-          (.threwIo stickyErr, { w with stdin := { ch with stdioBuf := ByteArray.empty } })
-        else
-          (.returned "", { w with stdin := { ch with stdioBuf := ByteArray.empty, stickyEof := false } })
+      if writersClosed then
+        let ch' := { ch with backing := .pipe ByteArray.empty true nonblock readersClosed cap }
+        (.returned (decodeUtf8LossyLean pending), { w with stdin := ch' })
+      else if nonblock then
+        let ch' := { ch with backing := .pipe ByteArray.empty false true readersClosed cap }
+        (.threwIo .wouldBlock, { w with stdin := ch', lastErrno := 11 })
+      else if ch.pendingInterrupt.exhaustsRetries then
+        let ch' := { ch with backing := .pipe ByteArray.empty false false readersClosed cap, pendingInterrupt := .none }
+        (.threwIo .interrupted, { w with stdin := ch', lastErrno := 4 })
       else
-        match ch.backing with
-        | .closedFd | .wrongMode =>
-          let ch' := { ch with stdioBuf := ByteArray.empty, stickyReadErr := ch.backend == .osFileStar || ch.stickyReadErr }
-          (.threwIo .badFd, { w with stdin := ch', lastErrno := 9 })
-        | .dirFd =>
-          let ch' := { ch with stdioBuf := ByteArray.empty, stickyReadErr := ch.backend == .osFileStar || ch.stickyReadErr }
-          (.threwIo .isDirectory, { w with stdin := ch', lastErrno := 21 })
-        | .nullDev =>
-          if ch.backend == .osFileStar then
-            let ch' := { ch with stdioBuf := ByteArray.empty, stickyEof := sticky }
-            if sticky then (.threwIo stickyErr, { w with stdin := ch' })
-            else (decodeStreamLineBytes ch.backend ch.stdioBuf, { w with stdin := ch' })
-          else
-            (decodeStreamLineBytes ch.backend ch.stdioBuf, { w with stdin := { ch with stdioBuf := ByteArray.empty } })
-        | .fullDev =>
-          (.threwIo .blocked, w)
-        | .regFile bytes pos fsizeLimit? =>
-          if ch.backend == .osFileStar then
-            let (split?, newPos, eofBuf) :=
-              pullRegFileChunks bytes pos ch.stdioBuf ((bytes.size - pos) / 4096 + 2)
-            match split? with
-            | some (lineBs, rest) =>
-              let ch' := { ch with backing := .regFile bytes newPos fsizeLimit?, stdioBuf := rest }
-              let w' := { w with stdin := ch' }
-              if sticky then (.threwIo stickyErr, w') else (decodeStreamLineBytes ch.backend lineBs, w')
-            | none =>
-              let ch' := { ch with backing := .regFile bytes newPos fsizeLimit?, stdioBuf := ByteArray.empty, stickyEof := sticky }
-              let w' := { w with stdin := ch' }
-              if sticky then (.threwIo stickyErr, w') else (decodeStreamLineBytes ch.backend eofBuf, w')
-          else
-            let avail := ch.stdioBuf ++ bytes.extract pos bytes.size
-            let (lineBs, newPos, remBuf) :=
-              match splitLineBytes avail with
-              | some (l, _) =>
-                (l, pos + (l.size - ch.stdioBuf.size),
-                 ch.stdioBuf.extract (min l.size ch.stdioBuf.size) ch.stdioBuf.size)
-              | none => (avail, max pos bytes.size, ByteArray.empty)
-            let ch' := { ch with backing := .regFile bytes newPos fsizeLimit?, stdioBuf := remBuf }
-            (decodeStreamLineBytes ch.backend lineBs, { w with stdin := ch' })
-        | .pipe pending writersClosed nonblock readersClosed cap =>
-          let (split?, newPending, eofBuf) :=
-            if ch.backend == .osFileStar then
-              pullPipeChunks ch.stdioBuf pending (pending.size / 4096 + 2)
-            else
-              let avail := ch.stdioBuf ++ pending
-              match splitLineBytes avail with
-              | some (l, rest) => (some (l, ByteArray.empty), rest, ByteArray.empty)
-              | none => (none, ByteArray.empty, avail)
-          match split? with
-          | some (lineBs, newStdioBuf) =>
-            let ch' := { ch with backing := .pipe newPending writersClosed nonblock readersClosed cap, stdioBuf := newStdioBuf }
-            let w' := { w with stdin := ch' }
-            if sticky then (.threwIo stickyErr, w') else (decodeStreamLineBytes ch.backend lineBs, w')
-          | none =>
-            if writersClosed then
-              let eofLatch := ch.backend == .osFileStar && sticky
-              let ch' := { ch with backing := .pipe ByteArray.empty true nonblock readersClosed cap, stdioBuf := ByteArray.empty, stickyEof := eofLatch }
-              let w' := { w with stdin := ch' }
-              if sticky then (.threwIo stickyErr, w') else (decodeStreamLineBytes ch.backend eofBuf, w')
-            else if nonblock then
-              let ch' :=
-                { ch with
-                  backing := .pipe ByteArray.empty false true readersClosed cap
-                  stdioBuf := ByteArray.empty
-                  stickyReadErr := ch.backend == .osFileStar || ch.stickyReadErr }
-              (.threwIo .wouldBlock, { w with stdin := ch', lastErrno := 11 })
-            else
-              match ch.pendingInterrupt? with
-              | some _ =>
-                let ch' :=
-                  { ch with
-                    backing := .pipe ByteArray.empty false false readersClosed cap
-                    stdioBuf := ByteArray.empty
-                    stickyReadErr := ch.backend == .osFileStar || ch.stickyReadErr
-                    pendingInterrupt? := none }
-                (.threwIo .interrupted, { w with stdin := ch', lastErrno := 4 })
-              | none =>
-                (.threwIo .blocked, w)
-        | .ptySlave segs masterOpen pendingLine =>
-          if !masterOpen then
-            let eofLatch := ch.backend == .osFileStar && sticky
-            let ch' := { ch with backing := .ptySlave [] false ByteArray.empty, stdioBuf := ByteArray.empty, stickyEof := eofLatch }
-            let w' := { w with stdin := ch' }
-            if sticky then (.threwIo stickyErr, w') else (decodeStreamLineBytes ch.backend ch.stdioBuf, w')
-          else
-            match consumePtySegments ch.stdioBuf segs with
-            | some (lineBs, rest, hitCtrlD) =>
-              let eofLatch := ch.backend == .osFileStar && sticky && hitCtrlD
-              let ch' := { ch with backing := .ptySlave rest true pendingLine, stdioBuf := ByteArray.empty, stickyEof := eofLatch }
-              let w' := { w with stdin := ch' }
-              if sticky then (.threwIo stickyErr, w') else (decodeStreamLineBytes ch.backend lineBs, w')
-            | none =>
-              match ch.pendingInterrupt? with
-              | some _ =>
-                let ch' :=
-                  { ch with
-                    backing := .ptySlave [] true pendingLine
-                    stdioBuf := ByteArray.empty
-                    stickyReadErr := ch.backend == .osFileStar || ch.stickyReadErr
-                    pendingInterrupt? := none }
-                (.threwIo .interrupted, { w with stdin := ch', lastErrno := 4 })
-              | none =>
-                (.threwIo .blocked, w)
-        | .ptyHungup _ =>
-          let ch' := { ch with stdioBuf := ByteArray.empty, stickyReadErr := ch.backend == .osFileStar || ch.stickyReadErr }
-          (.threwIo .hardwareFault, { w with stdin := ch', lastErrno := 5 })
+        (.threwIo .blocked, { w with stdin := { ch with pendingInterrupt := .none } })
+  | .ptySlave segs masterOpen pendingLine =>
+    if !masterOpen then
+      let ch' := { ch with backing := .ptySlave [] false ByteArray.empty }
+      (.returned "", { w with stdin := ch' })
+    else
+      match consumePtySegments ByteArray.empty segs with
+      | some (lineBs, rest) =>
+        let ch' := { ch with backing := .ptySlave rest true pendingLine }
+        (.returned (decodeUtf8LossyLean lineBs), { w with stdin := ch' })
+      | none =>
+        if ch.pendingInterrupt.exhaustsRetries then
+          let ch' := { ch with backing := .ptySlave [] true pendingLine, pendingInterrupt := .none }
+          (.threwIo .interrupted, { w with stdin := ch', lastErrno := 4 })
+        else
+          (.threwIo .blocked, { w with stdin := { ch with pendingInterrupt := .none } })
+  | .ptyHungup _ =>
+    (.threwIo .hardwareFault, { w with lastErrno := 5 })
 
 /-- Pure transition of `defaultOps.readLine` on `StdioWorld`. -/
 def stepDefaultReadLine (w : StdioWorld) : IoStepOutcome (Option String) × StdioWorld :=
@@ -1038,7 +883,7 @@ def stepDefaultReadLine (w : StdioWorld) : IoStepOutcome (Option String) × Stdi
     else
       (.returned (some (stripTrailingNewlineModel line)), w')
 
-/-- Valid kernel partial-write bound for an `O_NONBLOCK` pipe under glibc `FILE*` chunking. -/
+/-- Valid kernel partial-write bound for an `O_NONBLOCK` pipe. -/
 def isValidNonblockPipeWriteBytes (avail bsSize actualWritten : Nat) : Bool :=
   actualWritten ≤ min avail bsSize
 
@@ -1052,19 +897,12 @@ def writeAtRegFileOffset (bytes : ByteArray) (pos : Nat) (chunk : ByteArray) : B
   else
     bytes.extract 0 pos ++ chunk ++ bytes.extract (min (pos + chunk.size) bytes.size) bytes.size
 
-/-- Pure transition of `putStr text >> flush` on a `StdioChannelState`. -/
+/-- Pure transition of unbuffered `LinuxSyscall.Files` write on a `StdioChannelState`.
+    On a blocking full pipe or hung-up PTY write, transient `EINTR` bursts with `count ≤ stdioEintrRetryLimit` (`64`)
+    are absorbed; `repeating` or `transient count` with `count > stdioEintrRetryLimit` throws `.interrupted`. -/
 def stepChannelWrite (ch : StdioChannelState) (text : String) : IoStepOutcome Unit × StdioChannelState :=
-  if text.isEmpty && (ch.backend == .osFileStar || ch.backend == .leanOfBuffer) then
+  if text.isEmpty then
     (.returned (), ch)
-  else if ch.backend == .leanOfBuffer then
-    let bs := text.toUTF8
-    let newBuf := bs.copySlice 0 ch.memBuffer ch.memPos bs.size false
-    let ch' :=
-      { ch with
-        memBuffer := newBuf
-        memPos := ch.memPos + bs.size
-        writtenBytes := ch.writtenBytes ++ bs }
-    (.returned (), ch')
   else
     let bs := text.toUTF8
     match ch.backing with
@@ -1084,15 +922,19 @@ def stepChannelWrite (ch : StdioChannelState) (text : String) : IoStepOutcome Un
           let ch' :=
             { ch with
               backing := .pipe (pending ++ partialBs) writersClosed nonblock readersClosed cap
-              writtenBytes := ch.writtenBytes ++ partialBs }
+              writtenBytes := ch.writtenBytes ++ partialBs
+              pendingInterrupt := .none }
           (.threwIo .wouldBlock, ch')
+        else if ch.pendingInterrupt.exhaustsRetries then
+          (.threwIo .interrupted, { ch with pendingInterrupt := .none })
         else
-          (.threwIo .blocked, ch)
+          (.threwIo .blocked, { ch with pendingInterrupt := .none })
       else
         let ch' :=
           { ch with
             backing := .pipe (pending ++ bs) writersClosed nonblock readersClosed cap
-            writtenBytes := ch.writtenBytes ++ bs }
+            writtenBytes := ch.writtenBytes ++ bs
+            pendingInterrupt := .none }
         (.returned (), ch')
     | .regFile bytes pos fsizeLimit? =>
       if bs.isEmpty then
@@ -1128,16 +970,21 @@ def stepChannelWrite (ch : StdioChannelState) (text : String) : IoStepOutcome Un
         let ch' :=
           { ch with
             backing := .ptySlave segs true pendingLine
-            writtenBytes := ch.writtenBytes ++ bs }
+            writtenBytes := ch.writtenBytes ++ bs
+            pendingInterrupt := .none }
         (.returned (), ch')
     | .ptyHungup written =>
       if written + bs.size > 4096 then
-        (.threwIo .blocked, ch)
+        if ch.pendingInterrupt.exhaustsRetries then
+          (.threwIo .interrupted, { ch with pendingInterrupt := .none })
+        else
+          (.threwIo .blocked, { ch with pendingInterrupt := .none })
       else
         let ch' :=
           { ch with
             backing := .ptyHungup (written + bs.size)
-            writtenBytes := ch.writtenBytes ++ bs }
+            writtenBytes := ch.writtenBytes ++ bs
+            pendingInterrupt := .none }
         (.returned (), ch')
 
 /-- Pure transition of `defaultOps.writeOut` on `StdioWorld`. -/

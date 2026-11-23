@@ -41,7 +41,7 @@
   "suites": {
     "selftest": { "paths": ["harness/Fuzz/SelfTest.lean"] },
     "float": { "paths": ["harness/Fuzz/Float/", "LeanSwe/NumParse/", "LeanSwe/Toml/"] },
-    "cmdline": { "paths": ["harness/Fuzz/CmdLine/", "LeanSwe/CmdLine/", "LeanSwe/EnvVars/", "harness/Fuzz/LinuxSyscall/c/timerand_fuzz_sig.c"] },
+    "cmdline": { "paths": ["harness/Fuzz/CmdLine/", "LeanSwe/CmdLine/", "LeanSwe/EnvVars/", "LeanSwe/LinuxSyscall/Common/", "LeanSwe/LinuxSyscall/Files/", "LeanSwe/LinuxSyscall/c/files_shim.c", "LeanSwe/LinuxSyscall/c/fd_box.h", "LeanSwe/LinuxSyscall/c/fd_box.c", "harness/Fuzz/LinuxSyscall/c/timerand_fuzz_sig.c"] },
     "envvars": { "paths": ["LeanSwe/EnvVars/", "harness/Fuzz/EnvVars/"] },
     "cryptohash": { "paths": ["LeanSwe/CryptoHash/", "harness/Fuzz/CryptoHash/"] },
     "passwd": { "paths": ["harness/Fuzz/Passwd/", "LeanSwe/LinuxSyscall/c/passwd_shim.c", "LeanSwe/LinuxSyscall/Common/", "LeanSwe/LinuxSyscall/Passwd/", "LeanSwe/LinuxSyscall/Sandbox/", "LeanSwe/LinuxSyscall/TestSupport/Seccomp.lean", "harness/Fuzz/LinuxSyscall/SandboxEnv.lean", "LeanSwe/LinuxSyscall/c/sandbox_shim.c", "harness/Fuzz/LinuxSyscall/c/sandbox_fuzz_env.c", "LeanSwe/LinuxSyscall/c/fd_box.h", "LeanSwe/LinuxSyscall/c/fd_box.c"] },
