@@ -45,9 +45,6 @@ def MAX_ACCEPT_BATCH : Nat := 256
 /-- Structural poll-loop fuel bound (`2^64`, ensuring total termination). -/
 def LOOP_FUEL : Nat := UInt64.size
 
-/-- Maximum relative `ppoll` timeout seconds passed by `LeanSwe.ConnectProxy` (`2^31 - 1`). -/
-def MAX_POLL_TIMEOUT_SEC : Nat := 2147483647
-
 /-- Validate that all four `ProxyLimits` fields in `vcfg` are strictly positive. -/
 def validateStartLimits (vcfg : ValidProxyConfig) : Except ProxyError ValidProxyConfig :=
   let lim := vcfg.config.limits
@@ -141,13 +138,6 @@ def findCrlfCrlf (bs : ByteArray) (start : Nat := 0) : Option Nat :=
     none
   else
     findCrlfCrlfAux bs (bs.size - start) start
-
-/-- Convert a relative timeout in milliseconds to a valid `Poll.Timespec`, capping `ms / 1000 > MAX_POLL_TIMEOUT_SEC` at `{ sec := 2147483647, nsec := 0 }`. -/
-def msToPollTimespec (ms : Nat) : Poll.Timespec :=
-  if ms / 1000 > MAX_POLL_TIMEOUT_SEC then
-    { sec := 2147483647, nsec := 0 }
-  else
-    Poll.msToPollTimespec ms
 
 /-- Generic OS syscall capability bundle consumed by `LeanSwe.ConnectProxy.SysBridge`. -/
 structure CProxySysOpsM (m : Type → Type) (fd : Type) where
@@ -965,7 +955,7 @@ def initPollBackoffRem (activeSlots maxTunnels nowMs : Nat) : Nat → Nat → Op
     else
       none
 
-/-- Build the `ppoll` request array, per-slot index table, and optional relative timeout for one loop tick. -/
+/-- Build the `ppoll` request array, per-slot index table, and optional relative timeout (clamped via `Poll.msToPollTimespec` for 64-bit Linux `time_t`, where `ppoll(2)` saturates large relative timeouts) for one loop tick. -/
 def buildPollBatchM {m : Type → Type} [Monad m] {fd dnsJob : Type}
     (pollDnsReady : dnsJob → m Bool)
     (wakeR listenFd : fd)
@@ -981,7 +971,7 @@ def buildPollBatchM {m : Type → Type} [Monad m] {fd dnsJob : Type}
   let initReqs : Array (fd × Poll.PollEvents) := #[(wakeR, { pollin := true }), (listenFd, listenEv)]
   let (reqs, indices, minRem?) ←
     buildPollBatchAux pollDnsReady nowMs slots.toList initReqs (Array.emptyWithCapacity slots.size) initMinRem? dnsWatchFd
-  return (reqs, indices, minRem?.map msToPollTimespec)
+  return (reqs, indices, minRem?.map Poll.msToPollTimespec)
 
 /-- Execute one polymorphic client slot transition after `ppoll` returns `revents`. -/
 def stepSlotM {m : Type → Type} [Monad m] {fd dnsJob : Type}
