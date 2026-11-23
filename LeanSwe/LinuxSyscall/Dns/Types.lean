@@ -208,13 +208,13 @@ abbrev DnsOps := DnsOpsM IO
 /-- Fixed byte width of each serialized address record emitted by `c/dns_shim.c`. -/
 def DNS_RECORD_SIZE : Nat := 21
 
-/-- Wire-format tag identifying an IPv4 address record in `c/dns_shim.c`. -/
-def WIRE_FAMILY_V4 : UInt8 := 4
+private def WIRE_FAMILY_V4 : UInt8 := 4
 
-/-- Wire-format tag identifying an IPv6 address record in `c/dns_shim.c`. -/
-def WIRE_FAMILY_V6 : UInt8 := 6
+private def WIRE_FAMILY_V6 : UInt8 := 6
 
-/-- Append a 32-bit unsigned integer to `acc` in little-endian wire byte order. -/
+namespace Internal
+
+/-- Internal wire-encoding helper (`LeanSwe.LinuxSyscall.Dns.Internal`): append a 32-bit unsigned integer to `acc` in little-endian wire byte order. -/
 def pushWireUInt32LE (acc : ByteArray) (v : UInt32) : ByteArray :=
   let n := v.toNat
   acc
@@ -223,7 +223,7 @@ def pushWireUInt32LE (acc : ByteArray) (v : UInt32) : ByteArray :=
     |>.push (UInt8.ofNat ((n / 65536) % 256))
     |>.push (UInt8.ofNat ((n / 16777216) % 256))
 
-/-- Append one 21-byte wire record (`c/dns_shim.c` layout) for `a` to `acc`. -/
+/-- Internal wire-encoding helper (`LeanSwe.LinuxSyscall.Dns.Internal`): append one 21-byte wire record (`c/dns_shim.c` layout) for `a` to `acc`. -/
 def pushWireAddr (acc : ByteArray) : DnsAddr → ByteArray
   | .ipv4 b0 b1 b2 b3 =>
     acc
@@ -241,13 +241,15 @@ def pushWireAddr (acc : ByteArray) : DnsAddr → ByteArray
       |>.push b12 |>.push b13 |>.push b14 |>.push b15
     pushWireUInt32LE base sc
 
-/-- Tail-recursively append 21-byte wire records for a list of `DnsAddr` values. -/
+/-- Internal wire-encoding helper (`LeanSwe.LinuxSyscall.Dns.Internal`): tail-recursively append 21-byte wire records for a list of `DnsAddr` values. -/
 def encodeWireRecordsLoop : List DnsAddr → ByteArray → ByteArray
   | [], acc => acc
   | a :: rest, acc => encodeWireRecordsLoop rest (pushWireAddr acc a)
 
+end Internal
+
 /-- Serialize a list of `DnsAddr` values into concatenated 21-byte wire records (`c/dns_shim.c` layout). -/
 def encodeWireRecords (addrs : List DnsAddr) : ByteArray :=
-  encodeWireRecordsLoop addrs (ByteArray.emptyWithCapacity (addrs.length * DNS_RECORD_SIZE))
+  Internal.encodeWireRecordsLoop addrs (ByteArray.emptyWithCapacity (addrs.length * DNS_RECORD_SIZE))
 
 end LeanSwe.LinuxSyscall.Dns
