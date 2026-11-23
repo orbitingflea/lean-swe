@@ -181,20 +181,12 @@ private partial def unfoldMatcherChain (env : Environment) (fuel : Nat) (e : Exp
     | some e' => unfoldMatcherChain env (fuel - 1) e'
     | none => e
 
-private partial def evalClosedDecidable? (prop decInst : Expr) : MetaM (Option Bool) := do
-  let p := prop.consumeMData
-  if p.isConstOf ``Bool.true || p.isConstOf ``True then return some true
-  if p.isConstOf ``Bool.false || p.isConstOf ``False then return some false
-  let d ← withTransparency .all (Meta.reduce decInst (explicitOnly := false) (skipTypes := true) (skipProofs := true))
-  let df := d.consumeMData.getAppFn.consumeMData
-  if df.isConstOf ``Decidable.isTrue then return some true
-  if df.isConstOf ``Decidable.isFalse then return some false
-  let pw := (← whnf p).consumeMData
+private partial def evalClosedPropExpr? (prop : Expr) : MetaM (Option Bool) := do
+  let pw := (← withTransparency .all (whnf prop)).consumeMData
   if pw.isConstOf ``Bool.true || pw.isConstOf ``True then return some true
   if pw.isConstOf ``Bool.false || pw.isConstOf ``False then return some false
   if pw.isAppOfArity ``Not 1 then
-    if let some b ← evalClosedDecidable? pw.appArg! decInst then
-      return some (!b)
+    return (← evalClosedPropExpr? pw.appArg!).map (!·)
   if pw.isAppOfArity ``Eq 3 then
     let lhs := (← withTransparency .all (Meta.reduce (pw.getArg! 1))).consumeMData
     let rhs := (← withTransparency .all (Meta.reduce (pw.getArg! 2))).consumeMData
@@ -203,8 +195,28 @@ private partial def evalClosedDecidable? (prop decInst : Expr) : MetaM (Option B
       return some (lhs == rhs)
   return none
 
+private def evalClosedDecidable? (prop decInst : Expr) : MetaM (Option Bool) := do
+  let p := prop.consumeMData
+  if p.isConstOf ``Bool.true || p.isConstOf ``True then return some true
+  if p.isConstOf ``Bool.false || p.isConstOf ``False then return some false
+  let decBool := (← withTransparency .all (whnf (mkApp2 (mkConst ``decide) prop decInst))).consumeMData
+  if decBool.isConstOf ``Bool.true then return some true
+  if decBool.isConstOf ``Bool.false then return some false
+  let d ← withTransparency .all (Meta.reduce decInst (explicitOnly := false) (skipTypes := true) (skipProofs := true))
+  let df := d.consumeMData.getAppFn.consumeMData
+  if df.isConstOf ``Decidable.isTrue then return some true
+  if df.isConstOf ``Decidable.isFalse then return some false
+  evalClosedPropExpr? p
+
+private def exprIsClosedModulo (closedLets : Std.HashSet FVarId) (e : Expr) : Bool :=
+  !e.hasLooseBVars && !e.hasAnyFVar (fun fv => !closedLets.contains fv)
+
+private def exprTouchesPkgImpl (env : Environment) (implLets : Std.HashSet FVarId) (e : Expr) : Bool :=
+  exprUsesPkgImpl env e || e.hasAnyFVar (fun fv => implLets.contains fv)
+
 private partial def classifyBranchNode?
     (env : Environment)
+    (closedLets implLets : Std.HashSet FVarId)
     (rawExpr : Expr) : MetaM (Option (Bool × Array Expr)) := do
   let cur := (unfoldMatcherChain env 8 rawExpr).consumeMData
   let fn := cur.getAppFn.consumeMData
@@ -215,7 +227,8 @@ private partial def classifyBranchNode?
     let extra := args.extract 5 args.size
     let tB := mkAppN args[3]! extra
     let fB := mkAppN args[4]! extra
-    if !prop.hasFVar && !prop.hasLooseBVars && !dec.hasFVar && !dec.hasLooseBVars && !exprUsesPkgImpl env prop then
+    if exprIsClosedModulo closedLets prop && exprIsClosedModulo closedLets dec &&
+        !exprTouchesPkgImpl env implLets prop && !exprTouchesPkgImpl env implLets dec then
       match ← evalClosedDecidable? prop dec with
       | some true => return some (true, #[tB])
       | some false => return some (true, #[fB])
@@ -227,7 +240,8 @@ private partial def classifyBranchNode?
     let extra := args.extract 5 args.size
     let tB := args[3]!
     let fB := args[4]!
-    if !prop.hasFVar && !prop.hasLooseBVars && !dec.hasFVar && !dec.hasLooseBVars && !exprUsesPkgImpl env prop then
+    if exprIsClosedModulo closedLets prop && exprIsClosedModulo closedLets dec &&
+        !exprTouchesPkgImpl env implLets prop && !exprTouchesPkgImpl env implLets dec then
       match ← evalClosedDecidable? prop dec with
       | some true => return some (true, #[tB] ++ extra)
       | some false => return some (true, #[fB] ++ extra)
@@ -238,7 +252,7 @@ private partial def classifyBranchNode?
     let extra := args.extract 4 args.size
     let tB := mkAppN args[2]! extra
     let fB := mkAppN args[3]! extra
-    if !b.hasFVar && !b.hasLooseBVars && !exprUsesPkgImpl env b then
+    if exprIsClosedModulo closedLets b && !exprTouchesPkgImpl env implLets b then
       let bw ← withTransparency .all (whnf b)
       if bw.consumeMData.isConstOf ``Bool.true then return some (true, #[tB])
       if bw.consumeMData.isConstOf ``Bool.false then return some (true, #[fB])
@@ -260,7 +274,7 @@ private partial def classifyBranchNode?
             if args.size >= total then
               let major := args[majorIdx]!
               let extra := args.extract total args.size
-              if !major.hasFVar && !major.hasLooseBVars && !exprUsesPkgImpl env major then
+              if exprIsClosedModulo closedLets major && !exprTouchesPkgImpl env implLets major then
                 let mw ← withTransparency .all (whnf major)
                 if let .const ctorName _ := mw.consumeMData.getAppFn.consumeMData then
                   if let some cIdx := ind.ctors.findIdx? (· == ctorName) then
@@ -272,18 +286,25 @@ private partial def classifyBranchNode?
               return some (false, subs)
   return none
 
-private def isSmallClosedExpr (e : Expr) : Bool :=
-  !e.hasFVar && !e.hasLooseBVars && e.approxDepth.toNat <= 16
+private inductive BoundedBool where
+  | isTrue
+  | isFalse
+  | inconclusive (reason : String)
 
-private def runBoundedMeta {α : Type} (fallback : α) (act : MetaM α) : MetaM α :=
+private def runBoundedMeta {α : Type}
+    (act : MetaM α)
+    (maxHeartbeats : Nat := 500000)
+    (maxRecDepth : Nat := 2048) : MetaM (Except String α) :=
   Lean.tryCatchRuntimeEx
     (try
       Core.withCurrHeartbeats <|
         withTheReader Core.Context
-          (fun c => { c with maxHeartbeats := 500000, maxRecDepth := min c.maxRecDepth 2048 }) act
-    catch _ =>
-      pure fallback)
-    (fun _ => pure fallback)
+          (fun c => { c with maxHeartbeats := maxHeartbeats, maxRecDepth := min c.maxRecDepth maxRecDepth })
+          (.ok <$> act)
+    catch ex =>
+      return .error (← ex.toMessageData.toString))
+    (fun ex =>
+      return .error (← ex.toMessageData.toString))
 
 private inductive DeadBranchResult where
   | clean
@@ -293,6 +314,7 @@ private inductive DeadBranchResult where
 private partial def hasStaticDeadBranchExprAux
     (env : Environment)
     (bestFuelRef : IO.Ref (Std.HashMap Expr Nat))
+    (closedLets implLets : Std.HashSet FVarId)
     (fuel : Nat)
     (e : Expr) : MetaM DeadBranchResult := do
   if fuel == 0 then return .inconclusive "AST depth budget exhausted"
@@ -300,29 +322,34 @@ private partial def hasStaticDeadBranchExprAux
   if (← bestFuelRef.get).getD cur 0 >= fuel then return .clean
   bestFuelRef.modify (·.insert cur fuel)
   if cur.isLambda then
-    return ← lambdaTelescope cur fun _ body => hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) body
-  if let some (isStatic, subs) ← classifyBranchNode? env cur then
+    return ← lambdaTelescope cur fun _ body =>
+      hasStaticDeadBranchExprAux env bestFuelRef closedLets implLets (fuel - 1) body
+  if let some (isStatic, subs) ← classifyBranchNode? env closedLets implLets cur then
     if isStatic then return .hasDeadBranch
     for s in subs do
-      match ← hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) s with
+      match ← hasStaticDeadBranchExprAux env bestFuelRef closedLets implLets (fuel - 1) s with
       | .clean => pure ()
       | bad => return bad
     return .clean
   match cur with
   | .app f a =>
-    match ← hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) f with
-    | .clean => hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) a
+    match ← hasStaticDeadBranchExprAux env bestFuelRef closedLets implLets (fuel - 1) f with
+    | .clean => hasStaticDeadBranchExprAux env bestFuelRef closedLets implLets (fuel - 1) a
     | bad => return bad
   | .letE n t v b _ =>
-    match ← hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) v with
+    match ← hasStaticDeadBranchExprAux env bestFuelRef closedLets implLets (fuel - 1) v with
     | .clean =>
-      if isSmallClosedExpr v then
-        hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) (b.instantiate1 v)
+      if !b.hasLooseBVar 0 then
+        hasStaticDeadBranchExprAux env bestFuelRef closedLets implLets (fuel - 1) (b.lowerLooseBVars 1 1)
       else
-        withLocalDeclD n t fun x =>
-          hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) (b.instantiate1 x)
+        let vClosed := exprIsClosedModulo closedLets v
+        let vTouchesImpl := exprTouchesPkgImpl env implLets v
+        withLetDecl n t v fun x =>
+          let closedLets' := if vClosed then closedLets.insert x.fvarId! else closedLets
+          let implLets' := if vTouchesImpl then implLets.insert x.fvarId! else implLets
+          hasStaticDeadBranchExprAux env bestFuelRef closedLets' implLets' (fuel - 1) (b.instantiate1 x)
     | bad => return bad
-  | .proj _ _ s => hasStaticDeadBranchExprAux env bestFuelRef (fuel - 1) s
+  | .proj _ _ s => hasStaticDeadBranchExprAux env bestFuelRef closedLets implLets (fuel - 1) s
   | _ => return .clean
 
 private def hasStaticDeadBranchExpr (env : Environment) (fuel : Nat) (e : Expr) : MetaM DeadBranchResult :=
@@ -332,7 +359,7 @@ private def hasStaticDeadBranchExpr (env : Environment) (fuel : Nat) (e : Expr) 
         withTheReader Core.Context
           (fun c => { c with maxHeartbeats := 5000000, maxRecDepth := max c.maxRecDepth 4096 }) do
           let bestFuelRef ← IO.mkRef (Std.HashMap.emptyWithCapacity (α := Expr) (β := Nat) 128)
-          hasStaticDeadBranchExprAux env bestFuelRef fuel e
+          hasStaticDeadBranchExprAux env bestFuelRef {} {} fuel e
     catch ex => do
       return .inconclusive (← ex.toMessageData.toString))
     (fun ex => do
@@ -393,88 +420,158 @@ private partial def stripDeadPureLets (e : Expr) : Expr :=
   | .proj tn idx s => .proj tn idx (stripDeadPureLets s)
   | cur => cur
 
-private partial def stripInertBindings (env : Environment) (rtMod : Name) (e : Expr) : Expr :=
+private inductive LetBindingInfo where
+  | opaque
+  | letVal (pureArg? : Option Expr) (usesRtHelper : Bool)
+  deriving Inhabited
+
+private def lookupLetInfo (stack : Array LetBindingInfo) (bvarIdx : Nat) : LetBindingInfo :=
+  if h : bvarIdx < stack.size then stack[stack.size - 1 - bvarIdx] else .opaque
+
+private partial def exprUsesRtHelperWithStack
+    (env : Environment) (rtMod : Name) (stack : Array LetBindingInfo) (e : Expr) : Bool :=
+  let rec go (depth : Nat) (cur : Expr) : Bool :=
+    match cur with
+    | .const c _ => moduleOfConst env c == rtMod
+    | .bvar k =>
+      if k < depth then false
+      else
+        match lookupLetInfo stack (k - depth) with
+        | .letVal _ usesRt => usesRt
+        | .opaque => false
+    | .app f a => go depth f || go depth a
+    | .lam _ t b _ | .forallE _ t b _ => go depth t || go (depth + 1) b
+    | .letE _ t v b _ => go depth t || go depth v || go (depth + 1) b
+    | .mdata _ b | .proj _ _ b => go depth b
+    | _ => false
+  go 0 e
+
+private def pureArgOfAct (stack : Array LetBindingInfo) (actClean : Expr) : Option Expr :=
+  if actClean.isAppOfArity ``Pure.pure 4 || actClean.isAppOfArity ``pure 4 then
+    some actClean.appArg!
+  else
+    match actClean with
+    | .bvar k =>
+      match lookupLetInfo stack k with
+      | .letVal (some a) _ => some (a.liftLooseBVars 0 (k + 1))
+      | _ => none
+    | _ => none
+
+private partial def stripInertBindingsAux
+    (env : Environment) (rtMod : Name) (stack : Array LetBindingInfo) (e : Expr) : Expr :=
   let cur := e.consumeMData
   if cur.getAppFn.consumeMData.isLambda then
     let red := cur.headBeta
-    if red != cur then stripInertBindings env rtMod red else cur
+    if red != cur then stripInertBindingsAux env rtMod stack red else cur
   else if cur.isAppOfArity ``Bind.bind 6 || cur.isAppOfArity ``bind 6 then
     let args := cur.getAppArgs
-    let act := stripInertBindings env rtMod args[4]!
-    let cont := match args[5]!.consumeMData with
-      | .lam n t b bi => Expr.lam n t (stripInertBindings env rtMod b) bi
-      | other => stripInertBindings env rtMod other
+    let act := stripInertBindingsAux env rtMod stack args[4]!
     let actClean := act.consumeMData
-    if actClean.isAppOfArity ``Pure.pure 4 || actClean.isAppOfArity ``pure 4 then
-      let v := actClean.appArg!
-      stripInertBindings env rtMod (mkApp cont v).headBeta
-    else if let .lam _ binderTy body _ := cont.consumeMData then
-      let bt := binderTy.consumeMData
-      let isUnitBinder := bt.isConstOf ``Unit || bt.isConstOf ``PUnit
-      let usesRtHelper := actClean.getUsedConstants.any (fun c => moduleOfConst env c == rtMod)
-      if !body.hasLooseBVar 0 && !isUnitBinder && !usesRtHelper then
-        body
+    if let some pv := pureArgOfAct stack actClean then
+      match args[5]!.consumeMData with
+      | .lam n t rawBody _ =>
+        if !rawBody.hasLooseBVar 0 then
+          stripInertBindingsAux env rtMod stack (rawBody.lowerLooseBVars 1 1)
+        else
+          let pvInfo := LetBindingInfo.letVal
+            (pureArgOfAct stack pv.consumeMData)
+            (exprUsesRtHelperWithStack env rtMod stack pv)
+          let b' := stripInertBindingsAux env rtMod (stack.push pvInfo) rawBody
+          if !b'.hasLooseBVar 0 then
+            b'.lowerLooseBVars 1 1
+          else
+            .letE n t pv b' false
+      | other =>
+        stripInertBindingsAux env rtMod stack (mkApp other pv).headBeta
+    else
+      let cont := match args[5]!.consumeMData with
+        | .lam n t b bi => Expr.lam n t (stripInertBindingsAux env rtMod (stack.push .opaque) b) bi
+        | other => stripInertBindingsAux env rtMod stack other
+      if let .lam _ binderTy body _ := cont.consumeMData then
+        let bt := binderTy.consumeMData
+        let isUnitBinder := bt.isConstOf ``Unit || bt.isConstOf ``PUnit
+        let usesRtHelper := exprUsesRtHelperWithStack env rtMod stack actClean
+        if !body.hasLooseBVar 0 && !isUnitBinder && !usesRtHelper then
+          body.lowerLooseBVars 1 1
+        else
+          mkAppN cur.getAppFn (args.set! 4 act |>.set! 5 cont)
       else
         mkAppN cur.getAppFn (args.set! 4 act |>.set! 5 cont)
-    else
-      mkAppN cur.getAppFn (args.set! 4 act |>.set! 5 cont)
   else
     match cur with
     | .letE n t v b nonDep =>
       if !b.hasLooseBVar 0 then
-        stripInertBindings env rtMod (b.lowerLooseBVars 1 1)
-      else if isSmallClosedExpr v then
-        stripInertBindings env rtMod (b.instantiate1 v)
+        stripInertBindingsAux env rtMod stack (b.lowerLooseBVars 1 1)
       else
-        let b' := stripInertBindings env rtMod b
+        let v' := stripInertBindingsAux env rtMod stack v
+        let vInfo := LetBindingInfo.letVal
+          (pureArgOfAct stack v'.consumeMData)
+          (exprUsesRtHelperWithStack env rtMod stack v')
+        let b' := stripInertBindingsAux env rtMod (stack.push vInfo) b
         if !b'.hasLooseBVar 0 then
           b'.lowerLooseBVars 1 1
         else
-          .letE n t (stripInertBindings env rtMod v) b' nonDep
-    | .lam n t b bi => .lam n t (stripInertBindings env rtMod b) bi
-    | .app f a => .app (stripInertBindings env rtMod f) (stripInertBindings env rtMod a)
-    | .proj tn idx s => .proj tn idx (stripInertBindings env rtMod s)
+          .letE n t v' b' nonDep
+    | .lam n t b bi => .lam n t (stripInertBindingsAux env rtMod (stack.push .opaque) b) bi
+    | .app f a => .app (stripInertBindingsAux env rtMod stack f) (stripInertBindingsAux env rtMod stack a)
+    | .proj tn idx s => .proj tn idx (stripInertBindingsAux env rtMod stack s)
     | _ => cur
+
+private def stripInertBindings (env : Environment) (rtMod : Name) (e : Expr) : Expr :=
+  stripInertBindingsAux env rtMod #[] e
 
 private structure ActiveCallCache where
   directPlain : Std.HashMap Name (Array Name) := {}
   directStripped : Std.HashMap (Name × Name) (Array Name) := {}
   reachesThrow : Std.HashMap Name Bool := {}
+  scanErrors : Std.HashMap Name String := {}
 
 private partial def exprActiveDirectConsts
     (env : Environment)
-    (e : Expr) : MetaM (Array Name) :=
-  runBoundedMeta #[] do
+    (e : Expr) : MetaM (Except String (Array Name)) :=
+  runBoundedMeta (maxHeartbeats := 5000000) (maxRecDepth := 4096) do
     let bestFuelRef ← IO.mkRef (Std.HashMap.emptyWithCapacity (α := Expr) (β := Nat) 128)
+    let visitedLetsRef ← IO.mkRef (Std.HashSet.emptyWithCapacity (α := FVarId) 32)
     let outSetRef ← IO.mkRef (Std.HashSet.emptyWithCapacity (α := Name) 32)
-    let rec collect (fuel : Nat) (raw : Expr) : MetaM Unit := do
-      if fuel == 0 then return
+    let rec collect (closedLets implLets : Std.HashSet FVarId)
+        (letVals : Std.HashMap FVarId Expr) (fuel : Nat) (raw : Expr) : MetaM Unit := do
+      if fuel == 0 then
+        throwError "AST depth budget exhausted in active-const scan"
       let cur := raw.consumeMData
       if (← bestFuelRef.get).getD cur 0 >= fuel then return
       bestFuelRef.modify (·.insert cur fuel)
       if cur.isLambda then
         lambdaTelescope cur fun _ body =>
-          collect (fuel - 1) body
+          collect closedLets implLets letVals (fuel - 1) body
         return
-      if let some (_, subs) ← classifyBranchNode? env cur then
+      if let some (_, subs) ← classifyBranchNode? env closedLets implLets cur then
         for s in subs do
-          collect (fuel - 1) s
+          collect closedLets implLets letVals (fuel - 1) s
         return
       match cur with
       | .const c _ => outSetRef.modify (·.insert c)
+      | .fvar fv =>
+        if let some v := letVals.get? fv then
+          if !(← visitedLetsRef.get).contains fv then
+            visitedLetsRef.modify (·.insert fv)
+            collect closedLets implLets letVals (fuel - 1) v
       | .app f a =>
-        collect (fuel - 1) f
-        collect (fuel - 1) a
+        collect closedLets implLets letVals (fuel - 1) f
+        collect closedLets implLets letVals (fuel - 1) a
       | .letE n t v b _ =>
-        collect (fuel - 1) v
-        if isSmallClosedExpr v then
-          collect (fuel - 1) (b.instantiate1 v)
+        if !b.hasLooseBVar 0 then
+          collect closedLets implLets letVals (fuel - 1) (b.lowerLooseBVars 1 1)
         else
-          withLocalDeclD n t fun x =>
-            collect (fuel - 1) (b.instantiate1 x)
-      | .proj _ _ s => collect (fuel - 1) s
+          let vClosed := exprIsClosedModulo closedLets v
+          let vTouchesImpl := exprTouchesPkgImpl env implLets v
+          withLetDecl n t v fun x =>
+            let closedLets' := if vClosed then closedLets.insert x.fvarId! else closedLets
+            let implLets' := if vTouchesImpl then implLets.insert x.fvarId! else implLets
+            let letVals' := letVals.insert x.fvarId! v
+            collect closedLets' implLets' letVals' (fuel - 1) (b.instantiate1 x)
+      | .proj _ _ s => collect closedLets implLets letVals (fuel - 1) s
       | _ => pure ()
-    collect 4096 e
+    collect {} {} {} 4096 e
     return (← outSetRef.get).toArray
 
 private def constActiveDirectConsts
@@ -488,7 +585,12 @@ private def constActiveDirectConsts
   | none =>
     if let some hit := cache.directPlain.get? cur then
       return hit
-    let used ← exprActiveDirectConsts env rawBody
+    let used ← match ← exprActiveDirectConsts env rawBody with
+      | .ok arr => pure arr
+      | .error reason =>
+        cacheRef.modify fun c =>
+          { c with scanErrors := if c.scanErrors.contains cur then c.scanErrors else c.scanErrors.insert cur reason }
+        pure #[]
     cacheRef.modify fun c => { c with directPlain := c.directPlain.insert cur used }
     return used
   | some rtMod =>
@@ -499,7 +601,12 @@ private def constActiveDirectConsts
     if let some hit := cache.directStripped.get? key then
       return hit
     let stripped := stripInertBindings env keyMod (stripDeadPureLets rawBody)
-    let used ← exprActiveDirectConsts env stripped
+    let used ← match ← exprActiveDirectConsts env stripped with
+      | .ok arr => pure arr
+      | .error reason =>
+        cacheRef.modify fun c =>
+          { c with scanErrors := if c.scanErrors.contains cur then c.scanErrors else c.scanErrors.insert cur reason }
+        pure #[]
     cacheRef.modify fun c => { c with directStripped := c.directStripped.insert key used }
     return used
 
@@ -538,13 +645,6 @@ private def usesAnyConstActiveCached
     (targets : Std.HashSet Name)
     (start : Name) : MetaM Bool :=
   usesPredConstActiveCached env cacheRef none (fun c => targets.contains c) start
-
-private def usesAnyConstActive
-    (env : Environment)
-    (targets : Std.HashSet Name)
-    (start : Name) : MetaM Bool := do
-  let cacheRef ← IO.mkRef ({} : ActiveCallCache)
-  usesAnyConstActiveCached env cacheRef targets start
 
 private def usesThrowTargetsActive
     (env : Environment)
@@ -608,119 +708,206 @@ private def usesPackageImplConstActiveCached
 private partial def exprContainsAnyFVar (fvars : Std.HashSet FVarId) (e : Expr) : Bool :=
   e.hasAnyFVar (fun fv => fvars.contains fv)
 
-private partial def isStaticFalseProp (e : Expr) : MetaM Bool :=
-  runBoundedMeta false do
-    let p := (← whnf e).consumeMData
-    if p.isConstOf ``False then return true
-    if p.isAppOfArity ``Not 1 then
-      let inner := (← whnf p.appArg!).consumeMData
-      if inner.isConstOf ``True then return true
-      if inner.isAppOfArity ``Eq 3 then
-        let args := inner.getAppArgs
-        if args[1]! == args[2]! || (← isDefEq args[1]! args[2]!) then return true
-    if !p.hasFVar && !p.hasLooseBVars then
-      let decFalse ← runBoundedMeta false <|
-        withTheReader Core.Context (fun c => { c with maxRecDepth := min c.maxRecDepth 1024 }) do
-          let inst ← synthInstance (mkApp (mkConst ``Decidable) p)
-          let b ← withTransparency .all (whnf (mkApp2 (mkConst ``decide) p inst))
-          return b.consumeMData.isConstOf ``Bool.false
-      if decFalse then return true
-    return false
+private partial def isStaticFalseProp (e : Expr) : MetaM BoundedBool := do
+  let p ← match ← runBoundedMeta (whnf e) with
+    | .ok w => pure w.consumeMData
+    | .error r => return .inconclusive r
+  if p.isConstOf ``False then return .isTrue
+  if p.isAppOfArity ``Not 1 then
+    let inner ← match ← runBoundedMeta (whnf p.appArg!) with
+      | .ok w => pure w.consumeMData
+      | .error r => return .inconclusive r
+    if inner.isConstOf ``True then return .isTrue
+    if inner.isAppOfArity ``Eq 3 then
+      let args := inner.getAppArgs
+      if args[1]! == args[2]! then return .isTrue
+      match ← runBoundedMeta (Meta.withNewMCtxDepth (isDefEq args[1]! args[2]!)) (maxRecDepth := 1024) with
+      | .ok true => return .isTrue
+      | .ok false => pure ()
+      | .error r => return .inconclusive r
+  if !p.hasFVar && !p.hasLooseBVars then
+    match ← runBoundedMeta (withLCtx {} #[] (trySynthInstance (mkApp (mkConst ``Decidable) p))) (maxRecDepth := 1024) with
+    | .error r => return .inconclusive r
+    | .ok (.some inst) =>
+      match ← runBoundedMeta (withTransparency .all (whnf (mkApp2 (mkConst ``decide) p inst))) (maxRecDepth := 1024) with
+      | .error r => return .inconclusive r
+      | .ok b => if b.consumeMData.isConstOf ``Bool.false then return .isTrue
+    | .ok .none => pure ()
+    | .ok .undef => return .inconclusive "Decidable instance synthesis incomplete"
+  return .isFalse
 
-private partial def isStaticTrueProp (e : Expr) : MetaM Bool :=
-  runBoundedMeta false do
-    let p := (← whnf e).consumeMData
-    if p.isConstOf ``True then return true
-    if p.isAppOfArity ``And 2 then
-      return (← isStaticTrueProp p.appFn!.appArg!) && (← isStaticTrueProp p.appArg!)
-    if p.isAppOfArity ``Not 1 then
-      return ← isStaticFalseProp p.appArg!
-    if p.isAppOfArity ``Eq 3 then
-      let args := p.getAppArgs
-      if args[1]! == args[2]! || (← isDefEq args[1]! args[2]!) then return true
-    if !p.hasFVar && !p.hasLooseBVars then
-      let decTrue ← runBoundedMeta false <|
-        withTheReader Core.Context (fun c => { c with maxRecDepth := min c.maxRecDepth 1024 }) do
-          let inst ← synthInstance (mkApp (mkConst ``Decidable) p)
-          let b ← withTransparency .all (whnf (mkApp2 (mkConst ``decide) p inst))
-          return b.consumeMData.isConstOf ``Bool.true
-      if decTrue then return true
-    return false
+private partial def isStaticTrueProp (e : Expr) : MetaM BoundedBool := do
+  let p ← match ← runBoundedMeta (whnf e) with
+    | .ok w => pure w.consumeMData
+    | .error r => return .inconclusive r
+  if p.isConstOf ``True then return .isTrue
+  if p.isAppOfArity ``And 2 then
+    let l ← isStaticTrueProp p.appFn!.appArg!
+    let r ← isStaticTrueProp p.appArg!
+    match l, r with
+    | .inconclusive msg, _ | _, .inconclusive msg => return .inconclusive msg
+    | .isTrue, .isTrue => return .isTrue
+    | _, _ => return .isFalse
+  if p.isAppOfArity ``Not 1 then
+    return ← isStaticFalseProp p.appArg!
+  if p.isAppOfArity ``Eq 3 then
+    let args := p.getAppArgs
+    if args[1]! == args[2]! then return .isTrue
+    match ← runBoundedMeta (Meta.withNewMCtxDepth (isDefEq args[1]! args[2]!)) (maxRecDepth := 1024) with
+    | .ok true => return .isTrue
+    | .ok false => pure ()
+    | .error r => return .inconclusive r
+  if !p.hasFVar && !p.hasLooseBVars then
+    match ← runBoundedMeta (withLCtx {} #[] (trySynthInstance (mkApp (mkConst ``Decidable) p))) (maxRecDepth := 1024) with
+    | .error r => return .inconclusive r
+    | .ok (.some inst) =>
+      match ← runBoundedMeta (withTransparency .all (whnf (mkApp2 (mkConst ``decide) p inst))) (maxRecDepth := 1024) with
+      | .error r => return .inconclusive r
+      | .ok b => if b.consumeMData.isConstOf ``Bool.true then return .isTrue
+    | .ok .none => pure ()
+    | .ok .undef => return .inconclusive "Decidable instance synthesis incomplete"
+  return .isFalse
 
-private def isNegationPair (a b : Expr) : MetaM Bool :=
-  runBoundedMeta false do
-    let a' := (← whnf a).consumeMData
-    let b' := (← whnf b).consumeMData
-    if b'.isAppOfArity ``Not 1 then
-      if ← isDefEq a' b'.appArg! then return true
-    if a'.isAppOfArity ``Not 1 then
-      if ← isDefEq b' a'.appArg! then return true
-    return false
+private def isNegationPair (a b : Expr) : MetaM BoundedBool := do
+  let a' ← match ← runBoundedMeta (whnf a) with
+    | .ok w => pure w.consumeMData
+    | .error r => return .inconclusive r
+  let b' ← match ← runBoundedMeta (whnf b) with
+    | .ok w => pure w.consumeMData
+    | .error r => return .inconclusive r
+  if b'.isAppOfArity ``Not 1 then
+    match ← runBoundedMeta (Meta.withNewMCtxDepth (isDefEq a' b'.appArg!)) (maxRecDepth := 1024) with
+    | .ok true => return .isTrue
+    | .ok false => pure ()
+    | .error r => return .inconclusive r
+  if a'.isAppOfArity ``Not 1 then
+    match ← runBoundedMeta (Meta.withNewMCtxDepth (isDefEq b' a'.appArg!)) (maxRecDepth := 1024) with
+    | .ok true => return .isTrue
+    | .ok false => pure ()
+    | .error r => return .inconclusive r
+  return .isFalse
 
 private partial def isMeaningfulBoundaryProp
     (boundaryFVars assertBoundFVars : Std.HashSet FVarId)
-    (e : Expr) : MetaM Bool := do
-  let p := (← whnf e).consumeMData
-  if ← isStaticTrueProp p then return false
-  if ← isStaticFalseProp p then return false
-  if !exprContainsAnyFVar boundaryFVars p then return false
+    (e : Expr) : MetaM BoundedBool := do
+  let p ← match ← runBoundedMeta (whnf e) with
+    | .ok w => pure w.consumeMData
+    | .error r => return .inconclusive r
+  match ← isStaticTrueProp p with
+  | .isFalse => pure ()
+  | .isTrue => return .isFalse
+  | .inconclusive r => return .inconclusive r
+  match ← isStaticFalseProp p with
+  | .isFalse => pure ()
+  | .isTrue => return .isFalse
+  | .inconclusive r => return .inconclusive r
+  if !exprContainsAnyFVar boundaryFVars p then return .isFalse
   if p.isAppOfArity ``And 2 then
     let lhs := p.appFn!.appArg!
     let rhs := p.appArg!
-    if (← isStaticTrueProp lhs) || (← isStaticTrueProp rhs) then return false
-    if (← isStaticFalseProp lhs) || (← isStaticFalseProp rhs) then return false
+    for side in #[lhs, rhs] do
+      match ← isStaticTrueProp side with
+      | .isFalse => pure ()
+      | .isTrue => return .isFalse
+      | .inconclusive r => return .inconclusive r
+      match ← isStaticFalseProp side with
+      | .isFalse => pure ()
+      | .isTrue => return .isFalse
+      | .inconclusive r => return .inconclusive r
     if lhs.consumeMData.isForall then
-      if !(← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars lhs) then return false
+      match ← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars lhs with
+      | .isTrue => pure ()
+      | bad => return bad
     if rhs.consumeMData.isForall then
-      if !(← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars rhs) then return false
-    return (← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars lhs) ||
-           (← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars rhs)
+      match ← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars rhs with
+      | .isTrue => pure ()
+      | bad => return bad
+    let lRes ← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars lhs
+    let rRes ← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars rhs
+    match lRes, rRes with
+    | .inconclusive r, _ | _, .inconclusive r => return .inconclusive r
+    | .isTrue, _ | _, .isTrue => return .isTrue
+    | .isFalse, .isFalse => return .isFalse
   if p.isAppOfArity ``Or 2 then
     let lhs := p.appFn!.appArg!
     let rhs := p.appArg!
-    if ← isNegationPair lhs rhs then return false
-    return (← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars lhs) &&
-           (← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars rhs)
+    match ← isNegationPair lhs rhs with
+    | .isFalse => pure ()
+    | .isTrue => return .isFalse
+    | .inconclusive r => return .inconclusive r
+    match ← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars lhs with
+    | .isTrue => return ← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars rhs
+    | bad => return bad
   if p.isAppOfArity ``Exists 2 then
     let dom := p.appFn!.appArg!
     if ← isProp dom then
-      if ← isStaticFalseProp dom then return false
+      match ← isStaticFalseProp dom with
+      | .isFalse => pure ()
+      | .isTrue => return .isFalse
+      | .inconclusive r => return .inconclusive r
     return ← lambdaBoundedTelescope p.appArg! 1 fun xs body => do
       let bVars := xs.foldl (fun (s : Std.HashSet FVarId) x => s.insert x.fvarId!) assertBoundFVars
       isMeaningfulBoundaryProp boundaryFVars bVars body
   if let .forallE n dom body bi := p then
     if ← isProp dom then
-      if (← isStaticFalseProp dom) || (← isStaticTrueProp dom) then return false
-      if !body.hasLooseBVar 0 && (← isStaticFalseProp body) then
-        return ← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars dom
-      if !exprContainsAnyFVar assertBoundFVars dom then return false
-      if exprContainsAnyFVar boundaryFVars dom then return false
+      match ← isStaticFalseProp dom with
+      | .isFalse => pure ()
+      | .isTrue => return .isFalse
+      | .inconclusive r => return .inconclusive r
+      match ← isStaticTrueProp dom with
+      | .isFalse => pure ()
+      | .isTrue => return .isFalse
+      | .inconclusive r => return .inconclusive r
+      if !body.hasLooseBVar 0 then
+        match ← isStaticFalseProp body with
+        | .isTrue => return ← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars dom
+        | .inconclusive r => return .inconclusive r
+        | .isFalse => pure ()
+      if !exprContainsAnyFVar assertBoundFVars dom then return .isFalse
+      if exprContainsAnyFVar boundaryFVars dom then return .isFalse
       return ← withLocalDecl n bi dom fun h => do
         let concl := body.instantiate1 h
-        if ← isDefEq dom concl then return false
-        isMeaningfulBoundaryProp boundaryFVars assertBoundFVars concl
+        match ← runBoundedMeta (Meta.withNewMCtxDepth (isDefEq dom concl)) (maxRecDepth := 1024) with
+        | .error r => return .inconclusive r
+        | .ok true => return .isFalse
+        | .ok false => isMeaningfulBoundaryProp boundaryFVars assertBoundFVars concl
     else
-      let dClean := (← whnf dom).consumeMData
-      if dClean.isConstOf ``Empty || dClean.isConstOf ``PEmpty then return false
+      let dClean ← match ← runBoundedMeta (whnf dom) with
+        | .ok w => pure w.consumeMData
+        | .error r => return .inconclusive r
+      if dClean.isConstOf ``Empty || dClean.isConstOf ``PEmpty then return .isFalse
       return ← withLocalDecl n bi dom fun x =>
         isMeaningfulBoundaryProp boundaryFVars (assertBoundFVars.insert x.fvarId!) (body.instantiate1 x)
   if p.isAppOfArity ``Eq 3 then
     let args := p.getAppArgs
     let lhs := args[1]!
     let rhs := args[2]!
-    if lhs == rhs || (← isDefEq lhs rhs) then return false
+    if lhs == rhs then return .isFalse
+    match ← runBoundedMeta (Meta.withNewMCtxDepth (isDefEq lhs rhs)) (maxRecDepth := 1024) with
+    | .error r => return .inconclusive r
+    | .ok true => return .isFalse
+    | .ok false => pure ()
     if lhs.consumeMData.isAppOfArity ``Decidable.decide 2 && rhs.consumeMData.isConstOf ``Bool.true then
       return ← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars lhs.consumeMData.appFn!.appArg!
-    return exprContainsAnyFVar boundaryFVars lhs || exprContainsAnyFVar boundaryFVars rhs
+    return if exprContainsAnyFVar boundaryFVars lhs || exprContainsAnyFVar boundaryFVars rhs then .isTrue else .isFalse
   if p.isAppOfArity ``Not 1 then
-    let inner := (← whnf p.appArg!).consumeMData
-    if (← isStaticTrueProp inner) || (← isStaticFalseProp inner) then return false
+    let inner ← match ← runBoundedMeta (whnf p.appArg!) with
+      | .ok w => pure w.consumeMData
+      | .error r => return .inconclusive r
+    match ← isStaticTrueProp inner with
+    | .isFalse => pure ()
+    | .isTrue => return .isFalse
+    | .inconclusive r => return .inconclusive r
+    match ← isStaticFalseProp inner with
+    | .isFalse => pure ()
+    | .isTrue => return .isFalse
+    | .inconclusive r => return .inconclusive r
     return ← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars inner
-  return exprContainsAnyFVar boundaryFVars p
+  return if exprContainsAnyFVar boundaryFVars p then .isTrue else .isFalse
 
 private partial def validateAssertsInExpr
     (boundaryFVars assertBoundFVars : Std.HashSet FVarId)
-    (e : Expr) : MetaM (Bool × Bool) := do
+    (e : Expr) : MetaM (Bool × BoundedBool) := do
   let cur := e.consumeMData
   if cur.isAppOfArity `Core.NondetTest.assert 3 then
     let ok ← isMeaningfulBoundaryProp boundaryFVars assertBoundFVars cur.appArg!
@@ -730,14 +917,15 @@ private partial def validateAssertsInExpr
     cur.withApp fun fn args => do
       let nonLamHasBoundary := exprContainsAnyFVar boundaryFVars fn ||
         args.any (fun a => !(a.consumeMData matches .lam _ _ _ _) && exprContainsAnyFVar boundaryFVars a)
-      let (foundF, okF) ← validateAssertsInExpr boundaryFVars assertBoundFVars fn
-      if foundF && !okF then return (true, false)
+      let (foundF, statusF) ← validateAssertsInExpr boundaryFVars assertBoundFVars fn
+      match statusF with
+      | .isTrue => pure ()
+      | bad => if foundF then return (true, bad)
       let mut anyFound := foundF
-      let mut allOk := okF
       for arg in args do
         let aClean := arg.consumeMData
         if aClean.isLambda then
-          let (foundA, okA) ← lambdaTelescope aClean fun lxs lbody => do
+          let (foundA, statusA) ← lambdaTelescope aClean fun lxs lbody => do
             let mut nextBoundary := boundaryFVars
             let mut nextBound := assertBoundFVars
             for x in lxs do
@@ -746,23 +934,32 @@ private partial def validateAssertsInExpr
                 nextBoundary := nextBoundary.insert x.fvarId!
             validateAssertsInExpr nextBoundary nextBound lbody
           anyFound := anyFound || foundA
-          allOk := allOk && okA
-          if anyFound && !allOk then return (true, false)
+          if foundA then
+            match statusA with
+            | .isTrue => pure ()
+            | bad => return (true, bad)
         else
-          let (foundA, okA) ← validateAssertsInExpr boundaryFVars assertBoundFVars arg
+          let (foundA, statusA) ← validateAssertsInExpr boundaryFVars assertBoundFVars arg
           anyFound := anyFound || foundA
-          allOk := allOk && okA
-          if anyFound && !allOk then return (true, false)
-      return (anyFound, allOk)
+          if foundA then
+            match statusA with
+            | .isTrue => pure ()
+            | bad => return (true, bad)
+      return (anyFound, .isTrue)
   | .lam n t b bi =>
     withLocalDecl n bi t fun x =>
       validateAssertsInExpr boundaryFVars (assertBoundFVars.insert x.fvarId!) (b.instantiate1 x)
   | .letE _ _ v b _ =>
-    let (foundV, okV) ← validateAssertsInExpr boundaryFVars assertBoundFVars v
-    if foundV && !okV then return (true, false)
-    let (foundB, okB) ← validateAssertsInExpr boundaryFVars assertBoundFVars (b.instantiate1 v)
-    return (foundV || foundB, okV && okB)
-  | _ => return (false, true)
+    let (foundV, statusV) ← validateAssertsInExpr boundaryFVars assertBoundFVars v
+    if foundV then
+      match statusV with
+      | .isTrue => pure ()
+      | bad => return (true, bad)
+    let (foundB, statusB) ← validateAssertsInExpr boundaryFVars assertBoundFVars (b.instantiate1 v)
+    if foundB then
+      return (true, statusB)
+    return (foundV, .isTrue)
+  | _ => return (false, .isTrue)
 
 private partial def exprHasStringLitMatching (pred : String → Bool) (e : Expr) : Bool :=
   match e with
@@ -1439,21 +1636,31 @@ private def buildTransitiveImportFn (env : Environment) : Name → Std.HashSet N
           work := work.push nxt
     return seen
 
-private def kernelDefEq (a b : Expr) : MetaM Bool :=
-  runBoundedMeta false do
-    Meta.withNewMCtxDepth do
-      withTheReader Core.Context (fun c => { c with maxRecDepth := min c.maxRecDepth 1024 }) do
-        withTransparency .all <| isDefEq a b
+private def kernelDefEq (a b : Expr) : MetaM BoundedBool := do
+  if !a.hasMVar && !b.hasMVar then
+    let env ← getEnv
+    let lctx ← getLCtx
+    let opts ← getOptions
+    let res ← runBoundedMeta (do pure (Lean.Kernel.isDefEq env lctx a b)) (maxRecDepth := 1024)
+    match res with
+    | .ok (.ok true) => return .isTrue
+    | .ok (.ok false) => return .isFalse
+    | .ok (.error kex) => return .inconclusive (← (kex.toMessageData opts).toString)
+    | .error r => return .inconclusive r
+  match ← runBoundedMeta (Meta.withNewMCtxDepth (withTransparency .all <| isDefEq a b)) (maxRecDepth := 1024) with
+  | .ok true => return .isTrue
+  | .ok false => return .isFalse
+  | .error r => return .inconclusive r
 
-private def isDefEqPropAtom (e : Expr) : MetaM Bool := do
+private def isDefEqPropAtom (e : Expr) : MetaM BoundedBool := do
   let p := e.consumeMData
   if p.isAppOfArity ``Eq 3 then
-    if (p.getArg! 1).consumeMData == (p.getArg! 2).consumeMData then return true
+    if (p.getArg! 1).consumeMData == (p.getArg! 2).consumeMData then return .isTrue
     return ← kernelDefEq (p.getArg! 1) (p.getArg! 2)
   if p.isAppOfArity ``Iff 2 then
-    if (p.getArg! 0).consumeMData == (p.getArg! 1).consumeMData then return true
+    if (p.getArg! 0).consumeMData == (p.getArg! 1).consumeMData then return .isTrue
     return ← kernelDefEq (p.getArg! 0) (p.getArg! 1)
-  return false
+  return .isFalse
 
 private partial def exprAstNodesAtMost (limit : Nat) (e : Expr) : Option Nat :=
   if limit == 0 then none
@@ -1503,11 +1710,14 @@ private partial def isProvablyInhabitedDataType (env : Environment) (fuel : Nat)
   if c == .sort (.succ .zero) then return true
   if let .forallE _ (.sort (.succ .zero)) (.sort (.succ .zero)) _ := c then return true
   let l0 := [Level.succ Level.zero]
-  if (← withLCtx {} #[] (runBoundedMeta none (some <$> synthInstance (mkApp (mkConst ``Inhabited l0) ty)))).isSome then
-    return true
-  if (← withLCtx {} #[] (runBoundedMeta none (some <$> synthInstance (mkApp (mkConst ``Nonempty l0) ty)))).isSome then
-    return true
-  let w := (← runBoundedMeta ty (whnf ty)).consumeMData
+  match ← withLCtx {} #[] (runBoundedMeta (trySynthInstance (mkApp (mkConst ``Inhabited l0) ty))) with
+  | .ok (.some _) => return true
+  | _ => pure ()
+  match ← withLCtx {} #[] (runBoundedMeta (trySynthInstance (mkApp (mkConst ``Nonempty l0) ty))) with
+  | .ok (.some _) => return true
+  | _ => pure ()
+  let .ok wRaw ← runBoundedMeta (whnf ty) | return false
+  let w := wRaw.consumeMData
   if w.isConstOf ``Empty || w.isConstOf ``PEmpty then return false
   if w.isForall then
     return ← forallTelescope w fun _ ret => isProvablyInhabitedDataType env (fuel - 1) ret
@@ -1525,7 +1735,9 @@ private partial def isProvablyInhabitedDataType (env : Environment) (fuel : Nat)
         for fx in fxs do
           let fTy ← inferType fx
           if ← isProp fTy then
-            if !(← isStaticTrueProp fTy) then return false
+            match ← isStaticTrueProp fTy with
+            | .isTrue => pure ()
+            | .isFalse | .inconclusive _ => return false
           else
             if !(← isProvablyInhabitedDataType env (fuel - 1) fTy) then return false
         return true
@@ -1544,9 +1756,9 @@ private def areOuterDataBindersInhabited (env : Environment) (xs : Array Expr) :
       subst := subst.push (x, mkConst ``Nat)
     else if let .const clsName _ := xc.getAppFn.consumeMData then
       if Lean.isClass env clsName then
-        match ← withLCtx {} #[] (runBoundedMeta none (some <$> synthInstance xTy)) with
-        | some inst => subst := subst.push (x, inst)
-        | none => return false
+        match ← withLCtx {} #[] (runBoundedMeta (trySynthInstance xTy)) with
+        | .ok (.some inst) => subst := subst.push (x, inst)
+        | _ => return false
       else if !(← isProvablyInhabitedDataType env 8 xTy) then
         return false
     else if !(← isProvablyInhabitedDataType env 8 xTy) then
@@ -1720,21 +1932,30 @@ private def isEffectfulInterfaceOp (env : Environment) (ty : Expr) (cName : Name
     let rw := (← whnf ret).consumeMData
     return rw.isAppOfArity ``EIO 2 || rw.isAppOfArity ``EStateM 3
 
-private def checkWfNotVacuous (env : Environment) (sTy : Expr) (wfFn : Name) : MetaM Bool := do
-  let some (.defnInfo _) := env.find? wfFn | return false
-  if !(← isProvablyInhabitedDataType env 8 sTy) then return false
+private def checkWfNotVacuous (env : Environment) (sTy : Expr) (wfFn : Name) : MetaM BoundedBool := do
+  let some (.defnInfo _) := env.find? wfFn | return .isFalse
+  if !(← isProvablyInhabitedDataType env 8 sTy) then return .isFalse
   withLocalDeclD `_wfState sTy fun s => do
     let app := mkApp (mkConst wfFn) s
-    let w ← runBoundedMeta app (withTransparency .all (whnf app))
-    if w.consumeMData.isConstOf ``Bool.false then return false
+    let w ← match ← runBoundedMeta (withTransparency .all (whnf app)) with
+      | .ok w' => pure w'
+      | .error r => return .inconclusive r
+    if w.consumeMData.isConstOf ``Bool.false then return .isFalse
     let eqTrue := mkApp3 (mkConst ``Eq [Level.succ Level.zero]) (mkConst ``Bool) app (mkConst ``Bool.true)
-    if ← isStaticFalseProp eqTrue then return false
-    return true
+    match ← isStaticFalseProp eqTrue with
+    | .isFalse => return .isTrue
+    | .isTrue => return .isFalse
+    | .inconclusive r => return .inconclusive r
 
-private def isTrivialPayloadType (ty : Expr) : MetaM Bool := do
-  if ← isProp ty then return true
-  let w := (← runBoundedMeta ty (whnf ty)).consumeMData
-  return w.isConstOf ``Unit || w.isConstOf ``PUnit || w.isConstOf ``Empty || w.isConstOf ``PEmpty
+private def isTrivialPayloadType (ty : Expr) : MetaM BoundedBool := do
+  if ← isProp ty then return .isTrue
+  match ← runBoundedMeta (whnf ty) with
+  | .error r => return .inconclusive r
+  | .ok wRaw =>
+    let w := wRaw.consumeMData
+    return if w.isConstOf ``Unit || w.isConstOf ``PUnit || w.isConstOf ``Empty || w.isConstOf ``PEmpty then
+      .isTrue
+    else .isFalse
 
 private partial def stripSyntacticReflAtoms (e : Expr) : Expr :=
   let c := e.consumeMData
@@ -1752,38 +1973,54 @@ private partial def stripSyntacticReflAtoms (e : Expr) : Expr :=
     | .proj tn idx s => .proj tn idx (stripSyntacticReflAtoms s)
     | _ => e
 
-private partial def reduceMatchersBounded (fuel : Nat) (e : Expr) : MetaM Expr := do
-  if fuel == 0 then return e
-  let b := (← runBoundedMeta e (Core.betaReduce e)).headBeta.consumeMData
-  match ← runBoundedMeta ReduceMatcherResult.notMatcher (Meta.reduceMatcher? b) with
-  | .reduced b' => reduceMatchersBounded (fuel - 1) b'
-  | _ =>
-    match b with
-    | .app f a =>
-      let f' ← reduceMatchersBounded (fuel - 1) f
-      let a' ← reduceMatchersBounded (fuel - 1) a
-      let appE := (Expr.app f' a').headBeta
-      match ← runBoundedMeta ReduceMatcherResult.notMatcher (Meta.reduceMatcher? appE) with
-      | .reduced r => reduceMatchersBounded (fuel - 1) r
-      | _ => return appE
-    | .lam n t body bi =>
-      withLocalDecl n bi t fun x => do
-        let body' ← reduceMatchersBounded (fuel - 1) (body.instantiate1 x)
-        mkLambdaFVars #[x] body'
-    | .forallE n t body bi =>
-      withLocalDecl n bi t fun x => do
-        let body' ← reduceMatchersBounded (fuel - 1) (body.instantiate1 x)
-        mkForallFVars #[x] body'
-    | .letE _ _ v body _ =>
-      if !body.hasLooseBVar 0 then
-        reduceMatchersBounded (fuel - 1) (body.lowerLooseBVars 1 1)
-      else if isSmallClosedExpr v then
-        reduceMatchersBounded (fuel - 1) (body.instantiate1 v)
-      else
-        return b
-    | _ => return b
+private partial def reduceMatchersBounded (fuel : Nat) (e : Expr) : MetaM (Except String Expr) := do
+  if fuel == 0 then return .ok e
+  match ← runBoundedMeta (Core.betaReduce e) with
+  | .error reason => return .error reason
+  | .ok redE =>
+    let b := redE.headBeta.consumeMData
+    match ← runBoundedMeta (Meta.reduceMatcher? b) with
+    | .error reason => return .error reason
+    | .ok (.reduced b') => reduceMatchersBounded (fuel - 1) b'
+    | .ok _ =>
+      match b with
+      | .app f a =>
+        match ← reduceMatchersBounded (fuel - 1) f with
+        | .error reason => return .error reason
+        | .ok f' =>
+          match ← reduceMatchersBounded (fuel - 1) a with
+          | .error reason => return .error reason
+          | .ok a' =>
+            let appE := (Expr.app f' a').headBeta
+            match ← runBoundedMeta (Meta.reduceMatcher? appE) with
+            | .error reason => return .error reason
+            | .ok (.reduced r) => reduceMatchersBounded (fuel - 1) r
+            | .ok _ => return .ok appE
+      | .lam n t body bi =>
+        withLocalDecl n bi t fun x => do
+          match ← reduceMatchersBounded (fuel - 1) (body.instantiate1 x) with
+          | .error reason => return .error reason
+          | .ok body' => return .ok (← mkLambdaFVars #[x] body')
+      | .forallE n t body bi =>
+        withLocalDecl n bi t fun x => do
+          match ← reduceMatchersBounded (fuel - 1) (body.instantiate1 x) with
+          | .error reason => return .error reason
+          | .ok body' => return .ok (← mkForallFVars #[x] body')
+      | .letE n t v body _ =>
+        if !body.hasLooseBVar 0 then
+          reduceMatchersBounded (fuel - 1) (body.lowerLooseBVars 1 1)
+        else
+          match ← reduceMatchersBounded (fuel - 1) v with
+          | .error reason => return .error reason
+          | .ok v' =>
+            withLetDecl n t v' fun x => do
+              match ← reduceMatchersBounded (fuel - 1) (body.instantiate1 x) with
+              | .error reason => return .error reason
+              | .ok body' => return .ok (← mkLetFVars #[x] body' (usedLetOnly := true))
+      | _ => return .ok b
 
-private def expandModelPropRels (env : Environment) (modelMods : Std.HashSet Name) (extraFn : Name) (e : Expr) : MetaM Expr := do
+private def expandModelPropRels (env : Environment) (modelMods : Std.HashSet Name) (extraFn : Name) (e : Expr) :
+    MetaM (Except String Expr) := do
   let shouldUnfold (fn : Name) : Bool :=
     fn == extraFn ||
       (modelMods.contains (moduleOfConst env fn) && !isCompilerAux fn &&
@@ -1791,77 +2028,115 @@ private def expandModelPropRels (env : Environment) (modelMods : Std.HashSet Nam
         | some (.defnInfo dv) =>
           dv.type.getForallBody.consumeMData == .sort .zero && (exprAstNodesAtMost 4096 dv.value).isSome
         | _ => false)
-  let d ← runBoundedMeta e (Meta.deltaExpand e shouldUnfold (allowOpaque := false))
-  let r ← reduceMatchersBounded 16 d
-  return stripSyntacticReflAtoms r
+  match ← runBoundedMeta (Meta.deltaExpand e shouldUnfold (allowOpaque := false)) with
+  | .error reason => return .error reason
+  | .ok d =>
+    match ← reduceMatchersBounded 16 d with
+    | .error reason => return .error reason
+    | .ok r => return .ok (stripSyntacticReflAtoms r)
+
+private def isTrivialPropExpr (e : Expr) : MetaM BoundedBool := do
+  match ← isDefEqPropAtom e with
+  | .isFalse => isStaticTrueProp e
+  | other => return other
 
 private def checkWrappedPayloadSensitive
     (env : Environment)
     (modelMods : Std.HashSet Name)
     (mkPred : Expr → MetaM Expr)
     (unfoldFn : Name)
-    (ty : Expr) : MetaM Bool := do
-  let ow := (← runBoundedMeta ty (whnf ty)).consumeMData
+    (ty : Expr) : MetaM BoundedBool := do
+  let ow ← match ← runBoundedMeta (whnf ty) with
+    | .ok w => pure w.consumeMData
+    | .error r => return .inconclusive r
   if ow.isAppOfArity ``Except 2 then
     let lvls := ow.getAppFn.consumeMData.constLevels!
     let errTy := ow.appFn!.appArg!
     let okTy := ow.appArg!
-    if !(← isTrivialPayloadType okTy) then
+    match ← isTrivialPayloadType okTy with
+    | .inconclusive r => return .inconclusive r
+    | .isTrue => return .isTrue
+    | .isFalse =>
       return ← withLocalDeclD `_refOk1 okTy fun v1 =>
         withLocalDeclD `_refOk2 okTy fun v2 => do
           let pOk1 ← mkPred (mkApp3 (mkConst ``Except.ok lvls) errTy okTy v1)
           let pOk2 ← mkPred (mkApp3 (mkConst ``Except.ok lvls) errTy okTy v2)
-          let expOk1 ← expandModelPropRels env modelMods unfoldFn pOk1
-          if !expOk1.hasAnyFVar (· == v1.fvarId!) then return false
-          if (← isDefEqPropAtom expOk1) || (← isStaticTrueProp expOk1) then return false
-          if ← kernelDefEq pOk1 pOk2 then return false
-          return true
+          let expOk1 ← match ← expandModelPropRels env modelMods unfoldFn pOk1 with
+            | .ok e => pure e
+            | .error r => return .inconclusive r
+          if !expOk1.hasAnyFVar (· == v1.fvarId!) then return .isFalse
+          match ← isTrivialPropExpr expOk1 with
+          | .isFalse => pure ()
+          | .isTrue => return .isFalse
+          | .inconclusive r => return .inconclusive r
+          match ← kernelDefEq pOk1 pOk2 with
+          | .isFalse => return .isTrue
+          | .isTrue => return .isFalse
+          | .inconclusive r => return .inconclusive r
   else if ow.isAppOfArity ``Option 1 then
     let lvls := ow.getAppFn.consumeMData.constLevels!
     let valTy := ow.appArg!
-    if !(← isTrivialPayloadType valTy) then
+    match ← isTrivialPayloadType valTy with
+    | .inconclusive r => return .inconclusive r
+    | .isTrue => return .isTrue
+    | .isFalse =>
       return ← withLocalDeclD `_refSome1 valTy fun v1 =>
         withLocalDeclD `_refSome2 valTy fun v2 => do
           let pSm1 ← mkPred (mkApp2 (mkConst ``Option.some lvls) valTy v1)
           let pSm2 ← mkPred (mkApp2 (mkConst ``Option.some lvls) valTy v2)
-          let expSm1 ← expandModelPropRels env modelMods unfoldFn pSm1
-          if !expSm1.hasAnyFVar (· == v1.fvarId!) then return false
-          if (← isDefEqPropAtom expSm1) || (← isStaticTrueProp expSm1) then return false
-          if ← kernelDefEq pSm1 pSm2 then return false
-          return true
-  return true
+          let expSm1 ← match ← expandModelPropRels env modelMods unfoldFn pSm1 with
+            | .ok e => pure e
+            | .error r => return .inconclusive r
+          if !expSm1.hasAnyFVar (· == v1.fvarId!) then return .isFalse
+          match ← isTrivialPropExpr expSm1 with
+          | .isFalse => pure ()
+          | .isTrue => return .isFalse
+          | .inconclusive r => return .inconclusive r
+          match ← kernelDefEq pSm1 pSm2 with
+          | .isFalse => return .isTrue
+          | .isTrue => return .isFalse
+          | .inconclusive r => return .inconclusive r
+  return .isTrue
 
-private partial def hasVacuousInputBranch (fuel : Nat) (outFV : FVarId) (isConjPart : Bool) (e : Expr) : MetaM Bool := do
-  if fuel == 0 then return false
+private partial def hasVacuousInputBranch (fuel : Nat) (outFV : FVarId) (isConjPart : Bool) (e : Expr) :
+    MetaM BoundedBool := do
+  if fuel == 0 then return .isFalse
   let c := e.consumeMData
   if !c.hasAnyFVar (· == outFV) then
-    return true
+    return .isTrue
   if c.isAppOfArity ``And 2 then
-    return (← hasVacuousInputBranch (fuel - 1) outFV true c.appFn!.appArg!) ||
-      (← hasVacuousInputBranch (fuel - 1) outFV true c.appArg!)
+    match ← hasVacuousInputBranch (fuel - 1) outFV true c.appFn!.appArg! with
+    | .isFalse => return ← hasVacuousInputBranch (fuel - 1) outFV true c.appArg!
+    | other => return other
   if c.isAppOfArity ``ite 5 then
     let cond := c.getArg! 1
     let tBr := c.getArg! 3
     let eBr := c.getArg! 4
     if !cond.hasAnyFVar (· == outFV) then
-      return (← hasVacuousInputBranch (fuel - 1) outFV isConjPart tBr) ||
-        (← hasVacuousInputBranch (fuel - 1) outFV isConjPart eBr)
+      match ← hasVacuousInputBranch (fuel - 1) outFV isConjPart tBr with
+      | .isFalse => return ← hasVacuousInputBranch (fuel - 1) outFV isConjPart eBr
+      | other => return other
   if c.isAppOfArity ``dite 5 then
     let cond := c.getArg! 1
     let tLam := c.getArg! 3
     let eLam := c.getArg! 4
     if !cond.hasAnyFVar (· == outFV) then
-      let badT ← withLocalDeclD `_ditePos cond fun hp =>
+      let resT ← withLocalDeclD `_ditePos cond fun hp =>
         hasVacuousInputBranch (fuel - 1) outFV isConjPart ((Expr.app tLam hp).headBeta)
-      if badT then return true
-      let negCond := mkApp (mkConst ``Not) cond
-      return ← withLocalDeclD `_diteNeg negCond fun hn =>
-        hasVacuousInputBranch (fuel - 1) outFV isConjPart ((Expr.app eLam hn).headBeta)
+      match resT with
+      | .isFalse =>
+        let negCond := mkApp (mkConst ``Not) cond
+        return ← withLocalDeclD `_diteNeg negCond fun hn =>
+          hasVacuousInputBranch (fuel - 1) outFV isConjPart ((Expr.app eLam hn).headBeta)
+      | other => return other
   if let .forallE n dom body bi := c then
     if !dom.hasAnyFVar (· == outFV) then
       if ← isProp dom then
-        if !isConjPart && !(← isStaticTrueProp dom) then
-          return true
+        if !isConjPart then
+          match ← isStaticTrueProp dom with
+          | .isTrue => pure ()
+          | .isFalse => return .isTrue
+          | .inconclusive r => return .inconclusive r
       return ← withLocalDecl n bi dom fun hx =>
         hasVacuousInputBranch (fuel - 1) outFV isConjPart (body.instantiate1 hx)
   return ← isDefEqPropAtom c
@@ -1880,25 +2155,29 @@ private partial def collectAllInputImplicationGuards (fuel : Nat) (outFV : FVarI
         return some #[dom]
   return none
 
-private def groundSamplesForType (ty : Expr) : MetaM (Option (Array Expr)) := do
-  let w := (← runBoundedMeta ty (whnf ty)).consumeMData
-  let mkNatLitTyped (t : Expr) (n : Nat) : MetaM (Option Expr) := do
+private def groundSamplesForType (ty : Expr) : MetaM (Except String (Option (Array Expr))) := do
+  let w ← match ← runBoundedMeta (whnf ty) with
+    | .ok w' => pure w'.consumeMData
+    | .error r => return .error r
+  let mkNatLitTyped (t : Expr) (n : Nat) : MetaM (Except String (Option Expr)) := do
     let instTy := mkApp2 (mkConst ``OfNat [Level.zero]) t (mkRawNatLit n)
-    match ← withLCtx {} #[] (runBoundedMeta none (some <$> synthInstance instTy)) with
-    | some inst => pure (some (mkApp3 (mkConst ``OfNat.ofNat [Level.zero]) t (mkRawNatLit n) inst))
-    | none => pure none
+    match ← withLCtx {} #[] (runBoundedMeta (trySynthInstance instTy)) with
+    | .ok (.some inst) => pure (.ok (some (mkApp3 (mkConst ``OfNat.ofNat [Level.zero]) t (mkRawNatLit n) inst)))
+    | .ok .none => pure (.ok none)
+    | .ok .undef => pure (.error "OfNat instance synthesis incomplete")
+    | .error r => pure (.error r)
   if w.isConstOf ``Nat || w.isConstOf ``Int ||
       w.isConstOf ``UInt8 || w.isConstOf ``UInt16 ||
       w.isConstOf ``UInt32 || w.isConstOf ``UInt64 || w.isConstOf ``USize then
-    if let some v0 ← mkNatLitTyped w 0 then
-      if let some v1 ← mkNatLitTyped w 1 then
-        if let some v2 ← mkNatLitTyped w 2 then
-          return some #[v0, v1, v2]
+    match ← mkNatLitTyped w 0, ← mkNatLitTyped w 1, ← mkNatLitTyped w 2 with
+    | .ok (some v0), .ok (some v1), .ok (some v2) => return .ok (some #[v0, v1, v2])
+    | .error r, _, _ | _, .error r, _ | _, _, .error r => return .error r
+    | _, _, _ => return .ok none
   if w.isConstOf ``String then
-    return some #[mkStrLit "", mkStrLit "a", mkStrLit "b"]
+    return .ok (some #[mkStrLit "", mkStrLit "a", mkStrLit "b"])
   if w.isConstOf ``Bool then
-    return some #[mkConst ``Bool.false, mkConst ``Bool.true]
-  return none
+    return .ok (some #[mkConst ``Bool.false, mkConst ``Bool.true])
+  return .ok none
 
 private def checkPureAllowedNonTrivial
     (env : Environment)
@@ -1906,14 +2185,15 @@ private def checkPureAllowedNonTrivial
     (specSubst : Expr)
     (specFn : Name)
     (inTysSubst : Array Expr)
-    (outTySubst : Expr) : MetaM Bool := do
+    (outTySubst : Expr) : MetaM BoundedBool := do
   let mut allGroundSamples : Option (Array (Array Expr)) := some #[]
   for inTy in inTysSubst do
     if let some arr := allGroundSamples then
       match ← groundSamplesForType inTy with
-      | some sVals => allGroundSamples := some (arr.push sVals)
-      | none => allGroundSamples := none
-  let rec withInputs (idx : Nat) (acc : Array Expr) : MetaM Bool := do
+      | .error r => return .inconclusive r
+      | .ok (some sVals) => allGroundSamples := some (arr.push sVals)
+      | .ok none => allGroundSamples := none
+  let rec withInputs (idx : Nat) (acc : Array Expr) : MetaM BoundedBool := do
     if h : idx < inTysSubst.size then
       withLocalDeclD (Name.num `_refIn idx) inTysSubst[idx] fun v =>
         withInputs (idx + 1) (acc.push v)
@@ -1922,18 +2202,33 @@ private def checkPureAllowedNonTrivial
       withLocalDeclD `_refOut2 outTySubst fun y2 => do
         let p1 := (mkAppN specSubst (acc.push y1)).headBeta
         let p2 := (mkAppN specSubst (acc.push y2)).headBeta
-        let exp1 ← expandModelPropRels env modelMods specFn p1
-        if !exp1.hasAnyFVar (· == y1.fvarId!) then return false
-        if ← hasVacuousInputBranch 32 y1.fvarId! false exp1 then return false
+        let exp1 ← match ← expandModelPropRels env modelMods specFn p1 with
+          | .ok e => pure e
+          | .error r => return .inconclusive r
+        if !exp1.hasAnyFVar (· == y1.fvarId!) then return .isFalse
+        match ← hasVacuousInputBranch 32 y1.fvarId! false exp1 with
+        | .isFalse => pure ()
+        | .isTrue => return .isFalse
+        | .inconclusive r => return .inconclusive r
         for k in [0 : inTysSubst.size] do
-          if !(← isTrivialPayloadType inTysSubst[k]!) then
-            if !exp1.hasAnyFVar (· == acc[k]!.fvarId!) then return false
-        if ← kernelDefEq p1 p2 then return false
-        let u1 := (← runBoundedMeta p1 (Meta.deltaExpand p1 (· == specFn) (allowOpaque := false))).headBeta
-        if (← isDefEqPropAtom p1) || (← isStaticTrueProp p1) ||
-            (← isDefEqPropAtom u1) || (← isStaticTrueProp u1) ||
-            (← isDefEqPropAtom exp1) || (← isStaticTrueProp exp1) then
-          return false
+          match ← isTrivialPayloadType inTysSubst[k]! with
+          | .inconclusive r => return .inconclusive r
+          | .isTrue => pure ()
+          | .isFalse =>
+            if !exp1.hasAnyFVar (· == acc[k]!.fvarId!) then return .isFalse
+        match ← kernelDefEq p1 p2 with
+        | .isFalse => pure ()
+        | .isTrue => return .isFalse
+        | .inconclusive r => return .inconclusive r
+        let u1Raw ← match ← runBoundedMeta (Meta.deltaExpand p1 (· == specFn) (allowOpaque := false)) with
+          | .ok e => pure e
+          | .error r => return .inconclusive r
+        let u1 := u1Raw.headBeta
+        for cand in #[p1, u1, exp1] do
+          match ← isTrivialPropExpr cand with
+          | .isFalse => pure ()
+          | .isTrue => return .isFalse
+          | .inconclusive r => return .inconclusive r
         if let some guards ← collectAllInputImplicationGuards 16 y1.fvarId! exp1 then
           if let some sampleGrid := allGroundSamples then
             if !sampleGrid.isEmpty then
@@ -1946,21 +2241,33 @@ private def checkPureAllowedNonTrivial
                     return none
                 let mut anyGuardPossible := false
                 for g in guards do
-                  if !(← isStaticFalseProp (substIn g)) then
+                  match ← isStaticFalseProp (substIn g) with
+                  | .isFalse =>
                     anyGuardPossible := true
                     break
+                  | .isTrue => pure ()
+                  | .inconclusive r => return .inconclusive r
                 if !anyGuardPossible then
-                  return false
-        let u1w := (← runBoundedMeta u1 (whnf u1)).consumeMData
+                  return .isFalse
+        let u1w ← match ← runBoundedMeta (whnf u1) with
+          | .ok w => pure w.consumeMData
+          | .error r => return .inconclusive r
         if u1w.isAppOfArity ``Or 2 then
-          if ← isNegationPair u1w.appFn!.appArg! u1w.appArg! then return false
+          match ← isNegationPair u1w.appFn!.appArg! u1w.appArg! with
+          | .isFalse => pure ()
+          | .isTrue => return .isFalse
+          | .inconclusive r => return .inconclusive r
         if outTySubst.consumeMData.isConstOf ``Bool then
           let pT := (mkAppN specSubst (acc.push (mkConst ``Bool.true))).headBeta
           let pF := (mkAppN specSubst (acc.push (mkConst ``Bool.false))).headBeta
-          if (← isStaticTrueProp pT) && (← isStaticTrueProp pF) then return false
-        if !(← checkWrappedPayloadSensitive env modelMods (fun y => pure (mkAppN specSubst (acc.push y)).headBeta) specFn outTySubst) then
-          return false
-        return true
+          match ← isStaticTrueProp pT, ← isStaticTrueProp pF with
+          | .inconclusive r, _ | _, .inconclusive r => return .inconclusive r
+          | .isTrue, .isTrue => return .isFalse
+          | _, _ => pure ()
+        match ← checkWrappedPayloadSensitive env modelMods
+            (fun y => pure (mkAppN specSubst (acc.push y)).headBeta) specFn outTySubst with
+        | .isTrue => return .isTrue
+        | other => return other
   withInputs 0 #[]
 
 private def checkStepAllowedNonTrivial
@@ -1968,7 +2275,7 @@ private def checkStepAllowedNonTrivial
     (modelMods : Std.HashSet Name)
     (allowedArg : Expr)
     (allowedFn : Name)
-    (sTy reqTy outTy : Expr) : MetaM Bool := do
+    (sTy reqTy outTy : Expr) : MetaM BoundedBool := do
   withLocalDeclD `_stPre sTy fun s =>
   withLocalDeclD `_stReq reqTy fun req =>
   withLocalDeclD `_stOut1 outTy fun o1 =>
@@ -1977,23 +2284,44 @@ private def checkStepAllowedNonTrivial
   withLocalDeclD `_stPost2 sTy fun s2' => do
     let p1 := (mkApp4 allowedArg s req o1 s1').headBeta
     let p2 := (mkApp4 allowedArg s req o2 s2').headBeta
-    let exp1 ← expandModelPropRels env modelMods allowedFn p1
+    let exp1 ← match ← expandModelPropRels env modelMods allowedFn p1 with
+      | .ok e => pure e
+      | .error r => return .inconclusive r
     if !exp1.hasAnyFVar (· == o1.fvarId!) && !exp1.hasAnyFVar (· == s1'.fvarId!) then
-      return false
-    if !(← isTrivialPayloadType reqTy) then
-      if !exp1.hasAnyFVar (· == req.fvarId!) then return false
-    if ← kernelDefEq p1 p2 then return false
-    let u1 := (← runBoundedMeta p1 (Meta.deltaExpand p1 (· == allowedFn) (allowOpaque := false))).headBeta
-    if (← isDefEqPropAtom p1) || (← isStaticTrueProp p1) ||
-        (← isDefEqPropAtom u1) || (← isStaticTrueProp u1) ||
-        (← isDefEqPropAtom exp1) || (← isStaticTrueProp exp1) then
-      return false
-    let u1w := (← runBoundedMeta u1 (whnf u1)).consumeMData
+      return .isFalse
+    match ← isTrivialPayloadType reqTy with
+    | .inconclusive r => return .inconclusive r
+    | .isTrue => pure ()
+    | .isFalse =>
+      if !exp1.hasAnyFVar (· == req.fvarId!) then return .isFalse
+    match ← kernelDefEq p1 p2 with
+    | .isFalse => pure ()
+    | .isTrue => return .isFalse
+    | .inconclusive r => return .inconclusive r
+    let u1Raw ← match ← runBoundedMeta (Meta.deltaExpand p1 (· == allowedFn) (allowOpaque := false)) with
+      | .ok e => pure e
+      | .error r => return .inconclusive r
+    let u1 := u1Raw.headBeta
+    for cand in #[p1, u1, exp1] do
+      match ← isTrivialPropExpr cand with
+      | .isFalse => pure ()
+      | .isTrue => return .isFalse
+      | .inconclusive r => return .inconclusive r
+    let u1w ← match ← runBoundedMeta (whnf u1) with
+      | .ok w => pure w.consumeMData
+      | .error r => return .inconclusive r
     if u1w.isAppOfArity ``Or 2 then
-      if ← isNegationPair u1w.appFn!.appArg! u1w.appArg! then return false
-    if !(← checkWrappedPayloadSensitive env modelMods (fun o => pure (mkApp4 allowedArg s req o s1').headBeta) allowedFn outTy) then
-      return false
-    let ow := (← runBoundedMeta outTy (whnf outTy)).consumeMData
+      match ← isNegationPair u1w.appFn!.appArg! u1w.appArg! with
+      | .isFalse => pure ()
+      | .isTrue => return .isFalse
+      | .inconclusive r => return .inconclusive r
+    match ← checkWrappedPayloadSensitive env modelMods
+        (fun o => pure (mkApp4 allowedArg s req o s1').headBeta) allowedFn outTy with
+    | .isTrue => pure ()
+    | other => return other
+    let ow ← match ← runBoundedMeta (whnf outTy) with
+      | .ok w => pure w.consumeMData
+      | .error r => return .inconclusive r
     if let .const outIndName outLvls := ow.getAppFn.consumeMData then
       if isProjectModule (moduleOfConst env outIndName) then
         if let some (.inductInfo iv) := env.find? outIndName then
@@ -2003,12 +2331,16 @@ private def checkStepAllowedNonTrivial
                 if ci.numFields == 1 then
                   let ctorConst := mkConst ctorName outLvls
                   let cTy ← inferType ctorConst
-                  if let .forallE _ fldTy _ _ := (← runBoundedMeta cTy (whnf cTy)).consumeMData then
-                    if !(← checkWrappedPayloadSensitive env modelMods
+                  let cTyW ← match ← runBoundedMeta (whnf cTy) with
+                    | .ok w => pure w.consumeMData
+                    | .error r => return .inconclusive r
+                  if let .forallE _ fldTy _ _ := cTyW then
+                    match ← checkWrappedPayloadSensitive env modelMods
                         (fun inner => pure (mkApp4 allowedArg s req (mkApp ctorConst inner) s1').headBeta)
-                        allowedFn fldTy) then
-                      return false
-    return true
+                        allowedFn fldTy with
+                    | .isTrue => pure ()
+                    | other => return other
+    return .isTrue
 
 private def checkRefinesModelTheorem
     (env : Environment)
@@ -2099,9 +2431,9 @@ private def checkRefinesModelTheorem
               if instTy.hasAnyFVar (· == tfv.fvarId!) then
                 let instTyGround := instTy.replace fun u =>
                   (trialSubst.find? (fun (fr, _) => fr == u)).map Prod.snd
-                match ← withLCtx {} #[] (runBoundedMeta none (some <$> synthInstance instTyGround)) with
-                | some instVal => instSubst := instSubst.push (instVar, instVal)
-                | none => allInstOk := false
+                match ← withLCtx {} #[] (runBoundedMeta (trySynthInstance instTyGround)) with
+                | .ok (.some instVal) => instSubst := instSubst.push (instVar, instVal)
+                | _ => allInstOk := false
             if allInstOk then
               foundWitness? := some (candTy, instSubst)
           match foundWitness? with
@@ -2158,8 +2490,12 @@ private def checkRefinesModelTheorem
                 aErrs := aErrs.push s!"TRIVIAL_CODOMAIN_IN_REFINES: Unit codomain in RefinesPureEq for {implFn} in {thmName}"
           else
             let specSubst := applySubst specArg
-            if !(← checkPureAllowedNonTrivial env modelMods specSubst specFn inTysSubst outTySubst) then
+            match ← checkPureAllowedNonTrivial env modelMods specSubst specFn inTysSubst outTySubst with
+            | .isTrue => pure ()
+            | .isFalse =>
               aErrs := aErrs.push s!"TRIVIAL_ALLOWED_IN_REFINES: {specFn} for {implFn} in {thmName} is output-insensitive or tautological"
+            | .inconclusive reason =>
+              aErrs := aErrs.push s!"INCONCLUSIVE_REFINES_CHECK: {specFn} for {implFn} in {thmName} ({reason})"
           if aErrs.isEmpty then
             coveredPureOpsRef.modify (·.insert implFn)
           return aErrs
@@ -2202,10 +2538,18 @@ private def checkRefinesModelTheorem
           if !(← isProvablyInhabitedDataType env 8 wTy) || !(← isProvablyInhabitedDataType env 8 sTy) ||
               !(← isProvablyInhabitedDataType env 8 reqTy) then
             aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited state/request domain in RefinesStep of {thmName}"
-          if !(← checkWfNotVacuous env sTy wfFn) then
+          match ← checkWfNotVacuous env sTy wfFn with
+          | .isTrue => pure ()
+          | .isFalse =>
             aErrs := aErrs.push s!"VACUOUS_WF_IN_REFINES: {wfFn} in {thmName} is identically false or refutable"
-          if !(← checkStepAllowedNonTrivial env modelMods allowedArg allowedFn sTy reqTy outTy) then
+          | .inconclusive reason =>
+            aErrs := aErrs.push s!"INCONCLUSIVE_REFINES_CHECK: {wfFn} in {thmName} ({reason})"
+          match ← checkStepAllowedNonTrivial env modelMods allowedArg allowedFn sTy reqTy outTy with
+          | .isTrue => pure ()
+          | .isFalse =>
             aErrs := aErrs.push s!"TRIVIAL_ALLOWED_IN_REFINES: {allowedFn} in {thmName} is output/state-insensitive or tautological"
+          | .inconclusive reason =>
+            aErrs := aErrs.push s!"INCONCLUSIVE_REFINES_CHECK: {allowedFn} in {thmName} ({reason})"
           if aErrs.isEmpty then
             if stepMod == ifaceMod then
               coveredStepOpsRef.modify (·.insert stepFn)
@@ -2255,10 +2599,18 @@ private def checkRefinesModelTheorem
           for dTy in #[rawSTy, pkgSTy, pkgReqTy] do
             if !(← isProvablyInhabitedDataType env 8 dTy) then
               aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited state/request domain in RefinesStepFrom of {thmName}"
-          if !(← checkWfNotVacuous env rawSTy rawWfFn) then
+          match ← checkWfNotVacuous env rawSTy rawWfFn with
+          | .isTrue => pure ()
+          | .isFalse =>
             aErrs := aErrs.push s!"VACUOUS_WF_IN_REFINES: {rawWfFn} in {thmName} is identically false or refutable"
-          if !(← checkWfNotVacuous env pkgSTy pkgWfFn) then
+          | .inconclusive reason =>
+            aErrs := aErrs.push s!"INCONCLUSIVE_REFINES_CHECK: {rawWfFn} in {thmName} ({reason})"
+          match ← checkWfNotVacuous env pkgSTy pkgWfFn with
+          | .isTrue => pure ()
+          | .isFalse =>
             aErrs := aErrs.push s!"VACUOUS_WF_IN_REFINES: {pkgWfFn} in {thmName} is identically false or refutable"
+          | .inconclusive reason =>
+            aErrs := aErrs.push s!"INCONCLUSIVE_REFINES_CHECK: {pkgWfFn} in {thmName} ({reason})"
           for idx in [0 : stepLegs.size] do
             let (legReqTy, legOutTy, legExecArg, legAllowedArg) := stepLegs[idx]!
             let isPkgLeg := idx + 1 == stepLegs.size
@@ -2274,8 +2626,12 @@ private def checkRefinesModelTheorem
                 aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {mFn} in {thmName} transitively references Interface/Impl"
             if !(← isProvablyInhabitedDataType env 8 legReqTy) then
               aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited state/request domain in RefinesStepFrom of {thmName}"
-            if !(← checkStepAllowedNonTrivial env modelMods legAllowedArg legAllowedFn legSTy legReqTy legOutTy) then
+            match ← checkStepAllowedNonTrivial env modelMods legAllowedArg legAllowedFn legSTy legReqTy legOutTy with
+            | .isTrue => pure ()
+            | .isFalse =>
               aErrs := aErrs.push s!"TRIVIAL_ALLOWED_IN_REFINES: {legAllowedFn} in {thmName} is output/state-insensitive or tautological"
+            | .inconclusive reason =>
+              aErrs := aErrs.push s!"INCONCLUSIVE_REFINES_CHECK: {legAllowedFn} in {thmName} ({reason})"
           if aErrs.isEmpty then
             let execFlds := collectUsedStructFieldsTransitive env modelMods {} execPkgFn
             if execFlds.isEmpty then
@@ -2410,12 +2766,7 @@ unsafe def main (args : List String) : IO UInt32 := do
     IO.eprintln "EMPTY_NONCE_FORBIDDEN: --nonce must be non-empty"
     return 1
   let libDir := cfg.libDir
-  let repoDir ←
-    if cfg.repoDir == System.FilePath.mk "." && !(← (cfg.repoDir / "LeanSwe.lean").pathExists) &&
-        (← (libDir / ".." / ".." / ".." / ".." / "LeanSwe.lean").pathExists) then
-      IO.FS.realPath (libDir / ".." / ".." / ".." / "..")
-    else
-      pure cfg.repoDir
+  let repoDir := cfg.repoDir
   unless ← (libDir / "LeanSwe.olean").pathExists do
     IO.eprintln s!"MISSING_OLEAN: LeanSwe ({libDir / "LeanSwe.olean"})"
     return 1
@@ -2675,6 +3026,8 @@ unsafe def main (args : List String) : IO UInt32 := do
               if formalAssumpSet.contains fn then
                 assumpCanReach := assumpCanReach.insert fn
 
+    let activeCacheRef ← IO.mkRef ({} : ActiveCallCache)
+
     for (m, aName) in formalAssumptions do
       let pkgNs := pkgNamespaceOfSpecWith knownPkgs m
       if !isExternalBoundaryPkg env knownPkgs pkgNs then
@@ -2684,11 +3037,11 @@ unsafe def main (args : List String) : IO UInt32 := do
       axCache := axCache'
       if let some badAx := badAx? then
         errs := errs.push s!"UNALLOWED_AXIOM_IN_ASSUMPTION: {aName} uses [{badAx}]"
-      let usedAssert ← usesAnyConstActive env (Std.HashSet.emptyWithCapacity 1 |>.insert `Core.NondetTest.assert) aName
+      let usedAssert ← usesAnyConstActiveCached env activeCacheRef (Std.HashSet.emptyWithCapacity 1 |>.insert `Core.NondetTest.assert) aName
       if !usedAssert then
         errs := errs.push s!"COMMENT_ONLY_OR_TRIVIAL_ASSUMPTION: {aName} in {m} does not assert a check"
       else if let some (.defnInfo dv) := env.find? aName then
-        let bodyOk ← lambdaTelescope dv.value fun xs body => do
+        let bodyStatus ← lambdaTelescope dv.value fun xs body => do
           let mut explicitNonInst : Array FVarId := #[]
           for x in xs do
             let bi ← x.fvarId!.getBinderInfo
@@ -2696,18 +3049,21 @@ unsafe def main (args : List String) : IO UInt32 := do
             if bi == .default && !xTy.isAppOfArity `Core.NondetTest 1 then
               explicitNonInst := explicitNonInst.push x.fvarId!
           let fvarSet : Std.HashSet FVarId := explicitNonInst.foldl (fun (s : Std.HashSet FVarId) fv => s.insert fv) {}
-          if fvarSet.isEmpty then return false
-          let (foundAssert, allOk) ← validateAssertsInExpr fvarSet {} body
-          return foundAssert && allOk
-        if !bodyOk then
+          if fvarSet.isEmpty then return BoundedBool.isFalse
+          let (foundAssert, assertStatus) ← validateAssertsInExpr fvarSet {} body
+          if !foundAssert then return BoundedBool.isFalse
+          return assertStatus
+        match bodyStatus with
+        | .isTrue => pure ()
+        | .isFalse =>
           errs := errs.push s!"TRIVIAL_ASSUMPTION_ASSERT: {aName} in {m} has trivial, vacuous, or boundary-independent assert"
+        | .inconclusive reason =>
+          errs := errs.push s!"INCONCLUSIVE_ASSUMPTION_CHECK: {aName} in {m} ({reason})"
       if !assumpCanReach.contains aName then
         errs := errs.push s!"MISSING_ASSUMPTION_CANREACH: {aName} in {m}"
       if !assumpUpperConsumed.contains aName then
         errs := errs.push s!"UNUSED_FORMAL_ASSUMPTION: {aName} in {m} is not consumed as a hypothesis by any upper-layer Proofs theorem"
 
-
-    let activeCacheRef ← IO.mkRef ({} : ActiveCallCache)
     if hasTestsMainOlean || anyHasRt then
       if env.contains `main then
         let (deadMain, dbCache') ← hasStaticDeadBranchTransitive env cfg.deadBranchFuel dbCache `main
@@ -3029,6 +3385,10 @@ unsafe def main (args : List String) : IO UInt32 := do
                 errs := errs.push s!"UNCOVERED_ERROR_KIND: ({req}, {ctor}) missing from {errCovConst}"
         else
           errs := errs.push s!"MISSING_ERROR_COVERAGE: {errCovConst}"
+
+    let activeScanErrs := (← activeCacheRef.get).scanErrors.toArray.qsort (fun a b => a.1.toString < b.1.toString)
+    for (fnName, reason) in activeScanErrs do
+      errs := errs.push s!"INCONCLUSIVE_ACTIVE_CALL_CHECK: {fnName} ({reason})"
 
     return (errs, expAssumps, expErrTests)
   ).toIO ctx state

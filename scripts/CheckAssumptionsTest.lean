@@ -355,8 +355,9 @@ private def runHarnessParitySelfTests (tmpRoot realRepo : System.FilePath) : IO 
     throw (IO.userError s!"FAIL [harness_parity_clean]: expected exit 0 with '{expectedBanner}':\n{okCombined}")
   IO.println s!"PASS [harness_parity_clean] -> {expectedBanner}"
 
-  let runParityMut (name code : String) (forbiddenCodes : Array String := #[])
-      (mutate : System.FilePath → IO Unit) : IO Unit := do
+  let runParityMut (name code : String)
+      (mutate : System.FilePath → IO Unit)
+      (forbiddenCodes : Array String := #[]) : IO Unit := do
     let d := tmpRoot / s!"parity_{name}"
     copyDirTree baseDir d
     mutate d
@@ -364,85 +365,85 @@ private def runHarnessParitySelfTests (tmpRoot realRepo : System.FilePath) : IO 
     expectOutputContains name code out forbiddenCodes
     IO.FS.removeDirAll d
 
-  runParityMut "harness_toolchain_version_drift" "HARNESS_TOOLCHAIN_MISMATCH" #[] fun d => do
+  runParityMut "harness_toolchain_version_drift" "HARNESS_TOOLCHAIN_MISMATCH" fun d => do
     let curStr := (String.fromUTF8? tcBytes).getD ""
     let drifted := if curStr == "leanprover/lean4:v0.0.0" then "leanprover/lean4:v0.0.1" else "leanprover/lean4:v0.0.0"
     IO.FS.writeFile (d / "harness" / "lean-toolchain") drifted
-  runParityMut "harness_toolchain_trailing_byte" "HARNESS_TOOLCHAIN_MISMATCH" #[] fun d => do
+  runParityMut "harness_toolchain_trailing_byte" "HARNESS_TOOLCHAIN_MISMATCH" fun d => do
     let mut extra := tcBytes
     extra := extra.push 10
     IO.FS.writeBinFile (d / "harness" / "lean-toolchain") extra
   runParityMut "harness_toolchain_empty" "HARNESS_TOOLCHAIN_INVALID"
-      #["HARNESS_TOOLCHAIN_MISMATCH", "HARNESS_TOOLCHAIN_MISSING"] fun d => do
+      (forbiddenCodes := #["HARNESS_TOOLCHAIN_MISMATCH", "HARNESS_TOOLCHAIN_MISSING"]) fun d => do
     IO.FS.writeBinFile (d / "lean-toolchain") ByteArray.empty
     IO.FS.writeBinFile (d / "harness" / "lean-toolchain") ByteArray.empty
-  runParityMut "harness_toolchain_missing" "HARNESS_TOOLCHAIN_MISSING" #[] fun d => do
+  runParityMut "harness_toolchain_missing" "HARNESS_TOOLCHAIN_MISSING" fun d => do
     IO.FS.removeFile (d / "harness" / "lean-toolchain")
-  runParityMut "harness_manifest_invalid_json" "HARNESS_MANIFEST_ERROR" #[] fun d => do
+  runParityMut "harness_manifest_invalid_json" "HARNESS_MANIFEST_ERROR" fun d => do
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") "{invalid-json"
-  runParityMut "harness_manifest_packages_dir_drift" "HARNESS_MANIFEST_PACKAGES_DIR_MISMATCH" #[] fun d => do
+  runParityMut "harness_manifest_packages_dir_drift" "HARNESS_MANIFEST_PACKAGES_DIR_MISMATCH" fun d => do
     let updated ← setJsonObjField harnessManJson "packagesDir" (.str ".lake/packages")
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") updated.pretty
-  runParityMut "harness_manifest_version_drift" "HARNESS_MANIFEST_FIELD_MISMATCH: manifest 'version' differs" #[] fun d => do
+  runParityMut "harness_manifest_version_drift" "HARNESS_MANIFEST_FIELD_MISMATCH: manifest 'version' differs" fun d => do
     let updated ← setJsonObjField harnessManJson "version" (.str "0.0.0-drift")
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") updated.pretty
-  runParityMut "harness_manifest_fixed_toolchain_drift" "HARNESS_MANIFEST_FIELD_MISMATCH: manifest 'fixedToolchain' differs" #[] fun d => do
+  runParityMut "harness_manifest_fixed_toolchain_drift" "HARNESS_MANIFEST_FIELD_MISMATCH: manifest 'fixedToolchain' differs" fun d => do
     let cur := (harnessManJson.getObjValAs? Bool "fixedToolchain").toOption.getD false
     let updated ← setJsonObjField harnessManJson "fixedToolchain" (.bool (!cur))
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") updated.pretty
-  runParityMut "harness_manifest_rev_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" #[] fun d => do
+  runParityMut "harness_manifest_rev_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" fun d => do
     let mutated ← mapFirstManifestPkg harnessManJson "rev_drift" isInheritedGitPkg fun e => do
       let curRev := (e.getObjValAs? String "rev").toOption.getD "deadbeef"
       setJsonObjField e "rev" (.str (toggleHexStr curRev))
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
-  runParityMut "harness_manifest_input_rev_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" #[] fun d => do
+  runParityMut "harness_manifest_input_rev_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" fun d => do
     let mutated ← mapFirstManifestPkg harnessManJson "input_rev_drift" isInheritedGitPkg fun e => do
       let cur := (e.getObjValAs? String "inputRev").toOption.getD "main"
       setJsonObjField e "inputRev" (.str s!"{cur}-drift")
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
-  runParityMut "harness_manifest_subdir_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" #[] fun d => do
+  runParityMut "harness_manifest_subdir_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" fun d => do
     let mutated ← mapFirstManifestPkg harnessManJson "subdir_drift" isInheritedGitPkg fun e => do
       let nextVal : Lean.Json := match (e.getObjVal? "subDir").toOption with
         | some (.str s) => .str s!"{s}/drift"
         | _ => .str "drift-subdir"
       setJsonObjField e "subDir" nextVal
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
-  runParityMut "harness_manifest_scope_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" #[] fun d => do
+  runParityMut "harness_manifest_scope_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" fun d => do
     let mutated ← mapFirstManifestPkg harnessManJson "scope_drift" isInheritedGitPkg fun e => do
       let curScope := (e.getObjValAs? String "scope").toOption.getD ""
       setJsonObjField e "scope" (.str s!"{curScope}-drift")
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
   runParityMut "harness_manifest_missing_pkg" "HARNESS_MANIFEST_MISSING_PACKAGE"
-      #["HARNESS_MANIFEST_EXTRA_PACKAGE", "HARNESS_MANIFEST_MISSING_ROOT_DEP"] fun d => do
+      (forbiddenCodes := #["HARNESS_MANIFEST_EXTRA_PACKAGE", "HARNESS_MANIFEST_MISSING_ROOT_DEP"]) fun d => do
     let mutated ← dropFirstManifestPkg harnessManJson "delete_inherited_pkg" isInheritedPkg
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
   runParityMut "harness_manifest_extra_pkg" "HARNESS_MANIFEST_EXTRA_PACKAGE"
-      #["HARNESS_MANIFEST_MISSING_PACKAGE", "HARNESS_MANIFEST_DUPLICATE_PACKAGE"] fun d => do
+      (forbiddenCodes := #["HARNESS_MANIFEST_MISSING_PACKAGE", "HARNESS_MANIFEST_DUPLICATE_PACKAGE"]) fun d => do
     let mutated ← appendManifestPkg harnessManJson "append_extra_pkg" isInheritedPkg fun e => do
       let curName := (e.getObjValAs? String "name").toOption.getD "pkg"
       setJsonObjField e "name" (.str s!"{curName}-extra-drift")
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
   runParityMut "harness_manifest_duplicate_pkg" "HARNESS_MANIFEST_DUPLICATE_PACKAGE"
-      #["HARNESS_MANIFEST_MISSING_PACKAGE", "HARNESS_MANIFEST_EXTRA_PACKAGE"] fun d => do
+      (forbiddenCodes := #["HARNESS_MANIFEST_MISSING_PACKAGE", "HARNESS_MANIFEST_EXTRA_PACKAGE"]) fun d => do
     let mutated ← appendManifestPkg harnessManJson "dup_harness_pkg" isInheritedPkg pure
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
   runParityMut "root_manifest_duplicate_pkg" "HARNESS_MANIFEST_DUPLICATE_PACKAGE"
-      #["HARNESS_MANIFEST_MISSING_PACKAGE", "HARNESS_MANIFEST_EXTRA_PACKAGE"] fun d => do
+      (forbiddenCodes := #["HARNESS_MANIFEST_MISSING_PACKAGE", "HARNESS_MANIFEST_EXTRA_PACKAGE"]) fun d => do
     let mutated ← appendManifestPkg rootManJson "dup_root_pkg" (fun _ => true) pure
     IO.FS.writeFile (d / "lake-manifest.json") mutated
-  runParityMut "harness_manifest_unexpected_direct_dep" "HARNESS_MANIFEST_UNEXPECTED_PACKAGE" #[] fun d => do
+  runParityMut "harness_manifest_unexpected_direct_dep" "HARNESS_MANIFEST_UNEXPECTED_PACKAGE" fun d => do
     let mutated ← mapFirstManifestPkg harnessManJson "unexpected_direct_dep" isInheritedPkg fun e =>
       setJsonObjField e "inherited" (.bool false)
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
-  runParityMut "harness_manifest_root_dep_drift" "HARNESS_MANIFEST_ROOT_DEP_MISMATCH" #[] fun d => do
+  runParityMut "harness_manifest_root_dep_drift" "HARNESS_MANIFEST_ROOT_DEP_MISMATCH" fun d => do
     let mutated ← mapFirstManifestPkg harnessManJson "root_dep_drift" (fun e => !isInheritedPkg e) fun e =>
       setJsonObjField e "dir" (.str "../drift")
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
   runParityMut "harness_manifest_missing_root_dep" "HARNESS_MANIFEST_MISSING_ROOT_DEP"
-      #["HARNESS_MANIFEST_MISSING_PACKAGE", "HARNESS_MANIFEST_EXTRA_PACKAGE"] fun d => do
+      (forbiddenCodes := #["HARNESS_MANIFEST_MISSING_PACKAGE", "HARNESS_MANIFEST_EXTRA_PACKAGE"]) fun d => do
     let mutated ← dropFirstManifestPkg harnessManJson "drop_root_dep" (fun e => !isInheritedPkg e)
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
-  runParityMut "harness_manifest_missing" "HARNESS_MANIFEST_MISSING" #[] fun d => do
+  runParityMut "harness_manifest_missing" "HARNESS_MANIFEST_MISSING" fun d => do
     IO.FS.removeFile (d / "harness" / "lake-manifest.json")
   IO.FS.removeDirAll baseDir
 
@@ -493,6 +494,32 @@ private def buildDagRatchetDriver (tmpRoot realRepo : System.FilePath) : IO Syst
     "      return 1\n" ++
     "    IO.println \"PASS_IPC_ROUNDTRIP\"\n" ++
     "    return 0\n" ++
+    "  if args.head? == some \"--ctoridx-check\" then\n" ++
+    "    let libDir : System.FilePath := args[1]!\n" ++
+    "    initSearchPath (← findSysroot) [libDir]\n" ++
+    "    enableInitializersExecution\n" ++
+    "    let env ← importModules #[{ module := `LeanSwe.MiniA.Types }] {} (loadExts := true)\n" ++
+    "    let pubName := `LeanSwe.MiniA.Tag.ctorIdx\n" ++
+    "    let pubImpl := pubName.str \"_impl\"\n" ++
+    "    let some pubInfo := env.find? pubName | do IO.eprintln \"CTORIDX_MISSING_PUB\"; return 1\n" ++
+    "    let some (.defnInfo pubDef) := env.find? pubName | do IO.eprintln \"CTORIDX_BAD_PUB\"; return 1\n" ++
+    "    let privName := env.constants.fold (init := Name.anonymous) fun acc n _ =>\n" ++
+    "      if n.isStr && n.getString! == \"ctorIdx\" && isPrivateName n && (n.toString.splitOn \"PrivTag\").length > 1 then n else acc\n" ++
+    "    let some privInfo := env.find? privName | do IO.eprintln \"CTORIDX_MISSING_PRIV\"; return 1\n" ++
+    "    let okPub ← isCompilerGeneratedCtorIdx env pubName pubImpl pubInfo\n" ++
+    "    let okPriv ← isCompilerGeneratedCtorIdx env privName (privName.str \"_impl\") privInfo\n" ++
+    "    let badNum ← isCompilerGeneratedCtorIdx env (Name.num `LeanSwe.MiniA.Tag 0) pubImpl pubInfo\n" ++
+    "    let badAnon ← isCompilerGeneratedCtorIdx env Name.anonymous pubImpl pubInfo\n" ++
+    "    let badRoot ← isCompilerGeneratedCtorIdx env (Name.mkStr1 \"ctorIdx\") ((Name.mkStr1 \"ctorIdx\").str \"_impl\") pubInfo\n" ++
+    "    let badImpl ← isCompilerGeneratedCtorIdx env pubName (pubName.str \"_fake\") pubInfo\n" ++
+    "    let badMismatch ← isCompilerGeneratedCtorIdx env pubName pubImpl privInfo\n" ++
+    "    let badUnsafeNum ← isAllowedCompilerUnsafeDef env (Name.num `LeanSwe.MiniA.Tag 0) pubDef\n" ++
+    "    let badUnsafeAnon ← isAllowedCompilerUnsafeDef env Name.anonymous pubDef\n" ++
+    "    if !okPub || !okPriv || badNum || badAnon || badRoot || badImpl || badMismatch || badUnsafeNum || badUnsafeAnon then\n" ++
+    "      IO.eprintln s!\"CTORIDX_CHECK_FAIL: okPub={okPub} okPriv={okPriv} badNum={badNum} badAnon={badAnon} badRoot={badRoot} badImpl={badImpl} badMismatch={badMismatch} badUnsafeNum={badUnsafeNum} badUnsafeAnon={badUnsafeAnon}\"\n" ++
+    "      return 1\n" ++
+    "    IO.println \"PASS_CTORIDX_CHECK\"\n" ++
+    "    return 0\n" ++
     "  let libDir : System.FilePath := args[0]!\n" ++
     "  let rootMods := (args[1]!.splitOn \",\").filter (!·.isEmpty) |>.toArray.map (·.toName)\n" ++
     "  let edgeCsv := args[2]!\n" ++
@@ -536,7 +563,7 @@ private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath
   let leanPath := s!"{libDir}:{realLibAbs}"
 
   writeFileCreatingParents (root / "LeanSwe/MiniA/Types.lean")
-    "namespace LeanSwe.MiniA\ninductive Tag where | a | b deriving BEq\nend LeanSwe.MiniA\n"
+    "namespace LeanSwe.MiniA\ninductive Tag where | a | b deriving BEq\nprivate inductive PrivTag where | p | q\nend LeanSwe.MiniA\n"
   writeFileCreatingParents (root / "LeanSwe/MiniA/Model.lean")
     "import LeanSwe.MiniA.Types\nnamespace LeanSwe.MiniA.Model\ndef step (t : Tag) : Nat := match t with | .a => 1 | .b => 2\nend LeanSwe.MiniA.Model\n"
   writeFileCreatingParents (root / "LeanSwe/MiniA/Impl.lean")
@@ -585,16 +612,22 @@ private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath
     throw (IO.userError s!"FAIL [dag_worker_ipc_roundtrip]:\n{ipcOut.stdout}\n{ipcOut.stderr}")
   IO.println "PASS [dag_worker_ipc_roundtrip] -> encodeDagReportWireLines + decodeDagReportWireLines + mergeDagReports verified"
 
+  let ctorOut ← runCmd bin.toString #["--ctoridx-check", libDir.toString]
+  if ctorOut.exitCode != 0 || (ctorOut.stdout.splitOn "PASS_CTORIDX_CHECK").length <= 1 || !ctorOut.stderr.isEmpty then
+    throw (IO.userError s!"FAIL [ctoridx_edge_cases]:\n{ctorOut.stdout}\n{ctorOut.stderr}")
+  IO.println "PASS [ctoridx_edge_cases] -> isCompilerGeneratedCtorIdx + isAllowedCompilerUnsafeDef verified"
+
   let staleOut ← runCmd bin.toString #[libDir.toString, "LeanSwe", "WITHIN|LeanSwe.MiniA.Model|LeanSwe.MiniA.Impl", ""]
   expectOutputContains "dag_stale_edge_allowlist" "STALE_IMPORT_DAG_ALLOWLIST" staleOut
 
   let staleSigZero ← runCmd bin.toString #[libDir.toString, "LeanSwe", "", "LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs.ghost=1"]
   expectOutputContains "dag_stale_sig_allowlist_missing" "STALE_SIG_PROOF_ALLOWLIST" staleSigZero
 
-  let runDagMut (name expectedCode : String) (edgeAllow sigAllow : String := "")
+  let runDagMut (name expectedCode : String)
+      (mutate : System.FilePath → IO (Array String))
+      (edgeAllow sigAllow : String := "")
       (roots : String := "LeanSwe")
-      (forbiddenCodes : Array String := #[])
-      (mutate : System.FilePath → IO (Array String)) : IO Unit := do
+      (forbiddenCodes : Array String := #[]) : IO Unit := do
     let d := tmpRoot / s!"dag_{name}"
     let rc := d / "repo"
     let lc := d / "lib"
@@ -609,54 +642,56 @@ private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath
     expectOutputContains name expectedCode out forbiddenCodes
     IO.FS.removeDirAll d
 
-  runDagMut "within_model_imports_impl" "WITHIN|LeanSwe.MiniA.Model|LeanSwe.MiniA.Impl" "" "" "LeanSwe" #[] fun rc => do
+  runDagMut "within_model_imports_impl" "WITHIN|LeanSwe.MiniA.Model|LeanSwe.MiniA.Impl" fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Model.lean")
       "import LeanSwe.MiniA.Types\nimport LeanSwe.MiniA.Impl\nnamespace LeanSwe.MiniA.Model\ndef step (t : Tag) : Nat := Internal.stepImpl t\nend LeanSwe.MiniA.Model\n"
     return #["LeanSwe/MiniA/Model", "LeanSwe/MiniA/SpecTests", "LeanSwe/MiniA/Proofs", "LeanSwe/MiniB/Model", "LeanSwe/MiniB/Proofs", "LeanSwe"]
 
   runDagMut "within_model_imports_other_helper"
       "DAG_WITHIN_VIOLATION: LeanSwe.MiniA.Model (Model) transitively imports same-package LeanSwe.MiniA.Helper (Other)"
-      "" "" "LeanSwe.MiniA.Model" #[] fun rc => do
+      (roots := "LeanSwe.MiniA.Model") fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Helper.lean")
       "namespace LeanSwe.MiniA.Helper\ndef offset : Nat := 1\nend LeanSwe.MiniA.Helper\n"
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Model.lean")
       "import LeanSwe.MiniA.Types\nimport LeanSwe.MiniA.Helper\nnamespace LeanSwe.MiniA.Model\ndef step (t : Tag) : Nat := match t with | .a => Helper.offset | .b => 2\nend LeanSwe.MiniA.Model\n"
     return #["LeanSwe/MiniA/Helper", "LeanSwe/MiniA/Model"]
 
-  runDagMut "within_spectests_transitive_impl" "WITHIN|LeanSwe.MiniA.SpecTests|LeanSwe.MiniA.Impl" "" "" "LeanSwe" #[] fun rc => do
+  runDagMut "within_spectests_transitive_impl" "WITHIN|LeanSwe.MiniA.SpecTests|LeanSwe.MiniA.Impl" fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Model.lean")
       "import LeanSwe.MiniA.Types\nimport LeanSwe.MiniA.Impl\nnamespace LeanSwe.MiniA.Model\ndef step (t : Tag) : Nat := Internal.stepImpl t\nend LeanSwe.MiniA.Model\n"
     return #["LeanSwe/MiniA/Model", "LeanSwe/MiniA/SpecTests", "LeanSwe/MiniA/Proofs", "LeanSwe/MiniB/Model", "LeanSwe/MiniB/Proofs", "LeanSwe"]
 
-  runDagMut "within_impl_imports_spec" "WITHIN|LeanSwe.MiniA.Impl|LeanSwe.MiniA.SpecTests" "" "" "LeanSwe" #[] fun rc => do
+  runDagMut "within_impl_imports_spec" "WITHIN|LeanSwe.MiniA.Impl|LeanSwe.MiniA.SpecTests" fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Impl.lean")
       "import LeanSwe.MiniA.Types\nimport LeanSwe.MiniA.SpecTests\nnamespace LeanSwe.MiniA.Internal\ndef stepImpl (t : Tag) : Nat := match t with | .a => 1 | .b => 2\nend LeanSwe.MiniA.Internal\n"
     return #["LeanSwe/MiniA/Impl", "LeanSwe/MiniA/Interface", "LeanSwe/MiniA/Proofs", "LeanSwe/MiniB/SysBridge", "LeanSwe/MiniB/Impl", "LeanSwe/MiniB/Interface", "LeanSwe/MiniB/RuntimeTests", "LeanSwe/MiniB/Proofs", "LeanSwe"]
 
-  runDagMut "within_sysbridge_imports_runtimetests" "WITHIN|LeanSwe.MiniB.SysBridge|LeanSwe.MiniB.RuntimeTests" "" "" "LeanSwe.MiniB.SysBridge" #[] fun rc => do
+  runDagMut "within_sysbridge_imports_runtimetests" "WITHIN|LeanSwe.MiniB.SysBridge|LeanSwe.MiniB.RuntimeTests"
+      (roots := "LeanSwe.MiniB.SysBridge") fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniB/RuntimeTests.lean")
       "namespace LeanSwe.MiniB.RuntimeTests\ndef tagVal : Nat := 1\nend LeanSwe.MiniB.RuntimeTests\n"
     writeFileCreatingParents (rc / "LeanSwe/MiniB/SysBridge.lean")
       "import LeanSwe.MiniA.Interface\nimport LeanSwe.MiniB.Types\nimport LeanSwe.MiniB.RuntimeTests\nnamespace LeanSwe.MiniB.SysBridge\ndef runB (t : BTag) : Nat := LeanSwe.MiniA.step t + RuntimeTests.tagVal\nend LeanSwe.MiniB.SysBridge\n"
     return #["LeanSwe/MiniB/RuntimeTests", "LeanSwe/MiniB/SysBridge"]
 
-  runDagMut "cross_direct_impl_import" "CROSS|LeanSwe.MiniB.Impl|LeanSwe.MiniA.Impl" "" "" "LeanSwe" #[] fun rc => do
+  runDagMut "cross_direct_impl_import" "CROSS|LeanSwe.MiniB.Impl|LeanSwe.MiniA.Impl" fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniB/Impl.lean")
       "import LeanSwe.MiniB.SysBridge\nimport LeanSwe.MiniA.Impl\nnamespace LeanSwe.MiniB.Internal\ndef implB (t : BTag) : Nat := SysBridge.runB t\nend LeanSwe.MiniB.Internal\n"
     return #["LeanSwe/MiniB/Impl", "LeanSwe/MiniB/Interface", "LeanSwe/MiniB/RuntimeTests", "LeanSwe/MiniB/Proofs", "LeanSwe"]
 
-  runDagMut "cross_direct_proofs_import" "CROSS|LeanSwe.MiniB.Proofs|LeanSwe.MiniA.Proofs" "" "" "LeanSwe" #[] fun rc => do
+  runDagMut "cross_direct_proofs_import" "CROSS|LeanSwe.MiniB.Proofs|LeanSwe.MiniA.Proofs" fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniB/Proofs.lean")
       "import Core.Refines\nimport LeanSwe.MiniA.Proofs\nimport LeanSwe.MiniB.Model\nimport LeanSwe.MiniB.Interface\nnamespace LeanSwe.MiniB.Proofs\ntheorem refines_model : Core.RefinesPureEq LeanSwe.MiniB.callB LeanSwe.MiniB.Model.evalB := fun t => by cases t <;> rfl\nend LeanSwe.MiniB.Proofs\n"
     return #["LeanSwe/MiniB/Proofs", "LeanSwe"]
 
-  runDagMut "cross_indirect_reachin_through_interface" "CROSS_REF|LeanSwe.MiniB.SysBridge|LeanSwe.MiniA.Impl" "" "" "LeanSwe" #[] fun rc => do
+  runDagMut "cross_indirect_reachin_through_interface" "CROSS_REF|LeanSwe.MiniB.SysBridge|LeanSwe.MiniA.Impl" fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniB/SysBridge.lean")
       "import LeanSwe.MiniA.Interface\nimport LeanSwe.MiniB.Types\nnamespace LeanSwe.MiniB.SysBridge\ndef runB (t : BTag) : Nat := LeanSwe.MiniA.Internal.stepImpl t\nend LeanSwe.MiniB.SysBridge\n"
     return #["LeanSwe/MiniB/SysBridge", "LeanSwe/MiniB/Impl", "LeanSwe/MiniB/Interface", "LeanSwe/MiniB/RuntimeTests", "LeanSwe/MiniB/Proofs", "LeanSwe"]
 
-  runDagMut "cross_internal_reachin_in_interface" "DAG_CROSS_INTERNAL_REACHIN" "" "" "LeanSwe.MiniB.SysBridge"
-      #["DAG_CROSS_IMPORT_VIOLATION", "DAG_CROSS_REACHIN_VIOLATION"] fun rc => do
+  runDagMut "cross_internal_reachin_in_interface" "DAG_CROSS_INTERNAL_REACHIN"
+      (roots := "LeanSwe.MiniB.SysBridge")
+      (forbiddenCodes := #["DAG_CROSS_IMPORT_VIOLATION", "DAG_CROSS_REACHIN_VIOLATION"]) fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Interface.lean")
       "import LeanSwe.MiniA.Impl\nnamespace LeanSwe.MiniA\ndef step (t : Tag) : Nat := Internal.stepImpl t\nnamespace Internal\ndef leakedHelper (t : Tag) : Nat := stepImpl t\nend Internal\nend LeanSwe.MiniA\n"
     writeFileCreatingParents (rc / "LeanSwe/MiniB/SysBridge.lean")
@@ -664,76 +699,77 @@ private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath
     return #["LeanSwe/MiniA/Interface", "LeanSwe/MiniB/SysBridge"]
 
   runDagMut "duplicate_dag_allowlist_entry" "DUPLICATE_DAG_ALLOWLIST_ENTRY"
-      "WITHIN|LeanSwe.MiniA.Model|LeanSwe.MiniA.Impl;WITHIN|LeanSwe.MiniA.Model|LeanSwe.MiniA.Impl" ""
-      "LeanSwe.MiniA.Model" #["STALE_IMPORT_DAG_ALLOWLIST", "DAG_WITHIN_VIOLATION"] fun rc => do
+      (edgeAllow := "WITHIN|LeanSwe.MiniA.Model|LeanSwe.MiniA.Impl;WITHIN|LeanSwe.MiniA.Model|LeanSwe.MiniA.Impl")
+      (roots := "LeanSwe.MiniA.Model")
+      (forbiddenCodes := #["STALE_IMPORT_DAG_ALLOWLIST", "DAG_WITHIN_VIOLATION"]) fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Model.lean")
       "import LeanSwe.MiniA.Types\nimport LeanSwe.MiniA.Impl\nnamespace LeanSwe.MiniA.Model\ndef step (t : Tag) : Nat := Internal.stepImpl t\nend LeanSwe.MiniA.Model\n"
     return #["LeanSwe/MiniA/Model"]
 
-  runDagMut "proofs_namespace_model_public" "PROOF_MODEL_NS_FORBIDDEN" "" "" "LeanSwe" #[] fun rc => do
+  runDagMut "proofs_namespace_model_public" "PROOF_MODEL_NS_FORBIDDEN" fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
       "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nnamespace LeanSwe.MiniA.Model\ndef disguisedModel (n : Nat) : Nat := n\nend LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA.Proofs\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a LeanSwe.MiniA.step) := fun t => ⟨by cases t <;> rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
     return #["LeanSwe/MiniA/Proofs", "LeanSwe"]
 
-  runDagMut "proofs_namespace_model_private" "PROOF_MODEL_NS_FORBIDDEN" "" "" "LeanSwe" #[] fun rc => do
+  runDagMut "proofs_namespace_model_private" "PROOF_MODEL_NS_FORBIDDEN" fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
       "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nnamespace LeanSwe.MiniA.Model\nprivate def hiddenModel (n : Nat) : Nat := n\nend LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA.Proofs\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a LeanSwe.MiniA.step) := fun t => ⟨by cases t <;> rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
     return #["LeanSwe/MiniA/Proofs", "LeanSwe"]
 
-  runDagMut "properties_uses_proofs_const" "PROOF_CONST_IN_SPEC" "" "" "LeanSwe.MiniA.Properties" #[] fun rc => do
+  runDagMut "properties_uses_proofs_const" "PROOF_CONST_IN_SPEC" (roots := "LeanSwe.MiniA.Properties") fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Properties.lean")
       "import LeanSwe.MiniA.Proofs\nnamespace LeanSwe.MiniA\ndef prop_bad : Prop := LeanSwe.MiniA.Proofs.step_cases .a = LeanSwe.MiniA.Proofs.step_cases .a\nend LeanSwe.MiniA\n"
     return #["LeanSwe/MiniA/Properties"]
 
-  runDagMut "spectests_body_uses_proofs_const" "PROOF_CONST_IN_SPEC" "" "" "LeanSwe.MiniA.SpecTests" #[] fun rc => do
+  runDagMut "spectests_body_uses_proofs_const" "PROOF_CONST_IN_SPEC" (roots := "LeanSwe.MiniA.SpecTests") fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
       "import LeanSwe.MiniA.Types\nnamespace LeanSwe.MiniA.Proofs\ndef proofHelperVal : Nat := 7\nend LeanSwe.MiniA.Proofs\n"
     writeFileCreatingParents (rc / "LeanSwe/MiniA/SpecTests.lean")
       "import Core.NondetTest\nimport LeanSwe.MiniA.Model\nimport LeanSwe.MiniA.Proofs\nnamespace LeanSwe.MiniA\nopen Core Core.NondetTest\ndef test_bad_body {r} [NondetTest r] : r Unit := do\n  NondetTest.assert (Proofs.proofHelperVal = 7)\nend LeanSwe.MiniA\n"
     return #["LeanSwe/MiniA/Proofs", "LeanSwe/MiniA/SpecTests"]
 
-  runDagMut "within_impl_imports_proofs" "WITHIN|LeanSwe.MiniA.Impl|LeanSwe.MiniA.Proofs" "" "" "LeanSwe.MiniA.Impl" #[] fun rc => do
+  runDagMut "within_impl_imports_proofs" "WITHIN|LeanSwe.MiniA.Impl|LeanSwe.MiniA.Proofs" (roots := "LeanSwe.MiniA.Impl") fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
       "import LeanSwe.MiniA.Types\nnamespace LeanSwe.MiniA.Proofs\ndef pfConst : Nat := 1\nend LeanSwe.MiniA.Proofs\n"
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Impl.lean")
       "import LeanSwe.MiniA.Types\nimport LeanSwe.MiniA.Proofs\nnamespace LeanSwe.MiniA.Internal\ndef stepImpl (_ : Tag) : Nat := Proofs.pfConst\nend LeanSwe.MiniA.Internal\n"
     return #["LeanSwe/MiniA/Proofs", "LeanSwe/MiniA/Impl"]
 
-  runDagMut "cross_trans_model_imports_proofs" "DAG_TRANS_LEAK" "" "" "LeanSwe.MiniB.Model" #[] fun rc => do
+  runDagMut "cross_trans_model_imports_proofs" "DAG_TRANS_LEAK" (roots := "LeanSwe.MiniB.Model") fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniB/Model.lean")
       "import LeanSwe.MiniA.Model\nimport LeanSwe.MiniA.Proofs\nimport LeanSwe.MiniB.Types\nnamespace LeanSwe.MiniB.Model\ndef evalB (t : BTag) : Nat := LeanSwe.MiniA.Model.step t\nend LeanSwe.MiniB.Model\n"
     return #["LeanSwe/MiniB/Model"]
 
-  runDagMut "refines_model_uses_proofs_const" "PROOF_CONST_IN_SIGNATURE" "" "" "LeanSwe" #[] fun rc => do
+  runDagMut "refines_model_uses_proofs_const" "PROOF_CONST_IN_SIGNATURE" fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
       "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nnamespace LeanSwe.MiniA.Proofs\ndef proofHelper (t : Tag) : Nat := Model.step t\ntheorem refines_model : Core.RefinesPureEq LeanSwe.MiniA.step proofHelper := fun t => by cases t <;> rfl\nend LeanSwe.MiniA.Proofs\n"
     return #["LeanSwe/MiniA/Proofs", "LeanSwe"]
 
-  runDagMut "obeys_model_uses_proofs_const" "PROOF_CONST_IN_SIGNATURE" "" "" "LeanSwe" #[] fun rc => do
+  runDagMut "obeys_model_uses_proofs_const" "PROOF_CONST_IN_SIGNATURE" fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
       "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nnamespace LeanSwe.MiniA.Proofs\ndef proofPred (t : Tag) : Prop := Model.step t > 0\ntheorem obeys_model (t : Tag) : proofPred t := by cases t <;> simp [proofPred, Model.step]\nend LeanSwe.MiniA.Proofs\n"
     return #["LeanSwe/MiniA/Proofs", "LeanSwe"]
 
-  runDagMut "allpass_sig_uses_proofs_const" "PROOF_CONST_IN_SIGNATURE" "" "" "LeanSwe" #[] fun rc => do
+  runDagMut "allpass_sig_uses_proofs_const" "PROOF_CONST_IN_SIGNATURE" fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
       "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nnamespace LeanSwe.MiniA.Proofs\ndef fakeStep (t : Tag) : Nat := Model.step t\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
     return #["LeanSwe/MiniA/Proofs", "LeanSwe"]
 
-  runDagMut "allpass_sig_count_grew" "PROOF_CONST_IN_SIGNATURE_GREW" ""
-      "LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs.fakeStep=1" "LeanSwe" #[] fun rc => do
+  runDagMut "allpass_sig_count_grew" "PROOF_CONST_IN_SIGNATURE_GREW"
+      (sigAllow := "LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs.fakeStep=1") fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
       "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nnamespace LeanSwe.MiniA.Proofs\ndef fakeStep (t : Tag) : Nat := Model.step t\ntheorem proof_a1 : Core.AllPass (LeanSwe.MiniA.test_a fakeStep) := fun _ => ⟨rfl, trivial⟩\ntheorem proof_a2 : Core.AllPass (LeanSwe.MiniA.test_a fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
     return #["LeanSwe/MiniA/Proofs", "LeanSwe"]
 
-  runDagMut "allpass_sig_count_stale" "STALE_SIG_PROOF_ALLOWLIST" ""
-      "LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs.fakeStep=2" "LeanSwe" #[] fun rc => do
+  runDagMut "allpass_sig_count_stale" "STALE_SIG_PROOF_ALLOWLIST"
+      (sigAllow := "LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs.fakeStep=2") fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
       "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nnamespace LeanSwe.MiniA.Proofs\ndef fakeStep (t : Tag) : Nat := Model.step t\ntheorem proof_a1 : Core.AllPass (LeanSwe.MiniA.test_a fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
     return #["LeanSwe/MiniA/Proofs", "LeanSwe"]
 
-  runDagMut "duplicate_sig_proof_allowlist_entry" "DUPLICATE_SIG_PROOF_ALLOWLIST_ENTRY" ""
-      "LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs.fakeStep=1;LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs.fakeStep=1"
-      "LeanSwe" #["STALE_SIG_PROOF_ALLOWLIST", "PROOF_CONST_IN_SIGNATURE"] fun rc => do
+  runDagMut "duplicate_sig_proof_allowlist_entry" "DUPLICATE_SIG_PROOF_ALLOWLIST_ENTRY"
+      (sigAllow := "LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs.fakeStep=1;LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs.fakeStep=1")
+      (forbiddenCodes := #["STALE_SIG_PROOF_ALLOWLIST", "PROOF_CONST_IN_SIGNATURE"]) fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
       "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nnamespace LeanSwe.MiniA.Proofs\ndef fakeStep (t : Tag) : Nat := Model.step t\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
     return #["LeanSwe/MiniA/Proofs", "LeanSwe"]
@@ -1520,6 +1556,170 @@ def main (_ : List String) : IO UInt32 := do
          "  ⟨fun _ => rfl, fun _ _ _ _ _ _ => trivial⟩\n" ++
          "end LeanSwe.MiniPure.Proofs\n")
       return #["LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl", "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
+
+    runMutantCase base tmpRoot bin "dead_branch_deep_closed_let_in_runtime_test" "DEAD_CONDITIONAL_IN_TEST" fun mr =>
+      setupFallibleRuntimeMiniPure mr
+        ("import Core.Assumptions\n" ++
+         "import LeanSwe.MiniPure.Interface\n" ++
+         "namespace LeanSwe.MiniPure.RuntimeTests\n" ++
+         "def test_err_zero : IO Unit := do\n" ++
+         "  let c : Nat := (((((((((((((((((((0 + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1)\n" ++
+         "  if c == 999 then throw (IO.userError \"dead\")\n" ++
+         "  let res := LeanSwe.MiniPure.checkPos 0\n" ++
+         "  match res with\n" ++
+         "  | .error .zeroInput => pure ()\n" ++
+         "  | .ok _ => throw (IO.userError \"expected zeroInput\")\n" ++
+         "def registeredErrorTests : Array Core.RegisteredErrorTest := #[\n" ++
+         "  { testName := \"LeanSwe.MiniPure.RuntimeTests.test_err_zero\", mode := .real, run := test_err_zero }\n" ++
+         "]\n" ++
+         "def runAll : IO Unit := Core.runRegisteredErrorTests registeredErrorTests\n" ++
+         "end LeanSwe.MiniPure.RuntimeTests\n")
+
+    runMutantCase base tmpRoot bin "deep_closed_let_dead_throw_in_runtime_test" "TRIVIAL_ERROR_TEST" fun mr =>
+      setupFallibleRuntimeMiniPure mr
+        ("import Core.Assumptions\n" ++
+         "import LeanSwe.MiniPure.Interface\n" ++
+         "namespace LeanSwe.MiniPure.RuntimeTests\n" ++
+         "def test_err_zero : IO Unit := do\n" ++
+         "  let c : Nat := (((((((((((((((((((0 + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1)\n" ++
+         "  let fakeThrow : IO Unit := throw (IO.userError \"dead\")\n" ++
+         "  if c == 999 then fakeThrow else pure ()\n" ++
+         "  let res := LeanSwe.MiniPure.checkPos 0\n" ++
+         "  match res with\n" ++
+         "  | .error .zeroInput => pure ()\n" ++
+         "  | .ok _ => pure ()\n" ++
+         "def registeredErrorTests : Array Core.RegisteredErrorTest := #[\n" ++
+         "  { testName := \"LeanSwe.MiniPure.RuntimeTests.test_err_zero\", mode := .real, run := test_err_zero }\n" ++
+         "]\n" ++
+         "def runAll : IO Unit := Core.runRegisteredErrorTests registeredErrorTests\n" ++
+         "end LeanSwe.MiniPure.RuntimeTests\n")
+
+    runMutantCase base tmpRoot bin "deep_closed_let_pure_bind_pkg_ref_stripped" "MISSING_PACKAGE_REF_IN_TEST" fun mr =>
+      setupFallibleRuntimeMiniPure mr
+        ("import Core.Assumptions\n" ++
+         "import LeanSwe.MiniPure.Interface\n" ++
+         "namespace LeanSwe.MiniPure.RuntimeTests\n" ++
+         "def test_err_zero : IO Unit := do\n" ++
+         "  let inert : IO Nat := pure (((((((((((((((((((LeanSwe.MiniPure.eval 0 + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1) + 1)\n" ++
+         "  let _ ← inert\n" ++
+         "  let t ← IO.monoNanosNow\n" ++
+         "  if t == 0 then throw (IO.userError \"unexpected zero clock\")\n" ++
+         "def registeredErrorTests : Array Core.RegisteredErrorTest := #[\n" ++
+         "  { testName := \"LeanSwe.MiniPure.RuntimeTests.test_err_zero\", mode := .real, run := test_err_zero }\n" ++
+         "]\n" ++
+         "def runAll : IO Unit := Core.runRegisteredErrorTests registeredErrorTests\n" ++
+         "end LeanSwe.MiniPure.RuntimeTests\n")
+
+    runMutantCase base tmpRoot bin "deep_tautology_kernel_defeq_refines_rejected" "TRIVIAL_ALLOWED_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def deepAdd : Nat → Nat → Nat\n" ++
+         "  | 0, x => x\n" ++
+         "  | k + 1, x => (deepAdd k x) + 0\n" ++
+         "def sneakyAllowed (n y : Nat) : Prop := deepAdd 1500 (n + y) = n + y\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Refines\n" ++
+         "import LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "private theorem deepAdd_eq : ∀ k x : Nat, Model.deepAdd k x = x\n" ++
+         "  | 0, _ => rfl\n" ++
+         "  | k + 1, x => by simp [Model.deepAdd, deepAdd_eq k x]\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem refines_model : Core.RefinesPure LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.sneakyAllowed :=\n" ++
+         "  fun n => deepAdd_eq 1500 (n + LeanSwe.MiniPure.eval n)\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #["LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
+
+    runMutantCase base tmpRoot bin "bounded_meta_exhaustion_refines_fails_closed" "INCONCLUSIVE_REFINES_CHECK" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def deepTaut : Nat → Nat → Prop\n" ++
+         "  | 0, x => x = x\n" ++
+         "  | k + 1, x => deepTaut k x\n" ++
+         "def sneakyAllowed (n y : Nat) : Prop := deepTaut 2500 (n + y)\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Refines\n" ++
+         "import LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "private theorem deepTaut_true : ∀ k x : Nat, Model.deepTaut k x\n" ++
+         "  | 0, _ => rfl\n" ++
+         "  | k + 1, x => deepTaut_true k x\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "set_option maxRecDepth 16384 in\n" ++
+         "theorem refines_model : Core.RefinesPure LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.sneakyAllowed :=\n" ++
+         "  fun n => deepTaut_true 2500 (n + LeanSwe.MiniPure.eval n)\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #["LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
+
+    runMutantCase base tmpRoot bin "bounded_meta_exhaustion_assumption_fails_closed" "INCONCLUSIVE_ASSUMPTION_CHECK" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniExt/Types.lean")
+        "namespace LeanSwe.MiniExt\ninductive ExtErr | fail deriving Repr, BEq, DecidableEq\nend LeanSwe.MiniExt\n"
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniExt/Model.lean")
+        ("import LeanSwe.MiniExt.Types\n" ++
+         "namespace LeanSwe.MiniExt.Model\n" ++
+         "def deepAdd : Nat → Nat → Nat\n" ++
+         "  | 0, x => x\n" ++
+         "  | k + 1, x => (deepAdd k x) + 0\n" ++
+         "end LeanSwe.MiniExt.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniExt/Impl.lean")
+        ("import LeanSwe.MiniExt.Types\n" ++
+         "namespace LeanSwe.MiniExt.Internal\n" ++
+         "def pingImpl : IO Nat := IO.monoNanosNow\n" ++
+         "end LeanSwe.MiniExt.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniExt/Interface.lean")
+        ("import LeanSwe.MiniExt.Impl\n" ++
+         "namespace LeanSwe.MiniExt\n" ++
+         "def ping : IO Nat := Internal.pingImpl\n" ++
+         "end LeanSwe.MiniExt\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniExt/SpecTests.lean")
+        ("import Core.NondetTest\n" ++
+         "import Core.Assumptions\n" ++
+         "import LeanSwe.MiniExt.Model\n" ++
+         "import LeanSwe.MiniExt.Interface\n" ++
+         "namespace LeanSwe.MiniExt\n" ++
+         "open Core Core.NondetTest\n" ++
+         "def assume_ping_taut {r} [NondetTest r] (fn : Nat → Nat) : r Unit := do\n" ++
+         "  NondetTest.assert (Model.deepAdd 1500 (fn 0) = fn 0)\n" ++
+         "def externalAssumptions : List AssumptionObligation := [\n" ++
+         "  { name := \"LeanSwe.MiniExt.assume_ping_taut\", subject := \"LeanSwe.MiniExt.ping\", formalPred? := some \"LeanSwe.MiniExt.assume_ping_taut\" }\n" ++
+         "]\n" ++
+         "end LeanSwe.MiniExt\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniExt/Proofs.lean")
+        ("import LeanSwe.MiniExt.SpecTests\n" ++
+         "namespace LeanSwe.MiniExt.Proofs\n" ++
+         "private theorem deepAdd_eq : ∀ k x : Nat, Model.deepAdd k x = x\n" ++
+         "  | 0, _ => rfl\n" ++
+         "  | k + 1, x => by simp [Model.deepAdd, deepAdd_eq k x]\n" ++
+         "set_option maxRecDepth 16384 in\n" ++
+         "theorem assume_ping_taut_can_reach : Core.CanReach (LeanSwe.MiniExt.assume_ping_taut id) :=\n" ++
+         "  ⟨deepAdd_eq 1500 0, trivial⟩\n" ++
+         "set_option maxRecDepth 16384 in\n" ++
+         "theorem consumer (fn : Nat → Nat) (h : Core.AllPass (LeanSwe.MiniExt.assume_ping_taut fn)) : Model.deepAdd 1500 (fn 0) = fn 0 := h.1\n" ++
+         "end LeanSwe.MiniExt.Proofs\n")
+      let ls ← IO.FS.readFile (mr.root / "LeanSwe.lean")
+      writeFileCreatingParents (mr.root / "LeanSwe.lean")
+        (ls ++
+         "import LeanSwe.MiniExt.Types\n" ++
+         "import LeanSwe.MiniExt.Model\n" ++
+         "import LeanSwe.MiniExt.Impl\n" ++
+         "import LeanSwe.MiniExt.Interface\n" ++
+         "import LeanSwe.MiniExt.SpecTests\n" ++
+         "import LeanSwe.MiniExt.Proofs\n")
+      return #[
+        "LeanSwe/MiniExt/Types",
+        "LeanSwe/MiniExt/Model",
+        "LeanSwe/MiniExt/Impl",
+        "LeanSwe/MiniExt/Interface",
+        "LeanSwe/MiniExt/SpecTests",
+        "LeanSwe/MiniExt/Proofs",
+        "LeanSwe"
+      ]
 
     expectFailureCode bin "inconclusive_dead_branch_fails_closed" "INCONCLUSIVE_DEAD_BRANCH_CHECK"
       base.libDir base.root #["--allow-legacy", "--dead-branch-fuel", "0"]
