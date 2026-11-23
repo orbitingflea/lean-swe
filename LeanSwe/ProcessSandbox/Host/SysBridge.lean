@@ -309,7 +309,7 @@ structure HostSysDepsM (m : Type → Type) (fd : Type) (fwdTask : Type) where
   /-- Stop a running forwarder task and close its listener and wakeup descriptors. -/
   stopFwdTask : fwdTask → m Unit
 
-/-- Check structural size bounds enforced by `psandbox_init.c` (`LSWP0002`) before sealing a `CompiledSandboxPlan`. -/
+/-- Check structural size bounds enforced by `psandbox-init` (`LSWP0002`) before sealing a `CompiledSandboxPlan`. -/
 def isPlanWithinInitLimits (plan : CompiledSandboxPlan) : Bool :=
   plan.cwd.startsWith "/" &&
   plan.args.size ≤ 65536 &&

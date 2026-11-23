@@ -53,7 +53,19 @@ lean_lib LeanSwe where
     .one `LeanSwe.PostFork.Aeneas.Api,
     .one `LeanSwe.PostFork.Aeneas.Bridge,
     .submodules `LeanSwe.Process,
-    .submodules `LeanSwe.ProcessSandbox,
+    .one `LeanSwe.ProcessSandbox.Types,
+    .one `LeanSwe.ProcessSandbox.Model,
+    .one `LeanSwe.ProcessSandbox.SpecTests,
+    .one `LeanSwe.ProcessSandbox.SpecMutants,
+    .one `LeanSwe.ProcessSandbox.Impl,
+    .one `LeanSwe.ProcessSandbox.Interface,
+    .andSubmodules `LeanSwe.ProcessSandbox.Proofs,
+    .one `LeanSwe.ProcessSandbox.RuntimeTests,
+    .submodules `LeanSwe.ProcessSandbox.Seccomp,
+    .submodules `LeanSwe.ProcessSandbox.Raw,
+    .submodules `LeanSwe.ProcessSandbox.Host,
+    .andSubmodules `LeanSwe.ProcessSandbox.Init.Proofs,
+    .one `LeanSwe.ProcessSandbox.Init.Verified,
     .submodules `LeanSwe.RegExp,
     .submodules `LeanSwe.SlotPool,
     .submodules `LeanSwe.Sqlite,
@@ -84,6 +96,22 @@ lean_lib «LeanSwe.PostFork.AeneasGen» where
     .one `LeanSwe.PostFork.Aeneas.Types,
     .one `LeanSwe.PostFork.Aeneas.FunsExternal,
     .one `LeanSwe.PostFork.Aeneas.Funs
+  ]
+  leanOptions := #[⟨`weak.linter.missingDocs, false⟩]
+
+@[default_target]
+lean_lib «LeanSwe.ProcessSandbox.Init.AeneasGen» where
+  roots := #[
+    `LeanSwe.ProcessSandbox.Init.Aeneas.TypesExternal,
+    `LeanSwe.ProcessSandbox.Init.Aeneas.Types,
+    `LeanSwe.ProcessSandbox.Init.Aeneas.FunsExternal,
+    `LeanSwe.ProcessSandbox.Init.Aeneas.Funs
+  ]
+  globs := #[
+    .one `LeanSwe.ProcessSandbox.Init.Aeneas.TypesExternal,
+    .one `LeanSwe.ProcessSandbox.Init.Aeneas.Types,
+    .one `LeanSwe.ProcessSandbox.Init.Aeneas.FunsExternal,
+    .one `LeanSwe.ProcessSandbox.Init.Aeneas.Funs
   ]
   leanOptions := #[⟨`weak.linter.missingDocs, false⟩]
 
@@ -176,19 +204,82 @@ private def encodeBase64Lake (bs : ByteArray) : String := Id.run do
     out := out.push '='.toNat.toUInt8
   return String.fromUTF8! out
 
-/-- Compile `psandbox_init.c` into `.lake/build/c/leanswe-psandbox-init` and generate `.lake/build/gen/LeanSwe/ProcessSandbox/InitData.lean`. -/
+private def resolveCargoAndEnv (rustFlags? : Option String) :
+    IO (String × Array (String × Option String)) := do
+  let homeDir := (← IO.getEnv "HOME").getD ""
+  let aeneasToolchain := s!"{homeDir}/.local/share/aeneas-toolchain"
+  let fallbackCargo : System.FilePath := s!"{aeneasToolchain}/cargo/bin/cargo"
+  let findCargoOnPath : IO (Option String) := do
+    let pathEnv := (← IO.getEnv "PATH").getD ""
+    for dir in pathEnv.splitOn ":" do
+      if !dir.isEmpty then
+        let cand : System.FilePath := System.FilePath.mk dir / "cargo"
+        if ← cand.pathExists then
+          return some cand.toString
+    return none
+  let cargoBin ← do
+    match (← IO.getEnv "CARGO").filter (!·.isEmpty) with
+    | some c => pure c
+    | none =>
+      match (← findCargoOnPath) with
+      | some c => pure c
+      | none =>
+        if !homeDir.isEmpty && (← fallbackCargo.pathExists) then
+          pure fallbackCargo.toString
+        else
+          pure "cargo"
+  let aeneasPath : System.FilePath := aeneasToolchain
+  let absAeneas? ←
+    if !homeDir.isEmpty && (← aeneasPath.pathExists) then
+      pure (some (← IO.FS.realPath aeneasPath))
+    else
+      pure none
+  let cargoPath : System.FilePath := cargoBin
+  let absCargo? ←
+    if (← cargoPath.pathExists) then
+      pure (some (← IO.FS.realPath cargoPath))
+    else
+      pure none
+  let useAeneas := match absAeneas?, absCargo? with
+    | some ad, some cb => cb.toString.startsWith (ad.toString ++ "/")
+    | _, _ => false
+  let baseEnv : Array (String × Option String) := #[
+    ("RUSTUP_TOOLCHAIN", none),
+    ("CARGO_BUILD_TARGET", none),
+    ("RUSTFLAGS", rustFlags?)
+  ]
+  let extraEnv := match useAeneas, absAeneas? with
+    | true, some ad => baseEnv ++ #[("CARGO_HOME", some s!"{ad}/cargo"), ("RUSTUP_HOME", some s!"{ad}/rustup")]
+    | _, _ => baseEnv
+  return (cargoBin, extraEnv)
+
+/-- Compile `#![no_std]` `psandbox-init` and generate `.lake/build/gen/LeanSwe/ProcessSandbox/InitData.lean`. -/
 target «leanswe-psandbox-init-data» pkg : System.FilePath := do
-  let cDir := pkg.dir / "LeanSwe" / "ProcessSandbox" / "Raw" / "c"
-  let initSrcJob ← inputTextFile (cDir / "psandbox_init.c")
-  let initBin := pkg.buildDir / "c" / "leanswe-psandbox-init"
+  let rustDir := pkg.dir / "LeanSwe" / "ProcessSandbox" / "Init" / "rust"
+  let targetDir := pkg.buildDir / "psandbox-init-rust"
   let genFile := pkg.buildDir / "gen" / "LeanSwe" / "ProcessSandbox" / "InitData.lean"
-  buildFileAfterDep genFile initSrcJob fun srcFile => do
-    createParentDirs initBin
-    let cc := ((← IO.getEnv "CC").filter (!·.isEmpty)).getD "cc"
+  let manifestJob ← inputTextFile (rustDir / "Cargo.toml")
+  let lockJob ← inputTextFile (rustDir / "Cargo.lock")
+  let toolchainJob ← inputTextFile (rustDir / "rust-toolchain.toml")
+  let srcLib ← inputTextFile (rustDir / "src" / "lib.rs")
+  let srcMain ← inputTextFile (rustDir / "src" / "main.rs")
+  let srcSys ← inputTextFile (rustDir / "src" / "init_sys.rs")
+  let srcCli ← inputTextFile (rustDir / "src" / "cli.rs")
+  let srcPlan ← inputTextFile (rustDir / "src" / "plan.rs")
+  let srcOps ← inputTextFile (rustDir / "src" / "ops.rs")
+  let depsJob := Job.collectArray #[manifestJob, lockJob, toolchainJob, srcLib, srcMain, srcSys, srcCli, srcPlan, srcOps]
+  buildFileAfterDep genFile depsJob fun _ => do
+    IO.FS.createDirAll targetDir
+    let absRustDir ← IO.FS.realPath rustDir
+    let absTargetDir ← IO.FS.realPath targetDir
+    let (cargoBin, extraEnv) ← resolveCargoAndEnv none
     proc {
-      cmd := cc
-      args := #["-O2", "-Wall", "-Wextra", "-Werror", srcFile.toString, "-o", initBin.toString]
+      cmd := cargoBin
+      args := #["build", "--locked", "--target-dir", absTargetDir.toString, "--release", "--bin", "psandbox-init", "--features", "standalone"]
+      cwd := some absRustDir
+      env := extraEnv
     }
+    let initBin := absTargetDir / "release" / "psandbox-init"
     let bytes ← IO.FS.readBinFile initBin
     let b64 := encodeBase64Lake bytes
     createParentDirs genFile
@@ -332,51 +423,7 @@ target «postfork_rust_archive» pkg : System.FilePath := do
     IO.FS.createDirAll targetDir
     let absRustDir ← IO.FS.realPath rustDir
     let absTargetDir ← IO.FS.realPath targetDir
-    let homeDir := (← IO.getEnv "HOME").getD ""
-    let aeneasToolchain := s!"{homeDir}/.local/share/aeneas-toolchain"
-    let fallbackCargo : System.FilePath := s!"{aeneasToolchain}/cargo/bin/cargo"
-    let findCargoOnPath : IO (Option String) := do
-      let pathEnv := (← IO.getEnv "PATH").getD ""
-      for dir in pathEnv.splitOn ":" do
-        if !dir.isEmpty then
-          let cand : System.FilePath := System.FilePath.mk dir / "cargo"
-          if ← cand.pathExists then
-            return some cand.toString
-      return none
-    let cargoBin ← do
-      match (← IO.getEnv "CARGO").filter (!·.isEmpty) with
-      | some c => pure c
-      | none =>
-        match (← findCargoOnPath) with
-        | some c => pure c
-        | none =>
-          if !homeDir.isEmpty && (← fallbackCargo.pathExists) then
-            pure fallbackCargo.toString
-          else
-            pure "cargo"
-    let aeneasPath : System.FilePath := aeneasToolchain
-    let absAeneas? ←
-      if !homeDir.isEmpty && (← aeneasPath.pathExists) then
-        pure (some (← IO.FS.realPath aeneasPath))
-      else
-        pure none
-    let cargoPath : System.FilePath := cargoBin
-    let absCargo? ←
-      if (← cargoPath.pathExists) then
-        pure (some (← IO.FS.realPath cargoPath))
-      else
-        pure none
-    let useAeneas := match absAeneas?, absCargo? with
-      | some ad, some cb => cb.toString.startsWith (ad.toString ++ "/")
-      | _, _ => false
-    let baseEnv : Array (String × Option String) := #[
-      ("RUSTUP_TOOLCHAIN", none),
-      ("CARGO_BUILD_TARGET", none),
-      ("RUSTFLAGS", some "-C opt-level=3")
-    ]
-    let extraEnv := match useAeneas, absAeneas? with
-      | true, some ad => baseEnv ++ #[("CARGO_HOME", some s!"{ad}/cargo"), ("RUSTUP_HOME", some s!"{ad}/rustup")]
-      | _, _ => baseEnv
+    let (cargoBin, extraEnv) ← resolveCargoAndEnv (some "-C opt-level=3")
     proc {
       cmd := cargoBin
       args := #["build", "--locked", "--target-dir", absTargetDir.toString, "--release", "--features", "standalone"]
