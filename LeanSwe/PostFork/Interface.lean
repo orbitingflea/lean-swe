@@ -40,7 +40,7 @@ private opaque rawForkRun :
     @& Option String → @& String → @& Array ByteArray →
     BaseIO (Except Errno Pid)
 
-private def posixHostOps : LeanSwe.PostFork.Model.Internal.PosixHostOpsM IO RawFd where
+private def posixHostOps : LeanSwe.PostFork.Impl.Internal.PosixHostOpsM IO RawFd where
   probeFdOpen := fun fd => liftM (rawProbeFdOpen fd)
   probeHandleOpen := fun h => liftM (rawProbeHandleOpen h)
   mkPipeCloexec := liftM rawMkPipeCloexec
@@ -55,35 +55,9 @@ private def posixHostOps : LeanSwe.PostFork.Model.Internal.PosixHostOpsM IO RawF
     liftM (rawForkRun flags imm flat.handles flat.metaSlots flat.closeSlots flat.keepSlots
       flat.argPrefixes flat.argSuffixes flat.argSlots cwd path envp)
 
-private theorem baseIO_lift_noThrow {α : Type} (act : BaseIO α) (w : Void IO.RealWorld) :
-    ∃ r w', (liftM act : IO α) w = .ok r w' := by
-  simp only [liftM, monadLift, MonadLiftT.monadLift, MonadLift.monadLift, BaseIO.toEIO]
-  cases act w with
-  | mk a s => exact ⟨a, s, rfl⟩
-
 /-- Default `IO` capability bundle backed by `Internal.mkHostOps`, `postfork_shim.c`, and verified `#![no_std]` `libpostfork.a`. -/
 def defaultOps : PostForkOps :=
   LeanSwe.PostFork.Impl.Internal.mkHostOps posixHostOps
-
-namespace Internal
-
-/-- Pure `Prop` witness that `defaultOps` wraps a non-throwing `PosixHostOpsM IO RawFd` table (`Exists` cannot eliminate into `Type` or `IO`). -/
-theorem defaultOps_exists_noThrow :
-    ∃ raw : LeanSwe.PostFork.Model.Internal.PosixHostOpsM IO RawFd,
-      defaultOps = LeanSwe.PostFork.Impl.Internal.mkHostOps raw ∧
-      LeanSwe.PostFork.Model.Internal.NoThrowOps raw :=
-  ⟨posixHostOps, rfl,
-    { probeFdOpen_ok := fun _ w => baseIO_lift_noThrow _ w
-      probeHandleOpen_ok := fun _ w => baseIO_lift_noThrow _ w
-      mkPipeCloexec_ok := fun w => baseIO_lift_noThrow _ w
-      closeFd_ok := fun _ w => baseIO_lift_noThrow _ w
-      setpgidOnce_ok := fun _ _ w => baseIO_lift_noThrow _ w
-      writeOnce_ok := fun _ _ _ _ w => baseIO_lift_noThrow _ w
-      readOnce_ok := fun _ _ w => baseIO_lift_noThrow _ w
-      waitOnce_ok := fun _ w => baseIO_lift_noThrow _ w
-      forkRun_ok := fun _ _ _ _ _ _ _ _ _ _ _ w => baseIO_lift_noThrow _ w }⟩
-
-end Internal
 
 /-- Validate `spec`, fork, run post-`fork` child setup, verify `execve` via EOF, and return the live `SpawnedChild`. -/
 @[inline] def spawn (spec : ChildSpec) : IO (Except PostForkError SpawnedChild) :=

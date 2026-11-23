@@ -152,8 +152,8 @@ example : ¬ Core.AllPass (test_postfork_worldModel_linuxKernelEdgeInvariants
   exact absurd hSig (by decide)
 
 private def badHostBuilder :
-    LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 →
-      PostForkOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 := fun raw =>
+    LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 →
+      PostForkOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 := fun raw =>
   { spawn := fun spec => do
       let _ ← raw.probeFdOpen 0
       if !LeanSwe.PostFork.Model.validateSpec spec then
@@ -167,7 +167,7 @@ example : ¬ Core.AllPass (test_postfork_hostOps_validationBarrierEintrAndWire b
   intro h
   have hBase := (h { path := "", argv := #[] } .validate 1 (.exited 0) 0 3 .direct).1
   dsimp [test_postfork_hostOps_validationBarrierEintrAndWire, badHostBuilder,
-    LeanSwe.PostFork.Model.Internal.mockPosixHostOps] at hBase
+    LeanSwe.PostFork.mockPosixHostOps] at hBase
   exact absurd hBase.2 (by decide)
 
 private theorem mem_byteArray_toList_loop_mut (bs : ByteArray) (i : Nat) (r : List UInt8) (x : UInt8) :
@@ -241,8 +241,8 @@ example : ¬ Core.AllPass (test_postfork_marshaling_flattenSlotsForkModeAndClose
   exact absurd hSub.2 (by decide)
 
 private def leakSpawnForkErrBuilder :
-    LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 →
-      PostForkOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 := fun raw =>
+    LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 →
+      PostForkOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 := fun raw =>
   { (LeanSwe.PostFork.Impl.Internal.mkHostOps raw) with
     spawn := fun _ => do
       let (_, errW) ← match ← raw.mkPipeCloexec with
@@ -262,8 +262,8 @@ example : ¬ Core.AllPass (test_postfork_marshaling_flattenSlotsForkModeAndClose
   exact absurd hCl (by decide)
 
 private def deadlockBusyReleaseBuilder :
-    LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 →
-      PostForkOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 := fun raw =>
+    LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 →
+      PostForkOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 := fun raw =>
   { (LeanSwe.PostFork.Impl.Internal.mkHostOps raw) with
     releaseBarrier := fun pending => do
       let _ ← raw.writeOnce pending.syncWrite (ByteArray.mk #[1]) 0 1
@@ -286,7 +286,7 @@ private def badByteLaneFlatten
     (syncRead? : Option Int32) (errWrite : Int32)
     (stdioRefs closeRefs keepRefs : _root_.Array (FdRef Int32))
     (argv : _root_.Array (ArgToken Int32)) :
-    LeanSwe.PostFork.Model.Internal.FlattenedForkArgsM Int32 :=
+    LeanSwe.PostFork.Impl.Internal.FlattenedForkArgsM Int32 :=
   let base := LeanSwe.PostFork.Impl.Internal.flattenForkArgs syncRead? errWrite stdioRefs closeRefs keepRefs argv
   { base with keepSlots := ByteArray.mk (List.replicate (keepRefs.size * 4) (0 : UInt8)).toArray }
 
@@ -297,8 +297,8 @@ example : ¬ Core.AllPass (test_postfork_marshaling_flattenSlotsForkModeAndClose
   exact absurd hSub.2.2.2.2.2.2.2 (by decide)
 
 private def unprobedErrReadReleaseBuilder :
-    LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 →
-      PostForkOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 := fun raw =>
+    LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 →
+      PostForkOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 := fun raw =>
   { (LeanSwe.PostFork.Impl.Internal.mkHostOps raw) with
     releaseBarrier := fun pending => do
       let _ ← raw.writeOnce pending.syncWrite (ByteArray.mk #[1]) 0 1
@@ -316,8 +316,8 @@ example : ¬ Core.AllPass (test_postfork_marshaling_flattenSlotsForkModeAndClose
   exact absurd hSync (by decide)
 
 private def epipeEmptyFalseOkBuilder :
-    LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 →
-      PostForkOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 := fun raw =>
+    LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 →
+      PostForkOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 := fun raw =>
   { spawn := fun _ => pure (.error { kind := .invalidInput, message := "bad" })
     spawnWithBarrier := fun _ => do
       modify fun s => { s with hasSpawned := true, allocSyncWriteFd := 13 }
@@ -342,8 +342,8 @@ example : ¬ Core.AllPass (test_postfork_hostOps_validationBarrierEintrAndWire e
   cases hErr
 
 private def rawEnvDroppingBuilder :
-    LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 →
-      PostForkOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 := fun raw =>
+    LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 →
+      PostForkOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 := fun raw =>
   let base := LeanSwe.PostFork.Impl.Internal.mkHostOps raw
   { base with
     spawn := fun spec => do
@@ -359,8 +359,8 @@ example : ¬ Core.AllPass (test_postfork_hostOps_validationBarrierEintrAndWire r
   simp [LeanSwe.PostFork.Model.formatEnvEntriesBytes] at hSz
 
 private def rawEnvUncheckedNulBuilder :
-    LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 →
-      PostForkOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 := fun raw =>
+    LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 →
+      PostForkOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 := fun raw =>
   let base := LeanSwe.PostFork.Impl.Internal.mkHostOps raw
   { base with
     spawn := fun spec =>
@@ -383,13 +383,13 @@ example : ¬ Core.AllPass (test_postfork_hostOps_validationBarrierEintrAndWire r
   simp only [hBad, ↓reduceIte] at hAll
   rcases hAll.1 with ⟨⟨_, hErr, _⟩, _⟩
   have hIsOk :
-      ((rawEnvUncheckedNulBuilder LeanSwe.PostFork.Model.Internal.mockPosixHostOps).1 badSpec {}).1 =
+      ((rawEnvUncheckedNulBuilder LeanSwe.PostFork.mockPosixHostOps).1 badSpec {}).1 =
         .ok { pid := 4242, pgid := none } := by
     have hNul : LeanSwe.PostFork.Model.isValidRawEnvEntry (ByteArray.mk #[0x41, 0x3D, 0x00]) = false := by
       decide +kernel
-    change ((((rawEnvUncheckedNulBuilder LeanSwe.PostFork.Model.Internal.mockPosixHostOps).spawn badSpec).run {})).1 = _
+    change ((((rawEnvUncheckedNulBuilder LeanSwe.PostFork.mockPosixHostOps).spawn badSpec).run {})).1 = _
     simp [rawEnvUncheckedNulBuilder, badSpec, hNul,
-      LeanSwe.PostFork.Model.Internal.mockPosixHostOps, ← Array.any_toList]
+      LeanSwe.PostFork.mockPosixHostOps, ← Array.any_toList]
     rfl
   rw [hIsOk] at hErr
   cases hErr
@@ -399,8 +399,8 @@ private def naiveFormatEnvEntriesBytes (rawEnv : Array ByteArray) (env : Array (
   rawEnv.map (fun b => b.push 0) ++ env.map (fun (k, v) => s!"{k}={v}".toUTF8.push 0)
 
 private def rawEnvNoDedupBuilder :
-    LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 →
-      PostForkOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 := fun raw =>
+    LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 →
+      PostForkOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 := fun raw =>
   let base := LeanSwe.PostFork.Impl.Internal.mkHostOps raw
   { base with
     spawn := fun spec => do

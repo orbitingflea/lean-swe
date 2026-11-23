@@ -1,5 +1,4 @@
 import LeanSwe.PostFork.Aeneas.Model
-import LeanSwe.PostFork.Aeneas.Funs
 
 open _root_.Aeneas _root_.Aeneas.Std Result
 
@@ -82,28 +81,5 @@ def internalPipesDisjoint
   (!hasRedir ||
     (!fdInStdioSpec repW inFd outFd errFd &&
       (!withBarrier || !fdInStdioSpec syncR inFd outFd errFd)))
-
-private theorem flagsOfSpec_valid_combos {fd : Type} (spec : ChildSpecM fd) (withBarrier : Bool) :
-    validFlagsSpec (specFlagsU32 spec withBarrier) = true := by
-  dsimp only [validFlagsSpec, flagSet, specFlagsU32, mkU32,
-    LeanSwe.PostFork.Model.flagsOfSpec,
-    LeanSwe.PostFork.Model.FLAG_SET_PGID,
-    LeanSwe.PostFork.Model.FLAG_RESET_SIGPIPE,
-    LeanSwe.PostFork.Model.FLAG_HAS_SYNC_BARRIER,
-    LeanSwe.PostFork.Model.FLAG_REDIRECT_STDIO,
-    LeanSwe.PostFork.Model.FLAG_CLOSE_UNKEPT_ABOVE2,
-    LeanSwe.PostFork.Model.FLAG_CLOSE_STDIO_SOURCES,
-    FLAG_CLOSE_STDIO_SOURCES, FLAG_REDIRECT_STDIO, FLAG_CLOSE_UNKEPT_ABOVE2]
-  cases spec.processGroup <;> cases spec.sigpipe <;> cases withBarrier <;>
-    cases spec.stdio with
-    | inherit =>
-      cases spec.fdPolicy <;> (simp only; decide)
-    | redirect _ _ _ closeSrcs =>
-      cases closeSrcs <;> cases spec.fdPolicy <;> (simp only; decide)
-
-/-- Every `ChildSpecM` configuration produces valid `validFlagsSpec` child setup flags via `flagsOfSpec`. -/
-theorem flagsOfSpec_always_valid {fd : Type} (spec : ChildSpecM fd) (withBarrier : Bool) :
-    validFlagsSpec (specFlagsU32 spec withBarrier) = true :=
-  flagsOfSpec_valid_combos spec withBarrier
 
 end LeanSwe.PostFork.Aeneas.Bridge

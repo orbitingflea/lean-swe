@@ -21,6 +21,29 @@ open LeanSwe.PostFork.Aeneas
 open LeanSwe.PostFork.Aeneas.Model
 open LeanSwe.PostFork.Aeneas.Bridge
 
+private theorem flagsOfSpec_valid_combos {fd : Type} (spec : ChildSpecM fd) (withBarrier : Bool) :
+    validFlagsSpec (specFlagsU32 spec withBarrier) = true := by
+  dsimp only [validFlagsSpec, flagSet, specFlagsU32, mkU32,
+    LeanSwe.PostFork.Model.flagsOfSpec,
+    LeanSwe.PostFork.Model.FLAG_SET_PGID,
+    LeanSwe.PostFork.Model.FLAG_RESET_SIGPIPE,
+    LeanSwe.PostFork.Model.FLAG_HAS_SYNC_BARRIER,
+    LeanSwe.PostFork.Model.FLAG_REDIRECT_STDIO,
+    LeanSwe.PostFork.Model.FLAG_CLOSE_UNKEPT_ABOVE2,
+    LeanSwe.PostFork.Model.FLAG_CLOSE_STDIO_SOURCES,
+    FLAG_CLOSE_STDIO_SOURCES, FLAG_REDIRECT_STDIO, FLAG_CLOSE_UNKEPT_ABOVE2]
+  cases spec.processGroup <;> cases spec.sigpipe <;> cases withBarrier <;>
+    cases spec.stdio with
+    | inherit =>
+      cases spec.fdPolicy <;> (simp only; decide)
+    | redirect _ _ _ closeSrcs =>
+      cases closeSrcs <;> cases spec.fdPolicy <;> (simp only; decide)
+
+/-- Every `ChildSpecM` configuration produces valid `validFlagsSpec` child setup flags via `flagsOfSpec`. -/
+theorem flagsOfSpec_always_valid {fd : Type} (spec : ChildSpecM fd) (withBarrier : Bool) :
+    validFlagsSpec (specFlagsU32 spec withBarrier) = true :=
+  flagsOfSpec_valid_combos spec withBarrier
+
 section HostMarshalingAndCloseFilter
 
 private theorem pushI32Le_size (buf : ByteArray) (v : Int32) :
@@ -239,7 +262,7 @@ private theorem validateSpec_hygiene_rejections :
 
 private theorem spawn_closedRawCloseFilter_ok :
     ∃ stCol,
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).spawn
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).spawn
         { path := "/bin/true"
           argv := #[]
           closeFds := #[.raw 10, .raw 11, .raw 5, .handle 7] }).run { closedCallerFds := [10, 11] } =
@@ -247,7 +270,7 @@ private theorem spawn_closedRawCloseFilter_ok :
       stCol.spawnedCloseRefs = #[.raw 5, .handle 7, .handle 10] := by
   let specC : ChildSpecM Int32 :=
     { path := "/bin/true", argv := #[], closeFds := #[.raw 10, .raw 11, .raw 5, .handle 7] }
-  let st0 : LeanSwe.PostFork.Model.Internal.HostMockState := { closedCallerFds := [10, 11] }
+  let st0 : LeanSwe.PostFork.HostMockState := { closedCallerFds := [10, 11] }
   let stF := { st0 with callCount := 3 }
   let s1 := { stF with callCount := 4, nextFd := 12, allocRepReadFd := 10 }
   let s2 :=
@@ -256,7 +279,7 @@ private theorem spawn_closedRawCloseFilter_ok :
       hasSpawned := true
       spawnedFlags := LeanSwe.PostFork.Model.flagsOfSpec specC false
       spawnedForkMode := .direct
-      spawnedArgv := specC.argv.map LeanSwe.PostFork.Model.Internal.renderMockArgToken
+      spawnedArgv := specC.argv.map LeanSwe.PostFork.renderMockArgToken
       spawnedEnv := LeanSwe.PostFork.Model.formatEnvEntriesBytes specC.rawEnv specC.env
       spawnedCloseRefs := #[.raw 5, .handle 7, .handle 10] }
   let s3 := { s2 with callCount := 6, closedHandles := [11], closedFds := [11] }
@@ -268,38 +291,38 @@ private theorem spawn_closedRawCloseFilter_ok :
       LeanSwe.PostFork.Model.disjointFdRefArrays, ← _root_.Array.all_toList, ← _root_.Array.any_toList]
     decide
   have hColRun :
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).spawn specC).run st0 =
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).spawn specC).run st0 =
       (.ok { pid := 4242, pgid := none }, s5) := by
     dsimp only [Impl.Internal.mkHostOps]
     simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.Model.Internal.mockPosixHostOps .inherit).run st0 = (.ok (), st0) := rfl
+    have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.mockPosixHostOps .inherit).run st0 = (.ok (), st0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP1]
     dsimp only
-    have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+    have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.mockPosixHostOps
       (LeanSwe.PostFork.Model.FdPolicy.keepFds .inheritNonCloexec).toList).run st0 = (.ok (), st0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP2]
     dsimp only
     have hFilt :
-        (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+        (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.mockPosixHostOps
           (#[FdRef.raw 10, .raw 11, .raw 5, .handle 7] : _root_.Array (FdRef Int32)).toList #[]).run st0 =
         (#[.raw 5, .handle 7], stF) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hFilt]
-    have hPipe : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.mkPipeCloexec).run stF = (.ok (10, 11), s1) := rfl
+    have hPipe : (LeanSwe.PostFork.mockPosixHostOps.mkPipeCloexec).run stF = (.ok (10, 11), s1) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hPipe]
     rw [stateT_bind_pure_val]
     dsimp only
     have hFork :
-        (Impl.Internal.performFork LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+        (Impl.Internal.performFork LeanSwe.PostFork.mockPosixHostOps
           specC none 11 #[.raw 5, .handle 7] #[.handle 10] false).run s1 = (.ok 4242, s2) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hFork]
     dsimp only
-    have hCloseW : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.closeFd 11).run s2 = (.ok (), s3) := rfl
+    have hCloseW : (LeanSwe.PostFork.mockPosixHostOps.closeFd 11).run s2 = (.ok (), s3) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hCloseW]
     unfold Impl.Internal.awaitExecOrFailure
     have hRd := readAllRetry_empty 10 0 (by decide) s3 rfl rfl rfl rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hRd]
     dsimp only
-    have hCloseR : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.closeFd 10).run s4 = (.ok (), s5) := rfl
+    have hCloseR : (LeanSwe.PostFork.mockPosixHostOps.closeFd 10).run s4 = (.ok (), s5) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hCloseR]
     have hDec : LeanSwe.PostFork.Model.decodeChildFailure ByteArray.empty = none := rfl
     rw [hDec]
@@ -307,41 +330,41 @@ private theorem spawn_closedRawCloseFilter_ok :
   exact ⟨s5, hColRun, rfl⟩
 
 private theorem pipeCleanup_and_busyAbort_ok :
-    let busyRaw : LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 :=
-      { LeanSwe.PostFork.Model.Internal.mockPosixHostOps with
+    let busyRaw : LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 :=
+      { LeanSwe.PostFork.mockPosixHostOps with
         closeFd := fun _ => do
           modify fun st => { st with callCount := st.callCount + 1 }
           return .error Errno.EBUSY }
-    let epermRaw : LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 :=
-      { LeanSwe.PostFork.Model.Internal.mockPosixHostOps with
+    let epermRaw : LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 :=
+      { LeanSwe.PostFork.mockPosixHostOps with
         closeFd := fun _ => do
           modify fun st => { st with callCount := st.callCount + 1 }
           return .error Errno.EPERM }
     (∃ e st,
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).spawn
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).spawn
         { path := "/bin/true", argv := #[] }).run { failForkErrno := some Errno.EAGAIN } = (.error e, st) ∧
       e.errno = some Errno.EAGAIN ∧ st.closedHandles = [10, 11]) ∧
     (∃ e st,
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).spawnWithBarrier
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).spawnWithBarrier
         { path := "/bin/true", argv := #[] }).run { failNextPipeAt := some 1 } = (.error e, st) ∧
       e.errno = some Errno.EMFILE ∧ st.closedHandles = [10, 11]) ∧
     (∃ e st,
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).spawnWithBarrier
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).spawnWithBarrier
         { path := "/bin/true", argv := #[] }).run { failForkErrno := some Errno.EAGAIN } = (.error e, st) ∧
       e.errno = some Errno.EAGAIN ∧ st.closedHandles = [10, 13, 12, 11]) ∧
     (∃ e st,
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).spawn
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).spawn
         { path := "/bin/true", argv := #[] }).run { failReadErrno := some Errno.EIO } = (.error e, st) ∧
       e.kind = .sysError ∧ e.errno = some Errno.EIO ∧ st.closedHandles = [10, 11] ∧ st.callCount = 5) ∧
     (∃ e st,
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).spawn
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).spawn
         { path := "/bin/false", argv := #[] }).run
         { readEintrCount := 1
           repWire := LeanSwe.PostFork.Model.encodeFailureReport .execve Errno.ENOENT
           failWaitErrno := some Errno.ECHILD } = (.error e, st) ∧
       e.kind = .sysError ∧ e.errno = some Errno.ECHILD ∧ st.closedHandles = [10, 11]) ∧
     (∃ e st,
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).releaseBarrier
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).releaseBarrier
         { pid := 4242, pgid := none, syncWrite := 13, errRead := 10 }).run
         { failWriteErrno := some Errno.EIO, waitResult := .exited 125 } = (.error e, st) ∧
       e.kind = .sysError ∧ e.errno = some Errno.EIO ∧ st.closedHandles = [10, 13] ∧ st.callCount = 5) ∧
@@ -355,12 +378,12 @@ private theorem pipeCleanup_and_busyAbort_ok :
         { pid := 4242, pgid := none, syncWrite := 13, errRead := 10 }).run {} = (.error e, st) ∧
       e.kind = .sysError ∧ e.errno = some Errno.EBUSY ∧ st.callCount = 1) ∧
     (∃ e st,
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).releaseBarrier
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).releaseBarrier
         { pid := 4242, pgid := none, syncWrite := 13, errRead := 10 }).run
         { allocSyncWriteFd := 13, closedHandles := [10] } = (.error e, st) ∧
       e.kind = .sysError ∧ e.errno = some Errno.EBADF ∧ st.syncWritten = ByteArray.empty ∧ st.callCount = 1) ∧
     (∃ e st,
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).releaseBarrier
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).releaseBarrier
         { pid := 4242, pgid := none, syncWrite := 13, errRead := 10 }).run
         { failWriteErrno := some 75 } = (.error e, st) ∧
       e.kind = .sysError ∧ e.errno = some 75 ∧ st.callCount = 2 ∧ st.closedHandles = []) ∧
@@ -384,215 +407,215 @@ private theorem pipeCleanup_and_busyAbort_ok :
       hasEmbeddedNulStr_false, LeanSwe.PostFork.Model.FdPolicy.keepFds,
       LeanSwe.PostFork.Model.disjointFdRefArrays, ← _root_.Array.all_toList, ← _root_.Array.any_toList]
     decide
-  let f0 : LeanSwe.PostFork.Model.Internal.HostMockState := { failForkErrno := some Errno.EAGAIN }
-  let f1 : LeanSwe.PostFork.Model.Internal.HostMockState := { f0 with callCount := 1, nextFd := 12, allocRepReadFd := 10 }
-  let f2 : LeanSwe.PostFork.Model.Internal.HostMockState := { f1 with callCount := 2 }
-  let f3 : LeanSwe.PostFork.Model.Internal.HostMockState :=
+  let f0 : LeanSwe.PostFork.HostMockState := { failForkErrno := some Errno.EAGAIN }
+  let f1 : LeanSwe.PostFork.HostMockState := { f0 with callCount := 1, nextFd := 12, allocRepReadFd := 10 }
+  let f2 : LeanSwe.PostFork.HostMockState := { f1 with callCount := 2 }
+  let f3 : LeanSwe.PostFork.HostMockState :=
     { f2 with callCount := 3, closedHandles := [11], closedFds := [11], closedBeforeFork := [11] }
-  let f4 : LeanSwe.PostFork.Model.Internal.HostMockState :=
+  let f4 : LeanSwe.PostFork.HostMockState :=
     { f3 with callCount := 4, closedHandles := [10, 11], closedFds := [10, 11], closedBeforeFork := [10, 11] }
   have hSpawnForkRun :
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).spawn
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).spawn
         { path := "/bin/true", argv := #[] }).run f0 =
       (.error (Impl.Internal.mkSysErr Errno.EAGAIN "fork failed"), f4) := by
     dsimp only [Impl.Internal.mkHostOps]
     simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.Model.Internal.mockPosixHostOps .inherit).run f0 = (.ok (), f0) := rfl
+    have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.mockPosixHostOps .inherit).run f0 = (.ok (), f0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP1]
     dsimp only
-    have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+    have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.mockPosixHostOps
       (LeanSwe.PostFork.Model.FdPolicy.keepFds .inheritNonCloexec).toList).run f0 = (.ok (), f0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP2]
     dsimp only
-    have hFC : (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+    have hFC : (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.mockPosixHostOps
       (#[] : _root_.Array (FdRef Int32)).toList #[]).run f0 = (#[], f0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hFC]
-    have hMp : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.mkPipeCloexec).run f0 = (.ok (10, 11), f1) := rfl
+    have hMp : (LeanSwe.PostFork.mockPosixHostOps.mkPipeCloexec).run f0 = (.ok (10, 11), f1) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hMp]
     rw [stateT_bind_pure_val]
     dsimp only
-    have hFk : (Impl.Internal.performFork LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+    have hFk : (Impl.Internal.performFork LeanSwe.PostFork.mockPosixHostOps
       { path := "/bin/true", argv := #[] } none 11 #[] #[.handle 10] false).run f1 =
       (.error (Impl.Internal.mkSysErr Errno.EAGAIN "fork failed"), f2) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hFk]
-    have hCl1 : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.closeFd 11).run f2 = (.ok (), f3) := rfl
+    have hCl1 : (LeanSwe.PostFork.mockPosixHostOps.closeFd 11).run f2 = (.ok (), f3) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hCl1]
     dsimp only
-    have hCl2 : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.closeFd 10).run f3 = (.ok (), f4) := rfl
+    have hCl2 : (LeanSwe.PostFork.mockPosixHostOps.closeFd 10).run f3 = (.ok (), f4) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hCl2]
     rfl
-  let s0 : LeanSwe.PostFork.Model.Internal.HostMockState := { failNextPipeAt := some 1 }
-  let s1 : LeanSwe.PostFork.Model.Internal.HostMockState := { s0 with callCount := 1, nextFd := 12, allocRepReadFd := 10 }
-  let s2 : LeanSwe.PostFork.Model.Internal.HostMockState := { s1 with callCount := 2 }
-  let s3 : LeanSwe.PostFork.Model.Internal.HostMockState :=
+  let s0 : LeanSwe.PostFork.HostMockState := { failNextPipeAt := some 1 }
+  let s1 : LeanSwe.PostFork.HostMockState := { s0 with callCount := 1, nextFd := 12, allocRepReadFd := 10 }
+  let s2 : LeanSwe.PostFork.HostMockState := { s1 with callCount := 2 }
+  let s3 : LeanSwe.PostFork.HostMockState :=
     { s2 with callCount := 4, closedHandles := [10, 11], closedFds := [10, 11], closedBeforeFork := [10, 11] }
   have hPipe2Run :
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).spawnWithBarrier
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).spawnWithBarrier
         { path := "/bin/true", argv := #[] }).run s0 =
       (.error (Impl.Internal.mkSysErr Errno.EMFILE "pipe2 sync-barrier failed"), s3) := by
     dsimp only [Impl.Internal.mkHostOps]
     simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.Model.Internal.mockPosixHostOps .inherit).run s0 = (.ok (), s0) := rfl
+    have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.mockPosixHostOps .inherit).run s0 = (.ok (), s0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP1]
     dsimp only
-    have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+    have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.mockPosixHostOps
       (LeanSwe.PostFork.Model.FdPolicy.keepFds .inheritNonCloexec).toList).run s0 = (.ok (), s0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP2]
     dsimp only
-    have hFC : (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+    have hFC : (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.mockPosixHostOps
       (#[] : _root_.Array (FdRef Int32)).toList #[]).run s0 = (#[], s0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hFC]
-    have hMp1 : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.mkPipeCloexec).run s0 = (.ok (10, 11), s1) := rfl
+    have hMp1 : (LeanSwe.PostFork.mockPosixHostOps.mkPipeCloexec).run s0 = (.ok (10, 11), s1) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hMp1]
     rw [stateT_bind_pure_val]
     dsimp only
-    have hMp2 : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.mkPipeCloexec).run s1 = (.error Errno.EMFILE, s2) := rfl
+    have hMp2 : (LeanSwe.PostFork.mockPosixHostOps.mkPipeCloexec).run s1 = (.error Errno.EMFILE, s2) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hMp2]
     dsimp only
-    have hCl : (Impl.Internal.closeListQuiet LeanSwe.PostFork.Model.Internal.mockPosixHostOps [11, 10]).run s2 = ((), s3) := rfl
+    have hCl : (Impl.Internal.closeListQuiet LeanSwe.PostFork.mockPosixHostOps [11, 10]).run s2 = ((), s3) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hCl]
     rfl
-  let t0 : LeanSwe.PostFork.Model.Internal.HostMockState := { failForkErrno := some Errno.EAGAIN }
-  let t1 : LeanSwe.PostFork.Model.Internal.HostMockState := { t0 with callCount := 1, nextFd := 12, allocRepReadFd := 10 }
-  let t2 : LeanSwe.PostFork.Model.Internal.HostMockState := { t1 with callCount := 2, nextFd := 14, allocSyncWriteFd := 13 }
-  let t3 : LeanSwe.PostFork.Model.Internal.HostMockState := { t2 with callCount := 3 }
-  let t4 : LeanSwe.PostFork.Model.Internal.HostMockState :=
+  let t0 : LeanSwe.PostFork.HostMockState := { failForkErrno := some Errno.EAGAIN }
+  let t1 : LeanSwe.PostFork.HostMockState := { t0 with callCount := 1, nextFd := 12, allocRepReadFd := 10 }
+  let t2 : LeanSwe.PostFork.HostMockState := { t1 with callCount := 2, nextFd := 14, allocSyncWriteFd := 13 }
+  let t3 : LeanSwe.PostFork.HostMockState := { t2 with callCount := 3 }
+  let t4 : LeanSwe.PostFork.HostMockState :=
     { t3 with callCount := 5, closedHandles := [12, 11], closedFds := [12, 11], closedBeforeFork := [12, 11] }
-  let t5 : LeanSwe.PostFork.Model.Internal.HostMockState :=
+  let t5 : LeanSwe.PostFork.HostMockState :=
     { t4 with callCount := 7, closedHandles := [10, 13, 12, 11], closedFds := [10, 13, 12, 11], closedBeforeFork := [10, 13, 12, 11] }
   have hForkRun :
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).spawnWithBarrier
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).spawnWithBarrier
         { path := "/bin/true", argv := #[] }).run t0 =
       (.error (Impl.Internal.mkSysErr Errno.EAGAIN "fork failed"), t5) := by
     dsimp only [Impl.Internal.mkHostOps]
     simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.Model.Internal.mockPosixHostOps .inherit).run t0 = (.ok (), t0) := rfl
+    have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.mockPosixHostOps .inherit).run t0 = (.ok (), t0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP1]
     dsimp only
-    have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+    have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.mockPosixHostOps
       (LeanSwe.PostFork.Model.FdPolicy.keepFds .inheritNonCloexec).toList).run t0 = (.ok (), t0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP2]
     dsimp only
-    have hFC : (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+    have hFC : (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.mockPosixHostOps
       (#[] : _root_.Array (FdRef Int32)).toList #[]).run t0 = (#[], t0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hFC]
-    have hMp1 : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.mkPipeCloexec).run t0 = (.ok (10, 11), t1) := rfl
+    have hMp1 : (LeanSwe.PostFork.mockPosixHostOps.mkPipeCloexec).run t0 = (.ok (10, 11), t1) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hMp1]
     rw [stateT_bind_pure_val]
     dsimp only
-    have hMp2 : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.mkPipeCloexec).run t1 = (.ok (12, 13), t2) := rfl
+    have hMp2 : (LeanSwe.PostFork.mockPosixHostOps.mkPipeCloexec).run t1 = (.ok (12, 13), t2) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hMp2]
     rw [stateT_bind_pure_val]
     dsimp only
-    have hFk : (Impl.Internal.performFork LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+    have hFk : (Impl.Internal.performFork LeanSwe.PostFork.mockPosixHostOps
       { path := "/bin/true", argv := #[] } (some 12) 11 #[] #[.handle 10, .handle 13] true).run t2 =
       (.error (Impl.Internal.mkSysErr Errno.EAGAIN "fork failed"), t3) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hFk]
-    have hCl1 : (Impl.Internal.closeListQuiet LeanSwe.PostFork.Model.Internal.mockPosixHostOps [11, 12]).run t3 = ((), t4) := rfl
+    have hCl1 : (Impl.Internal.closeListQuiet LeanSwe.PostFork.mockPosixHostOps [11, 12]).run t3 = ((), t4) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hCl1]
     dsimp only
-    have hCl2 : (Impl.Internal.closeListQuiet LeanSwe.PostFork.Model.Internal.mockPosixHostOps [13, 10]).run t4 = ((), t5) := rfl
+    have hCl2 : (Impl.Internal.closeListQuiet LeanSwe.PostFork.mockPosixHostOps [13, 10]).run t4 = ((), t5) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hCl2]
     rfl
-  let rd0 : LeanSwe.PostFork.Model.Internal.HostMockState := { failReadErrno := some Errno.EIO }
-  let rd1 : LeanSwe.PostFork.Model.Internal.HostMockState := { rd0 with callCount := 1, nextFd := 12, allocRepReadFd := 10 }
-  let rd2 : LeanSwe.PostFork.Model.Internal.HostMockState :=
+  let rd0 : LeanSwe.PostFork.HostMockState := { failReadErrno := some Errno.EIO }
+  let rd1 : LeanSwe.PostFork.HostMockState := { rd0 with callCount := 1, nextFd := 12, allocRepReadFd := 10 }
+  let rd2 : LeanSwe.PostFork.HostMockState :=
     { rd1 with
       callCount := 2
       hasSpawned := true
       spawnedFlags := LeanSwe.PostFork.Model.flagsOfSpec ({ path := "/bin/true", argv := #[] } : ChildSpecM Int32) false
       spawnedForkMode := .direct
-      spawnedArgv := (#[] : _root_.Array (ArgToken Int32)).map LeanSwe.PostFork.Model.Internal.renderMockArgToken
+      spawnedArgv := (#[] : _root_.Array (ArgToken Int32)).map LeanSwe.PostFork.renderMockArgToken
       spawnedEnv := LeanSwe.PostFork.Model.formatEnvEntriesBytes #[] #[]
       spawnedCloseRefs := #[.handle 10] }
-  let rd3 : LeanSwe.PostFork.Model.Internal.HostMockState := { rd2 with callCount := 3, closedHandles := [11], closedFds := [11] }
-  let rd4 : LeanSwe.PostFork.Model.Internal.HostMockState := { rd3 with callCount := 4 }
-  let rd5 : LeanSwe.PostFork.Model.Internal.HostMockState := { rd4 with callCount := 5, closedHandles := [10, 11], closedFds := [10, 11] }
+  let rd3 : LeanSwe.PostFork.HostMockState := { rd2 with callCount := 3, closedHandles := [11], closedFds := [11] }
+  let rd4 : LeanSwe.PostFork.HostMockState := { rd3 with callCount := 4 }
+  let rd5 : LeanSwe.PostFork.HostMockState := { rd4 with callCount := 5, closedHandles := [10, 11], closedFds := [10, 11] }
   have hReadErrRun :
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).spawn
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).spawn
         { path := "/bin/true", argv := #[] }).run rd0 =
       (.error (Impl.Internal.mkSysErr Errno.EIO "host read failed"), rd5) := by
     dsimp only [Impl.Internal.mkHostOps]
     simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.Model.Internal.mockPosixHostOps .inherit).run rd0 = (.ok (), rd0) := rfl
+    have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.mockPosixHostOps .inherit).run rd0 = (.ok (), rd0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP1]
     dsimp only
-    have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+    have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.mockPosixHostOps
       (LeanSwe.PostFork.Model.FdPolicy.keepFds .inheritNonCloexec).toList).run rd0 = (.ok (), rd0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP2]
     dsimp only
-    have hFC : (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+    have hFC : (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.mockPosixHostOps
       (#[] : _root_.Array (FdRef Int32)).toList #[]).run rd0 = (#[], rd0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hFC]
-    have hMp : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.mkPipeCloexec).run rd0 = (.ok (10, 11), rd1) := rfl
+    have hMp : (LeanSwe.PostFork.mockPosixHostOps.mkPipeCloexec).run rd0 = (.ok (10, 11), rd1) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hMp]
     rw [stateT_bind_pure_val]
     dsimp only
-    have hFk : (Impl.Internal.performFork LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+    have hFk : (Impl.Internal.performFork LeanSwe.PostFork.mockPosixHostOps
       { path := "/bin/true", argv := #[] } none 11 #[] #[.handle 10] false).run rd1 = (.ok 4242, rd2) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hFk]
     dsimp only
-    have hClW : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.closeFd 11).run rd2 = (.ok (), rd3) := rfl
+    have hClW : (LeanSwe.PostFork.mockPosixHostOps.closeFd 11).run rd2 = (.ok (), rd3) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hClW]
     unfold Impl.Internal.awaitExecOrFailure
     have hRdE := readAllRetry_eio 10 rd3 rfl rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hRdE]
     dsimp only
-    have hClR : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.closeFd 10).run rd4 = (.ok (), rd5) := rfl
+    have hClR : (LeanSwe.PostFork.mockPosixHostOps.closeFd 10).run rd4 = (.ok (), rd5) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hClR]
     rfl
-  let wt0 : LeanSwe.PostFork.Model.Internal.HostMockState :=
+  let wt0 : LeanSwe.PostFork.HostMockState :=
     { readEintrCount := 1
       repWire := LeanSwe.PostFork.Model.encodeFailureReport .execve Errno.ENOENT
       failWaitErrno := some Errno.ECHILD }
-  let wt1 : LeanSwe.PostFork.Model.Internal.HostMockState := { wt0 with callCount := 1, nextFd := 12, allocRepReadFd := 10 }
-  let wt2 : LeanSwe.PostFork.Model.Internal.HostMockState :=
+  let wt1 : LeanSwe.PostFork.HostMockState := { wt0 with callCount := 1, nextFd := 12, allocRepReadFd := 10 }
+  let wt2 : LeanSwe.PostFork.HostMockState :=
     { wt1 with
       callCount := 2
       hasSpawned := true
       spawnedFlags := LeanSwe.PostFork.Model.flagsOfSpec ({ path := "/bin/false", argv := #[] } : ChildSpecM Int32) false
       spawnedForkMode := .direct
-      spawnedArgv := (#[] : _root_.Array (ArgToken Int32)).map LeanSwe.PostFork.Model.Internal.renderMockArgToken
+      spawnedArgv := (#[] : _root_.Array (ArgToken Int32)).map LeanSwe.PostFork.renderMockArgToken
       spawnedEnv := LeanSwe.PostFork.Model.formatEnvEntriesBytes #[] #[]
       spawnedCloseRefs := #[.handle 10] }
-  let wt3 : LeanSwe.PostFork.Model.Internal.HostMockState := { wt2 with callCount := 3, closedHandles := [11], closedFds := [11] }
-  let wt4 : LeanSwe.PostFork.Model.Internal.HostMockState :=
+  let wt3 : LeanSwe.PostFork.HostMockState := { wt2 with callCount := 3, closedHandles := [11], closedFds := [11] }
+  let wt4 : LeanSwe.PostFork.HostMockState :=
     { wt3 with callCount := wt3.callCount + 1 + 4, readEintrCount := 0, repWire := ByteArray.empty }
-  let wt5 : LeanSwe.PostFork.Model.Internal.HostMockState :=
+  let wt5 : LeanSwe.PostFork.HostMockState :=
     { wt4 with callCount := wt4.callCount + 1, closedHandles := [10, 11], closedFds := [10, 11] }
-  let wt6 : LeanSwe.PostFork.Model.Internal.HostMockState := { wt5 with callCount := wt5.callCount + 1 }
+  let wt6 : LeanSwe.PostFork.HostMockState := { wt5 with callCount := wt5.callCount + 1 }
   have hWaitErrRun :
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).spawn
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).spawn
         { path := "/bin/false", argv := #[] }).run wt0 =
       (.error (Impl.Internal.mkSysErr Errno.ECHILD "waitpid failed"), wt6) := by
     dsimp only [Impl.Internal.mkHostOps]
     simp only [hValF, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.Model.Internal.mockPosixHostOps .inherit).run wt0 = (.ok (), wt0) := rfl
+    have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.mockPosixHostOps .inherit).run wt0 = (.ok (), wt0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP1]
     dsimp only
-    have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+    have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.mockPosixHostOps
       (LeanSwe.PostFork.Model.FdPolicy.keepFds .inheritNonCloexec).toList).run wt0 = (.ok (), wt0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP2]
     dsimp only
-    have hFC : (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+    have hFC : (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.mockPosixHostOps
       (#[] : _root_.Array (FdRef Int32)).toList #[]).run wt0 = (#[], wt0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hFC]
-    have hMp : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.mkPipeCloexec).run wt0 = (.ok (10, 11), wt1) := rfl
+    have hMp : (LeanSwe.PostFork.mockPosixHostOps.mkPipeCloexec).run wt0 = (.ok (10, 11), wt1) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hMp]
     rw [stateT_bind_pure_val]
     dsimp only
-    have hFk : (Impl.Internal.performFork LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+    have hFk : (Impl.Internal.performFork LeanSwe.PostFork.mockPosixHostOps
       { path := "/bin/false", argv := #[] } none 11 #[] #[.handle 10] false).run wt1 = (.ok 4242, wt2) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hFk]
     dsimp only
-    have hClW : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.closeFd 11).run wt2 = (.ok (), wt3) := rfl
+    have hClW : (LeanSwe.PostFork.mockPosixHostOps.closeFd 11).run wt2 = (.ok (), wt3) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hClW]
     unfold Impl.Internal.awaitExecOrFailure
     have hWire : wt3.repWire = ByteArray.mk #[0x50, 0x01, 7, 0, 2, 0, 0, 0] := rfl
     have hRd := readAllRetry_wire8 10 1 (Or.inl rfl) 0x50 0x01 7 0 2 0 0 0 wt3 rfl rfl rfl rfl hWire
     rw [stateT_bind_pure_pair _ _ _ _ _ hRd]
     dsimp only
-    have hClR : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.closeFd 10).run wt4 = (.ok (), wt5) := rfl
+    have hClR : (LeanSwe.PostFork.mockPosixHostOps.closeFd 10).run wt4 = (.ok (), wt5) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hClR]
     have hDec : LeanSwe.PostFork.Model.decodeChildFailure (ByteArray.mk #[0x50, 0x01, 7, 0, 2, 0, 0, 0]) =
         some { stage := .execve, errno := Errno.ENOENT } := rfl
@@ -601,42 +624,42 @@ private theorem pipeCleanup_and_busyAbort_ok :
     have hWtE := waitRetry_echild 4242 wt5 rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hWtE]
     rfl
-  let re0 : LeanSwe.PostFork.Model.Internal.HostMockState :=
+  let re0 : LeanSwe.PostFork.HostMockState :=
     { failWriteErrno := some Errno.EIO, waitResult := .exited 125 }
-  let reP : LeanSwe.PostFork.Model.Internal.HostMockState := { re0 with callCount := 1 }
-  let re1 : LeanSwe.PostFork.Model.Internal.HostMockState := { reP with callCount := 2 }
-  let re2 : LeanSwe.PostFork.Model.Internal.HostMockState :=
+  let reP : LeanSwe.PostFork.HostMockState := { re0 with callCount := 1 }
+  let re1 : LeanSwe.PostFork.HostMockState := { reP with callCount := 2 }
+  let re2 : LeanSwe.PostFork.HostMockState :=
     { re1 with callCount := 3, closedHandles := [13], closedFds := [13], closedBeforeFork := [13] }
-  let re3 : LeanSwe.PostFork.Model.Internal.HostMockState :=
+  let re3 : LeanSwe.PostFork.HostMockState :=
     { re2 with callCount := 4, closedHandles := [10, 13], closedFds := [10, 13], closedBeforeFork := [10, 13] }
-  let re4 : LeanSwe.PostFork.Model.Internal.HostMockState :=
+  let re4 : LeanSwe.PostFork.HostMockState :=
     { re3 with callCount := 4 + 0 + 1, waitEintrCount := 0 }
   have hRelEioRun :
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).releaseBarrier
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).releaseBarrier
         { pid := 4242, pgid := none, syncWrite := 13, errRead := 10 }).run re0 =
       (.error (Impl.Internal.mkSysErr Errno.EIO "host write failed"), re4) := by
     dsimp only [Impl.Internal.mkHostOps]
-    have hPr : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.probeHandleOpen 10).run re0 = (.ok (), reP) := rfl
+    have hPr : (LeanSwe.PostFork.mockPosixHostOps.probeHandleOpen 10).run re0 = (.ok (), reP) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hPr]
     dsimp only
-    have hWr := writeAllRetry_eio_raw LeanSwe.PostFork.Model.Internal.mockPosixHostOps rfl 13 reP rfl rfl
+    have hWr := writeAllRetry_eio_raw LeanSwe.PostFork.mockPosixHostOps rfl 13 reP rfl rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hWr]
     dsimp only
     have hNotEp : ((Impl.Internal.mkSysErr Errno.EIO "host write failed").errno == some Errno.EPIPE) = false := by decide
     have hNotEb : Impl.Internal.isFastFailSyncWriteErr (Impl.Internal.mkSysErr Errno.EIO "host write failed").errno = false := by decide
     simp only [hNotEp, hNotEb, Bool.false_eq_true, ↓reduceIte]
-    have hCl13 : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.closeFd 13).run re1 = (.ok (), re2) := rfl
+    have hCl13 : (LeanSwe.PostFork.mockPosixHostOps.closeFd 13).run re1 = (.ok (), re2) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hCl13]
     dsimp only
-    have hCl10 : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.closeFd 10).run re2 = (.ok (), re3) := rfl
+    have hCl10 : (LeanSwe.PostFork.mockPosixHostOps.closeFd 10).run re2 = (.ok (), re3) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hCl10]
     have hWt := waitRetry_ok 4242 re3 rfl (by decide)
     rw [stateT_bind_pure_pair _ _ _ _ _ hWt]
     rfl
-  let br0 : LeanSwe.PostFork.Model.Internal.HostMockState := { failWriteErrno := some Errno.EIO }
-  let brP : LeanSwe.PostFork.Model.Internal.HostMockState := { br0 with callCount := 1 }
-  let br1 : LeanSwe.PostFork.Model.Internal.HostMockState := { brP with callCount := 2 }
-  let br2 : LeanSwe.PostFork.Model.Internal.HostMockState := { br1 with callCount := 3 }
+  let br0 : LeanSwe.PostFork.HostMockState := { failWriteErrno := some Errno.EIO }
+  let brP : LeanSwe.PostFork.HostMockState := { br0 with callCount := 1 }
+  let br1 : LeanSwe.PostFork.HostMockState := { brP with callCount := 2 }
+  let br2 : LeanSwe.PostFork.HostMockState := { br1 with callCount := 3 }
   have hBusyRelRun :
       ((Impl.Internal.mkHostOps busyRaw).releaseBarrier
         { pid := 4242, pgid := none, syncWrite := 13, errRead := 10 }).run br0 =
@@ -671,24 +694,24 @@ private theorem pipeCleanup_and_busyAbort_ok :
     rw [hCond]
     simp only [↓reduceIte]
     rfl
-  let ce0 : LeanSwe.PostFork.Model.Internal.HostMockState := { allocSyncWriteFd := 13, closedHandles := [10] }
-  let ce1 : LeanSwe.PostFork.Model.Internal.HostMockState := { ce0 with callCount := 1 }
+  let ce0 : LeanSwe.PostFork.HostMockState := { allocSyncWriteFd := 13, closedHandles := [10] }
+  let ce1 : LeanSwe.PostFork.HostMockState := { ce0 with callCount := 1 }
   have hClosedErrReadRun :
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).releaseBarrier
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).releaseBarrier
         { pid := 4242, pgid := none, syncWrite := 13, errRead := 10 }).run ce0 =
       (.error (Impl.Internal.mkSysErr Errno.EBADF "failure report handle is not open"), ce1) := rfl
-  let ov0 : LeanSwe.PostFork.Model.Internal.HostMockState := { failWriteErrno := some 75 }
-  let ovP : LeanSwe.PostFork.Model.Internal.HostMockState := { ov0 with callCount := 1 }
-  let ov1 : LeanSwe.PostFork.Model.Internal.HostMockState := { ovP with callCount := 2 }
+  let ov0 : LeanSwe.PostFork.HostMockState := { failWriteErrno := some 75 }
+  let ovP : LeanSwe.PostFork.HostMockState := { ov0 with callCount := 1 }
+  let ov1 : LeanSwe.PostFork.HostMockState := { ovP with callCount := 2 }
   have hOvRelRun :
-      ((Impl.Internal.mkHostOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps).releaseBarrier
+      ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).releaseBarrier
         { pid := 4242, pgid := none, syncWrite := 13, errRead := 10 }).run ov0 =
       (.error (Impl.Internal.mkSysErr 75 "host write failed"), ov1) := by
     dsimp only [Impl.Internal.mkHostOps]
-    have hPr : (LeanSwe.PostFork.Model.Internal.mockPosixHostOps.probeHandleOpen 10).run ov0 = (.ok (), ovP) := rfl
+    have hPr : (LeanSwe.PostFork.mockPosixHostOps.probeHandleOpen 10).run ov0 = (.ok (), ovP) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hPr]
     dsimp only
-    have hWr := writeAllRetry_errno_ne4_raw LeanSwe.PostFork.Model.Internal.mockPosixHostOps rfl 75 (by decide) 13 ovP rfl rfl
+    have hWr := writeAllRetry_errno_ne4_raw LeanSwe.PostFork.mockPosixHostOps rfl 75 (by decide) 13 ovP rfl rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hWr]
     dsimp only
     have hNotEp : ((Impl.Internal.mkSysErr 75 "host write failed").errno == some Errno.EPIPE) = false := by decide

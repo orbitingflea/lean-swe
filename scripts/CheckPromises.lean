@@ -1207,7 +1207,7 @@ private def checkPostForkRuntimeTestsExterns (env : Environment) (consts : Array
   return errs
 
 private def checkPostForkPrivateWiring (env : Environment) : IO (Array String) := do
-  let allowPub : Array Name := #[`LeanSwe.PostFork.defaultOps, `LeanSwe.PostFork.Internal.defaultOps_exists_noThrow,
+  let allowPub : Array Name := #[`LeanSwe.PostFork.defaultOps,
     `LeanSwe.PostFork.spawn, `LeanSwe.PostFork.spawnWithBarrier, `LeanSwe.PostFork.releaseBarrier, `LeanSwe.PostFork.abortBarrier]
   let mut privRaw : Std.HashMap Name Name := {}
   let mut privRawSet : Std.HashSet Name := {}
@@ -1226,8 +1226,6 @@ private def checkPostForkPrivateWiring (env : Environment) : IO (Array String) :
                 privRaw := privRaw.insert u c.name
                 privRawSet := privRawSet.insert c.name
               else if u == `LeanSwe.PostFork.posixHostOps then privPosixOps? := some c.name
-              else if u == `LeanSwe.PostFork.baseIO_lift_noThrow then
-                if !(c matches .thmInfo _) then errs := errs.push s!"TRUSTED_CLOSURE_INTERFACE_WIRING_MISMATCH: {c.name} must be a theorem"
               else if isUser then errs := errs.push s!"TRUSTED_CLOSURE_UNEXPECTED_INTERFACE_DECL: unexpected private {c.name} in PostFork.Interface"
           else if (isUser && !allowPub.contains c.name) || (!isUser && (c matches .opaqueInfo _ || (getExternAttrData? env c.name).isSome || (Lean.getExportNameFor? env c.name).isSome)) then
             errs := errs.push s!"TRUSTED_CLOSURE_PUBLIC_FFI_LEAK: unexpected declaration {c.name} in PostFork.Interface"
@@ -1247,7 +1245,7 @@ private def checkPostForkPrivateWiring (env : Environment) : IO (Array String) :
       for c in ifaceConsts do
         if some c.name != privPosixOps? && !privRawSet.contains c.name then
           let used := c.type.getUsedConstants ++ (c.value?.map (·.getUsedConstants) |>.getD #[])
-          let okPosix := c.name == `LeanSwe.PostFork.defaultOps || (c.name == `LeanSwe.PostFork.Internal.defaultOps_exists_noThrow && (c matches .thmInfo _)) || (!(Lean.declRangeExt.find? env c.name).isSome && (c matches .thmInfo _))
+          let okPosix := c.name == `LeanSwe.PostFork.defaultOps || (!(Lean.declRangeExt.find? env c.name).isSome && (c matches .thmInfo _))
           if rawPrivs.any used.contains || (privPosixOps?.any used.contains && !okPosix) then
             we := we.push s!"TRUSTED_CLOSURE_PUBLIC_FFI_LEAK: {c.name} in PostFork.Interface exposes raw FFI"
     match privPosixOps?, rawPrivs.size == 9 with
@@ -1277,8 +1275,8 @@ private def checkPostForkPrivateWiring (env : Environment) : IO (Array String) :
           if iv.consumeMData != mkApp (mkConst `LeanSwe.PostFork.Impl.Internal.forkModeToUInt32) (.bvar 10) then return false
           let some call := unwrapBaseIOLift b2 | return false
           let pj (s : Name) := mkApp2 (mkConst s) rawFd (.bvar 1)
-          return call == mkAppN (mkConst rawP) #[.bvar 12, .bvar 0, pj `LeanSwe.PostFork.Model.Internal.FlattenedForkArgsM.handles, pj `LeanSwe.PostFork.Model.Internal.FlattenedForkArgsM.metaSlots, pj `LeanSwe.PostFork.Model.Internal.FlattenedForkArgsM.closeSlots, pj `LeanSwe.PostFork.Model.Internal.FlattenedForkArgsM.keepSlots, pj `LeanSwe.PostFork.Model.Internal.FlattenedForkArgsM.argPrefixes, pj `LeanSwe.PostFork.Model.Internal.FlattenedForkArgsM.argSuffixes, pj `LeanSwe.PostFork.Model.Internal.FlattenedForkArgsM.argSlots, .bvar 5, .bvar 4, .bvar 2]
-        let pOk := pInfo.safety == .safe && pWhnf.getAppFn.constName? == some `LeanSwe.PostFork.Model.Internal.PosixHostOpsM.mk && pArgs.size == 11 && pArgs[0]!.consumeMData.isConstOf ``IO && pArgs[1]!.consumeMData.isConstOf `LeanSwe.LinuxSyscall.RawFd && ((List.range 8).all fun i => chkBase rawPrivs[i]! postForkExternSpecs[i]!.2.2.1 pArgs[2 + i]!) && chkFork rawPrivs[8]! pArgs[10]!
+          return call == mkAppN (mkConst rawP) #[.bvar 12, .bvar 0, pj `LeanSwe.PostFork.Impl.Internal.FlattenedForkArgsM.handles, pj `LeanSwe.PostFork.Impl.Internal.FlattenedForkArgsM.metaSlots, pj `LeanSwe.PostFork.Impl.Internal.FlattenedForkArgsM.closeSlots, pj `LeanSwe.PostFork.Impl.Internal.FlattenedForkArgsM.keepSlots, pj `LeanSwe.PostFork.Impl.Internal.FlattenedForkArgsM.argPrefixes, pj `LeanSwe.PostFork.Impl.Internal.FlattenedForkArgsM.argSuffixes, pj `LeanSwe.PostFork.Impl.Internal.FlattenedForkArgsM.argSlots, .bvar 5, .bvar 4, .bvar 2]
+        let pOk := pInfo.safety == .safe && pWhnf.getAppFn.constName? == some `LeanSwe.PostFork.Impl.Internal.PosixHostOpsM.mk && pArgs.size == 11 && pArgs[0]!.consumeMData.isConstOf ``IO && pArgs[1]!.consumeMData.isConstOf `LeanSwe.LinuxSyscall.RawFd && ((List.range 8).all fun i => chkBase rawPrivs[i]! postForkExternSpecs[i]!.2.2.1 pArgs[2 + i]!) && chkFork rawPrivs[8]! pArgs[10]!
         let dArgs := dInfo.value.consumeMData.getAppArgs
         if !pOk || dInfo.safety != .safe || dInfo.type.consumeMData != mkConst `LeanSwe.PostFork.PostForkOps || dInfo.value.consumeMData.getAppFn.constName? != some `LeanSwe.PostFork.Impl.Internal.mkHostOps || dArgs.size != 5 || dArgs[3]!.consumeMData.constName? != some posixOpsName then
           we := we.push "TRUSTED_CLOSURE_INTERFACE_WIRING_MISMATCH: posixHostOps/defaultOps wiring mismatch"
@@ -1337,7 +1335,7 @@ private def hasCanonicalPromiseTarget (fn : Name) (prog : Expr) : MetaM Bool := 
   let chkMock (e : Expr) : MetaM Bool := do
     let .lam _ _ b _ := e.consumeMData | return false
     let ba := b.consumeMData.getAppArgs
-    let ms := mkConst `LeanSwe.PostFork.Model.Internal.HostMockState
+    let ms := mkConst `LeanSwe.PostFork.HostMockState
     if b.consumeMData.getAppFn.constName? != some `LeanSwe.PostFork.Impl.Internal.mkHostOps || ba.size != 5 || !ba[2]!.consumeMData.isConstOf ``Int32 || ba[3]!.consumeMData != .bvar 0 || ba[0]!.consumeMData != mkApp (mkConst ``StateM [.zero]) ms || ba[1]!.consumeMData != mkApp3 (mkConst ``StateT.instMonad [.zero, .zero]) ms (mkConst ``Id [.zero]) (mkConst ``Id.instMonad [.zero]) then return false
     return (← Meta.withTransparency .all (Meta.whnf ba[4]!)).rawNatLit? == some 18
   if fn == `LeanSwe.PostFork.test_postfork_hostOps_validationBarrierEintrAndWire then return pa.size == 3 && (← chkMock pa[2]!)

@@ -458,11 +458,201 @@ def test_postfork_worldModel_linuxKernelEdgeInvariants
   else
     NondetTest.assert (OkPost (sys.setpgid_self s) (fun p => p.1 = .Ok () ∧ p.2.pgid = s.pid))
 
+/-- Deterministic in-memory mock host state for pure `SpecTests` verification of `LeanSwe.PostFork.Impl`. -/
+structure HostMockState where
+  /-- Total primitive calls executed so far. -/
+  callCount : Nat := 0
+  /-- Next synthetic pipe descriptor number. -/
+  nextFd : Int32 := 10
+  /-- Caller raw OS descriptors treated as closed (`EBADF`). -/
+  closedCallerFds : List Int32 := []
+  /-- Managed handles already closed. -/
+  closedHandles : List Int32 := []
+  /-- Optional primitive call index at which `mkPipeCloexec` fails with `EMFILE`. -/
+  failNextPipeAt : Option Nat := none
+  /-- Optional `errno` injected into `forkRun`. -/
+  failForkErrno : Option Errno := none
+  /-- Optional `errno` injected into `setpgidOnce`. -/
+  failSetpgidErrno : Option Errno := none
+  /-- Remaining transient `EINTR` failures injected into `writeOnce`. -/
+  writeEintrCount : Nat := 0
+  /-- Optional terminal `errno` injected into `writeOnce`. -/
+  failWriteErrno : Option Errno := none
+  /-- Remaining transient `EINTR` failures injected into `readOnce`. -/
+  readEintrCount : Nat := 0
+  /-- Optional terminal `errno` injected into `readOnce`. -/
+  failReadErrno : Option Errno := none
+  /-- Remaining transient `EINTR` failures injected into `waitOnce`. -/
+  waitEintrCount : Nat := 0
+  /-- Optional terminal `errno` injected into `waitOnce`. -/
+  failWaitErrno : Option Errno := none
+  /-- Sync-barrier write handle allocated by the second `mkPipeCloexec`. -/
+  allocSyncWriteFd : Int32 := -1
+  /-- Failure-report read handle allocated by the first `mkPipeCloexec`. -/
+  allocRepReadFd : Int32 := -1
+  /-- Queued failure-report wire bytes drained by `readOnce` on `allocRepReadFd`. -/
+  repWire : ByteArray := ByteArray.empty
+  /-- Reaped child status returned once `waitEintrCount = 0`. -/
+  waitResult : ChildWaitStatus := .exited 0
+  /-- Handles closed before `forkRun` executed. -/
+  closedBeforeFork : List Int32 := []
+  /-- All handles closed across the run. -/
+  closedFds : List Int32 := []
+  /-- Recorded `(pid, pgid)` arguments passed to `setpgidOnce`. -/
+  setpgidCalls : List (Pid × Pid) := []
+  /-- Sync bytes written to `allocSyncWriteFd`. -/
+  syncWritten : ByteArray := ByteArray.empty
+  /-- Flags passed to `forkRun`. -/
+  spawnedFlags : UInt32 := 0
+  /-- `ForkMode` passed to `forkRun`. -/
+  spawnedForkMode : ForkMode := .direct
+  /-- Resolved `argv` strings passed to `forkRun`. -/
+  spawnedArgv : Array String := #[]
+  /-- NUL-terminated `KEY=VALUE` environment byte entries passed to `forkRun`. -/
+  spawnedEnv : Array ByteArray := #[]
+  /-- `closeRefs` array passed to `forkRun`. -/
+  spawnedCloseRefs : Array (FdRef Int32) := #[]
+  /-- Whether `forkRun` has succeeded. -/
+  hasSpawned : Bool := false
+  deriving BEq, DecidableEq, Inhabited
+
+/-- Render an `ArgToken Int32` into its resolved child `argv` string in the pure mock model. -/
+def renderMockArgToken : ArgToken Int32 → String
+  | .lit s => s
+  | .fdDecimal (.handle h) => s!"{h}"
+  | .fdDecimal (.raw n) => s!"{n}"
+  | .prefixedFd p (.handle h) s => s!"{p}{h}{s}"
+  | .prefixedFd p (.raw n) s => s!"{p}{n}{s}"
+
+/-- Pure `StateM HostMockState` implementation of `PosixHostOpsM` exercising `EINTR`, `EPIPE`, and barrier races. -/
+def mockPosixHostOps : LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM HostMockState) Int32 where
+  probeFdOpen fd := do
+    modify fun st => { st with callCount := st.callCount + 1 }
+    let st ← get
+    if st.closedCallerFds.contains fd then
+      return .error Errno.EBADF
+    else
+      return .ok ()
+  probeHandleOpen h := do
+    modify fun st => { st with callCount := st.callCount + 1 }
+    let st ← get
+    if st.closedCallerFds.contains h || st.closedHandles.contains h then
+      return .error Errno.EBADF
+    else
+      return .ok ()
+  mkPipeCloexec := do
+    let st ← get
+    let c := st.callCount
+    match st.failNextPipeAt with
+    | some k =>
+      if c == k then
+        set { st with callCount := c + 1 }
+        return .error Errno.EMFILE
+    | none => pure ()
+    let rFd := st.nextFd
+    let wFd := st.nextFd + 1
+    let isRep := st.allocRepReadFd < 0
+    set { st with
+      callCount := c + 1
+      nextFd := st.nextFd + 2
+      allocRepReadFd := if isRep then rFd else st.allocRepReadFd
+      allocSyncWriteFd := if isRep then st.allocSyncWriteFd else wFd }
+    return .ok (rFd, wFd)
+  closeFd h := do
+    let st ← get
+    if st.closedHandles.contains h then
+      set { st with callCount := st.callCount + 1 }
+      return .error Errno.EBADF
+    else
+      set { st with
+        callCount := st.callCount + 1
+        closedHandles := h :: st.closedHandles
+        closedFds := h :: st.closedFds
+        closedBeforeFork := if st.hasSpawned then st.closedBeforeFork else h :: st.closedBeforeFork }
+      return .ok ()
+  setpgidOnce pid pgid := do
+    let st ← get
+    set { st with callCount := st.callCount + 1, setpgidCalls := st.setpgidCalls ++ [(pid, pgid)] }
+    match st.failSetpgidErrno with
+    | some e => return .error e
+    | none => return .ok ()
+  writeOnce fd data off len := do
+    let st ← get
+    if st.closedHandles.contains fd then
+      set { st with callCount := st.callCount + 1 }
+      return .error Errno.EBADF
+    match st.failWriteErrno with
+    | some e =>
+      set { st with callCount := st.callCount + 1 }
+      return .error e
+    | none =>
+      if st.writeEintrCount > 0 then
+        set { st with callCount := st.callCount + 1, writeEintrCount := st.writeEintrCount - 1 }
+        return .error Errno.EINTR
+      else
+        let takeN := Nat.min len.toNat 2
+        let slice := data.extract off.toNat (off.toNat + takeN)
+        set { st with
+          callCount := st.callCount + 1
+          syncWritten := if fd == st.allocSyncWriteFd then LeanSwe.PostFork.Model.appendBytes st.syncWritten slice else st.syncWritten }
+        return .ok (UInt64.ofNat slice.size)
+  readOnce fd maxBytes := do
+    let st ← get
+    if st.closedHandles.contains fd then
+      set { st with callCount := st.callCount + 1 }
+      return .error Errno.EBADF
+    match st.failReadErrno with
+    | some e =>
+      set { st with callCount := st.callCount + 1 }
+      return .error e
+    | none =>
+      if st.readEintrCount > 0 then
+        set { st with callCount := st.callCount + 1, readEintrCount := st.readEintrCount - 1 }
+        return .error Errno.EINTR
+      else
+        let cur := if fd == st.allocRepReadFd then st.repWire else ByteArray.empty
+        let takeN := Nat.min (Nat.min cur.size maxBytes.toNat) 3
+        let chunk := cur.extract 0 takeN
+        let rest := cur.extract takeN cur.size
+        set { st with
+          callCount := st.callCount + 1
+          repWire := if fd == st.allocRepReadFd then rest else st.repWire }
+        return .ok chunk
+  waitOnce _ := do
+    let st ← get
+    match st.failWaitErrno with
+    | some e =>
+      set { st with callCount := st.callCount + 1 }
+      return .error e
+    | none =>
+      if st.waitEintrCount > 0 then
+        set { st with callCount := st.callCount + 1, waitEintrCount := st.waitEintrCount - 1 }
+        return .error Errno.EINTR
+      else
+        set { st with callCount := st.callCount + 1 }
+        return .ok st.waitResult
+  forkRun flags forkMode _ _ _ closeRefs _ _ _ argv envEntries := do
+    let st ← get
+    match st.failForkErrno with
+    | some e =>
+      set { st with callCount := st.callCount + 1 }
+      return .error e
+    | none =>
+      set { st with
+        callCount := st.callCount + 1
+        hasSpawned := true
+        spawnedFlags := flags
+        spawnedForkMode := forkMode
+        spawnedArgv := argv.map renderMockArgToken
+        spawnedEnv := envEntries
+        spawnedCloseRefs := closeRefs }
+      return .ok 4242
+
 /-- Caller-agnostic `PostFork.Impl.Internal.mkHostOps` makes zero OS hook calls (`callCount = 0`) on invalid `ChildSpecM`, rejects closed caller handles/descriptors (`EBADF = 9`), closes parent ends safely, resolves `ArgToken` & `ForkMode` without length caps, retries `EINTR` across `writeOnce`/`readOnce`/`waitOnce`, preserves `EPIPE` tolerance on `releaseBarrier`, returns `AbortOutcome.aborted`/`failedBeforeBarrier` cleanly, and decodes uniform 8-byte failure wire frames. -/
 def test_postfork_hostOps_validationBarrierEintrAndWire
     {runner} [NondetTest runner]
-    (mkOps : LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 →
-      PostForkOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32) : runner Unit := do
+    (mkOps : LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 →
+      PostForkOpsM (StateM LeanSwe.PostFork.HostMockState) Int32) : runner Unit := do
   let spec ← nondet (ChildSpecM Int32)
   let stage ← nondet FailureStage
   let errVal ← nondet UInt32
@@ -470,7 +660,7 @@ def test_postfork_hostOps_validationBarrierEintrAndWire
   let extraArgCount ← nondet Nat
   let tokFd ← nondet Int32
   let fMode ← nondet ForkMode
-  let ops := mkOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+  let ops := mkOps LeanSwe.PostFork.mockPosixHostOps
   if !LeanSwe.PostFork.Model.validateSpec spec then do
     let (rSpawn, stSpawn) := (ops.spawn spec).run {}
     NondetTest.assert ((∃ e, rSpawn = .error e ∧ e.kind = .invalidInput) ∧ stSpawn.callCount = 0)
@@ -501,14 +691,14 @@ def test_postfork_hostOps_validationBarrierEintrAndWire
       stTok.spawnedForkMode = .immortalThread ∧
       stTok.spawnedFlags = LeanSwe.PostFork.Model.flagsOfSpec
         ({ path := "/bin/echo", argv := #[], processGroup := .newGroup } : ChildSpecM Int32) false)
-  let closedInit : LeanSwe.PostFork.Model.Internal.HostMockState := { closedCallerFds := [99] }
+  let closedInit : LeanSwe.PostFork.HostMockState := { closedCallerFds := [99] }
   let (rClosedStd, _) :=
     (ops.spawn { path := "/bin/true", argv := #[], stdio := .redirect (.raw 99) (.raw 1) (.raw 2) true }).run closedInit
   NondetTest.assert (∃ e, rClosedStd = .error e ∧ e.kind = .sysError ∧ e.errno = some Errno.EBADF)
   let (rClosedKeep, _) :=
     (ops.spawnWithBarrier { path := "/bin/true", argv := #[], fdPolicy := .closeAllAbove2Except #[.handle 99] }).run closedInit
   NondetTest.assert (∃ e, rClosedKeep = .error e ∧ e.kind = .sysError ∧ e.errno = some Errno.EBADF)
-  let stBar : LeanSwe.PostFork.Model.Internal.HostMockState :=
+  let stBar : LeanSwe.PostFork.HostMockState :=
     { writeEintrCount := 2
       readEintrCount := 2
       waitEintrCount := 2
@@ -526,13 +716,13 @@ def test_postfork_hostOps_validationBarrierEintrAndWire
         stRelOut.syncWritten = ByteArray.mk #[1] ∧
         stRelOut.closedHandles.contains pend.syncWrite ∧
         stRelOut.closedHandles.contains pend.errRead)
-    let stEpipe : LeanSwe.PostFork.Model.Internal.HostMockState :=
+    let stEpipe : LeanSwe.PostFork.HostMockState :=
       { stBarMid with
         failWriteErrno := some Errno.EPIPE
         repWire := LeanSwe.PostFork.Model.encodeFailureReport .execve Errno.ENOENT
         waitResult := .exited 127 }
     let (rRelEpipe, _) := (ops.releaseBarrier pend).run stEpipe
-    let stEpipeEmpty : LeanSwe.PostFork.Model.Internal.HostMockState :=
+    let stEpipeEmpty : LeanSwe.PostFork.HostMockState :=
       { stBarMid with
         failWriteErrno := some Errno.EPIPE
         repWire := ByteArray.empty
@@ -624,12 +814,12 @@ def test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter
       Option Int32 → Int32 →
       _root_.Array (FdRef Int32) → _root_.Array (FdRef Int32) → _root_.Array (FdRef Int32) →
       _root_.Array (ArgToken Int32) →
-      LeanSwe.PostFork.Model.Internal.FlattenedForkArgsM Int32 :=
+      LeanSwe.PostFork.Impl.Internal.FlattenedForkArgsM Int32 :=
       LeanSwe.PostFork.Impl.Internal.flattenForkArgs)
     (modeFn : ForkMode → UInt32 := LeanSwe.PostFork.Impl.Internal.forkModeToUInt32)
     (mkOps :
-      LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 →
-      PostForkOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 :=
+      LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 →
+      PostForkOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 :=
       fun raw => LeanSwe.PostFork.Impl.Internal.mkHostOps raw) : runner Unit := do
   let syncRead? ← nondet (Option Int32)
   let errWrite ← nondet Int32
@@ -704,7 +894,7 @@ def test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter
       flatHijack.argSlots = LeanSwe.PostFork.Model.packI32LeList [-1, -1, -5] ∧
       (flattenFn none 60 #[] #[] #[.raw 0x01020304] #[]).keepSlots =
         ByteArray.mk #[0x04, 0x03, 0x02, 0x01])
-  let ops := mkOps LeanSwe.PostFork.Model.Internal.mockPosixHostOps
+  let ops := mkOps LeanSwe.PostFork.mockPosixHostOps
   NondetTest.assert
     (∃ stCol,
       (ops.spawn
@@ -713,13 +903,13 @@ def test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter
           closeFds := #[.raw 10, .raw 11, .raw 5, .handle 7] }).run { closedCallerFds := [10, 11] } =
         (.ok { pid := 4242, pgid := none }, stCol) ∧
       stCol.spawnedCloseRefs = #[.raw 5, .handle 7, .handle 10])
-  let busyRaw : LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 :=
-    { LeanSwe.PostFork.Model.Internal.mockPosixHostOps with
+  let busyRaw : LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 :=
+    { LeanSwe.PostFork.mockPosixHostOps with
       closeFd := fun _ => do
         modify fun st => { st with callCount := st.callCount + 1 }
         return .error Errno.EBUSY }
-  let epermRaw : LeanSwe.PostFork.Model.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.Model.Internal.HostMockState) Int32 :=
-    { LeanSwe.PostFork.Model.Internal.mockPosixHostOps with
+  let epermRaw : LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 :=
+    { LeanSwe.PostFork.mockPosixHostOps with
       closeFd := fun _ => do
         modify fun st => { st with callCount := st.callCount + 1 }
         return .error Errno.EPERM }

@@ -2,6 +2,7 @@ import Tests.Common
 import LeanSwe.PostFork.Interface
 import LeanSwe.PostFork.Aeneas.Model
 import LeanSwe.PostFork.Aeneas.Funs
+import LeanSwe.PostFork.SpecTests
 
 namespace Tests.Mutate.PostForkMock
 
@@ -22,7 +23,7 @@ def runPostForkMockTests : IO Unit := do
       | 1 => pure (.ok 1)
       | _ => pure (.ok (if len > 0 then len else 0))
   let fakeOps (syncEpipe : Bool) (repBytes : ByteArray) :
-      PostFork.Model.Internal.PosixHostOpsM (StateM (Nat × Nat × Nat × List Int32)) Int32 :=
+      PostFork.Impl.Internal.PosixHostOpsM (StateM (Nat × Nat × Nat × List Int32)) Int32 :=
     { probeFdOpen := fun _ => pure (.ok ())
       probeHandleOpen := fun _ => pure (.ok ())
       mkPipeCloexec := do
@@ -70,7 +71,7 @@ def runPostForkMockTests : IO Unit := do
        | .error e => e.kind == .childFailed && e.errno == some LinuxSyscall.Errno.ENOENT
        | .ok _ => false)
 
-  let fakeZero : PostFork.Model.Internal.PosixHostOpsM (StateM (Nat × Nat × Nat × List Int32)) Int32 :=
+  let fakeZero : PostFork.Impl.Internal.PosixHostOpsM (StateM (Nat × Nat × Nat × List Int32)) Int32 :=
     { (fakeOps false ByteArray.empty) with writeOnce := fun _ _ _ _ => do
         let (wCnt, rCnt, tCnt, closed) ← get
         set (wCnt + 1, rCnt, tCnt, closed)
@@ -84,7 +85,7 @@ def runPostForkMockTests : IO Unit := do
     checkM "writeOnce 0 returns error immediately"
       (bZSt2.1 == 1 && (match rZ with | .error e => e.message == "host write returned zero bytes" | .ok _ => false))
 
-  let fakeWriteEintr : PostFork.Model.Internal.PosixHostOpsM (StateM Nat) Int32 :=
+  let fakeWriteEintr : PostFork.Impl.Internal.PosixHostOpsM (StateM Nat) Int32 :=
     { writeOnce := fun _ _ _ len => do
         let n ← get
         set (n + 1)
@@ -103,7 +104,7 @@ def runPostForkMockTests : IO Unit := do
     (PostFork.Impl.Internal.writeAllRetryEintr fakeWriteEintr 11 (ByteArray.mk #[7]) 0 1).run 0
   checkM "writeAllRetryEintr exact fuel finalOff succeeds" (wrExactFuel == .ok () && wrExactCnt == 2)
 
-  let fakeReadAcc : PostFork.Model.Internal.PosixHostOpsM (StateM Nat) Int32 :=
+  let fakeReadAcc : PostFork.Impl.Internal.PosixHostOpsM (StateM Nat) Int32 :=
     { fakeWriteEintr with
       readOnce := fun _ _ => do
         let n ← get
@@ -112,7 +113,7 @@ def runPostForkMockTests : IO Unit := do
   let (rdAcc, _) := (PostFork.Impl.Internal.readAllRetryEintr fakeReadAcc 10 64 (ByteArray.mk #[42, 43]) 4).run 0
   checkM "readAllRetryEintr keeps non-empty acc" (rdAcc == .ok (ByteArray.mk #[42, 43, 44]))
 
-  let fakeAbortBusy : PostFork.Model.Internal.PosixHostOpsM (StateM Nat) Int32 :=
+  let fakeAbortBusy : PostFork.Impl.Internal.PosixHostOpsM (StateM Nat) Int32 :=
     { fakeWriteEintr with
       closeFd := fun _ => do modify (· + 1); pure (.error LinuxSyscall.Errno.EBUSY) }
   let (abBusyRes, abBusyCnt) :=
@@ -124,7 +125,7 @@ def runPostForkMockTests : IO Unit := do
        | .error e => e.kind == .sysError && e.errno == some LinuxSyscall.Errno.EBUSY
        | .ok _ => false))
 
-  let fakeAbortCloseEintr : PostFork.Model.Internal.PosixHostOpsM (StateM Nat) Int32 :=
+  let fakeAbortCloseEintr : PostFork.Impl.Internal.PosixHostOpsM (StateM Nat) Int32 :=
     { fakeWriteEintr with
       closeFd := fun fd => do
         modify (· + 1)
@@ -137,7 +138,7 @@ def runPostForkMockTests : IO Unit := do
     (abEintrRes == .ok (.aborted (.exited 125)))
 
   let (spFkRes, spFkSt) :=
-    ((PostFork.Impl.Internal.mkHostOps PostFork.Model.Internal.mockPosixHostOps 4).spawn
+    ((PostFork.Impl.Internal.mkHostOps PostFork.mockPosixHostOps 4).spawn
       { path := "/bin/true", argv := #[] }).run { failForkErrno := some LinuxSyscall.Errno.EAGAIN }
   checkM "spawn failForkErrno closes errW and errR"
     (spFkRes.isOk == false && spFkSt.closedHandles == [10, 11])
@@ -159,7 +160,7 @@ def runPostForkMockTests : IO Unit := do
       PostFork.Model.i32Le Int32.maxValue Int32.minValue == false)
 
   let mkRelProbe (wrErr : LinuxSyscall.Errno) (cl13Res : Except LinuxSyscall.Errno Unit) :
-      PostFork.Model.Internal.PosixHostOpsM (StateM (Nat × List Int32)) Int32 :=
+      PostFork.Impl.Internal.PosixHostOpsM (StateM (Nat × List Int32)) Int32 :=
     { probeFdOpen := fun _ => pure (.ok ())
       probeHandleOpen := fun _ => pure (.ok ())
       mkPipeCloexec := pure (.ok (10, 11))
@@ -295,7 +296,7 @@ def runPostForkMockTests : IO Unit := do
       (PostFork.ChildSpecM.ofCommand "/bin/true" : PostFork.ChildSpecM Int32) ==
         { path := "/bin/true", argv := #[.lit "/bin/true"] })
 
-  let alwaysEintrOps : PostFork.Model.Internal.PosixHostOpsM (StateM Nat) Int32 :=
+  let alwaysEintrOps : PostFork.Impl.Internal.PosixHostOpsM (StateM Nat) Int32 :=
     { probeFdOpen := fun _ => pure (.ok ())
       probeHandleOpen := fun _ => pure (.ok ())
       mkPipeCloexec := pure (.ok (10, 11))
@@ -319,12 +320,12 @@ def runPostForkMockTests : IO Unit := do
     (wtFuelCnt == 2 && (match wtFuelRes with | .error e => e.errno == some LinuxSyscall.Errno.EINTR | .ok _ => false))
 
   let (spRdErr, spRdSt) :=
-    ((PostFork.Impl.Internal.mkHostOps PostFork.Model.Internal.mockPosixHostOps 4).spawn
+    ((PostFork.Impl.Internal.mkHostOps PostFork.mockPosixHostOps 4).spawn
       { path := "/bin/cat", argv := #[] }).run { failReadErrno := some LinuxSyscall.Errno.ENOMEM }
   checkM "awaitExecOrFailure read error does not call blocking waitOnce"
     (!spRdErr.isOk && spRdSt.closedHandles == [10, 11] && spRdSt.callCount == 5)
   let (relClErr, relClSt) :=
-    ((PostFork.Impl.Internal.mkHostOps PostFork.Model.Internal.mockPosixHostOps 4).releaseBarrier relPend).run
+    ((PostFork.Impl.Internal.mkHostOps PostFork.mockPosixHostOps 4).releaseBarrier relPend).run
       { allocSyncWriteFd := 13, closedHandles := [10] }
   checkM "releaseBarrier closed errRead fails fast before syncWrite"
     (!relClErr.isOk && relClSt.syncWritten == ByteArray.empty && relClSt.callCount == 1)
@@ -336,7 +337,7 @@ def runPostForkMockTests : IO Unit := do
     ((PostFork.Impl.Internal.mkHostOps (mkRelProbe LinuxSyscall.Errno.EIO (.error LinuxSyscall.Errno.EPERM)) 4).releaseBarrier relPend).run (0, [])
   checkM "releaseBarrier close EPERM fails fast without reaping"
     (!rClEperm.isOk && stClEperm == (2, [13]))
-  let fakeAbortEperm : PostFork.Model.Internal.PosixHostOpsM (StateM Nat) Int32 :=
+  let fakeAbortEperm : PostFork.Impl.Internal.PosixHostOpsM (StateM Nat) Int32 :=
     { fakeWriteEintr with
       closeFd := fun _ => do modify (· + 1); pure (.error LinuxSyscall.Errno.EPERM) }
   let (abEpermRes, abEpermCnt) :=
