@@ -1,4 +1,4 @@
-import LeanSwe.Time.SleepModelProofs
+import LeanSwe.Time.Proofs.SleepModelProofs
 
 namespace LeanSwe.Time.SleepOpsProofs
 

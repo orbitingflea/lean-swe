@@ -3,12 +3,12 @@ import LeanSwe.CryptoHash.Raw.Model
 import LeanSwe.CryptoHash.Raw.Impl
 import LeanSwe.CryptoHash.Raw.Interface
 import LeanSwe.CryptoHash.Raw.SpecTests
-import LeanSwe.CryptoHash.Raw.Sha256Vectors
-import LeanSwe.CryptoHash.Raw.Sha512Vectors
-import LeanSwe.CryptoHash.Raw.HmacVectors
-import LeanSwe.CryptoHash.Raw.HmacTc1
-import LeanSwe.CryptoHash.Raw.HmacTc2
-import LeanSwe.CryptoHash.Raw.HmacTc6
+import LeanSwe.CryptoHash.Raw.Proofs.Sha256Vectors
+import LeanSwe.CryptoHash.Raw.Proofs.Sha512Vectors
+import LeanSwe.CryptoHash.Raw.Proofs.HmacVectors
+import LeanSwe.CryptoHash.Raw.Proofs.HmacTc1
+import LeanSwe.CryptoHash.Raw.Proofs.HmacTc2
+import LeanSwe.CryptoHash.Raw.Proofs.HmacTc6
 
 namespace LeanSwe.CryptoHash.Raw.Proofs
 

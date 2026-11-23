@@ -1,5 +1,5 @@
 import LeanSwe.Time.Interface
-import LeanSwe.Time.EpochBaseProofs
+import LeanSwe.Time.Proofs.EpochBaseProofs
 
 namespace LeanSwe.Time.Proofs
 

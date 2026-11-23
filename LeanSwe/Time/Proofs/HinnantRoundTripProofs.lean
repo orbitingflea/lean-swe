@@ -1,6 +1,6 @@
 import LeanSwe.Time.Interface
-import LeanSwe.Time.EpochBaseProofs
-import LeanSwe.Time.HinnantProofs
+import LeanSwe.Time.Proofs.EpochBaseProofs
+import LeanSwe.Time.Proofs.HinnantProofs
 
 namespace LeanSwe.Time.Proofs
 
