@@ -415,10 +415,11 @@ private def isForbiddenHostExtern (cName : Name) (cinfo : ConstantInfo) (extData
       | .opaque => false
 
 private def isCompilerGeneratedCtorIdx (env : Environment) (cName impl : Name) (cinfo : ConstantInfo) : IO Bool := do
-  if cName.getString! != "ctorIdx" || impl != cName.str "_impl" then
+  let .str indName "ctorIdx" := cName | return false
+  if indName == .anonymous || impl != cName.str "_impl" then
     return false
-  let indName := cName.getPrefix
-  if cName != indName.str "ctorIdx" || isPrivateName cName != isPrivateName indName then
+  let .defnInfo cDef := cinfo | return false
+  if cDef.name != cName || cDef.safety != .safe then
     return false
   if (Lean.declRangeExt.find? env cName).isSome || (Lean.declRangeExt.find? env impl).isSome then
     return false
@@ -427,7 +428,7 @@ private def isCompilerGeneratedCtorIdx (env : Environment) (cName impl : Name) (
     return false
   let some (.inductInfo iv) := env.find? indName | return false
   let some (.defnInfo implInfo) := env.find? impl | return false
-  if iv.ctors.length <= 1 then
+  if iv.isUnsafe || iv.ctors.length <= 1 then
     return false
   if !(implInfo.value.getUsedConstants.contains `getObjTagNat) then
     return false
@@ -577,17 +578,18 @@ private def isAllowedSqliteInitFn (env : Environment) (modName cName initFn : Na
 private def isAllowedCompilerUnsafeDef (env : Environment) (cName : Name) (v : DefinitionVal) : IO Bool := do
   if (Lean.declRangeExt.find? env cName).isSome then
     return false
-  if cName.getString! == "_impl" then
-    match env.find? cName.getPrefix with
-    | some parentInfo => isCompilerGeneratedCtorIdx env cName.getPrefix cName parentInfo
+  match cName with
+  | .str parent "_impl" =>
+    match env.find? parent with
+    | some parentInfo => isCompilerGeneratedCtorIdx env parent cName parentInfo
     | none => return false
-  else if v.safety == .partial && cName.getString! == "_unsafe_rec" then
-    return env.getModuleIdxFor? cName.getPrefix == env.getModuleIdxFor? cName &&
-      match env.find? cName.getPrefix with
+  | .str parent "_unsafe_rec" =>
+    if v.safety != .partial then return false
+    return env.getModuleIdxFor? parent == env.getModuleIdxFor? cName &&
+      match env.find? parent with
       | some (.defnInfo pv) => pv.safety == .safe
       | _ => false
-  else
-    return false
+  | _ => return false
 
 private unsafe def checkPackageTrustedClosure (repoDir : System.FilePath) (pkgLabel : String) (auditModules : Array Name)
     (isAllowedMod : Name → Bool) (externMod : Name) (allowedExternSyms : Std.HashMap Name String)
@@ -979,7 +981,7 @@ private unsafe def checkSandboxTrustedClosure (env : Environment) : IO (Array St
         errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_MODULE: {cName} in {cMod} reachable from {originMod}"
       if let some implName := Lean.Compiler.getImplementedBy? sbxEnv cName then
         let isCtorIdxImpl :=
-          cName.getString! == "ctorIdx" &&
+          cName.isStr && cName.getString! == "ctorIdx" &&
           implName == Name.str cName "_impl" &&
           (match sbxEnv.find? cName.getPrefix, sbxEnv.find? implName with
            | some (.inductInfo iv), some (.defnInfo implVal) =>
