@@ -27,9 +27,9 @@ vendored SHA-256, or deleting/renaming `.foreign-budget.json` requires `add-fore
 and `spec-add` do not substitute for `add-foreign-lang`, nor vice versa).
 
 Lean import hygiene is enforced unconditionally (no label waives it): every touched regular `.lean`
-file (or the whole tracked tree under `--check-imports`) must not contain `import all` targeting an
-external dependency (module root outside `Core`, `LeanSwe`, `Fuzz`, `Tests`) or a bare umbrella
-`import Mathlib` (specific submodules such as `import Mathlib.Data.Nat.Basic` are allowed).
+file must not contain `import all` targeting an external dependency (module root outside `Core`,
+`LeanSwe`, `Fuzz`, `Tests`) or a bare umbrella `import Mathlib` (specific submodules such as
+`import Mathlib.Data.Nat.Basic` are allowed).
 """
 
 from __future__ import annotations
@@ -1220,16 +1220,6 @@ def check_repo_imports(repo_root: Path) -> tuple[int, list[str]]:
     return checked, violations
 
 
-def _print_import_policy_failure(violations: list[str], checked: int) -> None:
-    """Print `IMPORT_POLICY_CHECK` failure details to stderr."""
-    print(
-        f"IMPORT_POLICY_CHECK: failed ({len(violations)} violation(s) across {checked} .lean file(s))",
-        file=sys.stderr,
-    )
-    for v in violations:
-        print(f"IMPORT_POLICY_VIOLATION: {v}", file=sys.stderr)
-
-
 def _check_commit_lean_imports(repo_root: Path, commit_ref: str, rel_paths: list[str]) -> tuple[int, list[str]]:
     """Check regular tracked `.lean` blobs in `rel_paths` at `commit_ref`."""
     if not rel_paths:
@@ -1260,7 +1250,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Verify spec-add / spec-change / add-foreign-lang PR labels and Lean import policy."
     )
-    parser.add_argument("--base", help="Base commit or ref to diff against.")
+    parser.add_argument("--base", required=True, help="Base commit or ref to diff against.")
     parser.add_argument("--head", default="HEAD", help="Head commit or ref (default: HEAD).")
     parser.add_argument(
         "--event-path",
@@ -1274,24 +1264,9 @@ def main(argv: list[str] | None = None) -> int:
         type=_parse_cli_label,
         help="Treat the given PR label(s) as present for local testing (repeatable or comma-separated).",
     )
-    parser.add_argument(
-        "--check-imports",
-        action="store_true",
-        help="Scan all tracked regular .lean files in the repository for disallowed imports.",
-    )
     args = parser.parse_args(argv)
-    if not args.base and not args.check_imports:
-        parser.error("the following arguments are required: --base (or pass --check-imports)")
 
     repo_root = resolve_repo_root()
-    if args.check_imports and not args.base:
-        checked, import_violations = check_repo_imports(repo_root)
-        if import_violations:
-            _print_import_policy_failure(import_violations, checked)
-            return 1
-        print(f"IMPORT_POLICY_CHECK: ok (checked={checked} errors=0)")
-        return 0
-
     effective_base = resolve_effective_base(repo_root, args.base, args.head)
     base_pkgs = existing_top_packages_at_base(repo_root, effective_base)
     entries = diff_entries(repo_root, effective_base, args.head)
@@ -1321,18 +1296,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
         locked_assessments.append(classify_locked_spec_diff(repo_root, effective_base, args.head, status, paths))
 
-    if args.check_imports:
-        import_checked, import_violations = check_repo_imports(repo_root)
-        diff_checked, diff_violations = _check_commit_lean_imports(repo_root, args.head, touched_lean)
-        seen_msgs = set(import_violations)
-        for msg in diff_violations:
-            if msg not in seen_msgs:
-                seen_msgs.add(msg)
-                import_violations.append(msg)
-        if not import_checked:
-            import_checked = diff_checked
-    else:
-        import_checked, import_violations = _check_commit_lean_imports(repo_root, args.head, touched_lean)
+    import_checked, import_violations = _check_commit_lean_imports(repo_root, args.head, touched_lean)
 
     event_file = Path(args.event_path) if args.event_path else None
     labels_present = read_pr_labels(event_file, args.label)
@@ -1340,7 +1304,12 @@ def main(argv: list[str] | None = None) -> int:
     failed = False
     if import_violations:
         failed = True
-        _print_import_policy_failure(import_violations, import_checked)
+        print(
+            f"IMPORT_POLICY_CHECK: failed ({len(import_violations)} violation(s) across {import_checked} .lean file(s))",
+            file=sys.stderr,
+        )
+        for v in import_violations:
+            print(f"IMPORT_POLICY_VIOLATION: {v}", file=sys.stderr)
 
     if foreign_assessments and LABEL_FOREIGN not in labels_present:
         failed = True
