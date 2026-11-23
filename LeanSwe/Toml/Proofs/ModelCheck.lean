@@ -1,11 +1,11 @@
 import LeanSwe.Toml.Proofs.Core
-import LeanSwe.Toml.Cases.Model
+import LeanSwe.Toml.SpecTests.Cases
 
 /-!
 Concrete model-oracle conformance proofs for `LeanSwe/Toml`.
 
 Evaluates all 9 concrete parser, error-kind, and IEEE-754 float-bit suites from
-`LeanSwe.Toml.Cases.Model` by reducing only the input `String.toList` via `cbv`
+`LeanSwe.Toml.SpecTests.Cases` by reducing only the input `String.toList` via `cbv`
 and closing each pure `List Char` parser check via kernel `decide`.
 -/
 

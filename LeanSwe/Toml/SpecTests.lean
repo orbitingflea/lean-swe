@@ -2,7 +2,7 @@ import Core.NondetTest
 import Core.Assumptions
 import LeanSwe.Toml.Types
 import LeanSwe.Toml.Model
-import LeanSwe.Toml.Cases.Model
+import LeanSwe.Toml.SpecTests.Cases
 import LeanSwe.NumParse.Types
 import LeanSwe.NumParse.Model
 
