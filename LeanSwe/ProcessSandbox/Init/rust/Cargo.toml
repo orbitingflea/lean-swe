@@ -1,0 +1,29 @@
+[package]
+name = "psandbox_init"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "psandbox-init"
+path = "src/main.rs"
+
+[features]
+default = []
+standalone = []
+
+[dependencies]
+libc = { version = "0.2", default-features = false }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+codegen-units = 1
+strip = "symbols"

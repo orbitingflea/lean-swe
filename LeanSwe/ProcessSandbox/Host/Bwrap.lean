@@ -54,7 +54,7 @@ def decodeEmbeddedInitBytes (b64 : String) : Except String ByteArray :=
     else
       .ok bytes
 
-/-- Embedded `leanswe-psandbox-init` ELF bytes compiled from `psandbox_init.c` (decoded once and reused across `preflight` and every `sealPlan`). -/
+/-- Embedded `leanswe-psandbox-init` ELF bytes compiled from `psandbox-init` (decoded once and reused across `preflight` and every `sealPlan`). -/
 def embeddedInitBytes : Except String ByteArray :=
   decodeEmbeddedInitBytes LeanSwe.ProcessSandbox.InitData.initBinaryBase64
 

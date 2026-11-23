@@ -245,9 +245,13 @@ private def isAllowedEnvVarsClosureModule (m : Name) : Bool :=
 private def isAllowedPostForkClosureModule (m : Name) : Bool :=
   m.getRoot == `Core || m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] || postForkAuditModules.contains m
 
+private def isInitVerifiedMod (m : Name) : Bool :=
+  m.components.take 3 == [`LeanSwe, `ProcessSandbox, `Init]
+
 private def isPostForkVerifiedMod (m : Name) : Bool :=
   m == `LeanSwe.PostFork.Verified || m == `LeanSwe.PostFork.SpecTests || m == `LeanSwe.PostFork.SpecMutants ||
-    m.components.take 3 == [`LeanSwe, `PostFork, `Aeneas] || m.components.take 3 == [`LeanSwe, `PostFork, `Proofs]
+    m.components.take 3 == [`LeanSwe, `PostFork, `Aeneas] || m.components.take 3 == [`LeanSwe, `PostFork, `Proofs] ||
+    isInitVerifiedMod m
 
 private def isAllowedCryptoHashClosureModule (m : Name) : Bool :=
   m.getRoot == `Core ||
@@ -473,7 +477,9 @@ private def isAllowedProjectDirectImport (m imp : Name) : Bool :=
   let r := imp.getRoot
   r == `Init || r == `Std || r == `Core || r == `LeanSwe ||
     imp.components.take 2 == [`Lean, `Data] ||
-    (imp == `Aeneas && m.components.take 3 == [`LeanSwe, `PostFork, `Aeneas])
+    (imp == `Aeneas &&
+      (m.components.take 3 == [`LeanSwe, `PostFork, `Aeneas] ||
+        m.components.take 4 == [`LeanSwe, `ProcessSandbox, `Init, `Aeneas]))
 
 private def closureForbiddenMetaSyntaxKinds : Array Name :=
   #[``Lean.Parser.Command.macro, ``Lean.Parser.Command.macro_rules,
@@ -2547,7 +2553,7 @@ private def dagPkgMarkerSegs : Array String := #[
 
 private def dagSubdirExcludeSegs : Array Name := #[
   `Proofs, `Model, `SpecTests, `Properties, `SpecMutants, `RuntimeTests,
-  `Impl, `Interface, `SysBridge, `Cases, `Helpers, `Host, `Aeneas, `TestSupport
+  `Impl, `Interface, `SysBridge, `Cases, `Helpers, `Host, `Init, `Aeneas, `TestSupport
 ]
 
 private def isNamePrefixComps (pfx comps : List Name) : Bool :=
@@ -2624,6 +2630,8 @@ private def dagRoleOf (knownPkgs : Array Name) (m : Name) : DagModuleRole :=
           if last == `Types || last == `TypesExternal then .types
           else if last == `Model then .model
           else .impl
+        else if head == `Init then
+          .impl
         else if head == `Impl || head == `Relay || head == `HealthySys || head == `InitData then
           .impl
         else
@@ -3088,6 +3096,9 @@ unsafe def main (args : List String) : IO UInt32 := do
   unless ← (libDir / "LeanSwe" / "PostFork" / "Verified.olean").pathExists do
     IO.eprintln s!"MISSING_OLEAN: LeanSwe.PostFork.Verified ({libDir / "LeanSwe" / "PostFork" / "Verified.olean"})"
     return 1
+  unless ← (libDir / "LeanSwe" / "ProcessSandbox" / "Init" / "Verified.olean").pathExists do
+    IO.eprintln s!"MISSING_OLEAN: LeanSwe.ProcessSandbox.Init.Verified ({libDir / "LeanSwe" / "ProcessSandbox" / "Init" / "Verified.olean"})"
+    return 1
   let leanSweDir := repoDir / "LeanSwe"
   let coreDir := repoDir / "Core"
   unless (← leanSweDir.isDir) && (← coreDir.isDir) do
@@ -3103,6 +3114,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       m.components.take 2 == [`LeanSwe, `CryptoHash] ||
       m.components.take 2 == [`LeanSwe, `LinuxSyscall] ||
       m.components.take 2 == [`LeanSwe, `PostFork] ||
+      m.components.take 3 == [`LeanSwe, `ProcessSandbox, `Init] ||
       m.components.take 2 == [`LeanSwe, `Sqlite] ||
       m.components.take 2 == [`LeanSwe, `Git] ||
       m.components.take 2 == [`LeanSwe, `ConnectProxy]
@@ -3264,13 +3276,14 @@ unsafe def main (args : List String) : IO UInt32 := do
             (onlyPf && !isPostForkVerifiedMod m) || (!onlyPf && isPostForkVerifiedMod m) then
           continue
         let some data := auditE.header.moduleData[i]? | continue
-        if isMutantModule m then
+        if isMutantModule m || isInitVerifiedMod m then
           for c in data.constants do
             if c matches .thmInfo _ || c matches .defnInfo _ || c matches .opaqueInfo _ then
               let (badAx?, nextCache) ← (checkAxiomsOk c.name).run axCache
               axCache := nextCache
               if let some badAx := badAx? then
-                axErrs := axErrs.push s!"UNALLOWED_AXIOM_IN_MUTANT: {c.name} in {m} uses [{badAx}]"
+                let tag := if isMutantModule m then "UNALLOWED_AXIOM_IN_MUTANT" else "UNALLOWED_AXIOM_IN_THEOREM"
+                axErrs := axErrs.push s!"{tag}: {c.name} in {m} uses [{badAx}]"
           continue
         for c in data.constants do
           let .thmInfo v := c | continue
@@ -3344,7 +3357,7 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   if isWorker then
     enableInitializersExecution
-    let pfEnv ← importModules #[{ module := `LeanSwe.PostFork.Verified }] {} (loadExts := true)
+    let pfEnv ← importModules #[{ module := `LeanSwe.PostFork.Verified }, { module := `LeanSwe.ProcessSandbox.Init.Verified }] {} (loadExts := true)
     for modName in pfEnv.header.moduleNames do
       if isPostForkVerifiedMod modName then
         IO.println s!"PFW_MOD:{modName}"
