@@ -137,18 +137,18 @@ private def cryptoHashAuditModules : Array Name := #[
 
 private def postForkAuditModules : Array Name := #[`LeanSwe.PostFork.Types, `LeanSwe.PostFork.Model, `LeanSwe.PostFork.Impl, `LeanSwe.PostFork.Interface]
 private def cryptoHashVectorModules : Array Name := #[
-  `LeanSwe.CryptoHash.Raw.HmacEmptyInner,
-  `LeanSwe.CryptoHash.Raw.HmacTc1,
-  `LeanSwe.CryptoHash.Raw.HmacTc1Inner,
-  `LeanSwe.CryptoHash.Raw.HmacTc2,
-  `LeanSwe.CryptoHash.Raw.HmacTc2Inner,
-  `LeanSwe.CryptoHash.Raw.HmacTc2Outer,
-  `LeanSwe.CryptoHash.Raw.HmacTc6,
-  `LeanSwe.CryptoHash.Raw.HmacTc6Inner,
-  `LeanSwe.CryptoHash.Raw.HmacVectors,
-  `LeanSwe.CryptoHash.Raw.Sha256Vec131,
-  `LeanSwe.CryptoHash.Raw.Sha256Vectors,
-  `LeanSwe.CryptoHash.Raw.Sha512Vectors
+  `LeanSwe.CryptoHash.Raw.Proofs.HmacEmptyInner,
+  `LeanSwe.CryptoHash.Raw.Proofs.HmacTc1,
+  `LeanSwe.CryptoHash.Raw.Proofs.HmacTc1Inner,
+  `LeanSwe.CryptoHash.Raw.Proofs.HmacTc2,
+  `LeanSwe.CryptoHash.Raw.Proofs.HmacTc2Inner,
+  `LeanSwe.CryptoHash.Raw.Proofs.HmacTc2Outer,
+  `LeanSwe.CryptoHash.Raw.Proofs.HmacTc6,
+  `LeanSwe.CryptoHash.Raw.Proofs.HmacTc6Inner,
+  `LeanSwe.CryptoHash.Raw.Proofs.HmacVectors,
+  `LeanSwe.CryptoHash.Raw.Proofs.Sha256Vec131,
+  `LeanSwe.CryptoHash.Raw.Proofs.Sha256Vectors,
+  `LeanSwe.CryptoHash.Raw.Proofs.Sha512Vectors
 ]
 
 private def sqliteAuditModules : Array Name := #[

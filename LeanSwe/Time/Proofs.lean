@@ -1,12 +1,12 @@
 import LeanSwe.Time.Interface
 import LeanSwe.Time.SpecTests
-import LeanSwe.Time.EpochBaseProofs
-import LeanSwe.Time.HinnantProofs
-import LeanSwe.Time.HinnantRoundTripProofs
-import LeanSwe.Time.HinnantRangeProofs
-import LeanSwe.Time.CalendarProofs
-import LeanSwe.Time.FormatParseProofs
-import LeanSwe.Time.SleepOpsProofs
+import LeanSwe.Time.Proofs.EpochBaseProofs
+import LeanSwe.Time.Proofs.HinnantProofs
+import LeanSwe.Time.Proofs.HinnantRoundTripProofs
+import LeanSwe.Time.Proofs.HinnantRangeProofs
+import LeanSwe.Time.Proofs.CalendarProofs
+import LeanSwe.Time.Proofs.FormatParseProofs
+import LeanSwe.Time.Proofs.SleepOpsProofs
 
 namespace LeanSwe.Time.Proofs
 

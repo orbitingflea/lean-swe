@@ -1,7 +1,7 @@
 import LeanSwe.CryptoHash.Raw.Model
-import LeanSwe.CryptoHash.Raw.HmacEmptyInner
-import LeanSwe.CryptoHash.Raw.HmacTc2Inner
-import LeanSwe.CryptoHash.Raw.HmacTc2Outer
+import LeanSwe.CryptoHash.Raw.Proofs.HmacEmptyInner
+import LeanSwe.CryptoHash.Raw.Proofs.HmacTc2Inner
+import LeanSwe.CryptoHash.Raw.Proofs.HmacTc2Outer
 
 namespace LeanSwe.CryptoHash.Raw.Proofs
 
