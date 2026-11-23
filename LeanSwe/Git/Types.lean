@@ -166,16 +166,6 @@ structure WorktreeAddOptions where
   force : Bool := false
   deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Per-call subprocess execution options for `git`. -/
-structure ExecOptions where
-  /-- Subprocess timeout in milliseconds. -/
-  timeoutMs : Option Nat := some 30000
-  /-- Combined captured stdout/stderr byte limit. -/
-  maxOutputBytes : Option Nat := some 16777216
-  /-- Optional caller environment overrides filtered through `cleanGitEnv`. -/
-  extraEnv : Array (String × Option String) := #[]
-  deriving Repr, BEq, DecidableEq, Inhabited
-
 /-- Closed classification of errors produced by `LeanSwe.Git`. -/
 inductive GitErrorKind where
   /-- Target path is not a Git repository or lacks a working tree when required. -/
