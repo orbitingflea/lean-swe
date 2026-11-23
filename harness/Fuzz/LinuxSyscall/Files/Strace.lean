@@ -4289,6 +4289,14 @@ def runCShimBoundaryProbes : IO Unit := withTempSandbox "cshim" fun dir => do
     stdin := .null
   }
   assertTrue s!"closed-stdio /dev/null pinning worker failed (exit={csOut.exitCode})" (csOut.exitCode == 0)
+  for (label, cmd, args) in [
+    ("close1", appExeStdio.toString, #["--files-strace-worker", "--sanitize-closed-stdio-check", "close1"]),
+    ("close2", appExeStdio.toString, #["--files-strace-worker", "--sanitize-closed-stdio-check", "close2"]),
+    ("closed-both", "sh", #["-c", "exec 0<&- 1>&- 2>&-; exec \"$1\" --files-strace-worker --sanitize-closed-stdio-check closed-both", "_", appExeStdio.toString]),
+    ("devnull", "sh", #["-c", "exec >/dev/null 2>/dev/null; exec \"$1\" --files-strace-worker --sanitize-closed-stdio-check devnull", "_", appExeStdio.toString])
+  ] do
+    let scOut ← IO.Process.output { cmd, args, stdin := .null }
+    assertTrue s!"sanitizeClosedStdio worker ({label}) failed (exit={scOut.exitCode}): {scOut.stderr}" (scOut.exitCode == 0)
 
   let probeUns ← IO.Process.output { cmd := "sh", args := #["-c", "unshare -Urm true"], stdin := .null }
   if probeUns.exitCode == 0 then
@@ -4302,6 +4310,18 @@ def runCShimBoundaryProbes : IO Unit := withTempSandbox "cshim" fun dir => do
     }
     if spOut.exitCode != 77 then
       assertTrue s!"procfs bind/tmpfs spoof worker failed (exit={spOut.exitCode}): {spOut.stderr}" (spOut.exitCode == 0)
+
+  let probeStrace ← IO.Process.output { cmd := "sh", args := #["-c", "strace -qq -o /dev/null true"], stdin := .null }
+  if probeStrace.exitCode == 0 then
+    let stxOut ← IO.Process.output {
+      cmd := "strace"
+      args := #["-f", "-qq", "-o", "/dev/null", "-P", "/proc/", "-P", "/proc/thread-self/fd/",
+        "-e", "inject=statx:retval=0", appExeStdio.toString, "--files-strace-worker",
+        "--statx-nomntid", sentinel.toString]
+      stdin := .null
+    }
+    assertTrue s!"reopenReadOnly missing STATX_MNT_ID probe failed (exit={stxOut.exitCode}): {stxOut.stderr}"
+      (stxOut.exitCode == 0)
 
   let pBadMode := (dirReal / "bad_mode_openat2").toString.toUTF8
   assertErr "openat2 upper mode bits -> EINVAL"
@@ -5134,9 +5154,75 @@ def runStraceFaultCheck : IO Unit := withTempSandbox "strace" fun dir => do
     }
     if out.exitCode != 0 then
       throw (IO.userError s!"strace fault-injection failed for {opName}/{errName} (exit={out.exitCode}): {out.stderr}")
+  let stxOut ← IO.Process.output {
+    cmd := "strace"
+    args := #["-f", "-qq", "-o", "/dev/null", "-P", "/proc/", "-P", "/proc/thread-self/fd/",
+      "-e", "inject=statx:retval=0", exe.toString, "--files-strace-worker",
+      "--statx-nomntid", sentinel.toString]
+  }
+  if stxOut.exitCode != 0 then
+    throw (IO.userError s!"strace STATX_MNT_ID omission probe failed (exit={stxOut.exitCode}): {stxOut.stderr}")
+
+private def runStatxNoMntIdWorker (sentinelPath : String) : IO UInt32 := do
+  let fd ← match ← defaultOps.openat none sentinelPath.toUTF8 { access := .rdwr } 0 with
+    | .ok f => pure f
+    | .error _ => return 2
+  let res ← defaultOps.reopenReadOnly fd
+  if let .ok rfd := res then
+    safeClose defaultOps rfd
+  let cRes ← defaultOps.close fd
+  let unpinOk := match cRes with
+    | .ok () => true
+    | .error e => e != Errno.EBUSY
+  if !unpinOk then return 5
+  match res with
+  | .error e => return (if e == Errno.ENOENT then 0 else 4)
+  | .ok _ => return 3
+
+private def runSanitizeClosedStdioWorker (mode : String) : IO UInt32 := do
+  match mode with
+  | "close1" =>
+    let _ ← Fuzz.LinuxSyscall.Env.closeRawFd 1
+    if (← Fuzz.LinuxSyscall.Env.fdKind 1) != 0 then return 2
+    let (outClosed, errClosed) ← Fuzz.LinuxSyscall.Env.sanitizeClosedStdio
+    if !outClosed || errClosed then return 3
+    IO.println "closed-stdout-noop"
+    (← IO.getStdout).flush
+    return 0
+  | "close2" =>
+    let _ ← Fuzz.LinuxSyscall.Env.closeRawFd 2
+    if (← Fuzz.LinuxSyscall.Env.fdKind 2) != 0 then return 2
+    let (outClosed, errClosed) ← Fuzz.LinuxSyscall.Env.sanitizeClosedStdio
+    if outClosed || !errClosed then return 3
+    IO.eprintln "closed-stderr-noop"
+    (← IO.getStderr).flush
+    return 0
+  | "closed-both" =>
+    let k1 ← Fuzz.LinuxSyscall.Env.fdKind 1
+    let k2 ← Fuzz.LinuxSyscall.Env.fdKind 2
+    if (k1 != 0 && k1 != 6) || (k2 != 0 && k2 != 6) then return 2
+    let (outClosed, errClosed) ← Fuzz.LinuxSyscall.Env.sanitizeClosedStdio
+    if !outClosed || !errClosed then return 3
+    IO.println "closed-both-out"
+    (← IO.getStdout).flush
+    IO.eprintln "closed-both-err"
+    (← IO.getStderr).flush
+    return 0
+  | "devnull" =>
+    if (← Fuzz.LinuxSyscall.Env.fdKind 1) != 31 || (← Fuzz.LinuxSyscall.Env.fdKind 2) != 31 then return 2
+    let (outClosed, errClosed) ← Fuzz.LinuxSyscall.Env.sanitizeClosedStdio
+    if outClosed || errClosed then return 3
+    IO.println "devnull-out"
+    (← IO.getStdout).flush
+    return 0
+  | _ => return 9
 
 /-- Handle `--files-strace-fault-check` and `--files-strace-worker` subcommands dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`) and `lean-swe-mut-test`. -/
 def probeMain (args : List String) : IO UInt32 := do
+  match args with
+  | ["--worker", "--sanitize-closed-stdio-check", mode] =>
+    return ← runSanitizeClosedStdioWorker mode
+  | _ => pure ()
   Fuzz.LinuxSyscall.Env.pinClosedStdio
   match args with
   | [] =>
@@ -5145,6 +5231,8 @@ def probeMain (args : List String) : IO UInt32 := do
     return 0
   | ["--worker", "--proc-spoof", tmpDir] =>
     runProcSpoofWorker tmpDir
+  | ["--worker", "--statx-nomntid", sentinelPath] =>
+    runStatxNoMntIdWorker sentinelPath
   | ["--worker", "--closed-stdio-check"] =>
     for slot in [StdioFd.stdin, StdioFd.stdout, StdioFd.stderr] do
       let slotIdx : UInt32 := match slot with | .stdin => 0 | .stdout => 1 | .stderr => 2
