@@ -1180,6 +1180,19 @@ private theorem encodeGzipStored_chunkLoop_size (input : ByteArray) :
           (Nat.le_trans (Nat.add_le_add_right (Nat.add_le_add_right (pushBytesRange_size_le _ _ _ _) _) _)
             (by simp only [pushU16LE_size, ByteArray.size_push]; omega))⟩
 
+private theorem encodeGzipStored_chunkLoop_size_succ (input : ByteArray)
+    (fuel pos : Nat) (acc : ByteArray) (hpos : pos ≤ input.size) :
+    acc.size + 5 ≤ (Model.encodeGzipStored.chunkLoop input (fuel + 1) pos acc).size := by
+  unfold Model.encodeGzipStored.chunkLoop
+  dsimp only
+  have hT : min (input.size - pos) 65535 ≤ input.size - pos := Nat.min_le_left _ _
+  split
+  · exact Nat.le_trans (by simp only [pushU16LE_size, ByteArray.size_push]; omega)
+      (pushBytesRange_size_ge _ _ _ _)
+  · exact Nat.le_trans (Nat.le_trans (by simp only [pushU16LE_size, ByteArray.size_push]; omega)
+        (pushBytesRange_size_ge _ _ _ _))
+      (encodeGzipStored_chunkLoop_size input fuel (pos + min (input.size - pos) 65535) _ (by omega)).1
+
 private theorem encodeGzipStored_chunkLoop_get!_lt (input : ByteArray) (i : Nat) :
     ∀ (fuel pos : Nat) (acc : ByteArray), i < acc.size →
       (Model.encodeGzipStored.chunkLoop input fuel pos acc).get! i = acc.get! i
@@ -1450,11 +1463,12 @@ private theorem hasCanonicalCompressedFraming_encodeStored (codec : Codec) (inpu
       · simp only [ByteArray.size_append]; rw [hHdrSize]; omega
       · have h := (encodeGzipStored_chunkLoop_size input (input.size / 65535 + 2) 0 hdr (Nat.zero_le _)).1
         rw [hHdrSize] at h; exact h
-    have hSz : 18 ≤ enc.size := by
+    have hSz : 20 ≤ enc.size := by
       dsimp only [enc]; simp only [pushU32LE_size]
       simp only [body]; split
       · simp only [ByteArray.size_append]; rw [hHdrSize, h5]; omega
-      · have h := (encodeGzipStored_chunkLoop_size input (input.size / 65535 + 2) 0 hdr (Nat.zero_le _)).1
+      · have h : hdr.size + 5 ≤ (Model.encodeGzipStored.chunkLoop input (input.size / 65535 + 2) 0 hdr).size :=
+          encodeGzipStored_chunkLoop_size_succ input (input.size / 65535 + 1) 0 hdr (Nat.zero_le _)
         rw [hHdrSize] at h; omega
     have hGet : ∀ i : Nat, i < 10 → enc.get! i = hdr.get! i := by
       intro i hi
@@ -1472,7 +1486,7 @@ private theorem hasCanonicalCompressedFraming_encodeStored (codec : Codec) (inpu
     have hb5 : enc.get! 5 = (0x00 : UInt8) := by rw [hGet 5 (by omega)]; rfl
     have hb6 : enc.get! 6 = (0x00 : UInt8) := by rw [hGet 6 (by omega)]; rfl
     have hb7 : enc.get! 7 = (0x00 : UInt8) := by rw [hGet 7 (by omega)]; rfl
-    change (decide (enc.size ≥ 18) && (enc.get! 0 == 0x1F) && (enc.get! 1 == 0x8B) && (enc.get! 2 == 0x08) &&
+    change (decide (enc.size ≥ 20) && (enc.get! 0 == 0x1F) && (enc.get! 1 == 0x8B) && (enc.get! 2 == 0x08) &&
       (enc.get! 3 == 0x00) && (enc.get! 4 == 0x00) && (enc.get! 5 == 0x00) && (enc.get! 6 == 0x00) && (enc.get! 7 == 0x00)) = true
     simp only [Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq]
     exact ⟨⟨⟨⟨⟨⟨⟨⟨hSz, hb0⟩, hb1⟩, hb2⟩, hb3⟩, hb4⟩, hb5⟩, hb6⟩, hb7⟩

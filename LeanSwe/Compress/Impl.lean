@@ -32,9 +32,9 @@ def isResourceOrPathIoErrno (code : UInt32) : Bool :=
   code == 28 || code == 31 || code == 36 || code == 37 || code == 63 ||
   code == 90 || code == 105
 
-/-- O(1) RFC 1952 `.gzip` header check (`1f 8b 08` and at least 18 bytes) so GNU `gzip -d` rejects legacy `.Z`/pack/lzh/PKZIP containers at byte 0. -/
+/-- O(1) RFC 1952 `.gzip` header check (`1f 8b 08` and at least 20 bytes) so GNU `gzip -d` rejects legacy `.Z`/pack/lzh/PKZIP containers at byte 0. -/
 def hasGzipHeader (input : ByteArray) : Bool :=
-  input.size ≥ 18 && input.get! 0 == 0x1F && input.get! 1 == 0x8B && input.get! 2 == 0x08
+  input.size ≥ 20 && input.get! 0 == 0x1F && input.get! 1 == 0x8B && input.get! 2 == 0x08
 
 /-- Decode raw stderr bytes as `none` when empty or invalid UTF-8, and `some s` otherwise. -/
 def decodeStderr (bs : ByteArray) : Option String :=

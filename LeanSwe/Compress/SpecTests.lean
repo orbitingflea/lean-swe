@@ -750,7 +750,7 @@ def test_compress_publicApi_matchesDefaultOps
   NondetTest.assert (decompressFn codec input = dfltApi.decompress codec input)
   NondetTest.assert (isToolAvailFn codec = dfltApi.isToolAvailable codec)
 
-/-- `chk` (`Model.hasGzipHeader`) accepts canonical `enc .gzip` (`encodeStored .gzip`) streams and rejects `.zstd`/`.xz` cross-codec streams, legacy `.Z`/`pack`, PKZIP, and short `< 18`-byte buffers. -/
+/-- `chk` (`Model.hasGzipHeader`) accepts canonical `enc .gzip` (`encodeStored .gzip`) streams and rejects `.zstd`/`.xz` cross-codec streams, legacy `.Z`/`pack`, PKZIP, and short `< 20`-byte buffers. -/
 def test_compress_model_framingRejectsCrossCodecAndLegacy
     {runner} [NondetTest runner]
     (enc : Codec → ByteArray → ByteArray)
@@ -759,10 +759,10 @@ def test_compress_model_framingRejectsCrossCodecAndLegacy
   let gzText := enc .gzip "hello lean-swe!\n".toUTF8
   let zstSample := enc .zstd ByteArray.empty
   let xzSample := enc .xz ByteArray.empty
-  let lzwStream := ByteArray.mk #[0x1F, 0x9D, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-  let packStream := ByteArray.mk #[0x1F, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-  let pkzipStream := ByteArray.mk #[0x50, 0x4B, 0x03, 0x04, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-  let shortGzip := gzSample.extract 0 17
+  let lzwStream := ByteArray.mk #[0x1F, 0x9D, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+  let packStream := ByteArray.mk #[0x1F, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+  let pkzipStream := ByteArray.mk #[0x50, 0x4B, 0x03, 0x04, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+  let shortGzip := gzSample.extract 0 19
   NondetTest.assert (chk gzSample = true)
   NondetTest.assert (chk gzText = true)
   NondetTest.assert (chk zstSample = false)
@@ -818,7 +818,7 @@ def test_compress_model_statefulRoundTrip_andContracts_tight
     0x02, 0x00, 0x21, 0x01, 0x16, 0x00, 0x00, 0x00]
   let st1 := recFn Model.State.empty codec sampleStream plain
   let stExtXz := recFn Model.State.empty .xz xzBcjSample plain
-  NondetTest.assert (minSzFn .zstd = 9 ∧ minSzFn .gzip = 18 ∧ minSzFn .xz = 32 ∧ sampleStream.size ≥ minSzFn codec)
+  NondetTest.assert (minSzFn .zstd = 9 ∧ minSzFn .gzip = 20 ∧ minSzFn .xz = 32 ∧ sampleStream.size ≥ minSzFn codec)
   NondetTest.assert (lkFn Model.State.empty codec sampleStream = none ∧ lkFn st1 codec sampleStream = some plain)
   NondetTest.assert
     (allowCompStepFn envAvail Model.State.empty codec {} plain (.ok sampleStream) st1 = true ∧

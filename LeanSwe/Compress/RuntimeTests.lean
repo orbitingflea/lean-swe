@@ -316,6 +316,16 @@ private def testFramingBeforeOutputLimit : IO Unit := do
     (← bigStdoutApi.decompressWith .gzip { maxOutputBytes := 2 } bad)
   let _ ← expectErrKind "mock exited stdout>limit valid gzip header" .outputLimitExceeded
     (← bigStdoutApi.decompressWith .gzip { maxOutputBytes := 2 } validEmptyGzipFrame)
+  assertTrue "validEmptyGzipFrame matches minCompressedSize"
+    (validEmptyGzipFrame.size == Model.minCompressedSize .gzip)
+  let emptyGzOut ← expectOk "real gzip accepts 20-byte validEmptyGzipFrame"
+    (← Compress.decompress .gzip validEmptyGzipFrame)
+  assertBytesEq "20-byte validEmptyGzipFrame decompresses to empty" emptyGzOut ByteArray.empty
+  let shortGz19 := validEmptyGzipFrame.extract 0 19
+  assertTrue "19-byte gzip fails hasGzipHeader"
+    (!Model.hasGzipHeader shortGz19 && !Internal.hasGzipHeader shortGz19)
+  let _ ← expectErrKind "real gzip rejects 19-byte truncated gzip frame" .corruptData
+    (← Compress.decompress .gzip shortGz19)
   let _ ← expectErrKind "mock exited stdout>limit valid zstd framing" .outputLimitExceeded
     (← bigStdoutApi.decompressWith .zstd { maxOutputBytes := 2 } validEmptyZstdFrame)
   let oomApi := mkMockAwaitApi (.outputLimitExceeded (ByteArray.mk #[1, 2, 3, 4]) ByteArray.empty)

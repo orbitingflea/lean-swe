@@ -11,9 +11,6 @@ def codecSanitizedEnv : Array (String × Option String) :=
     ("GZIP", none),
     ("LC_ALL", some "C")]
 
-/-- Pipe buffer slack beyond `maxOutputBytes` passed to `LeanSwe.Process` so small CLI `stderr` diagnostics do not mask `.corruptData`. -/
-def stderrPipeSlack : Nat := 4096
-
 /-- Read a little-endian 32-bit unsigned integer at `pos`. -/
 @[inline] def readU32LE (bs : ByteArray) (pos : Nat) : UInt32 :=
   UInt32.ofNat (
@@ -177,18 +174,11 @@ def xxh64Low32 (bs : ByteArray) : UInt32 :=
   let h6 := (h5 ^^^ (h5 >>> 29)) * xxhPrime3
   (h6 ^^^ (h6 >>> 32)).toUInt32
 
-/-- Return `true` iff `code` is a POSIX `errno` that `LeanSwe.Process.Raw` surfaces as `.invalidInput`
-    for OS resource exhaustion (`IO.Error.resourceExhausted`) or `PATH` `ENAMETOOLONG` (`36`). -/
-def isResourceOrPathIoErrno (code : UInt32) : Bool :=
-  code == 7 || code == 11 || code == 12 || code == 23 || code == 24 ||
-  code == 28 || code == 31 || code == 36 || code == 37 || code == 63 ||
-  code == 90 || code == 105
-
 namespace Model
 
-/-- O(1) RFC 1952 `.gzip` header check (`1f 8b 08` and at least 18 bytes) rejecting legacy `.Z`/pack/lzh/PKZIP containers at byte 0. -/
+/-- O(1) RFC 1952 `.gzip` header check (`1f 8b 08` and at least 20 bytes) rejecting legacy `.Z`/pack/lzh/PKZIP containers at byte 0. -/
 def hasGzipHeader (input : ByteArray) : Bool :=
-  input.size ≥ 18 && input.get! 0 == 0x1F && input.get! 1 == 0x8B && input.get! 2 == 0x08
+  input.size ≥ 20 && input.get! 0 == 0x1F && input.get! 1 == 0x8B && input.get! 2 == 0x08
 
 /-- Encode `n` as a canonical `.xz` variable-length integer. -/
 def encodeXzVli (n : Nat) : ByteArray :=
@@ -379,7 +369,7 @@ def isValidDecompressInput (opts : DecompressOptions) (input : ByteArray) : Bool
 /-- Minimum valid compressed stream byte length per `Codec`. -/
 def minCompressedSize : Codec → Nat
   | .zstd => 9
-  | .gzip => 18
+  | .gzip => 20
   | .xz => 32
 
 /-- Conservative upper bound on worst-case compressed stream size for `input.size = n`. -/
@@ -390,7 +380,7 @@ def maxCompressedBound (_codec : Codec) (n : Nat) : Nat :=
 def hasCanonicalCompressedFraming (codec : Codec) (bs : ByteArray) : Bool :=
   match codec with
   | .gzip =>
-    bs.size ≥ 18 && bs.get! 0 == 0x1F && bs.get! 1 == 0x8B && bs.get! 2 == 0x08 &&
+    bs.size ≥ 20 && bs.get! 0 == 0x1F && bs.get! 1 == 0x8B && bs.get! 2 == 0x08 &&
     bs.get! 3 == 0x00 && bs.get! 4 == 0x00 && bs.get! 5 == 0x00 && bs.get! 6 == 0x00 && bs.get! 7 == 0x00
   | .zstd =>
     bs.size ≥ 9 && bs.get! 0 == 0x28 && bs.get! 1 == 0xB5 && bs.get! 2 == 0x2F && bs.get! 3 == 0xFD
