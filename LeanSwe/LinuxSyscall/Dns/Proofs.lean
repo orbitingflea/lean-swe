@@ -21,21 +21,23 @@ private theorem push_wire_toList (b : ByteArray) (x : UInt8) :
   simp [ByteArray.push]
 
 private theorem pushWireAddr_data_toList (acc : ByteArray) (a : DnsAddr) :
-    (pushWireAddr acc a).data.toList = acc.data.toList ++ wireAddrBytes a := by
+    (Internal.pushWireAddr acc a).data.toList = acc.data.toList ++ wireAddrBytes a := by
   cases a with
   | ipv4 b0 b1 b2 b3 =>
-    unfold pushWireAddr wireAddrBytes
-    simp only [WIRE_FAMILY_V4, push_wire_toList, List.append_assoc, List.cons_append, List.nil_append]
+    unfold Internal.pushWireAddr wireAddrBytes
+    simp only [push_wire_toList, List.append_assoc, List.cons_append, List.nil_append]
+    rfl
   | ipv6 b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 sc =>
-    unfold pushWireAddr pushWireUInt32LE wireAddrBytes
-    simp only [WIRE_FAMILY_V6, push_wire_toList, List.append_assoc, List.cons_append, List.nil_append]
+    unfold Internal.pushWireAddr Internal.pushWireUInt32LE wireAddrBytes
+    simp only [push_wire_toList, List.append_assoc, List.cons_append, List.nil_append]
+    rfl
 
 private theorem encodeWireRecordsLoop_data_toList (addrs : List DnsAddr) (acc : ByteArray) :
-    (encodeWireRecordsLoop addrs acc).data.toList = acc.data.toList ++ addrs.flatMap wireAddrBytes := by
+    (Internal.encodeWireRecordsLoop addrs acc).data.toList = acc.data.toList ++ addrs.flatMap wireAddrBytes := by
   induction addrs generalizing acc with
-  | nil => simp [encodeWireRecordsLoop]
+  | nil => simp [Internal.encodeWireRecordsLoop]
   | cons a rest ih =>
-    simp [encodeWireRecordsLoop, ih, pushWireAddr_data_toList, List.flatMap_cons, List.append_assoc]
+    simp [Internal.encodeWireRecordsLoop, ih, pushWireAddr_data_toList, List.flatMap_cons, List.append_assoc]
 
 /-- Every `encodeWireRecords addrs` buffer equals `addrs.flatMap wireAddrBytes` byte-for-byte. -/
 theorem encodeWireRecords_data_toList (addrs : List DnsAddr) :
@@ -49,9 +51,9 @@ theorem validateHost_of_parsePureNumericAddr {host : String} {addr : DnsAddr}
     (hP : parsePureNumericAddr? host = some addr) :
     validateHost host = true := by
   unfold parsePureNumericAddr? at hP
-  by_cases hne : isNonEmptyNoNulHost host = true
+  by_cases hne : Internal.isNonEmptyNoNulHost host = true
   · unfold validateHost
-    unfold isNonEmptyNoNulHost at hne
+    unfold Internal.isNonEmptyNoNulHost at hne
     simp only [Bool.and_eq_true, Bool.not_eq_true'] at hne ⊢
     refine ⟨?_, ?_⟩
     · cases hl : host.toList with
@@ -78,9 +80,9 @@ theorem validateHost_of_parseHybridScopedNumericZone {host : String} {baseAddr :
     (hH : parseHybridScopedNumericZone? host = some (baseAddr, sc)) :
     validateHost host = true := by
   unfold parseHybridScopedNumericZone? at hH
-  by_cases hne : isNonEmptyNoNulHost host = true
+  by_cases hne : Internal.isNonEmptyNoNulHost host = true
   · unfold validateHost
-    unfold isNonEmptyNoNulHost at hne
+    unfold Internal.isNonEmptyNoNulHost at hne
     simp only [Bool.and_eq_true, Bool.not_eq_true'] at hne ⊢
     refine ⟨?_, ?_⟩
     · cases hl : host.toList with
@@ -107,13 +109,11 @@ theorem allowsSymbolicIpv6Zone_of_parseHybridScopedNumericZone {host : String} {
     (hH : parseHybridScopedNumericZone? host = some (baseAddr, sc)) :
     allowsSymbolicIpv6Zone baseAddr = true := by
   unfold parseHybridScopedNumericZone? at hH
-  by_cases hne : isNonEmptyNoNulHost host = true
+  by_cases hne : Internal.isNonEmptyNoNulHost host = true
   · simp only [hne, Bool.not_true, Bool.false_eq_true, ↓reduceIte] at hH
-    cases h4 : parseIpv4Aton? host with
-    | some _ => simp [h4] at hH
-    | none =>
-      simp only [h4] at hH
-      cases h6 : parseIpv6SplitZone? host with
+    split at hH
+    · contradiction
+    · cases h6 : Internal.parseIpv6SplitZone? host with
       | none => simp [h6] at hH
       | some p =>
         rcases p with ⟨mk, z?⟩
@@ -123,77 +123,63 @@ theorem allowsSymbolicIpv6Zone_of_parseHybridScopedNumericZone {host : String} {
           simp only [h6] at hH
           by_cases hlen : zoneCs.length < 16
           · simp only [hlen, ↓reduceIte] at hH
-            cases hm : mk 0 with
-            | none => simp [hm] at hH
-            | some bAddr =>
-              cases hn : parseNumericZone? zoneCs with
-              | none => simp [hm, hn] at hH
-              | some scVal =>
-                simp only [hm, hn] at hH
-                by_cases hAl : allowsSymbolicIpv6Zone bAddr = true
-                · simp only [hAl, ↓reduceIte, Option.some.injEq, Prod.mk.injEq] at hH
-                  rw [← hH.1]
-                  exact hAl
-                · simp [hAl] at hH
+            split at hH
+            · rename_i bAddr scVal _ _
+              by_cases hAl : allowsSymbolicIpv6Zone bAddr = true
+              · simp only [hAl, ↓reduceIte, Option.some.injEq, Prod.mk.injEq] at hH
+                rw [← hH.1]
+                exact hAl
+              · simp [hAl] at hH
+            · contradiction
           · simp [hlen] at hH
   · simp [hne] at hH
 
 private theorem wordsToIpv6Addr_allowsSymbolic {ws : List Nat} {sc1 sc2 : UInt32} {a1 a2 : DnsAddr}
-    (h1 : wordsToIpv6Addr ws sc1 = some a1) (h2 : wordsToIpv6Addr ws sc2 = some a2) :
+    (h1 : Internal.wordsToIpv6Addr ws sc1 = some a1) (h2 : Internal.wordsToIpv6Addr ws sc2 = some a2) :
     allowsSymbolicIpv6Zone a1 = allowsSymbolicIpv6Zone a2 := by
-  cases ws with | nil => simp [wordsToIpv6Addr] at h1 | cons w0 ws1 =>
-  cases ws1 with | nil => simp [wordsToIpv6Addr] at h1 | cons w1 ws2 =>
-  cases ws2 with | nil => simp [wordsToIpv6Addr] at h1 | cons w2 ws3 =>
-  cases ws3 with | nil => simp [wordsToIpv6Addr] at h1 | cons w3 ws4 =>
-  cases ws4 with | nil => simp [wordsToIpv6Addr] at h1 | cons w4 ws5 =>
-  cases ws5 with | nil => simp [wordsToIpv6Addr] at h1 | cons w5 ws6 =>
-  cases ws6 with | nil => simp [wordsToIpv6Addr] at h1 | cons w6 ws7 =>
-  cases ws7 with | nil => simp [wordsToIpv6Addr] at h1 | cons w7 ws8 =>
+  cases ws with | nil => simp [Internal.wordsToIpv6Addr] at h1 | cons w0 ws1 =>
+  cases ws1 with | nil => simp [Internal.wordsToIpv6Addr] at h1 | cons w1 ws2 =>
+  cases ws2 with | nil => simp [Internal.wordsToIpv6Addr] at h1 | cons w2 ws3 =>
+  cases ws3 with | nil => simp [Internal.wordsToIpv6Addr] at h1 | cons w3 ws4 =>
+  cases ws4 with | nil => simp [Internal.wordsToIpv6Addr] at h1 | cons w4 ws5 =>
+  cases ws5 with | nil => simp [Internal.wordsToIpv6Addr] at h1 | cons w5 ws6 =>
+  cases ws6 with | nil => simp [Internal.wordsToIpv6Addr] at h1 | cons w6 ws7 =>
+  cases ws7 with | nil => simp [Internal.wordsToIpv6Addr] at h1 | cons w7 ws8 =>
   cases ws8 with
-  | cons _ _ => simp [wordsToIpv6Addr] at h1
+  | cons _ _ => simp [Internal.wordsToIpv6Addr] at h1
   | nil =>
-    simp only [wordsToIpv6Addr, Option.some.injEq] at h1 h2
+    simp only [Internal.wordsToIpv6Addr, Option.some.injEq] at h1 h2
     subst h1; subst h2
     rfl
 
 private theorem parseIpv6Core_exists_words {addrCs : List Char} {mkFn : UInt32 → Option DnsAddr}
-    (h : parseIpv6Core? addrCs = some mkFn) :
-    ∃ ws : List Nat, mkFn = wordsToIpv6Addr ws := by
-  unfold parseIpv6Core? at h
+    (h : Internal.parseIpv6Core? addrCs = some mkFn) :
+    ∃ ws : List Nat, mkFn = Internal.wordsToIpv6Addr ws := by
+  unfold Internal.parseIpv6Core? at h
   by_cases hBad : (addrCs.isEmpty || decide (addrCs.length > 64)) = true
   · simp [hBad] at h
   · simp only [hBad, Bool.false_eq_true, ↓reduceIte, Bind.bind, Option.bind] at h
-    cases hSplit : splitDoubleColonChars addrCs with
-    | nil => simp [hSplit] at h
-    | cons first rest =>
-      cases rest with
-      | nil =>
-        simp only [hSplit] at h
-        cases hP1 : parseIpv6Parts? true first with
-        | none => simp [hP1] at h
-        | some ws =>
-          simp only [hP1] at h
-          by_cases hne8 : (ws.length != 8) = true
-          · simp [hne8] at h
-          · simp only [hne8, Bool.false_eq_true, ↓reduceIte, Option.some.injEq] at h
-            exact ⟨ws, h.symm⟩
-      | cons second rest2 =>
-        cases rest2 with
-        | cons _ _ => simp [hSplit] at h
-        | nil =>
-          simp only [hSplit] at h
-          cases hL : parseIpv6Parts? false first with
-          | none => simp [hL] at h
-          | some lhs =>
-            simp only [hL] at h
-            cases hR : parseIpv6Parts? true second with
-            | none => simp [hR] at h
-            | some rhs =>
-              simp only [hR] at h
-              by_cases hge : lhs.length + rhs.length ≥ 8
-              · simp [hge] at h
-              · simp only [hge, ↓reduceIte, Option.some.injEq] at h
-                exact ⟨lhs ++ List.replicate (8 - (lhs.length + rhs.length)) 0 ++ rhs, h.symm⟩
+    split at h
+    · split at h
+      · contradiction
+      · rename_i ws _
+        by_cases hne8 : (ws.length != 8) = true
+        · simp [hne8] at h
+        · simp only [hne8, Bool.false_eq_true, ↓reduceIte, Option.some.injEq] at h
+          exact ⟨ws, h.symm⟩
+    · split at h
+      · contradiction
+      · rename_i lhs _
+        dsimp only at h
+        split at h
+        · contradiction
+        · rename_i rhs _
+          dsimp only at h
+          by_cases hge : lhs.length + rhs.length ≥ 8
+          · simp [hge] at h
+          · simp only [hge, ↓reduceIte, Option.some.injEq] at h
+            exact ⟨lhs ++ List.replicate (8 - (lhs.length + rhs.length)) 0 ++ rhs, h.symm⟩
+    · contradiction
 
 /-- `parsePureNumericAddr?` and `parseHybridScopedNumericZone?` are mutually exclusive: every hybrid numeric-scoped literal yields `parsePureNumericAddr? host = none`. -/
 theorem parsePureNumericAddr_none_of_parseHybridScopedNumericZone
@@ -202,13 +188,11 @@ theorem parsePureNumericAddr_none_of_parseHybridScopedNumericZone
     parsePureNumericAddr? host = none := by
   unfold parseHybridScopedNumericZone? at hHyb
   unfold parsePureNumericAddr?
-  by_cases hne : isNonEmptyNoNulHost host = true
+  by_cases hne : Internal.isNonEmptyNoNulHost host = true
   · simp only [hne, Bool.not_true, Bool.false_eq_true, ↓reduceIte] at hHyb ⊢
-    cases h4 : parseIpv4Aton? host with
-    | some _ => simp [h4] at hHyb
-    | none =>
-      simp only [h4] at hHyb ⊢
-      cases h6 : parseIpv6SplitZone? host with
+    split at hHyb
+    · contradiction
+    · cases h6 : Internal.parseIpv6SplitZone? host with
       | none => simp [h6] at hHyb
       | some p =>
         rcases p with ⟨mk, z?⟩
@@ -218,33 +202,31 @@ theorem parsePureNumericAddr_none_of_parseHybridScopedNumericZone
           simp only [h6] at hHyb ⊢
           by_cases hlen : zoneCs.length < 16
           · simp only [hlen, ↓reduceIte] at hHyb
-            cases hm0 : mk 0 with
-            | none => simp [hm0] at hHyb
-            | some bAddr =>
-              cases hn : parseNumericZone? zoneCs with
-              | none => simp [hm0, hn] at hHyb
-              | some scVal =>
-                simp only [hm0, hn] at hHyb ⊢
-                by_cases hAl : allowsSymbolicIpv6Zone bAddr = true
-                · simp only [hAl, ↓reduceIte] at hHyb
-                  cases hms : mk scVal with
-                  | none => rfl
-                  | some addrSc =>
-                    dsimp only
-                    unfold parseIpv6SplitZone? at h6
-                    cases hCore : parseIpv6Core? (splitFirstZoneAux host.toList []).1 with
-                    | none => simp [hCore] at h6
-                    | some mkFn =>
-                      have hMkEq : mkFn = mk := by
-                        simp only [hCore, Option.some.injEq, Prod.mk.injEq] at h6
-                        exact h6.1
-                      subst hMkEq
-                      rcases parseIpv6Core_exists_words hCore with ⟨ws, hWs⟩
-                      rw [hWs] at hm0 hms
-                      have hEqAl := wordsToIpv6Addr_allowsSymbolic hm0 hms
-                      rw [← hEqAl]
-                      simp [hAl, hlen]
-                · simp [hAl] at hHyb
+            split at hHyb
+            · rename_i bAddr scVal hm0 hn
+              simp only [hn]
+              by_cases hAl : allowsSymbolicIpv6Zone bAddr = true
+              · simp only [hAl, ↓reduceIte] at hHyb
+                cases hms : mk scVal with
+                | none => rfl
+                | some addrSc =>
+                  dsimp only
+                  unfold Internal.parseIpv6SplitZone? at h6
+                  split at h6
+                  split at h6
+                  · contradiction
+                  · rename_i mkFn hCore
+                    have hMkEq : mkFn = mk := by
+                      simp only [Option.some.injEq, Prod.mk.injEq] at h6
+                      exact h6.1
+                    subst hMkEq
+                    rcases parseIpv6Core_exists_words hCore with ⟨ws, hWs⟩
+                    rw [hWs] at hm0 hms
+                    have hEqAl := wordsToIpv6Addr_allowsSymbolic hm0 hms
+                    rw [← hEqAl]
+                    simp [hAl, hlen]
+              · simp [hAl] at hHyb
+            · contradiction
           · simp [hlen] at hHyb
   · simp [hne] at hHyb
 
@@ -254,11 +236,11 @@ theorem parsePureNumericAddr_none_of_not_numericLiteral {host : String}
     parsePureNumericAddr? host = none := by
   unfold isNumericHostLiteral at hNonNum
   unfold parsePureNumericAddr?
-  by_cases hne : isNonEmptyNoNulHost host = true
+  by_cases hne : Internal.isNonEmptyNoNulHost host = true
   · simp only [hne, Bool.true_and, Bool.or_eq_false_iff, Option.isSome_eq_false_iff,
       Option.isNone_iff_eq_none] at hNonNum
     simp [hne, hNonNum.1, hNonNum.2]
-  · have hneF : isNonEmptyNoNulHost host = false := Bool.eq_false_iff.mpr hne
+  · have hneF : Internal.isNonEmptyNoNulHost host = false := Bool.eq_false_iff.mpr hne
     simp [hneF]
 
 /-- Every non-numeric host (`isNumericHostLiteral host = false`) returns `none` under `parseHybridScopedNumericZone?`. -/
@@ -267,11 +249,11 @@ theorem parseHybridScopedNumericZone_none_of_not_numericLiteral {host : String}
     parseHybridScopedNumericZone? host = none := by
   unfold isNumericHostLiteral at hNonNum
   unfold parseHybridScopedNumericZone?
-  by_cases hne : isNonEmptyNoNulHost host = true
+  by_cases hne : Internal.isNonEmptyNoNulHost host = true
   · simp only [hne, Bool.true_and, Bool.or_eq_false_iff, Option.isSome_eq_false_iff,
       Option.isNone_iff_eq_none] at hNonNum
     simp [hne, hNonNum.1, hNonNum.2]
-  · have hneF : isNonEmptyNoNulHost host = false := Bool.eq_false_iff.mpr hne
+  · have hneF : Internal.isNonEmptyNoNulHost host = false := Bool.eq_false_iff.mpr hne
     simp [hneF]
 
 end LeanSwe.LinuxSyscall.Dns

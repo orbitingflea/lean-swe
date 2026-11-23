@@ -46,8 +46,7 @@ private def splitDoubleColonAux : List Char → List Char → List (List Char) �
   | c :: cs, cur, acc =>
     splitDoubleColonAux cs (c :: cur) acc
 
-/-- Split a character list on occurrences of `"::"`. -/
-def splitDoubleColonChars (cs : List Char) : List (List Char) :=
+private def splitDoubleColonChars (cs : List Char) : List (List Char) :=
   splitDoubleColonAux cs [] []
 
 private def parseIpv4AtonPart? (cs : List Char) : Option Nat :=
@@ -63,8 +62,7 @@ private def parseIpv4AtonPart? (cs : List Char) : Option Nat :=
     else
       none
 
-/-- Parse an `inet_aton(3)` numeric IPv4 literal (1–4 dot-separated decimal, octal, or hex parts). -/
-def parseIpv4Aton? (host : String) : Option DnsAddr := do
+private def parseIpv4Aton? (host : String) : Option DnsAddr := do
   let parts := splitCharList '.' host.toList
   if parts.any (·.isEmpty) then none
   match parts with
@@ -139,8 +137,7 @@ private def parseIpv6PartsLoop (allowV4Tail : Bool) : List (List Char) → List 
       let v ← parseHexGroup? p
       parseIpv6PartsLoop allowV4Tail rest (v :: acc)
 
-/-- Parse colon-separated 16-bit hex groups (and optional dotted-quad IPv4 tail when `allowV4Tail = true`). -/
-def parseIpv6Parts? (allowV4Tail : Bool) (cs : List Char) : Option (List Nat) :=
+private def parseIpv6Parts? (allowV4Tail : Bool) (cs : List Char) : Option (List Nat) :=
   if cs.isEmpty then
     some []
   else
@@ -150,7 +147,23 @@ def parseIpv6Parts? (allowV4Tail : Bool) (cs : List Char) : Option (List Nat) :=
     else
       parseIpv6PartsLoop allowV4Tail parts []
 
-/-- Construct an `.ipv6` `DnsAddr` from 8 16-bit big-endian words and `scopeId`. -/
+private def parseNumericZone? (zoneCs : List Char) : Option UInt32 := do
+  if zoneCs.isEmpty then none
+  let n ← parseUintDigits? 10 0xffffffff zoneCs 0
+  some (UInt32.ofNat n)
+
+private def isIpv4MappedAddr : DnsAddr → Bool
+  | .ipv6 0 0 0 0 0 0 0 0 0 0 0xff 0xff _ _ _ _ _ => true
+  | _ => false
+
+private def splitFirstZoneAux : List Char → List Char → List Char × Option (List Char)
+  | [], acc => (acc.reverse, none)
+  | '%' :: rest, acc => (acc.reverse, some rest)
+  | c :: rest, acc => splitFirstZoneAux rest (c :: acc)
+
+namespace Internal
+
+/-- Internal parsing helper (`LeanSwe.LinuxSyscall.Dns.Internal`): construct an `.ipv6` `DnsAddr` from 8 16-bit big-endian words and `scopeId`. -/
 def wordsToIpv6Addr (ws : List Nat) (sc : UInt32) : Option DnsAddr :=
   match ws with
   | [w0, w1, w2, w3, w4, w5, w6, w7] =>
@@ -166,7 +179,7 @@ def wordsToIpv6Addr (ws : List Nat) (sc : UInt32) : Option DnsAddr :=
       sc)
   | _ => none
 
-/-- Parse the address body of an IPv6 literal (without `%zone`) into a `scopeId → Option DnsAddr` builder. -/
+/-- Internal parsing helper (`LeanSwe.LinuxSyscall.Dns.Internal`): parse the address body of an IPv6 literal (without `%zone`) into a `scopeId → Option DnsAddr` builder. -/
 def parseIpv6Core? (addrCs : List Char) : Option (UInt32 → Option DnsAddr) := do
   if addrCs.isEmpty || addrCs.length > 64 then none
   let halves := splitDoubleColonChars addrCs
@@ -184,15 +197,19 @@ def parseIpv6Core? (addrCs : List Char) : Option (UInt32 → Option DnsAddr) := 
     some (wordsToIpv6Addr (lhs ++ zeros ++ rhs))
   | _ => none
 
-/-- Parse a decimal `UInt32` IPv6 zone identifier following `'%'`. -/
-def parseNumericZone? (zoneCs : List Char) : Option UInt32 := do
-  if zoneCs.isEmpty then none
-  let n ← parseUintDigits? 10 0xffffffff zoneCs 0
-  some (UInt32.ofNat n)
+/-- Internal parsing helper (`LeanSwe.LinuxSyscall.Dns.Internal`): parse an IPv6 literal with an optional `%<zone>` suffix into its builder and raw zone chars. -/
+def parseIpv6SplitZone? (host : String) : Option ((UInt32 → Option DnsAddr) × Option (List Char)) :=
+  let (addrCs, zone?) := splitFirstZoneAux host.toList []
+  match parseIpv6Core? addrCs with
+  | none => none
+  | some mk => some (mk, zone?)
 
-private def isIpv4MappedAddr : DnsAddr → Bool
-  | .ipv6 0 0 0 0 0 0 0 0 0 0 0xff 0xff _ _ _ _ _ => true
-  | _ => false
+/-- Internal parsing helper (`LeanSwe.LinuxSyscall.Dns.Internal`): return `true` iff `host.toList` is non-empty and free of embedded NUL (`\x00`) characters. -/
+def isNonEmptyNoNulHost (host : String) : Bool :=
+  let cs := host.toList
+  !cs.isEmpty && !cs.contains (Char.ofNat 0)
+
+end Internal
 
 /-- Return `true` iff `a` is an IPv6 link-local (`fe80::/10`), multicast node-local (`ffx1::/16`), or multicast link-local (`ffx2::/16`) address eligible for symbolic `%<iface>` zones under RFC 4007 / `glibc`. -/
 def allowsSymbolicIpv6Zone : DnsAddr → Bool
@@ -201,32 +218,14 @@ def allowsSymbolicIpv6Zone : DnsAddr → Bool
     (b0 == 0xff && ((b1 &&& 0x0f) == 0x01 || (b1 &&& 0x0f) == 0x02))
   | .ipv4 .. => false
 
-/-- Split a character list at the first `'%'` scope-zone delimiter. -/
-def splitFirstZoneAux : List Char → List Char → List Char × Option (List Char)
-  | [], acc => (acc.reverse, none)
-  | '%' :: rest, acc => (acc.reverse, some rest)
-  | c :: rest, acc => splitFirstZoneAux rest (c :: acc)
-
-/-- Parse an IPv6 literal with an optional `%<zone>` suffix into its builder and raw zone chars. -/
-def parseIpv6SplitZone? (host : String) : Option ((UInt32 → Option DnsAddr) × Option (List Char)) :=
-  let (addrCs, zone?) := splitFirstZoneAux host.toList []
-  match parseIpv6Core? addrCs with
-  | none => none
-  | some mk => some (mk, zone?)
-
-/-- Return `true` iff `host.toList` is non-empty and free of embedded NUL (`\x00`) characters. -/
-def isNonEmptyNoNulHost (host : String) : Bool :=
-  let cs := host.toList
-  !cs.isEmpty && !cs.contains (Char.ofNat 0)
-
 /-- Parse pure platform- and namespace-independent numeric IPv4 (`inet_aton`) or IPv6 (unscoped, non-link/multicast-local `%<u32>`, or `>= 16`-byte `%<u32>` exceeding `IFNAMSIZ`) literals. -/
 def parsePureNumericAddr? (host : String) : Option DnsAddr :=
-  if !isNonEmptyNoNulHost host then none
+  if !Internal.isNonEmptyNoNulHost host then none
   else
     match parseIpv4Aton? host with
     | some addr => some addr
     | none =>
-      match parseIpv6SplitZone? host with
+      match Internal.parseIpv6SplitZone? host with
       | none => none
       | some (mk, none) => mk 0
       | some (mk, some zoneCs) =>
@@ -241,12 +240,12 @@ def parsePureNumericAddr? (host : String) : Option DnsAddr :=
 
 /-- If `host` is a link- or node/link-local-multicast IPv6 literal (`allowsSymbolicIpv6Zone`) with a `1..15`-byte (`< IFNAMSIZ`) numeric `%<u32>` zone (where `glibc` checks `if_nametoindex` before falling back to numeric `strtoul`), return `(baseAddr, numericScopeId)`. -/
 def parseHybridScopedNumericZone? (host : String) : Option (DnsAddr × UInt32) :=
-  if !isNonEmptyNoNulHost host then none
+  if !Internal.isNonEmptyNoNulHost host then none
   else
     match parseIpv4Aton? host with
     | some _ => none
     | none =>
-      match parseIpv6SplitZone? host with
+      match Internal.parseIpv6SplitZone? host with
       | some (mk, some zoneCs) =>
         if zoneCs.length < 16 then
           match mk 0, parseNumericZone? zoneCs with
@@ -258,12 +257,12 @@ def parseHybridScopedNumericZone? (host : String) : Option (DnsAddr × UInt32) :
 
 /-- If `host` is an IPv6 literal with an empty or non-`uint32` `%<zone>` suffix (`strchr('%')`), return its base address (`scopeId = 0`) and raw zone bytes. -/
 def parseScopedNonNumericZone? (host : String) : Option (DnsAddr × List Char) :=
-  if !isNonEmptyNoNulHost host then none
+  if !Internal.isNonEmptyNoNulHost host then none
   else
     match parseIpv4Aton? host with
     | some _ => none
     | none =>
-      match parseIpv6SplitZone? host with
+      match Internal.parseIpv6SplitZone? host with
       | some (mk, some zoneCs) =>
         if (parseNumericZone? zoneCs).isSome then none
         else
@@ -274,8 +273,8 @@ def parseScopedNonNumericZone? (host : String) : Option (DnsAddr × List Char) :
 
 /-- Return `true` iff `host` is a numeric IPv4 or IPv6 literal (including IPv6 literals with a `%zone` suffix). -/
 def isNumericHostLiteral (host : String) : Bool :=
-  isNonEmptyNoNulHost host &&
-    ((parseIpv4Aton? host).isSome || (parseIpv6SplitZone? host).isSome)
+  Internal.isNonEmptyNoNulHost host &&
+    ((parseIpv4Aton? host).isSome || (Internal.parseIpv6SplitZone? host).isSome)
 
 /-- Transform `a` under `hints.family`: unwraps IPv4-mapped IPv6 (`::ffff:a.b.c.d`) to `.ipv4` when `hints.family = .ipv4`. -/
 def mapAddrForHints (hints : ResolveHints) (a : DnsAddr) : Option DnsAddr :=
@@ -520,7 +519,7 @@ def defaultOfflineOracle : DnsOracle :=
                 .error { kind := .otherGai, gaiCode := EAI_ADDRFAMILY, errno? := none,
                          message := "Address family for hostname not supported" }
               else
-                match parseIpv6SplitZone? host with
+                match Internal.parseIpv6SplitZone? host with
                 | some (mk, _) =>
                   match mk 1 with
                   | some scopedAddr => filterByFamily [scopedAddr]
