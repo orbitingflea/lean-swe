@@ -196,7 +196,7 @@ def test_psandboxRaw_boxAndForwarderLifecycle_conservesResources
 
 /-- External trust boundary assumptions for `LeanSwe.ProcessSandbox.Raw` (`Host.SysBridge` and the `#![no_std]` Rust `psandbox-init` binary `Init/rust/src/{init_sys,ops}.rs`) grounded in `RuntimeTests.lean`. -/
 structure EmpiricalAssumptions where
-  /-- `leanswe_psandbox_host_arch` returns the native host `AUDIT_ARCH_X86_64` (`0xc000003e`) or `AUDIT_ARCH_AARCH64` (`0xc00000b7`) constant (`0` otherwise), and `preflight` verifies Linux host, `bwrap` availability, unprivileged `user`/`pid`/`net`/`mount`/`ipc`/`uts` namespace creation, Landlock `landlock_create_ruleset` ABI >= 4, `seccomp` BPF support, and direct `/sys/fs/cgroup` sibling cgroup creation plus `memory` (`memory.max`, ignoring `ENOENT` on `memory.swap.max` on swapless kernels) and `pids` (`pids.max`) controller delegation when requested, failing closed with `.unavailable`. -/
+  /-- `Host.SysBridge` (`Host.Bwrap.detectHostAuditArch`) returns the native host `AUDIT_ARCH_X86_64` (`0xc000003e`) or `AUDIT_ARCH_AARCH64` (`0xc00000b7`) constant (`0` otherwise), and `preflight` verifies Linux host, `bwrap` availability, unprivileged `user`/`pid`/`net`/`mount`/`ipc`/`uts` namespace creation, Landlock `landlock_create_ruleset` ABI >= 4, `seccomp` BPF support, and direct `/sys/fs/cgroup` sibling cgroup creation plus `memory` (`memory.max`, ignoring `ENOENT` on `memory.swap.max` on swapless kernels) and `pids` (`pids.max`) controller delegation when requested, failing closed with `.unavailable`. -/
   preflightProbesNamespacesLandlockV4AndDirectCgroupV2 : Prop
   /-- `discoverHostPreset` inspects `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` via `lstat` (preserving top-level symlinks such as `/bin -> usr/bin`), checks the 9 allowlisted `/etc` paths, reads `getenv("HOME")` plus `getpwuid_r(getuid())` without touching unmounted `/home` autofs mounts, and includes nested home paths (including through symlinked system roots) in `excludedHomePaths` iff `stat` confirms the host directory exists. -/
   discoverHostPresetPreservesTopSymlinksAndAvoidsAutofs : Prop
@@ -208,7 +208,7 @@ structure EmpiricalAssumptions where
   psandboxInitLandlockAndBoundedSeccompLoader : Prop
   /-- `startPortForwarders` runs a non-blocking `poll()` TCP relay (`SOCK_NONBLOCK | SOCK_CLOEXEC`, `send(..., MSG_NOSIGNAL)`) capping concurrent active relay slots at `MAX_RELAY_SLOTS = 128` (clearing `listenerFd` `POLLIN` at capacity to prevent host `EMFILE`), gating `POLLIN`/`POLLOUT` on `16 KiB` per-direction ring buffers, propagating independent directional EOF via buffer drain + `shutdown(dstFd, SHUT_WR)` so TCP half-close works cleanly, and isolating per-slot socket/`ECONNREFUSED` errors, while `readBoxOutput` feeds `stdin` and bounds captured `stdout.size + stderr.size` to `maxOutputBytes` under monotonic `timeoutMs`. -/
   nonBlockingTcpForwarderAndBoundedOutputCapture : Prop
-  /-- C-shim handle tables for `PlanHandle`, `BoxHandle`, and `PortForwarderHandle` allocate `0 < handleId < UInt64.size`, protect close/reap transitions under mutexes without FD-reuse races, and reject invalid/closed handles with `.invalidInput`. -/
+  /-- `Host.SysBridge` handle tables (`IO.Ref`-backed atomic `modifyGet` transitions) for `PlanHandle`, `BoxHandle`, and `PortForwarderHandle` allocate `0 < handleId < UInt64.size`, protect close/reap transitions without FD-reuse races, and reject invalid/closed handles with `.invalidInput`. -/
   handleTables64BitSafeAndRaceFree : Prop
 
 end LeanSwe.ProcessSandbox.Raw
