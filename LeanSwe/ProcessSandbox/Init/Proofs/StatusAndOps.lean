@@ -12,8 +12,8 @@ Machine-checked invariants on `psandbox_init::ops`:
 - Loopback interface `IFF_UP | IFF_RUNNING` activation logic,
 - Linux `waitpid` status word classification across all 8-bit exit codes (`0..255`) and
   fatal signals (`1..126`),
-- `seccomp` `ENOSYS` fallback (`SYS_seccomp` → `prctl(PR_SET_SECCOMP)`) and loopback listener
-  descriptor cleanup on `bind`/`listen` failure.
+- Loopback listener socket opening (including port `0` for Linux ephemeral assignment) and
+  descriptor cleanup on `bind`/`listen` failure (`OracleOps` covers `seccomp` `ENOSYS` fallback).
 -/
 
 namespace LeanSwe.ProcessSandbox.Init.Proofs
@@ -416,13 +416,84 @@ theorem classify_wait_status_signaled (sig : Nat) (hLo : 1 ≤ sig) (hHi : sig �
     omega
   simp only [hNe0, ↓reduceIte, hBne127, ops.PS_STATUS_SIGNALED]
 
-/-- `ops.open_loopback_listener` closes the newly opened socket descriptor when `bind_loopback_v4` fails on port `0`. -/
-theorem open_loopback_listener_port0_closes_fd (s : init_sys.Sys) :
-    ops.open_loopback_listener s 0#u16 =
-      Result.ok (.Err 22#i32, { s with closedFds := s.closedFds ++ [10#i32] }) := by
+/-- One-step termination rule for `Aeneas.Std.loop` when `body x = Result.ok (done y)`. -/
+theorem loop_done {α β : Type} (body : α → Result (ControlFlow α β))
+    (x : α) (y : β) (h : body x = Result.ok (done y)) :
+    loop body x = Result.ok y := by
+  rw [loop.eq_1, h]
+  simp
+
+/-- One-step unfolding rule for `Aeneas.Std.loop` when `body x = Result.ok (cont x')`. -/
+theorem loop_cont {α β : Type} (body : α → Result (ControlFlow α β))
+    (x x' : α) (h : body x = Result.ok (cont x')) :
+    loop body x = loop body x' := by
+  rw [loop.eq_1, h]
+  simp
+
+/-- Any Linux `errno` in `1..4095` is preserved unchanged by `World.sanitizeErrno`. -/
+theorem sanitizeErrno_eq_of_bounds (e : I32) (hLo : 1 ≤ e.val) (hHi : e.val ≤ 4095) :
+    LeanSwe.ProcessSandbox.Init.World.sanitizeErrno e = e := by
+  unfold LeanSwe.ProcessSandbox.Init.World.sanitizeErrno
+  have h1 : (1#i32 : I32) ≤ e := by
+    change (1#i32 : I32).val ≤ e.val
+    exact hLo
+  have h2 : e ≤ (4095#i32 : I32) := by
+    change e.val ≤ (4095#i32 : I32).val
+    exact hHi
+  split
+  · rfl
+  · next h =>
+    exfalso
+    exact h (by simp [h1, h2])
+
+/-- `ops.open_loopback_listener` opens, binds (including port `0`, matching Linux ephemeral port assignment), listens, and returns fd `10`. -/
+theorem open_loopback_listener_ok (s : init_sys.Sys) (port : U16) :
+    ops.open_loopback_listener { s with bindOracle := [], listenOracle := [] } port =
+      Result.ok (.Ok 10#i32,
+        { s with
+          bindOracle := []
+          listenOracle := []
+          boundPorts := s.boundPorts ++ [port] }) := by
+  unfold ops.open_loopback_listener init_sys.socket_tcp_nonblock_cloexec
+    init_sys.setsockopt_reuseaddr init_sys.bind_loopback_v4 init_sys.listen_socket
+  simp [core.result.Result.Insts.CoreOpsTry.branch]
+
+/-- Linux `bind(127.0.0.1:0)` assigns an ephemeral port; `ops.open_loopback_listener` accepts port `0` cleanly. -/
+theorem open_loopback_listener_port0_ok (s : init_sys.Sys) :
+    ops.open_loopback_listener { s with bindOracle := [], listenOracle := [] } 0#u16 =
+      Result.ok (.Ok 10#i32,
+        { s with
+          bindOracle := []
+          listenOracle := []
+          boundPorts := s.boundPorts ++ [0#u16] }) :=
+  open_loopback_listener_ok s 0#u16
+
+/-- `ops.open_loopback_listener` closes the newly opened socket descriptor `10` when `bind_loopback_v4` fails with any valid Linux `errno` `e`. -/
+theorem open_loopback_listener_bind_err_closes_fd (s : init_sys.Sys) (port : U16)
+    (e : I32) (rest : List (Option I32)) (hLo : 1 ≤ e.val) (hHi : e.val ≤ 4095) :
+    ops.open_loopback_listener { s with bindOracle := some e :: rest } port =
+      Result.ok (.Err e,
+        { s with
+          bindOracle := rest
+          closedFds := s.closedFds ++ [10#i32] }) := by
   unfold ops.open_loopback_listener init_sys.socket_tcp_nonblock_cloexec
     init_sys.setsockopt_reuseaddr init_sys.bind_loopback_v4 init_sys.close_fd
-    LeanSwe.ProcessSandbox.Init.World.EINVAL
-  simp [core.result.Result.Insts.CoreOpsTry.branch]
+  simp [core.result.Result.Insts.CoreOpsTry.branch, sanitizeErrno_eq_of_bounds e hLo hHi]
+
+/-- `ops.open_loopback_listener` closes socket descriptor `10` when `listen_socket` fails with any valid Linux `errno` `e`. -/
+theorem open_loopback_listener_listen_err_closes_fd (s : init_sys.Sys) (port : U16)
+    (e : I32) (rest : List (Option I32)) (hLo : 1 ≤ e.val) (hHi : e.val ≤ 4095) :
+    ops.open_loopback_listener
+        { s with bindOracle := [], listenOracle := some e :: rest } port =
+      Result.ok (.Err e,
+        { s with
+          bindOracle := []
+          listenOracle := rest
+          boundPorts := s.boundPorts ++ [port]
+          closedFds := s.closedFds ++ [10#i32] }) := by
+  unfold ops.open_loopback_listener init_sys.socket_tcp_nonblock_cloexec
+    init_sys.setsockopt_reuseaddr init_sys.bind_loopback_v4
+    init_sys.listen_socket init_sys.close_fd
+  simp [core.result.Result.Insts.CoreOpsTry.branch, sanitizeErrno_eq_of_bounds e hLo hHi]
 
 end LeanSwe.ProcessSandbox.Init.Proofs

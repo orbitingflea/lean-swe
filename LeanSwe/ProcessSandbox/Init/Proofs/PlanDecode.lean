@@ -1576,15 +1576,20 @@ theorem parse_plan_agrees_with_encodePlan
                                 refine eq_ok_of_bind hAddP10 ?_
                                 exact eq_ok_of_try_ok hrSec rfl
 
-/-- `ops.install_seccomp` succeeds with `.Ok ()` without mutating state whenever `view` has
-`1 ≤ view.seccomp_n ≤ 160` and `AtOffset data view.seccomp_pos seccompBytes []` with
+/-- `ops.install_seccomp` succeeds with `.Ok ()` (recording `(.syscall, view.seccomp_n)` in
+`seccompInstalled`) whenever `s.seccompErr? = none`, `1 ≤ view.seccomp_n ≤ 160`, and
+`AtOffset data view.seccomp_pos seccompBytes []` with
 `seccompBytes.length = 8 * view.seccomp_n.val` (as guaranteed by `parse_plan`). -/
 theorem install_seccomp_valid_view_spec
     (s : init_sys.Sys) (data : Slice U8) (view : plan.PlanView) (seccompBytes : Bytes)
     (hLo : 1 ≤ view.seccomp_n.val) (hHi : view.seccomp_n.val ≤ 160)
     (hAt : AtOffset data view.seccomp_pos seccompBytes [])
-    (hLen : seccompBytes.length = 8 * view.seccomp_n.val) :
-    ops.install_seccomp s data view = Result.ok (.Ok (), s) := by
+    (hLen : seccompBytes.length = 8 * view.seccomp_n.val)
+    (hNoErr : s.seccompErr? = none) :
+    ops.install_seccomp s data view =
+      Result.ok (.Ok (),
+        { s with
+          seccompInstalled := s.seccompInstalled ++ [(.syscall, view.seccomp_n)] }) := by
   have hTot := atOffset_len_eq hAt
   simp only [List.length_nil] at hTot
   have h8u : (8#usize).val = 8 := rfl
@@ -1633,7 +1638,10 @@ theorem install_seccomp_valid_view_spec
     omega
   obtain ⟨sl, hsl, hslLen⟩ := hSlice
   have hSecCall :
-      init_sys.seccomp_set_mode_filter s sl view.seccomp_n = Result.ok (.Ok (), s) := by
+      init_sys.seccomp_set_mode_filter s sl view.seccomp_n =
+        Result.ok (.Ok (),
+          { s with
+            seccompInstalled := s.seccompInstalled ++ [(.syscall, view.seccomp_n)] }) := by
     unfold init_sys.seccomp_set_mode_filter
     have hBad :
         (view.seccomp_n.val == 0 || decide (view.seccomp_n.val > 160) ||
@@ -1645,6 +1653,7 @@ theorem install_seccomp_valid_view_spec
     change (if (view.seccomp_n.val == 0 || decide (view.seccomp_n.val > 160) ||
         sl.val.length != view.seccomp_n.val * 8) = true then _ else _) = _
     rw [hBad, if_false_eq Bool.false_ne_true]
+    simp [hNoErr]
   rw [ops.install_seccomp]
   refine eq_ok_of_bind rfl ?_
   refine eq_ok_of_bind hMul ?_
