@@ -445,16 +445,17 @@ pub fn apply_close_unkept(
     }
 }
 
+/// Borrowed `chdir` and `execve` target specification passed to post-sync child setup.
+#[derive(Clone, Copy)]
+pub struct ExecSpec<'a> {
+    pub cwd: Option<&'a CStr>,
+    pub path: &'a CStr,
+    pub argv: &'a CStrArray,
+    pub envp: &'a CStrArray,
+}
+
 /// Post-barrier descriptor relocation, stdio routing, kept-FD flags, sweep, `chdir`, and `execve`.
-pub fn run_child_post_sync(
-    s: &mut Sys,
-    fds: ChildFds,
-    keep_fds: &[i32],
-    cwd: Option<&CStr>,
-    path: &CStr,
-    argv: &CStrArray,
-    envp: &CStrArray,
-) {
+pub fn run_child_post_sync(s: &mut Sys, fds: ChildFds, keep_fds: &[i32], exec: ExecSpec<'_>) {
     let redir_stdio = (fds.flags & FLAG_REDIRECT_STDIO) != 0;
     let close_unkept = (fds.flags & FLAG_CLOSE_UNKEPT_ABOVE2) != 0;
     let close_stdio_srcs = (fds.flags & FLAG_CLOSE_STDIO_SOURCES) != 0;
@@ -477,30 +478,26 @@ pub fn run_child_post_sync(
         report_and_exit(s, safe_rep_w, STAGE_CLOSE_UNKEPT, e, EIO);
         return;
     }
-    if let Some(dir) = cwd {
+    if let Some(dir) = exec.cwd {
         if let Err(e) = sys::chdir(s, dir) {
             report_and_exit(s, safe_rep_w, STAGE_CHDIR, e, EIO);
             return;
         }
     }
-    let e = sys::execve(s, path, argv, envp);
+    let e = sys::execve(s, exec.path, exec.argv, exec.envp);
     report_and_exit(s, safe_rep_w, STAGE_EXECVE, e, ENOENT);
 }
 
 /// Caller-agnostic post-`fork` child setup pipeline executing the 14-step verified setup sequence.
-#[allow(clippy::too_many_arguments)]
 pub fn run_child(
     s: &mut Sys,
     fds: ChildFds,
     close_fds: &[i32],
     keep_fds: &[i32],
-    cwd: Option<&CStr>,
-    path: &CStr,
-    argv: &CStrArray,
-    envp: &CStrArray,
+    exec: ExecSpec<'_>,
 ) {
     if !run_child_pre_sync(s, fds, close_fds, keep_fds) {
         return;
     }
-    run_child_post_sync(s, fds, keep_fds, cwd, path, argv, envp);
+    run_child_post_sync(s, fds, keep_fds, exec);
 }

@@ -33,7 +33,7 @@ private def stubApi : PostForkAeneasApi :=
     parseDirentName := fun buf start stop => ok (expectedDirentParse buf start stop)
     readSyncByte := fun s _ => ok (true, s)
     writeAll := fun s _ _ => ok (.Ok (), s)
-    runChild := fun s _ _ _ _ _ _ _ => ok { s with status := .exited 127#i32 } }
+    runChild := fun s _ _ _ _ => ok { s with status := .exited 127#i32 } }
 
 example : ¬ Core.AllPass (test_postfork_wireEncoder_uniformAndRoundTrip
     { stubApi with
@@ -114,7 +114,7 @@ example : ¬ Core.AllPass (test_postfork_writeAll_eintrPartialWriteAndReassembly
 
 example : ¬ Core.AllPass (test_postfork_runChild_safetyAndExecPost
     { stubApi with
-      runChild := fun s _ _ _ _ _ _ _ => ok { s with status := .exited 0#i32 } }) := by
+      runChild := fun s _ _ _ _ => ok { s with status := .exited 0#i32 } }) := by
   intro h
   have hBase := (h {} 0#u32 (-1)#i32 0#i32 1#i32 2#i32 3#i32
     (mkSliceI32 0#usize []) (mkSliceI32 0#usize []) none [] [] []).1
@@ -127,7 +127,7 @@ example : ¬ Core.AllPass (test_postfork_runChild_safetyAndExecPost
 
 example : ¬ Core.AllPass (test_postfork_runChild_validationStagesAndBarrier
     { stubApi with
-      runChild := fun s _ _ _ _ _ _ _ => ok { s with status := .exited 0#i32 } }) := by
+      runChild := fun s _ _ _ _ => ok { s with status := .exited 0#i32 } }) := by
   intro h
   have hBase := h {} 0#u32 (-1)#i32 0#i32 1#i32 2#i32 (-1)#i32
     (mkSliceI32 0#usize []) (mkSliceI32 0#usize []) none [] [] [] ⟨rfl, rfl⟩

@@ -918,7 +918,7 @@ private theorem run_child_post_sync_safety
     (cwd? : Option sys.CStr) (path : sys.CStr) (argv envp : sys.CStrArray)
     (hPre : PreSyncOkPost s flags syncR inFd outFd errFd repW closeFds keepFds.val s1) :
     OkPost
-      (postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds cwd? path argv envp)
+      (postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds { cwd := cwd?, path := path, argv := argv, envp := envp })
       (RunChildSafetyPost s flags syncR inFd outFd errFd repW closeFds keepFds.val cwd? path argv envp) := by
   have hRun1 : s1.status = .running := hPre.1
   have hCfg1 : SameChildConfig s1 s := hPre.2.1
@@ -1703,7 +1703,7 @@ theorem run_child_safety_core
     (closeFds keepFds : Slice I32)
     (cwd? : Option sys.CStr) (path : sys.CStr) (argv envp : sys.CStrArray) :
     OkPost
-      (postfork.child.run_child s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp)
+      (postfork.child.run_child s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp })
       (RunChildSafetyPost s flags syncR inFd outFd errFd repW closeFds.val keepFds.val cwd? path argv envp) := by
   unfold postfork.child.run_child
   refine okPost_bind
@@ -1719,7 +1719,7 @@ theorem run_child_total
     (closeFds keepFds : Slice I32)
     (cwd? : Option sys.CStr) (path : sys.CStr) (argv envp : sys.CStrArray) :
     OkPost
-      (postfork.child.run_child s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp)
+      (postfork.child.run_child s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp })
       (fun _ => True) := by
   unfold postfork.child.run_child
   refine okPost_bind (run_child_pre_sync_total s flags syncR inFd outFd errFd repW closeFds keepFds)
@@ -1923,7 +1923,7 @@ private theorem run_child_post_sync_after_setup
         | .Err e =>
           postfork.child.report_and_exit s5 fd postfork.child.STAGE_CLOSE_UNKEPT e postfork.fd_ops.EIO) P) :
     OkPost
-      (postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds cwd? path argv envp)
+      (postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds { cwd := cwd?, path := path, argv := argv, envp := envp })
       P := by
   have hRun1 := hPre.1
   have hCfg1 := hPre.2.1
@@ -2241,10 +2241,10 @@ private theorem run_child_exec_after_pre
     (hPathNe : path ≠ [])
     (hCwdNe : ∀ dir : Bytes, cwd? = some dir → dir ≠ []) :
     OkPost
-      (postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds cwd? path argv envp)
+      (postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds { cwd := cwd?, path := path, argv := argv, envp := envp })
       (RunChildExecPost s flags syncR inFd outFd errFd repW closeFds keepFds.val cwd? path argv envp) := by
   have hNoAbort : OkPost
-      (postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds cwd? path argv envp)
+      (postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds { cwd := cwd?, path := path, argv := argv, envp := envp })
       (fun s' => s'.status ≠ .exited 127#i32 ∧ s'.status ≠ .exited 125#i32) := by
     refine run_child_post_sync_after_setup s s1 flags syncR inFd outFd errFd repW
       closeFds keepFds cwd? path argv envp hOr hPre hOpRep hSlack _ ?_
@@ -2322,7 +2322,7 @@ theorem run_child_exec
     (cwd? : Option sys.CStr) (path : sys.CStr) (argv envp : sys.CStrArray)
     (hPre : ValidRunChildExecPre s flags syncR inFd outFd errFd repW closeFds.val keepFds.val cwd? path) :
     OkPost
-      (postfork.child.run_child s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp)
+      (postfork.child.run_child s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp })
       (RunChildExecPost s flags syncR inFd outFd errFd repW closeFds.val keepFds.val cwd? path argv envp) := by
   rcases hPre with ⟨hRun, hOr, hFl, hRepGe, hSg, hOv, hPgPre, hSlack, hCap, hOpRep,
     hStdOp, hKpOp, hSyncStream, hPathNe, hCwdNe⟩
@@ -2346,18 +2346,18 @@ private theorem run_child_stage_failures_after_pre
     {rd : Bool} {rem : Bytes} (hRepDesc : s.getDesc repEnt.desc = .stream rd true false rem)
     (hSlack : min s.fdLimit 2147483648 ≥ minRunChildFdSlack flags + Int.ofNat s.fds.length) :
     (flagSet flags FLAG_CLOSE_UNKEPT_ABOVE2 && !s.closeRangeSupported && !s.procSelfFdAvailable = true →
-      OkPost (postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds cwd? path argv envp)
+      OkPost (postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds { cwd := cwd?, path := path, argv := argv, envp := envp })
         fun s' => s'.status = .exited 127#i32 ∧
           appendedBytesForDesc s.writeLog s'.writeLog repEnt.desc =
             expectedFailureWireBytes 5#u8 (sanitizeErrno s.procOpenErrno)) ∧
     ((!flagSet flags FLAG_CLOSE_UNKEPT_ABOVE2 || s.closeRangeSupported || s.procSelfFdAvailable) = true →
       (cwd? = some [] →
-        OkPost (postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds cwd? path argv envp)
+        OkPost (postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds { cwd := cwd?, path := path, argv := argv, envp := envp })
           fun s' => s'.status = .exited 127#i32 ∧
             appendedBytesForDesc s.writeLog s'.writeLog repEnt.desc =
               expectedFailureWireBytes 6#u8 ENOENT) ∧
       (cwd? = none → path = [] →
-        OkPost (postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds cwd? path argv envp)
+        OkPost (postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds { cwd := cwd?, path := path, argv := argv, envp := envp })
           fun s' => s'.status = .exited 127#i32 ∧
             appendedBytesForDesc s.writeLog s'.writeLog repEnt.desc =
               expectedFailureWireBytes 7#u8 ENOENT)) := by
@@ -2535,7 +2535,7 @@ private theorem run_child_broken_rep_bad_flags
     (cwd? : Option sys.CStr) (path : sys.CStr) (argv envp : sys.CStrArray)
     (hRep : ¬ repW < 0#i32) (hBad : (!validFlagsSpec flags) = true) :
     OkPost
-      (postfork.child.run_child s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp)
+      (postfork.child.run_child s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp })
       fun s' => s'.status = .exited 127#i32 := by
   have hPre : OkPost
       (postfork.child.run_child_pre_sync s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds)
@@ -2570,7 +2570,7 @@ private theorem run_child_tail_trivial
                   closedBeforeSyncRead (List.drop s.trace.length s1.trace) closeFds.val syncR) :
     OkPost
       (if b = true then
-         postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds cwd? path argv envp
+         postfork.child.run_child_post_sync s1 { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } keepFds { cwd := cwd?, path := path, argv := argv, envp := envp }
        else ok s1)
       fun _ => True := by
   cases b
@@ -2585,7 +2585,7 @@ private theorem run_child_validation_stages_spec
     (closeFds keepFds : Slice I32)
     (cwd? : Option sys.CStr) (path : sys.CStr) (argv envp : sys.CStrArray) :
     OkPost
-      (postfork.child.run_child s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp)
+      (postfork.child.run_child s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp })
       fun s' =>
         if repW < 0#i32 then
           s'.status = .exited 127#i32 ∧ s'.writeLog = s.writeLog

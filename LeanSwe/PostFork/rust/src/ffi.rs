@@ -2,7 +2,9 @@
 
 use core::ffi::c_char;
 
-use crate::child::{report_and_exit, run_child, ChildFds, EXIT_EXEC_FAILED, STAGE_VALIDATE};
+use crate::child::{
+    report_and_exit, run_child, ChildFds, ExecSpec, EXIT_EXEC_FAILED, STAGE_VALIDATE,
+};
 use crate::fd_ops::{close_fds_above2_except_rc, EINVAL};
 use crate::sys::{self, CStr, CStrArray, Sys};
 
@@ -85,16 +87,13 @@ pub unsafe extern "C" fn leanswe_postfork_run_child(args: *const CPostForkChildA
         stderr_fd: a.stderr_fd,
         rep_w: a.rep_w,
     };
-    run_child(
-        &mut s,
-        fds,
-        close_fds,
-        keep_fds,
-        cwd.as_ref(),
-        &path,
-        &argv,
-        &envp,
-    );
+    let exec = ExecSpec {
+        cwd: cwd.as_ref(),
+        path: &path,
+        argv: &argv,
+        envp: &envp,
+    };
+    run_child(&mut s, fds, close_fds, keep_fds, exec);
 }
 
 /// C-ABI helper exposing proved `close_fds_above2_except` (`0` on success, `errno > 0` on error).
