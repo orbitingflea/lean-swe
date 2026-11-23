@@ -175,12 +175,12 @@ private def genNetMask (r : Rng) : UInt64 × Rng :=
   else
     r1.nextU64
 
-private def genSeccompFlags (r : Rng) : SeccompFlags × Rng :=
-  let (b0, r1) := r.chance 1 3
+private def genSeccompFlags (r : Rng) (tsyncDiverged : Bool := false) : SeccompFlags × Rng :=
+  let (b0, r1) := if tsyncDiverged then r.chance 3 4 else r.chance 1 3
   let (b1, r2) := r1.chance 1 3
   let (b2, r3) := r2.chance 1 4
-  let (b3, r4) := r3.chance 1 3
-  let (b4, r5) := r4.chance 1 4
+  let (b3, r4) := if tsyncDiverged then r3.chance 3 5 else r3.chance 1 3
+  let (b4, r5) := if tsyncDiverged then r4.chance 1 8 else r4.chance 1 4
   ({ tsync := b0, log := b1, specAllow := b2, tsyncEsrch := b3, waitKillableRecv := b4 }, r5)
 
 private def genU32 (r : Rng) : UInt32 × Rng :=
@@ -487,9 +487,11 @@ private def genAdvSeccompFilter (r : Rng) (allowSelectErr : Bool) : ByteArray ×
       [{ code := 0x0006, jt := 0, jf := 0, k := SECCOMP_RET_ALLOW }]
     (encodeFilter oversized, r2)
 
-private def genFilterBytes (r : Rng) (allowSelectErr : Bool) : ByteArray × Rng :=
+private def genFilterBytes (r : Rng) (allowSelectErr : Bool) (preferValid : Bool := false) : ByteArray × Rng :=
   let (kind, r1) := r.nextNat 10
-  if kind < 2 then
+  let rawLim := if preferValid then 1 else 2
+  let advLim := if preferValid then 3 else 5
+  if kind < rawLim then
     let (lenChoice, r2) := r1.nextNat 5
     let (len, r3) :=
       if lenChoice == 0 then (0, r2)
@@ -497,7 +499,7 @@ private def genFilterBytes (r : Rng) (allowSelectErr : Bool) : ByteArray × Rng 
       else if lenChoice == 2 then (1288, r2)
       else r2.nextRange 1 80
     genRandomBytes r3 len
-  else if kind < 5 then
+  else if kind < advLim then
     genAdvSeccompFilter r1 allowSelectErr
   else
     genFullCbpfDag r1 allowSelectErr
@@ -550,7 +552,8 @@ private def addRuleFsAccessPool : Array UInt64 := #[
   0x1FFFF
 ]
 
-private def genStep (r : Rng) (llBurst : Bool) (allowSelectErr : Bool) : FuzzStep × Rng :=
+private def genStep (r : Rng) (llBurst : Bool) (allowSelectErr : Bool)
+    (tsyncDiverged : Bool := false) : FuzzStep × Rng :=
   let (opRaw, r1) := r.nextNat 12
   let opKind :=
     if llBurst then
@@ -561,7 +564,7 @@ private def genStep (r : Rng) (llBurst : Bool) (allowSelectErr : Bool) : FuzzSte
       else if opRaw == 10 then 5
       else 11
     else if opRaw >= 10 then
-      if opRaw == 10 then 7 else 9
+      if opRaw == 10 then (if tsyncDiverged then 4 else 7) else 9
     else
       opRaw
   if opKind == 0 then
@@ -617,13 +620,15 @@ private def genStep (r : Rng) (llBurst : Bool) (allowSelectErr : Bool) : FuzzSte
     (.llRestrict rs, r2)
   else if opKind == 4 then
     let (sub, r2) := r1.chance 1 3
-    let (fl, r3) := genSeccompFlags r2
     if sub then
+      let (zeroFl, rFl) := r2.chance 1 2
+      let (fl, r3) := if zeroFl then ({}, rFl) else genSeccompFlags rFl
       let (usePool, r4) := r3.chance 2 3
       let (act, r5) := if usePool then r4.pickArray seccompRetPool SECCOMP_RET_ALLOW else genU32 r4
       (.scGetAvail act fl, r5)
     else
-      let (bs, r4) := genFilterBytes r3 allowSelectErr
+      let (fl, r3) := genSeccompFlags r2 tsyncDiverged
+      let (bs, r4) := genFilterBytes r3 allowSelectErr (tsyncDiverged && fl.tsync && !fl.waitKillableRecv)
       (.scSetFilter fl bs, r4)
   else if opKind == 5 then
     let (pk, r2) := r1.nextNat 6
@@ -680,11 +685,11 @@ private def genEpisodePlan (r : Rng) (nSteps : Nat) : EpisodePlan × Rng :=
     let (outerErr, rOe) := if preferEperm then (Errno.EPERM, rPe) else rPe.pickArray seccompErrnoPool Errno.EPERM
     cur := rOe
     let (spawnRoll, rSp) := cur.nextNat 8
-    let spawnMode := if spawnRoll == 0 then 1 else if spawnRoll == 1 then 2 else 0
+    let spawnMode := if spawnRoll < 2 then 1 else if spawnRoll == 2 then 2 else 0
     let (closeLowFds, rCl) := rSp.chance 1 5
     let (seedOPathSpecials, rSd) := rCl.chance 1 3
     let (specialSeedIdx, rSi) := rSd.nextNat 64
-    let (llBurst, rLb) := rSi.chance 1 3
+    let (llBurst, rLb) := if spawnMode == 1 then (false, rSi) else rSi.chance 4 9
     let (allowEpisodeSeccompErr, rSc) := rLb.chance 7 20
     let (maxInsnsMode, rMx) := if nSteps >= 100 then rSc.chance 1 32 else (false, rSc)
     cur := rMx
@@ -720,13 +725,16 @@ private def genEpisodePlan (r : Rng) (nSteps : Nat) : EpisodePlan × Rng :=
         closeLowFds := false, dirModes, fileModes, pseudoOPaths, seedOPathSpecials := false,
         specialSeedIdx, steps
       }, cur)
+    let tsyncDiverged := spawnMode == 1
     let mut steps := Array.mkEmpty nSteps
     for _ in List.range nSteps do
-      let (st, nxt) := genStep cur llBurst allowEpisodeSeccompErr
+      let (st, nxt) := genStep cur llBurst allowEpisodeSeccompErr tsyncDiverged
       steps := steps.push st
       cur := nxt
     return ({
-      useUserns, useMntNs, extraNsMask, preNnp, preLowerLimits, preLowerNofile,
+      useUserns, useMntNs,
+      extraNsMask := if spawnMode != 0 then extraNsMask &&& 0x1E else extraNsMask,
+      preNnp, preLowerLimits, preLowerNofile,
       preOuterLayers, preOuterSeccomp, outerKeepNnpZero,
       outerSeccompTargets := outerTargets, outerSeccompErrno := outerErr, spawnMode,
       closeLowFds, dirModes, fileModes, pseudoOPaths, seedOPathSpecials, specialSeedIdx, steps
