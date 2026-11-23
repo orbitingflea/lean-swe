@@ -27,17 +27,17 @@ opaque spawnStopped (pgidReq : Int32) (stopSig : UInt32) : IO (Except Errno (UIn
 opaque spawnZombie (pgidReq : Int32) (isSig : Bool) (codeOrSig : UInt32) (allowCore : Bool) :
     IO (Except Errno ((UInt32 × UInt32) × Bool))
 
-/-- Spawn an in-process non-leader thread returning `(tid, (ctlWriteFd, pthreadHandle))`. -/
+/-- Spawn an in-process non-leader thread waiting on a `pthread_barrier_t`, returning `(tid, threadHandle)` for `joinThread`. -/
 @[extern "leanswe_proc_fuzz_spawn_thread"]
-opaque spawnThread : IO (Except Errno (UInt32 × (UInt32 × UInt64)))
+opaque spawnThread : IO (Except Errno (UInt32 × UInt64))
 
-/-- Spawn a persistent sibling thread that forks a controlled child, returning `((childPid, childPgid), (siblingTid, threadHandle))`. -/
+/-- Spawn a persistent sibling thread that forks a controlled child and waits on a `pthread_barrier_t`, returning `((childPid, childPgid), (siblingTid, threadHandle))`. -/
 @[extern "leanswe_proc_fuzz_spawn_sibling_child"]
 opaque spawnSiblingChild (pgidReq : Int32) : IO (Except Errno ((UInt32 × UInt32) × (UInt32 × UInt64)))
 
-/-- Signal and join a spawned helper thread. -/
+/-- Wait on the thread's `pthread_barrier_t`, `pthread_join`, and free a helper thread handle returned by `spawnThread` or `spawnSiblingChild`. -/
 @[extern "leanswe_proc_fuzz_join_thread"]
-opaque joinThread (ctlWr : UInt32) (handle : UInt64) : IO Unit
+opaque joinThread (handle : UInt64) : IO Unit
 
 /-- Spawn a `clone(..., 0)` child (`__WCLONE`, non-`SIGCHLD` exit signal), optionally exiting immediately with `exitCode`. -/
 @[extern "leanswe_proc_fuzz_spawn_clone_child"]
@@ -53,11 +53,11 @@ opaque spawnThreadedChild (pgidReq : Int32) : IO (Except Errno (UInt32 × (UInt3
 opaque spawnDelayedZombie (pgidReq : Int32) (exitCode : UInt8) (subDelayUs : UInt32 := 0)
     (subExitCode : UInt8 := exitCode) : IO (Except Errno (UInt32 × (UInt32 × UInt32)))
 
-/-- Probe whether the host kernel supports `pidfd_open(..., PIDFD_THREAD)` directly via raw `syscall`, bypassing `process_shim.c`. -/
+/-- Probe whether the host kernel supports `pidfd_open(..., PIDFD_THREAD)` directly via raw `syscall`, bypassing `LeanSwe/LinuxSyscall/c/process_shim.c`. -/
 @[extern "leanswe_proc_fuzz_probe_pidfd_thread_raw"]
 opaque probeKernelPidfdThread : IO Bool
 
-/-- Probe whether the host kernel supports `pipe2(..., O_NOTIFICATION_PIPE)` directly in C, bypassing `process_shim.c`. -/
+/-- Probe whether the host kernel supports `pipe2(..., O_NOTIFICATION_PIPE)` directly via raw `syscall`, bypassing `LeanSwe/LinuxSyscall/c/process_shim.c`. -/
 @[extern "leanswe_proc_fuzz_probe_watch_queue_raw"]
 opaque probeKernelWatchQueue : IO Bool
 

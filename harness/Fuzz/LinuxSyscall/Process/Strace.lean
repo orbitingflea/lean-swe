@@ -163,12 +163,12 @@ private def assume_process_pidfdOpen_nr434AndCloexec : IO Unit := do
   finally
     closeQuiet pfdSelf
 
-  let (tid, (ctlWr, th)) ← assertOk "spawnThread" (← ProcessEnv.spawnThread)
+  let (tid, th) ← assertOk "spawnThread" (← ProcessEnv.spawnThread)
   try
     let rThread ← pidfd_open tid {}
     assertErrOneOf "pidfd_open non-leader thread" rThread [Errno.ENOENT, Errno.EINVAL]
   finally
-    ProcessEnv.joinThread ctlWr th
+    ProcessEnv.joinThread th
 
   let ((zPid, _), _) ← assertOk "spawn zombie" (← ProcessEnv.spawnZombie (-1) false 7 false)
   try
@@ -349,11 +349,11 @@ private def err_kill_permissionDenied : IO Unit := do
 /-- Real `pidfd_open` `noSuchProcess` error test (`ENOENT` on non-leader thread and `ESRCH` on reaped child). -/
 private def err_pidfdOpen_noSuchProcess : IO Unit := do
   let _ ← ProcessEnv.setSigchldAutoreap 0
-  let (tid, (ctlWr, th)) ← assertOk "spawnThread" (← ProcessEnv.spawnThread)
+  let (tid, th) ← assertOk "spawnThread" (← ProcessEnv.spawnThread)
   try
     assertErrOneOf "real pidfd_open thread ENOENT" (← pidfd_open tid {}) [Errno.ENOENT, Errno.EINVAL]
   finally
-    ProcessEnv.joinThread ctlWr th
+    ProcessEnv.joinThread th
   let ((pid, _), _) ← assertOk "spawn zombie" (← ProcessEnv.spawnZombie (-1) false 0 false)
   try
     let _ ← assertOk "reap zombie" (← waitpid pid.toInt32 {})
@@ -634,10 +634,10 @@ def runEdgeCaseReproducers : IO Unit := do
     assertTrue s!"sibling child reaped without __WNOTHREAD, got {repr wsib}" (wsib == .signaled cSib 9 false)
   finally
     ProcessEnv.cleanupChild cSib
-    ProcessEnv.joinThread 0 sibTh
+    ProcessEnv.joinThread sibTh
 
   let hasPidfdThread ← ProcessEnv.probeKernelPidfdThread
-  let (tid, (ctlWr, th)) ← assertOk "spawn thread for PIDFD_THREAD" (← ProcessEnv.spawnThread)
+  let (tid, th) ← assertOk "spawn thread for PIDFD_THREAD" (← ProcessEnv.spawnThread)
   try
     match ← pidfd_open tid { thread := true } with
     | .ok tpfd =>
@@ -651,7 +651,7 @@ def runEdgeCaseReproducers : IO Unit := do
         throw (IO.userError s!"PIDFD_THREAD supported by kernel but pidfd_open failed with {e}")
       assertTrue s!"PIDFD_THREAD expected EINVAL if unsupported, got {e}" (e == Errno.EINVAL)
   finally
-    ProcessEnv.joinThread ctlWr th
+    ProcessEnv.joinThread th
 
   let (cThr, (_, wTid)) ← assertOk "spawn threaded child" (← ProcessEnv.spawnThreadedChild (-1))
   try

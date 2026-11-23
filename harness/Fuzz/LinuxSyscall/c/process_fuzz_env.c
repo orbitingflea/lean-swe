@@ -314,8 +314,7 @@ LEAN_EXPORT lean_obj_res leanswe_proc_fuzz_spawn_thread(void) {
   if (rc != 0) { pthread_barrier_destroy(&arg->bar); free(arg); close(sv[0]); close(sv[1]); return leanswe_mk_errno(rc); }
   uint32_t tid = 0; ssize_t rd = read_nointr(sv[0], &tid, sizeof(tid)); close(sv[0]);
   if (rd != (ssize_t)sizeof(tid) || tid == 0u) { join_and_free_thread(arg); return leanswe_mk_errno(EIO); }
-  lean_obj_res tail = mk_pair(lean_box_uint32(0u), lean_box_uint64((uint64_t)(uintptr_t)arg));
-  return leanswe_mk_ok(mk_pair(lean_box_uint32(tid), tail));
+  return leanswe_mk_ok(mk_pair(lean_box_uint32(tid), lean_box_uint64((uint64_t)(uintptr_t)arg)));
 }
 
 typedef struct { uint32_t tid; uint32_t child_pid; uint32_t child_pgid; } SiblingChildMsg;
@@ -359,8 +358,8 @@ LEAN_EXPORT lean_obj_res leanswe_proc_fuzz_spawn_sibling_child(uint32_t pgid_req
   return leanswe_mk_ok(mk_pair(mk_pair(lean_box_uint32(msg.child_pid), lean_box_uint32(msg.child_pgid)), tail));
 }
 
-LEAN_EXPORT lean_obj_res leanswe_proc_fuzz_join_thread(uint32_t ctl_wr, uint64_t handle) {
-  (void)ctl_wr; join_and_free_thread((ThreadStartArg *)(uintptr_t)handle);
+LEAN_EXPORT lean_obj_res leanswe_proc_fuzz_join_thread(uint64_t handle) {
+  join_and_free_thread((ThreadStartArg *)(uintptr_t)handle);
   return lean_io_result_mk_ok(lean_box(0));
 }
 

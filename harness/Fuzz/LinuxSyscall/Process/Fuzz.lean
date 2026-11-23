@@ -165,7 +165,6 @@ private structure TrackedChild where
 private structure TrackedThread where
   tid : UInt32
   tgid : UInt32
-  ctlWr : UInt32
   handle : UInt64
   joinable : Bool
 
@@ -588,7 +587,7 @@ private def resolvePid (st : LiveState) (t : SymPidTarget) : Int32 :=
       if pg == 0 then 0 else -pg.toInt32
   | .threadTid idx =>
     if st.threads.isEmpty then 99999998
-    else (st.threads.getD (idx % st.threads.size) { tid := 99999998, tgid := 0, ctlWr := 0, handle := 0, joinable := false }).tid.toInt32
+    else (st.threads.getD (idx % st.threads.size) { tid := 99999998, tgid := 0, handle := 0, joinable := false }).tid.toInt32
   | .hostThreadTid idx =>
     if st.hostThreadTids.isEmpty then 99999997
     else (st.hostThreadTids.getD (idx % st.hostThreadTids.size) 99999997).toInt32
@@ -704,7 +703,7 @@ private def cleanupLiveState (st : LiveState) : IO Unit := do
     ProcessEnv.cleanupChild c.pid
   for t in st.threads do
     if t.joinable then
-      ProcessEnv.joinThread t.ctlWr t.handle
+      ProcessEnv.joinThread t.handle
 
 private def pickSpawnPgidReq (st : LiveState) (pgidChoice : Nat) : Int32 :=
   let mod := pgidChoice % 4
@@ -881,10 +880,10 @@ private def runOneAction (st : LiveState) (hits : HitMap) (act : FuzzAction) :
       | .error _ => return .ok (st, hits)
     | .thread =>
       match ← ProcessEnv.spawnThread with
-      | .ok (tid, (ctlWr, handle)) =>
+      | .ok (tid, handle) =>
         let sp := effectiveSelfPid st.model
         let m1 := st.model.registerNonLeaderThread tid sp st.model.selfPgid
-        return .ok ({ st with model := m1, threads := st.threads.push { tid, tgid := sp, ctlWr, handle, joinable := true } }, hits)
+        return .ok ({ st with model := m1, threads := st.threads.push { tid, tgid := sp, handle, joinable := true } }, hits)
       | .error _ => return .ok (st, hits)
     | .cloneControlled =>
       match ← ProcessEnv.spawnCloneChild pgReq false 0 with
@@ -902,7 +901,7 @@ private def runOneAction (st : LiveState) (hits : HitMap) (act : FuzzAction) :
         let st1 := recordSpawnedChild st (st.model.spawnRunningChild pid pgid none false false (isOrphanedChild pgid)) pid pgid
         if wTid == 0 then return .ok (st1, hits)
         let m2 := st1.model.registerNonLeaderThread wTid pid pgid
-        return .ok ({ st1 with model := m2, threads := st1.threads.push { tid := wTid, tgid := pid, ctlWr := 0, handle := 0, joinable := false } }, hits)
+        return .ok ({ st1 with model := m2, threads := st1.threads.push { tid := wTid, tgid := pid, handle := 0, joinable := false } }, hits)
       | .error _ => return .ok (st, hits)
     | .delayedZombie exitCode subDelayUs subExitCode =>
       match ← ProcessEnv.spawnDelayedZombie pgReq exitCode subDelayUs subExitCode with
@@ -929,7 +928,7 @@ private def runOneAction (st : LiveState) (hits : HitMap) (act : FuzzAction) :
                 role := .thread pid
                 lifecycle := .alive { auto := .planned (.exited subExitCode) } }
             st1.model.upsertProc wTid wEntry
-        return .ok ({ st1 with model := m2, threads := st1.threads.push { tid := wTid, tgid := pid, ctlWr := 0, handle := 0, joinable := false } }, hits)
+        return .ok ({ st1 with model := m2, threads := st1.threads.push { tid := wTid, tgid := pid, handle := 0, joinable := false } }, hits)
       | .error _ => return .ok (st, hits)
     | .siblingChild =>
       match ← ProcessEnv.spawnSiblingChild pgReq with
@@ -938,7 +937,7 @@ private def runOneAction (st : LiveState) (hits : HitMap) (act : FuzzAction) :
         let st1 :=
           if sTid != 0 then
             let m1 := st.model.registerNonLeaderThread sTid sp st.model.selfPgid
-            { st with model := m1, threads := st.threads.push { tid := sTid, tgid := sp, ctlWr := 0, handle, joinable := true } }
+            { st with model := m1, threads := st.threads.push { tid := sTid, tgid := sp, handle, joinable := true } }
           else st
         if cPid == 0 then return .ok (st1, hits)
         let st2 := recordSpawnedChild st1 (st1.model.spawnRunningChild cPid cPg none false true (isOrphanedChild cPg)) cPid cPg
