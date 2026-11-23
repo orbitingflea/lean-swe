@@ -102,7 +102,7 @@ inductive ConnectOutcome where
   | allowed
   /-- Refused by HTTP method/framing, `allowedTargets`, or `IpPolicy` (`403 Forbidden`). -/
   | denied
-  /-- Permitted by policy, but DNS lookup or upstream `connect()` failed (`502 Bad Gateway`), or proxy stopped mid-handshake/dial. -/
+  /-- DNS lookup or upstream `connect()` failed (`502 Bad Gateway`), DNS wakeup `socketpair` creation failed (`503 Service Unavailable`), the client disconnected mid-DNS/dial, or the proxy stopped mid-handshake/DNS/dial. -/
   | failed
   deriving Repr, BEq, DecidableEq, Inhabited
 

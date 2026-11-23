@@ -45,6 +45,9 @@ def MAX_ACCEPT_BATCH : Nat := 256
 /-- Structural poll-loop fuel bound (`2^64`, ensuring total termination). -/
 def LOOP_FUEL : Nat := UInt64.size
 
+/-- Maximum relative `ppoll` timeout seconds passed by `LeanSwe.ConnectProxy` (`2^31 - 1`). -/
+def MAX_POLL_TIMEOUT_SEC : Nat := 2147483647
+
 /-- Validate that all four `ProxyLimits` fields in `vcfg` are strictly positive. -/
 def validateStartLimits (vcfg : ValidProxyConfig) : Except ProxyError ValidProxyConfig :=
   let lim := vcfg.config.limits
@@ -138,6 +141,13 @@ def findCrlfCrlf (bs : ByteArray) (start : Nat := 0) : Option Nat :=
     none
   else
     findCrlfCrlfAux bs (bs.size - start) start
+
+/-- Convert a relative timeout in milliseconds to a valid `Poll.Timespec`, capping `ms / 1000 > MAX_POLL_TIMEOUT_SEC` at `{ sec := 2147483647, nsec := 0 }`. -/
+def msToPollTimespec (ms : Nat) : Poll.Timespec :=
+  if ms / 1000 > MAX_POLL_TIMEOUT_SEC then
+    { sec := 2147483647, nsec := 0 }
+  else
+    Poll.msToPollTimespec ms
 
 /-- Generic OS syscall capability bundle consumed by `LeanSwe.ConnectProxy.SysBridge`. -/
 structure CProxySysOpsM (m : Type → Type) (fd : Type) where
@@ -971,7 +981,7 @@ def buildPollBatchM {m : Type → Type} [Monad m] {fd dnsJob : Type}
   let initReqs : Array (fd × Poll.PollEvents) := #[(wakeR, { pollin := true }), (listenFd, listenEv)]
   let (reqs, indices, minRem?) ←
     buildPollBatchAux pollDnsReady nowMs slots.toList initReqs (Array.emptyWithCapacity slots.size) initMinRem? dnsWatchFd
-  return (reqs, indices, minRem?.map Poll.msToPollTimespec)
+  return (reqs, indices, minRem?.map msToPollTimespec)
 
 /-- Execute one polymorphic client slot transition after `ppoll` returns `revents`. -/
 def stepSlotM {m : Type → Type} [Monad m] {fd dnsJob : Type}
@@ -1454,47 +1464,31 @@ def startDnsIo
   | .ok (dnsR, dnsW) =>
     let jobRef ← IO.mkRef ({} : IoDnsJobState)
     let dnsRRef ← IO.mkRef (some dnsR)
-    let taskRes ←
+    let dnsTask ← IO.asTask (prio := .dedicated) do
       try
-        let dnsTask ← IO.asTask (prio := .dedicated) do
-          try
-            let res ← dnsResolve host
-            let mapped : Except String (Array IpAddr) :=
-              match res with
-              | .error dnsErr =>
-                .error (if dnsErr.message.isEmpty then "dns resolution failed" else dnsErr.message)
-              | .ok addrs =>
-                .ok (filterUnscopedDnsAddrs addrs)
-            jobRef.modify fun st =>
-              if st.cancelled then st else { st with result? := some mapped }
-          catch err =>
-            let msg := toString err
-            let reason := if msg.isEmpty then "dns resolution failed" else msg
-            jobRef.modify fun st =>
-              if st.cancelled then st else { st with result? := some (.error reason) }
-          finally
-            jobRef.modify fun st =>
-              let st1 :=
-                if st.cancelled || st.result?.isSome then st
-                else { st with result? := some (.error "dns resolution failed") }
-              { st1 with done := true }
-            defaultIoSysOps.closeFd dnsW
-        pure (Except.ok dnsTask)
+        let res ← dnsResolve host
+        let mapped : Except String (Array IpAddr) :=
+          match res with
+          | .error dnsErr =>
+            .error (if dnsErr.message.isEmpty then "dns resolution failed" else dnsErr.message)
+          | .ok addrs =>
+            .ok (filterUnscopedDnsAddrs addrs)
+        jobRef.modify fun st =>
+          if st.cancelled then st else { st with result? := some mapped }
       catch err =>
-        defaultIoSysOps.closeFd dnsR
-        defaultIoSysOps.closeFd dnsW
         let msg := toString err
-        pure (Except.error (if msg.isEmpty then "failed to spawn dns task" else msg))
-    match taskRes with
-    | .error msg =>
-      let (slot1, events1) :=
-        emitSlotEvent slot events
-          { host := some host, port := some port, outcome := .failed, reason := some msg }
-      let slot2 ← enterClosingReply defaultIoSysOps limits slot1 clientFd 503
-      return (slot2, events1)
-    | .ok dnsTask =>
-      let job : IoDnsJob := { stateRef := jobRef, dnsRRef := dnsRRef, task := dnsTask }
-      return ({ slot with phase := .dns clientFd host port job }, events)
+        let reason := if msg.isEmpty then "dns resolution failed" else msg
+        jobRef.modify fun st =>
+          if st.cancelled then st else { st with result? := some (.error reason) }
+      finally
+        jobRef.modify fun st =>
+          let st1 :=
+            if st.cancelled || st.result?.isSome then st
+            else { st with result? := some (.error "dns resolution failed") }
+          { st1 with done := true }
+        defaultIoSysOps.closeFd dnsW
+    let job : IoDnsJob := { stateRef := jobRef, dnsRRef := dnsRRef, task := dnsTask }
+    return ({ slot with phase := .dns clientFd host port job }, events)
 
 /-- Tear down loop-owned resources inside `stateRef`: cancel pending `.dns` jobs and close every slot FD, active and detached per-job `dnsR`, and `listenFd` immediately without blocking on in-flight DNS tasks. The shutdown `wakeR`/`wakeW` pair is closed strictly after `loopTask` exits in `stopProxy`. -/
 def teardownIoLoopState (stateRef : IO.Ref IoLoopState) : IO (Array ConnectEvent) := do
@@ -1620,7 +1614,7 @@ def freshIoHandleId (tbl : IoProxyTable) : Nat :=
   Nat.max tbl.nextHandleId ((tbl.entries.foldl (fun m e => Nat.max m e.handleId) 0) + 1)
 
 /-- Build a concurrent `IO` `RawConnectProxyOps` bundle backed by an explicit `IO.Ref IoProxyTable`.
-    Unlike the synchronous `mkSyncRawOps` stand-in, this driver offloads DNS resolution onto dedicated tasks communicating exclusively via per-job `socketpair` EOF/close, so `stopProxy` returns immediately without blocking on stalled lookups. -/
+    Unlike the synchronous `mkSyncRawOps` stand-in, this driver offloads DNS resolution onto dedicated tasks that pass cancellation, completion, and lookup results (`cancelled`/`done`/`result?`) through a shared `IO.Ref IoDnsJobState` while signaling `ppoll` wakeup via per-job `socketpair` EOF/close, so `stopProxy` returns immediately without blocking on stalled lookups. -/
 def mkIoRawOps (tableRef : IO.Ref IoProxyTable)
     (dnsResolve : String → IO (Except Dns.DnsError (List Dns.DnsAddr)) :=
       fun h => Dns.defaultOps.getaddrinfo h { family := .any, sockType := .stream })
@@ -1638,36 +1632,24 @@ def mkIoRawOps (tableRef : IO.Ref IoProxyTable)
           let wakeWRef ← IO.mkRef (some wakeW)
           let stateRef ← IO.mkRef
             ({ listenFd? := some listenFd, wakeR? := some wakeR } : IoLoopState)
-          let loopTaskRes ←
+          let loopTask ← IO.asTask (prio := .dedicated) do
             try
-              let t ← IO.asTask (prio := .dedicated) do
-                try
-                  runIoProxyLoop vcfg onHead onResolved stopRequested stateRef LOOP_FUEL dnsResolve mkWakePair
-                catch err =>
-                  let _ ← teardownIoLoopState stateRef
-                  throw err
-              pure (Except.ok t)
+              runIoProxyLoop vcfg onHead onResolved stopRequested stateRef LOOP_FUEL dnsResolve mkWakePair
             catch err =>
               let _ ← teardownIoLoopState stateRef
-              defaultIoSysOps.closeFd wakeR
-              defaultIoSysOps.closeFd wakeW
-              pure (Except.error err)
-          match loopTaskRes with
-          | .error err =>
-            return .error (Model.mapRawErrorPure (.userError (toString err)))
-          | .ok loopTask =>
-            let hid ← tableRef.modifyGet fun tbl =>
-              let h := freshIoHandleId tbl
-              let entry : IoProxyEntry :=
-                { handleId := h
-                  port := boundPort
-                  stopClaimed := false
-                  stopRequested := stopRequested
-                  wakeRRef := wakeRRef
-                  wakeWRef := wakeWRef
-                  loopTask := loopTask }
-              (h, { nextHandleId := h + 1, entries := entry :: tbl.entries })
-            return .ok { handleId := hid, port := boundPort }
+              throw err
+          let hid ← tableRef.modifyGet fun tbl =>
+            let h := freshIoHandleId tbl
+            let entry : IoProxyEntry :=
+              { handleId := h
+                port := boundPort
+                stopClaimed := false
+                stopRequested := stopRequested
+                wakeRRef := wakeRRef
+                wakeWRef := wakeWRef
+                loopTask := loopTask }
+            (h, { nextHandleId := h + 1, entries := entry :: tbl.entries })
+          return .ok { handleId := hid, port := boundPort }
       catch err =>
         return .error (Model.mapRawErrorPure (.userError (toString err)))
     stopProxy := fun proxy => do
