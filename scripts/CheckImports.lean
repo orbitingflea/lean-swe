@@ -186,17 +186,11 @@ private def cleanMessageText (msg : Message) : IO String := do
   let raw := (← msg.data.toString).trimAscii.toString
   return raw.replace "\r\n" " " |>.replace "\n" " "
 
-private def firstNulLine? (bytes : ByteArray) (rawSrc : String) : Option Nat := Id.run do
-  if !rawSrc.contains "\x00" then
-    return none
-  let mut line : Nat := 1
-  for i in [0 : bytes.size] do
-    let b := bytes[i]!
-    if b == 0 then
-      return some line
-    if b == 10 then
-      line := line + 1
-  return some 1
+/-- Return the 1-based line number of the first embedded NUL (`0x00`) byte in valid UTF-8
+`rawSrc`, or `none`. Uses compiled `String.find?` rather than an interpreted `ByteArray` loop
+so `--run` avoids multi-second byte-indexing overhead across the repository. -/
+private def firstNulLine? (rawSrc : String) : Option Nat :=
+  (rawSrc.find? "\x00").map fun p => ((FileMap.ofString rawSrc).toPosition p.offset).line
 
 private def checkSourceWithBytes (relPath : String) (bytes : ByteArray) (rawSrc : String) : IO (Nat × Array String) := do
   let mut violations : Array String := #[]
@@ -209,7 +203,7 @@ private def checkSourceWithBytes (relPath : String) (bytes : ByteArray) (rawSrc 
   if hadBom then
     violations := violations.push
       s!"{relPath}:1: disallowed leading UTF-8 BOM (U+FEFF); Lean files must be UTF-8 without BOM"
-  if let some nulLine := firstNulLine? bytes rawSrc then
+  if let some nulLine := firstNulLine? rawSrc then
     violations := violations.push
       s!"{relPath}:{nulLine}: disallowed embedded NUL byte (0x00)"
 
@@ -350,11 +344,22 @@ private structure CheckSummary where
   violations : Array String := #[]
   errors : Array String := #[]
 
+private inductive ResolvedTargetType where
+  | file
+  | dir
+  | other
+
 private def resolveTopLevelTarget (target : System.FilePath) :
-    IO (Except String (System.FilePath × IO.FS.FileType)) := do
+    IO (Except String (System.FilePath × ResolvedTargetType)) := do
   match ← isRegularFileSymlinkSafe target with
   | none =>
     return .error s!"target path not found or unreadable: {target}"
+  | some .file =>
+    return .ok (target, .file)
+  | some .dir =>
+    return .ok (target, .dir)
+  | some .other =>
+    return .ok (target, .other)
   | some .symlink =>
     let resolved ← try
       IO.FS.realPath target
@@ -368,16 +373,12 @@ private def resolveTopLevelTarget (target : System.FilePath) :
       return .error s!"target symlink '{target}' did not resolve past symlink '{resolved}'"
     | none =>
       return .error s!"target symlink '{target}' resolves to missing or unreadable path '{resolved}'"
-  | some fileType =>
-    return .ok (target, fileType)
 
 private def checkTargetPath (target : System.FilePath) : IO CheckSummary := do
   let (resolvedTarget, targetType) ← match ← resolveTopLevelTarget target with
     | .ok resolved => pure resolved
     | .error err => return { errors := #[err] }
   match targetType with
-  | .symlink =>
-    return { errors := #[s!"target symlink '{target}' could not be resolved"] }
   | .other =>
     return { errors := #[s!"target path is neither regular file nor directory: {target}"] }
   | .file =>

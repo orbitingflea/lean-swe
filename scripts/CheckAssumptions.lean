@@ -1653,11 +1653,21 @@ private def nonProjectReducibilityStatus (env : Environment) (cName : Name) : Re
             st := s
   return st
 
+/-- Run `act` while preserving the ambient `Core.State.cache`. `MonadEnv.modifyEnv` (used by
+`setEnv`, `withEnv`, and `withoutModifyingEnv'`) clears `Core.State.cache := {}`, so saving before
+and restoring after in `finally` keeps the ambient cache intact without leaking entries created
+under a temporary `Environment`. -/
+private def withPreservedCoreCache {m : Type → Type} {α : Type}
+    [Monad m] [MonadFinally m] [MonadStateOf Core.State m] (act : m α) : m α := do
+  let savedCache := (← getThe Core.State).cache
+  try act
+  finally modifyThe Core.State fun s => { s with cache := savedCache }
+
 /-- Build a copy of the current `Environment` with project-applied `@[irreducible]` attributes
-relaxed back to their pre-project reducibility status, leaving the ambient `CoreM` environment
-and stdlib `@[irreducible]` barriers unchanged. -/
+relaxed back to their pre-project reducibility status, leaving the ambient `CoreM` environment,
+`Core.State.cache`, and stdlib `@[irreducible]` barriers unchanged. -/
 private def mkRelaxedProjectIrreduciblesEnv : CoreM Environment := do
-  let (_, relaxedEnv) ← withoutModifyingEnv' do
+  let (_, relaxedEnv) ← withPreservedCoreCache <| withoutModifyingEnv' do
     let env ← getEnv
     let mut toRestore : Array (Name × ReducibilityStatus) := #[]
     for h : i in [0 : env.header.moduleNames.size] do
@@ -1680,13 +1690,15 @@ private def mkRelaxedProjectIrreduciblesEnv : CoreM Environment := do
   return relaxedEnv
 
 /-- Bounded Meta-level definitional-equality check for `Core.Refines` triviality gates.
-Temporarily runs `Meta.isDefEq` at `.default` transparency under `relaxedEnv` with a fresh
-`MetaM` cache so project `@[irreducible]` definitions (and cross-module global `[irreducible]`
-attributes applied in project modules) unfold while preserving stdlib `@[irreducible]` barriers,
-full Lean WHNF/defeq caching, and the unmodified ambient `CoreM`/`MetaM` environment and caches
-outside this check. -/
+Temporarily runs `Meta.isDefEq` at `.default` transparency under `relaxedEnv` with fresh
+`CoreM`/`MetaM` caches so project `@[irreducible]` definitions (and cross-module global
+`[irreducible]` attributes applied in project modules) unfold while preserving stdlib
+`@[irreducible]` barriers, full Lean WHNF/defeq caching, and the unmodified ambient
+`CoreM`/`MetaM` environment and caches outside this check (`setEnv` clears `Core.State.cache`
+via `modifyEnv`, so `withPreservedCoreCache` restores the ambient `CoreM` cache after `withEnv`
+drops entries computed under `relaxedEnv`). -/
 private def boundedMetaDefEq (relaxedEnv : Environment) (a b : Expr) : MetaM BoundedBool := do
-  Meta.withFreshCache <| withEnv relaxedEnv do
+  withPreservedCoreCache <| Meta.withFreshCache <| withEnv relaxedEnv do
     match ← runBoundedMeta
         (Meta.withNewMCtxDepth <| Meta.withTransparency .default <| isDefEq a b)
         (maxRecDepth := 1024) with
