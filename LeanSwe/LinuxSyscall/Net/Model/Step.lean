@@ -633,7 +633,10 @@ def stepBindInet (s0 : NetState) (hid : HandleId) (selfFid : FileId) (d0 : SockD
       | _ => none
     let isNativeV6Lo0 := match addr with | .ipv6 0 1 _ _ _ => true | _ => false
     let validBindAddr0 := !isInvalidV6LinkOrMulticast d0.sockType addr d0.boundDevIf
-    let loDownV6 := match s0.loState with | .up _ => false | _ => isLocalNonWildcardV6 addr
+    let loDownV6 := match s0.loState with
+      | .up _ => false
+      | .down _ true => isNativeV6Lo0
+      | .down _ false | .unpinned _ => isLocalNonWildcardV6 addr
     let loDefDown := match s0.loState with | .down _ _ => true | _ => false
     let extBoundDev0 := validBindAddr0 && !isIpv6WildcardAddr addr && dScoped0.boundDevIf != 0 && dScoped0.boundDevIf != 1
     let devAllowsAddr0 :=

@@ -3067,9 +3067,43 @@ private def runV6SelfShutBindLoDownTests : IO Unit := do
   let _ ← mustStep "v4 loDown 127.0.0.1:ep EADDRINUSE" v4Down (.bind 0 (.ipv4 INADDR_LOOPBACK 50716)) (.err Errno.EADDRINUSE)
   let _ ← mustStep "v4 loDown 127.0.0.1:0 unit" v4Down (.bind 0 (.ipv4 INADDR_LOOPBACK 0)) .unit
   let mappedLoZero : SockAddr := .ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 0 0 0
-  let _ ← mustStep "ci loDown mapped ::ffff:127.0.0.1:0 unit" ciDown (.bind 0 mappedLoZero) .unit
-  let _ ← mustStep "ci loDown mapped ::ffff:127.0.0.1:0 EINVAL" ciDown (.bind 0 mappedLoZero) (.err Errno.EINVAL)
-  let _ ← mustStep "ci loDown mapped ::ffff:127.0.0.1:0 EADDRNOTAVAIL" ciDown (.bind 0 mappedLoZero) (.err Errno.EADDRNOTAVAIL)
+  let mappedLoEp : SockAddr := .ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) ep 0 0
+  mustReject "ci loDown(wasUp) mapped ::ffff:127.0.0.1:0 rejects EADDRNOTAVAIL" ciDown (.bind 0 mappedLoZero) (.err Errno.EADDRNOTAVAIL)
+  mustReject "ci loDown(wasUp) mapped ::ffff:127.0.0.1:ep rejects EADDRNOTAVAIL" ciDown (.bind 0 mappedLoEp) (.err Errno.EADDRNOTAVAIL)
+  let _ ← mustStep "ci loDown(wasUp) mapped ::ffff:127.0.0.1:0 unit" ciDown (.bind 0 mappedLoZero) .unit
+  let _ ← mustStep "ci loDown(wasUp) mapped ::ffff:127.0.0.1:0 EINVAL" ciDown (.bind 0 mappedLoZero) (.err Errno.EINVAL)
+  let _ ← mustStep "ci loDown(wasUp) mapped ::ffff:127.0.0.1:ep EADDRINUSE" ciDown (.bind 0 mappedLoEp) (.err Errno.EADDRINUSE)
+  let _ ← mustStep "ci loDown(wasUp) mapped ::ffff:127.0.0.1:ep EINVAL" ciDown (.bind 0 mappedLoEp) (.err Errno.EINVAL)
+  let mut ciMapped ← mustStep "ciMapped.s0" s0 (.socket .inet6 .stream nbFlags 0) (.opened 0)
+  ciMapped ← mustStep "ciMapped.bind" ciMapped (.bind 0 mappedLoZero) .unit
+  ciMapped ← mustStep "ciMapped.gsn" ciMapped (.getsockname 0) (.addr mappedLoEp)
+  ciMapped ← mustStep "ciMapped.shut" ciMapped (.shutdown 0 .wr) (.err Errno.ENOTCONN)
+  ciMapped ← mustStep "ciMapped.conn" ciMapped (.connect 0 mappedLoEp) (.err Errno.EINPROGRESS)
+  let ciMappedDown ← mustStep "ciMapped.loDown" ciMapped (.ioctl 0 (.setIfFlags 8) loIfname) (.u32 0)
+  mustReject "mapped loDown(wasUp) ::ffff:127.0.0.1:0 rejects EADDRNOTAVAIL" ciMappedDown (.bind 0 mappedLoZero) (.err Errno.EADDRNOTAVAIL)
+  mustReject "mapped loDown(wasUp) ::ffff:127.0.0.1:ep rejects EADDRNOTAVAIL" ciMappedDown (.bind 0 mappedLoEp) (.err Errno.EADDRNOTAVAIL)
+  let _ ← mustStep "mapped loDown(wasUp) ::ffff:127.0.0.1:0 unit" ciMappedDown (.bind 0 mappedLoZero) .unit
+  let ciMappedInUse ← mustStep "mapped loDown(wasUp) ::ffff:127.0.0.1:ep EADDRINUSE" ciMappedDown (.bind 0 mappedLoEp) (.err Errno.EADDRINUSE)
+  let _ ← mustStep "mapped loDown(wasUp) after EADDRINUSE gsn cleared to ::" ciMappedInUse (.getsockname 0) (.addr any6Ep)
+  mustReject "mapped loDown(wasUp) ::1:0 rejects unit" ciMappedDown (.bind 0 lo6Zero) .unit
+  let _ ← mustStep "mapped loDown(wasUp) ::1:0 EADDRNOTAVAIL" ciMappedDown (.bind 0 lo6Zero) (.err Errno.EADDRNOTAVAIL)
+  let _ ← mustStep "mapped loDown(wasUp) ::1:ep EADDRNOTAVAIL" ciMappedDown (.bind 0 lo6Ep) (.err Errno.EADDRNOTAVAIL)
+  let sNeverUp := NetState.initialNetns
+  let mut refNeverUp ← mustStep "neverUp.s0" sNeverUp (.socket .inet6 .stream nbFlags 0) (.opened 0)
+  refNeverUp ← mustStep "neverUp.conn" refNeverUp (.connect 0 (.ipv6 0 (ipv4ToMappedV6Lo 0x0a000002) 49999 0 0)) (.err Errno.EINPROGRESS)
+  mustReject "neverUp ::1:0 rejects unit" refNeverUp (.bind 0 lo6Zero) .unit
+  let _ ← mustStep "neverUp ::1:0 EADDRNOTAVAIL" refNeverUp (.bind 0 lo6Zero) (.err Errno.EADDRNOTAVAIL)
+  let _ ← mustStep "neverUp ::1:ep EADDRNOTAVAIL" refNeverUp (.bind 0 lo6Ep) (.err Errno.EADDRNOTAVAIL)
+  let _ ← mustStep "neverUp mapped ::ffff:127.0.0.1:0 unit" refNeverUp (.bind 0 mappedLoZero) .unit
+  let _ ← mustStep "neverUp mapped ::ffff:127.0.0.1:0 EADDRNOTAVAIL" refNeverUp (.bind 0 mappedLoZero) (.err Errno.EADDRNOTAVAIL)
+  let _ ← mustStep "neverUp mapped ::ffff:127.0.0.1:ep EADDRNOTAVAIL" refNeverUp (.bind 0 mappedLoEp) (.err Errno.EADDRNOTAVAIL)
+  let refUp ← mustStep "neverUp.loUp" refNeverUp (.ioctl 0 (.setIfFlags defaultLoFlags) loIfname) (.u32 0)
+  let refWasUp ← mustStep "neverUp.loDown" refUp (.ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname) (.u32 0)
+  mustReject "wasUp mapped ::ffff:127.0.0.1:0 rejects EADDRNOTAVAIL" refWasUp (.bind 0 mappedLoZero) (.err Errno.EADDRNOTAVAIL)
+  mustReject "wasUp mapped ::ffff:127.0.0.1:ep rejects EADDRNOTAVAIL" refWasUp (.bind 0 mappedLoEp) (.err Errno.EADDRNOTAVAIL)
+  let _ ← mustStep "wasUp mapped ::ffff:127.0.0.1:0 unit" refWasUp (.bind 0 mappedLoZero) .unit
+  mustReject "wasUp ::1:0 rejects unit" refWasUp (.bind 0 lo6Zero) .unit
+  let _ ← mustStep "wasUp ::1:0 EADDRNOTAVAIL" refWasUp (.bind 0 lo6Zero) (.err Errno.EADDRNOTAVAIL)
   let mut ext ← mustStep "ext.s0" s0 (.socket .inet6 .stream nbFlags 0) (.opened 0)
   ext ← mustStep "ext.conn" ext (.connect 0 (.ipv6 0xfe80000000000000 1 49998 0 2)) (.err Errno.EINPROGRESS)
   mustReject "ext mcast ff02::1 rejects EADDRNOTAVAIL" ext (.bind 0 (.ipv6 0xff02000000000000 1 0 0 2)) (.err Errno.EADDRNOTAVAIL)
@@ -3083,6 +3117,8 @@ private def runV6SelfShutBindLoDownTests : IO Unit := do
   unp ← mustStep "unp.conn" unp (.connect 0 lo6Ep) (.err Errno.EINPROGRESS)
   let _ ← mustStep "unp lo6:0 unit" unp (.bind 0 lo6Zero) .unit
   let _ ← mustStep "unp lo6:0 EADDRNOTAVAIL" unp (.bind 0 lo6Zero) (.err Errno.EADDRNOTAVAIL)
+  let _ ← mustStep "unp mapped ::ffff:127.0.0.1:0 unit" unp (.bind 0 mappedLoZero) .unit
+  let _ ← mustStep "unp mapped ::ffff:127.0.0.1:0 EADDRNOTAVAIL" unp (.bind 0 mappedLoZero) (.err Errno.EADDRNOTAVAIL)
 
 /-- Run all `Net` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke` and `lean-swe-mut-test`). -/
 def runChecks : IO Unit := do
