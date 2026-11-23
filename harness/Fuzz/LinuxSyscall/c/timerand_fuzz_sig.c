@@ -2,26 +2,15 @@
 #error "LeanSwe LinuxSyscall requires LP64 Linux on x86_64 or aarch64"
 #endif
 #define _GNU_SOURCE
-#include <errno.h>
 #include <lean/lean.h>
-#include <linux/audit.h>
-#include <linux/filter.h>
-#include <linux/seccomp.h>
 #include <pthread.h>
 #include <signal.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
-#if defined(__x86_64__)
-#define LEANSWE_AUDIT_ARCH AUDIT_ARCH_X86_64
-#else
-#define LEANSWE_AUDIT_ARCH AUDIT_ARCH_AARCH64
-#endif
 
 static pthread_mutex_t g_sig_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_once_t g_atfork_once = PTHREAD_ONCE_INIT;
@@ -95,24 +84,4 @@ LEAN_EXPORT lean_obj_res leanswe_fuzz_disarm_sigalrm(uint32_t unused) {
     if (pthread_sigmask(SIG_SETMASK, &t_prev_mask, NULL) != 0) { abort(); } t_armed = 0;
   }
   return lean_box(0);
-}
-static inline uint32_t pick_nr(uint32_t mask, uint32_t bit, uint32_t nr, uint32_t fb) { return (mask & bit) ? nr : fb; }
-/** Install a process-wide (`TSYNC`) `SECCOMP_RET_ERRNO` filter returning `eno` (`1..4095`) on the masked `TimeRand` syscalls (`1..7`). */
-LEAN_EXPORT uint32_t leanswe_fuzz_install_seccomp_errno(uint32_t eno, uint32_t syscall_mask) {
-  if (eno == 0u || eno > 4095u || syscall_mask == 0u || syscall_mask > 7u) { return (uint32_t)EINVAL; }
-  if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) { return (uint32_t)errno; }
-  uint32_t fb = (syscall_mask & 1u) ? (uint32_t)__NR_clock_gettime : ((syscall_mask & 2u) ? (uint32_t)__NR_clock_nanosleep : (uint32_t)__NR_getrandom);
-  struct sock_filter filter[] = {
-    { (uint16_t)(BPF_LD | BPF_W | BPF_ABS), 0, 0, (uint32_t)offsetof(struct seccomp_data, arch) },
-    { (uint16_t)(BPF_JMP | BPF_JEQ | BPF_K), 0, 5, (uint32_t)LEANSWE_AUDIT_ARCH },
-    { (uint16_t)(BPF_LD | BPF_W | BPF_ABS), 0, 0, (uint32_t)offsetof(struct seccomp_data, nr) },
-    { (uint16_t)(BPF_JMP | BPF_JEQ | BPF_K), 2, 0, pick_nr(syscall_mask, 1u, (uint32_t)__NR_clock_gettime, fb) },
-    { (uint16_t)(BPF_JMP | BPF_JEQ | BPF_K), 1, 0, pick_nr(syscall_mask, 2u, (uint32_t)__NR_clock_nanosleep, fb) },
-    { (uint16_t)(BPF_JMP | BPF_JEQ | BPF_K), 0, 1, pick_nr(syscall_mask, 4u, (uint32_t)__NR_getrandom, fb) },
-    { (uint16_t)(BPF_RET | BPF_K), 0, 0, SECCOMP_RET_ERRNO | (eno & 0x0000FFFFu) },
-    { (uint16_t)(BPF_RET | BPF_K), 0, 0, SECCOMP_RET_ALLOW },
-  };
-  struct sock_fprog prog = { (unsigned short)(sizeof(filter) / sizeof(filter[0])), filter };
-  long rc = syscall(SYS_seccomp, (unsigned long)SECCOMP_SET_MODE_FILTER, (unsigned long)SECCOMP_FILTER_FLAG_TSYNC, &prog);
-  return rc == 0 ? 0u : (rc < 0 ? (uint32_t)errno : (uint32_t)EAGAIN);
 }

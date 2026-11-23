@@ -54,7 +54,7 @@
       "legacy_unmigrated": false
     },
     "harness/Fuzz/LinuxSyscall/c/timerand_fuzz_sig.c": {
-      "max_lines": 120,
+      "max_lines": 89,
       "legacy_unmigrated": false
     },
     "LeanSwe/LinuxSyscall/c/timerand_shim.c": {
