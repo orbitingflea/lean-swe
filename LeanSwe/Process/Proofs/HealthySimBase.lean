@@ -681,7 +681,8 @@ theorem healthySimDeps_proc_refinesHealthy :
     dsimp only [healthySimDeps, stateM_modifyGet_run, projSimProc, id]
     by_cases hVal : flags.isValid = true
     · by_cases hNotif : flags.notificationPipe = true
-      · simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte, hNotif]
+      · simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte, hNotif,
+          Except.map, LinuxSyscall.Process.outcomeOfPiped]
         unfold LinuxSyscall.Process.healthyStep LinuxSyscall.Process.HealthyEnv.wf
           LinuxSyscall.Process.isCriticalFault LinuxSyscall.Process.isEintrOutcome
           LinuxSyscall.Process.allowedStep LinuxSyscall.Process.validateReqBeforeKernel
@@ -690,7 +691,8 @@ theorem healthySimDeps_proc_refinesHealthy :
         simp [toSimProcState, LinuxSyscall.Process.ProcessSysState.initial, hVal, hNotif,
           hCrit65, hNeEi65]
       · have hNotifF : flags.notificationPipe = false := Bool.eq_false_iff.mpr hNotif
-        simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte, hNotifF]
+        simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte, hNotifF,
+          Except.map, LinuxSyscall.Process.outcomeOfPiped]
         let base := Nat.max (maxKey s.procFds s.procNextHid) (maxKey s.simFds 10)
         have hLeB : maxKey s.procFds s.procNextHid ≤ base := Nat.le_max_left _ _
         have hNoneR : LinuxSyscall.Process.assocGet s.procFds (base + 1) = none :=
@@ -710,7 +712,7 @@ theorem healthySimDeps_proc_refinesHealthy :
         rw [hVal, hNotifF, hFds, hNe, hNoneR, hNoneW]
         simp [LinuxSyscall.Process.commitPipeFds, toSimProcState, LinuxSyscall.Process.ProcessSysState.initial]
     · have hValF : flags.isValid = false := Bool.eq_false_iff.mpr hVal
-      simp only [hValF, Bool.not_false, ↓reduceIte]
+      simp only [hValF, Bool.not_false, ↓reduceIte, Except.map, LinuxSyscall.Process.outcomeOfPiped]
       unfold LinuxSyscall.Process.healthyStep LinuxSyscall.Process.HealthyEnv.wf
         LinuxSyscall.Process.isCriticalFault LinuxSyscall.Process.isEintrOutcome
         LinuxSyscall.Process.allowedStep LinuxSyscall.Process.validateReqBeforeKernel
@@ -747,12 +749,12 @@ theorem healthySimDeps_proc_refinesHealthy :
       have hSec : (toSimProcState s).ambientSeccomp = false := rfl
       cases res with
       | ok wr =>
-        dsimp only at hSound ⊢
+        dsimp only [LinuxSyscall.Process.outcomeOfWaited] at hSound ⊢
         rw [hSec, hSound, hStEq]
         rfl
       | error e =>
         obtain ⟨hCrit, hNeEi⟩ := hNoCrit e rfl
-        dsimp only at hSound hStEq ⊢
+        dsimp only [LinuxSyscall.Process.outcomeOfWaited] at hSound hStEq ⊢
         simp only [hSec, hCrit, hSound, beq_false_of_ne hNeEi, hStEq,
           Bool.not_false, Bool.not_true, Bool.or_self, Bool.false_eq_true, ↓reduceIte]
   kill_healthy s target sig _ := by
@@ -820,7 +822,7 @@ theorem healthySimDeps_proc_refinesHealthy :
         · injection hPre with hEq; exact hEq.symm
         · cases hPre
       subst hPreEq
-      dsimp only at hSound2 ⊢
+      dsimp only [LinuxSyscall.Process.outcomeOfUnit] at hSound2 ⊢
       have hCrit22 : Errno.isCriticalOsErrno Errno.EINVAL = false := by decide
       have hNeEi22 : (Errno.EINVAL == Errno.EINTR) = false := by decide
       simp [hSec, hCrit22, hSound2, hNeEi22]
@@ -835,7 +837,7 @@ theorem healthySimDeps_proc_refinesHealthy :
         subst hR hS
         have hEq := hKillOk st hEv
         subst hEq
-        dsimp only at hSound2 ⊢
+        dsimp only [LinuxSyscall.Process.outcomeOfUnit] at hSound2 ⊢
         rw [hSec, hSound2]
         rfl
       | error e =>
@@ -849,7 +851,7 @@ theorem healthySimDeps_proc_refinesHealthy :
           · next hIs => exact hEsrchEq (beq_iff_eq.mp hIs)
           · rfl
         subst hNextEq
-        dsimp only at hSound2 ⊢
+        dsimp only [LinuxSyscall.Process.outcomeOfUnit] at hSound2 ⊢
         simp [hSec, hCrit, hSound2, beq_false_of_ne hNeEi]
 
 end LeanSwe.Process.Proofs

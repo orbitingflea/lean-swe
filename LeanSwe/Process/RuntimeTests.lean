@@ -270,11 +270,105 @@ def registeredErrorTests : Array Core.RegisteredErrorTest :=
        mode := .real
        run := err_process_runCommandChecked_ioError } ]
 
+/-- Deterministic tests verifying that `streamPipesLoop` preserves chunks already read earlier in a drain round when timeout fires mid-round. -/
+private def testPartialDrainTimeoutPreservesChunks : IO Unit := do
+  let mkMockFiles (readFn : Nat → Nat → Except LinuxSyscall.Errno ByteArray) :
+      LinuxSyscall.Files.FilesOpsM (StateM (Nat × Nat)) Nat :=
+    { openat := fun _ _ _ _ => pure (.error LinuxSyscall.Errno.ENOENT)
+      openat2 := fun _ _ _ => pure (.error LinuxSyscall.Errno.ENOENT)
+      close := fun _ => pure (.ok ())
+      read := fun fd _ => modifyGet fun (clk, rd) => (readFn fd rd, (clk, rd + 1))
+      write := fun _ data => pure (.ok (UInt32.ofNat data.size))
+      fstat := fun _ => pure (.error LinuxSyscall.Errno.EBADF)
+      fstatat := fun _ _ _ => pure (.error LinuxSyscall.Errno.ENOENT)
+      faccessat := fun _ _ _ _ => pure (.error LinuxSyscall.Errno.EACCES)
+      mkdirat := fun _ _ _ => pure (.error LinuxSyscall.Errno.EACCES)
+      unlinkat := fun _ _ _ => pure (.error LinuxSyscall.Errno.EACCES)
+      renameat2 := fun _ _ _ _ _ => pure (.error LinuxSyscall.Errno.EACCES)
+      symlinkat := fun _ _ _ => pure (.error LinuxSyscall.Errno.EACCES)
+      readlinkat := fun _ _ _ => pure (.error LinuxSyscall.Errno.ENOENT)
+      getdents64 := fun _ _ => pure (.error LinuxSyscall.Errno.EBADF)
+      fchmodat := fun _ _ _ => pure (.error LinuxSyscall.Errno.EACCES)
+      fchmod := fun _ _ => pure (.error LinuxSyscall.Errno.EBADF)
+      flock := fun _ _ => pure (.error LinuxSyscall.Errno.EBADF)
+      fcntl := fun _ _ => pure (.ok 0)
+      fsync := fun _ => pure (.ok ())
+      getcwd := fun _ => pure (.ok "/".toUTF8)
+      lseek := fun _ _ _ => pure (.error LinuxSyscall.Errno.ESPIPE)
+      reopenReadOnly := fun _ => pure (.error LinuxSyscall.Errno.EBADF)
+      dupStdio := fun _ => pure (.error LinuxSyscall.Errno.EBADF) }
+  let mockPoll : LinuxSyscall.Poll.PollOpsM (StateM (Nat × Nat)) Nat :=
+    { ppoll := fun entries _ => pure (.ok (entries.map Prod.snd))
+      eventfd2 := fun _ _ => pure (.error LinuxSyscall.Errno.ENOSYS) }
+  let mkMockTime (timeoutAtTick : Nat) : LinuxSyscall.TimeRand.TimeRandOpsM (StateM (Nat × Nat)) :=
+    { clock_gettime := fun _ => modifyGet fun (clk, rd) =>
+        let ts : LinuxSyscall.TimeRand.Timespec :=
+          if clk ≥ timeoutAtTick then { sec := 1, nsec := 0 } else { sec := 0, nsec := 0 }
+        (.ok ts, (clk + 1, rd))
+      clock_nanosleep := fun _ _ _ => pure (.ok ())
+      getrandom := fun _ _ => pure (.ok ByteArray.empty) }
+  let outFiles := mkMockFiles fun fd rd =>
+    if fd == 1 then
+      if rd == 0 then .ok "OUT_CHUNK_1|".toUTF8
+      else if rd == 1 then .ok "OUT_CHUNK_2".toUTF8
+      else .error LinuxSyscall.Errno.EAGAIN
+    else .error LinuxSyscall.Errno.EAGAIN
+  let outRes := (SysBridge.streamPipesLoop outFiles mockPoll (mkMockTime 3)
+    ByteArray.empty 0 (some 50) none 8
+    { inFd? := none, outFd? := some 1, errFd? := some 2 } 4).run (0, 0)
+  match outRes.1 with
+  | .ok (.timedOut out err) =>
+    assertTrue (out == "OUT_CHUNK_1|OUT_CHUNK_2".toUTF8 && err == ByteArray.empty)
+      s!"mid-round stdout drain timeout dropped chunks: out={String.fromUTF8! out} err={String.fromUTF8! err}"
+  | .ok (.eof _ _) =>
+    throw (IO.userError "ASSERTION FAILED: mid-round stdout drain expected timedOut, got eof")
+  | .ok (.limitExceeded _ _) =>
+    throw (IO.userError "ASSERTION FAILED: mid-round stdout drain expected timedOut, got limitExceeded")
+  | .error e =>
+    throw (IO.userError s!"ASSERTION FAILED: mid-round stdout drain expected timedOut, got error {repr e}")
+  let errFiles := mkMockFiles fun fd rd =>
+    if fd == 1 then
+      if rd == 0 then .ok "OUT_OK".toUTF8 else .error LinuxSyscall.Errno.EAGAIN
+    else if fd == 2 then
+      if rd == 2 then .ok "ERR_PARTIAL".toUTF8 else .error LinuxSyscall.Errno.EAGAIN
+    else .error LinuxSyscall.Errno.EAGAIN
+  let errRes := (SysBridge.streamPipesLoop errFiles mockPoll (mkMockTime 4)
+    ByteArray.empty 0 (some 50) none 8
+    { inFd? := none, outFd? := some 1, errFd? := some 2 } 4).run (0, 0)
+  match errRes.1 with
+  | .ok (.timedOut out err) =>
+    assertTrue (out == "OUT_OK".toUTF8 && err == "ERR_PARTIAL".toUTF8)
+      s!"mid-round stderr drain timeout dropped chunks: out={String.fromUTF8! out} err={String.fromUTF8! err}"
+  | .ok (.eof _ _) =>
+    throw (IO.userError "ASSERTION FAILED: mid-round stderr drain expected timedOut, got eof")
+  | .ok (.limitExceeded _ _) =>
+    throw (IO.userError "ASSERTION FAILED: mid-round stderr drain expected timedOut, got limitExceeded")
+  | .error e =>
+    throw (IO.userError s!"ASSERTION FAILED: mid-round stderr drain expected timedOut, got error {repr e}")
+
+/-- End-to-end live OS check verifying that `Process.run` preserves stdout and stderr emitted before a timeout (while `testPartialDrainTimeoutPreservesChunks` deterministically exercises mid-round drain timeouts). -/
+private def testLiveTimeoutPreservesPriorOutput : IO Unit := do
+  match ← Process.run {
+    program := "sh"
+    args := #["-c", "printf 'PARTIAL_BEFORE_TIMEOUT_OUT'; printf 'PARTIAL_BEFORE_TIMEOUT_ERR' >&2; sleep 10"]
+    timeoutMs := some 200
+  } with
+  | .ok r =>
+    throw (IO.userError s!"ASSERTION FAILED: live timeout unexpectedly exited {r.exitCode}")
+  | .error err =>
+    assertTrue (err.kind == .timedOut &&
+      err.stdout == some "PARTIAL_BEFORE_TIMEOUT_OUT".toUTF8 &&
+      err.stderr == some "PARTIAL_BEFORE_TIMEOUT_ERR".toUTF8)
+      s!"live timeout did not preserve output written prior to timeout: {repr err}"
+  assertTrue ((← Process.activeProcessCount) == 0) "activeProcessCount == 0 after live timeout"
+
 /-- Execute end-to-end OS runtime verification tests for `LeanSwe.Process`. -/
 def runAll : IO Unit := do
   assertTrue ((← Process.activeProcessCount) == 0) "initial Process.activeProcessCount == 0"
 
   Core.runRegisteredErrorTests registeredErrorTests
+  testPartialDrainTimeoutPreservesChunks
+  testLiveTimeoutPreservesPriorOutput
 
   let tmpDir ← IO.FS.createTempDir
   try

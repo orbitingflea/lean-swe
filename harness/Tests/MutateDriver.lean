@@ -66,6 +66,8 @@ def main (args : List String) : IO UInt32 := do
     return (← worker)
   if let "--postfork-probe" :: _ := args then
     return (← PostFork.runPostForkSubprocProbe)
+  if let "--process-sigpipe-probe" :: _ := args then
+    return (← FsAndProcess.runProcessSigpipeProbe)
   let flags ← match parseFlags args with
     | .ok f => pure f
     | .error msg =>

@@ -354,7 +354,7 @@ private theorem drainPipeStep_sat {fd : Type}
     (chunks : Array ByteArray) (curLen iterBytes : Nat) (prog : Bool) (fuel : Nat) :
     SatisfiesIO (fun r => match r with
       | .ioErr e => isBasicErrKind e
-      | .timedOut => timeoutMs? ≠ none
+      | .timedOut _ _ => timeoutMs? ≠ none
       | .limitExceeded _ _ => maxOut? ≠ none
       | .cont _ _ _ _ => True)
       (drainPipeStep files tr pipeFd otherLen startMs timeoutMs? maxOut?
@@ -420,7 +420,7 @@ private theorem stepDrainOpt_sat {fd : Type}
     (chunks : Array ByteArray) (curLen stepFuel : Nat) :
     SatisfiesIO (fun r => match r with
       | .ioErr e => isBasicErrKind e
-      | .timedOut => timeoutMs? ≠ none
+      | .timedOut _ _ => timeoutMs? ≠ none
       | .limitExceeded _ _ => maxOut? ≠ none
       | .cont _ _ _ _ => True)
       (stepDrainOpt files tr pipeFd? otherLen startMs timeoutMs? maxOut? chunks curLen stepFuel) := by
@@ -499,7 +499,7 @@ private theorem streamPipesLoop_sat {fd : Type}
                 · have hOutSat : SatisfiesIO
                     (fun r => match r with
                       | .ioErr e => isBasicErrKind e
-                      | .timedOut => timeoutMs? ≠ none
+                      | .timedOut _ _ => timeoutMs? ≠ none
                       | .limitExceeded _ _ => maxOut? ≠ none
                       | .cont _ _ _ _ => True)
                     (stepDrainIfReady outR files tr st.outFd? st.errLen startMs timeoutMs? maxOut?
@@ -513,7 +513,7 @@ private theorem streamPipesLoop_sat {fd : Type}
                   cases outStep with
                   | ioErr e =>
                     apply sat_seq; intro _; apply sat_seq; intro _; exact sat_pure ho
-                  | timedOut =>
+                  | timedOut _ _ =>
                     apply sat_seq; intro _; apply sat_seq; intro _; exact sat_pure ho
                   | limitExceeded _ _ =>
                     apply sat_seq; intro _; apply sat_seq; intro _; exact sat_pure ho
@@ -521,7 +521,7 @@ private theorem streamPipesLoop_sat {fd : Type}
                     have hErrSat : SatisfiesIO
                         (fun r => match r with
                           | .ioErr e => isBasicErrKind e
-                          | .timedOut => timeoutMs? ≠ none
+                          | .timedOut _ _ => timeoutMs? ≠ none
                           | .limitExceeded _ _ => maxOut? ≠ none
                           | .cont _ _ _ _ => True)
                         (stepDrainIfReady errR files tr st.errFd? outLen' startMs timeoutMs? maxOut?
@@ -535,7 +535,7 @@ private theorem streamPipesLoop_sat {fd : Type}
                     cases errStep with
                     | ioErr e =>
                       apply sat_seq; intro _; apply sat_seq; intro _; exact sat_pure he
-                    | timedOut =>
+                    | timedOut _ _ =>
                       apply sat_seq; intro _; apply sat_seq; intro _; exact sat_pure he
                     | limitExceeded _ _ =>
                       apply sat_seq; intro _; apply sat_seq; intro _; exact sat_pure he

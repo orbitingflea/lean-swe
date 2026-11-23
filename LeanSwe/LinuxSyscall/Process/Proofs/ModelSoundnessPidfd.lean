@@ -183,7 +183,7 @@ theorem modelOps_pidfd_send_signal_sound (s : ProcessSysState) (hid : HandleId) 
     allowedStep s (.pidfd_send_signal hid sig flags) r.1 = some r.2 := by
   cases hpre : validateReqBeforeKernel s (.pidfd_send_signal hid sig flags) with
   | some preErr =>
-    simp only [execProcessReq, modelOps, allowedStep, hpre, StateT.run, get, getThe,
+    simp only [execProcessReq, outcomeOfUnit, modelOps, allowedStep, hpre, StateT.run, get, getThe,
       MonadStateOf.get, StateT.get, pure, Pure.pure, StateT.pure, bind, Bind.bind, StateT.bind,
       beq_self_eq_true, ↓reduceIte]
   | none =>

@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/openat2.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +15,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/vfs.h>
+#include <time.h>
 #include <unistd.h>
 #include "fd_box.h"
 
@@ -274,6 +276,24 @@ LEAN_EXPORT lean_obj_res leanswe_sys_read(b_lean_obj_arg fd_obj, uint32_t max_by
   return finish_read_buf(buf, n, err);
 }
 
+static ssize_t write_nosigpipe(int fd, const void *ptr, size_t len, int *err_out) {
+  sigset_t pipe_set, old_set, pend;
+  sigemptyset(&pipe_set);
+  sigaddset(&pipe_set, SIGPIPE);
+  int masked = (pthread_sigmask(SIG_BLOCK, &pipe_set, &old_set) == 0);
+  int was_blocked = masked && (sigismember(&old_set, SIGPIPE) == 1);
+  int pre_pend = !masked || sigpending(&pend) != 0 || (sigismember(&pend, SIGPIPE) == 1);
+  ssize_t n = write(fd, ptr, len);
+  int err = (n < 0) ? errno : 0;
+  if (masked && !pre_pend && n < 0 && err == EPIPE) {
+    struct timespec zero_ts = { 0, 0 };
+    (void)sigtimedwait(&pipe_set, NULL, &zero_ts);
+  }
+  if (masked && !was_blocked) (void)pthread_sigmask(SIG_SETMASK, &old_set, NULL);
+  *err_out = err;
+  return n;
+}
+
 LEAN_EXPORT lean_obj_res leanswe_sys_write(b_lean_obj_arg fd_obj, b_lean_obj_arg ba) {
   LeanFdBox *box = (LeanFdBox *)lean_get_external_data(fd_obj);
   int fd = -1;
@@ -281,8 +301,8 @@ LEAN_EXPORT lean_obj_res leanswe_sys_write(b_lean_obj_arg fd_obj, b_lean_obj_arg
   if (perr != 0) return leanswe_mk_errno(perr);
   size_t len = lean_sarray_size(ba);
   const void *ptr = (len == 0) ? (const void *)"" : (const void *)lean_sarray_cptr(ba);
-  ssize_t n = write(fd, ptr, len);
-  int err = errno;
+  int err = 0;
+  ssize_t n = write_nosigpipe(fd, ptr, len, &err);
   leanswe_fd_box_unpin(box);
   if (n < 0) return leanswe_mk_errno(err);
   return leanswe_mk_ok(lean_box_uint32((uint32_t)n));

@@ -513,8 +513,8 @@ def spawnPure {m : Type → Type} [Monad m] {fd : Type}
 inductive PipeStepResult (fd : Type) where
   /-- Normal round completion with updated descriptor (`none` if closed) and progress flag. -/
   | cont (fd? : Option fd) (chunks : Array ByteArray) (len : Nat) (madeProgress : Bool)
-  /-- Timeout deadline reached during step. -/
-  | timedOut
+  /-- Timeout deadline reached during step; `chunks` and `len` carry the full accumulated output (from prior rounds and this round) at timeout, so callers replace rather than re-append. -/
+  | timedOut (chunks : Array ByteArray) (len : Nat)
   /-- `maxOutputBytes` exceeded (captures prefix up to `maxOutputBytes`). -/
   | limitExceeded (chunks : Array ByteArray) (len : Nat)
   /-- Non-recoverable OS read error. -/
@@ -584,7 +584,7 @@ def drainPipeStep {m : Type → Type} [Monad m] {fd : Type}
       return .ioErr (mapErrno none "clock_gettime" e)
     | .ok (true, _) =>
       Files.closeOpt files (some pipeFd)
-      return .timedOut
+      return .timedOut chunks curLen
     | .ok (false, _) =>
       match ← files.read pipeFd PIPE_READ_CHUNK with
       | .ok chunk =>
@@ -790,10 +790,10 @@ def streamPipesLoop {m : Type → Type} [Monad m] {fd : Type}
               Files.closeOpt files inFdNext?
               Files.closeOpt files st.errFd?
               return .error e
-            | .timedOut =>
+            | .timedOut outChunks' outLen' =>
               Files.closeOpt files inFdNext?
               Files.closeOpt files st.errFd?
-              return .ok (.timedOut (concatChunks st.outChunks st.outLen) (concatChunks st.errChunks st.errLen))
+              return .ok (.timedOut (concatChunks outChunks' outLen') (concatChunks st.errChunks st.errLen))
             | .limitExceeded outChunks' outLen' =>
               Files.closeOpt files inFdNext?
               Files.closeOpt files st.errFd?
@@ -807,10 +807,10 @@ def streamPipesLoop {m : Type → Type} [Monad m] {fd : Type}
                 Files.closeOpt files inFdNext?
                 Files.closeOpt files outFdNext?
                 return .error e
-              | .timedOut =>
+              | .timedOut errChunks' errLen' =>
                 Files.closeOpt files inFdNext?
                 Files.closeOpt files outFdNext?
-                return .ok (.timedOut (concatChunks outChunks' outLen') (concatChunks st.errChunks st.errLen))
+                return .ok (.timedOut (concatChunks outChunks' outLen') (concatChunks errChunks' errLen'))
               | .limitExceeded errChunks' errLen' =>
                 Files.closeOpt files inFdNext?
                 Files.closeOpt files outFdNext?

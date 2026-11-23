@@ -34,7 +34,7 @@ theorem mkProcessOps_sound_for_allowedStep
     dsimp only [execProcessReq, Internal.mkProcessOps, StateT.run, bind, Bind.bind, StateT.bind, pure, Pure.pure, StateT.pure]
     cases hres : sig.isNptlReserved with
     | true =>
-      simp [pure, Pure.pure, StateT.pure, hres, allowedStep, validateReqBeforeKernel]
+      simp [outcomeOfUnit, pure, Pure.pure, StateT.pure, hres, allowedStep, validateReqBeforeKernel]
     | false =>
       have hk := hsound.kill_sound s pid sig hres
       dsimp only [StateT.run] at hk
@@ -58,7 +58,7 @@ theorem mkProcessOps_sound_for_allowedStep
     dsimp only [execProcessReq, Internal.mkProcessOps, StateT.run, bind, Bind.bind, StateT.bind, pure, Pure.pure, StateT.pure]
     cases hres : sig.isNptlReserved with
     | true =>
-      simp [pure, Pure.pure, StateT.pure, hres, allowedStep, validateReqBeforeKernel]
+      simp [outcomeOfUnit, pure, Pure.pure, StateT.pure, hres, allowedStep, validateReqBeforeKernel]
     | false =>
       have hs := hsound.pidfd_send_signal_sound s hid sig psf hres
       dsimp only [StateT.run] at hs
