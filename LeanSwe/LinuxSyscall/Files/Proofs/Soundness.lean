@@ -23,6 +23,39 @@ private theorem replicateZeroBytesLoop_size (n : Nat) (acc : ByteArray) :
     (replicateZeroBytes n).size = n :=
   replicateZeroBytes_data_size n
 
+private theorem replicateZeroBytesLoop_get (n : Nat) (acc : ByteArray)
+    (hAcc : ∀ j (hj : j < acc.size), acc[j] = 0) :
+    ∀ i (hi : i < (replicateZeroBytesLoop n acc).size), (replicateZeroBytesLoop n acc)[i] = 0 := by
+  induction n generalizing acc with
+  | zero => exact hAcc
+  | succ k ih =>
+    apply ih (acc.push 0)
+    intro j hj
+    show (acc.data.push 0)[j] = 0
+    by_cases hLt : j < acc.data.size
+    · rw [Array.getElem_push_lt hLt]; exact hAcc j hLt
+    · have hEq : j = acc.data.size := by
+        have hj' : j < (acc.data.push 0).size := hj
+        rw [Array.size_push] at hj'
+        omega
+      subst hEq
+      exact Array.getElem_push_eq
+
+/-- Replicating `0x00` via `replicateZeroBytes` satisfies `allBytesZeroLoop`. -/
+theorem allBytesZeroLoop_replicate_zero (cap : Nat) :
+    ∀ rem i : Nat, allBytesZeroLoop (replicateZeroBytes cap) i rem = true
+  | 0, _ => rfl
+  | rem + 1, i => by
+    unfold allBytesZeroLoop
+    split
+    · rename_i h
+      have hElem : (replicateZeroBytes cap)[i] = (0 : UInt8) :=
+        replicateZeroBytesLoop_get cap (ByteArray.emptyWithCapacity cap)
+          (fun _ hj => absurd hj (Nat.not_lt_zero _)) i h
+      simp only [hElem, bne_self_eq_false, Bool.false_eq_true, ↓reduceIte]
+      exact allBytesZeroLoop_replicate_zero cap rem (i + 1)
+    · rfl
+
 @[simp] private theorem sliceBytes_data (b : ByteArray) (start len : Nat) :
     (sliceBytes b start len).data = b.data.extract start (min b.data.size (start + len)) := by
   unfold sliceBytes
