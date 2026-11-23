@@ -189,17 +189,6 @@ private theorem vfsTreeNodes_insert_dir (t : VfsTree) (parCanon lastSeg : String
     simp [vfsTreeNodes, hKCanonF, hBeqF]
 
 
-private theorem vfsTreeNodes_set_preserves_none (t : VfsTree) (segs : List String) (lastSeg : String) (m' : Nat)
-    (hDir : ∃ dm dch, vfsTreeGet t segs = some (.dir dm dch))
-    (hNone : vfsTreeGet t (segs ++ [lastSeg]) = none) (q : String) (hq : vfsTreeNodes t q = none)
-    (hQCanon : isCanonPath q = true) (hNe : vfsSplitSegs q ≠ segs ++ [lastSeg]) :
-    vfsTreeNodes (vfsTreeSet t (segs ++ [lastSeg]) (some (vfsEmptyDir m'))) q = none := by
-  simp only [vfsTreeNodes, hQCanon, ↓reduceIte] at hq ⊢
-  rw [vfsTreeGet_set_emptyDir m' segs lastSeg t (vfsSplitSegs q) hDir hNone]
-  have hBeqF : (vfsSplitSegs q == segs ++ [lastSeg]) = false := beq_false_of_ne hNe
-  simp [hBeqF, hq]
-
-
 private theorem vfsTreeSet_emptyDir_nodes_root_child (t : VfsTree) (child : String)
     (hPar : ∃ dm, vfsTreeNodes t "/" = some (.dir dm))
     (hValid : Internal.validFileName child = true)
@@ -315,12 +304,6 @@ theorem proof_fs_vfs_mkdir_existingFails :
     rw [hRes]
     simp only [Bool.false_and, Bool.false_eq_true, ↓reduceIte, StateT.pure]
     exact ⟨⟨⟨_, rfl, rfl⟩, rfl⟩, trivial⟩
-
-
-private theorem vfsResolveSegs_root_dir (m : Nat) :
-    vfsResolveSegs (fun k => if k == "/" then some (.dir m) else none) "/" [] true 512 = .ok ("/", .dir m) := by
-  unfold vfsResolveSegs
-  rfl
 
 
 private theorem vfsLstat_broken_symlink :
