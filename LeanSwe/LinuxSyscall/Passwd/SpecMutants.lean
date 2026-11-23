@@ -1,4 +1,5 @@
 import LeanSwe.LinuxSyscall.Passwd.SpecTests
+import LeanSwe.LinuxSyscall.Passwd.Proofs
 
 /-! Compile-time negative specification mutants for `LeanSwe.LinuxSyscall.Passwd`. -/
 
@@ -17,7 +18,7 @@ private def overCapMutantName : ByteArray :=
 
 private theorem validPasswdName_overCapMutantName :
     validPasswdName overCapMutantName = true :=
-  validPasswdName_replicate (MAX_PASSWD_NAME_BYTES + 1) 97 (by decide)
+  Proofs.validPasswdName_replicate (MAX_PASSWD_NAME_BYTES + 1) 97 (by decide)
 
 private theorem overCapMutantName_size_gt :
     overCapMutantName.size > MAX_PASSWD_NAME_BYTES := by

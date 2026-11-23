@@ -69,6 +69,20 @@ private theorem treemap_foldl_insert {K V : Type} [Ord K] [Std.TransOrd K] [Std.
     have hmem0 := (Impl.mem_toList_iff_get?_eq_some t.inner.wf).2 hget'
     exact hfold.2 ⟨k', v'⟩ hmem0
 
+/-- Any repeated non-zero byte array passes `validPasswdName` in `O(1)` proof size. -/
+theorem validPasswdName_replicate (n : Nat) (c : UInt8) (hc : c ≠ 0) :
+    validPasswdName (ByteArray.mk (Array.replicate n c)) = true := by
+  unfold validPasswdName
+  rw [hasEmbeddedNul_eq_toList_any]
+  have hfalse : (Array.replicate n c).toList.any (· == (0 : UInt8)) = false := by
+    rw [List.any_eq_false]
+    intro x hx
+    rw [Array.toList_replicate, List.mem_replicate] at hx
+    simp [hx.2, hc]
+  change !((Array.replicate n c).toList.any (· == (0 : UInt8))) = true
+  rw [hfalse]
+  rfl
+
 private def overCapWitness : ByteArray :=
   ByteArray.mk (Array.replicate (MAX_PASSWD_NAME_BYTES + 1) 97)
 
