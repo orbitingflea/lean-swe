@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Verify PR labels for locked specs (`spec-add`/`spec-change`) and foreign budget (`add-foreign-lang`).
 
-Locked spec files (`Core/*.lean` and `LeanSwe/**/{Types,Model,SpecTests,Interface}.lean`,
+Locked spec files (`Core/*.lean`, `LeanSwe/**/{Types,Model,SpecTests,Interface}.lean`,
+and `LeanSwe/**/{Types,Model,SpecTests,Interface}/**/*.lean`,
 except brand-new `LeanSwe/<Pkg>` packages absent at the base commit) always require a PR label.
 Every top-level unit in a Lean file is split at unindented column-0 boundaries outside nested
 block comments (`/- ... -/`), doc comments (`/-- ... -/`), string literals (including
@@ -12,11 +13,11 @@ continuations stay attached to the preceding declaration. A unit is unchanged if
 comment included) is byte-identical. Pure declaration additions (`def`, `theorem`, `abbrev`,
 `structure`, `inductive`, `example`, `mutual`) with at most allowlisted `@[...]` attributes,
 appended after all non-`end` base units (before any unchanged trailing `end` lines) or added as a
-validated new `{Types,Model,SpecTests}.lean` file in an existing package, require `spec-add` (also
-satisfied by `spec-change`). Any alteration (including adding fields to an existing
+validated new `{Types,Model,SpecTests}{.lean,/**/*.lean}` file in an existing package, require
+`spec-add` (also satisfied by `spec-change`). Any alteration (including adding fields to an existing
 `EmpiricalAssumptions` structure, editing doc comments, or adding `assume`), removal, rename/copy,
-middle insertion, new `Core/*.lean` or `Interface.lean`, `opaque`/`instance`/`class`, unsafe or
-custom `@[...]` attributes, embedded/indented/same-line extra commands, or non-declaration
+middle insertion, new `Core/*.lean` or `Interface{.lean,/**/*.lean}`, `opaque`/`instance`/`class`,
+unsafe or custom `@[...]` attributes, embedded/indented/same-line extra commands, or non-declaration
 directive requires `spec-change`.
 
 `.foreign-budget.json` is enforced as a strictly orthogonal one-way ratchet: deleting files,
@@ -41,7 +42,8 @@ from pathlib import Path
 import subprocess
 import sys
 
-SPEC_BASENAMES = frozenset({"Types.lean", "Model.lean", "SpecTests.lean", "Interface.lean"})
+SPEC_SUBDIRS = frozenset({"Types", "Model", "SpecTests", "Interface"})
+SPEC_BASENAMES = frozenset(f"{d}.lean" for d in SPEC_SUBDIRS)
 FOREIGN_BUDGET_PATH = ".foreign-budget.json"
 BUDGET_ROOT_KEYS = frozenset({"version", "files", "vendored_files", "function_overrides", "named_thread_helpers"})
 BUDGET_FILE_KEYS = frozenset({"max_lines", "legacy_unmigrated"})
@@ -180,8 +182,11 @@ def is_spec_file(rel_path: str) -> bool:
         return False
     if parts[0] == "Core" and rel_path.endswith(".lean"):
         return True
-    if parts[0] == "LeanSwe" and len(parts) >= 2 and parts[-1] in SPEC_BASENAMES:
-        return True
+    if parts[0] == "LeanSwe" and len(parts) >= 2 and rel_path.endswith(".lean"):
+        if parts[-1] in SPEC_BASENAMES:
+            return True
+        if any(seg in SPEC_SUBDIRS for seg in parts[1:-1]):
+            return True
     return False
 
 
@@ -686,7 +691,12 @@ def _is_valid_dotted_name(tokens: list[LeanToken], blocked: frozenset[str]) -> b
 def validate_new_spec_file(rel_path: str, head_text: str) -> tuple[bool, str]:
     """Validate a newly added (`status == 'A'`) locked spec file for `spec-add` eligibility."""
     path_obj = Path(rel_path)
-    if (path_obj.parts and path_obj.parts[0] == "Core") or path_obj.name == "Interface.lean":
+    is_interface_file = path_obj.name == "Interface.lean" or (
+        path_obj.parts[:1] == ("LeanSwe",)
+        and rel_path.endswith(".lean")
+        and "Interface" in path_obj.parts[1:-1]
+    )
+    if (path_obj.parts and path_obj.parts[0] == "Core") or is_interface_file:
         return False, f"new locked spec file '{rel_path}' expands Core or Interface boundary"
 
     head_units, head_clean = split_lean_units(head_text)

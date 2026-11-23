@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit and git-integration tests for `.foreign-budget.json` ratchet and Lean import policy in check_spec_change.py."""
+"""Unit and git-integration tests for spec-lock rules, `.foreign-budget.json` ratchet, and Lean import policy in check_spec_change.py."""
 
 from __future__ import annotations
 
@@ -575,6 +575,190 @@ class ImportHygieneCliTests(unittest.TestCase):
         res = self._run_cli(REPO_ROOT, "--check-imports")
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn("IMPORT_POLICY_CHECK: ok", res.stdout)
+
+
+class SpecSubdirLockTests(unittest.TestCase):
+    """Unit and git-integration tests verifying locked spec subdirectory coverage."""
+
+    def _run_cli(self, repo: Path, base: str, head: str, *extra_args: str) -> subprocess.CompletedProcess[str]:
+        script = Path(__file__).resolve().parent / "check_spec_change.py"
+        env = {k: v for k, v in os.environ.items() if k != "GITHUB_EVENT_PATH"}
+        return subprocess.run(
+            [sys.executable, "-B", str(script), "--base", base, "--head", head, *extra_args],
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    def _init_repo(self, tmp: str) -> Path:
+        repo = Path(tmp)
+        _git(repo, "init")
+        _git(repo, "config", "user.name", "Test")
+        _git(repo, "config", "user.email", "test@example.com")
+        for rel, body in (
+            ("LeanSwe/Tar/SpecTests/Helpers.lean", "namespace LeanSwe.Tar\ndef h : Nat := 1\nend LeanSwe.Tar\n"),
+            ("LeanSwe/Toml/SpecTests/Cases.lean", "namespace LeanSwe.Toml\ndef c : Nat := 1\nend LeanSwe.Toml\n"),
+            ("LeanSwe/LinuxSyscall/Net/Model/Step.lean", "def stepNet : Nat := 1\n"),
+            ("LeanSwe/Tar/Impl.lean", "def tarImpl : Nat := 1\n"),
+        ):
+            p = repo / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(body, encoding="utf-8")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "base")
+        return repo
+
+    def test_is_spec_file_covers_basenames_and_subdirs(self) -> None:
+        locked = [
+            "Core/NondetTest.lean",
+            "Core/Sub/Helper.lean",
+            "LeanSwe/Tar/Types.lean",
+            "LeanSwe/Tar/Model.lean",
+            "LeanSwe/Tar/SpecTests.lean",
+            "LeanSwe/Tar/Interface.lean",
+            "LeanSwe/Tar/SpecTests/Helpers.lean",
+            "LeanSwe/Toml/SpecTests/Cases.lean",
+            "LeanSwe/Toml/SpecTests/Sub/Extra.lean",
+            "LeanSwe/LinuxSyscall/Net/Model/Step.lean",
+            "LeanSwe/Demo/Types/Sub.lean",
+            "LeanSwe/Demo/Interface/Sub.lean",
+            "LeanSwe/SpecTests/Helpers.lean",
+        ]
+        for rel in locked:
+            with self.subTest(locked=rel):
+                self.assertTrue(check_spec_change.is_spec_file(rel))
+
+        unlocked = [
+            "Core/README.md",
+            "LeanSwe/Tar/Impl.lean",
+            "LeanSwe/Tar/Impl/Helper.lean",
+            "LeanSwe/Tar/Proofs/ByteModel.lean",
+            "LeanSwe/Toml/Proofs/ModelCheck.lean",
+            "LeanSwe/Tar/SpecMutants.lean",
+            "LeanSwe/Tar/RuntimeTests.lean",
+            "LeanSwe/LinuxSyscall/Files/Seed.lean",
+            "LeanSwe/Demo/SpecTestsHelper/Foo.lean",
+            "LeanSwe/Demo/ModelExtra/Bar.lean",
+            "LeanSwe/Tar/SpecTests/README.md",
+            "harness/Fuzz/SpecTests/Foo.lean",
+            "scripts/SpecTests/Foo.lean",
+            "LeanSwe.lean",
+        ]
+        for rel in unlocked:
+            with self.subTest(unlocked=rel):
+                self.assertFalse(check_spec_change.is_spec_file(rel))
+
+    def test_tar_and_toml_spec_subdir_add_and_modify_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(tmp)
+            tar_helpers = repo / "LeanSwe/Tar/SpecTests/Helpers.lean"
+            toml_cases = repo / "LeanSwe/Toml/SpecTests/Cases.lean"
+
+            tar_helpers.write_text(
+                "namespace LeanSwe.Tar\ndef h : Nat := 1\ndef h2 : Nat := 2\nend LeanSwe.Tar\n",
+                encoding="utf-8",
+            )
+            toml_cases.write_text(
+                "namespace LeanSwe.Toml\ndef c : Nat := 1\ndef c2 : Nat := 2\nend LeanSwe.Toml\n",
+                encoding="utf-8",
+            )
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "append pure spec helpers")
+
+            res_none = self._run_cli(repo, "HEAD~1", "HEAD")
+            self.assertNotEqual(res_none.returncode, 0)
+            self.assertIn("UNMARKED_SPEC_ADD", res_none.stderr)
+            self.assertIn("LeanSwe/Tar/SpecTests/Helpers.lean", res_none.stderr)
+            self.assertIn("LeanSwe/Toml/SpecTests/Cases.lean", res_none.stderr)
+
+            res_add = self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-add")
+            self.assertEqual(res_add.returncode, 0, res_add.stderr)
+
+            tar_helpers.write_text(
+                "namespace LeanSwe.Tar\ndef h : Nat := 99\ndef h2 : Nat := 2\nend LeanSwe.Tar\n",
+                encoding="utf-8",
+            )
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "edit existing helper")
+
+            res_mod_none = self._run_cli(repo, "HEAD~1", "HEAD")
+            self.assertNotEqual(res_mod_none.returncode, 0)
+            self.assertIn("UNMARKED_SPEC_CHANGE", res_mod_none.stderr)
+
+            res_mod_add = self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-add")
+            self.assertNotEqual(res_mod_add.returncode, 0)
+            self.assertIn("SPEC_CHANGE_REQUIRED", res_mod_add.stderr)
+
+            res_mod_change = self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-change")
+            self.assertEqual(res_mod_change.returncode, 0, res_mod_change.stderr)
+
+            toml_cases.write_text(
+                "namespace LeanSwe.Toml\ndef c : Nat := 42\ndef c2 : Nat := 2\nend LeanSwe.Toml\n",
+                encoding="utf-8",
+            )
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "edit existing toml case")
+
+            res_toml_add = self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-add")
+            self.assertNotEqual(res_toml_add.returncode, 0)
+            self.assertIn("LeanSwe/Toml/SpecTests/Cases.lean", res_toml_add.stderr)
+
+            res_toml_change = self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-change")
+            self.assertEqual(res_toml_change.returncode, 0, res_toml_change.stderr)
+
+    def test_new_and_moved_spec_subdir_files_and_interface_subdir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(tmp)
+
+            extra = repo / "LeanSwe/Tar/SpecTests/Extra.lean"
+            extra.write_text("namespace LeanSwe.Tar\ndef e : Nat := 1\nend LeanSwe.Tar\n", encoding="utf-8")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "add pure spec submodule")
+            self.assertNotEqual(self._run_cli(repo, "HEAD~1", "HEAD").returncode, 0)
+            res_extra_add = self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-add")
+            self.assertEqual(res_extra_add.returncode, 0, res_extra_add.stderr)
+
+            iface_sub = repo / "LeanSwe/Tar/Interface/Extra.lean"
+            iface_sub.parent.mkdir(parents=True, exist_ok=True)
+            iface_sub.write_text("namespace LeanSwe.Tar\ndef i : Nat := 1\nend LeanSwe.Tar\n", encoding="utf-8")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "add interface submodule")
+            res_iface_add = self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-add")
+            self.assertNotEqual(res_iface_add.returncode, 0)
+            self.assertIn("expands Core or Interface boundary", res_iface_add.stderr)
+            res_iface_chg = self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-change")
+            self.assertEqual(res_iface_chg.returncode, 0, res_iface_chg.stderr)
+
+            net_step = repo / "LeanSwe/LinuxSyscall/Net/Model/Step.lean"
+            net_step.write_text("def stepNet : Nat := 2\n", encoding="utf-8")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "edit model submodule")
+            self.assertNotEqual(self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-add").returncode, 0)
+            self.assertEqual(self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-change").returncode, 0)
+
+            _git(repo, "mv", "LeanSwe/Tar/Impl.lean", "LeanSwe/Tar/SpecTests/Sneaky.lean")
+            _git(repo, "commit", "-m", "rename impl into spectests")
+            self.assertNotEqual(self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-add").returncode, 0)
+            self.assertEqual(self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-change").returncode, 0)
+
+            _git(repo, "mv", "LeanSwe/Tar/SpecTests/Sneaky.lean", "LeanSwe/Tar/MovedOut.lean")
+            _git(repo, "commit", "-m", "rename out of spectests")
+            self.assertNotEqual(self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-add").returncode, 0)
+            self.assertEqual(self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-change").returncode, 0)
+
+            _git(repo, "rm", "LeanSwe/Tar/SpecTests/Extra.lean")
+            _git(repo, "commit", "-m", "delete spectests submodule")
+            self.assertNotEqual(self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-add").returncode, 0)
+            self.assertEqual(self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-change").returncode, 0)
+
+            fresh = repo / "LeanSwe/FreshPkg/SpecTests/Helpers.lean"
+            fresh.parent.mkdir(parents=True, exist_ok=True)
+            fresh.write_text("def fresh : Nat := 1\n", encoding="utf-8")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "brand new package spectests submodule")
+            res_fresh = self._run_cli(repo, "HEAD~1", "HEAD")
+            self.assertEqual(res_fresh.returncode, 0, res_fresh.stderr)
 
 
 if __name__ == "__main__":

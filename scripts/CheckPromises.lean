@@ -2551,7 +2551,7 @@ private def dagPkgMarkerSegs : Array String := #[
 
 private def dagSubdirExcludeSegs : Array Name := #[
   `Proofs, `Model, `SpecTests, `Properties, `SpecMutants, `RuntimeTests,
-  `Impl, `Interface, `SysBridge, `Cases, `Helpers, `Host, `Init, `Aeneas, `TestSupport
+  `Impl, `Interface, `SysBridge, `Host, `Init, `Aeneas, `TestSupport
 ]
 
 private def isNamePrefixComps (pfx comps : List Name) : Bool :=
@@ -2615,8 +2615,7 @@ private def dagRoleOf (knownPkgs : Array Name) (m : Name) : DagModuleRole :=
           .specTests
         else if head == `Types then
           .types
-        else if head == `Model || rem == [`Helpers, `Model] || rem == [`Cases, `Model] ||
-            m == `LeanSwe.LinuxSyscall.Files.Seed then
+        else if head == `Model || m == `LeanSwe.LinuxSyscall.Files.Seed then
           .model
         else if head == `Interface then
           .iface

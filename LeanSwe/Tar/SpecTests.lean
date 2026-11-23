@@ -2,7 +2,7 @@ import Core.NondetTest
 import Core.Assumptions
 import LeanSwe.Tar.Types
 import LeanSwe.Tar.Model
-import LeanSwe.Tar.Helpers.Model
+import LeanSwe.Tar.SpecTests.Helpers
 
 namespace LeanSwe.Tar
 
