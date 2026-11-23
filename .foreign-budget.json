@@ -178,7 +178,7 @@
       "legacy_unmigrated": false
     },
     "LeanSwe/LinuxSyscall/c/files_shim.c": {
-      "max_lines": 660,
+      "max_lines": 679,
       "legacy_unmigrated": false
     },
     "harness/Fuzz/LinuxSyscall/c/fuzz_env.c": {

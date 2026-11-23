@@ -66,7 +66,7 @@ theorem modelOps_kill_sound (s : ProcessSysState) (pidOrNegPgid : Int32) (sig : 
     allowedStep s (.kill pidOrNegPgid sig) r.1 = some r.2 := by
   cases hpre : validateReqBeforeKernel s (.kill pidOrNegPgid sig) with
   | some preErr =>
-    simp only [execProcessReq, modelOps, allowedStep, hpre, StateT.run, get, getThe,
+    simp only [execProcessReq, outcomeOfUnit, modelOps, allowedStep, hpre, StateT.run, get, getThe,
       MonadStateOf.get, StateT.get, pure, Pure.pure, StateT.pure, bind, Bind.bind, StateT.bind,
       beq_self_eq_true, ↓reduceIte]
   | none =>

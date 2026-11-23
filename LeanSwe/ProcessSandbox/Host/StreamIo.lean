@@ -311,12 +311,12 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
               Files.closeOpt files st.errFd?
               Files.closeOpt files st.statusFd?
               return .error (processErrToSandboxErr e)
-            | .timedOut =>
+            | .timedOut outChunks' outLen' =>
               Files.closeOpt files inFdNext?
               Files.closeOpt files st.errFd?
               Files.closeOpt files st.statusFd?
               return classifyBoxStreamResult program cwd true false st.statusMsg?
-                (concatChunks st.outChunks st.outLen) (concatChunks st.errChunks st.errLen)
+                (concatChunks outChunks' outLen') (concatChunks st.errChunks st.errLen)
             | .limitExceeded outChunks' outLen' =>
               Files.closeOpt files inFdNext?
               Files.closeOpt files st.errFd?
@@ -339,12 +339,12 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
                 Files.closeOpt files outFdNext?
                 Files.closeOpt files st.statusFd?
                 return .error (processErrToSandboxErr e)
-              | .timedOut =>
+              | .timedOut errChunks' errLen' =>
                 Files.closeOpt files inFdNext?
                 Files.closeOpt files outFdNext?
                 Files.closeOpt files st.statusFd?
                 return classifyBoxStreamResult program cwd true false st.statusMsg?
-                  (concatChunks outChunks' outLen') (concatChunks st.errChunks st.errLen)
+                  (concatChunks outChunks' outLen') (concatChunks errChunks' errLen')
               | .limitExceeded errChunks' errLen' =>
                 Files.closeOpt files inFdNext?
                 Files.closeOpt files outFdNext?

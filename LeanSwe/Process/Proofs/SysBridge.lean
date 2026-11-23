@@ -663,7 +663,11 @@ private theorem drainPipeStep_spec {S fd : Type}
     let r := (SysBridge.drainPipeStep files timeRand pipeFd otherLen startMs timeoutMs? maxOutputBytes?
       chunks curLen iterBytes prog fuel).run s
     getTbl r.2 = getTbl s ∧
-    (r.1 = .timedOut → timeoutMs?.isSome = true ∧ openFds r.2 = fdAt false) ∧
+    (∀ ch' len', r.1 = .timedOut ch' len' →
+      timeoutMs?.isSome = true ∧
+      openFds r.2 = fdAt false ∧
+      (ch'.toList.map ByteArray.size).sum = len' ∧
+      (∀ lim, maxOutputBytes? = some lim → len' + otherLen ≤ lim)) ∧
     (∀ ch' len', r.1 = .limitExceeded ch' len' →
       openFds r.2 = fdAt false ∧
       maxOutputBytes?.isSome = true ∧
@@ -685,7 +689,7 @@ private theorem drainPipeStep_spec {S fd : Type}
   | zero =>
     unfold SysBridge.drainPipeStep
     dsimp only [pure, StateT.pure, StateT.run]
-    refine ⟨rfl, (by intro h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
+    refine ⟨rfl, (by intro _ _ h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
     intro fd? ch' len' _ hEq
     injection hEq with hFd hCh hLen _
     subst hCh hLen
@@ -694,7 +698,7 @@ private theorem drainPipeStep_spec {S fd : Type}
     unfold SysBridge.drainPipeStep
     split
     · dsimp only [pure, StateT.pure, StateT.run]
-      refine ⟨rfl, (by intro h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
+      refine ⟨rfl, (by intro _ _ h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
       intro fd? ch' len' _ hEq
       injection hEq with hFd hCh hLen _
       subst hCh hLen
@@ -713,7 +717,7 @@ private theorem drainPipeStep_spec {S fd : Type}
         dsimp only [pure, StateT.pure, StateT.run]
         obtain ⟨hT, hO⟩ := closeOpt_optFdOf getTbl openFds files hCloseT pipeFd fdAt hErase true s1 hFcO
         refine ⟨hT.trans hFcT,
-          (by intro h; cases h), (by intro _ _ h; cases h), (by intro _ _ _ _ h; cases h), ?_⟩
+          (by intro _ _ h; cases h), (by intro _ _ h; cases h), (by intro _ _ _ _ h; cases h), ?_⟩
         intro err hEq
         injection hEq with hE
         rw [← hE]
@@ -736,7 +740,7 @@ private theorem drainPipeStep_spec {S fd : Type}
               dsimp only [pure, StateT.pure, StateT.run]
               obtain ⟨hT, hO⟩ := closeOpt_optFdOf getTbl openFds files hCloseT pipeFd fdAt hErase true s2 hFrO
               refine ⟨hT.trans hFrT,
-                (by intro h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
+                (by intro _ _ h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
               intro fd? ch' len' _ hEq
               injection hEq with hFd hCh hLen _
               subst hCh hLen
@@ -768,7 +772,7 @@ private theorem drainPipeStep_spec {S fd : Type}
                           curLen + (chunk.extract 0 (maxOut - (curLen + otherLen))).size := by
                       simp [Array.toList_push, hSum]
                     refine ⟨hT.trans hFrT,
-                      (by intro h; cases h), ?_, (by intro _ _ _ _ h; cases h), (by intro _ h; cases h)⟩
+                      (by intro _ _ h; cases h), ?_, (by intro _ _ _ _ h; cases h), (by intro _ h; cases h)⟩
                     intro ch' len' hEq
                     injection hEq with hCh hLen
                     subst hCh hLen
@@ -784,7 +788,7 @@ private theorem drainPipeStep_spec {S fd : Type}
                     dsimp only [pure, StateT.pure, StateT.run]
                     obtain ⟨hT, hO⟩ := closeOpt_optFdOf getTbl openFds files hCloseT pipeFd fdAt hErase true s2 hFrO
                     refine ⟨hT.trans hFrT,
-                      (by intro h; cases h), ?_, (by intro _ _ _ _ h; cases h), (by intro _ h; cases h)⟩
+                      (by intro _ _ h; cases h), ?_, (by intro _ _ _ _ h; cases h), (by intro _ h; cases h)⟩
                     intro ch' len' hEq
                     injection hEq with hCh hLen
                     subst hCh hLen
@@ -809,7 +813,7 @@ private theorem drainPipeStep_spec {S fd : Type}
               exact ⟨hFi.trans hFrT, hTi, hLi, hCi, hEi⟩
             · split
               · dsimp only [pure, StateT.pure, StateT.run]
-                refine ⟨hFrT, (by intro h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
+                refine ⟨hFrT, (by intro _ _ h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
                 intro fd? ch' len' _ hEq
                 injection hEq with hFd hCh hLen _
                 subst hCh hLen
@@ -818,7 +822,7 @@ private theorem drainPipeStep_spec {S fd : Type}
                 dsimp only [pure, StateT.pure, StateT.run]
                 obtain ⟨hT, hO⟩ := closeOpt_optFdOf getTbl openFds files hCloseT pipeFd fdAt hErase true s2 hFrO
                 refine ⟨hT.trans hFrT,
-                  (by intro h; cases h), (by intro _ _ h; cases h), (by intro _ _ _ _ h; cases h), ?_⟩
+                  (by intro _ _ h; cases h), (by intro _ _ h; cases h), (by intro _ _ _ _ h; cases h), ?_⟩
                 intro err hEq
                 injection hEq with hE
                 subst hE
@@ -827,9 +831,12 @@ private theorem drainPipeStep_spec {S fd : Type}
           rw [stateT_bind_eq]
           dsimp only [pure, StateT.pure, StateT.run]
           obtain ⟨hT, hO⟩ := closeOpt_optFdOf getTbl openFds files hCloseT pipeFd fdAt hErase true s1 hFcO
-          exact ⟨hT.trans hFcT,
-            fun _ => ⟨hTo rem hCt, hO⟩, (by intro _ _ h; cases h),
+          refine ⟨hT.trans hFcT, ?_, (by intro _ _ h; cases h),
             (by intro _ _ _ _ h; cases h), (by intro _ h; cases h)⟩
+          intro ch' len' hEq
+          injection hEq with hCh hLen
+          subst hCh hLen
+          exact ⟨hTo rem hCt, hO, hSum, hCap⟩
 
 private theorem streamPipesLoop_spec {S fd : Type} [DecidableEq fd]
     (getTbl : S → ProcTableState fd)
@@ -1043,8 +1050,11 @@ private theorem streamPipesLoop_spec {S fd : Type} [DecidableEq fd]
                         (SysBridge.stepDrainIfReady outReady files timeRand st.outFd? st.errLen startMs timeoutMs? maxOutputBytes?
                           st.outChunks st.outLen stepFuel).run s2 = (outRes, s3) ∧
                         getTbl s3 = getTbl s ∧
-                        (outRes = .timedOut →
-                          timeoutMs?.isSome = true ∧ openFds s3 = pipePrefix errR outR inW bErr false bIn' base) ∧
+                        (∀ ch' len', outRes = .timedOut ch' len' →
+                          timeoutMs?.isSome = true ∧
+                          openFds s3 = pipePrefix errR outR inW bErr false bIn' base ∧
+                          (ch'.toList.map ByteArray.size).sum = len' ∧
+                          (∀ lim, maxOutputBytes? = some lim → len' + st.errLen ≤ lim)) ∧
                         (∀ ch' len', outRes = .limitExceeded ch' len' →
                           openFds s3 = pipePrefix errR outR inW bErr false bIn' base ∧
                           maxOutputBytes?.isSome = true ∧
@@ -1062,7 +1072,7 @@ private theorem streamPipesLoop_spec {S fd : Type} [DecidableEq fd]
                     cases outReady
                     · simp only [Bool.false_eq_true, ↓reduceIte]
                       refine ⟨.cont st.outFd? st.outChunks st.outLen false, s2, rfl, hFs2,
-                        (by intro h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
+                        (by intro _ _ h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
                       intro fd? ch' len' _ hEq; injection hEq with hFd h1 h2 _; subst hFd h1 h2
                       exact ⟨⟨bOut, hOut, hOs2⟩, hOutSum, hCap⟩
                     · simp only [↓reduceIte]
@@ -1071,7 +1081,7 @@ private theorem streamPipesLoop_spec {S fd : Type} [DecidableEq fd]
                       cases bOut with
                       | false =>
                         refine ⟨.cont none st.outChunks st.outLen false, s2, rfl, hFs2,
-                          (by intro h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
+                          (by intro _ _ h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
                         intro fd? ch' len' _ hEq; injection hEq with hFd h1 h2 _; subst h1 h2
                         exact ⟨⟨false, hFd.symm, hOs2⟩, hOutSum, hCap⟩
                       | true =>
@@ -1110,11 +1120,11 @@ private theorem streamPipesLoop_spec {S fd : Type} [DecidableEq fd]
                     refine ⟨hTEnd, hOEnd,
                       (by intro _ _ h; cases h), (by intro _ _ h; cases h), (by intro _ _ h; cases h), ?_⟩
                     intro err hEq; injection hEq with hE; rw [← hE]; exact hMsgO
-                  | timedOut =>
+                  | timedOut outChunks' outLen' =>
                     dsimp only
                     rw [stateT_bind_eq, stateT_bind_eq]
                     dsimp only [pure, StateT.pure, StateT.run]
-                    obtain ⟨hSomeTo, hO3⟩ := hToO rfl
+                    obtain ⟨hSomeTo, hO3, _, _⟩ := hToO outChunks' outLen' rfl
                     obtain ⟨hTEnd, hOEnd⟩ := hCloseInAndErr s3 hO3 hFs3
                     exact ⟨hTEnd, hOEnd,
                       (by intro _ _ h; cases h), fun _ _ _ => hSomeTo,
@@ -1145,8 +1155,11 @@ private theorem streamPipesLoop_spec {S fd : Type} [DecidableEq fd]
                           (SysBridge.stepDrainIfReady errReady files timeRand st.errFd? outLen' startMs timeoutMs? maxOutputBytes?
                             st.errChunks st.errLen stepFuel).run s3 = (errRes, s4) ∧
                           getTbl s4 = getTbl s ∧
-                          (errRes = .timedOut →
-                            timeoutMs?.isSome = true ∧ openFds s4 = pipePrefix errR outR inW false bOut' bIn' base) ∧
+                          (∀ ch' len', errRes = .timedOut ch' len' →
+                            timeoutMs?.isSome = true ∧
+                            openFds s4 = pipePrefix errR outR inW false bOut' bIn' base ∧
+                            (ch'.toList.map ByteArray.size).sum = len' ∧
+                            (∀ lim, maxOutputBytes? = some lim → len' + outLen' ≤ lim)) ∧
                           (∀ ch' len', errRes = .limitExceeded ch' len' →
                             openFds s4 = pipePrefix errR outR inW false bOut' bIn' base ∧
                             maxOutputBytes?.isSome = true ∧
@@ -1164,7 +1177,7 @@ private theorem streamPipesLoop_spec {S fd : Type} [DecidableEq fd]
                       cases errReady
                       · simp only [Bool.false_eq_true, ↓reduceIte]
                         refine ⟨.cont st.errFd? st.errChunks st.errLen false, s3, rfl, hFs3,
-                          (by intro h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
+                          (by intro _ _ h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
                         intro fd? ch' len' _ hEq; injection hEq with hFd h1 h2 _; subst hFd h1 h2
                         exact ⟨⟨bErr, hErr, hOs3⟩, hErrSum, hErrCapIn⟩
                       · simp only [↓reduceIte]
@@ -1173,7 +1186,7 @@ private theorem streamPipesLoop_spec {S fd : Type} [DecidableEq fd]
                         cases bErr with
                         | false =>
                           refine ⟨.cont none st.errChunks st.errLen false, s3, rfl, hFs3,
-                            (by intro h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
+                            (by intro _ _ h; cases h), (by intro _ _ h; cases h), ?_, (by intro _ h; cases h)⟩
                           intro fd? ch' len' _ hEq; injection hEq with hFd h1 h2 _; subst h1 h2
                           exact ⟨⟨false, hFd.symm, hOs3⟩, hErrSum, hErrCapIn⟩
                         | true =>
@@ -1212,11 +1225,11 @@ private theorem streamPipesLoop_spec {S fd : Type} [DecidableEq fd]
                       refine ⟨hTEnd, hOEnd,
                         (by intro _ _ h; cases h), (by intro _ _ h; cases h), (by intro _ _ h; cases h), ?_⟩
                       intro err hEq; injection hEq with hE; rw [← hE]; exact hMsgE
-                    | timedOut =>
+                    | timedOut errChunks' errLen' =>
                       dsimp only
                       rw [stateT_bind_eq, stateT_bind_eq]
                       dsimp only [pure, StateT.pure, StateT.run]
-                      obtain ⟨hSomeTo, hO4⟩ := hToE rfl
+                      obtain ⟨hSomeTo, hO4, _, _⟩ := hToE errChunks' errLen' rfl
                       obtain ⟨hTEnd, hOEnd⟩ := hCloseInAndOut s4 hO4 hFs4
                       exact ⟨hTEnd, hOEnd,
                         (by intro _ _ h; cases h), fun _ _ _ => hSomeTo,

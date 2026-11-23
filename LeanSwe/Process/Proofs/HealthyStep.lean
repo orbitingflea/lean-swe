@@ -195,21 +195,18 @@ structure RefinesHealthyProcOpsAt {S fd : Type}
   /-- `pipe2` transitions via canonical `LinuxSyscall.Process.healthyStep`. -/
   pipe2_healthy : ∀ s flags, (proj s).wf = true →
     let r := (ops.pipe2 flags).run s
-    let out : LinuxSyscall.Process.ProcessOutcome :=
-      match r.1 with | .ok (rf, wf) => .piped (toHid rf) (toHid wf) | .error e => .err e
-    LinuxSyscall.Process.healthyStep (proj s) (.pipe2 flags) out = some (proj r.2)
+    LinuxSyscall.Process.healthyStep (proj s) (.pipe2 flags)
+      (LinuxSyscall.Process.outcomeOfPiped (r.1.map fun p => (toHid p.1, toHid p.2))) = some (proj r.2)
   /-- `waitpid` transitions via canonical `LinuxSyscall.Process.healthyStep`. -/
   waitpid_healthy : ∀ s pid flags, (proj s).wf = true →
     let r := (ops.waitpid pid flags).run s
-    let out : LinuxSyscall.Process.ProcessOutcome :=
-      match r.1 with | .ok wr => .waited wr | .error e => .err e
-    LinuxSyscall.Process.healthyStep (proj s) (.waitpid pid flags) out = some (proj r.2)
+    LinuxSyscall.Process.healthyStep (proj s) (.waitpid pid flags)
+      (LinuxSyscall.Process.outcomeOfWaited r.1) = some (proj r.2)
   /-- `kill` transitions via canonical `LinuxSyscall.Process.healthyStep`. -/
   kill_healthy : ∀ s target sig, (proj s).wf = true →
     let r := (ops.kill target sig).run s
-    let out : LinuxSyscall.Process.ProcessOutcome :=
-      match r.1 with | .ok () => .unit | .error e => .err e
-    LinuxSyscall.Process.healthyStep (proj s) (.kill target sig) out = some (proj r.2)
+    LinuxSyscall.Process.healthyStep (proj s) (.kill target sig)
+      (LinuxSyscall.Process.outcomeOfUnit r.1) = some (proj r.2)
 
 /-- Scoped refinement predicate for the `FilesOpsM` subset (`close`, `read`, `write`, `fstatat`, `faccessat`, `fcntl`) consumed by `Process.SysBridge`, stated directly against canonical `LinuxSyscall.Files.healthyStep`. -/
 structure RefinesHealthyFilesOpsAt {S fd : Type}
@@ -437,21 +434,21 @@ theorem refinesHealthySysDeps_of_components {S : Type}
     intro e he
     refine ⟨hE e he, ?_⟩
     have hCrit := (LinuxSyscall.Process.healthyStep_implies_allowedStep hSt).2.2.2.1
-    simpa [he, LinuxSyscall.Process.isCriticalFault] using hCrit
+    simpa [he, Except.map, LinuxSyscall.Process.outcomeOfPiped, LinuxSyscall.Process.isCriticalFault] using hCrit
   waitpid_frame s pid flags := by
     obtain ⟨hT, hO⟩ := hWaitLens s pid flags
     have hSt := hProc.waitpid_healthy s pid flags (hWf s).1
     refine ⟨hT, hO, ?_⟩
     intro e he
     have hCrit := (LinuxSyscall.Process.healthyStep_implies_allowedStep hSt).2.2.2.1
-    simpa [he, LinuxSyscall.Process.isCriticalFault] using hCrit
+    simpa [he, LinuxSyscall.Process.outcomeOfWaited, LinuxSyscall.Process.isCriticalFault] using hCrit
   kill_frame s target sig := by
     obtain ⟨hT, hO⟩ := hKillLens s target sig
     have hSt := hProc.kill_healthy s target sig (hWf s).1
     refine ⟨hT, hO, ?_⟩
     intro e he
     have hCrit := (LinuxSyscall.Process.healthyStep_implies_allowedStep hSt).2.2.2.1
-    simpa [he, LinuxSyscall.Process.isCriticalFault] using hCrit
+    simpa [he, LinuxSyscall.Process.outcomeOfUnit, LinuxSyscall.Process.isCriticalFault] using hCrit
   close_frame s h := by
     have hSt := hFiles.close_healthy s h (hWf s).2.1
     refine ⟨hCloseTblLens s h, healthyFilesStep_close_fds hSt, ?_⟩
@@ -496,23 +493,20 @@ theorem refinesHealthySysDeps_of_components {S : Type}
   ppoll_frame := hPollLens
   clock_gettime_frame s clk := by
     obtain ⟨hT, hO⟩ := hCgLens s clk
-    have hSt := hTime s (.clock_gettime clk) (hWf s).2.2
-    refine ⟨hT, hO, ?_⟩
-    intro e he
+    refine ⟨hT, hO, fun e he => False.elim ?_⟩
+    have hWfT := (hWf s).2.2
+    have hSt := hTime s (.clock_gettime clk) hWfT
     dsimp only [LinuxSyscall.TimeRand.execTimeRandReq, Bind.bind, StateT.bind,
       Pure.pure, StateT.pure, StateT.run, Id.run] at hSt
-    cases hRun : (deps.timeRand.clock_gettime clk).run s with
-    | mk res s' =>
-      have hRes : res = .error e := by
-        simpa [hRun] using he
-      subst hRes
-      have hRunFn : deps.timeRand.clock_gettime clk s = (.error e, s') := hRun
-      rw [hRunFn] at hSt
-      dsimp only [LinuxSyscall.TimeRand.outcomeOfTimespec] at hSt
-      unfold LinuxSyscall.TimeRand.healthyStep at hSt
-      cases hCrit : Errno.isCriticalOsErrno e
-      · rfl
-      · simp [LinuxSyscall.TimeRand.isCriticalFault, hCrit] at hSt
+    rcases hRun : (deps.timeRand.clock_gettime clk).run s with ⟨res, s'⟩
+    have hRes : res = .error e := by simpa [hRun] using he
+    subst hRes
+    rw [show deps.timeRand.clock_gettime clk s = (.error e, s') from hRun] at hSt
+    have hSec : (projTime s).state.ambientSeccomp = false := by
+      unfold LinuxSyscall.TimeRand.HealthyEnv.wf at hWfT
+      cases hb : (projTime s).state.ambientSeccomp <;> simp_all
+    simp [LinuxSyscall.TimeRand.healthyStep, hWfT, LinuxSyscall.TimeRand.outcomeOfTimespec,
+      LinuxSyscall.TimeRand.allowedStep, LinuxSyscall.TimeRand.allowedStepCore, hSec] at hSt
   clock_nanosleep_frame := hNsLens
   postFork_healthy := hPostFork
   postFork_frame := hPfLens

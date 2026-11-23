@@ -2293,69 +2293,6 @@ def modelOps : ProcessOpsM (StateM ProcessSysState) HandleId :=
       let s ← get
       return .ok s.selfUid }
 
-/-- Execute one `ProcessReq` against any `ProcessOpsM (StateM S) HandleId` bundle and package the result as a `ProcessOutcome`. -/
-def execProcessReq {S : Type} (ops : ProcessOpsM (StateM S) HandleId) (req : ProcessReq) : StateM S ProcessOutcome := do
-  match req with
-  | .pipe2 flags =>
-    match ← ops.pipe2 flags with
-    | .ok (rHid, wHid) => return .piped rHid wHid
-    | .error e => return .err e
-  | .waitpid pid flags =>
-    match ← ops.waitpid pid flags with
-    | .ok res => return .waited res
-    | .error e => return .err e
-  | .kill pidOrNegPgid sig =>
-    match ← ops.kill pidOrNegPgid sig with
-    | .ok () => return .unit
-    | .error e => return .err e
-  | .pidfd_open pid flags =>
-    match ← ops.pidfd_open pid flags with
-    | .ok hid => return .opened hid
-    | .error e => return .err e
-  | .pidfd_send_signal hid sig flags =>
-    match ← ops.pidfd_send_signal hid sig flags with
-    | .ok () => return .unit
-    | .error e => return .err e
-  | .getpid =>
-    match ← ops.getpid with
-    | .ok pid => return .u32 pid
-    | .error e => return .err e
-  | .getuid =>
-    match ← ops.getuid with
-    | .ok uid => return .u32 uid
-    | .error e => return .err e
-
-/-- Non-circular raw C-ABI postcondition contract on a low-level `PosixProcessOpsM` shim against `Model.allowedStep`. -/
-structure RawPosixShimSound (raw : PosixProcessOpsM (StateM ProcessSysState) HandleId) : Prop where
-  /-- Low-level `pipe2` shim refines `Model.allowedStep`. -/
-  pipe2_sound : ∀ s pf,
-    let r := (raw.pipe2 pf.toBits).run s
-    allowedStep s (.pipe2 pf) (match r.1 with | .ok (rf, wf) => .piped rf wf | .error e => .err e) = some r.2
-  /-- Low-level `waitpid` shim refines `Model.allowedStep`. -/
-  waitpid_sound : ∀ s pid wf,
-    let r := (raw.waitpid pid wf.toBits).run s
-    allowedStep s (.waitpid pid wf) (match r.1 with | .ok t => .waited (WaitResult.ofRawWait4 t) | .error e => .err e) = some r.2
-  /-- Low-level `kill` shim (after NPTL-reserved signal filtering) refines `Model.allowedStep`. -/
-  kill_sound : ∀ s pid sig, sig.isNptlReserved = false →
-    let r := (raw.kill pid sig.toRaw.1 sig.toRaw.2).run s
-    allowedStep s (.kill pid sig) (match r.1 with | .ok () => .unit | .error e => .err e) = some r.2
-  /-- Low-level `pidfd_open` shim refines `Model.allowedStep`. -/
-  pidfd_open_sound : ∀ s pid pof,
-    let r := (raw.pidfd_open pid pof.toBits).run s
-    allowedStep s (.pidfd_open pid pof) (match r.1 with | .ok h => .opened h | .error e => .err e) = some r.2
-  /-- Low-level `pidfd_send_signal` shim (after NPTL-reserved signal filtering) refines `Model.allowedStep`. -/
-  pidfd_send_signal_sound : ∀ s hid sig psf, sig.isNptlReserved = false →
-    let r := (raw.pidfd_send_signal hid sig.toRaw.1 sig.toRaw.2 psf.toBits).run s
-    allowedStep s (.pidfd_send_signal hid sig psf) (match r.1 with | .ok () => .unit | .error e => .err e) = some r.2
-  /-- Low-level `getpid` shim refines `Model.allowedStep`. -/
-  getpid_sound : ∀ s,
-    let r := raw.getpid.run s
-    allowedStep s .getpid (match r.1 with | .ok p => .u32 p | .error e => .err e) = some r.2
-  /-- Low-level `getuid` shim refines `Model.allowedStep`. -/
-  getuid_sound : ∀ s,
-    let r := raw.getuid.run s
-    allowedStep s .getuid (match r.1 with | .ok u => .u32 u | .error e => .err e) = some r.2
-
 /-- Convert `Except Errno (HandleId × HandleId)` into `ProcessOutcome`. -/
 def outcomeOfPiped : Except Errno (HandleId × HandleId) → ProcessOutcome
   | .ok (rHid, wHid) => .piped rHid wHid
@@ -2380,6 +2317,55 @@ def outcomeOfOpened : Except Errno HandleId → ProcessOutcome
 def outcomeOfU32 : Except Errno UInt32 → ProcessOutcome
   | .ok v => .u32 v
   | .error e => .err e
+
+/-- Execute one `ProcessReq` against any `ProcessOpsM (StateM S) HandleId` bundle and package the result as a `ProcessOutcome`. -/
+def execProcessReq {S : Type} (ops : ProcessOpsM (StateM S) HandleId) (req : ProcessReq) : StateM S ProcessOutcome :=
+  match req with
+  | .pipe2 flags => do
+    return outcomeOfPiped (← ops.pipe2 flags)
+  | .waitpid pid flags => do
+    return outcomeOfWaited (← ops.waitpid pid flags)
+  | .kill pidOrNegPgid sig => do
+    return outcomeOfUnit (← ops.kill pidOrNegPgid sig)
+  | .pidfd_open pid flags => do
+    return outcomeOfOpened (← ops.pidfd_open pid flags)
+  | .pidfd_send_signal hid sig flags => do
+    return outcomeOfUnit (← ops.pidfd_send_signal hid sig flags)
+  | .getpid => do
+    return outcomeOfU32 (← ops.getpid)
+  | .getuid => do
+    return outcomeOfU32 (← ops.getuid)
+
+/-- Non-circular raw C-ABI postcondition contract on a low-level `PosixProcessOpsM` shim against `Model.allowedStep`. -/
+structure RawPosixShimSound (raw : PosixProcessOpsM (StateM ProcessSysState) HandleId) : Prop where
+  /-- Low-level `pipe2` shim refines `Model.allowedStep`. -/
+  pipe2_sound : ∀ s pf,
+    let r := (raw.pipe2 pf.toBits).run s
+    allowedStep s (.pipe2 pf) (outcomeOfPiped r.1) = some r.2
+  /-- Low-level `waitpid` shim refines `Model.allowedStep`. -/
+  waitpid_sound : ∀ s pid wf,
+    let r := (raw.waitpid pid wf.toBits).run s
+    allowedStep s (.waitpid pid wf) (outcomeOfWaited (r.1.map WaitResult.ofRawWait4)) = some r.2
+  /-- Low-level `kill` shim (after NPTL-reserved signal filtering) refines `Model.allowedStep`. -/
+  kill_sound : ∀ s pid sig, sig.isNptlReserved = false →
+    let r := (raw.kill pid sig.toRaw.1 sig.toRaw.2).run s
+    allowedStep s (.kill pid sig) (outcomeOfUnit r.1) = some r.2
+  /-- Low-level `pidfd_open` shim refines `Model.allowedStep`. -/
+  pidfd_open_sound : ∀ s pid pof,
+    let r := (raw.pidfd_open pid pof.toBits).run s
+    allowedStep s (.pidfd_open pid pof) (outcomeOfOpened r.1) = some r.2
+  /-- Low-level `pidfd_send_signal` shim (after NPTL-reserved signal filtering) refines `Model.allowedStep`. -/
+  pidfd_send_signal_sound : ∀ s hid sig psf, sig.isNptlReserved = false →
+    let r := (raw.pidfd_send_signal hid sig.toRaw.1 sig.toRaw.2 psf.toBits).run s
+    allowedStep s (.pidfd_send_signal hid sig psf) (outcomeOfUnit r.1) = some r.2
+  /-- Low-level `getpid` shim refines `Model.allowedStep`. -/
+  getpid_sound : ∀ s,
+    let r := raw.getpid.run s
+    allowedStep s .getpid (outcomeOfU32 r.1) = some r.2
+  /-- Low-level `getuid` shim refines `Model.allowedStep`. -/
+  getuid_sound : ∀ s,
+    let r := raw.getuid.run s
+    allowedStep s .getuid (outcomeOfU32 r.1) = some r.2
 
 /-- Return `true` iff `out` is a curated catastrophic OS fault (`ENOMEM`, `EIO`, `ENFILE`). -/
 def isCriticalFault : ProcessOutcome → Bool

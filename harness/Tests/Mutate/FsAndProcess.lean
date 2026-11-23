@@ -8,6 +8,10 @@ import LeanSwe.ProcessSandbox.Seccomp.RuntimeTests
 import LeanSwe.ProcessSandbox.Raw.RuntimeTests
 import LeanSwe.ProcessSandbox.RuntimeTests
 import LeanSwe.SlotPool.RuntimeTests
+import LeanSwe.LinuxSyscall.Files.Interface
+import LeanSwe.LinuxSyscall.Process.Interface
+import LeanSwe.LinuxSyscall.Net.Interface
+import Fuzz.LinuxSyscall.ProcessEnv
 
 namespace Tests.Mutate.FsAndProcess
 
@@ -99,9 +103,137 @@ def fsRawSuite : MutateSuite :=
 def fsSuite : MutateSuite :=
   { name := "Fs", runBase := do Fs.RuntimeTests.runAll; return none }
 
+private def parseProcStatusHexMask (status field : String) : Option Nat := Id.run do
+  for line in status.splitOn "\n" do
+    if line.startsWith field then
+      let hex := (line.drop field.length).trimAscii.toString
+      if hex.isEmpty then return none
+      let mut acc : Nat := 0
+      for c in hex.toList do
+        let d? :=
+          if '0' ≤ c && c ≤ '9' then some (c.toNat - '0'.toNat)
+          else if 'a' ≤ c && c ≤ 'f' then some (10 + c.toNat - 'a'.toNat)
+          else if 'A' ≤ c && c ≤ 'F' then some (10 + c.toNat - 'A'.toNat)
+          else none
+        match d? with
+        | some d => acc := acc * 16 + d
+        | none => return none
+      return some acc
+  return none
+
+/-- Subprocess probe verifying `Process.run` and `LinuxSyscall.Files.write` under `SIGPIPE = SIG_DFL` and pre-pending `SIGPIPE`. -/
+def runProcessSigpipeProbe : IO UInt32 := do
+  let bit12 : Nat := 1 <<< 12
+  if (← Fuzz.LinuxSyscall.ProcessEnv.setSigIgn 13 false) != .ok () then
+    IO.eprintln "sigpipe-probe: setSigIgn(SIGPIPE, false) failed"
+    return 1
+  if (← Fuzz.LinuxSyscall.ProcessEnv.setSigBlock 13 false) != .ok () then
+    IO.eprintln "sigpipe-probe: setSigBlock(SIGPIPE, false) failed"
+    return 2
+  let st0 ← IO.FS.readFile "/proc/thread-self/status"
+  match parseProcStatusHexMask st0 "SigIgn:", parseProcStatusHexMask st0 "SigBlk:" with
+  | some ign, some blk =>
+    if (ign &&& bit12) != 0 || (blk &&& bit12) != 0 then
+      IO.eprintln s!"sigpipe-probe: SIGPIPE not SIG_DFL+unblocked (ign={ign}, blk={blk})"
+      return 3
+  | _, _ =>
+    IO.eprintln "sigpipe-probe: failed to parse /proc/thread-self/status"
+    return 4
+  let bigA := ByteArray.mk (Array.replicate 262144 (0x41 : UInt8))
+  match ← Process.run {
+    program := "sh"
+    args := #["-c", "exec 0<&-; exit 0"]
+    stdin := bigA
+    timeoutMs := some 5000
+  } with
+  | .ok r =>
+    if r.exitCode != 0 then
+      IO.eprintln s!"sigpipe-probe: immediate-close child exitCode={r.exitCode}"
+      return 5
+  | .error e =>
+    IO.eprintln s!"sigpipe-probe: immediate-close Process.run failed: {repr e}"
+    return 6
+  let bigB := ByteArray.mk (Array.replicate 524288 (0x42 : UInt8))
+  match ← Process.run {
+    program := "sh"
+    args := #["-c", "dd bs=1 count=1 >/dev/null 2>&1; exec 0<&-; exit 0"]
+    stdin := bigB
+    timeoutMs := some 5000
+  } with
+  | .ok r =>
+    if r.exitCode != 0 then
+      IO.eprintln s!"sigpipe-probe: partial-read child exitCode={r.exitCode}"
+      return 7
+  | .error e =>
+    IO.eprintln s!"sigpipe-probe: partial-read Process.run failed: {repr e}"
+    return 8
+  match ← LinuxSyscall.Process.pipe2 { cloexec := true } with
+  | .error e =>
+    IO.eprintln s!"sigpipe-probe: pipe2 failed: {e}"
+    return 9
+  | .ok (rd, wr) =>
+    let _ ← LinuxSyscall.Files.close rd
+    let w1 ← LinuxSyscall.Files.write wr (ByteArray.mk #[1, 2, 3])
+    if w1 != .error LinuxSyscall.Errno.EPIPE then
+      let _ ← LinuxSyscall.Files.close wr
+      IO.eprintln s!"sigpipe-probe: expected EPIPE from Files.write, got {repr w1}"
+      return 10
+    let st1 ← IO.FS.readFile "/proc/thread-self/status"
+    if (parseProcStatusHexMask st1 "SigPnd:").getD bit12 &&& bit12 != 0 then
+      let _ ← LinuxSyscall.Files.close wr
+      IO.eprintln "sigpipe-probe: SIGPIPE left pending after unblocked broken-pipe write"
+      return 11
+    if (← Fuzz.LinuxSyscall.ProcessEnv.setSigBlock 13 true) != .ok () then
+      let _ ← LinuxSyscall.Files.close wr
+      IO.eprintln "sigpipe-probe: setSigBlock(SIGPIPE, true) failed"
+      return 12
+    match ← LinuxSyscall.Net.socketpair .unix .stream { cloexec := true } with
+    | .error e =>
+      let _ ← LinuxSyscall.Files.close wr
+      IO.eprintln s!"sigpipe-probe: socketpair failed: {e}"
+      return 13
+    | .ok (s0, s1) =>
+      let _ ← LinuxSyscall.Files.close s1
+      let _ ← LinuxSyscall.Net.sendto s0 (ByteArray.mk #[1]) { nosignal := false }
+      let _ ← LinuxSyscall.Files.close s0
+      let stPre ← IO.FS.readFile "/proc/thread-self/status"
+      let prePend := (parseProcStatusHexMask stPre "SigPnd:").getD 0
+      if (prePend &&& bit12) == 0 then
+        let _ ← LinuxSyscall.Files.close wr
+        IO.eprintln "sigpipe-probe: pre-existing thread-pending SIGPIPE not observed"
+        return 14
+      let w2 ← LinuxSyscall.Files.write wr (ByteArray.mk #[4])
+      let stPost ← IO.FS.readFile "/proc/thread-self/status"
+      let postPend := (parseProcStatusHexMask stPost "SigPnd:").getD 0
+      let _ ← LinuxSyscall.Files.close wr
+      let _ ← Fuzz.LinuxSyscall.ProcessEnv.setSigIgn 13 true
+      let _ ← Fuzz.LinuxSyscall.ProcessEnv.setSigBlock 13 false
+      if w2 != .error LinuxSyscall.Errno.EPIPE then
+        IO.eprintln s!"sigpipe-probe: expected EPIPE with pre-pending SIGPIPE, got {repr w2}"
+        return 15
+      if (postPend &&& bit12) == 0 then
+        IO.eprintln "sigpipe-probe: pre-existing thread-pending SIGPIPE was swallowed"
+        return 16
+  return 0
+
+private def runProcessSigpipeCheck : IO Unit := do
+  let selfBin := (← IO.appPath).toString
+  match ← Process.run {
+    program := selfBin
+    args := #["--process-sigpipe-probe"]
+    timeoutMs := some 10000
+  } with
+  | .ok r =>
+    if r.exitCode != 0 then
+      throw (IO.userError s!"Process SIGPIPE SIG_DFL probe failed (exit={r.exitCode}): {String.fromUTF8! r.stderr}")
+  | .error e =>
+    throw (IO.userError s!"Process SIGPIPE SIG_DFL probe errored (killed?): {repr e}")
+
 /-- Mutation test suite for `LeanSwe.Process`. -/
 def processSuite : MutateSuite :=
-  { name := "Process", runBase := do Process.RuntimeTests.runAll; return none }
+  { name := "Process"
+    runBase := do Process.RuntimeTests.runAll; return none
+    runExtra := runProcessSigpipeCheck }
 
 /-- Mutation test suite for `LeanSwe.Git`. -/
 def gitSuite : MutateSuite :=
