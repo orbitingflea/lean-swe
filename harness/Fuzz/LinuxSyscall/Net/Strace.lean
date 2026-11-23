@@ -2964,6 +2964,126 @@ private def runPreShutCloseWaitLoFlapTests : IO Unit := do
   t6v4 ← mustStep "t6v4.conn1" t6v4 (.connect 1 (.ipv4 INADDR_LOOPBACK 55207)) (.err Errno.EINPROGRESS)
   let _ ← mustStep "t6v4.rx1.eof" t6v4 (.recvfrom 1 8 { dontwait := true }) (.bytes ByteArray.empty)
 
+private def runV6SelfShutBindLoDownTests : IO Unit := do
+  let mustStep (lbl : String) (s : NetState) (req : NetReq) (out : NetOutcome) : IO NetState := do
+    match Net.allowedStep s req out with
+    | some s' => return s'
+    | none => throw (IO.userError s!"v6 self-shut lo-down bind parity: model rejected {lbl}: req={repr req} out={repr out}")
+  let mustReject (lbl : String) (s : NetState) (req : NetReq) (out : NetOutcome) : IO Unit :=
+    assertTrue s!"v6 self-shut lo-down bind parity: {lbl} should reject" ((Net.allowedStep s req out).isNone)
+  let s0 := NetState.initial true
+  let ep : UInt16 := 50715
+  let lo6Ep : SockAddr := .ipv6 0 1 ep 0 0
+  let lo6Zero : SockAddr := .ipv6 0 1 0 0 0
+  let any6Ep : SockAddr := .ipv6 0 0 ep 0 0
+  let any6Zero : SockAddr := .ipv6 0 0 0 0 0
+  let mut ci ← mustStep "ci.s0" s0 (.socket .inet6 .stream nbFlags 0) (.opened 0)
+  ci ← mustStep "ci.bind0" ci (.bind 0 (.ipv6 0 1 0 74565 7)) .unit
+  ci ← mustStep "ci.gsn0" ci (.getsockname 0) (.addr lo6Ep)
+  ci ← mustStep "ci.shutWr" ci (.shutdown 0 .wr) (.err Errno.ENOTCONN)
+  ci ← mustStep "ci.connSelf" ci (.connect 0 lo6Ep) (.err Errno.EINPROGRESS)
+  mustReject "loUp bind ::1:ep rejects EADDRNOTAVAIL" ci (.bind 0 lo6Ep) (.err Errno.EADDRNOTAVAIL)
+  mustReject "loUp bind ::1:0 rejects EADDRNOTAVAIL" ci (.bind 0 lo6Zero) (.err Errno.EADDRNOTAVAIL)
+  let _ ← mustStep "loUp bind ::1:ep EADDRINUSE" ci (.bind 0 lo6Ep) (.err Errno.EADDRINUSE)
+  let _ ← mustStep "loUp bind ::1:0 unit" ci (.bind 0 lo6Zero) .unit
+  let ciDown ← mustStep "ci.loDown" ci (.ioctl 0 (.setIfFlags 8) loIfname) (.u32 0)
+  let ciAfter ← mustStep "ci.bind7 EADDRNOTAVAIL" ciDown (.bind 0 lo6Ep) (.err Errno.EADDRNOTAVAIL)
+  mustReject "ci loDown bind ::1:ep rejects unit" ciDown (.bind 0 lo6Ep) .unit
+  mustReject "ci loDown bind ::1:0 rejects unit" ciDown (.bind 0 lo6Zero) .unit
+  let _ ← mustStep "ci loDown bind ::1:0 EADDRNOTAVAIL" ciDown (.bind 0 lo6Zero) (.err Errno.EADDRNOTAVAIL)
+  let ciGsn ← mustStep "ci after EADDRNOTAVAIL gsn" ciAfter (.getsockname 0) (.addr lo6Ep)
+  let _ ← mustStep "ci after EADDRNOTAVAIL soErr" ciGsn (.getsockopt 0 .error) (.u32 0)
+  let _ ← mustStep "ci after EADDRNOTAVAIL conn" ciGsn (.connect 0 lo6Ep) (.err Errno.ECONNABORTED)
+  let _ ← mustStep "ci after EADDRNOTAVAIL shutRd" ciGsn (.shutdown 0 .rd) (.err Errno.ENOTCONN)
+  mustReject "ci loDown bind [::]:0 rejects EADDRNOTAVAIL" ciAfter (.bind 0 any6Zero) (.err Errno.EADDRNOTAVAIL)
+  let _ ← mustStep "ci loDown bind [::]:0 unit" ciAfter (.bind 0 any6Zero) .unit
+  let ciInUse ← mustStep "ci loDown bind [::]:ep EADDRINUSE" ciAfter (.bind 0 any6Ep) (.err Errno.EADDRINUSE)
+  let _ ← mustStep "ci after EADDRINUSE gsn cleared to ::" ciInUse (.getsockname 0) (.addr any6Ep)
+  let ciConnUnit ← mustStep "ciUnit.connSelf" (← mustStep "ciUnit.shutWr" (← mustStep "ciUnit.gsn" (← mustStep "ciUnit.bind" (← mustStep "ciUnit.s0" s0 (.socket .inet6 .stream nbFlags 0) (.opened 0)) (.bind 0 lo6Zero) .unit) (.getsockname 0) (.addr lo6Ep)) (.shutdown 0 .wr) (.err Errno.ENOTCONN)) (.connect 0 lo6Ep) .unit
+  let ciUnitDown ← mustStep "ciUnit.loDown" ciConnUnit (.ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname) (.u32 0)
+  mustReject "ciUnit loDown bind ::1:0 rejects unit" ciUnitDown (.bind 0 lo6Zero) .unit
+  let _ ← mustStep "ciUnit loDown bind ::1:0 EADDRNOTAVAIL" ciUnitDown (.bind 0 lo6Zero) (.err Errno.EADDRNOTAVAIL)
+  let mut bnd ← mustStep "bnd.s0" s0 (.socket .inet6 .stream nbFlags 0) (.opened 0)
+  bnd ← mustStep "bnd.bind" bnd (.bind 0 lo6Zero) .unit
+  bnd ← mustStep "bnd.gsn" bnd (.getsockname 0) (.addr lo6Ep)
+  let bndDown ← mustStep "bnd.loDown" bnd (.ioctl 0 (.setIfFlags 8) loIfname) (.u32 0)
+  mustReject "already-bound loDown ::1:ep rejects EADDRNOTAVAIL" bndDown (.bind 0 lo6Ep) (.err Errno.EADDRNOTAVAIL)
+  mustReject "already-bound loDown ::1:0 rejects EADDRNOTAVAIL" bndDown (.bind 0 lo6Zero) (.err Errno.EADDRNOTAVAIL)
+  let _ ← mustStep "already-bound loDown ::1:ep EINVAL" bndDown (.bind 0 lo6Ep) (.err Errno.EINVAL)
+  let mut locked ← mustStep "locked.s0" s0 (.socket .inet6 .stream nbFlags 0) (.opened 0)
+  locked ← mustStep "locked.bind" locked (.bind 0 (.ipv6 0 1 41234 0 0)) .unit
+  locked ← mustStep "locked.shut" locked (.shutdown 0 .wr) (.err Errno.ENOTCONN)
+  locked ← mustStep "locked.conn" locked (.connect 0 (.ipv6 0 1 41234 0 0)) (.err Errno.EINPROGRESS)
+  let lockedDown ← mustStep "locked.loDown" locked (.ioctl 0 (.setIfFlags 8) loIfname) (.u32 0)
+  mustReject "port-locked loDown ::1:41234 rejects EADDRNOTAVAIL" lockedDown (.bind 0 (.ipv6 0 1 41234 0 0)) (.err Errno.EADDRNOTAVAIL)
+  let _ ← mustStep "port-locked loDown EINVAL" lockedDown (.bind 0 (.ipv6 0 1 41234 0 0)) (.err Errno.EINVAL)
+  let mut est ← mustStep "est.s0" s0 (.socket .inet6 .stream nbFlags 0) (.opened 0)
+  est ← mustStep "est.bind" est (.bind 0 lo6Zero) .unit
+  est ← mustStep "est.gsn" est (.getsockname 0) (.addr lo6Ep)
+  est ← mustStep "est.conn" est (.connect 0 lo6Ep) (.err Errno.EINPROGRESS)
+  let estDown ← mustStep "est.loDown" est (.ioctl 0 (.setIfFlags 8) loIfname) (.u32 0)
+  mustReject "established loDown ::1:ep rejects EADDRNOTAVAIL" estDown (.bind 0 lo6Ep) (.err Errno.EADDRNOTAVAIL)
+  let _ ← mustStep "established loDown EINVAL" estDown (.bind 0 lo6Ep) (.err Errno.EINVAL)
+  let mut lis ← mustStep "lis.s0" s0 (.socket .inet6 .stream nbFlags 0) (.opened 0)
+  lis ← mustStep "lis.listen" lis (.listen 0 4) .unit
+  let lisDown ← mustStep "lis.loDown" lis (.ioctl 0 (.setIfFlags 8) loIfname) (.u32 0)
+  mustReject "listener loDown ::1:0 rejects EADDRNOTAVAIL" lisDown (.bind 0 lo6Zero) (.err Errno.EADDRNOTAVAIL)
+  let mut udp6 ← mustStep "udp6.s0" s0 (.socket .inet6 .dgram nbFlags 0) (.opened 0)
+  udp6 ← mustStep "udp6.bind" udp6 (.bind 0 lo6Zero) .unit
+  let udp6Down ← mustStep "udp6.loDown" udp6 (.ioctl 0 (.setIfFlags 8) loIfname) (.u32 0)
+  mustReject "udp6 bound loDown ::1:0 rejects EADDRNOTAVAIL" udp6Down (.bind 0 lo6Zero) (.err Errno.EADDRNOTAVAIL)
+  let mut ref ← mustStep "ref.s0" s0 (.socket .inet6 .stream nbFlags 0) (.opened 0)
+  ref ← mustStep "ref.conn" ref (.connect 0 (.ipv6 0 1 49999 0 0)) (.err Errno.EINPROGRESS)
+  mustReject "refused loUp bind ::1:49999 rejects EADDRNOTAVAIL" ref (.bind 0 (.ipv6 0 1 49999 0 0)) (.err Errno.EADDRNOTAVAIL)
+  let refDown ← mustStep "ref.loDown" ref (.ioctl 0 (.setIfFlags 8) loIfname) (.u32 0)
+  mustReject "refused loDown bind ::1:49999 rejects unit" refDown (.bind 0 (.ipv6 0 1 49999 0 0)) .unit
+  let _ ← mustStep "refused loDown bind ::1:49999 EADDRNOTAVAIL" refDown (.bind 0 (.ipv6 0 1 49999 0 0)) (.err Errno.EADDRNOTAVAIL)
+  let mut cw ← mustStep "cw.s0" s0 (.socket .inet6 .stream nbFlags 0) (.opened 0)
+  cw ← mustStep "cw.bind" cw (.bind 0 lo6Zero) .unit
+  cw ← mustStep "cw.gsn" cw (.getsockname 0) (.addr (.ipv6 0 1 55290 0 0))
+  cw ← mustStep "cw.lis" cw (.listen 0 4) .unit
+  cw ← mustStep "cw.s1" cw (.socket .inet6 .stream nbFlags 0) (.opened 1)
+  cw ← mustStep "cw.conn" cw (.connect 1 (.ipv6 0 1 55290 0 0)) (.err Errno.EINPROGRESS)
+  cw ← mustStep "cw.acc" cw (.accept4 0 nbFlags) (.accepted 2 (.ipv6 0 1 49290 0 0))
+  cw ← mustStep "cw.send" cw (.sendto 2 (ByteArray.mk #[65, 66]) {}) (.u32 2)
+  cw ← mustStep "cw.shut1" cw (.shutdown 1 .rdwr) .unit
+  mustReject "finWait loUp bind ::1:0 rejects EADDRNOTAVAIL" cw (.bind 1 lo6Zero) (.err Errno.EADDRNOTAVAIL)
+  mustReject "closeWait loUp bind ::1:0 rejects EADDRNOTAVAIL" cw (.bind 2 lo6Zero) (.err Errno.EADDRNOTAVAIL)
+  let cwDown ← mustStep "cw.loDown" cw (.ioctl 0 (.setIfFlags 8) loIfname) (.u32 0)
+  mustReject "finWait loDown bind ::1:0 rejects unit" cwDown (.bind 1 lo6Zero) .unit
+  let _ ← mustStep "finWait loDown bind ::1:0 EADDRNOTAVAIL" cwDown (.bind 1 lo6Zero) (.err Errno.EADDRNOTAVAIL)
+  mustReject "closeWait loDown bind ::1:0 rejects unit" cwDown (.bind 2 lo6Zero) .unit
+  let _ ← mustStep "closeWait loDown bind ::1:0 EADDRNOTAVAIL" cwDown (.bind 2 lo6Zero) (.err Errno.EADDRNOTAVAIL)
+  let cwInUse ← mustStep "closeWait bind [::]:55290 EADDRINUSE" cwDown (.bind 2 (.ipv6 0 0 55290 0 0)) (.err Errno.EADDRINUSE)
+  let _ ← mustStep "closeWait after EADDRINUSE gsn cleared to ::" cwInUse (.getsockname 2) (.addr (.ipv6 0 0 55290 0 0))
+  let mut v4 ← mustStep "v4.s0" s0 (.socket .inet .stream nbFlags 0) (.opened 0)
+  v4 ← mustStep "v4.bind" v4 (.bind 0 (.ipv4 INADDR_LOOPBACK 0)) .unit
+  v4 ← mustStep "v4.gsn" v4 (.getsockname 0) (.addr (.ipv4 INADDR_LOOPBACK 50716))
+  v4 ← mustStep "v4.shut" v4 (.shutdown 0 .wr) (.err Errno.ENOTCONN)
+  v4 ← mustStep "v4.conn" v4 (.connect 0 (.ipv4 INADDR_LOOPBACK 50716)) (.err Errno.EINPROGRESS)
+  let v4Down ← mustStep "v4.loDown" v4 (.ioctl 0 (.setIfFlags 8) loIfname) (.u32 0)
+  mustReject "v4 loDown 127.0.0.1:ep rejects EADDRNOTAVAIL" v4Down (.bind 0 (.ipv4 INADDR_LOOPBACK 50716)) (.err Errno.EADDRNOTAVAIL)
+  mustReject "v4 loDown 127.0.0.1:0 rejects EADDRNOTAVAIL" v4Down (.bind 0 (.ipv4 INADDR_LOOPBACK 0)) (.err Errno.EADDRNOTAVAIL)
+  let _ ← mustStep "v4 loDown 127.0.0.1:ep EADDRINUSE" v4Down (.bind 0 (.ipv4 INADDR_LOOPBACK 50716)) (.err Errno.EADDRINUSE)
+  let _ ← mustStep "v4 loDown 127.0.0.1:0 unit" v4Down (.bind 0 (.ipv4 INADDR_LOOPBACK 0)) .unit
+  let mappedLoZero : SockAddr := .ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 0 0 0
+  let _ ← mustStep "ci loDown mapped ::ffff:127.0.0.1:0 unit" ciDown (.bind 0 mappedLoZero) .unit
+  let _ ← mustStep "ci loDown mapped ::ffff:127.0.0.1:0 EINVAL" ciDown (.bind 0 mappedLoZero) (.err Errno.EINVAL)
+  let _ ← mustStep "ci loDown mapped ::ffff:127.0.0.1:0 EADDRNOTAVAIL" ciDown (.bind 0 mappedLoZero) (.err Errno.EADDRNOTAVAIL)
+  let mut ext ← mustStep "ext.s0" s0 (.socket .inet6 .stream nbFlags 0) (.opened 0)
+  ext ← mustStep "ext.conn" ext (.connect 0 (.ipv6 0xfe80000000000000 1 49998 0 2)) (.err Errno.EINPROGRESS)
+  mustReject "ext mcast ff02::1 rejects EADDRNOTAVAIL" ext (.bind 0 (.ipv6 0xff02000000000000 1 0 0 2)) (.err Errno.EADDRNOTAVAIL)
+  mustReject "ext lo6 rejects unit" ext (.bind 0 lo6Zero) .unit
+  let _ ← mustStep "ext lo6 EADDRNOTAVAIL" ext (.bind 0 lo6Zero) (.err Errno.EADDRNOTAVAIL)
+  let sUnpin := NetState.initialUnpinned false
+  let mut unp ← mustStep "unp.s0" sUnpin (.socket .inet6 .stream nbFlags 0) (.opened 0)
+  unp ← mustStep "unp.bind" unp (.bind 0 lo6Zero) .unit
+  unp ← mustStep "unp.gsn" unp (.getsockname 0) (.addr lo6Ep)
+  unp ← mustStep "unp.shut" unp (.shutdown 0 .wr) (.err Errno.ENOTCONN)
+  unp ← mustStep "unp.conn" unp (.connect 0 lo6Ep) (.err Errno.EINPROGRESS)
+  let _ ← mustStep "unp lo6:0 unit" unp (.bind 0 lo6Zero) .unit
+  let _ ← mustStep "unp lo6:0 EADDRNOTAVAIL" unp (.bind 0 lo6Zero) (.err Errno.EADDRNOTAVAIL)
+
 /-- Run all `Net` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke` and `lean-swe-mut-test`). -/
 def runChecks : IO Unit := do
   assume_net_socket_domainTypeFlagsAbi
@@ -3057,6 +3177,7 @@ def runChecks : IO Unit := do
     runDualStackShutdownAndUnixFsTests
     runMulticastAndV6SelfShutTests
   runPreShutCloseWaitLoFlapTests
+  runV6SelfShutBindLoDownTests
   runDefaultWrapperFlagsTests
   runStickyScopeMappedWildcardAndUntaintTests
   runMcastScopeAndSynResetTests

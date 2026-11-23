@@ -621,6 +621,8 @@ def stepBindInet (s0 : NetState) (hid : HandleId) (selfFid : FileId) (d0 : SockD
         if d0.soError != 0 then some (target, 0) else none
       | .tcp _ (.unhashed ..) (.connecting _) (.closedAfterConn target _) _ =>
         some (target, 0)
+      | .tcp _ (.unhashed ..) .connected (.established (some pf) target) _ =>
+        if pf == selfFid && d0.shut.wr then some (target, 0) else none
       | .tcp _ (.hashed _ _ false _) _ (.finWait _ target) _ =>
         if (d0.shut.isBoth && !d0.rxQueue.isEmpty) || d0.tcpShutRdwrRst then some (target, Errno.ECONNRESET) else none
       | .tcp _ (.hashed _ _ false _) _ (.closeWait pf? target _) _ =>
@@ -630,14 +632,19 @@ def stepBindInet (s0 : NetState) (hid : HandleId) (selfFid : FileId) (d0 : SockD
         if peerShutRd then some (target, Errno.EPIPE) else none
       | _ => none
     let isNativeV6Lo0 := match addr with | .ipv6 0 1 _ _ _ => true | _ => false
+    let validBindAddr0 := !isInvalidV6LinkOrMulticast d0.sockType addr d0.boundDevIf
+    let loDownV6 := match s0.loState with | .up _ => false | _ => isLocalNonWildcardV6 addr
+    let loDefDown := match s0.loState with | .down _ _ => true | _ => false
+    let extBoundDev0 := validBindAddr0 && !isIpv6WildcardAddr addr && dScoped0.boundDevIf != 0 && dScoped0.boundDevIf != 1
     let devAllowsAddr0 :=
       if isIpv6WildcardAddr addr || dScoped0.boundDevIf == 0 || dScoped0.boundDevIf == 1 then
         isLocalBindableAddr addr || isIpv6LinkLocal addr
       else
         !isNativeV6Lo0 && (isLocalBindableAddr addr || isIpv6LinkLocal addr)
     let allowAsyncRstBind :=
-      targetOpt?.isSome && !isInvalidV6LinkOrMulticast d0.sockType addr d0.boundDevIf &&
-        devAllowsAddr0 && !(port != 0 && hasBindPortConflict s0 hid d0.sockType d0.reuseAddr normAddr0)
+      targetOpt?.isSome && validBindAddr0 &&
+        devAllowsAddr0 && !(isNativeV6Lo0 && loDefDown) &&
+        !(port != 0 && hasBindPortConflict s0 hid d0.sockType d0.reuseAddr normAddr0)
     let sAsyncOk? :=
       if allowAsyncRstBind then
         let s1 := applyTcpBind s0 selfFid dScoped0 nextBind0 nextPortVal0
@@ -647,18 +654,38 @@ def stepBindInet (s0 : NetState) (hid : HandleId) (selfFid : FileId) (d0 : SockD
           match d1.proto with
           | .tcp fam1 bind1 ss1 (.synSent _) taint1
           | .tcp fam1 bind1 ss1 .idle taint1
+          | .tcp fam1 bind1 ss1 (.established _ _) taint1
           | .tcp fam1 bind1 ss1 (.finWait _ _) taint1
           | .tcp fam1 bind1 ss1 (.closeWait _ _ _) taint1 =>
             some (setFileSocket s1 selfFid { d1 with soError := nextSoErr, tcpShutRdwrRst := false, tcpCloseWaitRst := false, tcpLastAck := false, proto := .tcp fam1 bind1 ss1 (.closedAfterConn target .reset) taint1 })
           | _ => some s1
         | _, _ => some s1
       else none
+    let onBindErr (e : Errno) : NetState :=
+      if e == Errno.EADDRINUSE then
+        match d0.proto, targetOpt? with
+        | .tcp fam (.hashed sa ep false _) ss (.finWait _ _) taint, some (target, rstErr)
+        | .tcp fam (.hashed sa ep false _) ss (.closeWait _ _ _) taint, some (target, rstErr) =>
+          let wildSa := match sa with
+            | .ipv4 _ p => .ipv4 INADDR_ANY p
+            | .ipv6 _ _ p fl _ => .ipv6 0 0 p fl 0
+            | other => other
+          let nextSoErr := if rstErr != 0 && d0.soError == 0 then rstErr else d0.soError
+          setFileSocket s0 selfFid
+            { d0 with
+              soError := nextSoErr
+              tcpShutRdwrRst := false
+              tcpCloseWaitRst := false
+              tcpLastAck := false
+              proto := .tcp fam (.unhashed wildSa ep false) ss (.closedAfterConn target .reset) taint }
+        | _, _ => clearBindIpOnGetPortErr s0 selfFid d0 e
+      else s0
     let alts :=
-      (if !isLocalBindableAddr addr then [Errno.EADDRNOTAVAIL] else []) ++
+      (if !isLocalBindableAddr addr || (targetOpt?.isSome && (loDownV6 || extBoundDev0)) then [Errno.EADDRNOTAVAIL] else []) ++
       (if port != 0 && port.toNat < 1024 then [Errno.EACCES] else []) ++
       (if hasScope0 then [Errno.ENODEV] else []) ++
       (if targetOpt?.isSome && port != 0 then [Errno.EADDRINUSE] else [])
-    emitErr obs? s0 Errno.EINVAL alts (fun e => clearBindIpOnGetPortErr s0 selfFid d0 e) (allowUnit? := sAsyncOk?)
+    emitErr obs? s0 Errno.EINVAL alts onBindErr (allowUnit? := sAsyncOk?)
   else if isInvalidV6LinkOrMulticast d0.sockType addr d0.boundDevIf then
     emitErr obs? s0 Errno.EINVAL (if hasScope0 then [Errno.ENODEV] else [])
   else
