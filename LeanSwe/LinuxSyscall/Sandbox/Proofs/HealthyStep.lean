@@ -75,23 +75,29 @@ private theorem assocSet_hid_all_lt_h (s : SandboxSysState) (hid : HandleId) (d 
       intro a b h hab
       simp only [List.all_cons, Bool.and_eq_true, decide_eq_true_eq] at h ⊢
       exact ⟨Nat.lt_of_lt_of_le h.1 hab, ih h.2 hab⟩
-  have hSet : ∀ (l : List (Nat × SandboxFdDesc)) (k : Nat) (v : SandboxFdDesc) (m : Nat),
-      l.all (fun p => decide (p.1 < m)) = true → k < m →
-      (assocSet l k v).all (fun p => decide (p.1 < m)) = true := by
+  have hSet : ∀ (l acc : List (Nat × SandboxFdDesc)) (k : Nat) (v : SandboxFdDesc) (m : Nat),
+      l.all (fun p => decide (p.1 < m)) = true →
+      acc.all (fun p => decide (p.1 < m)) = true → k < m →
+      (assocSetAux l k v acc).all (fun p => decide (p.1 < m)) = true := by
     intro l
     induction l with
-    | nil => intro k v m _ hk; simp [assocSet, hk]
+    | nil =>
+      intro acc k v m _ hAcc hk
+      simp only [assocSetAux, List.reverseAux_eq, List.all_append, List.all_reverse,
+        List.all_cons, List.all_nil, Bool.and_true, Bool.and_eq_true, decide_eq_true_eq]
+      exact ⟨hAcc, hk⟩
     | cons hd tl ih =>
-      intro k v m h hk
+      intro acc k v m h hAcc hk
       simp only [List.all_cons, Bool.and_eq_true, decide_eq_true_eq] at h
-      unfold assocSet
+      unfold assocSetAux
       by_cases heq : (hd.1 == k)
-      · simp only [heq, ↓reduceIte, List.all_cons, Bool.and_eq_true, decide_eq_true_eq]
-        exact ⟨hk, h.2⟩
-      · simp only [heq, Bool.false_eq_true, ↓reduceIte, List.all_cons, Bool.and_eq_true, decide_eq_true_eq]
-        exact ⟨h.1, ih k v m h.2 hk⟩
-  exact hSet s.fds hid d (Nat.max s.nextHid (hid + 1))
-    (hMono s.fds (wf_fds_of_wf s hwf) (Nat.le_max_left s.nextHid (hid + 1)))
+      · simp only [heq, ↓reduceIte, List.reverseAux_eq, List.all_append, List.all_reverse,
+          List.all_cons, Bool.and_eq_true, decide_eq_true_eq]
+        exact ⟨hAcc, hk, h.2⟩
+      · simp only [heq, Bool.false_eq_true, ↓reduceIte]
+        exact ih (hd :: acc) k v m h.2 (by simp [List.all_cons, h.1, hAcc]) hk
+  exact hSet s.fds [] hid d (Nat.max s.nextHid (hid + 1))
+    (hMono s.fds (wf_fds_of_wf s hwf) (Nat.le_max_left s.nextHid (hid + 1))) rfl
     (Nat.lt_of_lt_of_le (Nat.lt_succ_self hid) (Nat.le_max_right s.nextHid (hid + 1)))
 
 private theorem ui64_and_assoc_h (a b c : UInt64) : (a &&& b) &&& c = a &&& (b &&& c) := by

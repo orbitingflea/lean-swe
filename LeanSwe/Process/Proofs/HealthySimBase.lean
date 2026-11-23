@@ -619,7 +619,7 @@ private theorem evalKill_child100
                   | mk a b c d e f g h i j k l =>
                     simp only at hOne ⊢
                     subst hOne
-                    dsimp only [LinuxSyscall.Process.assocSet, LinuxSyscall.Process.assocSetGo]
+                    dsimp only [LinuxSyscall.Process.assocSet, LinuxSyscall.Process.assocSetAux]
                     have hDel := deliverSignalToEntry_zombie
                       { selfPid := a, selfPgid := b, selfUid := c, sigchld := d,
                         ambientIgnoredSigs := e, closedPidNamespace := f,

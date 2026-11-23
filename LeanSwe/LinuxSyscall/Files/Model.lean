@@ -1,8 +1,13 @@
+import LeanSwe.LinuxSyscall.Common.Model
 import LeanSwe.LinuxSyscall.Files.Types
 
 namespace LeanSwe.LinuxSyscall.Files
 
 open LeanSwe.LinuxSyscall
+
+export LeanSwe.LinuxSyscall (byteGetD bytesEqLoop bytesEq
+  assocGet assocSetAux assocSet assocEraseAux assocErase
+  bytesAssocGet bytesAssocSet bytesAssocErase)
 
 /-- Return `true` iff `e` is a valid safe outer `seccomp(SECCOMP_RET_ERRNO)` error (`1..4095 \ {EFAULT}`). -/
 def Errno.isSafeSeccompErrno (e : Errno) : Bool :=
@@ -58,10 +63,6 @@ structure RegData where
   /-- Whether opening for write/truncation rejects with `ETXTBSY`. -/
   exeProtected : Bool := false
   deriving Repr, BEq
-
-/-- Unboxed `O(1)` byte lookup returning `0` when `i ≥ b.size`. -/
-@[inline] def byteGetD (b : ByteArray) (i : Nat) : UInt8 :=
-  if h : i < b.size then b[i] else 0
 
 /-- Tail-recursive helper building an `n`-byte zero-filled `ByteArray` without boxed `Array UInt8` allocation. -/
 def replicateZeroBytesLoop : Nat → ByteArray → ByteArray
@@ -509,73 +510,6 @@ instance : Inhabited FilesState := ⟨FilesState.initial⟩
 /-- Configure `ambientSeccomp` on `s` for pre-installed safe outer `seccomp(SECCOMP_RET_ERRNO)` filters. -/
 def FilesState.withOuterSeccomp (s : FilesState) (enabled : Bool := true) : FilesState :=
   { s with ambientSeccomp := enabled }
-
-/-- Unboxed index loop comparing `rem` bytes of `a` and `b` starting at `i`. -/
-def bytesEqLoop (a b : ByteArray) (i rem : Nat) : Bool :=
-  match rem with
-  | 0 => true
-  | rem' + 1 =>
-    if byteGetD a i == byteGetD b i then bytesEqLoop a b (i + 1) rem' else false
-
-/-- Kernel-reducible unboxed `ByteArray` equality. -/
-def bytesEq (a b : ByteArray) : Bool :=
-  a.size == b.size && bytesEqLoop a b 0 a.size
-
-/-- Look up a `ByteArray` key in a directory children list. -/
-def bytesAssocGet {β : Type} (xs : List (ByteArray × β)) (k : ByteArray) : Option β :=
-  match xs with
-  | [] => none
-  | (k', v) :: rest => if bytesEq k' k then some v else bytesAssocGet rest k
-
-private def bytesAssocSetAux {β : Type} (k : ByteArray) (v : β) :
-    List (ByteArray × β) → List (ByteArray × β) → List (ByteArray × β)
-  | [], acc => acc.reverseAux [(k, v)]
-  | (k', v') :: rest, acc =>
-    if bytesEq k' k then acc.reverseAux ((k, v) :: rest)
-    else bytesAssocSetAux k v rest ((k', v') :: acc)
-
-/-- Insert or replace a `ByteArray` key in a directory children list (tail-recursive). -/
-def bytesAssocSet {β : Type} (xs : List (ByteArray × β)) (k : ByteArray) (v : β) : List (ByteArray × β) :=
-  bytesAssocSetAux k v xs []
-
-private def bytesAssocEraseAux {β : Type} (k : ByteArray) :
-    List (ByteArray × β) → List (ByteArray × β) → List (ByteArray × β)
-  | [], acc => acc.reverse
-  | (k', v') :: rest, acc =>
-    if bytesEq k' k then acc.reverseAux rest
-    else bytesAssocEraseAux k rest ((k', v') :: acc)
-
-/-- Remove a `ByteArray` key from a directory children list (tail-recursive). -/
-def bytesAssocErase {β : Type} (xs : List (ByteArray × β)) (k : ByteArray) : List (ByteArray × β) :=
-  bytesAssocEraseAux k xs []
-
-/-- Look up a key in an association list. -/
-def assocGet {α β : Type} [BEq α] (xs : List (α × β)) (k : α) : Option β :=
-  match xs with
-  | [] => none
-  | (k', v) :: rest => if k' == k then some v else assocGet rest k
-
-private def assocSetAux {α β : Type} [BEq α] (k : α) (v : β) :
-    List (α × β) → List (α × β) → List (α × β)
-  | [], acc => acc.reverseAux [(k, v)]
-  | (k', v') :: rest, acc =>
-    if k' == k then acc.reverseAux ((k, v) :: rest)
-    else assocSetAux k v rest ((k', v') :: acc)
-
-/-- Insert or replace a key in an association list (tail-recursive). -/
-def assocSet {α β : Type} [BEq α] (xs : List (α × β)) (k : α) (v : β) : List (α × β) :=
-  assocSetAux k v xs []
-
-private def assocEraseAux {α β : Type} [BEq α] (k : α) :
-    List (α × β) → List (α × β) → List (α × β)
-  | [], acc => acc.reverse
-  | (k', v') :: rest, acc =>
-    if k' == k then acc.reverseAux rest
-    else assocEraseAux k rest ((k', v') :: acc)
-
-/-- Remove a key from an association list (tail-recursive). -/
-def assocErase {α β : Type} [BEq α] (xs : List (α × β)) (k : α) : List (α × β) :=
-  assocEraseAux k xs []
 
 /-- Extract `bytes[start .. start + len)` without boxed `Array UInt8` materialization. -/
 def sliceBytes (b : ByteArray) (start len : Nat) : ByteArray :=

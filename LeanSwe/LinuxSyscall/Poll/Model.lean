@@ -1,8 +1,11 @@
+import LeanSwe.LinuxSyscall.Common.Model
 import LeanSwe.LinuxSyscall.Poll.Types
 
 namespace LeanSwe.LinuxSyscall.Poll
 
 open LeanSwe.LinuxSyscall
+
+export LeanSwe.LinuxSyscall (assocGet assocSetAux assocSet assocEraseAux assocErase)
 
 /-- Logical descriptor kind tracked by `PollState` for `ppoll` readiness evaluation. -/
 inductive PollDescKind where
@@ -55,36 +58,6 @@ def PollState.withOuterSeccomp (s : PollState := PollState.initial) : PollState 
   { s with ambientSeccomp := true }
 
 instance : Inhabited PollState := ⟨PollState.initial⟩
-
-/-- Look up a key in an association list (kernel-reducible). -/
-def assocGet {α β : Type} [BEq α] (xs : List (α × β)) (k : α) : Option β :=
-  match xs with
-  | [] => none
-  | (k', v) :: rest => if k' == k then some v else assocGet rest k
-
-/-- Tail-recursive helper for `assocSet` preserving existing key position. -/
-def assocSetAux {α β : Type} [BEq α] :
-    List (α × β) → α → β → List (α × β) → List (α × β)
-  | [], k, v, acc => acc.reverseAux [(k, v)]
-  | (k', v') :: rest, k, v, acc =>
-    if k' == k then acc.reverseAux ((k, v) :: rest)
-    else assocSetAux rest k v ((k', v') :: acc)
-
-/-- Insert or replace a key in an association list (kernel-reducible, tail-recursive). -/
-def assocSet {α β : Type} [BEq α] (xs : List (α × β)) (k : α) (v : β) : List (α × β) :=
-  assocSetAux xs k v []
-
-/-- Tail-recursive helper for `assocErase`. -/
-def assocEraseAux {α β : Type} [BEq α] :
-    List (α × β) → α → List (α × β) → List (α × β)
-  | [], _, acc => acc.reverse
-  | (k', v') :: rest, k, acc =>
-    if k' == k then acc.reverseAux rest
-    else assocEraseAux rest k ((k', v') :: acc)
-
-/-- Remove a key from an association list (kernel-reducible, tail-recursive). -/
-def assocErase {α β : Type} [BEq α] (xs : List (α × β)) (k : α) : List (α × β) :=
-  assocEraseAux xs k []
 
 /-- Compute exact Linux `revents` for a single open `PollDesc` given requested `reqEv` (`POLLERR`, `POLLHUP`, `POLLNVAL` are reported regardless of `reqEv`). -/
 def computeDescRevents (desc : PollDesc) (reqEv : PollEvents) : PollEvents :=

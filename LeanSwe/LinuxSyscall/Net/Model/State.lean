@@ -1,8 +1,12 @@
+import LeanSwe.LinuxSyscall.Common.Model
 import LeanSwe.LinuxSyscall.Net.Types
 
 namespace LeanSwe.LinuxSyscall.Net
 
 open LeanSwe.LinuxSyscall
+
+export LeanSwe.LinuxSyscall (bytesEq assocGet assocSetAux assocSet
+  assocEraseAllAux assocEraseAll bytesAssocGet bytesAssocSet)
 
 /-- Kernel open-file table identifier (`struct file *`). -/
 abbrev FileId := Nat
@@ -361,70 +365,11 @@ def NetState.initialUnpinned (hasNetAdmin : Bool := false) (ambientSeccomp : Boo
 def isTransientNetErrno (e : Errno) : Bool :=
   e.isTransientOsErrno || e == Errno.ENOBUFS
 
-/-- Structural tail-recursive byte-by-byte equality helper for `bytesEq`. -/
-def bytesEqAux (a b : ByteArray) : Nat → Nat → Bool
-  | 0, _ => true
-  | rem + 1, i =>
-    if a.get! i != b.get! i then false
-    else bytesEqAux a b rem (i + 1)
-
-/-- Returns `true` iff `a` and `b` have identical byte contents. -/
-def bytesEq (a b : ByteArray) : Bool :=
-  a.size == b.size && bytesEqAux a b a.size 0
-
 /-- Slice `[start, start + len)` bytes out of `b`. -/
 def sliceBytes (b : ByteArray) (start len : Nat) : ByteArray :=
   if start == 0 && len >= b.size then b
   else if len == 0 then ByteArray.empty
   else b.extract start (start + len)
-
-/-- Association-list lookup by `BEq` key. -/
-def assocGet {α β : Type} [BEq α] (xs : List (α × β)) (k : α) : Option β :=
-  match xs with
-  | [] => none
-  | (x, v) :: rest => if x == k then some v else assocGet rest k
-
-/-- Tail-recursive helper for `assocSet`. -/
-def assocSetAux {α β : Type} [BEq α] :
-    List (α × β) → α → β → List (α × β) → List (α × β)
-  | [], k, v, acc => acc.reverseAux [(k, v)]
-  | (x, oldV) :: rest, k, v, acc =>
-    if x == k then acc.reverseAux ((k, v) :: rest)
-    else assocSetAux rest k v ((x, oldV) :: acc)
-
-/-- Functional association-list update by `BEq` key (tail-recursive). -/
-def assocSet {α β : Type} [BEq α] (xs : List (α × β)) (k : α) (v : β) : List (α × β) :=
-  assocSetAux xs k v []
-
-/-- Tail-recursive helper for `assocErase`. -/
-def assocEraseAux {α β : Type} [BEq α] :
-    List (α × β) → α → List (α × β) → List (α × β)
-  | [], _, acc => acc.reverse
-  | (x, v) :: rest, k, acc =>
-    if x == k then assocEraseAux rest k acc
-    else assocEraseAux rest k ((x, v) :: acc)
-
-/-- Erase key `k` from association list `xs` (tail-recursive). -/
-def assocErase {α β : Type} [BEq α] (xs : List (α × β)) (k : α) : List (α × β) :=
-  assocEraseAux xs k []
-
-/-- Byte-keyed association-list lookup. -/
-def bytesAssocGet {β : Type} (xs : List (ByteArray × β)) (k : ByteArray) : Option β :=
-  match xs with
-  | [] => none
-  | (x, v) :: rest => if bytesEq x k then some v else bytesAssocGet rest k
-
-/-- Tail-recursive helper for `bytesAssocSet`. -/
-def bytesAssocSetAux {β : Type} :
-    List (ByteArray × β) → ByteArray → β → List (ByteArray × β) → List (ByteArray × β)
-  | [], k, v, acc => acc.reverseAux [(k, v)]
-  | (x, oldV) :: rest, k, v, acc =>
-    if bytesEq x k then acc.reverseAux ((k, v) :: rest)
-    else bytesAssocSetAux rest k v ((x, oldV) :: acc)
-
-/-- Byte-keyed association-list update (tail-recursive). -/
-def bytesAssocSet {β : Type} (xs : List (ByteArray × β)) (k : ByteArray) (v : β) : List (ByteArray × β) :=
-  bytesAssocSetAux xs k v []
 
 /-- Returns `true` iff `b` is byte-equal to an element of `xs`. -/
 def bytesListContains (xs : List ByteArray) (b : ByteArray) : Bool :=
@@ -582,7 +527,7 @@ def resetTcpPeerOnClose (s : NetState) (peerFid : FileId) (hasUnread : Bool)
 private def abortUnacceptedTcpChild (s : NetState) (q : AcceptEntry) : NetState × List FileId :=
   match assocGet s.files q.childFid with
   | some (.socket cd) =>
-    let s0 := { s with files := assocErase s.files q.childFid }
+    let s0 := { s with files := assocEraseAll s.files q.childFid }
     let loUp := match s0.loState with | .up _ => true | _ => false
     let s1 :=
       match cd.proto with
@@ -602,7 +547,7 @@ private def abortUnacceptedTcpChild (s : NetState) (q : AcceptEntry) : NetState 
 private def abortUnacceptedUnixChild (s : NetState) (q : AcceptEntry) (fromGc : Bool) : NetState × List FileId :=
   match assocGet s.files q.childFid with
   | some (.socket cd) =>
-    let s0 := { s with files := assocErase s.files q.childFid }
+    let s0 := { s with files := assocEraseAll s.files q.childFid }
     let s1 :=
       match cd.proto with
       | .unixStream _ _ (.connected (some cliFid) _ _ _ _) =>
@@ -622,7 +567,7 @@ private def releaseOneFile (s : NetState) (fid : FileId) (fromGc : Bool := false
   match assocGet s.files fid with
   | none => (s, [])
   | some entry =>
-    let s0 : NetState := { s with files := assocErase s.files fid }
+    let s0 : NetState := { s with files := assocEraseAll s.files fid }
     match entry with
     | .nonSocket => (s0, [])
     | .socket d =>
