@@ -31,16 +31,31 @@ def encodeSeccompErrnoBpf (x86Nrs armNrs : Array UInt32) (err : LeanSwe.LinuxSys
   b := pushBpfInsn b 0x0006 0 0 (0x00050000 ||| (err &&& 0xffff))
   return b
 
-/-- Install a portable (`x86_64`/`aarch64`) `TSYNC` `SECCOMP_RET_ERRNO` filter returning `eno` (`1..4095`) on `clock_gettime`, `clock_nanosleep`, and `getrandom` for forked `RuntimeTests` child probes. -/
-def installTimeRandSeccompErrno (eno : LeanSwe.LinuxSyscall.Errno) : IO UInt32 := do
-  if eno == 0 || eno > 4095 then
+/-- Encode a portable (`x86_64`/`aarch64`) `SECCOMP_RET_ERRNO` cBPF filter returning `eno` for the masked `TimeRand` syscalls (`syscallMask` bits: `bit 0 = clock_gettime`, `bit 1 = clock_nanosleep`, `bit 2 = getrandom`). -/
+def encodeTimeRandSeccompErrnoBpf (eno : LeanSwe.LinuxSyscall.Errno) (syscallMask : UInt32 := 7) : ByteArray := Id.run do
+  let mut x86Nrs : Array UInt32 := #[]
+  let mut armNrs : Array UInt32 := #[]
+  if (syscallMask &&& 1) != 0 then
+    x86Nrs := x86Nrs.push 228
+    armNrs := armNrs.push 113
+  if (syscallMask &&& 2) != 0 then
+    x86Nrs := x86Nrs.push 230
+    armNrs := armNrs.push 115
+  if (syscallMask &&& 4) != 0 then
+    x86Nrs := x86Nrs.push 318
+    armNrs := armNrs.push 278
+  encodeSeccompErrnoBpf x86Nrs armNrs eno
+
+/-- Install a portable (`x86_64`/`aarch64`) `TSYNC` `SECCOMP_RET_ERRNO` filter returning `eno` (`1..4095`, rejecting `EFAULT`) on the masked `TimeRand` syscalls (`syscallMask` in `1..7`: `bit 0 = clock_gettime`, `bit 1 = clock_nanosleep`, `bit 2 = getrandom`). Returns `0` on success, `EINVAL` on invalid inputs, `EAGAIN` if `TSYNC` returns a conflicting thread ID, or the kernel errno on syscall failure. -/
+def installTimeRandSeccompErrno (eno : LeanSwe.LinuxSyscall.Errno) (syscallMask : UInt32 := 7) : IO UInt32 := do
+  if eno == 0 || eno > 4095 || eno == LeanSwe.LinuxSyscall.Errno.EFAULT || syscallMask == 0 || syscallMask > 7 then
     return LeanSwe.LinuxSyscall.Errno.EINVAL
   match ← LeanSwe.LinuxSyscall.Sandbox.prctl .setNoNewPrivs with
   | .error e => return e
   | .ok _ =>
-    let bpf := encodeSeccompErrnoBpf #[228, 230, 318] #[113, 115, 278] eno
+    let bpf := encodeTimeRandSeccompErrnoBpf eno syscallMask
     match ← LeanSwe.LinuxSyscall.Sandbox.seccomp .setModeFilter { tsync := true } bpf with
-    | .ok _ => return 0
+    | .ok rc => return if rc == 0 then 0 else LeanSwe.LinuxSyscall.Errno.EAGAIN
     | .error e => return e
 
 end LeanSwe.LinuxSyscall.TestSupport.Seccomp

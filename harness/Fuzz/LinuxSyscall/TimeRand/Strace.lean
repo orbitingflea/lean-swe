@@ -1,6 +1,9 @@
+import LeanSwe.LinuxSyscall.Sandbox.Interface
+import LeanSwe.LinuxSyscall.TestSupport.Seccomp
 import LeanSwe.LinuxSyscall.TimeRand.Impl
 import LeanSwe.LinuxSyscall.TimeRand.Interface
 import LeanSwe.LinuxSyscall.TimeRand.Model
+import Fuzz.LinuxSyscall.SandboxEnv
 
 namespace Fuzz.LinuxSyscall.TimeRand.Strace
 
@@ -9,9 +12,6 @@ open LeanSwe.LinuxSyscall.TimeRand
 
 private def failWith {α : Type} (msg : String) : IO α :=
   throw (IO.userError s!"TimeRand.Strace: {msg}")
-
-@[extern "leanswe_fuzz_install_seccomp_errno"]
-private opaque installSeccompErrnoRaw (eno : UInt32) (mask : UInt32) : BaseIO UInt32
 
 @[extern "leanswe_sys_clock_gettime"]
 private opaque rawClockGettimeForTest : UInt32 → BaseIO (Except Errno (Int64 × UInt32))
@@ -182,9 +182,9 @@ private def seccompWorker (errName : String) : IO UInt32 := do
     | do
         IO.eprintln s!"seccomp-worker: unsupported errno {errName}"
         return 1
-  let rc ← installSeccompErrnoRaw expected 7
+  let rc ← TestSupport.Seccomp.installTimeRandSeccompErrno expected
   if rc != 0 then
-    IO.eprintln s!"seccomp-worker: installSeccompErrnoRaw failed with errno {rc}"
+    IO.eprintln s!"seccomp-worker: installTimeRandSeccompErrno failed with errno {rc}"
     return 1
   let sSec := TimeRandState.initial.withOuterSeccomp
   let sPlain := TimeRandState.initial
@@ -212,10 +212,17 @@ private def seccompWorker (errName : String) : IO UInt32 := do
   return 0
 
 private def seccompEfaultWorker (opName : String) : IO UInt32 := do
-  let rc ← installSeccompErrnoRaw Errno.EFAULT 7
-  if rc != 0 then
-    IO.eprintln s!"seccomp-efault-worker: installSeccompErrnoRaw failed with errno {rc}"
+  match ← Sandbox.prctl .setNoNewPrivs with
+  | .error e =>
+    IO.eprintln s!"seccomp-efault-worker: prctl(PR_SET_NO_NEW_PRIVS) failed with errno {e}"
     return 1
+  | .ok _ => pure ()
+  let bpf := TestSupport.Seccomp.encodeTimeRandSeccompErrnoBpf Errno.EFAULT
+  match ← SandboxEnv.installRawSeccomp bpf with
+  | .error e =>
+    IO.eprintln s!"seccomp-efault-worker: installRawSeccomp failed with errno {e}"
+    return 1
+  | .ok () => pure ()
   match opName with
   | "clock_gettime" =>
     let _ ← clock_gettime .monotonic
@@ -229,7 +236,33 @@ private def seccompEfaultWorker (opName : String) : IO UInt32 := do
   IO.eprintln s!"seccomp-efault-worker ({opName}): expected SIGABRT, syscall returned instead"
   return 99
 
+private def seccompTsyncWorker : IO UInt32 := do
+  let _tid ← match ← SandboxEnv.spawnSyncThread true with
+    | .ok t => pure t
+    | .error e =>
+      IO.eprintln s!"seccomp-tsync-worker: spawnSyncThread failed with errno {e}"
+      return 1
+  try
+    let rc ← TestSupport.Seccomp.installTimeRandSeccompErrno Errno.EPERM
+    if rc != Errno.EAGAIN then
+      IO.eprintln s!"seccomp-tsync-worker: expected EAGAIN ({Errno.EAGAIN}), got errno {rc}"
+      return 2
+    return 0
+  finally
+    let _ ← SandboxEnv.stopSyncThread
+
 private def checkOuterSeccompRuntime : IO Unit := do
+  let nnpBefore ← expectOk "PR_GET_NO_NEW_PRIVS before invalid calls" (← Sandbox.prctl .getNoNewPrivs)
+  for (label, eno, mask) in
+      [ ("eno=0", (0 : Errno), (7 : UInt32))
+      , ("eno=4096", (4096 : Errno), (7 : UInt32))
+      , ("eno=EFAULT", Errno.EFAULT, (7 : UInt32))
+      , ("mask=0", Errno.EPERM, (0 : UInt32))
+      , ("mask=8", Errno.EPERM, (8 : UInt32)) ] do
+    let rc ← TestSupport.Seccomp.installTimeRandSeccompErrno eno mask
+    assertTrue s!"installTimeRandSeccompErrno rejects {label} with EINVAL (got {rc})" (rc == Errno.EINVAL)
+  let nnpAfter ← expectOk "PR_GET_NO_NEW_PRIVS after invalid calls" (← Sandbox.prctl .getNoNewPrivs)
+  assertTrue "invalid installTimeRandSeccompErrno calls preserve PR_GET_NO_NEW_PRIVS" (nnpAfter == nnpBefore)
   let exe ← IO.appPath
   let out ← IO.Process.output {
     cmd := exe.toString
@@ -237,6 +270,12 @@ private def checkOuterSeccompRuntime : IO Unit := do
   }
   if out.exitCode != 0 then
     failWith s!"outer seccomp child check failed exit={out.exitCode}: {out.stderr}"
+  let tsyncOut ← IO.Process.output {
+    cmd := exe.toString
+    args := #["--timerand-strace-fault-check", "--seccomp-tsync-worker"]
+  }
+  if tsyncOut.exitCode != 0 then
+    failWith s!"outer seccomp TSYNC conflict check failed exit={tsyncOut.exitCode}: {tsyncOut.stderr}"
   for opName in ["clock_gettime", "clock_nanosleep", "getrandom"] do
     let abortOut ← IO.Process.output {
       cmd := exe.toString
@@ -403,6 +442,8 @@ def probeMain (args : List String) : IO UInt32 := do
     straceWorker opName errName
   | ["--seccomp-worker", errName] =>
     seccompWorker errName
+  | ["--seccomp-tsync-worker"] =>
+    seccompTsyncWorker
   | ["--seccomp-efault-worker", opName] =>
     seccompEfaultWorker opName
   | _ =>

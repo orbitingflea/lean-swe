@@ -1,6 +1,7 @@
 import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.LinuxSyscall.TimeRand.Model
 import LeanSwe.LinuxSyscall.TimeRand.Interface
+import LeanSwe.LinuxSyscall.TestSupport.Seccomp
 import Fuzz.LinuxSyscall.Rng
 
 namespace Fuzz.LinuxSyscall
@@ -13,9 +14,6 @@ private opaque armSigalrmRaw (usec : UInt32) (saRestart : UInt8) : BaseIO Unit
 
 @[extern "leanswe_fuzz_disarm_sigalrm"]
 private opaque disarmSigalrmRaw (unused : UInt32) : BaseIO Unit
-
-@[extern "leanswe_fuzz_install_seccomp_errno"]
-private opaque installSeccompErrnoRaw (eno : UInt32) (mask : UInt32) : BaseIO UInt32
 
 /-- Action executed by the `TimeRand` world-model fuzzer, optionally arming a short `SIGALRM` around `clock_nanosleep` or `getrandom`. -/
 inductive TimeRandFuzzAction where
@@ -780,9 +778,9 @@ def fuzzTimeRandSeccompChild (steps : Nat) (seedVal : UInt64) (eno : UInt32)
   let mut st := if delaySteps == 0 then TimeRandState.initial.withOuterSeccomp else TimeRandState.initial
   let mut seccompInstalled := false
   if delaySteps == 0 then
-    let rc ← installSeccompErrnoRaw eno mask
+    let rc ← TestSupport.Seccomp.installTimeRandSeccompErrno eno mask
     if rc != 0 then
-      throw (IO.userError s!"installSeccompErrnoRaw({eno}, {mask}) failed with errno {rc}")
+      throw (IO.userError s!"installTimeRandSeccompErrno({eno}, {mask}) failed with errno {rc}")
     seccompInstalled := true
   let mut lastMono? : Option Timespec := none
   let mut lastReal? : Option Timespec := none
@@ -798,9 +796,9 @@ def fuzzTimeRandSeccompChild (steps : Nat) (seedVal : UInt64) (eno : UInt32)
     if !seccompInstalled && stepIdx == delaySteps then
       if delaySteps ≥ 100 && (st.monoLowerBoundNs == 0 || !st.crngReady) then
         throw (IO.userError s!"mid-episode seccomp child warmup ({delaySteps} steps) did not advance state: mono={st.monoLowerBoundNs} crngReady={st.crngReady}")
-      let rc ← installSeccompErrnoRaw eno mask
+      let rc ← TestSupport.Seccomp.installTimeRandSeccompErrno eno mask
       if rc != 0 then
-        throw (IO.userError s!"mid-episode installSeccompErrnoRaw({eno}, {mask}) failed with errno {rc}")
+        throw (IO.userError s!"mid-episode installTimeRandSeccompErrno({eno}, {mask}) failed with errno {rc}")
       st := st.withOuterSeccomp
       postInitSt := st
       seccompInstalled := true
