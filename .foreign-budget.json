@@ -6,11 +6,11 @@
       "legacy_unmigrated": false
     },
     ".github/workflows/audit-daily.yml": {
-      "max_lines": 493,
+      "max_lines": 495,
       "legacy_unmigrated": false
     },
     ".github/workflows/audit.yml": {
-      "max_lines": 334,
+      "max_lines": 396,
       "legacy_unmigrated": false
     },
     "harness/Fuzz/EnvVars/c/envvars_fuzz_env.c": {
@@ -34,7 +34,7 @@
       "legacy_unmigrated": false
     },
     "harness/Fuzz/suites.json": {
-      "max_lines": 38,
+      "max_lines": 60,
       "legacy_unmigrated": false
     },
     "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c": {
@@ -210,7 +210,7 @@
       "legacy_unmigrated": false
     },
     "scripts/test_fuzz_changed.py": {
-      "max_lines": 326,
+      "max_lines": 705,
       "legacy_unmigrated": false
     }
   },

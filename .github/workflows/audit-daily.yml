@@ -325,6 +325,7 @@ jobs:
             harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 250000 --self-test-shrink
             harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 750000 --random-seed --self-test-shrink
             harness/.lake/build/bin/leanswe-fuzz --suite net --steps 250000 --self-test-shrink --require-ns
+            harness/.lake/build/bin/leanswe-fuzz --suite net --seed 11262680905236430927 --steps 50000 --self-test-shrink --require-ns
             harness/.lake/build/bin/leanswe-fuzz --suite net --steps 750000 --random-seed --self-test-shrink --require-ns
             harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process
             harness/.lake/build/bin/leanswe-fuzz --process-strace-fault-check
@@ -332,6 +333,7 @@ jobs:
             harness/.lake/build/bin/leanswe-fuzz --suite process --steps 15000 --random-seed --self-test-shrink --require-ns
             harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 100000 --self-test-shrink
             harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 50000 --random-seed --self-test-shrink
+            harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 500 --self-test-shrink 0<&- >/dev/null
           } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
 
       - name: Run Files world-model differential fuzzer and strace fault injection

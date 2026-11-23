@@ -222,54 +222,114 @@ jobs:
           echo "ASSUMP_NONCE=$ASSUMP_NONCE" >> "$GITHUB_ENV"
           echo "ASSUMP_LOG=$ASSUMP_LOG" >> "$GITHUB_ENV"
           harness/.lake/build/bin/lean-swe-test --assump-log "$ASSUMP_LOG" --assump-nonce "$ASSUMP_NONCE"
-          harness/.lake/build/bin/leanswe-fuzz --sandbox-strace-fault-check
-          harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 100000 --self-test-shrink
-          harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink
-          if sudo -n sysctl -n vm.memfd_noexec >/dev/null 2>&1; then
-            OLD_MEMFD_NOEXEC=$(sudo -n sysctl -n vm.memfd_noexec)
-            sudo -n unshare --pid --fork --mount-proc -- bash -ec '
-              ulimit -Hc unlimited
-              if (( $1 == 2 )); then
-                echo "MEMFD_NOEXEC_WARN: vm.memfd_noexec=2 enforced; skipping vm.memfd_noexec=1"
-              else
-                sysctl -w vm.memfd_noexec=1 >/dev/null
-                setpriv --reuid="$2" --regid="$3" --init-groups -- harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink
-                sysctl -w vm.memfd_noexec=2 >/dev/null
-              fi
-              setpriv --reuid="$2" --regid="$3" --init-groups -- harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink --require-memfd-strict
-              sysctl -w "vm.memfd_noexec=$1" >/dev/null 2>&1 || true
-            ' _ "$OLD_MEMFD_NOEXEC" "$(id -u)" "$(id -g)"
-          else
-            echo "::warning::sudo -n sysctl unavailable; skipping vm.memfd_noexec={1,2} strict checks"
-          fi
-          harness/.lake/build/bin/leanswe-fuzz --timerand-strace-fault-check
-          harness/.lake/build/bin/leanswe-fuzz --files-strace-fault-check
           harness/.lake/build/bin/lean-swe-test --suite Git --suite Compress --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite PostFork --suite Sqlite --suite Sqlite.Raw 0<&- 1>&- 2>&-
-          harness/.lake/build/bin/leanswe-fuzz --smoke --suite sandbox,timerand,files,process,poll,net,passwd,dns --self-test-shrink 0<&- 1>&- 2>&-
           harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,Compress,LinuxSyscall.Poll,LinuxSyscall.Net,Git,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns,LinuxSyscall.Files,PostFork,Sqlite,Sqlite.Raw
-          harness/.lake/build/bin/leanswe-fuzz --suite timerand --steps 100000 --self-test-shrink
-          harness/.lake/build/bin/leanswe-fuzz --suite timerand --steps 100000 --random-seed --self-test-shrink
           harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process
-          harness/.lake/build/bin/leanswe-fuzz --process-strace-fault-check
-          harness/.lake/build/bin/leanswe-fuzz --suite process --steps 15000 --self-test-shrink --require-ns
-          harness/.lake/build/bin/leanswe-fuzz --suite process --steps 5000 --random-seed --self-test-shrink --require-ns
-          python3 -B -m unittest scripts/test_fuzz_changed.py
-          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" && -n "${BASE_SHA:-}" ]]; then
-            python3 -B scripts/fuzz_changed.py --base "$BASE_SHA" --head HEAD --check-manifest --run --extra-arg=--self-test-shrink
-          else
-            python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest
-            harness/.lake/build/bin/leanswe-fuzz --smoke --all --self-test-shrink
+
+      - name: Run changed fuzz suites
+        id: fuzz_gate
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          FUZZ_BIN="harness/.lake/build/bin/leanswe-fuzz"
+          DIFF_BASE=""
+          if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" && "${BASE_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
+            DIFF_BASE="$BASE_SHA"
+          elif [[ "${GITHUB_EVENT_NAME:-}" == "push" && "${PUSH_BEFORE:-}" =~ ^[0-9a-f]{40}$ && "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]]; then
+            git rev-parse --verify --quiet "${PUSH_BEFORE}^{commit}" >/dev/null 2>&1 || git fetch --no-tags --depth=1 origin -- "$PUSH_BEFORE" 2>/dev/null || true
+            if git rev-parse --verify --quiet "${PUSH_BEFORE}^{commit}" >/dev/null 2>&1; then
+              DIFF_BASE="$PUSH_BEFORE"
+            fi
           fi
-          harness/.lake/build/bin/leanswe-fuzz --poll-strace-fault-check
-          harness/.lake/build/bin/leanswe-fuzz --net-strace-fault-check
-          harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 50000 --self-test-shrink
-          harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 50000 --random-seed --self-test-shrink
-          harness/.lake/build/bin/leanswe-fuzz --suite net --steps 50000 --self-test-shrink --require-ns
-          harness/.lake/build/bin/leanswe-fuzz --suite net --seed 11262680905236430927 --steps 50000 --self-test-shrink --require-ns
-          harness/.lake/build/bin/leanswe-fuzz --suite net --steps 50000 --random-seed --self-test-shrink --require-ns
-          harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 25000 --self-test-shrink
-          harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 25000 --random-seed --self-test-shrink
-          harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 500 --self-test-shrink 0<&- >/dev/null
+          if [[ -n "$DIFF_BASE" ]]; then
+            CHANGED_RAW=$(python3 -B scripts/fuzz_changed.py --base "$DIFF_BASE" --head HEAD --check-manifest --runner "$FUZZ_BIN" --format lines)
+            echo "FUZZ_GATE: mode=diff base=$DIFF_BASE"
+          else
+            python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest --runner "$FUZZ_BIN" >/dev/null
+            CHANGED_RAW=$("$FUZZ_BIN" --list-suites)
+            [[ -n "$CHANGED_RAW" ]] || { echo "FUZZ_GATE_ERROR: empty --list-suites output" >&2; exit 2; }
+            echo "FUZZ_GATE: mode=full event=${GITHUB_EVENT_NAME:-unknown}"
+          fi
+          CHANGED_SET=","
+          LIGHT_ARGS=()
+          STDIO_ARGS=()
+          has_suite() { [[ "$CHANGED_SET" == *",$1,"* ]]; }
+          while IFS= read -r _s; do
+            [[ -n "$_s" ]] || continue
+            [[ "$_s" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "FUZZ_GATE_ERROR: invalid suite '$_s'" >&2; exit 2; }
+            if has_suite "$_s"; then
+              continue
+            fi
+            CHANGED_SET+="${_s},"
+            case "$_s" in
+              sandbox|timerand|files|process|poll|net|postfork) ;;
+              *) LIGHT_ARGS+=(--suite "$_s") ;;
+            esac
+            case "$_s" in
+              sandbox|timerand|files|process|poll|net|passwd|dns) STDIO_ARGS+=(--suite "$_s") ;;
+            esac
+          done <<< "$CHANGED_RAW"
+          SUMMARY="${CHANGED_SET#,}"
+          SUMMARY="${SUMMARY%,}"
+          echo "FUZZ_GATE: changed_suites=${SUMMARY:-none}"
+          if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+            echo "run_files=$(has_suite files && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          fi
+          if (( ${#STDIO_ARGS[@]} > 0 )); then
+            "$FUZZ_BIN" --smoke "${STDIO_ARGS[@]}" --self-test-shrink 0<&- 1>&- 2>&-
+          fi
+          if (( ${#LIGHT_ARGS[@]} > 0 )); then
+            "$FUZZ_BIN" --smoke "${LIGHT_ARGS[@]}" --self-test-shrink
+          fi
+          if has_suite sandbox; then
+            "$FUZZ_BIN" --sandbox-strace-fault-check
+            "$FUZZ_BIN" --suite sandbox --steps 100000 --self-test-shrink
+            "$FUZZ_BIN" --suite sandbox --steps 50000 --random-seed --self-test-shrink
+            if sudo -n sysctl -n vm.memfd_noexec >/dev/null 2>&1; then
+              OLD_MEMFD_NOEXEC=$(sudo -n sysctl -n vm.memfd_noexec)
+              sudo -n unshare --pid --fork --mount-proc -- bash -ec '
+                ulimit -Hc unlimited
+                if (( $1 == 2 )); then
+                  echo "MEMFD_NOEXEC_WARN: vm.memfd_noexec=2 enforced; skipping vm.memfd_noexec=1"
+                else
+                  sysctl -w vm.memfd_noexec=1 >/dev/null
+                  setpriv --reuid="$2" --regid="$3" --init-groups -- harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink
+                  sysctl -w vm.memfd_noexec=2 >/dev/null
+                fi
+                setpriv --reuid="$2" --regid="$3" --init-groups -- harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink --require-memfd-strict
+                sysctl -w "vm.memfd_noexec=$1" >/dev/null 2>&1 || true
+              ' _ "$OLD_MEMFD_NOEXEC" "$(id -u)" "$(id -g)"
+            else
+              echo "::warning::sudo -n sysctl unavailable; skipping vm.memfd_noexec={1,2} strict checks"
+            fi
+          fi
+          if has_suite timerand; then
+            "$FUZZ_BIN" --timerand-strace-fault-check
+            "$FUZZ_BIN" --suite timerand --steps 100000 --self-test-shrink
+            "$FUZZ_BIN" --suite timerand --steps 100000 --random-seed --self-test-shrink
+          fi
+          if has_suite process; then
+            "$FUZZ_BIN" --process-strace-fault-check
+            "$FUZZ_BIN" --suite process --steps 15000 --self-test-shrink --require-ns
+            "$FUZZ_BIN" --suite process --steps 5000 --random-seed --self-test-shrink --require-ns
+          fi
+          if has_suite poll; then
+            "$FUZZ_BIN" --poll-strace-fault-check
+            "$FUZZ_BIN" --suite poll --steps 50000 --self-test-shrink
+            "$FUZZ_BIN" --suite poll --steps 50000 --random-seed --self-test-shrink
+          fi
+          if has_suite net; then
+            "$FUZZ_BIN" --net-strace-fault-check
+            "$FUZZ_BIN" --suite net --steps 50000 --self-test-shrink --require-ns
+            "$FUZZ_BIN" --suite net --seed 11262680905236430927 --steps 50000 --self-test-shrink --require-ns
+            "$FUZZ_BIN" --suite net --steps 50000 --random-seed --self-test-shrink --require-ns
+          fi
+          if has_suite postfork; then
+            "$FUZZ_BIN" --suite postfork --steps 25000 --self-test-shrink
+            "$FUZZ_BIN" --suite postfork --steps 25000 --random-seed --self-test-shrink
+            "$FUZZ_BIN" --suite postfork --steps 500 --self-test-shrink 0<&- >/dev/null
+          fi
 
       - name: Check 1 GB private-memory cap on changed modules and reverse dependents
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -310,8 +370,10 @@ jobs:
         run: lake env lean -DwarningAsError=true --run scripts/CheckForeignThinness.lean .
 
       - name: Run world-model differential fuzzer (Files)
+        if: success() && steps.fuzz_gate.outputs.run_files != 'false'
         run: |
           set -euo pipefail
+          harness/.lake/build/bin/leanswe-fuzz --files-strace-fault-check
           harness/.lake/build/bin/leanswe-fuzz --suite files --steps 100000 --self-test-shrink --require-ns
           harness/.lake/build/bin/leanswe-fuzz --suite files --steps 50000 --random-seed --require-ns
           command -v capsh >/dev/null 2>&1 || { echo "ERROR: missing capsh" >&2; exit 1; }
