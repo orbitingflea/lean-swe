@@ -1,5 +1,7 @@
 import LeanSwe.ProcessSandbox.Init.Proofs.Base
 import LeanSwe.ProcessSandbox.Init.Proofs.StatusAndOps
+import LeanSwe.ProcessSandbox.Init.Proofs.OracleOps
+import LeanSwe.ProcessSandbox.Init.Proofs.LifecycleOps
 import LeanSwe.ProcessSandbox.Init.Proofs.Cli
 import LeanSwe.ProcessSandbox.Init.Proofs.PlanPrimitives
 import LeanSwe.ProcessSandbox.Init.Proofs.PlanDecode

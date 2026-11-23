@@ -104,7 +104,7 @@ fn check_usize(r: isize) -> Result<usize, i32> {
     if r < 0 { Err(errno()) } else { Ok(r as usize) }
 }
 
-/// Copy `argv[idx]` into `buf` when its length is `<= 64`, returning the raw byte length.
+/// Copy `argv[idx]` into `buf` when its length is `<= 64`, returning `len` (`0` if missing/null, sentinel `65` if `> 64`).
 pub fn read_cli_arg(s: &mut Sys, idx: usize, buf: &mut [u8; 64]) -> usize {
     if idx >= s.argc || s.argv.is_null() {
         return 0;
