@@ -859,8 +859,9 @@ private def isOpenDirHandle (s : FilesState) (hid : HandleId) : Bool :=
 private def isUnlinkedOpenDirHandle (s : FilesState) (hid : HandleId) : Bool :=
   match assocGet s.fds hid with
   | some desc =>
+    !desc.isPathFd &&
     match assocGet s.inodes desc.ino with
-    | some vn => vn.kind == .dir && vn.nlink == 0
+    | some vn => vn.kind == .dir && (vn.nlink == 0 || vn.isDeadDir)
     | none => false
   | none => false
 
@@ -1271,21 +1272,50 @@ private def findOpenEmptyCwdChildName (s : FilesState) : Option ByteArray :=
       match assocGet s.inodes cino with
       | some cvn =>
         if cvn.kind == .dir && cvn.children.isEmpty && cvn.nlink > 0 &&
-            s.fds.any (fun (_, desc) => desc.ino == cino) then
+            s.fds.any (fun (_, desc) => !desc.isPathFd && desc.ino == cino) then
           some name
         else none
+      | none => none
+
+private def findSymlinkChildName (s : FilesState) : Option ByteArray :=
+  match assocGet s.inodes s.cwdIno with
+  | none => none
+  | some cwdVn =>
+    if cwdVn.isDeadDir || (cwdVn.mode &&& 0o100) == 0 then none
+    else cwdVn.children.findSome? fun (name, cino) =>
+      match assocGet s.inodes cino with
+      | some cvn =>
+        if cvn.kind == .symlink && cvn.nlink > 0 then some name else none
       | none => none
 
 private def findOpenMayCopyUpChild (s : FilesState) : Option (ByteArray × Bool) :=
   match assocGet s.inodes s.cwdIno with
   | none => none
   | some cwdVn =>
-    cwdVn.children.findSome? fun (name, cino) =>
+    if cwdVn.isDeadDir || isReadOnlyMount s cwdVn.mountId || (cwdVn.mode &&& 0o300) != 0o300 then none
+    else cwdVn.children.findSome? fun (name, cino) =>
       match assocGet s.inodes cino with
       | some cvn =>
         let removable := cvn.kind != .dir || cvn.children.isEmpty
-        if cvn.mayCopyUp && cvn.nlink > 0 && removable &&
-            s.fds.any (fun (_, desc) => desc.ino == cino) then
+        if cvn.mayCopyUp && cvn.nlink > 0 && removable && !cvn.isPseudo && !cvn.isDynamic &&
+            cvn.owner.ownedByUid && !isReadOnlyMount s cvn.mountId &&
+            s.fds.any (fun (_, desc) => !desc.isPathFd && desc.ino == cino && desc.dentry? == some (s.cwdIno, name)) then
+          some (name, cvn.kind == .dir)
+        else none
+      | none => none
+
+private def findUnopenedMayCopyUpChild (s : FilesState) : Option (ByteArray × Bool) :=
+  match assocGet s.inodes s.cwdIno with
+  | none => none
+  | some cwdVn =>
+    if cwdVn.isDeadDir || isReadOnlyMount s cwdVn.mountId || (cwdVn.mode &&& 0o300) != 0o300 then none
+    else cwdVn.children.findSome? fun (name, cino) =>
+      match assocGet s.inodes cino with
+      | some cvn =>
+        let removable := cvn.kind == .reg || (cvn.kind == .dir && cvn.children.isEmpty)
+        if cvn.mayCopyUp && cvn.nlink > 0 && removable && !cvn.isPseudo && !cvn.isDynamic &&
+            cvn.owner.ownedByUid && (cvn.mode &&& 0o400) != 0 && !isReadOnlyMount s cvn.mountId &&
+            !(s.fds.any (fun (_, desc) => !desc.isPathFd && desc.dentry? == some (s.cwdIno, name))) then
           some (name, cvn.kind == .dir)
         else none
       | none => none
@@ -1305,10 +1335,12 @@ private def findWritableFifoChildName (s : FilesState) : Option ByteArray :=
       | none => none
 
 private def isUnlinkedCopyUpDesc (s : FilesState) (od : OpenDesc) : Bool :=
+  !od.isPathFd &&
   match assocGet s.inodes od.ino with
   | none => false
   | some vn =>
-    vn.mayCopyUp &&
+    vn.mayCopyUp && !vn.isPseudo && !vn.isDynamic &&
+    vn.owner.ownedByUid && !isReadOnlyMount s vn.mountId &&
     match od.dentry? with
     | none => true
     | some (pIno, lf) =>
@@ -1373,6 +1405,10 @@ private def genSymReq (rng : Rng) (env : GenEnv) (s : FilesState)
   let asymHot := match assocGet s.inodes s.cwdIno with
     | some cvn => (bytesAssocGet cvn.children "gd".toUTF8).isSome
     | none => false
+  let unlinkedCopyUpFds := env.openFds.filter fun (_, hid) =>
+    match assocGet s.fds hid with
+    | some od => isUnlinkedCopyUpDesc s od
+    | none => false
   let (opSlot, r1a) := rng.nextNat 28
   let opIdx0 :=
     if opSlot < 23 then opSlot
@@ -1391,10 +1427,18 @@ private def genSymReq (rng : Rng) (env : GenEnv) (s : FilesState)
       | _ => 0
   let (rebalanceOpen, r1b) := r1a.chance 1 2
   let (allocPick, r1c) := r1b.nextNat 6
-  let (preferFreeDup, r1) :=
+  let (preferFreeDup, r1d) :=
     if !s.freeStdioSlots.isEmpty then r1c.chance 1 3 else (false, r1c)
+  let (preferOvlFchmod, r1e) :=
+    if ovlHot && !unlinkedCopyUpFds.isEmpty then r1d.chance 1 14 else (false, r1d)
+  let (preferOvlUnlink, r1) :=
+    if ovlHot && !preferOvlFchmod && unlinkedCopyUpFds.isEmpty && (findOpenMayCopyUpChild s).isSome then
+      r1e.chance 1 5
+    else (false, r1e)
   let opIdx :=
     if preferFreeDup then 22
+    else if preferOvlFchmod then 15
+    else if preferOvlUnlink then 9
     else if env.allFds.isEmpty then
       let initOps := #[0, 1, 6, 7, 8, 9, 10, 11, 12, 14, 19, 22]
       initOps.getD (opIdx0 % initOps.size) 0
@@ -1424,12 +1468,25 @@ private def genSymReq (rng : Rng) (env : GenEnv) (s : FilesState)
         | some vn => vn.kind == .socket
         | none => false
       | none => false
+    let hasOpathSymFd := env.openFds.any fun (_, hid) =>
+      match assocGet s.fds hid with
+      | some desc =>
+        desc.isPathFd &&
+        match assocGet s.inodes desc.ino with
+        | some vn => vn.kind == .symlink
+        | none => false
+      | none => false
     let cwdHasSock := match assocGet s.inodes s.cwdIno with
       | some cvn => (bytesAssocGet cvn.children "p.sock".toUTF8).isSome
       | none => false
     let (preferFifoOpen, r1f) := r1.chance 1 8
     let (preferOpathSock, r1s0) := r1f.chance 1 12
-    let (preferExeBusy, r1s) := r1s0.chance 1 48
+    let (preferOpathSym, r1s0b) := r1s0.chance 1 12
+    let (preferExeBusy, r1s1) := r1s0b.chance 1 48
+    let (preferOvlLowerOpen, r1s) :=
+      if ovlHot && unlinkedCopyUpFds.isEmpty && (findOpenMayCopyUpChild s).isNone then
+        r1s1.chance 1 4
+      else (false, r1s1)
     if preferExeBusy && allowHostMut && canProbeProcSelfExe s then
       (.openat none "/proc/self/exe".toUTF8 { access := .wronly, cloexec := true } 0, r1s)
     else
@@ -1440,6 +1497,14 @@ private def genSymReq (rng : Rng) (env : GenEnv) (s : FilesState)
       if !hasOpathSockFd && preferOpathSock && cwdHasSock then
         (.openat none "p.sock".toUTF8 { path := true, cloexec := true } 0, r1s)
       else
+      match !hasOpathSymFd && preferOpathSym, findSymlinkChildName s with
+      | true, some symName =>
+        (.openat none symName { path := true, nofollow := true, cloexec := true } 0, r1s)
+      | _, _ =>
+      match preferOvlLowerOpen, findUnopenedMayCopyUpChild s with
+      | true, some (ovlName, isDir) =>
+        (.openat none ovlName { access := .rdonly, directory := isDir, cloexec := true } 0, r1s)
+      | _, _ =>
       let ((dir0, hasDir), r2) := pickDirArg r1s env
       let (flags0, r3) := genOpenFlags r2
       let (useSimple, r3b) := r3.chance 1 3
@@ -1644,10 +1709,6 @@ private def genSymReq (rng : Rng) (env : GenEnv) (s : FilesState)
     let (mode, r5) := genMode r4
     (.fchmodat dir path mode, r5)
   | 15 =>
-    let unlinkedCopyUpFds := env.openFds.filter fun (_, hid) =>
-      match assocGet s.fds hid with
-      | some od => isUnlinkedCopyUpDesc s od
-      | none => false
     let (preferUnlinkedCopyUp, r1b) := r1.chance 4 5
     let (fd, r2) :=
       if preferUnlinkedCopyUp && !unlinkedCopyUpFds.isEmpty then

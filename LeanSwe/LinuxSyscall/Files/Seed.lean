@@ -922,11 +922,16 @@ def FilesState.withSeededTree (cfg : SeedTreeConfig := {}) : FilesState :=
     if cfg.chrootUnreachable && cfg.includeHostTree then
       let outerEntries :=
         if cfg.chrootOuterEntries.isEmpty then
+          let maxBuiltinMountId :=
+            max 5 (max cfg.sysMountId (max cfg.cwdMountId (max cfg.cwdParentMountId
+              (max cfg.crossMountId (max cfg.crossParentMountId cfg.devMountId)))))
+          let outerSysMountId :=
+            s5.inodes.foldl (fun acc (_, vn) => max acc vn.mountId) maxBuiltinMountId + 1
           [ { name := asciiBytes ['e', 't', 'c'], kind := .dir, mode := 0o755, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, dynamicMeta := true },
             { relDir := [asciiBytes ['e', 't', 'c']], name := asciiBytes ['p', 'a', 's', 's', 'w', 'd'], kind := .reg, mode := 0o644, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, dynamicMeta := true },
-            { name := asciiBytes ['s', 'y', 's'], kind := .dir, mode := 0o555, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, mountId? := some 3, dynamicMeta := true },
-            { relDir := [asciiBytes ['s', 'y', 's']], name := asciiBytes ['k', 'e', 'r', 'n', 'e', 'l'], kind := .dir, mode := 0o755, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, mountId? := some 3, dynamicMeta := true },
-            { relDir := [asciiBytes ['s', 'y', 's'], asciiBytes ['k', 'e', 'r', 'n', 'e', 'l']], name := asciiBytes ['c', 'p', 'u', '_', 'b', 'y', 't', 'e', 'o', 'r', 'd', 'e', 'r'], kind := .reg, mode := 0o444, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, mountId? := some 3, dynamicMeta := true },
+            { name := asciiBytes ['s', 'y', 's'], kind := .dir, mode := 0o555, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, mountId? := some outerSysMountId, dynamicMeta := true },
+            { relDir := [asciiBytes ['s', 'y', 's']], name := asciiBytes ['k', 'e', 'r', 'n', 'e', 'l'], kind := .dir, mode := 0o755, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, mountId? := some outerSysMountId, dynamicMeta := true },
+            { relDir := [asciiBytes ['s', 'y', 's'], asciiBytes ['k', 'e', 'r', 'n', 'e', 'l']], name := asciiBytes ['c', 'p', 'u', '_', 'b', 'y', 't', 'e', 'o', 'r', 'd', 'e', 'r'], kind := .reg, mode := 0o444, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, mountId? := some outerSysMountId, dynamicMeta := true },
             { name := asciiBytes ['t', 'm', 'p'], kind := .dir, mode := 0o1777, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, dynamicMeta := true } ]
         else cfg.chrootOuterEntries
       seedApplyOuterEntries s5 outRootIno outerEntries
