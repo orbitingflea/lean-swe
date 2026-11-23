@@ -924,9 +924,19 @@ def FilesState.withSeededTree (cfg : SeedTreeConfig := {}) : FilesState :=
         if cfg.chrootOuterEntries.isEmpty then
           let maxBuiltinMountId :=
             max 5 (max cfg.sysMountId (max cfg.cwdMountId (max cfg.cwdParentMountId
-              (max cfg.crossMountId (max cfg.crossParentMountId cfg.devMountId)))))
+              (max cfg.crossMountId (max cfg.crossParentMountId (max cfg.devMountId
+                (max cfg.stdinMountId (max cfg.stdoutMountId (max cfg.stderrMountId
+                  (max cfg.proc1CwdMountId cfg.proc1Fd0MountId))))))))))
+          let maxSeededMountId :=
+            s5.inodes.foldl (fun acc (_, vn) => max acc vn.mountId) maxBuiltinMountId
+          let maxAncMountId :=
+            cfg.ancestorMeta.foldl (fun acc (_, _, _, mid, _, _) => max acc mid) maxSeededMountId
+          let maxProfileMountId :=
+            cfg.mountProfiles.foldl (fun acc (mid, _) => max acc mid) maxAncMountId
+          let maxEntryMountId (acc : Nat) (entries : List SeedEntry) : Nat :=
+            entries.foldl (fun m e => match e.mountId? with | some mid => max m mid | none => m) acc
           let outerSysMountId :=
-            s5.inodes.foldl (fun acc (_, vn) => max acc vn.mountId) maxBuiltinMountId + 1
+            maxEntryMountId (maxEntryMountId maxProfileMountId cfg.cwdEntries) cfg.crossEntries + 1
           [ { name := asciiBytes ['e', 't', 'c'], kind := .dir, mode := 0o755, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, dynamicMeta := true },
             { relDir := [asciiBytes ['e', 't', 'c']], name := asciiBytes ['p', 'a', 's', 's', 'w', 'd'], kind := .reg, mode := 0o644, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, dynamicMeta := true },
             { name := asciiBytes ['s', 'y', 's'], kind := .dir, mode := 0o555, ownedByUid := false, inGroup := cfg.hostSyntheticInGroup, ownerUid? := some 0, mountId? := some outerSysMountId, dynamicMeta := true },

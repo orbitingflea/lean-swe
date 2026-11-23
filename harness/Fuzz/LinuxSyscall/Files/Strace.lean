@@ -2142,6 +2142,89 @@ private def runSeccompAndOverlayCopyUpReproducers : IO Unit := do
   let _ ← stepModelCheck "chroot custom sysMountId=6 inner->outer cross-/sys renameat2 -> EXDEV" unreachOuterCustomSys
     (.renameat2 none "/sys/kernel/cpu_byteorder".toUTF8 none "../../../../sys/kernel/cpu_byteorder".toUTF8 exFlags)
     (.err Errno.EXDEV)
+  let assertOuterSysDisjoint (label : String) (st : FilesState) (minExclusiveMid : Nat) : IO Unit := do
+    let stOpened ← stepModelCheck s!"{label}: open outer /sys/kernel/cpu_byteorder" st
+      (.openat none "../../../../sys/kernel/cpu_byteorder".toUTF8 { access := .rdonly, cloexec := true } 0) (.opened 0)
+    let outerSysMid? := (assocGet stOpened.fds 0).bind fun desc =>
+      (assocGet stOpened.inodes desc.ino).map (·.mountId)
+    match outerSysMid? with
+    | none => throw (IO.userError s!"{label}: missing opened outer /sys/kernel/cpu_byteorder inode")
+    | some mid =>
+      assertTrue s!"{label}: outerSysMountId ({mid}) > {minExclusiveMid}" (mid > minExclusiveMid)
+      assertTrue s!"{label}: outer /sys mount {mid} does not inherit readOnly profile"
+        (!isReadOnlyMount st mid)
+      assertTrue s!"{label}: outer /sys mount {mid} does not inherit isOverlay profile"
+        (!(mountProfileOf st mid).isOverlay)
+  let unreachOuterHigherSeeded := FilesState.withSeededTree {
+    cwdPath := "/outside/ep".toUTF8
+    crossMountPath? := some "/cross".toUTF8
+    chrootUnreachable := true
+    cwdEntries := [
+      { name := "ro_sub".toUTF8, kind := .dir, mode := 0o755, mountId? := some 6 },
+      { relDir := ["ro_sub".toUTF8], name := "f".toUTF8, kind := .reg, mode := 0o644 }
+    ]
+    crossEntries := [
+      { name := "ovl_sub".toUTF8, kind := .dir, mode := 0o755, mountId? := some 7 },
+      { relDir := ["ovl_sub".toUTF8], name := "g".toUTF8, kind := .reg, mode := 0o644 }
+    ]
+    mountProfiles := [
+      (6, { readOnly := true }),
+      (7, { isOverlay := true }),
+      (8, { readOnly := true, isOverlay := true })
+    ]
+  }
+  assertOuterSysDisjoint "chroot outer /sys above cwdEntries/crossEntries/mountProfiles" unreachOuterHigherSeeded 8
+  let _ ← stepModelCheck "chroot outer /sys fchmodat not EROFS (returns EPERM)" unreachOuterHigherSeeded
+    (.fchmodat none "../../../../sys/kernel/cpu_byteorder".toUTF8 0o444) (.err Errno.EPERM)
+  assertTrue "chroot outer /sys fchmodat rejects EROFS"
+    ((allowedStep unreachOuterHigherSeeded
+      (.fchmodat none "../../../../sys/kernel/cpu_byteorder".toUTF8 0o444) (.err Errno.EROFS)).isNone)
+  let _ ← stepModelCheck "chroot cwdEntries mountId=6 -> outer /sys renameat2 -> EXDEV" unreachOuterHigherSeeded
+    (.renameat2 none "ro_sub/f".toUTF8 none "../../../../sys/kernel/cpu_byteorder".toUTF8 exFlags)
+    (.err Errno.EXDEV)
+  assertTrue "chroot cwdEntries mountId=6 -> outer /sys renameat2 rejects EROFS"
+    ((allowedStep unreachOuterHigherSeeded
+      (.renameat2 none "ro_sub/f".toUTF8 none "../../../../sys/kernel/cpu_byteorder".toUTF8 exFlags)
+      (.err Errno.EROFS)).isNone)
+  let _ ← stepModelCheck "chroot crossEntries mountId=7 -> outer /sys renameat2 -> EXDEV" unreachOuterHigherSeeded
+    (.renameat2 none "/cross/ovl_sub/g".toUTF8 none "../../../../sys/kernel/cpu_byteorder".toUTF8 exFlags)
+    (.err Errno.EXDEV)
+  let unreachOuterCwdEntryOnly := FilesState.withSeededTree {
+    cwdPath := "/outside/ep".toUTF8
+    chrootUnreachable := true
+    cwdEntries := [
+      { name := "sub6".toUTF8, kind := .dir, mode := 0o755, mountId? := some 6 },
+      { relDir := ["sub6".toUTF8], name := "f".toUTF8, kind := .reg, mode := 0o644 }
+    ]
+  }
+  assertOuterSysDisjoint "chroot outer /sys above cwdEntries mountId=6" unreachOuterCwdEntryOnly 6
+  let _ ← stepModelCheck "chroot cwdEntries-only mountId=6 -> outer /sys renameat2 -> EXDEV" unreachOuterCwdEntryOnly
+    (.renameat2 none "sub6/f".toUTF8 none "../../../../sys/kernel/cpu_byteorder".toUTF8 exFlags)
+    (.err Errno.EXDEV)
+  let unreachOuterCrossEntryOnly := FilesState.withSeededTree {
+    cwdPath := "/outside/ep".toUTF8
+    crossMountPath? := some "/cross".toUTF8
+    chrootUnreachable := true
+    crossEntries := [
+      { name := "sub6".toUTF8, kind := .dir, mode := 0o755, mountId? := some 6 },
+      { relDir := ["sub6".toUTF8], name := "g".toUTF8, kind := .reg, mode := 0o644 }
+    ]
+  }
+  assertOuterSysDisjoint "chroot outer /sys above crossEntries mountId=6" unreachOuterCrossEntryOnly 6
+  let _ ← stepModelCheck "chroot crossEntries-only mountId=6 -> outer /sys renameat2 -> EXDEV" unreachOuterCrossEntryOnly
+    (.renameat2 none "/cross/sub6/g".toUTF8 none "../../../../sys/kernel/cpu_byteorder".toUTF8 exFlags)
+    (.err Errno.EXDEV)
+  let unreachOuterProfileOnly := FilesState.withSeededTree {
+    cwdPath := "/outside/ep".toUTF8
+    chrootUnreachable := true
+    mountProfiles := [(6, { readOnly := true, isOverlay := true })]
+  }
+  assertOuterSysDisjoint "chroot outer /sys above mountProfiles key 6" unreachOuterProfileOnly 6
+  let _ ← stepModelCheck "chroot mountProfiles-only key 6 outer /sys fchmodat -> EPERM" unreachOuterProfileOnly
+    (.fchmodat none "../../../../sys/kernel/cpu_byteorder".toUTF8 0o444) (.err Errno.EPERM)
+  assertTrue "chroot mountProfiles-only key 6 outer /sys fchmodat rejects EROFS"
+    ((allowedStep unreachOuterProfileOnly
+      (.fchmodat none "../../../../sys/kernel/cpu_byteorder".toUTF8 0o444) (.err Errno.EROFS)).isNone)
   let unreachSameMount := FilesState.withSeededTree {
     cwdPath := "/ep".toUTF8
     cwdMountId := 0
