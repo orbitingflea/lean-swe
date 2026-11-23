@@ -111,8 +111,8 @@ class FuzzChangedUnitTests(unittest.TestCase):
         audit = (REPO_ROOT / ".github" / "workflows" / "audit.yml").read_text(encoding="utf-8")
         daily = (REPO_ROOT / ".github" / "workflows" / "audit-daily.yml").read_text(encoding="utf-8")
         self.assertNotIn("leanswe-world-fuzz", audit); self.assertNotIn("leanswe-world-fuzz", daily)
-        for wf in (audit, daily): self.assertIn("--suite Git ", wf); self.assertIn(",Git,", wf)
-        self.assertIn("scripts/test_fuzz_changed.py", daily); self.assertIn("--check-manifest", daily)
+        for wf in (audit, daily): self.assertIn("--suite Git ", wf); self.assertIn(",Git,", wf); self.assertIn("python3 -B -m unittest discover -s scripts -p 'test_*.py'", wf)
+        self.assertNotIn("test -f scripts/test_fuzz_changed.py", daily); self.assertIn("--check-manifest", daily)
         self.assertIn("leanswe-fuzz --all --exclude sandbox,timerand,files,process,poll,net ", daily); self.assertNotIn("leanswe-fuzz --suite float ", daily)
 
 class FuzzChangedGitIntegrationTests(unittest.TestCase):
