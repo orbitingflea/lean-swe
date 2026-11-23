@@ -579,10 +579,14 @@ def main() -> int:
                     continue
                 for mname, cst, cout in measure_c_sancov(work, eval_modes, args.suite, ct, use_systemd, args.timeout):
                     print(f"C sancov [{mname}] ({cst}, {ct}): {cout}")
-        if args.c_cov_only: return 0
+        if args.c_cov_only:
+            return 0
+
         mutants: list[Mutant] = []
-        for rel in lean_targets: mutants.extend(generate_lean_mutants(rel, (work / rel).read_text()))
-        for rel in c_targets: mutants.extend(generate_c_mutants(rel, (work / rel).read_text()))
+        for rel in lean_targets:
+            mutants.extend(generate_lean_mutants(rel, (work / rel).read_text()))
+        for rel in c_targets:
+            mutants.extend(generate_c_mutants(rel, (work / rel).read_text()))
 
         per_mode_killed: dict[str, int] = {m: 0 for m in eval_modes}
         per_mode_survived: dict[str, list[Mutant]] = {m: [] for m in eval_modes}
