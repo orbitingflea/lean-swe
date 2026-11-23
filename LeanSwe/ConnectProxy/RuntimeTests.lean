@@ -1071,11 +1071,32 @@ private def testDetachedDnsWakeupAtMaxConcurrency : IO Unit := do
       let _ ← ops2.stopProxy proxy2
   waitForFdCount fdsStart 1000 "detached DNS teardown FD cleanup"
 
+private def testPollTimeoutCap : IO Unit := do
+  assertTrue (SysBridge.msToPollTimespec 0 == { sec := 0, nsec := 0 })
+    "msToPollTimespec 0"
+  assertTrue (SysBridge.msToPollTimespec 1250 == { sec := 1, nsec := 250000000 })
+    "msToPollTimespec 1250"
+  assertTrue (SysBridge.msToPollTimespec (2147483647 * 1000 + 999) ==
+      { sec := 2147483647, nsec := 999000000 })
+    "msToPollTimespec at 2147483647s boundary preserves sub-second nsec"
+  assertTrue (SysBridge.msToPollTimespec (2147483648 * 1000 + 750) ==
+      { sec := 2147483647, nsec := 0 })
+    "msToPollTimespec above 2147483647s caps to 2147483647s, 0ns"
+  assertTrue (SysBridge.msToPollTimespec (10000000000000000000 * 1000 + 500) ==
+      { sec := 2147483647, nsec := 0 })
+    "msToPollTimespec far above Int64 max still clamps to 2147483647s, 0ns"
+  let hugeSlot : SysBridge.ClientSlot Nat Unit :=
+    { phase := .handshake 7 ByteArray.empty (1000 + 2147483648 * 1000 + 750) }
+  let (_, _, to?) := SysBridge.buildPollBatchSync 3 4 4 1000 #[hugeSlot]
+  assertTrue (to? == some { sec := 2147483647, nsec := 0 })
+    s!"buildPollBatchSync huge deadline expected 2147483647s/0ns, got {repr to?}"
+
 /-- Execute end-to-end OS network and Python differential runtime tests for `LeanSwe.ConnectProxy`. -/
 def runAll : IO Unit := do
   let fdsBefore ← countSelfOpenFds
   assertErrKind (← withProxy { limits := { maxHeaderBytes := 0 } } fun _ => pure (.ok ()))
     .invalidInput "withProxy invalid config rejected"
+  testPollTimeoutCap
   runPythonIpaddressDifferential
   testTunnelPipelineHalfCloseFailoverAndCurl
   testDenialsPublicOnlyBansAndPostBody
