@@ -1,21 +1,11 @@
+import LeanSwe.LinuxSyscall.Common.Model
 import LeanSwe.LinuxSyscall.Sandbox.Types
 
 namespace LeanSwe.LinuxSyscall.Sandbox
 
 open LeanSwe.LinuxSyscall
 
-/-- Look up `k` in a `Nat`-keyed association list (kernel-reducible). -/
-def assocGet {α : Type} : List (Nat × α) → Nat → Option α
-  | [], _ => none
-  | (k, v) :: rest, target =>
-    if k == target then some v else assocGet rest target
-
-/-- Insert or overwrite `(target, val)` in a `Nat`-keyed association list (kernel-reducible). -/
-def assocSet {α : Type} : List (Nat × α) → Nat → α → List (Nat × α)
-  | [], target, val => [(target, val)]
-  | (k, v) :: rest, target, val =>
-    if k == target then (target, val) :: rest
-    else (k, v) :: assocSet rest target val
+export LeanSwe.LinuxSyscall (assocGet assocSetAux assocSet)
 
 /-- Construct a `ByteArray` consisting of `n` copies of `byte` (kernel-reducible). -/
 def mkRepBytes (n : Nat) (byte : UInt8 := 97) : ByteArray :=

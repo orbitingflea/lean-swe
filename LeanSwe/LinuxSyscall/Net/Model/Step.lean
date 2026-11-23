@@ -429,7 +429,7 @@ def emitAccept (obs? : Option NetOutcome) (s : NetState) (lFid : FileId) (ld : S
           | some (.socket cd) =>
             match cd.proto with
             | .tcp _ _ _ (.established (some cliFid) pa) _ =>
-              let accS0 := { accS with files := assocErase accS.files q.childFid }
+              let accS0 := { accS with files := assocEraseAll accS.files q.childFid }
               match lookupFileSocket accS0 cliFid with
               | .ok clid =>
                 match clid.proto with

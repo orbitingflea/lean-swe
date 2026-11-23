@@ -183,29 +183,18 @@ private theorem assocGet_none_of_not_mem_fst {β : Type} :
     simp only [Files.assocGet, hNe, Bool.false_eq_true, ↓reduceIte]
     exact assocGet_none_of_not_mem_fst tl j hNotMem.2
 
-private def myEraseAux {α β : Type} [BEq α] (k : α) :
-    List (α × β) → List (α × β) → List (α × β)
-  | [], acc => acc.reverse
-  | (k', v') :: rest, acc =>
-    if k' == k then acc.reverseAux rest
-    else myEraseAux k rest ((k', v') :: acc)
-
-set_option smartUnfolding false in
-private theorem assocErase_eq_my {α β : Type} [BEq α] (xs : List (α × β)) (k : α) :
-    Files.assocErase xs k = myEraseAux k xs [] := rfl
-
 private theorem assocErase_sublist_and_laws {β : Type} (k : Nat) :
     ∀ (xs acc : List (Nat × β)),
       (∀ x ∈ acc, x.1 ≠ k) →
-      (myEraseAux k xs acc = acc.reverse ++ xs ∨
-       ∃ l1 l2 v, acc.reverse ++ xs = l1 ++ (k, v) :: l2 ∧ myEraseAux k xs acc = l1 ++ l2)
-  | [], acc, _ => Or.inl (by simp [myEraseAux])
+      (Files.assocEraseAux xs k acc = acc.reverse ++ xs ∨
+       ∃ l1 l2 v, acc.reverse ++ xs = l1 ++ (k, v) :: l2 ∧ Files.assocEraseAux xs k acc = l1 ++ l2)
+  | [], acc, _ => Or.inl (by simp [Files.assocEraseAux])
   | (k', v') :: rest, acc, hAcc => by
     by_cases hEq : (k' == k) = true
     · have hk : k' = k := beq_iff_eq.mp hEq
       subst hk
       refine Or.inr ⟨acc.reverse, rest, v', by simp, ?_⟩
-      simp [myEraseAux]
+      simp [Files.assocEraseAux]
     · have hEqF : (k' == k) = false := Bool.eq_false_iff.mpr hEq
       have hNe : k' ≠ k := fun h => hEq (beq_iff_eq.mpr h)
       have hSub := assocErase_sublist_and_laws k rest ((k', v') :: acc) (by
@@ -213,7 +202,7 @@ private theorem assocErase_sublist_and_laws {β : Type} (k : Nat) :
         rcases List.mem_cons.mp hx with rfl | hTail
         · exact hNe
         · exact hAcc x hTail)
-      simp only [myEraseAux, hEqF, Bool.false_eq_true, ↓reduceIte]
+      simp only [Files.assocEraseAux, hEqF, Bool.false_eq_true, ↓reduceIte]
       simpa [List.reverse_cons, List.append_assoc] using hSub
 
 private theorem assocErase_nodup_and_get_none {β : Type} (xs : List (Nat × β)) (k : Nat) :
@@ -222,7 +211,11 @@ private theorem assocErase_nodup_and_get_none {β : Type} (xs : List (Nat × β)
       Files.assocGet (Files.assocErase xs k) k = none) ∧
     (∀ j, Files.assocGet xs j = none → Files.assocGet (Files.assocErase xs k) j = none) := by
   have hSpec := assocErase_sublist_and_laws k xs [] (fun _ h => nomatch h)
-  simp only [List.reverse_nil, List.nil_append, assocErase_eq_my] at hSpec ⊢
+  simp only [List.reverse_nil, List.nil_append] at hSpec
+  change ((xs.map Prod.fst).Nodup →
+      ((Files.assocEraseAux xs k []).map Prod.fst).Nodup ∧
+      Files.assocGet (Files.assocEraseAux xs k []) k = none) ∧
+    (∀ j, Files.assocGet xs j = none → Files.assocGet (Files.assocEraseAux xs k []) j = none)
   have hGetNonePres : ∀ (a b : List (Nat × β)) (j : Nat),
       Files.assocGet (a ++ b) j = none → Files.assocGet a j = none ∧ Files.assocGet b j = none := by
     intro a b j hNone
@@ -235,7 +228,7 @@ private theorem assocErase_nodup_and_get_none {β : Type} (xs : List (Nat × β)
     refine ⟨fun hNd => ⟨hNd, ?_⟩, fun _ h => h⟩
     have hNoK : ∀ (ys acc : List (Nat × β)),
         (∀ x ∈ acc, x.1 ≠ k) →
-        myEraseAux k ys acc = acc.reverse ++ ys →
+        Files.assocEraseAux ys k acc = acc.reverse ++ ys →
         k ∉ (ys.map Prod.fst) := by
       intro ys
       induction ys with
@@ -246,12 +239,12 @@ private theorem assocErase_nodup_and_get_none {β : Type} (xs : List (Nat × β)
         by_cases hk : (k' == k) = true
         · have hkk : k' = k := beq_iff_eq.mp hk
           subst hkk
-          simp only [myEraseAux, beq_self_eq_true, ↓reduceIte, List.reverseAux_eq] at hEqAux
+          simp only [Files.assocEraseAux, beq_self_eq_true, ↓reduceIte, List.reverseAux_eq] at hEqAux
           have hLen := congrArg List.length hEqAux
           simp at hLen
         · have hkF : (k' == k) = false := Bool.eq_false_iff.mpr hk
           have hNe : k' ≠ k := fun hc => hk (beq_iff_eq.mpr hc)
-          simp only [myEraseAux, hkF, Bool.false_eq_true, ↓reduceIte] at hEqAux
+          simp only [Files.assocEraseAux, hkF, Bool.false_eq_true, ↓reduceIte] at hEqAux
           have hTailNot := ih ((k', v') :: acc) (by
             intro x hx
             rcases List.mem_cons.mp hx with rfl | ht

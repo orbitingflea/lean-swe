@@ -846,20 +846,20 @@ private def assocSetNaive {α β : Type} [BEq α] (xs : List (α × β)) (k : α
     if k' == k then (k, v) :: rest
     else (k', v') :: assocSetNaive rest k v
 
-private theorem assocSetGo_eq {α β : Type} [BEq α]
+private theorem assocSetAux_eq {α β : Type} [BEq α]
     (xs : List (α × β)) (k : α) (v : β) (acc : List (α × β)) :
-    assocSetGo xs k v acc = acc.reverse ++ assocSetNaive xs k v := by
+    assocSetAux xs k v acc = acc.reverse ++ assocSetNaive xs k v := by
   induction xs generalizing acc with
-  | nil => simp [assocSetGo, assocSetNaive]
+  | nil => simp [assocSetAux, assocSetNaive]
   | cons p rest ih =>
     rcases p with ⟨k', v'⟩
     by_cases h : k' == k
-    · simp [assocSetGo, assocSetNaive, h]
-    · simp [assocSetGo, assocSetNaive, h, ih, List.reverse_cons]
+    · simp [assocSetAux, assocSetNaive, h]
+    · simp [assocSetAux, assocSetNaive, h, ih, List.reverse_cons]
 
 private theorem assocSet_eq_naive {α β : Type} [BEq α] (xs : List (α × β)) (k : α) (v : β) :
     assocSet xs k v = assocSetNaive xs k v := by
-  simp [assocSet, assocSetGo_eq]
+  simp [assocSet, assocSetAux_eq]
 
 private theorem assocGet_assocSet_eq {α β : Type} [BEq α] [LawfulBEq α]
     (xs : List (α × β)) (k : α) (v : β) :

@@ -30,19 +30,30 @@ private theorem assocGet_of_all_lt {α : Type} :
     simp only [hne, Bool.false_eq_true, ↓reduceIte]
     exact assocGet_of_all_lt rest n h.2
 
-private theorem assocSet_all_lt {α : Type} :
-    ∀ (l : List (Nat × α)) (k : Nat) (v : α) (m : Nat),
-      l.all (fun p => decide (p.1 < m)) = true → k < m →
-      (assocSet l k v).all (fun p => decide (p.1 < m)) = true
-  | [], k, v, m, _, hk => by simp [assocSet, hk]
-  | (a, b) :: rest, k, v, m, h, hk => by
+private theorem assocSetAux_all_lt {α : Type} :
+    ∀ (l acc : List (Nat × α)) (k : Nat) (v : α) (m : Nat),
+      l.all (fun p => decide (p.1 < m)) = true →
+      acc.all (fun p => decide (p.1 < m)) = true → k < m →
+      (assocSetAux l k v acc).all (fun p => decide (p.1 < m)) = true
+  | [], acc, k, v, m, _, hAcc, hk => by
+    simp only [assocSetAux, List.reverseAux_eq, List.all_append, List.all_reverse,
+      List.all_cons, List.all_nil, Bool.and_true, Bool.and_eq_true, decide_eq_true_eq]
+    exact ⟨hAcc, hk⟩
+  | (a, b) :: rest, acc, k, v, m, h, hAcc, hk => by
     simp only [List.all_cons, Bool.and_eq_true, decide_eq_true_eq] at h
-    unfold assocSet
+    unfold assocSetAux
     by_cases heq : (a == k)
-    · simp only [heq, ↓reduceIte, List.all_cons, Bool.and_eq_true, decide_eq_true_eq]
-      exact ⟨hk, h.2⟩
-    · simp only [heq, Bool.false_eq_true, ↓reduceIte, List.all_cons, Bool.and_eq_true, decide_eq_true_eq]
-      exact ⟨h.1, assocSet_all_lt rest k v m h.2 hk⟩
+    · simp only [heq, ↓reduceIte, List.reverseAux_eq, List.all_append, List.all_reverse,
+        List.all_cons, Bool.and_eq_true, decide_eq_true_eq]
+      exact ⟨hAcc, hk, h.2⟩
+    · simp only [heq, Bool.false_eq_true, ↓reduceIte]
+      exact assocSetAux_all_lt rest ((a, b) :: acc) k v m h.2
+        (by simp [List.all_cons, h.1, hAcc]) hk
+
+private theorem assocSet_all_lt {α : Type} (l : List (Nat × α)) (k : Nat) (v : α) (m : Nat)
+    (h : l.all (fun p => decide (p.1 < m)) = true) (hk : k < m) :
+    (assocSet l k v).all (fun p => decide (p.1 < m)) = true :=
+  assocSetAux_all_lt l [] k v m h rfl hk
 
 private theorem all_lt_mono {α : Type} :
     ∀ (l : List (Nat × α)) {a b : Nat},

@@ -1,9 +1,12 @@
 import Std.Data.TreeSet
+import LeanSwe.LinuxSyscall.Common.Model
 import LeanSwe.LinuxSyscall.Process.Types
 
 namespace LeanSwe.LinuxSyscall.Process
 
 open LeanSwe.LinuxSyscall
+
+export LeanSwe.LinuxSyscall (assocGet assocSetAux assocSet assocEraseAllAux assocEraseAll)
 
 /-- Maximum valid positive 32-bit signed Linux `pid_t` (`INT32_MAX = 0x7fffffff`). -/
 def maxLinuxPid : UInt32 := 0x7fffffff
@@ -443,36 +446,6 @@ def effectiveSelfPid (s : ProcessSysState) : UInt32 :=
 def effectiveSelfPgid (s : ProcessSysState) : UInt32 :=
   if s.selfPgid ≤ maxLinuxPid then s.selfPgid else effectiveSelfPid s
 
-/-- Kernel-reducible association-list lookup returning the first matching key's value. -/
-def assocGet {α β : Type} [BEq α] (xs : List (α × β)) (k : α) : Option β :=
-  match xs with
-  | [] => none
-  | (k', v) :: rest => if k' == k then some v else assocGet rest k
-
-/-- Tail-recursive association-list update helper. -/
-def assocSetGo {α β : Type} [BEq α] (xs : List (α × β)) (k : α) (v : β) (acc : List (α × β)) : List (α × β) :=
-  match xs with
-  | [] => acc.reverseAux [(k, v)]
-  | (k', v') :: rest =>
-    if k' == k then acc.reverseAux ((k, v) :: rest)
-    else assocSetGo rest k v ((k', v') :: acc)
-
-/-- Tail-recursive kernel-reducible association-list update replacing the first matching key or appending at the end. -/
-def assocSet {α β : Type} [BEq α] (xs : List (α × β)) (k : α) (v : β) : List (α × β) :=
-  assocSetGo xs k v []
-
-/-- Tail-recursive association-list key removal helper. -/
-def assocEraseGo {α β : Type} [BEq α] (xs : List (α × β)) (k : α) (acc : List (α × β)) : List (α × β) :=
-  match xs with
-  | [] => acc.reverse
-  | (k', v') :: rest =>
-    if k' == k then assocEraseGo rest k acc
-    else assocEraseGo rest k ((k', v') :: acc)
-
-/-- Tail-recursive kernel-reducible removal of all entries with key `k`. -/
-def assocErase {α β : Type} [BEq α] (xs : List (α × β)) (k : α) : List (α × β) :=
-  assocEraseGo xs k []
-
 /-- Append `sig` to `xs` if not already present, preserving queue order. -/
 def appendUniqueSig (xs : List UInt32) (sig : UInt32) : List UInt32 :=
   if xs.contains sig then xs else xs ++ [sig]
@@ -584,7 +557,7 @@ def ProcessSysState.registerNonLeaderThread (s : ProcessSysState) (tid : UInt32)
 
 /-- Pure state helper removing `hid` upon closing at the `LeanFdBox` layer without unbounded dead-handle growth. -/
 def ProcessSysState.closeFd (s : ProcessSysState) (hid : HandleId) : ProcessSysState :=
-  { s with fds := assocErase s.fds hid, nextHid := max s.nextHid (hid + 1) }
+  { s with fds := assocEraseAll s.fds hid, nextHid := max s.nextHid (hid + 1) }
 
 /-- Update `fds` after allocating `(readHid, writeHid)` from `pipe2`. -/
 def commitPipeFds (s : ProcessSysState) (readHid writeHid : HandleId) (flags : PipeFlags) : ProcessSysState :=
@@ -1137,7 +1110,7 @@ def setProcLifecycle (s : ProcessSysState) (cPid : UInt32) (entry : ProcEntry) (
 
 /-- Remove a single reaped process or non-leader thread `pid` from `s.procs`. -/
 def reapSingleProc (s : ProcessSysState) (pid : UInt32) : ProcessSysState :=
-  { s with procs := assocErase s.procs pid }
+  { s with procs := assocEraseAll s.procs pid }
 
 private def matchesThreadGroup (rPid pid : UInt32) (entry : ProcEntry) : Bool :=
   pid == rPid || match entry.role with | .thread t => t == rPid | _ => false
@@ -1296,7 +1269,7 @@ def autoreapKillEsrch? (s : ProcessSysState) (pidOrNegPgid : Int32) : Option Pro
 
 /-- Remove non-leader thread `tid` from `s.procs`, preserving its `AliveState` on `leaderPid` so `waitpid` retains `synchronize_group_exit` outcomes. -/
 def reapNonLeaderSubthread (s : ProcessSysState) (tid leaderPid : UInt32) (entry : ProcEntry) : ProcessSysState :=
-  let procs1 := assocErase s.procs tid
+  let procs1 := assocEraseAll s.procs tid
   let procs2 :=
     match entry.lifecycle, assocGet procs1 leaderPid with
     | .alive a, some leader =>
