@@ -630,7 +630,9 @@ static int check_proc_fd_fs(void) {
   memset(&psx, 0, sizeof(psx)); memset(&fdsx, 0, sizeof(fdsx));
   if (syscall(SYS_statx, (long)AT_FDCWD, "/proc/", 0L, (unsigned long)STATX_MNT_ID, &psx) < 0) return errno;
   if (syscall(SYS_statx, (long)AT_FDCWD, "/proc/thread-self/fd/", 0L, (unsigned long)STATX_MNT_ID, &fdsx) < 0) return errno;
-  if (psx.stx_mnt_id != fdsx.stx_mnt_id) return ENOENT;
+  if (!(psx.stx_mask & STATX_MNT_ID) || !(fdsx.stx_mask & STATX_MNT_ID) ||
+      psx.stx_mnt_id != fdsx.stx_mnt_id)
+    return ENOENT;
   return 0;
 }
 

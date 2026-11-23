@@ -417,7 +417,7 @@ def runSpecialMode (opts : WorldOptions) (requestedSuites : List String) (steps 
     let isSeccomp := wm == "seccomp"
     let isUnlinkedCwd := wm == "unlinked_cwd"
     let allowAutoCross := opts.crossDir?.isNone && wm != "chroot"
-    if opts.closeFd0 && (← Env.fdKind 0) != 6 then
+    if opts.closeFd0 && !(← Env.isStdioFdClosedOrUv 0) then
       let _ ← Env.closeRawFd 0
     let rep ← runFilesFuzzOnDir steps effectiveSeed false opts.dir crossP isRo chrootP
       opts.hostProtected allowAutoCross isSeccomp isUnlinkedCwd opts.preseededEps opts.rlimitNofile?
