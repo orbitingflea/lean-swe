@@ -1745,6 +1745,130 @@ def main (_ : List String) : IO UInt32 := do
         "LeanSwe"
       ]
 
+    runPositiveCase base tmpRoot bin "non_refines_gates_preserve_project_irreducible" fun mr => do
+      writeFileCreatingParents (mr.root / "harness/Fuzz/suites.json")
+        ("{\n" ++
+         "  \"version\": 1,\n" ++
+         "  \"common_paths\": [\"Core/\", \"harness/Fuzz/Main.lean\"],\n" ++
+         "  \"suites\": {\n" ++
+         "    \"selftest\": { \"paths\": [\"harness/Fuzz/SelfTest.lean\"] },\n" ++
+         "    \"minifloat\": { \"paths\": [\"harness/Fuzz/MiniFloat/\", \"LeanSwe/MiniFloat/\"] },\n" ++
+         "    \"miniext\": { \"paths\": [\"harness/Fuzz/MiniExt/\", \"LeanSwe/MiniExt/\"] }\n" ++
+         "  }\n" ++
+         "}\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniExt/Types.lean")
+        "namespace LeanSwe.MiniExt\ninductive MiniExtErr\n  | sysFail\n  deriving Repr, BEq, DecidableEq\nend LeanSwe.MiniExt\n"
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniExt/Model.lean")
+        ("import LeanSwe.MiniExt.Types\n" ++
+         "namespace LeanSwe.MiniExt.Model\n" ++
+         "def deepAdd : Nat → Nat → Nat\n" ++
+         "  | 0, x => x\n" ++
+         "  | k + 1, x => (deepAdd k x) + 0\n" ++
+         "@[irreducible] def opaqueZero : Nat := deepAdd 1000000000 0\n" ++
+         "def pingModel (x : UInt32) : UInt32 := x + 1\n" ++
+         "end LeanSwe.MiniExt.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniExt/Impl.lean")
+        ("import LeanSwe.MiniExt.Types\n" ++
+         "namespace LeanSwe.MiniExt.Internal\n" ++
+         "@[extern \"lean_miniext_ping_u32\"]\n" ++
+         "opaque rawPing : UInt32 → IO (Except MiniExtErr UInt32)\n" ++
+         "end LeanSwe.MiniExt.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniExt/Interface.lean")
+        ("import LeanSwe.MiniExt.Impl\n" ++
+         "namespace LeanSwe.MiniExt\n" ++
+         "def ping (x : UInt32) : IO (Except MiniExtErr UInt32) := Internal.rawPing x\n" ++
+         "end LeanSwe.MiniExt\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniExt/SpecTests.lean")
+        ("import Core.NondetTest\n" ++
+         "import Core.Assumptions\n" ++
+         "import LeanSwe.MiniExt.Model\n" ++
+         "import LeanSwe.MiniExt.Interface\n" ++
+         "namespace LeanSwe.MiniExt\n" ++
+         "open Core Core.NondetTest\n" ++
+         "def assume_ping_opaque {r} [NondetTest r] (fn : Nat → Nat) : r Unit := do\n" ++
+         "  NondetTest.assert (fn Model.opaqueZero = fn 1)\n" ++
+         "def externalAssumptions : List AssumptionObligation := [\n" ++
+         "  { name := \"LeanSwe.MiniExt.assume_ping_opaque\", subject := \"LeanSwe.MiniExt.ping\", formalPred? := some \"LeanSwe.MiniExt.assume_ping_opaque\" }\n" ++
+         "]\n" ++
+         "def errorCoverage : List (ErrorObligation MiniExtErr) := [\n" ++
+         "  { request := \"LeanSwe.MiniExt.ping\", errorKind := .sysFail, justification := .tested \"LeanSwe.MiniExt.RuntimeTests.err_sys\" .real }\n" ++
+         "]\n" ++
+         "end LeanSwe.MiniExt\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniExt/Proofs.lean")
+        ("import LeanSwe.MiniExt.SpecTests\n" ++
+         "namespace LeanSwe.MiniExt.Proofs\n" ++
+         "theorem assume_ping_opaque_can_reach : Core.CanReach (LeanSwe.MiniExt.assume_ping_opaque (fun _ => 0)) :=\n" ++
+         "  ⟨rfl, trivial⟩\n" ++
+         "end LeanSwe.MiniExt.Proofs\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def deepAdd : Nat → Nat → Nat\n" ++
+         "  | 0, x => x\n" ++
+         "  | k + 1, x => (deepAdd k x) + 0\n" ++
+         "@[irreducible] def slowZero : Nat := deepAdd 1000000000 0\n" ++
+         "def allowedIsSlowZero (n : Nat) (b : Bool) : Prop := if b then n = slowZero else n ≠ slowZero\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def isSlowZeroImpl (n : Nat) : Bool := n == 0\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def isSlowZero (n : Nat) : Bool := Internal.isSlowZeroImpl n\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Refines\n" ++
+         "import LeanSwe.MiniExt.SpecTests\n" ++
+         "import LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "private theorem deepAdd_eq : ∀ k x : Nat, Model.deepAdd k x = x\n" ++
+         "  | 0, _ => rfl\n" ++
+         "  | k + 1, x => by simp [Model.deepAdd, deepAdd_eq k x]\n" ++
+         "private theorem slowZero_eq : Model.slowZero = 0 := by\n" ++
+         "  unfold Model.slowZero\n" ++
+         "  exact deepAdd_eq 1000000000 0\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem consume_miniext_opaque (fn : Nat → Nat) (h : Core.AllPass (LeanSwe.MiniExt.assume_ping_opaque fn)) :\n" ++
+         "    fn LeanSwe.MiniExt.Model.opaqueZero = fn 1 ∧ LeanSwe.MiniPure.eval 0 = 1 :=\n" ++
+         "  ⟨h.1, rfl⟩\n" ++
+         "theorem refines_model :\n" ++
+         "    Core.RefinesPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel ∧\n" ++
+         "    Core.RefinesPure LeanSwe.MiniPure.isSlowZero LeanSwe.MiniPure.Model.allowedIsSlowZero := by\n" ++
+         "  refine ⟨fun _ => rfl, fun n => ?_⟩\n" ++
+         "  unfold LeanSwe.MiniPure.isSlowZero LeanSwe.MiniPure.Internal.isSlowZeroImpl LeanSwe.MiniPure.Model.allowedIsSlowZero\n" ++
+         "  rw [slowZero_eq]\n" ++
+         "  cases n <;> simp\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      let ls ← IO.FS.readFile (mr.root / "LeanSwe.lean")
+      writeFileCreatingParents (mr.root / "LeanSwe.lean")
+        (ls ++
+         "import LeanSwe.MiniExt.Types\n" ++
+         "import LeanSwe.MiniExt.Model\n" ++
+         "import LeanSwe.MiniExt.Impl\n" ++
+         "import LeanSwe.MiniExt.Interface\n" ++
+         "import LeanSwe.MiniExt.SpecTests\n" ++
+         "import LeanSwe.MiniExt.Proofs\n")
+      return #[
+        "LeanSwe/MiniExt/Types",
+        "LeanSwe/MiniExt/Model",
+        "LeanSwe/MiniExt/Impl",
+        "LeanSwe/MiniExt/Interface",
+        "LeanSwe/MiniExt/SpecTests",
+        "LeanSwe/MiniExt/Proofs",
+        "LeanSwe/MiniPure/Model",
+        "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface",
+        "LeanSwe/MiniPure/SpecTests",
+        "LeanSwe/MiniPure/Proofs",
+        "LeanSwe"
+      ]
+
     expectFailureCode bin "inconclusive_dead_branch_fails_closed" "INCONCLUSIVE_DEAD_BRANCH_CHECK"
       base.libDir base.root #["--allow-legacy", "--dead-branch-fuel", "0"]
 
