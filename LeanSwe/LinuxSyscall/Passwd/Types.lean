@@ -4,57 +4,12 @@ namespace LeanSwe.LinuxSyscall.Passwd
 
 open LeanSwe.LinuxSyscall
 
-private def hasZeroByteAux (bs : ByteArray) : Nat → Nat → Bool
-  | _, 0 => false
-  | idx, rem + 1 =>
-    if h : idx < bs.size then
-      if bs[idx] == 0 then
-        true
-      else
-        hasZeroByteAux bs (idx + 1) rem
-    else
-      false
-
-private def containsZeroByte (bs : ByteArray) : Bool :=
-  hasZeroByteAux bs 0 bs.size
-
 /-- Maximum username byte length (`1 MiB`) enforced before copying into C `getpwnam_r`. -/
 def MAX_PASSWD_NAME_BYTES : Nat := 1048576
 
 /-- Return `true` iff `name` contains no embedded `0x00` byte. -/
 def validPasswdName (name : ByteArray) : Bool :=
-  !containsZeroByte name
-
-private theorem hasZeroByteAux_eq_false (bs : ByteArray)
-    (hNoZero : ∀ (j : Nat) (hj : j < bs.size), bs[j] ≠ 0) :
-    ∀ rem idx, hasZeroByteAux bs idx rem = false := by
-  intro rem
-  induction rem with
-  | zero => intro idx; rfl
-  | succ rem ih =>
-    intro idx
-    dsimp only [hasZeroByteAux]
-    split
-    · next h =>
-      have hne : (bs[idx] == 0) = false := beq_false_of_ne (hNoZero idx h)
-      simp only [hne, Bool.false_eq_true, ↓reduceIte]
-      exact ih (idx + 1)
-    · rfl
-
-/-- Any repeated non-zero byte array passes `validPasswdName` in `O(1)` proof size. -/
-theorem validPasswdName_replicate (n : Nat) (c : UInt8) (hc : c ≠ 0) :
-    validPasswdName (ByteArray.mk (Array.replicate n c)) = true := by
-  let bs : ByteArray := ByteArray.mk (Array.replicate n c)
-  have hNoZero : ∀ (j : Nat) (hj : j < bs.size), bs[j] ≠ 0 := by
-    intro j hj
-    have hj' : j < (Array.replicate n c).size := hj
-    change (Array.replicate n c)[j] ≠ 0
-    rw [Array.getElem_replicate]
-    exact hc
-  have hz : hasZeroByteAux bs 0 bs.size = false := hasZeroByteAux_eq_false bs hNoZero bs.size 0
-  change !hasZeroByteAux bs 0 bs.size = true
-  rw [hz]
-  rfl
+  !hasEmbeddedNul name
 
 /-- Portable POSIX `<pwd.h>` entry (`struct passwd`) preserving raw C byte fields. -/
 structure PasswdEntry where
@@ -119,8 +74,8 @@ def PasswdEntry.shellUtf8? (e : PasswdEntry) : Option String :=
 
 /-- Return `true` iff all byte fields of `e` are free of embedded `0x00` bytes. -/
 def PasswdEntry.hasNoEmbeddedNul (e : PasswdEntry) : Bool :=
-  !containsZeroByte e.name && !containsZeroByte e.gecos &&
-    !containsZeroByte e.homeDir && !containsZeroByte e.shell
+  !hasEmbeddedNul e.name && !hasEmbeddedNul e.gecos &&
+    !hasEmbeddedNul e.homeDir && !hasEmbeddedNul e.shell
 
 /-- Semantic classification of `LinuxSyscall.Passwd` `Errno` outcomes for error-coverage auditing. -/
 inductive PasswdErrorKind where
