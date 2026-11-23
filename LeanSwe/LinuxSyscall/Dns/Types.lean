@@ -208,11 +208,14 @@ abbrev DnsOps := DnsOpsM IO
 /-- Fixed byte width of each serialized address record emitted by `c/dns_shim.c`. -/
 def DNS_RECORD_SIZE : Nat := 21
 
-private def WIRE_FAMILY_V4 : UInt8 := 4
+/-- Wire-format tag identifying an IPv4 address record in `c/dns_shim.c`. -/
+def WIRE_FAMILY_V4 : UInt8 := 4
 
-private def WIRE_FAMILY_V6 : UInt8 := 6
+/-- Wire-format tag identifying an IPv6 address record in `c/dns_shim.c`. -/
+def WIRE_FAMILY_V6 : UInt8 := 6
 
-private def pushWireUInt32LE (acc : ByteArray) (v : UInt32) : ByteArray :=
+/-- Append a 32-bit unsigned integer to `acc` in little-endian wire byte order. -/
+def pushWireUInt32LE (acc : ByteArray) (v : UInt32) : ByteArray :=
   let n := v.toNat
   acc
     |>.push (UInt8.ofNat (n % 256))
@@ -220,7 +223,8 @@ private def pushWireUInt32LE (acc : ByteArray) (v : UInt32) : ByteArray :=
     |>.push (UInt8.ofNat ((n / 65536) % 256))
     |>.push (UInt8.ofNat ((n / 16777216) % 256))
 
-private def pushWireAddr (acc : ByteArray) : DnsAddr → ByteArray
+/-- Append one 21-byte wire record (`c/dns_shim.c` layout) for `a` to `acc`. -/
+def pushWireAddr (acc : ByteArray) : DnsAddr → ByteArray
   | .ipv4 b0 b1 b2 b3 =>
     acc
       |>.push WIRE_FAMILY_V4 |>.push b0 |>.push b1 |>.push b2 |>.push b3
@@ -237,50 +241,13 @@ private def pushWireAddr (acc : ByteArray) : DnsAddr → ByteArray
       |>.push b12 |>.push b13 |>.push b14 |>.push b15
     pushWireUInt32LE base sc
 
-private def encodeWireRecordsLoop : List DnsAddr → ByteArray → ByteArray
+/-- Tail-recursively append 21-byte wire records for a list of `DnsAddr` values. -/
+def encodeWireRecordsLoop : List DnsAddr → ByteArray → ByteArray
   | [], acc => acc
   | a :: rest, acc => encodeWireRecordsLoop rest (pushWireAddr acc a)
 
 /-- Serialize a list of `DnsAddr` values into concatenated 21-byte wire records (`c/dns_shim.c` layout). -/
 def encodeWireRecords (addrs : List DnsAddr) : ByteArray :=
   encodeWireRecordsLoop addrs (ByteArray.emptyWithCapacity (addrs.length * DNS_RECORD_SIZE))
-
-/-- Canonical 21-byte wire serialization for a single `DnsAddr` (`c/dns_shim.c` layout). -/
-def wireAddrBytes : DnsAddr → List UInt8
-  | .ipv4 b0 b1 b2 b3 =>
-    [4, b0, b1, b2, b3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-  | .ipv6 b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 sc =>
-    let n := sc.toNat
-    [6, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15,
-     UInt8.ofNat (n % 256), UInt8.ofNat ((n / 256) % 256),
-     UInt8.ofNat ((n / 65536) % 256), UInt8.ofNat ((n / 16777216) % 256)]
-
-private theorem push_wire_toList (b : ByteArray) (x : UInt8) :
-    (b.push x).data.toList = b.data.toList ++ [x] := by
-  simp [ByteArray.push]
-
-private theorem pushWireAddr_data_toList (acc : ByteArray) (a : DnsAddr) :
-    (pushWireAddr acc a).data.toList = acc.data.toList ++ wireAddrBytes a := by
-  cases a with
-  | ipv4 b0 b1 b2 b3 =>
-    unfold pushWireAddr wireAddrBytes
-    simp only [WIRE_FAMILY_V4, push_wire_toList, List.append_assoc, List.cons_append, List.nil_append]
-  | ipv6 b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 sc =>
-    unfold pushWireAddr pushWireUInt32LE wireAddrBytes
-    simp only [WIRE_FAMILY_V6, push_wire_toList, List.append_assoc, List.cons_append, List.nil_append]
-
-private theorem encodeWireRecordsLoop_data_toList (addrs : List DnsAddr) (acc : ByteArray) :
-    (encodeWireRecordsLoop addrs acc).data.toList = acc.data.toList ++ addrs.flatMap wireAddrBytes := by
-  induction addrs generalizing acc with
-  | nil => simp [encodeWireRecordsLoop]
-  | cons a rest ih =>
-    simp [encodeWireRecordsLoop, ih, pushWireAddr_data_toList, List.flatMap_cons, List.append_assoc]
-
-/-- Every `encodeWireRecords addrs` buffer equals `addrs.flatMap wireAddrBytes` byte-for-byte. -/
-theorem encodeWireRecords_data_toList (addrs : List DnsAddr) :
-    (encodeWireRecords addrs).data.toList = addrs.flatMap wireAddrBytes := by
-  unfold encodeWireRecords
-  rw [encodeWireRecordsLoop_data_toList]
-  rfl
 
 end LeanSwe.LinuxSyscall.Dns

@@ -1,5 +1,4 @@
 import LeanSwe.LinuxSyscall.Dns.SpecTests
-import LeanSwe.LinuxSyscall.Dns.Impl
 
 /-! Compile-time negative specification mutants for `LeanSwe.LinuxSyscall.Dns`. -/
 
@@ -138,16 +137,27 @@ example : ¬ Core.AllPass (test_dns_mkRawOps_soundAgainstAllowedOutcome
 example : ¬ Core.AllPass (test_dns_mkRawOps_soundAgainstAllowedOutcome
     (fun raw =>
       { getaddrinfo := fun host hints =>
-          match (Internal.mkDnsOpsM (m := Id) { getaddrinfo := raw }).getaddrinfo host hints with
-          | .ok xs => .ok xs
-          | .error e => .error { e with errno? := none } })) := by
+          if !validateHost host then
+            .error invalidHostError
+          else
+            match raw host hints.family.toWire hints.sockType.toWire with
+            | .ok _ => .ok [.ipv4 127 0 0 1]
+            | .error (rc, _, msgBytes) =>
+              let expCode := normalizeGaiCodeForHost host hints rc
+              let expMsg :=
+                match String.fromUTF8? msgBytes with
+                | some s => if s.isEmpty then "getaddrinfo failed" else s
+                | none => s!"<non-utf8:{msgBytes.size}B>"
+              .error { kind := classifyGaiKind expCode
+                       gaiCode := expCode
+                       errno? := none
+                       message := expMsg } })) := by
   intro h
   have h3 := (h (fun _ _ _ => .error (EAI_SYSTEM, Errno.ENOMEM, "oom".toUTF8)) "127.0.0.1" {} []).2.2.1
   dsimp [Core.NondetTest.assert, Bind.bind] at h3
   have hv : validateHost "127.0.0.1" = true := by simp [validateHost, String.any]
   rw [hv] at h3
   dsimp at h3
-  rw [Internal.mkDnsOpsM_id_error_eq "127.0.0.1" hv {} EAI_SYSTEM Errno.ENOMEM "oom".toUTF8] at h3
   injection h3 with hErr
   injection hErr with _ _ hEno _
   exact absurd hEno (by decide)
@@ -155,16 +165,25 @@ example : ¬ Core.AllPass (test_dns_mkRawOps_soundAgainstAllowedOutcome
 example : ¬ Core.AllPass (test_dns_mkRawOps_soundAgainstAllowedOutcome
     (fun raw =>
       { getaddrinfo := fun host hints =>
-          match (Internal.mkDnsOpsM (m := Id) { getaddrinfo := raw }).getaddrinfo host hints with
-          | .ok xs => .ok xs
-          | .error e => .error { e with message := "x" } })) := by
+          if !validateHost host then
+            .error invalidHostError
+          else
+            match raw host hints.family.toWire hints.sockType.toWire with
+            | .ok _ => .ok [.ipv4 127 0 0 1]
+            | .error (rc, eno, _) =>
+              let expCode := normalizeGaiCodeForHost host hints rc
+              let expErrno? : Option Errno :=
+                if expCode == EAI_SYSTEM && eno != 0 && eno != Errno.EFAULT then some eno else none
+              .error { kind := classifyGaiKind expCode
+                       gaiCode := expCode
+                       errno? := expErrno?
+                       message := "x" } })) := by
   intro h
   have h3 := (h (fun _ _ _ => .error (EAI_AGAIN, 0, "temp err".toUTF8)) "127.0.0.1" {} []).2.2.1
   dsimp [Core.NondetTest.assert, Bind.bind] at h3
   have hv : validateHost "127.0.0.1" = true := by simp [validateHost, String.any]
   rw [hv] at h3
   dsimp at h3
-  rw [Internal.mkDnsOpsM_id_error_eq "127.0.0.1" hv {} EAI_AGAIN 0 "temp err".toUTF8] at h3
   injection h3 with hErr
   injection hErr with _ _ _ hMsg
   have hUtf8 : String.fromUTF8? "temp err".toUTF8 = some "temp err" := by
@@ -280,8 +299,7 @@ example : ¬ Core.AllPass (test_dns_healthyStep_and_healthyModelOps
   have hvHyb : validateHost hostHyb = true := by simp [hostHyb, validateHost, String.any]
   have hHHyb : parseHybridScopedNumericZone? hostHyb =
       some (.ipv6 0xfe 0x80 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0, 305419896) := by decide
-  have hPHyb : parsePureNumericAddr? hostHyb = none :=
-    parsePureNumericAddr_none_of_parseHybridScopedNumericZone hHHyb
+  have hPHyb : parsePureNumericAddr? hostHyb = none := by decide
   have h0 := (h.2.2.2.2.2.2.2.2.2 env7 rfl hostHyb hints6).2.1.2
     (.ipv6 0xfe 0x80 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0) 305419896 hHHyb rfl
   rw [hPHyb, hHHyb] at h0

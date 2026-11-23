@@ -46,7 +46,8 @@ private def splitDoubleColonAux : List Char → List Char → List (List Char) �
   | c :: cs, cur, acc =>
     splitDoubleColonAux cs (c :: cur) acc
 
-private def splitDoubleColonChars (cs : List Char) : List (List Char) :=
+/-- Split a character list on occurrences of `"::"`. -/
+def splitDoubleColonChars (cs : List Char) : List (List Char) :=
   splitDoubleColonAux cs [] []
 
 private def parseIpv4AtonPart? (cs : List Char) : Option Nat :=
@@ -62,7 +63,8 @@ private def parseIpv4AtonPart? (cs : List Char) : Option Nat :=
     else
       none
 
-private def parseIpv4Aton? (host : String) : Option DnsAddr := do
+/-- Parse an `inet_aton(3)` numeric IPv4 literal (1–4 dot-separated decimal, octal, or hex parts). -/
+def parseIpv4Aton? (host : String) : Option DnsAddr := do
   let parts := splitCharList '.' host.toList
   if parts.any (·.isEmpty) then none
   match parts with
@@ -137,7 +139,8 @@ private def parseIpv6PartsLoop (allowV4Tail : Bool) : List (List Char) → List 
       let v ← parseHexGroup? p
       parseIpv6PartsLoop allowV4Tail rest (v :: acc)
 
-private def parseIpv6Parts? (allowV4Tail : Bool) (cs : List Char) : Option (List Nat) :=
+/-- Parse colon-separated 16-bit hex groups (and optional dotted-quad IPv4 tail when `allowV4Tail = true`). -/
+def parseIpv6Parts? (allowV4Tail : Bool) (cs : List Char) : Option (List Nat) :=
   if cs.isEmpty then
     some []
   else
@@ -147,7 +150,8 @@ private def parseIpv6Parts? (allowV4Tail : Bool) (cs : List Char) : Option (List
     else
       parseIpv6PartsLoop allowV4Tail parts []
 
-private def wordsToIpv6Addr (ws : List Nat) (sc : UInt32) : Option DnsAddr :=
+/-- Construct an `.ipv6` `DnsAddr` from 8 16-bit big-endian words and `scopeId`. -/
+def wordsToIpv6Addr (ws : List Nat) (sc : UInt32) : Option DnsAddr :=
   match ws with
   | [w0, w1, w2, w3, w4, w5, w6, w7] =>
     some (.ipv6
@@ -162,7 +166,8 @@ private def wordsToIpv6Addr (ws : List Nat) (sc : UInt32) : Option DnsAddr :=
       sc)
   | _ => none
 
-private def parseIpv6Core? (addrCs : List Char) : Option (UInt32 → Option DnsAddr) := do
+/-- Parse the address body of an IPv6 literal (without `%zone`) into a `scopeId → Option DnsAddr` builder. -/
+def parseIpv6Core? (addrCs : List Char) : Option (UInt32 → Option DnsAddr) := do
   if addrCs.isEmpty || addrCs.length > 64 then none
   let halves := splitDoubleColonChars addrCs
   match halves with
@@ -179,7 +184,8 @@ private def parseIpv6Core? (addrCs : List Char) : Option (UInt32 → Option DnsA
     some (wordsToIpv6Addr (lhs ++ zeros ++ rhs))
   | _ => none
 
-private def parseNumericZone? (zoneCs : List Char) : Option UInt32 := do
+/-- Parse a decimal `UInt32` IPv6 zone identifier following `'%'`. -/
+def parseNumericZone? (zoneCs : List Char) : Option UInt32 := do
   if zoneCs.isEmpty then none
   let n ← parseUintDigits? 10 0xffffffff zoneCs 0
   some (UInt32.ofNat n)
@@ -195,18 +201,21 @@ def allowsSymbolicIpv6Zone : DnsAddr → Bool
     (b0 == 0xff && ((b1 &&& 0x0f) == 0x01 || (b1 &&& 0x0f) == 0x02))
   | .ipv4 .. => false
 
-private def splitFirstZoneAux : List Char → List Char → List Char × Option (List Char)
+/-- Split a character list at the first `'%'` scope-zone delimiter. -/
+def splitFirstZoneAux : List Char → List Char → List Char × Option (List Char)
   | [], acc => (acc.reverse, none)
   | '%' :: rest, acc => (acc.reverse, some rest)
   | c :: rest, acc => splitFirstZoneAux rest (c :: acc)
 
-private def parseIpv6SplitZone? (host : String) : Option ((UInt32 → Option DnsAddr) × Option (List Char)) :=
+/-- Parse an IPv6 literal with an optional `%<zone>` suffix into its builder and raw zone chars. -/
+def parseIpv6SplitZone? (host : String) : Option ((UInt32 → Option DnsAddr) × Option (List Char)) :=
   let (addrCs, zone?) := splitFirstZoneAux host.toList []
   match parseIpv6Core? addrCs with
   | none => none
   | some mk => some (mk, zone?)
 
-private def isNonEmptyNoNulHost (host : String) : Bool :=
+/-- Return `true` iff `host.toList` is non-empty and free of embedded NUL (`\x00`) characters. -/
+def isNonEmptyNoNulHost (host : String) : Bool :=
   let cs := host.toList
   !cs.isEmpty && !cs.contains (Char.ofNat 0)
 
@@ -705,234 +714,5 @@ def RefinesHealthyDnsAt {W : Type} (proj : W → HealthyEnv)
 abbrev RefinesHealthyDns (ops : DnsOpsM (StateM HealthyEnv)) : Prop :=
   RefinesHealthyDnsAt id ops
 
-/-- Every host accepted by `parsePureNumericAddr?` is non-empty and free of embedded NUL bytes (`validateHost = true`). -/
-theorem validateHost_of_parsePureNumericAddr {host : String} {addr : DnsAddr}
-    (hP : parsePureNumericAddr? host = some addr) :
-    validateHost host = true := by
-  unfold parsePureNumericAddr? at hP
-  by_cases hne : isNonEmptyNoNulHost host = true
-  · unfold validateHost
-    unfold isNonEmptyNoNulHost at hne
-    simp only [Bool.and_eq_true, Bool.not_eq_true'] at hne ⊢
-    refine ⟨?_, ?_⟩
-    · cases hl : host.toList with
-      | nil => simp [hl] at hne
-      | cons _ _ =>
-        cases he : host.isEmpty
-        · rfl
-        · have : host = "" := String.isEmpty_iff.mp he
-          subst this; simp at hl
-    · cases hAny : host.toList.any (· == '\x00') with
-      | false => simp [String.any, hAny]
-      | true =>
-        rw [List.any_eq_true] at hAny
-        rcases hAny with ⟨c, hcMem, hcEq⟩
-        have hc0 : c = Char.ofNat 0 := eq_of_beq hcEq
-        subst hc0
-        have hCont : host.toList.contains (Char.ofNat 0) = true := List.contains_iff_mem.mpr hcMem
-        rw [hne.2] at hCont
-        contradiction
-  · simp [hne] at hP
-
-/-- Every host accepted by `parseHybridScopedNumericZone?` is non-empty and free of embedded NUL bytes (`validateHost = true`). -/
-theorem validateHost_of_parseHybridScopedNumericZone {host : String} {baseAddr : DnsAddr} {sc : UInt32}
-    (hH : parseHybridScopedNumericZone? host = some (baseAddr, sc)) :
-    validateHost host = true := by
-  unfold parseHybridScopedNumericZone? at hH
-  by_cases hne : isNonEmptyNoNulHost host = true
-  · unfold validateHost
-    unfold isNonEmptyNoNulHost at hne
-    simp only [Bool.and_eq_true, Bool.not_eq_true'] at hne ⊢
-    refine ⟨?_, ?_⟩
-    · cases hl : host.toList with
-      | nil => simp [hl] at hne
-      | cons _ _ =>
-        cases he : host.isEmpty
-        · rfl
-        · have : host = "" := String.isEmpty_iff.mp he
-          subst this; simp at hl
-    · cases hAny : host.toList.any (· == '\x00') with
-      | false => simp [String.any, hAny]
-      | true =>
-        rw [List.any_eq_true] at hAny
-        rcases hAny with ⟨c, hcMem, hcEq⟩
-        have hc0 : c = Char.ofNat 0 := eq_of_beq hcEq
-        subst hc0
-        have hCont : host.toList.contains (Char.ofNat 0) = true := List.contains_iff_mem.mpr hcMem
-        rw [hne.2] at hCont
-        contradiction
-  · simp [hne] at hH
-
-/-- Every `baseAddr` produced by `parseHybridScopedNumericZone?` satisfies `allowsSymbolicIpv6Zone baseAddr = true`. -/
-theorem allowsSymbolicIpv6Zone_of_parseHybridScopedNumericZone {host : String} {baseAddr : DnsAddr} {sc : UInt32}
-    (hH : parseHybridScopedNumericZone? host = some (baseAddr, sc)) :
-    allowsSymbolicIpv6Zone baseAddr = true := by
-  unfold parseHybridScopedNumericZone? at hH
-  by_cases hne : isNonEmptyNoNulHost host = true
-  · simp only [hne, Bool.not_true, Bool.false_eq_true, ↓reduceIte] at hH
-    cases h4 : parseIpv4Aton? host with
-    | some _ => simp [h4] at hH
-    | none =>
-      simp only [h4] at hH
-      cases h6 : parseIpv6SplitZone? host with
-      | none => simp [h6] at hH
-      | some p =>
-        rcases p with ⟨mk, z?⟩
-        cases z? with
-        | none => simp [h6] at hH
-        | some zoneCs =>
-          simp only [h6] at hH
-          by_cases hlen : zoneCs.length < 16
-          · simp only [hlen, ↓reduceIte] at hH
-            cases hm : mk 0 with
-            | none => simp [hm] at hH
-            | some bAddr =>
-              cases hn : parseNumericZone? zoneCs with
-              | none => simp [hm, hn] at hH
-              | some scVal =>
-                simp only [hm, hn] at hH
-                by_cases hAl : allowsSymbolicIpv6Zone bAddr = true
-                · simp only [hAl, ↓reduceIte, Option.some.injEq, Prod.mk.injEq] at hH
-                  rw [← hH.1]
-                  exact hAl
-                · simp [hAl] at hH
-          · simp [hlen] at hH
-  · simp [hne] at hH
-
-private theorem wordsToIpv6Addr_allowsSymbolic {ws : List Nat} {sc1 sc2 : UInt32} {a1 a2 : DnsAddr}
-    (h1 : wordsToIpv6Addr ws sc1 = some a1) (h2 : wordsToIpv6Addr ws sc2 = some a2) :
-    allowsSymbolicIpv6Zone a1 = allowsSymbolicIpv6Zone a2 := by
-  cases ws with | nil => simp [wordsToIpv6Addr] at h1 | cons w0 ws1 =>
-  cases ws1 with | nil => simp [wordsToIpv6Addr] at h1 | cons w1 ws2 =>
-  cases ws2 with | nil => simp [wordsToIpv6Addr] at h1 | cons w2 ws3 =>
-  cases ws3 with | nil => simp [wordsToIpv6Addr] at h1 | cons w3 ws4 =>
-  cases ws4 with | nil => simp [wordsToIpv6Addr] at h1 | cons w4 ws5 =>
-  cases ws5 with | nil => simp [wordsToIpv6Addr] at h1 | cons w5 ws6 =>
-  cases ws6 with | nil => simp [wordsToIpv6Addr] at h1 | cons w6 ws7 =>
-  cases ws7 with | nil => simp [wordsToIpv6Addr] at h1 | cons w7 ws8 =>
-  cases ws8 with
-  | cons _ _ => simp [wordsToIpv6Addr] at h1
-  | nil =>
-    simp only [wordsToIpv6Addr, Option.some.injEq] at h1 h2
-    subst h1; subst h2
-    rfl
-
-private theorem parseIpv6Core_exists_words {addrCs : List Char} {mkFn : UInt32 → Option DnsAddr}
-    (h : parseIpv6Core? addrCs = some mkFn) :
-    ∃ ws : List Nat, mkFn = wordsToIpv6Addr ws := by
-  unfold parseIpv6Core? at h
-  by_cases hBad : (addrCs.isEmpty || decide (addrCs.length > 64)) = true
-  · simp [hBad] at h
-  · simp only [hBad, Bool.false_eq_true, ↓reduceIte, Bind.bind, Option.bind] at h
-    cases hSplit : splitDoubleColonChars addrCs with
-    | nil => simp [hSplit] at h
-    | cons first rest =>
-      cases rest with
-      | nil =>
-        simp only [hSplit] at h
-        cases hP1 : parseIpv6Parts? true first with
-        | none => simp [hP1] at h
-        | some ws =>
-          simp only [hP1] at h
-          by_cases hne8 : (ws.length != 8) = true
-          · simp [hne8] at h
-          · simp only [hne8, Bool.false_eq_true, ↓reduceIte, Option.some.injEq] at h
-            exact ⟨ws, h.symm⟩
-      | cons second rest2 =>
-        cases rest2 with
-        | cons _ _ => simp [hSplit] at h
-        | nil =>
-          simp only [hSplit] at h
-          cases hL : parseIpv6Parts? false first with
-          | none => simp [hL] at h
-          | some lhs =>
-            simp only [hL] at h
-            cases hR : parseIpv6Parts? true second with
-            | none => simp [hR] at h
-            | some rhs =>
-              simp only [hR] at h
-              by_cases hge : lhs.length + rhs.length ≥ 8
-              · simp [hge] at h
-              · simp only [hge, ↓reduceIte, Option.some.injEq] at h
-                exact ⟨lhs ++ List.replicate (8 - (lhs.length + rhs.length)) 0 ++ rhs, h.symm⟩
-
-/-- `parsePureNumericAddr?` and `parseHybridScopedNumericZone?` are mutually exclusive: every hybrid numeric-scoped literal yields `parsePureNumericAddr? host = none`. -/
-theorem parsePureNumericAddr_none_of_parseHybridScopedNumericZone
-    {host : String} {baseAddr : DnsAddr} {sc : UInt32}
-    (hHyb : parseHybridScopedNumericZone? host = some (baseAddr, sc)) :
-    parsePureNumericAddr? host = none := by
-  unfold parseHybridScopedNumericZone? at hHyb
-  unfold parsePureNumericAddr?
-  by_cases hne : isNonEmptyNoNulHost host = true
-  · simp only [hne, Bool.not_true, Bool.false_eq_true, ↓reduceIte] at hHyb ⊢
-    cases h4 : parseIpv4Aton? host with
-    | some _ => simp [h4] at hHyb
-    | none =>
-      simp only [h4] at hHyb ⊢
-      cases h6 : parseIpv6SplitZone? host with
-      | none => simp [h6] at hHyb
-      | some p =>
-        rcases p with ⟨mk, z?⟩
-        cases z? with
-        | none => simp [h6] at hHyb
-        | some zoneCs =>
-          simp only [h6] at hHyb ⊢
-          by_cases hlen : zoneCs.length < 16
-          · simp only [hlen, ↓reduceIte] at hHyb
-            cases hm0 : mk 0 with
-            | none => simp [hm0] at hHyb
-            | some bAddr =>
-              cases hn : parseNumericZone? zoneCs with
-              | none => simp [hm0, hn] at hHyb
-              | some scVal =>
-                simp only [hm0, hn] at hHyb ⊢
-                by_cases hAl : allowsSymbolicIpv6Zone bAddr = true
-                · simp only [hAl, ↓reduceIte] at hHyb
-                  cases hms : mk scVal with
-                  | none => rfl
-                  | some addrSc =>
-                    dsimp only
-                    unfold parseIpv6SplitZone? at h6
-                    cases hCore : parseIpv6Core? (splitFirstZoneAux host.toList []).1 with
-                    | none => simp [hCore] at h6
-                    | some mkFn =>
-                      have hMkEq : mkFn = mk := by
-                        simp only [hCore, Option.some.injEq, Prod.mk.injEq] at h6
-                        exact h6.1
-                      subst hMkEq
-                      rcases parseIpv6Core_exists_words hCore with ⟨ws, hWs⟩
-                      rw [hWs] at hm0 hms
-                      have hEqAl := wordsToIpv6Addr_allowsSymbolic hm0 hms
-                      rw [← hEqAl]
-                      simp [hAl, hlen]
-                · simp [hAl] at hHyb
-          · simp [hlen] at hHyb
-  · simp [hne] at hHyb
-
-/-- Every non-numeric host (`isNumericHostLiteral host = false`) returns `none` under `parsePureNumericAddr?`. -/
-theorem parsePureNumericAddr_none_of_not_numericLiteral {host : String}
-    (hNonNum : isNumericHostLiteral host = false) :
-    parsePureNumericAddr? host = none := by
-  unfold isNumericHostLiteral at hNonNum
-  unfold parsePureNumericAddr?
-  by_cases hne : isNonEmptyNoNulHost host = true
-  · simp only [hne, Bool.true_and, Bool.or_eq_false_iff, Option.isSome_eq_false_iff,
-      Option.isNone_iff_eq_none] at hNonNum
-    simp [hne, hNonNum.1, hNonNum.2]
-  · have hneF : isNonEmptyNoNulHost host = false := Bool.eq_false_iff.mpr hne
-    simp [hneF]
-
-/-- Every non-numeric host (`isNumericHostLiteral host = false`) returns `none` under `parseHybridScopedNumericZone?`. -/
-theorem parseHybridScopedNumericZone_none_of_not_numericLiteral {host : String}
-    (hNonNum : isNumericHostLiteral host = false) :
-    parseHybridScopedNumericZone? host = none := by
-  unfold isNumericHostLiteral at hNonNum
-  unfold parseHybridScopedNumericZone?
-  by_cases hne : isNonEmptyNoNulHost host = true
-  · simp only [hne, Bool.true_and, Bool.or_eq_false_iff, Option.isSome_eq_false_iff,
-      Option.isNone_iff_eq_none] at hNonNum
-    simp [hne, hNonNum.1, hNonNum.2]
-  · have hneF : isNonEmptyNoNulHost host = false := Bool.eq_false_iff.mpr hne
-    simp [hneF]
 
 end LeanSwe.LinuxSyscall.Dns
