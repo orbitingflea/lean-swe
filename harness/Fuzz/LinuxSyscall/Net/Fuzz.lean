@@ -2300,6 +2300,19 @@ private def runUsernsLoParityProbe (baseDir : System.FilePath) : IO Unit := do
      , { allocIds := #[], req := .getsockname 0 }
      , { allocIds := #[], req := .bind 0 (.fixed (.ipv4 INADDR_LOOPBACK 0)) }
      ]
+  let trV6MappedAndNativeLoNeverUp : Array SymStep :=
+    #[ { allocIds := #[0], req := .socket .inet6 .stream nb 0 }
+     , { allocIds := #[], req := .bind 0 (.fixed (.ipv6 0 1 0 0 0)) }
+     , { allocIds := #[], req := .bind 0 (.fixed (.ipv6 0 1 41234 0 0)) }
+     , { allocIds := #[], req := .bind 0 (.fixed (.ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 0 0 0)) }
+     , { allocIds := #[], req := .getsockname 0 }
+     , { allocIds := #[1], req := .socket .inet6 .stream nb 0 }
+     , { allocIds := #[], req := .bind 1 (.sameLocalOf 0 none) }
+     , { allocIds := #[], req := .bind 1 (.fixed (.ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 41235 0 0)) }
+     , { allocIds := #[], req := .connect 0 (.fixed (.ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 49999 0 0)) }
+     , { allocIds := #[2], req := .socket .inet6 .stream nb 0 }
+     , { allocIds := #[], req := .connect 2 (.fixed (.ipv6 0 1 49999 0 0)) }
+     ]
   let trV6MappedSelfShutBindLoDown : Array SymStep :=
     #[ { allocIds := #[0], req := .socket .inet6 .stream nb 0 }
      , { allocIds := #[], req := .ioctl 0 (.setIfFlags defaultLoFlags) loIfname }
@@ -2309,8 +2322,46 @@ private def runUsernsLoParityProbe (baseDir : System.FilePath) : IO Unit := do
      , { allocIds := #[], req := .connect 0 (.sameLocalOf 0 none) }
      , { allocIds := #[], req := .ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname }
      , { allocIds := #[], req := .bind 0 (.sameLocalOf 0 none) }
+     , { allocIds := #[], req := .getsockname 0 }
      , { allocIds := #[], req := .bind 0 (.fixed (.ipv6 0 1 0 0 0)) }
      , { allocIds := #[], req := .bind 0 (.fixed (.ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 0 0 0)) }
+     , { allocIds := #[], req := .getsockname 0 }
+     ]
+  let trV6MappedSelfShutBindPort0LoDown : Array SymStep :=
+    #[ { allocIds := #[0], req := .socket .inet6 .stream nb 0 }
+     , { allocIds := #[], req := .ioctl 0 (.setIfFlags defaultLoFlags) loIfname }
+     , { allocIds := #[], req := .bind 0 (.fixed (.ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 0 0 0)) }
+     , { allocIds := #[], req := .getsockname 0 }
+     , { allocIds := #[], req := .shutdown 0 .wr }
+     , { allocIds := #[], req := .connect 0 (.sameLocalOf 0 none) }
+     , { allocIds := #[], req := .ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname }
+     , { allocIds := #[], req := .bind 0 (.fixed (.ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 0 0 0)) }
+     , { allocIds := #[], req := .getsockname 0 }
+     ]
+  let trV6SelfShutBindMappedLoDown : Array SymStep :=
+    #[ { allocIds := #[0], req := .socket .inet6 .stream nb 0 }
+     , { allocIds := #[], req := .ioctl 0 (.setIfFlags defaultLoFlags) loIfname }
+     , { allocIds := #[], req := .bind 0 (.fixed (.ipv6 0 1 0 0 0)) }
+     , { allocIds := #[], req := .getsockname 0 }
+     , { allocIds := #[], req := .shutdown 0 .wr }
+     , { allocIds := #[], req := .connect 0 (.sameLocalOf 0 none) }
+     , { allocIds := #[], req := .ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname }
+     , { allocIds := #[], req := .bind 0 (.fixed (.ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 0 0 0)) }
+     , { allocIds := #[], req := .bind 0 (.fixed (.ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 41236 0 0)) }
+     , { allocIds := #[], req := .bind 0 (.fixed (.ipv6 0 1 0 0 0)) }
+     , { allocIds := #[], req := .getsockname 0 }
+     ]
+  let trV6RefusedSynSentBindMappedLoDown : Array SymStep :=
+    #[ { allocIds := #[0], req := .socket .inet6 .stream nb 0 }
+     , { allocIds := #[], req := .ioctl 0 (.setIfFlags defaultLoFlags) loIfname }
+     , { allocIds := #[], req := .connect 0 (.fixed (.ipv6 0 1 49999 0 0)) }
+     , { allocIds := #[1], req := .socket .inet6 .stream nb 0 }
+     , { allocIds := #[], req := .connect 1 (.fixed (.ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 49999 0 0)) }
+     , { allocIds := #[], req := .ioctl 0 (.setIfFlags IFF_LOOPBACK) loIfname }
+     , { allocIds := #[], req := .bind 0 (.fixed (.ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 0 0 0)) }
+     , { allocIds := #[], req := .getsockname 0 }
+     , { allocIds := #[], req := .bind 1 (.fixed (.ipv6 0 (ipv4ToMappedV6Lo INADDR_LOOPBACK) 49999 0 0)) }
+     , { allocIds := #[], req := .getsockname 1 }
      ]
   let trV6PortLockedSelfShutBindLoDown : Array SymStep :=
     #[ { allocIds := #[0], req := .socket .inet6 .stream nb 0 }
@@ -2342,7 +2393,7 @@ private def runUsernsLoParityProbe (baseDir : System.FilePath) : IO Unit := do
     match ← SandboxEnv.unshareExtra 2 with
     | .error e => return s!"UNSHARE_ERR:{e}".toUTF8
     | .ok () => pure ()
-    let traces := #[trClosingShut, trTaintedV6LoDown, trCloseWaitRstEpipe, trSelfShutFlushRx, trMappedDirBcastGsn, trUdpAllHostsMcastLoopback, trV6SelfConnectLoDownShutSoError, trV6SelfConnectLoDownShutRdwrRxSoError, trPreShutCrossV6LoFlap, trPreShutV4LoFlap, trPreShutV6NativeLoFlap, trPreShutV6MappedToV4LoFlap, trPreShutOrphanCloseLoFlap, trPreShutOrphanShutLoFlap, trTaintedV6PreShutLisLoFlap, trV6SelfShutBindLoDown, trV6SelfShutBindPort0LoDown, trV6RefusedSynSentBindLoDown, trV4SelfShutBindLoDown, trV6MappedSelfShutBindLoDown, trV6PortLockedSelfShutBindLoDown, trV6ShutRdwrPeerRstBindLoDown]
+    let traces := #[trV6MappedAndNativeLoNeverUp, trClosingShut, trTaintedV6LoDown, trCloseWaitRstEpipe, trSelfShutFlushRx, trMappedDirBcastGsn, trUdpAllHostsMcastLoopback, trV6SelfConnectLoDownShutSoError, trV6SelfConnectLoDownShutRdwrRxSoError, trPreShutCrossV6LoFlap, trPreShutV4LoFlap, trPreShutV6NativeLoFlap, trPreShutV6MappedToV4LoFlap, trPreShutOrphanCloseLoFlap, trPreShutOrphanShutLoFlap, trTaintedV6PreShutLisLoFlap, trV6SelfShutBindLoDown, trV6SelfShutBindPort0LoDown, trV6RefusedSynSentBindLoDown, trV4SelfShutBindLoDown, trV6MappedSelfShutBindLoDown, trV6MappedSelfShutBindPort0LoDown, trV6SelfShutBindMappedLoDown, trV6RefusedSynSentBindMappedLoDown, trV6PortLockedSelfShutBindLoDown, trV6ShutRdwrPeerRstBindLoDown]
     for h : idx in [:traces.size] do
       let pDir := baseDir / s!"parity-{idx}"
       let r ← replayTrace pDir traces[idx] true allowedStep true false
