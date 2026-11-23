@@ -18,13 +18,17 @@ Checks:
    `SpecMutants` declarations/examples use only standard axioms
    (`propext`, `Classical.choice`, `Quot.sound`) with zero `sorry`/`admit`/`native_decide`.
 6. One-way transitive `.olean` import-DAG ratchet and no-proof-content audit covering `LeanSwe`,
-   `LeanSwe.PostFork.Verified`, and any extra unimported modules:
+   `LeanSwe.PostFork.Verified`, `LeanSwe.ProcessSandbox.Init.Verified`, and any extra unimported
+   modules:
    - Within-package transitive checks (`Types`/`Model`/`SpecTests`/`Properties` cannot import
-     `Impl`/`SysBridge`/`Interface`/`Proofs`; `Impl`/`SysBridge`/`Interface` cannot import
+     same-package `Impl`/`SysBridge`/`Interface`/`Proofs`/`SpecMutants`/`RuntimeTests`/
+     `TestSupport`, or any unclassified `.other` helper module whose name matches no role;
+     `Impl`/`SysBridge`/`Interface` cannot import same-package
      `Proofs`/`SpecTests`/`Properties`/`SpecMutants`/`RuntimeTests`).
    - Cross-package checks: direct imports target only another package's `Types`, `Model`, or
-     `Interface` (no `Impl`/`SysBridge`/`Proofs`/`SpecTests`/`TestSupport`), with constant-level
-     indirect reach-in and `.Internal.` reach-in checks on non-proof modules.
+     `Interface` (no `Impl`/`SysBridge`/`Proofs`/`SpecTests`/`Properties`/`SpecMutants`/
+     `RuntimeTests`/`TestSupport`/`.other`), plus cross-package transitive leak checks and
+     constant-level indirect reach-in and `.Internal.` reach-in checks on non-proof modules.
    - `namespace <Pkg>.Model` inside `*.Proofs*` ban over `.olean` constant tables (excluding
      strictly verified lazy compiler-generated aux lemmas for existing non-proof `Model` decls).
    - No `*.Proofs*` constants in `SpecTests`/`Properties` (`type` or `value`), in exported
@@ -2990,8 +2994,46 @@ private def mergeDagReports (a b : DagAuditReport) : DagAuditReport := Id.run do
       | some (prev, pSamples) =>
         let merged := samples.foldl (fun acc s => if acc.size < 3 && !acc.contains s then acc.push s else acc) pSamples
         sc.insert k (prev + cnt, merged)
-      | none => sc.insert k (cnt, samples)
+      | none =>
+        let capped := samples.foldl (fun acc s => if acc.size < 3 && !acc.contains s then acc.push s else acc) #[]
+        sc.insert k (cnt, capped)
   return { violations := v, sigProofCounts := sc, checkedModules := a.checkedModules + b.checkedModules }
+
+private def encodeDagReportWireLines (rep : DagAuditReport) : Array String := Id.run do
+  let mut lines : Array String := #[]
+  for (k, msg) in rep.violations.toList do
+    lines := lines.push s!"PFW_DAG_V:{k}\t{msg}"
+  for (k, (cnt, samples)) in rep.sigProofCounts.toList do
+    lines := lines.push s!"PFW_DAG_S:{k}\t{cnt}\t{String.intercalate "," samples.toList}"
+  lines := lines.push s!"PFW_DAG_MODS:{rep.checkedModules}"
+  return lines
+
+private def parseDagWireLine? (ln : String) : Option DagAuditReport :=
+  if ln.startsWith "PFW_DAG_V:" then
+    let body := (ln.drop 10).toString
+    match body.splitOn "\t" with
+    | k :: rest =>
+      let msg := String.intercalate "\t" rest
+      some { violations := recordDagViolation {} k msg }
+    | [] => none
+  else if ln.startsWith "PFW_DAG_S:" then
+    let body := (ln.drop 10).toString
+    match body.splitOn "\t" with
+    | [k, cntStr, sampleCsv] =>
+      let cnt := cntStr.toNat!
+      let samples := (sampleCsv.splitOn ",").filter (!·.isEmpty) |>.toArray
+      some { sigProofCounts := ({} : Std.HashMap String (Nat × Array String)).insert k (cnt, samples) }
+    | _ => none
+  else if ln.startsWith "PFW_DAG_MODS:" then
+    some { checkedModules := (ln.drop 13).toString.toNat! }
+  else
+    none
+
+private def decodeDagReportWireLines (lines : Array String) : DagAuditReport :=
+  lines.foldl (init := {}) fun acc ln =>
+    match parseDagWireLine? ln with
+    | some delta => mergeDagReports acc delta
+    | none => acc
 
 private def evaluateDagRatchetWith
     (allowEdges : Array String)
@@ -3360,11 +3402,8 @@ unsafe def main (args : List String) : IO UInt32 := do
       IO.println s!"PFW_MUT:{m}"
     for err in eErrs2 ++ pfAeneasErrs do
       IO.println s!"PFW_ERR:{err}"
-    for (k, msg) in pfDagRep.violations.toList do
-      IO.println s!"PFW_DAG_V:{k}\t{msg}"
-    for (k, (cnt, samples)) in pfDagRep.sigProofCounts.toList do
-      IO.println s!"PFW_DAG_S:{k}\t{cnt}\t{String.intercalate "," samples.toList}"
-    IO.println s!"PFW_DAG_MODS:{pfDagRep.checkedModules}"
+    for ln in encodeDagReportWireLines pfDagRep do
+      IO.println ln
     IO.println s!"PFW_STATS:{sCnt2}:{prom2.size}:{wAss2}"
     return 0
 
@@ -3376,6 +3415,7 @@ unsafe def main (args : List String) : IO UInt32 := do
   if workerOut.exitCode != 0 then
     IO.eprintln s!"POSTFORK_VERIFIED_WORKER_FAILED: exit={workerOut.exitCode} stderr={workerOut.stderr.trimAscii.toString}"
     return 1
+  let workerLines := (workerOut.stdout.splitOn "\n").toArray
   let mut pfModNames : Std.HashSet String := {}
   let mut eErrs2 : Array String := #[]
   let mut sMods2 : Array String := #[]
@@ -3383,32 +3423,12 @@ unsafe def main (args : List String) : IO UInt32 := do
   let mut sCnt2 : Nat := 0
   let mut prom2Count : Nat := 0
   let mut wAss2 : Nat := 0
-  let mut pfAeneasErrs : Array String := #[]
-  let mut pfDagRep : DagAuditReport := {}
-  for ln in workerOut.stdout.splitOn "\n" do
+  let pfDagRep := decodeDagReportWireLines workerLines
+  for ln in workerLines do
     if ln.startsWith "PFW_MOD:" then pfModNames := pfModNames.insert (ln.drop 8).toString
     else if ln.startsWith "PFW_SPEC:" then sMods2 := sMods2.push (ln.drop 9).toString
     else if ln.startsWith "PFW_MUT:" then mutOk2 := mutOk2.insert (ln.drop 8).toString
     else if ln.startsWith "PFW_ERR:" then eErrs2 := eErrs2.push (ln.drop 8).toString
-    else if ln.startsWith "PFW_DAG_V:" then
-      let body := (ln.drop 10).toString
-      match body.splitOn "\t" with
-      | k :: rest =>
-        let msg := String.intercalate "\t" rest
-        pfDagRep := { pfDagRep with violations := recordDagViolation pfDagRep.violations k msg }
-      | [] => pure ()
-    else if ln.startsWith "PFW_DAG_S:" then
-      let body := (ln.drop 10).toString
-      match body.splitOn "\t" with
-      | [k, cntStr, sampleCsv] =>
-        let cnt := cntStr.toNat!
-        let samples := (sampleCsv.splitOn ",").filter (!·.isEmpty) |>.toArray
-        let prev := pfDagRep.sigProofCounts.getD k (0, #[])
-        let merged := samples.foldl (fun acc s => if acc.size < 3 && !acc.contains s then acc.push s else acc) prev.2
-        pfDagRep := { pfDagRep with sigProofCounts := pfDagRep.sigProofCounts.insert k (prev.1 + cnt, merged) }
-      | _ => pure ()
-    else if ln.startsWith "PFW_DAG_MODS:" then
-      pfDagRep := { pfDagRep with checkedModules := (ln.drop 13).toString.toNat! }
     else if ln.startsWith "PFW_STATS:" then
       match (ln.drop 10).toString.splitOn ":" with
       | [a, b, c] =>
@@ -3626,7 +3646,7 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   let promCount := prom1.size + prom2Count
   let withAssumeCount := wAss1 + wAss2
-  errors := errors ++ eErrs1 ++ eErrs2 ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sqClosureErrs ++ sbxClosureErrs ++ compClosureErrs ++ managedProcErrs ++ psandboxHostErrs ++ pfClosureErrs ++ pfWiringErrs ++ pfAeneasErrs ++ gitClosureErrs ++ cproxyClosureErrs ++ dagErrs
+  errors := errors ++ eErrs1 ++ eErrs2 ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sqClosureErrs ++ sbxClosureErrs ++ compClosureErrs ++ managedProcErrs ++ psandboxHostErrs ++ pfClosureErrs ++ pfWiringErrs ++ gitClosureErrs ++ cproxyClosureErrs ++ dagErrs
   IO.println s!"PROMISE_CHECK: spec_modules={specModCount} promises={promCount} with_assume={withAssumeCount} errors={errors.size}"
   if errors.isEmpty then
     return 0
