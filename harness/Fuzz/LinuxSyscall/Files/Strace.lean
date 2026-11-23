@@ -4083,44 +4083,184 @@ private def runProcSpoofWorker (tmpDir : String) : IO UInt32 := do
   IO.FS.writeFile spoofedPath "SPOOFED"
   let fd ← match ← ops.openat none trustedPath.toUTF8 roFlags 0 with
     | .ok f => pure f
-    | .error _ => return 2
-  let rawNum ← Fuzz.LinuxSyscall.Env.rawFdNum fd
-  let tsStr ← match ← ops.readlinkat none "/proc/thread-self".toUTF8 128 with
-    | .ok b => pure (String.fromUTF8! b)
-    | .error _ =>
-      safeClose ops fd
-      return 3
-  let runMountCase (setupCmd cleanupCmd : String) : IO UInt32 := do
-    let mOut ← IO.Process.output { cmd := "sh", args := #["-c", setupCmd], stdin := .null }
-    if mOut.exitCode != 0 then return 77
-    let r ← ops.reopenReadOnly fd
-    let _ ← IO.Process.output { cmd := "sh", args := #["-c", cleanupCmd], stdin := .null }
-    match r with
-    | .error e => return (if e == Errno.ENOENT then 0 else 4)
-    | .ok rfd =>
-      safeClose ops rfd
-      return 5
-  let cpidFile := tmpDir ++ "/cpid"
-  let c1 ← runMountCase
-    (s!"set -e; ( exec {rawNum}<'{spoofedPath}'; exec sleep 10 >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 & CPID=$!; " ++
-     s!"echo $CPID > '{cpidFile}'; mount --bind /proc/$CPID/fd /proc/{tsStr}/fd")
-    (s!"umount /proc/{tsStr}/fd 2>/dev/null || true; kill $(cat '{cpidFile}' 2>/dev/null) 2>/dev/null || true")
-  if c1 != 0 then safeClose ops fd; return c1
-  let c2 ← runMountCase
-    (s!"set -e; ( exec {rawNum}<'{trustedPath}'; exec sleep 10 >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 & CPID=$!; " ++
-     s!"echo $CPID > '{cpidFile}'; mount --bind /proc/$CPID/fd /proc/{tsStr}/fd")
-    (s!"umount /proc/{tsStr}/fd 2>/dev/null || true; kill $(cat '{cpidFile}' 2>/dev/null) 2>/dev/null || true")
-  if c2 != 0 then safeClose ops fd; return c2
-  let c3 ← runMountCase
-    (s!"set -e; ( exec {rawNum}<'{spoofedPath}'; exec sleep 10 >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 & CPID=$!; " ++
-     s!"echo $CPID > '{cpidFile}'; mount --bind /proc/$CPID /proc/{tsStr}")
-    (s!"umount /proc/{tsStr} 2>/dev/null || true; kill $(cat '{cpidFile}' 2>/dev/null) 2>/dev/null || true")
-  if c3 != 0 then safeClose ops fd; return c3
-  let c4 ← runMountCase
-    (s!"set -e; mount -t tmpfs tmpfs /proc/{tsStr}/fd; printf 'SPOOFED' > /proc/{tsStr}/fd/{rawNum}")
-    (s!"umount /proc/{tsStr}/fd 2>/dev/null || true")
-  safeClose ops fd
-  return c4
+    | .error e =>
+      IO.eprintln s!"proc-spoof: open trusted failed ({e})"
+      return 2
+  try
+    let rawNum ← Fuzz.LinuxSyscall.Env.rawFdNum fd
+    if rawNum == (0xffffffff : UInt32) || rawNum < 3 then
+      IO.eprintln s!"proc-spoof: unexpected rawFdNum={rawNum}"
+      return 2
+    let tsStr ← match ← ops.readlinkat none "/proc/thread-self".toUTF8 128 with
+      | .ok b =>
+        match String.fromUTF8? b with
+        | some s =>
+          if s.isEmpty then
+            IO.eprintln "proc-spoof: empty /proc/thread-self readlink"
+            return 3
+          pure s
+        | none =>
+          IO.eprintln "proc-spoof: invalid UTF-8 in /proc/thread-self readlink"
+          return 3
+      | .error e =>
+        IO.eprintln s!"proc-spoof: readlinkat /proc/thread-self failed ({e})"
+        return 3
+    let probeDir := tmpDir ++ "/mnt_probe"
+    IO.FS.createDirAll probeDir
+    let probeOut ← IO.Process.output {
+      cmd := "mount"
+      args := #["-t", "tmpfs", "tmpfs", probeDir]
+      stdin := .null
+    }
+    if probeOut.exitCode != 0 then
+      IO.eprintln s!"proc-spoof: skipping (tmpfs mount probe unavailable, exit={probeOut.exitCode}): {probeOut.stderr.trimAscii.toString}"
+      return 77
+    let probeUm ← IO.Process.output { cmd := "umount", args := #[probeDir], stdin := .null }
+    if probeUm.exitCode != 0 then
+      IO.eprintln s!"proc-spoof: probe umount failed (exit={probeUm.exitCode}): {probeUm.stderr.trimAscii.toString}"
+      return 6
+    let pyHoldScript :=
+      "import os, signal, sys, time\n" ++
+      "signal.signal(signal.SIGTERM, lambda _s, _f: os._exit(0))\n" ++
+      "target = int(sys.argv[2])\n" ++
+      "if target < 3:\n" ++
+      "    sys.stderr.write(f'invalid target fd {target}\\n')\n" ++
+      "    sys.exit(2)\n" ++
+      "fd = os.open(sys.argv[1], os.O_RDONLY)\n" ++
+      "if fd != target:\n" ++
+      "    os.dup2(fd, target)\n" ++
+      "    os.close(fd)\n" ++
+      "os.write(1, b'READY\\n')\n" ++
+      "time.sleep(60)\n"
+    let checkReopen (label : String) (r : Except Errno RawFd) : IO UInt32 := do
+      match r with
+      | .error e =>
+        if e == Errno.ENOENT then
+          return 0
+        IO.eprintln s!"proc-spoof: {label} (rawFd={rawNum}) expected ENOENT, got {e}"
+        return 4
+      | .ok rfd =>
+        safeClose ops rfd
+        IO.eprintln s!"proc-spoof: {label} (rawFd={rawNum}) unexpectedly succeeded"
+        return 5
+    let runBindCase (label targetPath : String) (mountFdSubdir reapBeforeReopen : Bool) : IO UInt32 := do
+      let child ← IO.Process.spawn {
+        cmd := "python3"
+        args := #["-I", "-S", "-B", "-c", pyHoldScript, targetPath, toString rawNum]
+        stdin := .null
+        stdout := .piped
+        stderr := .piped
+      }
+      let mountedRef ← IO.mkRef false
+      let reapedRef ← IO.mkRef false
+      let umFailedRef ← IO.mkRef false
+      let childPid := child.pid
+      let src := if mountFdSubdir then s!"/proc/{childPid}/fd" else s!"/proc/{childPid}"
+      let dst := if mountFdSubdir then s!"/proc/{tsStr}/fd" else s!"/proc/{tsStr}"
+      let reapChildBestEffort : IO Unit := do
+        if !(← reapedRef.get) then
+          match ← try child.tryWait catch _ => pure (some 0) with
+          | some _ => reapedRef.set true
+          | none =>
+            try child.kill catch _ => pure ()
+            let _ ← try child.wait catch _ => pure 0
+            reapedRef.set true
+      let rc ← try
+        let readyLine ← child.stdout.getLine
+        if readyLine.trimAscii.toString != "READY" then
+          reapChildBestEffort
+          let errText ← try child.stderr.readToEnd catch _ => pure ""
+          IO.eprintln s!"proc-spoof: {label} (rawFd={rawNum}) helper handshake failed (line={repr readyLine}): {errText.trimAscii.toString}"
+          pure (6 : UInt32)
+        else
+          match ← ops.fstatat none s!"/proc/{childPid}/fd/{rawNum}".toUTF8 { symlinkNofollow := true } with
+          | .error e =>
+            IO.eprintln s!"proc-spoof: {label} (rawFd={rawNum}) missing /proc/{childPid}/fd/{rawNum} ({e})"
+            pure (6 : UInt32)
+          | .ok _ =>
+            let mOut ← IO.Process.output {
+              cmd := "mount"
+              args := #["--bind", src, dst]
+              stdin := .null
+            }
+            if mOut.exitCode != 0 then
+              let deadNote ← match ← child.tryWait with
+                | some ec => reapedRef.set true; pure s!" (helper exited={ec})"
+                | none => pure " (helper alive)"
+              IO.eprintln s!"proc-spoof: {label} (rawFd={rawNum}) mount --bind {src} {dst} failed (exit={mOut.exitCode}){deadNote}: {mOut.stderr.trimAscii.toString}"
+              pure (6 : UInt32)
+            else
+              mountedRef.set true
+              if reapBeforeReopen then
+                match ← child.tryWait with
+                | some ec =>
+                  reapedRef.set true
+                  IO.eprintln s!"proc-spoof: {label} (rawFd={rawNum}) helper exited prematurely before kill (exit={ec})"
+                  pure (6 : UInt32)
+                | none =>
+                  child.kill
+                  let _ ← child.wait
+                  reapedRef.set true
+                  checkReopen label (← ops.reopenReadOnly fd)
+              else
+                match ← child.tryWait with
+                | some ec =>
+                  reapedRef.set true
+                  IO.eprintln s!"proc-spoof: {label} (rawFd={rawNum}) helper exited prematurely before reopenReadOnly (exit={ec})"
+                  pure (6 : UInt32)
+                | none =>
+                  let r ← ops.reopenReadOnly fd
+                  match ← child.tryWait with
+                  | some ec =>
+                    reapedRef.set true
+                    if let .ok rfd := r then safeClose ops rfd
+                    IO.eprintln s!"proc-spoof: {label} (rawFd={rawNum}) helper exited during reopenReadOnly (exit={ec})"
+                    pure (6 : UInt32)
+                  | none =>
+                    checkReopen label r
+      finally
+        try
+          if ← mountedRef.get then
+            let umOut ← IO.Process.output { cmd := "umount", args := #[dst], stdin := .null }
+            if umOut.exitCode != 0 then
+              IO.eprintln s!"proc-spoof: {label} (rawFd={rawNum}) umount {dst} failed (exit={umOut.exitCode}): {umOut.stderr.trimAscii.toString}"
+              umFailedRef.set true
+        finally
+          reapChildBestEffort
+      if rc != 0 then return rc
+      if ← umFailedRef.get then return 6
+      return 0
+    let c1 ← runBindCase "c1_spoof_fd_bind" spoofedPath true false
+    if c1 != 0 then return c1
+    let c2 ← runBindCase "c2_trusted_fd_bind" trustedPath true false
+    if c2 != 0 then return c2
+    let c3 ← runBindCase "c3_proc_pid_bind" spoofedPath false false
+    if c3 != 0 then return c3
+    let c3d ← runBindCase "c3_proc_pid_dead_bind" spoofedPath false true
+    if c3d != 0 then return c3d
+    let c4Dst := s!"/proc/{tsStr}/fd"
+    let c4Mount ← IO.Process.output {
+      cmd := "mount"
+      args := #["-t", "tmpfs", "tmpfs", c4Dst]
+      stdin := .null
+    }
+    if c4Mount.exitCode != 0 then
+      IO.eprintln s!"proc-spoof: c4_tmpfs_fd (rawFd={rawNum}) mount -t tmpfs tmpfs {c4Dst} failed (exit={c4Mount.exitCode}): {c4Mount.stderr.trimAscii.toString}"
+      return 6
+    let c4UmFailedRef ← IO.mkRef false
+    let c4 ← try
+      IO.FS.writeFile s!"{c4Dst}/{rawNum}" "SPOOFED"
+      checkReopen "c4_tmpfs_fd" (← ops.reopenReadOnly fd)
+    finally
+      let umOut ← IO.Process.output { cmd := "umount", args := #[c4Dst], stdin := .null }
+      if umOut.exitCode != 0 then
+        IO.eprintln s!"proc-spoof: c4_tmpfs_fd (rawFd={rawNum}) umount {c4Dst} failed (exit={umOut.exitCode}): {umOut.stderr.trimAscii.toString}"
+        c4UmFailedRef.set true
+    if c4 != 0 then return c4
+    if ← c4UmFailedRef.get then return 6
+    return 0
+  finally
+    safeClose ops fd
 
 private def runGetcwdUnboundLongChild (baseReal : System.FilePath) : IO UInt32 := do
   let gcwRoot := baseReal / "gcw_long"
