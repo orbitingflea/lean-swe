@@ -1098,19 +1098,6 @@ theorem healthy_flushRingNonblock_laws
             have hNeAg : e ≠ Errno.EAGAIN := fun hc => hAg (beq_iff_eq.mpr hc)
             exact ⟨hWf1, hMono, id, e, by simp [Array.toList_push], Or.inr hNeAg⟩
 
-/-- `SysBridge.msToPollTimespec` produces a kernel-valid `Poll.Timespec` (`0 ≤ sec` and `nsec < 1_000_000_000`) for every `ms : Nat`. -/
-theorem msToPollTimespec_isValid (ms : Nat) :
-    (msToPollTimespec ms).isValid = true := by
-  unfold msToPollTimespec
-  split
-  · decide
-  · exact Poll.msToPollTimespec_isValid ms
-
-/-- `SysBridge.msToPollTimespec` caps any duration exceeding `MAX_POLL_TIMEOUT_SEC` whole seconds at `{ sec := 2147483647, nsec := 0 }`. -/
-theorem msToPollTimespec_caps_large (ms : Nat) (hLarge : ms / 1000 > MAX_POLL_TIMEOUT_SEC) :
-    msToPollTimespec ms = { sec := 2147483647, nsec := 0 } := by
-  simp [msToPollTimespec, hLarge]
-
 /-- `SysBridge.dnsAddrToIpAddr?` rejects every scoped IPv6 address (`scopeId != 0`), preventing link-local `%iface` confusion. -/
 theorem dnsAddrToIpAddr_rejects_scoped (a : Dns.DnsAddr) (ip : IpAddr)
     (h : dnsAddrToIpAddr? a = some ip) :

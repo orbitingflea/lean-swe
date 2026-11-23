@@ -964,7 +964,7 @@ theorem buildPollBatchSync_laws
     dsimp only [Option.map] at hTs
     injection hTs with hEq
     subst hEq
-    exact msToPollTimespec_isValid ms
+    exact Poll.msToPollTimespec_isValid ms
 
 private theorem drainWakeSocket_laws
     (sys : CProxySysOpsM (StateM HealthySysWorld) Nat)

@@ -1071,32 +1071,47 @@ private def testDetachedDnsWakeupAtMaxConcurrency : IO Unit := do
       let _ ← ops2.stopProxy proxy2
   waitForFdCount fdsStart 1000 "detached DNS teardown FD cleanup"
 
-private def testPollTimeoutCap : IO Unit := do
-  assertTrue (SysBridge.msToPollTimespec 0 == { sec := 0, nsec := 0 })
-    "msToPollTimespec 0"
-  assertTrue (SysBridge.msToPollTimespec 1250 == { sec := 1, nsec := 250000000 })
-    "msToPollTimespec 1250"
-  assertTrue (SysBridge.msToPollTimespec (2147483647 * 1000 + 999) ==
-      { sec := 2147483647, nsec := 999000000 })
-    "msToPollTimespec at 2147483647s boundary preserves sub-second nsec"
-  assertTrue (SysBridge.msToPollTimespec (2147483648 * 1000 + 750) ==
-      { sec := 2147483647, nsec := 0 })
-    "msToPollTimespec above 2147483647s caps to 2147483647s, 0ns"
-  assertTrue (SysBridge.msToPollTimespec (10000000000000000000 * 1000 + 500) ==
-      { sec := 2147483647, nsec := 0 })
-    "msToPollTimespec far above Int64 max still clamps to 2147483647s, 0ns"
-  let hugeSlot : SysBridge.ClientSlot Nat Unit :=
+private def testPollTimeoutClamp : IO Unit := do
+  assertTrue (LinuxSyscall.Poll.msToPollTimespec 0 == { sec := 0, nsec := 0 })
+    "Poll.msToPollTimespec 0"
+  assertTrue (LinuxSyscall.Poll.msToPollTimespec 1250 == { sec := 1, nsec := 250000000 })
+    "Poll.msToPollTimespec 1250"
+  assertTrue (LinuxSyscall.Poll.msToPollTimespec (2147483648 * 1000 + 750) ==
+      { sec := 2147483648, nsec := 750000000 })
+    "Poll.msToPollTimespec above 2^31-1 seconds preserves full 64-bit sec and nsec"
+  assertTrue (LinuxSyscall.Poll.msToPollTimespec (10000000000000000000 * 1000 + 500) ==
+      { sec := 9223372036854775807, nsec := 500000000 })
+    "Poll.msToPollTimespec above Int64 max clamps sec to Int64.max with valid nsec"
+  let overInt32Slot : SysBridge.ClientSlot Nat Unit :=
     { phase := .handshake 7 ByteArray.empty (1000 + 2147483648 * 1000 + 750) }
-  let (_, _, to?) := SysBridge.buildPollBatchSync 3 4 4 1000 #[hugeSlot]
-  assertTrue (to? == some { sec := 2147483647, nsec := 0 })
-    s!"buildPollBatchSync huge deadline expected 2147483647s/0ns, got {repr to?}"
+  let (_, _, to32?) := SysBridge.buildPollBatchSync 3 4 4 1000 #[overInt32Slot]
+  assertTrue (to32? == some { sec := 2147483648, nsec := 750000000 })
+    s!"buildPollBatchSync >2^31-1s deadline expected 2147483648s/750000000ns, got {repr to32?}"
+  let hugeSlot : SysBridge.ClientSlot Nat Unit :=
+    { phase := .handshake 7 ByteArray.empty (1000 + 10000000000000000000 * 1000 + 500) }
+  let (_, _, toMax?) := SysBridge.buildPollBatchSync 3 4 4 1000 #[hugeSlot]
+  assertTrue (toMax? == some { sec := 9223372036854775807, nsec := 500000000 })
+    s!"buildPollBatchSync huge deadline expected Int64.max/500000000ns, got {repr toMax?}"
+  let efd ← match ← LinuxSyscall.Poll.eventfd2 1 { nonblock := true, cloexec := true } with
+    | .ok fd => pure fd
+    | .error e => throw (IO.userError s!"eventfd2 failed: errno {e}")
+  try
+    let revs ← match ← LinuxSyscall.retryEintr
+        (LinuxSyscall.Poll.ppoll #[(efd, { pollin := true })] toMax?) SysBridge.MAX_EINTR_RETRIES with
+      | .ok r => pure r
+      | .error e => throw (IO.userError s!"ppoll with Int64.max timeout failed: errno {e}")
+    let rev : LinuxSyscall.Poll.PollEvents := match revs[0]? with | some r => r | none => {}
+    assertTrue rev.pollin
+      s!"ppoll with Int64.max timeout expected POLLIN on ready eventfd, got {repr revs}"
+  finally
+    let _ ← LinuxSyscall.Files.close efd
 
 /-- Execute end-to-end OS network and Python differential runtime tests for `LeanSwe.ConnectProxy`. -/
 def runAll : IO Unit := do
   let fdsBefore ← countSelfOpenFds
   assertErrKind (← withProxy { limits := { maxHeaderBytes := 0 } } fun _ => pure (.ok ()))
     .invalidInput "withProxy invalid config rejected"
-  testPollTimeoutCap
+  testPollTimeoutClamp
   runPythonIpaddressDifferential
   testTunnelPipelineHalfCloseFailoverAndCurl
   testDenialsPublicOnlyBansAndPostBody
