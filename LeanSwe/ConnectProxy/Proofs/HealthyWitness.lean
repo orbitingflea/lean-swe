@@ -612,7 +612,7 @@ private theorem stepConnect_spc (s : Net.NetState) (hid : Net.HandleId) (selfFid
     refine ⟨s, ?_, rfl⟩
     unfold Net.stepUdpConnect
     dsimp only
-    cases hDom : ((Net.normalizeUdpTarget d.domain addr bind.addr?).domain != d.domain) with
+    cases hDom : ((Net.normalizeUdpTarget d.domain addr bind.addr? d.inetSaddrZero).domain != d.domain) with
     | true =>
       simp only [↓reduceIte]
       apply emitErr_spc s e _ _ _ _ _ hSpc (familyMismatch_ne_spc _ _ e hSpc)
