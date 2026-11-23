@@ -14,8 +14,10 @@ Machine-checked agreement and rejection theorems for `psandbox_init::plan` and
   `psandbox_init::plan::parse_plan` succeeds and recovers the exact header fields, `program` and
   `cwd` UTF-8 spans, section counts, `seccomp` instruction count (`1..160`), and `seccomp` filter
   trailer slice,
-- `install_seccomp_valid_view_spec`: `ops.install_seccomp` succeeds on any `PlanView` produced by
-  `parse_plan`,
+- `install_seccomp_valid_view_spec`: when `s.seccompErr? = none`, `ops.install_seccomp` succeeds
+  on any `PlanView` produced by `parse_plan` and appends `(.syscall, view.seccomp_n)` to
+  `s.seccompInstalled` (`ENOSYS` `prctl` fallback and `seccompErr?` / `prctlSeccompErr?` error
+  branches are proved in `OracleOps.install_seccomp_fallback_spec`),
 - Rejection theorems (`parse_plan_rejects_short_magic`, `parse_header_part1_rejects_low_abi`,
   `validate_seccomp_trailer_rejects_zero`, `validate_seccomp_trailer_rejects_over_160`,
   `validate_seccomp_trailer_rejects_trailing_bytes`).

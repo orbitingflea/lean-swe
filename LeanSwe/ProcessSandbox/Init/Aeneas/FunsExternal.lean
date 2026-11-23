@@ -339,8 +339,11 @@ def init_sys.prctl_set_seccomp_filter (s : init_sys.Sys)
       filterBytes.val.length != insnCount.val * 8 then
     ok (.Err EINVAL, s)
   else
-    let installed := s.seccompInstalled ++ [(.prctl, insnCount)]
-    ok (.Ok (), { s with seccompInstalled := installed })
+    match s.prctlSeccompErr? with
+    | some e => ok (.Err (sanitizeErrno e), s)
+    | none =>
+      let installed := s.seccompInstalled ++ [(.prctl, insnCount)]
+      ok (.Ok (), { s with seccompInstalled := installed })
 
 /-- Allocate a pre-fork `ExecTable`. -/
 def init_sys.exec_table_new (s : init_sys.Sys) (argc envc : Std.U32)

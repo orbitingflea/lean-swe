@@ -8,7 +8,8 @@ explicit `InitState` syscall oracles:
 - `fd_is_dir` in `ops.add_ll_path` (directory vs regular file masking vs dir-only skip vs `fstat` error),
 - `read1` in `ops.wait_for_go_byte` (`EOF`, release byte, `EINTR` retry, non-`EINTR` error),
 - `sendmsg_scm_batch` in `ops.send_fds_scm` (`34`-FD split `32 + 2`, `EINTR` retry, `Ok 0 -> EIO`, error),
-- `seccomp_set_mode_filter` in `ops.install_seccomp` (direct `SYS_seccomp`, `ENOSYS` fallback to `prctl`, error).
+- `seccomp_set_mode_filter` and `prctl_set_seccomp_filter` in `ops.install_seccomp` (direct
+  `SYS_seccomp`, `ENOSYS` fallback to `prctl` succeeding or failing, and non-`ENOSYS` errors).
 -/
 
 namespace LeanSwe.ProcessSandbox.Init.Proofs
@@ -469,7 +470,9 @@ theorem send_fds_scm_zero_sent_eio (s : init_sys.Sys) (ctrl_fd : I32)
   rw [loop_done _ _ _ hOut, bind_ok]
   simp [ops.EIO]
 
-/-- `ops.install_seccomp` uses `SYS_seccomp`, falls back to `prctl` on `ENOSYS` (`38`), and propagates other errors. -/
+/-- `ops.install_seccomp` uses `SYS_seccomp`, falls back to `prctl` on `ENOSYS` (`38`)
+(propagating `prctlSeccompErr?` errors without recording an installation), and propagates
+non-`ENOSYS` `SYS_seccomp` errors directly. -/
 theorem install_seccomp_fallback_spec (s : init_sys.Sys) (data : Slice U8)
     (view : plan.PlanView) (hNPos : 0 < view.seccomp_n.val) (hNLe : view.seccomp_n.val ≤ 160)
     (hPos : view.seccomp_pos.val + view.seccomp_n.val * 8 ≤ data.val.length) :
@@ -478,13 +481,20 @@ theorem install_seccomp_fallback_spec (s : init_sys.Sys) (data : Slice U8)
         { s with
           seccompErr? := none
           seccompInstalled := s.seccompInstalled ++ [(.syscall, view.seccomp_n)] }) ∧
-    ops.install_seccomp { s with seccompErr? := some 38#i32 } data view =
+    ops.install_seccomp { s with seccompErr? := some 38#i32, prctlSeccompErr? := none } data view =
       Result.ok (.Ok (),
         { s with
           seccompErr? := some 38#i32
+          prctlSeccompErr? := none
           seccompInstalled := s.seccompInstalled ++ [(.prctl, view.seccomp_n)] }) ∧
-    ops.install_seccomp { s with seccompErr? := some 22#i32 } data view =
-      Result.ok (.Err 22#i32, { s with seccompErr? := some 22#i32 }) := by
+    (∀ e : I32, 1 ≤ e.val → e.val ≤ 4095 →
+      ops.install_seccomp
+          { s with seccompErr? := some 38#i32, prctlSeccompErr? := some e } data view =
+        Result.ok (.Err e,
+          { s with seccompErr? := some 38#i32, prctlSeccompErr? := some e })) ∧
+    (∀ e : I32, 1 ≤ e.val → e.val ≤ 4095 → e ≠ 38#i32 →
+      ops.install_seccomp { s with seccompErr? := some e } data view =
+        Result.ok (.Err e, { s with seccompErr? := some e })) := by
   have hMax : data.val.length ≤ Usize.max := data.property
   have hCastN : (UScalar.cast .Usize view.seccomp_n : Usize).val = view.seccomp_n.val := by simp
   obtain ⟨byteLen, hMul, hMulVal⟩ :=
@@ -524,31 +534,37 @@ theorem install_seccomp_fallback_spec (s : init_sys.Sys) (data : Slice U8)
   have hInvalidFalse : (view.seccomp_n.val == 0 || view.seccomp_n.val > 160 ||
       sl.val.length != view.seccomp_n.val * 8) = false := by
     rw [hSlLen]; simp; omega
-  have hStep : ∀ err? : Option I32,
-      ops.install_seccomp { s with seccompErr? := err? } data view =
+  have hStep : ∀ s' : init_sys.Sys,
+      ops.install_seccomp s' data view =
         (do
-          let (r, s1) ←
-            init_sys.seccomp_set_mode_filter { s with seccompErr? := err? } sl view.seccomp_n
+          let (r, s1) ← init_sys.seccomp_set_mode_filter s' sl view.seccomp_n
           match r with
           | core.result.Result.Ok _ => Result.ok (core.result.Result.Ok (), s1)
           | core.result.Result.Err e =>
             if e = ops.ENOSYS then init_sys.prctl_set_seccomp_filter s1 sl view.seccomp_n
             else Result.ok (r, s1)) := by
-    intro err?
+    intro s'
     unfold ops.install_seccomp
     dsimp only [lift]
     rw [bind_ok, hMul, bind_ok, if_false_eq hNotGtPos, hRem, bind_ok,
       if_false_eq hNotGtLen, hEnd, bind_ok, hSl, bind_ok]
     rfl
-  refine ⟨?_, ?_, ?_⟩
-  · rw [hStep none]
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · rw [hStep]
     unfold init_sys.seccomp_set_mode_filter
     simp [hInvalidFalse]
-  · rw [hStep (some 38#i32)]
+  · rw [hStep]
     unfold init_sys.seccomp_set_mode_filter init_sys.prctl_set_seccomp_filter ops.ENOSYS
     simp [hInvalidFalse, sanitizeErrno_eq_of_bounds 38#i32 (by decide) (by decide)]
-  · rw [hStep (some 22#i32)]
+  · intro e hLo hHi
+    rw [hStep]
+    unfold init_sys.seccomp_set_mode_filter init_sys.prctl_set_seccomp_filter ops.ENOSYS
+    simp [hInvalidFalse, sanitizeErrno_eq_of_bounds 38#i32 (by decide) (by decide),
+      sanitizeErrno_eq_of_bounds e hLo hHi]
+  · intro e hLo hHi hNe
+    have hNeVal : e.val ≠ 38 := fun hv => hNe (IScalar.eq_of_val_eq hv)
+    rw [hStep]
     unfold init_sys.seccomp_set_mode_filter ops.ENOSYS
-    simp [hInvalidFalse, sanitizeErrno_eq_of_bounds 22#i32 (by decide) (by decide)]
+    simp [hInvalidFalse, sanitizeErrno_eq_of_bounds e hLo hHi, hNeVal]
 
 end LeanSwe.ProcessSandbox.Init.Proofs

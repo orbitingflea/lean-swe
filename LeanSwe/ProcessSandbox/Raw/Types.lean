@@ -34,7 +34,7 @@ structure SandboxError where
   message : String
   deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Pure representation of raw C-shim and OS error records for total error-mapping specifications. -/
+/-- Pure representation of raw host-bridge and OS error records for total error-mapping specifications. -/
 inductive SandboxRawError where
   /-- Sandbox backend unavailable or failed closed prior to guest `execvp`. -/
   | unavailable (errno? : Option UInt32) (detail : String)
@@ -317,19 +317,19 @@ structure CompiledSandboxPlan where
   limits : SandboxLimits := {}
   deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Return `true` iff `id` is a valid non-zero 64-bit C-shim slot identifier (`0 < id < UInt64.size`). -/
+/-- Return `true` iff `id` is a valid non-zero 64-bit handle slot identifier (`0 < id < UInt64.size`). -/
 def isValidSandboxHandleId (id : Nat) : Bool :=
   decide (0 < id ∧ id < UInt64.size)
 
 /-- Opaque handle referencing an immutable `F_ADD_SEALS`-sealed `memfd` sandbox plan. -/
 structure PlanHandle where
-  /-- Non-zero C-shim plan slot identifier (`0 < handleId < UInt64.size`). -/
+  /-- Non-zero host-table plan slot identifier (`0 < handleId < UInt64.size`). -/
   handleId : Nat
   deriving Repr, BEq, DecidableEq, Inhabited
 
 /-- Opaque handle referencing a spawned sandbox instance inside its isolated process group and per-box `/sys/fs/cgroup` directory. -/
 structure BoxHandle where
-  /-- Non-zero C-shim box slot identifier (`0 < handleId < UInt64.size`). -/
+  /-- Non-zero host-table box slot identifier (`0 < handleId < UInt64.size`). -/
   handleId : Nat
   /-- Host-visible root process ID of the sandbox instance (`> 0`). -/
   pid : Int
@@ -341,7 +341,7 @@ structure BoxHandle where
 
 /-- Opaque handle referencing a running host-side non-blocking TCP `poll()` port forwarder. -/
 structure PortForwarderHandle where
-  /-- Non-zero C-shim forwarder slot identifier (`0 < handleId < UInt64.size`). -/
+  /-- Non-zero host-table forwarder slot identifier (`0 < handleId < UInt64.size`). -/
   handleId : Nat
   /-- Associated `BoxHandle.handleId` owning the handed-off box listener descriptors. -/
   boxHandleId : Nat
@@ -357,7 +357,7 @@ structure SandboxResourceCounts where
   activeForwarders : Nat := 0
   deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Single-step OS and C-shim primitives for `LeanSwe.ProcessSandbox`, parameterized over effect monad `m`. -/
+/-- Single-step OS and `Host.SysBridge` primitives for `LeanSwe.ProcessSandbox`, parameterized over effect monad `m`. -/
 structure RawProcessSandboxOpsM (m : Type → Type) where
   /-- Normalize a `SandboxRawError` into a `SandboxError` with a non-empty diagnostic message. -/
   mapRawError : SandboxRawError → SandboxError
@@ -375,7 +375,7 @@ structure RawProcessSandboxOpsM (m : Type → Type) where
   sealPlan : CompiledSandboxPlan → ByteArray → m (Except SandboxError PlanHandle)
   /-- Close and release a sealed `PlanHandle`. -/
   closePlan : PlanHandle → m (Except SandboxError Unit)
-  /-- Create per-box direct `cgroup v2` directory (`memory.max`, `memory.swap.max = "0"`, `pids.max = pidsMax + 2`), spawn `bwrap --unshare-all --as-pid-1 --die-with-parent` via the dedicated `pthread_once` spawner thread using fresh `O_RDONLY` `/proc/self/fd/<memfd>` descriptors, place child into `cgroup.procs` before `execvp`, open `pidfd`, and complete pre-`execvp` setup barrier. -/
+  /-- Create per-box direct `cgroup v2` directory (`memory.max`, `memory.swap.max = "0"`, `pids.max = pidsMax + 2`), spawn `bwrap --unshare-all --as-pid-1 --die-with-parent` via `PostFork` `.immortalThread` using fresh `O_RDONLY` `/proc/self/fd/<memfd>` descriptors, place child into `cgroup.procs` before `execvp`, open `pidfd`, and complete pre-`execvp` setup barrier. -/
   spawnBox : PlanHandle → m (Except SandboxError BoxHandle)
   /-- Start the host-side non-blocking raw TCP `poll()` forwarder (`MAX_RELAY_SLOTS = 128`, `16 KiB` ring buffers, independent half-close `SHUT_WR` drain) for the box's handed-off `127.0.0.1:boxPort` listeners. -/
   startPortForwarders : BoxHandle → Array PortForward → m (Except SandboxError PortForwarderHandle)

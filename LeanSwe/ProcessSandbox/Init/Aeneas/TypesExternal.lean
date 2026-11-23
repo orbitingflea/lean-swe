@@ -113,6 +113,8 @@ structure InitState where
   scmSentBatches : List (Std.I32 × Std.Usize × Std.Usize) := []
   /-- Optional forced `errno` returned by `seccomp_set_mode_filter`. -/
   seccompErr? : Option Std.I32 := none
+  /-- Optional forced `errno` returned by `prctl_set_seccomp_filter`. -/
+  prctlSeccompErr? : Option Std.I32 := none
   /-- Recorded `(backend, insnCount)` seccomp filter installations. -/
   seccompInstalled : List (SeccompBackend × Std.U32) := []
   /-- Outcome returned by `fork_proc` (`child`, `parent pid`, or `err`). -/
