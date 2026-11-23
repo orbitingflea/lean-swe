@@ -438,8 +438,8 @@ private def testIsPidDeadChecks : IO Unit := do
     | .ok p => pure p
     | .error e =>
       throw (IO.userError s!"ASSERTION FAILED: getpid failed with {LinuxSyscall.Errno.name e} ({e})")
-  assertTrue (!(← isPidDead (toString selfPid)))
-    s!"isPidDead should report live self PID {selfPid} as not dead"
+  assertTrue (!(← isPidDeadWith LinuxSyscall.Process.kill 1 0 (toString selfPid)))
+    s!"isPidDeadWith should report live self PID {selfPid} as not dead"
 
 /-- Execute end-to-end OS runtime verification tests for `LeanSwe.Process`. -/
 def runAll : IO Unit := do

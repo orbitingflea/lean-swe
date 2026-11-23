@@ -2,7 +2,7 @@ namespace LeanSwe.TempDir
 
 /-- Classification of failures in `LeanSwe.TempDir`. -/
 inductive TempDirErrorKind where
-  /-- Invalid root path, directory prefix, or unexpected non-file lock entry. -/
+  /-- Invalid root path, directory prefix, unexpected non-file lock entry, or propagated `FsErrorKind.invalidInput` (e.g. `EINVAL` or `ENAMETOOLONG` from filesystem or file-lock operations). -/
   | invalidInput
   /-- Target path or temporary root does not exist. -/
   | notFound
@@ -12,7 +12,7 @@ inductive TempDirErrorKind where
   | permissionDenied
   /-- Expected a directory (for temp root or child), found a non-directory. -/
   | notADirectory
-  /-- Underlying OS, environment, entropy, or lock I/O failure. -/
+  /-- Other underlying OS, filesystem, environment, entropy, or lock I/O failure not matched by the variants above. -/
   | ioError
   deriving Repr, BEq, DecidableEq
 
