@@ -399,7 +399,7 @@ def timestampOfUtcDate (d : Std.Time.PlainDate) : Std.Time.Timestamp :=
     (Std.Time.Nanosecond.Offset.ofInt (d.toEpochDay.val * 86400000000000))
 
 /-- Assemble a `TimeApiM m` record over a `TimeOpsM m` effect implementation. -/
-def mkApiM {m : Type → Type} [Monad m] (ops : TimeOpsM m) : TimeApiM m :=
+def mkApiM {m : Type → Type} [Monad m] [MonadFinally m] (ops : TimeOpsM m) : TimeApiM m :=
   { nowTimestamp := ops.nowTimestamp
     monoNanosNow := ops.monoNanosNow
     sleepMs := sleepMs ops
