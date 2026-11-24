@@ -1,8 +1,8 @@
 import LeanSwe.TempDir.Interface
+import LeanSwe.TempDir.Model
 import LeanSwe.TempDir.SpecTests
 /-!
-Shared mock filesystem/lock/env/uuid/time model and core proof infrastructure
-for `LeanSwe.TempDir` specifications.
+Core proof lemmas over `LeanSwe.TempDir.Model` for `LeanSwe.TempDir` specifications.
 -/
 namespace LeanSwe.TempDir.Proofs
 open Core Core.NondetTest
@@ -10,203 +10,8 @@ open LeanSwe.Fs (FsApiM FsError FsErrorKind EntryKind FileStat LockMode)
 open LeanSwe.Time (TimeOpsM)
 open LeanSwe.Uuid (UuidApiM Uuid)
 open LeanSwe.EnvVars (EnvVarsApiM)
-/-- Entry kind stored in the `TempDirMockState` filesystem model. -/
-inductive MockNode where
-  /-- Directory node. -/ | dir (modifiedSec : Int) (mode : Nat)
-  /-- Regular file node. -/ | file (inode : Nat) (content : String) (modifiedSec : Int) (mode : Nat)
-  /-- Symlink node. -/ | symlink (target : String) (modifiedSec : Int)
-  deriving Repr, DecidableEq
-/-- Pure mock state backing `TempDir` stateful specifications. -/
-structure TempDirMockState where
-  /-- Filesystem path-to-node association list. -/ nodes : List (String × MockNode) := [("/tmp", .dir 0 0o755)]
-  /-- Active `(inode, mode)` lock entries. -/ locks : List (Nat × LockMode) := []
-  /-- Next fresh inode counter. -/ nextInode : Nat := 1
-  /-- Optional `TMPDIR` value. -/ tmpdir : Option String := none
-  /-- Current mock epoch timestamp in seconds. -/ nowSec : Int := 0
-  /-- Next deterministic UUID counter. -/ nextUuid : Nat := 1
-  deriving Repr
-private def trimTrailingSlashesRev : List Char → List Char
-  | [] => [] | ['/'] => ['/'] | '/' :: rest => trimTrailingSlashesRev rest | cs => cs
-private def trimSlashChars (cs : List Char) : List Char := (trimTrailingSlashesRev cs.reverse).reverse
-/-- Normalize trailing slashes on a mock path. -/
-def normKey (p : String) : String := String.ofList (trimSlashChars p.toList)
-/-- Join two mock paths. -/
-def mockJoin (a b : String) : String :=
-  let na := normKey a; if na.isEmpty then b else if na == "/" then "/" ++ b else na ++ "/" ++ b
-private def splitLastSlashRev : List Char → Option (List Char × List Char)
-  | [] => none
-  | c :: cs => if c == '/' then some (cs.reverse, []) else match splitLastSlashRev cs with | none => none | some (par, base) => some (par, base ++ [c])
-/-- Split a non-root normalized path into `(parent, basename)`. -/
-def splitParentChild (p : String) : Option (String × String) :=
-  let np := normKey p; if np == "/" || np.isEmpty then none else match splitLastSlashRev np.toList.reverse with
-    | none => none | some (parCs, baseCs) => let par := if parCs.isEmpty then "/" else String.ofList parCs; let base := String.ofList baseCs
-      if base.isEmpty then none else some (par, base)
-/-- Convert a `MockNode` to `FileStat`. -/
-def mockNodeStat : MockNode → FileStat
-  | .dir t m => { kind := .dir, byteSize := 0, mode := m, modifiedSec := t, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }
-  | .file _ c t m => { kind := .file, byteSize := c.length, mode := m, modifiedSec := t, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }
-  | .symlink _ t => { kind := .symlink, byteSize := 0, mode := 0o777, modifiedSec := t, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }
-/-- Look up the first matching normalized key in `nodes`. -/
-def lookupNode (nodes : List (String × MockNode)) (p : String) : Option MockNode :=
-  (nodes.find? (fun e => normKey e.1 == normKey p)).map Prod.snd
-/-- Pure `lstat` evaluation. -/
-def mockLstatPure (s : TempDirMockState) (p : String) : Except FsError FileStat :=
-  match lookupNode s.nodes p with
-  | none => .error { kind := .notFound, path := some p, message := "not found" }
-  | some node => .ok (mockNodeStat node)
-/-- Pure `stat` evaluation. -/
-def mockStatPure (s : TempDirMockState) (p : String) : Except FsError FileStat := mockLstatPure s p
-/-- Write+execute bits check. -/
-def hasWx (st : FileStat) : Bool := st.kind == .dir && (st.mode / 128) % 2 == 1 && (st.mode / 64) % 2 == 1
-/-- Read+execute bits check. -/
-def hasRx (st : FileStat) : Bool := st.kind == .dir && (st.mode / 256) % 2 == 1 && (st.mode / 64) % 2 == 1
-/-- Immediate valid child name of `dir` for `full`. -/
-def mockParentChild (dir full : String) : Option String :=
-  let nd := normKey dir; let nf := normKey full; let pref := if nd.isEmpty then "" else if nd == "/" then "/" else nd ++ "/"
-  if pref.toList.isPrefixOf nf.toList then
-    let rest := String.ofList (nf.toList.drop pref.length)
-    if !rest.isEmpty && rest != "." && rest != ".." && !('/' ∈ rest.toList) && !(Char.ofNat 0 ∈ rest.toList) then some rest else none
-  else none
-private def eraseDupStringsAux (seen : List String) : List String → List String
-  | [] => [] | x :: xs => if x ∈ seen then eraseDupStringsAux seen xs else x :: eraseDupStringsAux (x :: seen) xs
-/-- Deduplicate strings preserving first occurrence. -/
-def eraseDupStrings (xs : List String) : List String := eraseDupStringsAux [] xs
-/-- Check lock conflict on `(ino, m)`. -/
-def mockHasConflict (locks : List (Nat × LockMode)) (ino : Nat) (m : LockMode) : Bool :=
-  locks.any fun (li, lm) => li == ino && (m == .exclusive || lm == .exclusive)
-/-- Remove first matching `(ino, m)` lock entry. -/
-def mockRemoveFirstLock (ino : Nat) (m : LockMode) : List (Nat × LockMode) → List (Nat × LockMode)
-  | [] => [] | x :: xs => if x == (ino, m) then xs else x :: mockRemoveFirstLock ino m xs
-/-- Allocate fresh inode above `s.nextInode` and active locks. -/
-def freshInode (s : TempDirMockState) : Nat := s.locks.foldl (fun m l => Nat.max m (l.1 + 1)) s.nextInode
-/-- True iff `key` equals `prefixDir` or lies beneath it. -/
-def underDir (prefixDir key : String) : Bool :=
-  let np := normKey prefixDir; let nk := normKey key; nk == np || (if np == "/" then "/" else np ++ "/").toList.isPrefixOf nk.toList
-/-- Pure recursive directory removal. -/
-def mockRmtreePure (p : String) (ignoreMissing : Bool) : StateM TempDirMockState (Except FsError Unit) := do
-  let s ← get; let rp := normKey p
-  match lookupNode s.nodes rp with
-  | none => if ignoreMissing then return .ok () else return .error { kind := .notFound, path := some p, message := "not found" }
-  | some (.dir _ _) => set { s with nodes := s.nodes.filter (fun e => !underDir rp e.1) }; return .ok ()
-  | some _ => return .error { kind := .notADirectory, path := some p, message := "not a dir" }
-/-- Deterministic mock UUIDv4 from `n`. -/
-def mockUuidOfNat (n : Nat) : Uuid :=
-  { bytes := ByteArray.mk #[0, 0, 0, 0, 0, 0, 0x40, 0, 0x80, 0, 0, 0, 0, 0, UInt8.ofNat ((n / 256) % 256), UInt8.ofNat (n % 256)] }
-private def mockHexByte (b : UInt8) : String :=
-  let d (k : Nat) : Char := if k < 10 then Char.ofNat (48 + k) else Char.ofNat (87 + k)
-  String.ofList [d (b.toNat / 16), d (b.toNat % 16)]
-/-- Format mock UUID as canonical lowercase hex string. -/
-def mockUuidToString (u : Uuid) : String :=
-  "00000000-0000-4000-8000-00000000" ++ mockHexByte (u.bytes[14]?.getD 0) ++ mockHexByte (u.bytes[15]?.getD 0)
-/-- Polymorphic lock acquisition helper. -/
-def mockLockCore {m : Type → Type} {α β : Type} [Monad m] [MonadFinally m] [MonadStateOf TempDirMockState m]
-    (p : String) (mode : LockMode) (createIfMissing : Bool) (onConflict : m (Except FsError β))
-    (wrap : Except FsError α → Except FsError β) (action : m (Except FsError α)) : m (Except FsError β) := do
-  let s ← get; let rp := normKey p
-  match lookupNode s.nodes rp with
-  | some (.dir _ _) => return .error { kind := .isADirectory, path := some p, message := "is dir" }
-  | some (.symlink _ _) => return .error { kind := .invalidInput, path := some p, message := "symlink" }
-  | some (.file ino _ _ _) =>
-    if mockHasConflict s.locks ino mode then onConflict
-    else set { s with locks := (ino, mode) :: s.locks }; let (r, _) ← tryFinally' action fun _ => modify fun s' => { s' with locks := mockRemoveFirstLock ino mode s'.locks }; return wrap r
-  | none =>
-    if !createIfMissing then return .error { kind := .notFound, path := some p, message := "not found" }
-    let ino := freshInode s; set { s with nodes := (rp, .file ino "" s.nowSec 0o644) :: s.nodes, locks := (ino, mode) :: s.locks, nextInode := ino + 1 }
-    let (r, _) ← tryFinally' action fun _ => modify fun s' => { s' with locks := mockRemoveFirstLock ino mode s'.locks }; return wrap r
-private def writeFileMock (p c : String) : StateM TempDirMockState (Except FsError Unit) := do
-  let s ← get; let rp := normKey p; let ino := freshInode s
-  set { s with nodes := (rp, .file ino c s.nowSec 0o644) :: s.nodes.filter (fun e => normKey e.1 != rp), nextInode := ino + 1 }; return .ok ()
-/-- Mock `FsApiM` over `StateM TempDirMockState`. -/
-def mockFs : FsApiM (StateM TempDirMockState) :=
-  { join := mockJoin, joinMany := fun ps => ps.foldl mockJoin "", normPath := normKey
-    parent := fun p => (splitParentChild p).map Prod.fst, name := fun p => (splitParentChild p).map Prod.snd
-    stem := fun _ => none, suffix := fun _ => "", suffixes := fun _ => #[], withName := fun p _ => .ok p, withSuffix := fun p _ => .ok p
-    isAbsolute := fun p => p.startsWith "/", relativeTo := fun p _ => .ok p, mapRawError := fun _ => { kind := .ioError, message := "raw" }
-    readText := fun p => do match lookupNode (← get).nodes (normKey p) with
-      | some (.file _ c _ _) => return .ok c | some (.dir _ _) => return .error { kind := .isADirectory, path := some p, message := "is dir" }
-      | _ => return .error { kind := .notFound, path := some p, message := "not found" }
-    writeText := writeFileMock, appendText := writeFileMock, readBytes := fun _ => pure (.ok ByteArray.empty), writeBytes := fun _ _ => pure (.ok ())
-    atomicWriteBytes := fun _ _ => pure (.ok ()), atomicWriteText := fun _ _ => pure (.ok ()), touch := fun p _ => writeFileMock p ""
-    mkdir := fun p _ existOk => do
-      let s ← get; match splitParentChild p with
-      | none => return .error { kind := .alreadyExists, path := some p, message := "root" }
-      | some (par, base) => match lookupNode s.nodes par with
-        | none => return .error { kind := .notFound, path := some par, message := "parent not found" }
-        | some parNode =>
-          let stPar := mockNodeStat parNode
-          if stPar.kind != .dir then return .error { kind := .notADirectory, path := some par, message := "not a dir" }
-          if !hasWx stPar then return .error { kind := .permissionDenied, path := some par, message := "no write permission" }
-          let rp := mockJoin par base; match lookupNode s.nodes rp with
-          | some (.dir _ _) => if existOk then return .ok () else return .error { kind := .alreadyExists, path := some p, message := "exists" }
-          | some _ => return .error { kind := .alreadyExists, path := some p, message := "exists" }
-          | none => set { s with nodes := (rp, .dir s.nowSec 0o755) :: s.nodes.filter (fun e => !underDir rp e.1) }; return .ok ()
-    unlink := fun p miss => do
-      let s ← get; let rp := normKey p; match lookupNode s.nodes rp with
-      | none => if miss then return .ok () else return .error { kind := .notFound, path := some p, message := "not found" }
-      | some (.dir _ _) => return .error { kind := .isADirectory, path := some p, message := "is dir" }
-      | some _ => set { s with nodes := s.nodes.filter (fun e => normKey e.1 != rp) }; return .ok ()
-    rmdir := fun p => do
-      let s ← get; let rp := normKey p; match lookupNode s.nodes rp with
-      | none => return .error { kind := .notFound, path := some p, message := "not found" }
-      | some (.dir _ _) => set { s with nodes := s.nodes.filter (fun e => normKey e.1 != rp) }; return .ok ()
-      | some _ => return .error { kind := .notADirectory, path := some p, message := "not dir" }
-    rmtree := mockRmtreePure, rename := fun _ _ => pure (.ok ()), copyFile := fun _ _ => pure (.ok ()), copyTree := fun _ _ _ => pure (.ok ())
-    pathExists := fun p => do return .ok ((mockStatPure (← get) p).isOk)
-    isFile := fun p => do match mockStatPure (← get) p with | .ok st => return .ok (st.kind == .file) | .error _ => return .ok false
-    isDir := fun p => do match mockStatPure (← get) p with | .ok st => return .ok (st.kind == .dir) | .error _ => return .ok false
-    isSymlink := fun p => do match mockLstatPure (← get) p with | .ok st => return .ok (st.kind == .symlink) | .error _ => return .ok false
-    stat := fun p => do return mockStatPure (← get) p, lstat := fun p => do return mockLstatPure (← get) p
-    chmod := fun p mode => do
-      let s ← get; let rp := normKey p; match lookupNode s.nodes rp with
-      | none => return .error { kind := .notFound, path := some p, message := "not found" }
-      | some _ => set { s with nodes := s.nodes.map fun (k, n) => if normKey k == rp then
-          (k, match (n : MockNode) with | .dir t _ => .dir t mode | .file i c t _ => .file i c t mode | .symlink tgt t => .symlink tgt t) else (k, n) }; return .ok ()
-    symlink := fun _ _ => pure (.ok ()), readLink := fun _ => pure (.error { kind := .notFound, message := "no link" }), resolve := fun p => pure (.ok (normKey p)), cwd := pure (.ok "/")
-    listDir := fun p => do
-      let s ← get; let rp := normKey p; match lookupNode s.nodes rp with
-      | none => return .error { kind := .notFound, path := some p, message := "not found" }
-      | some node =>
-        let st := mockNodeStat node
-        if st.kind != .dir then return .error { kind := .notADirectory, path := some p, message := "not dir" }
-        if !hasRx st then return .error { kind := .permissionDenied, path := some p, message := "no read/exec permission" }
-        return .ok (Internal.sortStrings (eraseDupStrings (s.nodes.filterMap (fun e => mockParentChild rp e.1)))).toArray
-    walk := fun _ => pure (.ok #[]), glob := fun _ _ => pure (.ok #[]), rglob := fun _ _ => pure (.ok #[])
-    withFileLock := fun p m c act => mockLockCore p m c (pure (.error { kind := .wouldBlock, path := some p, message := "wouldBlock" })) id act
-    tryWithFileLock := fun p m c act => mockLockCore p m c (pure (.ok none)) (Except.map some) act }
-/-- Mock `TimeOpsM` over `StateM TempDirMockState`. -/
-def mockTime : TimeOpsM (StateM TempDirMockState) :=
-  { nowTimestamp := do return Std.Time.Timestamp.ofSecondsSinceUnixEpoch (Std.Time.Second.Offset.ofInt (← get).nowSec), monoNanosNow := pure 0, sleep := fun _ => pure () }
-/-- Mock `UuidApiM` over `StateM TempDirMockState`. -/
-def mockUuid : UuidApiM (StateM TempDirMockState) :=
-  { mapRawError := fun _ => { kind := .entropyFailed, message := "entropy" }, fromRandomBytes := fun _ => .ok (mockUuidOfNat 1), toString := mockUuidToString
-    toHex := fun _ => "00000000000040008000000000000001", parse := fun _ => .ok (mockUuidOfNat 1), parseHex := fun _ => .ok (mockUuidOfNat 1), isValid := fun _ => true
-    getUuid := do let s ← get; set { s with nextUuid := s.nextUuid + 1 }; return .ok (mockUuidOfNat s.nextUuid) }
-/-- Mock `EnvVarsApiM` over `StateM TempDirMockState`. -/
-def mockEnv : EnvVarsApiM (StateM TempDirMockState) :=
-  { mapRawError := fun _ => { kind := .ioError, message := "env" }, getEnv := fun k => do if k == "TMPDIR" then return .ok (← get).tmpdir else return .ok none
-    listEnv := pure (.ok #[]), homeDir := pure (.ok "/mock/user"), splitSearchPath := fun _ => #[] }
-/-- Mock `FsApiM` lifted to `ExceptT String (StateM TempDirMockState)` with exception-safe locking. -/
-def mockFsEx : FsApiM (ExceptT String (StateM TempDirMockState)) :=
-  { join := mockFs.join, joinMany := mockFs.joinMany, normPath := mockFs.normPath, parent := mockFs.parent, name := mockFs.name, stem := mockFs.stem, suffix := mockFs.suffix, suffixes := mockFs.suffixes
-    withName := mockFs.withName, withSuffix := mockFs.withSuffix, isAbsolute := mockFs.isAbsolute, relativeTo := mockFs.relativeTo, mapRawError := mockFs.mapRawError
-    readText := fun p => liftM (mockFs.readText p), writeText := fun p c => liftM (mockFs.writeText p c), appendText := fun p c => liftM (mockFs.appendText p c), readBytes := fun p => liftM (mockFs.readBytes p)
-    writeBytes := fun p b => liftM (mockFs.writeBytes p b), atomicWriteBytes := fun p b => liftM (mockFs.atomicWriteBytes p b), atomicWriteText := fun p c => liftM (mockFs.atomicWriteText p c)
-    touch := fun p e => liftM (mockFs.touch p e), mkdir := fun p a e => liftM (mockFs.mkdir p a e), unlink := fun p m => liftM (mockFs.unlink p m), rmdir := fun p => liftM (mockFs.rmdir p), rmtree := fun p i => liftM (mockFs.rmtree p i)
-    rename := fun a b => liftM (mockFs.rename a b), copyFile := fun a b => liftM (mockFs.copyFile a b), copyTree := fun a b c => liftM (mockFs.copyTree a b c), pathExists := fun p => liftM (mockFs.pathExists p)
-    isFile := fun p => liftM (mockFs.isFile p), isDir := fun p => liftM (mockFs.isDir p), isSymlink := fun p => liftM (mockFs.isSymlink p), stat := fun p => liftM (mockFs.stat p), lstat := fun p => liftM (mockFs.lstat p)
-    chmod := fun p m => liftM (mockFs.chmod p m), symlink := fun a b => liftM (mockFs.symlink a b), readLink := fun p => liftM (mockFs.readLink p), resolve := fun p => liftM (mockFs.resolve p), cwd := liftM mockFs.cwd
-    listDir := fun p => liftM (mockFs.listDir p), walk := fun p => liftM (mockFs.walk p), glob := fun a b => liftM (mockFs.glob a b), rglob := fun a b => liftM (mockFs.rglob a b)
-    withFileLock := fun p m c act => mockLockCore p m c (pure (.error { kind := .wouldBlock, path := some p, message := "wouldBlock" })) id act, tryWithFileLock := fun p m c act => mockLockCore p m c (pure (.ok none)) (Except.map some) act }
-/-- Mock `TimeOpsM` lifted to `ExceptT String (StateM TempDirMockState)`. -/
-def mockTimeEx : TimeOpsM (ExceptT String (StateM TempDirMockState)) :=
-  { nowTimestamp := liftM mockTime.nowTimestamp, monoNanosNow := liftM mockTime.monoNanosNow, sleep := fun ms => liftM (mockTime.sleep ms) }
-/-- Mock `UuidApiM` lifted to `ExceptT String (StateM TempDirMockState)`. -/
-def mockUuidEx : UuidApiM (ExceptT String (StateM TempDirMockState)) :=
-  { mapRawError := mockUuid.mapRawError, fromRandomBytes := mockUuid.fromRandomBytes, toString := mockUuid.toString, toHex := mockUuid.toHex
-    parse := mockUuid.parse, parseHex := mockUuid.parseHex, isValid := mockUuid.isValid, getUuid := liftM mockUuid.getUuid }
-/-- Mock `EnvVarsApiM` lifted to `ExceptT String (StateM TempDirMockState)`. -/
-def mockEnvEx : EnvVarsApiM (ExceptT String (StateM TempDirMockState)) :=
-  { mapRawError := mockEnv.mapRawError, getEnv := fun k => liftM (mockEnv.getEnv k), listEnv := liftM mockEnv.listEnv, homeDir := liftM mockEnv.homeDir, splitSearchPath := mockEnv.splitSearchPath }
+open LeanSwe.TempDir.Model
+open LeanSwe.TempDir.Model.Internal
 theorem stateM_bind_run {S α β : Type} (x : StateM S α) (f : α → StateM S β) (s : S) : (x >>= f).run s = (f (x.run s).1).run (x.run s).2 := rfl
 theorem stateM_pure_run {S α : Type} (a : α) (s : S) : (pure a : StateM S α).run s = (a, s) := rfl
 theorem stateM_get_run {S : Type} (s : S) : (get : StateM S S).run s = (s, s) := rfl
@@ -239,17 +44,17 @@ theorem mkApiM_withLockedTempDir_eq {m : Type → Type} {α : Type} [Monad m] [M
 theorem mkApiM_cleanupStaleTempDirs_eq {m : Type → Type} [Monad m] [MonadFinally m]
     (fs : FsApiM m) (time : TimeOpsM m) (uuid : UuidApiM m) (env : EnvVarsApiM m) (root? : Option String) (dirPrefix : String) (maxAgeSec : Nat) :
     (Internal.mkApiM fs time uuid env).cleanupStaleTempDirs root? dirPrefix maxAgeSec = Internal.cleanupStaleTempDirsM fs time env root? dirPrefix maxAgeSec := rfl
-theorem mem_insertSorted (x y : String) (xs : List String) : y ∈ Internal.insertSorted x xs ↔ y = x ∨ y ∈ xs := by
-  induction xs with | nil => simp [Internal.insertSorted] | cons z zs ih => simp only [Internal.insertSorted]; split <;> simp [List.mem_cons, ih, or_left_comm]
-private theorem pairwise_insertSorted (x : String) (xs : List String) (h : List.Pairwise (· ≤ ·) xs) : List.Pairwise (· ≤ ·) (Internal.insertSorted x xs) := by
-  induction xs with | nil => simp [Internal.insertSorted] | cons y ys ih =>
-    simp only [Internal.insertSorted]; split
+theorem mem_insertSorted (x y : String) (xs : List String) : y ∈ insertSorted x xs ↔ y = x ∨ y ∈ xs := by
+  induction xs with | nil => simp [insertSorted] | cons z zs ih => simp only [insertSorted]; split <;> simp [List.mem_cons, ih, or_left_comm]
+private theorem pairwise_insertSorted (x : String) (xs : List String) (h : List.Pairwise (· ≤ ·) xs) : List.Pairwise (· ≤ ·) (insertSorted x xs) := by
+  induction xs with | nil => simp [insertSorted] | cons y ys ih =>
+    simp only [insertSorted]; split
     · next hxy => exact List.Pairwise.cons (fun z hz => by rcases List.mem_cons.mp hz with rfl | hz; exact hxy; exact Std.le_trans hxy (List.rel_of_pairwise_cons h hz)) h
     · next hxy => exact List.Pairwise.cons (fun z hz => by rw [mem_insertSorted] at hz; rcases hz with rfl | hz; exact Std.Asymm.asymm _ _ (Classical.byContradiction (fun hny => hxy hny)); exact List.rel_of_pairwise_cons h hz) (ih (List.pairwise_cons.mp h).2)
-theorem pairwise_sortStrings (xs : List String) : List.Pairwise (· ≤ ·) (Internal.sortStrings xs) := by
-  induction xs with | nil => simp [Internal.sortStrings] | cons _ _ ih => exact pairwise_insertSorted _ _ ih
-theorem mem_sortStrings (y : String) (xs : List String) : y ∈ Internal.sortStrings xs ↔ y ∈ xs := by
-  induction xs with | nil => simp [Internal.sortStrings] | cons _ _ ih => simp [Internal.sortStrings, mem_insertSorted, ih]
+theorem pairwise_sortStrings (xs : List String) : List.Pairwise (· ≤ ·) (sortStrings xs) := by
+  induction xs with | nil => simp [sortStrings] | cons _ _ ih => exact pairwise_insertSorted _ _ ih
+theorem mem_sortStrings (y : String) (xs : List String) : y ∈ sortStrings xs ↔ y ∈ xs := by
+  induction xs with | nil => simp [sortStrings] | cons _ _ ih => simp [sortStrings, mem_insertSorted, ih]
 private theorem mem_eraseDupStringsAux (seen xs : List String) (y : String) (hNot : y ∉ seen) : y ∈ eraseDupStringsAux seen xs ↔ y ∈ xs := by
   induction xs generalizing seen with | nil => simp [eraseDupStringsAux] | cons x xs ih =>
     simp only [eraseDupStringsAux]; split
@@ -261,12 +66,12 @@ theorem nodup_eraseDupStrings (xs : List String) : (eraseDupStrings xs).Nodup :=
   intro seen xs; induction xs generalizing seen with | nil => simp [eraseDupStringsAux] | cons x xs ih =>
     simp only [eraseDupStringsAux]; split <;> first | exact ih seen |
       (next hnx => have ⟨hnd, hsub⟩ := ih (x :: seen); refine ⟨List.nodup_cons.mpr ⟨fun hx => hsub x hx (by simp), hnd⟩, fun y hy => ?_⟩; rcases List.mem_cons.mp hy with rfl | hy <;> first | exact hnx | exact fun h => hsub y hy (by simp [h]))
-theorem nodup_sortStrings (xs : List String) (hNd : xs.Nodup) : (Internal.sortStrings xs).Nodup := by
-  have hIns : ∀ x zs, x ∉ zs → zs.Nodup → (Internal.insertSorted x zs).Nodup := fun x zs hnx hzs => by
-    induction zs with | nil => simp [Internal.insertSorted] | cons z zs ih =>
-      simp only [Internal.insertSorted]; split <;> first | exact List.nodup_cons.mpr ⟨hnx, hzs⟩ |
+theorem nodup_sortStrings (xs : List String) (hNd : xs.Nodup) : (sortStrings xs).Nodup := by
+  have hIns : ∀ x zs, x ∉ zs → zs.Nodup → (insertSorted x zs).Nodup := fun x zs hnx hzs => by
+    induction zs with | nil => simp [insertSorted] | cons z zs ih =>
+      simp only [insertSorted]; split <;> first | exact List.nodup_cons.mpr ⟨hnx, hzs⟩ |
         (have hzNd := List.nodup_cons.mp hzs; exact List.nodup_cons.mpr ⟨fun h => hzNd.1 ((mem_insertSorted x z zs).mp h |>.resolve_left fun e => hnx (e ▸ by simp)), ih (fun h => hnx (by simp [h])) hzNd.2⟩)
-  induction xs with | nil => simp [Internal.sortStrings] | cons x xs ih => have h := List.nodup_cons.mp hNd; exact hIns x _ (fun hm => h.1 ((mem_sortStrings x xs).mp hm)) (ih h.2)
+  induction xs with | nil => simp [sortStrings] | cons x xs ih => have h := List.nodup_cons.mp hNd; exact hIns x _ (fun hm => h.1 ((mem_sortStrings x xs).mp hm)) (ih h.2)
 theorem string_isEmpty_iff_eq_empty (s : String) : s.isEmpty = true ↔ s = "" := by simp only [String.isEmpty, beq_iff_eq]; exact String.utf8ByteSize_eq_zero_iff
 private theorem str_len_pos {s : String} (hs : s ≠ "") : 0 < s.toList.length := by cases h : s.toList with | nil => exact absurd (String.toList_eq_nil_iff.mp h) hs | cons _ _ => simp
 private theorem trimTrailingSlashesRev_ne_nil {cs : List Char} (h : cs ≠ []) : trimTrailingSlashesRev cs ≠ [] := by

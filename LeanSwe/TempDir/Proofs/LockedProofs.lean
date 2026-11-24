@@ -8,6 +8,8 @@ specifications (Specs 8–10) and their `CanReach` witnesses.
 namespace LeanSwe.TempDir.Proofs
 open Core Core.NondetTest LeanSwe.Time LeanSwe.Uuid LeanSwe.EnvVars
 open LeanSwe.Fs (FsApiM FsError FsErrorKind EntryKind FileStat LockMode)
+open LeanSwe.TempDir.Model
+open LeanSwe.TempDir.Model.Internal
 private theorem foldl_max_ge_init (xs : List (Nat × LockMode)) (init : Nat) : init ≤ xs.foldl (fun m l => Nat.max m (l.1 + 1)) init := by
   induction xs generalizing init with | nil => exact Nat.le_refl init | cons y ys ih => simp only [List.foldl_cons]; exact Nat.le_trans (Nat.le_max_left init (y.1 + 1)) (ih _)
 private theorem foldl_max_gt_mem (xs : List (Nat × LockMode)) (init : Nat) (x : Nat × LockMode) (hx : x ∈ xs) :

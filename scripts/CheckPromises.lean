@@ -2961,26 +2961,7 @@ private def sigProofConstAllowlist : Array (String × Nat) := #[
   ("LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.healthySimApi", 1),
   ("LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.Process.Proofs.HealthySimState", 1),
   ("LeanSwe.Process.Proofs|LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.healthySimApi", 34),
-  ("LeanSwe.Process.Proofs|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.Process.Proofs.HealthySimState", 34),
-  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.TempDirMockState", 6),
-  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockEnv", 4),
-  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockEnvEx", 2),
-  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockFs", 6),
-  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockFsEx", 2),
-  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockTime", 4),
-  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockTimeEx", 2),
-  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockUuid", 6),
-  ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockUuidEx", 2),
-  ("LeanSwe.TempDir.Proofs.WithTempDirProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.TempDirMockState", 14),
-  ("LeanSwe.TempDir.Proofs.WithTempDirProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockEnv", 14),
-  ("LeanSwe.TempDir.Proofs.WithTempDirProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockFs", 14),
-  ("LeanSwe.TempDir.Proofs.WithTempDirProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockTime", 14),
-  ("LeanSwe.TempDir.Proofs.WithTempDirProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockUuid", 14),
-  ("LeanSwe.TempDir.Proofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.TempDirMockState", 10),
-  ("LeanSwe.TempDir.Proofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockEnv", 10),
-  ("LeanSwe.TempDir.Proofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockFs", 10),
-  ("LeanSwe.TempDir.Proofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockTime", 10),
-  ("LeanSwe.TempDir.Proofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockUuid", 10)
+  ("LeanSwe.Process.Proofs|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.Process.Proofs.HealthySimState", 34)
 ]
 
 private def mergeDagReports (a b : DagAuditReport) : DagAuditReport := Id.run do
