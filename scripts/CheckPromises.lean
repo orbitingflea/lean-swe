@@ -1875,7 +1875,7 @@ private def checkCompressTrustedClosure
     let mut mErrs : Array String := #[]
     match env.find? `LeanSwe.Compress.defaultApi with
     | some (.defnInfo dv) =>
-      let canon ← Meta.mkAppM `LeanSwe.Compress.Internal.mkApiM #[mkConst `LeanSwe.Process.SysBridge.defaultOps]
+      let canon ← Meta.mkAppM `LeanSwe.Compress.Internal.mkApiM #[mkConst `LeanSwe.Process.defaultApi]
       if dv.safety != .safe || dv.type.getUsedConstants.contains ``optParam ||
           !(← Meta.withTransparency .none (Meta.isDefEq dv.value canon)) then
         mErrs := mErrs.push "TRUSTED_CLOSURE_COMPRESS_WIRING: invalid defaultApi"
@@ -2915,8 +2915,6 @@ private def auditImportDagEnv
 violation forces removing its entry from this table, and any new violation fails the audit gate. -/
 private def importDagAllowlist : Array String := #[
   "CROSS|LeanSwe.CmdLine.Proofs.ErrorBounds|LeanSwe.EnvVars.Proofs",
-  "CROSS|LeanSwe.Compress.Impl|LeanSwe.Process.Impl",
-  "CROSS|LeanSwe.Compress.Interface|LeanSwe.Process.SysBridge",
   "CROSS|LeanSwe.ConnectProxy.Proofs.HealthyWitness|LeanSwe.LinuxSyscall.Dns.Proofs",
   "CROSS|LeanSwe.ConnectProxy.Proofs.HealthyWitness|LeanSwe.LinuxSyscall.TimeRand.Proofs",
   "CROSS|LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs|LeanSwe.LinuxSyscall.Dns.Proofs",
@@ -2950,8 +2948,7 @@ private def importDagAllowlist : Array String := #[
   "CROSS|LeanSwe.Toml.Proofs.FormatBridge|LeanSwe.NumParse.SpecTests",
   "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.Proofs",
   "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.SpecTests",
-  "CROSS|LeanSwe.Uuid.RuntimeTests|LeanSwe.LinuxSyscall.TestSupport.Seccomp",
-  "CROSS_REF|LeanSwe.Compress.RuntimeTests|LeanSwe.Process.SysBridge"
+  "CROSS|LeanSwe.Uuid.RuntimeTests|LeanSwe.LinuxSyscall.TestSupport.Seccomp"
 ]
 
 /-- Shrinking ratchet allowlist of pre-existing constants from disallowed non-API roles

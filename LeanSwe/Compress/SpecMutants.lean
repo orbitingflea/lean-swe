@@ -10,7 +10,7 @@ namespace LeanSwe.Compress
 open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.Process
-  (ProcessErrorKind ProcessError ExecRequest ExecResult ProcessHandle ExecOutcome RawProcessOpsM)
+  (ProcessErrorKind ProcessError ExecRequest ExecResult ProcessApiM)
 
 private def noopCompressBuilder {m : Type → Type} [Monad m] : CompressBuilder m :=
   fun _ =>
@@ -21,14 +21,14 @@ private def noopCompressBuilder {m : Type → Type} [Monad m] : CompressBuilder 
       isToolAvailable := fun _ => pure false }
 
 private def buggyCompressBuilderAcceptsBadOpts : CompressBuilder (StateM MockProcState) :=
-  fun raw =>
-    { noopCompressBuilder raw with
+  fun proc =>
+    { noopCompressBuilder proc with
       compressWith := fun _ _ input => pure (.ok input)
       decompressWith := fun _ _ input => pure (.ok input) }
 
 private def buggyCompressBuilderNoEnvSanitize : CompressBuilder (StateM MockProcState) :=
-  fun raw =>
-    { noopCompressBuilder raw with
+  fun proc =>
+    { noopCompressBuilder proc with
       compressWith := fun codec opts input => do
         let req : ExecRequest :=
           { program := codecProgram codec
@@ -38,21 +38,13 @@ private def buggyCompressBuilderNoEnvSanitize : CompressBuilder (StateM MockProc
             stdin := input
             timeoutMs := some opts.timeoutMs
             maxOutputBytes := some opts.maxOutputBytes }
-        match ← raw.spawn req with
+        match ← proc.run req with
         | .error e => return .error { kind := expectedProcessErrorKind e.kind, codec := some codec, message := "err" }
-        | .ok h =>
-          match ← raw.awaitOutput h req.stdin req.timeoutMs req.maxOutputBytes with
-          | .ok (.exited res) =>
-            let _ ← raw.reap h
-            return .ok res.stdout
-          | _ =>
-            let _ ← raw.killProcessGroup h
-            let _ ← raw.reap h
-            return .error { kind := .ioError, codec := some codec, message := "fail" } }
+        | .ok res => return .ok res.stdout }
 
 private def buggyDecompressBuilderEmptyShortCircuit : CompressBuilder (StateM MockProcState) :=
-  fun raw =>
-    { noopCompressBuilder raw with
+  fun proc =>
+    { noopCompressBuilder proc with
       decompressWith := fun codec opts input => do
         if input.isEmpty then
           return .ok ByteArray.empty
@@ -64,22 +56,15 @@ private def buggyDecompressBuilderEmptyShortCircuit : CompressBuilder (StateM Mo
             stdin := input
             timeoutMs := some opts.timeoutMs
             maxOutputBytes := some opts.maxOutputBytes }
-        match ← raw.spawn req with
+        match ← proc.run req with
         | .error e => return .error { kind := expectedProcessErrorKind e.kind, codec := some codec, message := "err" }
-        | .ok h =>
-          match ← raw.awaitOutput h req.stdin req.timeoutMs req.maxOutputBytes with
-          | .ok (.exited res) =>
-            let _ ← raw.reap h
-            if res.exitCode == 0 then return .ok res.stdout
-            else return .error { kind := .corruptData, codec := some codec, exitCode := some res.exitCode, message := "bad" }
-          | _ =>
-            let _ ← raw.killProcessGroup h
-            let _ ← raw.reap h
-            return .error { kind := .ioError, codec := some codec, message := "fail" } }
+        | .ok res =>
+          if res.exitCode == 0 then return .ok res.stdout
+          else return .error { kind := .corruptData, codec := some codec, exitCode := some res.exitCode, message := "bad" } }
 
 private def buggyCompressBuilderPermDeniedAsCommandFailed : CompressBuilder (StateM MockProcState) :=
-  fun raw =>
-    { noopCompressBuilder raw with
+  fun proc =>
+    { noopCompressBuilder proc with
       compressWith := fun codec opts input => do
         let req : ExecRequest :=
           { program := codecProgram codec
@@ -89,15 +74,13 @@ private def buggyCompressBuilderPermDeniedAsCommandFailed : CompressBuilder (Sta
             stdin := input
             timeoutMs := some opts.timeoutMs
             maxOutputBytes := some opts.maxOutputBytes }
-        match ← raw.spawn req with
-        | .error _ => return .error { kind := .commandFailed, codec := some codec, message := "spawn failed" }
-        | .ok h =>
-          let _ ← raw.reap h
-          return .ok ByteArray.empty }
+        match ← proc.run req with
+        | .error _ => return .error { kind := .commandFailed, codec := some codec, message := "run failed" }
+        | .ok _ => return .ok ByteArray.empty }
 
-private def buggyCompressBuilderNoKillOnTimeout : CompressBuilder (StateM MockProcState) :=
-  fun raw =>
-    { noopCompressBuilder raw with
+private def buggyCompressBuilderMisclassifiesTimeout : CompressBuilder (StateM MockProcState) :=
+  fun proc =>
+    { noopCompressBuilder proc with
       compressWith := fun codec opts input => do
         let req : ExecRequest :=
           { program := codecProgram codec
@@ -107,20 +90,13 @@ private def buggyCompressBuilderNoKillOnTimeout : CompressBuilder (StateM MockPr
             stdin := input
             timeoutMs := some opts.timeoutMs
             maxOutputBytes := some opts.maxOutputBytes }
-        match ← raw.spawn req with
-        | .error _ => return .error { kind := .ioError, codec := some codec, message := "spawn" }
-        | .ok h =>
-          match ← raw.awaitOutput h req.stdin req.timeoutMs req.maxOutputBytes with
-          | .ok (.timedOut _ _) =>
-            let _ ← raw.reap h
-            return .error { kind := .timedOut, codec := some codec, message := "timed out" }
-          | _ =>
-            let _ ← raw.reap h
-            return .error { kind := .ioError, codec := some codec, message := "other" } }
+        match ← proc.run req with
+        | .error _ => return .error { kind := .ioError, codec := some codec, message := "other" }
+        | .ok res => return .ok res.stdout }
 
 private def buggyCompressBuilderGzipExit2Ok : CompressBuilder (StateM MockProcState) :=
-  fun raw =>
-    { noopCompressBuilder raw with
+  fun proc =>
+    { noopCompressBuilder proc with
       compressWith := fun codec _ _ =>
         pure (.error { kind := .commandFailed, codec := some codec, exitCode := some 1, message := "fail" })
       decompressWith := fun codec opts input => do
@@ -132,28 +108,22 @@ private def buggyCompressBuilderGzipExit2Ok : CompressBuilder (StateM MockProcSt
             stdin := input
             timeoutMs := some opts.timeoutMs
             maxOutputBytes := some opts.maxOutputBytes }
-        match ← raw.spawn req with
-        | .error _ => return .error { kind := .ioError, codec := some codec, message := "spawn" }
-        | .ok h =>
-          match ← raw.awaitOutput h req.stdin req.timeoutMs req.maxOutputBytes with
-          | .ok (.exited res) =>
-            let _ ← raw.reap h
-            if res.exitCode == 0 || (codec == .gzip && res.exitCode == 2) then
-              return .ok res.stdout
-            else
-              return .error { kind := .corruptData, codec := some codec, exitCode := some res.exitCode, message := "corrupt" }
-          | _ =>
-            let _ ← raw.reap h
-            return .error { kind := .ioError, codec := some codec, message := "other" } }
+        match ← proc.run req with
+        | .error _ => return .error { kind := .ioError, codec := some codec, message := "run" }
+        | .ok res =>
+          if res.exitCode == 0 || (codec == .gzip && res.exitCode == 2) then
+            return .ok res.stdout
+          else
+            return .error { kind := .corruptData, codec := some codec, exitCode := some res.exitCode, message := "corrupt" } }
 
 private def buggyCompressBuilderBadIsToolAvailable : CompressBuilder (StateM MockProcState) :=
   fun _ =>
-    { noopCompressBuilder mockRawOps with
+    { noopCompressBuilder mockProcessApi with
       isToolAvailable := fun _ => pure false }
 
 private def buggyCompressBuilderIgnoresOutputLimit : CompressBuilder (StateM MockProcState) :=
-  fun raw =>
-    { noopCompressBuilder raw with
+  fun proc =>
+    { noopCompressBuilder proc with
       compressWith := fun codec opts input => do
         let req : ExecRequest :=
           { program := codecProgram codec
@@ -163,18 +133,11 @@ private def buggyCompressBuilderIgnoresOutputLimit : CompressBuilder (StateM Moc
             stdin := input
             timeoutMs := some opts.timeoutMs
             maxOutputBytes := some (opts.maxOutputBytes + expectedStderrPipeSlack) }
-        match ← raw.spawn req with
-        | .error _ => return .error { kind := .ioError, codec := some codec, message := "spawn" }
-        | .ok h =>
-          match ← raw.awaitOutput h req.stdin req.timeoutMs req.maxOutputBytes with
-          | .ok (.exited res) =>
-            let _ ← raw.reap h
-            if res.exitCode == 0 then return .ok res.stdout
-            else return .error { kind := .commandFailed, codec := some codec, exitCode := some res.exitCode, message := "fail" }
-          | _ =>
-            let _ ← raw.killProcessGroup h
-            let _ ← raw.reap h
-            return .error { kind := .ioError, codec := some codec, message := "other" } }
+        match ← proc.run req with
+        | .error _ => return .error { kind := .ioError, codec := some codec, message := "run" }
+        | .ok res =>
+          if res.exitCode == 0 then return .ok res.stdout
+          else return .error { kind := .commandFailed, codec := some codec, exitCode := some res.exitCode, message := "fail" } }
 
 private def buggyModelApiRawInput : CompressApiM (StateT Model.State (ReaderM Model.CompressEnv)) :=
   { Model.modelApi with
@@ -188,19 +151,19 @@ private def buggyModelApiForgetsRoundTrip : CompressApiM (StateT Model.State (Re
 private def buggyHasGzipHeaderAcceptsAll : ByteArray → Bool
   | _ => true
 
-example : ¬ Core.AllPass (test_compress_compressWith_invalidOptionsRejectWithoutSpawn buggyCompressBuilderAcceptsBadOpts mockRawOps) := by
+example : ¬ Core.AllPass (test_compress_compressWith_invalidOptionsRejectWithoutSpawn buggyCompressBuilderAcceptsBadOpts mockProcessApi) := by
   intro h
   have h0 := h {} .gzip { threads := some 2 } ByteArray.empty (by decide)
   rcases h0.1 with ⟨e, he, _⟩
   cases he
 
-example : ¬ Core.AllPass (test_compress_compressWith_invalidOptionsRejectWithoutSpawn buggyCompressBuilderAcceptsBadOpts mockRawOps) := by
+example : ¬ Core.AllPass (test_compress_compressWith_invalidOptionsRejectWithoutSpawn buggyCompressBuilderAcceptsBadOpts mockProcessApi) := by
   intro h
   have h0 := h {} .xz { threads := some 16385 } ByteArray.empty (by decide)
   rcases h0.1 with ⟨e, he, _⟩
   cases he
 
-example : ¬ Core.AllPass (test_compress_decompressWith_invalidOptionsRejectWithoutSpawn buggyCompressBuilderAcceptsBadOpts mockRawOps) := by
+example : ¬ Core.AllPass (test_compress_decompressWith_invalidOptionsRejectWithoutSpawn buggyCompressBuilderAcceptsBadOpts mockProcessApi) := by
   intro h
   have h0 := h {} .zstd { timeoutMs := 0 } ByteArray.empty (by decide)
   rcases h0.1 with ⟨e, he, _⟩
@@ -208,26 +171,26 @@ example : ¬ Core.AllPass (test_compress_decompressWith_invalidOptionsRejectWith
 
 example : ¬ Core.AllPass (test_compress_compressWith_buildsExactExecRequest buggyCompressBuilderNoEnvSanitize) := by
   intro h
-  have h0 := h .xz {} ByteArray.empty ByteArray.empty ByteArray.empty 0 (by decide)
-  have hReq := h0.2.2.2.1
-  dsimp [test_compress_compressWith_buildsExactExecRequest, buggyCompressBuilderNoEnvSanitize, mockRawOps,
+  have h0 := h .xz {} ByteArray.empty ByteArray.empty ByteArray.empty (by decide)
+  have hReq := h0.2.2.1
+  dsimp [test_compress_compressWith_buildsExactExecRequest, buggyCompressBuilderNoEnvSanitize, mockProcessApi,
     StateT.run, bind, StateT.bind, pure, StateT.pure] at hReq
   cases hReq
 
 example : ¬ Core.AllPass (test_compress_decompressWith_buildsExactExecRequest_noEmptyShortCircuit buggyDecompressBuilderEmptyShortCircuit) := by
   intro h
-  have h0 := h .zstd {} ByteArray.empty 1 ByteArray.empty ByteArray.empty 0 (by decide)
+  have h0 := h .zstd {} ByteArray.empty 1 ByteArray.empty ByteArray.empty (by decide)
   have hAttempts := h0.1
   dsimp [test_compress_decompressWith_buildsExactExecRequest_noEmptyShortCircuit,
     buggyDecompressBuilderEmptyShortCircuit, StateT.run, bind, StateT.bind, pure, StateT.pure] at hAttempts
-  exact absurd hAttempts.1 (by decide)
+  exact absurd hAttempts (by decide)
 
 example : ¬ Core.AllPass (test_compress_defaults_matchWithDefaultOptions
-    (fun raw =>
-      { noopCompressBuilder raw with
+    (fun proc =>
+      { noopCompressBuilder proc with
         compress := fun _ _ => pure (.ok ByteArray.empty)
         compressWith := fun _ _ _ => pure (.error { kind := .invalidInput, message := "diff" }) })
-    mockRawOps) := by
+    mockProcessApi) := by
   intro h
   have h0 := h {} .zstd ByteArray.empty
   have hEq := h0.1
@@ -236,42 +199,43 @@ example : ¬ Core.AllPass (test_compress_defaults_matchWithDefaultOptions
 
 example : ¬ Core.AllPass (test_compress_spawnErrors_mappedCorrectly buggyCompressBuilderPermDeniedAsCommandFailed) := by
   intro h
-  have h0 := h .zstd false {} {} { kind := .permissionDenied, message := "eacces" } ByteArray.empty 0 (by decide)
+  have h0 := h .zstd false {} {} { kind := .permissionDenied, message := "eacces" } ByteArray.empty (by decide)
   rcases h0.2.1 with ⟨e, he, hkind, _⟩
-  dsimp [test_compress_spawnErrors_mappedCorrectly, buggyCompressBuilderPermDeniedAsCommandFailed, mockRawOps,
+  dsimp [test_compress_spawnErrors_mappedCorrectly, buggyCompressBuilderPermDeniedAsCommandFailed, mockProcessApi,
     StateT.run, bind, StateT.bind, pure, StateT.pure] at he
   cases he
   cases hkind
 
-example : ¬ Core.AllPass (test_compress_awaitOutcomes_cleanedUpAndClassified buggyCompressBuilderNoKillOnTimeout) := by
+example : ¬ Core.AllPass (test_compress_awaitOutcomes_cleanedUpAndClassified buggyCompressBuilderMisclassifiesTimeout) := by
   intro h
-  have h0 := h .zstd false {} {} ByteArray.empty ByteArray.empty ByteArray.empty 9 0 0 (by decide) (by decide)
-  have hKills := h0.1
-  dsimp [test_compress_awaitOutcomes_cleanedUpAndClassified, buggyCompressBuilderNoKillOnTimeout, mockRawOps,
-    StateT.run, bind, StateT.bind, pure, StateT.pure] at hKills
-  exact absurd hKills.2.1 (by decide)
+  have h0 := h .zstd false {} {} ByteArray.empty ByteArray.empty ByteArray.empty 9 0 (by decide) (by decide)
+  rcases h0.2.1 with ⟨e, he, hkind, _⟩
+  dsimp [test_compress_awaitOutcomes_cleanedUpAndClassified, buggyCompressBuilderMisclassifiesTimeout, mockProcessApi,
+    StateT.run, bind, StateT.bind, pure, StateT.pure] at he hkind
+  cases he
+  cases hkind
 
 example : ¬ Core.AllPass (test_compress_exitCodes_compressVsDecompress_andStderr buggyCompressBuilderGzipExit2Ok) := by
   intro h
   have h0 := h .gzip 2 ByteArray.empty "gzip: stdin: decompression OK, trailing garbage ignored\n".toUTF8 (by decide)
   rcases h0.2.1 with ⟨e, he, _⟩
-  dsimp [test_compress_exitCodes_compressVsDecompress_andStderr, buggyCompressBuilderGzipExit2Ok, mockRawOps,
+  dsimp [test_compress_exitCodes_compressVsDecompress_andStderr, buggyCompressBuilderGzipExit2Ok, mockProcessApi,
     StateT.run, bind, StateT.bind, pure, StateT.pure] at he
   cases he
 
 example : ¬ Core.AllPass (test_compress_isToolAvailable_checksVersionAndCleansUp buggyCompressBuilderBadIsToolAvailable) := by
   intro h
-  have h0 := h .zstd true 0 0
+  have h0 := h .zstd true 0
   have hAttempts := h0.1
   dsimp [test_compress_isToolAvailable_checksVersionAndCleansUp, buggyCompressBuilderBadIsToolAvailable,
     StateT.run, bind, StateT.bind, pure, StateT.pure] at hAttempts
-  exact absurd hAttempts.1 (by decide)
+  exact absurd hAttempts (by decide)
 
 example : ¬ Core.AllPass (test_compress_compressWith_buildsExactExecRequest buggyCompressBuilderIgnoresOutputLimit) := by
   intro h
-  have h0 := h .zstd { maxOutputBytes := 1 } ByteArray.empty (ByteArray.mk #[1, 2]) ByteArray.empty 0 (by decide)
+  have h0 := h .zstd { maxOutputBytes := 1 } ByteArray.empty (ByteArray.mk #[1, 2]) ByteArray.empty (by decide)
   have hRes := h0.1
-  dsimp [test_compress_compressWith_buildsExactExecRequest, buggyCompressBuilderIgnoresOutputLimit, mockRawOps,
+  dsimp [test_compress_compressWith_buildsExactExecRequest, buggyCompressBuilderIgnoresOutputLimit, mockProcessApi,
     StateT.run, bind, StateT.bind, pure, StateT.pure] at hRes
   rcases hRes with ⟨e, he, _⟩
   cases he
@@ -292,37 +256,43 @@ example : ¬ Core.AllPass (test_compress_model_framingRejectsCrossCodecAndLegacy
   exact absurd h.2.2.1 (by decide)
 
 example : ¬ Core.AllPass (test_compress_internalApi_soundAgainstAllowedOutcome
-    (fun raw =>
-      { noopCompressBuilder raw with
+    (fun proc =>
+      { noopCompressBuilder proc with
         compressWith := fun _ _ input => pure (.ok input) })) := by
   intro h
-  let okRes : Except ProcessError ExecOutcome :=
-    .ok (.exited { exitCode := 0, stdout := Model.encodeStored .zstd ByteArray.empty, stderr := ByteArray.empty })
-  let okD : Except ProcessError ExecOutcome :=
-    .ok (.exited { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty })
+  let okRes : Except ProcessError ExecResult :=
+    .ok { exitCode := 0, stdout := Model.encodeStored .zstd ByteArray.empty, stderr := ByteArray.empty }
+  let okD : Except ProcessError ExecResult :=
+    .ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }
   have h0 := h { toolStatus := fun _ => .available } Model.State.empty .zstd { maxOutputBytes := 0 } {} ByteArray.empty
-    0 0 0 okRes okRes okD okD okD
+    okRes okRes okD okD okD
     (by decide) (by decide) (by decide) (by decide) (by decide)
   exact absurd h0.1 (by decide)
 
 example : ¬ Core.AllPass (test_compress_publicApi_matchesDefaultOps
     noopCompressBuilder
-    (noopCompressBuilder { mapRawError := mockRawOps.mapRawError
-                           spawn := fun _ => pure (.error { kind := .notFound, message := "m" })
-                           awaitOutput := fun _ _ _ _ => pure (.error { kind := .ioError, message := "m" })
-                           killProcessGroup := fun _ => pure (.ok ())
-                           reap := fun _ => pure (.ok ())
+    (noopCompressBuilder { mapRawError := mockProcessApi.mapRawError
+                           validateRequest := fun req => .ok req
+                           mkCommandRequest := fun program args => { program := program, args := args }
+                           withTextInput := fun req text => { req with stdin := text.toUTF8 }
+                           run := fun _ => pure (.error { kind := .notFound, message := "m" })
+                           runChecked := fun _ => pure (.error { kind := .notFound, message := "m" })
+                           runCommand := fun _ _ => pure (.error { kind := .notFound, message := "m" })
+                           runCommandChecked := fun _ _ => pure (.error { kind := .notFound, message := "m" })
                            activeProcessCount := pure 0 })
     (fun _ _ => pure (.error { kind := .ioError, message := "noop" }))
     (fun _ _ => pure (.ok ByteArray.empty))
     (fun _ _ _ => pure (.error { kind := .ioError, message := "noop" }))
     (fun _ _ _ => pure (.error { kind := .ioError, message := "noop" }))
     (fun _ => pure false)
-    { mapRawError := mockRawOps.mapRawError
-      spawn := fun _ => pure (.error { kind := .notFound, message := "m" })
-      awaitOutput := fun _ _ _ _ => pure (.error { kind := .ioError, message := "m" })
-      killProcessGroup := fun _ => pure (.ok ())
-      reap := fun _ => pure (.ok ())
+    { mapRawError := mockProcessApi.mapRawError
+      validateRequest := fun req => .ok req
+      mkCommandRequest := fun program args => { program := program, args := args }
+      withTextInput := fun req text => { req with stdin := text.toUTF8 }
+      run := fun _ => pure (.error { kind := .notFound, message := "m" })
+      runChecked := fun _ => pure (.error { kind := .notFound, message := "m" })
+      runCommand := fun _ _ => pure (.error { kind := .notFound, message := "m" })
+      runCommandChecked := fun _ _ => pure (.error { kind := .notFound, message := "m" })
       activeProcessCount := pure 0 }) := by
   intro h
   have h0 := h .zstd {} {} ByteArray.empty
@@ -335,9 +305,9 @@ example : ¬ Core.AllPass (test_compress_publicApi_matchesDefaultOps
 example : ¬ Core.AllPass (test_compress_spawnErrors_mappedCorrectly buggyCompressBuilderNoEnvSanitize) := by
   intro h
   have h0 := h .zstd false {} {} { kind := .invalidInput, errnoCode := some 11, message := "resource temporarily unavailable" }
-    ByteArray.empty 0 (by decide)
+    ByteArray.empty (by decide)
   rcases h0.2.1 with ⟨e, he, hkind, _⟩
-  dsimp [test_compress_spawnErrors_mappedCorrectly, buggyCompressBuilderNoEnvSanitize, mockRawOps,
+  dsimp [test_compress_spawnErrors_mappedCorrectly, buggyCompressBuilderNoEnvSanitize, mockProcessApi,
     StateT.run, bind, StateT.bind, pure, StateT.pure] at he
   cases he
   dsimp [expectedProcessErrorKindFor, isResourceExhaustedProcessError, expectedResourceOrPathIoErrno,
@@ -345,8 +315,8 @@ example : ¬ Core.AllPass (test_compress_spawnErrors_mappedCorrectly buggyCompre
   cases hkind
 
 private def buggyCompressBuilderStderrOomAsIoError : CompressBuilder (StateM MockProcState) :=
-  fun raw =>
-    { noopCompressBuilder raw with
+  fun proc =>
+    { noopCompressBuilder proc with
       compressWith := fun codec _ _ =>
         pure (.error { kind := .ioError, codec := some codec, message := "io" })
       decompressWith := fun codec _ _ =>
@@ -362,8 +332,8 @@ example : ¬ Core.AllPass (test_compress_exitCodes_compressVsDecompress_andStder
   exact absurd hdkind (by decide)
 
 private def buggyCompressBuilderPartialEnvAndBloatedSlack : CompressBuilder (StateM MockProcState) :=
-  fun raw =>
-    { noopCompressBuilder raw with
+  fun proc =>
+    { noopCompressBuilder proc with
       compressWith := fun codec opts input => do
         let req : ExecRequest :=
           { program := codecProgram codec
@@ -373,18 +343,16 @@ private def buggyCompressBuilderPartialEnvAndBloatedSlack : CompressBuilder (Sta
             stdin := input
             timeoutMs := some opts.timeoutMs
             maxOutputBytes := some (opts.maxOutputBytes + 1073741824) }
-        match ← raw.spawn req with
-        | .error _ => return .error { kind := .ioError, codec := some codec, message := "spawn" }
-        | .ok h =>
-          let _ ← raw.reap h
-          return .ok ByteArray.empty }
+        match ← proc.run req with
+        | .error _ => return .error { kind := .ioError, codec := some codec, message := "run" }
+        | .ok _ => return .ok ByteArray.empty }
 
 example : ¬ Core.AllPass (test_compress_compressWith_buildsExactExecRequest buggyCompressBuilderPartialEnvAndBloatedSlack) := by
   intro h
-  have h0 := h .zstd {} ByteArray.empty ByteArray.empty ByteArray.empty 0 (by decide)
-  have hReq := h0.2.2.2.1
+  have h0 := h .zstd {} ByteArray.empty ByteArray.empty ByteArray.empty (by decide)
+  have hReq := h0.2.2.1
   dsimp [test_compress_compressWith_buildsExactExecRequest, buggyCompressBuilderPartialEnvAndBloatedSlack,
-    mockRawOps, expectedSanitizedEnv, expectedStderrPipeSlack, StateT.run, bind, StateT.bind, pure, StateT.pure] at hReq
+    mockProcessApi, expectedSanitizedEnv, expectedStderrPipeSlack, StateT.run, bind, StateT.bind, pure, StateT.pure] at hReq
   have hEnv := congrArg (fun xs => xs.map ExecRequest.env) hReq
   exact absurd hEnv (by decide)
 

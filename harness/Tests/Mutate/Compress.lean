@@ -123,27 +123,30 @@ private def runCompressMutateExtra : IO Unit := do
       (match overMaxCal with | .error e => e.kind == .outputLimitExceeded && e.codec == some .gzip && e.exitCode == none && e.stderr == some "warn" | _ => false) &&
       (match compFailEmptySerr with | .error e => e.kind == .commandFailed && e.codec == some .zstd && e.exitCode == some 2 && e.stderr == none | _ => false) &&
       (match decFailBadUtf8Serr with | .error e => e.kind == .corruptData && e.codec == some .xz && e.exitCode == some 1 && e.stderr == none | _ => false))
-  let mkMockRaw (out : Process.ExecOutcome) : Process.RawProcessOpsM Id :=
+  let mkMockProc (res : Except Process.ProcessError Process.ExecResult) : Process.ProcessApiM Id :=
     { mapRawError := fun _ => { kind := .ioError, message := "mock" }
-      spawn := fun _ => .ok { handleId := 1, pid := 1, pgid := 1 }
-      awaitOutput := fun _ _ _ _ => .ok out
-      killProcessGroup := fun _ => .ok ()
-      reap := fun _ => .ok ()
+      validateRequest := fun req => .ok req
+      mkCommandRequest := fun program args => { program := program, args := args }
+      withTextInput := fun req text => { req with stdin := text.toUTF8 }
+      run := fun _ => res
+      runChecked := fun _ => res
+      runCommand := fun _ _ => res
+      runCommandChecked := fun _ _ => res
       activeProcessCount := 0 }
   let avail0 : Bool := Compress.Internal.isToolAvailable
-    (mkMockRaw (.exited { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty })) .zstd
+    (mkMockProc (.ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty })) .zstd
   let avail1 : Bool := Compress.Internal.isToolAvailable
-    (mkMockRaw (.exited { exitCode := 1, stdout := ByteArray.empty, stderr := ByteArray.empty })) .zstd
+    (mkMockProc (.ok { exitCode := 1, stdout := ByteArray.empty, stderr := ByteArray.empty })) .zstd
   let avail127 : Bool := Compress.Internal.isToolAvailable
-    (mkMockRaw (.exited { exitCode := 127, stdout := ByteArray.empty, stderr := ByteArray.empty })) .xz
+    (mkMockProc (.ok { exitCode := 127, stdout := ByteArray.empty, stderr := ByteArray.empty })) .xz
   let decOomCal : Except Compress.CompressError ByteArray :=
-    Compress.Internal.decompressWith (mkMockRaw (.outputLimitExceeded ("abc".toUTF8) ByteArray.empty)) .gzip { maxOutputBytes := 2 } calStream
+    Compress.Internal.decompressWith (mkMockProc (.error { kind := .outputLimitExceeded, stdout := some ("abc".toUTF8), stderr := some ByteArray.empty, message := "limit" })) .gzip { maxOutputBytes := 2 } calStream
   let decToCal : Except Compress.CompressError ByteArray :=
-    Compress.Internal.decompressWith (mkMockRaw (.timedOut ByteArray.empty ByteArray.empty)) .gzip { maxOutputBytes := 2 } calStream
+    Compress.Internal.decompressWith (mkMockProc (.error { kind := .timedOut, stdout := some ByteArray.empty, stderr := some ByteArray.empty, message := "timeout" })) .gzip { maxOutputBytes := 2 } calStream
   let decNzOver : Except Compress.CompressError ByteArray :=
-    Compress.Internal.decompressWith (mkMockRaw (.exited { exitCode := 1, stdout := ByteArray.mk #[0x41, 0x42, 0x43], stderr := ByteArray.empty })) .gzip { maxOutputBytes := 2 } calStream
+    Compress.Internal.decompressWith (mkMockProc (.ok { exitCode := 1, stdout := ByteArray.mk #[0x41, 0x42, 0x43], stderr := ByteArray.empty })) .gzip { maxOutputBytes := 2 } calStream
   let compNzOver : Except Compress.CompressError ByteArray :=
-    Compress.Internal.compressWith (mkMockRaw (.exited { exitCode := 1, stdout := ByteArray.mk #[0x41, 0x42, 0x43], stderr := ByteArray.empty })) .gzip { maxOutputBytes := 2 } ("ab".toUTF8)
+    Compress.Internal.compressWith (mkMockProc (.ok { exitCode := 1, stdout := ByteArray.mk #[0x41, 0x42, 0x43], stderr := ByteArray.empty })) .gzip { maxOutputBytes := 2 } ("ab".toUTF8)
   checkB "isToolAvailable nonzero exit + decompressWith bounded cal"
     (avail0 == true && avail1 == false && avail127 == false &&
       (match decOomCal with | .error e => e.kind == .outputLimitExceeded && e.codec == some .gzip && e.exitCode == none && e.stderr == none | _ => false) &&
