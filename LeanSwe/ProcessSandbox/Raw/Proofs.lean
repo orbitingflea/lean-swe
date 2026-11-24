@@ -4,6 +4,10 @@ import LeanSwe.ProcessSandbox.Raw.Interface
 import LeanSwe.ProcessSandbox.Raw.Impl
 import LeanSwe.ProcessSandbox.Raw.SpecTests
 import LeanSwe.ProcessSandbox.Raw.Proofs.EncodePlan
+import LeanSwe.ProcessSandbox.Raw.Proofs.HostCgroupPresetProofs
+import LeanSwe.ProcessSandbox.Raw.Proofs.HostBwrapProofs
+import LeanSwe.ProcessSandbox.Raw.Proofs.HostForwarderStreamProofs
+import LeanSwe.ProcessSandbox.Raw.Proofs.HostBridgeProofs
 
 namespace LeanSwe.ProcessSandbox.Raw.Proofs
 
@@ -11,9 +15,8 @@ open Core
 open Core.NondetTest
 open LeanSwe.ProcessSandbox.Raw.Model.Internal (MockRawState mockRawOps freshU32 hasHandle)
 
-private theorem nonEmptyMsg_ne_empty (fallback msg : String) (hf : fallback ≠ "") :
-    Internal.nonEmptyMsg fallback msg ≠ "" := by
-  unfold Internal.nonEmptyMsg
+private theorem ifEmpty_ne_empty (fallback msg : String) (hf : fallback ≠ "") :
+    (if msg.isEmpty then fallback else msg) ≠ "" := by
   split
   · exact hf
   · next h =>
@@ -103,17 +106,17 @@ theorem reach_psandboxRaw_isValidSandboxHandleId_bounds :
 theorem proof_psandboxRaw_mapRawError_returnsNonEmptyMessage :
     AllPass (test_psandboxRaw_mapRawError_returnsNonEmptyMessage defaultOps) := by
   intro raw
-  simp only [defaultOps, Internal.mapRawError, assert]
+  simp only [defaultOps, Internal.mapRawError, Model.Internal.mapRawError, assert]
   refine ⟨?_, trivial⟩
   cases raw with
-  | unavailable _ _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
+  | unavailable _ _ => exact ifEmpty_ne_empty _ _ (by decide)
   | notFound p _ _ =>
-    exact nonEmptyMsg_ne_empty _ _ (append_head_ne_empty "not found: " p (by decide))
-  | permissionDenied _ _ _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
-  | invalidArgument _ _ _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
+    exact ifEmpty_ne_empty _ _ (append_head_ne_empty "not found: " p (by decide))
+  | permissionDenied _ _ _ => exact ifEmpty_ne_empty _ _ (by decide)
+  | invalidArgument _ _ _ => exact ifEmpty_ne_empty _ _ (by decide)
   | ioError _ errno _ =>
-    exact nonEmptyMsg_ne_empty _ _ (by simp [String.append_eq_empty_iff, toString])
-  | userError _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
+    exact ifEmpty_ne_empty _ _ (by simp [String.append_eq_empty_iff, toString])
+  | userError _ => exact ifEmpty_ne_empty _ _ (by decide)
 
 /-- Non-vacuity `CanReach` witness for `test_psandboxRaw_mapRawError_returnsNonEmptyMessage`. -/
 theorem reach_psandboxRaw_mapRawError_returnsNonEmptyMessage :
@@ -124,12 +127,12 @@ theorem reach_psandboxRaw_mapRawError_returnsNonEmptyMessage :
 theorem proof_psandboxRaw_mapRawError_preservesKindAndFields :
     AllPass (test_psandboxRaw_mapRawError_preservesKindAndFields defaultOps) := by
   intro raw
-  cases raw <;> simp [defaultOps, Internal.mapRawError, assert]
+  cases raw <;> simp [defaultOps, Internal.mapRawError, Model.Internal.mapRawError, assert]
 
 /-- Non-vacuity `CanReach` witness for `test_psandboxRaw_mapRawError_preservesKindAndFields`. -/
 theorem reach_psandboxRaw_mapRawError_preservesKindAndFields :
     CanReach (test_psandboxRaw_mapRawError_preservesKindAndFields defaultOps) :=
-  ⟨.userError "err", by simp [defaultOps, Internal.mapRawError, assert]⟩
+  ⟨.userError "err", by simp [defaultOps, Internal.mapRawError, Model.Internal.mapRawError, assert]⟩
 
 /-- Proof of `test_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed` for `defaultOps`. -/
 theorem proof_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed :
@@ -146,8 +149,7 @@ theorem proof_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed :
       LeanSwe.ProcessSandbox.Model.AUDIT_ARCH_AARCH64]
     have hb0 : (raw == 0xc000003e) = false := beq_false_of_ne h0
     have hb1 : (raw == 0xc00000b7) = false := beq_false_of_ne h1
-    simp [hb0, hb1, Internal.mapRawError, assert]
-    exact nonEmptyMsg_ne_empty _ _ (by decide)
+    simp [hb0, hb1, Internal.mapRawError, Model.Internal.mapRawError, assert]
 
 /-- Non-vacuity `CanReach` witness for `test_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed`. -/
 theorem reach_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed :
@@ -157,8 +159,7 @@ theorem reach_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed :
     LeanSwe.ProcessSandbox.Model.seccompArchOfAudit?,
     LeanSwe.ProcessSandbox.Model.AUDIT_ARCH_X86_64,
     LeanSwe.ProcessSandbox.Model.AUDIT_ARCH_AARCH64,
-    Internal.mapRawError, assert]
-  exact nonEmptyMsg_ne_empty _ _ (by decide)
+    Internal.mapRawError, Model.Internal.mapRawError, assert]
 
 /-- Proof of `test_psandboxRaw_hostSeccompArch_failClosedUnavailable` for `mockRawOps`. -/
 theorem proof_psandboxRaw_hostSeccompArch_failClosedUnavailable :

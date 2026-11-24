@@ -7,76 +7,24 @@ import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Process.Interface
 import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.LinuxSyscall.TimeRand.Interface
-import LeanSwe.Process.SysBridge
 import LeanSwe.ProcessSandbox.Raw.Types
+import LeanSwe.ProcessSandbox.Raw.Model.InitStatus
 import LeanSwe.ProcessSandbox.Raw.Impl
-import LeanSwe.ProcessSandbox.Host.Cgroup
-import LeanSwe.ProcessSandbox.Host.Bwrap
+import LeanSwe.ProcessSandbox.Raw.SysBridge.Cgroup
+import LeanSwe.ProcessSandbox.Raw.SysBridge.Bwrap
+import LeanSwe.ProcessSandbox.Raw.SysBridge.PipeIo
 
-namespace LeanSwe.ProcessSandbox.Host.StreamIo
+namespace LeanSwe.ProcessSandbox.Raw.SysBridge.StreamIo
 
 open LeanSwe.LinuxSyscall
-open LeanSwe.Process.SysBridge
 open LeanSwe.ProcessSandbox.Raw
-open LeanSwe.ProcessSandbox.Host.Cgroup
-open LeanSwe.ProcessSandbox.Host.Bwrap
+open LeanSwe.ProcessSandbox.Raw.SysBridge.Cgroup
+open LeanSwe.ProcessSandbox.Raw.SysBridge.Bwrap
+open LeanSwe.ProcessSandbox.Raw.SysBridge.PipeIo
 
-/-- `InitStatusMsg` tag indicating pre-`execvp` setup succeeded and `psandbox_init` is waiting on `go_fd`. -/
-def PS_STATUS_READY : UInt8 := 1
-
-/-- `InitStatusMsg` tag indicating pre-`execvp` init setup failed closed (`value = errno`). -/
-def PS_STATUS_INIT_ERR : UInt8 := 2
-
-/-- `InitStatusMsg` tag indicating guest `chdir` (`flag != 0`) or `execvp` (`flag == 0`) failed (`value = errno`). -/
-def PS_STATUS_EXEC_ERR : UInt8 := 3
-
-/-- `InitStatusMsg` tag indicating guest exited normally (`value = exitCode`). -/
-def PS_STATUS_EXITED : UInt8 := 4
-
-/-- `InitStatusMsg` tag indicating guest was terminated by a signal (`value = signal`). -/
-def PS_STATUS_SIGNALED : UInt8 := 5
-
-/-- Fixed 8-byte status frame exchanged over `status_pipe` between `psandbox_init` and the host. -/
-structure InitStatusMsg where
-  /-- Status tag (`PS_STATUS_*`). -/
-  kind : UInt8
-  /-- Auxiliary flag (`1` for `chdir` failure vs `0` for `execvp` failure on `PS_STATUS_EXEC_ERR`). -/
-  flag : UInt8
-  /-- Little-endian signed 32-bit payload (`errno`, exit code, or signal number). -/
-  value : Int32
-  deriving Repr, BEq, DecidableEq, Inhabited
-
-/-- Encode an `InitStatusMsg` into its exact 8-byte C wire layout (`[kind, flag, 0, 0, val_le32]`). -/
-def encodeInitStatusMsg (m : InitStatusMsg) : ByteArray :=
-  let u := m.value.toUInt32.toNat
-  ByteArray.mk #[
-    m.kind,
-    m.flag,
-    0,
-    0,
-    UInt8.ofNat (u % 256),
-    UInt8.ofNat ((u / 256) % 256),
-    UInt8.ofNat ((u / 65536) % 256),
-    UInt8.ofNat ((u / 16777216) % 256)
-  ]
-
-/-- Decode an 8-byte C wire buffer into `InitStatusMsg` (`none` if `bs.size != 8`). -/
-def decodeInitStatusMsg (bs : ByteArray) : Option InitStatusMsg :=
-  if h : bs.size = 8 then
-    let b0 := bs[0]
-    let b1 := bs[1]
-    let v0 := bs[4].toNat
-    let v1 := bs[5].toNat
-    let v2 := bs[6].toNat
-    let v3 := bs[7].toNat
-    let rawU := UInt32.ofNat (v0 + 256 * v1 + 65536 * v2 + 16777216 * v3)
-    some { kind := b0, flag := b1, value := rawU.toInt32 }
-  else
-    none
-
-/-- Convert a `ProcessError` from reused `Process.SysBridge` helpers into a `SandboxError`. -/
-def processErrToSandboxErr (e : LeanSwe.Process.ProcessError) : SandboxError :=
-  Internal.mapRawError (.ioError none (e.errnoCode.getD Errno.EIO) e.message)
+export LeanSwe.ProcessSandbox.Raw.Model
+  (PS_STATUS_READY PS_STATUS_INIT_ERR PS_STATUS_EXEC_ERR PS_STATUS_EXITED PS_STATUS_SIGNALED
+   InitStatusMsg encodeInitStatusMsg decodeInitStatusMsg)
 
 /-- Blocking read of an 8-byte `InitStatusMsg` during `spawnBox` pre-`execvp` handshake (retrying `EINTR`, stopping on EOF/error). -/
 def readInitStatusBlocking {m : Type → Type} [Monad m] {fd : Type}
@@ -191,7 +139,7 @@ def decodeBoxReadyFlags {fd : Type} (st : BoxStreamState fd) (revents : Array Po
     | some _ => match revents[i3]? with | some ev => Poll.pollEvReady false ev | none => true
   (inRev?, outReady, errReady, stReady)
 
-/-- Classify the completed stream phase into `Except SandboxError SandboxResult` for `Host.SysBridge` / `Host.StreamIo`. -/
+/-- Classify the completed stream phase into `Except SandboxError SandboxResult` for `Raw.SysBridge` / `StreamIo`. -/
 def classifyBoxStreamResult (program cwd : String)
     (timedOut limitExceeded : Bool) (statusMsg? : Option InitStatusMsg)
     (stdout stderr : ByteArray) : Except SandboxError SandboxResult :=
@@ -223,7 +171,7 @@ def classifyBoxStreamResult (program cwd : String)
     else
       .ok { outcome := .signaled 9, stdout := stdout, stderr := stderr }
 
-/-- Fuel-bounded 4-FD `ppoll(2)` loop streaming `stdin`/`stdout`/`stderr` and decoding `InitStatusMsg` from `status_fd`, reusing `Process.SysBridge` pipe helpers. -/
+/-- Fuel-bounded 4-FD `ppoll(2)` loop streaming `stdin`/`stdout`/`stderr` and decoding `InitStatusMsg` from `status_fd`, using `Raw.SysBridge.PipeIo` pipe helpers. -/
 def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
     (files : Files.FilesOpsM m fd) (poll : Poll.PollOpsM m fd)
     (timeRand : TimeRand.TimeRandOpsM m)
@@ -277,7 +225,7 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
                 pure (none, st.stdinPos, false, none)
               else if ev.pollout then
                 match ← writeStdinStep files timeRand inFd stdin startMs (some timeoutMs) st.stdinPos false stepFuel with
-                | .error e => pure (none, st.stdinPos, false, some (processErrToSandboxErr e))
+                | .error e => pure (none, st.stdinPos, false, some e)
                 | .ok (nextFd?, p', _, to) => pure (nextFd?, p', to, none)
               else
                 pure (some inFd, st.stdinPos, false, none)
@@ -310,7 +258,7 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
               Files.closeOpt files inFdNext?
               Files.closeOpt files st.errFd?
               Files.closeOpt files st.statusFd?
-              return .error (processErrToSandboxErr e)
+              return .error e
             | .timedOut outChunks' outLen' =>
               Files.closeOpt files inFdNext?
               Files.closeOpt files st.errFd?
@@ -338,7 +286,7 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
                 Files.closeOpt files inFdNext?
                 Files.closeOpt files outFdNext?
                 Files.closeOpt files st.statusFd?
-                return .error (processErrToSandboxErr e)
+                return .error e
               | .timedOut errChunks' errLen' =>
                 Files.closeOpt files inFdNext?
                 Files.closeOpt files outFdNext?
@@ -443,4 +391,4 @@ def killBoxPidfd {m : Type → Type} [Monad m] {fd : Type}
     if e == Errno.ESRCH then return .ok ()
     else return .error (Internal.mapRawError (.ioError none e s!"pidfd_send_signal: {Errno.name e}"))
 
-end LeanSwe.ProcessSandbox.Host.StreamIo
+end LeanSwe.ProcessSandbox.Raw.SysBridge.StreamIo

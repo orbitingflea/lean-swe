@@ -3,13 +3,13 @@ import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Passwd.Types
 import LeanSwe.ProcessSandbox.Raw.Types
-import LeanSwe.ProcessSandbox.Host.Cgroup
+import LeanSwe.ProcessSandbox.Raw.SysBridge.Cgroup
 
-namespace LeanSwe.ProcessSandbox.Host.Preset
+namespace LeanSwe.ProcessSandbox.Raw.SysBridge.Preset
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.ProcessSandbox.Raw
-open LeanSwe.ProcessSandbox.Host.Cgroup
+open LeanSwe.ProcessSandbox.Raw.SysBridge.Cgroup
 
 /-- Top-level host system directories inspected for the immutable OS runtime preset. -/
 def presetSystemRoots : Array String :=
@@ -140,4 +140,4 @@ def discoverHostPresetM {m : Type → Type} [Monad m] {fd : Type}
     excludedHomePaths := excludedHomes
   }
 
-end LeanSwe.ProcessSandbox.Host.Preset
+end LeanSwe.ProcessSandbox.Raw.SysBridge.Preset

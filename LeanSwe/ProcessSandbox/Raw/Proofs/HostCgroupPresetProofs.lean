@@ -1,11 +1,11 @@
-import LeanSwe.ProcessSandbox.Host.Cgroup
-import LeanSwe.ProcessSandbox.Host.Preset
+import LeanSwe.ProcessSandbox.Raw.SysBridge.Cgroup
+import LeanSwe.ProcessSandbox.Raw.SysBridge.Preset
 
-namespace LeanSwe.ProcessSandbox.Proofs.HostCgroupPreset
+namespace LeanSwe.ProcessSandbox.Raw.Proofs.HostCgroupPreset
 
 open LeanSwe.LinuxSyscall
-open LeanSwe.ProcessSandbox.Host.Cgroup
-open LeanSwe.ProcessSandbox.Host.Preset
+open LeanSwe.ProcessSandbox.Raw.SysBridge.Cgroup
+open LeanSwe.ProcessSandbox.Raw.SysBridge.Preset
 
 private theorem list_isPrefixOf_append_self (p r : List Char) :
     p.isPrefixOf (p ++ r) = true := by
@@ -180,4 +180,4 @@ theorem presetEtcAllowlist_excludes_shadow :
     presetEtcAllowlist.toList.contains "/etc/gshadow" = false := by
   decide
 
-end LeanSwe.ProcessSandbox.Proofs.HostCgroupPreset
+end LeanSwe.ProcessSandbox.Raw.Proofs.HostCgroupPreset

@@ -4,7 +4,7 @@ import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.LinuxSyscall.TimeRand.Interface
 
-namespace LeanSwe.ProcessSandbox.Host.Cgroup
+namespace LeanSwe.ProcessSandbox.Raw.SysBridge.Cgroup
 
 open LeanSwe.LinuxSyscall
 
@@ -269,4 +269,4 @@ def cleanupCgroupDir {m : Type → Type} [Monad m] {fd : Type}
   pollCgroupUnpopulated files timeRand (cgroupSubfile cgDir "cgroup.events") eintrFuel pollSteps
   retryRmdirCgroup files timeRand cgDir.toUTF8 rmdirSteps
 
-end LeanSwe.ProcessSandbox.Host.Cgroup
+end LeanSwe.ProcessSandbox.Raw.SysBridge.Cgroup

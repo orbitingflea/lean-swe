@@ -1,4 +1,5 @@
 import LeanSwe.ProcessSandbox.Raw.Types
+import LeanSwe.ProcessSandbox.Raw.Model
 
 namespace LeanSwe.ProcessSandbox.Raw.Internal
 
@@ -39,46 +40,13 @@ structure PosixRawOps where
   /-- Return active `(openPlans, activeBoxes, activeForwarders)` resource counts. -/
   activeCounts : IO (Nat × Nat × Nat)
 
-/-- Return `msg` if non-empty, or `fallback` otherwise. -/
-def nonEmptyMsg (fallback msg : String) : String :=
-  if msg.isEmpty then fallback else msg
-
 /-- Clamp a `Nat` to `UInt64` without modulo wraparound. -/
 def natToUInt64Sat (n : Nat) : UInt64 :=
   UInt64.ofNat (Nat.min n (UInt64.size - 1))
 
-/-- Convert a pure `SandboxRawError` into a normalized `SandboxError` preserving kind, path, errno, and non-empty message. -/
-def mapRawError : SandboxRawError → SandboxError
-  | .unavailable errno? detail =>
-    { kind := .unavailable
-      path := none
-      errnoCode := errno?
-      message := nonEmptyMsg "sandbox unavailable" detail }
-  | .notFound p errno detail =>
-    { kind := .notFound
-      path := some p
-      errnoCode := some errno
-      message := nonEmptyMsg s!"not found: {p}" detail }
-  | .permissionDenied p? errno detail =>
-    { kind := .permissionDenied
-      path := p?
-      errnoCode := some errno
-      message := nonEmptyMsg "permission denied" detail }
-  | .invalidArgument p? errno? detail =>
-    { kind := .invalidInput
-      path := p?
-      errnoCode := errno?
-      message := nonEmptyMsg "invalid sandbox argument" detail }
-  | .ioError p? errno detail =>
-    { kind := .ioError
-      path := p?
-      errnoCode := some errno
-      message := nonEmptyMsg s!"sandbox I/O error {errno}" detail }
-  | .userError detail =>
-    { kind := .ioError
-      path := none
-      errnoCode := none
-      message := nonEmptyMsg "sandbox error" detail }
+/-- Reuse canonical `Raw.Model.Internal.mapRawError` to normalize a pure `SandboxRawError` into a `SandboxError` with a non-empty message. -/
+abbrev mapRawError : SandboxRawError → SandboxError :=
+  LeanSwe.ProcessSandbox.Raw.Model.Internal.mapRawError
 
 /-- Decode a structured FFI error tag and fields into a normalized `SandboxError`. -/
 def decodeTupleError (tag : UInt8) (errnum : UInt32) (path detail : String) : SandboxError :=

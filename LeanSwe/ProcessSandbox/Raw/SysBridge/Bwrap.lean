@@ -7,18 +7,18 @@ import LeanSwe.LinuxSyscall.Poll.Types
 import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Sandbox.Types
 import LeanSwe.PostFork.Types
-import LeanSwe.ProcessSandbox.InitData
+import LeanSwe.ProcessSandbox.Raw.SysBridge.InitData
 import LeanSwe.ProcessSandbox.Raw.Types
 import LeanSwe.ProcessSandbox.Raw.Impl
-import LeanSwe.ProcessSandbox.Host.Cgroup
-import LeanSwe.ProcessSandbox.Host.Preset
+import LeanSwe.ProcessSandbox.Raw.SysBridge.Cgroup
+import LeanSwe.ProcessSandbox.Raw.SysBridge.Preset
 
-namespace LeanSwe.ProcessSandbox.Host.Bwrap
+namespace LeanSwe.ProcessSandbox.Raw.SysBridge.Bwrap
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.ProcessSandbox.Raw
-open LeanSwe.ProcessSandbox.Host.Cgroup
-open LeanSwe.ProcessSandbox.Host.Preset
+open LeanSwe.ProcessSandbox.Raw.SysBridge.Cgroup
+open LeanSwe.ProcessSandbox.Raw.SysBridge.Preset
 
 /-- Linux `F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE` (`0x0F`) immutability seal mask for `memfd` descriptors. -/
 def F_SEAL_ALL : UInt32 := 0x0F
@@ -56,7 +56,7 @@ def decodeEmbeddedInitBytes (b64 : String) : Except String ByteArray :=
 
 /-- Embedded `leanswe-psandbox-init` ELF bytes compiled from `psandbox-init` (decoded once and reused across `preflight` and every `sealPlan`). -/
 def embeddedInitBytes : Except String ByteArray :=
-  decodeEmbeddedInitBytes LeanSwe.ProcessSandbox.InitData.initBinaryBase64
+  decodeEmbeddedInitBytes LeanSwe.ProcessSandbox.Raw.SysBridge.InitData.initBinaryBase64
 
 /-- Map a path-related Linux `Errno` into `SandboxError` (`.notFound` for `ENOENT`/`ENOTDIR`, `.permissionDenied` for `EACCES`/`EPERM`, `.ioError` otherwise). -/
 def mapPathErrnoToSandboxError (path ctx : String) (e : Errno) : SandboxError :=
@@ -414,4 +414,4 @@ def drainStderrSnippet {m : Type → Type} [Monad m] {fd : Type}
   let raw ← drainStderrSnippetLoop files stderrFd maxBytes #[] 0 fuel
   return trimTrailingNewlines (String.fromUTF8? raw |>.getD "")
 
-end LeanSwe.ProcessSandbox.Host.Bwrap
+end LeanSwe.ProcessSandbox.Raw.SysBridge.Bwrap
