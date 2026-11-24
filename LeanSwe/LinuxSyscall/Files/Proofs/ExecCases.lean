@@ -258,6 +258,40 @@ theorem files_ops_symlinkLoopAndNameTooLong_proof :
   · exact loopStat_eloop
   · exact loopLstat_sym
 
+private theorem splitPathBytesLoop_noSlash (path : ByteArray) (hPos : 0 < path.size)
+    (hNo : ∀ j, (hj : j < path.size) → path[j] != slashByte) :
+    ∀ k i, i + k = path.size →
+      splitPathBytesLoop path i 0 [] k = [path]
+  | 0, i, hk => by
+    have hEq : i = path.size := by omega
+    subst hEq
+    unfold splitPathBytesLoop
+    simp [hPos]
+  | k + 1, i, hk => by
+    have hi : i < path.size := by omega
+    unfold splitPathBytesLoop
+    simp only [hi, ↓reduceDIte]
+    have hNe : (path[i] == slashByte) = false := by
+      have h1 := hNo i hi
+      simpa [bne] using h1
+    rw [hNe]
+    exact splitPathBytesLoop_noSlash path hPos hNo k (i + 1) (by omega)
+
+/-- Any non-empty path without `'/'` splits to `[path]`. -/
+theorem splitPathBytes_of_noSlash (path : ByteArray) (hPos : 0 < path.size)
+    (hNo : ∀ j, (hj : j < path.size) → path[j] != slashByte) :
+    splitPathBytes path = (false, [path], false) := by
+  unfold splitPathBytes
+  have h0 : (path[0] == slashByte) = false := by
+    have := hNo 0 hPos
+    simpa [bne] using this
+  have hLast : (path[path.size - 1] == slashByte) = false := by
+    have := hNo (path.size - 1) (Nat.sub_lt hPos Nat.zero_lt_one)
+    simpa [bne] using this
+  simp only [hPos, ↓reduceDIte, h0, hLast]
+  exact congrArg (fun x => (false, x, false))
+    (splitPathBytesLoop_noSlash path hPos hNo path.size 0 (Nat.zero_add _))
+
 private def mkRepPath (n : Nat) : ByteArray :=
   ByteArray.mk (List.replicate n (97 : UInt8)).toArray
 

@@ -596,46 +596,12 @@ def splitPathBytesLoop (path : ByteArray) (i segStart : Nat) (acc : List ByteArr
         else acc
       acc'.reverse
 
-private theorem splitPathBytesLoop_noSlash (path : ByteArray) (hPos : 0 < path.size)
-    (hNo : ∀ j, (hj : j < path.size) → path[j] != slashByte) :
-    ∀ k i, i + k = path.size →
-      splitPathBytesLoop path i 0 [] k = [path]
-  | 0, i, hk => by
-    have hEq : i = path.size := by omega
-    subst hEq
-    unfold splitPathBytesLoop
-    simp [hPos]
-  | k + 1, i, hk => by
-    have hi : i < path.size := by omega
-    unfold splitPathBytesLoop
-    simp only [hi, ↓reduceDIte]
-    have hNe : (path[i] == slashByte) = false := by
-      have h1 := hNo i hi
-      simpa [bne] using h1
-    rw [hNe]
-    exact splitPathBytesLoop_noSlash path hPos hNo k (i + 1) (by omega)
-
 /-- Split a byte path into `(isAbs, nonEmptySegments, hasTrailingSlash)`. -/
 def splitPathBytes (path : ByteArray) : Bool × List ByteArray × Bool :=
   let sz := path.size
   let isAbs := if h : 0 < sz then path[0] == slashByte else false
   let trailingSlash := if h : 0 < sz then path[sz - 1] == slashByte else false
   (isAbs, splitPathBytesLoop path 0 0 [] sz, trailingSlash)
-
-/-- Any non-empty path without `'/'` splits to `[path]`. -/
-theorem splitPathBytes_of_noSlash (path : ByteArray) (hPos : 0 < path.size)
-    (hNo : ∀ j, (hj : j < path.size) → path[j] != slashByte) :
-    splitPathBytes path = (false, [path], false) := by
-  unfold splitPathBytes
-  have h0 : (path[0] == slashByte) = false := by
-    have := hNo 0 hPos
-    simpa [bne] using this
-  have hLast : (path[path.size - 1] == slashByte) = false := by
-    have := hNo (path.size - 1) (Nat.sub_lt hPos Nat.zero_lt_one)
-    simpa [bne] using this
-  simp only [hPos, ↓reduceDIte, h0, hLast]
-  exact congrArg (fun x => (false, x, false))
-    (splitPathBytesLoop_noSlash path hPos hNo path.size 0 (Nat.zero_add _))
 
 /-- Look up the `mountId` of `ino` in `s` (`0` if absent). -/
 def inodeMountId (s : FilesState) (ino : InodeId) : Nat :=
@@ -3446,39 +3412,6 @@ def allBytesZeroLoop (b : ByteArray) (i : Nat) : Nat → Bool
     if h : i < b.size then
       if b[i] != 0 then false else allBytesZeroLoop b (i + 1) rem
     else true
-
-private theorem replicateZeroBytesLoop_get (n : Nat) (acc : ByteArray)
-    (hAcc : ∀ j (hj : j < acc.size), acc[j] = 0) :
-    ∀ i (hi : i < (replicateZeroBytesLoop n acc).size), (replicateZeroBytesLoop n acc)[i] = 0 := by
-  induction n generalizing acc with
-  | zero => exact hAcc
-  | succ k ih =>
-    apply ih (acc.push 0)
-    intro j hj
-    show (acc.data.push 0)[j] = 0
-    by_cases hLt : j < acc.data.size
-    · rw [Array.getElem_push_lt hLt]; exact hAcc j hLt
-    · have hEq : j = acc.data.size := by
-        have hj' : j < (acc.data.push 0).size := hj
-        rw [Array.size_push] at hj'
-        omega
-      subst hEq
-      exact Array.getElem_push_eq
-
-/-- Replicating `0x00` via `replicateZeroBytes` satisfies `allBytesZeroLoop`. -/
-theorem allBytesZeroLoop_replicate_zero (cap : Nat) :
-    ∀ rem i : Nat, allBytesZeroLoop (replicateZeroBytes cap) i rem = true
-  | 0, _ => rfl
-  | rem + 1, i => by
-    unfold allBytesZeroLoop
-    split
-    · rename_i h
-      have hElem : (replicateZeroBytes cap)[i] = (0 : UInt8) :=
-        replicateZeroBytesLoop_get cap (ByteArray.emptyWithCapacity cap)
-          (fun _ hj => absurd hj (Nat.not_lt_zero _)) i h
-      simp only [hElem, bne_self_eq_false, Bool.false_eq_true, ↓reduceIte]
-      exact allBytesZeroLoop_replicate_zero cap rem (i + 1)
-    · rfl
 
 /-- Validate a nondeterministic outcome `out` against `act` and return the updated `FilesState`. -/
 def verifyNondet (s : FilesState) (act : NondetAction) (out : FilesOutcome) : Option FilesState :=
