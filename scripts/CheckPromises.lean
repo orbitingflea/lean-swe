@@ -1312,7 +1312,6 @@ private def checkPostForkAeneasWiring (env : Environment) : Array String := Id.r
 private def canonicalManagedProcessTargets : Std.HashSet Name :=
   Std.HashSet.emptyWithCapacity 14
     |>.insert `LeanSwe.Process.defaultApi
-    |>.insert `LeanSwe.Process.Proofs.healthySimApi
     |>.insert `LeanSwe.Process.Internal.mkApiM
     |>.insert `LeanSwe.Process.SysBridge.mapRawError
     |>.insert `LeanSwe.Process.SysBridge.probePathBytes
@@ -1322,6 +1321,14 @@ private def canonicalManagedProcessTargets : Std.HashSet Name :=
     |>.insert `LeanSwe.Process.SysBridge.streamPipesLoop
     |>.insert `LeanSwe.Process.SysBridge.mkRawOpsM
     |>.insert `LeanSwe.Process.SysBridge.spawnPure
+
+private def isCanonicalHealthySimRawOps (raw : Expr) : Bool :=
+  let raw' := (etaReduceExpr raw).consumeMData
+  let rawArgs := raw'.getAppArgs
+  raw'.getAppFn.consumeMData.constName? == some `LeanSwe.Process.SysBridge.mkRawOpsM &&
+    rawArgs.size == 7 &&
+    rawArgs[3]!.consumeMData.constName? == some `LeanSwe.Process.Model.Internal.healthySimDeps &&
+    rawArgs[4]!.consumeMData.getAppFn.consumeMData.constName? == some `LeanSwe.Process.SysBridge.stateProcTableOps
 
 private def hasCanonicalProcessPromiseTarget (prog : Expr) : MetaM Bool := do
   Meta.withTransparency .all do
@@ -1335,11 +1342,16 @@ private def hasCanonicalProcessPromiseTarget (prog : Expr) : MetaM Bool := do
         if tyWhnf.isAppOfArity `Core.NondetTest 1 then
           afterNondet := true
       else
-        let tgt := (etaReduceExpr arg).consumeMData.getAppFn.consumeMData
+        let argEta := (etaReduceExpr arg).consumeMData
+        let tgt := argEta.getAppFn.consumeMData
         match tgt with
         | .const tName _ =>
           if !canonicalManagedProcessTargets.contains tName then
             return false
+          if tName == `LeanSwe.Process.Internal.mkApiM then
+            let mkArgs := argEta.getAppArgs
+            if mkArgs.size >= 3 && !isCanonicalHealthySimRawOps mkArgs[2]! then
+              return false
           checked := checked + 1
         | _ => return false
     return afterNondet && checked > 0
@@ -1999,6 +2011,15 @@ private def checkManagedProcessClosure (env : Environment) : IO (Array String) :
       errs := errs.push "PROCESS_PROOF_TARGET_WIRING_MISMATCH: healthySimApi must wire Internal.mkApiM to healthySimRawOps"
   | _ =>
     errs := errs.push "PROCESS_PROOF_TARGET_WIRING_MISMATCH: missing LeanSwe.Process.Proofs.healthySimApi"
+  match env.find? `LeanSwe.Process.Proofs.healthySimRawOps with
+  | some (.defnInfo dv) =>
+    let used := dv.value.getUsedConstants
+    if !used.contains `LeanSwe.Process.SysBridge.mkRawOpsM ||
+        !used.contains `LeanSwe.Process.Model.Internal.healthySimDeps ||
+        !used.contains `LeanSwe.Process.SysBridge.stateProcTableOps then
+      errs := errs.push "PROCESS_PROOF_TARGET_WIRING_MISMATCH: healthySimRawOps must wire SysBridge.mkRawOpsM to Model.Internal.healthySimDeps and stateProcTableOps"
+  | _ =>
+    errs := errs.push "PROCESS_PROOF_TARGET_WIRING_MISMATCH: missing LeanSwe.Process.Proofs.healthySimRawOps"
   for wrapper in #[`LeanSwe.Process.spawn, `LeanSwe.Process.awaitOutput,
       `LeanSwe.Process.killProcessGroup, `LeanSwe.Process.reap,
       `LeanSwe.Process.run, `LeanSwe.Process.runChecked, `LeanSwe.Process.activeProcessCount] do
@@ -2957,12 +2978,7 @@ referenced in qualifying `Core.AllPass`/`Core.CanReach` promised theorem signatu
 increased count, or stale/lower count fails the gate so the table strictly shrinks as
 proof-local mock helpers move into `Model.lean` (and cannot be evaded by moving them into
 `.other`, `.testSupport`, or unlocked `Properties` helpers). -/
-private def sigProofConstAllowlist : Array (String × Nat) := #[
-  ("LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.healthySimApi", 1),
-  ("LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.Process.Proofs.HealthySimState", 1),
-  ("LeanSwe.Process.Proofs|LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.healthySimApi", 34),
-  ("LeanSwe.Process.Proofs|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.Process.Proofs.HealthySimState", 34)
-]
+private def sigProofConstAllowlist : Array (String × Nat) := #[]
 
 private def mergeDagReports (a b : DagAuditReport) : DagAuditReport := Id.run do
   let mut v := a.violations

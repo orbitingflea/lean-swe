@@ -51,6 +51,7 @@ import LeanSwe.Fs.Proofs
 import LeanSwe.Fs.RuntimeTests
 import LeanSwe.Process.Types
 import LeanSwe.Process.Types.Internal
+import LeanSwe.Process.Model.HealthySim
 import LeanSwe.Process.SysBridge
 import LeanSwe.Process.Impl
 import LeanSwe.Process.Interface
@@ -62,7 +63,9 @@ import LeanSwe.Process.Proofs.HealthySimBase
 import LeanSwe.Process.Proofs.HealthySimFiles
 import LeanSwe.Process.Proofs.HealthySim
 import LeanSwe.Process.Proofs.ImpossibleProofs
+import LeanSwe.Process.Proofs.EndToEndLaws
 import LeanSwe.Process.Proofs.EndToEnd
+import LeanSwe.Process.Proofs.PureSpecs
 import LeanSwe.Process.Proofs
 import LeanSwe.Process.RuntimeTests
 import LeanSwe.Time.Types
