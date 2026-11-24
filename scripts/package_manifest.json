@@ -1,0 +1,383 @@
+{
+  "version": 1,
+  "packages": {
+    "LeanSwe.Base64": {
+      "kind": "model",
+      "purity": "pure",
+      "deps": [],
+      "external_boundary": false,
+      "spec_style": "pure_eq"
+    },
+    "LeanSwe.CmdLine": {
+      "kind": "model",
+      "purity": "mixed",
+      "deps": [
+        "LeanSwe.EnvVars",
+        "LeanSwe.LinuxSyscall.Files"
+      ],
+      "fuzz_suite": "cmdline",
+      "external_boundary": false,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.Compress": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.Process"
+      ],
+      "fuzz_suite": "compress",
+      "external_boundary": true,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.ConnectProxy": {
+      "kind": "model",
+      "purity": "mixed",
+      "deps": [
+        "LeanSwe.LinuxSyscall.Common",
+        "LeanSwe.LinuxSyscall.Dns",
+        "LeanSwe.LinuxSyscall.Files",
+        "LeanSwe.LinuxSyscall.Net",
+        "LeanSwe.LinuxSyscall.Poll",
+        "LeanSwe.LinuxSyscall.TimeRand",
+        "LeanSwe.NetRelay"
+      ],
+      "external_boundary": false,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.CryptoHash": {
+      "kind": "model",
+      "purity": "mixed",
+      "deps": [
+        "LeanSwe.CryptoHash.Raw"
+      ],
+      "fuzz_suite": "cryptohash",
+      "external_boundary": false,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.CryptoHash.Raw": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [],
+      "fuzz_suite": "cryptohash",
+      "external_boundary": true,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.EnvVars": {
+      "kind": "model",
+      "purity": "mixed",
+      "deps": [
+        "LeanSwe.EnvVars.Raw"
+      ],
+      "fuzz_suite": "envvars",
+      "external_boundary": false,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.EnvVars.Raw": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [],
+      "fuzz_suite": "envvars",
+      "external_boundary": true,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.Fs": {
+      "kind": "model",
+      "purity": "mixed",
+      "deps": [
+        "LeanSwe.Glob",
+        "LeanSwe.LinuxSyscall.Common",
+        "LeanSwe.LinuxSyscall.Files",
+        "LeanSwe.LinuxSyscall.TimeRand"
+      ],
+      "external_boundary": false,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.Git": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.EnvVars",
+        "LeanSwe.Process"
+      ],
+      "fuzz_suite": "git",
+      "external_boundary": true,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.Glob": {
+      "kind": "model",
+      "purity": "pure",
+      "deps": [],
+      "external_boundary": false,
+      "spec_style": "pure_eq"
+    },
+    "LeanSwe.Json": {
+      "kind": "model",
+      "purity": "pure",
+      "deps": [],
+      "external_boundary": false,
+      "err_msg_opaque": true,
+      "spec_style": "inverse_render"
+    },
+    "LeanSwe.LinuxSyscall.Common": {
+      "kind": "support",
+      "purity": "types_only",
+      "deps": [],
+      "external_boundary": false
+    },
+    "LeanSwe.LinuxSyscall.Dns": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.LinuxSyscall.Common"
+      ],
+      "fuzz_suite": "dns",
+      "external_boundary": true,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.LinuxSyscall.Files": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.LinuxSyscall.Common"
+      ],
+      "fuzz_suite": "files",
+      "external_boundary": true,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.LinuxSyscall.Net": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.LinuxSyscall.Common"
+      ],
+      "fuzz_suite": "net",
+      "external_boundary": true,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.LinuxSyscall.Passwd": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.LinuxSyscall.Common"
+      ],
+      "fuzz_suite": "passwd",
+      "external_boundary": true,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.LinuxSyscall.Poll": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.LinuxSyscall.Common"
+      ],
+      "fuzz_suite": "poll",
+      "external_boundary": true,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.LinuxSyscall.Process": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.LinuxSyscall.Common"
+      ],
+      "fuzz_suite": "process",
+      "external_boundary": true,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.LinuxSyscall.Sandbox": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.LinuxSyscall.Common"
+      ],
+      "fuzz_suite": "sandbox",
+      "external_boundary": true,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.LinuxSyscall.TestSupport": {
+      "kind": "support",
+      "purity": "pure",
+      "deps": [
+        "LeanSwe.LinuxSyscall.Sandbox"
+      ],
+      "external_boundary": false
+    },
+    "LeanSwe.LinuxSyscall.TimeRand": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.LinuxSyscall.Common"
+      ],
+      "fuzz_suite": "timerand",
+      "external_boundary": true,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.NetRelay": {
+      "kind": "model",
+      "purity": "mixed",
+      "deps": [
+        "LeanSwe.LinuxSyscall.Common",
+        "LeanSwe.LinuxSyscall.Net"
+      ],
+      "external_boundary": false,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.NumParse": {
+      "kind": "model",
+      "purity": "pure",
+      "deps": [],
+      "fuzz_suite": "float",
+      "external_boundary": false,
+      "err_msg_opaque": true,
+      "spec_style": "pure_eq"
+    },
+    "LeanSwe.PostFork": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.LinuxSyscall.Common"
+      ],
+      "fuzz_suite": "postfork",
+      "external_boundary": true,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.Process": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.EnvVars.Raw",
+        "LeanSwe.LinuxSyscall.Common",
+        "LeanSwe.LinuxSyscall.Files",
+        "LeanSwe.LinuxSyscall.Poll",
+        "LeanSwe.LinuxSyscall.Process",
+        "LeanSwe.LinuxSyscall.TimeRand",
+        "LeanSwe.PostFork"
+      ],
+      "external_boundary": false,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.ProcessSandbox": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.ProcessSandbox.Raw",
+        "LeanSwe.ProcessSandbox.Seccomp"
+      ],
+      "external_boundary": false,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.ProcessSandbox.Raw": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.Base64",
+        "LeanSwe.EnvVars.Raw",
+        "LeanSwe.LinuxSyscall.Common",
+        "LeanSwe.LinuxSyscall.Files",
+        "LeanSwe.LinuxSyscall.Net",
+        "LeanSwe.LinuxSyscall.Passwd",
+        "LeanSwe.LinuxSyscall.Poll",
+        "LeanSwe.LinuxSyscall.Process",
+        "LeanSwe.LinuxSyscall.Sandbox",
+        "LeanSwe.LinuxSyscall.TimeRand",
+        "LeanSwe.NetRelay",
+        "LeanSwe.PostFork",
+        "LeanSwe.ProcessSandbox.Seccomp"
+      ],
+      "external_boundary": true,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.ProcessSandbox.Seccomp": {
+      "kind": "model",
+      "purity": "pure",
+      "deps": [],
+      "external_boundary": false,
+      "spec_style": "pure_eq"
+    },
+    "LeanSwe.RegExp": {
+      "kind": "model",
+      "purity": "pure",
+      "deps": [],
+      "external_boundary": false,
+      "err_msg_opaque": true,
+      "spec_style": "pure_eq"
+    },
+    "LeanSwe.SlotPool": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.Fs",
+        "LeanSwe.Time"
+      ],
+      "external_boundary": false,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.Sqlite": {
+      "kind": "model",
+      "purity": "mixed",
+      "deps": [
+        "LeanSwe.Sqlite.Raw"
+      ],
+      "fuzz_suite": "sqlite",
+      "external_boundary": false,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.Sqlite.Raw": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [],
+      "fuzz_suite": "sqlite",
+      "external_boundary": true,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.Tar": {
+      "kind": "model",
+      "purity": "pure",
+      "deps": [],
+      "external_boundary": false,
+      "err_msg_opaque": true,
+      "spec_style": "pure_eq"
+    },
+    "LeanSwe.TempDir": {
+      "kind": "model",
+      "purity": "nondet_io",
+      "deps": [
+        "LeanSwe.EnvVars",
+        "LeanSwe.Fs",
+        "LeanSwe.Time",
+        "LeanSwe.Uuid"
+      ],
+      "external_boundary": false,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.Time": {
+      "kind": "model",
+      "purity": "mixed",
+      "deps": [
+        "LeanSwe.LinuxSyscall.TimeRand"
+      ],
+      "external_boundary": false,
+      "spec_style": "state_step"
+    },
+    "LeanSwe.Toml": {
+      "kind": "model",
+      "purity": "pure",
+      "deps": [
+        "LeanSwe.NumParse"
+      ],
+      "fuzz_suite": "float",
+      "external_boundary": false,
+      "err_msg_opaque": true,
+      "spec_style": "inverse_render"
+    },
+    "LeanSwe.Uuid": {
+      "kind": "model",
+      "purity": "mixed",
+      "deps": [
+        "LeanSwe.LinuxSyscall.TimeRand"
+      ],
+      "external_boundary": false,
+      "spec_style": "state_step"
+    }
+  }
+}

@@ -194,7 +194,7 @@
       "legacy_unmigrated": false
     },
     "scripts/check_spec_change.py": {
-      "max_lines": 1209,
+      "max_lines": 1813,
       "legacy_unmigrated": false
     },
     "scripts/fuzz_changed.py": {
@@ -205,8 +205,12 @@
       "max_lines": 662,
       "legacy_unmigrated": false
     },
+    "scripts/package_manifest.json": {
+      "max_lines": 383,
+      "legacy_unmigrated": false
+    },
     "scripts/test_check_spec_change.py": {
-      "max_lines": 530,
+      "max_lines": 919,
       "legacy_unmigrated": false
     },
     "scripts/test_fuzz_changed.py": {
