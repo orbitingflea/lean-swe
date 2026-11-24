@@ -1,7 +1,6 @@
 import Core.Refines
 import LeanSwe.Sqlite.Interface
 import LeanSwe.Sqlite.SpecTests
-import LeanSwe.Sqlite.Raw.Proofs
 import LeanSwe.Sqlite.Proofs.ModelTrace
 
 namespace LeanSwe.Sqlite.Proofs
@@ -24,8 +23,15 @@ private theorem nonEmptyMsg_ne_empty (fallback msg : String) (hf : fallback ≠ 
 theorem proof_sqlite_mapRawError_returnsNonEmptyMessage :
     AllPass (test_sqlite_mapRawError_returnsNonEmptyMessage defaultApi) := by
   intro raw
-  simpa [defaultApi, Internal.mkApiM] using
-    Raw.Proofs.proof_sqliteraw_mapRawError_returnsNonEmptyMessage raw
+  dsimp only [test_sqlite_mapRawError_returnsNonEmptyMessage, Bind.bind, Pure.pure,
+    defaultApi, Internal.mkApiM, Raw.defaultOps, Raw.Internal.mkRawOps,
+    Raw.Internal.mapRawError, assert]
+  refine ⟨?_, trivial⟩
+  cases raw with
+  | cantOpen _ _ _ | busy _ _ | constraint _ _ | misuse _ _ | invalidArgument _ | userError _ =>
+    exact nonEmptyMsg_ne_empty _ _ (by decide)
+  | ioFailure _ _ | sqliteCodeError _ _ =>
+    exact nonEmptyMsg_ne_empty _ _ (by intro h; simp only [String.append_eq_empty_iff] at h; exact absurd h.2 (by decide))
 
 /-- Non-vacuity `CanReach` witness for `test_sqlite_mapRawError_returnsNonEmptyMessage`. -/
 theorem reach_sqlite_mapRawError_returnsNonEmptyMessage :

@@ -5,7 +5,6 @@ import LeanSwe.Toml.Impl
 import LeanSwe.Toml.SpecTests
 import LeanSwe.NumParse.Types
 import LeanSwe.NumParse.Model
-import LeanSwe.NumParse.SpecTests
 
 /-!
 Core invariants, error classification, well-formedness, and `ValidNumApi` refinement for `LeanSwe/Toml`.
@@ -22,15 +21,33 @@ open Core LeanSwe.Toml LeanSwe.Toml.Model LeanSwe.Toml.Impl LeanSwe.NumParse Lea
 /-- Bundle of `NumParse` specification proofs assumed for a parametric `numApi : NumParseApi`. -/
 structure ValidNumApi (numApi : NumParseApi) : Prop where
   /-- Errors returned by `numApi` carry non-empty diagnostic messages. -/
-  onError : Core.AllPass (test_numparse_onError_returnsNonEmptyMessage numApi)
-  /-- `parseInt64` refines `parseInt64Model`. -/
-  parseInt64 : Core.AllPass (test_numparse_parseInt64_matchesModel numApi)
-  /-- `parseFloat` refines `parseFloatModel`. -/
-  parseFloat : Core.AllPass (test_numparse_parseFloat_matchesModel numApi)
-  /-- `formatInt` round-trips through `parseInt` and `parseIntModel`. -/
-  formatInt : Core.AllPass (test_numparse_formatInt_roundTrip numApi)
+  onError : ∀ s : String,
+    (∀ e, numApi.parseInt s = .error e → e.message ≠ "") ∧
+    (∀ e, numApi.parseInt64 s = .error e → e.message ≠ "") ∧
+    (∀ e, numApi.parseFloat s = .error e → e.message ≠ "")
+  /-- `parseInt64` refines `parseInt64Model` with non-empty error messages. -/
+  parseInt64 : ∀ s : String, allowedParseInt64 s (numApi.parseInt64 s)
+  /-- `parseFloat` refines `parseFloatModel` up to `FloatBitMatch` with non-empty error messages. -/
+  parseFloat : ∀ s : String,
+    match numApi.parseFloat s, parseFloatModel s with
+    | .ok actual, .ok expected => FloatBitMatch expected actual
+    | .error e, .error expectedKind => e.kind = expectedKind ∧ e.message ≠ ""
+    | _, _ => False
+  /-- `formatInt` emits underscore-free decimal text that round-trips through `parseIntModel`, `parseInt`, and `parseInt64`. -/
+  formatInt : ∀ n : Int,
+    !(numApi.formatInt n).contains '_' ∧
+    parseIntModel (numApi.formatInt n) = .ok n ∧
+    numApi.parseInt (numApi.formatInt n) = .ok n ∧
+    (if inInt64Range n then numApi.parseInt64 (numApi.formatInt n) = .ok (Int64.ofInt n)
+     else match numApi.parseInt64 (numApi.formatInt n) with
+       | .error e => e.kind = .overflow ∧ e.message ≠ ""
+       | .ok _ => False)
   /-- `formatFloat` satisfies `FloatFormatSpec` and round-trips through `parseFloat`. -/
-  formatFloat : Core.AllPass (test_numparse_formatFloat_specAndRoundTrip numApi)
+  formatFloat : ∀ x : Float,
+    FloatFormatSpec x (numApi.formatFloat x) ∧
+    match numApi.parseFloat (numApi.formatFloat x) with
+    | .ok y => FloatBitMatch x y ∧ FloatEquiv x y
+    | .error _ => False
   /-- `formatInt` emits canonical signed decimal characters (`'-'` or `'0'..'9'`). -/
   formatIntChars : ∀ n : Int, (numApi.formatInt n).toList.all (fun c => isAsciiDigit c || c == '-') = true
 
@@ -905,16 +922,21 @@ private theorem insertAtActivePath_bitMatch (fullPath : List String) {e1 e2 : Li
 private theorem parseInt64_refines (numApi : NumParseApi) (hnum : ValidNumApi numApi) (s : String) :
     match parseInt64Model s, numApi.parseInt64 s with | .ok n1, .ok n2 => n1 = n2 | .error k1, .error e2 => e2.kind = k1 ∧ e2.message ≠ "" | _, _ => False := by
   have h := hnum.parseInt64 s
-  dsimp only [test_numparse_parseInt64_matchesModel, Core.NondetTest.nondet, NondetTest.assert, bind, pure] at h
-  cases hm : parseInt64Model s <;> cases ha : numApi.parseInt64 s <;> simp [hm, ha] at h
-  · exact h
-  · exact h.symm
+  have h1 := h.1
+  cases hm : parseInt64Model s with
+  | ok n1 =>
+    cases ha : numApi.parseInt64 s with
+    | ok n2 => simp [Except.mapError, ha, hm] at h1; exact h1.symm
+    | error _ => simp [Except.mapError, ha, hm] at h1
+  | error k1 =>
+    cases ha : numApi.parseInt64 s with
+    | ok _ => simp [Except.mapError, ha, hm] at h1
+    | error e2 => simp [Except.mapError, ha, hm] at h1; exact ⟨h1, h.2 e2 ha⟩
 
 private theorem parseFloat_refines (numApi : NumParseApi) (hnum : ValidNumApi numApi) (s : String) :
     match parseFloatModel s, numApi.parseFloat s with | .ok f1, .ok f2 => FloatBitMatch f1 f2 | .error k1, .error e2 => e2.kind = k1 ∧ e2.message ≠ "" | _, _ => False := by
   have h := hnum.parseFloat s
-  dsimp only [test_numparse_parseFloat_matchesModel, Core.NondetTest.nondet, NondetTest.assert, bind, pure] at h
-  cases hm : parseFloatModel s <;> cases ha : numApi.parseFloat s <;> simp [hm, ha] at h <;> exact h
+  cases ha : numApi.parseFloat s <;> cases hm : parseFloatModel s <;> simp [ha, hm] at h ⊢ <;> exact h
 
 private theorem classifyScalarChars_refines (numApi : NumParseApi) (hnum : ValidNumApi numApi) (cs : List Char) :
     ExceptMatch ValBitMatch (classifyScalarChars modelCharNumApi cs) (classifyScalarChars (toCharNumApi numApi) cs) := by

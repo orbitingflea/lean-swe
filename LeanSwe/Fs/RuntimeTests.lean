@@ -2259,6 +2259,40 @@ private def testCreationModesAndUmask (tmp : String) : IO Unit := do
     assertTrue ((stSubFile.mode &&& 0o777) == expectPerm 0o644)
       s!"Subtree.atomicWriteBytes perm {stSubFile.mode &&& 0o777} matches 0o644 & ~umask ({expectPerm 0o644})"
 
+private def testMkdirToctouRace (tmp : String) : IO Unit := do
+  let raceDir := Fs.join tmp "toctou-dir-race"
+  let raceFile := Fs.join tmp "toctou-file-race"
+  let statCallsRef ← IO.mkRef (0 : Nat)
+  let fileStatCallsRef ← IO.mkRef (0 : Nat)
+  let dirRacingOps : Model.RawFsOpsM IO LinuxSyscall.RawFd :=
+    { SysBridge.defaultOps with
+      stat := fun follow p => do
+        if p == raceDir then
+          let n ← statCallsRef.modifyGet fun c => (c, c + 1)
+          if n == 0 then
+            return .error { kind := .notFound, path := some p, message := "initial stat before peer mkdir" }
+        else if p == raceFile then
+          let n ← fileStatCallsRef.modifyGet fun c => (c, c + 1)
+          if n == 0 then
+            return .error { kind := .notFound, path := some p, message := "initial stat before peer file" }
+        SysBridge.defaultOps.stat follow p
+      createDir := fun p => do
+        if p == raceDir then
+          let _ ← Fs.mkdir p false false
+          return .error { kind := .alreadyExists, path := some p, message := "simulated concurrent mkdir" }
+        else if p == raceFile then
+          let _ ← Fs.writeText p "not-a-dir"
+          return .error { kind := .alreadyExists, path := some p, message := "simulated concurrent file" }
+        else
+          SysBridge.defaultOps.createDir p }
+  let racingApi := Fs.Internal.mkApiM dirRacingOps
+  assertOk (← racingApi.mkdir raceDir true true) "mkdir tolerates concurrent createDir alreadyExists on real dir"
+  assertTrue ((← statCallsRef.get) == 2) "mkdir TOCTOU dir race exercised initial and recovery stat"
+  assertTrue (← assertOk (← Fs.isDir raceDir) "raceDir isDir") "raceDir created as directory"
+  assertErrKind (← racingApi.mkdir raceFile true true) .alreadyExists
+    "mkdir rejects concurrent regular file creation on TOCTOU race"
+  assertTrue ((← fileStatCallsRef.get) == 2) "mkdir TOCTOU file race exercised initial and recovery stat"
+
 /-- Execute all pure path and real filesystem runtime checks for `LeanSwe.Fs`. -/
 def runAll : IO Unit := do
   Core.runRegisteredErrorTests registeredErrorTests
@@ -2272,6 +2306,7 @@ def runAll : IO Unit := do
     testWithSubtree tmp
     testSysBridgeEdgeCases tmp
     testCreationModesAndUmask tmp
+    testMkdirToctouRace tmp
   IO.println "PASS: LeanSwe.Fs runtime tests"
 
 end LeanSwe.Fs.RuntimeTests
