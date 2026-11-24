@@ -704,23 +704,21 @@ private theorem io_bind_ok {α β : Type} (x : IO α) (f : α → IO β) (w : Vo
   change EST.bind x f w = f a w'
   simp [EST.bind, h]
 
+private theorem validateSpawnRequest_err_is_invalidInput (req : SpawnRequest) (err : ProcessError)
+    (h : Internal.validateSpawnRequest req = .error err) : err.kind = .invalidInput := by
+  unfold Internal.validateSpawnRequest at h; repeat (first | (rw [Except.error.injEq] at h; subst h; rfl) | (rw [Except.ok.injEq] at h; cases h) | split at h | cases h)
+
 private theorem validateRequest_err_is_invalidInput (req : ExecRequest) (err : ProcessError)
     (h : Internal.validateRequest req = .error err) : err.kind = .invalidInput := by
-  unfold Internal.validateRequest at h
-  repeat (first
-    | (rw [Except.error.injEq] at h; subst h; rfl)
-    | (rw [Except.ok.injEq] at h; cases h)
-    | split at h
-    | cases h)
+  unfold Internal.validateRequest at h; cases hS : Internal.validateSpawnRequest req.toSpawnRequest with
+  | error e => simp only [hS, Except.error.injEq] at h; subst h; exact validateSpawnRequest_err_is_invalidInput req.toSpawnRequest e hS
+  | ok _ => simp only [hS] at h; split at h <;> first | (rw [Except.error.injEq] at h; subst h; rfl) | cases h
 
-private theorem validateRequest_ok_limits {req norm : ExecRequest}
-    (h : Internal.validateRequest req = .ok norm) :
+private theorem validateRequest_ok_limits {req norm : ExecRequest} (h : Internal.validateRequest req = .ok norm) :
     norm.timeoutMs = req.timeoutMs ∧ norm.maxOutputBytes = req.maxOutputBytes := by
-  unfold Internal.validateRequest at h
-  repeat (first
-    | (rw [Except.ok.injEq] at h; subst h; exact ⟨rfl, rfl⟩)
-    | split at h
-    | cases h)
+  unfold Internal.validateRequest at h; cases hS : Internal.validateSpawnRequest req.toSpawnRequest with
+  | error _ => simp [hS] at h
+  | ok _ => simp only [hS] at h; split at h <;> first | (rw [Except.ok.injEq] at h; subst h; exact ⟨rfl, rfl⟩) | cases h
 
 private def outcomePred (timeoutMs? maxOut? : Option Nat) : ExecOutcome → Prop
   | .timedOut _ _ => timeoutMs? ≠ none
@@ -1020,20 +1018,20 @@ private theorem killProcessGroupPure_sat {fd : Type}
             · exact sat_pure (mapErrno_basic _ _ e)
           | ok _ => exact sat_pure trivial
 
-private theorem defaultOps_spawn_inv (req : ExecRequest) (w : Void IO.RealWorld) :
+private theorem defaultOps_spawn_inv (req : SpawnRequest) (w : Void IO.RealWorld) :
     ∃ r w', LeanSwe.Process.spawn req w = .ok r w' ∧ basicErrOrOk r := by
   unfold LeanSwe.Process.spawn defaultApi Internal.mkApiM Internal.spawn
   dsimp only
-  cases hVal : Internal.validateRequest req with
+  cases hVal : Internal.validateSpawnRequest req with
   | error err =>
-    exact ⟨.error err, w, rfl, basic_invalid (validateRequest_err_is_invalidInput req err hVal)⟩
+    exact ⟨.error err, w, rfl, basic_invalid (validateSpawnRequest_err_is_invalidInput req err hVal)⟩
   | ok norm =>
     dsimp only
     rcases catchProc_sat (some norm.program)
-        (spawnPure ioSysDeps ioProcTableOps DEFAULT_EINTR_FUEL norm)
-        (basicErrOrOk_to_exceptBasic (spawnPure_ioSysDeps_sat ioProcTableOps DEFAULT_EINTR_FUEL norm)) w with
+        (spawnPure ioSysDeps ioProcTableOps DEFAULT_EINTR_FUEL { toSpawnRequest := norm })
+        (basicErrOrOk_to_exceptBasic (spawnPure_ioSysDeps_sat ioProcTableOps DEFAULT_EINTR_FUEL { toSpawnRequest := norm })) w with
       ⟨rSpawn, w1, hSpawn, hSpawnInv⟩
-    change defaultOps.spawn norm w = .ok rSpawn w1 at hSpawn
+    change defaultOps.spawn { toSpawnRequest := norm } w = .ok rSpawn w1 at hSpawn
     rw [io_bind_ok _ _ _ hSpawn]
     cases rSpawn with
     | error err => exact ⟨_, w1, rfl, ensureNonEmptyMsg_basic "process spawn failed" hSpawnInv⟩
@@ -1087,28 +1085,28 @@ private theorem defaultOps_reap_inv (h : ProcessHandle) (w : Void IO.RealWorld) 
   | ok u => exact ⟨.ok u, w1, rfl, trivial⟩
 
 /-- `Process.spawn` never fails with `.timedOut`. -/
-theorem process_spawn_never_timedOut (req : ExecRequest) (w : Void IO.RealWorld) :
+theorem process_spawn_never_timedOut (req : SpawnRequest) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO ProcessError.kind .timedOut (LeanSwe.Process.spawn req) w := by
   unfold Core.NeverErrorKindIO
   rcases defaultOps_spawn_inv req w with ⟨r, w', hr, hinv⟩
   rw [hr]; cases r with | ok _ => exact trivial | error _ => exact hinv.1
 
 /-- `Process.spawn` never fails with `.outputLimitExceeded`. -/
-theorem process_spawn_never_outputLimitExceeded (req : ExecRequest) (w : Void IO.RealWorld) :
+theorem process_spawn_never_outputLimitExceeded (req : SpawnRequest) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO ProcessError.kind .outputLimitExceeded (LeanSwe.Process.spawn req) w := by
   unfold Core.NeverErrorKindIO
   rcases defaultOps_spawn_inv req w with ⟨r, w', hr, hinv⟩
   rw [hr]; cases r with | ok _ => exact trivial | error _ => exact hinv.2.1
 
 /-- `Process.spawn` never fails with `.terminatedBySignal`. -/
-theorem process_spawn_never_terminatedBySignal (req : ExecRequest) (w : Void IO.RealWorld) :
+theorem process_spawn_never_terminatedBySignal (req : SpawnRequest) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO ProcessError.kind .terminatedBySignal (LeanSwe.Process.spawn req) w := by
   unfold Core.NeverErrorKindIO
   rcases defaultOps_spawn_inv req w with ⟨r, w', hr, hinv⟩
   rw [hr]; cases r with | ok _ => exact trivial | error _ => exact hinv.2.2.1
 
 /-- `Process.spawn` never fails with `.nonZeroExit`. -/
-theorem process_spawn_never_nonZeroExit (req : ExecRequest) (w : Void IO.RealWorld) :
+theorem process_spawn_never_nonZeroExit (req : SpawnRequest) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO ProcessError.kind .nonZeroExit (LeanSwe.Process.spawn req) w := by
   unfold Core.NeverErrorKindIO
   rcases defaultOps_spawn_inv req w with ⟨r, w', hr, hinv⟩

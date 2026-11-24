@@ -3,7 +3,7 @@ import LeanSwe.Process.Types
 namespace LeanSwe.Process.Internal
 
 open LeanSwe.Process
-  (ProcessErrorKind ProcessError ProcessRawError ExecRequest ExecResult
+  (ProcessErrorKind ProcessError ProcessRawError SpawnRequest ExecRequest ExecResult
    ProcessHandle ExecOutcome RawProcessOpsM ProcessApiM)
 
 /-- Return `err` with a non-empty fallback message if `err.message` is empty. -/
@@ -28,8 +28,8 @@ def dedupEnvList : List (String × Option String) → List (String × Option Str
     let tail := dedupEnvList rest
     if tail.any (fun p => p.1 == kv.1) then tail else kv :: tail
 
-/-- Validate and normalize an `ExecRequest` before spawning. -/
-def validateRequest (req : ExecRequest) : Except ProcessError ExecRequest :=
+/-- Validate and normalize a `SpawnRequest` before spawning. -/
+def validateSpawnRequest (req : SpawnRequest) : Except ProcessError SpawnRequest :=
   if req.program.isEmpty then
     .error { kind := .invalidInput, program := some req.program, message := "executable program must not be empty" }
   else if hasNul req.program then
@@ -40,10 +40,18 @@ def validateRequest (req : ExecRequest) : Except ProcessError ExecRequest :=
     .error { kind := .invalidInput, program := some req.program, message := "working directory must not contain NUL bytes" }
   else if req.env.toList.any isInvalidEnvEntry then
     .error { kind := .invalidInput, program := some req.program, message := "invalid environment variable entry" }
-  else if req.timeoutMs == some 0 then
-    .error { kind := .invalidInput, program := some req.program, message := "timeoutMs must be greater than zero" }
   else
     .ok { req with env := (dedupEnvList req.env.toList).toArray }
+
+/-- Validate and normalize an `ExecRequest` before spawning. -/
+def validateRequest (req : ExecRequest) : Except ProcessError ExecRequest :=
+  match validateSpawnRequest req.toSpawnRequest with
+  | .error err => .error err
+  | .ok norm =>
+    if req.timeoutMs == some 0 then
+      .error { kind := .invalidInput, program := some req.program, message := "timeoutMs must be greater than zero" }
+    else
+      .ok { req with toSpawnRequest := norm }
 
 /-- Construct a direct `execvp`-style `ExecRequest` from `program` and `args`. -/
 def mkCommandRequest (program : String) (args : Array String) : ExecRequest :=
@@ -54,12 +62,12 @@ def withTextInput (req : ExecRequest) (text : String) : ExecRequest :=
   { req with stdin := text.toUTF8 }
 
 /-- Validate `req` and spawn a child process in its own process group via `raw`. -/
-def spawn {m : Type → Type} [Monad m] (raw : RawProcessOpsM m) (req : ExecRequest) :
+def spawn {m : Type → Type} [Monad m] (raw : RawProcessOpsM m) (req : SpawnRequest) :
     m (Except ProcessError ProcessHandle) := do
-  match validateRequest req with
+  match validateSpawnRequest req with
   | .error err => return .error err
   | .ok norm =>
-    match ← raw.spawn norm with
+    match ← raw.spawn { toSpawnRequest := norm } with
     | .error err => return .error (ensureNonEmptyMsg "process spawn failed" err)
     | .ok h => return .ok h
 

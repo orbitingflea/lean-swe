@@ -224,11 +224,49 @@ private def runProcessSigpipeCheck : IO Unit := do
   | .error e =>
     throw (IO.userError s!"Process SIGPIPE SIG_DFL probe errored (killed?): {repr e}")
 
+private def runProcessSpawnRequestCheck : IO Unit := do
+  let check (label : String) (cond : Bool) : IO Unit := do
+    if !cond then throw (IO.userError s!"PROCESS_SPAWN_REQ_CHECK_FAIL: {label}")
+  let checkInvalid (label : String) (req : Process.SpawnRequest) : IO Unit := do
+    match Process.Internal.validateSpawnRequest req with
+    | .ok _ => throw (IO.userError s!"PROCESS_SPAWN_REQ_CHECK_FAIL: expected error for {label}")
+    | .error e => check s!"{label} kind/msg" (e.kind == .invalidInput && !e.message.isEmpty)
+  checkInvalid "empty program" { program := "" }
+  checkInvalid "nul program" { program := "a\x00b" }
+  checkInvalid "nul arg" { program := "echo", args := #["x\x00y"] }
+  checkInvalid "nul cwd" { program := "echo", cwd := some "/tmp/\x00a" }
+  checkInvalid "empty env key" { program := "echo", env := #[("", some "1")] }
+  checkInvalid "eq env key" { program := "echo", env := #[("A=B", some "1")] }
+  checkInvalid "nul env key" { program := "echo", env := #[("A\x00B", some "1")] }
+  checkInvalid "nul env val" { program := "echo", env := #[("A", some "v\x00w")] }
+  let validReq : Process.SpawnRequest :=
+    { program := "echo"
+      args := #["hi"]
+      cwd := some "/tmp"
+      env := #[("K", some "1"), ("KEEP", none), ("K", some "2")]
+      inheritEnv := false }
+  match Process.Internal.validateSpawnRequest validReq with
+  | .error e => throw (IO.userError s!"PROCESS_SPAWN_REQ_CHECK_FAIL: unexpected error: {repr e}")
+  | .ok norm =>
+    check "dedup + preserve fields"
+      (norm.program == "echo" && norm.args == #["hi"] && norm.cwd == some "/tmp" &&
+        norm.inheritEnv == false && norm.env == #[("KEEP", none), ("K", some "2")])
+    check "idempotent" (Process.Internal.validateSpawnRequest norm == .ok norm)
+  let zeroTimeoutExec : Process.ExecRequest :=
+    { program := "echo", stdin := "in".toUTF8, timeoutMs := some 0, maxOutputBytes := some 8 }
+  check "validateRequest rejects zero timeout"
+    (match Process.validateRequest zeroTimeoutExec with
+      | .error e => e.kind == .invalidInput && !e.message.isEmpty
+      | .ok _ => false)
+  check "validateSpawnRequest accepts projection"
+    (Process.Internal.validateSpawnRequest zeroTimeoutExec.toSpawnRequest ==
+      .ok { program := "echo" })
+
 /-- Mutation test suite for `LeanSwe.Process`. -/
 def processSuite : MutateSuite :=
   { name := "Process"
     runBase := do Process.RuntimeTests.runAll; return none
-    runExtra := runProcessSigpipeCheck }
+    runExtra := do runProcessSpawnRequestCheck; runProcessSigpipeCheck }
 
 /-- Mutation test suite for `LeanSwe.Git`. -/
 def gitSuite : MutateSuite :=

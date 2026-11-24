@@ -25,7 +25,7 @@ def defaultApi : ProcessApi :=
   defaultApi.withTextInput req text
 
 /-- Validate `req` and spawn a child process directly in its own process group. -/
-@[inline] def spawn (req : ExecRequest) : IO (Except ProcessError ProcessHandle) :=
+@[inline] def spawn (req : SpawnRequest) : IO (Except ProcessError ProcessHandle) :=
   defaultApi.spawn req
 
 /-- Feed `stdin`, stream `stdout`/`stderr`, and wait for completion, timeout, or output cap. -/

@@ -1186,12 +1186,12 @@ def test_process_sysBridge_spawnCwdIsolationKillPgid1AndChdirError
     ((1 : Int32), LinuxSyscall.Process.Signal.sigkill) ∈ rFull.2.killedTargets.toList ∧
     rFull.2.openFds = [7])
 
-/-- `Internal.mkApiM.spawn` rejects every invalid `ExecRequest` with `.invalidInput` and a non-empty message without calling `raw.spawn` or mutating state. -/
+/-- `Internal.mkApiM.spawn` rejects every invalid `SpawnRequest` with `.invalidInput` and a non-empty message without calling `raw.spawn` or mutating state. -/
 def test_process_spawn_invalidRequest_doesNotCallRaw
     {runner} [NondetTest runner]
     (mkApiFn : RawProcessOpsM (StateM Nat) → ProcessApiM (StateM Nat)) : runner Unit := do
   let s₀ ← nondet Nat
-  let req ← nondet ExecRequest
+  let req ← nondet SpawnRequest
   let raw : RawProcessOpsM (StateM Nat) :=
     { mapRawError := fun _ => { kind := .ioError, message := "err" }
       spawn := fun _ => modifyGet fun n => (.ok { handleId := n, pid := 1, pgid := 1 }, n + 1)
@@ -1200,18 +1200,18 @@ def test_process_spawn_invalidRequest_doesNotCallRaw
       reap := fun _ => pure (.ok ())
       activeProcessCount := get }
   let api := mkApiFn raw
-  match api.validateRequest req with
+  match api.validateRequest { toSpawnRequest := req } with
   | .ok _ => assume False
   | .error _ =>
     let (res, s₁) := (api.spawn req).run s₀
     NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput ∧ e.message ≠ "") ∧ s₁ = s₀)
 
-/-- `Internal.mkApiM.spawn` passes the `validateRequest`-normalized request to `raw.spawn` and behaves identically on `req` and `norm`. -/
+/-- `Internal.mkApiM.spawn` passes the `validateSpawnRequest`-normalized request (with default `ExecRequest` I/O fields) to `raw.spawn` and behaves identically on `req` and `norm`. -/
 def test_process_spawn_usesNormalizedRequest
     {runner} [NondetTest runner]
     (mkApiFn : RawProcessOpsM (StateM (Option ExecRequest)) → ProcessApiM (StateM (Option ExecRequest))) :
     runner Unit := do
-  let req ← nondet ExecRequest
+  let req ← nondet SpawnRequest
   let raw : RawProcessOpsM (StateM (Option ExecRequest)) :=
     { mapRawError := fun _ => { kind := .ioError, message := "err" }
       spawn := fun r => modifyGet fun _ => (.ok { handleId := 1, pid := 7, pgid := 7 }, some r)
@@ -1220,11 +1220,11 @@ def test_process_spawn_usesNormalizedRequest
       reap := fun _ => pure (.ok ())
       activeProcessCount := pure 0 }
   let api := mkApiFn raw
-  match api.validateRequest req with
+  match api.validateRequest { toSpawnRequest := req } with
   | .error _ => assume False
   | .ok norm =>
     let (res1, seen1) := (api.spawn req).run none
-    let (res2, seen2) := (api.spawn norm).run none
+    let (res2, seen2) := (api.spawn norm.toSpawnRequest).run none
     NondetTest.assert (seen1 = some norm ∧ seen2 = some norm ∧ res1 = res2)
 
 /-- `Internal.mkApiM.awaitOutput` rejects `timeoutMs = some 0` with `.invalidInput` and a non-empty message without invoking `raw.awaitOutput` or mutating state. -/
@@ -1294,7 +1294,7 @@ def test_process_lifecycle_delegatesAndNormalizesErrors
       RawProcessOpsM (StateM LifecycleScriptState) →
       ProcessApiM (StateM LifecycleScriptState)) : runner Unit := do
   let api := mkApiFn mkLifecycleScriptRawOps
-  let req : ExecRequest := { program := "/bin/demo", args := #["x"] }
+  let req : SpawnRequest := { program := "/bin/demo", args := #["x"] }
   let okProg : StateM LifecycleScriptState Bool := do
     match ← api.spawn req with
     | .error _ => return false

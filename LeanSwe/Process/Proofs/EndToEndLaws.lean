@@ -18,11 +18,11 @@ theorem stateT_bind_run {σ α β : Type} (x : StateM σ α) (f : α → StateM 
   cases x s
   rfl
 
-/-- Every error returned by `Internal.validateRequest` has kind `.invalidInput` and a non-empty message. -/
-theorem validateRequest_err_spec (req : ExecRequest) (err : ProcessError)
-    (h : Internal.validateRequest req = .error err) :
+/-- Every error returned by `Internal.validateSpawnRequest` has kind `.invalidInput` and a non-empty message. -/
+theorem validateSpawnRequest_err_spec (req : SpawnRequest) (err : ProcessError)
+    (h : Internal.validateSpawnRequest req = .error err) :
     err.kind = .invalidInput ∧ err.message ≠ "" := by
-  unfold Internal.validateRequest at h
+  unfold Internal.validateSpawnRequest at h
   by_cases h1 : req.program.isEmpty = true
   · rw [ite_eq_left h1, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
   · rw [ite_eq_right h1] at h
@@ -37,10 +37,7 @@ theorem validateRequest_err_spec (req : ExecRequest) (err : ProcessError)
           simp only [hcwd, Bool.false_eq_true, ↓reduceIte] at h
           by_cases h5 : req.env.toList.any Internal.isInvalidEnvEntry = true
           · rw [ite_eq_left h5, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-          · rw [ite_eq_right h5] at h
-            by_cases h6 : (req.timeoutMs == some 0) = true
-            · rw [ite_eq_left h6, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-            · rw [ite_eq_right h6] at h; cases h
+          · rw [ite_eq_right h5] at h; cases h
         | some d =>
           simp only [hcwd] at h
           by_cases h4 : Internal.hasNul d = true
@@ -48,10 +45,29 @@ theorem validateRequest_err_spec (req : ExecRequest) (err : ProcessError)
           · rw [ite_eq_right h4] at h
             by_cases h5 : req.env.toList.any Internal.isInvalidEnvEntry = true
             · rw [ite_eq_left h5, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-            · rw [ite_eq_right h5] at h
-              by_cases h6 : (req.timeoutMs == some 0) = true
-              · rw [ite_eq_left h6, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-              · rw [ite_eq_right h6] at h; cases h
+            · rw [ite_eq_right h5] at h; cases h
+
+/-- Every error returned by `Internal.validateRequest` has kind `.invalidInput` and a non-empty message. -/
+theorem validateRequest_err_spec (req : ExecRequest) (err : ProcessError)
+    (h : Internal.validateRequest req = .error err) :
+    err.kind = .invalidInput ∧ err.message ≠ "" := by
+  unfold Internal.validateRequest at h
+  cases hS : Internal.validateSpawnRequest req.toSpawnRequest with
+  | error e =>
+    simp only [hS, Except.error.injEq] at h
+    subst h
+    exact validateSpawnRequest_err_spec req.toSpawnRequest e hS
+  | ok _ =>
+    simp only [hS] at h
+    by_cases h6 : (req.timeoutMs == some 0) = true
+    · rw [ite_eq_left h6, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
+    · rw [ite_eq_right h6] at h; cases h
+
+private theorem validateSpawnRequest_ok_program {req norm : SpawnRequest}
+    (h : Internal.validateSpawnRequest req = .ok norm) :
+    norm.program = req.program := by
+  unfold Internal.validateSpawnRequest at h
+  repeat (first | (rw [Except.ok.injEq] at h; subst h; rfl) | split at h | cases h)
 
 private theorem validateRequest_ok_fields_preserved {req norm : ExecRequest}
     (h : Internal.validateRequest req = .ok norm) :
@@ -59,7 +75,14 @@ private theorem validateRequest_ok_fields_preserved {req norm : ExecRequest}
     norm.timeoutMs = req.timeoutMs ∧
     norm.maxOutputBytes = req.maxOutputBytes := by
   unfold Internal.validateRequest at h
-  repeat (first | (rw [Except.ok.injEq] at h; subst h; exact ⟨rfl, rfl, rfl⟩) | split at h | cases h)
+  cases hS : Internal.validateSpawnRequest req.toSpawnRequest with
+  | error _ => simp [hS] at h
+  | ok sn =>
+    simp only [hS] at h
+    split at h
+    · cases h
+    · rw [Except.ok.injEq] at h; subst h
+      exact ⟨validateSpawnRequest_ok_program hS, rfl, rfl⟩
 
 private theorem ensureNonEmpty_msg_and_kind (fb : String) (err : ProcessError) (hfb : fb ≠ "") :
     (Internal.ensureNonEmptyMsg fb err).message ≠ "" ∧
@@ -232,11 +255,11 @@ private theorem dedupEnv_idempotent (xs : List (String × Option String)) :
     obtain ⟨hnot, hrest⟩ := h
     simp [Internal.dedupEnvList, ih hrest, hnot]
 
-/-- `Internal.validateRequest` is idempotent on accepted requests. -/
-theorem validateRequest_idempotent_ok {req norm : ExecRequest}
-    (h : Internal.validateRequest req = .ok norm) :
-    Internal.validateRequest norm = .ok norm := by
-  unfold Internal.validateRequest at h
+/-- `Internal.validateSpawnRequest` is idempotent on accepted requests. -/
+theorem validateSpawnRequest_idempotent_ok {req norm : SpawnRequest}
+    (h : Internal.validateSpawnRequest req = .ok norm) :
+    Internal.validateSpawnRequest norm = .ok norm := by
+  unfold Internal.validateSpawnRequest at h
   by_cases h1 : req.program.isEmpty = true
   · rw [ite_eq_left h1] at h; cases h
   · rw [ite_eq_right h1] at h
@@ -254,20 +277,16 @@ theorem validateRequest_idempotent_ok {req norm : ExecRequest}
           simp only [hcwd, Bool.false_eq_true, ↓reduceIte] at h
           by_cases h5 : req.env.toList.any Internal.isInvalidEnvEntry = true
           · rw [ite_eq_left h5] at h; cases h
-          · rw [ite_eq_right h5] at h
-            by_cases h6 : (req.timeoutMs == some 0) = true
-            · rw [ite_eq_left h6] at h; cases h
-            · rw [ite_eq_right h6, Except.ok.injEq] at h
-              subst h
-              have h5f := Bool.eq_false_iff.mpr h5
-              have h6f := Bool.eq_false_iff.mpr h6
-              have h5' : ((Internal.dedupEnvList req.env.toList).toArray).toList.any Internal.isInvalidEnvEntry = false := by
-                have hArr : ((Internal.dedupEnvList req.env.toList).toArray).toList =
-                    Internal.dedupEnvList req.env.toList := by simp
-                rw [hArr, List.any_eq_false]
-                intro x hx
-                exact List.any_eq_false.mp h5f x (mem_dedupEnv hx)
-              simp [Internal.validateRequest, h1f, h2f, h3f, h5', h6f, dedupEnv_idempotent]
+          · rw [ite_eq_right h5, Except.ok.injEq] at h
+            subst h
+            have h5f := Bool.eq_false_iff.mpr h5
+            have h5' : ((Internal.dedupEnvList req.env.toList).toArray).toList.any Internal.isInvalidEnvEntry = false := by
+              have hArr : ((Internal.dedupEnvList req.env.toList).toArray).toList =
+                  Internal.dedupEnvList req.env.toList := by simp
+              rw [hArr, List.any_eq_false]
+              intro x hx
+              exact List.any_eq_false.mp h5f x (mem_dedupEnv hx)
+            simp [Internal.validateSpawnRequest, h1f, h2f, h3f, h5', dedupEnv_idempotent]
         | some d =>
           simp only [hcwd] at h
           by_cases h4 : Internal.hasNul d = true
@@ -275,20 +294,42 @@ theorem validateRequest_idempotent_ok {req norm : ExecRequest}
           · rw [ite_eq_right h4] at h
             by_cases h5 : req.env.toList.any Internal.isInvalidEnvEntry = true
             · rw [ite_eq_left h5] at h; cases h
-            · rw [ite_eq_right h5] at h
-              by_cases h6 : (req.timeoutMs == some 0) = true
-              · rw [ite_eq_left h6] at h; cases h
-              · rw [ite_eq_right h6, Except.ok.injEq] at h
-                subst h
-                have h4f := Bool.eq_false_iff.mpr h4
-                have h5f := Bool.eq_false_iff.mpr h5
-                have h6f := Bool.eq_false_iff.mpr h6
-                have h5' : ((Internal.dedupEnvList req.env.toList).toArray).toList.any Internal.isInvalidEnvEntry = false := by
-                  have hArr : ((Internal.dedupEnvList req.env.toList).toArray).toList =
-                      Internal.dedupEnvList req.env.toList := by simp
-                  rw [hArr, List.any_eq_false]
-                  intro x hx
-                  exact List.any_eq_false.mp h5f x (mem_dedupEnv hx)
-                simp [Internal.validateRequest, h1f, h2f, h3f, h4f, h5', h6f, dedupEnv_idempotent]
+            · rw [ite_eq_right h5, Except.ok.injEq] at h
+              subst h
+              have h4f := Bool.eq_false_iff.mpr h4
+              have h5f := Bool.eq_false_iff.mpr h5
+              have h5' : ((Internal.dedupEnvList req.env.toList).toArray).toList.any Internal.isInvalidEnvEntry = false := by
+                have hArr : ((Internal.dedupEnvList req.env.toList).toArray).toList =
+                    Internal.dedupEnvList req.env.toList := by simp
+                rw [hArr, List.any_eq_false]
+                intro x hx
+                exact List.any_eq_false.mp h5f x (mem_dedupEnv hx)
+              simp [Internal.validateSpawnRequest, h1f, h2f, h3f, h4f, h5', dedupEnv_idempotent]
+
+/-- `Internal.validateRequest` is idempotent on accepted requests. -/
+theorem validateRequest_idempotent_ok {req norm : ExecRequest}
+    (h : Internal.validateRequest req = .ok norm) :
+    Internal.validateRequest norm = .ok norm := by
+  unfold Internal.validateRequest at h ⊢
+  cases hS : Internal.validateSpawnRequest req.toSpawnRequest with
+  | error _ => simp [hS] at h
+  | ok sn =>
+    simp only [hS] at h
+    by_cases h6 : (req.timeoutMs == some 0) = true
+    · rw [ite_eq_left h6] at h; cases h
+    · rw [ite_eq_right h6, Except.ok.injEq] at h
+      subst h
+      have hIdem := validateSpawnRequest_idempotent_ok hS
+      have h6f := Bool.eq_false_iff.mpr h6
+      simp [hIdem, h6f]
+
+/-- Lifting a `SpawnRequest` to an `ExecRequest` with default I/O fields gives `validateRequest` equivalent to `validateSpawnRequest`. -/
+theorem validateRequest_toExecRequest (req : SpawnRequest) :
+    Internal.validateRequest { toSpawnRequest := req } =
+      match Internal.validateSpawnRequest req with
+      | .error e => .error e
+      | .ok norm => .ok { toSpawnRequest := norm } := by
+  unfold Internal.validateRequest
+  cases Internal.validateSpawnRequest req <;> rfl
 
 end LeanSwe.Process.Proofs
