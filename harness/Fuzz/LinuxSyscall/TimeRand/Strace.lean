@@ -192,10 +192,11 @@ private def seccompWorker (errName : String) : IO UInt32 := do
     [ (.clock_gettime .realtime, outcomeOfTimespec <$> clock_gettime .realtime, true)
     , (.clock_gettime .monotonic, outcomeOfTimespec <$> clock_gettime .monotonic, true)
     , (.clock_nanosleep .monotonic false { sec := 0, nsec := 1000 },
-        outcomeOfUnit <$> clock_nanosleep .monotonic false { sec := 0, nsec := 1000 }, true)
+        outcomeOfUnit <$> clock_nanosleep .monotonic false { sec := 0, nsec := 1000 },
+        expected != Errno.EINTR)
     , (.clock_nanosleep .monotonic false { sec := -1, nsec := 0 },
         outcomeOfUnit <$> clock_nanosleep .monotonic false { sec := -1, nsec := 0 }, false)
-    , (.getrandom 16 {}, outcomeOfBytes <$> getrandom 16 {}, true)
+    , (.getrandom 16 {}, outcomeOfBytes <$> getrandom 16 {}, expected != Errno.EINTR)
     , (.getrandom 16 { random := true, insecure := true },
         outcomeOfBytes <$> getrandom 16 { random := true, insecure := true }, false) ]
   for (req, action, expectRejectedWithoutSeccomp) in reqs do
@@ -264,12 +265,13 @@ private def checkOuterSeccompRuntime : IO Unit := do
   let nnpAfter ← expectOk "PR_GET_NO_NEW_PRIVS after invalid calls" (← Sandbox.prctl .getNoNewPrivs)
   assertTrue "invalid installTimeRandSeccompErrno calls preserve PR_GET_NO_NEW_PRIVS" (nnpAfter == nnpBefore)
   let exe ← IO.appPath
-  let out ← IO.Process.output {
-    cmd := exe.toString
-    args := #["--timerand-strace-fault-check", "--seccomp-worker", "EPERM"]
-  }
-  if out.exitCode != 0 then
-    failWith s!"outer seccomp child check failed exit={out.exitCode}: {out.stderr}"
+  for errName in ["EPERM", "EINTR"] do
+    let out ← IO.Process.output {
+      cmd := exe.toString
+      args := #["--timerand-strace-fault-check", "--seccomp-worker", errName]
+    }
+    if out.exitCode != 0 then
+      failWith s!"outer seccomp {errName} child check failed exit={out.exitCode}: {out.stderr}"
   let tsyncOut ← IO.Process.output {
     cmd := exe.toString
     args := #["--timerand-strace-fault-check", "--seccomp-tsync-worker"]

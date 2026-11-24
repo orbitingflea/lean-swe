@@ -1,5 +1,4 @@
 import Core.Assumptions
-import LeanSwe.LinuxSyscall.TestSupport.Seccomp
 import LeanSwe.Uuid.Interface
 
 namespace LeanSwe.Uuid.RuntimeTests
@@ -172,54 +171,22 @@ def registeredErrorTests : Array RegisteredErrorTest :=
        mode := .mocked
        run := err_uuid_v4_entropyFailed } ]
 
-private def seccompWorker (errName : String) : IO UInt32 := do
-  let expected? : Option UInt32 :=
-    match errName with
-    | "EPERM" => some Errno.EPERM
-    | "EINTR" => some Errno.EINTR
-    | _ => none
-  let some expected := expected?
-    | do
-        IO.eprintln s!"uuid seccomp-worker: unsupported errno {errName}"
-        return 1
-  let rc ← LeanSwe.LinuxSyscall.TestSupport.Seccomp.installTimeRandSeccompErrno expected
-  if rc != 0 then
-    IO.eprintln s!"uuid seccomp-worker: installTimeRandSeccompErrno failed errno={rc}"
-    return 1
-  match ← Uuid.getUuid with
-  | .ok u =>
-    IO.eprintln s!"uuid seccomp-worker ({errName}): expected entropyFailed, got {Uuid.toString u}"
-    return 2
-  | .error e =>
-    if e.kind != .entropyFailed || e.errnoCode != some expected || e.message.isEmpty then
-      IO.eprintln s!"uuid seccomp-worker ({errName}): unexpected error {repr e}"
-      return 3
-    return 0
-
-/-- CLI entrypoint for `--uuid-probe`. -/
-def probeMain (args : List String) : IO UInt32 := do
-  match args with
-  | ["--seccomp-worker", errName] => seccompWorker errName
-  | _ =>
-    IO.eprintln s!"unknown uuid-probe args: {args}"
-    return 1
-
-private def checkLiveSeccomp : IO Unit := do
-  let exe ← IO.appPath
-  for errName in ["EPERM", "EINTR"] do
-    let out ← IO.Process.output {
-      cmd := exe.toString
-      args := #["--uuid-probe", "--seccomp-worker", errName]
-    }
-    if out.exitCode != 0 then
-      throw <| IO.userError s!"LeanSwe.Uuid.RuntimeTests FAILED (live seccomp {errName} exit={out.exitCode}): {out.stderr}"
+private def testInjectedTimeRandFaults : IO Unit := do
+  for expected in [Errno.EPERM, Errno.EINTR] do
+    let api := Uuid.mkApi (mkFailingTimeRandOps expected)
+    match ← api.getUuid with
+    | .ok u =>
+      throw <| IO.userError s!"LeanSwe.Uuid.RuntimeTests FAILED (injected {Errno.name expected}): expected entropyFailed, got {Uuid.toString u}"
+    | .error e =>
+      if e.kind != .entropyFailed || e.errnoCode != some expected || e.message.isEmpty then
+        throw <| IO.userError s!"LeanSwe.Uuid.RuntimeTests FAILED (injected {Errno.name expected}): unexpected error {repr e}"
 
 /-- Execute the empirical OS-entropy batch, error-coverage, and validation runtime tests for `LeanSwe.Uuid`. -/
 def runAll : IO Unit := do
   Core.runRegisteredErrorTests registeredErrorTests
   runBatchTests 1000
   runEdgeCaseTests
-  checkLiveSeccomp
+  testInjectedTimeRandFaults
   IO.println "PASS: LeanSwe.Uuid runtime tests"
 
 end LeanSwe.Uuid.RuntimeTests

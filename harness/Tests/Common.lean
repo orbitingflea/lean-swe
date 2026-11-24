@@ -5,8 +5,6 @@ import LeanSwe.CmdLine.RuntimeTests
 import LeanSwe.SlotPool.RuntimeTests
 import LeanSwe.Compress.RuntimeTests
 import LeanSwe.Process.RuntimeTests
-import LeanSwe.Uuid.RuntimeTests
-import LeanSwe.Time.RuntimeTests
 
 namespace Tests.Common
 
@@ -67,8 +65,6 @@ def findRuntimeProbe? : List String → Option (IO UInt32)
   | "--slotpool-probe" :: rest => some (LeanSwe.SlotPool.RuntimeTests.probeMain rest)
   | "--compress-probe" :: rest => some (LeanSwe.Compress.RuntimeTests.probeMain rest)
   | "--process-probe" :: rest => some (LeanSwe.Process.RuntimeTests.probeMain rest)
-  | "--uuid-probe" :: rest => some (LeanSwe.Uuid.RuntimeTests.probeMain rest)
-  | "--time-probe" :: rest => some (LeanSwe.Time.RuntimeTests.probeMain rest)
   | _ => none
 
 end Tests.Common

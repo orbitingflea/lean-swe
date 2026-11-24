@@ -1,5 +1,4 @@
 import Core.Assumptions
-import LeanSwe.LinuxSyscall.TestSupport.Seccomp
 import LeanSwe.Time.Interface
 
 namespace LeanSwe.Time.RuntimeTests
@@ -133,40 +132,35 @@ def registeredErrorTests : Array Core.RegisteredErrorTest :=
        mode := .real
        run := err_time_parseUtcDate_invalidFormat } ]
 
-private def seccompWorker : IO UInt32 := do
-  let rc ← LeanSwe.LinuxSyscall.TestSupport.Seccomp.installTimeRandSeccompErrno
-    LeanSwe.LinuxSyscall.Errno.EPERM
-  if rc != 0 then
-    IO.eprintln s!"time seccomp-worker: installTimeRandSeccompErrno failed errno={rc}"
-    return 1
-  let ts ← nowTimestamp
-  if ts != Timestamp.ofSecondsSinceUnixEpoch 0 then
-    IO.eprintln s!"time seccomp-worker: expected epoch 0 fallback, got {repr ts}"
-    return 2
-  let mono ← monoNanosNow
-  if mono != 0 then
-    IO.eprintln s!"time seccomp-worker: expected monoNanosNow = 0 fallback, got {mono}"
-    return 3
-  sleepMs 1000
-  sleepDuration (Duration.ofMillisecond 1000)
-  return 0
+private def testInjectedTimeRandFaults : IO Unit := do
+  let failingSys : LeanSwe.LinuxSyscall.TimeRand.TimeRandOpsM IO :=
+    { clock_gettime := fun _ => pure (.error LeanSwe.LinuxSyscall.Errno.EPERM)
+      clock_nanosleep := fun _ _ _ => pure (.error LeanSwe.LinuxSyscall.Errno.EPERM)
+      getrandom := fun _ _ => pure (.error LeanSwe.LinuxSyscall.Errno.EPERM) }
+  let failApi := mkApiM (mkTimeOps failingSys)
+  let ts ← failApi.nowTimestamp
+  assertTrue (ts == Timestamp.ofSecondsSinceUnixEpoch 0)
+    s!"injected EPERM expected epoch 0 fallback, got {repr ts}"
+  let mono ← failApi.monoNanosNow
+  assertTrue (mono == 0)
+    s!"injected EPERM expected monoNanosNow = 0 fallback, got {mono}"
+  failApi.sleepMs 1000
+  failApi.sleepDuration (Duration.ofMillisecond 1000)
 
-/-- CLI entrypoint for `--time-probe`. -/
-def probeMain (args : List String) : IO UInt32 := do
-  match args with
-  | ["--seccomp-worker", "EPERM"] => seccompWorker
-  | _ =>
-    IO.eprintln s!"unknown time-probe args: {args}"
-    return 1
-
-private def checkLiveSeccomp : IO Unit := do
-  let exe ← IO.appPath
-  let out ← IO.Process.output {
-    cmd := exe.toString
-    args := #["--time-probe", "--seccomp-worker", "EPERM"]
-  }
-  if out.exitCode != 0 then
-    throw <| IO.userError s!"LeanSwe.Time.RuntimeTests FAILED (live seccomp EPERM exit={out.exitCode}): {out.stderr}"
+  let sleepCalls ← IO.mkRef (0 : Nat)
+  let eintrOnceSys : LeanSwe.LinuxSyscall.TimeRand.TimeRandOpsM IO :=
+    { clock_gettime := fun _ => pure (.ok { sec := 10, nsec := 0 })
+      clock_nanosleep := fun _ _ _ => do
+        let n ← sleepCalls.modifyGet fun k => (k, k + 1)
+        if n == 0 then
+          pure (.error LeanSwe.LinuxSyscall.Errno.EINTR)
+        else
+          pure (.ok ())
+      getrandom := fun _ _ => pure (.error LeanSwe.LinuxSyscall.Errno.ENOSYS) }
+  let retryApi := mkApiM (mkTimeOps eintrOnceSys)
+  retryApi.sleepMs 1
+  let calls ← sleepCalls.get
+  assertTrue (calls == 2) s!"expected 2 clock_nanosleep calls across EINTR retry, got {calls}"
 
 /-- Execute all runtime checks for `LeanSwe.Time`. -/
 def runAll : IO Unit := do
@@ -174,7 +168,7 @@ def runAll : IO Unit := do
   testUtcDates
   testRealClockAndSleep
   Core.runRegisteredErrorTests registeredErrorTests
-  checkLiveSeccomp
+  testInjectedTimeRandFaults
   IO.println "PASS: LeanSwe.Time runtime tests"
 
 end LeanSwe.Time.RuntimeTests
