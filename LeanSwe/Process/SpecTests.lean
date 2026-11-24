@@ -1187,6 +1187,157 @@ def test_process_sysBridge_spawnCwdIsolationKillPgid1AndChdirError
     ((1 : Int32), LinuxSyscall.Process.Signal.sigkill) ∈ rFull.2.killedTargets.toList ∧
     rFull.2.openFds = [7])
 
+/-- `Internal.mkApiM.spawn` rejects every invalid `ExecRequest` with `.invalidInput` and a non-empty message without calling `raw.spawn` or mutating state. -/
+def test_process_spawn_invalidRequest_doesNotCallRaw
+    {runner} [NondetTest runner]
+    (mkApiFn : RawProcessOpsM (StateM Nat) → ProcessApiM (StateM Nat)) : runner Unit := do
+  let s₀ ← nondet Nat
+  let req ← nondet ExecRequest
+  let raw : RawProcessOpsM (StateM Nat) :=
+    { mapRawError := fun _ => { kind := .ioError, message := "err" }
+      spawn := fun _ => modifyGet fun n => (.ok { handleId := n, pid := 1, pgid := 1 }, n + 1)
+      awaitOutput := fun _ _ _ _ => pure (.error { kind := .ioError, message := "unused" })
+      killProcessGroup := fun _ => pure (.ok ())
+      reap := fun _ => pure (.ok ())
+      activeProcessCount := get }
+  let api := mkApiFn raw
+  match api.validateRequest req with
+  | .ok _ => assume False
+  | .error _ =>
+    let (res, s₁) := (api.spawn req).run s₀
+    NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput ∧ e.message ≠ "") ∧ s₁ = s₀)
+
+/-- `Internal.mkApiM.spawn` passes the `validateRequest`-normalized request to `raw.spawn` and behaves identically on `req` and `norm`. -/
+def test_process_spawn_usesNormalizedRequest
+    {runner} [NondetTest runner]
+    (mkApiFn : RawProcessOpsM (StateM (Option ExecRequest)) → ProcessApiM (StateM (Option ExecRequest))) :
+    runner Unit := do
+  let req ← nondet ExecRequest
+  let raw : RawProcessOpsM (StateM (Option ExecRequest)) :=
+    { mapRawError := fun _ => { kind := .ioError, message := "err" }
+      spawn := fun r => modifyGet fun _ => (.ok { handleId := 1, pid := 7, pgid := 7 }, some r)
+      awaitOutput := fun _ _ _ _ => pure (.error { kind := .ioError, message := "unused" })
+      killProcessGroup := fun _ => pure (.ok ())
+      reap := fun _ => pure (.ok ())
+      activeProcessCount := pure 0 }
+  let api := mkApiFn raw
+  match api.validateRequest req with
+  | .error _ => assume False
+  | .ok norm =>
+    let (res1, seen1) := (api.spawn req).run none
+    let (res2, seen2) := (api.spawn norm).run none
+    NondetTest.assert (seen1 = some norm ∧ seen2 = some norm ∧ res1 = res2)
+
+/-- `Internal.mkApiM.awaitOutput` rejects `timeoutMs = some 0` with `.invalidInput` and a non-empty message without invoking `raw.awaitOutput` or mutating state. -/
+def test_process_awaitOutput_rejectsZeroTimeout
+    {runner} [NondetTest runner]
+    (mkApiFn : RawProcessOpsM (StateM Nat) → ProcessApiM (StateM Nat)) : runner Unit := do
+  let s₀ ← nondet Nat
+  let h ← nondet ProcessHandle
+  let stdin ← nondet ByteArray
+  let maxOut ← nondet (Option Nat)
+  let raw : RawProcessOpsM (StateM Nat) :=
+    { mapRawError := fun _ => { kind := .ioError, message := "err" }
+      spawn := fun _ => pure (.error { kind := .ioError, message := "unused" })
+      awaitOutput := fun _ _ _ _ => modifyGet fun n =>
+        (.ok (.exited { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }), n + 1)
+      killProcessGroup := fun _ => pure (.ok ())
+      reap := fun _ => pure (.ok ())
+      activeProcessCount := get }
+  let api := mkApiFn raw
+  let (res, s₁) := (api.awaitOutput h stdin (some 0) maxOut).run s₀
+  NondetTest.assert ((∃ e, res = .error e ∧ e.kind = .invalidInput ∧ e.message ≠ "") ∧ s₁ = s₀)
+
+/-- Scripted `RawProcessOpsM` state auditing validated `spawn`, `awaitOutput`, `killProcessGroup`, and `reap` delegation and empty-message error normalization. -/
+structure LifecycleScriptState where
+  /-- Active unreaped handle count. -/
+  active : Nat := 0
+  /-- Failure mode selector (`0` = ok, `1` = spawn error, `2` = awaitOutput error, `3` = killProcessGroup error, `4` = reap error). -/
+  failMode : Nat := 0
+  /-- Recorded arguments passed to `raw.awaitOutput`. -/
+  lastAwait : Option (ProcessHandle × ByteArray × Option Nat × Option Nat) := none
+  /-- Count of `raw.killProcessGroup` invocations. -/
+  killed : Nat := 0
+  /-- Count of `raw.reap` invocations. -/
+  reaped : Nat := 0
+
+/-- Deterministic `RawProcessOpsM` fixture exercising handle lifecycle delegation and empty-message error normalization. -/
+def mkLifecycleScriptRawOps : RawProcessOpsM (StateM LifecycleScriptState) where
+  mapRawError := fun _ => { kind := .ioError, message := "err" }
+  spawn := fun _ => modifyGet fun s =>
+    if s.failMode == 1 then
+      (.error { kind := .notFound, message := "" }, s)
+    else
+      (.ok { handleId := 3, pid := 88, pgid := 88 }, { s with active := s.active + 1 })
+  awaitOutput := fun h stdin to? max? => modifyGet fun s =>
+    let s' := { s with lastAwait := some (h, stdin, to?, max?) }
+    if s.failMode == 2 then
+      (.error { kind := .ioError, message := "" }, s')
+    else
+      (.ok (.exited { exitCode := 5, stdout := "LO".toUTF8, stderr := "LE".toUTF8 }), s')
+  killProcessGroup := fun _ => modifyGet fun s =>
+    let s' := { s with killed := s.killed + 1 }
+    if s.failMode == 3 then
+      (.error { kind := .permissionDenied, message := "" }, s')
+    else
+      (.ok (), s')
+  reap := fun _ => modifyGet fun s =>
+    if s.failMode == 4 then
+      (.error { kind := .ioError, message := "" }, { s with reaped := s.reaped + 1 })
+    else
+      (.ok (), { s with active := s.active - 1, reaped := s.reaped + 1 })
+  activeProcessCount := do return (← get).active
+
+/-- `Internal.mkApiM` delegates validated `spawn`, `awaitOutput`, `killProcessGroup`, and `reap` cleanly to `raw` and normalizes empty error messages across all 4 lifecycle operations. -/
+def test_process_lifecycle_delegatesAndNormalizesErrors
+    {runner} [NondetTest runner]
+    (mkApiFn :
+      RawProcessOpsM (StateM LifecycleScriptState) →
+      ProcessApiM (StateM LifecycleScriptState)) : runner Unit := do
+  let api := mkApiFn mkLifecycleScriptRawOps
+  let req : ExecRequest := { program := "/bin/demo", args := #["x"] }
+  let okProg : StateM LifecycleScriptState Bool := do
+    match ← api.spawn req with
+    | .error _ => return false
+    | .ok h =>
+      let c1 ← api.activeProcessCount
+      let aw ← api.awaitOutput h "in".toUTF8 (some 250) (some 64)
+      let kg ← api.killProcessGroup h
+      let rp ← api.reap h
+      let c2 ← api.activeProcessCount
+      let awOk := match aw with
+        | .ok (.exited out) => out == { exitCode := 5, stdout := "LO".toUTF8, stderr := "LE".toUTF8 }
+        | _ => false
+      return (h == { handleId := 3, pid := 88, pgid := 88 } &&
+        c1 == 1 && awOk && kg.isOk && rp.isOk && c2 == 0)
+  let rOk := okProg.run {}
+  let h0 : ProcessHandle := { handleId := 3, pid := 88, pgid := 88 }
+  let rSpErr := (api.spawn req).run { failMode := 1 }
+  let rAwErr := (api.awaitOutput h0 ByteArray.empty (some 10) none).run { failMode := 2 }
+  let rKgErr := (api.killProcessGroup h0).run { failMode := 3 }
+  let rRpErr := (api.reap h0).run { failMode := 4 }
+  let spErrOk : Bool := match rSpErr.1 with
+    | .error e => e.kind == .notFound && !e.message.isEmpty
+    | .ok _ => false
+  let awErrOk : Bool := match rAwErr.1 with
+    | .error e => e.kind == .ioError && !e.message.isEmpty
+    | .ok _ => false
+  let kgErrOk : Bool := match rKgErr.1 with
+    | .error e => e.kind == .permissionDenied && !e.message.isEmpty
+    | .ok _ => false
+  let rpErrOk : Bool := match rRpErr.1 with
+    | .error e => e.kind == .ioError && !e.message.isEmpty
+    | .ok _ => false
+  NondetTest.assert (
+    rOk.1 = true ∧
+    rOk.2.lastAwait = some (h0, "in".toUTF8, some 250, some 64) ∧
+    rOk.2.killed = 1 ∧
+    rOk.2.reaped = 1 ∧
+    spErrOk = true ∧
+    awErrOk = true ∧
+    kgErrOk = true ∧
+    rpErrOk = true)
+
 /-- Complete error-kind coverage table for every fallible public entrypoint in `LeanSwe.Process`. -/
 def errorCoverage : List (Core.ErrorObligation ProcessErrorKind) :=
   [ { request := "LeanSwe.Process.validateRequest"
@@ -1309,6 +1460,102 @@ def errorCoverage : List (Core.ErrorObligation ProcessErrorKind) :=
   , { request := "LeanSwe.Process.runCommandChecked"
       errorKind := .ioError
       justification := .tested "LeanSwe.Process.RuntimeTests.err_process_runCommandChecked_ioError" .real }
+  , { request := "LeanSwe.Process.spawn"
+      errorKind := .notFound
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_spawn_notFound" .real }
+  , { request := "LeanSwe.Process.spawn"
+      errorKind := .permissionDenied
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_spawn_permissionDenied" .real }
+  , { request := "LeanSwe.Process.spawn"
+      errorKind := .invalidInput
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_spawn_invalidInput" .real }
+  , { request := "LeanSwe.Process.spawn"
+      errorKind := .timedOut
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_spawn_never_timedOut" }
+  , { request := "LeanSwe.Process.spawn"
+      errorKind := .outputLimitExceeded
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_spawn_never_outputLimitExceeded" }
+  , { request := "LeanSwe.Process.spawn"
+      errorKind := .terminatedBySignal
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_spawn_never_terminatedBySignal" }
+  , { request := "LeanSwe.Process.spawn"
+      errorKind := .nonZeroExit
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_spawn_never_nonZeroExit" }
+  , { request := "LeanSwe.Process.spawn"
+      errorKind := .ioError
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_spawn_ioError" .real }
+  , { request := "LeanSwe.Process.awaitOutput"
+      errorKind := .notFound
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_awaitOutput_notFound" .mocked }
+  , { request := "LeanSwe.Process.awaitOutput"
+      errorKind := .permissionDenied
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_awaitOutput_permissionDenied" .mocked }
+  , { request := "LeanSwe.Process.awaitOutput"
+      errorKind := .invalidInput
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_awaitOutput_invalidInput" .real }
+  , { request := "LeanSwe.Process.awaitOutput"
+      errorKind := .timedOut
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_awaitOutput_never_timedOut" }
+  , { request := "LeanSwe.Process.awaitOutput"
+      errorKind := .outputLimitExceeded
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_awaitOutput_never_outputLimitExceeded" }
+  , { request := "LeanSwe.Process.awaitOutput"
+      errorKind := .terminatedBySignal
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_awaitOutput_never_terminatedBySignal" }
+  , { request := "LeanSwe.Process.awaitOutput"
+      errorKind := .nonZeroExit
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_awaitOutput_never_nonZeroExit" }
+  , { request := "LeanSwe.Process.awaitOutput"
+      errorKind := .ioError
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_awaitOutput_ioError" .real }
+  , { request := "LeanSwe.Process.killProcessGroup"
+      errorKind := .notFound
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_killProcessGroup_notFound" .mocked }
+  , { request := "LeanSwe.Process.killProcessGroup"
+      errorKind := .permissionDenied
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_killProcessGroup_permissionDenied" .mocked }
+  , { request := "LeanSwe.Process.killProcessGroup"
+      errorKind := .invalidInput
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_killProcessGroup_invalidInput" .mocked }
+  , { request := "LeanSwe.Process.killProcessGroup"
+      errorKind := .timedOut
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_killProcessGroup_never_timedOut" }
+  , { request := "LeanSwe.Process.killProcessGroup"
+      errorKind := .outputLimitExceeded
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_killProcessGroup_never_outputLimitExceeded" }
+  , { request := "LeanSwe.Process.killProcessGroup"
+      errorKind := .terminatedBySignal
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_killProcessGroup_never_terminatedBySignal" }
+  , { request := "LeanSwe.Process.killProcessGroup"
+      errorKind := .nonZeroExit
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_killProcessGroup_never_nonZeroExit" }
+  , { request := "LeanSwe.Process.killProcessGroup"
+      errorKind := .ioError
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_killProcessGroup_ioError" .mocked }
+  , { request := "LeanSwe.Process.reap"
+      errorKind := .notFound
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_reap_notFound" .mocked }
+  , { request := "LeanSwe.Process.reap"
+      errorKind := .permissionDenied
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_reap_permissionDenied" .mocked }
+  , { request := "LeanSwe.Process.reap"
+      errorKind := .invalidInput
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_reap_invalidInput" .mocked }
+  , { request := "LeanSwe.Process.reap"
+      errorKind := .timedOut
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_reap_never_timedOut" }
+  , { request := "LeanSwe.Process.reap"
+      errorKind := .outputLimitExceeded
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_reap_never_outputLimitExceeded" }
+  , { request := "LeanSwe.Process.reap"
+      errorKind := .terminatedBySignal
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_reap_never_terminatedBySignal" }
+  , { request := "LeanSwe.Process.reap"
+      errorKind := .nonZeroExit
+      justification := .provedImpossible "LeanSwe.Process.Proofs.process_reap_never_nonZeroExit" }
+  , { request := "LeanSwe.Process.reap"
+      errorKind := .ioError
+      justification := .tested "LeanSwe.Process.RuntimeTests.err_process_reap_ioError" .mocked }
   ]
 
 end LeanSwe.Process

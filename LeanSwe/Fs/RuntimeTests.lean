@@ -5,7 +5,6 @@ import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.Process.Interface
-import LeanSwe.Process.SysBridge
 
 namespace LeanSwe.Fs.RuntimeTests
 
@@ -241,7 +240,7 @@ private def testLocksMultiProcess (tmp : String) : IO Unit := do
     "deadline = time.monotonic() + 5.0\n" ++
     "while not os.path.exists(sp) and time.monotonic() < deadline:\n" ++
     "  time.sleep(0.01)\n"
-  let child1 ← match ← Process.SysBridge.spawn
+  let child1 ← match ← Process.spawn
       { program := "python3", args := #["-c", holdScript, lockPath, ready1, stop1, "ex"] } with
     | .ok h => pure h
     | .error e => throw (IO.userError s!"spawn child1 failed: {repr e}")
@@ -258,16 +257,16 @@ private def testLocksMultiProcess (tmp : String) : IO Unit := do
     let got ← assertOk (← Fs.withFileLock lockPath .exclusive false (pure (.ok "acquired")))
       "blocking withFileLock acquires once child1 exits"
     assertTrue (got == "acquired") "blocking withFileLock result"
-    match ← Process.SysBridge.awaitOutput child1 with
+    match ← Process.awaitOutput child1 with
     | .ok (.exited out) => assertTrue (out.exitCode == 0) "child1 exited 0"
     | .ok other => throw (IO.userError s!"child1 unexpected outcome: {repr other}")
     | .error e => throw (IO.userError s!"awaitOutput child1 failed: {repr e}")
   finally
-    let _ ← Process.SysBridge.reap child1
+    let _ ← Process.reap child1
 
   let ready2 := Fs.join tmp "mp2.ready"
   let stop2 := Fs.join tmp "mp2.stop"
-  let child2 ← match ← Process.SysBridge.spawn
+  let child2 ← match ← Process.spawn
       { program := "python3", args := #["-c", holdScript, lockPath, ready2, stop2, "sh"] } with
     | .ok h => pure h
     | .error e => throw (IO.userError s!"spawn child2 failed: {repr e}")
@@ -278,12 +277,12 @@ private def testLocksMultiProcess (tmp : String) : IO Unit := do
     assertOkEq (← Fs.tryWithFileLock lockPath .exclusive false (pure (.ok 1))) none
       "multi-process shared blocks exclusive"
     assertOk (← Fs.writeText stop2 "go") "signal child2 exit"
-    match ← Process.SysBridge.awaitOutput child2 with
+    match ← Process.awaitOutput child2 with
     | .ok (.exited out) => assertTrue (out.exitCode == 0) "child2 exited 0"
     | .ok other => throw (IO.userError s!"child2 unexpected outcome: {repr other}")
     | .error e => throw (IO.userError s!"awaitOutput child2 failed: {repr e}")
   finally
-    let _ ← Process.SysBridge.reap child2
+    let _ ← Process.reap child2
 
   let ready3 := Fs.join tmp "mp3.ready"
   let killScript :=
@@ -294,7 +293,7 @@ private def testLocksMultiProcess (tmp : String) : IO Unit := do
     "fcntl.flock(fd, fcntl.LOCK_EX)\n" ++
     "open(rp, 'w').write('1')\n" ++
     "time.sleep(10.0)\n"
-  let child3 ← match ← Process.SysBridge.spawn
+  let child3 ← match ← Process.spawn
       { program := "python3", args := #["-c", killScript, lockPath, ready3] } with
     | .ok h => pure h
     | .error e => throw (IO.userError s!"spawn child3 failed: {repr e}")
@@ -306,7 +305,7 @@ private def testLocksMultiProcess (tmp : String) : IO Unit := do
     | .ok kout => assertTrue (kout.exitCode == 0) "kill -9 child3 exitCode 0"
     | .error e => throw (IO.userError s!"kill -9 child3 failed: {repr e}")
   finally
-    let _ ← Process.SysBridge.reap child3
+    let _ ← Process.reap child3
 
   assertOkEq (← Fs.tryWithFileLock lockPath .exclusive false (pure (.ok "unlocked"))) (some "unlocked")
     "OS kernel immediately releases flock on child SIGKILL"
@@ -378,7 +377,7 @@ private def testAmbientSafety (tmp : String) : IO Unit := do
     "while not os.path.exists('fs_sock.stop') and time.monotonic() < deadline:\n" ++
     "  time.sleep(0.01)\n" ++
     "s.close()\n"
-  let sockChild ← match ← Process.SysBridge.spawn { program := "python3", args := #["-c", sockScript, workDir] } with
+  let sockChild ← match ← Process.spawn { program := "python3", args := #["-c", sockScript, workDir] } with
     | .ok h => pure h
     | .error e => throw (IO.userError s!"spawn sockChild failed: {repr e}")
   try
@@ -386,12 +385,12 @@ private def testAmbientSafety (tmp : String) : IO Unit := do
     assertErrKind (← Fs.readBytes sockPath) .invalidInput "Fs.readBytes Unix socket rejected"
     assertErrKind (← Fs.readText sockPath) .invalidInput "Fs.readText Unix socket rejected"
     assertOk (← Fs.writeText stopPath "go") "stop sockChild"
-    match ← Process.SysBridge.awaitOutput sockChild with
+    match ← Process.awaitOutput sockChild with
     | .ok (.exited out) => assertTrue (out.exitCode == 0) "sockChild exited 0"
     | .ok other => throw (IO.userError s!"sockChild unexpected outcome: {repr other}")
     | .error e => throw (IO.userError s!"awaitOutput sockChild failed: {repr e}")
   finally
-    let _ ← Process.SysBridge.reap sockChild
+    let _ ← Process.reap sockChild
     let _ ← Fs.unlink sockPath true
     let _ ← Fs.unlink readyPath true
     let _ ← Fs.unlink stopPath true

@@ -275,6 +275,10 @@ example : ¬ Core.AllPass (test_compress_publicApi_matchesDefaultOps
                            validateRequest := fun req => .ok req
                            mkCommandRequest := fun program args => { program := program, args := args }
                            withTextInput := fun req text => { req with stdin := text.toUTF8 }
+                           spawn := fun _ => pure (.error { kind := .notFound, message := "m" })
+                           awaitOutput := fun _ _ _ _ => pure (.error { kind := .notFound, message := "m" })
+                           killProcessGroup := fun _ => pure (.ok ())
+                           reap := fun _ => pure (.ok ())
                            run := fun _ => pure (.error { kind := .notFound, message := "m" })
                            runChecked := fun _ => pure (.error { kind := .notFound, message := "m" })
                            runCommand := fun _ _ => pure (.error { kind := .notFound, message := "m" })
@@ -289,6 +293,10 @@ example : ¬ Core.AllPass (test_compress_publicApi_matchesDefaultOps
       validateRequest := fun req => .ok req
       mkCommandRequest := fun program args => { program := program, args := args }
       withTextInput := fun req text => { req with stdin := text.toUTF8 }
+      spawn := fun _ => pure (.error { kind := .notFound, message := "m" })
+      awaitOutput := fun _ _ _ _ => pure (.error { kind := .notFound, message := "m" })
+      killProcessGroup := fun _ => pure (.ok ())
+      reap := fun _ => pure (.ok ())
       run := fun _ => pure (.error { kind := .notFound, message := "m" })
       runChecked := fun _ => pure (.error { kind := .notFound, message := "m" })
       runCommand := fun _ _ => pure (.error { kind := .notFound, message := "m" })

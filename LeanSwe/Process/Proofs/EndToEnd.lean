@@ -668,4 +668,47 @@ theorem process_run_never_throws (req : ExecRequest) (w : Void IO.RealWorld) :
     ∃ res w', LeanSwe.Process.run req w = EST.Out.ok res w' :=
   process_defaultOps_run_never_throws req w
 
+/-- `LeanSwe.Process.spawn` never throws an uncaught `IO.Error` on any `ExecRequest`. -/
+theorem process_spawn_never_throws (req : ExecRequest) (w : Void IO.RealWorld) :
+    ∃ res w', LeanSwe.Process.spawn req w = EST.Out.ok res w' := by
+  unfold LeanSwe.Process.spawn defaultApi Internal.mkApiM Internal.spawn
+  dsimp only
+  cases Internal.validateRequest req with
+  | error err => exact ⟨.error err, w, rfl⟩
+  | ok norm =>
+    dsimp only
+    rcases defaultOps_spawn_never_throws norm w with ⟨r1, w1, hw1⟩
+    rw [io_bind_ok _ _ _ hw1]
+    cases r1 <;> exact ⟨_, w1, rfl⟩
+
+/-- `LeanSwe.Process.awaitOutput` never throws an uncaught `IO.Error`. -/
+theorem process_awaitOutput_never_throws (h : ProcessHandle)
+    (stdin : ByteArray) (timeoutMs? maxOutputBytes? : Option Nat) (w : Void IO.RealWorld) :
+    ∃ res w', LeanSwe.Process.awaitOutput h stdin timeoutMs? maxOutputBytes? w = EST.Out.ok res w' := by
+  unfold LeanSwe.Process.awaitOutput defaultApi Internal.mkApiM Internal.awaitOutput
+  dsimp only
+  split
+  · exact ⟨_, w, rfl⟩
+  · rcases defaultOps_awaitOutput_never_throws h stdin timeoutMs? maxOutputBytes? w with ⟨r1, w1, hw1⟩
+    rw [io_bind_ok _ _ _ hw1]
+    cases r1 <;> exact ⟨_, w1, rfl⟩
+
+/-- `LeanSwe.Process.killProcessGroup` never throws an uncaught `IO.Error`. -/
+theorem process_killProcessGroup_never_throws (h : ProcessHandle) (w : Void IO.RealWorld) :
+    ∃ res w', LeanSwe.Process.killProcessGroup h w = EST.Out.ok res w' := by
+  unfold LeanSwe.Process.killProcessGroup defaultApi Internal.mkApiM Internal.killProcessGroup
+  dsimp only
+  rcases defaultOps_killProcessGroup_never_throws h w with ⟨r1, w1, hw1⟩
+  rw [io_bind_ok _ _ _ hw1]
+  cases r1 <;> exact ⟨_, w1, rfl⟩
+
+/-- `LeanSwe.Process.reap` never throws an uncaught `IO.Error`. -/
+theorem process_reap_never_throws (h : ProcessHandle) (w : Void IO.RealWorld) :
+    ∃ res w', LeanSwe.Process.reap h w = EST.Out.ok res w' := by
+  unfold LeanSwe.Process.reap defaultApi Internal.mkApiM Internal.reap
+  dsimp only
+  rcases defaultOps_reap_never_throws h w with ⟨r1, w1, hw1⟩
+  rw [io_bind_ok _ _ _ hw1]
+  cases r1 <;> exact ⟨_, w1, rfl⟩
+
 end LeanSwe.Process.Proofs

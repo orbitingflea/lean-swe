@@ -203,6 +203,15 @@ structure ProcessApiM (m : Type → Type) where
   mkCommandRequest : String → Array String → ExecRequest
   /-- Return a copy of `req` with UTF-8 encoded `stdin` text. -/
   withTextInput : ExecRequest → String → ExecRequest
+  /-- Validate `req` and spawn a child process directly in its own process group (`setpgid`). -/
+  spawn : ExecRequest → m (Except ProcessError ProcessHandle)
+  /-- Feed `stdin`, stream `stdout`/`stderr`, and wait for completion, timeout, or output cap. -/
+  awaitOutput :
+    ProcessHandle → ByteArray → Option Nat → Option Nat → m (Except ProcessError ExecOutcome)
+  /-- Send `SIGTERM` followed by `SIGKILL` to the child process group (`-pgid`) to stop child and descendants. -/
+  killProcessGroup : ProcessHandle → m (Except ProcessError Unit)
+  /-- Wait/reap child handle and release associated OS/table resources (no zombies/leaks). -/
+  reap : ProcessHandle → m (Except ProcessError Unit)
   /-- Execute a command directly in its own process group, returning `ExecResult` even for non-zero exit codes. -/
   run : ExecRequest → m (Except ProcessError ExecResult)
   /-- Execute a command like `run`, mapping any non-zero exit code to `.error` with `kind := .nonZeroExit`. -/

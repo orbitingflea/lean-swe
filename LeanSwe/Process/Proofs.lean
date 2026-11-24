@@ -903,4 +903,61 @@ theorem proof_process_sysBridge_spawnCwdIsolationKillPgid1AndChdirError :
   refine ⟨?_, trivial⟩
   decide +kernel
 
+/-- Proof of `test_process_spawn_invalidRequest_doesNotCallRaw` for `Internal.mkApiM`. -/
+theorem proof_process_spawn_invalidRequest_doesNotCallRaw :
+    AllPass (test_process_spawn_invalidRequest_doesNotCallRaw
+      (@Internal.mkApiM (StateM Nat) _)) := by
+  intro s₀ req
+  dsimp only [Internal.mkApiM]
+  cases hVal : Internal.validateRequest req with
+  | ok _ => simp [assume]
+  | error err =>
+    have herr := validateRequest_error_msg_ne_empty req err hVal
+    simp only [Internal.spawn, hVal, StateT.run, StateT.pure, pure, assert]
+    exact ⟨⟨⟨err, rfl, herr⟩, trivial⟩, trivial⟩
+
+/-- Non-vacuity `CanReach` witness for `test_process_spawn_invalidRequest_doesNotCallRaw`. -/
+theorem reach_process_spawn_invalidRequest_doesNotCallRaw :
+    CanReach (test_process_spawn_invalidRequest_doesNotCallRaw
+      (@Internal.mkApiM (StateM Nat) _)) :=
+  ⟨0, { program := "" }, proof_process_spawn_invalidRequest_doesNotCallRaw 0 { program := "" }⟩
+
+/-- Proof of `test_process_spawn_usesNormalizedRequest` for `Internal.mkApiM`. -/
+theorem proof_process_spawn_usesNormalizedRequest :
+    AllPass (test_process_spawn_usesNormalizedRequest
+      (@Internal.mkApiM (StateM (Option ExecRequest)) _)) := by
+  intro req
+  dsimp only [Internal.mkApiM]
+  cases hVal : Internal.validateRequest req with
+  | error _ => simp [assume]
+  | ok norm =>
+    have hIdem : Internal.validateRequest norm = .ok norm := by
+      have hAll := proof_process_validateRequest_idempotent req
+      simp only [defaultApi, Internal.mkApiM, hVal, assert] at hAll
+      exact hAll.1
+    simp [Internal.spawn, hVal, hIdem, StateT.run, bind, StateT.bind, pure, StateT.pure,
+      modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, assert]
+
+/-- Non-vacuity `CanReach` witness for `test_process_spawn_usesNormalizedRequest`. -/
+theorem reach_process_spawn_usesNormalizedRequest :
+    CanReach (test_process_spawn_usesNormalizedRequest
+      (@Internal.mkApiM (StateM (Option ExecRequest)) _)) :=
+  ⟨{ program := "/bin/true" }, proof_process_spawn_usesNormalizedRequest { program := "/bin/true" }⟩
+
+/-- Proof of `test_process_awaitOutput_rejectsZeroTimeout` for `Internal.mkApiM`. -/
+theorem proof_process_awaitOutput_rejectsZeroTimeout :
+    AllPass (test_process_awaitOutput_rejectsZeroTimeout
+      (@Internal.mkApiM (StateM Nat) _)) := by
+  intro s₀ h stdin maxOut
+  simp only [Internal.mkApiM, Internal.awaitOutput, beq_self_eq_true, ↓reduceIte,
+    StateT.run, StateT.pure, pure, assert]
+  exact ⟨⟨⟨_, rfl, rfl, by decide⟩, trivial⟩, trivial⟩
+
+/-- Proof of `test_process_lifecycle_delegatesAndNormalizesErrors` for `Internal.mkApiM`. -/
+theorem proof_process_lifecycle_delegatesAndNormalizesErrors :
+    AllPass (test_process_lifecycle_delegatesAndNormalizesErrors
+      (@Internal.mkApiM (StateM LifecycleScriptState) _)) := by
+  refine ⟨?_, trivial⟩
+  decide +kernel
+
 end LeanSwe.Process.Proofs
