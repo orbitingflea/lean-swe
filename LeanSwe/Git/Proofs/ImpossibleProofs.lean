@@ -1,7 +1,6 @@
 import Core.Assumptions
 import LeanSwe.EnvVars.Proofs
 import LeanSwe.Process.Proofs.EndToEnd
-import LeanSwe.Process.Impl
 import LeanSwe.Process.Interface
 import LeanSwe.Git.Types
 import LeanSwe.Git.Model

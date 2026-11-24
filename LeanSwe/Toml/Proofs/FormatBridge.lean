@@ -8,7 +8,6 @@ import LeanSwe.Toml.Proofs.RoundTripScalar
 import LeanSwe.Toml.Proofs.RoundTripDoc
 import LeanSwe.NumParse.Types
 import LeanSwe.NumParse.Model
-import LeanSwe.NumParse.SpecTests
 
 /-!
 # Format & Round-Trip Bridge Proofs
@@ -27,20 +26,18 @@ private def ValidFmt (numApi : NumParseApi) : Prop :=
 
 private theorem validNumApi_parseInt64 (numApi : NumParseApi) (hnum : ValidNumApi numApi)
     (tok : String) (n : Int64) (h : parseInt64Model tok = .ok n) : numApi.parseInt64 tok = .ok n := by
-  have hspec := hnum.parseInt64 tok
-  dsimp only [test_numparse_parseInt64_matchesModel, Core.NondetTest.nondet, NondetTest.assert, bind, pure] at hspec
-  rw [h] at hspec; cases ha : numApi.parseInt64 tok <;> rw [ha] at hspec
-  · exact False.elim hspec.1
-  · exact congrArg Except.ok hspec.1
+  have hspec := (hnum.parseInt64 tok).1
+  cases ha : numApi.parseInt64 tok with
+  | error _ => simp [Except.mapError, ha, h] at hspec
+  | ok m => simp [Except.mapError, ha, h] at hspec; exact congrArg Except.ok hspec
 
 private theorem validNumApi_parseFloat (numApi : NumParseApi) (hnum : ValidNumApi numApi)
     (tok : String) (f : Float) (h : parseFloatModel tok = .ok f) :
     ∃ g, numApi.parseFloat tok = .ok g ∧ FloatBitMatch f g := by
   have hspec := hnum.parseFloat tok
-  dsimp only [test_numparse_parseFloat_matchesModel, Core.NondetTest.nondet, NondetTest.assert, bind, pure] at hspec
   rw [h] at hspec; cases ha : numApi.parseFloat tok <;> rw [ha] at hspec
-  · exact False.elim hspec.1
-  · exact ⟨_, rfl, hspec.1⟩
+  · exact False.elim hspec
+  · exact ⟨_, rfl, hspec⟩
 
 private theorem decOrMinus_clean {c : Char} (h : (isAsciiDigit c || c == '-') = true) :
     (!c.isWhitespace && c != '#' && c != ',' && c != ']' && c != '}' && c != '.' && !isDisallowedControl c) = true := by
@@ -70,17 +67,12 @@ private theorem validNumApi_validFmt (numApi : NumParseApi) (hnum : ValidNumApi 
       have : Int64.maxValue.toInt = 9223372036854775807 := by decide
       rw [inInt64Range, decide_eq_true_eq]; simp only [int64MinInt, int64MaxInt]; omega
     have hfmt := hnum.formatInt n.toInt
-    dsimp only [test_numparse_formatInt_roundTrip, Core.NondetTest.nondet, NondetTest.assert, bind, pure] at hfmt
     simp only [hbounds, ↓reduceIte, Int64.ofInt_toInt] at hfmt
     have hchars := hnum.formatIntChars n.toInt
-    have hspec := hnum.parseInt64 (numApi.formatInt n.toInt)
-    dsimp only [test_numparse_parseInt64_matchesModel, Core.NondetTest.nondet, NondetTest.assert, bind, pure] at hspec
+    have hspec := (hnum.parseInt64 (numApi.formatInt n.toInt)).1
     generalize numApi.formatInt n.toInt = s at hfmt hchars hspec ⊢
-    rw [hfmt.2.2.2.1] at hspec
-    have hp64 : parseInt64Model s = .ok n := by
-      cases hm : parseInt64Model s <;> rw [hm] at hspec
-      · exact False.elim hspec.1
-      · exact congrArg Except.ok hspec.1.symm
+    rw [hfmt.2.2.2] at hspec
+    have hp64 : parseInt64Model s = .ok n := by simpa [Except.mapError] using hspec.symm
     have hclean := List.all_eq_true.mpr fun c hc => decOrMinus_clean (List.all_eq_true.mp hchars c hc)
     have hX := no_char_of_decOrMinus hchars 'X'; have hO := no_char_of_decOrMinus hchars 'O'; have hB := no_char_of_decOrMinus hchars 'B'
     have hno_upper : (s.startsWith "0X" || s.startsWith "0O" || s.startsWith "0B" || s.startsWith "+0X" ||
@@ -91,9 +83,7 @@ private theorem validNumApi_validFmt (numApi : NumParseApi) (hnum : ValidNumApi 
         not_startsWith_of_not_mem hX⟩, not_startsWith_of_not_mem hO⟩, not_startsWith_of_not_mem hB⟩
     simp only [isValidIntLex, hp64, hclean, hno_upper, beq_self_eq_true, Bool.not_false, Bool.true_and, Bool.and_true]
     split <;> simp [String.contains, no_char_of_decOrMinus hchars 'e', no_char_of_decOrMinus hchars 'E']
-  · have hfmt := hnum.formatFloat f
-    dsimp only [test_numparse_formatFloat_specAndRoundTrip, Core.NondetTest.nondet, NondetTest.assert, bind, pure] at hfmt
-    exact floatFormatSpec_isValidFloatLex f (numApi.formatFloat f) hfmt.1
+  · exact floatFormatSpec_isValidFloatLex f (numApi.formatFloat f) (hnum.formatFloat f).1
 
 private theorem joinRenderedPath_eq_intercalate : (xs : List String) → joinRenderedPath xs = String.intercalate "." xs
   | [] => by simp [joinRenderedPath, String.intercalate_nil]

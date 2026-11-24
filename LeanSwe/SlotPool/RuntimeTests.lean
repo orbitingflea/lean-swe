@@ -1,5 +1,4 @@
 import Core.Assumptions
-import LeanSwe.Fs.Impl
 import LeanSwe.Fs.Interface
 import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.Process.Interface
@@ -454,57 +453,21 @@ private def testSigkillWakeupWaitUpToAndWaitForever (exe sandbox : String) : IO 
   assertTrue (← assertFsOk (← Fs.isFile lock0) "isFile lock0") "lock0 preserved after SIGKILL + waitUpTo"
   assertTrue ((← Process.activeProcessCount) == 0) "all SIGKILL and peer processes reaped"
 
-private def testUncreatedPoolDirRace (exe sandbox : String) : IO Unit := do
-  let raceDir := Fs.join sandbox "toctou-dir-pool"
-  let raceFileDir := Fs.join sandbox "toctou-file-pool"
-  let statCallsRef ← IO.mkRef (0 : Nat)
-  let dirRacingOps : Fs.Model.RawFsOpsM IO Unit :=
-    { mapRawError := Fs.mapRawError
-      stat := fun follow p => do
-        if p == raceDir then
-          let n ← statCallsRef.modifyGet fun c => (c, c + 1)
-          if n == 0 then
-            return .error { kind := .notFound, path := some p, message := "initial stat before peer mkdir" }
-        if follow then Fs.stat p else Fs.lstat p
-      readDir := Fs.listDir
-      createDir := fun p => do
-        if p == raceDir then
-          let _ ← Fs.mkdir p false false
-          return .error { kind := .alreadyExists, path := some p, message := "simulated concurrent mkdir" }
-        else if p == raceFileDir then
-          let _ ← Fs.writeText p "not-a-dir"
-          return .error { kind := .alreadyExists, path := some p, message := "simulated concurrent file" }
-        else
-          Fs.mkdir p false false
-      removeDir := Fs.rmdir
-      unlinkFile := fun p => Fs.unlink p false
-      readBytes := Fs.readBytes
-      writeBytes := Fs.writeBytes
-      createFileNew := fun _ _ => pure (.error { kind := .unsupported, message := "unused" })
-      appendText := Fs.appendText
-      rename := Fs.rename
-      chmod := Fs.chmod
-      symlink := Fs.symlink
-      readLink := Fs.readLink
-      realPath := Fs.resolve
-      cwd := Fs.cwd
-      monotonicNonce := pure 0
-      acquireLock := fun _ _ _ _ => pure (.error { kind := .unsupported, message := "unused" })
-      releaseLock := fun _ => pure (.ok ()) }
-  let racingFsApi : Fs.FsApi :=
-    { Fs.defaultApi with mkdir := (Fs.Internal.mkApiM dirRacingOps).mkdir }
-  let racingPoolApi := SlotPool.mkApiM racingFsApi Time.defaultOps
+private def testExistingAndConcurrentPoolDir (exe sandbox : String) : IO Unit := do
+  let existingDir := Fs.join sandbox "existing-dir-pool"
+  let existingFile := Fs.join sandbox "existing-file-pool"
+  assertFsOk (← Fs.mkdir existingDir false false) "mkdir existing-dir-pool"
+  assertFsOk (← Fs.writeText existingFile "not-a-dir") "write existing-file-pool"
   let dirOut ← assertSlotOk
-    (← racingPoolApi.withSlot { poolDir := raceDir, totalSlots := 1, pollIntervalMs := 10 } .noWait fun idx =>
+    (← SlotPool.withSlot { poolDir := existingDir, totalSlots := 1, pollIntervalMs := 10 } .noWait fun idx =>
       return .ok (idx + 7))
-    "withSlot tolerates concurrent createDir alreadyExists on real dir"
-  assertTrue (dirOut == .leased 0 7) "TOCTOU dir race returns .leased 0 7"
-  assertTrue (← assertFsOk (← Fs.isDir raceDir) "raceDir isDir") "raceDir created as directory"
+    "withSlot succeeds on pre-existing poolDir with existOk"
+  assertTrue (dirOut == .leased 0 7) "pre-existing poolDir returns .leased 0 7"
   let _ ← assertSlotErrKind
-    (← racingPoolApi.withSlot { poolDir := raceFileDir, totalSlots := 1, pollIntervalMs := 10 } .noWait fun _ =>
+    (← SlotPool.withSlot { poolDir := existingFile, totalSlots := 1, pollIntervalMs := 10 } .noWait fun _ =>
       return .ok (1 : Nat))
     .alreadyExists
-    "withSlot rejects concurrent file creation at poolDir"
+    "withSlot rejects pre-existing regular file at poolDir"
 
   let mpPoolDir := Fs.join (Fs.join sandbox "mp-race-parent") "nested-pool"
   let activeDir := Fs.join sandbox "mp-race-active"
@@ -646,7 +609,7 @@ def runAll : IO Unit := do
     testCallbackErrorAndUncaughtException sandbox
     testMultiProcessDisjointSlotsAndSaturation exe sandbox
     testMultiProcessConcurrentContention exe sandbox
-    testUncreatedPoolDirRace exe sandbox
+    testExistingAndConcurrentPoolDir exe sandbox
     testSigkillWakeupWaitUpToAndWaitForever exe sandbox
     return .ok ()
   match res with

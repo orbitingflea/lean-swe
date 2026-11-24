@@ -2947,7 +2947,6 @@ private def importDagAllowlist : Array String := #[
   "CROSS|LeanSwe.CryptoHash.Proofs|LeanSwe.CryptoHash.Raw.Proofs",
   "CROSS|LeanSwe.EnvVars.Proofs|LeanSwe.EnvVars.Raw.Proofs",
   "CROSS|LeanSwe.Git.Proofs.ImpossibleProofs|LeanSwe.EnvVars.Proofs",
-  "CROSS|LeanSwe.Git.Proofs.ImpossibleProofs|LeanSwe.Process.Impl",
   "CROSS|LeanSwe.Git.Proofs.ImpossibleProofs|LeanSwe.Process.Proofs.EndToEnd",
   "CROSS|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.LinuxSyscall.Files.Proofs",
   "CROSS|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.LinuxSyscall.Process.Proofs",
@@ -2961,13 +2960,8 @@ private def importDagAllowlist : Array String := #[
   "CROSS|LeanSwe.ProcessSandbox.Proofs.SeccompApiProofs|LeanSwe.ProcessSandbox.Seccomp.Proofs",
   "CROSS|LeanSwe.ProcessSandbox.Raw.Interface|LeanSwe.ProcessSandbox.Host.SysBridge",
   "CROSS|LeanSwe.ProcessSandbox.Raw.RuntimeTests|LeanSwe.ProcessSandbox.Host.Bwrap",
-  "CROSS|LeanSwe.SlotPool.RuntimeTests|LeanSwe.Fs.Impl",
-  "CROSS|LeanSwe.Sqlite.Proofs|LeanSwe.Sqlite.Raw.Proofs",
   "CROSS|LeanSwe.Time.RuntimeTests|LeanSwe.LinuxSyscall.TestSupport.Seccomp",
-  "CROSS|LeanSwe.Toml.Proofs.Core|LeanSwe.NumParse.SpecTests",
-  "CROSS|LeanSwe.Toml.Proofs.FormatBridge|LeanSwe.NumParse.SpecTests",
   "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.Proofs",
-  "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.SpecTests",
   "CROSS|LeanSwe.Uuid.RuntimeTests|LeanSwe.LinuxSyscall.TestSupport.Seccomp"
 ]
 
