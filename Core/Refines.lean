@@ -1,51 +1,51 @@
+import Core.Obeys
+
 namespace Core
 
-/-- Pure 1-argument refinement predicate stating that `allowed x (impl x)` holds for all `x`. -/
-def RefinesPure {In Out : Type} (impl : In → Out) (allowed : In → Out → Prop) : Prop :=
-  ∀ x : In, allowed x (impl x)
+/-- Backward-compatible alias for `Core.ObeysPure`. -/
+abbrev RefinesPure {In Out : Type} (impl : In → Out) (allowed : In → Out → Prop) : Prop :=
+  ObeysPure impl allowed
 
-/-- Pure 2-argument refinement predicate stating that `allowed a b (impl a b)` holds for all `a, b`. -/
-def RefinesPure2 {A B Out : Type} (impl : A → B → Out) (allowed : A → B → Out → Prop) : Prop :=
-  ∀ (a : A) (b : B), allowed a b (impl a b)
+/-- Backward-compatible alias for `Core.ObeysPure2`. -/
+abbrev RefinesPure2 {A B Out : Type} (impl : A → B → Out) (allowed : A → B → Out → Prop) : Prop :=
+  ObeysPure2 impl allowed
 
-/-- Pure 3-argument refinement predicate stating that `allowed a b c (impl a b c)` holds for all `a, b, c`. -/
-def RefinesPure3 {A B C Out : Type} (impl : A → B → C → Out)
+/-- Backward-compatible alias for `Core.ObeysPure3`. -/
+abbrev RefinesPure3 {A B C Out : Type} (impl : A → B → C → Out)
     (allowed : A → B → C → Out → Prop) : Prop :=
-  ∀ (a : A) (b : B) (c : C), allowed a b c (impl a b c)
+  ObeysPure3 impl allowed
 
-/-- Pure 4-argument refinement predicate stating that `allowed a b c d (impl a b c d)` holds for all `a, b, c, d`. -/
-def RefinesPure4 {A B C D Out : Type} (impl : A → B → C → D → Out)
+/-- Backward-compatible alias for `Core.ObeysPure4`. -/
+abbrev RefinesPure4 {A B C D Out : Type} (impl : A → B → C → D → Out)
     (allowed : A → B → C → D → Out → Prop) : Prop :=
-  ∀ (a : A) (b : B) (c : C) (d : D), allowed a b c d (impl a b c d)
+  ObeysPure4 impl allowed
 
-/-- Pure 1-argument deterministic refinement predicate stating that `impl x = model x` for all `x`. -/
-def RefinesPureEq {In Out : Type} (impl model : In → Out) : Prop :=
-  RefinesPure impl (fun x y => y = model x)
+/-- Backward-compatible alias for `Core.ObeysPureEq`. -/
+abbrev RefinesPureEq {In Out : Type} (impl model : In → Out) : Prop :=
+  ObeysPureEq impl model
 
-/-- Pure 2-argument deterministic refinement predicate stating that `impl a b = model a b` for all `a, b`. -/
-def RefinesPureEq2 {A B Out : Type} (impl model : A → B → Out) : Prop :=
-  RefinesPure2 impl (fun a b y => y = model a b)
+/-- Backward-compatible alias for `Core.ObeysPureEq2`. -/
+abbrev RefinesPureEq2 {A B Out : Type} (impl model : A → B → Out) : Prop :=
+  ObeysPureEq2 impl model
 
-/-- Pure 3-argument deterministic refinement predicate stating that `impl a b c = model a b c` for all `a, b, c`. -/
-def RefinesPureEq3 {A B C Out : Type} (impl model : A → B → C → Out) : Prop :=
-  RefinesPure3 impl (fun a b c y => y = model a b c)
+/-- Backward-compatible alias for `Core.ObeysPureEq3`. -/
+abbrev RefinesPureEq3 {A B C Out : Type} (impl model : A → B → C → Out) : Prop :=
+  ObeysPureEq3 impl model
 
-/-- Pure 4-argument deterministic refinement predicate stating that `impl a b c d = model a b c d` for all `a, b, c, d`. -/
-def RefinesPureEq4 {A B C D Out : Type} (impl model : A → B → C → D → Out) : Prop :=
-  RefinesPure4 impl (fun a b c d y => y = model a b c d)
+/-- Backward-compatible alias for `Core.ObeysPureEq4`. -/
+abbrev RefinesPureEq4 {A B C D Out : Type} (impl model : A → B → C → D → Out) : Prop :=
+  ObeysPureEq4 impl model
 
-/-- Single-step stateful refinement predicate relating concrete `StateM W Out` transitions under projection `proj` and well-formedness guard `wf` to `allowedStep`. -/
-def RefinesStep {W S Req Out : Type} (proj : W → S) (wf : S → Bool)
+/-- Backward-compatible alias for `Core.ObeysStep`. -/
+abbrev RefinesStep {W S Req Out : Type} (proj : W → S) (wf : S → Bool)
     (step : Req → StateM W Out) (allowedStep : S → Req → Out → S → Prop) : Prop :=
-  ∀ (w : W) (req : Req), wf (proj w) = true →
-    let r := (step req).run w
-    allowedStep (proj w) req r.1 (proj r.2)
+  ObeysStep proj wf step allowedStep
 
-/-- Single-step stateful refinement predicate when concrete state `S` equals abstract state `S` (`proj = id`). -/
-abbrev RefinesStepId {S Req Out : Type} := @RefinesStep S S Req Out id
+/-- Backward-compatible alias for `Core.ObeysStepId`. -/
+abbrev RefinesStepId {S Req Out : Type} := @ObeysStep S S Req Out id
 
-/-- Compositional single-step refinement lifting a verified `RawOps` step contract to a `mkApi`-built `PkgApi` step contract. -/
-def RefinesStepFrom
+/-- Backward-compatible alias for `Core.ObeysStepFrom`. -/
+abbrev RefinesStepFrom
     {RawS PkgS : Type}
     {RawOps PkgApi : (Type → Type) → Type}
     {RawReq RawOut PkgReq PkgOut : Type}
@@ -57,19 +57,10 @@ def RefinesStepFrom
     (mkApi : {m : Type → Type} → [Monad m] → RawOps m → PkgApi m)
     (execPkg : {W : Type} → PkgApi (StateM W) → PkgReq → StateM W PkgOut)
     (pkgAllowed : PkgS → PkgReq → PkgOut → PkgS → Prop) : Prop :=
-  ∀ {W : Type} (proj : W → RawS) (raw : RawOps (StateM W)),
-    RefinesStep proj rawWf (execRaw raw) rawAllowed →
-    RefinesStep (mapS ∘ proj) pkgWf (execPkg (mkApi raw)) pkgAllowed
+  ObeysStepFrom mapS rawWf execRaw rawAllowed pkgWf mkApi execPkg pkgAllowed
 
-/-- Compositional single-step refinement lifting a verified `RawOps` step contract to a
-    `[MonadFinally m]`-polymorphic `mkApi`-built `PkgApi` step contract. This proposition only
-    quantifies over `m := StateM W` (using the canonical `MonadFinally (StateM W)` instance, which
-    has no exceptions and always passes `some a` to finalizers), so it establishes single-step
-    refinement solely along normal/returning control flow. It does not require `mkApi` to call
-    `MonadFinally.tryFinally'` or prove exception-path (`none`) cleanup under `IO`; exception-safety
-    and `IO` cleanup ordering must be verified separately (for example via exception-capable monad
-    proofs, runtime/mutation tests, and inspection of `mkApi`'s `MonadFinally` usage). -/
-def RefinesStepFromFinally.{u₁, u₂}
+/-- Backward-compatible alias for `Core.ObeysStepFromFinally`. -/
+abbrev RefinesStepFromFinally.{u₁, u₂}
     {RawS PkgS : Type}
     {RawOps : (Type → Type) → Type u₁}
     {PkgApi : (Type → Type) → Type u₂}
@@ -82,12 +73,10 @@ def RefinesStepFromFinally.{u₁, u₂}
     (mkApi : {m : Type → Type} → [Monad m] → [MonadFinally m] → RawOps m → PkgApi m)
     (execPkg : {W : Type} → PkgApi (StateM W) → PkgReq → StateM W PkgOut)
     (pkgAllowed : PkgS → PkgReq → PkgOut → PkgS → Prop) : Prop :=
-  ∀ {W : Type} (proj : W → RawS) (raw : RawOps (StateM W)),
-    RefinesStep proj rawWf (execRaw raw) rawAllowed →
-    RefinesStep (mapS ∘ proj) pkgWf (execPkg (mkApi raw)) pkgAllowed
+  ObeysStepFromFinally mapS rawWf execRaw rawAllowed pkgWf mkApi execPkg pkgAllowed
 
-/-- Compositional single-step refinement lifting two verified capability contracts (`RawOps1`, `RawOps2`) to a `mkApi`-built `PkgApi` step contract. -/
-def RefinesStepFrom2.{u₁, u₂, u₃}
+/-- Backward-compatible alias for `Core.ObeysStepFrom2`. -/
+abbrev RefinesStepFrom2.{u₁, u₂, u₃}
     {RawS PkgS : Type}
     {RawOps1 : (Type → Type) → Type u₁}
     {RawOps2 : (Type → Type) → Type u₂}
@@ -103,9 +92,6 @@ def RefinesStepFrom2.{u₁, u₂, u₃}
     (mkApi : {m : Type → Type} → [Monad m] → RawOps1 m → RawOps2 m → PkgApi m)
     (execPkg : {W : Type} → PkgApi (StateM W) → PkgReq → StateM W PkgOut)
     (pkgAllowed : PkgS → PkgReq → PkgOut → PkgS → Prop) : Prop :=
-  ∀ {W : Type} (proj : W → RawS) (raw1 : RawOps1 (StateM W)) (raw2 : RawOps2 (StateM W)),
-    RefinesStep proj rawWf (execRaw1 raw1) rawAllowed1 →
-    RefinesStep proj rawWf (execRaw2 raw2) rawAllowed2 →
-    RefinesStep (mapS ∘ proj) pkgWf (execPkg (mkApi raw1 raw2)) pkgAllowed
+  ObeysStepFrom2 mapS rawWf execRaw1 rawAllowed1 execRaw2 rawAllowed2 pkgWf mkApi execPkg pkgAllowed
 
 end Core

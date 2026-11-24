@@ -82,6 +82,7 @@ private def setupBaselineMiniRepo (baseDir realRepo realLibAbs : System.FilePath
   writeFileCreatingParents (root / "harness/Fuzz/suites.json") defaultSuitesJson
   writeFileCreatingParents (root / "Core/Assumptions.lean") (← IO.FS.readFile (realRepo / "Core/Assumptions.lean"))
   writeFileCreatingParents (root / "Core/NondetTest.lean") (← IO.FS.readFile (realRepo / "Core/NondetTest.lean"))
+  writeFileCreatingParents (root / "Core/Obeys.lean") (← IO.FS.readFile (realRepo / "Core/Obeys.lean"))
   writeFileCreatingParents (root / "Core/Refines.lean") (← IO.FS.readFile (realRepo / "Core/Refines.lean"))
 
   writeFileCreatingParents (root / "LeanSwe/MiniPure/Types.lean")
@@ -111,7 +112,7 @@ private def setupBaselineMiniRepo (baseDir realRepo realLibAbs : System.FilePath
     "import Core.Refines\nimport LeanSwe.MiniFloat.SpecTests\nnamespace LeanSwe.MiniFloat.Proofs\ntheorem proof_minifloat : Core.AllPass (LeanSwe.MiniFloat.test_minifloat_zero LeanSwe.MiniFloat.getBits) := fun _ => ⟨rfl, trivial⟩\ntheorem refines_model : Core.RefinesPure LeanSwe.MiniFloat.getBits LeanSwe.MiniFloat.Model.allowedGetBits := fun u => by unfold LeanSwe.MiniFloat.getBits LeanSwe.MiniFloat.Internal.implBits LeanSwe.MiniFloat.Model.allowedGetBits; cases hu : (u == 0) <;> simp_all; cases hf : ((Float.ofBits u).toBits == 0) <;> simp_all\nend LeanSwe.MiniFloat.Proofs\n"
 
   writeFileCreatingParents (root / "LeanSwe.lean")
-    "import Core.NondetTest\nimport Core.Assumptions\nimport Core.Refines\nimport LeanSwe.MiniPure.Types\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Impl\nimport LeanSwe.MiniPure.Interface\nimport LeanSwe.MiniPure.SpecTests\nimport LeanSwe.MiniPure.Proofs\nimport LeanSwe.MiniFloat.Types\nimport LeanSwe.MiniFloat.Model\nimport LeanSwe.MiniFloat.Impl\nimport LeanSwe.MiniFloat.Interface\nimport LeanSwe.MiniFloat.SpecTests\nimport LeanSwe.MiniFloat.Proofs\n"
+    "import Core.NondetTest\nimport Core.Assumptions\nimport Core.Obeys\nimport Core.Refines\nimport LeanSwe.MiniPure.Types\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Impl\nimport LeanSwe.MiniPure.Interface\nimport LeanSwe.MiniPure.SpecTests\nimport LeanSwe.MiniPure.Proofs\nimport LeanSwe.MiniFloat.Types\nimport LeanSwe.MiniFloat.Model\nimport LeanSwe.MiniFloat.Impl\nimport LeanSwe.MiniFloat.Interface\nimport LeanSwe.MiniFloat.SpecTests\nimport LeanSwe.MiniFloat.Proofs\n"
 
   writeFileCreatingParents (root / "harness/Tests/Main.lean")
     "import Core.Assumptions\nimport LeanSwe\ndef main (_ : List String) : IO UInt32 := do\n  Core.initAssumpLog \"a\" \"b\"\n  Core.closeAssumpLog\n  return 0\n"
@@ -2036,6 +2037,792 @@ def main (_ : List String) : IO UInt32 := do
         "LeanSwe/MiniPure/Proofs",
         "LeanSwe"
       ]
+
+    runPositiveCase base tmpRoot bin "obeys_model_pure_eq_accepted" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\n" ++
+         "import LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel := fun _ => rfl\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #["LeanSwe/MiniPure/Proofs", "LeanSwe"]
+
+    runPositiveCase base tmpRoot bin "obeys_model_upto_errmsg_accepted" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "inductive ParseKind\n  | empty\n  | bad\n  deriving Repr, BEq, DecidableEq\n" ++
+         "structure ParseErr where\n  kind : ParseKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def parseModel (s : String) : Except ParseErr Nat :=\n" ++
+         "  if s.isEmpty then .error { kind := .empty, msg := \"\" } else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseImpl (s : String) : Except ParseErr Nat :=\n" ++
+         "  if s.isEmpty then .error { kind := .empty, msg := \"empty input\" } else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parse (s : String) : Except ParseErr Nat := Internal.parseImpl s\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/SpecTests.lean")
+        ("import Core.NondetTest\nimport Core.Assumptions\n" ++
+         "import LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\n" ++
+         "namespace LeanSwe.MiniPure\nopen Core Core.NondetTest\n" ++
+         "def test_minipure_matches {r} [NondetTest r] (fn : Nat → Nat) : r Unit := do\n" ++
+         "  let x ← nondet Nat\n  NondetTest.assert (fn x = Model.evalModel x)\n" ++
+         "def errorCoverage : List (ErrorObligation ParseKind) := [\n" ++
+         "  { request := \"LeanSwe.MiniPure.parse\", errorKind := .empty, justification := .tested \"LeanSwe.MiniPure.RuntimeTests.test_err_empty\" .real },\n" ++
+         "  { request := \"LeanSwe.MiniPure.parse\", errorKind := .bad, justification := .provedImpossible \"LeanSwe.MiniPure.Proofs.never_bad\" }\n" ++
+         "]\nend LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem never_bad : ∀ s : String, Core.NeverErrorKindPure ParseErr.kind ParseKind.bad (LeanSwe.MiniPure.parse s) := by\n" ++
+         "  intro s; unfold LeanSwe.MiniPure.parse LeanSwe.MiniPure.Internal.parseImpl; by_cases h : s.isEmpty <;> simp [h, Core.NeverErrorKindPure]\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel ∧\n" ++
+         "    Core.ObeysPureEqUpToErrMsg ParseErr.kind ParseErr.msg LeanSwe.MiniPure.parse LeanSwe.MiniPure.Model.parseModel := by\n" ++
+         "  refine ⟨fun _ => rfl, fun s => ?_⟩\n" ++
+         "  unfold LeanSwe.MiniPure.parse LeanSwe.MiniPure.Internal.parseImpl LeanSwe.MiniPure.Model.parseModel\n" ++
+         "  by_cases h : s.isEmpty <;> simp [h, Core.EqUpToErrMsg]\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/RuntimeTests.lean")
+        ("import Core.Assumptions\nimport LeanSwe.MiniPure.Interface\n" ++
+         "namespace LeanSwe.MiniPure.RuntimeTests\n" ++
+         "def test_err_empty : IO Unit := do\n" ++
+         "  match LeanSwe.MiniPure.parse \"\" with\n" ++
+         "  | .error e => if e.kind != .empty then throw (IO.userError \"wrong kind\")\n" ++
+         "  | .ok _ => throw (IO.userError \"expected error\")\n" ++
+         "def registeredErrorTests : Array Core.RegisteredErrorTest := #[\n" ++
+         "  { testName := \"LeanSwe.MiniPure.RuntimeTests.test_err_empty\", mode := .real, run := test_err_empty }\n" ++
+         "]\n" ++
+         "def runAll : IO Unit := Core.runRegisteredErrorTests registeredErrorTests\n" ++
+         "end LeanSwe.MiniPure.RuntimeTests\n")
+      let ls ← IO.FS.readFile (mr.root / "LeanSwe.lean")
+      writeFileCreatingParents (mr.root / "LeanSwe.lean") (ls ++ "import LeanSwe.MiniPure.RuntimeTests\n")
+      writeFileCreatingParents (mr.root / "harness/Tests/Main.lean")
+        "import Core.Assumptions\nimport LeanSwe\ndef main (_ : List String) : IO UInt32 := do\n  Core.initAssumpLog \"a\" \"b\"\n  LeanSwe.MiniPure.RuntimeTests.runAll\n  Core.closeAssumpLog\n  return 0\n"
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs",
+        "LeanSwe/MiniPure/RuntimeTests", "LeanSwe", "Tests/Main"
+      ]
+
+    runPositiveCase base tmpRoot bin "obeys_model_step_from_finally_accepted" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "structure RawOpsM (m : Type → Type) where\n  getVal : m Nat\n" ++
+         "structure PkgApiM (m : Type → Type) where\n  readVal : m Nat\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def rawWf (_ : Nat) : Bool := true\n" ++
+         "def execRaw {W : Type} (ops : RawOpsM (StateM W)) (_ : Unit) : StateM W Nat := ops.getVal\n" ++
+         "def rawAllowed (s : Nat) (_ : Unit) (out s' : Nat) : Prop := out = s ∧ s' = s\n" ++
+         "def execPkg {W : Type} (api : PkgApiM (StateM W)) (_ : Unit) : StateM W Nat := api.readVal\n" ++
+         "def pkgAllowed (s : Nat) (_ : Unit) (out s' : Nat) : Prop := out = s ∧ s' = s\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkApiM {m : Type → Type} [Monad m] [MonadFinally m] (ops : RawOpsM m) : PkgApiM m :=\n" ++
+         "  { readVal := do let v ← ops.getVal; pure v }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def defaultApi : PkgApiM IO := Internal.mkApiM { getVal := pure 0 }\n" ++
+         "def readVal : IO Nat := defaultApi.readVal\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysStepFromFinally id Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf Internal.mkApiM Model.execPkg Model.pkgAllowed := by\n" ++
+         "  refine ⟨fun _ => rfl, ?_⟩\n" ++
+         "  intro W proj raw hRaw w req hw\n" ++
+         "  simpa [Model.execPkg, Internal.mkApiM, Model.execRaw, Model.rawAllowed, Model.pkgAllowed] using hRaw w req hw\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    runPositiveCase base tmpRoot bin "obeys_model_inverse_render_accepted" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "inductive InvKind\n  | bad\n  deriving Repr, BEq, DecidableEq\n" ++
+         "structure InvErr where\n  kind : InvKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def renderBool (b : Bool) (_ : Unit) : Option String := some (if b then \"true\" else \"false\")\n" ++
+         "def wfBool (_ : Bool) : Prop := True\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseBoolImpl (s : String) : Except InvErr Bool :=\n" ++
+         "  if s == \"true\" then .ok true else if s == \"false\" then .ok false else .error { kind := .bad, msg := \"bad bool\" }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parseBool (s : String) : Except InvErr Bool := Internal.parseBoolImpl s\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/SpecTests.lean")
+        ("import Core.NondetTest\nimport Core.Assumptions\n" ++
+         "import LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\n" ++
+         "namespace LeanSwe.MiniPure\nopen Core Core.NondetTest\n" ++
+         "def test_minipure_matches {r} [NondetTest r] (fn : Nat → Nat) : r Unit := do\n" ++
+         "  let x ← nondet Nat\n  NondetTest.assert (fn x = Model.evalModel x)\n" ++
+         "def errorCoverage : List (ErrorObligation InvKind) := [\n" ++
+         "  { request := \"LeanSwe.MiniPure.parseBool\", errorKind := .bad, justification := .tested \"LeanSwe.MiniPure.RuntimeTests.test_err_bad\" .real }\n" ++
+         "]\nend LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "private theorem renderBool_inj : Core.RenderInjectiveModulo Model.renderBool Eq := by\n" ++
+         "  intro a b _ _ raw ha hb; cases a <;> cases b <;> simp [Model.renderBool] at ha hb <;> first | rfl | exact absurd (ha.trans hb.symm) (by decide)\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysInverseRender LeanSwe.MiniPure.parseBool Model.renderBool Model.wfBool Eq InvErr.msg := by\n" ++
+         "  refine ⟨fun _ => rfl, Core.ObeysInverseRender.of_injective renderBool_inj ?_ ?_⟩\n" ++
+         "  · intro raw out hp\n" ++
+         "    unfold LeanSwe.MiniPure.parseBool LeanSwe.MiniPure.Internal.parseBoolImpl at hp\n" ++
+         "    by_cases h1 : raw = \"true\"\n" ++
+         "    · subst h1; simp at hp; subst hp; exact ⟨trivial, ⟨(), rfl⟩⟩\n" ++
+         "    · by_cases h2 : raw = \"false\"\n" ++
+         "      · subst h2; simp at hp; subst hp; exact ⟨trivial, ⟨(), rfl⟩⟩\n" ++
+         "      · simp [h1, h2] at hp\n" ++
+         "  · intro raw e hp\n" ++
+         "    unfold LeanSwe.MiniPure.parseBool LeanSwe.MiniPure.Internal.parseBoolImpl at hp\n" ++
+         "    by_cases h1 : raw = \"true\"\n" ++
+         "    · subst h1; simp at hp\n" ++
+         "    · by_cases h2 : raw = \"false\"\n" ++
+         "      · subst h2; simp at hp\n" ++
+         "      · simp [h1, h2] at hp; subst hp; refine ⟨by decide, ?_⟩; intro a _ hr; cases a <;> simp [Model.renderBool] at hr <;> exact absurd hr.symm (by assumption)\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/RuntimeTests.lean")
+        ("import Core.Assumptions\nimport LeanSwe.MiniPure.Interface\n" ++
+         "namespace LeanSwe.MiniPure.RuntimeTests\n" ++
+         "def test_err_bad : IO Unit := do\n" ++
+         "  match LeanSwe.MiniPure.parseBool \"nope\" with\n" ++
+         "  | .error e => if e.kind != .bad then throw (IO.userError \"wrong kind\")\n" ++
+         "  | .ok _ => throw (IO.userError \"expected error\")\n" ++
+         "def registeredErrorTests : Array Core.RegisteredErrorTest := #[\n" ++
+         "  { testName := \"LeanSwe.MiniPure.RuntimeTests.test_err_bad\", mode := .real, run := test_err_bad }\n" ++
+         "]\n" ++
+         "def runAll : IO Unit := Core.runRegisteredErrorTests registeredErrorTests\n" ++
+         "end LeanSwe.MiniPure.RuntimeTests\n")
+      let ls ← IO.FS.readFile (mr.root / "LeanSwe.lean")
+      writeFileCreatingParents (mr.root / "LeanSwe.lean") (ls ++ "import LeanSwe.MiniPure.RuntimeTests\n")
+      writeFileCreatingParents (mr.root / "harness/Tests/Main.lean")
+        "import Core.Assumptions\nimport LeanSwe\ndef main (_ : List String) : IO UInt32 := do\n  Core.initAssumpLog \"a\" \"b\"\n  LeanSwe.MiniPure.RuntimeTests.runAll\n  Core.closeAssumpLog\n  return 0\n"
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs",
+        "LeanSwe/MiniPure/RuntimeTests", "LeanSwe", "Tests/Main"
+      ]
+
+    runMutantCase base tmpRoot bin "duplicate_obeys_and_refines_rejected" "DUPLICATE_OBEYS_AND_REFINES_MODEL" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport Core.Refines\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel := fun _ => rfl\n" ++
+         "theorem refines_model : Core.RefinesPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel := fun _ => rfl\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #["LeanSwe/MiniPure/Proofs", "LeanSwe"]
+
+    runMutantCase base tmpRoot bin "obeys_upto_errmsg_const_kind_rejected" "TRIVIAL_ALLOWED_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "structure ParseErr where\n  code : Nat\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
+         "def constKind (_ : ParseErr) : Nat := 0\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def parseModel (s : String) : Except ParseErr Nat :=\n" ++
+         "  if s.isEmpty then .error { code := 1, msg := \"\" } else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseImpl (s : String) : Except ParseErr Nat :=\n" ++
+         "  if s.isEmpty then .error { code := 99, msg := \"oops\" } else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parse (s : String) : Except ParseErr Nat := Internal.parseImpl s\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel ∧\n" ++
+         "    Core.ObeysPureEqUpToErrMsg constKind ParseErr.msg LeanSwe.MiniPure.parse LeanSwe.MiniPure.Model.parseModel := by\n" ++
+         "  refine ⟨fun _ => rfl, fun s => ?_⟩\n" ++
+         "  unfold LeanSwe.MiniPure.parse LeanSwe.MiniPure.Internal.parseImpl LeanSwe.MiniPure.Model.parseModel\n" ++
+         "  by_cases h : s.isEmpty <;> simp [h, Core.EqUpToErrMsg, constKind]\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    runMutantCase base tmpRoot bin "obeys_upto_errmsg_pattern_match_enum_const_kind_rejected" "TRIVIAL_ALLOWED_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "inductive EnumErr\n  | errA\n  | errB\n  deriving Repr, BEq, DecidableEq\n" ++
+         "def matchConstKind : EnumErr → Nat\n  | .errA => 0\n  | .errB => 0\n" ++
+         "def enumMsg : EnumErr → String\n  | .errA => \"a\"\n  | .errB => \"b\"\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def parseModel (s : String) : Except EnumErr Nat :=\n" ++
+         "  if s.isEmpty then .error .errA else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseImpl (s : String) : Except EnumErr Nat :=\n" ++
+         "  if s.isEmpty then .error .errB else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parse (s : String) : Except EnumErr Nat := Internal.parseImpl s\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel ∧\n" ++
+         "    Core.ObeysPureEqUpToErrMsg matchConstKind enumMsg LeanSwe.MiniPure.parse LeanSwe.MiniPure.Model.parseModel := by\n" ++
+         "  refine ⟨fun _ => rfl, fun s => ?_⟩\n" ++
+         "  unfold LeanSwe.MiniPure.parse LeanSwe.MiniPure.Internal.parseImpl LeanSwe.MiniPure.Model.parseModel\n" ++
+         "  by_cases h : s.isEmpty <;> simp [h, Core.EqUpToErrMsg, matchConstKind, enumMsg]\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    runMutantCase base tmpRoot bin "obeys_upto_errmsg_pattern_match_struct_const_kind_rejected" "TRIVIAL_ALLOWED_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "inductive ParseKind\n  | empty\n  | bad\n  deriving Repr, BEq, DecidableEq\n" ++
+         "structure ParseErr where\n  kind : ParseKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
+         "def sneakStructKind (e : ParseErr) : Nat :=\n  match e.kind with\n  | .empty => 0\n  | .bad => 0\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def parseModel (s : String) : Except ParseErr Nat :=\n" ++
+         "  if s.isEmpty then .error { kind := .empty, msg := \"\" } else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseImpl (s : String) : Except ParseErr Nat :=\n" ++
+         "  if s.isEmpty then .error { kind := .bad, msg := \"oops\" } else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parse (s : String) : Except ParseErr Nat := Internal.parseImpl s\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel ∧\n" ++
+         "    Core.ObeysPureEqUpToErrMsg sneakStructKind ParseErr.msg LeanSwe.MiniPure.parse LeanSwe.MiniPure.Model.parseModel := by\n" ++
+         "  refine ⟨fun _ => rfl, fun s => ?_⟩\n" ++
+         "  unfold LeanSwe.MiniPure.parse LeanSwe.MiniPure.Internal.parseImpl LeanSwe.MiniPure.Model.parseModel\n" ++
+         "  by_cases h : s.isEmpty <;> simp [h, Core.EqUpToErrMsg, sneakStructKind]\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    runMutantCase base tmpRoot bin "obeys_inverse_render_const_none_rejected" "TRIVIAL_ALLOWED_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "inductive InvKind\n  | bad\n  deriving Repr, BEq, DecidableEq\n" ++
+         "structure InvErr where\n  kind : InvKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def badRender : Bool → Unit → Option String\n  | true, _ => none\n  | false, _ => none\n" ++
+         "def wfBool (_ : Bool) : Prop := True\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseBoolImpl (_ : String) : Except InvErr Bool := .error { kind := .bad, msg := \"no\" }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parseBool (s : String) : Except InvErr Bool := Internal.parseBoolImpl s\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysInverseRender LeanSwe.MiniPure.parseBool Model.badRender Model.wfBool Eq InvErr.msg := by\n" ++
+         "  refine ⟨fun _ => rfl, fun _ => ?_⟩\n" ++
+         "  refine ⟨by decide, fun a _ h => ?_⟩; cases a <;> simp [Model.badRender] at h\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    runMutantCase base tmpRoot bin "obeys_upto_errmsg_char_const_kind_rejected" "TRIVIAL_ALLOWED_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "inductive CharErr\n  | io (c : Char)\n  | parse (c : Char)\n  deriving Repr, BEq, DecidableEq\n" ++
+         "def constCharKind : CharErr → Nat\n  | .io _ => 0\n  | .parse _ => 0\n" ++
+         "def charErrMsg : CharErr → String\n  | .io c => toString c\n  | .parse c => \"p\" ++ toString c\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def parseModel (s : String) : Except CharErr Nat :=\n" ++
+         "  if s.isEmpty then .error (.io 'x') else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseImpl (s : String) : Except CharErr Nat :=\n" ++
+         "  if s.isEmpty then .error (.parse 'y') else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parse (s : String) : Except CharErr Nat := Internal.parseImpl s\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysPureEqUpToErrMsg constCharKind charErrMsg LeanSwe.MiniPure.parse Model.parseModel := by\n" ++
+         "  refine ⟨fun _ => rfl, fun s => ?_⟩\n" ++
+         "  unfold LeanSwe.MiniPure.parse LeanSwe.MiniPure.Internal.parseImpl Model.parseModel\n" ++
+         "  by_cases h : s.isEmpty <;> simp [h, Core.EqUpToErrMsg, constCharKind, charErrMsg]\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    runMutantCase base tmpRoot bin "obeys_upto_errmsg_unsampleable_field_fails_closed" "INCONCLUSIVE_REFINES_CHECK" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "inductive FnErr\n  | io (f : Nat → Nat)\n  | parse (f : Nat → Nat)\n" ++
+         "def constFnKind : FnErr → Nat\n  | .io _ => 0\n  | .parse _ => 0\n" ++
+         "def fnErrMsg : FnErr → String\n  | .io _ => \"io\"\n  | .parse _ => \"parse\"\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def parseModel (s : String) : Except FnErr Nat :=\n" ++
+         "  if s.isEmpty then .error (.io id) else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseImpl (s : String) : Except FnErr Nat :=\n" ++
+         "  if s.isEmpty then .error (.parse id) else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parse (s : String) : Except FnErr Nat := Internal.parseImpl s\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysPureEqUpToErrMsg constFnKind fnErrMsg LeanSwe.MiniPure.parse Model.parseModel := by\n" ++
+         "  refine ⟨fun _ => rfl, fun s => ?_⟩\n" ++
+         "  unfold LeanSwe.MiniPure.parse LeanSwe.MiniPure.Internal.parseImpl Model.parseModel\n" ++
+         "  by_cases h : s.isEmpty <;> simp [h, Core.EqUpToErrMsg, constFnKind, fnErrMsg]\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    runMutantCase base tmpRoot bin "obeys_inverse_render_tape_match_const_rejected" "TRIVIAL_ALLOWED_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "inductive InvKind\n  | bad\n  deriving Repr, BEq, DecidableEq\n" ++
+         "structure InvErr where\n  kind : InvKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
+         "inductive MyTape\n  | t1\n  | t2\n  deriving Repr, BEq, DecidableEq\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def tapeConstRender (_ : Bool) (t : MyTape) : Option String :=\n  match t with\n  | .t1 => none\n  | .t2 => none\n" ++
+         "def wfBool (_ : Bool) : Prop := True\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseBoolImpl (_ : String) : Except InvErr Bool := .error { kind := .bad, msg := \"no\" }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parseBool (s : String) : Except InvErr Bool := Internal.parseBoolImpl s\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysInverseRender LeanSwe.MiniPure.parseBool Model.tapeConstRender Model.wfBool Eq InvErr.msg := by\n" ++
+         "  refine ⟨fun _ => rfl, fun _ => ?_⟩\n" ++
+         "  refine ⟨by decide, fun _ t h => ?_⟩; cases t <;> simp [Model.tapeConstRender] at h\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    runMutantCase base tmpRoot bin "obeys_upto_errmsg_const_msg_rejected" "TRIVIAL_ALLOWED_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "inductive ParseKind\n  | empty\n  | bad\n  deriving Repr, BEq, DecidableEq\n" ++
+         "structure ParseErr where\n  kind : ParseKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
+         "def constMsg (_ : ParseErr) : String := \"x\"\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def parseModel (s : String) : Except ParseErr Nat :=\n" ++
+         "  if s.isEmpty then .error { kind := .empty, msg := \"\" } else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseImpl (s : String) : Except ParseErr Nat :=\n" ++
+         "  if s.isEmpty then .error { kind := .empty, msg := \"\" } else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parse (s : String) : Except ParseErr Nat := Internal.parseImpl s\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysPureEqUpToErrMsg ParseErr.kind constMsg LeanSwe.MiniPure.parse Model.parseModel := by\n" ++
+         "  refine ⟨fun _ => rfl, fun s => ?_⟩\n" ++
+         "  unfold LeanSwe.MiniPure.parse LeanSwe.MiniPure.Internal.parseImpl Model.parseModel\n" ++
+         "  by_cases h : s.isEmpty <;> simp [h, Core.EqUpToErrMsg, constMsg]\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    runMutantCase base tmpRoot bin "obeys_upto_errmsg_proof_msg_rejected" "NON_MODEL_SPEC_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "inductive ParseKind\n  | empty\n  | bad\n  deriving Repr, BEq, DecidableEq\n" ++
+         "structure ParseErr where\n  kind : ParseKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def parseModel (s : String) : Except ParseErr Nat :=\n" ++
+         "  if s.isEmpty then .error { kind := .empty, msg := \"\" } else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseImpl (s : String) : Except ParseErr Nat :=\n" ++
+         "  if s.isEmpty then .error { kind := .empty, msg := \"nonempty\" } else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parse (s : String) : Except ParseErr Nat := Internal.parseImpl s\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "def proofMsg (e : ParseErr) : String := e.msg\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysPureEqUpToErrMsg ParseErr.kind proofMsg LeanSwe.MiniPure.parse Model.parseModel := by\n" ++
+         "  refine ⟨fun _ => rfl, fun s => ?_⟩\n" ++
+         "  unfold LeanSwe.MiniPure.parse LeanSwe.MiniPure.Internal.parseImpl Model.parseModel\n" ++
+         "  by_cases h : s.isEmpty <;> simp [h, Core.EqUpToErrMsg, proofMsg]\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    runMutantCase base tmpRoot bin "obeys_upto_errmsg_private_proof_msg_rejected" "LAMBDA_OR_PARTIAL_APP_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "inductive ParseKind\n  | empty\n  | bad\n  deriving Repr, BEq, DecidableEq\n" ++
+         "structure ParseErr where\n  kind : ParseKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def parseModel (s : String) : Except ParseErr Nat :=\n" ++
+         "  if s.isEmpty then .error { kind := .empty, msg := \"\" } else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseImpl (s : String) : Except ParseErr Nat :=\n" ++
+         "  if s.isEmpty then .error { kind := .empty, msg := \"nonempty\" } else .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parse (s : String) : Except ParseErr Nat := Internal.parseImpl s\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "private def proofMsg (e : ParseErr) : String := e.msg\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysPureEqUpToErrMsg ParseErr.kind proofMsg LeanSwe.MiniPure.parse Model.parseModel := by\n" ++
+         "  refine ⟨fun _ => rfl, fun s => ?_⟩\n" ++
+         "  unfold LeanSwe.MiniPure.parse LeanSwe.MiniPure.Internal.parseImpl Model.parseModel\n" ++
+         "  by_cases h : s.isEmpty <;> simp [h, Core.EqUpToErrMsg, proofMsg]\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    runMutantCase base tmpRoot bin "obeys_inverse_render_const_msg_rejected" "TRIVIAL_ALLOWED_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "inductive InvKind\n  | bad\n  deriving Repr, BEq, DecidableEq\n" ++
+         "structure InvErr where\n  kind : InvKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
+         "def constInvMsg (_ : InvErr) : String := \"x\"\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def renderBool (b : Bool) (_ : Unit) : Option String := some (if b then \"true\" else \"false\")\n" ++
+         "def wfBool (_ : Bool) : Prop := True\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseBoolImpl (s : String) : Except InvErr Bool :=\n" ++
+         "  if s == \"true\" then .ok true else if s == \"false\" then .ok false else .error { kind := .bad, msg := \"\" }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parseBool (s : String) : Except InvErr Bool := Internal.parseBoolImpl s\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "private theorem renderBool_inj : Core.RenderInjectiveModulo Model.renderBool Eq := by\n" ++
+         "  intro a b _ _ raw ha hb; cases a <;> cases b <;> simp [Model.renderBool] at ha hb <;> first | rfl | exact absurd (ha.trans hb.symm) (by decide)\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysInverseRender LeanSwe.MiniPure.parseBool Model.renderBool Model.wfBool Eq constInvMsg := by\n" ++
+         "  refine ⟨fun _ => rfl, Core.ObeysInverseRender.of_injective renderBool_inj ?_ ?_⟩\n" ++
+         "  · intro raw out hp\n" ++
+         "    unfold LeanSwe.MiniPure.parseBool LeanSwe.MiniPure.Internal.parseBoolImpl at hp\n" ++
+         "    by_cases h1 : raw = \"true\"\n" ++
+         "    · subst h1; simp at hp; subst hp; exact ⟨trivial, ⟨(), rfl⟩⟩\n" ++
+         "    · by_cases h2 : raw = \"false\"\n" ++
+         "      · subst h2; simp at hp; subst hp; exact ⟨trivial, ⟨(), rfl⟩⟩\n" ++
+         "      · simp [h1, h2] at hp\n" ++
+         "  · intro raw e hp\n" ++
+         "    unfold LeanSwe.MiniPure.parseBool LeanSwe.MiniPure.Internal.parseBoolImpl at hp\n" ++
+         "    by_cases h1 : raw = \"true\"\n" ++
+         "    · subst h1; simp at hp\n" ++
+         "    · by_cases h2 : raw = \"false\"\n" ++
+         "      · subst h2; simp at hp\n" ++
+         "      · simp [h1, h2] at hp; subst hp; refine ⟨by decide, ?_⟩; intro a _ hr; cases a <;> simp [Model.renderBool] at hr <;> exact absurd hr.symm (by assumption)\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    let psOk ← runCmd bin.toString #[base.libDir.toString, base.root.toString, "--print-sig", "LeanSwe.MiniPure"]
+    if psOk.exitCode != 0 ||
+        (psOk.stdout.splitOn "Template for LeanSwe.MiniPure.Proofs.obeys_model").length <= 1 ||
+        (psOk.stdout.splitOn "theorem obeys_model :").length <= 1 ||
+        (psOk.stdout.splitOn "Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel").length <= 1 then
+      throw (IO.userError s!"FAIL [print_sig_minipure_ok]: exit={psOk.exitCode}\nstdout={psOk.stdout}\nstderr={psOk.stderr}")
+    IO.println "PASS [print_sig_minipure_ok] -> printed expected obeys_model template"
+
+    do
+      let psDir := tmpRoot / "print_sig_shapes"
+      let repoCopy := psDir / "repo"
+      let libCopy := psDir / "lib"
+      IO.FS.createDirAll psDir
+      copyDirTree base.root repoCopy
+      copyDirTree base.libDir libCopy
+      let lp := s!"{libCopy}:{base.leanPath}"
+      writeFileCreatingParents (repoCopy / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "inductive ParseKind\n  | empty\n  deriving Repr, BEq, DecidableEq\n" ++
+         "structure ParseErr where\n  kind : ParseKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
+         "structure RawOpsM (m : Type → Type) where\n  getVal : m Nat\n" ++
+         "structure PkgApiM (m : Type → Type) where\n  readVal : m Nat\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (repoCopy / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def parseModel (s : String) : Except ParseErr Nat := .ok s.length\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (repoCopy / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseImpl (s : String) : Except ParseErr Nat := .ok s.length\n" ++
+         "def mkApiM {m : Type → Type} [Monad m] [MonadFinally m] (ops : RawOpsM m) : PkgApiM m := { readVal := ops.getVal }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (repoCopy / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parse (s : String) : Except ParseErr Nat := Internal.parseImpl s\n" ++
+         "def zeroArg : Nat := 42\n" ++
+         "def polyShow {α : Type} [ToString α] (x : α) : String := toString x\n" ++
+         "def defaultApi : PkgApiM IO := Internal.mkApiM { getVal := pure 0 }\n" ++
+         "def readVal : IO Nat := defaultApi.readVal\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (repoCopy / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      for m in #["LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+          "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"] do
+        compileLeanMod repoCopy lp (repoCopy / s!"{m}.lean") (libCopy / s!"{m}.olean")
+      let psShapes ← runCmd bin.toString #[libCopy.toString, repoCopy.toString, "--print-sig", "LeanSwe.MiniPure"]
+      let st := psShapes.stdout
+      let okShapes :=
+        psShapes.exitCode == 0 &&
+        (st.splitOn "Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel").length > 1 &&
+        (st.splitOn "Core.ObeysPureEqUpToErrMsg LeanSwe.MiniPure.ParseErr.kind LeanSwe.MiniPure.ParseErr.msg LeanSwe.MiniPure.parse Model.parseModel").length > 1 &&
+        (st.splitOn "<MANUAL_TEMPLATE_ARITY_0: LeanSwe.MiniPure.zeroArg").length > 1 &&
+        (st.splitOn "<MANUAL_TEMPLATE_POLY: LeanSwe.MiniPure.polyShow").length > 1 &&
+        (st.splitOn "Core.ObeysStepFromFinally <MAP_S> <RAW_WF> <EXEC_RAW> <RAW_ALLOWED> <PKG_WF> LeanSwe.MiniPure.Internal.mkApiM <EXEC_PKG> <PKG_ALLOWED>").length > 1 &&
+        (st.splitOn "Model.rawStepWf").length == 1
+      if !okShapes then
+        throw (IO.userError s!"FAIL [print_sig_shapes_ok]: exit={psShapes.exitCode}\nstdout={st}\nstderr={psShapes.stderr}")
+      IO.println "PASS [print_sig_shapes_ok] -> Except, 0-arg, poly, and effectful placeholders verified"
+      IO.FS.removeDirAll psDir
+
+    expectFailureCode bin "print_sig_unknown_pkg_rejected" "UNKNOWN_PACKAGE_FOR_PRINT_SIG"
+      base.libDir base.root #["--print-sig", "LeanSwe.DoesNotExist"]
 
     expectFailureCode bin "inconclusive_dead_branch_fails_closed" "INCONCLUSIVE_DEAD_BRANCH_CHECK"
       base.libDir base.root #["--allow-legacy", "--dead-branch-fuel", "0"]

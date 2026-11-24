@@ -1,4 +1,5 @@
 import Core.NondetTest
+import Core.Obeys
 import Core.Refines
 import LeanSwe.RegExp.Types
 import LeanSwe.RegExp.Model
