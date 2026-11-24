@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Verify PR labels for locked specs (`spec-add`/`spec-change`) and foreign budget (`add-foreign-lang`).
 
-Locked spec files (`Core/*.lean`, `LeanSwe/**/{Types,Model,SpecTests,Interface}.lean`,
-and `LeanSwe/**/{Types,Model,SpecTests,Interface}/**/*.lean`,
-except brand-new `LeanSwe/<Pkg>` packages absent at the base commit) always require a PR label.
+Locked spec files (`Core/*.lean`, `LeanSwe/**/{Types,Model,Interface,Properties,ModelChecks}.lean`,
+`LeanSwe/**/{Types,Model,Interface,Properties,ModelChecks}/**/*.lean`, and locked spec metadata
+files `scripts/package_manifest.json`, `scripts/external_assumptions.json`, and
+`scripts/coverage_overrides.json`, except brand-new `LeanSwe/<Pkg>` packages absent at the base
+commit) always require a PR label. `SpecTests.lean` and `SpecTests/**/*.lean` are intentionally
+unlocked (`#153`).
 Every top-level unit in a Lean file is split at unindented column-0 boundaries outside nested
 block comments (`/- ... -/`), doc comments (`/-- ... -/`), string literals (including
 interpolated `s!"..."` expressions), char literals, and `mutual ... end` blocks; leading
@@ -12,13 +15,27 @@ following declaration, while `where`/`|`/`deriving`/`termination_by`/`decreasing
 continuations stay attached to the preceding declaration. A unit is unchanged iff its text (doc
 comment included) is byte-identical. Pure declaration additions (`def`, `theorem`, `abbrev`,
 `structure`, `inductive`, `example`, `mutual`) with at most allowlisted `@[...]` attributes,
-appended after all non-`end` base units (before any unchanged trailing `end` lines) or added as a
-validated new `{Types,Model,SpecTests}{.lean,/**/*.lean}` file in an existing package, require
-`spec-add` (also satisfied by `spec-change`). Any alteration (including adding fields to an existing
-`EmpiricalAssumptions` structure, editing doc comments, or adding `assume`), removal, rename/copy,
-middle insertion, new `Core/*.lean` or `Interface{.lean,/**/*.lean}`, `opaque`/`instance`/`class`,
-unsafe or custom `@[...]` attributes, embedded/indented/same-line extra commands, or non-declaration
-directive requires `spec-change`.
+appended after all non-`end` base units (before any unchanged trailing `end` lines), added as a
+validated new `{Types,Model,Properties,ModelChecks}{.lean,/**/*.lean}` file in an existing
+package, or manifest-only additions/strengthenings in `scripts/package_manifest.json` (adding
+entries under existing top-level packages, upgrading `"kind": "property" -> "model"`, adding
+`fuzz_suite`, adding `deps`, or tightening `external_boundary: false -> true`) require
+`spec-add` (also satisfied by `spec-change`). Purely adding `scripts/package_manifest.json`
+entries for brand-new top-level `LeanSwe/<Pkg>` packages absent at the base commit (touching zero
+existing entries) is exempt alongside brand-new package spec files when `ALLOW_NEW_PACKAGES` is
+enabled. Any alteration (including adding fields to an existing `EmpiricalAssumptions` structure,
+editing doc comments, or adding `assume`), removal, rename/copy, middle insertion, new
+`Core/*.lean` or `Interface{.lean,/**/*.lean}`, `opaque`/`instance`/`class`, unsafe or custom
+`@[...]` attributes, embedded/indented/same-line extra commands, non-declaration directive, or
+non-strengthening edit to locked spec metadata JSON files (including downgrading a package from
+`"kind": "model"` to `"kind": "property"` or `external_boundary: true -> false`, removing a
+package/dep/`fuzz_suite`, or editing `scripts/external_assumptions.json` /
+`scripts/coverage_overrides.json`) requires `spec-change`.
+
+When `scripts/package_manifest.json` is present in `base` or `head`, manifest integrity is
+enforced unconditionally: 100% package coverage under `LeanSwe/`, zero orphan entries, no
+`"kind": "property"` for packages with `external_boundary=true` or `@[extern]` declarations, and
+every referenced `fuzz_suite` must exist in `harness/Fuzz/suites.json`.
 
 `.foreign-budget.json` is enforced as a strictly orthogonal one-way ratchet: deleting files,
 lowering `max_lines`, clearing `legacy_unmigrated`, or tightening `function_overrides` /
@@ -37,8 +54,40 @@ from pathlib import Path
 import subprocess
 import sys
 
-SPEC_SUBDIRS = frozenset({"Types", "Model", "SpecTests", "Interface"})
+SPEC_SUBDIRS = frozenset({"Types", "Model", "Interface", "Properties", "ModelChecks"})
 SPEC_BASENAMES = frozenset(f"{d}.lean" for d in SPEC_SUBDIRS)
+PACKAGE_MANIFEST_PATH = "scripts/package_manifest.json"
+EXTERNAL_ASSUMPTIONS_PATH = "scripts/external_assumptions.json"
+COVERAGE_OVERRIDES_PATH = "scripts/coverage_overrides.json"
+LOCKED_SPEC_JSON_PATHS = frozenset({
+    PACKAGE_MANIFEST_PATH,
+    EXTERNAL_ASSUMPTIONS_PATH,
+    COVERAGE_OVERRIDES_PATH,
+})
+FUZZ_SUITES_PATH = "harness/Fuzz/suites.json"
+NON_PACKAGE_SUBDIRS = frozenset({
+    "Proofs",
+    "Model",
+    "Types",
+    "SpecTests",
+    "Properties",
+    "ModelChecks",
+    "SpecMutants",
+    "RuntimeTests",
+    "Impl",
+    "Interface",
+    "SysBridge",
+    "Host",
+    "Init",
+    "Aeneas",
+})
+MANIFEST_ROOT_KEYS = frozenset({"version", "packages"})
+MANIFEST_PKG_REQUIRED_KEYS = frozenset({"kind", "purity", "deps", "external_boundary"})
+MANIFEST_PKG_OPTIONAL_KEYS = frozenset({"fuzz_suite", "err_msg_opaque", "spec_style"})
+MANIFEST_PKG_ALL_KEYS = MANIFEST_PKG_REQUIRED_KEYS | MANIFEST_PKG_OPTIONAL_KEYS
+MANIFEST_KINDS = frozenset({"model", "property", "support"})
+MANIFEST_PURITIES = frozenset({"pure", "nondet_io", "mixed", "types_only"})
+MANIFEST_SPEC_STYLES = frozenset({"pure_eq", "inverse_render", "state_step"})
 FOREIGN_BUDGET_PATH = ".foreign-budget.json"
 BUDGET_ROOT_KEYS = frozenset({"version", "files", "vendored_files", "function_overrides", "named_thread_helpers"})
 BUDGET_FILE_KEYS = frozenset({"max_lines", "legacy_unmigrated"})
@@ -169,7 +218,9 @@ def resolve_effective_base(repo_root: Path, base_ref: str, head_ref: str) -> str
 
 
 def is_spec_file(rel_path: str) -> bool:
-    """Return True when rel_path is a frozen spec file under Core/ or LeanSwe/."""
+    """Return True when rel_path is a frozen spec file under Core/, LeanSwe/, or locked metadata JSON."""
+    if rel_path in LOCKED_SPEC_JSON_PATHS:
+        return True
     parts = Path(rel_path).parts
     if not parts:
         return False
@@ -251,6 +302,29 @@ def git_show_text(repo_root: Path, commit_ref: str, rel_path: str) -> str:
         ["git", "show", f"{commit_ref}:{rel_path}"],
         cwd=repo_root,
     ).decode("utf-8", errors="surrogateescape")
+
+
+def git_file_exists(repo_root: Path, commit_ref: str, rel_path: str) -> bool:
+    """Return True if rel_path exists as a blob at commit_ref."""
+    proc = subprocess.run(
+        ["git", "cat-file", "-e", f"{commit_ref}:{rel_path}"],
+        cwd=repo_root,
+        capture_output=True,
+    )
+    return proc.returncode == 0
+
+
+def git_list_tree_files(repo_root: Path, commit_ref: str, prefix: str) -> list[str]:
+    """Return repo-relative file paths under prefix at commit_ref."""
+    proc = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", "-z", commit_ref, "--", prefix],
+        cwd=repo_root,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return []
+    raw = proc.stdout.decode("utf-8", errors="surrogateescape")
+    return [tok for tok in raw.split("\0") if tok]
 
 
 @dataclass(frozen=True)
@@ -776,6 +850,32 @@ def classify_locked_spec_diff(
 ) -> LockedDiffAssessment:
     """Determine whether one touched locked spec file requires `spec-add` or `spec-change`."""
     hit = f"{status}\t{' -> '.join(paths)}"
+    if any(p in LOCKED_SPEC_JSON_PATHS for p in paths):
+        if status == "M" and paths == [PACKAGE_MANIFEST_PATH]:
+            base_text = git_show_text(repo_root, base_ref, PACKAGE_MANIFEST_PATH)
+            head_text = git_show_text(repo_root, head_ref, PACKAGE_MANIFEST_PATH)
+            req_label, reason = classify_package_manifest_texts(
+                base_text, head_text, base_top_pkgs=set(), allow_new_packages=False
+            )
+            return LockedDiffAssessment(hit, req_label or LABEL_ADD, reason)
+        if (
+            PACKAGE_MANIFEST_PATH in paths
+            and git_file_exists(repo_root, base_ref, PACKAGE_MANIFEST_PATH)
+            and git_file_exists(repo_root, head_ref, PACKAGE_MANIFEST_PATH)
+        ):
+            base_text = git_show_text(repo_root, base_ref, PACKAGE_MANIFEST_PATH)
+            head_text = git_show_text(repo_root, head_ref, PACKAGE_MANIFEST_PATH)
+            downgraded, _ = find_manifest_kind_downgrades(base_text, head_text)
+            if downgraded:
+                return LockedDiffAssessment(
+                    hit,
+                    LABEL_CHANGE,
+                    f"downgraded package kind 'model' -> 'property' for {', '.join(downgraded)}",
+                )
+        target = next(p for p in reversed(paths) if p in LOCKED_SPEC_JSON_PATHS)
+        return LockedDiffAssessment(
+            hit, LABEL_CHANGE, f"locked spec metadata '{target}' changed (status '{status}')"
+        )
     if status[0] in ("D", "R", "C"):
         return LockedDiffAssessment(hit, LABEL_CHANGE, f"spec file status '{status}' alters or removes existing spec")
     if status == "A" and len(paths) == 1:
@@ -1053,6 +1153,479 @@ def classify_foreign_budget_diff(
     return None
 
 
+def has_extern_attribute(source: str) -> bool:
+    """Return True if Lean source declares an `extern` attribute (`@[...]` or `attribute [...]`)."""
+    if "extern" not in source:
+        return False
+    tokens, _ = scan_lean(source)
+    for idx, tok in enumerate(tokens):
+        if tok.after_dot or tok.after_backtick or tok.interp_depth > 0:
+            continue
+        if tok.in_attr and tok.bdepth == 1 and tok.text == "extern":
+            return True
+        if not tok.in_attr and tok.bdepth == 0 and tok.text == "attribute":
+            j = idx + 1
+            while j < len(tokens) and tokens[j].bdepth >= 1:
+                inner = tokens[j]
+                if (
+                    inner.bdepth == 1
+                    and not inner.after_dot
+                    and not inner.after_backtick
+                    and inner.interp_depth == 0
+                    and inner.text == "extern"
+                ):
+                    return True
+                j += 1
+    return False
+
+
+def _is_valid_manifest_pkg_name(pkg: str) -> bool:
+    """Return True if pkg is a valid dotted `LeanSwe.<Pkg>` identifier."""
+    if not pkg.startswith("LeanSwe."):
+        return False
+    segs = pkg.split(".")
+    if len(segs) < 2:
+        return False
+    for seg in segs[1:]:
+        if not seg or not seg[0].isalpha() or not all(ch.isalnum() or ch == "_" for ch in seg):
+            return False
+        if seg in NON_PACKAGE_SUBDIRS:
+            return False
+    return True
+
+
+def _discover_packages_from_lean_paths(lean_paths: list[str]) -> tuple[set[str], set[str]]:
+    """Return `(discovered_pkgs, all_lean_dirs)` from repo-relative `.lean` paths under `LeanSwe/`."""
+    discovered: set[str] = set()
+    all_lean_dirs: set[str] = set()
+    for rel_path in lean_paths:
+        p = Path(rel_path)
+        parts = p.parts
+        if len(parts) < 3 or parts[0] != "LeanSwe" or not rel_path.endswith(".lean"):
+            continue
+        parent_parts = parts[:-1]
+        all_lean_dirs.add("/".join(parent_parts))
+        if parts[-1] in ("Interface.lean", "Types.lean") and not any(
+            seg in NON_PACKAGE_SUBDIRS for seg in parent_parts[1:]
+        ):
+            discovered.add(".".join(parent_parts))
+    return discovered, all_lean_dirs
+
+
+def _owner_package_for_lean_path(rel_path: str, sorted_pkg_prefixes: list[tuple[str, str]]) -> str | None:
+    """Return the deepest package owning rel_path by longest directory prefix match."""
+    for dir_prefix, pkg in sorted_pkg_prefixes:
+        if rel_path.startswith(dir_prefix):
+            return pkg
+    return None
+
+
+def find_manifest_kind_downgrades(base_text: str, head_text: str) -> tuple[list[str], str | None]:
+    """Return `(downgraded_pkgs, parse_err)` for packages changing kind `'model' -> 'property'`."""
+    try:
+        base_obj = _loads_strict_json(base_text)
+        head_obj = _loads_strict_json(head_text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        return [], str(exc)
+    if not isinstance(base_obj, dict) or not isinstance(head_obj, dict):
+        return [], "manifest root must be a JSON object"
+    base_pkgs = base_obj.get("packages")
+    head_pkgs = head_obj.get("packages")
+    if not isinstance(base_pkgs, dict) or not isinstance(head_pkgs, dict):
+        return [], "manifest 'packages' must be a JSON object"
+    downgraded: list[str] = []
+    for pkg in sorted(set(base_pkgs.keys()) & set(head_pkgs.keys())):
+        b_entry = base_pkgs[pkg]
+        h_entry = head_pkgs[pkg]
+        if (
+            isinstance(b_entry, dict)
+            and isinstance(h_entry, dict)
+            and b_entry.get("kind") == "model"
+            and h_entry.get("kind") == "property"
+        ):
+            downgraded.append(pkg)
+    return downgraded, None
+
+
+def _classify_existing_manifest_pkg_edit(pkg: str, base_entry: object, head_entry: object) -> tuple[str | None, str]:
+    """Classify an edit to an existing manifest package entry.
+
+    Returns `(None, "")` when unchanged, `(LABEL_ADD, reason)` for pure strengthenings,
+    or `(LABEL_CHANGE, reason)` for any downgrade or non-strengthening alteration.
+    """
+    if base_entry == head_entry:
+        return None, ""
+    if not isinstance(base_entry, dict) or not isinstance(head_entry, dict):
+        return LABEL_CHANGE, f"altered entry shape for '{pkg}'"
+    if not set(head_entry.keys()).issubset(MANIFEST_PKG_ALL_KEYS):
+        return LABEL_CHANGE, f"unknown key(s) added to '{pkg}'"
+
+    b_kind = base_entry.get("kind")
+    h_kind = head_entry.get("kind")
+    if b_kind == "model" and h_kind == "property":
+        return LABEL_CHANGE, f"downgraded package kind 'model' -> 'property' for {pkg}"
+    if b_kind != h_kind and not (b_kind == "property" and h_kind == "model"):
+        return LABEL_CHANGE, f"changed kind on '{pkg}' ({b_kind!r} -> {h_kind!r})"
+
+    b_ext = base_entry.get("external_boundary")
+    h_ext = head_entry.get("external_boundary")
+    if not isinstance(b_ext, bool) or not isinstance(h_ext, bool):
+        return LABEL_CHANGE, f"invalid external_boundary on '{pkg}'"
+    if b_ext and not h_ext:
+        return LABEL_CHANGE, f"loosened external_boundary on '{pkg}' (true -> false)"
+
+    b_has_suite = "fuzz_suite" in base_entry
+    h_has_suite = "fuzz_suite" in head_entry
+    if b_has_suite and not h_has_suite:
+        return LABEL_CHANGE, f"removed fuzz_suite on '{pkg}'"
+    if b_has_suite and h_has_suite and base_entry["fuzz_suite"] != head_entry["fuzz_suite"]:
+        return (
+            LABEL_CHANGE,
+            f"changed fuzz_suite on '{pkg}' ({base_entry['fuzz_suite']!r} -> {head_entry['fuzz_suite']!r})",
+        )
+    if not b_has_suite and h_has_suite:
+        h_suite = head_entry["fuzz_suite"]
+        if not isinstance(h_suite, str) or not h_suite:
+            return LABEL_CHANGE, f"invalid fuzz_suite added on '{pkg}'"
+
+    b_deps = base_entry.get("deps")
+    h_deps = head_entry.get("deps")
+    if (
+        not isinstance(b_deps, list)
+        or not isinstance(h_deps, list)
+        or not all(isinstance(x, str) for x in b_deps)
+        or not all(isinstance(x, str) for x in h_deps)
+    ):
+        return LABEL_CHANGE, f"invalid deps on '{pkg}'"
+    removed_deps = sorted(set(b_deps) - set(h_deps))
+    if removed_deps:
+        return LABEL_CHANGE, f"removed deps on '{pkg}': {', '.join(removed_deps)}"
+
+    for key in ("purity", "err_msg_opaque", "spec_style"):
+        if (key in base_entry) != (key in head_entry) or base_entry.get(key) != head_entry.get(key):
+            return LABEL_CHANGE, f"modified '{key}' on '{pkg}'"
+
+    changes: list[str] = []
+    if b_kind == "property" and h_kind == "model":
+        changes.append("kind 'property' -> 'model'")
+    if not b_ext and h_ext:
+        changes.append("external_boundary false -> true")
+    if not b_has_suite and h_has_suite:
+        changes.append(f"added fuzz_suite '{head_entry['fuzz_suite']}'")
+    added_deps = sorted(set(h_deps) - set(b_deps))
+    if added_deps:
+        changes.append(f"added deps {', '.join(added_deps)}")
+    if not changes:
+        return LABEL_CHANGE, f"reordered or reformatted entry '{pkg}'"
+    return LABEL_ADD, f"strengthened '{pkg}' ({'; '.join(changes)})"
+
+
+def classify_package_manifest_texts(
+    base_text: str,
+    head_text: str,
+    base_top_pkgs: set[str],
+    allow_new_packages: bool = ALLOW_NEW_PACKAGES,
+) -> tuple[str | None, str]:
+    """Classify a `scripts/package_manifest.json` modification into `(required_label, reason)`.
+
+    Returns `(None, reason)` when `allow_new_packages` is True and only brand-new top-level
+    packages absent from `base_top_pkgs` are added; `(LABEL_ADD, reason)` for pure additions
+    or strengthenings (`property -> model`, adding `fuzz_suite`/`deps`, tightening
+    `external_boundary`); or `(LABEL_CHANGE, reason)` for any downgrade, removal, or other edit.
+    """
+    try:
+        base_obj = _loads_strict_json(base_text)
+        head_obj = _loads_strict_json(head_text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        return LABEL_CHANGE, f"invalid JSON in '{PACKAGE_MANIFEST_PATH}': {exc}"
+    if not isinstance(base_obj, dict) or not isinstance(head_obj, dict):
+        return LABEL_CHANGE, f"'{PACKAGE_MANIFEST_PATH}' root must be a JSON object"
+    if set(base_obj.keys()) != MANIFEST_ROOT_KEYS or set(head_obj.keys()) != MANIFEST_ROOT_KEYS:
+        return LABEL_CHANGE, f"changed top-level keys in '{PACKAGE_MANIFEST_PATH}'"
+    base_ver = base_obj.get("version")
+    head_ver = head_obj.get("version")
+    if isinstance(base_ver, bool) or isinstance(head_ver, bool) or base_ver != 1 or head_ver != 1:
+        return LABEL_CHANGE, f"changed or invalid version in '{PACKAGE_MANIFEST_PATH}'"
+    base_pkgs = base_obj.get("packages")
+    head_pkgs = head_obj.get("packages")
+    if not isinstance(base_pkgs, dict) or not isinstance(head_pkgs, dict):
+        return LABEL_CHANGE, f"'{PACKAGE_MANIFEST_PATH}' 'packages' must be a JSON object"
+
+    downgraded = [
+        pkg
+        for pkg in sorted(set(base_pkgs.keys()) & set(head_pkgs.keys()))
+        if isinstance(base_pkgs[pkg], dict)
+        and isinstance(head_pkgs[pkg], dict)
+        and base_pkgs[pkg].get("kind") == "model"
+        and head_pkgs[pkg].get("kind") == "property"
+    ]
+    if downgraded:
+        return LABEL_CHANGE, f"downgraded package kind 'model' -> 'property' for {', '.join(downgraded)}"
+
+    removed = sorted(set(base_pkgs.keys()) - set(head_pkgs.keys()))
+    if removed:
+        return LABEL_CHANGE, f"removed manifest package(s): {', '.join(removed)}"
+
+    strengthened: list[str] = []
+    for pkg in sorted(base_pkgs.keys()):
+        req, reason = _classify_existing_manifest_pkg_edit(pkg, base_pkgs[pkg], head_pkgs[pkg])
+        if req == LABEL_CHANGE:
+            return LABEL_CHANGE, reason
+        if req == LABEL_ADD:
+            strengthened.append(reason)
+
+    added = sorted(set(head_pkgs.keys()) - set(base_pkgs.keys()))
+    for pkg in added:
+        if not isinstance(pkg, str) or not _is_valid_manifest_pkg_name(pkg):
+            return LABEL_CHANGE, f"invalid added package name '{pkg}' in '{PACKAGE_MANIFEST_PATH}'"
+        if not isinstance(head_pkgs[pkg], dict):
+            return LABEL_CHANGE, f"invalid added package entry '{pkg}' in '{PACKAGE_MANIFEST_PATH}'"
+
+    if not added and not strengthened:
+        return LABEL_CHANGE, f"no semantic package addition or strengthening in '{PACKAGE_MANIFEST_PATH}'"
+
+    if added and not strengthened and allow_new_packages:
+        if all(f"LeanSwe/{pkg.split('.')[1]}" not in base_top_pkgs for pkg in added):
+            return None, f"added manifest entries for brand-new package(s): {', '.join(added)}"
+
+    parts: list[str] = []
+    if added:
+        parts.append(f"added manifest package(s): {', '.join(added)}")
+    if strengthened:
+        parts.append("; ".join(strengthened))
+    return LABEL_ADD, "; ".join(parts)
+
+
+def _validate_manifest_data(
+    manifest_text: str,
+    suites_text: str | None,
+    lean_paths: list[str],
+    read_lean_text,
+) -> list[str]:
+    """Validate package manifest schema, 100% coverage, external-boundary rules, and fuzz suites."""
+    errors: list[str] = []
+    try:
+        manifest_obj = _loads_strict_json(manifest_text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        return [f"invalid JSON in '{PACKAGE_MANIFEST_PATH}': {exc}"]
+
+    if not isinstance(manifest_obj, dict):
+        return [f"'{PACKAGE_MANIFEST_PATH}' root must be a JSON object"]
+    unknown_root = sorted(set(manifest_obj.keys()) - MANIFEST_ROOT_KEYS)
+    missing_root = sorted(MANIFEST_ROOT_KEYS - set(manifest_obj.keys()))
+    if missing_root:
+        errors.append(f"missing top-level key(s) in '{PACKAGE_MANIFEST_PATH}': {', '.join(missing_root)}")
+    if unknown_root:
+        errors.append(f"unknown top-level key(s) in '{PACKAGE_MANIFEST_PATH}': {', '.join(unknown_root)}")
+
+    version = manifest_obj.get("version")
+    if isinstance(version, bool) or version != 1:
+        errors.append(f"'{PACKAGE_MANIFEST_PATH}' version must be integer 1")
+
+    packages = manifest_obj.get("packages")
+    if not isinstance(packages, dict):
+        errors.append(f"'{PACKAGE_MANIFEST_PATH}' 'packages' must be a JSON object")
+        return errors
+
+    valid_suites: set[str] | None = None
+    if suites_text is not None:
+        try:
+            suites_obj = _loads_strict_json(suites_text)
+        except (json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"invalid JSON in '{FUZZ_SUITES_PATH}': {exc}")
+        else:
+            if not isinstance(suites_obj, dict) or not isinstance(suites_obj.get("suites"), dict):
+                errors.append(f"'{FUZZ_SUITES_PATH}' must contain a 'suites' object")
+            else:
+                valid_suites = set(suites_obj["suites"].keys())
+
+    discovered_pkgs, all_lean_dirs = _discover_packages_from_lean_paths(lean_paths)
+
+    for pkg, entry in packages.items():
+        if not isinstance(pkg, str) or not _is_valid_manifest_pkg_name(pkg):
+            errors.append(f"invalid package name '{pkg}' in '{PACKAGE_MANIFEST_PATH}'")
+            continue
+        if not isinstance(entry, dict):
+            errors.append(f"package '{pkg}' entry must be a JSON object")
+            continue
+
+        missing_keys = sorted(MANIFEST_PKG_REQUIRED_KEYS - set(entry.keys()))
+        unknown_keys = sorted(set(entry.keys()) - MANIFEST_PKG_ALL_KEYS)
+        if missing_keys:
+            errors.append(f"package '{pkg}' missing required key(s): {', '.join(missing_keys)}")
+        if unknown_keys:
+            errors.append(f"package '{pkg}' has unknown key(s): {', '.join(unknown_keys)}")
+
+        kind = entry.get("kind")
+        if kind not in MANIFEST_KINDS:
+            errors.append(f"package '{pkg}' has invalid kind '{kind}' (expected one of {sorted(MANIFEST_KINDS)})")
+
+        purity = entry.get("purity")
+        if purity not in MANIFEST_PURITIES:
+            errors.append(
+                f"package '{pkg}' has invalid purity '{purity}' (expected one of {sorted(MANIFEST_PURITIES)})"
+            )
+
+        deps = entry.get("deps")
+        if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
+            errors.append(f"package '{pkg}' field 'deps' must be a list of package names")
+        else:
+            if len(set(deps)) != len(deps):
+                errors.append(f"package '{pkg}' has duplicate entries in 'deps'")
+            if deps != sorted(deps):
+                errors.append(f"package '{pkg}' field 'deps' must be sorted")
+            for dep in deps:
+                if dep == pkg:
+                    errors.append(f"package '{pkg}' cannot list itself in 'deps'")
+                elif dep not in packages:
+                    errors.append(f"package '{pkg}' depends on unknown manifest package '{dep}'")
+
+        ext_boundary = entry.get("external_boundary")
+        if not isinstance(ext_boundary, bool):
+            errors.append(f"package '{pkg}' field 'external_boundary' must be a boolean")
+        elif kind == "property" and ext_boundary:
+            errors.append(f"package '{pkg}' has external_boundary=true and cannot use kind='property'")
+
+        if "err_msg_opaque" in entry and not isinstance(entry["err_msg_opaque"], bool):
+            errors.append(f"package '{pkg}' field 'err_msg_opaque' must be a boolean")
+
+        if "spec_style" in entry and entry["spec_style"] not in MANIFEST_SPEC_STYLES:
+            errors.append(
+                f"package '{pkg}' has invalid spec_style '{entry['spec_style']}' "
+                f"(expected one of {sorted(MANIFEST_SPEC_STYLES)})"
+            )
+
+        if "fuzz_suite" in entry:
+            suite = entry["fuzz_suite"]
+            if not isinstance(suite, str) or not suite:
+                errors.append(f"package '{pkg}' field 'fuzz_suite' must be a non-empty string")
+            elif valid_suites is None:
+                errors.append(
+                    f"package '{pkg}' references fuzz_suite '{suite}' but '{FUZZ_SUITES_PATH}' is missing or invalid"
+                )
+            elif suite not in valid_suites:
+                errors.append(
+                    f"package '{pkg}' references unknown fuzz_suite '{suite}' (not in '{FUZZ_SUITES_PATH}')"
+                )
+
+        pkg_dir = pkg.replace(".", "/")
+        if pkg_dir not in all_lean_dirs:
+            errors.append(f"orphan manifest entry '{pkg}': directory '{pkg_dir}' has no Lean files on disk")
+        elif kind != "support" and pkg not in discovered_pkgs:
+            errors.append(
+                f"orphan manifest entry '{pkg}': directory '{pkg_dir}' lacks Interface.lean and Types.lean"
+            )
+
+    for pkg in sorted(discovered_pkgs):
+        if pkg not in packages:
+            errors.append(f"missing package '{pkg}' in '{PACKAGE_MANIFEST_PATH}'")
+
+    owner_candidates = {p for p in packages if isinstance(p, str) and _is_valid_manifest_pkg_name(p)} | discovered_pkgs
+    sorted_pkg_prefixes = sorted(
+        ((p.replace(".", "/") + "/", p) for p in owner_candidates),
+        key=lambda item: (-len(item[0]), item[0]),
+    )
+    pkgs_with_extern: set[str] = set()
+    for rel_path in lean_paths:
+        if not rel_path.endswith(".lean"):
+            continue
+        owner = _owner_package_for_lean_path(rel_path, sorted_pkg_prefixes)
+        if owner is None or owner not in packages or owner in pkgs_with_extern:
+            continue
+        if has_extern_attribute(read_lean_text(rel_path)):
+            pkgs_with_extern.add(owner)
+
+    for pkg in sorted(pkgs_with_extern):
+        entry = packages.get(pkg)
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("kind") == "property":
+            errors.append(f"package '{pkg}' contains @[extern] declarations and cannot use kind='property'")
+        if entry.get("external_boundary") is False:
+            errors.append(
+                f"package '{pkg}' contains @[extern] declarations but manifest declares external_boundary=false"
+            )
+
+    return errors
+
+
+def validate_package_manifest(
+    repo_root: Path,
+    manifest_rel_path: str = PACKAGE_MANIFEST_PATH,
+    suites_rel_path: str = FUZZ_SUITES_PATH,
+) -> list[str]:
+    """Validate `scripts/package_manifest.json` against the working tree under `repo_root`."""
+    manifest_path = repo_root / manifest_rel_path
+    if not manifest_path.is_file():
+        return [f"missing package manifest '{manifest_rel_path}'"]
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+
+    suites_path = repo_root / suites_rel_path
+    suites_text = suites_path.read_text(encoding="utf-8") if suites_path.is_file() else None
+
+    lean_root = repo_root / "LeanSwe"
+    lean_paths = (
+        sorted(p.relative_to(repo_root).as_posix() for p in lean_root.rglob("*.lean"))
+        if lean_root.is_dir()
+        else []
+    )
+    return _validate_manifest_data(
+        manifest_text,
+        suites_text,
+        lean_paths,
+        lambda rel: (repo_root / rel).read_text(encoding="utf-8"),
+    )
+
+
+def git_grep_word_files(repo_root: Path, commit_ref: str, word: str, prefix: str) -> set[str]:
+    """Return repo-relative paths under prefix at commit_ref matching whole word."""
+    proc = subprocess.run(
+        ["git", "grep", "-l", "-z", "-w", "--", word, commit_ref, "--", prefix],
+        cwd=repo_root,
+        capture_output=True,
+    )
+    if proc.returncode == 1:
+        return set()
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, proc.args, proc.stdout, proc.stderr)
+    raw = proc.stdout.decode("utf-8", errors="surrogateescape")
+    ref_prefix = f"{commit_ref}:"
+    out: set[str] = set()
+    for tok in raw.split("\0"):
+        if not tok:
+            continue
+        if tok.startswith(ref_prefix):
+            out.add(tok[len(ref_prefix) :])
+        else:
+            out.add(tok)
+    return out
+
+
+def validate_package_manifest_at_ref(
+    repo_root: Path,
+    commit_ref: str,
+    manifest_rel_path: str = PACKAGE_MANIFEST_PATH,
+    suites_rel_path: str = FUZZ_SUITES_PATH,
+) -> list[str]:
+    """Validate `scripts/package_manifest.json` against the git tree at `commit_ref`."""
+    if not git_file_exists(repo_root, commit_ref, manifest_rel_path):
+        return [f"missing package manifest '{manifest_rel_path}' at '{commit_ref}'"]
+    manifest_text = git_show_text(repo_root, commit_ref, manifest_rel_path)
+    suites_text = (
+        git_show_text(repo_root, commit_ref, suites_rel_path)
+        if git_file_exists(repo_root, commit_ref, suites_rel_path)
+        else None
+    )
+    lean_paths = [p for p in git_list_tree_files(repo_root, commit_ref, "LeanSwe") if p.endswith(".lean")]
+    extern_candidates = git_grep_word_files(repo_root, commit_ref, "extern", "LeanSwe") if lean_paths else set()
+    return _validate_manifest_data(
+        manifest_text,
+        suites_text,
+        lean_paths,
+        lambda rel: git_show_text(repo_root, commit_ref, rel) if rel in extern_candidates else "",
+    )
+
+
 def _parse_cli_label(value: str) -> str:
     """Validate comma-separated CLI `--label` values against known gate labels."""
     parts = [p.strip() for p in value.split(",") if p.strip()]
@@ -1109,12 +1682,40 @@ def main(argv: list[str] | None = None) -> int:
             if pkg is not None and pkg not in base_pkgs:
                 new_pkg_spec_hits.append(f"{status}\t{paths[0]}")
                 continue
+        if status == "M" and paths == [PACKAGE_MANIFEST_PATH]:
+            req_label, reason = classify_package_manifest_texts(
+                git_show_text(repo_root, effective_base, PACKAGE_MANIFEST_PATH),
+                git_show_text(repo_root, args.head, PACKAGE_MANIFEST_PATH),
+                base_pkgs,
+                ALLOW_NEW_PACKAGES,
+            )
+            if req_label is None:
+                new_pkg_spec_hits.append(f"{status}\t{PACKAGE_MANIFEST_PATH}")
+                continue
+            locked_assessments.append(LockedDiffAssessment(f"{status}\t{PACKAGE_MANIFEST_PATH}", req_label, reason))
+            continue
         locked_assessments.append(classify_locked_spec_diff(repo_root, effective_base, args.head, status, paths))
 
     event_file = Path(args.event_path) if args.event_path else None
     labels_present = read_pr_labels(event_file, args.label)
 
+    has_manifest_base = git_file_exists(repo_root, effective_base, PACKAGE_MANIFEST_PATH)
+    has_manifest_head = git_file_exists(repo_root, args.head, PACKAGE_MANIFEST_PATH)
+    manifest_validated = has_manifest_base or has_manifest_head
+    manifest_errors = (
+        validate_package_manifest_at_ref(repo_root, args.head) if manifest_validated else []
+    )
+
     failed = False
+    if manifest_errors:
+        failed = True
+        print(
+            f"MANIFEST_CHECK: failed ({len(manifest_errors)} error(s) in '{PACKAGE_MANIFEST_PATH}')",
+            file=sys.stderr,
+        )
+        for err in manifest_errors:
+            print(f"MANIFEST_ERROR: {err}", file=sys.stderr)
+
     if foreign_assessments and LABEL_FOREIGN not in labels_present:
         failed = True
         print(
@@ -1167,6 +1768,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if failed:
         return 1
+
+    if manifest_validated:
+        print(f"MANIFEST_CHECK: ok ('{PACKAGE_MANIFEST_PATH}' verified)")
 
     if foreign_assessments:
         print(f"FOREIGN_BUDGET_CHECK: ok (label='{LABEL_FOREIGN}' present)")
