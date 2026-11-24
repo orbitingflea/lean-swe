@@ -58,7 +58,6 @@ private def legacyExemptionAllowlist : Array Name := #[
 private def deferredRefinesModelPackages : Std.HashSet Name :=
   Std.HashSet.emptyWithCapacity 4
     |>.insert `LeanSwe.Tar
-    |>.insert `LeanSwe.SlotPool
 
 private def forbiddenTestMainConsts : Std.HashSet Name :=
   Std.HashSet.emptyWithCapacity 16
