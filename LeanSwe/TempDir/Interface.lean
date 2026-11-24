@@ -1,6 +1,7 @@
 import LeanSwe.EnvVars.Interface
 import LeanSwe.Fs.Interface
 import LeanSwe.TempDir.Impl
+import LeanSwe.TempDir.Model
 import LeanSwe.TempDir.Types
 import LeanSwe.Time.Interface
 import LeanSwe.Uuid.Interface
@@ -13,15 +14,15 @@ namespace LeanSwe.TempDir
     (time : LeanSwe.Time.TimeOpsM m)
     (uuid : LeanSwe.Uuid.UuidApiM m)
     (env : LeanSwe.EnvVars.EnvVarsApiM m) : TempDirApiM m :=
-  Internal.mkApiM fs time uuid env
+  Internal.mkApiFromCapsM { fs := fs, time := time, uuid := uuid, env := env }
 
 /-- Default concrete `IO` temporary-directory API bundle. -/
 def defaultApi : TempDirApi :=
-  Internal.mkApiM
-    LeanSwe.Fs.defaultApi
-    LeanSwe.Time.defaultOps
-    LeanSwe.Uuid.defaultApi
-    LeanSwe.EnvVars.defaultApi
+  Internal.mkApiFromCapsM
+    { fs := LeanSwe.Fs.defaultApi
+      time := LeanSwe.Time.defaultOps
+      uuid := LeanSwe.Uuid.defaultApi
+      env := LeanSwe.EnvVars.defaultApi }
 
 /-- Create an exclusive `0o700` temporary directory, execute `action dir`, and remove it on exit. -/
 @[inline] def withTempDir {α : Type}

@@ -180,6 +180,7 @@ import LeanSwe.Toml.SpecMutants
 import LeanSwe.Toml.Proofs
 import LeanSwe.Toml.RuntimeTests
 import LeanSwe.TempDir.Types
+import LeanSwe.TempDir.Model
 import LeanSwe.TempDir.Impl
 import LeanSwe.TempDir.Interface
 import LeanSwe.TempDir.SpecTests
@@ -187,6 +188,10 @@ import LeanSwe.TempDir.SpecMutants
 import LeanSwe.TempDir.Proofs.Shared
 import LeanSwe.TempDir.Proofs.WithTempDirProofs
 import LeanSwe.TempDir.Proofs.LockedProofs
+import LeanSwe.TempDir.Proofs.CleanupBase
+import LeanSwe.TempDir.Proofs.CleanupProofs
+import LeanSwe.TempDir.Proofs.RefinesRaw
+import LeanSwe.TempDir.Proofs.RefinesModel
 import LeanSwe.TempDir.Proofs
 import LeanSwe.TempDir.RuntimeTests
 import LeanSwe.Compress.Types

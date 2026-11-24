@@ -7,6 +7,8 @@ specifications (Specs 1–7) and their `CanReach` witnesses.
 namespace LeanSwe.TempDir.Proofs
 open Core Core.NondetTest LeanSwe.Time LeanSwe.Uuid LeanSwe.EnvVars
 open LeanSwe.Fs (FsApiM FsError FsErrorKind EntryKind FileStat LockMode)
+open LeanSwe.TempDir.Model
+open LeanSwe.TempDir.Model.Internal
 private theorem lookupNode_dir_after_writeText (sMk : TempDirMockState) (root child nm : String) (hrNe : root ≠ "") (hcNe : child ≠ "") (hcNoSlash : '/' ∉ child.toList)
     (hnmNe : nm ≠ "") (hnmNoSlash : '/' ∉ nm.toList) (t : Int) (mode : Nat) (c : String) (hLook : lookupNode sMk.nodes (mockJoin root child) = some (.dir t mode)) :
     let dir := mockJoin root child; let p := mockJoin dir nm
@@ -242,15 +244,19 @@ private theorem spec7_ok_allPass (s₀ : TempDirMockState) (r dirPrefix : String
   have hList : (mockFs.listDir r).run s₀ = (.ok names, s₀) := by
     dsimp only [mockFs]; rw [stateM_bind_run, stateM_get_run]; dsimp only; rw [hLookRootNorm]; dsimp only; rw [hStRoot]
     simp only [hRwx.1, show (EntryKind.dir != EntryKind.dir) = false from rfl, Bool.false_eq_true, ↓reduceIte, hasRx_of_hasRwx st hRwx, Bool.not_true, stateM_pure_run]; rfl
-  dsimp only [expectedDir]; rw [mockFs_join_eq, mockUuid_toString_eq]; simp only [allPass_assert, allPass_assert_end]
-  change ((Internal.withTempDirM mockFs mockUuid mockEnv none dirPrefix fun d => pure (Except.ok d)).run s₀).1 = Except.ok dir ∧
-      ((Internal.withLockedTempDirM mockFs mockUuid mockEnv none dirPrefix fun d => pure (Except.ok d)).run s₀).1 = Except.ok dir ∧
-      ((Internal.cleanupStaleTempDirsM mockFs mockTime mockEnv none dirPrefix 86400).run s₀).1.isOk = true ∧ True
-  refine ⟨by rw [hRun1]; rfl, by dsimp only [dir, u] at hRun2; rw [hRun2], ?_, trivial⟩
-  dsimp only [Internal.cleanupStaleTempDirsM]; simp only [show Internal.validPrefix dirPrefix = true from hvp, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-  rw [stateM_bind_run, hRes]; dsimp only; let nowTs := (mockTime.nowTimestamp.run s₀).1; have hTime : mockTime.nowTimestamp.run s₀ = (nowTs, s₀) := rfl
-  rw [stateM_bind_run, hTime]; dsimp only; rw [stateM_bind_run, hList]; dsimp only; rw [stateM_bind_run]
-  cases (Internal.sweepEntries mockFs r dirPrefix 86400 nowTs.toSecondsSinceUnixEpoch.val {} names.toList).run s₀ with | mk _ _ => rw [stateM_pure_run]; rfl
+  dsimp only [expectedDir]; rw [mockFs_join_eq, mockUuid_toString_eq]
+  rw [show api = Internal.mkApiM mockFs mockTime mockUuid mockEnv from rfl, mkApiM_withTempDir_eq, mkApiM_withLockedTempDir_eq, mkApiM_cleanupStaleTempDirs_eq]
+  rw [hRun1, hRun2]; dsimp only; simp only [allPass_assert, allPass_assert_end]
+  cases hC : (Internal.cleanupStaleTempDirsM mockFs mockTime mockEnv none dirPrefix 86400).run s₀ with | mk r3 s3 =>
+  refine ⟨rfl, rfl, ?_, trivial⟩
+  have hResC : r3.isOk = true := by
+    have hEq : r3 = ((Internal.cleanupStaleTempDirsM mockFs mockTime mockEnv none dirPrefix 86400).run s₀).1 := by rw [hC]
+    rw [hEq]
+    dsimp only [Internal.cleanupStaleTempDirsM]; simp only [show Internal.validPrefix dirPrefix = true from hvp, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    rw [stateM_bind_run, hRes]; dsimp only; let nowTs := (mockTime.nowTimestamp.run s₀).1; have hTime : mockTime.nowTimestamp.run s₀ = (nowTs, s₀) := rfl
+    rw [stateM_bind_run, hTime]; dsimp only; rw [stateM_bind_run, hList]; dsimp only; rw [stateM_bind_run]
+    cases (Internal.sweepEntries mockFs r dirPrefix 86400 nowTs.toSecondsSinceUnixEpoch.val {} names.toList).run s₀ with | mk _ _ => rw [stateM_pure_run]; rfl
+  exact hResC
 /-- Spec 7: With `root? = none`, all three operations resolve non-empty `TMPDIR`, reject NUL `TMPDIR` with `.invalidInput`, reject missing/non-dir `TMPDIR` strictly, and fall back to `"/tmp"` when `TMPDIR` is unset or empty. -/
 theorem proof_tempdir_rootResolution_tmpdirAndFallbackAndStrictMissing :
     AllPass (test_tempdir_rootResolution_tmpdirAndFallbackAndStrictMissing (S := TempDirMockState) Internal.mkApiM mockFs mockTime mockUuid mockEnv) := by

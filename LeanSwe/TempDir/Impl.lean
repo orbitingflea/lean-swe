@@ -1,5 +1,6 @@
 import LeanSwe.EnvVars.Types
 import LeanSwe.Fs.Types
+import LeanSwe.TempDir.Model
 import LeanSwe.TempDir.Types
 import LeanSwe.Time.Types
 import LeanSwe.Uuid.Types
@@ -21,14 +22,10 @@ def validRoot (root : String) : Bool :=
   !root.isEmpty && !(Char.ofNat 0 ∈ root.toList)
 
 /-- Insert a path string into a sorted list using lexicographical `String` order. -/
-def insertSorted (x : String) : List String → List String
-  | [] => [x]
-  | y :: ys => if x ≤ y then x :: y :: ys else y :: insertSorted x ys
+abbrev insertSorted := Model.insertSorted
 
 /-- Sort a list of path strings into ascending lexicographical order. -/
-def sortStrings : List String → List String
-  | [] => []
-  | x :: xs => insertSorted x (sortStrings xs)
+abbrev sortStrings := Model.sortStrings
 
 /-- Map an `FsError` into a `TempDirError` with non-empty diagnostic message. -/
 def mapFsError (err : FsError) : TempDirError :=
@@ -257,13 +254,18 @@ def cleanupStaleTempDirsM {m : Type → Type} [Monad m]
           skipped := (sortStrings rep.skipped.toList).toArray
           failed := rep.failed }
 
+/-- Assemble a `TempDirApiM m` from a bundled `Model.Internal.TempDirCaps m` capability record. -/
+def mkApiFromCapsM {m : Type → Type} [Monad m] [MonadFinally m]
+    (caps : Model.Internal.TempDirCaps m) : TempDirApiM m :=
+  { withTempDir := fun root? dirPrefix action => withTempDirM caps.fs caps.uuid caps.env root? dirPrefix action
+    withLockedTempDir := fun root? dirPrefix action => withLockedTempDirM caps.fs caps.uuid caps.env root? dirPrefix action
+    cleanupStaleTempDirs := fun root? dirPrefix maxAgeSec =>
+      cleanupStaleTempDirsM caps.fs caps.time caps.env root? dirPrefix maxAgeSec }
+
 /-- Assemble a `TempDirApiM m` from injected `Fs`, `Time`, `Uuid`, and `Env` interfaces. -/
 def mkApiM {m : Type → Type} [Monad m] [MonadFinally m]
     (fs : FsApiM m) (time : TimeOpsM m) (uuid : UuidApiM m) (env : EnvVarsApiM m) :
     TempDirApiM m :=
-  { withTempDir := fun root? dirPrefix action => withTempDirM fs uuid env root? dirPrefix action
-    withLockedTempDir := fun root? dirPrefix action => withLockedTempDirM fs uuid env root? dirPrefix action
-    cleanupStaleTempDirs := fun root? dirPrefix maxAgeSec =>
-      cleanupStaleTempDirsM fs time env root? dirPrefix maxAgeSec }
+  mkApiFromCapsM { fs := fs, time := time, uuid := uuid, env := env }
 
 end LeanSwe.TempDir.Internal
