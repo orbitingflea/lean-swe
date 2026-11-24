@@ -17,16 +17,8 @@ def defaultOps : TimeOps :=
 def defaultApi : TimeApi :=
   Internal.mkApiM defaultOps
 
-/-- Deterministic `TimeOpsM (StateM FakeClock)` for fast fake-clock tests and proofs. -/
-def fakeOps : TimeOpsM (StateM FakeClock) :=
-  Internal.fakeOps
-
-/-- Deterministic `TimeApiM (StateM FakeClock)` backed by `fakeOps`. -/
-def fakeApi : TimeApiM (StateM FakeClock) :=
-  Internal.fakeApi
-
 /-- Build a `TimeApiM m` over any custom `TimeOpsM m` effect implementation. -/
-@[inline] def mkApiM {m : Type → Type} [Monad m] (ops : TimeOpsM m) : TimeApiM m :=
+@[inline] def mkApiM {m : Type → Type} [Monad m] [MonadFinally m] (ops : TimeOpsM m) : TimeApiM m :=
   Internal.mkApiM ops
 
 /-- Read current UTC wall-clock timestamp. -/

@@ -106,7 +106,7 @@ private def testRealClockAndSleep : IO Unit := do
 
   let fakeInit : FakeClock := { wall := Timestamp.ofSecondsSinceUnixEpoch 100, monoNanos := 500 }
   let ((val, fElapsed), fakeEnd) :=
-    (fakeApi.measure (do fakeApi.sleepMs 4294967297; pure 99)).run fakeInit
+    (Internal.fakeApi.measure (do Internal.fakeApi.sleepMs 4294967297; pure 99)).run fakeInit
   assertTrue (val == 99) "fake measure returned wrong value"
   assertTrue (fElapsed == Duration.ofMillisecond (Millisecond.Offset.ofNat 4294967297))
     "fake measure elapsed mismatch across > UInt32.max"

@@ -1,7 +1,9 @@
 import LeanSwe.Uuid.Interface
+import LeanSwe.Uuid.Model
 import LeanSwe.Uuid.SpecTests
 import LeanSwe.Uuid.Proofs.Codec
 import LeanSwe.Uuid.Proofs.Entropy
+import LeanSwe.Uuid.Proofs.RefinesModel
 
 /-!
 # Verified RFC 4122 UUIDv4 Specification Proofs
@@ -356,5 +358,18 @@ theorem uuid_v4_never_invalidFormat (w : Void IO.RealWorld) :
 /-- Proof that `LeanSwe.Uuid.v4` never returns `.invalidVersion`. -/
 theorem uuid_v4_never_invalidVersion (w : Void IO.RealWorld) :
     NeverErrorKindIO UuidError.kind .invalidVersion LeanSwe.Uuid.v4 w := uuid_getUuid_never_invalidVersion w
+
+/-- Full public `Interface` refinement of `LeanSwe.Uuid` against `LeanSwe.Uuid.Model`. -/
+theorem refines_model :
+    Core.RefinesPureEq LeanSwe.Uuid.mapRawError Model.mapRawError ∧
+    Core.RefinesPureEq LeanSwe.Uuid.fromRandomBytes Model.fromRandomBytes ∧
+    Core.RefinesPureEq LeanSwe.Uuid.toString Model.toString ∧
+    Core.RefinesPureEq LeanSwe.Uuid.toHex Model.toHex ∧
+    Core.RefinesPureEq LeanSwe.Uuid.parse Model.parse ∧
+    Core.RefinesPureEq LeanSwe.Uuid.parseHex Model.parseHex ∧
+    Core.RefinesPureEq LeanSwe.Uuid.isValid Model.isValid ∧
+    Core.RefinesStepFrom id Model.healthyWf Model.execRawStep Model.allowedRawStep
+      Model.healthyWf Internal.mkApi Model.execPkgStep Model.allowedPkgStep :=
+  LeanSwe.Uuid.Proofs.RefinesModel.refines_model_impl
 
 end LeanSwe.Uuid.Proofs
