@@ -9,7 +9,6 @@ open LeanSwe.ConnectProxy
 open LeanSwe.ConnectProxy.Model
 open LeanSwe.ConnectProxy.Relay
 open LeanSwe.ConnectProxy.SysBridge
-open LeanSwe.ConnectProxy.HealthySys
 
 /-- Internal SysBridge helper lemma `emitAndClosingReply_of_eq`. -/
 theorem emitAndClosingReply_of_eq {dnsJob : Type}

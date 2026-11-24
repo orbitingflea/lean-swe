@@ -11,6 +11,8 @@ import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.LinuxSyscall.TimeRand.Interface
 import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Model
+import LeanSwe.ConnectProxy.Model.BridgeState
+import LeanSwe.ConnectProxy.Model.HealthySys
 import LeanSwe.NetRelay.Types
 import LeanSwe.NetRelay.Interface
 import LeanSwe.ConnectProxy.Relay
@@ -21,14 +23,39 @@ open LeanSwe.LinuxSyscall
 open LeanSwe.ConnectProxy
 open LeanSwe.ConnectProxy.Model
 
-/-- Bounded `EINTR` retry budget per individual non-blocking or setup syscall. -/
-def MAX_EINTR_RETRIES : Nat := 64
+export LeanSwe.ConnectProxy.Internal.SysBridge
+  (MAX_EINTR_RETRIES MAX_HANDSHAKE_STEPS MAX_ACCEPT_BATCH
+   dnsAddrToIpAddr? isIpv4MappedV6 ipAddrToDialSockAddr effectiveDialIp
+   CProxySysOpsM SlotPhase ClientSlot SyncProxyEntry SyncProxyTable
+   freshSyncHandleId PollTickOutcome SysAuditTrace liftTraceOp instrumentSysOps)
+
+export LeanSwe.ConnectProxy.Internal.HealthySys
+  (HealthySysWorld RefinesHealthyCProxySysAt RefinesHealthyCProxySys
+   slotOpenFds SysBridgeTarget)
+
+namespace ClientSlot
+export LeanSwe.ConnectProxy.Internal.SysBridge.ClientSlot (isFinished)
+end ClientSlot
+
+namespace SlotPhase
+export LeanSwe.ConnectProxy.Internal.SysBridge.SlotPhase (handshake dns connecting relay closingReply done)
+end SlotPhase
+
+namespace PollTickOutcome
+export LeanSwe.ConnectProxy.Internal.SysBridge.PollTickOutcome (retryEintr stopOrFatal stepped)
+end PollTickOutcome
+
+namespace SysAuditTrace
+export LeanSwe.ConnectProxy.Internal.SysBridge.SysAuditTrace
+  (openedFds closedFds boundAddrs dnsQueries dialedAddrs recvBytes sentBytes netErrs sawZeroSend pollOutcomes)
+end SysAuditTrace
+
+namespace HealthySysWorld
+export LeanSwe.ConnectProxy.Internal.HealthySys.HealthySysWorld (wf)
+end HealthySysWorld
 
 /-- Per-call byte cap when reading HTTP `CONNECT` request headers. -/
 def HANDSHAKE_CHUNK_MAX : Nat := 8192
-
-/-- Per-poll-tick read iteration cap during `CONNECT` handshake. -/
-def MAX_HANDSHAKE_STEPS : Nat := 256
 
 /-- Maximum unread request body bytes drained on `403`/`502` before closing (`64 KiB`). -/
 def CLOSING_DRAIN_MAX : Nat := 65536
@@ -38,9 +65,6 @@ def CLOSING_TIMEOUT_MAX_MS : Nat := 250
 
 /-- Per-poll-tick I/O iteration bound during `CLOSING_REPLY` flush/drain. -/
 def MAX_CLOSING_STEPS : Nat := 256
-
-/-- Maximum client connections accepted in a single poll tick. -/
-def MAX_ACCEPT_BATCH : Nat := 256
 
 /-- Structural poll-loop fuel bound (`2^64`, ensuring total termination). -/
 def LOOP_FUEL : Nat := UInt64.size
@@ -73,52 +97,9 @@ def classifyErrno (port : UInt16) (e : Errno) : ConnectProxyRawError :=
 def errnoToProxyError (port : UInt16) (e : Errno) : ProxyError :=
   Model.mapRawErrorPure (classifyErrno port e)
 
-/-- Convert an unscoped `Dns.DnsAddr` (`scopeId == 0`) to `ConnectProxy.IpAddr`, dropping scoped IPv6 records. -/
-def dnsAddrToIpAddr? : Dns.DnsAddr → Option IpAddr
-  | .ipv4 b0 b1 b2 b3 =>
-    let addr : UInt32 :=
-      (b0.toUInt32 <<< 24) ||| (b1.toUInt32 <<< 16) ||| (b2.toUInt32 <<< 8) ||| b3.toUInt32
-    some (.v4 addr)
-  | .ipv6 b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 sc =>
-    if sc != 0 then
-      none
-    else
-      let hi : UInt64 :=
-        (b0.toUInt64 <<< 56) ||| (b1.toUInt64 <<< 48) |||
-        (b2.toUInt64 <<< 40) ||| (b3.toUInt64 <<< 32) |||
-        (b4.toUInt64 <<< 24) ||| (b5.toUInt64 <<< 16) |||
-        (b6.toUInt64 <<< 8) ||| b7.toUInt64
-      let lo : UInt64 :=
-        (b8.toUInt64 <<< 56) ||| (b9.toUInt64 <<< 48) |||
-        (b10.toUInt64 <<< 40) ||| (b11.toUInt64 <<< 32) |||
-        (b12.toUInt64 <<< 24) ||| (b13.toUInt64 <<< 16) |||
-        (b14.toUInt64 <<< 8) ||| b15.toUInt64
-      some (.v6 hi lo)
-
 /-- Filter `Dns.DnsAddr` records to unscoped IPv4/IPv6 `IpAddr` candidates in resolver order. -/
 def filterUnscopedDnsAddrs (addrs : List Dns.DnsAddr) : Array IpAddr :=
   (addrs.filterMap dnsAddrToIpAddr?).toArray
-
-/-- Return `true` iff `(hi, lo)` encodes an RFC 4291 IPv4-mapped IPv6 address (`::ffff:0:0/96`). -/
-def isIpv4MappedV6 (hi lo : UInt64) : Bool :=
-  hi == 0 && (lo >>> 32) == 0x0000ffff
-
-/-- Convert a verified `IpAddr` and `port` into a concrete `Net.SockAddr`, unwrapping `::ffff:a.b.c.d` to `AF_INET`. -/
-def ipAddrToDialSockAddr (ip : IpAddr) (port : UInt16) : Net.SockAddr :=
-  match ip with
-  | .v4 addr => .ipv4 addr port
-  | .v6 hi lo =>
-    if isIpv4MappedV6 hi lo then
-      .ipv4 lo.toUInt32 port
-    else
-      .ipv6 hi lo port 0 0
-
-/-- Recover the semantic `IpAddr` dialed by `ipAddrToDialSockAddr` (`IpAddr.v4` when unwrapped, `ip` otherwise). -/
-def effectiveDialIp (ip : IpAddr) : IpAddr :=
-  match ip with
-  | .v4 addr => .v4 addr
-  | .v6 hi lo =>
-    if isIpv4MappedV6 hi lo then .v4 lo.toUInt32 else .v6 hi lo
 
 /-- Tail-recursive `\r\n\r\n` scanner starting at byte offset `idx`. -/
 def findCrlfCrlfAux (bs : ByteArray) : Nat → Nat → Option Nat
@@ -139,19 +120,6 @@ def findCrlfCrlf (bs : ByteArray) (start : Nat := 0) : Option Nat :=
   else
     findCrlfCrlfAux bs (bs.size - start) start
 
-/-- Generic OS syscall capability bundle consumed by `LeanSwe.ConnectProxy.SysBridge`. -/
-structure CProxySysOpsM (m : Type → Type) (fd : Type) where
-  /-- Curated Linux file descriptor close (`close`). -/
-  files : Files.FilesOpsM m fd
-  /-- Curated Linux socket syscalls (`socket`, `socketpair`, `bind`, `listen`, `accept4`, `connect`, `getsockopt`, `setsockopt`, `getsockname`, `recvfrom`, `sendto`, `shutdown`). -/
-  net : Net.NetOpsM m fd
-  /-- Curated Linux readiness polling (`ppoll`). -/
-  poll : Poll.PollOpsM m fd
-  /-- Curated DNS name resolution (`getaddrinfo`). -/
-  dns : Dns.DnsOpsM m
-  /-- Curated monotonic clock access (`clock_gettime`, `clock_nanosleep`). -/
-  timeRand : TimeRand.TimeRandOpsM m
-
 /-- Close descriptor `d` via `sys.files.close`, retrying briefly only on transient `EBUSY` pin contention. -/
 def closeSysFdAux {m : Type → Type} [Monad m] {fd : Type}
     (sys : CProxySysOpsM m fd) (d : fd) : Nat → m Unit
@@ -167,10 +135,26 @@ def closeSysFdAux {m : Type → Type} [Monad m] {fd : Type}
       else
         pure ()
 
+end LeanSwe.ConnectProxy.SysBridge
+
+namespace LeanSwe.ConnectProxy.Internal.SysBridge
+
 /-- Deterministically close descriptor `d` in the OS file descriptor table via `sys.files.close`. -/
 def CProxySysOpsM.closeFd {m : Type → Type} [Monad m] {fd : Type}
     (sys : CProxySysOpsM m fd) (d : fd) : m Unit :=
-  closeSysFdAux sys d 64
+  LeanSwe.ConnectProxy.SysBridge.closeSysFdAux sys d 64
+
+end LeanSwe.ConnectProxy.Internal.SysBridge
+
+namespace LeanSwe.ConnectProxy.SysBridge
+
+open LeanSwe.LinuxSyscall
+open LeanSwe.ConnectProxy
+open LeanSwe.ConnectProxy.Model
+
+namespace CProxySysOpsM
+export LeanSwe.ConnectProxy.Internal.SysBridge.CProxySysOpsM (closeFd)
+end CProxySysOpsM
 
 /-- Query `CLOCK_MONOTONIC` in milliseconds via `sys.timeRand`, falling back to `0` on unexpected error. -/
 def monoNowMs {m : Type → Type} [Monad m] {fd : Type}
@@ -244,57 +228,6 @@ def createListener {m : Type → Type} [Monad m] {fd : Type}
                   return .error (errnoToProxyError reqPort e)
                 | .ok (wakeR, wakeW) =>
                   return .ok (lfd, wakeR, wakeW, boundPort)
-
-/-- Per-connection state machine phases matching the 5-state proxy protocol plus terminal `.done`. -/
-inductive SlotPhase (fd : Type) (dnsJob : Type) where
-  /-- Accumulating HTTP `CONNECT` request headers up to `\r\n\r\n` within `maxHeaderBytes` and `deadlineMs`. -/
-  | handshake (clientFd : fd) (headBuf : ByteArray) (deadlineMs : Nat)
-  /-- Waiting for asynchronous DNS resolution of `(host, port)`. -/
-  | dns (clientFd : fd) (host : String) (port : UInt16) (job : dnsJob)
-  /-- Waiting for non-blocking TCP `connect()` completion on `upstreamFd`, with remaining `candidates[candIdx..]`. -/
-  | connecting
-      (clientFd : fd)
-      (upstreamFd : fd)
-      (host : String)
-      (port : UInt16)
-      (candidates : Array IpAddr)
-      (candIdx : Nat)
-      (lastErrno? : Option Errno)
-      (deadlineMs : Nat)
-  /-- Bidirectional `16 KiB` TCP relay after queuing `200 Connection Established`. -/
-  | relay (st : Relay.RelayState fd)
-  /-- Graceful `403`/`502` header send, `SHUT_WR`, and bounded client RX drain avoiding `TCP RST`. -/
-  | closingReply
-      (clientFd? : Option fd)
-      (replyBytes : ByteArray)
-      (replyOff : Nat)
-      (shutWr : Bool)
-      (drained : Nat)
-      (deadlineMs : Nat)
-  /-- Terminal closed slot ready for removal from the active table. -/
-  | done
-
-/-- Single active client connection slot tracked by a running proxy instance. -/
-structure ClientSlot (fd : Type) (dnsJob : Type) where
-  /-- Current protocol phase and owned socket descriptors. -/
-  phase : SlotPhase fd dnsJob
-  /-- Whether this slot has already emitted its single `ConnectEvent`. -/
-  eventEmitted : Bool := false
-  /-- Parsed `(host, port)` target once Stage-1 `onHead` succeeds. -/
-  target? : Option (String × UInt16) := none
-  /-- Coalesced tunnel payload bytes received after `\r\n\r\n` during handshake. -/
-  pipelined : ByteArray := ByteArray.empty
-
-instance {fd dnsJob : Type} : Inhabited (ClientSlot fd dnsJob) where
-  default := { phase := .done }
-
-/-- Return `true` iff `slot` owns zero open descriptors or pending DNS jobs and can be pruned. -/
-def ClientSlot.isFinished {fd dnsJob : Type} (slot : ClientSlot fd dnsJob) : Bool :=
-  match slot.phase with
-  | .done => true
-  | .relay st => st.isClosed
-  | .closingReply cfd? .. => cfd?.isNone
-  | _ => false
 
 /-- Record `ev` at most once for `slot`, setting `slot.eventEmitted = true`. -/
 def emitSlotEvent {fd dnsJob : Type}
@@ -765,36 +698,6 @@ def startDnsSync {m : Type → Type} [Monad m] {fd : Type}
     let ips := filterUnscopedDnsAddrs addrs
     handleResolveDecision sys limits onResolved slot events clientFd host port ips
 
-/-- Active synchronous proxy entry stored in `SyncProxyTable` for `mkSyncRawOps`. -/
-structure SyncProxyEntry (fd : Type) where
-  /-- Unique handle ID. -/
-  handleId : Nat
-  /-- Bound loopback port (`1..65535`). -/
-  port : UInt16
-  /-- Validated configuration. -/
-  vcfg : ValidProxyConfig
-  /-- Open listener socket. -/
-  listenFd : fd
-  /-- Open wakeup reader socket. -/
-  wakeR : fd
-  /-- Open wakeup writer socket. -/
-  wakeW : fd
-  /-- Active client slots. -/
-  slots : Array (ClientSlot fd Unit) := #[]
-  /-- Emitted audit events. -/
-  events : Array ConnectEvent := #[]
-
-/-- Pure handle table for synchronous `RawConnectProxyOpsM` execution over any `CProxySysOpsM m fd`. -/
-structure SyncProxyTable (fd : Type) where
-  /-- Next fresh handle ID (`≥ 1`). -/
-  nextHandleId : Nat := 1
-  /-- Active proxy instances (most recently started first). -/
-  entries : List (SyncProxyEntry fd) := []
-
-/-- Compute a strictly fresh handle ID greater than all active handle IDs in `entries`. -/
-def freshSyncHandleId {fd : Type} (tbl : SyncProxyTable fd) : Nat :=
-  Nat.max tbl.nextHandleId ((tbl.entries.foldl (fun m e => Nat.max m e.handleId) 0) + 1)
-
 /-- Construct a synchronous, single-threaded `RawConnectProxyOpsM (StateM W)` stand-in backed purely by `sys : CProxySysOpsM (StateM W) fd`.
     Formal FD-conservation and `healthyStep` proofs verify this synchronous stand-in; the concurrent `IO` task/socketpair driver (`mkIoRawOps` / `runIoProxyLoop` / `teardownIoLoopState`) is verified separately by runtime, mutation, and stress tests. -/
 def mkSyncRawOps {W fd : Type}
@@ -1056,15 +959,6 @@ def stepSlotsListM {m : Type → Type} [Monad m] {fd dnsJob : Type}
     stepSlotsListM sys limits onHead onResolved startDns pollDns cancelDns indices revents nowMs
       (idx + 1) rest accSlots' events' useDnsRevents
 
-/-- Outcome of one polymorphic `pollAndStepTickM` server loop iteration. -/
-inductive PollTickOutcome (fd : Type) (dnsJob : Type) where
-  /-- `ppoll` returned `EINTR`; caller should immediately retry the next loop iteration. -/
-  | retryEintr
-  /-- Stop was requested or `ppoll` returned a non-`EINTR` fatal error; caller should tear down. -/
-  | stopOrFatal
-  /-- Tick completed cleanly with updated active `slots` and `events`. -/
-  | stepped (slots : Array (ClientSlot fd dnsJob)) (events : Array ConnectEvent)
-
 /-- Drain `wakeR` iff `wakeRev.pollin = true`. -/
 def maybeDrainWakeSocket {m : Type → Type} [Monad m] {fd : Type}
     (net : Net.NetOpsM m fd) (wakeR : fd) (wakeRev : Poll.PollEvents) : m Unit :=
@@ -1188,129 +1082,6 @@ def pollAndStepTickSync {m : Type → Type} [Monad m] {fd : Type}
     (fun () => pure none)
     (fun () => pure ())
     wakeR listenFd slots events
-
-/-- Observational syscall audit log for stating end-to-end invariants over any `CProxySysOpsM`. -/
-structure SysAuditTrace (fd : Type) where
-  /-- Descriptors returned by `net.socket`, `net.socketpair`, or `net.accept4` in allocation order. -/
-  openedFds : Array fd := #[]
-  /-- Descriptors passed to `files.close` in call order. -/
-  closedFds : Array fd := #[]
-  /-- Socket addresses passed to `net.bind` in call order. -/
-  boundAddrs : Array Net.SockAddr := #[]
-  /-- Hostnames passed to `dns.getaddrinfo` in call order. -/
-  dnsQueries : Array String := #[]
-  /-- Socket addresses passed to `net.connect` in call order. -/
-  dialedAddrs : Array Net.SockAddr := #[]
-  /-- Ordered bytes returned by `net.recvfrom` across calls. -/
-  recvBytes : Array UInt8 := #[]
-  /-- Ordered bytes accepted by `net.sendto` across calls. -/
-  sentBytes : Array UInt8 := #[]
-  /-- Non-`EINTR` `Errno` outcomes returned by `net.accept4`, `net.recvfrom`, or `net.sendto`. -/
-  netErrs : Array Errno := #[]
-  /-- Set to `true` when `net.sendto` on a non-empty buffer returns `.ok 0`. -/
-  sawZeroSend : Bool := false
-  /-- Per-call `poll.ppoll` outcomes (`none` on `.ok`, `some e` on `.error e`). -/
-  pollOutcomes : Array (Option Errno) := #[]
-  deriving BEq, DecidableEq, Inhabited
-
-/-- Lift a `StateM W` action to `StateM (W × SysAuditTrace fd)` while updating the audit trace on result. -/
-def liftTraceOp {W fd α : Type}
-    (act : StateM W α)
-    (upd : α → SysAuditTrace fd → SysAuditTrace fd := fun _ tr => tr) :
-    StateM (W × SysAuditTrace fd) α := fun (w, tr) =>
-  let (r, w') := act.run w
-  (r, (w', upd r tr))
-
-/-- Wrap any `sys : CProxySysOpsM (StateM W) fd` with pure non-interfering syscall trace recording. -/
-def instrumentSysOps {W fd : Type}
-    (sys : CProxySysOpsM (StateM W) fd) :
-    CProxySysOpsM (StateM (W × SysAuditTrace fd)) fd :=
-  { files :=
-      { openat := fun d p fl m => liftTraceOp (sys.files.openat d p fl m)
-        openat2 := fun d p how => liftTraceOp (sys.files.openat2 d p how)
-        close := fun h => liftTraceOp (sys.files.close h) (fun _ tr => { tr with closedFds := tr.closedFds.push h })
-        read := fun h n => liftTraceOp (sys.files.read h n)
-        write := fun h bs => liftTraceOp (sys.files.write h bs)
-        fstat := fun h => liftTraceOp (sys.files.fstat h)
-        fstatat := fun d p fl => liftTraceOp (sys.files.fstatat d p fl)
-        faccessat := fun d p m fl => liftTraceOp (sys.files.faccessat d p m fl)
-        mkdirat := fun d p m => liftTraceOp (sys.files.mkdirat d p m)
-        unlinkat := fun d p rd => liftTraceOp (sys.files.unlinkat d p rd)
-        renameat2 := fun od op nd np fl => liftTraceOp (sys.files.renameat2 od op nd np fl)
-        symlinkat := fun t d lp => liftTraceOp (sys.files.symlinkat t d lp)
-        readlinkat := fun d p c => liftTraceOp (sys.files.readlinkat d p c)
-        getdents64 := fun h c => liftTraceOp (sys.files.getdents64 h c)
-        fchmodat := fun d p m => liftTraceOp (sys.files.fchmodat d p m)
-        fchmod := fun h m => liftTraceOp (sys.files.fchmod h m)
-        flock := fun h op => liftTraceOp (sys.files.flock h op)
-        fcntl := fun h cmd => liftTraceOp (sys.files.fcntl h cmd)
-        fsync := fun h => liftTraceOp (sys.files.fsync h)
-        getcwd := fun c => liftTraceOp (sys.files.getcwd c)
-        lseek := fun h off wh => liftTraceOp (sys.files.lseek h off wh)
-        reopenReadOnly := fun h => liftTraceOp (sys.files.reopenReadOnly h)
-        dupStdio := fun sl => liftTraceOp (sys.files.dupStdio sl) }
-    net :=
-      { socket := fun dom st fl p =>
-          liftTraceOp (sys.net.socket dom st fl p) fun r tr =>
-            match r with
-            | .ok h => { tr with openedFds := tr.openedFds.push h }
-            | .error _ => tr
-        socketpair := fun dom st fl =>
-          liftTraceOp (sys.net.socketpair dom st fl) fun r tr =>
-            match r with
-            | .ok (h0, h1) => { tr with openedFds := (tr.openedFds.push h0).push h1 }
-            | .error _ => tr
-        bind := fun h sa =>
-          liftTraceOp (sys.net.bind h sa) fun _ tr =>
-            { tr with boundAddrs := tr.boundAddrs.push sa }
-        listen := fun h bl => liftTraceOp (sys.net.listen h bl)
-        accept4 := fun h fl =>
-          liftTraceOp (sys.net.accept4 h fl) fun r tr =>
-            match r with
-            | .ok (cfd, _) => { tr with openedFds := tr.openedFds.push cfd }
-            | .error e => if e == Errno.EINTR then tr else { tr with netErrs := tr.netErrs.push e }
-        connect := fun h sa =>
-          liftTraceOp (sys.net.connect h sa) fun _ tr =>
-            { tr with dialedAddrs := tr.dialedAddrs.push sa }
-        getsockopt := fun h opt => liftTraceOp (sys.net.getsockopt h opt)
-        setsockopt := fun h opt val => liftTraceOp (sys.net.setsockopt h opt val)
-        getsockname := fun h => liftTraceOp (sys.net.getsockname h)
-        recvfrom := fun h n fl =>
-          liftTraceOp (sys.net.recvfrom h n fl) fun r tr =>
-            match r with
-            | .ok bs =>
-              let k := Nat.min bs.size n.toNat
-              let accepted := if k == bs.size then bs.data else (bs.extract 0 k).data
-              { tr with recvBytes := tr.recvBytes ++ accepted }
-            | .error e => if e == Errno.EINTR then tr else { tr with netErrs := tr.netErrs.push e }
-        sendto := fun h bs fl =>
-          liftTraceOp (sys.net.sendto h bs fl) fun r tr =>
-            match r with
-            | .ok n =>
-              let k := Nat.min n.toNat bs.size
-              let accepted := if k == bs.size then bs.data else (bs.extract 0 k).data
-              let zeroSend := tr.sawZeroSend || (n == 0 && bs.size > 0)
-              { tr with sentBytes := tr.sentBytes ++ accepted, sawZeroSend := zeroSend }
-            | .error e => if e == Errno.EINTR then tr else { tr with netErrs := tr.netErrs.push e }
-        shutdown := fun h how => liftTraceOp (sys.net.shutdown h how)
-        sendmsg := fun h fds => liftTraceOp (sys.net.sendmsg h fds)
-        recvmsg := fun h maxFds => liftTraceOp (sys.net.recvmsg h maxFds)
-        ioctl := fun h req ifn => liftTraceOp (sys.net.ioctl h req ifn) }
-    poll :=
-      { ppoll := fun fds to? =>
-          liftTraceOp (sys.poll.ppoll fds to?) fun r tr =>
-            match r with
-            | .ok _ => { tr with pollOutcomes := tr.pollOutcomes.push none }
-            | .error e => { tr with pollOutcomes := tr.pollOutcomes.push (some e) }
-        eventfd2 := fun iv fl => liftTraceOp (sys.poll.eventfd2 iv fl) }
-    dns :=
-      { getaddrinfo := fun host hints =>
-          liftTraceOp (sys.dns.getaddrinfo host hints) fun _ tr =>
-            { tr with dnsQueries := tr.dnsQueries.push host } }
-    timeRand :=
-      { clock_gettime := fun clk => liftTraceOp (sys.timeRand.clock_gettime clk)
-        clock_nanosleep := fun clk abs ts => liftTraceOp (sys.timeRand.clock_nanosleep clk abs ts)
-        getrandom := fun n fl => liftTraceOp (sys.timeRand.getrandom n fl) } }
 
 /-- Shared state of one off-thread `IO` DNS lookup job. -/
 structure IoDnsJobState where
@@ -1689,5 +1460,32 @@ def withProxyIo {α : Type} (vcfg : ValidProxyConfig)
     IO (Except ProxyError (α × Array ConnectEvent)) := do
   let tableRef ← IO.mkRef ({} : IoProxyTable)
   Model.withValidProxyModel (mkIoRawOps tableRef) vcfg action
+
+/-- Canonical `SysBridgeTarget` wired directly to `SysBridge` and `Relay`.
+    Note: `mkRawOps` binds the synchronous single-threaded stand-in `SysBridge.mkSyncRawOps` for formal FD-conservation and `healthyStep` proofs; concurrent `IO` DNS-task/socketpair orchestration (`mkIoRawOps` / `runIoProxyLoop` / `teardownIoLoopState`) is verified separately via runtime, mutation, and stress tests. -/
+def realBridgeTarget : SysBridgeTarget :=
+  { createListener := fun sys vcfg => createListener sys vcfg
+    handleCompleteHeadSync := fun sys limits onHead onResolved slot evs cfd head pipe =>
+      handleCompleteHead sys limits onHead onResolved
+        (startDnsSync sys limits onResolved) slot evs cfd head pipe
+    acceptNewClients := fun sys limits lfd now slots =>
+      acceptNewClients sys limits lfd now slots
+    listenPollinEnabled := fun cur maxT => (listenPollEvents cur maxT).pollin
+    buildPollBatchSync := fun wakeR lfd maxT nowMs slots =>
+      buildPollBatchSync wakeR lfd maxT nowMs slots
+    stepHandshakeSync := fun sys limits onHead onResolved slot evs cfd hb dl rev now =>
+      stepHandshake sys limits onHead onResolved
+        (startDnsSync sys limits onResolved) slot evs cfd hb dl rev now
+    recvIntoRing := fun net fd fuel rb => NetRelay.recvIntoRing net fd fuel rb
+    flushRingNonblock := fun net fd fuel rb => NetRelay.flushRingNonblock net fd fuel rb
+    stepBidirectionalRelay := fun sys st cRev uRev =>
+      Relay.stepBidirectionalRelay sys.net sys.closeFd st cRev uRev
+    stepSlotSync := fun sys limits onHead onResolved slot evs cRev uRev nowMs =>
+      stepSyncSlot sys limits onHead onResolved slot evs cRev uRev nowMs
+    pollAndStepTickSync := fun sys limits onHead onResolved stopFlag wakeR lfd slots evs =>
+      pollAndStepTickSync sys limits onHead onResolved stopFlag wakeR lfd slots evs
+    mkRawOps := fun sys =>
+      mkSyncRawOps sys (fun wt => wt.1.proxyTable)
+        (fun (w, tr) tbl => ({ w with proxyTable := tbl }, tr)) }
 
 end LeanSwe.ConnectProxy.SysBridge

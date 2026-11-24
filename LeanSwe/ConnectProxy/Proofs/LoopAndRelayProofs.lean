@@ -9,7 +9,6 @@ open LeanSwe.ConnectProxy
 open LeanSwe.ConnectProxy.Model
 open LeanSwe.ConnectProxy.Relay
 open LeanSwe.ConnectProxy.SysBridge
-open LeanSwe.ConnectProxy.HealthySys
 
 private def PreservesWfPoll (tr₀ : SysAuditTrace Nat) {α : Type}
     (m : StateM (HealthySysWorld × SysAuditTrace Nat) α) : Prop :=

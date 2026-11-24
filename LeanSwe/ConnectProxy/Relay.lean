@@ -3,6 +3,25 @@ import LeanSwe.LinuxSyscall.Net.Types
 import LeanSwe.LinuxSyscall.Poll.Types
 import LeanSwe.NetRelay.Types
 import LeanSwe.NetRelay.Interface
+import LeanSwe.ConnectProxy.Model.RelayState
+
+namespace LeanSwe.ConnectProxy.Internal.Relay
+
+open LeanSwe.LinuxSyscall.Poll
+open LeanSwe.NetRelay
+
+/-- Compute requested `PollEvents` for `st.clientFd?` (`isEmpty = true` omits the descriptor from `ppoll`). -/
+def RelayState.clientPollEvents {fd : Type} (st : RelayState fd) : PollEvents :=
+  { pollin := (st.prefixFlushed || st.uWrClosed || st.upstreamFd?.isNone) && !st.cEof &&
+      (st.uWrClosed || st.upstreamFd?.isNone || st.c2u.writeAvail > 0)
+    pollout := !st.u2c.isEmpty && !st.cWrClosed }
+
+/-- Compute requested `PollEvents` for `st.upstreamFd?` (`isEmpty = true` omits the descriptor from `ppoll`). -/
+def RelayState.upstreamPollEvents {fd : Type} (st : RelayState fd) : PollEvents :=
+  { pollin := !st.uEof && st.u2c.writeAvail > 0
+    pollout := (!st.prefixFlushed || !st.c2u.isEmpty) && !st.uWrClosed }
+
+end LeanSwe.ConnectProxy.Internal.Relay
 
 namespace LeanSwe.ConnectProxy.Relay
 
@@ -12,12 +31,11 @@ open LeanSwe.LinuxSyscall.Poll
 open LeanSwe.NetRelay
 
 export LeanSwe.NetRelay (RING_CAP MAX_RELAY_IO_STEPS RingBuf)
+export LeanSwe.ConnectProxy.Internal.Relay (reply200Bytes RelayState)
 
-/-- Static HTTP `200 Connection Established` response header bytes. -/
-def reply200Bytes : ByteArray :=
-  asciiBytes ['H', 'T', 'T', 'P', '/', '1', '.', '1', ' ', '2', '0', '0', ' ',
-    'C', 'o', 'n', 'n', 'e', 'c', 't', 'i', 'o', 'n', ' ',
-    'E', 's', 't', 'a', 'b', 'l', 'i', 's', 'h', 'e', 'd', '\r', '\n', '\r', '\n']
+namespace RelayState
+export LeanSwe.ConnectProxy.Internal.Relay.RelayState (init prefixFlushed isClosed clientPollEvents upstreamPollEvents)
+end RelayState
 
 /-- Static HTTP `403 Forbidden` response header bytes. -/
 def reply403Bytes : ByteArray :=
@@ -39,61 +57,6 @@ def reply503Bytes : ByteArray :=
     'S', 'e', 'r', 'v', 'i', 'c', 'e', ' ', 'U', 'n', 'a', 'v', 'a', 'i', 'l', 'a', 'b', 'l', 'e', '\r', '\n',
     'C', 'o', 'n', 't', 'e', 'n', 't', '-', 'L', 'e', 'n', 'g', 't', 'h', ':', ' ', '0',
     '\r', '\n', '\r', '\n']
-
-/-- Bidirectional TCP tunnel state with pipelined handshake tail and half-close tracking. -/
-structure RelayState (fd : Type) where
-  /-- Open client socket descriptor (`none` once closed). -/
-  clientFd? : Option fd := none
-  /-- Open upstream socket descriptor (`none` once closed). -/
-  upstreamFd? : Option fd := none
-  /-- Coalesced client payload bytes received after `\r\n\r\n` during handshake. -/
-  pendingPrefix : ByteArray := ByteArray.empty
-  /-- Offset of already-forwarded bytes within `pendingPrefix`. -/
-  pendingOff : Nat := 0
-  /-- Client-to-upstream `16 KiB` FIFO buffer. -/
-  c2u : RingBuf := {}
-  /-- Upstream-to-client `16 KiB` FIFO buffer (seeded with `200 Connection Established`). -/
-  u2c : RingBuf := {}
-  /-- `true` once client `recvfrom` has returned `0` (`EOF`). -/
-  cEof : Bool := false
-  /-- `true` once upstream `recvfrom` has returned `0` (`EOF`). -/
-  uEof : Bool := false
-  /-- `true` once `shutdown(clientFd, .wr)` has completed. -/
-  cWrClosed : Bool := false
-  /-- `true` once `shutdown(upstreamFd, .wr)` has completed. -/
-  uWrClosed : Bool := false
-
-/-- Initialize a `RelayState` with `200 Connection Established` queued to the client and any pipelined client tail queued to upstream. -/
-def RelayState.init {fd : Type} (clientFd upstreamFd : fd) (pipelinedPrefix : ByteArray) : RelayState fd :=
-  { clientFd? := some clientFd
-    upstreamFd? := some upstreamFd
-    pendingPrefix := pipelinedPrefix
-    pendingOff := 0
-    c2u := {}
-    u2c := ({} : RingBuf).push reply200Bytes
-    cEof := false
-    uEof := false
-    cWrClosed := false
-    uWrClosed := false }
-
-/-- Return `true` iff all pipelined post-`\r\n\r\n` handshake bytes have been flushed to `upstreamFd`. -/
-def RelayState.prefixFlushed {fd : Type} (st : RelayState fd) : Bool :=
-  st.pendingOff >= st.pendingPrefix.size
-
-/-- Return `true` iff both client and upstream descriptors have been closed. -/
-def RelayState.isClosed {fd : Type} (st : RelayState fd) : Bool :=
-  st.clientFd?.isNone && st.upstreamFd?.isNone
-
-/-- Compute requested `PollEvents` for `st.clientFd?` (`isEmpty = true` omits the descriptor from `ppoll`). -/
-def RelayState.clientPollEvents {fd : Type} (st : RelayState fd) : PollEvents :=
-  { pollin := (st.prefixFlushed || st.uWrClosed || st.upstreamFd?.isNone) && !st.cEof &&
-      (st.uWrClosed || st.upstreamFd?.isNone || st.c2u.writeAvail > 0)
-    pollout := !st.u2c.isEmpty && !st.cWrClosed }
-
-/-- Compute requested `PollEvents` for `st.upstreamFd?` (`isEmpty = true` omits the descriptor from `ppoll`). -/
-def RelayState.upstreamPollEvents {fd : Type} (st : RelayState fd) : PollEvents :=
-  { pollin := !st.uEof && st.u2c.writeAvail > 0
-    pollout := (!st.prefixFlushed || !st.c2u.isEmpty) && !st.uWrClosed }
 
 /-- Close both endpoints of `st` and return the cleared `RelayState`. -/
 def closeRelayBoth {m : Type → Type} [Monad m] {fd : Type}

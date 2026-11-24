@@ -5,7 +5,6 @@ import LeanSwe.NetRelay.Types
 import LeanSwe.NetRelay.Interface
 import LeanSwe.ConnectProxy.Relay
 import LeanSwe.ConnectProxy.SysBridge
-import LeanSwe.ConnectProxy.HealthySys
 import LeanSwe.ConnectProxy.SpecTests
 import LeanSwe.ConnectProxy.Proofs.HealthyWitness
 
@@ -338,7 +337,7 @@ example : ¬ Core.AllPass (test_cproxy_withProxy_exceptionTriggersMonadFinallyTe
   decide
 
 example : ¬ Core.AllPass (test_cproxy_healthy_listenerBindLoopbackOnlyAndPortLaws
-    { HealthySys.realBridgeTarget with
+    { SysBridge.realBridgeTarget with
       createListener := fun _ _ => pure (.ok (3, 4, 5, 0)) }) := by
   intro h
   have h0 := h Proofs.sampleHealthySys Proofs.sampleHealthySys_refines
@@ -347,7 +346,7 @@ example : ¬ Core.AllPass (test_cproxy_healthy_listenerBindLoopbackOnlyAndPortLa
   exact h0.2.2.2.1.1 rfl
 
 example : ¬ Core.AllPass (test_cproxy_healthy_onHeadBeforeDnsAndVerifiedIpConnect
-    { HealthySys.realBridgeTarget with
+    { SysBridge.realBridgeTarget with
       handleCompleteHeadSync := fun _ _ _ _ slot evs _ _ _ =>
         fun (w, tr) => ((slot, evs), (w, { tr with dnsQueries := tr.dnsQueries.push "leaked.invalid" })) }) := by
   intro h
@@ -362,7 +361,7 @@ example : ¬ Core.AllPass (test_cproxy_healthy_onHeadBeforeDnsAndVerifiedIpConne
   cases hEq
 
 example : ¬ Core.AllPass (test_cproxy_healthy_admissionCapsUnderShortReadsAndEintr
-    { HealthySys.realBridgeTarget with
+    { SysBridge.realBridgeTarget with
       listenPollinEnabled := fun _ _ => true }) := by
   intro h
   have h0 := h Proofs.sampleHealthySys Proofs.sampleHealthySys_refines
@@ -373,7 +372,7 @@ example : ¬ Core.AllPass (test_cproxy_healthy_admissionCapsUnderShortReadsAndEi
   cases hPollin
 
 example : ¬ Core.AllPass (test_cproxy_healthy_admissionCapsUnderShortReadsAndEintr
-    { HealthySys.realBridgeTarget with
+    { SysBridge.realBridgeTarget with
       stepHandshakeSync := fun _ _ _ _ slot evs cfd headBuf dl _ _ =>
         pure ({ slot with phase := .handshake cfd headBuf dl }, evs) }) := by
   intro h
@@ -385,7 +384,7 @@ example : ¬ Core.AllPass (test_cproxy_healthy_admissionCapsUnderShortReadsAndEi
   exact Nat.lt_irrefl 1 hStay
 
 example : ¬ Core.AllPass (test_cproxy_healthy_relayByteConservationShortIoAndEintr
-    { HealthySys.realBridgeTarget with
+    { SysBridge.realBridgeTarget with
       recvIntoRing := fun _ _ _ _ => pure (some ({ buf := ByteArray.mk #[42], off := 0 }, false)) }) := by
   intro h
   have h0 := h Proofs.sampleHealthySys Proofs.sampleHealthySys_refines
@@ -397,7 +396,7 @@ example : ¬ Core.AllPass (test_cproxy_healthy_relayByteConservationShortIoAndEi
   decide
 
 example : ¬ Core.AllPass (test_cproxy_healthy_relayByteConservationShortIoAndEintr
-    { HealthySys.realBridgeTarget with
+    { SysBridge.realBridgeTarget with
       recvIntoRing := fun _ _ _ _ => pure none }) := by
   intro h
   have h0 := h Proofs.sampleHealthySys Proofs.sampleHealthySys_refines
@@ -407,7 +406,7 @@ example : ¬ Core.AllPass (test_cproxy_healthy_relayByteConservationShortIoAndEi
   cases hMem
 
 example : ¬ Core.AllPass (test_cproxy_healthy_relayByteConservationShortIoAndEintr
-    { HealthySys.realBridgeTarget with
+    { SysBridge.realBridgeTarget with
       stepBidirectionalRelay := fun _ st _ _ =>
         pure { st with pendingPrefix := ByteArray.empty, pendingOff := 0 } }) := by
   intro h
@@ -419,7 +418,7 @@ example : ¬ Core.AllPass (test_cproxy_healthy_relayByteConservationShortIoAndEi
   decide
 
 example : ¬ Core.AllPass (test_cproxy_healthy_relayByteConservationShortIoAndEintr
-    { HealthySys.realBridgeTarget with
+    { SysBridge.realBridgeTarget with
       stepBidirectionalRelay := fun _ st _ uRev =>
         if uRev.pollerr then pure {} else pure st }) := by
   intro h
@@ -431,7 +430,7 @@ example : ¬ Core.AllPass (test_cproxy_healthy_relayByteConservationShortIoAndEi
   · cases hFd
 
 example : ¬ Core.AllPass (test_cproxy_healthy_withProxyAndStopClosesAllFds
-    { HealthySys.realBridgeTarget with
+    { SysBridge.realBridgeTarget with
       mkRawOps := fun _ =>
         { startProxy := fun _ _ _ => pure (.error { kind := .ioError, message := "unused" })
           stopProxy := fun _ => fun (w, tr) =>
@@ -446,7 +445,7 @@ example : ¬ Core.AllPass (test_cproxy_healthy_withProxyAndStopClosesAllFds
   cases hClosed
 
 example : ¬ Core.AllPass (test_cproxy_healthy_pollAndStepTickAndFallbackConnect
-    { HealthySys.realBridgeTarget with
+    { SysBridge.realBridgeTarget with
       pollAndStepTickSync := fun _ _ _ _ _ _ _ _ _ =>
         fun (w, tr) => (.stopOrFatal, (w, { tr with pollOutcomes := #[some LinuxSyscall.Errno.EINTR] })) }) := by
   intro h

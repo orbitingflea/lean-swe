@@ -398,9 +398,11 @@ import LeanSwe.NetRelay.SpecMutants
 import LeanSwe.NetRelay.Proofs
 import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Model
+import LeanSwe.ConnectProxy.Model.RelayState
+import LeanSwe.ConnectProxy.Model.BridgeState
+import LeanSwe.ConnectProxy.Model.HealthySys
 import LeanSwe.ConnectProxy.Relay
 import LeanSwe.ConnectProxy.SysBridge
-import LeanSwe.ConnectProxy.HealthySys
 import LeanSwe.ConnectProxy.Impl
 import LeanSwe.ConnectProxy.Interface
 import LeanSwe.ConnectProxy.SpecTests

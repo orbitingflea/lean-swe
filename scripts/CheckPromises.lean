@@ -2040,9 +2040,11 @@ private def checkProcessSandboxHostClosure (env : Environment) : IO (Array Strin
 private def connectProxyRequiredModules : Array Name := #[
   `LeanSwe.ConnectProxy.Types,
   `LeanSwe.ConnectProxy.Model,
+  `LeanSwe.ConnectProxy.Model.RelayState,
+  `LeanSwe.ConnectProxy.Model.BridgeState,
+  `LeanSwe.ConnectProxy.Model.HealthySys,
   `LeanSwe.ConnectProxy.Relay,
   `LeanSwe.ConnectProxy.SysBridge,
-  `LeanSwe.ConnectProxy.HealthySys,
   `LeanSwe.ConnectProxy.Impl,
   `LeanSwe.ConnectProxy.Interface,
   `LeanSwe.ConnectProxy.SpecTests,
@@ -2057,7 +2059,7 @@ private partial def peelLambdas (e : Expr) : Expr :=
 private def expectedConnectProxyPromiseTarget? (fn : Name) : Option Name :=
   let s := fn.getString!
   if s.startsWith "test_cproxy_healthy_" then
-    some `LeanSwe.ConnectProxy.HealthySys.realBridgeTarget
+    some `LeanSwe.ConnectProxy.SysBridge.realBridgeTarget
   else if s.startsWith "test_cproxy_withProxy_" then
     some `LeanSwe.ConnectProxy.Internal.mkApiM
   else if s.startsWith "test_cproxy_model_authorizeConnect_" then
@@ -2351,7 +2353,7 @@ private def checkConnectProxyWiring (env : Environment) : Array String := Id.run
     let v := dv.value.consumeMData
     let used := dv.value.getUsedConstants
     let ok :=
-      v.isAppOfArity `LeanSwe.ConnectProxy.SysBridge.CProxySysOpsM.mk 7 &&
+      v.isAppOfArity `LeanSwe.ConnectProxy.Internal.SysBridge.CProxySysOpsM.mk 7 &&
       used.contains `LeanSwe.LinuxSyscall.Files.defaultOps &&
       used.contains `LeanSwe.LinuxSyscall.Net.defaultOps &&
       used.contains `LeanSwe.LinuxSyscall.Poll.defaultOps &&
@@ -2361,12 +2363,12 @@ private def checkConnectProxyWiring (env : Environment) : Array String := Id.run
       errs := errs.push "CPROXY_SYSBRIDGE_WIRING: SysBridge.defaultIoSysOps must wire LinuxSyscall.{Files,Net,Poll,Dns,TimeRand}.defaultOps"
   | _ =>
     errs := errs.push "CPROXY_SYSBRIDGE_WIRING: missing SysBridge.defaultIoSysOps"
-  match env.find? `LeanSwe.ConnectProxy.HealthySys.realBridgeTarget with
+  match env.find? `LeanSwe.ConnectProxy.SysBridge.realBridgeTarget with
   | some (.defnInfo dv) =>
     let v := dv.value.consumeMData
     let args := v.getAppArgs
-    if !v.isAppOfArity `LeanSwe.ConnectProxy.HealthySys.SysBridgeTarget.mk 12 then
-      errs := errs.push "CPROXY_BRIDGE_TARGET_WIRING: HealthySys.realBridgeTarget must construct SysBridgeTarget.mk (arity 12)"
+    if !v.isAppOfArity `LeanSwe.ConnectProxy.Internal.HealthySys.SysBridgeTarget.mk 12 then
+      errs := errs.push "CPROXY_BRIDGE_TARGET_WIRING: SysBridge.realBridgeTarget must construct Internal.HealthySys.SysBridgeTarget.mk (arity 12)"
     else
       let listenBody := peelLambdas args[3]!
       let listenOk :=
@@ -2392,9 +2394,9 @@ private def checkConnectProxyWiring (env : Environment) : Array String := Id.run
         (peelLambdas args[10]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.SysBridge.pollAndStepTickSync &&
         (peelLambdas args[11]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.SysBridge.mkSyncRawOps
       if !fieldsOk then
-        errs := errs.push "CPROXY_BRIDGE_TARGET_WIRING: HealthySys.realBridgeTarget fields must wire directly to SysBridge and Relay"
+        errs := errs.push "CPROXY_BRIDGE_TARGET_WIRING: SysBridge.realBridgeTarget fields must wire directly to SysBridge and Relay"
   | _ =>
-    errs := errs.push "CPROXY_BRIDGE_TARGET_WIRING: missing HealthySys.realBridgeTarget"
+    errs := errs.push "CPROXY_BRIDGE_TARGET_WIRING: missing SysBridge.realBridgeTarget"
   return errs
 
 private def checkConnectProxyTrustedClosure
@@ -2651,7 +2653,7 @@ private def dagRoleOf (knownPkgs : Array Name) (m : Name) : DagModuleRole :=
           else if last == `Model then .model
           else .impl
         else if head == `Impl || m == `LeanSwe.ConnectProxy.Relay ||
-            m == `LeanSwe.ConnectProxy.HealthySys || m == `LeanSwe.ProcessSandbox.InitData then
+            m == `LeanSwe.ProcessSandbox.InitData then
           .impl
         else
           .other
@@ -2943,9 +2945,6 @@ private def importDagAllowlist : Array String := #[
   "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.SpecTests",
   "CROSS|LeanSwe.Uuid.RuntimeTests|LeanSwe.LinuxSyscall.TestSupport.Seccomp",
   "CROSS_REF|LeanSwe.Compress.RuntimeTests|LeanSwe.Process.SysBridge",
-  "WITHIN|LeanSwe.ConnectProxy.SpecTests|LeanSwe.ConnectProxy.HealthySys",
-  "WITHIN|LeanSwe.ConnectProxy.SpecTests|LeanSwe.ConnectProxy.Relay",
-  "WITHIN|LeanSwe.ConnectProxy.SpecTests|LeanSwe.ConnectProxy.SysBridge",
   "WITHIN|LeanSwe.PostFork.Aeneas.Model|LeanSwe.PostFork.Aeneas.FunsExternal",
   "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Aeneas.Api",
   "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Aeneas.Bridge",

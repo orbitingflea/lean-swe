@@ -1,13 +1,13 @@
 import LeanSwe.LinuxSyscall.Dns.Proofs
 import LeanSwe.LinuxSyscall.TimeRand.Proofs
-import LeanSwe.ConnectProxy.HealthySys
+import LeanSwe.ConnectProxy.Model.HealthySys
 
 namespace LeanSwe.ConnectProxy.Proofs
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.ConnectProxy
-open LeanSwe.ConnectProxy.SysBridge
-open LeanSwe.ConnectProxy.HealthySys
+open LeanSwe.ConnectProxy.Internal.SysBridge
+open LeanSwe.ConnectProxy.Internal.HealthySys
 
 /-!
 Non-vacuity healthy OS world witness `sampleHealthySys` inhabiting `RefinesHealthyCProxySys`

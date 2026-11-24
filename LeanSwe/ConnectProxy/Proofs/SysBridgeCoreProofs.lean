@@ -14,7 +14,6 @@ import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Model
 import LeanSwe.ConnectProxy.Relay
 import LeanSwe.ConnectProxy.SysBridge
-import LeanSwe.ConnectProxy.HealthySys
 import LeanSwe.ConnectProxy.Impl
 import LeanSwe.ConnectProxy.Interface
 import LeanSwe.ConnectProxy.Proofs.IpPolicyProofs
@@ -29,7 +28,6 @@ open LeanSwe.ConnectProxy
 open LeanSwe.ConnectProxy.Model
 open LeanSwe.ConnectProxy.Relay
 open LeanSwe.ConnectProxy.SysBridge
-open LeanSwe.ConnectProxy.HealthySys
 
 /-- Internal SysBridge helper lemma `nat_min_eq_min`. -/
 theorem nat_min_eq_min (a b : Nat) : Nat.min a b = min a b := rfl
