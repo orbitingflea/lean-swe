@@ -335,7 +335,7 @@ def suites : Array MutateSuite := #[
   { name := "LinuxSyscall.Poll", runBase := do Fuzz.LinuxSyscall.Poll.Strace.runChecks; return none, runExtra := do Fuzz.LinuxSyscall.Poll.Strace.runStraceFaultCheck; runPollOpsUnitTests },
   { name := "LinuxSyscall.Net", runBase := do Fuzz.LinuxSyscall.Net.Strace.runChecks; return none, runExtra := do Fuzz.LinuxSyscall.Net.Strace.runStraceFaultCheck; runNetOpsUnitTests },
   { name := "LinuxSyscall.Process", runBase := do Fuzz.LinuxSyscall.Process.Strace.runChecks; return none, runExtra := runProcessMutExtra },
-  { name := "LinuxSyscall.Files", runBase := do Fuzz.LinuxSyscall.Files.Strace.runChecks; return none, runExtra := runFilesMkOpsUnitTests }
+  { name := "LinuxSyscall.Files", runBase := do Fuzz.LinuxSyscall.Files.Strace.runChecks; return none, runExtra := do Fuzz.LinuxSyscall.Files.Strace.runStatxNoMntIdProbe; runFilesMkOpsUnitTests }
 ]
 
 /-- Match `LinuxSyscall` strace, namespace, passwd, and dns subprocess worker CLI flags. -/

@@ -4451,18 +4451,6 @@ def runCShimBoundaryProbes : IO Unit := withTempSandbox "cshim" fun dir => do
     if spOut.exitCode != 77 then
       assertTrue s!"procfs bind/tmpfs spoof worker failed (exit={spOut.exitCode}): {spOut.stderr}" (spOut.exitCode == 0)
 
-  let probeStrace ← IO.Process.output { cmd := "sh", args := #["-c", "strace -qq -o /dev/null true"], stdin := .null }
-  if probeStrace.exitCode == 0 then
-    let stxOut ← IO.Process.output {
-      cmd := "strace"
-      args := #["-f", "-qq", "-o", "/dev/null", "-P", "/proc/", "-P", "/proc/thread-self/fd/",
-        "-e", "inject=statx:retval=0", appExeStdio.toString, "--files-strace-worker",
-        "--statx-nomntid", sentinel.toString]
-      stdin := .null
-    }
-    assertTrue s!"reopenReadOnly missing STATX_MNT_ID probe failed (exit={stxOut.exitCode}): {stxOut.stderr}"
-      (stxOut.exitCode == 0)
-
   let pBadMode := (dirReal / "bad_mode_openat2").toString.toUTF8
   assertErr "openat2 upper mode bits -> EINVAL"
     (← defaultOps.openat2 none pBadMode { flags := rwCreatFlags, mode := 0o100644 }) Errno.EINVAL
@@ -5248,6 +5236,25 @@ private def straceWorker (opName sentinelPath expectedErr : String) : IO UInt32 
     IO.eprintln s!"strace-worker: unknown op {opName}"
     return 4
 
+private def runStatxNoMntIdProbeWith (exe sentinel : System.FilePath) : IO Unit := do
+  let stxOut ← IO.Process.output {
+    cmd := "strace"
+    args := #["-f", "-qq", "-o", "/dev/null", "-P", "/proc/", "-P", "/proc/thread-self/fd/",
+      "-e", "inject=statx:retval=0", exe.toString, "--files-strace-worker",
+      "--statx-nomntid", sentinel.toString]
+    stdin := .null
+  }
+  if stxOut.exitCode != 0 then
+    throw (IO.userError s!"strace STATX_MNT_ID omission probe failed (exit={stxOut.exitCode}): {stxOut.stderr}")
+
+/-- Run a live `strace` fault-injection probe verifying `reopenReadOnly` fails closed with `ENOENT` when `statx` omits `STATX_MNT_ID` on `/proc/` and `/proc/thread-self/fd/`. -/
+def runStatxNoMntIdProbe : IO Unit := withTempSandbox "statx-nomntid" fun dir => do
+  let dirReal ← IO.FS.realPath dir
+  let sentinel := dirReal / "sentinel"
+  IO.FS.writeFile sentinel "ok"
+  let exe ← IO.appPath
+  runStatxNoMntIdProbeWith exe sentinel
+
 /-- Run live `strace` fault-injection tests verifying `EIO`, `EINTR`, `ENOMEM`, `ENFILE`, `EMFILE`, `ENOSPC`, `EDQUOT` propagation and `Files.allowedStep` + `unpin` invariants across all 23 `Files` syscalls. -/
 def runStraceFaultCheck : IO Unit := withTempSandbox "strace" fun dir => do
   let dirReal ← IO.FS.realPath dir
@@ -5294,14 +5301,7 @@ def runStraceFaultCheck : IO Unit := withTempSandbox "strace" fun dir => do
     }
     if out.exitCode != 0 then
       throw (IO.userError s!"strace fault-injection failed for {opName}/{errName} (exit={out.exitCode}): {out.stderr}")
-  let stxOut ← IO.Process.output {
-    cmd := "strace"
-    args := #["-f", "-qq", "-o", "/dev/null", "-P", "/proc/", "-P", "/proc/thread-self/fd/",
-      "-e", "inject=statx:retval=0", exe.toString, "--files-strace-worker",
-      "--statx-nomntid", sentinel.toString]
-  }
-  if stxOut.exitCode != 0 then
-    throw (IO.userError s!"strace STATX_MNT_ID omission probe failed (exit={stxOut.exitCode}): {stxOut.stderr}")
+  runStatxNoMntIdProbeWith exe sentinel
 
 private def runStatxNoMntIdWorker (sentinelPath : String) : IO UInt32 := do
   let fd ← match ← defaultOps.openat none sentinelPath.toUTF8 { access := .rdwr } 0 with
