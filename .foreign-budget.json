@@ -10,7 +10,7 @@
       "legacy_unmigrated": false
     },
     ".github/workflows/audit.yml": {
-      "max_lines": 530,
+      "max_lines": 539,
       "legacy_unmigrated": false
     },
     "harness/Fuzz/EnvVars/c/envvars_fuzz_env.c": {
@@ -210,7 +210,7 @@
       "legacy_unmigrated": false
     },
     "scripts/test_fuzz_changed.py": {
-      "max_lines": 856,
+      "max_lines": 904,
       "legacy_unmigrated": false
     }
   },

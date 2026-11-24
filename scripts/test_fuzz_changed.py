@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import copy, io, json, os, re, shlex, shutil, stat, subprocess, sys, tempfile, time, unittest
+import copy, io, json, os, re, shlex, shutil, signal, stat, subprocess, sys, tempfile, time, unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -698,6 +698,17 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
     def test_audit_yml_parallel_gates_runner(self) -> None:
         audit_blocks = dict(_extract_run_blocks(REPO_ROOT / ".github" / "workflows" / "audit.yml"))
         par_script = audit_blocks["Run post-build audit checks in parallel"]
+        hold_hook = "\n".join([
+            "if os.environ.get('HOLD_DIR'):",
+            "    import pathlib as _pl, subprocess as _s",
+            "    _p = _pl.Path(os.environ['HOLD_DIR']) / f'{lane}.json'",
+            "    if os.environ.get('IGN_LANE') == lane:",
+            "        _c = 'import json,os,pathlib,signal,sys,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); p=pathlib.Path(sys.argv[1]); t=p.with_suffix(\".t\"); t.write_text(json.dumps({\"pids\":[int(sys.argv[2]),int(sys.argv[3]),os.getpid()],\"pgid\":os.getpgrp()})); t.replace(p); time.sleep(60)'",
+            "        _s.Popen([sys.executable, '-c', _c, str(_p), str(os.getppid()), str(os.getpid())])",
+            "    else:",
+            "        _g = _s.Popen(['sleep', '60']); _t = _p.with_suffix('.t'); _t.write_text(json.dumps({'pids': [os.getppid(), os.getpid(), _g.pid], 'pgid': os.getpgrp()})); _t.replace(_p)",
+            "    time.sleep(60)",
+        ])
         fake_lean_py = "\n".join([
             f"#!{sys.executable}",
             "import json, os, signal, sys, time",
@@ -709,6 +720,7 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
             "elif tag == 'CheckAssumptions.lean': lane = '3'",
             "elif tag == 'CheckForeignThinness.lean': lane = '4'",
             "else: lane = '0'",
+            hold_hook,
             "t_start = time.monotonic()",
             "if os.environ.get('STUB_DELAY'): time.sleep(float(os.environ['STUB_DELAY']))",
             "log_row = {'cmd': 'lean', 'args': args, 'threads': os.environ.get('LEAN_NUM_THREADS'), 'lake_marker': os.environ.get('LEAN_FAKE_MARKER'), 't': t_start, 't_end': time.monotonic()}",
@@ -730,6 +742,7 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
             f"#!{sys.executable}",
             "import json, os, sys, time",
             "args = sys.argv[1:]",
+            "lane = '3'", hold_hook,
             "closed = []",
             "for fd in (0, 1, 2):",
             "    try: os.fstat(fd)",
@@ -749,6 +762,7 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
             f"#!{sys.executable}",
             "import json, os, sys, time",
             "args = sys.argv[1:]",
+            "lane = '4'", hold_hook,
             "with open(os.environ['CALL_LOG'], 'a', encoding='utf-8') as f:",
             "    f.write(json.dumps({'cmd': 'mut', 'args': args, 'threads': os.environ.get('LEAN_NUM_THREADS'), 't': time.monotonic()}) + '\\n')",
             "print(f'OUT_MUT_{args[-1]}')",
@@ -848,6 +862,40 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
             rc, out, _, rows, _, _ = run_par(FAIL_LANE="4_mut")
             self.assertEqual(rc, 13, out)
             self.assertFalse(any(r["cmd"] == "lean" and "scripts/CheckForeignThinness.lean" in r["args"] for r in rows))
+
+            # TERM / INT reaps lane subshells, children, and grandchild processes (including SIGTERM-ignoring survivor).
+            for sig, exp_rc, ign_lane in ((signal.SIGTERM, 143, ""), (signal.SIGINT, 130, "1")):
+                hold = root / f"hold_{exp_rc}"; shutil.rmtree(hold, ignore_errors=True); hold.mkdir()
+                rtemp = root / f"rt_{exp_rc}"; shutil.rmtree(rtemp, ignore_errors=True); rtemp.mkdir()
+                env = {**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}", "RUNNER_TEMP": str(rtemp), "CALL_LOG": str(root / "calls.jsonl"), "HOLD_DIR": str(hold), "IGN_LANE": ign_lane}
+                proc = subprocess.Popen(["bash", "-c", par_script], cwd=ws, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+                pids: list[int] = []; dead: set[int] = set()
+                try:
+                    t_end = time.monotonic() + 10.0
+                    while len(list(hold.glob("[1-4].json"))) < 4:
+                        self.assertLess(time.monotonic(), t_end, f"lanes hung before signal (poll={proc.poll()})")
+                        time.sleep(0.02)
+                    recs = [json.loads((hold / f"{i}.json").read_text(encoding="utf-8")) for i in (1, 2, 3, 4)]
+                    pgids = [int(r["pgid"]) for r in recs]
+                    self.assertEqual(len(set(pgids)), 4, recs); self.assertNotIn(proc.pid, pgids)
+                    pids = [int(x) for r in recs for x in r["pids"]]
+                    for pid in pids: os.kill(pid, 0)
+                    proc.send_signal(sig); out, err = proc.communicate(timeout=10)
+                    self.assertEqual(proc.returncode, exp_rc, (out, err))
+                    for pid in pids:
+                        dl = time.monotonic() + 0.5
+                        while True:
+                            try: os.kill(pid, 0)
+                            except ProcessLookupError: dead.add(pid); break
+                            if time.monotonic() >= dl: self.fail(f"leaked pid={pid} after sig={sig}")
+                            time.sleep(0.01)
+                    self.assertEqual(list(rtemp.glob("audit-state.*")), [])
+                finally:
+                    if proc.poll() is None: proc.kill(); proc.wait(timeout=5)
+                    for pid in pids:
+                        if pid not in dead:
+                            try: os.kill(pid, signal.SIGKILL)
+                            except OSError: pass
 
     def test_mutate_and_test_collects_sysbridge_and_relay_targets(self) -> None:
         import importlib.util; s = importlib.util.spec_from_file_location("mutate_and_test", REPO_ROOT / "scripts/mutate_and_test.py"); assert s and s.loader; m = importlib.util.module_from_spec(s); sys.modules["mutate_and_test"] = m; s.loader.exec_module(m)
