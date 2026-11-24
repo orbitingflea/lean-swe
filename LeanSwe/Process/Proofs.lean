@@ -360,10 +360,11 @@ theorem proof_process_spawn_invalidRequest_doesNotCallRaw :
       (@Internal.mkApiM (StateM Nat) _)) := by
   intro s₀ req
   dsimp only [Internal.mkApiM]
-  cases hVal : Internal.validateRequest req with
+  rw [validateRequest_toExecRequest req]
+  cases hVal : Internal.validateSpawnRequest req with
   | ok _ => simp [assume]
   | error err =>
-    have herr := validateRequest_err_spec req err hVal
+    have herr := validateSpawnRequest_err_spec req err hVal
     simp only [Internal.spawn, hVal, StateT.run, StateT.pure, pure, assert]
     exact ⟨⟨⟨err, rfl, herr⟩, trivial⟩, trivial⟩
 
@@ -379,13 +380,12 @@ theorem proof_process_spawn_usesNormalizedRequest :
       (@Internal.mkApiM (StateM (Option ExecRequest)) _)) := by
   intro req
   dsimp only [Internal.mkApiM]
-  cases hVal : Internal.validateRequest req with
+  rw [validateRequest_toExecRequest req]
+  cases hVal : Internal.validateSpawnRequest req with
   | error _ => simp [assume]
   | ok norm =>
-    have hIdem : Internal.validateRequest norm = .ok norm := by
-      have hAll := proof_process_validateRequest_idempotent req
-      simp only [defaultApi, Internal.mkApiM, hVal, assert] at hAll
-      exact hAll.1
+    have hIdem : Internal.validateSpawnRequest norm = .ok norm :=
+      validateSpawnRequest_idempotent_ok hVal
     simp [Internal.spawn, hVal, hIdem, StateT.run, bind, StateT.bind, pure, StateT.pure,
       modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, assert]
 

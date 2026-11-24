@@ -250,7 +250,7 @@ def err_process_spawn_permissionDenied : IO Unit :=
 /-- Real error-forcing test: `spawn` validates requests and returns `.invalidInput` without spawning. -/
 def err_process_spawn_invalidInput : IO Unit := do
   assertErrKind (← Process.spawn { program := "" }) .invalidInput "spawn invalidInput empty"
-  assertErrKind (← Process.spawn { program := "echo", timeoutMs := some 0 }) .invalidInput "spawn invalidInput zero timeout"
+  assertErrKind (← Process.spawn { program := "echo", env := #[("BAD=KEY", some "1")] }) .invalidInput "spawn invalidInput bad env"
 
 /-- Real error-forcing test: `spawn` returns `.ioError` (`ENOTDIR`) when `cwd` is a regular file. -/
 def err_process_spawn_ioError : IO Unit :=

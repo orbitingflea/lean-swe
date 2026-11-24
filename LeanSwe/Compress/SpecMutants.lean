@@ -361,7 +361,7 @@ example : ¬ Core.AllPass (test_compress_compressWith_buildsExactExecRequest bug
   have hReq := h0.2.2.1
   dsimp [test_compress_compressWith_buildsExactExecRequest, buggyCompressBuilderPartialEnvAndBloatedSlack,
     mockProcessApi, expectedSanitizedEnv, expectedStderrPipeSlack, StateT.run, bind, StateT.bind, pure, StateT.pure] at hReq
-  have hEnv := congrArg (fun xs => xs.map ExecRequest.env) hReq
+  have hEnv := congrArg (fun xs => xs.map (·.env)) hReq
   exact absurd hEnv (by decide)
 
 example : ¬ Core.AllPass (test_compress_model_boundsAndCanonicalFraming_tight

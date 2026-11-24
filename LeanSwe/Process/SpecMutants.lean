@@ -467,35 +467,63 @@ theorem mutant_mkRawOpsM_pgid1KillZero_rejected :
   intro ⟨h, _⟩
   exact absurd h (by decide +kernel)
 
-/-- Mutant `mkApiM` bypassing `validateRequest` in `spawn` is rejected by `test_process_spawn_invalidRequest_doesNotCallRaw`. -/
+/-- Mutant `mkApiM` bypassing `validateSpawnRequest` in `spawn` is rejected by `test_process_spawn_invalidRequest_doesNotCallRaw`. -/
 theorem mutant_mkApiM_spawnBypassesValidate_rejected :
     ¬ Core.AllPass (test_process_spawn_invalidRequest_doesNotCallRaw
-      (fun raw => { Internal.mkApiM raw with spawn := raw.spawn })) := by
+      (fun raw => { Internal.mkApiM raw with spawn := fun req => raw.spawn { toSpawnRequest := req } })) := by
   intro h
   have h0 := h 0 { program := "" }
-  simp [Internal.mkApiM, Internal.validateRequest, StateT.run, modifyGet, MonadStateOf.modifyGet,
-    StateT.modifyGet, pure, assert] at h0
+  simp [Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, StateT.run,
+    modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, pure, assert] at h0
 
-/-- Mutant `mkApiM` forwarding unnormalized `ExecRequest` to `raw.spawn` is rejected by `test_process_spawn_usesNormalizedRequest`. -/
+/-- Mutant `mkApiM` forwarding unnormalized `SpawnRequest` to `raw.spawn` is rejected by `test_process_spawn_usesNormalizedRequest`. -/
 theorem mutant_mkApiM_spawnSkipsNormalize_rejected :
     ¬ Core.AllPass (test_process_spawn_usesNormalizedRequest
       (fun raw =>
         { Internal.mkApiM raw with
           spawn := fun req =>
-            match Internal.validateRequest req with
+            match Internal.validateSpawnRequest req with
             | .error e => pure (.error e)
-            | .ok _ => raw.spawn req })) := by
+            | .ok _ => raw.spawn { toSpawnRequest := req } })) := by
   intro h
-  let req : ExecRequest := { program := "echo", env := #[("A", some "1"), ("A", some "2")] }
+  let req : SpawnRequest := { program := "echo", env := #[("A", some "1"), ("A", some "2")] }
   have h0 := h req
-  have hVal : Internal.validateRequest req = .ok { program := "echo", env := #[("A", some "2")] } := by
-    simp +decide [req, Internal.validateRequest, Internal.hasNul, Internal.isInvalidEnvEntry, Internal.dedupEnvList]
+  have hValS : Internal.validateSpawnRequest req = .ok { program := "echo", env := #[("A", some "2")] } := by
+    simp +decide [req, Internal.validateSpawnRequest, Internal.hasNul, Internal.isInvalidEnvEntry, Internal.dedupEnvList]
+  have hVal : Internal.validateRequest { toSpawnRequest := req } =
+      .ok { program := "echo", env := #[("A", some "2")] } := by
+    simp [Internal.validateRequest, hValS]
   dsimp only [Core.AllPass, test_process_spawn_usesNormalizedRequest, nondet, bind] at h0
-  rw [show (Internal.mkApiM _).validateRequest req = .ok { program := "echo", env := #[("A", some "2")] } from hVal] at h0
+  rw [show (Internal.mkApiM _).validateRequest { toSpawnRequest := req } =
+      .ok { program := "echo", env := #[("A", some "2")] } from hVal] at h0
   dsimp only [assert] at h0
   have hBad := h0.1.1
   have hSz := congrArg (fun o => match o with | some r => r.env.size | none => 0) hBad
-  simp [req, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, pure, hVal] at hSz
+  simp [req, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, pure, hValS] at hSz
+
+/-- Mutant `mkApiM` lifting `SpawnRequest` with non-default `timeoutMs` is rejected by `test_process_spawn_usesNormalizedRequest`. -/
+theorem mutant_mkApiM_spawnSetsSpuriousTimeout_rejected :
+    ¬ Core.AllPass (test_process_spawn_usesNormalizedRequest
+      (fun raw =>
+        { Internal.mkApiM raw with
+          spawn := fun req =>
+            match Internal.validateSpawnRequest req with
+            | .error e => pure (.error e)
+            | .ok norm => raw.spawn { toSpawnRequest := norm, timeoutMs := some 1 } })) := by
+  intro h
+  let req : SpawnRequest := { program := "echo" }
+  have h0 := h req
+  have hValS : Internal.validateSpawnRequest req = .ok req := by
+    simp +decide [req, Internal.validateSpawnRequest, Internal.hasNul, Internal.dedupEnvList]
+  have hVal : Internal.validateRequest { toSpawnRequest := req } = .ok { toSpawnRequest := req } := by
+    simp [Internal.validateRequest, hValS]
+  dsimp only [Core.AllPass, test_process_spawn_usesNormalizedRequest, nondet, bind] at h0
+  rw [show (Internal.mkApiM _).validateRequest { toSpawnRequest := req } =
+      .ok { toSpawnRequest := req } from hVal] at h0
+  dsimp only [assert] at h0
+  have hBad := h0.1.1
+  have hTo := congrArg (fun o => match o with | some r => r.timeoutMs | none => none) hBad
+  simp [req, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, pure, hValS] at hTo
 
 /-- Mutant `mkApiM` forwarding `timeoutMs = some 0` to `raw.awaitOutput` is rejected by `test_process_awaitOutput_rejectsZeroTimeout`. -/
 theorem mutant_mkApiM_awaitOutputAllowsZeroTimeout_rejected :

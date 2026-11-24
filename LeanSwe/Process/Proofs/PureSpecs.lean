@@ -126,10 +126,10 @@ theorem reach_process_mapRawError_preservesKindAndFields :
 private theorem toList_toArray {α : Type} (xs : List α) : xs.toArray.toList = xs := by
   simp
 
-private theorem validateRequest_error_msg_ne_empty (req : ExecRequest) (err : ProcessError)
-    (h : Internal.validateRequest req = .error err) :
+private theorem validateSpawnRequest_error_msg_ne_empty (req : SpawnRequest) (err : ProcessError)
+    (h : Internal.validateSpawnRequest req = .error err) :
     err.kind = .invalidInput ∧ err.message ≠ "" := by
-  unfold Internal.validateRequest at h
+  unfold Internal.validateSpawnRequest at h
   by_cases h1 : req.program.isEmpty = true
   · rw [ite_eq_left h1, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
   · rw [ite_eq_right h1] at h
@@ -144,10 +144,7 @@ private theorem validateRequest_error_msg_ne_empty (req : ExecRequest) (err : Pr
           simp only [hcwd, Bool.false_eq_true, ↓reduceIte] at h
           by_cases h5 : req.env.toList.any Internal.isInvalidEnvEntry = true
           · rw [ite_eq_left h5, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-          · rw [ite_eq_right h5] at h
-            by_cases h6 : (req.timeoutMs == some 0) = true
-            · rw [ite_eq_left h6, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-            · rw [ite_eq_right h6] at h; contradiction
+          · rw [ite_eq_right h5] at h; contradiction
         | some d =>
           simp only [hcwd] at h
           by_cases h4 : Internal.hasNul d = true
@@ -155,21 +152,30 @@ private theorem validateRequest_error_msg_ne_empty (req : ExecRequest) (err : Pr
           · rw [ite_eq_right h4] at h
             by_cases h5 : req.env.toList.any Internal.isInvalidEnvEntry = true
             · rw [ite_eq_left h5, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-            · rw [ite_eq_right h5] at h
-              by_cases h6 : (req.timeoutMs == some 0) = true
-              · rw [ite_eq_left h6, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
-              · rw [ite_eq_right h6] at h; contradiction
+            · rw [ite_eq_right h5] at h; contradiction
 
-private theorem validateRequest_ok_eq (req norm : ExecRequest)
-    (h : Internal.validateRequest req = .ok norm) :
-    req.program.isEmpty = false ∧
-    Internal.hasNul req.program = false ∧
+private theorem validateRequest_error_msg_ne_empty (req : ExecRequest) (err : ProcessError)
+    (h : Internal.validateRequest req = .error err) :
+    err.kind = .invalidInput ∧ err.message ≠ "" := by
+  unfold Internal.validateRequest at h
+  cases hS : Internal.validateSpawnRequest req.toSpawnRequest with
+  | error e =>
+    simp only [hS, Except.error.injEq] at h; subst h
+    exact validateSpawnRequest_error_msg_ne_empty req.toSpawnRequest e hS
+  | ok _ =>
+    simp only [hS] at h
+    by_cases h6 : (req.timeoutMs == some 0) = true
+    · rw [ite_eq_left h6, Except.error.injEq] at h; subst h; exact ⟨rfl, by simp⟩
+    · rw [ite_eq_right h6] at h; contradiction
+
+private theorem validateSpawnRequest_ok_eq (req norm : SpawnRequest)
+    (h : Internal.validateSpawnRequest req = .ok norm) :
+    req.program.isEmpty = false ∧ Internal.hasNul req.program = false ∧
     req.args.toList.any Internal.hasNul = false ∧
     (match req.cwd with | some d => Internal.hasNul d | none => false) = false ∧
     req.env.toList.any Internal.isInvalidEnvEntry = false ∧
-    (req.timeoutMs == some 0) = false ∧
     norm = { req with env := (Internal.dedupEnvList req.env.toList).toArray } := by
-  unfold Internal.validateRequest at h
+  unfold Internal.validateSpawnRequest at h
   by_cases h1 : req.program.isEmpty = true
   · rw [ite_eq_left h1] at h; contradiction
   · rw [ite_eq_right h1] at h
@@ -184,13 +190,9 @@ private theorem validateRequest_ok_eq (req norm : ExecRequest)
           simp only [hcwd, Bool.false_eq_true, ↓reduceIte] at h
           by_cases h5 : req.env.toList.any Internal.isInvalidEnvEntry = true
           · rw [ite_eq_left h5] at h; contradiction
-          · rw [ite_eq_right h5] at h
-            by_cases h6 : (req.timeoutMs == some 0) = true
-            · rw [ite_eq_left h6] at h; contradiction
-            · rw [ite_eq_right h6, Except.ok.injEq] at h
-              exact ⟨Bool.eq_false_iff.mpr h1, Bool.eq_false_iff.mpr h2,
-                Bool.eq_false_iff.mpr h3, by rfl,
-                Bool.eq_false_iff.mpr h5, Bool.eq_false_iff.mpr h6, h.symm⟩
+          · rw [ite_eq_right h5, Except.ok.injEq] at h
+            exact ⟨Bool.eq_false_iff.mpr h1, Bool.eq_false_iff.mpr h2, Bool.eq_false_iff.mpr h3,
+              rfl, Bool.eq_false_iff.mpr h5, h.symm⟩
         | some d =>
           simp only [hcwd] at h
           by_cases h4 : Internal.hasNul d = true
@@ -198,42 +200,55 @@ private theorem validateRequest_ok_eq (req norm : ExecRequest)
           · rw [ite_eq_right h4] at h
             by_cases h5 : req.env.toList.any Internal.isInvalidEnvEntry = true
             · rw [ite_eq_left h5] at h; contradiction
-            · rw [ite_eq_right h5] at h
-              by_cases h6 : (req.timeoutMs == some 0) = true
-              · rw [ite_eq_left h6] at h; contradiction
-              · rw [ite_eq_right h6, Except.ok.injEq] at h
-                exact ⟨Bool.eq_false_iff.mpr h1, Bool.eq_false_iff.mpr h2,
-                  Bool.eq_false_iff.mpr h3, by simp [Bool.eq_false_iff.mpr h4],
-                  Bool.eq_false_iff.mpr h5, Bool.eq_false_iff.mpr h6, h.symm⟩
+            · rw [ite_eq_right h5, Except.ok.injEq] at h
+              exact ⟨Bool.eq_false_iff.mpr h1, Bool.eq_false_iff.mpr h2, Bool.eq_false_iff.mpr h3,
+                by simp [Bool.eq_false_iff.mpr h4], Bool.eq_false_iff.mpr h5, h.symm⟩
+
+private theorem validateRequest_ok_eq (req norm : ExecRequest)
+    (h : Internal.validateRequest req = .ok norm) :
+    req.program.isEmpty = false ∧ Internal.hasNul req.program = false ∧
+    req.args.toList.any Internal.hasNul = false ∧
+    (match req.cwd with | some d => Internal.hasNul d | none => false) = false ∧
+    req.env.toList.any Internal.isInvalidEnvEntry = false ∧
+    (req.timeoutMs == some 0) = false ∧
+    norm = { req with env := (Internal.dedupEnvList req.env.toList).toArray } := by
+  unfold Internal.validateRequest at h
+  cases hS : Internal.validateSpawnRequest req.toSpawnRequest with
+  | error _ => simp [hS] at h
+  | ok sn =>
+    simp only [hS] at h
+    by_cases h6 : (req.timeoutMs == some 0) = true
+    · rw [ite_eq_left h6] at h; contradiction
+    · rw [ite_eq_right h6, Except.ok.injEq] at h
+      obtain ⟨h1, h2, h3, h4, h5, rfl⟩ := validateSpawnRequest_ok_eq req.toSpawnRequest sn hS
+      exact ⟨h1, h2, h3, h4, h5, Bool.eq_false_iff.mpr h6, h.symm⟩
 
 /-- Proof of `test_process_validateRequest_rejectsEmptyProgram` for `defaultApi`. -/
 theorem proof_process_validateRequest_rejectsEmptyProgram :
     AllPass (test_process_validateRequest_rejectsEmptyProgram defaultApi) := by
   intro req hEmpty
   have hisEmpty : req.program.isEmpty = true := isEmpty_true_of_eq_empty hEmpty
-  simp [defaultApi, Internal.mkApiM, Internal.validateRequest, hisEmpty, assert]
+  simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, hisEmpty, assert]
 
 /-- Non-vacuity `CanReach` witness for `test_process_validateRequest_rejectsEmptyProgram`. -/
 theorem reach_process_validateRequest_rejectsEmptyProgram :
     CanReach (test_process_validateRequest_rejectsEmptyProgram defaultApi) :=
   ⟨{ program := "" }, rfl, by
-    simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, assert]⟩
+    simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, assert]⟩
 
 /-- Proof of `test_process_validateRequest_rejectsNulInProgram` for `defaultApi`. -/
 theorem proof_process_validateRequest_rejectsNulInProgram :
     AllPass (test_process_validateRequest_rejectsNulInProgram defaultApi) := by
   intro req hNul
   have hhas : Internal.hasNul req.program = true := hasNul_eq_true_of_mem hNul
-  simp only [defaultApi, Internal.mkApiM, Internal.validateRequest, hhas]
-  split
-  · simp [assert]
-  · simp [assert]
+  by_cases hEmp : req.program.isEmpty = true <;>
+    simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, hEmp, hhas, assert]
 
 /-- Non-vacuity `CanReach` witness for `test_process_validateRequest_rejectsNulInProgram`. -/
 theorem reach_process_validateRequest_rejectsNulInProgram :
     CanReach (test_process_validateRequest_rejectsNulInProgram defaultApi) := by
   refine ⟨{ program := "a\x00b" }, by decide, ?_⟩
-  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, assert]
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, assert]
 
 /-- Proof of `test_process_validateRequest_rejectsNulInArg` for `defaultApi`. -/
 theorem proof_process_validateRequest_rejectsNulInArg :
@@ -259,7 +274,7 @@ theorem reach_process_validateRequest_rejectsNulInArg :
     CanReach (test_process_validateRequest_rejectsNulInArg defaultApi) := by
   let req : ExecRequest := { program := "echo", args := #["x\x00y"] }
   refine ⟨req, 0, by decide, by decide, ?_⟩
-  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, assert, req]
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, assert, req]
 
 /-- Proof of `test_process_validateRequest_rejectsNulInCwd` for `defaultApi`. -/
 theorem proof_process_validateRequest_rejectsNulInCwd :
@@ -283,7 +298,7 @@ theorem reach_process_validateRequest_rejectsNulInCwd :
     CanReach (test_process_validateRequest_rejectsNulInCwd defaultApi) := by
   let req : ExecRequest := { program := "echo", cwd := some "/tmp/\x00a" }
   refine ⟨req, ⟨"/tmp/\x00a", rfl, by decide⟩, ?_⟩
-  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, assert, req]
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, assert, req]
 
 /-- Proof of `test_process_validateRequest_rejectsInvalidEnv` for `defaultApi`. -/
 theorem proof_process_validateRequest_rejectsInvalidEnv :
@@ -316,7 +331,7 @@ theorem reach_process_validateRequest_rejectsInvalidEnv :
     CanReach (test_process_validateRequest_rejectsInvalidEnv defaultApi) := by
   let req : ExecRequest := { program := "echo", env := #[("A=B", some "1")] }
   refine ⟨req, 0, by decide, Or.inr (Or.inl (by decide)), ?_⟩
-  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, assert, req]
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, assert, req]
 
 /-- Proof of `test_process_validateRequest_rejectsZeroTimeout` for `defaultApi`. -/
 theorem proof_process_validateRequest_rejectsZeroTimeout :
@@ -338,7 +353,7 @@ theorem reach_process_validateRequest_rejectsZeroTimeout :
     CanReach (test_process_validateRequest_rejectsZeroTimeout defaultApi) := by
   let req : ExecRequest := { program := "echo", timeoutMs := some 0 }
   refine ⟨req, rfl, ?_⟩
-  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, assert, req]
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, assert, req]
 
 /-- Proof of `test_process_validateRequest_acceptsValidRequest` for `defaultApi`. -/
 theorem proof_process_validateRequest_acceptsValidRequest :
@@ -385,15 +400,15 @@ theorem proof_process_validateRequest_acceptsValidRequest :
     · exact absurd (beq_iff_eq.mp hT) hTimeout
   cases hC : req.cwd with
   | none =>
-    simp only [defaultApi, Internal.mkApiM, Internal.validateRequest, h1, h2, h3, hC, h5, h6,
-      Bool.false_eq_true, ↓reduceIte, assert]
+    simp only [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest,
+      h1, h2, h3, hC, h5, h6, Bool.false_eq_true, ↓reduceIte, assert]
     trivial
   | some d =>
     rw [hC] at hCwd
     have hdNot : '\x00' ∉ d.toList := by simp_all
     have h4 : Internal.hasNul d = false := hasNul_eq_false_of_not_mem hdNot
-    simp only [defaultApi, Internal.mkApiM, Internal.validateRequest, h1, h2, h3, hC, h4, h5, h6,
-      Bool.false_eq_true, ↓reduceIte, assert]
+    simp only [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest,
+      h1, h2, h3, hC, h4, h5, h6, Bool.false_eq_true, ↓reduceIte, assert]
     trivial
 
 /-- Non-vacuity `CanReach` witness for `test_process_validateRequest_acceptsValidRequest`. -/
@@ -401,7 +416,7 @@ theorem reach_process_validateRequest_acceptsValidRequest :
     CanReach (test_process_validateRequest_acceptsValidRequest defaultApi) := by
   let req : ExecRequest := { program := "echo" }
   refine ⟨req, ⟨by decide, by decide⟩, by decide, by decide, by decide, by decide, ?_⟩
-  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest,
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest,
     Internal.dedupEnvList, assert, req]
 
 /-- Proof of `test_process_validateRequest_idempotent` for `defaultApi`. -/
@@ -419,20 +434,20 @@ theorem proof_process_validateRequest_idempotent :
       exact List.any_eq_false.mp h5f x (mem_dedupEnvList hx)
     cases hC : req.cwd with
     | none =>
-      simp only [Internal.validateRequest, h1f, h2f, h3f, h5', h6f, Bool.false_eq_true,
-        ↓reduceIte, dedupEnvList_idempotent, assert]
+      simp only [Internal.validateRequest, Internal.validateSpawnRequest, h1f, h2f, h3f, h5', h6f,
+        Bool.false_eq_true, ↓reduceIte, dedupEnvList_idempotent, assert]
       trivial
     | some d =>
       rw [hC] at h4f
-      simp only [Internal.validateRequest, h1f, h2f, h3f, h4f, h5', h6f, Bool.false_eq_true,
-        ↓reduceIte, dedupEnvList_idempotent, assert]
+      simp only [Internal.validateRequest, Internal.validateSpawnRequest, h1f, h2f, h3f, h4f, h5', h6f,
+        Bool.false_eq_true, ↓reduceIte, dedupEnvList_idempotent, assert]
       trivial
 
 /-- Non-vacuity `CanReach` witness for `test_process_validateRequest_idempotent`. -/
 theorem reach_process_validateRequest_idempotent :
     CanReach (test_process_validateRequest_idempotent defaultApi) := by
   refine ⟨{ program := "echo" }, ?_⟩
-  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest,
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest,
     Internal.dedupEnvList, assert]
 
 /-- Proof of `test_process_validateRequest_preservesDirectArgsAndOptions` for `defaultApi`. -/
@@ -450,7 +465,7 @@ theorem proof_process_validateRequest_preservesDirectArgsAndOptions :
 theorem reach_process_validateRequest_preservesDirectArgsAndOptions :
     CanReach (test_process_validateRequest_preservesDirectArgsAndOptions defaultApi) := by
   refine ⟨{ program := "echo", args := #["a;b"] }, ?_⟩
-  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest,
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest,
     Internal.dedupEnvList, assert]
 
 /-- Proof of `test_process_validateRequest_envOverride_lastWins` for `defaultApi`. -/
@@ -466,24 +481,24 @@ theorem proof_process_validateRequest_envOverride_lastWins :
   | none =>
     cases hV₂ : v₂ with
     | none =>
-      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.isInvalidEnvEntry,
+      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, Internal.isInvalidEnvEntry,
         Internal.hasNul, Internal.dedupEnvList, h1, hpNot, hkEmp, hkEqNot, hkNulNot, assert]
     | some w₂ =>
       rw [hV₂] at hv₂
       have hw₂ : '\x00' ∉ w₂.toList := by simp_all
-      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.isInvalidEnvEntry,
+      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, Internal.isInvalidEnvEntry,
         Internal.hasNul, Internal.dedupEnvList, h1, hpNot, hkEmp, hkEqNot, hkNulNot, hw₂, assert]
   | some w₁ =>
     rw [hV₁] at hv₁
     have hw₁ : '\x00' ∉ w₁.toList := by simp_all
     cases hV₂ : v₂ with
     | none =>
-      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.isInvalidEnvEntry,
+      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, Internal.isInvalidEnvEntry,
         Internal.hasNul, Internal.dedupEnvList, h1, hpNot, hkEmp, hkEqNot, hkNulNot, hw₁, assert]
     | some w₂ =>
       rw [hV₂] at hv₂
       have hw₂ : '\x00' ∉ w₂.toList := by simp_all
-      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.isInvalidEnvEntry,
+      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, Internal.isInvalidEnvEntry,
         Internal.hasNul, Internal.dedupEnvList, h1, hpNot, hkEmp, hkEqNot, hkNulNot, hw₁, hw₂, assert]
 
 /-- Non-vacuity `CanReach` witness for `test_process_validateRequest_envOverride_lastWins`. -/
@@ -491,7 +506,7 @@ theorem reach_process_validateRequest_envOverride_lastWins :
     CanReach (test_process_validateRequest_envOverride_lastWins defaultApi) := by
   refine ⟨"echo", "FOO", some "1", none, ⟨by decide, by decide⟩, ⟨by decide, by decide, by decide⟩,
     by decide, by decide, ?_⟩
-  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest,
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest,
     Internal.dedupEnvList, assert]
 
 /-- Proof of `test_process_validateRequest_preservesDistinctEnv` for `defaultApi`. -/
@@ -511,13 +526,13 @@ theorem proof_process_validateRequest_preservesDistinctEnv :
   | none =>
     cases hV₂ : v₂ with
     | none =>
-      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.isInvalidEnvEntry,
+      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, Internal.isInvalidEnvEntry,
         Internal.hasNul, Internal.dedupEnvList, h1, hpNot, hk1Emp, hk1EqNot, hk1NulNot,
         hk2Emp, hk2EqNot, hk2NulNot, hbeq, assert]
     | some w₂ =>
       rw [hV₂] at hv₂
       have hw₂ : '\x00' ∉ w₂.toList := by simp_all
-      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.isInvalidEnvEntry,
+      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, Internal.isInvalidEnvEntry,
         Internal.hasNul, Internal.dedupEnvList, h1, hpNot, hk1Emp, hk1EqNot, hk1NulNot,
         hk2Emp, hk2EqNot, hk2NulNot, hw₂, hbeq, assert]
   | some w₁ =>
@@ -525,13 +540,13 @@ theorem proof_process_validateRequest_preservesDistinctEnv :
     have hw₁ : '\x00' ∉ w₁.toList := by simp_all
     cases hV₂ : v₂ with
     | none =>
-      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.isInvalidEnvEntry,
+      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, Internal.isInvalidEnvEntry,
         Internal.hasNul, Internal.dedupEnvList, h1, hpNot, hk1Emp, hk1EqNot, hk1NulNot,
         hk2Emp, hk2EqNot, hk2NulNot, hw₁, hbeq, assert]
     | some w₂ =>
       rw [hV₂] at hv₂
       have hw₂ : '\x00' ∉ w₂.toList := by simp_all
-      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.isInvalidEnvEntry,
+      simp [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest, Internal.isInvalidEnvEntry,
         Internal.hasNul, Internal.dedupEnvList, h1, hpNot, hk1Emp, hk1EqNot, hk1NulNot,
         hk2Emp, hk2EqNot, hk2NulNot, hw₁, hw₂, hbeq, assert]
 
@@ -541,7 +556,7 @@ theorem reach_process_validateRequest_preservesDistinctEnv :
   refine ⟨"echo", "A", "B", some "1", none, ⟨by decide, by decide⟩,
     ⟨by decide, by decide, by decide⟩, ⟨by decide, by decide, by decide⟩, by decide,
     by decide, by decide, ?_⟩
-  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest,
+  simp +decide [defaultApi, Internal.mkApiM, Internal.validateRequest, Internal.validateSpawnRequest,
     Internal.dedupEnvList, assert]
 
 /-- Proof of `test_process_mkCommandRequest_preservesProgramAndArgsVerbatim` for `defaultApi`. -/

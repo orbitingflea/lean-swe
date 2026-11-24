@@ -78,7 +78,7 @@ inductive ProcessRawError where
   | userError (detail : String)
   deriving Repr, BEq, DecidableEq
 
-/-- One-shot command execution request (`PATH`-searching `execve`, never executed via a shell).
+/-- Spawn-time process request (`PATH`-searching `execve`, never executed via a shell).
     When `program` contains no `'/'`, searches valid UTF-8 `PATH` directory segments treating
     empty segments (e.g. `""`, `:/usr/bin`, `/usr/bin:`, `a::b`) as `"."` per POSIX `execvp(3)`;
     any individual non-UTF-8 `PATH` directory segment is skipped without failing the search (and
@@ -86,7 +86,7 @@ inductive ProcessRawError where
     child `execve(2)`). Unlike glibc `execvp(3)`, executable scripts lacking a `#!` shebang are
     never retried via `/bin/sh`: `execve(2)` `ENOEXEC` fails with `kind = .invalidInput` and
     `errnoCode = some 8`. -/
-structure ExecRequest where
+structure SpawnRequest where
   /-- Executable name or path (`argv[0]`); `PATH`-resolved when containing no `'/'`. -/
   program : String
   /-- Explicit argument array (`argv[1..]`), passed verbatim without shell interpretation. -/
@@ -97,6 +97,11 @@ structure ExecRequest where
   env : Array (String × Option String) := #[]
   /-- Whether to inherit the parent process's raw `environ(7)` bytes before applying `env`. -/
   inheritEnv : Bool := true
+  deriving Repr, BEq, DecidableEq
+
+/-- One-shot command execution request extending `SpawnRequest` with `awaitOutput` I/O controls
+    (`stdin`, `timeoutMs`, and `maxOutputBytes`). -/
+structure ExecRequest extends SpawnRequest where
   /-- Standard input bytes written to the child's stdin pipe before closing it. -/
   stdin : ByteArray := ByteArray.empty
   /-- Optional timeout in milliseconds (`some 0` is rejected as invalid input). -/
@@ -204,7 +209,7 @@ structure ProcessApiM (m : Type → Type) where
   /-- Return a copy of `req` with UTF-8 encoded `stdin` text. -/
   withTextInput : ExecRequest → String → ExecRequest
   /-- Validate `req` and spawn a child process directly in its own process group (`setpgid`). -/
-  spawn : ExecRequest → m (Except ProcessError ProcessHandle)
+  spawn : SpawnRequest → m (Except ProcessError ProcessHandle)
   /-- Feed `stdin`, stream `stdout`/`stderr`, and wait for completion, timeout, or output cap. -/
   awaitOutput :
     ProcessHandle → ByteArray → Option Nat → Option Nat → m (Except ProcessError ExecOutcome)
