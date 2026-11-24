@@ -2931,8 +2931,6 @@ private def importDagAllowlist : Array String := #[
   "WITHIN|LeanSwe.ConnectProxy.SpecTests|LeanSwe.ConnectProxy.HealthySys",
   "WITHIN|LeanSwe.ConnectProxy.SpecTests|LeanSwe.ConnectProxy.Relay",
   "WITHIN|LeanSwe.ConnectProxy.SpecTests|LeanSwe.ConnectProxy.SysBridge",
-  "WITHIN|LeanSwe.LinuxSyscall.Files.SpecTests|LeanSwe.LinuxSyscall.Files.Impl",
-  "WITHIN|LeanSwe.LinuxSyscall.Files.SpecTests|LeanSwe.LinuxSyscall.Files.Interface",
   "WITHIN|LeanSwe.PostFork.Aeneas.Model|LeanSwe.PostFork.Aeneas.FunsExternal",
   "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Aeneas.Api",
   "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Aeneas.Bridge",

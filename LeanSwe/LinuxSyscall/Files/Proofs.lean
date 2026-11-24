@@ -1,4 +1,6 @@
 import LeanSwe.LinuxSyscall.Files.SpecTests
+import LeanSwe.LinuxSyscall.Files.Impl
+import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.Files.Proofs.Bitflags
 import LeanSwe.LinuxSyscall.Files.Proofs.ExecCases
 import LeanSwe.LinuxSyscall.Files.Proofs.Soundness

@@ -1,4 +1,6 @@
 import LeanSwe.LinuxSyscall.Files.SpecTests
+import LeanSwe.LinuxSyscall.Files.Impl
+import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.Files.Proofs.ExecCases
 
 namespace LeanSwe.LinuxSyscall.Files
@@ -496,8 +498,19 @@ example : ¬ Core.AllPass (test_files_impl_mkFilesOpsM
   exact absurd (congrArg Prod.snd h0.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1) (by decide)
 
 example : ¬ Core.AllPass (test_files_interface_wrappersAndDefaults
-    (ops := { defaultOps with close := fun _ => pure (.ok ()) })
-    (wClose := fun _ => pure (.error Errno.EBADF))) := by
+    { defaultOps with close := fun _ => pure (.ok ()) }
+    (fun d p f m => openat d p f m) (fun d p f => openat d p f) openat2
+    (fun _ => pure (.error Errno.EBADF)) read write fstat
+    (fun d p fl => fstatat d p fl) (fun d p => fstatat d p)
+    (fun d p m fl => faccessat d p m fl) (fun d p => faccessat d p)
+    (fun d p m => mkdirat d p m) (fun d p => mkdirat d p)
+    (fun d p rm => unlinkat d p rm) (fun d p => unlinkat d p)
+    (fun od op nd np rf => renameat2 od op nd np rf) (fun od op nd np => renameat2 od op nd np)
+    symlinkat (fun d p c => readlinkat d p c) (fun d p => readlinkat d p)
+    (fun fd c => getdents64 fd c) (fun fd => getdents64 fd)
+    fchmodat fchmod flock fcntl fsync (fun c => getcwd c) getcwd
+    (fun fd off wh => lseek fd off wh) (fun fd off => lseek fd off)
+    reopenReadOnly dupStdio) := by
   intro h
   have h0 := h none none (ByteArray.mk #[]) (ByteArray.mk #[]) (Classical.choice (inferInstance : Nonempty RawFd)) {} {} 0 {} {} false {} 0 .unlock .getFl 0 .seekSet .stdin
   have hc := congrFun h0.2.2.2.1 (Classical.choice inferInstance)

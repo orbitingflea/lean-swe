@@ -3,8 +3,6 @@ import Core.Assumptions
 import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Files.Model
 import LeanSwe.LinuxSyscall.Files.Seed
-import LeanSwe.LinuxSyscall.Files.Impl
-import LeanSwe.LinuxSyscall.Files.Interface
 
 namespace LeanSwe.LinuxSyscall.Files
 
@@ -1146,7 +1144,7 @@ def mkRecRawOps : Internal.PosixFilesOpsM (StateM (List (Nat × UInt64 × UInt64
 def test_files_impl_mkFilesOpsM
     {runner} [NondetTest runner]
     (mkOps : Internal.PosixFilesOpsM (StateM (List (Nat × UInt64 × UInt64))) Nat →
-      FilesOpsM (StateM (List (Nat × UInt64 × UInt64))) Nat := Internal.mkFilesOpsM) :
+      FilesOpsM (StateM (List (Nat × UInt64 × UInt64))) Nat) :
     runner Unit := do
   let ops := mkOps mkRecRawOps
   let badPath ← nondet ByteArray
@@ -1219,40 +1217,40 @@ def test_files_impl_mkFilesOpsM
 /-- All 23 top-level `LeanSwe.LinuxSyscall.Files` wrappers and their default arguments delegate directly to `defaultOps`. -/
 def test_files_interface_wrappersAndDefaults
     {runner} [NondetTest runner]
-    (ops : FilesOps := defaultOps)
-    (wOpenat : Option RawFd → ByteArray → OpenFlags → Mode → IO (Except Errno RawFd) := fun d p f m => openat d p f m)
-    (wOpenatDef : Option RawFd → ByteArray → OpenFlags → IO (Except Errno RawFd) := fun d p f => openat d p f)
-    (wOpenat2 : Option RawFd → ByteArray → OpenHow → IO (Except Errno RawFd) := openat2)
-    (wClose : RawFd → IO (Except Errno Unit) := close)
-    (wRead : RawFd → UInt32 → IO (Except Errno ByteArray) := read)
-    (wWrite : RawFd → ByteArray → IO (Except Errno UInt32) := write)
-    (wFstat : RawFd → IO (Except Errno StatInfo) := fstat)
-    (wFstatat : Option RawFd → ByteArray → AtFlags → IO (Except Errno StatInfo) := fun d p fl => fstatat d p fl)
-    (wFstatatDef : Option RawFd → ByteArray → IO (Except Errno StatInfo) := fun d p => fstatat d p)
-    (wFaccessat : Option RawFd → ByteArray → AccessModeMask → AtFlags → IO (Except Errno Unit) := fun d p m fl => faccessat d p m fl)
-    (wFaccessatDef : Option RawFd → ByteArray → IO (Except Errno Unit) := fun d p => faccessat d p)
-    (wMkdirat : Option RawFd → ByteArray → Mode → IO (Except Errno Unit) := fun d p m => mkdirat d p m)
-    (wMkdiratDef : Option RawFd → ByteArray → IO (Except Errno Unit) := fun d p => mkdirat d p)
-    (wUnlinkat : Option RawFd → ByteArray → Bool → IO (Except Errno Unit) := fun d p rm => unlinkat d p rm)
-    (wUnlinkatDef : Option RawFd → ByteArray → IO (Except Errno Unit) := fun d p => unlinkat d p)
-    (wRenameat2 : Option RawFd → ByteArray → Option RawFd → ByteArray → RenameFlags → IO (Except Errno Unit) := fun od op nd np rf => renameat2 od op nd np rf)
-    (wRenameat2Def : Option RawFd → ByteArray → Option RawFd → ByteArray → IO (Except Errno Unit) := fun od op nd np => renameat2 od op nd np)
-    (wSymlinkat : ByteArray → Option RawFd → ByteArray → IO (Except Errno Unit) := symlinkat)
-    (wReadlinkat : Option RawFd → ByteArray → UInt32 → IO (Except Errno ByteArray) := fun d p c => readlinkat d p c)
-    (wReadlinkatDef : Option RawFd → ByteArray → IO (Except Errno ByteArray) := fun d p => readlinkat d p)
-    (wGetdents64 : RawFd → UInt32 → IO (Except Errno ByteArray) := fun fd c => getdents64 fd c)
-    (wGetdents64Def : RawFd → IO (Except Errno ByteArray) := fun fd => getdents64 fd)
-    (wFchmodat : Option RawFd → ByteArray → Mode → IO (Except Errno Unit) := fchmodat)
-    (wFchmod : RawFd → Mode → IO (Except Errno Unit) := fchmod)
-    (wFlock : RawFd → FlockOp → IO (Except Errno Unit) := flock)
-    (wFcntl : RawFd → FcntlCmd → IO (Except Errno UInt32) := fcntl)
-    (wFsync : RawFd → IO (Except Errno Unit) := fsync)
-    (wGetcwd : UInt32 → IO (Except Errno ByteArray) := fun c => getcwd c)
-    (wGetcwdDef : IO (Except Errno ByteArray) := getcwd)
-    (wLseek : RawFd → Int64 → SeekWhence → IO (Except Errno UInt64) := fun fd off wh => lseek fd off wh)
-    (wLseekDef : RawFd → Int64 → IO (Except Errno UInt64) := fun fd off => lseek fd off)
-    (wReopenReadOnly : RawFd → IO (Except Errno RawFd) := reopenReadOnly)
-    (wDupStdio : StdioFd → IO (Except Errno RawFd) := dupStdio) : runner Unit := do
+    (ops : FilesOps)
+    (wOpenat : Option RawFd → ByteArray → OpenFlags → Mode → IO (Except Errno RawFd))
+    (wOpenatDef : Option RawFd → ByteArray → OpenFlags → IO (Except Errno RawFd))
+    (wOpenat2 : Option RawFd → ByteArray → OpenHow → IO (Except Errno RawFd))
+    (wClose : RawFd → IO (Except Errno Unit))
+    (wRead : RawFd → UInt32 → IO (Except Errno ByteArray))
+    (wWrite : RawFd → ByteArray → IO (Except Errno UInt32))
+    (wFstat : RawFd → IO (Except Errno StatInfo))
+    (wFstatat : Option RawFd → ByteArray → AtFlags → IO (Except Errno StatInfo))
+    (wFstatatDef : Option RawFd → ByteArray → IO (Except Errno StatInfo))
+    (wFaccessat : Option RawFd → ByteArray → AccessModeMask → AtFlags → IO (Except Errno Unit))
+    (wFaccessatDef : Option RawFd → ByteArray → IO (Except Errno Unit))
+    (wMkdirat : Option RawFd → ByteArray → Mode → IO (Except Errno Unit))
+    (wMkdiratDef : Option RawFd → ByteArray → IO (Except Errno Unit))
+    (wUnlinkat : Option RawFd → ByteArray → Bool → IO (Except Errno Unit))
+    (wUnlinkatDef : Option RawFd → ByteArray → IO (Except Errno Unit))
+    (wRenameat2 : Option RawFd → ByteArray → Option RawFd → ByteArray → RenameFlags → IO (Except Errno Unit))
+    (wRenameat2Def : Option RawFd → ByteArray → Option RawFd → ByteArray → IO (Except Errno Unit))
+    (wSymlinkat : ByteArray → Option RawFd → ByteArray → IO (Except Errno Unit))
+    (wReadlinkat : Option RawFd → ByteArray → UInt32 → IO (Except Errno ByteArray))
+    (wReadlinkatDef : Option RawFd → ByteArray → IO (Except Errno ByteArray))
+    (wGetdents64 : RawFd → UInt32 → IO (Except Errno ByteArray))
+    (wGetdents64Def : RawFd → IO (Except Errno ByteArray))
+    (wFchmodat : Option RawFd → ByteArray → Mode → IO (Except Errno Unit))
+    (wFchmod : RawFd → Mode → IO (Except Errno Unit))
+    (wFlock : RawFd → FlockOp → IO (Except Errno Unit))
+    (wFcntl : RawFd → FcntlCmd → IO (Except Errno UInt32))
+    (wFsync : RawFd → IO (Except Errno Unit))
+    (wGetcwd : UInt32 → IO (Except Errno ByteArray))
+    (wGetcwdDef : IO (Except Errno ByteArray))
+    (wLseek : RawFd → Int64 → SeekWhence → IO (Except Errno UInt64))
+    (wLseekDef : RawFd → Int64 → IO (Except Errno UInt64))
+    (wReopenReadOnly : RawFd → IO (Except Errno RawFd))
+    (wDupStdio : StdioFd → IO (Except Errno RawFd)) : runner Unit := do
   let dir ← nondet (Option RawFd)
   let dir2 ← nondet (Option RawFd)
   let path ← nondet ByteArray
