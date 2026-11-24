@@ -176,20 +176,17 @@ theorem poll_ops_invalidTimespecAndMaxNfdsRejectedWithEinval_mkPollOpsM_allPass
   · exact mkPollOpsM_ppoll_huge raw hugeEntries hHuge s₀
   · exact mkPollOpsM_ppoll_huge_none raw hugeEntries hHuge s₀
 
-private def dummyRawPollOps : Internal.PosixPollOpsM (StateM PollState) HandleId :=
-  { ppoll := fun _ _ _ _ _ => pure (.error Errno.ENOSYS)
-    eventfd2 := fun _ _ => pure (.error Errno.ENOSYS) }
-
-/-- Concrete witness demonstrating reachability of `test_poll_ops_invalidTimespecAndMaxNfdsRejectedWithEinval` on `Internal.mkPollOpsM`. -/
-theorem poll_ops_invalidTimespecAndMaxNfdsRejectedWithEinval_mkPollOpsM_canReach :
-    CanReach (test_poll_ops_invalidTimespecAndMaxNfdsRejectedWithEinval (Internal.mkPollOpsM dummyRawPollOps)) := by
+/-- Concrete witness demonstrating reachability of `test_poll_ops_invalidTimespecAndMaxNfdsRejectedWithEinval` on `Internal.mkPollOpsM raw` for every `raw`. -/
+theorem poll_ops_invalidTimespecAndMaxNfdsRejectedWithEinval_mkPollOpsM_canReach
+    (raw : Internal.PosixPollOpsM (StateM PollState) HandleId) :
+    CanReach (test_poll_ops_invalidTimespecAndMaxNfdsRejectedWithEinval (Internal.mkPollOpsM raw)) := by
   have hBad : Timespec.isValid { sec := -1, nsec := 0 } = false := by decide
   have hHuge : (Array.replicate (MAX_POLL_NFDS + 1) ((0 : HandleId), ({} : PollEvents))).size > MAX_POLL_NFDS := by
     rw [Array.size_replicate]
     exact Nat.lt_succ_self MAX_POLL_NFDS
   refine ⟨PollState.initial, #[], { sec := -1, nsec := 0 }, hBad,
     Array.replicate (MAX_POLL_NFDS + 1) ((0 : HandleId), ({} : PollEvents)), hHuge, ?_⟩
-  exact poll_ops_invalidTimespecAndMaxNfdsRejectedWithEinval_mkPollOpsM_allPass dummyRawPollOps
+  exact poll_ops_invalidTimespecAndMaxNfdsRejectedWithEinval_mkPollOpsM_allPass raw
     PollState.initial #[] { sec := -1, nsec := 0 } hBad
     (Array.replicate (MAX_POLL_NFDS + 1) ((0 : HandleId), ({} : PollEvents))) hHuge
 

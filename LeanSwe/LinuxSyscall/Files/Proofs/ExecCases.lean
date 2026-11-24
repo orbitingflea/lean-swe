@@ -361,8 +361,7 @@ theorem files_model_envGeneralizationInvariants_proof :
   refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl,
     rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, trivial⟩
 
-/-- Proof helper for `files_ops_lseekReopenDupStdioAndOpath_allPass`. -/
-def lroState : FilesState :=
+private def lroState : FilesState :=
   { inodes := [(1, { data := .dir { parentIno := 1, children := [("proc".toUTF8, 2)] }, mode := 0o755, nlink := 3 }),
                (2, { data := .dir { parentIno := 1, children := [("self".toUTF8, 3)] }, mode := 0o755, origin := .pseudoFs, nlink := 3 }),
                (3, { data := .dir { parentIno := 2, children := [("fd".toUTF8, 4)] }, mode := 0o755, origin := .pseudoFs, nlink := 3 }),
@@ -474,7 +473,13 @@ private theorem d24_fst : ∃ bs, ((modelOps.getdents64 0 4096).run d23.2).1 = .
 set_option maxHeartbeats 800000 in
 /-- Proof helper for `files_ops_lseekReopenDupStdioAndOpath_allPass`. -/
 theorem files_ops_lseekReopenDupStdioAndOpath_proof :
-    AllPass (test_files_ops_lseekReopenDupStdioAndOpath modelOps lroState) := by
+    AllPass (test_files_ops_lseekReopenDupStdioAndOpath modelOps
+      { inodes := [(1, { data := .dir { parentIno := 1, children := [("proc".toUTF8, 2)] }, mode := 0o755, nlink := 3 }),
+                   (2, { data := .dir { parentIno := 1, children := [("self".toUTF8, 3)] }, mode := 0o755, origin := .pseudoFs, nlink := 3 }),
+                   (3, { data := .dir { parentIno := 2, children := [("fd".toUTF8, 4)] }, mode := 0o755, origin := .pseudoFs, nlink := 3 }),
+                   (4, { data := .dir { parentIno := 3, children := [] }, mode := 0o755, origin := .pseudoFs, nlink := 2 })],
+        fds := [], cwdPath := .bound "/".toUTF8, rootIno := 1, cwdIno := 1, nextIno := 5, nextHid := 0 }) := by
+  change AllPass (test_files_ops_lseekReopenDupStdioAndOpath modelOps lroState)
   refine ⟨⟨_, rfl⟩, rfl, rfl, rfl, ⟨_, rfl⟩,
     rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨_, rfl, rfl⟩,
     b2a_s8_fst, b2a_s9_fst, b2a_s10_fst, b2a_read_ok, b2a_end_ok, b2a_cur_ok,
