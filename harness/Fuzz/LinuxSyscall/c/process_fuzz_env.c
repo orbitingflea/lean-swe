@@ -728,6 +728,7 @@ static void reset_pid1_rt_sigs(void) {
 }
 
 static void run_ns_pid1(uint8_t do_setsid, uint8_t as_pid2, const char *mode_str, const char *arg_str) {
+  unblock_and_reset_sig(15u);
   setenv("UV_USE_IO_URING", "0", 1); setenv("LEAN_NUM_THREADS", "1", 1);
   if (!as_pid2) exec_self_ns_worker(do_setsid, mode_str, arg_str);
   reset_pid1_rt_sigs();
@@ -761,22 +762,38 @@ static void sync_and_map_subid(pid_t p_mid, int sv0, uint8_t ns_flags, uid_t u, 
     if (exec_idmap("/usr/bin/newgidmap", p_mid, (unsigned long)g, getenv("LEANSWE_SUBGID")) != 0 ||
         exec_idmap("/usr/bin/newuidmap", p_mid, (unsigned long)u, getenv("LEANSWE_SUBUID")) != 0) id_ok = 0;
   }
-  ssize_t w1 = write(sv0, id_ok ? "1" : "0", 1); (void)w1; close(sv0);
+  ssize_t w1 = write(sv0, id_ok ? "1" : "0", 1); (void)w1;
 }
 
 static void run_ns_mid(int sv1, uint8_t ns_flags, uid_t u, gid_t g, const char *mode_str, const char *arg_str) {
   setpgid(0, 0);
-  if (unshare(CLONE_NEWUSER | CLONE_NEWPID) < 0) _exit(125);
+  if (unshare(CLONE_NEWUSER | CLONE_NEWPID) < 0) { close(sv1); _exit(125); }
   ssize_t w0 = write(sv1, "1", 1); char ack = '0'; ssize_t r0 = read(sv1, &ack, 1);
-  (void)w0; (void)r0; close(sv1);
+  (void)w0; (void)r0;
   if (ack != '1') {
-    if ((ns_flags & 8u) != 0u) _exit(126);
+    if ((ns_flags & 8u) != 0u) { close(sv1); _exit(126); }
     map_self_uid_gid(u, g);
   }
   pid_t p2 = fork();
-  if (p2 < 0) _exit(124);
-  if (p2 == 0) run_ns_pid1((ns_flags & 1u) != 0u, (ns_flags & 2u) != 0u, mode_str, arg_str);
+  if (p2 < 0) { close(sv1); _exit(124); }
+  if (p2 == 0) { close(sv1); run_ns_pid1((ns_flags & 1u) != 0u, (ns_flags & 2u) != 0u, mode_str, arg_str); }
+  ssize_t w2 = write(sv1, &p2, sizeof(p2)); (void)w2; close(sv1);
   _exit(0);
+}
+
+static void finish_ns_reap(
+    uint8_t ns_flags, const char *mode_str, const char *arg_str,
+    pid_t p_mid, pid_t p2, pid_t r2, int st2, int err) {
+  if (r2 < 0 || !WIFEXITED(st2) || WEXITSTATUS(st2) != 0) {
+    fprintf(stderr, "ns-worker-fail mode=%s arg=%s flags=%u p1=%d p_mid=%d p2=%d reaped=%d st2=0x%x exited=%d code=%d signaled=%d sig=%d errno=%d\n",
+            mode_str, arg_str, (unsigned)ns_flags, (int)getpid(), (int)p_mid, (int)p2, (int)r2, (unsigned)st2,
+            WIFEXITED(st2) ? 1 : 0, WIFEXITED(st2) ? WEXITSTATUS(st2) : -1, WIFSIGNALED(st2) ? 1 : 0, WIFSIGNALED(st2) ? WTERMSIG(st2) : 0, err);
+    fflush(stderr);
+  }
+  if (r2 < 0) _exit(123);
+  if (WIFEXITED(st2)) _exit(WEXITSTATUS(st2));
+  if (WIFSIGNALED(st2)) _exit(128 + WTERMSIG(st2));
+  _exit(123);
 }
 
 static void spawn_ns_via_reaper(uint8_t ns_flags, const char *mode_str, const char *arg_str) {
@@ -787,12 +804,12 @@ static void spawn_ns_via_reaper(uint8_t ns_flags, const char *mode_str, const ch
   if (p_mid < 0) _exit(124);
   if (p_mid == 0) { close(sv[0]); run_ns_mid(sv[1], ns_flags, u, g, mode_str, arg_str); }
   close(sv[1]); sync_and_map_subid(p_mid, sv[0], ns_flags, u, g);
-  int stm = 0, st2 = 0;
-  if (waitpid_nointr(p_mid, &stm) < 0 || !WIFEXITED(stm) || WEXITSTATUS(stm) != 0) _exit(125);
-  if (waitpid_nointr(-1, &st2) < 0) _exit(123);
-  if (WIFEXITED(st2)) _exit(WEXITSTATUS(st2));
-  if (WIFSIGNALED(st2)) _exit(128 + WTERMSIG(st2));
-  _exit(123);
+  int stm = 0, st2 = 0; pid_t p2 = -1;
+  if (waitpid_nointr(p_mid, &stm) < 0 || !WIFEXITED(stm) || WEXITSTATUS(stm) != 0) { close(sv[0]); _exit(125); }
+  ssize_t rd = read_nointr(sv[0], &p2, sizeof(p2)); close(sv[0]);
+  if (rd != (ssize_t)sizeof(p2) || p2 <= 0) finish_ns_reap(ns_flags, mode_str, arg_str, p_mid, p2, -1, 0, EIO);
+  pid_t r2 = waitpid_nointr(p2, &st2);
+  finish_ns_reap(ns_flags, mode_str, arg_str, p_mid, p2, r2, st2, (r2 < 0) ? errno : 0);
 }
 
 LEAN_EXPORT lean_obj_res leanswe_proc_fuzz_run_ns_worker(
