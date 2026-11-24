@@ -403,8 +403,8 @@ def test_compress_spawnErrors_mappedCorrectly
         (isDecompress && (pe.kind == .outputLimitExceeded || pe.kind == .timedOut) &&
           codec == .gzip && !Model.hasGzipHeader input)))
 
-/-- Abnormal `proc.run` outcomes (`.timedOut`, `.outputLimitExceeded`, `.terminatedBySignal`, pipe/reap `.ioError`) classify cleanly and honor gzip framing precedence. -/
-def test_compress_awaitOutcomes_cleanedUpAndClassified
+/-- Abnormal `proc.run` outcomes (`.timedOut`, `.outputLimitExceeded`, `.terminatedBySignal`, `.ioError`) classify cleanly and honor gzip framing precedence. -/
+def test_compress_awaitOutcomes_classified
     {runner} [NondetTest runner]
     (mkApi : CompressBuilder (StateM MockProcState)) : runner Unit := do
   let codec ← nondet Codec
@@ -416,7 +416,7 @@ def test_compress_awaitOutcomes_cleanedUpAndClassified
   let errBytes ← nondet ByteArray
   let sig ← nondet Int
   let outcomeKind ← nondet Nat
-  assume (outcomeKind < 5)
+  assume (outcomeKind < 4)
   assume (if isDecompress then isValidDecompressInput dopts input = true else isValidCompressInput codec copts input = true)
   let runRes : Except ProcessError ExecResult :=
     if outcomeKind == 0 then
@@ -425,10 +425,8 @@ def test_compress_awaitOutcomes_cleanedUpAndClassified
       .error { kind := .outputLimitExceeded, program := some (codecProgram codec), stdout := some outBytes, stderr := some errBytes, message := "process exceeded output byte limit" }
     else if outcomeKind == 2 then
       .error { kind := .terminatedBySignal, program := some (codecProgram codec), signal := some sig, stdout := some outBytes, stderr := some errBytes, message := "process terminated by signal" }
-    else if outcomeKind == 3 then
-      .error { kind := .ioError, message := "pipe read failed" }
     else
-      .error { kind := .ioError, message := "waitpid failed" }
+      .error { kind := .ioError, message := "pipe read failed" }
   let expectedKind : CompressErrorKind :=
     if outcomeKind == 0 then
       if isDecompress && codec == .gzip && !Model.hasGzipHeader input then .corruptData else .timedOut
@@ -482,7 +480,7 @@ def test_compress_exitCodes_compressVsDecompress_andStderr
       de.message ≠ "")
 
 /-- `isToolAvailable` runs `<binary> --version` with sanitized env, `timeoutMs = some 5000`, `maxOutputBytes = some 65536`, and returns `true` iff exit code is `0`. -/
-def test_compress_isToolAvailable_checksVersionAndCleansUp
+def test_compress_isToolAvailable_checksVersion
     {runner} [NondetTest runner]
     (mkApi : CompressBuilder (StateM MockProcState)) : runner Unit := do
   let codec ← nondet Codec

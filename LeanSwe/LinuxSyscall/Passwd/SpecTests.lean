@@ -258,20 +258,23 @@ def test_passwd_modelOps_soundAgainstAllowedStep
   NondetTest.assert (step s (.getpwnam name) (outcomeOfEntryOpt rNam) = some sNam)
   NondetTest.assert (sNam.isWellFormed = true)
 
+/-- Raw C-ABI tuple `(name, uid, gid, gecos, homeDir, shell)` returned by single-call passwd hooks. -/
+abbrev RawPasswdTuple := ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray
+
 /-- `Internal.mkPasswdOpsM raw` (and `Internal.mkPasswdOps raw`) rejects invalid (`EINVAL`) and oversized (`ENAMETOOLONG`) `getpwnam` names without mutating state and produces outcomes accepted by `allowedStep` while preserving `PasswdState.isWellFormed` whenever each raw call for `sz ∈ 4096..65536` satisfies `allowedStep` on `ERANGE`-preserving hooks. -/
 def test_passwd_mkPasswdOps_soundAgainstAllowedStep
     {runner} [NondetTest runner]
     (mkOps :
-      (UInt32 → UInt32 → StateM PasswdState (Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray)))) →
-      (ByteArray → UInt32 → StateM PasswdState (Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray)))) →
+      (UInt32 → UInt32 → StateM PasswdState (Except Errno (Option RawPasswdTuple))) →
+      (ByteArray → UInt32 → StateM PasswdState (Except Errno (Option RawPasswdTuple))) →
       PasswdOpsM (StateM PasswdState)) : runner Unit := do
   let s ← nondet PasswdState
   let uid ← nondet UInt32
   let name ← nondet ByteArray
   let badName ← nondet ByteArray
   let overCapName ← nondet ByteArray
-  let rawGetpwuidOnce ← nondet (UInt32 → UInt32 → StateM PasswdState (Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray))))
-  let rawGetpwnamOnce ← nondet (ByteArray → UInt32 → StateM PasswdState (Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray))))
+  let rawGetpwuidOnce ← nondet (UInt32 → UInt32 → StateM PasswdState (Except Errno (Option RawPasswdTuple)))
+  let rawGetpwnamOnce ← nondet (ByteArray → UInt32 → StateM PasswdState (Except Errno (Option RawPasswdTuple)))
   assume (s.isWellFormed = true)
   assume (validPasswdName badName = false)
   assume (validPasswdName overCapName = true)
@@ -322,22 +325,22 @@ def test_passwd_mkPasswdOps_soundAgainstAllowedStep
 def test_passwd_mkPasswdOps_exactRetryAndDelegation
     {runner} [NondetTest runner]
     (mkOps :
-      (UInt32 → UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray))) →
-      (ByteArray → UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray))) →
+      (UInt32 → UInt32 → Except Errno (Option RawPasswdTuple)) →
+      (ByteArray → UInt32 → Except Errno (Option RawPasswdTuple)) →
       PasswdOpsM Id)
     (bufSizes : List UInt32)
     (mkOpsAlias :
-      (UInt32 → UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray))) →
-      (ByteArray → UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray))) →
+      (UInt32 → UInt32 → Except Errno (Option RawPasswdTuple)) →
+      (ByteArray → UInt32 → Except Errno (Option RawPasswdTuple)) →
       PasswdOpsM Id) : runner Unit := do
-  let rawGetpwuid ← nondet (UInt32 → UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray)))
-  let rawGetpwnam ← nondet (ByteArray → UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray)))
+  let rawGetpwuid ← nondet (UInt32 → UInt32 → Except Errno (Option RawPasswdTuple))
+  let rawGetpwnam ← nondet (ByteArray → UInt32 → Except Errno (Option RawPasswdTuple))
   let uid ← nondet UInt32
   let name ← nondet ByteArray
   let ops := mkOps rawGetpwuid rawGetpwnam
   let aliasOps := mkOpsAlias rawGetpwuid rawGetpwnam
   let validateTuple (pred : PasswdEntry → Bool) :
-      Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray)) →
+      Except Errno (Option RawPasswdTuple) →
         Except Errno (Option PasswdEntry)
     | .error e => .error e
     | .ok none => .ok none
@@ -351,14 +354,14 @@ def test_passwd_mkPasswdOps_exactRetryAndDelegation
           shell := t.2.2.2.2.2 }
       if pred entry then .ok (some entry) else .error Errno.EIO
   let stepOr (pred : PasswdEntry → Bool)
-      (once : UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray)))
+      (once : UInt32 → Except Errno (Option RawPasswdTuple))
       (sz : UInt32) (next : Except Errno (Option PasswdEntry)) :
       Except Errno (Option PasswdEntry) :=
     match once sz with
     | .error e => if e == Errno.ERANGE then next else .error e
     | .ok opt => validateTuple pred (.ok opt)
   let expectedRetry (pred : PasswdEntry → Bool)
-      (once : UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray))) :
+      (once : UInt32 → Except Errno (Option RawPasswdTuple)) :
       Except Errno (Option PasswdEntry) :=
     stepOr pred once 4096
       (stepOr pred once 8192

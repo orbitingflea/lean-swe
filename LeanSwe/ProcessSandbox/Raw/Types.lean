@@ -335,7 +335,7 @@ structure BoxHandle where
   pid : Int
   /-- Dedicated host process group ID covering the sandbox launcher (`> 0`). -/
   pgid : Int
-  /-- Non-negative `pidfd` field (`≥ 0`). Under the pure-Lean host bridge (`ProcessSandbox.Host.SysBridge`), the live Linux `pidfd` `RawFd` stays encapsulated in the host box table and this field holds a `0` placeholder (this placeholder field is scheduled for removal when `LeanSwe.ProcessSandbox.Raw` is retired). -/
+  /-- Non-negative `pidfd` field (`≥ 0`). Under the pure-Lean host bridge (`ProcessSandbox.Raw.SysBridge`), the live Linux `pidfd` `RawFd` stays encapsulated in the host box table and this field holds a `0` placeholder (this placeholder field is scheduled for removal when `LeanSwe.ProcessSandbox.Raw` is retired). -/
   pidfd : Int
   deriving Repr, BEq, DecidableEq, Inhabited
 
@@ -357,7 +357,7 @@ structure SandboxResourceCounts where
   activeForwarders : Nat := 0
   deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Single-step OS and `Host.SysBridge` primitives for `LeanSwe.ProcessSandbox`, parameterized over effect monad `m`. -/
+/-- Single-step OS and `Raw.SysBridge` primitives for `LeanSwe.ProcessSandbox`, parameterized over effect monad `m`. -/
 structure RawProcessSandboxOpsM (m : Type → Type) where
   /-- Normalize a `SandboxRawError` into a `SandboxError` with a non-empty diagnostic message. -/
   mapRawError : SandboxRawError → SandboxError

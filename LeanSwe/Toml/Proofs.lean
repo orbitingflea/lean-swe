@@ -66,44 +66,25 @@ theorem validNumApi_defaultApi : ValidNumApi LeanSwe.NumParse.defaultApi :=
        (LeanSwe.NumParse.Proofs.parseFloat_spec s).2⟩
   , parseInt64 := LeanSwe.NumParse.Proofs.parseInt64_spec
   , parseFloat := fun s => by
-      have h := LeanSwe.NumParse.Proofs.parseFloat_spec s
-      change LeanSwe.NumParse.Model.allowedParseFloat s (LeanSwe.NumParse.defaultApi.parseFloat s) at h
-      cases ha : LeanSwe.NumParse.defaultApi.parseFloat s with
-      | ok actual =>
-        cases hm : LeanSwe.NumParse.Model.parseFloatModel s with
-        | error _ => simp [LeanSwe.NumParse.Model.allowedParseFloat, Except.mapError, ha, hm] at h
-        | ok expected =>
-          have heq : actual = expected := by
-            simpa [LeanSwe.NumParse.Model.allowedParseFloat, Except.mapError, ha, hm] using h.1
-          subst heq; exact LeanSwe.NumParse.Model.floatBitMatch_refl actual
-      | error e =>
-        cases hm : LeanSwe.NumParse.Model.parseFloatModel s with
-        | ok _ => simp [LeanSwe.NumParse.Model.allowedParseFloat, Except.mapError, ha, hm] at h
-        | error expectedKind =>
-          have hk : e.kind = expectedKind := by
-            simpa [LeanSwe.NumParse.Model.allowedParseFloat, Except.mapError, ha, hm] using h.1
-          exact ⟨hk, h.2 e ha⟩
+      have h := LeanSwe.NumParse.Proofs.proof_numparse_parseFloat_matchesModel s
+      dsimp only [LeanSwe.NumParse.test_numparse_parseFloat_matchesModel,
+        Core.NondetTest.assert] at h
+      cases hp : LeanSwe.NumParse.defaultApi.parseFloat s <;>
+        cases hm : LeanSwe.NumParse.Model.parseFloatModel s <;>
+        simp only [hp, hm] at h ⊢ <;>
+        exact h.1
   , formatInt := fun n => by
-      rcases LeanSwe.NumParse.Proofs.parseIntModel_formatInt n with ⟨hnoU, hmodel⟩
-      change !(LeanSwe.NumParse.defaultApi.formatInt n).contains '_' at hnoU
-      change LeanSwe.NumParse.Model.parseIntModel (LeanSwe.NumParse.defaultApi.formatInt n) = .ok n at hmodel
-      have hpi_ok := LeanSwe.NumParse.Proofs.impl_eq_ok_of_mapError
-        (LeanSwe.NumParse.Proofs.parseInt_spec (LeanSwe.NumParse.defaultApi.formatInt n)).1 hmodel
-      have h64 := LeanSwe.NumParse.Proofs.parseInt64_spec (LeanSwe.NumParse.defaultApi.formatInt n)
-      change LeanSwe.NumParse.Model.allowedParseInt64 (LeanSwe.NumParse.defaultApi.formatInt n)
-        (LeanSwe.NumParse.defaultApi.parseInt64 (LeanSwe.NumParse.defaultApi.formatInt n)) at h64
-      refine ⟨hnoU, hmodel, hpi_ok, ?_⟩
+      have h := LeanSwe.NumParse.Proofs.proof_numparse_formatInt_roundTrip n
+      dsimp only [LeanSwe.NumParse.test_numparse_formatInt_roundTrip,
+        Core.NondetTest.assert, Bind.bind] at h
+      rcases h with ⟨hnoU, hmodel, hpi, h64⟩
+      refine ⟨hnoU, hmodel, hpi, ?_⟩
       by_cases hr : LeanSwe.NumParse.Model.inInt64Range n = true
-      · simp only [hr, ↓reduceIte]
-        have hm64 : LeanSwe.NumParse.Model.parseInt64Model (LeanSwe.NumParse.defaultApi.formatInt n) = .ok (Int64.ofInt n) := by
-          rw [LeanSwe.NumParse.Model.parseInt64Model_eq_parseIntModel, hmodel]; simp [hr]
-        exact LeanSwe.NumParse.Proofs.impl_eq_ok_of_mapError h64.1 hm64
-      · have hr' : LeanSwe.NumParse.Model.inInt64Range n = false := Bool.eq_false_iff.mpr hr
-        simp only [hr', Bool.false_eq_true, ↓reduceIte]
-        have hm64 : LeanSwe.NumParse.Model.parseInt64Model (LeanSwe.NumParse.defaultApi.formatInt n) = .error .overflow := by
-          rw [LeanSwe.NumParse.Model.parseInt64Model_eq_parseIntModel, hmodel]; simp [hr']
-        rcases LeanSwe.NumParse.Proofs.impl_eq_error_of_mapError h64.1 hm64 with ⟨e, he, hk⟩
-        rw [he]; exact ⟨hk, h64.2 e he⟩
+      · simp only [hr, ↓reduceIte] at h64 ⊢; exact h64.1
+      · simp only [hr, Bool.false_eq_true, ↓reduceIte] at h64 ⊢
+        cases hp64 : LeanSwe.NumParse.defaultApi.parseInt64 (LeanSwe.NumParse.defaultApi.formatInt n) <;>
+          simp only [hp64] at h64 ⊢ <;>
+          exact h64.1
   , formatFloat := fun x => by
       have h := LeanSwe.NumParse.Proofs.proof_numparse_formatFloat_specAndRoundTrip x
       dsimp only [LeanSwe.NumParse.test_numparse_formatFloat_specAndRoundTrip,

@@ -206,11 +206,11 @@ example : ¬ Core.AllPass (test_compress_spawnErrors_mappedCorrectly buggyCompre
   cases he
   cases hkind
 
-example : ¬ Core.AllPass (test_compress_awaitOutcomes_cleanedUpAndClassified buggyCompressBuilderMisclassifiesTimeout) := by
+example : ¬ Core.AllPass (test_compress_awaitOutcomes_classified buggyCompressBuilderMisclassifiesTimeout) := by
   intro h
   have h0 := h .zstd false {} {} ByteArray.empty ByteArray.empty ByteArray.empty 9 0 (by decide) (by decide)
   rcases h0.2.1 with ⟨e, he, hkind, _⟩
-  dsimp [test_compress_awaitOutcomes_cleanedUpAndClassified, buggyCompressBuilderMisclassifiesTimeout, mockProcessApi,
+  dsimp [test_compress_awaitOutcomes_classified, buggyCompressBuilderMisclassifiesTimeout, mockProcessApi,
     StateT.run, bind, StateT.bind, pure, StateT.pure] at he hkind
   cases he
   cases hkind
@@ -223,11 +223,11 @@ example : ¬ Core.AllPass (test_compress_exitCodes_compressVsDecompress_andStder
     StateT.run, bind, StateT.bind, pure, StateT.pure] at he
   cases he
 
-example : ¬ Core.AllPass (test_compress_isToolAvailable_checksVersionAndCleansUp buggyCompressBuilderBadIsToolAvailable) := by
+example : ¬ Core.AllPass (test_compress_isToolAvailable_checksVersion buggyCompressBuilderBadIsToolAvailable) := by
   intro h
   have h0 := h .zstd true 0
   have hAttempts := h0.1
-  dsimp [test_compress_isToolAvailable_checksVersionAndCleansUp, buggyCompressBuilderBadIsToolAvailable,
+  dsimp [test_compress_isToolAvailable_checksVersion, buggyCompressBuilderBadIsToolAvailable,
     StateT.run, bind, StateT.bind, pure, StateT.pure] at hAttempts
   exact absurd hAttempts (by decide)
 

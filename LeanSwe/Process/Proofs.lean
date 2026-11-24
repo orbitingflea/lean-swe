@@ -342,7 +342,6 @@ theorem proof_process_sysBridge_partialPipe2Failure_cleansUpAllocatedFds :
 /-- Proof of `test_process_mkApiM_preservesExactAwaitOutcomes` for `Internal.mkApiM`. -/
 theorem proof_process_mkApiM_preservesExactAwaitOutcomes :
     AllPass (test_process_mkApiM_preservesExactAwaitOutcomes
-      SysBridge.mapRawError
       (@Internal.mkApiM (StateM OutcomeScriptState) _)) := by
   refine ⟨?_, trivial⟩
   decide +kernel
