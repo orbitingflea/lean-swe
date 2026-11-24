@@ -1,5 +1,7 @@
+import Core.Refines
 import LeanSwe.Tar.SpecTests
 import LeanSwe.Tar.Interface
+import LeanSwe.Tar.Model.WireSpec
 import LeanSwe.Tar.Proofs.ByteModel
 import LeanSwe.Tar.Proofs.FieldCodecs
 import LeanSwe.Tar.Proofs.HeaderLayout
@@ -9,6 +11,10 @@ import LeanSwe.Tar.Proofs.RoundTrip
 import LeanSwe.Tar.Proofs.ConcretePack
 import LeanSwe.Tar.Proofs.ConcreteUnpack
 import LeanSwe.Tar.Proofs.ConcreteUnpackHeader
+import LeanSwe.Tar.Proofs.RefinesPack
+import LeanSwe.Tar.Proofs.RefinesUnpackCodec
+import LeanSwe.Tar.Proofs.RefinesPax
+import LeanSwe.Tar.Proofs.RefinesUnpack
 
 namespace LeanSwe.Tar.Proofs
 
@@ -246,5 +252,13 @@ theorem tar_packWith_never_invalidEncoding (opts : PackOptions) (entries : List 
 theorem tar_packWith_never_resourceLimitExceeded (opts : PackOptions) (entries : List TarEntry) :
     Core.NeverErrorKindPure TarError.kind .resourceLimitExceeded (LeanSwe.Tar.packWith opts entries) :=
   packWith_never_of_not_packKind .resourceLimitExceeded (by unfold IsPackErrorKind; decide) opts entries
+
+/-- Full public `Interface` refinement of `LeanSwe.Tar` against `LeanSwe.Tar.Model`. -/
+theorem refines_model :
+    Core.RefinesPure LeanSwe.Tar.pack Model.allowedPack ∧
+    Core.RefinesPure2 LeanSwe.Tar.packWith Model.allowedPackWith ∧
+    Core.RefinesPure LeanSwe.Tar.unpack Model.allowedUnpack ∧
+    Core.RefinesPure2 LeanSwe.Tar.unpackWith Model.allowedUnpackWith :=
+  ⟨pack_refines_model, packWith_refines_model, unpack_refines_model, unpackWith_refines_model⟩
 
 end LeanSwe.Tar.Proofs

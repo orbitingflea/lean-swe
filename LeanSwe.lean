@@ -254,10 +254,15 @@ import LeanSwe.CryptoHash.Proofs
 import LeanSwe.CryptoHash.RuntimeTests
 import LeanSwe.Tar.Types
 import LeanSwe.Tar.Model
+import LeanSwe.Tar.Model.WireSpec
 import LeanSwe.Tar.Impl
 import LeanSwe.Tar.Interface
 import LeanSwe.Tar.SpecTests
 import LeanSwe.Tar.SpecMutants
+import LeanSwe.Tar.Proofs.RefinesPack
+import LeanSwe.Tar.Proofs.RefinesUnpackCodec
+import LeanSwe.Tar.Proofs.RefinesPax
+import LeanSwe.Tar.Proofs.RefinesUnpack
 import LeanSwe.Tar.Proofs
 import LeanSwe.Tar.RuntimeTests
 import LeanSwe.ProcessSandbox.Seccomp.Types

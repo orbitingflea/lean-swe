@@ -33,7 +33,7 @@ Enforces:
 5. Error coverage completeness & canonical `.provedImpossible` shape (`Core.NeverErrorKind{IO,BaseIO,Pure}`).
 6. `Core.Obeys` / `Core.Refines` model-refinement completeness: every non-`@[extern]`/non-CLI package that provides
    `<pkgNs>.Model` (mandatory for impure boundaries, optional for pure/composed packages; `deferredRefinesModelPackages`
-   tracks `LeanSwe.Tar` and `LeanSwe.SlotPool` pending their dedicated follow-up PR) must prove `<pkgNs>.Proofs.obeys_model`
+   is currently empty, as no deferred packages remain) must prove `<pkgNs>.Proofs.obeys_model`
    or legacy `<pkgNs>.Proofs.refines_model` (never both) via `ObeysPure`, `ObeysPure2`, `ObeysPure3`, `ObeysPure4`,
    `ObeysPureEq`, `ObeysPureEq2`, `ObeysPureEq3`, `ObeysPureEq4`, `ObeysPureEqUpToErrMsg`, `ObeysPureEqUpToErrMsg2`,
    `ObeysPureEqUpToErrMsg3`, `ObeysPureEqUpToErrMsg4`, `ObeysInverseRender`, `ObeysStep`, `ObeysStepId`,
@@ -55,9 +55,9 @@ private def legacyExemptionAllowlist : Array Name := #[
   `LeanSwe.ProcessSandbox.Raw
 ]
 
+/-- Packages with temporarily deferred `<pkgNs>.Proofs.obeys_model` / `refines_model` obligations; currently empty (no deferred packages remain). -/
 private def deferredRefinesModelPackages : Std.HashSet Name :=
-  Std.HashSet.emptyWithCapacity 4
-    |>.insert `LeanSwe.Tar
+  Std.HashSet.emptyWithCapacity
 
 private def forbiddenTestMainConsts : Std.HashSet Name :=
   Std.HashSet.emptyWithCapacity 16
