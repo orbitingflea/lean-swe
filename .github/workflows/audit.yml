@@ -322,7 +322,6 @@ jobs:
           for idx in 0 1 2 3; do
             rc=0
             wait "${LANE_PIDS[$idx]}" || rc=$?
-            kill -TERM -- -"${LANE_PIDS[$idx]}" 2>/dev/null || true
             kill -KILL -- -"${LANE_PIDS[$idx]}" 2>/dev/null || true
             unset "LANE_PIDS[$idx]"
             LANE_RCS+=("$rc")

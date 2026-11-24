@@ -259,7 +259,7 @@ def test_passwd_modelOps_soundAgainstAllowedStep
   NondetTest.assert (sNam.isWellFormed = true)
 
 /-- Raw C-ABI tuple `(name, uid, gid, gecos, homeDir, shell)` returned by single-call passwd hooks. -/
-abbrev RawPasswdTuple := ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray
+private abbrev RawPasswdTuple := ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray
 
 /-- `Internal.mkPasswdOpsM raw` (and `Internal.mkPasswdOps raw`) rejects invalid (`EINVAL`) and oversized (`ENAMETOOLONG`) `getpwnam` names without mutating state and produces outcomes accepted by `allowedStep` while preserving `PasswdState.isWellFormed` whenever each raw call for `sz ∈ 4096..65536` satisfies `allowedStep` on `ERANGE`-preserving hooks. -/
 def test_passwd_mkPasswdOps_soundAgainstAllowedStep
