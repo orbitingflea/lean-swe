@@ -78,33 +78,33 @@ def defaultApi : CmdLineApi :=
   defaultApi.renderArgs spec parsed
 
 /-- Prompt for a line of input on unbuffered OS stdio descriptors (`0`/`1`), trimming ASCII whitespace and applying `default`.
-    Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`; flush buffered Lean output
-    beforehand when mixing with `IO.print`/`IO.println`, do not mix with buffered `IO.getStdin` reads (read-ahead
-    bytes are invisible to descriptor `0` and cannot be recovered by flushing), or use `promptLineM` for custom/in-memory streams. -/
+    Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`. Never mix with buffered
+    `IO.getStdin` reads (read-ahead bytes are invisible to descriptor `0` and cannot be recovered by flushing); flush
+    buffered Lean output beforehand when mixing with `IO.print`/`IO.println`, or use `promptLineM` for custom/in-memory streams. -/
 @[inline] def promptLine (prompt : String) (default : Option String := none) :
     IO (Except CmdLineError String) :=
   defaultApi.promptLine prompt default
 
 /-- Prompt up to `maxAttempts` times on unbuffered OS stdio descriptors (`0`/`1`/`2`) for `y`/`yes`/`n`/`no` confirmation.
-    Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`/`IO.withStderr`; flush buffered
-    Lean output beforehand when mixing with `IO.print`/`IO.println`, do not mix with buffered `IO.getStdin` reads
-    (read-ahead bytes are invisible to descriptor `0` and cannot be recovered by flushing), or use `confirmM` for custom/in-memory streams. -/
+    Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`/`IO.withStderr`. Never mix with
+    buffered `IO.getStdin` reads (read-ahead bytes are invisible to descriptor `0` and cannot be recovered by flushing);
+    flush buffered Lean output beforehand when mixing with `IO.print`/`IO.println`, or use `confirmM` for custom/in-memory streams. -/
 @[inline] def confirm (prompt : String) (default : Option Bool := none)
     (maxAttempts : Nat := 100) : IO (Except CmdLineError Bool) :=
   defaultApi.confirm prompt default maxAttempts
 
 /-- Execute a full CLI flow on unbuffered OS stdio descriptors (`0`/`1`/`2`) and `LeanSwe.EnvVars`.
-    Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`/`IO.withStderr`;
-    flush buffered Lean output beforehand when mixing with `IO.print`/`IO.println`, do not mix with buffered
-    `IO.getStdin` reads (read-ahead bytes are invisible to descriptor `0` and cannot be recovered by flushing), or use `runCliM` for custom streams. -/
+    Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`/`IO.withStderr`. Never mix with
+    buffered `IO.getStdin` reads (read-ahead bytes are invisible to descriptor `0` and cannot be recovered by flushing);
+    flush buffered Lean output beforehand when mixing with `IO.print`/`IO.println`, or use `runCliM` for custom streams. -/
 @[inline] def runCli (spec : CommandSpec) (args : List String)
     (handler : ParsedCmd → IO UInt32) : IO UInt32 :=
   defaultApi.runCli spec args handler
 
 /-- Execute a full CLI flow with custom validators on unbuffered OS stdio descriptors (`0`/`1`/`2`) and `LeanSwe.EnvVars`.
-    Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`/`IO.withStderr`;
-    flush buffered Lean output beforehand when mixing with `IO.print`/`IO.println`, do not mix with buffered
-    `IO.getStdin` reads (read-ahead bytes are invisible to descriptor `0` and cannot be recovered by flushing), or use `runCliWithM` for custom streams. -/
+    Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`/`IO.withStderr`. Never mix with
+    buffered `IO.getStdin` reads (read-ahead bytes are invisible to descriptor `0` and cannot be recovered by flushing);
+    flush buffered Lean output beforehand when mixing with `IO.print`/`IO.println`, or use `runCliWithM` for custom streams. -/
 @[inline] def runCliWith (spec : CommandSpec) (args : List String)
     (validators : CustomValidators) (handler : ParsedCmd → IO UInt32) : IO UInt32 :=
   defaultApi.runCliWith spec args validators handler

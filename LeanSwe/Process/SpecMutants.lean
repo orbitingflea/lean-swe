@@ -430,7 +430,6 @@ example : ¬ Core.AllPass (test_process_sysBridge_partialPipe2Failure_cleansUpAl
 /-- Mutant `mkApiM` corrupting `.signaled` signal number and swapping `stdout`/`stderr` is rejected by `test_process_mkApiM_preservesExactAwaitOutcomes`. -/
 theorem mutant_mkApiM_corruptedSignaledAndSwappedStreams_rejected :
     ¬ Core.AllPass (test_process_mkApiM_preservesExactAwaitOutcomes
-      SysBridge.mapRawError
       (fun raw =>
         let base := Internal.mkApiM raw
         { base with

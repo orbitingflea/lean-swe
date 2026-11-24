@@ -452,19 +452,19 @@ theorem reach_compress_spawnErrors_mappedCorrectly :
     proof_compress_spawnErrors_mappedCorrectly .xz false {} {}
       { kind := .permissionDenied, program := some "xz", message := "eacces" } ByteArray.empty (by decide)⟩
 
-/-- Proof of `test_compress_awaitOutcomes_cleanedUpAndClassified` for `Internal.mkApiM`. -/
-theorem proof_compress_awaitOutcomes_cleanedUpAndClassified :
-    AllPass (test_compress_awaitOutcomes_cleanedUpAndClassified Internal.mkApiM) := by
+/-- Proof of `test_compress_awaitOutcomes_classified` for `Internal.mkApiM`. -/
+theorem proof_compress_awaitOutcomes_classified :
+    AllPass (test_compress_awaitOutcomes_classified Internal.mkApiM) := by
   intro codec isDecompress copts dopts input outBytes errBytes sig outcomeKind hKind hValid
-  have hCases : outcomeKind = 0 ∨ outcomeKind = 1 ∨ outcomeKind = 2 ∨ outcomeKind = 3 ∨ outcomeKind = 4 := by omega
+  have hCases : outcomeKind = 0 ∨ outcomeKind = 1 ∨ outcomeKind = 2 ∨ outcomeKind = 3 := by omega
   have hf : Internal.codecProgram codec ++ " process invocation failed" ≠ "" :=
     append_head_ne_empty _ _ (codecProgram_ne_empty codec)
   cases isDecompress with
   | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at hValid
     rcases validateCompressOptions_true_implies_ok codec copts input hValid with ⟨hValC, _⟩
-    rcases hCases with rfl | rfl | rfl | rfl | rfl
-    · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
+    rcases hCases with rfl | rfl | rfl | rfl
+    · dsimp only [test_compress_awaitOutcomes_classified, Internal.mkApiM,
         Internal.compressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [Bool.false_eq_true, ↓reduceIte]
       rw [hValC]
@@ -474,7 +474,7 @@ theorem proof_compress_awaitOutcomes_cleanedUpAndClassified :
       change _ ∧ _ ∧ True
       simp only [show (0 == 0) = true from rfl, ↓reduceIte, Bool.false_and]
       exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
-    · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
+    · dsimp only [test_compress_awaitOutcomes_classified, Internal.mkApiM,
         Internal.compressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [Bool.false_eq_true, ↓reduceIte]
       rw [hValC]
@@ -485,7 +485,7 @@ theorem proof_compress_awaitOutcomes_cleanedUpAndClassified :
       simp only [show (1 == 0) = false from rfl, show (1 == 1) = true from rfl,
         Bool.false_eq_true, ↓reduceIte, Bool.false_and]
       exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
-    · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
+    · dsimp only [test_compress_awaitOutcomes_classified, Internal.mkApiM,
         Internal.compressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [Bool.false_eq_true, ↓reduceIte]
       rw [hValC]
@@ -496,7 +496,7 @@ theorem proof_compress_awaitOutcomes_cleanedUpAndClassified :
       simp only [show (2 == 0) = false from rfl, show (2 == 1) = false from rfl, show (2 == 2) = true from rfl,
         Bool.false_eq_true, ↓reduceIte]
       exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
-    · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
+    · dsimp only [test_compress_awaitOutcomes_classified, Internal.mkApiM,
         Internal.compressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [Bool.false_eq_true, ↓reduceIte]
       rw [hValC]
@@ -505,24 +505,13 @@ theorem proof_compress_awaitOutcomes_cleanedUpAndClassified :
         StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
       change _ ∧ _ ∧ True
       simp only [show (3 == 0) = false from rfl, show (3 == 1) = false from rfl, show (3 == 2) = false from rfl,
-        show (3 == 3) = true from rfl, Bool.false_eq_true, ↓reduceIte]
-      exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
-    · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
-        Internal.compressWith, bind, StateT.bind, pure, StateT.pure, assert]
-      simp only [Bool.false_eq_true, ↓reduceIte]
-      rw [hValC]
-      dsimp only [mockProcessApi, Internal.classifyProcessError, StateT.run, bind, StateT.bind,
-        pure, StateT.pure, get, set, modify, modifyGet, MonadStateOf.modifyGet,
-        StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
-      change _ ∧ _ ∧ True
-      simp only [show (4 == 0) = false from rfl, show (4 == 1) = false from rfl, show (4 == 2) = false from rfl,
-        show (4 == 3) = false from rfl, Bool.false_eq_true, ↓reduceIte]
+        Bool.false_eq_true, ↓reduceIte]
       exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
   | true =>
     simp only [↓reduceIte] at hValid
     rcases validateDecompressOptions_true_implies_ok codec dopts input hValid with ⟨hValD, _⟩
-    rcases hCases with rfl | rfl | rfl | rfl | rfl
-    · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
+    rcases hCases with rfl | rfl | rfl | rfl
+    · dsimp only [test_compress_awaitOutcomes_classified, Internal.mkApiM,
         Internal.decompressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [↓reduceIte]
       rw [hValD]
@@ -540,7 +529,7 @@ theorem proof_compress_awaitOutcomes_cleanedUpAndClassified :
         have hGhFI : (codec == .gzip && !Internal.hasGzipHeader input) = false := hGhF
         simp only [Bool.and_assoc, hGhF, hGhFI, Bool.false_eq_true, ↓reduceIte]
         exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
-    · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
+    · dsimp only [test_compress_awaitOutcomes_classified, Internal.mkApiM,
         Internal.decompressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [↓reduceIte]
       rw [hValD]
@@ -559,7 +548,7 @@ theorem proof_compress_awaitOutcomes_cleanedUpAndClassified :
         have hGhFI : (codec == .gzip && !Internal.hasGzipHeader input) = false := hGhF
         simp only [Bool.and_assoc, hGhF, hGhFI, Bool.false_eq_true, ↓reduceIte]
         exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
-    · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
+    · dsimp only [test_compress_awaitOutcomes_classified, Internal.mkApiM,
         Internal.decompressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [↓reduceIte]
       rw [hValD]
@@ -570,7 +559,7 @@ theorem proof_compress_awaitOutcomes_cleanedUpAndClassified :
       simp only [show (2 == 0) = false from rfl, show (2 == 1) = false from rfl, show (2 == 2) = true from rfl,
         Bool.false_eq_true, ↓reduceIte]
       exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
-    · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
+    · dsimp only [test_compress_awaitOutcomes_classified, Internal.mkApiM,
         Internal.decompressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [↓reduceIte]
       rw [hValD]
@@ -579,25 +568,14 @@ theorem proof_compress_awaitOutcomes_cleanedUpAndClassified :
         StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
       change _ ∧ _ ∧ True
       simp only [show (3 == 0) = false from rfl, show (3 == 1) = false from rfl, show (3 == 2) = false from rfl,
-        show (3 == 3) = true from rfl, Bool.false_eq_true, ↓reduceIte]
-      exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
-    · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
-        Internal.decompressWith, bind, StateT.bind, pure, StateT.pure, assert]
-      simp only [↓reduceIte]
-      rw [hValD]
-      dsimp only [mockProcessApi, Internal.classifyProcessError, StateT.run, bind, StateT.bind,
-        pure, StateT.pure, get, set, modify, modifyGet, MonadStateOf.modifyGet,
-        StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
-      change _ ∧ _ ∧ True
-      simp only [show (4 == 0) = false from rfl, show (4 == 1) = false from rfl, show (4 == 2) = false from rfl,
-        show (4 == 3) = false from rfl, Bool.false_eq_true, ↓reduceIte]
+        Bool.false_eq_true, ↓reduceIte]
       exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for `test_compress_awaitOutcomes_cleanedUpAndClassified`. -/
-theorem reach_compress_awaitOutcomes_cleanedUpAndClassified :
-    CanReach (test_compress_awaitOutcomes_cleanedUpAndClassified Internal.mkApiM) :=
+/-- Non-vacuity `CanReach` witness for `test_compress_awaitOutcomes_classified`. -/
+theorem reach_compress_awaitOutcomes_classified :
+    CanReach (test_compress_awaitOutcomes_classified Internal.mkApiM) :=
   ⟨.zstd, true, {}, {}, ByteArray.empty, ByteArray.empty, ByteArray.empty, 9, 0, by decide, by decide,
-    proof_compress_awaitOutcomes_cleanedUpAndClassified
+    proof_compress_awaitOutcomes_classified
       .zstd true {} {} ByteArray.empty ByteArray.empty ByteArray.empty 9 0 (by decide) (by decide)⟩
 
 /-- Proof of `test_compress_exitCodes_compressVsDecompress_andStderr` for `Internal.mkApiM`. -/
@@ -631,11 +609,11 @@ theorem reach_compress_exitCodes_compressVsDecompress_andStderr :
   ⟨.gzip, 2, ByteArray.empty, "trailing".toUTF8, by decide,
     proof_compress_exitCodes_compressVsDecompress_andStderr .gzip 2 ByteArray.empty "trailing".toUTF8 (by decide)⟩
 
-/-- Proof of `test_compress_isToolAvailable_checksVersionAndCleansUp` for `Internal.mkApiM`. -/
-theorem proof_compress_isToolAvailable_checksVersionAndCleansUp :
-    AllPass (test_compress_isToolAvailable_checksVersionAndCleansUp Internal.mkApiM) := by
+/-- Proof of `test_compress_isToolAvailable_checksVersion` for `Internal.mkApiM`. -/
+theorem proof_compress_isToolAvailable_checksVersion :
+    AllPass (test_compress_isToolAvailable_checksVersion Internal.mkApiM) := by
   intro codec runOk exitCode
-  dsimp only [test_compress_isToolAvailable_checksVersionAndCleansUp, Internal.mkApiM,
+  dsimp only [test_compress_isToolAvailable_checksVersion, Internal.mkApiM,
     Internal.isToolAvailable, bind, StateT.bind, pure, StateT.pure, assert]
   cases runOk with
   | false =>
@@ -655,10 +633,10 @@ theorem proof_compress_isToolAvailable_checksVersionAndCleansUp :
     simp only [codecProgram_eq_expected, codecSanitizedEnv_eq_expected codec]
     exact ⟨rfl, rfl, rfl, trivial⟩
 
-/-- Non-vacuity `CanReach` witness for `test_compress_isToolAvailable_checksVersionAndCleansUp`. -/
-theorem reach_compress_isToolAvailable_checksVersionAndCleansUp :
-    CanReach (test_compress_isToolAvailable_checksVersionAndCleansUp Internal.mkApiM) :=
-  ⟨.zstd, true, 0, proof_compress_isToolAvailable_checksVersionAndCleansUp .zstd true 0⟩
+/-- Non-vacuity `CanReach` witness for `test_compress_isToolAvailable_checksVersion`. -/
+theorem reach_compress_isToolAvailable_checksVersion :
+    CanReach (test_compress_isToolAvailable_checksVersion Internal.mkApiM) :=
+  ⟨.zstd, true, 0, proof_compress_isToolAvailable_checksVersion .zstd true 0⟩
 
 private theorem io_pure_eq {α : Type} (a : α) (w : Void IO.RealWorld) :
     (pure a : IO α) w = EST.Out.ok a w := rfl

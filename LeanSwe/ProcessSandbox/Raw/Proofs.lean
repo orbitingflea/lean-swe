@@ -15,15 +15,6 @@ open Core
 open Core.NondetTest
 open LeanSwe.ProcessSandbox.Raw.Model.Internal (MockRawState mockRawOps freshU32 hasHandle)
 
-private theorem ifEmpty_ne_empty (fallback msg : String) (hf : fallback ≠ "") :
-    (if msg.isEmpty then fallback else msg) ≠ "" := by
-  split
-  · exact hf
-  · next h =>
-    intro hem
-    subst hem
-    simp [String.isEmpty] at h
-
 private theorem append_head_ne_empty (pre rest : String) (hp : pre ≠ "") :
     pre ++ rest ≠ "" := by
   simp [String.append_eq_empty_iff, hp]

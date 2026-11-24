@@ -933,9 +933,9 @@ structure OutcomeScriptState where
   reaped : Nat := 0
 
 /-- Deterministic `RawProcessOpsM` fixture returning distinct equal-length `stdout`/`stderr` payloads across every `ExecOutcome` constructor. -/
-def mkOutcomeScriptRawOps (mapRawErrorFn : ProcessRawError → ProcessError) :
+def mkOutcomeScriptRawOps :
     RawProcessOpsM (StateM OutcomeScriptState) where
-  mapRawError := mapRawErrorFn
+  mapRawError := fun _ => { kind := .ioError, message := "err" }
   spawn := fun _ => modifyGet fun s =>
     (.ok { handleId := 1, pid := 77, pgid := 77 }, { s with active := s.active + 1 })
   awaitOutput := fun _ _ _ _ => do
@@ -954,11 +954,10 @@ def mkOutcomeScriptRawOps (mapRawErrorFn : ProcessRawError → ProcessError) :
 /-- `Process.Internal.mkApiM` preserves exact `ExecResult` (`exitCode`, `stdout`, `stderr`) on `.exited`, exact `signal` and captured `stdout`/`stderr` on `.signaled`, and exact captured `stdout`/`stderr` on `.timedOut` and `.outputLimitExceeded` while killing and reaping cleanly. -/
 def test_process_mkApiM_preservesExactAwaitOutcomes
     {runner} [NondetTest runner]
-    (mapRawErrorFn : ProcessRawError → ProcessError)
     (mkApiFn :
       RawProcessOpsM (StateM OutcomeScriptState) →
       ProcessApiM (StateM OutcomeScriptState)) : runner Unit := do
-  let api := mkApiFn (mkOutcomeScriptRawOps mapRawErrorFn)
+  let api := mkApiFn mkOutcomeScriptRawOps
   let req : ExecRequest := { program := "/bin/demo", timeoutMs := some 50, maxOutputBytes := some 16 }
   let r0 := (api.run req).run { mode := 0 }
   let rc0 := (api.runChecked req).run { mode := 0 }
