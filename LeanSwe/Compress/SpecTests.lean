@@ -164,6 +164,10 @@ def mockProcessApi : ProcessApiM (StateM MockProcState) :=
     validateRequest := fun req => .ok req
     mkCommandRequest := fun program args => { program := program, args := args }
     withTextInput := fun req text => { req with stdin := text.toUTF8 }
+    spawn := fun _ => pure (.error { kind := .ioError, message := "unused" })
+    awaitOutput := fun _ _ _ _ => pure (.error { kind := .ioError, message := "unused" })
+    killProcessGroup := fun _ => pure (.ok ())
+    reap := fun _ => pure (.ok ())
     run := fun req => do
       let s ← get
       set { s with ran := s.ran ++ [req], runAttempts := s.runAttempts + 1 }
@@ -642,6 +646,10 @@ def scriptedProcessApiId (procOut : Except ProcessError ExecResult) : ProcessApi
     validateRequest := fun req => .ok req
     mkCommandRequest := fun program args => { program := program, args := args }
     withTextInput := fun req text => { req with stdin := text.toUTF8 }
+    spawn := fun _ => .error { kind := .ioError, message := "unused" }
+    awaitOutput := fun _ _ _ _ => .error { kind := .ioError, message := "unused" }
+    killProcessGroup := fun _ => .ok ()
+    reap := fun _ => .ok ()
     run := fun _ => procOut
     runChecked := fun _ => procOut
     runCommand := fun _ _ => procOut

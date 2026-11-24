@@ -128,6 +128,10 @@ private def runCompressMutateExtra : IO Unit := do
       validateRequest := fun req => .ok req
       mkCommandRequest := fun program args => { program := program, args := args }
       withTextInput := fun req text => { req with stdin := text.toUTF8 }
+      spawn := fun _ => .error { kind := .ioError, message := "unused" }
+      awaitOutput := fun _ _ _ _ => .error { kind := .ioError, message := "unused" }
+      killProcessGroup := fun _ => .ok ()
+      reap := fun _ => .ok ()
       run := fun _ => res
       runChecked := fun _ => res
       runCommand := fun _ _ => res

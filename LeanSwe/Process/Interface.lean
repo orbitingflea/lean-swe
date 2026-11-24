@@ -24,6 +24,26 @@ def defaultApi : ProcessApi :=
 @[inline] def withTextInput (req : ExecRequest) (text : String) : ExecRequest :=
   defaultApi.withTextInput req text
 
+/-- Validate `req` and spawn a child process directly in its own process group. -/
+@[inline] def spawn (req : ExecRequest) : IO (Except ProcessError ProcessHandle) :=
+  defaultApi.spawn req
+
+/-- Feed `stdin`, stream `stdout`/`stderr`, and wait for completion, timeout, or output cap. -/
+@[inline] def awaitOutput
+    (h : ProcessHandle)
+    (stdin : ByteArray := ByteArray.empty)
+    (timeoutMs : Option Nat := none)
+    (maxOutputBytes : Option Nat := none) : IO (Except ProcessError ExecOutcome) :=
+  defaultApi.awaitOutput h stdin timeoutMs maxOutputBytes
+
+/-- Terminate the child process group (`SIGTERM` followed by `SIGKILL`). -/
+@[inline] def killProcessGroup (h : ProcessHandle) : IO (Except ProcessError Unit) :=
+  defaultApi.killProcessGroup h
+
+/-- Wait for and release a spawned child handle. -/
+@[inline] def reap (h : ProcessHandle) : IO (Except ProcessError Unit) :=
+  defaultApi.reap h
+
 /-- Execute a command directly in its own process group, returning `ExecResult` even for non-zero exit codes. -/
 @[inline] def run (req : ExecRequest) : IO (Except ProcessError ExecResult) :=
   defaultApi.run req

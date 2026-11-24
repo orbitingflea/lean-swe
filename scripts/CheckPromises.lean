@@ -1999,7 +1999,9 @@ private def checkManagedProcessClosure (env : Environment) : IO (Array String) :
       errs := errs.push "PROCESS_PROOF_TARGET_WIRING_MISMATCH: healthySimApi must wire Internal.mkApiM to healthySimRawOps"
   | _ =>
     errs := errs.push "PROCESS_PROOF_TARGET_WIRING_MISMATCH: missing LeanSwe.Process.Proofs.healthySimApi"
-  for wrapper in #[`LeanSwe.Process.run, `LeanSwe.Process.runChecked, `LeanSwe.Process.activeProcessCount] do
+  for wrapper in #[`LeanSwe.Process.spawn, `LeanSwe.Process.awaitOutput,
+      `LeanSwe.Process.killProcessGroup, `LeanSwe.Process.reap,
+      `LeanSwe.Process.run, `LeanSwe.Process.runChecked, `LeanSwe.Process.activeProcessCount] do
     match env.find? wrapper with
     | some (.defnInfo dv) =>
       if !dv.value.getUsedConstants.contains `LeanSwe.Process.defaultApi then
@@ -2923,7 +2925,6 @@ private def importDagAllowlist : Array String := #[
   "CROSS|LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs|LeanSwe.NetRelay.Proofs",
   "CROSS|LeanSwe.CryptoHash.Proofs|LeanSwe.CryptoHash.Raw.Proofs",
   "CROSS|LeanSwe.EnvVars.Proofs|LeanSwe.EnvVars.Raw.Proofs",
-  "CROSS|LeanSwe.Fs.RuntimeTests|LeanSwe.Process.SysBridge",
   "CROSS|LeanSwe.Git.Proofs.ImpossibleProofs|LeanSwe.EnvVars.Proofs",
   "CROSS|LeanSwe.Git.Proofs.ImpossibleProofs|LeanSwe.Process.Impl",
   "CROSS|LeanSwe.Git.Proofs.ImpossibleProofs|LeanSwe.Process.Proofs.EndToEnd",
@@ -2940,9 +2941,7 @@ private def importDagAllowlist : Array String := #[
   "CROSS|LeanSwe.ProcessSandbox.Raw.Interface|LeanSwe.ProcessSandbox.Host.SysBridge",
   "CROSS|LeanSwe.ProcessSandbox.Raw.RuntimeTests|LeanSwe.ProcessSandbox.Host.Bwrap",
   "CROSS|LeanSwe.SlotPool.RuntimeTests|LeanSwe.Fs.Impl",
-  "CROSS|LeanSwe.SlotPool.RuntimeTests|LeanSwe.Process.SysBridge",
   "CROSS|LeanSwe.Sqlite.Proofs|LeanSwe.Sqlite.Raw.Proofs",
-  "CROSS|LeanSwe.TempDir.RuntimeTests|LeanSwe.Process.SysBridge",
   "CROSS|LeanSwe.Time.RuntimeTests|LeanSwe.LinuxSyscall.TestSupport.Seccomp",
   "CROSS|LeanSwe.Toml.Proofs.Core|LeanSwe.NumParse.SpecTests",
   "CROSS|LeanSwe.Toml.Proofs.FormatBridge|LeanSwe.NumParse.SpecTests",

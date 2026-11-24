@@ -215,7 +215,119 @@ def err_process_runCommandChecked_ioError : IO Unit :=
   withTempRegularFile fun reg => do
     assertErrKind (← Process.runCommandChecked s!"{reg}/bin" #[]) .ioError "runCommandChecked ioError ENOTDIR"
 
-/-- Registered runtime error-coverage probes verified for `LeanSwe.Process` (all `.real`). -/
+private def mkMockLifecycleErrApi (eno : LinuxSyscall.Errno) : IO ProcessApi := do
+  let slot : Internal.ProcSlotM LinuxSyscall.RawFd :=
+    { pid := 42, pgid := 42, stdinFd? := none, stdoutFd? := none, stderrFd? := none, waited := false }
+  let ref ← IO.mkRef ({ nextId := 2, slots := [(1, slot)] } : Internal.ProcTableState LinuxSyscall.RawFd)
+  let tbl : Internal.ProcTableOpsM IO LinuxSyscall.RawFd :=
+    { insertSlot := fun s => (ref.modifyGet fun st => SysBridge.insertSlotPure st s : BaseIO _)
+      takeSlotIo := fun hid => (ref.modifyGet fun st => SysBridge.takeSlotIoPure st hid : BaseIO _)
+      markWaited := fun hid waited => (ref.modifyGet fun st => SysBridge.markWaitedPure st hid waited : BaseIO _)
+      lookupPgid := fun hid => do
+        let st ← (ref.get : BaseIO _)
+        return (SysBridge.findSlotPure hid st.slots).map (·.pgid)
+      detachSlot := fun hid => (ref.modifyGet fun st => SysBridge.detachSlotPure st hid : BaseIO _)
+      activeCount := do
+        let st ← (ref.get : BaseIO _)
+        return st.slots.length }
+  let deps : Internal.SysDepsM IO LinuxSyscall.RawFd :=
+    { SysBridge.ioSysDeps with
+      proc :=
+        { SysBridge.ioSysDeps.proc with
+          kill := fun _ _ => pure (.error eno)
+          waitpid := fun _ _ => pure (.error eno) } }
+  return Internal.mkApiM (SysBridge.mkRawOpsM deps tbl)
+
+/-- Real error-forcing test: `spawn` returns `.notFound` on a missing executable. -/
+def err_process_spawn_notFound : IO Unit := do
+  assertErrKind (← Process.spawn { program := "leanswe_missing_binary_88888" }) .notFound "spawn notFound"
+
+/-- Real error-forcing test: `spawn` returns `.permissionDenied` on a non-executable regular file. -/
+def err_process_spawn_permissionDenied : IO Unit :=
+  withTempNonExecFile fun p => do
+    assertErrKind (← Process.spawn { program := p.toString }) .permissionDenied "spawn permissionDenied"
+
+/-- Real error-forcing test: `spawn` validates requests and returns `.invalidInput` without spawning. -/
+def err_process_spawn_invalidInput : IO Unit := do
+  assertErrKind (← Process.spawn { program := "" }) .invalidInput "spawn invalidInput empty"
+  assertErrKind (← Process.spawn { program := "echo", timeoutMs := some 0 }) .invalidInput "spawn invalidInput zero timeout"
+
+/-- Real error-forcing test: `spawn` returns `.ioError` (`ENOTDIR`) when `cwd` is a regular file. -/
+def err_process_spawn_ioError : IO Unit :=
+  withTempRegularFile fun reg => do
+    assertErrKind (← Process.spawn { program := "true", cwd := some reg.toString }) .ioError "spawn ioError ENOTDIR"
+
+/-- Mocked error-forcing test: `awaitOutput` maps underlying `ENOENT` to `.notFound`. -/
+def err_process_awaitOutput_notFound : IO Unit := do
+  let api ← mkMockLifecycleErrApi LinuxSyscall.Errno.ENOENT
+  assertErrKind (← api.awaitOutput { handleId := 1, pid := 42, pgid := 42 } ByteArray.empty none none)
+    .notFound "awaitOutput notFound"
+
+/-- Mocked error-forcing test: `awaitOutput` maps underlying `EACCES` to `.permissionDenied`. -/
+def err_process_awaitOutput_permissionDenied : IO Unit := do
+  let api ← mkMockLifecycleErrApi LinuxSyscall.Errno.EACCES
+  assertErrKind (← api.awaitOutput { handleId := 1, pid := 42, pgid := 42 } ByteArray.empty none none)
+    .permissionDenied "awaitOutput permissionDenied"
+
+/-- Real error-forcing test: `awaitOutput` rejects `timeoutMs = some 0` with `.invalidInput`. -/
+def err_process_awaitOutput_invalidInput : IO Unit := do
+  assertErrKind (← Process.awaitOutput { handleId := 0, pid := 0, pgid := 0 } ByteArray.empty (some 0) none)
+    .invalidInput "awaitOutput invalidInput zero timeout"
+
+/-- Real error-forcing test: `awaitOutput` rejects an unknown handle with `.ioError`. -/
+def err_process_awaitOutput_ioError : IO Unit := do
+  assertErrKind (← Process.awaitOutput { handleId := 0, pid := 0, pgid := 0 })
+    .ioError "awaitOutput ioError unknown handle"
+
+/-- Mocked error-forcing test: `killProcessGroup` maps underlying `ENOENT` to `.notFound`. -/
+def err_process_killProcessGroup_notFound : IO Unit := do
+  let api ← mkMockLifecycleErrApi LinuxSyscall.Errno.ENOENT
+  assertErrKind (← api.killProcessGroup { handleId := 1, pid := 42, pgid := 42 })
+    .notFound "killProcessGroup notFound"
+
+/-- Mocked error-forcing test: `killProcessGroup` maps underlying `EPERM` to `.permissionDenied`. -/
+def err_process_killProcessGroup_permissionDenied : IO Unit := do
+  let api ← mkMockLifecycleErrApi LinuxSyscall.Errno.EPERM
+  assertErrKind (← api.killProcessGroup { handleId := 1, pid := 42, pgid := 42 })
+    .permissionDenied "killProcessGroup permissionDenied"
+
+/-- Mocked error-forcing test: `killProcessGroup` maps underlying `EINVAL` to `.invalidInput`. -/
+def err_process_killProcessGroup_invalidInput : IO Unit := do
+  let api ← mkMockLifecycleErrApi LinuxSyscall.Errno.EINVAL
+  assertErrKind (← api.killProcessGroup { handleId := 1, pid := 42, pgid := 42 })
+    .invalidInput "killProcessGroup invalidInput"
+
+/-- Mocked error-forcing test: `killProcessGroup` maps underlying `EIO` to `.ioError`. -/
+def err_process_killProcessGroup_ioError : IO Unit := do
+  let api ← mkMockLifecycleErrApi LinuxSyscall.Errno.EIO
+  assertErrKind (← api.killProcessGroup { handleId := 1, pid := 42, pgid := 42 })
+    .ioError "killProcessGroup ioError"
+
+/-- Mocked error-forcing test: `reap` maps underlying `ENOENT` to `.notFound`. -/
+def err_process_reap_notFound : IO Unit := do
+  let api ← mkMockLifecycleErrApi LinuxSyscall.Errno.ENOENT
+  assertErrKind (← api.reap { handleId := 1, pid := 42, pgid := 42 })
+    .notFound "reap notFound"
+
+/-- Mocked error-forcing test: `reap` maps underlying `EACCES` to `.permissionDenied`. -/
+def err_process_reap_permissionDenied : IO Unit := do
+  let api ← mkMockLifecycleErrApi LinuxSyscall.Errno.EACCES
+  assertErrKind (← api.reap { handleId := 1, pid := 42, pgid := 42 })
+    .permissionDenied "reap permissionDenied"
+
+/-- Mocked error-forcing test: `reap` maps underlying `EINVAL` to `.invalidInput`. -/
+def err_process_reap_invalidInput : IO Unit := do
+  let api ← mkMockLifecycleErrApi LinuxSyscall.Errno.EINVAL
+  assertErrKind (← api.reap { handleId := 1, pid := 42, pgid := 42 })
+    .invalidInput "reap invalidInput"
+
+/-- Mocked error-forcing test: `reap` maps underlying `EIO` to `.ioError`. -/
+def err_process_reap_ioError : IO Unit := do
+  let api ← mkMockLifecycleErrApi LinuxSyscall.Errno.EIO
+  assertErrKind (← api.reap { handleId := 1, pid := 42, pgid := 42 })
+    .ioError "reap ioError"
+
+/-- Registered runtime error-coverage probes verified for `LeanSwe.Process`. -/
 def registeredErrorTests : Array Core.RegisteredErrorTest :=
   #[ { testName := "LeanSwe.Process.RuntimeTests.err_process_validateRequest_invalidInput"
        mode := .real
@@ -297,7 +409,55 @@ def registeredErrorTests : Array Core.RegisteredErrorTest :=
        run := err_process_runCommandChecked_nonZeroExit }
    , { testName := "LeanSwe.Process.RuntimeTests.err_process_runCommandChecked_ioError"
        mode := .real
-       run := err_process_runCommandChecked_ioError } ]
+       run := err_process_runCommandChecked_ioError }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_spawn_notFound"
+       mode := .real
+       run := err_process_spawn_notFound }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_spawn_permissionDenied"
+       mode := .real
+       run := err_process_spawn_permissionDenied }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_spawn_invalidInput"
+       mode := .real
+       run := err_process_spawn_invalidInput }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_spawn_ioError"
+       mode := .real
+       run := err_process_spawn_ioError }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_awaitOutput_notFound"
+       mode := .mocked
+       run := err_process_awaitOutput_notFound }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_awaitOutput_permissionDenied"
+       mode := .mocked
+       run := err_process_awaitOutput_permissionDenied }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_awaitOutput_invalidInput"
+       mode := .real
+       run := err_process_awaitOutput_invalidInput }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_awaitOutput_ioError"
+       mode := .real
+       run := err_process_awaitOutput_ioError }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_killProcessGroup_notFound"
+       mode := .mocked
+       run := err_process_killProcessGroup_notFound }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_killProcessGroup_permissionDenied"
+       mode := .mocked
+       run := err_process_killProcessGroup_permissionDenied }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_killProcessGroup_invalidInput"
+       mode := .mocked
+       run := err_process_killProcessGroup_invalidInput }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_killProcessGroup_ioError"
+       mode := .mocked
+       run := err_process_killProcessGroup_ioError }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_reap_notFound"
+       mode := .mocked
+       run := err_process_reap_notFound }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_reap_permissionDenied"
+       mode := .mocked
+       run := err_process_reap_permissionDenied }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_reap_invalidInput"
+       mode := .mocked
+       run := err_process_reap_invalidInput }
+   , { testName := "LeanSwe.Process.RuntimeTests.err_process_reap_ioError"
+       mode := .mocked
+       run := err_process_reap_ioError } ]
 
 /-- Deterministic tests verifying that `streamPipesLoop` preserves chunks already read earlier in a drain round when timeout fires mid-round. -/
 private def testPartialDrainTimeoutPreservesChunks : IO Unit := do
@@ -441,6 +601,45 @@ private def testIsPidDeadChecks : IO Unit := do
   assertTrue (!(← isPidDeadWith LinuxSyscall.Process.kill 1 0 (toString selfPid)))
     s!"isPidDeadWith should report live self PID {selfPid} as not dead"
 
+/-- Live OS end-to-end verification of `Process.{spawn,awaitOutput,killProcessGroup,reap}` lifecycle. -/
+private def testBackgroundChildLifecycle : IO Unit := do
+  assertTrue ((← Process.activeProcessCount) == 0) "lifecycle initial activeProcessCount == 0"
+  assertErrKind (← Process.spawn { program := "" }) .invalidInput "lifecycle spawn rejects empty program"
+  assertTrue ((← Process.activeProcessCount) == 0) "lifecycle invalid spawn leaves activeProcessCount == 0"
+
+  let h1 ← assertOk (← Process.spawn {
+    program := "sh"
+    args := #["-c", "cat; echo err_line >&2"]
+    env := #[("LEANSWE_BG", some "first"), ("LEANSWE_BG", some "second")]
+  }) "lifecycle spawn cat"
+  try
+    assertTrue ((← Process.activeProcessCount) == 1) "lifecycle activeProcessCount == 1 after spawn"
+    assertErrKind (← Process.awaitOutput h1 ByteArray.empty (some 0) none)
+      .invalidInput "lifecycle awaitOutput rejects zero timeout without consuming handle"
+    match ← Process.awaitOutput h1 "bg-stdin".toUTF8 (some 5000) none with
+    | .ok (.exited res) =>
+      assertTrue (res.exitCode == 0 &&
+        String.fromUTF8! res.stdout == "bg-stdin" &&
+        String.fromUTF8! res.stderr == "err_line\n") "lifecycle awaitOutput exited result"
+    | .ok other => throw (IO.userError s!"ASSERTION FAILED: lifecycle expected exited, got {repr other}")
+    | .error e => throw (IO.userError s!"ASSERTION FAILED: lifecycle awaitOutput failed: {repr e}")
+    assertOk (← Process.reap h1) "lifecycle reap h1"
+  finally
+    let _ ← Process.killProcessGroup h1
+    let _ ← Process.reap h1
+  assertTrue ((← Process.activeProcessCount) == 0) "lifecycle activeProcessCount == 0 after h1 reap"
+
+  let h2 ← assertOk (← Process.spawn { program := "sleep", args := #["30"] }) "lifecycle spawn sleep"
+  try
+    assertTrue ((← Process.activeProcessCount) == 1) "lifecycle activeProcessCount == 1 for h2"
+    assertOk (← Process.killProcessGroup h2) "lifecycle killProcessGroup h2"
+    assertOk (← Process.reap h2) "lifecycle reap h2"
+    assertTrue (← isPidDead (toString h2.pid)) "lifecycle h2 dead after killProcessGroup + reap"
+  finally
+    let _ ← Process.killProcessGroup h2
+    let _ ← Process.reap h2
+  assertTrue ((← Process.activeProcessCount) == 0) "lifecycle final activeProcessCount == 0"
+
 /-- Execute end-to-end OS runtime verification tests for `LeanSwe.Process`. -/
 def runAll : IO Unit := do
   assertTrue ((← Process.activeProcessCount) == 0) "initial Process.activeProcessCount == 0"
@@ -449,6 +648,7 @@ def runAll : IO Unit := do
   testPartialDrainTimeoutPreservesChunks
   testLiveTimeoutPreservesPriorOutput
   testIsPidDeadChecks
+  testBackgroundChildLifecycle
 
   let tmpDir ← IO.FS.createTempDir
   try

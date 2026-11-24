@@ -2,7 +2,6 @@ import Core.Assumptions
 import LeanSwe.TempDir.Interface
 import LeanSwe.TempDir.Impl
 import LeanSwe.Process.Interface
-import LeanSwe.Process.SysBridge
 
 namespace LeanSwe.TempDir.RuntimeTests
 
@@ -221,7 +220,7 @@ private def testCleanupStaleTempDirsOS (sandbox : String) : IO Unit := do
     "deadline = time.monotonic() + 15.0\n" ++
     "while not os.path.exists(sp) and time.monotonic() < deadline:\n" ++
     "  time.sleep(0.01)\n"
-  let liveChild ← match ← Process.SysBridge.spawn
+  let liveChild ← match ← Process.spawn
       { program := "python3", args := #["-c", holdScript, liveLock, liveReady, liveStop] } with
     | .ok h => pure h
     | .error e => throw (IO.userError s!"spawn liveChild failed: {repr e}")
@@ -234,12 +233,12 @@ private def testCleanupStaleTempDirsOS (sandbox : String) : IO Unit := do
     "fcntl.flock(fd, fcntl.LOCK_EX)\n" ++
     "open(rp, 'w').write('1')\n" ++
     "time.sleep(15.0)\n"
-  let deadChild ← match ← Process.SysBridge.spawn
+  let deadChild ← match ← Process.spawn
       { program := "python3", args := #["-c", deadScript, deadLock, deadReady] } with
     | .ok h => pure h
     | .error e =>
       let _ ← Fs.writeText liveStop "go"
-      let _ ← Process.SysBridge.reap liveChild
+      let _ ← Process.reap liveChild
       throw (IO.userError s!"spawn deadChild failed: {repr e}")
 
   try
@@ -248,7 +247,7 @@ private def testCleanupStaleTempDirsOS (sandbox : String) : IO Unit := do
     match ← Process.runCommand "kill" #["-9", toString deadChild.pid] with
     | .ok kout => assertTrue (kout.exitCode == 0) "kill -9 deadChild exitCode 0"
     | .error e => throw (IO.userError s!"kill -9 deadChild failed: {repr e}")
-    let _ ← Process.SysBridge.reap deadChild
+    let _ ← Process.reap deadChild
 
     let rep1 ← assertTempDirOk (← TempDir.cleanupStaleTempDirs (some sweepRoot) "job-" 3600)
       "first cleanup pass with 3600s grace window"
@@ -280,14 +279,14 @@ private def testCleanupStaleTempDirsOS (sandbox : String) : IO Unit := do
     assertTrue (!(← assertFsOk (← Fs.pathExists oldDir) "pathExists oldDir after pass 2")) "oldDir removed after pass 2"
 
     assertFsOk (← Fs.writeText liveStop "done") "signal liveChild stop"
-    match ← Process.SysBridge.awaitOutput liveChild with
+    match ← Process.awaitOutput liveChild with
     | .ok (.exited out) => assertTrue (out.exitCode == 0) "liveChild exited cleanly"
     | .ok other => throw (IO.userError s!"liveChild unexpected outcome: {repr other}")
     | .error e => throw (IO.userError s!"awaitOutput liveChild failed: {repr e}")
   finally
     let _ ← Fs.writeText liveStop "done"
-    let _ ← Process.SysBridge.reap deadChild
-    let _ ← Process.SysBridge.reap liveChild
+    let _ ← Process.reap deadChild
+    let _ ← Process.reap liveChild
 
   assertTrue ((← Process.activeProcessCount) == 0) "all child processes reaped"
 

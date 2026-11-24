@@ -53,6 +53,41 @@ def mkCommandRequest (program : String) (args : Array String) : ExecRequest :=
 def withTextInput (req : ExecRequest) (text : String) : ExecRequest :=
   { req with stdin := text.toUTF8 }
 
+/-- Validate `req` and spawn a child process in its own process group via `raw`. -/
+def spawn {m : Type → Type} [Monad m] (raw : RawProcessOpsM m) (req : ExecRequest) :
+    m (Except ProcessError ProcessHandle) := do
+  match validateRequest req with
+  | .error err => return .error err
+  | .ok norm =>
+    match ← raw.spawn norm with
+    | .error err => return .error (ensureNonEmptyMsg "process spawn failed" err)
+    | .ok h => return .ok h
+
+/-- Feed `stdin`, stream `stdout`/`stderr`, and wait for completion, timeout, or output cap via `raw`. -/
+def awaitOutput {m : Type → Type} [Monad m] (raw : RawProcessOpsM m)
+    (h : ProcessHandle) (stdin : ByteArray)
+    (timeoutMs : Option Nat) (maxOutputBytes : Option Nat) :
+    m (Except ProcessError ExecOutcome) := do
+  if timeoutMs == some 0 then
+    return .error { kind := .invalidInput, message := "timeoutMs must be greater than zero" }
+  match ← raw.awaitOutput h stdin timeoutMs maxOutputBytes with
+  | .error err => return .error (ensureNonEmptyMsg "process I/O failed" err)
+  | .ok out => return .ok out
+
+/-- Terminate the child process group (`SIGTERM` followed by `SIGKILL`) via `raw`. -/
+def killProcessGroup {m : Type → Type} [Monad m] (raw : RawProcessOpsM m) (h : ProcessHandle) :
+    m (Except ProcessError Unit) := do
+  match ← raw.killProcessGroup h with
+  | .error err => return .error (ensureNonEmptyMsg "process group termination failed" err)
+  | .ok () => return .ok ()
+
+/-- Wait for and release a spawned child handle via `raw`. -/
+def reap {m : Type → Type} [Monad m] (raw : RawProcessOpsM m) (h : ProcessHandle) :
+    m (Except ProcessError Unit) := do
+  match ← raw.reap h with
+  | .error err => return .error (ensureNonEmptyMsg "process reap failed" err)
+  | .ok () => return .ok ()
+
 /-- Execute a command via `raw`, isolating in a process group and cleaning up on every outcome. -/
 def run {m : Type → Type} [Monad m] (raw : RawProcessOpsM m) (req : ExecRequest) :
     m (Except ProcessError ExecResult) := do
@@ -123,6 +158,10 @@ def mkApiM {m : Type → Type} [Monad m] (raw : RawProcessOpsM m) : ProcessApiM 
     validateRequest := validateRequest
     mkCommandRequest := mkCommandRequest
     withTextInput := withTextInput
+    spawn := spawn raw
+    awaitOutput := awaitOutput raw
+    killProcessGroup := killProcessGroup raw
+    reap := reap raw
     run := run raw
     runChecked := runChecked raw
     runCommand := fun program args => run raw (mkCommandRequest program args)

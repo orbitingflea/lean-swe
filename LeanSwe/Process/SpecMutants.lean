@@ -50,6 +50,10 @@ private def stubProcessApi : ProcessApi :=
         .ok { req with env := dedup }
     mkCommandRequest := fun program args => { program := program, args := args }
     withTextInput := fun req text => { req with stdin := text.toUTF8 }
+    spawn := fun _ => pure (.error { kind := .ioError, message := "stub" })
+    awaitOutput := fun _ _ _ _ => pure (.error { kind := .ioError, message := "stub" })
+    killProcessGroup := fun _ => pure (.ok ())
+    reap := fun _ => pure (.ok ())
     run := fun _ => pure (.error { kind := .ioError, message := "stub" })
     runChecked := fun _ => pure (.error { kind := .ioError, message := "stub" })
     runCommand := fun _ _ => pure (.error { kind := .ioError, message := "stub" })
@@ -79,6 +83,10 @@ private def stubStatefulApi : ProcessApiM (StateM Nat) :=
     validateRequest := stubProcessApi.validateRequest
     mkCommandRequest := stubProcessApi.mkCommandRequest
     withTextInput := stubProcessApi.withTextInput
+    spawn := fun _ => pure (.error { kind := .ioError, message := "stub" })
+    awaitOutput := fun _ _ _ _ => pure (.error { kind := .ioError, message := "stub" })
+    killProcessGroup := fun _ => pure (.ok ())
+    reap := fun _ => pure (.ok ())
     run := stubStatefulRun
     runChecked := stubStatefulRunChecked
     runCommand := fun prog args =>
@@ -457,6 +465,51 @@ theorem mutant_mkRawOpsM_pgid1KillZero_rejected :
             let _ ← deps.proc.kill 0 .sigterm
             let _ ← deps.proc.kill 0 .sigkill
             return .ok () })) := by
+  intro ⟨h, _⟩
+  exact absurd h (by decide +kernel)
+
+/-- Mutant `mkApiM` bypassing `validateRequest` in `spawn` is rejected by `test_process_spawn_invalidRequest_doesNotCallRaw`. -/
+theorem mutant_mkApiM_spawnBypassesValidate_rejected :
+    ¬ Core.AllPass (test_process_spawn_invalidRequest_doesNotCallRaw
+      (fun raw => { Internal.mkApiM raw with spawn := raw.spawn })) := by
+  intro h
+  have h0 := h 0 { program := "" }
+  simp [Internal.mkApiM, Internal.validateRequest, StateT.run, modifyGet, MonadStateOf.modifyGet,
+    StateT.modifyGet, pure, assert] at h0
+
+/-- Mutant `mkApiM` forwarding unnormalized `ExecRequest` to `raw.spawn` is rejected by `test_process_spawn_usesNormalizedRequest`. -/
+theorem mutant_mkApiM_spawnSkipsNormalize_rejected :
+    ¬ Core.AllPass (test_process_spawn_usesNormalizedRequest
+      (fun raw =>
+        { Internal.mkApiM raw with
+          spawn := fun req =>
+            match Internal.validateRequest req with
+            | .error e => pure (.error e)
+            | .ok _ => raw.spawn req })) := by
+  intro h
+  let req : ExecRequest := { program := "echo", env := #[("A", some "1"), ("A", some "2")] }
+  have h0 := h req
+  have hVal : Internal.validateRequest req = .ok { program := "echo", env := #[("A", some "2")] } := by
+    simp +decide [req, Internal.validateRequest, Internal.hasNul, Internal.isInvalidEnvEntry, Internal.dedupEnvList]
+  dsimp only [Core.AllPass, test_process_spawn_usesNormalizedRequest, nondet, bind] at h0
+  rw [show (Internal.mkApiM _).validateRequest req = .ok { program := "echo", env := #[("A", some "2")] } from hVal] at h0
+  dsimp only [assert] at h0
+  have hBad := h0.1.1
+  have hSz := congrArg (fun o => match o with | some r => r.env.size | none => 0) hBad
+  simp [req, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, pure, hVal] at hSz
+
+/-- Mutant `mkApiM` forwarding `timeoutMs = some 0` to `raw.awaitOutput` is rejected by `test_process_awaitOutput_rejectsZeroTimeout`. -/
+theorem mutant_mkApiM_awaitOutputAllowsZeroTimeout_rejected :
+    ¬ Core.AllPass (test_process_awaitOutput_rejectsZeroTimeout
+      (fun raw => { Internal.mkApiM raw with awaitOutput := raw.awaitOutput })) := by
+  intro h
+  have h0 := h 0 { handleId := 1, pid := 1, pgid := 1 } ByteArray.empty none
+  simp [StateT.run, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, pure, assert] at h0
+
+/-- Mutant `mkApiM` dropping empty-message normalization on `killProcessGroup` is rejected by `test_process_lifecycle_delegatesAndNormalizesErrors`. -/
+theorem mutant_mkApiM_lifecycleDropsMsgNormalization_rejected :
+    ¬ Core.AllPass (test_process_lifecycle_delegatesAndNormalizesErrors
+      (fun raw => { Internal.mkApiM raw with killProcessGroup := raw.killProcessGroup })) := by
   intro ⟨h, _⟩
   exact absurd h (by decide +kernel)
 
