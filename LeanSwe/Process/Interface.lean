@@ -1,8 +1,30 @@
 import LeanSwe.Process.Types
+import LeanSwe.Process.Types.Internal
 import LeanSwe.Process.Impl
 import LeanSwe.Process.SysBridge
 
 namespace LeanSwe.Process
+
+namespace Internal
+
+/-- Construct a `ProcessApiM m` composing `Impl` and `SysBridge` over a `ProcessHostCapsM fd m` bundle. -/
+def mkApiFromCapsM {m : Type → Type} [Monad m] {fd : Type}
+    (cap : ProcessHostCapsM fd m) : ProcessApiM m :=
+  let deps : SysDepsM m fd :=
+    { proc := cap.proc
+      files := cap.files
+      poll := cap.poll
+      timeRand := cap.timeRand
+      postFork := cap.postFork
+      listAmbientEnv := Except.ok <$> cap.listEnvironBytes }
+  mkApiM (SysBridge.mkRawOpsM deps cap.table)
+
+/-- Construct a `ProcessApiM m` composing `Impl` and `SysBridge` over `HealthyHostCapsM m` (`LinuxSyscall.{Process,Files,Poll,TimeRand}`, `PostFork`, `EnvVars.Raw`). -/
+def mkApiFromHostCapsM {m : Type → Type} [Monad m]
+    (cap : HealthyHostCapsM m) : ProcessApiM m :=
+  mkApiFromCapsM cap
+
+end Internal
 
 /-- Default `ProcessApi` backed by `LeanSwe.Process.SysBridge.defaultOps`. -/
 def defaultApi : ProcessApi :=
