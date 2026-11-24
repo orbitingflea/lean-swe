@@ -13,8 +13,10 @@ namespace LeanSwe.CmdLine
     Live I/O intentionally bypasses Lean's host-IO stream handles (`IO.getStdin`/`IO.getStdout`/`IO.getStderr`):
     it does **not** flush C/Lean `IO.FS.Stream` buffers and does **not** honor `IO.withStdin`/`IO.withStdout`/
     `IO.withStderr` redirections. Callers mixing buffered `IO.print`/`IO.println` with `CmdLine` on pipes or
-    non-TTYs must flush Lean stdio beforehand; callers needing redirected or in-memory streams should pass an
-    explicit `CliOpsM m` backend to `Internal.mkApiM`, `promptLineM`, `confirmM`, `runCliM`, or `runCliWithM`. -/
+    non-TTYs must flush Lean stdio beforehand; do **not** mix buffered `IO.getStdin` reads with `CmdLine` `stdin`
+    reads, because bytes already read ahead into Lean's `stdin` buffer are invisible to descriptor `0` and cannot
+    be recovered by flushing. Callers needing redirected or in-memory streams should pass an explicit `CliOpsM m`
+    backend to `Internal.mkApiM`, `promptLineM`, `confirmM`, `runCliM`, or `runCliWithM`. -/
 def defaultOps : CliOps :=
   SysBridge.mkFilesCliOps LeanSwe.LinuxSyscall.Files.defaultOps fun key => do
     match ← LeanSwe.EnvVars.getEnv key with
@@ -33,7 +35,9 @@ private def catchIoAsCmdLineError {α : Type} (act : IO (Except CmdLineError α)
 
 /-- Default `CmdLineApi` backed by `defaultOps` (unbuffered OS descriptors `0`/`1`/`2` via
     `LeanSwe.LinuxSyscall.Files.dupStdio`), catching `IO.Error` throws from `promptLine`/`confirm` into `.ioError`.
-    Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`/`IO.withStderr`. -/
+    Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`/`IO.withStderr`; do not
+    mix buffered `IO.getStdin` reads with `CmdLine` `stdin` reads (bytes read ahead by `IO.getStdin` are invisible
+    to descriptor `0` and cannot be recovered by flushing). -/
 def defaultApi : CmdLineApi :=
   { Internal.mkApiM defaultOps with
     promptLine := fun prompt default =>
@@ -74,29 +78,33 @@ def defaultApi : CmdLineApi :=
   defaultApi.renderArgs spec parsed
 
 /-- Prompt for a line of input on unbuffered OS stdio descriptors (`0`/`1`), trimming ASCII whitespace and applying `default`.
-    Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`; flush buffered Lean stdio
-    beforehand when mixing with `IO.print`/`IO.println`, or use `promptLineM` for custom/in-memory streams. -/
+    Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`; flush buffered Lean output
+    beforehand when mixing with `IO.print`/`IO.println`, do not mix with buffered `IO.getStdin` reads (read-ahead
+    bytes are invisible to descriptor `0` and cannot be recovered by flushing), or use `promptLineM` for custom/in-memory streams. -/
 @[inline] def promptLine (prompt : String) (default : Option String := none) :
     IO (Except CmdLineError String) :=
   defaultApi.promptLine prompt default
 
 /-- Prompt up to `maxAttempts` times on unbuffered OS stdio descriptors (`0`/`1`/`2`) for `y`/`yes`/`n`/`no` confirmation.
     Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`/`IO.withStderr`; flush buffered
-    Lean stdio beforehand when mixing with `IO.print`/`IO.println`, or use `confirmM` for custom/in-memory streams. -/
+    Lean output beforehand when mixing with `IO.print`/`IO.println`, do not mix with buffered `IO.getStdin` reads
+    (read-ahead bytes are invisible to descriptor `0` and cannot be recovered by flushing), or use `confirmM` for custom/in-memory streams. -/
 @[inline] def confirm (prompt : String) (default : Option Bool := none)
     (maxAttempts : Nat := 100) : IO (Except CmdLineError Bool) :=
   defaultApi.confirm prompt default maxAttempts
 
 /-- Execute a full CLI flow on unbuffered OS stdio descriptors (`0`/`1`/`2`) and `LeanSwe.EnvVars`.
     Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`/`IO.withStderr`;
-    flush buffered Lean stdio beforehand when mixing with `IO.print`/`IO.println`, or use `runCliM` for custom streams. -/
+    flush buffered Lean output beforehand when mixing with `IO.print`/`IO.println`, do not mix with buffered
+    `IO.getStdin` reads (read-ahead bytes are invisible to descriptor `0` and cannot be recovered by flushing), or use `runCliM` for custom streams. -/
 @[inline] def runCli (spec : CommandSpec) (args : List String)
     (handler : ParsedCmd → IO UInt32) : IO UInt32 :=
   defaultApi.runCli spec args handler
 
 /-- Execute a full CLI flow with custom validators on unbuffered OS stdio descriptors (`0`/`1`/`2`) and `LeanSwe.EnvVars`.
     Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`/`IO.withStderr`;
-    flush buffered Lean stdio beforehand when mixing with `IO.print`/`IO.println`, or use `runCliWithM` for custom streams. -/
+    flush buffered Lean output beforehand when mixing with `IO.print`/`IO.println`, do not mix with buffered
+    `IO.getStdin` reads (read-ahead bytes are invisible to descriptor `0` and cannot be recovered by flushing), or use `runCliWithM` for custom streams. -/
 @[inline] def runCliWith (spec : CommandSpec) (args : List String)
     (validators : CustomValidators) (handler : ParsedCmd → IO UInt32) : IO UInt32 :=
   defaultApi.runCliWith spec args validators handler

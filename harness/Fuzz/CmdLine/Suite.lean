@@ -1307,7 +1307,7 @@ private def runTransientEintrProbe : IO Unit := do
       writeFdRaw fd "!\n".toUTF8
     wrTask? := some t
     let r ← withArmedSigalrm (some 10000) CmdLine.defaultOps.readLine
-    let wr ← IO.ofExcept t.get
+    let wr ← IO.ofExcept (← IO.wait t)
     wrTask? := none
     if wr != 2 then
       throw (IO.userError s!"TRANSIENT_EINTR_PROBE_WRITE_FAILED wr={wr}")
@@ -1316,7 +1316,7 @@ private def runTransientEintrProbe : IO Unit := do
   finally
     disarmSigalrmRaw 0
     if let some t := wrTask? then
-      let _ := t.get
+      let _ ← IO.wait t
     closeOptFd feedFd?
     let _ ← restoreStdioRaw 0
 

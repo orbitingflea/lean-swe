@@ -609,7 +609,7 @@ where
 def stripTrailingNewlineModel (s : String) : String :=
   String.ofList (s.toList.reverse.dropWhile (fun c => c == '\n' || c == '\r')).reverse
 
-/-- Bounded retry count on transient `EINTR` (`4`) for single `read(2)` / `write(2)` calls
+/-- Bounded retry count (`64`) on transient `EINTR` (errno `4`) for single `read(2)` / `write(2)` calls
     (shared with `SysBridge.stdioEintrFuel`). Up to `64` consecutive `EINTR` deliveries are retried
     transparently while preserving accumulated bytes; exceeding this budget propagates `.interrupted`. -/
 def stdioEintrRetryLimit : Nat := 64
@@ -818,7 +818,9 @@ def updateWorldErrno {α : Type} (w : StdioWorld) (out : IoStepOutcome α) : Std
 
 /-- Pure transition of reading one raw line from `stdin` on `StdioWorld` via unbuffered `LinuxSyscall.Files`.
     On a blocking open pipe or PTY, transient `EINTR` bursts with `count ≤ stdioEintrRetryLimit` (`64`) are
-    absorbed; `repeating` or `transient count` with `count > stdioEintrRetryLimit` throws `.interrupted`. -/
+    absorbed; `repeating` or `transient count` with `count > stdioEintrRetryLimit` throws `.interrupted`.
+    This abstract model omits the live 64 MiB line-length cap (`EFBIG` in `SysBridge.readStdioLineM`) and
+    `dupStdio` file-descriptor exhaustion (`EMFILE`). -/
 def stepRawGetLine (w : StdioWorld) : IoStepOutcome String × StdioWorld :=
   let ch := w.stdin
   match ch.backing with
