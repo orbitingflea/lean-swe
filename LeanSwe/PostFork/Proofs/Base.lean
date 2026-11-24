@@ -14,7 +14,8 @@ Foundation lemmas for `LeanSwe.PostFork` kernel proofs:
 namespace LeanSwe.PostFork.Proofs
 
 open _root_.Aeneas.Std
-open LeanSwe.PostFork.World
+open LeanSwe.PostFork.Aeneas.Internal
+open LeanSwe.PostFork.Aeneas.Internal.World
 open LeanSwe.PostFork.Aeneas
 open LeanSwe.PostFork.Aeneas.Model
 
@@ -891,7 +892,7 @@ theorem sys_exit_eq (s : ChildState) (code : I32) :
         trace := s.trace ++ [{ req := Req.exit code, out := .okVal 0 }]
         status := Status.exited code }
       else s) := by
-  unfold sys.exit
+  unfold sys.exit LeanSwe.PostFork.Aeneas.Internal.Sys.exit
   cases hs : s.status <;> simp
 
 /-- `sys.close` step characterization on a running state. -/
@@ -907,7 +908,7 @@ theorem sys_close_running (s : ChildState) (hs : s.status = Status.running) (fd 
       (((∀ rawE, currentFault s ≠ StepFault.seccomp rawE) → s.isOpen (↑fd : Int) = false → r = .Err EBADF) ∧
        (s.isOpen (↑fd : Int) = true ∧ s.oracle = [] → r = .Ok ()) ∧
        (∀ rawE, currentFault s = StepFault.seccomp rawE → r = .Err (sanitizeErrno rawE))) := by
-  unfold sys.close
+  unfold sys.close LeanSwe.PostFork.Aeneas.Internal.Sys.close
   have hrun := runUnitSyscall_running s hs (Req.close fd)
     (if s.isOpen ↑fd then none else some EBADF)
     (fun s => s.closeSlot ↑fd) (fun s => s.closeSlot ↑fd)
@@ -967,7 +968,7 @@ theorem sys_dup2_running (s : ChildState) (hs : s.status = Status.running) (oldf
           r = .Err EBADF) ∧
         (s.isOpen ↑oldfd = true ∧ ((↑oldfd : Int) = ↑newfd ∨ (0 ≤ (↑newfd : Int) ∧ (↑newfd : Int) < s.fdLimit)) →
           r = .Ok ())) := by
-  unfold sys.dup2
+  unfold sys.dup2 LeanSwe.PostFork.Aeneas.Internal.Sys.dup2
   let forcedErr? : Option I32 :=
     if (!s.isOpen ↑oldfd) = true then some EBADF
     else if ((↑oldfd : Int) == ↑newfd) = true then none
@@ -1080,7 +1081,7 @@ theorem sys_fcntl_getfd_running (s : ChildState) (hs : s.status = Status.running
            match fault with
            | StepFault.fail rawE => r = .Err (sanitizeErrno rawE)
            | _ => r = .Ok (fdFlagsWord e)) := by
-  unfold sys.fcntl_getfd
+  unfold sys.fcntl_getfd LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_getfd
   cases hf : currentFault s with
   | seccomp rawE =>
     cases hget : s.getFd (↑fd : Int) with
@@ -1140,7 +1141,7 @@ theorem sys_fcntl_setfd_running (s : ChildState) (hs : s.status = Status.running
            match fault with
            | StepFault.fail rawE => r = .Err (sanitizeErrno rawE)
            | _ => r = .Ok ()) := by
-  unfold sys.fcntl_setfd
+  unfold sys.fcntl_setfd LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_setfd
   have hopen_eq : s.isOpen (↑fd : Int) = (s.getFd ↑fd).isSome := rfl
   have hrun := runUnitSyscall_running s hs (Req.fcntlSetfd fd flags)
     (if s.isOpen ↑fd then none else some EBADF)
@@ -1200,7 +1201,7 @@ theorem sys_fcntl_dupfd_cloexec_running (s : ChildState) (hs : s.status = Status
         | some _, none =>
           if ((decide ((↑minFd : Int) < 0) || decide ((↑minFd : Int) ≥ s.fdLimit)) = true) then r = .Err EINVAL
           else r = .Err EMFILE) := by
-  unfold sys.fcntl_dupfd_cloexec
+  unfold sys.fcntl_dupfd_cloexec LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_dupfd_cloexec
   cases hf : currentFault s with
   | seccomp rawE =>
     cases hget : s.getFd (↑fd : Int) with
@@ -1330,7 +1331,7 @@ theorem sys_chdir_running (s : ChildState) (hs : s.status = Status.running) (pat
       (∀ err, r = .Err err → s'.cwd = s.cwd) ∧
       (r = .Ok () → s'.cwd = resolveChdirTarget s path) ∧
       (s.oracle = [] → (path.isEmpty = true → r = .Err ENOENT) ∧ (path.isEmpty = false → r = .Ok ())) := by
-  unfold sys.chdir
+  unfold sys.chdir LeanSwe.PostFork.Aeneas.Internal.Sys.chdir
   have hrun := runUnitSyscall_running s hs (Req.chdir path)
     (if path.isEmpty then some ENOENT else none)
     (fun s => { s with cwd := resolveChdirTarget s path }) id
@@ -1375,7 +1376,7 @@ theorem sys_setpgid_self_running (s : ChildState) (hs : s.status = Status.runnin
       (s.oracle = [] →
         ((s.pid == s.sid && decide (s.pid > 0)) = true → r = .Err EPERM) ∧
         ((s.pid == s.sid && decide (s.pid > 0)) = false → r = .Ok ())) := by
-  unfold sys.setpgid_self
+  unfold sys.setpgid_self LeanSwe.PostFork.Aeneas.Internal.Sys.setpgid_self
   have hrun := runUnitSyscall_running s hs Req.setpgidSelf
     (if (s.pid == s.sid && decide (s.pid > 0)) then some EPERM else none)
     (fun s => { s with pgid := s.pid }) id
@@ -1420,7 +1421,7 @@ theorem sys_sig_dfl_running (s : ChildState) (hs : s.status = Status.running) (s
       (s.oracle = [] →
         (isInvalidSigactionSig sig = true → r = .Err EINVAL) ∧
         (isInvalidSigactionSig sig = false → r = .Ok ())) := by
-  unfold sys.sig_dfl
+  unfold sys.sig_dfl LeanSwe.PostFork.Aeneas.Internal.Sys.sig_dfl
   by_cases hus : isUserspaceInvalidSigactionSig sig = true
   · refine ⟨.Err EINVAL, s, ?_, SameChildConfig.refl s, rfl, rfl, rfl, rfl, rfl, by simp [hus],
       fun _ _ => rfl, fun h => (nomatch h), fun _ => ⟨fun _ => rfl, fun h => ?_⟩⟩
@@ -1474,7 +1475,7 @@ theorem sys_sig_ign_running (s : ChildState) (hs : s.status = Status.running) (s
       (s.oracle = [] →
         (isInvalidSigactionSig sig = true → r = .Err EINVAL) ∧
         (isInvalidSigactionSig sig = false → r = .Ok ())) := by
-  unfold sys.sig_ign
+  unfold sys.sig_ign LeanSwe.PostFork.Aeneas.Internal.Sys.sig_ign
   by_cases hus : isUserspaceInvalidSigactionSig sig = true
   · refine ⟨.Err EINVAL, s, ?_, SameChildConfig.refl s, rfl, rfl, rfl, rfl, rfl, by simp [hus],
       fun _ _ => rfl, fun h => (nomatch h), fun _ => ⟨fun _ => rfl, fun h => ?_⟩⟩
@@ -1528,7 +1529,7 @@ theorem sys_sig_unblock_running (s : ChildState) (hs : s.status = Status.running
       (s.oracle = [] →
         ((sig.val < 1 ∨ sig.val > 64) → r = .Err EINVAL) ∧
         (1 ≤ sig.val → sig.val ≤ 64 → r = .Ok ())) := by
-  unfold sys.sig_unblock
+  unfold sys.sig_unblock LeanSwe.PostFork.Aeneas.Internal.Sys.sig_unblock
   by_cases hInv : (sig.val < 1 || sig.val > 64) = true
   · have hDisj : sig.val < 1 ∨ sig.val > 64 := by simpa [Bool.or_eq_true] using hInv
     refine ⟨.Err EINVAL, s, ?_, SameChildConfig.refl s, rfl, rfl, rfl, rfl, rfl, rfl,
@@ -1584,7 +1585,7 @@ theorem sys_execve_running (s : ChildState) (hs : s.status = Status.running)
            match fault with
            | StepFault.fail rawE => err = sanitizeErrno rawE ∧ s'.status = Status.running
            | _ => err = 0#i32 ∧ s'.status = Status.execd (imageOf s path argv envp)) := by
-  unfold sys.execve
+  unfold sys.execve LeanSwe.PostFork.Aeneas.Internal.Sys.execve
   rw [hs]
   cases hf : currentFault s with
   | seccomp rawE =>
@@ -1608,7 +1609,7 @@ theorem sys_execve_running (s : ChildState) (hs : s.status = Status.running)
 theorem sys_execve_not_running (s : ChildState) (hs : s.status ≠ Status.running)
     (path : sys.CStr) (argv envp : sys.CStrArray) :
     sys.execve s path argv envp = Result.ok (0#i32, s) := by
-  unfold sys.execve
+  unfold sys.execve LeanSwe.PostFork.Aeneas.Internal.Sys.execve
   cases h : s.status
   · exact absurd h hs
   · rfl
@@ -1671,13 +1672,13 @@ private theorem runI32Syscall_dspec_blockedSigs (s : ChildState) (req : Req)
 /-- `sys.setpgid_self` preserves `blockedSigs`. -/
 theorem sys_setpgid_self_dspec_blockedSigs (s : ChildState) :
     WP.dspec (sys.setpgid_self s) fun p => p.2.blockedSigs = s.blockedSigs := by
-  unfold sys.setpgid_self
+  unfold sys.setpgid_self LeanSwe.PostFork.Aeneas.Internal.Sys.setpgid_self
   exact runUnitSyscall_dspec_blockedSigs s _ _ _ _ rfl rfl
 
 /-- `sys.sig_dfl` preserves `blockedSigs`. -/
 theorem sys_sig_dfl_dspec_blockedSigs (s : ChildState) (sig : I32) :
     WP.dspec (sys.sig_dfl s sig) fun p => p.2.blockedSigs = s.blockedSigs := by
-  unfold sys.sig_dfl
+  unfold sys.sig_dfl LeanSwe.PostFork.Aeneas.Internal.Sys.sig_dfl
   by_cases h : (s.status == Status.running && isUserspaceInvalidSigactionSig sig) = true
   · simp only [h, ↓reduceIte, WP.dspec_ok]
   · simp only [h, Bool.false_eq_true, ↓reduceIte]
@@ -1686,19 +1687,19 @@ theorem sys_sig_dfl_dspec_blockedSigs (s : ChildState) (sig : I32) :
 /-- `sys.chdir` preserves `blockedSigs`. -/
 theorem sys_chdir_dspec_blockedSigs (s : ChildState) (path : sys.CStr) :
     WP.dspec (sys.chdir s path) fun p => p.2.blockedSigs = s.blockedSigs := by
-  unfold sys.chdir
+  unfold sys.chdir LeanSwe.PostFork.Aeneas.Internal.Sys.chdir
   exact runUnitSyscall_dspec_blockedSigs s _ _ _ _ rfl rfl
 
 /-- `sys.close` preserves `blockedSigs`. -/
 theorem sys_close_dspec_blockedSigs (s : ChildState) (fd : I32) :
     WP.dspec (sys.close s fd) fun p => p.2.blockedSigs = s.blockedSigs := by
-  unfold sys.close
+  unfold sys.close LeanSwe.PostFork.Aeneas.Internal.Sys.close
   exact runUnitSyscall_dspec_blockedSigs s _ _ _ _ rfl rfl
 
 /-- `sys.dup2` preserves `blockedSigs`. -/
 theorem sys_dup2_dspec_blockedSigs (s : ChildState) (oldfd newfd : I32) :
     WP.dspec (sys.dup2 s oldfd newfd) fun p => p.2.blockedSigs = s.blockedSigs := by
-  unfold sys.dup2
+  unfold sys.dup2 LeanSwe.PostFork.Aeneas.Internal.Sys.dup2
   refine runUnitSyscall_dspec_blockedSigs s _ _ _ _ ?_ rfl
   split
   · rfl
@@ -1707,7 +1708,7 @@ theorem sys_dup2_dspec_blockedSigs (s : ChildState) (oldfd newfd : I32) :
 /-- `sys.fcntl_getfd` preserves `blockedSigs`. -/
 theorem sys_fcntl_getfd_dspec_blockedSigs (s : ChildState) (fd : I32) :
     WP.dspec (sys.fcntl_getfd s fd) fun p => p.2.blockedSigs = s.blockedSigs := by
-  unfold sys.fcntl_getfd
+  unfold sys.fcntl_getfd LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_getfd
   cases s.getFd fd.val with
   | none => exact runI32Syscall_dspec_blockedSigs s _ _ _ rfl
   | some _ => exact runI32Syscall_dspec_blockedSigs s _ _ _ rfl
@@ -1715,14 +1716,14 @@ theorem sys_fcntl_getfd_dspec_blockedSigs (s : ChildState) (fd : I32) :
 /-- `sys.fcntl_setfd` preserves `blockedSigs`. -/
 theorem sys_fcntl_setfd_dspec_blockedSigs (s : ChildState) (fd flags : I32) :
     WP.dspec (sys.fcntl_setfd s fd flags) fun p => p.2.blockedSigs = s.blockedSigs := by
-  unfold sys.fcntl_setfd
+  unfold sys.fcntl_setfd LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_setfd
   refine runUnitSyscall_dspec_blockedSigs s _ _ _ _ ?_ rfl
   cases s.getFd fd.val <;> rfl
 
 /-- `sys.fcntl_dupfd_cloexec` preserves `blockedSigs`. -/
 theorem sys_fcntl_dupfd_cloexec_dspec_blockedSigs (s : ChildState) (fd minFd : I32) :
     WP.dspec (sys.fcntl_dupfd_cloexec s fd minFd) fun p => p.2.blockedSigs = s.blockedSigs := by
-  unfold sys.fcntl_dupfd_cloexec
+  unfold sys.fcntl_dupfd_cloexec LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_dupfd_cloexec
   cases s.getFd fd.val with
   | none => exact runI32Syscall_dspec_blockedSigs s _ _ _ rfl
   | some _ =>
@@ -1737,14 +1738,14 @@ theorem sys_fcntl_dupfd_cloexec_dspec_blockedSigs (s : ChildState) (fd minFd : I
 /-- `sys.close_range` preserves `blockedSigs`. -/
 theorem sys_close_range_dspec_blockedSigs (s : ChildState) (first last flags : U32) :
     WP.dspec (sys.close_range s first last flags) fun p => p.2.blockedSigs = s.blockedSigs := by
-  unfold sys.close_range
+  unfold sys.close_range LeanSwe.PostFork.Aeneas.Internal.Sys.close_range
   refine runUnitSyscall_dspec_blockedSigs s _ _ _ _ ?_ rfl
   split <;> rfl
 
 /-- `sys.open_proc_self_fd` preserves `blockedSigs`. -/
 theorem sys_open_proc_self_fd_dspec_blockedSigs (s : ChildState) :
     WP.dspec (sys.open_proc_self_fd s) fun p => p.2.blockedSigs = s.blockedSigs := by
-  unfold sys.open_proc_self_fd
+  unfold sys.open_proc_self_fd LeanSwe.PostFork.Aeneas.Internal.Sys.open_proc_self_fd
   cases findLowestFreeFd s 0 with
   | none => exact runI32Syscall_dspec_blockedSigs s _ _ _ rfl
   | some _ =>
@@ -1757,7 +1758,7 @@ theorem sys_open_proc_self_fd_dspec_blockedSigs (s : ChildState) :
 /-- `sys.getdents64` preserves `blockedSigs`. -/
 theorem sys_getdents64_dspec_blockedSigs (s : ChildState) (dirfd : I32) (buf : Array U8 256#usize) :
     WP.dspec (sys.getdents64 s dirfd buf) fun p => p.2.1.blockedSigs = s.blockedSigs := by
-  unfold sys.getdents64
+  unfold sys.getdents64 LeanSwe.PostFork.Aeneas.Internal.Sys.getdents64
   cases s.status <;> simp only [WP.dspec_ok]
   cases currentFault s <;> cases s.getFd dirfd.val <;> simp only [WP.dspec_ok]
   all_goals
@@ -1769,7 +1770,7 @@ theorem sys_getdents64_dspec_blockedSigs (s : ChildState) (dirfd : I32) (buf : A
 /-- `sys.read1` preserves `blockedSigs`. -/
 theorem sys_read1_dspec_blockedSigs (s : ChildState) (fd : I32) (buf : Array U8 1#usize) :
     WP.dspec (sys.read1 s fd buf) fun p => p.2.1.blockedSigs = s.blockedSigs := by
-  unfold sys.read1
+  unfold sys.read1 LeanSwe.PostFork.Aeneas.Internal.Sys.read1
   cases s.status <;> simp only [WP.dspec_ok]
   cases currentFault s <;> cases s.getFd fd.val <;> simp only [WP.dspec_ok]
   all_goals

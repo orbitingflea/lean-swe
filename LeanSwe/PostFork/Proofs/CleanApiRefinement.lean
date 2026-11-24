@@ -16,10 +16,11 @@ namespace LeanSwe.PostFork.Proofs
 open _root_.Aeneas _root_.Aeneas.Std Result
 open LeanSwe.LinuxSyscall
 open LeanSwe.PostFork
-open LeanSwe.PostFork.World
+open LeanSwe.PostFork.Aeneas.Internal
+open LeanSwe.PostFork.Aeneas.Internal.World
 open LeanSwe.PostFork.Aeneas
 open LeanSwe.PostFork.Aeneas.Model
-open LeanSwe.PostFork.Aeneas.Bridge
+open LeanSwe.PostFork.Aeneas.Internal.Bridge
 
 private theorem flagsOfSpec_valid_combos {fd : Type} (spec : ChildSpecM fd) (withBarrier : Bool) :
     validFlagsSpec (specFlagsU32 spec withBarrier) = true := by
@@ -767,7 +768,10 @@ private theorem pipeCleanup_and_busyAbort_ok :
 
 /-- Kernel proof of `test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter`. -/
 theorem test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter_allPass :
-    Core.AllPass (test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter) := by
+    Core.AllPass (test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter
+      LeanSwe.PostFork.Impl.Internal.flattenForkArgs
+      LeanSwe.PostFork.Impl.Internal.forkModeToUInt32
+      (fun raw => LeanSwe.PostFork.Impl.Internal.mkHostOps raw)) := by
   intro syncRead? errWrite stdioRefs closeRefs keepRefs argv specAny
   refine ⟨by decide, by simp [ChildSpecM.ofCommand], by decide,
     validateSpec_eq_validateSpecWith_false specAny,
@@ -780,7 +784,10 @@ theorem test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter_allPass :
 
 /-- Witness reachability proof for `test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter`. -/
 theorem test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter_canReach :
-    Core.CanReach (test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter) := by
+    Core.CanReach (test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter
+      LeanSwe.PostFork.Impl.Internal.flattenForkArgs
+      LeanSwe.PostFork.Impl.Internal.forkModeToUInt32
+      (fun raw => LeanSwe.PostFork.Impl.Internal.mkHostOps raw)) := by
   let spec0 : ChildSpecM Int32 := { path := "", argv := #[] }
   have hAll := test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter_allPass none 0 #[] #[] #[] #[] spec0
   exact ⟨none, 0, #[], #[], #[], #[], spec0, hAll⟩

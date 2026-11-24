@@ -1,11 +1,9 @@
 import Core.NondetTest
 import Core.Assumptions
 import LeanSwe.PostFork.Types
+import LeanSwe.PostFork.Types.Internal
 import LeanSwe.PostFork.Model
-import LeanSwe.PostFork.Impl
 import LeanSwe.PostFork.Aeneas.Model
-import LeanSwe.PostFork.Aeneas.Api
-import LeanSwe.PostFork.Aeneas.Bridge
 
 namespace LeanSwe.PostFork
 
@@ -13,10 +11,10 @@ open _root_.Aeneas _root_.Aeneas.Std Result
 open Core (NondetTest AssumptionObligation ErrorObligation)
 open Core.NondetTest
 open LeanSwe.LinuxSyscall
-open LeanSwe.PostFork.World
-open LeanSwe.PostFork.Aeneas
 open LeanSwe.PostFork.Aeneas.Model
-open LeanSwe.PostFork.Aeneas.Bridge
+open LeanSwe.PostFork.Aeneas.Internal
+open LeanSwe.PostFork.Aeneas.Internal.World
+open LeanSwe.PostFork.Aeneas.Internal.Bridge
 
 /-- `encodeFailureReport` and pure `Model.encodeFailureReport`/`Model.decodeChildFailure` emit uniform 8-byte wire frames `[0x50, 0x01, stage, 0x00, err_le32]`, round-trip every valid `(stage, errno)`, and map malformed/truncated frames to `.wireTruncated` (`EIO`). -/
 def test_postfork_wireEncoder_uniformAndRoundTrip
@@ -59,15 +57,15 @@ def test_postfork_wireEncoder_uniformAndRoundTrip
   NondetTest.assert
     (LeanSwe.PostFork.Model.decodeChildFailure wire = some { stage := fStage, errno := errU })
   NondetTest.assert
-    (LeanSwe.PostFork.Model.WIRE_MAGIC.toNat = postfork.child.WIRE_MAGIC.val ∧
-      LeanSwe.PostFork.Model.WIRE_VERSION.toNat = postfork.child.WIRE_VERSION.val ∧
-      LeanSwe.PostFork.Model.STAGE_VALIDATE.toNat = postfork.child.STAGE_VALIDATE.val ∧
-      LeanSwe.PostFork.Model.STAGE_PROCESS_GROUP.toNat = postfork.child.STAGE_PROCESS_GROUP.val ∧
-      LeanSwe.PostFork.Model.STAGE_SIGNAL_RESET.toNat = postfork.child.STAGE_SIGNAL_RESET.val ∧
-      LeanSwe.PostFork.Model.STAGE_FD_SETUP.toNat = postfork.child.STAGE_FD_SETUP.val ∧
-      LeanSwe.PostFork.Model.STAGE_CLOSE_UNKEPT.toNat = postfork.child.STAGE_CLOSE_UNKEPT.val ∧
-      LeanSwe.PostFork.Model.STAGE_CHDIR.toNat = postfork.child.STAGE_CHDIR.val ∧
-      LeanSwe.PostFork.Model.STAGE_EXECVE.toNat = postfork.child.STAGE_EXECVE.val)
+    (LeanSwe.PostFork.Model.WIRE_MAGIC.toNat = api.wireMagic.val ∧
+      LeanSwe.PostFork.Model.WIRE_VERSION.toNat = api.wireVersion.val ∧
+      LeanSwe.PostFork.Model.STAGE_VALIDATE.toNat = api.stageValidate.val ∧
+      LeanSwe.PostFork.Model.STAGE_PROCESS_GROUP.toNat = api.stageProcessGroup.val ∧
+      LeanSwe.PostFork.Model.STAGE_SIGNAL_RESET.toNat = api.stageSignalReset.val ∧
+      LeanSwe.PostFork.Model.STAGE_FD_SETUP.toNat = api.stageFdSetup.val ∧
+      LeanSwe.PostFork.Model.STAGE_CLOSE_UNKEPT.toNat = api.stageCloseUnkept.val ∧
+      LeanSwe.PostFork.Model.STAGE_CHDIR.toNat = api.stageChdir.val ∧
+      LeanSwe.PostFork.Model.STAGE_EXECVE.toNat = api.stageExecve.val)
   NondetTest.assert
     (OkPost (api.encodeFailureReport (stageToU8 fStage) errnum) (fun a =>
       bytesToByteArray a.val =
@@ -400,35 +398,35 @@ def test_postfork_worldModel_linuxKernelEdgeInvariants
   assume (s.status = .running ∧ s.oracle = [])
   if !path.isEmpty then do
     NondetTest.assert
-      (OkPost (sys.execve s path [] envp) (fun p =>
+      (OkPost (Sys.execve s path [] envp) (fun p =>
         p.1 = 0#i32 ∧ ∃ img, p.2.status = .execd img ∧ img.argv = [[]]))
     NondetTest.assert
-      (OkPost (sys.execve s path (argHead :: argTail) envp) (fun p =>
+      (OkPost (Sys.execve s path (argHead :: argTail) envp) (fun p =>
         p.1 = 0#i32 ∧ ∃ img, p.2.status = .execd img ∧ img.argv = argHead :: argTail))
   else
     pure ()
   if !s.closeRangeSupported then
     NondetTest.assert
-      (OkPost (sys.close_range s first last crFlags) (fun p =>
+      (OkPost (Sys.close_range s first last crFlags) (fun p =>
         p.1 = .Err (sanitizeErrno s.closeRangeErrno) ∧ p.2.fds = s.fds))
   else if decide (first.val > last.val) || (crFlags &&& 4294967289#u32) != 0#u32 then
     NondetTest.assert
-      (OkPost (sys.close_range s first last crFlags) (fun p =>
+      (OkPost (Sys.close_range s first last crFlags) (fun p =>
         p.1 = .Err EINVAL ∧ p.2.fds = s.fds))
   else
     pure ()
   match s.getFd fd.val with
   | some e =>
     NondetTest.assert
-      (OkPost (sys.dup2 s fd fd) (fun p => p.1 = .Ok () ∧ p.2.getFd fd.val = some e))
+      (OkPost (Sys.dup2 s fd fd) (fun p => p.1 = .Ok () ∧ p.2.getFd fd.val = some e))
     if fd != newFd && (decide (newFd.val < 0) || decide (newFd.val ≥ s.fdLimit)) then
       NondetTest.assert
-        (OkPost (sys.dup2 s fd newFd) (fun p => p.1 = .Err EBADF ∧ p.2.fds = s.fds))
+        (OkPost (Sys.dup2 s fd newFd) (fun p => p.1 = .Err EBADF ∧ p.2.fds = s.fds))
     else
       pure ()
     if decide (minFd.val < 0) || decide (minFd.val ≥ s.fdLimit) then
       NondetTest.assert
-        (OkPost (sys.fcntl_dupfd_cloexec s fd minFd) (fun p => p.1 = .Err EINVAL ∧ p.2.fds = s.fds))
+        (OkPost (Sys.fcntl_dupfd_cloexec s fd minFd) (fun p => p.1 = .Err EINVAL ∧ p.2.fds = s.fds))
     else
       pure ()
     if decide (0#i32 ≤ fd) && !payload.val.isEmpty then
@@ -447,16 +445,16 @@ def test_postfork_worldModel_linuxKernelEdgeInvariants
       pure ()
   | none =>
     NondetTest.assert
-      (OkPost (sys.fcntl_dupfd_cloexec s fd minFd) (fun p => p.1 = .Err EBADF ∧ p.2.fds = s.fds))
+      (OkPost (Sys.fcntl_dupfd_cloexec s fd minFd) (fun p => p.1 = .Err EBADF ∧ p.2.fds = s.fds))
   if isInvalidSigactionSig sig then do
-    NondetTest.assert (OkPost (sys.sig_dfl s sig) (fun p => p.1 = .Err EINVAL))
-    NondetTest.assert (OkPost (sys.sig_ign s sig) (fun p => p.1 = .Err EINVAL))
+    NondetTest.assert (OkPost (Sys.sig_dfl s sig) (fun p => p.1 = .Err EINVAL))
+    NondetTest.assert (OkPost (Sys.sig_ign s sig) (fun p => p.1 = .Err EINVAL))
   else
     pure ()
   if decide (s.pid > 0) && decide (s.pid = s.sid) then
-    NondetTest.assert (OkPost (sys.setpgid_self s) (fun p => p.1 = .Err EPERM ∧ p.2.pgid = s.pgid))
+    NondetTest.assert (OkPost (Sys.setpgid_self s) (fun p => p.1 = .Err EPERM ∧ p.2.pgid = s.pgid))
   else
-    NondetTest.assert (OkPost (sys.setpgid_self s) (fun p => p.1 = .Ok () ∧ p.2.pgid = s.pid))
+    NondetTest.assert (OkPost (Sys.setpgid_self s) (fun p => p.1 = .Ok () ∧ p.2.pgid = s.pid))
 
 /-- Deterministic in-memory mock host state for pure `SpecTests` verification of `LeanSwe.PostFork.Impl`. -/
 structure HostMockState where
@@ -814,13 +812,11 @@ def test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter
       Option Int32 → Int32 →
       _root_.Array (FdRef Int32) → _root_.Array (FdRef Int32) → _root_.Array (FdRef Int32) →
       _root_.Array (ArgToken Int32) →
-      LeanSwe.PostFork.Impl.Internal.FlattenedForkArgsM Int32 :=
-      LeanSwe.PostFork.Impl.Internal.flattenForkArgs)
-    (modeFn : ForkMode → UInt32 := LeanSwe.PostFork.Impl.Internal.forkModeToUInt32)
+      LeanSwe.PostFork.Impl.Internal.FlattenedForkArgsM Int32)
+    (modeFn : ForkMode → UInt32)
     (mkOps :
       LeanSwe.PostFork.Impl.Internal.PosixHostOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 →
-      PostForkOpsM (StateM LeanSwe.PostFork.HostMockState) Int32 :=
-      fun raw => LeanSwe.PostFork.Impl.Internal.mkHostOps raw) : runner Unit := do
+      PostForkOpsM (StateM LeanSwe.PostFork.HostMockState) Int32) : runner Unit := do
   let syncRead? ← nondet (Option Int32)
   let errWrite ← nondet Int32
   let stdioRefs ← nondet (_root_.Array (FdRef Int32))

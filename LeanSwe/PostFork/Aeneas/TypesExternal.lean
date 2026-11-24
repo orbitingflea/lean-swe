@@ -6,7 +6,7 @@ set_option linter.dupNamespace false
 set_option linter.style.longLine false
 set_option linter.style.setOption false
 
-namespace LeanSwe.PostFork.World
+namespace LeanSwe.PostFork.Aeneas.Internal.World
 
 /-- Raw byte sequence representing a NUL-free path, argument, environment entry, or pipe payload. -/
 abbrev Bytes := List Std.U8
@@ -190,13 +190,13 @@ structure ChildState where
   status : Status := .running
   deriving DecidableEq, Repr
 
-end LeanSwe.PostFork.World
+end LeanSwe.PostFork.Aeneas.Internal.World
 
 /-- `postfork::sys::Sys`: physical-Linux child process state. -/
-abbrev sys.Sys : Type := LeanSwe.PostFork.World.ChildState
+abbrev sys.Sys : Type := LeanSwe.PostFork.Aeneas.Internal.World.ChildState
 
 /-- `postfork::sys::CStr`: NUL-free byte content of a borrowed C string. -/
-abbrev sys.CStr : Type := LeanSwe.PostFork.World.Bytes
+abbrev sys.CStr : Type := LeanSwe.PostFork.Aeneas.Internal.World.Bytes
 
 /-- `postfork::sys::CStrArray`: list of NUL-free C strings in a `NULL`-terminated array. -/
-abbrev sys.CStrArray : Type := List LeanSwe.PostFork.World.Bytes
+abbrev sys.CStrArray : Type := List LeanSwe.PostFork.Aeneas.Internal.World.Bytes

@@ -219,7 +219,7 @@ def runPostForkMockTests : IO Unit := do
       some { stage := .wireTruncated, errno := LinuxSyscall.Errno.EIO })
 
   let wrSlice := PostFork.Aeneas.Model.mkSliceU8 1#usize [97#u8] rfl
-  let brokenBase : PostFork.World.ChildState :=
+  let brokenBase : PostFork.Aeneas.Internal.World.ChildState :=
     { status := .running
       fds := [(1, { desc := 11, cloexec := false })]
       descs := [(11, .stream false true true [])] }
@@ -240,7 +240,7 @@ def runPostForkMockTests : IO Unit := do
      | _ => false)
 
   let zeroBuf : Aeneas.Std.Array Aeneas.Std.U8 256#usize := Aeneas.Std.Array.repeat 256#usize 0#u8
-  let dirState : PostFork.World.ChildState :=
+  let dirState : PostFork.Aeneas.Internal.World.ChildState :=
     { status := .running
       fds := [(4, { desc := 30, cloexec := true })]
       descs := [(30, .directory 0)] }
@@ -255,7 +255,7 @@ def runPostForkMockTests : IO Unit := do
   checkM "sys.getdents64 .directory EOF = 0"
     (match dRes2 with | .Ok n => n.val == 0 | _ => false)
 
-  let sparseProcState : PostFork.World.ChildState :=
+  let sparseProcState : PostFork.Aeneas.Internal.World.ChildState :=
     { status := .running
       fds := [(3, { desc := 40, cloexec := true }), (10, { desc := 41, cloexec := false }), (200, { desc := 42, cloexec := false })]
       descs := [(40, .procSelfFd (-2)), (41, .stream true true false []), (42, .stream true true false [])]

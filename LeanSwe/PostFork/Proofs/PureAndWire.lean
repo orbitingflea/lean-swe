@@ -1,7 +1,6 @@
 import LeanSwe.PostFork.SpecTests
 import LeanSwe.PostFork.Aeneas.Model
 import LeanSwe.PostFork.Aeneas.Api
-import LeanSwe.PostFork.Aeneas.Bridge
 import LeanSwe.PostFork.Proofs.Base
 
 /-!
@@ -16,7 +15,8 @@ namespace LeanSwe.PostFork.Proofs
 open _root_.Aeneas _root_.Aeneas.Std
 open LeanSwe.LinuxSyscall
 open LeanSwe.PostFork
-open LeanSwe.PostFork.World
+open LeanSwe.PostFork.Aeneas.Internal
+open LeanSwe.PostFork.Aeneas.Internal.World
 open LeanSwe.PostFork.Aeneas
 open LeanSwe.PostFork.Aeneas.Model
 
@@ -201,9 +201,9 @@ private theorem i32_bv_toNat_eq_toNat_of_pos (v : I32) (hLo : 1 ≤ v.val) :
   omega
 
 private theorem stageToU8_toNat_eq_tag (fStage : FailureStage) (hStage : fStage ≠ .wireTruncated) :
-    UInt8.ofNat (LeanSwe.PostFork.Aeneas.Bridge.stageToU8 fStage).bv.toNat =
+    UInt8.ofNat (LeanSwe.PostFork.Aeneas.Internal.Bridge.stageToU8 fStage).bv.toNat =
       (LeanSwe.PostFork.Model.FailureStage.toTag? fStage).getD LeanSwe.PostFork.Model.STAGE_EXECVE := by
-  cases fStage <;> simp [LeanSwe.PostFork.Aeneas.Bridge.stageToU8,
+  cases fStage <;> simp [LeanSwe.PostFork.Aeneas.Internal.Bridge.stageToU8,
     LeanSwe.PostFork.Model.FailureStage.toTag?] at hStage ⊢ <;> rfl
 
 /-- Exact wire-level refinement between Aeneas `expectedFailureWireBytes` and pure `PostFork.Model.encodeFailureReport`. -/
@@ -211,8 +211,8 @@ theorem bytesToByteArray_expectedFailureWireBytes_eq_model
     (fStage : FailureStage) (errnum : I32)
     (hStage : fStage ≠ .wireTruncated)
     (hLo : 1 ≤ errnum.val) (hHi : errnum.val ≤ 4095) :
-    LeanSwe.PostFork.Aeneas.Bridge.bytesToByteArray
-        (expectedFailureWireBytes (LeanSwe.PostFork.Aeneas.Bridge.stageToU8 fStage) errnum) =
+    LeanSwe.PostFork.Aeneas.Internal.Bridge.bytesToByteArray
+        (expectedFailureWireBytes (LeanSwe.PostFork.Aeneas.Internal.Bridge.stageToU8 fStage) errnum) =
       LeanSwe.PostFork.Model.encodeFailureReport fStage (UInt32.ofNat errnum.toNat) := by
   have hToNatLo : 1 ≤ errnum.toNat := by
     have : errnum.toNat = errnum.val.toNat := rfl
@@ -241,7 +241,7 @@ theorem bytesToByteArray_expectedFailureWireBytes_eq_model
   have he3 : (errnum.bv.extractLsb' 24 8).toNat = (errnum.toNat / 16777216) % 256 := by
     change (errnum.bv.toNat >>> 24) % 256 = (errnum.toNat / 16777216) % 256
     rw [hBvNat, Nat.shiftRight_eq_div_pow]
-  unfold LeanSwe.PostFork.Aeneas.Bridge.bytesToByteArray expectedFailureWireBytes expectedI32LeBytes
+  unfold LeanSwe.PostFork.Aeneas.Internal.Bridge.bytesToByteArray expectedFailureWireBytes expectedI32LeBytes
     LeanSwe.PostFork.Model.encodeFailureReport
   simp only [List.cons_append, List.nil_append, List.map_cons, List.map_nil]
   rw [stageToU8_toNat_eq_tag fStage hStage, hNorm, hU32Nat, he0, he1, he2, he3]
@@ -275,7 +275,7 @@ theorem test_postfork_wireEncoder_uniformAndRoundTrip_allPass :
   refine ⟨encode_failure_report_spec stage errnum, by decide, by decide, by decide, by decide,
     by decide, by decide, by decide, by decide, ?_⟩
   rintro ⟨hStage, hLo, hHi, hLoN, hHiN⟩
-  have hSpec := encode_failure_report_spec (LeanSwe.PostFork.Aeneas.Bridge.stageToU8 fStage) errnum
+  have hSpec := encode_failure_report_spec (LeanSwe.PostFork.Aeneas.Internal.Bridge.stageToU8 fStage) errnum
   rcases hSpec with ⟨arr, hArrOk, hArrVal⟩
   have hBytesEq := bytesToByteArray_expectedFailureWireBytes_eq_model fStage errnum hStage hLoN hHiN
   have hToNatLo : 1 ≤ (UInt32.ofNat errnum.toNat).toNat := by
@@ -1217,12 +1217,12 @@ private theorem sys_close_range_running (s : ChildState) (hRun : s.status = .run
   have hFault := currentFault_oracle_nil s hOr
   constructor
   · intro hNosup
-    unfold sys.close_range
+    unfold sys.close_range LeanSwe.PostFork.Aeneas.Internal.Sys.close_range
     have hCond : (!s.closeRangeSupported) = true := by simp [hNosup]
     simp only [hCond, ↓reduceIte, runUnitSyscall, hRun, hFault]
     exact ⟨_, rfl, rfl, rfl⟩
   · intro hSup hBad
-    unfold sys.close_range
+    unfold sys.close_range LeanSwe.PostFork.Aeneas.Internal.Sys.close_range
     have hNotNosup : (!s.closeRangeSupported) = false := by simp [hSup]
     have hCond : (decide (first.val > last.val) || (flags &&& 4294967289#u32 != 0#u32)) = true := by
       rcases hBad with h1 | h2
@@ -1293,7 +1293,7 @@ private theorem writeAll_epipe_first_step (s : ChildState)
     dsimp only
     unfold postfork.child.write_all_loop1.body
     simp only [hLtLen, ↓reduceIte, hSlice, bind_ok]
-    unfold sys.write
+    unfold sys.write LeanSwe.PostFork.Aeneas.Internal.Sys.write
     simp only [hRun, hGetFd, hGetDesc, hEmptyFalse, hFault, Bool.false_eq_true, ↓reduceIte]
     by_cases hSig : (s.getSig 13 == Disp.default && s.pid != 1 && !s.isSigBlocked 13) = true
     · simp only [hSig, ↓reduceIte]

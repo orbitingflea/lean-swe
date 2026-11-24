@@ -13,7 +13,8 @@ namespace LeanSwe.PostFork.Proofs
 
 open _root_.Aeneas _root_.Aeneas.Std Result
 open LeanSwe.PostFork
-open LeanSwe.PostFork.World
+open LeanSwe.PostFork.Aeneas.Internal
+open LeanSwe.PostFork.Aeneas.Internal.World
 open LeanSwe.PostFork.Aeneas
 open LeanSwe.PostFork.Aeneas.Model
 
@@ -808,7 +809,7 @@ private theorem read_sync_byte_preserves_streams
             (r = .Err postfork.fd_ops.EINTR →
               cur'.oracle = cur.oracle ∧
               cur'.trace.length = cur.trace.length + 1 ∧ cur.trace.length < cur.oracle.length) := by
-        unfold sys.read1
+        unfold sys.read1 LeanSwe.PostFork.Aeneas.Internal.Sys.read1
         by_cases hRun : cur.status = .running
         · simp only [hRun]
           cases hcf : currentFault cur
@@ -1013,7 +1014,7 @@ private theorem read_sync_byte_preserves_streams
       unfold ChildState.getDesc at hD' ⊢
       rw [hde2]
       exact hD'
-    · unfold sys.close
+    · unfold sys.close LeanSwe.PostFork.Aeneas.Internal.Sys.close
       rw [runUnitSyscall_not_running s1 hRun1, bind_ok]
       exact ⟨(gotOne, s1), rfl, hPost⟩
 
@@ -1070,7 +1071,7 @@ private theorem await_sync_barrier_spec
       exact List.length_filter_le _ _
     cases gotOne
     · change OkPost (do let s2 ← sys.exit s1 postfork.child.EXIT_SYNC_ABORT; ok (false, s2)) _
-      unfold sys.exit
+      unfold sys.exit LeanSwe.PostFork.Aeneas.Internal.Sys.exit
       rw [hRun1, child_exit_sync_abort_eq, bind_ok]
       refine ⟨(false, _), rfl, fun hOr _ ⟨e, w, brk, hd, tl, he, hde⟩ => ?_,
         trivial, rfl, hWl1, hClosed1, hOther1,
@@ -1160,7 +1161,7 @@ theorem run_child_pre_sync_safety
   unfold postfork.child.run_child_pre_sync
   by_cases hRep : repW < 0#i32
   · simp only [hRep, ↓reduceIte, child_exit_exec_failed_eq]
-    unfold sys.exit
+    unfold sys.exit LeanSwe.PostFork.Aeneas.Internal.Sys.exit
     rw [hRun]
     simp only [bind_ok]
     exact ⟨(false, _), rfl, Or.inl rfl⟩
@@ -1478,7 +1479,7 @@ theorem run_child_pre_sync_oracle_empty
   · simp only [hRep, ↓reduceIte]
     unfold postfork.child.run_child_pre_sync
     simp only [hRep, ↓reduceIte, child_exit_exec_failed_eq]
-    unfold sys.exit; rw [hRun]; simp only [bind_ok]
+    unfold sys.exit LeanSwe.PostFork.Aeneas.Internal.Sys.exit; rw [hRun]; simp only [bind_ok]
     exact ⟨(false, _), rfl, rfl, rfl, rfl⟩
   · simp only [hRep, ↓reduceIte]
     cases hRepFd : s.getFd repW.val with
@@ -2215,7 +2216,7 @@ theorem run_child_pre_sync_total
           by_cases hxRun : x.status = .running
           · obtain ⟨r, x', hEq, _⟩ := sys_fcntl_getfd_running x hxRun syncR
             exact ⟨(r, x'), hEq, trivial⟩
-          · unfold sys.fcntl_getfd
+          · unfold sys.fcntl_getfd LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_getfd
             cases x.getFd syncR.val <;>
               (dsimp only; rw [runI32Syscall_not_running x hxRun]; exact ⟨_, rfl, trivial⟩)
         refine okPost_bind hGetTot fun (r, x1) _ => ?_

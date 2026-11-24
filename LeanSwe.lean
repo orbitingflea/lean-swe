@@ -385,6 +385,7 @@ import LeanSwe.LinuxSyscall.Process.Proofs.HealthyStep
 import LeanSwe.LinuxSyscall.Process.Proofs
 import LeanSwe.LinuxSyscall.TestSupport.Seccomp
 import LeanSwe.PostFork.Types
+import LeanSwe.PostFork.Types.Internal
 import LeanSwe.PostFork.Model
 import LeanSwe.PostFork.Impl
 import LeanSwe.PostFork.Interface
