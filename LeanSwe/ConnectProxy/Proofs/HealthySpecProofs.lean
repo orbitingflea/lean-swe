@@ -2,7 +2,6 @@ import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Model
 import LeanSwe.ConnectProxy.Relay
 import LeanSwe.ConnectProxy.SysBridge
-import LeanSwe.ConnectProxy.HealthySys
 import LeanSwe.ConnectProxy.SpecTests
 import LeanSwe.ConnectProxy.Proofs.SysBridgeProofs
 import LeanSwe.ConnectProxy.Proofs.LoopAndRelayProofs
@@ -15,7 +14,6 @@ open Core.NondetTest
 open LeanSwe.LinuxSyscall
 open LeanSwe.ConnectProxy
 open LeanSwe.ConnectProxy.SysBridge
-open LeanSwe.ConnectProxy.HealthySys
 
 private def cleanInitialWorld : HealthySysWorld :=
   { filesEnv := { state := { Files.FilesState.initial with fds := [] } } }

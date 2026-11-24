@@ -2,15 +2,18 @@ import Core.NondetTest
 import Core.Assumptions
 import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Model
-import LeanSwe.ConnectProxy.Relay
-import LeanSwe.ConnectProxy.SysBridge
-import LeanSwe.ConnectProxy.HealthySys
+import LeanSwe.NetRelay.Types
+import LeanSwe.NetRelay.Model
+import LeanSwe.ConnectProxy.Model.RelayState
+import LeanSwe.ConnectProxy.Model.BridgeState
+import LeanSwe.ConnectProxy.Model.HealthySys
 
 namespace LeanSwe.ConnectProxy
 
 open Core (NondetTest ErrorObligation)
 open Core.NondetTest
 open LeanSwe.ConnectProxy.Model
+open LeanSwe.ConnectProxy.Internal
 
 /-- Builder assembling a pure `ConnectProxyApiM m` from injected `RawConnectProxyOpsM m`. -/
 abbrev ConnectProxyBuilder (m : Type → Type) :=
@@ -435,7 +438,7 @@ def test_cproxy_healthy_onHeadBeforeDnsAndVerifiedIpConnect
   NondetTest.assert (w₁.wf = true)
   NondetTest.assert (
     (∀ st, slot₁.phase = .relay st →
-      st.pendingPrefix = pipelined ∧ st.pendingOff = 0 ∧ st.u2c.toList = Relay.reply200Bytes.data.toList) ∧
+      st.pendingPrefix = pipelined ∧ st.pendingOff = 0 ∧ NetRelay.Model.ringBufToList st.u2c = Relay.reply200Bytes.data.toList) ∧
     (∀ c u h p cs ci le dl, slot₁.phase = .connecting c u h p cs ci le dl →
       slot₁.pipelined = pipelined))
   match Model.decideConnectHead cfg headBytes with
@@ -512,9 +515,9 @@ def test_cproxy_healthy_relayByteConservationShortIoAndEintr
   let fd ← nondet Nat
   let ufd ← nondet Nat
   let fuel ← nondet Nat
-  let rb ← nondet Relay.RingBuf
+  let rb ← nondet NetRelay.RingBuf
   let pipelined ← nondet ByteArray
-  assume (rb.len ≤ rb.cap)
+  assume (NetRelay.Model.ringBufLen rb ≤ rb.cap)
   let (rxRes, (w₁, tr₁)) := (bridge.recvIntoRing (SysBridge.instrumentSysOps sys).net fd fuel rb).run (w₀, {})
   NondetTest.assert (w₁.wf = true)
   match rxRes with
@@ -522,20 +525,22 @@ def test_cproxy_healthy_relayByteConservationShortIoAndEintr
     NondetTest.assert (∃ e ∈ tr₁.netErrs.toList,
       e = LinuxSyscall.Errno.EBADF ∨ e = LinuxSyscall.Errno.EINVAL ∨ e = LinuxSyscall.Errno.ENOTSOCK)
   | some (rb', eof) =>
-    NondetTest.assert (rb'.len ≤ rb.cap ∧ rb'.toList = rb.toList ++ tr₁.recvBytes.toList ∧
+    NondetTest.assert (NetRelay.Model.ringBufLen rb' ≤ rb.cap ∧
+      NetRelay.Model.ringBufToList rb' = NetRelay.Model.ringBufToList rb ++ tr₁.recvBytes.toList ∧
       rb'.cap = rb.cap ∧
-      (w₀.netEnv.eintrBudget + (rb.cap - rb.len) ≤ fuel →
-        rb'.writeAvail = 0 ∨ eof = true ∨ tr₁.netErrs.size > 0))
+      (w₀.netEnv.eintrBudget + (rb.cap - NetRelay.Model.ringBufLen rb) ≤ fuel →
+        NetRelay.Model.ringBufWriteAvail rb' = 0 ∨ eof = true ∨ tr₁.netErrs.size > 0))
   let (txRes, (w₂, tr₂)) := (bridge.flushRingNonblock (SysBridge.instrumentSysOps sys).net fd fuel rb).run (w₀, {})
   NondetTest.assert (w₂.wf = true)
   match txRes with
   | none =>
     NondetTest.assert (∃ e ∈ tr₂.netErrs.toList, e ≠ LinuxSyscall.Errno.EAGAIN)
   | some rb' =>
-    NondetTest.assert (rb'.len ≤ rb.cap ∧ tr₂.sentBytes.toList ++ rb'.toList = rb.toList ∧
+    NondetTest.assert (NetRelay.Model.ringBufLen rb' ≤ rb.cap ∧
+      tr₂.sentBytes.toList ++ NetRelay.Model.ringBufToList rb' = NetRelay.Model.ringBufToList rb ∧
       rb'.cap = rb.cap ∧
-      (w₀.netEnv.eintrBudget + rb.len ≤ fuel →
-        rb'.isEmpty = true ∨ LinuxSyscall.Errno.EAGAIN ∈ tr₂.netErrs.toList ∨ tr₂.sawZeroSend = true))
+      (w₀.netEnv.eintrBudget + NetRelay.Model.ringBufLen rb ≤ fuel →
+        NetRelay.Model.ringBufIsEmpty rb' = true ∨ LinuxSyscall.Errno.EAGAIN ∈ tr₂.netErrs.toList ∨ tr₂.sawZeroSend = true))
   let (stPipe, (w₃, tr₃)) :=
     (bridge.stepBidirectionalRelay (SysBridge.instrumentSysOps sys)
       (Relay.RelayState.init fd ufd pipelined) {} { pollout := true }).run (w₀, {})
@@ -544,10 +549,10 @@ def test_cproxy_healthy_relayByteConservationShortIoAndEintr
       tr₃.sentBytes.toList ++
         (stPipe.pendingPrefix.extract stPipe.pendingOff stPipe.pendingPrefix.size).data.toList =
         pipelined.data.toList ∧
-      (w₀.netEnv.eintrBudget + pipelined.size ≤ Relay.MAX_RELAY_IO_STEPS →
+      (w₀.netEnv.eintrBudget + pipelined.size ≤ NetRelay.MAX_RELAY_IO_STEPS →
         stPipe.prefixFlushed = true ∨ LinuxSyscall.Errno.EAGAIN ∈ tr₃.netErrs.toList ∨ tr₃.sawZeroSend = true)) ∧
     (stPipe.uWrClosed = true →
-      stPipe.clientFd? = some fd ∧ stPipe.u2c.toList = Relay.reply200Bytes.data.toList))
+      stPipe.clientFd? = some fd ∧ NetRelay.Model.ringBufToList stPipe.u2c = Relay.reply200Bytes.data.toList))
   let (stRst, (w₄, tr₄)) :=
     (bridge.stepBidirectionalRelay (SysBridge.instrumentSysOps sys)
       (Relay.RelayState.init fd ufd ByteArray.empty)
@@ -555,7 +560,7 @@ def test_cproxy_healthy_relayByteConservationShortIoAndEintr
   NondetTest.assert (w₄.wf = true ∧
     ((∃ e ∈ tr₄.netErrs.toList,
         e = LinuxSyscall.Errno.EBADF ∨ e = LinuxSyscall.Errno.EINVAL ∨ e = LinuxSyscall.Errno.ENOTSOCK) ∨
-      (stRst.clientFd? = some fd ∧ stRst.u2c.toList = Relay.reply200Bytes.data.toList ++ tr₄.recvBytes.toList)))
+      (stRst.clientFd? = some fd ∧ NetRelay.Model.ringBufToList stRst.u2c = Relay.reply200Bytes.data.toList ++ tr₄.recvBytes.toList)))
 
 /-- Over any `sys` refining `RefinesHealthyCProxySys`, `stopProxy` and `withProxy` deterministically close `listenFd`, `wakeR`, `wakeW`, and all active `slotOpenFds` via `files.close` (removing every closed handle from `FilesState.fds`), emit `"proxy stopped"` once per undecided slot, conserve `activeProxyCount`, and reject double `stopProxy` with `.invalidInput`. -/
 def test_cproxy_healthy_withProxyAndStopClosesAllFds
@@ -649,7 +654,7 @@ def test_cproxy_healthy_pollAndStepTickAndFallbackConnect
         Model.isBannedByPrefixes cfg.ipPolicy.extraBans (SysBridge.effectiveDialIp ip) = false) ∧
     (∀ st, connSlot'.phase = .relay st →
       st.pendingPrefix = pipelined ∧ st.pendingOff = 0 ∧
-      st.u2c.toList = Relay.reply200Bytes.data.toList ∧
+      NetRelay.Model.ringBufToList st.u2c = Relay.reply200Bytes.data.toList ∧
       connEvs'.size = events.size + 1) ∧
     ((cRev.pollerr || cRev.pollhup || cRev.pollnval) = true →
       ufd ∈ trC.closedFds.toList ∧ cfd ∈ trC.closedFds.toList ∧

@@ -4,19 +4,146 @@ import LeanSwe.LinuxSyscall.Net.Model
 import LeanSwe.LinuxSyscall.Poll.Model
 import LeanSwe.LinuxSyscall.Dns.Model
 import LeanSwe.LinuxSyscall.TimeRand.Model
-import LeanSwe.ConnectProxy.Types
-import LeanSwe.ConnectProxy.Model
 import LeanSwe.NetRelay.Types
-import LeanSwe.NetRelay.Interface
-import LeanSwe.ConnectProxy.Relay
-import LeanSwe.ConnectProxy.SysBridge
+import LeanSwe.ConnectProxy.Types
+import LeanSwe.ConnectProxy.Model.RelayState
+import LeanSwe.ConnectProxy.Model.BridgeState
 
-namespace LeanSwe.ConnectProxy.HealthySys
+namespace LeanSwe.ConnectProxy.Internal.SysBridge
+
+open LeanSwe.LinuxSyscall
+
+/-- Observational syscall audit log for stating end-to-end invariants over any `CProxySysOpsM`. -/
+structure SysAuditTrace (fd : Type) where
+  /-- Descriptors returned by `net.socket`, `net.socketpair`, or `net.accept4` in allocation order. -/
+  openedFds : Array fd := #[]
+  /-- Descriptors passed to `files.close` in call order. -/
+  closedFds : Array fd := #[]
+  /-- Socket addresses passed to `net.bind` in call order. -/
+  boundAddrs : Array Net.SockAddr := #[]
+  /-- Hostnames passed to `dns.getaddrinfo` in call order. -/
+  dnsQueries : Array String := #[]
+  /-- Socket addresses passed to `net.connect` in call order. -/
+  dialedAddrs : Array Net.SockAddr := #[]
+  /-- Ordered bytes returned by `net.recvfrom` across calls. -/
+  recvBytes : Array UInt8 := #[]
+  /-- Ordered bytes accepted by `net.sendto` across calls. -/
+  sentBytes : Array UInt8 := #[]
+  /-- Non-`EINTR` `Errno` outcomes returned by `net.accept4`, `net.recvfrom`, or `net.sendto`. -/
+  netErrs : Array Errno := #[]
+  /-- Set to `true` when `net.sendto` on a non-empty buffer returns `.ok 0`. -/
+  sawZeroSend : Bool := false
+  /-- Per-call `poll.ppoll` outcomes (`none` on `.ok`, `some e` on `.error e`). -/
+  pollOutcomes : Array (Option Errno) := #[]
+  deriving BEq, DecidableEq, Inhabited
+
+/-- Lift a `StateM W` action to `StateM (W × SysAuditTrace fd)` while updating the audit trace on result. -/
+def liftTraceOp {W fd α : Type}
+    (act : StateM W α)
+    (upd : α → SysAuditTrace fd → SysAuditTrace fd := fun _ tr => tr) :
+    StateM (W × SysAuditTrace fd) α := fun (w, tr) =>
+  let (r, w') := act.run w
+  (r, (w', upd r tr))
+
+/-- Wrap any `sys : CProxySysOpsM (StateM W) fd` with pure non-interfering syscall trace recording. -/
+def instrumentSysOps {W fd : Type}
+    (sys : CProxySysOpsM (StateM W) fd) :
+    CProxySysOpsM (StateM (W × SysAuditTrace fd)) fd :=
+  { files :=
+      { openat := fun d p fl m => liftTraceOp (sys.files.openat d p fl m)
+        openat2 := fun d p how => liftTraceOp (sys.files.openat2 d p how)
+        close := fun h => liftTraceOp (sys.files.close h) (fun _ tr => { tr with closedFds := tr.closedFds.push h })
+        read := fun h n => liftTraceOp (sys.files.read h n)
+        write := fun h bs => liftTraceOp (sys.files.write h bs)
+        fstat := fun h => liftTraceOp (sys.files.fstat h)
+        fstatat := fun d p fl => liftTraceOp (sys.files.fstatat d p fl)
+        faccessat := fun d p m fl => liftTraceOp (sys.files.faccessat d p m fl)
+        mkdirat := fun d p m => liftTraceOp (sys.files.mkdirat d p m)
+        unlinkat := fun d p rd => liftTraceOp (sys.files.unlinkat d p rd)
+        renameat2 := fun od op nd np fl => liftTraceOp (sys.files.renameat2 od op nd np fl)
+        symlinkat := fun t d lp => liftTraceOp (sys.files.symlinkat t d lp)
+        readlinkat := fun d p c => liftTraceOp (sys.files.readlinkat d p c)
+        getdents64 := fun h c => liftTraceOp (sys.files.getdents64 h c)
+        fchmodat := fun d p m => liftTraceOp (sys.files.fchmodat d p m)
+        fchmod := fun h m => liftTraceOp (sys.files.fchmod h m)
+        flock := fun h op => liftTraceOp (sys.files.flock h op)
+        fcntl := fun h cmd => liftTraceOp (sys.files.fcntl h cmd)
+        fsync := fun h => liftTraceOp (sys.files.fsync h)
+        getcwd := fun c => liftTraceOp (sys.files.getcwd c)
+        lseek := fun h off wh => liftTraceOp (sys.files.lseek h off wh)
+        reopenReadOnly := fun h => liftTraceOp (sys.files.reopenReadOnly h)
+        dupStdio := fun sl => liftTraceOp (sys.files.dupStdio sl) }
+    net :=
+      { socket := fun dom st fl p =>
+          liftTraceOp (sys.net.socket dom st fl p) fun r tr =>
+            match r with
+            | .ok h => { tr with openedFds := tr.openedFds.push h }
+            | .error _ => tr
+        socketpair := fun dom st fl =>
+          liftTraceOp (sys.net.socketpair dom st fl) fun r tr =>
+            match r with
+            | .ok (h0, h1) => { tr with openedFds := (tr.openedFds.push h0).push h1 }
+            | .error _ => tr
+        bind := fun h sa =>
+          liftTraceOp (sys.net.bind h sa) fun _ tr =>
+            { tr with boundAddrs := tr.boundAddrs.push sa }
+        listen := fun h bl => liftTraceOp (sys.net.listen h bl)
+        accept4 := fun h fl =>
+          liftTraceOp (sys.net.accept4 h fl) fun r tr =>
+            match r with
+            | .ok (cfd, _) => { tr with openedFds := tr.openedFds.push cfd }
+            | .error e => if e == Errno.EINTR then tr else { tr with netErrs := tr.netErrs.push e }
+        connect := fun h sa =>
+          liftTraceOp (sys.net.connect h sa) fun _ tr =>
+            { tr with dialedAddrs := tr.dialedAddrs.push sa }
+        getsockopt := fun h opt => liftTraceOp (sys.net.getsockopt h opt)
+        setsockopt := fun h opt val => liftTraceOp (sys.net.setsockopt h opt val)
+        getsockname := fun h => liftTraceOp (sys.net.getsockname h)
+        recvfrom := fun h n fl =>
+          liftTraceOp (sys.net.recvfrom h n fl) fun r tr =>
+            match r with
+            | .ok bs =>
+              let k := Nat.min bs.size n.toNat
+              let accepted := if k == bs.size then bs.data else (bs.extract 0 k).data
+              { tr with recvBytes := tr.recvBytes ++ accepted }
+            | .error e => if e == Errno.EINTR then tr else { tr with netErrs := tr.netErrs.push e }
+        sendto := fun h bs fl =>
+          liftTraceOp (sys.net.sendto h bs fl) fun r tr =>
+            match r with
+            | .ok n =>
+              let k := Nat.min n.toNat bs.size
+              let accepted := if k == bs.size then bs.data else (bs.extract 0 k).data
+              let zeroSend := tr.sawZeroSend || (n == 0 && bs.size > 0)
+              { tr with sentBytes := tr.sentBytes ++ accepted, sawZeroSend := zeroSend }
+            | .error e => if e == Errno.EINTR then tr else { tr with netErrs := tr.netErrs.push e }
+        shutdown := fun h how => liftTraceOp (sys.net.shutdown h how)
+        sendmsg := fun h fds => liftTraceOp (sys.net.sendmsg h fds)
+        recvmsg := fun h maxFds => liftTraceOp (sys.net.recvmsg h maxFds)
+        ioctl := fun h req ifn => liftTraceOp (sys.net.ioctl h req ifn) }
+    poll :=
+      { ppoll := fun fds to? =>
+          liftTraceOp (sys.poll.ppoll fds to?) fun r tr =>
+            match r with
+            | .ok _ => { tr with pollOutcomes := tr.pollOutcomes.push none }
+            | .error e => { tr with pollOutcomes := tr.pollOutcomes.push (some e) }
+        eventfd2 := fun iv fl => liftTraceOp (sys.poll.eventfd2 iv fl) }
+    dns :=
+      { getaddrinfo := fun host hints =>
+          liftTraceOp (sys.dns.getaddrinfo host hints) fun _ tr =>
+            { tr with dnsQueries := tr.dnsQueries.push host } }
+    timeRand :=
+      { clock_gettime := fun clk => liftTraceOp (sys.timeRand.clock_gettime clk)
+        clock_nanosleep := fun clk abs ts => liftTraceOp (sys.timeRand.clock_nanosleep clk abs ts)
+        getrandom := fun n fl => liftTraceOp (sys.timeRand.getrandom n fl) } }
+
+end LeanSwe.ConnectProxy.Internal.SysBridge
+
+namespace LeanSwe.ConnectProxy.Internal.HealthySys
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.ConnectProxy
-open LeanSwe.ConnectProxy.Model
-open LeanSwe.ConnectProxy.SysBridge
+open LeanSwe.ConnectProxy.Internal
+open LeanSwe.ConnectProxy.Internal.SysBridge
 
 /-- Combined healthy OS world state for `ConnectProxy` relational specs (`Files` + `Net` + `Poll` + `Dns` + `TimeRand` + `SyncProxyTable` + unconstrained nondeterministic `auxTag`). -/
 structure HealthySysWorld where
@@ -182,31 +309,4 @@ structure SysBridgeTarget where
     CProxySysOpsM (StateM (HealthySysWorld × SysAuditTrace Nat)) Nat →
     RawConnectProxyOpsM (StateM (HealthySysWorld × SysAuditTrace Nat))
 
-/-- Canonical `SysBridgeTarget` wired directly to `SysBridge` and `Relay`.
-    Note: `mkRawOps` binds the synchronous single-threaded stand-in `SysBridge.mkSyncRawOps` for formal FD-conservation and `healthyStep` proofs; concurrent `IO` DNS-task/socketpair orchestration (`mkIoRawOps` / `runIoProxyLoop` / `teardownIoLoopState`) is verified separately via runtime, mutation, and stress tests. -/
-def realBridgeTarget : SysBridgeTarget :=
-  { createListener := fun sys vcfg => SysBridge.createListener sys vcfg
-    handleCompleteHeadSync := fun sys limits onHead onResolved slot evs cfd head pipe =>
-      SysBridge.handleCompleteHead sys limits onHead onResolved
-        (SysBridge.startDnsSync sys limits onResolved) slot evs cfd head pipe
-    acceptNewClients := fun sys limits lfd now slots =>
-      SysBridge.acceptNewClients sys limits lfd now slots
-    listenPollinEnabled := fun cur maxT => (SysBridge.listenPollEvents cur maxT).pollin
-    buildPollBatchSync := fun wakeR lfd maxT nowMs slots =>
-      SysBridge.buildPollBatchSync wakeR lfd maxT nowMs slots
-    stepHandshakeSync := fun sys limits onHead onResolved slot evs cfd hb dl rev now =>
-      SysBridge.stepHandshake sys limits onHead onResolved
-        (SysBridge.startDnsSync sys limits onResolved) slot evs cfd hb dl rev now
-    recvIntoRing := fun net fd fuel rb => NetRelay.recvIntoRing net fd fuel rb
-    flushRingNonblock := fun net fd fuel rb => NetRelay.flushRingNonblock net fd fuel rb
-    stepBidirectionalRelay := fun sys st cRev uRev =>
-      Relay.stepBidirectionalRelay sys.net sys.closeFd st cRev uRev
-    stepSlotSync := fun sys limits onHead onResolved slot evs cRev uRev nowMs =>
-      SysBridge.stepSyncSlot sys limits onHead onResolved slot evs cRev uRev nowMs
-    pollAndStepTickSync := fun sys limits onHead onResolved stopFlag wakeR lfd slots evs =>
-      SysBridge.pollAndStepTickSync sys limits onHead onResolved stopFlag wakeR lfd slots evs
-    mkRawOps := fun sys =>
-      SysBridge.mkSyncRawOps sys (fun wt => wt.1.proxyTable)
-        (fun (w, tr) tbl => ({ w with proxyTable := tbl }, tr)) }
-
-end LeanSwe.ConnectProxy.HealthySys
+end LeanSwe.ConnectProxy.Internal.HealthySys
