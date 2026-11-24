@@ -2962,8 +2962,6 @@ private def sigProofConstAllowlist : Array (String × Nat) := #[
   ("LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.Process.Proofs.HealthySimState", 1),
   ("LeanSwe.Process.Proofs|LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.healthySimApi", 34),
   ("LeanSwe.Process.Proofs|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.Process.Proofs.HealthySimState", 34),
-  ("LeanSwe.ProcessSandbox.Raw.Proofs|LeanSwe.ProcessSandbox.Raw.Proofs|LeanSwe.ProcessSandbox.Raw.Proofs.MockRawState", 8),
-  ("LeanSwe.ProcessSandbox.Raw.Proofs|LeanSwe.ProcessSandbox.Raw.Proofs|LeanSwe.ProcessSandbox.Raw.Proofs.mockRawOps", 8),
   ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.TempDirMockState", 6),
   ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockEnv", 4),
   ("LeanSwe.TempDir.Proofs.LockedProofs|LeanSwe.TempDir.Proofs.Shared|LeanSwe.TempDir.Proofs.mockEnvEx", 2),
