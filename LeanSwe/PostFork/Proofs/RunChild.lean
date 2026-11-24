@@ -15,7 +15,8 @@ namespace LeanSwe.PostFork.Proofs
 
 open _root_.Aeneas _root_.Aeneas.Std Result
 open LeanSwe.PostFork
-open LeanSwe.PostFork.World
+open LeanSwe.PostFork.Aeneas.Internal
+open LeanSwe.PostFork.Aeneas.Internal.World
 open LeanSwe.PostFork.Aeneas
 open LeanSwe.PostFork.Aeneas.Model
 
@@ -128,7 +129,7 @@ private theorem runI32Syscall_trace_rc (s : ChildState) (req : Req) (forcedErr? 
 
 private theorem sys_fcntl_setfd_trace_rc (s : ChildState) (fd flags : I32) :
     OkPost (sys.fcntl_setfd s fd flags) fun p => TraceExtends s p.2 := by
-  unfold sys.fcntl_setfd
+  unfold sys.fcntl_setfd LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_setfd
   apply runUnitSyscall_trace_rc
   · cases s.getFd ↑fd <;> simp [ChildState.putSlot]
   · rfl
@@ -225,12 +226,12 @@ private theorem clear_cloexec_slice_trace_rc (s : ChildState) (hRun : s.status =
 
 private theorem sys_close_range_trace_rc (s : ChildState) (first last flags : U32) :
     OkPost (sys.close_range s first last flags) fun p => TraceExtends s p.2 := by
-  unfold sys.close_range
+  unfold sys.close_range LeanSwe.PostFork.Aeneas.Internal.Sys.close_range
   exact runUnitSyscall_trace_rc s _ _ _ _ (by split <;> rfl) rfl
 
 private theorem sys_open_proc_self_fd_trace_rc (s : ChildState) :
     OkPost (sys.open_proc_self_fd s) fun p => TraceExtends s p.2 := by
-  unfold sys.open_proc_self_fd
+  unfold sys.open_proc_self_fd LeanSwe.PostFork.Aeneas.Internal.Sys.open_proc_self_fd
   cases findLowestFreeFd s 0 with
   | none => exact runI32Syscall_trace_rc s _ _ _ rfl
   | some dirfd =>
@@ -244,7 +245,7 @@ private theorem sys_open_proc_self_fd_trace_rc (s : ChildState) :
 
 private theorem sys_getdents64_trace_rc (s : ChildState) (dirfd : I32) (buf : Array U8 256#usize) :
     OkPost (sys.getdents64 s dirfd buf) fun p => TraceExtends s p.2.1 := by
-  unfold sys.getdents64
+  unfold sys.getdents64 LeanSwe.PostFork.Aeneas.Internal.Sys.getdents64
   cases hs : s.status with
   | running =>
     dsimp only
@@ -581,7 +582,7 @@ private theorem apply_close_unkept_trace (s : ChildState) (closeUnkept : Bool) (
 private theorem sys_chdir_trace_eq (s : ChildState) (hRun : s.status = .running) (path : sys.CStr)
     {r : core.result.Result Unit I32} {s' : ChildState} (hEq : sys.chdir s path = ok (r, s')) :
     TraceExtends s s' := by
-  unfold sys.chdir runUnitSyscall at hEq
+  unfold sys.chdir LeanSwe.PostFork.Aeneas.Internal.Sys.chdir runUnitSyscall at hEq
   rw [hRun] at hEq
   dsimp only [id] at hEq
   cases hf : currentFault s with
@@ -1124,7 +1125,7 @@ private theorem run_child_post_sync_safety
                 have hTrAll : TraceExtends s1 sEx := traceExtends_trans hTr1P hTrEx
                 have hCls := preSync_trace_closedBeforeSync hPre hTrAll
                 have hWrEx : sEx.writeLog = s.writeLog := by
-                  unfold sys.execve at hExEq
+                  unfold sys.execve LeanSwe.PostFork.Aeneas.Internal.Sys.execve at hExEq
                   rw [hRunP, hcf] at hExEq
                   simp only [hemp, Bool.false_eq_true, ↓reduceIte, Result.ok.injEq, Prod.mk.injEq] at hExEq
                   obtain ⟨_, rfl⟩ := hExEq
@@ -1665,7 +1666,7 @@ private theorem run_child_post_sync_safety
               have hFds6 : ∀ k, s6.getFd k = s5.getFd k := by
                 intro k; unfold ChildState.getFd
                 have : s6.fds = s5.fds := by
-                  unfold sys.chdir runUnitSyscall at hChEq
+                  unfold sys.chdir LeanSwe.PostFork.Aeneas.Internal.Sys.chdir runUnitSyscall at hChEq
                   rw [hRun5] at hChEq
                   dsimp only [id] at hChEq
                   cases hf : currentFault s5 with
@@ -1748,7 +1749,7 @@ theorem run_child_total
     have hChdirTot : ∀ x d, OkPost (sys.chdir x d) (fun _ => True) := fun x d => by
       by_cases hRun : x.status = .running
       · obtain ⟨r, x', hEq, _⟩ := sys_chdir_running x hRun d; exact ⟨(r, x'), hEq, trivial⟩
-      · unfold sys.chdir; rw [runUnitSyscall_not_running x hRun]; exact ⟨_, rfl, trivial⟩
+      · unfold sys.chdir LeanSwe.PostFork.Aeneas.Internal.Sys.chdir; rw [runUnitSyscall_not_running x hRun]; exact ⟨_, rfl, trivial⟩
     have hExecTot : ∀ x, OkPost (sys.execve x path argv envp) (fun _ => True) := fun x => by
       by_cases hRun : x.status = .running
       · obtain ⟨e, x', hEq, _⟩ := sys_execve_running x hRun path argv envp; exact ⟨(e, x'), hEq, trivial⟩

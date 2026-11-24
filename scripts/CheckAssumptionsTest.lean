@@ -894,6 +894,54 @@ private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath
       "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nimport LeanSwe.MiniA\nnamespace LeanSwe.MiniA.Proofs\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a LeanSwe.MiniA.umbrellaStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
     return #["LeanSwe/MiniA", "LeanSwe/MiniA/Proofs", "LeanSwe"]
 
+  do
+    let d := tmpRoot / "dag_aeneas_model_submodule_ok"
+    let rc := d / "repo"
+    let lc := d / "lib"
+    IO.FS.createDirAll d
+    copyDirTree root rc
+    copyDirTree libDir lc
+    let lp := s!"{lc}:{realLibAbs}"
+    writeFileCreatingParents (rc / "LeanSwe/PostFork/Types.lean")
+      "namespace LeanSwe.PostFork\ninductive PfTag where | ok\nend LeanSwe.PostFork\n"
+    writeFileCreatingParents (rc / "LeanSwe/PostFork/Aeneas/Model/World.lean")
+      "import LeanSwe.PostFork.Types\nnamespace LeanSwe.PostFork.Aeneas.Internal.World\ndef worldVal : Nat := 1\nend LeanSwe.PostFork.Aeneas.Internal.World\n"
+    writeFileCreatingParents (rc / "LeanSwe/PostFork/Aeneas/Model.lean")
+      "import LeanSwe.PostFork.Aeneas.Model.World\nnamespace LeanSwe.PostFork.Aeneas.Model\ndef modelVal : Nat := LeanSwe.PostFork.Aeneas.Internal.World.worldVal\nend LeanSwe.PostFork.Aeneas.Model\n"
+    writeFileCreatingParents (rc / "LeanSwe/PostFork/SpecTests.lean")
+      "import Core.NondetTest\nimport LeanSwe.PostFork.Aeneas.Model\nnamespace LeanSwe.PostFork\nopen Core Core.NondetTest\ndef test_pf {r} [NondetTest r] : r Unit := do\n  NondetTest.assert (LeanSwe.PostFork.Aeneas.Model.modelVal = 1)\nend LeanSwe.PostFork\n"
+    for m in #["LeanSwe/PostFork/Types", "LeanSwe/PostFork/Aeneas/Model/World", "LeanSwe/PostFork/Aeneas/Model", "LeanSwe/PostFork/SpecTests"] do
+      compileLeanMod rc lp (rc / s!"{m}.lean") (lc / s!"{m}.olean")
+    let out ← runCmd bin.toString #[lc.toString, "LeanSwe.PostFork.SpecTests", "", ""]
+    let comb := out.stdout ++ "\n" ++ out.stderr
+    if out.exitCode != 0 || (comb.splitOn "errors=0").length <= 1 then
+      throw (IO.userError s!"FAIL [aeneas_model_submodule_ok]: expected exit 0 errors=0:\n{comb}")
+    IO.println s!"PASS [aeneas_model_submodule_ok] -> {out.stdout.trimAscii.toString}"
+    IO.FS.removeDirAll d
+
+  runDagMut "aeneas_model_submodule_imports_impl"
+      "DAG_WITHIN_VIOLATION: LeanSwe.PostFork.Aeneas.Model.World (Model) transitively imports same-package LeanSwe.PostFork.Aeneas.FunsExternal (Impl)"
+      (roots := "LeanSwe.PostFork.Aeneas.Model.World") fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/PostFork/Types.lean")
+      "namespace LeanSwe.PostFork\ninductive PfTag where | ok\nend LeanSwe.PostFork\n"
+    writeFileCreatingParents (rc / "LeanSwe/PostFork/Aeneas/FunsExternal.lean")
+      "namespace LeanSwe.PostFork.Aeneas.FunsExternal\ndef extVal : Nat := 1\nend LeanSwe.PostFork.Aeneas.FunsExternal\n"
+    writeFileCreatingParents (rc / "LeanSwe/PostFork/Aeneas/Model/World.lean")
+      "import LeanSwe.PostFork.Types\nimport LeanSwe.PostFork.Aeneas.FunsExternal\nnamespace LeanSwe.PostFork.Aeneas.Internal.World\ndef worldVal : Nat := LeanSwe.PostFork.Aeneas.FunsExternal.extVal\nend LeanSwe.PostFork.Aeneas.Internal.World\n"
+    return #["LeanSwe/PostFork/Types", "LeanSwe/PostFork/Aeneas/FunsExternal", "LeanSwe/PostFork/Aeneas/Model/World"]
+
+  runDagMut "aeneas_model_submodule_cross_internal"
+      "DAG_CROSS_INTERNAL_REACHIN"
+      (roots := "LeanSwe.MiniB.Model")
+      (forbiddenCodes := #["DAG_CROSS_IMPORT_VIOLATION", "DAG_CROSS_REACHIN_VIOLATION"]) fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/PostFork/Types.lean")
+      "namespace LeanSwe.PostFork\ninductive PfTag where | ok\nend LeanSwe.PostFork\n"
+    writeFileCreatingParents (rc / "LeanSwe/PostFork/Aeneas/Model/World.lean")
+      "import LeanSwe.PostFork.Types\nnamespace LeanSwe.PostFork.Aeneas.Internal.World\ndef worldVal : Nat := 1\nend LeanSwe.PostFork.Aeneas.Internal.World\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniB/Model.lean")
+      "import LeanSwe.PostFork.Aeneas.Model.World\nimport LeanSwe.MiniB.Types\nnamespace LeanSwe.MiniB.Model\ndef evalB (_ : BTag) : Nat := LeanSwe.PostFork.Aeneas.Internal.World.worldVal\nend LeanSwe.MiniB.Model\n"
+    return #["LeanSwe/PostFork/Types", "LeanSwe/PostFork/Aeneas/Model/World", "LeanSwe/MiniB/Model"]
+
   IO.FS.removeDirAll baseDir
 
 /-- Execute self-tests for `Core.Refines`, boundary retirement, harness parity, and import-DAG gates. -/

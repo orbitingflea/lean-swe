@@ -13,7 +13,8 @@ namespace LeanSwe.PostFork.Proofs
 
 open _root_.Aeneas _root_.Aeneas.Std
 open LeanSwe.PostFork
-open LeanSwe.PostFork.World
+open LeanSwe.PostFork.Aeneas.Internal
+open LeanSwe.PostFork.Aeneas.Internal.World
 open LeanSwe.PostFork.Aeneas
 open LeanSwe.PostFork.Aeneas.Model
 
@@ -297,7 +298,7 @@ private theorem sys_dup2_total (s : ChildState) (oldfd newfd : I32) :
   by_cases hrun : s.status = .running
   · obtain ⟨r, s', h, _⟩ := sys_dup2_running s hrun oldfd newfd
     exact ⟨(r, s'), h, trivial⟩
-  · unfold sys.dup2
+  · unfold sys.dup2 LeanSwe.PostFork.Aeneas.Internal.Sys.dup2
     rw [runUnitSyscall_not_running s hrun]
     exact okPost_ok _ _ trivial
 
@@ -306,7 +307,7 @@ private theorem sys_fcntl_getfd_total (s : ChildState) (fd : I32) :
   by_cases hrun : s.status = .running
   · obtain ⟨r, s', h, _⟩ := sys_fcntl_getfd_running s hrun fd
     exact ⟨(r, s'), h, trivial⟩
-  · unfold sys.fcntl_getfd
+  · unfold sys.fcntl_getfd LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_getfd
     cases s.getFd fd.val <;>
       (dsimp only; rw [runI32Syscall_not_running s hrun]; exact ⟨_, rfl, trivial⟩)
 
@@ -315,7 +316,7 @@ private theorem sys_fcntl_setfd_total (s : ChildState) (fd flags : I32) :
   by_cases hrun : s.status = .running
   · obtain ⟨r, s', h, _⟩ := sys_fcntl_setfd_running s hrun fd flags
     exact ⟨(r, s'), h, trivial⟩
-  · unfold sys.fcntl_setfd
+  · unfold sys.fcntl_setfd LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_setfd
     rw [runUnitSyscall_not_running s hrun]
     exact okPost_ok _ _ trivial
 
@@ -324,7 +325,7 @@ private theorem sys_fcntl_dupfd_cloexec_total (s : ChildState) (fd minFd : I32) 
   by_cases hrun : s.status = .running
   · obtain ⟨r, s', h, _⟩ := sys_fcntl_dupfd_cloexec_running s hrun fd minFd
     exact ⟨(r, s'), h, trivial⟩
-  · unfold sys.fcntl_dupfd_cloexec
+  · unfold sys.fcntl_dupfd_cloexec LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_dupfd_cloexec
     cases s.getFd fd.val with
     | none =>
       dsimp only
@@ -400,7 +401,7 @@ private theorem sys_fcntl_getfd_run_spec (s : ChildState) (hRun : s.status = .ru
       | none => r1 = .Err EBADF
       | some e => r1 = .Ok (fdFlagsWord e) := by
   have hf := currentFault_oracle_nil s hOr
-  unfold sys.fcntl_getfd runI32Syscall
+  unfold sys.fcntl_getfd LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_getfd runI32Syscall
   rw [hRun, hf]
   cases hget : s.getFd fd.val with
   | none =>
@@ -1383,7 +1384,7 @@ private theorem sys_close_spec (s : sys.Sys) (hRun : s.status = .running) (hOr :
         p.2.pgid = s.pgid ∧ p.2.cwd = s.cwd ∧ p.2.sig = s.sig ∧
         p.2.descs = s.descs ∧ p.2.writeLog = s.writeLog ∧
         ∀ k, p.2.getFd k = if k = fd.val then none else s.getFd k := by
-  unfold sys.close runUnitSyscall
+  unfold sys.close LeanSwe.PostFork.Aeneas.Internal.Sys.close runUnitSyscall
   rw [hRun]
   have hF : currentFault s = .normal := currentFault_oracle_nil s hOr
   by_cases hOpen : s.isOpen fd.val = true
@@ -1409,7 +1410,7 @@ private theorem sys_dup2_spec (s : sys.Sys) (hRun : s.status = .running) (hOr : 
         p.2.descs = s.descs ∧ p.2.writeLog = s.writeLog ∧
         (∃ f, p.2.getFd newfd.val = some f ∧ f.desc = e.desc) ∧
         (∀ k, k ≠ newfd.val → p.2.getFd k = s.getFd k) := by
-  unfold sys.dup2 runUnitSyscall
+  unfold sys.dup2 LeanSwe.PostFork.Aeneas.Internal.Sys.dup2 runUnitSyscall
   have ho : s.isOpen oldfd.val = true := by simp [ChildState.isOpen, hOpen]
   have hoNot : (!s.isOpen oldfd.val) = false := by simp [ho]
   have hF : currentFault s = .normal := currentFault_oracle_nil s hOr
@@ -1456,7 +1457,7 @@ private theorem sys_fcntl_dupfd_cloexec_spec (s : sys.Sys) (hRun : s.status = .r
   have hBounds : (decide (minFd.val < 0) || decide (minFd.val ≥ s.fdLimit)) = false := by
     simp [show ¬(minFd.val < 0) by omega, show ¬(minFd.val ≥ s.fdLimit) by omega]
   have hF : currentFault s = .normal := currentFault_oracle_nil s hOr
-  unfold sys.fcntl_dupfd_cloexec runI32Syscall
+  unfold sys.fcntl_dupfd_cloexec LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_dupfd_cloexec runI32Syscall
   simp only [hOpen, hBounds, Bool.false_eq_true, ↓reduceIte, hFree, hRun, hF]
   refine okPost_ok _ _ ⟨mkI32 dst, rfl, htmpVal, by omega, by omega, by rw [htmpVal]; exact hfdNone.2,
     ⟨rfl, by simp [ChildState.putSlot, hRun], rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩, rfl, rfl, rfl, rfl, rfl,
@@ -1801,25 +1802,25 @@ theorem sys_close_trace (s : ChildState) (fd : I32) :
 
 private theorem sys_dup2_trace (s : ChildState) (oldfd newfd : I32) :
     OkPost (sys.dup2 s oldfd newfd) fun p => TraceExtends s p.2 := by
-  unfold sys.dup2
+  unfold sys.dup2 LeanSwe.PostFork.Aeneas.Internal.Sys.dup2
   exact runUnitSyscall_trace s _ _ _ _ (by split <;> [rfl; cases s.getFd ↑oldfd <;> rfl]) rfl
 
 /-- Trace-extension specification for `sys.fcntl_getfd`. -/
 theorem sys_fcntl_getfd_trace (s : ChildState) (fd : I32) :
     OkPost (sys.fcntl_getfd s fd) fun p => TraceExtends s p.2 := by
-  unfold sys.fcntl_getfd
+  unfold sys.fcntl_getfd LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_getfd
   cases s.getFd ↑fd <;> exact runI32Syscall_trace s _ _ _ rfl
 
 private theorem sys_fcntl_setfd_trace (s : ChildState) (fd flags : I32) :
     OkPost (sys.fcntl_setfd s fd flags) fun p => TraceExtends s p.2 := by
-  unfold sys.fcntl_setfd
+  unfold sys.fcntl_setfd LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_setfd
   cases s.getFd ↑fd <;>
     exact runUnitSyscall_trace s _ _ _ _ (by cases s.getFd ↑fd <;> rfl) rfl
 
 /-- Trace-extension specification for `sys.fcntl_dupfd_cloexec`. -/
 theorem sys_fcntl_dupfd_cloexec_trace (s : ChildState) (fd minFd : I32) :
     OkPost (sys.fcntl_dupfd_cloexec s fd minFd) fun p => TraceExtends s p.2 := by
-  unfold sys.fcntl_dupfd_cloexec
+  unfold sys.fcntl_dupfd_cloexec LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_dupfd_cloexec
   cases s.getFd ↑fd with
   | none => exact runI32Syscall_trace s _ _ _ rfl
   | some e =>
@@ -2677,7 +2678,7 @@ private theorem sys_close_step_total (s : sys.Sys) (fd : I32) :
         p.2.trace.length ≤ s.trace.length + 1 ∧
         (∀ k, k ≠ fd.val → p.2.getFd k = s.getFd k) ∧
         (p.2.getFd fd.val = none ∨ p.2.getFd fd.val = s.getFd fd.val) := by
-  unfold sys.close runUnitSyscall
+  unfold sys.close LeanSwe.PostFork.Aeneas.Internal.Sys.close runUnitSyscall
   cases hst : s.status with
   | running =>
     dsimp only
@@ -3078,7 +3079,7 @@ private theorem sys_close_range_total (s : sys.Sys) (first last : U32) :
         (s.status = .running → s.closeRangeSupported = false →
           ∃ e, p.1 = .Err e ∧ p.2.fds = s.fds ∧
             (oracleHasSeccomp s.oracle = false → e = sanitizeErrno s.closeRangeErrno)) := by
-  unfold sys.close_range runUnitSyscall
+  unfold sys.close_range LeanSwe.PostFork.Aeneas.Internal.Sys.close_range runUnitSyscall
   cases hst : s.status with
   | running =>
     dsimp only
@@ -3134,7 +3135,7 @@ private theorem sys_close_range_run_ok_spec (s : sys.Sys) (hRun : s.status = .ru
         p.2.pgid = s.pgid ∧ p.2.cwd = s.cwd ∧ p.2.sig = s.sig ∧
         p.2.descs = s.descs ∧ p.2.writeLog = s.writeLog ∧
         ∀ k : ℤ, p.2.getFd k = if (first.val : ℤ) ≤ k ∧ k ≤ last.val then none else s.getFd k := by
-  unfold sys.close_range runUnitSyscall
+  unfold sys.close_range LeanSwe.PostFork.Aeneas.Internal.Sys.close_range runUnitSyscall
   have hns : (!s.closeRangeSupported) = false := by simp [hSup]
   have hbad : (decide (first.val > last.val) || (0#u32 : U32) &&& 4294967289#u32 != 0#u32) = false := by
     have h0 : (0#u32 : U32) &&& 4294967289#u32 = 0#u32 := by decide
@@ -3412,7 +3413,7 @@ private theorem sys_close_range_run_safety (s : sys.Sys) (hRun : s.status = .run
         (p.1 = .Ok () →
           ∀ k : ℤ, p.2.getFd k = if (first.val : ℤ) ≤ k ∧ k ≤ last.val then none else s.getFd k) ∧
         (∀ e, p.1 = .Err e → p.2.fds = s.fds) := by
-  unfold sys.close_range runUnitSyscall
+  unfold sys.close_range LeanSwe.PostFork.Aeneas.Internal.Sys.close_range runUnitSyscall
   rw [hRun]
   by_cases hsup : s.closeRangeSupported = true
   · have hns : (!s.closeRangeSupported) = false := by simp [hsup]

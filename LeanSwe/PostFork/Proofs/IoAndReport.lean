@@ -14,7 +14,8 @@ namespace LeanSwe.PostFork.Proofs
 
 open _root_.Aeneas _root_.Aeneas.Std
 open LeanSwe.PostFork
-open LeanSwe.PostFork.World
+open LeanSwe.PostFork.Aeneas.Internal
+open LeanSwe.PostFork.Aeneas.Internal.World
 open LeanSwe.PostFork.Aeneas
 open LeanSwe.PostFork.Aeneas.Model
 
@@ -232,7 +233,7 @@ private theorem read_sync_byte_loop_spec (s : ChildState) (syncR : I32) :
     dsimp only
     by_cases hSec : ∃ rawE, currentFault cur = StepFault.seccomp rawE
     · rcases hSec with ⟨rawE, hcf⟩
-      unfold sys.read1
+      unfold sys.read1 LeanSwe.PostFork.Aeneas.Internal.Sys.read1
       simp only [hCurRun, hcf, bind_ok, Aeneas.Std.uncurry]
       by_cases hEintr : (sanitizeErrno rawE != postfork.fd_ops.EINTR) = true
       · simp only [hEintr, ↓reduceIte]
@@ -301,7 +302,7 @@ private theorem read_sync_byte_loop_spec (s : ChildState) (syncR : I32) :
                     { s' with trace := s'.trace ++ [⟨.read1 syncR, .okVal 1⟩] },
                     Aeneas.Std.Array.make 1#usize [b]) := by
         intro buf1
-        unfold sys.read1
+        unfold sys.read1 LeanSwe.PostFork.Aeneas.Internal.Sys.read1
         cases hcf : currentFault cur with
         | seccomp rawE => exact absurd hcf (hNonSec rawE)
         | fail _ | normal | partialWrite _ | dentsBatch _ => simp only [hCurRun]; rfl
@@ -552,7 +553,7 @@ private theorem read_sync_byte_loop_spec (s : ChildState) (syncR : I32) :
     intro cur hEq
     subst hEq
     unfold postfork.child.read_sync_byte_loop.body
-    unfold sys.read1
+    unfold sys.read1 LeanSwe.PostFork.Aeneas.Internal.Sys.read1
     cases hSt : cur.status with
     | running => exact absurd hSt hRun
     | exited _ =>
@@ -583,7 +584,7 @@ theorem read_sync_byte_spec (s : ChildState) (syncR : I32) :
       obtain ⟨r, s2, hCloseEq, hCfg2, hPgid2, hCwd2, hSig2, _, hWlog2, hTraceLen2, hFds2, _⟩ :=
         sys_close_running s1 hRun1 syncR
       have hTrace2 : ∃ suf2, s2.trace = s.trace ++ suf2 := by
-        unfold sys.close runUnitSyscall at hCloseEq
+        unfold sys.close LeanSwe.PostFork.Aeneas.Internal.Sys.close runUnitSyscall at hCloseEq
         simp only [hRun1] at hCloseEq
         by_cases hOpen : s1.isOpen syncR.val = true
         · simp only [hOpen, ↓reduceIte] at hCloseEq
@@ -867,7 +868,7 @@ private theorem write_all_loop0_seccomp_or_err (s : ChildState) (fd : I32) (buf 
   · rcases hSec with ⟨rawE, hcf⟩
     have hW : sys.write cur fd buf = Result.ok (.Err (sanitizeErrno rawE),
         { cur with trace := cur.trace ++ [⟨.write fd buf.val, .err (sanitizeErrno rawE)⟩] }) := by
-      unfold sys.write
+      unfold sys.write LeanSwe.PostFork.Aeneas.Internal.Sys.write
       by_cases hEmpty : (↑buf : List U8).isEmpty = true <;>
         simp [hCurRun, hcf]
     rw [hW]
@@ -963,7 +964,7 @@ private theorem write_all_loop0_stream (s : ChildState) (fd : I32) (buf : Slice 
       rw [ChildState.getFd, hFds]; exact hFd
     have hCurDesc : cur.getDesc e.desc = .stream rd true brk rbs := by
       rw [ChildState.getDesc, hDescs]; exact hDesc
-    unfold sys.write
+    unfold sys.write LeanSwe.PostFork.Aeneas.Internal.Sys.write
     simp only [hCurRun, hCurFd, hCurDesc, hEmpty, ↓reduceIte]
     cases hcf : currentFault cur with
     | seccomp rawE =>
@@ -1102,7 +1103,7 @@ private theorem write_all_loop_stream_ok (s : ChildState) (fd : I32) (buf : Slic
           rw [hSlVal, List.length_drop] at hLen0
           omega
         | cons _ _ => rfl
-      unfold sys.write
+      unfold sys.write LeanSwe.PostFork.Aeneas.Internal.Sys.write
       simp only [hCurRun, hCurFd, hCurDesc, hSlNonempty, Bool.false_eq_true, ↓reduceIte]
       cases hcf : currentFault cur with
       | seccomp rawE =>
@@ -1378,7 +1379,7 @@ private theorem write_all_loop1_seccomp_or_err (s : ChildState) (fd : I32) (buf 
   · rcases hSec with ⟨rawE, hcf⟩
     have hW : sys.write cur fd sl0 = Result.ok (.Err (sanitizeErrno rawE),
         { cur with trace := cur.trace ++ [⟨.write fd sl0.val, .err (sanitizeErrno rawE)⟩] }) := by
-      unfold sys.write
+      unfold sys.write LeanSwe.PostFork.Aeneas.Internal.Sys.write
       simp [hCurRun, hcf]
     rw [hW]
     simp only [bind_ok, Aeneas.Std.uncurry]
@@ -1472,7 +1473,7 @@ theorem write_all_spec (s : ChildState) (fd : I32) (buf : Slice U8) :
               have hCurFd : cur.getFd fd.val = none := by rw [ChildState.getFd, hFds]; exact hFd
               cases hcf : currentFault cur with
               | seccomp rawE => exact absurd hcf (hNonSec rawE)
-              | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, hCurRun, hCurFd, hcf])
+              | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, LeanSwe.PostFork.Aeneas.Internal.Sys.write, hCurRun, hCurFd, hcf])
           refine okPost_bind hLoop ?_
           intro ⟨s1, err, failed⟩ ⟨hFail, hSt1, hFds1, hDescs1, hCwd1, hPgid1, hSig1, hOr1,
             hLim1, hMask1, hCrSup1, hCrErr1, hProcAv1, hProcErr1, hPid1, hSid1, hWlog1, hTr1, hNoSec1⟩
@@ -1491,7 +1492,7 @@ theorem write_all_spec (s : ChildState) (fd : I32) (buf : Slice U8) :
                 have hCurDesc : cur.getDesc e.desc = .directory cursor := by rw [ChildState.getDesc, hDescs]; exact hDesc
                 cases hcf : currentFault cur with
                 | seccomp rawE => exact absurd hcf (hNonSec rawE)
-                | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, hCurRun, hCurFd, hCurDesc, hcf])
+                | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, LeanSwe.PostFork.Aeneas.Internal.Sys.write, hCurRun, hCurFd, hCurDesc, hcf])
             refine okPost_bind hLoop ?_
             intro ⟨s1, err, failed⟩ ⟨hFail, hSt1, hFds1, hDescs1, hCwd1, hPgid1, hSig1, hOr1,
               hLim1, hMask1, hCrSup1, hCrErr1, hProcAv1, hProcErr1, hPid1, hSid1, hWlog1, hTr1, hNoSec1⟩
@@ -1508,7 +1509,7 @@ theorem write_all_spec (s : ChildState) (fd : I32) (buf : Slice U8) :
                 have hCurDesc : cur.getDesc e.desc = .procSelfFd cursor := by rw [ChildState.getDesc, hDescs]; exact hDesc
                 cases hcf : currentFault cur with
                 | seccomp rawE => exact absurd hcf (hNonSec rawE)
-                | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, hCurRun, hCurFd, hCurDesc, hcf])
+                | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, LeanSwe.PostFork.Aeneas.Internal.Sys.write, hCurRun, hCurFd, hCurDesc, hcf])
             refine okPost_bind hLoop ?_
             intro ⟨s1, err, failed⟩ ⟨hFail, hSt1, hFds1, hDescs1, hCwd1, hPgid1, hSig1, hOr1,
               hLim1, hMask1, hCrSup1, hCrErr1, hProcAv1, hProcErr1, hPid1, hSid1, hWlog1, hTr1, hNoSec1⟩
@@ -1526,7 +1527,7 @@ theorem write_all_spec (s : ChildState) (fd : I32) (buf : Slice U8) :
                   have hCurDesc : cur.getDesc e.desc = .stream rd false brk rbs := by rw [ChildState.getDesc, hDescs]; exact hDesc
                   cases hcf : currentFault cur with
                   | seccomp rawE => exact absurd hcf (hNonSec rawE)
-                  | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, hCurRun, hCurFd, hCurDesc, hcf])
+                  | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, LeanSwe.PostFork.Aeneas.Internal.Sys.write, hCurRun, hCurFd, hCurDesc, hcf])
               refine okPost_bind hLoop ?_
               intro ⟨s1, err, failed⟩ ⟨hFail, hSt1, hFds1, hDescs1, hCwd1, hPgid1, hSig1, hOr1,
                 hLim1, hMask1, hCrSup1, hCrErr1, hProcAv1, hProcErr1, hPid1, hSid1, hWlog1, hTr1, hNoSec1⟩
@@ -1588,7 +1589,7 @@ theorem write_all_spec (s : ChildState) (fd : I32) (buf : Slice U8) :
           intro p hp
           rw [hp]
           unfold postfork.child.write_all_loop0.body
-          unfold sys.write
+          unfold sys.write LeanSwe.PostFork.Aeneas.Internal.Sys.write
           cases hSt : s.status with
           | running => exact absurd hSt hRun
           | exited _ | signaled _ | execd _ =>
@@ -1616,7 +1617,7 @@ theorem write_all_spec (s : ChildState) (fd : I32) (buf : Slice U8) :
               have hCurFd : cur.getFd fd.val = none := by rw [ChildState.getFd, hFds]; exact hFd
               cases hcf : currentFault cur with
               | seccomp rawE => exact absurd hcf (hNonSec rawE)
-              | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, hCurRun, hCurFd, hcf])
+              | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, LeanSwe.PostFork.Aeneas.Internal.Sys.write, hCurRun, hCurFd, hcf])
           refine okPost_bind hLoop ?_
           intro ⟨s1, err, failed⟩ ⟨hFail, hSt1, hFds1, hDescs1, hCwd1, hPgid1, hSig1, _, hOr1,
             hLim1, hMask1, hCrSup1, hCrErr1, hProcAv1, hProcErr1, hPid1, hSid1, hWlog1, hTr1, hNoSec1⟩
@@ -1636,7 +1637,7 @@ theorem write_all_spec (s : ChildState) (fd : I32) (buf : Slice U8) :
                 have hCurDesc : cur.getDesc e.desc = .directory cursor := by rw [ChildState.getDesc, hDescs]; exact hDesc
                 cases hcf : currentFault cur with
                 | seccomp rawE => exact absurd hcf (hNonSec rawE)
-                | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, hCurRun, hCurFd, hCurDesc, hcf])
+                | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, LeanSwe.PostFork.Aeneas.Internal.Sys.write, hCurRun, hCurFd, hCurDesc, hcf])
             refine okPost_bind hLoop ?_
             intro ⟨s1, err, failed⟩ ⟨hFail, hSt1, hFds1, hDescs1, hCwd1, hPgid1, hSig1, _, hOr1,
               hLim1, hMask1, hCrSup1, hCrErr1, hProcAv1, hProcErr1, hPid1, hSid1, hWlog1, hTr1, hNoSec1⟩
@@ -1654,7 +1655,7 @@ theorem write_all_spec (s : ChildState) (fd : I32) (buf : Slice U8) :
                 have hCurDesc : cur.getDesc e.desc = .procSelfFd cursor := by rw [ChildState.getDesc, hDescs]; exact hDesc
                 cases hcf : currentFault cur with
                 | seccomp rawE => exact absurd hcf (hNonSec rawE)
-                | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, hCurRun, hCurFd, hCurDesc, hcf])
+                | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, LeanSwe.PostFork.Aeneas.Internal.Sys.write, hCurRun, hCurFd, hCurDesc, hcf])
             refine okPost_bind hLoop ?_
             intro ⟨s1, err, failed⟩ ⟨hFail, hSt1, hFds1, hDescs1, hCwd1, hPgid1, hSig1, _, hOr1,
               hLim1, hMask1, hCrSup1, hCrErr1, hProcAv1, hProcErr1, hPid1, hSid1, hWlog1, hTr1, hNoSec1⟩
@@ -1673,7 +1674,7 @@ theorem write_all_spec (s : ChildState) (fd : I32) (buf : Slice U8) :
                   have hCurDesc : cur.getDesc e.desc = .stream rd false brk rbs := by rw [ChildState.getDesc, hDescs]; exact hDesc
                   cases hcf : currentFault cur with
                   | seccomp rawE => exact absurd hcf (hNonSec rawE)
-                  | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, hCurRun, hCurFd, hCurDesc, hcf])
+                  | fail _ | normal | partialWrite _ | dentsBatch _ => simp [sys.write, LeanSwe.PostFork.Aeneas.Internal.Sys.write, hCurRun, hCurFd, hCurDesc, hcf])
               refine okPost_bind hLoop ?_
               intro ⟨s1, err, failed⟩ ⟨hFail, hSt1, hFds1, hDescs1, hCwd1, hPgid1, hSig1, _, hOr1,
                 hLim1, hMask1, hCrSup1, hCrErr1, hProcAv1, hProcErr1, hPid1, hSid1, hWlog1, hTr1, hNoSec1⟩
@@ -1736,9 +1737,9 @@ theorem write_all_spec (s : ChildState) (fd : I32) (buf : Slice U8) :
                     | fail _ | normal | partialWrite _ | dentsBatch _ =>
                       by_cases hSigDef : (cur.getSig 13 == Disp.default && cur.pid != 1 && !cur.isSigBlocked 13) = true
                       · simp only [Bool.and_eq_true, Bool.not_eq_true', beq_iff_eq, bne_iff_ne] at hSigDef
-                        simp [sys.write, hCurRun, hCurFd, hCurDesc, hSlEmpty, hcf, hSigDef]
+                        simp [sys.write, LeanSwe.PostFork.Aeneas.Internal.Sys.write, hCurRun, hCurFd, hCurDesc, hSlEmpty, hcf, hSigDef]
                       · simp only [Bool.not_eq_true] at hSigDef
-                        simp [sys.write, hCurRun, hCurFd, hCurDesc, hSlEmpty, hcf, hSigDef])
+                        simp [sys.write, LeanSwe.PostFork.Aeneas.Internal.Sys.write, hCurRun, hCurFd, hCurDesc, hSlEmpty, hcf, hSigDef])
                 refine okPost_bind hLoop ?_
                 intro ⟨s1, err, failed⟩ ⟨hFail, hSt1, hFds1, hDescs1, hCwd1, hPgid1, hSig1, _, hOr1,
                   hLim1, hMask1, hCrSup1, hCrErr1, hProcAv1, hProcErr1, hPid1, hSid1, hWlog1, hTr1, hNoSec1⟩
@@ -1770,7 +1771,7 @@ theorem write_all_spec (s : ChildState) (fd : I32) (buf : Slice U8) :
           subst hp
           unfold postfork.child.write_all_loop1.body
           simp only [hLenPos, ↓reduceIte, hSlEq, bind_ok]
-          unfold sys.write
+          unfold sys.write LeanSwe.PostFork.Aeneas.Internal.Sys.write
           cases hSt : s.status with
           | running => exact absurd hSt hRun
           | exited _ | signaled _ | execd _ =>
@@ -1841,7 +1842,7 @@ theorem report_bytes_and_exit_spec (s : ChildState) (repW : I32) (bytes : Slice 
         simp [postfork.child.SIGPIPE, isUserspaceInvalidSigactionSig]
       have hSigKn : isKernelInvalidSigactionSig postfork.child.SIGPIPE = false := by
         simp [postfork.child.SIGPIPE, isKernelInvalidSigactionSig]
-      unfold sys.sig_ign runUnitSyscall
+      unfold sys.sig_ign LeanSwe.PostFork.Aeneas.Internal.Sys.sig_ign runUnitSyscall
       simp only [hRun, hSigUs, hSigKn, Bool.and_false, Bool.false_eq_true, ↓reduceIte]
       cases hcf : currentFault s with
       | seccomp rawE =>
@@ -2073,7 +2074,7 @@ theorem report_bytes_and_exit_spec (s : ChildState) (repW : I32) (bytes : Slice 
   · by_cases hGe : repW ≥ 0#i32
     · simp only [hGe, ↓reduceIte]
       have hNotRunB : (s.status == Status.running) = false := beq_false_of_ne hRun
-      unfold sys.sig_ign
+      unfold sys.sig_ign LeanSwe.PostFork.Aeneas.Internal.Sys.sig_ign
       simp only [hNotRunB, Bool.false_and, Bool.false_eq_true, ↓reduceIte]
       rw [runUnitSyscall_not_running s hRun _ _ _ _, bind_ok]
       dsimp only [Aeneas.Std.uncurry]

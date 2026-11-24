@@ -1,13 +1,15 @@
 import LeanSwe.PostFork.Types
 import LeanSwe.PostFork.Model
-import LeanSwe.PostFork.Aeneas.FunsExternal
+import LeanSwe.PostFork.Aeneas.Types
+import LeanSwe.PostFork.Aeneas.Model.World
+import LeanSwe.PostFork.Aeneas.Model.Sys
 
 open _root_.Aeneas _root_.Aeneas.Std Result
 
 namespace LeanSwe.PostFork.Aeneas.Model
 
 open LeanSwe.PostFork
-open LeanSwe.PostFork.World
+open LeanSwe.PostFork.Aeneas.Internal.World
 
 /-- Child flag bit `0`: `FLAG_SET_PGID`. -/
 def FLAG_SET_PGID : Std.U32 := 1#u32
@@ -404,3 +406,139 @@ def RunChildSafetyPost
          sliceContainsNonnegSpec keepFds k = false → execImageGetFd img k = none))
 
 end LeanSwe.PostFork.Aeneas.Model
+
+namespace LeanSwe.PostFork.Aeneas.Internal
+
+open LeanSwe.PostFork.Aeneas.Internal.World
+
+/-- Private Aeneas capability bundle wrapping the Charon/Aeneas-translated `#![no_std]` Rust `postfork` wire constants and functions. -/
+structure PostForkAeneasApi where
+  /-- Wire magic byte (`postfork.child.WIRE_MAGIC`). -/
+  wireMagic : Std.U8
+  /-- Wire protocol version byte (`postfork.child.WIRE_VERSION`). -/
+  wireVersion : Std.U8
+  /-- Stage tag for validation errors (`postfork.child.STAGE_VALIDATE`). -/
+  stageValidate : Std.U8
+  /-- Stage tag for `setpgid` errors (`postfork.child.STAGE_PROCESS_GROUP`). -/
+  stageProcessGroup : Std.U8
+  /-- Stage tag for `SIGPIPE` reset errors (`postfork.child.STAGE_SIGNAL_RESET`). -/
+  stageSignalReset : Std.U8
+  /-- Stage tag for FD setup errors (`postfork.child.STAGE_FD_SETUP`). -/
+  stageFdSetup : Std.U8
+  /-- Stage tag for closing unkept FDs (`postfork.child.STAGE_CLOSE_UNKEPT`). -/
+  stageCloseUnkept : Std.U8
+  /-- Stage tag for `chdir` errors (`postfork.child.STAGE_CHDIR`). -/
+  stageChdir : Std.U8
+  /-- Stage tag for `execve` errors (`postfork.child.STAGE_EXECVE`). -/
+  stageExecve : Std.U8
+  /-- Encode the uniform 8-byte failure wire `[0x50, 0x01, stage, 0x00, err_le32]`. -/
+  encodeFailureReport : Std.U8 → Std.I32 → Result (Array Std.U8 8#usize)
+  /-- Validate flags, descriptor signs, and descriptor-set disjointness (`postfork.child.validate_child_args`). -/
+  validateChildArgs :
+    postfork.child.ChildFds → Slice Std.I32 → Slice Std.I32 → Result (core.result.Result Unit Std.I32)
+  /-- Clear `FD_CLOEXEC` via `F_GETFD` + `F_SETFD(flags & ~FD_CLOEXEC)`, preserving extra flags. -/
+  clearCloexec : ChildState → Std.I32 → Result (core.result.Result Unit Std.I32 × ChildState)
+  /-- Set `FD_CLOEXEC` via `F_GETFD` + `F_SETFD(flags | FD_CLOEXEC)`, preserving extra flags. -/
+  setCloexec : ChildState → Std.I32 → Result (core.result.Result Unit Std.I32 × ChildState)
+  /-- Relocate `rep_w` in `0..2` to `>= 3` via `F_DUPFD_CLOEXEC` + `close`, or set `FD_CLOEXEC` when `rep_w >= 3`. -/
+  relocateRepAbove2 : ChildState → Std.I32 → Result (core.result.Result Std.I32 Std.I32 × ChildState)
+  /-- Route `(stdin_fd, stdout_fd, stderr_fd)` onto `(0, 1, 2)` without clobbering cycles and clear `FD_CLOEXEC`. -/
+  setupStdio : ChildState → Std.I32 → Std.I32 → Std.I32 → Bool → Result (core.result.Result Unit Std.I32 × ChildState)
+  /-- Close all open descriptors `> 2` except `extra_keep_fd` and `keep_fds` via `close_range` or `/proc/self/fd`. -/
+  closeFdsAbove2Except : ChildState → Std.I32 → Slice Std.I32 → Result (core.result.Result Unit Std.I32 × ChildState)
+  /-- Parse a `/proc/self/fd` `linux_dirent64` `d_name` slice (`>= 0` canonical fd, `-1` other, `-2` malformed). -/
+  parseDirentName : Array Std.U8 256#usize → Std.Usize → Std.Usize → Result Std.I32
+  /-- Read 1 sync-barrier byte with `EINTR` retry and unconditionally close `sync_r`. -/
+  readSyncByte : ChildState → Std.I32 → Result (Bool × ChildState)
+  /-- Write the entire slice to `fd`, retrying `EINTR` and reassembling partial writes. -/
+  writeAll : ChildState → Std.I32 → Slice Std.U8 → Result (core.result.Result Unit Std.I32 × ChildState)
+  /-- Execute unified post-`fork` child setup (`postfork.child.run_child`). -/
+  runChild :
+    ChildState → postfork.child.ChildFds →
+      Slice Std.I32 → Slice Std.I32 → postfork.child.ExecSpec →
+      Result ChildState
+
+namespace Bridge
+
+open LeanSwe.LinuxSyscall
+open LeanSwe.PostFork
+open LeanSwe.PostFork.Aeneas.Internal.World
+open LeanSwe.PostFork.Aeneas.Model
+
+/-- Convert a pure `FailureStage` into its Aeneas wire byte (`1..7`). -/
+def stageToU8 : FailureStage → Std.U8
+  | .validate => 1#u8
+  | .processGroup => 2#u8
+  | .signalReset => 3#u8
+  | .fdSetup => 4#u8
+  | .closeUnkept => 5#u8
+  | .chdir => 6#u8
+  | .execve => 7#u8
+  | .wireTruncated => 7#u8
+
+/-- Convert a pure host `UInt32` bitmask into `Aeneas.Std.U32`. -/
+def mkU32 (v : UInt32) : Std.U32 :=
+  ⟨v.toBitVec⟩
+
+/-- Compute the Aeneas child flag mask corresponding to `(spec, withBarrier)`. -/
+def specFlagsU32 {fd : Type} (spec : ChildSpecM fd) (withBarrier : Bool) : Std.U32 :=
+  mkU32 (LeanSwe.PostFork.Model.flagsOfSpec spec withBarrier)
+
+/-- Convert an `Aeneas.Std.U8` byte list into a pure `ByteArray`. -/
+def bytesToByteArray (bs : List Std.U8) : ByteArray :=
+  ByteArray.mk (bs.map (fun b => UInt8.ofNat b.bv.toNat)).toArray
+
+/-- Project an `FdRef Std.I32` into its concrete child descriptor `Std.I32`. -/
+def fdRefToStdI32 : FdRef Std.I32 → Std.I32
+  | .handle h => h
+  | .raw n => ⟨n.toBitVec⟩
+
+/-- Project a `StdioPlan Std.I32` into the `(stdin_fd, stdout_fd, stderr_fd)` triple passed to `run_child`. -/
+def stdioToStdI32Triple : StdioPlan Std.I32 → Std.I32 × Std.I32 × Std.I32
+  | .inherit => ((-1)#i32, (-1)#i32, (-1)#i32)
+  | .redirect sIn sOut sErr _ => (fdRefToStdI32 sIn, fdRefToStdI32 sOut, fdRefToStdI32 sErr)
+
+/-- Pure string/env/argv hygiene portion of `Model.validateSpecWith`. -/
+def specStringHygieneOk {fd : Type} (spec : ChildSpecM fd) : Bool :=
+  let cwdOk := match spec.cwd with | some d => !LeanSwe.PostFork.Model.hasEmbeddedNulStr d | none => true
+  let pathOk := !spec.path.isEmpty && !LeanSwe.PostFork.Model.hasEmbeddedNulStr spec.path
+  let argvOk := spec.argv.all LeanSwe.PostFork.Model.ArgToken.isValid
+  let envOk := spec.env.all LeanSwe.PostFork.Model.isValidEnvBinding &&
+    spec.rawEnv.all LeanSwe.PostFork.Model.isValidRawEnvEntry
+  pathOk && cwdOk && argvOk && envOk
+
+/-- Collect all `FdRef` entries referenced in `stdio`, `closeFds`, and `fdPolicy.keepFds`. -/
+def allSpecFdRefs {fd : Type} (spec : ChildSpecM fd) : List (FdRef fd) :=
+  let stdioList := match spec.stdio with
+    | .inherit => []
+    | .redirect a b c _ => [a, b, c]
+  stdioList ++ spec.closeFds.toList ++ (LeanSwe.PostFork.Model.FdPolicy.keepFds spec.fdPolicy).toList
+
+/-- Host invariant on pinned `RawFd` handles: every `.handle h` is `>= 3` and distinct from caller `.raw n` slots. -/
+def specHandlesValid (spec : ChildSpecM Std.I32) : Bool :=
+  let refs := allSpecFdRefs spec
+  let handles := refs.filterMap (fun r => match r with | .handle h => some h | .raw _ => none)
+  let raws := refs.filterMap (fun r => match r with | .raw n => some (⟨n.toBitVec⟩ : Std.I32) | .handle _ => none)
+  handles.all (fun h => decide (3#i32 ≤ h) && !(raws.any (· == h)))
+
+/-- Host invariant that newly allocated internal `repW` and optional `syncR` pipes are non-negative and disjoint from caller descriptors. -/
+def internalPipesDisjoint
+    (withBarrier hasRedir : Bool)
+    (syncR inFd outFd errFd repW : Std.I32)
+    (closeList keepList : List Std.I32) : Bool :=
+  decide (0#i32 ≤ repW) &&
+  !sliceContainsNonnegSpec closeList repW.val &&
+  !sliceContainsNonnegSpec keepList repW.val &&
+  (!withBarrier ||
+    (decide (0#i32 ≤ syncR) &&
+      repW != syncR &&
+      !sliceContainsNonnegSpec closeList syncR.val &&
+      !sliceContainsNonnegSpec keepList syncR.val)) &&
+  (!hasRedir ||
+    (!fdInStdioSpec repW inFd outFd errFd &&
+      (!withBarrier || !fdInStdioSpec syncR inFd outFd errFd)))
+
+
+end Bridge
+
+end LeanSwe.PostFork.Aeneas.Internal

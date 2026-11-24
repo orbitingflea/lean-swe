@@ -13,7 +13,8 @@ namespace LeanSwe.PostFork.Proofs
 
 open _root_.Aeneas _root_.Aeneas.Std Result ControlFlow Error
 open LeanSwe.PostFork
-open LeanSwe.PostFork.World
+open LeanSwe.PostFork.Aeneas.Internal
+open LeanSwe.PostFork.Aeneas.Internal.World
 open LeanSwe.PostFork.Aeneas
 open LeanSwe.PostFork.Aeneas.Model
 
@@ -135,7 +136,7 @@ private theorem sys_close_running_exact (s : ChildState) (hs : s.status = Status
     ⟨r, s', hEq, hCfg, hPgid, hCwd, hSig, hDescs, hWl, hTr, hFds, _⟩
   refine ⟨r, s', hEq, hCfg, hPgid, hCwd, hSig, hDescs, hWl, hTr, hFds, ?_, ?_⟩
   · intro hr rawE
-    unfold sys.close runUnitSyscall at hEq
+    unfold sys.close LeanSwe.PostFork.Aeneas.Internal.Sys.close runUnitSyscall at hEq
     simp only [hs] at hEq
     cases hf : currentFault s with
     | seccomp e =>
@@ -150,7 +151,7 @@ private theorem sys_close_running_exact (s : ChildState) (hs : s.status = Status
     | normal | partialWrite _ | dentsBatch _ =>
       exact ⟨(fun h => (by cases h)), (fun h => (by cases h))⟩
   · intro hNF hOpen
-    unfold sys.close runUnitSyscall at hEq
+    unfold sys.close LeanSwe.PostFork.Aeneas.Internal.Sys.close runUnitSyscall at hEq
     simp only [hs, hOpen, ↓reduceIte] at hEq
     cases hf : currentFault s with
     | seccomp e => exact absurd hf (hNF e).1
@@ -744,7 +745,7 @@ private def procCloseMeas (dirfd : I32) (cur : sys.Sys) : Nat :=
 private theorem sys_getdents64_not_running (s : sys.Sys) (h : s.status ≠ .running)
     (dirfd : I32) (buf : Array U8 256#usize) :
     sys.getdents64 s dirfd buf = ok (.Ok 0#usize, s, buf) := by
-  unfold sys.getdents64
+  unfold sys.getdents64 LeanSwe.PostFork.Aeneas.Internal.Sys.getdents64
   cases hSt : s.status <;> simp_all
 
 private theorem sys_getdents64_seccomp (s : sys.Sys) (hRun : s.status = .running)
@@ -753,7 +754,7 @@ private theorem sys_getdents64_seccomp (s : sys.Sys) (hRun : s.status = .running
     sys.getdents64 s dirfd buf =
       ok (.Err (sanitizeErrno rawE),
         { s with trace := s.trace ++ [⟨.getdents64 dirfd, .err (sanitizeErrno rawE)⟩] }, buf) := by
-  simp [sys.getdents64, hRun, hS]
+  simp [sys.getdents64, LeanSwe.PostFork.Aeneas.Internal.Sys.getdents64, hRun, hS]
 
 private theorem sys_getdents64_none (s : sys.Sys) (hRun : s.status = .running)
     (hNoSec : ∀ rawE, currentFault s ≠ .seccomp rawE)
@@ -762,7 +763,7 @@ private theorem sys_getdents64_none (s : sys.Sys) (hRun : s.status = .running)
       ok (.Err EBADF, { s with trace := s.trace ++ [⟨.getdents64 dirfd, .err EBADF⟩] }, buf) := by
   cases hCur : currentFault s with
   | seccomp rawE => exact absurd hCur (hNoSec rawE)
-  | normal | fail _ | partialWrite _ | dentsBatch _ => simp [sys.getdents64, hRun, hCur, hFd]
+  | normal | fail _ | partialWrite _ | dentsBatch _ => simp [sys.getdents64, LeanSwe.PostFork.Aeneas.Internal.Sys.getdents64, hRun, hCur, hFd]
 
 private theorem sys_getdents64_stream (s : sys.Sys) (hRun : s.status = .running)
     (hNoSec : ∀ rawE, currentFault s ≠ .seccomp rawE)
@@ -773,7 +774,7 @@ private theorem sys_getdents64_stream (s : sys.Sys) (hRun : s.status = .running)
       ok (.Err ENOTDIR, { s with trace := s.trace ++ [⟨.getdents64 dirfd, .err ENOTDIR⟩] }, buf) := by
   cases hCur : currentFault s with
   | seccomp rawE => exact absurd hCur (hNoSec rawE)
-  | normal | fail _ | partialWrite _ | dentsBatch _ => simp [sys.getdents64, hRun, hCur, hFd, hDesc]
+  | normal | fail _ | partialWrite _ | dentsBatch _ => simp [sys.getdents64, LeanSwe.PostFork.Aeneas.Internal.Sys.getdents64, hRun, hCur, hFd, hDesc]
 
 private theorem sys_getdents64_dir_fail (s : sys.Sys) (hRun : s.status = .running)
     (dirfd : I32) (e : FdEntry) (hFd : s.getFd dirfd.val = some e)
@@ -782,7 +783,7 @@ private theorem sys_getdents64_dir_fail (s : sys.Sys) (hRun : s.status = .runnin
     sys.getdents64 s dirfd buf =
       ok (.Err (sanitizeErrno rawE),
         { s with trace := s.trace ++ [⟨.getdents64 dirfd, .err (sanitizeErrno rawE)⟩] }, buf) := by
-  simp [sys.getdents64, hRun, hFd, hDesc, hF]
+  simp [sys.getdents64, LeanSwe.PostFork.Aeneas.Internal.Sys.getdents64, hRun, hFd, hDesc, hF]
 
 private theorem sys_getdents64_dir_ok (s : sys.Sys) (hRun : s.status = .running)
     (dirfd : I32) (e : FdEntry) (hFd : s.getFd dirfd.val = some e)
@@ -801,7 +802,7 @@ private theorem sys_getdents64_dir_ok (s : sys.Sys) (hRun : s.status = .running)
   | seccomp rawE => exact absurd hCur (hNoSec rawE)
   | fail rawE => exact absurd hCur (hF rawE)
   | normal | partialWrite _ | dentsBatch _ =>
-    simp only [sys.getdents64, hRun, hFd, hDesc, hCur]
+    simp only [sys.getdents64, LeanSwe.PostFork.Aeneas.Internal.Sys.getdents64, hRun, hFd, hDesc, hCur]
     rfl
 
 private theorem sys_getdents64_proc_fail (s : sys.Sys) (hRun : s.status = .running)
@@ -812,7 +813,7 @@ private theorem sys_getdents64_proc_fail (s : sys.Sys) (hRun : s.status = .runni
     sys.getdents64 s dirfd buf =
       ok (.Err (sanitizeErrno rawE),
         { s with trace := s.trace ++ [⟨.getdents64 dirfd, .err (sanitizeErrno rawE)⟩] }, buf) := by
-  simp [sys.getdents64, hRun, hFd, hDesc, hF]
+  simp [sys.getdents64, LeanSwe.PostFork.Aeneas.Internal.Sys.getdents64, hRun, hFd, hDesc, hF]
 
 private theorem sys_getdents64_proc_ok (s : sys.Sys) (hRun : s.status = .running)
     (dirfd : I32) (e : FdEntry) (hFd : s.getFd dirfd.val = some e)
@@ -833,7 +834,7 @@ private theorem sys_getdents64_proc_ok (s : sys.Sys) (hRun : s.status = .running
   | seccomp rawE => exact absurd hCur (hNoSec rawE)
   | fail rawE => exact absurd hCur (hF rawE)
   | normal | partialWrite _ | dentsBatch _ =>
-    simp only [sys.getdents64, hRun, hFd, hDesc, hCur]
+    simp only [sys.getdents64, LeanSwe.PostFork.Aeneas.Internal.Sys.getdents64, hRun, hFd, hDesc, hCur]
     rfl
 
 private def procLoopCont (extra_keep_fd : I32) (keep_fds : Slice I32) (dirfd : I32)
@@ -1210,7 +1211,7 @@ private theorem close_via_proc_self_fd_loop_total (s0 : sys.Sys) (extra_keep_fd 
 
 private theorem sys_open_proc_self_fd_total (s : sys.Sys) :
     OkPost (sys.open_proc_self_fd s) fun _ => True := by
-  unfold sys.open_proc_self_fd
+  unfold sys.open_proc_self_fd LeanSwe.PostFork.Aeneas.Internal.Sys.open_proc_self_fd
   by_cases hRun : s.status = .running
   · cases findLowestFreeFd s 0 with
     | none =>
@@ -1295,7 +1296,7 @@ private theorem sys_open_proc_self_fd_ok_spec (s : sys.Sys) (hRun : s.status = .
     let s2 := s1.putSlot dirfd { desc := d, cloexec := true, extraFdFlags := 0#i32 }
     let s3 := { s2 with trace := s2.trace ++ [⟨.openProcSelfFd, .okVal (mkI32 dirfd).val⟩] }
     sys.open_proc_self_fd s = ok (.Ok (mkI32 dirfd), s3) := by
-  unfold sys.open_proc_self_fd
+  unfold sys.open_proc_self_fd LeanSwe.PostFork.Aeneas.Internal.Sys.open_proc_self_fd
   rw [hLow]
   have hNA : (!s.procSelfFdAvailable) = false := by simp [hAvail]
   unfold runI32Syscall
@@ -1308,7 +1309,7 @@ private theorem sys_open_proc_self_fd_err_spec (s : sys.Sys) (hRun : s.status = 
     let e := sanitizeErrno s.procOpenErrno
     let s1 := { s with trace := s.trace ++ [⟨.openProcSelfFd, .err e⟩] }
     sys.open_proc_self_fd s = ok (.Err e, s1) := by
-  unfold sys.open_proc_self_fd
+  unfold sys.open_proc_self_fd LeanSwe.PostFork.Aeneas.Internal.Sys.open_proc_self_fd
   rw [hLow]
   have hA : (!s.procSelfFdAvailable) = true := by simp [hNotAvail]
   unfold runI32Syscall
@@ -3253,7 +3254,7 @@ private theorem sys_open_proc_self_fd_safety (s : sys.Sys) (hRun : s.status = .r
           p.2.getDesc eDir.desc = .procSelfFd (-2) ∧
           (∀ fd, fd ≠ dirfd.val → p.2.getFd fd = s.getFd fd) ∧
           (∀ d, d ≠ d0 → p.2.getDesc d = s.getDesc d)) := by
-  unfold sys.open_proc_self_fd
+  unfold sys.open_proc_self_fd LeanSwe.PostFork.Aeneas.Internal.Sys.open_proc_self_fd
   cases hLow : findLowestFreeFd s 0 with
   | none =>
     rcases runI32Syscall_running s hRun .openProcSelfFd (some EMFILE) (fun s => (0#i32, s)) with

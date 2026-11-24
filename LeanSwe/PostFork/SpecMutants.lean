@@ -2,9 +2,9 @@ import Core.NondetTest
 import Core.Assumptions
 import LeanSwe.PostFork.Types
 import LeanSwe.PostFork.Model
+import LeanSwe.PostFork.Impl
 import LeanSwe.PostFork.Aeneas.Model
 import LeanSwe.PostFork.Aeneas.Api
-import LeanSwe.PostFork.Aeneas.Bridge
 import LeanSwe.PostFork.SpecTests
 
 namespace LeanSwe.PostFork
@@ -13,15 +13,25 @@ open _root_.Aeneas _root_.Aeneas.Std Result
 open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.LinuxSyscall
-open LeanSwe.PostFork.World
 open LeanSwe.PostFork.Aeneas
 open LeanSwe.PostFork.Aeneas.Model
+open LeanSwe.PostFork.Aeneas.Internal
+open LeanSwe.PostFork.Aeneas.Internal.World
 
 private theorem ok_inj {α : Type} {a b : α} (h : (ok a : Result α) = ok b) : a = b := by
   simpa using h
 
 private def stubApi : PostForkAeneasApi :=
-  { encodeFailureReport := fun st e =>
+  { wireMagic := 80#u8
+    wireVersion := 1#u8
+    stageValidate := 1#u8
+    stageProcessGroup := 2#u8
+    stageSignalReset := 3#u8
+    stageFdSetup := 4#u8
+    stageCloseUnkept := 5#u8
+    stageChdir := 6#u8
+    stageExecve := 7#u8
+    encodeFailureReport := fun st e =>
       let _ := e
       ok (Array.make 8#usize [80#u8, 1#u8, st, 0#u8, 0#u8, 0#u8, 0#u8, 0#u8])
     validateChildArgs := fun _ _ _ => ok (.Ok ())
@@ -43,6 +53,14 @@ example : ¬ Core.AllPass (test_postfork_wireEncoder_uniformAndRoundTrip
   rcases (h 7#u8 2#i32 .execve Errno.ENOENT).1 with ⟨a, hOk, hEq⟩
   cases ok_inj hOk
   exact absurd hEq (by decide)
+
+example : ¬ Core.AllPass (test_postfork_wireEncoder_uniformAndRoundTrip
+    { stubApi with
+      wireMagic := 81#u8 }) := by
+  intro h
+  have hAssume := (h 7#u8 2#i32 .execve Errno.ENOENT).2.2.2.2.2.2.2.2.2
+    ⟨by decide, by decide, by decide, by decide, by decide⟩
+  exact absurd hAssume.2.1.1 (by decide)
 
 example : ¬ Core.AllPass (test_postfork_cloexecAndRelocate_preserveFlagsAndBounds
     { stubApi with
@@ -235,7 +253,9 @@ example : ¬ Core.AllPass (test_postfork_aeneasRefinement_flagsAndValidateChildA
   exact absurd hEq (by decide)
 
 example : ¬ Core.AllPass (test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter
-    (modeFn := fun _ => 0)) := by
+    LeanSwe.PostFork.Impl.Internal.flattenForkArgs
+    (fun _ => 0)
+    (fun raw => LeanSwe.PostFork.Impl.Internal.mkHostOps raw)) := by
   intro h
   have hSub := (h none 3 #[] #[] #[] #[] { path := "", argv := #[] }).1
   exact absurd hSub.2 (by decide)
@@ -252,7 +272,9 @@ private def leakSpawnForkErrBuilder :
       return .error (LeanSwe.PostFork.Impl.Internal.mkSysErr Errno.EAGAIN "fork failed") }
 
 example : ¬ Core.AllPass (test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter
-    (mkOps := leakSpawnForkErrBuilder)) := by
+    LeanSwe.PostFork.Impl.Internal.flattenForkArgs
+    LeanSwe.PostFork.Impl.Internal.forkModeToUInt32
+    leakSpawnForkErrBuilder) := by
   intro h
   have hSub := (h none 3 #[] #[] #[] #[] { path := "", argv := #[] }).2.2.2.2.2.2.2.2.1
   rcases hSub.1 with ⟨_, st, hRun, _, hCl⟩
@@ -273,7 +295,9 @@ private def deadlockBusyReleaseBuilder :
       return .error (LeanSwe.PostFork.Impl.Internal.mkSysErr Errno.EIO "host write failed") }
 
 example : ¬ Core.AllPass (test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter
-    (mkOps := deadlockBusyReleaseBuilder)) := by
+    LeanSwe.PostFork.Impl.Internal.flattenForkArgs
+    LeanSwe.PostFork.Impl.Internal.forkModeToUInt32
+    deadlockBusyReleaseBuilder) := by
   intro h
   have hSub := (h none 3 #[] #[] #[] #[] { path := "", argv := #[] }).2.2.2.2.2.2.2.2.1
   rcases hSub.2.2.2.2.2.2.1 with ⟨_, st, hRun, _, _, hCnt, _⟩
@@ -291,7 +315,9 @@ private def badByteLaneFlatten
   { base with keepSlots := ByteArray.mk (List.replicate (keepRefs.size * 4) (0 : UInt8)).toArray }
 
 example : ¬ Core.AllPass (test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter
-    (flattenFn := badByteLaneFlatten)) := by
+    badByteLaneFlatten
+    LeanSwe.PostFork.Impl.Internal.forkModeToUInt32
+    (fun raw => LeanSwe.PostFork.Impl.Internal.mkHostOps raw)) := by
   intro h
   have hSub := (h none 3 #[] #[] #[] #[] { path := "", argv := #[] }).2.2.2.2.2.2.1
   exact absurd hSub.2.2.2.2.2.2.2 (by decide)
@@ -306,7 +332,9 @@ private def unprobedErrReadReleaseBuilder :
       return .error (LeanSwe.PostFork.Impl.Internal.mkSysErr Errno.EBADF "host read failed") }
 
 example : ¬ Core.AllPass (test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter
-    (mkOps := unprobedErrReadReleaseBuilder)) := by
+    LeanSwe.PostFork.Impl.Internal.flattenForkArgs
+    LeanSwe.PostFork.Impl.Internal.forkModeToUInt32
+    unprobedErrReadReleaseBuilder) := by
   intro h
   have hSub := (h none 3 #[] #[] #[] #[] { path := "", argv := #[] }).2.2.2.2.2.2.2.2.1
   rcases hSub.2.2.2.2.2.2.2.2.1 with ⟨_, st, hRun, _, _, hSync, _⟩

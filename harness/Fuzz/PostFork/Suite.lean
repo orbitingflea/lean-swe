@@ -21,7 +21,7 @@ open Aeneas Aeneas.Std
 open Fuzz.Common
 open LeanSwe.LinuxSyscall
 open LeanSwe.PostFork
-open LeanSwe.PostFork.World
+open LeanSwe.PostFork.Aeneas.Internal.World
 open LeanSwe.PostFork.Model
 open LeanSwe.PostFork.Aeneas.Model
 

@@ -144,7 +144,7 @@ private def cryptoHashAuditModules : Array Name := #[
   `LeanSwe.CryptoHash.Proofs
 ]
 
-private def postForkAuditModules : Array Name := #[`LeanSwe.PostFork.Types, `LeanSwe.PostFork.Model, `LeanSwe.PostFork.Impl, `LeanSwe.PostFork.Interface]
+private def postForkAuditModules : Array Name := #[`LeanSwe.PostFork.Types, `LeanSwe.PostFork.Types.Internal, `LeanSwe.PostFork.Model, `LeanSwe.PostFork.Impl, `LeanSwe.PostFork.Interface]
 private def cryptoHashVectorModules : Array Name := #[
   `LeanSwe.CryptoHash.Raw.Proofs.HmacEmptyInner,
   `LeanSwe.CryptoHash.Raw.Proofs.HmacTc1,
@@ -1284,12 +1284,22 @@ private def checkPostForkPrivateWiring (env : Environment) : IO (Array String) :
   return wErrs
 
 private def checkPostForkAeneasWiring (env : Environment) : Array String := Id.run do
-  let targets : Array Name := #[`postfork.child.encode_failure_report, `postfork.child.validate_child_args, `postfork.fd_ops.clear_cloexec, `postfork.fd_ops.set_cloexec, `postfork.fd_ops.relocate_rep_above2, `postfork.fd_ops.setup_stdio, `postfork.fd_ops.close_fds_above2_except, `postfork.fd_ops.parse_dirent_name, `postfork.child.read_sync_byte, `postfork.child.write_all, `postfork.child.run_child]
+  let targets : Array Name := #[
+    `postfork.child.WIRE_MAGIC, `postfork.child.WIRE_VERSION,
+    `postfork.child.STAGE_VALIDATE, `postfork.child.STAGE_PROCESS_GROUP,
+    `postfork.child.STAGE_SIGNAL_RESET, `postfork.child.STAGE_FD_SETUP,
+    `postfork.child.STAGE_CLOSE_UNKEPT, `postfork.child.STAGE_CHDIR,
+    `postfork.child.STAGE_EXECVE,
+    `postfork.child.encode_failure_report, `postfork.child.validate_child_args,
+    `postfork.fd_ops.clear_cloexec, `postfork.fd_ops.set_cloexec,
+    `postfork.fd_ops.relocate_rep_above2, `postfork.fd_ops.setup_stdio,
+    `postfork.fd_ops.close_fds_above2_except, `postfork.fd_ops.parse_dirent_name,
+    `postfork.child.read_sync_byte, `postfork.child.write_all, `postfork.child.run_child]
   let apiConst := `LeanSwe.PostFork.Aeneas.rustAeneasApi
   let some (.defnInfo dv) := env.find? apiConst | return #[s!"TRUSTED_CLOSURE_AENEAS_WIRING_MISMATCH: missing {apiConst}"]
   let v := dv.value.consumeMData
   let args := v.getAppArgs
-  if dv.safety != .safe || dv.type.consumeMData != mkConst `LeanSwe.PostFork.Aeneas.PostForkAeneasApi || v.getAppFn.constName? != some `LeanSwe.PostFork.Aeneas.PostForkAeneasApi.mk || args.size != targets.size then
+  if dv.safety != .safe || dv.type.consumeMData != mkConst `LeanSwe.PostFork.Aeneas.Internal.PostForkAeneasApi || v.getAppFn.constName? != some `LeanSwe.PostFork.Aeneas.Internal.PostForkAeneasApi.mk || args.size != targets.size then
     return #[s!"TRUSTED_CLOSURE_AENEAS_WIRING_MISMATCH: invalid {apiConst}"]
   let mut errs : Array String := #[]
   for i in [0 : targets.size] do
@@ -2650,7 +2660,7 @@ private def dagRoleOf (knownPkgs : Array Name) (m : Name) : DagModuleRole :=
         else if m.components.take 3 == [`LeanSwe, `PostFork, `Aeneas] ||
             m.components.take 4 == [`LeanSwe, `ProcessSandbox, `Init, `Aeneas] then
           if last == `Types || last == `TypesExternal then .types
-          else if last == `Model then .model
+          else if last == `Model || rem.contains `Model then .model
           else .impl
         else if head == `Impl || m == `LeanSwe.ConnectProxy.Relay ||
             m == `LeanSwe.ProcessSandbox.InitData then
@@ -2941,13 +2951,7 @@ private def importDagAllowlist : Array String := #[
   "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.Proofs",
   "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.SpecTests",
   "CROSS|LeanSwe.Uuid.RuntimeTests|LeanSwe.LinuxSyscall.TestSupport.Seccomp",
-  "CROSS_REF|LeanSwe.Compress.RuntimeTests|LeanSwe.Process.SysBridge",
-  "WITHIN|LeanSwe.PostFork.Aeneas.Model|LeanSwe.PostFork.Aeneas.FunsExternal",
-  "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Aeneas.Api",
-  "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Aeneas.Bridge",
-  "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Aeneas.Funs",
-  "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Aeneas.FunsExternal",
-  "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Impl"
+  "CROSS_REF|LeanSwe.Compress.RuntimeTests|LeanSwe.Process.SysBridge"
 ]
 
 /-- Shrinking ratchet allowlist of pre-existing constants from disallowed non-API roles

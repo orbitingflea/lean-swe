@@ -14,7 +14,8 @@ namespace LeanSwe.PostFork.Proofs
 
 open _root_.Aeneas _root_.Aeneas.Std
 open LeanSwe.PostFork
-open LeanSwe.PostFork.World
+open LeanSwe.PostFork.Aeneas.Internal
+open LeanSwe.PostFork.Aeneas.Internal.World
 open LeanSwe.PostFork.Aeneas
 open LeanSwe.PostFork.Aeneas.Model
 
@@ -695,7 +696,7 @@ theorem close_unused_slice_safety (s : ChildState) (hRun : s.status = .running) 
               exact eraseFdEntries_length_le s1.fds _
           exact Nat.le_trans hcl hlen1
         have hs2Trace : ∃ out, s2.trace = s1.trace ++ [Event.mk (.close fds.val[idx.val]) out] := by
-          unfold sys.close runUnitSyscall at h2eq
+          unfold sys.close LeanSwe.PostFork.Aeneas.Internal.Sys.close runUnitSyscall at h2eq
           rw [hRun1] at h2eq
           cases hf : currentFault s1 with
           | seccomp rawE =>
@@ -934,7 +935,7 @@ theorem sys_setpgid_self_total (s : ChildState) :
   by_cases hrun : s.status = .running
   · obtain ⟨r, s', h, _⟩ := sys_setpgid_self_running s hrun
     exact ⟨(r, s'), h, trivial⟩
-  · unfold sys.setpgid_self
+  · unfold sys.setpgid_self LeanSwe.PostFork.Aeneas.Internal.Sys.setpgid_self
     rw [runUnitSyscall_not_running s hrun]
     exact okPost_ok _ _ trivial
 
@@ -945,7 +946,7 @@ theorem sys_sig_dfl_total (s : ChildState) (sig : I32) :
   · obtain ⟨r, s', h, _⟩ := sys_sig_dfl_running s hrun sig
     exact ⟨(r, s'), h, trivial⟩
   · have hNotRunB : (s.status == Status.running) = false := beq_false_of_ne hrun
-    unfold sys.sig_dfl
+    unfold sys.sig_dfl LeanSwe.PostFork.Aeneas.Internal.Sys.sig_dfl
     simp only [hNotRunB, Bool.false_and, Bool.false_eq_true, ↓reduceIte]
     rw [runUnitSyscall_not_running s hrun]
     exact okPost_ok _ _ trivial
@@ -957,7 +958,7 @@ theorem sys_sig_unblock_total (s : ChildState) (sig : I32) :
   · obtain ⟨r, s', h, _⟩ := sys_sig_unblock_running s hrun sig
     exact ⟨(r, s'), h, trivial⟩
   · have hNotRunB : (s.status == Status.running) = false := beq_false_of_ne hrun
-    unfold sys.sig_unblock
+    unfold sys.sig_unblock LeanSwe.PostFork.Aeneas.Internal.Sys.sig_unblock
     simp only [hNotRunB, Bool.false_and, Bool.false_eq_true, ↓reduceIte]
     rw [runUnitSyscall_not_running s hrun]
     exact okPost_ok _ _ trivial
@@ -968,7 +969,7 @@ theorem sys_chdir_total (s : ChildState) (path : sys.CStr) :
   by_cases hrun : s.status = .running
   · obtain ⟨r, s', h, _⟩ := sys_chdir_running s hrun path
     exact ⟨(r, s'), h, trivial⟩
-  · unfold sys.chdir
+  · unfold sys.chdir LeanSwe.PostFork.Aeneas.Internal.Sys.chdir
     rw [runUnitSyscall_not_running s hrun]
     exact okPost_ok _ _ trivial
 
@@ -984,7 +985,7 @@ theorem sys_execve_total (s : ChildState) (path : sys.CStr) (argv envp : sys.CSt
 /-- `sys.exit` always terminates on any `ChildState`. -/
 theorem sys_exit_total (s : ChildState) (code : I32) :
     OkPost (sys.exit s code) (fun _ => True) := by
-  unfold sys.exit
+  unfold sys.exit LeanSwe.PostFork.Aeneas.Internal.Sys.exit
   cases s.status <;> exact okPost_ok _ _ trivial
 
 /-- `report_and_exit` always terminates on any `ChildState`. -/
@@ -1106,7 +1107,7 @@ private theorem sys_fcntl_getfd_trace_eq_local (s : ChildState) (hRun : s.status
       (SameChildConfig.refl s).with_trace s'.trace,
       rfl, rfl, rfl, rfl, rfl, rfl⟩
   have hTrace : ∃ out, s'.trace = s.trace ++ [Event.mk (.fcntlGetfd fd) out] := by
-    unfold sys.fcntl_getfd runI32Syscall at hEq
+    unfold sys.fcntl_getfd LeanSwe.PostFork.Aeneas.Internal.Sys.fcntl_getfd runI32Syscall at hEq
     rw [hRun] at hEq
     cases hGet : s.getFd fd.val with
     | none =>
@@ -1171,7 +1172,7 @@ theorem sys_setpgid_self_trace_eq (s : ChildState) (hRun : s.status = .running)
     {r : core.result.Result Unit I32} {s' : ChildState}
     (hEq : sys.setpgid_self s = Result.ok (r, s')) :
     ∃ out, s'.trace = s.trace ++ [Event.mk .setpgidSelf out] := by
-  unfold sys.setpgid_self at hEq
+  unfold sys.setpgid_self LeanSwe.PostFork.Aeneas.Internal.Sys.setpgid_self at hEq
   exact runUnitSyscall_trace_eq s .setpgidSelf _ _ rfl hRun hEq
 
 /-- `sys.sig_dfl` running step appends a single `.sigDfl` event for valid userspace signal numbers. -/
@@ -1181,7 +1182,7 @@ theorem sys_sig_dfl_trace_eq (s : ChildState) (hRun : s.status = .running) (sig 
     (hValid : isUserspaceInvalidSigactionSig sig = false := by
       simp [isUserspaceInvalidSigactionSig, postfork.child.SIGPIPE]) :
     ∃ out, s'.trace = s.trace ++ [Event.mk (.sigDfl sig) out] := by
-  unfold sys.sig_dfl at hEq
+  unfold sys.sig_dfl LeanSwe.PostFork.Aeneas.Internal.Sys.sig_dfl at hEq
   simp only [hRun, beq_self_eq_true, hValid, Bool.and_false, Bool.false_eq_true, ↓reduceIte] at hEq
   exact runUnitSyscall_trace_eq s (.sigDfl sig) _ _ rfl hRun hEq
 
@@ -1192,7 +1193,7 @@ theorem sys_sig_unblock_trace_eq (s : ChildState) (hRun : s.status = .running) (
     (hValid : (sig.val < 1 || sig.val > 64) = false := by
       simp [postfork.child.SIGPIPE]) :
     ∃ out, s'.trace = s.trace ++ [Event.mk (.sigUnblock sig) out] := by
-  unfold sys.sig_unblock at hEq
+  unfold sys.sig_unblock LeanSwe.PostFork.Aeneas.Internal.Sys.sig_unblock at hEq
   simp only [hRun, beq_self_eq_true, hValid, Bool.true_and, Bool.false_eq_true, ↓reduceIte] at hEq
   exact runUnitSyscall_trace_eq s (.sigUnblock sig) _ _ rfl hRun hEq
 
@@ -1212,7 +1213,7 @@ theorem sys_execve_trace_eq (s : ChildState) (path : sys.CStr) (argv envp : sys.
     {e : I32} {s' : ChildState}
     (hEq : sys.execve s path argv envp = Result.ok (e, s')) :
     ∃ suf, s'.trace = s.trace ++ suf := by
-  unfold sys.execve at hEq
+  unfold sys.execve LeanSwe.PostFork.Aeneas.Internal.Sys.execve at hEq
   cases hSt : s.status with
   | running =>
     rw [hSt] at hEq
