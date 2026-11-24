@@ -1,5 +1,6 @@
 import LeanSwe.LinuxSyscall.Process.SpecTests
 import LeanSwe.LinuxSyscall.Process.Impl
+import LeanSwe.LinuxSyscall.Process.Interface
 
 namespace LeanSwe.LinuxSyscall.Process
 
@@ -1147,7 +1148,14 @@ theorem process_ops_getpidAndGetuid_consistentAndPositive_allPass :
 
 /-- Structural wiring proof: `Interface.defaultOps` is constructed via `Internal.mkProcessOps` and every wrapper (both explicit-flag and default-flag) delegates directly to it. -/
 theorem process_interface_defaultOpsWiring_allPass :
-    AllPass (test_process_interface_defaultOpsWiring defaultOps) := by
+    AllPass (test_process_interface_defaultOpsWiring
+      Internal.mkProcessOps defaultOps
+      (fun flags => pipe2 flags) pipe2
+      (fun pid flags => waitpid pid flags) (fun pid => waitpid pid)
+      kill
+      (fun pid flags => pidfd_open pid flags) (fun pid => pidfd_open pid)
+      (fun fd sig flags => pidfd_send_signal fd sig flags) (fun fd sig => pidfd_send_signal fd sig)
+      getpid getuid) := by
   dsimp only [AllPass, test_process_interface_defaultOpsWiring, Pure.pure, assert]
   exact ⟨⟨_, rfl⟩, (fun _ => rfl), rfl, (fun _ _ => rfl), (fun _ => rfl),
     (fun _ _ => rfl), (fun _ _ => rfl), (fun _ => rfl), (fun _ _ _ => rfl), (fun _ _ => rfl),

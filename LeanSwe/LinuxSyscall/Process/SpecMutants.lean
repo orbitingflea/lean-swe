@@ -1,4 +1,6 @@
 import LeanSwe.LinuxSyscall.Process.SpecTests
+import LeanSwe.LinuxSyscall.Process.Impl
+import LeanSwe.LinuxSyscall.Process.Interface
 
 namespace LeanSwe.LinuxSyscall.Process
 
@@ -1003,7 +1005,14 @@ example : ¬ Core.AllPass (test_process_model_delayedZombieThreadScopeOrphanAndE
   exact absurd hbad (by decide)
 
 example : ¬ Core.AllPass (test_process_interface_defaultOpsWiring
-    { defaultOps with kill := fun _ _ => pure (.error Errno.EPERM) }) := by
+    Internal.mkProcessOps
+    { defaultOps with kill := fun _ _ => pure (.error Errno.EPERM) }
+    (fun flags => pipe2 flags) pipe2
+    (fun pid flags => waitpid pid flags) (fun pid => waitpid pid)
+    kill
+    (fun pid flags => pidfd_open pid flags) (fun pid => pidfd_open pid)
+    (fun fd sig flags => pidfd_send_signal fd sig flags) (fun fd sig => pidfd_send_signal fd sig)
+    getpid getuid) := by
   intro h
   rcases h with ⟨⟨raw, hmk⟩, _⟩
   have hk := congrArg (fun o => o.kill 0 (.raw 32)) hmk
@@ -1012,9 +1021,16 @@ example : ¬ Core.AllPass (test_process_interface_defaultOpsWiring
     cases hw
 
 example : ¬ Core.AllPass (test_process_interface_defaultOpsWiring
+    Internal.mkProcessOps
     { defaultOps with
       pidfd_send_signal := fun _ _ flags =>
-        if flags == {} then pure (.error Errno.EPERM) else pure (.error Errno.EINVAL) }) := by
+        if flags == {} then pure (.error Errno.EPERM) else pure (.error Errno.EINVAL) }
+    (fun flags => pipe2 flags) pipe2
+    (fun pid flags => waitpid pid flags) (fun pid => waitpid pid)
+    kill
+    (fun pid flags => pidfd_open pid flags) (fun pid => pidfd_open pid)
+    (fun fd sig flags => pidfd_send_signal fd sig flags) (fun fd sig => pidfd_send_signal fd sig)
+    getpid getuid) := by
   intro h
   rcases h with ⟨⟨raw, hmk⟩, _⟩
   exact (inferInstance : Nonempty RawFd).elim fun fd =>

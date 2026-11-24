@@ -2,7 +2,6 @@ import Core.NondetTest
 import Core.Assumptions
 import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Process.Model
-import LeanSwe.LinuxSyscall.Process.Interface
 
 namespace LeanSwe.LinuxSyscall.Process
 
@@ -785,24 +784,36 @@ def test_process_model_modelOpsSoundForAllowedStep
 /-- Structural wiring promise: `Interface.defaultOps` is constructed via `Internal.mkProcessOps` and every top-level wrapper in `Interface` (both with explicit arguments and with default `optParam` flag values) delegates directly to `defaultOps`, so NPTL `32`/`33` guards, flag encoders, default `FD_CLOEXEC`, and `WaitResult.ofRawWait4` decoding cannot be bypassed. -/
 def test_process_interface_defaultOpsWiring
     {runner} [NondetTest runner]
-    (ops : ProcessOps := defaultOps) : runner Unit := do
-  NondetTest.assert (∃ raw : PosixProcessOps, ops = Internal.mkProcessOps raw)
-  NondetTest.assert (∀ flags, LeanSwe.LinuxSyscall.Process.pipe2 flags = ops.pipe2 flags)
-  NondetTest.assert (LeanSwe.LinuxSyscall.Process.pipe2 = ops.pipe2 {})
-  NondetTest.assert (∀ pid flags, LeanSwe.LinuxSyscall.Process.waitpid pid flags = ops.waitpid pid flags)
-  NondetTest.assert (∀ pid, LeanSwe.LinuxSyscall.Process.waitpid pid = ops.waitpid pid {})
-  NondetTest.assert (∀ pidOrNegPgid sig, LeanSwe.LinuxSyscall.Process.kill pidOrNegPgid sig = ops.kill pidOrNegPgid sig)
-  NondetTest.assert (∀ pid flags, LeanSwe.LinuxSyscall.Process.pidfd_open pid flags = ops.pidfd_open pid flags)
-  NondetTest.assert (∀ pid, LeanSwe.LinuxSyscall.Process.pidfd_open pid = ops.pidfd_open pid {})
-  NondetTest.assert (∀ fd sig flags, LeanSwe.LinuxSyscall.Process.pidfd_send_signal fd sig flags = ops.pidfd_send_signal fd sig flags)
-  NondetTest.assert (∀ fd sig, LeanSwe.LinuxSyscall.Process.pidfd_send_signal fd sig = ops.pidfd_send_signal fd sig {})
-  NondetTest.assert (LeanSwe.LinuxSyscall.Process.getpid = ops.getpid)
-  NondetTest.assert (LeanSwe.LinuxSyscall.Process.getuid = ops.getuid)
+    (mkOps : PosixProcessOps → ProcessOps)
+    (ops : ProcessOps)
+    (wPipe2 : PipeFlags → IO (Except Errno (RawFd × RawFd)))
+    (wPipe2Def : IO (Except Errno (RawFd × RawFd)))
+    (wWaitpid : Int32 → WaitFlags → IO (Except Errno WaitResult))
+    (wWaitpidDef : Int32 → IO (Except Errno WaitResult))
+    (wKill : Int32 → Signal → IO (Except Errno Unit))
+    (wPidfdOpen : UInt32 → PidfdOpenFlags → IO (Except Errno RawFd))
+    (wPidfdOpenDef : UInt32 → IO (Except Errno RawFd))
+    (wPidfdSend : RawFd → Signal → PidfdSignalFlags → IO (Except Errno Unit))
+    (wPidfdSendDef : RawFd → Signal → IO (Except Errno Unit))
+    (wGetpid : IO (Except Errno UInt32))
+    (wGetuid : IO (Except Errno UInt32)) : runner Unit := do
+  NondetTest.assert (∃ raw : PosixProcessOps, ops = mkOps raw)
+  NondetTest.assert (∀ flags, wPipe2 flags = ops.pipe2 flags)
+  NondetTest.assert (wPipe2Def = ops.pipe2 {})
+  NondetTest.assert (∀ pid flags, wWaitpid pid flags = ops.waitpid pid flags)
+  NondetTest.assert (∀ pid, wWaitpidDef pid = ops.waitpid pid {})
+  NondetTest.assert (∀ pidOrNegPgid sig, wKill pidOrNegPgid sig = ops.kill pidOrNegPgid sig)
+  NondetTest.assert (∀ pid flags, wPidfdOpen pid flags = ops.pidfd_open pid flags)
+  NondetTest.assert (∀ pid, wPidfdOpenDef pid = ops.pidfd_open pid {})
+  NondetTest.assert (∀ fd sig flags, wPidfdSend fd sig flags = ops.pidfd_send_signal fd sig flags)
+  NondetTest.assert (∀ fd sig, wPidfdSendDef fd sig = ops.pidfd_send_signal fd sig {})
+  NondetTest.assert (wGetpid = ops.getpid)
+  NondetTest.assert (wGetuid = ops.getuid)
 
 /-- Soundness and polymorphic `{m} [Monad m]` delegation promise for `Internal.mkProcessOps` covering both `IO` and `StateM`. -/
 def test_process_impl_mkProcessOpsSound
     {runner} [NondetTest runner]
-    (mkOps : {m : Type → Type} → [Monad m] → {fd : Type} → PosixProcessOpsM m fd → ProcessOpsM m fd := Internal.mkProcessOps) :
+    (mkOps : {m : Type → Type} → [Monad m] → {fd : Type} → PosixProcessOpsM m fd → ProcessOpsM m fd) :
     runner Unit := do
   NondetTest.assert
     (∀ (raw : PosixProcessOpsM (StateM ProcessSysState) HandleId), RawPosixShimSound raw →
