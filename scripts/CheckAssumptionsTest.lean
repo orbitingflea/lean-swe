@@ -774,6 +774,126 @@ private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath
       "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nnamespace LeanSwe.MiniA.Proofs\ndef fakeStep (t : Tag) : Nat := Model.step t\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
     return #["LeanSwe/MiniA/Proofs", "LeanSwe"]
 
+  runDagMut "other_helper_in_refines_model" "PROOF_CONST_IN_SIGNATURE"
+      (forbiddenCodes := #["DAG_WITHIN_VIOLATION"]) fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Helper.lean")
+      "import LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA.Helper\ndef fakeStep (t : Tag) : Nat := Model.step t\nend LeanSwe.MiniA.Helper\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
+      "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nimport LeanSwe.MiniA.Helper\nnamespace LeanSwe.MiniA.Proofs\ntheorem refines_model : Core.RefinesPureEq LeanSwe.MiniA.step Helper.fakeStep := fun t => by cases t <;> rfl\nend LeanSwe.MiniA.Proofs\n"
+    return #["LeanSwe/MiniA/Helper", "LeanSwe/MiniA/Proofs", "LeanSwe"]
+
+  runDagMut "other_helper_in_obeys_model" "PROOF_CONST_IN_SIGNATURE"
+      (forbiddenCodes := #["DAG_WITHIN_VIOLATION"]) fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Helper.lean")
+      "import LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA.Helper\ndef helperPred (t : Tag) : Prop := Model.step t > 0\nend LeanSwe.MiniA.Helper\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
+      "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nimport LeanSwe.MiniA.Helper\nnamespace LeanSwe.MiniA.Proofs\ntheorem obeys_model (t : Tag) : Helper.helperPred t := by cases t <;> simp [Helper.helperPred, Model.step]\nend LeanSwe.MiniA.Proofs\n"
+    return #["LeanSwe/MiniA/Helper", "LeanSwe/MiniA/Proofs", "LeanSwe"]
+
+  runDagMut "other_helper_in_allpass_sig"
+      "PROOF_CONST_IN_SIGNATURE: LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Helper|LeanSwe.MiniA.Helper.fakeStep count=1"
+      (forbiddenCodes := #["DAG_WITHIN_VIOLATION"]) fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Helper.lean")
+      "import LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA.Helper\ndef fakeStep (t : Tag) : Nat := Model.step t\nend LeanSwe.MiniA.Helper\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
+      "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nimport LeanSwe.MiniA.Helper\nnamespace LeanSwe.MiniA.Proofs\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a Helper.fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
+    return #["LeanSwe/MiniA/Helper", "LeanSwe/MiniA/Proofs", "LeanSwe"]
+
+  runDagMut "other_helper_in_canreach_sig"
+      "PROOF_CONST_IN_SIGNATURE: LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Helper|LeanSwe.MiniA.Helper.fakeStep count=1"
+      (forbiddenCodes := #["DAG_WITHIN_VIOLATION"]) fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Helper.lean")
+      "import LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA.Helper\ndef fakeStep (t : Tag) : Nat := Model.step t\nend LeanSwe.MiniA.Helper\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
+      "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nimport LeanSwe.MiniA.Helper\nnamespace LeanSwe.MiniA.Proofs\ntheorem proof_reach : Core.CanReach (LeanSwe.MiniA.test_a Helper.fakeStep) := ⟨.a, rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
+    return #["LeanSwe/MiniA/Helper", "LeanSwe/MiniA/Proofs", "LeanSwe"]
+
+  runDagMut "other_helper_sig_count_stale" "STALE_SIG_PROOF_ALLOWLIST"
+      (sigAllow := "LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Helper|LeanSwe.MiniA.Helper.fakeStep=2") fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Helper.lean")
+      "import LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA.Helper\ndef fakeStep (t : Tag) : Nat := Model.step t\nend LeanSwe.MiniA.Helper\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
+      "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nimport LeanSwe.MiniA.Helper\nnamespace LeanSwe.MiniA.Proofs\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a Helper.fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
+    return #["LeanSwe/MiniA/Helper", "LeanSwe/MiniA/Proofs", "LeanSwe"]
+
+  runDagMut "testsupport_in_allpass_sig"
+      "PROOF_CONST_IN_SIGNATURE: LeanSwe.MiniA.Proofs|LeanSwe.MiniA.TestSupport.Mock|LeanSwe.MiniA.TestSupport.fakeStep count=1"
+      (forbiddenCodes := #["DAG_WITHIN_VIOLATION"]) fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/TestSupport/Mock.lean")
+      "import LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA.TestSupport\ndef fakeStep (t : Tag) : Nat := Model.step t\nend LeanSwe.MiniA.TestSupport\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
+      "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nimport LeanSwe.MiniA.TestSupport.Mock\nnamespace LeanSwe.MiniA.Proofs\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a TestSupport.fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
+    return #["LeanSwe/MiniA/TestSupport/Mock", "LeanSwe/MiniA/Proofs", "LeanSwe"]
+
+  runDagMut "legacy_alias_spoof_in_allpass_sig"
+      "PROOF_CONST_IN_SIGNATURE: LeanSwe.MiniA.Proofs|LeanSwe.MiniA.HealthySys|LeanSwe.MiniA.HealthySys.fakeStep count=1"
+      (forbiddenCodes := #["DAG_WITHIN_VIOLATION"]) fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/HealthySys.lean")
+      "import LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA.HealthySys\ndef fakeStep (t : Tag) : Nat := Model.step t\nend LeanSwe.MiniA.HealthySys\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
+      "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nimport LeanSwe.MiniA.HealthySys\nnamespace LeanSwe.MiniA.Proofs\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a HealthySys.fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
+    return #["LeanSwe/MiniA/HealthySys", "LeanSwe/MiniA/Proofs", "LeanSwe"]
+
+  runDagMut "spectests_body_uses_other_helper" "PROOF_CONST_IN_SPEC"
+      (edgeAllow := "WITHIN|LeanSwe.MiniA.SpecTests|LeanSwe.MiniA.Helper")
+      (roots := "LeanSwe.MiniA.SpecTests")
+      (forbiddenCodes := #["DAG_WITHIN_VIOLATION", "STALE_IMPORT_DAG_ALLOWLIST"]) fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Helper.lean")
+      "namespace LeanSwe.MiniA.Helper\ndef helperVal : Nat := 7\nend LeanSwe.MiniA.Helper\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/SpecTests.lean")
+      "import Core.NondetTest\nimport LeanSwe.MiniA.Model\nimport LeanSwe.MiniA.Helper\nnamespace LeanSwe.MiniA\nopen Core Core.NondetTest\ndef test_bad_other {r} [NondetTest r] : r Unit := do\n  NondetTest.assert (Helper.helperVal = 7)\nend LeanSwe.MiniA\n"
+    return #["LeanSwe/MiniA/Helper", "LeanSwe/MiniA/SpecTests"]
+
+  runDagMut "other_helper_namespace_model" "PROOF_MODEL_NS_FORBIDDEN"
+      (roots := "LeanSwe.MiniA.Helper") fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Helper.lean")
+      "namespace LeanSwe.MiniA.Model\ndef disguisedModel (n : Nat) : Nat := n\nend LeanSwe.MiniA.Model\n"
+    return #["LeanSwe/MiniA/Helper"]
+
+  runDagMut "within_impl_imports_other_helper" "WITHIN|LeanSwe.MiniA.Impl|LeanSwe.MiniA.Helper"
+      (roots := "LeanSwe.MiniA.Impl") fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Helper.lean")
+      "namespace LeanSwe.MiniA.Helper\ndef val : Nat := 1\nend LeanSwe.MiniA.Helper\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Impl.lean")
+      "import LeanSwe.MiniA.Types\nimport LeanSwe.MiniA.Helper\nnamespace LeanSwe.MiniA.Internal\ndef stepImpl (_ : Tag) : Nat := Helper.val\nend LeanSwe.MiniA.Internal\n"
+    return #["LeanSwe/MiniA/Helper", "LeanSwe/MiniA/Impl"]
+
+  runDagMut "properties_helper_in_allpass_sig"
+      "PROOF_CONST_IN_SIGNATURE: LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Properties|LeanSwe.MiniA.Properties.fakeStep count=1"
+      (forbiddenCodes := #["DAG_WITHIN_VIOLATION"]) fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Properties.lean")
+      "import LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA.Properties\ndef fakeStep (t : Tag) : Nat := Model.step t\nend LeanSwe.MiniA.Properties\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
+      "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nimport LeanSwe.MiniA.Properties\nnamespace LeanSwe.MiniA.Proofs\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a Properties.fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
+    return #["LeanSwe/MiniA/Properties", "LeanSwe/MiniA/Proofs", "LeanSwe"]
+
+  runDagMut "specmutants_in_allpass_sig"
+      "PROOF_CONST_IN_SIGNATURE: LeanSwe.MiniA.Proofs|LeanSwe.MiniA.SpecMutants|LeanSwe.MiniA.SpecMutants.fakeStep count=1"
+      (forbiddenCodes := #["DAG_WITHIN_VIOLATION"]) fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/SpecMutants.lean")
+      "import LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA.SpecMutants\ndef fakeStep (t : Tag) : Nat := Model.step t\nend LeanSwe.MiniA.SpecMutants\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
+      "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nimport LeanSwe.MiniA.SpecMutants\nnamespace LeanSwe.MiniA.Proofs\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a SpecMutants.fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
+    return #["LeanSwe/MiniA/SpecMutants", "LeanSwe/MiniA/Proofs", "LeanSwe"]
+
+  runDagMut "runtimetests_in_allpass_sig"
+      "PROOF_CONST_IN_SIGNATURE: LeanSwe.MiniA.Proofs|LeanSwe.MiniA.RuntimeTests|LeanSwe.MiniA.RuntimeTests.fakeStep count=1"
+      (forbiddenCodes := #["DAG_WITHIN_VIOLATION"]) fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/RuntimeTests.lean")
+      "import LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA.RuntimeTests\ndef fakeStep (t : Tag) : Nat := Model.step t\nend LeanSwe.MiniA.RuntimeTests\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
+      "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nimport LeanSwe.MiniA.RuntimeTests\nnamespace LeanSwe.MiniA.Proofs\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a RuntimeTests.fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
+    return #["LeanSwe/MiniA/RuntimeTests", "LeanSwe/MiniA/Proofs", "LeanSwe"]
+
+  runDagMut "umbrella_in_allpass_sig"
+      "PROOF_CONST_IN_SIGNATURE: LeanSwe.MiniA.Proofs|LeanSwe.MiniA|LeanSwe.MiniA.umbrellaStep count=1"
+      (forbiddenCodes := #["DAG_WITHIN_VIOLATION"]) fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA.lean")
+      "import LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA\ndef umbrellaStep (t : Tag) : Nat := Model.step t\nend LeanSwe.MiniA\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
+      "import Core.Refines\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nimport LeanSwe.MiniA\nnamespace LeanSwe.MiniA.Proofs\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a LeanSwe.MiniA.umbrellaStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
+    return #["LeanSwe/MiniA", "LeanSwe/MiniA/Proofs", "LeanSwe"]
+
   IO.FS.removeDirAll baseDir
 
 /-- Execute self-tests for `Core.Refines`, boundary retirement, harness parity, and import-DAG gates. -/
