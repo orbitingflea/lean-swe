@@ -235,14 +235,14 @@ jobs:
           ASSUMP_LOG="$LANE_STATE_DIR/assump.log"
           LANE_PIDS=()
           cleanup_parallel() {
-            local p sig
+            local p sig running live=()
             set +m
             if (( ${#LANE_PIDS[@]} > 0 )); then
+              running=$'\n'$(jobs -r -p 2>/dev/null || true)$'\n'
+              for p in "${LANE_PIDS[@]}"; do if [[ "$p" =~ ^[1-9][0-9]*$ && "$p" -gt 1 && "$running" == *$'\n'"$p"$'\n'* ]]; then live+=("$p"); fi; done
               for sig in TERM KILL; do
-                for p in "${LANE_PIDS[@]}"; do
-                  [[ "$p" =~ ^[1-9][0-9]*$ && "$p" -gt 1 ]] || continue
-                  kill "-$sig" -- -"$p" 2>/dev/null || kill "-$sig" "$p" 2>/dev/null || true
-                done
+                (( ${#live[@]} > 0 )) || break
+                for p in "${live[@]}"; do kill "-$sig" -- -"$p" 2>/dev/null || true; done
                 [[ "$sig" == TERM ]] && sleep 0.1 || true
               done
               wait "${LANE_PIDS[@]}" 2>/dev/null || true
