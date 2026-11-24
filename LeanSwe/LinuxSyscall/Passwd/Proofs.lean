@@ -823,8 +823,9 @@ private theorem passwdRetryBufSizes_range (sz : UInt32) (hMem : sz ∈ Internal.
 
 /-- Proof of `test_passwd_mkPasswdOps_soundAgainstAllowedStep` for `Internal.mkPasswdOpsM`. -/
 theorem proof_passwd_mkPasswdOps_soundAgainstAllowedStep :
-    AllPass (test_passwd_mkPasswdOps_soundAgainstAllowedStep Internal.mkPasswdOpsM) := by
-  intro s uid name badName overCapName raw hwf hBad hOverValid hOverSize hRawUid hRawNam
+    AllPass (test_passwd_mkPasswdOps_soundAgainstAllowedStep
+      (fun gUid gNam => Internal.mkPasswdOpsM { getpwuidOnce := gUid, getpwnamOnce := gNam })) := by
+  intro s uid name badName overCapName rawGetpwuidOnce rawGetpwnamOnce hwf hBad hOverValid hOverSize hRawUid hRawNam
   dsimp only [test_passwd_mkPasswdOps_soundAgainstAllowedStep, NondetTest.assert, Bind.bind]
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, trivial⟩
   · simp [Internal.mkPasswdOpsM, hBad]; rfl
@@ -832,12 +833,12 @@ theorem proof_passwd_mkPasswdOps_soundAgainstAllowedStep :
   · dsimp only [Internal.mkPasswdOpsM, StateT.run]
     exact (retryPasswdLookup_sound s (.getpwuid uid)
       (fun entry => entry.hasNoEmbeddedNul && entry.uid == uid)
-      (raw.getpwuidOnce uid) Internal.passwdRetryBufSizes (by decide) rfl hwf
+      (rawGetpwuidOnce uid) Internal.passwdRetryBufSizes (by decide) rfl hwf
       (fun sz hMem => hRawUid sz (passwdRetryBufSizes_range sz hMem))).1
   · dsimp only [Internal.mkPasswdOpsM, StateT.run]
     exact (retryPasswdLookup_sound s (.getpwuid uid)
       (fun entry => entry.hasNoEmbeddedNul && entry.uid == uid)
-      (raw.getpwuidOnce uid) Internal.passwdRetryBufSizes (by decide) rfl hwf
+      (rawGetpwuidOnce uid) Internal.passwdRetryBufSizes (by decide) rfl hwf
       (fun sz hMem => hRawUid sz (passwdRetryBufSizes_range sz hMem))).2
   · dsimp only [Internal.mkPasswdOpsM, StateT.run]
     by_cases hv : validPasswdName name = true
@@ -851,7 +852,7 @@ theorem proof_passwd_mkPasswdOps_soundAgainstAllowedStep :
           simp [isUserspaceInvalidReq, hv, hlen]
         exact (retryPasswdLookup_sound s (.getpwnam name)
           (fun entry => entry.hasNoEmbeddedNul && entry.name == name)
-          (raw.getpwnamOnce name) Internal.passwdRetryBufSizes (by decide) hInv hwf
+          (rawGetpwnamOnce name) Internal.passwdRetryBufSizes (by decide) hInv hwf
           (fun sz hMem => hRawNam sz (passwdRetryBufSizes_range sz hMem) hv hlenLe)).1
     · have hvF : validPasswdName name = false := by
         cases hb : validPasswdName name <;> simp_all
@@ -867,7 +868,7 @@ theorem proof_passwd_mkPasswdOps_soundAgainstAllowedStep :
           simp [isUserspaceInvalidReq, hv, hlen]
         exact (retryPasswdLookup_sound s (.getpwnam name)
           (fun entry => entry.hasNoEmbeddedNul && entry.name == name)
-          (raw.getpwnamOnce name) Internal.passwdRetryBufSizes (by decide) hInv hwf
+          (rawGetpwnamOnce name) Internal.passwdRetryBufSizes (by decide) hInv hwf
           (fun sz hMem => hRawNam sz (passwdRetryBufSizes_range sz hMem) hv hlenLe)).2
     · have hvF : validPasswdName name = false := by
         cases hb : validPasswdName name <;> simp_all
@@ -875,10 +876,12 @@ theorem proof_passwd_mkPasswdOps_soundAgainstAllowedStep :
 
 /-- Non-vacuity `CanReach` witness for `test_passwd_mkPasswdOps_soundAgainstAllowedStep`. -/
 theorem reach_passwd_mkPasswdOps_soundAgainstAllowedStep :
-    CanReach (test_passwd_mkPasswdOps_soundAgainstAllowedStep Internal.mkPasswdOpsM) := by
-  let rawNone : Internal.PosixPasswdOpsM (StateM PasswdState) :=
-    { getpwuidOnce := fun _ _ => pure (.ok none)
-      getpwnamOnce := fun _ _ => pure (.ok none) }
+    CanReach (test_passwd_mkPasswdOps_soundAgainstAllowedStep
+      (fun gUid gNam => Internal.mkPasswdOpsM { getpwuidOnce := gUid, getpwnamOnce := gNam })) := by
+  let rawGetpwuidNone : UInt32 → UInt32 → StateM PasswdState (Except Errno (Option Internal.RawPasswdTuple)) :=
+    fun _ _ => pure (.ok none)
+  let rawGetpwnamNone : ByteArray → UInt32 → StateM PasswdState (Except Errno (Option Internal.RawPasswdTuple)) :=
+    fun _ _ => pure (.ok none)
   let s0 : PasswdState :=
     { byUid := setPasswdByUid ∅ 0 none
       byName := setPasswdByName ∅ ByteArray.empty none }
@@ -886,30 +889,88 @@ theorem reach_passwd_mkPasswdOps_soundAgainstAllowedStep :
     simp only [s0, PasswdState.isWellFormed, Bool.and_eq_true]
     exact ⟨setPasswdByUid_wellFormed ∅ 0 none (by decide) (by decide),
       setPasswdByName_wellFormed ∅ ByteArray.empty none (by decide) (by decide)⟩
-  refine ⟨s0, 0, ByteArray.empty, ByteArray.mk #[0], overCapWitness, rawNone, hs0,
+  refine ⟨s0, 0, ByteArray.empty, ByteArray.mk #[0], overCapWitness, rawGetpwuidNone, rawGetpwnamNone, hs0,
     by decide, validPasswdName_overCapWitness, overCapWitness_size_gt,
-    (fun _ _ => by dsimp only [rawNone, pure, StateT.pure]; simp [s0, allowedStep, allowedStepCore,
+    (fun _ _ => by dsimp only [rawGetpwuidNone, pure, StateT.pure]; simp [s0, allowedStep, allowedStepCore,
       lookupPasswdByUid_set_self, hs0]),
-    (fun _ _ _ _ => by dsimp only [rawNone, pure, StateT.pure]; simp [s0, allowedStep, allowedStepCore,
+    (fun _ _ _ _ => by dsimp only [rawGetpwnamNone, pure, StateT.pure]; simp [s0, allowedStep, allowedStepCore,
       lookupPasswdByName_set_self, hs0, show validPasswdName ByteArray.empty = true by decide]),
     ?_⟩
   exact proof_passwd_mkPasswdOps_soundAgainstAllowedStep s0 0 ByteArray.empty (ByteArray.mk #[0])
-    overCapWitness rawNone hs0 (by decide) validPasswdName_overCapWitness overCapWitness_size_gt
-    (fun _ _ => by dsimp only [rawNone, pure, StateT.pure]; simp [s0, allowedStep, allowedStepCore,
+    overCapWitness rawGetpwuidNone rawGetpwnamNone hs0 (by decide) validPasswdName_overCapWitness overCapWitness_size_gt
+    (fun _ _ => by dsimp only [rawGetpwuidNone, pure, StateT.pure]; simp [s0, allowedStep, allowedStepCore,
       lookupPasswdByUid_set_self, hs0])
-    (fun _ _ _ _ => by dsimp only [rawNone, pure, StateT.pure]; simp [s0, allowedStep, allowedStepCore,
+    (fun _ _ _ _ => by dsimp only [rawGetpwnamNone, pure, StateT.pure]; simp [s0, allowedStep, allowedStepCore,
       lookupPasswdByName_set_self, hs0, show validPasswdName ByteArray.empty = true by decide])
 
 /-- Proof of `test_passwd_mkPasswdOps_exactRetryAndDelegation` for `Internal.mkPasswdOpsM` and `Internal.mkPasswdOps`. -/
 theorem proof_passwd_mkPasswdOps_exactRetryAndDelegation :
-    AllPass test_passwd_mkPasswdOps_exactRetryAndDelegation := by
+    AllPass (test_passwd_mkPasswdOps_exactRetryAndDelegation
+      (fun gUid gNam => Internal.mkPasswdOpsM { getpwuidOnce := gUid, getpwnamOnce := gNam })
+      Internal.passwdRetryBufSizes
+      (fun gUid gNam => Internal.mkPasswdOps { getpwuidOnce := gUid, getpwnamOnce := gNam })) := by
   intro rawGetpwuid rawGetpwnam uid name
   dsimp only [test_passwd_mkPasswdOps_exactRetryAndDelegation, NondetTest.assert, Bind.bind]
-  refine ⟨rfl, rfl, rfl, rfl, ?_, trivial⟩
-  dsimp only [Internal.mkPasswdOpsM]
-  split
-  · rfl
-  · split <;> rfl
+  have hContracts := internal_mkPasswdOpsM_contracts
+    { getpwuidOnce := rawGetpwuid, getpwnamOnce := rawGetpwnam } uid name
+  have hRetryEq : ∀ (pred : PasswdEntry → Bool)
+      (once : UInt32 → Except Errno (Option Internal.RawPasswdTuple)),
+      (let stepOr (sz : UInt32) (next : Except Errno (Option PasswdEntry)) :=
+         match once sz with
+         | .error e => if e == Errno.ERANGE then next else .error e
+         | .ok opt => Internal.validateRawPasswdResult pred (.ok opt)
+       stepOr 4096 (stepOr 8192 (stepOr 16384 (stepOr 32768
+         (Internal.validateRawPasswdResult pred (once 65536)))))) =
+      (let validateTuple : Except Errno (Option Internal.RawPasswdTuple) → Except Errno (Option PasswdEntry)
+         | .error e => .error e
+         | .ok none => .ok none
+         | .ok (some t) =>
+           let entry : PasswdEntry :=
+             { name := t.1, uid := t.2.1, gid := t.2.2.1, gecos := t.2.2.2.1,
+               homeDir := t.2.2.2.2.1, shell := t.2.2.2.2.2 }
+           if pred entry then .ok (some entry) else .error Errno.EIO
+       let stepOr (sz : UInt32) (next : Except Errno (Option PasswdEntry)) :=
+         match once sz with
+         | .error e => if e == Errno.ERANGE then next else .error e
+         | .ok opt => validateTuple (.ok opt)
+       stepOr 4096 (stepOr 8192 (stepOr 16384 (stepOr 32768 (validateTuple (once 65536)))))) := by
+    intro pred once
+    dsimp only
+    cases once 4096 with
+    | ok opt => cases opt <;> rfl
+    | error e1 =>
+      by_cases h1 : e1 == Errno.ERANGE
+      · simp only [h1, ↓reduceIte]
+        cases once 8192 with
+        | ok opt => cases opt <;> rfl
+        | error e2 =>
+          by_cases h2 : e2 == Errno.ERANGE
+          · simp only [h2, ↓reduceIte]
+            cases once 16384 with
+            | ok opt => cases opt <;> rfl
+            | error e3 =>
+              by_cases h3 : e3 == Errno.ERANGE
+              · simp only [h3, ↓reduceIte]
+                cases once 32768 with
+                | ok opt => cases opt <;> rfl
+                | error e4 =>
+                  by_cases h4 : e4 == Errno.ERANGE
+                  · simp only [h4, ↓reduceIte]
+                    cases once 65536 with
+                    | error _ => rfl
+                    | ok opt => cases opt <;> rfl
+                  · simp [h4]
+              · simp [h3]
+          · simp [h2]
+      · simp [h1]
+  refine ⟨rfl, rfl, rfl, ?_, ?_, trivial⟩
+  · exact hContracts.1.trans (hRetryEq _ (rawGetpwuid uid))
+  · rw [hContracts.2]
+    split
+    · rfl
+    · split
+      · rfl
+      · exact hRetryEq _ (rawGetpwnam name)
 
 /-- Soundness binding: `Passwd.getpwuid` dispatches through `Passwd.defaultOps.getpwuid`. -/
 theorem proof_passwd_getpwuid_eq_defaultOps (uid : UInt32) :
@@ -936,7 +997,7 @@ theorem proof_passwd_getpwnam_overCap_eq_enametoolong (name : ByteArray)
 
 /-- Proof of `test_passwd_interface_wiringAndSoundness` for `Interface.lean` definitions. -/
 theorem proof_passwd_interface_wiringAndSoundness :
-    AllPass test_passwd_interface_wiringAndSoundness := by
+    AllPass (test_passwd_interface_wiringAndSoundness defaultOps getpwuid getpwnam) := by
   intro uid name
   dsimp only [test_passwd_interface_wiringAndSoundness, NondetTest.assert, Bind.bind]
   refine ⟨rfl, rfl, ?_, ?_, trivial⟩

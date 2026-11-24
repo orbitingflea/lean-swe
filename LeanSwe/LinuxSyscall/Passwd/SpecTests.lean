@@ -1,8 +1,6 @@
 import Core.NondetTest
 import Core.Assumptions
 import LeanSwe.LinuxSyscall.Passwd.Types
-import LeanSwe.LinuxSyscall.Passwd.Impl
-import LeanSwe.LinuxSyscall.Passwd.Interface
 import LeanSwe.LinuxSyscall.Passwd.Model
 
 namespace LeanSwe.LinuxSyscall.Passwd
@@ -263,20 +261,23 @@ def test_passwd_modelOps_soundAgainstAllowedStep
 /-- `Internal.mkPasswdOpsM raw` (and `Internal.mkPasswdOps raw`) rejects invalid (`EINVAL`) and oversized (`ENAMETOOLONG`) `getpwnam` names without mutating state and produces outcomes accepted by `allowedStep` while preserving `PasswdState.isWellFormed` whenever each raw call for `sz ∈ 4096..65536` satisfies `allowedStep` on `ERANGE`-preserving hooks. -/
 def test_passwd_mkPasswdOps_soundAgainstAllowedStep
     {runner} [NondetTest runner]
-    (mkOps : Internal.PosixPasswdOpsM (StateM PasswdState) → PasswdOpsM (StateM PasswdState) :=
-      Internal.mkPasswdOpsM) : runner Unit := do
+    (mkOps :
+      (UInt32 → UInt32 → StateM PasswdState (Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray)))) →
+      (ByteArray → UInt32 → StateM PasswdState (Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray)))) →
+      PasswdOpsM (StateM PasswdState)) : runner Unit := do
   let s ← nondet PasswdState
   let uid ← nondet UInt32
   let name ← nondet ByteArray
   let badName ← nondet ByteArray
   let overCapName ← nondet ByteArray
-  let raw ← nondet (Internal.PosixPasswdOpsM (StateM PasswdState))
+  let rawGetpwuidOnce ← nondet (UInt32 → UInt32 → StateM PasswdState (Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray))))
+  let rawGetpwnamOnce ← nondet (ByteArray → UInt32 → StateM PasswdState (Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray))))
   assume (s.isWellFormed = true)
   assume (validPasswdName badName = false)
   assume (validPasswdName overCapName = true)
   assume (overCapName.size > MAX_PASSWD_NAME_BYTES)
   assume (∀ sz : UInt32, 4096 ≤ sz.toNat ∧ sz.toNat ≤ 65536 →
-    let (r, s') := raw.getpwuidOnce uid sz s
+    let (r, s') := rawGetpwuidOnce uid sz s
     match r with
     | .error e =>
       (e == Errno.ERANGE → s' = s) ∧
@@ -293,7 +294,7 @@ def test_passwd_mkPasswdOps_soundAgainstAllowedStep
   assume (∀ sz : UInt32, 4096 ≤ sz.toNat ∧ sz.toNat ≤ 65536 →
     validPasswdName name = true →
     name.size ≤ MAX_PASSWD_NAME_BYTES →
-    let (r, s') := raw.getpwnamOnce name sz s
+    let (r, s') := rawGetpwnamOnce name sz s
     match r with
     | .error e =>
       (e == Errno.ERANGE → s' = s) ∧
@@ -307,7 +308,7 @@ def test_passwd_mkPasswdOps_soundAgainstAllowedStep
       (entry.hasNoEmbeddedNul && entry.name == name →
         allowedStep s (.getpwnam name) (.found entry) = some s' ∧ s'.isWellFormed = true) ∧
       (!(entry.hasNoEmbeddedNul && entry.name == name) → s' = s))
-  let ops := mkOps raw
+  let ops := mkOps rawGetpwuidOnce rawGetpwnamOnce
   NondetTest.assert ((ops.getpwnam badName).run s = (.error Errno.EINVAL, s))
   NondetTest.assert ((ops.getpwnam overCapName).run s = (.error Errno.ENAMETOOLONG, s))
   let (rUid, sUid) := (ops.getpwuid uid).run s
@@ -317,44 +318,72 @@ def test_passwd_mkPasswdOps_soundAgainstAllowedStep
   NondetTest.assert (allowedStep s (.getpwnam name) (outcomeOfEntryOpt rNam) = some sNam)
   NondetTest.assert (sNam.isWellFormed = true)
 
-/-- `Internal.mkPasswdOpsM` and `Internal.mkPasswdOps` agree identically, use the exact retry sequence `[4096, 8192, 16384, 32768, 65536]`, validate names and length caps before calling `getpwnamOnce`, and delegate directly to `Internal.retryPasswdLookup`. -/
+/-- `Internal.mkPasswdOpsM` and `Internal.mkPasswdOps` agree identically, use the exact retry sequence `[4096, 8192, 16384, 32768, 65536]`, validate names and length caps before calling `getpwnamOnce`, and execute the `ERANGE` retry doubling schedule across `4096 → 8192 → 16384 → 32768 → 65536` while validating returned entries against `hasNoEmbeddedNul` and key match (`Errno.EIO` on mismatch). -/
 def test_passwd_mkPasswdOps_exactRetryAndDelegation
     {runner} [NondetTest runner]
-    (mkOps : Internal.PosixPasswdOpsM Id → PasswdOpsM Id := Internal.mkPasswdOpsM)
-    (bufSizes : List UInt32 := Internal.passwdRetryBufSizes)
-    (mkOpsAlias : Internal.PosixPasswdOpsM Id → PasswdOpsM Id := Internal.mkPasswdOps) : runner Unit := do
-  let rawGetpwuid ← nondet (UInt32 → UInt32 → Except Errno (Option Internal.RawPasswdTuple))
-  let rawGetpwnam ← nondet (ByteArray → UInt32 → Except Errno (Option Internal.RawPasswdTuple))
+    (mkOps :
+      (UInt32 → UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray))) →
+      (ByteArray → UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray))) →
+      PasswdOpsM Id)
+    (bufSizes : List UInt32)
+    (mkOpsAlias :
+      (UInt32 → UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray))) →
+      (ByteArray → UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray))) →
+      PasswdOpsM Id) : runner Unit := do
+  let rawGetpwuid ← nondet (UInt32 → UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray)))
+  let rawGetpwnam ← nondet (ByteArray → UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray)))
   let uid ← nondet UInt32
   let name ← nondet ByteArray
-  let raw : Internal.PosixPasswdOpsM Id :=
-    { getpwuidOnce := rawGetpwuid
-      getpwnamOnce := rawGetpwnam }
-  let ops := mkOps raw
-  let aliasOps := mkOpsAlias raw
+  let ops := mkOps rawGetpwuid rawGetpwnam
+  let aliasOps := mkOpsAlias rawGetpwuid rawGetpwnam
+  let validateTuple (pred : PasswdEntry → Bool) :
+      Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray)) →
+        Except Errno (Option PasswdEntry)
+    | .error e => .error e
+    | .ok none => .ok none
+    | .ok (some t) =>
+      let entry : PasswdEntry :=
+        { name := t.1
+          uid := t.2.1
+          gid := t.2.2.1
+          gecos := t.2.2.2.1
+          homeDir := t.2.2.2.2.1
+          shell := t.2.2.2.2.2 }
+      if pred entry then .ok (some entry) else .error Errno.EIO
+  let stepOr (pred : PasswdEntry → Bool)
+      (once : UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray)))
+      (sz : UInt32) (next : Except Errno (Option PasswdEntry)) :
+      Except Errno (Option PasswdEntry) :=
+    match once sz with
+    | .error e => if e == Errno.ERANGE then next else .error e
+    | .ok opt => validateTuple pred (.ok opt)
+  let expectedRetry (pred : PasswdEntry → Bool)
+      (once : UInt32 → Except Errno (Option (ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray))) :
+      Except Errno (Option PasswdEntry) :=
+    stepOr pred once 4096
+      (stepOr pred once 8192
+        (stepOr pred once 16384
+          (stepOr pred once 32768
+            (validateTuple pred (once 65536)))))
   NondetTest.assert (bufSizes = [4096, 8192, 16384, 32768, 65536])
   NondetTest.assert (aliasOps.getpwuid uid = ops.getpwuid uid)
   NondetTest.assert (aliasOps.getpwnam name = ops.getpwnam name)
   NondetTest.assert (ops.getpwuid uid =
-    Internal.retryPasswdLookup (rawGetpwuid uid)
-      (fun entry => entry.hasNoEmbeddedNul && entry.uid == uid)
-      [4096, 8192, 16384, 32768, 65536])
+    expectedRetry (fun entry => entry.hasNoEmbeddedNul && entry.uid == uid) (rawGetpwuid uid))
   NondetTest.assert (ops.getpwnam name =
     if !validPasswdName name then
       .error Errno.EINVAL
     else if name.size > MAX_PASSWD_NAME_BYTES then
       .error Errno.ENAMETOOLONG
     else
-      Internal.retryPasswdLookup (rawGetpwnam name)
-        (fun entry => entry.hasNoEmbeddedNul && entry.name == name)
-        [4096, 8192, 16384, 32768, 65536])
+      expectedRetry (fun entry => entry.hasNoEmbeddedNul && entry.name == name) (rawGetpwnam name))
 
 /-- `Passwd.getpwuid` and `Passwd.getpwnam` delegate to `Passwd.defaultOps`, and `defaultOps.getpwnam` rejects embedded-NUL (`EINVAL`) and oversized (`> MAX_PASSWD_NAME_BYTES`, `ENAMETOOLONG`) names in pure user space. -/
 def test_passwd_interface_wiringAndSoundness
     {runner} [NondetTest runner]
-    (ops : PasswdOps := defaultOps)
-    (getpwuidFn : UInt32 → IO (Except Errno (Option PasswdEntry)) := getpwuid)
-    (getpwnamFn : ByteArray → IO (Except Errno (Option PasswdEntry)) := getpwnam) :
+    (ops : PasswdOps)
+    (getpwuidFn : UInt32 → IO (Except Errno (Option PasswdEntry)))
+    (getpwnamFn : ByteArray → IO (Except Errno (Option PasswdEntry))) :
     runner Unit := do
   let uid ← nondet UInt32
   let name ← nondet ByteArray
