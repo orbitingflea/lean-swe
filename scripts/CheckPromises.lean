@@ -21,20 +21,25 @@ Checks:
    `LeanSwe.PostFork.Verified`, `LeanSwe.ProcessSandbox.Init.Verified`, and any extra unimported
    modules:
    - Within-package transitive checks (`Types`/`Model`/`SpecTests`/`Properties` cannot import
-     same-package `Impl`/`SysBridge`/`Interface`/`Proofs`/`SpecMutants`/`RuntimeTests`/
-     `TestSupport`, or any unclassified `.other` helper module whose name matches no role;
+     same-package `Impl`/`SysBridge`/`Interface` or any non-API role
+     `Properties`/`Proofs`/`SpecMutants`/`RuntimeTests`/`TestSupport`/`Umbrella`/`Other`;
      `Impl`/`SysBridge`/`Interface` cannot import same-package
-     `Proofs`/`SpecTests`/`Properties`/`SpecMutants`/`RuntimeTests`).
+     `SpecTests` or any non-API role
+     `Properties`/`Proofs`/`SpecMutants`/`RuntimeTests`/`TestSupport`/`Umbrella`/`Other`).
    - Cross-package checks: direct imports target only another package's `Types`, `Model`, or
      `Interface` (no `Impl`/`SysBridge`/`Proofs`/`SpecTests`/`Properties`/`SpecMutants`/
-     `RuntimeTests`/`TestSupport`/`.other`), plus cross-package transitive leak checks and
-     constant-level indirect reach-in and `.Internal.` reach-in checks on non-proof modules.
-   - `namespace <Pkg>.Model` inside `*.Proofs*` ban over `.olean` constant tables (excluding
-     strictly verified lazy compiler-generated aux lemmas for existing non-proof `Model` decls).
-   - No `*.Proofs*` constants in `SpecTests`/`Properties` (`type` or `value`), in exported
-     `refines_model` / `obeys_model` theorem signatures, or in qualifying `AllPass` / `CanReach`
-     theorem signatures, enforced with a strict shrinking ratchet allowlist (fails on both new
-     violations and stale allowlist entries).
+     `RuntimeTests`/`TestSupport`/`Umbrella`/`Other`), plus cross-package transitive leak checks
+     and constant-level indirect reach-in and `.Internal.` reach-in checks on non-proof modules.
+   - `namespace <Pkg>.Model` ban inside non-API roles (`Properties`/`Proofs`/`SpecMutants`/
+     `RuntimeTests`/`TestSupport`/`Umbrella`/`Other`) over `.olean` constant tables (excluding
+     strictly verified lazy compiler-generated aux lemmas for existing API/spec/impl `Model`
+     decls).
+   - No constants from non-API roles (`Properties`/`Proofs`/`SpecMutants`/`RuntimeTests`/
+     `TestSupport`/`Umbrella`/`Other`, i.e., any `LeanSwe.*` module outside `{Types, Model,
+     SpecTests, Impl, SysBridge, Interface}`) in `SpecTests`/`Properties` (`type` or `value`), in
+     exported `refines_model` / `obeys_model` theorem signatures, or in qualifying `AllPass` /
+     `CanReach` theorem signatures, enforced with a strict shrinking ratchet allowlist (fails on
+     both new violations and stale allowlist entries).
 -/
 
 open Lean Meta
@@ -2507,6 +2512,7 @@ private inductive DagModuleRole where
   | types
   | model
   | specTests
+  | properties
   | impl
   | sysBridge
   | iface
@@ -2522,6 +2528,7 @@ private def DagModuleRole.label : DagModuleRole → String
   | .types => "Types"
   | .model => "Model"
   | .specTests => "SpecTests"
+  | .properties => "Properties"
   | .impl => "Impl"
   | .sysBridge => "SysBridge"
   | .iface => "Interface"
@@ -2531,6 +2538,15 @@ private def DagModuleRole.label : DagModuleRole → String
   | .testSupport => "TestSupport"
   | .umbrella => "Umbrella"
   | .other => "Other"
+
+/-- Non-API/non-production roles disallowed in `SpecTests`/`Properties` bodies, exported
+`refines_model`/`obeys_model` signatures, qualifying `Core.AllPass`/`Core.CanReach` theorem
+signatures, `namespace <Pkg>.Model` declarations, and production-module transitive imports.
+Bare `Properties` modules (outside `SpecTests/`) are not spec-locked by `check_spec_change.py`,
+so they are treated as disallowed targets alongside `Proofs`/`TestSupport`/`Other`. -/
+private def DagModuleRole.isDisallowedSpecOrSigRole : DagModuleRole → Bool
+  | .types | .model | .specTests | .impl | .sysBridge | .iface => false
+  | .properties | .proofs | .specMutants | .runtimeTests | .testSupport | .umbrella | .other => true
 
 private def dagPkgMarkerSegs : Array String := #[
   "Types", "Model", "Impl", "Interface", "SpecTests", "Properties",
@@ -2598,9 +2614,12 @@ private def dagRoleOf (knownPkgs : Array Name) (m : Name) : DagModuleRole :=
           .specMutants
         else if head == `RuntimeTests || rem.contains `RuntimeTests then
           .runtimeTests
-        else if head == `SpecTests || head == `Properties ||
-            rem.contains `SpecTests || rem.contains `Properties then
+        else if head == `TestSupport || rem.contains `TestSupport then
+          .testSupport
+        else if head == `SpecTests || rem.contains `SpecTests then
           .specTests
+        else if head == `Properties || rem.contains `Properties then
+          .properties
         else if head == `Types then
           .types
         else if head == `Model || m == `LeanSwe.LinuxSyscall.Files.Seed then
@@ -2609,15 +2628,15 @@ private def dagRoleOf (knownPkgs : Array Name) (m : Name) : DagModuleRole :=
           .iface
         else if head == `SysBridge then
           .sysBridge
-        else if head == `Host then
+        else if pkg == `LeanSwe.ProcessSandbox && head == `Host then
           if last == `SysBridge then .sysBridge else .impl
-        else if rem.contains `Aeneas then
+        else if m.components.take 3 == [`LeanSwe, `PostFork, `Aeneas] ||
+            m.components.take 4 == [`LeanSwe, `ProcessSandbox, `Init, `Aeneas] then
           if last == `Types || last == `TypesExternal then .types
           else if last == `Model then .model
           else .impl
-        else if head == `Init then
-          .impl
-        else if head == `Impl || head == `Relay || head == `HealthySys || head == `InitData then
+        else if head == `Impl || m == `LeanSwe.ConnectProxy.Relay ||
+            m == `LeanSwe.ConnectProxy.HealthySys || m == `LeanSwe.ProcessSandbox.InitData then
           .impl
         else
           .other
@@ -2728,7 +2747,7 @@ private def auditImportDagEnv
   for h : i in [0 : env.header.moduleNames.size] do
     let m := env.header.moduleNames[i]
     if m.getRoot != `LeanSwe || m == `LeanSwe then continue
-    if dagRoleOf knownPkgs m == .proofs then continue
+    if (dagRoleOf knownPkgs m).isDisallowedSpecOrSigRole then continue
     let some data := env.header.moduleData[i]? | continue
     for c in data.constants do
       let u := (privateToUserName? c.name).getD c.name
@@ -2758,24 +2777,23 @@ private def auditImportDagEnv
       let pkgT := dagPkgOf knownPkgs t
       let roleT := dagRoleOf knownPkgs t
       if pkgM == pkgT then
-        if (roleM == .types || roleM == .model || roleM == .specTests) &&
-            (roleT == .impl || roleT == .sysBridge || roleT == .iface || roleT == .proofs ||
-             roleT == .specMutants || roleT == .runtimeTests || roleT == .testSupport || roleT == .other) then
+        if (roleM == .types || roleM == .model || roleM == .specTests || roleM == .properties) &&
+            (roleT == .impl || roleT == .sysBridge || roleT == .iface || roleT.isDisallowedSpecOrSigRole) then
           let key := s!"WITHIN|{m}|{t}"
           let msg := s!"DAG_WITHIN_VIOLATION: {m} ({roleM.label}) transitively imports same-package {t} ({roleT.label})"
           violations := recordDagViolation violations key msg
         if (roleM == .impl || roleM == .sysBridge || roleM == .iface) &&
-            (roleT == .proofs || roleT == .specTests || roleT == .specMutants || roleT == .runtimeTests) then
+            (roleT == .specTests || roleT.isDisallowedSpecOrSigRole) then
           let key := s!"WITHIN|{m}|{t}"
           let msg := s!"DAG_WITHIN_VIOLATION: {m} ({roleM.label}) transitively imports same-package {t} ({roleT.label})"
           violations := recordDagViolation violations key msg
       else
         if (roleM == .types || roleM == .model || roleM == .impl || roleM == .sysBridge || roleM == .iface) &&
-            (roleT == .proofs || roleT == .specTests || roleT == .specMutants || roleT == .runtimeTests) then
+            (roleT == .specTests || roleT.isDisallowedSpecOrSigRole) then
           let key := s!"TRANS_LEAK|{m}|{t}"
           let msg := s!"DAG_TRANS_LEAK: {m} ({roleM.label}) transitively imports cross-package {t} ({roleT.label})"
           violations := recordDagViolation violations key msg
-        if roleM == .specTests && (roleT == .proofs || roleT == .specMutants || roleT == .runtimeTests) then
+        if (roleM == .specTests || roleM == .properties) && roleT.isDisallowedSpecOrSigRole then
           let key := s!"TRANS_LEAK|{m}|{t}"
           let msg := s!"DAG_TRANS_LEAK: {m} ({roleM.label}) transitively imports cross-package {t} ({roleT.label})"
           violations := recordDagViolation violations key msg
@@ -2792,9 +2810,9 @@ private def auditImportDagEnv
         violations := recordDagViolation violations key msg
     for c in data.constants do
       let uName := (privateToUserName? c.name).getD c.name
-      if roleM == .proofs && isModelNamespaceDeclName uName && !isCompilerLazyModelAux env nonProofUsers c then
+      if roleM.isDisallowedSpecOrSigRole && isModelNamespaceDeclName uName && !isCompilerLazyModelAux env nonProofUsers c then
         let key := s!"PROOF_NS_MODEL|{m}|{uName}"
-        let msg := s!"PROOF_MODEL_NS_FORBIDDEN: {m} defines {stableConstLabel c.name} inside Model namespace"
+        let msg := s!"PROOF_MODEL_NS_FORBIDDEN: {m} ({roleM.label}) defines {stableConstLabel c.name} inside Model namespace"
         violations := recordDagViolation violations key msg
       let usedTy := c.type.getUsedConstants
       let usedVal := match c with
@@ -2802,14 +2820,16 @@ private def auditImportDagEnv
         | .opaqueInfo v => v.value.getUsedConstants
         | .thmInfo v => v.value.getUsedConstants
         | _ => #[]
-      if roleM == .specTests then
+      if roleM == .specTests || roleM == .properties then
         for u in usedTy ++ usedVal do
           let um := modOf u
-          if um.getRoot == `LeanSwe && dagRoleOf knownPkgs um == .proofs then
-            let uLbl := stableConstLabel u
-            let key := s!"SPEC_PROOF_CONST|{m}|{stableConstLabel c.name}|{um}|{uLbl}"
-            let msg := s!"PROOF_CONST_IN_SPEC: {stableConstLabel c.name} in {m} references proof constant {uLbl} from {um}"
-            violations := recordDagViolation violations key msg
+          if um.getRoot == `LeanSwe && !(roleM == .properties && um == m) then
+            let roleU := dagRoleOf knownPkgs um
+            if roleU.isDisallowedSpecOrSigRole then
+              let uLbl := stableConstLabel u
+              let key := s!"SPEC_PROOF_CONST|{m}|{stableConstLabel c.name}|{um}|{uLbl}"
+              let msg := s!"PROOF_CONST_IN_SPEC: {stableConstLabel c.name} in {m} references disallowed {roleU.label} constant {uLbl} from {um}"
+              violations := recordDagViolation violations key msg
       if roleM != .specMutants && roleM != .runtimeTests &&
           !isPrivateName c.name && !c.name.isInternalOrNum && !env.isProjectionFn c.name then
         let short := c.name.getString!
@@ -2818,13 +2838,16 @@ private def auditImportDagEnv
           let mut seenU : Std.HashSet String := {}
           for u in c.type.getUsedConstants do
             let um := modOf u
-            if um.getRoot == `LeanSwe && dagRoleOf knownPkgs um == .proofs then
-              let uLbl := stableConstLabel u
-              if !seenU.contains uLbl then
-                seenU := seenU.insert uLbl
-                let key := s!"REFINES_PROOF_CONST|{c.name}|{um}|{uLbl}"
-                let msg := s!"PROOF_CONST_IN_SIGNATURE: {c.name} in {m} uses proof constant {uLbl} from {um}"
-                violations := recordDagViolation violations key msg
+            if um.getRoot == `LeanSwe then
+              let roleU := dagRoleOf knownPkgs um
+              if roleU.isDisallowedSpecOrSigRole then
+                let uLbl := stableConstLabel u
+                let dedupKey := s!"{um}|{uLbl}"
+                if !seenU.contains dedupKey then
+                  seenU := seenU.insert dedupKey
+                  let key := s!"REFINES_PROOF_CONST|{c.name}|{um}|{uLbl}"
+                  let msg := s!"PROOF_CONST_IN_SIGNATURE: {c.name} in {m} uses disallowed {roleU.label} constant {uLbl} from {um}"
+                  violations := recordDagViolation violations key msg
         else if let .thmInfo v := c then
           let isTrackedPromiseThm :=
             qualifyingThms.contains c.name ||
@@ -2833,7 +2856,7 @@ private def auditImportDagEnv
             let mut seenU : Std.HashSet String := {}
             for u in v.type.getUsedConstants do
               let um := modOf u
-              if um.getRoot == `LeanSwe && dagRoleOf knownPkgs um == .proofs then
+              if um.getRoot == `LeanSwe && (dagRoleOf knownPkgs um).isDisallowedSpecOrSigRole then
                 let uLbl := stableConstLabel u
                 let sKey := s!"{m}|{um}|{uLbl}"
                 if !seenU.contains sKey then
@@ -2923,11 +2946,13 @@ private def importDagAllowlist : Array String := #[
   "WITHIN|LeanSwe.Process.SpecTests|LeanSwe.Process.SysBridge"
 ]
 
-/-- Shrinking ratchet allowlist of pre-existing `*.Proofs*`-defined constants referenced in
-qualifying `Core.AllPass`/`Core.CanReach` promised theorem signatures (`thmMod|proofMod|const`,
-paired with the exact active theorem count at `84750ac`). Any new constant, increased count, or
-stale/lower count fails the gate so the table strictly shrinks as proof-local mock helpers move
-into `Model.lean`. -/
+/-- Shrinking ratchet allowlist of pre-existing constants from disallowed non-API roles
+(`Properties`, `Proofs`, `SpecMutants`, `RuntimeTests`, `TestSupport`, `Umbrella`, `Other`)
+referenced in qualifying `Core.AllPass`/`Core.CanReach` promised theorem signatures
+(`thmMod|constMod|const`, paired with the exact active theorem count). Any new constant,
+increased count, or stale/lower count fails the gate so the table strictly shrinks as
+proof-local mock helpers move into `Model.lean` (and cannot be evaded by moving them into
+`.other`, `.testSupport`, or unlocked `Properties` helpers). -/
 private def sigProofConstAllowlist : Array (String × Nat) := #[
   ("LeanSwe.Fs.Proofs.AtomicWriteProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.VfsState", 48),
   ("LeanSwe.Fs.Proofs.AtomicWriteProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.vfsApi", 6),
