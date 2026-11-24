@@ -2941,9 +2941,7 @@ private def importDagAllowlist : Array String := #[
   "CROSS|LeanSwe.Process.Proofs.HealthyStep|LeanSwe.LinuxSyscall.Files.Proofs.HealthyStep",
   "CROSS|LeanSwe.Process.Proofs.HealthyStep|LeanSwe.LinuxSyscall.Process.Proofs.HealthyStep",
   "CROSS|LeanSwe.ProcessSandbox.Proofs.SeccompApiProofs|LeanSwe.ProcessSandbox.Seccomp.Proofs",
-  "CROSS|LeanSwe.Time.RuntimeTests|LeanSwe.LinuxSyscall.TestSupport.Seccomp",
-  "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.Proofs",
-  "CROSS|LeanSwe.Uuid.RuntimeTests|LeanSwe.LinuxSyscall.TestSupport.Seccomp"
+  "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.Proofs"
 ]
 
 /-- Shrinking ratchet allowlist of pre-existing constants from disallowed non-API roles
