@@ -728,10 +728,9 @@ static void reset_pid1_rt_sigs(void) {
 }
 
 static void run_ns_pid1(uint8_t do_setsid, uint8_t as_pid2, const char *mode_str, const char *arg_str) {
-  unblock_and_reset_sig(15u);
   setenv("UV_USE_IO_URING", "0", 1); setenv("LEAN_NUM_THREADS", "1", 1);
   if (!as_pid2) exec_self_ns_worker(do_setsid, mode_str, arg_str);
-  reset_pid1_rt_sigs();
+  unblock_and_reset_sig(15u); reset_pid1_rt_sigs();
   pid_t p3 = fork();
   if (p3 < 0) _exit(124);
   if (p3 == 0) exec_self_ns_worker(do_setsid, mode_str, arg_str);
@@ -785,9 +784,10 @@ static void finish_ns_reap(
     uint8_t ns_flags, const char *mode_str, const char *arg_str,
     pid_t p_mid, pid_t p2, pid_t r2, int st2, int err) {
   if (r2 < 0 || !WIFEXITED(st2) || WEXITSTATUS(st2) != 0) {
+    int ex = (r2 >= 0 && WIFEXITED(st2)), sigd = (r2 >= 0 && WIFSIGNALED(st2));
     fprintf(stderr, "ns-worker-fail mode=%s arg=%s flags=%u p1=%d p_mid=%d p2=%d reaped=%d st2=0x%x exited=%d code=%d signaled=%d sig=%d errno=%d\n",
             mode_str, arg_str, (unsigned)ns_flags, (int)getpid(), (int)p_mid, (int)p2, (int)r2, (unsigned)st2,
-            WIFEXITED(st2) ? 1 : 0, WIFEXITED(st2) ? WEXITSTATUS(st2) : -1, WIFSIGNALED(st2) ? 1 : 0, WIFSIGNALED(st2) ? WTERMSIG(st2) : 0, err);
+            ex, ex ? WEXITSTATUS(st2) : -1, sigd, sigd ? WTERMSIG(st2) : 0, err);
     fflush(stderr);
   }
   if (r2 < 0) _exit(123);
@@ -804,10 +804,10 @@ static void spawn_ns_via_reaper(uint8_t ns_flags, const char *mode_str, const ch
   if (p_mid < 0) _exit(124);
   if (p_mid == 0) { close(sv[0]); run_ns_mid(sv[1], ns_flags, u, g, mode_str, arg_str); }
   close(sv[1]); sync_and_map_subid(p_mid, sv[0], ns_flags, u, g);
-  int stm = 0, st2 = 0; pid_t p2 = -1;
+  int stm = 0, st2 = -1; pid_t p2 = -1;
   if (waitpid_nointr(p_mid, &stm) < 0 || !WIFEXITED(stm) || WEXITSTATUS(stm) != 0) { close(sv[0]); _exit(125); }
   ssize_t rd = read_nointr(sv[0], &p2, sizeof(p2)); close(sv[0]);
-  if (rd != (ssize_t)sizeof(p2) || p2 <= 0) finish_ns_reap(ns_flags, mode_str, arg_str, p_mid, p2, -1, 0, EIO);
+  if (rd != (ssize_t)sizeof(p2) || p2 <= 0) finish_ns_reap(ns_flags, mode_str, arg_str, p_mid, p2, -1, -1, EIO);
   pid_t r2 = waitpid_nointr(p2, &st2);
   finish_ns_reap(ns_flags, mode_str, arg_str, p_mid, p2, r2, st2, (r2 < 0) ? errno : 0);
 }

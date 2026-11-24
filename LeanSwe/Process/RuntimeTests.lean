@@ -609,7 +609,7 @@ private def testBackgroundChildLifecycle : IO Unit := do
 
   let h1 ← assertOk (← Process.spawn {
     program := "sh"
-    args := #["-c", "cat; echo err_line >&2"]
+    args := #["-c", "cat; printf '|%s' \"$LEANSWE_BG\"; echo err_line >&2"]
     env := #[("LEANSWE_BG", some "first"), ("LEANSWE_BG", some "second")]
   }) "lifecycle spawn cat"
   try
@@ -619,7 +619,7 @@ private def testBackgroundChildLifecycle : IO Unit := do
     match ← Process.awaitOutput h1 "bg-stdin".toUTF8 (some 5000) none with
     | .ok (.exited res) =>
       assertTrue (res.exitCode == 0 &&
-        String.fromUTF8! res.stdout == "bg-stdin" &&
+        String.fromUTF8! res.stdout == "bg-stdin|second" &&
         String.fromUTF8! res.stderr == "err_line\n") "lifecycle awaitOutput exited result"
     | .ok other => throw (IO.userError s!"ASSERTION FAILED: lifecycle expected exited, got {repr other}")
     | .error e => throw (IO.userError s!"ASSERTION FAILED: lifecycle awaitOutput failed: {repr e}")

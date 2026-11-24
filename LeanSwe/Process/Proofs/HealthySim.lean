@@ -228,10 +228,4 @@ theorem healthySimDeps_refinesHealthy :
     | cons hd tl ih => rcases hd with ⟨k, d⟩; simp only [List.map_cons]; exact congrArg (k :: ·) ih
   · intro _; exact ⟨rfl, rfl, (by intro _ h; cases h)⟩
 
-/-- `RawProcessOpsM (StateM HealthySimState)` constructed through `SysBridge.mkRawOpsM` over genuine `healthySimDeps`. -/
-def healthySimRawOps : RawProcessOpsM (StateM HealthySimState) :=
-  SysBridge.mkRawOpsM healthySimDeps
-    (SysBridge.stateProcTableOps (fun s => s.tbl) (fun s t => { s with tbl := t }))
-    4 8
-
 end LeanSwe.Process.Proofs

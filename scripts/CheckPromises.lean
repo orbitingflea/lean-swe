@@ -1322,13 +1322,22 @@ private def canonicalManagedProcessTargets : Std.HashSet Name :=
     |>.insert `LeanSwe.Process.SysBridge.mkRawOpsM
     |>.insert `LeanSwe.Process.SysBridge.spawnPure
 
-private def isCanonicalHealthySimRawOps (raw : Expr) : Bool :=
+private def isCanonicalHealthySimRawOps (raw : Expr) : MetaM Bool := do
   let raw' := (etaReduceExpr raw).consumeMData
   let rawArgs := raw'.getAppArgs
-  raw'.getAppFn.consumeMData.constName? == some `LeanSwe.Process.SysBridge.mkRawOpsM &&
-    rawArgs.size == 7 &&
-    rawArgs[3]!.consumeMData.constName? == some `LeanSwe.Process.Model.Internal.healthySimDeps &&
-    rawArgs[4]!.consumeMData.getAppFn.consumeMData.constName? == some `LeanSwe.Process.SysBridge.stateProcTableOps
+  if raw'.getAppFn.consumeMData.constName? != some `LeanSwe.Process.SysBridge.mkRawOpsM ||
+      rawArgs.size != 7 ||
+      rawArgs[3]!.consumeMData.constName? != some `LeanSwe.Process.Model.Internal.healthySimDeps then
+    return false
+  let tbl := (etaReduceExpr rawArgs[4]!).consumeMData
+  let tblArgs := tbl.getAppArgs
+  if tbl.getAppFn.consumeMData.constName? != some `LeanSwe.Process.SysBridge.stateProcTableOps ||
+      tblArgs.size != 4 ||
+      (etaReduceExpr tblArgs[2]!).consumeMData.constName? != some `LeanSwe.Process.Model.Internal.HealthySimState.tbl ||
+      (etaReduceExpr tblArgs[3]!).consumeMData.constName? != some `LeanSwe.Process.Model.Internal.setSimTbl then
+    return false
+  return (← Meta.whnf rawArgs[5]!).rawNatLit? == some 4 &&
+    (← Meta.whnf rawArgs[6]!).rawNatLit? == some 8
 
 private def hasCanonicalProcessPromiseTarget (prog : Expr) : MetaM Bool := do
   Meta.withTransparency .all do
@@ -1350,8 +1359,9 @@ private def hasCanonicalProcessPromiseTarget (prog : Expr) : MetaM Bool := do
             return false
           if tName == `LeanSwe.Process.Internal.mkApiM then
             let mkArgs := argEta.getAppArgs
-            if mkArgs.size >= 3 && !isCanonicalHealthySimRawOps mkArgs[2]! then
-              return false
+            if mkArgs.size >= 3 then
+              if !(← isCanonicalHealthySimRawOps mkArgs[2]!) then
+                return false
           checked := checked + 1
         | _ => return false
     return afterNondet && checked > 0
@@ -2003,23 +2013,6 @@ private def checkManagedProcessClosure (env : Environment) : IO (Array String) :
       errs := errs.push "PROCESS_INTERFACE_WIRING_MISMATCH: LeanSwe.Process.defaultApi must wire Internal.mkApiM to SysBridge.defaultOps"
   | _ =>
     errs := errs.push "PROCESS_INTERFACE_WIRING_MISMATCH: missing LeanSwe.Process.defaultApi"
-  match env.find? `LeanSwe.Process.Proofs.healthySimApi with
-  | some (.defnInfo dv) =>
-    let used := dv.value.getUsedConstants
-    if !used.contains `LeanSwe.Process.Internal.mkApiM ||
-        !used.contains `LeanSwe.Process.Proofs.healthySimRawOps then
-      errs := errs.push "PROCESS_PROOF_TARGET_WIRING_MISMATCH: healthySimApi must wire Internal.mkApiM to healthySimRawOps"
-  | _ =>
-    errs := errs.push "PROCESS_PROOF_TARGET_WIRING_MISMATCH: missing LeanSwe.Process.Proofs.healthySimApi"
-  match env.find? `LeanSwe.Process.Proofs.healthySimRawOps with
-  | some (.defnInfo dv) =>
-    let used := dv.value.getUsedConstants
-    if !used.contains `LeanSwe.Process.SysBridge.mkRawOpsM ||
-        !used.contains `LeanSwe.Process.Model.Internal.healthySimDeps ||
-        !used.contains `LeanSwe.Process.SysBridge.stateProcTableOps then
-      errs := errs.push "PROCESS_PROOF_TARGET_WIRING_MISMATCH: healthySimRawOps must wire SysBridge.mkRawOpsM to Model.Internal.healthySimDeps and stateProcTableOps"
-  | _ =>
-    errs := errs.push "PROCESS_PROOF_TARGET_WIRING_MISMATCH: missing LeanSwe.Process.Proofs.healthySimRawOps"
   for wrapper in #[`LeanSwe.Process.spawn, `LeanSwe.Process.awaitOutput,
       `LeanSwe.Process.killProcessGroup, `LeanSwe.Process.reap,
       `LeanSwe.Process.run, `LeanSwe.Process.runChecked, `LeanSwe.Process.activeProcessCount] do

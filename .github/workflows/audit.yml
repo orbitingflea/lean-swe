@@ -235,14 +235,11 @@ jobs:
           ASSUMP_LOG="$LANE_STATE_DIR/assump.log"
           LANE_PIDS=()
           cleanup_parallel() {
-            local p sig running live=()
+            local p sig
             set +m
             if (( ${#LANE_PIDS[@]} > 0 )); then
-              running=$'\n'$(jobs -r -p 2>/dev/null || true)$'\n'
-              for p in "${LANE_PIDS[@]}"; do if [[ "$p" =~ ^[1-9][0-9]*$ && "$p" -gt 1 && "$running" == *$'\n'"$p"$'\n'* ]]; then live+=("$p"); fi; done
               for sig in TERM KILL; do
-                (( ${#live[@]} > 0 )) || break
-                for p in "${live[@]}"; do kill "-$sig" -- -"$p" 2>/dev/null || true; done
+                for p in "${LANE_PIDS[@]}"; do [[ "$p" =~ ^[1-9][0-9]*$ && "$p" -gt 1 ]] && kill "-$sig" -- -"$p" 2>/dev/null || true; done
                 [[ "$sig" == TERM ]] && sleep 0.1 || true
               done
               wait "${LANE_PIDS[@]}" 2>/dev/null || true
@@ -311,6 +308,7 @@ jobs:
               set +m
               trap - INT TERM
               set -euo pipefail
+              ( trap '' INT TERM; exec sleep 86400 ) </dev/null >/dev/null 2>&1 &
               _t0="$SECONDS"
               _tf="$tf"
               trap 'printf "%s\n" "$((SECONDS - _t0))" > "$_tf" 2>/dev/null || true' EXIT
@@ -324,6 +322,8 @@ jobs:
           for idx in 0 1 2 3; do
             rc=0
             wait "${LANE_PIDS[$idx]}" || rc=$?
+            kill -TERM -- -"${LANE_PIDS[$idx]}" 2>/dev/null || true
+            kill -KILL -- -"${LANE_PIDS[$idx]}" 2>/dev/null || true
             unset "LANE_PIDS[$idx]"
             LANE_RCS+=("$rc")
             if (( rc != 0 && FAIL_RC == 0 )); then

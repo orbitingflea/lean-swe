@@ -264,10 +264,6 @@ theorem sysBridge_healthyStep_conserves_openFds {S fd : Type} [DecidableEq fd]
   (run_spec_of_RawProcessLaws openFds
     (mkRawOpsM_satisfies_RawProcessLaws getTbl setTbl openFds deps hDeps eintrFuel ioFuel) s₀ req).2.1
 
-/-- `ProcessApiM (StateM HealthySimState)` constructed through `Internal.mkApiM healthySimRawOps` over genuine `healthySimDeps`. -/
-def healthySimApi : ProcessApiM (StateM HealthySimState) :=
-  Internal.mkApiM healthySimRawOps
-
 local notation "healthySimApiExpr" =>
   Internal.mkApiM
     (SysBridge.mkRawOpsM Model.Internal.healthySimDeps
