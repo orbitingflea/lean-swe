@@ -2,7 +2,7 @@ import Core.NondetTest
 import Core.Assumptions
 import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Files.Model
-import LeanSwe.LinuxSyscall.Files.Seed
+import LeanSwe.LinuxSyscall.Files.Model.Seed
 
 namespace LeanSwe.LinuxSyscall.Files
 

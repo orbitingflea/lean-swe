@@ -376,8 +376,7 @@ class SpecSubdirLockTests(unittest.TestCase):
 
     def test_is_spec_file_covers_basenames_and_subdirs(self) -> None:
         locked = [
-            "Core/NondetTest.lean",
-            "Core/Sub/Helper.lean",
+            "Core/NondetTest.lean", "Core/Sub/Helper.lean",
             "LeanSwe/Tar/Types.lean",
             "LeanSwe/Tar/Model.lean",
             "LeanSwe/Tar/SpecTests.lean",
@@ -386,6 +385,7 @@ class SpecSubdirLockTests(unittest.TestCase):
             "LeanSwe/Toml/SpecTests/Cases.lean",
             "LeanSwe/Toml/SpecTests/Sub/Extra.lean",
             "LeanSwe/LinuxSyscall/Net/Model/Step.lean",
+            "LeanSwe/LinuxSyscall/Files/Model/Seed.lean",
             "LeanSwe/Demo/Types/Sub.lean",
             "LeanSwe/Demo/Interface/Sub.lean",
             "LeanSwe/SpecTests/Helpers.lean",

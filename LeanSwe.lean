@@ -322,7 +322,7 @@ import LeanSwe.LinuxSyscall.TimeRand.SpecMutants
 import LeanSwe.LinuxSyscall.TimeRand.Proofs
 import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Files.Model
-import LeanSwe.LinuxSyscall.Files.Seed
+import LeanSwe.LinuxSyscall.Files.Model.Seed
 import LeanSwe.LinuxSyscall.Files.Impl
 import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.Files.SpecTests
