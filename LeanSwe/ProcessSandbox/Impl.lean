@@ -1,6 +1,6 @@
 import LeanSwe.ProcessSandbox.Types
 import LeanSwe.ProcessSandbox.Model
-import LeanSwe.ProcessSandbox.Seccomp.Impl
+import LeanSwe.ProcessSandbox.Seccomp.Interface
 
 namespace LeanSwe.ProcessSandbox.Internal
 
@@ -17,8 +17,8 @@ def validateSpec (spec : BoxSpec) : Except SandboxError ValidBoxSpec :=
 
 /-- Compile and encode the guest `seccomp` classic BPF filter wire payload for `arch`. -/
 @[irreducible] def encodedSeccompFilter (arch : SeccompArch) : ByteArray :=
-  LeanSwe.ProcessSandbox.Seccomp.Impl.encodeSeccompBpf
-    (LeanSwe.ProcessSandbox.Seccomp.Impl.compileSeccompBpf arch)
+  LeanSwe.ProcessSandbox.Seccomp.encodeSeccompBpf
+    (LeanSwe.ProcessSandbox.Seccomp.compileSeccompBpf arch)
 
 /-- Run `spec` inside a freshly compiled, sealed, and cgroup-bounded sandbox using `MonadFinally` brackets for leak-free teardown. -/
 def runGeneric {m : Type → Type} [Monad m] [MonadFinally m]

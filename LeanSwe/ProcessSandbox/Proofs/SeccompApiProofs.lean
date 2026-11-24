@@ -2,7 +2,6 @@ import LeanSwe.ProcessSandbox.Types
 import LeanSwe.ProcessSandbox.Model
 import LeanSwe.ProcessSandbox.Seccomp.Types
 import LeanSwe.ProcessSandbox.Seccomp.Model
-import LeanSwe.ProcessSandbox.Seccomp.Impl
 import LeanSwe.ProcessSandbox.Seccomp.Interface
 import LeanSwe.ProcessSandbox.Seccomp.Proofs
 import LeanSwe.ProcessSandbox.Impl
