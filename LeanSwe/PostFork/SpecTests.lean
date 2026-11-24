@@ -263,15 +263,15 @@ def test_postfork_runChild_safetyAndExecPost
   let envp ← nondet (List Bytes)
   if s.status == .running then
     NondetTest.assert
-      (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp)
+      (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp })
         (RunChildSafetyPost s flags syncR inFd outFd errFd repW closeFds.val keepFds.val cwd? path argv envp))
   else
     NondetTest.assert
-      (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp)
+      (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp })
         (fun _ => True))
   assume (ValidRunChildExecPre s flags syncR inFd outFd errFd repW closeFds.val keepFds.val cwd? path)
   NondetTest.assert
-    (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp)
+    (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp })
       (RunChildExecPost s flags syncR inFd outFd errFd repW closeFds.val keepFds.val cwd? path argv envp))
 
 /-- `runChild` universally enforces exact pre-`execve` validation, stage-tagged uniform failure wire bytes (`STAGE_VALIDATE=1`, `STAGE_PROCESS_GROUP=2`, `STAGE_FD_SETUP=4`, `STAGE_CLOSE_UNKEPT=5`, `STAGE_CHDIR=6`, `STAGE_EXECVE=7`), broken-`rep_w` `SIGPIPE`-immunity, sync-barrier EOF `_exit(125)` with `closeFds` closed before `read1`, and `/proc/self/fd`-unavailable fail-closed reporting. -/
@@ -293,7 +293,7 @@ def test_postfork_runChild_validationStagesAndBarrier
   assume (s.status = .running ∧ s.oracle = [])
   if decide (repW < 0#i32) then
     NondetTest.assert
-      (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp) (fun s' =>
+      (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp }) (fun s' =>
         s'.status = .exited 127#i32 ∧ s'.writeLog = s.writeLog))
   else
     match s.getFd repW.val with
@@ -303,29 +303,29 @@ def test_postfork_runChild_validationStagesAndBarrier
       | .stream _ true false _ =>
         if !validFlagsSpec flags then
           NondetTest.assert
-            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp) (fun s' =>
+            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp }) (fun s' =>
               s'.status = .exited 127#i32 ∧
               appendedBytesForDesc s.writeLog s'.writeLog repEnt.desc = expectedFailureWireBytes 1#u8 EINVAL))
         else if !validSignsSpec flags syncR inFd outFd errFd then
           NondetTest.assert
-            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp) (fun s' =>
+            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp }) (fun s' =>
               s'.status = .exited 127#i32 ∧
               appendedBytesForDesc s.writeLog s'.writeLog repEnt.desc = expectedFailureWireBytes 1#u8 EBADF))
         else if !validRunChildNoOverlap flags syncR inFd outFd errFd repW closeFds.val keepFds.val then
           NondetTest.assert
-            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp) (fun s' =>
+            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp }) (fun s' =>
               s'.status = .exited 127#i32 ∧
               appendedBytesForDesc s.writeLog s'.writeLog repEnt.desc = expectedFailureWireBytes 1#u8 EINVAL))
         else if flagSet flags FLAG_SET_PGID && decide (s.pid > 0) && decide (s.pid = s.sid) then
           NondetTest.assert
-            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp) (fun s' =>
+            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp }) (fun s' =>
               s'.status = .exited 127#i32 ∧
               appendedBytesForDesc s.writeLog s'.writeLog repEnt.desc = expectedFailureWireBytes 2#u8 EPERM))
         else if (flagSet flags FLAG_HAS_SYNC_BARRIER && !s.isOpen syncR.val) ||
             (flagSet flags FLAG_REDIRECT_STDIO && (!s.isOpen inFd.val || !s.isOpen outFd.val || !s.isOpen errFd.val)) ||
             keepFds.val.any (fun k => decide (0#i32 ≤ k) && !s.isOpen k.val) then
           NondetTest.assert
-            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp) (fun s' =>
+            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp }) (fun s' =>
               s'.status = .exited 127#i32 ∧
               appendedBytesForDesc s.writeLog s'.writeLog repEnt.desc = expectedFailureWireBytes 4#u8 EBADF))
         else if flagSet flags FLAG_HAS_SYNC_BARRIER then
@@ -335,7 +335,7 @@ def test_postfork_runChild_validationStagesAndBarrier
             match s.getDesc syncEnt.desc with
             | .stream true _ _ [] =>
               NondetTest.assert
-                (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp) (fun s' =>
+                (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp }) (fun s' =>
                   s'.status = .exited 125#i32 ∧
                   s'.writeLog = s.writeLog ∧
                   closedBeforeSyncRead (s'.trace.drop s.trace.length) closeFds.val syncR))
@@ -344,7 +344,7 @@ def test_postfork_runChild_validationStagesAndBarrier
                   !s.closeRangeSupported && !s.procSelfFdAvailable &&
                   decide (min s.fdLimit 2147483648 ≥ minRunChildFdSlack flags + Int.ofNat s.fds.length) then
                 NondetTest.assert
-                  (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp) (fun s' =>
+                  (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp }) (fun s' =>
                     s'.status = .exited 127#i32 ∧
                     appendedBytesForDesc s.writeLog s'.writeLog repEnt.desc =
                       expectedFailureWireBytes 5#u8 (sanitizeErrno s.procOpenErrno)))
@@ -355,7 +355,7 @@ def test_postfork_runChild_validationStagesAndBarrier
             !s.closeRangeSupported && !s.procSelfFdAvailable &&
             decide (min s.fdLimit 2147483648 ≥ minRunChildFdSlack flags + Int.ofNat s.fds.length) then
           NondetTest.assert
-            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp) (fun s' =>
+            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp }) (fun s' =>
               s'.status = .exited 127#i32 ∧
               appendedBytesForDesc s.writeLog s'.writeLog repEnt.desc =
                 expectedFailureWireBytes 5#u8 (sanitizeErrno s.procOpenErrno)))
@@ -363,11 +363,11 @@ def test_postfork_runChild_validationStagesAndBarrier
               s.closeRangeSupported || s.procSelfFdAvailable) &&
             decide (min s.fdLimit 2147483648 ≥ minRunChildFdSlack flags + Int.ofNat s.fds.length) then do
           NondetTest.assert
-            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds (some []) path argv envp) (fun s' =>
+            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := some [], path := path, argv := argv, envp := envp }) (fun s' =>
               s'.status = .exited 127#i32 ∧
               appendedBytesForDesc s.writeLog s'.writeLog repEnt.desc = expectedFailureWireBytes 6#u8 ENOENT))
           NondetTest.assert
-            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds none [] argv envp) (fun s' =>
+            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := none, path := [], argv := argv, envp := envp }) (fun s' =>
               s'.status = .exited 127#i32 ∧
               appendedBytesForDesc s.writeLog s'.writeLog repEnt.desc = expectedFailureWireBytes 7#u8 ENOENT))
         else
@@ -375,7 +375,7 @@ def test_postfork_runChild_validationStagesAndBarrier
       | .stream _ true true _ =>
         if !validFlagsSpec flags then
           NondetTest.assert
-            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds cwd? path argv envp) (fun s' =>
+            (OkPost (api.runChild s { flags := flags, sync_r := syncR, stdin_fd := inFd, stdout_fd := outFd, stderr_fd := errFd, rep_w := repW } closeFds keepFds { cwd := cwd?, path := path, argv := argv, envp := envp }) (fun s' =>
               s'.status = .exited 127#i32))
         else
           pure ()

@@ -2732,6 +2732,27 @@ def child.apply_close_unkept
   then fd_ops.close_fds_above2_except s safe_rep_w keep_fds
   else ok (core.result.Result.Ok (), s)
 
+/-- [postfork::child::{impl core::clone::Clone for postfork::child::ExecSpec<'a>}::clone]:
+    Source: 'src/child.rs', lines 449:9-449:14
+    Visibility: public -/
+def child.ExecSpec.Insts.CoreCloneClone.clone
+  (self : child.ExecSpec) : Result child.ExecSpec := do
+  ok self
+
+/-- Trait implementation: [postfork::child::{impl core::clone::Clone for postfork::child::ExecSpec<'a>}]
+    Source: 'src/child.rs', lines 449:9-449:14 -/
+@[reducible]
+def child.ExecSpec.Insts.CoreCloneClone : core.clone.Clone child.ExecSpec := {
+  clone := child.ExecSpec.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [postfork::child::{impl core::marker::Copy for postfork::child::ExecSpec<'a>}]
+    Source: 'src/child.rs', lines 449:16-449:20 -/
+@[reducible]
+def child.ExecSpec.Insts.CoreMarkerCopy : core.marker.Copy child.ExecSpec := {
+  cloneInst := child.ExecSpec.Insts.CoreCloneClone
+}
+
 /-- [postfork::fd_ops::clear_cloexec_slice]: loop body 0:
     Source: 'src/fd_ops.rs', lines 90:4-100:5
     Visibility: public -/
@@ -2780,12 +2801,11 @@ def fd_ops.clear_cloexec_slice
   else ok (core.result.Result.Ok (), s1)
 
 /-- [postfork::child::run_child_post_sync]:
-    Source: 'src/child.rs', lines 449:0-488:1
+    Source: 'src/child.rs', lines 458:0-489:1
     Visibility: public -/
 def child.run_child_post_sync
   (s : sys.Sys) (fds : child.ChildFds) (keep_fds : Slice Std.I32)
-  (cwd : Option sys.CStr) (path : sys.CStr) (argv : sys.CStrArray)
-  (envp : sys.CStrArray) :
+  (exec : child.ExecSpec) :
   Result sys.Sys
   := do
   let i ← lift (fds.flags &&& child.FLAG_REDIRECT_STDIO)
@@ -2805,15 +2825,15 @@ def child.run_child_post_sync
         let (r3, s4) ← child.apply_close_unkept s3 (i1 != 0#u32) fd keep_fds
         match r3 with
         | core.result.Result.Ok _ =>
-          match cwd with
+          match exec.cwd with
           | none =>
-            let (e, s5) ← sys.execve s4 path argv envp
+            let (e, s5) ← sys.execve s4 exec.path exec.argv exec.envp
             child.report_and_exit s5 fd child.STAGE_EXECVE e child.ENOENT
           | some dir =>
             let (r4, s5) ← sys.chdir s4 dir
             match r4 with
             | core.result.Result.Ok _ =>
-              let (e, s6) ← sys.execve s5 path argv envp
+              let (e, s6) ← sys.execve s5 exec.path exec.argv exec.envp
               child.report_and_exit s6 fd child.STAGE_EXECVE e child.ENOENT
             | core.result.Result.Err e =>
               child.report_and_exit s5 fd child.STAGE_CHDIR e fd_ops.EIO
@@ -2827,17 +2847,16 @@ def child.run_child_post_sync
     child.report_and_exit s1 fds.rep_w child.STAGE_FD_SETUP e fd_ops.EIO
 
 /-- [postfork::child::run_child]:
-    Source: 'src/child.rs', lines 492:0-506:1
+    Source: 'src/child.rs', lines 492:0-503:1
     Visibility: public -/
 def child.run_child
   (s : sys.Sys) (fds : child.ChildFds) (close_fds : Slice Std.I32)
-  (keep_fds : Slice Std.I32) (cwd : Option sys.CStr) (path : sys.CStr)
-  (argv : sys.CStrArray) (envp : sys.CStrArray) :
+  (keep_fds : Slice Std.I32) (exec : child.ExecSpec) :
   Result sys.Sys
   := do
   let (b, s1) ← child.run_child_pre_sync s fds close_fds keep_fds
   if b
-  then child.run_child_post_sync s1 fds keep_fds cwd path argv envp
+  then child.run_child_post_sync s1 fds keep_fds exec
   else ok s1
 
 /-- [postfork::fd_ops::close_fds_above2_except_rc]:

@@ -33,7 +33,7 @@ structure PostForkAeneasApi where
   /-- Execute unified post-`fork` child setup (`postfork.child.run_child`). -/
   runChild :
     ChildState → postfork.child.ChildFds →
-      Slice Std.I32 → Slice Std.I32 → Option sys.CStr → sys.CStr → sys.CStrArray → sys.CStrArray →
+      Slice Std.I32 → Slice Std.I32 → postfork.child.ExecSpec →
       Result ChildState
 
 /-- Default `PostForkAeneasApi` backed by Charon/Aeneas-translated `postfork` functions. -/

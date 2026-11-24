@@ -1310,7 +1310,8 @@ private def evalLowLevelCase
               stdout_fd := mkI32 stdoutArg.toInt
               stderr_fd := mkI32 stderrArg.toInt
               rep_w := mkI32 repArg.toInt }
-            closeSlice keepSlice cwdCStrOpt pathCStr argvCStr envpCStr)
+            closeSlice keepSlice
+            { cwd := cwdCStrOpt, path := pathCStr, argv := argvCStr, envp := envpCStr })
           (fun st => st.trace)
       else do
         let p ← runWithSeccompFixedPoint sBase inp.secTgt inp.secErrI32 inp.cwdErr? inp.execErr?

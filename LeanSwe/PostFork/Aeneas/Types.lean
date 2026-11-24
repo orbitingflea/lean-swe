@@ -30,4 +30,13 @@ structure child.ChildFds where
   stderr_fd : Std.I32
   rep_w : Std.I32
 
+/-- [postfork::child::ExecSpec]
+    Source: 'src/child.rs', lines 450:0-455:1
+    Visibility: public -/
+structure child.ExecSpec where
+  cwd : Option sys.CStr
+  path : sys.CStr
+  argv : sys.CStrArray
+  envp : sys.CStrArray
+
 end postfork
