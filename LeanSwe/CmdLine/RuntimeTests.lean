@@ -1,5 +1,6 @@
 import Core.Assumptions
 import LeanSwe.CmdLine.Interface
+import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.Process.Interface
 
 namespace LeanSwe.CmdLine.RuntimeTests
@@ -335,8 +336,7 @@ private def covLeafSpec : CommandSpec := {
   args := [{ name := "input", kind := .string, required := true }]
 }
 
-/-- Verify `CmdLine.defaultOps.readLine` returns `none` on EOF. -/
-def assume_cmdline_defaultOps_readLine_eofReturnsNone : IO Unit := do
+private def testDefaultOpsReadLineEof : IO Unit := do
   assertDefaultGetEnvUnset "__LEANSWE_UNSET_CMDLINE_ENV__"
   let exe := (← IO.appPath).toString
   let res ← runProbe exe #["prompt-eof"] #[] (some "")
@@ -344,8 +344,7 @@ def assume_cmdline_defaultOps_readLine_eofReturnsNone : IO Unit := do
   assertTrue (res.exitCode == 2 && containsSubstr err "CmdLineErrorKind.eof")
     s!"expected eof on closed stdin, got rc={res.exitCode} err={repr err}"
 
-/-- Verify `CmdLine.defaultOps.readLine` strips trailing LF and CR+LF newlines. -/
-def assume_cmdline_defaultOps_readLine_stripsTrailingNewlines : IO Unit := do
+private def testDefaultOpsReadLineStripsNewlines : IO Unit := do
   assertDefaultGetEnvUnset "__LEANSWE_UNSET_CMDLINE_ENV__"
   let exe := (← IO.appPath).toString
   let lfRes ← runProbe exe #["prompt-default"] #[] (some "alpha\n")
@@ -357,8 +356,7 @@ def assume_cmdline_defaultOps_readLine_stripsTrailingNewlines : IO Unit := do
   assertTrue (crlfRes.exitCode == 0 && containsSubstr crlfOut "DEF:beta\n" && !containsSubstr crlfOut "\r")
     s!"expected CRLF stripped, got rc={crlfRes.exitCode} out={repr crlfOut}"
 
-/-- Verify `CmdLine.defaultOps.writeOut` flushes stdout before blocking on `readLine`. -/
-def assume_cmdline_defaultOps_writeOut_flushesBeforeBlockingRead : IO Unit := do
+private def testDefaultOpsWriteOutFlushesBeforeRead : IO Unit := do
   assertDefaultGetEnvUnset "__LEANSWE_UNSET_CMDLINE_ENV__"
   let exe := (← IO.appPath).toString
   let child ← IO.Process.spawn {
@@ -384,8 +382,7 @@ def assume_cmdline_defaultOps_writeOut_flushesBeforeBlockingRead : IO Unit := do
   assertTrue (rc == 0 && containsSubstr restOut "STRICT:abc:true")
     s!"expected prompt-strict exit 0 with STRICT:abc:true, got rc={rc} out={repr restOut}"
 
-/-- Verify `CmdLine.defaultOps.writeErr` flushes stderr before blocking on `readLine`. -/
-def assume_cmdline_defaultOps_writeErr_flushesBeforeBlockingRead : IO Unit := do
+private def testDefaultOpsWriteErrFlushesBeforeRead : IO Unit := do
   assertDefaultGetEnvUnset "__LEANSWE_UNSET_CMDLINE_ENV__"
   let exe := (← IO.appPath).toString
   let child ← IO.Process.spawn {
@@ -416,8 +413,7 @@ def assume_cmdline_defaultOps_writeErr_flushesBeforeBlockingRead : IO Unit := do
   assertTrue (rc == 0 && containsSubstr restOut "STRICT:xyz:true")
     s!"expected prompt-strict exit 0 after retry, got rc={rc} out={repr restOut}"
 
-/-- Verify `CmdLine.defaultOps.getEnv` maps valid `EnvVars.getEnv` results and invalid UTF-8 to `.ioError`. -/
-def assume_cmdline_defaultOps_getEnv_mapsEnvVarsAndInvalidUtf8ToIoError : IO Unit := do
+private def testDefaultOpsGetEnvMapsEnvVars : IO Unit := do
   assertDefaultGetEnvUnset "__LEANSWE_UNSET_CMDLINE_ENV__"
   let okOut ← runCmdCProbe false #["default-get-env", "MY_VAR"] #[cmdUtf8ToHex "MY_VAR=ok_val"]
   assertTrue (okOut.exitCode == 0 && okOut.stdout == "OK:SOME:ok_val\n")
@@ -426,19 +422,114 @@ def assume_cmdline_defaultOps_getEnv_mapsEnvVarsAndInvalidUtf8ToIoError : IO Uni
   assertTrue (badOut.exitCode == 2 && containsSubstr badOut.stderr "CmdLineErrorKind.ioError:BAD_VAR:")
     s!"expected defaultOps.getEnv ioError on invalid UTF-8, got rc={badOut.exitCode} err={repr badOut.stderr}"
 
-/-- Registry of runtime assumption checks for `LeanSwe.CmdLine`. -/
-def registeredAssumptions : Array Core.RegisteredAssumption := #[
-  ⟨"LeanSwe.CmdLine.assume_cmdline_defaultOps_readLine_eofReturnsNone",
-    assume_cmdline_defaultOps_readLine_eofReturnsNone⟩,
-  ⟨"LeanSwe.CmdLine.assume_cmdline_defaultOps_readLine_stripsTrailingNewlines",
-    assume_cmdline_defaultOps_readLine_stripsTrailingNewlines⟩,
-  ⟨"LeanSwe.CmdLine.assume_cmdline_defaultOps_writeOut_flushesBeforeBlockingRead",
-    assume_cmdline_defaultOps_writeOut_flushesBeforeBlockingRead⟩,
-  ⟨"LeanSwe.CmdLine.assume_cmdline_defaultOps_writeErr_flushesBeforeBlockingRead",
-    assume_cmdline_defaultOps_writeErr_flushesBeforeBlockingRead⟩,
-  ⟨"LeanSwe.CmdLine.assume_cmdline_defaultOps_getEnv_mapsEnvVarsAndInvalidUtf8ToIoError",
-    assume_cmdline_defaultOps_getEnv_mapsEnvVarsAndInvalidUtf8ToIoError⟩
-]
+private structure MockStdioState where
+  inBytes : ByteArray := ByteArray.empty
+  inOff : Nat := 0
+  readEintrLeft : Nat := 0
+  writeEintrLeft : Nat := 0
+  writeZeroOnce : Bool := false
+  dupFailErr? : Option LinuxSyscall.Errno := none
+  outBytes : ByteArray := ByteArray.empty
+  errBytes : ByteArray := ByteArray.empty
+  openCount : Nat := 0
+
+private def mkMockStdioFilesOps (stRef : IO.Ref MockStdioState) :
+    LinuxSyscall.Files.FilesOpsM IO LinuxSyscall.Files.StdioFd :=
+  let sentinel := LinuxSyscall.Errno.ENOSYS
+  { openat := fun _ _ _ _ => pure (.error sentinel)
+    openat2 := fun _ _ _ => pure (.error sentinel)
+    close := fun _ => stRef.modifyGet fun st => (.ok (), { st with openCount := st.openCount - 1 })
+    read := fun _ n => stRef.modifyGet fun st =>
+      if st.readEintrLeft > 0 then
+        (.error LinuxSyscall.Errno.EINTR, { st with readEintrLeft := st.readEintrLeft - 1 })
+      else if n == 0 || st.inOff >= st.inBytes.size then
+        (.ok ByteArray.empty, st)
+      else
+        let b := st.inBytes[st.inOff]!
+        (.ok (ByteArray.mk #[b]), { st with inOff := st.inOff + 1 })
+    write := fun slot slice => stRef.modifyGet fun st =>
+      if st.writeEintrLeft > 0 then
+        (.error LinuxSyscall.Errno.EINTR, { st with writeEintrLeft := st.writeEintrLeft - 1 })
+      else if st.writeZeroOnce then
+        (.ok 0, { st with writeZeroOnce := false })
+      else
+        let takeN := min 2 slice.size
+        let part := slice.extract 0 takeN
+        let st' := match slot with
+          | .stdout => { st with outBytes := st.outBytes ++ part }
+          | .stderr => { st with errBytes := st.errBytes ++ part }
+          | .stdin => st
+        (.ok (UInt32.ofNat takeN), st')
+    fstat := fun _ => pure (.error sentinel)
+    fstatat := fun _ _ _ => pure (.error sentinel)
+    faccessat := fun _ _ _ _ => pure (.error sentinel)
+    mkdirat := fun _ _ _ => pure (.error sentinel)
+    unlinkat := fun _ _ _ => pure (.error sentinel)
+    renameat2 := fun _ _ _ _ _ => pure (.error sentinel)
+    symlinkat := fun _ _ _ => pure (.error sentinel)
+    readlinkat := fun _ _ _ => pure (.error sentinel)
+    getdents64 := fun _ _ => pure (.error sentinel)
+    fchmodat := fun _ _ _ => pure (.error sentinel)
+    fchmod := fun _ _ => pure (.error sentinel)
+    flock := fun _ _ => pure (.error sentinel)
+    fcntl := fun _ _ => pure (.error sentinel)
+    fsync := fun _ => pure (.error sentinel)
+    getcwd := fun _ => pure (.error sentinel)
+    lseek := fun _ _ _ => pure (.error sentinel)
+    reopenReadOnly := fun _ => pure (.error sentinel)
+    dupStdio := fun slot => stRef.modifyGet fun st =>
+      match st.dupFailErr? with
+      | some e => (.error e, st)
+      | none => (.ok slot, { st with openCount := st.openCount + 1 }) }
+
+private def testMkFilesCliOpsLive : IO Unit := do
+  let stRef ← IO.mkRef
+    { inBytes := "  yes \r\nnext\n".toUTF8
+      readEintrLeft := 2
+      writeEintrLeft := 2 : MockStdioState }
+  let cliOps := CmdLine.SysBridge.mkFilesCliOps (mkMockStdioFilesOps stRef)
+    (fun k => pure (.ok (if k == "CLI_OPT" then some "env_val" else none)))
+  let cRes ← CmdLine.confirmM cliOps "Proceed? " none 3
+  assertTrue (match cRes with | .ok true => true | _ => false) "confirmM eintr+shortwrite"
+  let pRes ← CmdLine.promptLineM cliOps "Next: " none
+  assertTrue (match pRes with | .ok "next" => true | _ => false) "promptLineM second line"
+  let eofRes ← CmdLine.promptLineM cliOps "Eof: " (some "defv")
+  assertTrue (match eofRes with | .error e => e.kind == .eof | _ => false) "promptLineM eof"
+  let sp : CmdLine.CommandSpec :=
+    { name := "demo"
+      version := some "2.0"
+      options := [{ name := "opt", long := some "opt", kind := .string, envVar := some "CLI_OPT", default := some "fb" }] }
+  let rcHelp ← CmdLine.runCliM cliOps sp ["--help"] (fun _ => pure 0)
+  let rcVer ← CmdLine.runCliM cliOps sp ["--version"] (fun _ => pure 0)
+  let rcBad ← CmdLine.runCliM cliOps sp ["--unknown"] (fun _ => pure 0)
+  let rcOk ← CmdLine.runCliM cliOps sp [] (fun p => pure (if p.getString "opt" == some "env_val" then 0 else 9))
+  assertTrue (rcHelp == 0 && rcVer == 0 && rcBad == 2 && rcOk == 0) "runCliM exit codes"
+  let stMid ← stRef.get
+  assertTrue (stMid.openCount == 0 && !stMid.outBytes.isEmpty && !stMid.errBytes.isEmpty) "stdio fds closed"
+  stRef.set { inBytes := "ok\n".toUTF8, readEintrLeft := CmdLine.SysBridge.stdioEintrFuel }
+  let readAtLimit ← cliOps.readLine
+  assertTrue (readAtLimit == some "ok" && (← stRef.get).openCount == 0)
+    "readLine absorbs exact stdioEintrFuel (64) consecutive EINTRs"
+  stRef.set { inBytes := "ok\n".toUTF8, readEintrLeft := CmdLine.SysBridge.stdioEintrFuel + 1 }
+  let readIntr ← try let _ ← cliOps.readLine; pure false catch e => pure (match e with | .interrupted _ 4 _ => true | _ => false)
+  assertTrue (readIntr && (← stRef.get).openCount == 0) "readLine fails EINTR after stdioEintrFuel + 1 (65) and closes fd"
+  stRef.set { writeEintrLeft := CmdLine.SysBridge.stdioEintrFuel }
+  cliOps.writeOut "xy"
+  let stWrLim ← stRef.get
+  assertTrue (stWrLim.outBytes == "xy".toUTF8 && stWrLim.openCount == 0)
+    "writeOut absorbs exact stdioEintrFuel (64) consecutive EINTRs"
+  stRef.set { writeEintrLeft := CmdLine.SysBridge.stdioEintrFuel + 1 }
+  let writeIntr ← try cliOps.writeOut "x"; pure false catch e => pure (match e with | .interrupted _ 4 _ => true | _ => false)
+  assertTrue (writeIntr && (← stRef.get).openCount == 0) "writeOut fails EINTR after stdioEintrFuel + 1 (65) and closes fd"
+  stRef.set { writeZeroOnce := true }
+  let writeZero ← try cliOps.writeErr "x"; pure false catch e => pure (match e with | .hardwareFault 5 _ => true | _ => false)
+  assertTrue (writeZero && (← stRef.get).openCount == 0) "writeErr 0-byte write returns EIO and closes fd"
+  stRef.set { dupFailErr? := some LinuxSyscall.Errno.EBADF }
+  let dupErr ← try let _ ← cliOps.readLine; pure false catch e => pure (match e with | .invalidArgument _ 9 _ => true | _ => false)
+  assertTrue (dupErr && (← stRef.get).openCount == 0) "dupStdio EBADF throws invalidArgument 9"
+  cliOps.writeOut ""
+  cliOps.writeErr ""
+  assertTrue ((← stRef.get).openCount == 0) "empty writeOut/writeErr bypasses dupStdio"
 
 /-- Error test for `CmdLine.parse` returning `.helpRequested`. -/
 def err_cmdline_parse_helpRequested : IO Unit :=
@@ -760,7 +851,12 @@ def runAll : IO Unit := do
   assertTrue (containsSubstr (String.fromUTF8! rConfirmExhaust.stderr) "ERR:LeanSwe.CmdLine.CmdLineErrorKind.invalidValue")
     s!"confirm exhaustion stderr: {repr (String.fromUTF8! rConfirmExhaust.stderr)}"
 
-  Core.runRegisteredAssumptions registeredAssumptions
+  testDefaultOpsReadLineEof
+  testDefaultOpsReadLineStripsNewlines
+  testDefaultOpsWriteOutFlushesBeforeRead
+  testDefaultOpsWriteErrFlushesBeforeRead
+  testDefaultOpsGetEnvMapsEnvVars
+  testMkFilesCliOpsLive
   Core.runRegisteredErrorTests registeredErrorTests
   IO.println "PASS: LeanSwe.CmdLine runtime tests"
 

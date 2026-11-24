@@ -146,6 +146,7 @@ import LeanSwe.Git.RuntimeTests
 import LeanSwe.CmdLine.Types
 import LeanSwe.CmdLine.Model
 import LeanSwe.CmdLine.Impl
+import LeanSwe.CmdLine.SysBridge
 import LeanSwe.CmdLine.Interface
 import LeanSwe.CmdLine.SpecTests
 import LeanSwe.CmdLine.SpecMutants

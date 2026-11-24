@@ -2,10 +2,11 @@ import Core.NondetTest
 import Core.Assumptions
 import LeanSwe.CmdLine.Types
 import LeanSwe.CmdLine.Model
+import LeanSwe.LinuxSyscall.Files.Types
 
 namespace LeanSwe.CmdLine
 
-open Core (NondetTest AssumptionObligation ErrorObligation)
+open Core (NondetTest ErrorObligation)
 open Core.NondetTest
 
 /-- Pure `CliOpsM Id` with empty stdin, no-op stdout/stderr, and clean unset environment. -/
@@ -537,24 +538,147 @@ def test_cmdline_parseWithEnv_unsetEnvMatchesParseWith
   let validators ← nondet CustomValidators
   NondetTest.assert ((mkApi pureIdCliOps).parseWithEnv spec args validators = api.parseWith spec args validators)
 
-/-- Frozen thin external-boundary assumptions for `LeanSwe.CmdLine.defaultOps` over OS `stdio`
-    (`IO.getStdin`, `IO.getStdout`, `IO.getStderr`) and `LeanSwe.EnvVars.getEnv` adapter error mapping. -/
-def externalAssumptions : List AssumptionObligation :=
-  [ { name := "LeanSwe.CmdLine.assume_cmdline_defaultOps_readLine_eofReturnsNone"
-      subject := "LeanSwe.CmdLine.defaultOps"
-      formalPred? := none }
-  , { name := "LeanSwe.CmdLine.assume_cmdline_defaultOps_readLine_stripsTrailingNewlines"
-      subject := "LeanSwe.CmdLine.defaultOps"
-      formalPred? := none }
-  , { name := "LeanSwe.CmdLine.assume_cmdline_defaultOps_writeOut_flushesBeforeBlockingRead"
-      subject := "LeanSwe.CmdLine.defaultOps"
-      formalPred? := none }
-  , { name := "LeanSwe.CmdLine.assume_cmdline_defaultOps_writeErr_flushesBeforeBlockingRead"
-      subject := "LeanSwe.CmdLine.defaultOps"
-      formalPred? := none }
-  , { name := "LeanSwe.CmdLine.assume_cmdline_defaultOps_getEnv_mapsEnvVarsAndInvalidUtf8ToIoError"
-      subject := "LeanSwe.CmdLine.defaultOps"
-      formalPred? := none } ]
+/-- Scripted `FilesOpsM` state for verifying `mkFilesCliOpsM` `EINTR` retry, partial writes, EOF, and FD conservation. -/
+structure ScriptedStdioState where
+  /-- Queued `read` outcomes for `.stdin`. -/
+  readQueue : List (Except LeanSwe.LinuxSyscall.Errno ByteArray) := []
+  /-- Queued `write` outcomes (`UInt32` byte count or `Errno`) for `.stdout`/`.stderr`. -/
+  writeQueue : List (Except LeanSwe.LinuxSyscall.Errno UInt32) := []
+  /-- Accumulated bytes actually committed by successful `write` steps. -/
+  written : ByteArray := ByteArray.empty
+  /-- Currently open duplicated stdio descriptors (`dupStdio` inserts, `close` removes). -/
+  openFds : List Nat := []
+  /-- Monotonic next descriptor ID and total `dupStdio` call count. -/
+  dupCount : Nat := 0
+  deriving Inhabited
+
+/-- Pure state+exception monad over `ScriptedStdioState` instantiating `mkFilesCliOpsM`. -/
+abbrev ScriptedCliM := ExceptT IO.Error (StateM ScriptedStdioState)
+
+instance : MonadFinally ScriptedCliM where
+  tryFinally' x f := show StateM ScriptedStdioState _ from do
+    let r ← (x : StateM ScriptedStdioState _)
+    let opt := match r with | .ok a => some a | .error _ => none
+    let b ← (f opt : StateM ScriptedStdioState _)
+    match r, b with
+    | _, .error e => return .error e
+    | .error e, .ok _ => return .error e
+    | .ok a, .ok bVal => return .ok (a, bVal)
+
+/-- Builder signature for `SysBridge.mkFilesCliOpsM` specialized to `ScriptedCliM`. -/
+abbrev FilesCliOpsBuilder :=
+  LeanSwe.LinuxSyscall.Files.FilesOpsM ScriptedCliM Nat →
+  (String → ScriptedCliM (Except CmdLineError (Option String))) →
+  CliOpsM ScriptedCliM
+
+private def unimplScripted {α : Type} : ScriptedCliM (Except LeanSwe.LinuxSyscall.Errno α) :=
+  pure (.error LeanSwe.LinuxSyscall.Errno.ENOSYS)
+
+/-- Scripted `FilesOpsM ScriptedCliM Nat` tracking `dupStdio`, `close`, `read`, and partial `write` slices. -/
+def scriptedStdioFilesOps : LeanSwe.LinuxSyscall.Files.FilesOpsM ScriptedCliM Nat :=
+  let liftState {α : Type} (act : StateM ScriptedStdioState α) : ScriptedCliM α :=
+    show StateM ScriptedStdioState (Except IO.Error α) from (fun a => .ok a) <$> act
+  { openat := fun _ _ _ _ => unimplScripted
+    openat2 := fun _ _ _ => unimplScripted
+    close := fun fd => liftState do
+      let st ← get
+      if st.openFds.contains fd then
+        set { st with openFds := st.openFds.erase fd }
+        return .ok ()
+      else
+        return .error LeanSwe.LinuxSyscall.Errno.EBADF
+    read := fun fd _ => liftState do
+      let st ← get
+      if !st.openFds.contains fd then
+        return .error LeanSwe.LinuxSyscall.Errno.EBADF
+      else
+        match st.readQueue with
+        | [] => return .ok ByteArray.empty
+        | r :: rest =>
+          set { st with readQueue := rest }
+          return r
+    write := fun fd slice => liftState do
+      let st ← get
+      if !st.openFds.contains fd then
+        return .error LeanSwe.LinuxSyscall.Errno.EBADF
+      else
+        match st.writeQueue with
+        | [] => return .error LeanSwe.LinuxSyscall.Errno.EIO
+        | .error e :: rest =>
+          set { st with writeQueue := rest }
+          return .error e
+        | .ok n :: rest =>
+          let k := min slice.size n.toNat
+          set { st with writeQueue := rest, written := st.written ++ slice.extract 0 k }
+          return .ok (UInt32.ofNat k)
+    fstat := fun _ => unimplScripted
+    fstatat := fun _ _ _ => unimplScripted
+    faccessat := fun _ _ _ _ => unimplScripted
+    mkdirat := fun _ _ _ => unimplScripted
+    unlinkat := fun _ _ _ => unimplScripted
+    renameat2 := fun _ _ _ _ _ => unimplScripted
+    symlinkat := fun _ _ _ => unimplScripted
+    readlinkat := fun _ _ _ => unimplScripted
+    getdents64 := fun _ _ => unimplScripted
+    fchmodat := fun _ _ _ => unimplScripted
+    fchmod := fun _ _ => unimplScripted
+    flock := fun _ _ => unimplScripted
+    fcntl := fun _ _ => unimplScripted
+    fsync := fun _ => unimplScripted
+    getcwd := fun _ => unimplScripted
+    lseek := fun _ _ _ => unimplScripted
+    reopenReadOnly := fun _ => unimplScripted
+    dupStdio := fun _ => liftState do
+      let st ← get
+      let fd := st.dupCount + 10
+      set { st with openFds := fd :: st.openFds, dupCount := st.dupCount + 1 }
+      return .ok fd }
+
+/-- `mkFilesCliOpsM` preserves accumulated line prefix bytes across mid-line `EINTR`, handles `0`-byte EOF without over-reading past `\n`, reassembles partial `write` slices across `EINTR` (short-circuiting `""` and rejecting `0`-byte progress as `EIO`), and always closes duplicated FDs on both `.ok` and `.error`. -/
+def test_cmdline_mkFilesCliOps_eintrPartialWriteAndEof
+    {runner} [NondetTest runner] (mkCliOps : FilesCliOpsBuilder) : runner Unit := do
+  let ops := mkCliOps scriptedStdioFilesOps (fun _ => pure (.ok none))
+  let eintrCount ← nondet Nat
+  assume (eintrCount ≤ 8)
+  let sRead : ScriptedStdioState :=
+    { readQueue :=
+        [.ok (ByteArray.mk #[0x68]), .ok (ByteArray.mk #[0x69])] ++
+        List.replicate eintrCount (.error LeanSwe.LinuxSyscall.Errno.EINTR) ++
+        [.ok (ByteArray.mk #[0x0D]), .ok (ByteArray.mk #[0x0A]), .ok (ByteArray.mk #[0x5A])] }
+  let (rLine, sRead') := (ops.readLine : StateM ScriptedStdioState _).run sRead
+  NondetTest.assert ((match rLine with | .ok v => v == some "hi" | .error _ => false) = true)
+  NondetTest.assert (sRead'.openFds = [] ∧ sRead'.dupCount = 1 ∧ sRead'.readQueue.length = 1)
+  let sEof : ScriptedStdioState := { readQueue := [.ok ByteArray.empty] }
+  let (rEof, sEof') := (ops.readLine : StateM ScriptedStdioState _).run sEof
+  NondetTest.assert ((match rEof with | .ok v => v == none | .error _ => false) = true ∧ sEof'.openFds = [])
+  let sPartialEof : ScriptedStdioState :=
+    { readQueue :=
+        [.ok (ByteArray.mk #[0x6F]), .error LeanSwe.LinuxSyscall.Errno.EINTR,
+         .ok (ByteArray.mk #[0x6B]), .ok ByteArray.empty] }
+  let (rPEof, sPEof') := (ops.readLine : StateM ScriptedStdioState _).run sPartialEof
+  NondetTest.assert ((match rPEof with | .ok v => v == some "ok" | .error _ => false) = true ∧ sPEof'.openFds = [])
+  let sReadErr : ScriptedStdioState :=
+    { readQueue := [.ok (ByteArray.mk #[0x61]), .error LeanSwe.LinuxSyscall.Errno.EIO] }
+  let (rRErr, sRErr') := (ops.readLine : StateM ScriptedStdioState _).run sReadErr
+  NondetTest.assert (rRErr.isOk = false ∧ sRErr'.openFds = [] ∧ sRErr'.dupCount = 1)
+  let (rEmptyOut, sEmptyOut) := (ops.writeOut "" : StateM ScriptedStdioState _).run {}
+  let (rEmptyErr, sEmptyErr) := (ops.writeErr "" : StateM ScriptedStdioState _).run {}
+  NondetTest.assert (rEmptyOut.isOk = true ∧ sEmptyOut.dupCount = 0 ∧ sEmptyOut.openFds = [])
+  NondetTest.assert (rEmptyErr.isOk = true ∧ sEmptyErr.dupCount = 0 ∧ sEmptyErr.openFds = [])
+  let sWrite : ScriptedStdioState :=
+    { writeQueue :=
+        [.error LeanSwe.LinuxSyscall.Errno.EINTR, .ok 2,
+         .error LeanSwe.LinuxSyscall.Errno.EINTR, .ok 3] }
+  let (rWrite, sWrite') := (ops.writeOut "hello" : StateM ScriptedStdioState _).run sWrite
+  NondetTest.assert (rWrite.isOk = true ∧ sWrite'.written = "hello".toUTF8 ∧ sWrite'.openFds = [] ∧ sWrite'.dupCount = 1)
+  let sWriteZero : ScriptedStdioState :=
+    { writeQueue := [.ok 0] }
+  let (rWZero, sWZero') := (ops.writeOut "hello" : StateM ScriptedStdioState _).run sWriteZero
+  NondetTest.assert (rWZero.isOk = false ∧ sWZero'.openFds = [] ∧ sWZero'.dupCount = 1)
+  let sWriteErr : ScriptedStdioState :=
+    { writeQueue := [.ok 2, .error LeanSwe.LinuxSyscall.Errno.ENOSPC] }
+  let (rWErr, sWErr') := (ops.writeErr "hello" : StateM ScriptedStdioState _).run sWriteErr
+  NondetTest.assert (rWErr.isOk = false ∧ sWErr'.openFds = [] ∧ sWErr'.dupCount = 1)
 
 /-- Exhaustive `(request, errorKind)` coverage matrix across all 7 fallible `LeanSwe.CmdLine` entrypoints
     (`7 × 11 = 77` obligations over `CmdLineErrorKind`). -/

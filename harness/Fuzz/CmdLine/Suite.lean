@@ -83,6 +83,7 @@ private structure EpisodeCtx where
   stderrCapFd? : Option UInt32 := none
   armedSigalrmUsec? : Option UInt32 := none
   lastStdinBytes : ByteArray := ByteArray.empty
+  hadPriorReadErr : Bool := false
 
 private def pipeSmallSentinel : UInt32 := 0xfffffffd
 private def invalidFdSentinel : UInt32 := 0xfffffffe
@@ -118,12 +119,7 @@ private def ioOutcomeMatches {α : Type} [BEq α]
     (expected : Model.IoStepOutcome α) (actual : Except IO.Error α) : Bool :=
   match expected, actual with
   | .returned a, .ok b => a == b
-  | .threwIo c, .error e =>
-    let ac := classifyIoError e
-    if c == .stickyReadError then
-      ac == some .stickyReadError || ac == none
-    else
-      some c == ac
+  | .threwIo c, .error e => some c == classifyIoError e
   | _, _ => false
 
 private def byteContains (bs : ByteArray) (b : UInt8) : Bool := Id.run do
@@ -193,21 +189,12 @@ private def classifyReadLineSuccess (before : Model.StdioChannelState) (line : S
     | some _ :: _ => "ok.some_ascii"
   | _ => if line.isEmpty then "ok.eof_null" else "ok.some_ascii"
 
-private def recordReadLineBuckets (before after : Model.StdioChannelState)
+private def recordReadLineBuckets (before after : Model.StdioChannelState) (hadPriorReadErr : Bool)
     (out : Model.IoStepOutcome (Option String)) (tracker : CoverageTracker) : CoverageTracker :=
   let _ := after
   match out with
   | .threwIo c =>
-    let isStickyCase := before.stickyReadErr &&
-      (c == .stickyReadError || match before.backing with
-        | .pipe p wc _ _ _ => !p.isEmpty || wc
-        | .regFile _ _ _ | .nullDev => true
-        | .ptySlave segs om _ => !segs.isEmpty || !om
-        | _ => false)
-    let bkt :=
-      if isStickyCase then "err.sticky_ferror_after_err"
-      else match before.backing, c with
-      | _, .stickyReadError => "err.sticky_ferror_after_err"
+    let bkt := match before.backing, c with
       | .closedFd, .badFd => "err.ebadf_closed"
       | .wrongMode, .badFd => "err.ebadf_wronly"
       | .dirFd, .isDirectory => "err.eisdir"
@@ -225,34 +212,19 @@ private def recordReadLineBuckets (before after : Model.StdioChannelState)
       | _ => "ok.eof_pipe"
     tracker.record "readLine" bkt
   | .returned (some line) => Id.run do
-    let mut t := tracker
+    let mut t := if hadPriorReadErr then tracker.record "readLine" "ok.recover_after_err" else tracker
     let rawChunk :=
-      if !before.stdioBuf.isEmpty then
-        match Model.splitLineBytes before.stdioBuf with
-        | some (l, _) => l
-        | none =>
-          let tail := match before.backing with
-            | .pipe pending _ _ _ _ => pending
-            | .regFile bs pos _ => bs.extract pos bs.size
-            | .ptySlave segs _ _ =>
-              match Model.consumePtySegments ByteArray.empty segs with
-              | some (chunk, _, _) => chunk
-              | none => ByteArray.empty
-            | _ => ByteArray.empty
-          let combined := before.stdioBuf ++ tail
-          match Model.splitLineBytes combined with | some (l, _) => l | none => combined
-      else
-        match before.backing with
-        | .pipe pending _ _ _ _ =>
-          match Model.splitLineBytes pending with | some (l, _) => l | none => pending
-        | .regFile bs pos _ =>
-          let tail := bs.extract pos bs.size
-          match Model.splitLineBytes tail with | some (l, _) => l | none => tail
-        | .ptySlave segs _ _ =>
-          match Model.consumePtySegments ByteArray.empty segs with
-          | some (chunk, _, _) => chunk
-          | none => ByteArray.empty
-        | _ => ByteArray.empty
+      match before.backing with
+      | .pipe pending _ _ _ _ =>
+        match Model.splitLineBytes pending with | some (l, _) => l | none => pending
+      | .regFile bs pos _ =>
+        let tail := bs.extract pos bs.size
+        match Model.splitLineBytes tail with | some (l, _) => l | none => tail
+      | .ptySlave segs _ _ =>
+        match Model.consumePtySegments ByteArray.empty segs with
+        | some (chunk, _) => chunk
+        | none => ByteArray.empty
+      | _ => ByteArray.empty
     if rawChunk.size > 8192 then
       t := t.record "readLine" "ok.some_large_over_8192"
     if byteContains rawChunk 0 then
@@ -326,19 +298,13 @@ private def restoreHostEnv (saved : List ByteArray) : IO Unit := do
 private def makeEmptyPtySlave : Model.FdBacking := .ptySlave [] true ByteArray.empty
 
 private def canSafelyReadOne (w : Model.StdioWorld) : Bool :=
-  if w.stdin.backend == .leanOfBuffer then
-    true
-  else if w.stdin.backend == .osFileStar &&
-      (w.stdin.stickyEof || (Model.splitLineBytes w.stdin.stdioBuf).isSome) then
-    true
-  else
-    match w.stdin.backing with
-    | .fullDev => false
-    | .pipe pending wc nb _ _ =>
-      wc || nb || w.stdin.pendingInterrupt?.isSome || (Model.splitLineBytes (w.stdin.stdioBuf ++ pending)).isSome
-    | .ptySlave segs openM _ =>
-      !openM || w.stdin.pendingInterrupt?.isSome || (Model.consumePtySegments w.stdin.stdioBuf segs).isSome
-    | _ => true
+  match w.stdin.backing with
+  | .fullDev => false
+  | .pipe pending wc nb _ _ =>
+    wc || nb || w.stdin.pendingInterrupt.exhaustsRetries || (Model.splitLineBytes pending).isSome
+  | .ptySlave segs openM _ =>
+    !openM || w.stdin.pendingInterrupt.exhaustsRetries || (Model.consumePtySegments ByteArray.empty segs).isSome
+  | _ => true
 
 private def canSafelyConfirm (w : Model.StdioWorld) (prompt : String) (default : Option Bool) (maxAttempts : Nat) : Bool :=
   match maxAttempts with
@@ -457,7 +423,7 @@ private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOut
     if let .pipe _ _ _ _ := kind then
       closeOptFd ctx.stdinFeedFd?
     let w' := { ctx.world with stdin := { backing := backing } }
-    return ({ ctx with world := w', stdinFeedFd? := fd?, stdinIsPty := isPty, armedSigalrmUsec? := none }, tracker, priorOutErr)
+    return ({ ctx with world := w', stdinFeedFd? := fd?, stdinIsPty := isPty, armedSigalrmUsec? := none, hadPriorReadErr := false }, tracker, priorOutErr)
 
   | .setupStdout kind =>
     closeOptFd ctx.stdoutCapFd?
@@ -587,10 +553,10 @@ private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOut
       | .ptySlave _ true _ => true
       | _ => false
     if armable then
-      let w' := { ctx.world with stdin := { ctx.world.stdin with pendingInterrupt? := some 4 } }
+      let w' := { ctx.world with stdin := { ctx.world.stdin with pendingInterrupt := .repeating } }
       return ({ ctx with world := w', armedSigalrmUsec? := some usec }, tracker, priorOutErr)
     else
-      let w' := { ctx.world with stdin := { ctx.world.stdin with pendingInterrupt? := none } }
+      let w' := { ctx.world with stdin := { ctx.world.stdin with pendingInterrupt := .none } }
       return ({ ctx with world := w', armedSigalrmUsec? := none }, tracker, priorOutErr)
 
   | .setEnv k v ovw =>
@@ -625,10 +591,11 @@ private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOut
         | .threwIo c => s!"{repr c}"
         | .returned none => "eof"
         | .returned (some _) => "line"
-      throw (IO.userError s!"FUZZ_MISMATCH|READLINE|{sub}|exp={repr expOut} actual={actStr} sticky={ctx.world.stdin.stickyReadErr}")
-    let t' := recordReadLineBuckets ctx.world.stdin wNext.stdin expOut tracker
-    let nextArm := if wNext.stdin.pendingInterrupt?.isSome then ctx.armedSigalrmUsec? else none
-    return ({ ctx with world := wNext, armedSigalrmUsec? := nextArm }, t', priorOutErr)
+      throw (IO.userError s!"FUZZ_MISMATCH|READLINE|{sub}|exp={repr expOut} actual={actStr}")
+    let t' := recordReadLineBuckets ctx.world.stdin wNext.stdin ctx.hadPriorReadErr expOut tracker
+    let nextPriorReadErr := match expOut with | .threwIo _ => true | .returned _ => false
+    let nextArm := if wNext.stdin.pendingInterrupt.exhaustsRetries then ctx.armedSigalrmUsec? else none
+    return ({ ctx with world := wNext, armedSigalrmUsec? := nextArm, hadPriorReadErr := nextPriorReadErr }, t', priorOutErr)
 
   | .callWriteOut text =>
     let (expOut, wNext) := Model.stepDefaultWriteOut ctx.world text
@@ -693,7 +660,7 @@ private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOut
       disarmSigalrmRaw 0
       return (ctx, tracker, priorOutErr)
     let (exp, wNext) := Model.stepPromptLine ctx.world prompt default
-    if ctx.world.stdin.pendingInterrupt?.isSome && wNext.stdin.pendingInterrupt?.isNone then
+    if ctx.world.stdin.pendingInterrupt.exhaustsRetries && !wNext.stdin.pendingInterrupt.exhaustsRetries then
       return (ctx, tracker, priorOutErr)
     disarmSigalrmRaw 0
     let actual ← CmdLine.promptLine prompt default
@@ -725,7 +692,7 @@ private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOut
           | .threwIo _ => "err.ioError_write"
           | .returned () => "err.ioError_read"
         | _ => "err.other"
-    let nextArm := if wNext.stdin.pendingInterrupt?.isSome then ctx.armedSigalrmUsec? else none
+    let nextArm := if wNext.stdin.pendingInterrupt.exhaustsRetries then ctx.armedSigalrmUsec? else none
     return ({ ctx with world := { wNext with stdout := outCh' }, armedSigalrmUsec? := nextArm }, tracker.record "promptLine" bkt, priorOutErr)
 
   | .callConfirm prompt default maxAttempts =>
@@ -733,7 +700,7 @@ private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOut
       disarmSigalrmRaw 0
       return (ctx, tracker, priorOutErr)
     let (exp, wNext) := Model.stepConfirm ctx.world prompt default maxAttempts
-    if ctx.world.stdin.pendingInterrupt?.isSome && wNext.stdin.pendingInterrupt?.isNone then
+    if ctx.world.stdin.pendingInterrupt.exhaustsRetries && !wNext.stdin.pendingInterrupt.exhaustsRetries then
       return (ctx, tracker, priorOutErr)
     disarmSigalrmRaw 0
     let actual ← CmdLine.confirm prompt default maxAttempts
@@ -787,7 +754,7 @@ private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOut
               | _ => "err.ioError_writeErr_reprompt"
             else "err.ioError_writeErr_reprompt"
         | _ => "err.other"
-    let nextArm := if wNext.stdin.pendingInterrupt?.isSome then ctx.armedSigalrmUsec? else none
+    let nextArm := if wNext.stdin.pendingInterrupt.exhaustsRetries then ctx.armedSigalrmUsec? else none
     return ({ ctx with world := { wNext with stdout := outCh', stderr := errCh' }, armedSigalrmUsec? := nextArm }, tracker.record "confirm" bkt, priorOutErr)
 
   | .callParseWithEnv spec args =>
@@ -894,62 +861,6 @@ private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOut
         | _ => "threw.other"
       t := t.record "runCli" bkt
     return ({ ctx with world := { wNext with stdout := outCh', stderr := errCh' } }, t, priorOutErr)
-
-  | .callWithBufferStdin rawBytes prompt startPos isConfirm =>
-    let bufWorld : Model.StdioWorld := {
-      stdin := { backing := .nullDev, backend := .leanOfBuffer, memBuffer := rawBytes, memPos := startPos }
-      stdout := { backing := .nullDev, backend := .leanOfBuffer }
-      stderr := { backing := .nullDev, backend := .leanOfBuffer }
-    }
-    let bufRef ← IO.mkRef ({ data := rawBytes, pos := startPos } : IO.FS.Stream.Buffer)
-    let outBufRef ← IO.mkRef ({ data := ByteArray.empty, pos := 0 } : IO.FS.Stream.Buffer)
-    let errBufRef ← IO.mkRef ({ data := ByteArray.empty, pos := 0 } : IO.FS.Stream.Buffer)
-    let (expOk, bufW1, resOk) ← if isConfirm then
-      let (expC, wC) := Model.stepConfirm bufWorld prompt none 2
-      let resC : Except IO.Error (Except CmdLineError Unit) ← try
-        let r ← IO.withStdin (IO.FS.Stream.ofBuffer bufRef)
-          (IO.withStdout (IO.FS.Stream.ofBuffer outBufRef)
-            (IO.withStderr (IO.FS.Stream.ofBuffer errBufRef)
-              (CmdLine.confirm prompt none 2)))
-        pure (.ok (r.map fun _ => ()))
-      catch e =>
-        pure (.error e)
-      pure (expC.map fun _ => (), wC, resC)
-    else
-      let (expP, wP) := Model.stepPromptLine bufWorld prompt none
-      let resP : Except IO.Error (Except CmdLineError Unit) ← try
-        let r ← IO.withStdin (IO.FS.Stream.ofBuffer bufRef)
-          (IO.withStdout (IO.FS.Stream.ofBuffer outBufRef)
-            (IO.withStderr (IO.FS.Stream.ofBuffer errBufRef)
-              (CmdLine.promptLine prompt none)))
-        pure (.ok (r.map fun _ => ()))
-      catch e =>
-        pure (.error e)
-      pure (expP.map fun _ => (), wP, resP)
-    let afterBuf ← bufRef.get
-    let afterOut ← outBufRef.get
-    let afterErr ← errBufRef.get
-    if afterBuf.pos != bufW1.stdin.memPos then
-      throw (IO.userError s!"FUZZ_MISMATCH|OFBUFFER|pos|exp={bufW1.stdin.memPos} actual={afterBuf.pos}")
-    if afterBuf.data != bufW1.stdin.memBuffer then
-      throw (IO.userError s!"FUZZ_MISMATCH|OFBUFFER|in_data|expSize={bufW1.stdin.memBuffer.size} actSize={afterBuf.data.size}")
-    if afterOut.data != bufW1.stdout.memBuffer || afterOut.pos != bufW1.stdout.memPos then
-      throw (IO.userError s!"FUZZ_MISMATCH|OFBUFFER|out_buf|pos={afterOut.pos} expPos={bufW1.stdout.memPos}")
-    if afterErr.data != bufW1.stderr.memBuffer || afterErr.pos != bufW1.stderr.memPos then
-      throw (IO.userError s!"FUZZ_MISMATCH|OFBUFFER|err_buf|pos={afterErr.pos} expPos={bufW1.stderr.memPos}")
-    let bkt ← match expOk, resOk with
-      | .ok (), .ok (.ok ()) => pure "ok.valid_utf8"
-      | .error expE, .ok (.error actE) =>
-        if expE.kind == actE.kind then
-          if expE.kind == .eof || expE.kind == .invalidValue then pure "ok.valid_utf8"
-          else pure "threw.invalid_utf8_strict"
-        else throw (IO.userError s!"FUZZ_MISMATCH|OFBUFFER|err|exp={repr expE.kind} actual={repr actE.kind}")
-      | .error expE, .error _ =>
-        if expE.kind == .ioError then pure "threw.invalid_utf8_strict"
-        else throw (IO.userError s!"FUZZ_MISMATCH|OFBUFFER|threw|exp={repr expE.kind}")
-      | _, _ =>
-        throw (IO.userError s!"FUZZ_MISMATCH|OFBUFFER|outcome|exp={repr expOk} actualOk={resOk.isOk}")
-    return (ctx, tracker.record "ofBuffer" bkt, priorOutErr)
 
   | .callPureRoundTrip spec args =>
     let helpRoot := CmdLine.renderHelp spec []
@@ -1078,13 +989,6 @@ private def boundaryCorpus : Array (Array CmdLineFuzzOp) := #[
     .setupStdout .brokenPipe, .callRunCli { name := "t", version := some "1.0" } ["--help"] 0,
     .setupStdout .fullDev, .callRunCli { name := "t", version := some "1.0" } ["--help"] 0,
     .setupStdout .nullDev, .setupStderr .brokenPipe, .callRunCli { name := "t" } ["--bad"] 0],
-  #[.callWithBufferStdin "valid\n".toUTF8 "p:" 0 false,
-    .callWithBufferStdin (ByteArray.mk #[0xed, 0xa0, 0x80, 0x0a]) "p:" 0 false,
-    .callWithBufferStdin (ByteArray.mk #[0x41, 0x00, 0x42, 0x0a]) "p:" 0 false,
-    .callWithBufferStdin (ByteArray.mk #[0xda, 0xb6, 0x00, 0x80, 0x0a]) "p:" 0 false,
-    .callWithBufferStdin "bad\nyes\n".toUTF8 "c?" 0 true,
-    .callWithBufferStdin "  ok\n".toUTF8 "" 2 false,
-    .callWithBufferStdin "eof\n".toUTF8 "🚀" 99 false],
   #[.setupStdin (.pty true),
     .feedPipeOrPty "part".toUTF8, .sendPtyEof, .sendPtyEof, .callReadLine,
     .feedPipeOrPty "x".toUTF8, .sendPtyEof, .feedPipeOrPty "y\n".toUTF8, .callReadLine,
@@ -1192,10 +1096,6 @@ private def shrinkOpCandidates : CmdLineFuzzOp → List CmdLineFuzzOp
     (shrinkByteArrayCandidates bs).map fun bs' => .setupStdin (.memfd bs')
   | .feedPipeOrPty bs =>
     (shrinkByteArrayCandidates bs).map fun bs' => .feedPipeOrPty bs'
-  | .callWithBufferStdin bs p pos ic =>
-    ((shrinkByteArrayCandidates bs).map fun bs' => .callWithBufferStdin bs' p pos ic) ++
-    ((shrinkStringCandidates p).map fun p' => .callWithBufferStdin bs p' pos ic) ++
-    (if pos > 0 then [.callWithBufferStdin bs p 0 ic] else [])
   | .callWriteOut s =>
     (shrinkStringCandidates s).map .callWriteOut
   | .callWriteErr s =>
@@ -1226,7 +1126,6 @@ private def summarizeOp : CmdLineFuzzOp → String
   | .callConfirm p _ m => s!"callConfirm({repr p}, max={m})"
   | .callParseWithEnv _ args => s!"callParseWithEnv({repr args})"
   | .callRunCli _ args ex => s!"callRunCli({repr args}, ex={ex})"
-  | .callWithBufferStdin bs p pos ic => s!"callWithBufferStdin(len={bs.size} bytes={bs.data.toList}, p={repr p}, pos={pos}, conf={ic})"
   | .callPureRoundTrip _ args => s!"callPureRoundTrip({repr args})"
 
 private def shrinkOnMismatch (runner : Array CmdLineFuzzOp → IO CoverageTracker)
@@ -1274,7 +1173,7 @@ private def requiredBuckets : Array CoverageBucket := #[
   bucket "readLine" "err.eagain_partial_drop",
   bucket "readLine" "err.eintr",
   bucket "readLine" "err.pty_eio",
-  bucket "readLine" "err.sticky_ferror_after_err",
+  bucket "readLine" "ok.recover_after_err",
   bucket "writeOut" "ok.nonempty",
   bucket "writeOut" "ok.empty_on_broken_pipe",
   bucket "writeOut" "ok.empty_on_full_dev",
@@ -1318,8 +1217,7 @@ private def requiredBuckets : Array CoverageBucket := #[
   bucket "runCli" "threw.epipe_help",
   bucket "runCli" "threw.enospc_help",
   bucket "runCli" "threw.epipe_err",
-  bucket "ofBuffer" "ok.valid_utf8",
-  bucket "ofBuffer" "threw.invalid_utf8_strict",
+  bucket "readLine" "ok.eintr_retry_preserve",
   bucket "parseWithEnv" "err.LeanSwe.CmdLine.CmdLineErrorKind.ioError",
   bucket "subproc" "argv_lossy_utf8",
   bucket "subproc" "sigpipe_dfl_becomes_epipe",
@@ -1395,9 +1293,38 @@ private def runStackSmokeCheck : IO Unit := do
   if rc != 0 then
     throw (IO.userError s!"CMDLINE_1MIB_STACK_FAILED rc={rc}")
 
+private def runTransientEintrProbe : IO Unit := do
+  let _ ← saveStdioRaw 0
+  let mut feedFd? : Option UInt32 := none
+  let mut wrTask? : Option (Task (Except IO.Error UInt32)) := none
+  try
+    let fd ← setupPipeInRaw "hi".toUTF8 0 0
+    if fd == pipeSmallSentinel || fd == invalidFdSentinel || fd == closedWriterSentinel then
+      throw (IO.userError s!"TRANSIENT_EINTR_PROBE_SETUP_FAILED fd={fd}")
+    feedFd? := some fd
+    let t ← IO.asTask (prio := .dedicated) do
+      IO.sleep 35
+      writeFdRaw fd "!\n".toUTF8
+    wrTask? := some t
+    let r ← withArmedSigalrm (some 10000) CmdLine.defaultOps.readLine
+    let wr ← IO.ofExcept t.get
+    wrTask? := none
+    if wr != 2 then
+      throw (IO.userError s!"TRANSIENT_EINTR_PROBE_WRITE_FAILED wr={wr}")
+    if r != some "hi!" then
+      throw (IO.userError s!"TRANSIENT_EINTR_PROBE_MISMATCH expected=some \"hi!\" actual={repr r}")
+  finally
+    disarmSigalrmRaw 0
+    if let some t := wrTask? then
+      let _ := t.get
+    closeOptFd feedFd?
+    let _ ← restoreStdioRaw 0
+
 private def runCmdLineSuite (steps : Nat) (seedVal : UInt64) : IO Unit := do
   runStackSmokeCheck
   let mut tracker := CoverageTracker.empty
+  runTransientEintrProbe
+  tracker := tracker.record "readLine" "ok.eintr_retry_preserve"
   for ep in boundaryCorpus do
     tracker ← runEpisodeShrunk ep tracker
   let subBuckets ← Subproc.runSubprocChecks
@@ -1510,7 +1437,7 @@ private def runCmdLineSelfTestShrink (seedVal : UInt64) : IO Unit := do
 /-- Differential fuzzing suite for `LeanSwe.CmdLine` stdio/env/CLI/OS boundaries. -/
 def suite : FuzzSuite := {
   name := "cmdline"
-  description := "Differential fuzzer for LeanSwe.CmdLine, stdio FILE*/fd semantics, EnvVars, argv UTF-8, and SIGPIPE/flush/exit"
+  description := "Differential fuzzer for LeanSwe.CmdLine, LinuxSyscall.Files stdio fd semantics, EnvVars, argv UTF-8, and SIGPIPE/flush/exit"
   runSmoke := fun cfg => runCmdLineSuite 200 cfg.seed
   runFuzz := fun cfg => runCmdLineSuite cfg.steps cfg.seed
   selfTestShrink := runCmdLineSelfTestShrink

@@ -62,7 +62,7 @@ inductive CmdLineFuzzOp where
   | sendPtyEof
   /-- Close open stdin pipe/PTY writer fd. -/
   | closeStdinWriter
-  /-- Arm a oneshot SIGALRM timer without `SA_RESTART`. -/
+  /-- Arm a repeating thread-directed `SIGALRM` interval timer without `SA_RESTART`. -/
   | armEintr (usec : UInt32)
   /-- Set an environment variable using raw bytes. -/
   | setEnv (k v : ByteArray) (ovw : Bool)
@@ -84,8 +84,6 @@ inductive CmdLineFuzzOp where
   | callParseWithEnv (spec : CommandSpec) (args : List String)
   /-- Invoke `defaultApi.runCli`. -/
   | callRunCli (spec : CommandSpec) (args : List String) (handlerExit : UInt32)
-  /-- Invoke `promptLineM` or `confirmM` over `IO.FS.Stream.ofBuffer` from `startPos`. -/
-  | callWithBufferStdin (rawBytes : ByteArray) (prompt : String) (startPos : Nat := 0) (isConfirm : Bool := false)
   /-- Check pure `renderHelp` and `renderArgs`/`parse` round-trip. -/
   | callPureRoundTrip (spec : CommandSpec) (args : List String)
   deriving BEq, Inhabited
@@ -322,19 +320,12 @@ def genFuzzOp (rng : Rng) : CmdLineFuzzOp × Rng :=
     let (us, r2) := r1.nextRange 800 2500
     (.armEintr (UInt32.ofNat us), r2)
   | _ =>
-    let (mode, r2) := r1.nextNat 6
+    let (mode, r2) := r1.nextNat 5
     if mode == 0 || mode == 3 || mode == 4 then
       let (sp, r3) := genCommandSpec r2
       let (args, r4) := genCliArgs r3
       (.callParseWithEnv sp args, r4)
     else if mode == 1 then
-      let (bs, r3) := genLineBytes r2
-      let (pr, r4) := genWriteString r3
-      let (pk, r5) := r4.nextNat 3
-      let (cf, r6) := r5.nextNat 3
-      let pos := match pk with | 0 => 0 | 1 => 1 | _ => bs.size + 2
-      (.callWithBufferStdin bs pr pos (cf == 0), r6)
-    else if mode == 5 then
       let (p, r3) := genWriteString r2
       (.callConfirm p none 3, r3)
     else

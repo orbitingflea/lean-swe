@@ -177,7 +177,7 @@ private theorem io_bind_allowed {α β : Type} (P : CmdLineError → Prop) (act 
   cases ha : act w with | error _ w' => rw [io_bind_err _ _ w ha]; trivial | ok a w' => rw [io_bind_eq _ _ w ha]; exact hk a w'
 private theorem defaultOps_getEnv_noThrow_noEof (key : String) (w : Void IO.RealWorld) :
     (∃ v w', defaultOps.getEnv key w = EST.Out.ok (Except.ok v) w') ∨ (∃ e w', defaultOps.getEnv key w = EST.Out.ok (Except.error e) w' ∧ e.kind ≠ .eof) := by
-  have hnf := EnvVars.Proofs.envvars_getEnv_never_notFound key w; unfold Core.NeverErrorKindIO at hnf; unfold defaultOps; dsimp only
+  have hnf := EnvVars.Proofs.envvars_getEnv_never_notFound key w; unfold Core.NeverErrorKindIO at hnf; unfold defaultOps SysBridge.mkFilesCliOps SysBridge.mkFilesCliOpsM; dsimp only
   cases hr : EnvVars.getEnv key w with | error _ _ => rw [hr] at hnf; exact False.elim hnf | ok res w' => rw [io_bind_eq _ _ w hr]; cases res with | ok v => exact Or.inl ⟨v, w', io_pure_eq _ _⟩ | error err => exact Or.inr ⟨{ kind := .ioError, message := err.message, target := err.key }, w', io_pure_eq _ _, fun hc => by cases hc⟩
 private theorem resolveSingleOption_defaultOps_noEof (opt : OptSpec) (cliVals : List OptValue) (validators : CustomValidators) (w : Void IO.RealWorld) :
     ∃ r w', Model.resolveSingleOption defaultOps.getEnv opt cliVals validators w = EST.Out.ok r w' ∧ exceptKindIn (fun kd => kd ≠ .eof) r := by
@@ -425,21 +425,44 @@ theorem validateUtf8OneWidth_ascii (bs : ByteArray) (i : Nat) (hi : i < bs.size)
 /-- `Model.stepDefaultGetEnv` always rejects invalid environment keys with `.ioError`. -/
 theorem stepDefaultGetEnv_invalidKey (w : Model.StdioWorld) (key : String) (hk : Model.isValidEnvKey key = false) :
     ∃ e, Model.stepDefaultGetEnv w key = .error e ∧ e.kind = .ioError ∧ e.target = some key := by unfold Model.stepDefaultGetEnv; simp [hk]
-/-- `Model.stepChannelWrite` on an empty string with `.osFileStar` is a total no-op. -/
-theorem stepChannelWrite_empty_osFileStar (ch : Model.StdioChannelState) (hb : ch.backend = .osFileStar) :
+/-- `Model.stepChannelWrite` on an empty string is a total no-op for any stream backend. -/
+theorem stepChannelWrite_empty (ch : Model.StdioChannelState) :
     Model.stepChannelWrite ch "" = (.returned (), ch) := by
-  unfold Model.stepChannelWrite; have hbeq : (Model.StreamBackend.osFileStar == Model.StreamBackend.osFileStar) = true := rfl; simp [hb, hbeq]
+  unfold Model.stepChannelWrite; simp
 /-- On an empty clean `StdioWorld`, `Model.stepPromptLine` agrees with `mockCliOps` EOF error. -/
 theorem stepPromptLine_eof_agrees_mock (prompt : String) (default : Option String) :
     (Model.stepPromptLine { stdin := { backing := .nullDev }, stdout := { backing := .nullDev } } prompt default).1 =
       ((Internal.promptLine mockCliOps prompt default).run {}).1 := by
   unfold Model.stepPromptLine Model.stepDefaultWriteOut Model.stepChannelWrite Model.updateWorldErrno Model.stepDefaultReadLine Model.stepRawGetLine Internal.promptLine mockCliOps
-  have hbeq : (Model.StreamBackend.osFileStar == Model.StreamBackend.osFileStar) = true := rfl
-  have hnb : (Model.StreamBackend.osFileStar == Model.StreamBackend.leanOfBuffer) = false := rfl
-  have hsp : Model.splitLineBytes ByteArray.empty = none := by decide
-  have hdc : Model.decodeStreamLineBytes .osFileStar ByteArray.empty = .returned "" := rfl
-  cases prompt.isEmpty <;> simp [hbeq, hnb, hsp, hdc, StateT.run, StateT.bind, StateT.pure, bind, pure]
+  cases prompt.isEmpty <;> rfl
 /-- For `maxAttempts = 0`, `Model.stepConfirm` agrees with `mockCliOps`. -/
 theorem stepConfirm_zero_agrees_mock (w : Model.StdioWorld) (prompt : String) (default : Option Bool) (st : CliMockState) :
     (Model.stepConfirm w prompt default 0).1 = ((Internal.confirm mockCliOps prompt default 0).run st).1 := rfl
+/-- `SysBridge.stdioEintrFuel` agrees with `Model.stdioEintrRetryLimit` (`64`). -/
+theorem stdioEintrFuel_eq_modelLimit : SysBridge.stdioEintrFuel = Model.stdioEintrRetryLimit := rfl
+/-- On an open empty blocking pipe, a transient `EINTR` burst within `Model.stdioEintrRetryLimit` (`≤ 64`) is absorbed rather than throwing `.interrupted`. -/
+theorem stepDefaultReadLine_pipe_transient_absorbed (count : Nat) (h : count ≤ Model.stdioEintrRetryLimit) :
+    (Model.stepDefaultReadLine {
+      stdin := { backing := .pipe ByteArray.empty false false false 65536, pendingInterrupt := .transient count } }).1 =
+      .threwIo .blocked := by
+  unfold Model.stepDefaultReadLine Model.stepRawGetLine Model.PendingInterrupt.exhaustsRetries
+  have hgt : ¬(Model.stdioEintrRetryLimit < count) := by omega
+  have hsp : Model.splitLineBytes ByteArray.empty = none := by decide
+  simp [hsp, hgt]
+/-- On an open empty blocking pipe, an `EINTR` burst exceeding `Model.stdioEintrRetryLimit` (`> 64`) throws `.interrupted`. -/
+theorem stepDefaultReadLine_pipe_transient_exhaust (count : Nat) (h : count > Model.stdioEintrRetryLimit) :
+    (Model.stepDefaultReadLine {
+      stdin := { backing := .pipe ByteArray.empty false false false 65536, pendingInterrupt := .transient count } }).1 =
+      .threwIo .interrupted := by
+  unfold Model.stepDefaultReadLine Model.stepRawGetLine Model.PendingInterrupt.exhaustsRetries
+  have hsp : Model.splitLineBytes ByteArray.empty = none := by decide
+  simp [hsp, h]
+/-- On an open empty blocking pipe, a `.repeating` `EINTR` stream throws `.interrupted`. -/
+theorem stepDefaultReadLine_pipe_repeating_interrupted :
+    (Model.stepDefaultReadLine {
+      stdin := { backing := .pipe ByteArray.empty false false false 65536, pendingInterrupt := .repeating } }).1 =
+      .threwIo .interrupted := by
+  unfold Model.stepDefaultReadLine Model.stepRawGetLine Model.PendingInterrupt.exhaustsRetries
+  have hsp : Model.splitLineBytes ByteArray.empty = none := by decide
+  simp [hsp]
 end LeanSwe.CmdLine.Proofs
