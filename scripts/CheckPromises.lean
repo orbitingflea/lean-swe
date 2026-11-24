@@ -1300,29 +1300,43 @@ private def checkPostForkAeneasWiring (env : Environment) : Array String := Id.r
   return errs
 
 private def canonicalManagedProcessTargets : Std.HashSet Name :=
-  Std.HashSet.emptyWithCapacity 10
+  Std.HashSet.emptyWithCapacity 14
     |>.insert `LeanSwe.Process.defaultApi
     |>.insert `LeanSwe.Process.Proofs.healthySimApi
     |>.insert `LeanSwe.Process.Internal.mkApiM
+    |>.insert `LeanSwe.Process.SysBridge.mapRawError
+    |>.insert `LeanSwe.Process.SysBridge.probePathBytes
+    |>.insert `LeanSwe.Process.SysBridge.stateProcTableOps
     |>.insert `LeanSwe.Process.SysBridge.resolveExecutablePath
     |>.insert `LeanSwe.Process.SysBridge.validateWorkingDir
     |>.insert `LeanSwe.Process.SysBridge.streamPipesLoop
     |>.insert `LeanSwe.Process.SysBridge.mkRawOpsM
     |>.insert `LeanSwe.Process.SysBridge.spawnPure
 
-private def hasCanonicalProcessPromiseTarget (prog : Expr) : Bool :=
-  let args := prog.consumeMData.getAppArgs
-  if args.isEmpty then
-    false
-  else
-    let tgt := (etaReduceExpr args.back!).consumeMData.getAppFn.consumeMData
-    match tgt with
-    | .const tName _ => canonicalManagedProcessTargets.contains tName
-    | _ => false
+private def hasCanonicalProcessPromiseTarget (prog : Expr) : MetaM Bool := do
+  Meta.withTransparency .all do
+    let args := prog.consumeMData.getAppArgs
+    let mut afterNondet := false
+    let mut checked := 0
+    for arg in args do
+      let arg := arg.consumeMData
+      if !afterNondet then
+        let tyWhnf ← Meta.whnf (← Meta.inferType arg)
+        if tyWhnf.isAppOfArity `Core.NondetTest 1 then
+          afterNondet := true
+      else
+        let tgt := (etaReduceExpr arg).consumeMData.getAppFn.consumeMData
+        match tgt with
+        | .const tName _ =>
+          if !canonicalManagedProcessTargets.contains tName then
+            return false
+          checked := checked + 1
+        | _ => return false
+    return afterNondet && checked > 0
 
 private def hasCanonicalPromiseTarget (fn : Name) (prog : Expr) : MetaM Bool := do
   if fn.getPrefix == `LeanSwe.Process then
-    return hasCanonicalProcessPromiseTarget prog
+    return ← hasCanonicalProcessPromiseTarget prog
   if fn.getPrefix != `LeanSwe.PostFork then return true
   let pa := prog.getAppArgs
   let chkMock (e : Expr) : MetaM Bool := do
@@ -1904,6 +1918,7 @@ private def checkManagedProcessClosure (env : Environment) : IO (Array String) :
   let mut errs : Array String := #[]
   let seedMods : Array Name := #[
     `LeanSwe.Process.Types,
+    `LeanSwe.Process.Types.Internal,
     `LeanSwe.Process.SysBridge,
     `LeanSwe.Process.Impl,
     `LeanSwe.Process.Interface
@@ -2936,8 +2951,7 @@ private def importDagAllowlist : Array String := #[
   "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Aeneas.Bridge",
   "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Aeneas.Funs",
   "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Aeneas.FunsExternal",
-  "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Impl",
-  "WITHIN|LeanSwe.Process.SpecTests|LeanSwe.Process.SysBridge"
+  "WITHIN|LeanSwe.PostFork.SpecTests|LeanSwe.PostFork.Impl"
 ]
 
 /-- Shrinking ratchet allowlist of pre-existing constants from disallowed non-API roles

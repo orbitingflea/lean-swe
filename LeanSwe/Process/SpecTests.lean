@@ -1,7 +1,13 @@
 import Core.NondetTest
 import Core.Assumptions
+import LeanSwe.LinuxSyscall.Common.Types
+import LeanSwe.LinuxSyscall.Process.Types
+import LeanSwe.LinuxSyscall.Files.Types
+import LeanSwe.LinuxSyscall.Poll.Types
+import LeanSwe.LinuxSyscall.TimeRand.Types
+import LeanSwe.PostFork.Types
 import LeanSwe.Process.Types
-import LeanSwe.Process.SysBridge
+import LeanSwe.Process.Types.Internal
 
 namespace LeanSwe.Process
 
@@ -511,6 +517,7 @@ def test_process_sysBridge_resolveExecutablePath_relativeCwdAndPathRules
 /-- `SysBridge.validateWorkingDir` accepts `none` and accessible directories while rejecting empty `""` (`ENOENT` without root probing), regular files (`ENOTDIR`), and non-searchable directories (`EACCES`) with `program` attributed to `cwd`. -/
 def test_process_sysBridge_validateWorkingDir_chdirSemantics
     {runner} [NondetTest runner]
+    (probePathBytesFn : Option String → String → String → ByteArray)
     (validateCwdFn :
       LinuxSyscall.Files.FilesOpsM (StateM PathProbeState) Nat →
       Option String → Nat →
@@ -539,7 +546,7 @@ def test_process_sysBridge_validateWorkingDir_chdirSemantics
     notDirOk = true ∧
     noPermOk = true ∧
     rOk.1.isOk = true ∧
-    SysBridge.probePathBytes (some "") "relbin" "mytool" = "relbin/mytool".toUTF8)
+    probePathBytesFn (some "") "relbin" "mytool" = "relbin/mytool".toUTF8)
 
 /-- State scripted across non-blocking `stdin` / `stdout` / `stderr` pipe I/O steps. -/
 structure PipeScriptState where
@@ -642,9 +649,9 @@ def test_process_sysBridge_streamPipes_shortReadWriteEagainEintrReassembly
       LinuxSyscall.Poll.PollOpsM (StateM PipeScriptState) Nat →
       LinuxSyscall.TimeRand.TimeRandOpsM (StateM PipeScriptState) →
       ByteArray → Nat → Option Nat → Option Nat → Nat →
-      SysBridge.StreamLoopState Nat → Nat →
-      StateM PipeScriptState (Except ProcessError SysBridge.StreamPhaseOutcome)) : runner Unit := do
-  let initLoop : SysBridge.StreamLoopState Nat :=
+      Internal.StreamLoopState Nat → Nat →
+      StateM PipeScriptState (Except ProcessError Internal.StreamPhaseOutcome)) : runner Unit := do
+  let initLoop : Internal.StreamLoopState Nat :=
     { inFd? := some 11, outFd? := some 12, errFd? := some 14 }
   let r :=
     (streamFn mkPipeScriptFilesOps mkPipeScriptPollOps mkPipeScriptTimeOps "hello".toUTF8 0 none none 4 initLoop 10).run {}
@@ -665,9 +672,9 @@ def test_process_sysBridge_streamPipes_drainsStdinAfterOutErrEof
       LinuxSyscall.Poll.PollOpsM (StateM PipeScriptState) Nat →
       LinuxSyscall.TimeRand.TimeRandOpsM (StateM PipeScriptState) →
       ByteArray → Nat → Option Nat → Option Nat → Nat →
-      SysBridge.StreamLoopState Nat → Nat →
-      StateM PipeScriptState (Except ProcessError SysBridge.StreamPhaseOutcome)) : runner Unit := do
-  let initLoop : SysBridge.StreamLoopState Nat :=
+      Internal.StreamLoopState Nat → Nat →
+      StateM PipeScriptState (Except ProcessError Internal.StreamPhaseOutcome)) : runner Unit := do
+  let initLoop : Internal.StreamLoopState Nat :=
     { inFd? := some 11, outFd? := some 12, errFd? := some 14 }
   let r :=
     (streamFn mkPipeScriptFilesOps mkPipeScriptPollOps mkPipeScriptTimeOps "hello".toUTF8 0 none none 4 initLoop 10).run
@@ -683,7 +690,7 @@ def test_process_sysBridge_streamPipes_drainsStdinAfterOutErrEof
 /-- Simulation state for `maxOutputBytes` truncation, process-group kill, reap, and FD conservation. -/
 structure CapSimState where
   /-- Active `SysBridge` process slot table. -/
-  tbl : SysBridge.ProcTableState Nat := {}
+  tbl : Internal.ProcTableState Nat := {}
   /-- Next fresh pipe handle ID. -/
   nextFd : Nat := 10
   /-- Currently open OS descriptors (`[3, 4]` ambient). -/
@@ -700,7 +707,7 @@ structure CapSimState where
   reapedPids : Array Int32 := #[]
 
 /-- Deterministic `SysDepsM` fixture where child `pid = 42, pgid = 42` emits `10` bytes against a `4`-byte limit. -/
-def mkCapSimDeps : SysBridge.SysDepsM (StateM CapSimState) Nat where
+def mkCapSimDeps : Internal.SysDepsM (StateM CapSimState) Nat where
   proc :=
     { pipe2 := fun _ => modifyGet fun s =>
         let r := s.nextFd
@@ -775,13 +782,17 @@ def mkCapSimDeps : SysBridge.SysDepsM (StateM CapSimState) Nat where
 /-- On `maxOutputBytes = some 4`, `SysBridge.mkRawOpsM` truncates captured output to `4` bytes, sends `SIGTERM` and `SIGKILL` to `-pgid` (`-42`), reaps `pid = 42`, restores `activeProcessCount = 0`, and conserves ambient `openFds = [3, 4]` with zero leaked pipe FDs. -/
 def test_process_sysBridge_maxOutputBytes_truncatesKillsAndReaps
     {runner} [NondetTest runner]
+    (stateTblFn :
+      (CapSimState → Internal.ProcTableState Nat) →
+      (CapSimState → Internal.ProcTableState Nat → CapSimState) →
+      Internal.ProcTableOpsM (StateM CapSimState) Nat)
     (mkRawFn :
-      SysBridge.SysDepsM (StateM CapSimState) Nat →
-      SysBridge.ProcTableOpsM (StateM CapSimState) Nat →
+      Internal.SysDepsM (StateM CapSimState) Nat →
+      Internal.ProcTableOpsM (StateM CapSimState) Nat →
       Nat → Nat →
       RawProcessOpsM (StateM CapSimState)) : runner Unit := do
   let ops :=
-    mkRawFn mkCapSimDeps (SysBridge.stateProcTableOps (·.tbl) (fun s t => { s with tbl := t })) 2 4
+    mkRawFn mkCapSimDeps (stateTblFn (·.tbl) (fun s t => { s with tbl := t })) 2 4
   let prog : StateM CapSimState (Bool × Nat) := do
     match ← ops.spawn { program := "/bin/big", inheritEnv := false } with
     | .error _ => return (false, 99)
@@ -806,7 +817,7 @@ def test_process_sysBridge_maxOutputBytes_truncatesKillsAndReaps
 /-- Simulation state for partial `pipe2` `EMFILE` failures on the 2nd or 3rd pipe pair in `spawnPure`. -/
 structure PipeFailSimState where
   /-- Active `SysBridge` process slot table. -/
-  tbl : SysBridge.ProcTableState Nat := {}
+  tbl : Internal.ProcTableState Nat := {}
   /-- Number of `pipe2` calls allowed to succeed before failing with `EMFILE`. -/
   pipeBudget : Nat := 1
   /-- Next fresh pipe handle ID. -/
@@ -817,7 +828,7 @@ structure PipeFailSimState where
   postForkCalled : Bool := false
 
 /-- Deterministic `SysDepsM` fixture failing `pipe2` with `Errno.EMFILE` once `pipeBudget` reaches `0`. -/
-def mkPipeFailSimDeps : SysBridge.SysDepsM (StateM PipeFailSimState) Nat where
+def mkPipeFailSimDeps : Internal.SysDepsM (StateM PipeFailSimState) Nat where
   proc :=
     { pipe2 := fun _ => modifyGet fun s =>
         if s.pipeBudget == 0 then
@@ -879,12 +890,16 @@ def mkPipeFailSimDeps : SysBridge.SysDepsM (StateM PipeFailSimState) Nat where
 /-- When `pipe2` fails with `EMFILE` on either the 2nd or 3rd pipe pair, `SysBridge.spawnPure` closes every previously allocated pipe FD, never calls `postFork.spawn`, inserts no process-table slot, and conserves ambient `openFds = [5]`. -/
 def test_process_sysBridge_partialPipe2Failure_cleansUpAllocatedFds
     {runner} [NondetTest runner]
+    (stateTblFn :
+      (PipeFailSimState → Internal.ProcTableState Nat) →
+      (PipeFailSimState → Internal.ProcTableState Nat → PipeFailSimState) →
+      Internal.ProcTableOpsM (StateM PipeFailSimState) Nat)
     (spawnFn :
-      SysBridge.SysDepsM (StateM PipeFailSimState) Nat →
-      SysBridge.ProcTableOpsM (StateM PipeFailSimState) Nat →
+      Internal.SysDepsM (StateM PipeFailSimState) Nat →
+      Internal.ProcTableOpsM (StateM PipeFailSimState) Nat →
       Nat → ExecRequest →
       StateM PipeFailSimState (Except ProcessError ProcessHandle)) : runner Unit := do
-  let tblOps := SysBridge.stateProcTableOps (fun (s : PipeFailSimState) => s.tbl) (fun s t => { s with tbl := t })
+  let tblOps := stateTblFn (fun (s : PipeFailSimState) => s.tbl) (fun s t => { s with tbl := t })
   let req : ExecRequest := { program := "/bin/true", inheritEnv := false }
   let r1 := (spawnFn mkPipeFailSimDeps tblOps 2 req).run { pipeBudget := 1 }
   let r2 := (spawnFn mkPipeFailSimDeps tblOps 2 req).run { pipeBudget := 2 }
@@ -918,8 +933,9 @@ structure OutcomeScriptState where
   reaped : Nat := 0
 
 /-- Deterministic `RawProcessOpsM` fixture returning distinct equal-length `stdout`/`stderr` payloads across every `ExecOutcome` constructor. -/
-def mkOutcomeScriptRawOps : RawProcessOpsM (StateM OutcomeScriptState) where
-  mapRawError := SysBridge.mapRawError
+def mkOutcomeScriptRawOps (mapRawErrorFn : ProcessRawError → ProcessError) :
+    RawProcessOpsM (StateM OutcomeScriptState) where
+  mapRawError := mapRawErrorFn
   spawn := fun _ => modifyGet fun s =>
     (.ok { handleId := 1, pid := 77, pgid := 77 }, { s with active := s.active + 1 })
   awaitOutput := fun _ _ _ _ => do
@@ -938,10 +954,11 @@ def mkOutcomeScriptRawOps : RawProcessOpsM (StateM OutcomeScriptState) where
 /-- `Process.Internal.mkApiM` preserves exact `ExecResult` (`exitCode`, `stdout`, `stderr`) on `.exited`, exact `signal` and captured `stdout`/`stderr` on `.signaled`, and exact captured `stdout`/`stderr` on `.timedOut` and `.outputLimitExceeded` while killing and reaping cleanly. -/
 def test_process_mkApiM_preservesExactAwaitOutcomes
     {runner} [NondetTest runner]
+    (mapRawErrorFn : ProcessRawError → ProcessError)
     (mkApiFn :
       RawProcessOpsM (StateM OutcomeScriptState) →
       ProcessApiM (StateM OutcomeScriptState)) : runner Unit := do
-  let api := mkApiFn mkOutcomeScriptRawOps
+  let api := mkApiFn (mkOutcomeScriptRawOps mapRawErrorFn)
   let req : ExecRequest := { program := "/bin/demo", timeoutMs := some 50, maxOutputBytes := some 16 }
   let r0 := (api.run req).run { mode := 0 }
   let rc0 := (api.runChecked req).run { mode := 0 }
@@ -985,7 +1002,7 @@ def test_process_mkApiM_preservesExactAwaitOutcomes
 /-- Simulation state auditing pre-`PATH` `cwd` validation, `ChildSpecM` isolation fields, `O_CLOEXEC`/`O_NONBLOCK` pipe setup, `pgid = 1` safe `kill` targeting, and `.chdir` error attribution. -/
 structure SpawnAuditState where
   /-- Active `SysBridge` process slot table. -/
-  tbl : SysBridge.ProcTableState Nat := {}
+  tbl : Internal.ProcTableState Nat := {}
   /-- Next fresh pipe handle ID. -/
   nextFd : Nat := 20
   /-- Currently open OS descriptors (`[7]` ambient). -/
@@ -1002,7 +1019,7 @@ structure SpawnAuditState where
   killedTargets : Array (Int32 × LinuxSyscall.Process.Signal) := #[]
 
 /-- Deterministic `SysDepsM` fixture auditing `cwd` pre-validation, `ChildSpecM` isolation invariants, `pgid = 1` `kill` safety, and `.chdir` failure attribution. -/
-def mkSpawnAuditDeps : SysBridge.SysDepsM (StateM SpawnAuditState) Nat where
+def mkSpawnAuditDeps : Internal.SysDepsM (StateM SpawnAuditState) Nat where
   proc :=
     { pipe2 := fun flags => modifyGet fun s =>
         let r := s.nextFd
@@ -1100,13 +1117,17 @@ def mkSpawnAuditDeps : SysBridge.SysDepsM (StateM SpawnAuditState) Nat where
 /-- `SysBridge.mkRawOpsM` pre-validates `req.cwd` before `PATH` search (`ENOTDIR`, `EACCES`, `ENOENT`, `""`), enforces `O_CLOEXEC` pipes, `O_NONBLOCK` parent pipe ends, and isolated `ChildSpecM` (`processGroup = .newGroup`, `sigpipe = .resetDefault`, `forkMode = .direct`, exact `closeFds`), maps `pgid = 1` to `kill(1, ...)` rather than `0` or `-1`, and attributes post-fork `.chdir` errors to `req.cwd`. -/
 def test_process_sysBridge_spawnCwdIsolationKillPgid1AndChdirError
     {runner} [NondetTest runner]
+    (stateTblFn :
+      (SpawnAuditState → Internal.ProcTableState Nat) →
+      (SpawnAuditState → Internal.ProcTableState Nat → SpawnAuditState) →
+      Internal.ProcTableOpsM (StateM SpawnAuditState) Nat)
     (mkRawFn :
-      SysBridge.SysDepsM (StateM SpawnAuditState) Nat →
-      SysBridge.ProcTableOpsM (StateM SpawnAuditState) Nat →
+      Internal.SysDepsM (StateM SpawnAuditState) Nat →
+      Internal.ProcTableOpsM (StateM SpawnAuditState) Nat →
       Nat → Nat →
       RawProcessOpsM (StateM SpawnAuditState)) : runner Unit := do
   let ops :=
-    mkRawFn mkSpawnAuditDeps (SysBridge.stateProcTableOps (·.tbl) (fun s t => { s with tbl := t })) 2 4
+    mkRawFn mkSpawnAuditDeps (stateTblFn (·.tbl) (fun s t => { s with tbl := t })) 2 4
   let rNotDir :=
     (ops.spawn { program := "missing_prog", cwd := some "/not_a_dir", inheritEnv := false,
                  env := #[("PATH", some "relbin")] }).run {}
