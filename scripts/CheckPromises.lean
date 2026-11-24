@@ -62,7 +62,7 @@ private def timeRandAuditModules : Array Name := #[
 private def filesAuditModules : Array Name := #[
   `LeanSwe.LinuxSyscall.Files.Types,
   `LeanSwe.LinuxSyscall.Files.Model,
-  `LeanSwe.LinuxSyscall.Files.Seed,
+  `LeanSwe.LinuxSyscall.Files.Model.Seed,
   `LeanSwe.LinuxSyscall.Files.Impl,
   `LeanSwe.LinuxSyscall.Files.Interface,
   `LeanSwe.LinuxSyscall.Files.SpecTests,
@@ -2637,7 +2637,7 @@ private def dagRoleOf (knownPkgs : Array Name) (m : Name) : DagModuleRole :=
           .properties
         else if head == `Types then
           .types
-        else if head == `Model || m == `LeanSwe.LinuxSyscall.Files.Seed then
+        else if head == `Model then
           .model
         else if head == `Interface then
           .iface
