@@ -250,6 +250,7 @@ import LeanSwe.ProcessSandbox.Seccomp.Interface
 import LeanSwe.ProcessSandbox.Seccomp.Proofs
 import LeanSwe.ProcessSandbox.Seccomp.RuntimeTests
 import LeanSwe.ProcessSandbox.Raw.Types
+import LeanSwe.ProcessSandbox.Raw.Model
 import LeanSwe.ProcessSandbox.Raw.SpecTests
 import LeanSwe.ProcessSandbox.Raw.SpecMutants
 import LeanSwe.ProcessSandbox.Raw.Impl
@@ -260,6 +261,7 @@ import LeanSwe.ProcessSandbox.Host.Forwarder
 import LeanSwe.ProcessSandbox.Host.StreamIo
 import LeanSwe.ProcessSandbox.Host.SysBridge
 import LeanSwe.ProcessSandbox.Raw.Interface
+import LeanSwe.ProcessSandbox.Raw.Proofs.EncodePlan
 import LeanSwe.ProcessSandbox.Raw.Proofs
 import LeanSwe.ProcessSandbox.Raw.RuntimeTests
 import LeanSwe.ProcessSandbox.Types
