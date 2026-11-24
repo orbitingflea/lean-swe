@@ -748,23 +748,25 @@ private def hexVal (c : Char) : Option UInt64 :=
   else if 'A' ≤ c && c ≤ 'F' then some (UInt64.ofNat (10 + c.toNat - 'A'.toNat))
   else none
 
+private def parseProcStatusHexMask (txt fieldPrefix : String) : Option UInt64 :=
+  (txt.splitOn "\n").findSome? fun line =>
+    if line.startsWith fieldPrefix then
+      let rest := (line.drop fieldPrefix.length).toString
+      let tokens := (rest.splitOn "\t").flatMap (·.splitOn " ") |>.filter (!·.isEmpty)
+      tokens.getLast?.bind fun tok =>
+        tok.foldl (fun (acc? : Option UInt64) ch =>
+          match acc?, hexVal ch with
+          | some acc, some v => some ((acc <<< (4 : UInt64)) ||| v)
+          | _, _ => none) (some (0 : UInt64))
+    else
+      none
+
 private def readAmbientMaskField (fieldPrefix : String) : IO (List UInt32) := do
   try
     let txt ←
       try IO.FS.readFile "/proc/thread-self/status"
       catch _ => IO.FS.readFile "/proc/self/status"
-    let maskOpt := (txt.splitOn "\n").findSome? fun line =>
-      if line.startsWith fieldPrefix then
-        let rest := (line.drop fieldPrefix.length).toString
-        let tokens := (rest.splitOn "\t").flatMap (·.splitOn " ") |>.filter (!·.isEmpty)
-        tokens.getLast?.bind fun tok =>
-          tok.foldl (fun (acc? : Option UInt64) ch =>
-            match acc?, hexVal ch with
-            | some acc, some v => some ((acc <<< (4 : UInt64)) ||| v)
-            | _, _ => none) (some (0 : UInt64))
-      else
-        none
-    match maskOpt with
+    match parseProcStatusHexMask txt fieldPrefix with
     | none => return []
     | some mask =>
       let mut sigs : List UInt32 := []
@@ -2290,6 +2292,15 @@ def nsWorkerMain (mode arg : String) (_rest : List String) : IO UInt32 := do
     if p != 1 && p != 2 then
       IO.eprintln s!"pid1-unkillable: expected getpid in (1 or 2), got {p}"
       return 1
+    if p == 1 then
+      let statusTxt ← try IO.FS.readFile "/proc/self/status" catch _ => pure ""
+      let blk := (parseProcStatusHexMask statusTxt "SigBlk:").getD 0
+      let ign := (parseProcStatusHexMask statusTxt "SigIgn:").getD 0
+      let cgt := (parseProcStatusHexMask statusTxt "SigCgt:").getD 0
+      let termBit : UInt64 := 0x4000
+      if (blk &&& termBit) != 0 || (ign &&& termBit) != 0 || (cgt &&& termBit) != 0 then
+        let hex := fun (v : UInt64) => String.ofList (Nat.toDigits 16 v.toNat)
+        IO.eprintln s!"pid1-unkillable: non-zero SIGTERM mask before kill: SigBlk=0x{hex blk} SigIgn=0x{hex ign} SigCgt=0x{hex cgt}"
     for sig in #[Signal.sigzero, .sigterm, .sigkill, .sigstop] do
       match ← kill 1 sig with
       | .ok () => pure ()
