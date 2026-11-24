@@ -6,7 +6,12 @@ namespace LeanSwe.Fs.Proofs
 open Core
 open Core.NondetTest
 open LeanSwe.Fs
-open LeanSwe.Fs.Model (RawFsOpsM RawDirOpsM)
+open LeanSwe.Fs.Model (RawFsOpsM RawDirOpsM
+  VfsNode VfsTree VfsState vfsTreeTopNode vfsEmptyDir vfsTreeGet nodeAt vfsTreeSet
+  vfsAbsNorm vfsSplitSegs isCanonPath vfsTreeNodes vfsChildPath vfsResolveSegs
+  vfsToStat vfsStatPure vfsRealPathPure vfsCreateDirPure vfsReadDirPure
+  vfsWriteBytesPure hasLockConflict vfsAcquireLockPure vfsReleaseLockPure
+  isValidRawPath vfsReadBytesPure vfsCreateFileNewPure vfsRenamePure vfsOps)
 open LeanSwe.Fs.ProofsInternal
 
 private theorem vfsTreeGet_set_leaf :
@@ -127,7 +132,7 @@ private theorem vfsTreeNodes_set_leaf (t : VfsTree) (parCanon lastSeg : String) 
   have ⟨hChildCanon, hChildSp⟩ := vfsChildPath_valid parCanon lastSeg hParCanon hLastValid
   have hParTreeDir : ∃ dm dch, vfsTreeGet t (vfsSplitSegs parCanon) = some (.dir dm dch) := by
     rcases hParDir with ⟨dm, hPar⟩
-    simp only [vfsTreeNodes, hParCanon, ↓reduceIte] at hPar
+    simp only [vfsTreeNodes, nodeAt, hParCanon, ↓reduceIte] at hPar
     cases hGet : vfsTreeGet t (vfsSplitSegs parCanon) with
     | none => simp [hGet] at hPar
     | some sub =>
@@ -138,10 +143,10 @@ private theorem vfsTreeNodes_set_leaf (t : VfsTree) (parCanon lastSeg : String) 
   have hChildTreeNotDir : ∀ dm dch, vfsTreeGet t (vfsSplitSegs parCanon ++ [lastSeg]) ≠ some (.dir dm dch) := by
     intro dm dch hGet
     apply hNotDir dm
-    simp only [vfsTreeNodes, hChildCanon, ↓reduceIte, hChildSp, hGet, Option.map_some, vfsTreeTopNode]
+    simp only [vfsTreeNodes, nodeAt, hChildCanon, ↓reduceIte, hChildSp, hGet, Option.map_some, vfsTreeTopNode]
   funext k
   by_cases hKCanon : isCanonPath k = true
-  · simp only [vfsTreeNodes, hKCanon, ↓reduceIte, hChildSp]
+  · simp only [vfsTreeNodes, nodeAt, hKCanon, ↓reduceIte, hChildSp]
     rw [vfsTreeGet_set_leaf (vfsSplitSegs parCanon) lastSeg t v (vfsSplitSegs k) hParTreeDir hChildTreeNotDir hNewNotDir]
     by_cases hEq : k = vfsChildPath parCanon lastSeg
     · subst hEq
@@ -1659,7 +1664,7 @@ private theorem atomicWriteBytes_vfs_step (s₀ : VfsState) (path : String) (byt
     have hTop : Option.map vfsTreeTopNode moved = some (.file bytes 0o644) := by
       have hNode : sAfterCreate.nodes tmpKey = some (.file bytes 0o644) := by
         rw [hNodesAfterCreate]; simp
-      dsimp only [VfsState.nodes, vfsTreeNodes, sAfterCreate] at hNode
+      dsimp only [VfsState.nodes, vfsTreeNodes, nodeAt, sAfterCreate] at hNode
       rw [(vfsChildPath_valid parCanon tmpName hParCanon.1 hTmpValid).1] at hNode
       simpa [moved] using hNode
     cases hm : moved with
@@ -3471,15 +3476,15 @@ theorem reach_fs_vfs_atomicWriteBytes_nestedParentAndRelative :
   dsimp only [assert]
   exact ⟨⟨rfl, hReadRel, hTmp1NotOk₂⟩, trivial⟩
 
-/-- Proof of `test_fs_vfs_readBytes_followsSymlinkToRegularFile` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_readBytes_followsSymlinkToRegularFile` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_readBytes_followsSymlinkToRegularFile :
-    AllPass (test_fs_vfs_readBytes_followsSymlinkToRegularFile vfsApi) := by
+    AllPass (test_fs_vfs_readBytes_followsSymlinkToRegularFile (Internal.mkApiM vfsOps)) := by
   intro s₀ path hV hLst hSt
   exact proof_fsraw_readBytes_followsSymlinkToRegularFile s₀ path hV hLst hSt
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_readBytes_followsSymlinkToRegularFile`. -/
 theorem reach_fs_vfs_readBytes_followsSymlinkToRegularFile :
-    CanReach (test_fs_vfs_readBytes_followsSymlinkToRegularFile vfsApi) :=
+    CanReach (test_fs_vfs_readBytes_followsSymlinkToRegularFile (Internal.mkApiM vfsOps)) :=
   reach_fsraw_readBytes_followsSymlinkToRegularFile
 
 private theorem roundTripsExactBytesThroughSymlink_exec (s₀ : VfsState)
@@ -3670,26 +3675,26 @@ theorem reach_fs_vfs_readBytes_roundTripsExactBytesThroughSymlink :
   dsimp only [assert]
   exact ⟨⟨rfl, rfl⟩, trivial⟩
 
-/-- Proof of `test_fs_vfs_readBytes_dirAndMissingRejected` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_readBytes_dirAndMissingRejected` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_readBytes_dirAndMissingRejected :
-    AllPass (test_fs_vfs_readBytes_dirAndMissingRejected vfsApi) := by
+    AllPass (test_fs_vfs_readBytes_dirAndMissingRejected (Internal.mkApiM vfsOps)) := by
   intro s₀ path hV
   exact proof_fsraw_readBytes_dirAndMissingRejected s₀ path hV
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_readBytes_dirAndMissingRejected`. -/
 theorem reach_fs_vfs_readBytes_dirAndMissingRejected :
-    CanReach (test_fs_vfs_readBytes_dirAndMissingRejected vfsApi) :=
+    CanReach (test_fs_vfs_readBytes_dirAndMissingRejected (Internal.mkApiM vfsOps)) :=
   reach_fsraw_readBytes_dirAndMissingRejected
 
-/-- Proof of `test_fs_vfs_readBytes_invalidPathRejected` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_readBytes_invalidPathRejected` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_readBytes_invalidPathRejected :
-    AllPass (test_fs_vfs_readBytes_invalidPathRejected vfsApi) := by
+    AllPass (test_fs_vfs_readBytes_invalidPathRejected (Internal.mkApiM vfsOps)) := by
   intro s₀ path hInvalid
   exact proof_fsraw_readBytes_invalidPathRejected s₀ path hInvalid
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_readBytes_invalidPathRejected`. -/
 theorem reach_fs_vfs_readBytes_invalidPathRejected :
-    CanReach (test_fs_vfs_readBytes_invalidPathRejected vfsApi) :=
+    CanReach (test_fs_vfs_readBytes_invalidPathRejected (Internal.mkApiM vfsOps)) :=
   reach_fsraw_readBytes_invalidPathRejected
 
 example : ¬ AllPass (test_fs_vfs_atomicWriteBytes_invalidPathRejected

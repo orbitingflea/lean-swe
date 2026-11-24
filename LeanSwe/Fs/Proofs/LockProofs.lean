@@ -6,7 +6,12 @@ namespace LeanSwe.Fs.Proofs
 open Core
 open Core.NondetTest
 open LeanSwe.Fs
-open LeanSwe.Fs.Model (LockHandle RawFsOpsM RawFsOps RawDirOpsM RawDirOps)
+open LeanSwe.Fs.Model (LockHandle RawFsOpsM RawFsOps RawDirOpsM RawDirOps
+  VfsNode VfsTree VfsState vfsTreeTopNode vfsEmptyDir vfsTreeGet nodeAt vfsTreeSet
+  vfsAbsNorm vfsSplitSegs isCanonPath vfsTreeNodes vfsChildPath vfsResolveSegs
+  vfsToStat vfsStatPure vfsRealPathPure vfsCreateDirPure vfsReadDirPure
+  vfsWriteBytesPure hasLockConflict vfsAcquireLockPure vfsReleaseLockPure
+  isValidRawPath vfsReadBytesPure vfsCreateFileNewPure vfsRenamePure vfsOps)
 open LeanSwe.Fs.ProofsInternal
 
 private theorem maxLockId_ge :
@@ -127,7 +132,7 @@ private theorem vfsTreeNodes_insert_file (t : VfsTree) (parCanon lastSeg : Strin
   have ⟨hChildCanon, hChildSp⟩ := vfsChildPath_valid parCanon lastSeg hParCanon hLastValid
   have hParTreeDir : ∃ dm dch, vfsTreeGet t (vfsSplitSegs parCanon) = some (.dir dm dch) := by
     rcases hParDir with ⟨dm, hPar⟩
-    simp only [vfsTreeNodes, hParCanon, ↓reduceIte] at hPar
+    simp only [vfsTreeNodes, nodeAt, hParCanon, ↓reduceIte] at hPar
     cases hGet : vfsTreeGet t (vfsSplitSegs parCanon) with
     | none => simp [hGet] at hPar
     | some sub =>
@@ -137,13 +142,13 @@ private theorem vfsTreeNodes_insert_file (t : VfsTree) (parCanon lastSeg : Strin
       | symlink _ _ => simp [hGet, vfsTreeTopNode] at hPar
   have hNewTreeNone : vfsTreeGet t (vfsSplitSegs parCanon ++ [lastSeg]) = none := by
     have hNn := hNewNone
-    simp only [vfsTreeNodes, hChildCanon, ↓reduceIte, hChildSp] at hNn
+    simp only [vfsTreeNodes, nodeAt, hChildCanon, ↓reduceIte, hChildSp] at hNn
     cases hGet : vfsTreeGet t (vfsSplitSegs parCanon ++ [lastSeg]) with
     | none => rfl
     | some _ => simp [hGet] at hNn
   funext k
   by_cases hKCanon : isCanonPath k = true
-  · simp only [vfsTreeNodes, hKCanon, ↓reduceIte, hChildSp]
+  · simp only [vfsTreeNodes, nodeAt, hKCanon, ↓reduceIte, hChildSp]
     rw [vfsTreeGet_set_file bs m' (vfsSplitSegs parCanon) lastSeg t (vfsSplitSegs k) hParTreeDir hNewTreeNone]
     by_cases hEq : k = vfsChildPath parCanon lastSeg
     · subst hEq
@@ -309,7 +314,7 @@ private theorem vfsAcquireLock_ok_step (st : VfsState) (path : String) (mode : L
           keys := vfsChildPath parCanon lastSeg :: st.keys
           locks := (freshLockId st, vfsChildPath parCanon lastSeg, mode) :: st.locks
           nextLockId := freshLockId st })) := by
-  unfold vfsAcquireLockPure at hAcq
+  rw [vfsAcquireLockPure_unfold] at hAcq
   split at hAcq
   · simp at hAcq
   · cases hRes : vfsResolveSegs st.nodes "/" (vfsSplitSegs (vfsAbsNorm st.cwd path)) false 1024 with
@@ -496,7 +501,7 @@ private theorem vfsAcquireLock_after_exclusive_probe (s₀ : VfsState) (path : S
     | ok hEx =>
       have ⟨rfl, hCases⟩ := vfsAcquireLock_ok_step s₀ path .exclusive createIfMissing true hEx st' hA
       have hValid : isValidLockPath path = true := by
-        unfold vfsAcquireLockPure at hA
+        rw [vfsAcquireLockPure_unfold] at hA
         cases hv : isValidLockPath path <;> simp_all
       refine ⟨hValid, ?_⟩
       rcases hCases with ⟨_, _, hFalse⟩ | ⟨canon, bs, m, hRes, hConfEx, _⟩ |
@@ -504,12 +509,12 @@ private theorem vfsAcquireLock_after_exclusive_probe (s₀ : VfsState) (path : S
       · exact hFalse.elim
       · refine Or.inl ⟨canon, bs, m, hRes, hConfEx, fun nb => ?_⟩
         have hConfMode := hasLockConflict_exclusive_false s₀.locks canon mode hConfEx
-        simp [vfsAcquireLockPure, hValid, hRes, hConfMode]
+        simp [vfsAcquireLockPure_unfold, hValid, hRes, hConfMode]
       · refine Or.inr ⟨parSegs, lastSeg, parCanon, parMode, hCre, hSplit, hPar, hW, hX, hNone, hConfEx, fun nb => ?_⟩
         have hConfMode := hasLockConflict_exclusive_false s₀.locks (vfsChildPath parCanon lastSeg) mode hConfEx
         have hPermF : ((parMode / 128) % 2 == 0 || (parMode / 64) % 2 == 0) = false := by simp [hW, hX]
         have hNfBool : (e.kind != .notFound) = false := by rw [hNf]; decide
-        unfold vfsAcquireLockPure
+        rw [vfsAcquireLockPure_unfold]
         rw [hValid]
         dsimp only
         rw [hRes]
@@ -586,7 +591,7 @@ private theorem vfsProbe_after_release_created (s₀ : VfsState) (path parCanon 
       (.ok { handleId := freshLockId s₁, path := path, mode := .exclusive },
         { s₁ with locks := (freshLockId s₁, vfsChildPath parCanon lastSeg, .exclusive) :: s₁.locks,
                   nextLockId := freshLockId s₁ }) := by
-    simp [vfsAcquireLockPure, hValid, hResS1, s₁, hConfEx]
+    simp [vfsAcquireLockPure_unfold, hValid, hResS1, s₁, hConfEx]
   rw [hAcqS1]
   have hRelS1 := vfsReleaseLockPure_fresh s₁
     { s₁ with locks := (freshLockId s₁, vfsChildPath parCanon lastSeg, .exclusive) :: s₁.locks,
@@ -594,9 +599,9 @@ private theorem vfsProbe_after_release_created (s₀ : VfsState) (path parCanon 
     (vfsChildPath parCanon lastSeg) path .exclusive (Or.inl rfl)
   simp [hRelS1]
 
-/-- Proof of `test_fs_vfs_withFileLock_releasesOnOk` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_withFileLock_releasesOnOk` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_withFileLock_releasesOnOk :
-    AllPass (test_fs_vfs_withFileLock_releasesOnOk vfsApi) := by
+    AllPass (test_fs_vfs_withFileLock_releasesOnOk (Internal.mkApiM vfsOps)) := by
   intro s₀ path mode createIfMissing val hProbe
   have ⟨hValid, hCases⟩ := vfsAcquireLock_after_exclusive_probe s₀ path mode createIfMissing hProbe
   dsimp only [assert]
@@ -615,7 +620,7 @@ theorem proof_fs_vfs_withFileLock_releasesOnOk :
     have hAcqS1 : vfsAcquireLockPure s₁ path .exclusive false true =
         (.ok { handleId := freshLockId s₁, path := path, mode := .exclusive },
           { s₁ with locks := (freshLockId s₁, canon, .exclusive) :: s₁.locks, nextLockId := freshLockId s₁ }) := by
-      unfold vfsAcquireLockPure
+      rw [vfsAcquireLockPure_unfold]
       rw [hValid]
       dsimp only
       rw [hResS1]
@@ -654,7 +659,7 @@ theorem proof_fs_vfs_withFileLock_releasesOnOk :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_withFileLock_releasesOnOk` using a `0o444` read-only file with `createIfMissing = true`. -/
 theorem reach_fs_vfs_withFileLock_releasesOnOk :
-    CanReach (test_fs_vfs_withFileLock_releasesOnOk vfsApi) := by
+    CanReach (test_fs_vfs_withFileLock_releasesOnOk (Internal.mkApiM vfsOps)) := by
   let st : VfsState :=
     { tree := .dir 0o755 (fun s => if s == "ro.lock" then some (.file (ByteArray.mk #[42]) 0o444) else none)
       keys := ["/ro.lock"]
@@ -673,7 +678,7 @@ theorem reach_fs_vfs_withFileLock_releasesOnOk :
     have hAcq : vfsAcquireLockPure st "/ro.lock" .exclusive true true =
         (.ok { handleId := freshLockId st, path := "/ro.lock", mode := .exclusive },
           { st with locks := (freshLockId st, "/ro.lock", .exclusive) :: st.locks, nextLockId := freshLockId st }) := by
-      unfold vfsAcquireLockPure
+      rw [vfsAcquireLockPure_unfold]
       rw [show isValidLockPath "/ro.lock" = true from by decide]
       dsimp only
       rw [hRes]
@@ -686,9 +691,9 @@ theorem reach_fs_vfs_withFileLock_releasesOnOk :
   exact ⟨st, "/ro.lock", .shared, true, 7, hProbe,
     proof_fs_vfs_withFileLock_releasesOnOk st "/ro.lock" .shared true 7 hProbe⟩
 
-/-- Proof of `test_fs_vfs_withFileLock_releasesOnError` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_withFileLock_releasesOnError` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_withFileLock_releasesOnError :
-    AllPass (test_fs_vfs_withFileLock_releasesOnError vfsApi) := by
+    AllPass (test_fs_vfs_withFileLock_releasesOnError (Internal.mkApiM vfsOps)) := by
   intro s₀ path mode createIfMissing err hProbe
   have ⟨hValid, hCases⟩ := vfsAcquireLock_after_exclusive_probe s₀ path mode createIfMissing hProbe
   dsimp only [assert]
@@ -708,7 +713,7 @@ theorem proof_fs_vfs_withFileLock_releasesOnError :
     have hAcqS1 : vfsAcquireLockPure s₁ path .exclusive false true =
         (.ok { handleId := freshLockId s₁, path := path, mode := .exclusive },
           { s₁ with locks := (freshLockId s₁, canon, .exclusive) :: s₁.locks, nextLockId := freshLockId s₁ }) := by
-      unfold vfsAcquireLockPure
+      rw [vfsAcquireLockPure_unfold]
       rw [hValid]
       dsimp only
       rw [hResS1]
@@ -748,7 +753,7 @@ theorem proof_fs_vfs_withFileLock_releasesOnError :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_withFileLock_releasesOnError`. -/
 theorem reach_fs_vfs_withFileLock_releasesOnError :
-    CanReach (test_fs_vfs_withFileLock_releasesOnError vfsApi) := by
+    CanReach (test_fs_vfs_withFileLock_releasesOnError (Internal.mkApiM vfsOps)) := by
   let st : VfsState := { tree := .dir 0o755 (fun _ => none), keys := [], cwd := "/", nonce := 0 }
   let err : FsError := { kind := .permissionDenied, message := "boom" }
   have hRes : vfsResolveSegs st.nodes "/" (vfsSplitSegs (vfsAbsNorm st.cwd "/err.lock")) false 1024 =
@@ -770,7 +775,7 @@ theorem reach_fs_vfs_withFileLock_releasesOnError :
             keys := vfsChildPath "/" "err.lock" :: st.keys
             locks := (freshLockId st, vfsChildPath "/" "err.lock", .exclusive) :: st.locks
             nextLockId := freshLockId st }) := by
-      unfold vfsAcquireLockPure
+      rw [vfsAcquireLockPure_unfold]
       rw [show isValidLockPath "/err.lock" = true from by decide]
       dsimp only
       rw [hRes]
@@ -794,9 +799,9 @@ theorem reach_fs_vfs_withFileLock_releasesOnError :
   exact ⟨st, "/err.lock", .exclusive, true, err, hProbe,
     proof_fs_vfs_withFileLock_releasesOnError st "/err.lock" .exclusive true err hProbe⟩
 
-/-- Proof of `test_fs_vfs_tryWithFileLock_sharedCoexists` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_tryWithFileLock_sharedCoexists` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_tryWithFileLock_sharedCoexists :
-    AllPass (test_fs_vfs_tryWithFileLock_sharedCoexists vfsApi) := by
+    AllPass (test_fs_vfs_tryWithFileLock_sharedCoexists (Internal.mkApiM vfsOps)) := by
   intro s₀ path val hIsOk
   change ((vfsApi.withFileLock path .shared true
       (vfsApi.tryWithFileLock path .shared false (pure (Except.ok val)))).run s₀).1.isOk = true at hIsOk
@@ -811,7 +816,7 @@ theorem proof_fs_vfs_tryWithFileLock_sharedCoexists :
       dsimp only at hIsOk ⊢
       rcases vfsAcquireLock_ok_step s₀ path .shared true false hO stO hOuter with ⟨rfl, hCases⟩
       have hValid : isValidLockPath path = true := by
-        unfold vfsAcquireLockPure at hOuter
+        rw [vfsAcquireLockPure_unfold] at hOuter
         cases hv : isValidLockPath path <;> simp_all
       have hSharedNe : (LockMode.shared == LockMode.exclusive) = false := rfl
       have hInner : (vfsApi.tryWithFileLock path .shared false (pure (Except.ok val))).run stO =
@@ -827,7 +832,7 @@ theorem proof_fs_vfs_tryWithFileLock_sharedCoexists :
           have hAcqIn : vfsAcquireLockPure stO' path .shared false true =
               (.ok { handleId := freshLockId stO', path := path, mode := .shared },
                 { stO' with locks := (freshLockId stO', canon, .shared) :: stO'.locks, nextLockId := freshLockId stO' }) := by
-            unfold vfsAcquireLockPure
+            rw [vfsAcquireLockPure_unfold]
             rw [hValid]
             dsimp only
             rw [show stO'.nodes = s₀.nodes from rfl, show stO'.cwd = s₀.cwd from rfl, hRes]
@@ -855,7 +860,7 @@ theorem proof_fs_vfs_tryWithFileLock_sharedCoexists :
                 { stO' with
                   locks := (freshLockId stO', vfsChildPath parCanon lastSeg, .shared) :: stO'.locks
                   nextLockId := freshLockId stO' }) := by
-            unfold vfsAcquireLockPure
+            rw [vfsAcquireLockPure_unfold]
             rw [hValid]
             dsimp only
             rw [show stO'.nodes = ({ s₀ with tree := newTree, keys := vfsChildPath parCanon lastSeg :: s₀.keys, nextLockId := freshLockId s₀ } : VfsState).nodes from rfl,
@@ -901,7 +906,7 @@ theorem proof_fs_vfs_tryWithFileLock_sharedCoexists :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_tryWithFileLock_sharedCoexists`. -/
 theorem reach_fs_vfs_tryWithFileLock_sharedCoexists :
-    CanReach (test_fs_vfs_tryWithFileLock_sharedCoexists vfsApi) := by
+    CanReach (test_fs_vfs_tryWithFileLock_sharedCoexists (Internal.mkApiM vfsOps)) := by
   let st : VfsState := { tree := .dir 0o755 (fun _ => none), keys := [], cwd := "/", nonce := 0 }
   have hRes : vfsResolveSegs st.nodes "/" (vfsSplitSegs (vfsAbsNorm st.cwd "/sh.lock")) false 1024 =
       .error { kind := .notFound, path := some "/sh.lock", message := "no such file or directory: /sh.lock" } := by
@@ -923,7 +928,7 @@ theorem reach_fs_vfs_tryWithFileLock_sharedCoexists :
         nextLockId := freshLockId st }
     have hAcqO : vfsAcquireLockPure st "/sh.lock" .shared true false =
         (.ok { handleId := freshLockId st, path := "/sh.lock", mode := .shared }, stO) := by
-      unfold vfsAcquireLockPure
+      rw [vfsAcquireLockPure_unfold]
       rw [show isValidLockPath "/sh.lock" = true from by decide]
       dsimp only
       rw [hRes]
@@ -959,7 +964,7 @@ theorem reach_fs_vfs_tryWithFileLock_sharedCoexists :
       have hAcqI : vfsAcquireLockPure stO "/sh.lock" .shared false true =
           (.ok { handleId := freshLockId stO, path := "/sh.lock", mode := .shared },
             { stO with locks := (freshLockId stO, "/sh.lock", .shared) :: stO.locks, nextLockId := freshLockId stO }) := by
-        unfold vfsAcquireLockPure
+        rw [vfsAcquireLockPure_unfold]
         rw [show isValidLockPath "/sh.lock" = true from by decide]
         dsimp only
         rw [hResO]
@@ -997,9 +1002,10 @@ theorem reach_fs_vfs_tryWithFileLock_sharedCoexists :
   exact ⟨st, "/sh.lock", 42, hOuter,
     proof_fs_vfs_tryWithFileLock_sharedCoexists st "/sh.lock" 42 hOuter⟩
 
-/-- Proof of `test_fs_vfs_tryWithFileLock_exclusiveRejects` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_tryWithFileLock_exclusiveRejects` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_tryWithFileLock_exclusiveRejects :
-    AllPass (test_fs_vfs_tryWithFileLock_exclusiveRejects vfsApi) := by
+    AllPass (test_fs_vfs_tryWithFileLock_exclusiveRejects (Internal.mkApiM vfsOps)) := by
+  change AllPass (test_fs_vfs_tryWithFileLock_exclusiveRejects vfsApi)
   intro s₀ path markerPath outerMode innerMode hModes _ hMarkerNone
   dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run] at hMarkerNone
   rw [vfsWithFileLock_action_step]
@@ -1014,7 +1020,7 @@ theorem proof_fs_vfs_tryWithFileLock_exclusiveRejects :
       dsimp only
       rcases vfsAcquireLock_ok_step s₀ path outerMode false false hO stO hOuter with ⟨rfl, hCases⟩
       have hValid : isValidLockPath path = true := by
-        unfold vfsAcquireLockPure at hOuter
+        rw [vfsAcquireLockPure_unfold] at hOuter
         cases hv : isValidLockPath path <;> simp_all
       rcases hCases with ⟨_, _, hF⟩ | ⟨canon, bs, m, hRes, _, rfl⟩ | ⟨_, _, _, _, _, hCre, _⟩
       · exact hF.elim
@@ -1023,7 +1029,7 @@ theorem proof_fs_vfs_tryWithFileLock_exclusiveRejects :
         let stO' : VfsState := { s₀ with locks := (freshLockId s₀, canon, outerMode) :: s₀.locks, nextLockId := freshLockId s₀ }
         have hAcq1 : vfsAcquireLockPure stO' path innerMode false true =
             (.error { kind := .wouldBlock, path := some path, message := "resource temporarily unavailable" }, stO') := by
-          unfold vfsAcquireLockPure
+          rw [vfsAcquireLockPure_unfold]
           rw [hValid]
           dsimp only
           rw [show stO'.nodes = s₀.nodes from rfl, show stO'.cwd = s₀.cwd from rfl, hRes]
@@ -1037,7 +1043,7 @@ theorem proof_fs_vfs_tryWithFileLock_exclusiveRejects :
           rfl
         have hAcq2 : vfsAcquireLockPure stO' path .exclusive false true =
             (.error { kind := .wouldBlock, path := some path, message := "resource temporarily unavailable" }, stO') := by
-          unfold vfsAcquireLockPure
+          rw [vfsAcquireLockPure_unfold]
           rw [hValid]
           dsimp only
           rw [show stO'.nodes = s₀.nodes from rfl, show stO'.cwd = s₀.cwd from rfl, hRes]
@@ -1089,7 +1095,8 @@ theorem proof_fs_vfs_tryWithFileLock_exclusiveRejects :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_tryWithFileLock_exclusiveRejects`. -/
 theorem reach_fs_vfs_tryWithFileLock_exclusiveRejects :
-    CanReach (test_fs_vfs_tryWithFileLock_exclusiveRejects vfsApi) := by
+    CanReach (test_fs_vfs_tryWithFileLock_exclusiveRejects (Internal.mkApiM vfsOps)) := by
+  change CanReach (test_fs_vfs_tryWithFileLock_exclusiveRejects vfsApi)
   let st : VfsState :=
     { tree := .dir 0o755 (fun s => if s == "a.lock" then some (.file ByteArray.empty 0o644) else none)
       keys := ["/a.lock"]
@@ -1117,14 +1124,14 @@ theorem reach_fs_vfs_tryWithFileLock_exclusiveRejects :
   let stO' : VfsState := { st with locks := (freshLockId st, "/a.lock", .exclusive) :: st.locks, nextLockId := freshLockId st }
   have hAcqO : vfsAcquireLockPure st "/a.lock" .exclusive false false =
       (.ok { handleId := freshLockId st, path := "/a.lock", mode := .exclusive }, stO') := by
-    unfold vfsAcquireLockPure; rw [show isValidLockPath "/a.lock" = true from by decide]; dsimp only; rw [hRes]; dsimp only
+    rw [vfsAcquireLockPure_unfold]; rw [show isValidLockPath "/a.lock" = true from by decide]; dsimp only; rw [hRes]; dsimp only
     simp [st, hasLockConflict, stO']
   have hConf1 : hasLockConflict stO'.locks "/a.lock" .exclusive = true := by
     dsimp [stO', hasLockConflict]
     decide
   have hAcq1 : vfsAcquireLockPure stO' "/a.lock" .exclusive false true =
       (.error { kind := .wouldBlock, path := some "/a.lock", message := "resource temporarily unavailable" }, stO') := by
-    unfold vfsAcquireLockPure; rw [show isValidLockPath "/a.lock" = true from by decide]; dsimp only
+    rw [vfsAcquireLockPure_unfold]; rw [show isValidLockPath "/a.lock" = true from by decide]; dsimp only
     rw [show stO'.nodes = st.nodes from rfl, show stO'.cwd = st.cwd from rfl, hRes]; dsimp only; simp [stO', hConf1]
   have hR1 : (vfsApi.tryWithFileLock "/a.lock" .exclusive false (vfsApi.writeText "/marker" "ran")).run stO' =
       (.ok none, stO') := by
@@ -1195,9 +1202,9 @@ private theorem isValidLockPath_of_not_empty_no_trailing_slash (path : String)
           exact beq_false_of_ne (fun h => hLast' (by cases h; rfl))
       simp [hBeq]
 
-/-- Proof of `test_fs_vfs_withFileLock_missingNotCreated` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_withFileLock_missingNotCreated` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_withFileLock_missingNotCreated :
-    AllPass (test_fs_vfs_withFileLock_missingNotCreated vfsApi) := by
+    AllPass (test_fs_vfs_withFileLock_missingNotCreated (Internal.mkApiM vfsOps)) := by
   intro s₀ path mode hNeEmpty hNoSlash hLstat
   dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run] at hLstat
   rcases hLstat with ⟨e, hStat, hNf⟩
@@ -1208,7 +1215,7 @@ theorem proof_fs_vfs_withFileLock_missingNotCreated :
     simp only [hRes, Except.error.injEq] at hStat
     subst hStat
     have hAcq : vfsAcquireLockPure s₀ path mode false false = (.error e', s₀) := by
-      unfold vfsAcquireLockPure
+      rw [vfsAcquireLockPure_unfold]
       rw [hValid]
       dsimp only
       rw [hRes]
@@ -1221,7 +1228,7 @@ theorem proof_fs_vfs_withFileLock_missingNotCreated :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_withFileLock_missingNotCreated`. -/
 theorem reach_fs_vfs_withFileLock_missingNotCreated :
-    CanReach (test_fs_vfs_withFileLock_missingNotCreated vfsApi) := by
+    CanReach (test_fs_vfs_withFileLock_missingNotCreated (Internal.mkApiM vfsOps)) := by
   let st : VfsState := { tree := .dir 0o755 (fun _ => none), keys := [], cwd := "/", nonce := 0 }
   have hStat : ((vfsApi.lstat "/missing.lock").run st).1 =
       .error { kind := .notFound, path := some "/missing.lock", message := "no such file or directory: /missing.lock" } := by
@@ -1236,9 +1243,9 @@ theorem reach_fs_vfs_withFileLock_missingNotCreated :
     ⟨_, hStat, rfl⟩,
     proof_fs_vfs_withFileLock_missingNotCreated st "/missing.lock" .exclusive (by decide) (Or.inr (by decide)) ⟨_, hStat, rfl⟩⟩
 
-/-- Proof of `test_fs_vfs_withFileLock_symlinkRejected` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_withFileLock_symlinkRejected` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_withFileLock_symlinkRejected :
-    AllPass (test_fs_vfs_withFileLock_symlinkRejected vfsApi) := by
+    AllPass (test_fs_vfs_withFileLock_symlinkRejected (Internal.mkApiM vfsOps)) := by
   intro s₀ path markerPath mode createIfMissing hNeEmpty hNoSlash hLstat hMarkerNone
   dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run, assert] at hLstat hMarkerNone ⊢
   rcases hLstat with ⟨st, hStat, hSym⟩
@@ -1258,7 +1265,7 @@ theorem proof_fs_vfs_withFileLock_symlinkRejected :
         tryFinally', MonadFinally.tryFinally', StateT.bind, bind, StateT.pure, pure, Id.instMonad]
       have hAcq : vfsAcquireLockPure s₀ path mode createIfMissing false =
           (.error { kind := .invalidInput, path := some path, message := s!"symlink rejected for lock: {path}" }, s₀) := by
-        unfold vfsAcquireLockPure
+        rw [vfsAcquireLockPure_unfold]
         rw [hValid]
         dsimp only
         rw [hRes]
@@ -1268,7 +1275,7 @@ theorem proof_fs_vfs_withFileLock_symlinkRejected :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_withFileLock_symlinkRejected`. -/
 theorem reach_fs_vfs_withFileLock_symlinkRejected :
-    CanReach (test_fs_vfs_withFileLock_symlinkRejected vfsApi) := by
+    CanReach (test_fs_vfs_withFileLock_symlinkRejected (Internal.mkApiM vfsOps)) := by
   let st : VfsState :=
     { tree := .dir 0o755 (fun s => if s == "sym.lock" then some (.symlink "/target" 0o777) else none)
       keys := ["/sym.lock"]
@@ -1295,9 +1302,9 @@ theorem reach_fs_vfs_withFileLock_symlinkRejected :
     proof_fs_vfs_withFileLock_symlinkRejected st "/sym.lock" "/marker" .exclusive true (by decide) (Or.inr (by decide))
       ⟨vfsToStat (.symlink "/target" 0o777), hSym, rfl⟩ hMarker⟩
 
-/-- Proof of `test_fs_vfs_withFileLock_dirRejected` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_withFileLock_dirRejected` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_withFileLock_dirRejected :
-    AllPass (test_fs_vfs_withFileLock_dirRejected vfsApi) := by
+    AllPass (test_fs_vfs_withFileLock_dirRejected (Internal.mkApiM vfsOps)) := by
   intro s₀ path markerPath mode createIfMissing hNeEmpty hNoSlash hLstat hMarkerNone
   dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run, assert] at hLstat hMarkerNone ⊢
   rcases hLstat with ⟨st, hStat, hDir⟩
@@ -1317,7 +1324,7 @@ theorem proof_fs_vfs_withFileLock_dirRejected :
         tryFinally', MonadFinally.tryFinally', StateT.bind, bind, StateT.pure, pure, Id.instMonad]
       have hAcq : vfsAcquireLockPure s₀ path mode createIfMissing false =
           (.error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }, s₀) := by
-        unfold vfsAcquireLockPure
+        rw [vfsAcquireLockPure_unfold]
         rw [hValid]
         dsimp only
         rw [hRes]
@@ -1327,7 +1334,7 @@ theorem proof_fs_vfs_withFileLock_dirRejected :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_withFileLock_dirRejected`. -/
 theorem reach_fs_vfs_withFileLock_dirRejected :
-    CanReach (test_fs_vfs_withFileLock_dirRejected vfsApi) := by
+    CanReach (test_fs_vfs_withFileLock_dirRejected (Internal.mkApiM vfsOps)) := by
   let st : VfsState :=
     { tree := .dir 0o755 (fun s => if s == "dir" then some (.dir 0o755 fun _ => none) else none)
       keys := ["/dir"]
@@ -1354,9 +1361,9 @@ theorem reach_fs_vfs_withFileLock_dirRejected :
     proof_fs_vfs_withFileLock_dirRejected st "/dir" "/marker" .exclusive true (by decide) (Or.inr (by decide))
       ⟨vfsToStat (.dir 0o755), hDir, rfl⟩ hMarker⟩
 
-/-- Proof of `test_fs_vfs_withFileLock_createsMissingFile` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_withFileLock_createsMissingFile` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_withFileLock_createsMissingFile :
-    AllPass (test_fs_vfs_withFileLock_createsMissingFile vfsApi) := by
+    AllPass (test_fs_vfs_withFileLock_createsMissingFile (Internal.mkApiM vfsOps)) := by
   intro s₀ path mode hNeEmpty hNoSlash hLstat hResOk
   dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run] at hLstat
   rcases hLstat with ⟨e, hStat, hNf⟩
@@ -1375,7 +1382,7 @@ theorem proof_fs_vfs_withFileLock_createsMissingFile :
       | error err => simp at hResOk
       | ok h =>
         have hValid : isValidLockPath path = true := by
-          unfold vfsAcquireLockPure at hA
+          rw [vfsAcquireLockPure_unfold] at hA
           cases hv : isValidLockPath path <;> simp_all
         rcases vfsAcquireLock_ok_step s₀ path mode true false h st1 hA with ⟨rfl, hCases⟩
         rcases hCases with ⟨_, _, hF⟩ | ⟨_, _, _, hResOk', _⟩ |
@@ -1399,7 +1406,7 @@ theorem proof_fs_vfs_withFileLock_createsMissingFile :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_withFileLock_createsMissingFile` using a missing path. -/
 theorem reach_fs_vfs_withFileLock_createsMissingFile :
-    CanReach (test_fs_vfs_withFileLock_createsMissingFile vfsApi) := by
+    CanReach (test_fs_vfs_withFileLock_createsMissingFile (Internal.mkApiM vfsOps)) := by
   let st : VfsState := { tree := .dir 0o755 (fun _ => none), keys := [], cwd := "/", nonce := 0 }
   have hRes : vfsResolveSegs st.nodes "/" (vfsSplitSegs (vfsAbsNorm st.cwd "/new.lock")) false 1024 =
       .error { kind := .notFound, path := some "/new.lock", message := "no such file or directory: /new.lock" } := by
@@ -1424,7 +1431,7 @@ theorem reach_fs_vfs_withFileLock_createsMissingFile :
             keys := vfsChildPath "/" "new.lock" :: st.keys
             locks := (freshLockId st, vfsChildPath "/" "new.lock", .exclusive) :: st.locks
             nextLockId := freshLockId st }) := by
-      unfold vfsAcquireLockPure
+      rw [vfsAcquireLockPure_unfold]
       rw [show isValidLockPath "/new.lock" = true from by decide]
       dsimp only
       rw [hRes]
@@ -1448,9 +1455,10 @@ theorem reach_fs_vfs_withFileLock_createsMissingFile :
   exact ⟨st, "/new.lock", .exclusive, by decide, Or.inr (by decide), ⟨_, hStat, rfl⟩, hOk,
     proof_fs_vfs_withFileLock_createsMissingFile st "/new.lock" .exclusive (by decide) (Or.inr (by decide)) ⟨_, hStat, rfl⟩ hOk⟩
 
-/-- Proof of `test_fs_vfs_withFileLock_preservesExistingBytes` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_withFileLock_preservesExistingBytes` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_withFileLock_preservesExistingBytes :
-    AllPass (test_fs_vfs_withFileLock_preservesExistingBytes vfsApi) := by
+    AllPass (test_fs_vfs_withFileLock_preservesExistingBytes (Internal.mkApiM vfsOps)) := by
+  change AllPass (test_fs_vfs_withFileLock_preservesExistingBytes vfsApi)
   intro s₀ path mode createIfMissing hNeEmpty hNoSlash
   have hValid := isValidLockPath_of_not_empty_no_trailing_slash path hNeEmpty hNoSlash
   dsimp only [test_fs_vfs_withFileLock_preservesExistingBytes]
@@ -1490,7 +1498,7 @@ theorem proof_fs_vfs_withFileLock_preservesExistingBytes :
     | dir _ =>
       have hAcq : vfsAcquireLockPure s₀ path mode createIfMissing false =
           (.error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }, s₀) := by
-        unfold vfsAcquireLockPure
+        rw [vfsAcquireLockPure_unfold]
         rw [hValid]
         dsimp only
         rw [hNoFollowOk]
@@ -1500,7 +1508,7 @@ theorem proof_fs_vfs_withFileLock_preservesExistingBytes :
     | symlink _ _ =>
       have hAcq : vfsAcquireLockPure s₀ path mode createIfMissing false =
           (.error { kind := .invalidInput, path := some path, message := s!"symlink rejected for lock: {path}" }, s₀) := by
-        unfold vfsAcquireLockPure
+        rw [vfsAcquireLockPure_unfold]
         rw [hValid]
         dsimp only
         rw [hNoFollowOk]
@@ -1511,7 +1519,7 @@ theorem proof_fs_vfs_withFileLock_preservesExistingBytes :
       by_cases hConf : hasLockConflict s₀.locks canon' mode = true
       · have hAcq : vfsAcquireLockPure s₀ path mode createIfMissing false =
             (.error { kind := .wouldBlock, path := some path, message := "resource temporarily unavailable" }, s₀) := by
-          unfold vfsAcquireLockPure
+          rw [vfsAcquireLockPure_unfold]
           rw [hValid]
           dsimp only
           rw [hNoFollowOk]
@@ -1523,7 +1531,7 @@ theorem proof_fs_vfs_withFileLock_preservesExistingBytes :
         let st1 : VfsState := { s₀ with locks := (freshLockId s₀, canon', mode) :: s₀.locks, nextLockId := freshLockId s₀ }
         have hAcq : vfsAcquireLockPure s₀ path mode createIfMissing false =
             (.ok { handleId := freshLockId s₀, path := path, mode := mode }, st1) := by
-          unfold vfsAcquireLockPure
+          rw [vfsAcquireLockPure_unfold]
           rw [hValid]
           dsimp only
           rw [hNoFollowOk]
@@ -1552,7 +1560,8 @@ theorem proof_fs_vfs_withFileLock_preservesExistingBytes :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_withFileLock_preservesExistingBytes` using a `0o444` read-only existing file. -/
 theorem reach_fs_vfs_withFileLock_preservesExistingBytes :
-    CanReach (test_fs_vfs_withFileLock_preservesExistingBytes vfsApi) := by
+    CanReach (test_fs_vfs_withFileLock_preservesExistingBytes (Internal.mkApiM vfsOps)) := by
+  change CanReach (test_fs_vfs_withFileLock_preservesExistingBytes vfsApi)
   let st : VfsState :=
     { tree := .dir 0o755 (fun s => if s == "data.lock" then some (.file (ByteArray.mk #[1, 2, 3]) 0o444) else none)
       keys := ["/data.lock"]
@@ -1582,7 +1591,7 @@ theorem reach_fs_vfs_withFileLock_preservesExistingBytes :
   let st1 : VfsState := { st with locks := (freshLockId st, "/data.lock", .exclusive) :: st.locks, nextLockId := freshLockId st }
   have hAcq : vfsAcquireLockPure st "/data.lock" .exclusive true false =
       (.ok { handleId := freshLockId st, path := "/data.lock", mode := .exclusive }, st1) := by
-    unfold vfsAcquireLockPure
+    rw [vfsAcquireLockPure_unfold]
     rw [show isValidLockPath "/data.lock" = true from by decide]
     dsimp only
     rw [hResFalse]
@@ -1602,7 +1611,9 @@ theorem reach_fs_vfs_withFileLock_preservesExistingBytes :
     dsimp only
     rw [hRel]
     rfl
-  have hAll := proof_fs_vfs_withFileLock_preservesExistingBytes st "/data.lock" .exclusive true (by decide) (Or.inr (by decide))
+  have hAllBase : AllPass (test_fs_vfs_withFileLock_preservesExistingBytes vfsApi) :=
+    proof_fs_vfs_withFileLock_preservesExistingBytes
+  have hAll := hAllBase st "/data.lock" .exclusive true (by decide) (Or.inr (by decide))
   rw [hReadSt] at hAll
   dsimp only at hAll
   refine ⟨st, "/data.lock", .exclusive, true, by decide, Or.inr (by decide), ?_⟩
@@ -1610,9 +1621,9 @@ theorem reach_fs_vfs_withFileLock_preservesExistingBytes :
   rw [hReadSt]
   exact ⟨hResOk, hAll hResOk⟩
 
-/-- Proof of `test_fs_vfs_withFileLock_invalidPathRejected` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_withFileLock_invalidPathRejected` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_withFileLock_invalidPathRejected :
-    AllPass (test_fs_vfs_withFileLock_invalidPathRejected vfsApi) := by
+    AllPass (test_fs_vfs_withFileLock_invalidPathRejected (Internal.mkApiM vfsOps)) := by
   intro s₀ path markerPath mode createIfMissing hBadPath hMarkerNone
   dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, Internal.withFileLockImplM, vfsOps, StateT.run, bind, StateT.bind,
     pure, StateT.pure, assert] at hMarkerNone ⊢
@@ -1629,7 +1640,7 @@ theorem proof_fs_vfs_withFileLock_invalidPathRejected :
         simp [hPos, hSlash']
   have hAcq : vfsAcquireLockPure s₀ path mode createIfMissing false =
       (.error { kind := .invalidInput, path := some path, message := "invalid lock path" }, s₀) := by
-    unfold vfsAcquireLockPure
+    rw [vfsAcquireLockPure_unfold]
     rw [hInvalid]
     rfl
   rw [hAcq]
@@ -1637,7 +1648,7 @@ theorem proof_fs_vfs_withFileLock_invalidPathRejected :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_withFileLock_invalidPathRejected`. -/
 theorem reach_fs_vfs_withFileLock_invalidPathRejected :
-    CanReach (test_fs_vfs_withFileLock_invalidPathRejected vfsApi) := by
+    CanReach (test_fs_vfs_withFileLock_invalidPathRejected (Internal.mkApiM vfsOps)) := by
   let st : VfsState := { tree := .dir 0o755 (fun _ => none), keys := [], cwd := "/", nonce := 0 }
   have hMarker : ((vfsApi.lstat "/marker").run st).1.isOk = false := by
     dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
@@ -1650,9 +1661,9 @@ theorem reach_fs_vfs_withFileLock_invalidPathRejected :
   exact ⟨st, "", "/marker", .exclusive, true, Or.inl rfl, hMarker,
     proof_fs_vfs_withFileLock_invalidPathRejected st "" "/marker" .exclusive true (Or.inl rfl) hMarker⟩
 
-/-- Proof of `test_fs_vfs_tryWithFileLock_releasesOnOk` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_tryWithFileLock_releasesOnOk` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_tryWithFileLock_releasesOnOk :
-    AllPass (test_fs_vfs_tryWithFileLock_releasesOnOk vfsApi) := by
+    AllPass (test_fs_vfs_tryWithFileLock_releasesOnOk (Internal.mkApiM vfsOps)) := by
   intro s₀ path mode createIfMissing val hProbe
   have ⟨hValid, hCases⟩ := vfsAcquireLock_after_exclusive_probe s₀ path mode createIfMissing hProbe
   have hBoth :
@@ -1672,7 +1683,7 @@ theorem proof_fs_vfs_tryWithFileLock_releasesOnOk :
       have hAcqS1 : vfsAcquireLockPure s₁ path .exclusive false true =
           (.ok { handleId := freshLockId s₁, path := path, mode := .exclusive },
             { s₁ with locks := (freshLockId s₁, canon, .exclusive) :: s₁.locks, nextLockId := freshLockId s₁ }) := by
-        unfold vfsAcquireLockPure
+        rw [vfsAcquireLockPure_unfold]
         rw [hValid]
         dsimp only
         rw [show s₁.nodes = s₀.nodes from rfl, show s₁.cwd = s₀.cwd from rfl, hRes]
@@ -1698,7 +1709,7 @@ theorem proof_fs_vfs_tryWithFileLock_releasesOnOk :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_tryWithFileLock_releasesOnOk`. -/
 theorem reach_fs_vfs_tryWithFileLock_releasesOnOk :
-    CanReach (test_fs_vfs_tryWithFileLock_releasesOnOk vfsApi) := by
+    CanReach (test_fs_vfs_tryWithFileLock_releasesOnOk (Internal.mkApiM vfsOps)) := by
   let st : VfsState := { tree := .dir 0o755 (fun _ => none), keys := [], cwd := "/", nonce := 0 }
   have hRes : vfsResolveSegs st.nodes "/" (vfsSplitSegs (vfsAbsNorm st.cwd "/try.lock")) false 1024 =
       .error { kind := .notFound, path := some "/try.lock", message := "no such file or directory: /try.lock" } := by
@@ -1719,7 +1730,7 @@ theorem reach_fs_vfs_tryWithFileLock_releasesOnOk :
             keys := vfsChildPath "/" "try.lock" :: st.keys
             locks := (freshLockId st, vfsChildPath "/" "try.lock", .exclusive) :: st.locks
             nextLockId := freshLockId st }) := by
-      unfold vfsAcquireLockPure
+      rw [vfsAcquireLockPure_unfold]
       rw [show isValidLockPath "/try.lock" = true from by decide]
       dsimp only
       rw [hRes]
@@ -1743,9 +1754,9 @@ theorem reach_fs_vfs_tryWithFileLock_releasesOnOk :
   exact ⟨st, "/try.lock", .shared, true, 9, hProbe,
     proof_fs_vfs_tryWithFileLock_releasesOnOk st "/try.lock" .shared true 9 hProbe⟩
 
-/-- Proof of `test_fs_vfs_tryWithFileLock_missingNotSwallowed` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_tryWithFileLock_missingNotSwallowed` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_tryWithFileLock_missingNotSwallowed :
-    AllPass (test_fs_vfs_tryWithFileLock_missingNotSwallowed vfsApi) := by
+    AllPass (test_fs_vfs_tryWithFileLock_missingNotSwallowed (Internal.mkApiM vfsOps)) := by
   intro s₀ path markerPath mode hNeEmpty hNoSlash hLstat hMarkerNone
   dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run, assert] at hLstat hMarkerNone ⊢
   rcases hLstat with ⟨e, hStat, hNf⟩
@@ -1757,7 +1768,7 @@ theorem proof_fs_vfs_tryWithFileLock_missingNotSwallowed :
     subst hStat
     dsimp only [Internal.tryWithFileLockImplM, StateT.bind, bind, StateT.pure, pure, Id.instMonad]
     have hAcq : vfsAcquireLockPure s₀ path mode false true = (.error e', s₀) := by
-      unfold vfsAcquireLockPure
+      rw [vfsAcquireLockPure_unfold]
       rw [hValid]
       dsimp only
       rw [hRes]
@@ -1770,7 +1781,7 @@ theorem proof_fs_vfs_tryWithFileLock_missingNotSwallowed :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_tryWithFileLock_missingNotSwallowed`. -/
 theorem reach_fs_vfs_tryWithFileLock_missingNotSwallowed :
-    CanReach (test_fs_vfs_tryWithFileLock_missingNotSwallowed vfsApi) := by
+    CanReach (test_fs_vfs_tryWithFileLock_missingNotSwallowed (Internal.mkApiM vfsOps)) := by
   let st : VfsState := { tree := .dir 0o755 (fun _ => none), keys := [], cwd := "/", nonce := 0 }
   have hStat : ((vfsApi.lstat "/missing.lock").run st).1 =
       .error { kind := .notFound, path := some "/missing.lock", message := "no such file or directory: /missing.lock" } := by
@@ -1794,9 +1805,9 @@ theorem reach_fs_vfs_tryWithFileLock_missingNotSwallowed :
     proof_fs_vfs_tryWithFileLock_missingNotSwallowed st "/missing.lock" "/marker" .exclusive (by decide) (Or.inr (by decide))
       ⟨_, hStat, rfl⟩ hMarker⟩
 
-/-- Proof of `test_fs_vfs_tryWithFileLock_releasesOnActionError` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_tryWithFileLock_releasesOnActionError` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_tryWithFileLock_releasesOnActionError :
-    AllPass (test_fs_vfs_tryWithFileLock_releasesOnActionError vfsApi) := by
+    AllPass (test_fs_vfs_tryWithFileLock_releasesOnActionError (Internal.mkApiM vfsOps)) := by
   intro s₀ path mode createIfMissing err hProbe
   have ⟨hValid, hCases⟩ := vfsAcquireLock_after_exclusive_probe s₀ path mode createIfMissing hProbe
   have hBoth :
@@ -1818,7 +1829,7 @@ theorem proof_fs_vfs_tryWithFileLock_releasesOnActionError :
       have hAcqS1 : vfsAcquireLockPure s₁ path .exclusive false true =
           (.ok { handleId := freshLockId s₁, path := path, mode := .exclusive },
             { s₁ with locks := (freshLockId s₁, canon, .exclusive) :: s₁.locks, nextLockId := freshLockId s₁ }) := by
-        unfold vfsAcquireLockPure
+        rw [vfsAcquireLockPure_unfold]
         rw [hValid]
         dsimp only
         rw [show s₁.nodes = s₀.nodes from rfl, show s₁.cwd = s₀.cwd from rfl, hRes]
@@ -1844,7 +1855,7 @@ theorem proof_fs_vfs_tryWithFileLock_releasesOnActionError :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_tryWithFileLock_releasesOnActionError`. -/
 theorem reach_fs_vfs_tryWithFileLock_releasesOnActionError :
-    CanReach (test_fs_vfs_tryWithFileLock_releasesOnActionError vfsApi) := by
+    CanReach (test_fs_vfs_tryWithFileLock_releasesOnActionError (Internal.mkApiM vfsOps)) := by
   let st : VfsState := { tree := .dir 0o755 (fun _ => none), keys := [], cwd := "/", nonce := 0 }
   let err : FsError := { kind := .permissionDenied, message := "boom" }
   have hRes : vfsResolveSegs st.nodes "/" (vfsSplitSegs (vfsAbsNorm st.cwd "/tryerr.lock")) false 1024 =
@@ -1866,7 +1877,7 @@ theorem reach_fs_vfs_tryWithFileLock_releasesOnActionError :
             keys := vfsChildPath "/" "tryerr.lock" :: st.keys
             locks := (freshLockId st, vfsChildPath "/" "tryerr.lock", .exclusive) :: st.locks
             nextLockId := freshLockId st }) := by
-      unfold vfsAcquireLockPure
+      rw [vfsAcquireLockPure_unfold]
       rw [show isValidLockPath "/tryerr.lock" = true from by decide]
       dsimp only
       rw [hRes]

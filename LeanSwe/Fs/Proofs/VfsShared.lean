@@ -3,319 +3,34 @@ import LeanSwe.Fs.Proofs.PurePathProofs
 open Core
 open Core.NondetTest
 open LeanSwe.Fs
-open LeanSwe.Fs.Model (LockHandle RawFsOpsM RawFsOps RawDirOpsM RawDirOps)
-
-namespace LeanSwe.Fs.Proofs
-
-open LeanSwe.Fs.ProofsInternal
-
-/-- Node stored in the pure in-memory VFS model. -/
-inductive VfsNode where
-  /-- Regular file storing bytes and POSIX permission bits. -/
-  | file (data : ByteArray) (mode : Nat)
-  /-- Directory storing POSIX permission bits. -/
-  | dir (mode : Nat)
-  /-- Symbolic link storing target path and mode bits. -/
-  | symlink (target : String) (mode : Nat)
-  deriving BEq, DecidableEq
-
-
-/-- Structural directory tree backing `VfsState` (makes orphan paths unrepresentable). -/
-inductive VfsTree where
-  /-- Regular file storing bytes and POSIX permission bits. -/
-  | file (data : ByteArray) (mode : Nat)
-  /-- Directory storing POSIX permission bits and child lookup. -/
-  | dir (mode : Nat) (children : String → Option VfsTree)
-  /-- Symbolic link storing target path and mode bits. -/
-  | symlink (target : String) (mode : Nat)
-
-
-end LeanSwe.Fs.Proofs
+open LeanSwe.Fs.Model (LockHandle RawFsOpsM RawFsOps RawDirOpsM RawDirOps
+  VfsNode VfsTree VfsState vfsTreeTopNode vfsEmptyDir vfsTreeGet nodeAt vfsTreeSet
+  vfsAbsNorm vfsSplitSegs isCanonPath vfsTreeNodes vfsChildPath vfsResolveSegs
+  vfsToStat vfsStatPure vfsRealPathPure vfsCreateDirPure vfsReadDirPure
+  vfsWriteBytesPure hasLockConflict vfsAcquireLockPure vfsReleaseLockPure
+  isValidRawPath vfsReadBytesPure vfsCreateFileNewPure vfsRenamePure vfsOps)
 
 namespace LeanSwe.Fs.ProofsInternal
 
-open LeanSwe.Fs.Proofs
+/-- Helper alias for `Internal.mkApiM vfsOps` used inside proof bodies (never in exported theorem types). -/
+def vfsApi : FsApiM (StateM VfsState) :=
+  Internal.mkApiM vfsOps
 
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsTreeTopNode : VfsTree → VfsNode
-  | .file bs m => .file bs m
-  | .dir m _ => .dir m
-  | .symlink t m => .symlink t m
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsEmptyDir (mode : Nat) : VfsTree :=
-  .dir mode (fun _ => none)
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsTreeGet (t : VfsTree) : List String → Option VfsTree
-  | [] => some t
-  | seg :: rest =>
-    match t with
-    | .dir _ ch =>
-      match ch seg with
-      | none => none
-      | some sub => vfsTreeGet sub rest
-    | _ => none
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsTreeSet (t : VfsTree) (segs : List String) (v : Option VfsTree) : VfsTree :=
-  match segs with
-  | [] => v.getD t
-  | [last] =>
-    match t with
-    | .dir m ch => .dir m (fun s => if s == last then v else ch s)
-    | _ => t
-  | seg :: rest =>
-    match t with
-    | .dir m ch =>
-      .dir m (fun s =>
-        if s == seg then
-          match ch seg with
-          | some sub => some (vfsTreeSet sub rest v)
-          | none => none
-        else ch s)
-    | _ => t
-
-
-end LeanSwe.Fs.ProofsInternal
-
-namespace LeanSwe.Fs.Proofs
-
-open LeanSwe.Fs.ProofsInternal
-
-/-- Pure in-memory VFS state used to discharge `SpecTests` over `StateM VfsState`. -/
-structure VfsState where
-  /-- Root directory tree of the VFS. -/
-  tree : VfsTree
-  /-- Canonical paths tracked for directory listing. -/
-  keys : List String
-  /-- Current working directory (normalized absolute path). -/
-  cwd : String
-  /-- Monotonic counter for temporary sibling filenames. -/
-  nonce : Nat
-  /-- Active advisory locks `(handleId, canonicalPath, mode)`. -/
-  locks : List (Nat × String × LockMode) := []
-  /-- Monotonic counter for allocated lock handle IDs. -/
-  nextLockId : Nat := 1
-
-
-end LeanSwe.Fs.Proofs
-
-namespace LeanSwe.Fs.ProofsInternal
-
-open LeanSwe.Fs.Proofs
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsAbsNorm (cwd path : String) : String :=
-  Internal.normPath (if Internal.isAbsolute path then path else Internal.join cwd path)
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsSplitSegs (absNorm : String) : List String :=
-  match absNorm.toList with
-  | '/' :: rest =>
-    (Internal.splitCharList '/' rest).filterMap fun cs =>
-      if cs.isEmpty then none else some (String.ofList cs)
-  | _ => []
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def isCanonPath (k : String) : Bool :=
-  Internal.isAbsolute k && (Internal.normPath k == k)
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsTreeNodes (t : VfsTree) (k : String) : Option VfsNode :=
-  if isCanonPath k then (vfsTreeGet t (vfsSplitSegs k)).map vfsTreeTopNode else none
-
-
-end LeanSwe.Fs.ProofsInternal
-
-namespace LeanSwe.Fs.Proofs
-
-open LeanSwe.Fs.ProofsInternal
-
-/-- Canonical path lookup view derived from `VfsState.tree`. -/
-def VfsState.nodes (st : VfsState) : String → Option VfsNode :=
-  vfsTreeNodes st.tree
-
-
-end LeanSwe.Fs.Proofs
-
-namespace LeanSwe.Fs.ProofsInternal
-
-open LeanSwe.Fs.Proofs
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsChildPath (cur seg : String) : String :=
-  if cur == "/" then "/" ++ seg else cur ++ "/" ++ seg
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsResolveSegs (nodes : String → Option VfsNode) (cur : String)
-    (segs : List String) (followLast : Bool) : Nat → Except FsError (String × VfsNode)
-  | 0 => .error { kind := .ioError, path := some cur, message := "too many levels of symbolic links" }
-  | fuel + 1 =>
-    match segs with
-    | [] =>
-      match nodes cur with
-      | none => .error { kind := .notFound, path := some cur, message := s!"no such file or directory: {cur}" }
-      | some (.symlink target m) =>
-        if followLast then
-          let par := (Internal.parent cur).getD "/"
-          let nextAbs := Internal.normPath (if Internal.isAbsolute target then target else Internal.join par target)
-          vfsResolveSegs nodes "/" (vfsSplitSegs nextAbs) true fuel
-        else
-          .ok (cur, .symlink target m)
-      | some node => .ok (cur, node)
-    | seg :: rest =>
-      match nodes cur with
-      | none => .error { kind := .notFound, path := some cur, message := s!"no such file or directory: {cur}" }
-      | some (.dir mode) =>
-        if (mode / 64) % 2 == 0 then
-          .error { kind := .permissionDenied, path := some cur, message := s!"permission denied: {cur}" }
-        else
-          vfsResolveSegs nodes (vfsChildPath cur seg) rest followLast fuel
-      | some (.symlink target _) =>
-        let par := (Internal.parent cur).getD "/"
-        let nextAbs := Internal.normPath (if Internal.isAbsolute target then target else Internal.join par target)
-        vfsResolveSegs nodes "/" (vfsSplitSegs nextAbs ++ seg :: rest) followLast fuel
-      | some (.file _ _) =>
-        .error { kind := .notADirectory, path := some cur, message := s!"not a directory: {cur}" }
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsToStat : VfsNode → FileStat
-  | .file bs m =>
-    { kind := .file, byteSize := bs.size, mode := m,
-      modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }
-  | .dir m =>
-    { kind := .dir, byteSize := 0, mode := m,
-      modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }
-  | .symlink _ m =>
-    { kind := .symlink, byteSize := 0, mode := m,
-      modifiedSec := 0, modifiedNsec := 0, accessedSec := 0, accessedNsec := 0 }
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsStatPure (st : VfsState) (follow : Bool) (path : String) : Except FsError FileStat :=
-  match vfsResolveSegs st.nodes "/" (vfsSplitSegs (vfsAbsNorm st.cwd path)) follow 1024 with
-  | .error e => .error e
-  | .ok (_, node) => .ok (vfsToStat node)
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsRealPathPure (st : VfsState) (path : String) : Except FsError String :=
-  match vfsResolveSegs st.nodes "/" (vfsSplitSegs (vfsAbsNorm st.cwd path)) true 1024 with
-  | .error e => .error e
-  | .ok (canon, _) => .ok canon
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsCreateDirPure (st : VfsState) (path : String) : Except FsError Unit × VfsState :=
-  let abs := vfsAbsNorm st.cwd path
-  match vfsResolveSegs st.nodes "/" (vfsSplitSegs abs) false 1024 with
-  | .ok _ => (.error { kind := .alreadyExists, path := some path, message := s!"already exists: {path}" }, st)
-  | .error e =>
-    if e.kind != .notFound then
-      (.error e, st)
-    else
-      match Internal.splitLastAux (vfsSplitSegs abs) [] with
-      | none =>
-        (.error { kind := .notFound, path := some path, message := s!"invalid path: {path}" }, st)
-      | some (parSegs, lastSeg) =>
-        match vfsResolveSegs st.nodes "/" parSegs true 512 with
-        | .error pe => (.error pe, st)
-        | .ok (parCanon, .dir parMode) =>
-          if (parMode / 128) % 2 == 0 || (parMode / 64) % 2 == 0 then
-            (.error { kind := .permissionDenied, path := some path, message := s!"permission denied: {path}" }, st)
-          else
-            let newKey := vfsChildPath parCanon lastSeg
-            match st.nodes newKey with
-            | some _ => (.error { kind := .alreadyExists, path := some path, message := s!"already exists: {path}" }, st)
-            | none =>
-              (.ok (), { st with
-                tree := vfsTreeSet st.tree (vfsSplitSegs newKey) (some (vfsEmptyDir 0o755))
-                keys := newKey :: st.keys })
-        | .ok (parCanon, _) =>
-          (.error { kind := .notADirectory, path := some parCanon, message := s!"not a directory: {parCanon}" }, st)
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsReadDirPure (st : VfsState) (path : String) : Except FsError (Array String) :=
-  match vfsResolveSegs st.nodes "/" (vfsSplitSegs (vfsAbsNorm st.cwd path)) true 1024 with
-  | .error e => .error e
-  | .ok (canon, .dir mode) =>
-    if (mode / 256) % 2 == 0 then
-      .error { kind := .permissionDenied, path := some path, message := s!"permission denied: {path}" }
-    else
-      let prefixChars := (if canon == "/" then "/" else canon ++ "/").toList
-      let children := st.keys.eraseDups.filterMap fun k =>
-        if (st.nodes k).isSome then
-          if k != canon && prefixChars.isPrefixOf k.toList then
-            let restChars := k.toList.drop prefixChars.length
-            if !restChars.isEmpty && !('/' ∈ restChars) then some (String.ofList restChars) else none
-          else none
-        else none
-      .ok children.toArray
-  | .ok (_, _) => .error { kind := .notADirectory, path := some path, message := s!"not a directory: {path}" }
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsWriteBytesPure (st : VfsState) (path : String) (bs : ByteArray) :
-    Except FsError Unit × VfsState :=
-  let abs := vfsAbsNorm st.cwd path
-  match Internal.splitLastAux (vfsSplitSegs abs) [] with
-  | none => (.error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }, st)
-  | some (parSegs, lastSeg) =>
-    match vfsResolveSegs st.nodes "/" parSegs true 512 with
-    | .error pe => (.error pe, st)
-    | .ok (parCanon, .dir parMode) =>
-      if (parMode / 128) % 2 == 0 || (parMode / 64) % 2 == 0 then
-        (.error { kind := .permissionDenied, path := some path, message := s!"permission denied: {path}" }, st)
-      else
-        let targetKey := vfsChildPath parCanon lastSeg
-        match vfsResolveSegs st.nodes "/" (vfsSplitSegs abs) true 1024 with
-        | .ok (_, .dir _) => (.error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }, st)
-        | _ =>
-          let finalKey := match st.nodes targetKey with
-            | some (.symlink tgt _) => vfsAbsNorm parCanon tgt
-            | _ => targetKey
-          (.ok (), { st with
-            tree := vfsTreeSet st.tree (vfsSplitSegs finalKey) (some (.file bs 0o644))
-            keys := finalKey :: st.keys })
-    | .ok (parCanon, _) =>
-      (.error { kind := .notADirectory, path := some parCanon, message := s!"not a directory: {parCanon}" }, st)
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
+/-- Public mirror of private `Model.maxLockId`. -/
 def maxLockId : List (Nat × String × LockMode) → Nat
   | [] => 0
   | (i, _, _) :: rest => max i (maxLockId rest)
 
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
+/-- Public mirror of private `Model.freshLockId`. -/
 def freshLockId (st : VfsState) : Nat :=
   max (maxLockId st.locks) st.nextLockId + 1
 
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def hasLockConflict (locks : List (Nat × String × LockMode)) (canon : String)
-    (mode : LockMode) : Bool :=
-  locks.any fun (_, p, m) => p == canon && (mode == .exclusive || m == .exclusive)
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
+/-- Public mirror of private `Model.isValidLockPath`. -/
 def isValidLockPath (path : String) : Bool :=
   let chars := path.toList
   !chars.isEmpty && !(chars.length > 1 && chars.getLast? == some '/')
 
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsAcquireLockPure (st : VfsState) (path : String) (mode : LockMode)
+private def vfsAcquireLockPureWith (d : Nat) (st : VfsState) (path : String) (mode : LockMode)
     (createIfMissing : Bool) (_nonBlocking : Bool) : Except FsError LockHandle × VfsState :=
   if !isValidLockPath path then
     (.error { kind := .invalidInput, path := some path, message := "invalid lock path" }, st)
@@ -326,7 +41,7 @@ def vfsAcquireLockPure (st : VfsState) (path : String) (mode : LockMode)
       if hasLockConflict st.locks canon mode then
         (.error { kind := .wouldBlock, path := some path, message := "resource temporarily unavailable" }, st)
       else
-        let id := freshLockId st
+        let id := max d st.nextLockId + 1
         (.ok { handleId := id, path := path, mode := mode },
           { st with locks := (id, canon, mode) :: st.locks, nextLockId := id })
     | .ok (_, .dir _) =>
@@ -353,7 +68,7 @@ def vfsAcquireLockPure (st : VfsState) (path : String) (mode : LockMode)
               if hasLockConflict st.locks newKey mode then
                 (.error { kind := .wouldBlock, path := some path, message := "resource temporarily unavailable" }, st)
               else
-                let id := freshLockId st
+                let id := max d st.nextLockId + 1
                 (.ok { handleId := id, path := path, mode := mode },
                   { st with
                     tree := vfsTreeSet st.tree (vfsSplitSegs newKey) (some (.file ByteArray.empty 0o644))
@@ -363,188 +78,72 @@ def vfsAcquireLockPure (st : VfsState) (path : String) (mode : LockMode)
           | .ok (parCanon, _) =>
             (.error { kind := .notADirectory, path := some parCanon, message := s!"not a directory: {parCanon}" }, st)
 
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsReleaseLockPure (st : VfsState) (handle : LockHandle) :
-    Except FsError Unit × VfsState :=
-  if handle.handleId == 0 then
-    (.error { kind := .invalidInput, path := some handle.path, message := "invalid lock handle" }, st)
-  else if st.locks.any (fun (id, _, _) => id == handle.handleId) then
-    (.ok (), { st with locks := st.locks.filter (fun (id, _, _) => id != handle.handleId) })
-  else
-    (.error { kind := .invalidInput, path := some handle.path, message := "unknown lock handle" }, st)
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def isValidRawPath (path : String) : Bool :=
-  let cs := path.toList
-  !cs.isEmpty && !(Char.ofNat 0 ∈ cs) && !(cs.length > 1 && cs.getLast? == some '/')
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsReadBytesPure (st : VfsState) (path : String) : Except FsError ByteArray :=
-  if !isValidRawPath path then
-    .error { kind := .invalidInput, path := some path, message := s!"invalid path: {path}" }
-  else
-    let abs := vfsAbsNorm st.cwd path
-    match vfsResolveSegs st.nodes "/" (vfsSplitSegs abs) true 1024 with
-    | .error e => .error e
-    | .ok (_, .file bs _) => .ok bs
-    | .ok (_, .dir _) => .error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }
-    | .ok (_, _) => .error { kind := .notFound, path := some path, message := s!"not found: {path}" }
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsCreateFileNewPure (st : VfsState) (path : String) (bs : ByteArray) :
-    Except FsError Unit × VfsState :=
-  if !isValidRawPath path then
-    (.error { kind := .invalidInput, path := some path, message := s!"invalid path: {path}" }, st)
-  else
-    let abs := vfsAbsNorm st.cwd path
-    match vfsResolveSegs st.nodes "/" (vfsSplitSegs abs) false 1024 with
-    | .ok _ =>
-      (.error { kind := .alreadyExists, path := some path, message := s!"already exists: {path}" }, st)
-    | .error e =>
-      if e.kind != .notFound then
-        (.error e, st)
+/-- Expanded equation rewriting `Model.vfsAcquireLockPure` to its `if`/`match` body over `isValidLockPath` and `freshLockId`. -/
+theorem vfsAcquireLockPure_unfold (st : VfsState) (path : String) (mode : LockMode)
+    (createIfMissing nonBlocking : Bool) :
+    vfsAcquireLockPure st path mode createIfMissing nonBlocking =
+      if !isValidLockPath path then
+        (.error { kind := .invalidInput, path := some path, message := "invalid lock path" }, st)
       else
-        match Internal.splitLastAux (vfsSplitSegs abs) [] with
-        | none =>
-          (.error { kind := .alreadyExists, path := some path, message := s!"already exists: {path}" }, st)
-        | some (parSegs, lastSeg) =>
-          match vfsResolveSegs st.nodes "/" parSegs true 1024 with
-          | .error pe => (.error pe, st)
-          | .ok (parCanon, .dir parMode) =>
-            if (parMode / 128) % 2 == 0 || (parMode / 64) % 2 == 0 then
-              (.error { kind := .permissionDenied, path := some path, message := s!"permission denied: {path}" }, st)
-            else
-              let newKey := vfsChildPath parCanon lastSeg
-              (.ok (), { st with
-                tree := vfsTreeSet st.tree (vfsSplitSegs newKey) (some (.file bs 0o644))
-                keys := newKey :: st.keys })
-          | .ok (parCanon, _) =>
-            (.error { kind := .notADirectory, path := some parCanon, message := s!"not a directory: {parCanon}" }, st)
-
-
-/-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
-def vfsRenamePure (st : VfsState) (src dst : String) : Except FsError Unit × VfsState :=
-  if !isValidRawPath src then
-    (.error { kind := .invalidInput, path := some src, message := s!"invalid path: {src}" }, st)
-  else if !isValidRawPath dst then
-    (.error { kind := .invalidInput, path := some dst, message := s!"invalid path: {dst}" }, st)
-  else
-    let srcAbs := vfsAbsNorm st.cwd src
-    let dstAbs := vfsAbsNorm st.cwd dst
-    match vfsResolveSegs st.nodes "/" (vfsSplitSegs srcAbs) false 1024 with
-    | .error e => (.error e, st)
-    | .ok (srcCanon, srcNode) =>
-      match Internal.splitLastAux (vfsSplitSegs dstAbs) [] with
-      | none => (.error { kind := .isADirectory, path := some dst, message := s!"is a directory: {dst}" }, st)
-      | some (dstParSegs, dstLastSeg) =>
-        match vfsResolveSegs st.nodes "/" dstParSegs true 512 with
-        | .error pe => (.error pe, st)
-        | .ok (dstParCanon, .dir parMode) =>
-          if (parMode / 128) % 2 == 0 || (parMode / 64) % 2 == 0 then
-            (.error { kind := .permissionDenied, path := some dst, message := s!"permission denied: {dst}" }, st)
+        let abs := vfsAbsNorm st.cwd path
+        match vfsResolveSegs st.nodes "/" (vfsSplitSegs abs) false 1024 with
+        | .ok (canon, .file _ _) =>
+          if hasLockConflict st.locks canon mode then
+            (.error { kind := .wouldBlock, path := some path, message := "resource temporarily unavailable" }, st)
           else
-            let dstKey := vfsChildPath dstParCanon dstLastSeg
-            let srcIsDir := match srcNode with | .dir _ => true | _ => false
-            let dstIsDir := match st.nodes dstKey with | some (.dir _) => true | _ => false
-            if dstIsDir && !srcIsDir then
-              (.error { kind := .isADirectory, path := some dst, message := s!"is a directory: {dst}" }, st)
-            else if srcCanon == dstKey then
-              (.ok (), st)
-            else
-              let moved := vfsTreeGet st.tree (vfsSplitSegs srcCanon)
-              let tr₁ := vfsTreeSet st.tree (vfsSplitSegs srcCanon) none
-              (.ok (), { st with
-                tree := vfsTreeSet tr₁ (vfsSplitSegs dstKey) moved
-                keys := dstKey :: st.keys })
-        | .ok (dstParCanon, _) =>
-          (.error { kind := .notADirectory, path := some dstParCanon, message := s!"not a directory: {dstParCanon}" }, st)
-
-
-end LeanSwe.Fs.ProofsInternal
-
-namespace LeanSwe.Fs.Proofs
-
-open LeanSwe.Fs.ProofsInternal
-
-/-- Pure single-step `RawFsOpsM (StateM VfsState)` backed by `VfsState`. -/
-def vfsOps : RawFsOpsM (StateM VfsState) :=
-  { mapRawError := Model.mapRawError
-    stat := fun follow path st => (vfsStatPure st follow path, st)
-    readDir := fun path st => (vfsReadDirPure st path, st)
-    createDir := fun path st => vfsCreateDirPure st path
-    removeDir := fun path st =>
-      let abs := vfsAbsNorm st.cwd path
-      match vfsResolveSegs st.nodes "/" (vfsSplitSegs abs) false 1024 with
-      | .error e => (.error e, st)
-      | .ok (canon, .dir _) =>
-        if canon == "/" then (.error { kind := .permissionDenied, path := some path, message := "cannot remove root" }, st)
-        else (.ok (), { st with tree := vfsTreeSet st.tree (vfsSplitSegs canon) none })
-      | .ok (_, _) => (.error { kind := .notADirectory, path := some path, message := s!"not a directory: {path}" }, st)
-    unlinkFile := fun path st =>
-      let abs := vfsAbsNorm st.cwd path
-      match vfsResolveSegs st.nodes "/" (vfsSplitSegs abs) false 1024 with
-      | .error e => (.error e, st)
-      | .ok (_, .dir _) => (.error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }, st)
-      | .ok (canon, _) => (.ok (), { st with tree := vfsTreeSet st.tree (vfsSplitSegs canon) none })
-    readBytes := fun path st => (vfsReadBytesPure st path, st)
-    writeBytes := fun path bs st => vfsWriteBytesPure st path bs
-    createFileNew := fun path bs st => vfsCreateFileNewPure st path bs
-    appendText := fun path s st =>
-      let abs := vfsAbsNorm st.cwd path
-      match vfsResolveSegs st.nodes "/" (vfsSplitSegs abs) true 1024 with
-      | .ok (canon, .file bs m) =>
-        (.ok (), { st with tree := vfsTreeSet st.tree (vfsSplitSegs canon) (some (.file (bs ++ s.toUTF8) m)) })
-      | .ok (_, .dir _) => (.error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }, st)
-      | _ => vfsWriteBytesPure st path s.toUTF8
-    rename := fun src dst st => vfsRenamePure st src dst
-    chmod := fun path mode st =>
-      let abs := vfsAbsNorm st.cwd path
-      match vfsResolveSegs st.nodes "/" (vfsSplitSegs abs) true 1024 with
-      | .error e => (.error e, st)
-      | .ok (canon, _) =>
-        let updated := match vfsTreeGet st.tree (vfsSplitSegs canon) with
-          | some (.file bs _) => some (.file bs mode)
-          | some (.dir _ ch) => some (.dir mode ch)
-          | some (.symlink t _) => some (.symlink t mode)
-          | none => none
-        (.ok (), { st with tree := vfsTreeSet st.tree (vfsSplitSegs canon) updated })
-    symlink := fun target linkPath st =>
-      let abs := vfsAbsNorm st.cwd linkPath
-      match vfsResolveSegs st.nodes "/" (vfsSplitSegs abs) false 1024 with
-      | .ok _ => (.error { kind := .alreadyExists, path := some linkPath, message := s!"already exists: {linkPath}" }, st)
-      | .error e =>
-        if e.kind != .notFound then (.error e, st)
-        else (.ok (), { st with
-          tree := vfsTreeSet st.tree (vfsSplitSegs abs) (some (.symlink target 0o777))
-          keys := abs :: st.keys })
-    readLink := fun path st =>
-      let abs := vfsAbsNorm st.cwd path
-      match vfsResolveSegs st.nodes "/" (vfsSplitSegs abs) false 1024 with
-      | .error e => (.error e, st)
-      | .ok (_, .symlink target _) => (.ok target, st)
-      | .ok (_, _) => (.error { kind := .invalidInput, path := some path, message := s!"not a symlink: {path}" }, st)
-    realPath := fun path st => (vfsRealPathPure st path, st)
-    cwd := fun st => (.ok st.cwd, st)
-    monotonicNonce := fun st => (st.nonce, { st with nonce := st.nonce + 1 })
-    acquireLock := fun path mode createIfMissing nonBlocking st =>
-      vfsAcquireLockPure st path mode createIfMissing nonBlocking
-    releaseLock := fun handle st => vfsReleaseLockPure st handle }
-
-
-/-- Generic `FsApiM (StateM VfsState)` built directly from `Internal.mkApiM vfsOps`. -/
-def vfsApi : FsApiM (StateM VfsState) :=
-  Internal.mkApiM vfsOps
-
-
-end LeanSwe.Fs.Proofs
-
-namespace LeanSwe.Fs.ProofsInternal
-
-open LeanSwe.Fs.Proofs
+            let id := freshLockId st
+            (.ok { handleId := id, path := path, mode := mode },
+              { st with locks := (id, canon, mode) :: st.locks, nextLockId := id })
+        | .ok (_, .dir _) =>
+          (.error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }, st)
+        | .ok (_, .symlink _ _) =>
+          (.error { kind := .invalidInput, path := some path, message := s!"symlink rejected for lock: {path}" }, st)
+        | .error e =>
+          if e.kind != .notFound then
+            (.error e, st)
+          else if !createIfMissing then
+            (.error e, st)
+          else
+            match Internal.splitLastAux (vfsSplitSegs abs) [] with
+            | none =>
+              (.error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }, st)
+            | some (parSegs, lastSeg) =>
+              match vfsResolveSegs st.nodes "/" parSegs true 512 with
+              | .error pe => (.error pe, st)
+              | .ok (parCanon, .dir parMode) =>
+                if (parMode / 128) % 2 == 0 || (parMode / 64) % 2 == 0 then
+                  (.error { kind := .permissionDenied, path := some path, message := s!"permission denied: {path}" }, st)
+                else
+                  let newKey := vfsChildPath parCanon lastSeg
+                  if hasLockConflict st.locks newKey mode then
+                    (.error { kind := .wouldBlock, path := some path, message := "resource temporarily unavailable" }, st)
+                  else
+                    let id := freshLockId st
+                    (.ok { handleId := id, path := path, mode := mode },
+                      { st with
+                        tree := vfsTreeSet st.tree (vfsSplitSegs newKey) (some (.file ByteArray.empty 0o644))
+                        keys := newKey :: st.keys
+                        locks := (id, newKey, mode) :: st.locks
+                        nextLockId := id })
+              | .ok (parCanon, _) =>
+                (.error { kind := .notADirectory, path := some parCanon, message := s!"not a directory: {parCanon}" }, st) := by
+  have hEx : ∃ f : List (Nat × String × LockMode) → Nat,
+      f [] = 0 ∧
+      (∀ i p m rest, f ((i, p, m) :: rest) = max i (f rest)) ∧
+      vfsAcquireLockPure st path mode createIfMissing nonBlocking =
+        vfsAcquireLockPureWith (f st.locks) st path mode createIfMissing nonBlocking :=
+    ⟨_, rfl, fun _ _ _ _ => rfl, rfl⟩
+  rcases hEx with ⟨f, hNil, hCons, hEq⟩
+  have hF : ∀ locks : List (Nat × String × LockMode), f locks = maxLockId locks := by
+    intro locks
+    induction locks with
+    | nil => exact hNil
+    | cons hd tl ih =>
+      rcases hd with ⟨i, p, m⟩
+      rw [hCons, ih]
+      rfl
+  rw [hEq, hF st.locks]
+  rfl
 
 /-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
 theorem vfsResolveSegs_insert_fresh (nodes : String → Option VfsNode) (p : String) (v : VfsNode)

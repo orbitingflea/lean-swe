@@ -6,7 +6,12 @@ namespace LeanSwe.Fs.Proofs
 open Core
 open Core.NondetTest
 open LeanSwe.Fs
-open LeanSwe.Fs.Model (RawFsOpsM RawDirOpsM)
+open LeanSwe.Fs.Model (RawFsOpsM RawDirOpsM
+  VfsNode VfsTree VfsState vfsTreeTopNode vfsEmptyDir vfsTreeGet nodeAt vfsTreeSet
+  vfsAbsNorm vfsSplitSegs isCanonPath vfsTreeNodes vfsChildPath vfsResolveSegs
+  vfsToStat vfsStatPure vfsRealPathPure vfsCreateDirPure vfsReadDirPure
+  vfsWriteBytesPure hasLockConflict vfsAcquireLockPure vfsReleaseLockPure
+  isValidRawPath vfsReadBytesPure vfsCreateFileNewPure vfsRenamePure vfsOps)
 open LeanSwe.Fs.ProofsInternal
 
 private theorem vfsResolveSegs_dir_child (nodes : String → Option VfsNode)
@@ -155,7 +160,7 @@ private theorem vfsTreeNodes_insert_dir (t : VfsTree) (parCanon lastSeg : String
   have ⟨hChildCanon, hChildSp⟩ := vfsChildPath_valid parCanon lastSeg hParCanon hLastValid
   have hParTreeDir : ∃ dm dch, vfsTreeGet t (vfsSplitSegs parCanon) = some (.dir dm dch) := by
     rcases hParDir with ⟨dm, hPar⟩
-    simp only [vfsTreeNodes, hParCanon, ↓reduceIte] at hPar
+    simp only [vfsTreeNodes, nodeAt, hParCanon, ↓reduceIte] at hPar
     cases hGet : vfsTreeGet t (vfsSplitSegs parCanon) with
     | none => simp [hGet] at hPar
     | some sub =>
@@ -165,13 +170,13 @@ private theorem vfsTreeNodes_insert_dir (t : VfsTree) (parCanon lastSeg : String
       | symlink _ _ => simp [hGet, vfsTreeTopNode] at hPar
   have hNewTreeNone : vfsTreeGet t (vfsSplitSegs parCanon ++ [lastSeg]) = none := by
     have hNn := hNewNone
-    simp only [vfsTreeNodes, hChildCanon, ↓reduceIte, hChildSp] at hNn
+    simp only [vfsTreeNodes, nodeAt, hChildCanon, ↓reduceIte, hChildSp] at hNn
     cases hGet : vfsTreeGet t (vfsSplitSegs parCanon ++ [lastSeg]) with
     | none => rfl
     | some _ => simp [hGet] at hNn
   funext k
   by_cases hKCanon : isCanonPath k = true
-  · simp only [vfsTreeNodes, hKCanon, ↓reduceIte, hChildSp]
+  · simp only [vfsTreeNodes, nodeAt, hKCanon, ↓reduceIte, hChildSp]
     rw [vfsTreeGet_set_emptyDir 0o755 (vfsSplitSegs parCanon) lastSeg t (vfsSplitSegs k) hParTreeDir hNewTreeNone]
     by_cases hEq : k = vfsChildPath parCanon lastSeg
     · subst hEq
@@ -290,9 +295,9 @@ private theorem vfsCreateDir_sets_isDir (path : String) (s₀ s₁ : VfsState)
                 rfl
 
 
-/-- Proof of `test_fs_vfs_mkdir_existingFails` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_mkdir_existingFails` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_mkdir_existingFails :
-    AllPass (test_fs_vfs_mkdir_existingFails vfsApi) := by
+    AllPass (test_fs_vfs_mkdir_existingFails (Internal.mkApiM vfsOps)) := by
   intro s₀ path parents hOk
   dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run] at hOk
   cases hRes : vfsResolveSegs s₀.nodes "/" (vfsSplitSegs (vfsAbsNorm s₀.cwd path)) false 1024 with
@@ -338,7 +343,7 @@ private theorem vfsLstat_broken_symlink :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_mkdir_existingFails`. -/
 theorem reach_fs_vfs_mkdir_existingFails :
-    CanReach (test_fs_vfs_mkdir_existingFails vfsApi) := by
+    CanReach (test_fs_vfs_mkdir_existingFails (Internal.mkApiM vfsOps)) := by
   let st : VfsState :=
     { tree := .dir 0o755 (fun s => if s == "broken" then some (.symlink "/nope" 0o777) else none)
       keys := ["/", "/broken"]
@@ -347,9 +352,9 @@ theorem reach_fs_vfs_mkdir_existingFails :
   exact ⟨st, "/broken", true, vfsLstat_broken_symlink, proof_fs_vfs_mkdir_existingFails st "/broken" true vfsLstat_broken_symlink⟩
 
 
-/-- Proof of `test_fs_vfs_touch_existingFails` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_touch_existingFails` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_touch_existingFails :
-    AllPass (test_fs_vfs_touch_existingFails vfsApi) := by
+    AllPass (test_fs_vfs_touch_existingFails (Internal.mkApiM vfsOps)) := by
   intro s₀ path hOk
   dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run] at hOk
   cases hRes : vfsResolveSegs s₀.nodes "/" (vfsSplitSegs (vfsAbsNorm s₀.cwd path)) false 1024 with
@@ -365,7 +370,7 @@ theorem proof_fs_vfs_touch_existingFails :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_touch_existingFails`. -/
 theorem reach_fs_vfs_touch_existingFails :
-    CanReach (test_fs_vfs_touch_existingFails vfsApi) := by
+    CanReach (test_fs_vfs_touch_existingFails (Internal.mkApiM vfsOps)) := by
   let st : VfsState :=
     { tree := .dir 0o755 (fun s => if s == "broken" then some (.symlink "/nope" 0o777) else none)
       keys := ["/", "/broken"]
@@ -374,9 +379,9 @@ theorem reach_fs_vfs_touch_existingFails :
   exact ⟨st, "/broken", vfsLstat_broken_symlink, proof_fs_vfs_touch_existingFails st "/broken" vfsLstat_broken_symlink⟩
 
 
-/-- Proof of `test_fs_vfs_walk_preservesStatError` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_walk_preservesStatError` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_walk_preservesStatError :
-    AllPass (test_fs_vfs_walk_preservesStatError vfsApi) := by
+    AllPass (test_fs_vfs_walk_preservesStatError (Internal.mkApiM vfsOps)) := by
   intro s₀ root
   dsimp only [vfsApi, Internal.mkApiM, Internal.mkApiFromScopedRawM, Internal.toScopedRawFsOpsM, vfsOps, vfsStatPure, StateT.run]
   cases hRes : vfsResolveSegs s₀.nodes "/" (vfsSplitSegs (vfsAbsNorm s₀.cwd root)) true 1024 with
@@ -402,7 +407,7 @@ theorem proof_fs_vfs_walk_preservesStatError :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_walk_preservesStatError` exercising `EACCES`. -/
 theorem reach_fs_vfs_walk_preservesStatError :
-    CanReach (test_fs_vfs_walk_preservesStatError vfsApi) := by
+    CanReach (test_fs_vfs_walk_preservesStatError (Internal.mkApiM vfsOps)) := by
   let st : VfsState :=
     { tree := vfsEmptyDir 0o000
       keys := ["/"]
@@ -443,9 +448,9 @@ private theorem mkdirImpl_parents_ok {S : Type} (ops : RawFsOpsM (StateM S)) (pa
             exact ⟨s_mid, hMk, rfl⟩
 
 
-/-- Proof of `test_fs_vfs_mkdir_parentsCreatesDir` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_mkdir_parentsCreatesDir` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_mkdir_parentsCreatesDir :
-    AllPass (test_fs_vfs_mkdir_parentsCreatesDir vfsApi) := by
+    AllPass (test_fs_vfs_mkdir_parentsCreatesDir (Internal.mkApiM vfsOps)) := by
   intro s₀ path hRes
   have hMk : ((Internal.mkdirImplM vfsOps.toNonLockFsOpsM path true false).run s₀).1 = .ok () := hRes
   rcases mkdirImpl_parents_ok vfsOps path s₀ hMk with ⟨s_mid, hCr, hSnd⟩
@@ -457,7 +462,7 @@ theorem proof_fs_vfs_mkdir_parentsCreatesDir :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_mkdir_parentsCreatesDir`. -/
 theorem reach_fs_vfs_mkdir_parentsCreatesDir :
-    CanReach (test_fs_vfs_mkdir_parentsCreatesDir vfsApi) := by
+    CanReach (test_fs_vfs_mkdir_parentsCreatesDir (Internal.mkApiM vfsOps)) := by
   let st : VfsState :=
     { tree := vfsEmptyDir 0o755
       keys := ["/"]
@@ -681,7 +686,7 @@ private theorem vfsTree_noOrphan_child (t : VfsTree) (hNone : vfsTreeNodes t "/n
   have hC2 : isCanonPath "/new_parent/copy" = true := by decide
   have hS1 : vfsSplitSegs "/new_parent" = ["new_parent"] := by decide
   have hS2 : vfsSplitSegs "/new_parent/copy" = ["new_parent", "copy"] := by decide
-  simp only [vfsTreeNodes, hC1, hC2, ↓reduceIte, hS1, hS2] at hNone ⊢
+  simp only [vfsTreeNodes, nodeAt, hC1, hC2, ↓reduceIte, hS1, hS2] at hNone ⊢
   cases t with
   | file _ _ => rfl
   | symlink _ _ => rfl
@@ -828,9 +833,10 @@ private theorem copyTree_selfCopyRejected_exec (s₀ : VfsState) (src dst : Stri
       exact ⟨_, rfl, rfl⟩
 
 
-/-- Proof of `test_fs_vfs_copyTree_selfCopyRejected` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_copyTree_selfCopyRejected` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_copyTree_selfCopyRejected :
-    AllPass (test_fs_vfs_copyTree_selfCopyRejected vfsApi) := by
+    AllPass (test_fs_vfs_copyTree_selfCopyRejected (Internal.mkApiM vfsOps)) := by
+  change AllPass (test_fs_vfs_copyTree_selfCopyRejected vfsApi)
   intro s₀ src dst ⟨st, hStat, hKind⟩ ⟨c, hResSrc, hCAbs, hCNeRoot, hResC, hDstCase⟩
   rcases copyTree_selfCopyRejected_exec s₀ src dst st hStat hKind c hResSrc hCAbs hCNeRoot hResC hDstCase with ⟨e, hEq, hEk⟩
   rw [hEq]
@@ -839,7 +845,7 @@ theorem proof_fs_vfs_copyTree_selfCopyRejected :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_copyTree_selfCopyRejected`. -/
 theorem reach_fs_vfs_copyTree_selfCopyRejected :
-    CanReach (test_fs_vfs_copyTree_selfCopyRejected vfsApi) := by
+    CanReach (test_fs_vfs_copyTree_selfCopyRejected (Internal.mkApiM vfsOps)) := by
   let st : VfsState :=
     { tree := .dir 0o755 (fun s => if s == "src" then some (vfsEmptyDir 0o755) else none)
       keys := ["/", "/src"]
@@ -1006,9 +1012,9 @@ private theorem copyTree_pre_checks_ok {S : Type} (ops : RawFsOpsM (StateM S))
   simp [hGuard]
 
 
-/-- Proof of `test_fs_vfs_copyTree_createsMissingParents` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_copyTree_createsMissingParents` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_copyTree_createsMissingParents :
-    AllPass (test_fs_vfs_copyTree_createsMissingParents vfsApi) := by
+    AllPass (test_fs_vfs_copyTree_createsMissingParents (Internal.mkApiM vfsOps)) := by
   intro s₀ src ⟨stRoot, hStatRoot, hRootKind, hRootW, hRootX, hResRoot⟩
     ⟨stSrc, hStatSrc, hSrcKind⟩ ⟨c, hResSrc, hCAbs, hCNeRoot, hCNeNP, hCNeCopy⟩
     hListSrc hLstatNP hStatNP hLstatCopy
@@ -1236,7 +1242,7 @@ theorem proof_fs_vfs_copyTree_createsMissingParents :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_copyTree_createsMissingParents`. -/
 theorem reach_fs_vfs_copyTree_createsMissingParents :
-    CanReach (test_fs_vfs_copyTree_createsMissingParents vfsApi) := by
+    CanReach (test_fs_vfs_copyTree_createsMissingParents (Internal.mkApiM vfsOps)) := by
   let st : VfsState :=
     { tree := .dir 0o755 (fun s => if s == "src" then some (vfsEmptyDir 0o755) else none)
       keys := ["/", "/src"]
@@ -1326,9 +1332,9 @@ theorem reach_fs_vfs_copyTree_createsMissingParents :
       hListSrc hLstatNP hStatNP hLstatCopy⟩
 
 
-/-- Proof of `test_fs_vfs_copyTree_loopRejected` on `vfsApi`. -/
+/-- Proof of `test_fs_vfs_copyTree_loopRejected` on `Internal.mkApiM vfsOps`. -/
 theorem proof_fs_vfs_copyTree_loopRejected :
-    AllPass (test_fs_vfs_copyTree_loopRejected vfsApi) := by
+    AllPass (test_fs_vfs_copyTree_loopRejected (Internal.mkApiM vfsOps)) := by
   intro s₀ src ⟨stRoot, hStatRoot, hRootKind, hRootW, hRootX, hResRoot⟩
     ⟨stSrc, hStatSrc, hSrcKind⟩ ⟨c, hResSrc, hCAbs, hCNeRoot, hCNeLoop, hResSelf⟩
     hListSrc ⟨stSelf, hStatSelf, hSelfKind⟩ hLstatLoop
@@ -1500,7 +1506,7 @@ theorem proof_fs_vfs_copyTree_loopRejected :
 
 /-- Non-vacuity `CanReach` witness for `test_fs_vfs_copyTree_loopRejected`. -/
 theorem reach_fs_vfs_copyTree_loopRejected :
-    CanReach (test_fs_vfs_copyTree_loopRejected vfsApi) := by
+    CanReach (test_fs_vfs_copyTree_loopRejected (Internal.mkApiM vfsOps)) := by
   let st : VfsState :=
     { tree := .dir 0o755 (fun s =>
         if s == "src" then
@@ -2199,7 +2205,7 @@ private def NoFileTree (t : VfsTree) : Prop :=
 
 private theorem vfsTreeNodes_noFile (t : VfsTree) (k : String) (bs : ByteArray) (m : Nat)
     (hc : vfsTreeNodes t k = some (.file bs m)) (ht : NoFileTree t) : False := by
-  unfold vfsTreeNodes at hc
+  unfold vfsTreeNodes nodeAt at hc
   by_cases hC : isCanonPath k = true
   · simp only [hC, ↓reduceIte] at hc
     cases hg : vfsTreeGet t (vfsSplitSegs k) with

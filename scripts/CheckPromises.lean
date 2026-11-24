@@ -2962,13 +2962,6 @@ increased count, or stale/lower count fails the gate so the table strictly shrin
 proof-local mock helpers move into `Model.lean` (and cannot be evaded by moving them into
 `.other`, `.testSupport`, or unlocked `Properties` helpers). -/
 private def sigProofConstAllowlist : Array (String × Nat) := #[
-  ("LeanSwe.Fs.Proofs.AtomicWriteProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.VfsState", 48),
-  ("LeanSwe.Fs.Proofs.AtomicWriteProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.vfsApi", 6),
-  ("LeanSwe.Fs.Proofs.AtomicWriteProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.vfsOps", 42),
-  ("LeanSwe.Fs.Proofs.CopyTreeProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.VfsState", 14),
-  ("LeanSwe.Fs.Proofs.CopyTreeProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.vfsApi", 14),
-  ("LeanSwe.Fs.Proofs.LockProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.VfsState", 26),
-  ("LeanSwe.Fs.Proofs.LockProofs|LeanSwe.Fs.Proofs.VfsShared|LeanSwe.Fs.Proofs.vfsApi", 26),
   ("LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.healthySimApi", 1),
   ("LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.Process.Proofs.HealthySimState", 1),
   ("LeanSwe.Process.Proofs|LeanSwe.Process.Proofs.EndToEnd|LeanSwe.Process.Proofs.healthySimApi", 34),
