@@ -5,7 +5,7 @@ import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.PostFork.Types
 import LeanSwe.Process.Types
 
-/-! Internal `SysBridge` data shapes shared between `LeanSwe.Process.SysBridge` and `LeanSwe.Process.SpecTests`. -/
+/-! Internal `SysBridge` and host-capability data shapes shared across `LeanSwe.Process`. -/
 
 namespace LeanSwe.Process.Internal
 
@@ -40,6 +40,7 @@ structure ProcSlotM (fd : Type) where
   stderrFd? : Option fd
   /-- Whether `waitpid` has already reaped `pid`. -/
   waited : Bool := false
+  deriving BEq, DecidableEq
 
 /-- Pure in-memory table state tracking active unreaped `ProcSlotM` handles. -/
 structure ProcTableState (fd : Type) where
@@ -47,7 +48,7 @@ structure ProcTableState (fd : Type) where
   nextId : Nat := 1
   /-- Active handle slots keyed by `handleId`. -/
   slots : List (Nat × ProcSlotM fd) := []
-  deriving Inhabited
+  deriving BEq, DecidableEq, Inhabited
 
 /-- Capability interface over active process-slot table operations in monad `m`. -/
 structure ProcTableOpsM (m : Type → Type) (fd : Type) where
@@ -92,5 +93,25 @@ structure StreamLoopState (fd : Type) where
   errChunks : Array ByteArray := #[]
   /-- Total bytes in `errChunks`. -/
   errLen : Nat := 0
+
+/-- Public dependency bundle for `LeanSwe.Process` over imported OS capability interfaces. -/
+structure ProcessHostCapsM (fd : Type) (m : Type → Type) where
+  /-- Curated Linux process syscalls (`pipe2`, `waitpid`, `kill`, etc.). -/
+  proc : LeanSwe.LinuxSyscall.Process.ProcessOpsM m fd
+  /-- Curated Linux file and descriptor syscalls (`close`, `read`, `write`, `fstatat`, `faccessat`, `fcntl`, etc.). -/
+  files : LeanSwe.LinuxSyscall.Files.FilesOpsM m fd
+  /-- Curated Linux descriptor-readiness syscall bundle (`ppoll`). -/
+  poll : LeanSwe.LinuxSyscall.Poll.PollOpsM m fd
+  /-- Curated Linux clock and sleep syscalls (`clock_gettime`, `clock_nanosleep`, `getrandom`). -/
+  timeRand : LeanSwe.LinuxSyscall.TimeRand.TimeRandOpsM m
+  /-- Verified post-`fork` child setup and `execve` capability bundle. -/
+  postFork : LeanSwe.PostFork.PostForkOpsM m fd
+  /-- Snapshot raw NUL-free `environ(7)` byte entries when `inheritEnv = true`. -/
+  listEnvironBytes : m (Array ByteArray)
+  /-- Active child-process handle slot table operations. -/
+  table : ProcTableOpsM m fd
+
+/-- Concrete healthy-model `ProcessHostCapsM` specialized to `LinuxSyscall.Files.HandleId`. -/
+abbrev HealthyHostCapsM (m : Type → Type) := ProcessHostCapsM LeanSwe.LinuxSyscall.Files.HandleId m
 
 end LeanSwe.Process.Internal

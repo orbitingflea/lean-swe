@@ -6,6 +6,7 @@ import LeanSwe.Process.Impl
 import LeanSwe.Process.SpecTests
 import LeanSwe.Process.Proofs.EndToEnd
 import LeanSwe.Process.Proofs.PureSpecs
+import LeanSwe.Process.Proofs.RefinesModel
 
 namespace LeanSwe.Process.Proofs
 
@@ -410,5 +411,22 @@ theorem proof_process_lifecycle_delegatesAndNormalizesErrors :
       (@Internal.mkApiM (StateM LifecycleScriptState) _)) := by
   refine ⟨?_, trivial⟩
   decide +kernel
+
+/-- Top-level `Core.Refines` theorem for `LeanSwe.Process` over `Model` and `Model.HealthyHost`. -/
+theorem refines_model :
+    Core.RefinesPureEq LeanSwe.Process.mapRawError Model.mapRawErrorModel ∧
+    Core.RefinesPureEq LeanSwe.Process.validateRequest Model.validateRequestModel ∧
+    @Core.RefinesPureEq2 String (Array String) ExecRequest
+      (@LeanSwe.Process.mkCommandRequest) Model.mkCommandRequestModel ∧
+    Core.RefinesPureEq2 LeanSwe.Process.withTextInput Model.withTextInputModel ∧
+    Core.RefinesStepFrom id Model.processStateWf
+      Model.execRawStep Model.allowedRawStep
+      Model.processStateWf Internal.mkApiM
+      Model.execPkgStep Model.allowedPkgStep ∧
+    Core.RefinesStepFrom id Model.hostWorldWf
+      Model.execHostCapStep Model.allowedHostCapStep
+      Model.hostWorldWf Internal.mkApiFromHostCapsM
+      Model.execPkgStep Model.allowedPkgHostStep :=
+  process_refines_model
 
 end LeanSwe.Process.Proofs
