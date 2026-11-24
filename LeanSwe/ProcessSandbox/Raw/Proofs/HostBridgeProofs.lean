@@ -1,11 +1,11 @@
-import LeanSwe.ProcessSandbox.Host.SysBridge
-import LeanSwe.ProcessSandbox.Proofs.HostBwrapProofs
+import LeanSwe.ProcessSandbox.Raw.SysBridge
+import LeanSwe.ProcessSandbox.Raw.Proofs.HostBwrapProofs
 
-namespace LeanSwe.ProcessSandbox.Proofs.HostBridge
+namespace LeanSwe.ProcessSandbox.Raw.Proofs.HostBridge
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.ProcessSandbox.Raw
-open LeanSwe.ProcessSandbox.Host.SysBridge
+open LeanSwe.ProcessSandbox.Raw.SysBridge
 
 /-- `allocHandleIdPure` only yields IDs satisfying `isValidSandboxHandleId` and advances `nextId` monotonically. -/
 theorem allocHandleIdPure_valid {fd fwdTask : Type} (st : HostTableState fd fwdTask) (hid : Nat)
@@ -188,4 +188,4 @@ theorem preflightPure_nonLinux {m : Type → Type} [Monad m] {fd fwdTask : Type}
   exact ⟨Internal.mapRawError (.unavailable none "ProcessSandbox requires Linux"),
     by simp [preflightPure, h], rfl, by decide⟩
 
-end LeanSwe.ProcessSandbox.Proofs.HostBridge
+end LeanSwe.ProcessSandbox.Raw.Proofs.HostBridge

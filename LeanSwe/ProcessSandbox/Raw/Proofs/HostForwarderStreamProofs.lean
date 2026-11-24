@@ -1,14 +1,14 @@
-import LeanSwe.ProcessSandbox.Host.Forwarder
-import LeanSwe.ProcessSandbox.Host.StreamIo
-import LeanSwe.ProcessSandbox.Proofs.HostBwrapProofs
+import LeanSwe.ProcessSandbox.Raw.SysBridge.Forwarder
+import LeanSwe.ProcessSandbox.Raw.SysBridge.StreamIo
+import LeanSwe.ProcessSandbox.Raw.Proofs.HostBwrapProofs
 
-namespace LeanSwe.ProcessSandbox.Proofs.HostForwarderStream
+namespace LeanSwe.ProcessSandbox.Raw.Proofs.HostForwarderStream
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.ProcessSandbox.Raw
-open LeanSwe.ProcessSandbox.Host.Bwrap
-open LeanSwe.ProcessSandbox.Host.Forwarder
-open LeanSwe.ProcessSandbox.Host.StreamIo
+open LeanSwe.ProcessSandbox.Raw.SysBridge.Bwrap
+open LeanSwe.ProcessSandbox.Raw.SysBridge.Forwarder
+open LeanSwe.ProcessSandbox.Raw.SysBridge.StreamIo
 
 /-- `boxPollEvents` is empty once box inbound EOF has arrived and `h2b` is empty. -/
 theorem boxPollEvents_empty_when_drained {fd : Type} (c : ForwardRelayConn fd)
@@ -147,7 +147,7 @@ theorem decodeInitStatusMsg_encodeInitStatusMsg (m : InitStatusMsg) :
           16777216 * (UInt8.ofNat ((value.toUInt32.toNat / 16777216) % 256)).toNat)).toInt32 = value := by
       rw [heqU]
       cases value; rfl
-    exact congrArg (InitStatusMsg.mk kind flag) heqI
+    exact congrArg (fun v => ({ kind := kind, flag := flag, value := v } : InitStatusMsg)) heqI
 
 /-- `decodeInitStatusMsg` rejects any byte slice whose length is not exactly `8`. -/
 theorem decodeInitStatusMsg_wrong_size (bs : ByteArray) (h : bs.size ≠ 8) :
@@ -175,9 +175,8 @@ theorem classifyBoxStreamResult_initErr (program cwd : String) (code : Int32) (o
     ∃ se, classifyBoxStreamResult program cwd false false
       (some { kind := PS_STATUS_INIT_ERR, flag := 0, value := code }) out err = .error se ∧
       se.kind = .unavailable ∧ se.message ≠ "" := by
-  have hnonEmpty : ∀ s : String, Internal.nonEmptyMsg "sandbox unavailable" s ≠ "" := by
+  have hnonEmpty : ∀ s : String, (if s.isEmpty then "sandbox unavailable" else s) ≠ "" := by
     intro s
-    unfold Internal.nonEmptyMsg
     split
     · decide
     · next h => exact String.isEmpty_eq_false_iff.mp (Bool.eq_false_iff.mpr h)
@@ -185,7 +184,7 @@ theorem classifyBoxStreamResult_initErr (program cwd : String) (code : Int32) (o
   simp only [PS_STATUS_INIT_ERR, PS_STATUS_EXEC_ERR, Bool.not_false, Bool.and_self]
   have hne : ((2 : UInt8) == 3) = false := by decide
   have heq : ((2 : UInt8) == 2) = true := rfl
-  simp only [hne, heq, Bool.false_eq_true, ↓reduceIte, Internal.mapRawError]
+  simp only [hne, heq, Bool.false_eq_true, ↓reduceIte, Internal.mapRawError, Model.Internal.mapRawError]
   refine ⟨_, rfl, rfl, ?_⟩
   dsimp only
   exact hnonEmpty _
@@ -218,4 +217,4 @@ theorem buildBoxPollEntries_size {fd : Type} (st : BoxStreamState fd) :
   unfold buildBoxPollEntries
   cases st.inFd? <;> cases st.outFd? <;> cases st.errFd? <;> cases st.statusFd? <;> simp
 
-end LeanSwe.ProcessSandbox.Proofs.HostForwarderStream
+end LeanSwe.ProcessSandbox.Raw.Proofs.HostForwarderStream

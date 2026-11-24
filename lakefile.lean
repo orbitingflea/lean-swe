@@ -63,7 +63,6 @@ lean_lib LeanSwe where
     .one `LeanSwe.ProcessSandbox.RuntimeTests,
     .submodules `LeanSwe.ProcessSandbox.Seccomp,
     .submodules `LeanSwe.ProcessSandbox.Raw,
-    .submodules `LeanSwe.ProcessSandbox.Host,
     .andSubmodules `LeanSwe.ProcessSandbox.Init.Proofs,
     .one `LeanSwe.ProcessSandbox.Init.Verified,
     .submodules `LeanSwe.RegExp,
@@ -79,8 +78,8 @@ lean_lib LeanSwe where
 @[default_target]
 lean_lib LeanSweProcessSandboxInitData where
   srcDir := ".lake/build/gen"
-  roots := #[`LeanSwe.ProcessSandbox.InitData]
-  globs := #[.one `LeanSwe.ProcessSandbox.InitData]
+  roots := #[`LeanSwe.ProcessSandbox.Raw.SysBridge.InitData]
+  globs := #[.one `LeanSwe.ProcessSandbox.Raw.SysBridge.InitData]
   extraDepTargets := #[`«leanswe-psandbox-init-data»]
 
 @[default_target]
@@ -243,11 +242,11 @@ private def resolveCargoAndEnv (rustFlags? : Option String) :
     | _, _ => baseEnv
   return (cargoBin, extraEnv)
 
-/-- Compile `#![no_std]` `psandbox-init` and generate `.lake/build/gen/LeanSwe/ProcessSandbox/InitData.lean`. -/
+/-- Compile `#![no_std]` `psandbox-init` and generate `.lake/build/gen/LeanSwe/ProcessSandbox/Raw/SysBridge/InitData.lean`. -/
 target «leanswe-psandbox-init-data» pkg : System.FilePath := do
   let rustDir := pkg.dir / "LeanSwe" / "ProcessSandbox" / "Init" / "rust"
   let targetDir := pkg.buildDir / "psandbox-init-rust"
-  let genFile := pkg.buildDir / "gen" / "LeanSwe" / "ProcessSandbox" / "InitData.lean"
+  let genFile := pkg.buildDir / "gen" / "LeanSwe" / "ProcessSandbox" / "Raw" / "SysBridge" / "InitData.lean"
   let manifestJob ← inputTextFile (rustDir / "Cargo.toml")
   let lockJob ← inputTextFile (rustDir / "Cargo.lock")
   let toolchainJob ← inputTextFile (rustDir / "rust-toolchain.toml")
@@ -274,11 +273,11 @@ target «leanswe-psandbox-init-data» pkg : System.FilePath := do
     let b64 := encodeBase64Lake bytes
     createParentDirs genFile
     let content :=
-      "namespace LeanSwe.ProcessSandbox.InitData\n\n" ++
+      "namespace LeanSwe.ProcessSandbox.Raw.SysBridge.InitData\n\n" ++
       "/-- Base64-encoded ELF bytes of the compiled `leanswe-psandbox-init` helper binary. -/\n" ++
       "def initBinaryBase64 : String :=\n" ++
       "  \"" ++ b64 ++ "\"\n\n" ++
-      "end LeanSwe.ProcessSandbox.InitData\n"
+      "end LeanSwe.ProcessSandbox.Raw.SysBridge.InitData\n"
     IO.FS.writeFile genFile content
 
 extern_lib «leanswe_linux_process» pkg := do

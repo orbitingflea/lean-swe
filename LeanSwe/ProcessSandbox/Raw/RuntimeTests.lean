@@ -1,5 +1,5 @@
 import LeanSwe.ProcessSandbox.Raw.Interface
-import LeanSwe.ProcessSandbox.Host.Bwrap
+import LeanSwe.ProcessSandbox.Raw.SysBridge.Bwrap
 import LeanSwe.ProcessSandbox.Model
 import LeanSwe.Fs.Interface
 import LeanSwe.LinuxSyscall.Files.Interface
@@ -216,15 +216,15 @@ def runAllOutcome : IO (Option String) := do
     finally
       assertOk (← Raw.closePlan phMany) "closePlan 34 fwds"
 
-    assertTrue (Host.Bwrap.absoluteBwrapPathDirs ":/usr/bin".toUTF8 == ["/usr/bin"])
+    assertTrue (SysBridge.Bwrap.absoluteBwrapPathDirs ":/usr/bin".toUTF8 == ["/usr/bin"])
       "absoluteBwrapPathDirs drops leading empty segment"
-    assertTrue (Host.Bwrap.absoluteBwrapPathDirs "/usr/bin:".toUTF8 == ["/usr/bin"])
+    assertTrue (SysBridge.Bwrap.absoluteBwrapPathDirs "/usr/bin:".toUTF8 == ["/usr/bin"])
       "absoluteBwrapPathDirs drops trailing empty segment"
-    assertTrue (Host.Bwrap.absoluteBwrapPathDirs "/bin::/usr/bin".toUTF8 == ["/bin", "/usr/bin"])
+    assertTrue (SysBridge.Bwrap.absoluteBwrapPathDirs "/bin::/usr/bin".toUTF8 == ["/bin", "/usr/bin"])
       "absoluteBwrapPathDirs drops middle empty segment"
-    assertTrue (Host.Bwrap.absoluteBwrapPathDirs ".:/usr/bin".toUTF8 == ["/usr/bin"])
+    assertTrue (SysBridge.Bwrap.absoluteBwrapPathDirs ".:/usr/bin".toUTF8 == ["/usr/bin"])
       "absoluteBwrapPathDirs drops dot segment"
-    assertTrue (Host.Bwrap.absoluteBwrapPathDirs "rel/dir:/usr/bin".toUTF8 == ["/usr/bin"])
+    assertTrue (SysBridge.Bwrap.absoluteBwrapPathDirs "rel/dir:/usr/bin".toUTF8 == ["/usr/bin"])
       "absoluteBwrapPathDirs drops relative segment"
     let probedRef ← IO.mkRef (#[] : Array String)
     let fakeRegStat : LeanSwe.LinuxSyscall.Files.StatInfo := {
@@ -247,7 +247,7 @@ def runAllOutcome : IO (Option String) := do
         else
           return .error LeanSwe.LinuxSyscall.Errno.ENOENT
     }
-    let mockResolved ← Host.Bwrap.resolveBwrapPath mockFiles
+    let mockResolved ← SysBridge.Bwrap.resolveBwrapPath mockFiles
       (pure (some ":/nonexistent:.:rel/dir:/usr/bin".toUTF8))
     let probedPaths ← probedRef.get
     assertTrue (mockResolved == some "/usr/bin/bwrap")
@@ -259,7 +259,7 @@ def runAllOutcome : IO (Option String) := do
     let fakeBwrap := fakeBwrapDir / "bwrap"
     IO.FS.writeFile fakeBwrap "#!/bin/sh\nexit 0\n"
     let _ ← assertOk (← LeanSwe.Fs.chmod fakeBwrap.toString 0o755) "chmod 0755 fake bwrap"
-    let realResolved ← Host.Bwrap.resolveBwrapPath LeanSwe.LinuxSyscall.Files.defaultOps
+    let realResolved ← SysBridge.Bwrap.resolveBwrapPath LeanSwe.LinuxSyscall.Files.defaultOps
       (pure (some s!":/nonexistent:.:rel/dir:{fakeBwrapDir}:/usr/bin".toUTF8))
     assertTrue (realResolved == some fakeBwrap.toString)
       s!"resolveBwrapPath real FS skips empty/rel and resolves absolute dir (got {repr realResolved})"

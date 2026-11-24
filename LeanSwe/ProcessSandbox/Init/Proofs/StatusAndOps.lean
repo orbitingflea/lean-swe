@@ -1,4 +1,4 @@
-import LeanSwe.ProcessSandbox.Host.StreamIo
+import LeanSwe.ProcessSandbox.Raw.Model.InitStatus
 import LeanSwe.ProcessSandbox.Init.Proofs.Base
 
 /-!
@@ -6,7 +6,7 @@ import LeanSwe.ProcessSandbox.Init.Proofs.Base
 
 Machine-checked invariants on `psandbox_init::ops`:
 - 8-byte `InitStatusMsg` wire encoding/decoding round-trip and exact byte-level agreement
-  with host `LeanSwe.ProcessSandbox.Host.StreamIo.encodeInitStatusMsg` / `decodeInitStatusMsg`,
+  with host `LeanSwe.ProcessSandbox.Raw.Model.encodeInitStatusMsg` / `decodeInitStatusMsg`,
 - Landlock ABI v4 filesystem and TCP access bitmask stripping and mount tag permissions,
 - `SCM_RIGHTS` descriptor batch sizing (`1 ≤ batch ≤ 32` and `batch ≤ remaining`),
 - Loopback interface `IFF_UP | IFF_RUNNING` activation logic,
@@ -20,7 +20,7 @@ namespace LeanSwe.ProcessSandbox.Init.Proofs
 
 open _root_.Aeneas _root_.Aeneas.Std Result ControlFlow
 open psandbox_init
-open LeanSwe.ProcessSandbox.Host.StreamIo
+open LeanSwe.ProcessSandbox.Raw.Model
 
 private theorem u32_numBits : UScalarTy.U32.numBits = 32 := UScalarTy.U32_numBits_eq
 private theorem u64_numBits : UScalarTy.U64.numBits = 64 := UScalarTy.U64_numBits_eq
@@ -121,7 +121,7 @@ theorem decode_encode_status_msg_roundTrip (kind flag : U8) (value : I32) :
           simp [h8, h16, h24, hs1, hs2, hs3, hb, hi]
   simp [hEnc, hDec]
 
-/-- Wire-tag constants in `psandbox_init::ops` match `LeanSwe.ProcessSandbox.Host.StreamIo`. -/
+/-- Wire-tag constants in `psandbox_init::ops` match `LeanSwe.ProcessSandbox.Raw.Model`. -/
 theorem status_tags_match_host :
     ops.PS_STATUS_READY.val = PS_STATUS_READY.toNat ∧
     ops.PS_STATUS_INIT_ERR.val = PS_STATUS_INIT_ERR.toNat ∧
@@ -142,7 +142,7 @@ private theorem uint8OfU8_ushift_eq (bv : BitVec 32) (sh : Nat) :
   rw [BitVec.toNat_ushiftRight, Nat.shiftRight_eq_div_pow, BitVec.toNat_ofNat]
   simp
 
-/-- Byte-for-byte agreement between `ops.encode_status_msg` and host `StreamIo.encodeInitStatusMsg`. -/
+/-- Byte-for-byte agreement between `ops.encode_status_msg` and host `Raw.Model.encodeInitStatusMsg`. -/
 theorem encode_status_msg_matches_host (kind flag : U8) (value : I32) :
     ∃ msg : Array U8 8#usize,
       ops.encode_status_msg kind flag value = Result.ok msg ∧
@@ -170,7 +170,7 @@ theorem encode_status_msg_matches_host (kind flag : U8) (value : I32) :
   simp only [List.map, hu, hb0, hb1, hb2, hb3]
   rfl
 
-/-- Host `StreamIo.decodeInitStatusMsg` recovers the exact `InitStatusMsg` written by `ops.encode_status_msg`. -/
+/-- Host `Raw.Model.decodeInitStatusMsg` recovers the exact `InitStatusMsg` written by `ops.encode_status_msg`. -/
 theorem host_decode_encode_status_msg_roundTrip (kind flag : U8) (value : I32) :
     ∃ msg : Array U8 8#usize,
       ops.encode_status_msg kind flag value = Result.ok msg ∧

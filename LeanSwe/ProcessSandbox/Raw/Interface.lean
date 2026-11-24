@@ -1,12 +1,12 @@
 import LeanSwe.ProcessSandbox.Raw.Types
 import LeanSwe.ProcessSandbox.Raw.Impl
-import LeanSwe.ProcessSandbox.Host.SysBridge
+import LeanSwe.ProcessSandbox.Raw.SysBridge
 
 namespace LeanSwe.ProcessSandbox.Raw
 
-/-- Default OS sandbox primitive operations backed by pure Lean `Host.SysBridge` and embedded `leanswe-psandbox-init`. -/
+/-- Default OS sandbox primitive operations backed by pure Lean `Raw.SysBridge` and embedded `leanswe-psandbox-init`. -/
 def defaultOps : RawProcessSandboxOps :=
-  { Host.SysBridge.defaultOps with
+  { SysBridge.defaultOps with
     mapRawError := Internal.mapRawError
     decodeHostAuditArch := Internal.decodeHostAuditArch
     encodePlan := Internal.encodePlan }

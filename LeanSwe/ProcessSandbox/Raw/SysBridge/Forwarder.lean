@@ -8,7 +8,7 @@ import LeanSwe.LinuxSyscall.Poll.Interface
 import LeanSwe.NetRelay.Types
 import LeanSwe.NetRelay.Interface
 
-namespace LeanSwe.ProcessSandbox.Host.Forwarder
+namespace LeanSwe.ProcessSandbox.Raw.SysBridge.Forwarder
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.NetRelay
@@ -349,4 +349,4 @@ def stopIoForwarder (h : IoForwarderHandle) : IO Unit := do
   for lfd in h.listenerFds do
     closeFd lfd
 
-end LeanSwe.ProcessSandbox.Host.Forwarder
+end LeanSwe.ProcessSandbox.Raw.SysBridge.Forwarder

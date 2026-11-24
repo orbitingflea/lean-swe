@@ -1,11 +1,11 @@
-import LeanSwe.ProcessSandbox.Host.Bwrap
+import LeanSwe.ProcessSandbox.Raw.SysBridge.Bwrap
 
-namespace LeanSwe.ProcessSandbox.Proofs.HostBwrap
+namespace LeanSwe.ProcessSandbox.Raw.Proofs.HostBwrap
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.PostFork
 open LeanSwe.ProcessSandbox.Raw
-open LeanSwe.ProcessSandbox.Host.Bwrap
+open LeanSwe.ProcessSandbox.Raw.SysBridge.Bwrap
 
 /-- `detectHostAuditArch` maps Linux `x86_64-*` and `aarch64-*` targets to their exact `AUDIT_ARCH_*` constants and fails closed (`0`) on non-Linux or unsupported targets. -/
 theorem detectHostAuditArch_exact :
@@ -92,9 +92,8 @@ theorem mapPathErrnoToSandboxError_classification (path ctx : String) (e : Errno
     intro h
     simp only [String.append_eq_empty_iff] at h
     exact absurd h.1.2 (by decide)
-  have hneMsg : ∀ fb, Internal.nonEmptyMsg fb s!"{ctx}: {Errno.name e}" ≠ "" := by
+  have hneMsg : ∀ fb : String, (if s!"{ctx}: {Errno.name e}".isEmpty then fb else s!"{ctx}: {Errno.name e}") ≠ "" := by
     intro fb
-    unfold Internal.nonEmptyMsg
     have hnot : (s!"{ctx}: {Errno.name e}").isEmpty = false := String.isEmpty_eq_false_iff.mpr hdetail
     simp [hnot, hdetail]
   split
@@ -227,7 +226,7 @@ theorem absoluteBwrapPathDirs_all_abs (rawPath : ByteArray) (d : String)
 /-- `filterAbsoluteBwrapDirs` rejects empty/dot/relative/NUL-containing `PATH` entries across `":/usr/bin"`, `"/usr/bin:"`, `"/bin::/usr/bin"`, `".:/usr/bin"`, and `"rel/dir:/usr/bin"`, and `bwrapCandidatePath` normalizes `"/"` to `"/bwrap"`. -/
 theorem filterAbsoluteBwrapDirs_examples :
     let splitPosixStr (p : String) : List String :=
-      (LeanSwe.ProcessSandbox.Host.Cgroup.splitChar ':' p.toList).map fun seg =>
+      (LeanSwe.ProcessSandbox.Raw.SysBridge.Cgroup.splitChar ':' p.toList).map fun seg =>
         if seg.isEmpty then "." else String.ofList seg
     filterAbsoluteBwrapDirs (splitPosixStr ":/usr/bin") = ["/usr/bin"] ∧
     filterAbsoluteBwrapDirs (splitPosixStr "/usr/bin:") = ["/usr/bin"] ∧
@@ -239,4 +238,4 @@ theorem filterAbsoluteBwrapDirs_examples :
     bwrapCandidatePath "/usr/bin" = "/usr/bin/bwrap" := by
   decide
 
-end LeanSwe.ProcessSandbox.Proofs.HostBwrap
+end LeanSwe.ProcessSandbox.Raw.Proofs.HostBwrap

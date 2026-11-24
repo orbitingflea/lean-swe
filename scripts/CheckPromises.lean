@@ -2049,8 +2049,8 @@ private def checkProcessSandboxHostClosure (env : Environment) : IO (Array Strin
               errs := errs.push s!"PSANDBOX_FORBIDDEN_UNSAFE: {c.name} in {m}"
         if (Lean.regularInitAttr.getParam? env c.name).isSome then
           let allowedInit :=
-            m == `LeanSwe.ProcessSandbox.Host.SysBridge &&
-            privateToUserName? c.name == some `LeanSwe.ProcessSandbox.Host.SysBridge.gHostTable
+            m == `LeanSwe.ProcessSandbox.Raw.SysBridge &&
+            privateToUserName? c.name == some `LeanSwe.ProcessSandbox.Raw.SysBridge.gHostTable
           if !allowedInit then
             errs := errs.push s!"PSANDBOX_FORBIDDEN_INIT: {c.name} in {m}"
         let usesBaseMutex (e : Expr) : Bool :=
@@ -2064,8 +2064,8 @@ private def checkProcessSandboxHostClosure (env : Environment) : IO (Array Strin
           errs := errs.push s!"PSANDBOX_FORBIDDEN_BASEMUTEX: {c.name} in {m} references Std.BaseMutex"
   match env.find? `LeanSwe.ProcessSandbox.Raw.defaultOps with
   | some (.defnInfo dv) =>
-    if !dv.value.getUsedConstants.contains `LeanSwe.ProcessSandbox.Host.SysBridge.defaultOps then
-      errs := errs.push "PSANDBOX_INTERFACE_WIRING_MISMATCH: LeanSwe.ProcessSandbox.Raw.defaultOps must delegate to Host.SysBridge.defaultOps"
+    if !dv.value.getUsedConstants.contains `LeanSwe.ProcessSandbox.Raw.SysBridge.defaultOps then
+      errs := errs.push "PSANDBOX_INTERFACE_WIRING_MISMATCH: LeanSwe.ProcessSandbox.Raw.defaultOps must delegate to Raw.SysBridge.defaultOps"
   | _ =>
     errs := errs.push "PSANDBOX_INTERFACE_WIRING_MISMATCH: missing LeanSwe.ProcessSandbox.Raw.defaultOps"
   return errs
@@ -2678,15 +2678,12 @@ private def dagRoleOf (knownPkgs : Array Name) (m : Name) : DagModuleRole :=
           .iface
         else if head == `SysBridge then
           .sysBridge
-        else if pkg == `LeanSwe.ProcessSandbox && head == `Host then
-          if last == `SysBridge then .sysBridge else .impl
         else if m.components.take 3 == [`LeanSwe, `PostFork, `Aeneas] ||
             m.components.take 4 == [`LeanSwe, `ProcessSandbox, `Init, `Aeneas] then
           if last == `Types || last == `TypesExternal then .types
           else if last == `Model || rem.contains `Model then .model
           else .impl
-        else if head == `Impl || m == `LeanSwe.ConnectProxy.Relay ||
-            m == `LeanSwe.ProcessSandbox.InitData then
+        else if head == `Impl || m == `LeanSwe.ConnectProxy.Relay then
           .impl
         else
           .other
@@ -2953,13 +2950,7 @@ private def importDagAllowlist : Array String := #[
   "CROSS|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.LinuxSyscall.TimeRand.Proofs",
   "CROSS|LeanSwe.Process.Proofs.HealthyStep|LeanSwe.LinuxSyscall.Files.Proofs.HealthyStep",
   "CROSS|LeanSwe.Process.Proofs.HealthyStep|LeanSwe.LinuxSyscall.Process.Proofs.HealthyStep",
-  "CROSS|LeanSwe.ProcessSandbox.Host.Bwrap|LeanSwe.ProcessSandbox.Raw.Impl",
-  "CROSS|LeanSwe.ProcessSandbox.Host.StreamIo|LeanSwe.Process.SysBridge",
-  "CROSS|LeanSwe.ProcessSandbox.Host.StreamIo|LeanSwe.ProcessSandbox.Raw.Impl",
-  "CROSS|LeanSwe.ProcessSandbox.Host.SysBridge|LeanSwe.ProcessSandbox.Raw.Impl",
   "CROSS|LeanSwe.ProcessSandbox.Proofs.SeccompApiProofs|LeanSwe.ProcessSandbox.Seccomp.Proofs",
-  "CROSS|LeanSwe.ProcessSandbox.Raw.Interface|LeanSwe.ProcessSandbox.Host.SysBridge",
-  "CROSS|LeanSwe.ProcessSandbox.Raw.RuntimeTests|LeanSwe.ProcessSandbox.Host.Bwrap",
   "CROSS|LeanSwe.Time.RuntimeTests|LeanSwe.LinuxSyscall.TestSupport.Seccomp",
   "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.Proofs",
   "CROSS|LeanSwe.Uuid.RuntimeTests|LeanSwe.LinuxSyscall.TestSupport.Seccomp"

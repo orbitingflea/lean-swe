@@ -8,9 +8,8 @@ namespace LeanSwe.ProcessSandbox.Raw.Proofs
 open Core
 open Core.NondetTest
 
-private theorem nonEmptyMsg_ne_empty_enc (fallback msg : String) (hf : fallback ≠ "") :
-    Internal.nonEmptyMsg fallback msg ≠ "" := by
-  unfold Internal.nonEmptyMsg
+private theorem ifEmpty_ne_empty_enc (fallback msg : String) (hf : fallback ≠ "") :
+    (if msg.isEmpty then fallback else msg) ≠ "" := by
   split
   · exact hf
   · next h =>
@@ -93,11 +92,11 @@ private theorem pushStr_spec (ba : ByteArray) (s : String) (hp : HeaderPreserved
   unfold Internal.pushStr
   simp only [bind, Except.bind, pure, Except.pure]
   by_cases hnul : Internal.hasNulByte s = true
-  · simp [hnul, Internal.mapRawError, Internal.nonEmptyMsg]
+  · simp [hnul, Internal.mapRawError, Model.Internal.mapRawError]
   · simp only [hnul, Bool.false_eq_true, ↓reduceIte]
     by_cases hsz : s.toUTF8.size ≥ UInt32.size
-    · simp only [hsz, ↓reduceIte, Internal.mapRawError]
-      exact ⟨trivial, nonEmptyMsg_ne_empty_enc _ _ (by decide)⟩
+    · simp only [hsz, ↓reduceIte, Internal.mapRawError, Model.Internal.mapRawError]
+      exact ⟨trivial, ifEmpty_ne_empty_enc _ _ (by decide)⟩
     · simp only [hsz, ↓reduceIte]
       exact headerPreserved_append (headerPreserved_pushU32LE hp _)
 
@@ -399,24 +398,24 @@ private theorem encodePlan_inv (plan : CompiledSandboxPlan) (seccompBytes : Byte
       !plan.directCgroupV2Fs || decide (plan.landlockMinAbi < 4) || !plan.blockUnixSocketAndSmc ||
       !plan.allowAnonUnixSocketpair || !plan.clone3EnosysFallback || !plan.seccompStrictDenylist ||
       !plan.noNewPrivs || !plan.rlimitCoreZero || !plan.subreaperAndPdeathsig || !plan.cleanEnv) = true
-  · simp only [h1, ↓reduceIte, Internal.mapRawError]
-    exact ⟨trivial, nonEmptyMsg_ne_empty_enc _ _ (by decide)⟩
+  · simp only [h1, ↓reduceIte, Internal.mapRawError, Model.Internal.mapRawError]
+    exact ⟨trivial, ifEmpty_ne_empty_enc _ _ (by decide)⟩
   · simp only [h1, Bool.false_eq_true, ↓reduceIte]
     by_cases h2 : (plan.program.isEmpty || plan.cwd.isEmpty) = true
-    · simp only [h2, ↓reduceIte, Internal.mapRawError]
-      exact ⟨trivial, nonEmptyMsg_ne_empty_enc _ _ (by decide)⟩
+    · simp only [h2, ↓reduceIte, Internal.mapRawError, Model.Internal.mapRawError]
+      exact ⟨trivial, ifEmpty_ne_empty_enc _ _ (by decide)⟩
     · simp only [h2, Bool.false_eq_true, ↓reduceIte]
       by_cases h3 : (plan.limits.timeoutMs == 0 || plan.limits.memoryMaxBytes == some 0 || plan.limits.pidsMax == some 0) = true
-      · simp only [h3, ↓reduceIte, Internal.mapRawError]
-        exact ⟨trivial, nonEmptyMsg_ne_empty_enc _ _ (by decide)⟩
+      · simp only [h3, ↓reduceIte, Internal.mapRawError, Model.Internal.mapRawError]
+        exact ⟨trivial, ifEmpty_ne_empty_enc _ _ (by decide)⟩
       · simp only [h3, Bool.false_eq_true, ↓reduceIte]
         by_cases h4 : (plan.portForwards.any fun pf => pf.boxPort == 0 || pf.hostPort == 0) = true
-        · simp only [h4, ↓reduceIte, Internal.mapRawError]
-          exact ⟨trivial, nonEmptyMsg_ne_empty_enc _ _ (by decide)⟩
+        · simp only [h4, ↓reduceIte, Internal.mapRawError, Model.Internal.mapRawError]
+          exact ⟨trivial, ifEmpty_ne_empty_enc _ _ (by decide)⟩
         · simp only [h4, Bool.false_eq_true, ↓reduceIte]
           by_cases hsec : (seccompBytes.size == 0 || seccompBytes.size % 8 != 0 || decide (seccompBytes.size > 8 * SECCOMP_MAX_INSNS)) = true
-          · simp only [hsec, ↓reduceIte, Internal.mapRawError]
-            exact ⟨trivial, nonEmptyMsg_ne_empty_enc _ _ (by decide)⟩
+          · simp only [hsec, ↓reduceIte, Internal.mapRawError, Model.Internal.mapRawError]
+            exact ⟨trivial, ifEmpty_ne_empty_enc _ _ (by decide)⟩
           · simp only [hsec, Bool.false_eq_true, ↓reduceIte]
             have hpos : 0 < seccompBytes.size := by
               by_cases h0 : seccompBytes.size = 0
