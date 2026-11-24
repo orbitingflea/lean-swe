@@ -7,7 +7,7 @@ open LeanSwe.LinuxSyscall
 /-- Exclusive upper bound on valid `Timespec.nsec` values (`1_000_000_000` nanoseconds per second). -/
 def NANOS_PER_SEC : UInt32 := 1000000000
 
-/-- Maximum reachable counter value of a Linux `eventfd` (`0xfffffffffffffffe`; `POLLOUT` clears at `counter == 0xfffffffffffffffe`, and any non-blocking `write` that would exceed it returns `EAGAIN`). -/
+/-- Maximum `eventfd` counter value reachable via `write(2)` (`0xfffffffffffffffe`). Any non-blocking `write(2)` that would exceed it returns `EAGAIN`, and `POLLOUT` clears for `counter >= EFD_MAX_COUNT` (since the kernel's `eventfd_signal` can advance the counter to `UInt64.max`, which `Poll/Model.lean` maps to `POLLERR`). -/
 def EFD_MAX_COUNT : UInt64 := 0xfffffffffffffffe
 
 /-- Maximum `nfds` accepted before failing with `EINVAL` in bounded world-model checks (`1_048_576`). -/

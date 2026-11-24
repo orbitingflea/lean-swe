@@ -4,9 +4,6 @@ namespace LeanSwe.LinuxSyscall.Process
 
 open LeanSwe.LinuxSyscall
 
-/-- Linux `ENOPKG` (`65`), returned by `pipe2(..., O_NOTIFICATION_PIPE)` when kernel `CONFIG_WATCH_QUEUE` is disabled. -/
-def errnoENOPKG : Errno := ⟨65⟩
-
 /-- Portable symbolic flags for Linux `pipe2(2)` (`O_CLOEXEC`, `O_NONBLOCK`, `O_DIRECT`, `O_NOTIFICATION_PIPE`), plus `extraBits` for unsupported flag validation (`extraBits != 0` triggers `EINVAL`). -/
 structure PipeFlags where
   /-- Atomically set close-on-exec (`FD_CLOEXEC`) on both pipe descriptors (`O_CLOEXEC`). -/

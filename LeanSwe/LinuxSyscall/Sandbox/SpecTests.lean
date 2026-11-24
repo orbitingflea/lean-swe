@@ -15,22 +15,22 @@ def test_sandbox_errno_classificationAndConstants
     (isTransient : Errno → Bool := Errno.isTransientOsErrno)
     (classify : Errno → SandboxErrorKind := SandboxErrorKind.ofErrno) : runner Unit := do
   let e ← nondet Errno
-  NondetTest.assert (ENOMSG = 42 ∧ EBADFD = 77 ∧ MFD_NAME_MAX = 249 ∧
+  NondetTest.assert (Errno.ENOMSG = 42 ∧ Errno.EBADFD = 77 ∧ MFD_NAME_MAX = 249 ∧
     SECCOMP_MAX_FILTER_INSNS = 160 ∧ LANDLOCK_MAX_STACKED_LAYERS = 16 ∧ MAX_LINUX_SIGNAL = 64)
   NondetTest.assert (isTransient Errno.EFAULT = false)
   NondetTest.assert (isTransient e =
     (e == Errno.EINTR || e == Errno.EIO || e == Errno.ENOMEM ||
      e == Errno.ENFILE || e == Errno.EMFILE || e == Errno.ENOSPC))
   let expectedKind : SandboxErrorKind :=
-    if e == Errno.EBADF || e == EBADFD then .badFd
-    else if e == Errno.EINVAL || e == ENOMSG then .invalidArg
+    if e == Errno.EBADF || e == Errno.EBADFD then .badFd
+    else if e == Errno.EINVAL || e == Errno.ENOMSG then .invalidArg
     else if e == Errno.EPERM || e == Errno.EACCES then .permissionDenied
     else if e == Errno.E2BIG || e == Errno.EOPNOTSUPP || e == Errno.ENOSYS ||
         e == Errno.ESRCH || e == Errno.EBUSY then .limitOrUnsupported
     else .transientOrResource
   NondetTest.assert (classify e = expectedKind)
-  NondetTest.assert (classify Errno.EBADF = .badFd ∧ classify EBADFD = .badFd)
-  NondetTest.assert (classify Errno.EINVAL = .invalidArg ∧ classify ENOMSG = .invalidArg)
+  NondetTest.assert (classify Errno.EBADF = .badFd ∧ classify Errno.EBADFD = .badFd)
+  NondetTest.assert (classify Errno.EINVAL = .invalidArg ∧ classify Errno.ENOMSG = .invalidArg)
   NondetTest.assert (classify Errno.EPERM = .permissionDenied ∧ classify Errno.EACCES = .permissionDenied)
   NondetTest.assert (classify Errno.E2BIG = .limitOrUnsupported ∧
     classify Errno.EOPNOTSUPP = .limitOrUnsupported ∧
@@ -296,7 +296,7 @@ def test_sandbox_ops_landlock_rulesetAddRuleAndRestrictSelf
     let (rBadCombo, sBc) := (ops.landlockCreateRuleset (some {}) 1).run s₁
     NondetTest.assert (rBadCombo = .error Errno.EINVAL ∧ sBc = s₁)
     let (rEmpty, sEm) := (ops.landlockCreateRuleset (some { handledAccessFs := 0, handledAccessNet := 0 }) 0).run s₁
-    NondetTest.assert (rEmpty = .error ENOMSG ∧ sEm = s₁)
+    NondetTest.assert (rEmpty = .error Errno.ENOMSG ∧ sEm = s₁)
     let (rUnkFs, sUf) := (ops.landlockCreateRuleset (some { handledAccessFs := (1 : UInt64) <<< 60 }) 0).run s₁
     NondetTest.assert (rUnkFs = .error Errno.EINVAL ∧ sUf = s₁)
     let (rUnkNet, sUn) := (ops.landlockCreateRuleset (some { handledAccessNet := (1 : UInt64) <<< 4 }) 0).run s₁
@@ -314,9 +314,9 @@ def test_sandbox_ops_landlock_rulesetAddRuleAndRestrictSelf
         NondetTest.assert (rAddClosedRs = .error Errno.EBADF)
         let (rAddNonRs, _) := (ops.landlockAddRule mfd (.pathBeneath dirHid LANDLOCK_ACCESS_FS_READ_DIR)).run s₃
         let (rAddPseudoRs, _) := (ops.landlockAddRule pseudoHid (.pathBeneath dirHid LANDLOCK_ACCESS_FS_READ_DIR)).run s₃
-        NondetTest.assert (rAddNonRs = .error EBADFD ∧ rAddPseudoRs = .error EBADFD)
+        NondetTest.assert (rAddNonRs = .error Errno.EBADFD ∧ rAddPseudoRs = .error Errno.EBADFD)
         let (rAddZeroPb, _) := (ops.landlockAddRule rs (.pathBeneath 999 0)).run s₃
-        NondetTest.assert (rAddZeroPb = .error ENOMSG)
+        NondetTest.assert (rAddZeroPb = .error Errno.ENOMSG)
         let (rAddUnhandPb, _) := (ops.landlockAddRule rs (.pathBeneath 999 LANDLOCK_ACCESS_FS_WRITE_FILE)).run s₃
         NondetTest.assert (rAddUnhandPb = .error Errno.EINVAL)
         let (rAddClosedParent, _) := (ops.landlockAddRule rs (.pathBeneath 999 LANDLOCK_ACCESS_FS_READ_FILE)).run s₃
@@ -324,14 +324,14 @@ def test_sandbox_ops_landlock_rulesetAddRuleAndRestrictSelf
         let (rAddMfdParent, _) := (ops.landlockAddRule rs (.pathBeneath mfd LANDLOCK_ACCESS_FS_READ_FILE)).run s₃
         let (rAddPseudoParent, _) := (ops.landlockAddRule rs (.pathBeneath pseudoHid LANDLOCK_ACCESS_FS_READ_FILE)).run s₃
         let (rAddRsParent, _) := (ops.landlockAddRule rs (.pathBeneath rs LANDLOCK_ACCESS_FS_READ_FILE)).run s₃
-        NondetTest.assert (rAddMfdParent = .error EBADFD ∧ rAddPseudoParent = .error EBADFD ∧ rAddRsParent = .error EBADFD)
+        NondetTest.assert (rAddMfdParent = .error Errno.EBADFD ∧ rAddPseudoParent = .error Errno.EBADFD ∧ rAddRsParent = .error Errno.EBADFD)
         let (rAddDirBitOnReg, _) := (ops.landlockAddRule rs (.pathBeneath regHid LANDLOCK_ACCESS_FS_READ_DIR)).run s₃
         NondetTest.assert (rAddDirBitOnReg = .error Errno.EINVAL)
         let (rAddRegOk, s₄) := (ops.landlockAddRule rs (.pathBeneath regHid LANDLOCK_ACCESS_FS_READ_FILE)).run s₃
         let (rAddDirOk, s₅) := (ops.landlockAddRule rs (.pathBeneath dirHid LANDLOCK_ACCESS_FS_READ_DIR)).run s₄
         NondetTest.assert (rAddRegOk = .ok () ∧ rAddDirOk = .ok ())
         let (rAddZeroNp, _) := (ops.landlockAddRule rs (.netPort 70000 0)).run s₅
-        NondetTest.assert (rAddZeroNp = .error ENOMSG)
+        NondetTest.assert (rAddZeroNp = .error Errno.ENOMSG)
         let (rAddUnhandNp, _) := (ops.landlockAddRule rs (.netPort 80 LANDLOCK_ACCESS_NET_BIND_TCP)).run s₅
         NondetTest.assert (rAddUnhandNp = .error Errno.EINVAL)
         let (rAddBigPort, _) := (ops.landlockAddRule rs (.netPort 65536 LANDLOCK_ACCESS_NET_CONNECT_TCP)).run s₅
@@ -345,14 +345,14 @@ def test_sandbox_ops_landlock_rulesetAddRuleAndRestrictSelf
         let (rRestrClosed, _) := (ops.landlockRestrictSelf 999).run s₈
         let (rRestrMfd, _) := (ops.landlockRestrictSelf mfd).run s₈
         let (rRestrPseudo, _) := (ops.landlockRestrictSelf pseudoHid).run s₈
-        NondetTest.assert (rRestrClosed = .error Errno.EBADF ∧ rRestrMfd = .error EBADFD ∧ rRestrPseudo = .error EBADFD)
+        NondetTest.assert (rRestrClosed = .error Errno.EBADF ∧ rRestrMfd = .error Errno.EBADFD ∧ rRestrPseudo = .error Errno.EBADFD)
         let (r16, s₉) := repeatRestrictSelf ops rs 16 s₈
         NondetTest.assert (r16 = .ok ())
         let (r17, s₁₀) := (ops.landlockRestrictSelf rs).run s₉
         NondetTest.assert (r17 = .error Errno.E2BIG ∧ s₁₀ = s₉)
         let (rAfterCapClosed, _) := (ops.landlockRestrictSelf 999).run s₉
         let (rAfterCapMfd, _) := (ops.landlockRestrictSelf mfd).run s₉
-        NondetTest.assert (rAfterCapClosed = .error Errno.EBADF ∧ rAfterCapMfd = .error EBADFD)
+        NondetTest.assert (rAfterCapClosed = .error Errno.EBADF ∧ rAfterCapMfd = .error Errno.EBADFD)
     | _ => NondetTest.assert False
   | _ => NondetTest.assert False
 
@@ -643,21 +643,21 @@ def test_sandbox_model_allowedStep_environmentFreeAndOPath
   match step sPseudo (.landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_READ_FILE ||| LANDLOCK_ACCESS_FS_READ_DIR }) 0) (.opened 55) with
   | none => NondetTest.assert False
   | some sPseudoRs =>
-    NondetTest.assert (step sPseudoRs (.landlockAddRule 50 (.pathBeneath 51 LANDLOCK_ACCESS_FS_READ_DIR)) (.err EBADFD) = some sPseudoRs)
+    NondetTest.assert (step sPseudoRs (.landlockAddRule 50 (.pathBeneath 51 LANDLOCK_ACCESS_FS_READ_DIR)) (.err Errno.EBADFD) = some sPseudoRs)
     NondetTest.assert ((step sPseudoRs (.landlockAddRule 50 (.pathBeneath 51 LANDLOCK_ACCESS_FS_READ_DIR)) (.err Errno.EBADF)).isNone)
-    NondetTest.assert (step sPseudoRs (.landlockAddRule 55 (.pathBeneath 50 LANDLOCK_ACCESS_FS_READ_FILE)) (.err EBADFD) = some sPseudoRs)
+    NondetTest.assert (step sPseudoRs (.landlockAddRule 55 (.pathBeneath 50 LANDLOCK_ACCESS_FS_READ_FILE)) (.err Errno.EBADFD) = some sPseudoRs)
     NondetTest.assert ((step sPseudoRs (.landlockAddRule 55 (.pathBeneath 50 LANDLOCK_ACCESS_FS_READ_FILE)) .unit).isNone)
     NondetTest.assert (step sPseudoRs (.landlockAddRule 53 (.pathBeneath 51 LANDLOCK_ACCESS_FS_READ_DIR)) (.err Errno.EBADF) = some sPseudoRs)
-    NondetTest.assert ((step sPseudoRs (.landlockAddRule 53 (.pathBeneath 51 LANDLOCK_ACCESS_FS_READ_DIR)) (.err EBADFD)).isNone)
+    NondetTest.assert ((step sPseudoRs (.landlockAddRule 53 (.pathBeneath 51 LANDLOCK_ACCESS_FS_READ_DIR)) (.err Errno.EBADFD)).isNone)
     NondetTest.assert (step sPseudoRs (.landlockAddRule 55 (.pathBeneath 53 LANDLOCK_ACCESS_FS_READ_DIR)) .unit =
       some { sPseudoRs with landlockEnabled := true })
     NondetTest.assert (step sPseudoRs (.landlockAddRule 54 (.pathBeneath 51 LANDLOCK_ACCESS_FS_READ_DIR)) (.err Errno.EBADF) = some sPseudoRs)
-    NondetTest.assert (step sPseudoRs (.landlockAddRule 55 (.pathBeneath 54 LANDLOCK_ACCESS_FS_READ_FILE)) (.err EBADFD) = some sPseudoRs)
+    NondetTest.assert (step sPseudoRs (.landlockAddRule 55 (.pathBeneath 54 LANDLOCK_ACCESS_FS_READ_FILE)) (.err Errno.EBADFD) = some sPseudoRs)
     let sPseudoNnp := { sPseudoRs with noNewPrivs? := some true }
-    NondetTest.assert (step sPseudoNnp (.landlockRestrictSelf 50) (.err EBADFD) = some sPseudoNnp)
+    NondetTest.assert (step sPseudoNnp (.landlockRestrictSelf 50) (.err Errno.EBADFD) = some sPseudoNnp)
     NondetTest.assert ((step sPseudoNnp (.landlockRestrictSelf 50) .unit).isNone)
     NondetTest.assert (step sPseudoNnp (.landlockRestrictSelf 53) (.err Errno.EBADF) = some sPseudoNnp)
-    NondetTest.assert ((step sPseudoNnp (.landlockRestrictSelf 53) (.err EBADFD)).isNone)
+    NondetTest.assert ((step sPseudoNnp (.landlockRestrictSelf 53) (.err Errno.EBADFD)).isNone)
   let sGapBase := (((s0.withHostFd 9 true).withHostFd 10 false).withHostFd 11 true).withHostFd 12 false
   match step sGapBase (.setrlimit .nofile 4 1024) .unit with
   | none => NondetTest.assert False

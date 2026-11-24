@@ -569,9 +569,9 @@ theorem refine_landlockCreateRuleset (s : SandboxSysState) (hwf : s.wf = true)
           cases hSec : s.seccompMayIntercept
           · refine ⟨?_, by simp only [Bool.not_false, ↓reduceIte, st_bind, st_set, st_pure]; exact wf_with_enabled s hwf⟩
             simp [allowedStep, failsPureWrapperGuard, allowedStepCore, hFl, hEmpty, hSec,
-              ENOMSG, Errno.EOPNOTSUPP, Errno.ENOSYS, Errno.EFAULT]
+              Errno.ENOMSG, Errno.EOPNOTSUPP, Errno.ENOSYS, Errno.EFAULT]
           · refine ⟨?_, by simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, st_pure]; exact hwf⟩
-            exact allowedStep_seccomp_err s _ ENOMSG (by simp [failsPureWrapperGuard, hFl])
+            exact allowedStep_seccomp_err s _ Errno.ENOMSG (by simp [failsPureWrapperGuard, hFl])
               hSec (by decide) (by decide) (by decide)
         · by_cases hNet : (attr.handledAccessNet &&& ~~~LANDLOCK_ACCESS_NET_ALL) != 0
           · simp only [hFl, Bool.false_eq_true, ↓reduceIte, hLt4, hEmpty, hNet]
@@ -786,15 +786,15 @@ theorem refine_landlockAddRule (s : SandboxSysState) (hwf : s.wf = true)
         subst hOp
         cases hKind : rsKind with
         | memfd _ _ | hostPath _ | pseudoFs =>
-          refine addRule_err_pair s hwf ruleset rule EBADFD (by decide) (by decide) ?_
-          intro _; simp [allowedStepCore, hRs, hKind, EBADFD, Errno.EOPNOTSUPP, Errno.ENOSYS, Errno.EFAULT]
+          refine addRule_err_pair s hwf ruleset rule Errno.EBADFD (by decide) (by decide) ?_
+          intro _; simp [allowedStepCore, hRs, hKind, Errno.EBADFD, Errno.EOPNOTSUPP, Errno.ENOSYS, Errno.EFAULT]
         | landlockRuleset handledFs handledNet =>
           cases rule with
           | pathBeneath parentHid allowedAccess =>
             by_cases hZero : allowedAccess == 0
             · simp only [hZero]
-              refine addRule_err_pair s hwf ruleset (.pathBeneath parentHid allowedAccess) ENOMSG (by decide) (by decide) ?_
-              intro _; simp [allowedStepCore, hRs, hKind, hZero, ENOMSG, Errno.EOPNOTSUPP, Errno.ENOSYS, Errno.EFAULT]
+              refine addRule_err_pair s hwf ruleset (.pathBeneath parentHid allowedAccess) Errno.ENOMSG (by decide) (by decide) ?_
+              intro _; simp [allowedStepCore, hRs, hKind, hZero, Errno.ENOMSG, Errno.EOPNOTSUPP, Errno.ENOSYS, Errno.EFAULT]
             · by_cases hUnh : (allowedAccess &&& ~~~handledFs) != 0
               · simp only [hZero, Bool.false_eq_true, ↓reduceIte, hUnh]
                 refine addRule_err_pair s hwf ruleset (.pathBeneath parentHid allowedAccess) Errno.EINVAL (by decide) (by decide) ?_
@@ -809,8 +809,8 @@ theorem refine_landlockAddRule (s : SandboxSysState) (hwf : s.wf = true)
                   cases hPK : pKind with
                   | landlockRuleset _ _ | memfd _ _ | pseudoFs =>
                     simp only [hZero, Bool.false_eq_true, ↓reduceIte, hUnh, hPar, hPK]
-                    refine addRule_err_pair s hwf ruleset (.pathBeneath parentHid allowedAccess) EBADFD (by decide) (by decide) ?_
-                    intro _; simp [allowedStepCore, hRs, hKind, hZero, hUnh, hPar, hPK, EBADFD, Errno.EOPNOTSUPP, Errno.ENOSYS, Errno.EFAULT]
+                    refine addRule_err_pair s hwf ruleset (.pathBeneath parentHid allowedAccess) Errno.EBADFD (by decide) (by decide) ?_
+                    intro _; simp [allowedStepCore, hRs, hKind, hZero, hUnh, hPar, hPK, Errno.EBADFD, Errno.EOPNOTSUPP, Errno.ENOSYS, Errno.EFAULT]
                   | hostPath isDir =>
                     by_cases hDirErr : (!isDir && (allowedAccess &&& LANDLOCK_DIR_ONLY_FS_MASK) != 0) = true
                     · simp only [hZero, Bool.false_eq_true, ↓reduceIte, hUnh, hPar, hPK, hDirErr]
@@ -823,8 +823,8 @@ theorem refine_landlockAddRule (s : SandboxSysState) (hwf : s.wf = true)
           | netPort port allowedAccess =>
             by_cases hZero : allowedAccess == 0
             · simp only [hZero]
-              refine addRule_err_pair s hwf ruleset (.netPort port allowedAccess) ENOMSG (by decide) (by decide) ?_
-              intro _; simp [allowedStepCore, hRs, hKind, hZero, ENOMSG, Errno.EOPNOTSUPP, Errno.ENOSYS, Errno.EFAULT]
+              refine addRule_err_pair s hwf ruleset (.netPort port allowedAccess) Errno.ENOMSG (by decide) (by decide) ?_
+              intro _; simp [allowedStepCore, hRs, hKind, hZero, Errno.ENOMSG, Errno.EOPNOTSUPP, Errno.ENOSYS, Errno.EFAULT]
             · by_cases hUnh : ((allowedAccess &&& ~~~handledNet) != 0 || port > 65535) = true
               · have hBad : (allowedAccess &&& ~~~handledNet) != 0 ∨ port > 65535 := by
                   simpa [Bool.or_eq_true] using hUnh
@@ -910,17 +910,17 @@ theorem refine_landlockRestrictSelf (s : SandboxSysState) (hwf : s.wf = true)
           subst hOp
           cases hKind : dKind with
           | memfd _ _ | hostPath _ | pseudoFs =>
-            have hE1 : EBADFD ≠ Errno.EOPNOTSUPP := by decide
-            have hE2 : EBADFD ≠ Errno.ENOSYS := by decide
-            have hE3 : EBADFD ≠ Errno.EPERM := by decide
-            have hE4 : EBADFD ≠ Errno.EFAULT := by decide
+            have hE1 : Errno.EBADFD ≠ Errno.EOPNOTSUPP := by decide
+            have hE2 : Errno.EBADFD ≠ Errno.ENOSYS := by decide
+            have hE3 : Errno.EBADFD ≠ Errno.EPERM := by decide
+            have hE4 : Errno.EBADFD ≠ Errno.EFAULT := by decide
             cases hSec : s.seccompMayIntercept
             · refine ⟨?_, by simp only [Bool.not_false, ↓reduceIte]; exact hWfPass⟩
               simp [allowedStep, failsPureWrapperGuard, allowedStepCore, hPassT, hRs, hKind, hSec,
                 hE1, hE2, hE3, hE4]
             · refine ⟨?_, by simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]; exact hwf⟩
               simp [allowedStep, failsPureWrapperGuard, hSec, hE4,
-                show 1 ≤ EBADFD.toNat ∧ EBADFD.toNat ≤ 4095 by decide]
+                show 1 ≤ Errno.EBADFD.toNat ∧ Errno.EBADFD.toNat ≤ 4095 by decide]
           | landlockRuleset _ _ =>
             by_cases hCap : s.landlockLayers ≥ LANDLOCK_MAX_STACKED_LAYERS
             · simp only [hCap, ↓reduceIte]

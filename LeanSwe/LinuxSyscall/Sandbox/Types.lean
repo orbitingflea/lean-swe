@@ -4,12 +4,6 @@ namespace LeanSwe.LinuxSyscall.Sandbox
 
 open LeanSwe.LinuxSyscall
 
-/-- No message of desired type (`ENOMSG`, `42` on `x86_64` and `aarch64`); returned by Landlock on empty access masks. -/
-def ENOMSG : Errno := 42
-
-/-- File descriptor in bad state (`EBADFD`, `77` on `x86_64` and `aarch64`); returned by Landlock on non-ruleset or pseudo-FS descriptors. -/
-def EBADFD : Errno := 77
-
 /-- Maximum `memfd_create(2)` name byte length (`249` = `NAME_MAX - strlen("memfd:")`). -/
 def MFD_NAME_MAX : Nat := 249
 
@@ -300,8 +294,8 @@ inductive SandboxErrorKind where
 
 /-- Classify any Linux `Errno` into its `SandboxErrorKind` bucket. -/
 def SandboxErrorKind.ofErrno (e : Errno) : SandboxErrorKind :=
-  if e == Errno.EBADF || e == EBADFD then .badFd
-  else if e == Errno.EINVAL || e == ENOMSG then .invalidArg
+  if e == Errno.EBADF || e == Errno.EBADFD then .badFd
+  else if e == Errno.EINVAL || e == Errno.ENOMSG then .invalidArg
   else if e == Errno.EPERM || e == Errno.EACCES then .permissionDenied
   else if e == Errno.E2BIG || e == Errno.EOPNOTSUPP || e == Errno.ENOSYS ||
       e == Errno.ESRCH || e == Errno.EBUSY then .limitOrUnsupported

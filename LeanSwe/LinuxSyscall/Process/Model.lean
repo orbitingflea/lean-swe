@@ -2161,7 +2161,7 @@ def allowedStep (s : ProcessSysState) (req : ProcessReq) (out : ProcessOutcome) 
       else if flags.notificationPipe && !s.watchQueueSupported then
         match out with
         | .err code =>
-          if code == errnoENOPKG || isKernelFdAllocTransient code ||
+          if code == Errno.ENOPKG || isKernelFdAllocTransient code ||
              (s.ambientSeccomp && isSeccompSynthesizableErrno code) then some s
           else none
         | _ => none
@@ -2208,7 +2208,7 @@ def modelOps : ProcessOpsM (StateM ProcessSysState) HandleId :=
       if !flags.isValid then
         return .error Errno.EINVAL
       else if flags.notificationPipe && !s.watchQueueSupported then
-        return .error errnoENOPKG
+        return .error Errno.ENOPKG
       else
         let rHid := nextFreeHid s.fds s.nextHid
         let wHid := rHid + 1

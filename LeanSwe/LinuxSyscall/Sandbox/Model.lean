@@ -444,7 +444,7 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
           if canDisable then
             some s
           else if attr.handledAccessFs == 0 && attr.handledAccessNet == 0 then
-            if e == ENOMSG then some { s with landlockEnabled := true }
+            if e == Errno.ENOMSG then some { s with landlockEnabled := true }
             else if isNonFdTransientErrno e then some s
             else none
           else if (attr.handledAccessNet &&& ~~~LANDLOCK_ACCESS_NET_ALL) != 0 then
@@ -490,14 +490,14 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
             else
               match rsDesc.kind with
               | .memfd _ _ | .hostPath _ | .pseudoFs =>
-                if e == EBADFD then some { s with landlockEnabled := true }
+                if e == Errno.EBADFD then some { s with landlockEnabled := true }
                 else if isNonFdTransientErrno e then some s
                 else none
               | .landlockRuleset handledFs handledNet =>
                 match rule with
                 | .pathBeneath parentHid allowedAccess =>
                   if allowedAccess == 0 then
-                    if e == ENOMSG then some { s with landlockEnabled := true }
+                    if e == Errno.ENOMSG then some { s with landlockEnabled := true }
                     else if isNonFdTransientErrno e then some s
                     else none
                   else if (allowedAccess &&& ~~~handledFs) != 0 then
@@ -513,7 +513,7 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
                     | some pDesc =>
                       match pDesc.kind with
                       | .landlockRuleset _ _ | .memfd _ _ | .pseudoFs =>
-                        if e == EBADFD then some { s with landlockEnabled := true }
+                        if e == Errno.EBADFD then some { s with landlockEnabled := true }
                         else if isNonFdTransientErrno e then some s
                         else none
                       | .hostPath isDir =>
@@ -525,7 +525,7 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
                           if isNonFdTransientErrno e then some s else none
                 | .netPort port allowedAccess =>
                   if allowedAccess == 0 then
-                    if e == ENOMSG then some { s with landlockEnabled := true }
+                    if e == Errno.ENOMSG then some { s with landlockEnabled := true }
                     else if isNonFdTransientErrno e then some s
                     else none
                   else if (allowedAccess &&& ~~~handledNet) != 0 || port > 65535 then
@@ -555,7 +555,7 @@ def allowedStepCore (s : SandboxSysState) (req : SandboxReq) (out : SandboxOutco
             else
               match desc.kind with
               | .memfd _ _ | .hostPath _ | .pseudoFs =>
-                if e == EBADFD then some sPass
+                if e == Errno.EBADFD then some sPass
                 else if isNonFdTransientErrno e then some s
                 else none
               | .landlockRuleset _ _ =>
@@ -864,7 +864,7 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
         if attr.handledAccessFs == 0 && attr.handledAccessNet == 0 then
           if !s.seccompMayIntercept then
             set { s with landlockEnabled := true }
-          return .error ENOMSG
+          return .error Errno.ENOMSG
         if (attr.handledAccessNet &&& ~~~LANDLOCK_ACCESS_NET_ALL) != 0 then
           if !s.seccompMayIntercept then
             set { s with landlockEnabled := true }
@@ -904,13 +904,13 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
         match rsDesc.kind with
         | .memfd _ _ | .hostPath _ | .pseudoFs =>
           if !s.seccompMayIntercept then set { s with landlockEnabled := true }
-          return .error EBADFD
+          return .error Errno.EBADFD
         | .landlockRuleset handledFs handledNet =>
           match rule with
           | .pathBeneath parentHid allowedAccess =>
             if allowedAccess == 0 then
               if !s.seccompMayIntercept then set { s with landlockEnabled := true }
-              return .error ENOMSG
+              return .error Errno.ENOMSG
             if (allowedAccess &&& ~~~handledFs) != 0 then
               if !s.seccompMayIntercept then set { s with landlockEnabled := true }
               return .error Errno.EINVAL
@@ -922,7 +922,7 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
               match pDesc.kind with
               | .landlockRuleset _ _ | .memfd _ _ | .pseudoFs =>
                 if !s.seccompMayIntercept then set { s with landlockEnabled := true }
-                return .error EBADFD
+                return .error Errno.EBADFD
               | .hostPath isDir =>
                 if !isDir && (allowedAccess &&& LANDLOCK_DIR_ONLY_FS_MASK) != 0 then
                   if !s.seccompMayIntercept then set { s with landlockEnabled := true }
@@ -932,7 +932,7 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
           | .netPort port allowedAccess =>
             if allowedAccess == 0 then
               if !s.seccompMayIntercept then set { s with landlockEnabled := true }
-              return .error ENOMSG
+              return .error Errno.ENOMSG
             if (allowedAccess &&& ~~~handledNet) != 0 then
               if !s.seccompMayIntercept then set { s with landlockEnabled := true }
               return .error Errno.EINVAL
@@ -962,7 +962,7 @@ def modelOps : SandboxOpsM (StateM SandboxSysState) HandleId :=
         match desc.kind with
         | .memfd _ _ | .hostPath _ | .pseudoFs =>
           if !s.seccompMayIntercept then set sPass
-          return .error EBADFD
+          return .error Errno.EBADFD
         | .landlockRuleset _ _ =>
           if s.landlockLayers ≥ LANDLOCK_MAX_STACKED_LAYERS then
             if !s.seccompMayIntercept then

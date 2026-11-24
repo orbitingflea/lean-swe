@@ -276,7 +276,7 @@ private def runProcessMutExtra : IO Unit := do
   if !(← Fuzz.LinuxSyscall.ProcessEnv.probeKernelWatchQueue) then
     let notifOk ←
       match ← LeanSwe.LinuxSyscall.Process.pipe2 { notificationPipe := true } with
-      | .error e => pure (e == LeanSwe.LinuxSyscall.Process.errnoENOPKG)
+      | .error e => pure (e == LeanSwe.LinuxSyscall.Errno.ENOPKG)
       | .ok (r, w) =>
         let _ ← Fuzz.LinuxSyscall.ProcessEnv.closeFd r
         let _ ← Fuzz.LinuxSyscall.ProcessEnv.closeFd w

@@ -584,7 +584,7 @@ def runEdgeCaseReproducers : IO Unit := do
     assertTrue "O_NOTIFICATION_PIPE succeeded despite kernel lacking CONFIG_WATCH_QUEUE" hasWatchQueue
   | .error e =>
     assertTrue "O_NOTIFICATION_PIPE failed despite kernel supporting CONFIG_WATCH_QUEUE" (!hasWatchQueue)
-    assertTrue s!"O_NOTIFICATION_PIPE expected ENOPKG, got {e}" (e == errnoENOPKG)
+    assertTrue s!"O_NOTIFICATION_PIPE expected ENOPKG, got {e}" (e == Errno.ENOPKG)
 
   let (cClone1, _) ← assertOk "spawn clone child 1" (← ProcessEnv.spawnCloneChild (-1) true 7)
   try
@@ -882,7 +882,7 @@ def runEdgeCaseReproducers : IO Unit := do
       (Process.allowedStep (s0.withWatchQueueSupported true) (.pipe2 { notificationPipe := true }) (.piped 0 1)).isSome
   | .error e =>
     assertTrue s!"notificationPipe expected ENOPKG, got {e}"
-      (e == errnoENOPKG)
+      (e == Errno.ENOPKG)
     assertTrue "model watchQueueSupported=false accepts live notificationPipe err"
       (Process.allowedStep s0 (.pipe2 { notificationPipe := true }) (.err e)).isSome
     assertTrue "model watchQueueSupported=false rejects EINVAL on valid notificationPipe"
