@@ -852,6 +852,7 @@ theorem proof_process_sysBridge_resolveExecutablePath_relativeCwdAndPathRules :
 /-- Proof of `test_process_sysBridge_validateWorkingDir_chdirSemantics` for `SysBridge.validateWorkingDir`. -/
 theorem proof_process_sysBridge_validateWorkingDir_chdirSemantics :
     AllPass (test_process_sysBridge_validateWorkingDir_chdirSemantics
+      SysBridge.probePathBytes
       (@SysBridge.validateWorkingDir (StateM PathProbeState) _ Nat)) := by
   refine ⟨?_, trivial⟩
   decide +kernel
@@ -873,6 +874,7 @@ theorem proof_process_sysBridge_streamPipes_drainsStdinAfterOutErrEof :
 /-- Proof of `test_process_sysBridge_maxOutputBytes_truncatesKillsAndReaps` for `SysBridge.mkRawOpsM`. -/
 theorem proof_process_sysBridge_maxOutputBytes_truncatesKillsAndReaps :
     AllPass (test_process_sysBridge_maxOutputBytes_truncatesKillsAndReaps
+      (@SysBridge.stateProcTableOps CapSimState Nat)
       (@SysBridge.mkRawOpsM (StateM CapSimState) _ Nat)) := by
   refine ⟨?_, trivial⟩
   decide +kernel
@@ -880,6 +882,7 @@ theorem proof_process_sysBridge_maxOutputBytes_truncatesKillsAndReaps :
 /-- Proof of `test_process_sysBridge_partialPipe2Failure_cleansUpAllocatedFds` for `SysBridge.spawnPure`. -/
 theorem proof_process_sysBridge_partialPipe2Failure_cleansUpAllocatedFds :
     AllPass (test_process_sysBridge_partialPipe2Failure_cleansUpAllocatedFds
+      (@SysBridge.stateProcTableOps PipeFailSimState Nat)
       (@SysBridge.spawnPure (StateM PipeFailSimState) _ Nat)) := by
   refine ⟨?_, trivial⟩
   decide +kernel
@@ -887,6 +890,7 @@ theorem proof_process_sysBridge_partialPipe2Failure_cleansUpAllocatedFds :
 /-- Proof of `test_process_mkApiM_preservesExactAwaitOutcomes` for `Internal.mkApiM`. -/
 theorem proof_process_mkApiM_preservesExactAwaitOutcomes :
     AllPass (test_process_mkApiM_preservesExactAwaitOutcomes
+      SysBridge.mapRawError
       (@Internal.mkApiM (StateM OutcomeScriptState) _)) := by
   refine ⟨?_, trivial⟩
   decide +kernel
@@ -894,6 +898,7 @@ theorem proof_process_mkApiM_preservesExactAwaitOutcomes :
 /-- Proof of `test_process_sysBridge_spawnCwdIsolationKillPgid1AndChdirError` for `SysBridge.mkRawOpsM`. -/
 theorem proof_process_sysBridge_spawnCwdIsolationKillPgid1AndChdirError :
     AllPass (test_process_sysBridge_spawnCwdIsolationKillPgid1AndChdirError
+      (@SysBridge.stateProcTableOps SpawnAuditState Nat)
       (@SysBridge.mkRawOpsM (StateM SpawnAuditState) _ Nat)) := by
   refine ⟨?_, trivial⟩
   decide +kernel

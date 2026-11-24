@@ -352,7 +352,15 @@ example : ¬ Core.AllPass (test_process_sysBridge_resolveExecutablePath_relative
   exact absurd h (by decide +kernel)
 
 example : ¬ Core.AllPass (test_process_sysBridge_validateWorkingDir_chdirSemantics
+    SysBridge.probePathBytes
     (fun _ _ _ => pure (.ok ()))) := by
+  intro ⟨h, _⟩
+  exact absurd h (by decide +kernel)
+
+example : ¬ Core.AllPass (test_process_sysBridge_validateWorkingDir_chdirSemantics
+    (fun cwd? dir prog =>
+      (match cwd? with | some d => d ++ "/" ++ dir ++ "/" ++ prog | none => dir ++ "/" ++ prog).toUTF8)
+    (@SysBridge.validateWorkingDir (StateM PathProbeState) _ Nat)) := by
   intro ⟨h, _⟩
   exact absurd h (by decide +kernel)
 
@@ -374,13 +382,23 @@ example : ¬ Core.AllPass (test_process_sysBridge_streamPipes_drainsStdinAfterOu
   exact absurd h (by decide +kernel)
 
 example : ¬ Core.AllPass (test_process_sysBridge_maxOutputBytes_truncatesKillsAndReaps
+    (@SysBridge.stateProcTableOps CapSimState Nat)
     (fun deps tbl eintrFuel ioFuel =>
       let base := SysBridge.mkRawOpsM deps tbl eintrFuel ioFuel
       { base with killProcessGroup := fun _ => pure (.ok ()) })) := by
   intro ⟨h, _⟩
   exact absurd h (by decide +kernel)
 
+example : ¬ Core.AllPass (test_process_sysBridge_maxOutputBytes_truncatesKillsAndReaps
+    (fun getTbl setTbl =>
+      let base := SysBridge.stateProcTableOps getTbl setTbl
+      { base with activeCount := pure 1 })
+    (@SysBridge.mkRawOpsM (StateM CapSimState) _ Nat)) := by
+  intro ⟨h, _⟩
+  exact absurd h (by decide +kernel)
+
 example : ¬ Core.AllPass (test_process_sysBridge_partialPipe2Failure_cleansUpAllocatedFds
+    (@SysBridge.stateProcTableOps PipeFailSimState Nat)
     (fun deps _ _ req => do
       match ← deps.proc.pipe2 { cloexec := true } with
       | .error e => return .error (SysBridge.mapErrno (some req.program) "pipe2" e)
@@ -404,6 +422,7 @@ example : ¬ Core.AllPass (test_process_sysBridge_partialPipe2Failure_cleansUpAl
 /-- Mutant `mkApiM` corrupting `.signaled` signal number and swapping `stdout`/`stderr` is rejected by `test_process_mkApiM_preservesExactAwaitOutcomes`. -/
 theorem mutant_mkApiM_corruptedSignaledAndSwappedStreams_rejected :
     ¬ Core.AllPass (test_process_mkApiM_preservesExactAwaitOutcomes
+      SysBridge.mapRawError
       (fun raw =>
         let base := Internal.mkApiM raw
         { base with
@@ -430,6 +449,7 @@ theorem mutant_resolveExecutablePath_acceptsFifo_rejected :
 /-- Mutant `mkRawOpsM` sending `SIGKILL` to `0` on `pgid = 1` or skipping pre-`PATH` `cwd` validation is rejected by `test_process_sysBridge_spawnCwdIsolationKillPgid1AndChdirError`. -/
 theorem mutant_mkRawOpsM_pgid1KillZero_rejected :
     ¬ Core.AllPass (test_process_sysBridge_spawnCwdIsolationKillPgid1AndChdirError
+      (@SysBridge.stateProcTableOps SpawnAuditState Nat)
       (fun deps tbl eintrFuel ioFuel =>
         let base := SysBridge.mkRawOpsM deps tbl eintrFuel ioFuel
         { base with

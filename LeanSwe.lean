@@ -50,6 +50,7 @@ import LeanSwe.Fs.Proofs.FsRefines
 import LeanSwe.Fs.Proofs
 import LeanSwe.Fs.RuntimeTests
 import LeanSwe.Process.Types
+import LeanSwe.Process.Types.Internal
 import LeanSwe.Process.SysBridge
 import LeanSwe.Process.Impl
 import LeanSwe.Process.Interface
