@@ -1,5 +1,4 @@
 import LeanSwe.LinuxSyscall.Process.Proofs
-import LeanSwe.LinuxSyscall.Files.Proofs
 import LeanSwe.LinuxSyscall.TimeRand.Proofs
 import LeanSwe.Process.Model.HealthySim
 import LeanSwe.Process.SysBridge

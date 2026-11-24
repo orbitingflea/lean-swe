@@ -3,9 +3,7 @@ import LeanSwe.LinuxSyscall.Files.Model
 import LeanSwe.LinuxSyscall.Net.Model
 import LeanSwe.LinuxSyscall.Net.Proofs.HealthyStep
 import LeanSwe.LinuxSyscall.Poll.Model
-import LeanSwe.LinuxSyscall.Poll.Proofs
 import LeanSwe.LinuxSyscall.Dns.Model
-import LeanSwe.LinuxSyscall.Dns.Proofs
 import LeanSwe.LinuxSyscall.TimeRand.Model
 import LeanSwe.NetRelay.Types
 import LeanSwe.NetRelay.Interface

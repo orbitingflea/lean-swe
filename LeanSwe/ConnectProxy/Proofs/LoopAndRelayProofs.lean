@@ -963,7 +963,19 @@ theorem buildPollBatchSync_laws
     dsimp only [Option.map] at hTs
     injection hTs with hEq
     subst hEq
-    exact Poll.msToPollTimespec_isValid ms
+    unfold Poll.msToPollTimespec Poll.Timespec.isValid Poll.NANOS_PER_SEC
+    simp only [Bool.and_eq_true, decide_eq_true_eq, Int.ofNat_eq_natCast]
+    have hCap : Nat.min (ms / 1000) 9223372036854775807 ≤ 9223372036854775807 := Nat.min_le_right _ _
+    have hMod : ms % 1000 < 1000 := Nat.mod_lt ms (by decide)
+    refine ⟨?_, ?_⟩
+    · rw [Int64.le_iff_toInt_le, Int64.toInt_ofInt, Int.bmod_eq_of_le]
+      · have : (0 : Int64).toInt = 0 := rfl; omega
+      · change -9223372036854775808 ≤ (↑(Nat.min (ms / 1000) 9223372036854775807) : Int); omega
+      · change (↑(Nat.min (ms / 1000) 9223372036854775807) : Int) < 9223372036854775808; omega
+    · rw [UInt32.lt_iff_toNat_lt, UInt32.toNat_ofNat',
+        Nat.mod_eq_of_lt (by change ms % 1000 * 1000000 < 4294967296; omega)]
+      have : (1000000000 : UInt32).toNat = 1000000000 := rfl
+      omega
 
 private theorem drainWakeSocket_laws
     (sys : CProxySysOpsM (StateM HealthySysWorld) Nat)
