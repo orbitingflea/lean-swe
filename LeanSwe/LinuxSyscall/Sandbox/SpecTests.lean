@@ -9,7 +9,7 @@ open Core (NondetTest ErrorObligation ErrorJustification ErrorTestMode Assumptio
 open Core.NondetTest
 open LeanSwe.LinuxSyscall
 
-/-- `Sandbox` ABI constants (`ENOMSG = 42`, `EBADFD = 77`, `MFD_NAME_MAX = 249`, `SECCOMP_MAX_FILTER_INSNS = 160`, `LANDLOCK_MAX_STACKED_LAYERS = 16`, `MAX_LINUX_SIGNAL = 64`), `Errno.isTransientOsErrno` (`EFAULT` excluded), and `SandboxErrorKind.ofErrno` map every `e : Errno` to its exact bucket. -/
+/-- Shared `LinuxSyscall.Errno` constants (`Errno.ENOMSG = 42`, `Errno.EBADFD = 77`) and `Sandbox` ABI constants (`MFD_NAME_MAX = 249`, `SECCOMP_MAX_FILTER_INSNS = 160`, `LANDLOCK_MAX_STACKED_LAYERS = 16`, `MAX_LINUX_SIGNAL = 64`) have exact values; `Errno.isTransientOsErrno` (`EFAULT` excluded) and `SandboxErrorKind.ofErrno` map every `e : Errno` to its exact bucket. -/
 def test_sandbox_errno_classificationAndConstants
     {runner} [NondetTest runner]
     (isTransient : Errno → Bool := Errno.isTransientOsErrno)

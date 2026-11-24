@@ -235,10 +235,15 @@ jobs:
           ASSUMP_LOG="$LANE_STATE_DIR/assump.log"
           LANE_PIDS=()
           cleanup_parallel() {
-            local p
+            local p sig
+            set +m
             if (( ${#LANE_PIDS[@]} > 0 )); then
-              for p in "${LANE_PIDS[@]}"; do
-                kill "$p" 2>/dev/null || true
+              for sig in TERM KILL; do
+                for p in "${LANE_PIDS[@]}"; do
+                  [[ "$p" =~ ^[1-9][0-9]*$ && "$p" -gt 1 ]] || continue
+                  kill "-$sig" -- -"$p" 2>/dev/null || kill "-$sig" "$p" 2>/dev/null || true
+                done
+                [[ "$sig" == TERM ]] && sleep 0.1 || true
               done
               wait "${LANE_PIDS[@]}" 2>/dev/null || true
               LANE_PIDS=()
@@ -247,8 +252,8 @@ jobs:
             [[ -z "$OWN_LOG_DIR" ]] || rm -rf "$OWN_LOG_DIR"
           }
           trap cleanup_parallel EXIT
-          trap 'cleanup_parallel; exit 130' INT
-          trap 'cleanup_parallel; exit 143' TERM
+          trap 'trap "" INT TERM; cleanup_parallel; exit 130' INT
+          trap 'trap "" INT TERM; cleanup_parallel; exit 143' TERM
           ASSUMP_NONCE=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
           [[ "$ASSUMP_NONCE" =~ ^[0-9a-f]{32}$ ]] || { echo "ASSUMP_NONCE_ERROR: invalid nonce" >&2; exit 2; }
           rm -f "$ASSUMP_LOG"
@@ -301,7 +306,9 @@ jobs:
             rm -f "$log" "$tf"
             LANE_LOGS+=("$log")
             LANE_TFILES+=("$tf")
+            set -m
             (
+              set +m
               trap - INT TERM
               set -euo pipefail
               _t0="$SECONDS"
@@ -310,12 +317,14 @@ jobs:
               "lane_${i}"
             ) </dev/null >"$log" 2>&1 &
             LANE_PIDS+=("$!")
+            set +m
           done
           FAIL_RC=0
           LANE_RCS=()
           for idx in 0 1 2 3; do
             rc=0
             wait "${LANE_PIDS[$idx]}" || rc=$?
+            unset "LANE_PIDS[$idx]"
             LANE_RCS+=("$rc")
             if (( rc != 0 && FAIL_RC == 0 )); then
               FAIL_RC=$rc
