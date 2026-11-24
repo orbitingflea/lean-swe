@@ -10,116 +10,6 @@ open Core.NondetTest
 open LeanSwe.Process
 open LeanSwe.Compress
 
-private theorem digitChar_ne_nul (k : Nat) (hk : k < 10) : Nat.digitChar k ≠ '\x00' := by
-  have hcases : k = 0 ∨ k = 1 ∨ k = 2 ∨ k = 3 ∨ k = 4 ∨
-      k = 5 ∨ k = 6 ∨ k = 7 ∨ k = 8 ∨ k = 9 := by omega
-  rcases hcases with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> decide
-
-private theorem toDigitsCore_all_ne_nul (fuel n : Nat) (acc : List Char)
-    (hacc : acc.all (fun c => c != '\x00') = true) :
-    (Nat.toDigitsCore 10 fuel n acc).all (fun c => c != '\x00') = true := by
-  induction fuel generalizing n acc with
-  | zero => exact hacc
-  | succ f ih =>
-    unfold Nat.toDigitsCore
-    dsimp only
-    have hlt : n % 10 < 10 := Nat.mod_lt n (by decide)
-    have hne : (Nat.digitChar (n % 10) != '\x00') = true :=
-      bne_iff_ne.mpr (digitChar_ne_nul (n % 10) hlt)
-    split
-    · simp [List.all_cons, hne, hacc]
-    · exact ih (n / 10) (Nat.digitChar (n % 10) :: acc) (by simp [List.all_cons, hne, hacc])
-
-private theorem toString_nat_hasNul_false (n : Nat) :
-    LeanSwe.Process.Internal.hasNul (toString n) = false := by
-  have hall : (Nat.toDigits 10 n).all (fun c => c != '\x00') = true :=
-    toDigitsCore_all_ne_nul (n + 1) n [] rfl
-  have hmem : ∀ c ∈ (Nat.repr n).toList, c ≠ '\x00' := by
-    intro c hc
-    rw [Nat.repr, String.toList_ofList] at hc
-    have hc' := List.all_eq_true.mp hall c hc
-    exact bne_iff_ne.mp hc'
-  change (toString n).toList.contains '\x00' = false
-  cases h : (toString n).toList.contains '\x00'
-  · rfl
-  · exact absurd (hmem '\x00' (List.elem_iff.mp h)) (fun h0 => h0 rfl)
-
-private theorem hasNul_append (a b : String)
-    (ha : LeanSwe.Process.Internal.hasNul a = false)
-    (hb : LeanSwe.Process.Internal.hasNul b = false) :
-    LeanSwe.Process.Internal.hasNul (a ++ b) = false := by
-  simp only [LeanSwe.Process.Internal.hasNul] at ha hb ⊢
-  rw [String.toList_append]
-  cases h : (a.toList ++ b.toList).contains '\x00'
-  · rfl
-  · rcases List.mem_append.mp (List.elem_iff.mp h) with h1 | h2
-    · have : a.toList.contains '\x00' = true := List.elem_iff.mpr h1
-      rw [this] at ha; cases ha
-    · have : b.toList.contains '\x00' = true := List.elem_iff.mpr h2
-      rw [this] at hb; cases hb
-
-private theorem hasNul_dash_repr (n : Nat) :
-    LeanSwe.Process.Internal.hasNul (toString "-" ++ Nat.repr n) = false :=
-  hasNul_append (toString "-") (Nat.repr n) (by decide) (toString_nat_hasNul_false n)
-
-private theorem hasNul_dashT_repr (n : Nat) :
-    LeanSwe.Process.Internal.hasNul (toString "-T" ++ Nat.repr n) = false :=
-  hasNul_append (toString "-T") (Nat.repr n) (by decide) (toString_nat_hasNul_false n)
-
-private theorem mkCompressArgs_any_hasNul_false (codec : Codec) (opts : CompressOptions) :
-    (Internal.mkCompressArgs codec opts).toList.any LeanSwe.Process.Internal.hasNul = false := by
-  unfold Internal.mkCompressArgs
-  cases codec <;> cases opts.level <;> cases opts.threads <;>
-    simp [hasNul_dash_repr, hasNul_dashT_repr] <;>
-    decide
-
-private theorem validateRequest_mkCompressRequest (codec : Codec) (opts : CompressOptions)
-    (input : ByteArray) (ht : opts.timeoutMs ≠ 0) :
-    LeanSwe.Process.Internal.validateRequest (Internal.mkCompressRequest codec opts input) =
-      .ok (Internal.mkCompressRequest codec opts input) := by
-  have hArgs : (Internal.mkCompressArgs codec opts).toList.any LeanSwe.Process.Internal.hasNul = false :=
-    mkCompressArgs_any_hasNul_false codec opts
-  have hProg : (Internal.codecProgram codec).isEmpty = false ∧
-      LeanSwe.Process.Internal.hasNul (Internal.codecProgram codec) = false := by
-    cases codec <;> exact ⟨rfl, rfl⟩
-  have hEnv : Internal.codecSanitizedEnv.toList.any LeanSwe.Process.Internal.isInvalidEnvEntry = false := by
-    decide
-  have hDedup : (LeanSwe.Process.Internal.dedupEnvList Internal.codecSanitizedEnv.toList).toArray =
-      Internal.codecSanitizedEnv := by
-    decide
-  have hTout : (some opts.timeoutMs == some 0) = false := by
-    cases h : opts.timeoutMs with
-    | zero => exact absurd h ht
-    | succ _ => rfl
-  simp only [LeanSwe.Process.Internal.validateRequest, Internal.mkCompressRequest,
-    hProg.1, hProg.2, hArgs, hEnv, hDedup, hTout, Bool.false_eq_true, ↓reduceIte]
-
-private theorem validateRequest_mkDecompressRequest (codec : Codec) (opts : DecompressOptions)
-    (input : ByteArray) (ht : opts.timeoutMs ≠ 0) :
-    LeanSwe.Process.Internal.validateRequest (Internal.mkDecompressRequest codec opts input) =
-      .ok (Internal.mkDecompressRequest codec opts input) := by
-  have hArgs : (Internal.mkDecompressArgs codec).toList.any LeanSwe.Process.Internal.hasNul = false := by
-    cases codec <;> decide
-  have hProg : (Internal.codecProgram codec).isEmpty = false ∧
-      LeanSwe.Process.Internal.hasNul (Internal.codecProgram codec) = false := by
-    cases codec <;> exact ⟨rfl, rfl⟩
-  have hEnv : Internal.codecSanitizedEnv.toList.any LeanSwe.Process.Internal.isInvalidEnvEntry = false := by
-    decide
-  have hDedup : (LeanSwe.Process.Internal.dedupEnvList Internal.codecSanitizedEnv.toList).toArray =
-      Internal.codecSanitizedEnv := by
-    decide
-  have hTout : (some opts.timeoutMs == some 0) = false := by
-    cases h : opts.timeoutMs with
-    | zero => exact absurd h ht
-    | succ _ => rfl
-  simp only [LeanSwe.Process.Internal.validateRequest, Internal.mkDecompressRequest,
-    hProg.1, hProg.2, hArgs, hEnv, hDedup, hTout, Bool.false_eq_true, ↓reduceIte]
-
-private theorem validateRequest_mkToolVersionRequest (codec : Codec) :
-    LeanSwe.Process.Internal.validateRequest (Internal.mkToolVersionRequest codec) =
-      .ok (Internal.mkToolVersionRequest codec) := by
-  cases codec <;> rfl
-
 private theorem validateCompressOptions_false_implies_error (codec : Codec) (opts : CompressOptions)
     (input : ByteArray) (h : isValidCompressInput codec opts input = false) :
     ∃ e, Internal.validateCompressOptions codec opts input = .error e ∧
@@ -249,13 +139,6 @@ private theorem isResourceExhausted_of_kind {pe : ProcessError} (h : pe.kind ≠
   | invalidInput => exact absurd hpk h
   | notFound | permissionDenied | timedOut | outputLimitExceeded | terminatedBySignal | nonZeroExit | ioError => rfl
 
-private theorem ensureNonEmptyMsg_eq_of_not_empty (fb : String) (pe : ProcessError)
-    (h : (!pe.message.isEmpty) = true) :
-    LeanSwe.Process.Internal.ensureNonEmptyMsg fb pe = pe := by
-  unfold LeanSwe.Process.Internal.ensureNonEmptyMsg
-  have hm : pe.message.isEmpty = false := by cases he : pe.message.isEmpty <;> simp_all
-  simp [hm]
-
 private theorem classifyProcessError_spec (codec : Codec) (pe : ProcessError) :
     let e := Internal.classifyProcessError codec pe
     e.kind = expectedProcessErrorKindFor pe ∧
@@ -346,8 +229,8 @@ private theorem classifyExitResult_nonzero_msg (codec : Codec) (isDecompress : B
 
 /-- Proof of `test_compress_compressWith_invalidOptionsRejectWithoutSpawn` for `Internal.mkApiM`. -/
 theorem proof_compress_compressWith_invalidOptionsRejectWithoutSpawn
-    {S : Type} (raw : RawProcessOpsM (StateM S)) :
-    AllPass (test_compress_compressWith_invalidOptionsRejectWithoutSpawn Internal.mkApiM raw) := by
+    {S : Type} (proc : ProcessApiM (StateM S)) :
+    AllPass (test_compress_compressWith_invalidOptionsRejectWithoutSpawn Internal.mkApiM proc) := by
   intro s₀ codec opts input hInvalid
   rcases validateCompressOptions_false_implies_error codec opts input hInvalid with
     ⟨e, hVal, hKind, hCodec, hExit, hErr, hMsg⟩
@@ -359,15 +242,15 @@ theorem proof_compress_compressWith_invalidOptionsRejectWithoutSpawn
 
 /-- Non-vacuity `CanReach` witness for `test_compress_compressWith_invalidOptionsRejectWithoutSpawn`. -/
 theorem reach_compress_compressWith_invalidOptionsRejectWithoutSpawn :
-    CanReach (test_compress_compressWith_invalidOptionsRejectWithoutSpawn Internal.mkApiM mockRawOps) := by
+    CanReach (test_compress_compressWith_invalidOptionsRejectWithoutSpawn Internal.mkApiM mockProcessApi) := by
   refine ⟨{}, .gzip, { threads := some 2 }, ByteArray.empty, by decide, ?_⟩
-  exact proof_compress_compressWith_invalidOptionsRejectWithoutSpawn mockRawOps
+  exact proof_compress_compressWith_invalidOptionsRejectWithoutSpawn mockProcessApi
     {} .gzip { threads := some 2 } ByteArray.empty (by decide)
 
 /-- Proof of `test_compress_decompressWith_invalidOptionsRejectWithoutSpawn` for `Internal.mkApiM`. -/
 theorem proof_compress_decompressWith_invalidOptionsRejectWithoutSpawn
-    {S : Type} (raw : RawProcessOpsM (StateM S)) :
-    AllPass (test_compress_decompressWith_invalidOptionsRejectWithoutSpawn Internal.mkApiM raw) := by
+    {S : Type} (proc : ProcessApiM (StateM S)) :
+    AllPass (test_compress_decompressWith_invalidOptionsRejectWithoutSpawn Internal.mkApiM proc) := by
   intro s₀ codec opts input hInvalid
   rcases validateDecompressOptions_false_implies_error codec opts input hInvalid with
     ⟨e, hVal, hKind, hCodec, hExit, hErr, hMsg⟩
@@ -379,23 +262,20 @@ theorem proof_compress_decompressWith_invalidOptionsRejectWithoutSpawn
 
 /-- Non-vacuity `CanReach` witness for `test_compress_decompressWith_invalidOptionsRejectWithoutSpawn`. -/
 theorem reach_compress_decompressWith_invalidOptionsRejectWithoutSpawn :
-    CanReach (test_compress_decompressWith_invalidOptionsRejectWithoutSpawn Internal.mkApiM mockRawOps) := by
+    CanReach (test_compress_decompressWith_invalidOptionsRejectWithoutSpawn Internal.mkApiM mockProcessApi) := by
   refine ⟨{}, .zstd, { timeoutMs := 0 }, ByteArray.empty, by decide, ?_⟩
-  exact proof_compress_decompressWith_invalidOptionsRejectWithoutSpawn mockRawOps
+  exact proof_compress_decompressWith_invalidOptionsRejectWithoutSpawn mockProcessApi
     {} .zstd { timeoutMs := 0 } ByteArray.empty (by decide)
 
 /-- Proof of `test_compress_compressWith_buildsExactExecRequest` for `Internal.mkApiM`. -/
 theorem proof_compress_compressWith_buildsExactExecRequest :
     AllPass (test_compress_compressWith_buildsExactExecRequest Internal.mkApiM) := by
-  intro codec opts input outBytes errBytes active₀ hValid
-  rcases validateCompressOptions_true_implies_ok codec opts input hValid with ⟨hVal, hTout⟩
-  have hReqVal := validateRequest_mkCompressRequest codec opts input hTout
+  intro codec opts input outBytes errBytes hValid
+  rcases validateCompressOptions_true_implies_ok codec opts input hValid with ⟨hVal, _⟩
   dsimp only [test_compress_compressWith_buildsExactExecRequest, Internal.mkApiM,
     Internal.compressWith, bind, StateT.bind, pure, StateT.pure, assert]
   rw [hVal]
-  dsimp only
-  rw [LeanSwe.Process.Internal.run, hReqVal]
-  dsimp only [mockRawOps, Internal.classifyExitResult, StateT.run, bind, StateT.bind,
+  dsimp only [mockProcessApi, Internal.classifyExitResult, StateT.run, bind, StateT.bind,
     pure, StateT.pure, get, set, modify, modifyGet, MonadStateOf.modifyGet,
     StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set,
     StateT.get, StateT.set, Internal.mkCompressRequest]
@@ -405,32 +285,29 @@ theorem proof_compress_compressWith_buildsExactExecRequest :
   by_cases hOut : outBytes.size ≤ opts.maxOutputBytes
   · have hGt : ¬ (outBytes.size > opts.maxOutputBytes) := by omega
     simp only [hOut, hGt, ↓reduceIte]
-    exact ⟨trivial, ⟨trivial, trivial, trivial⟩, trivial, trivial, trivial⟩
+    exact ⟨trivial, trivial, trivial, trivial⟩
   · have hGt : outBytes.size > opts.maxOutputBytes := by omega
     simp only [hOut, hGt, ↓reduceIte]
     refine ⟨⟨_, rfl, rfl, rfl, rfl, decodeStderr_eq_expected errBytes,
       append_head_ne_empty _ _ (codecProgram_ne_empty codec)⟩,
-      ⟨trivial, trivial, trivial⟩, trivial, trivial, trivial⟩
+      trivial, trivial, trivial⟩
 
 /-- Non-vacuity `CanReach` witness for `test_compress_compressWith_buildsExactExecRequest`. -/
 theorem reach_compress_compressWith_buildsExactExecRequest :
     CanReach (test_compress_compressWith_buildsExactExecRequest Internal.mkApiM) := by
-  refine ⟨.zstd, { level := some 3, threads := some 0 }, ByteArray.empty, ByteArray.empty, ByteArray.empty, 0, by decide, ?_⟩
+  refine ⟨.zstd, { level := some 3, threads := some 0 }, ByteArray.empty, ByteArray.empty, ByteArray.empty, by decide, ?_⟩
   exact proof_compress_compressWith_buildsExactExecRequest
-    .zstd { level := some 3, threads := some 0 } ByteArray.empty ByteArray.empty ByteArray.empty 0 (by decide)
+    .zstd { level := some 3, threads := some 0 } ByteArray.empty ByteArray.empty ByteArray.empty (by decide)
 
 /-- Proof of `test_compress_decompressWith_buildsExactExecRequest_noEmptyShortCircuit` for `Internal.mkApiM`. -/
 theorem proof_compress_decompressWith_buildsExactExecRequest_noEmptyShortCircuit :
     AllPass (test_compress_decompressWith_buildsExactExecRequest_noEmptyShortCircuit Internal.mkApiM) := by
-  intro codec opts input exitCode outBytes errBytes active₀ hValid
-  rcases validateDecompressOptions_true_implies_ok codec opts input hValid with ⟨hVal, hTout⟩
-  have hReqVal := validateRequest_mkDecompressRequest codec opts input hTout
+  intro codec opts input exitCode outBytes errBytes hValid
+  rcases validateDecompressOptions_true_implies_ok codec opts input hValid with ⟨hVal, _⟩
   dsimp only [test_compress_decompressWith_buildsExactExecRequest_noEmptyShortCircuit, Internal.mkApiM,
     Internal.decompressWith, bind, StateT.bind, pure, StateT.pure, assert]
   rw [hVal]
-  dsimp only
-  rw [LeanSwe.Process.Internal.run, hReqVal]
-  dsimp only [mockRawOps, Internal.classifyExitResult, StateT.run, bind, StateT.bind,
+  dsimp only [mockProcessApi, Internal.classifyExitResult, StateT.run, bind, StateT.bind,
     pure, StateT.pure, get, set, modify, modifyGet, MonadStateOf.modifyGet,
     StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set,
     StateT.get, StateT.set, Internal.mkDecompressRequest]
@@ -439,7 +316,7 @@ theorem proof_compress_decompressWith_buildsExactExecRequest_noEmptyShortCircuit
     stderrPipeSlack_eq_expected]
   by_cases hNz : (exitCode != 0) = true
   · simp only [hNz, ↓reduceIte]
-    refine ⟨⟨trivial, trivial, trivial⟩, trivial, trivial,
+    refine ⟨trivial, trivial,
       ⟨_, rfl, rfl, rfl, rfl, decodeStderr_eq_expected errBytes,
         classifyExitResult_nonzero_msg codec true { exitCode := exitCode, stdout := outBytes, stderr := errBytes }⟩, trivial⟩
   · simp only [hNz, Bool.false_eq_true, ↓reduceIte]
@@ -448,21 +325,21 @@ theorem proof_compress_decompressWith_buildsExactExecRequest_noEmptyShortCircuit
       by_cases hGh : (codec == .gzip && !Model.hasGzipHeader input) = true
       · have hGhI : (codec == .gzip && !Internal.hasGzipHeader input) = true := hGh
         simp only [Bool.true_and, hGh, hGhI, ↓reduceIte]
-        refine ⟨⟨trivial, trivial, trivial⟩, trivial, trivial,
+        refine ⟨trivial, trivial,
           ⟨_, rfl, rfl, rfl, rfl, rfl,
             append_head_ne_empty _ _ (codecProgram_ne_empty codec)⟩, trivial⟩
       · have hGhF : (codec == .gzip && !Model.hasGzipHeader input) = false :=
           Bool.eq_false_iff.mpr hGh
         have hGhFI : (codec == .gzip && !Internal.hasGzipHeader input) = false := hGhF
         simp only [Bool.true_and, hGhF, hGhFI, Bool.false_eq_true, ↓reduceIte]
-        refine ⟨⟨trivial, trivial, trivial⟩, trivial, trivial,
+        refine ⟨trivial, trivial,
           ⟨_, rfl, rfl, rfl, rfl, decodeStderr_eq_expected errBytes,
             append_head_ne_empty _ _ (codecProgram_ne_empty codec)⟩, trivial⟩
     · simp only [hOut, ↓reduceIte]
       by_cases hGh : (codec == .gzip && !Model.hasGzipHeader input) = true
       · have hGhI : (codec == .gzip && !Internal.hasGzipHeader input) = true := hGh
         simp only [Bool.true_and, hGh, hGhI, ↓reduceIte]
-        refine ⟨⟨trivial, trivial, trivial⟩, trivial, trivial,
+        refine ⟨trivial, trivial,
           ⟨_, rfl, rfl, rfl, rfl, rfl,
             append_head_ne_empty _ _ (codecProgram_ne_empty codec)⟩, trivial⟩
       · have hGhF : (codec == .gzip && !Model.hasGzipHeader input) = false :=
@@ -474,14 +351,14 @@ theorem proof_compress_decompressWith_buildsExactExecRequest_noEmptyShortCircuit
 /-- Non-vacuity `CanReach` witness for `test_compress_decompressWith_buildsExactExecRequest_noEmptyShortCircuit`. -/
 theorem reach_compress_decompressWith_buildsExactExecRequest_noEmptyShortCircuit :
     CanReach (test_compress_decompressWith_buildsExactExecRequest_noEmptyShortCircuit Internal.mkApiM) := by
-  refine ⟨.gzip, {}, ByteArray.empty, 2, ByteArray.empty, "trailing".toUTF8, 0, by decide, ?_⟩
+  refine ⟨.gzip, {}, ByteArray.empty, 2, ByteArray.empty, "trailing".toUTF8, by decide, ?_⟩
   exact proof_compress_decompressWith_buildsExactExecRequest_noEmptyShortCircuit
-    .gzip {} ByteArray.empty 2 ByteArray.empty "trailing".toUTF8 0 (by decide)
+    .gzip {} ByteArray.empty 2 ByteArray.empty "trailing".toUTF8 (by decide)
 
 /-- Proof of `test_compress_defaults_matchWithDefaultOptions` for `Internal.mkApiM`. -/
 theorem proof_compress_defaults_matchWithDefaultOptions
-    {S : Type} (raw : RawProcessOpsM (StateM S)) :
-    AllPass (test_compress_defaults_matchWithDefaultOptions Internal.mkApiM raw) := by
+    {S : Type} (proc : ProcessApiM (StateM S)) :
+    AllPass (test_compress_defaults_matchWithDefaultOptions Internal.mkApiM proc) := by
   intro s₀ codec input
   dsimp only [test_compress_defaults_matchWithDefaultOptions, Internal.mkApiM,
     bind, pure, assert]
@@ -489,90 +366,47 @@ theorem proof_compress_defaults_matchWithDefaultOptions
 
 /-- Non-vacuity `CanReach` witness for `test_compress_defaults_matchWithDefaultOptions`. -/
 theorem reach_compress_defaults_matchWithDefaultOptions :
-    CanReach (test_compress_defaults_matchWithDefaultOptions Internal.mkApiM mockRawOps) :=
-  ⟨{}, .zstd, ByteArray.empty, proof_compress_defaults_matchWithDefaultOptions mockRawOps {} .zstd ByteArray.empty⟩
+    CanReach (test_compress_defaults_matchWithDefaultOptions Internal.mkApiM mockProcessApi) :=
+  ⟨{}, .zstd, ByteArray.empty, proof_compress_defaults_matchWithDefaultOptions mockProcessApi {} .zstd ByteArray.empty⟩
 
 /-- Proof of `test_compress_spawnErrors_mappedCorrectly` for `Internal.mkApiM`. -/
 theorem proof_compress_spawnErrors_mappedCorrectly :
     AllPass (test_compress_spawnErrors_mappedCorrectly Internal.mkApiM) := by
-  intro codec isDecompress copts dopts pe input active₀ hValid
-  let pe' := LeanSwe.Process.Internal.ensureNonEmptyMsg "process spawn failed" pe
-  have hSpec := classifyProcessError_spec codec pe'
-  have hkind : pe'.kind = pe.kind := by
-    unfold pe' LeanSwe.Process.Internal.ensureNonEmptyMsg
-    split <;> rfl
-  have hexc : pe'.exitCode = pe.exitCode := by
-    unfold pe' LeanSwe.Process.Internal.ensureNonEmptyMsg
-    split <;> rfl
-  have hserr : pe'.stderr = pe.stderr := by
-    unfold pe' LeanSwe.Process.Internal.ensureNonEmptyMsg
-    split <;> rfl
-  have hResEq : isResourceExhaustedProcessError pe' = isResourceExhaustedProcessError pe := by
-    unfold pe' isResourceExhaustedProcessError LeanSwe.Process.Internal.ensureNonEmptyMsg
-    split <;> rfl
-  have hKindFor : expectedProcessErrorKindFor pe' = expectedProcessErrorKindFor pe := by
-    simp [expectedProcessErrorKindFor, hResEq, hkind]
-  have hPeSpec :
-      (Internal.classifyProcessError codec pe').kind = expectedProcessErrorKindFor pe ∧
-      (Internal.classifyProcessError codec pe').codec = some codec ∧
-      (Internal.classifyProcessError codec pe').exitCode =
-        expectedProcessErrorExitCode (expectedProcessErrorKindFor pe) pe.exitCode ∧
-      (Internal.classifyProcessError codec pe').stderr =
-        (match expectedProcessErrorKindFor pe with
-        | .toolNotFound | .invalidInput => none
-        | _ => pe.stderr.bind expectedStderr) ∧
-      (Internal.classifyProcessError codec pe').message ≠ "" ∧
-      (pe.message = "" ∨ (Internal.classifyProcessError codec pe').message = pe.message) := by
-    rcases hSpec with ⟨hk, hc, hex, herr, hne, hmsg⟩
-    refine ⟨hk.trans hKindFor, hc, ?_, ?_, hne, ?_⟩
-    · simpa [hKindFor, hexc] using hex
-    · simpa [hKindFor, hserr] using herr
-    · by_cases hm : pe.message = ""
-      · exact Or.inl hm
-      · have hpe : pe'.message = pe.message := by
-          simp [pe', LeanSwe.Process.Internal.ensureNonEmptyMsg, hm]
-        rcases hmsg with h0 | h1
-        · exact absurd (by simpa [hpe] using h0) hm
-        · exact Or.inr (h1.trans hpe)
+  intro codec isDecompress copts dopts pe input hValid
+  have hPeSpec := classifyProcessError_spec codec pe
   cases isDecompress with
   | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at hValid
-    rcases validateCompressOptions_true_implies_ok codec copts input hValid with ⟨hVal, hTout⟩
-    have hReqVal := validateRequest_mkCompressRequest codec copts input hTout
+    rcases validateCompressOptions_true_implies_ok codec copts input hValid with ⟨hVal, _⟩
     dsimp only [test_compress_spawnErrors_mappedCorrectly, Internal.mkApiM,
       Internal.compressWith, bind, StateT.bind, pure, StateT.pure, assert]
     simp only [Bool.false_eq_true, ↓reduceIte]
     rw [hVal]
-    dsimp only
-    rw [LeanSwe.Process.Internal.run, hReqVal]
-    dsimp only [mockRawOps, StateT.run, bind, StateT.bind, pure, StateT.pure,
+    dsimp only [mockProcessApi, StateT.run, bind, StateT.bind, pure, StateT.pure,
       get, set, modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet,
       getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
     dsimp
-    exact ⟨⟨rfl, rfl⟩, ⟨Internal.classifyProcessError codec pe', rfl,
+    exact ⟨rfl, ⟨Internal.classifyProcessError codec pe, rfl,
       hPeSpec.1, hPeSpec.2.1, hPeSpec.2.2.1, hPeSpec.2.2.2.1, hPeSpec.2.2.2.2.1,
       match hPeSpec.2.2.2.2.2 with | Or.inl h => Or.inl h | Or.inr h => Or.inr (Or.inl h)⟩, trivial⟩
   | true =>
     simp only [↓reduceIte] at hValid
-    rcases validateDecompressOptions_true_implies_ok codec dopts input hValid with ⟨hVal, hTout⟩
-    have hReqVal := validateRequest_mkDecompressRequest codec dopts input hTout
+    rcases validateDecompressOptions_true_implies_ok codec dopts input hValid with ⟨hVal, _⟩
     dsimp only [test_compress_spawnErrors_mappedCorrectly, Internal.mkApiM,
       Internal.decompressWith, bind, StateT.bind, pure, StateT.pure, assert]
     simp only [↓reduceIte]
     rw [hVal]
-    dsimp only
-    rw [LeanSwe.Process.Internal.run, hReqVal]
-    dsimp only [mockRawOps, StateT.run, bind, StateT.bind, pure, StateT.pure,
+    dsimp only [mockProcessApi, StateT.run, bind, StateT.bind, pure, StateT.pure,
       get, set, modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet,
       getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
     by_cases hLim : (pe.kind == .outputLimitExceeded || pe.kind == .timedOut) = true
     · by_cases hGh : (codec == .gzip && !Model.hasGzipHeader input) = true
       · have hGhI : (codec == .gzip && !Internal.hasGzipHeader input) = true := hGh
-        have hIf : ((pe'.kind == .outputLimitExceeded || pe'.kind == .timedOut) &&
+        have hIf : ((pe.kind == .outputLimitExceeded || pe.kind == .timedOut) &&
             codec == .gzip && !Internal.hasGzipHeader input) = true := by
-          rw [Bool.and_assoc, hkind, hLim, hGhI]; rfl
+          rw [Bool.and_assoc, hLim, hGhI]; rfl
         rw [ite_eq_left hIf]
-        exact ⟨⟨rfl, rfl⟩, ⟨_, rfl, by simp only [Bool.true_and, hLim, hGh, ↓reduceIte], rfl,
+        exact ⟨rfl, ⟨_, rfl, by simp only [Bool.true_and, hLim, hGh, ↓reduceIte], rfl,
           by simp only [Bool.true_and, hLim, hGh, ↓reduceIte],
           by have hNotLim : (expectedProcessErrorKindFor pe = .outputLimitExceeded ∨ expectedProcessErrorKindFor pe = .timedOut) := by
                cases hpk : pe.kind with
@@ -583,28 +417,28 @@ theorem proof_compress_spawnErrors_mappedCorrectly :
                | notFound | permissionDenied | invalidInput | terminatedBySignal | nonZeroExit | ioError =>
                  exfalso; rw [hpk] at hLim; cases hLim
              rcases hNotLim with hpk | hpk <;>
-               (change pe'.stderr.bind Internal.decodeStderr = _; rw [hserr, hpk]; rfl),
+               (change pe.stderr.bind Internal.decodeStderr = _; rw [hpk]; rfl),
           append_head_ne_empty _ _ (codecProgram_ne_empty codec),
           Or.inr (Or.inr (by simp only [hLim, hGh, Bool.true_and]))⟩, trivial⟩
       · have hGhF : (codec == .gzip && !Model.hasGzipHeader input) = false :=
           Bool.eq_false_iff.mpr hGh
         have hGhFI : (codec == .gzip && !Internal.hasGzipHeader input) = false := hGhF
-        have hIf : ((pe'.kind == .outputLimitExceeded || pe'.kind == .timedOut) &&
+        have hIf : ((pe.kind == .outputLimitExceeded || pe.kind == .timedOut) &&
             codec == .gzip && !Internal.hasGzipHeader input) = false := by
           rw [Bool.and_assoc, hGhFI, Bool.and_false]
         rw [ite_eq_right (Bool.eq_false_iff.mp hIf)]
-        exact ⟨⟨rfl, rfl⟩, ⟨Internal.classifyProcessError codec pe', rfl,
+        exact ⟨rfl, ⟨Internal.classifyProcessError codec pe, rfl,
           by simpa [hLim, hGhF] using hPeSpec.1, hPeSpec.2.1,
           by simpa [hLim, hGhF] using hPeSpec.2.2.1,
           hPeSpec.2.2.2.1, hPeSpec.2.2.2.2.1,
           match hPeSpec.2.2.2.2.2 with | Or.inl h => Or.inl h | Or.inr h => Or.inr (Or.inl h)⟩, trivial⟩
-    · have hLimF : (pe'.kind == .outputLimitExceeded || pe'.kind == .timedOut) = false := by
-        rw [hkind]; exact Bool.eq_false_iff.mpr hLim
-      have hIf : ((pe'.kind == .outputLimitExceeded || pe'.kind == .timedOut) &&
+    · have hLimF : (pe.kind == .outputLimitExceeded || pe.kind == .timedOut) = false :=
+        Bool.eq_false_iff.mpr hLim
+      have hIf : ((pe.kind == .outputLimitExceeded || pe.kind == .timedOut) &&
           codec == .gzip && !Internal.hasGzipHeader input) = false := by
         rw [Bool.and_assoc, hLimF, Bool.false_and]
       rw [ite_eq_right (Bool.eq_false_iff.mp hIf)]
-      exact ⟨⟨rfl, rfl⟩, ⟨Internal.classifyProcessError codec pe', rfl,
+      exact ⟨rfl, ⟨Internal.classifyProcessError codec pe, rfl,
         by simpa [hLim] using hPeSpec.1, hPeSpec.2.1,
         by simpa [hLim] using hPeSpec.2.2.1,
         hPeSpec.2.2.2.1, hPeSpec.2.2.2.2.1,
@@ -614,171 +448,157 @@ theorem proof_compress_spawnErrors_mappedCorrectly :
 theorem reach_compress_spawnErrors_mappedCorrectly :
     CanReach (test_compress_spawnErrors_mappedCorrectly Internal.mkApiM) :=
   ⟨.xz, false, {}, {}, { kind := .permissionDenied, program := some "xz", message := "eacces" },
-    ByteArray.empty, 0, by decide,
+    ByteArray.empty, by decide,
     proof_compress_spawnErrors_mappedCorrectly .xz false {} {}
-      { kind := .permissionDenied, program := some "xz", message := "eacces" } ByteArray.empty 0 (by decide)⟩
+      { kind := .permissionDenied, program := some "xz", message := "eacces" } ByteArray.empty (by decide)⟩
 
 /-- Proof of `test_compress_awaitOutcomes_cleanedUpAndClassified` for `Internal.mkApiM`. -/
 theorem proof_compress_awaitOutcomes_cleanedUpAndClassified :
     AllPass (test_compress_awaitOutcomes_cleanedUpAndClassified Internal.mkApiM) := by
-  intro codec isDecompress copts dopts input outBytes errBytes sig active₀ outcomeKind hKind hValid
+  intro codec isDecompress copts dopts input outBytes errBytes sig outcomeKind hKind hValid
   have hCases : outcomeKind = 0 ∨ outcomeKind = 1 ∨ outcomeKind = 2 ∨ outcomeKind = 3 ∨ outcomeKind = 4 := by omega
   have hf : Internal.codecProgram codec ++ " process invocation failed" ≠ "" :=
     append_head_ne_empty _ _ (codecProgram_ne_empty codec)
   cases isDecompress with
   | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at hValid
-    rcases validateCompressOptions_true_implies_ok codec copts input hValid with ⟨hValC, hTout⟩
-    have hReqC := validateRequest_mkCompressRequest codec copts input hTout
+    rcases validateCompressOptions_true_implies_ok codec copts input hValid with ⟨hValC, _⟩
     rcases hCases with rfl | rfl | rfl | rfl | rfl
     · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
         Internal.compressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [Bool.false_eq_true, ↓reduceIte]
-      rw [hValC]; dsimp only; rw [LeanSwe.Process.Internal.run, hReqC]
-      dsimp only [mockRawOps, Internal.classifyProcessError,
-        LeanSwe.Process.Internal.ensureNonEmptyMsg, StateT.run, bind, StateT.bind,
+      rw [hValC]
+      dsimp only [mockProcessApi, Internal.classifyProcessError, StateT.run, bind, StateT.bind,
         pure, StateT.pure, get, set, modify, modifyGet, MonadStateOf.modifyGet,
         StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
-      change _ ∧ _ ∧ _ ∧ True
+      change _ ∧ _ ∧ True
       simp only [show (0 == 0) = true from rfl, ↓reduceIte, Bool.false_and]
-      exact ⟨⟨rfl, rfl, rfl⟩, rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
+      exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
     · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
         Internal.compressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [Bool.false_eq_true, ↓reduceIte]
-      rw [hValC]; dsimp only; rw [LeanSwe.Process.Internal.run, hReqC]
-      dsimp only [mockRawOps, Internal.classifyProcessError,
-        LeanSwe.Process.Internal.ensureNonEmptyMsg, StateT.run, bind, StateT.bind,
+      rw [hValC]
+      dsimp only [mockProcessApi, Internal.classifyProcessError, StateT.run, bind, StateT.bind,
         pure, StateT.pure, get, set, modify, modifyGet, MonadStateOf.modifyGet,
         StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
-      change _ ∧ _ ∧ _ ∧ True
+      change _ ∧ _ ∧ True
       simp only [show (1 == 0) = false from rfl, show (1 == 1) = true from rfl,
         Bool.false_eq_true, ↓reduceIte, Bool.false_and]
-      exact ⟨⟨rfl, rfl, rfl⟩, rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
+      exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
     · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
         Internal.compressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [Bool.false_eq_true, ↓reduceIte]
-      rw [hValC]; dsimp only; rw [LeanSwe.Process.Internal.run, hReqC]
-      dsimp only [mockRawOps, Internal.classifyProcessError,
-        LeanSwe.Process.Internal.ensureNonEmptyMsg, StateT.run, bind, StateT.bind,
+      rw [hValC]
+      dsimp only [mockProcessApi, Internal.classifyProcessError, StateT.run, bind, StateT.bind,
         pure, StateT.pure, get, set, modify, modifyGet, MonadStateOf.modifyGet,
         StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
-      change _ ∧ _ ∧ _ ∧ True
+      change _ ∧ _ ∧ True
       simp only [show (2 == 0) = false from rfl, show (2 == 1) = false from rfl, show (2 == 2) = true from rfl,
         Bool.false_eq_true, ↓reduceIte]
-      exact ⟨⟨rfl, rfl, rfl⟩, rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
+      exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
     · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
         Internal.compressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [Bool.false_eq_true, ↓reduceIte]
-      rw [hValC]; dsimp only; rw [LeanSwe.Process.Internal.run, hReqC]
-      dsimp only [mockRawOps, Internal.classifyProcessError,
-        LeanSwe.Process.Internal.ensureNonEmptyMsg, StateT.run, bind, StateT.bind,
+      rw [hValC]
+      dsimp only [mockProcessApi, Internal.classifyProcessError, StateT.run, bind, StateT.bind,
         pure, StateT.pure, get, set, modify, modifyGet, MonadStateOf.modifyGet,
         StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
-      change _ ∧ _ ∧ _ ∧ True
+      change _ ∧ _ ∧ True
       simp only [show (3 == 0) = false from rfl, show (3 == 1) = false from rfl, show (3 == 2) = false from rfl,
         show (3 == 3) = true from rfl, Bool.false_eq_true, ↓reduceIte]
-      exact ⟨⟨rfl, rfl, rfl⟩, rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
+      exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
     · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
         Internal.compressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [Bool.false_eq_true, ↓reduceIte]
-      rw [hValC]; dsimp only; rw [LeanSwe.Process.Internal.run, hReqC]
-      dsimp only [mockRawOps, Internal.classifyProcessError,
-        LeanSwe.Process.Internal.ensureNonEmptyMsg, StateT.run, bind, StateT.bind,
+      rw [hValC]
+      dsimp only [mockProcessApi, Internal.classifyProcessError, StateT.run, bind, StateT.bind,
         pure, StateT.pure, get, set, modify, modifyGet, MonadStateOf.modifyGet,
         StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
-      change _ ∧ _ ∧ _ ∧ True
+      change _ ∧ _ ∧ True
       simp only [show (4 == 0) = false from rfl, show (4 == 1) = false from rfl, show (4 == 2) = false from rfl,
-        show (4 == 3) = false from rfl, show (4 == 4) = true from rfl,
-        Bool.false_eq_true, ↓reduceIte]
-      exact ⟨⟨rfl, rfl, rfl⟩, rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
+        show (4 == 3) = false from rfl, Bool.false_eq_true, ↓reduceIte]
+      exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
   | true =>
     simp only [↓reduceIte] at hValid
-    rcases validateDecompressOptions_true_implies_ok codec dopts input hValid with ⟨hValD, hTout⟩
-    have hReqD := validateRequest_mkDecompressRequest codec dopts input hTout
+    rcases validateDecompressOptions_true_implies_ok codec dopts input hValid with ⟨hValD, _⟩
     rcases hCases with rfl | rfl | rfl | rfl | rfl
     · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
         Internal.decompressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [↓reduceIte]
-      rw [hValD]; dsimp only; rw [LeanSwe.Process.Internal.run, hReqD]
-      dsimp only [mockRawOps, Internal.classifyProcessError,
-        LeanSwe.Process.Internal.ensureNonEmptyMsg, StateT.run, bind, StateT.bind,
+      rw [hValD]
+      dsimp only [mockProcessApi, Internal.classifyProcessError, StateT.run, bind, StateT.bind,
         pure, StateT.pure, get, set, modify, modifyGet, MonadStateOf.modifyGet,
         StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
-      change _ ∧ _ ∧ _ ∧ True
+      change _ ∧ _ ∧ True
       simp only [show (0 == 0) = true from rfl, ↓reduceIte, Bool.true_and]
       by_cases hGh : (codec == .gzip && !Model.hasGzipHeader input) = true
       · have hGhI : (codec == .gzip && !Internal.hasGzipHeader input) = true := hGh
         simp only [Bool.and_assoc, hGh, hGhI, ↓reduceIte]
-        exact ⟨⟨rfl, rfl, rfl⟩, rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact append_head_ne_empty _ _ (codecProgram_ne_empty codec)⟩, trivial⟩
+        exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact append_head_ne_empty _ _ (codecProgram_ne_empty codec)⟩, trivial⟩
       · have hGhF : (codec == .gzip && !Model.hasGzipHeader input) = false :=
           Bool.eq_false_iff.mpr hGh
         have hGhFI : (codec == .gzip && !Internal.hasGzipHeader input) = false := hGhF
         simp only [Bool.and_assoc, hGhF, hGhFI, Bool.false_eq_true, ↓reduceIte]
-        exact ⟨⟨rfl, rfl, rfl⟩, rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
+        exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
     · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
         Internal.decompressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [↓reduceIte]
-      rw [hValD]; dsimp only; rw [LeanSwe.Process.Internal.run, hReqD]
-      dsimp only [mockRawOps, Internal.classifyProcessError,
-        LeanSwe.Process.Internal.ensureNonEmptyMsg, StateT.run, bind, StateT.bind,
+      rw [hValD]
+      dsimp only [mockProcessApi, Internal.classifyProcessError, StateT.run, bind, StateT.bind,
         pure, StateT.pure, get, set, modify, modifyGet, MonadStateOf.modifyGet,
         StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
-      change _ ∧ _ ∧ _ ∧ True
+      change _ ∧ _ ∧ True
       simp only [show (1 == 0) = false from rfl, show (1 == 1) = true from rfl,
         Bool.false_eq_true, ↓reduceIte, Bool.true_and]
       by_cases hGh : (codec == .gzip && !Model.hasGzipHeader input) = true
       · have hGhI : (codec == .gzip && !Internal.hasGzipHeader input) = true := hGh
         simp only [Bool.and_assoc, hGh, hGhI, ↓reduceIte]
-        exact ⟨⟨rfl, rfl, rfl⟩, rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact append_head_ne_empty _ _ (codecProgram_ne_empty codec)⟩, trivial⟩
+        exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact append_head_ne_empty _ _ (codecProgram_ne_empty codec)⟩, trivial⟩
       · have hGhF : (codec == .gzip && !Model.hasGzipHeader input) = false :=
           Bool.eq_false_iff.mpr hGh
         have hGhFI : (codec == .gzip && !Internal.hasGzipHeader input) = false := hGhF
         simp only [Bool.and_assoc, hGhF, hGhFI, Bool.false_eq_true, ↓reduceIte]
-        exact ⟨⟨rfl, rfl, rfl⟩, rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
+        exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
     · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
         Internal.decompressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [↓reduceIte]
-      rw [hValD]; dsimp only; rw [LeanSwe.Process.Internal.run, hReqD]
-      dsimp only [mockRawOps, Internal.classifyProcessError,
-        LeanSwe.Process.Internal.ensureNonEmptyMsg, StateT.run, bind, StateT.bind,
+      rw [hValD]
+      dsimp only [mockProcessApi, Internal.classifyProcessError, StateT.run, bind, StateT.bind,
         pure, StateT.pure, get, set, modify, modifyGet, MonadStateOf.modifyGet,
         StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
-      change _ ∧ _ ∧ _ ∧ True
+      change _ ∧ _ ∧ True
       simp only [show (2 == 0) = false from rfl, show (2 == 1) = false from rfl, show (2 == 2) = true from rfl,
         Bool.false_eq_true, ↓reduceIte]
-      exact ⟨⟨rfl, rfl, rfl⟩, rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
+      exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
     · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
         Internal.decompressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [↓reduceIte]
-      rw [hValD]; dsimp only; rw [LeanSwe.Process.Internal.run, hReqD]
-      dsimp only [mockRawOps, Internal.classifyProcessError,
-        LeanSwe.Process.Internal.ensureNonEmptyMsg, StateT.run, bind, StateT.bind,
+      rw [hValD]
+      dsimp only [mockProcessApi, Internal.classifyProcessError, StateT.run, bind, StateT.bind,
         pure, StateT.pure, get, set, modify, modifyGet, MonadStateOf.modifyGet,
         StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
-      change _ ∧ _ ∧ _ ∧ True
+      change _ ∧ _ ∧ True
       simp only [show (3 == 0) = false from rfl, show (3 == 1) = false from rfl, show (3 == 2) = false from rfl,
         show (3 == 3) = true from rfl, Bool.false_eq_true, ↓reduceIte]
-      exact ⟨⟨rfl, rfl, rfl⟩, rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
+      exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
     · dsimp only [test_compress_awaitOutcomes_cleanedUpAndClassified, Internal.mkApiM,
         Internal.decompressWith, bind, StateT.bind, pure, StateT.pure, assert]
       simp only [↓reduceIte]
-      rw [hValD]; dsimp only; rw [LeanSwe.Process.Internal.run, hReqD]
-      dsimp only [mockRawOps, Internal.classifyProcessError,
-        LeanSwe.Process.Internal.ensureNonEmptyMsg, StateT.run, bind, StateT.bind,
+      rw [hValD]
+      dsimp only [mockProcessApi, Internal.classifyProcessError, StateT.run, bind, StateT.bind,
         pure, StateT.pure, get, set, modify, modifyGet, MonadStateOf.modifyGet,
         StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
-      change _ ∧ _ ∧ _ ∧ True
+      change _ ∧ _ ∧ True
       simp only [show (4 == 0) = false from rfl, show (4 == 1) = false from rfl, show (4 == 2) = false from rfl,
-        show (4 == 3) = false from rfl, show (4 == 4) = true from rfl,
-        Bool.false_eq_true, ↓reduceIte]
-      exact ⟨⟨rfl, rfl, rfl⟩, rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
+        show (4 == 3) = false from rfl, Bool.false_eq_true, ↓reduceIte]
+      exact ⟨rfl, ⟨_, rfl, rfl, rfl, by dsimp; exact nonEmptyMsg_ne_empty _ _ hf⟩, trivial⟩
 
 /-- Non-vacuity `CanReach` witness for `test_compress_awaitOutcomes_cleanedUpAndClassified`. -/
 theorem reach_compress_awaitOutcomes_cleanedUpAndClassified :
     CanReach (test_compress_awaitOutcomes_cleanedUpAndClassified Internal.mkApiM) :=
-  ⟨.zstd, true, {}, {}, ByteArray.empty, ByteArray.empty, ByteArray.empty, 9, 0, 0, by decide, by decide,
+  ⟨.zstd, true, {}, {}, ByteArray.empty, ByteArray.empty, ByteArray.empty, 9, 0, by decide, by decide,
     proof_compress_awaitOutcomes_cleanedUpAndClassified
-      .zstd true {} {} ByteArray.empty ByteArray.empty ByteArray.empty 9 0 0 (by decide) (by decide)⟩
+      .zstd true {} {} ByteArray.empty ByteArray.empty ByteArray.empty 9 0 (by decide) (by decide)⟩
 
 /-- Proof of `test_compress_exitCodes_compressVsDecompress_andStderr` for `Internal.mkApiM`. -/
 theorem proof_compress_exitCodes_compressVsDecompress_andStderr :
@@ -789,14 +609,10 @@ theorem proof_compress_exitCodes_compressVsDecompress_andStderr :
     cases codec <;> rfl
   have hValD : Internal.validateDecompressOptions codec {} input = .ok () := by
     cases codec <;> rfl
-  have hReqC := validateRequest_mkCompressRequest codec {} input (by decide)
-  have hReqD := validateRequest_mkDecompressRequest codec {} input (by decide)
   dsimp only [test_compress_exitCodes_compressVsDecompress_andStderr, Internal.mkApiM,
     Internal.compressWith, Internal.decompressWith, bind, StateT.bind, pure, StateT.pure, assert]
   rw [hValC, hValD]
-  dsimp only
-  simp only [LeanSwe.Process.Internal.run, hReqC, hReqD]
-  dsimp only [mockRawOps, Internal.classifyExitResult, StateT.run, bind, StateT.bind,
+  dsimp only [mockProcessApi, Internal.classifyExitResult, StateT.run, bind, StateT.bind,
     pure, StateT.pure, get, set, modify, modifyGet, MonadStateOf.modifyGet,
     StateT.modifyGet, getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set]
   dsimp
@@ -818,34 +634,31 @@ theorem reach_compress_exitCodes_compressVsDecompress_andStderr :
 /-- Proof of `test_compress_isToolAvailable_checksVersionAndCleansUp` for `Internal.mkApiM`. -/
 theorem proof_compress_isToolAvailable_checksVersionAndCleansUp :
     AllPass (test_compress_isToolAvailable_checksVersionAndCleansUp Internal.mkApiM) := by
-  intro codec spawnOk exitCode active₀
-  have hReqVal := validateRequest_mkToolVersionRequest codec
+  intro codec runOk exitCode
   dsimp only [test_compress_isToolAvailable_checksVersionAndCleansUp, Internal.mkApiM,
     Internal.isToolAvailable, bind, StateT.bind, pure, StateT.pure, assert]
-  rw [LeanSwe.Process.Internal.run, hReqVal]
-  cases spawnOk with
+  cases runOk with
   | false =>
-    dsimp only [mockRawOps, StateT.run, bind, StateT.bind, pure, StateT.pure,
+    dsimp only [mockProcessApi, StateT.run, bind, StateT.bind, pure, StateT.pure,
       get, set, modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet,
       getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set,
       Internal.mkToolVersionRequest]
     dsimp
     simp only [codecProgram_eq_expected, codecSanitizedEnv_eq_expected codec]
-    exact ⟨⟨rfl, rfl⟩, rfl, rfl, trivial⟩
+    exact ⟨rfl, rfl, rfl, trivial⟩
   | true =>
-    dsimp only [mockRawOps, StateT.run, bind, StateT.bind, pure, StateT.pure,
+    dsimp only [mockProcessApi, StateT.run, bind, StateT.bind, pure, StateT.pure,
       get, set, modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet,
       getThe, MonadStateOf.get, MonadStateOf.set, StateT.get, StateT.set,
       Internal.mkToolVersionRequest]
     dsimp
     simp only [codecProgram_eq_expected, codecSanitizedEnv_eq_expected codec]
-    refine ⟨⟨rfl, ?_⟩, rfl, rfl, rfl, trivial⟩
-    exact Nat.add_sub_cancel active₀ 1
+    exact ⟨rfl, rfl, rfl, trivial⟩
 
 /-- Non-vacuity `CanReach` witness for `test_compress_isToolAvailable_checksVersionAndCleansUp`. -/
 theorem reach_compress_isToolAvailable_checksVersionAndCleansUp :
     CanReach (test_compress_isToolAvailable_checksVersionAndCleansUp Internal.mkApiM) :=
-  ⟨.zstd, true, 0, 0, proof_compress_isToolAvailable_checksVersionAndCleansUp .zstd true 0 0⟩
+  ⟨.zstd, true, 0, proof_compress_isToolAvailable_checksVersionAndCleansUp .zstd true 0⟩
 
 private theorem io_pure_eq {α : Type} (a : α) (w : Void IO.RealWorld) :
     (pure a : IO α) w = EST.Out.ok a w := rfl
@@ -987,7 +800,7 @@ theorem compress_compressWith_never_corruptData (codec : Codec) (opts : Compress
     Core.NeverErrorKindIO CompressError.kind .corruptData
       (Compress.compressWith codec opts input) w := by
   unfold Core.NeverErrorKindIO Compress.compressWith Compress.defaultApi Internal.mkApiM
-    Internal.compressWith
+    Internal.compressWith LeanSwe.Process.defaultApi LeanSwe.Process.Internal.mkApiM
   dsimp only
   cases hVal : Internal.validateCompressOptions codec opts input with
   | error e =>
@@ -2067,19 +1880,19 @@ private theorem classifyExitResult_wellFormed_of_err (codec : Codec) (isDecompre
         simp only [hGhF, Bool.false_eq_true, ↓reduceIte] at h
         cases h
 
-/-- Wiring theorem: `Compress.defaultApi` is `Internal.mkApiM SysBridge.defaultOps`. -/
+/-- Wiring theorem: `Compress.defaultApi` is `Internal.mkApiM LeanSwe.Process.defaultApi`. -/
 theorem compress_defaultApi_eq :
-    Compress.defaultApi = Internal.mkApiM LeanSwe.Process.SysBridge.defaultOps := rfl
+    Compress.defaultApi = Internal.mkApiM LeanSwe.Process.defaultApi := rfl
 
-/-- Wiring theorem: `Compress.compressWith` delegates to `Internal.compressWith SysBridge.defaultOps`. -/
+/-- Wiring theorem: `Compress.compressWith` delegates to `Internal.compressWith LeanSwe.Process.defaultApi`. -/
 theorem compress_compressWith_eq (codec : Codec) (opts : CompressOptions) (input : ByteArray) :
     Compress.compressWith codec opts input =
-      Internal.compressWith LeanSwe.Process.SysBridge.defaultOps codec opts input := rfl
+      Internal.compressWith LeanSwe.Process.defaultApi codec opts input := rfl
 
-/-- Wiring theorem: `Compress.decompressWith` delegates to `Internal.decompressWith SysBridge.defaultOps`. -/
+/-- Wiring theorem: `Compress.decompressWith` delegates to `Internal.decompressWith LeanSwe.Process.defaultApi`. -/
 theorem compress_decompressWith_eq (codec : Codec) (opts : DecompressOptions) (input : ByteArray) :
     Compress.decompressWith codec opts input =
-      Internal.decompressWith LeanSwe.Process.SysBridge.defaultOps codec opts input := rfl
+      Internal.decompressWith LeanSwe.Process.defaultApi codec opts input := rfl
 
 /-- Wiring theorem: `Compress.compress` delegates to `Compress.compressWith codec {}`. -/
 theorem compress_compress_eq (codec : Codec) (input : ByteArray) :
@@ -2089,36 +1902,9 @@ theorem compress_compress_eq (codec : Codec) (input : ByteArray) :
 theorem compress_decompress_eq (codec : Codec) (input : ByteArray) :
     Compress.decompress codec input = Compress.decompressWith codec {} input := rfl
 
-/-- Wiring theorem: `Compress.isToolAvailable` delegates to `Internal.isToolAvailable SysBridge.defaultOps`. -/
+/-- Wiring theorem: `Compress.isToolAvailable` delegates to `Internal.isToolAvailable LeanSwe.Process.defaultApi`. -/
 theorem compress_isToolAvailable_eq (codec : Codec) :
-    Compress.isToolAvailable codec = Internal.isToolAvailable LeanSwe.Process.SysBridge.defaultOps codec := rfl
-
-private theorem scriptedStage_run_error (stage : Nat) (pe : ProcessError)
-    (req : ExecRequest) (hVal : LeanSwe.Process.Internal.validateRequest req = .ok req) :
-    ∃ fb, LeanSwe.Process.Internal.run (scriptedStageRawOpsId stage (.error pe)) req =
-      .error (LeanSwe.Process.Internal.ensureNonEmptyMsg fb pe) := by
-  have hCases : stage = 0 ∨ stage = 1 ∨ stage ≥ 2 := by omega
-  rcases hCases with rfl | rfl | hGe
-  · refine ⟨"process spawn failed", ?_⟩
-    rw [LeanSwe.Process.Internal.run, hVal]
-    dsimp only [scriptedStageRawOpsId, bind, pure, Id.run]
-    simp only [show (0 == 0) = true from rfl, ↓reduceIte]
-  · refine ⟨"process I/O failed", ?_⟩
-    rw [LeanSwe.Process.Internal.run, hVal]
-    dsimp only [scriptedStageRawOpsId, bind, pure, Id.run]
-    simp only [show (1 == 0) = false from rfl, show (1 == 1) = true from rfl, Bool.false_eq_true, ↓reduceIte]
-  · refine ⟨"process reap failed", ?_⟩
-    have h0 : (stage == 0) = false := beq_false_of_ne (by omega)
-    have h1 : (stage == 1) = false := beq_false_of_ne (by omega)
-    rw [LeanSwe.Process.Internal.run, hVal]
-    dsimp only [scriptedStageRawOpsId, bind, pure, Id.run]
-    simp only [h0, h1, Bool.false_eq_true, ↓reduceIte, hGe]
-
-private theorem scriptedStage_run_ok (stage : Nat)
-    (out : LeanSwe.Process.ExecOutcome) (req : ExecRequest) :
-    LeanSwe.Process.Internal.run (scriptedStageRawOpsId stage (.ok out)) req =
-      LeanSwe.Process.Internal.run (scriptedRawOpsId (.ok out)) req := by
-  cases out <;> rfl
+    Compress.isToolAvailable codec = Internal.isToolAvailable LeanSwe.Process.defaultApi codec := rfl
 
 private theorem framingErr_wellFormed (codec : Codec) (err? : Option ByteArray) :
     Model.isWellFormedCompressError codec
@@ -2145,33 +1931,27 @@ private theorem framingErr_wellFormed (codec : Codec) (err? : Option ByteArray) 
   exact hSerr
 
 private theorem internalApi_compressWith_sound (env : Model.CompressEnv) (st₀ : Model.State)
-    (codec : Codec) (opts : CompressOptions) (input : ByteArray) (stage : Nat)
-    (rawC : Except ProcessError LeanSwe.Process.ExecOutcome)
+    (codec : Codec) (opts : CompressOptions) (input : ByteArray)
+    (rawC : Except ProcessError ExecResult)
     (hConf : rawCompressCallConforms env st₀ codec opts input rawC = true) :
-    let res := (Internal.mkApiM (scriptedStageRawOpsId stage rawC)).compressWith codec opts input
+    let res := (Internal.mkApiM (scriptedProcessApiId rawC)).compressWith codec opts input
     let st₁ := match res with | .ok c => st₀.record codec c input | .error _ => st₀
     Model.allowedCompressStep env st₀ codec opts input res st₁ = true := by
   unfold Internal.mkApiM Internal.compressWith Model.allowedCompressStep
   dsimp only
   by_cases hv : isValidCompressInput codec opts input = true
-  · rcases validateCompressOptions_true_implies_ok codec opts input hv with ⟨hVal, hTout⟩
-    have hReq := validateRequest_mkCompressRequest codec opts input hTout
+  · rcases validateCompressOptions_true_implies_ok codec opts input hv with ⟨hVal, _⟩
     have hvM : Model.isValidCompressInput codec opts input = true := hv
     simp only [hvM, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     rw [hVal]
-    dsimp only [bind, pure, Id.run]
+    dsimp only [scriptedProcessApiId, bind, pure, Id.run]
     cases rawC with
     | error pe =>
-      rcases scriptedStage_run_error stage pe (Internal.mkCompressRequest codec opts input) hReq with ⟨fb, hRun⟩
-      rw [hRun]
       dsimp only
-      have hWf := classifyProcessError_wellFormed codec (LeanSwe.Process.Internal.ensureNonEmptyMsg fb pe)
-      have hSpec := classifyProcessError_spec codec (LeanSwe.Process.Internal.ensureNonEmptyMsg fb pe)
+      have hWf := classifyProcessError_wellFormed codec pe
+      have hSpec := classifyProcessError_spec codec pe
       dsimp only [rawCompressCallConforms] at hConf
-      rcases (Bool.and_eq_true _ _).mp hConf with ⟨hMsgNe, hCond⟩
-      have hEnsEq : LeanSwe.Process.Internal.ensureNonEmptyMsg fb pe = pe :=
-        ensureNonEmptyMsg_eq_of_not_empty fb pe hMsgNe
-      rw [hEnsEq] at hSpec hWf ⊢
+      rcases (Bool.and_eq_true _ _).mp hConf with ⟨_, hCond⟩
       simp only [state_beq_self, Bool.true_and]
       cases hpk : pe.kind <;> simp only [hpk] at hCond hSpec
       · have hS := toolStatus_eq_of_beq hCond
@@ -2235,76 +2015,40 @@ private theorem internalApi_compressWith_sound (env : Model.CompressEnv) (st₀ 
             first | rfl | exact Or.inl rfl | exact Or.inr rfl | decide
         · simp [Model.allowedTransientError, hk, hWf, hIo,
             show (CompressErrorKind.ioError == CompressErrorKind.ioError) = true from rfl]
-    | ok outcome =>
-      rw [scriptedStage_run_ok stage outcome (Internal.mkCompressRequest codec opts input),
-        LeanSwe.Process.Internal.run, hReq]
-      cases outcome with
-      | timedOut out err =>
-        dsimp only [scriptedRawOpsId, scriptedStageRawOpsId, bind, pure, rawCompressCallConforms] at hConf ⊢
-        rcases (Bool.and_eq_true _ _).mp hConf with ⟨_, hT⟩
-        have hWf := classifyProcessError_wellFormed codec
-          { kind := .timedOut, program := some (Internal.mkCompressRequest codec opts input).program,
-            stdout := out, stderr := err,
-            message := toString "process '" ++ toString (Internal.mkCompressRequest codec opts input).program ++ toString "' timed out" }
-        simp [state_beq_self, Model.allowedTransientError, Internal.classifyProcessError, hT,
-          show (CompressErrorKind.timedOut == CompressErrorKind.timedOut) = true from rfl]
-        exact Or.inl (by simpa [Internal.classifyProcessError] using hWf)
-      | signaled sig out err =>
-        dsimp only [scriptedRawOpsId, scriptedStageRawOpsId, bind, pure, rawCompressCallConforms] at hConf ⊢
-        rcases (Bool.and_eq_true _ _).mp hConf with ⟨_, hSig⟩
-        have hWf := classifyProcessError_wellFormed codec
-          { kind := .terminatedBySignal, program := some (Internal.mkCompressRequest codec opts input).program,
-            signal := some sig, stdout := out, stderr := err,
-            message := toString "process '" ++ toString (Internal.mkCompressRequest codec opts input).program ++ toString "' terminated by signal " ++ toString sig }
-        simp [state_beq_self, Model.allowedTransientError, Internal.classifyProcessError, hSig,
+    | ok res =>
+      dsimp only [rawCompressCallConforms] at hConf ⊢
+      by_cases hNz : (res.exitCode != 0) = true
+      · simp only [hNz, ↓reduceIte] at hConf
+        rcases (Bool.and_eq_true _ _).mp hConf with ⟨_, hBr⟩
+        have ⟨e, hEq, hk⟩ : ∃ e, Internal.classifyExitResult codec false opts.maxOutputBytes input res = .error e ∧
+            e.kind = .commandFailed := by
+          unfold Internal.classifyExitResult; simp only [hNz, ↓reduceIte]; exact ⟨_, rfl, rfl⟩
+        have hWf := classifyExitResult_wellFormed_of_err codec false opts.maxOutputBytes input res hEq
+        rw [hEq]
+        simp [state_beq_self, Model.allowedTransientError, hk, hWf, hBr,
           show (CompressErrorKind.commandFailed == CompressErrorKind.commandFailed) = true from rfl]
-        exact Or.inl (by simpa [Internal.classifyProcessError] using hWf)
-      | outputLimitExceeded out err =>
-        dsimp only [scriptedRawOpsId, scriptedStageRawOpsId, bind, pure, rawCompressCallConforms] at hConf ⊢
-        rcases (Bool.and_eq_true _ _).mp hConf with ⟨hSt, hLt⟩
-        have hS := toolStatus_eq_of_beq hSt
-        have hWf := classifyProcessError_wellFormed codec
-          { kind := .outputLimitExceeded, program := some (Internal.mkCompressRequest codec opts input).program,
-            stdout := out, stderr := err,
-            message := toString "process '" ++ toString (Internal.mkCompressRequest codec opts input).program ++ toString "' exceeded output byte limit" }
-        dsimp only [Internal.classifyProcessError] at hWf ⊢
-        simp only [state_beq_self, Bool.true_and, Model.allowedTransientError, hWf, hS, decide_eq_true_eq.mp hLt]
-        cases env.allowTimeout <;> cases env.allowResourceIoError <;> cases env.allowExternalSignal <;> simp <;>
-          first | rfl | exact Or.inl rfl | exact Or.inr rfl | decide
-      | exited res =>
-        dsimp only [scriptedRawOpsId, scriptedStageRawOpsId, bind, pure, Id.run, rawCompressCallConforms] at hConf ⊢
-        by_cases hNz : (res.exitCode != 0) = true
-        · simp only [hNz, ↓reduceIte] at hConf
-          rcases (Bool.and_eq_true _ _).mp hConf with ⟨_, hBr⟩
+      · simp only [hNz, Bool.false_eq_true, ↓reduceIte] at hConf
+        by_cases hOut : res.stdout.size > opts.maxOutputBytes
+        · simp only [hOut, ↓reduceIte] at hConf
+          rcases (Bool.and_eq_true _ _).mp hConf with ⟨hSt, hLt⟩
+          have hS := toolStatus_eq_of_beq hSt
           have ⟨e, hEq, hk⟩ : ∃ e, Internal.classifyExitResult codec false opts.maxOutputBytes input res = .error e ∧
-              e.kind = .commandFailed := by
-            unfold Internal.classifyExitResult; simp only [hNz, ↓reduceIte]; exact ⟨_, rfl, rfl⟩
+              e.kind = .outputLimitExceeded := by
+            unfold Internal.classifyExitResult; simp only [hNz, Bool.false_eq_true, ↓reduceIte, hOut]; exact ⟨_, rfl, rfl⟩
           have hWf := classifyExitResult_wellFormed_of_err codec false opts.maxOutputBytes input res hEq
           rw [hEq]
-          simp [state_beq_self, Model.allowedTransientError, hk, hWf, hBr,
-            show (CompressErrorKind.commandFailed == CompressErrorKind.commandFailed) = true from rfl]
-        · simp only [hNz, Bool.false_eq_true, ↓reduceIte] at hConf
-          by_cases hOut : res.stdout.size > opts.maxOutputBytes
-          · simp only [hOut, ↓reduceIte] at hConf
-            rcases (Bool.and_eq_true _ _).mp hConf with ⟨hSt, hLt⟩
-            have hS := toolStatus_eq_of_beq hSt
-            have ⟨e, hEq, hk⟩ : ∃ e, Internal.classifyExitResult codec false opts.maxOutputBytes input res = .error e ∧
-                e.kind = .outputLimitExceeded := by
-              unfold Internal.classifyExitResult; simp only [hNz, Bool.false_eq_true, ↓reduceIte, hOut]; exact ⟨_, rfl, rfl⟩
-            have hWf := classifyExitResult_wellFormed_of_err codec false opts.maxOutputBytes input res hEq
-            rw [hEq]
-            simp only [state_beq_self, Bool.true_and, Model.allowedTransientError, hk, hWf, hS, decide_eq_true_eq.mp hLt]
-            cases env.allowTimeout <;> cases env.allowResourceIoError <;> cases env.allowExternalSignal <;> simp <;>
-              first | rfl | exact Or.inl rfl | exact Or.inr rfl | decide
-          · simp only [hOut, ↓reduceIte] at hConf
-            rcases (Bool.and_eq_true _ _).mp hConf with ⟨hAnd1, hLk⟩
-            rcases (Bool.and_eq_true _ _).mp hAnd1 with ⟨hSt, hFrm⟩
-            have hLe : res.stdout.size ≤ opts.maxOutputBytes := by omega
-            have hOk : Internal.classifyExitResult codec false opts.maxOutputBytes input res = .ok res.stdout := by
-              unfold Internal.classifyExitResult; simp only [hNz, Bool.false_eq_true, ↓reduceIte, hOut, Bool.false_and]
-            rw [hOk]
-            simp [state_beq_self, hSt, hLe, hFrm]
-            exact hLk
+          simp only [state_beq_self, Bool.true_and, Model.allowedTransientError, hk, hWf, hS, decide_eq_true_eq.mp hLt]
+          cases env.allowTimeout <;> cases env.allowResourceIoError <;> cases env.allowExternalSignal <;> simp <;>
+            first | rfl | exact Or.inl rfl | exact Or.inr rfl | decide
+        · simp only [hOut, ↓reduceIte] at hConf
+          rcases (Bool.and_eq_true _ _).mp hConf with ⟨hAnd1, hLk⟩
+          rcases (Bool.and_eq_true _ _).mp hAnd1 with ⟨hSt, hFrm⟩
+          have hLe : res.stdout.size ≤ opts.maxOutputBytes := by omega
+          have hOk : Internal.classifyExitResult codec false opts.maxOutputBytes input res = .ok res.stdout := by
+            unfold Internal.classifyExitResult; simp only [hNz, Bool.false_eq_true, ↓reduceIte, hOut, Bool.false_and]
+          rw [hOk]
+          simp [state_beq_self, hSt, hLe, hFrm]
+          exact hLk
   · have hf : isValidCompressInput codec opts input = false := Bool.eq_false_iff.mpr hv
     rcases validateCompressOptions_false_implies_error codec opts input hf with
       ⟨e, hVal, hKind, hCodec, hExit, hErr, hMsg⟩
@@ -2342,33 +2086,27 @@ private theorem gzip_or_header_of_not_err {codec : Codec} {input : ByteArray}
     rw [Bool.false_or]; exact h
 
 private theorem internalApi_decompressWith_sound (env : Model.CompressEnv) (st₀ : Model.State)
-    (codec : Codec) (opts : DecompressOptions) (input : ByteArray) (stage : Nat)
-    (rawD : Except ProcessError LeanSwe.Process.ExecOutcome)
+    (codec : Codec) (opts : DecompressOptions) (input : ByteArray)
+    (rawD : Except ProcessError ExecResult)
     (hConf : rawDecompressCallConforms env st₀ codec opts input rawD = true) :
-    let res := (Internal.mkApiM (scriptedStageRawOpsId stage rawD)).decompressWith codec opts input
+    let res := (Internal.mkApiM (scriptedProcessApiId rawD)).decompressWith codec opts input
     let st₁ := match res with | .ok o => st₀.record codec input o | .error _ => st₀
     Model.allowedDecompressStep env st₀ codec opts input res st₁ = true := by
   unfold Internal.mkApiM Internal.decompressWith Model.allowedDecompressStep
   dsimp only
   by_cases hv : isValidDecompressInput opts input = true
-  · rcases validateDecompressOptions_true_implies_ok codec opts input hv with ⟨hVal, hTout⟩
-    have hReq := validateRequest_mkDecompressRequest codec opts input hTout
+  · rcases validateDecompressOptions_true_implies_ok codec opts input hv with ⟨hVal, _⟩
     have hvM : Model.isValidDecompressInput opts input = true := hv
     simp only [hvM, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     rw [hVal]
-    dsimp only [bind, pure, Id.run]
+    dsimp only [scriptedProcessApiId, bind, pure, Id.run]
     cases rawD with
     | error pe =>
-      rcases scriptedStage_run_error stage pe (Internal.mkDecompressRequest codec opts input) hReq with ⟨fb, hRun⟩
-      rw [hRun]
       dsimp only
-      have hWf := classifyProcessError_wellFormed codec (LeanSwe.Process.Internal.ensureNonEmptyMsg fb pe)
-      have hSpec := classifyProcessError_spec codec (LeanSwe.Process.Internal.ensureNonEmptyMsg fb pe)
+      have hWf := classifyProcessError_wellFormed codec pe
+      have hSpec := classifyProcessError_spec codec pe
       dsimp only [rawDecompressCallConforms] at hConf
-      rcases (Bool.and_eq_true _ _).mp hConf with ⟨hMsgNe, hCond⟩
-      have hEnsEq : LeanSwe.Process.Internal.ensureNonEmptyMsg fb pe = pe :=
-        ensureNonEmptyMsg_eq_of_not_empty fb pe hMsgNe
-      rw [hEnsEq] at hSpec hWf ⊢
+      rcases (Bool.and_eq_true _ _).mp hConf with ⟨_, hCond⟩
       cases hpk : pe.kind <;> simp only [hpk] at hCond hSpec
       · have hS := toolStatus_eq_of_beq hCond
         have hResF : isResourceExhaustedProcessError pe = false := isResourceExhausted_of_kind (by rw [hpk]; intro hc; cases hc)
@@ -2484,153 +2222,74 @@ private theorem internalApi_decompressWith_sound (env : Model.CompressEnv) (st�
           all_goals
             (simp [state_beq_self, Model.allowedTransientError, hk, hWf, hIo, kind_beq_self];
              try exact Or.inl (Or.inl (Or.inr rfl)))
-    | ok outcome =>
-      rw [scriptedStage_run_ok stage outcome (Internal.mkDecompressRequest codec opts input),
-        LeanSwe.Process.Internal.run, hReq]
-      cases outcome with
-      | timedOut out err =>
-        dsimp only [scriptedRawOpsId, scriptedStageRawOpsId, bind, pure, Id.run, rawDecompressCallConforms,
-          rawTimedOutDecompressConforms] at hConf ⊢
-        rcases (Bool.and_eq_true _ _).mp hConf with ⟨hAnd1, hLkFrm⟩
-        rcases (Bool.and_eq_true _ _).mp hAnd1 with ⟨hSt, hT⟩
-        have hS := toolStatus_eq_of_beq hSt
-        have hWf := classifyProcessError_wellFormed codec
-          { kind := .timedOut, program := some (Internal.mkDecompressRequest codec opts input).program,
-            stdout := out, stderr := err,
-            message := toString "process '" ++ toString (Internal.mkDecompressRequest codec opts input).program ++ toString "' timed out" }
-        dsimp only [Internal.classifyProcessError, isResourceExhaustedProcessError, Option.bind] at hWf
-        have hCond : (ProcessErrorKind.timedOut == ProcessErrorKind.outputLimitExceeded ||
-            ProcessErrorKind.timedOut == ProcessErrorKind.timedOut) = true := rfl
-        cases hLk : st₀.lookup codec input with
-        | some expected =>
-          simp only [hLk] at hLkFrm
-          have hGhF := not_gzip_and_not_header_of_ok hLkFrm
-          simp only [hCond, Bool.true_and, hGhF, Bool.false_eq_true, ↓reduceIte, hS]
-          simp [state_beq_self, Model.allowedTransientError, Internal.classifyProcessError, hT, hWf,
-            show (CompressErrorKind.timedOut == CompressErrorKind.timedOut) = true from rfl]
-        | none =>
-          by_cases hGh : (codec == .gzip && !Internal.hasGzipHeader input) = true
-          · have hWfF := framingErr_wellFormed codec (some err)
-            simp only [hCond, Bool.true_and, hGh, ↓reduceIte, hS]
-            dsimp only [Option.bind] at hWfF
-            simp [state_beq_self, Model.allowedTransientError, hWfF, kind_beq_self]
-          · have hGhF : (codec == .gzip && !Internal.hasGzipHeader input) = false :=
-              Bool.eq_false_iff.mpr hGh
-            simp only [hCond, Bool.true_and, hGhF, Bool.false_eq_true, ↓reduceIte, hS]
-            simp [state_beq_self, Model.allowedTransientError, Internal.classifyProcessError, hT, hWf,
-              show (CompressErrorKind.timedOut == CompressErrorKind.timedOut) = true from rfl]
-      | signaled sig out err =>
-        dsimp only [scriptedRawOpsId, scriptedStageRawOpsId, bind, pure, Id.run, rawDecompressCallConforms] at hConf ⊢
-        rcases (Bool.and_eq_true _ _).mp hConf with ⟨hSt, hSig⟩
-        have hS := toolStatus_eq_of_beq hSt
-        have hWf := classifyProcessError_wellFormed codec
-          { kind := .terminatedBySignal, program := some (Internal.mkDecompressRequest codec opts input).program,
-            signal := some sig, stdout := out, stderr := err,
-            message := toString "process '" ++ toString (Internal.mkDecompressRequest codec opts input).program ++ toString "' terminated by signal " ++ toString sig }
-        dsimp only [Internal.classifyProcessError, isResourceExhaustedProcessError, Option.bind] at hWf
-        simp only [toString] at hWf
-        have hCond : (ProcessErrorKind.terminatedBySignal == ProcessErrorKind.outputLimitExceeded ||
-            ProcessErrorKind.terminatedBySignal == ProcessErrorKind.timedOut) = false := rfl
-        simp only [hS, hCond, Bool.false_and, Bool.false_eq_true, ↓reduceIte]
-        cases hLk : st₀.lookup codec input <;>
-          simp [state_beq_self, Model.allowedTransientError, Internal.classifyProcessError, hSig, kind_beq_self, toString, hWf]
-      | outputLimitExceeded out err =>
-        dsimp only [scriptedRawOpsId, scriptedStageRawOpsId, bind, pure, Id.run, rawDecompressCallConforms] at hConf ⊢
-        rcases (Bool.and_eq_true _ _).mp hConf with ⟨hSt, hLkCond⟩
-        have hS := toolStatus_eq_of_beq hSt
-        let peOom : ProcessError :=
-          { kind := .outputLimitExceeded, program := some (Internal.mkDecompressRequest codec opts input).program,
-            stdout := out, stderr := err,
-            message := toString "process '" ++ toString (Internal.mkDecompressRequest codec opts input).program ++ toString "' exceeded output byte limit" }
-        have hWf := classifyProcessError_wellFormed codec peOom
-        dsimp only [peOom, Internal.classifyProcessError, isResourceExhaustedProcessError, Option.bind] at hWf
-        have hCond : (ProcessErrorKind.outputLimitExceeded == ProcessErrorKind.outputLimitExceeded ||
-            ProcessErrorKind.outputLimitExceeded == ProcessErrorKind.timedOut) = true := rfl
-        cases hLk : st₀.lookup codec input with
-        | some expected =>
-          simp only [hLk] at hLkCond
-          rcases (Bool.and_eq_true _ _).mp hLkCond with ⟨hGt, hFrm⟩
-          have hGhF := not_gzip_and_not_header_of_ok hFrm
-          simp only [hCond, Bool.true_and, hGhF, Bool.false_eq_true, ↓reduceIte, hS]
-          simp [state_beq_self, Model.allowedTransientError, Internal.classifyProcessError, hGt, kind_beq_self, hWf]
-        | none =>
-          by_cases hGh : (codec == .gzip && !Internal.hasGzipHeader input) = true
-          · have hWfF := framingErr_wellFormed codec peOom.stderr
-            simp only [hCond, Bool.true_and, hGh, ↓reduceIte, hS]
-            dsimp only [peOom, Option.bind] at hWfF
-            simp [state_beq_self, Model.allowedTransientError, hWfF, kind_beq_self]
-          · have hGhF : (codec == .gzip && !Internal.hasGzipHeader input) = false :=
-              Bool.eq_false_iff.mpr hGh
-            simp only [hCond, Bool.true_and, hGhF, Bool.false_eq_true, ↓reduceIte, hS]
-            simp [state_beq_self, Model.allowedTransientError, Internal.classifyProcessError, kind_beq_self, hWf]
-      | exited res =>
-        dsimp only [scriptedRawOpsId, scriptedStageRawOpsId, bind, pure, Id.run, rawDecompressCallConforms] at hConf ⊢
-        rcases (Bool.and_eq_true _ _).mp hConf with ⟨hSt, hLkCond⟩
-        have hS := toolStatus_eq_of_beq hSt
-        cases hLk : st₀.lookup codec input with
-        | some expected =>
-          simp only [hLk] at hLkCond
-          by_cases hNz : (res.exitCode != 0) = true
-          · simp [hNz] at hLkCond
-          · simp only [hNz, Bool.false_eq_true, ↓reduceIte] at hLkCond
-            by_cases hOut : res.stdout.size > opts.maxOutputBytes
-            · simp only [hOut, ↓reduceIte] at hLkCond
-              rcases (Bool.and_eq_true _ _).mp hLkCond with ⟨hGt, hFrm⟩
-              have hGhF := not_gzip_and_not_header_of_ok hFrm
+    | ok res =>
+      dsimp only [rawDecompressCallConforms] at hConf ⊢
+      rcases (Bool.and_eq_true _ _).mp hConf with ⟨hSt, hLkCond⟩
+      have hS := toolStatus_eq_of_beq hSt
+      cases hLk : st₀.lookup codec input with
+      | some expected =>
+        simp only [hLk] at hLkCond
+        by_cases hNz : (res.exitCode != 0) = true
+        · simp [hNz] at hLkCond
+        · simp only [hNz, Bool.false_eq_true, ↓reduceIte] at hLkCond
+          by_cases hOut : res.stdout.size > opts.maxOutputBytes
+          · simp only [hOut, ↓reduceIte] at hLkCond
+            rcases (Bool.and_eq_true _ _).mp hLkCond with ⟨hGt, hFrm⟩
+            have hGhF := not_gzip_and_not_header_of_ok hFrm
+            have ⟨e, hEq, hk⟩ : ∃ e, Internal.classifyExitResult codec true opts.maxOutputBytes input res = .error e ∧
+                e.kind = .outputLimitExceeded := by
+              unfold Internal.classifyExitResult; simp only [hNz, Bool.false_eq_true, ↓reduceIte, hOut, Bool.true_and, hGhF]; exact ⟨_, rfl, rfl⟩
+            have hWf := classifyExitResult_wellFormed_of_err codec true opts.maxOutputBytes input res hEq
+            rw [hEq]
+            simp [state_beq_self, hS, Model.allowedTransientError, hk, hWf, hGt, kind_beq_self]
+          · simp only [hOut, ↓reduceIte] at hLkCond
+            rcases (Bool.and_eq_true _ _).mp hLkCond with ⟨hAnd1, hFrm⟩
+            rcases (Bool.and_eq_true _ _).mp hAnd1 with ⟨hLe, hEqOut⟩
+            have hGhF := not_gzip_and_not_header_of_ok hFrm
+            have hOk : Internal.classifyExitResult codec true opts.maxOutputBytes input res = .ok res.stdout := by
+              unfold Internal.classifyExitResult; simp only [hNz, Bool.false_eq_true, ↓reduceIte, hOut, Bool.true_and, hGhF]
+            rw [hOk]
+            unfold Model.State.record
+            simp [state_beq_self, hS, hLk, hLe, hEqOut]
+      | none =>
+        by_cases hNz : (res.exitCode != 0) = true
+        · have ⟨e, hEq, hk⟩ : ∃ e, Internal.classifyExitResult codec true opts.maxOutputBytes input res = .error e ∧
+              e.kind = .corruptData := by
+            unfold Internal.classifyExitResult; simp only [hNz, ↓reduceIte]; exact ⟨_, rfl, rfl⟩
+          have hWf := classifyExitResult_wellFormed_of_err codec true opts.maxOutputBytes input res hEq
+          rw [hEq]
+          simp [state_beq_self, hS, Model.allowedTransientError, hk, hWf, kind_beq_self]
+        · by_cases hOut : res.stdout.size > opts.maxOutputBytes
+          · by_cases hGh : (codec == .gzip && !Internal.hasGzipHeader input) = true
+            · have ⟨e, hEq, hk⟩ : ∃ e, Internal.classifyExitResult codec true opts.maxOutputBytes input res = .error e ∧
+                  e.kind = .corruptData := by
+                unfold Internal.classifyExitResult; simp only [hNz, Bool.false_eq_true, ↓reduceIte, hOut, Bool.true_and, hGh]; exact ⟨_, rfl, rfl⟩
+              have hWf := classifyExitResult_wellFormed_of_err codec true opts.maxOutputBytes input res hEq
+              rw [hEq]
+              simp [state_beq_self, hS, Model.allowedTransientError, hk, hWf, kind_beq_self]
+            · have hGhF : (codec == .gzip && !Internal.hasGzipHeader input) = false :=
+                Bool.eq_false_iff.mpr hGh
               have ⟨e, hEq, hk⟩ : ∃ e, Internal.classifyExitResult codec true opts.maxOutputBytes input res = .error e ∧
                   e.kind = .outputLimitExceeded := by
                 unfold Internal.classifyExitResult; simp only [hNz, Bool.false_eq_true, ↓reduceIte, hOut, Bool.true_and, hGhF]; exact ⟨_, rfl, rfl⟩
               have hWf := classifyExitResult_wellFormed_of_err codec true opts.maxOutputBytes input res hEq
               rw [hEq]
-              simp [state_beq_self, hS, Model.allowedTransientError, hk, hWf, hGt, kind_beq_self]
-            · simp only [hOut, ↓reduceIte] at hLkCond
-              rcases (Bool.and_eq_true _ _).mp hLkCond with ⟨hAnd1, hFrm⟩
-              rcases (Bool.and_eq_true _ _).mp hAnd1 with ⟨hLe, hEqOut⟩
-              have hGhF := not_gzip_and_not_header_of_ok hFrm
-              have hOk : Internal.classifyExitResult codec true opts.maxOutputBytes input res = .ok res.stdout := by
+              simp [state_beq_self, hS, Model.allowedTransientError, hk, hWf, kind_beq_self]
+          · by_cases hGh : (codec == .gzip && !Internal.hasGzipHeader input) = true
+            · have ⟨e, hEq, hk⟩ : ∃ e, Internal.classifyExitResult codec true opts.maxOutputBytes input res = .error e ∧
+                  e.kind = .corruptData := by
+                unfold Internal.classifyExitResult; simp only [hNz, Bool.false_eq_true, ↓reduceIte, hOut, Bool.true_and, hGh]; exact ⟨_, rfl, rfl⟩
+              have hWf := classifyExitResult_wellFormed_of_err codec true opts.maxOutputBytes input res hEq
+              rw [hEq]
+              simp [state_beq_self, hS, Model.allowedTransientError, hk, hWf, kind_beq_self]
+            · have hGhF : (codec == .gzip && !Internal.hasGzipHeader input) = false :=
+                Bool.eq_false_iff.mpr hGh
+              have hGhM := gzip_or_header_of_not_err hGhF
+              have hLe : res.stdout.size ≤ opts.maxOutputBytes := by omega
+              have hRes : Internal.classifyExitResult codec true opts.maxOutputBytes input res = .ok res.stdout := by
                 unfold Internal.classifyExitResult; simp only [hNz, Bool.false_eq_true, ↓reduceIte, hOut, Bool.true_and, hGhF]
-              rw [hOk]
-              unfold Model.State.record
-              simp [state_beq_self, hS, hLk, hLe, hEqOut]
-        | none =>
-          by_cases hNz : (res.exitCode != 0) = true
-          · have ⟨e, hEq, hk⟩ : ∃ e, Internal.classifyExitResult codec true opts.maxOutputBytes input res = .error e ∧
-                e.kind = .corruptData := by
-              unfold Internal.classifyExitResult; simp only [hNz, ↓reduceIte]; exact ⟨_, rfl, rfl⟩
-            have hWf := classifyExitResult_wellFormed_of_err codec true opts.maxOutputBytes input res hEq
-            rw [hEq]
-            simp [state_beq_self, hS, Model.allowedTransientError, hk, hWf, kind_beq_self]
-          · by_cases hOut : res.stdout.size > opts.maxOutputBytes
-            · by_cases hGh : (codec == .gzip && !Internal.hasGzipHeader input) = true
-              · have ⟨e, hEq, hk⟩ : ∃ e, Internal.classifyExitResult codec true opts.maxOutputBytes input res = .error e ∧
-                    e.kind = .corruptData := by
-                  unfold Internal.classifyExitResult; simp only [hNz, Bool.false_eq_true, ↓reduceIte, hOut, Bool.true_and, hGh]; exact ⟨_, rfl, rfl⟩
-                have hWf := classifyExitResult_wellFormed_of_err codec true opts.maxOutputBytes input res hEq
-                rw [hEq]
-                simp [state_beq_self, hS, Model.allowedTransientError, hk, hWf, kind_beq_self]
-              · have hGhF : (codec == .gzip && !Internal.hasGzipHeader input) = false :=
-                  Bool.eq_false_iff.mpr hGh
-                have ⟨e, hEq, hk⟩ : ∃ e, Internal.classifyExitResult codec true opts.maxOutputBytes input res = .error e ∧
-                    e.kind = .outputLimitExceeded := by
-                  unfold Internal.classifyExitResult; simp only [hNz, Bool.false_eq_true, ↓reduceIte, hOut, Bool.true_and, hGhF]; exact ⟨_, rfl, rfl⟩
-                have hWf := classifyExitResult_wellFormed_of_err codec true opts.maxOutputBytes input res hEq
-                rw [hEq]
-                simp [state_beq_self, hS, Model.allowedTransientError, hk, hWf, kind_beq_self]
-            · by_cases hGh : (codec == .gzip && !Internal.hasGzipHeader input) = true
-              · have ⟨e, hEq, hk⟩ : ∃ e, Internal.classifyExitResult codec true opts.maxOutputBytes input res = .error e ∧
-                    e.kind = .corruptData := by
-                  unfold Internal.classifyExitResult; simp only [hNz, Bool.false_eq_true, ↓reduceIte, hOut, Bool.true_and, hGh]; exact ⟨_, rfl, rfl⟩
-                have hWf := classifyExitResult_wellFormed_of_err codec true opts.maxOutputBytes input res hEq
-                rw [hEq]
-                simp [state_beq_self, hS, Model.allowedTransientError, hk, hWf, kind_beq_self]
-              · have hGhF : (codec == .gzip && !Internal.hasGzipHeader input) = false :=
-                  Bool.eq_false_iff.mpr hGh
-                have hGhM := gzip_or_header_of_not_err hGhF
-                have hLe : res.stdout.size ≤ opts.maxOutputBytes := by omega
-                have hRes : Internal.classifyExitResult codec true opts.maxOutputBytes input res = .ok res.stdout := by
-                  unfold Internal.classifyExitResult; simp only [hNz, Bool.false_eq_true, ↓reduceIte, hOut, Bool.true_and, hGhF]
-                rw [hRes]
-                simp [state_beq_self, hS, hLe, hGhM]
+              rw [hRes]
+              simp [state_beq_self, hS, hLe, hGhM]
   · have hf : isValidDecompressInput opts input = false := Bool.eq_false_iff.mpr hv
     rcases validateDecompressOptions_false_implies_error codec opts input hf with
       ⟨e, hVal, hKind, hCodec, hExit, hErr, hMsg⟩
@@ -2646,78 +2305,59 @@ private theorem internalApi_decompressWith_sound (env : Model.CompressEnv) (st�
     simp [state_beq_self, hKind, hWf, show (CompressErrorKind.invalidInput == CompressErrorKind.invalidInput) = true from rfl]
 
 private theorem internalApi_isToolAvailable_sound (env : Model.CompressEnv) (codec : Codec)
-    (stage : Nat) (rawV : Except ProcessError LeanSwe.Process.ExecOutcome)
+    (rawV : Except ProcessError ExecResult)
     (hConf : rawVersionCallConforms env codec rawV = true) :
     Model.allowedIsToolAvailable env codec
-      ((Internal.mkApiM (scriptedStageRawOpsId stage rawV)).isToolAvailable codec) = true := by
-  have hReq := validateRequest_mkToolVersionRequest codec
+      ((Internal.mkApiM (scriptedProcessApiId rawV)).isToolAvailable codec) = true := by
   unfold Internal.mkApiM Internal.isToolAvailable Model.allowedIsToolAvailable
-  dsimp only [bind, pure, Id.run]
+  dsimp only [scriptedProcessApiId, bind, pure, Id.run]
   cases rawV with
-  | error pe =>
-    rcases scriptedStage_run_error stage pe (Internal.mkToolVersionRequest codec) hReq with ⟨fb, hRun⟩
-    rw [hRun]
+  | error _ =>
     dsimp only [rawVersionCallConforms] at hConf
     cases hTs : env.toolStatus codec <;> simp [hTs] at hConf ⊢
     exact hConf
-  | ok outcome =>
-    rw [scriptedStage_run_ok stage outcome (Internal.mkToolVersionRequest codec),
-      LeanSwe.Process.Internal.run, hReq]
-    cases outcome with
-    | exited res =>
-      dsimp only [scriptedRawOpsId, scriptedStageRawOpsId, bind, pure, Id.run, rawVersionCallConforms] at hConf ⊢
-      cases hTs : env.toolStatus codec <;> simp [hTs] at hConf ⊢
-      · by_cases hZ : res.exitCode = 0
-        · simp [hZ]
-        · simp [hZ] at hConf ⊢
-          exact hConf
-      · exact hConf
-      · exact hConf
-      · exact hConf
-    | signaled _ _ _ =>
-      dsimp only [scriptedRawOpsId, scriptedStageRawOpsId, bind, pure, Id.run, rawVersionCallConforms] at hConf ⊢
-      cases hTs : env.toolStatus codec <;> simp [hTs] at hConf ⊢
-      exact hConf
-    | timedOut _ _ =>
-      dsimp only [scriptedRawOpsId, scriptedStageRawOpsId, bind, pure, Id.run, rawVersionCallConforms] at hConf ⊢
-      cases hTs : env.toolStatus codec <;> simp [hTs] at hConf ⊢
-      exact hConf
-    | outputLimitExceeded _ _ =>
-      dsimp only [scriptedRawOpsId, scriptedStageRawOpsId, bind, pure, Id.run, rawVersionCallConforms] at hConf ⊢
-      cases hTs : env.toolStatus codec <;> simp [hTs] at hConf ⊢
-      exact hConf
+  | ok res =>
+    dsimp only [rawVersionCallConforms] at hConf ⊢
+    cases hTs : env.toolStatus codec <;> simp [hTs] at hConf ⊢
+    · by_cases hZ : res.exitCode = 0
+      · simp [hZ]
+      · simp [hZ] at hConf ⊢
+        exact hConf
+    · exact hConf
+    · exact hConf
+    · exact hConf
 
-/-- Formal bridge soundness proof of `Internal.mkApiM (scriptedStageRawOpsId stage raw)` against stateful `Model.allowedCompressStep`, `Model.allowedDecompressStep`, and `Model.allowedIsToolAvailable`. -/
+/-- Formal bridge soundness proof of `Internal.mkApiM (scriptedProcessApiId raw)` against stateful `Model.allowedCompressStep`, `Model.allowedDecompressStep`, and `Model.allowedIsToolAvailable`. -/
 theorem proof_compress_internalApi_soundAgainstAllowedOutcome :
     AllPass (test_compress_internalApi_soundAgainstAllowedOutcome Internal.mkApiM) := by
-  intro env st₀ codec copts dopts input stageC stageD stageV rawC rawC0 rawD rawD0 rawV hC hC0 hD hD0 hV
+  intro env st₀ codec copts dopts input rawC rawC0 rawD rawD0 rawV hC hC0 hD hD0 hV
   dsimp only [test_compress_internalApi_soundAgainstAllowedOutcome, bind, pure, assume, assert]
-  exact ⟨internalApi_compressWith_sound env st₀ codec copts input stageC rawC hC,
-    internalApi_compressWith_sound env st₀ codec {} input stageC rawC0 hC0,
-    internalApi_decompressWith_sound env st₀ codec dopts input stageD rawD hD,
-    internalApi_decompressWith_sound env st₀ codec {} input stageD rawD0 hD0,
-    internalApi_isToolAvailable_sound env codec stageV rawV hV, trivial⟩
+  exact ⟨internalApi_compressWith_sound env st₀ codec copts input rawC hC,
+    internalApi_compressWith_sound env st₀ codec {} input rawC0 hC0,
+    internalApi_decompressWith_sound env st₀ codec dopts input rawD hD,
+    internalApi_decompressWith_sound env st₀ codec {} input rawD0 hD0,
+    internalApi_isToolAvailable_sound env codec rawV hV, trivial⟩
 
 /-- Non-vacuity `CanReach` witness for `test_compress_internalApi_soundAgainstAllowedOutcome`. -/
 theorem reach_compress_internalApi_soundAgainstAllowedOutcome :
     CanReach (test_compress_internalApi_soundAgainstAllowedOutcome Internal.mkApiM) :=
-  ⟨{ toolStatus := fun _ => .available }, Model.State.empty, .zstd, {}, {}, ByteArray.empty, 0, 0, 0,
-    .ok (.exited { exitCode := 0, stdout := Model.encodeStored .zstd ByteArray.empty, stderr := ByteArray.empty }),
-    .ok (.exited { exitCode := 0, stdout := Model.encodeStored .zstd ByteArray.empty, stderr := ByteArray.empty }),
-    .ok (.exited { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }),
-    .ok (.exited { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }),
-    .ok (.exited { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }),
+  ⟨{ toolStatus := fun _ => .available }, Model.State.empty, .zstd, {}, {}, ByteArray.empty,
+    .ok { exitCode := 0, stdout := Model.encodeStored .zstd ByteArray.empty, stderr := ByteArray.empty },
+    .ok { exitCode := 0, stdout := Model.encodeStored .zstd ByteArray.empty, stderr := ByteArray.empty },
+    .ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty },
+    .ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty },
+    .ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty },
     by decide, by decide, by decide, by decide, by decide,
     proof_compress_internalApi_soundAgainstAllowedOutcome
-      { toolStatus := fun _ => .available } Model.State.empty .zstd {} {} ByteArray.empty 0 0 0 _ _ _ _ _
+      { toolStatus := fun _ => .available } Model.State.empty .zstd {} {} ByteArray.empty _ _ _ _ _
       (by decide) (by decide) (by decide) (by decide) (by decide)⟩
 
-/-- Proof of `test_compress_publicApi_matchesDefaultOps` anchoring all public `Compress.*` entry points to `Internal.mkApiM SysBridge.defaultOps`. -/
+/-- Proof of `test_compress_publicApi_matchesDefaultOps` anchoring all public `Compress.*` entry points to `Internal.mkApiM LeanSwe.Process.defaultApi`. -/
 theorem proof_compress_publicApi_matchesDefaultOps :
     AllPass (test_compress_publicApi_matchesDefaultOps Internal.mkApiM
       Compress.defaultApi Compress.compress Compress.decompress
       Compress.compressWith Compress.decompressWith Compress.isToolAvailable
-      LeanSwe.Process.SysBridge.defaultOps) := by
+      LeanSwe.Process.defaultApi) := by
   intro codec copts dopts input
   dsimp only [test_compress_publicApi_matchesDefaultOps, bind, pure, assert]
   exact ⟨compress_defaultApi_eq, compress_compressWith_eq codec copts input,

@@ -181,10 +181,10 @@ private def testCorruptAndTruncatedAndTrailingGarbage : IO Unit := do
       assertTrue "gzip trailing garbage exits with 2" (garbageErr.exitCode == some 2)
 
 private def testInvalidInputsNoSpawn : IO Unit := do
-  let noSpawnOps : RawProcessOpsM IO :=
-    { SysBridge.defaultOps with
-      spawn := fun _ => throw (IO.userError "unexpected spawn during invalidInput test") }
-  let api := Internal.mkApiM noSpawnOps
+  let noSpawnProc : ProcessApi :=
+    { Process.defaultApi with
+      run := fun _ => throw (IO.userError "unexpected spawn during invalidInput test") }
+  let api := Internal.mkApiM noSpawnProc
   let threeBytes := "abc".toUTF8
   let invalidCompressCases : Array (String × Codec × CompressOptions × ByteArray) :=
     #[("timeoutMs=0", .zstd, { timeoutMs := 0 }, threeBytes),
@@ -215,17 +215,12 @@ private def testInvalidInputsNoSpawn : IO Unit := do
   | .error e => assertTrue "validateDecompressOptions timeoutMs=0 kind" (e.kind == .invalidInput)
   | .ok () => throw (IO.userError "validateDecompressOptions timeoutMs=0 unexpectedly succeeded")
   let spawnedRef ← IO.mkRef (#[] : Array ExecRequest)
-  let mockOkOps : RawProcessOpsM IO :=
-    { SysBridge.defaultOps with
-      spawn := fun req => do
+  let mockOkProc : ProcessApi :=
+    { Process.defaultApi with
+      run := fun req => do
         spawnedRef.modify (·.push req)
-        return .ok { handleId := 1, pid := 1, pgid := 1 }
-      awaitOutput := fun _ _ _ _ =>
-        return .ok (.exited { exitCode := 0, stdout := Model.encodeStored .zstd ByteArray.empty, stderr := ByteArray.empty })
-      killProcessGroup := fun _ => return .ok ()
-      reap := fun _ => return .ok ()
-      activeProcessCount := return 0 }
-  let mockOkApi := Internal.mkApiM mockOkOps
+        return .ok { exitCode := 0, stdout := Model.encodeStored .zstd ByteArray.empty, stderr := ByteArray.empty } }
+  let mockOkApi := Internal.mkApiM mockOkProc
   let _ ← expectOk "compressWith exact maxInputBytes" (← mockOkApi.compressWith .zstd { maxInputBytes := some threeBytes.size, maxOutputBytes := 2048 } threeBytes)
   let _ ← expectOk "compressWith zstd max threads" (← mockOkApi.compressWith .zstd { threads := some 4294967295 } threeBytes)
   let _ ← expectOk "compressWith xz max threads" (← mockOkApi.compressWith .xz { threads := some 16384 } threeBytes)
@@ -258,11 +253,11 @@ private def testInvalidInputsNoSpawn : IO Unit := do
       req.timeoutMs == some 5000 && req.maxOutputBytes == some 65536)
 
 private def testToolNotFoundAndNonExecutable : IO Unit := do
-  let missingOps : RawProcessOpsM IO :=
-    { SysBridge.defaultOps with
-      spawn := fun req =>
-        SysBridge.defaultOps.spawn { req with program := "/nonexistent/lean-swe-missing-compress-tool" } }
-  let missingApi := Internal.mkApiM missingOps
+  let missingProc : ProcessApi :=
+    { Process.defaultApi with
+      run := fun req =>
+        Process.defaultApi.run { req with program := "/nonexistent/lean-swe-missing-compress-tool" } }
+  let missingApi := Internal.mkApiM missingProc
   for codec in #[Codec.zstd, .xz, .gzip] do
     let avail ← missingApi.isToolAvailable codec
     assertTrue s!"missing tool isToolAvailable false {repr codec}" (!avail)
@@ -278,11 +273,11 @@ private def testToolNotFoundAndNonExecutable : IO Unit := do
       { user := { read := true, write := true, execution := false }
         group := { read := true }
         other := { read := true } }
-    let nonExecOps : RawProcessOpsM IO :=
-      { SysBridge.defaultOps with
-        spawn := fun req =>
-          SysBridge.defaultOps.spawn { req with program := nonExecPath.toString } }
-    let nonExecApi := Internal.mkApiM nonExecOps
+    let nonExecProc : ProcessApi :=
+      { Process.defaultApi with
+        run := fun req =>
+          Process.defaultApi.run { req with program := nonExecPath.toString } }
+    let nonExecApi := Internal.mkApiM nonExecProc
     let avail ← nonExecApi.isToolAvailable .zstd
     assertTrue "non-executable tool isToolAvailable false" (!avail)
     let _ ← expectErrKind "non-executable tool compress" .toolNotFound
@@ -293,14 +288,34 @@ private def testToolNotFoundAndNonExecutable : IO Unit := do
     IO.FS.removeDirAll tmpDir
 
 private def mkMockAwaitApi (outcome : ExecOutcome) : CompressApi :=
-  let ops : RawProcessOpsM IO :=
-    { SysBridge.defaultOps with
-      spawn := fun _ => pure (.ok { handleId := 1, pid := 1, pgid := 1 })
-      awaitOutput := fun _ _ _ _ => pure (.ok outcome)
-      killProcessGroup := fun _ => pure (.ok ())
-      reap := fun _ => pure (.ok ())
-      activeProcessCount := pure 0 }
-  Internal.mkApiM ops
+  let proc : ProcessApi :=
+    { Process.defaultApi with
+      run := fun req =>
+        match outcome with
+        | .exited res => pure (.ok res)
+        | .signaled sig out err =>
+          pure (.error
+            { kind := .terminatedBySignal
+              program := some req.program
+              signal := some sig
+              stdout := some out
+              stderr := some err
+              message := s!"process '{req.program}' terminated by signal {sig}" })
+        | .timedOut out err =>
+          pure (.error
+            { kind := .timedOut
+              program := some req.program
+              stdout := some out
+              stderr := some err
+              message := s!"process '{req.program}' timed out" })
+        | .outputLimitExceeded out err =>
+          pure (.error
+            { kind := .outputLimitExceeded
+              program := some req.program
+              stdout := some out
+              stderr := some err
+              message := s!"process '{req.program}' exceeded output byte limit" }) }
+  Internal.mkApiM proc
 
 private def validEmptyZstdFrame : ByteArray :=
   ByteArray.mk #[0x28, 0xB5, 0x2F, 0xFD, 0x20, 0x00, 0x01, 0x00, 0x00]
@@ -384,11 +399,11 @@ private def testOutputLimitExceeded : IO Unit := do
       (← decompressWith codec { maxOutputBytes := 1024 } comp)
 
 private def testTimedOutAndEnvSanitization : IO Unit := do
-  let slowOps : RawProcessOpsM IO :=
-    { SysBridge.defaultOps with
-      spawn := fun req =>
-        SysBridge.defaultOps.spawn { req with program := "sleep", args := #["2"] } }
-  let slowApi := Internal.mkApiM slowOps
+  let slowProc : ProcessApi :=
+    { Process.defaultApi with
+      run := fun req =>
+        Process.defaultApi.run { req with program := "sleep", args := #["2"] } }
+  let slowApi := Internal.mkApiM slowProc
   let _ ← expectErrKind "timeout compress" .timedOut
     (← slowApi.compressWith .zstd { timeoutMs := 50 } ByteArray.empty)
   let poisoned : Array (String × Option String) :=
@@ -399,11 +414,11 @@ private def testTimedOutAndEnvSanitization : IO Unit := do
       ("GZIP", some "--lean-swe-invalid-gzip-flag"),
       ("LANG", some "de_AT.utf8"),
       ("LANGUAGE", some "de_AT:de")]
-  let poisonedOps : RawProcessOpsM IO :=
-    { SysBridge.defaultOps with
-      spawn := fun req =>
-        SysBridge.defaultOps.spawn { req with env := poisoned ++ req.env } }
-  let poisonedApi := Internal.mkApiM poisonedOps
+  let poisonedProc : ProcessApi :=
+    { Process.defaultApi with
+      run := fun req =>
+        Process.defaultApi.run { req with env := poisoned ++ req.env } }
+  let poisonedApi := Internal.mkApiM poisonedProc
   let sample := "sanitized-env-check-payload".toUTF8
   for codec in #[Codec.zstd, .xz, .gzip] do
     let avail ← poisonedApi.isToolAvailable codec
@@ -750,10 +765,10 @@ def registeredErrorTests : Array Core.RegisteredErrorTest :=
        mode := .real, run := err_compress_decompressWith_ioError } ]
 
 private def mkMockSpawnErrApi (pe : ProcessError) : CompressApi :=
-  let ops : RawProcessOpsM IO :=
-    { SysBridge.defaultOps with
-      spawn := fun _ => pure (.error pe) }
-  Internal.mkApiM ops
+  let proc : ProcessApi :=
+    { Process.defaultApi with
+      run := fun _ => pure (.error pe) }
+  Internal.mkApiM proc
 
 private def testResourceExhaustedMappedToIoError : IO Unit := do
   let envIo : Model.CompressEnv := { allowResourceIoError := true }
@@ -1006,17 +1021,13 @@ private def testIntegrityVectorsAndFlushHorizon : IO Unit := do
   assertTrue "Model.allowedDecompressWith accepts real xzPartialCopy at maxOutputBytes=1"
     (Model.allowedDecompressWith { toolStatus := fun _ => .available } .xz
       { maxOutputBytes := 1 } xzPartialCopy resXzPartial)
-  let mkPartialFlushMock (exitCode : Int) (outSz : Nat) : RawProcessOpsM IO :=
-    { SysBridge.defaultOps with
-      spawn := fun _ => return .ok { handleId := 1, pid := 1, pgid := 1 }
-      awaitOutput := fun _ _ _ _ =>
-        return .ok (.exited {
+  let mkPartialFlushMock (exitCode : Int) (outSz : Nat) : ProcessApi :=
+    { Process.defaultApi with
+      run := fun _ =>
+        return .ok {
           exitCode := exitCode
           stdout := ByteArray.mk (Array.replicate outSz 0x41)
-          stderr := ByteArray.empty })
-      killProcessGroup := fun _ => return .ok ()
-      reap := fun _ => return .ok ()
-      activeProcessCount := return 0 }
+          stderr := ByteArray.empty } }
   let mockFlushDec ← (Internal.mkApiM (mkPartialFlushMock 1 4)).decompressWith .xz
     { maxOutputBytes := 1 } xzPartialCopy
   assertTrue "decompressWith prioritizes non-zero exit over partial stdout > maxOutputBytes"

@@ -1,11 +1,10 @@
 import LeanSwe.Process.Types
-import LeanSwe.Process.Impl
 import LeanSwe.Compress.Types
 
 namespace LeanSwe.Compress.Internal
 
 open LeanSwe.Process
-  (ProcessError ExecRequest ExecResult RawProcessOpsM)
+  (ProcessError ExecRequest ExecResult ProcessApiM)
 
 /-- Return the CLI executable name for `codec`. -/
 def codecProgram : Codec → String
@@ -236,27 +235,27 @@ def classifyExitResult (codec : Codec) (isDecompress : Bool) (maxOut : Nat) (inp
   else
     .ok res.stdout
 
-/-- Compress `input` with `codec` and `opts` via `raw`. -/
-def compressWith {m : Type → Type} [Monad m] (raw : RawProcessOpsM m)
+/-- Compress `input` with `codec` and `opts` via `proc`. -/
+def compressWith {m : Type → Type} [Monad m] (proc : ProcessApiM m)
     (codec : Codec) (opts : CompressOptions) (input : ByteArray) :
     m (Except CompressError ByteArray) := do
   match validateCompressOptions codec opts input with
   | .error err => return .error err
   | .ok () =>
     let req := mkCompressRequest codec opts input
-    match ← LeanSwe.Process.Internal.run raw req with
+    match ← proc.run req with
     | .error pe => return .error (classifyProcessError codec pe)
     | .ok res => return classifyExitResult codec false opts.maxOutputBytes input res
 
-/-- Decompress `input` with `codec` and `opts` via `raw`. -/
-def decompressWith {m : Type → Type} [Monad m] (raw : RawProcessOpsM m)
+/-- Decompress `input` with `codec` and `opts` via `proc`. -/
+def decompressWith {m : Type → Type} [Monad m] (proc : ProcessApiM m)
     (codec : Codec) (opts : DecompressOptions) (input : ByteArray) :
     m (Except CompressError ByteArray) := do
   match validateDecompressOptions codec opts input with
   | .error err => return .error err
   | .ok () =>
     let req := mkDecompressRequest codec opts input
-    match ← LeanSwe.Process.Internal.run raw req with
+    match ← proc.run req with
     | .error pe =>
       if (pe.kind == .outputLimitExceeded || pe.kind == .timedOut) && codec == .gzip && !hasGzipHeader input then
         return .error
@@ -269,19 +268,19 @@ def decompressWith {m : Type → Type} [Monad m] (raw : RawProcessOpsM m)
         return .error (classifyProcessError codec pe)
     | .ok res => return classifyExitResult codec true opts.maxOutputBytes input res
 
-/-- Return `true` iff the binary for `codec` succeeds on `--version` via `raw`. -/
-def isToolAvailable {m : Type → Type} [Monad m] (raw : RawProcessOpsM m)
+/-- Return `true` iff the binary for `codec` succeeds on `--version` via `proc`. -/
+def isToolAvailable {m : Type → Type} [Monad m] (proc : ProcessApiM m)
     (codec : Codec) : m Bool := do
-  match ← LeanSwe.Process.Internal.run raw (mkToolVersionRequest codec) with
+  match ← proc.run (mkToolVersionRequest codec) with
   | .ok res => return res.exitCode == 0
   | .error _ => return false
 
-/-- Build a generic `CompressApiM m` backed by `raw : RawProcessOpsM m`. -/
-def mkApiM {m : Type → Type} [Monad m] (raw : RawProcessOpsM m) : CompressApiM m :=
-  { compress := fun codec input => compressWith raw codec {} input
-    decompress := fun codec input => decompressWith raw codec {} input
-    compressWith := compressWith raw
-    decompressWith := decompressWith raw
-    isToolAvailable := isToolAvailable raw }
+/-- Build a generic `CompressApiM m` backed by `proc : ProcessApiM m`. -/
+def mkApiM {m : Type → Type} [Monad m] (proc : ProcessApiM m) : CompressApiM m :=
+  { compress := fun codec input => compressWith proc codec {} input
+    decompress := fun codec input => decompressWith proc codec {} input
+    compressWith := compressWith proc
+    decompressWith := decompressWith proc
+    isToolAvailable := isToolAvailable proc }
 
 end LeanSwe.Compress.Internal

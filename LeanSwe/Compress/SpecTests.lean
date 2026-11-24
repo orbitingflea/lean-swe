@@ -9,11 +9,11 @@ namespace LeanSwe.Compress
 open Core (NondetTest AssumptionObligation ErrorObligation)
 open Core.NondetTest
 open LeanSwe.Process
-  (ProcessErrorKind ProcessError ExecRequest ExecResult ProcessHandle ExecOutcome RawProcessOpsM)
+  (ProcessErrorKind ProcessError ExecRequest ExecResult ProcessApiM)
 
-/-- Builder function constructing a `CompressApiM m` from an injected `RawProcessOpsM m`. -/
+/-- Builder function constructing a `CompressApiM m` from an injected `ProcessApiM m`. -/
 abbrev CompressBuilder (m : Type → Type) :=
-  RawProcessOpsM m → CompressApiM m
+  ProcessApiM m → CompressApiM m
 
 /-- CLI executable name for a `Codec`. -/
 def codecProgram : Codec → String
@@ -132,29 +132,18 @@ def expectedProcessErrorExitCode (kind : CompressErrorKind) (exitCode : Option I
     | none => none
   | _ => none
 
-/-- Deterministic mock process state for `RawProcessOpsM (StateM MockProcState)` spec tests. -/
+/-- Deterministic mock process state for `ProcessApiM (StateM MockProcState)` spec tests. -/
 structure MockProcState where
-  /-- Scripted response for `raw.spawn`. -/
-  onSpawn : ExecRequest → Except ProcessError ProcessHandle :=
-    fun _ => .ok { handleId := 1, pid := 100, pgid := 100 }
-  /-- Scripted response for `raw.awaitOutput`. -/
-  onAwait : ProcessHandle → ByteArray → Option Nat → Option Nat → Except ProcessError ExecOutcome :=
-    fun _ stdin _ _ => .ok (.exited { exitCode := 0, stdout := stdin, stderr := ByteArray.empty })
-  /-- Scripted response for `raw.reap`. -/
-  onReap : ProcessHandle → Except ProcessError Unit := fun _ => .ok ()
-  /-- Recorded `ExecRequest` values passed to `raw.spawn` in invocation order. -/
-  spawned : List ExecRequest := []
-  /-- Total `raw.spawn` calls attempted. -/
-  spawnAttempts : Nat := 0
-  /-- Total `raw.killProcessGroup` calls observed. -/
-  killCount : Nat := 0
-  /-- Total `raw.reap` calls observed. -/
-  reapCount : Nat := 0
-  /-- Active un-reaped handle count. -/
-  activeHandles : Nat := 0
+  /-- Scripted response for `proc.run`. -/
+  onRun : ExecRequest → Except ProcessError ExecResult :=
+    fun req => .ok { exitCode := 0, stdout := req.stdin, stderr := ByteArray.empty }
+  /-- Recorded `ExecRequest` values passed to `proc.run` in invocation order. -/
+  ran : List ExecRequest := []
+  /-- Total `proc.run` calls attempted. -/
+  runAttempts : Nat := 0
 
-/-- Deterministic `RawProcessOpsM (StateM MockProcState)` backed by `MockProcState`. -/
-def mockRawOps : RawProcessOpsM (StateM MockProcState) :=
+/-- Deterministic `ProcessApiM (StateM MockProcState)` backed by `MockProcState`. -/
+def mockProcessApi : ProcessApiM (StateM MockProcState) :=
   { mapRawError := fun
       | .executableNotFound prog errno detail =>
         { kind := .notFound, program := some prog, errnoCode := some errno, message := detail }
@@ -172,38 +161,62 @@ def mockRawOps : RawProcessOpsM (StateM MockProcState) :=
         { kind := .ioError, errnoCode := some errno, message := detail }
       | .userError detail =>
         { kind := .ioError, message := detail }
-    spawn := fun req => do
+    validateRequest := fun req => .ok req
+    mkCommandRequest := fun program args => { program := program, args := args }
+    withTextInput := fun req text => { req with stdin := text.toUTF8 }
+    run := fun req => do
       let s ← get
-      set { s with spawned := s.spawned ++ [req], spawnAttempts := s.spawnAttempts + 1 }
-      match s.onSpawn req with
+      set { s with ran := s.ran ++ [req], runAttempts := s.runAttempts + 1 }
+      return s.onRun req
+    runChecked := fun req => do
+      let s ← get
+      set { s with ran := s.ran ++ [req], runAttempts := s.runAttempts + 1 }
+      match s.onRun req with
       | .error e => return .error e
-      | .ok h =>
-        modify fun s' => { s' with activeHandles := s'.activeHandles + 1 }
-        return .ok h
-    awaitOutput := fun h stdin timeoutMs maxOutputBytes => do
+      | .ok res =>
+        if res.exitCode == 0 then return .ok res
+        else
+          return .error
+            { kind := .nonZeroExit
+              program := some req.program
+              exitCode := some res.exitCode
+              stdout := some res.stdout
+              stderr := some res.stderr
+              message := s!"process '{req.program}' exited with status {res.exitCode}" }
+    runCommand := fun program args => do
+      let req : ExecRequest := { program := program, args := args }
       let s ← get
-      return s.onAwait h stdin timeoutMs maxOutputBytes
-    killProcessGroup := fun _ => do
-      modify fun s => { s with killCount := s.killCount + 1 }
-      return .ok ()
-    reap := fun h => do
+      set { s with ran := s.ran ++ [req], runAttempts := s.runAttempts + 1 }
+      return s.onRun req
+    runCommandChecked := fun program args => do
+      let req : ExecRequest := { program := program, args := args }
       let s ← get
-      set { s with reapCount := s.reapCount + 1, activeHandles := s.activeHandles - 1 }
-      return s.onReap h
-    activeProcessCount := do
-      return (← get).activeHandles }
+      set { s with ran := s.ran ++ [req], runAttempts := s.runAttempts + 1 }
+      match s.onRun req with
+      | .error e => return .error e
+      | .ok res =>
+        if res.exitCode == 0 then return .ok res
+        else
+          return .error
+            { kind := .nonZeroExit
+              program := some req.program
+              exitCode := some res.exitCode
+              stdout := some res.stdout
+              stderr := some res.stderr
+              message := s!"process '{req.program}' exited with status {res.exitCode}" }
+    activeProcessCount := return 0 }
 
-/-- Invalid `CompressOptions` or `input.size > maxInputBytes` fail with `.invalidInput` without calling `raw` or mutating state. -/
+/-- Invalid `CompressOptions` or `input.size > maxInputBytes` fail with `.invalidInput` without calling `proc` or mutating state. -/
 def test_compress_compressWith_invalidOptionsRejectWithoutSpawn
     {S : Type} {runner} [NondetTest runner]
     (mkApi : CompressBuilder (StateM S))
-    (raw : RawProcessOpsM (StateM S)) : runner Unit := do
+    (proc : ProcessApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let codec ← nondet Codec
   let opts ← nondet CompressOptions
   let input ← nondet ByteArray
   assume (isValidCompressInput codec opts input = false)
-  let (res, s₁) := ((mkApi raw).compressWith codec opts input).run s₀
+  let (res, s₁) := ((mkApi proc).compressWith codec opts input).run s₀
   NondetTest.assert
     (∃ e, res = .error e ∧
       e.kind = .invalidInput ∧
@@ -213,17 +226,17 @@ def test_compress_compressWith_invalidOptionsRejectWithoutSpawn
       e.message ≠ "")
   NondetTest.assert (s₁ = s₀)
 
-/-- Invalid `DecompressOptions` or `input.size > maxInputBytes` fail with `.invalidInput` without calling `raw` or mutating state. -/
+/-- Invalid `DecompressOptions` or `input.size > maxInputBytes` fail with `.invalidInput` without calling `proc` or mutating state. -/
 def test_compress_decompressWith_invalidOptionsRejectWithoutSpawn
     {S : Type} {runner} [NondetTest runner]
     (mkApi : CompressBuilder (StateM S))
-    (raw : RawProcessOpsM (StateM S)) : runner Unit := do
+    (proc : ProcessApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let codec ← nondet Codec
   let opts ← nondet DecompressOptions
   let input ← nondet ByteArray
   assume (isValidDecompressInput opts input = false)
-  let (res, s₁) := ((mkApi raw).decompressWith codec opts input).run s₀
+  let (res, s₁) := ((mkApi proc).decompressWith codec opts input).run s₀
   NondetTest.assert
     (∃ e, res = .error e ∧
       e.kind = .invalidInput ∧
@@ -233,7 +246,7 @@ def test_compress_decompressWith_invalidOptionsRejectWithoutSpawn
       e.message ≠ "")
   NondetTest.assert (s₁ = s₀)
 
-/-- Valid `compressWith` builds exact direct `execvp` args, strips inherited codec env vars, passes `stdin` (including empty), reaps cleanly, and enforces `maxOutputBytes`. -/
+/-- Valid `compressWith` builds exact direct `execvp` args, strips inherited codec env vars, passes `stdin` (including empty), and enforces `maxOutputBytes`. -/
 def test_compress_compressWith_buildsExactExecRequest
     {runner} [NondetTest runner]
     (mkApi : CompressBuilder (StateM MockProcState)) : runner Unit := do
@@ -242,13 +255,11 @@ def test_compress_compressWith_buildsExactExecRequest
   let input ← nondet ByteArray
   let outBytes ← nondet ByteArray
   let errBytes ← nondet ByteArray
-  let active₀ ← nondet Nat
   assume (isValidCompressInput codec opts input = true)
   let s₀ : MockProcState :=
-    { activeHandles := active₀
-      onAwait := fun _ _ _ _ =>
-        .ok (.exited { exitCode := 0, stdout := outBytes, stderr := errBytes }) }
-  let (res, s₁) := ((mkApi mockRawOps).compressWith codec opts input).run s₀
+    { onRun := fun _ =>
+        .ok { exitCode := 0, stdout := outBytes, stderr := errBytes } }
+  let (res, s₁) := ((mkApi mockProcessApi).compressWith codec opts input).run s₀
   if outBytes.size ≤ opts.maxOutputBytes then
     NondetTest.assert (res = .ok outBytes)
   else
@@ -259,9 +270,8 @@ def test_compress_compressWith_buildsExactExecRequest
         e.exitCode = none ∧
         e.stderr = expectedStderr errBytes ∧
         e.message ≠ "")
-  NondetTest.assert (s₁.spawnAttempts = 1 ∧ s₁.reapCount = 1 ∧ s₁.killCount = 0)
-  NondetTest.assert (s₁.activeHandles = active₀)
-  NondetTest.assert (s₁.spawned =
+  NondetTest.assert (s₁.runAttempts = 1)
+  NondetTest.assert (s₁.ran =
     [{ program := codecProgram codec
        args := expectedCompressArgs codec opts
        cwd := none
@@ -281,16 +291,13 @@ def test_compress_decompressWith_buildsExactExecRequest_noEmptyShortCircuit
   let exitCode ← nondet Int
   let outBytes ← nondet ByteArray
   let errBytes ← nondet ByteArray
-  let active₀ ← nondet Nat
   assume (isValidDecompressInput opts input = true)
   let s₀ : MockProcState :=
-    { activeHandles := active₀
-      onAwait := fun _ _ _ _ =>
-        .ok (.exited { exitCode := exitCode, stdout := outBytes, stderr := errBytes }) }
-  let (res, s₁) := ((mkApi mockRawOps).decompressWith codec opts input).run s₀
-  NondetTest.assert (s₁.spawnAttempts = 1 ∧ s₁.reapCount = 1 ∧ s₁.killCount = 0)
-  NondetTest.assert (s₁.activeHandles = active₀)
-  NondetTest.assert (s₁.spawned =
+    { onRun := fun _ =>
+        .ok { exitCode := exitCode, stdout := outBytes, stderr := errBytes } }
+  let (res, s₁) := ((mkApi mockProcessApi).decompressWith codec opts input).run s₀
+  NondetTest.assert (s₁.runAttempts = 1)
+  NondetTest.assert (s₁.ran =
     [{ program := codecProgram codec
        args := expectedDecompressArgs codec
        cwd := none
@@ -336,19 +343,19 @@ def test_compress_decompressWith_buildsExactExecRequest_noEmptyShortCircuit
     else
       NondetTest.assert (res = .ok outBytes)
 
-/-- `compress` and `decompress` are equivalent to `compressWith _ {}` and `decompressWith _ {}` for any `raw`. -/
+/-- `compress` and `decompress` are equivalent to `compressWith _ {}` and `decompressWith _ {}` for any `proc`. -/
 def test_compress_defaults_matchWithDefaultOptions
     {S : Type} {runner} [NondetTest runner]
     (mkApi : CompressBuilder (StateM S))
-    (raw : RawProcessOpsM (StateM S)) : runner Unit := do
+    (proc : ProcessApiM (StateM S)) : runner Unit := do
   let s₀ ← nondet S
   let codec ← nondet Codec
   let input ← nondet ByteArray
-  let api := mkApi raw
+  let api := mkApi proc
   NondetTest.assert ((api.compress codec input).run s₀ = (api.compressWith codec {} input).run s₀)
   NondetTest.assert ((api.decompress codec input).run s₀ = (api.decompressWith codec {} input).run s₀)
 
-/-- `spawn` errors (`notFound`/`permissionDenied` → `.toolNotFound`, etc.) map completely with preserved non-empty messages and no leaked handles. -/
+/-- `proc.run` errors (`notFound`/`permissionDenied` → `.toolNotFound`, etc.) map completely with preserved non-empty messages. -/
 def test_compress_spawnErrors_mappedCorrectly
     {runner} [NondetTest runner]
     (mkApi : CompressBuilder (StateM MockProcState)) : runner Unit := do
@@ -358,18 +365,16 @@ def test_compress_spawnErrors_mappedCorrectly
   let dopts ← nondet DecompressOptions
   let pe ← nondet ProcessError
   let input ← nondet ByteArray
-  let active₀ ← nondet Nat
   assume (if isDecompress then isValidDecompressInput dopts input = true else isValidCompressInput codec copts input = true)
   let s₀ : MockProcState :=
-    { activeHandles := active₀
-      onSpawn := fun _ => .error pe }
-  let api := mkApi mockRawOps
+    { onRun := fun _ => .error pe }
+  let api := mkApi mockProcessApi
   let (res, s₁) :=
     if isDecompress then
       (api.decompressWith codec dopts input).run s₀
     else
       (api.compressWith codec copts input).run s₀
-  NondetTest.assert (s₁.spawnAttempts = 1 ∧ s₁.activeHandles = active₀)
+  NondetTest.assert (s₁.runAttempts = 1)
   NondetTest.assert
     (∃ e, res = .error e ∧
       e.kind =
@@ -394,7 +399,7 @@ def test_compress_spawnErrors_mappedCorrectly
         (isDecompress && (pe.kind == .outputLimitExceeded || pe.kind == .timedOut) &&
           codec == .gzip && !Model.hasGzipHeader input)))
 
-/-- `awaitOutput` abnormal outcomes (`.timedOut`, `.outputLimitExceeded`, `.signaled`, `.error`) and `reap` `.error` clean up process groups and classify errors cleanly. -/
+/-- Abnormal `proc.run` outcomes (`.timedOut`, `.outputLimitExceeded`, `.terminatedBySignal`, pipe/reap `.ioError`) classify cleanly and honor gzip framing precedence. -/
 def test_compress_awaitOutcomes_cleanedUpAndClassified
     {runner} [NondetTest runner]
     (mkApi : CompressBuilder (StateM MockProcState)) : runner Unit := do
@@ -406,26 +411,20 @@ def test_compress_awaitOutcomes_cleanedUpAndClassified
   let outBytes ← nondet ByteArray
   let errBytes ← nondet ByteArray
   let sig ← nondet Int
-  let active₀ ← nondet Nat
   let outcomeKind ← nondet Nat
   assume (outcomeKind < 5)
   assume (if isDecompress then isValidDecompressInput dopts input = true else isValidCompressInput codec copts input = true)
-  let outcomeRes : Except ProcessError ExecOutcome :=
+  let runRes : Except ProcessError ExecResult :=
     if outcomeKind == 0 then
-      .ok (.timedOut outBytes errBytes)
+      .error { kind := .timedOut, program := some (codecProgram codec), stdout := some outBytes, stderr := some errBytes, message := "process timed out" }
     else if outcomeKind == 1 then
-      .ok (.outputLimitExceeded outBytes errBytes)
+      .error { kind := .outputLimitExceeded, program := some (codecProgram codec), stdout := some outBytes, stderr := some errBytes, message := "process exceeded output byte limit" }
     else if outcomeKind == 2 then
-      .ok (.signaled sig outBytes errBytes)
+      .error { kind := .terminatedBySignal, program := some (codecProgram codec), signal := some sig, stdout := some outBytes, stderr := some errBytes, message := "process terminated by signal" }
     else if outcomeKind == 3 then
       .error { kind := .ioError, message := "pipe read failed" }
     else
-      .ok (.exited { exitCode := 0, stdout := outBytes, stderr := errBytes })
-  let reapRes : Except ProcessError Unit :=
-    if outcomeKind == 4 then
       .error { kind := .ioError, message := "waitpid failed" }
-    else
-      .ok ()
   let expectedKind : CompressErrorKind :=
     if outcomeKind == 0 then
       if isDecompress && codec == .gzip && !Model.hasGzipHeader input then .corruptData else .timedOut
@@ -433,19 +432,15 @@ def test_compress_awaitOutcomes_cleanedUpAndClassified
       if isDecompress && codec == .gzip && !Model.hasGzipHeader input then .corruptData else .outputLimitExceeded
     else if outcomeKind == 2 then .commandFailed
     else .ioError
-  let expectedKills : Nat := if outcomeKind == 4 then 0 else 1
   let s₀ : MockProcState :=
-    { activeHandles := active₀
-      onAwait := fun _ _ _ _ => outcomeRes
-      onReap := fun _ => reapRes }
-  let api := mkApi mockRawOps
+    { onRun := fun _ => runRes }
+  let api := mkApi mockProcessApi
   let (res, s₁) :=
     if isDecompress then
       (api.decompressWith codec dopts input).run s₀
     else
       (api.compressWith codec copts input).run s₀
-  NondetTest.assert (s₁.spawnAttempts = 1 ∧ s₁.killCount = expectedKills ∧ s₁.reapCount = 1)
-  NondetTest.assert (s₁.activeHandles = active₀)
+  NondetTest.assert (s₁.runAttempts = 1)
   NondetTest.assert
     (∃ e, res = .error e ∧
       e.kind = expectedKind ∧
@@ -462,9 +457,9 @@ def test_compress_exitCodes_compressVsDecompress_andStderr
   let errBytes ← nondet ByteArray
   assume (exitCode ≠ 0)
   let s₀ : MockProcState :=
-    { onAwait := fun _ _ _ _ =>
-        .ok (.exited { exitCode := exitCode, stdout := ByteArray.empty, stderr := errBytes }) }
-  let api := mkApi mockRawOps
+    { onRun := fun _ =>
+        .ok { exitCode := exitCode, stdout := ByteArray.empty, stderr := errBytes } }
+  let api := mkApi mockProcessApi
   let (cRes, _) := (api.compressWith codec {} input).run s₀
   let (dRes, _) := (api.decompressWith codec {} input).run s₀
   NondetTest.assert
@@ -487,19 +482,15 @@ def test_compress_isToolAvailable_checksVersionAndCleansUp
     {runner} [NondetTest runner]
     (mkApi : CompressBuilder (StateM MockProcState)) : runner Unit := do
   let codec ← nondet Codec
-  let spawnOk ← nondet Bool
+  let runOk ← nondet Bool
   let exitCode ← nondet Int
-  let active₀ ← nondet Nat
   let s₀ : MockProcState :=
-    { activeHandles := active₀
-      onSpawn := fun _ =>
-        if spawnOk then .ok { handleId := 1, pid := 100, pgid := 100 }
-        else .error { kind := .notFound, program := some (codecProgram codec), message := "missing" }
-      onAwait := fun _ _ _ _ =>
-        .ok (.exited { exitCode := exitCode, stdout := ByteArray.empty, stderr := ByteArray.empty }) }
-  let (avail, s₁) := ((mkApi mockRawOps).isToolAvailable codec).run s₀
-  NondetTest.assert (s₁.spawnAttempts = 1 ∧ s₁.activeHandles = active₀)
-  NondetTest.assert (s₁.spawned =
+    { onRun := fun _ =>
+        if runOk then .ok { exitCode := exitCode, stdout := ByteArray.empty, stderr := ByteArray.empty }
+        else .error { kind := .notFound, program := some (codecProgram codec), message := "missing" } }
+  let (avail, s₁) := ((mkApi mockProcessApi).isToolAvailable codec).run s₀
+  NondetTest.assert (s₁.runAttempts = 1)
+  NondetTest.assert (s₁.ran =
     [{ program := codecProgram codec
        args := #["--version"]
        cwd := none
@@ -508,8 +499,7 @@ def test_compress_isToolAvailable_checksVersionAndCleansUp
        stdin := ByteArray.empty
        timeoutMs := some 5000
        maxOutputBytes := some 65536 }])
-  if spawnOk then
-    NondetTest.assert (s₁.reapCount = 1)
+  if runOk then
     NondetTest.assert (avail = (exitCode == 0))
   else
     NondetTest.assert (avail = false)
@@ -552,10 +542,10 @@ def test_compress_modelApi_soundAgainstAllowedOutcome
   let (avail, stA) := ((api.isToolAvailable codec).run st₀).run env
   NondetTest.assert (Model.allowedIsToolAvailable env codec avail = true ∧ stA = st₀)
 
-/-- Spec-conforming pure process-outcome predicate linking a `Raw.ExecOutcome`/`ProcessError` response to `Model.CompressEnv`, `Model.State`, and `Model` behavior. -/
+/-- Spec-conforming pure process-outcome predicate linking a `Process.run` response to `Model.CompressEnv`, `Model.State`, and `Model` behavior. -/
 def rawCompressCallConforms (env : Model.CompressEnv) (st₀ : Model.State) (codec : Codec)
     (opts : CompressOptions) (input : ByteArray)
-    (outcome : Except ProcessError ExecOutcome) : Bool :=
+    (outcome : Except ProcessError ExecResult) : Bool :=
   match outcome with
   | .error pe =>
     !pe.message.isEmpty &&
@@ -572,11 +562,7 @@ def rawCompressCallConforms (env : Model.CompressEnv) (st₀ : Model.State) (cod
     | .nonZeroExit => false
     | .outputLimitExceeded =>
       env.toolStatus codec == .available && opts.maxOutputBytes < Model.maxCompressedBound codec input.size
-  | .ok (.timedOut _ _) => env.toolStatus codec == .available && env.allowTimeout
-  | .ok (.signaled _ _ _) => env.toolStatus codec == .available && env.allowExternalSignal
-  | .ok (.outputLimitExceeded _ _) =>
-    env.toolStatus codec == .available && opts.maxOutputBytes < Model.maxCompressedBound codec input.size
-  | .ok (.exited res) =>
+  | .ok res =>
     if res.exitCode != 0 then
       env.toolStatus codec == .available && env.allowExternalSignal
     else if res.stdout.size > opts.maxOutputBytes then
@@ -596,10 +582,10 @@ def rawTimedOutDecompressConforms (env : Model.CompressEnv) (st₀ : Model.State
   | some _ => codec != .gzip || Model.hasGzipHeader input
   | none => true
 
-/-- Spec-conforming pure process-outcome predicate linking decompression `Raw` outcomes to `Model.CompressEnv`, `Model.State`, and `Model` behavior. -/
+/-- Spec-conforming pure process-outcome predicate linking decompression `Process.run` outcomes to `Model.CompressEnv`, `Model.State`, and `Model` behavior. -/
 def rawDecompressCallConforms (env : Model.CompressEnv) (st₀ : Model.State) (codec : Codec)
     (opts : DecompressOptions) (input : ByteArray)
-    (outcome : Except ProcessError ExecOutcome) : Bool :=
+    (outcome : Except ProcessError ExecResult) : Bool :=
   match outcome with
   | .error pe =>
     !pe.message.isEmpty &&
@@ -621,16 +607,7 @@ def rawDecompressCallConforms (env : Model.CompressEnv) (st₀ : Model.State) (c
         expected.size > opts.maxOutputBytes &&
         (codec != .gzip || Model.hasGzipHeader input)
       | none => true
-  | .ok (.timedOut _ _) => rawTimedOutDecompressConforms env st₀ codec input
-  | .ok (.signaled _ _ _) => env.toolStatus codec == .available && env.allowExternalSignal
-  | .ok (.outputLimitExceeded _ _) =>
-    env.toolStatus codec == .available &&
-    match st₀.lookup codec input with
-    | some expected =>
-      expected.size > opts.maxOutputBytes &&
-      (codec != .gzip || Model.hasGzipHeader input)
-    | none => true
-  | .ok (.exited res) =>
+  | .ok res =>
     env.toolStatus codec == .available &&
     match st₀.lookup codec input with
     | some expected =>
@@ -644,51 +621,34 @@ def rawDecompressCallConforms (env : Model.CompressEnv) (st₀ : Model.State) (c
         (codec != .gzip || Model.hasGzipHeader input)
     | none => true
 
-/-- Spec-conforming pure process-outcome predicate linking `--version` probe `Raw` outcomes to `Model.CompressEnv`. -/
+/-- Spec-conforming pure process-outcome predicate linking `--version` probe `Process.run` outcomes to `Model.CompressEnv`. -/
 def rawVersionCallConforms (env : Model.CompressEnv) (codec : Codec)
-    (outcome : Except ProcessError ExecOutcome) : Bool :=
+    (outcome : Except ProcessError ExecResult) : Bool :=
   match outcome with
   | .error _ =>
     match env.toolStatus codec with
     | .available => env.allowTimeout || env.allowResourceIoError || env.allowExternalSignal
     | _ => true
-  | .ok (.exited res) =>
+  | .ok res =>
     match env.toolStatus codec with
     | .available =>
       if res.exitCode == 0 then true
       else env.allowTimeout || env.allowResourceIoError || env.allowExternalSignal
     | _ => res.exitCode != 0
-  | .ok _ =>
-    match env.toolStatus codec with
-    | .available => env.allowTimeout || env.allowResourceIoError || env.allowExternalSignal
-    | _ => true
 
-/-- Build pure `RawProcessOpsM Id` injecting `rawOut` at `stage` (`0` = `spawn`, `1` = `awaitOutput`, `≥ 2` = `reap`). -/
-def scriptedStageRawOpsId (stage : Nat)
-    (rawOut : Except ProcessError ExecOutcome) : RawProcessOpsM Id :=
-  { mapRawError := mockRawOps.mapRawError
-    spawn := fun _ =>
-      match rawOut with
-      | .error pe => if stage == 0 then .error pe else .ok { handleId := 1, pid := 1, pgid := 1 }
-      | .ok _ => .ok { handleId := 1, pid := 1, pgid := 1 }
-    awaitOutput := fun _ _ _ _ =>
-      match rawOut with
-      | .error pe =>
-        if stage == 1 then .error pe
-        else .ok (.exited { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty })
-      | .ok out => .ok out
-    killProcessGroup := fun _ => .ok ()
-    reap := fun _ =>
-      match rawOut with
-      | .error pe => if stage >= 2 then .error pe else .ok ()
-      | .ok _ => .ok ()
+/-- Build pure `ProcessApiM Id` whose `run` produces predetermined `procOut`. -/
+def scriptedProcessApiId (procOut : Except ProcessError ExecResult) : ProcessApiM Id :=
+  { mapRawError := mockProcessApi.mapRawError
+    validateRequest := fun req => .ok req
+    mkCommandRequest := fun program args => { program := program, args := args }
+    withTextInput := fun req text => { req with stdin := text.toUTF8 }
+    run := fun _ => procOut
+    runChecked := fun _ => procOut
+    runCommand := fun _ _ => procOut
+    runCommandChecked := fun _ _ => procOut
     activeProcessCount := 0 }
 
-/-- Build pure `RawProcessOpsM Id` whose `spawn`/`awaitOutput` produce predetermined `rawOut` when `req` is valid. -/
-def scriptedRawOpsId (rawOut : Except ProcessError ExecOutcome) : RawProcessOpsM Id :=
-  scriptedStageRawOpsId 0 rawOut
-
-/-- Wrapper `mkApi (scriptedStageRawOpsId stage rawOut)` is sound against stateful `Model.allowedCompressStep`, `Model.allowedDecompressStep`, and `Model.allowedIsToolAvailable` across `spawn`/`awaitOutput`/`reap` errors. -/
+/-- Wrapper `mkApi (scriptedProcessApiId procOut)` is sound against stateful `Model.allowedCompressStep`, `Model.allowedDecompressStep`, and `Model.allowedIsToolAvailable`. -/
 def test_compress_internalApi_soundAgainstAllowedOutcome
     {runner} [NondetTest runner]
     (mkApi : CompressBuilder Id) : runner Unit := do
@@ -698,36 +658,33 @@ def test_compress_internalApi_soundAgainstAllowedOutcome
   let copts ← nondet CompressOptions
   let dopts ← nondet DecompressOptions
   let input ← nondet ByteArray
-  let stageC ← nondet Nat
-  let stageD ← nondet Nat
-  let stageV ← nondet Nat
-  let rawC ← nondet (Except ProcessError ExecOutcome)
-  let rawC0 ← nondet (Except ProcessError ExecOutcome)
-  let rawD ← nondet (Except ProcessError ExecOutcome)
-  let rawD0 ← nondet (Except ProcessError ExecOutcome)
-  let rawV ← nondet (Except ProcessError ExecOutcome)
+  let rawC ← nondet (Except ProcessError ExecResult)
+  let rawC0 ← nondet (Except ProcessError ExecResult)
+  let rawD ← nondet (Except ProcessError ExecResult)
+  let rawD0 ← nondet (Except ProcessError ExecResult)
+  let rawV ← nondet (Except ProcessError ExecResult)
   assume (rawCompressCallConforms env st₀ codec copts input rawC = true)
   assume (rawCompressCallConforms env st₀ codec {} input rawC0 = true)
   assume (rawDecompressCallConforms env st₀ codec dopts input rawD = true)
   assume (rawDecompressCallConforms env st₀ codec {} input rawD0 = true)
   assume (rawVersionCallConforms env codec rawV = true)
-  let resC := (mkApi (scriptedStageRawOpsId stageC rawC)).compressWith codec copts input
+  let resC := (mkApi (scriptedProcessApiId rawC)).compressWith codec copts input
   let stC := match resC with | .ok c => st₀.record codec c input | .error _ => st₀
   NondetTest.assert (Model.allowedCompressStep env st₀ codec copts input resC stC = true)
-  let resC0 := (mkApi (scriptedStageRawOpsId stageC rawC0)).compress codec input
+  let resC0 := (mkApi (scriptedProcessApiId rawC0)).compress codec input
   let stC0 := match resC0 with | .ok c => st₀.record codec c input | .error _ => st₀
   NondetTest.assert (Model.allowedCompressStep env st₀ codec {} input resC0 stC0 = true)
-  let resD := (mkApi (scriptedStageRawOpsId stageD rawD)).decompressWith codec dopts input
+  let resD := (mkApi (scriptedProcessApiId rawD)).decompressWith codec dopts input
   let stD := match resD with | .ok o => st₀.record codec input o | .error _ => st₀
   NondetTest.assert (Model.allowedDecompressStep env st₀ codec dopts input resD stD = true)
-  let resD0 := (mkApi (scriptedStageRawOpsId stageD rawD0)).decompress codec input
+  let resD0 := (mkApi (scriptedProcessApiId rawD0)).decompress codec input
   let stD0 := match resD0 with | .ok o => st₀.record codec input o | .error _ => st₀
   NondetTest.assert (Model.allowedDecompressStep env st₀ codec {} input resD0 stD0 = true)
   NondetTest.assert
     (Model.allowedIsToolAvailable env codec
-      ((mkApi (scriptedStageRawOpsId stageV rawV)).isToolAvailable codec) = true)
+      ((mkApi (scriptedProcessApiId rawV)).isToolAvailable codec) = true)
 
-/-- Public `Compress.*` entry points (`defaultApi`, `compress`, `decompress`, `compressWith`, `decompressWith`, `isToolAvailable`) match `mkApi raw`. -/
+/-- Public `Compress.*` entry points (`defaultApi`, `compress`, `decompress`, `compressWith`, `decompressWith`, `isToolAvailable`) match `mkApi proc`. -/
 def test_compress_publicApi_matchesDefaultOps
     {runner} [NondetTest runner]
     (mkApi : CompressBuilder IO)
@@ -737,12 +694,12 @@ def test_compress_publicApi_matchesDefaultOps
     (compressWithFn : Codec → CompressOptions → ByteArray → IO (Except CompressError ByteArray))
     (decompressWithFn : Codec → DecompressOptions → ByteArray → IO (Except CompressError ByteArray))
     (isToolAvailFn : Codec → IO Bool)
-    (raw : RawProcessOpsM IO) : runner Unit := do
+    (proc : ProcessApiM IO) : runner Unit := do
   let codec ← nondet Codec
   let copts ← nondet CompressOptions
   let dopts ← nondet DecompressOptions
   let input ← nondet ByteArray
-  let baseApi := mkApi raw
+  let baseApi := mkApi proc
   NondetTest.assert (dfltApi = baseApi)
   NondetTest.assert (compressWithFn codec copts input = dfltApi.compressWith codec copts input)
   NondetTest.assert (decompressWithFn codec dopts input = dfltApi.decompressWith codec dopts input)
