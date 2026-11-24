@@ -222,12 +222,22 @@ theorem files_model_envGeneralizationInvariants_canReach :
 
 /-- `modelOps` satisfies `O_PATH`, `lseek`, `reopenReadOnly`, and `dupStdio` invariants. -/
 theorem files_ops_lseekReopenDupStdioAndOpath_allPass :
-    AllPass (test_files_ops_lseekReopenDupStdioAndOpath modelOps lroState) :=
+    AllPass (test_files_ops_lseekReopenDupStdioAndOpath modelOps
+      { inodes := [(1, { data := .dir { parentIno := 1, children := [("proc".toUTF8, 2)] }, mode := 0o755, nlink := 3 }),
+                   (2, { data := .dir { parentIno := 1, children := [("self".toUTF8, 3)] }, mode := 0o755, origin := .pseudoFs, nlink := 3 }),
+                   (3, { data := .dir { parentIno := 2, children := [("fd".toUTF8, 4)] }, mode := 0o755, origin := .pseudoFs, nlink := 3 }),
+                   (4, { data := .dir { parentIno := 3, children := [] }, mode := 0o755, origin := .pseudoFs, nlink := 2 })],
+        fds := [], cwdPath := .bound "/".toUTF8, rootIno := 1, cwdIno := 1, nextIno := 5, nextHid := 0 }) :=
   files_ops_lseekReopenDupStdioAndOpath_proof
 
 /-- Concrete witness demonstrating reachability of `test_files_ops_lseekReopenDupStdioAndOpath` on `modelOps`. -/
 theorem files_ops_lseekReopenDupStdioAndOpath_canReach :
-    CanReach (test_files_ops_lseekReopenDupStdioAndOpath modelOps lroState) :=
+    CanReach (test_files_ops_lseekReopenDupStdioAndOpath modelOps
+      { inodes := [(1, { data := .dir { parentIno := 1, children := [("proc".toUTF8, 2)] }, mode := 0o755, nlink := 3 }),
+                   (2, { data := .dir { parentIno := 1, children := [("self".toUTF8, 3)] }, mode := 0o755, origin := .pseudoFs, nlink := 3 }),
+                   (3, { data := .dir { parentIno := 2, children := [("fd".toUTF8, 4)] }, mode := 0o755, origin := .pseudoFs, nlink := 3 }),
+                   (4, { data := .dir { parentIno := 3, children := [] }, mode := 0o755, origin := .pseudoFs, nlink := 2 })],
+        fds := [], cwdPath := .bound "/".toUTF8, rootIno := 1, cwdIno := 1, nextIno := 5, nextHid := 0 }) :=
   files_ops_lseekReopenDupStdioAndOpath_proof
 
 /-- Every `evalModel` transition `(out, s')` on a well-formed step is accepted by `verifyStep` with identical next state `some s'`. -/

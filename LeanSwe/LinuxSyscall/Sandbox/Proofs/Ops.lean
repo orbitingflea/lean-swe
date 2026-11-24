@@ -6,9 +6,6 @@ open Core (NondetTest AllPass CanReach CanReachRun)
 open Core.NondetTest
 open LeanSwe.LinuxSyscall
 
-private def unprivInitWithHostFds : SandboxSysState :=
-  ((SandboxSysState.unprivileged.withHostFd 100 true).withHostFd 101 false).withPseudoFd 102
-
 private theorem hasEmbeddedNul_mkRepBytes_97 :
     ∀ n, (List.replicate n (97 : UInt8)).any (· == (0 : UInt8)) = false
   | 0 => rfl
@@ -32,14 +29,12 @@ theorem sandbox_ops_prctl_noNewPrivsSubreaperAndPdeathsig_allPass :
   refine ⟨⟨rfl, rfl⟩, ⟨rfl, rfl⟩, ⟨rfl, rfl⟩, ⟨rfl, rfl, rfl, rfl, rfl⟩,
     ⟨rfl, rfl⟩, rfl, ⟨rfl, rfl, rfl, rfl, rfl⟩, trivial⟩
 
-/-- `modelOps` satisfies `test_sandbox_ops_landlock_rulesetAddRuleAndRestrictSelf` on pre-populated `unprivInitWithHostFds`. -/
+/-- `modelOps` satisfies `test_sandbox_ops_landlock_rulesetAddRuleAndRestrictSelf` on `SandboxSysState.unprivileged` pre-populated with host directory FD `100`, regular FD `101`, and pseudo-FS FD `102`. -/
 theorem sandbox_ops_landlock_rulesetAddRuleAndRestrictSelf_allPass :
-    AllPass (test_sandbox_ops_landlock_rulesetAddRuleAndRestrictSelf modelOps unprivInitWithHostFds 100 101 102) := by
+    AllPass (test_sandbox_ops_landlock_rulesetAddRuleAndRestrictSelf modelOps
+      (((SandboxSysState.unprivileged.withHostFd 100 true).withHostFd 101 false).withPseudoFd 102) 100 101 102) := by
   dsimp only [AllPass, test_sandbox_ops_landlock_rulesetAddRuleAndRestrictSelf, NondetTest.assert,
     Bind.bind, Pure.pure]
-  have hs0 : unprivInitWithHostFds =
-      ((SandboxSysState.unprivileged.withHostFd 100 true).withHostFd 101 false).withPseudoFd 102 := rfl
-  rw [hs0]
   have hVer : (modelOps.landlockCreateRuleset none LANDLOCK_CREATE_RULESET_VERSION
       (((SandboxSysState.unprivileged.withHostFd 100 true).withHostFd 101 false).withPseudoFd 102)).1 =
       .ok (.version 9) := rfl

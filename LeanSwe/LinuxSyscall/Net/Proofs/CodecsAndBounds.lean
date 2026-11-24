@@ -196,26 +196,25 @@ theorem net_ops_boundaryValidation_einval_mkNetOpsM_allPass
   · simp [hNul.2]; rfl
   · simp [hLongIfNotLt]; rfl
 
-private def dummyRawNetOps : Internal.PosixNetOpsM (StateM NetState) HandleId :=
-  { socket := fun _ _ _ _ => pure (.error Errno.ENOSYS)
-    socketpair := fun _ _ _ => pure (.error Errno.ENOSYS)
-    bind := fun _ _ => pure (.error Errno.ENOSYS)
-    listen := fun _ _ => pure (.error Errno.ENOSYS)
-    accept4 := fun _ _ => pure (.error Errno.ENOSYS)
-    connect := fun _ _ => pure (.error Errno.ENOSYS)
-    getsockopt := fun _ _ => pure (.error Errno.ENOSYS)
-    setsockopt := fun _ _ _ => pure (.error Errno.ENOSYS)
-    getsockname := fun _ => pure (.error Errno.ENOSYS)
-    recvfrom := fun _ _ _ => pure (.error Errno.ENOSYS)
-    sendto := fun _ _ _ => pure (.error Errno.ENOSYS)
-    shutdown := fun _ _ => pure (.error Errno.ENOSYS)
-    sendmsg := fun _ _ => pure (.error Errno.ENOSYS)
-    recvmsg := fun _ _ => pure (.error Errno.ENOSYS)
-    ioctl := fun _ _ _ _ => pure (.error Errno.ENOSYS) }
-
 /-- Concrete witness demonstrating reachability of `test_net_ops_boundaryValidation_einval` on `Internal.mkNetOpsM`. -/
 theorem net_ops_boundaryValidation_einval_mkNetOpsM_canReach :
-    CanReach (test_net_ops_boundaryValidation_einval (Internal.mkNetOpsM dummyRawNetOps)) := by
+    CanReach (test_net_ops_boundaryValidation_einval (Internal.mkNetOpsM
+      ({ socket := fun _ _ _ _ => pure (.error Errno.ENOSYS)
+         socketpair := fun _ _ _ => pure (.error Errno.ENOSYS)
+         bind := fun _ _ => pure (.error Errno.ENOSYS)
+         listen := fun _ _ => pure (.error Errno.ENOSYS)
+         accept4 := fun _ _ => pure (.error Errno.ENOSYS)
+         connect := fun _ _ => pure (.error Errno.ENOSYS)
+         getsockopt := fun _ _ => pure (.error Errno.ENOSYS)
+         setsockopt := fun _ _ _ => pure (.error Errno.ENOSYS)
+         getsockname := fun _ => pure (.error Errno.ENOSYS)
+         recvfrom := fun _ _ _ => pure (.error Errno.ENOSYS)
+         sendto := fun _ _ _ => pure (.error Errno.ENOSYS)
+         shutdown := fun _ _ => pure (.error Errno.ENOSYS)
+         sendmsg := fun _ _ => pure (.error Errno.ENOSYS)
+         recvmsg := fun _ _ => pure (.error Errno.ENOSYS)
+         ioctl := fun _ _ _ _ => pure (.error Errno.ENOSYS) } :
+        Internal.PosixNetOpsM (StateM NetState) HandleId))) := by
   have hNul : (ByteArray.mk #[97, 0, 98]).data[0]? != some 0 ∧ hasEmbeddedNul (ByteArray.mk #[97, 0, 98]) = true := by decide
   have hLongUnix : (ByteArray.mk (Array.replicate (UNIX_PATH_MAX + 1) 97)).data.size > UNIX_PATH_MAX := by
     rw [Array.size_replicate]; decide
@@ -229,7 +228,7 @@ theorem net_ops_boundaryValidation_einval_mkNetOpsM_canReach :
     ByteArray.mk (Array.replicate IFNAMSIZ 97), hLongIf,
     Array.replicate (MAX_SCM_FDS + 1) (0 : HandleId), hOverFds,
     (MAX_SCM_FDS + 1 : Nat).toUInt32, hOverMax, ?_⟩
-  exact net_ops_boundaryValidation_einval_mkNetOpsM_allPass dummyRawNetOps
+  exact net_ops_boundaryValidation_einval_mkNetOpsM_allPass _
     (NetState.initial false) 0 .getIfFlags (ByteArray.mk #[97, 0, 98]) hNul
     (ByteArray.mk (Array.replicate (UNIX_PATH_MAX + 1) 97)) hLongUnix
     (ByteArray.mk (Array.replicate IFNAMSIZ 97)) hLongIf
