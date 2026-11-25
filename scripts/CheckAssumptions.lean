@@ -3284,34 +3284,47 @@ private def checkRefinesModelTheorem
               coveredImplHelpersRef.modify (·.insert stepFn)
           return aErrs
 
-        let stepFromInfo? : Option (Expr × Expr × Expr × Expr × Expr × Expr × Expr × Expr × Expr × Array (Expr × Expr × Expr × Expr)) :=
+        let stepFromInfo? : Option (Option (Expr × Expr) × Expr × Expr × Expr × Expr × Expr × Expr × Expr × Expr × Expr × Array (Expr × Expr × Expr × Expr)) :=
           if ab.isAppOfArity `Core.RefinesStepFrom 16 ||
               ab.isAppOfArity `Core.RefinesStepFromFinally 16 ||
               ab.isAppOfArity `Core.ObeysStepFrom 16 ||
               ab.isAppOfArity `Core.ObeysStepFromFinally 16 ||
               ab.isAppOfArity `Core.ObeysStepFromConc 16 then
             let args := ab.getAppArgs
-            some (args[0]!, args[1]!, args[6]!, args[7]!, args[8]!, args[9]!, args[12]!, args[13]!, args[14]!,
+            some (none, args[0]!, args[1]!, args[6]!, args[7]!, args[8]!, args[9]!, args[12]!, args[13]!, args[14]!,
               #[(args[4]!, args[5]!, args[10]!, args[11]!), (args[6]!, args[7]!, args[14]!, args[15]!)])
           else if ab.isAppOfArity `Core.ObeysStepFromExcept 16 then
             let args := ab.getAppArgs
             let exRawOutTy := mkApp2 (mkConst ``Except [.zero, .zero]) (mkConst ``IO.Error) args[5]!
             let exPkgOutTy := mkApp2 (mkConst ``Except [.zero, .zero]) (mkConst ``IO.Error) args[7]!
-            some (args[0]!, args[1]!, args[6]!, exPkgOutTy, args[8]!, args[9]!, args[12]!, args[13]!, args[14]!,
+            some (none, args[0]!, args[1]!, args[6]!, exPkgOutTy, args[8]!, args[9]!, args[12]!, args[13]!, args[14]!,
               #[(args[4]!, exRawOutTy, args[10]!, args[11]!), (args[6]!, exPkgOutTy, args[14]!, args[15]!)])
+          else if ab.isAppOfArity `Core.ObeysStepFromConcCell 19 then
+            let args := ab.getAppArgs
+            some (some (args[1]!, args[11]!), args[0]!, args[2]!, args[8]!, args[9]!, args[10]!, args[12]!, args[15]!, args[16]!, args[17]!,
+              #[(args[6]!, args[7]!, args[13]!, args[14]!), (args[8]!, args[9]!, args[17]!, args[18]!)])
           else if ab.isAppOfArity `Core.RefinesStepFrom2 21 ||
               ab.isAppOfArity `Core.ObeysStepFrom2 21 then
             let args := ab.getAppArgs
-            some (args[0]!, args[1]!, args[9]!, args[10]!, args[11]!, args[12]!, args[17]!, args[18]!, args[19]!,
+            some (none, args[0]!, args[1]!, args[9]!, args[10]!, args[11]!, args[12]!, args[17]!, args[18]!, args[19]!,
               #[(args[5]!, args[6]!, args[13]!, args[14]!),
                 (args[7]!, args[8]!, args[15]!, args[16]!),
                 (args[9]!, args[10]!, args[19]!, args[20]!)])
           else none
 
-        if let some (rawSTy, pkgSTy, pkgReqTy, _pkgOutTy, mapSArg, rawWfArg, pkgWfArg, mkApiArg, execPkgArg, stepLegs) := stepFromInfo? then
+        if let some (cellInfo?, rawSTy, pkgSTy, pkgReqTy, _pkgOutTy, mapSArg, rawWfArg, pkgWfArg, mkApiArg, execPkgArg, stepLegs) := stepFromInfo? then
           if !axs.isEmpty then
             return #[s!"INVALID_REFINES_ATOM_BINDER: {thmName} RefinesStepFrom conjunct cannot have binders"]
-          let some mapSFn ← checkBareConstArg env {} true mapSArg
+          if let some (cellModelSTy, cellToModelArg) := cellInfo? then
+            let some cellToModelFn ← checkBareConstArg env {} false cellToModelArg
+              | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare cellToModel argument in {thmName}"]
+            if isPrivateName cellToModelFn || !modelMods.contains (moduleOfConst env cellToModelFn) then
+              aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {cellToModelFn} in {thmName} is not a public constant in {pkg}.Model"
+            if ← constTransitivelyTouchesSweImplOrIfaceCached env safeModelConstsRef cellToModelFn then
+              aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {cellToModelFn} in {thmName} transitively references Interface/Impl"
+            if !(← isProvablyInhabitedDataType env 8 cellModelSTy) then
+              aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited cellModelS domain in ObeysStepFromConcCell of {thmName}"
+          let some mapSFn ← checkBareConstArg env {} cellInfo?.isNone mapSArg
             | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare mapS argument in {thmName}"]
           let some rawWfFn ← checkBareConstArg env {} false rawWfArg
             | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare rawWf argument in {thmName}"]
@@ -3928,20 +3941,26 @@ private def renderExpectedObeysSig (env : Environment) (knownPkgs : Array Name) 
       let c2 := Name.str (Name.str pkg "Internal") "mkApiFromCapsM"
       if env.contains c2 then c2 else c1
     let mkFullCand := Name.str (Name.str pkg "Internal") "mkFullApiM"
-    let (stepPred, builderStr) :=
-      match (env.find? mkApiCand).orElse (fun _ => env.find? mkFullCand) with
+    let (isConcCell, stepPred, builderStr) :=
+      match (env.find? mkFullCand).orElse (fun _ => env.find? mkApiCand) with
       | some ci =>
         let used := ci.type.getUsedConstants
+        let cc := used.contains `Core.ConcOpsM && used.contains `Core.StateCellM
         let pred :=
-          if used.contains `Core.ConcOpsM then "Core.ObeysStepFromConc"
+          if cc then "Core.ObeysStepFromConcCell"
+          else if used.contains `Core.ConcOpsM then "Core.ObeysStepFromConc"
           else if used.contains ``MonadExceptOf then "Core.ObeysStepFromExcept"
           else if used.contains ``MonadFinally then "Core.ObeysStepFromFinally"
           else "Core.ObeysStepFrom"
-        let bName := if (env.find? mkApiCand).isSome then mkApiCand else mkFullCand
-        (pred, bName.toString)
-      | none => ("Core.ObeysStepFrom", "<MK_API_M>")
-    conjuncts := conjuncts.push
-      s!"{stepPred} <MAP_S> <RAW_WF> <EXEC_RAW> <RAW_ALLOWED> <PKG_WF> {builderStr} <EXEC_PKG> <PKG_ALLOWED>"
+        let bName := if (env.find? mkFullCand).isSome then mkFullCand else mkApiCand
+        (cc, pred, bName.toString)
+      | none => (false, "Core.ObeysStepFrom", "<MK_API_M>")
+    let stepTemplate :=
+      if isConcCell then
+        s!"{stepPred} <MAP_S> <CELL_TO_MODEL> <RAW_WF> <EXEC_RAW> <RAW_ALLOWED> <PKG_WF> {builderStr} <EXEC_PKG> <PKG_ALLOWED>"
+      else
+        s!"{stepPred} <MAP_S> <RAW_WF> <EXEC_RAW> <RAW_ALLOWED> <PKG_WF> {builderStr} <EXEC_PKG> <PKG_ALLOWED>"
+    conjuncts := conjuncts.push stepTemplate
   if conjuncts.isEmpty then
     return .error s!"EMPTY_INTERFACE_FOR_PRINT_SIG: {ifaceMod} exposes zero public operations"
   let body := String.intercalate " ∧\n    " conjuncts.toList

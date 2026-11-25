@@ -1,3 +1,11 @@
+import Core.ConcOps
+import LeanSwe.LinuxSyscall.Common.Types
+import LeanSwe.LinuxSyscall.Process.Interface
+import LeanSwe.LinuxSyscall.Files.Interface
+import LeanSwe.LinuxSyscall.Poll.Interface
+import LeanSwe.LinuxSyscall.TimeRand.Interface
+import LeanSwe.PostFork.Interface
+import LeanSwe.EnvVars.Raw.Interface
 import LeanSwe.Process.Types
 import LeanSwe.Process.Types.Internal
 import LeanSwe.Process.Impl
@@ -5,30 +13,19 @@ import LeanSwe.Process.SysBridge
 
 namespace LeanSwe.Process
 
-namespace Internal
+private initialize gProcTable : IO.Ref (Internal.ProcTableState LeanSwe.LinuxSyscall.RawFd) ← IO.mkRef {}
 
-/-- Construct a `ProcessApiM m` composing `Impl` and `SysBridge` over a `ProcessHostCapsM fd m` bundle. -/
-def mkApiFromCapsM {m : Type → Type} [Monad m] {fd : Type}
-    (cap : ProcessHostCapsM fd m) : ProcessApiM m :=
-  let deps : SysDepsM m fd :=
-    { proc := cap.proc
-      files := cap.files
-      poll := cap.poll
-      timeRand := cap.timeRand
-      postFork := cap.postFork
-      listAmbientEnv := Except.ok <$> cap.listEnvironBytes }
-  mkApiM (SysBridge.mkRawOpsM deps cap.table)
-
-/-- Construct a `ProcessApiM m` composing `Impl` and `SysBridge` over `HealthyHostCapsM m` (`LinuxSyscall.{Process,Files,Poll,TimeRand}`, `PostFork`, `EnvVars.Raw`). -/
-def mkApiFromHostCapsM {m : Type → Type} [Monad m]
-    (cap : HealthyHostCapsM m) : ProcessApiM m :=
-  mkApiFromCapsM cap
-
-end Internal
-
-/-- Default `ProcessApi` backed by `LeanSwe.Process.SysBridge.defaultOps`. -/
+/-- Default `ProcessApi` wired directly over `LinuxSyscall.{Process,Files,Poll,TimeRand}.defaultOps`, `PostFork.defaultOps`, `EnvVars.Raw.defaultOpsBase`, `Core.ioConcOps`, and `Core.ioStateCell`. -/
 def defaultApi : ProcessApi :=
-  Internal.mkApiM SysBridge.defaultOps
+  Internal.mkFullApiM
+    { proc := LeanSwe.LinuxSyscall.Process.defaultOps
+      files := LeanSwe.LinuxSyscall.Files.defaultOps
+      poll := LeanSwe.LinuxSyscall.Poll.defaultOps
+      timeRand := LeanSwe.LinuxSyscall.TimeRand.defaultOps
+      postFork := LeanSwe.PostFork.defaultOps
+      envRaw := LeanSwe.EnvVars.Raw.defaultOpsBase }
+    Core.ioConcOps
+    (Core.ioStateCell gProcTable)
 
 /-- Convert a raw OS error record into a normalized `ProcessError` with non-empty message. -/
 @[inline] def mapRawError (err : ProcessRawError) : ProcessError :=

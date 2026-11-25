@@ -297,14 +297,20 @@ theorem tblEq_to_stateEq {w1 w2 : Model.ProcessHostWorld} (h : w1.tbl = w2.tbl) 
   unfold Model.hostWorldToProcessState
   rw [h]
 
-theorem spawnPure_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
+private theorem spawnOsPhase_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
     (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (req : ExecRequest) :
-    let r := (SysBridge.spawnPure (hostDepsOf cap) cap.table DEFAULT_EINTR_FUEL req).run w
+    let r := (SysBridge.spawnOsPhase (hostDepsOf cap) DEFAULT_EINTR_FUEL req).run w
     Model.hostWorldWf (proj r.2) = true ∧
-    Model.allowedRawSpawn (Model.hostWorldToProcessState (proj w)) r.1 (Model.hostWorldToProcessState (proj r.2)) := by
-  unfold SysBridge.spawnPure
+    (proj r.2).tbl = (proj w).tbl ∧
+    match r.1 with
+    | .error err => Model.isNonOutcomeError err
+    | .ok slot =>
+      (1 : UInt32) ≤ slot.pid ∧ slot.pid ≤ Model.maxLinuxPidModel ∧
+      (1 : UInt32) ≤ slot.pgid ∧ slot.pgid ≤ Model.maxLinuxPidModel ∧
+      slot.stdinFd?.isNone = false ∧ slot.waited = false := by
+  unfold SysBridge.spawnOsPhase
   dsimp only [hostDepsOf]
   split
   · rw [hostStateT_pure_run]
@@ -317,7 +323,7 @@ theorem spawnPure_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
       cases wdRes with
       | error wdErr =>
         rw [hostStateT_pure_run]
-        exact ⟨hWd.1, tblEq_to_stateEq hWd.2.1, hWd.2.2 _ rfl⟩
+        exact ⟨hWd.1, hWd.2.1, hWd.2.2 _ rfl⟩
       | ok _ =>
         dsimp only
         rw [hostStateT_bind_run]
@@ -345,7 +351,7 @@ theorem spawnPure_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
           cases envRes with
           | error envErr =>
             rw [hostStateT_pure_run]
-            exact ⟨hEnv.1, tblEq_to_stateEq (hEnv.2.1.trans hWd.2.1),
+            exact ⟨hEnv.1, hEnv.2.1.trans hWd.2.1,
               ensureNonEmpty_host_isNonOutcome _ _ (by decide) (hEnv.2.2 _ rfl)⟩
           | ok baseEnv =>
             dsimp only
@@ -360,12 +366,12 @@ theorem spawnPure_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
               cases pathRes with
               | error resErr =>
                 rw [hostStateT_pure_run]
-                exact ⟨hRes.1, tblEq_to_stateEq (hRes.2.1.trans (hEnv.2.1.trans hWd.2.1)), hRes.2.2 _ rfl⟩
+                exact ⟨hRes.1, hRes.2.1.trans (hEnv.2.1.trans hWd.2.1), hRes.2.2 _ rfl⟩
               | ok resolvedPath =>
                 dsimp only
                 split
                 · rw [hostStateT_pure_run]
-                  exact ⟨hRes.1, tblEq_to_stateEq (hRes.2.1.trans (hEnv.2.1.trans hWd.2.1)),
+                  exact ⟨hRes.1, hRes.2.1.trans (hEnv.2.1.trans hWd.2.1),
                     mapRawError_invalidArg_isNonOutcome _ _ _⟩
                 · rw [hostStateT_bind_run]
                   have hP1 := hostRetryEintr_frame proj (cap.proc.pipe2 { cloexec := true })
@@ -378,7 +384,7 @@ theorem spawnPure_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
                     cases p1Res with
                     | error e1 =>
                       rw [hostStateT_pure_run]
-                      exact ⟨hP1.1, tblEq_to_stateEq (hP1.2.trans (hRes.2.1.trans (hEnv.2.1.trans hWd.2.1))),
+                      exact ⟨hP1.1, hP1.2.trans (hRes.2.1.trans (hEnv.2.1.trans hWd.2.1)),
                         mapErrno_isNonOutcome _ _ _⟩
                     | ok p1 =>
                       rcases p1 with ⟨inR, inW⟩
@@ -398,8 +404,8 @@ theorem spawnPure_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
                           have hc1 := hostCloseOpt_frame proj cap hCap (some inR) w5 hP2.1
                           have hc2 := hostCloseOpt_frame proj cap hCap (some inW)
                             (Files.closeOpt cap.files (some inR) |>.run w5).2 hc1.1
-                          exact ⟨hc2.1, tblEq_to_stateEq (hc2.2.trans (hc1.2.trans (hP2.2.trans
-                            (hP1.2.trans (hRes.2.1.trans (hEnv.2.1.trans hWd.2.1)))))),
+                          exact ⟨hc2.1, hc2.2.trans (hc1.2.trans (hP2.2.trans
+                            (hP1.2.trans (hRes.2.1.trans (hEnv.2.1.trans hWd.2.1))))),
                             mapErrno_isNonOutcome _ _ _⟩
                         | ok p2 =>
                           rcases p2 with ⟨outR, outW⟩
@@ -427,8 +433,8 @@ theorem spawnPure_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
                                 (Files.closeOpt cap.files (some outR) |>.run
                                   (Files.closeOpt cap.files (some inW) |>.run
                                     (Files.closeOpt cap.files (some inR) |>.run w6).2).2).2 hc3.1
-                              exact ⟨hc4.1, tblEq_to_stateEq (hc4.2.trans (hc3.2.trans (hc2.2.trans (hc1.2.trans
-                                (hP3.2.trans (hP2.2.trans (hP1.2.trans (hRes.2.1.trans (hEnv.2.1.trans hWd.2.1))))))))),
+                              exact ⟨hc4.1, hc4.2.trans (hc3.2.trans (hc2.2.trans (hc1.2.trans
+                                (hP3.2.trans (hP2.2.trans (hP1.2.trans (hRes.2.1.trans (hEnv.2.1.trans hWd.2.1)))))))),
                                 mapErrno_isNonOutcome _ _ _⟩
                             | ok p3 =>
                               rcases p3 with ⟨errR, errW⟩
@@ -470,7 +476,7 @@ theorem spawnPure_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
                                   have hc6 := hostCloseOpt_frame proj cap hCap (some errR)
                                     (Files.closeOpt cap.files (some outR) |>.run
                                       (Files.closeOpt cap.files (some inW) |>.run w8).2).2 hc5.1
-                                  exact ⟨hc6.1, tblEq_to_stateEq (hc6.2.trans (hc5.2.trans (hc4.2.trans hTbl8))),
+                                  exact ⟨hc6.1, hc6.2.trans (hc5.2.trans (hc4.2.trans hTbl8)),
                                     mapPostForkError_isNonOutcome _ _⟩
                                 | ok child =>
                                   dsimp only
@@ -485,9 +491,9 @@ theorem spawnPure_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
                                     have hc6 := hostCloseOpt_frame proj cap hCap (some errR)
                                       (Files.closeOpt cap.files (some outR) |>.run
                                         (Files.closeOpt cap.files (some inW) |>.run w8).2).2 hc5.1
-                                    exact ⟨hc6.1, tblEq_to_stateEq (hc6.2.trans (hc5.2.trans (hc4.2.trans hTbl8))),
+                                    exact ⟨hc6.1, hc6.2.trans (hc5.2.trans (hc4.2.trans hTbl8)),
                                       mapRawError_userError_isNonOutcome _⟩
-                                  · rw [ite_eq_right hBadPid, hostStateT_bind_run]
+                                  · rw [ite_eq_right hBadPid, hostStateT_pure_run]
                                     have hOkPid : (child.pid == 0 || child.pid > LinuxSyscall.Process.MAX_LINUX_PID ||
                                         rawPgid == 0 || rawPgid > LinuxSyscall.Process.MAX_LINUX_PID) = false :=
                                       Bool.eq_false_iff.mpr hBadPid
@@ -502,19 +508,40 @@ theorem spawnPure_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
                                     have hPMax : child.pid ≤ Model.maxLinuxPidModel := by rw [UInt32.le_iff_toNat_le]; omega
                                     have hPg1Ge : (1 : UInt32) ≤ rawPgid := by rw [UInt32.le_iff_toNat_le]; change 1 ≤ rawPgid.toNat; omega
                                     have hPgMax : rawPgid ≤ Model.maxLinuxPidModel := by rw [UInt32.le_iff_toNat_le]; omega
-                                    have hIns := capTbl_insertSlot_step proj cap hCap w8 hc3.1
-                                      { pid := child.pid, pgid := rawPgid, stdinFd? := some inW,
-                                        stdoutFd? := some outR, stderrFd? := some errR, waited := false }
-                                      hP1Ge hPMax hPg1Ge hPgMax rfl rfl
-                                    cases hInsRun : (cap.table.insertSlot
-                                        { pid := child.pid, pgid := rawPgid, stdinFd? := some inW,
-                                          stdoutFd? := some outR, stderrFd? := some errR, waited := false }).run w8 with
-                                    | mk hid w9 =>
-                                      rw [hInsRun] at hIns
-                                      rw [hostStateT_pure_run]
-                                      obtain ⟨hWf9, hHidEq, hPidPos, hPgidPos, hSt9⟩ := hIns
-                                      have hSt8 := tblEq_to_stateEq hTbl8
-                                      rw [hSt8] at hHidEq hSt9
-                                      exact ⟨hWf9, hHidEq, hPidPos, hPgidPos, hSt9⟩
+                                    exact ⟨hc3.1, hTbl8, hP1Ge, hPMax, hPg1Ge, hPgMax, rfl, rfl⟩
+
+theorem spawnPure_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
+    (cap : Model.HealthyHostCapsM (StateM W))
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (w : W) (hWf : Model.hostWorldWf (proj w) = true) (req : ExecRequest) :
+    let r := (SysBridge.spawnPure (hostDepsOf cap) cap.table DEFAULT_EINTR_FUEL req).run w
+    Model.hostWorldWf (proj r.2) = true ∧
+    Model.allowedRawSpawn (Model.hostWorldToProcessState (proj w)) r.1 (Model.hostWorldToProcessState (proj r.2)) := by
+  unfold SysBridge.spawnPure
+  rw [hostStateT_bind_run]
+  have hOs := spawnOsPhase_refines_host proj cap hCap w hWf req
+  cases hOsRun : (SysBridge.spawnOsPhase (hostDepsOf cap) DEFAULT_EINTR_FUEL req).run w with
+  | mk osRes w1 =>
+    rw [hOsRun] at hOs
+    obtain ⟨hWf1, hTbl1, hSpec⟩ := hOs
+    cases osRes with
+    | error err =>
+      dsimp only at hSpec ⊢
+      rw [hostStateT_pure_run]
+      exact ⟨hWf1, tblEq_to_stateEq hTbl1, hSpec⟩
+    | ok slot =>
+      dsimp only at hSpec ⊢
+      obtain ⟨hP1Ge, hPMax, hPg1Ge, hPgMax, hInSome, hWaitF⟩ := hSpec
+      rw [hostStateT_bind_run]
+      have hIns := capTbl_insertSlot_step proj cap hCap w1 hWf1 slot
+        hP1Ge hPMax hPg1Ge hPgMax hInSome hWaitF
+      cases hInsRun : (cap.table.insertSlot slot).run w1 with
+      | mk hid w2 =>
+        rw [hInsRun] at hIns
+        rw [hostStateT_pure_run]
+        obtain ⟨hWf2, hHidEq, hPidPos, hPgidPos, hSt2⟩ := hIns
+        have hSt1 := tblEq_to_stateEq hTbl1
+        rw [hSt1] at hHidEq hSt2
+        exact ⟨hWf2, hHidEq, hPidPos, hPgidPos, hSt2⟩
 
 end LeanSwe.Process.Proofs

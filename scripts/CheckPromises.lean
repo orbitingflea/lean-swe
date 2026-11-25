@@ -2009,6 +2009,10 @@ private def checkManagedProcessClosure (env : Environment) : IO (Array String) :
   let seedMods : Array Name := #[
     `LeanSwe.Process.Types,
     `LeanSwe.Process.Types.Internal,
+    `LeanSwe.Process.SysBridge.ErrorAndEnv,
+    `LeanSwe.Process.SysBridge.PathAndSpawn,
+    `LeanSwe.Process.SysBridge.StreamIo,
+    `LeanSwe.Process.SysBridge.WaitAndLifecycle,
     `LeanSwe.Process.SysBridge,
     `LeanSwe.Process.Impl,
     `LeanSwe.Process.Interface
@@ -2034,8 +2038,8 @@ private def checkManagedProcessClosure (env : Environment) : IO (Array String) :
               errs := errs.push s!"PROCESS_FORBIDDEN_UNSAFE: {c.name} in {m}"
         if (Lean.regularInitAttr.getParam? env c.name).isSome then
           let allowedInit :=
-            m == `LeanSwe.Process.SysBridge &&
-            privateToUserName? c.name == some `LeanSwe.Process.SysBridge.gProcTable
+            m == `LeanSwe.Process.Interface &&
+            privateToUserName? c.name == some `LeanSwe.Process.gProcTable
           if !allowedInit then
             errs := errs.push s!"PROCESS_FORBIDDEN_INIT: {c.name} in {m}"
     if seedMods.contains m then
@@ -2066,9 +2070,19 @@ private def checkManagedProcessClosure (env : Environment) : IO (Array String) :
   match env.find? `LeanSwe.Process.defaultApi with
   | some (.defnInfo dv) =>
     let used := dv.value.getUsedConstants
-    if !used.contains `LeanSwe.Process.Internal.mkApiM ||
-        !used.contains `LeanSwe.Process.SysBridge.defaultOps then
-      errs := errs.push "PROCESS_INTERFACE_WIRING_MISMATCH: LeanSwe.Process.defaultApi must wire Internal.mkApiM to SysBridge.defaultOps"
+    let reqUsed : Array Name := #[
+      `LeanSwe.Process.Internal.mkFullApiM,
+      `LeanSwe.LinuxSyscall.Process.defaultOps,
+      `LeanSwe.LinuxSyscall.Files.defaultOps,
+      `LeanSwe.LinuxSyscall.Poll.defaultOps,
+      `LeanSwe.LinuxSyscall.TimeRand.defaultOps,
+      `LeanSwe.PostFork.defaultOps,
+      `LeanSwe.EnvVars.Raw.defaultOpsBase,
+      `Core.ioConcOps,
+      `Core.ioStateCell
+    ]
+    if !reqUsed.all used.contains then
+      errs := errs.push "PROCESS_INTERFACE_WIRING_MISMATCH: LeanSwe.Process.defaultApi must wire Internal.mkFullApiM directly to LinuxSyscall.{Process,Files,Poll,TimeRand}.defaultOps, PostFork.defaultOps, EnvVars.Raw.defaultOpsBase, Core.ioConcOps, and Core.ioStateCell"
   | _ =>
     errs := errs.push "PROCESS_INTERFACE_WIRING_MISMATCH: missing LeanSwe.Process.defaultApi"
   for wrapper in #[`LeanSwe.Process.spawn, `LeanSwe.Process.awaitOutput,
@@ -3172,7 +3186,6 @@ through a same-package un-fuzzed middle hook (`SysBridge.defaultOps`, `CliOpsM`,
 `ScopedRawFsOpsM`, `RelayRawOps`, `defaultRawOps`) instead of imported `manifest.deps`
 capabilities. -/
 private def middleHookAllowlist : Array String := #[
-  "MIDDLE_HOOK|LeanSwe.Process",
   "MIDDLE_HOOK|LeanSwe.ProcessSandbox.Raw"
 ]
 
@@ -3204,7 +3217,7 @@ private def isAllowedCoreRuntimeCap (c : Name) : Bool :=
 
 private def isDepDefaultCap (depSet : Std.HashSet Name) (c : Name) : Bool :=
   let s := c.getString!
-  (s == "defaultApi" || s == "defaultOps") && depSet.contains c.getPrefix
+  (s == "defaultApi" || s == "defaultOps" || s == "defaultOpsBase") && depSet.contains c.getPrefix
 
 private def isKnownContractPredHead (fn : Name) : Bool :=
   fn == `Core.ObeysPure || fn == `Core.ObeysPure2 || fn == `Core.ObeysPure3 || fn == `Core.ObeysPure4 ||
@@ -3214,8 +3227,8 @@ private def isKnownContractPredHead (fn : Name) : Bool :=
     fn == `Core.ObeysInverseRender || fn == `Core.ObeysInverseRenderWithin ||
     fn == `Core.ObeysPureFrom || fn == `Core.ObeysInverseRenderFrom ||
     fn == `Core.ObeysStep || fn == `Core.ObeysStepExcept || fn == `Core.ObeysStepId ||
-    fn == `Core.ObeysStepFrom || fn == `Core.ObeysStepFromFinally ||
-    fn == `Core.ObeysStepFromConc || fn == `Core.ObeysStepFromExcept || fn == `Core.ObeysStepFrom2 ||
+    fn == `Core.ObeysStepFrom || fn == `Core.ObeysStepFromFinally || fn == `Core.ObeysStepFromConc ||
+    fn == `Core.ObeysStepFromExcept || fn == `Core.ObeysStepFromConcCell || fn == `Core.ObeysStepFrom2 ||
     fn == `Core.RefinesPure || fn == `Core.RefinesPure2 || fn == `Core.RefinesPure3 || fn == `Core.RefinesPure4 ||
     fn == `Core.RefinesPureEq || fn == `Core.RefinesPureEq2 || fn == `Core.RefinesPureEq3 || fn == `Core.RefinesPureEq4 ||
     fn == `Core.RefinesStep || fn == `Core.RefinesStepId ||
@@ -3321,6 +3334,11 @@ private def extractStepFromConj? (ab : Expr) : Option (Name × Array Expr × Exp
     match (peelLambdas (etaReduceExpr a[13]!)).consumeMData.getAppFn.consumeMData with
     | .const mkFn _ => some (mkFn, #[a[2]!], a[3]!)
     | _ => none
+  else if ab.isAppOfArity `Core.ObeysStepFromConcCell 19 then
+    let a := ab.getAppArgs
+    match (peelLambdas (etaReduceExpr a[16]!)).consumeMData.getAppFn.consumeMData with
+    | .const mkFn _ => some (mkFn, #[a[3]!], a[5]!)
+    | _ => none
   else if ab.isAppOfArity `Core.ObeysStepFrom2 21 || ab.isAppOfArity `Core.RefinesStepFrom2 21 then
     let a := ab.getAppArgs
     match (peelLambdas (etaReduceExpr a[18]!)).consumeMData.getAppFn.consumeMData with
@@ -3401,8 +3419,55 @@ private def collectNonTypeNonInstArgs (env : Environment) (fnConst : Name) (args
       out := out.push args[i]!
     return out
 
+private def allowedInitRefIoConsts : Array Name := #[
+  ``IO, ``IO.mkRef, ``IO.Ref, ``ST.mkRef, ``ST.Ref, ``ST.Prim.mkRef, ``ST.RefPointed,
+  ``IO.RealWorld, ``IO.RealWorld.nonemptyType, ``IO.Error,
+  ``BaseIO, ``EIO, ``BaseIO.toEIO, ``instMonadLiftBaseIOEIO
+]
+
+private def isAllowedInterfaceStateCellArg
+    (env : Environment) (knownPkgs : Array Name) (pkg : Name) (depSet : Std.HashSet Name) (e : Expr) : Bool :=
+  if !e.isAppOfArity `Core.ioStateCell 2 then false
+  else
+    match e.appArg!.consumeMData with
+    | .const refName _ =>
+      if !isPrivateName refName || modOfConst env refName != Name.str pkg "Interface" then false
+      else if (getExternAttrData? env refName).isSome || (Lean.Compiler.getImplementedBy? env refName).isSome then false
+      else
+        match Lean.regularInitAttr.getParam? env refName with
+        | none => false
+        | some initFn =>
+          if (getExternAttrData? env initFn).isSome || (Lean.Compiler.getImplementedBy? env initFn).isSome then false
+          else
+            match env.find? initFn with
+            | some (.defnInfo iv) =>
+              let usedVal := iv.value.getUsedConstants
+              let usedAll := iv.type.getUsedConstants ++ usedVal
+              iv.safety == .safe &&
+                (usedVal.contains ``IO.mkRef || usedVal.contains ``ST.mkRef || usedVal.contains ``ST.Prim.mkRef) &&
+                usedAll.all fun u =>
+                  if u == refName || u == initFn then true
+                  else
+                    let uMod := modOfConst env u
+                    if uMod.getRoot == `Core then uMod != `Core.Assumptions
+                    else if uMod.getRoot == `LeanSwe then
+                      let uPkg := dagPkgOf knownPkgs uMod
+                      let uRole := dagRoleOf knownPkgs uMod
+                      (uPkg == pkg || depSet.contains uPkg) && (uRole == .types || uRole == .model)
+                    else
+                      let us := u.toString
+                      if (getExternAttrData? env u).isSome || u.getRoot == `IO || u.components.contains `IO ||
+                          us.startsWith "ST.Prim." || us.startsWith "BaseIO." ||
+                          us.startsWith "Std.Internal." || us.startsWith "System.FilePath" ||
+                          u == `dbgTrace || u == `dbgTraceVal then
+                        allowedInitRefIoConsts.contains u
+                      else
+                        true
+            | _ => false
+    | _ => false
+
 private partial def checkCompositeCapArg
-    (env : Environment) (pkg : Name) (depSet : Std.HashSet Name)
+    (env : Environment) (knownPkgs : Array Name) (pkg : Name) (depSet : Std.HashSet Name)
     (allowSelfDefaultOps : Bool) (fuel : Nat) (rawArg : Expr) : MetaM (Except String Unit) := do
   let e := (etaReduceExpr rawArg).consumeMData
   match e with
@@ -3415,6 +3480,8 @@ private partial def checkCompositeCapArg
     else
       return .error s!"unmanifested or non-canonical capability {c} passed to {pkg} builder"
   | _ =>
+    if isAllowedInterfaceStateCellArg env knownPkgs pkg depSet e then
+      return .ok ()
     if fuel == 0 then
       return .error s!"capability container nesting exceeded in {pkg}"
     let hd := e.getAppFn.consumeMData
@@ -3426,7 +3493,7 @@ private partial def checkCompositeCapArg
         if valArgs.isEmpty then
           return .error s!"empty capability container {ctorName} in {pkg}"
         for va in valArgs do
-          match ← checkCompositeCapArg env pkg depSet allowSelfDefaultOps (fuel - 1) va with
+          match ← checkCompositeCapArg env knownPkgs pkg depSet allowSelfDefaultOps (fuel - 1) va with
           | .ok () => pure ()
           | .error err => return .error err
         return .ok ()
@@ -3436,7 +3503,7 @@ private partial def checkCompositeCapArg
       return .error s!"non-canonical expression (lambda/adapter) passed to {pkg} builder"
 
 private def checkCompositeDefaultDef
-    (env : Environment) (pkg : Name) (depSet : Std.HashSet Name)
+    (env : Environment) (knownPkgs : Array Name) (pkg : Name) (depSet : Std.HashSet Name)
     (allowSelfDefaultOps : Bool) (defName : Name) : MetaM (Except String Name) := do
   let some (.defnInfo dv) := env.find? defName
     | return .error s!"missing definition {defName}"
@@ -3455,7 +3522,7 @@ private def checkCompositeDefaultDef
   if valArgs.isEmpty then
     return .error s!"{defName} calls {mkFn} with zero capability arguments"
   for va in valArgs do
-    match ← checkCompositeCapArg env pkg depSet allowSelfDefaultOps 4 va with
+    match ← checkCompositeCapArg env knownPkgs pkg depSet allowSelfDefaultOps 4 va with
     | .ok () => pure ()
     | .error err => return .error s!"{defName}: {err}"
   return .ok mkFn
@@ -4275,6 +4342,57 @@ private def auditEffectfulStepSynthesis
           for h in ← collectCoveredMkApiImplHelpers env implMod mkCanon execFlds do
             nextHelpers := nextHelpers.insert h
           st := { st with coveredImplHelpers := nextHelpers }
+    else if fnName == `Core.ObeysStepFromConcCell && args.size == 19 then
+      st := { st with stepCount := st.stepCount + 1 }
+      let some _ := checkBareModelConst env modelMods false args[10]!
+        | errs := errs.push s!"stepFromConcCell mapS in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[11]!
+        | errs := errs.push s!"stepFromConcCell cellToModel in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[12]!
+        | errs := errs.push s!"stepFromConcCell rawWf in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[13]!
+        | errs := errs.push s!"stepFromConcCell execRaw in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[14]!
+        | errs := errs.push s!"stepFromConcCell rawAllowed in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[15]!
+        | errs := errs.push s!"stepFromConcCell pkgWf in {pkg} is not a public Model constant"
+      let some execPkgFn := checkBareModelConst env modelMods false args[17]!
+        | errs := errs.push s!"stepFromConcCell execPkg in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[18]!
+        | errs := errs.push s!"stepFromConcCell pkgAllowed in {pkg} is not a public Model constant"
+      let synth := mkAppN (mkConst `Core.ObeysStepFromConcCell fnLvls) args
+      if !(← isDefEqReducible synth atom) then
+        errs := errs.push s!"stepFromConcCell conjunct in {pkg} failed reducible isDefEq against synthesized Core.ObeysStepFromConcCell"
+      let mkExpr := (etaReduceExpr args[16]!).consumeMData
+      st := { st with
+        provenExecPkgExprs := st.provenExecPkgExprs.push (etaReduceExpr args[17]!)
+        provenAllowedPkgExprs := st.provenAllowedPkgExprs.push (etaReduceExpr args[18]!)
+        provenMkApiExprs := st.provenMkApiExprs.push mkExpr }
+      let mkHead? : Option Name := match (peelLambdas mkExpr).consumeMData.getAppFn.consumeMData with
+        | .const mkFn _ => some mkFn
+        | _ => none
+      let isDirectIfaceComb := match mkHead? with
+        | some mkFn => modOfConst env mkFn == ifaceMod && !isPrivateOrInternal mkFn && !isPkgBuilderConst env pkg mkFn
+        | none => false
+      if isDirectIfaceComb then
+        if !(← execPkgInvokesApiParam env execPkgFn) then
+          errs := errs.push s!"execPkg {execPkgFn} in {pkg} must directly invoke Interface op on request projections"
+        else if let some mkFn := mkHead? then
+          st := { st with coveredStepOps := st.coveredStepOps.insert mkFn }
+      else
+        let execFlds := collectUsedStructFieldsTransitive env modelMods {} execPkgFn
+        if execFlds.isEmpty then
+          errs := errs.push s!"execPkg {execPkgFn} in {pkg} projects zero capability fields"
+        let mut nextFlds := st.coveredExecFields
+        for f in execFlds do nextFlds := nextFlds.insert f
+        st := { st with coveredExecFields := nextFlds }
+        if let some mkFn := mkHead? then
+          let mkCanon := unfoldThinIfaceBuilder env pkg mkFn
+          st := { st with coveredBuilders := (st.coveredBuilders.insert mkFn).insert mkCanon }
+          let mut nextHelpers := st.coveredImplHelpers
+          for h in ← collectCoveredMkApiImplHelpers env implMod mkCanon execFlds do
+            nextHelpers := nextHelpers.insert h
+          st := { st with coveredImplHelpers := nextHelpers }
     else if (fnName == `Core.ObeysStepFrom2 || fnName == `Core.RefinesStepFrom2) && args.size == 21 then
       st := { st with stepCount := st.stepCount + 1 }
       let some _ := checkBareModelConst env modelMods true args[11]!
@@ -4741,10 +4859,16 @@ private def renderSynthesizedObeysSig
         | none =>
           let cand := Name.str (Name.str pkg "Internal") "mkApiM"
           if env.contains cand then some cand else none
+      let isConcCell := match mkApiCand.bind (env.find? ·) with
+        | some ci =>
+          let ucs := ci.type.getUsedConstants
+          ucs.contains `Core.ConcOpsM && ucs.contains `Core.StateCellM
+        | none => false
       let stepHead := match mkApiCand.bind (env.find? ·) with
         | some ci =>
           let ucs := ci.type.getUsedConstants
-          if ucs.contains `Core.ConcOpsM then "Core.ObeysStepFromConc"
+          if ucs.contains `Core.ConcOpsM && ucs.contains `Core.StateCellM then "Core.ObeysStepFromConcCell"
+          else if ucs.contains `Core.ConcOpsM then "Core.ObeysStepFromConc"
           else if ucs.contains ``MonadExceptOf then "Core.ObeysStepFromExcept"
           else if ucs.contains ``MonadFinally then "Core.ObeysStepFromFinally"
           else "Core.ObeysStepFrom"
@@ -4756,14 +4880,21 @@ private def renderSynthesizedObeysSig
           else (modelDefs.find? fun d => nameLastStr d == s).map (·.toString) with
         | some found => found
         | none => fallback
-      let wfStr := findShort #["rawStepWf", "healthyWf", "pkgWf", "fullWorldWf", "proxyStepWf"] "<WF>"
-      let execRawStr := findShort #["execRawStep", "execFullRawStep", "execRaw"] "<EXEC_RAW>"
-      let allowedRawStr := findShort #["allowedRawStep", "allowedFullRawStep", "allowedRaw"] "<ALLOWED_RAW>"
+      let mapStr := findShort #["mapFullWorldToState", "mapS"] "id"
+      let cellToModelStr := findShort #["procCellToState", "cellToModel"] "id"
+      let rawWfStr := findShort #["rawStepWf", "healthyWf", "pkgWf", "fullWorldWf", "proxyStepWf", "fullRawWf"] "<WF>"
+      let pkgWfStr := findShort #["processStateWf", "rawStepWf", "healthyWf", "pkgWf", "fullWorldWf", "proxyStepWf"] rawWfStr
+      let execRawStr := findShort (if isConcCell then #["execFullRawStep", "execRawStep", "execRaw"] else #["execRawStep", "execFullRawStep", "execRaw"]) "<EXEC_RAW>"
+      let allowedRawStr := findShort (if isConcCell then #["allowedFullRawStep", "allowedRawStep", "allowedRaw"] else #["allowedRawStep", "allowedFullRawStep", "allowedRaw"]) "<ALLOWED_RAW>"
       let execPkgStr := findShort #["execPkgStep", "execPkg"] "<EXEC_PKG>"
       let allowedPkgStr := findShort #["allowedPkgStep", "allowedPkg"] "<ALLOWED_PKG>"
       let mkStr := (mkApiCand.map (·.toString)).getD "<MK_API>"
-      conjuncts := conjuncts.push
-        s!"{stepHead} id {wfStr} {execRawStr} {allowedRawStr} {wfStr} {mkStr} {execPkgStr} {allowedPkgStr}"
+      let stepLine :=
+        if isConcCell then
+          s!"{stepHead} {mapStr} {cellToModelStr} {rawWfStr} {execRawStr} {allowedRawStr} {pkgWfStr} {mkStr} {execPkgStr} {allowedPkgStr}"
+        else
+          s!"{stepHead} id {rawWfStr} {execRawStr} {allowedRawStr} {rawWfStr} {mkStr} {execPkgStr} {allowedPkgStr}"
+      conjuncts := conjuncts.push stepLine
   if conjuncts.isEmpty then
     return .error s!"EMPTY_OBEYS_SIG: {pkg} synthesized zero conjuncts"
   let body := String.intercalate " ∧\n    " conjuncts.toList
@@ -4953,6 +5084,10 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
                       if isTrivialFalsePred env args[11]! ||
                           isTrivialFalseBoolFn env args[12]! || isTrivialTruePred env args[15]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous rawAllowed, pkgWf, or pkgAllowed"
+                    else if fnName == `Core.ObeysStepFromConcCell && args.size == 19 then
+                      if isTrivialFalsePred env args[14]! ||
+                          isTrivialFalseBoolFn env args[15]! || isTrivialTruePred env args[18]! then
+                        ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous rawAllowed, pkgWf, or pkgAllowed"
                     else if (fnName == `Core.ObeysStepFrom2 || fnName == `Core.RefinesStepFrom2) && args.size == 21 then
                       if isTrivialFalsePred env args[14]! || isTrivialFalsePred env args[16]! ||
                           isTrivialFalseBoolFn env args[17]! || isTrivialTruePred env args[20]! then
@@ -4973,7 +5108,7 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
           pureFromConjs := pfConjs
           if !pureFromConjs.isEmpty then
             let defApiName := Name.str pkg "defaultApi"
-            let defApiMk? ← match ← checkCompositeDefaultDef env pkg depSet false defApiName with
+            let defApiMk? ← match ← checkCompositeDefaultDef env knownPkgs pkg depSet false defApiName with
               | .ok mkFn => pure (some (unfoldThinIfaceBuilder env pkg mkFn))
               | .error err =>
                 mHard := mHard.push s!"MIDDLE_HOOK_VIOLATION: {err}"
@@ -5082,12 +5217,12 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
         for ioErr in ← checkConcreteIoInterfaceDecls env pkg ifaceMod defApiName defOpsName do
           mHookObs := recordManifestObs mHookObs hookKey ioErr
         if hasDefOps then
-          match ← checkCompositeDefaultDef env pkg depSet false defOpsName with
+          match ← checkCompositeDefaultDef env knownPkgs pkg depSet false defOpsName with
           | .ok _ => defOpsOk := true
           | .error err =>
             mHookObs := recordManifestObs mHookObs hookKey s!"MIDDLE_HOOK_VIOLATION: {err}"
         if hasDefApi then
-          match ← checkCompositeDefaultDef env pkg depSet (hasDefOps && defOpsOk) defApiName with
+          match ← checkCompositeDefaultDef env knownPkgs pkg depSet (hasDefOps && defOpsOk) defApiName with
           | .ok mkFn => defApiBuilder? := some mkFn
           | .error err =>
             mHookObs := recordManifestObs mHookObs hookKey s!"MIDDLE_HOOK_VIOLATION: {err}"
