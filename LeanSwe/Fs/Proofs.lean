@@ -18,7 +18,7 @@ namespace LeanSwe.Fs.Proofs
 open LeanSwe.Fs
 open LeanSwe.Fs.Model
 
-/-- Full public `Interface` `Core.Obeys` contract of `LeanSwe.Fs` against `LeanSwe.Fs.Model` and `LeanSwe.LinuxSyscall.Files.healthyStep`. -/
+/-- Full public `Interface` `Core.Obeys` contract of `LeanSwe.Fs` against `LeanSwe.Fs.Model`, `LeanSwe.LinuxSyscall.Files.healthyStep`, and `LeanSwe.LinuxSyscall.TimeRand.healthyStep`. -/
 theorem obeys_model :
     Core.ObeysPureEq2 LeanSwe.Fs.join Model.join ∧
     Core.ObeysPureEq LeanSwe.Fs.joinMany Model.joinMany ∧
@@ -33,18 +33,14 @@ theorem obeys_model :
     Core.ObeysPureEq LeanSwe.Fs.isAbsolute Model.isAbsolute ∧
     Core.ObeysPureEq2 LeanSwe.Fs.relativeTo Model.relativeTo ∧
     Core.ObeysPureEq LeanSwe.Fs.mapRawError Model.mapRawError ∧
-    Core.ObeysStepFromFinally id fsWorldWf
-      execScopedRawFsStep allowedScopedRawFsStep
-      fsWorldWf Internal.mkApiFromScopedRawM
-      execFsStep allowedFsStep ∧
-    Core.ObeysStepFromFinally id fsWorldWf
-      execFilesCapStep allowedFilesCapStep
-      fsWorldWf Internal.mkApiFromHealthyFilesM
-      execFsStep allowedFsStep ∧
-    Core.ObeysStepFromFinally id fsWorldWf
-      execFilesCapStep allowedFilesCapStep
-      fsWorldWf Internal.mkSubtreeOpenerFromHealthyFilesM
-      execSubtreeStep allowedSubtreeStep :=
+    Core.ObeysStepFromFinally fsDepsWorldToFsWorld fsDepsWorldWf
+      execFsSysCapStep allowedFsSysCapStep
+      fsWorldWf Internal.mkSubtreeOpenerFromCapsM
+      execSubtreeStep allowedSubtreeStep ∧
+    Core.ObeysStepFromFinally fsDepsWorldToFsWorld fsDepsWorldWf
+      execFsSysCapStep allowedFsSysCapStep
+      fsWorldWf Internal.mkApiFromCapsM
+      execFsStep allowedFsStep :=
   ⟨refinesPure_join,
    refinesPure_joinMany,
    refinesPure_normPath,
@@ -58,8 +54,7 @@ theorem obeys_model :
    refinesPure_isAbsolute,
    refinesPure_relativeTo,
    refinesPure_mapRawError,
-   refinesStepFromFinally_mkApiFromScopedRawM,
-   refinesStepFromFinally_mkApiFromHealthyFilesM,
-   refinesStepFromFinally_mkSubtreeOpenerFromHealthyFilesM⟩
+   refinesStepFromFinally_mkSubtreeOpenerFromCapsM,
+   refinesStepFromFinally_mkApiFromCapsM⟩
 
 end LeanSwe.Fs.Proofs

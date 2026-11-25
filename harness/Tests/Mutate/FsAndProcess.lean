@@ -8,6 +8,7 @@ import LeanSwe.ProcessSandbox.Raw.RuntimeTests
 import LeanSwe.ProcessSandbox.RuntimeTests
 import LeanSwe.SlotPool.RuntimeTests
 import LeanSwe.LinuxSyscall.Files.Interface
+import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.LinuxSyscall.Process.Interface
 import LeanSwe.LinuxSyscall.Net.Interface
 import Fuzz.LinuxSyscall.ProcessEnv
@@ -94,9 +95,102 @@ private def runGitMutateExtra : IO Unit := do
       peTimeout.stderr == some "t" && !peTimeout.message.isEmpty &&
       peInv.kind == .invalidInput && evErr.kind == .commandFailed && !evErr.message.isEmpty)
 
+private structure FsCollisionProbeState where
+  openAttempts : Nat := 0
+  collideBelow : Nat := 1
+  written : ByteArray := ByteArray.empty
+  renamedSrc : String := ""
+  renamedDst : String := ""
+
+private def mkMockFsCaps (dummyFd : LinuxSyscall.RawFd) :
+    Fs.Model.FsSysCapsM (StateM FsCollisionProbeState) :=
+  let ePerm : LinuxSyscall.Errno := LinuxSyscall.Errno.EPERM
+  { files :=
+      { openat := fun _ path flags _ => do
+          if flags.excl then
+            let idx ← modifyGet fun s => (s.openAttempts, { s with openAttempts := s.openAttempts + 1 })
+            let st ← get
+            if idx < st.collideBelow then
+              return .error LinuxSyscall.Errno.EEXIST
+            else
+              return .ok dummyFd
+          else
+            let _ := path
+            return .error LinuxSyscall.Errno.ENOENT
+        openat2 := fun _ _ _ => pure (.error ePerm)
+        close := fun _ => pure (.ok ())
+        read := fun _ _ => pure (.ok ByteArray.empty)
+        write := fun _ bs => do
+          modify fun s => { s with written := s.written ++ bs }
+          return .ok bs.size.toUInt32
+        fstat := fun _ => pure (.error ePerm)
+        fstatat := fun _ _ _ => pure (.error LinuxSyscall.Errno.ENOENT)
+        faccessat := fun _ _ _ _ => pure (.error ePerm)
+        mkdirat := fun _ _ _ => pure (.error ePerm)
+        unlinkat := fun _ _ _ => pure (.ok ())
+        renameat2 := fun _ oldP _ newP _ => do
+          modify fun s =>
+            { s with
+              renamedSrc := String.fromUTF8! oldP
+              renamedDst := String.fromUTF8! newP }
+          return .ok ()
+        symlinkat := fun _ _ _ => pure (.error ePerm)
+        readlinkat := fun _ _ _ => pure (.error ePerm)
+        getdents64 := fun _ _ => pure (.ok ByteArray.empty)
+        fchmodat := fun _ _ _ => pure (.error ePerm)
+        fchmod := fun _ _ => pure (.error ePerm)
+        flock := fun _ _ => pure (.error ePerm)
+        fcntl := fun _ _ => pure (.ok 0)
+        fsync := fun _ => pure (.ok ())
+        getcwd := fun _ => pure (.error ePerm)
+        lseek := fun _ _ _ => pure (.ok 0)
+        reopenReadOnly := fun _ => pure (.error ePerm)
+        dupStdio := fun _ => pure (.error ePerm) }
+    timeRand :=
+      { clock_gettime := fun _ => do
+          let st ← get
+          return .ok { sec := Int64.ofInt (Int.ofNat st.openAttempts), nsec := 7 }
+        clock_nanosleep := fun _ _ _ => pure (.ok ())
+        getrandom := fun n _ => do
+          let st ← get
+          return .ok (ByteArray.mk (Array.replicate n.toNat st.openAttempts.toUInt8)) } }
+
+private def runFsMutateExtra : IO Unit := do
+  let checkB (label : String) (cond : Bool) : IO Unit := do
+    if !cond then throw (IO.userError s!"FS_MUTATE_EXTRA_FAIL: {label}")
+  let dummyFd ← match ← LinuxSyscall.Files.openat none "/dev/null".toUTF8 {} 0 with
+    | .ok fd => do
+      let _ ← LinuxSyscall.Files.close fd
+      pure fd
+    | .error e => throw (IO.userError s!"FS_MUTATE_EXTRA_FAIL: open /dev/null failed: {e}")
+  let api := Fs.Internal.mkApiFromCapsM (mkMockFsCaps dummyFd)
+  let payload := "hello-atomic".toUTF8
+  let (r1, st1) := (api.atomicWriteBytes "/dir/out.txt" payload).run { collideBelow := 1 }
+  checkB "collision retry succeeds on second sibling temp path"
+    (r1 == .ok () && st1.openAttempts == 2 && st1.written == payload &&
+      st1.renamedDst == "/dir/out.txt" && st1.renamedSrc.startsWith "/dir/.out.txt.tmp.")
+  let (rExhaust, stExhaust) := (api.atomicWriteBytes "/dir/out.txt" payload).run { collideBelow := 99 }
+  checkB "16-attempt collision exhaustion returns alreadyExists"
+    ((match rExhaust with | .error e => e.kind == .alreadyExists && !e.message.isEmpty | .ok () => false) &&
+      stExhaust.openAttempts == 16)
+  let tmpDir := "/tmp/leanswe_fs_defaultops_mut_probe"
+  let _ ← Fs.rmtree tmpDir true
+  match ← Fs.mkdir tmpDir true true with
+  | .error e => throw (IO.userError s!"FS_MUTATE_EXTRA_FAIL: mkdir {tmpDir}: {repr e}")
+  | .ok () => pure ()
+  let rel ← IO.ofExcept (Fs.RelPath.parse "sub.txt" |>.mapError (fun e => IO.userError e.message))
+  let subRes ← Fs.defaultOps.withSubtree tmpDir fun sub => do
+    match ← sub.atomicWriteBytes rel payload with
+    | .error e => return .error e
+    | .ok () => sub.readRegular rel
+  let _ ← Fs.rmtree tmpDir true
+  checkB "Fs.defaultOps.withSubtree round-trip" (subRes == .ok payload)
+
 /-- Mutation test suite for `LeanSwe.Fs`. -/
 def fsSuite : MutateSuite :=
-  { name := "Fs", runBase := do Fs.RuntimeTests.runAll; return none }
+  { name := "Fs"
+    runBase := do Fs.RuntimeTests.runAll; return none
+    runExtra := runFsMutateExtra }
 
 private def parseProcStatusHexMask (status field : String) : Option Nat := Id.run do
   for line in status.splitOn "\n" do

@@ -2,10 +2,8 @@ import Core.NondetTest
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Process.Model
-import LeanSwe.LinuxSyscall.Process.Proofs.HealthyStep
 import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Files.Model
-import LeanSwe.LinuxSyscall.Files.Proofs.HealthyStep
 import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.LinuxSyscall.TimeRand.Model
 import LeanSwe.PostFork.Types
@@ -13,179 +11,13 @@ import LeanSwe.PostFork.Model
 import LeanSwe.Process.Types
 import LeanSwe.LinuxSyscall.Process.Interface
 import LeanSwe.Process.SysBridge
+import LeanSwe.Process.Proofs.HealthyStepAssoc
 
 namespace LeanSwe.Process.Proofs
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.Process
 open LeanSwe.Process.SysBridge
-
-/-!
-`Files.close` descriptor-erasure lemma over canonical `LinuxSyscall.Files.healthyStep`,
-`Process`-scoped bridge refinement contracts (`RefinesHealthyProcOpsAt`,
-`RefinesHealthyFilesOpsAt`, `RefinesHealthyPostFork`, `RefinesHealthySysDeps`),
-`refinesHealthySysDeps_of_components`, and `RawProcessLaws` with full process-slot and
-OS pipe file-descriptor (`openFds`) conservation.
--/
-
-/-- `Files.assocGet xs k = none` holds iff `k ∉ xs.map Prod.fst`. -/
-theorem assocGet_none_iff_not_mem_fst {α β : Type} [DecidableEq α]
-    (xs : List (α × β)) (k : α) :
-    LinuxSyscall.Files.assocGet xs k = none ↔ k ∉ xs.map Prod.fst := by
-  induction xs with
-  | nil => simp [LinuxSyscall.Files.assocGet]
-  | cons hd rest ih =>
-    rcases hd with ⟨k', v⟩
-    simp only [LinuxSyscall.Files.assocGet, List.map_cons, List.mem_cons, not_or]
-    by_cases hEq : k' = k
-    · subst hEq
-      simp
-    · have hNe : (k' == k) = false := beq_false_of_ne hEq
-      rw [hNe]
-      simp [ih, Ne.symm hEq]
-
-/-- `(Files.assocErase xs k).map Prod.fst` equals `(xs.map Prod.fst).erase k`. -/
-theorem map_fst_assocErase {α β : Type} [DecidableEq α]
-    (xs : List (α × β)) (k : α) :
-    (LinuxSyscall.Files.assocErase xs k).map Prod.fst = (xs.map Prod.fst).erase k := by
-  rw [← List.nil_append ((xs.map Prod.fst).erase k)]
-  change (LinuxSyscall.Files.assocErase xs k).map Prod.fst =
-    ([] : List (α × β)).reverse.map Prod.fst ++ (xs.map Prod.fst).erase k
-  unfold LinuxSyscall.Files.assocErase
-  generalize ([] : List (α × β)) = acc
-  induction xs generalizing acc with
-  | nil =>
-    change acc.reverse.map Prod.fst = _
-    simp
-  | cons hd rest ih =>
-    rcases hd with ⟨k', v⟩
-    change (if k' == k then acc.reverseAux rest else _).map Prod.fst = _
-    by_cases hEq : (k' == k) = true
-    · simp [hEq, List.erase_cons, List.reverseAux_eq]
-    · have hF : (k' == k) = false := Bool.eq_false_iff.mpr hEq
-      rw [ite_eq_right hEq]
-      simp only [List.map_cons, List.erase_cons, hF, Bool.false_eq_true, ↓reduceIte, ih]
-      simp [List.reverse_cons, List.map_append]
-
-/-- `Files.assocErase` commutes with value mapping `Prod.map id f`. -/
-theorem assocErase_map_val {α β γ : Type} [DecidableEq α]
-    (xs : List (α × β)) (f : β → γ) (k : α) :
-    LinuxSyscall.Files.assocErase (xs.map fun (a, b) => (a, f b)) k =
-      (LinuxSyscall.Files.assocErase xs k).map fun (a, b) => (a, f b) := by
-  have hInit : ([] : List (α × γ)) = ([] : List (α × β)).map fun (a, b) => (a, f b) := rfl
-  unfold LinuxSyscall.Files.assocErase
-  rw [hInit]
-  generalize ([] : List (α × β)) = acc
-  induction xs generalizing acc with
-  | nil =>
-    change (List.map (fun (a, b) => (a, f b)) acc).reverse =
-      List.map (fun (a, b) => (a, f b)) acc.reverse
-    simp [List.map_reverse]
-  | cons hd rest ih =>
-    rcases hd with ⟨k', v⟩
-    simp only [List.map_cons]
-    change (if k' == k then (acc.map fun (a, b) => (a, f b)).reverseAux (rest.map fun (a, b) => (a, f b)) else _) =
-      List.map (fun (a, b) => (a, f b)) (if k' == k then acc.reverseAux rest else _)
-    by_cases hEq : (k' == k) = true
-    · simp [hEq, List.reverseAux_eq, List.map_reverse]
-    · rw [ite_eq_right hEq, ite_eq_right hEq]
-      exact ih ((k', v) :: acc)
-
-/-- `Files.assocSet` commutes with value mapping `Prod.map id f`. -/
-theorem assocSet_map_val {α β γ : Type} [DecidableEq α]
-    (xs : List (α × β)) (f : β → γ) (k : α) (v : β) :
-    LinuxSyscall.Files.assocSet (xs.map fun (a, b) => (a, f b)) k (f v) =
-      (LinuxSyscall.Files.assocSet xs k v).map fun (a, b) => (a, f b) := by
-  have hInit : ([] : List (α × γ)) = ([] : List (α × β)).map fun (a, b) => (a, f b) := rfl
-  unfold LinuxSyscall.Files.assocSet
-  rw [hInit]
-  generalize ([] : List (α × β)) = acc
-  induction xs generalizing acc with
-  | nil =>
-    change (acc.map fun (a, b) => (a, f b)).reverseAux [(k, f v)] =
-      List.map (fun (a, b) => (a, f b)) (acc.reverseAux [(k, v)])
-    simp [List.reverseAux_eq, List.map_reverse]
-  | cons hd rest ih =>
-    rcases hd with ⟨k', v'⟩
-    simp only [List.map_cons]
-    change (if k' == k then (acc.map fun (a, b) => (a, f b)).reverseAux ((k, f v) :: rest.map fun (a, b) => (a, f b)) else _) =
-      List.map (fun (a, b) => (a, f b)) (if k' == k then acc.reverseAux ((k, v) :: rest) else _)
-    by_cases hEq : (k' == k) = true
-    · simp [hEq, List.reverseAux_eq, List.map_reverse]
-    · rw [ite_eq_right hEq, ite_eq_right hEq]
-      exact ih ((k', v') :: acc)
-
-/-- Replacing an existing key `k ∈ xs.map Prod.fst` via `Files.assocSet` preserves `map Prod.fst` identically. -/
-theorem map_fst_assocSet_of_mem {α β : Type} [DecidableEq α]
-    (xs : List (α × β)) (k : α) (v : β) (hMem : k ∈ xs.map Prod.fst) :
-    (LinuxSyscall.Files.assocSet xs k v).map Prod.fst = xs.map Prod.fst := by
-  rw [← List.nil_append (xs.map Prod.fst)]
-  change (LinuxSyscall.Files.assocSet xs k v).map Prod.fst =
-    ([] : List (α × β)).reverse.map Prod.fst ++ xs.map Prod.fst
-  unfold LinuxSyscall.Files.assocSet
-  generalize ([] : List (α × β)) = acc
-  induction xs generalizing acc with
-  | nil => simp at hMem
-  | cons hd rest ih =>
-    rcases hd with ⟨k', v'⟩
-    change (if k' == k then acc.reverseAux ((k, v) :: rest) else _).map Prod.fst = _
-    by_cases hEq : (k' == k) = true
-    · have hk : k' = k := beq_iff_eq.mp hEq
-      subst hk
-      simp [List.reverseAux_eq]
-    · rw [ite_eq_right hEq]
-      have hkNe : k ≠ k' := fun h => hEq (beq_iff_eq.mpr h.symm)
-      have hMemRest : k ∈ rest.map Prod.fst := by
-        simp only [List.map_cons, List.mem_cons] at hMem
-        exact hMem.resolve_left hkNe
-      rw [ih hMemRest ((k', v') :: acc)]
-      simp [List.reverse_cons, List.map_append]
-
-/-- Under canonical `LinuxSyscall.Files.healthyStep` (excluding `.close`/`EBUSY` and `ambientSeccomp`), every `.close hid` transition erases `hid` from `state.fds.map Prod.fst`. -/
-theorem healthyFilesStep_close_fds
-    {env env' : LinuxSyscall.Files.HealthyEnv}
-    {hid : LinuxSyscall.Files.HandleId} {out : LinuxSyscall.Files.FilesOutcome}
-    (h : LinuxSyscall.Files.healthyStep env (.close hid) out = some env') :
-    env'.state.fds.map Prod.fst = (env.state.fds.map Prod.fst).erase hid := by
-  obtain ⟨hStep, _, hSec, _, hNoBusy, _, _, _⟩ := LinuxSyscall.Files.healthyStep_implies_allowedStep h
-  unfold LinuxSyscall.Files.allowedStep LinuxSyscall.Files.allowedCloseStep at hStep
-  dsimp only at hStep
-  cases hGet : LinuxSyscall.Files.assocGet env.state.fds hid with
-  | none =>
-    rw [hGet] at hStep
-    unfold LinuxSyscall.Files.verifyStep at hStep
-    dsimp only at hStep
-    by_cases hEb : LinuxSyscall.Files.isOutcomeErr out Errno.EBADF = true
-    · rw [ite_eq_left hEb] at hStep
-      injection hStep with hEq
-      rw [← hEq]
-      have hNotMem := (assocGet_none_iff_not_mem_fst env.state.fds hid).mp hGet
-      exact (List.erase_of_not_mem hNotMem).symm
-    · rw [ite_eq_right hEb] at hStep
-      cases hStep
-  | some desc =>
-    rw [hGet] at hStep
-    cases out with
-    | unit =>
-      simp only [Option.some.injEq] at hStep
-      rw [← hStep]
-      have hFds : (LinuxSyscall.Files.closeDescInState env.state hid desc).fds =
-          LinuxSyscall.Files.assocErase env.state.fds hid := rfl
-      rw [hFds, map_fst_assocErase]
-    | err e =>
-      dsimp only [LinuxSyscall.Files.isCloseEbusy] at hNoBusy
-      simp only [hNoBusy, hSec, Bool.not_false, Bool.and_true, Bool.false_and,
-        Bool.false_eq_true, ↓reduceIte] at hStep
-      cases hK : LinuxSyscall.Files.isKernelCloseErr e
-      · simp [hK] at hStep
-      · simp only [hK, ↓reduceIte] at hStep
-        cases hEb : e == Errno.EBADF
-        · simp only [hEb, Bool.false_eq_true, ↓reduceIte, Option.some.injEq] at hStep
-          rw [← hStep]
-          exact map_fst_assocErase env.state.fds hid
-        · simp [hEb] at hStep
-    | opened _ | bytes _ | u32 _ | u64 _ | statted _ =>
-      cases hStep
 
 /-- Scoped refinement predicate for the `ProcessOpsM` subset (`pipe2`, `waitpid`, `kill`) consumed by `Process.SysBridge`, stated directly against canonical `LinuxSyscall.Process.healthyStep`. -/
 structure RefinesHealthyProcOpsAt {S fd : Type}
@@ -433,62 +265,62 @@ theorem refinesHealthySysDeps_of_components {S : Type}
     refine ⟨hT, ?_, hO⟩
     intro e he
     refine ⟨hE e he, ?_⟩
-    have hCrit := (LinuxSyscall.Process.healthyStep_implies_allowedStep hSt).2.2.2.1
+    have hCrit := proc_healthyStep_noCrit hSt
     simpa [he, Except.map, LinuxSyscall.Process.outcomeOfPiped, LinuxSyscall.Process.isCriticalFault] using hCrit
   waitpid_frame s pid flags := by
     obtain ⟨hT, hO⟩ := hWaitLens s pid flags
     have hSt := hProc.waitpid_healthy s pid flags (hWf s).1
     refine ⟨hT, hO, ?_⟩
     intro e he
-    have hCrit := (LinuxSyscall.Process.healthyStep_implies_allowedStep hSt).2.2.2.1
+    have hCrit := proc_healthyStep_noCrit hSt
     simpa [he, LinuxSyscall.Process.outcomeOfWaited, LinuxSyscall.Process.isCriticalFault] using hCrit
   kill_frame s target sig := by
     obtain ⟨hT, hO⟩ := hKillLens s target sig
     have hSt := hProc.kill_healthy s target sig (hWf s).1
     refine ⟨hT, hO, ?_⟩
     intro e he
-    have hCrit := (LinuxSyscall.Process.healthyStep_implies_allowedStep hSt).2.2.2.1
+    have hCrit := proc_healthyStep_noCrit hSt
     simpa [he, LinuxSyscall.Process.outcomeOfUnit, LinuxSyscall.Process.isCriticalFault] using hCrit
   close_frame s h := by
     have hSt := hFiles.close_healthy s h (hWf s).2.1
     refine ⟨hCloseTblLens s h, healthyFilesStep_close_fds hSt, ?_⟩
     intro e he
-    have hCrit := (LinuxSyscall.Files.healthyStep_implies_allowedStep hSt).2.2.2.1
+    have hCrit := (files_healthyStep_props hSt).2.2.1
     simpa [he, LinuxSyscall.Files.outcomeOfUnit, LinuxSyscall.Files.isCriticalFault] using hCrit
   read_frame s h cap := by
     obtain ⟨hT, hO⟩ := hReadLens s h cap
     obtain ⟨hSt, hSz⟩ := hFiles.read_healthy s h cap (hWf s).2.1
     refine ⟨hT, hO, hSz, ?_⟩
     intro e he
-    have hCrit := (LinuxSyscall.Files.healthyStep_implies_allowedStep hSt).2.2.2.1
+    have hCrit := (files_healthyStep_props hSt).2.2.1
     simpa [he, LinuxSyscall.Files.outcomeOfBytes, LinuxSyscall.Files.isCriticalFault] using hCrit
   write_frame s h data := by
     obtain ⟨hT, hO⟩ := hWriteLens s h data
     obtain ⟨hSt, hSz⟩ := hFiles.write_healthy s h data (hWf s).2.1
     refine ⟨hT, hO, hSz, ?_⟩
     intro e he
-    have hCrit := (LinuxSyscall.Files.healthyStep_implies_allowedStep hSt).2.2.2.1
+    have hCrit := (files_healthyStep_props hSt).2.2.1
     simpa [he, LinuxSyscall.Files.outcomeOfU32, LinuxSyscall.Files.isCriticalFault] using hCrit
   fstatat_frame s dir path flags := by
     obtain ⟨hT, hO⟩ := hStatLens s dir path flags
     have hSt := hFiles.fstatat_healthy s dir path flags (hWf s).2.1
     refine ⟨hT, hO, ?_⟩
     intro e he
-    have hCrit := (LinuxSyscall.Files.healthyStep_implies_allowedStep hSt).2.2.2.1
+    have hCrit := (files_healthyStep_props hSt).2.2.1
     simpa [he, LinuxSyscall.Files.outcomeOfStatted, LinuxSyscall.Files.isCriticalFault] using hCrit
   faccessat_frame s dir path mask flags := by
     obtain ⟨hT, hO⟩ := hAccLens s dir path mask flags
     have hSt := hFiles.faccessat_healthy s dir path mask flags (hWf s).2.1
     refine ⟨hT, hO, ?_⟩
     intro e he
-    have hCrit := (LinuxSyscall.Files.healthyStep_implies_allowedStep hSt).2.2.2.1
+    have hCrit := (files_healthyStep_props hSt).2.2.1
     simpa [he, LinuxSyscall.Files.outcomeOfUnit, LinuxSyscall.Files.isCriticalFault] using hCrit
   fcntl_frame s h cmd := by
     obtain ⟨hT, hO⟩ := hFcntlLens s h cmd
     have hSt := hFiles.fcntl_healthy s h cmd (hWf s).2.1
     refine ⟨hT, hO, ?_⟩
     intro e he
-    have hCrit := (LinuxSyscall.Files.healthyStep_implies_allowedStep hSt).2.2.2.1
+    have hCrit := (files_healthyStep_props hSt).2.2.1
     simpa [he, LinuxSyscall.Files.outcomeOfU32, LinuxSyscall.Files.isCriticalFault] using hCrit
   ppoll_frame := hPollLens
   clock_gettime_frame s clk := by

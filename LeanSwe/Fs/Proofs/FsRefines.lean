@@ -1,5 +1,6 @@
-import LeanSwe.Fs.Proofs.FsRefinesHelpers3
+import LeanSwe.Fs.Proofs.FsRefinesAtomic
 import LeanSwe.Fs.Proofs.FsRefinesPure
+import LeanSwe.Fs.Proofs.SysBridgeCaps
 
 namespace LeanSwe.Fs.Proofs
 
@@ -382,18 +383,60 @@ theorem refinesStepFromFinally_mkApiFromScopedRawM :
     cases hEq : (ops.tryWithFileLock path mode createIfMissing (StateT.pure actRes) s) with
     | mk r _ => rw [hEq] at h; dsimp only at h ⊢; obtain ⟨tr, hTr, _, hOut⟩ := h; exact ⟨tr, hTr, hOut⟩
 
-/-- End-to-end compositional single-step refinement lifting `LinuxSyscall.Files.healthyStep` (`HealthyFilesCapM`) through `SysBridge.mkRawFsOpsM` and `Internal.mkApiFromScopedRawM` to `Internal.mkApiFromHealthyFilesM`. -/
-theorem refinesStepFromFinally_mkApiFromHealthyFilesM :
+/-- Compositional single-step refinement lifting `ScopedRawFsOpsM` to `Internal.mkApiFromScopedRawRetryM` across all 32 effectful `FsApiM` operations. -/
+theorem refinesStepFromFinally_mkApiFromScopedRawRetryM :
     Core.ObeysStepFromFinally
       (RawS := FsWorld) (PkgS := FsWorld)
-      (RawOps := HealthyFilesCapM) (PkgApi := FsApiM)
-      (RawReq := FilesCapStepReq) (RawOut := FilesCapStepOut)
+      (RawOps := ScopedRawFsOpsM) (PkgApi := FsApiM)
+      (RawReq := ScopedRawFsStepReq) (RawOut := ScopedRawFsStepOut)
       (PkgReq := FsStepReq) (PkgOut := FsStepOut)
-      id fsWorldWf execFilesCapStep allowedFilesCapStep
-      fsWorldWf Internal.mkApiFromHealthyFilesM execFsStep allowedFsStep := by
-  intro W proj cap hCap
-  exact refinesStepFromFinally_mkApiFromScopedRawM proj
-    (Internal.toScopedRawFsOpsM (SysBridge.mkRawFsOpsM cap.files cap.nextTempSeq))
-    (refinesScopedRawFs_of_refinesFilesCap hCap)
+      id fsWorldWf execScopedRawFsStep allowedScopedRawFsStep
+      fsWorldWf Internal.mkApiFromScopedRawRetryM execFsStep allowedFsStep := by
+  intro W proj ops hOps s req hWf
+  cases req with
+  | atomicWriteBytes path data =>
+    have h := atomicWriteBytesRetryM_trace hOps path data 16 hWf
+    simp only [execFsStep, Internal.mkApiFromScopedRawRetryM, Functor.map, StateT.map, StateT.run, Bind.bind, Pure.pure, allowedFsStep]
+    cases hEq : (Internal.atomicWriteBytesRetryM ops.toNonLockFsOpsM path data 16 s) with
+    | mk r _ => rw [StateT.run] at h; rw [hEq] at h; obtain ⟨tr, hTr, hOut⟩ := h; exact ⟨tr, hTr, by cases r with | ok u => cases u; exact hOut | error e => exact hOut⟩
+  | atomicWriteText path content =>
+    have h := atomicWriteBytesRetryM_trace hOps path content.toUTF8 16 hWf
+    simp only [execFsStep, Internal.mkApiFromScopedRawRetryM, Functor.map, StateT.map, StateT.run, Bind.bind, Pure.pure, allowedFsStep]
+    cases hEq : (Internal.atomicWriteBytesRetryM ops.toNonLockFsOpsM path content.toUTF8 16 s) with
+    | mk r _ => rw [StateT.run] at h; rw [hEq] at h; obtain ⟨tr, hTr, hOut⟩ := h; exact ⟨tr, hTr, by cases r with | ok u => cases u; exact hOut | error e => exact hOut⟩
+  | _ =>
+    exact refinesStepFromFinally_mkApiFromScopedRawM proj ops hOps s _ hWf
+
+/-- End-to-end compositional single-step refinement lifting `FsSysCapsM` (`LinuxSyscall.Files` + `LinuxSyscall.TimeRand`) to `Internal.mkApiFromCapsM`. -/
+theorem refinesStepFromFinally_mkApiFromCapsM :
+    Core.ObeysStepFromFinally
+      fsDepsWorldToFsWorld fsDepsWorldWf
+      execFsSysCapStep allowedFsSysCapStep
+      fsWorldWf Internal.mkApiFromCapsM
+      execFsStep allowedFsStep := by
+  intro W proj caps hCaps s req hPkgWf
+  have hDepsWf : fsDepsWorldWf (proj s) = true :=
+    (fsWorldWf_fsDepsWorldToFsWorld_iff (proj s)).mp hPkgWf
+  have hWfSplit := (Bool.and_eq_true _ _).mp hDepsWf
+  let hidOf := (proj s).toHid
+  have hEq0 : pinToHidProj proj hidOf s = (proj s).fs := pinToHidProj_eq_of_inv rfl hWfSplit.2
+  have hMap0 : fsDepsWorldToFsWorld (proj s) = (proj s).fs := fsDepsWorldToFsWorld_eq_of_wf hWfSplit.2
+  have hPinWf : fsWorldWf (pinToHidProj proj hidOf s) = true := hEq0 ▸ hWfSplit.1
+  have hApi := refinesStepFromFinally_mkApiFromScopedRawRetryM (pinToHidProj proj hidOf)
+    (Internal.toScopedRawFsOpsM (SysBridge.mkRawFsOpsM caps.files (SysBridge.nextTimeRandNonce caps.timeRand)))
+    (refinesScopedRawFs_of_refinesFilesFixed (refinesFsFilesFixed_of_fsSysCaps hCaps hidOf))
+    s req hPinWf
+  have hWf1 := allowedFsStep_wf hApi
+  obtain ⟨hHid1, hTwf1, _, _⟩ := pinToHidProj_wf_inv hWf1
+  have hEq1 : pinToHidProj proj hidOf ((execFsStep (Internal.mkApiFromCapsM caps) req).run s).2 =
+      (proj ((execFsStep (Internal.mkApiFromCapsM caps) req).run s).2).fs :=
+    pinToHidProj_eq_of_inv hHid1 hTwf1
+  have hMap1 : fsDepsWorldToFsWorld (proj ((execFsStep (Internal.mkApiFromCapsM caps) req).run s).2) =
+      (proj ((execFsStep (Internal.mkApiFromCapsM caps) req).run s).2).fs :=
+    fsDepsWorldToFsWorld_eq_of_wf hTwf1
+  dsimp only [Function.comp, id, Internal.mkApiFromCapsM] at hApi hEq1 hMap1 ⊢
+  rw [hEq0, hEq1] at hApi
+  rw [hMap0, hMap1]
+  exact hApi
 
 end LeanSwe.Fs.Proofs

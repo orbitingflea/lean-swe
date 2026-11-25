@@ -1,4 +1,4 @@
-import LeanSwe.Fs.Proofs.SysBridgeDirWalk
+import LeanSwe.Fs.Proofs.SysBridgeDirMkdirWalk
 
 namespace LeanSwe.Fs.Proofs
 
@@ -8,11 +8,12 @@ open LeanSwe.Fs
 open LeanSwe.Fs.Model
 
 /-- Confined trace specification for `Internal.atomicWriteAtAuxM`. -/
-theorem atomicWriteAtAuxM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
-    (parDh : HandleId) (leaf : EntryName) (bytes : ByteArray) (held : List HandleId) (attempts : Nat)
+theorem atomicWriteAtAuxM_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
+    (parDh : fd) (leaf : EntryName) (bytes : ByteArray) (held : List HandleId) (attempts : Nat)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := (Internal.atomicWriteAtAuxM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) parDh leaf bytes attempts).run s
+    let p := (Internal.atomicWriteAtAuxM (SysBridge.mkRawDirOpsM files nextNonce) parDh leaf bytes attempts).run s
     fsWorldWf (proj p.2) = true ∧
     (proj s).tempSeq ≤ (proj p.2).tempSeq ∧
     ∃ tr,
@@ -23,8 +24,8 @@ theorem atomicWriteAtAuxM_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
       | .ok () =>
         ∃ tmp : EntryName, ∃ sub1 sub2,
           Subtrace (sub1 ++ sub2) tr ∧
-          WriteFileTrace (some parDh) tmp.val.toUTF8 createNewOpenFlags 0o644 bytes sub1 ∧
-          RenameTrace (some parDh) tmp.val.toUTF8 (some parDh) leaf.val.toUTF8 sub2
+          WriteFileTrace (some (hidOf parDh)) tmp.val.toUTF8 createNewOpenFlags 0o644 bytes sub1 ∧
+          RenameTrace (some (hidOf parDh)) tmp.val.toUTF8 (some (hidOf parDh)) leaf.val.toUTF8 sub2
       | .error e => nonLockErrOk e := by
   induction attempts generalizing s with
   | zero =>
@@ -35,24 +36,24 @@ theorem atomicWriteAtAuxM_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
   | succ a ih =>
     unfold Internal.atomicWriteAtAuxM
     have hTmp := dirOps_freshTempName_trace hCap held hWf
-    cases hRt : ((SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).freshTempName s) with
+    cases hRt : ((SysBridge.mkRawDirOpsM files nextNonce).freshTempName s) with
     | mk tmp s1 =>
       rw [StateT.run] at hTmp; rw [hRt] at hTmp; dsimp only at hTmp
       obtain ⟨hWf1, hSeq1, hSt0, _⟩ := hTmp
       simp only [Bind.bind, StateT.bind, StateT.run, hRt]
       have hCr := createFileAtPure_trace hCap parDh tmp bytes held DEFAULT_EINTR_FUEL hWf1
-      cases hRc : (SysBridge.createFileAtPure cap.files parDh tmp bytes DEFAULT_EINTR_FUEL s1) with
+      cases hRc : (SysBridge.createFileAtPure files parDh tmp bytes DEFAULT_EINTR_FUEL s1) with
       | mk crRes s2 =>
         rw [StateT.run] at hCr; rw [hRc] at hCr; dsimp only at hCr
         obtain ⟨hWf2, hTmp2, trC, hStC, hFdC, hConfC, hOutC⟩ := hCr
-        have hRc' : (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).createFileAt parDh tmp bytes s1 = (crRes, s2) := hRc
+        have hRc' : (SysBridge.mkRawDirOpsM files nextNonce).createFileAt parDh tmp bytes s1 = (crRes, s2) := hRc
         rw [hRc']; dsimp only
         have hSt0C := healthyFilesSteps_append hSt0 hStC
         cases crRes with
         | ok u =>
           cases u
           have hRn := dirOps_renameAt_trace hCap parDh tmp parDh leaf held hWf2
-          cases hRr : ((SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).renameAt parDh tmp parDh leaf s2) with
+          cases hRr : ((SysBridge.mkRawDirOpsM files nextNonce).renameAt parDh tmp parDh leaf s2) with
           | mk rnRes s3 =>
             rw [StateT.run] at hRn; rw [hRr] at hRn; dsimp only at hRn
             obtain ⟨hWf3, hTmp3, trR, hStR, hFdR, hConfR, hOutR⟩ := hRn
@@ -66,7 +67,7 @@ theorem atomicWriteAtAuxM_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
                 tmp, trC, trR, subtrace_refl _, hOutC, hOutR⟩
             | error re =>
               have hUn := dirOps_unlinkAt_trace hCap parDh tmp false held hWf3
-              cases hRu : ((SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).unlinkAt parDh tmp false s3) with
+              cases hRu : ((SysBridge.mkRawDirOpsM files nextNonce).unlinkAt parDh tmp false s3) with
               | mk uRes s4 =>
                 rw [StateT.run] at hUn; rw [hRu] at hUn; dsimp only at hUn
                 obtain ⟨hWf4, hTmp4, trU, hStU, hFdU, hConfU, _⟩ := hUn
@@ -79,7 +80,7 @@ theorem atomicWriteAtAuxM_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
           by_cases hRetry : (ce.kind == .alreadyExists && decide (a > 0)) = true
           · simp only [hRetry, ↓reduceIte]
             have hIh := ih hWf2
-            cases hO : (Internal.atomicWriteAtAuxM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) parDh leaf bytes a s2) with
+            cases hO : (Internal.atomicWriteAtAuxM (SysBridge.mkRawDirOpsM files nextNonce) parDh leaf bytes a s2) with
             | mk r3 s3 =>
               simp only [StateT.run, hO] at hIh ⊢
               obtain ⟨hWf3, hTmp3, tr3, hSt3, hFd3, hConf3, hOut3⟩ := hIh
@@ -95,18 +96,19 @@ theorem atomicWriteAtAuxM_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
             exact ⟨hWf2, by omega, trC, hSt0C, hFdC, hConfC, hOutC⟩
 
 /-- Confined trace and sortedness specification for `Internal.walkRecM`. -/
-theorem walkRecM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
-    (rootDh : HandleId) (fuel : Nat) :
+theorem walkRecM_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
+    (rootDh : fd) (fuel : Nat) :
     ∀ (relSegs : List EntryName) (relLabel : String) (acc : Array WalkEntry) (s : W),
       fsWorldWf (proj s) = true →
       (∀ e ∈ acc.toList, WalkEntrySorted e) →
-      let p := (Internal.walkRecM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh relSegs relLabel acc fuel).run s
+      let p := (Internal.walkRecM (SysBridge.mkRawDirOpsM files nextNonce) rootDh relSegs relLabel acc fuel).run s
       fsWorldWf (proj p.2) = true ∧
       (proj s).tempSeq ≤ (proj p.2).tempSeq ∧
       ∃ tr,
         HealthyFilesSteps (proj s).env tr (proj p.2).env ∧
-        TraceFds [rootDh] tr [rootDh] ∧
+        TraceFds [hidOf rootDh] tr [hidOf rootDh] ∧
         (∀ step ∈ tr, SubtreeConfinedReq step.1) ∧
         match p.1 with
         | .ok entries =>
@@ -126,12 +128,12 @@ theorem walkRecM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM
         (dirs : List EntryName) (acc : Array WalkEntry) (s : W),
         fsWorldWf (proj s) = true →
         (∀ e ∈ acc.toList, WalkEntrySorted e) →
-        let q := (Internal.walkChildrenM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh relSegs relLabel f acc dirs).run s
+        let q := (Internal.walkChildrenM (SysBridge.mkRawDirOpsM files nextNonce) rootDh relSegs relLabel f acc dirs).run s
         fsWorldWf (proj q.2) = true ∧
         (proj s).tempSeq ≤ (proj q.2).tempSeq ∧
         ∃ tr,
           HealthyFilesSteps (proj s).env tr (proj q.2).env ∧
-          TraceFds [rootDh] tr [rootDh] ∧
+          TraceFds [hidOf rootDh] tr [hidOf rootDh] ∧
           (∀ step ∈ tr, SubtreeConfinedReq step.1) ∧
           match q.1 with
           | .ok entries =>
@@ -148,7 +150,7 @@ theorem walkRecM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM
         intro acc s hWf hAcc
         unfold Internal.walkChildrenM
         have hSub := ih (relSegs ++ [d]) (if (relLabel == ".") = true then d.val else relLabel ++ "/" ++ d.val) acc s hWf hAcc
-        cases hR : (Internal.walkRecM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh
+        cases hR : (Internal.walkRecM (SysBridge.mkRawDirOpsM files nextNonce) rootDh
             (relSegs ++ [d]) (if (relLabel == ".") = true then d.val else relLabel ++ "/" ++ d.val) acc f s) with
         | mk r1 s1 =>
           rw [StateT.run] at hSub; rw [hR] at hSub; dsimp only at hSub
@@ -160,7 +162,7 @@ theorem walkRecM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM
             exact ⟨hWf1, hTmp1, tr1, hSt1, hFd1, hConf1, hOut1⟩
           | ok acc' =>
             have hRest := ihD acc' s1 hWf1 hOut1.1
-            cases hR2 : (Internal.walkChildrenM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh relSegs relLabel f acc' rest s1) with
+            cases hR2 : (Internal.walkChildrenM (SysBridge.mkRawDirOpsM files nextNonce) rootDh relSegs relLabel f acc' rest s1) with
             | mk r2 s2 =>
               simp only [StateT.run, hR2] at hRest ⊢
               obtain ⟨hWf2, hTmp2, tr2, hSt2, hFd2, hConf2, hOut2⟩ := hRest
@@ -170,12 +172,12 @@ theorem walkRecM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM
               | error e => exact hOut2
               | ok entries => exact ⟨hOut2.1, by have := hOut1.2.1; have := hOut2.2; omega⟩
     intro relSegs relLabel acc s hWf hAcc
-    let readClassify : HandleId → StateM W (Except FsError (List EntryName × List String)) := fun dirDh => do
-      match ← (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).readDirAt dirDh with
+    let readClassify : fd → StateM W (Except FsError (List EntryName × List String)) := fun dirDh => do
+      match ← (SysBridge.mkRawDirOpsM files nextNonce).readDirAt dirDh with
       | .error e => pure (.error e)
       | .ok rawNames =>
-        Internal.classifyChildrenM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) dirDh (Internal.sortEntryNames rawNames) [] []
-    have hWalk := walkDescendAuxM_trace hCap (fun _ => none)
+        Internal.classifyChildrenM (SysBridge.mkRawDirOpsM files nextNonce) dirDh (Internal.sortEntryNames rawNames) [] []
+    have hWalk := walkDescendAuxM_trace hCap (fun _ => (none : Option fd))
       (fun _ res tr =>
         List.Pairwise (· ≤ ·) (res.1.map (·.val)) ∧ List.Pairwise (· ≤ ·) res.2 ∧
         ∃ h eof, (.getdents64 h 8192, .bytes eof) ∈ tr ∧ eof.size = 0)
@@ -186,11 +188,11 @@ theorem walkRecM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM
       (fun dirDh held s0 hW0 => by
         dsimp only [readClassify]
         have hRd := readDirAtPure_trace hCap dirDh held DEFAULT_EINTR_FUEL SysBridge.DEFAULT_STREAM_FUEL hW0
-        cases hR0 : (SysBridge.readDirAtPure cap.files dirDh DEFAULT_EINTR_FUEL SysBridge.DEFAULT_STREAM_FUEL s0) with
+        cases hR0 : (SysBridge.readDirAtPure files dirDh DEFAULT_EINTR_FUEL SysBridge.DEFAULT_STREAM_FUEL s0) with
         | mk rdRes s1 =>
           rw [StateT.run] at hRd; rw [hR0] at hRd; dsimp only at hRd
           obtain ⟨hWf1, hTmp1, trRd, hStRd, hFdRd, hConfRd, hOutRd⟩ := hRd
-          have hR0' : (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).readDirAt dirDh s0 = (rdRes, s1) := hR0
+          have hR0' : (SysBridge.mkRawDirOpsM files nextNonce).readDirAt dirDh s0 = (rdRes, s1) := hR0
           simp only [Bind.bind, StateT.bind, StateT.run, hR0']
           cases rdRes with
           | error e =>
@@ -200,7 +202,7 @@ theorem walkRecM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM
             have hCl := classifyChildrenM_trace hCap dirDh held (Internal.sortEntryNames rawNames) [] []
               (sortEntryNames_pairwise rawNames) List.Pairwise.nil List.Pairwise.nil
               (fun _ hm => nomatch hm) (fun _ hm => nomatch hm) hWf1
-            cases hRc : (Internal.classifyChildrenM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) dirDh
+            cases hRc : (Internal.classifyChildrenM (SysBridge.mkRawDirOpsM files nextNonce) dirDh
                 (Internal.sortEntryNames rawNames) [] [] s1) with
             | mk clRes s2 =>
               simp only [StateT.run, hRc] at hCl ⊢
@@ -213,34 +215,34 @@ theorem walkRecM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM
                 obtain ⟨h, eof, hMemE, hEz, _⟩ := hOutRd
                 exact ⟨traceFds_append hFdRd hFdCl, hOutCl.1, hOutCl.2,
                   h, eof, List.mem_append_left _ hMemE, hEz⟩)
-      true rootDh [rootDh] relSegs hWf
-    cases hRw : (Internal.walkDescendM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh relSegs readClassify s) with
+      true rootDh [hidOf rootDh] relSegs hWf
+    cases hRw : (Internal.walkDescendM (SysBridge.mkRawDirOpsM files nextNonce) rootDh relSegs readClassify s) with
     | mk rRead s1 =>
-      have hRw' : Internal.walkDescendAuxM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) true rootDh relSegs readClassify s = (rRead, s1) := hRw
+      have hRw' : Internal.walkDescendAuxM (SysBridge.mkRawDirOpsM files nextNonce) true rootDh relSegs readClassify s = (rRead, s1) := hRw
       rw [StateT.run] at hWalk; rw [hRw'] at hWalk; simp only [↓reduceIte] at hWalk
       obtain ⟨hWf1, hTmp1, tr1, hSt1, hConf1, hOut1⟩ := hWalk
-      have hStepEq : (Internal.walkRecM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh relSegs relLabel acc (f + 1)).run s =
+      have hStepEq : (Internal.walkRecM (SysBridge.mkRawDirOpsM files nextNonce) rootDh relSegs relLabel acc (f + 1)).run s =
           (match rRead with
            | .error e => (Except.error e, s1)
-           | .ok (dirs, files) =>
-             (Internal.walkChildrenM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh relSegs relLabel f
-               (acc.push { root := relLabel, dirs := (dirs.map (·.val)).toArray, files := files.toArray }) dirs).run s1) := by
+           | .ok (dirs, outFiles) =>
+             (Internal.walkChildrenM (SysBridge.mkRawDirOpsM files nextNonce) rootDh relSegs relLabel f
+               (acc.push { root := relLabel, dirs := (dirs.map (·.val)).toArray, files := outFiles.toArray }) dirs).run s1) := by
         conv => lhs; unfold Internal.walkRecM
-        refine Eq.trans ?_ (show (Internal.walkDescendM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh relSegs readClassify >>= fun r =>
+        refine Eq.trans ?_ (show (Internal.walkDescendM (SysBridge.mkRawDirOpsM files nextNonce) rootDh relSegs readClassify >>= fun r =>
           match r with
           | .error e => pure (Except.error e)
-          | .ok (dirs, files) => Internal.walkChildrenM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh relSegs relLabel f
-              (acc.push { root := relLabel, dirs := (dirs.map (·.val)).toArray, files := files.toArray }) dirs).run s = _ from by
+          | .ok (dirs, outFiles) => Internal.walkChildrenM (SysBridge.mkRawDirOpsM files nextNonce) rootDh relSegs relLabel f
+              (acc.push { root := relLabel, dirs := (dirs.map (·.val)).toArray, files := outFiles.toArray }) dirs).run s = _ from by
           simp only [Bind.bind, StateT.bind, StateT.run, hRw]; cases rRead <;> rfl)
-        have hF : ∀ (a b : HandleId → StateM W (Except FsError (List EntryName × List String)))
+        have hF : ∀ (a b : fd → StateM W (Except FsError (List EntryName × List String)))
             (g1 g2 : Except FsError (List EntryName × List String) → StateM W (Except FsError (Array WalkEntry))),
             a = b → g1 = g2 →
-            (Internal.walkDescendM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh relSegs a >>= g1).run s =
-            (Internal.walkDescendM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh relSegs b >>= g2).run s := by
+            (Internal.walkDescendM (SysBridge.mkRawDirOpsM files nextNonce) rootDh relSegs a >>= g1).run s =
+            (Internal.walkDescendM (SysBridge.mkRawDirOpsM files nextNonce) rootDh relSegs b >>= g2).run s := by
           rintro _ _ _ _ rfl rfl; rfl
         refine hF _ _ _ _ (funext fun dirDh => funext fun s0 => ?_) (funext fun r => by cases r <;> rfl)
         simp only [readClassify, Bind.bind, StateT.bind]
-        cases (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).readDirAt dirDh s0 with
+        cases (SysBridge.mkRawDirOpsM files nextNonce).readDirAt dirDh s0 with
         | mk r0 _ => cases r0 <;> rfl
       dsimp only; rw [hStepEq]
       cases rRead with
@@ -262,7 +264,7 @@ theorem walkRecM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM
           · exact hAcc e hOld
           · exact hEntrySorted
         have hCh := hChildren relSegs relLabel pair.1 (acc.push entry) s1 hWf1 hAcc'
-        cases hRc : (Internal.walkChildrenM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh relSegs relLabel f (acc.push entry) pair.1 s1) with
+        cases hRc : (Internal.walkChildrenM (SysBridge.mkRawDirOpsM files nextNonce) rootDh relSegs relLabel f (acc.push entry) pair.1 s1) with
         | mk r2 s2 =>
           simp only [StateT.run, hRc] at hCh
           dsimp only [entry] at hRc
@@ -279,11 +281,12 @@ theorem walkRecM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM
             omega
 
 /-- Confined trace specification for `Internal.rmtreeNonDirPrefixM`. -/
-theorem rmtreeNonDirPrefixM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
-    (dirDh : HandleId) (held : List HandleId) (items : List EntryName)
+theorem rmtreeNonDirPrefixM_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
+    (dirDh : fd) (held : List HandleId) (items : List EntryName)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := (Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) dirDh items).run s
+    let p := (Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM files nextNonce) dirDh items).run s
     fsWorldWf (proj p.2) = true ∧
     (proj p.2).tempSeq = (proj s).tempSeq ∧
     ∃ tr,
@@ -301,7 +304,7 @@ theorem rmtreeNonDirPrefixM_trace {W : Type} {proj : W → FsWorld} {cap : Healt
   | cons c rest ih =>
     unfold Internal.rmtreeNonDirPrefixM
     have hLs := dirOps_lstatAt_trace hCap dirDh c held hWf
-    cases hR : ((SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).lstatAt dirDh c s) with
+    cases hR : ((SysBridge.mkRawDirOpsM files nextNonce).lstatAt dirDh c s) with
     | mk res s1 =>
       rw [StateT.run] at hLs; rw [hR] at hLs; dsimp only at hLs
       obtain ⟨hWf1, hTmp1, tr1, hSt1, hFd1, hConf1, hOut1⟩ := hLs
@@ -311,7 +314,7 @@ theorem rmtreeNonDirPrefixM_trace {W : Type} {proj : W → FsWorld} {cap : Healt
         by_cases hNf : (e.kind == .notFound) = true
         · simp only [hNf, ↓reduceIte]
           have hIh := ih hWf1
-          cases hO : (Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) dirDh rest s1) with
+          cases hO : (Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM files nextNonce) dirDh rest s1) with
           | mk r2 s2 =>
             simp only [StateT.run, hO] at hIh ⊢
             obtain ⟨hWf2, hTmp2, tr2, hSt2, hFd2, hConf2, hOut2⟩ := hIh
@@ -325,7 +328,7 @@ theorem rmtreeNonDirPrefixM_trace {W : Type} {proj : W → FsWorld} {cap : Healt
           exact ⟨hWf1, hTmp1, tr1, hSt1, hFd1, hConf1, trivial⟩
         · simp only [hDir, Bool.false_eq_true, ↓reduceIte]
           have hUn := dirOps_unlinkAt_trace hCap dirDh c false held hWf1
-          cases hRu : ((SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).unlinkAt dirDh c false s1) with
+          cases hRu : ((SysBridge.mkRawDirOpsM files nextNonce).unlinkAt dirDh c false s1) with
           | mk uRes s2 =>
             rw [StateT.run] at hUn; rw [hRu] at hUn; dsimp only at hUn
             obtain ⟨hWf2, hTmp2, trU, hStU, hFdU, hConfU, hOutU⟩ := hUn
@@ -334,7 +337,7 @@ theorem rmtreeNonDirPrefixM_trace {W : Type} {proj : W → FsWorld} {cap : Healt
             | ok u =>
               cases u
               have hIh := ih hWf2
-              cases hO : (Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) dirDh rest s2) with
+              cases hO : (Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM files nextNonce) dirDh rest s2) with
               | mk r3 s3 =>
                 simp only [StateT.run, hO] at hIh ⊢
                 obtain ⟨hWf3, hTmp3, tr3, hSt3, hFd3, hConf3, hOut3⟩ := hIh
@@ -346,7 +349,7 @@ theorem rmtreeNonDirPrefixM_trace {W : Type} {proj : W → FsWorld} {cap : Healt
               by_cases hNf : (ue.kind == .notFound) = true
               · simp only [hNf, ↓reduceIte]
                 have hIh := ih hWf2
-                cases hO : (Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) dirDh rest s2) with
+                cases hO : (Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM files nextNonce) dirDh rest s2) with
                 | mk r3 s3 =>
                   simp only [StateT.run, hO] at hIh ⊢
                   obtain ⟨hWf3, hTmp3, tr3, hSt3, hFd3, hConf3, hOut3⟩ := hIh
@@ -359,23 +362,24 @@ theorem rmtreeNonDirPrefixM_trace {W : Type} {proj : W → FsWorld} {cap : Healt
                   traceFds_append hFd1 hFdU, confined_append hConf1 hConfU, hOutU.1⟩
 
 /-- Confined trace specification for `Internal.rmtreeProcessM`. -/
-theorem rmtreeProcessM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
-    (rootDh : HandleId) (dirSegs : List EntryName)
+theorem rmtreeProcessM_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
+    (rootDh : fd) (dirSegs : List EntryName)
     (subDirFn : EntryName → StateM W (Except FsError Unit))
     (hSub : ∀ (sub : EntryName) {s : W}, fsWorldWf (proj s) = true →
       let q := (subDirFn sub).run s
       fsWorldWf (proj q.2) = true ∧ (proj s).tempSeq ≤ (proj q.2).tempSeq ∧
       ∃ tr, HealthyFilesSteps (proj s).env tr (proj q.2).env ∧
-        TraceFds [rootDh] tr [rootDh] ∧ (∀ step ∈ tr, SubtreeConfinedReq step.1) ∧
+        TraceFds [hidOf rootDh] tr [hidOf rootDh] ∧ (∀ step ∈ tr, SubtreeConfinedReq step.1) ∧
         match q.1 with | .ok () => True | .error e => nonLockErrOk e)
     (steps : Nat) (items : List EntryName) {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := (Internal.rmtreeProcessM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh dirSegs subDirFn steps items).run s
+    let p := (Internal.rmtreeProcessM (SysBridge.mkRawDirOpsM files nextNonce) rootDh dirSegs subDirFn steps items).run s
     fsWorldWf (proj p.2) = true ∧
     (proj s).tempSeq ≤ (proj p.2).tempSeq ∧
     ∃ tr,
       HealthyFilesSteps (proj s).env tr (proj p.2).env ∧
-      TraceFds [rootDh] tr [rootDh] ∧
+      TraceFds [hidOf rootDh] tr [hidOf rootDh] ∧
       (∀ step ∈ tr, SubtreeConfinedReq step.1) ∧
       match p.1 with
       | .ok () => True
@@ -393,22 +397,22 @@ theorem rmtreeProcessM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFil
       exact ⟨hWf, Nat.le_refl _, [], HealthyFilesSteps.nil _, TraceFds.nil _, confined_nil, trivial⟩
     | cons hd tl =>
       unfold Internal.rmtreeProcessM
-      have hBatch := walkDescendAuxM_trace hCap (fun _ => none) (fun _ _ _ => True)
+      have hBatch := walkDescendAuxM_trace hCap (fun _ => (none : Option fd)) (fun _ _ _ => True)
         (fun e _ => nonLockErrOk e) (fun _ _ _ _ h => h) (fun _ _ h _ => h)
-        (fun dirDh => Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) dirDh (hd :: tl))
+        (fun dirDh => Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM files nextNonce) dirDh (hd :: tl))
         (fun dirDh held s0 hW0 => by
           have hP := rmtreeNonDirPrefixM_trace hCap dirDh held (hd :: tl) hW0
-          cases hRp : (Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) dirDh (hd :: tl) s0) with
+          cases hRp : (Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM files nextNonce) dirDh (hd :: tl) s0) with
           | mk r0 s1 =>
             simp only [StateT.run, hRp] at hP ⊢
             obtain ⟨hWf1, hTmp1, tr, hSt, hFd, hConf, hOut⟩ := hP
             exact ⟨hWf1, by omega, tr, hSt, hConf, by cases r0 <;> exact ⟨hFd, hOut⟩⟩)
-        true rootDh [rootDh] dirSegs hWf
-      cases hRb : (Internal.walkDescendM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh dirSegs
-          (fun dirDh => Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) dirDh (hd :: tl)) s) with
+        true rootDh [hidOf rootDh] dirSegs hWf
+      cases hRb : (Internal.walkDescendM (SysBridge.mkRawDirOpsM files nextNonce) rootDh dirSegs
+          (fun dirDh => Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM files nextNonce) dirDh (hd :: tl)) s) with
       | mk bRes s1 =>
-        have hRb' : Internal.walkDescendAuxM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) true rootDh dirSegs
-            (fun dirDh => Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) dirDh (hd :: tl)) s = (bRes, s1) := hRb
+        have hRb' : Internal.walkDescendAuxM (SysBridge.mkRawDirOpsM files nextNonce) true rootDh dirSegs
+            (fun dirDh => Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM files nextNonce) dirDh (hd :: tl)) s = (bRes, s1) := hRb
         rw [StateT.run] at hBatch; rw [hRb'] at hBatch; simp only [↓reduceIte] at hBatch
         obtain ⟨hWf1, hTmp1, tr1, hSt1, hConf1, hOut1⟩ := hBatch
         simp only [Bind.bind, StateT.bind, StateT.run, hRb]
@@ -436,7 +440,7 @@ theorem rmtreeProcessM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFil
               | ok u =>
                 cases u
                 have hIh := ih pair.2 hWf2
-                cases hR3 : (Internal.rmtreeProcessM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh dirSegs subDirFn k pair.2 s2) with
+                cases hR3 : (Internal.rmtreeProcessM (SysBridge.mkRawDirOpsM files nextNonce) rootDh dirSegs subDirFn k pair.2 s2) with
                 | mk r3 s3 =>
                   simp only [StateT.run, hR3] at hIh ⊢
                   obtain ⟨hWf3, hTmp3, tr3, hSt3, hFd3, hConf3, hOut3⟩ := hIh
@@ -446,17 +450,18 @@ theorem rmtreeProcessM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFil
                     confined_append (confined_append hConf1 hConf2) hConf3, hOut3⟩
 
 /-- Confined trace specification for `Internal.rmtreeDirAtM`. -/
-theorem rmtreeDirAtM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
-    (rootDh : HandleId) (fuel : Nat) :
+theorem rmtreeDirAtM_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
+    (rootDh : fd) (fuel : Nat) :
     ∀ (parSegs : List EntryName) (leaf : EntryName) (s : W),
       fsWorldWf (proj s) = true →
-      let p := (Internal.rmtreeDirAtM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh parSegs leaf fuel).run s
+      let p := (Internal.rmtreeDirAtM (SysBridge.mkRawDirOpsM files nextNonce) rootDh parSegs leaf fuel).run s
       fsWorldWf (proj p.2) = true ∧
       (proj s).tempSeq ≤ (proj p.2).tempSeq ∧
       ∃ tr,
         HealthyFilesSteps (proj s).env tr (proj p.2).env ∧
-        TraceFds [rootDh] tr [rootDh] ∧
+        TraceFds [hidOf rootDh] tr [hidOf rootDh] ∧
         (∀ step ∈ tr, SubtreeConfinedReq step.1) ∧
         match p.1 with
         | .ok () => ∃ d, UnlinkTrace (some d) leaf.val.toUTF8 true tr
@@ -471,22 +476,22 @@ theorem rmtreeDirAtM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
   | succ f ih =>
     intro parSegs leaf s hWf
     unfold Internal.rmtreeDirAtM
-    have hRd := walkDescendAuxM_trace hCap (fun _ => none) (fun _ _ _ => True)
+    have hRd := walkDescendAuxM_trace hCap (fun _ => (none : Option fd)) (fun _ _ _ => True)
       (fun e _ => nonLockErrOk e) (fun _ _ _ _ h => h) (fun _ _ h _ => h)
-      (fun dirDh => (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).readDirAt dirDh)
+      (fun dirDh => (SysBridge.mkRawDirOpsM files nextNonce).readDirAt dirDh)
       (fun dirDh held s0 hW0 => by
         have hR := readDirAtPure_trace hCap dirDh held DEFAULT_EINTR_FUEL SysBridge.DEFAULT_STREAM_FUEL hW0
-        cases hRo : (SysBridge.readDirAtPure cap.files dirDh DEFAULT_EINTR_FUEL SysBridge.DEFAULT_STREAM_FUEL s0) with
+        cases hRo : (SysBridge.readDirAtPure files dirDh DEFAULT_EINTR_FUEL SysBridge.DEFAULT_STREAM_FUEL s0) with
         | mk res s1 =>
           simp only [SysBridge.mkRawDirOpsM, StateT.run, hRo] at hR ⊢
           obtain ⟨hWf1, hTmp1, tr, hSt, hFd, hConf, hOut⟩ := hR
           exact ⟨hWf1, by omega, tr, hSt, hConf, by cases res <;> exact ⟨hFd, by first | trivial | exact hOut⟩⟩)
-      true rootDh [rootDh] (parSegs ++ [leaf]) hWf
-    cases hRr : (Internal.walkDescendM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh (parSegs ++ [leaf])
-        (fun dirDh => (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).readDirAt dirDh) s) with
+      true rootDh [hidOf rootDh] (parSegs ++ [leaf]) hWf
+    cases hRr : (Internal.walkDescendM (SysBridge.mkRawDirOpsM files nextNonce) rootDh (parSegs ++ [leaf])
+        (fun dirDh => (SysBridge.mkRawDirOpsM files nextNonce).readDirAt dirDh) s) with
     | mk rRead s1 =>
-      have hRr' : Internal.walkDescendAuxM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) true rootDh (parSegs ++ [leaf])
-          (fun dirDh => (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).readDirAt dirDh) s = (rRead, s1) := hRr
+      have hRr' : Internal.walkDescendAuxM (SysBridge.mkRawDirOpsM files nextNonce) true rootDh (parSegs ++ [leaf])
+          (fun dirDh => (SysBridge.mkRawDirOpsM files nextNonce).readDirAt dirDh) s = (rRead, s1) := hRr
       rw [StateT.run] at hRd; rw [hRr'] at hRd; simp only [↓reduceIte] at hRd
       obtain ⟨hWf1, hTmp1, tr1, hSt1, hConf1, hOut1⟩ := hRd
       simp only [Bind.bind, StateT.bind, StateT.run, hRr]
@@ -496,17 +501,17 @@ theorem rmtreeDirAtM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
         exact ⟨hWf1, hTmp1, tr1, hSt1, hOut1.1, hConf1, hOut1.2⟩
       | ok rawNames =>
         have hProc := rmtreeProcessM_trace hCap rootDh (parSegs ++ [leaf])
-          (fun subDir => Internal.rmtreeDirAtM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh (parSegs ++ [leaf]) subDir f)
+          (fun subDir => Internal.rmtreeDirAtM (SysBridge.mkRawDirOpsM files nextNonce) rootDh (parSegs ++ [leaf]) subDir f)
           (fun sub s0 hW0 => by
             have hI := ih (parSegs ++ [leaf]) sub s0 hW0
-            cases hRi : (Internal.rmtreeDirAtM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh (parSegs ++ [leaf]) sub f s0) with
+            cases hRi : (Internal.rmtreeDirAtM (SysBridge.mkRawDirOpsM files nextNonce) rootDh (parSegs ++ [leaf]) sub f s0) with
             | mk r0 sX =>
               simp only [StateT.run, hRi] at hI ⊢
               obtain ⟨hWfX, hTmpX, trX, hStX, hFdX, hConfX, hOutX⟩ := hI
               exact ⟨hWfX, hTmpX, trX, hStX, hFdX, hConfX, by cases r0 with | ok u => cases u; trivial | error e => exact hOutX⟩)
           (Internal.sortEntryNames rawNames).length (Internal.sortEntryNames rawNames) hWf1
-        cases hRp : (Internal.rmtreeProcessM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh (parSegs ++ [leaf])
-            (fun subDir => Internal.rmtreeDirAtM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh (parSegs ++ [leaf]) subDir f)
+        cases hRp : (Internal.rmtreeProcessM (SysBridge.mkRawDirOpsM files nextNonce) rootDh (parSegs ++ [leaf])
+            (fun subDir => Internal.rmtreeDirAtM (SysBridge.mkRawDirOpsM files nextNonce) rootDh (parSegs ++ [leaf]) subDir f)
             (Internal.sortEntryNames rawNames).length (Internal.sortEntryNames rawNames) s1) with
         | mk pRes s2 =>
           rw [StateT.run] at hProc; rw [hRp] at hProc; dsimp only at hProc
@@ -519,23 +524,23 @@ theorem rmtreeDirAtM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
               traceFds_append hOut1.1 hFd2, confined_append hConf1 hConf2, hOut2⟩
           | ok u =>
             cases u
-            have hUn := walkDescendAuxM_trace hCap (fun _ => none)
+            have hUn := walkDescendAuxM_trace hCap (fun _ => (none : Option fd))
               (fun parDh _ tr => UnlinkTrace (some parDh) leaf.val.toUTF8 true tr)
               (fun e _ => nonLockErrOk e) (fun _ _ _ _ h => h) (fun _ _ h _ => h)
-              (fun parDh => (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).unlinkAt parDh leaf true)
+              (fun parDh => (SysBridge.mkRawDirOpsM files nextNonce).unlinkAt parDh leaf true)
               (fun parDh held s0 hW0 => by
                 have hU := dirOps_unlinkAt_trace hCap parDh leaf true held hW0
-                cases hRu : ((SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).unlinkAt parDh leaf true s0) with
+                cases hRu : ((SysBridge.mkRawDirOpsM files nextNonce).unlinkAt parDh leaf true s0) with
                 | mk uRes sX =>
                   simp only [StateT.run, hRu] at hU ⊢
                   obtain ⟨hWfX, hTmpX, trX, hStX, hFdX, hConfX, hOutX⟩ := hU
                   exact ⟨hWfX, by omega, trX, hStX, hConfX, by cases uRes with | ok u => cases u; exact ⟨hFdX, hOutX⟩ | error e => exact ⟨hFdX, hOutX.1⟩⟩)
-              true rootDh [rootDh] parSegs hWf2
-            cases hRu : (Internal.walkDescendM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootDh parSegs
-                (fun parDh => (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).unlinkAt parDh leaf true) s2) with
+              true rootDh [hidOf rootDh] parSegs hWf2
+            cases hRu : (Internal.walkDescendM (SysBridge.mkRawDirOpsM files nextNonce) rootDh parSegs
+                (fun parDh => (SysBridge.mkRawDirOpsM files nextNonce).unlinkAt parDh leaf true) s2) with
             | mk uRes s3 =>
-              have hRu' : Internal.walkDescendAuxM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) true rootDh parSegs
-                  (fun parDh => (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).unlinkAt parDh leaf true) s2 = (uRes, s3) := hRu
+              have hRu' : Internal.walkDescendAuxM (SysBridge.mkRawDirOpsM files nextNonce) true rootDh parSegs
+                  (fun parDh => (SysBridge.mkRawDirOpsM files nextNonce).unlinkAt parDh leaf true) s2 = (uRes, s3) := hRu
               rw [StateT.run] at hUn; rw [hRu'] at hUn; simp only [↓reduceIte] at hUn
               obtain ⟨hWf3, hTmp3, tr3, hSt3, hConf3, hOut3⟩ := hUn
               dsimp only; rw [hRu]; dsimp only

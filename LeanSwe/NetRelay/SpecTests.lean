@@ -1,5 +1,6 @@
 import Core.NondetTest
 import LeanSwe.LinuxSyscall.Common.Types
+import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Net.Types
 import LeanSwe.NetRelay.Types
 import LeanSwe.NetRelay.Model
@@ -62,7 +63,30 @@ private def scriptedRawOps : RelayRawOps (StateM ScriptState) :=
       , sendmsg := fun _ _ => noNet
       , recvmsg := fun _ _ => noNet
       , ioctl := fun _ _ _ => noNet }
-  , closeFd := fun fd => modify fun s => { s with closed := s.closed ++ [fd] } }
+  , files :=
+      { openat := fun _ _ _ _ => noNet
+      , openat2 := fun _ _ _ => noNet
+      , close := fun fd => do modify (fun s => { s with closed := s.closed ++ [fd] }); return .ok ()
+      , read := fun _ _ => noNet
+      , write := fun _ _ => noNet
+      , fstat := fun _ => noNet
+      , fstatat := fun _ _ _ => noNet
+      , faccessat := fun _ _ _ _ => noNet
+      , mkdirat := fun _ _ _ => noNet
+      , unlinkat := fun _ _ _ => noNet
+      , renameat2 := fun _ _ _ _ _ => noNet
+      , symlinkat := fun _ _ _ => noNet
+      , readlinkat := fun _ _ _ => noNet
+      , getdents64 := fun _ _ => noNet
+      , fchmodat := fun _ _ _ => noNet
+      , fchmod := fun _ _ => noNet
+      , flock := fun _ _ => noNet
+      , fcntl := fun _ _ => noNet
+      , fsync := fun _ => noNet
+      , getcwd := fun _ => noNet
+      , lseek := fun _ _ _ => noNet
+      , reopenReadOnly := fun _ => noNet
+      , dupStdio := fun _ => noNet } }
 
 /-- Pure `RingBuf` operations preserve arbitrary `rb.cap`, match the bounded FIFO list model, compact cleanly on `push`, and clamp unread slices to `rb.cap`. -/
 def test_netRelay_ringBuf_pushAndViewLaws

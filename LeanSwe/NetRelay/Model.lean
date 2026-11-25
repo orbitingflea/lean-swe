@@ -1,4 +1,5 @@
 import LeanSwe.LinuxSyscall.Common.Types
+import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Net.Types
 import LeanSwe.NetRelay.Types
 
@@ -97,7 +98,7 @@ inductive RelayRawReq where
 /-- Tagged return value for `RelayRawReq`. -/
 inductive RelayRawOut where
   /-- Result of `closeFd`. -/
-  | unit
+  | closed (res : Except Errno Unit)
   /-- Result of `recvfrom`. -/
   | bytes (res : Except Errno ByteArray)
   /-- Result of `sendto`. -/
@@ -108,7 +109,7 @@ inductive RelayRawOut where
 
 /-- Dispatch a `RelayRawReq` through a `RelayRawOps` capability bundle. -/
 def execRawStep {W : Type} (raw : RelayRawOps (StateM W)) : RelayRawReq → StateM W RelayRawOut
-  | .closeFd fd => do raw.closeFd fd; return .unit
+  | .closeFd fd => .closed <$> raw.files.close fd
   | .recvfrom fd maxBytes flags => .bytes <$> raw.net.recvfrom fd maxBytes flags
   | .sendto fd bs flags => .sent <$> raw.net.sendto fd bs flags
   | .shutdown fd how => .shut <$> raw.net.shutdown fd how
@@ -118,7 +119,7 @@ def allowedRawStep (s : RelayTraceState) (req : RelayRawReq) (out : RelayRawOut)
     (s' : RelayTraceState) : Prop :=
   s'.wf = true ∧
   match req, out with
-  | .closeFd fd, .unit =>
+  | .closeFd fd, .closed _ =>
     s'.closedFds = s.closedFds ++ [fd] ∧
       s'.rxLog = s.rxLog ∧ s'.txLog = s.txLog ∧
       s'.errLog = s.errLog ∧ s'.shutdownWrFds = s.shutdownWrFds

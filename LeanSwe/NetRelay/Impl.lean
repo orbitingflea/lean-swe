@@ -1,4 +1,5 @@
 import LeanSwe.LinuxSyscall.Common.Types
+import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Net.Types
 import LeanSwe.NetRelay.Types
 
@@ -167,9 +168,9 @@ def drainDeadPeerRx {m : Type → Type} [Monad m] {fd : Type}
       else if e == Errno.EAGAIN then return false
       else return true
 
-/-- Build a `RelayApi` bundle over arbitrary monadic raw socket and close capabilities. -/
+/-- Build a `RelayApi` bundle over arbitrary monadic raw socket and descriptor capabilities. -/
 def mkRelayApiM {m : Type → Type} [Monad m] (raw : RelayRawOps m) : RelayApi m :=
-  { closeOptFd := closeOptFd raw.closeFd
+  { closeOptFd := closeOptFd (fun fd => do let _ ← raw.files.close fd; pure ())
   , flushBytesNonblock := flushBytesNonblock raw.net
   , recvIntoRing := recvIntoRing raw.net
   , flushRingNonblock := flushRingNonblock raw.net

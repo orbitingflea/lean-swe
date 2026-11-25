@@ -1,5 +1,5 @@
 import LeanSwe.Fs.SysBridge
-import LeanSwe.Fs.Proofs.HealthyFilesBase
+import LeanSwe.Fs.Proofs.RefinesFilesFixed
 
 namespace LeanSwe.Fs.Proofs
 
@@ -203,36 +203,23 @@ theorem renderAbsRev_isAbsolute (rev : List String) :
   · simp only [↓reduceIte]
     rfl
 
-/-- Helper to unpack any single `FilesOpsM` method call from `Core.ObeysStep` over `HealthyFilesCapM`. -/
-theorem cap_method_step {W α : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
-    (req : FilesReq) (act : StateM W (Except Errno α)) (toOut : Except Errno α → FilesOutcome)
-    (hExec : execFilesReq cap.files req = toOut <$> act)
-    {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := act.run s
-    fsWorldWf (proj p.2) = true ∧
-    healthyStep (proj s).env req (toOut p.1) = some (proj p.2).env ∧
-    (proj p.2).tempSeq = (proj s).tempSeq := by
-  have h := cap_fileReq_raw hCap req hWf
-  rw [hExec] at h
-  simpa [Functor.map, StateT.map, StateT.run] using h
-
-/-- `SysBridge.closeQuiet` always executes `.close h`, popping `h` from `h :: held`, and stays confined. -/
-theorem closeQuiet_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
-    (h : HandleId) (held : List HandleId) {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := (SysBridge.closeQuiet cap.files h).run s
+/-- `SysBridge.closeQuiet` always executes `.close (hidOf h)`, popping `hidOf h` from `hidOf h :: held`, and stays confined. -/
+theorem closeQuiet_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
+    (h : fd) (held : List HandleId) {s : W} (hWf : fsWorldWf (proj s) = true) :
+    let p := (SysBridge.closeQuiet files h).run s
     fsWorldWf (proj p.2) = true ∧
     (proj p.2).tempSeq = (proj s).tempSeq ∧
     ∃ co,
-      HealthyFilesSteps (proj s).env [(.close h, co)] (proj p.2).env ∧
-      TraceFds (h :: held) [(.close h, co)] held ∧
-      SubtreeConfinedReq (.close h) := by
-  have hC := cap_method_step hCap (.close h) (cap.files.close h) outcomeOfUnit rfl hWf
-  cases hR : cap.files.close h s with
+      HealthyFilesSteps (proj s).env [(.close (hidOf h), co)] (proj p.2).env ∧
+      TraceFds (hidOf h :: held) [(.close (hidOf h), co)] held ∧
+      SubtreeConfinedReq (.close (hidOf h)) := by
+  have hC := cap_unit_step hCap (.close h) (files.close h) rfl hWf
+  cases hR : files.close h s with
   | mk res s1 =>
     have hC' : fsWorldWf (proj s1) = true ∧
-        healthyStep (proj s).env (.close h) (outcomeOfUnit res) = some (proj s1).env ∧
+        healthyStep (proj s).env (.close (hidOf h)) (outcomeOfUnit res) = some (proj s1).env ∧
         (proj s1).tempSeq = (proj s).tempSeq := by
       simpa [StateT.run, hR] using hC
     unfold SysBridge.closeQuiet
@@ -240,31 +227,32 @@ theorem closeQuiet_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCa
     refine ⟨hC'.1, hC'.2.2, outcomeOfUnit res, healthyFilesSteps_single hC'.2.1, ?_, trivial⟩
     exact traceFds_close_head (by cases res <;> rfl) rfl
 
-/-- `SysBridge.closeCheck` always executes `.close h`, popping `h` from `h :: held`, and yields `nonLockErrOk` on error. -/
-theorem closeCheck_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
-    (h : HandleId) (path? : Option String) (held : List HandleId) {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := (SysBridge.closeCheck cap.files h path?).run s
+/-- `SysBridge.closeCheck` always executes `.close (hidOf h)`, popping `hidOf h` from `hidOf h :: held`, and yields `nonLockErrOk` on error. -/
+theorem closeCheck_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
+    (h : fd) (path? : Option String) (held : List HandleId) {s : W} (hWf : fsWorldWf (proj s) = true) :
+    let p := (SysBridge.closeCheck files h path?).run s
     fsWorldWf (proj p.2) = true ∧
     (proj p.2).tempSeq = (proj s).tempSeq ∧
     (match p.1 with | .ok () => True | .error e => nonLockErrOk e) ∧
     ∃ co,
-      HealthyFilesSteps (proj s).env [(.close h, co)] (proj p.2).env ∧
-      TraceFds (h :: held) [(.close h, co)] held ∧
-      SubtreeConfinedReq (.close h) := by
-  have hC := cap_method_step hCap (.close h) (cap.files.close h) outcomeOfUnit rfl hWf
-  cases hR : cap.files.close h s with
+      HealthyFilesSteps (proj s).env [(.close (hidOf h), co)] (proj p.2).env ∧
+      TraceFds (hidOf h :: held) [(.close (hidOf h), co)] held ∧
+      SubtreeConfinedReq (.close (hidOf h)) := by
+  have hC := cap_unit_step hCap (.close h) (files.close h) rfl hWf
+  cases hR : files.close h s with
   | mk res s1 =>
     have hC' : fsWorldWf (proj s1) = true ∧
-        healthyStep (proj s).env (.close h) (outcomeOfUnit res) = some (proj s1).env ∧
+        healthyStep (proj s).env (.close (hidOf h)) (outcomeOfUnit res) = some (proj s1).env ∧
         (proj s1).tempSeq = (proj s).tempSeq := by
       simpa [StateT.run, hR] using hC
     unfold SysBridge.closeCheck
     simp only [Bind.bind, StateT.bind, StateT.run, hR]
     have hPost : ∃ co,
-        HealthyFilesSteps (proj s).env [(.close h, co)] (proj s1).env ∧
-        TraceFds (h :: held) [(.close h, co)] held ∧
-        SubtreeConfinedReq (.close h) :=
+        HealthyFilesSteps (proj s).env [(.close (hidOf h), co)] (proj s1).env ∧
+        TraceFds (hidOf h :: held) [(.close (hidOf h), co)] held ∧
+        SubtreeConfinedReq (.close (hidOf h)) :=
       ⟨outcomeOfUnit res, healthyFilesSteps_single hC'.2.1,
        traceFds_close_head (by cases res <;> rfl) rfl, trivial⟩
     cases res with
@@ -279,44 +267,45 @@ theorem closeCheck_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCa
       · simp only [hEin, Bool.false_eq_true, ↓reduceIte, Pure.pure, StateT.pure]
         exact ⟨hC'.1, hC'.2.2, nonLockErrOk_mapErrno _ _ _, hPost⟩
 
-/-- Trace specification for `SysBridge.readAllChunksLoop`: reads exact `readBytesOn h trRead` to 0-byte EOF and always closes `h`. -/
-theorem readAllChunksLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
-    (h : HandleId) (path : String) (held : List HandleId)
+/-- Trace specification for `SysBridge.readAllChunksLoop`: reads exact `readBytesOn (hidOf h) trRead` to 0-byte EOF and always closes `h`. -/
+theorem readAllChunksLoop_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
+    (h : fd) (path : String) (held : List HandleId)
     (chunks : Array ByteArray) (total fuel : Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := (SysBridge.readAllChunksLoop cap.files h path chunks total fuel).run s
+    let p := (SysBridge.readAllChunksLoop files h path chunks total fuel).run s
     fsWorldWf (proj p.2) = true ∧
     (proj p.2).tempSeq = (proj s).tempSeq ∧
     ∃ trRead trClose,
       HealthyFilesSteps (proj s).env (trRead ++ trClose) (proj p.2).env ∧
-      TraceFds (h :: held) trRead (h :: held) ∧
-      TraceFds (h :: held) trClose held ∧
+      TraceFds (hidOf h :: held) trRead (hidOf h :: held) ∧
+      TraceFds (hidOf h :: held) trClose held ∧
       (∀ step ∈ trRead ++ trClose, SubtreeConfinedReq step.1) ∧
-      (∃ co, trClose = [(.close h, co)]) ∧
+      (∃ co, trClose = [(.close (hidOf h), co)]) ∧
       match p.1 with
       | .ok bs =>
-        (∃ eof, (.read h 65536, .bytes eof) ∈ trRead ∧ eof.size = 0) ∧
-        chunks.toList.foldl (· ++ ·) ByteArray.empty ++ readBytesOn h trRead = bs
+        (∃ eof, (.read (hidOf h) 65536, .bytes eof) ∈ trRead ∧ eof.size = 0) ∧
+        chunks.toList.foldl (· ++ ·) ByteArray.empty ++ readBytesOn (hidOf h) trRead = bs
       | .error e => nonLockErrOk e := by
   induction fuel generalizing chunks total s with
   | zero =>
     unfold SysBridge.readAllChunksLoop
     have hQ := closeQuiet_trace hCap h held hWf
-    cases hR : (SysBridge.closeQuiet cap.files h s) with
+    cases hR : (SysBridge.closeQuiet files h s) with
     | mk u s1 =>
       rw [StateT.run] at hQ; rw [hR] at hQ; dsimp only at hQ
       obtain ⟨hWf1, hTmp1, co, hSt, hFd, hConf⟩ := hQ
       simp only [Bind.bind, StateT.bind, StateT.run, Pure.pure, StateT.pure, hR]
-      exact ⟨hWf1, hTmp1, [], [(.close h, co)], hSt, TraceFds.nil _, hFd,
+      exact ⟨hWf1, hTmp1, [], [(.close (hidOf h), co)], hSt, TraceFds.nil _, hFd,
         confined_single hConf, ⟨co, rfl⟩, nonLockErrOk_mapErrno _ _ _⟩
   | succ f ih =>
     unfold SysBridge.readAllChunksLoop
-    have hRd := cap_method_step hCap (.read h SysBridge.READ_CHUNK_SIZE)
-      (cap.files.read h SysBridge.READ_CHUNK_SIZE) outcomeOfBytes rfl hWf
-    cases hR : cap.files.read h SysBridge.READ_CHUNK_SIZE s with
+    have hRd := cap_bytes_step hCap (.read h SysBridge.READ_CHUNK_SIZE)
+      (files.read h SysBridge.READ_CHUNK_SIZE) rfl hWf
+    cases hR : files.read h SysBridge.READ_CHUNK_SIZE s with
     | mk res s1 =>
       have hRd' : fsWorldWf (proj s1) = true ∧
-          healthyStep (proj s).env (.read h 65536) (outcomeOfBytes res) = some (proj s1).env ∧
+          healthyStep (proj s).env (.read (hidOf h) 65536) (outcomeOfBytes res) = some (proj s1).env ∧
           (proj s1).tempSeq = (proj s).tempSeq := by
         rw [StateT.run] at hRd; rw [hR] at hRd; simpa [SysBridge.READ_CHUNK_SIZE] using hRd
       simp only [Bind.bind, StateT.bind, StateT.run, hR]
@@ -325,11 +314,11 @@ theorem readAllChunksLoop_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
         by_cases hRetry : (e == Errno.EINTR || e == Errno.EAGAIN) = true
         · simp only [hRetry, ↓reduceIte]
           have hIh := ih chunks total hRd'.1
-          cases hO : (SysBridge.readAllChunksLoop cap.files h path chunks total f s1) with
+          cases hO : (SysBridge.readAllChunksLoop files h path chunks total f s1) with
           | mk r2 s2 =>
             simp only [StateT.run, hO] at hIh ⊢
             obtain ⟨hWf2, hTmp2, trR, trC, hSt2, hFdR, hFdC, hConf2, hCeq, hOut2⟩ := hIh
-            refine ⟨hWf2, hTmp2.trans hRd'.2.2, (.read h 65536, .err e) :: trR, trC,
+            refine ⟨hWf2, hTmp2.trans hRd'.2.2, (.read (hidOf h) 65536, .err e) :: trR, trC,
               HealthyFilesSteps.cons _ _ _ hRd'.2.1 hSt2,
               TraceFds.step (by rfl) hFdR, hFdC, confined_cons trivial hConf2, hCeq, ?_⟩
             cases r2 with
@@ -337,20 +326,20 @@ theorem readAllChunksLoop_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
             | ok bs =>
               obtain ⟨⟨eof, hMem, hZ⟩, hEq⟩ := hOut2
               refine ⟨⟨eof, List.mem_cons_of_mem _ hMem, hZ⟩, ?_⟩
-              have hStepMiss : readBytesOn h [(.read h 65536, .err e)] = ByteArray.empty :=
-                readBytesOn_step_miss h _ (fun _ _ hc => by cases hc)
-              have hApp : readBytesOn h ((.read h 65536, .err e) :: trR) = readBytesOn h trR := by
-                change readBytesOn h ([(.read h 65536, .err e)] ++ trR) = _
+              have hStepMiss : readBytesOn (hidOf h) [(.read (hidOf h) 65536, .err e)] = ByteArray.empty :=
+                readBytesOn_step_miss (hidOf h) _ (fun _ _ hc => by cases hc)
+              have hApp : readBytesOn (hidOf h) ((.read (hidOf h) 65536, .err e) :: trR) = readBytesOn (hidOf h) trR := by
+                change readBytesOn (hidOf h) ([(.read (hidOf h) 65536, .err e)] ++ trR) = _
                 rw [readBytesOn_append, hStepMiss, byteArray_empty_append]
               rw [hApp]; exact hEq
         · simp only [hRetry, Bool.false_eq_true, ↓reduceIte]
           have hQ := closeQuiet_trace hCap h held hRd'.1
-          cases hRq : (SysBridge.closeQuiet cap.files h s1) with
+          cases hRq : (SysBridge.closeQuiet files h s1) with
           | mk u s2 =>
             rw [StateT.run] at hQ; rw [hRq] at hQ; dsimp only at hQ
             obtain ⟨hWf2, hTmp2, co, hStC, hFdC, _⟩ := hQ
             simp only [Bind.bind, StateT.bind, Pure.pure, StateT.pure, hRq]
-            exact ⟨hWf2, hTmp2.trans hRd'.2.2, [(.read h 65536, .err e)], [(.close h, co)],
+            exact ⟨hWf2, hTmp2.trans hRd'.2.2, [(.read (hidOf h) 65536, .err e)], [(.close (hidOf h), co)],
               HealthyFilesSteps.cons _ _ _ hRd'.2.1 hStC, traceFds_nonFd_step rfl rfl, hFdC,
               confined_cons trivial (confined_single trivial), ⟨co, rfl⟩, nonLockErrOk_mapErrno _ _ _⟩
       | ok chunk =>
@@ -361,33 +350,33 @@ theorem readAllChunksLoop_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
             apply ByteArray.ext
             exact Array.eq_empty_of_size_eq_zero hZ0
           have hCc := closeCheck_trace hCap h (some path) held hRd'.1
-          cases hRc : (SysBridge.closeCheck cap.files h (some path) s1) with
+          cases hRc : (SysBridge.closeCheck files h (some path) s1) with
           | mk cres s2 =>
             rw [StateT.run] at hCc; rw [hRc] at hCc; dsimp only at hCc
             obtain ⟨hWf2, hTmp2, hErrOk, co, hStC, hFdC, _⟩ := hCc
             simp only [Bind.bind, StateT.bind, hRc]
-            have hSteps : HealthyFilesSteps (proj s).env ([(.read h 65536, .bytes chunk)] ++ [(.close h, co)]) (proj s2).env :=
+            have hSteps : HealthyFilesSteps (proj s).env ([(.read (hidOf h) 65536, .bytes chunk)] ++ [(.close (hidOf h), co)]) (proj s2).env :=
               HealthyFilesSteps.cons _ _ _ hRd'.2.1 hStC
-            have hConf := confined_cons (s := (.read h 65536, .bytes chunk)) trivial (confined_single (s := (.close h, co)) trivial)
+            have hConf := confined_cons (s := (.read (hidOf h) 65536, .bytes chunk)) trivial (confined_single (s := (.close (hidOf h), co)) trivial)
             cases cres with
             | error ce =>
               simp only [Pure.pure, StateT.pure]
-              exact ⟨hWf2, hTmp2.trans hRd'.2.2, [(.read h 65536, .bytes chunk)], [(.close h, co)],
+              exact ⟨hWf2, hTmp2.trans hRd'.2.2, [(.read (hidOf h) 65536, .bytes chunk)], [(.close (hidOf h), co)],
                 hSteps, traceFds_nonFd_step rfl rfl, hFdC, hConf, ⟨co, rfl⟩, hErrOk⟩
             | ok u =>
               cases u
               simp only [Pure.pure, StateT.pure]
-              refine ⟨hWf2, hTmp2.trans hRd'.2.2, [(.read h 65536, .bytes chunk)], [(.close h, co)],
+              refine ⟨hWf2, hTmp2.trans hRd'.2.2, [(.read (hidOf h) 65536, .bytes chunk)], [(.close (hidOf h), co)],
                 hSteps, traceFds_nonFd_step rfl rfl, hFdC, hConf, ⟨co, rfl⟩,
                 ⟨chunk, List.mem_singleton.mpr rfl, hZ0⟩, ?_⟩
               rw [readBytesOn_read_hit, hChunkEmp, byteArray_append_empty, concatChunks_eq_foldl]
         · simp only [hZ, Bool.false_eq_true, ↓reduceIte]
           have hIh := ih (chunks.push chunk) (total + chunk.size) hRd'.1
-          cases hO : (SysBridge.readAllChunksLoop cap.files h path (chunks.push chunk) (total + chunk.size) f s1) with
+          cases hO : (SysBridge.readAllChunksLoop files h path (chunks.push chunk) (total + chunk.size) f s1) with
           | mk r2 s2 =>
             simp only [StateT.run, hO] at hIh ⊢
             obtain ⟨hWf2, hTmp2, trR, trC, hSt2, hFdR, hFdC, hConf2, hCeq, hOut2⟩ := hIh
-            refine ⟨hWf2, hTmp2.trans hRd'.2.2, (.read h 65536, .bytes chunk) :: trR, trC,
+            refine ⟨hWf2, hTmp2.trans hRd'.2.2, (.read (hidOf h) 65536, .bytes chunk) :: trR, trC,
               HealthyFilesSteps.cons _ _ _ hRd'.2.1 hSt2,
               TraceFds.step (by rfl) hFdR, hFdC, confined_cons trivial hConf2, hCeq, ?_⟩
             cases r2 with
@@ -395,96 +384,97 @@ theorem readAllChunksLoop_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
             | ok bs =>
               obtain ⟨⟨eof, hMem, hEz⟩, hEq⟩ := hOut2
               refine ⟨⟨eof, List.mem_cons_of_mem _ hMem, hEz⟩, ?_⟩
-              have hApp : readBytesOn h ((.read h 65536, .bytes chunk) :: trR) = chunk ++ readBytesOn h trR := by
-                change readBytesOn h ([(.read h 65536, .bytes chunk)] ++ trR) = _
+              have hApp : readBytesOn (hidOf h) ((.read (hidOf h) 65536, .bytes chunk) :: trR) = chunk ++ readBytesOn (hidOf h) trR := by
+                change readBytesOn (hidOf h) ([(.read (hidOf h) 65536, .bytes chunk)] ++ trR) = _
                 rw [readBytesOn_append, readBytesOn_read_hit]
               rw [hApp, ← byteArray_append_assoc]
               simpa [Array.toList_push, List.foldl_append] using hEq
 
 /-- Trace specification for `SysBridge.readRegularFd`: validates `.reg` via `fstat`, clears `O_NONBLOCK`, reads exact payload to EOF, and closes `h`. -/
-theorem readRegularFd_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
-    (h : HandleId) (path : String) (held : List HandleId) (streamFuel : Nat)
+theorem readRegularFd_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
+    (h : fd) (path : String) (held : List HandleId) (streamFuel : Nat)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := (SysBridge.readRegularFd cap.files h path streamFuel).run s
+    let p := (SysBridge.readRegularFd files h path streamFuel).run s
     fsWorldWf (proj p.2) = true ∧
     (proj p.2).tempSeq = (proj s).tempSeq ∧
     ∃ trBody trClose,
       HealthyFilesSteps (proj s).env (trBody ++ trClose) (proj p.2).env ∧
-      TraceFds (h :: held) trBody (h :: held) ∧
-      TraceFds (h :: held) trClose held ∧
+      TraceFds (hidOf h :: held) trBody (hidOf h :: held) ∧
+      TraceFds (hidOf h :: held) trClose held ∧
       (∀ step ∈ trBody ++ trClose, SubtreeConfinedReq step.1) ∧
-      (∃ co, trClose = [(.close h, co)]) ∧
+      (∃ co, trClose = [(.close (hidOf h), co)]) ∧
       match p.1 with
       | .ok bs =>
-        (∃ rawSt, (.fstat h, .statted rawSt) ∈ trBody ∧ rawSt.kind = .reg) ∧
-        (∃ eof, (.read h 65536, .bytes eof) ∈ trBody ∧ eof.size = 0) ∧
-        readBytesOn h trBody = bs
+        (∃ rawSt, (.fstat (hidOf h), .statted rawSt) ∈ trBody ∧ rawSt.kind = .reg) ∧
+        (∃ eof, (.read (hidOf h) 65536, .bytes eof) ∈ trBody ∧ eof.size = 0) ∧
+        readBytesOn (hidOf h) trBody = bs
       | .error e => nonLockErrOk e := by
   unfold SysBridge.readRegularFd
-  have hFs := cap_method_step hCap (.fstat h) (cap.files.fstat h) outcomeOfStatted rfl hWf
-  cases hR : cap.files.fstat h s with
+  have hFs := cap_statted_step hCap (.fstat h) (files.fstat h) rfl hWf
+  cases hR : files.fstat h s with
   | mk res s1 =>
     have hFs' : fsWorldWf (proj s1) = true ∧
-        healthyStep (proj s).env (.fstat h) (outcomeOfStatted res) = some (proj s1).env ∧
+        healthyStep (proj s).env (.fstat (hidOf h)) (outcomeOfStatted res) = some (proj s1).env ∧
         (proj s1).tempSeq = (proj s).tempSeq := by
       simpa [StateT.run, hR] using hFs
     simp only [Bind.bind, StateT.bind, StateT.run, hR]
     cases res with
     | error e =>
       have hQ := closeQuiet_trace hCap h held hFs'.1
-      cases hRq : (SysBridge.closeQuiet cap.files h s1) with
+      cases hRq : (SysBridge.closeQuiet files h s1) with
       | mk u s2 =>
         rw [StateT.run] at hQ; rw [hRq] at hQ; dsimp only at hQ
         obtain ⟨hWf2, hTmp2, co, hStC, hFdC, _⟩ := hQ
         simp only [Bind.bind, StateT.bind, Pure.pure, StateT.pure, hRq]
-        exact ⟨hWf2, hTmp2.trans hFs'.2.2, [(.fstat h, .err e)], [(.close h, co)],
+        exact ⟨hWf2, hTmp2.trans hFs'.2.2, [(.fstat (hidOf h), .err e)], [(.close (hidOf h), co)],
           HealthyFilesSteps.cons _ _ _ hFs'.2.1 hStC, traceFds_nonFd_step rfl rfl, hFdC,
           confined_cons trivial (confined_single trivial), ⟨co, rfl⟩, nonLockErrOk_mapErrno _ _ _⟩
     | ok st =>
       by_cases hDir : (st.kind == .dir) = true
       · simp only [hDir, ↓reduceIte]
         have hQ := closeQuiet_trace hCap h held hFs'.1
-        cases hRq : (SysBridge.closeQuiet cap.files h s1) with
+        cases hRq : (SysBridge.closeQuiet files h s1) with
         | mk u s2 =>
           rw [StateT.run] at hQ; rw [hRq] at hQ; dsimp only at hQ
           obtain ⟨hWf2, hTmp2, co, hStC, hFdC, _⟩ := hQ
           simp only [Bind.bind, StateT.bind, Pure.pure, StateT.pure, hRq]
-          exact ⟨hWf2, hTmp2.trans hFs'.2.2, [(.fstat h, .statted st)], [(.close h, co)],
+          exact ⟨hWf2, hTmp2.trans hFs'.2.2, [(.fstat (hidOf h), .statted st)], [(.close (hidOf h), co)],
             HealthyFilesSteps.cons _ _ _ hFs'.2.1 hStC, traceFds_nonFd_step rfl rfl, hFdC,
             confined_cons trivial (confined_single trivial), ⟨co, rfl⟩, nonLockErrOk_mapErrno _ _ _⟩
       · by_cases hNReg : (st.kind != .reg) = true
         · simp only [hDir, Bool.false_eq_true, ↓reduceIte, hNReg]
           have hQ := closeQuiet_trace hCap h held hFs'.1
-          cases hRq : (SysBridge.closeQuiet cap.files h s1) with
+          cases hRq : (SysBridge.closeQuiet files h s1) with
           | mk u s2 =>
             rw [StateT.run] at hQ; rw [hRq] at hQ; dsimp only at hQ
             obtain ⟨hWf2, hTmp2, co, hStC, hFdC, _⟩ := hQ
             simp only [Bind.bind, StateT.bind, Pure.pure, StateT.pure, hRq]
-            exact ⟨hWf2, hTmp2.trans hFs'.2.2, [(.fstat h, .statted st)], [(.close h, co)],
+            exact ⟨hWf2, hTmp2.trans hFs'.2.2, [(.fstat (hidOf h), .statted st)], [(.close (hidOf h), co)],
               HealthyFilesSteps.cons _ _ _ hFs'.2.1 hStC, traceFds_nonFd_step rfl rfl, hFdC,
               confined_cons trivial (confined_single trivial), ⟨co, rfl⟩, nonLockErrOk_mapErrno _ _ _⟩
         · simp only [hDir, Bool.false_eq_true, ↓reduceIte, hNReg]
           have hKindReg : st.kind = .reg := by
             cases hK : st.kind <;> rw [hK] at hNReg <;> first | rfl | exact absurd (by decide) hNReg
-          have hFc := cap_method_step hCap (.fcntl h .getFl) (cap.files.fcntl h .getFl) outcomeOfU32 rfl hFs'.1
-          cases hRf : cap.files.fcntl h .getFl s1 with
+          have hFc := cap_u32_step hCap (.fcntl h .getFl) (files.fcntl h .getFl) rfl hFs'.1
+          cases hRf : files.fcntl h .getFl s1 with
           | mk fres s2 =>
             have hFc' : fsWorldWf (proj s2) = true ∧
-                healthyStep (proj s1).env (.fcntl h .getFl) (outcomeOfU32 fres) = some (proj s2).env ∧
+                healthyStep (proj s1).env (.fcntl (hidOf h) .getFl) (outcomeOfU32 fres) = some (proj s2).env ∧
                 (proj s2).tempSeq = (proj s1).tempSeq := by
               simpa [StateT.run, hRf] using hFc
             simp only [Bind.bind, StateT.bind, hRf]
             cases fres with
             | error fe =>
               have hQ := closeQuiet_trace hCap h held hFc'.1
-              cases hRq : (SysBridge.closeQuiet cap.files h s2) with
+              cases hRq : (SysBridge.closeQuiet files h s2) with
               | mk u s3 =>
                 rw [StateT.run] at hQ; rw [hRq] at hQ; dsimp only at hQ
                 obtain ⟨hWf3, hTmp3, co, hStC, hFdC, _⟩ := hQ
                 simp only [Bind.bind, StateT.bind, Pure.pure, StateT.pure, hRq]
                 exact ⟨hWf3, hTmp3.trans (hFc'.2.2.trans hFs'.2.2),
-                  [(.fstat h, .statted st), (.fcntl h .getFl, .err fe)], [(.close h, co)],
+                  [(.fstat (hidOf h), .statted st), (.fcntl (hidOf h) .getFl, .err fe)], [(.close (hidOf h), co)],
                   HealthyFilesSteps.cons _ _ _ hFs'.2.1 (HealthyFilesSteps.cons _ _ _ hFc'.2.1 hStC),
                   TraceFds.step (by rfl) (traceFds_nonFd_step rfl rfl), hFdC,
                   confined_cons trivial (confined_cons trivial (confined_single trivial)),
@@ -495,27 +485,27 @@ theorem readRegularFd_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFile
                   fsWorldWf (proj sX) = true →
                   (proj sX).tempSeq = (proj s).tempSeq →
                   HealthyFilesSteps (proj s).env pre (proj sX).env →
-                  TraceFds (h :: held) pre (h :: held) →
+                  TraceFds (hidOf h :: held) pre (hidOf h :: held) →
                   (∀ step ∈ pre, SubtreeConfinedReq step.1) →
-                  (.fstat h, .statted st) ∈ pre →
-                  readBytesOn h pre = ByteArray.empty →
-                  let p := (SysBridge.readAllChunksLoop cap.files h path #[] 0 streamFuel).run sX
+                  (.fstat (hidOf h), .statted st) ∈ pre →
+                  readBytesOn (hidOf h) pre = ByteArray.empty →
+                  let p := (SysBridge.readAllChunksLoop files h path #[] 0 streamFuel).run sX
                   fsWorldWf (proj p.2) = true ∧ (proj p.2).tempSeq = (proj s).tempSeq ∧
                   ∃ trBody trClose,
                     HealthyFilesSteps (proj s).env (trBody ++ trClose) (proj p.2).env ∧
-                    TraceFds (h :: held) trBody (h :: held) ∧
-                    TraceFds (h :: held) trClose held ∧
+                    TraceFds (hidOf h :: held) trBody (hidOf h :: held) ∧
+                    TraceFds (hidOf h :: held) trClose held ∧
                     (∀ step ∈ trBody ++ trClose, SubtreeConfinedReq step.1) ∧
-                    (∃ co, trClose = [(.close h, co)]) ∧
+                    (∃ co, trClose = [(.close (hidOf h), co)]) ∧
                     match p.1 with
                     | .ok bs =>
-                      (∃ rawSt, (.fstat h, .statted rawSt) ∈ trBody ∧ rawSt.kind = .reg) ∧
-                      (∃ eof, (.read h 65536, .bytes eof) ∈ trBody ∧ eof.size = 0) ∧
-                      readBytesOn h trBody = bs
+                      (∃ rawSt, (.fstat (hidOf h), .statted rawSt) ∈ trBody ∧ rawSt.kind = .reg) ∧
+                      (∃ eof, (.read (hidOf h) 65536, .bytes eof) ∈ trBody ∧ eof.size = 0) ∧
+                      readBytesOn (hidOf h) trBody = bs
                     | .error e => nonLockErrOk e := by
                 intro sX pre hWfX hTmpX hStX hFdX hConfX hMemFs hEmptyPre
                 have hRdLoop := readAllChunksLoop_trace hCap h path held #[] 0 streamFuel hWfX
-                cases hO : (SysBridge.readAllChunksLoop cap.files h path #[] 0 streamFuel sX) with
+                cases hO : (SysBridge.readAllChunksLoop files h path #[] 0 streamFuel sX) with
                 | mk rF sF =>
                   simp only [StateT.run, hO] at hRdLoop ⊢
                   obtain ⟨hWfF, hTmpF, trR, trC, hStF, hFdR, hFdC, hConfF, hCeq, hOutF⟩ := hRdLoop
@@ -531,35 +521,35 @@ theorem readRegularFd_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFile
                       ⟨eof, List.mem_append_right _ hMemE, hEz⟩, ?_⟩
                     rw [readBytesOn_append, hEmptyPre, byteArray_empty_append]
                     simpa [byteArray_empty_append] using hEq
-              have hPre2 : HealthyFilesSteps (proj s).env [(.fstat h, .statted st), (.fcntl h .getFl, .u32 fl)] (proj s2).env :=
+              have hPre2 : HealthyFilesSteps (proj s).env [(.fstat (hidOf h), .statted st), (.fcntl (hidOf h) .getFl, .u32 fl)] (proj s2).env :=
                 HealthyFilesSteps.cons _ _ _ hFs'.2.1 (healthyFilesSteps_single hFc'.2.1)
-              have hFd2 : TraceFds (h :: held) [(.fstat h, .statted st), (.fcntl h .getFl, .u32 fl)] (h :: held) :=
+              have hFd2 : TraceFds (hidOf h :: held) [(.fstat (hidOf h), .statted st), (.fcntl (hidOf h) .getFl, .u32 fl)] (hidOf h :: held) :=
                 TraceFds.step (by rfl) (traceFds_nonFd_step rfl rfl)
-              have hConf2 := confined_cons (s := (.fstat h, .statted st)) trivial
-                (confined_single (s := (.fcntl h .getFl, .u32 fl)) trivial)
-              have hRdEmpty2 : readBytesOn h [(.fstat h, .statted st), (.fcntl h .getFl, .u32 fl)] = ByteArray.empty := rfl
+              have hConf2 := confined_cons (s := (.fstat (hidOf h), .statted st)) trivial
+                (confined_single (s := (.fcntl (hidOf h) .getFl, .u32 fl)) trivial)
+              have hRdEmpty2 : readBytesOn (hidOf h) [(.fstat (hidOf h), .statted st), (.fcntl (hidOf h) .getFl, .u32 fl)] = ByteArray.empty := rfl
               by_cases hNb : ((fl &&& ((1 : UInt32) <<< 8)) != 0) = true
               · simp only [hNb, ↓reduceIte]
-                have hSet := cap_method_step hCap (.fcntl h (.setFl false ((fl &&& ((1 : UInt32) <<< 5)) != 0)))
-                  (cap.files.fcntl h (.setFl false ((fl &&& ((1 : UInt32) <<< 5)) != 0))) outcomeOfU32 rfl hFc'.1
-                cases hRs : cap.files.fcntl h (.setFl false ((fl &&& ((1 : UInt32) <<< 5)) != 0)) s2 with
+                have hSet := cap_u32_step hCap (.fcntl h (.setFl false ((fl &&& ((1 : UInt32) <<< 5)) != 0)))
+                  (files.fcntl h (.setFl false ((fl &&& ((1 : UInt32) <<< 5)) != 0))) rfl hFc'.1
+                cases hRs : files.fcntl h (.setFl false ((fl &&& ((1 : UInt32) <<< 5)) != 0)) s2 with
                 | mk sres s3 =>
                   have hSet' : fsWorldWf (proj s3) = true ∧
-                      healthyStep (proj s2).env (.fcntl h (.setFl false ((fl &&& ((1 : UInt32) <<< 5)) != 0))) (outcomeOfU32 sres) = some (proj s3).env ∧
+                      healthyStep (proj s2).env (.fcntl (hidOf h) (.setFl false ((fl &&& ((1 : UInt32) <<< 5)) != 0))) (outcomeOfU32 sres) = some (proj s3).env ∧
                       (proj s3).tempSeq = (proj s2).tempSeq := by
                     rw [StateT.run] at hSet; rw [hRs] at hSet; exact hSet
                   simp only [Bind.bind, StateT.bind, hRs]
                   cases sres with
                   | error se =>
                     have hQ := closeQuiet_trace hCap h held hSet'.1
-                    cases hRq : (SysBridge.closeQuiet cap.files h s3) with
+                    cases hRq : (SysBridge.closeQuiet files h s3) with
                     | mk u s4 =>
                       rw [StateT.run] at hQ; rw [hRq] at hQ; dsimp only at hQ
                       obtain ⟨hWf4, hTmp4, co, hStC, hFdC, _⟩ := hQ
                       simp only [Bind.bind, StateT.bind, Pure.pure, StateT.pure, hRq]
                       exact ⟨hWf4, hTmp4.trans (hSet'.2.2.trans (hFc'.2.2.trans hFs'.2.2)),
-                        [(.fstat h, .statted st), (.fcntl h .getFl, .u32 fl),
-                         (.fcntl h (.setFl false ((fl &&& ((1 : UInt32) <<< 5)) != 0)), .err se)], [(.close h, co)],
+                        [(.fstat (hidOf h), .statted st), (.fcntl (hidOf h) .getFl, .u32 fl),
+                         (.fcntl (hidOf h) (.setFl false ((fl &&& ((1 : UInt32) <<< 5)) != 0)), .err se)], [(.close (hidOf h), co)],
                         HealthyFilesSteps.cons _ _ _ hFs'.2.1 (HealthyFilesSteps.cons _ _ _ hFc'.2.1
                           (HealthyFilesSteps.cons _ _ _ hSet'.2.1 hStC)),
                         TraceFds.step (by rfl) (TraceFds.step (by rfl) (traceFds_nonFd_step rfl rfl)),

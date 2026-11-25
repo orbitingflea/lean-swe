@@ -8,14 +8,14 @@ open LeanSwe.Fs
 open LeanSwe.Fs.Model
 
 /-- Confined step refinement for `SubtreeOpReq.withFileLock`. -/
-theorem subtree_withFileLock_step {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+theorem subtree_withFileLock_step {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
     (rootPath : String) (rel : RelPath) (mode : LockMode) (createIfMissing : Bool)
     (actRes : Except FsError Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let r := (execSubtreeStep (Internal.mkSubtreeOpenerFromHealthyFilesM cap) ⟨rootPath, .withFileLock rel mode createIfMissing actRes⟩).run s
+    let r := (execSubtreeStep (Internal.mkSubtreeOpenerM (SysBridge.mkRawDirOpsM files nextNonce)) ⟨rootPath, .withFileLock rel mode createIfMissing actRes⟩).run s
     allowedSubtreeStep (proj s) ⟨rootPath, .withFileLock rel mode createIfMissing actRes⟩ r.1 (proj r.2) := by
-  simp only [execSubtreeStep, Internal.mkSubtreeOpenerFromHealthyFilesM, Internal.mkSubtreeOpenerM,
-    Functor.map, StateT.map, StateT.run]
+  simp only [execSubtreeStep, Internal.mkSubtreeOpenerM, Functor.map, StateT.map, StateT.run]
   have hW := withSubtreeM_trace hCap rootPath
     (fun v _ trInner =>
       actRes = .ok v ∧
@@ -44,14 +44,14 @@ theorem subtree_withFileLock_step {W : Type} {proj : W → FsWorld} {cap : Healt
           (fun parDh h tr =>
             ∃ rawSt fl modeArg trO trL,
               tr = trO ++ trL ∧ fl.access = .rdonly ∧ fl.nofollow = true ∧ fl.cloexec = true ∧ fl.nonblock = true ∧
-              (.openat (some parDh) pair.2.val.toUTF8 fl modeArg, .opened h) ∈ trO ∧
-              (.fstat h, .statted rawSt) ∈ trL ∧ rawSt.kind = .reg ∧
-              (.flock h (lockModeToFlockOp mode false), .unit) ∈ trL)
+              (.openat (some parDh) pair.2.val.toUTF8 fl modeArg, .opened (hidOf h)) ∈ trO ∧
+              (.fstat (hidOf h), .statted rawSt) ∈ trL ∧ rawSt.kind = .reg ∧
+              (.flock (hidOf h) (lockModeToFlockOp mode false), .unit) ∈ trL)
           (fun e _ => nonLockErrOk e) (fun _ _ _ _ h => h) (fun _ _ h _ => h)
-          (fun parDh => (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).acquireLockAt parDh pair.2 mode createIfMissing false)
+          (fun parDh => (SysBridge.mkRawDirOpsM files nextNonce).acquireLockAt parDh pair.2 mode createIfMissing false)
           (fun parDh held sX hWX => by
             have hA := acquireLockAtPure_trace hCap parDh pair.2 mode createIfMissing false held DEFAULT_EINTR_FUEL hWX
-            cases hRa : (SysBridge.acquireLockAtPure cap.files parDh pair.2 mode createIfMissing false DEFAULT_EINTR_FUEL sX) with
+            cases hRa : (SysBridge.acquireLockAtPure files parDh pair.2 mode createIfMissing false DEFAULT_EINTR_FUEL sX) with
             | mk rA sY =>
               simp only [SysBridge.mkRawDirOpsM, StateT.run, hRa] at hA ⊢
               obtain ⟨hWfY, hTmpY, hOut⟩ := hA
@@ -65,12 +65,12 @@ theorem subtree_withFileLock_step {W : Type} {proj : W → FsWorld} {cap : Healt
                 rcases hCase with hNl | ⟨_, hF, _⟩
                 · exact ⟨hWfY, by omega, tr, hSt, hConf, hFd, hNl⟩
                 · cases hF)
-          true dh [dh] pair.1 hW0
-        cases hRd : (Internal.walkDescendM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) dh pair.1
-            (fun parDh => (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).acquireLockAt parDh pair.2 mode createIfMissing false) s0) with
+          true dh [hidOf dh] pair.1 hW0
+        cases hRd : (Internal.walkDescendM (SysBridge.mkRawDirOpsM files nextNonce) dh pair.1
+            (fun parDh => (SysBridge.mkRawDirOpsM files nextNonce).acquireLockAt parDh pair.2 mode createIfMissing false) s0) with
         | mk rLock s1 =>
-          have hRd' : Internal.walkDescendAuxM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) true dh pair.1
-              (fun parDh => (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).acquireLockAt parDh pair.2 mode createIfMissing false) s0 = (rLock, s1) := hRd
+          have hRd' : Internal.walkDescendAuxM (SysBridge.mkRawDirOpsM files nextNonce) true dh pair.1
+              (fun parDh => (SysBridge.mkRawDirOpsM files nextNonce).acquireLockAt parDh pair.2 mode createIfMissing false) s0 = (rLock, s1) := hRd
           rw [StateT.run] at hD; rw [hRd'] at hD; simp only [↓reduceIte] at hD
           obtain ⟨hWf1, hTmp1, tr1, hSt1, hConf1, hOut1⟩ := hD
           simp only [Bind.bind, StateT.bind, StateT.run, hRd]
@@ -81,13 +81,13 @@ theorem subtree_withFileLock_step {W : Type} {proj : W → FsWorld} {cap : Healt
           | ok lockH =>
             dsimp only
             obtain ⟨hFd1, d, sub, hSub, rawSt, fl, modeArg, trO, trL, hSubEq, hAcc, hNf, hCl, hNb, hMemO, hMemFs, hReg, hMemFl⟩ := hOut1
-            have hBr := bracketDirLockM_pure_run (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) lockH actRes s1
-            have hRel := releaseLockPure_trace hCap lockH [dh] DEFAULT_EINTR_FUEL hWf1
-            cases hRr : (SysBridge.releaseLockPure cap.files lockH DEFAULT_EINTR_FUEL s1) with
+            have hBr := bracketDirLockM_pure_run (SysBridge.mkRawDirOpsM files nextNonce) lockH actRes s1
+            have hRel := releaseLockPure_trace hCap lockH [hidOf dh] DEFAULT_EINTR_FUEL hWf1
+            cases hRr : (SysBridge.releaseLockPure files lockH DEFAULT_EINTR_FUEL s1) with
             | mk rRes s2 =>
               rw [StateT.run] at hRel; rw [hRr] at hRel; dsimp only at hRel
               obtain ⟨hWf2, hTmp2, trRel, hStR, hFdR, hConfR, ⟨uo, hMemU, hUOk⟩, ⟨co, hMemC⟩, hErrR⟩ := hRel
-              have hRelEq : ((SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).releaseLock lockH).run s1 = (rRes, s2) := hRr
+              have hRelEq : ((SysBridge.mkRawDirOpsM files nextNonce).releaseLock lockH).run s1 = (rRes, s2) := hRr
               rw [hRelEq] at hBr; simp only [StateT.run] at hBr
               rw [hBr]; dsimp only
               obtain ⟨pre, post, hTr1Eq⟩ := hSub
@@ -100,7 +100,7 @@ theorem subtree_withFileLock_step {W : Type} {proj : W → FsWorld} {cap : Healt
                   ⟨pre, [], by rw [hTr1Eq, hSubEq]; simp [List.append_assoc]⟩
                 exact ⟨hWf2, by omega, tr1 ++ trRel, hStAll, hFdAll, hConfAll,
                   Or.inr ⟨rfl, pair.1, pair.2, d, trO ++ trL ++ (post ++ trRel), rfl, hSubFL,
-                    lockH, rawSt, fl, modeArg, trO, trL, post ++ trRel, rfl, hAcc, hNf, hCl, hNb,
+                    hidOf lockH, rawSt, fl, modeArg, trO, trL, post ++ trRel, rfl, hAcc, hNf, hCl, hNb,
                     hMemO, hMemFs, hReg, hMemFl, ⟨uo, by simp [hMemU], fun hc => by cases hc⟩, co, by simp [hMemC]⟩⟩
               | ok v =>
                 cases rRes with
@@ -111,10 +111,10 @@ theorem subtree_withFileLock_step {W : Type} {proj : W → FsWorld} {cap : Healt
                     ⟨pre, [], by rw [hTr1Eq, hSubEq]; simp [List.append_assoc]⟩
                   exact ⟨hWf2, by omega, tr1 ++ trRel, hStAll, hFdAll, hConfAll,
                     rfl, pair.1, pair.2, d, trO ++ trL ++ (post ++ trRel), rfl, hSubFL,
-                    lockH, rawSt, fl, modeArg, trO, trL, post ++ trRel, rfl, hAcc, hNf, hCl, hNb,
+                    hidOf lockH, rawSt, fl, modeArg, trO, trL, post ++ trRel, rfl, hAcc, hNf, hCl, hNb,
                     hMemO, hMemFs, hReg, hMemFl, ⟨uo, by simp [hMemU], fun _ => hUOk rfl⟩, co, by simp [hMemC]⟩)
     hWf
-  cases hRw : (Internal.withSubtreeM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootPath
+  cases hRw : (Internal.withSubtreeM (SysBridge.mkRawDirOpsM files nextNonce) rootPath
       (·.withFileLock rel mode createIfMissing (pure actRes)) s) with
   | mk res s1 =>
     rw [StateT.run] at hW; rw [hRw] at hW; dsimp only at hW
@@ -132,14 +132,14 @@ theorem subtree_withFileLock_step {W : Type} {proj : W → FsWorld} {cap : Healt
         · exact ⟨tr, hTr, Or.inr ⟨hActEq, dh, trO, trI, trC, hEq, hMemO, hAllO, hFdI, hConfI, hC, hBody⟩⟩
 
 /-- Confined step refinement for `SubtreeOpReq.tryWithFileLock`. -/
-theorem subtree_tryWithFileLock_step {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+theorem subtree_tryWithFileLock_step {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
     (rootPath : String) (rel : RelPath) (mode : LockMode) (createIfMissing : Bool)
     (actRes : Except FsError Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let r := (execSubtreeStep (Internal.mkSubtreeOpenerFromHealthyFilesM cap) ⟨rootPath, .tryWithFileLock rel mode createIfMissing actRes⟩).run s
+    let r := (execSubtreeStep (Internal.mkSubtreeOpenerM (SysBridge.mkRawDirOpsM files nextNonce)) ⟨rootPath, .tryWithFileLock rel mode createIfMissing actRes⟩).run s
     allowedSubtreeStep (proj s) ⟨rootPath, .tryWithFileLock rel mode createIfMissing actRes⟩ r.1 (proj r.2) := by
-  simp only [execSubtreeStep, Internal.mkSubtreeOpenerFromHealthyFilesM, Internal.mkSubtreeOpenerM,
-    Functor.map, StateT.map, StateT.run]
+  simp only [execSubtreeStep, Internal.mkSubtreeOpenerM, Functor.map, StateT.map, StateT.run]
   have hW := withSubtreeM_trace hCap rootPath
     (fun opt _ trInner =>
       match opt with
@@ -175,19 +175,19 @@ theorem subtree_tryWithFileLock_step {W : Type} {proj : W → FsWorld} {cap : He
           (fun parDh h tr =>
             ∃ rawSt fl modeArg trO trL,
               tr = trO ++ trL ∧ fl.access = .rdonly ∧ fl.nofollow = true ∧ fl.cloexec = true ∧ fl.nonblock = true ∧
-              (.openat (some parDh) pair.2.val.toUTF8 fl modeArg, .opened h) ∈ trO ∧
-              (.fstat h, .statted rawSt) ∈ trL ∧ rawSt.kind = .reg ∧
-              (.flock h (lockModeToFlockOp mode true), .unit) ∈ trL)
+              (.openat (some parDh) pair.2.val.toUTF8 fl modeArg, .opened (hidOf h)) ∈ trO ∧
+              (.fstat (hidOf h), .statted rawSt) ∈ trL ∧ rawSt.kind = .reg ∧
+              (.flock (hidOf h) (lockModeToFlockOp mode true), .unit) ∈ trL)
           (fun e tr => nonLockErrOk e ∨
             (e.kind = .wouldBlock ∧ ∃ d sub, Subtrace sub tr ∧ TryLockContendedTrace (some d) pair.2.val.toUTF8 mode sub))
           (fun _ _ _ hSub h => match h with
             | Or.inl hNl => Or.inl hNl
             | Or.inr ⟨hWb, d, sub, hS, hCt⟩ => Or.inr ⟨hWb, d, sub, subtrace_trans hS hSub, hCt⟩)
           (fun _ _ hNl _ => Or.inl hNl)
-          (fun parDh => (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).acquireLockAt parDh pair.2 mode createIfMissing true)
+          (fun parDh => (SysBridge.mkRawDirOpsM files nextNonce).acquireLockAt parDh pair.2 mode createIfMissing true)
           (fun parDh held sX hWX => by
             have hA := acquireLockAtPure_trace hCap parDh pair.2 mode createIfMissing true held DEFAULT_EINTR_FUEL hWX
-            cases hRa : (SysBridge.acquireLockAtPure cap.files parDh pair.2 mode createIfMissing true DEFAULT_EINTR_FUEL sX) with
+            cases hRa : (SysBridge.acquireLockAtPure files parDh pair.2 mode createIfMissing true DEFAULT_EINTR_FUEL sX) with
             | mk rA sY =>
               simp only [SysBridge.mkRawDirOpsM, StateT.run, hRa] at hA ⊢
               obtain ⟨hWfY, hTmpY, hOut⟩ := hA
@@ -200,13 +200,13 @@ theorem subtree_tryWithFileLock_step {W : Type} {proj : W → FsWorld} {cap : He
                 obtain ⟨tr, hSt, hFd, hConf, hCase⟩ := hOut
                 rcases hCase with hNl | ⟨hWb, _, hCt⟩
                 · exact ⟨hWfY, by omega, tr, hSt, hConf, hFd, Or.inl hNl⟩
-                · exact ⟨hWfY, by omega, tr, hSt, hConf, hFd, Or.inr ⟨hWb, parDh, tr, subtrace_refl tr, hCt⟩⟩)
-          true dh [dh] pair.1 hW0
-        cases hRd : (Internal.walkDescendM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) dh pair.1
-            (fun parDh => (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).acquireLockAt parDh pair.2 mode createIfMissing true) s0) with
+                · exact ⟨hWfY, by omega, tr, hSt, hConf, hFd, Or.inr ⟨hWb, hidOf parDh, tr, subtrace_refl tr, hCt⟩⟩)
+          true dh [hidOf dh] pair.1 hW0
+        cases hRd : (Internal.walkDescendM (SysBridge.mkRawDirOpsM files nextNonce) dh pair.1
+            (fun parDh => (SysBridge.mkRawDirOpsM files nextNonce).acquireLockAt parDh pair.2 mode createIfMissing true) s0) with
         | mk rLock s1 =>
-          have hRd' : Internal.walkDescendAuxM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) true dh pair.1
-              (fun parDh => (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).acquireLockAt parDh pair.2 mode createIfMissing true) s0 = (rLock, s1) := hRd
+          have hRd' : Internal.walkDescendAuxM (SysBridge.mkRawDirOpsM files nextNonce) true dh pair.1
+              (fun parDh => (SysBridge.mkRawDirOpsM files nextNonce).acquireLockAt parDh pair.2 mode createIfMissing true) s0 = (rLock, s1) := hRd
           rw [StateT.run] at hD; rw [hRd'] at hD; simp only [↓reduceIte] at hD
           obtain ⟨hWf1, hTmp1, tr1, hSt1, hConf1, hOut1⟩ := hD
           simp only [Bind.bind, StateT.bind, StateT.run, hRd]
@@ -226,19 +226,19 @@ theorem subtree_tryWithFileLock_step {W : Type} {proj : W → FsWorld} {cap : He
             dsimp only
             obtain ⟨hFd1, d, sub, hSub, rawSt, fl, modeArg, trO, trL, hSubEq, hAcc, hNf, hCl, hNb, hMemO, hMemFs, hReg, hMemFl⟩ := hOut1
             let mappedRes : Except FsError (Option Nat) := match actRes with | .ok a => .ok (some a) | .error e => .error e
-            have hBr := bracketDirLockM_pure_run (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) lockH mappedRes s1
-            have hRel := releaseLockPure_trace hCap lockH [dh] DEFAULT_EINTR_FUEL hWf1
-            cases hRr : (SysBridge.releaseLockPure cap.files lockH DEFAULT_EINTR_FUEL s1) with
+            have hBr := bracketDirLockM_pure_run (SysBridge.mkRawDirOpsM files nextNonce) lockH mappedRes s1
+            have hRel := releaseLockPure_trace hCap lockH [hidOf dh] DEFAULT_EINTR_FUEL hWf1
+            cases hRr : (SysBridge.releaseLockPure files lockH DEFAULT_EINTR_FUEL s1) with
             | mk rRes s2 =>
               rw [StateT.run] at hRel; rw [hRr] at hRel; dsimp only at hRel
               obtain ⟨hWf2, hTmp2, trRel, hStR, hFdR, hConfR, ⟨uo, hMemU, hUOk⟩, ⟨co, hMemC⟩, hErrR⟩ := hRel
-              have hRelEq : ((SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).releaseLock lockH).run s1 = (rRes, s2) := hRr
+              have hRelEq : ((SysBridge.mkRawDirOpsM files nextNonce).releaseLock lockH).run s1 = (rRes, s2) := hRr
               rw [hRelEq] at hBr; simp only [StateT.run] at hBr
               refine subAct_subst
-                (r2 := (Internal.bracketDirLockM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) lockH (pure mappedRes) s1).1)
-                (s2 := (Internal.bracketDirLockM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) lockH (pure mappedRes) s1).2) ?_ ?_
+                (r2 := (Internal.bracketDirLockM (SysBridge.mkRawDirOpsM files nextNonce) lockH (pure mappedRes) s1).1)
+                (s2 := (Internal.bracketDirLockM (SysBridge.mkRawDirOpsM files nextNonce) lockH (pure mappedRes) s1).2) ?_ ?_
               · exact congrArg (a₂ := pure mappedRes)
-                  (fun m => Internal.bracketDirLockM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) lockH m s1)
+                  (fun m => Internal.bracketDirLockM (SysBridge.mkRawDirOpsM files nextNonce) lockH m s1)
                   (funext fun sX => by cases actRes <;> rfl)
               · rw [hBr]; dsimp only
                 obtain ⟨pre, post, hTr1Eq⟩ := hSub
@@ -251,7 +251,7 @@ theorem subtree_tryWithFileLock_step {W : Type} {proj : W → FsWorld} {cap : He
                     ⟨pre, [], by rw [hTr1Eq, hSubEq]; simp [List.append_assoc]⟩
                   exact ⟨hWf2, by omega, tr1 ++ trRel, hStAll, hFdAll, hConfAll,
                     Or.inr ⟨rfl, pair.1, pair.2, d, trO ++ trL ++ (post ++ trRel), rfl, hSubFL,
-                      lockH, rawSt, fl, modeArg, trO, trL, post ++ trRel, rfl, hAcc, hNf, hCl, hNb,
+                      hidOf lockH, rawSt, fl, modeArg, trO, trL, post ++ trRel, rfl, hAcc, hNf, hCl, hNb,
                       hMemO, hMemFs, hReg, hMemFl, ⟨uo, List.mem_append_right _ hMemU, fun hc => by cases hc⟩, co, List.mem_append_right _ hMemC⟩⟩
                 | ok v =>
                   cases rRes with
@@ -262,10 +262,10 @@ theorem subtree_tryWithFileLock_step {W : Type} {proj : W → FsWorld} {cap : He
                       ⟨pre, [], by rw [hTr1Eq, hSubEq]; simp [List.append_assoc]⟩
                     exact ⟨hWf2, by omega, tr1 ++ trRel, hStAll, hFdAll, hConfAll,
                       rfl, pair.1, pair.2, d, trO ++ trL ++ (post ++ trRel), rfl, hSubFL,
-                      lockH, rawSt, fl, modeArg, trO, trL, post ++ trRel, rfl, hAcc, hNf, hCl, hNb,
+                      hidOf lockH, rawSt, fl, modeArg, trO, trL, post ++ trRel, rfl, hAcc, hNf, hCl, hNb,
                       hMemO, hMemFs, hReg, hMemFl, ⟨uo, List.mem_append_right _ hMemU, fun _ => hUOk rfl⟩, co, List.mem_append_right _ hMemC⟩)
     hWf
-  cases hRw : (Internal.withSubtreeM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) rootPath
+  cases hRw : (Internal.withSubtreeM (SysBridge.mkRawDirOpsM files nextNonce) rootPath
       (·.tryWithFileLock rel mode createIfMissing (pure actRes)) s) with
   | mk res s1 =>
     rw [StateT.run] at hW; rw [hRw] at hW; dsimp only at hW
@@ -285,18 +285,15 @@ theorem subtree_tryWithFileLock_step {W : Type} {proj : W → FsWorld} {cap : He
         · exact ⟨tr, hTr, Or.inl ⟨hNl, Or.inr (Or.inr ⟨dh, trO, trI, trC, hEq, hMemO, hAllO, hFdI, hConfI, hC, trivial⟩)⟩⟩
         · exact ⟨tr, hTr, Or.inr ⟨hActEq, dh, trO, trI, trC, hEq, hMemO, hAllO, hFdI, hConfI, hC, hBody⟩⟩
 
-/-- End-to-end descriptor-confined refinement of `Internal.mkSubtreeOpenerFromHealthyFilesM` against `allowedSubtreeStep` directly over `LinuxSyscall.Files.healthyStep`. -/
-theorem refinesStepFromFinally_mkSubtreeOpenerFromHealthyFilesM :
-    Core.ObeysStepFromFinally
-      (id : FsWorld → FsWorld)
-      Model.fsWorldWf
-      Model.execFilesCapStep
-      Model.allowedFilesCapStep
-      Model.fsWorldWf
-      Internal.mkSubtreeOpenerFromHealthyFilesM
-      Model.execSubtreeStep
+/-- End-to-end descriptor-confined refinement of `Internal.mkSubtreeOpenerM (SysBridge.mkRawDirOpsM files nextNonce)` against `allowedSubtreeStep` directly over `RefinesFsFilesFixed`. -/
+theorem refinesSubtree_of_refinesFilesFixed
+    {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce) :
+    Core.ObeysStep proj Model.fsWorldWf
+      (Model.execSubtreeStep (Internal.mkSubtreeOpenerM (SysBridge.mkRawDirOpsM files nextNonce)))
       Model.allowedSubtreeStep := by
-  intro W proj cap hCap s req hWf
+  intro s req hWf
   rcases req with ⟨rootPath, op⟩
   cases op with
   | lstat rel => exact subtree_lstat_step hCap rootPath rel hWf

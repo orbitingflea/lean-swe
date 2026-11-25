@@ -476,42 +476,6 @@ theorem healthyStep_write_le {env env' : HealthyEnv} {hid : HandleId} {chunk : B
               · simp only [hPs, ↓reduceIte] at hV
                 exact verifyStep_writeDiscard_le hV
 
-/-- Extract a single verified `FilesReq` transition from `Core.ObeysStep` over `HealthyFilesCapM`. -/
-theorem cap_fileReq_raw {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
-    (req : FilesReq) {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := (execFilesReq cap.files req).run s
-    fsWorldWf (proj p.2) = true ∧
-    healthyStep (proj s).env req p.1 = some (proj p.2).env ∧
-    (proj p.2).tempSeq = (proj s).tempSeq := by
-  have h := hCap s (.fileReq req) hWf
-  have hRun : ((execFilesCapStep cap (.fileReq req)).run s) =
-      (FilesCapStepOut.fileOut (execFilesReq cap.files req |>.run s).1,
-       (execFilesReq cap.files req |>.run s).2) := by
-    simp [execFilesCapStep, Functor.map, StateT.map, StateT.run]
-  rw [hRun] at h
-  dsimp only [allowedFilesCapStep] at h
-  exact ⟨h.2.2.2, h.2.1, h.2.2.1⟩
-
-/-- Extract a single verified `nextTempSeq` transition from `Core.ObeysStep` over `HealthyFilesCapM`. -/
-theorem cap_nextTempSeq {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
-    {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := cap.nextTempSeq.run s
-    fsWorldWf (proj p.2) = true ∧
-    (proj p.2).env = (proj s).env ∧
-    p.1 = (proj s).tempSeq ∧
-    (proj p.2).tempSeq = (proj s).tempSeq + 1 := by
-  have h := hCap s .nextTempSeq hWf
-  have hRun : ((execFilesCapStep cap .nextTempSeq).run s) =
-      (FilesCapStepOut.tempSeq (cap.nextTempSeq.run s).1, (cap.nextTempSeq.run s).2) := by
-    simp [execFilesCapStep, Functor.map, StateT.map, StateT.run]
-  rw [hRun] at h
-  dsimp only [allowedFilesCapStep] at h
-  have hWf' : fsWorldWf (proj (cap.nextTempSeq.run s).2) = true := by
-    unfold fsWorldWf; rw [h.2.1]; exact hWf
-  exact ⟨hWf', h.2.1, h.2.2.1, h.2.2.2⟩
-
 /-- Generic `retryEintr` trace lifting lemma for any single-attempt `FilesReq` wrapper. -/
 theorem retryEintr_single_req {W α : Type} {proj : W → FsWorld}
     (act : StateM W (Except Errno α)) (req : FilesReq) (toOut : Except Errno α → FilesOutcome)

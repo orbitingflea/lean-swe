@@ -1,4 +1,5 @@
 import LeanSwe.LinuxSyscall.Common.Types
+import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Net.Types
 
 namespace LeanSwe.NetRelay
@@ -36,12 +37,12 @@ structure RingBufApi where
   /-- Advance the read cursor by `n` bytes, compacting when drained and preserving `cap`. -/
   consume : RingBuf → Nat → RingBuf
 
-/-- Raw socket and descriptor-closing capabilities consumed by `NetRelay` loops over descriptor `Nat`. -/
+/-- Raw socket and file-descriptor capabilities consumed by `NetRelay` loops over descriptor `Nat`. -/
 structure RelayRawOps (m : Type → Type) where
   /-- Non-blocking socket syscall interface over `Nat` descriptors. -/
   net : LinuxSyscall.Net.NetOpsM m Nat
-  /-- Close a `Nat` descriptor once idle or aborted. -/
-  closeFd : Nat → m Unit
+  /-- Filesystem descriptor syscall interface over `Nat` descriptors (used to close descriptors). -/
+  files : LinuxSyscall.Files.FilesOpsM m Nat
 
 /-- Parameterized bundle of monadic non-blocking stream relay helpers. -/
 structure RelayApi (m : Type → Type) where

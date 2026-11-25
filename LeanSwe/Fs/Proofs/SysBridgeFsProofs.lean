@@ -16,10 +16,11 @@ private theorem append_ne_empty_l {a b : String} (h : a ≠ "") : a ++ b ≠ "" 
   exact String.ext (by simpa using (List.append_eq_nil_iff.mp hl).1)
 
 /-- Trace specification for `SysBridge.readLinkLoop`. -/
-theorem readLinkLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+theorem readLinkLoop_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
     (path : String) (capSz : UInt32) (eintrFuel fuel : Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := (SysBridge.readLinkLoop cap.files path capSz eintrFuel fuel).run s
+    let p := (SysBridge.readLinkLoop files path capSz eintrFuel fuel).run s
     fsWorldWf (proj p.2) = true ∧
     (proj p.2).tempSeq = (proj s).tempSeq ∧
     ∃ tr,
@@ -34,12 +35,12 @@ theorem readLinkLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
     exact ⟨hWf, trivial, [], fsWorldTrace_nil hWf, nonLockErrOk_mapErrno _ _ _, fun h => by omega⟩
   | succ f ih =>
     unfold SysBridge.readLinkLoop
-    have hRl := retryEintr_single_req (cap.files.readlinkat none path.toUTF8 capSz)
+    have hRl := retryEintr_single_req (files.readlinkat none path.toUTF8 capSz)
       (.readlinkat none path.toUTF8 capSz) outcomeOfBytes
-      (fun s' hW => cap_method_step hCap (.readlinkat none path.toUTF8 capSz)
-        (cap.files.readlinkat none path.toUTF8 capSz) outcomeOfBytes rfl hW)
+      (fun s' hW => cap_bytes_step hCap (.readlinkat none path.toUTF8 capSz)
+        (files.readlinkat none path.toUTF8 capSz) rfl hW)
       (fun _ => rfl) eintrFuel hWf
-    cases hR : (retryEintr (cap.files.readlinkat none path.toUTF8 capSz) eintrFuel s) with
+    cases hR : (retryEintr (files.readlinkat none path.toUTF8 capSz) eintrFuel s) with
     | mk res s1 =>
       rw [StateT.run] at hRl; rw [hR] at hRl; dsimp only at hRl
       obtain ⟨hWf1, hTmp1, trR, hSt1, hAll1⟩ := hRl
@@ -70,7 +71,7 @@ theorem readLinkLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
             exact ⟨hWf1, hTmp1, _, hTr1, nonLockErrOk_mapErrno _ _ _, fun _ => hNe1⟩
           · simp only [hCapGe, ↓reduceIte]
             have hIh := ih (min (capSz * 2) SysBridge.MAX_PATH_BUF_CAP) hWf1
-            cases hO : (SysBridge.readLinkLoop cap.files path (min (capSz * 2) SysBridge.MAX_PATH_BUF_CAP) eintrFuel f s1) with
+            cases hO : (SysBridge.readLinkLoop files path (min (capSz * 2) SysBridge.MAX_PATH_BUF_CAP) eintrFuel f s1) with
             | mk r2 s2 =>
               simp only [StateT.run, hO] at hIh ⊢
               obtain ⟨hWf2, hTmp2, tr2, hTr2, hOut2⟩ := hIh
@@ -82,10 +83,11 @@ theorem readLinkLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
               | error e => exact ⟨hOut2.1, fun _ => by simp⟩
 
 /-- Trace specification for `SysBridge.getcwdLoop`. -/
-theorem getcwdLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+theorem getcwdLoop_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
     (capSz : UInt32) (eintrFuel fuel : Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := (SysBridge.getcwdLoop cap.files capSz eintrFuel fuel).run s
+    let p := (SysBridge.getcwdLoop files capSz eintrFuel fuel).run s
     fsWorldWf (proj p.2) = true ∧
     (proj p.2).tempSeq = (proj s).tempSeq ∧
     ∃ tr,
@@ -100,10 +102,10 @@ theorem getcwdLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCa
     exact ⟨hWf, trivial, [], fsWorldTrace_nil hWf, nonLockErrOk_mapErrno _ _ _, fun h => by omega⟩
   | succ f ih =>
     unfold SysBridge.getcwdLoop
-    have hGc := retryEintr_single_req (cap.files.getcwd capSz) (.getcwd capSz) outcomeOfBytes
-      (fun s' hW => cap_method_step hCap (.getcwd capSz) (cap.files.getcwd capSz) outcomeOfBytes rfl hW)
+    have hGc := retryEintr_single_req (files.getcwd capSz) (.getcwd capSz) outcomeOfBytes
+      (fun s' hW => cap_bytes_step hCap (.getcwd capSz) (files.getcwd capSz) rfl hW)
       (fun _ => rfl) eintrFuel hWf
-    cases hR : (retryEintr (cap.files.getcwd capSz) eintrFuel s) with
+    cases hR : (retryEintr (files.getcwd capSz) eintrFuel s) with
     | mk res s1 =>
       rw [StateT.run] at hGc; rw [hR] at hGc; dsimp only at hGc
       obtain ⟨hWf1, hTmp1, trR, hSt1, hAll1⟩ := hGc
@@ -125,7 +127,7 @@ theorem getcwdLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCa
         by_cases hRng : (e == Errno.ERANGE && decide (capSz < SysBridge.MAX_PATH_BUF_CAP)) = true
         · simp only [hRng, ↓reduceIte]
           have hIh := ih (min (capSz * 2) SysBridge.MAX_PATH_BUF_CAP) hWf1
-          cases hO : (SysBridge.getcwdLoop cap.files (min (capSz * 2) SysBridge.MAX_PATH_BUF_CAP) eintrFuel f s1) with
+          cases hO : (SysBridge.getcwdLoop files (min (capSz * 2) SysBridge.MAX_PATH_BUF_CAP) eintrFuel f s1) with
           | mk r2 s2 =>
             simp only [StateT.run, hO] at hIh ⊢
             obtain ⟨hWf2, hTmp2, tr2, hTr2, hOut2⟩ := hIh
@@ -139,12 +141,13 @@ theorem getcwdLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCa
           exact ⟨hWf1, hTmp1, _, hTr1, nonLockErrOk_mapErrno _ _ _, fun _ => by simp⟩
 
 /-- Trace specification for `SysBridge.realPathLoop`. -/
-theorem realPathLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+theorem realPathLoop_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
     (origPath : String) (eintrFuel : Nat)
     (resolvedRev queue : List String) (trailingSlash : Bool) (symLeft fuel : Nat)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := (SysBridge.realPathLoop cap.files origPath eintrFuel resolvedRev queue trailingSlash symLeft fuel).run s
+    let p := (SysBridge.realPathLoop files origPath eintrFuel resolvedRev queue trailingSlash symLeft fuel).run s
     fsWorldWf (proj p.2) = true ∧
     (proj p.2).tempSeq = (proj s).tempSeq ∧
     ∃ tr,
@@ -161,12 +164,12 @@ theorem realPathLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
     unfold SysBridge.realPathLoop
     cases queue with
     | nil =>
-      have hFs := retryEintr_single_req (cap.files.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true })
+      have hFs := retryEintr_single_req (files.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true })
         (.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true }) outcomeOfStatted
-        (fun s' hW => cap_method_step hCap (.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true })
-          (cap.files.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true }) outcomeOfStatted rfl hW)
+        (fun s' hW => cap_statted_step hCap (.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true })
+          (files.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true }) rfl hW)
         (fun _ => rfl) eintrFuel hWf
-      cases hR : (retryEintr (cap.files.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true }) eintrFuel s) with
+      cases hR : (retryEintr (files.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true }) eintrFuel s) with
       | mk res s1 =>
         rw [StateT.run] at hFs; rw [hR] at hFs; dsimp only at hFs
         obtain ⟨hWf1, hTmp1, trR, hSt1, hAll1⟩ := hFs
@@ -188,7 +191,7 @@ theorem realPathLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
       by_cases hDot : (seg == ".") = true
       · simp only [hDot, ↓reduceIte]
         have hIh := ih resolvedRev rest trailingSlash symLeft hWf
-        cases hO : (SysBridge.realPathLoop cap.files origPath eintrFuel resolvedRev rest trailingSlash symLeft f s) with
+        cases hO : (SysBridge.realPathLoop files origPath eintrFuel resolvedRev rest trailingSlash symLeft f s) with
         | mk r2 s2 =>
           simp only [StateT.run, hO] at hIh ⊢
           obtain ⟨hWf2, hTmp2, tr2, hTr2, hOut2⟩ := hIh
@@ -198,12 +201,12 @@ theorem realPathLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
           | error e => exact ⟨hOut2.1, fun hGt => hOut2.2 (by simp at hGt; omega)⟩
       · by_cases hDotDot : (seg == "..") = true
         · simp only [hDot, Bool.false_eq_true, ↓reduceIte, hDotDot]
-          have hFs := retryEintr_single_req (cap.files.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true })
+          have hFs := retryEintr_single_req (files.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true })
             (.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true }) outcomeOfStatted
-            (fun s' hW => cap_method_step hCap (.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true })
-              (cap.files.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true }) outcomeOfStatted rfl hW)
+            (fun s' hW => cap_statted_step hCap (.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true })
+              (files.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true }) rfl hW)
             (fun _ => rfl) eintrFuel hWf
-          cases hR : (retryEintr (cap.files.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true }) eintrFuel s) with
+          cases hR : (retryEintr (files.fstatat none (SysBridge.renderAbsRev resolvedRev).toUTF8 { symlinkNofollow := true }) eintrFuel s) with
           | mk res s1 =>
             rw [StateT.run] at hFs; rw [hR] at hFs; dsimp only at hFs
             obtain ⟨hWf1, hTmp1, trR, hSt1, hAll1⟩ := hFs
@@ -221,7 +224,7 @@ theorem realPathLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
                 exact ⟨hWf1, hTmp1, _, hTr1, nonLockErrOk_mapErrno _ _ _, fun _ => by simp⟩
               · simp only [hNd, Bool.false_eq_true, ↓reduceIte]
                 have hPopStep : ∀ (rev' : List String),
-                    let p := (SysBridge.realPathLoop cap.files origPath eintrFuel rev' rest trailingSlash symLeft f).run s1
+                    let p := (SysBridge.realPathLoop files origPath eintrFuel rev' rest trailingSlash symLeft f).run s1
                     fsWorldWf (proj p.2) = true ∧ (proj p.2).tempSeq = (proj s).tempSeq ∧
                     ∃ tr, FsWorldTrace (proj s) tr (proj p.2) ∧
                       match p.1 with
@@ -229,7 +232,7 @@ theorem realPathLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
                       | .error e => nonLockErrOk e ∧ (f + 1 > (seg :: rest).length → tr ≠ []) := by
                   intro rev'
                   have hIh := ih rev' rest trailingSlash symLeft hWf1
-                  cases hO : (SysBridge.realPathLoop cap.files origPath eintrFuel rev' rest trailingSlash symLeft f s1) with
+                  cases hO : (SysBridge.realPathLoop files origPath eintrFuel rev' rest trailingSlash symLeft f s1) with
                   | mk r2 s2 =>
                     simp only [StateT.run, hO] at hIh ⊢
                     obtain ⟨hWf2, hTmp2, tr2, hTr2, hOut2⟩ := hIh
@@ -241,12 +244,12 @@ theorem realPathLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
                 | nil => exact hPopStep []
                 | cons _ tl => exact hPopStep tl
         · simp only [hDot, Bool.false_eq_true, ↓reduceIte, hDotDot]
-          have hFs := retryEintr_single_req (cap.files.fstatat none (SysBridge.renderAbsRev (seg :: resolvedRev)).toUTF8 { symlinkNofollow := true })
+          have hFs := retryEintr_single_req (files.fstatat none (SysBridge.renderAbsRev (seg :: resolvedRev)).toUTF8 { symlinkNofollow := true })
             (.fstatat none (SysBridge.renderAbsRev (seg :: resolvedRev)).toUTF8 { symlinkNofollow := true }) outcomeOfStatted
-            (fun s' hW => cap_method_step hCap (.fstatat none (SysBridge.renderAbsRev (seg :: resolvedRev)).toUTF8 { symlinkNofollow := true })
-              (cap.files.fstatat none (SysBridge.renderAbsRev (seg :: resolvedRev)).toUTF8 { symlinkNofollow := true }) outcomeOfStatted rfl hW)
+            (fun s' hW => cap_statted_step hCap (.fstatat none (SysBridge.renderAbsRev (seg :: resolvedRev)).toUTF8 { symlinkNofollow := true })
+              (files.fstatat none (SysBridge.renderAbsRev (seg :: resolvedRev)).toUTF8 { symlinkNofollow := true }) rfl hW)
             (fun _ => rfl) eintrFuel hWf
-          cases hR : (retryEintr (cap.files.fstatat none (SysBridge.renderAbsRev (seg :: resolvedRev)).toUTF8 { symlinkNofollow := true }) eintrFuel s) with
+          cases hR : (retryEintr (files.fstatat none (SysBridge.renderAbsRev (seg :: resolvedRev)).toUTF8 { symlinkNofollow := true }) eintrFuel s) with
           | mk res s1 =>
             rw [StateT.run] at hFs; rw [hR] at hFs; dsimp only at hFs
             obtain ⟨hWf1, hTmp1, trR, hSt1, hAll1⟩ := hFs
@@ -266,7 +269,7 @@ theorem realPathLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
                   exact ⟨hWf1, hTmp1, _, hTr1, nonLockErrOk_mapErrno _ _ _, fun _ => by simp⟩
                 · simp only [hS0, Bool.false_eq_true, ↓reduceIte]
                   have hRl := readLinkLoop_trace hCap (SysBridge.renderAbsRev (seg :: resolvedRev)) 256 eintrFuel 13 hWf1
-                  cases hRlR : (SysBridge.readLinkLoop cap.files (SysBridge.renderAbsRev (seg :: resolvedRev)) 256 eintrFuel 13 s1) with
+                  cases hRlR : (SysBridge.readLinkLoop files (SysBridge.renderAbsRev (seg :: resolvedRev)) 256 eintrFuel 13 s1) with
                   | mk rlRes s2 =>
                     simp only [StateT.run, hRlR] at hRl ⊢
                     obtain ⟨hWf2, hTmp2, trL, hTrL, hOutL⟩ := hRl
@@ -282,7 +285,7 @@ theorem realPathLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
                         (SysBridge.splitNonEmptySegs target ++ rest)
                         (if rest.isEmpty = true then (trailingSlash || (decide (target.length > 1) && target.endsWith "/")) else trailingSlash)
                         (symLeft - 1) hWf2
-                      cases hO : (SysBridge.realPathLoop cap.files origPath eintrFuel
+                      cases hO : (SysBridge.realPathLoop files origPath eintrFuel
                           (if target.startsWith "/" = true then [] else resolvedRev)
                           (SysBridge.splitNonEmptySegs target ++ rest)
                           (if rest.isEmpty = true then (trailingSlash || (decide (target.length > 1) && target.endsWith "/")) else trailingSlash)
@@ -298,7 +301,7 @@ theorem realPathLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
               · by_cases hDir : (st.kind == .dir) = true
                 · simp only [hSym, Bool.false_eq_true, ↓reduceIte, hDir]
                   have hIh := ih (seg :: resolvedRev) rest trailingSlash symLeft hWf1
-                  cases hO : (SysBridge.realPathLoop cap.files origPath eintrFuel (seg :: resolvedRev) rest trailingSlash symLeft f s1) with
+                  cases hO : (SysBridge.realPathLoop files origPath eintrFuel (seg :: resolvedRev) rest trailingSlash symLeft f s1) with
                   | mk r2 s2 =>
                     simp only [StateT.run, hO] at hIh ⊢
                     obtain ⟨hWf2, hTmp2, tr2, hTr2, hOut2⟩ := hIh
@@ -314,10 +317,11 @@ theorem realPathLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
                     exact ⟨hWf1, hTmp1, _, hTr1, renderAbsRev_isAbsolute (seg :: resolvedRev), st, by simp [outcomeOfStatted]⟩
 
 /-- Trace specification for `SysBridge.realPathPure`. -/
-theorem realPathPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+theorem realPathPure_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
     (path : String) (eintrFuel : Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := (SysBridge.realPathPure cap.files path eintrFuel).run s
+    let p := (SysBridge.realPathPure files path eintrFuel).run s
     fsWorldWf (proj p.2) = true ∧
     (proj p.2).tempSeq = (proj s).tempSeq ∧
     ∃ tr,
@@ -339,7 +343,7 @@ theorem realPathPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
         have hLp := realPathLoop_trace hCap path eintrFuel [] (SysBridge.splitNonEmptySegs path)
           (decide (path.length > 1) && path.endsWith "/") SysBridge.MAX_SYMLINK_DEPTH
           ((SysBridge.splitNonEmptySegs path).length + 4096) hWf
-        cases hO : (SysBridge.realPathLoop cap.files path eintrFuel [] (SysBridge.splitNonEmptySegs path)
+        cases hO : (SysBridge.realPathLoop files path eintrFuel [] (SysBridge.splitNonEmptySegs path)
             (decide (path.length > 1) && path.endsWith "/") SysBridge.MAX_SYMLINK_DEPTH
             ((SysBridge.splitNonEmptySegs path).length + 4096) s) with
         | mk r s1 =>
@@ -351,7 +355,7 @@ theorem realPathPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
           | error e => exact ⟨hOut.1, Or.inl (hOut.2 (by omega))⟩
       · simp only [hAbs, Bool.false_eq_true, ↓reduceIte, Bind.bind, StateT.bind, StateT.run]
         have hGc := getcwdLoop_trace hCap 4096 eintrFuel 9 hWf
-        cases hG : (SysBridge.getcwdLoop cap.files 4096 eintrFuel 9 s) with
+        cases hG : (SysBridge.getcwdLoop files 4096 eintrFuel 9 s) with
         | mk gRes s1 =>
           rw [StateT.run] at hGc; rw [hG] at hGc; dsimp only at hGc
           obtain ⟨hWf1, hTmp1, trG, hTrG, hOutG⟩ := hGc
@@ -365,7 +369,7 @@ theorem realPathPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
             have hLp := realPathLoop_trace hCap path eintrFuel (SysBridge.splitNonEmptySegs cwdStr).reverse
               (SysBridge.splitNonEmptySegs path) (decide (path.length > 1) && path.endsWith "/")
               SysBridge.MAX_SYMLINK_DEPTH ((SysBridge.splitNonEmptySegs path).length + 4096) hWf1
-            cases hO : (SysBridge.realPathLoop cap.files path eintrFuel (SysBridge.splitNonEmptySegs cwdStr).reverse
+            cases hO : (SysBridge.realPathLoop files path eintrFuel (SysBridge.splitNonEmptySegs cwdStr).reverse
                 (SysBridge.splitNonEmptySegs path) (decide (path.length > 1) && path.endsWith "/")
                 SysBridge.MAX_SYMLINK_DEPTH ((SysBridge.splitNonEmptySegs path).length + 4096) s1) with
             | mk r s2 =>
@@ -377,37 +381,40 @@ theorem realPathPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
               | error e => exact ⟨hOut2.1, Or.inl (by intro hNil; exact hOutG.2 (List.append_eq_nil_iff.mp hNil).1)⟩
 
 /-- Trace specification for `SysBridge.removeDirAtOpt`. -/
-theorem removeDirAtOpt_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
-    (dir : Option HandleId) (path : String) (held : List HandleId) (eintrFuel : Nat)
+theorem removeDirAtOpt_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
+    (dir : Option fd) (path : String) (held : List HandleId) (eintrFuel : Nat)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := (SysBridge.removeDirAtOpt cap.files dir path eintrFuel).run s
+    let p := (SysBridge.removeDirAtOpt files dir path eintrFuel).run s
     fsWorldWf (proj p.2) = true ∧
     (proj p.2).tempSeq = (proj s).tempSeq ∧
     ∃ tr,
       HealthyFilesSteps (proj s).env tr (proj p.2).env ∧
       TraceFds held tr held ∧
       tr ≠ [] ∧
-      (∀ step ∈ tr, ∃ o, step = (.unlinkat dir path.toUTF8 true, o)) ∧
+      (∀ step ∈ tr, ∃ o, step = (.unlinkat (dir.map hidOf) path.toUTF8 true, o)) ∧
       match p.1 with
-      | .ok () => UnlinkTrace dir path.toUTF8 true tr
-      | .error e => nonLockErrOk e ∧ (e.kind = .notFound → (.unlinkat dir path.toUTF8 true, .err Errno.ENOENT) ∈ tr) := by
+      | .ok () => UnlinkTrace (dir.map hidOf) path.toUTF8 true tr
+      | .error e => nonLockErrOk e ∧ (e.kind = .notFound → (.unlinkat (dir.map hidOf) path.toUTF8 true, .err Errno.ENOENT) ∈ tr) := by
   unfold SysBridge.removeDirAtOpt
-  have hUn := retryEintr_single_req (cap.files.unlinkat dir path.toUTF8 true)
-    (.unlinkat dir path.toUTF8 true) outcomeOfUnit
-    (fun s' hW => cap_method_step hCap (.unlinkat dir path.toUTF8 true)
-      (cap.files.unlinkat dir path.toUTF8 true) outcomeOfUnit rfl hW)
+  have hUn := retryEintr_single_req (files.unlinkat dir path.toUTF8 true)
+    (.unlinkat (dir.map hidOf) path.toUTF8 true) outcomeOfUnit
+    (fun s' hW => by
+      have h := cap_unit_step hCap (.unlinkat dir path.toUTF8 true)
+        (files.unlinkat dir path.toUTF8 true) rfl hW
+      cases dir <;> exact h)
     (fun _ => rfl) eintrFuel hWf
-  cases hR : (retryEintr (cap.files.unlinkat dir path.toUTF8 true) eintrFuel s) with
+  cases hR : (retryEintr (files.unlinkat dir path.toUTF8 true) eintrFuel s) with
   | mk res s1 =>
     rw [StateT.run] at hUn; rw [hR] at hUn; dsimp only at hUn
     obtain ⟨hWf1, hTmp1, trR, hSt1, hAll1⟩ := hUn
     simp only [Bind.bind, StateT.bind, StateT.run, hR]
-    have hFd1 : TraceFds held (trR ++ [(.unlinkat dir path.toUTF8 true, outcomeOfUnit res)]) held :=
+    have hFd1 : TraceFds held (trR ++ [(.unlinkat (dir.map hidOf) path.toUTF8 true, outcomeOfUnit res)]) held :=
       traceFds_append (traceFds_eintr_retries (fun _ hc => by cases hc) hAll1)
         (traceFds_nonFd_step (by cases res <;> rfl) rfl)
-    have hAllStep : ∀ step ∈ trR ++ [(.unlinkat dir path.toUTF8 true, outcomeOfUnit res)],
-        ∃ o, step = (.unlinkat dir path.toUTF8 true, o) := fun step hm => by
+    have hAllStep : ∀ step ∈ trR ++ [(.unlinkat (dir.map hidOf) path.toUTF8 true, outcomeOfUnit res)],
+        ∃ o, step = (.unlinkat (dir.map hidOf) path.toUTF8 true, o) := fun step hm => by
       rcases List.mem_append.mp hm with h1 | h2
       · exact ⟨.err Errno.EINTR, hAll1 step h1⟩
       · exact ⟨outcomeOfUnit res, List.mem_singleton.mp h2⟩
@@ -428,10 +435,11 @@ theorem removeDirAtOpt_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFil
         simp [outcomeOfUnit]
 
 /-- Trace specification for `SysBridge.readBytesPure`. -/
-theorem readBytesPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+theorem readBytesPure_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → HandleId}
+    {files : FilesOpsM (StateM W) fd} {nextNonce : StateM W Nat}
+    (hCap : RefinesFsFilesFixed proj hidOf files nextNonce)
     (path : String) (eintrFuel streamFuel : Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
-    let p := (SysBridge.readBytesPure cap.files path eintrFuel streamFuel).run s
+    let p := (SysBridge.readBytesPure files path eintrFuel streamFuel).run s
     fsWorldWf (proj p.2) = true ∧
     (proj p.2).tempSeq = (proj s).tempSeq ∧
     ∃ tr,
@@ -442,12 +450,12 @@ theorem readBytesPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFile
   unfold SysBridge.readBytesPure
   by_cases hVal : isValidRawPath path = true
   · simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    have hOp := retryEintr_single_req (cap.files.openat none path.toUTF8 readOpenFlags 0)
-      (.openat none path.toUTF8 readOpenFlags 0) outcomeOfOpened
-      (fun s' hW => cap_method_step hCap (.openat none path.toUTF8 readOpenFlags 0)
-        (cap.files.openat none path.toUTF8 readOpenFlags 0) outcomeOfOpened rfl hW)
+    have hOp := retryEintr_single_req (files.openat none path.toUTF8 readOpenFlags 0)
+      (.openat none path.toUTF8 readOpenFlags 0) (outcomeOfOpenedFd hidOf)
+      (fun s' hW => cap_opened_step hCap (.openat none path.toUTF8 readOpenFlags 0)
+        (files.openat none path.toUTF8 readOpenFlags 0) rfl hW)
       (fun _ => rfl) eintrFuel hWf
-    cases hR : (retryEintr (cap.files.openat none path.toUTF8 readOpenFlags 0) eintrFuel s) with
+    cases hR : (retryEintr (files.openat none path.toUTF8 readOpenFlags 0) eintrFuel s) with
     | mk oRes s1 =>
       rw [StateT.run] at hOp; rw [hR] at hOp; dsimp only at hOp
       obtain ⟨hWf1, hTmp1, trR, hStO, hAllO⟩ := hOp
@@ -456,14 +464,14 @@ theorem readBytesPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFile
       have hFdR : TraceFds [] trR [] := traceFds_eintr_retries (fun _ hc => by cases hc) hAllO
       cases oRes with
       | ok h =>
-        have hFdO : TraceFds [] (trR ++ [(.openat none path.toUTF8 readOpenFlags 0, .opened h)]) [h] :=
+        have hFdO : TraceFds [] (trR ++ [(.openat none path.toUTF8 readOpenFlags 0, .opened (hidOf h))]) [hidOf h] :=
           traceFds_append hFdR (traceFds_open_step rfl rfl)
         have hRd := readRegularFd_trace hCap h path [] streamFuel hWf1
-        cases hRf : (SysBridge.readRegularFd cap.files h path streamFuel s1) with
+        cases hRf : (SysBridge.readRegularFd files h path streamFuel s1) with
         | mk rRes s2 =>
           simp only [StateT.run, hRf] at hRd ⊢
           obtain ⟨hWf2, hTmp2, trB, trC, hStBC, hFdB, hFdC, _, hCeq, hOut⟩ := hRd
-          let trOpen := trR ++ [(.openat none path.toUTF8 readOpenFlags 0, .opened h)]
+          let trOpen := trR ++ [(.openat none path.toUTF8 readOpenFlags 0, .opened (hidOf h))]
           have hTrAll : FsWorldTrace (proj s) (trOpen ++ trB ++ trC) (proj s2) :=
             ⟨hWf2, by rw [List.append_assoc]; exact healthyFilesSteps_append hStO hStBC,
              by rw [List.append_assoc]; exact traceFds_append hFdO (traceFds_append hFdB hFdC), by omega⟩
@@ -475,19 +483,19 @@ theorem readBytesPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFile
           | ok bs =>
             obtain ⟨⟨rawSt, hFsM, hReg⟩, ⟨eof, hEofM, hEz⟩, hBytes⟩ := hOut
             obtain ⟨co, rfl⟩ := hCeq
-            exact ⟨h, rawSt, eof, trOpen, trB, [(.close h, co)], rfl,
+            exact ⟨hidOf h, rawSt, eof, trOpen, trB, [(.close (hidOf h), co)], rfl,
               by simp [trOpen], hFsM, hReg, hEofM, hEz, hBytes, co, by simp⟩
       | error e =>
         have hTrO : FsWorldTrace (proj s) (trR ++ [(.openat none path.toUTF8 readOpenFlags 0, .err e)]) (proj s1) :=
           ⟨hWf1, hStO, traceFds_append hFdR (traceFds_nonFd_step rfl rfl), by omega⟩
         by_cases hNx : (e == Errno.ENXIO) = true
         · simp only [hNx, ↓reduceIte]
-          have hS1 := retryEintr_single_req (cap.files.fstatat none path.toUTF8 {})
+          have hS1 := retryEintr_single_req (files.fstatat none path.toUTF8 {})
             (.fstatat none path.toUTF8 {}) outcomeOfStatted
-            (fun s' hW => cap_method_step hCap (.fstatat none path.toUTF8 {})
-              (cap.files.fstatat none path.toUTF8 {}) outcomeOfStatted rfl hW)
+            (fun s' hW => cap_statted_step hCap (.fstatat none path.toUTF8 {})
+              (files.fstatat none path.toUTF8 {}) rfl hW)
             (fun _ => rfl) eintrFuel hWf1
-          cases hRs1 : (retryEintr (cap.files.fstatat none path.toUTF8 {}) eintrFuel s1) with
+          cases hRs1 : (retryEintr (files.fstatat none path.toUTF8 {}) eintrFuel s1) with
           | mk sRes1 s2 =>
             rw [StateT.run] at hS1; rw [hRs1] at hS1; dsimp only at hS1
             obtain ⟨hWf2, hTmp2, trR1, hSt1, hAll1⟩ := hS1
@@ -504,12 +512,12 @@ theorem readBytesPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFile
               · exact ⟨hWf2, hTmp2.trans hTmp1, _, fsWorldTrace_append hTrO hTr1,
                   nonLockErrOk_mapErrno _ _ _, Or.inl (by simp)⟩
             | error _ =>
-              have hS2 := retryEintr_single_req (cap.files.fstatat none path.toUTF8 { symlinkNofollow := true })
+              have hS2 := retryEintr_single_req (files.fstatat none path.toUTF8 { symlinkNofollow := true })
                 (.fstatat none path.toUTF8 { symlinkNofollow := true }) outcomeOfStatted
-                (fun s' hW => cap_method_step hCap (.fstatat none path.toUTF8 { symlinkNofollow := true })
-                  (cap.files.fstatat none path.toUTF8 { symlinkNofollow := true }) outcomeOfStatted rfl hW)
+                (fun s' hW => cap_statted_step hCap (.fstatat none path.toUTF8 { symlinkNofollow := true })
+                  (files.fstatat none path.toUTF8 { symlinkNofollow := true }) rfl hW)
                 (fun _ => rfl) eintrFuel hWf2
-              cases hRs2 : (retryEintr (cap.files.fstatat none path.toUTF8 { symlinkNofollow := true }) eintrFuel s2) with
+              cases hRs2 : (retryEintr (files.fstatat none path.toUTF8 { symlinkNofollow := true }) eintrFuel s2) with
               | mk sRes2 s3 =>
                 rw [StateT.run] at hS2; rw [hRs2] at hS2; dsimp only at hS2
                 obtain ⟨hWf3, hTmp3, trR2, hSt2, hAll2⟩ := hS2

@@ -240,8 +240,7 @@ theorem scoped_monotonicNonce {W : Type} {proj : W → FsWorld} {ops : ScopedRaw
     (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := ops.monotonicNonce.run s
-    FsWorldTrace (proj s) [] (proj r.2) ∧ (proj r.2).env = (proj s).env ∧
-    r.1 = (proj s).tempSeq ∧ (proj r.2).tempSeq = (proj s).tempSeq + 1 := by
+    FsWorldTrace (proj s) [] (proj r.2) ∧ (proj r.2).env = (proj s).env := by
   have h := hOps s .monotonicNonce hWf
   simp only [execScopedRawFsStep, Functor.map, StateT.map, StateT.run, Bind.bind, Pure.pure, allowedScopedRawFsStep] at h ⊢
   cases hEq : (ops.monotonicNonce s); rw [hEq] at h; exact h
