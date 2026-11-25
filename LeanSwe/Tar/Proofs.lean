@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.Tar.SpecTests
 import LeanSwe.Tar.Interface
 import LeanSwe.Tar.Model.WireSpec
@@ -253,12 +253,12 @@ theorem tar_packWith_never_resourceLimitExceeded (opts : PackOptions) (entries :
     Core.NeverErrorKindPure TarError.kind .resourceLimitExceeded (LeanSwe.Tar.packWith opts entries) :=
   packWith_never_of_not_packKind .resourceLimitExceeded (by unfold IsPackErrorKind; decide) opts entries
 
-/-- Full public `Interface` refinement of `LeanSwe.Tar` against `LeanSwe.Tar.Model`. -/
-theorem refines_model :
-    Core.RefinesPure LeanSwe.Tar.pack Model.allowedPack ∧
-    Core.RefinesPure2 LeanSwe.Tar.packWith Model.allowedPackWith ∧
-    Core.RefinesPure LeanSwe.Tar.unpack Model.allowedUnpack ∧
-    Core.RefinesPure2 LeanSwe.Tar.unpackWith Model.allowedUnpackWith :=
+/-- Full public `Interface` obedience of `LeanSwe.Tar` against `LeanSwe.Tar.Model`. -/
+theorem obeys_model :
+    Core.ObeysPure LeanSwe.Tar.pack Model.allowedPack ∧
+    Core.ObeysPure2 LeanSwe.Tar.packWith Model.allowedPackWith ∧
+    Core.ObeysPure LeanSwe.Tar.unpack Model.allowedUnpack ∧
+    Core.ObeysPure2 LeanSwe.Tar.unpackWith Model.allowedUnpackWith :=
   ⟨pack_refines_model, packWith_refines_model, unpack_refines_model, unpackWith_refines_model⟩
 
 end LeanSwe.Tar.Proofs

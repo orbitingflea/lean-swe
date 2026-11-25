@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.CryptoHash.Model
 import LeanSwe.CryptoHash.Interface
 import LeanSwe.CryptoHash.SpecTests
@@ -1577,8 +1577,8 @@ private theorem mapRawError_eq_model (err : CryptoHashRawError) :
     LeanSwe.CryptoHash.mapRawError err = Model.mapRawErrorModel err := by
   cases err <;> rfl
 
-private theorem refinesStepFrom_mkApiM :
-    Core.RefinesStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
+private theorem obeysStepFrom_mkApiM :
+    Core.ObeysStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
       Model.rawStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep := by
   intro W proj raw hRaw w req _
   cases req with
@@ -1701,16 +1701,16 @@ private theorem refinesStepFrom_mkApiM :
       simp only [ht, ↓reduceIte, StateT.pure, Pure.pure, Model.allowedPkgStep, Model.ctEqModel, id]
       simp [hne]
 
-/-- Full public `Interface` refinement of `LeanSwe.CryptoHash` against `LeanSwe.CryptoHash.Model`. -/
-theorem refines_model :
-    Core.RefinesPureEq LeanSwe.CryptoHash.mapRawError Model.mapRawErrorModel ∧
-    Core.RefinesPureEq LeanSwe.CryptoHash.toHex Model.toHexModel ∧
-    Core.RefinesPureEq2 LeanSwe.CryptoHash.fromHex Model.fromHexModel ∧
-    Core.RefinesStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
+/-- Full public `Interface` obedience of `LeanSwe.CryptoHash` against `LeanSwe.CryptoHash.Model`. -/
+theorem obeys_model :
+    Core.ObeysPureEq LeanSwe.CryptoHash.mapRawError Model.mapRawErrorModel ∧
+    Core.ObeysPureEq LeanSwe.CryptoHash.toHex Model.toHexModel ∧
+    Core.ObeysPureEq2 LeanSwe.CryptoHash.fromHex Model.fromHexModel ∧
+    Core.ObeysStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
       Model.rawStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep :=
   ⟨mapRawError_eq_model,
    fun _ => (toHexModel_eq ▸ rfl),
    fun _ _ => (fromHexModel_eq ▸ rfl),
-   refinesStepFrom_mkApiM⟩
+   obeysStepFrom_mkApiM⟩
 
 end LeanSwe.CryptoHash.Proofs

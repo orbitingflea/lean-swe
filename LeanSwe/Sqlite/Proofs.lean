@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.Sqlite.Interface
 import LeanSwe.Sqlite.SpecTests
 import LeanSwe.Sqlite.Proofs.ModelTrace
@@ -1388,7 +1388,7 @@ private theorem validateConfig_eq_model (cfg : OpenConfig) :
 
 private theorem rawMapEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
     (w : W) (err : SqliteRawError) :
     raw.mapRawError err = Model.modelRawOps.mapRawError err := by
   have h := hRaw w (.mapRawError err) rfl
@@ -1398,7 +1398,7 @@ private theorem rawMapEq {W : Type} (proj : W → Model.SqliteWorldState)
 
 private theorem rawOpenEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
     (w : W) (path : String) (cfg : OpenConfig) :
     (raw.openDb path cfg w).1 = (Model.modelRawOps.openDb path cfg (proj w)).1 ∧
     proj (raw.openDb path cfg w).2 = (Model.modelRawOps.openDb path cfg (proj w)).2 := by
@@ -1409,7 +1409,7 @@ private theorem rawOpenEq {W : Type} (proj : W → Model.SqliteWorldState)
 
 private theorem rawCloseEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
     (w : W) (db : DbHandle) :
     (raw.closeDb db w).1 = (Model.modelRawOps.closeDb db (proj w)).1 ∧
     proj (raw.closeDb db w).2 = (Model.modelRawOps.closeDb db (proj w)).2 := by
@@ -1420,7 +1420,7 @@ private theorem rawCloseEq {W : Type} (proj : W → Model.SqliteWorldState)
 
 private theorem rawPrepareEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
     (w : W) (db : DbHandle) (sql : String) :
     (raw.prepare db sql w).1 = (Model.modelRawOps.prepare db sql (proj w)).1 ∧
     proj (raw.prepare db sql w).2 = (Model.modelRawOps.prepare db sql (proj w)).2 := by
@@ -1431,7 +1431,7 @@ private theorem rawPrepareEq {W : Type} (proj : W → Model.SqliteWorldState)
 
 private theorem rawBindEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
     (w : W) (stmt : StmtHandle) (params : Array SqliteValue) :
     (raw.bind stmt params w).1 = (Model.modelRawOps.bind stmt params (proj w)).1 ∧
     proj (raw.bind stmt params w).2 = (Model.modelRawOps.bind stmt params (proj w)).2 := by
@@ -1442,7 +1442,7 @@ private theorem rawBindEq {W : Type} (proj : W → Model.SqliteWorldState)
 
 private theorem rawStepEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
     (w : W) (stmt : StmtHandle) :
     (raw.step stmt w).1 = (Model.modelRawOps.step stmt (proj w)).1 ∧
     proj (raw.step stmt w).2 = (Model.modelRawOps.step stmt (proj w)).2 := by
@@ -1453,7 +1453,7 @@ private theorem rawStepEq {W : Type} (proj : W → Model.SqliteWorldState)
 
 private theorem rawFinalizeEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
     (w : W) (stmt : StmtHandle) :
     (raw.finalize stmt w).1 = (Model.modelRawOps.finalize stmt (proj w)).1 ∧
     proj (raw.finalize stmt w).2 = (Model.modelRawOps.finalize stmt (proj w)).2 := by
@@ -1502,7 +1502,7 @@ private theorem state_tryFinally_refines {W S α β : Type} (proj : W → S)
 
 private theorem execLoop_refines {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
     (stmt : StmtHandle) :
     ∀ (fuel : Nat) (w : W),
       (Internal.execLoop raw stmt fuel w).1 =
@@ -1523,7 +1523,7 @@ private theorem execLoop_refines {W : Type} (proj : W → Model.SqliteWorldState
 
 private theorem queryLoop_refines {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
     (stmt : StmtHandle) :
     ∀ (fuel : Nat) (acc : Array SqliteRow) (w : W),
       (Internal.queryLoop raw stmt acc fuel w).1 =
@@ -1544,7 +1544,7 @@ private theorem queryLoop_refines {W : Type} (proj : W → Model.SqliteWorldStat
 
 private theorem execMaybeBindOp_refines {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
     (db : DbHandle) (sql : String) (params? : Option (Array SqliteValue)) (w : W) :
     (Internal.execMaybeBindOp raw db sql params? w).1 =
       (Internal.execMaybeBindOp Model.modelRawOps db sql params? (proj w)).1 ∧
@@ -1568,7 +1568,7 @@ private theorem execMaybeBindOp_refines {W : Type} (proj : W → Model.SqliteWor
 
 private theorem queryOp_refines {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
     (db : DbHandle) (sql : String) (params : Array SqliteValue) (w : W) :
     (Internal.queryOp raw db sql params w).1 =
       (Internal.queryOp Model.modelRawOps db sql params (proj w)).1 ∧
@@ -1589,7 +1589,7 @@ private theorem queryOp_refines {W : Type} (proj : W → Model.SqliteWorldState)
 
 private theorem queryOneOp_refines {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
     (db : DbHandle) (sql : String) (params : Array SqliteValue) (w : W) :
     (Internal.queryOneOp raw db sql params w).1 =
       (Internal.queryOneOp Model.modelRawOps db sql params (proj w)).1 ∧
@@ -1614,7 +1614,7 @@ private theorem queryOneOp_refines {W : Type} (proj : W → Model.SqliteWorldSta
 
 private theorem runStepAction_refines {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep)
     (db : DbHandle) :
     ∀ (act : Model.StepAction) (w : W),
       (Model.runStepAction (Internal.mkApiM raw) db act w).1 =
@@ -1630,8 +1630,8 @@ private theorem runStepAction_refines {W : Type} (proj : W → Model.SqliteWorld
     | error _ => exact ⟨rfl, rfl⟩
     | ok _ => exact runStepAction_refines proj raw hRaw db b w1
 
-private theorem refinesStepFromFinally_mkApiM :
-    Core.RefinesStepFromFinally id Model.rawStepWf Model.execRawStep Model.allowedRawStep
+private theorem obeysStepFromFinally_mkApiM :
+    Core.ObeysStepFromFinally id Model.rawStepWf Model.execRawStep Model.allowedRawStep
       Model.rawStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep := by
   intro W proj raw hRaw w req _
   change ((Model.execPkgStep (Internal.mkApiM raw) req) w).1 =
@@ -1726,12 +1726,12 @@ private theorem refinesStepFromFinally_mkApiM :
       Functor.map, StateT.map] at h
     exact ⟨congrArg Model.PkgStepOut.count (Raw.Model.RawStepOut.activeStmtCount.inj h.1), h.2⟩
 
-/-- Full public `Interface` refinement of `LeanSwe.Sqlite` against `LeanSwe.Sqlite.Model`. -/
-theorem refines_model :
-    Core.RefinesPureEq LeanSwe.Sqlite.mapRawError Model.mapRawError ∧
-    Core.RefinesPureEq LeanSwe.Sqlite.validateConfig Model.validateConfig ∧
-    Core.RefinesStepFromFinally id Model.rawStepWf Model.execRawStep Model.allowedRawStep
+/-- Full public `Interface` obedience of `LeanSwe.Sqlite` against `LeanSwe.Sqlite.Model`. -/
+theorem obeys_model :
+    Core.ObeysPureEq LeanSwe.Sqlite.mapRawError Model.mapRawError ∧
+    Core.ObeysPureEq LeanSwe.Sqlite.validateConfig Model.validateConfig ∧
+    Core.ObeysStepFromFinally id Model.rawStepWf Model.execRawStep Model.allowedRawStep
       Model.rawStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep :=
-  ⟨mapRawError_eq_model, validateConfig_eq_model, refinesStepFromFinally_mkApiM⟩
+  ⟨mapRawError_eq_model, validateConfig_eq_model, obeysStepFromFinally_mkApiM⟩
 
 end LeanSwe.Sqlite.Proofs

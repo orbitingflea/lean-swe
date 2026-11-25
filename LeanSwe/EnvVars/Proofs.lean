@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.EnvVars.Model
 import LeanSwe.EnvVars.Interface
 import LeanSwe.EnvVars.SpecTests
@@ -784,8 +784,8 @@ private theorem mapRawError_eq_model (err : EnvVarsRawError) :
     LeanSwe.EnvVars.mapRawError err = Model.mapRawErrorModel err := by
   cases err <;> rfl
 
-private theorem refinesStepFrom_mkApiM :
-    Core.RefinesStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
+private theorem obeysStepFrom_mkApiM :
+    Core.ObeysStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
       Model.rawStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep := by
   intro W proj raw hRaw w req _
   have hMap : ∀ e, raw.mapRawError e = Raw.Model.mapRawErrorModel e := fun e => by
@@ -867,14 +867,14 @@ private theorem refinesStepFrom_mkApiM :
             simp [StateT.pure, Pure.pure, Model.allowedPkgStep, Model.homeDirModel, hm, hw']
           · simp [StateT.pure, Pure.pure, Model.allowedPkgStep, Model.homeDirModel, hm, hw']
 
-/-- Full public `Interface` refinement of `LeanSwe.EnvVars` against `LeanSwe.EnvVars.Model`. -/
-theorem refines_model :
-    Core.RefinesPureEq LeanSwe.EnvVars.mapRawError Model.mapRawErrorModel ∧
-    Core.RefinesPureEq LeanSwe.EnvVars.splitSearchPath Model.splitSearchPathModel ∧
-    Core.RefinesStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
+/-- Full public `Interface` obedience of `LeanSwe.EnvVars` against `LeanSwe.EnvVars.Model`. -/
+theorem obeys_model :
+    Core.ObeysPureEq LeanSwe.EnvVars.mapRawError Model.mapRawErrorModel ∧
+    Core.ObeysPureEq LeanSwe.EnvVars.splitSearchPath Model.splitSearchPathModel ∧
+    Core.ObeysStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
       Model.rawStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep :=
   ⟨mapRawError_eq_model,
    fun path => (splitSearchPathModel_eq path).symm,
-   refinesStepFrom_mkApiM⟩
+   obeysStepFrom_mkApiM⟩
 
 end LeanSwe.EnvVars.Proofs
