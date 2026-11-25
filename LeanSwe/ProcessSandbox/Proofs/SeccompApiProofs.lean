@@ -3,7 +3,6 @@ import LeanSwe.ProcessSandbox.Model
 import LeanSwe.ProcessSandbox.Seccomp.Types
 import LeanSwe.ProcessSandbox.Seccomp.Model
 import LeanSwe.ProcessSandbox.Seccomp.Interface
-import LeanSwe.ProcessSandbox.Seccomp.Proofs
 import LeanSwe.ProcessSandbox.Impl
 import LeanSwe.ProcessSandbox.SpecTests
 import LeanSwe.ProcessSandbox.Proofs.ApiProofs
@@ -12,7 +11,24 @@ import LeanSwe.ProcessSandbox.Proofs.ApiSpawnOkProofs
 namespace LeanSwe.ProcessSandbox.Proofs
 
 open Core Core.NondetTest LeanSwe.ProcessSandbox.Model
-open LeanSwe.ProcessSandbox.Seccomp.Proofs
+
+private theorem compileSeccompBpf_valid_local (arch : SeccompArch) :
+    isValidLinuxSeccompProg (Seccomp.compileSeccompBpf arch) = true := by
+  cases arch <;> decide
+
+private theorem encodeSeccompBpf_eq_model_local (prog : Array SockFilter) :
+    Seccomp.encodeSeccompBpf prog = encodeSeccompBpfModel prog :=
+  rfl
+
+private theorem eval_compiled_nr0_allow_local (arch : SeccompArch) :
+    evalBpf (Seccomp.compileSeccompBpf arch) { arch := auditArchOf arch, nr := 0 } =
+      some 0x7fff0000 := by
+  cases arch <;> decide
+
+private theorem eval_compiled_bad_arch_eperm_local (arch : SeccompArch) :
+    evalBpf (Seccomp.compileSeccompBpf arch) { arch := 0, nr := 0 } =
+      some 0x00050001 := by
+  cases arch <;> decide
 
 /-- Proof of `test_seccomp_run_queriesHostArchAndSealsEncodedFilter` for `Internal.mkApiM`. -/
 theorem proof_seccomp_run_queriesHostArchAndSealsEncodedFilter :
@@ -50,8 +66,8 @@ theorem proof_seccomp_run_queriesHostArchAndSealsEncodedFilter :
          | Except.error e => Except.error (Internal.ensureNonEmptyMsg "sandbox I/O failed" e)
          | Except.ok out => Except.ok out).isOk = true := rfl
     dsimp only [assert]
-    refine ⟨⟨hResOk, compileSeccompBpf_valid arch, encodeSeccompBpf_eq_model_pub _,
-      eval_compiled_nr0_allow arch, eval_compiled_bad_arch_eperm arch,
+    refine ⟨⟨hResOk, compileSeccompBpf_valid_local arch, encodeSeccompBpf_eq_model_local _,
+      eval_compiled_nr0_allow_local arch, eval_compiled_bad_arch_eperm_local arch,
       by unfold Internal.encodedSeccompFilter; rfl, rfl, rfl, rfl⟩, ?_⟩
     intro sNoArch specFail hSpecOk ⟨hB', hM', hP', hNoArch⟩
     cases hV : validateSpecPure specFail with

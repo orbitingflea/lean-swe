@@ -2992,7 +2992,6 @@ private def importDagAllowlist : Array String := #[
   "CROSS|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.LinuxSyscall.TimeRand.Proofs",
   "CROSS|LeanSwe.Process.Proofs.HealthyStep|LeanSwe.LinuxSyscall.Files.Proofs.HealthyStep",
   "CROSS|LeanSwe.Process.Proofs.HealthyStep|LeanSwe.LinuxSyscall.Process.Proofs.HealthyStep",
-  "CROSS|LeanSwe.ProcessSandbox.Proofs.SeccompApiProofs|LeanSwe.ProcessSandbox.Seccomp.Proofs",
   "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.Proofs"
 ]
 
@@ -3177,8 +3176,7 @@ stale entries as follow-up PRs land. -/
 private def modelPresenceAllowlist : Array String := #[
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Files",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Net",
-  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Process",
-  "MISSING_OBEYS_MODEL|LeanSwe.ProcessSandbox"
+  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Process"
 ]
 
 /-- Exact shrinking ratchet allowlist of non-pure zero-`@[extern]` packages currently wiring
