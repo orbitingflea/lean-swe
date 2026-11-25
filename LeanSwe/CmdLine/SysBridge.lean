@@ -2,6 +2,7 @@ import LeanSwe.CmdLine.Types
 import LeanSwe.CmdLine.Model
 import LeanSwe.CmdLine.Model.Obeys
 import LeanSwe.CmdLine.Impl
+import LeanSwe.EnvVars.Types
 import LeanSwe.LinuxSyscall.Files.Types
 
 namespace LeanSwe.CmdLine.SysBridge
@@ -15,17 +16,14 @@ def stdioEintrFuel : Nat := Model.stdioEintrRetryLimit
 
 /-- Map a Linux `Errno` returned by `LeanSwe.LinuxSyscall.Files` stdio primitives into the matching `IO.Error`. -/
 def errnoToIoError (e : Errno) : IO.Error :=
-  match e.toNat with
-  | 4 => .interrupted "" 4 "interrupted system call"
-  | 5 => .hardwareFault 5 "input/output error"
-  | 9 => .invalidArgument none 9 "bad file descriptor"
-  | 11 => .resourceExhausted none 11 "resource temporarily unavailable"
-  | 21 => .inappropriateType none 21 "is a directory"
-  | 24 => .resourceExhausted none 24 "too many open files"
-  | 27 => .resourceExhausted none 27 "file too large"
-  | 28 => .resourceExhausted none 28 "no space left on device"
-  | 32 => .resourceVanished 32 "broken pipe"
-  | _ => .otherError e (Errno.name e)
+  Model.errnoToIoErrorModel e
+
+/-- Map `LeanSwe.EnvVars.EnvVarsApiM.getEnv` into `CliOpsM.getEnv` via `Model.mapEnvVarsErrorModel`. -/
+def mapEnvVarsGet {m : Type → Type} [Monad m] (env : LeanSwe.EnvVars.EnvVarsApiM m)
+    (key : String) : m (Except CmdLineError (Option String)) := do
+  match ← env.getEnv key with
+  | .ok v => return .ok v
+  | .error err => return .error (Model.mapEnvVarsErrorModel err)
 
 /-- Read 1 byte at a time from `d` up to `0x0A` (`'\n'`) or `0`-byte EOF without over-reading past newline,
     retrying transient `EINTR` via `LeanSwe.LinuxSyscall.retryEintr` while preserving `acc` and capping line
@@ -139,25 +137,19 @@ def mkFilesCliOps {fd : Type}
     (getEnvFn : String → IO (Except CmdLineError (Option String))) : CliOps :=
   mkFilesCliOpsM files getEnvFn
 
-/-- Wrap an `IO` stdio step into `IO (Except CmdLineError α)`, mapping caught `IO.Error`s via `Model.mkStdioIoError`. -/
-def catchStdioIo {α : Type} (act : IO α) : IO (Except CmdLineError α) :=
-  BaseIO.toEIO (EIO.catchExceptions (act >>= fun a => pure (.ok a)) fun err =>
-    pure (.error (Model.mkStdioIoError err.toString)))
+/-- Wrap a monadic stdio action into `m (Except CmdLineError α)`, catching `IO.Error` via `Model.mkStdioIoError`. -/
+def catchStdioM {m : Type → Type} [Monad m] [MonadExceptOf IO.Error m] {α : Type}
+    (act : m α) : m (Except CmdLineError α) :=
+  tryCatch (Except.ok <$> act) fun err =>
+    pure (.error (Model.mkStdioIoError err.toString))
 
-/-- Lift a `CliOps` (`CliOpsM IO`) backend into `Model.CheckedCliOpsM IO`, catching stdio `IO.Error` throws into `.ioError`. -/
-def mkCheckedCliOps (ops : CliOps) : Model.CheckedCliOpsM IO :=
-  { readLineChecked := catchStdioIo ops.readLine
-    writeOutChecked := fun text => catchStdioIo (ops.writeOut text)
-    writeErrChecked := fun text => catchStdioIo (ops.writeErr text)
-    cliOps := ops }
-
-/-- Prompt for a line of input over a `Model.CheckedCliOpsM m` backend, propagating stdio `.ioError`s cleanly. -/
-def promptLineChecked {m : Type → Type} [Monad m] (ops : Model.CheckedCliOpsM m)
+/-- Prompt for a line of input over `CliOpsM m`, catching stdio `IO.Error` throws into `.ioError`. -/
+def promptLineCheckedM {m : Type → Type} [Monad m] [MonadExceptOf IO.Error m] (ops : CliOpsM m)
     (prompt : String) (default : Option String := none) : m (Except CmdLineError String) := do
-  match ← ops.writeOutChecked prompt with
+  match ← catchStdioM (ops.writeOut prompt) with
   | .error e => return .error e
   | .ok () =>
-    match ← ops.readLineChecked with
+    match ← catchStdioM ops.readLine with
     | .error e => return .error e
     | .ok none => return .error { kind := .eof, message := "unexpected end of input" }
     | .ok (some line) =>
@@ -169,17 +161,17 @@ def promptLineChecked {m : Type → Type} [Monad m] (ops : Model.CheckedCliOpsM 
       else
         return .ok trimmed
 
-/-- Prompt up to `maxAttempts` times over a `Model.CheckedCliOpsM m` backend for `y`/`yes`/`n`/`no` confirmation. -/
-def confirmChecked {m : Type → Type} [Monad m] (ops : Model.CheckedCliOpsM m)
+/-- Prompt up to `maxAttempts` times over `CliOpsM m` for `y`/`yes`/`n`/`no` confirmation, catching `IO.Error` into `.ioError`. -/
+def confirmCheckedM {m : Type → Type} [Monad m] [MonadExceptOf IO.Error m] (ops : CliOpsM m)
     (prompt : String) (default : Option Bool := none) (maxAttempts : Nat := 100) :
     m (Except CmdLineError Bool) :=
   match maxAttempts with
   | 0 => return .error { kind := .invalidValue, message := "exceeded maximum confirmation attempts" }
   | n + 1 => do
-    match ← ops.writeOutChecked prompt with
+    match ← catchStdioM (ops.writeOut prompt) with
     | .error e => return .error e
     | .ok () =>
-      match ← ops.readLineChecked with
+      match ← catchStdioM ops.readLine with
       | .error e => return .error e
       | .ok none => return .error { kind := .eof, message := "unexpected end of input" }
       | .ok (some line) =>
@@ -191,9 +183,9 @@ def confirmChecked {m : Type → Type} [Monad m] (ops : Model.CheckedCliOpsM m)
             match n with
             | 0 => return .error { kind := .invalidValue, message := "exceeded maximum confirmation attempts" }
             | _ + 1 => do
-              match ← ops.writeErrChecked "Please answer yes or no.\n" with
+              match ← catchStdioM (ops.writeErr "Please answer yes or no.\n") with
               | .error e => return .error e
-              | .ok () => confirmChecked ops prompt default n
+              | .ok () => confirmCheckedM ops prompt default n
         else if norm == "y" || norm == "yes" then
           return .ok true
         else if norm == "n" || norm == "no" then
@@ -202,8 +194,8 @@ def confirmChecked {m : Type → Type} [Monad m] (ops : Model.CheckedCliOpsM m)
           match n with
           | 0 => return .error { kind := .invalidValue, message := "exceeded maximum confirmation attempts" }
           | _ + 1 => do
-            match ← ops.writeErrChecked "Please answer yes or no.\n" with
+            match ← catchStdioM (ops.writeErr "Please answer yes or no.\n") with
             | .error e => return .error e
-            | .ok () => confirmChecked ops prompt default n
+            | .ok () => confirmCheckedM ops prompt default n
 
 end LeanSwe.CmdLine.SysBridge

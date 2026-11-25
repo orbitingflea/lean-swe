@@ -3623,6 +3623,76 @@ def main (_ : List String) : IO UInt32 := do
         "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
       ]
 
+    runPositiveCase base tmpRoot bin "obeys_model_step_from_except_accepted" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\nstructure PureCfg where\n  delta : Nat\n" ++
+         "structure RawOpsM (m : Type → Type) where\n  getVal : m Nat\n" ++
+         "structure PkgApiM (m : Type → Type) where\n  readVal : m Nat\nend LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\ndef evalModel (n : Nat) : Nat := n + 1\ndef rawWf (_ : Nat) : Bool := true\n" ++
+         "def execRaw {W : Type} (ops : RawOpsM (ExceptT IO.Error (StateM W))) (_ : Unit) : ExceptT IO.Error (StateM W) Nat := ops.getVal\n" ++
+         "def rawAllowed (s : Nat) (_ : Unit) (out : Except IO.Error Nat) (s' : Nat) : Prop := out = .ok s ∧ s' = s\n" ++
+         "inductive PkgOut where | res (v : Nat)\n" ++
+         "def execPkg {W : Type} (api : PkgApiM (ExceptT IO.Error (StateM W))) (_ : Unit) : ExceptT IO.Error (StateM W) PkgOut := .res <$> api.readVal\n" ++
+         "def pkgAllowed (s : Nat) (_ : Unit) (out : Except IO.Error PkgOut) (s' : Nat) : Prop :=\n" ++
+         "  match out with | .ok (.res r) => r = s ∧ s' = s | .error _ => False\nend LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\ndef evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkApiM {m : Type → Type} [Monad m] [MonadFinally m] [MonadExceptOf IO.Error m] (ops : RawOpsM m) : PkgApiM m :=\n" ++
+         "  { readVal := tryCatch ops.getVal (fun _ => pure 0) }\nend LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\ndef eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def defaultApi : PkgApiM IO := Internal.mkApiM { getVal := pure 0 }\ndef readVal : IO Nat := defaultApi.readVal\nend LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\nnamespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysStepFromExcept id Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf Internal.mkApiM Model.execPkg Model.pkgAllowed := by\n" ++
+         "  refine ⟨fun _ => rfl, ?_⟩\n  intro W proj raw hRaw w req hw\n  have hr := hRaw w () hw\n" ++
+         "  dsimp only [Function.comp, id, Model.execRaw, Model.rawAllowed, Model.execPkg, Model.pkgAllowed, Internal.mkApiM] at hr ⊢\n" ++
+         "  change match (ExceptT.map Model.PkgOut.res (ExceptT.tryCatch raw.getVal (fun _ => pure 0)) w).1 with | Except.ok (Model.PkgOut.res r) => r = proj w ∧ proj (ExceptT.map Model.PkgOut.res (ExceptT.tryCatch raw.getVal (fun _ => pure 0)) w).2 = proj w | Except.error _ => False\n" ++
+         "  unfold ExceptT.map ExceptT.tryCatch; dsimp only [Bind.bind, StateT.bind, Pure.pure, StateT.pure, StateT.run, ExceptT.run, ExceptT.mk] at hr ⊢\n" ++
+         "  cases hg : raw.getVal w with | mk rv w1 => rw [hg] at hr; rcases hr with ⟨rfl, hw1⟩; exact ⟨rfl, hw1⟩\nend LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    runMutantCase base tmpRoot bin "obeys_model_step_from_except_inner_vacuous_rejected" "TRIVIAL_ALLOWED_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\nstructure PureCfg where\n  delta : Nat\n" ++
+         "structure RawOpsM (m : Type → Type) where\n  getVal : m Nat\n" ++
+         "structure PkgApiM (m : Type → Type) where\n  readVal : m Nat\nend LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\ndef evalModel (n : Nat) : Nat := n + 1\ndef rawWf (_ : Nat) : Bool := true\n" ++
+         "def execRaw {W : Type} (ops : RawOpsM (ExceptT IO.Error (StateM W))) (_ : Unit) : ExceptT IO.Error (StateM W) Nat := ops.getVal\n" ++
+         "def rawAllowed (s : Nat) (_ : Unit) (out : Except IO.Error Nat) (s' : Nat) : Prop := out = .ok s ∧ s' = s\n" ++
+         "inductive PkgOut where | res (v : Nat)\n" ++
+         "def execPkg {W : Type} (api : PkgApiM (ExceptT IO.Error (StateM W))) (_ : Unit) : ExceptT IO.Error (StateM W) PkgOut := .res <$> api.readVal\n" ++
+         "def pkgAllowed (s : Nat) (_ : Unit) (out : Except IO.Error PkgOut) (s' : Nat) : Prop :=\n" ++
+         "  match out with | .ok (.res _) => s' = s | .error _ => False\nend LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\ndef evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkApiM {m : Type → Type} [Monad m] [MonadFinally m] [MonadExceptOf IO.Error m] (ops : RawOpsM m) : PkgApiM m :=\n" ++
+         "  { readVal := tryCatch ops.getVal (fun _ => pure 0) }\nend LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\ndef eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def defaultApi : PkgApiM IO := Internal.mkApiM { getVal := pure 0 }\ndef readVal : IO Nat := defaultApi.readVal\nend LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\nnamespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysStepFromExcept id Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf Internal.mkApiM Model.execPkg Model.pkgAllowed := by\n" ++
+         "  refine ⟨fun _ => rfl, ?_⟩\n  intro W proj raw hRaw w req hw\n  have hr := hRaw w () hw\n" ++
+         "  dsimp only [Function.comp, id, Model.execRaw, Model.rawAllowed, Model.execPkg, Model.pkgAllowed, Internal.mkApiM] at hr ⊢\n" ++
+         "  change match (ExceptT.map Model.PkgOut.res (ExceptT.tryCatch raw.getVal (fun _ => pure 0)) w).1 with | Except.ok (Model.PkgOut.res _) => proj (ExceptT.map Model.PkgOut.res (ExceptT.tryCatch raw.getVal (fun _ => pure 0)) w).2 = proj w | Except.error _ => False\n" ++
+         "  unfold ExceptT.map ExceptT.tryCatch; dsimp only [Bind.bind, StateT.bind, Pure.pure, StateT.pure, StateT.run, ExceptT.run, ExceptT.mk] at hr ⊢\n" ++
+         "  cases hg : raw.getVal w with | mk rv w1 => rw [hg] at hr; rcases hr with ⟨rfl, hw1⟩; exact hw1\nend LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
     expectFailureCode bin "inconclusive_dead_branch_fails_closed" "INCONCLUSIVE_DEAD_BRANCH_CHECK"
       base.libDir base.root #["--allow-legacy", "--dead-branch-fuel", "0"]
 
