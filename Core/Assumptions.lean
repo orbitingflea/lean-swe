@@ -59,14 +59,14 @@ structure AssumptionObligation where
   name : String
   /-- Qualified `<Pkg>.Interface` / `<Pkg>.Impl` boundary constant whose external behavior is pinned. -/
   subject : String
-  /-- `some name` iff a formal `assume_*` predicate in `SpecTests` is consumed as a hypothesis by an upper-layer
-      `Proofs` theorem; `none` otherwise. -/
+  /-- `some name` iff a formal `assume_*` predicate in `SpecTests` or `Model.Assumptions` is consumed as a
+      hypothesis by an upper-layer `Proofs` theorem; `none` otherwise. -/
   formalPred? : Option String := none
   deriving Repr, BEq, DecidableEq
 
 /-- One named runtime assumption check registered by `RuntimeTests.lean`. -/
 structure RegisteredAssumption where
-  /-- Exact Lean constant name of the assumption in `SpecTests.lean`. -/
+  /-- Exact Lean constant name of the assumption in `SpecTests.lean` or `Model/Assumptions.lean`. -/
   specName : String
   /-- Executable `IO` test checking that the real external world satisfies the assumption. -/
   run : IO Unit

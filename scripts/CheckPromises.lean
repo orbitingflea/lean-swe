@@ -139,6 +139,7 @@ private def envVarsAuditModules : Array Name := #[
   `LeanSwe.EnvVars.Impl,
   `LeanSwe.EnvVars.Interface,
   `LeanSwe.EnvVars.SpecTests,
+  `LeanSwe.EnvVars.Proofs.SpecProofs,
   `LeanSwe.EnvVars.Proofs
 ]
 
@@ -154,6 +155,9 @@ private def cryptoHashAuditModules : Array Name := #[
   `LeanSwe.CryptoHash.Impl,
   `LeanSwe.CryptoHash.Interface,
   `LeanSwe.CryptoHash.SpecTests,
+  `LeanSwe.CryptoHash.Proofs.HexHelpers,
+  `LeanSwe.CryptoHash.Proofs.MockApiProofs,
+  `LeanSwe.CryptoHash.Proofs.HexSpecProofs,
   `LeanSwe.CryptoHash.Proofs
 ]
 
@@ -2981,13 +2985,10 @@ private def auditImportDagEnv
 `LeanSwe/LinuxSyscall/Net/Model/State.lean`). Every entry must stay active; removing a listed
 violation forces removing its entry from this table, and any new violation fails the audit gate. -/
 private def importDagAllowlist : Array String := #[
-  "CROSS|LeanSwe.CmdLine.Proofs.ErrorBounds|LeanSwe.EnvVars.Proofs",
   "CROSS|LeanSwe.ConnectProxy.Proofs.HealthyWitness|LeanSwe.LinuxSyscall.Dns.Proofs",
   "CROSS|LeanSwe.ConnectProxy.Proofs.HealthyWitness|LeanSwe.LinuxSyscall.TimeRand.Proofs",
   "CROSS|LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs|LeanSwe.LinuxSyscall.Net.Proofs.HealthyStep",
   "CROSS|LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs|LeanSwe.NetRelay.Proofs",
-  "CROSS|LeanSwe.CryptoHash.Proofs|LeanSwe.CryptoHash.Raw.Proofs",
-  "CROSS|LeanSwe.EnvVars.Proofs|LeanSwe.EnvVars.Raw.Proofs",
   "CROSS|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.LinuxSyscall.Process.Proofs",
   "CROSS|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.LinuxSyscall.TimeRand.Proofs",
   "CROSS|LeanSwe.Process.Proofs.HealthyStep|LeanSwe.LinuxSyscall.Files.Proofs.HealthyStep",
