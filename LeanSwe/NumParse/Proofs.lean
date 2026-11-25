@@ -85,7 +85,7 @@ theorem obeys_model :
     Core.ObeysPure LeanSwe.NumParse.formatFloat Model.allowedFormatFloat :=
   ⟨parseInt_spec,
    parseInt64_spec,
-   parseIntModel_formatInt,
+   allowedFormatInt_formatInt,
    parseFloat_spec,
    fun x => (proof_numparse_formatFloat_specAndRoundTrip x).1⟩
 

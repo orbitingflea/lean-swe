@@ -3,6 +3,7 @@ import LeanSwe.Toml.Types
 import LeanSwe.Toml.Model
 import LeanSwe.NumParse.Types
 import LeanSwe.NumParse.Model
+import LeanSwe.NumParse.Model.Obeys
 import LeanSwe.Toml.SpecTests
 
 /-! Compile-time negative specification mutants for `LeanSwe.Toml`. -/
@@ -49,9 +50,10 @@ private def buggyWrongAstParseApi : TomlApi :=
   { stubTomlApi with
     parse := fun _ => .ok #[("wrong", .int 1)] }
 
-example : ¬ Core.AllPass (test_toml_render_parse_roundTrip buggyWrongAstParseApi) := by
+example : ¬ Core.AllPass
+    (test_toml_render_parse_roundTrip (fun _ => buggyWrongAstParseApi) LeanSwe.NumParse.Model.modelApi) := by
   intro h
-  have h0 := h (#[], {})
+  have h0 := h LeanSwe.NumParse.Model.modelApi_obeys (#[], {})
   have hr : Model.render #[] {} = some "" := by
     simp [Model.render, Model.renderLF, Model.wellFormedTableBool,
       Model.wellFormedValueBool.wellFormedTableListBool, Model.noDupKeysBool,
@@ -60,33 +62,38 @@ example : ¬ Core.AllPass (test_toml_render_parse_roundTrip buggyWrongAstParseAp
   simp [buggyWrongAstParseApi, hr, Model.TomlTableEquiv, Model.TomlTableEquivList,
     Model.lookupKeyList, assert] at h0
 
-example : ¬ Core.AllPass (test_toml_format_validAndRoundTrip buggyWrongAstParseApi) := by
+example : ¬ Core.AllPass
+    (test_toml_format_validAndRoundTrip (fun _ => buggyWrongAstParseApi) LeanSwe.NumParse.Model.modelApi) := by
   intro h
-  have h0 := h #[]
+  have h0 := h LeanSwe.NumParse.Model.modelApi_obeys #[]
   have hwf : Model.WellFormedTable #[] := rfl
   have h1 := h0 hwf
   simp [buggyWrongAstParseApi, Model.TomlTableEquiv, Model.TomlTableEquivList,
     Model.lookupKeyList, assert] at h1
 
-example : ¬ Core.AllPass (test_toml_keysAndProvenance_conformsToSpec stubTomlApi) := by
+example : ¬ Core.AllPass
+    (test_toml_keysAndProvenance_conformsToSpec (fun _ => stubTomlApi) LeanSwe.NumParse.Model.modelApi) := by
   intro h
-  simp [Core.AllPass, test_toml_keysAndProvenance_conformsToSpec, keyProvenanceOkCases,
-    checkParseEquiv, stubTomlApi, bind, pure, assert] at h
+  have h0 := h LeanSwe.NumParse.Model.modelApi_obeys
+  simp [keyProvenanceOkCases, checkParseEquiv, stubTomlApi, bind, pure, assert] at h0
 
-example : ¬ Core.AllPass (test_toml_inlineTablesAndAot_conformsToSpec stubTomlApi) := by
+example : ¬ Core.AllPass
+    (test_toml_inlineTablesAndAot_conformsToSpec (fun _ => stubTomlApi) LeanSwe.NumParse.Model.modelApi) := by
   intro h
-  simp [Core.AllPass, test_toml_inlineTablesAndAot_conformsToSpec, inlineAotOkCases,
-    checkParseEquiv, stubTomlApi, bind, pure, assert] at h
+  have h0 := h LeanSwe.NumParse.Model.modelApi_obeys
+  simp [inlineAotOkCases, checkParseEquiv, stubTomlApi, bind, pure, assert] at h0
 
-example : ¬ Core.AllPass (test_toml_stringsAndControls_conformsToSpec stubTomlApi) := by
+example : ¬ Core.AllPass
+    (test_toml_stringsAndControls_conformsToSpec (fun _ => stubTomlApi) LeanSwe.NumParse.Model.modelApi) := by
   intro h
-  simp [Core.AllPass, test_toml_stringsAndControls_conformsToSpec, stringOkCases,
-    checkParseEquiv, stubTomlApi, bind, pure, assert] at h
+  have h0 := h LeanSwe.NumParse.Model.modelApi_obeys
+  simp [stringOkCases, checkParseEquiv, stubTomlApi, bind, pure, assert] at h0
 
-example : ¬ Core.AllPass (test_toml_numbersAndDatetimes_conformsToSpec stubTomlApi) := by
+example : ¬ Core.AllPass
+    (test_toml_numbersAndDatetimes_conformsToSpec (fun _ => stubTomlApi) LeanSwe.NumParse.Model.modelApi) := by
   intro h
-  simp [Core.AllPass, test_toml_numbersAndDatetimes_conformsToSpec, numberDatetimeOkCases,
-    checkParseEquiv, stubTomlApi, bind, pure, assert] at h
+  have h0 := h LeanSwe.NumParse.Model.modelApi_obeys
+  simp [numberDatetimeOkCases, checkParseEquiv, stubTomlApi, bind, pure, assert] at h0
 
 example : ¬ Core.AllPass (test_toml_codecsAndAccessors_conformsToSpec stubTomlApi) := by
   intro h

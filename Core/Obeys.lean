@@ -108,6 +108,40 @@ def ObeysInverseRenderWithin {Obj Tape Raw Err : Type}
     (msgOf : Err → String) : Prop :=
   ObeysPure parse (InverseRenderWithinSpec render withinLimits wf equiv msgOf)
 
+/-- Compositional pure 1-argument refinement lifting a verified `DepApi` contract `depObeys`
+    to `projOp (mkApi dep)` via `ObeysPure`. -/
+def ObeysPureFrom.{u₁, u₂} {DepApi : Type u₁} {PkgApi : Type u₂} {In Out : Type}
+    (depObeys : DepApi → Prop) (mkApi : DepApi → PkgApi)
+    (projOp : PkgApi → In → Out) (allowed : In → Out → Prop) : Prop :=
+  ∀ dep : DepApi, depObeys dep → ObeysPure (projOp (mkApi dep)) allowed
+
+/-- Compositional pure parser refinement lifting a verified `DepApi` contract `depObeys`
+    to `projParse (mkApi dep)` via `ObeysInverseRender`. -/
+def ObeysInverseRenderFrom.{u₁, u₂} {DepApi : Type u₁} {PkgApi : Type u₂} {Obj Tape Raw Err : Type}
+    (depObeys : DepApi → Prop) (mkApi : DepApi → PkgApi)
+    (projParse : PkgApi → Raw → Except Err Obj) (render : Obj → Tape → Option Raw)
+    (wf : Obj → Prop) (equiv : Obj → Obj → Prop) (msgOf : Err → String) : Prop :=
+  ∀ dep : DepApi, depObeys dep →
+    ObeysInverseRender (projParse (mkApi dep)) render wf equiv msgOf
+
+/-- Instantiate an `ObeysPureFrom` contract at a concrete `dep` satisfying `depObeys`. -/
+theorem ObeysPureFrom.apply.{u₁, u₂} {DepApi : Type u₁} {PkgApi : Type u₂} {In Out : Type}
+    {depObeys : DepApi → Prop} {mkApi : DepApi → PkgApi}
+    {projOp : PkgApi → In → Out} {allowed : In → Out → Prop}
+    (hFrom : ObeysPureFrom depObeys mkApi projOp allowed) {dep : DepApi} (hDep : depObeys dep) :
+    ObeysPure (projOp (mkApi dep)) allowed :=
+  hFrom dep hDep
+
+/-- Instantiate an `ObeysInverseRenderFrom` contract at a concrete `dep` satisfying `depObeys`. -/
+theorem ObeysInverseRenderFrom.apply.{u₁, u₂} {DepApi : Type u₁} {PkgApi : Type u₂} {Obj Tape Raw Err : Type}
+    {depObeys : DepApi → Prop} {mkApi : DepApi → PkgApi}
+    {projParse : PkgApi → Raw → Except Err Obj} {render : Obj → Tape → Option Raw}
+    {wf : Obj → Prop} {equiv : Obj → Obj → Prop} {msgOf : Err → String}
+    (hFrom : ObeysInverseRenderFrom depObeys mkApi projParse render wf equiv msgOf)
+    {dep : DepApi} (hDep : depObeys dep) :
+    ObeysInverseRender (projParse (mkApi dep)) render wf equiv msgOf :=
+  hFrom dep hDep
+
 /-- Single-step stateful refinement relating `StateM W Out` transitions under `proj` and `wf` to `allowedStep`. -/
 def ObeysStep {W S Req Out : Type} (proj : W → S) (wf : S → Bool)
     (step : Req → StateM W Out) (allowedStep : S → Req → Out → S → Prop) : Prop :=

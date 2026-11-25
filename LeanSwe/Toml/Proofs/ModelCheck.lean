@@ -1,4 +1,5 @@
 import LeanSwe.Toml.Proofs.Core
+import LeanSwe.Toml.Proofs.NumParseContract
 import LeanSwe.Toml.SpecTests.Cases
 
 /-!
@@ -108,63 +109,79 @@ private theorem floatBit_model_valid : floatBitCases.all checkOneFloatBitModel =
 section
 attribute [local irreducible] parseWithNum
 
-/-- Prove `test_toml_keysAndProvenance_conformsToSpec` for `makeTomlApi numApi`. -/
-theorem allPass_keysAndProvenance (numApi : NumParseApi) (hnum : ValidNumApi numApi) :
-    Core.AllPass (test_toml_keysAndProvenance_conformsToSpec (makeTomlApi numApi)) :=
-  allPass_forM_seq keyProvenanceOkCases keyProvenanceErrCases _ _
+/-- Prove `test_toml_keysAndProvenance_conformsToSpec` for `Internal.mkApi` over any `numApi`. -/
+theorem allPass_keysAndProvenance (numApi : NumParseApi) :
+    Core.AllPass (test_toml_keysAndProvenance_conformsToSpec Internal.mkApi numApi) := by
+  intro hobeys
+  have hnum := validNumApi_of_obeysApi hobeys
+  exact allPass_forM_seq keyProvenanceOkCases keyProvenanceErrCases _ _
     (checkParseEquiv_allPass numApi hnum keyProvenanceOkCases keyProvenanceOk_model_valid)
     (checkParseErrorKind_allPass numApi hnum keyProvenanceErrCases keyProvenanceErr_model_valid)
 
-/-- Witness `CanReach` for `test_toml_keysAndProvenance_conformsToSpec`. -/
-theorem canReach_keysAndProvenance (numApi : NumParseApi) (hnum : ValidNumApi numApi) :
-    Core.CanReach (test_toml_keysAndProvenance_conformsToSpec (makeTomlApi numApi)) :=
-  canReach_forM_seq keyProvenanceOkCases keyProvenanceErrCases _ _
-    (checkParseEquiv_canReach numApi hnum keyProvenanceOkCases keyProvenanceOk_model_valid)
-    (checkParseErrorKind_canReach numApi hnum keyProvenanceErrCases keyProvenanceErr_model_valid)
+/-- Witness `CanReach` for `test_toml_keysAndProvenance_conformsToSpec` using `NumParse.Model.modelApi`. -/
+theorem canReach_keysAndProvenance :
+    Core.CanReach (test_toml_keysAndProvenance_conformsToSpec Internal.mkApi LeanSwe.NumParse.Model.modelApi) := by
+  refine ⟨LeanSwe.NumParse.Model.modelApi_obeys, ?_⟩
+  have hnum := validNumApi_of_obeysApi LeanSwe.NumParse.Model.modelApi_obeys
+  exact canReach_forM_seq keyProvenanceOkCases keyProvenanceErrCases _ _
+    (checkParseEquiv_canReach _ hnum keyProvenanceOkCases keyProvenanceOk_model_valid)
+    (checkParseErrorKind_canReach _ hnum keyProvenanceErrCases keyProvenanceErr_model_valid)
 
-/-- Prove `test_toml_inlineTablesAndAot_conformsToSpec` for `makeTomlApi numApi`. -/
-theorem allPass_inlineTablesAndAot (numApi : NumParseApi) (hnum : ValidNumApi numApi) :
-    Core.AllPass (test_toml_inlineTablesAndAot_conformsToSpec (makeTomlApi numApi)) :=
-  allPass_forM_seq inlineAotOkCases inlineAotErrCases _ _
+/-- Prove `test_toml_inlineTablesAndAot_conformsToSpec` for `Internal.mkApi` over any `numApi`. -/
+theorem allPass_inlineTablesAndAot (numApi : NumParseApi) :
+    Core.AllPass (test_toml_inlineTablesAndAot_conformsToSpec Internal.mkApi numApi) := by
+  intro hobeys
+  have hnum := validNumApi_of_obeysApi hobeys
+  exact allPass_forM_seq inlineAotOkCases inlineAotErrCases _ _
     (checkParseEquiv_allPass numApi hnum inlineAotOkCases inlineAotOk_model_valid)
     (checkParseErrorKind_allPass numApi hnum inlineAotErrCases inlineAotErr_model_valid)
 
-/-- Witness `CanReach` for `test_toml_inlineTablesAndAot_conformsToSpec`. -/
-theorem canReach_inlineTablesAndAot (numApi : NumParseApi) (hnum : ValidNumApi numApi) :
-    Core.CanReach (test_toml_inlineTablesAndAot_conformsToSpec (makeTomlApi numApi)) :=
-  canReach_forM_seq inlineAotOkCases inlineAotErrCases _ _
-    (checkParseEquiv_canReach numApi hnum inlineAotOkCases inlineAotOk_model_valid)
-    (checkParseErrorKind_canReach numApi hnum inlineAotErrCases inlineAotErr_model_valid)
+/-- Witness `CanReach` for `test_toml_inlineTablesAndAot_conformsToSpec` using `NumParse.Model.modelApi`. -/
+theorem canReach_inlineTablesAndAot :
+    Core.CanReach (test_toml_inlineTablesAndAot_conformsToSpec Internal.mkApi LeanSwe.NumParse.Model.modelApi) := by
+  refine ⟨LeanSwe.NumParse.Model.modelApi_obeys, ?_⟩
+  have hnum := validNumApi_of_obeysApi LeanSwe.NumParse.Model.modelApi_obeys
+  exact canReach_forM_seq inlineAotOkCases inlineAotErrCases _ _
+    (checkParseEquiv_canReach _ hnum inlineAotOkCases inlineAotOk_model_valid)
+    (checkParseErrorKind_canReach _ hnum inlineAotErrCases inlineAotErr_model_valid)
 
-/-- Prove `test_toml_stringsAndControls_conformsToSpec` for `makeTomlApi numApi`. -/
-theorem allPass_stringsAndControls (numApi : NumParseApi) (hnum : ValidNumApi numApi) :
-    Core.AllPass (test_toml_stringsAndControls_conformsToSpec (makeTomlApi numApi)) :=
-  allPass_forM_seq stringOkCases stringErrCases _ _
+/-- Prove `test_toml_stringsAndControls_conformsToSpec` for `Internal.mkApi` over any `numApi`. -/
+theorem allPass_stringsAndControls (numApi : NumParseApi) :
+    Core.AllPass (test_toml_stringsAndControls_conformsToSpec Internal.mkApi numApi) := by
+  intro hobeys
+  have hnum := validNumApi_of_obeysApi hobeys
+  exact allPass_forM_seq stringOkCases stringErrCases _ _
     (checkParseEquiv_allPass numApi hnum stringOkCases stringOk_model_valid)
     (checkParseErrorKind_allPass numApi hnum stringErrCases stringErr_model_valid)
 
-/-- Witness `CanReach` for `test_toml_stringsAndControls_conformsToSpec`. -/
-theorem canReach_stringsAndControls (numApi : NumParseApi) (hnum : ValidNumApi numApi) :
-    Core.CanReach (test_toml_stringsAndControls_conformsToSpec (makeTomlApi numApi)) :=
-  canReach_forM_seq stringOkCases stringErrCases _ _
-    (checkParseEquiv_canReach numApi hnum stringOkCases stringOk_model_valid)
-    (checkParseErrorKind_canReach numApi hnum stringErrCases stringErr_model_valid)
+/-- Witness `CanReach` for `test_toml_stringsAndControls_conformsToSpec` using `NumParse.Model.modelApi`. -/
+theorem canReach_stringsAndControls :
+    Core.CanReach (test_toml_stringsAndControls_conformsToSpec Internal.mkApi LeanSwe.NumParse.Model.modelApi) := by
+  refine ⟨LeanSwe.NumParse.Model.modelApi_obeys, ?_⟩
+  have hnum := validNumApi_of_obeysApi LeanSwe.NumParse.Model.modelApi_obeys
+  exact canReach_forM_seq stringOkCases stringErrCases _ _
+    (checkParseEquiv_canReach _ hnum stringOkCases stringOk_model_valid)
+    (checkParseErrorKind_canReach _ hnum stringErrCases stringErr_model_valid)
 
-/-- Prove `test_toml_numbersAndDatetimes_conformsToSpec` for `makeTomlApi numApi`. -/
-theorem allPass_numbersAndDatetimes (numApi : NumParseApi) (hnum : ValidNumApi numApi) :
-    Core.AllPass (test_toml_numbersAndDatetimes_conformsToSpec (makeTomlApi numApi)) :=
-  allPass_forM_seq3 numberDatetimeOkCases floatBitCases numberDatetimeErrCases _ _ _
+/-- Prove `test_toml_numbersAndDatetimes_conformsToSpec` for `Internal.mkApi` over any `numApi`. -/
+theorem allPass_numbersAndDatetimes (numApi : NumParseApi) :
+    Core.AllPass (test_toml_numbersAndDatetimes_conformsToSpec Internal.mkApi numApi) := by
+  intro hobeys
+  have hnum := validNumApi_of_obeysApi hobeys
+  exact allPass_forM_seq3 numberDatetimeOkCases floatBitCases numberDatetimeErrCases _ _ _
     (checkParseEquiv_allPass numApi hnum numberDatetimeOkCases numberDatetimeOk_model_valid)
     (checkParseFloatBits_allPass numApi hnum floatBit_model_valid)
     (checkParseErrorKind_allPass numApi hnum numberDatetimeErrCases numberDatetimeErr_model_valid)
 
-/-- Witness `CanReach` for `test_toml_numbersAndDatetimes_conformsToSpec`. -/
-theorem canReach_numbersAndDatetimes (numApi : NumParseApi) (hnum : ValidNumApi numApi) :
-    Core.CanReach (test_toml_numbersAndDatetimes_conformsToSpec (makeTomlApi numApi)) :=
-  canReach_forM_seq3 numberDatetimeOkCases floatBitCases numberDatetimeErrCases _ _ _
-    (checkParseEquiv_canReach numApi hnum numberDatetimeOkCases numberDatetimeOk_model_valid)
-    (checkParseFloatBits_canReach numApi hnum floatBit_model_valid)
-    (checkParseErrorKind_canReach numApi hnum numberDatetimeErrCases numberDatetimeErr_model_valid)
+/-- Witness `CanReach` for `test_toml_numbersAndDatetimes_conformsToSpec` using `NumParse.Model.modelApi`. -/
+theorem canReach_numbersAndDatetimes :
+    Core.CanReach (test_toml_numbersAndDatetimes_conformsToSpec Internal.mkApi LeanSwe.NumParse.Model.modelApi) := by
+  refine ⟨LeanSwe.NumParse.Model.modelApi_obeys, ?_⟩
+  have hnum := validNumApi_of_obeysApi LeanSwe.NumParse.Model.modelApi_obeys
+  exact canReach_forM_seq3 numberDatetimeOkCases floatBitCases numberDatetimeErrCases _ _ _
+    (checkParseEquiv_canReach _ hnum numberDatetimeOkCases numberDatetimeOk_model_valid)
+    (checkParseFloatBits_canReach _ hnum floatBit_model_valid)
+    (checkParseErrorKind_canReach _ hnum numberDatetimeErrCases numberDatetimeErr_model_valid)
 
 end
 

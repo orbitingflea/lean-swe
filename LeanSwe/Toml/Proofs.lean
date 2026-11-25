@@ -6,20 +6,23 @@ import LeanSwe.Toml.Impl
 import LeanSwe.Toml.Interface
 import LeanSwe.Toml.SpecTests
 import LeanSwe.Toml.Proofs.Core
+import LeanSwe.Toml.Proofs.NumParseContract
 import LeanSwe.Toml.Proofs.ModelCheck
 import LeanSwe.Toml.Proofs.RenderInjective
 import LeanSwe.Toml.Proofs.ParseWitnessDoc
 import LeanSwe.Toml.Proofs.FormatBridge
 import LeanSwe.NumParse.Types
+import LeanSwe.NumParse.Model.Obeys
 import LeanSwe.NumParse.Interface
-import LeanSwe.NumParse.Proofs
 
 /-!
 # Verified TOML 1.0 Implementation Entry Point
 
 Exports `render_injective` (`Core.RenderInjectiveModulo Model.render Model.TomlTableEquiv`),
-`obeys_model` (`Core.ObeysInverseRender` + canonical `Core.ObeysPure*` / `Core.ObeysPureEq`),
-`proof_toml_*` / `reach_toml_*`, `validNumApi_defaultApi`, and `toml_*_never_*`.
+compositional `obeys_model` (`Core.ObeysInverseRenderFrom` + `Core.ObeysPureFrom` over
+`LeanSwe.NumParse.Model.ObeysApi` + canonical `Core.ObeysPure*` / `Core.ObeysPureEq`),
+`obeys_model_nonvacuous`, `proof_toml_*` / `reach_toml_*`, and `toml_*_never_*` without
+importing `LeanSwe.NumParse.Proofs`.
 -/
 
 namespace LeanSwe.Toml.Proofs
@@ -28,77 +31,6 @@ open Core
 open LeanSwe.Toml
 open LeanSwe.Toml.Model
 open LeanSwe.Toml.Impl
-
-private theorem natToDecCharsPos_digits (n : Nat) (acc : List Char)
-    (hacc : acc.all (fun c => isAsciiDigit c || c == '-') = true) :
-    (LeanSwe.NumParse.Internal.natToDecCharsPos n acc).all
-      (fun c => isAsciiDigit c || c == '-') = true := by
-  match n with
-  | 0 => unfold LeanSwe.NumParse.Internal.natToDecCharsPos; exact hacc
-  | m + 1 =>
-    unfold LeanSwe.NumParse.Internal.natToDecCharsPos
-    apply natToDecCharsPos_digits ((m + 1) / 10) _
-    simp only [List.all_cons, hacc, Bool.and_true, Bool.or_eq_true]; left
-    have hlt : (m + 1) % 10 < 10 := Nat.mod_lt _ (by decide)
-    match hrm : (m + 1) % 10 with
-    | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 => decide
-    | _ + 10 => omega
-termination_by n
-
-private theorem defaultNumApi_formatIntChars (n : Int) :
-    (LeanSwe.NumParse.defaultApi.formatInt n).toList.all
-      (fun c => isAsciiDigit c || c == '-') = true := by
-  change (String.ofList (LeanSwe.NumParse.Internal.formatIntChars n)).toList.all
-      (fun c => isAsciiDigit c || c == '-') = true
-  rw [String.toList_ofList]
-  cases n with
-  | ofNat k =>
-    cases k with
-    | zero => decide
-    | succ m => unfold LeanSwe.NumParse.Internal.formatIntChars; exact natToDecCharsPos_digits (m + 1) [] rfl
-  | negSucc k =>
-    unfold LeanSwe.NumParse.Internal.formatIntChars
-    simp only [List.all_cons, (by decide : (isAsciiDigit '-' || '-' == '-') = true), Bool.true_and]
-    exact natToDecCharsPos_digits (k + 1) [] rfl
-
-/-- Concrete `ValidNumApi` witness for `LeanSwe.NumParse.defaultApi`. -/
-theorem validNumApi_defaultApi : ValidNumApi LeanSwe.NumParse.defaultApi :=
-  { onError := fun s =>
-      ⟨(LeanSwe.NumParse.Proofs.parseInt_spec s).2,
-       (LeanSwe.NumParse.Proofs.parseInt64_spec s).2,
-       (LeanSwe.NumParse.Proofs.parseFloat_spec s).2⟩
-  , parseInt64 := LeanSwe.NumParse.Proofs.parseInt64_spec
-  , parseFloat := fun s => by
-      have h := LeanSwe.NumParse.Proofs.proof_numparse_parseFloat_matchesModel s
-      dsimp only [LeanSwe.NumParse.test_numparse_parseFloat_matchesModel,
-        Core.NondetTest.assert] at h
-      cases hp : LeanSwe.NumParse.defaultApi.parseFloat s <;>
-        cases hm : LeanSwe.NumParse.Model.parseFloatModel s <;>
-        simp only [hp, hm] at h ⊢ <;>
-        exact h.1
-  , formatInt := fun n => by
-      have h := LeanSwe.NumParse.Proofs.proof_numparse_formatInt_roundTrip n
-      dsimp only [LeanSwe.NumParse.test_numparse_formatInt_roundTrip,
-        Core.NondetTest.assert, Bind.bind] at h
-      rcases h with ⟨hnoU, hmodel, hpi, h64⟩
-      refine ⟨hnoU, hmodel, hpi, ?_⟩
-      by_cases hr : LeanSwe.NumParse.Model.inInt64Range n = true
-      · simp only [hr, ↓reduceIte] at h64 ⊢; exact h64.1
-      · simp only [hr, Bool.false_eq_true, ↓reduceIte] at h64 ⊢
-        cases hp64 : LeanSwe.NumParse.defaultApi.parseInt64 (LeanSwe.NumParse.defaultApi.formatInt n) <;>
-          simp only [hp64] at h64 ⊢ <;>
-          exact h64.1
-  , formatFloat := fun x => by
-      have h := LeanSwe.NumParse.Proofs.proof_numparse_formatFloat_specAndRoundTrip x
-      dsimp only [LeanSwe.NumParse.test_numparse_formatFloat_specAndRoundTrip,
-        LeanSwe.NumParse.defaultApi, LeanSwe.NumParse.Internal.defaultApi,
-        Core.NondetTest.assert, Bind.bind] at h
-      refine ⟨h.1, ?_⟩
-      cases hp : LeanSwe.NumParse.Internal.parseFloat (LeanSwe.NumParse.Internal.formatFloat x) with
-      | ok y => simpa [LeanSwe.NumParse.defaultApi, LeanSwe.NumParse.Internal.defaultApi, hp] using h.2
-      | error e => simpa [LeanSwe.NumParse.defaultApi, LeanSwe.NumParse.Internal.defaultApi, hp] using h.2
-  , formatIntChars := defaultNumApi_formatIntChars
-  }
 
 /-- Standalone injectivity of `Model.render` up to `Model.TomlTableEquiv` (independent of `Impl`). -/
 theorem render_injective : Core.RenderInjectiveModulo Model.render Model.TomlTableEquiv :=
@@ -119,42 +51,54 @@ theorem reach_toml_accessorError_returnsNonEmptyMessage : Core.CanReach (test_to
 theorem proof_toml_parse_returnsWellFormedTable : Core.AllPass (test_toml_parse_returnsWellFormedTable LeanSwe.Toml.defaultApi) := allPass_parse_returnsWellFormedTable LeanSwe.NumParse.defaultApi
 /-- Concrete `CanReach` witness for `test_toml_parse_returnsWellFormedTable`. -/
 theorem reach_toml_parse_returnsWellFormedTable : Core.CanReach (test_toml_parse_returnsWellFormedTable LeanSwe.Toml.defaultApi) := canReach_parse_returnsWellFormedTable LeanSwe.NumParse.defaultApi
-/-- Concrete `AllPass` proof of `test_toml_render_parse_roundTrip` for `LeanSwe.Toml.defaultApi`. -/
-theorem proof_toml_render_parse_roundTrip : Core.AllPass (test_toml_render_parse_roundTrip LeanSwe.Toml.defaultApi) :=
-  allPass_render_parse_roundTrip LeanSwe.NumParse.defaultApi validNumApi_defaultApi
-/-- Concrete `CanReach` witness for `test_toml_render_parse_roundTrip`. -/
-theorem reach_toml_render_parse_roundTrip : Core.CanReach (test_toml_render_parse_roundTrip LeanSwe.Toml.defaultApi) :=
-  canReach_render_parse_roundTrip LeanSwe.NumParse.defaultApi validNumApi_defaultApi
-/-- Concrete `AllPass` proof of `test_toml_format_validAndRoundTrip` for `LeanSwe.Toml.defaultApi`. -/
-theorem proof_toml_format_validAndRoundTrip : Core.AllPass (test_toml_format_validAndRoundTrip LeanSwe.Toml.defaultApi) :=
-  allPass_format_validAndRoundTrip LeanSwe.NumParse.defaultApi validNumApi_defaultApi
-/-- Concrete `CanReach` witness for `test_toml_format_validAndRoundTrip`. -/
-theorem reach_toml_format_validAndRoundTrip : Core.CanReach (test_toml_format_validAndRoundTrip LeanSwe.Toml.defaultApi) :=
-  canReach_format_validAndRoundTrip LeanSwe.NumParse.defaultApi validNumApi_defaultApi
-/-- Concrete `AllPass` proof of `test_toml_keysAndProvenance_conformsToSpec` for `LeanSwe.Toml.defaultApi`. -/
-theorem proof_toml_keysAndProvenance_conformsToSpec : Core.AllPass (test_toml_keysAndProvenance_conformsToSpec LeanSwe.Toml.defaultApi) :=
-  allPass_keysAndProvenance LeanSwe.NumParse.defaultApi validNumApi_defaultApi
-/-- Concrete `CanReach` witness for `test_toml_keysAndProvenance_conformsToSpec`. -/
-theorem reach_toml_keysAndProvenance_conformsToSpec : Core.CanReach (test_toml_keysAndProvenance_conformsToSpec LeanSwe.Toml.defaultApi) :=
-  canReach_keysAndProvenance LeanSwe.NumParse.defaultApi validNumApi_defaultApi
-/-- Concrete `AllPass` proof of `test_toml_inlineTablesAndAot_conformsToSpec` for `LeanSwe.Toml.defaultApi`. -/
-theorem proof_toml_inlineTablesAndAot_conformsToSpec : Core.AllPass (test_toml_inlineTablesAndAot_conformsToSpec LeanSwe.Toml.defaultApi) :=
-  allPass_inlineTablesAndAot LeanSwe.NumParse.defaultApi validNumApi_defaultApi
-/-- Concrete `CanReach` witness for `test_toml_inlineTablesAndAot_conformsToSpec`. -/
-theorem reach_toml_inlineTablesAndAot_conformsToSpec : Core.CanReach (test_toml_inlineTablesAndAot_conformsToSpec LeanSwe.Toml.defaultApi) :=
-  canReach_inlineTablesAndAot LeanSwe.NumParse.defaultApi validNumApi_defaultApi
-/-- Concrete `AllPass` proof of `test_toml_stringsAndControls_conformsToSpec` for `LeanSwe.Toml.defaultApi`. -/
-theorem proof_toml_stringsAndControls_conformsToSpec : Core.AllPass (test_toml_stringsAndControls_conformsToSpec LeanSwe.Toml.defaultApi) :=
-  allPass_stringsAndControls LeanSwe.NumParse.defaultApi validNumApi_defaultApi
-/-- Concrete `CanReach` witness for `test_toml_stringsAndControls_conformsToSpec`. -/
-theorem reach_toml_stringsAndControls_conformsToSpec : Core.CanReach (test_toml_stringsAndControls_conformsToSpec LeanSwe.Toml.defaultApi) :=
-  canReach_stringsAndControls LeanSwe.NumParse.defaultApi validNumApi_defaultApi
-/-- Concrete `AllPass` proof of `test_toml_numbersAndDatetimes_conformsToSpec` for `LeanSwe.Toml.defaultApi`. -/
-theorem proof_toml_numbersAndDatetimes_conformsToSpec : Core.AllPass (test_toml_numbersAndDatetimes_conformsToSpec LeanSwe.Toml.defaultApi) :=
-  allPass_numbersAndDatetimes LeanSwe.NumParse.defaultApi validNumApi_defaultApi
-/-- Concrete `CanReach` witness for `test_toml_numbersAndDatetimes_conformsToSpec`. -/
-theorem reach_toml_numbersAndDatetimes_conformsToSpec : Core.CanReach (test_toml_numbersAndDatetimes_conformsToSpec LeanSwe.Toml.defaultApi) :=
-  canReach_numbersAndDatetimes LeanSwe.NumParse.defaultApi validNumApi_defaultApi
+/-- Compositional `AllPass` proof of `test_toml_render_parse_roundTrip` for `Internal.mkApi`. -/
+theorem proof_toml_render_parse_roundTrip (num : LeanSwe.NumParse.NumParseApi) :
+    Core.AllPass (test_toml_render_parse_roundTrip Internal.mkApi num) :=
+  allPass_render_parse_roundTrip num
+/-- Compositional `CanReach` witness for `test_toml_render_parse_roundTrip`. -/
+theorem reach_toml_render_parse_roundTrip :
+    Core.CanReach (test_toml_render_parse_roundTrip Internal.mkApi LeanSwe.NumParse.Model.modelApi) :=
+  canReach_render_parse_roundTrip
+/-- Compositional `AllPass` proof of `test_toml_format_validAndRoundTrip` for `Internal.mkApi`. -/
+theorem proof_toml_format_validAndRoundTrip (num : LeanSwe.NumParse.NumParseApi) :
+    Core.AllPass (test_toml_format_validAndRoundTrip Internal.mkApi num) :=
+  allPass_format_validAndRoundTrip num
+/-- Compositional `CanReach` witness for `test_toml_format_validAndRoundTrip`. -/
+theorem reach_toml_format_validAndRoundTrip :
+    Core.CanReach (test_toml_format_validAndRoundTrip Internal.mkApi LeanSwe.NumParse.Model.modelApi) :=
+  canReach_format_validAndRoundTrip
+/-- Compositional `AllPass` proof of `test_toml_keysAndProvenance_conformsToSpec` for `Internal.mkApi`. -/
+theorem proof_toml_keysAndProvenance_conformsToSpec (num : LeanSwe.NumParse.NumParseApi) :
+    Core.AllPass (test_toml_keysAndProvenance_conformsToSpec Internal.mkApi num) :=
+  allPass_keysAndProvenance num
+/-- Compositional `CanReach` witness for `test_toml_keysAndProvenance_conformsToSpec`. -/
+theorem reach_toml_keysAndProvenance_conformsToSpec :
+    Core.CanReach (test_toml_keysAndProvenance_conformsToSpec Internal.mkApi LeanSwe.NumParse.Model.modelApi) :=
+  canReach_keysAndProvenance
+/-- Compositional `AllPass` proof of `test_toml_inlineTablesAndAot_conformsToSpec` for `Internal.mkApi`. -/
+theorem proof_toml_inlineTablesAndAot_conformsToSpec (num : LeanSwe.NumParse.NumParseApi) :
+    Core.AllPass (test_toml_inlineTablesAndAot_conformsToSpec Internal.mkApi num) :=
+  allPass_inlineTablesAndAot num
+/-- Compositional `CanReach` witness for `test_toml_inlineTablesAndAot_conformsToSpec`. -/
+theorem reach_toml_inlineTablesAndAot_conformsToSpec :
+    Core.CanReach (test_toml_inlineTablesAndAot_conformsToSpec Internal.mkApi LeanSwe.NumParse.Model.modelApi) :=
+  canReach_inlineTablesAndAot
+/-- Compositional `AllPass` proof of `test_toml_stringsAndControls_conformsToSpec` for `Internal.mkApi`. -/
+theorem proof_toml_stringsAndControls_conformsToSpec (num : LeanSwe.NumParse.NumParseApi) :
+    Core.AllPass (test_toml_stringsAndControls_conformsToSpec Internal.mkApi num) :=
+  allPass_stringsAndControls num
+/-- Compositional `CanReach` witness for `test_toml_stringsAndControls_conformsToSpec`. -/
+theorem reach_toml_stringsAndControls_conformsToSpec :
+    Core.CanReach (test_toml_stringsAndControls_conformsToSpec Internal.mkApi LeanSwe.NumParse.Model.modelApi) :=
+  canReach_stringsAndControls
+/-- Compositional `AllPass` proof of `test_toml_numbersAndDatetimes_conformsToSpec` for `Internal.mkApi`. -/
+theorem proof_toml_numbersAndDatetimes_conformsToSpec (num : LeanSwe.NumParse.NumParseApi) :
+    Core.AllPass (test_toml_numbersAndDatetimes_conformsToSpec Internal.mkApi num) :=
+  allPass_numbersAndDatetimes num
+/-- Compositional `CanReach` witness for `test_toml_numbersAndDatetimes_conformsToSpec`. -/
+theorem reach_toml_numbersAndDatetimes_conformsToSpec :
+    Core.CanReach (test_toml_numbersAndDatetimes_conformsToSpec Internal.mkApi LeanSwe.NumParse.Model.modelApi) :=
+  canReach_numbersAndDatetimes
 /-- Concrete `AllPass` proof of `test_toml_codecsAndAccessors_conformsToSpec` for `LeanSwe.Toml.defaultApi`. -/
 theorem proof_toml_codecsAndAccessors_conformsToSpec : Core.AllPass (test_toml_codecsAndAccessors_conformsToSpec LeanSwe.Toml.defaultApi) := allPass_codecsAndAccessors LeanSwe.NumParse.defaultApi
 /-- Concrete `CanReach` witness for `test_toml_codecsAndAccessors_conformsToSpec`. -/
@@ -182,7 +126,8 @@ theorem toml_parse_never_decodeError (raw : String) : Core.NeverErrorKindPure To
 
 private theorem decode_never_of (k : TomlErrorKind) (hk : k ≠ .decodeError)
     (α : Type) [FromToml α] (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind k (LeanSwe.Toml.decode (α := α) v) := by
-  unfold Core.NeverErrorKindPure LeanSwe.Toml.decode tomlDecode
+  unfold Core.NeverErrorKindPure LeanSwe.Toml.decode defaultApi Internal.mkApi makeTomlApi tomlDecode
+  dsimp only
   cases (FromToml.fromToml v : Except TomlError α) with | ok _ => trivial | error _ => exact hk.symm
 
 /-- `Toml.decode` never returns `.parseError`. -/
@@ -212,7 +157,8 @@ theorem toml_decode_never_typeMismatch (α : Type) [FromToml α] (v : TomlValue)
 
 private theorem getTable_never_of (k : TomlErrorKind) (hk : k ≠ .typeMismatch) (v : TomlValue) :
     Core.NeverErrorKindPure TomlError.kind k (LeanSwe.Toml.getTable v) := by
-  unfold Core.NeverErrorKindPure LeanSwe.Toml.getTable tomlGetTable
+  unfold Core.NeverErrorKindPure LeanSwe.Toml.getTable defaultApi Internal.mkApi makeTomlApi tomlGetTable
+  dsimp only
   cases v <;> first | trivial | exact hk.symm
 
 /-- `Toml.getTable` never returns `.parseError`. -/
@@ -236,7 +182,8 @@ theorem toml_getTable_never_decodeError (v : TomlValue) : Core.NeverErrorKindPur
 
 private theorem getArray_never_of (k : TomlErrorKind) (hk : k ≠ .typeMismatch) (v : TomlValue) :
     Core.NeverErrorKindPure TomlError.kind k (LeanSwe.Toml.getArray v) := by
-  unfold Core.NeverErrorKindPure LeanSwe.Toml.getArray tomlGetArray
+  unfold Core.NeverErrorKindPure LeanSwe.Toml.getArray defaultApi Internal.mkApi makeTomlApi tomlGetArray
+  dsimp only
   cases v <;> first | trivial | exact hk.symm
 
 /-- `Toml.getArray` never returns `.parseError`. -/
@@ -261,7 +208,8 @@ theorem toml_getArray_never_decodeError (v : TomlValue) : Core.NeverErrorKindPur
 private theorem getField_never_of (k : TomlErrorKind) (hk1 : k ≠ .missingField) (hk2 : k ≠ .decodeError)
     (α : Type) [FromToml α] (t : TomlTable) (key : String) :
     Core.NeverErrorKindPure TomlError.kind k (LeanSwe.Toml.getField (α := α) t key) := by
-  unfold Core.NeverErrorKindPure LeanSwe.Toml.getField tomlGetField
+  unfold Core.NeverErrorKindPure LeanSwe.Toml.getField defaultApi Internal.mkApi makeTomlApi tomlGetField
+  dsimp only
   cases lookupKey key t with
   | none => exact hk1.symm
   | some v => dsimp only; cases (FromToml.fromToml v : Except TomlError α) <;> first | trivial | exact hk2.symm
@@ -291,7 +239,8 @@ theorem toml_getField_never_typeMismatch (α : Type) [FromToml α] (t : TomlTabl
 private theorem getOptField_never_of (k : TomlErrorKind) (hk : k ≠ .decodeError)
     (α : Type) [FromToml α] (t : TomlTable) (key : String) :
     Core.NeverErrorKindPure TomlError.kind k (LeanSwe.Toml.getOptField (α := α) t key) := by
-  unfold Core.NeverErrorKindPure LeanSwe.Toml.getOptField tomlGetOptField
+  unfold Core.NeverErrorKindPure LeanSwe.Toml.getOptField defaultApi Internal.mkApi makeTomlApi tomlGetOptField
+  dsimp only
   cases lookupKey key t with
   | none => trivial
   | some v => dsimp only; cases (FromToml.fromToml v : Except TomlError α) <;> first | trivial | exact hk.symm
@@ -365,22 +314,29 @@ theorem toml_getPath_never_invalidUtf8OrControl (α : Type) [FromToml α] (t : T
 theorem toml_getPath_never_numericOverflow (α : Type) [FromToml α] (t : TomlTable) (keys : List String) :
     Core.NeverErrorKindPure TomlError.kind .numericOverflow (LeanSwe.Toml.getPath (α := α) t keys) := getPathAux_never_of .numericOverflow (by decide) (by decide) (by decide) α [] t keys
 
-private theorem obeysInverseRender_parse :
-    Core.ObeysInverseRender LeanSwe.Toml.parse Model.render Model.WellFormedTable
-      Model.TomlTableEquiv TomlError.message := by
+private theorem obeysInverseRenderFrom_parse :
+    Core.ObeysInverseRenderFrom LeanSwe.NumParse.Model.ObeysApi Internal.mkApi TomlApi.parse
+      Model.render Model.WellFormedTable Model.TomlTableEquiv TomlError.message := by
+  intro num hobeys
+  have hnum := validNumApi_of_obeysApi hobeys
   refine Core.ObeysInverseRender.of_injective render_injective
-    (fun raw out hp => parseWithNum_ok_has_tape LeanSwe.NumParse.defaultApi validNumApi_defaultApi raw out hp)
+    (fun raw out hp => parseWithNum_ok_has_tape num hnum raw out hp)
     (fun raw e hp => ⟨?_, fun a t hr => ?_⟩)
-  · have herr := allPass_onError LeanSwe.NumParse.defaultApi raw
+  · have herr := allPass_onError num raw
     dsimp only [Core.AllPass, Core.AllPassRun, test_toml_onError_returnsNonEmptyMessage,
       makeTomlApi, Core.NondetTest.nondet, Core.NondetTest.assert, bind, pure] at herr
-    change parseWithNum LeanSwe.NumParse.defaultApi raw = .error e at hp
+    change parseWithNum num raw = .error e at hp
     rw [hp] at herr
     simpa using herr.1
-  · obtain ⟨_, hp_ok⟩ := render_imp_parseWithNum_ok LeanSwe.NumParse.defaultApi validNumApi_defaultApi a t raw hr
-    change parseWithNum LeanSwe.NumParse.defaultApi raw = .error e at hp
+  · obtain ⟨_, hp_ok⟩ := render_imp_parseWithNum_ok num hnum a t raw hr
+    change parseWithNum num raw = .error e at hp
     rw [hp] at hp_ok
     nomatch hp_ok
+
+private theorem obeysPureFrom_format :
+    Core.ObeysPureFrom LeanSwe.NumParse.Model.ObeysApi Internal.mkApi TomlApi.format
+      Model.allowedFormat :=
+  fun num hobeys => formatWithNum_allowedFormat num (validNumApi_of_obeysApi hobeys)
 
 private theorem nonEmptyMsg_ne_empty (msg : String) : nonEmptyMsg msg ≠ "" := by
   unfold nonEmptyMsg
@@ -394,20 +350,22 @@ private theorem nonEmptyMsg_not_isEmpty (msg : String) : !(nonEmptyMsg msg).isEm
 
 private theorem allowedGetTable_holds (v : TomlValue) :
     Model.allowedGetTable v (LeanSwe.Toml.getTable v) := by
-  cases v <;> simp [Model.allowedGetTable, LeanSwe.Toml.getTable, tomlGetTable, mkErr, nonEmptyMsg_ne_empty]
+  cases v <;> simp [Model.allowedGetTable, LeanSwe.Toml.getTable, defaultApi, Internal.mkApi, makeTomlApi, tomlGetTable, mkErr, nonEmptyMsg_ne_empty]
 
 private theorem allowedGetArray_holds (v : TomlValue) :
     Model.allowedGetArray v (LeanSwe.Toml.getArray v) := by
-  cases v <;> simp [Model.allowedGetArray, LeanSwe.Toml.getArray, tomlGetArray, mkErr, nonEmptyMsg_ne_empty]
+  cases v <;> simp [Model.allowedGetArray, LeanSwe.Toml.getArray, defaultApi, Internal.mkApi, makeTomlApi, tomlGetArray, mkErr, nonEmptyMsg_ne_empty]
 
 private theorem allowedDecode_holds {α : Type} [FromToml α] (v : TomlValue) :
     Model.allowedDecode v (LeanSwe.Toml.decode (α := α) v) := by
-  unfold Model.allowedDecode LeanSwe.Toml.decode tomlDecode
+  unfold Model.allowedDecode LeanSwe.Toml.decode defaultApi Internal.mkApi makeTomlApi tomlDecode
+  dsimp only
   cases FromToml.fromToml (α := α) v <;> simp [nonEmptyMsg_ne_empty]
 
 private theorem allowedGetField_holds {α : Type} [FromToml α] (t : TomlTable) (key : String) :
     Model.allowedGetField t key (LeanSwe.Toml.getField (α := α) t key) := by
-  unfold Model.allowedGetField LeanSwe.Toml.getField tomlGetField
+  unfold Model.allowedGetField LeanSwe.Toml.getField defaultApi Internal.mkApi makeTomlApi tomlGetField
+  dsimp only
   cases lookupKey key t with
   | none => simp [mkErr, nonEmptyMsg_ne_empty]
   | some v =>
@@ -417,7 +375,8 @@ private theorem allowedGetField_holds {α : Type} [FromToml α] (t : TomlTable) 
 
 private theorem allowedGetOptField_holds {α : Type} [FromToml α] (t : TomlTable) (key : String) :
     Model.allowedGetOptField t key (LeanSwe.Toml.getOptField (α := α) t key) := by
-  unfold Model.allowedGetOptField LeanSwe.Toml.getOptField tomlGetOptField
+  unfold Model.allowedGetOptField LeanSwe.Toml.getOptField defaultApi Internal.mkApi makeTomlApi tomlGetOptField
+  dsimp only
   cases lookupKey key t with
   | none => trivial
   | some v =>
@@ -453,11 +412,16 @@ private theorem allowedGetPathAux_holds {α : Type} [FromToml α]
         | table sub => exact ih (k :: revPrefix) sub
         | _ => exact ⟨_, rfl, rfl, rfl, nonEmptyMsg_not_isEmpty _⟩
 
-/-- Full public `Interface` obedience of `LeanSwe.Toml` against `LeanSwe.Toml.Model`. -/
+/-- Non-vacuity witness showing the `ObeysApi` hypothesis in `obeys_model` is satisfiable. -/
+theorem obeys_model_nonvacuous : ∃ num : LeanSwe.NumParse.NumParseApi, LeanSwe.NumParse.Model.ObeysApi num :=
+  LeanSwe.NumParse.Model.obeysApi_satisfiable
+
+/-- Full compositional `Interface` obedience of `LeanSwe.Toml` against `LeanSwe.Toml.Model`. -/
 theorem obeys_model :
-    Core.ObeysInverseRender LeanSwe.Toml.parse Model.render Model.WellFormedTable
-      Model.TomlTableEquiv TomlError.message ∧
-    Core.ObeysPure LeanSwe.Toml.format Model.allowedFormat ∧
+    Core.ObeysInverseRenderFrom LeanSwe.NumParse.Model.ObeysApi Internal.mkApi TomlApi.parse
+      Model.render Model.WellFormedTable Model.TomlTableEquiv TomlError.message ∧
+    Core.ObeysPureFrom LeanSwe.NumParse.Model.ObeysApi Internal.mkApi TomlApi.format
+      Model.allowedFormat ∧
     Core.ObeysPure LeanSwe.Toml.getTable Model.allowedGetTable ∧
     Core.ObeysPure LeanSwe.Toml.getArray Model.allowedGetArray ∧
     (∀ {α : Type} [FromToml α], Core.ObeysPure (@LeanSwe.Toml.decode α _) (@Model.allowedDecode α _)) ∧
@@ -465,8 +429,8 @@ theorem obeys_model :
     (∀ {α : Type} [FromToml α], Core.ObeysPure2 (@LeanSwe.Toml.getField α _) (@Model.allowedGetField α _)) ∧
     (∀ {α : Type} [FromToml α], Core.ObeysPure2 (@LeanSwe.Toml.getOptField α _) (@Model.allowedGetOptField α _)) ∧
     (∀ {α : Type} [FromToml α], Core.ObeysPure2 (@LeanSwe.Toml.getPath α _) (@Model.allowedGetPath α _)) :=
-  ⟨obeysInverseRender_parse,
-   formatWithNum_allowedFormat LeanSwe.NumParse.defaultApi validNumApi_defaultApi,
+  ⟨obeysInverseRenderFrom_parse,
+   obeysPureFrom_format,
    allowedGetTable_holds,
    allowedGetArray_holds,
    fun v => allowedDecode_holds v,

@@ -5,6 +5,7 @@ import LeanSwe.Toml.Model
 import LeanSwe.Toml.SpecTests.Cases
 import LeanSwe.NumParse.Types
 import LeanSwe.NumParse.Model
+import LeanSwe.NumParse.Model.Obeys
 
 namespace LeanSwe.Toml
 
@@ -53,7 +54,10 @@ def test_toml_parse_returnsWellFormedTable
 
 /-- Every TOML document accepted by `Model.render` parses back to a `TomlTableEquiv` table. -/
 def test_toml_render_parse_roundTrip
-    {runner} [NondetTest runner] (api : TomlApi) : runner Unit := do
+    {runner} [NondetTest runner] (mkApi : LeanSwe.NumParse.NumParseApi → TomlApi)
+    (num : LeanSwe.NumParse.NumParseApi) : runner Unit := do
+  assume (LeanSwe.NumParse.Model.ObeysApi num)
+  let api := mkApi num
   let pair ← nondet (TomlTable × Model.RenderTape)
   match Model.render pair.1 pair.2 with
   | none => assume False
@@ -64,7 +68,10 @@ def test_toml_render_parse_roundTrip
 
 /-- Formatting any `WellFormedTable` produces valid TOML text that parses back `TomlTableEquiv` to the input. -/
 def test_toml_format_validAndRoundTrip
-    {runner} [NondetTest runner] (api : TomlApi) : runner Unit := do
+    {runner} [NondetTest runner] (mkApi : LeanSwe.NumParse.NumParseApi → TomlApi)
+    (num : LeanSwe.NumParse.NumParseApi) : runner Unit := do
+  assume (LeanSwe.NumParse.Model.ObeysApi num)
+  let api := mkApi num
   let doc ← nondet TomlTable
   assume (Model.WellFormedTable doc)
   let txt := api.format doc
@@ -74,25 +81,37 @@ def test_toml_format_validAndRoundTrip
 
 /-- Keys, dotted keys, statement boundaries, and 4-state table provenance conform to TOML 1.0. -/
 def test_toml_keysAndProvenance_conformsToSpec
-    {runner} [NondetTest runner] (api : TomlApi) : runner Unit := do
+    {runner} [NondetTest runner] (mkApi : LeanSwe.NumParse.NumParseApi → TomlApi)
+    (num : LeanSwe.NumParse.NumParseApi) : runner Unit := do
+  assume (LeanSwe.NumParse.Model.ObeysApi num)
+  let api := mkApi num
   keyProvenanceOkCases.forM (checkParseEquiv api)
   keyProvenanceErrCases.forM (checkParseErrorKind api)
 
 /-- Inline tables, arrays, and `[[array_of_tables]]` rules conform to TOML 1.0. -/
 def test_toml_inlineTablesAndAot_conformsToSpec
-    {runner} [NondetTest runner] (api : TomlApi) : runner Unit := do
+    {runner} [NondetTest runner] (mkApi : LeanSwe.NumParse.NumParseApi → TomlApi)
+    (num : LeanSwe.NumParse.NumParseApi) : runner Unit := do
+  assume (LeanSwe.NumParse.Model.ObeysApi num)
+  let api := mkApi num
   inlineAotOkCases.forM (checkParseEquiv api)
   inlineAotErrCases.forM (checkParseErrorKind api)
 
 /-- String escapes, multiline whitespace/quote boundaries, CRLF normalization, and control rejections conform to TOML 1.0. -/
 def test_toml_stringsAndControls_conformsToSpec
-    {runner} [NondetTest runner] (api : TomlApi) : runner Unit := do
+    {runner} [NondetTest runner] (mkApi : LeanSwe.NumParse.NumParseApi → TomlApi)
+    (num : LeanSwe.NumParse.NumParseApi) : runner Unit := do
+  assume (LeanSwe.NumParse.Model.ObeysApi num)
+  let api := mkApi num
   stringOkCases.forM (checkParseEquiv api)
   stringErrCases.forM (checkParseErrorKind api)
 
 /-- Integer/float delegation (`NumParse`), `0X` rejection, overflow classification, and RFC 3339 datetimes conform to TOML 1.0. -/
 def test_toml_numbersAndDatetimes_conformsToSpec
-    {runner} [NondetTest runner] (api : TomlApi) : runner Unit := do
+    {runner} [NondetTest runner] (mkApi : LeanSwe.NumParse.NumParseApi → TomlApi)
+    (num : LeanSwe.NumParse.NumParseApi) : runner Unit := do
+  assume (LeanSwe.NumParse.Model.ObeysApi num)
+  let api := mkApi num
   numberDatetimeOkCases.forM (checkParseEquiv api)
   floatBitCases.forM (checkParseFloatBits api)
   numberDatetimeErrCases.forM (checkParseErrorKind api)

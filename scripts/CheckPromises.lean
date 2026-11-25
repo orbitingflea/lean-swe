@@ -2985,9 +2985,7 @@ private def auditImportDagEnv
 (after removing the unused `import LeanSwe.LinuxSyscall.Net.Interface` from
 `LeanSwe/LinuxSyscall/Net/Model/State.lean`). Every entry must stay active; removing a listed
 violation forces removing its entry from this table, and any new violation fails the audit gate. -/
-private def importDagAllowlist : Array String := #[
-  "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.Proofs"
-]
+private def importDagAllowlist : Array String := #[]
 
 /-- Shrinking ratchet allowlist of pre-existing constants from disallowed non-API roles
 (`Properties`, `Proofs`, `SpecMutants`, `RuntimeTests`, `TestSupport`, `Umbrella`, `Other`)
@@ -3214,6 +3212,7 @@ private def isKnownContractPredHead (fn : Name) : Bool :=
     fn == `Core.ObeysPureEqUpToErrMsg || fn == `Core.ObeysPureEqUpToErrMsg2 ||
     fn == `Core.ObeysPureEqUpToErrMsg3 || fn == `Core.ObeysPureEqUpToErrMsg4 ||
     fn == `Core.ObeysInverseRender || fn == `Core.ObeysInverseRenderWithin ||
+    fn == `Core.ObeysPureFrom || fn == `Core.ObeysInverseRenderFrom ||
     fn == `Core.ObeysStep || fn == `Core.ObeysStepExcept || fn == `Core.ObeysStepId ||
     fn == `Core.ObeysStepFrom || fn == `Core.ObeysStepFromFinally ||
     fn == `Core.ObeysStepFromConc || fn == `Core.ObeysStepFromExcept || fn == `Core.ObeysStepFrom2 ||
@@ -3773,12 +3772,166 @@ private def findInverseRenderModel?
       st.restore
   return none
 
+private structure PureCompositeCtx where
+  depPkg : Name
+  depTy : Expr
+  u1 : Level
+  pkgStName : Name
+  pkgApiTy : Expr
+  u2 : Level
+  mkFn : Name
+  depObeysExpr : Expr
+
+private def resolvePureCompositeContext?
+    (env : Environment) (knownPkgs : Array Name) (spec : ManifestPkgSpec) :
+    MetaM (Option PureCompositeCtx) := do
+  let pkg := spec.name
+  let ifaceMod := Name.str pkg "Interface"
+  let defApiName := Name.str pkg "defaultApi"
+  let some (.defnInfo dv) := env.find? defApiName | return none
+  if modOfConst env defApiName != ifaceMod then return none
+  let body := dv.value.consumeMData
+  let .const mkFn _ := body.getAppFn.consumeMData | return none
+  if !isPkgBuilderConst env pkg mkFn then return none
+  let valArgs ← collectNonTypeNonInstArgs env mkFn body.getAppArgs
+  if valArgs.size != 1 then return none
+  let .const depDefCap _ := (etaReduceExpr valArgs[0]!).consumeMData | return none
+  let depSet : Std.HashSet Name := spec.deps.foldl (fun s d => s.insert d) {}
+  if !isDepDefaultCap depSet depDefCap then return none
+  let depPkg := depDefCap.getPrefix
+  let depModelMods := collectPkgModelModules env depPkg
+  let depObeysName := Name.str (Name.str depPkg "Model") "ObeysApi"
+  if !env.contains depObeysName || isPrivateOrInternal depObeysName ||
+      !depModelMods.contains (modOfConst env depObeysName) then
+    return none
+  let some depCapInfo := env.find? depDefCap | return none
+  let depTy := depCapInfo.type
+  let pkgApiTy := dv.type
+  let pkgApiW := (← Meta.withTransparency .reducible (Meta.whnf pkgApiTy)).consumeMData
+  let .const pkgStName _ := pkgApiW.getAppFn.consumeMData | return none
+  if !Lean.isStructure env pkgStName || dagPkgOf knownPkgs (modOfConst env pkgStName) != pkg then
+    return none
+  let .sort (.succ u1) := (← Meta.whnf (← Meta.inferType depTy)).consumeMData | return none
+  let .sort (.succ u2) := (← Meta.whnf (← Meta.inferType pkgApiTy)).consumeMData | return none
+  return some {
+    depPkg
+    depTy
+    u1
+    pkgStName
+    pkgApiTy
+    u2
+    mkFn := unfoldThinIfaceBuilder env pkg mkFn
+    depObeysExpr := mkConst depObeysName []
+  }
+
+private def extractInterfaceProjOnDefaultApi?
+    (env : Environment) (defApiName pkgStName opName : Name) : Option Name :=
+  match env.find? opName with
+  | some (.defnInfo dv) =>
+    if !exprDelegatesToCanonicalDefault env defApiName (Name.str defApiName.getPrefix "defaultOps") dv.value then
+      none
+    else
+      let body := (peelLambdas (etaReduceExpr dv.value)).consumeMData
+      let fn := body.getAppFn.consumeMData
+      let args := body.getAppArgs
+      match fn with
+      | .proj stName idx s =>
+        if stName == pkgStName && s.consumeMData.isConstOf defApiName then
+          let flds := Lean.getStructureFields env stName
+          flds[idx]?.map fun fld => Name.str stName fld.toString
+        else none
+      | .const projFn _ =>
+        if env.isProjectionFn projFn && projFn.getPrefix == pkgStName &&
+            args.any (fun a => a.consumeMData.isConstOf defApiName) then
+          some projFn
+        else none
+      | _ => none
+  | _ => none
+
+private def projDependsOnCapParam (depTy mkExpr projExpr : Expr) : MetaM Bool := do
+  Meta.withLocalDeclD `_capDep1 depTy fun d1 =>
+    Meta.withLocalDeclD `_capDep2 depTy fun d2 => do
+      let st ← Meta.saveState
+      try
+        let eq ← Meta.withNewMCtxDepth <| Meta.withTransparency .default <|
+          Meta.isDefEq (mkApp projExpr (mkApp mkExpr d1)) (mkApp projExpr (mkApp mkExpr d2))
+        return !eq
+      catch _ =>
+        return true
+      finally
+        st.restore
+
+private def constTransitivelyTouchesImplOrIface
+    (env : Environment) (knownPkgs : Array Name) (start : Name) : Bool := Id.run do
+  let mut work : Array Name := #[start]
+  let mut seen : Std.HashSet Name := {}
+  while !work.isEmpty do
+    let cur := work.back!
+    work := work.pop
+    if seen.contains cur then continue
+    seen := seen.insert cur
+    let m := modOfConst env cur
+    if m.getRoot == `LeanSwe && m != `LeanSwe then
+      let role := dagRoleOf knownPkgs m
+      if role == .impl || role == .iface || role == .sysBridge then
+        return true
+    if !isProjectModule m then continue
+    if let some ci := env.find? cur then
+      let valUsed := match ci with
+        | .defnInfo v => v.value.getUsedConstants
+        | .thmInfo v => v.value.getUsedConstants
+        | .opaqueInfo v => v.value.getUsedConstants
+        | _ => #[]
+      for u in ci.type.getUsedConstants ++ valUsed do
+        if !seen.contains u then
+          work := work.push u
+  return false
+
+private def hasPureFromSatisfiabilityWitness
+    (env : Environment) (knownPkgs : Array Name) (depPkg pkg : Name)
+    (depTy depObeys : Expr) (axCacheIn : AxCache) : MetaM (Bool × AxCache) := do
+  let mut axCache := axCacheIn
+  let depModelMods := collectPkgModelModules env depPkg
+  let proofsMod := Name.str pkg "Proofs"
+  let proofsPfx := proofsMod.toString ++ "."
+  for h : i in [0 : env.header.moduleNames.size] do
+    let m := env.header.moduleNames[i]
+    if !depModelMods.contains m && m != proofsMod && !m.toString.startsWith proofsPfx then
+      continue
+    let some data := env.header.moduleData[i]? | continue
+    for c in data.constants do
+      let .thmInfo tv := c | continue
+      if isPrivateOrInternal c.name || env.isProjectionFn c.name then continue
+      let tc := tv.type.consumeMData
+      if !tc.isAppOfArity ``Exists 2 then continue
+      let typeMatches ← do
+        let st ← Meta.saveState
+        try
+          Meta.withNewMCtxDepth <| Meta.withTransparency .default do
+            if !(← Meta.isDefEq tc.appFn!.appArg! depTy) then
+              return false
+            Meta.withLocalDeclD `_witDep depTy fun d =>
+              Meta.isDefEq (mkApp tc.appArg! d) (mkApp depObeys d)
+        catch _ =>
+          pure false
+        finally
+          st.restore
+      if !typeMatches then continue
+      let (badAx?, nextAx) ← (checkAxiomsOk c.name).run axCache
+      axCache := nextAx
+      if badAx?.isSome then continue
+      if constTransitivelyTouchesImplOrIface env knownPkgs c.name then continue
+      return (true, axCache)
+  return (false, axCache)
+
 private def synthPureOpConjunct
     (env : Environment) (spec : ManifestPkgSpec)
     (modelMods : Std.HashSet Name) (modelDefs : Array Name)
+    (compCtx? : Option PureCompositeCtx)
     (opName : Name) (opTy : Expr) : MetaM (Except String Expr) := do
   let some opInfo := env.find? opName
     | return .error s!"missing constant {opName}"
+  let defApiName := Name.str spec.name "defaultApi"
   Meta.forallTelescope opTy fun xs ret => do
     let mut polyXs : Array Expr := #[]
     let mut valXs : Array Expr := #[]
@@ -3807,6 +3960,27 @@ private def synthPureOpConjunct
     let allowedTy := argTys.foldr (fun d b => Expr.forallE `_ d b .default)
       (Expr.forallE `_ retTy (.sort .zero) .default)
     let retW := (← Meta.withTransparency .reducible (Meta.whnf retTy)).consumeMData
+    let pureFromTarget? : Option (PureCompositeCtx × Expr × Expr) ← do
+      if !polyXs.isEmpty || arity != 1 then
+        pure none
+      else
+        match compCtx? with
+        | none => pure none
+        | some ctx =>
+          match extractInterfaceProjOnDefaultApi? env defApiName ctx.pkgStName opName with
+          | none => pure none
+          | some projFn =>
+            let mkInfo? := env.find? ctx.mkFn
+            let projInfo? := env.find? projFn
+            match mkInfo?, projInfo? with
+            | some mkCi, some projCi =>
+              let mkExpr := mkConst ctx.mkFn (mkCi.levelParams.map fun _ => Level.zero)
+              let projExpr := mkConst projFn (projCi.levelParams.map fun _ => Level.zero)
+              if ← projDependsOnCapParam ctx.depTy mkExpr projExpr then
+                pure (some (ctx, mkExpr, projExpr))
+              else
+                pure none
+            | _, _ => pure none
 
     if spec.specStyle? == some "inverse_render" && arity == 1 && retW.isAppOfArity ``Except 2 then
       let errTy := retW.appFn!.appArg!
@@ -3828,11 +4002,15 @@ private def synthPureOpConjunct
           let equivExpr := match equiv? with
             | some (_, eqE) => eqE
             | none => mkApp (mkConst ``Eq [Level.succ Level.zero]) objTy
-          let pred := match within? with
-            | some (_, withinExpr) =>
+          let pred := match within?, pureFromTarget? with
+            | some (_, withinExpr), _ =>
               mkAppN (mkConst `Core.ObeysInverseRenderWithin [])
                 #[objTy, tapeTy, rawTy, errTy, opApplied, renderExpr, withinExpr, wfExpr, equivExpr, msgExpr]
-            | none =>
+            | none, some (ctx, mkExpr, projExpr) =>
+              mkAppN (mkConst `Core.ObeysInverseRenderFrom [ctx.u1, ctx.u2])
+                #[ctx.depTy, ctx.pkgApiTy, objTy, tapeTy, rawTy, errTy,
+                  ctx.depObeysExpr, mkExpr, projExpr, renderExpr, wfExpr, equivExpr, msgExpr]
+            | none, none =>
               mkAppN (mkConst `Core.ObeysInverseRender [])
                 #[objTy, tapeTy, rawTy, errTy, opApplied, renderExpr, wfExpr, equivExpr, msgExpr]
           return .ok (← Meta.mkForallFVars polyXs pred)
@@ -3867,12 +4045,17 @@ private def synthPureOpConjunct
     if let some (_, allowedExpr) ← findModelConstByShortNames? env modelMods modelDefs spec.name #[allowedShort] polyXs allowedTy then
       if isTrivialTruePred env allowedExpr then
         return .error s!"pure op {opName} matched tautological predicate {allowedShort}"
-      let head := match arity with
-        | 1 => `Core.ObeysPure
-        | 2 => `Core.ObeysPure2
-        | 3 => `Core.ObeysPure3
-        | _ => `Core.ObeysPure4
-      let pred := mkAppN (mkConst head []) (argTys ++ #[retTy, opApplied, allowedExpr])
+      let pred := match pureFromTarget? with
+        | some (ctx, mkExpr, projExpr) =>
+          mkAppN (mkConst `Core.ObeysPureFrom [ctx.u1, ctx.u2])
+            #[ctx.depTy, ctx.pkgApiTy, argTys[0]!, retTy, ctx.depObeysExpr, mkExpr, projExpr, allowedExpr]
+        | none =>
+          let head := match arity with
+            | 1 => `Core.ObeysPure
+            | 2 => `Core.ObeysPure2
+            | 3 => `Core.ObeysPure3
+            | _ => `Core.ObeysPure4
+          mkAppN (mkConst head []) (argTys ++ #[retTy, opApplied, allowedExpr])
       return .ok (← Meta.mkForallFVars polyXs pred)
 
     return .error s!"no matching Model spec for pure op {opName} (tried Model.{camel}, Model.{camel}Model, Model.{allowedShort})"
@@ -4330,13 +4513,14 @@ private def auditModelObeysSynthesis
     return #[s!"OBEYS_SYNTH_EMPTY_INTERFACE: {pkg}.Interface exposes zero public operations"]
   let modelMods := collectPkgModelModules env pkg
   let modelDefs := collectModelDefNames env modelMods
+  let compCtx? ← resolvePureCompositeContext? env knownPkgs spec
   let mut errs : Array String := #[]
   let hasOuterBinders := thmType.consumeMData.isForall
   if hasOuterBinders then
     errs := errs.push s!"OBEYS_SYNTH_OUTER_BINDERS: {thmName} must bind parameters per conjunct, not at outer level"
   let actualAtoms := collectConclusionAtoms thmType
   for (opName, opTy) in pureOps do
-    match ← synthPureOpConjunct env spec modelMods modelDefs opName opTy with
+    match ← synthPureOpConjunct env spec modelMods modelDefs compCtx? opName opTy with
     | .error reason =>
       errs := errs.push s!"OBEYS_SYNTH_NO_MODEL_OP: {reason}"
     | .ok expectedExpr =>
@@ -4532,8 +4716,9 @@ private def renderSynthesizedObeysSig
       (env.contains (Name.str pkg "defaultOps") && modOfConst env (Name.str pkg "defaultOps") == ifaceMod)
     let modelMods := collectPkgModelModules env pkg
     let modelDefs := collectModelDefNames env modelMods
+    let compCtx? ← resolvePureCompositeContext? env knownPkgs spec
     for (opName, opTy) in pureOps do
-      match ← synthPureOpConjunct env spec modelMods modelDefs opName opTy with
+      match ← synthPureOpConjunct env spec modelMods modelDefs compCtx? opName opTy with
       | .ok expectedExpr =>
         conjuncts := conjuncts.push (← formatSynthExpr expectedExpr)
       | .error reason =>
@@ -4681,6 +4866,7 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
       let hasObeys := env.contains obeysName
       let hasRefines := env.contains refinesName
       let mut stepFromConjs : Array (Name × Array Expr × Expr) := #[]
+      let mut pureFromConjs : Array (Expr × Expr × Expr × Expr × Expr) := #[]
       let mut thmName? : Option Name := none
       if hasObeys && hasRefines then
         mHard := mHard.push s!"DUPLICATE_OBEYS_AND_REFINES_MODEL: {pkg} defines both {obeysName} and {refinesName}"
@@ -4698,17 +4884,19 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
           axCache := nextAx
           if let some badAx := badAx? then
             mHard := mHard.push s!"UNALLOWED_AXIOM_IN_OBEYS_MODEL: {thmName} uses [{badAx}]"
-          let (conjErrs, sfConjs) ← Meta.forallTelescope tv.type fun outerXs body => do
+          let (conjErrs, sfConjs, pfConjs) ← Meta.forallTelescope tv.type fun outerXs body => do
             let mut cErrs : Array String := #[]
             let mut sfs : Array (Name × Array Expr × Expr) := #[]
+            let mut pfs : Array (Expr × Expr × Expr × Expr × Expr) := #[]
             for ox in outerXs do
               if ← Meta.isProp (← Meta.inferType ox) then
                 cErrs := cErrs.push s!"CONDITIONAL_OBEYS_MODEL: {thmName} has outer Prop hypothesis"
             let atoms := collectConclusionAtoms body
             let mut contractCount : Nat := 0
             for atom in atoms do
-              let (aErrs, isContract, sf?) ← Meta.forallTelescope atom fun axs abRaw => do
+              let (aErrs, isContract, sf?, pf?) ← Meta.forallTelescope atom fun axs abRaw => do
                 let mut ae : Array String := #[]
+                let mut pfOut? : Option (Expr × Expr × Expr × Expr × Expr) := none
                 for ax in axs do
                   if ← Meta.isProp (← Meta.inferType ax) then
                     ae := ae.push s!"CONDITIONAL_OBEYS_MODEL: {thmName} conjunct has Prop hypothesis"
@@ -4717,10 +4905,10 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
                 match fn with
                 | .const fnName _ =>
                   if fnName == ``Exists then
-                    return (ae, false, none)
+                    return (ae, false, none, none)
                   else if !isKnownContractPredHead fnName then
                     ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has unsupported conjunct head {fnName}"
-                    return (ae, false, none)
+                    return (ae, false, none, none)
                   else
                     let args := ab.getAppArgs
                     if (fnName == `Core.ObeysPure || fnName == `Core.RefinesPure) && args.size == 4 then
@@ -4742,6 +4930,17 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
                       if (← isVacuousFalseUnaryPred env args[1]! args[6]!) ||
                           (← isVacuousFalseUnaryPred env args[0]! args[7]!) then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous False withinLimits or wf in ObeysInverseRenderWithin"
+                    else if fnName == `Core.ObeysPureFrom && args.size == 8 then
+                      if (← isVacuousFalseUnaryPred env args[0]! args[4]!) || isTrivialTruePred env args[7]! then
+                        ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous depObeys or allowed in ObeysPureFrom"
+                      else
+                        pfOut? := some (args[0]!, args[1]!, args[4]!, args[5]!, args[6]!)
+                    else if fnName == `Core.ObeysInverseRenderFrom && args.size == 13 then
+                      if (← isVacuousFalseUnaryPred env args[0]! args[6]!) ||
+                          (← isVacuousFalseUnaryPred env args[2]! args[10]!) then
+                        ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous depObeys or wf in ObeysInverseRenderFrom"
+                      else
+                        pfOut? := some (args[0]!, args[1]!, args[6]!, args[7]!, args[8]!)
                     else if (fnName == `Core.ObeysStep || fnName == `Core.ObeysStepExcept || fnName == `Core.RefinesStep) && args.size == 8 then
                       if isTrivialFalseBoolFn env args[5]! || isTrivialTruePred env args[7]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous wf or allowedStep"
@@ -4758,18 +4957,82 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
                       if isTrivialFalsePred env args[14]! || isTrivialFalsePred env args[16]! ||
                           isTrivialFalseBoolFn env args[17]! || isTrivialTruePred env args[20]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous rawAllowed, pkgWf, or pkgAllowed"
-                    return (ae, true, extractStepFromConj? ab)
+                    return (ae, true, extractStepFromConj? ab, pfOut?)
                 | _ =>
                   ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has non-constant conjunct head"
-                  return (ae, false, none)
+                  return (ae, false, none, none)
               cErrs := cErrs ++ aErrs
               if isContract then contractCount := contractCount + 1
               if let some sf := sf? then sfs := sfs.push sf
+              if let some pf := pf? then pfs := pfs.push pf
             if contractCount == 0 then
               cErrs := cErrs.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} contains zero Core.Obeys/Core.Refines contracts"
-            return (cErrs, sfs)
+            return (cErrs, sfs, pfs)
           mHard := mHard ++ conjErrs
           stepFromConjs := sfConjs
+          pureFromConjs := pfConjs
+          if !pureFromConjs.isEmpty then
+            let defApiName := Name.str pkg "defaultApi"
+            let defApiMk? ← match ← checkCompositeDefaultDef env pkg depSet false defApiName with
+              | .ok mkFn => pure (some (unfoldThinIfaceBuilder env pkg mkFn))
+              | .error err =>
+                mHard := mHard.push s!"MIDDLE_HOOK_VIOLATION: {err}"
+                pure none
+            for (depTy, pkgApiTy, depObeys, mkArg, projArg) in pureFromConjs do
+              let depObeysClean := (etaReduceExpr depObeys).consumeMData
+              let mkClean := (peelLambdas (etaReduceExpr mkArg)).consumeMData
+              let projClean := (etaReduceExpr projArg).consumeMData
+              match depObeysClean, mkClean.getAppFn.consumeMData, projClean.getAppFn.consumeMData with
+              | .const depObeysFn _, .const mkFn _, .const projFn _ =>
+                if isPrivateOrInternal depObeysFn || isPrivateOrInternal mkFn || isPrivateOrInternal projFn then
+                  mHard := mHard.push s!"PURE_FROM_WIRING_VIOLATION: {thmName} uses private/internal constant in Obeys*From"
+                else
+                  let depMod := modOfConst env depObeysFn
+                  let depPkg := dagPkgOf knownPkgs depMod
+                  let depModelMods := collectPkgModelModules env depPkg
+                  if !depSet.contains depPkg || !depModelMods.contains depMod then
+                    mHard := mHard.push s!"PURE_FROM_WIRING_VIOLATION: {thmName} uses {depObeysFn} outside declared manifest.deps .Model"
+                  else if constTransitivelyTouchesImplOrIface env knownPkgs depObeysFn then
+                    mHard := mHard.push s!"PURE_FROM_WIRING_VIOLATION: {thmName} depObeys {depObeysFn} references Impl/Interface"
+                  else
+                    let depTyOk ← match ← extractCapTypeHead? depTy with
+                      | some dHead => pure (dagPkgOf knownPkgs (modOfConst env dHead) == depPkg)
+                      | none => pure false
+                    if !depTyOk then
+                      mHard := mHard.push s!"PURE_FROM_WIRING_VIOLATION: {thmName} capability type in Obeys*From does not belong to {depPkg}"
+                    if !isPkgBuilderConst env pkg mkFn then
+                      mHard := mHard.push s!"PURE_FROM_WIRING_VIOLATION: {thmName} builder {mkFn} is not a {pkg} mk* builder"
+                    if let some defMkCanon := defApiMk? then
+                      if unfoldThinIfaceBuilder env pkg mkFn != defMkCanon then
+                        mHard := mHard.push s!"MIDDLE_HOOK_VIOLATION: {defApiName} builder does not match {mkFn} in {thmName}"
+                    let projOk ← match ← extractCapTypeHead? pkgApiTy with
+                      | some pHead =>
+                        pure (env.isProjectionFn projFn && projFn.getPrefix == pHead &&
+                          dagPkgOf knownPkgs (modOfConst env pHead) == pkg)
+                      | none => pure false
+                    if !projOk then
+                      mHard := mHard.push s!"PURE_FROM_WIRING_VIOLATION: {thmName} projection {projFn} is not a {pkg} capability field projection"
+                    let depDefaultApi := Name.str depPkg "defaultApi"
+                    let depObeysThm := Name.str (Name.str depPkg "Proofs") "obeys_model"
+                    match env.find? depDefaultApi, env.find? depObeysThm with
+                    | some (.defnInfo _), some (.thmInfo depTv) =>
+                      let bridgeOk ← do
+                        let st ← Meta.saveState
+                        try
+                          Meta.withNewMCtxDepth <| Meta.withTransparency .default <|
+                            Meta.isDefEq depTv.type (mkApp depObeys (mkConst depDefaultApi [])).headBeta
+                        catch _ => pure false
+                        finally st.restore
+                      if !bridgeOk then
+                        mHard := mHard.push s!"PURE_FROM_OBEYS_MISMATCH: {thmName} assumes {depObeysFn} which is not definitionally equal to {depObeysThm} on {depDefaultApi}"
+                    | _, _ =>
+                      mHard := mHard.push s!"PURE_FROM_OBEYS_MISMATCH: {thmName} requires {depDefaultApi} and {depObeysThm} to discharge {depObeysFn}"
+                    let (hasWit, nextAxW) ← hasPureFromSatisfiabilityWitness env knownPkgs depPkg pkg depTy depObeys axCache
+                    axCache := nextAxW
+                    if !hasWit then
+                      mHard := mHard.push s!"MISSING_PURE_FROM_WITNESS: {thmName} uses {depObeysFn} without an Impl/Interface-free theorem ∃ d, {depObeysFn} d"
+              | _, _, _ =>
+                mHard := mHard.push s!"PURE_FROM_WIRING_VIOLATION: {thmName} has non-bare depObeys, mkApi, or projOp in Obeys*From"
           if hasModelMod && modSet.contains ifaceMod then
             mSynthCnt := mSynthCnt + 1
             let synthErrs ← auditModelObeysSynthesis env knownPkgs spec (ifaceHasPrivateExtern.contains pkg) thmName tv.type
