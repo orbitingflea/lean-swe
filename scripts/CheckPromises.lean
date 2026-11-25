@@ -223,8 +223,7 @@ private def discoverPackageModules (env : Environment) (extraMods : Array Name) 
   for m in env.header.moduleNames ++ extraMods do
     let s := m.toString
     if s == prefStr || s.startsWith (prefStr ++ ".") then
-      let last := nameLastStr m
-      if last != "RuntimeTests" && last != "SpecMutants" && !mods.contains m then
+      if !m.components.contains `RuntimeTests && !m.components.contains `SpecMutants && !mods.contains m then
         mods := mods.push m
   return mods
 
@@ -1091,12 +1090,29 @@ private def isAllowedGitDirectImport (srcMod imp : Name) : Bool :=
   else match srcMod with
   | `LeanSwe.Git.Types => false
   | `LeanSwe.Git.Model => imp == `LeanSwe.Git.Types
-  | `LeanSwe.Git.Impl => imp == `LeanSwe.Git.Types || imp == `LeanSwe.Git.Model
+  | `LeanSwe.Git.Model.Refines =>
+    imp ∈ [`LeanSwe.Git.Types, `LeanSwe.Git.Model,
+      `LeanSwe.EnvVars.Types, `LeanSwe.EnvVars.Model, `LeanSwe.EnvVars.Raw.Types, `LeanSwe.EnvVars.Raw.Model,
+      `LeanSwe.Process.Types, `LeanSwe.Process.Model]
+  | `LeanSwe.Git.Impl =>
+    imp ∈ [`LeanSwe.Git.Types, `LeanSwe.Git.Model, `LeanSwe.Git.Model.Refines,
+      `LeanSwe.Git.Impl.Helpers, `LeanSwe.Git.Impl.QueryOps, `LeanSwe.Git.Impl.MutOps,
+      `LeanSwe.EnvVars.Types, `LeanSwe.Process.Types]
   | `LeanSwe.Git.Interface =>
-    imp ∈ [`LeanSwe.Git.Types, `LeanSwe.Git.Model, `LeanSwe.Git.Impl,
+    imp ∈ [`LeanSwe.Git.Types, `LeanSwe.Git.Model, `LeanSwe.Git.Model.Refines, `LeanSwe.Git.Impl,
       `LeanSwe.Process.Types, `LeanSwe.Process.Interface, `LeanSwe.EnvVars.Types, `LeanSwe.EnvVars.Interface]
-  | `LeanSwe.Git.SpecTests => imp ∈ [`LeanSwe.Git.Types, `LeanSwe.Git.Model, `LeanSwe.Git.Impl, `LeanSwe.Git.Interface]
-  | _ => if srcMod == `LeanSwe.Git.Proofs || srcMod.components.contains `Proofs then
+  | `LeanSwe.Git.SpecTests =>
+    imp ∈ [`LeanSwe.Git.Types, `LeanSwe.Git.Model, `LeanSwe.Git.Impl, `LeanSwe.Git.Interface] ||
+      imp.components.take 3 == [`LeanSwe, `Git, `SpecTests]
+  | _ =>
+    if srcMod.components.take 3 == [`LeanSwe, `Git, `Impl] then
+      imp ∈ [`LeanSwe.Git.Types, `LeanSwe.Git.Model, `LeanSwe.Git.Model.Refines,
+        `LeanSwe.EnvVars.Types, `LeanSwe.Process.Types] ||
+        imp.components.take 3 == [`LeanSwe, `Git, `Impl]
+    else if srcMod.components.take 3 == [`LeanSwe, `Git, `SpecTests] then
+      imp ∈ [`LeanSwe.Git.Types, `LeanSwe.Git.Model] ||
+        imp.components.take 3 == [`LeanSwe, `Git, `SpecTests]
+    else if srcMod == `LeanSwe.Git.Proofs || srcMod.components.contains `Proofs then
       let p := imp.components.take 2; p == [`LeanSwe, `Git] || p == [`LeanSwe, `Process] || p == [`LeanSwe, `EnvVars]
     else false
 
@@ -1123,10 +1139,11 @@ private def checkGitTrustedClosure (env : Environment) (extraMods : Array Name) 
         if !isProjectModule uMod then
           if !stdVisited.contains (u, false) then stdQueue := stdQueue.push (m, false, u)
         else if uMod != m && !isAllowedGitDirectImport m uMod &&
-            !(m == `LeanSwe.Git.Interface && uMod == `LeanSwe.EnvVars.Raw.Types) then
+            !((m == `LeanSwe.Git.Interface || m == `LeanSwe.Git.Impl || m.components.take 3 == [`LeanSwe, `Git, `Impl]) &&
+              uMod == `LeanSwe.EnvVars.Raw.Types) then
           errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_REF: {c.name} in {m} references {u} in {uMod}"
         else if m == `LeanSwe.Git.Interface && (uMod == `LeanSwe.Process.Interface || uMod == `LeanSwe.EnvVars.Interface) &&
-            u != `LeanSwe.Process.run && u != `LeanSwe.EnvVars.listEnv then
+            u != `LeanSwe.Process.defaultApi && u != `LeanSwe.EnvVars.defaultApi then
           errs := errs.push s!"TRUSTED_CLOSURE_GIT_WIRING: {c.name} in {m} references {u}"
   while !stdQueue.isEmpty do
     let (originMod, inStdImpl, cName) := stdQueue.back!; stdQueue := stdQueue.pop
@@ -1147,12 +1164,15 @@ private def checkGitTrustedClosure (env : Environment) (extraMods : Array Name) 
     let extra : List Name := match cinfo with | .ctorInfo v => [v.induct] | .recInfo v => v.all | .inductInfo v => v.all ++ v.ctors | _ => []
     for u in cinfo.type.getUsedConstants ++ (cinfo.value?.map (·.getUsedConstants) |>.getD #[]) ++ extra.toArray do
       if !stdVisited.contains (u, inStdImpl) then stdQueue := stdQueue.push (originMod, inStdImpl, u)
-  for fn in [`LeanSwe.Git.defaultRawOps, `LeanSwe.Git.defaultApi] do
+  for fn in [`LeanSwe.Git.defaultOps, `LeanSwe.Git.defaultApi] do
     if (env.getModuleIdxFor? fn |>.bind (env.header.moduleNames[·]?)) != some `LeanSwe.Git.Interface || !(env.find? fn matches some (.defnInfo _)) then
       errs := errs.push s!"TRUSTED_CLOSURE_GIT_WIRING: {fn} must be a safe def in LeanSwe.Git.Interface"
+  if let some (.defnInfo dv) := env.find? `LeanSwe.Git.defaultOps then
+    if !dv.value.consumeMData.getAppFn.consumeMData.isConstOf `LeanSwe.Git.Impl.mkRawOpsM then
+      errs := errs.push "TRUSTED_CLOSURE_GIT_WIRING: defaultOps must call LeanSwe.Git.Impl.mkRawOpsM"
   if let some (.defnInfo dv) := env.find? `LeanSwe.Git.defaultApi then
-    if !dv.value.consumeMData.getAppFn.consumeMData.isConstOf `LeanSwe.Git.Impl.mkApiM then
-      errs := errs.push "TRUSTED_CLOSURE_GIT_WIRING: defaultApi must call LeanSwe.Git.Impl.mkApiM"
+    if !dv.value.consumeMData.getAppFn.consumeMData.isConstOf `LeanSwe.Git.Impl.mkApiFromCapsM then
+      errs := errs.push "TRUSTED_CLOSURE_GIT_WIRING: defaultApi must call LeanSwe.Git.Impl.mkApiFromCapsM"
   IO.println s!"TRUSTED_CLOSURE: git_modules={gitMods.size} allowlist=Git+Process+EnvVars"
   return errs
 
@@ -2968,8 +2988,6 @@ private def importDagAllowlist : Array String := #[
   "CROSS|LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs|LeanSwe.NetRelay.Proofs",
   "CROSS|LeanSwe.CryptoHash.Proofs|LeanSwe.CryptoHash.Raw.Proofs",
   "CROSS|LeanSwe.EnvVars.Proofs|LeanSwe.EnvVars.Raw.Proofs",
-  "CROSS|LeanSwe.Git.Proofs.ImpossibleProofs|LeanSwe.EnvVars.Proofs",
-  "CROSS|LeanSwe.Git.Proofs.ImpossibleProofs|LeanSwe.Process.Proofs.EndToEnd",
   "CROSS|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.LinuxSyscall.Process.Proofs",
   "CROSS|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.LinuxSyscall.TimeRand.Proofs",
   "CROSS|LeanSwe.Process.Proofs.HealthyStep|LeanSwe.LinuxSyscall.Files.Proofs.HealthyStep",
@@ -3158,7 +3176,6 @@ private def loadPackageManifest (repoDir : System.FilePath) : IO (Except String 
 stale entries as follow-up PRs land. -/
 private def modelPresenceAllowlist : Array String := #[
   "MISSING_MODEL|LeanSwe.Json",
-  "MISSING_OBEYS_MODEL|LeanSwe.Git",
   "MISSING_OBEYS_MODEL|LeanSwe.Json",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Files",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Net",
@@ -3174,7 +3191,6 @@ private def middleHookAllowlist : Array String := #[
   "MIDDLE_HOOK|LeanSwe.CmdLine",
   "MIDDLE_HOOK|LeanSwe.ConnectProxy",
   "MIDDLE_HOOK|LeanSwe.Fs",
-  "MIDDLE_HOOK|LeanSwe.Git",
   "MIDDLE_HOOK|LeanSwe.NetRelay",
   "MIDDLE_HOOK|LeanSwe.Process",
   "MIDDLE_HOOK|LeanSwe.ProcessSandbox.Raw"

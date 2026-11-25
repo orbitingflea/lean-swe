@@ -4,6 +4,7 @@ import LeanSwe.EnvVars.Types
 import LeanSwe.EnvVars.Interface
 import LeanSwe.Git.Types
 import LeanSwe.Git.Model
+import LeanSwe.Git.Model.Refines
 import LeanSwe.Git.Impl
 
 namespace LeanSwe.Git
@@ -13,48 +14,19 @@ open LeanSwe.EnvVars
 
 /-- Map an `EnvVarsError` produced by `EnvVars.listEnv` to a normalized `GitError`. -/
 def mapEnvVarsError (e : EnvVarsError) : GitError :=
-  let msg := if e.message.isEmpty then "failed to read inherited environment variables" else e.message
-  { kind := .commandFailed, message := msg }
+  Impl.mapEnvVarsErrorImpl e
 
 /-- Map a `ProcessError` produced by `Process.run` to a normalized `GitError`. -/
 def mapProcessError (cmd : String) (e : ProcessError) : GitError :=
-  let kind :=
-    match e.kind with
-    | .timedOut => .timeout
-    | .invalidInput => .invalidInput
-    | _ => .commandFailed
-  let msg := if e.message.isEmpty then s!"git {cmd} invocation failed" else e.message
-  { kind := kind
-    command := some cmd
-    exitCode := e.exitCode
-    stderr := e.stderr.map (fun b => (String.fromUTF8? b).getD "")
-    message := msg }
+  Impl.mapProcessErrorImpl cmd e
 
-/-- Default `IO` implementation of `RawGitOps` wired to `EnvVars.listEnv` and `Process.run`. -/
-def defaultRawOps : RawGitOps :=
-  { listEnv := do
-      match ← EnvVars.listEnv with
-      | .ok env => return .ok env
-      | .error e => return .error (mapEnvVarsError e)
-    execGit := fun envOverrides req => do
-      let cmd := req.args[0]?.getD "git"
-      let execReq : ExecRequest :=
-        { program := "git"
-          args := req.args
-          cwd := req.cwd
-          env := envOverrides
-          inheritEnv := true
-          stdin := req.stdin
-          timeoutMs := req.timeoutMs
-          maxOutputBytes := req.maxOutputBytes }
-      match ← Process.run execReq with
-      | .ok res =>
-        return .ok { exitCode := res.exitCode, stdout := res.stdout, stderr := res.stderr }
-      | .error e =>
-        return .error (mapProcessError cmd e) }
+/-- Default `IO` implementation of `RawGitOps` wired to `EnvVars.defaultApi` and `Process.defaultApi`. -/
+def defaultOps : RawGitOps :=
+  Impl.mkRawOpsM { env := EnvVars.defaultApi, proc := Process.defaultApi }
 
-/-- Default `IO` Git API bundle built from `Impl.mkApiM defaultRawOps`. -/
-def defaultApi : GitApi := Impl.mkApiM defaultRawOps
+/-- Default `IO` Git API bundle built from `Impl.mkApiFromCapsM` over `EnvVars.defaultApi` and `Process.defaultApi`. -/
+def defaultApi : GitApi :=
+  Impl.mkApiFromCapsM { env := EnvVars.defaultApi, proc := Process.defaultApi }
 
 /-- Return `true` iff `repoPath` is inside a Git repository. -/
 def isRepo (repoPath : String) : IO (Except GitError Bool) :=

@@ -148,8 +148,12 @@ private def isProjectOrTestModule (m : Name) : Bool :=
 private def isProofsModule (m : Name) : Bool :=
   m.components.any (· == `Proofs)
 
+private def isInModuleSubtree (m root : Name) : Bool :=
+  let rComps := root.components
+  !rComps.isEmpty && m.components.take rComps.length == rComps
+
 private def isSpecOrRuntimeOrProofsModule (m : Name) : Bool :=
-  isProofsModule m || m.getString! == "SpecTests" || m.getString! == "RuntimeTests"
+  isProofsModule m || m.components.contains `SpecTests || m.components.contains `RuntimeTests
 
 private def moduleOfConst (env : Environment) (cName : Name) : Name :=
   env.getModuleIdxFor? cName |>.bind (env.header.moduleNames[·]?) |>.getD .anonymous
@@ -436,7 +440,7 @@ private partial def exprUsesRtHelperWithStack
     (env : Environment) (rtMod : Name) (stack : Array LetBindingInfo) (e : Expr) : Bool :=
   let rec go (depth : Nat) (cur : Expr) : Bool :=
     match cur with
-    | .const c _ => moduleOfConst env c == rtMod
+    | .const c _ => isInModuleSubtree (moduleOfConst env c) rtMod
     | .bvar k =>
       if k < depth then false
       else
@@ -599,7 +603,7 @@ private def constActiveDirectConsts
     return used
   | some rtMod =>
     let keyMod :=
-      if rawBody.getUsedConstants.any (fun k => moduleOfConst env k == rtMod) then rtMod
+      if rawBody.getUsedConstants.any (fun k => isInModuleSubtree (moduleOfConst env k) rtMod) then rtMod
       else Name.anonymous
     let key := (cur, keyMod)
     if let some hit := cache.directStripped.get? key then
@@ -706,7 +710,7 @@ private def usesPackageImplConstActiveCached
   usesPredConstActiveCached env cacheRef (some rtMod)
     (fun c =>
       let m := moduleOfConst env c
-      (m == ifaceMod || m == implMod) && !isCompilerAux c)
+      (m == ifaceMod || isInModuleSubtree m implMod) && !isCompilerAux c)
     start
 
 private partial def exprContainsAnyFVar (fvars : Std.HashSet FVarId) (e : Expr) : Bool :=
@@ -4256,7 +4260,7 @@ unsafe def main (args : List String) : IO UInt32 := do
                 if let some (specName, runFn) ← parseRegisteredAssumption elem then
                   let runClean := runFn.consumeMData
                   if let .const fnName _ := runClean then
-                    if moduleOfConst env fnName != rtMod || fnName.getString! != specName.toName.getString! then
+                    if !isInModuleSubtree (moduleOfConst env fnName) rtMod || fnName.getString! != specName.toName.getString! then
                       errs := errs.push s!"RUNTIME_ASSUMPTION_NAME_MISMATCH: {specName} bound to {fnName}"
                     else
                       let (deadFn, dbCache') ← hasStaticDeadBranchTransitive env cfg.deadBranchFuel dbCache fnName
@@ -4365,7 +4369,7 @@ unsafe def main (args : List String) : IO UInt32 := do
                 if let some (tName, modeCtor, runFn) ← parseRegisteredErrorTest elem then
                   let runClean := runFn.consumeMData
                   if let .const fnName _ := runClean then
-                    if moduleOfConst env fnName != rtMod || fnName.toString != tName then
+                    if !isInModuleSubtree (moduleOfConst env fnName) rtMod || fnName.toString != tName then
                       errs := errs.push s!"ERROR_TEST_NAME_MISMATCH: {tName} bound to {fnName}"
                     else
                       let (deadErrFn, dbCache') ← hasStaticDeadBranchTransitive env cfg.deadBranchFuel dbCache fnName
@@ -4418,7 +4422,7 @@ unsafe def main (args : List String) : IO UInt32 := do
               let some (.thmInfo tv) := env.find? thmName
                 | errs := errs.push s!"MISSING_IMPOSSIBLE_THEOREM: {thmName} for ({req}, {kindCtor})"; continue
               let thmMod := moduleOfConst env thmName
-              if thmMod.getString! == "SpecTests" || thmMod.getString! == "RuntimeTests" then
+              if thmMod.components.contains `SpecTests || thmMod.components.contains `RuntimeTests then
                 errs := errs.push s!"INVALID_THEOREM_LOCATION: {thmName} must be outside SpecTests/RuntimeTests"
               let (badAx?, axCache') ← checkAxiomsOk axCache thmName
               axCache := axCache'
