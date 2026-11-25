@@ -167,15 +167,16 @@ private theorem obeysStepFrom_mkRelayApiM :
       exact ⟨hWf, by simp [execPkgStep, Internal.mkRelayApiM, Internal.closeOptFd,
         Bind.bind, StateT.bind, Pure.pure, StateT.pure, StateT.run], rfl, rfl, rfl, rfl⟩
     | some fd =>
-      rcases hCall : (raw.closeFd fd).run w with ⟨u, w1⟩
+      rcases hCall : (raw.files.close fd).run w with ⟨res, w1⟩
       have hStep := hRaw w (.closeFd fd) hWf
-      have hRawEq : (execRawStep raw (.closeFd fd)).run w = (.unit, w1) := by
-        unfold execRawStep
-        exact stateM_bind_eq _ _ w hCall
+      have hRawEq : (execRawStep raw (.closeFd fd)).run w = (.closed res, w1) :=
+        stateM_map_eq RelayRawOut.closed _ w hCall
       have hPkgEq : (execPkgStep (Internal.mkRelayApiM raw) (.closeOptFd (some fd))).run w =
           (.unit, w1) := by
-        unfold execPkgStep Internal.mkRelayApiM Internal.closeOptFd
-        exact stateM_bind_eq _ _ w hCall
+        dsimp only [execPkgStep, Internal.mkRelayApiM, Internal.closeOptFd]
+        have h1 : (do let _ ← raw.files.close fd; pure () : StateM W Unit).run w = ((), w1) :=
+          stateM_bind_eq _ _ w hCall
+        exact stateM_bind_eq _ _ w h1
       dsimp only at hStep ⊢
       rw [hRawEq] at hStep
       rw [hPkgEq]

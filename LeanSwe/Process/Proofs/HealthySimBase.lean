@@ -1,16 +1,6 @@
-import LeanSwe.LinuxSyscall.Process.Proofs
-import LeanSwe.LinuxSyscall.TimeRand.Proofs
 import LeanSwe.Process.Model.HealthySim
 import LeanSwe.Process.SysBridge
 import LeanSwe.Process.Proofs.HealthyStep
-
-/-!
-# Genuine `healthyStep` Simulation Proofs for `LeanSwe.Process.SysBridge`
-
-Re-exports the spec-locked simulation model definitions from `LeanSwe.Process.Model.HealthySim`
-(`HealthySimState`, `healthySimDeps`, and projections) and proves `healthySimDeps_proc_refinesHealthy`
-over canonical `LinuxSyscall.Process.healthyStep`.
--/
 
 namespace LeanSwe.Process.Proofs
 
@@ -102,43 +92,57 @@ private theorem reapThreadGroup_child100
   rw [hProcs]
   cases z <;> rfl
 
+private theorem normWaitSig_props (sig : UInt32) :
+    (1 ≤ LinuxSyscall.Process.normalizeWaitSig sig ∧
+      LinuxSyscall.Process.normalizeWaitSig sig ≤ 126) ∧
+    LinuxSyscall.Process.normalizeWaitSig (LinuxSyscall.Process.normalizeWaitSig sig) =
+      LinuxSyscall.Process.normalizeWaitSig sig := by
+  unfold LinuxSyscall.Process.normalizeWaitSig
+  by_cases h : (1 ≤ sig && sig ≤ 126) = true
+  · simp only [h, ↓reduceIte]
+    exact ⟨by simpa [Bool.and_eq_true, decide_eq_true_eq] using h, trivial⟩
+  · simp only [h, Bool.false_eq_true, ↓reduceIte]
+    decide
+
 private theorem evalModelWaitpid_child100
     (s : HealthySimState) (pid : Int32) (flags : LinuxSyscall.Process.WaitFlags) :
     let ps := toSimProcState s
     let (res, ps') := LinuxSyscall.Process.evalModelWaitpid ps pid flags
+    LinuxSyscall.Process.allowedStep ps (.waitpid pid flags)
+      (LinuxSyscall.Process.outcomeOfWaited res) = some ps' ∧
     (∀ e, res = .error e → Errno.isCriticalOsErrno e = false ∧ e ≠ Errno.EINTR) ∧
     toSimProcState { s with child100? := if ps'.procs.isEmpty then none else s.child100? } = ps' := by
   dsimp only
   cases hCh : s.child100? with
   | none =>
-    have hSame : toSimProcState { s with child100? := none } = toSimProcState s := by
-      simp only [toSimProcState, hCh]
-    unfold LinuxSyscall.Process.evalModelWaitpid
+    dsimp only [LinuxSyscall.Process.evalModelWaitpid, LinuxSyscall.Process.allowedStep,
+      LinuxSyscall.Process.validateReqBeforeKernel, LinuxSyscall.Process.allowedStepWaitpid]
     have hPsProcs : (toSimProcState s).procs = [] := by simp [toSimProcState, child100Procs, hCh]
     split
-    · exact ⟨(fun e h => by injection h with hE; subst hE; decide),
+    · exact ⟨rfl, (fun e h => by injection h with hE; subst hE; decide),
         by simp [toSimProcState, child100Procs, hCh]⟩
     · split
-      · exact ⟨(fun e h => by injection h with hE; subst hE; decide),
+      · exact ⟨rfl, (fun e h => by injection h with hE; subst hE; decide),
           by simp [toSimProcState, child100Procs, hCh]⟩
       · have hMatch : LinuxSyscall.Process.matchingUnreapedChildren (toSimProcState s) pid flags = [] := by
           simp [LinuxSyscall.Process.matchingUnreapedChildren,
             LinuxSyscall.Process.matchingUnreapedChildrenGo, hPsProcs]
         rw [hMatch]
-        exact ⟨(fun e h => by injection h with hE; subst hE; decide),
+        dsimp only [List.isEmpty, LinuxSyscall.Process.outcomeOfWaited]
+        exact ⟨rfl, (fun e h => by injection h with hE; subst hE; decide),
           by simp [toSimProcState, child100Procs, hCh]⟩
   | some z =>
     have hPsProcs : (toSimProcState s).procs = [(100, child100Entry z)] := by
       simp [toSimProcState, child100Procs, child100Entry, hCh]
-    unfold LinuxSyscall.Process.evalModelWaitpid
+    dsimp only [LinuxSyscall.Process.evalModelWaitpid, LinuxSyscall.Process.allowedStep,
+      LinuxSyscall.Process.validateReqBeforeKernel, LinuxSyscall.Process.allowedStepWaitpid]
     split
-    · exact ⟨(fun e h => by injection h with hE; subst hE; decide),
+    · exact ⟨rfl, (fun e h => by injection h with hE; subst hE; decide),
         by simp [toSimProcState, child100Procs, hCh]⟩
     · split
-      · exact ⟨(fun e h => by injection h with hE; subst hE; decide),
+      · exact ⟨rfl, (fun e h => by injection h with hE; subst hE; decide),
           by simp [toSimProcState, child100Procs, hCh]⟩
-      · have hM := LinuxSyscall.Process.matchingUnreapedChildren (toSimProcState s) pid flags
-        have hCases : LinuxSyscall.Process.matchingUnreapedChildren (toSimProcState s) pid flags = [] ∨
+      · have hCases : LinuxSyscall.Process.matchingUnreapedChildren (toSimProcState s) pid flags = [] ∨
             LinuxSyscall.Process.matchingUnreapedChildren (toSimProcState s) pid flags = [(100, child100Entry z)] := by
           unfold LinuxSyscall.Process.matchingUnreapedChildren
             LinuxSyscall.Process.matchingUnreapedChildrenGo
@@ -151,8 +155,8 @@ private theorem evalModelWaitpid_child100
           · exact Or.inl rfl
         rcases hCases with hEmpty | hOne
         · rw [hEmpty]
-          dsimp only [List.isEmpty_nil, ↓reduceIte]
-          exact ⟨(fun e h => by injection h with hE; subst hE; decide),
+          dsimp only [List.isEmpty, LinuxSyscall.Process.outcomeOfWaited]
+          exact ⟨rfl, (fun e h => by injection h with hE; subst hE; decide),
             by simp [toSimProcState, child100Procs, hCh]⟩
         · have hPick : LinuxSyscall.Process.pickImmediateWaitResult (toSimProcState s).procs
               [(100, child100Entry z)] flags = some (z.toWaitResult 100) := by
@@ -160,41 +164,30 @@ private theorem evalModelWaitpid_child100
               LinuxSyscall.Process.pickImmediateWaitResultSet
               LinuxSyscall.Process.pickImmediateWaitStep
             cases z <;> rfl
-          simp only [hOne, List.isEmpty_cons, Bool.false_eq_true, ↓reduceIte, hPick]
-          refine ⟨(fun _ h => by cases h), ?_⟩
-          cases hStep : LinuxSyscall.Process.allowedStepWaitResult (toSimProcState s)
-              [(100, child100Entry z)] flags (z.toWaitResult 100) with
-          | none =>
-            simp only [Option.getD, List.isEmpty_cons, Bool.false_eq_true, ↓reduceIte,
-              toSimProcState, child100Procs, hCh]
-          | some psNext =>
-            have hEqReap : psNext = LinuxSyscall.Process.reapThreadGroup (toSimProcState s) 100 := by
-              cases z with
-              | exited zc =>
-                change LinuxSyscall.Process.waitChildStep (toSimProcState s) 100
-                  (child100Entry (.exited zc)) flags (.exited 100 zc) = some psNext at hStep
-                simp only [LinuxSyscall.Process.waitChildStep, child100Entry,
-                  bne_self_eq_false, Bool.false_eq_true, ↓reduceIte, beq_self_eq_true,
-                  Option.some.injEq] at hStep
-                exact hStep.symm
-              | signaled zs zcore =>
-                change LinuxSyscall.Process.waitChildStep (toSimProcState s) 100
-                  (child100Entry (.signaled zs zcore)) flags
-                  (.signaled 100 (LinuxSyscall.Process.normalizeWaitSig zs) zcore) = some psNext at hStep
-                unfold LinuxSyscall.Process.waitChildStep child100Entry at hStep
-                dsimp only at hStep
-                split at hStep
-                · cases hStep
-                · split at hStep
-                  · injection hStep with hE; exact hE.symm
-                  · cases hStep
-            subst hEqReap
-            have hRE : (LinuxSyscall.Process.reapThreadGroup (toSimProcState s) 100).procs = [] :=
-              reapThreadGroup_child100 (toSimProcState s) z hPsProcs
-            simp only [Option.getD, hRE, List.isEmpty_nil, ↓reduceIte]
-            unfold LinuxSyscall.Process.reapThreadGroup
-            rw [show LinuxSyscall.Process.markThreadGroupLifecycleGo 100 .reaped (toSimProcState s).procs {} [] = [] from hRE]
-            rfl
+          have hStepEq : LinuxSyscall.Process.allowedStepWaitResult (toSimProcState s)
+              [(100, child100Entry z)] flags (z.toWaitResult 100) =
+              some (LinuxSyscall.Process.reapThreadGroup (toSimProcState s) 100) := by
+            cases z with
+            | exited zc =>
+              change LinuxSyscall.Process.waitChildStep (toSimProcState s) 100
+                (child100Entry (.exited zc)) flags (.exited 100 zc) = _
+              simp [LinuxSyscall.Process.waitChildStep, child100Entry]
+            | signaled zs zcore =>
+              obtain ⟨⟨hLo, hHi⟩, _⟩ := normWaitSig_props zs
+              change LinuxSyscall.Process.waitChildStep (toSimProcState s) 100
+                (child100Entry (.signaled zs zcore)) flags
+                (.signaled 100 (LinuxSyscall.Process.normalizeWaitSig zs) zcore) = _
+              simp [LinuxSyscall.Process.waitChildStep, child100Entry, hLo, hHi]
+          rw [hOne]
+          simp only [List.isEmpty_cons, Bool.false_eq_true, ↓reduceIte, hPick, hStepEq,
+            Option.getD, LinuxSyscall.Process.outcomeOfWaited]
+          refine ⟨trivial, (fun _ h => by cases h), ?_⟩
+          have hRE : (LinuxSyscall.Process.reapThreadGroup (toSimProcState s) 100).procs = [] :=
+            reapThreadGroup_child100 (toSimProcState s) z hPsProcs
+          simp only [hRE, List.isEmpty_nil, ↓reduceIte]
+          unfold LinuxSyscall.Process.reapThreadGroup
+          rw [show LinuxSyscall.Process.markThreadGroupLifecycleGo 100 .reaped (toSimProcState s).procs {} [] = [] from hRE]
+          rfl
 
 private theorem evalKill_child100
     (ps : LinuxSyscall.Process.ProcessSysState) (target : Int32) (sig : LinuxSyscall.Process.Signal)
@@ -415,7 +408,6 @@ theorem healthySimDeps_proc_refinesHealthy :
       simp [toSimProcState, LinuxSyscall.Process.ProcessSysState.initial, hValF,
         Errno.isCriticalOsErrno, Errno.EINVAL, Errno.EINTR, Errno.ENOMEM, Errno.EIO, Errno.ENFILE]
   waitpid_healthy s pid flags _ := by
-    have hSound := LinuxSyscall.Process.modelOps_execProcessReq_sound (toSimProcState s) (.waitpid pid flags)
     have hPres := evalModelWaitpid_child100 s pid flags
     dsimp only [healthySimDeps, stateM_modifyGet_run, projSimProc]
     have hWaitRun : (LinuxSyscall.Process.modelOps.waitpid pid flags).run (toSimProcState s) =
@@ -427,18 +419,8 @@ theorem healthySimDeps_proc_refinesHealthy :
     dsimp only at hPres
     cases hEv : LinuxSyscall.Process.evalModelWaitpid (toSimProcState s) pid flags with
     | mk res ps' =>
-      have hExecEv : (LinuxSyscall.Process.execProcessReq LinuxSyscall.Process.modelOps (.waitpid pid flags)).run
-          (toSimProcState s) =
-          (match res with | .ok wr => .waited wr | .error e => .err e, ps') := by
-        have hWaitFn : LinuxSyscall.Process.modelOps.waitpid pid flags (toSimProcState s) = (res, ps') :=
-          hWaitRun.trans hEv
-        unfold LinuxSyscall.Process.execProcessReq StateT.run
-        dsimp only [Bind.bind, StateT.bind]
-        rw [hWaitFn]
-        cases res <;> rfl
-      rw [hExecEv] at hSound
       rw [hEv] at hPres
-      obtain ⟨hNoCrit, hStEq⟩ := hPres
+      obtain ⟨hSound, hNoCrit, hStEq⟩ := hPres
       dsimp only at hSound ⊢
       unfold LinuxSyscall.Process.healthyStep LinuxSyscall.Process.HealthyEnv.wf
         LinuxSyscall.Process.isCriticalFault LinuxSyscall.Process.isEintrOutcome
@@ -454,30 +436,15 @@ theorem healthySimDeps_proc_refinesHealthy :
         simp only [hSec, hCrit, hSound, beq_false_of_ne hNeEi, hStEq,
           Bool.not_false, Bool.not_true, Bool.or_self, Bool.false_eq_true, ↓reduceIte]
   kill_healthy s target sig _ := by
-    have hSound := LinuxSyscall.Process.modelOps_execProcessReq_sound (toSimProcState s) (.kill target sig)
     have hProcsShape : (toSimProcState s).procs = [] ∨ ∃ z, (toSimProcState s).procs = [(100, child100Entry z)] := by
       cases hCh : s.child100? with
       | none => exact Or.inl (by simp [toSimProcState, child100Procs, hCh])
       | some z => exact Or.inr ⟨z, by simp [toSimProcState, child100Procs, child100Entry, hCh]⟩
-    have hExecKill : (LinuxSyscall.Process.execProcessReq LinuxSyscall.Process.modelOps (.kill target sig)).run
-        (toSimProcState s) =
-        (match ((LinuxSyscall.Process.modelOps.kill target sig).run (toSimProcState s)).1 with
-         | .ok () => .unit | .error e => .err e,
-         ((LinuxSyscall.Process.modelOps.kill target sig).run (toSimProcState s)).2) := by
-      unfold LinuxSyscall.Process.execProcessReq StateT.run
-      dsimp only [Bind.bind, StateT.bind]
-      cases LinuxSyscall.Process.modelOps.kill target sig (toSimProcState s) with
-      | mk a _ => cases a <;> rfl
-    rw [hExecKill] at hSound
-    dsimp only at hSound
     dsimp only [healthySimDeps, stateM_modifyGet_run, projSimProc]
     obtain ⟨res, ps', hEvRun⟩ : ∃ res ps',
         (LinuxSyscall.Process.modelOps.kill target sig).run (toSimProcState s) = (res, ps') :=
       ⟨_, _, rfl⟩
-    rw [hEvRun] at hSound ⊢
-    have hSound2 : LinuxSyscall.Process.allowedStep (toSimProcState s) (.kill target sig)
-        (match res with | .ok () => .unit | .error e => .err e) = some ps' := by
-      cases res <;> exact hSound
+    rw [hEvRun]
     have hRun : LinuxSyscall.Process.modelOps.kill target sig (toSimProcState s) = (res, ps') := hEvRun
     dsimp only
     unfold LinuxSyscall.Process.healthyStep LinuxSyscall.Process.HealthyEnv.wf
@@ -518,7 +485,10 @@ theorem healthySimDeps_proc_refinesHealthy :
         · injection hPre with hEq; exact hEq.symm
         · cases hPre
       subst hPreEq
-      dsimp only [LinuxSyscall.Process.outcomeOfUnit] at hSound2 ⊢
+      have hSound2 : LinuxSyscall.Process.allowedStep (toSimProcState s) (.kill target sig)
+          (.err Errno.EINVAL) = some (toSimProcState s) := by
+        simp [LinuxSyscall.Process.allowedStep, hPre]
+      dsimp only [LinuxSyscall.Process.outcomeOfUnit]
       have hCrit22 : Errno.isCriticalOsErrno Errno.EINVAL = false := by decide
       have hNeEi22 : (Errno.EINVAL == Errno.EINTR) = false := by decide
       simp [hSec, hCrit22, hSound2, hNeEi22]
@@ -533,7 +503,10 @@ theorem healthySimDeps_proc_refinesHealthy :
         subst hR hS
         have hEq := hKillOk st hEv
         subst hEq
-        dsimp only [LinuxSyscall.Process.outcomeOfUnit] at hSound2 ⊢
+        have hSound2 : LinuxSyscall.Process.allowedStep (toSimProcState s) (.kill target sig)
+            .unit = some (toSimProcState s) := by
+          simp [LinuxSyscall.Process.allowedStep, hPre, LinuxSyscall.Process.allowedStepKill, hEv]
+        dsimp only [LinuxSyscall.Process.outcomeOfUnit]
         rw [hSec, hSound2]
         rfl
       | error e =>
@@ -547,7 +520,18 @@ theorem healthySimDeps_proc_refinesHealthy :
           · next hIs => exact hEsrchEq (beq_iff_eq.mp hIs)
           · rfl
         subst hNextEq
-        dsimp only [LinuxSyscall.Process.outcomeOfUnit] at hSound2 ⊢
+        have hSound2 : LinuxSyscall.Process.allowedStep (toSimProcState s) (.kill target sig)
+            (.err e) = some (toSimProcState s) := by
+          unfold LinuxSyscall.Process.allowedStep
+          rw [hPre]
+          dsimp only [LinuxSyscall.Process.allowedStepKill]
+          rw [hEv]
+          simp only [beq_self_eq_true, ↓reduceIte]
+          exact congrArg some (by
+            split
+            · next hIs => exact hEsrchEq (beq_iff_eq.mp hIs)
+            · rfl)
+        dsimp only [LinuxSyscall.Process.outcomeOfUnit]
         simp [hSec, hCrit, hSound2, beq_false_of_ne hNeEi]
 
 end LeanSwe.Process.Proofs

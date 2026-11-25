@@ -2989,10 +2989,6 @@ private def importDagAllowlist : Array String := #[
   "CROSS|LeanSwe.ConnectProxy.Proofs.HealthyWitness|LeanSwe.LinuxSyscall.TimeRand.Proofs",
   "CROSS|LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs|LeanSwe.LinuxSyscall.Net.Proofs.HealthyStep",
   "CROSS|LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs|LeanSwe.NetRelay.Proofs",
-  "CROSS|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.LinuxSyscall.Process.Proofs",
-  "CROSS|LeanSwe.Process.Proofs.HealthySimBase|LeanSwe.LinuxSyscall.TimeRand.Proofs",
-  "CROSS|LeanSwe.Process.Proofs.HealthyStep|LeanSwe.LinuxSyscall.Files.Proofs.HealthyStep",
-  "CROSS|LeanSwe.Process.Proofs.HealthyStep|LeanSwe.LinuxSyscall.Process.Proofs.HealthyStep",
   "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.Proofs"
 ]
 
@@ -3183,8 +3179,6 @@ capabilities. -/
 private def middleHookAllowlist : Array String := #[
   "MIDDLE_HOOK|LeanSwe.CmdLine",
   "MIDDLE_HOOK|LeanSwe.ConnectProxy",
-  "MIDDLE_HOOK|LeanSwe.Fs",
-  "MIDDLE_HOOK|LeanSwe.NetRelay",
   "MIDDLE_HOOK|LeanSwe.Process",
   "MIDDLE_HOOK|LeanSwe.ProcessSandbox.Raw"
 ]

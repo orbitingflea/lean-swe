@@ -1,3 +1,5 @@
+import LeanSwe.LinuxSyscall.Files.Interface
+import LeanSwe.LinuxSyscall.TimeRand.Interface
 import LeanSwe.Fs.Types
 import LeanSwe.Fs.Model.HealthyStep
 import LeanSwe.Fs.Impl
@@ -7,21 +9,30 @@ namespace LeanSwe.Fs
 
 namespace Internal
 
-/-- Build a generic `FsApiM m` directly over a `HealthyFilesCapM m` (`LinuxSyscall.Files`) capability bundle. -/
-def mkApiFromHealthyFilesM {m : Type → Type} [Monad m] [MonadFinally m]
-    (cap : Model.HealthyFilesCapM m) : FsApiM m :=
-  mkApiFromScopedRawM (toScopedRawFsOpsM (SysBridge.mkRawFsOpsM cap.files cap.nextTempSeq))
+/-- Build a generic `FsApiM m` directly over a `FsSysCapsM m` (`LinuxSyscall.Files` + `LinuxSyscall.TimeRand`) capability bundle. -/
+def mkApiFromCapsM {m : Type → Type} [Monad m] [MonadFinally m]
+    (caps : Model.FsSysCapsM m) : FsApiM m :=
+  mkApiFromScopedRawRetryM
+    (toScopedRawFsOpsM (SysBridge.mkRawFsOpsM caps.files (SysBridge.nextTimeRandNonce caps.timeRand)))
 
-/-- Construct a `SubtreeOpenerM m` directly over a `HealthyFilesCapM m` (`LinuxSyscall.Files`) capability bundle. -/
-def mkSubtreeOpenerFromHealthyFilesM {m : Type → Type} [Monad m] [MonadFinally m]
-    (cap : Model.HealthyFilesCapM m) : SubtreeOpenerM m :=
-  mkSubtreeOpenerM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq)
+/-- Construct a `SubtreeOpenerM m` directly over a `FsSysCapsM m` (`LinuxSyscall.Files` + `LinuxSyscall.TimeRand`) capability bundle. -/
+def mkSubtreeOpenerFromCapsM {m : Type → Type} [Monad m] [MonadFinally m]
+    (caps : Model.FsSysCapsM m) : SubtreeOpenerM m :=
+  mkSubtreeOpenerM (SysBridge.mkRawDirOpsM caps.files (SysBridge.nextTimeRandNonce caps.timeRand))
 
 end Internal
 
-/-- Default `FsApi` backed by `LeanSwe.Fs.SysBridge.defaultOps`. -/
+/-- Default `SubtreeOpener` backed directly by `LinuxSyscall.Files.defaultOps` and `LinuxSyscall.TimeRand.defaultOps`. -/
+def defaultOps : SubtreeOpener :=
+  Internal.mkSubtreeOpenerFromCapsM
+    { files := LinuxSyscall.Files.defaultOps
+    , timeRand := LinuxSyscall.TimeRand.defaultOps }
+
+/-- Default `FsApi` backed directly by `LinuxSyscall.Files.defaultOps` and `LinuxSyscall.TimeRand.defaultOps`. -/
 def defaultApi : FsApi :=
-  Internal.mkApiFromScopedRawM (Internal.toScopedRawFsOpsM SysBridge.defaultOps)
+  Internal.mkApiFromCapsM
+    { files := LinuxSyscall.Files.defaultOps
+    , timeRand := LinuxSyscall.TimeRand.defaultOps }
 
 /-- Join two paths using `/` (`Path.joinpath`). -/
 @[inline] def join (base sub : String) : String :=
@@ -211,6 +222,6 @@ def defaultApi : FsApi :=
 /-- Open `rootPath` once as a confined directory handle, execute `action`, and always close the handle on exit. -/
 @[inline] def withSubtree {α : Type} (rootPath : String)
     (action : Subtree → IO (Except FsError α)) : IO (Except FsError α) :=
-  (Internal.mkSubtreeOpenerM SysBridge.defaultDirOps).withSubtree rootPath action
+  defaultOps.withSubtree rootPath action
 
 end LeanSwe.Fs
