@@ -367,7 +367,7 @@
       "deps": [
         "LeanSwe.NumParse"
       ],
-      "fuzz_suite": "float",
+      "fuzz_suite": "toml",
       "external_boundary": false,
       "err_msg_opaque": true,
       "spec_style": "inverse_render"
