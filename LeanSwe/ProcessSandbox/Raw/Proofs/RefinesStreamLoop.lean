@@ -29,7 +29,7 @@ private theorem preserves_err_eq {W α β : Type} {proj : W → RawHostWorld} {Q
   exact hQ _ ((hMa w (by rw [hEq]; exact hWf)).trans hEq)
 
 private theorem stepBoxStdin_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (st : BoxStreamState Nat) (inRev? : Option Poll.PollEvents)
     (stdin : ByteArray) (startMs toMs stepFuel : Nat) :
     PreservesProj proj (stepBoxStdin cap.files cap.timeRand st inRev? stdin startMs toMs stepFuel) ∧
@@ -79,7 +79,7 @@ private theorem stepBoxStdin_spec {W : Type} {proj : W → RawHostWorld} {cap : 
           exact ⟨preservesProj_pure _, fun _ _ _ h => by cases h⟩
 
 private theorem stepBoxPipe_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (ready : Bool) (fd? : Option Nat) (chunks : Array ByteArray) (curLen otherLen startMs toMs : Nat)
     (maxOut? : Option Nat) (stepFuel : Nat)
     (hSum : curLen = (chunks.toList.map ByteArray.size).sum)
@@ -100,7 +100,7 @@ private theorem stepBoxPipe_spec {W : Type} {proj : W → RawHostWorld} {cap : R
     | some pfd => exact drainPipeStep_spec hCap pfd otherLen startMs (some toMs) maxOut? chunks curLen 0 false stepFuel hSum hBnd
 
 private theorem preservesProj_stepBoxStatus {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (stReady : Bool) (st : BoxStreamState Nat) :
     PreservesProj proj (stepBoxStatus cap.files stReady st) := by
   unfold stepBoxStatus
@@ -119,7 +119,7 @@ private theorem preservesProj_stepBoxStatus {W : Type} {proj : W → RawHostWorl
 
 /-- `readBoxStreamLoop` preserves `proj`, bounds `stdout.size + stderr.size` by `maxOut?`, and ensures non-negative outcome and non-empty error messages. -/
 theorem readBoxStreamLoop_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (program cwd : String) (stdin : ByteArray) (startMs toMs : Nat) (maxOut? : Option Nat) (stepFuel : Nat) :
     ∀ (st : BoxStreamState Nat) (fuel : Nat),
       st.outLen = (st.outChunks.toList.map ByteArray.size).sum →
@@ -330,7 +330,7 @@ theorem readBoxStreamLoop_spec {W : Type} {proj : W → RawHostWorld} {cap : Raw
 
 /-- `readBoxOutputCore` preserves `proj`, bounds `stdout.size + stderr.size` by `maxOut?`, and ensures non-negative outcome and non-empty error messages. -/
 theorem readBoxOutputCore_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (program cwd : String) (inFd0? outFd0? errFd0? statusFd0? goFd0? : Option Nat)
     (stdin : ByteArray) (timeoutMs : Nat) (maxOut? : Option Nat) (eintrFuel ioFuel : Nat) :
     PreservesProj proj (readBoxOutputCore cap.files cap.poll cap.timeRand program cwd inFd0? outFd0? errFd0? statusFd0? goFd0? stdin timeoutMs maxOut? eintrFuel ioFuel) ∧

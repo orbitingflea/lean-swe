@@ -31,7 +31,7 @@ private theorem preserves_err_eq {W α β : Type} {proj : W → RawHostWorld} {Q
 
 /-- `preflightPure` satisfies `allowedRawOpsStep` for `.preflight req`. -/
 theorem preflightPure_refines {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (eintrFuel : Nat) (req : PreflightReq) (w : W) (hWf : rawHostWorldWf (proj w) = true)
     (emb : Except String ByteArray := embeddedInitBytes) :
     let r := (preflightPure (toHostSysDeps cap) (toHostTableOps cap) eintrFuel req emb).run w
@@ -208,7 +208,7 @@ theorem preflightPure_refines {W : Type} {proj : W → RawHostWorld} {cap : RawH
 
 /-- `sealPlanPure` satisfies `allowedRawOpsStep` for `.sealPlan plan sec`. -/
 theorem sealPlanPure_refines {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (eintrFuel : Nat) (plan : CompiledSandboxPlan) (sec : ByteArray)
     (w : W) (hWf : rawHostWorldWf (proj w) = true)
     (emb : Except String ByteArray := embeddedInitBytes) :

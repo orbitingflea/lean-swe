@@ -95,7 +95,7 @@ private theorem pairwise_reverse_append_cons {α : Type} {R : α → α → Prop
 
 /-- Confined trace and sortedness specification for `Internal.classifyChildrenM`. -/
 theorem classifyChildrenM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (dirDh : HandleId) (held : List HandleId)
     (items : List EntryName) (dirsAcc : List EntryName) (filesAcc : List String)
     (hItems : List.Pairwise (fun a b => a.val ≤ b.val) items)
@@ -174,7 +174,7 @@ theorem classifyChildrenM_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
 
 /-- General confined trace specification for `Internal.walkDescendAuxM`, supporting both normal ops (`outFd = none`) and lock acquisition (`outFd = some`). -/
 theorem walkDescendAuxM_trace {W α : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (outFd : α → Option HandleId)
     (post : HandleId → α → List KernelStep → Prop)
     (errPred : FsError → List KernelStep → Prop)
@@ -330,7 +330,7 @@ theorem walkDescendAuxM_trace {W α : Type} {proj : W → FsWorld} {cap : Health
 
 /-- Confined trace specification for `Internal.mkdirWalkM`. -/
 theorem mkdirWalkM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (post : HandleId → List KernelStep → Prop)
     (leafAct : HandleId → StateM W (Except FsError Unit))
     (hLeaf : ∀ (dirDh : HandleId) (held : List HandleId) {s : W}, fsWorldWf (proj s) = true →

@@ -136,7 +136,7 @@ private theorem resolveArgs_go_noEofIo (validators : CustomValidators) (argSpecs
             | ok _ => (try rw [hp]); cases hr : Model.resolveArgs.go validators restArgs [] with | error _ => have h := ih []; rw [hr] at h; exact h | ok _ => trivial
 private theorem parseWith_never_of (spec : CommandSpec) (args : List String) (validators : CustomValidators) :
     exceptKindIn (fun kd => kd ≠ .eof ∧ kd ≠ .ioError) (CmdLine.parseWith spec args validators) := by
-  unfold CmdLine.parseWith defaultApi Internal.mkApiM Internal.parseWith; simp only [Shared.parseWithEnvM_eq_spec]; unfold Internal.parseWithEnvSpecM; dsimp only [pure, bind]
+  unfold CmdLine.parseWith defaultApi Internal.mkCheckedApiM Internal.mkApiM Internal.parseWith; simp only [Shared.parseWithEnvM_eq_spec]; unfold Internal.parseWithEnvSpecM; dsimp only [pure, bind]
   split
   · exact exceptKindIn_mk (by decide)
   · have htok := parseTokens_noEofIo spec.name validators { curSpec := spec, effectiveVersion := spec.version } args
@@ -209,7 +209,7 @@ private theorem resolveOptionsTR_defaultOps_noEof (visibleOpts : List OptSpec) (
 /-- Proof that `CmdLine.parseWithEnv` never returns `.eof`. -/
 theorem cmdline_parseWithEnv_never_eof (spec : CommandSpec) (args : List String) (validators : CustomValidators) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO CmdLineError.kind .eof (CmdLine.parseWithEnv spec args validators) w := by
-  unfold Core.NeverErrorKindIO CmdLine.parseWithEnv defaultApi Internal.mkApiM; simp only [Shared.parseWithEnvM_eq_spec]; unfold Internal.parseWithEnvSpecM; dsimp only
+  unfold Core.NeverErrorKindIO CmdLine.parseWithEnv defaultApi Internal.mkCheckedApiM Internal.mkApiM SysBridge.mkCheckedCliOps; simp only [Shared.parseWithEnvM_eq_spec]; unfold Internal.parseWithEnvSpecM; dsimp only
   rw [Shared.isValidSpecTR_eq]; cases hv : Model.isValidSpec spec
   · simp only [Bool.not_false, ↓reduceIte, io_pure_eq]; decide
   · simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]; have htok := parseTokens_noEofIo spec.name validators { curSpec := spec, effectiveVersion := spec.version } args
@@ -239,7 +239,7 @@ private theorem findSubcommandPath_kind (spec : CommandSpec) (path : List String
 private theorem renderHelp_never_of (rootSpec : CommandSpec) (subcommandPath : List String) (k : CmdLineErrorKind) (hk1 : k ≠ .invalidSpec) (hk2 : k ≠ .unknownSubcommand) :
     Core.NeverErrorKindPure CmdLineError.kind k (CmdLine.renderHelp rootSpec subcommandPath) := by
   have hk : exceptKindIn (fun kd => kd = .invalidSpec ∨ kd = .unknownSubcommand) (CmdLine.renderHelp rootSpec subcommandPath) := by
-    unfold CmdLine.renderHelp defaultApi Internal.mkApiM Internal.renderHelp; dsimp only
+    unfold CmdLine.renderHelp defaultApi Internal.mkCheckedApiM Internal.mkApiM Internal.renderHelp; dsimp only
     split
     · exact Or.inl rfl
     · refine exceptKindIn_bind _ _ ?_ fun _ => trivial
@@ -302,7 +302,7 @@ private theorem renderArgs_never_of (spec : CommandSpec) (parsed : ParsedCmd) (k
     (hk1 : k ≠ .invalidSpec) (hk2 : k ≠ .unknownSubcommand) (hk3 : k ≠ .missingArgument) (hk4 : k ≠ .invalidValue) :
     Core.NeverErrorKindPure CmdLineError.kind k (CmdLine.renderArgs spec parsed) := by
   have hk : exceptKindIn (fun kd => kd = .invalidSpec ∨ kd = .unknownSubcommand ∨ kd = .missingArgument ∨ kd = .invalidValue) (CmdLine.renderArgs spec parsed) := by
-    unfold CmdLine.renderArgs defaultApi Internal.mkApiM; dsimp only
+    unfold CmdLine.renderArgs defaultApi Internal.mkCheckedApiM Internal.mkApiM; dsimp only
     rw [Shared.renderArgsTR_eq]; unfold Model.renderArgs; dsimp only [bind, pure, Except.bind, Except.pure]
     split
     · exact exceptKindIn_mk (Or.inl rfl)
@@ -340,47 +340,87 @@ theorem cmdline_renderArgs_never_unexpectedArgument (spec : CommandSpec) (parsed
 theorem cmdline_renderArgs_never_eof (spec : CommandSpec) (parsed : ParsedCmd) : Core.NeverErrorKindPure CmdLineError.kind .eof (CmdLine.renderArgs spec parsed) := renderArgs_never_of spec parsed .eof (by decide) (by decide) (by decide) (by decide)
 /-- Proof that `CmdLine.renderArgs` never returns `.ioError`. -/
 theorem cmdline_renderArgs_never_ioError (spec : CommandSpec) (parsed : ParsedCmd) : Core.NeverErrorKindPure CmdLineError.kind .ioError (CmdLine.renderArgs spec parsed) := renderArgs_never_of spec parsed .ioError (by decide) (by decide) (by decide) (by decide)
-private theorem catchIo_never_of {α : Type} (k : CmdLineErrorKind) (hk : k ≠ .ioError)
-    (act : IO (Except CmdLineError α)) (hact : ∀ w', estOutCmdLineAllowed (fun e => e.kind ≠ k) (act w')) (w : Void IO.RealWorld) :
-    Core.NeverErrorKindIO CmdLineError.kind k
-      (BaseIO.toEIO (EIO.catchExceptions act fun err => let msg := err.toString; pure (.error { kind := .ioError, message := if msg.isEmpty then "stdio I/O error" else msg }))) w := by
-  unfold Core.NeverErrorKindIO BaseIO.toEIO EIO.catchExceptions; have h := hact w
-  cases ha : act w with
-  | error _ _ => dsimp only [pure, EST.pure, EStateM.pure]; exact hk.symm
-  | ok res _ => rw [ha] at h; cases res with | ok _ => trivial | error _ => exact h
-private theorem internal_promptLine_allowed (ops : CliOps) (prompt : String) (default : Option String) (k : CmdLineErrorKind) (hk : k ≠ .eof) (w : Void IO.RealWorld) :
-    estOutCmdLineAllowed (fun e => e.kind ≠ k) (Internal.promptLine ops prompt default w) := by
-  unfold Internal.promptLine
-  refine io_bind_allowed _ _ _ w fun _ w1 => io_bind_allowed _ _ _ w1 fun line? _ => ?_
+private def estOutNoThrowAllowed {α : Type} (P : CmdLineError → Prop) (out : EST.Out IO.Error IO.RealWorld (Except CmdLineError α)) : Prop :=
+  match out with | EST.Out.error _ _ => False | EST.Out.ok (.ok _) _ => True | EST.Out.ok (.error e) _ => P e
+private theorem catchStdioIo_bind_allowed {α β : Type} (P : CmdLineError → Prop)
+    (hIo : ∀ msg, P (Model.mkStdioIoError msg))
+    (act : IO α) (k : Except CmdLineError α → IO (Except CmdLineError β))
+    (w : Void IO.RealWorld)
+    (hk : ∀ a w', estOutNoThrowAllowed P (k (.ok a) w'))
+    (he : ∀ e, P e → ∀ w', estOutNoThrowAllowed P (k (.error e) w')) :
+    estOutNoThrowAllowed P ((SysBridge.catchStdioIo act >>= k) w) := by
+  have hCatch : (∃ a w', SysBridge.catchStdioIo act w = EST.Out.ok (.ok a) w') ∨
+      (∃ msg w', SysBridge.catchStdioIo act w = EST.Out.ok (.error (Model.mkStdioIoError msg)) w') := by
+    unfold SysBridge.catchStdioIo BaseIO.toEIO EIO.catchExceptions
+    cases ha : act w with
+    | error err w' =>
+      have hm : (act >>= fun a => pure (Except.ok a : Except CmdLineError α)) w = EST.Out.error err w' :=
+        io_bind_err act _ w ha
+      exact Or.inr ⟨err.toString, w', by dsimp only; rw [hm]; rfl⟩
+    | ok a w' =>
+      have hm : (act >>= fun a => pure (Except.ok a : Except CmdLineError α)) w = EST.Out.ok (.ok a) w' := by
+        rw [io_bind_eq act _ w ha]; exact io_pure_eq _ _
+      exact Or.inl ⟨a, w', by dsimp only; rw [hm]⟩
+  rcases hCatch with ⟨a, w', hOk⟩ | ⟨msg, w', hErr⟩
+  · rw [io_bind_eq _ _ w hOk]; exact hk a w'
+  · rw [io_bind_eq _ _ w hErr]; exact he _ (hIo msg) w'
+private theorem checked_promptLine_allowed (ops : CliOps) (prompt : String) (default : Option String)
+    (k : CmdLineErrorKind) (hk1 : k ≠ .eof) (hk2 : k ≠ .ioError) (w : Void IO.RealWorld) :
+    estOutNoThrowAllowed (fun e => e.kind ≠ k) (SysBridge.promptLineChecked (SysBridge.mkCheckedCliOps ops) prompt default w) := by
+  unfold SysBridge.promptLineChecked SysBridge.mkCheckedCliOps
+  refine catchStdioIo_bind_allowed _ (fun _ => hk2.symm) _ _ w
+    (fun _ w1 => catchStdioIo_bind_allowed _ (fun _ => hk2.symm) _ _ w1
+      (fun line? w2 => ?_) (fun e he w2 => by dsimp only; rw [io_pure_eq]; exact he))
+    (fun e he w1 => by dsimp only; rw [io_pure_eq]; exact he)
   cases line? with
-  | none => dsimp only; rw [io_pure_eq]; exact hk.symm
+  | none => dsimp only; rw [io_pure_eq]; exact hk1.symm
   | some _ => dsimp only; split <;> first | (cases default <;> dsimp only <;> rw [io_pure_eq] <;> trivial) | (rw [io_pure_eq]; trivial)
-private theorem internal_confirm_allowed (ops : CliOps) (prompt : String) (default : Option Bool) (maxAttempts : Nat)
-    (k : CmdLineErrorKind) (hk1 : k ≠ .eof) (hk2 : k ≠ .invalidValue) (w : Void IO.RealWorld) :
-    estOutCmdLineAllowed (fun e => e.kind ≠ k) (Internal.confirm ops prompt default maxAttempts w) := by
+private theorem checked_confirm_allowed (ops : CliOps) (prompt : String) (default : Option Bool) (maxAttempts : Nat)
+    (k : CmdLineErrorKind) (hk1 : k ≠ .eof) (hk2 : k ≠ .invalidValue) (hk3 : k ≠ .ioError) (w : Void IO.RealWorld) :
+    estOutNoThrowAllowed (fun e => e.kind ≠ k) (SysBridge.confirmChecked (SysBridge.mkCheckedCliOps ops) prompt default maxAttempts w) := by
   induction maxAttempts generalizing w with
-  | zero => unfold Internal.confirm; rw [io_pure_eq]; exact hk2.symm
+  | zero => unfold SysBridge.confirmChecked; rw [io_pure_eq]; exact hk2.symm
   | succ n ih =>
-    unfold Internal.confirm
-    refine io_bind_allowed _ _ _ w fun _ w1 => io_bind_allowed _ _ _ w1 fun line? w2 => ?_
+    unfold SysBridge.confirmChecked SysBridge.mkCheckedCliOps
+    refine catchStdioIo_bind_allowed _ (fun _ => hk3.symm) _ _ w
+      (fun _ w1 => catchStdioIo_bind_allowed _ (fun _ => hk3.symm) _ _ w1
+        (fun line? w2 => ?_) (fun e he w2 => by dsimp only; rw [io_pure_eq]; exact he))
+      (fun e he w1 => by dsimp only; rw [io_pure_eq]; exact he)
     cases line? with
     | none => dsimp only; rw [io_pure_eq]; exact hk1.symm
     | some _ =>
       dsimp only; split
       · cases default with
         | some _ => dsimp only; rw [io_pure_eq]; trivial
-        | none => cases n with | zero => dsimp only; rw [io_pure_eq]; exact hk2.symm | succ _ => exact io_bind_allowed _ _ _ w2 fun _ w3 => ih w3
+        | none =>
+          cases n with
+          | zero => dsimp only; rw [io_pure_eq]; exact hk2.symm
+          | succ _ =>
+            exact catchStdioIo_bind_allowed _ (fun _ => hk3.symm) _ _ w2
+              (fun _ w3 => ih w3) (fun e he w3 => by dsimp only; rw [io_pure_eq]; exact he)
       · split
         · rw [io_pure_eq]; trivial
         · split
           · rw [io_pure_eq]; trivial
-          · cases n with | zero => dsimp only; rw [io_pure_eq]; exact hk2.symm | succ _ => exact io_bind_allowed _ _ _ w2 fun _ w3 => ih w3
+          · cases n with
+            | zero => dsimp only; rw [io_pure_eq]; exact hk2.symm
+            | succ _ =>
+              exact catchStdioIo_bind_allowed _ (fun _ => hk3.symm) _ _ w2
+                (fun _ w3 => ih w3) (fun e he w3 => by dsimp only; rw [io_pure_eq]; exact he)
 private theorem promptLine_never_of (prompt : String) (default : Option String) (k : CmdLineErrorKind) (hk1 : k ≠ .eof) (hk2 : k ≠ .ioError) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO CmdLineError.kind k (CmdLine.promptLine prompt default) w := by
-  unfold CmdLine.promptLine defaultApi; dsimp only; exact catchIo_never_of k hk2 _ (fun w' => internal_promptLine_allowed defaultOps prompt default k hk1 w') w
+  unfold Core.NeverErrorKindIO CmdLine.promptLine defaultApi Internal.mkCheckedApiM; dsimp only
+  have h := checked_promptLine_allowed defaultOps prompt default k hk1 hk2 w
+  cases hr : SysBridge.promptLineChecked (SysBridge.mkCheckedCliOps defaultOps) prompt default w with
+  | error _ _ => rw [hr] at h; exact h
+  | ok res _ => rw [hr] at h; cases res with | ok _ => trivial | error _ => exact h
 private theorem confirm_never_of (prompt : String) (default : Option Bool) (maxAttempts : Nat) (k : CmdLineErrorKind) (hk1 : k ≠ .eof) (hk2 : k ≠ .invalidValue) (hk3 : k ≠ .ioError) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO CmdLineError.kind k (CmdLine.confirm prompt default maxAttempts) w := by
-  unfold CmdLine.confirm defaultApi; dsimp only; exact catchIo_never_of k hk3 _ (fun w' => internal_confirm_allowed defaultOps prompt default maxAttempts k hk1 hk2 w') w
+  unfold Core.NeverErrorKindIO CmdLine.confirm defaultApi Internal.mkCheckedApiM; dsimp only
+  have h := checked_confirm_allowed defaultOps prompt default maxAttempts k hk1 hk2 hk3 w
+  cases hr : SysBridge.confirmChecked (SysBridge.mkCheckedCliOps defaultOps) prompt default maxAttempts w with
+  | error _ _ => rw [hr] at h; exact h
+  | ok res _ => rw [hr] at h; cases res with | ok _ => trivial | error _ => exact h
 /-- Proof that `CmdLine.promptLine` never returns `.helpRequested`. -/
 theorem cmdline_promptLine_never_helpRequested (prompt : String) (default : Option String) (w : Void IO.RealWorld) : Core.NeverErrorKindIO CmdLineError.kind .helpRequested (CmdLine.promptLine prompt default) w := promptLine_never_of prompt default .helpRequested (by decide) (by decide) w
 /-- Proof that `CmdLine.promptLine` never returns `.versionRequested`. -/

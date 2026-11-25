@@ -13,7 +13,7 @@ open LeanSwe.ProcessSandbox.Raw.SysBridge.StreamIo
 
 /-- `recvFdsScm` preserves `proj`. -/
 theorem preservesProj_recvFdsScm {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (ctrlFd statusFd : Nat) (expected : Nat) :
     ∀ got fuel, PreservesProj proj (recvFdsScmLoop cap.files cap.net cap.poll ctrlFd statusFd expected got fuel)
   | got, 0 => by
@@ -48,7 +48,7 @@ theorem preservesProj_recvFdsScm {W : Type} {proj : W → RawHostWorld} {cap : R
 
 /-- `drainStderrSnippet` preserves `proj`. -/
 theorem preservesProj_drainStderrSnippet {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (stderrFd : Nat) (maxBytes fuel : Nat) :
     PreservesProj proj (drainStderrSnippet cap.files stderrFd maxBytes fuel) := by
   have hLoop : ∀ chunks total f,
@@ -70,7 +70,7 @@ theorem preservesProj_drainStderrSnippet {W : Type} {proj : W → RawHostWorld} 
 
 /-- `precheckHostMounts` preserves `proj` and returns non-empty error messages on failure. -/
 theorem precheckHostMounts_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (fuel : Nat) :
     ∀ mounts,
       PreservesProj proj (precheckHostMounts cap.files fuel mounts) ∧
@@ -120,7 +120,7 @@ private theorem mapRawError_io_ne_empty (e : Errno) (msg : String) :
 
 /-- `killBoxPg` preserves `proj` and only returns `.ioError` with non-empty message on failure. -/
 theorem killBoxPg_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (pgid : UInt32) (fuel : Nat) :
     PreservesProj proj (killBoxPg cap.proc pgid fuel) ∧
     ∀ w, rawHostWorldWf (proj w) = true →
@@ -153,7 +153,7 @@ theorem killBoxPg_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM
 
 /-- `killBoxPidfd` preserves `proj` and only returns `.ioError` with non-empty message on failure. -/
 theorem killBoxPidfd_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (pidfd : Nat) (fuel : Nat) :
     PreservesProj proj (killBoxPidfd cap.proc pidfd fuel) ∧
     ∀ w, rawHostWorldWf (proj w) = true →
@@ -182,7 +182,7 @@ theorem killBoxPidfd_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostC
 
 /-- `LinuxSyscall.Process.waitpidReapLoop` preserves `proj`. -/
 theorem preservesProj_waitpidReapLoop {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (pid : Int32) :
     ∀ fuel, PreservesProj proj (LinuxSyscall.Process.waitpidReapLoop cap.proc pid fuel)
   | 0 => preservesProj_pure _
@@ -198,7 +198,7 @@ theorem preservesProj_waitpidReapLoop {W : Type} {proj : W → RawHostWorld} {ca
 
 /-- `rollbackRunningChild` preserves `proj`. -/
 theorem preservesProj_rollbackRunningChild {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (childPid : UInt32) (pidfd? : Option Nat) (cgDir : String) (fuel : Nat) :
     PreservesProj proj (rollbackRunningChild cap.files cap.proc cap.timeRand childPid pidfd? cgDir fuel) := by
   have hTail3 : PreservesProj proj (do
@@ -252,7 +252,7 @@ theorem preservesProj_rollbackRunningChild {W : Type} {proj : W → RawHostWorld
 
 /-- `readInitStatusBlocking` preserves `proj`. -/
 theorem preservesProj_readInitStatusBlocking {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (statusFd : Nat) :
     ∀ buf fuel, PreservesProj proj (readInitStatusBlocking cap.files statusFd buf fuel)
   | _, 0 => preservesProj_pure _
@@ -272,7 +272,7 @@ theorem preservesProj_readInitStatusBlocking {W : Type} {proj : W → RawHostWor
 
 /-- `readInitStatusStep` preserves `proj`. -/
 theorem preservesProj_readInitStatusStep {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (statusFd : Nat) :
     ∀ buf fuel, PreservesProj proj (readInitStatusStep cap.files statusFd buf fuel)
   | _, 0 => preservesProj_pure _

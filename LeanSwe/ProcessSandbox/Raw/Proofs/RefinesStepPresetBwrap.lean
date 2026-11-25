@@ -12,7 +12,7 @@ open LeanSwe.ProcessSandbox.Raw.SysBridge.Bwrap
 
 /-- `discoverSystemEntries` preserves `proj` and only emits entries targeting `Model.presetSystemRoots`. -/
 theorem discoverSystemEntries_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fuel : Nat) :
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fuel : Nat) :
     PreservesProj proj (discoverSystemEntries cap.files fuel) ∧
     ∀ w, rawHostWorldWf (proj w) = true →
       ∀ e ∈ ((discoverSystemEntries cap.files fuel).run w).1.toList,
@@ -97,7 +97,7 @@ theorem discoverSystemEntries_spec {W : Type} {proj : W → RawHostWorld} {cap :
 
 /-- `discoverEtcPaths` preserves `proj` and only emits paths in `Model.presetEtcAllowlist`. -/
 theorem discoverEtcPaths_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fuel : Nat) :
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fuel : Nat) :
     PreservesProj proj (discoverEtcPaths cap.files fuel) ∧
     ∀ w, rawHostWorldWf (proj w) = true →
       ∀ p ∈ ((discoverEtcPaths cap.files fuel).run w).1.toList,
@@ -137,7 +137,7 @@ theorem discoverEtcPaths_spec {W : Type} {proj : W → RawHostWorld} {cap : RawH
 
 /-- `discoverExcludedHomes` preserves `proj` and only emits paths satisfying `Model.isUnderSystemRoot`. -/
 theorem discoverExcludedHomes_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fuel : Nat) :
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fuel : Nat) :
     PreservesProj proj (discoverExcludedHomes cap.files cap.proc cap.passwd cap.getEnvHome fuel) ∧
     ∀ w, rawHostWorldWf (proj w) = true →
       ∀ h ∈ ((discoverExcludedHomes cap.files cap.proc cap.passwd cap.getEnvHome fuel).run w).1.toList,
@@ -275,7 +275,7 @@ theorem discoverExcludedHomes_spec {W : Type} {proj : W → RawHostWorld} {cap :
 
 /-- `discoverHostPresetM` preserves `proj` and enforces root/allowlist/home-mask invariants. -/
 theorem discoverHostPresetM_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fuel : Nat) :
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fuel : Nat) :
     PreservesProj proj (discoverHostPresetM cap.files cap.proc cap.passwd cap.getEnvHome fuel) ∧
     ∀ w, rawHostWorldWf (proj w) = true →
       let preset := ((discoverHostPresetM cap.files cap.proc cap.passwd cap.getEnvHome fuel).run w).1
@@ -301,7 +301,7 @@ theorem discoverHostPresetM_spec {W : Type} {proj : W → RawHostWorld} {cap : R
 
 /-- `resolveBwrapPath` preserves `proj`. -/
 theorem preservesProj_resolveBwrapPath {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fuel : Nat) :
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fuel : Nat) :
     PreservesProj proj (resolveBwrapPath cap.files cap.getEnvPath fuel) := by
   have hExec : ∀ p, PreservesProj proj (isExecutableRegFile cap.files p fuel) := fun p => by
     unfold isExecutableRegFile
@@ -332,7 +332,7 @@ theorem preservesProj_resolveBwrapPath {W : Type} {proj : W → RawHostWorld} {c
 
 /-- `createSealedMemfd` preserves `proj`. -/
 theorem preservesProj_createSealedMemfd {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (name : String) (data : ByteArray) (fuel : Nat) :
     PreservesProj proj (createSealedMemfd cap.sandbox cap.files name data fuel) := by
   unfold createSealedMemfd
@@ -362,7 +362,7 @@ theorem preservesProj_createSealedMemfd {W : Type} {proj : W → RawHostWorld} {
 
 /-- `probeBwrapNamespaces` preserves `proj`. -/
 theorem preservesProj_probeBwrapNamespaces {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (bwrapPath : String) (initBytes : ByteArray) (fuel : Nat) :
     PreservesProj proj (probeBwrapNamespaces cap.files cap.sandbox cap.proc cap.postFork bwrapPath initBytes fuel) := by
   have hOpen1 : PreservesProj proj (retryEintr (cap.files.openat none "/dev/null".toUTF8 { access := .rdwr, cloexec := true } 0) fuel) :=

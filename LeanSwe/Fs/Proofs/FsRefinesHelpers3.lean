@@ -40,7 +40,7 @@ private theorem pairwise_push_str {arr : Array String} {x : String}
 
 /-- Trace specification for `Internal.walkGoM`. -/
 theorem walkGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (fuel : Nat) (root relRoot : String) (acc : Array WalkEntry)
     (hAcc : ∀ e ∈ acc.toList, List.Pairwise (· ≤ ·) e.dirs.toList ∧ List.Pairwise (· ≤ ·) e.files.toList)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
@@ -227,7 +227,7 @@ theorem walkGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (
 
 /-- Trace specification for `Internal.walkImplM`. -/
 theorem walkImplM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (root : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (Internal.walkImplM ops.toNonLockFsOpsM root).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧
@@ -271,7 +271,7 @@ theorem walkImplM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM
 
 /-- Trace specification for `Internal.globImplM`. -/
 theorem globImplM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (root pattern : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (Internal.globImplM ops.toNonLockFsOpsM root pattern).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧
@@ -353,7 +353,7 @@ theorem globImplM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM
 
 /-- Trace specification for `Internal.atomicWriteSiblingM`. -/
 theorem atomicWriteSiblingM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) (bytes : ByteArray) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (Internal.atomicWriteSiblingM ops.toNonLockFsOpsM path bytes).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧
@@ -409,7 +409,7 @@ theorem atomicWriteSiblingM_trace {W : Type} {proj : W → FsWorld} {ops : Scope
 
 /-- Trace specification for `Internal.atomicWriteBytesImplM`. -/
 theorem atomicWriteBytesImplM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) (bytes : ByteArray) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (Internal.atomicWriteBytesImplM ops.toNonLockFsOpsM path bytes).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧
@@ -466,7 +466,7 @@ theorem atomicWriteBytesImplM_trace {W : Type} {proj : W → FsWorld} {ops : Sco
 
 /-- Trace specification for `Internal.touchImplM`. -/
 theorem touchImplM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) (existOk : Bool) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (Internal.touchImplM ops.toNonLockFsOpsM path existOk).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧

@@ -42,7 +42,7 @@ theorem forEachChildM_trace {W : Type} {proj : W → FsWorld}
 
 /-- Trace specification for `Internal.rmtreeGoM`. -/
 theorem rmtreeGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (fuel : Nat) (dir : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (Internal.rmtreeGoM ops.toNonLockFsOpsM dir fuel).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧
@@ -130,7 +130,7 @@ theorem rmtreeGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM
 
 /-- Trace specification for `Internal.resolveApproxGoM`. -/
 theorem resolveApproxGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (fuel : Nat) (cur : String) (tail : List String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (Internal.resolveApproxGoM ops.toNonLockFsOpsM cur tail fuel).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) := by
@@ -165,7 +165,7 @@ theorem resolveApproxGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRa
 
 /-- Trace specification for `Internal.copyFileImplM`. -/
 theorem copyFileImplM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (src dst : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (Internal.copyFileImplM ops.toNonLockFsOpsM src dst).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧
@@ -217,7 +217,7 @@ theorem copyFileImplM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFs
 
 /-- Trace specification for `Internal.copyTreeGoM`. -/
 theorem copyTreeGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (fuel : Nat) (src dst : String) (dirsExistOk : Bool) (visited : List String)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (Internal.copyTreeGoM ops.toNonLockFsOpsM src dst dirsExistOk visited fuel).run s

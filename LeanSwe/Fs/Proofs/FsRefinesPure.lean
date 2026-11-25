@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import Core.Assumptions
 import LeanSwe.Fs.Interface
 import LeanSwe.Fs.Model
@@ -8,55 +8,55 @@ namespace LeanSwe.Fs.Proofs
 open LeanSwe.Fs
 
 /-- Pure refinement for `Fs.join`. -/
-theorem refinesPure_join : Core.RefinesPureEq2 LeanSwe.Fs.join LeanSwe.Fs.Model.join :=
+theorem refinesPure_join : Core.ObeysPureEq2 LeanSwe.Fs.join LeanSwe.Fs.Model.join :=
   fun _ _ => rfl
 
 /-- Pure refinement for `Fs.joinMany`. -/
-theorem refinesPure_joinMany : Core.RefinesPureEq LeanSwe.Fs.joinMany LeanSwe.Fs.Model.joinMany :=
+theorem refinesPure_joinMany : Core.ObeysPureEq LeanSwe.Fs.joinMany LeanSwe.Fs.Model.joinMany :=
   fun _ => rfl
 
 /-- Pure refinement for `Fs.normPath`. -/
-theorem refinesPure_normPath : Core.RefinesPureEq LeanSwe.Fs.normPath LeanSwe.Fs.Model.normPath :=
+theorem refinesPure_normPath : Core.ObeysPureEq LeanSwe.Fs.normPath LeanSwe.Fs.Model.normPath :=
   fun _ => rfl
 
 /-- Pure refinement for `Fs.parent`. -/
-theorem refinesPure_parent : Core.RefinesPureEq LeanSwe.Fs.parent LeanSwe.Fs.Model.parent :=
+theorem refinesPure_parent : Core.ObeysPureEq LeanSwe.Fs.parent LeanSwe.Fs.Model.parent :=
   fun _ => rfl
 
 /-- Pure refinement for `Fs.name`. -/
-theorem refinesPure_name : Core.RefinesPureEq LeanSwe.Fs.name LeanSwe.Fs.Model.name :=
+theorem refinesPure_name : Core.ObeysPureEq LeanSwe.Fs.name LeanSwe.Fs.Model.name :=
   fun _ => rfl
 
 /-- Pure refinement for `Fs.stem`. -/
-theorem refinesPure_stem : Core.RefinesPureEq LeanSwe.Fs.stem LeanSwe.Fs.Model.stem :=
+theorem refinesPure_stem : Core.ObeysPureEq LeanSwe.Fs.stem LeanSwe.Fs.Model.stem :=
   fun _ => rfl
 
 /-- Pure refinement for `Fs.suffix`. -/
-theorem refinesPure_suffix : Core.RefinesPureEq LeanSwe.Fs.suffix LeanSwe.Fs.Model.suffix :=
+theorem refinesPure_suffix : Core.ObeysPureEq LeanSwe.Fs.suffix LeanSwe.Fs.Model.suffix :=
   fun _ => rfl
 
 /-- Pure refinement for `Fs.suffixes`. -/
-theorem refinesPure_suffixes : Core.RefinesPureEq LeanSwe.Fs.suffixes LeanSwe.Fs.Model.suffixes :=
+theorem refinesPure_suffixes : Core.ObeysPureEq LeanSwe.Fs.suffixes LeanSwe.Fs.Model.suffixes :=
   fun _ => rfl
 
 /-- Pure refinement for `Fs.withName`. -/
-theorem refinesPure_withName : Core.RefinesPureEq2 LeanSwe.Fs.withName LeanSwe.Fs.Model.withName :=
+theorem refinesPure_withName : Core.ObeysPureEq2 LeanSwe.Fs.withName LeanSwe.Fs.Model.withName :=
   fun _ _ => rfl
 
 /-- Pure refinement for `Fs.withSuffix`. -/
-theorem refinesPure_withSuffix : Core.RefinesPureEq2 LeanSwe.Fs.withSuffix LeanSwe.Fs.Model.withSuffix :=
+theorem refinesPure_withSuffix : Core.ObeysPureEq2 LeanSwe.Fs.withSuffix LeanSwe.Fs.Model.withSuffix :=
   fun _ _ => rfl
 
 /-- Pure refinement for `Fs.isAbsolute`. -/
-theorem refinesPure_isAbsolute : Core.RefinesPureEq LeanSwe.Fs.isAbsolute LeanSwe.Fs.Model.isAbsolute :=
+theorem refinesPure_isAbsolute : Core.ObeysPureEq LeanSwe.Fs.isAbsolute LeanSwe.Fs.Model.isAbsolute :=
   fun _ => rfl
 
 /-- Pure refinement for `Fs.relativeTo`. -/
-theorem refinesPure_relativeTo : Core.RefinesPureEq2 LeanSwe.Fs.relativeTo LeanSwe.Fs.Model.relativeTo :=
+theorem refinesPure_relativeTo : Core.ObeysPureEq2 LeanSwe.Fs.relativeTo LeanSwe.Fs.Model.relativeTo :=
   fun _ _ => rfl
 
 /-- Pure refinement for `Fs.mapRawError`. -/
-theorem refinesPure_mapRawError : Core.RefinesPureEq LeanSwe.Fs.mapRawError LeanSwe.Fs.Model.mapRawError :=
+theorem refinesPure_mapRawError : Core.ObeysPureEq LeanSwe.Fs.mapRawError LeanSwe.Fs.Model.mapRawError :=
   fun _ => rfl
 
 private theorem withName_never_of (k : FsErrorKind) (hk : k ≠ .invalidInput) (path newName : String) :

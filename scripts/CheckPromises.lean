@@ -3171,9 +3171,6 @@ private def middleHookAllowlist : Array String := #[
 does not yet match mechanical `.olean` `Expr` synthesis at `6a903b4`. Fails on both new
 regressions and stale entries as packages converge. -/
 private def obeysSynthAllowlist : Array String := #[
-  "OBEYS_SYNTH|LeanSwe.Base64",
-  "OBEYS_SYNTH|LeanSwe.CmdLine",
-  "OBEYS_SYNTH|LeanSwe.NumParse",
   "OBEYS_SYNTH|LeanSwe.Toml"
 ]
 

@@ -9,7 +9,7 @@ open LeanSwe.Fs.Model
 
 /-- Trace specification for `SysBridge.writeAllLoop`: writes exact `data.extract off data.size` and always closes `h`. -/
 theorem writeAllLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (h : HandleId) (path : String) (data : ByteArray) (held : List HandleId)
     (off fuel : Nat) (hOff : off ≤ data.size) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.writeAllLoop cap.files h path data off fuel).run s
@@ -146,7 +146,7 @@ theorem writeAllLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
 
 /-- Trace specification for `SysBridge.writeAllAndClose`: writes exact `data` and always closes `h`. -/
 theorem writeAllAndClose_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (h : HandleId) (path : String) (data : ByteArray) (held : List HandleId) (eintrFuel : Nat)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.writeAllAndClose cap.files h path data eintrFuel).run s
@@ -166,7 +166,7 @@ theorem writeAllAndClose_trace {W : Type} {proj : W → FsWorld} {cap : HealthyF
 
 /-- Trace specification for `SysBridge.readDirStreamLoop`: scans `getdents64` to 0-byte EOF, excludes `.`/`..`, and stays confined. -/
 theorem readDirStreamLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (h : HandleId) (path : String) (held : List HandleId)
     (acc : Array String) (fuel : Nat) (hAcc : ∀ nm ∈ acc.toList, nm ≠ "." ∧ nm ≠ "..")
     {s : W} (hWf : fsWorldWf (proj s) = true) :
@@ -260,7 +260,7 @@ theorem readDirStreamLoop_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
 
 /-- Trace specification for `SysBridge.finishLockFd`: verifies `.reg` via `fstat`, applies `flock`, closes `h` on failure, and stays confined. -/
 theorem finishLockFd_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (h : HandleId) (path : String) (mode : LockMode) (nonBlocking : Bool)
     (held : List HandleId) (eintrFuel : Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.finishLockFd cap.files h path mode nonBlocking eintrFuel).run s
@@ -440,7 +440,7 @@ theorem finishLockFd_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
 
 /-- Trace specification for `SysBridge.releaseLockPure`: runs `flock(LOCK_UN)` then `close`, popping `h` from `h :: held`, and stays confined. -/
 theorem releaseLockPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (h : HandleId) (held : List HandleId) (eintrFuel : Nat)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.releaseLockPure cap.files h eintrFuel).run s

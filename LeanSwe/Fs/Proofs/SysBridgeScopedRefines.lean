@@ -37,8 +37,8 @@ private theorem bracketLockM_pure_run {W α lockH : Type}
 /-- End-to-end refinement of `toScopedRawFsOpsM (SysBridge.mkRawFsOpsM cap.files cap.nextTempSeq)` against `allowedScopedRawFsStep` directly from `LinuxSyscall.Files.healthyStep`. -/
 theorem refinesScopedRawFs_of_refinesFilesCap
     {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep) :
-    Core.RefinesStep proj Model.fsWorldWf
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep) :
+    Core.ObeysStep proj Model.fsWorldWf
       (Model.execScopedRawFsStep (Internal.toScopedRawFsOpsM (SysBridge.mkRawFsOpsM cap.files cap.nextTempSeq)))
       Model.allowedScopedRawFsStep := by
   intro s req hWf

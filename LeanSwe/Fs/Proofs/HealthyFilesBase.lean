@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Files.Model
@@ -476,9 +476,9 @@ theorem healthyStep_write_le {env env' : HealthyEnv} {hid : HandleId} {chunk : B
               · simp only [hPs, ↓reduceIte] at hV
                 exact verifyStep_writeDiscard_le hV
 
-/-- Extract a single verified `FilesReq` transition from `Core.RefinesStep` over `HealthyFilesCapM`. -/
+/-- Extract a single verified `FilesReq` transition from `Core.ObeysStep` over `HealthyFilesCapM`. -/
 theorem cap_fileReq_raw {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (req : FilesReq) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (execFilesReq cap.files req).run s
     fsWorldWf (proj p.2) = true ∧
@@ -493,9 +493,9 @@ theorem cap_fileReq_raw {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCap
   dsimp only [allowedFilesCapStep] at h
   exact ⟨h.2.2.2, h.2.1, h.2.2.1⟩
 
-/-- Extract a single verified `nextTempSeq` transition from `Core.RefinesStep` over `HealthyFilesCapM`. -/
+/-- Extract a single verified `nextTempSeq` transition from `Core.ObeysStep` over `HealthyFilesCapM`. -/
 theorem cap_nextTempSeq {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := cap.nextTempSeq.run s
     fsWorldWf (proj p.2) = true ∧

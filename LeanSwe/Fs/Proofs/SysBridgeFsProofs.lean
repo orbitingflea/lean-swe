@@ -17,7 +17,7 @@ private theorem append_ne_empty_l {a b : String} (h : a ≠ "") : a ++ b ≠ "" 
 
 /-- Trace specification for `SysBridge.readLinkLoop`. -/
 theorem readLinkLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (path : String) (capSz : UInt32) (eintrFuel fuel : Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.readLinkLoop cap.files path capSz eintrFuel fuel).run s
     fsWorldWf (proj p.2) = true ∧
@@ -83,7 +83,7 @@ theorem readLinkLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
 
 /-- Trace specification for `SysBridge.getcwdLoop`. -/
 theorem getcwdLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (capSz : UInt32) (eintrFuel fuel : Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.getcwdLoop cap.files capSz eintrFuel fuel).run s
     fsWorldWf (proj p.2) = true ∧
@@ -140,7 +140,7 @@ theorem getcwdLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCa
 
 /-- Trace specification for `SysBridge.realPathLoop`. -/
 theorem realPathLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (origPath : String) (eintrFuel : Nat)
     (resolvedRev queue : List String) (trailingSlash : Bool) (symLeft fuel : Nat)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
@@ -315,7 +315,7 @@ theorem realPathLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
 
 /-- Trace specification for `SysBridge.realPathPure`. -/
 theorem realPathPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (path : String) (eintrFuel : Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.realPathPure cap.files path eintrFuel).run s
     fsWorldWf (proj p.2) = true ∧
@@ -378,7 +378,7 @@ theorem realPathPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
 
 /-- Trace specification for `SysBridge.removeDirAtOpt`. -/
 theorem removeDirAtOpt_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (dir : Option HandleId) (path : String) (held : List HandleId) (eintrFuel : Nat)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.removeDirAtOpt cap.files dir path eintrFuel).run s
@@ -429,7 +429,7 @@ theorem removeDirAtOpt_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFil
 
 /-- Trace specification for `SysBridge.readBytesPure`. -/
 theorem readBytesPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (path : String) (eintrFuel streamFuel : Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.readBytesPure cap.files path eintrFuel streamFuel).run s
     fsWorldWf (proj p.2) = true ∧

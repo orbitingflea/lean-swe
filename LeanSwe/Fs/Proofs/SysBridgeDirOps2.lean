@@ -9,7 +9,7 @@ open LeanSwe.Fs.Model
 
 /-- Confined trace specification for `SysBridge.createFileAtPure`. -/
 theorem createFileAtPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (dirFd : HandleId) (name : EntryName) (bytes : ByteArray) (held : List HandleId) (eintrFuel : Nat)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.createFileAtPure cap.files dirFd name bytes eintrFuel).run s
@@ -81,7 +81,7 @@ theorem createFileAtPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyF
 
 /-- Confined trace specification for `SysBridge.acquireLockAtPure`. -/
 theorem acquireLockAtPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (dirFd : HandleId) (name : EntryName) (mode : LockMode) (createIfMissing nonBlocking : Bool)
     (held : List HandleId) (eintrFuel : Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.acquireLockAtPure cap.files dirFd name mode createIfMissing nonBlocking eintrFuel).run s
@@ -230,7 +230,7 @@ theorem acquireLockAtPure_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
 
 /-- Confined trace specification for `(SysBridge.mkRawDirOpsM ...).fstatDir`. -/
 theorem dirOps_fstatDir_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (dirFd : HandleId) (held : List HandleId) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := ((SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).fstatDir dirFd).run s
     fsWorldWf (proj p.2) = true ∧
@@ -263,7 +263,7 @@ theorem dirOps_fstatDir_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFi
 
 /-- Confined trace specification for `(SysBridge.mkRawDirOpsM ...).lstatAt`. -/
 theorem dirOps_lstatAt_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (dirFd : HandleId) (name : EntryName) (held : List HandleId) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := ((SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).lstatAt dirFd name).run s
     fsWorldWf (proj p.2) = true ∧
@@ -306,7 +306,7 @@ theorem dirOps_lstatAt_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFil
 
 /-- Confined trace specification for `(SysBridge.mkRawDirOpsM ...).createDirAt`. -/
 theorem dirOps_createDirAt_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (dirFd : HandleId) (name : EntryName) (held : List HandleId) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := ((SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).createDirAt dirFd name).run s
     fsWorldWf (proj p.2) = true ∧
@@ -341,7 +341,7 @@ theorem dirOps_createDirAt_trace {W : Type} {proj : W → FsWorld} {cap : Health
 
 /-- Confined trace specification for `(SysBridge.mkRawDirOpsM ...).renameAt`. -/
 theorem dirOps_renameAt_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (srcFd : HandleId) (srcName : EntryName) (dstFd : HandleId) (dstName : EntryName)
     (held : List HandleId) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := ((SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).renameAt srcFd srcName dstFd dstName).run s
@@ -377,7 +377,7 @@ theorem dirOps_renameAt_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFi
 
 /-- Confined trace specification for `(SysBridge.mkRawDirOpsM ...).unlinkAt`. -/
 theorem dirOps_unlinkAt_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (dirFd : HandleId) (name : EntryName) (isDir : Bool) (held : List HandleId)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := ((SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).unlinkAt dirFd name isDir).run s
@@ -433,7 +433,7 @@ theorem dirOps_unlinkAt_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFi
 
 /-- Confined trace specification for `(SysBridge.mkRawDirOpsM ...).symlinkAt`. -/
 theorem dirOps_symlinkAt_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (target : String) (dirFd : HandleId) (name : EntryName) (held : List HandleId)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := ((SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).symlinkAt target dirFd name).run s
@@ -475,7 +475,7 @@ theorem dirOps_symlinkAt_trace {W : Type} {proj : W → FsWorld} {cap : HealthyF
 
 /-- Confined zero-syscall trace specification for `(SysBridge.mkRawDirOpsM ...).freshTempName`. -/
 theorem dirOps_freshTempName_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (held : List HandleId) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := ((SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq).freshTempName).run s
     fsWorldWf (proj p.2) = true ∧
