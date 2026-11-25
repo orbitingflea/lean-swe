@@ -37,7 +37,7 @@ Enforces:
    or legacy `<pkgNs>.Proofs.refines_model` (never both) via `ObeysPure`, `ObeysPure2`, `ObeysPure3`, `ObeysPure4`,
    `ObeysPureEq`, `ObeysPureEq2`, `ObeysPureEq3`, `ObeysPureEq4`, `ObeysPureEqUpToErrMsg`, `ObeysPureEqUpToErrMsg2`,
    `ObeysPureEqUpToErrMsg3`, `ObeysPureEqUpToErrMsg4`, `ObeysInverseRender`, `ObeysStep`, `ObeysStepId`,
-   `ObeysStepFrom`, `ObeysStepFromFinally`, or `ObeysStepFrom2` (or legacy `RefinesPure{,2,3,4}`,
+   `ObeysStepFrom`, `ObeysStepFromFinally`, `ObeysStepFromConc`, or `ObeysStepFrom2` (or legacy `RefinesPure{,2,3,4}`,
    `RefinesPureEq{,2,3,4}`, `RefinesStep`, `RefinesStepId`, `RefinesStepFrom`, `RefinesStepFromFinally`,
    `RefinesStepFrom2` aliases) with bare-constant pinning and non-trivial `allowed` relations across the full public
    `<pkgNs>.Interface` surface.
@@ -3040,7 +3040,8 @@ private def checkRefinesModelTheorem
           if ab.isAppOfArity `Core.RefinesStepFrom 16 ||
               ab.isAppOfArity `Core.RefinesStepFromFinally 16 ||
               ab.isAppOfArity `Core.ObeysStepFrom 16 ||
-              ab.isAppOfArity `Core.ObeysStepFromFinally 16 then
+              ab.isAppOfArity `Core.ObeysStepFromFinally 16 ||
+              ab.isAppOfArity `Core.ObeysStepFromConc 16 then
             let args := ab.getAppArgs
             some (args[0]!, args[1]!, args[6]!, args[7]!, args[8]!, args[9]!, args[12]!, args[13]!, args[14]!,
               #[(args[4]!, args[5]!, args[10]!, args[11]!), (args[6]!, args[7]!, args[14]!, args[15]!)])
@@ -3669,13 +3670,17 @@ private def renderExpectedObeysSig (env : Environment) (knownPkgs : Array Name) 
     conjuncts := conjuncts.push line
   if !effOps.isEmpty then
     let mkApiCand := Name.str (Name.str pkg "Internal") "mkApiM"
+    let mkFullCand := Name.str (Name.str pkg "Internal") "mkFullApiM"
     let (stepPred, builderStr) :=
-      match env.find? mkApiCand with
+      match (env.find? mkApiCand).orElse (fun _ => env.find? mkFullCand) with
       | some ci =>
+        let used := ci.type.getUsedConstants
         let pred :=
-          if ci.type.getUsedConstants.contains ``MonadFinally then "Core.ObeysStepFromFinally"
+          if used.contains `Core.ConcOpsM then "Core.ObeysStepFromConc"
+          else if used.contains ``MonadFinally then "Core.ObeysStepFromFinally"
           else "Core.ObeysStepFrom"
-        (pred, mkApiCand.toString)
+        let bName := if (env.find? mkApiCand).isSome then mkApiCand else mkFullCand
+        (pred, bName.toString)
       | none => ("Core.ObeysStepFrom", "<MK_API_M>")
     conjuncts := conjuncts.push
       s!"{stepPred} <MAP_S> <RAW_WF> <EXEC_RAW> <RAW_ALLOWED> <PKG_WF> {builderStr} <EXEC_PKG> <PKG_ALLOWED>"

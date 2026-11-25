@@ -2124,11 +2124,15 @@ private def checkProcessSandboxHostClosure (env : Environment) : IO (Array Strin
 private def connectProxyRequiredModules : Array Name := #[
   `LeanSwe.ConnectProxy.Types,
   `LeanSwe.ConnectProxy.Model,
+  `LeanSwe.ConnectProxy.Model.IpAndHost,
   `LeanSwe.ConnectProxy.Model.RelayState,
   `LeanSwe.ConnectProxy.Model.BridgeState,
   `LeanSwe.ConnectProxy.Model.HealthySys,
+  `LeanSwe.ConnectProxy.Model.FullStep,
   `LeanSwe.ConnectProxy.Relay,
   `LeanSwe.ConnectProxy.SysBridge,
+  `LeanSwe.ConnectProxy.SysBridge.SlotSteps,
+  `LeanSwe.ConnectProxy.SysBridge.Driver,
   `LeanSwe.ConnectProxy.Impl,
   `LeanSwe.ConnectProxy.Interface,
   `LeanSwe.ConnectProxy.SpecTests,
@@ -2192,7 +2196,7 @@ private def isAllowedConnectProxyNonProofProjectMod (m : Name) : Bool :=
     true
   else if m.components.take 2 == [`LeanSwe, `ConnectProxy] then
     m != `LeanSwe.ConnectProxy.SpecMutants &&
-      nameLastStr m != "RuntimeTests" &&
+      !m.components.contains `RuntimeTests &&
       !m.components.contains `Proofs
   else
     false
@@ -2201,7 +2205,7 @@ private def isAllowedConnectProxyAnyProjectMod (m : Name) : Bool :=
   if isAllowedConnectProxyNonProofProjectMod m then true
   else if m == `Core.Assumptions then true
   else if m.components.take 2 == [`LeanSwe, `ConnectProxy] then
-    m != `LeanSwe.ConnectProxy.SpecMutants && nameLastStr m != "RuntimeTests"
+    m != `LeanSwe.ConnectProxy.SpecMutants && !m.components.contains `RuntimeTests
   else if m.getRoot == `LeanSwe then
     (m.components.contains `Proofs || nameLastStr m == "SpecTests") &&
       !isMutantModule m && nameLastStr m != "RuntimeTests"
@@ -2344,13 +2348,17 @@ private def checkConnectProxyWiring (env : Environment) : Array String := Id.run
   match env.find? `LeanSwe.ConnectProxy.defaultApi with
   | some (.defnInfo dv) =>
     let v := dv.value.consumeMData
-    let args := v.getAppArgs
+    let used := dv.value.getUsedConstants
     let ok :=
-      v.isAppOfArity `LeanSwe.ConnectProxy.Internal.mkScopedApiM 4 &&
-      args[0]!.consumeMData.isConstOf ``IO &&
-      args[3]!.consumeMData.isConstOf `LeanSwe.ConnectProxy.Internal.defaultScopedIoOps
+      v.getAppFn.consumeMData.isConstOf `LeanSwe.ConnectProxy.Internal.mkFullApiM &&
+      used.contains `LeanSwe.LinuxSyscall.Files.defaultOps &&
+      used.contains `LeanSwe.LinuxSyscall.Net.defaultOps &&
+      used.contains `LeanSwe.LinuxSyscall.Poll.defaultOps &&
+      used.contains `LeanSwe.LinuxSyscall.Dns.defaultOps &&
+      used.contains `LeanSwe.LinuxSyscall.TimeRand.defaultOps &&
+      used.contains `Core.ioConcOps
     if !ok then
-      errs := errs.push "CPROXY_INTERFACE_WIRING: LeanSwe.ConnectProxy.defaultApi must apply Internal.mkScopedApiM to Internal.defaultScopedIoOps"
+      errs := errs.push "CPROXY_INTERFACE_WIRING: LeanSwe.ConnectProxy.defaultApi must apply Internal.mkFullApiM directly to LinuxSyscall.{Files,Net,Poll,Dns,TimeRand}.defaultOps and Core.ioConcOps"
   | _ =>
     errs := errs.push "CPROXY_INTERFACE_WIRING: missing LeanSwe.ConnectProxy.defaultApi"
   let pubFns : Array (Name × Name) := #[
@@ -2376,7 +2384,7 @@ private def checkConnectProxyWiring (env : Environment) : Array String := Id.run
         errs := errs.push s!"CPROXY_INTERFACE_WIRING: {pubName} must delegate directly to defaultApi"
     | _ =>
       errs := errs.push s!"CPROXY_INTERFACE_WIRING: missing {pubName}"
-  match env.find? `LeanSwe.ConnectProxy.Internal.mkScopedApiM with
+  match env.find? `LeanSwe.ConnectProxy.Internal.mkFullApiM with
   | some (.defnInfo dv) =>
     let v := peelLambdas dv.value
     let args := v.getAppArgs
@@ -2389,64 +2397,28 @@ private def checkConnectProxyWiring (env : Environment) : Array String := Id.run
       (etaReduceExpr args[5]!).isConstOf `LeanSwe.ConnectProxy.Model.parseConnectRequest &&
       (etaReduceExpr args[6]!).isConstOf `LeanSwe.ConnectProxy.Model.validateConfig &&
       args[7]!.getUsedConstants.contains `LeanSwe.ConnectProxy.Model.validateConfig &&
-      exprUsesStructField `LeanSwe.ConnectProxy.ScopedProxyOpsM args[7]!
+      args[7]!.getUsedConstants.contains `LeanSwe.ConnectProxy.SysBridge.Driver.withProxyM
     if !ok then
-      errs := errs.push "CPROXY_IMPL_WIRING: Internal.mkScopedApiM must wire Model.{parseIpAddr,parseIpPrefix,isGlobalIp,allowsIp,parseConnectRequest,validateConfig} and ScopedProxyOpsM.withProxy"
+      errs := errs.push "CPROXY_IMPL_WIRING: Internal.mkFullApiM must wire Model.{parseIpAddr,parseIpPrefix,isGlobalIp,allowsIp,parseConnectRequest,validateConfig} and SysBridge.Driver.withProxyM"
   | _ =>
-    errs := errs.push "CPROXY_IMPL_WIRING: missing Internal.mkScopedApiM"
-  match env.find? `LeanSwe.ConnectProxy.Internal.defaultScopedIoOps with
-  | some (.defnInfo dv) =>
-    let v := dv.value.consumeMData
-    let args := v.getAppArgs
-    let ok :=
-      v.isAppOfArity `LeanSwe.ConnectProxy.ScopedProxyOpsM.mk 2 &&
-      args[0]!.consumeMData.isConstOf ``IO &&
-      (peelLambdas args[1]!).isAppOfArity `LeanSwe.ConnectProxy.SysBridge.withProxyIo 3
-    if !ok then
-      errs := errs.push "CPROXY_IMPL_WIRING: Internal.defaultScopedIoOps must wire SysBridge.withProxyIo"
-  | _ =>
-    errs := errs.push "CPROXY_IMPL_WIRING: missing Internal.defaultScopedIoOps"
-  match env.find? `LeanSwe.ConnectProxy.SysBridge.withProxyIo with
-  | some (.defnInfo dv) =>
-    let used := dv.value.getUsedConstants
-    if !used.contains `LeanSwe.ConnectProxy.Model.withValidProxyModel ||
-        !used.contains `LeanSwe.ConnectProxy.SysBridge.mkIoRawOps then
-      errs := errs.push "CPROXY_SYSBRIDGE_WIRING: SysBridge.withProxyIo must wire Model.withValidProxyModel and SysBridge.mkIoRawOps"
-  | _ =>
-    errs := errs.push "CPROXY_SYSBRIDGE_WIRING: missing SysBridge.withProxyIo"
-  match env.find? `LeanSwe.ConnectProxy.SysBridge.mkIoRawOps with
+    errs := errs.push "CPROXY_IMPL_WIRING: missing Internal.mkFullApiM"
+  match env.find? `LeanSwe.ConnectProxy.SysBridge.Driver.withProxyM with
   | some (.defnInfo dv) =>
     let used := dv.value.getUsedConstants
     if !used.contains `LeanSwe.ConnectProxy.SysBridge.createListener ||
-        !used.contains `LeanSwe.ConnectProxy.SysBridge.defaultIoSysOps ||
-        !used.contains `LeanSwe.ConnectProxy.SysBridge.runIoProxyLoop then
-      errs := errs.push "CPROXY_SYSBRIDGE_WIRING: SysBridge.mkIoRawOps must wire createListener, defaultIoSysOps, and runIoProxyLoop"
+        !used.contains `LeanSwe.ConnectProxy.SysBridge.Driver.runProxyLoopM then
+      errs := errs.push "CPROXY_SYSBRIDGE_WIRING: SysBridge.Driver.withProxyM must wire createListener and runProxyLoopM"
   | _ =>
-    errs := errs.push "CPROXY_SYSBRIDGE_WIRING: missing SysBridge.mkIoRawOps"
-  match env.find? `LeanSwe.ConnectProxy.SysBridge.runIoProxyLoop with
+    errs := errs.push "CPROXY_SYSBRIDGE_WIRING: missing SysBridge.Driver.withProxyM"
+  match env.find? `LeanSwe.ConnectProxy.SysBridge.Driver.runProxyLoopM with
   | some (.defnInfo _) =>
-    let modSb := `LeanSwe.ConnectProxy.SysBridge
-    let rootLoop := `LeanSwe.ConnectProxy.SysBridge.runIoProxyLoop
-    if !usesConstWithinModule env modSb rootLoop `LeanSwe.ConnectProxy.SysBridge.pollAndStepTickM ||
-        !usesConstWithinModule env modSb rootLoop `LeanSwe.ConnectProxy.SysBridge.defaultIoSysOps then
-      errs := errs.push "CPROXY_SYSBRIDGE_WIRING: SysBridge.runIoProxyLoop must execute verified pollAndStepTickM over defaultIoSysOps"
+    let modDrv := `LeanSwe.ConnectProxy.SysBridge.Driver
+    let rootLoop := `LeanSwe.ConnectProxy.SysBridge.Driver.runProxyLoopM
+    if !usesConstWithinModule env modDrv rootLoop `LeanSwe.ConnectProxy.SysBridge.pollAndStepTickM ||
+        !usesConstWithinModule env modDrv rootLoop `LeanSwe.ConnectProxy.SysBridge.teardownAllSlotsList then
+      errs := errs.push "CPROXY_SYSBRIDGE_WIRING: SysBridge.Driver.runProxyLoopM must execute verified pollAndStepTickM and teardownAllSlotsList"
   | _ =>
-    errs := errs.push "CPROXY_SYSBRIDGE_WIRING: missing SysBridge.runIoProxyLoop"
-  match env.find? `LeanSwe.ConnectProxy.SysBridge.defaultIoSysOps with
-  | some (.defnInfo dv) =>
-    let v := dv.value.consumeMData
-    let used := dv.value.getUsedConstants
-    let ok :=
-      v.isAppOfArity `LeanSwe.ConnectProxy.Internal.SysBridge.CProxySysOpsM.mk 7 &&
-      used.contains `LeanSwe.LinuxSyscall.Files.defaultOps &&
-      used.contains `LeanSwe.LinuxSyscall.Net.defaultOps &&
-      used.contains `LeanSwe.LinuxSyscall.Poll.defaultOps &&
-      used.contains `LeanSwe.LinuxSyscall.Dns.defaultOps &&
-      used.contains `LeanSwe.LinuxSyscall.TimeRand.defaultOps
-    if !ok then
-      errs := errs.push "CPROXY_SYSBRIDGE_WIRING: SysBridge.defaultIoSysOps must wire LinuxSyscall.{Files,Net,Poll,Dns,TimeRand}.defaultOps"
-  | _ =>
-    errs := errs.push "CPROXY_SYSBRIDGE_WIRING: missing SysBridge.defaultIoSysOps"
+    errs := errs.push "CPROXY_SYSBRIDGE_WIRING: missing SysBridge.Driver.runProxyLoopM"
   match env.find? `LeanSwe.ConnectProxy.SysBridge.realBridgeTarget with
   | some (.defnInfo dv) =>
     let v := dv.value.consumeMData
@@ -2497,7 +2469,7 @@ private def checkConnectProxyTrustedClosure
   for h : i in [0 : env.header.moduleNames.size] do
     let m := env.header.moduleNames[i]
     if m.components.take 2 == [`LeanSwe, `ConnectProxy] &&
-        !isMutantModule m && nameLastStr m != "RuntimeTests" then
+        !isMutantModule m && !m.components.contains `RuntimeTests then
       cproxyMods := cproxyMods.push m
       let isProofs := m.components.contains `Proofs
       let fromSpecOrProof := isProofs || m == `LeanSwe.ConnectProxy.SpecTests
@@ -3173,12 +3145,11 @@ stale entries as follow-up PRs land. -/
 private def modelPresenceAllowlist : Array String := #[]
 
 /-- Exact shrinking ratchet allowlist of non-pure zero-`@[extern]` packages currently wiring
-through a same-package un-fuzzed middle hook (`SysBridge.defaultOps`, `ScopedProxyOpsM`,
-`CliOpsM`, `ScopedRawFsOpsM`, `RelayRawOps`, `defaultRawOps`) instead of imported `manifest.deps`
+through a same-package un-fuzzed middle hook (`SysBridge.defaultOps`, `CliOpsM`,
+`ScopedRawFsOpsM`, `RelayRawOps`, `defaultRawOps`) instead of imported `manifest.deps`
 capabilities. -/
 private def middleHookAllowlist : Array String := #[
   "MIDDLE_HOOK|LeanSwe.CmdLine",
-  "MIDDLE_HOOK|LeanSwe.ConnectProxy",
   "MIDDLE_HOOK|LeanSwe.Process",
   "MIDDLE_HOOK|LeanSwe.ProcessSandbox.Raw"
 ]
@@ -3222,7 +3193,7 @@ private def isKnownContractPredHead (fn : Name) : Bool :=
     fn == `Core.ObeysPureEqUpToErrMsg3 || fn == `Core.ObeysPureEqUpToErrMsg4 ||
     fn == `Core.ObeysInverseRender || fn == `Core.ObeysInverseRenderWithin ||
     fn == `Core.ObeysStep || fn == `Core.ObeysStepId ||
-    fn == `Core.ObeysStepFrom || fn == `Core.ObeysStepFromFinally || fn == `Core.ObeysStepFrom2 ||
+    fn == `Core.ObeysStepFrom || fn == `Core.ObeysStepFromFinally || fn == `Core.ObeysStepFromConc || fn == `Core.ObeysStepFrom2 ||
     fn == `Core.RefinesPure || fn == `Core.RefinesPure2 || fn == `Core.RefinesPure3 || fn == `Core.RefinesPure4 ||
     fn == `Core.RefinesPureEq || fn == `Core.RefinesPureEq2 || fn == `Core.RefinesPureEq3 || fn == `Core.RefinesPureEq4 ||
     fn == `Core.RefinesStep || fn == `Core.RefinesStepId ||
@@ -3322,7 +3293,8 @@ private def checkConcreteIoInterfaceDecls
 
 private def extractStepFromConj? (ab : Expr) : Option (Name × Array Expr × Expr) :=
   if ab.isAppOfArity `Core.ObeysStepFrom 16 || ab.isAppOfArity `Core.RefinesStepFrom 16 ||
-      ab.isAppOfArity `Core.ObeysStepFromFinally 16 || ab.isAppOfArity `Core.RefinesStepFromFinally 16 then
+      ab.isAppOfArity `Core.ObeysStepFromFinally 16 || ab.isAppOfArity `Core.RefinesStepFromFinally 16 ||
+      ab.isAppOfArity `Core.ObeysStepFromConc 16 then
     let a := ab.getAppArgs
     match (peelLambdas (etaReduceExpr a[13]!)).consumeMData.getAppFn.consumeMData with
     | .const mkFn _ => some (mkFn, #[a[2]!], a[3]!)
@@ -4038,9 +4010,11 @@ private def auditEffectfulStepSynthesis
         if sm == ifaceMod then st := { st with coveredStepOps := st.coveredStepOps.insert stepFn }
         else if sm == implMod then st := { st with coveredImplHelpers := st.coveredImplHelpers.insert stepFn }
     else if (fnName == `Core.ObeysStepFrom || fnName == `Core.RefinesStepFrom ||
-        fnName == `Core.ObeysStepFromFinally || fnName == `Core.RefinesStepFromFinally) && args.size == 16 then
+        fnName == `Core.ObeysStepFromFinally || fnName == `Core.RefinesStepFromFinally ||
+        fnName == `Core.ObeysStepFromConc) && args.size == 16 then
       st := { st with stepCount := st.stepCount + 1 }
       let isFin := fnName == `Core.ObeysStepFromFinally || fnName == `Core.RefinesStepFromFinally
+      let isConc := fnName == `Core.ObeysStepFromConc
       let some _ := checkBareModelConst env modelMods true args[8]!
         | errs := errs.push s!"stepFrom mapS in {pkg} is not id or public Model constant"
       let some _ := checkBareModelConst env modelMods false args[9]!
@@ -4055,7 +4029,10 @@ private def auditEffectfulStepSynthesis
         | errs := errs.push s!"stepFrom execPkg in {pkg} is not a public Model constant"
       let some _ := checkBareModelConst env modelMods false args[15]!
         | errs := errs.push s!"stepFrom pkgAllowed in {pkg} is not a public Model constant"
-      let synthHead := if isFin then `Core.ObeysStepFromFinally else `Core.ObeysStepFrom
+      let synthHead :=
+        if isConc then `Core.ObeysStepFromConc
+        else if isFin then `Core.ObeysStepFromFinally
+        else `Core.ObeysStepFrom
       let synth := mkAppN (mkConst synthHead fnLvls) args
       if !(← isDefEqReducible synth atom) then
         errs := errs.push s!"stepFrom conjunct in {pkg} failed reducible isDefEq against synthesized {synthHead}"
@@ -4555,7 +4532,9 @@ private def renderSynthesizedObeysSig
           if env.contains cand then some cand else none
       let stepHead := match mkApiCand.bind (env.find? ·) with
         | some ci =>
-          if ci.type.getUsedConstants.contains ``MonadFinally then "Core.ObeysStepFromFinally"
+          let ucs := ci.type.getUsedConstants
+          if ucs.contains `Core.ConcOpsM then "Core.ObeysStepFromConc"
+          else if ucs.contains ``MonadFinally then "Core.ObeysStepFromFinally"
           else "Core.ObeysStepFrom"
         | none => "Core.ObeysStepFrom"
       let findShort (cands : Array String) (fallback : String) : String :=
@@ -4565,9 +4544,9 @@ private def renderSynthesizedObeysSig
           else (modelDefs.find? fun d => nameLastStr d == s).map (·.toString) with
         | some found => found
         | none => fallback
-      let wfStr := findShort #["rawStepWf", "healthyWf", "pkgWf"] "<WF>"
-      let execRawStr := findShort #["execRawStep", "execRaw"] "<EXEC_RAW>"
-      let allowedRawStr := findShort #["allowedRawStep", "allowedRaw"] "<ALLOWED_RAW>"
+      let wfStr := findShort #["rawStepWf", "healthyWf", "pkgWf", "fullWorldWf", "proxyStepWf"] "<WF>"
+      let execRawStr := findShort #["execRawStep", "execFullRawStep", "execRaw"] "<EXEC_RAW>"
+      let allowedRawStr := findShort #["allowedRawStep", "allowedFullRawStep", "allowedRaw"] "<ALLOWED_RAW>"
       let execPkgStr := findShort #["execPkgStep", "execPkg"] "<EXEC_PKG>"
       let allowedPkgStr := findShort #["allowedPkgStep", "allowedPkg"] "<ALLOWED_PKG>"
       let mkStr := (mkApiCand.map (·.toString)).getD "<MK_API>"
@@ -4743,7 +4722,8 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
                       if isTrivialFalseBoolFn env args[3]! || isTrivialTruePred env args[5]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous wf or allowedStep"
                     else if (fnName == `Core.ObeysStepFrom || fnName == `Core.RefinesStepFrom ||
-                        fnName == `Core.ObeysStepFromFinally || fnName == `Core.RefinesStepFromFinally) && args.size == 16 then
+                        fnName == `Core.ObeysStepFromFinally || fnName == `Core.RefinesStepFromFinally ||
+                        fnName == `Core.ObeysStepFromConc) && args.size == 16 then
                       if isTrivialFalsePred env args[11]! ||
                           isTrivialFalseBoolFn env args[12]! || isTrivialTruePred env args[15]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous rawAllowed, pkgWf, or pkgAllowed"

@@ -1,11 +1,23 @@
+import Core.ConcOps
+import LeanSwe.LinuxSyscall.Files.Interface
+import LeanSwe.LinuxSyscall.Net.Interface
+import LeanSwe.LinuxSyscall.Poll.Interface
+import LeanSwe.LinuxSyscall.Dns.Interface
+import LeanSwe.LinuxSyscall.TimeRand.Interface
 import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Impl
 
 namespace LeanSwe.ConnectProxy
 
-/-- Default `IO` HTTP `CONNECT` proxy API backed by `LeanSwe.LinuxSyscall.{Net,Poll,Dns,TimeRand}`. -/
+/-- Default `IO` HTTP `CONNECT` proxy API wired directly to `LeanSwe.LinuxSyscall.{Files,Net,Poll,Dns,TimeRand}.defaultOps` and `Core.ioConcOps`. -/
 def defaultApi : ConnectProxyApi :=
-  Internal.mkScopedApiM Internal.defaultScopedIoOps
+  Internal.mkFullApiM
+    { files := LeanSwe.LinuxSyscall.Files.defaultOps
+      net := LeanSwe.LinuxSyscall.Net.defaultOps
+      poll := LeanSwe.LinuxSyscall.Poll.defaultOps
+      dns := LeanSwe.LinuxSyscall.Dns.defaultOps
+      timeRand := LeanSwe.LinuxSyscall.TimeRand.defaultOps }
+    Core.ioConcOps
 
 /-- Parse a strict IPv4 (`a.b.c.d`) or RFC 4291 IPv6 literal into `IpAddr`. -/
 @[inline] def parseIpAddr (s : String) : Except ProxyError IpAddr :=

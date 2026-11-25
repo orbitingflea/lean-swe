@@ -200,13 +200,4 @@ structure RawConnectProxyOpsM (m : Type → Type) where
 /-- Concrete `IO` internal bridge bundle for `LeanSwe.ConnectProxy`. -/
 abbrev RawConnectProxyOps := RawConnectProxyOpsM IO
 
-/-- Minimal monadic capability bundle for scoped `withProxy` execution after pure configuration validation. -/
-structure ScopedProxyOpsM (m : Type → Type) where
-  /-- Execute `action` against a started `RunningProxy` for a pre-validated `ValidProxyConfig`, returning `(val, events)`. -/
-  withProxy :
-    {α : Type} →
-    ValidProxyConfig →
-    (RunningProxy → m (Except ProxyError α)) →
-    m (Except ProxyError (α × Array ConnectEvent))
-
 end LeanSwe.ConnectProxy

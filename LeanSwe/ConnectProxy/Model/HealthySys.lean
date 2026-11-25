@@ -303,8 +303,7 @@ structure SysBridgeTarget where
     Array (ClientSlot Nat Unit) →
     Array ConnectEvent →
     StateM (HealthySysWorld × SysAuditTrace Nat) (SysBridge.PollTickOutcome Nat Unit)
-  /-- Synchronous single-threaded `RawConnectProxyOpsM` stand-in builder (`SysBridge.mkSyncRawOps`) over instrumented `HealthySysWorld`.
-      Formal FD-conservation proofs target this stand-in; the concurrent `IO` task/socketpair driver (`mkIoRawOps` / `runIoProxyLoop` / `teardownIoLoopState`) is verified by runtime, mutation, and stress tests. -/
+  /-- Synchronous single-threaded `RawConnectProxyOpsM` stand-in builder (`SysBridge.mkSyncRawOps`) over instrumented `HealthySysWorld` for relational `healthyStep` and FD-conservation proofs; the unified `Core.ConcOpsM` concurrent driver (`SysBridge.Driver.withProxyM` / `runProxyLoopM`) is verified via `Proofs.obeys_model` and runtime/mutation tests. -/
   mkRawOps :
     CProxySysOpsM (StateM (HealthySysWorld × SysAuditTrace Nat)) Nat →
     RawConnectProxyOpsM (StateM (HealthySysWorld × SysAuditTrace Nat))

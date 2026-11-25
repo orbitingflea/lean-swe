@@ -1,6 +1,8 @@
+import Core.ConcOps
 import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Model
-import LeanSwe.ConnectProxy.SysBridge
+import LeanSwe.ConnectProxy.Model.BridgeState
+import LeanSwe.ConnectProxy.SysBridge.Driver
 
 namespace LeanSwe.ConnectProxy.Internal
 
@@ -18,13 +20,11 @@ def mkApiM {m : Type → Type} [Monad m] [MonadFinally m]
     validateConfig := Model.validateConfig
     withProxy := fun cfg action => Model.withProxyModel ops cfg action }
 
-/-- Default `IO` scoped proxy capability backed purely by `LeanSwe.LinuxSyscall.{Net,Poll,Dns,TimeRand}` via `SysBridge`. -/
-def defaultScopedIoOps : ScopedProxyOpsM IO :=
-  { withProxy := fun vcfg action => SysBridge.withProxyIo vcfg action }
-
-/-- Build a `ConnectProxyApiM m` bundle from an injected `ScopedProxyOpsM m` capability, validating `cfg` once via `Model.validateConfig`. -/
-def mkScopedApiM {m : Type → Type} [Monad m] [MonadFinally m]
-    (ops : ScopedProxyOpsM m) : ConnectProxyApiM m :=
+/-- Build a full `ConnectProxyApiM m` bundle unifying `Impl`, `SysBridge`, and `Relay` directly
+    over `LinuxSyscall.{Files,Net,Poll,Dns,TimeRand}` (`CProxySysOpsM m RawFd`) and `Core.ConcOpsM m`. -/
+def mkFullApiM {m : Type → Type} [Monad m] [MonadFinally m]
+    (sys : Internal.SysBridge.CProxySysOpsM m LinuxSyscall.RawFd)
+    (conc : Core.ConcOpsM m) : ConnectProxyApiM m :=
   { parseIpAddr := Model.parseIpAddr
     parseIpPrefix := Model.parseIpPrefix
     isGlobalIp := Model.isGlobalIp
@@ -34,6 +34,6 @@ def mkScopedApiM {m : Type → Type} [Monad m] [MonadFinally m]
     withProxy := fun cfg action =>
       match Model.validateConfig cfg with
       | .error err => pure (.error err)
-      | .ok vcfg => ops.withProxy vcfg action }
+      | .ok vcfg => SysBridge.Driver.withProxyM sys conc vcfg action }
 
 end LeanSwe.ConnectProxy.Internal

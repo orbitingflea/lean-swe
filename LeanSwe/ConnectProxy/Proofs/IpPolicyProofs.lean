@@ -274,7 +274,7 @@ theorem specIpv4InIpv6NeverBypassesBan : SpecIpv4InIpv6NeverBypassesBan := by
 theorem proof_cproxy_parseIpAddr_validAndRejectsWildcardsOctalInvalid :
     Core.AllPass (test_cproxy_parseIpAddr_validAndRejectsWildcardsOctalInvalid defaultApi) := by
   intro s
-  dsimp [test_cproxy_parseIpAddr_validAndRejectsWildcardsOctalInvalid, defaultApi, Internal.mkScopedApiM,
+  dsimp [test_cproxy_parseIpAddr_validAndRejectsWildcardsOctalInvalid, defaultApi, Internal.mkFullApiM,
     Core.AllPass, bind, assert]
   refine ⟨rfl, ?_⟩
   cases h : Model.parseIpAddr s with
@@ -290,7 +290,7 @@ theorem reach_cproxy_parseIpAddr_validAndRejectsWildcardsOctalInvalid :
 theorem proof_cproxy_parseIpPrefix_exactBitmaskAndRejectsWildcards :
     Core.AllPass (test_cproxy_parseIpPrefix_exactBitmaskAndRejectsWildcards defaultApi) := by
   intro s
-  dsimp [test_cproxy_parseIpPrefix_exactBitmaskAndRejectsWildcards, defaultApi, Internal.mkScopedApiM,
+  dsimp [test_cproxy_parseIpPrefix_exactBitmaskAndRejectsWildcards, defaultApi, Internal.mkFullApiM,
     Core.AllPass, bind, assert]
   refine ⟨rfl, ?_⟩
   have hP16 : Model.parseIpPrefix "10.1.0.0/16" = .ok (.v4 0x0a010000 16) := rfl
@@ -313,7 +313,7 @@ theorem reach_cproxy_parseIpPrefix_exactBitmaskAndRejectsWildcards :
 theorem proof_cproxy_isGlobalIp_completeIanaRfc6890Table :
     Core.AllPass (test_cproxy_isGlobalIp_completeIanaRfc6890Table defaultApi) := by
   intro ip
-  dsimp [test_cproxy_isGlobalIp_completeIanaRfc6890Table, defaultApi, Internal.mkScopedApiM,
+  dsimp [test_cproxy_isGlobalIp_completeIanaRfc6890Table, defaultApi, Internal.mkFullApiM,
     Core.AllPass, bind, assert]
   refine ⟨rfl, ?_⟩
   repeat refine ⟨by decide, ?_⟩
@@ -328,7 +328,7 @@ theorem reach_cproxy_isGlobalIp_completeIanaRfc6890Table :
 theorem proof_cproxy_allowsIp_banAlwaysOverridesAllow :
     Core.AllPass (test_cproxy_allowsIp_banAlwaysOverridesAllow defaultApi) := by
   intro policy ip
-  dsimp [test_cproxy_allowsIp_banAlwaysOverridesAllow, defaultApi, Internal.mkScopedApiM,
+  dsimp [test_cproxy_allowsIp_banAlwaysOverridesAllow, defaultApi, Internal.mkFullApiM,
     Core.AllPass, bind, assume, assert]
   refine ⟨rfl, by decide, by decide, ?_⟩
   intro i hi hMatch
@@ -345,9 +345,9 @@ theorem reach_cproxy_allowsIp_banAlwaysOverridesAllow :
   have hi : 0 < policy.extraBans.size := by decide
   have hMatch : prefixContains policy.extraBans[0]! ip = true := by decide
   have hAll := proof_cproxy_allowsIp_banAlwaysOverridesAllow policy ip
-  dsimp [test_cproxy_allowsIp_banAlwaysOverridesAllow, defaultApi, Internal.mkScopedApiM,
+  dsimp [test_cproxy_allowsIp_banAlwaysOverridesAllow, defaultApi, Internal.mkFullApiM,
     Core.AllPass, bind, assume, assert] at hAll
-  dsimp [test_cproxy_allowsIp_banAlwaysOverridesAllow, defaultApi, Internal.mkScopedApiM,
+  dsimp [test_cproxy_allowsIp_banAlwaysOverridesAllow, defaultApi, Internal.mkFullApiM,
     Core.CanReach, bind, assume, assert]
   exact ⟨policy, ip, rfl, by decide, by decide, 0, hi, hMatch, (hAll.2.2.2 0 hi hMatch).1, trivial⟩
 
@@ -355,7 +355,7 @@ theorem reach_cproxy_allowsIp_banAlwaysOverridesAllow :
 theorem proof_cproxy_allowsIp_ipv4InIpv6NeverBypassesBan :
     Core.AllPass (test_cproxy_allowsIp_ipv4InIpv6NeverBypassesBan defaultApi) := by
   intro v4 sub8 subHi sla subLo otherV4 flagsPort suffix32 suffix24 iface suffix40 ban hBan
-  dsimp [test_cproxy_allowsIp_ipv4InIpv6NeverBypassesBan, defaultApi, Internal.mkScopedApiM,
+  dsimp [test_cproxy_allowsIp_ipv4InIpv6NeverBypassesBan, defaultApi, Internal.mkFullApiM,
     Core.AllPass, bind, assume, assert]
   let wideAllowPolicy : IpPolicy :=
     { base := .publicOnly
@@ -388,9 +388,9 @@ theorem reach_cproxy_allowsIp_ipv4InIpv6NeverBypassesBan :
   have hBan : prefixContains ban (.v4 v4) = true := by decide
   have hAll := proof_cproxy_allowsIp_ipv4InIpv6NeverBypassesBan
     v4 0 0 0 0 0 0 0 0 0 0 ban hBan
-  dsimp [test_cproxy_allowsIp_ipv4InIpv6NeverBypassesBan, defaultApi, Internal.mkScopedApiM,
+  dsimp [test_cproxy_allowsIp_ipv4InIpv6NeverBypassesBan, defaultApi, Internal.mkFullApiM,
     Core.AllPass, bind, assume, assert] at hAll
-  dsimp [test_cproxy_allowsIp_ipv4InIpv6NeverBypassesBan, defaultApi, Internal.mkScopedApiM,
+  dsimp [test_cproxy_allowsIp_ipv4InIpv6NeverBypassesBan, defaultApi, Internal.mkFullApiM,
     Core.CanReach, bind, assume, assert]
   exact ⟨v4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ban, hBan, hAll⟩
 
