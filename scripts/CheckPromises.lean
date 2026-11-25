@@ -3137,7 +3137,6 @@ private def loadPackageManifest (repoDir : System.FilePath) : IO (Except String 
 stale entries as follow-up PRs land. -/
 private def modelPresenceAllowlist : Array String := #[
   "MISSING_MODEL|LeanSwe.Json",
-  "MISSING_OBEYS_MODEL|LeanSwe.Compress",
   "MISSING_OBEYS_MODEL|LeanSwe.CryptoHash.Raw",
   "MISSING_OBEYS_MODEL|LeanSwe.EnvVars.Raw",
   "MISSING_OBEYS_MODEL|LeanSwe.Git",
