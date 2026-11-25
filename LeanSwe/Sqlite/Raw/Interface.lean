@@ -67,32 +67,58 @@ private opaque rawColumnTextBytes : @& RawStmtExt → UInt32 → BaseIO (UInt32 
 @[extern "leanswe_sqlite_column_blob"]
 private opaque rawColumnBlob : @& RawStmtExt → UInt32 → BaseIO (UInt32 × String × ByteArray)
 
+private structure StmtLockSlot where
+  sh : StmtHandle
+  mu : Std.BaseMutex
+  pins : Nat
+
 private structure RawHandleState where
   table : RawHandleTable := {}
-  stmtLocks : List (StmtHandle × Std.Mutex Unit) := []
+  stmtLocks : List StmtLockSlot := []
   deriving Inhabited
 
 private initialize gHandleTable : Std.Mutex RawHandleState ← Std.Mutex.new {}
 
-private def lookupStmtLock (sh : StmtHandle) : List (StmtHandle × Std.Mutex Unit) → Option (Std.Mutex Unit)
+private def pinExistingStmtLock (sh : StmtHandle) (acc : List StmtLockSlot) :
+    List StmtLockSlot → Option (Std.BaseMutex × List StmtLockSlot)
   | [] => none
-  | (k, mu) :: rest => if k == sh then some mu else lookupStmtLock sh rest
+  | slot :: rest =>
+    if slot.sh == sh then
+      some (slot.mu, acc.reverse ++ ({ slot with pins := slot.pins + 1 } :: rest))
+    else
+      pinExistingStmtLock sh (slot :: acc) rest
+
+private def unpinStmtLockAux (live : List (StmtHandle × RawStmtHandle))
+    (sh : StmtHandle) (acc : List StmtLockSlot) :
+    List StmtLockSlot → Option Std.BaseMutex × List StmtLockSlot
+  | [] => (none, acc.reverse)
+  | slot :: rest =>
+    if slot.sh == sh then
+      let pins' := slot.pins - 1
+      let keep := pins' > 0 || (Internal.lookupRawStmt sh live).isSome
+      let locks' :=
+        if keep then acc.reverse ++ ({ slot with pins := pins' } :: rest)
+        else acc.reverse ++ rest
+      (some slot.mu, locks')
+    else
+      unpinStmtLockAux live sh (slot :: acc) rest
 
 private def filterLiveLocksAux (live : List (StmtHandle × RawStmtHandle))
-    (acc : List (StmtHandle × Std.Mutex Unit)) :
-    List (StmtHandle × Std.Mutex Unit) → List (StmtHandle × Std.Mutex Unit)
+    (acc : List StmtLockSlot) : List StmtLockSlot → List StmtLockSlot
   | [] => acc.reverse
-  | (sh, mu) :: rest =>
-    if (Internal.lookupRawStmt sh live).isSome then
-      filterLiveLocksAux live ((sh, mu) :: acc) rest
+  | slot :: rest =>
+    if slot.pins > 0 || (Internal.lookupRawStmt slot.sh live).isSome then
+      filterLiveLocksAux live (slot :: acc) rest
     else
       filterLiveLocksAux live acc rest
 
-private def withStmtLock {α : Type} (sh : StmtHandle) (act : IO α) : IO α := do
+private def acquireStmtLock (sh : StmtHandle) : IO Bool := do
   let fastRes ← gHandleTable.atomically do
     let st ← get
-    match lookupStmtLock sh st.stmtLocks with
-    | some mu => return some (some mu)
+    match pinExistingStmtLock sh [] st.stmtLocks with
+    | some (mu, locks') =>
+      set { st with stmtLocks := locks' }
+      return some (some mu)
     | none =>
       if (Internal.lookupRawStmt sh st.table.stmts).isSome then
         return some none
@@ -103,20 +129,35 @@ private def withStmtLock {α : Type} (sh : StmtHandle) (act : IO α) : IO α := 
     | none => pure none
     | some (some mu) => pure (some mu)
     | some none =>
-      let newMu ← Std.Mutex.new ()
+      let newMu ← liftM (m := BaseIO) Std.BaseMutex.new
       gHandleTable.atomically do
         let st ← get
-        match lookupStmtLock sh st.stmtLocks with
-        | some mu => return some mu
+        match pinExistingStmtLock sh [] st.stmtLocks with
+        | some (mu, locks') =>
+          set { st with stmtLocks := locks' }
+          return some mu
         | none =>
           if (Internal.lookupRawStmt sh st.table.stmts).isSome then
-            set { st with stmtLocks := (sh, newMu) :: st.stmtLocks }
+            set { st with stmtLocks := { sh := sh, mu := newMu, pins := 1 } :: st.stmtLocks }
             return some newMu
           else
             return none
   match mu? with
-  | some mu => mu.atomically act
-  | none => act
+  | some mu =>
+    liftM (m := BaseIO) mu.lock
+    return true
+  | none =>
+    return false
+
+private def releaseStmtLock (sh : StmtHandle) : IO Unit := do
+  let mu? ← gHandleTable.atomically do
+    let st ← get
+    let (mu?, locks') := unpinStmtLockAux st.table.stmts sh [] st.stmtLocks
+    set { st with stmtLocks := locks' }
+    return mu?
+  match mu? with
+  | some mu => liftM (m := BaseIO) mu.unlock
+  | none => pure ()
 
 private def withDbExt {α : Type} (h : RawDbHandle)
     (k : RawDbExt → BaseIO (Except SqliteRawError α)) : IO (Except SqliteRawError α) :=
@@ -207,11 +248,13 @@ private def cSqliteOps : CSqliteOps :=
     columnInt64 := fun stmt col => withStmtExt stmt fun ptr => mapValRc (rawColumnInt64 ptr col)
     columnDouble := fun stmt col => withStmtExt stmt fun ptr => mapValRc (rawColumnDouble ptr col)
     columnTextBytes := fun stmt col => withStmtExt stmt fun ptr => mapValRc (rawColumnTextBytes ptr col)
-    columnBlob := fun stmt col => withStmtExt stmt fun ptr => mapValRc (rawColumnBlob ptr col) }
+    columnBlob := fun stmt col => withStmtExt stmt fun ptr => mapValRc (rawColumnBlob ptr col)
+    lockStmt := fun {_} sh => acquireStmtLock sh
+    unlockStmt := fun {_} sh => releaseStmtLock sh }
 
 /-- Default single-step SQLite operations backed by `c/sqlite_shim.c` and vendored SQLite3. -/
 def defaultOps : RawSqliteOps :=
-  Internal.mkRawOps cSqliteOps withStmtLock
+  Internal.mkRawOps cSqliteOps
 
 /-- Convert a raw SQLite error record into a normalized `SqliteError` with non-empty message. -/
 @[inline] def mapRawError (err : SqliteRawError) : SqliteError :=

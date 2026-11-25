@@ -157,8 +157,8 @@ theorem proof_sqliteraw_openClose_preservesActiveDbCountAndRejectsClosedOrBusy :
   have hAct2Live : Internal.hasActiveStmtForDb 2 [({ id := 1, dbId := 1 }, RawStmtHandle.mock 200)] = false := rfl
   have hAct1Nil : Internal.hasActiveStmtForDb 1 [] = false := rfl
   dsimp only [test_sqliteraw_openClose_preservesActiveDbCountAndRejectsClosedOrBusy,
-    Internal.mkRawOps, Internal.lookupRawDb, Internal.eraseRawDb, Internal.insertRawDb,
-    Internal.lookupRawStmt, Internal.eraseRawStmt, Internal.insertRawStmt,
+    Internal.mkRawOps, Internal.withStmtLock, Internal.lookupRawDb, Internal.eraseRawDb,
+    Internal.insertRawDb, Internal.lookupRawStmt, Internal.eraseRawStmt, Internal.insertRawStmt,
     Internal.setupConnection, Internal.shouldEnableWal, Internal.computeOpenFlags,
     Internal.runSetupPragma, Internal.stepPragmaLoop, maxBusyTimeoutMs, maxSqlByteLen,
     mockCOps, mockPrepareSuccess, rawDbToken, rawStmtToken, assert]

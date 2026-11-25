@@ -237,6 +237,10 @@ structure CSqliteOpsM (m : Type → Type) where
   /-- Thin wrapper around `sqlite3_column_blob(stmt, col)` + `sqlite3_column_bytes(stmt, col)` copying raw binary
       column bytes and returning `SQLITE_MISUSE` on closed/invalid handles. -/
   columnBlob : RawStmtHandle → UInt32 → m (Except SqliteRawError ByteArray)
+  /-- Acquire the per-statement lock for `stmt`, returning `true` when `stmt` was active and locked. -/
+  lockStmt : [Pure m] → StmtHandle → m Bool := fun _ => pure false
+  /-- Release a previously acquired per-statement lock for `stmt`. -/
+  unlockStmt : [Pure m] → StmtHandle → m Unit := fun _ => pure ()
 
 /-- Concrete `IO` thin-C SQLite hooks backed by `c/sqlite_shim.c`. -/
 abbrev CSqliteOps := CSqliteOpsM IO

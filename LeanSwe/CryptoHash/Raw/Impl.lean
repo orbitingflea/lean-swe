@@ -4,16 +4,10 @@ namespace LeanSwe.CryptoHash.Raw.Internal
 
 open LeanSwe.CryptoHash.Raw
   (HashAlg digestLen CryptoHashErrorKind CryptoHashError CryptoHashRawError
-   RawCryptoHashOpsM RawCryptoHashOps)
+   RawCryptoHashOpsM RawCryptoHashOps CryptoHashFfiOpsM CryptoHashFfiOps)
 
-/-- OpenSSL `libcrypto` C-ABI operations injected by `LeanSwe.CryptoHash.Raw.Interface`. -/
-structure CryptoHashFfiOps where
-  /-- Compute raw digest bytes for algorithm tag (`0 = SHA256`, `1 = SHA512`). -/
-  digestRaw : UInt8 → ByteArray → BaseIO (UInt32 × UInt64 × String × ByteArray)
-  /-- Compute raw 32-byte HMAC-SHA256 tag over `key` and `msg`. -/
-  hmacSha256Raw : ByteArray → ByteArray → BaseIO (UInt32 × UInt64 × String × ByteArray)
-  /-- Constant-time byte-slice comparison via OpenSSL `CRYPTO_memcmp`. -/
-  ctEqualRaw : ByteArray → ByteArray → BaseIO Bool
+/-- Alias of `LeanSwe.CryptoHash.Raw.CryptoHashFfiOpsM` in `Internal`. -/
+abbrev InternalCryptoHashFfiOpsM := CryptoHashFfiOpsM
 
 /-- Return `msg` if non-empty, or `fallback` otherwise. -/
 def nonEmptyMsg (fallback msg : String) : String :=
@@ -57,12 +51,12 @@ def decodeShimError (status : UInt32) (code : UInt64) (detail : String) : Crypto
   else
     decodeOpenSslError code detail
 
-/-- Build the concrete `RawCryptoHashOps` bundle from the injected `BaseIO` OpenSSL hooks. -/
-def mkRawOps (ffi : CryptoHashFfiOps) : RawCryptoHashOps :=
+/-- Build a polymorphic `RawCryptoHashOpsM m` bundle from injected OpenSSL C-ABI hooks. -/
+def mkRawOpsM {m : Type → Type} [Monad m] (ffi : CryptoHashFfiOpsM m) : RawCryptoHashOpsM m :=
   { mapRawError := mapRawError
     digestRaw := fun alg data => do
       let tag : UInt8 := match alg with | .sha256 => 0 | .sha512 => 1
-      let (status, code, detail, bs) ← liftM (ffi.digestRaw tag data)
+      let (status, code, detail, bs) ← ffi.digestRaw tag data
       if status != 0 then
         return .error (decodeShimError status code detail)
       if bs.size != digestLen alg then
@@ -70,7 +64,7 @@ def mkRawOps (ffi : CryptoHashFfiOps) : RawCryptoHashOps :=
           s!"digest length mismatch: expected {digestLen alg} bytes, got {bs.size}"))
       return .ok bs
     hmacSha256Raw := fun key msg => do
-      let (status, code, detail, bs) ← liftM (ffi.hmacSha256Raw key msg)
+      let (status, code, detail, bs) ← ffi.hmacSha256Raw key msg
       if status != 0 then
         return .error (decodeShimError status code detail)
       if bs.size != 32 then
@@ -81,7 +75,14 @@ def mkRawOps (ffi : CryptoHashFfiOps) : RawCryptoHashOps :=
       if a.size != b.size then
         return .error (mapRawError (.lengthError a.size b.size
           s!"length mismatch: expected {a.size} bytes, got {b.size}"))
-      let eq ← liftM (ffi.ctEqualRaw a b)
+      let eq ← ffi.ctEqualRaw a b
       return .ok eq }
+
+/-- Build the concrete `RawCryptoHashOps` bundle from the injected `BaseIO` OpenSSL hooks. -/
+def mkRawOps (ffi : CryptoHashFfiOps) : RawCryptoHashOps :=
+  mkRawOpsM
+    { digestRaw := fun tag data => liftM (ffi.digestRaw tag data)
+      hmacSha256Raw := fun key msg => liftM (ffi.hmacSha256Raw key msg)
+      ctEqualRaw := fun a b => liftM (ffi.ctEqualRaw a b) }
 
 end LeanSwe.CryptoHash.Raw.Internal

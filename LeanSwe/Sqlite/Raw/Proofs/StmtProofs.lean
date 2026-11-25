@@ -337,6 +337,12 @@ private theorem mockCOps_columnCount_eq (rawStmt : RawStmtHandle) (s : MockCStat
          | .columnCount err => (.error err, s1)
          | _ => (.ok (UInt32.ofNat s1.mockColumns.size), s1)) := rfl
 
+private theorem withStmtLock_mockCOps {α : Type} (stmt : StmtHandle)
+    (act : StateM MockCState α) :
+    Internal.withStmtLock mockCOps stmt act = act := by
+  funext s
+  rfl
+
 /-- Proof of `test_sqliteraw_bind_resetsValidatesCountAndBindsAllFiveTypes` for `Internal.mkRawOps`. -/
 theorem proof_sqliteraw_bind_resetsValidatesCountAndBindsAllFiveTypes :
     AllPass (test_sqliteraw_bind_resetsValidatesCountAndBindsAllFiveTypes Internal.mkRawOps) := by
@@ -350,6 +356,7 @@ theorem proof_sqliteraw_bind_resetsValidatesCountAndBindsAllFiveTypes :
   have hLive200 : hasLiveRawStmt 200 [(100, 200)] = true := rfl
   dsimp only [test_sqliteraw_bind_resetsValidatesCountAndBindsAllFiveTypes,
     Internal.mkRawOps, mockStateWithOpenStmt, rawStmtToken, assert]
+  simp only [withStmtLock_mockCOps]
   dsimp only [Bind.bind, StateT.bind, bind, Pure.pure, StateT.pure, pure, StateT.run]
   refine ⟨?_, ?_, ?_, ?_, ?_, trivial⟩
   · simp [Internal.lookupRawStmt, Internal.mapRawError, Internal.nonEmptyMsg, mockCOps]
@@ -399,6 +406,7 @@ theorem proof_sqliteraw_step_decodesColumnsValidatesUtf8AndPropagatesColumnError
   have hLive200 : hasLiveRawStmt 200 [(100, 200)] = true := rfl
   dsimp only [test_sqliteraw_step_decodesColumnsValidatesUtf8AndPropagatesColumnErrors,
     Internal.mkRawOps, mockStateWithOpenStmt, rawStmtToken, assert]
+  simp only [withStmtLock_mockCOps]
   dsimp only [Bind.bind, StateT.bind, bind, Pure.pure, StateT.pure, pure, StateT.run]
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, trivial⟩
   · simp [Internal.lookupRawStmt, Internal.mapRawError, Internal.nonEmptyMsg, mockCOps]
@@ -453,8 +461,10 @@ theorem proof_sqliteraw_finalize_releasesStmtEvenOnStickyErrorAndRejectsDoubleFi
   have hLiveDbNil : hasLiveRawStmtForDb 100 [] = false := rfl
   have hActNil : Internal.hasActiveStmtForDb 1 [] = false := rfl
   dsimp only [test_sqliteraw_finalize_releasesStmtEvenOnStickyErrorAndRejectsDoubleFinalize,
-    Internal.mkRawOps, mockStateWithOpenStmt, mockCOps, rawStmtToken, rawDbToken, assert]
-  dsimp only [Bind.bind, StateT.bind, bind, Pure.pure, StateT.pure, pure, StateT.run]
+    Internal.mkRawOps, assert]
+  simp only [withStmtLock_mockCOps]
+  dsimp only [mockStateWithOpenStmt, mockCOps, rawStmtToken, rawDbToken,
+    Bind.bind, StateT.bind, bind, Pure.pure, StateT.pure, pure, StateT.run]
   simp [Internal.lookupRawStmt, Internal.lookupRawDb, Internal.eraseRawStmt,
     Internal.eraseRawStmtAux, Internal.eraseRawDb, Internal.eraseRawDbAux,
     Internal.mapRawError, Internal.nonEmptyMsg,
