@@ -157,7 +157,14 @@ private def cryptoHashAuditModules : Array Name := #[
   `LeanSwe.CryptoHash.Proofs
 ]
 
-private def postForkAuditModules : Array Name := #[`LeanSwe.PostFork.Types, `LeanSwe.PostFork.Types.Internal, `LeanSwe.PostFork.Model, `LeanSwe.PostFork.Impl, `LeanSwe.PostFork.Interface]
+private def postForkAuditModules : Array Name := #[
+  `LeanSwe.PostFork.Types,
+  `LeanSwe.PostFork.Types.Internal,
+  `LeanSwe.PostFork.Model,
+  `LeanSwe.PostFork.Model.Refines,
+  `LeanSwe.PostFork.Impl,
+  `LeanSwe.PostFork.Interface
+]
 private def cryptoHashVectorModules : Array Name := #[
   `LeanSwe.CryptoHash.Raw.Proofs.HmacEmptyInner,
   `LeanSwe.CryptoHash.Raw.Proofs.HmacTc1,
@@ -236,7 +243,8 @@ private def isAllowedFilesClosureModule (m : Name) : Bool :=
 private def isAllowedPasswdClosureModule (m : Name) : Bool :=
   m.getRoot == `Core ||
     m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
-    passwdAuditModules.contains m
+    (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Passwd] &&
+      nameLastStr m != "RuntimeTests" && nameLastStr m != "SpecMutants")
 
 private def isAllowedDnsClosureModule (m : Name) : Bool :=
   m.getRoot == `Core ||
@@ -3145,10 +3153,7 @@ private def modelPresenceAllowlist : Array String := #[
   "MISSING_OBEYS_MODEL|LeanSwe.Json",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Files",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Net",
-  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Passwd",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Process",
-  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Sandbox",
-  "MISSING_OBEYS_MODEL|LeanSwe.PostFork",
   "MISSING_OBEYS_MODEL|LeanSwe.ProcessSandbox",
   "MISSING_OBEYS_MODEL|LeanSwe.Sqlite.Raw"
 ]
@@ -4123,10 +4128,84 @@ private def auditEffectfulStepSynthesis
       match body.getAppFn.consumeMData with
       | .const defHead _ =>
         if ifaceHasPrivateExtern then
-          let defCanon := unfoldThinIfaceBuilder env pkg defHead
-          let ok := st.provenMkApiExprs.any fun mkE =>
-            let used := mkE.getUsedConstants
-            used.contains defHead || used.contains defCanon
+          let directProven (cand : Name) : Bool :=
+            let candCanon := unfoldThinIfaceBuilder env pkg cand
+            st.provenMkApiExprs.any fun mkE =>
+              let used := mkE.getUsedConstants
+              used.contains cand || used.contains candCanon
+          let matchesFdSpecWrapper : MetaM Bool := do
+            if !isPkgBuilderConst env pkg defHead then return false
+            let dArgs := body.getAppArgs
+            if dArgs.size < 4 then return false
+            let mut matched := false
+            for mkE in st.provenMkApiExprs do
+              if matched then break
+              let .const u _ := (peelLambdas (etaReduceExpr mkE)).consumeMData.getAppFn.consumeMData | continue
+              if !isPkgBuilderConst env pkg u then continue
+              let some (.defnInfo udv) := env.find? u | continue
+              let okU ← Meta.lambdaTelescope udv.value fun xs uBody => do
+                if xs.size != 3 then return false
+                let ub := uBody.consumeMData
+                let .const tgt _ := ub.getAppFn.consumeMData | return false
+                if tgt != defHead then return false
+                let uArgs := ub.getAppArgs
+                if uArgs.size != dArgs.size then return false
+                if uArgs[0]!.consumeMData != xs[0]! || uArgs[1]!.consumeMData != xs[1]! then return false
+                if uArgs[2]!.hasLooseBVars || uArgs[2]!.hasFVar then return false
+                if uArgs[3]!.consumeMData != xs[2]! then return false
+                for j in [4 : dArgs.size] do
+                  if uArgs[j]!.hasLooseBVars || uArgs[j]!.hasFVar then return false
+                  if !(← isDefEqReducible uArgs[j]! dArgs[j]!) then return false
+                return true
+              if okU then matched := true
+            return matched
+          let matchesStructFieldLift : MetaM Bool := do
+            let some (.ctorInfo ci) := env.find? defHead | return false
+            if ci.numFields == 0 || !ci.induct.toString.startsWith (pkg.toString ++ ".") then return false
+            let cArgs := body.getAppArgs
+            if cArgs.size != ci.numParams + ci.numFields then return false
+            let structFields := Lean.getStructureFields env ci.induct
+            if structFields.size != ci.numFields then return false
+            for fldIdx in [0 : ci.numFields] do
+              let fldExpr := cArgs[ci.numParams + fldIdx]!
+              let expectedProj := Name.str ci.induct structFields[fldIdx]!.toString
+              let fldOk ← Meta.lambdaTelescope fldExpr fun fxs fBody => do
+                let fb0 := fBody.consumeMData
+                let fb :=
+                  match fb0.getAppFn.consumeMData with
+                  | .const liftFn _ =>
+                    if (liftFn == ``liftM || liftFn == ``MonadLiftT.monadLift ||
+                        liftFn == ``MonadLift.monadLift || liftFn == `Lean.Internal.coeM) &&
+                        !fb0.getAppArgs.isEmpty then
+                      fb0.appArg!.consumeMData
+                    else fb0
+                  | _ => fb0
+                let fullArgs := fb.getAppArgs
+                if fullArgs.size < fxs.size then return false
+                let prefixLen := fullArgs.size - fxs.size
+                for k in [0 : fxs.size] do
+                  if fullArgs[prefixLen + k]!.consumeMData != fxs[k]! then return false
+                let projExpr := (mkAppN fb.getAppFn (fullArgs.extract 0 prefixLen)).consumeMData
+                let innerObj? : Option Expr :=
+                  match projExpr with
+                  | .proj sName idx inner =>
+                    if sName == ci.induct && idx == fldIdx then some inner else none
+                  | _ =>
+                    match projExpr.getAppFn.consumeMData with
+                    | .const pFn _ =>
+                      let pArgs := projExpr.getAppArgs
+                      if pFn == expectedProj && !pArgs.isEmpty then some pArgs.back! else none
+                    | _ => none
+                let some innerObj := innerObj? | return false
+                match innerObj.consumeMData.getAppFn.consumeMData with
+                | .const b _ => return isPkgBuilderConst env pkg b && directProven b
+                | _ => return false
+              if !fldOk then return false
+            return true
+          let ok ←
+            if directProven defHead then pure true
+            else if ← matchesFdSpecWrapper then pure true
+            else matchesStructFieldLift
           if !ok then
             errs := errs.push s!"OBEYS_SYNTH_BUILDER_MISMATCH: leaf {defRoot} builder {defHead} not referenced in obeys_model"
         else if !isPkgBuilderConst env pkg defHead then
@@ -4433,8 +4512,13 @@ private def renderSynthesizedObeysSig
   let body := String.intercalate " ∧\n    " conjuncts.toList
   return .ok s!"namespace {pkg}.Proofs\n\ntheorem obeys_model :\n    {body}\n\nend {pkg}.Proofs"
 
-private def auditManifestAndWiring (env : Environment) (manifest : PackageManifest) : IO ManifestAuditReport := do
-  let knownPkgs := discoverDagPackages env.header.moduleNames
+private def auditManifestAndWiring (env : Environment) (manifest : PackageManifest)
+    (onlyPkg? : Option Name := none) : IO ManifestAuditReport := do
+  let knownPkgs :=
+    if onlyPkg?.isSome then
+      (manifest.packages.toList.map (·.1)).toArray
+    else
+      discoverDagPackages env.header.moduleNames
   let mut hardErrors : Array String := #[]
   let mut modelPresenceObs : Std.HashMap String String := {}
   let mut middleHookObs : Std.HashMap String String := {}
@@ -4446,21 +4530,28 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
   for m in env.header.moduleNames do
     modSet := modSet.insert m
 
-  for kPkg in knownPkgs do
-    if !manifest.packages.contains kPkg then
-      hardErrors := hardErrors.push s!"MANIFEST_UNREGISTERED_PACKAGE: {kPkg} is compiled in LeanSwe but missing from scripts/package_manifest.json"
-  let sortedPkgs := (manifest.packages.toList.map (·.1)).toArray.qsort (fun a b => a.toString < b.toString)
-  for pkg in sortedPkgs do
-    let pfxStr := pkg.toString ++ "."
-    let hasAnyMod := env.header.moduleNames.any fun m => m == pkg || m.toString.startsWith pfxStr
-    if !hasAnyMod then
-      hardErrors := hardErrors.push s!"MANIFEST_ORPHAN_PACKAGE: {pkg} in scripts/package_manifest.json has no compiled modules in LeanSwe"
+  if onlyPkg?.isNone then
+    for kPkg in knownPkgs do
+      if !manifest.packages.contains kPkg then
+        hardErrors := hardErrors.push s!"MANIFEST_UNREGISTERED_PACKAGE: {kPkg} is compiled in LeanSwe but missing from scripts/package_manifest.json"
+  let sortedPkgs : Array Name :=
+    match onlyPkg? with
+    | some target => if manifest.packages.contains target then #[target] else #[]
+    | none => (manifest.packages.toList.map Prod.fst).toArray.qsort (fun a b => a.toString < b.toString)
+  if onlyPkg?.isNone then
+    for pkg in sortedPkgs do
+      let pfxStr := pkg.toString ++ "."
+      let hasAnyMod := env.header.moduleNames.any fun m => m == pkg || m.toString.startsWith pfxStr
+      if !hasAnyMod then
+        hardErrors := hardErrors.push s!"MANIFEST_ORPHAN_PACKAGE: {pkg} in scripts/package_manifest.json has no compiled modules in LeanSwe"
 
   let mut ifaceHasPrivateExtern : Std.HashSet Name := {}
   for h : i in [0 : env.header.moduleNames.size] do
     let m := env.header.moduleNames[i]
     if m.getRoot != `LeanSwe || m == `LeanSwe then continue
     let pkg := dagPkgOf knownPkgs m
+    if let some target := onlyPkg? then
+      if pkg != target then continue
     let role := dagRoleOf knownPkgs m
     if role == .runtimeTests || role == .specMutants then continue
     let some data := env.header.moduleData[i]? | continue
@@ -5156,11 +5247,23 @@ unsafe def main (args : List String) : IO UInt32 := do
     let (eErrs2, sCnt2, sMods2, mutOk2, prom2, ap2, cr2, wAss2) ← auditEnvPhase pfEnv true
     let pfAeneasErrs := checkPostForkAeneasWiring pfEnv
     let pfDagRep := auditImportDagEnv pfEnv isPostForkVerifiedMod ap2 cr2
+    let pfManifestParseErrs ← match ← loadPackageManifest repoDir with
+      | .error err => pure #[err]
+      | .ok manifest => do
+        let pfMRep ← auditManifestAndWiring pfEnv manifest (some `LeanSwe.PostFork)
+        for hErr in pfMRep.hardErrors do
+          IO.println s!"PFW_M_HARD:{hErr}"
+        for (k, v) in pfMRep.modelPresenceObs.toList do
+          IO.println s!"PFW_M_MODEL:{k}\t{v}"
+        for (k, v) in pfMRep.obeysSynthObs.toList do
+          IO.println s!"PFW_M_SYNTH:{k}\t{v}"
+        IO.println s!"PFW_M_STATS:{pfMRep.checkedSynthPkgs}"
+        pure #[]
     for m in sMods2 do
       IO.println s!"PFW_SPEC:{m}"
     for m in mutOk2 do
       IO.println s!"PFW_MUT:{m}"
-    for err in eErrs2 ++ pfAeneasErrs do
+    for err in eErrs2 ++ pfAeneasErrs ++ pfManifestParseErrs do
       IO.println s!"PFW_ERR:{err}"
     for ln in encodeDagReportWireLines pfDagRep do
       IO.println ln
@@ -5183,12 +5286,27 @@ unsafe def main (args : List String) : IO UInt32 := do
   let mut sCnt2 : Nat := 0
   let mut prom2Count : Nat := 0
   let mut wAss2 : Nat := 0
+  let mut pfMHard : Array String := #[]
+  let mut pfMModel : Array (String × String) := #[]
+  let mut pfMSynth : Array (String × String) := #[]
+  let mut pfMSynthCnt : Nat := 0
   let pfDagRep := decodeDagReportWireLines workerLines
   for ln in workerLines do
     if ln.startsWith "PFW_MOD:" then pfModNames := pfModNames.insert (ln.drop 8).toString
     else if ln.startsWith "PFW_SPEC:" then sMods2 := sMods2.push (ln.drop 9).toString
     else if ln.startsWith "PFW_MUT:" then mutOk2 := mutOk2.insert (ln.drop 8).toString
     else if ln.startsWith "PFW_ERR:" then eErrs2 := eErrs2.push (ln.drop 8).toString
+    else if ln.startsWith "PFW_M_HARD:" then pfMHard := pfMHard.push (ln.drop 11).toString
+    else if ln.startsWith "PFW_M_MODEL:" then
+      match (ln.drop 12).toString.splitOn "\t" with
+      | k :: rest => pfMModel := pfMModel.push (k, String.intercalate "\t" rest)
+      | [] => pure ()
+    else if ln.startsWith "PFW_M_SYNTH:" then
+      match (ln.drop 12).toString.splitOn "\t" with
+      | k :: rest => pfMSynth := pfMSynth.push (k, String.intercalate "\t" rest)
+      | [] => pure ()
+    else if ln.startsWith "PFW_M_STATS:" then
+      pfMSynthCnt := (ln.drop 12).toString.toNat!
     else if ln.startsWith "PFW_STATS:" then
       match (ln.drop 10).toString.splitOn ":" with
       | [a, b, c] =>
@@ -5401,7 +5519,19 @@ unsafe def main (args : List String) : IO UInt32 := do
       IO.println s!"MANIFEST_WIRING_CHECK: status=parse_error errors=1"
       pure #[err]
     | .ok manifest =>
-      let manifestRep ← auditManifestAndWiring env manifest
+      let rawManifestRep ← auditManifestAndWiring env manifest
+      let mut mergedModelObs := rawManifestRep.modelPresenceObs.erase "MISSING_OBEYS_MODEL|LeanSwe.PostFork"
+      for (k, v) in pfMModel do
+        mergedModelObs := recordManifestObs mergedModelObs k v
+      let mut mergedSynthObs := rawManifestRep.obeysSynthObs
+      for (k, v) in pfMSynth do
+        mergedSynthObs := recordManifestObs mergedSynthObs k v
+      let manifestRep : ManifestAuditReport :=
+        { rawManifestRep with
+          hardErrors := rawManifestRep.hardErrors ++ pfMHard
+          modelPresenceObs := mergedModelObs
+          obeysSynthObs := mergedSynthObs
+          checkedSynthPkgs := rawManifestRep.checkedSynthPkgs + pfMSynthCnt }
       let mErrs := evaluateManifestRatchet manifestRep
       IO.println s!"MANIFEST_WIRING_CHECK: model_pkgs={manifestRep.checkedModelPkgs} wired_pkgs={manifestRep.checkedWiredPkgs} synth_pkgs={manifestRep.checkedSynthPkgs} model_obs={manifestRep.modelPresenceObs.size} model_allow={modelPresenceAllowlist.size} hook_obs={manifestRep.middleHookObs.size} hook_allow={middleHookAllowlist.size} synth_obs={manifestRep.obeysSynthObs.size} synth_allow={obeysSynthAllowlist.size} hard_errs={manifestRep.hardErrors.size} errors={mErrs.size}"
       pure mErrs
