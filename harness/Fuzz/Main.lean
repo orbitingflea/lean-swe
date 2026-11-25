@@ -11,6 +11,7 @@ import Fuzz.EnvVars.Suite
 import Fuzz.CryptoHash.Suite
 import Fuzz.Sqlite.Suite
 import Fuzz.Git.Suite
+import Fuzz.Json.Suite
 import Fuzz.LinuxSyscall.Env
 import Fuzz.LinuxSyscall.Main
 
@@ -57,6 +58,7 @@ private def registeredSuites (world : WorldOptions) (outClosed errClosed : Bool)
   , Fuzz.PostFork.suite
   , Fuzz.Sqlite.suite
   , Fuzz.Git.suite
+  , Fuzz.Json.suite
   ] ++ Fuzz.LinuxSyscall.Main.suites world outClosed errClosed
 
 private def truncArg (s : String) (maxLen : Nat := 64) : String :=
@@ -378,6 +380,7 @@ private def suiteTargetPackages : String → Array String
   | "postfork" => #["LeanSwe.PostFork"]
   | "sqlite" => #["LeanSwe.Sqlite.Raw", "LeanSwe.Sqlite"]
   | "git" => #["LeanSwe.Git"]
+  | "json" => #["LeanSwe.Json"]
   | "sandbox" => #["LeanSwe.LinuxSyscall.Sandbox"]
   | "timerand" => #["LeanSwe.LinuxSyscall.TimeRand"]
   | "files" => #["LeanSwe.LinuxSyscall.Files"]

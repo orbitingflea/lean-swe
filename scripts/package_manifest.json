@@ -114,6 +114,7 @@
       "kind": "model",
       "purity": "pure",
       "deps": [],
+      "fuzz_suite": "json",
       "external_boundary": false,
       "err_msg_opaque": true,
       "spec_style": "inverse_render"
