@@ -41,8 +41,10 @@ private def testRfc8259ParsingAndEscapes : IO Unit := do
     (Lean.Json.str "\x00\x1fαΩ") "unicode hex escapes"
   assertOkEq (parse "\"\\ud83d\\ude80\"")
     (Lean.Json.str "🚀") "UTF-16 surrogate pair"
-  assertOkEq (parse "\"\\ud800\"")
-    (Lean.Json.str "\ufffd") "lone surrogate replacement"
+  assertErr (parse "\"\\ud800\"") .parseError none "lone high surrogate rejected"
+  assertErr (parse "\"\\udfff\"") .parseError none "lone low surrogate rejected"
+  assertErr (parse "\"\\ud800\\u0041\"") .parseError none "high surrogate without low surrogate rejected"
+  assertErr (parse "\"\\ud800\\ud800\"") .parseError none "double high surrogate rejected"
   assertOkEq (parse "\"日本語 🚀 αβγ\"")
     (Lean.Json.str "日本語 🚀 αβγ") "raw UTF-8 multi-byte"
 
@@ -51,14 +53,15 @@ private def testRfc8259ParsingAndEscapes : IO Unit := do
   assertOkEq (parse "-42") (Lean.Json.num ⟨-42, 0⟩) "negative int"
   assertOkEq (parse "3.14159") (Lean.Json.num ⟨314159, 5⟩) "decimal"
   assertOkEq (parse "1.5e-3") (Lean.Json.num ⟨15, 4⟩) "negative exponent"
+  assertOkEq (parse "1e-0003") (Lean.Json.num ⟨1, 3⟩) "negative exponent with leading zeros"
   assertOkEq (parse "2e+4") (Lean.Json.num ⟨20000, 0⟩) "positive exponent"
   assertOkEq (parse "1E2") (Lean.Json.num ⟨100, 0⟩) "uppercase exponent"
 
   let badInputs : Array String := #[
     "", "   ", "{", "}", "[", "]", "[1,]", "{\"a\":1,}", "{a:1}", "'single'",
-    "01", "-01", ".5", "1.", "+1", "1e", "1e+", "\"unclosed", "\"\\x\"",
-    "\"\\u123\"", "\"raw\nnewline\"", "\"raw\ttab\"", "true false", "NaN", "Infinity",
-    "{\"a\":1}{\"b\":2}"
+    "01", "-01", ".5", "1.", "+1", "1e", "1e+", "1e100001", "1e-100001",
+    "\"unclosed", "\"\\x\"", "\"\\u123\"", "\"raw\nnewline\"", "\"raw\ttab\"",
+    "true false", "NaN", "Infinity", "{\"a\":1}{\"b\":2}"
   ]
   for bad in badInputs do
     assertErr (parse bad) .parseError none s!"malformed input: {repr bad}"

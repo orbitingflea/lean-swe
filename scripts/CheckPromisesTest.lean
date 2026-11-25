@@ -265,12 +265,14 @@ def main (_ : List String) : IO UInt32 := do
       return (baselineRootsCsv, "", "", "")
     ) (some "MIDDLE_HOOK_VIOLATION")
 
-    runMutantCase bin tmpRoot baseDir realLibAbs "missing_obeys_model" (fun root libDir leanPath => do
+    let runStd (name : String) (expected? : Option String) (mutate : System.FilePath → System.FilePath → String → IO Unit) : IO Unit :=
+      runMutantCase bin tmpRoot baseDir realLibAbs name (fun root libDir leanPath => do
+        mutate root libDir leanPath; return (baselineRootsCsv, "", "", "")) expected?
+
+    runStd "missing_obeys_model" (some "MANIFEST_MISSING_OBEYS_MODEL") fun root libDir leanPath => do
       writeFileCreatingParents (root / "LeanSwe/MiniPure/Proofs.lean")
         "import LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.Proofs\nend LeanSwe.MiniPure.Proofs\n"
       recompile root libDir leanPath #["LeanSwe/MiniPure/Proofs.lean"]
-      return (baselineRootsCsv, "", "", "")
-    ) (some "MANIFEST_MISSING_OBEYS_MODEL")
 
     runMutantCase bin tmpRoot baseDir realLibAbs "missing_model" (fun root libDir leanPath => do
       writeFileCreatingParents (root / "LeanSwe/MiniPure/Proofs.lean")
@@ -279,39 +281,29 @@ def main (_ : List String) : IO UInt32 := do
       return (baselineRootsCsv, "MISSING_OBEYS_MODEL|LeanSwe.MiniPure", "", "")
     ) (some "MANIFEST_MISSING_MODEL")
 
-    runMutantCase bin tmpRoot baseDir realLibAbs "vacuous_obeys_model" (fun root libDir leanPath => do
+    runStd "vacuous_obeys_model" (some "VACUOUS_OR_INVALID_OBEYS_MODEL") fun root libDir leanPath => do
       writeFileCreatingParents (root / "LeanSwe/MiniPure/Proofs.lean")
         ("import Core.Obeys\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.Proofs\n" ++
          "theorem obeys_model : Core.ObeysPure LeanSwe.MiniPure.eval (fun _ _ => True) := fun _ => trivial\nend LeanSwe.MiniPure.Proofs\n")
       recompile root libDir leanPath #["LeanSwe/MiniPure/Proofs.lean"]
-      return (baselineRootsCsv, "", "", "")
-    ) (some "VACUOUS_OR_INVALID_OBEYS_MODEL")
 
-    runMutantCase bin tmpRoot baseDir realLibAbs "forbidden_extern_non_boundary" (fun root libDir leanPath => do
+    runStd "forbidden_extern_non_boundary" (some "FORBIDDEN_EXTERN_IN_NON_BOUNDARY") fun root libDir leanPath => do
       writeFileCreatingParents (root / "LeanSwe/MiniPure/Interface.lean")
         ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n@[extern \"bad_pure_extern\"]\nprivate opaque badExtern : BaseIO Nat\n" ++
          "def eval (n : Nat) : Nat := Internal.evalImpl n\nend LeanSwe.MiniPure\n")
       recompile root libDir leanPath #["LeanSwe/MiniPure/Interface.lean", "LeanSwe/MiniPure/Proofs.lean"]
-      return (baselineRootsCsv, "", "", "")
-    ) (some "FORBIDDEN_EXTERN_IN_NON_BOUNDARY")
 
-    runMutantCase bin tmpRoot baseDir realLibAbs "public_extern_in_boundary" (fun root libDir leanPath => do
+    runStd "public_extern_in_boundary" (some "INVALID_EXTERN_PLACEMENT") fun root libDir leanPath => do
       writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Interface.lean")
         ("import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"mini_leaf_raw_ping\"]\nopaque rawPing : Nat → BaseIO Nat\n" ++
          "def defaultOps : LeafOps := Internal.mkOps (fun n => liftM (rawPing n))\nend LeanSwe.MiniLeaf\n")
       recompile root libDir leanPath #["LeanSwe/MiniLeaf/Interface.lean", "LeanSwe/MiniLeaf/Proofs.lean", "LeanSwe/MiniComp/Interface.lean", "LeanSwe/MiniComp/Proofs.lean"]
-      return (baselineRootsCsv, "", "", "")
-    ) (some "INVALID_EXTERN_PLACEMENT")
 
-    runMutantCase bin tmpRoot baseDir realLibAbs "unregistered_ghost_pkg" (fun root _ _ => do
+    runStd "unregistered_ghost_pkg" (some "MANIFEST_UNREGISTERED_PACKAGE") fun root _ _ => do
       writeFileCreatingParents (root / "scripts/package_manifest.json")
-        (baselineManifestJson.replace
-          "    \"LeanSwe.MiniPure\": {\"kind\": \"model\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": false, \"spec_style\": \"pure_eq\"},\n"
-          "")
-      return (baselineRootsCsv, "", "", "")
-    ) (some "MANIFEST_UNREGISTERED_PACKAGE")
+        (baselineManifestJson.replace "    \"LeanSwe.MiniPure\": {\"kind\": \"model\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": false, \"spec_style\": \"pure_eq\"},\n" "")
 
-    runMutantCase bin tmpRoot baseDir realLibAbs "builder_mismatch" (fun root libDir leanPath => do
+    runStd "builder_mismatch" (some "MIDDLE_HOOK_VIOLATION") fun root libDir leanPath => do
       writeFileCreatingParents (root / "LeanSwe/MiniComp/Impl.lean")
         ("import LeanSwe.MiniLeaf.Types\nimport LeanSwe.MiniComp.Types\nnamespace LeanSwe.MiniComp.Internal\n" ++
          "def mkApiM {m : Type → Type} [Monad m] (leaf : LeanSwe.MiniLeaf.LeafOpsM m) : CompApiM m := { callPing := fun n => leaf.ping n }\n" ++
@@ -320,18 +312,13 @@ def main (_ : List String) : IO UInt32 := do
         ("import LeanSwe.MiniLeaf.Interface\nimport LeanSwe.MiniComp.Impl\nnamespace LeanSwe.MiniComp\n" ++
          "def defaultApi : CompApi := Internal.mkAltApiM LeanSwe.MiniLeaf.defaultOps\ndef callPing (n : Nat) : IO Nat := defaultApi.callPing n\nend LeanSwe.MiniComp\n")
       recompile root libDir leanPath #["LeanSwe/MiniComp/Impl.lean", "LeanSwe/MiniComp/Interface.lean", "LeanSwe/MiniComp/Proofs.lean"]
-      return (baselineRootsCsv, "", "", "")
-    ) (some "MIDDLE_HOOK_VIOLATION")
 
-    runMutantCase bin tmpRoot baseDir realLibAbs "external_cli_compliant" (fun root _ _ => do
+    runStd "external_cli_compliant" none fun root _ _ => do
       writeFileCreatingParents (root / "scripts/package_manifest.json")
-        (baselineManifestJson.replace
-          "\"LeanSwe.MiniComp\": {\"kind\": \"model\", \"purity\": \"mixed\", \"deps\": [\"LeanSwe.MiniLeaf\"], \"external_boundary\": false,"
+        (baselineManifestJson.replace "\"LeanSwe.MiniComp\": {\"kind\": \"model\", \"purity\": \"mixed\", \"deps\": [\"LeanSwe.MiniLeaf\"], \"external_boundary\": false,"
           "\"LeanSwe.MiniComp\": {\"kind\": \"model\", \"purity\": \"nondet_io\", \"deps\": [\"LeanSwe.MiniLeaf\"], \"external_boundary\": true,")
-      return (baselineRootsCsv, "", "", "")
-    ) none
 
-    runMutantCase bin tmpRoot baseDir realLibAbs "leaf_defaultOpsBase_and_thin_mk_wrapper_ok" (fun root libDir leanPath => do
+    runStd "leaf_defaultOpsBase_and_thin_mk_wrapper_ok" none fun root libDir leanPath => do
       writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Types.lean")
         ("namespace LeanSwe.MiniLeaf\nstructure LeafOpsM (m : Type → Type) (fd : Type) where\n  ping : Nat → m fd\n" ++
          "abbrev HandleLeafOpsM (m : Type → Type) : Type := LeafOpsM m Nat\nabbrev LeafOps := HandleLeafOpsM IO\nend LeanSwe.MiniLeaf\n")
@@ -346,89 +333,75 @@ def main (_ : List String) : IO UInt32 := do
       writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Interface.lean")
         ("import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"mini_leaf_raw_ping\"]\nprivate opaque rawPing : Nat → BaseIO Nat\n" ++
          "def defaultOpsBase : HandleLeafOpsM BaseIO := Internal.mkOpsBase { ping := rawPing }\n" ++
-         "def defaultOps : LeafOps := { ping := fun n => liftM (defaultOpsBase.ping n) }\n" ++
-         "def ping (n : Nat) : IO Nat := defaultOps.ping n\nend LeanSwe.MiniLeaf\n")
+         "def defaultOps : LeafOps := { ping := fun n => liftM (defaultOpsBase.ping n) }\ndef ping (n : Nat) : IO Nat := defaultOps.ping n\nend LeanSwe.MiniLeaf\n")
       writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Proofs.lean")
         ("import Core.Obeys\nimport LeanSwe.MiniLeaf.Model\nimport LeanSwe.MiniLeaf.Interface\nnamespace LeanSwe.MiniLeaf.Proofs\n" ++
-         "theorem obeys_model : Core.ObeysStepFrom id Model.leafWf Model.execLeaf Model.allowedLeaf Model.leafWf Internal.mkOpsM Model.execLeaf Model.allowedLeaf :=\n" ++
-         "  fun _ _ h => h\nend LeanSwe.MiniLeaf.Proofs\n")
+         "theorem obeys_model : Core.ObeysStepFrom id Model.leafWf Model.execLeaf Model.allowedLeaf Model.leafWf Internal.mkOpsM Model.execLeaf Model.allowedLeaf :=\n  fun _ _ h => h\nend LeanSwe.MiniLeaf.Proofs\n")
       writeFileCreatingParents (root / "LeanSwe/MiniComp/Model.lean")
         ("import LeanSwe.MiniLeaf.Types\nimport LeanSwe.MiniLeaf.Model\nimport LeanSwe.MiniComp.Types\nnamespace LeanSwe.MiniComp.Model\ndef compWf (_ : Nat) : Bool := true\n" ++
-         "def execRaw {W : Type} (ops : LeanSwe.MiniLeaf.HandleLeafOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.ping req\n" ++
-         "def allowedRaw (s req out s' : Nat) : Prop := out = req ∧ s' = s\n" ++
+         "def execRaw {W : Type} (ops : LeanSwe.MiniLeaf.HandleLeafOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.ping req\ndef allowedRaw (s req out s' : Nat) : Prop := out = req ∧ s' = s\n" ++
          "def execPkg {W : Type} (api : CompApiM (StateM W)) (req : Nat) : StateM W Nat := api.callPing req\n" ++
          "def allowedPkg (s req out s' : Nat) : Prop := out = req ∧ s' = s\nend LeanSwe.MiniComp.Model\n")
       writeFileCreatingParents (root / "LeanSwe/MiniComp/Impl.lean")
         ("import LeanSwe.MiniLeaf.Types\nimport LeanSwe.MiniComp.Types\nnamespace LeanSwe.MiniComp.Internal\n" ++
          "def mkApiM {m : Type → Type} [Monad m] (leaf : LeanSwe.MiniLeaf.HandleLeafOpsM m) : CompApiM m := { callPing := fun n => leaf.ping n }\nend LeanSwe.MiniComp.Internal\n")
       recompile root libDir leanPath #[
-        "LeanSwe/MiniLeaf/Types.lean", "LeanSwe/MiniLeaf/Model.lean", "LeanSwe/MiniLeaf/Impl.lean",
-        "LeanSwe/MiniLeaf/Interface.lean", "LeanSwe/MiniLeaf/Proofs.lean",
-        "LeanSwe/MiniComp/Model.lean", "LeanSwe/MiniComp/Impl.lean",
-        "LeanSwe/MiniComp/Interface.lean", "LeanSwe/MiniComp/Proofs.lean"]
-      return (baselineRootsCsv, "", "", "")
-    ) none
+        "LeanSwe/MiniLeaf/Types.lean", "LeanSwe/MiniLeaf/Model.lean", "LeanSwe/MiniLeaf/Impl.lean", "LeanSwe/MiniLeaf/Interface.lean", "LeanSwe/MiniLeaf/Proofs.lean",
+        "LeanSwe/MiniComp/Model.lean", "LeanSwe/MiniComp/Impl.lean", "LeanSwe/MiniComp/Interface.lean", "LeanSwe/MiniComp/Proofs.lean"]
 
-    let runStd (name : String) (expected? : Option String) (mutate : System.FilePath → System.FilePath → String → IO Unit) : IO Unit :=
-      runMutantCase bin tmpRoot baseDir realLibAbs name (fun root libDir leanPath => do
-        mutate root libDir leanPath; return (baselineRootsCsv, "", "", "")) expected?
+    let compModelHdr := "import LeanSwe.MiniLeaf.Types\nimport LeanSwe.MiniLeaf.Model\nimport LeanSwe.MiniComp.Types\nnamespace LeanSwe.MiniComp.Model\ndef compWf (_ : Nat) : Bool := true\n"
+    let compIfaceHdr := "import LeanSwe.MiniLeaf.Interface\nimport LeanSwe.MiniComp.Impl\nnamespace LeanSwe.MiniComp\n"
+    let compProofsHdr := "import Core.Obeys\nimport LeanSwe.MiniComp.Model\nimport LeanSwe.MiniComp.Interface\nnamespace LeanSwe.MiniComp.Proofs\n"
+    let pureIfaceHdr := "import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n"
+    let pureProofsHdr := "import Core.Obeys\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.Proofs\n"
 
     runStd "external_cli_middle_hook" (some "MIDDLE_HOOK_VIOLATION") fun root libDir leanPath => do
       writeFileCreatingParents (root / "scripts/package_manifest.json")
-        (baselineManifestJson.replace
-          "\"LeanSwe.MiniComp\": {\"kind\": \"model\", \"purity\": \"mixed\", \"deps\": [\"LeanSwe.MiniLeaf\"], \"external_boundary\": false,"
+        (baselineManifestJson.replace "\"LeanSwe.MiniComp\": {\"kind\": \"model\", \"purity\": \"mixed\", \"deps\": [\"LeanSwe.MiniLeaf\"], \"external_boundary\": false,"
           "\"LeanSwe.MiniComp\": {\"kind\": \"model\", \"purity\": \"nondet_io\", \"deps\": [\"LeanSwe.MiniLeaf\"], \"external_boundary\": true,")
       writeFileCreatingParents (root / "LeanSwe/MiniComp/Interface.lean")
-        ("import LeanSwe.MiniLeaf.Interface\nimport LeanSwe.MiniComp.Impl\nnamespace LeanSwe.MiniComp\n" ++
-         "def defaultRawOps : LeanSwe.MiniLeaf.LeafOps := { ping := LeanSwe.MiniLeaf.defaultOps.ping }\n" ++
+        (compIfaceHdr ++ "def defaultRawOps : LeanSwe.MiniLeaf.LeafOps := { ping := LeanSwe.MiniLeaf.defaultOps.ping }\n" ++
          "def defaultApi : CompApi := Internal.mkApiM defaultRawOps\ndef callPing (n : Nat) : IO Nat := defaultApi.callPing n\nend LeanSwe.MiniComp\n")
       recompile root libDir leanPath #["LeanSwe/MiniComp/Interface.lean", "LeanSwe/MiniComp/Proofs.lean"]
 
     runStd "vacuous_raw_allowed_false" (some "VACUOUS_OR_INVALID_OBEYS_MODEL") fun root libDir leanPath => do
       writeFileCreatingParents (root / "LeanSwe/MiniComp/Model.lean")
-        ("import LeanSwe.MiniLeaf.Types\nimport LeanSwe.MiniLeaf.Model\nimport LeanSwe.MiniComp.Types\nnamespace LeanSwe.MiniComp.Model\ndef compWf (_ : Nat) : Bool := true\n" ++
-         "def execRaw {W : Type} (ops : LeanSwe.MiniLeaf.LeafOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.ping req\n" ++
-         "def allowedRaw (_ _ _ _ : Nat) : Prop := False\n" ++
+        (compModelHdr ++ "def execRaw {W : Type} (ops : LeanSwe.MiniLeaf.LeafOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.ping req\ndef allowedRaw (_ _ _ _ : Nat) : Prop := False\n" ++
          "def execPkg {W : Type} (api : CompApiM (StateM W)) (req : Nat) : StateM W Nat := api.callPing req\n" ++
          "def allowedPkg (s req out s' : Nat) : Prop := out = req ∧ s' = s\nend LeanSwe.MiniComp.Model\n")
       writeFileCreatingParents (root / "LeanSwe/MiniComp/Proofs.lean")
-        ("import Core.Obeys\nimport LeanSwe.MiniComp.Model\nimport LeanSwe.MiniComp.Interface\nnamespace LeanSwe.MiniComp.Proofs\n" ++
+        (compProofsHdr ++
          "theorem obeys_model : Core.ObeysStepFrom id Model.compWf Model.execRaw Model.allowedRaw Model.compWf Internal.mkApiM Model.execPkg Model.allowedPkg :=\n" ++
          "  fun _ _ h w req hw => False.elim (h w req hw)\nend LeanSwe.MiniComp.Proofs\n")
       recompile root libDir leanPath #["LeanSwe/MiniComp/Model.lean", "LeanSwe/MiniComp/Proofs.lean"]
 
     runStd "renamed_default_client_bypass" (some "MIDDLE_HOOK_VIOLATION") fun root libDir leanPath => do
       writeFileCreatingParents (root / "LeanSwe/MiniComp/Interface.lean")
-        ("import LeanSwe.MiniLeaf.Interface\nimport LeanSwe.MiniComp.Impl\nnamespace LeanSwe.MiniComp\n" ++
+        (compIfaceHdr ++
          "def defaultClient : CompApi := Internal.mkApiM { ping := LeanSwe.MiniLeaf.defaultOps.ping }\ndef callPing (n : Nat) : IO Nat := defaultClient.callPing n\nend LeanSwe.MiniComp\n")
       recompile root libDir leanPath #["LeanSwe/MiniComp/Interface.lean", "LeanSwe/MiniComp/Proofs.lean"]
 
     runStd "decoy_defaultApi_with_hooked_defaultClient" (some "MIDDLE_HOOK_VIOLATION") fun root libDir leanPath => do
       writeFileCreatingParents (root / "LeanSwe/MiniComp/Interface.lean")
-        ("import LeanSwe.MiniLeaf.Interface\nimport LeanSwe.MiniComp.Impl\nnamespace LeanSwe.MiniComp\n" ++
-         "def defaultApi : CompApi := Internal.mkApiM LeanSwe.MiniLeaf.defaultOps\n" ++
+        (compIfaceHdr ++ "def defaultApi : CompApi := Internal.mkApiM LeanSwe.MiniLeaf.defaultOps\n" ++
          "def defaultClient : CompApi := Internal.mkApiM { ping := LeanSwe.MiniLeaf.defaultOps.ping }\ndef callPing (n : Nat) : IO Nat := defaultClient.callPing n\nend LeanSwe.MiniComp\n")
       recompile root libDir leanPath #["LeanSwe/MiniComp/Interface.lean", "LeanSwe/MiniComp/Proofs.lean"]
 
     runStd "synth_missing_pure_op" (some "OBEYS_SYNTH_PURE_MISMATCH") fun root libDir leanPath => do
       writeFileCreatingParents (root / "LeanSwe/MiniPure/Model.lean")
-        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\n" ++
-         "def evalModel (n : Nat) : Nat := n + 1\ndef eval2 (n : Nat) : Nat := n + 2\nend LeanSwe.MiniPure.Model\n")
+        "import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\ndef evalModel (n : Nat) : Nat := n + 1\ndef eval2 (n : Nat) : Nat := n + 2\nend LeanSwe.MiniPure.Model\n"
       writeFileCreatingParents (root / "LeanSwe/MiniPure/Interface.lean")
-        ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n" ++
-         "def eval (n : Nat) : Nat := Internal.evalImpl n\ndef eval2 (n : Nat) : Nat := n + 2\nend LeanSwe.MiniPure\n")
+        (pureIfaceHdr ++ "def eval (n : Nat) : Nat := Internal.evalImpl n\ndef eval2 (n : Nat) : Nat := n + 2\nend LeanSwe.MiniPure\n")
       recompile root libDir leanPath #["LeanSwe/MiniPure/Model.lean", "LeanSwe/MiniPure/Interface.lean", "LeanSwe/MiniPure/Proofs.lean"]
 
     runStd "synth_extra_domain_guard" (some "OBEYS_SYNTH_PURE_MISMATCH") fun root libDir leanPath => do
       writeFileCreatingParents (root / "LeanSwe/MiniPure/Proofs.lean")
-        ("import Core.Obeys\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.Proofs\n" ++
-         "theorem obeys_model : ∀ (x : Nat), x ≠ 0 → Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel := fun _ _ _ => rfl\nend LeanSwe.MiniPure.Proofs\n")
+        (pureProofsHdr ++ "theorem obeys_model : ∀ (x : Nat), x ≠ 0 → Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel := fun _ _ _ => rfl\nend LeanSwe.MiniPure.Proofs\n")
       recompile root libDir leanPath #["LeanSwe/MiniPure/Proofs.lean"]
 
     runStd "synth_substituted_impl_fn" (some "OBEYS_SYNTH_PURE_MISMATCH") fun root libDir leanPath => do
       writeFileCreatingParents (root / "LeanSwe/MiniPure/Proofs.lean")
-        ("import Core.Obeys\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.Proofs\n" ++
-         "theorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.Internal.evalImpl LeanSwe.MiniPure.Model.evalModel := fun _ => rfl\nend LeanSwe.MiniPure.Proofs\n")
+        (pureProofsHdr ++ "theorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.Internal.evalImpl LeanSwe.MiniPure.Model.evalModel := fun _ => rfl\nend LeanSwe.MiniPure.Proofs\n")
       recompile root libDir leanPath #["LeanSwe/MiniPure/Proofs.lean"]
 
     runStd "synth_missing_canreach_property" (some "OBEYS_SYNTH_MISSING_CANREACH") fun root libDir leanPath => do
@@ -580,11 +553,40 @@ def main (_ : List String) : IO UInt32 := do
 
     runStd "synth_smuggled_op_via_inst_body_rejected" (some "OBEYS_SYNTH_NO_MODEL_OP") fun root libDir leanPath => do
       writeFileCreatingParents (root / "LeanSwe/MiniPure/Interface.lean")
-        ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\ndef instFoo.op (n : Nat) : Nat := n + 2\n" ++
-         "instance instFoo : Inhabited (Nat → Nat) := ⟨instFoo.op⟩\ndef eval (n : Nat) : Nat := Internal.evalImpl n\nend LeanSwe.MiniPure\n")
+        (pureIfaceHdr ++ "def instFoo.op (n : Nat) : Nat := n + 2\ninstance instFoo : Inhabited (Nat → Nat) := ⟨instFoo.op⟩\ndef eval (n : Nat) : Nat := Internal.evalImpl n\nend LeanSwe.MiniPure\n")
       recompile root libDir leanPath #["LeanSwe/MiniPure/Interface.lean", "LeanSwe/MiniPure/Proofs.lean"]
 
-    IO.println "CHECK_PROMISES_SELF_TEST: passed=39 failed=0"
+    runStd "synth_inv_render_within_ok" none fun root libDir leanPath => do
+      writeFileCreatingParents (root / "LeanSwe/MiniInv/Model.lean")
+        ("import LeanSwe.MiniInv.Types\nnamespace LeanSwe.MiniInv.Model\ndef render (n : Nat) (t : Nat) : Option Nat := if n == t then some n else none\n" ++
+         "def withinResourceLimits (t : Nat) : Prop := t ≤ 10\ndef WellFormedJson (_ : Nat) : Prop := True\ndef equiv (a b : Nat) : Prop := a = b\nend LeanSwe.MiniInv.Model\n")
+      writeFileCreatingParents (root / "LeanSwe/MiniInv/Impl.lean")
+        ("import LeanSwe.MiniInv.Types\nnamespace LeanSwe.MiniInv.Internal\n" ++
+         "def parseImpl (n : Nat) : Except InvErr Nat := if n ≤ 10 then .ok n else .error { message := \"cap\" }\nend LeanSwe.MiniInv.Internal\n")
+      writeFileCreatingParents (root / "LeanSwe/MiniInv/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniInv.Model\nimport LeanSwe.MiniInv.Interface\nnamespace LeanSwe.MiniInv.Proofs\n" ++
+         "theorem obeys_model : Core.ObeysInverseRenderWithin LeanSwe.MiniInv.parse Model.render Model.withinResourceLimits Model.WellFormedJson Model.equiv InvErr.message := by\n" ++
+         "  intro n; unfold LeanSwe.MiniInv.parse LeanSwe.MiniInv.Internal.parseImpl; by_cases h : n ≤ 10 <;> simp [h, Core.InverseRenderWithinSpec]\n" ++
+         "  · exact ⟨trivial, ⟨n, by simp [Model.render]⟩, fun a t hr => by simp [Model.render] at hr; exact hr.2⟩\n" ++
+         "  · intro a t hr hlim; simp [Model.render] at hr; simp [Model.withinResourceLimits] at hlim; omega\nend LeanSwe.MiniInv.Proofs\n")
+      recompile root libDir leanPath #["LeanSwe/MiniInv/Model.lean", "LeanSwe/MiniInv/Impl.lean", "LeanSwe/MiniInv/Interface.lean", "LeanSwe/MiniInv/Proofs.lean"]
+      let sigOut ← runPrintSigCase bin libDir (root / "scripts/package_manifest.json") baselineRootsCsv "LeanSwe.MiniInv"
+      assertPassWith "print_sig_inv_render_within_head" "Core.ObeysInverseRenderWithin LeanSwe.MiniInv.parse LeanSwe.MiniInv.Model.render" sigOut
+      assertPassWith "print_sig_inv_render_within_args" "LeanSwe.MiniInv.Model.withinResourceLimits LeanSwe.MiniInv.Model.WellFormedJson" sigOut
+
+    runStd "vacuous_within_limits_false_rejected" (some "VACUOUS_OR_INVALID_OBEYS_MODEL") fun root libDir leanPath => do
+      writeFileCreatingParents (root / "LeanSwe/MiniInv/Model.lean")
+        ("import LeanSwe.MiniInv.Types\nnamespace LeanSwe.MiniInv.Model\ndef render (n : Nat) (_ : Unit) : Option Nat := some n\n" ++
+         "def withinResourceLimits (_ : Unit) : Prop := False\ndef wf (_ : Nat) : Prop := True\ndef equiv (a b : Nat) : Prop := a = b\nend LeanSwe.MiniInv.Model\n")
+      writeFileCreatingParents (root / "LeanSwe/MiniInv/Impl.lean")
+        "import LeanSwe.MiniInv.Types\nnamespace LeanSwe.MiniInv.Internal\ndef parseImpl (_ : Nat) : Except InvErr Nat := .error { message := \"bad\" }\nend LeanSwe.MiniInv.Internal\n"
+      writeFileCreatingParents (root / "LeanSwe/MiniInv/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniInv.Model\nimport LeanSwe.MiniInv.Interface\nnamespace LeanSwe.MiniInv.Proofs\n" ++
+         "theorem obeys_model : Core.ObeysInverseRenderWithin LeanSwe.MiniInv.parse Model.render Model.withinResourceLimits Model.wf Model.equiv InvErr.message :=\n" ++
+         "  fun _ => ⟨by decide, fun _ _ _ h => h⟩\nend LeanSwe.MiniInv.Proofs\n")
+      recompile root libDir leanPath #["LeanSwe/MiniInv/Model.lean", "LeanSwe/MiniInv/Impl.lean", "LeanSwe/MiniInv/Interface.lean", "LeanSwe/MiniInv/Proofs.lean"]
+
+    IO.println "CHECK_PROMISES_SELF_TEST: passed=42 failed=0"
     return 0
   finally
     if ← tmpRoot.pathExists then IO.FS.removeDirAll tmpRoot

@@ -3318,6 +3318,107 @@ def main (_ : List String) : IO UInt32 := do
         "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
       ]
 
+    runPositiveCase base tmpRoot bin "obeys_inverse_render_within_accepted" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\nstructure PureCfg where\n  delta : Nat\n" ++
+         "inductive InvKind | bad deriving Repr, BEq, DecidableEq\n" ++
+         "structure InvErr where\n  kind : InvKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\nend LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def renderBool (b : Bool) (pad : Bool) : Option String :=\n" ++
+         "  some ((if pad then \" \" else \"\") ++ (if b then \"true\" else \"false\"))\n" ++
+         "def withinBool (pad : Bool) : Prop := pad = false\n" ++
+         "def wfBool (_ : Bool) : Prop := True\nend LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseBoolImpl (s : String) : Except InvErr Bool :=\n" ++
+         "  if s == \"true\" then .ok true else if s == \"false\" then .ok false else .error { kind := .bad, msg := \"bad\" }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parseBool (s : String) : Except InvErr Bool := Internal.parseBoolImpl s\nend LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/SpecTests.lean")
+        ("import Core.NondetTest\nimport Core.Assumptions\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\n" ++
+         "namespace LeanSwe.MiniPure\nopen Core Core.NondetTest\n" ++
+         "def test_minipure_matches {r} [NondetTest r] (fn : Nat → Nat) : r Unit := do\n  let x ← nondet Nat\n  NondetTest.assert (fn x = Model.evalModel x)\n" ++
+         "def errorCoverage : List (ErrorObligation InvKind) := [\n" ++
+         "  { request := \"LeanSwe.MiniPure.parseBool\", errorKind := .bad, justification := .tested \"LeanSwe.MiniPure.RuntimeTests.test_err_bad\" .real }\n]\nend LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\nnamespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "private theorem renderBool_inj : Core.RenderInjectiveModulo Model.renderBool Eq := by\n" ++
+         "  intro a b p1 p2 raw ha hb; cases a <;> cases b <;> cases p1 <;> cases p2 <;> simp [Model.renderBool] at ha hb <;> first | rfl | exact absurd (ha.trans hb.symm) (by decide)\n" ++
+         "theorem obeys_model :\n    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysInverseRenderWithin LeanSwe.MiniPure.parseBool Model.renderBool Model.withinBool Model.wfBool Eq InvErr.msg := by\n" ++
+         "  refine ⟨fun _ => rfl, Core.ObeysInverseRenderWithin.of_injective renderBool_inj ?_ ?_⟩\n" ++
+         "  · intro raw out hp; unfold LeanSwe.MiniPure.parseBool LeanSwe.MiniPure.Internal.parseBoolImpl at hp\n" ++
+         "    by_cases h1 : raw = \"true\"\n" ++
+         "    · subst h1; simp at hp; subst hp; exact ⟨trivial, ⟨false, rfl⟩⟩\n" ++
+         "    · by_cases h2 : raw = \"false\"\n" ++
+         "      · subst h2; simp at hp; subst hp; exact ⟨trivial, ⟨false, rfl⟩⟩\n" ++
+         "      · simp [h1, h2] at hp\n" ++
+         "  · intro raw e hp; unfold LeanSwe.MiniPure.parseBool LeanSwe.MiniPure.Internal.parseBoolImpl at hp\n" ++
+         "    by_cases h1 : raw = \"true\"\n" ++
+         "    · subst h1; simp at hp\n" ++
+         "    · by_cases h2 : raw = \"false\"\n" ++
+         "      · subst h2; simp at hp\n" ++
+         "      · simp [h1, h2] at hp; subst hp; refine ⟨by decide, fun a p hr hlim => ?_⟩; rw [Model.withinBool] at hlim; subst hlim; cases a <;> simp [Model.renderBool] at hr <;> exact absurd hr.symm (by assumption)\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/RuntimeTests.lean")
+        ("import Core.Assumptions\nimport LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.RuntimeTests\n" ++
+         "def test_err_bad : IO Unit := do\n  match LeanSwe.MiniPure.parseBool \"nope\" with\n  | .error e => if e.kind != .bad then throw (IO.userError \"wrong\")\n  | .ok _ => throw (IO.userError \"expected err\")\n" ++
+         "def registeredErrorTests : Array Core.RegisteredErrorTest := #[{ testName := \"LeanSwe.MiniPure.RuntimeTests.test_err_bad\", mode := .real, run := test_err_bad }]\n" ++
+         "def runAll : IO Unit := Core.runRegisteredErrorTests registeredErrorTests\nend LeanSwe.MiniPure.RuntimeTests\n")
+      let ls ← IO.FS.readFile (mr.root / "LeanSwe.lean")
+      writeFileCreatingParents (mr.root / "LeanSwe.lean") (ls ++ "import LeanSwe.MiniPure.RuntimeTests\n")
+      writeFileCreatingParents (mr.root / "harness/Tests/Main.lean")
+        "import Core.Assumptions\nimport LeanSwe\ndef main (_ : List String) : IO UInt32 := do\n  Core.initAssumpLog \"a\" \"b\"\n  LeanSwe.MiniPure.RuntimeTests.runAll\n  Core.closeAssumpLog\n  return 0\n"
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs",
+        "LeanSwe/MiniPure/RuntimeTests", "LeanSwe", "Tests/Main"
+      ]
+
+    runMutantCase base tmpRoot bin "obeys_inverse_render_within_vacuous_limits_rejected" "VACUOUS_WITHIN_LIMITS_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\nstructure PureCfg where\n  delta : Nat\n" ++
+         "inductive InvKind | bad deriving Repr, BEq, DecidableEq\n" ++
+         "structure InvErr where\n  kind : InvKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\nend LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def renderBool (b : Bool) (_ : Unit) : Option String := some (if b then \"true\" else \"false\")\n" ++
+         "def vacWithin (_ : Unit) : Prop := False\n" ++
+         "def wfBool (_ : Bool) : Prop := True\nend LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def parseBoolImpl (_ : String) : Except InvErr Bool := .error { kind := .bad, msg := \"bad\" }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def parseBool (s : String) : Except InvErr Bool := Internal.parseBoolImpl s\nend LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/SpecTests.lean")
+        ("import Core.NondetTest\nimport Core.Assumptions\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\n" ++
+         "namespace LeanSwe.MiniPure\nopen Core Core.NondetTest\n" ++
+         "def test_minipure_matches {r} [NondetTest r] (fn : Nat → Nat) : r Unit := do\n  let x ← nondet Nat\n  NondetTest.assert (fn x = Model.evalModel x)\n" ++
+         "def errorCoverage : List (ErrorObligation InvKind) := [\n" ++
+         "  { request := \"LeanSwe.MiniPure.parseBool\", errorKind := .bad, justification := .tested \"LeanSwe.MiniPure.RuntimeTests.test_err_bad\" .real }\n]\nend LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\nnamespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysInverseRenderWithin LeanSwe.MiniPure.parseBool Model.renderBool Model.vacWithin Model.wfBool Eq InvErr.msg :=\n" ++
+         "  ⟨fun _ => rfl, fun _ => ⟨by decide, fun _ _ _ h => h⟩⟩\nend LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
     expectFailureCode bin "inconclusive_dead_branch_fails_closed" "INCONCLUSIVE_DEAD_BRANCH_CHECK"
       base.libDir base.root #["--allow-legacy", "--dead-branch-fuel", "0"]
 
