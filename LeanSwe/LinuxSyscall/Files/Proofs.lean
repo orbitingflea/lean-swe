@@ -1,10 +1,15 @@
+import Core.Obeys
 import LeanSwe.LinuxSyscall.Files.SpecTests
 import LeanSwe.LinuxSyscall.Files.Impl
 import LeanSwe.LinuxSyscall.Files.Interface
+import LeanSwe.LinuxSyscall.Files.Model.Refines
 import LeanSwe.LinuxSyscall.Files.Proofs.Bitflags
 import LeanSwe.LinuxSyscall.Files.Proofs.ExecCases
 import LeanSwe.LinuxSyscall.Files.Proofs.Soundness
 import LeanSwe.LinuxSyscall.Files.Proofs.HealthyStep
+import LeanSwe.LinuxSyscall.Files.Proofs.ObeysRaw
+import LeanSwe.LinuxSyscall.Files.Proofs.ObeysHealthyPkg
+import LeanSwe.LinuxSyscall.Files.Proofs.ObeysHealthyRaw
 
 namespace LeanSwe.LinuxSyscall.Files
 
@@ -338,5 +343,43 @@ theorem files_model_stateRefinementAndUserns_allPass :
   have hFc0 : (evalModel sru_gd.2 (.fcntl 0 .getFd)).1 = .u32 0 := rfl
   have hFc1 : (evalModel sru_gd.2 (.fcntl 1 .getFd)).1 = .u32 1 := rfl
   exact ⟨⟨hFc0, hFc1, sru_gd_step⟩, ⟨rfl, rfl⟩, rfl, rfl, rfl, rfl, trivial⟩
+
+namespace Proofs
+
+/-- Full public `Interface` `Core.Obeys` contract of `LeanSwe.LinuxSyscall.Files` against `Model`. -/
+theorem obeys_model :
+    Core.ObeysStepFrom id HealthyEnv.wf Model.execRawStep Model.allowedRawStep
+      HealthyEnv.wf Internal.mkFilesOpsM Model.execPkgStep Model.allowedPkgStep ∧
+    Core.ObeysStepFrom (PkgApi := Model.CloseOptFn)
+      id HealthyEnv.wf Model.execPkgStep Model.allowedPkgStep
+      HealthyEnv.wf LeanSwe.LinuxSyscall.Files.closeOpt
+      Model.execCloseOpt Model.allowedCloseOpt ∧
+    Core.ObeysStepFrom (PkgApi := Model.SetNonblockingOptFn)
+      id HealthyEnv.wf Model.execPkgStep Model.allowedPkgStep
+      HealthyEnv.wf LeanSwe.LinuxSyscall.Files.setNonblockingOpt
+      Model.execSetNonblockingOpt Model.allowedSetNonblockingOpt :=
+  ⟨mkFilesOpsM_obeysStepFrom, closeOpt_obeysStepFrom, setNonblockingOpt_obeysStepFrom⟩
+
+/-- Non-vacuity witness for `LeanSwe.LinuxSyscall.Files` `obeys_model` (`HealthyEnv.wf`, `allowedRawStep`, `allowedPkgStep`, and combinator step relations are simultaneously inhabited). -/
+theorem obeys_model_nonvacuous :
+    (∃ env₀ : HealthyEnv, HealthyEnv.wf env₀ = true) ∧
+    Core.ObeysStepId HealthyEnv.wf
+      (Model.execRawStep Model.rawHealthyModelOps) Model.allowedRawStep ∧
+    Core.ObeysStepId HealthyEnv.wf
+      (Model.execPkgStep Model.healthyModelOps) Model.allowedPkgStep ∧
+    Core.ObeysStepId HealthyEnv.wf
+      (Model.execCloseOpt (LeanSwe.LinuxSyscall.Files.closeOpt Model.healthyModelOps))
+      Model.allowedCloseOpt ∧
+    Core.ObeysStepId HealthyEnv.wf
+      (Model.execSetNonblockingOpt
+        (LeanSwe.LinuxSyscall.Files.setNonblockingOpt Model.healthyModelOps))
+      Model.allowedSetNonblockingOpt :=
+  ⟨⟨HealthyEnv.initial, rfl⟩,
+   rawHealthyModelOps_obeysStep,
+   healthyModelOps_obeysStep,
+   closeOpt_obeysStepFrom id Model.healthyModelOps healthyModelOps_obeysStep,
+   setNonblockingOpt_obeysStepFrom id Model.healthyModelOps healthyModelOps_obeysStep⟩
+
+end Proofs
 
 end LeanSwe.LinuxSyscall.Files
