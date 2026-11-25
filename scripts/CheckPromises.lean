@@ -50,6 +50,9 @@ Checks:
      `modelPresenceAllowlist`).
    - Generalized `.olean` wiring and capability-type provenance audit banning same-package
      un-fuzzed middle hooks in composite packages (exact shrinking `middleHookAllowlist`).
+8. Mechanical `.olean` `Expr` synthesis and `Meta.isDefEq` (`.reducible`) verification for
+   `obeys_model` across `kind == "model"` and `kind == "property"` packages (exact shrinking
+   `obeysSynthAllowlist`), plus `--print-obeys-sig <Pkg>` CLI signature synthesis.
 -/
 
 open Lean Meta
@@ -3063,6 +3066,7 @@ private structure ManifestPkgSpec where
   purity : String
   deps : Array Name
   externalBoundary : Bool
+  errMsgOpaque : Bool := false
   fuzzSuite? : Option String := none
   specStyle? : Option String := none
   deriving Inhabited
@@ -3106,6 +3110,7 @@ private def parsePackageManifest (raw : String) : Except String PackageManifest 
       match d.getStr? with
       | .ok ds => deps := deps.push ds.toName
       | .error _ => .error s!"MANIFEST_SCHEMA_ERROR: {pkgStr} 'deps' entry must be a string"
+    let errMsgOpaque := (entry.getObjValAs? Bool "err_msg_opaque").toOption.getD false
     let fuzzSuite? := (entry.getObjValAs? String "fuzz_suite").toOption
     let specStyle? := (entry.getObjValAs? String "spec_style").toOption
     pkgs := pkgs.insert pkgName {
@@ -3114,6 +3119,7 @@ private def parsePackageManifest (raw : String) : Except String PackageManifest 
       purity := purity
       deps := deps
       externalBoundary := extB
+      errMsgOpaque := errMsgOpaque
       fuzzSuite? := fuzzSuite?
       specStyle? := specStyle?
     }
@@ -3164,12 +3170,24 @@ private def middleHookAllowlist : Array String := #[
   "MIDDLE_HOOK|LeanSwe.ProcessSandbox.Raw"
 ]
 
+/-- Exact shrinking ratchet allowlist of packages whose `obeys_model` / `refines_model`
+does not yet match mechanical `.olean` `Expr` synthesis at `6a903b4`. Fails on both new
+regressions and stale entries as packages converge. -/
+private def obeysSynthAllowlist : Array String := #[
+  "OBEYS_SYNTH|LeanSwe.Base64",
+  "OBEYS_SYNTH|LeanSwe.CmdLine",
+  "OBEYS_SYNTH|LeanSwe.NumParse",
+  "OBEYS_SYNTH|LeanSwe.Toml"
+]
+
 private structure ManifestAuditReport where
   hardErrors : Array String := #[]
   modelPresenceObs : Std.HashMap String String := {}
   middleHookObs : Std.HashMap String String := {}
+  obeysSynthObs : Std.HashMap String String := {}
   checkedModelPkgs : Nat := 0
   checkedWiredPkgs : Nat := 0
+  checkedSynthPkgs : Nat := 0
 
 private def recordManifestObs (m : Std.HashMap String String) (key msg : String) :
     Std.HashMap String String :=
@@ -3448,13 +3466,890 @@ private def reachesOwnPrivateExtern (env : Environment) (ifaceMod root : Name) :
     | _ => pure ()
   return false
 
+private def stripOptParam (ty : Expr) : Expr :=
+  let c := ty.consumeMData
+  if c.isAppOfArity ``optParam 2 then c.appFn!.appArg! else ty
+
+private def isDefEqReducible (a b : Expr) : MetaM Bool := do
+  let st ← Meta.saveState
+  try
+    Meta.withTransparency .reducible (Meta.isDefEq a b)
+  finally
+    st.restore
+
+private def capFirst (s : String) : String :=
+  match s.toList with
+  | [] => ""
+  | c :: cs => String.ofList (c.toUpper :: cs)
+
+private def lowerFirst (s : String) : String :=
+  match s.toList with
+  | [] => ""
+  | c :: cs => String.ofList (c.toLower :: cs)
+
+private def opCamelName (pkg opName : Name) : String :=
+  let pkgComps := pkg.components
+  let opComps := opName.components
+  let rel := if isNamePrefixComps pkgComps opComps then opComps.drop pkgComps.length else [opName]
+  match rel.map (·.toString) with
+  | [] => opName.getString!
+  | [single] => single
+  | hd :: tl => lowerFirst hd ++ String.join (tl.map capFirst)
+
+private partial def typeHasTypeToTypeBinder (e : Expr) : Bool :=
+  match e.consumeMData with
+  | .forallE _ dom body _ =>
+    let isTypeToType := match dom.consumeMData with
+      | .forallE _ d1 b1 _ => d1.consumeMData.isSort && b1.consumeMData.isSort
+      | _ => false
+    isTypeToType || typeHasTypeToTypeBinder body
+  | _ => false
+
+private def constHasTypeToTypeBinder (env : Environment) (cName : Name) : Bool :=
+  match env.find? cName with
+  | none => false
+  | some ci => typeHasTypeToTypeBinder ci.type
+
+private def isSynthCompilerAux (n : Name) : Bool :=
+  let s := nameLastStr n
+  s == "rec" || s == "recOn" || s == "casesOn" || s == "noConfusion" ||
+    s == "noConfusionType" || s == "below" || s == "brecOn" || s == "binductionOn" ||
+    s == "ctorIdx" || s == "toCtorIdx" || s == "sizeOf_spec" || s == "inj" || s == "injEq" ||
+    s.startsWith "match_" || s.startsWith "_unsafe_rec" || s.startsWith "_cstage" ||
+    s.endsWith "_eq" || s.startsWith "eq_"
+
+private def isClassInstanceOrAuxSynth (env : Environment) (n : Name) (ty : Expr) : MetaM Bool := do
+  if ← Meta.isInstance n then return true
+  if (nameLastStr n).startsWith "inst" then
+    let isCls ← Meta.forallTelescope ty fun _ ret => do
+      match ret.consumeMData.getAppFn.consumeMData with
+      | .const hd _ => return Lean.isClass env hd
+      | _ => return false
+    if isCls then return true
+  return false
+
+private def isCapBundleSynth (env : Environment) (knownPkgs : Array Name) (pkg cName : Name) (ty : Expr) :
+    MetaM Bool := do
+  if cName != Name.str pkg "defaultApi" && cName != Name.str pkg "defaultOps" then
+    return false
+  Meta.forallTelescope ty fun fxs ret => do
+    for fx in fxs do
+      if (← fx.fvarId!.getBinderInfo) == .default then return false
+    let rc := ret.consumeMData
+    if rc.isAppOfArity ``IO 1 || rc.isAppOfArity ``BaseIO 1 || rc.isAppOfArity ``EIO 2 then
+      return false
+    let rw := (← Meta.withTransparency .reducible (Meta.whnf ret)).consumeMData
+    let .const stName _ := rw.getAppFn.consumeMData | return false
+    if !Lean.isStructure env stName then return false
+    return dagPkgOf knownPkgs (modOfConst env stName) == pkg
+
+private def isEffectfulOpSynth (env : Environment) (ty : Expr) (cName : Name) : MetaM Bool := do
+  if constHasTypeToTypeBinder env cName then return true
+  Meta.forallTelescope ty fun fxs ret => do
+    let rc := ret.consumeMData
+    if rc.isAppOfArity ``IO 1 || rc.isAppOfArity ``BaseIO 1 ||
+        rc.isAppOfArity ``EIO 2 || rc.isAppOfArity ``EStateM 3 ||
+        rc.isAppOfArity ``StateT 3 || rc.isAppOfArity ``StateM 2 then
+      return true
+    if let .fvar fv := rc.getAppFn.consumeMData then
+      if fxs.any (·.fvarId! == fv) then return true
+    let rw := (← Meta.withTransparency .reducible (Meta.whnf ret)).consumeMData
+    return rw.isAppOfArity ``EIO 2 || rw.isAppOfArity ``EStateM 3
+
+private def collectInterfaceOpsSynth (env : Environment) (knownPkgs : Array Name) (pkg : Name) :
+    MetaM (Array (Name × Expr) × Array (Name × Expr)) := do
+  let ifaceMod := Name.str pkg "Interface"
+  let some idx := env.header.moduleNames.findIdx? (· == ifaceMod) | return (#[], #[])
+  let some data := env.header.moduleData[idx]? | return (#[], #[])
+  let mut pureOps : Array (Name × Expr) := #[]
+  let mut effOps : Array (Name × Expr) := #[]
+  for c in data.constants do
+    let .defnInfo _ := c | continue
+    if isPrivateOrInternal c.name || isSynthCompilerAux c.name || env.isProjectionFn c.name then continue
+    if ← isClassInstanceOrAuxSynth env c.name c.type then continue
+    if ← isCapBundleSynth env knownPkgs pkg c.name c.type then continue
+    if ← isEffectfulOpSynth env c.type c.name then
+      effOps := effOps.push (c.name, c.type)
+    else
+      pureOps := pureOps.push (c.name, c.type)
+  return (pureOps.qsort (fun a b => a.1.toString < b.1.toString),
+          effOps.qsort (fun a b => a.1.toString < b.1.toString))
+
+private def collectPkgModelModules (env : Environment) (pkg : Name) : Std.HashSet Name := Id.run do
+  let modelMod := Name.str pkg "Model"
+  let pfx := modelMod.toString ++ "."
+  let mut mods : Std.HashSet Name := {}
+  for m in env.header.moduleNames do
+    if m == modelMod || m.toString.startsWith pfx then
+      mods := mods.insert m
+  return mods
+
+private def collectModelDefNames (env : Environment) (modelMods : Std.HashSet Name) : Array Name := Id.run do
+  let mut out : Array Name := #[]
+  for h : i in [0 : env.header.moduleNames.size] do
+    let m := env.header.moduleNames[i]
+    if !modelMods.contains m then continue
+    let some data := env.header.moduleData[i]? | continue
+    for c in data.constants do
+      if c matches .defnInfo _ then
+        if !isPrivateOrInternal c.name && !isSynthCompilerAux c.name && !env.isProjectionFn c.name then
+          out := out.push c.name
+  return out.qsort (fun a b => a.toString < b.toString)
+
+private def matchAppliedModelConst? (env : Environment) (cName : Name) (polyXs : Array Expr) (expectedTy : Expr) :
+    MetaM (Option Expr) := do
+  if isPrivateOrInternal cName then return none
+  let some (.defnInfo ci) := env.find? cName | return none
+  let st ← Meta.saveState
+  try
+    let lvls ← ci.levelParams.mapM fun _ => Meta.mkFreshLevelMVar
+    let mut curTy := ci.type.instantiateLevelParams ci.levelParams lvls
+    let mut ok := true
+    for px in polyXs do
+      let curW ← Meta.withTransparency .reducible (Meta.whnf curTy)
+      match curW with
+      | .forallE _ dom body _ =>
+        let pxTy ← Meta.inferType px
+        if !(← Meta.withTransparency .reducible (Meta.isDefEq dom pxTy)) then
+          ok := false
+          break
+        curTy := body.instantiate1 px
+      | _ =>
+        ok := false
+        break
+    if ok then
+      if ← Meta.withTransparency .reducible (Meta.isDefEq curTy expectedTy) then
+        let res ← instantiateMVars (mkAppN (mkConst cName lvls) polyXs)
+        st.restore
+        return some res
+    st.restore
+    return none
+  catch _ =>
+    st.restore
+    return none
+
+private def findModelConstByShortNames?
+    (env : Environment) (modelMods : Std.HashSet Name) (modelDefs : Array Name)
+    (pkg : Name) (shortNames : Array String) (polyXs : Array Expr) (expectedTy : Expr) :
+    MetaM (Option (Name × Expr)) := do
+  let modelMod := Name.str pkg "Model"
+  for short in shortNames do
+    let direct := Name.str modelMod short
+    if modelMods.contains (modOfConst env direct) then
+      if let some e ← matchAppliedModelConst? env direct polyXs expectedTy then
+        return some (direct, e)
+  for short in shortNames do
+    for cName in modelDefs do
+      if nameLastStr cName == short then
+        if let some e ← matchAppliedModelConst? env cName polyXs expectedTy then
+          return some (cName, e)
+  return none
+
+private def extractErrFieldProj? (env : Environment) (errTy : Expr) (fieldNames : Array Name) :
+    MetaM (Option (Expr × Expr)) := do
+  let errW := (← Meta.withTransparency .reducible (Meta.whnf errTy)).consumeMData
+  let .const stName stLvls := errW.getAppFn.consumeMData | return none
+  if !Lean.isStructure env stName then return none
+  let stParams := errW.getAppArgs
+  for fld in fieldNames do
+    let projName := Name.str stName fld.toString
+    if env.contains projName then
+      let projBase := mkAppN (mkConst projName stLvls) stParams
+      let projTy ← try some <$> Meta.inferType projBase catch _ => pure none
+      if let some pt := projTy then
+        let ptW := (← Meta.withTransparency .reducible (Meta.whnf pt)).consumeMData
+        match ptW with
+        | .forallE _ dom body _ =>
+          if !body.hasLooseBVars && (← isDefEqReducible dom errTy) then
+            return some (body, projBase)
+        | _ => pure ()
+  return none
+
+private def extractErrKindMsg? (env : Environment) (errTy : Expr) : MetaM (Option (Expr × Expr × Expr)) := do
+  let some (kTy, kindProj) ← extractErrFieldProj? env errTy #[`kind] | return none
+  let some (msgTy, msgProj) ← extractErrFieldProj? env errTy #[`message, `msg] | return none
+  if !(← isDefEqReducible msgTy (mkConst ``String)) then return none
+  return some (kTy, kindProj, msgProj)
+
+private def extractErrMsgOnly? (env : Environment) (errTy : Expr) : MetaM (Option Expr) := do
+  let some (msgTy, msgProj) ← extractErrFieldProj? env errTy #[`message, `msg] | return none
+  if !(← isDefEqReducible msgTy (mkConst ``String)) then return none
+  return some msgProj
+
+private def findInverseRenderModel?
+    (env : Environment) (modelMods : Std.HashSet Name) (modelDefs : Array Name)
+    (pkg : Name) (objTy rawTy : Expr) : MetaM (Option (Name × Expr × Expr)) := do
+  let modelMod := Name.str pkg "Model"
+  let mut cands : Array Name := #[]
+  let direct := Name.str modelMod "render"
+  if modelMods.contains (modOfConst env direct) then
+    cands := cands.push direct
+  for cName in modelDefs do
+    if nameLastStr cName == "render" && !cands.contains cName then
+      cands := cands.push cName
+  for rName in cands do
+    let some (.defnInfo ci) := env.find? rName | continue
+    let st ← Meta.saveState
+    try
+      let lvls ← ci.levelParams.mapM fun _ => Meta.mkFreshLevelMVar
+      let rTy := ci.type.instantiateLevelParams ci.levelParams lvls
+      let matched? ← Meta.forallTelescope rTy fun rxs rRet => do
+        if rxs.size != 2 then return none
+        let d0 ← Meta.inferType rxs[0]!
+        let d1 ← Meta.inferType rxs[1]!
+        if !(← Meta.withTransparency .reducible (Meta.isDefEq d0 objTy)) then return none
+        let optRaw := mkApp (mkConst ``Option [Level.zero]) rawTy
+        if !(← Meta.withTransparency .reducible (Meta.isDefEq rRet optRaw)) then return none
+        let tapeTy ← instantiateMVars d1
+        let rConst ← instantiateMVars (mkConst rName lvls)
+        return some (rName, rConst, tapeTy)
+      st.restore
+      if let some res := matched? then
+        return some res
+    catch _ =>
+      st.restore
+  return none
+
+private def synthPureOpConjunct
+    (env : Environment) (spec : ManifestPkgSpec)
+    (modelMods : Std.HashSet Name) (modelDefs : Array Name)
+    (opName : Name) (opTy : Expr) : MetaM (Except String Expr) := do
+  let some opInfo := env.find? opName
+    | return .error s!"missing constant {opName}"
+  Meta.forallTelescope opTy fun xs ret => do
+    let mut polyXs : Array Expr := #[]
+    let mut valXs : Array Expr := #[]
+    let mut sawDefault := false
+    for x in xs do
+      let bi ← x.fvarId!.getBinderInfo
+      if bi == .default then
+        sawDefault := true
+        if ← Meta.isProp (← Meta.inferType x) then
+          return .error s!"pure op {opName} has Prop value binder"
+        valXs := valXs.push x
+      else
+        if sawDefault then
+          return .error s!"pure op {opName} has implicit binder after explicit argument"
+        polyXs := polyXs.push x
+    let arity := valXs.size
+    if arity == 0 || arity > 4 then
+      return .error s!"pure op {opName} has unsupported arity {arity} (expected 1..4)"
+    let mut argTys : Array Expr := #[]
+    for vx in valXs do
+      argTys := argTys.push (stripOptParam (← Meta.inferType vx))
+    let retTy := stripOptParam ret
+    let opLvls := opInfo.levelParams.map fun _ => Level.zero
+    let opApplied := mkAppN (mkConst opName opLvls) polyXs
+    let fnTy := argTys.foldr (fun d b => Expr.forallE `_ d b .default) retTy
+    let allowedTy := argTys.foldr (fun d b => Expr.forallE `_ d b .default)
+      (Expr.forallE `_ retTy (.sort .zero) .default)
+    let retW := (← Meta.withTransparency .reducible (Meta.whnf retTy)).consumeMData
+
+    if spec.specStyle? == some "inverse_render" && arity == 1 && retW.isAppOfArity ``Except 2 then
+      let errTy := retW.appFn!.appArg!
+      let objTy := retW.appArg!
+      let rawTy := argTys[0]!
+      if let some (_, renderExpr, tapeTy) ← findInverseRenderModel? env modelMods modelDefs spec.name objTy rawTy then
+        let wfTy := Expr.forallE `_ objTy (.sort .zero) .default
+        let equivTy := Expr.forallE `_ objTy (Expr.forallE `_ objTy (.sort .zero) .default) .default
+        let wf? ← findModelConstByShortNames? env modelMods modelDefs spec.name
+          #["wf", "WellFormed", "WellFormedDoc", "WellFormedTable", "WellFormedValue", "wellFormed"] polyXs wfTy
+        let equiv? ← findModelConstByShortNames? env modelMods modelDefs spec.name
+          #["equiv", "Equiv", "TomlTableEquiv", "TableEquiv", "JsonEquiv", "DocEquiv", "ValueEquiv"] polyXs equivTy
+        let msgOf? ← extractErrMsgOnly? env errTy
+        match wf?, msgOf? with
+        | some (_, wfExpr), some msgExpr =>
+          let equivExpr := match equiv? with
+            | some (_, eqE) => eqE
+            | none => mkApp (mkConst ``Eq [Level.succ Level.zero]) objTy
+          let pred := mkAppN (mkConst `Core.ObeysInverseRender [])
+            #[objTy, tapeTy, rawTy, errTy, opApplied, renderExpr, wfExpr, equivExpr, msgExpr]
+          return .ok (← Meta.mkForallFVars polyXs pred)
+        | none, _ =>
+          return .error s!"inverse_render op {opName} has Model.render but lacks wf predicate in {spec.name}.Model"
+        | _, none =>
+          return .error s!"inverse_render op {opName} error type lacks message/msg projection"
+
+    let camel := opCamelName spec.name opName
+    let modelCands := #[camel, camel ++ "Model"]
+    if let some (_, mExpr) ← findModelConstByShortNames? env modelMods modelDefs spec.name modelCands polyXs fnTy then
+      if spec.errMsgOpaque && retW.isAppOfArity ``Except 2 then
+        let errTy := retW.appFn!.appArg!
+        let okTy := retW.appArg!
+        if let some (kTy, kindProj, msgProj) ← extractErrKindMsg? env errTy then
+          let head := match arity with
+            | 1 => `Core.ObeysPureEqUpToErrMsg
+            | 2 => `Core.ObeysPureEqUpToErrMsg2
+            | 3 => `Core.ObeysPureEqUpToErrMsg3
+            | _ => `Core.ObeysPureEqUpToErrMsg4
+          let pred := mkAppN (mkConst head []) (argTys ++ #[errTy, kTy, okTy, kindProj, msgProj, opApplied, mExpr])
+          return .ok (← Meta.mkForallFVars polyXs pred)
+      let head := match arity with
+        | 1 => `Core.ObeysPureEq
+        | 2 => `Core.ObeysPureEq2
+        | 3 => `Core.ObeysPureEq3
+        | _ => `Core.ObeysPureEq4
+      let pred := mkAppN (mkConst head []) (argTys ++ #[retTy, opApplied, mExpr])
+      return .ok (← Meta.mkForallFVars polyXs pred)
+
+    let allowedShort := "allowed" ++ capFirst camel
+    if let some (_, allowedExpr) ← findModelConstByShortNames? env modelMods modelDefs spec.name #[allowedShort] polyXs allowedTy then
+      if isTrivialTruePred env allowedExpr then
+        return .error s!"pure op {opName} matched tautological predicate {allowedShort}"
+      let head := match arity with
+        | 1 => `Core.ObeysPure
+        | 2 => `Core.ObeysPure2
+        | 3 => `Core.ObeysPure3
+        | _ => `Core.ObeysPure4
+      let pred := mkAppN (mkConst head []) (argTys ++ #[retTy, opApplied, allowedExpr])
+      return .ok (← Meta.mkForallFVars polyXs pred)
+
+    return .error s!"no matching Model spec for pure op {opName} (tried Model.{camel}, Model.{camel}Model, Model.{allowedShort})"
+
+private partial def collectUsedStructFieldsInExpr (env : Environment) (e : Expr) : Std.HashSet (Name × Nat) :=
+  let rec go (acc : Std.HashSet (Name × Nat)) (cur : Expr) : Std.HashSet (Name × Nat) :=
+    match cur with
+    | .proj stName idx s => go (acc.insert (stName, idx)) s
+    | .const fnName _ =>
+      match env.getProjectionFnInfo? fnName with
+      | some pInfo =>
+        match env.find? pInfo.ctorName with
+        | some (.ctorInfo ci) => acc.insert (ci.induct, pInfo.i)
+        | _ => acc
+      | none => acc
+    | .app f a => go (go acc f) a
+    | .lam _ t b _ => go (go acc t) b
+    | .forallE _ t b _ => go (go acc t) b
+    | .letE _ t v b _ => go (go (go acc t) v) b
+    | .mdata _ b => go acc b
+    | _ => acc
+  go {} e
+
+private def collectUsedStructFieldsTransitive
+    (env : Environment) (walkMods : Std.HashSet Name) (skipConsts : Std.HashSet Name) (root : Name) :
+    Std.HashSet (Name × Nat) := Id.run do
+  let mut q : Array Name := #[root]
+  let mut seen : Std.HashSet Name := {}
+  let mut fields : Std.HashSet (Name × Nat) := {}
+  while !q.isEmpty do
+    let cur := q.back!
+    q := q.pop
+    if seen.contains cur || skipConsts.contains cur then continue
+    seen := seen.insert cur
+    if !walkMods.contains (modOfConst env cur) then continue
+    if let some (.defnInfo dv) := env.find? cur then
+      for f in collectUsedStructFieldsInExpr env dv.value do
+        fields := fields.insert f
+      for u in dv.value.getUsedConstants do
+        if !seen.contains u && !skipConsts.contains u && walkMods.contains (modOfConst env u) then
+          q := q.push u
+  return fields
+
+private def collectCoveredMkApiImplHelpers
+    (env : Environment) (implMod mkApiFn : Name) (execFields : Std.HashSet (Name × Nat)) :
+    MetaM (Std.HashSet Name) := do
+  let some (.defnInfo dv) := env.find? mkApiFn | return {}
+  let body := (peelLambdas dv.value).consumeMData
+  let hd := body.getAppFn.consumeMData
+  let args := body.getAppArgs
+  let .const ctorName _ := hd | return {}
+  let some (.ctorInfo ci) := env.find? ctorName | return {}
+  if !Lean.isStructure env ci.induct then return {}
+  let mut helpers : Std.HashSet Name := {}
+  let fieldArgs := args.extract ci.numParams args.size
+  for i in [0 : fieldArgs.size] do
+    if execFields.contains (ci.induct, i) then
+      for u in fieldArgs[i]!.getUsedConstants do
+        if modOfConst env u == implMod && !isPrivateOrInternal u then
+          helpers := helpers.insert u
+  return helpers
+
+private def checkBareModelConst (env : Environment) (modelMods : Std.HashSet Name) (allowId : Bool) (e : Expr) :
+    Option Name :=
+  let c := (etaReduceExpr e).consumeMData
+  match c.getAppFn.consumeMData with
+  | .const fn _ =>
+    if allowId && fn == ``id then some fn
+    else if !isPrivateOrInternal fn && modelMods.contains (modOfConst env fn) then some fn
+    else none
+  | _ => none
+
+private structure StepSynthSummary where
+  stepCount : Nat := 0
+  coveredBuilders : Std.HashSet Name := {}
+  coveredStepOps : Std.HashSet Name := {}
+  coveredExecFields : Std.HashSet (Name × Nat) := {}
+  coveredImplHelpers : Std.HashSet Name := {}
+  provenExecPkgExprs : Array Expr := #[]
+  provenAllowedPkgExprs : Array Expr := #[]
+  provenMkApiExprs : Array Expr := #[]
+
+private def auditEffectfulStepSynthesis
+    (env : Environment) (pkg : Name) (ifaceHasPrivateExtern : Bool)
+    (modelMods : Std.HashSet Name) (effOps : Array (Name × Expr))
+    (actualAtoms : Array Expr) : MetaM (Array String) := do
+  let ifaceMod := Name.str pkg "Interface"
+  let implMod := Name.str pkg "Impl"
+  let mut errs : Array String := #[]
+  let mut st : StepSynthSummary := {}
+
+  for atom in actualAtoms do
+    let ab := atom.consumeMData
+    let fn := ab.getAppFn.consumeMData
+    let .const fnName fnLvls := fn | continue
+    let args := ab.getAppArgs
+    if (fnName == `Core.ObeysStep || fnName == `Core.RefinesStep) && args.size == 8 then
+      st := { st with stepCount := st.stepCount + 1 }
+      let some _ := checkBareModelConst env modelMods true args[4]!
+        | errs := errs.push s!"step proj in {pkg} is not id or public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[5]!
+        | errs := errs.push s!"step wf in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[7]!
+        | errs := errs.push s!"step allowed in {pkg} is not a public Model constant"
+      let synth := mkAppN (mkConst `Core.ObeysStep []) args
+      if !(← isDefEqReducible synth atom) then
+        errs := errs.push s!"step conjunct in {pkg} failed reducible isDefEq against synthesized Core.ObeysStep"
+      if let .const stepFn _ := (etaReduceExpr args[6]!).consumeMData.getAppFn.consumeMData then
+        let sm := modOfConst env stepFn
+        if sm == ifaceMod then st := { st with coveredStepOps := st.coveredStepOps.insert stepFn }
+        else if sm == implMod then st := { st with coveredImplHelpers := st.coveredImplHelpers.insert stepFn }
+    else if (fnName == `Core.ObeysStepId || fnName == `Core.RefinesStepId) && args.size == 6 then
+      st := { st with stepCount := st.stepCount + 1 }
+      let some _ := checkBareModelConst env modelMods false args[3]!
+        | errs := errs.push s!"stepId wf in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[5]!
+        | errs := errs.push s!"stepId allowed in {pkg} is not a public Model constant"
+      let sTy := args[0]!
+      let synth := mkAppN (mkConst `Core.ObeysStep [])
+        #[sTy, sTy, args[1]!, args[2]!, mkApp (mkConst ``id [Level.succ Level.zero]) sTy, args[3]!, args[4]!, args[5]!]
+      if !(← isDefEqReducible synth atom) then
+        errs := errs.push s!"stepId conjunct in {pkg} failed reducible isDefEq against synthesized Core.ObeysStep"
+      if let .const stepFn _ := (etaReduceExpr args[4]!).consumeMData.getAppFn.consumeMData then
+        let sm := modOfConst env stepFn
+        if sm == ifaceMod then st := { st with coveredStepOps := st.coveredStepOps.insert stepFn }
+        else if sm == implMod then st := { st with coveredImplHelpers := st.coveredImplHelpers.insert stepFn }
+    else if (fnName == `Core.ObeysStepFrom || fnName == `Core.RefinesStepFrom ||
+        fnName == `Core.ObeysStepFromFinally || fnName == `Core.RefinesStepFromFinally) && args.size == 16 then
+      st := { st with stepCount := st.stepCount + 1 }
+      let isFin := fnName == `Core.ObeysStepFromFinally || fnName == `Core.RefinesStepFromFinally
+      let some _ := checkBareModelConst env modelMods true args[8]!
+        | errs := errs.push s!"stepFrom mapS in {pkg} is not id or public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[9]!
+        | errs := errs.push s!"stepFrom rawWf in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[10]!
+        | errs := errs.push s!"stepFrom execRaw in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[11]!
+        | errs := errs.push s!"stepFrom rawAllowed in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[12]!
+        | errs := errs.push s!"stepFrom pkgWf in {pkg} is not a public Model constant"
+      let some execPkgFn := checkBareModelConst env modelMods false args[14]!
+        | errs := errs.push s!"stepFrom execPkg in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[15]!
+        | errs := errs.push s!"stepFrom pkgAllowed in {pkg} is not a public Model constant"
+      let synthHead := if isFin then `Core.ObeysStepFromFinally else `Core.ObeysStepFrom
+      let synth := mkAppN (mkConst synthHead fnLvls) args
+      if !(← isDefEqReducible synth atom) then
+        errs := errs.push s!"stepFrom conjunct in {pkg} failed reducible isDefEq against synthesized {synthHead}"
+      let mkExpr := (etaReduceExpr args[13]!).consumeMData
+      st := { st with
+        provenExecPkgExprs := st.provenExecPkgExprs.push (etaReduceExpr args[14]!)
+        provenAllowedPkgExprs := st.provenAllowedPkgExprs.push (etaReduceExpr args[15]!)
+        provenMkApiExprs := st.provenMkApiExprs.push mkExpr }
+      let execFlds := collectUsedStructFieldsTransitive env modelMods {} execPkgFn
+      if execFlds.isEmpty then
+        errs := errs.push s!"execPkg {execPkgFn} in {pkg} projects zero capability fields"
+      let mut nextFlds := st.coveredExecFields
+      for f in execFlds do nextFlds := nextFlds.insert f
+      st := { st with coveredExecFields := nextFlds }
+      if let .const mkFn _ := mkExpr.getAppFn.consumeMData then
+        let mkCanon := unfoldThinIfaceBuilder env pkg mkFn
+        st := { st with coveredBuilders := (st.coveredBuilders.insert mkFn).insert mkCanon }
+        let mut nextHelpers := st.coveredImplHelpers
+        for h in ← collectCoveredMkApiImplHelpers env implMod mkCanon execFlds do
+          nextHelpers := nextHelpers.insert h
+        st := { st with coveredImplHelpers := nextHelpers }
+    else if (fnName == `Core.ObeysStepFrom2 || fnName == `Core.RefinesStepFrom2) && args.size == 21 then
+      st := { st with stepCount := st.stepCount + 1 }
+      let some _ := checkBareModelConst env modelMods true args[11]!
+        | errs := errs.push s!"stepFrom2 mapS in {pkg} is not id or public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[12]!
+        | errs := errs.push s!"stepFrom2 rawWf in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[13]!
+        | errs := errs.push s!"stepFrom2 execRaw1 in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[14]!
+        | errs := errs.push s!"stepFrom2 rawAllowed1 in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[15]!
+        | errs := errs.push s!"stepFrom2 execRaw2 in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[16]!
+        | errs := errs.push s!"stepFrom2 rawAllowed2 in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[17]!
+        | errs := errs.push s!"stepFrom2 pkgWf in {pkg} is not a public Model constant"
+      let some execPkgFn := checkBareModelConst env modelMods false args[19]!
+        | errs := errs.push s!"stepFrom2 execPkg in {pkg} is not a public Model constant"
+      let some _ := checkBareModelConst env modelMods false args[20]!
+        | errs := errs.push s!"stepFrom2 pkgAllowed in {pkg} is not a public Model constant"
+      let synth := mkAppN (mkConst `Core.ObeysStepFrom2 fnLvls) args
+      if !(← isDefEqReducible synth atom) then
+        errs := errs.push s!"stepFrom2 conjunct in {pkg} failed reducible isDefEq against synthesized Core.ObeysStepFrom2"
+      let mkExpr := (etaReduceExpr args[18]!).consumeMData
+      st := { st with
+        provenExecPkgExprs := st.provenExecPkgExprs.push (etaReduceExpr args[19]!)
+        provenAllowedPkgExprs := st.provenAllowedPkgExprs.push (etaReduceExpr args[20]!)
+        provenMkApiExprs := st.provenMkApiExprs.push mkExpr }
+      let execFlds := collectUsedStructFieldsTransitive env modelMods {} execPkgFn
+      if execFlds.isEmpty then
+        errs := errs.push s!"execPkg {execPkgFn} in {pkg} projects zero capability fields"
+      let mut nextFlds := st.coveredExecFields
+      for f in execFlds do nextFlds := nextFlds.insert f
+      st := { st with coveredExecFields := nextFlds }
+      if let .const mkFn _ := mkExpr.getAppFn.consumeMData then
+        let mkCanon := unfoldThinIfaceBuilder env pkg mkFn
+        st := { st with coveredBuilders := (st.coveredBuilders.insert mkFn).insert mkCanon }
+        let mut nextHelpers := st.coveredImplHelpers
+        for h in ← collectCoveredMkApiImplHelpers env implMod mkCanon execFlds do
+          nextHelpers := nextHelpers.insert h
+        st := { st with coveredImplHelpers := nextHelpers }
+
+  if st.stepCount == 0 then
+    return errs.push s!"OBEYS_SYNTH_MISSING_STEP: {pkg} exposes {effOps.size} effectful Interface ops but has zero ObeysStep* conjuncts"
+
+  let modelMod := Name.str pkg "Model"
+  let canonExecPkg := Name.str modelMod "execPkgStep"
+  if env.contains canonExecPkg && modelMods.contains (modOfConst env canonExecPkg) && !isPrivateOrInternal canonExecPkg then
+    let mut matchedExec := false
+    for e in st.provenExecPkgExprs do
+      if ← isDefEqReducible (mkConst canonExecPkg []) e then
+        matchedExec := true
+        break
+    if !matchedExec then
+      errs := errs.push s!"OBEYS_SYNTH_EXEC_MISMATCH: {pkg} defines {canonExecPkg} not matched by isDefEq in obeys_model"
+  let canonAllowedPkg := Name.str modelMod "allowedPkgStep"
+  if env.contains canonAllowedPkg && modelMods.contains (modOfConst env canonAllowedPkg) && !isPrivateOrInternal canonAllowedPkg then
+    let mut matchedAllowed := false
+    for e in st.provenAllowedPkgExprs do
+      if ← isDefEqReducible (mkConst canonAllowedPkg []) e then
+        matchedAllowed := true
+        break
+    if !matchedAllowed then
+      errs := errs.push s!"OBEYS_SYNTH_ALLOWED_MISMATCH: {pkg} defines {canonAllowedPkg} not matched by isDefEq in obeys_model"
+
+  let defApiName := Name.str pkg "defaultApi"
+  let defOpsName := Name.str pkg "defaultOps"
+  let defRoot? : Option Name :=
+    if env.contains defApiName && modOfConst env defApiName == ifaceMod then some defApiName
+    else if env.contains defOpsName && modOfConst env defOpsName == ifaceMod then some defOpsName
+    else none
+  if let some defRoot := defRoot? then
+    if let some (.defnInfo dv) := env.find? defRoot then
+      let body := dv.value.consumeMData
+      match body.getAppFn.consumeMData with
+      | .const defHead _ =>
+        if ifaceHasPrivateExtern then
+          let ok := st.provenMkApiExprs.any fun mkE => mkE.getUsedConstants.contains defHead
+          if !ok then
+            errs := errs.push s!"OBEYS_SYNTH_BUILDER_MISMATCH: leaf {defRoot} builder {defHead} not referenced in obeys_model"
+        else if !isPkgBuilderConst env pkg defHead then
+          errs := errs.push s!"OBEYS_SYNTH_BUILDER_MISMATCH: {defRoot} top-level head {defHead} is not a {pkg} mk* builder"
+        else
+          let defCanon := unfoldThinIfaceBuilder env pkg defHead
+          let mut matchedBuilder := false
+          for mkE in st.provenMkApiExprs do
+            let headMatch ← match env.find? defHead with
+              | some ci => isDefEqReducible (mkConst defHead (ci.levelParams.map fun _ => Level.zero)) mkE
+              | none => pure false
+            let canonMatch ← match env.find? defCanon with
+              | some ci => isDefEqReducible (mkConst defCanon (ci.levelParams.map fun _ => Level.zero)) mkE
+              | none => pure false
+            if headMatch || canonMatch then
+              matchedBuilder := true
+              break
+          if !matchedBuilder then
+            errs := errs.push s!"OBEYS_SYNTH_BUILDER_MISMATCH: {defRoot} builder {defHead} failed isDefEq against obeys_model mkApi"
+      | _ =>
+        errs := errs.push s!"OBEYS_SYNTH_BUILDER_MISMATCH: {defRoot} does not apply a constant mk* builder"
+
+  let skipBundles : Std.HashSet Name :=
+    Std.HashSet.emptyWithCapacity 2 |>.insert defApiName |>.insert defOpsName
+  let ifaceSingleton : Std.HashSet Name := Std.HashSet.emptyWithCapacity 1 |>.insert ifaceMod
+  for (opName, _) in effOps do
+    let some (.defnInfo dv) := env.find? opName | continue
+    let opFields := collectUsedStructFieldsTransitive env ifaceSingleton skipBundles opName
+    let coveredByFields := !opFields.isEmpty && opFields.all st.coveredExecFields.contains
+    let usedBody := dv.value.getUsedConstants
+    let coveredByHelper := usedBody.any st.coveredImplHelpers.contains
+    let coveredByBuilder := st.coveredBuilders.contains opName || usedBody.any st.coveredBuilders.contains
+    if !st.coveredStepOps.contains opName && !coveredByFields && !coveredByHelper && !coveredByBuilder then
+      errs := errs.push s!"OBEYS_SYNTH_UNCOVERED_EFF_OP: effectful Interface op {opName} is not covered by synthesized step contract"
+
+  return errs
+
+private def auditModelObeysSynthesis
+    (env : Environment) (knownPkgs : Array Name) (spec : ManifestPkgSpec)
+    (ifaceHasPrivateExtern : Bool) (thmName : Name) (thmType : Expr) :
+    MetaM (Array String) := do
+  let pkg := spec.name
+  let ifaceMod := Name.str pkg "Interface"
+  let (pureOps, effOps) ← collectInterfaceOpsSynth env knownPkgs pkg
+  let hasDefBundle :=
+    (env.contains (Name.str pkg "defaultApi") && modOfConst env (Name.str pkg "defaultApi") == ifaceMod) ||
+    (env.contains (Name.str pkg "defaultOps") && modOfConst env (Name.str pkg "defaultOps") == ifaceMod)
+  if pureOps.isEmpty && effOps.isEmpty && !hasDefBundle then
+    return #[s!"OBEYS_SYNTH_EMPTY_INTERFACE: {pkg}.Interface exposes zero public operations"]
+  let modelMods := collectPkgModelModules env pkg
+  let modelDefs := collectModelDefNames env modelMods
+  let mut errs : Array String := #[]
+  let hasOuterBinders := thmType.consumeMData.isForall
+  if hasOuterBinders then
+    errs := errs.push s!"OBEYS_SYNTH_OUTER_BINDERS: {thmName} must bind parameters per conjunct, not at outer level"
+  let actualAtoms := collectConclusionAtoms thmType
+  for (opName, opTy) in pureOps do
+    match ← synthPureOpConjunct env spec modelMods modelDefs opName opTy with
+    | .error reason =>
+      errs := errs.push s!"OBEYS_SYNTH_NO_MODEL_OP: {reason}"
+    | .ok expectedExpr =>
+      let mut matched := false
+      for atom in actualAtoms do
+        if ← isDefEqReducible expectedExpr atom then
+          matched := true
+          break
+      if !matched then
+        let expFmt ← withOptions (fun o => (o.setBool `pp.universes false).setBool `pp.explicit false)
+          (Meta.ppExpr expectedExpr)
+        errs := errs.push s!"OBEYS_SYNTH_PURE_MISMATCH: {thmName} lacks reducible-isDefEq conjunct for {opName} (expected: {expFmt.pretty})"
+  if !effOps.isEmpty || (spec.purity != "pure" && hasDefBundle) then
+    let effErrs ← auditEffectfulStepSynthesis env pkg ifaceHasPrivateExtern modelMods effOps actualAtoms
+    errs := errs ++ effErrs
+  return errs
+
+private def collectPropertyDecls (env : Environment) (pkg : Name) : MetaM (Bool × Array (Name × Expr)) := do
+  let propMods := #[Name.str pkg "Properties", Name.str pkg "ModelChecks"]
+  let mut foundMod := false
+  let mut props : Array (Name × Expr) := #[]
+  for pm in propMods do
+    if let some idx := env.header.moduleNames.findIdx? (· == pm) then
+      foundMod := true
+      if let some data := env.header.moduleData[idx]? then
+        for c in data.constants do
+          let .defnInfo _ := c | continue
+          if isPrivateOrInternal c.name || isSynthCompilerAux c.name || env.isProjectionFn c.name then continue
+          if ← isClassInstanceOrAuxSynth env c.name c.type then continue
+          let isNondetProp ← Meta.forallTelescope c.type fun xs ret => do
+            let mut hasNondet := false
+            let mut rFVar? : Option FVarId := none
+            for x in xs do
+              let xTy := (← Meta.inferType x).consumeMData
+              if xTy.isAppOfArity `Core.NondetTest 1 then
+                hasNondet := true
+                if let .fvar fv := xTy.appArg!.consumeMData then
+                  rFVar? := some fv
+            if !hasNondet then return false
+            let rc := ret.consumeMData
+            match rFVar?, rc.getAppFn.consumeMData with
+            | some rfv, .fvar retFv =>
+              return rfv == retFv && rc.getAppArgs.size == 1 && (← isDefEqReducible rc.appArg! (mkConst ``Unit))
+            | _, _ => return false
+          if isNondetProp then
+            props := props.push (c.name, c.type)
+  return (foundMod, props.qsort (fun a b => a.1.toString < b.1.toString))
+
+private def synthPropertyObligations
+    (env : Environment) (pkg propName : Name) (propTy : Expr) :
+    MetaM (Except String (Expr × Expr)) := do
+  let defApiName := Name.str pkg "defaultApi"
+  let defOpsName := Name.str pkg "defaultOps"
+  let buildApp (runConst instConst wrapConst : Name) : MetaM (Except String Expr) := do
+    Meta.forallTelescope propTy fun xs _ => do
+      let mut args : Array Expr := #[]
+      let mut rFVar? : Option FVarId := none
+      for x in xs do
+        let xTy := (← Meta.inferType x).consumeMData
+        let isRunnerBinder := match xTy with
+          | .forallE _ d b _ => d.consumeMData == .sort (.succ .zero) && b.consumeMData == .sort (.succ .zero)
+          | _ => false
+        if isRunnerBinder && rFVar?.isNone then
+          rFVar? := some x.fvarId!
+          args := args.push (mkConst runConst [])
+        else if xTy.isAppOfArity `Core.NondetTest 1 then
+          args := args.push (mkConst instConst [])
+        else
+          let mut matchedCap? : Option Expr := none
+          for cand in #[defApiName, defOpsName] do
+            if matchedCap?.isNone then
+              if let some (.defnInfo dv) := env.find? cand then
+                if ← isDefEqReducible xTy dv.type then
+                  matchedCap? := some (mkConst cand [])
+          match matchedCap? with
+          | some capExpr => args := args.push capExpr
+          | none =>
+            return .error s!"property {propName} has unsupported binder type {xTy}"
+      let app := mkAppN (mkConst propName []) args
+      return .ok (mkApp (mkConst wrapConst []) app)
+  match ← buildApp `Core.AllPassRun `Core.instNondetTestAllPassRun `Core.AllPass with
+  | .error e => return .error e
+  | .ok allPassExpr =>
+    match ← buildApp `Core.CanReachRun `Core.instNondetTestCanReachRun `Core.CanReach with
+    | .error e => return .error e
+    | .ok canReachExpr => return .ok (allPassExpr, canReachExpr)
+
+private def auditPropertyObeysSynthesis
+    (env : Environment) (spec : ManifestPkgSpec) (axCacheIn : AxCache) :
+    MetaM (Array String × AxCache) := do
+  let pkg := spec.name
+  let mut axCache := axCacheIn
+  let (foundMod, props) ← collectPropertyDecls env pkg
+  if !foundMod then
+    return (#[s!"OBEYS_SYNTH_MISSING_PROPERTIES: {pkg} (kind=property) lacks {pkg}.Properties or {pkg}.ModelChecks"], axCache)
+  if props.isEmpty then
+    return (#[s!"OBEYS_SYNTH_EMPTY_PROPERTIES: {pkg} (kind=property) defines zero Core.NondetTest properties"], axCache)
+  let proofsMod := Name.str pkg "Proofs"
+  let obeysName := Name.str proofsMod "obeys_model"
+  let mut errs : Array String := #[]
+  let mut candidateAtoms : Array Expr := #[]
+
+  if let some (.thmInfo tv) := env.find? obeysName then
+    if isPrivateName obeysName || modOfConst env obeysName != proofsMod then
+      errs := errs.push s!"INVALID_OBEYS_MODEL_DECL: {obeysName} must be a public theorem in {proofsMod}"
+    let (badAx?, nextAx) ← (checkAxiomsOk obeysName).run axCache
+    axCache := nextAx
+    if let some badAx := badAx? then
+      errs := errs.push s!"UNALLOWED_AXIOM_IN_OBEYS_MODEL: {obeysName} uses [{badAx}]"
+    let atoms? ← Meta.forallTelescope tv.type fun oxs body => do
+      for ox in oxs do
+        if ← Meta.isProp (← Meta.inferType ox) then
+          return none
+      return some (collectConclusionAtoms body)
+    match atoms? with
+    | none =>
+      errs := errs.push s!"CONDITIONAL_OBEYS_MODEL: {obeysName} has Prop hypothesis"
+    | some atoms =>
+      candidateAtoms := atoms
+  else
+    let proofsPfx := proofsMod.toString ++ "."
+    for h : i in [0 : env.header.moduleNames.size] do
+      let m := env.header.moduleNames[i]
+      if m != proofsMod && !m.toString.startsWith proofsPfx then continue
+      let some data := env.header.moduleData[i]? | continue
+      for c in data.constants do
+        let .thmInfo tv := c | continue
+        if isPrivateOrInternal c.name || env.isProjectionFn c.name then continue
+        let (badAx?, nextAx) ← (checkAxiomsOk c.name).run axCache
+        axCache := nextAx
+        if badAx?.isSome then continue
+        let atoms? ← Meta.forallTelescope tv.type fun oxs body => do
+          for ox in oxs do
+            if ← Meta.isProp (← Meta.inferType ox) then return none
+          return some (collectConclusionAtoms body)
+        if let some atoms := atoms? then
+          candidateAtoms := candidateAtoms ++ atoms
+
+  for (propName, propTy) in props do
+    match ← synthPropertyObligations env pkg propName propTy with
+    | .error reason =>
+      errs := errs.push s!"OBEYS_SYNTH_PROP_ERROR: {reason}"
+    | .ok (allPassExpr, canReachExpr) =>
+      let mut hasAllPass := false
+      let mut hasCanReach := false
+      for atom in candidateAtoms do
+        if !hasAllPass && (← isDefEqReducible allPassExpr atom) then
+          hasAllPass := true
+        if !hasCanReach && (← isDefEqReducible canReachExpr atom) then
+          hasCanReach := true
+      if !hasAllPass then
+        errs := errs.push s!"OBEYS_SYNTH_MISSING_ALLPASS: {pkg}.Proofs lacks reducible-isDefEq Core.AllPass proof for {propName}"
+      if !hasCanReach then
+        errs := errs.push s!"OBEYS_SYNTH_MISSING_CANREACH: {pkg}.Proofs lacks reducible-isDefEq Core.CanReach proof for {propName}"
+  return (errs, axCache)
+
+private def formatSynthExpr (e : Expr) : MetaM String := do
+  let fmt ← withOptions (fun o => (o.setBool `pp.universes false).setBool `pp.explicit false) (Meta.ppExpr e)
+  return fmt.pretty
+
+private def renderSynthesizedObeysSig
+    (env : Environment) (manifest : PackageManifest) (rawPkg : Name) :
+    MetaM (Except String String) := do
+  let leanSweCand := ("LeanSwe." ++ rawPkg.toString).toName
+  let pkg :=
+    if manifest.packages.contains rawPkg then rawPkg
+    else if rawPkg.getRoot != `LeanSwe && manifest.packages.contains leanSweCand then leanSweCand
+    else rawPkg
+  let some spec := manifest.packages.get? pkg
+    | return .error s!"UNKNOWN_PACKAGE_FOR_PRINT_OBEYS_SIG: {rawPkg} not found in scripts/package_manifest.json"
+  if spec.kind == "support" then
+    return .error s!"SUPPORT_PACKAGE_FOR_PRINT_OBEYS_SIG: {pkg} has kind='support' (no obeys_model obligation)"
+  let mut conjuncts : Array String := #[]
+  if spec.kind == "property" then
+    let (foundMod, props) ← collectPropertyDecls env pkg
+    if !foundMod then
+      return .error s!"MISSING_PROPERTIES_MODULE: {pkg} lacks {pkg}.Properties or {pkg}.ModelChecks"
+    for (propName, propTy) in props do
+      match ← synthPropertyObligations env pkg propName propTy with
+      | .error reason =>
+        conjuncts := conjuncts.push s!"<PROPERTY_SYNTH_ERROR: {reason}>"
+      | .ok (allPassExpr, canReachExpr) =>
+        conjuncts := conjuncts.push (← formatSynthExpr allPassExpr)
+        conjuncts := conjuncts.push (← formatSynthExpr canReachExpr)
+  else
+    let knownPkgs := discoverDagPackages env.header.moduleNames
+    let ifaceMod := Name.str pkg "Interface"
+    if !env.header.moduleNames.contains ifaceMod then
+      return .error s!"MISSING_INTERFACE_MODULE: {ifaceMod} is not loaded"
+    let (pureOps, effOps) ← collectInterfaceOpsSynth env knownPkgs pkg
+    let hasDefBundle :=
+      (env.contains (Name.str pkg "defaultApi") && modOfConst env (Name.str pkg "defaultApi") == ifaceMod) ||
+      (env.contains (Name.str pkg "defaultOps") && modOfConst env (Name.str pkg "defaultOps") == ifaceMod)
+    let modelMods := collectPkgModelModules env pkg
+    let modelDefs := collectModelDefNames env modelMods
+    for (opName, opTy) in pureOps do
+      match ← synthPureOpConjunct env spec modelMods modelDefs opName opTy with
+      | .ok expectedExpr =>
+        conjuncts := conjuncts.push (← formatSynthExpr expectedExpr)
+      | .error reason =>
+        conjuncts := conjuncts.push s!"<MISSING_MODEL_SPEC: {reason}>"
+    if !effOps.isEmpty || (spec.purity != "pure" && hasDefBundle) then
+      let modelMod := Name.str pkg "Model"
+      let defApiName := Name.str pkg "defaultApi"
+      let mkApiCand := match env.find? defApiName with
+        | some (.defnInfo dv) =>
+          match dv.value.consumeMData.getAppFn.consumeMData with
+          | .const fn _ => if isPkgBuilderConst env pkg fn then some fn else none
+          | _ => none
+        | _ =>
+          let cand := Name.str (Name.str pkg "Internal") "mkApiM"
+          if env.contains cand then some cand else none
+      let stepHead := match mkApiCand.bind (env.find? ·) with
+        | some ci =>
+          if ci.type.getUsedConstants.contains ``MonadFinally then "Core.ObeysStepFromFinally"
+          else "Core.ObeysStepFrom"
+        | none => "Core.ObeysStepFrom"
+      let findShort (cands : Array String) (fallback : String) : String :=
+        match cands.findSome? fun s =>
+          let direct := Name.str modelMod s
+          if env.contains direct && modelMods.contains (modOfConst env direct) then some direct.toString
+          else (modelDefs.find? fun d => nameLastStr d == s).map (·.toString) with
+        | some found => found
+        | none => fallback
+      let wfStr := findShort #["rawStepWf", "healthyWf", "pkgWf"] "<WF>"
+      let execRawStr := findShort #["execRawStep", "execRaw"] "<EXEC_RAW>"
+      let allowedRawStr := findShort #["allowedRawStep", "allowedRaw"] "<ALLOWED_RAW>"
+      let execPkgStr := findShort #["execPkgStep", "execPkg"] "<EXEC_PKG>"
+      let allowedPkgStr := findShort #["allowedPkgStep", "allowedPkg"] "<ALLOWED_PKG>"
+      let mkStr := (mkApiCand.map (·.toString)).getD "<MK_API>"
+      conjuncts := conjuncts.push
+        s!"{stepHead} id {wfStr} {execRawStr} {allowedRawStr} {wfStr} {mkStr} {execPkgStr} {allowedPkgStr}"
+  if conjuncts.isEmpty then
+    return .error s!"EMPTY_OBEYS_SIG: {pkg} synthesized zero conjuncts"
+  let body := String.intercalate " ∧\n    " conjuncts.toList
+  return .ok s!"namespace {pkg}.Proofs\n\ntheorem obeys_model :\n    {body}\n\nend {pkg}.Proofs"
+
 private def auditManifestAndWiring (env : Environment) (manifest : PackageManifest) : IO ManifestAuditReport := do
   let knownPkgs := discoverDagPackages env.header.moduleNames
   let mut hardErrors : Array String := #[]
   let mut modelPresenceObs : Std.HashMap String String := {}
   let mut middleHookObs : Std.HashMap String String := {}
+  let mut obeysSynthObs : Std.HashMap String String := {}
   let mut checkedModelPkgs : Nat := 0
   let mut checkedWiredPkgs : Nat := 0
+  let mut checkedSynthPkgs : Nat := 0
   let mut modSet : Std.HashSet Name := {}
   for m in env.header.moduleNames do
     modSet := modSet.insert m
@@ -3492,16 +4387,26 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
           hardErrors := hardErrors.push s!"FORBIDDEN_EXTERN_IN_NON_BOUNDARY: {c.name} in {m} (unregistered package {pkg})"
 
   let ctx : Core.Context := { fileName := "<CheckPromises.ManifestWiring>", fileMap := default, maxHeartbeats := 0 }
-  let ((metaHardErrs, metaModelObs, metaHookObs, metaModelCnt, metaWiredCnt), _) ← (Meta.MetaM.run' do
+  let ((metaHardErrs, metaModelObs, metaHookObs, metaSynthObs, metaModelCnt, metaWiredCnt, metaSynthCnt), _) ← (Meta.MetaM.run' do
     let mut mHard : Array String := #[]
     let mut mModelObs : Std.HashMap String String := {}
     let mut mHookObs : Std.HashMap String String := {}
+    let mut mSynthObs : Std.HashMap String String := {}
     let mut mModelCnt : Nat := 0
     let mut mWiredCnt : Nat := 0
+    let mut mSynthCnt : Nat := 0
     let mut axCache : AxCache := {}
 
     for pkg in sortedPkgs do
       let some spec := manifest.packages.get? pkg | continue
+      if spec.kind == "property" then
+        mSynthCnt := mSynthCnt + 1
+        let (propErrs, nextAx) ← auditPropertyObeysSynthesis env spec axCache
+        axCache := nextAx
+        let synthKey := s!"OBEYS_SYNTH|{pkg}"
+        for pe in propErrs do
+          mSynthObs := recordManifestObs mSynthObs synthKey pe
+        continue
       if spec.kind != "model" then continue
       mModelCnt := mModelCnt + 1
       let ifaceMod := Name.str pkg "Interface"
@@ -3511,7 +4416,8 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
 
       if !modSet.contains ifaceMod then
         mHard := mHard.push s!"MANIFEST_MISSING_INTERFACE: {pkg} lacks {ifaceMod}"
-      if !modSet.contains modelMod then
+      let hasModelMod := modSet.contains modelMod
+      if !hasModelMod then
         let k := s!"MISSING_MODEL|{pkg}"
         mModelObs := recordManifestObs mModelObs k s!"MANIFEST_MISSING_MODEL: {pkg} lacks {modelMod}"
 
@@ -3601,6 +4507,12 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
             return (cErrs, sfs)
           mHard := mHard ++ conjErrs
           stepFromConjs := sfConjs
+          if hasModelMod && modSet.contains ifaceMod then
+            mSynthCnt := mSynthCnt + 1
+            let synthErrs ← auditModelObeysSynthesis env knownPkgs spec (ifaceHasPrivateExtern.contains pkg) thmName tv.type
+            let synthKey := s!"OBEYS_SYNTH|{pkg}"
+            for se in synthErrs do
+              mSynthObs := recordManifestObs mSynthObs synthKey se
         | _ =>
           mHard := mHard.push s!"INVALID_OBEYS_MODEL_DECL: {thmName} must be a theorem in {proofsMod}"
 
@@ -3681,18 +4593,20 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
               mHookObs := recordManifestObs mHookObs hookKey
                 s!"MIDDLE_HOOK_VIOLATION: {defApiName} delegates to {defMk} which is not proven in {thmLabel}"
 
-    return (mHard, mModelObs, mHookObs, mModelCnt, mWiredCnt)
+    return (mHard, mModelObs, mHookObs, mSynthObs, mModelCnt, mWiredCnt, mSynthCnt)
   ).toIO ctx { env }
 
   hardErrors := hardErrors ++ metaHardErrs
   modelPresenceObs := metaModelObs
   middleHookObs := metaHookObs
+  obeysSynthObs := metaSynthObs
   checkedModelPkgs := metaModelCnt
   checkedWiredPkgs := metaWiredCnt
-  return { hardErrors, modelPresenceObs, middleHookObs, checkedModelPkgs, checkedWiredPkgs }
+  checkedSynthPkgs := metaSynthCnt
+  return { hardErrors, modelPresenceObs, middleHookObs, obeysSynthObs, checkedModelPkgs, checkedWiredPkgs, checkedSynthPkgs }
 
 private def evaluateManifestRatchetWith
-    (allowModelPresence allowMiddleHook : Array String)
+    (allowModelPresence allowMiddleHook allowObeysSynth : Array String)
     (rep : ManifestAuditReport) : Array String := Id.run do
   let mut errs : Array String := rep.hardErrors
   let mut modelAllowSet : Std.HashSet String := {}
@@ -3720,16 +4634,33 @@ private def evaluateManifestRatchetWith
   for entry in allowMiddleHook do
     if !rep.middleHookObs.contains entry then
       errs := errs.push s!"STALE_MIDDLE_HOOK_ALLOWLIST: {entry} no longer occurs; remove it from middleHookAllowlist"
+
+  let mut synthAllowSet : Std.HashSet String := {}
+  for entry in allowObeysSynth do
+    if synthAllowSet.contains entry then
+      errs := errs.push s!"DUPLICATE_OBEYS_SYNTH_ALLOWLIST: {entry}"
+    synthAllowSet := synthAllowSet.insert entry
+  let obsSynthKeys := (rep.obeysSynthObs.toList.map (·.1)).toArray.qsort (· < ·)
+  for k in obsSynthKeys do
+    if !synthAllowSet.contains k then
+      errs := errs.push s!"OBEYS_SYNTH_MISMATCH: {rep.obeysSynthObs.getD k k} [key={k}]"
+  for entry in allowObeysSynth do
+    if !rep.obeysSynthObs.contains entry then
+      errs := errs.push s!"STALE_OBEYS_SYNTH_ALLOWLIST: {entry} no longer occurs; remove it from obeysSynthAllowlist"
   return errs
 
 private def evaluateManifestRatchet (rep : ManifestAuditReport) : Array String :=
-  evaluateManifestRatchetWith modelPresenceAllowlist middleHookAllowlist rep
+  evaluateManifestRatchetWith modelPresenceAllowlist middleHookAllowlist obeysSynthAllowlist rep
 
 /-- Audit compiled `.olean` artifacts reachable from `LeanSwe` for promise coverage. -/
 unsafe def main (args : List String) : IO UInt32 := do
   if args.head? == some "--internal-manifest-audit" then
     match args.drop 1 with
-    | [libDirStr, manifestPathStr, rootsCsv, modelAllowCsv, hookAllowCsv] =>
+    | [libDirStr, manifestPathStr, rootsCsv, modelAllowCsv, hookAllowCsv]
+    | [libDirStr, manifestPathStr, rootsCsv, modelAllowCsv, hookAllowCsv, _] =>
+      let synthAllowCsv := match args.drop 6 with
+        | s :: _ => s
+        | [] => ""
       let libDir : System.FilePath := libDirStr
       let manifestRaw ← IO.FS.readFile manifestPathStr
       match parsePackageManifest manifestRaw with
@@ -3740,18 +4671,80 @@ unsafe def main (args : List String) : IO UInt32 := do
         let rootMods := (rootsCsv.splitOn ",").filter (!·.isEmpty) |>.toArray.map (·.toName)
         let allowModel := if modelAllowCsv.isEmpty then #[] else (modelAllowCsv.splitOn ";").filter (!·.isEmpty) |>.toArray
         let allowHook := if hookAllowCsv.isEmpty then #[] else (hookAllowCsv.splitOn ";").filter (!·.isEmpty) |>.toArray
+        let allowSynth := if synthAllowCsv.isEmpty then #[] else (synthAllowCsv.splitOn ";").filter (!·.isEmpty) |>.toArray
         initSearchPath (← findSysroot) [libDir]
         enableInitializersExecution
         let testEnv ← importModules (rootMods.map fun m => { module := m }) {} (loadExts := true)
         let rep ← auditManifestAndWiring testEnv manifest
-        let errs := evaluateManifestRatchetWith allowModel allowHook rep
-        IO.println s!"MANIFEST_AUDIT_TEST: model_pkgs={rep.checkedModelPkgs} wired_pkgs={rep.checkedWiredPkgs} model_obs={rep.modelPresenceObs.size} hook_obs={rep.middleHookObs.size} hard_errs={rep.hardErrors.size} errors={errs.size}"
+        let errs := evaluateManifestRatchetWith allowModel allowHook allowSynth rep
+        IO.println s!"MANIFEST_AUDIT_TEST: model_pkgs={rep.checkedModelPkgs} wired_pkgs={rep.checkedWiredPkgs} synth_pkgs={rep.checkedSynthPkgs} model_obs={rep.modelPresenceObs.size} hook_obs={rep.middleHookObs.size} synth_obs={rep.obeysSynthObs.size} hard_errs={rep.hardErrors.size} errors={errs.size}"
         for e in errs do
           IO.eprintln e
         testEnv.freeRegions
         return if errs.isEmpty then 0 else 1
     | _ =>
-      IO.eprintln "USAGE_ERROR: --internal-manifest-audit <libDir> <manifestPath> <rootsCsv> <modelAllowCsv> <hookAllowCsv>"
+      IO.eprintln "USAGE_ERROR: --internal-manifest-audit <libDir> <manifestPath> <rootsCsv> <modelAllowCsv> <hookAllowCsv> [synthAllowCsv]"
+      return 1
+  if args.head? == some "--internal-print-obeys-sig" then
+    match args.drop 1 with
+    | [libDirStr, manifestPathStr, rootsCsv, pkgStr] =>
+      let libDir : System.FilePath := libDirStr
+      let manifestRaw ← IO.FS.readFile manifestPathStr
+      match parsePackageManifest manifestRaw with
+      | .error err =>
+        IO.eprintln err
+        return 1
+      | .ok manifest =>
+        let rootMods := (rootsCsv.splitOn ",").filter (!·.isEmpty) |>.toArray.map (·.toName)
+        initSearchPath (← findSysroot) [libDir]
+        enableInitializersExecution
+        let sigEnv ← importModules (rootMods.map fun m => { module := m }) {} (loadExts := true)
+        let ctx : Core.Context := { fileName := "<CheckPromises.PrintSig>", fileMap := default, maxHeartbeats := 0 }
+        let (res, _) ← (Meta.MetaM.run' (renderSynthesizedObeysSig sigEnv manifest pkgStr.toName)).toIO ctx { env := sigEnv }
+        match res with
+        | .ok sigText =>
+          IO.println sigText
+          return 0
+        | .error err =>
+          IO.eprintln err
+          return 1
+    | _ =>
+      IO.eprintln "USAGE_ERROR: --internal-print-obeys-sig <libDir> <manifestPath> <rootsCsv> <Pkg>"
+      return 1
+  if args.head? == some "--print-obeys-sig" then
+    match args.drop 1 with
+    | pkgStr :: rest =>
+      if rest.length > 2 then
+        IO.eprintln "USAGE_ERROR: --print-obeys-sig <Pkg> [libDir] [repoDir]"
+        return 1
+      let libDir : System.FilePath := match rest with
+        | a :: _ => a
+        | [] => ".lake/build/lib/lean"
+      let repoDir : System.FilePath := match rest with
+        | [_, b] => b
+        | _ => "."
+      unless ← (libDir / "LeanSwe.olean").pathExists do
+        IO.eprintln s!"MISSING_OLEAN: LeanSwe ({libDir / "LeanSwe.olean"})"
+        return 1
+      match ← loadPackageManifest repoDir with
+      | .error err =>
+        IO.eprintln err
+        return 1
+      | .ok manifest =>
+        initSearchPath (← findSysroot) [libDir]
+        enableInitializersExecution
+        let sigEnv ← importModules #[{ module := `LeanSwe }] {} (loadExts := true)
+        let ctx : Core.Context := { fileName := "<CheckPromises.PrintSig>", fileMap := default, maxHeartbeats := 0 }
+        let (res, _) ← (Meta.MetaM.run' (renderSynthesizedObeysSig sigEnv manifest pkgStr.toName)).toIO ctx { env := sigEnv }
+        match res with
+        | .ok sigText =>
+          IO.println sigText
+          return 0
+        | .error err =>
+          IO.eprintln err
+          return 1
+    | [] =>
+      IO.eprintln "USAGE_ERROR: --print-obeys-sig <Pkg> [libDir] [repoDir]"
       return 1
   let isWorker := args.head? == some "--internal-postfork-worker"
   let args0 := if isWorker then args.drop 1 else args
@@ -4318,7 +5311,7 @@ unsafe def main (args : List String) : IO UInt32 := do
     | .ok manifest =>
       let manifestRep ← auditManifestAndWiring env manifest
       let mErrs := evaluateManifestRatchet manifestRep
-      IO.println s!"MANIFEST_WIRING_CHECK: model_pkgs={manifestRep.checkedModelPkgs} wired_pkgs={manifestRep.checkedWiredPkgs} model_obs={manifestRep.modelPresenceObs.size} model_allow={modelPresenceAllowlist.size} hook_obs={manifestRep.middleHookObs.size} hook_allow={middleHookAllowlist.size} hard_errs={manifestRep.hardErrors.size} errors={mErrs.size}"
+      IO.println s!"MANIFEST_WIRING_CHECK: model_pkgs={manifestRep.checkedModelPkgs} wired_pkgs={manifestRep.checkedWiredPkgs} synth_pkgs={manifestRep.checkedSynthPkgs} model_obs={manifestRep.modelPresenceObs.size} model_allow={modelPresenceAllowlist.size} hook_obs={manifestRep.middleHookObs.size} hook_allow={middleHookAllowlist.size} synth_obs={manifestRep.obeysSynthObs.size} synth_allow={obeysSynthAllowlist.size} hard_errs={manifestRep.hardErrors.size} errors={mErrs.size}"
       pure mErrs
 
   let specModCount := sCnt1 + sCnt2
