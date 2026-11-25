@@ -40,6 +40,16 @@ Checks:
      exported `refines_model` / `obeys_model` theorem signatures, or in qualifying `AllPass` /
      `CanReach` theorem signatures, enforced with a strict shrinking ratchet allowlist (fails on
      both new violations and stale allowlist entries).
+7. Manifest-driven (`scripts/package_manifest.json`) `obeys_model` presence/non-vacuity audit and
+   generalized `.olean` wiring / middle-hook ban across all `kind == "model"` packages:
+   - Complete parity between compiled `LeanSwe` packages and `scripts/package_manifest.json`.
+   - Strict `@[extern]` boundary discipline (forbidden when `external_boundary == false`; must be
+     `private` in `<Pkg>.Interface` for production modules when `external_boundary == true`).
+   - Presence, standard-axioms, unconditionality, and non-vacuity checks on `<Pkg>.Model` and
+     `<Pkg>.Proofs.obeys_model` / `<Pkg>.Proofs.refines_model` (exact shrinking
+     `modelPresenceAllowlist`).
+   - Generalized `.olean` wiring and capability-type provenance audit banning same-package
+     un-fuzzed middle hooks in composite packages (exact shrinking `middleHookAllowlist`).
 -/
 
 open Lean Meta
@@ -3047,10 +3057,706 @@ private def evaluateDagRatchetWith
 private def evaluateDagRatchet (rep : DagAuditReport) : Array String :=
   evaluateDagRatchetWith importDagAllowlist sigProofConstAllowlist rep
 
+private structure ManifestPkgSpec where
+  name : Name
+  kind : String
+  purity : String
+  deps : Array Name
+  externalBoundary : Bool
+  fuzzSuite? : Option String := none
+  specStyle? : Option String := none
+  deriving Inhabited
+
+private structure PackageManifest where
+  version : Nat
+  packages : Std.HashMap Name ManifestPkgSpec
+  deriving Inhabited
+
+private def parsePackageManifest (raw : String) : Except String PackageManifest := do
+  let json ← Lean.Json.parse raw |>.mapError (fun e => s!"MANIFEST_SCHEMA_ERROR: invalid JSON ({e})")
+  let ver ← match json.getObjVal? "version" with
+    | .ok (.num n) =>
+      if n.exponent == 0 && n.mantissa >= 0 then pure n.mantissa.toNat
+      else .error "MANIFEST_SCHEMA_ERROR: 'version' must be a natural number"
+    | _ => .error "MANIFEST_SCHEMA_ERROR: missing numeric 'version'"
+  if ver != 1 then
+    .error s!"MANIFEST_SCHEMA_ERROR: unsupported version {ver} (expected 1)"
+  let pkgsJson ← json.getObjVal? "packages" |>.mapError (fun _ => "MANIFEST_SCHEMA_ERROR: missing 'packages' object")
+  let .obj pkgsObj := pkgsJson | .error "MANIFEST_SCHEMA_ERROR: 'packages' must be an object"
+  let mut pkgs : Std.HashMap Name ManifestPkgSpec := {}
+  for (pkgStr, entry) in pkgsObj do
+    let pkgName := pkgStr.toName
+    let kind ← entry.getObjValAs? String "kind"
+      |>.mapError (fun _ => s!"MANIFEST_SCHEMA_ERROR: {pkgStr} missing string 'kind'")
+    if kind != "model" && kind != "support" && kind != "property" then
+      .error s!"MANIFEST_SCHEMA_ERROR: {pkgStr} has invalid kind '{kind}'"
+    let purity ← entry.getObjValAs? String "purity"
+      |>.mapError (fun _ => s!"MANIFEST_SCHEMA_ERROR: {pkgStr} missing string 'purity'")
+    if purity != "pure" && purity != "nondet_io" && purity != "mixed" && purity != "types_only" then
+      .error s!"MANIFEST_SCHEMA_ERROR: {pkgStr} has invalid purity '{purity}'"
+    let extB ← entry.getObjValAs? Bool "external_boundary"
+      |>.mapError (fun _ => s!"MANIFEST_SCHEMA_ERROR: {pkgStr} missing bool 'external_boundary'")
+    if purity == "pure" && extB then
+      .error s!"MANIFEST_SCHEMA_ERROR: {pkgStr} cannot be both purity='pure' and external_boundary=true"
+    let depsJson ← entry.getObjVal? "deps"
+      |>.mapError (fun _ => s!"MANIFEST_SCHEMA_ERROR: {pkgStr} missing array 'deps'")
+    let .arr depsArr := depsJson | .error s!"MANIFEST_SCHEMA_ERROR: {pkgStr} 'deps' must be an array"
+    let mut deps : Array Name := #[]
+    for d in depsArr do
+      match d.getStr? with
+      | .ok ds => deps := deps.push ds.toName
+      | .error _ => .error s!"MANIFEST_SCHEMA_ERROR: {pkgStr} 'deps' entry must be a string"
+    let fuzzSuite? := (entry.getObjValAs? String "fuzz_suite").toOption
+    let specStyle? := (entry.getObjValAs? String "spec_style").toOption
+    pkgs := pkgs.insert pkgName {
+      name := pkgName
+      kind := kind
+      purity := purity
+      deps := deps
+      externalBoundary := extB
+      fuzzSuite? := fuzzSuite?
+      specStyle? := specStyle?
+    }
+  return { version := ver, packages := pkgs }
+
+private def loadPackageManifest (repoDir : System.FilePath) : IO (Except String PackageManifest) := do
+  let path := repoDir / "scripts" / "package_manifest.json"
+  unless ← path.pathExists do
+    return .error s!"MANIFEST_MISSING: {path} not found"
+  let raw ← IO.FS.readFile path
+  return parsePackageManifest raw
+
+/-- Exact shrinking ratchet allowlist of `kind == "model"` packages lacking `<Pkg>.Model` or
+`<Pkg>.Proofs.{obeys_model,refines_model}` at `5304439`. Fails on both new missing specs and
+stale entries as follow-up PRs land. -/
+private def modelPresenceAllowlist : Array String := #[
+  "MISSING_MODEL|LeanSwe.Json",
+  "MISSING_OBEYS_MODEL|LeanSwe.Compress",
+  "MISSING_OBEYS_MODEL|LeanSwe.CryptoHash.Raw",
+  "MISSING_OBEYS_MODEL|LeanSwe.EnvVars.Raw",
+  "MISSING_OBEYS_MODEL|LeanSwe.Git",
+  "MISSING_OBEYS_MODEL|LeanSwe.Json",
+  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Dns",
+  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Files",
+  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Net",
+  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Passwd",
+  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Poll",
+  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Process",
+  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Sandbox",
+  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.TimeRand",
+  "MISSING_OBEYS_MODEL|LeanSwe.PostFork",
+  "MISSING_OBEYS_MODEL|LeanSwe.ProcessSandbox",
+  "MISSING_OBEYS_MODEL|LeanSwe.ProcessSandbox.Raw",
+  "MISSING_OBEYS_MODEL|LeanSwe.Sqlite.Raw"
+]
+
+/-- Exact shrinking ratchet allowlist of non-pure zero-`@[extern]` packages currently wiring
+through a same-package un-fuzzed middle hook (`SysBridge.defaultOps`, `ScopedProxyOpsM`,
+`CliOpsM`, `ScopedRawFsOpsM`, `RelayRawOps`, `defaultRawOps`) instead of imported `manifest.deps`
+capabilities. -/
+private def middleHookAllowlist : Array String := #[
+  "MIDDLE_HOOK|LeanSwe.CmdLine",
+  "MIDDLE_HOOK|LeanSwe.ConnectProxy",
+  "MIDDLE_HOOK|LeanSwe.Fs",
+  "MIDDLE_HOOK|LeanSwe.Git",
+  "MIDDLE_HOOK|LeanSwe.NetRelay",
+  "MIDDLE_HOOK|LeanSwe.Process",
+  "MIDDLE_HOOK|LeanSwe.ProcessSandbox.Raw"
+]
+
+private structure ManifestAuditReport where
+  hardErrors : Array String := #[]
+  modelPresenceObs : Std.HashMap String String := {}
+  middleHookObs : Std.HashMap String String := {}
+  checkedModelPkgs : Nat := 0
+  checkedWiredPkgs : Nat := 0
+
+private def recordManifestObs (m : Std.HashMap String String) (key msg : String) :
+    Std.HashMap String String :=
+  match m.get? key with
+  | some prev => if prev == msg then m else m.insert key s!"{prev}; {msg}"
+  | none => m.insert key msg
+
+private def modOfConst (env : Environment) (c : Name) : Name :=
+  env.getModuleIdxFor? c |>.bind (env.header.moduleNames[·]?) |>.getD .anonymous
+
+private def isAllowedCoreRuntimeCap (c : Name) : Bool :=
+  c == `Core.ioConcOps
+
+private def isDepDefaultCap (depSet : Std.HashSet Name) (c : Name) : Bool :=
+  let s := c.getString!
+  (s == "defaultApi" || s == "defaultOps") && depSet.contains c.getPrefix
+
+private def isKnownContractPredHead (fn : Name) : Bool :=
+  fn == `Core.ObeysPure || fn == `Core.ObeysPure2 || fn == `Core.ObeysPure3 || fn == `Core.ObeysPure4 ||
+    fn == `Core.ObeysPureEq || fn == `Core.ObeysPureEq2 || fn == `Core.ObeysPureEq3 || fn == `Core.ObeysPureEq4 ||
+    fn == `Core.ObeysPureEqUpToErrMsg || fn == `Core.ObeysPureEqUpToErrMsg2 ||
+    fn == `Core.ObeysPureEqUpToErrMsg3 || fn == `Core.ObeysPureEqUpToErrMsg4 ||
+    fn == `Core.ObeysInverseRender || fn == `Core.ObeysStep || fn == `Core.ObeysStepId ||
+    fn == `Core.ObeysStepFrom || fn == `Core.ObeysStepFromFinally || fn == `Core.ObeysStepFrom2 ||
+    fn == `Core.RefinesPure || fn == `Core.RefinesPure2 || fn == `Core.RefinesPure3 || fn == `Core.RefinesPure4 ||
+    fn == `Core.RefinesPureEq || fn == `Core.RefinesPureEq2 || fn == `Core.RefinesPureEq3 || fn == `Core.RefinesPureEq4 ||
+    fn == `Core.RefinesStep || fn == `Core.RefinesStepId ||
+    fn == `Core.RefinesStepFrom || fn == `Core.RefinesStepFromFinally || fn == `Core.RefinesStepFrom2
+
+private def isTrivialTruePred (env : Environment) (e : Expr) : Bool :=
+  let b := (peelLambdas e).consumeMData
+  if b.isConstOf ``True then true
+  else match b.getAppFn.consumeMData with
+    | .const fn _ =>
+      match env.find? fn with
+      | some (.defnInfo dv) => (peelLambdas dv.value).consumeMData.isConstOf ``True
+      | _ => false
+    | _ => false
+
+private def isTrivialFalsePred (env : Environment) (e : Expr) : Bool :=
+  let b := (peelLambdas e).consumeMData
+  if b.isConstOf ``False then true
+  else match b.getAppFn.consumeMData with
+    | .const fn _ =>
+      match env.find? fn with
+      | some (.defnInfo dv) => (peelLambdas dv.value).consumeMData.isConstOf ``False
+      | _ => false
+    | _ => false
+
+private def isTrivialFalseBoolFn (env : Environment) (e : Expr) : Bool :=
+  let b := (peelLambdas e).consumeMData
+  if b.isConstOf ``Bool.false then true
+  else match b.getAppFn.consumeMData with
+    | .const fn _ =>
+      match env.find? fn with
+      | some (.defnInfo dv) => (peelLambdas dv.value).consumeMData.isConstOf ``Bool.false
+      | _ => false
+    | _ => false
+
+private def declTypeTouchesConcreteIo (ty : Expr) : MetaM Bool :=
+  Meta.forallTelescopeReducing ty fun xs ret => do
+    let retW ← Meta.withTransparency .reducible (Meta.whnf ret)
+    if typeMentionsIOEffect retW || retW.getUsedConstants.contains ``IO then
+      return true
+    for x in xs do
+      let xTyW ← Meta.withTransparency .reducible (Meta.whnf (← Meta.inferType x))
+      if typeMentionsIOEffect xTyW || xTyW.getUsedConstants.contains ``IO then
+        return true
+    return false
+
+private def exprDelegatesToCanonicalDefault
+    (env : Environment) (defApiName defOpsName : Name) (e : Expr) : Bool :=
+  let body := (peelLambdas (etaReduceExpr e)).consumeMData
+  let isCanonTarget (t : Expr) : Bool :=
+    let tc := t.consumeMData
+    tc.isConstOf defApiName || tc.isConstOf defOpsName
+  let fn := body.getAppFn.consumeMData
+  let args := body.getAppArgs
+  let headOk := match fn with
+    | .proj _ _ s => isCanonTarget s
+    | .const fnName _ => env.isProjectionFn fnName && args.any isCanonTarget
+    | _ => false
+  if !headOk then false
+  else
+    e.getUsedConstants.all fun u =>
+      if u == defApiName || u == defOpsName || env.isProjectionFn u then true
+      else
+        let m := modOfConst env u
+        m.getRoot != `LeanSwe ||
+          match env.find? u with
+          | some (.inductInfo _) | some (.ctorInfo _) => true
+          | _ => m.components.contains `Types || m.components.contains `Model
+
+private def checkConcreteIoInterfaceDecls
+    (env : Environment) (pkg ifaceMod defApiName defOpsName : Name) : MetaM (Array String) := do
+  let some idx := env.header.moduleNames.findIdx? (· == ifaceMod) | return #[]
+  let some data := env.header.moduleData[idx]? | return #[]
+  let mut errs : Array String := #[]
+  for c in data.constants do
+    let .defnInfo dv := c | continue
+    if isPrivateOrInternal c.name || env.isProjectionFn c.name then continue
+    if c.name == defApiName || c.name == defOpsName then continue
+    if ← declTypeTouchesConcreteIo dv.type then
+      if dv.safety != .safe || !exprDelegatesToCanonicalDefault env defApiName defOpsName dv.value then
+        errs := errs.push s!"MIDDLE_HOOK_VIOLATION: {c.name} in {ifaceMod} exposes concrete IO without delegating directly to {pkg}.defaultApi/defaultOps"
+  return errs
+
+private def extractStepFromConj? (ab : Expr) : Option (Name × Array Expr × Expr) :=
+  if ab.isAppOfArity `Core.ObeysStepFrom 16 || ab.isAppOfArity `Core.RefinesStepFrom 16 ||
+      ab.isAppOfArity `Core.ObeysStepFromFinally 16 || ab.isAppOfArity `Core.RefinesStepFromFinally 16 then
+    let a := ab.getAppArgs
+    match (etaReduceExpr a[13]!).consumeMData.getAppFn.consumeMData with
+    | .const mkFn _ => some (mkFn, #[a[2]!], a[3]!)
+    | _ => none
+  else if ab.isAppOfArity `Core.ObeysStepFrom2 21 || ab.isAppOfArity `Core.RefinesStepFrom2 21 then
+    let a := ab.getAppArgs
+    match (etaReduceExpr a[18]!).consumeMData.getAppFn.consumeMData with
+    | .const mkFn _ => some (mkFn, #[a[2]!, a[3]!], a[4]!)
+    | _ => none
+  else
+    none
+
+private def unfoldThinIfaceBuilder (env : Environment) (pkg c : Name) : Name :=
+  if modOfConst env c == Name.str pkg "Interface" then
+    match env.find? c with
+    | some (.defnInfo dv) =>
+      match (peelLambdas (etaReduceExpr dv.value)).consumeMData.getAppFn.consumeMData with
+      | .const tgt _ =>
+        if modOfConst env tgt == Name.str pkg "Impl" && tgt.getString!.startsWith "mk" then tgt else c
+      | _ => c
+    | _ => c
+  else c
+
+private def isPkgBuilderConst (env : Environment) (pkg c : Name) : Bool :=
+  let m := modOfConst env c
+  let s := c.getString!
+  s.startsWith "mk" &&
+    ((m == Name.str pkg "Impl" && (c.components.contains `Internal || c.components.contains `Impl)) ||
+      (m == Name.str pkg "Interface" && (c.components.contains `Internal || unfoldThinIfaceBuilder env pkg c != c)))
+
+private def isPureCapContainerCtor (env : Environment) (pkg ctorName : Name) : Bool :=
+  match env.find? ctorName with
+  | some (.ctorInfo ci) =>
+    if !Lean.isStructure env ci.induct then false
+    else
+      let m := modOfConst env ci.induct
+      let typesMod := Name.str pkg "Types"
+      let modelMod := Name.str pkg "Model"
+      m == typesMod || m == modelMod ||
+        m.toString.startsWith (typesMod.toString ++ ".") ||
+        m.toString.startsWith (modelMod.toString ++ ".")
+  | _ => false
+
+private def collectNonTypeNonInstArgs (env : Environment) (fnConst : Name) (args : Array Expr) :
+    MetaM (Array Expr) := do
+  let some ci := env.find? fnConst | return args
+  Meta.forallTelescopeReducing ci.type fun xs _ => do
+    let mut out : Array Expr := #[]
+    let n := min xs.size args.size
+    for i in [0 : n] do
+      let x := xs[i]!
+      let bi ← x.fvarId!.getBinderInfo
+      if bi == .instImplicit then continue
+      let xTy ← Meta.inferType x
+      if ← Meta.isTypeFormerType xTy then continue
+      if ← Meta.isProp xTy then continue
+      out := out.push args[i]!
+    return out
+
+private partial def checkCompositeCapArg
+    (env : Environment) (pkg : Name) (depSet : Std.HashSet Name)
+    (allowSelfDefaultOps : Bool) (fuel : Nat) (rawArg : Expr) : MetaM (Except String Unit) := do
+  let e := (etaReduceExpr rawArg).consumeMData
+  match e with
+  | .const c _ =>
+    if isDepDefaultCap depSet c then return .ok ()
+    else if isAllowedCoreRuntimeCap c then return .ok ()
+    else if allowSelfDefaultOps && c == Name.str pkg "defaultOps" then return .ok ()
+    else if c.toString.startsWith (pkg.toString ++ ".") then
+      return .error s!"same-package middle hook {c} passed to {pkg} builder"
+    else
+      return .error s!"unmanifested or non-canonical capability {c} passed to {pkg} builder"
+  | _ =>
+    if fuel == 0 then
+      return .error s!"capability container nesting exceeded in {pkg}"
+    let hd := e.getAppFn.consumeMData
+    let args := e.getAppArgs
+    match hd with
+    | .const ctorName _ =>
+      if isPureCapContainerCtor env pkg ctorName then
+        let valArgs ← collectNonTypeNonInstArgs env ctorName args
+        if valArgs.isEmpty then
+          return .error s!"empty capability container {ctorName} in {pkg}"
+        for va in valArgs do
+          match ← checkCompositeCapArg env pkg depSet allowSelfDefaultOps (fuel - 1) va with
+          | .ok () => pure ()
+          | .error err => return .error err
+        return .ok ()
+      else
+        return .error s!"same-package or ad-hoc adapter {ctorName} passed to {pkg} builder"
+    | _ =>
+      return .error s!"non-canonical expression (lambda/adapter) passed to {pkg} builder"
+
+private def checkCompositeDefaultDef
+    (env : Environment) (pkg : Name) (depSet : Std.HashSet Name)
+    (allowSelfDefaultOps : Bool) (defName : Name) : MetaM (Except String Name) := do
+  let some (.defnInfo dv) := env.find? defName
+    | return .error s!"missing definition {defName}"
+  if dv.safety != .safe then
+    return .error s!"{defName} must be safe"
+  if modOfConst env defName != Name.str pkg "Interface" then
+    return .error s!"{defName} must be defined in {pkg}.Interface"
+  let body := dv.value.consumeMData
+  let hd := body.getAppFn.consumeMData
+  let args := body.getAppArgs
+  let .const mkFn _ := hd
+    | return .error s!"{defName} does not apply an Internal.mk* builder"
+  if !isPkgBuilderConst env pkg mkFn then
+    return .error s!"{defName} calls {mkFn} instead of a {pkg}.Internal.mk* builder"
+  let valArgs ← collectNonTypeNonInstArgs env mkFn args
+  if valArgs.isEmpty then
+    return .error s!"{defName} calls {mkFn} with zero capability arguments"
+  for va in valArgs do
+    match ← checkCompositeCapArg env pkg depSet allowSelfDefaultOps 4 va with
+    | .ok () => pure ()
+    | .error err => return .error s!"{defName}: {err}"
+  return .ok mkFn
+
+private def extractCapTypeHead? (e : Expr) : MetaM (Option Name) := do
+  let body := (peelLambdas e).consumeMData
+  match body.getAppFn.consumeMData with
+  | .const n _ => return some n
+  | _ =>
+    let w ← Meta.withTransparency .reducible (Meta.whnf body)
+    return w.consumeMData.getAppFn.consumeMData.constName?
+
+private partial def isAllowedCapType
+    (env : Environment) (knownPkgs : Array Name) (pkg : Name)
+    (depSet provenSelfCapTypes : Std.HashSet Name) (fuel : Nat) (tyExpr : Expr) : MetaM Bool := do
+  let some tyName ← extractCapTypeHead? tyExpr | return false
+  let tyMod := modOfConst env tyName
+  if tyMod.getRoot == `Core then return true
+  let tyPkg := dagPkgOf knownPkgs tyMod
+  if depSet.contains tyPkg then return true
+  if provenSelfCapTypes.contains tyName then return true
+  if tyPkg == pkg && fuel > 0 then
+    if Lean.isStructure env tyName then
+      let some sInfo := Lean.getStructureInfo? env tyName | return false
+      if sInfo.fieldInfo.isEmpty then return false
+      for fi in sInfo.fieldInfo do
+        let some pInfo := env.find? fi.projFn | return false
+        let fieldOk ← Meta.forallTelescope pInfo.type fun _ ret =>
+          isAllowedCapType env knownPkgs pkg depSet provenSelfCapTypes (fuel - 1) ret
+        if !fieldOk then return false
+      return true
+    else if let some (.defnInfo dv) := env.find? tyName then
+      return ← isAllowedCapType env knownPkgs pkg depSet provenSelfCapTypes (fuel - 1) dv.value
+  return false
+
+private def reachesOwnPrivateExtern (env : Environment) (ifaceMod root : Name) : Bool := Id.run do
+  let mut q : Array Name := #[root]
+  let mut seen : Std.HashSet Name := {}
+  while !q.isEmpty do
+    let cur := q.back!
+    q := q.pop
+    if seen.contains cur then continue
+    seen := seen.insert cur
+    let cMod := modOfConst env cur
+    if cMod != ifaceMod then continue
+    if isPrivateName cur && (getExternAttrData? env cur).isSome then
+      return true
+    match env.find? cur with
+    | some (.defnInfo dv) =>
+      for u in dv.value.getUsedConstants do
+        if !seen.contains u then q := q.push u
+    | _ => pure ()
+  return false
+
+private def auditManifestAndWiring (env : Environment) (manifest : PackageManifest) : IO ManifestAuditReport := do
+  let knownPkgs := discoverDagPackages env.header.moduleNames
+  let mut hardErrors : Array String := #[]
+  let mut modelPresenceObs : Std.HashMap String String := {}
+  let mut middleHookObs : Std.HashMap String String := {}
+  let mut checkedModelPkgs : Nat := 0
+  let mut checkedWiredPkgs : Nat := 0
+  let mut modSet : Std.HashSet Name := {}
+  for m in env.header.moduleNames do
+    modSet := modSet.insert m
+
+  for kPkg in knownPkgs do
+    if !manifest.packages.contains kPkg then
+      hardErrors := hardErrors.push s!"MANIFEST_UNREGISTERED_PACKAGE: {kPkg} is compiled in LeanSwe but missing from scripts/package_manifest.json"
+  let sortedPkgs := (manifest.packages.toList.map (·.1)).toArray.qsort (fun a b => a.toString < b.toString)
+  for pkg in sortedPkgs do
+    let pfxStr := pkg.toString ++ "."
+    let hasAnyMod := env.header.moduleNames.any fun m => m == pkg || m.toString.startsWith pfxStr
+    if !hasAnyMod then
+      hardErrors := hardErrors.push s!"MANIFEST_ORPHAN_PACKAGE: {pkg} in scripts/package_manifest.json has no compiled modules in LeanSwe"
+
+  let mut ifaceHasPrivateExtern : Std.HashSet Name := {}
+  for h : i in [0 : env.header.moduleNames.size] do
+    let m := env.header.moduleNames[i]
+    if m.getRoot != `LeanSwe || m == `LeanSwe then continue
+    let pkg := dagPkgOf knownPkgs m
+    let role := dagRoleOf knownPkgs m
+    if role == .runtimeTests || role == .specMutants then continue
+    let some data := env.header.moduleData[i]? | continue
+    let spec? := manifest.packages.get? pkg
+    for c in data.constants do
+      if (getExternAttrData? env c.name).isSome then
+        match spec? with
+        | some spec =>
+          if !spec.externalBoundary then
+            hardErrors := hardErrors.push s!"FORBIDDEN_EXTERN_IN_NON_BOUNDARY: {c.name} in {m} ({pkg} has external_boundary=false)"
+          else if role != .iface || !isPrivateName c.name then
+            hardErrors := hardErrors.push s!"INVALID_EXTERN_PLACEMENT: {c.name} in {m} must be private in {pkg}.Interface"
+          else
+            ifaceHasPrivateExtern := ifaceHasPrivateExtern.insert pkg
+        | none =>
+          hardErrors := hardErrors.push s!"FORBIDDEN_EXTERN_IN_NON_BOUNDARY: {c.name} in {m} (unregistered package {pkg})"
+
+  let ctx : Core.Context := { fileName := "<CheckPromises.ManifestWiring>", fileMap := default, maxHeartbeats := 0 }
+  let ((metaHardErrs, metaModelObs, metaHookObs, metaModelCnt, metaWiredCnt), _) ← (Meta.MetaM.run' do
+    let mut mHard : Array String := #[]
+    let mut mModelObs : Std.HashMap String String := {}
+    let mut mHookObs : Std.HashMap String String := {}
+    let mut mModelCnt : Nat := 0
+    let mut mWiredCnt : Nat := 0
+    let mut axCache : AxCache := {}
+
+    for pkg in sortedPkgs do
+      let some spec := manifest.packages.get? pkg | continue
+      if spec.kind != "model" then continue
+      mModelCnt := mModelCnt + 1
+      let ifaceMod := Name.str pkg "Interface"
+      let modelMod := Name.str pkg "Model"
+      let proofsMod := Name.str pkg "Proofs"
+      let depSet : Std.HashSet Name := spec.deps.foldl (fun s d => s.insert d) {}
+
+      if !modSet.contains ifaceMod then
+        mHard := mHard.push s!"MANIFEST_MISSING_INTERFACE: {pkg} lacks {ifaceMod}"
+      if !modSet.contains modelMod then
+        let k := s!"MISSING_MODEL|{pkg}"
+        mModelObs := recordManifestObs mModelObs k s!"MANIFEST_MISSING_MODEL: {pkg} lacks {modelMod}"
+
+      let obeysName := Name.str proofsMod "obeys_model"
+      let refinesName := Name.str proofsMod "refines_model"
+      let hasObeys := env.contains obeysName
+      let hasRefines := env.contains refinesName
+      let mut stepFromConjs : Array (Name × Array Expr × Expr) := #[]
+      let mut thmName? : Option Name := none
+      if hasObeys && hasRefines then
+        mHard := mHard.push s!"DUPLICATE_OBEYS_AND_REFINES_MODEL: {pkg} defines both {obeysName} and {refinesName}"
+      else if !hasObeys && !hasRefines then
+        let k := s!"MISSING_OBEYS_MODEL|{pkg}"
+        mModelObs := recordManifestObs mModelObs k s!"MANIFEST_MISSING_OBEYS_MODEL: {pkg} lacks {obeysName} (or legacy {refinesName})"
+      else
+        let thmName := if hasObeys then obeysName else refinesName
+        thmName? := some thmName
+        match env.find? thmName with
+        | some (.thmInfo tv) =>
+          if isPrivateName thmName || modOfConst env thmName != proofsMod then
+            mHard := mHard.push s!"INVALID_OBEYS_MODEL_DECL: {thmName} must be a public theorem in {proofsMod}"
+          let (badAx?, nextAx) ← (checkAxiomsOk thmName).run axCache
+          axCache := nextAx
+          if let some badAx := badAx? then
+            mHard := mHard.push s!"UNALLOWED_AXIOM_IN_OBEYS_MODEL: {thmName} uses [{badAx}]"
+          let (conjErrs, sfConjs) ← Meta.forallTelescope tv.type fun outerXs body => do
+            let mut cErrs : Array String := #[]
+            let mut sfs : Array (Name × Array Expr × Expr) := #[]
+            for ox in outerXs do
+              if ← Meta.isProp (← Meta.inferType ox) then
+                cErrs := cErrs.push s!"CONDITIONAL_OBEYS_MODEL: {thmName} has outer Prop hypothesis"
+            let atoms := collectConclusionAtoms body
+            let mut contractCount : Nat := 0
+            for atom in atoms do
+              let (aErrs, isContract, sf?) ← Meta.forallTelescope atom fun axs abRaw => do
+                let mut ae : Array String := #[]
+                for ax in axs do
+                  if ← Meta.isProp (← Meta.inferType ax) then
+                    ae := ae.push s!"CONDITIONAL_OBEYS_MODEL: {thmName} conjunct has Prop hypothesis"
+                let ab := abRaw.consumeMData
+                let fn := ab.getAppFn.consumeMData
+                match fn with
+                | .const fnName _ =>
+                  if fnName == ``Exists then
+                    return (ae, false, none)
+                  else if !isKnownContractPredHead fnName then
+                    ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has unsupported conjunct head {fnName}"
+                    return (ae, false, none)
+                  else
+                    let args := ab.getAppArgs
+                    if (fnName == `Core.ObeysPure || fnName == `Core.RefinesPure) && args.size == 4 then
+                      if isTrivialTruePred env args[3]! then
+                        ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} uses vacuous True predicate"
+                    else if (fnName == `Core.ObeysPure2 || fnName == `Core.RefinesPure2) && args.size == 5 then
+                      if isTrivialTruePred env args[4]! then
+                        ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} uses vacuous True predicate"
+                    else if (fnName == `Core.ObeysPure3 || fnName == `Core.RefinesPure3) && args.size == 6 then
+                      if isTrivialTruePred env args[5]! then
+                        ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} uses vacuous True predicate"
+                    else if (fnName == `Core.ObeysPure4 || fnName == `Core.RefinesPure4) && args.size == 7 then
+                      if isTrivialTruePred env args[6]! then
+                        ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} uses vacuous True predicate"
+                    else if (fnName == `Core.ObeysStep || fnName == `Core.RefinesStep) && args.size == 8 then
+                      if isTrivialFalseBoolFn env args[5]! || isTrivialTruePred env args[7]! then
+                        ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous wf or allowedStep"
+                    else if (fnName == `Core.ObeysStepId || fnName == `Core.RefinesStepId) && args.size == 6 then
+                      if isTrivialFalseBoolFn env args[3]! || isTrivialTruePred env args[5]! then
+                        ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous wf or allowedStep"
+                    else if (fnName == `Core.ObeysStepFrom || fnName == `Core.RefinesStepFrom ||
+                        fnName == `Core.ObeysStepFromFinally || fnName == `Core.RefinesStepFromFinally) && args.size == 16 then
+                      if isTrivialFalsePred env args[11]! ||
+                          isTrivialFalseBoolFn env args[12]! || isTrivialTruePred env args[15]! then
+                        ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous rawAllowed, pkgWf, or pkgAllowed"
+                    else if (fnName == `Core.ObeysStepFrom2 || fnName == `Core.RefinesStepFrom2) && args.size == 21 then
+                      if isTrivialFalsePred env args[14]! || isTrivialFalsePred env args[16]! ||
+                          isTrivialFalseBoolFn env args[17]! || isTrivialTruePred env args[20]! then
+                        ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous rawAllowed, pkgWf, or pkgAllowed"
+                    return (ae, true, extractStepFromConj? ab)
+                | _ =>
+                  ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has non-constant conjunct head"
+                  return (ae, false, none)
+              cErrs := cErrs ++ aErrs
+              if isContract then contractCount := contractCount + 1
+              if let some sf := sf? then sfs := sfs.push sf
+            if contractCount == 0 then
+              cErrs := cErrs.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} contains zero Core.Obeys/Core.Refines contracts"
+            return (cErrs, sfs)
+          mHard := mHard ++ conjErrs
+          stepFromConjs := sfConjs
+        | _ =>
+          mHard := mHard.push s!"INVALID_OBEYS_MODEL_DECL: {thmName} must be a theorem in {proofsMod}"
+
+      if spec.purity == "pure" then continue
+      mWiredCnt := mWiredCnt + 1
+      let defApiName := Name.str pkg "defaultApi"
+      let defOpsName := Name.str pkg "defaultOps"
+      let hasDefApi := match env.find? defApiName with
+        | some (.defnInfo _) => modOfConst env defApiName == ifaceMod
+        | _ => false
+      let hasDefOps := match env.find? defOpsName with
+        | some (.defnInfo _) => modOfConst env defOpsName == ifaceMod
+        | _ => false
+
+      if spec.externalBoundary then
+        if !hasDefOps && !hasDefApi then
+          mHard := mHard.push s!"BOUNDARY_MISSING_DEFAULT_OPS: {pkg} (external_boundary=true) lacks defaultOps/defaultApi in {ifaceMod}"
+        else
+          let mut boundaryRoots : Array Name := #[]
+          if hasDefOps then boundaryRoots := boundaryRoots.push defOpsName
+          if hasDefApi then boundaryRoots := boundaryRoots.push defApiName
+          for bDef in boundaryRoots do
+            if let some (.defnInfo dv) := env.find? bDef then
+              if dv.safety != .safe then
+                mHard := mHard.push s!"BOUNDARY_WIRING_UNSAFE: {bDef} must be safe"
+              for u in dv.value.getUsedConstants do
+                let uMod := modOfConst env u
+                if uMod.getRoot == `LeanSwe then
+                  let uPkg := dagPkgOf knownPkgs uMod
+                  if uPkg != pkg && !depSet.contains uPkg then
+                    mHard := mHard.push s!"BOUNDARY_UNMANIFESTED_DEP: {bDef} references {u} from undeclared dep {uPkg}"
+          if ifaceHasPrivateExtern.contains pkg then
+            let reached := boundaryRoots.any (reachesOwnPrivateExtern env ifaceMod)
+            if !reached then
+              mHard := mHard.push s!"BOUNDARY_DISCONNECTED_EXTERN: {pkg} defines private @[extern] ops in {ifaceMod} not wired into defaultOps/defaultApi"
+
+      if !ifaceHasPrivateExtern.contains pkg then
+        let hookKey := s!"MIDDLE_HOOK|{pkg}"
+        let mut defOpsOk := false
+        let mut defApiBuilder? : Option Name := none
+        for ioErr in ← checkConcreteIoInterfaceDecls env pkg ifaceMod defApiName defOpsName do
+          mHookObs := recordManifestObs mHookObs hookKey ioErr
+        if hasDefOps then
+          match ← checkCompositeDefaultDef env pkg depSet false defOpsName with
+          | .ok _ => defOpsOk := true
+          | .error err =>
+            mHookObs := recordManifestObs mHookObs hookKey s!"MIDDLE_HOOK_VIOLATION: {err}"
+        if hasDefApi then
+          match ← checkCompositeDefaultDef env pkg depSet (hasDefOps && defOpsOk) defApiName with
+          | .ok mkFn => defApiBuilder? := some mkFn
+          | .error err =>
+            mHookObs := recordManifestObs mHookObs hookKey s!"MIDDLE_HOOK_VIOLATION: {err}"
+
+        if !stepFromConjs.isEmpty then
+          let mut provenSelfCapTypes : Std.HashSet Name := {}
+          for (_, rawOpsTys, pkgApiTy) in stepFromConjs do
+            let mut allDirectDeps := true
+            for rTy in rawOpsTys do
+              if !(← isAllowedCapType env knownPkgs pkg depSet {} 4 rTy) then
+                allDirectDeps := false
+            if allDirectDeps then
+              if let some apiHead ← extractCapTypeHead? pkgApiTy then
+                provenSelfCapTypes := provenSelfCapTypes.insert apiHead
+          let thmLabel := (thmName?.map (·.toString)).getD s!"{pkg}.Proofs.obeys_model"
+          for (thmMkFn, rawOpsTys, _) in stepFromConjs do
+            for rTy in rawOpsTys do
+              if !(← isAllowedCapType env knownPkgs pkg depSet provenSelfCapTypes 4 rTy) then
+                let capLbl := match ← extractCapTypeHead? rTy with
+                  | some n => n.toString
+                  | none => "<expr>"
+                mHookObs := recordManifestObs mHookObs hookKey
+                  s!"MIDDLE_HOOK_VIOLATION: {thmLabel} quantifies {thmMkFn} over same-package capability {capLbl} instead of imported manifest.deps"
+          if let some defMk := defApiBuilder? then
+            let defMkCanon := unfoldThinIfaceBuilder env pkg defMk
+            let matched := stepFromConjs.any fun (thmMk, _, _) =>
+              thmMk == defMk || unfoldThinIfaceBuilder env pkg thmMk == defMkCanon
+            if !matched then
+              mHookObs := recordManifestObs mHookObs hookKey
+                s!"MIDDLE_HOOK_VIOLATION: {defApiName} delegates to {defMk} which is not proven in {thmLabel}"
+
+    return (mHard, mModelObs, mHookObs, mModelCnt, mWiredCnt)
+  ).toIO ctx { env }
+
+  hardErrors := hardErrors ++ metaHardErrs
+  modelPresenceObs := metaModelObs
+  middleHookObs := metaHookObs
+  checkedModelPkgs := metaModelCnt
+  checkedWiredPkgs := metaWiredCnt
+  return { hardErrors, modelPresenceObs, middleHookObs, checkedModelPkgs, checkedWiredPkgs }
+
+private def evaluateManifestRatchetWith
+    (allowModelPresence allowMiddleHook : Array String)
+    (rep : ManifestAuditReport) : Array String := Id.run do
+  let mut errs : Array String := rep.hardErrors
+  let mut modelAllowSet : Std.HashSet String := {}
+  for entry in allowModelPresence do
+    if modelAllowSet.contains entry then
+      errs := errs.push s!"DUPLICATE_MODEL_PRESENCE_ALLOWLIST: {entry}"
+    modelAllowSet := modelAllowSet.insert entry
+  let obsModelKeys := (rep.modelPresenceObs.toList.map (·.1)).toArray.qsort (· < ·)
+  for k in obsModelKeys do
+    if !modelAllowSet.contains k then
+      errs := errs.push s!"{rep.modelPresenceObs.getD k k} [key={k}]"
+  for entry in allowModelPresence do
+    if !rep.modelPresenceObs.contains entry then
+      errs := errs.push s!"STALE_MODEL_PRESENCE_ALLOWLIST: {entry} no longer occurs; remove it from modelPresenceAllowlist"
+
+  let mut hookAllowSet : Std.HashSet String := {}
+  for entry in allowMiddleHook do
+    if hookAllowSet.contains entry then
+      errs := errs.push s!"DUPLICATE_MIDDLE_HOOK_ALLOWLIST: {entry}"
+    hookAllowSet := hookAllowSet.insert entry
+  let obsHookKeys := (rep.middleHookObs.toList.map (·.1)).toArray.qsort (· < ·)
+  for k in obsHookKeys do
+    if !hookAllowSet.contains k then
+      errs := errs.push s!"{rep.middleHookObs.getD k k} [key={k}]"
+  for entry in allowMiddleHook do
+    if !rep.middleHookObs.contains entry then
+      errs := errs.push s!"STALE_MIDDLE_HOOK_ALLOWLIST: {entry} no longer occurs; remove it from middleHookAllowlist"
+  return errs
+
+private def evaluateManifestRatchet (rep : ManifestAuditReport) : Array String :=
+  evaluateManifestRatchetWith modelPresenceAllowlist middleHookAllowlist rep
+
 /-- Audit compiled `.olean` artifacts reachable from `LeanSwe` for promise coverage. -/
 unsafe def main (args : List String) : IO UInt32 := do
+  if args.head? == some "--internal-manifest-audit" then
+    match args.drop 1 with
+    | [libDirStr, manifestPathStr, rootsCsv, modelAllowCsv, hookAllowCsv] =>
+      let libDir : System.FilePath := libDirStr
+      let manifestRaw ← IO.FS.readFile manifestPathStr
+      match parsePackageManifest manifestRaw with
+      | .error err =>
+        IO.eprintln err
+        return 1
+      | .ok manifest =>
+        let rootMods := (rootsCsv.splitOn ",").filter (!·.isEmpty) |>.toArray.map (·.toName)
+        let allowModel := if modelAllowCsv.isEmpty then #[] else (modelAllowCsv.splitOn ";").filter (!·.isEmpty) |>.toArray
+        let allowHook := if hookAllowCsv.isEmpty then #[] else (hookAllowCsv.splitOn ";").filter (!·.isEmpty) |>.toArray
+        initSearchPath (← findSysroot) [libDir]
+        enableInitializersExecution
+        let testEnv ← importModules (rootMods.map fun m => { module := m }) {} (loadExts := true)
+        let rep ← auditManifestAndWiring testEnv manifest
+        let errs := evaluateManifestRatchetWith allowModel allowHook rep
+        IO.println s!"MANIFEST_AUDIT_TEST: model_pkgs={rep.checkedModelPkgs} wired_pkgs={rep.checkedWiredPkgs} model_obs={rep.modelPresenceObs.size} hook_obs={rep.middleHookObs.size} hard_errs={rep.hardErrors.size} errors={errs.size}"
+        for e in errs do
+          IO.eprintln e
+        testEnv.freeRegions
+        return if errs.isEmpty then 0 else 1
+    | _ =>
+      IO.eprintln "USAGE_ERROR: --internal-manifest-audit <libDir> <manifestPath> <rootsCsv> <modelAllowCsv> <hookAllowCsv>"
+      return 1
   let isWorker := args.head? == some "--internal-postfork-worker"
-  let args' := if isWorker then args.drop 1 else args
+  let args0 := if isWorker then args.drop 1 else args
+  let runSelfTest := !isWorker && args0.head? == some "--with-self-test"
+  let args' := if runSelfTest then args0.drop 1 else args0
   if args'.length > 2 then
     IO.eprintln s!"USAGE_ERROR: expected at most 2 arguments ([libDir] [repoDir]), got {args'.length}"
     return 1
@@ -3605,6 +4311,16 @@ unsafe def main (args : List String) : IO UInt32 := do
   let totalSigHits := combinedDagRep.sigProofCounts.fold (init := 0) fun acc _ (cnt, _) => acc + cnt
   IO.println s!"IMPORT_DAG_CHECK: modules={combinedDagRep.checkedModules} edges_obs={combinedDagRep.violations.size} edges_allow={importDagAllowlist.size} sig_keys_obs={combinedDagRep.sigProofCounts.size} sig_hits_obs={totalSigHits} sig_allow={sigProofConstAllowlist.size} errors={dagErrs.size}"
 
+  let manifestErrs ← match ← loadPackageManifest repoDir with
+    | .error err =>
+      IO.println s!"MANIFEST_WIRING_CHECK: status=parse_error errors=1"
+      pure #[err]
+    | .ok manifest =>
+      let manifestRep ← auditManifestAndWiring env manifest
+      let mErrs := evaluateManifestRatchet manifestRep
+      IO.println s!"MANIFEST_WIRING_CHECK: model_pkgs={manifestRep.checkedModelPkgs} wired_pkgs={manifestRep.checkedWiredPkgs} model_obs={manifestRep.modelPresenceObs.size} model_allow={modelPresenceAllowlist.size} hook_obs={manifestRep.middleHookObs.size} hook_allow={middleHookAllowlist.size} hard_errs={manifestRep.hardErrors.size} errors={mErrs.size}"
+      pure mErrs
+
   let specModCount := sCnt1 + sCnt2
   let specModStrs := (sMods1.map (·.toString)) ++ sMods2
   let mutOkAll : Std.HashSet String := mutOk1.fold (fun acc m => acc.insert m.toString) mutOk2
@@ -3615,7 +4331,17 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   let promCount := prom1.size + prom2Count
   let withAssumeCount := wAss1 + wAss2
-  errors := errors ++ eErrs1 ++ eErrs2 ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sqClosureErrs ++ sbxClosureErrs ++ compClosureErrs ++ managedProcErrs ++ psandboxHostErrs ++ pfClosureErrs ++ pfWiringErrs ++ gitClosureErrs ++ cproxyClosureErrs ++ dagErrs
+  errors := errors ++ eErrs1 ++ eErrs2 ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sqClosureErrs ++ sbxClosureErrs ++ compClosureErrs ++ managedProcErrs ++ psandboxHostErrs ++ pfClosureErrs ++ pfWiringErrs ++ gitClosureErrs ++ cproxyClosureErrs ++ dagErrs ++ manifestErrs
+  if runSelfTest then
+    let selfTestOut ← IO.Process.output {
+      cmd := leanExe.toString
+      args := #["-DwarningAsError=true", "--run", (repoDir / "scripts" / "CheckPromisesTest.lean").toString]
+      cwd := some repoDir
+    }
+    if !selfTestOut.stdout.isEmpty then
+      IO.print selfTestOut.stdout
+    if selfTestOut.exitCode != 0 then
+      errors := errors.push s!"CHECK_PROMISES_SELF_TEST_FAILED: exit={selfTestOut.exitCode} stderr={selfTestOut.stderr.trimAscii.toString}"
   IO.println s!"PROMISE_CHECK: spec_modules={specModCount} promises={promCount} with_assume={withAssumeCount} errors={errors.size}"
   if errors.isEmpty then
     return 0

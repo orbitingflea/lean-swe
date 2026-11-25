@@ -270,7 +270,7 @@ jobs:
             run_lean_gate scripts/CheckAssumptionsTest.lean
           }
           lane_2() {
-            run_lean_gate scripts/CheckPromises.lean .lake/build/lib/lean .
+            run_lean_gate scripts/CheckPromises.lean --with-self-test .lake/build/lib/lean .
           }
           lane_3() {
             harness/.lake/build/bin/lean-swe-test --assump-log "$ASSUMP_LOG" --assump-nonce "$ASSUMP_NONCE"
@@ -290,7 +290,7 @@ jobs:
           }
           LANE_LABELS=(
             "Lane 1: CheckAssumptionsTest"
-            "Lane 2: CheckPromises"
+            "Lane 2: CheckPromises + CheckPromisesTest"
             "Lane 3: lean-swe-test + CheckAssumptions + closed-stdio"
             "Lane 4: lean-swe-mut-test + CheckForeignThinness"
           )
