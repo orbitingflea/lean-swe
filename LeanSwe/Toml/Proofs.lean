@@ -1,5 +1,5 @@
 import Core.NondetTest
-import Core.Refines
+import Core.Obeys
 import LeanSwe.Toml.Types
 import LeanSwe.Toml.Model
 import LeanSwe.Toml.Impl
@@ -7,6 +7,8 @@ import LeanSwe.Toml.Interface
 import LeanSwe.Toml.SpecTests
 import LeanSwe.Toml.Proofs.Core
 import LeanSwe.Toml.Proofs.ModelCheck
+import LeanSwe.Toml.Proofs.RenderInjective
+import LeanSwe.Toml.Proofs.ParseWitnessDoc
 import LeanSwe.Toml.Proofs.FormatBridge
 import LeanSwe.NumParse.Types
 import LeanSwe.NumParse.Interface
@@ -15,8 +17,9 @@ import LeanSwe.NumParse.Proofs
 /-!
 # Verified TOML 1.0 Implementation Entry Point
 
-Exports the top-level specification proofs (`proof_toml_*`, `reach_toml_*`),
-`validNumApi_defaultApi`, and error-kind non-occurrence theorems (`toml_*_never_*`).
+Exports `render_injective` (`Core.RenderInjectiveModulo Model.render Model.TomlTableEquiv`),
+`obeys_model` (`Core.ObeysInverseRender` + canonical `Core.ObeysPure*` / `Core.ObeysPureEq`),
+`proof_toml_*` / `reach_toml_*`, `validNumApi_defaultApi`, and `toml_*_never_*`.
 -/
 
 namespace LeanSwe.Toml.Proofs
@@ -97,6 +100,10 @@ theorem validNumApi_defaultApi : ValidNumApi LeanSwe.NumParse.defaultApi :=
   , formatIntChars := defaultNumApi_formatIntChars
   }
 
+/-- Standalone injectivity of `Model.render` up to `Model.TomlTableEquiv` (independent of `Impl`). -/
+theorem render_injective : Core.RenderInjectiveModulo Model.render Model.TomlTableEquiv :=
+  render_injective_model
+
 section
 attribute [local irreducible] Core.AllPass Core.CanReach
 
@@ -113,29 +120,41 @@ theorem proof_toml_parse_returnsWellFormedTable : Core.AllPass (test_toml_parse_
 /-- Concrete `CanReach` witness for `test_toml_parse_returnsWellFormedTable`. -/
 theorem reach_toml_parse_returnsWellFormedTable : Core.CanReach (test_toml_parse_returnsWellFormedTable LeanSwe.Toml.defaultApi) := canReach_parse_returnsWellFormedTable LeanSwe.NumParse.defaultApi
 /-- Concrete `AllPass` proof of `test_toml_render_parse_roundTrip` for `LeanSwe.Toml.defaultApi`. -/
-theorem proof_toml_render_parse_roundTrip : Core.AllPass (test_toml_render_parse_roundTrip LeanSwe.Toml.defaultApi) := allPass_render_parse_roundTrip LeanSwe.NumParse.defaultApi validNumApi_defaultApi
+theorem proof_toml_render_parse_roundTrip : Core.AllPass (test_toml_render_parse_roundTrip LeanSwe.Toml.defaultApi) :=
+  allPass_render_parse_roundTrip LeanSwe.NumParse.defaultApi validNumApi_defaultApi
 /-- Concrete `CanReach` witness for `test_toml_render_parse_roundTrip`. -/
-theorem reach_toml_render_parse_roundTrip : Core.CanReach (test_toml_render_parse_roundTrip LeanSwe.Toml.defaultApi) := canReach_render_parse_roundTrip LeanSwe.NumParse.defaultApi validNumApi_defaultApi
+theorem reach_toml_render_parse_roundTrip : Core.CanReach (test_toml_render_parse_roundTrip LeanSwe.Toml.defaultApi) :=
+  canReach_render_parse_roundTrip LeanSwe.NumParse.defaultApi validNumApi_defaultApi
 /-- Concrete `AllPass` proof of `test_toml_format_validAndRoundTrip` for `LeanSwe.Toml.defaultApi`. -/
-theorem proof_toml_format_validAndRoundTrip : Core.AllPass (test_toml_format_validAndRoundTrip LeanSwe.Toml.defaultApi) := allPass_format_validAndRoundTrip LeanSwe.NumParse.defaultApi validNumApi_defaultApi
+theorem proof_toml_format_validAndRoundTrip : Core.AllPass (test_toml_format_validAndRoundTrip LeanSwe.Toml.defaultApi) :=
+  allPass_format_validAndRoundTrip LeanSwe.NumParse.defaultApi validNumApi_defaultApi
 /-- Concrete `CanReach` witness for `test_toml_format_validAndRoundTrip`. -/
-theorem reach_toml_format_validAndRoundTrip : Core.CanReach (test_toml_format_validAndRoundTrip LeanSwe.Toml.defaultApi) := canReach_format_validAndRoundTrip LeanSwe.NumParse.defaultApi validNumApi_defaultApi
+theorem reach_toml_format_validAndRoundTrip : Core.CanReach (test_toml_format_validAndRoundTrip LeanSwe.Toml.defaultApi) :=
+  canReach_format_validAndRoundTrip LeanSwe.NumParse.defaultApi validNumApi_defaultApi
 /-- Concrete `AllPass` proof of `test_toml_keysAndProvenance_conformsToSpec` for `LeanSwe.Toml.defaultApi`. -/
-theorem proof_toml_keysAndProvenance_conformsToSpec : Core.AllPass (test_toml_keysAndProvenance_conformsToSpec LeanSwe.Toml.defaultApi) := allPass_keysAndProvenance LeanSwe.NumParse.defaultApi validNumApi_defaultApi
+theorem proof_toml_keysAndProvenance_conformsToSpec : Core.AllPass (test_toml_keysAndProvenance_conformsToSpec LeanSwe.Toml.defaultApi) :=
+  allPass_keysAndProvenance LeanSwe.NumParse.defaultApi validNumApi_defaultApi
 /-- Concrete `CanReach` witness for `test_toml_keysAndProvenance_conformsToSpec`. -/
-theorem reach_toml_keysAndProvenance_conformsToSpec : Core.CanReach (test_toml_keysAndProvenance_conformsToSpec LeanSwe.Toml.defaultApi) := canReach_keysAndProvenance LeanSwe.NumParse.defaultApi validNumApi_defaultApi
+theorem reach_toml_keysAndProvenance_conformsToSpec : Core.CanReach (test_toml_keysAndProvenance_conformsToSpec LeanSwe.Toml.defaultApi) :=
+  canReach_keysAndProvenance LeanSwe.NumParse.defaultApi validNumApi_defaultApi
 /-- Concrete `AllPass` proof of `test_toml_inlineTablesAndAot_conformsToSpec` for `LeanSwe.Toml.defaultApi`. -/
-theorem proof_toml_inlineTablesAndAot_conformsToSpec : Core.AllPass (test_toml_inlineTablesAndAot_conformsToSpec LeanSwe.Toml.defaultApi) := allPass_inlineTablesAndAot LeanSwe.NumParse.defaultApi validNumApi_defaultApi
+theorem proof_toml_inlineTablesAndAot_conformsToSpec : Core.AllPass (test_toml_inlineTablesAndAot_conformsToSpec LeanSwe.Toml.defaultApi) :=
+  allPass_inlineTablesAndAot LeanSwe.NumParse.defaultApi validNumApi_defaultApi
 /-- Concrete `CanReach` witness for `test_toml_inlineTablesAndAot_conformsToSpec`. -/
-theorem reach_toml_inlineTablesAndAot_conformsToSpec : Core.CanReach (test_toml_inlineTablesAndAot_conformsToSpec LeanSwe.Toml.defaultApi) := canReach_inlineTablesAndAot LeanSwe.NumParse.defaultApi validNumApi_defaultApi
+theorem reach_toml_inlineTablesAndAot_conformsToSpec : Core.CanReach (test_toml_inlineTablesAndAot_conformsToSpec LeanSwe.Toml.defaultApi) :=
+  canReach_inlineTablesAndAot LeanSwe.NumParse.defaultApi validNumApi_defaultApi
 /-- Concrete `AllPass` proof of `test_toml_stringsAndControls_conformsToSpec` for `LeanSwe.Toml.defaultApi`. -/
-theorem proof_toml_stringsAndControls_conformsToSpec : Core.AllPass (test_toml_stringsAndControls_conformsToSpec LeanSwe.Toml.defaultApi) := allPass_stringsAndControls LeanSwe.NumParse.defaultApi validNumApi_defaultApi
+theorem proof_toml_stringsAndControls_conformsToSpec : Core.AllPass (test_toml_stringsAndControls_conformsToSpec LeanSwe.Toml.defaultApi) :=
+  allPass_stringsAndControls LeanSwe.NumParse.defaultApi validNumApi_defaultApi
 /-- Concrete `CanReach` witness for `test_toml_stringsAndControls_conformsToSpec`. -/
-theorem reach_toml_stringsAndControls_conformsToSpec : Core.CanReach (test_toml_stringsAndControls_conformsToSpec LeanSwe.Toml.defaultApi) := canReach_stringsAndControls LeanSwe.NumParse.defaultApi validNumApi_defaultApi
+theorem reach_toml_stringsAndControls_conformsToSpec : Core.CanReach (test_toml_stringsAndControls_conformsToSpec LeanSwe.Toml.defaultApi) :=
+  canReach_stringsAndControls LeanSwe.NumParse.defaultApi validNumApi_defaultApi
 /-- Concrete `AllPass` proof of `test_toml_numbersAndDatetimes_conformsToSpec` for `LeanSwe.Toml.defaultApi`. -/
-theorem proof_toml_numbersAndDatetimes_conformsToSpec : Core.AllPass (test_toml_numbersAndDatetimes_conformsToSpec LeanSwe.Toml.defaultApi) := allPass_numbersAndDatetimes LeanSwe.NumParse.defaultApi validNumApi_defaultApi
+theorem proof_toml_numbersAndDatetimes_conformsToSpec : Core.AllPass (test_toml_numbersAndDatetimes_conformsToSpec LeanSwe.Toml.defaultApi) :=
+  allPass_numbersAndDatetimes LeanSwe.NumParse.defaultApi validNumApi_defaultApi
 /-- Concrete `CanReach` witness for `test_toml_numbersAndDatetimes_conformsToSpec`. -/
-theorem reach_toml_numbersAndDatetimes_conformsToSpec : Core.CanReach (test_toml_numbersAndDatetimes_conformsToSpec LeanSwe.Toml.defaultApi) := canReach_numbersAndDatetimes LeanSwe.NumParse.defaultApi validNumApi_defaultApi
+theorem reach_toml_numbersAndDatetimes_conformsToSpec : Core.CanReach (test_toml_numbersAndDatetimes_conformsToSpec LeanSwe.Toml.defaultApi) :=
+  canReach_numbersAndDatetimes LeanSwe.NumParse.defaultApi validNumApi_defaultApi
 /-- Concrete `AllPass` proof of `test_toml_codecsAndAccessors_conformsToSpec` for `LeanSwe.Toml.defaultApi`. -/
 theorem proof_toml_codecsAndAccessors_conformsToSpec : Core.AllPass (test_toml_codecsAndAccessors_conformsToSpec LeanSwe.Toml.defaultApi) := allPass_codecsAndAccessors LeanSwe.NumParse.defaultApi
 /-- Concrete `CanReach` witness for `test_toml_codecsAndAccessors_conformsToSpec`. -/
@@ -167,21 +186,29 @@ private theorem decode_never_of (k : TomlErrorKind) (hk : k ≠ .decodeError)
   cases (FromToml.fromToml v : Except TomlError α) with | ok _ => trivial | error _ => exact hk.symm
 
 /-- `Toml.decode` never returns `.parseError`. -/
-theorem toml_decode_never_parseError (α : Type) [FromToml α] (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .parseError (LeanSwe.Toml.decode (α := α) v) := decode_never_of .parseError (by decide) α v
+theorem toml_decode_never_parseError (α : Type) [FromToml α] (v : TomlValue) :
+    Core.NeverErrorKindPure TomlError.kind .parseError (LeanSwe.Toml.decode (α := α) v) := decode_never_of .parseError (by decide) α v
 /-- `Toml.decode` never returns `.duplicateKey`. -/
-theorem toml_decode_never_duplicateKey (α : Type) [FromToml α] (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .duplicateKey (LeanSwe.Toml.decode (α := α) v) := decode_never_of .duplicateKey (by decide) α v
+theorem toml_decode_never_duplicateKey (α : Type) [FromToml α] (v : TomlValue) :
+    Core.NeverErrorKindPure TomlError.kind .duplicateKey (LeanSwe.Toml.decode (α := α) v) := decode_never_of .duplicateKey (by decide) α v
 /-- `Toml.decode` never returns `.redefinedTable`. -/
-theorem toml_decode_never_redefinedTable (α : Type) [FromToml α] (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .redefinedTable (LeanSwe.Toml.decode (α := α) v) := decode_never_of .redefinedTable (by decide) α v
+theorem toml_decode_never_redefinedTable (α : Type) [FromToml α] (v : TomlValue) :
+    Core.NeverErrorKindPure TomlError.kind .redefinedTable (LeanSwe.Toml.decode (α := α) v) := decode_never_of .redefinedTable (by decide) α v
 /-- `Toml.decode` never returns `.immutableInlineTable`. -/
-theorem toml_decode_never_immutableInlineTable (α : Type) [FromToml α] (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .immutableInlineTable (LeanSwe.Toml.decode (α := α) v) := decode_never_of .immutableInlineTable (by decide) α v
+theorem toml_decode_never_immutableInlineTable (α : Type) [FromToml α] (v : TomlValue) :
+    Core.NeverErrorKindPure TomlError.kind .immutableInlineTable (LeanSwe.Toml.decode (α := α) v) := decode_never_of .immutableInlineTable (by decide) α v
 /-- `Toml.decode` never returns `.invalidUtf8OrControl`. -/
-theorem toml_decode_never_invalidUtf8OrControl (α : Type) [FromToml α] (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .invalidUtf8OrControl (LeanSwe.Toml.decode (α := α) v) := decode_never_of .invalidUtf8OrControl (by decide) α v
+theorem toml_decode_never_invalidUtf8OrControl (α : Type) [FromToml α] (v : TomlValue) :
+    Core.NeverErrorKindPure TomlError.kind .invalidUtf8OrControl (LeanSwe.Toml.decode (α := α) v) := decode_never_of .invalidUtf8OrControl (by decide) α v
 /-- `Toml.decode` never returns `.numericOverflow`. -/
-theorem toml_decode_never_numericOverflow (α : Type) [FromToml α] (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .numericOverflow (LeanSwe.Toml.decode (α := α) v) := decode_never_of .numericOverflow (by decide) α v
+theorem toml_decode_never_numericOverflow (α : Type) [FromToml α] (v : TomlValue) :
+    Core.NeverErrorKindPure TomlError.kind .numericOverflow (LeanSwe.Toml.decode (α := α) v) := decode_never_of .numericOverflow (by decide) α v
 /-- `Toml.decode` never returns `.missingField`. -/
-theorem toml_decode_never_missingField (α : Type) [FromToml α] (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .missingField (LeanSwe.Toml.decode (α := α) v) := decode_never_of .missingField (by decide) α v
+theorem toml_decode_never_missingField (α : Type) [FromToml α] (v : TomlValue) :
+    Core.NeverErrorKindPure TomlError.kind .missingField (LeanSwe.Toml.decode (α := α) v) := decode_never_of .missingField (by decide) α v
 /-- `Toml.decode` never returns `.typeMismatch`. -/
-theorem toml_decode_never_typeMismatch (α : Type) [FromToml α] (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .typeMismatch (LeanSwe.Toml.decode (α := α) v) := decode_never_of .typeMismatch (by decide) α v
+theorem toml_decode_never_typeMismatch (α : Type) [FromToml α] (v : TomlValue) :
+    Core.NeverErrorKindPure TomlError.kind .typeMismatch (LeanSwe.Toml.decode (α := α) v) := decode_never_of .typeMismatch (by decide) α v
 
 private theorem getTable_never_of (k : TomlErrorKind) (hk : k ≠ .typeMismatch) (v : TomlValue) :
     Core.NeverErrorKindPure TomlError.kind k (LeanSwe.Toml.getTable v) := by
@@ -195,9 +222,11 @@ theorem toml_getTable_never_duplicateKey (v : TomlValue) : Core.NeverErrorKindPu
 /-- `Toml.getTable` never returns `.redefinedTable`. -/
 theorem toml_getTable_never_redefinedTable (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .redefinedTable (LeanSwe.Toml.getTable v) := getTable_never_of .redefinedTable (by decide) v
 /-- `Toml.getTable` never returns `.immutableInlineTable`. -/
-theorem toml_getTable_never_immutableInlineTable (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .immutableInlineTable (LeanSwe.Toml.getTable v) := getTable_never_of .immutableInlineTable (by decide) v
+theorem toml_getTable_never_immutableInlineTable (v : TomlValue) :
+    Core.NeverErrorKindPure TomlError.kind .immutableInlineTable (LeanSwe.Toml.getTable v) := getTable_never_of .immutableInlineTable (by decide) v
 /-- `Toml.getTable` never returns `.invalidUtf8OrControl`. -/
-theorem toml_getTable_never_invalidUtf8OrControl (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .invalidUtf8OrControl (LeanSwe.Toml.getTable v) := getTable_never_of .invalidUtf8OrControl (by decide) v
+theorem toml_getTable_never_invalidUtf8OrControl (v : TomlValue) :
+    Core.NeverErrorKindPure TomlError.kind .invalidUtf8OrControl (LeanSwe.Toml.getTable v) := getTable_never_of .invalidUtf8OrControl (by decide) v
 /-- `Toml.getTable` never returns `.numericOverflow`. -/
 theorem toml_getTable_never_numericOverflow (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .numericOverflow (LeanSwe.Toml.getTable v) := getTable_never_of .numericOverflow (by decide) v
 /-- `Toml.getTable` never returns `.missingField`. -/
@@ -217,9 +246,11 @@ theorem toml_getArray_never_duplicateKey (v : TomlValue) : Core.NeverErrorKindPu
 /-- `Toml.getArray` never returns `.redefinedTable`. -/
 theorem toml_getArray_never_redefinedTable (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .redefinedTable (LeanSwe.Toml.getArray v) := getArray_never_of .redefinedTable (by decide) v
 /-- `Toml.getArray` never returns `.immutableInlineTable`. -/
-theorem toml_getArray_never_immutableInlineTable (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .immutableInlineTable (LeanSwe.Toml.getArray v) := getArray_never_of .immutableInlineTable (by decide) v
+theorem toml_getArray_never_immutableInlineTable (v : TomlValue) :
+    Core.NeverErrorKindPure TomlError.kind .immutableInlineTable (LeanSwe.Toml.getArray v) := getArray_never_of .immutableInlineTable (by decide) v
 /-- `Toml.getArray` never returns `.invalidUtf8OrControl`. -/
-theorem toml_getArray_never_invalidUtf8OrControl (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .invalidUtf8OrControl (LeanSwe.Toml.getArray v) := getArray_never_of .invalidUtf8OrControl (by decide) v
+theorem toml_getArray_never_invalidUtf8OrControl (v : TomlValue) :
+    Core.NeverErrorKindPure TomlError.kind .invalidUtf8OrControl (LeanSwe.Toml.getArray v) := getArray_never_of .invalidUtf8OrControl (by decide) v
 /-- `Toml.getArray` never returns `.numericOverflow`. -/
 theorem toml_getArray_never_numericOverflow (v : TomlValue) : Core.NeverErrorKindPure TomlError.kind .numericOverflow (LeanSwe.Toml.getArray v) := getArray_never_of .numericOverflow (by decide) v
 /-- `Toml.getArray` never returns `.missingField`. -/
@@ -236,19 +267,26 @@ private theorem getField_never_of (k : TomlErrorKind) (hk1 : k ≠ .missingField
   | some v => dsimp only; cases (FromToml.fromToml v : Except TomlError α) <;> first | trivial | exact hk2.symm
 
 /-- `Toml.getField` never returns `.parseError`. -/
-theorem toml_getField_never_parseError (α : Type) [FromToml α] (t : TomlTable) (key : String) : Core.NeverErrorKindPure TomlError.kind .parseError (LeanSwe.Toml.getField (α := α) t key) := getField_never_of .parseError (by decide) (by decide) α t key
+theorem toml_getField_never_parseError (α : Type) [FromToml α] (t : TomlTable) (key : String) :
+    Core.NeverErrorKindPure TomlError.kind .parseError (LeanSwe.Toml.getField (α := α) t key) := getField_never_of .parseError (by decide) (by decide) α t key
 /-- `Toml.getField` never returns `.duplicateKey`. -/
-theorem toml_getField_never_duplicateKey (α : Type) [FromToml α] (t : TomlTable) (key : String) : Core.NeverErrorKindPure TomlError.kind .duplicateKey (LeanSwe.Toml.getField (α := α) t key) := getField_never_of .duplicateKey (by decide) (by decide) α t key
+theorem toml_getField_never_duplicateKey (α : Type) [FromToml α] (t : TomlTable) (key : String) :
+    Core.NeverErrorKindPure TomlError.kind .duplicateKey (LeanSwe.Toml.getField (α := α) t key) := getField_never_of .duplicateKey (by decide) (by decide) α t key
 /-- `Toml.getField` never returns `.redefinedTable`. -/
-theorem toml_getField_never_redefinedTable (α : Type) [FromToml α] (t : TomlTable) (key : String) : Core.NeverErrorKindPure TomlError.kind .redefinedTable (LeanSwe.Toml.getField (α := α) t key) := getField_never_of .redefinedTable (by decide) (by decide) α t key
+theorem toml_getField_never_redefinedTable (α : Type) [FromToml α] (t : TomlTable) (key : String) :
+    Core.NeverErrorKindPure TomlError.kind .redefinedTable (LeanSwe.Toml.getField (α := α) t key) := getField_never_of .redefinedTable (by decide) (by decide) α t key
 /-- `Toml.getField` never returns `.immutableInlineTable`. -/
-theorem toml_getField_never_immutableInlineTable (α : Type) [FromToml α] (t : TomlTable) (key : String) : Core.NeverErrorKindPure TomlError.kind .immutableInlineTable (LeanSwe.Toml.getField (α := α) t key) := getField_never_of .immutableInlineTable (by decide) (by decide) α t key
+theorem toml_getField_never_immutableInlineTable (α : Type) [FromToml α] (t : TomlTable) (key : String) :
+    Core.NeverErrorKindPure TomlError.kind .immutableInlineTable (LeanSwe.Toml.getField (α := α) t key) := getField_never_of .immutableInlineTable (by decide) (by decide) α t key
 /-- `Toml.getField` never returns `.invalidUtf8OrControl`. -/
-theorem toml_getField_never_invalidUtf8OrControl (α : Type) [FromToml α] (t : TomlTable) (key : String) : Core.NeverErrorKindPure TomlError.kind .invalidUtf8OrControl (LeanSwe.Toml.getField (α := α) t key) := getField_never_of .invalidUtf8OrControl (by decide) (by decide) α t key
+theorem toml_getField_never_invalidUtf8OrControl (α : Type) [FromToml α] (t : TomlTable) (key : String) :
+    Core.NeverErrorKindPure TomlError.kind .invalidUtf8OrControl (LeanSwe.Toml.getField (α := α) t key) := getField_never_of .invalidUtf8OrControl (by decide) (by decide) α t key
 /-- `Toml.getField` never returns `.numericOverflow`. -/
-theorem toml_getField_never_numericOverflow (α : Type) [FromToml α] (t : TomlTable) (key : String) : Core.NeverErrorKindPure TomlError.kind .numericOverflow (LeanSwe.Toml.getField (α := α) t key) := getField_never_of .numericOverflow (by decide) (by decide) α t key
+theorem toml_getField_never_numericOverflow (α : Type) [FromToml α] (t : TomlTable) (key : String) :
+    Core.NeverErrorKindPure TomlError.kind .numericOverflow (LeanSwe.Toml.getField (α := α) t key) := getField_never_of .numericOverflow (by decide) (by decide) α t key
 /-- `Toml.getField` never returns `.typeMismatch`. -/
-theorem toml_getField_never_typeMismatch (α : Type) [FromToml α] (t : TomlTable) (key : String) : Core.NeverErrorKindPure TomlError.kind .typeMismatch (LeanSwe.Toml.getField (α := α) t key) := getField_never_of .typeMismatch (by decide) (by decide) α t key
+theorem toml_getField_never_typeMismatch (α : Type) [FromToml α] (t : TomlTable) (key : String) :
+    Core.NeverErrorKindPure TomlError.kind .typeMismatch (LeanSwe.Toml.getField (α := α) t key) := getField_never_of .typeMismatch (by decide) (by decide) α t key
 
 private theorem getOptField_never_of (k : TomlErrorKind) (hk : k ≠ .decodeError)
     (α : Type) [FromToml α] (t : TomlTable) (key : String) :
@@ -259,21 +297,29 @@ private theorem getOptField_never_of (k : TomlErrorKind) (hk : k ≠ .decodeErro
   | some v => dsimp only; cases (FromToml.fromToml v : Except TomlError α) <;> first | trivial | exact hk.symm
 
 /-- `Toml.getOptField` never returns `.parseError`. -/
-theorem toml_getOptField_never_parseError (α : Type) [FromToml α] (t : TomlTable) (key : String) : Core.NeverErrorKindPure TomlError.kind .parseError (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .parseError (by decide) α t key
+theorem toml_getOptField_never_parseError (α : Type) [FromToml α] (t : TomlTable) (key : String) :
+    Core.NeverErrorKindPure TomlError.kind .parseError (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .parseError (by decide) α t key
 /-- `Toml.getOptField` never returns `.duplicateKey`. -/
-theorem toml_getOptField_never_duplicateKey (α : Type) [FromToml α] (t : TomlTable) (key : String) : Core.NeverErrorKindPure TomlError.kind .duplicateKey (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .duplicateKey (by decide) α t key
+theorem toml_getOptField_never_duplicateKey (α : Type) [FromToml α] (t : TomlTable) (key : String) :
+    Core.NeverErrorKindPure TomlError.kind .duplicateKey (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .duplicateKey (by decide) α t key
 /-- `Toml.getOptField` never returns `.redefinedTable`. -/
-theorem toml_getOptField_never_redefinedTable (α : Type) [FromToml α] (t : TomlTable) (key : String) : Core.NeverErrorKindPure TomlError.kind .redefinedTable (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .redefinedTable (by decide) α t key
+theorem toml_getOptField_never_redefinedTable (α : Type) [FromToml α] (t : TomlTable) (key : String) :
+    Core.NeverErrorKindPure TomlError.kind .redefinedTable (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .redefinedTable (by decide) α t key
 /-- `Toml.getOptField` never returns `.immutableInlineTable`. -/
-theorem toml_getOptField_never_immutableInlineTable (α : Type) [FromToml α] (t : TomlTable) (key : String) : Core.NeverErrorKindPure TomlError.kind .immutableInlineTable (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .immutableInlineTable (by decide) α t key
+theorem toml_getOptField_never_immutableInlineTable (α : Type) [FromToml α] (t : TomlTable) (key : String) :
+    Core.NeverErrorKindPure TomlError.kind .immutableInlineTable (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .immutableInlineTable (by decide) α t key
 /-- `Toml.getOptField` never returns `.invalidUtf8OrControl`. -/
-theorem toml_getOptField_never_invalidUtf8OrControl (α : Type) [FromToml α] (t : TomlTable) (key : String) : Core.NeverErrorKindPure TomlError.kind .invalidUtf8OrControl (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .invalidUtf8OrControl (by decide) α t key
+theorem toml_getOptField_never_invalidUtf8OrControl (α : Type) [FromToml α] (t : TomlTable) (key : String) :
+    Core.NeverErrorKindPure TomlError.kind .invalidUtf8OrControl (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .invalidUtf8OrControl (by decide) α t key
 /-- `Toml.getOptField` never returns `.numericOverflow`. -/
-theorem toml_getOptField_never_numericOverflow (α : Type) [FromToml α] (t : TomlTable) (key : String) : Core.NeverErrorKindPure TomlError.kind .numericOverflow (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .numericOverflow (by decide) α t key
+theorem toml_getOptField_never_numericOverflow (α : Type) [FromToml α] (t : TomlTable) (key : String) :
+    Core.NeverErrorKindPure TomlError.kind .numericOverflow (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .numericOverflow (by decide) α t key
 /-- `Toml.getOptField` never returns `.missingField`. -/
-theorem toml_getOptField_never_missingField (α : Type) [FromToml α] (t : TomlTable) (key : String) : Core.NeverErrorKindPure TomlError.kind .missingField (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .missingField (by decide) α t key
+theorem toml_getOptField_never_missingField (α : Type) [FromToml α] (t : TomlTable) (key : String) :
+    Core.NeverErrorKindPure TomlError.kind .missingField (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .missingField (by decide) α t key
 /-- `Toml.getOptField` never returns `.typeMismatch`. -/
-theorem toml_getOptField_never_typeMismatch (α : Type) [FromToml α] (t : TomlTable) (key : String) : Core.NeverErrorKindPure TomlError.kind .typeMismatch (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .typeMismatch (by decide) α t key
+theorem toml_getOptField_never_typeMismatch (α : Type) [FromToml α] (t : TomlTable) (key : String) :
+    Core.NeverErrorKindPure TomlError.kind .typeMismatch (LeanSwe.Toml.getOptField (α := α) t key) := getOptField_never_of .typeMismatch (by decide) α t key
 
 private theorem getPathAux_never_of (k : TomlErrorKind)
     (hk1 : k ≠ .missingField) (hk2 : k ≠ .typeMismatch) (hk3 : k ≠ .decodeError)
@@ -301,58 +347,47 @@ private theorem getPathAux_never_of (k : TomlErrorKind)
         | _ => exact hk2.symm
 
 /-- `Toml.getPath` never returns `.parseError`. -/
-theorem toml_getPath_never_parseError (α : Type) [FromToml α] (t : TomlTable) (keys : List String) : Core.NeverErrorKindPure TomlError.kind .parseError (LeanSwe.Toml.getPath (α := α) t keys) := getPathAux_never_of .parseError (by decide) (by decide) (by decide) α [] t keys
+theorem toml_getPath_never_parseError (α : Type) [FromToml α] (t : TomlTable) (keys : List String) :
+    Core.NeverErrorKindPure TomlError.kind .parseError (LeanSwe.Toml.getPath (α := α) t keys) := getPathAux_never_of .parseError (by decide) (by decide) (by decide) α [] t keys
 /-- `Toml.getPath` never returns `.duplicateKey`. -/
-theorem toml_getPath_never_duplicateKey (α : Type) [FromToml α] (t : TomlTable) (keys : List String) : Core.NeverErrorKindPure TomlError.kind .duplicateKey (LeanSwe.Toml.getPath (α := α) t keys) := getPathAux_never_of .duplicateKey (by decide) (by decide) (by decide) α [] t keys
+theorem toml_getPath_never_duplicateKey (α : Type) [FromToml α] (t : TomlTable) (keys : List String) :
+    Core.NeverErrorKindPure TomlError.kind .duplicateKey (LeanSwe.Toml.getPath (α := α) t keys) := getPathAux_never_of .duplicateKey (by decide) (by decide) (by decide) α [] t keys
 /-- `Toml.getPath` never returns `.redefinedTable`. -/
-theorem toml_getPath_never_redefinedTable (α : Type) [FromToml α] (t : TomlTable) (keys : List String) : Core.NeverErrorKindPure TomlError.kind .redefinedTable (LeanSwe.Toml.getPath (α := α) t keys) := getPathAux_never_of .redefinedTable (by decide) (by decide) (by decide) α [] t keys
+theorem toml_getPath_never_redefinedTable (α : Type) [FromToml α] (t : TomlTable) (keys : List String) :
+    Core.NeverErrorKindPure TomlError.kind .redefinedTable (LeanSwe.Toml.getPath (α := α) t keys) := getPathAux_never_of .redefinedTable (by decide) (by decide) (by decide) α [] t keys
 /-- `Toml.getPath` never returns `.immutableInlineTable`. -/
-theorem toml_getPath_never_immutableInlineTable (α : Type) [FromToml α] (t : TomlTable) (keys : List String) : Core.NeverErrorKindPure TomlError.kind .immutableInlineTable (LeanSwe.Toml.getPath (α := α) t keys) := getPathAux_never_of .immutableInlineTable (by decide) (by decide) (by decide) α [] t keys
+theorem toml_getPath_never_immutableInlineTable (α : Type) [FromToml α] (t : TomlTable) (keys : List String) :
+    Core.NeverErrorKindPure TomlError.kind .immutableInlineTable (LeanSwe.Toml.getPath (α := α) t keys) := getPathAux_never_of .immutableInlineTable (by decide) (by decide) (by decide) α [] t keys
 /-- `Toml.getPath` never returns `.invalidUtf8OrControl`. -/
-theorem toml_getPath_never_invalidUtf8OrControl (α : Type) [FromToml α] (t : TomlTable) (keys : List String) : Core.NeverErrorKindPure TomlError.kind .invalidUtf8OrControl (LeanSwe.Toml.getPath (α := α) t keys) := getPathAux_never_of .invalidUtf8OrControl (by decide) (by decide) (by decide) α [] t keys
+theorem toml_getPath_never_invalidUtf8OrControl (α : Type) [FromToml α] (t : TomlTable) (keys : List String) :
+    Core.NeverErrorKindPure TomlError.kind .invalidUtf8OrControl (LeanSwe.Toml.getPath (α := α) t keys) := getPathAux_never_of .invalidUtf8OrControl (by decide) (by decide) (by decide) α [] t keys
 /-- `Toml.getPath` never returns `.numericOverflow`. -/
-theorem toml_getPath_never_numericOverflow (α : Type) [FromToml α] (t : TomlTable) (keys : List String) : Core.NeverErrorKindPure TomlError.kind .numericOverflow (LeanSwe.Toml.getPath (α := α) t keys) := getPathAux_never_of .numericOverflow (by decide) (by decide) (by decide) α [] t keys
+theorem toml_getPath_never_numericOverflow (α : Type) [FromToml α] (t : TomlTable) (keys : List String) :
+    Core.NeverErrorKindPure TomlError.kind .numericOverflow (LeanSwe.Toml.getPath (α := α) t keys) := getPathAux_never_of .numericOverflow (by decide) (by decide) (by decide) α [] t keys
 
-private theorem allowedParse_holds (raw : String) :
-    Model.allowedParse raw (LeanSwe.Toml.parse raw) := by
-  have hwf := proof_toml_parse_returnsWellFormedTable raw
-  have herr := proof_toml_onError_returnsNonEmptyMessage raw
-  dsimp only [Core.AllPass, Core.AllPassRun, test_toml_parse_returnsWellFormedTable,
-    test_toml_onError_returnsNonEmptyMessage, LeanSwe.Toml.defaultApi, makeTomlApi,
-    Core.NondetTest.nondet, Core.NondetTest.assert, bind, pure] at hwf herr
-  change Model.allowedParse raw (parseWithNum LeanSwe.NumParse.defaultApi raw)
-  cases hp : parseWithNum LeanSwe.NumParse.defaultApi raw with
-  | ok parsed =>
-    rw [hp] at hwf
-    refine ⟨hwf.1, fun doc tape hr => ?_⟩
-    have hrt := proof_toml_render_parse_roundTrip (doc, tape)
-    dsimp only [Core.AllPass, Core.AllPassRun, test_toml_render_parse_roundTrip,
-      LeanSwe.Toml.defaultApi, makeTomlApi, Core.NondetTest.nondet, Core.NondetTest.assume,
-      Core.NondetTest.assert, bind, pure] at hrt
-    rw [hr] at hrt
-    dsimp only at hrt
-    rw [hp] at hrt
-    exact hrt.1
-  | error e =>
+private theorem obeysInverseRender_parse :
+    Core.ObeysInverseRender LeanSwe.Toml.parse Model.render Model.WellFormedTable
+      Model.TomlTableEquiv TomlError.message := by
+  refine Core.ObeysInverseRender.of_injective render_injective
+    (fun raw out hp => parseWithNum_ok_has_tape LeanSwe.NumParse.defaultApi validNumApi_defaultApi raw out hp)
+    (fun raw e hp => ⟨?_, fun a t hr => ?_⟩)
+  · have herr := allPass_onError LeanSwe.NumParse.defaultApi raw
+    dsimp only [Core.AllPass, Core.AllPassRun, test_toml_onError_returnsNonEmptyMessage,
+      makeTomlApi, Core.NondetTest.nondet, Core.NondetTest.assert, bind, pure] at herr
+    change parseWithNum LeanSwe.NumParse.defaultApi raw = .error e at hp
     rw [hp] at herr
-    refine ⟨herr.1, fun doc tape hr => ?_⟩
-    have hrt := proof_toml_render_parse_roundTrip (doc, tape)
-    dsimp only [Core.AllPass, Core.AllPassRun, test_toml_render_parse_roundTrip,
-      LeanSwe.Toml.defaultApi, makeTomlApi, Core.NondetTest.nondet, Core.NondetTest.assume,
-      Core.NondetTest.assert, bind, pure] at hrt
-    rw [hr] at hrt
-    dsimp only at hrt
-    rw [hp] at hrt
-    exact hrt.1
+    simpa using herr.1
+  · obtain ⟨_, hp_ok⟩ := render_imp_parseWithNum_ok LeanSwe.NumParse.defaultApi validNumApi_defaultApi a t raw hr
+    change parseWithNum LeanSwe.NumParse.defaultApi raw = .error e at hp
+    rw [hp] at hp_ok
+    nomatch hp_ok
 
 private theorem nonEmptyMsg_ne_empty (msg : String) : nonEmptyMsg msg ≠ "" := by
   unfold nonEmptyMsg
   by_cases h : msg.isEmpty = true
   · simp [h]
   · simp only [h, Bool.false_eq_true, ↓reduceIte]
-    intro he
-    subst he
-    exact h rfl
+    intro he; subst he; exact h rfl
 
 private theorem nonEmptyMsg_not_isEmpty (msg : String) : !(nonEmptyMsg msg).isEmpty = true := by
   simp [nonEmptyMsg_ne_empty]
@@ -418,18 +453,19 @@ private theorem allowedGetPathAux_holds {α : Type} [FromToml α]
         | table sub => exact ih (k :: revPrefix) sub
         | _ => exact ⟨_, rfl, rfl, rfl, nonEmptyMsg_not_isEmpty _⟩
 
-/-- Full public `Interface` refinement of `LeanSwe.Toml` against `LeanSwe.Toml.Model`. -/
-theorem refines_model :
-    Core.RefinesPure LeanSwe.Toml.parse Model.allowedParse ∧
-    Core.RefinesPure LeanSwe.Toml.format Model.allowedFormat ∧
-    Core.RefinesPure LeanSwe.Toml.getTable Model.allowedGetTable ∧
-    Core.RefinesPure LeanSwe.Toml.getArray Model.allowedGetArray ∧
-    (∀ {α : Type} [FromToml α], Core.RefinesPure (@LeanSwe.Toml.decode α _) (@Model.allowedDecode α _)) ∧
-    (∀ {α : Type} [ToToml α], Core.RefinesPureEq (@LeanSwe.Toml.encode α _) (@Model.encodeModel α _)) ∧
-    (∀ {α : Type} [FromToml α], Core.RefinesPure2 (@LeanSwe.Toml.getField α _) (@Model.allowedGetField α _)) ∧
-    (∀ {α : Type} [FromToml α], Core.RefinesPure2 (@LeanSwe.Toml.getOptField α _) (@Model.allowedGetOptField α _)) ∧
-    (∀ {α : Type} [FromToml α], Core.RefinesPure2 (@LeanSwe.Toml.getPath α _) (@Model.allowedGetPath α _)) :=
-  ⟨allowedParse_holds,
+/-- Full public `Interface` obedience of `LeanSwe.Toml` against `LeanSwe.Toml.Model`. -/
+theorem obeys_model :
+    Core.ObeysInverseRender LeanSwe.Toml.parse Model.render Model.WellFormedTable
+      Model.TomlTableEquiv TomlError.message ∧
+    Core.ObeysPure LeanSwe.Toml.format Model.allowedFormat ∧
+    Core.ObeysPure LeanSwe.Toml.getTable Model.allowedGetTable ∧
+    Core.ObeysPure LeanSwe.Toml.getArray Model.allowedGetArray ∧
+    (∀ {α : Type} [FromToml α], Core.ObeysPure (@LeanSwe.Toml.decode α _) (@Model.allowedDecode α _)) ∧
+    (∀ {α : Type} [ToToml α], Core.ObeysPureEq (@LeanSwe.Toml.encode α _) (@Model.encodeModel α _)) ∧
+    (∀ {α : Type} [FromToml α], Core.ObeysPure2 (@LeanSwe.Toml.getField α _) (@Model.allowedGetField α _)) ∧
+    (∀ {α : Type} [FromToml α], Core.ObeysPure2 (@LeanSwe.Toml.getOptField α _) (@Model.allowedGetOptField α _)) ∧
+    (∀ {α : Type} [FromToml α], Core.ObeysPure2 (@LeanSwe.Toml.getPath α _) (@Model.allowedGetPath α _)) :=
+  ⟨obeysInverseRender_parse,
    formatWithNum_allowedFormat LeanSwe.NumParse.defaultApi validNumApi_defaultApi,
    allowedGetTable_holds,
    allowedGetArray_holds,

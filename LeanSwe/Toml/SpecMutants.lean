@@ -51,11 +51,12 @@ private def buggyWrongAstParseApi : TomlApi :=
 
 example : ¬ Core.AllPass (test_toml_render_parse_roundTrip buggyWrongAstParseApi) := by
   intro h
-  have h0 := h (#[], { entries := [] })
-  have hr : Model.render #[] { entries := [] } = some "\n" := by
-    simp [Model.render, Model.wellFormedTableBool, Model.wellFormedValueBool.wellFormedTableListBool,
-      Model.noDupKeysBool, Model.renderTablePlan, Model.isPlanPermutation, Model.noDupStringsBool,
-      Model.renderInlineEntries, Model.renderSectionEntries]
+  have h0 := h (#[], {})
+  have hr : Model.render #[] {} = some "" := by
+    simp [Model.render, Model.renderLF, Model.wellFormedTableBool,
+      Model.wellFormedValueBool.wellFormedTableListBool, Model.noDupKeysBool,
+      Model.isEofTrivia, Model.checkEofTriviaAux, Model.renderStmts,
+      Model.skelMatchesEntries, Model.skelMatchesEntriesAll, Model.expandNewlines]
   simp [buggyWrongAstParseApi, hr, Model.TomlTableEquiv, Model.TomlTableEquivList,
     Model.lookupKeyList, assert] at h0
 
