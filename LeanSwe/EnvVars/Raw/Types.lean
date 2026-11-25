@@ -84,4 +84,12 @@ structure RawEnvVarsOpsM (m : Type → Type) where
 /-- Concrete `IO` thin-wrapper API bundle exported by `LeanSwe.EnvVars.Raw`. -/
 abbrev RawEnvVarsOps := RawEnvVarsOpsM IO
 
+/-- Full capability bundle for `LeanSwe.EnvVars.Raw`, extending `RawEnvVarsOpsM m` with raw `listEnvironBytes`. -/
+structure RawEnvVarsBundleM (m : Type → Type) extends RawEnvVarsOpsM m where
+  /-- Snapshot raw NUL-free byte entries directly from `environ(7)` in order. -/
+  listEnvironBytes : m (Array ByteArray)
+
+/-- Concrete `IO` full capability bundle exported by `LeanSwe.EnvVars.Raw`. -/
+abbrev RawEnvVarsBundle := RawEnvVarsBundleM IO
+
 end LeanSwe.EnvVars.Raw

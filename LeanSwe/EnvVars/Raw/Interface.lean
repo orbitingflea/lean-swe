@@ -13,9 +13,13 @@ private def posixRawOps : PosixRawOps :=
   { getEnvBytes := fun key => rawGetEnvBytes key
     listEnvironBytes := rawListEnvironBytes }
 
+/-- Full OS environment primitive bundle including raw `listEnvironBytes`, backed by `c/envvars_shim.c`. -/
+abbrev defaultOpsBase : RawEnvVarsBundle :=
+  Internal.mkRawBundle posixRawOps
+
 /-- Default minimal OS environment primitives backed by `c/envvars_shim.c` (`getenv(3)` and `environ(7)`). -/
 def defaultOps : RawEnvVarsOps :=
-  Internal.mkRawOps posixRawOps
+  defaultOpsBase.toRawEnvVarsOpsM
 
 /-- Convert a raw OS error record into a normalized `EnvVarsError` with non-empty message. -/
 @[inline] def mapRawError (err : EnvVarsRawError) : EnvVarsError :=
@@ -31,6 +35,6 @@ def defaultOps : RawEnvVarsOps :=
 
 /-- Snapshot raw NUL-free byte entries directly from `environ(7)` in order without UTF-8 decoding. -/
 @[inline] def listEnvironBytes : IO (Array ByteArray) :=
-  posixRawOps.listEnvironBytes
+  defaultOpsBase.listEnvironBytes
 
 end LeanSwe.EnvVars.Raw

@@ -63,4 +63,16 @@ structure RawCryptoHashOpsM (m : Type → Type) where
 /-- Concrete `IO` primitive bundle exported by `LeanSwe.CryptoHash.Raw`. -/
 abbrev RawCryptoHashOps := RawCryptoHashOpsM IO
 
+/-- OpenSSL `libcrypto` C-ABI operations parameterized over effect monad `m`. -/
+structure CryptoHashFfiOpsM (m : Type → Type) where
+  /-- Compute raw digest bytes for algorithm tag (`0 = SHA256`, `1 = SHA512`). -/
+  digestRaw : UInt8 → ByteArray → m (UInt32 × UInt64 × String × ByteArray)
+  /-- Compute raw 32-byte HMAC-SHA256 tag over `key` and `msg`. -/
+  hmacSha256Raw : ByteArray → ByteArray → m (UInt32 × UInt64 × String × ByteArray)
+  /-- Constant-time byte-slice comparison via OpenSSL `CRYPTO_memcmp`. -/
+  ctEqualRaw : ByteArray → ByteArray → m Bool
+
+/-- Concrete `BaseIO` OpenSSL `libcrypto` C-ABI operations injected by `Interface`. -/
+abbrev CryptoHashFfiOps := CryptoHashFfiOpsM BaseIO
+
 end LeanSwe.CryptoHash.Raw

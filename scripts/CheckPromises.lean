@@ -271,8 +271,15 @@ private def isAllowedProcessClosureModule (m : Name) : Bool :=
       let last := nameLastStr m
       last != "RuntimeTests" && last != "SpecMutants")
 
+private def isAllowedRawSubmodule (pkgPrefix : List Name) (m : Name) : Bool :=
+  m.components.take pkgPrefix.length == pkgPrefix &&
+    let last := nameLastStr m
+    last != "RuntimeTests" && last != "SpecMutants"
+
 private def isAllowedEnvVarsClosureModule (m : Name) : Bool :=
-  m.getRoot == `Core || envVarsAuditModules.contains m
+  m.getRoot == `Core ||
+    envVarsAuditModules.contains m ||
+    isAllowedRawSubmodule [`LeanSwe, `EnvVars, `Raw] m
 
 private def isAllowedPostForkClosureModule (m : Name) : Bool :=
   m.getRoot == `Core || m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] || postForkAuditModules.contains m
@@ -288,10 +295,13 @@ private def isPostForkVerifiedMod (m : Name) : Bool :=
 private def isAllowedCryptoHashClosureModule (m : Name) : Bool :=
   m.getRoot == `Core ||
     cryptoHashAuditModules.contains m ||
-    cryptoHashVectorModules.contains m
+    cryptoHashVectorModules.contains m ||
+    isAllowedRawSubmodule [`LeanSwe, `CryptoHash, `Raw] m
 
 private def isAllowedSqliteClosureModule (m : Name) : Bool :=
-  m.getRoot == `Core || sqliteAuditModules.contains m
+  m.getRoot == `Core ||
+    sqliteAuditModules.contains m ||
+    isAllowedRawSubmodule [`LeanSwe, `Sqlite, `Raw] m
 
 private def allowedTimeRandExternSyms : Std.HashMap Name String :=
   Std.HashMap.emptyWithCapacity 4
@@ -586,9 +596,10 @@ private def isAllowedSqliteInitDecl (modName cName : Name) : Bool :=
     (privateToUserName? cName |>.getD cName) == `LeanSwe.Sqlite.Raw.gHandleTable
 
 private def allowedSqliteInitConsts : Array Name := #[
-  ``Std.Mutex, ``Std.Mutex.new, ``List.nil, ``Prod,
+  ``Std.Mutex, ``Std.Mutex.new, ``Std.BaseMutex, ``Nat, ``List.nil, ``Prod,
   ``OfNat.ofNat, ``UInt64, ``UInt64.instOfNat, ``Unit, ``liftM, ``BaseIO, ``EIO, ``IO.Error,
   ``instMonadLiftTOfMonadLift, ``instMonadLiftBaseIOEIO, ``instMonadLiftT,
+  `LeanSwe.Sqlite.Raw.StmtLockSlot,
   `LeanSwe.Sqlite.Raw.RawHandleState, `LeanSwe.Sqlite.Raw.RawHandleState.mk,
   `LeanSwe.Sqlite.Raw.RawHandleTable, `LeanSwe.Sqlite.Raw.RawHandleTable.mk,
   `LeanSwe.Sqlite.Raw.RawDbHandle, `LeanSwe.Sqlite.Raw.RawStmtHandle, `LeanSwe.Sqlite.Raw.StmtHandle
@@ -3147,15 +3158,12 @@ private def loadPackageManifest (repoDir : System.FilePath) : IO (Except String 
 stale entries as follow-up PRs land. -/
 private def modelPresenceAllowlist : Array String := #[
   "MISSING_MODEL|LeanSwe.Json",
-  "MISSING_OBEYS_MODEL|LeanSwe.CryptoHash.Raw",
-  "MISSING_OBEYS_MODEL|LeanSwe.EnvVars.Raw",
   "MISSING_OBEYS_MODEL|LeanSwe.Git",
   "MISSING_OBEYS_MODEL|LeanSwe.Json",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Files",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Net",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Process",
-  "MISSING_OBEYS_MODEL|LeanSwe.ProcessSandbox",
-  "MISSING_OBEYS_MODEL|LeanSwe.Sqlite.Raw"
+  "MISSING_OBEYS_MODEL|LeanSwe.ProcessSandbox"
 ]
 
 /-- Exact shrinking ratchet allowlist of non-pure zero-`@[extern]` packages currently wiring
@@ -3309,6 +3317,15 @@ private def extractStepFromConj? (ab : Expr) : Option (Name × Array Expr × Exp
   else
     none
 
+private def countExplicitBinders (e : Expr) : Nat := Id.run do
+  let mut cur := e.consumeMData
+  let mut acc : Nat := 0
+  while cur.isForall do
+    let .forallE _ _ body bi := cur | break
+    if bi == .default then acc := acc + 1
+    cur := body.consumeMData
+  return acc
+
 private def unfoldThinIfaceBuilder (env : Environment) (pkg c : Name) : Name :=
   let step1 :=
     if modOfConst env c == Name.str pkg "Interface" then
@@ -3316,7 +3333,10 @@ private def unfoldThinIfaceBuilder (env : Environment) (pkg c : Name) : Name :=
       | some (.defnInfo dv) =>
         match (peelLambdas (etaReduceExpr dv.value)).consumeMData.getAppFn.consumeMData with
         | .const tgt _ =>
-          if modOfConst env tgt == Name.str pkg "Impl" && tgt.getString!.startsWith "mk" then tgt else c
+          if modOfConst env tgt == Name.str pkg "Impl" && tgt.getString!.startsWith "mk" &&
+              (env.find? tgt |>.any fun tci => countExplicitBinders dv.type <= countExplicitBinders tci.type) then
+            tgt
+          else c
         | _ => c
       | _ => c
     else c
@@ -3325,7 +3345,10 @@ private def unfoldThinIfaceBuilder (env : Environment) (pkg c : Name) : Name :=
     | some (.defnInfo dv) =>
       match (peelLambdas (etaReduceExpr dv.value)).consumeMData.getAppFn.consumeMData with
       | .const tgt _ =>
-        if modOfConst env tgt == Name.str pkg "Impl" && tgt.getString!.startsWith "mk" then tgt else step1
+        if modOfConst env tgt == Name.str pkg "Impl" && tgt.getString!.startsWith "mk" &&
+            (env.find? tgt |>.any fun tci => countExplicitBinders dv.type <= countExplicitBinders tci.type) then
+          tgt
+        else step1
       | _ => step1
     | _ => step1
   else step1
@@ -3527,7 +3550,7 @@ private def isSynthCompilerAux (n : Name) : Bool :=
     s.startsWith "match_" || s.startsWith "_unsafe_rec" || s.startsWith "_cstage" ||
     s.endsWith "_eq" || s.startsWith "eq_"
 
-private def isClassInstanceOrAuxSynth (env : Environment) (n : Name) (ty : Expr) : MetaM Bool := do
+private def isDirectClassInstanceSynth (env : Environment) (n : Name) (ty : Expr) : MetaM Bool := do
   if ← Meta.isInstance n then return true
   if (nameLastStr n).startsWith "inst" then
     let isCls ← Meta.forallTelescope ty fun _ ret => do
@@ -3536,6 +3559,23 @@ private def isClassInstanceOrAuxSynth (env : Environment) (n : Name) (ty : Expr)
       | _ => return false
     if isCls then return true
   return false
+
+private def isDerivedInhabitedDefaultAuxSynth (env : Environment) (n : Name) (ty : Expr) : MetaM Bool := do
+  if nameLastStr n != "default" || ty.consumeMData.isForall then return false
+  let pfx := n.getPrefix
+  if !(nameLastStr pfx).startsWith "instInhabited" || !(← Meta.isInstance pfx) then return false
+  let some (.defnInfo pv) := env.find? pfx | return false
+  if !pv.value.getUsedConstants.contains n then return false
+  Meta.forallTelescope pv.type fun _ ret => do
+    let rc := ret.consumeMData
+    if !rc.isAppOfArity ``Inhabited 1 then return false
+    match rc.appArg!.consumeMData.getAppFn.consumeMData with
+    | .const ind _ => return (env.find? ind) matches some (.inductInfo _) && !Lean.isClass env ind
+    | _ => return false
+
+private def isClassInstanceOrAuxSynth (env : Environment) (n : Name) (ty : Expr) : MetaM Bool := do
+  if ← isDirectClassInstanceSynth env n ty then return true
+  isDerivedInhabitedDefaultAuxSynth env n ty
 
 private def isCapBundleSynth (env : Environment) (knownPkgs : Array Name) (pkg cName : Name) (ty : Expr) :
     MetaM Bool := do

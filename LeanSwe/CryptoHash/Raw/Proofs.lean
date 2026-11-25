@@ -1,5 +1,7 @@
+import Core.Obeys
 import LeanSwe.CryptoHash.Raw.Types
 import LeanSwe.CryptoHash.Raw.Model
+import LeanSwe.CryptoHash.Raw.Model.Refines
 import LeanSwe.CryptoHash.Raw.Impl
 import LeanSwe.CryptoHash.Raw.Interface
 import LeanSwe.CryptoHash.Raw.SpecTests
@@ -32,21 +34,21 @@ theorem raw_mapRawError_mapsKindsAndNonEmptyMessage :
   cases raw with
   | invalidArgument detail =>
     dsimp [test_cryptohashraw_mapRawError_mapsKindsAndNonEmptyMessage, defaultOps,
-      Internal.mkRawOps, Internal.mapRawError, Core.NondetTest.assert, Bind.bind]
+      Internal.mkRawOps, Internal.mkRawOpsM, Internal.mapRawError, Core.NondetTest.assert, Bind.bind]
     refine ⟨?_, ?_, ?_⟩
     · exact nonEmptyMsg_ne_empty "invalid cryptohash argument" detail (by decide)
     · exact ⟨rfl, rfl⟩
     · trivial
   | invalidHexInput detail =>
     dsimp [test_cryptohashraw_mapRawError_mapsKindsAndNonEmptyMessage, defaultOps,
-      Internal.mkRawOps, Internal.mapRawError, Core.NondetTest.assert, Bind.bind]
+      Internal.mkRawOps, Internal.mkRawOpsM, Internal.mapRawError, Core.NondetTest.assert, Bind.bind]
     refine ⟨?_, ?_, ?_⟩
     · exact nonEmptyMsg_ne_empty "invalid hex input" detail (by decide)
     · exact ⟨rfl, rfl⟩
     · trivial
   | lengthError expected got detail =>
     dsimp [test_cryptohashraw_mapRawError_mapsKindsAndNonEmptyMessage, defaultOps,
-      Internal.mkRawOps, Internal.mapRawError, Core.NondetTest.assert, Bind.bind]
+      Internal.mkRawOps, Internal.mkRawOpsM, Internal.mapRawError, Core.NondetTest.assert, Bind.bind]
     refine ⟨?_, ?_, ?_⟩
     · exact nonEmptyMsg_ne_empty s!"length mismatch: expected {expected} bytes, got {got}" detail (by
         intro h
@@ -56,14 +58,14 @@ theorem raw_mapRawError_mapsKindsAndNonEmptyMessage :
     · trivial
   | opensslError code detail =>
     dsimp [test_cryptohashraw_mapRawError_mapsKindsAndNonEmptyMessage, defaultOps,
-      Internal.mkRawOps, Internal.mapRawError, Core.NondetTest.assert, Bind.bind]
+      Internal.mkRawOps, Internal.mkRawOpsM, Internal.mapRawError, Core.NondetTest.assert, Bind.bind]
     refine ⟨?_, ?_, ?_⟩
     · exact nonEmptyMsg_ne_empty "openssl crypto error" detail (by decide)
     · exact ⟨rfl, rfl⟩
     · trivial
   | userError detail =>
     dsimp [test_cryptohashraw_mapRawError_mapsKindsAndNonEmptyMessage, defaultOps,
-      Internal.mkRawOps, Internal.mapRawError, Core.NondetTest.assert, Bind.bind]
+      Internal.mkRawOps, Internal.mkRawOpsM, Internal.mapRawError, Core.NondetTest.assert, Bind.bind]
     refine ⟨?_, ?_, ?_⟩
     · exact nonEmptyMsg_ne_empty "cryptohash error" detail (by decide)
     · exact ⟨rfl, rfl⟩
@@ -177,7 +179,7 @@ private theorem decodeShimError_ne_invalidHex (status : UInt32) (code : UInt64) 
 theorem defaultOps_digestRaw_outcome (alg : HashAlg) (data : ByteArray) (w : Void IO.RealWorld) :
     (∃ bs w', (defaultOps.digestRaw alg data) w = .ok (.ok bs) w' ∧ bs.size = digestLen alg) ∨
     (∃ e w', (defaultOps.digestRaw alg data) w = .ok (.error e) w' ∧ e.kind ≠ .invalidHex) := by
-  dsimp [defaultOps, Internal.mkRawOps]
+  dsimp [defaultOps, Internal.mkRawOps, Internal.mkRawOpsM]
   rw [io_bind_baseIO]
   rcases hres : ((_ : BaseIO _) w).val with ⟨status, code, detail, bs⟩
   dsimp only
@@ -202,7 +204,7 @@ theorem defaultOps_digestRaw_outcome (alg : HashAlg) (data : ByteArray) (w : Voi
 theorem defaultOps_hmacSha256Raw_outcome (key msg : ByteArray) (w : Void IO.RealWorld) :
     (∃ bs w', (defaultOps.hmacSha256Raw key msg) w = .ok (.ok bs) w' ∧ bs.size = 32) ∨
     (∃ e w', (defaultOps.hmacSha256Raw key msg) w = .ok (.error e) w' ∧ e.kind ≠ .invalidHex) := by
-  dsimp [defaultOps, Internal.mkRawOps]
+  dsimp [defaultOps, Internal.mkRawOps, Internal.mkRawOpsM]
   rw [io_bind_baseIO]
   rcases hres : ((_ : BaseIO _) w).val with ⟨status, code, detail, bs⟩
   dsimp only
@@ -227,7 +229,7 @@ theorem defaultOps_hmacSha256Raw_outcome (key msg : ByteArray) (w : Void IO.Real
 theorem defaultOps_ctEqualRaw_outcome (a b : ByteArray) (w : Void IO.RealWorld) :
     (a.size ≠ b.size ∧ ∃ e w', (defaultOps.ctEqualRaw a b) w = .ok (.error e) w' ∧ e.kind = .lengthMismatch) ∨
     (a.size = b.size ∧ ∃ eq w', (defaultOps.ctEqualRaw a b) w = .ok (.ok eq) w') := by
-  dsimp [defaultOps, Internal.mkRawOps]
+  dsimp [defaultOps, Internal.mkRawOps, Internal.mkRawOpsM]
   by_cases hne : (a.size != b.size) = true
   · simp only [hne, ↓reduceIte]
     rw [io_pure_eq]
@@ -289,5 +291,93 @@ theorem raw_modelDigestsValidLengthsAndVectors :
   exact ⟨rfl, digestBytesModel_size alg msg, rfl, hmacSha256Bytes_size key msg,
     sha256_empty_vec, sha256_abc_vec, sha512_empty_vec, sha512_abc_vec,
     hmac_tc1_vec, hmac_tc2_vec, hmac_tc6_vec, hmac_empty_vec, trivial⟩
+
+private theorem internal_mapRawError_eq_model (err : CryptoHashRawError) :
+    Internal.mapRawError err = Model.mapRawErrorModel err := by
+  cases err <;> rfl
+
+private theorem mapRawError_obeys :
+    Core.ObeysPureEq mapRawError Model.mapRawErrorModel := by
+  intro err
+  exact internal_mapRawError_eq_model err
+
+private theorem stateM_map_run {W α β : Type} (f : α → β) (m : StateM W α) (w : W) :
+    (f <$> m).run w = (f (m.run w).1, (m.run w).2) := rfl
+
+private theorem stateM_bind_run {W α β : Type} (m : StateM W α) (k : α → StateM W β) (w : W) :
+    (m >>= k).run w = (k (m.run w).1).run (m.run w).2 := rfl
+
+private theorem stateM_pure_run {W α : Type} (a : α) (w : W) :
+    (pure a : StateM W α).run w = (a, w) := rfl
+
+private theorem mkRawOpsM_obeys :
+    Core.ObeysStepFrom id Model.rawStepWf
+      Model.execFfiStep Model.allowedFfiStep Model.rawStepWf
+      Internal.mkRawOpsM Model.execPkgStep Model.allowedPkgStep := by
+  intro W proj ffi hFfi w req _
+  cases req with
+  | digestRaw alg data =>
+    cases alg with
+    | sha256 =>
+      have hStep := hFfi w (.digestRaw 0 data) rfl
+      have hOut : ((ffi.digestRaw 0 data).run w).1 = (0, 0, "", Model.sha256Bytes data) := hStep.2
+      have hSz : (Model.sha256Bytes data).size = 32 := digestBytesModel_size .sha256 data
+      simp only [Model.execPkgStep, Internal.mkRawOpsM, Model.allowedPkgStep,
+        Model.digestBytesModel, Function.comp, id,
+        stateM_map_run, stateM_bind_run, hOut, digestLen, hSz,
+        bne_self_eq_false, Bool.false_eq_true, ↓reduceIte, stateM_pure_run]
+      trivial
+    | sha512 =>
+      have hStep := hFfi w (.digestRaw 1 data) rfl
+      have hOut : ((ffi.digestRaw 1 data).run w).1 = (0, 0, "", Model.sha512Bytes data) := hStep.2
+      have hSz : (Model.sha512Bytes data).size = 64 := digestBytesModel_size .sha512 data
+      simp only [Model.execPkgStep, Internal.mkRawOpsM, Model.allowedPkgStep,
+        Model.digestBytesModel, Function.comp, id,
+        stateM_map_run, stateM_bind_run, hOut, digestLen, hSz,
+        bne_self_eq_false, Bool.false_eq_true, ↓reduceIte, stateM_pure_run]
+      trivial
+  | hmacSha256Raw key msg =>
+    have hStep := hFfi w (.hmacSha256Raw key msg) rfl
+    have hOut : ((ffi.hmacSha256Raw key msg).run w).1 = (0, 0, "", Model.hmacSha256Bytes key msg) :=
+      hStep.2
+    have hSz : (Model.hmacSha256Bytes key msg).size = 32 := hmacSha256Bytes_size key msg
+    simp only [Model.execPkgStep, Internal.mkRawOpsM, Model.allowedPkgStep, Function.comp, id,
+      stateM_map_run, stateM_bind_run, hOut, hSz,
+      bne_self_eq_false, Bool.false_eq_true, ↓reduceIte, stateM_pure_run]
+    trivial
+  | ctEqualRaw a b =>
+    by_cases hne : (a.size != b.size) = true
+    · simp only [Model.execPkgStep, Internal.mkRawOpsM, Model.allowedPkgStep,
+        Model.ctEqualRawModel, Function.comp, id,
+        hne, ↓reduceIte, stateM_map_run, stateM_pure_run, internal_mapRawError_eq_model]
+      trivial
+    · have hFalse : (a.size != b.size) = false := Bool.eq_false_iff.mpr hne
+      have hStep := hFfi w (.ctEqualRaw a b) rfl
+      have hOut : ((ffi.ctEqualRaw a b).run w).1 = (a == b) := hStep.2
+      simp only [Model.execPkgStep, Internal.mkRawOpsM, Model.allowedPkgStep,
+        Model.ctEqualRawModel, Function.comp, id,
+        hFalse, Bool.false_eq_true, ↓reduceIte,
+        stateM_map_run, stateM_bind_run, hOut, stateM_pure_run]
+      trivial
+
+/-- Canonical `Core.Obeys*` specification theorem for `LeanSwe.CryptoHash.Raw`. -/
+theorem obeys_model :
+    Core.ObeysPureEq mapRawError Model.mapRawErrorModel ∧
+    Core.ObeysStepFrom id Model.rawStepWf
+      Model.execFfiStep Model.allowedFfiStep Model.rawStepWf
+      Internal.mkRawOpsM Model.execPkgStep Model.allowedPkgStep :=
+  ⟨mapRawError_obeys, mkRawOpsM_obeys⟩
+
+private theorem modelStateFfiOps_obeys :
+    Core.ObeysStepId Model.rawStepWf
+      (Model.execFfiStep Model.modelStateFfiOps) Model.allowedFfiStep := by
+  intro s req _
+  cases req <;> exact ⟨rfl, rfl⟩
+
+/-- Concrete non-vacuity witness instantiating `obeys_model` over `Model.modelStateFfiOps`. -/
+theorem obeys_model_nonvacuous :
+    Core.ObeysStepId Model.rawStepWf
+      (Model.execPkgStep (Internal.mkRawOpsM Model.modelStateFfiOps)) Model.allowedPkgStep :=
+  obeys_model.2 id Model.modelStateFfiOps modelStateFfiOps_obeys
 
 end LeanSwe.CryptoHash.Raw.Proofs

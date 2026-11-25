@@ -3,7 +3,8 @@ import LeanSwe.EnvVars.Raw.Types
 namespace LeanSwe.EnvVars.Raw.Internal
 
 open LeanSwe.EnvVars.Raw
-  (EnvVarsErrorKind EnvVarsError EnvVarsRawError PosixRawOpsM PosixRawOps RawEnvVarsOpsM RawEnvVarsOps)
+  (EnvVarsErrorKind EnvVarsError EnvVarsRawError PosixRawOpsM PosixRawOps
+   RawEnvVarsOpsM RawEnvVarsOps RawEnvVarsBundleM RawEnvVarsBundle)
 
 /-- Return `msg` if non-empty, or `fallback` otherwise. -/
 def nonEmptyMsg (fallback msg : String) : String :=
@@ -88,5 +89,10 @@ def mkRawOps {m : Type → Type} [Monad m] (posix : PosixRawOpsM m) : RawEnvVars
     listEnv := do
       let entries ← posix.listEnvironBytes
       return (decodeEnvironAcc [] entries.toList).map List.toArray }
+
+/-- Build the full `RawEnvVarsBundleM m` capability bundle from a `PosixRawOpsM m` backend. -/
+abbrev mkRawBundle {m : Type → Type} [Monad m] (posix : PosixRawOpsM m) : RawEnvVarsBundleM m :=
+  { toRawEnvVarsOpsM := mkRawOps posix
+    listEnvironBytes := posix.listEnvironBytes }
 
 end LeanSwe.EnvVars.Raw.Internal
