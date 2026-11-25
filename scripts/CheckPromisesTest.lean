@@ -331,6 +331,44 @@ def main (_ : List String) : IO UInt32 := do
       return (baselineRootsCsv, "", "", "")
     ) none
 
+    runMutantCase bin tmpRoot baseDir realLibAbs "leaf_defaultOpsBase_and_thin_mk_wrapper_ok" (fun root libDir leanPath => do
+      writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Types.lean")
+        ("namespace LeanSwe.MiniLeaf\nstructure LeafOpsM (m : Type → Type) (fd : Type) where\n  ping : Nat → m fd\n" ++
+         "abbrev HandleLeafOpsM (m : Type → Type) : Type := LeafOpsM m Nat\nabbrev LeafOps := HandleLeafOpsM IO\nend LeanSwe.MiniLeaf\n")
+      writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Model.lean")
+        ("import LeanSwe.MiniLeaf.Types\nnamespace LeanSwe.MiniLeaf.Model\ndef leafWf (_ : Nat) : Bool := true\n" ++
+         "def execLeaf {W : Type} (ops : HandleLeafOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.ping req\n" ++
+         "def allowedLeaf (s req out s' : Nat) : Prop := out = req ∧ s' = s\nend LeanSwe.MiniLeaf.Model\n")
+      writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Impl.lean")
+        ("import LeanSwe.MiniLeaf.Types\nnamespace LeanSwe.MiniLeaf.Internal\n" ++
+         "def mkOpsM {m : Type → Type} {fd : Type} [Monad m] (raw : LeafOpsM m fd) : LeafOpsM m fd := { ping := raw.ping }\n" ++
+         "def mkOpsBase (raw : HandleLeafOpsM BaseIO) : HandleLeafOpsM BaseIO := mkOpsM raw\nend LeanSwe.MiniLeaf.Internal\n")
+      writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Interface.lean")
+        ("import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"mini_leaf_raw_ping\"]\nprivate opaque rawPing : Nat → BaseIO Nat\n" ++
+         "def defaultOpsBase : HandleLeafOpsM BaseIO := Internal.mkOpsBase { ping := rawPing }\n" ++
+         "def defaultOps : LeafOps := { ping := fun n => liftM (defaultOpsBase.ping n) }\n" ++
+         "def ping (n : Nat) : IO Nat := defaultOps.ping n\nend LeanSwe.MiniLeaf\n")
+      writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniLeaf.Model\nimport LeanSwe.MiniLeaf.Interface\nnamespace LeanSwe.MiniLeaf.Proofs\n" ++
+         "theorem obeys_model : Core.ObeysStepFrom id Model.leafWf Model.execLeaf Model.allowedLeaf Model.leafWf Internal.mkOpsM Model.execLeaf Model.allowedLeaf :=\n" ++
+         "  fun _ _ h => h\nend LeanSwe.MiniLeaf.Proofs\n")
+      writeFileCreatingParents (root / "LeanSwe/MiniComp/Model.lean")
+        ("import LeanSwe.MiniLeaf.Types\nimport LeanSwe.MiniLeaf.Model\nimport LeanSwe.MiniComp.Types\nnamespace LeanSwe.MiniComp.Model\ndef compWf (_ : Nat) : Bool := true\n" ++
+         "def execRaw {W : Type} (ops : LeanSwe.MiniLeaf.HandleLeafOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.ping req\n" ++
+         "def allowedRaw (s req out s' : Nat) : Prop := out = req ∧ s' = s\n" ++
+         "def execPkg {W : Type} (api : CompApiM (StateM W)) (req : Nat) : StateM W Nat := api.callPing req\n" ++
+         "def allowedPkg (s req out s' : Nat) : Prop := out = req ∧ s' = s\nend LeanSwe.MiniComp.Model\n")
+      writeFileCreatingParents (root / "LeanSwe/MiniComp/Impl.lean")
+        ("import LeanSwe.MiniLeaf.Types\nimport LeanSwe.MiniComp.Types\nnamespace LeanSwe.MiniComp.Internal\n" ++
+         "def mkApiM {m : Type → Type} [Monad m] (leaf : LeanSwe.MiniLeaf.HandleLeafOpsM m) : CompApiM m := { callPing := fun n => leaf.ping n }\nend LeanSwe.MiniComp.Internal\n")
+      recompile root libDir leanPath #[
+        "LeanSwe/MiniLeaf/Types.lean", "LeanSwe/MiniLeaf/Model.lean", "LeanSwe/MiniLeaf/Impl.lean",
+        "LeanSwe/MiniLeaf/Interface.lean", "LeanSwe/MiniLeaf/Proofs.lean",
+        "LeanSwe/MiniComp/Model.lean", "LeanSwe/MiniComp/Impl.lean",
+        "LeanSwe/MiniComp/Interface.lean", "LeanSwe/MiniComp/Proofs.lean"]
+      return (baselineRootsCsv, "", "", "")
+    ) none
+
     runMutantCase bin tmpRoot baseDir realLibAbs "external_cli_middle_hook" (fun root libDir leanPath => do
       writeFileCreatingParents (root / "scripts/package_manifest.json")
         (baselineManifestJson.replace
@@ -424,7 +462,93 @@ def main (_ : List String) : IO UInt32 := do
       return (baselineRootsCsv, "", "", "")
     ) (some "OBEYS_SYNTH_UNCOVERED_EFF_OP")
 
-    IO.println "CHECK_PROMISES_SELF_TEST: passed=28 failed=0"
+    runMutantCase bin tmpRoot baseDir realLibAbs "iface_combinator_stepfrom_ok" (fun root libDir leanPath => do
+      writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Model.lean")
+        ("import LeanSwe.MiniLeaf.Types\nnamespace LeanSwe.MiniLeaf.Model\ndef leafWf (_ : Nat) : Bool := true\n" ++
+         "def execLeaf {W : Type} (ops : LeafOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.ping req\n" ++
+         "def allowedLeaf (s req out s' : Nat) : Prop := out = req ∧ s' = s\n" ++
+         "abbrev PingTwiceFn (m : Type → Type) : Type := Nat → m (Nat × Nat)\n" ++
+         "def execPingTwice {W : Type} (fn : PingTwiceFn (StateM W)) (n : Nat) : StateM W (Nat × Nat) := fn n\n" ++
+         "def allowedPing2 (s req : Nat) (out : Nat × Nat) (s' : Nat) : Prop := out = (req, req + 1) ∧ s' = s\nend LeanSwe.MiniLeaf.Model\n")
+      writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Interface.lean")
+        ("import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"mini_leaf_raw_ping\"]\nprivate opaque rawPing : Nat → BaseIO Nat\n" ++
+         "def defaultOps : LeafOps := Internal.mkOps (fun n => liftM (rawPing n))\n" ++
+         "def ping (n : Nat) : IO Nat := defaultOps.ping n\n" ++
+         "def pingPair {m : Type → Type} [Monad m] (ops : LeafOpsM m) (n : Nat) : m (Nat × Nat) := do\n" ++
+         "  let a ← ops.ping n\n  return (a, a + 1)\nend LeanSwe.MiniLeaf\n")
+      writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniLeaf.Model\nimport LeanSwe.MiniLeaf.Interface\nnamespace LeanSwe.MiniLeaf.Proofs\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysStepFrom id Model.leafWf Model.execLeaf Model.allowedLeaf Model.leafWf (fun {m} [Monad m] (ops : LeafOpsM m) => Internal.mkOps ops.ping) Model.execLeaf Model.allowedLeaf ∧\n" ++
+         "    Core.ObeysStepFrom (PkgApi := Model.PingTwiceFn) id Model.leafWf Model.execLeaf Model.allowedLeaf Model.leafWf LeanSwe.MiniLeaf.pingPair Model.execPingTwice Model.allowedPing2 :=\n" ++
+         "  ⟨fun _ _ h => h, fun _ ops h w n hw => by\n" ++
+         "    have hs := h w n hw\n" ++
+         "    dsimp only [Function.comp, id, Model.execLeaf, Model.allowedLeaf, Model.execPingTwice, LeanSwe.MiniLeaf.pingPair, Model.allowedPing2, Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure] at hs ⊢\n" ++
+         "    rcases hc : ops.ping n w with ⟨v, w'⟩\n" ++
+         "    rw [hc] at hs\n" ++
+         "    dsimp only at hs ⊢\n" ++
+         "    exact ⟨by rw [hs.1], hs.2⟩⟩\nend LeanSwe.MiniLeaf.Proofs\n")
+      recompile root libDir leanPath #["LeanSwe/MiniLeaf/Model.lean", "LeanSwe/MiniLeaf/Interface.lean", "LeanSwe/MiniLeaf/Proofs.lean"]
+      return (baselineRootsCsv, "", "", "")
+    ) none
+
+    runMutantCase bin tmpRoot baseDir realLibAbs "iface_combinator_fake_exec_rejected" (fun root libDir leanPath => do
+      writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Model.lean")
+        ("import LeanSwe.MiniLeaf.Types\nnamespace LeanSwe.MiniLeaf.Model\ndef leafWf (_ : Nat) : Bool := true\n" ++
+         "def execLeaf {W : Type} (ops : LeafOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.ping req\n" ++
+         "def allowedLeaf (s req out s' : Nat) : Prop := out = req ∧ s' = s\n" ++
+         "abbrev PingTwiceFn (m : Type → Type) : Type := Nat → m (Nat × Nat)\n" ++
+         "def execPingTwice {W : Type} (_ : PingTwiceFn (StateM W)) (n : Nat) : StateM W (Nat × Nat) := pure (n, n + 1)\n" ++
+         "def allowedPing2 (s req : Nat) (out : Nat × Nat) (s' : Nat) : Prop := out = (req, req + 1) ∧ s' = s\nend LeanSwe.MiniLeaf.Model\n")
+      writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Interface.lean")
+        ("import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"mini_leaf_raw_ping\"]\nprivate opaque rawPing : Nat → BaseIO Nat\n" ++
+         "def defaultOps : LeafOps := Internal.mkOps (fun n => liftM (rawPing n))\n" ++
+         "def ping (n : Nat) : IO Nat := defaultOps.ping n\n" ++
+         "def pingPair {m : Type → Type} [Monad m] (ops : LeafOpsM m) (n : Nat) : m (Nat × Nat) := do\n" ++
+         "  let a ← ops.ping n\n  return (a, a + 99)\nend LeanSwe.MiniLeaf\n")
+      writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniLeaf.Model\nimport LeanSwe.MiniLeaf.Interface\nnamespace LeanSwe.MiniLeaf.Proofs\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysStepFrom id Model.leafWf Model.execLeaf Model.allowedLeaf Model.leafWf (fun {m} [Monad m] (ops : LeafOpsM m) => Internal.mkOps ops.ping) Model.execLeaf Model.allowedLeaf ∧\n" ++
+         "    Core.ObeysStepFrom (PkgApi := Model.PingTwiceFn) id Model.leafWf Model.execLeaf Model.allowedLeaf Model.leafWf LeanSwe.MiniLeaf.pingPair Model.execPingTwice Model.allowedPing2 :=\n" ++
+         "  ⟨fun _ _ h => h, fun _ _ _ _ _ _ => ⟨rfl, rfl⟩⟩\nend LeanSwe.MiniLeaf.Proofs\n")
+      recompile root libDir leanPath #["LeanSwe/MiniLeaf/Model.lean", "LeanSwe/MiniLeaf/Interface.lean", "LeanSwe/MiniLeaf/Proofs.lean"]
+      return (baselineRootsCsv, "", "", "")
+    ) (some "must directly invoke Interface op")
+
+    runMutantCase bin tmpRoot baseDir realLibAbs "iface_combinator_transitive_unproven_rejected" (fun root libDir leanPath => do
+      writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Model.lean")
+        ("import LeanSwe.MiniLeaf.Types\nnamespace LeanSwe.MiniLeaf.Model\ndef leafWf (_ : Nat) : Bool := true\n" ++
+         "def execLeaf {W : Type} (ops : LeafOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.ping req\n" ++
+         "def allowedLeaf (s req out s' : Nat) : Prop := out = req ∧ s' = s\n" ++
+         "abbrev PingTwiceFn (m : Type → Type) : Type := Nat → m (Nat × Nat)\n" ++
+         "def execPingTwice {W : Type} (fn : PingTwiceFn (StateM W)) (n : Nat) : StateM W (Nat × Nat) := fn n\n" ++
+         "def allowedPing2 (s req : Nat) (out : Nat × Nat) (s' : Nat) : Prop := out = (req, req + 1) ∧ s' = s\nend LeanSwe.MiniLeaf.Model\n")
+      writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Interface.lean")
+        ("import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"mini_leaf_raw_ping\"]\nprivate opaque rawPing : Nat → BaseIO Nat\n" ++
+         "def defaultOps : LeafOps := Internal.mkOps (fun n => liftM (rawPing n))\n" ++
+         "def ping (n : Nat) : IO Nat := defaultOps.ping n\n" ++
+         "def pingPair {m : Type → Type} [Monad m] (ops : LeafOpsM m) (n : Nat) : m (Nat × Nat) := do\n" ++
+         "  let a ← ops.ping n\n  return (a, a + 1)\n" ++
+         "def pingTriple {m : Type → Type} [Monad m] (ops : LeafOpsM m) (n : Nat) : m Nat := do\n" ++
+         "  let p ← pingPair ops n\n  return p.1 + p.2\nend LeanSwe.MiniLeaf\n")
+      writeFileCreatingParents (root / "LeanSwe/MiniLeaf/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniLeaf.Model\nimport LeanSwe.MiniLeaf.Interface\nnamespace LeanSwe.MiniLeaf.Proofs\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysStepFrom id Model.leafWf Model.execLeaf Model.allowedLeaf Model.leafWf (fun {m} [Monad m] (ops : LeafOpsM m) => Internal.mkOps ops.ping) Model.execLeaf Model.allowedLeaf ∧\n" ++
+         "    Core.ObeysStepFrom (PkgApi := Model.PingTwiceFn) id Model.leafWf Model.execLeaf Model.allowedLeaf Model.leafWf LeanSwe.MiniLeaf.pingPair Model.execPingTwice Model.allowedPing2 :=\n" ++
+         "  ⟨fun _ _ h => h, fun _ ops h w n hw => by\n" ++
+         "    have hs := h w n hw\n" ++
+         "    dsimp only [Function.comp, id, Model.execLeaf, Model.allowedLeaf, Model.execPingTwice, LeanSwe.MiniLeaf.pingPair, Model.allowedPing2, Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure] at hs ⊢\n" ++
+         "    rcases hc : ops.ping n w with ⟨v, w'⟩\n" ++
+         "    rw [hc] at hs\n" ++
+         "    dsimp only at hs ⊢\n" ++
+         "    exact ⟨by rw [hs.1], hs.2⟩⟩\nend LeanSwe.MiniLeaf.Proofs\n")
+      recompile root libDir leanPath #["LeanSwe/MiniLeaf/Model.lean", "LeanSwe/MiniLeaf/Interface.lean", "LeanSwe/MiniLeaf/Proofs.lean"]
+      return (baselineRootsCsv, "", "", "")
+    ) (some "OBEYS_SYNTH_UNCOVERED_EFF_OP")
+
+    IO.println "CHECK_PROMISES_SELF_TEST: passed=31 failed=0"
     return 0
   finally
     if ← tmpRoot.pathExists then IO.FS.removeDirAll tmpRoot

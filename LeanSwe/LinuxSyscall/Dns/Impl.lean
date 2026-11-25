@@ -102,14 +102,6 @@ decreasing_by
 def decodeRecords (bytes : ByteArray) : Except DnsError (List DnsAddr) :=
   decodeRecordsLoop bytes 0 []
 
-/-- Low-level C-ABI DNS resolution hook signature parameterized by monad `m`. -/
-structure PosixDnsOpsM (m : Type → Type) where
-  /-- Call `leanswe_sys_getaddrinfo` returning raw 21-byte records or `(gaiCode, errno, msgBytes)`. -/
-  getaddrinfo : String → UInt8 → UInt8 → m (Except (Int32 × UInt32 × ByteArray) ByteArray)
-
-/-- Specialized `IO` signature for `PosixDnsOpsM`. -/
-abbrev PosixDnsOps := PosixDnsOpsM IO
-
 /-- Construct a `DnsOpsM m` capability bundle from low-level `PosixDnsOpsM m` hooks, validating `host` up front, forwarding wire hints, enforcing `allowedDnsOutcome` invariants over decoded records, and safely UTF-8-decoding error bytes. -/
 def mkDnsOpsM {m : Type → Type} [Monad m] (raw : PosixDnsOpsM m) : DnsOpsM m :=
   { getaddrinfo := fun host hints => do

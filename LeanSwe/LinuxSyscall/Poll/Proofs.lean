@@ -1,6 +1,9 @@
+import Core.Obeys
 import LeanSwe.LinuxSyscall.Poll.SpecTests
 import LeanSwe.LinuxSyscall.Poll.Impl
 import LeanSwe.LinuxSyscall.Poll.Interface
+import LeanSwe.LinuxSyscall.Poll.Model.Refines
+import LeanSwe.LinuxSyscall.Poll.Proofs.Obeys
 
 namespace LeanSwe.LinuxSyscall.Poll
 
@@ -486,5 +489,26 @@ theorem msToPollTimespec_isValid (ms : Nat) :
       Nat.mod_eq_of_lt (by change ms % 1000 * 1000000 < 4294967296; omega)]
     have : (1000000000 : UInt32).toNat = 1000000000 := rfl
     omega
+
+namespace Proofs
+
+/-- Full public `Interface` `Core.Obeys` contract of `LeanSwe.LinuxSyscall.Poll` against `Model`. -/
+theorem obeys_model :
+    Core.ObeysPureEq LeanSwe.LinuxSyscall.Poll.msToPollTimespec Model.msToPollTimespec ∧
+    Core.ObeysPureEq2 LeanSwe.LinuxSyscall.Poll.pollEvReady Model.pollEvReady ∧
+    Core.ObeysStepFrom id HealthyEnv.wf Model.execRawStep Model.allowedRawStep
+      HealthyEnv.wf Internal.mkPollOpsM Model.execPkgStep Model.allowedPkgStep :=
+  ⟨fun _ => rfl, fun _ _ => rfl, mkPollOpsM_obeysStepFrom⟩
+
+/-- Non-vacuity witness for `LeanSwe.LinuxSyscall.Poll` `obeys_model` (`HealthyEnv.wf`, `allowedRawStep`, and `allowedPkgStep` are simultaneously inhabited). -/
+theorem obeys_model_nonvacuous :
+    (∃ env₀ : HealthyEnv, HealthyEnv.wf env₀ = true) ∧
+    Core.ObeysStepId HealthyEnv.wf
+      (Model.execRawStep Model.rawHealthyModelOps) Model.allowedRawStep ∧
+    Core.ObeysStepId HealthyEnv.wf
+      (Model.execPkgStep Model.healthyModelOps) Model.allowedPkgStep :=
+  ⟨⟨HealthyEnv.initial, rfl⟩, rawHealthyModelOps_obeysStep, healthyModelOps_obeysStep⟩
+
+end Proofs
 
 end LeanSwe.LinuxSyscall.Poll

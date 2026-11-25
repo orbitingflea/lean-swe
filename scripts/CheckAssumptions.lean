@@ -1836,22 +1836,55 @@ private def checkBareConstArg
     (env : Environment)
     (outerAllowedFVars : Std.HashSet FVarId)
     (allowId : Bool)
-    (rawArg : Expr) : MetaM (Option Name) := do
+    (rawArg : Expr)
+    (allowImplicitGroundTypeOnMk : Bool := false) : MetaM (Option Name) := do
   let clean := rawArg.consumeMData
   if allowId && clean.isAppOfArity ``id 1 then
     return some ``id
-  let checkAppBody (allowedFVars : Std.HashSet FVarId) (body : Expr) : Option Name := Id.run do
+  let checkAppBody (allowedFVars : Std.HashSet FVarId) (body : Expr) : MetaM (Option Name) := do
     let bc := body.consumeMData
-    let .const fn _ := bc.getAppFn.consumeMData | return none
+    let .const fn fnLvls := bc.getAppFn.consumeMData | return none
     if isCompilerAux fn then return none
-    let mut seenFVs : Std.HashSet FVarId := {}
-    for a in bc.getAppArgs do
-      let ac := a.consumeMData
-      let .fvar fv := ac | return none
-      if !allowedFVars.contains fv || seenFVs.contains fv then
-        return none
-      seenFVs := seenFVs.insert fv
-    return some fn
+    let appArgs := bc.getAppArgs
+    if !allowImplicitGroundTypeOnMk then
+      let mut seenFVs : Std.HashSet FVarId := {}
+      for a in appArgs do
+        let ac := a.consumeMData
+        let .fvar fv := ac | return none
+        if !allowedFVars.contains fv || seenFVs.contains fv then
+          return none
+        seenFVs := seenFVs.insert fv
+      return some fn
+    else
+      let isMkBuilder := fn.isStr && fn.getString!.startsWith "mk"
+      let some ci := env.find? fn | return none
+      let mut curTy := ci.type.instantiateLevelParams ci.levelParams fnLvls
+      let mut seenFVs : Std.HashSet FVarId := {}
+      for a in appArgs do
+        let ac := a.consumeMData
+        let mut paramDom? : Option Expr := none
+        let mut paramBi? : Option BinderInfo := none
+        match curTy.consumeMData with
+        | .forallE _ dom rest bi =>
+          curTy := rest.instantiate1 ac
+          paramDom? := some dom.consumeMData
+          paramBi? := some bi
+        | _ => pure ()
+        match ac with
+        | .fvar fv =>
+          if !allowedFVars.contains fv || seenFVs.contains fv then
+            return none
+          seenFVs := seenFVs.insert fv
+        | _ =>
+          if !isMkBuilder then return none
+          let (some pDom, some pBi) := (paramDom?, paramBi?) | return none
+          if pBi == .default || pBi == .instImplicit then return none
+          if pDom != .sort (.succ .zero) then return none
+          if ac.hasFVar || ac.hasLooseBVars then return none
+          if (← inferType ac).consumeMData != .sort (.succ .zero) then return none
+          if !(← isProvablyInhabitedDataType env 8 ac) then return none
+      if isMkBuilder && !appArgs.isEmpty && seenFVs.isEmpty then return none
+      return some fn
   if clean.isLambda then
     lambdaTelescope clean fun lxs body => do
       let mut allowed := outerAllowedFVars
@@ -1861,9 +1894,9 @@ private def checkBareConstArg
         let dom ← inferType lx
         if !isAllowedImplicitEtaDomain env dom then return none
         allowed := allowed.insert lx.fvarId!
-      return checkAppBody allowed body
+      checkAppBody allowed body
   else
-    return checkAppBody outerAllowedFVars clean
+    checkAppBody outerAllowedFVars clean
 
 private partial def collectDirectStructFields (env : Environment) (e : Expr) (acc : Std.HashSet (Name × Nat) := {}) :
     Std.HashSet (Name × Nat) :=
@@ -1911,6 +1944,39 @@ private def collectUsedStructFieldsTransitive
         if !seen.contains u && !skipConsts.contains u && allowedMods.contains (moduleOfConst env u) then
           work := work.push u
   return fields
+
+private partial def isPureReqProjExpr (reqFV : FVarId) (e : Expr) : Bool :=
+  let c := e.consumeMData
+  match c with
+  | .fvar fv => fv == reqFV
+  | .proj ``Prod _ inner => isPureReqProjExpr reqFV inner
+  | _ =>
+    let fn := c.getAppFn.consumeMData
+    let args := c.getAppArgs
+    if (fn.isConstOf ``Prod.fst || fn.isConstOf ``Prod.snd) && args.size == 3 then
+      isPureReqProjExpr reqFV args[2]!
+    else
+      false
+
+private def execPkgInvokesApiParam (env : Environment) (execPkgFn : Name) : MetaM Bool := do
+  let some (.defnInfo dv) := env.find? execPkgFn | return false
+  lambdaTelescope dv.value fun xs body => do
+    if xs.size < 3 then return false
+    let apiFV := xs[1]!.fvarId!
+    let reqFV := xs[2]!.fvarId!
+    let reqTy := (← inferType xs[2]!).consumeMData
+    let reqTriv := reqTy.isConstOf ``Unit || reqTy.isConstOf ``PUnit
+    let bc := body.consumeMData
+    if bc.getAppFn.consumeMData != .fvar apiFV then return false
+    let callArgs := bc.getAppArgs
+    if callArgs.isEmpty then
+      return reqTriv
+    for i in [0 : callArgs.size] do
+      let ai := callArgs[i]!.consumeMData
+      if !isPureReqProjExpr reqFV ai then return false
+      for j in [0 : i] do
+        if callArgs[j]!.consumeMData == ai then return false
+    return true
 
 private def collectCoveredMkApiImplHelpers
     (env : Environment)
@@ -1964,7 +2030,8 @@ private def isCapabilityBundleConst
     (knownPkgs : Array Name)
     (pkg cName : Name)
     (ty : Expr) : MetaM Bool := do
-  if cName != Name.str pkg "defaultApi" && cName != Name.str pkg "defaultOps" then
+  if cName != Name.str pkg "defaultApi" && cName != Name.str pkg "defaultOps" &&
+      cName != Name.str pkg "defaultOpsBase" && cName != Name.str pkg "defaultRawOps" then
     return false
   forallTelescope ty fun fxs ret => do
     for fx in fxs do
@@ -2975,7 +3042,7 @@ private def checkRefinesModelTheorem
             | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare rawWf argument in {thmName}"]
           let some pkgWfFn ← checkBareConstArg env {} false pkgWfArg
             | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare pkgWf argument in {thmName}"]
-          let some mkApiFn ← checkBareConstArg env {} false mkApiArg
+          let some mkApiFn ← checkBareConstArg env {} false mkApiArg (allowImplicitGroundTypeOnMk := true)
             | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare mkApi argument in {thmName}"]
           let some execPkgFn ← checkBareConstArg env {} false execPkgArg
             | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare execPkg argument in {thmName}"]
@@ -3028,15 +3095,24 @@ private def checkRefinesModelTheorem
             | .inconclusive reason =>
               aErrs := aErrs.push s!"INCONCLUSIVE_REFINES_CHECK: {legAllowedFn} in {thmName} ({reason})"
           if aErrs.isEmpty then
-            let execFlds := collectUsedStructFieldsTransitive env modelMods {} execPkgFn
-            if execFlds.isEmpty then
-              aErrs := aErrs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: {execPkgFn} in {thmName} projects zero capability fields"
+            let isDirectIfaceComb :=
+              mkApiMod == ifaceMod && !isPrivateName mkApiFn &&
+              !(mkApiFn.isStr && mkApiFn.getString!.startsWith "mk")
+            if isDirectIfaceComb then
+              if !(← execPkgInvokesApiParam env execPkgFn) then
+                aErrs := aErrs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: {execPkgFn} in {thmName} must directly invoke {mkApiFn} on request projections"
+              else
+                coveredStepOpsRef.modify (·.insert mkApiFn)
             else
-              coveredCapBuildersRef.modify (·.insert mkApiFn)
-              for fld in execFlds do
-                coveredExecFieldsRef.modify (·.insert fld)
-              for h in (← collectCoveredMkApiImplHelpers env implMod mkApiFn execFlds) do
-                coveredImplHelpersRef.modify (·.insert h)
+              let execFlds := collectUsedStructFieldsTransitive env modelMods {} execPkgFn
+              if execFlds.isEmpty then
+                aErrs := aErrs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: {execPkgFn} in {thmName} projects zero capability fields"
+              else
+                coveredCapBuildersRef.modify (·.insert mkApiFn)
+                for fld in execFlds do
+                  coveredExecFieldsRef.modify (·.insert fld)
+                for h in (← collectCoveredMkApiImplHelpers env implMod mkApiFn execFlds) do
+                  coveredImplHelpersRef.modify (·.insert h)
           return aErrs
 
         return #[s!"INVALID_REFINES_CONJUNCT: unsupported conjunct head {ab.getAppFn} in {thmName}"]
@@ -3054,7 +3130,11 @@ private def checkRefinesModelTheorem
     if let some ifaceIdx := env.header.moduleNames.findIdx? (· == ifaceMod) then
       if let some ifaceData := env.header.moduleData[ifaceIdx]? then
         let skipBundles : Std.HashSet Name :=
-          Std.HashSet.emptyWithCapacity 2 |>.insert (Name.str pkg "defaultApi") |>.insert (Name.str pkg "defaultOps")
+          Std.HashSet.emptyWithCapacity 4
+            |>.insert (Name.str pkg "defaultApi")
+            |>.insert (Name.str pkg "defaultOps")
+            |>.insert (Name.str pkg "defaultOpsBase")
+            |>.insert (Name.str pkg "defaultRawOps")
         let ifaceSingleton : Std.HashSet Name := Std.HashSet.emptyWithCapacity 1 |>.insert ifaceMod
         let mut sawAnyIfaceOp := false
         let mut sawAnyEffectfulOp := false

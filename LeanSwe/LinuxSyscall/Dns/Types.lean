@@ -252,4 +252,12 @@ end Internal
 def encodeWireRecords (addrs : List DnsAddr) : ByteArray :=
   Internal.encodeWireRecordsLoop addrs (ByteArray.emptyWithCapacity (addrs.length * DNS_RECORD_SIZE))
 
+/-- Low-level C-ABI DNS resolution hook signature parameterized by monad `m`. -/
+structure Internal.PosixDnsOpsM (m : Type → Type) where
+  /-- Call `leanswe_sys_getaddrinfo` returning raw 21-byte records or `(gaiCode, errno, msgBytes)`. -/
+  getaddrinfo : String → UInt8 → UInt8 → m (Except (Int32 × UInt32 × ByteArray) ByteArray)
+
+/-- Specialized `IO` signature for `PosixDnsOpsM`. -/
+abbrev Internal.PosixDnsOps := Internal.PosixDnsOpsM IO
+
 end LeanSwe.LinuxSyscall.Dns
