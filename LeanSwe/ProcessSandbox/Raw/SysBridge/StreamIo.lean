@@ -171,6 +171,65 @@ def classifyBoxStreamResult (program cwd : String)
     else
       .ok { outcome := .signaled 9, stdout := stdout, stderr := stderr }
 
+/-- Return `true` when none of `(inRev?, outReady, errReady, stReady)` reported readiness. -/
+def isBoxPollIdle (inRev? : Option Poll.PollEvents) (outReady errReady stReady : Bool) : Bool :=
+  let inAny := match inRev? with | some ev => Poll.pollEvReady true ev | none => false
+  !inAny && !outReady && !errReady && !stReady
+
+/-- Return `true` when `statusMsg?` carries `PS_STATUS_EXEC_ERR` or `PS_STATUS_INIT_ERR`. -/
+def isEarlyAbortStatus (statusMsg? : Option InitStatusMsg) : Bool :=
+  match statusMsg? with
+  | some msg => msg.kind == PS_STATUS_EXEC_ERR || msg.kind == PS_STATUS_INIT_ERR
+  | none => false
+
+/-- Advance the guest `stdin` pipe for one `readBoxStreamLoop` iteration. -/
+def stepBoxStdin {m : Type → Type} [Monad m] {fd : Type}
+    (files : Files.FilesOpsM m fd) (timeRand : TimeRand.TimeRandOpsM m)
+    (st : BoxStreamState fd) (inRev? : Option Poll.PollEvents)
+    (stdin : ByteArray) (startMs timeoutMs stepFuel : Nat) :
+    m (Option fd × Nat × Bool × Option SandboxError) := do
+  match st.inFd?, inRev? with
+  | some inFd, some ev =>
+    if ev.pollerr || ev.pollhup || ev.pollnval then
+      Files.closeOpt files (some inFd)
+      return (none, st.stdinPos, false, none)
+    else if ev.pollout then
+      match ← writeStdinStep files timeRand inFd stdin startMs (some timeoutMs) st.stdinPos false stepFuel with
+      | .error e => return (none, st.stdinPos, false, some e)
+      | .ok (nextFd?, p', _, to) => return (nextFd?, p', to, none)
+    else
+      return (some inFd, st.stdinPos, false, none)
+  | inFd?, _ =>
+    return (inFd?, st.stdinPos, false, none)
+
+/-- Advance a guest `stdout` or `stderr` pipe for one `readBoxStreamLoop` iteration. -/
+def stepBoxPipe {m : Type → Type} [Monad m] {fd : Type}
+    (files : Files.FilesOpsM m fd) (timeRand : TimeRand.TimeRandOpsM m)
+    (ready : Bool) (fd? : Option fd) (chunks : Array ByteArray)
+    (curLen otherLen startMs timeoutMs : Nat) (maxOutputBytes? : Option Nat) (stepFuel : Nat) :
+    m (PipeStepResult fd) := do
+  if ready then
+    match fd? with
+    | none => return .cont none chunks curLen false
+    | some pfd =>
+      drainPipeStep files timeRand pfd otherLen startMs (some timeoutMs) maxOutputBytes?
+        chunks curLen 0 false stepFuel
+  else
+    return .cont fd? chunks curLen false
+
+/-- Advance `statusFd?` for one `readBoxStreamLoop` iteration. -/
+def stepBoxStatus {m : Type → Type} [Monad m] {fd : Type}
+    (files : Files.FilesOpsM m fd) (stReady : Bool) (st : BoxStreamState fd) :
+    m (Option fd × ByteArray × Option InitStatusMsg) := do
+  if stReady then
+    match st.statusFd? with
+    | none => return (none, st.statusBuf, st.statusMsg?)
+    | some sfd =>
+      let (sf', sb', sm?) ← readInitStatusStep files sfd st.statusBuf 16
+      return (sf', sb', sm? <|> st.statusMsg?)
+  else
+    return (st.statusFd?, st.statusBuf, st.statusMsg?)
+
 /-- Fuel-bounded 4-FD `ppoll(2)` loop streaming `stdin`/`stdout`/`stderr` and decoding `InitStatusMsg` from `status_fd`, using `Raw.SysBridge.PipeIo` pipe helpers. -/
 def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
     (files : Files.FilesOpsM m fd) (poll : Poll.PollOpsM m fd)
@@ -204,8 +263,7 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
           return .error (Internal.mapRawError (.ioError none e s!"ppoll: {Errno.name e}"))
       | .ok revents =>
         let (inRev?, outReady, errReady, stReady) := decodeBoxReadyFlags st revents
-        let inAny := match inRev? with | some ev => Poll.pollEvReady true ev | none => false
-        if !inAny && !outReady && !errReady && !stReady then
+        if isBoxPollIdle inRev? outReady errReady stReady then
           match ← TimeRand.checkTimedOut timeRand startMs (some timeoutMs) with
           | .error e =>
             closeBoxStreamState files st
@@ -218,18 +276,7 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
             readBoxStreamLoop files poll timeRand program cwd stdin startMs timeoutMs maxOutputBytes? stepFuel st fuel
         else
           let (inFdNext?, stdinPos', inTimedOut, inErr?) ←
-            match st.inFd?, inRev? with
-            | some inFd, some ev =>
-              if ev.pollerr || ev.pollhup || ev.pollnval then
-                Files.closeOpt files (some inFd)
-                pure (none, st.stdinPos, false, none)
-              else if ev.pollout then
-                match ← writeStdinStep files timeRand inFd stdin startMs (some timeoutMs) st.stdinPos false stepFuel with
-                | .error e => pure (none, st.stdinPos, false, some e)
-                | .ok (nextFd?, p', _, to) => pure (nextFd?, p', to, none)
-              else
-                pure (some inFd, st.stdinPos, false, none)
-            | inFd?, _ => pure (inFd?, st.stdinPos, false, none)
+            stepBoxStdin files timeRand st inRev? stdin startMs timeoutMs stepFuel
           match inErr? with
           | some e =>
             Files.closeOpt files st.outFd?
@@ -245,14 +292,7 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
               return classifyBoxStreamResult program cwd true false st.statusMsg?
                 (concatChunks st.outChunks st.outLen) (concatChunks st.errChunks st.errLen)
             let outStep ←
-              if outReady then
-                match st.outFd? with
-                | none => pure (.cont none st.outChunks st.outLen false)
-                | some outFd =>
-                  drainPipeStep files timeRand outFd st.errLen startMs (some timeoutMs) maxOutputBytes?
-                    st.outChunks st.outLen 0 false stepFuel
-              else
-                pure (.cont st.outFd? st.outChunks st.outLen false)
+              stepBoxPipe files timeRand outReady st.outFd? st.outChunks st.outLen st.errLen startMs timeoutMs maxOutputBytes? stepFuel
             match outStep with
             | .ioErr e =>
               Files.closeOpt files inFdNext?
@@ -273,14 +313,7 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
                 (concatChunks outChunks' outLen') (concatChunks st.errChunks st.errLen)
             | .cont outFdNext? outChunks' outLen' _ =>
               let errStep ←
-                if errReady then
-                  match st.errFd? with
-                  | none => pure (.cont none st.errChunks st.errLen false)
-                  | some errFd =>
-                    drainPipeStep files timeRand errFd outLen' startMs (some timeoutMs) maxOutputBytes?
-                      st.errChunks st.errLen 0 false stepFuel
-                else
-                  pure (.cont st.errFd? st.errChunks st.errLen false)
+                stepBoxPipe files timeRand errReady st.errFd? st.errChunks st.errLen outLen' startMs timeoutMs maxOutputBytes? stepFuel
               match errStep with
               | .ioErr e =>
                 Files.closeOpt files inFdNext?
@@ -300,19 +333,8 @@ def readBoxStreamLoop {m : Type → Type} [Monad m] {fd : Type}
                 return classifyBoxStreamResult program cwd false true st.statusMsg?
                   (concatChunks outChunks' outLen') (concatChunks errChunks' errLen')
               | .cont errFdNext? errChunks' errLen' _ =>
-                let (stFdNext?, stBuf', stMsgNext?) ←
-                  if stReady then
-                    match st.statusFd? with
-                    | none => pure (none, st.statusBuf, st.statusMsg?)
-                    | some sfd =>
-                      let (sf', sb', sm?) ← readInitStatusStep files sfd st.statusBuf 16
-                      pure (sf', sb', sm? <|> st.statusMsg?)
-                  else
-                    pure (st.statusFd?, st.statusBuf, st.statusMsg?)
-                let stopEarly := match stMsgNext? with
-                  | some msg => msg.kind == PS_STATUS_EXEC_ERR || msg.kind == PS_STATUS_INIT_ERR
-                  | none => false
-                if stopEarly then
+                let (stFdNext?, stBuf', stMsgNext?) ← stepBoxStatus files stReady st
+                if isEarlyAbortStatus stMsgNext? then
                   Files.closeOpt files inFdNext?
                   Files.closeOpt files outFdNext?
                   Files.closeOpt files errFdNext?

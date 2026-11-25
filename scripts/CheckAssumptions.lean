@@ -51,8 +51,7 @@ private def allowedAxioms : Std.HashSet Name :=
   Std.HashSet.emptyWithCapacity 4 |>.insert ``propext |>.insert ``Classical.choice |>.insert ``Quot.sound
 
 private def legacyExemptionAllowlist : Array Name := #[
-  `LeanSwe.ProcessSandbox,
-  `LeanSwe.ProcessSandbox.Raw
+  `LeanSwe.ProcessSandbox
 ]
 
 /-- Packages with temporarily deferred `<pkgNs>.Proofs.obeys_model` / `refines_model` obligations; currently empty (no deferred packages remain). -/

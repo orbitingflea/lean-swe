@@ -284,7 +284,7 @@
         "LeanSwe.PostFork",
         "LeanSwe.ProcessSandbox.Seccomp"
       ],
-      "external_boundary": true,
+      "external_boundary": false,
       "spec_style": "state_step"
     },
     "LeanSwe.ProcessSandbox.Seccomp": {

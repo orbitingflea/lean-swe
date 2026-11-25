@@ -3151,7 +3151,6 @@ private def modelPresenceAllowlist : Array String := #[
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.TimeRand",
   "MISSING_OBEYS_MODEL|LeanSwe.PostFork",
   "MISSING_OBEYS_MODEL|LeanSwe.ProcessSandbox",
-  "MISSING_OBEYS_MODEL|LeanSwe.ProcessSandbox.Raw",
   "MISSING_OBEYS_MODEL|LeanSwe.Sqlite.Raw"
 ]
 

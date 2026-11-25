@@ -1,9 +1,10 @@
 import Core.NondetTest
+import Core.Assumptions
 import LeanSwe.ProcessSandbox.Raw.Types
 
 namespace LeanSwe.ProcessSandbox.Raw
 
-open Core (NondetTest)
+open Core (NondetTest ErrorObligation)
 open Core.NondetTest
 
 /-- `isValidSandboxHandleId` rejects `0` and values `≥ UInt64.size` while accepting positive 64-bit IDs. -/
@@ -194,21 +195,147 @@ def test_psandboxRaw_boxAndForwarderLifecycle_conservesResources
         NondetTest.assert (∃ e, (ops.reapBox bh |>.run s₈).1 = .error e ∧ e.kind = .invalidInput)
         NondetTest.assert (∃ e, (ops.stopPortForwarders fh |>.run s₈).1 = .error e ∧ e.kind = .invalidInput)
 
-/-- External trust boundary assumptions for `LeanSwe.ProcessSandbox.Raw` (`Raw.SysBridge` and the `#![no_std]` Rust `psandbox-init` binary `Init/rust/src/{init_sys,ops}.rs`) grounded in `RuntimeTests.lean`. -/
-structure EmpiricalAssumptions where
-  /-- `Raw.SysBridge` (`Raw.SysBridge.Bwrap.detectHostAuditArch`) returns the native host `AUDIT_ARCH_X86_64` (`0xc000003e`) or `AUDIT_ARCH_AARCH64` (`0xc00000b7`) constant (`0` otherwise), and `preflight` verifies Linux host, `bwrap` availability, unprivileged `user`/`pid`/`net`/`mount`/`ipc`/`uts` namespace creation, Landlock `landlock_create_ruleset` ABI >= 4, `seccomp` BPF support, and direct `/sys/fs/cgroup` sibling cgroup creation plus `memory` (`memory.max`, ignoring `ENOENT` on `memory.swap.max` on swapless kernels) and `pids` (`pids.max`) controller delegation when requested, failing closed with `.unavailable`. -/
-  preflightProbesNamespacesLandlockV4AndDirectCgroupV2 : Prop
-  /-- `discoverHostPreset` inspects `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` via `lstat` (preserving top-level symlinks such as `/bin -> usr/bin`), checks the 9 allowlisted `/etc` paths, reads `getenv("HOME")` plus `getpwuid_r(getuid())` without touching unmounted `/home` autofs mounts, and includes nested home paths (including through symlinked system roots) in `excludedHomePaths` iff `stat` confirms the host directory exists. -/
-  discoverHostPresetPreservesTopSymlinksAndAvoidsAutofs : Prop
-  /-- `sealPlan` writes the `LSWP0002` byte buffer produced by `encodePlan`, embedded `leanswe-psandbox-init` (`--perms 0555 --ro-bind-data <fd> /etc/.leanswe-psandbox-init`), and synthetic `/etc/hosts` (`127.0.0.1 localhost\n::1 localhost\n`) into `memfd_create(..., MFD_CLOEXEC | MFD_ALLOW_SEALING)` descriptors sealed with `F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE`, and `spawnBox` opens fresh per-spawn `open("/proc/self/fd/<memfd>", O_RDONLY)` descriptors to avoid shared-offset `lseek` races across concurrent `run` calls. -/
-  memfdPlanAndInitSealedImmutable : Prop
-  /-- `spawnBox` never uses `systemd-run --user --scope` (which closes inherited FDs `>= 3` with `EBADF`); instead `Raw.SysBridge` always creates a per-box sibling directory in `/sys/fs/cgroup` under `/proc/self/cgroup`'s delegated parent, writes `memory.max`, `memory.swap.max = "0"` (ignoring `ENOENT`), and `pids.max = pidsMax + 2` (for the 2 `--as-pid-1` wrapper tasks), spawns `bwrap --unshare-all --as-pid-1 --die-with-parent` via `PostFork` `.immortalThread` (avoiding Linux `PR_SET_PDEATHSIG` misfires on short-lived Lean `Task` worker pthreads), places child PID into `cgroup.procs` before `execvp`, prechecks user mount `hostPath`s (`.notFound`/`.permissionDenied`) while mapping pre-`execvp` nested mountpoint `EROFS` to `.unavailable`, opens a race-free `pidfd`, and `reapBox` writes `cgroup.kill = "1"`, reaps `bwrap`, and polls `cgroup.events` (`populated 0`) with bounded `EBUSY`-retrying `rmdir`. -/
-  directCgroupV2FsScopeAndCgroupKillRmdir : Prop
-  /-- The Rust `psandbox-init` binary (`LeanSwe/ProcessSandbox/Init/rust/src/{init_sys,ops}.rs`) runs under `bwrap` with `--perms 0000 --tmpfs <mask> --remount-ro <mask>` on `maskedPresetPaths` and trailing `--remount-ro /`, sets `PR_SET_PDEATHSIG(SIGKILL)` and `PR_SET_CHILD_SUBREAPER`, sets `RLIMIT_CORE = 0` and `RLIMIT_FSIZE`, binds `127.0.0.1:boxPort` listeners inside the box `net` namespace and hands them over `SCM_RIGHTS` before closing the control socket while keeping `O_CLOEXEC` `status_pipe` and `exec_err_pipe` reporting `{ EXEC_ERR(errno, isCwd), EXITED(code), SIGNALED(sig) }` (`ENOENT -> .notFound`, `EACCES | EPERM -> .permissionDenied`, other `errno -> .ioError`), sets `PR_SET_NO_NEW_PRIVS = 1`, installs Landlock ABI v4 rules (`handled_access_fs` masked strictly to ABI v4 bits without `IOCTL_DEV`, strictly `READ_DIR` on `"/"`, opening targets without `O_NOFOLLOW`, stripping directory-only bits when `!S_ISDIR`, granting `EXECUTE` on presets/mounts/`/tmp`, and setting `handled_access_net = 0` when `allowBoxLocalhost = true` vs `BIND_TCP | CONNECT_TCP` when `false`), validates `0 < n && n <= 160` and `byte_len == 8 * n` before copying the Lean-compiled `sock_filter` slice unchanged into the fixed 4-byte-aligned `[u32; 320]` buffer (`init_sys::copy_seccomp_aligned`) and installing it via arch-correct `syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog)` (with `ENOSYS` fallback to `prctl(PR_SET_SECCOMP, ...)` in `ops::install_seccomp`), clears inherited env (`clearenv`), and reaps all descendants via `kill(-1, SIGKILL)` + blocking `waitpid(-1, &s, 0)` until `ECHILD`. -/
-  psandboxInitLandlockAndBoundedSeccompLoader : Prop
-  /-- `startPortForwarders` runs a non-blocking `poll()` TCP relay (`SOCK_NONBLOCK | SOCK_CLOEXEC`, `send(..., MSG_NOSIGNAL)`) capping concurrent active relay slots at `MAX_RELAY_SLOTS = 128` (clearing `listenerFd` `POLLIN` at capacity to prevent host `EMFILE`), gating `POLLIN`/`POLLOUT` on `16 KiB` per-direction ring buffers, propagating independent directional EOF via buffer drain + `shutdown(dstFd, SHUT_WR)` so TCP half-close works cleanly, and isolating per-slot socket/`ECONNREFUSED` errors, while `readBoxOutput` feeds `stdin` and bounds captured `stdout.size + stderr.size` to `maxOutputBytes` under monotonic `timeoutMs`. -/
-  nonBlockingTcpForwarderAndBoundedOutputCapture : Prop
-  /-- `Raw.SysBridge` handle tables (`IO.Ref`-backed atomic `modifyGet` transitions) for `PlanHandle`, `BoxHandle`, and `PortForwarderHandle` allocate `0 < handleId < UInt64.size`, protect close/reap transitions without FD-reuse races, and reject invalid/closed handles with `.invalidInput`. -/
-  handleTables64BitSafeAndRaceFree : Prop
+/-- Declared error-coverage matrix for all 14 public fallible `LeanSwe.ProcessSandbox.Raw` requests (`SandboxErrorKind`). -/
+def errorCoverage : List (ErrorObligation SandboxErrorKind) :=
+  [ { request := "LeanSwe.ProcessSandbox.Raw.decodeHostAuditArch", errorKind := .invalidInput
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_decodeHostAuditArch_never_invalidInput" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.decodeHostAuditArch", errorKind := .unavailable
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_decodeHostAuditArch_unavailable" .real }
+  , { request := "LeanSwe.ProcessSandbox.Raw.decodeHostAuditArch", errorKind := .notFound
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_decodeHostAuditArch_never_notFound" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.decodeHostAuditArch", errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_decodeHostAuditArch_never_permissionDenied" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.decodeHostAuditArch", errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_decodeHostAuditArch_never_ioError" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.encodePlan", errorKind := .invalidInput
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_encodePlan_invalidInput" .real }
+  , { request := "LeanSwe.ProcessSandbox.Raw.encodePlan", errorKind := .unavailable
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_encodePlan_never_unavailable" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.encodePlan", errorKind := .notFound
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_encodePlan_never_notFound" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.encodePlan", errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_encodePlan_never_permissionDenied" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.encodePlan", errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_encodePlan_never_ioError" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.hostSeccompArch", errorKind := .invalidInput
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_hostSeccompArch_never_invalidInput" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.hostSeccompArch", errorKind := .unavailable
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_hostSeccompArch_unavailable" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.hostSeccompArch", errorKind := .notFound
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_hostSeccompArch_never_notFound" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.hostSeccompArch", errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_hostSeccompArch_never_permissionDenied" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.hostSeccompArch", errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_hostSeccompArch_never_ioError" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.preflight", errorKind := .invalidInput
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_preflight_never_invalidInput" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.preflight", errorKind := .unavailable
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_preflight_unavailable" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.preflight", errorKind := .notFound
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_preflight_never_notFound" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.preflight", errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_preflight_never_permissionDenied" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.preflight", errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_preflight_never_ioError" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.discoverHostPreset", errorKind := .invalidInput
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_discoverHostPreset_never_invalidInput" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.discoverHostPreset", errorKind := .unavailable
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_discoverHostPreset_unavailable" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.discoverHostPreset", errorKind := .notFound
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_discoverHostPreset_never_notFound" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.discoverHostPreset", errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_discoverHostPreset_never_permissionDenied" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.discoverHostPreset", errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_discoverHostPreset_never_ioError" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.sealPlan", errorKind := .invalidInput
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_sealPlan_invalidInput" .real }
+  , { request := "LeanSwe.ProcessSandbox.Raw.sealPlan", errorKind := .unavailable
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_sealPlan_unavailable" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.sealPlan", errorKind := .notFound
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_sealPlan_never_notFound" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.sealPlan", errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_sealPlan_never_permissionDenied" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.sealPlan", errorKind := .ioError
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_sealPlan_ioError" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.closePlan", errorKind := .invalidInput
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_closePlan_invalidInput" .real }
+  , { request := "LeanSwe.ProcessSandbox.Raw.closePlan", errorKind := .unavailable
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_closePlan_never_unavailable" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.closePlan", errorKind := .notFound
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_closePlan_never_notFound" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.closePlan", errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_closePlan_never_permissionDenied" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.closePlan", errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_closePlan_never_ioError" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.spawnBox", errorKind := .invalidInput
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_spawnBox_invalidInput" .real }
+  , { request := "LeanSwe.ProcessSandbox.Raw.spawnBox", errorKind := .unavailable
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_spawnBox_unavailable" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.spawnBox", errorKind := .notFound
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_spawnBox_notFound" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.spawnBox", errorKind := .permissionDenied
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_spawnBox_permissionDenied" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.spawnBox", errorKind := .ioError
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_spawnBox_ioError" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.startPortForwarders", errorKind := .invalidInput
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_startPortForwarders_invalidInput" .real }
+  , { request := "LeanSwe.ProcessSandbox.Raw.startPortForwarders", errorKind := .unavailable
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_startPortForwarders_never_unavailable" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.startPortForwarders", errorKind := .notFound
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_startPortForwarders_never_notFound" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.startPortForwarders", errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_startPortForwarders_never_permissionDenied" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.startPortForwarders", errorKind := .ioError
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_startPortForwarders_ioError" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.stopPortForwarders", errorKind := .invalidInput
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_stopPortForwarders_invalidInput" .real }
+  , { request := "LeanSwe.ProcessSandbox.Raw.stopPortForwarders", errorKind := .unavailable
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_stopPortForwarders_never_unavailable" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.stopPortForwarders", errorKind := .notFound
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_stopPortForwarders_never_notFound" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.stopPortForwarders", errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_stopPortForwarders_never_permissionDenied" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.stopPortForwarders", errorKind := .ioError
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_stopPortForwarders_never_ioError" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.readBoxOutput", errorKind := .invalidInput
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_readBoxOutput_invalidInput" .real }
+  , { request := "LeanSwe.ProcessSandbox.Raw.readBoxOutput", errorKind := .unavailable
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_readBoxOutput_unavailable" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.readBoxOutput", errorKind := .notFound
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_readBoxOutput_notFound" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.readBoxOutput", errorKind := .permissionDenied
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_readBoxOutput_permissionDenied" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.readBoxOutput", errorKind := .ioError
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_readBoxOutput_ioError" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.killProcessGroup", errorKind := .invalidInput
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_killProcessGroup_invalidInput" .real }
+  , { request := "LeanSwe.ProcessSandbox.Raw.killProcessGroup", errorKind := .unavailable
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_killProcessGroup_never_unavailable" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.killProcessGroup", errorKind := .notFound
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_killProcessGroup_never_notFound" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.killProcessGroup", errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_killProcessGroup_never_permissionDenied" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.killProcessGroup", errorKind := .ioError
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_killProcessGroup_ioError" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.pidfdKill", errorKind := .invalidInput
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_pidfdKill_invalidInput" .real }
+  , { request := "LeanSwe.ProcessSandbox.Raw.pidfdKill", errorKind := .unavailable
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_pidfdKill_never_unavailable" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.pidfdKill", errorKind := .notFound
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_pidfdKill_never_notFound" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.pidfdKill", errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_pidfdKill_never_permissionDenied" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.pidfdKill", errorKind := .ioError
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_pidfdKill_ioError" .mocked }
+  , { request := "LeanSwe.ProcessSandbox.Raw.reapBox", errorKind := .invalidInput
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_reapBox_invalidInput" .real }
+  , { request := "LeanSwe.ProcessSandbox.Raw.reapBox", errorKind := .unavailable
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_reapBox_never_unavailable" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.reapBox", errorKind := .notFound
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_reapBox_never_notFound" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.reapBox", errorKind := .permissionDenied
+      justification := .provedImpossible "LeanSwe.ProcessSandbox.Raw.Proofs.raw_reapBox_never_permissionDenied" }
+  , { request := "LeanSwe.ProcessSandbox.Raw.reapBox", errorKind := .ioError
+      justification := .tested "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_reapBox_ioError" .mocked } ]
 
 end LeanSwe.ProcessSandbox.Raw
