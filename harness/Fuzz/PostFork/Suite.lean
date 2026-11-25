@@ -3069,9 +3069,12 @@ private def runPostForkSuite (steps : Nat) (seedVal : UInt64) (isSmoke : Bool) :
 def suite : FuzzSuite := {
   «name» := "postfork"
   description := "Differential fuzzer for PostFork child pipeline, host orchestrator, ArgToken, and ForkMode against Linux"
-  runSmoke := fun cfg =>
-    runPostForkSuite (min cfg.steps 200) cfg.seed true
-  runFuzz := fun cfg =>
+  runSmoke := fun cfg => do
+    let actual := min cfg.steps 200
+    Fuzz.Common.recordSuiteSteps actual
+    runPostForkSuite actual cfg.seed true
+  runFuzz := fun cfg => do
+    Fuzz.Common.recordSuiteSteps cfg.steps
     runPostForkSuite cfg.steps cfg.seed false
   selfTestShrink := runPostForkSelfTestShrink
 }

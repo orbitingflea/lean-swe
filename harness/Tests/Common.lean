@@ -1,3 +1,4 @@
+import Core.Assumptions
 import LeanSwe.RegExp.Interface
 import LeanSwe.EnvVars.Raw.RuntimeTests
 import LeanSwe.EnvVars.RuntimeTests
@@ -66,5 +67,62 @@ def findRuntimeProbe? : List String → Option (IO UInt32)
   | "--compress-probe" :: rest => some (LeanSwe.Compress.RuntimeTests.probeMain rest)
   | "--process-probe" :: rest => some (LeanSwe.Process.RuntimeTests.probeMain rest)
   | _ => none
+
+private def errorTestModeTag : Core.ErrorTestMode → String
+  | .real => "real"
+  | .mocked => "mocked"
+
+private def pkgCoverageMeta : String → Option (String × String)
+  | "LeanSwe.Base64" => some ("LeanSwe.Base64.Base64ErrorKind", "err_base64_")
+  | "LeanSwe.CmdLine" => some ("LeanSwe.CmdLine.CmdLineErrorKind", "err_cmdline_")
+  | "LeanSwe.Compress" => some ("LeanSwe.Compress.CompressErrorKind", "err_compress_")
+  | "LeanSwe.ConnectProxy" => some ("LeanSwe.ConnectProxy.ProxyErrorKind", "err_cproxy_")
+  | "LeanSwe.CryptoHash.Raw" => some ("LeanSwe.CryptoHash.Raw.CryptoHashErrorKind", "err_cryptohashraw_")
+  | "LeanSwe.CryptoHash" => some ("LeanSwe.CryptoHash.Raw.CryptoHashErrorKind", "err_cryptohash_")
+  | "LeanSwe.EnvVars.Raw" => some ("LeanSwe.EnvVars.Raw.EnvVarsRawErrorKind", "err_envvarsraw_")
+  | "LeanSwe.EnvVars" => some ("LeanSwe.EnvVars.Raw.EnvVarsErrorKind", "err_envvars_")
+  | "LeanSwe.Fs" => some ("LeanSwe.Fs.FsErrorKind", "err_fs_")
+  | "LeanSwe.Git" => some ("LeanSwe.Git.GitErrorKind", "err_git_")
+  | "LeanSwe.Glob" => some ("LeanSwe.Glob.GlobErrorKind", "err_glob_")
+  | "LeanSwe.Json" => some ("LeanSwe.Json.JsonErrorKind", "err_json_")
+  | "LeanSwe.NumParse" => some ("LeanSwe.NumParse.NumParseErrorKind", "err_numparse_")
+  | "LeanSwe.PostFork" => some ("LeanSwe.PostFork.PostForkErrorKind", "err_")
+  | "LeanSwe.Process" => some ("LeanSwe.Process.ProcessErrorKind", "err_process_")
+  | "LeanSwe.ProcessSandbox.Raw" => some ("LeanSwe.ProcessSandbox.Raw.SandboxErrorKind", "err_psandboxRaw_")
+  | "LeanSwe.RegExp" => some ("LeanSwe.RegExp.RegexErrorKind", "err_regexp_")
+  | "LeanSwe.SlotPool" => some ("LeanSwe.SlotPool.SlotPoolErrorKind", "err_slotpool_")
+  | "LeanSwe.Sqlite.Raw" => some ("LeanSwe.Sqlite.Raw.SqliteErrorKind", "err_sqliteraw_")
+  | "LeanSwe.Sqlite" => some ("LeanSwe.Sqlite.Raw.SqliteErrorKind", "err_sqlite_")
+  | "LeanSwe.Tar" => some ("LeanSwe.Tar.TarErrorKind", "err_tar_")
+  | "LeanSwe.TempDir" => some ("LeanSwe.TempDir.TempDirErrorKind", "err_tempdir_")
+  | "LeanSwe.Time" => some ("LeanSwe.Time.TimeErrorKind", "err_time_")
+  | "LeanSwe.Toml" => some ("LeanSwe.Toml.TomlErrorKind", "err_toml_")
+  | "LeanSwe.Uuid" => some ("LeanSwe.Uuid.UuidErrorKind", "err_uuid_")
+  | _ => none
+
+private def resolveGitOpName (opBase : String) : String :=
+  match opBase with
+  | "headBranch" | "headCommit" | "mergeBase" | "showFile" => opBase ++ "?"
+  | _ => opBase
+
+private def splitLastUnderscore? (s : String) : Option (String × String) :=
+  let parts := s.splitOn "_"
+  match parts.reverse with
+  | [] | [_] => none
+  | last :: revInit =>
+    let head := "_".intercalate revInit.reverse
+    if head.isEmpty || last.isEmpty then none else some (head, last)
+
+/-- Runtime callback invoked by `Core.runRegisteredErrorTests` immediately after each error test (or verified sub-case) executes and passes, emitting live `ERR_HIT` records without static coverage tables. -/
+def onRegisteredErrorTestPass (testName : String) (mode : Core.ErrorTestMode) : IO Unit := do
+  let parts := testName.splitOn ".RuntimeTests."
+  let [pkgNs, fnShort] := parts | return ()
+  let some (enumType, pfx) := pkgCoverageMeta pkgNs | return ()
+  if !fnShort.startsWith pfx || fnShort.endsWith "_mocked" then
+    return ()
+  let body := (fnShort.drop pfx.length).toString
+  if let some (opBase, kindShort) := splitLastUnderscore? body then
+    let opName := if pkgNs == "LeanSwe.Git" then resolveGitOpName opBase else opBase
+    Core.logErrHit s!"{pkgNs}.{opName}" s!"{enumType}.{kindShort}" (errorTestModeTag mode)
 
 end Tests.Common

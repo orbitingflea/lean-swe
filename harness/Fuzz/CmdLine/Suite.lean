@@ -1438,8 +1438,12 @@ private def runCmdLineSelfTestShrink (seedVal : UInt64) : IO Unit := do
 def suite : FuzzSuite := {
   name := "cmdline"
   description := "Differential fuzzer for LeanSwe.CmdLine, LinuxSyscall.Files stdio fd semantics, EnvVars, argv UTF-8, and SIGPIPE/flush/exit"
-  runSmoke := fun cfg => runCmdLineSuite 200 cfg.seed
-  runFuzz := fun cfg => runCmdLineSuite cfg.steps cfg.seed
+  runSmoke := fun cfg => do
+    Fuzz.Common.recordSuiteSteps 200
+    runCmdLineSuite 200 cfg.seed
+  runFuzz := fun cfg => do
+    Fuzz.Common.recordSuiteSteps cfg.steps
+    runCmdLineSuite cfg.steps cfg.seed
   selfTestShrink := runCmdLineSelfTestShrink
 }
 

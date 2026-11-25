@@ -883,8 +883,12 @@ def suite : FuzzSuite :=
     description := "Differential fuzzing of LinuxSyscall.Passwd (getpwuid, getpwnam, PasswdEntry UTF-8 accessors) against stateful NSS model, Python pwd (-I), and multi-threaded task checks"
     runSmoke := fun cfg => do
       Fuzz.Passwd.Checks.runChecks
-      runPasswdSuite (min cfg.steps 200) cfg.seed true
-    runFuzz := fun cfg => runPasswdSuite cfg.steps cfg.seed false
+      let actual := min cfg.steps 200
+      Fuzz.Common.recordSuiteSteps actual
+      runPasswdSuite actual cfg.seed true
+    runFuzz := fun cfg => do
+      Fuzz.Common.recordSuiteSteps cfg.steps
+      runPasswdSuite cfg.steps cfg.seed false
     selfTestShrink := passwdShrinkSelfTest }
 
 end Fuzz.Passwd

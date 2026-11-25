@@ -1526,9 +1526,11 @@ private def runFloatSelfTestShrink (seedVal : UInt64) : IO Unit := do
 def suite : FuzzSuite := {
   name := "float"
   description := "4-way differential fuzzer for Float/Float32 runtime, NumParse, Toml, Float.Model, C99 strtod_l/libm, and Python 3"
-  runSmoke := fun cfg =>
+  runSmoke := fun cfg => do
+    Fuzz.Common.recordSuiteSteps 400
     runFloatSuite 400 cfg.seed true
-  runFuzz := fun cfg =>
+  runFuzz := fun cfg => do
+    Fuzz.Common.recordSuiteSteps cfg.steps
     runFloatSuite cfg.steps cfg.seed false
   selfTestShrink := runFloatSelfTestShrink
 }

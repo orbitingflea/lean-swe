@@ -866,9 +866,11 @@ def suite : FuzzSuite := {
   runSmoke := fun cfg => do
     Fuzz.Dns.Checks.runChecks
     let smokeSteps := max 120 (min cfg.steps 160)
+    Fuzz.Common.recordSuiteSteps smokeSteps
     runDnsDiffFuzz smokeSteps cfg.seed 12 10
-  runFuzz := fun cfg =>
+  runFuzz := fun cfg => do
     let slowBudget := max 24 (cfg.steps / 400)
+    Fuzz.Common.recordSuiteSteps cfg.steps
     runDnsDiffFuzz cfg.steps cfg.seed slowBudget 300
   selfTestShrink := runDnsSelfTestShrink
 }

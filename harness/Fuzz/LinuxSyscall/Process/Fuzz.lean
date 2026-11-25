@@ -1,4 +1,5 @@
 import Std.Data.TreeSet
+import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Process.Model
@@ -2620,26 +2621,49 @@ private def hitCount (hits : HitMap) (sys bkt : String) : Nat :=
 private def sumErrorHits (hits : HitMap) (sys : String) : Nat :=
   hits.foldl (fun acc ((s, b), c) => if s == sys && !b.startsWith "ok" then acc + c else acc) 0
 
+private def requiredNonSeccompBuckets : Array (String × String) := #[
+  ("pipe2", "ok"), ("pipe2", "EINVAL"), ("pipe2", "EMFILE"),
+  ("waitpid", "ok:stillRunning"), ("waitpid", "ok:exited"), ("waitpid", "ok:signaled"),
+  ("waitpid", "ok:stopped"), ("waitpid", "ok:continued"), ("waitpid", "EINVAL"), ("waitpid", "ECHILD"),
+  ("kill", "ok"), ("kill", "EINVAL"), ("kill", "ESRCH"),
+  ("pidfd_open", "ok"), ("pidfd_open", "EINVAL"), ("pidfd_open", "ENOENT"), ("pidfd_open", "ESRCH"),
+  ("pidfd_send_signal", "ok"), ("pidfd_send_signal", "EINVAL"),
+  ("pidfd_send_signal", "EBADF"), ("pidfd_send_signal", "ESRCH"),
+  ("getpid", "ok"), ("getuid", "ok"),
+  ("mode_wclone", "ok"), ("mode_wall", "ok"),
+  ("mode_wnothread", "ECHILD"), ("mode_autoreap", "ECHILD"), ("mode_subreaper", "ok"),
+  ("mode_delayed_zombie_exited", "ok")
+]
+
+private def requiredSeccompSyscalls : Array String :=
+  #["pipe2", "waitpid", "kill", "pidfd_open", "pidfd_send_signal", "getpid", "getuid"]
+
+private def countRequiredProcessBuckets (nonSecHits secHits : HitMap) (pid1ForeignRan requireNs : Bool) : Nat × Nat := Id.run do
+  let mut hit : Nat := 0
+  let mut total : Nat := 0
+  for (sys, bkt) in requiredNonSeccompBuckets do
+    total := total + 1
+    if hitCount nonSecHits sys bkt > 0 then
+      hit := hit + 1
+  for sys in requiredSeccompSyscalls do
+    total := total + 1
+    if sumErrorHits secHits sys > 0 then
+      hit := hit + 1
+  if pid1ForeignRan || requireNs then
+    total := total + 2
+    if hitCount nonSecHits "kill" "EPERM" > 0 then
+      hit := hit + 1
+    if hitCount nonSecHits "pidfd_send_signal" "EPERM" > 0 then
+      hit := hit + 1
+  return (hit, total)
+
 private def verifyCoverageFloor (nonSecHits secHits : HitMap) (totalSteps : Nat) (pid1ForeignRan requireNs : Bool) : Except String Unit := do
   if totalSteps < 10000 then
     return ()
-  let reqExact : Array (String × String) := #[
-    ("pipe2", "ok"), ("pipe2", "EINVAL"), ("pipe2", "EMFILE"),
-    ("waitpid", "ok:stillRunning"), ("waitpid", "ok:exited"), ("waitpid", "ok:signaled"),
-    ("waitpid", "ok:stopped"), ("waitpid", "ok:continued"), ("waitpid", "EINVAL"), ("waitpid", "ECHILD"),
-    ("kill", "ok"), ("kill", "EINVAL"), ("kill", "ESRCH"),
-    ("pidfd_open", "ok"), ("pidfd_open", "EINVAL"), ("pidfd_open", "ENOENT"), ("pidfd_open", "ESRCH"),
-    ("pidfd_send_signal", "ok"), ("pidfd_send_signal", "EINVAL"),
-    ("pidfd_send_signal", "EBADF"), ("pidfd_send_signal", "ESRCH"),
-    ("getpid", "ok"), ("getuid", "ok"),
-    ("mode_wclone", "ok"), ("mode_wall", "ok"),
-    ("mode_wnothread", "ECHILD"), ("mode_autoreap", "ECHILD"), ("mode_subreaper", "ok"),
-    ("mode_delayed_zombie_exited", "ok")
-  ]
-  for (sys, bkt) in reqExact do
+  for (sys, bkt) in requiredNonSeccompBuckets do
     if hitCount nonSecHits sys bkt == 0 then
       throw s!"COVERAGE_FLOOR_FAILED: missing required non-seccomp bucket ({sys}, {bkt}) across {totalSteps} steps"
-  for sys in #["pipe2", "waitpid", "kill", "pidfd_open", "pidfd_send_signal", "getpid", "getuid"] do
+  for sys in requiredSeccompSyscalls do
     if sumErrorHits secHits sys == 0 then
       throw s!"COVERAGE_FLOOR_FAILED: missing seccomp error hits on {sys} across {totalSteps} steps"
   if pid1ForeignRan || requireNs then
@@ -2890,6 +2914,9 @@ def runFuzz (totalSteps : Nat) (seed : UInt64) (selfTestShrink : Bool) (requireN
       IO.eprintln errMsg
       return 1
   let allHits := mergeHitMaps nonSecHits secHits
+  let (hitReq, totalReq) := countRequiredProcessBuckets nonSecHits secHits pid1ForeignRan requireNs
+  Fuzz.Common.recordSuiteBuckets hitReq totalReq
+  Fuzz.Common.recordSuiteSteps doneSteps
   printHitSummary allHits doneSteps
   match verifyCoverageFloor nonSecHits secHits doneSteps pid1ForeignRan requireNs with
   | .ok () => return 0

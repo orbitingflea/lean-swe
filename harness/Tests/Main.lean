@@ -80,6 +80,8 @@ private def formatStepSummary (label : Option String) (passed : Nat)
 private structure MainOptions where
   logPath? : Option String := none
   nonce? : Option String := none
+  coverageLogPath? : Option String := none
+  coverageNonce? : Option String := none
   suites : Array String := #[]
 
 private def parseMainOptions : List String → Except String MainOptions
@@ -90,6 +92,12 @@ private def parseMainOptions : List String → Except String MainOptions
   | "--assump-nonce" :: nc :: rest => do
     let opts ← parseMainOptions rest
     return { opts with nonce? := some nc }
+  | "--coverage-log" :: lp :: rest => do
+    let opts ← parseMainOptions rest
+    return { opts with coverageLogPath? := some lp }
+  | "--coverage-nonce" :: nc :: rest => do
+    let opts ← parseMainOptions rest
+    return { opts with coverageNonce? := some nc }
   | "--suite" :: s :: rest => do
     let opts ← parseMainOptions rest
     return { opts with suites := Tests.Common.parseSuiteCsv s ++ opts.suites }
@@ -135,6 +143,19 @@ def main (args : List String) : IO UInt32 := do
     IO.eprintln "INVALID_ARGS: --assump-log and --assump-nonce must be provided together"
     return 2
   | _, _ => pure ()
+  let effectiveCovNonce? := opts.coverageNonce?.orElse (fun _ => opts.nonce?)
+  match opts.coverageLogPath?, opts.coverageNonce?, effectiveCovNonce? with
+  | none, some _, _ =>
+    IO.eprintln "INVALID_ARGS: --coverage-nonce requires --coverage-log"
+    return 2
+  | some lp, _, some nc =>
+    if lp.isEmpty || nc.isEmpty then
+      IO.eprintln "INVALID_ARGS: --coverage-log and nonce must be non-empty"
+      return 2
+  | some _, _, none =>
+    IO.eprintln "INVALID_ARGS: --coverage-log requires --coverage-nonce or --assump-nonce"
+    return 2
+  | none, none, _ => pure ()
   let selectedSuites ← match Tests.Common.selectNamedSuites allSuites (fun (name, _, _) => name) opts.suites with
     | .ok xs => pure xs
     | .error msg =>
@@ -148,6 +169,11 @@ def main (args : List String) : IO UInt32 := do
   let inGitHubActions := (← IO.getEnv "GITHUB_ACTIONS") == some "true"
   match opts.logPath?, opts.nonce? with
   | some lp, some nc => Core.initAssumpLog lp nc
+  | _, _ => pure ()
+  match opts.coverageLogPath?, effectiveCovNonce? with
+  | some lp, some nc =>
+    Core.initCoverageLog lp nc
+    Core.setErrTestPassHook (some Tests.Common.onRegisteredErrorTestPass)
   | _, _ => pure ()
   let mut passed : Nat := 0
   let mut skipped : Array (String × String) := #[]
@@ -168,7 +194,9 @@ def main (args : List String) : IO UInt32 := do
       let cleanErr := singleLine err.toString
       IO.eprintln s!"FAIL: {name} ({cleanErr})"
       failed := failed.push (name, cleanErr)
+  Core.setErrTestPassHook none
   Core.closeAssumpLog
+  Core.closeCoverageLog
   IO.println s!"TEST_SUMMARY: passed={passed} skipped={skipped.size} failed={failed.size}"
   for (name, reason) in skipped do
     IO.println s!"SKIPPED_SUITE: {name} | {reason}"

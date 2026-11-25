@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "assumptions": [
+    {
+      "id": "envvarsraw.list_get_consistent",
+      "package": "LeanSwe.EnvVars.Raw",
+      "why_unfuzzable": "Global POSIX environ(7)/getenv(3) consistency invariant consumed formally by LeanSwe.EnvVars.Proofs until folded into EnvVars.Raw.Model",
+      "formal_pred": "LeanSwe.EnvVars.Raw.assume_envvarsraw_listEnv_consistentWithGetEnv"
+    }
+  ]
+}

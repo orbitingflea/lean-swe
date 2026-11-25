@@ -1,6 +1,5 @@
 import Fuzz.Common.Suite
 import LeanSwe.Fs.Interface
-import LeanSwe.LinuxSyscall.Files.SpecTests
 import Fuzz.LinuxSyscall.Env
 import Fuzz.LinuxSyscall.Files.Fuzz
 import Fuzz.LinuxSyscall.Files.Strace
@@ -73,6 +72,10 @@ structure WorldOptions where
   rlimitNofile? : Option UInt64 := none
   /-- Close raw FD `0` inside `--worker-mode` after runtime initialization. -/
   closeFd0 : Bool := false
+  /-- Optional parent coverage log path propagated to isolated child fuzz workers. -/
+  coverageLogPath? : Option String := none
+  /-- Optional parent coverage nonce propagated to isolated child fuzz workers. -/
+  coverageNonce? : Option String := none
   deriving Repr
 
 /-- Return `true` when any isolated worker or fixture-seeding submode flag is set. -/
@@ -86,6 +89,30 @@ def WorldOptions.hasSpecialMode (opts : WorldOptions) : Bool :=
   opts.envChild?.isSome ||
   opts.initNetnsDropCaps ||
   opts.inNetns
+
+private def requiredFilesRealErrorHits : Array (String × String) := #[
+  ("openat", "notFound"), ("openat", "badFd"), ("openat", "invalidArg"), ("openat", "stateConflict"), ("openat", "permissionDenied"),
+  ("openat2", "notFound"), ("openat2", "badFd"), ("openat2", "invalidArg"), ("openat2", "stateConflict"), ("openat2", "permissionDenied"),
+  ("close", "badFd"), ("read", "badFd"), ("read", "stateConflict"), ("write", "badFd"), ("fstat", "badFd"),
+  ("fstatat", "notFound"), ("fstatat", "badFd"), ("fstatat", "invalidArg"), ("fstatat", "stateConflict"), ("fstatat", "permissionDenied"),
+  ("faccessat", "notFound"), ("faccessat", "badFd"), ("faccessat", "invalidArg"), ("faccessat", "stateConflict"), ("faccessat", "permissionDenied"),
+  ("mkdirat", "notFound"), ("mkdirat", "badFd"), ("mkdirat", "invalidArg"), ("mkdirat", "stateConflict"), ("mkdirat", "permissionDenied"),
+  ("unlinkat", "notFound"), ("unlinkat", "badFd"), ("unlinkat", "invalidArg"), ("unlinkat", "stateConflict"), ("unlinkat", "permissionDenied"),
+  ("renameat2", "notFound"), ("renameat2", "badFd"), ("renameat2", "invalidArg"), ("renameat2", "stateConflict"), ("renameat2", "permissionDenied"),
+  ("symlinkat", "notFound"), ("symlinkat", "badFd"), ("symlinkat", "invalidArg"), ("symlinkat", "stateConflict"), ("symlinkat", "permissionDenied"),
+  ("readlinkat", "notFound"), ("readlinkat", "badFd"), ("readlinkat", "invalidArg"), ("readlinkat", "stateConflict"), ("readlinkat", "permissionDenied"),
+  ("getdents64", "notFound"), ("getdents64", "badFd"), ("getdents64", "invalidArg"), ("getdents64", "stateConflict"),
+  ("fchmodat", "notFound"), ("fchmodat", "badFd"), ("fchmodat", "invalidArg"), ("fchmodat", "stateConflict"), ("fchmodat", "permissionDenied"),
+  ("fchmod", "badFd"), ("flock", "badFd"), ("flock", "stateConflict"),
+  ("fcntl", "badFd"), ("fcntl", "invalidArg"), ("fcntl", "permissionDenied"),
+  ("fsync", "badFd"), ("getcwd", "invalidArg"),
+  ("lseek", "badFd"), ("lseek", "invalidArg"), ("lseek", "transientOrResource"),
+  ("reopenReadOnly", "badFd"), ("reopenReadOnly", "stateConflict"), ("reopenReadOnly", "permissionDenied"), ("reopenReadOnly", "transientOrResource")
+]
+
+private def allFilesErrorKindNames : Array String := #[
+  "notFound", "badFd", "invalidArg", "stateConflict", "permissionDenied", "transientOrResource"
+]
 
 private def requiredExtraErrorHits : Array (String × String) := #[
   ("write", "stateConflict"),
@@ -118,6 +145,21 @@ private def printAndAssertFilesHits (stdoutOpen : Bool) (stats : HitStats) (step
     let pdHits := stats.kindCounts.getD s!"{sname}:permissionDenied" 0
     let trHits := stats.kindCounts.getD s!"{sname}:transientOrResource" 0
     outPrintln stdoutOpen s!"  {sname}: ok={okHits} notFound={nfHits} badFd={bfHits} invalidArg={iaHits} stateConflict={scHits} permissionDenied={pdHits} transientOrResource={trHits}"
+  let mut filesHitCells : Nat := 0
+  let filesTotalCells := allSyscallNames.size * (allFilesErrorKindNames.size + 1)
+  for sname in allSyscallNames do
+    if stats.kindCounts.getD s!"{sname}:ok" 0 > 0 then
+      filesHitCells := filesHitCells + 1
+    for kname in allFilesErrorKindNames do
+      let realCount := realStats.kindCounts.getD s!"{sname}:{kname}" 0
+      let totalCount := stats.kindCounts.getD s!"{sname}:{kname}" 0
+      if realCount > 0 then
+        filesHitCells := filesHitCells + 1
+        logErrHit s!"LeanSwe.LinuxSyscall.Files.{sname}" s!"LeanSwe.LinuxSyscall.Files.FilesErrorKind.{kname}" "real"
+      else if totalCount > 0 then
+        filesHitCells := filesHitCells + 1
+        logErrHit s!"LeanSwe.LinuxSyscall.Files.{sname}" s!"LeanSwe.LinuxSyscall.Files.FilesErrorKind.{kname}" "fault_injected"
+  recordSuiteBuckets filesHitCells filesTotalCells
   if steps >= 1000 then
     for sname in allSyscallNames do
       let prefixStr := sname ++ ":"
@@ -141,14 +183,9 @@ private def printAndAssertFilesHits (stdoutOpen : Bool) (stats : HitStats) (step
     for sname in allSyscallNames do
       if realStats.kindCounts.getD s!"{sname}:ok" 0 == 0 then
         missing := missing.push s!"{sname}:ok"
-    for ob in LeanSwe.LinuxSyscall.Files.errorCoverage do
-      match ob.justification with
-      | .tested _ .real =>
-        let sname := ob.request.splitOn "." |>.getLast!
-        let kname := filesErrorKindName ob.errorKind
-        if realStats.kindCounts.getD s!"{sname}:{kname}" 0 == 0 then
-          missing := missing.push s!"{sname}:{kname}"
-      | _ => pure ()
+    for (sname, kname) in requiredFilesRealErrorHits do
+      if realStats.kindCounts.getD s!"{sname}:{kname}" 0 == 0 then
+        missing := missing.push s!"{sname}:{kname}"
     for (sname, kname) in requiredExtraErrorHits do
       if realStats.kindCounts.getD s!"{sname}:{kname}" 0 == 0 then
         missing := missing.push s!"{sname}:{kname}"
@@ -162,6 +199,29 @@ private def printAndAssertHits (suiteName : String) (expectedNames : Array Strin
   IO.println s!"SYSCALL_OUTCOME_HITS ({suiteName}):"
   for (bucket, count) in entries do
     IO.println s!"  {bucket} = {count}"
+  let mut hitCells : Nat := 0
+  let totalCells := expectedNames.size * 2
+  for sname in expectedNames do
+    if counts.getD s!"{sname}:ok" 0 > 0 then
+      hitCells := hitCells + 1
+    let prefixErr := sname ++ ":err("
+    if entries.any (fun (k, v) => v > 0 && k.startsWith prefixErr) then
+      hitCells := hitCells + 1
+  recordSuiteBuckets hitCells totalCells
+  for (bucketKey, cnt) in entries do
+    if cnt > 0 then
+      match bucketKey.splitOn ":err(" with
+      | [sname, rest] =>
+        if rest.endsWith ")" then
+          if let some eno := (rest.dropEnd 1).toString.toNat? then
+            let errVal : LeanSwe.LinuxSyscall.Errno := eno.toUInt32
+            if suiteName == "poll" then
+              let kStr := (reprStr (LeanSwe.LinuxSyscall.Poll.PollErrorKind.ofErrno errVal)).trimAscii.toString
+              logErrHit s!"LeanSwe.LinuxSyscall.Poll.{sname}" kStr "real"
+            else if suiteName == "net" then
+              let kStr := (reprStr (LeanSwe.LinuxSyscall.Net.NetErrorKind.ofErrno errVal)).trimAscii.toString
+              logErrHit s!"LeanSwe.LinuxSyscall.Net.{sname}" kStr "real"
+      | _ => pure ()
   if minStepsForCoverage then
     for sname in expectedNames do
       let okHits := counts.getD s!"{sname}:ok" 0
@@ -190,6 +250,7 @@ private def runFilesSuiteImpl (stdoutOpen : Bool) (opts : WorldOptions) (steps :
     (effectiveSeed : UInt64) : IO Unit := do
   Env.pinClosedStdio
   let report ← runFilesFuzz steps effectiveSeed false opts.dir opts.explicitDir opts.requireNs
+  recordSuiteSteps report.totalSteps
   if !report.shrinkSelfTestDetail.isEmpty then
     outPrintln stdoutOpen s!"SELF_TEST_SHRINK: {report.shrinkSelfTestDetail}"
   printAndAssertFilesHits stdoutOpen report.stats steps false (!opts.explicitDir) report.realStats
@@ -198,6 +259,7 @@ private def runFilesSuiteImpl (stdoutOpen : Bool) (opts : WorldOptions) (steps :
 private def runPollSuiteImpl (steps : Nat) (effectiveSeed : UInt64) : IO Unit := do
   let fdsBefore ← countSelfFds
   let report ← PollFuzz.runPollFuzz steps effectiveSeed false
+  recordSuiteSteps report.totalSteps
   let fdsAfter ← countSelfFds
   if fdsBefore > 0 && fdsAfter > fdsBefore then
     throw (IO.userError s!"poll fuzzer leaked FDs: before={fdsBefore} after={fdsAfter}")
@@ -214,13 +276,19 @@ private def runNetSuiteImpl (opts : WorldOptions) (steps : Nat) (effectiveSeed :
     let probe ← IO.Process.output { cmd := "unshare", args := #["-Urn", "--", "true"] }
     if probe.exitCode == 0 then
       let exe ← IO.appPath
+      let childCov? := match opts.coverageLogPath?, opts.coverageNonce? with
+        | some lp, some nc => some (s!"{lp}.net-unshare.tmp", nc)
+        | _, _ => none
+      let childCovArgs := match childCov? with
+        | some (cp, nc) => #["--coverage-log", cp, "--nonce", nc]
+        | none => #[]
       let childArgs :=
         #[ "-Urn", "--", exe.toString
          , "--suite", "net"
          , "--steps", toString steps
          , "--seed", toString effectiveSeed
          , "--init-netns-drop-caps"
-         ] ++ (if opts.requireNs then #["--require-ns"] else #[])
+         ] ++ (if opts.requireNs then #["--require-ns"] else #[]) ++ childCovArgs
       let child ← IO.Process.spawn {
         cmd := "unshare"
         args := childArgs
@@ -229,6 +297,8 @@ private def runNetSuiteImpl (opts : WorldOptions) (steps : Nat) (effectiveSeed :
         stderr := childStderr
       }
       let rc ← child.wait
+      if let some (cp, nc) := childCov? then
+        mergeChildCoverageLog cp nc
       if rc != 0 then
         throw (IO.userError s!"net fuzz unshare child failed (exit={rc})")
       return ()
@@ -242,13 +312,19 @@ private def runNetSuiteImpl (opts : WorldOptions) (steps : Nat) (effectiveSeed :
     }
     if capProbe.exitCode == 0 then
       let exe ← IO.appPath
+      let childCov? := match opts.coverageLogPath?, opts.coverageNonce? with
+        | some lp, some nc => some (s!"{lp}.net-setpriv.tmp", nc)
+        | _, _ => none
+      let childCovArgs := match childCov? with
+        | some (cp, nc) => #["--coverage-log", cp, "--nonce", nc]
+        | none => #[]
       let childArgs :=
         #[ "--inh-caps=-net_admin", "--bounding-set=-net_admin", "--", exe.toString
          , "--suite", "net"
          , "--steps", toString steps
          , "--seed", toString effectiveSeed
          , "--in-netns"
-         ] ++ (if opts.requireNs then #["--require-ns"] else #[])
+         ] ++ (if opts.requireNs then #["--require-ns"] else #[]) ++ childCovArgs
       let child ← IO.Process.spawn {
         cmd := "setpriv"
         args := childArgs
@@ -257,6 +333,8 @@ private def runNetSuiteImpl (opts : WorldOptions) (steps : Nat) (effectiveSeed :
         stderr := childStderr
       }
       let rc ← child.wait
+      if let some (cp, nc) := childCov? then
+        mergeChildCoverageLog cp nc
       if rc != 0 then
         throw (IO.userError s!"net fuzz setpriv child failed (exit={rc})")
       return ()
@@ -264,6 +342,7 @@ private def runNetSuiteImpl (opts : WorldOptions) (steps : Nat) (effectiveSeed :
       throw (IO.userError s!"net fuzz setpriv failed under --init-netns-drop-caps (exit={capProbe.exitCode}): {capProbe.stderr.trimAscii.toString}")
   let fdsBefore ← countSelfFds
   let report ← NetFuzz.runNetFuzz steps effectiveSeed false opts.requireNs
+  recordSuiteSteps report.totalSteps
   let fdsAfter ← countSelfFds
   if fdsBefore > 0 && fdsAfter > fdsBefore then
     throw (IO.userError s!"net fuzzer leaked FDs: before={fdsBefore} after={fdsAfter}")
@@ -440,6 +519,26 @@ def runSpecialMode (opts : WorldOptions) (requestedSuites : List String) (steps 
     return 0
   return 2
 
+private def recordTimeRandCoverage (actualSteps : Nat) (h : TimeRandHitCounters) : IO Unit := do
+  recordSuiteSteps actualSteps
+  let checks : Array Bool := #[
+    h.gettimeRealtimeOk > 0, h.gettimeMonotonicOk > 0, h.gettimeErr > 0,
+    h.nanosleepOk > 0, h.nanosleepInvalidArg > 0, h.nanosleepTransient > 0,
+    h.getrandomOkZero > 0, h.getrandomOkSmall > 0, h.getrandomOkLarge > 0,
+    h.getrandomInvalidArg > 0, h.getrandomWouldBlock > 0, h.getrandomTransient > 0
+  ]
+  recordSuiteBuckets (checks.filter id).size checks.size
+  if h.nanosleepInvalidArg > 0 then
+    logErrHit "LeanSwe.LinuxSyscall.TimeRand.clock_nanosleep" "LeanSwe.LinuxSyscall.TimeRand.TimeRandErrorKind.invalidArg" "real"
+  if h.nanosleepTransient > 0 then
+    logErrHit "LeanSwe.LinuxSyscall.TimeRand.clock_nanosleep" "LeanSwe.LinuxSyscall.TimeRand.TimeRandErrorKind.transientOrResource" "real"
+  if h.getrandomInvalidArg > 0 then
+    logErrHit "LeanSwe.LinuxSyscall.TimeRand.getrandom" "LeanSwe.LinuxSyscall.TimeRand.TimeRandErrorKind.invalidArg" "real"
+  if h.getrandomWouldBlock > 0 then
+    logErrHit "LeanSwe.LinuxSyscall.TimeRand.getrandom" "LeanSwe.LinuxSyscall.TimeRand.TimeRandErrorKind.wouldBlock" "fault_injected"
+  if h.getrandomTransient > 0 then
+    logErrHit "LeanSwe.LinuxSyscall.TimeRand.getrandom" "LeanSwe.LinuxSyscall.TimeRand.TimeRandErrorKind.transientOrResource" "fault_injected"
+
 /-- Construct the six unified `LinuxSyscall` world-model `FuzzSuite` descriptors (`sandbox`, `timerand`, `files`, `process`, `poll`, `net`). -/
 def suites (opts : WorldOptions) (outClosed errClosed : Bool) : List FuzzSuite :=
   let stdoutOpen := !outClosed
@@ -455,9 +554,12 @@ def suites (opts : WorldOptions) (outClosed errClosed : Bool) : List FuzzSuite :
       runSmoke := fun cfg => do
         Fuzz.LinuxSyscall.TimeRand.Strace.runChecks
         let allowNoTm := opts.allowNoTimens || !opts.requireNs
-        let _ ← fuzzTimeRand (min cfg.steps 1000) cfg.seed (runEnvSubEpisodes := true) (allowNoTimens := allowNoTm)
+        let actualSteps := min cfg.steps 1000
+        let rep ← fuzzTimeRand actualSteps cfg.seed (runEnvSubEpisodes := true) (allowNoTimens := allowNoTm)
+        recordTimeRandCoverage actualSteps rep.hits
       runFuzz := fun cfg => do
-        let _ ← fuzzTimeRand cfg.steps cfg.seed (runEnvSubEpisodes := true) (allowNoTimens := opts.allowNoTimens)
+        let rep ← fuzzTimeRand cfg.steps cfg.seed (runEnvSubEpisodes := true) (allowNoTimens := opts.allowNoTimens)
+        recordTimeRandCoverage cfg.steps rep.hits
       selfTestShrink := fun seed => selfTestShrink seed }
   , { name := "files"
       description := "LinuxSyscall.Files world-model differential fuzzer (23 POSIX file syscalls across FS/mount/seccomp worlds)"

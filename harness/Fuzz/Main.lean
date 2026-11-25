@@ -37,6 +37,10 @@ structure CliOptions where
   hasRandomSeed : Bool := false
   /-- Shared configuration passed to each selected `FuzzSuite`. -/
   config : FuzzConfig := {}
+  /-- Optional output path for nonce-authenticated `ERR_HIT` and `FUZZ_EQUIV` records. -/
+  coverageLogPath? : Option String := none
+  /-- Optional hex nonce paired with `--coverage-log`. -/
+  nonce? : Option String := none
   /-- LinuxSyscall world-model suite and worker options. -/
   world : WorldOptions := {}
   deriving Repr
@@ -265,6 +269,12 @@ private def parseArgs : List String → (opts : CliOptions := {}) → Except Str
   | "--rlimit-nofile" :: s :: rest, opts => do
     let n ← parsePositiveNat "RLIMIT_NOFILE" s
     parseArgs rest { opts with world := { opts.world with rlimitNofile? := some (UInt64.ofNat n) } }
+  | ["--coverage-log"], _ => .error "missing value for --coverage-log"
+  | "--coverage-log" :: p :: rest, opts =>
+    parseArgs rest { opts with coverageLogPath? := some p }
+  | ["--nonce"], _ => .error "missing value for --nonce"
+  | "--nonce" :: nc :: rest, opts =>
+    parseArgs rest { opts with nonce? := some nc }
   | flag :: rest, opts =>
     if let some s := stripEqFlag flag "--suite=" then do
       let names ← splitSuiteArg s
@@ -304,6 +314,10 @@ private def parseArgs : List String → (opts : CliOptions := {}) → Except Str
     else if let some s := stripEqFlag flag "--rlimit-nofile=" then do
       let n ← parsePositiveNat "RLIMIT_NOFILE" s
       parseArgs rest { opts with world := { opts.world with rlimitNofile? := some (UInt64.ofNat n) } }
+    else if let some p := stripEqFlag flag "--coverage-log=" then
+      parseArgs rest { opts with coverageLogPath? := some p }
+    else if let some nc := stripEqFlag flag "--nonce=" then
+      parseArgs rest { opts with nonce? := some nc }
     else
       .error s!"UNKNOWN_FLAG: {truncArg flag}"
 
@@ -352,11 +366,38 @@ private def resolveSelectedSuites (allSuites : List FuzzSuite) (opts : CliOption
     throw "NO_SUITES_SELECTED: all selected suites were excluded by --exclude"
   return filtered
 
+private def suiteTargetPackages : String → Array String
+  | "selftest" => #["Fuzz.SelfTest"]
+  | "float" => #["LeanSwe.NumParse", "LeanSwe.Toml"]
+  | "cmdline" => #["LeanSwe.CmdLine"]
+  | "envvars" => #["LeanSwe.EnvVars.Raw", "LeanSwe.EnvVars"]
+  | "cryptohash" => #["LeanSwe.CryptoHash.Raw", "LeanSwe.CryptoHash"]
+  | "passwd" => #["LeanSwe.LinuxSyscall.Passwd"]
+  | "dns" => #["LeanSwe.LinuxSyscall.Dns"]
+  | "compress" => #["LeanSwe.Compress"]
+  | "postfork" => #["LeanSwe.PostFork"]
+  | "sqlite" => #["LeanSwe.Sqlite.Raw", "LeanSwe.Sqlite"]
+  | "git" => #["LeanSwe.Git"]
+  | "sandbox" => #["LeanSwe.LinuxSyscall.Sandbox"]
+  | "timerand" => #["LeanSwe.LinuxSyscall.TimeRand"]
+  | "files" => #["LeanSwe.LinuxSyscall.Files"]
+  | "process" => #["LeanSwe.LinuxSyscall.Process"]
+  | "poll" => #["LeanSwe.LinuxSyscall.Poll"]
+  | "net" => #["LeanSwe.LinuxSyscall.Net"]
+  | other => #[other]
+
 private def validateOptions (allSuites : List FuzzSuite) (opts : CliOptions) : Except String (List FuzzSuite) := do
   if opts.runAll && !opts.suites.isEmpty then
     throw "CONFLICTING_FLAGS: pass either --all or --suite, not both"
   if opts.hasSeed && opts.hasRandomSeed then
     throw "CONFLICTING_FLAGS: pass either --seed or --random-seed, not both"
+  match opts.coverageLogPath?, opts.nonce? with
+  | some lp, some nc =>
+    if lp.isEmpty || nc.isEmpty then
+      throw "INVALID_ARGS: --coverage-log and --nonce must be non-empty"
+  | some _, none | none, some _ =>
+    throw "INVALID_ARGS: --coverage-log and --nonce must be provided together"
+  | none, none => pure ()
   if opts.world.hasSpecialMode then
     return []
   resolveSelectedSuites allSuites opts
@@ -375,6 +416,8 @@ private def printUsage : IO Unit := do
   IO.println "  --require-memfd-strict   Require vm.memfd_noexec=2 strict checks in sandbox suite"
   IO.println "  --allow-no-timens        Allow skipping CLONE_NEWTIME sub-episodes when unavailable"
   IO.println "  --dir, --fs-root <path>  Scratch directory root for files fuzzer episodes"
+  IO.println "  --coverage-log <path>    Write nonce-authenticated ERR_HIT and FUZZ_EQUIV records"
+  IO.println "  --nonce <hex>            Nonce token paired with --coverage-log"
   IO.println "  --list-suites            List registered fuzz suites and exit"
   IO.println "  -h, --help               Show this help message"
 
@@ -395,7 +438,12 @@ def main (args : List String) : IO UInt32 := do
       IO.eprintln msg
       stderr.flush
       return 2
-  let allSuites := registeredSuites opts.world outClosed errClosed
+  let worldOpts : WorldOptions := {
+    opts.world with
+    coverageLogPath? := opts.coverageLogPath?
+    coverageNonce? := opts.nonce?
+  }
+  let allSuites := registeredSuites worldOpts outClosed errClosed
   match validateRegisteredSuites allSuites with
   | .ok () => pure ()
   | .error msg =>
@@ -427,31 +475,58 @@ def main (args : List String) : IO UInt32 := do
         return 2
     else
       pure opts.config.seed
-  if opts.world.hasSpecialMode then
-    let rc ← Fuzz.LinuxSyscall.Main.runSpecialMode opts.world opts.suites opts.config.steps
-      effectiveSeed opts.hasRandomSeed outClosed errClosed
+  if worldOpts.hasSpecialMode then
+    match opts.coverageLogPath?, opts.nonce? with
+    | some lp, some nc => initCoverageLog lp nc
+    | _, _ => pure ()
+    let rc ← try
+      let code ← Fuzz.LinuxSyscall.Main.runSpecialMode worldOpts opts.suites opts.config.steps
+        effectiveSeed opts.hasRandomSeed outClosed errClosed
+      if worldOpts.inNetns || worldOpts.initNetnsDropCaps then
+        let (bucketsHit, bucketsTotal) ← getSuiteBuckets
+        let actualSteps ← getSuiteSteps opts.config.steps
+        if bucketsTotal > 0 || code != 0 then
+          for pkg in suiteTargetPackages "net" do
+            logFuzzEquiv pkg "net" actualSteps bucketsHit bucketsTotal (code == 0)
+      pure code
+    finally
+      closeCoverageLog
     stdout.flush
     stderr.flush
     return rc
   let effectiveConfig : FuzzConfig := { opts.config with seed := effectiveSeed }
   IO.println s!"SEED={effectiveSeed}"
   stdout.flush
+  match opts.coverageLogPath?, opts.nonce? with
+  | some lp, some nc => initCoverageLog lp nc
+  | _, _ => pure ()
   let mut failedSuites : Array String := #[]
-  for suite in selected do
-    try
-      if effectiveConfig.smoke || effectiveConfig.selfTestShrink then
-        suite.selfTestShrink effectiveSeed
+  try
+    for suite in selected do
+      resetSuiteBuckets
+      let mut suiteOk := true
+      try
+        if effectiveConfig.smoke || effectiveConfig.selfTestShrink then
+          suite.selfTestShrink effectiveSeed
+          stdout.flush
+        if effectiveConfig.smoke then
+          suite.runSmoke effectiveConfig
+        else
+          suite.runFuzz effectiveConfig
         stdout.flush
-      if effectiveConfig.smoke then
-        suite.runSmoke effectiveConfig
-      else
-        suite.runFuzz effectiveConfig
-      stdout.flush
-    catch e =>
-      stdout.flush
-      IO.eprintln s!"FUZZ_SUITE_FAILED suite={suite.name}: {e}"
-      stderr.flush
-      failedSuites := failedSuites.push suite.name
+      catch e =>
+        suiteOk := false
+        stdout.flush
+        IO.eprintln s!"FUZZ_SUITE_FAILED suite={suite.name}: {e}"
+        stderr.flush
+        failedSuites := failedSuites.push suite.name
+      let (bucketsHit, bucketsTotal) ← getSuiteBuckets
+      let actualSteps ← getSuiteSteps effectiveConfig.steps
+      if bucketsTotal > 0 || !suiteOk then
+        for pkg in suiteTargetPackages suite.name do
+          logFuzzEquiv pkg suite.name actualSteps bucketsHit bucketsTotal suiteOk
+  finally
+    closeCoverageLog
   if !failedSuites.isEmpty then
     IO.eprintln s!"FUZZ_RUN_FAILED failed={failedSuites.size}/{selected.length} suites={",".intercalate failedSuites.toList} seed={effectiveSeed}"
     stderr.flush

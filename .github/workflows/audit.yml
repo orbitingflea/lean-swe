@@ -233,6 +233,7 @@ jobs:
           LANE_STATE_DIR=$(mktemp -d "$LOG_DIR/audit-state.XXXXXX")
           LAKE_ENV_FILE="$LANE_STATE_DIR/lake.env"
           ASSUMP_LOG="$LANE_STATE_DIR/assump.log"
+          COV_LOG="$LANE_STATE_DIR/coverage.log"
           LANE_PIDS=()
           cleanup_parallel() {
             local p sig
@@ -253,7 +254,7 @@ jobs:
           trap 'trap "" INT TERM; cleanup_parallel; exit 143' TERM
           ASSUMP_NONCE=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
           [[ "$ASSUMP_NONCE" =~ ^[0-9a-f]{32}$ ]] || { echo "ASSUMP_NONCE_ERROR: invalid nonce" >&2; exit 2; }
-          rm -f "$ASSUMP_LOG"
+          rm -f "$ASSUMP_LOG" "$COV_LOG"
           # Capture lake env once before launching lanes to avoid concurrent .lake/config lock contention.
           lake env python3 -c '
           import os, re, shlex
@@ -273,10 +274,10 @@ jobs:
             run_lean_gate scripts/CheckPromises.lean --with-self-test .lake/build/lib/lean .
           }
           lane_3() {
-            harness/.lake/build/bin/lean-swe-test --assump-log "$ASSUMP_LOG" --assump-nonce "$ASSUMP_NONCE"
+            harness/.lake/build/bin/lean-swe-test --assump-log "$ASSUMP_LOG" --assump-nonce "$ASSUMP_NONCE" --coverage-log "$COV_LOG"
             [[ -s "$ASSUMP_LOG" ]] || { echo "ASSUMP_LOG_ERROR: missing or empty assumption log" >&2; return 1; }
-            run_lean_gate scripts/CheckAssumptions.lean --allow-legacy --verify-log "$ASSUMP_LOG" --nonce "$ASSUMP_NONCE"
-            rm -f "$ASSUMP_LOG"
+            run_lean_gate scripts/CheckAssumptions.lean --allow-legacy --verify-log "$ASSUMP_LOG" --coverage-log "$COV_LOG" --nonce "$ASSUMP_NONCE"
+            rm -f "$ASSUMP_LOG" "$COV_LOG"
             harness/.lake/build/bin/lean-swe-test --suite Git --suite Compress --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite PostFork --suite Sqlite --suite Sqlite.Raw 0<&- 1>&- 2>&-
           }
           lane_4() {

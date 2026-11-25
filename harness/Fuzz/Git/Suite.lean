@@ -710,6 +710,7 @@ private def runSmokeFuzz (cfg : FuzzConfig) : IO Unit := do
   safePrintln (tracker.formatReport "git")
   let reg1Steps := worktreeAndIgnoreRegressionTraces.foldl (fun acc t => acc + t.size) warmupCorpus.size
   let totalSteps := reg2.foldl (fun acc t => acc + t.size) reg1Steps
+  Fuzz.Common.recordSuiteSteps totalSteps
   safePrintln s!"FUZZ_SUMMARY suite=git mode=smoke steps={totalSteps} seed={cfg.seed}"
 
 private def runFullFuzz (cfg : FuzzConfig) : IO Unit := do

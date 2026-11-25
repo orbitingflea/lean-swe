@@ -3101,6 +3101,9 @@ private structure CliConfig where
   repoDir : System.FilePath := "."
   logPath? : Option System.FilePath := none
   nonce? : Option String := none
+  coverageLogPath? : Option System.FilePath := none
+  coverageNonce? : Option String := none
+  strictCentralCoverage : Bool := false
   printSigPkg? : Option Name := none
   legacyAllowlist : Std.HashSet Name := {}
   deadBranchFuel : Nat := 4096
@@ -3125,6 +3128,11 @@ private def parseArgs (args : List String) : CliConfig :=
     | ["--verify-log"] => { cfg with argError? := some "MISSING_VERIFY_LOG_VALUE: --verify-log requires a path" }
     | "--nonce" :: nc :: rest => go { cfg with nonce? := some nc } pos rest
     | ["--nonce"] => { cfg with argError? := some "MISSING_NONCE_VALUE: --nonce requires a non-empty argument" }
+    | "--coverage-log" :: lp :: rest => go { cfg with coverageLogPath? := some ⟨lp⟩ } pos rest
+    | ["--coverage-log"] => { cfg with argError? := some "MISSING_COVERAGE_LOG_VALUE: --coverage-log requires a path" }
+    | "--coverage-nonce" :: nc :: rest => go { cfg with coverageNonce? := some nc } pos rest
+    | ["--coverage-nonce"] => { cfg with argError? := some "MISSING_COVERAGE_NONCE_VALUE: --coverage-nonce requires a non-empty argument" }
+    | "--strict-central-coverage" :: rest => go { cfg with strictCentralCoverage := true } pos rest
     | "--print-sig" :: pkgStr :: rest => go { cfg with printSigPkg? := some pkgStr.toName } pos rest
     | ["--print-sig"] => { cfg with argError? := some "MISSING_PRINT_SIG_VALUE: --print-sig requires a package name" }
     | "--dead-branch-fuel" :: nf :: rest =>
@@ -3153,6 +3161,329 @@ private def parseArgs (args : List String) : CliConfig :=
         go cfg (pos + 1) rest
   termination_by xs => xs.length
   go {} 0 args
+
+private structure CoverageOverrideEntry where
+  op : String
+  kind : String
+  mode : String
+  testSymbol : String
+  reason : String
+
+private structure ExternalAssumptionEntry where
+  id : String
+  package : String
+  whyUnfuzzable : String
+  formalPred? : Option String
+
+private structure CoverageLogData where
+  errHits : Std.HashMap (String × String) (Std.HashSet String) := {}
+  fuzzEquiv : Array (String × String × Nat × Nat × Nat × Bool) := #[]
+  badLines : Nat := 0
+  sawInit : Bool := false
+  sawClose : Bool := false
+
+private def parsePackagePurityMap (repoDir : System.FilePath) :
+    IO (Except String (Bool × Std.HashMap Name String)) := do
+  let manifestPath := repoDir / "scripts" / "package_manifest.json"
+  if !(← manifestPath.pathExists) then
+    return .ok (false, {})
+  let raw ← IO.FS.readFile manifestPath
+  match Lean.Json.parse raw with
+  | .error err => return .error s!"MALFORMED_PACKAGE_MANIFEST: {err}"
+  | .ok j =>
+    let .ok (.obj pkgs) := j.getObjVal? "packages"
+      | return .error "MALFORMED_PACKAGE_MANIFEST: missing 'packages' object"
+    let mut out : Std.HashMap Name String := {}
+    for (pkgStr, entry) in pkgs do
+      if let .ok pStr := entry.getObjValAs? String "purity" then
+        out := out.insert pkgStr.toName pStr
+    return .ok (true, out)
+
+private def isPurePackage (env : Environment) (knownPkgs : Array Name)
+    (purityMap : Std.HashMap Name String) (pkg : Name) : Bool :=
+  match purityMap.get? pkg with
+  | some p => p == "pure"
+  | none => !isExternalBoundaryPkg env knownPkgs pkg
+
+private def parseCoverageOverridesJson (repoDir : System.FilePath) (requireFile : Bool) :
+    IO (Except String (Array CoverageOverrideEntry)) := do
+  let path := repoDir / "scripts" / "coverage_overrides.json"
+  if !(← path.pathExists) then
+    if requireFile then
+      return .error s!"MISSING_COVERAGE_OVERRIDES: missing {path}"
+    return .ok #[]
+  let raw ← IO.FS.readFile path
+  let j ← match Lean.Json.parse raw with
+    | .ok v => pure v
+    | .error err => return .error s!"MALFORMED_COVERAGE_OVERRIDES: {err}"
+  let .obj rootMap := j
+    | return .error "MALFORMED_COVERAGE_OVERRIDES: root must be JSON object"
+  for (k, _) in rootMap do
+    if k != "version" && k != "overrides" then
+      return .error s!"MALFORMED_COVERAGE_OVERRIDES: unknown root key '{k}'"
+  match j.getObjValAs? Nat "version" with
+  | .ok 1 => pure ()
+  | _ => return .error "MALFORMED_COVERAGE_OVERRIDES: 'version' must be 1"
+  let .ok (.arr arr) := j.getObjVal? "overrides"
+    | return .error "MALFORMED_COVERAGE_OVERRIDES: 'overrides' must be a JSON array"
+  let mut out : Array CoverageOverrideEntry := #[]
+  for item in arr do
+    let .obj kvs := item
+      | return .error "MALFORMED_COVERAGE_OVERRIDES: each override entry must be a JSON object"
+    for (k, _) in kvs do
+      if k != "op" && k != "kind" && k != "mode" && k != "test_symbol" && k != "reason" then
+        return .error s!"MALFORMED_COVERAGE_OVERRIDES: unknown override field '{k}'"
+    let .ok op := item.getObjValAs? String "op"
+      | return .error "MALFORMED_COVERAGE_OVERRIDES: override missing string 'op'"
+    let .ok kind := item.getObjValAs? String "kind"
+      | return .error "MALFORMED_COVERAGE_OVERRIDES: override missing string 'kind'"
+    let .ok mode := item.getObjValAs? String "mode"
+      | return .error "MALFORMED_COVERAGE_OVERRIDES: override missing string 'mode'"
+    let .ok reason := item.getObjValAs? String "reason"
+      | return .error "MALFORMED_COVERAGE_OVERRIDES: override missing string 'reason'"
+    let testSymbol ← match item.getObjVal? "test_symbol" with
+      | .ok (.str s) => pure s
+      | .ok .null => pure ""
+      | .error _ => pure ""
+      | .ok _ => return .error "MALFORMED_COVERAGE_OVERRIDES: 'test_symbol' must be string or null"
+    if op.trimAscii.toString.isEmpty || kind.trimAscii.toString.isEmpty || reason.trimAscii.toString.isEmpty then
+      return .error "MALFORMED_COVERAGE_OVERRIDES: 'op', 'kind', and 'reason' must be non-empty"
+    if mode != "mocked" && mode != "untriggerable" then
+      return .error s!"INVALID_COVERAGE_OVERRIDE_MODE: '{mode}' for ({op}, {kind}) (expected 'mocked' or 'untriggerable')"
+    out := out.push { op, kind, mode, testSymbol, reason }
+  return .ok out
+
+private def parseExternalAssumptionsJson (repoDir : System.FilePath) (requireFile : Bool) :
+    IO (Except String (Array ExternalAssumptionEntry)) := do
+  let path := repoDir / "scripts" / "external_assumptions.json"
+  if !(← path.pathExists) then
+    if requireFile then
+      return .error s!"MISSING_EXTERNAL_ASSUMPTIONS_JSON: missing {path}"
+    return .ok #[]
+  let raw ← IO.FS.readFile path
+  let j ← match Lean.Json.parse raw with
+    | .ok v => pure v
+    | .error err => return .error s!"MALFORMED_EXTERNAL_ASSUMPTIONS_JSON: {err}"
+  let .obj rootMap := j
+    | return .error "MALFORMED_EXTERNAL_ASSUMPTIONS_JSON: root must be JSON object"
+  for (k, _) in rootMap do
+    if k != "version" && k != "assumptions" then
+      return .error s!"MALFORMED_EXTERNAL_ASSUMPTIONS_JSON: unknown root key '{k}'"
+  match j.getObjValAs? Nat "version" with
+  | .ok 1 => pure ()
+  | _ => return .error "MALFORMED_EXTERNAL_ASSUMPTIONS_JSON: 'version' must be 1"
+  let .ok (.arr arr) := j.getObjVal? "assumptions"
+    | return .error "MALFORMED_EXTERNAL_ASSUMPTIONS_JSON: 'assumptions' must be a JSON array"
+  let mut out : Array ExternalAssumptionEntry := #[]
+  for item in arr do
+    let .obj kvs := item
+      | return .error "MALFORMED_EXTERNAL_ASSUMPTIONS_JSON: each entry must be a JSON object"
+    for (k, _) in kvs do
+      if k != "id" && k != "package" && k != "why_unfuzzable" && k != "formal_pred" then
+        return .error s!"MALFORMED_EXTERNAL_ASSUMPTIONS_JSON: unknown entry field '{k}'"
+    let .ok id := item.getObjValAs? String "id"
+      | return .error "MALFORMED_EXTERNAL_ASSUMPTIONS_JSON: entry missing string 'id'"
+    let .ok pkg := item.getObjValAs? String "package"
+      | return .error "MALFORMED_EXTERNAL_ASSUMPTIONS_JSON: entry missing string 'package'"
+    let .ok why := item.getObjValAs? String "why_unfuzzable"
+      | return .error "MALFORMED_EXTERNAL_ASSUMPTIONS_JSON: entry missing string 'why_unfuzzable'"
+    let fp? ← match item.getObjVal? "formal_pred" with
+      | .ok (.str s) =>
+        if s.trimAscii.toString.isEmpty then
+          return .error s!"MALFORMED_EXTERNAL_ASSUMPTIONS_JSON: empty 'formal_pred' in '{id}'"
+        pure (some s)
+      | .ok .null => pure none
+      | .error _ => pure none
+      | .ok _ => return .error s!"MALFORMED_EXTERNAL_ASSUMPTIONS_JSON: 'formal_pred' must be string or null in '{id}'"
+    if id.trimAscii.toString.isEmpty || pkg.trimAscii.toString.isEmpty || why.trimAscii.toString.isEmpty then
+      return .error "MALFORMED_EXTERNAL_ASSUMPTIONS_JSON: 'id', 'package', and 'why_unfuzzable' must be non-empty"
+    out := out.push { id, package := pkg, whyUnfuzzable := why, formalPred? := fp? }
+  return .ok out
+
+private def parseCoverageLogFile (logPath : System.FilePath) (expectedNonce : String) :
+    IO CoverageLogData := do
+  let txt ← IO.FS.readFile logPath
+  let mut errHits : Std.HashMap (String × String) (Std.HashSet String) := {}
+  let mut fuzzEquiv : Array (String × String × Nat × Nat × Nat × Bool) := #[]
+  let mut badLines : Nat := 0
+  let mut sawInit := false
+  let mut sawClose := false
+  for line in txt.splitOn "\n" do
+    let trimmed := line.trimAscii.toString
+    if trimmed.isEmpty then continue
+    let parts := trimmed.splitOn "|"
+    match parts with
+    | [nonce, "LOG_INIT"] =>
+      if nonce == expectedNonce then sawInit := true else badLines := badLines + 1
+    | [nonce, "LOG_CLOSE"] =>
+      if nonce == expectedNonce then sawClose := true else badLines := badLines + 1
+    | [nonce, "ERR_HIT", qualOp, kindCtor, mode] =>
+      let validMode := mode == "real" || mode == "fault_injected" || mode == "mocked"
+      if nonce == expectedNonce && !qualOp.isEmpty && !kindCtor.isEmpty && validMode then
+        let key := (qualOp, kindCtor)
+        let prev := errHits.getD key {}
+        errHits := errHits.insert key (prev.insert mode)
+      else
+        badLines := badLines + 1
+    | [nonce, "FUZZ_EQUIV", pkg, suite, stepsStr, bucketsStr, okField] =>
+      let okVal? : Option Bool :=
+        if okField == "ok=true" then some true
+        else if okField == "ok=false" then some false
+        else none
+      let bucketPair? : Option (Nat × Nat) :=
+        match bucketsStr.splitOn "/" with
+        | [hStr, tStr] =>
+          match hStr.toNat?, tStr.toNat? with
+          | some h, some t => if h <= t then some (h, t) else none
+          | _, _ => none
+        | _ => none
+      match stepsStr.toNat?, bucketPair?, okVal? with
+      | some steps, some (hit, total), some okVal =>
+        if nonce == expectedNonce && !pkg.isEmpty && !suite.isEmpty then
+          fuzzEquiv := fuzzEquiv.push (pkg, suite, steps, hit, total, okVal)
+        else
+          badLines := badLines + 1
+      | _, _, _ =>
+        badLines := badLines + 1
+    | _ =>
+      badLines := badLines + 1
+  return { errHits, fuzzEquiv, badLines, sawInit, sawClose }
+
+private partial def extractFallibleErrorType? (ty : Expr) : MetaM (Option Name) := do
+  let rec go (e : Expr) : MetaM (Option Name) := do
+    let e := e.consumeMData
+    if e.isAppOfArity ``Except 2 then
+      return e.appFn!.appArg!.consumeMData.getAppFn.consumeMData.constName?
+    if e.isAppOfArity ``ExceptT 3 then
+      return (e.getArg! 0).consumeMData.getAppFn.consumeMData.constName?
+    if e.isAppOfArity ``IO 1 || e.isAppOfArity ``BaseIO 1 then
+      return ← go e.appArg!
+    if e.isAppOfArity ``EIO 2 || e.isAppOfArity ``EST 3 || e.isAppOfArity ``EST.Out 3 then
+      return ← go e.appArg!
+    if e.isForall then
+      return ← forallTelescope e fun _ inner => go inner
+    let e' ← whnf e
+    if e' != e then
+      return ← go e'
+    return none
+  go ty
+
+private def findPkgErrorKindEnum? (env : Environment) (pkg : Name) : Option Name := Id.run do
+  let typesMod := Name.str pkg "Types"
+  let mut found : Array Name := #[]
+  if let some idx := env.header.moduleNames.findIdx? (· == typesMod) then
+    if let some md := env.header.moduleData[idx]? then
+      for c in md.constants do
+        if let .inductInfo ind := c then
+          if !isPrivateName ind.name && !isCompilerAux ind.name &&
+              ind.name.isStr && ind.name.getString!.endsWith "ErrorKind" then
+            found := found.push ind.name
+  if found.size == 1 then some found[0]!
+  else none
+
+private def isNullaryEnumInductive (env : Environment) (ind : InductiveVal) : Bool :=
+  !ind.ctors.isEmpty && ind.numParams == 0 && ind.numIndices == 0 &&
+    ind.ctors.all fun cn =>
+      match env.find? cn with
+      | some (.ctorInfo ci) => ci.numFields == 0
+      | _ => false
+
+private def resolveErrorKindEnum? (env : Environment) (pkg errTypeName : Name)
+    (legacyEnum? : Option Name := none) : MetaM (Option Name) := do
+  if Lean.isStructure env errTypeName then
+    let kindProj := Name.str errTypeName "kind"
+    if env.isProjectionFn kindProj then
+      if let some cinfo := env.find? kindProj then
+        let kName? ← forallTelescopeReducing cinfo.type fun _ ret => do
+          let rw := (← whnf ret).consumeMData
+          return rw.getAppFn.consumeMData.constName?
+        if let some kName := kName? then
+          if let some (.inductInfo _) := env.find? kName then
+            return some kName
+  if errTypeName == `LeanSwe.LinuxSyscall.Errno then
+    if let some pk := findPkgErrorKindEnum? env pkg then
+      return some pk
+  if errTypeName.isStr then
+    let cand := Name.str errTypeName.getPrefix (errTypeName.getString! ++ "Kind")
+    if let some (.inductInfo _) := env.find? cand then
+      return some cand
+  if let some pk := findPkgErrorKindEnum? env pkg then
+    return some pk
+  if let some (.inductInfo ind) := env.find? errTypeName then
+    if isNullaryEnumInductive env ind then
+      return some errTypeName
+  return legacyEnum?
+
+private def discoverProvedImpossibleCells
+    (env : Environment)
+    (knownPkgs : Array Name)
+    (axCacheIn : AxCache) : MetaM (Std.HashMap (String × String) Name × Array String × AxCache) := do
+  let mut cells : Std.HashMap (String × String) Name := {}
+  let mut errs : Array String := #[]
+  let mut axCache := axCacheIn
+  for h : i in [0 : env.header.moduleNames.size] do
+    let m := env.header.moduleNames[i]
+    if !isProjectModule m || !isProofsModule m then continue
+    let some data := env.header.moduleData[i]? | continue
+    let pkg := pkgNamespaceOfSpecWith knownPkgs m
+    let ifaceMod := Name.str pkg "Interface"
+    let implMod := Name.str pkg "Impl"
+    for c in data.constants do
+      let .thmInfo tv := c | continue
+      if isPrivateName c.name || isCompilerAux c.name || env.isProjectionFn c.name then continue
+      let usedTy := tv.type.getUsedConstants
+      let hasNever := usedTy.any fun u =>
+        u == `Core.NeverErrorKindIO || u == `Core.NeverErrorKindBaseIO || u == `Core.NeverErrorKindPure
+      if !hasNever then continue
+      let matched? ← forallTelescope tv.type fun xs concl => do
+        for x in xs do
+          if ← isProp (← inferType x) then return none
+        let cc := concl.consumeMData
+        let info? : Option (Expr × Expr × Expr × Expr × Expr × Bool × Option Expr) :=
+          if cc.isAppOfArity `Core.NeverErrorKindIO 7 || cc.isAppOfArity `Core.NeverErrorKindBaseIO 7 then
+            let a := cc.getAppArgs
+            some (a[0]!, a[1]!, a[3]!, a[4]!, a[5]!, true, some a[6]!)
+          else if cc.isAppOfArity `Core.NeverErrorKindPure 6 then
+            let a := cc.getAppArgs
+            some (a[0]!, a[1]!, a[3]!, a[4]!, a[5]!, false, none)
+          else none
+        let some (errTy, enumTy, kindFn, forbidden, actExpr, isIo, wExpr?) := info? | return none
+        let some errTypeName := errTy.consumeMData.getAppFn.consumeMData.constName? | return none
+        let some enumName := enumTy.consumeMData.getAppFn.consumeMData.constName? | return none
+        let some (.inductInfo enumInd) := env.find? enumName | return none
+        let some kindCtor := forbidden.consumeMData.constName? | return none
+        if !enumInd.ctors.contains kindCtor then return none
+        unless ← checkKindExtractorValid env errTypeName enumName kindFn do return none
+        let neededFVs : Array FVarId ←
+          if isIo then
+            match wExpr? with
+            | some wE =>
+              let wc := wE.consumeMData
+              if xs.size == 0 || !wc.isFVar || wc.fvarId! != xs.back!.fvarId! then return none
+              pure #[xs.back!.fvarId!]
+            | none => return none
+          else
+            pure #[]
+        let actClean := actExpr.consumeMData
+        let some opName := actClean.getAppFn.consumeMData.constName? | return none
+        if isPrivateName opName || isCompilerAux opName then return none
+        let opMod := moduleOfConst env opName
+        if opMod != ifaceMod && !(opMod == implMod && opName.getPrefix == pkg) then return none
+        let appArgs := actClean.getAppArgs
+        let fvs := appArgs.filterMap fun a => if a.consumeMData.isFVar then some a.consumeMData.fvarId! else none
+        if fvs.size != appArgs.size then return none
+        let initSet := neededFVs.foldl (fun (s : Std.HashSet FVarId) fv => s.insert fv) {}
+        let distinct := fvs.foldl (fun (s : Std.HashSet FVarId) fv => s.insert fv) initSet
+        if distinct.size != fvs.size + neededFVs.size then return none
+        return some (opName.toString, kindCtor.toString)
+      if let some cell := matched? then
+        let (badAx?, axCache') ← checkAxiomsOk axCache c.name
+        axCache := axCache'
+        if let some badAx := badAx? then
+          errs := errs.push s!"UNALLOWED_AXIOM_IN_THEOREM: {c.name} uses [{badAx}]"
+        else
+          cells := cells.insert cell c.name
+  return (cells, errs, axCache)
 
 private def renderExpectedObeysSig (env : Environment) (knownPkgs : Array Name) (rawPkg : Name) :
     MetaM (Except String String) := do
@@ -3263,6 +3594,13 @@ unsafe def main (args : List String) : IO UInt32 := do
   if cfg.nonce? == some "" then
     IO.eprintln "EMPTY_NONCE_FORBIDDEN: --nonce must be non-empty"
     return 1
+  if cfg.coverageNonce? == some "" then
+    IO.eprintln "EMPTY_COVERAGE_NONCE_FORBIDDEN: --coverage-nonce must be non-empty"
+    return 1
+  let effectiveCovNonce? := cfg.coverageNonce?.orElse (fun _ => cfg.nonce?)
+  if cfg.coverageLogPath?.isSome && effectiveCovNonce?.isNone then
+    IO.eprintln "MISSING_COVERAGE_NONCE: --coverage-log requires --coverage-nonce or --nonce"
+    return 1
   let libDir := cfg.libDir
   let repoDir := cfg.repoDir
   unless ← (libDir / "LeanSwe.olean").pathExists do
@@ -3338,6 +3676,51 @@ unsafe def main (args : List String) : IO UInt32 := do
       errors := errors.push err
       pure ({} : Std.HashSet Name)
 
+  let (hasPkgManifest, purityMap) ← match ← parsePackagePurityMap repoDir with
+    | .ok res => pure res
+    | .error err =>
+      errors := errors.push err
+      pure (false, ({} : Std.HashMap Name String))
+
+  let coverageOverrideEntries ← match ← parseCoverageOverridesJson repoDir hasPkgManifest with
+    | .ok arr => pure arr
+    | .error err =>
+      errors := errors.push err
+      pure #[]
+
+  let externalAssumpJsonEntries ← match ← parseExternalAssumptionsJson repoDir hasPkgManifest with
+    | .ok arr => pure arr
+    | .error err =>
+      errors := errors.push err
+      pure #[]
+
+  let mut covLogData : CoverageLogData := {}
+  let mut hasValidCovLog := false
+  if let some covPath := cfg.coverageLogPath? then
+    unless ← covPath.pathExists do
+      errors := errors.push s!"MISSING_COVERAGE_LOG: {covPath}"
+    if ← covPath.pathExists then
+      let expectedCovNonce := effectiveCovNonce?.getD ""
+      covLogData ← parseCoverageLogFile covPath expectedCovNonce
+      if covLogData.badLines > 0 then
+        errors := errors.push s!"INVALID_OR_UNAUTHENTICATED_COVERAGE_LOG_LINES: {covLogData.badLines} lines failed nonce/format check"
+      if !covLogData.sawInit || !covLogData.sawClose then
+        errors := errors.push "INCOMPLETE_OR_UNINITIALIZED_COVERAGE_LOG: missing LOG_INIT or LOG_CLOSE"
+      if covLogData.badLines == 0 && covLogData.sawInit && covLogData.sawClose then
+        hasValidCovLog := true
+      for (pkgStr, suiteStr, _, _, _, okVal) in covLogData.fuzzEquiv do
+        if !okVal then
+          errors := errors.push s!"FUZZ_EQUIV_FAILED: {pkgStr} ({suiteStr}) reported ok=false"
+      for ((qualOp, kindCtor), modes) in covLogData.errHits do
+        if modes.contains "mocked" then
+          let opName := qualOp.toName
+          let opMod := moduleOfConst env opName
+          let opPkg :=
+            if opMod != .anonymous then pkgNamespaceOfSpecWith knownPkgs opMod
+            else pkgNamespaceOfSpecWith knownPkgs opName
+          if isPurePackage env knownPkgs purityMap opPkg then
+            errors := errors.push s!"PURE_PACKAGE_MOCKED_ERR_HIT: ({qualOp}, {kindCtor}) in pure package {opPkg}"
+
   let mut specModules : Array Name := #[]
   let mut formalAssumptions : Array (Name × Name) := #[]
   let mut specAndProofRoots : Array Name := #[]
@@ -3366,9 +3749,12 @@ unsafe def main (args : List String) : IO UInt32 := do
           | some v => v.getUsedConstants
           | none => #[]
         let typeUsed := c.type.getUsedConstants
-        if typeUsed.any (fun k => k == `Core.logAssumpPass || k == `Core.logErrPass) ||
-            valUsed.any (fun k => k == `Core.logAssumpPass || k == `Core.logErrPass) then
+        if typeUsed.any (fun k => k == `Core.logAssumpPass || k == `Core.logErrPass || k == `Core.logErrHit) ||
+            valUsed.any (fun k => k == `Core.logAssumpPass || k == `Core.logErrPass || k == `Core.logErrHit) then
           errors := errors.push s!"FORBIDDEN_DIRECT_LOG_CALL: {c.name} in {m}"
+        if m != `Tests.Main &&
+            (typeUsed.any (· == `Core.setErrTestPassHook) || valUsed.any (· == `Core.setErrTestPassHook)) then
+          errors := errors.push s!"FORBIDDEN_DIRECT_LOG_CALL: {c.name} in {m} mutates Core.setErrTestPassHook"
         let touchesRunner :=
           typeUsed.any (fun k => k == `Core.runRegisteredAssumptions || k == `Core.runRegisteredErrorTests) ||
           valUsed.any (fun k => k == `Core.runRegisteredAssumptions || k == `Core.runRegisteredErrorTests)
@@ -3414,15 +3800,22 @@ unsafe def main (args : List String) : IO UInt32 := do
             specAndProofRoots := specAndProofRoots.push c.name
 
   let usedInSpecsOrProofs := collectTransitiveDeps env specAndProofRoots
-  let formalAssumpSet : Std.HashSet Name := formalAssumptions.foldl (fun s (_, a) => s.insert a) {}
+  let formalAssumpSet0 : Std.HashSet Name := formalAssumptions.foldl (fun s (_, a) => s.insert a) {}
+  let formalAssumpSet : Std.HashSet Name := externalAssumpJsonEntries.foldl (init := formalAssumpSet0) fun s entry =>
+    match entry.formalPred? with
+    | some fp =>
+      let pn := fp.toName
+      if env.contains pn then s.insert pn else s
+    | none => s
   let ctx : Core.Context := { fileName := "<CheckAssumptions>", fileMap := default, maxHeartbeats := 0, maxRecDepth := 8192 }
   let state : Core.State := { env }
-  let ((metaErrs, expectedAssumpNames, expectedErrorTests), _) ← (Meta.MetaM.run' do
+  let ((metaErrs, expectedAssumpNames, expectedErrorTests, oleanNeverErrCount, centralCellsChecked), _) ← (Meta.MetaM.run' do
     let mut errs : Array String := #[]
     let mut expAssumps : Array String := #[]
     let mut expErrTests : Array (String × String) := #[]
     let mut axCache : AxCache := {}
     let mut dbCache : DeadBranchCache := {}
+    let mut centralCellsN : Nat := 0
 
     for h : i in [0 : env.header.moduleNames.size] do
       let m := env.header.moduleNames[i]
@@ -3535,6 +3928,76 @@ unsafe def main (args : List String) : IO UInt32 := do
             if let .const fn _ := atom.appArg!.consumeMData.getAppFn.consumeMData then
               if formalAssumpSet.contains fn then
                 assumpCanReach := assumpCanReach.insert fn
+
+    let (provedImpossibleCells, piErrs, axCacheAfterPi) ← discoverProvedImpossibleCells env knownPkgs axCache
+    axCache := axCacheAfterPi
+    errs := errs ++ piErrs
+
+    let mut overrideCells : Std.HashSet (String × String) := {}
+    for entry in coverageOverrideEntries do
+      let cellKey := (entry.op, entry.kind)
+      if overrideCells.contains cellKey then
+        errs := errs.push s!"DUPLICATE_COVERAGE_OVERRIDE: ({entry.op}, {entry.kind})"
+        continue
+      let opName := entry.op.toName
+      let some opInfo := env.find? opName
+        | errs := errs.push s!"INVALID_COVERAGE_OVERRIDE_OP: {entry.op} not found in compiled environment"; continue
+      let opMod := moduleOfConst env opName
+      let opPkg := pkgNamespaceOfSpecWith knownPkgs opMod
+      let isPublicPkgOp := !isPrivateName opName && !isCompilerAux opName &&
+        (opMod == Name.str opPkg "Interface" || (opMod == Name.str opPkg "Impl" && opName.getPrefix == opPkg))
+      if !isPublicPkgOp || !(← isFallibleCodomain opInfo.type) then
+        errs := errs.push s!"INVALID_COVERAGE_OVERRIDE_OP: {entry.op} is not a fallible public Interface operation"
+        continue
+      let kindName := entry.kind.toName
+      let some (.ctorInfo kindCtorInfo) := env.find? kindName
+        | errs := errs.push s!"INVALID_COVERAGE_OVERRIDE_KIND: {entry.kind} is not an inductive constructor"; continue
+      let mut kindMatches := false
+      if let some errTyName ← extractFallibleErrorType? opInfo.type then
+        if let some resolvedEnum ← resolveErrorKindEnum? env opPkg errTyName then
+          if resolvedEnum == kindCtorInfo.induct then
+            kindMatches := true
+      if !kindMatches then
+        errs := errs.push s!"INVALID_COVERAGE_OVERRIDE_KIND: {entry.kind} does not match error kind enum of {entry.op}"
+        continue
+      if entry.mode == "mocked" then
+        if isPurePackage env knownPkgs purityMap opPkg then
+          errs := errs.push s!"PURE_PACKAGE_MOCKED_OVERRIDE: ({entry.op}, {entry.kind}) cannot use mode 'mocked' on pure package {opPkg}"
+          continue
+        if entry.testSymbol.trimAscii.toString.isEmpty then
+          errs := errs.push s!"MISSING_COVERAGE_OVERRIDE_TEST_SYMBOL: ({entry.op}, {entry.kind}) with mode 'mocked' requires non-empty test_symbol"
+          continue
+      overrideCells := overrideCells.insert cellKey
+
+    let mut seenExtJsonIds : Std.HashSet String := {}
+    for entry in externalAssumpJsonEntries do
+      if seenExtJsonIds.contains entry.id then
+        errs := errs.push s!"DUPLICATE_EXTERNAL_ASSUMPTION_ID: {entry.id}"
+        continue
+      seenExtJsonIds := seenExtJsonIds.insert entry.id
+      let pkgName := entry.package.toName
+      let pkgKnown := purityMap.contains pkgName || knownPkgs.contains pkgName || visited.contains (Name.str pkgName "Interface")
+      if !pkgKnown then
+        errs := errs.push s!"UNKNOWN_EXTERNAL_ASSUMPTION_PACKAGE: {entry.package} in '{entry.id}'"
+        continue
+      if isPurePackage env knownPkgs purityMap pkgName then
+        errs := errs.push s!"PURE_PACKAGE_EXTERNAL_ASSUMPTION: '{entry.id}' targets pure package {entry.package}"
+        continue
+      if let some fpStr := entry.formalPred? then
+        let fpName := fpStr.toName
+        let some _ := env.find? fpName
+          | errs := errs.push s!"MISSING_EXTERNAL_ASSUMPTION_FORMAL_PRED: {fpStr} in '{entry.id}' not found in compiled environment"; continue
+        let fpPkg := pkgNamespaceOfSpecWith knownPkgs (moduleOfConst env fpName)
+        if fpPkg != pkgName then
+          errs := errs.push s!"INVALID_EXTERNAL_ASSUMPTION_FORMAL_PRED_PKG: {fpStr} belongs to {fpPkg}, expected {pkgName}"
+        let (badAx?, axCache') ← checkAxiomsOk axCache fpName
+        axCache := axCache'
+        if let some badAx := badAx? then
+          errs := errs.push s!"UNALLOWED_AXIOM_IN_ASSUMPTION: {fpName} uses [{badAx}]"
+        if !assumpCanReach.contains fpName then
+          errs := errs.push s!"MISSING_ASSUMPTION_CANREACH: {fpName} referenced by external_assumptions.json '{entry.id}'"
+        if !assumpUpperConsumed.contains fpName then
+          errs := errs.push s!"UNUSED_FORMAL_ASSUMPTION: {fpName} referenced by external_assumptions.json '{entry.id}'"
 
     let activeCacheRef ← IO.mkRef ({} : ActiveCallCache)
 
@@ -3845,6 +4308,8 @@ unsafe def main (args : List String) : IO UInt32 := do
           else
             errs := errs.push s!"MISSING_REGISTERED_ERROR_TESTS: {regErrConst}"
 
+        let mut legacyEnum? : Option Name := none
+        let hasLegacyErrCov := (env.find? errCovConst).isSome
         if let some (.defnInfo dv) := env.find? errCovConst then
           let enumName? ← do
             let ty ← whnf dv.type
@@ -3855,6 +4320,7 @@ unsafe def main (args : List String) : IO UInt32 := do
                 pure (if let .const en _ := eTy.getAppFn then some en else none)
               else pure none
             else pure none
+          legacyEnum? := enumName?
           let some enumName := enumName?
             | errs := errs.push s!"MALFORMED_ERROR_COVERAGE_TYPE: {errCovConst}"; continue
           let some (.inductInfo ind) := env.find? enumName
@@ -3897,14 +4363,43 @@ unsafe def main (args : List String) : IO UInt32 := do
             for ctor in expectedCtors do
               if !covered.contains ctor then
                 errs := errs.push s!"UNCOVERED_ERROR_KIND: ({req}, {ctor}) missing from {errCovConst}"
-        else
+        else if !hasValidCovLog && !cfg.strictCentralCoverage then
           errs := errs.push s!"MISSING_ERROR_COVERAGE: {errCovConst}"
+
+        let runCentralDischarge :=
+          cfg.strictCentralCoverage || (hasValidCovLog && (hasRt || !hasLegacyErrCov))
+        if runCentralDischarge then
+          let mut pkgCentralCells : Nat := 0
+          for reqName in fallibleReqs do
+            let some reqInfo := env.find? reqName
+              | errs := errs.push s!"UNRESOLVABLE_FALLIBLE_OP: {reqName} in {pkgNs} not found in compiled environment"; continue
+            let some errTyName ← extractFallibleErrorType? reqInfo.type
+              | errs := errs.push s!"UNEXTRACTABLE_ERROR_TYPE: {reqName} in {pkgNs} has fallible codomain without extractable Except error type"; continue
+            let some enumName ← resolveErrorKindEnum? env pkgNs errTyName legacyEnum?
+              | errs := errs.push s!"UNRESOLVABLE_ERROR_KIND_ENUM: {reqName} (error type {errTyName}) in {pkgNs}"; continue
+            let some (.inductInfo enumInd) := env.find? enumName
+              | errs := errs.push s!"EMPTY_OR_NON_INDUCTIVE_ERROR_ENUM: {enumName} for {reqName} in {pkgNs}"; continue
+            if enumInd.ctors.isEmpty then
+              errs := errs.push s!"EMPTY_OR_NON_INDUCTIVE_ERROR_ENUM: {enumName} for {reqName} in {pkgNs}"
+              continue
+            for ctor in enumInd.ctors do
+              pkgCentralCells := pkgCentralCells + 1
+              centralCellsN := centralCellsN + 1
+              let cell := (reqName.toString, ctor.toString)
+              let discharged :=
+                provedImpossibleCells.contains cell ||
+                covLogData.errHits.contains cell ||
+                overrideCells.contains cell
+              unless discharged do
+                errs := errs.push s!"UNCOVERED_CENTRAL_ERROR_CELL: ({reqName}, {ctor}) in {pkgNs} not discharged by NeverErrorKind*, ERR_HIT log, or coverage_overrides.json"
+          if !hasLegacyErrCov && (hasAnyFallibleIfaceSurface || !fallibleReqs.isEmpty) && pkgCentralCells == 0 then
+            errs := errs.push s!"MISSING_ERROR_COVERAGE: {errCovConst} (central coverage checked 0 cells for fallible surface in {pkgNs})"
 
     let activeScanErrs := (← activeCacheRef.get).scanErrors.toArray.qsort (fun a b => a.1.toString < b.1.toString)
     for (fnName, reason) in activeScanErrs do
       errs := errs.push s!"INCONCLUSIVE_ACTIVE_CALL_CHECK: {fnName} ({reason})"
 
-    return (errs, expAssumps, expErrTests)
+    return (errs, expAssumps, expErrTests, provedImpossibleCells.size, centralCellsN)
   ).toIO ctx state
 
   errors := errors ++ metaErrs
@@ -3929,6 +4424,7 @@ unsafe def main (args : List String) : IO UInt32 := do
         else
           verifiedLogCount := verifiedLogCount + 1
 
+  IO.println s!"CENTRAL_COVERAGE_CHECK: olean_never_error={oleanNeverErrCount} err_hits={covLogData.errHits.size} fuzz_equiv={covLogData.fuzzEquiv.size} overrides={coverageOverrideEntries.size} ext_assumps={externalAssumpJsonEntries.size} central_cells={centralCellsChecked}"
   IO.println s!"ASSUMPTION_CHECK: spec_modules={specModules.size} assumptions={expectedAssumpNames.size} formal_assumptions={formalAssumptions.size} error_tests={expectedErrorTests.size} log_verified={verifiedLogCount} errors={errors.size}"
   if errors.isEmpty then
     return 0

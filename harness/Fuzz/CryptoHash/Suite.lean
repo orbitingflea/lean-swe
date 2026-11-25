@@ -1513,10 +1513,12 @@ def runSelfTestShrink (seedVal : UInt64) : IO Unit := do
 def suite : FuzzSuite := {
   name := "cryptohash"
   description := "OpenSSL 3 SHA-256/SHA-512/HMAC-SHA256 vs pure streaming Lean models & Python hashlib/hmac fuzzer"
-  runSmoke := fun cfg =>
-    let smokeSteps := min cfg.steps 300
-    runCryptoHashLoop (max 200 smokeSteps) cfg.seed true
-  runFuzz := fun cfg =>
+  runSmoke := fun cfg => do
+    let actual := max 200 (min cfg.steps 300)
+    Fuzz.Common.recordSuiteSteps actual
+    runCryptoHashLoop actual cfg.seed true
+  runFuzz := fun cfg => do
+    Fuzz.Common.recordSuiteSteps cfg.steps
     runCryptoHashLoop cfg.steps cfg.seed false
   selfTestShrink := runSelfTestShrink
 }
