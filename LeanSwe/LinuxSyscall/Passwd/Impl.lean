@@ -6,19 +6,6 @@ open LeanSwe.LinuxSyscall
 
 namespace Internal
 
-/-- Raw C-ABI tuple returned by `passwd_shim.c` (`(name, uid, gid, gecos, homeDir, shell)`). -/
-abbrev RawPasswdTuple := ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray
-
-/-- Internal single-call C-ABI hooks supplied by `Interface.lean` and backed by `passwd_shim.c`. -/
-structure PosixPasswdOpsM (m : Type → Type) where
-  /-- Single-call `getpwuid_r(3)` hook accepting `(uid, bufBytes)`. -/
-  getpwuidOnce : UInt32 → UInt32 → m (Except Errno (Option RawPasswdTuple))
-  /-- Single-call `getpwnam_r(3)` hook accepting `(name, bufBytes)`. -/
-  getpwnamOnce : ByteArray → UInt32 → m (Except Errno (Option RawPasswdTuple))
-
-/-- Real-world `IO` specialization of `PosixPasswdOpsM`. -/
-abbrev PosixPasswdOps := PosixPasswdOpsM IO
-
 /-- Validate a raw C-ABI result against the caller's entry invariant `pred`, returning `Errno.EIO` on inconsistent/corrupt NSS records. -/
 def validateRawPasswdResult (pred : PasswdEntry → Bool) :
     Except Errno (Option RawPasswdTuple) → Except Errno (Option PasswdEntry)

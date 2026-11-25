@@ -424,6 +424,11 @@ def mkHostOps
       | none => return .ok (.aborted wst)
       | some cf => return .ok (.failedBeforeBarrier { cf with waitStatus := some wst } wst)
 
+/-- Monadic `Nat`-specialized `PostForkOpsM` builder for `Core.ObeysStepFrom`. -/
+def mkHostOpsM {m : Type → Type} [Monad m]
+    (raw : PosixHostOpsM m Nat) : PostForkOpsM m Nat :=
+  mkHostOps raw
+
 end Internal
 
 end LeanSwe.PostFork.Impl

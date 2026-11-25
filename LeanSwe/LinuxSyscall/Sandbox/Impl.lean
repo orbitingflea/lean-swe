@@ -56,6 +56,11 @@ def mkSandboxOps {m : Type → Type} [Monad m] {fd : Type} (raw : PosixSandboxOp
       else
         raw.memfdCreate name flags.toBits }
 
+/-- Monadic `HandleId`-specialized `SandboxOpsM` builder for `Core.ObeysStepFrom`. -/
+def mkSandboxOpsM {m : Type → Type} [Monad m]
+    (raw : PosixSandboxOpsM m HandleId) : SandboxOpsM m HandleId :=
+  mkSandboxOps raw
+
 end Internal
 
 end LeanSwe.LinuxSyscall.Sandbox

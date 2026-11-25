@@ -103,4 +103,18 @@ structure PasswdOpsM (m : Type → Type) where
 /-- Real-world `IO` specialization of `PasswdOpsM`. -/
 abbrev PasswdOps := PasswdOpsM IO
 
+/-- Raw C-ABI tuple returned by `passwd_shim.c` (`(name, uid, gid, gecos, homeDir, shell)`). -/
+abbrev Internal.RawPasswdTuple :=
+  ByteArray × UInt32 × UInt32 × ByteArray × ByteArray × ByteArray
+
+/-- Internal single-call C-ABI hooks supplied by `Interface.lean` and backed by `passwd_shim.c`. -/
+structure Internal.PosixPasswdOpsM (m : Type → Type) where
+  /-- Single-call `getpwuid_r(3)` hook accepting `(uid, bufBytes)`. -/
+  getpwuidOnce : UInt32 → UInt32 → m (Except Errno (Option Internal.RawPasswdTuple))
+  /-- Single-call `getpwnam_r(3)` hook accepting `(name, bufBytes)`. -/
+  getpwnamOnce : ByteArray → UInt32 → m (Except Errno (Option Internal.RawPasswdTuple))
+
+/-- Real-world `IO` specialization of `Internal.PosixPasswdOpsM`. -/
+abbrev Internal.PosixPasswdOps := Internal.PosixPasswdOpsM IO
+
 end LeanSwe.LinuxSyscall.Passwd
