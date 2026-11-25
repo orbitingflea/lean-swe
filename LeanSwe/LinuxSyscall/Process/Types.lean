@@ -4,6 +4,9 @@ namespace LeanSwe.LinuxSyscall.Process
 
 open LeanSwe.LinuxSyscall
 
+/-- Maximum valid positive signed 32-bit Linux `pid_t` (`0x7fffffff`). -/
+def MAX_LINUX_PID : UInt32 := 0x7fffffff
+
 /-- Portable symbolic flags for Linux `pipe2(2)` (`O_CLOEXEC`, `O_NONBLOCK`, `O_DIRECT`, `O_NOTIFICATION_PIPE`), plus `extraBits` for unsupported flag validation (`extraBits != 0` triggers `EINVAL`). -/
 structure PipeFlags where
   /-- Atomically set close-on-exec (`FD_CLOEXEC`) on both pipe descriptors (`O_CLOEXEC`). -/

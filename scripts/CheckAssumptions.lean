@@ -1858,7 +1858,6 @@ private def checkBareConstArg
         seenFVs := seenFVs.insert fv
       return some fn
     else
-      let isMkBuilder := fn.isStr && fn.getString!.startsWith "mk"
       let some ci := env.find? fn | return none
       let mut curTy := ci.type.instantiateLevelParams ci.levelParams fnLvls
       let mut seenFVs : Std.HashSet FVarId := {}
@@ -1878,14 +1877,13 @@ private def checkBareConstArg
             return none
           seenFVs := seenFVs.insert fv
         | _ =>
-          if !isMkBuilder then return none
           let (some pDom, some pBi) := (paramDom?, paramBi?) | return none
           if pBi == .default || pBi == .instImplicit then return none
           if pDom != .sort (.succ .zero) then return none
           if ac.hasFVar || ac.hasLooseBVars then return none
           if (← inferType ac).consumeMData != .sort (.succ .zero) then return none
           if !(← isProvablyInhabitedDataType env 8 ac) then return none
-      if isMkBuilder && !appArgs.isEmpty && seenFVs.isEmpty then return none
+      if !appArgs.isEmpty && seenFVs.isEmpty then return none
       return some fn
   if clean.isLambda then
     lambdaTelescope clean fun lxs body => do

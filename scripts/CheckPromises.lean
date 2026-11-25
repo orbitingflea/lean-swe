@@ -3173,11 +3173,7 @@ private def loadPackageManifest (repoDir : System.FilePath) : IO (Except String 
 /-- Exact shrinking ratchet allowlist of `kind == "model"` packages lacking `<Pkg>.Model` or
 `<Pkg>.Proofs.{obeys_model,refines_model}` at `5304439`. Fails on both new missing specs and
 stale entries as follow-up PRs land. -/
-private def modelPresenceAllowlist : Array String := #[
-  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Files",
-  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Net",
-  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Process"
-]
+private def modelPresenceAllowlist : Array String := #[]
 
 /-- Exact shrinking ratchet allowlist of non-pure zero-`@[extern]` packages currently wiring
 through a same-package un-fuzzed middle hook (`SysBridge.defaultOps`, `ScopedProxyOpsM`,

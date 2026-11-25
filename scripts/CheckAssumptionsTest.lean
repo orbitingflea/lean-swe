@@ -3238,9 +3238,9 @@ def main (_ : List String) : IO UInt32 := do
          "def leafWf (_ : Nat) : Bool := true\n" ++
          "def execLeaf {W : Type} (ops : LeafOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.ping req\n" ++
          "def allowedLeaf (s req out s' : Nat) : Prop := out = req ∧ s' = s\n" ++
-         "abbrev PingPairFn (m : Type → Type) : Type := Nat → m (Nat × Nat)\n" ++
-         "def execPingPair {W : Type} (fn : PingPairFn (StateM W)) (n : Nat) : StateM W (Nat × Nat) := fn n\n" ++
-         "def allowedPingPair (s req : Nat) (out : Nat × Nat) (s' : Nat) : Prop := out = (req, req + 1) ∧ s' = s\n" ++
+         "abbrev PingPairFn (m : Type → Type) : Type := Option Nat × Nat → m (Nat × Nat)\n" ++
+         "def execPingPair {W : Type} (fn : PingPairFn (StateM W)) (req : Option Nat × Nat) : StateM W (Nat × Nat) := fn req\n" ++
+         "def allowedPingPair (s : Nat) (req : Option Nat × Nat) (out : Nat × Nat) (s' : Nat) : Prop := out = (req.2, req.2 + 1) ∧ s' = s\n" ++
          "end LeanSwe.MiniPure.Model\n")
       writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
         ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\n" ++
@@ -3251,8 +3251,8 @@ def main (_ : List String) : IO UInt32 := do
         ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n" ++
          "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
          "def defaultApi : LeafOpsM IO := Internal.mkOpsM { ping := pure }\n" ++
-         "def pingPair {m : Type → Type} [Monad m] (ops : LeafOpsM m) (n : Nat) : m (Nat × Nat) := do\n" ++
-         "  let a ← ops.ping n\n  return (a, a + 1)\n" ++
+         "def pingPair {m : Type → Type} [Monad m] {fd : Type} (ops : LeafOpsM m) (req : Option fd × Nat) : m (Nat × Nat) := do\n" ++
+         "  let a ← ops.ping req.2\n  return (a, a + 1)\n" ++
          "end LeanSwe.MiniPure\n")
       writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
         ("import Core.Obeys\nimport LeanSwe.MiniPure.Interface\nimport LeanSwe.MiniPure.SpecTests\n" ++
@@ -3262,10 +3262,10 @@ def main (_ : List String) : IO UInt32 := do
          "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
          "    Core.ObeysStepFrom id Model.leafWf Model.execLeaf Model.allowedLeaf Model.leafWf Internal.mkOpsM Model.execLeaf Model.allowedLeaf ∧\n" ++
          "    Core.ObeysStepFrom (PkgApi := Model.PingPairFn) id Model.leafWf Model.execLeaf Model.allowedLeaf Model.leafWf LeanSwe.MiniPure.pingPair Model.execPingPair Model.allowedPingPair :=\n" ++
-         "  ⟨fun _ => rfl, fun _ _ h => h, fun _ ops h w n hw => by\n" ++
-         "    have hs := h w n hw\n" ++
+         "  ⟨fun _ => rfl, fun _ _ h => h, fun _ ops h w req hw => by\n" ++
+         "    have hs := h w req.2 hw\n" ++
          "    dsimp only [Function.comp, id, Model.execLeaf, Model.allowedLeaf, Model.execPingPair, LeanSwe.MiniPure.pingPair, Model.allowedPingPair, Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure] at hs ⊢\n" ++
-         "    rcases hc : ops.ping n w with ⟨v, w'⟩\n" ++
+         "    rcases hc : ops.ping req.2 w with ⟨v, w'⟩\n" ++
          "    rw [hc] at hs\n" ++
          "    dsimp only at hs ⊢\n" ++
          "    exact ⟨by rw [hs.1], hs.2⟩⟩\n" ++

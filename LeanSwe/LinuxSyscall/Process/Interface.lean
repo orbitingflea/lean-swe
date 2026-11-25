@@ -69,9 +69,6 @@ def defaultOps : ProcessOps :=
 @[inline] def getuid : IO (Except Errno UInt32) :=
   defaultOps.getuid
 
-/-- Maximum valid positive signed 32-bit Linux `pid_t` (`0x7fffffff`). -/
-def MAX_LINUX_PID : UInt32 := 0x7fffffff
-
 /-- Compute safe `kill(2)` target for isolated process group `pgid` (never returning `-1`). -/
 def killTargetOfPgid (pgid : UInt32) : Int32 :=
   if pgid == 1 then 1 else -(pgid.toInt32)
