@@ -3174,7 +3174,6 @@ through a same-package un-fuzzed middle hook (`SysBridge.defaultOps`, `CliOpsM`,
 `ScopedRawFsOpsM`, `RelayRawOps`, `defaultRawOps`) instead of imported `manifest.deps`
 capabilities. -/
 private def middleHookAllowlist : Array String := #[
-  "MIDDLE_HOOK|LeanSwe.CmdLine",
   "MIDDLE_HOOK|LeanSwe.Process",
   "MIDDLE_HOOK|LeanSwe.ProcessSandbox.Raw"
 ]
@@ -3215,8 +3214,9 @@ private def isKnownContractPredHead (fn : Name) : Bool :=
     fn == `Core.ObeysPureEqUpToErrMsg || fn == `Core.ObeysPureEqUpToErrMsg2 ||
     fn == `Core.ObeysPureEqUpToErrMsg3 || fn == `Core.ObeysPureEqUpToErrMsg4 ||
     fn == `Core.ObeysInverseRender || fn == `Core.ObeysInverseRenderWithin ||
-    fn == `Core.ObeysStep || fn == `Core.ObeysStepId ||
-    fn == `Core.ObeysStepFrom || fn == `Core.ObeysStepFromFinally || fn == `Core.ObeysStepFromConc || fn == `Core.ObeysStepFrom2 ||
+    fn == `Core.ObeysStep || fn == `Core.ObeysStepExcept || fn == `Core.ObeysStepId ||
+    fn == `Core.ObeysStepFrom || fn == `Core.ObeysStepFromFinally ||
+    fn == `Core.ObeysStepFromConc || fn == `Core.ObeysStepFromExcept || fn == `Core.ObeysStepFrom2 ||
     fn == `Core.RefinesPure || fn == `Core.RefinesPure2 || fn == `Core.RefinesPure3 || fn == `Core.RefinesPure4 ||
     fn == `Core.RefinesPureEq || fn == `Core.RefinesPureEq2 || fn == `Core.RefinesPureEq3 || fn == `Core.RefinesPureEq4 ||
     fn == `Core.RefinesStep || fn == `Core.RefinesStepId ||
@@ -3317,7 +3317,7 @@ private def checkConcreteIoInterfaceDecls
 private def extractStepFromConj? (ab : Expr) : Option (Name × Array Expr × Expr) :=
   if ab.isAppOfArity `Core.ObeysStepFrom 16 || ab.isAppOfArity `Core.RefinesStepFrom 16 ||
       ab.isAppOfArity `Core.ObeysStepFromFinally 16 || ab.isAppOfArity `Core.RefinesStepFromFinally 16 ||
-      ab.isAppOfArity `Core.ObeysStepFromConc 16 then
+      ab.isAppOfArity `Core.ObeysStepFromConc 16 || ab.isAppOfArity `Core.ObeysStepFromExcept 16 then
     let a := ab.getAppArgs
     match (peelLambdas (etaReduceExpr a[13]!)).consumeMData.getAppFn.consumeMData with
     | .const mkFn _ => some (mkFn, #[a[2]!], a[3]!)
@@ -4002,7 +4002,7 @@ private def auditEffectfulStepSynthesis
     let fn := ab.getAppFn.consumeMData
     let .const fnName fnLvls := fn | continue
     let args := ab.getAppArgs
-    if (fnName == `Core.ObeysStep || fnName == `Core.RefinesStep) && args.size == 8 then
+    if (fnName == `Core.ObeysStep || fnName == `Core.ObeysStepExcept || fnName == `Core.RefinesStep) && args.size == 8 then
       st := { st with stepCount := st.stepCount + 1 }
       let some _ := checkBareModelConst env modelMods true args[4]!
         | errs := errs.push s!"step proj in {pkg} is not id or public Model constant"
@@ -4010,9 +4010,10 @@ private def auditEffectfulStepSynthesis
         | errs := errs.push s!"step wf in {pkg} is not a public Model constant"
       let some _ := checkBareModelConst env modelMods false args[7]!
         | errs := errs.push s!"step allowed in {pkg} is not a public Model constant"
-      let synth := mkAppN (mkConst `Core.ObeysStep []) args
+      let stepHead := if fnName == `Core.ObeysStepExcept then `Core.ObeysStepExcept else `Core.ObeysStep
+      let synth := mkAppN (mkConst stepHead []) args
       if !(← isDefEqReducible synth atom) then
-        errs := errs.push s!"step conjunct in {pkg} failed reducible isDefEq against synthesized Core.ObeysStep"
+        errs := errs.push s!"step conjunct in {pkg} failed reducible isDefEq against synthesized {stepHead}"
       if let .const stepFn _ := (etaReduceExpr args[6]!).consumeMData.getAppFn.consumeMData then
         let sm := modOfConst env stepFn
         if sm == ifaceMod then st := { st with coveredStepOps := st.coveredStepOps.insert stepFn }
@@ -4034,10 +4035,11 @@ private def auditEffectfulStepSynthesis
         else if sm == implMod then st := { st with coveredImplHelpers := st.coveredImplHelpers.insert stepFn }
     else if (fnName == `Core.ObeysStepFrom || fnName == `Core.RefinesStepFrom ||
         fnName == `Core.ObeysStepFromFinally || fnName == `Core.RefinesStepFromFinally ||
-        fnName == `Core.ObeysStepFromConc) && args.size == 16 then
+        fnName == `Core.ObeysStepFromConc || fnName == `Core.ObeysStepFromExcept) && args.size == 16 then
       st := { st with stepCount := st.stepCount + 1 }
       let isFin := fnName == `Core.ObeysStepFromFinally || fnName == `Core.RefinesStepFromFinally
       let isConc := fnName == `Core.ObeysStepFromConc
+      let isEx := fnName == `Core.ObeysStepFromExcept
       let some _ := checkBareModelConst env modelMods true args[8]!
         | errs := errs.push s!"stepFrom mapS in {pkg} is not id or public Model constant"
       let some _ := checkBareModelConst env modelMods false args[9]!
@@ -4054,6 +4056,7 @@ private def auditEffectfulStepSynthesis
         | errs := errs.push s!"stepFrom pkgAllowed in {pkg} is not a public Model constant"
       let synthHead :=
         if isConc then `Core.ObeysStepFromConc
+        else if isEx then `Core.ObeysStepFromExcept
         else if isFin then `Core.ObeysStepFromFinally
         else `Core.ObeysStepFrom
       let synth := mkAppN (mkConst synthHead fnLvls) args
@@ -4557,6 +4560,7 @@ private def renderSynthesizedObeysSig
         | some ci =>
           let ucs := ci.type.getUsedConstants
           if ucs.contains `Core.ConcOpsM then "Core.ObeysStepFromConc"
+          else if ucs.contains ``MonadExceptOf then "Core.ObeysStepFromExcept"
           else if ucs.contains ``MonadFinally then "Core.ObeysStepFromFinally"
           else "Core.ObeysStepFrom"
         | none => "Core.ObeysStepFrom"
@@ -4738,7 +4742,7 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
                       if (← isVacuousFalseUnaryPred env args[1]! args[6]!) ||
                           (← isVacuousFalseUnaryPred env args[0]! args[7]!) then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous False withinLimits or wf in ObeysInverseRenderWithin"
-                    else if (fnName == `Core.ObeysStep || fnName == `Core.RefinesStep) && args.size == 8 then
+                    else if (fnName == `Core.ObeysStep || fnName == `Core.ObeysStepExcept || fnName == `Core.RefinesStep) && args.size == 8 then
                       if isTrivialFalseBoolFn env args[5]! || isTrivialTruePred env args[7]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous wf or allowedStep"
                     else if (fnName == `Core.ObeysStepId || fnName == `Core.RefinesStepId) && args.size == 6 then
@@ -4746,7 +4750,7 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous wf or allowedStep"
                     else if (fnName == `Core.ObeysStepFrom || fnName == `Core.RefinesStepFrom ||
                         fnName == `Core.ObeysStepFromFinally || fnName == `Core.RefinesStepFromFinally ||
-                        fnName == `Core.ObeysStepFromConc) && args.size == 16 then
+                        fnName == `Core.ObeysStepFromConc || fnName == `Core.ObeysStepFromExcept) && args.size == 16 then
                       if isTrivialFalsePred env args[11]! ||
                           isTrivialFalseBoolFn env args[12]! || isTrivialTruePred env args[15]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous rawAllowed, pkgWf, or pkgAllowed"

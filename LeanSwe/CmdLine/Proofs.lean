@@ -5,6 +5,8 @@ import LeanSwe.CmdLine.Proofs.PhraseBridge
 import LeanSwe.CmdLine.Proofs.RoundTrip
 import LeanSwe.CmdLine.Proofs.ErrorBounds
 import LeanSwe.CmdLine.Proofs.CheckedObeys
+import LeanSwe.CmdLine.Proofs.HostObeys
+import LeanSwe.CmdLine.Proofs.HostWitness
 
 namespace LeanSwe.CmdLine.Proofs
 
@@ -54,7 +56,7 @@ private theorem renderHelpNode_nonEmpty (cmdPath : List String) (visibleOpts : L
 
 private theorem allowedRenderHelp_holds (rootSpec : CommandSpec) (subcommandPath : List String) :
     Model.allowedRenderHelp rootSpec subcommandPath (LeanSwe.CmdLine.renderHelp rootSpec subcommandPath) := by
-  unfold Model.allowedRenderHelp LeanSwe.CmdLine.renderHelp defaultApi Internal.mkCheckedApiM Internal.mkApiM Internal.renderHelp
+  unfold Model.allowedRenderHelp LeanSwe.CmdLine.renderHelp defaultApi Internal.mkApiFromCapsM Internal.mkApiM Internal.renderHelp
   dsimp only [Bind.bind, Except.bind]
   rw [isValidSpecTR_eq, findSubcommandPathTR_eq]
   cases hv : Model.isValidSpec rootSpec with
@@ -202,7 +204,7 @@ private def pureStateOps : CliOpsM (StateM Unit) :=
 
 private theorem allowedParseWith_holds (spec : CommandSpec) (args : List String) (validators : CustomValidators) :
     Model.allowedParseWith spec args validators (LeanSwe.CmdLine.parseWith spec args validators) := by
-  unfold Model.allowedParseWith LeanSwe.CmdLine.parseWith defaultApi Internal.mkCheckedApiM Internal.mkApiM Internal.parseWith
+  unfold Model.allowedParseWith LeanSwe.CmdLine.parseWith defaultApi Internal.mkApiFromCapsM Internal.mkApiM Internal.parseWith
   dsimp only
   rw [parseWithEnvM_eq_spec]
   have hro_unit : ∀ visibleOpts cliOpts,
@@ -523,46 +525,6 @@ private theorem refinesStepFrom_mkApiM :
       simp only [hp] at h ⊢
       exact h
 
-private theorem obeysStepFrom_mkCheckedApiM :
-    Core.ObeysStepFrom id Model.checkedStepWf Model.execCheckedRawStep Model.allowedCheckedRawStep
-      Model.checkedStepWf Internal.mkCheckedApiM Model.execPkgStep Model.allowedCheckedPkgStep := by
-  intro W proj ops hChecked w req _
-  have hRaw := checkedOps_cliOps_obeysRawStep proj ops hChecked
-  cases req with
-  | parseWithEnv spec args validators =>
-    have h1 := parseWithEnvM_step_spec (fun w0 => (proj w0).cli) ops.cliOps hRaw spec args validators w
-    have h2 := parseWithEnvM_preserves_stdioErr proj ops hChecked spec args validators w
-    simp only [Model.execPkgStep, Internal.mkCheckedApiM, Internal.mkApiM, Functor.map, StateT.map,
-      Bind.bind, Pure.pure, StateT.run, Function.comp, Model.allowedCheckedPkgStep, id]
-    cases hp : Internal.parseWithEnvM ops.cliOps spec args validators w with
-    | mk res w1 => simp only [hp] at h1 h2 ⊢; exact ⟨h1, h2⟩
-  | promptLine prompt default =>
-    have h := promptLineChecked_step_spec proj ops hChecked prompt default w
-    simp only [Model.execPkgStep, Internal.mkCheckedApiM, Functor.map, StateT.map, Bind.bind,
-      Pure.pure, StateT.run, Function.comp, Model.allowedCheckedPkgStep, id]
-    cases hp : SysBridge.promptLineChecked ops prompt default w with
-    | mk res w1 => simp only [hp] at h ⊢; exact h
-  | confirm prompt default maxAttempts =>
-    have h := confirmChecked_step_spec proj ops hChecked prompt default maxAttempts w
-    simp only [Model.execPkgStep, Internal.mkCheckedApiM, Functor.map, StateT.map, Bind.bind,
-      Pure.pure, StateT.run, Function.comp, Model.allowedCheckedPkgStep, id]
-    cases hp : SysBridge.confirmChecked ops prompt default maxAttempts w with
-    | mk res w1 => simp only [hp] at h ⊢; exact h
-  | runCli spec args exitCode =>
-    have h1 := runCliWith_step_spec (fun w0 => (proj w0).cli) ops.cliOps hRaw spec args [] exitCode w
-    have h2 := runCliWith_preserves_stdioErr proj ops hChecked spec args [] exitCode w
-    simp only [Model.execPkgStep, Internal.mkCheckedApiM, Internal.mkApiM, Internal.runCli,
-      Functor.map, StateT.map, Bind.bind, Pure.pure, StateT.run, Function.comp, Model.allowedCheckedPkgStep, id]
-    cases hp : Internal.runCliWith ops.cliOps spec args [] (fun _ => pure exitCode) w with
-    | mk res w1 => simp only [hp] at h1 h2 ⊢; exact ⟨h1, h2⟩
-  | runCliWith spec args validators exitCode =>
-    have h1 := runCliWith_step_spec (fun w0 => (proj w0).cli) ops.cliOps hRaw spec args validators exitCode w
-    have h2 := runCliWith_preserves_stdioErr proj ops hChecked spec args validators exitCode w
-    simp only [Model.execPkgStep, Internal.mkCheckedApiM, Internal.mkApiM, Functor.map, StateT.map,
-      Bind.bind, Pure.pure, StateT.run, Function.comp, Model.allowedCheckedPkgStep, id]
-    cases hp : Internal.runCliWith ops.cliOps spec args validators (fun _ => pure exitCode) w with
-    | mk res w1 => simp only [hp] at h1 h2 ⊢; exact ⟨h1, h2⟩
-
 /-- Full public `Interface` `Core.Obeys` contract of `LeanSwe.CmdLine` against `LeanSwe.CmdLine.Model`. -/
 theorem obeys_model :
     Core.ObeysPureEq LeanSwe.CmdLine.isValidSpec Model.isValidSpec ∧
@@ -573,8 +535,10 @@ theorem obeys_model :
     Core.ObeysPureEq2 LeanSwe.CmdLine.renderArgs Model.renderArgs ∧
     Core.ObeysStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
       Model.rawStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep ∧
-    Core.ObeysStepFrom id Model.checkedStepWf Model.execCheckedRawStep Model.allowedCheckedRawStep
-      Model.checkedStepWf Internal.mkCheckedApiM Model.execPkgStep Model.allowedCheckedPkgStep :=
+    Core.ObeysStepFromExcept id Model.hostStepWf Model.execCapsStep Model.allowedHostCapsStep
+      Model.hostStepWf Internal.mkCliOpsFromCapsM Model.execCliExceptStep Model.allowedHostCliStep ∧
+    Core.ObeysStepFromExcept id Model.hostStepWf Model.execCapsStep Model.allowedHostCapsStep
+      Model.hostStepWf Internal.mkApiFromCapsM Model.execPkgExceptStep Model.allowedHostPkgStep :=
   ⟨isValidSpecTR_eq,
    fun spec args => allowedParseWith_holds spec args [],
    allowedParseWith_holds,
@@ -582,6 +546,14 @@ theorem obeys_model :
    fun _ _ => rfl,
    renderArgsTR_eq,
    refinesStepFrom_mkApiM,
-   obeysStepFrom_mkCheckedApiM⟩
+   obeysStepFromExcept_mkCliOpsFromCapsM,
+   obeysStepFromExcept_mkApiFromCapsM⟩
+
+/-- Non-vacuity witness showing `Model.hostStepWf` and `Model.allowedHostCapsStep` in `obeys_model` are inhabited over `RawFd`. -/
+theorem obeys_model_nonvacuous :
+    (∃ s : Model.CmdLineHostState, Model.hostStepWf s = true) ∧
+    (∃ caps : Model.CmdLineCapsM (ExceptT IO.Error (StateM Model.CmdLineHostState)),
+      Core.ObeysStepExcept id Model.hostStepWf (Model.execCapsStep caps) Model.allowedHostCapsStep) :=
+  ⟨⟨{}, rfl⟩, ⟨modelHostCaps, modelHostCaps_obeys_allowedHostCapsStep⟩⟩
 
 end LeanSwe.CmdLine.Proofs

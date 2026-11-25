@@ -146,6 +146,30 @@ def ObeysStepFromFinally.{u₁, u₂}
     ObeysStep proj rawWf (execRaw raw) rawAllowed →
     ObeysStep (mapS ∘ proj) pkgWf (execPkg (mkApi raw)) pkgAllowed
 
+/-- Single-step stateful and `IO.Error`-exceptional refinement relating
+    `ExceptT IO.Error (StateM W) Out` transitions under `proj` and `wf` to `allowedStep`. -/
+def ObeysStepExcept {W S Req Out : Type} (proj : W → S) (wf : S → Bool)
+    (step : Req → ExceptT IO.Error (StateM W) Out)
+    (allowedStep : S → Req → Except IO.Error Out → S → Prop) : Prop :=
+  ∀ (w : W) (req : Req), wf (proj w) = true →
+    let r := (step req).run.run w
+    allowedStep (proj w) req r.1 (proj r.2)
+
+/-- Compositional single-step refinement lifting a verified `RawOps` step contract over
+    `ExceptT IO.Error (StateM W)` to a `[Monad m] → [MonadFinally m] → [MonadExceptOf IO.Error m]`
+    `mkApi`-built `PkgApi`, faithfully tracking `throwThe IO.Error`, `tryCatch`, and `tryFinally'`. -/
+def ObeysStepFromExcept.{u₁, u₂}
+    {RawS PkgS : Type} {RawOps : (Type → Type) → Type u₁} {PkgApi : (Type → Type) → Type u₂}
+    {RawReq RawOut PkgReq PkgOut : Type} (mapS : RawS → PkgS) (rawWf : RawS → Bool)
+    (execRaw : {W : Type} → RawOps (ExceptT IO.Error (StateM W)) → RawReq → ExceptT IO.Error (StateM W) RawOut)
+    (rawAllowed : RawS → RawReq → Except IO.Error RawOut → RawS → Prop) (pkgWf : PkgS → Bool)
+    (mkApi : {m : Type → Type} → [Monad m] → [MonadFinally m] → [MonadExceptOf IO.Error m] → RawOps m → PkgApi m)
+    (execPkg : {W : Type} → PkgApi (ExceptT IO.Error (StateM W)) → PkgReq → ExceptT IO.Error (StateM W) PkgOut)
+    (pkgAllowed : PkgS → PkgReq → Except IO.Error PkgOut → PkgS → Prop) : Prop :=
+  ∀ {W : Type} (proj : W → RawS) (raw : RawOps (ExceptT IO.Error (StateM W))),
+    ObeysStepExcept proj rawWf (execRaw raw) rawAllowed →
+    ObeysStepExcept (mapS ∘ proj) pkgWf (execPkg (mkApi raw)) pkgAllowed
+
 /-- Compositional single-step refinement lifting two verified capability contracts to a `mkApi`-built `PkgApi`. -/
 def ObeysStepFrom2.{u₁, u₂, u₃}
     {RawS PkgS : Type} {RawOps1 : (Type → Type) → Type u₁} {RawOps2 : (Type → Type) → Type u₂}

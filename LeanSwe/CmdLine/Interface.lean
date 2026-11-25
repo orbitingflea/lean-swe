@@ -10,16 +10,24 @@ namespace LeanSwe.CmdLine
 
 namespace Internal
 
-/-- Build `CmdLineApiM m` over a `Model.CheckedCliOpsM m` capability bundle. -/
-def mkCheckedApiM {m : Type → Type} [Monad m] (ops : Model.CheckedCliOpsM m) : CmdLineApiM m :=
-  { Internal.mkApiM ops.cliOps with
-    promptLine := fun prompt default => SysBridge.promptLineChecked ops prompt default
-    confirm := fun prompt default maxAttempts => SysBridge.confirmChecked ops prompt default maxAttempts }
+/-- Build `CliOpsM m` directly over a `Model.CmdLineCapsM m` capability bundle (`LinuxSyscall.Files` + `EnvVars`). -/
+def mkCliOpsFromCapsM {m : Type → Type} [Monad m] [MonadFinally m] [MonadExceptOf IO.Error m]
+    (caps : Model.CmdLineCapsM m) : CliOpsM m :=
+  SysBridge.mkFilesCliOpsM caps.files (SysBridge.mapEnvVarsGet caps.env)
+
+/-- Build `CmdLineApiM m` directly over a `Model.CmdLineCapsM m` capability bundle (`LinuxSyscall.Files` + `EnvVars`),
+    catching interactive `IO.Error` throws from `promptLine`/`confirm` into `.ioError`. -/
+def mkApiFromCapsM {m : Type → Type} [Monad m] [MonadFinally m] [MonadExceptOf IO.Error m]
+    (caps : Model.CmdLineCapsM m) : CmdLineApiM m :=
+  let ops := mkCliOpsFromCapsM caps
+  { Internal.mkApiM ops with
+    promptLine := fun prompt default => SysBridge.promptLineCheckedM ops prompt default
+    confirm := fun prompt default maxAttempts => SysBridge.confirmCheckedM ops prompt default maxAttempts }
 
 end Internal
 
 /-- Default `CliOps` wired directly to unbuffered OS stdio descriptors `0`/`1`/`2` via
-    `LeanSwe.LinuxSyscall.Files.defaultOps` (`dupStdio`/`read`/`write`/`close`) and `LeanSwe.EnvVars.getEnv`.
+    `LeanSwe.LinuxSyscall.Files.defaultOps` (`dupStdio`/`read`/`write`/`close`) and `LeanSwe.EnvVars.defaultApi`.
 
     Live I/O intentionally bypasses Lean's host-IO stream handles (`IO.getStdin`/`IO.getStdout`/`IO.getStderr`):
     it does **not** flush C/Lean `IO.FS.Stream` buffers and does **not** honor `IO.withStdin`/`IO.withStdout`/
@@ -29,22 +37,20 @@ end Internal
     be recovered by flushing. Callers needing redirected or in-memory streams should pass an explicit `CliOpsM m`
     backend to `Internal.mkApiM`, `promptLineM`, `confirmM`, `runCliM`, or `runCliWithM`. -/
 def defaultOps : CliOps :=
-  SysBridge.mkFilesCliOps LeanSwe.LinuxSyscall.Files.defaultOps fun key => do
-    match ← LeanSwe.EnvVars.getEnv key with
-    | .ok v => return .ok v
-    | .error err =>
-      return .error
-        { kind := .ioError
-          message := err.message
-          target := err.key }
+  Internal.mkCliOpsFromCapsM
+    { files := LeanSwe.LinuxSyscall.Files.defaultOps
+      env := LeanSwe.EnvVars.defaultApi }
 
-/-- Default `CmdLineApi` backed by `defaultOps` (unbuffered OS descriptors `0`/`1`/`2` via
-    `LeanSwe.LinuxSyscall.Files.dupStdio`), catching `IO.Error` throws from `promptLine`/`confirm` into `.ioError`.
-    Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`/`IO.withStderr`; do not
-    mix buffered `IO.getStdin` reads with `CmdLine` `stdin` reads (bytes read ahead by `IO.getStdin` are invisible
-    to descriptor `0` and cannot be recovered by flushing). -/
+/-- Default `CmdLineApi` wired directly over `LeanSwe.LinuxSyscall.Files.defaultOps` and
+    `LeanSwe.EnvVars.defaultApi` (`dupStdio`/`read`/`write`/`close` + `getEnv`), catching `IO.Error` throws
+    from `promptLine`/`confirm` into `.ioError`. Does not flush C/Lean `IO.FS.Stream` buffers or honor
+    `IO.withStdin`/`IO.withStdout`/`IO.withStderr`; do not mix buffered `IO.getStdin` reads with `CmdLine`
+    `stdin` reads (bytes read ahead by `IO.getStdin` are invisible to descriptor `0` and cannot be recovered
+    by flushing). -/
 def defaultApi : CmdLineApi :=
-  Internal.mkCheckedApiM (SysBridge.mkCheckedCliOps defaultOps)
+  Internal.mkApiFromCapsM
+    { files := LeanSwe.LinuxSyscall.Files.defaultOps
+      env := LeanSwe.EnvVars.defaultApi }
 
 /-- Return `true` iff `spec` satisfies `ValidSpec`. -/
 @[inline] def isValidSpec (spec : CommandSpec) : Bool :=

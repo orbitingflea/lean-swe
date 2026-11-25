@@ -36,8 +36,8 @@ Enforces:
    is currently empty, as no deferred packages remain) must prove `<pkgNs>.Proofs.obeys_model`
    or legacy `<pkgNs>.Proofs.refines_model` (never both) via `ObeysPure`, `ObeysPure2`, `ObeysPure3`, `ObeysPure4`,
    `ObeysPureEq`, `ObeysPureEq2`, `ObeysPureEq3`, `ObeysPureEq4`, `ObeysPureEqUpToErrMsg`, `ObeysPureEqUpToErrMsg2`,
-   `ObeysPureEqUpToErrMsg3`, `ObeysPureEqUpToErrMsg4`, `ObeysInverseRender`, `ObeysStep`, `ObeysStepId`,
-   `ObeysStepFrom`, `ObeysStepFromFinally`, `ObeysStepFromConc`, or `ObeysStepFrom2` (or legacy `RefinesPure{,2,3,4}`,
+   `ObeysPureEqUpToErrMsg3`, `ObeysPureEqUpToErrMsg4`, `ObeysInverseRender`, `ObeysStep`, `ObeysStepExcept`,
+   `ObeysStepId`, `ObeysStepFrom`, `ObeysStepFromFinally`, `ObeysStepFromConc`, `ObeysStepFromExcept`, or `ObeysStepFrom2` (or legacy `RefinesPure{,2,3,4}`,
    `RefinesPureEq{,2,3,4}`, `RefinesStep`, `RefinesStepId`, `RefinesStepFrom`, `RefinesStepFromFinally`,
    `RefinesStepFrom2` aliases) with bare-constant pinning and non-trivial `allowed` relations across the full public
    `<pkgNs>.Interface` surface.
@@ -2449,7 +2449,17 @@ private def checkStepAllowedNonTrivial
     let ow ← match ← runBoundedMeta (whnf outTy) with
       | .ok w => pure w.consumeMData
       | .error r => return .inconclusive r
-    if let .const outIndName outLvls := ow.getAppFn.consumeMData then
+    let (innerOutTy, wrapOut) : Expr × (Expr → Expr) ←
+      if ow.isAppOfArity ``Except 2 then
+        let exLvls := ow.getAppFn.consumeMData.constLevels!
+        let errTy := ow.appFn!.appArg!
+        let okTy := ow.appArg!
+        match ← runBoundedMeta (whnf okTy) with
+        | .ok w => pure (w.consumeMData, fun x => mkApp3 (mkConst ``Except.ok exLvls) errTy okTy x)
+        | .error r => return .inconclusive r
+      else
+        pure (ow, id)
+    if let .const outIndName outLvls := innerOutTy.getAppFn.consumeMData then
       if isProjectModule (moduleOfConst env outIndName) then
         if let some (.inductInfo iv) := env.find? outIndName then
           if iv.numParams == 0 && iv.numIndices == 0 then
@@ -2463,7 +2473,7 @@ private def checkStepAllowedNonTrivial
                     | .error r => return .inconclusive r
                   if let .forallE _ fldTy _ _ := cTyW then
                     match ← checkWrappedPayloadSensitive env relaxedEnv modelMods
-                        (fun inner => pure (mkApp4 allowedArg s req (mkApp ctorConst inner) s1').headBeta)
+                        (fun inner => pure (mkApp4 allowedArg s req (wrapOut (mkApp ctorConst inner)) s1').headBeta)
                         allowedFn fldTy with
                     | .isTrue => pure ()
                     | other => return other
@@ -2983,6 +2993,10 @@ private def checkRefinesModelTheorem
           if ab.isAppOfArity `Core.RefinesStep 8 || ab.isAppOfArity `Core.ObeysStep 8 then
             let args := ab.getAppArgs
             some (args[0]!, args[1]!, args[2]!, args[3]!, args[4]!, args[5]!, args[6]!, args[7]!)
+          else if ab.isAppOfArity `Core.ObeysStepExcept 8 then
+            let args := ab.getAppArgs
+            let exOutTy := mkApp2 (mkConst ``Except [.zero, .zero]) (mkConst ``IO.Error) args[3]!
+            some (args[0]!, args[1]!, args[2]!, exOutTy, args[4]!, args[5]!, args[6]!, args[7]!)
           else if ab.isAppOfArity `Core.RefinesStepId 6 || ab.isAppOfArity `Core.ObeysStepId 6 then
             let args := ab.getAppArgs
             let sTy := args[0]!
@@ -3045,6 +3059,12 @@ private def checkRefinesModelTheorem
             let args := ab.getAppArgs
             some (args[0]!, args[1]!, args[6]!, args[7]!, args[8]!, args[9]!, args[12]!, args[13]!, args[14]!,
               #[(args[4]!, args[5]!, args[10]!, args[11]!), (args[6]!, args[7]!, args[14]!, args[15]!)])
+          else if ab.isAppOfArity `Core.ObeysStepFromExcept 16 then
+            let args := ab.getAppArgs
+            let exRawOutTy := mkApp2 (mkConst ``Except [.zero, .zero]) (mkConst ``IO.Error) args[5]!
+            let exPkgOutTy := mkApp2 (mkConst ``Except [.zero, .zero]) (mkConst ``IO.Error) args[7]!
+            some (args[0]!, args[1]!, args[6]!, exPkgOutTy, args[8]!, args[9]!, args[12]!, args[13]!, args[14]!,
+              #[(args[4]!, exRawOutTy, args[10]!, args[11]!), (args[6]!, exPkgOutTy, args[14]!, args[15]!)])
           else if ab.isAppOfArity `Core.RefinesStepFrom2 21 ||
               ab.isAppOfArity `Core.ObeysStepFrom2 21 then
             let args := ab.getAppArgs
@@ -3669,7 +3689,10 @@ private def renderExpectedObeysSig (env : Environment) (knownPkgs : Array Name) 
           s!"{pred} {opName} {modelStr}"
     conjuncts := conjuncts.push line
   if !effOps.isEmpty then
-    let mkApiCand := Name.str (Name.str pkg "Internal") "mkApiM"
+    let mkApiCand :=
+      let c1 := Name.str (Name.str pkg "Internal") "mkApiM"
+      let c2 := Name.str (Name.str pkg "Internal") "mkApiFromCapsM"
+      if env.contains c2 then c2 else c1
     let mkFullCand := Name.str (Name.str pkg "Internal") "mkFullApiM"
     let (stepPred, builderStr) :=
       match (env.find? mkApiCand).orElse (fun _ => env.find? mkFullCand) with
@@ -3677,6 +3700,7 @@ private def renderExpectedObeysSig (env : Environment) (knownPkgs : Array Name) 
         let used := ci.type.getUsedConstants
         let pred :=
           if used.contains `Core.ConcOpsM then "Core.ObeysStepFromConc"
+          else if used.contains ``MonadExceptOf then "Core.ObeysStepFromExcept"
           else if used.contains ``MonadFinally then "Core.ObeysStepFromFinally"
           else "Core.ObeysStepFrom"
         let bName := if (env.find? mkApiCand).isSome then mkApiCand else mkFullCand
