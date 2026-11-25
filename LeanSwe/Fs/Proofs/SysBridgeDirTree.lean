@@ -9,7 +9,7 @@ open LeanSwe.Fs.Model
 
 /-- Confined trace specification for `Internal.atomicWriteAtAuxM`. -/
 theorem atomicWriteAtAuxM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (parDh : HandleId) (leaf : EntryName) (bytes : ByteArray) (held : List HandleId) (attempts : Nat)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (Internal.atomicWriteAtAuxM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) parDh leaf bytes attempts).run s
@@ -96,7 +96,7 @@ theorem atomicWriteAtAuxM_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
 
 /-- Confined trace and sortedness specification for `Internal.walkRecM`. -/
 theorem walkRecM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootDh : HandleId) (fuel : Nat) :
     ∀ (relSegs : List EntryName) (relLabel : String) (acc : Array WalkEntry) (s : W),
       fsWorldWf (proj s) = true →
@@ -280,7 +280,7 @@ theorem walkRecM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM
 
 /-- Confined trace specification for `Internal.rmtreeNonDirPrefixM`. -/
 theorem rmtreeNonDirPrefixM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (dirDh : HandleId) (held : List HandleId) (items : List EntryName)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (Internal.rmtreeNonDirPrefixM (SysBridge.mkRawDirOpsM cap.files cap.nextTempSeq) dirDh items).run s
@@ -360,7 +360,7 @@ theorem rmtreeNonDirPrefixM_trace {W : Type} {proj : W → FsWorld} {cap : Healt
 
 /-- Confined trace specification for `Internal.rmtreeProcessM`. -/
 theorem rmtreeProcessM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootDh : HandleId) (dirSegs : List EntryName)
     (subDirFn : EntryName → StateM W (Except FsError Unit))
     (hSub : ∀ (sub : EntryName) {s : W}, fsWorldWf (proj s) = true →
@@ -447,7 +447,7 @@ theorem rmtreeProcessM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFil
 
 /-- Confined trace specification for `Internal.rmtreeDirAtM`. -/
 theorem rmtreeDirAtM_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootDh : HandleId) (fuel : Nat) :
     ∀ (parSegs : List EntryName) (leaf : EntryName) (s : W),
       fsWorldWf (proj s) = true →

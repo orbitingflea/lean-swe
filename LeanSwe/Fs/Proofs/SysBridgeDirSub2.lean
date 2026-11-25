@@ -9,7 +9,7 @@ open LeanSwe.Fs.Model
 
 /-- Confined step refinement for `SubtreeOpReq.unlink`. -/
 theorem subtree_unlink_step {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootPath : String) (rel : RelPath) (missingOk : Bool) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execSubtreeStep (Internal.mkSubtreeOpenerFromHealthyFilesM cap) ⟨rootPath, .unlink rel missingOk⟩).run s
     allowedSubtreeStep (proj s) ⟨rootPath, .unlink rel missingOk⟩ r.1 (proj r.2) := by
@@ -83,7 +83,7 @@ theorem subtree_unlink_step {W : Type} {proj : W → FsWorld} {cap : HealthyFile
 
 /-- Confined step refinement for `SubtreeOpReq.rmdir`. -/
 theorem subtree_rmdir_step {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootPath : String) (rel : RelPath) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execSubtreeStep (Internal.mkSubtreeOpenerFromHealthyFilesM cap) ⟨rootPath, .rmdir rel⟩).run s
     allowedSubtreeStep (proj s) ⟨rootPath, .rmdir rel⟩ r.1 (proj r.2) := by
@@ -139,7 +139,7 @@ theorem subtree_rmdir_step {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
 
 /-- Confined step refinement for `SubtreeOpReq.rmtree`. -/
 theorem subtree_rmtree_step {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootPath : String) (rel : RelPath) (ignoreMissing : Bool) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execSubtreeStep (Internal.mkSubtreeOpenerFromHealthyFilesM cap) ⟨rootPath, .rmtree rel ignoreMissing⟩).run s
     allowedSubtreeStep (proj s) ⟨rootPath, .rmtree rel ignoreMissing⟩ r.1 (proj r.2) := by
@@ -223,7 +223,7 @@ theorem subtree_rmtree_step {W : Type} {proj : W → FsWorld} {cap : HealthyFile
 
 /-- Confined step refinement for `SubtreeOpReq.symlink`. -/
 theorem subtree_symlink_step {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootPath target : String) (rel : RelPath) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execSubtreeStep (Internal.mkSubtreeOpenerFromHealthyFilesM cap) ⟨rootPath, .symlink target rel⟩).run s
     allowedSubtreeStep (proj s) ⟨rootPath, .symlink target rel⟩ r.1 (proj r.2) := by
@@ -283,7 +283,7 @@ theorem subtree_symlink_step {W : Type} {proj : W → FsWorld} {cap : HealthyFil
 
 /-- Confined step refinement for `SubtreeOpReq.listDir`. -/
 theorem subtree_listDir_step {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootPath : String) (rel : RelPath) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execSubtreeStep (Internal.mkSubtreeOpenerFromHealthyFilesM cap) ⟨rootPath, .listDir rel⟩).run s
     allowedSubtreeStep (proj s) ⟨rootPath, .listDir rel⟩ r.1 (proj r.2) := by
@@ -366,7 +366,7 @@ theorem subtree_listDir_step {W : Type} {proj : W → FsWorld} {cap : HealthyFil
 
 /-- Confined step refinement for `SubtreeOpReq.walk`. -/
 theorem subtree_walk_step {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootPath : String) (rel : RelPath) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execSubtreeStep (Internal.mkSubtreeOpenerFromHealthyFilesM cap) ⟨rootPath, .walk rel⟩).run s
     allowedSubtreeStep (proj s) ⟨rootPath, .walk rel⟩ r.1 (proj r.2) := by

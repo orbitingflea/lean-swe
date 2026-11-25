@@ -121,7 +121,7 @@ theorem list_map_key_cond_preserves {α : Type} (hid : Nat) (f : α → α) (xs 
 
 /-- Extract platform identity equality from `hCap`. -/
 theorem cap_metaInfo_eq {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true) :
     cap.isLinux = (proj w).isLinux ∧ cap.target = (proj w).target := by
   have h := (hCap w .metaInfo hWf).1
@@ -130,7 +130,7 @@ theorem cap_metaInfo_eq {W : Type} {proj : W → RawHostWorld} {cap : RawHostCap
 
 /-- Extract `getTable` behavior from `hCap`. -/
 theorem cap_getTable_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true) :
     (cap.getTable.run w).1 = (proj w).table ∧ proj (cap.getTable.run w).2 = proj w := by
   have h := hCap w .getTable hWf
@@ -139,7 +139,7 @@ theorem cap_getTable_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostC
 
 /-- Extract `modifyTable` behavior from `hCap`. -/
 theorem cap_modifyTable_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true) (f : RawTableState → RawTableState) :
     ((cap.modifyTable f).run w).1 = (proj w).table ∧
     proj ((cap.modifyTable f).run w).2 = { proj w with table := f (proj w).table } := by
@@ -157,7 +157,7 @@ theorem rawHostWorldWf_iff (w : RawHostWorld) :
   simp [rawHostWorldWf, Bool.and_eq_true, and_assoc]
 
 private theorem tbl_modify_run {W α : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true)
     (step : HostTableState Nat Nat → α × HostTableState Nat Nat) :
     let act : StateM W α := do
@@ -172,7 +172,7 @@ private theorem tbl_modify_run {W α : Type} {proj : W → RawHostWorld} {cap : 
 
 /-- `toHostTableOps.counts` returns `tableCounts (proj w).table` and preserves `proj w`. -/
 theorem tbl_counts_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true) :
     ((toHostTableOps cap).counts.run w).1 = tableCounts (proj w).table ∧
     proj ((toHostTableOps cap).counts.run w).2 = proj w := by
@@ -184,7 +184,7 @@ theorem tbl_counts_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCap
 
 /-- `toHostTableOps.nextCgSeq` increments only `cgSeq` and preserves `rawHostWorldWf`, `plans`, `boxes`, `fwds`, `nextId`. -/
 theorem tbl_nextCgSeq_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true) :
     let w' := ((toHostTableOps cap).nextCgSeq.run w).2
     proj w' = { proj w with table := { (proj w).table with cgSeq := (proj w).table.cgSeq + 1 } } ∧
@@ -206,7 +206,7 @@ theorem tbl_nextCgSeq_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHost
 
 /-- `toHostTableOps.findPlan` preserves `proj w` and finds `some` iff `tableHasKey hid (proj w).table.plans`. -/
 theorem tbl_findPlan_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true) (hid : Nat) :
     (((toHostTableOps cap).findPlan hid).run w).1.isSome = tableHasKey hid (proj w).table.plans ∧
     proj (((toHostTableOps cap).findPlan hid).run w).2 = proj w := by
@@ -218,7 +218,7 @@ theorem tbl_findPlan_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostC
 
 /-- `toHostTableOps.findBoxKillInfo` preserves `proj w` and finds `some` iff `tableHasKey hid (proj w).table.boxes`. -/
 theorem tbl_findBoxKillInfo_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true) (hid : Nat) :
     (((toHostTableOps cap).findBoxKillInfo hid).run w).1.isSome = tableHasKey hid (proj w).table.boxes ∧
     proj (((toHostTableOps cap).findBoxKillInfo hid).run w).2 = proj w := by
@@ -230,7 +230,7 @@ theorem tbl_findBoxKillInfo_spec {W : Type} {proj : W → RawHostWorld} {cap : R
 
 /-- `toHostTableOps.insertPlan` either preserves `proj w` (on `none`) or allocates `nextId`, adds 1 plan, preserves `boxes`/`fwds`, and keeps `rawHostWorldWf`. -/
 theorem tbl_insertPlan_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true) (slot : PlanSlotM Nat) :
     let r := ((toHostTableOps cap).insertPlan slot).run w
     rawHostWorldWf (proj r.2) = true ∧
@@ -266,7 +266,7 @@ theorem tbl_insertPlan_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHos
 
 /-- `toHostTableOps.detachPlan` detaches `hid` if present (decrementing `plans.length` by 1) or leaves `proj w` unchanged with `tableHasKey = false`. -/
 theorem tbl_detachPlan_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true) (hid : Nat) :
     let r := ((toHostTableOps cap).detachPlan hid).run w
     rawHostWorldWf (proj r.2) = true ∧
@@ -302,7 +302,7 @@ theorem tbl_detachPlan_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHos
 
 /-- `toHostTableOps.insertBox` either preserves `proj w` (on `none`) or allocates `nextId`, adds 1 box, preserves `plans`/`fwds`, and keeps `rawHostWorldWf`. -/
 theorem tbl_insertBox_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true) (slot : BoxSlotM Nat) :
     let r := ((toHostTableOps cap).insertBox slot).run w
     rawHostWorldWf (proj r.2) = true ∧
@@ -338,7 +338,7 @@ theorem tbl_insertBox_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHost
 
 /-- `toHostTableOps.detachBox` detaches `hid` if present (decrementing `boxes.length` by 1) or leaves `proj w` unchanged with `tableHasKey = false`. -/
 theorem tbl_detachBox_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true) (hid : Nat) :
     let r := ((toHostTableOps cap).detachBox hid).run w
     rawHostWorldWf (proj r.2) = true ∧
@@ -374,7 +374,7 @@ theorem tbl_detachBox_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHost
 
 /-- `toHostTableOps.takeBoxListeners` preserves `rawHostWorldWf`, `plans`, `fwds`, `boxes.length`, and leaves `proj w` unchanged on `none`. -/
 theorem tbl_takeBoxListeners_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true) (hid expected : Nat) :
     let r := ((toHostTableOps cap).takeBoxListeners hid expected).run w
     rawHostWorldWf (proj r.2) = true ∧
@@ -416,7 +416,7 @@ theorem tbl_takeBoxListeners_spec {W : Type} {proj : W → RawHostWorld} {cap : 
 
 /-- `toHostTableOps.takeBoxIo` preserves `rawHostWorldWf`, `plans`, `fwds`, `boxes.length`, and leaves `proj w` unchanged on `none`. -/
 theorem tbl_takeBoxIo_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true) (hid : Nat) :
     let r := ((toHostTableOps cap).takeBoxIo hid).run w
     rawHostWorldWf (proj r.2) = true ∧
@@ -460,7 +460,7 @@ theorem tbl_takeBoxIo_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHost
 
 /-- `toHostTableOps.insertFwd` either preserves `proj w` (on `none`) or allocates a valid `hid`, adds 1 forwarder, preserves `plans`/`boxes`, and keeps `rawHostWorldWf`. -/
 theorem tbl_insertFwd_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true) (slot : ForwarderSlotM Nat) :
     let r := ((toHostTableOps cap).insertFwd slot).run w
     rawHostWorldWf (proj r.2) = true ∧
@@ -496,7 +496,7 @@ theorem tbl_insertFwd_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHost
 
 /-- `toHostTableOps.detachFwd` detaches `hid` if present (decrementing `fwds.length` by 1) or leaves `proj w` unchanged with `tableHasKey = false`. -/
 theorem tbl_detachFwd_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     {w : W} (hWf : rawHostWorldWf (proj w) = true) (hid : Nat) :
     let r := ((toHostTableOps cap).detachFwd hid).run w
     rawHostWorldWf (proj r.2) = true ∧

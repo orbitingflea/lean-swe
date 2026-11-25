@@ -23,7 +23,7 @@ theorem subAct_subst {W α : Type} {proj : W → FsWorld} {dh : HandleId} {s0 : 
 
 /-- General confined trace specification for `Internal.withSubtreeM`. -/
 theorem withSubtreeM_trace {W α : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootPath : String)
     (okPred : α → HandleId → List KernelStep → Prop)
     (errPred : FsError → HandleId → List KernelStep → Prop)
@@ -201,7 +201,7 @@ theorem nonLockErr_to_subtreeErr {rootPath : String} {e : FsError} {tr : List Ke
 
 /-- Confined step refinement for `SubtreeOpReq.lstat`. -/
 theorem subtree_lstat_step {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootPath : String) (rel : RelPath) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execSubtreeStep (Internal.mkSubtreeOpenerFromHealthyFilesM cap) ⟨rootPath, .lstat rel⟩).run s
     allowedSubtreeStep (proj s) ⟨rootPath, .lstat rel⟩ r.1 (proj r.2) := by
@@ -265,7 +265,7 @@ theorem subtree_lstat_step {W : Type} {proj : W → FsWorld} {cap : HealthyFiles
 
 /-- Confined step refinement for `SubtreeOpReq.readRegular`. -/
 theorem subtree_readRegular_step {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootPath : String) (rel : RelPath) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execSubtreeStep (Internal.mkSubtreeOpenerFromHealthyFilesM cap) ⟨rootPath, .readRegular rel⟩).run s
     allowedSubtreeStep (proj s) ⟨rootPath, .readRegular rel⟩ r.1 (proj r.2) := by
@@ -332,7 +332,7 @@ theorem subtree_readRegular_step {W : Type} {proj : W → FsWorld} {cap : Health
 
 /-- Confined step refinement for `SubtreeOpReq.atomicWriteBytes`. -/
 theorem subtree_atomicWriteBytes_step {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootPath : String) (rel : RelPath) (data : ByteArray) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execSubtreeStep (Internal.mkSubtreeOpenerFromHealthyFilesM cap) ⟨rootPath, .atomicWriteBytes rel data⟩).run s
     allowedSubtreeStep (proj s) ⟨rootPath, .atomicWriteBytes rel data⟩ r.1 (proj r.2) := by
@@ -396,7 +396,7 @@ theorem subtree_atomicWriteBytes_step {W : Type} {proj : W → FsWorld} {cap : H
 
 /-- Confined step refinement for `SubtreeOpReq.mkdir`. -/
 theorem subtree_mkdir_step {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootPath : String) (rel : RelPath) (parents existOk : Bool) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execSubtreeStep (Internal.mkSubtreeOpenerFromHealthyFilesM cap) ⟨rootPath, .mkdir rel parents existOk⟩).run s
     allowedSubtreeStep (proj s) ⟨rootPath, .mkdir rel parents existOk⟩ r.1 (proj r.2) := by

@@ -100,7 +100,7 @@ theorem classifyBoxStreamResult_spec (program cwd : String) (to lim : Bool)
 
 /-- `TimeRand.monoNowMs` preserves `proj`. -/
 theorem preservesProj_monoNowMs {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) :
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) :
     PreservesProj proj (TimeRand.monoNowMs cap.timeRand) := by
   unfold TimeRand.monoNowMs
   refine preservesProj_bind
@@ -109,7 +109,7 @@ theorem preservesProj_monoNowMs {W : Type} {proj : W → RawHostWorld} {cap : Ra
 
 /-- `TimeRand.checkTimedOut` preserves `proj`. -/
 theorem preservesProj_checkTimedOut {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (startMs : Nat) (to? : Option Nat) :
     PreservesProj proj (TimeRand.checkTimedOut cap.timeRand startMs to?) := by
   unfold TimeRand.checkTimedOut
@@ -123,7 +123,7 @@ theorem preservesProj_checkTimedOut {W : Type} {proj : W → RawHostWorld} {cap 
 
 /-- `writeStdinStep` preserves `proj` and returns non-empty error messages on failure. -/
 theorem writeStdinStep_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (inFd : Nat) (stdin : ByteArray) (startMs : Nat) (to? : Option Nat) :
     ∀ pos prog fuel,
       PreservesProj proj (writeStdinStep cap.files cap.timeRand inFd stdin startMs to? pos prog fuel) ∧
@@ -230,7 +230,7 @@ def PipeStepInv (otherLen : Nat) (maxOut? : Option Nat) (r : PipeStepResult Nat)
 
 /-- `drainPipeStep` preserves `proj` and maintains `PipeStepInv`. -/
 theorem drainPipeStep_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (pipeFd otherLen startMs : Nat) (to? maxOut? : Option Nat) :
     ∀ chunks curLen iterBytes prog fuel,
       curLen = (chunks.toList.map ByteArray.size).sum →
@@ -382,7 +382,7 @@ theorem classify_streamResInv (program cwd : String) (to lim : Bool)
 
 /-- `closeBoxStreamState` preserves `proj`. -/
 theorem preservesProj_closeBoxStreamState {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (st : BoxStreamState Nat) :
     PreservesProj proj (closeBoxStreamState cap.files st) := by
   unfold closeBoxStreamState

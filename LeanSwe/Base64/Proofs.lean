@@ -1,6 +1,7 @@
 import Core.Obeys
 import LeanSwe.Base64.Interface
 import LeanSwe.Base64.Model
+import LeanSwe.Base64.Model.Obeys
 import LeanSwe.Base64.SpecTests
 import LeanSwe.Base64.Proofs.CodecEquiv
 import LeanSwe.Base64.Proofs.RoundTrip
@@ -206,7 +207,7 @@ theorem decodeWith_encodeWith_roundTrip
 
 /-- Standard `encode` / `decode` round-trip theorem for arbitrary `ByteArray`. -/
 theorem decode_encode_roundTrip (bs : ByteArray) :
-    decode (encode bs) = .ok bs :=
+    Base64.decode (Base64.encode bs) = .ok bs :=
   decodeWith_encodeWith_roundTrip defaultEncodeOptions defaultDecodeOptions bs rfl
     (Or.inr (Or.inl (by decide))) (Or.inl rfl)
 
@@ -401,9 +402,9 @@ theorem allPass_concreteVectorsAndErrors :
 
 /-- Full public `Interface` obedience of `LeanSwe.Base64` against `LeanSwe.Base64.Model`. -/
 theorem obeys_model :
-    Core.ObeysPureEq LeanSwe.Base64.encode Model.encodeDefaultModel ∧
+    Core.ObeysPureEq LeanSwe.Base64.encode Model.encode ∧
     Core.ObeysPureEq LeanSwe.Base64.encodeUrl Model.encodeUrlModel ∧
-    Core.ObeysPureEq2 LeanSwe.Base64.encodeWith Model.encodeModel ∧
+    Core.ObeysPureEq2 LeanSwe.Base64.encodeWith Model.encodeWithModel ∧
     Core.ObeysPure LeanSwe.Base64.decode Model.allowedDecode ∧
     Core.ObeysPure LeanSwe.Base64.decodeUrl Model.allowedDecodeUrl ∧
     Core.ObeysPure2 LeanSwe.Base64.decodeWith Model.allowedDecodeWith :=

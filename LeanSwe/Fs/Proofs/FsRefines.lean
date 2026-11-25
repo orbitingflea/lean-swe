@@ -9,7 +9,7 @@ open LeanSwe.Fs
 open LeanSwe.Fs.Model
 
 private theorem readText_step {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execFsStep (Internal.mkApiFromScopedRawM ops) (.readText path)).run s
     allowedFsStep (proj s) (.readText path) r.1 (proj r.2) := by
@@ -35,7 +35,7 @@ private theorem readText_step {W : Type} {proj : W → FsWorld} {ops : ScopedRaw
         exact ⟨tr, hTr, ⟨nonEmpty_append_left (by decide), by intro h; cases h⟩, Or.inl (readRegularTrace_nonEmpty hOut)⟩
 
 private theorem unlink_step {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) (missingOk : Bool) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execFsStep (Internal.mkApiFromScopedRawM ops) (.unlink path missingOk)).run s
     allowedFsStep (proj s) (.unlink path missingOk) r.1 (proj r.2) := by
@@ -76,7 +76,7 @@ private theorem unlink_step {W : Type} {proj : W → FsWorld} {ops : ScopedRawFs
           | error e => exact ⟨hOut2.1, fun h => hNe1 (List.append_eq_nil_iff.mp h).1⟩
 
 private theorem rmtree_step {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) (ignoreMissing : Bool) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execFsStep (Internal.mkApiFromScopedRawM ops) (.rmtree path ignoreMissing)).run s
     allowedFsStep (proj s) (.rmtree path ignoreMissing) r.1 (proj r.2) := by
@@ -117,7 +117,7 @@ private theorem rmtree_step {W : Type} {proj : W → FsWorld} {ops : ScopedRawFs
           | error e => exact ⟨hOut2, fun h => hNe1 (List.append_eq_nil_iff.mp h).1⟩
 
 private theorem copyTree_step {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (src dst : String) (dirsExistOk : Bool) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execFsStep (Internal.mkApiFromScopedRawM ops) (.copyTree src dst dirsExistOk)).run s
     allowedFsStep (proj s) (.copyTree src dst dirsExistOk) r.1 (proj r.2) := by
@@ -205,7 +205,7 @@ private theorem copyTree_step {W : Type} {proj : W → FsWorld} {ops : ScopedRaw
 
 /-- Compositional single-step refinement lifting `ScopedRawFsOpsM` to `Internal.mkApiFromScopedRawM` across all 32 effectful `FsApiM` operations. -/
 theorem refinesStepFromFinally_mkApiFromScopedRawM :
-    Core.RefinesStepFromFinally
+    Core.ObeysStepFromFinally
       (RawS := FsWorld) (PkgS := FsWorld)
       (RawOps := ScopedRawFsOpsM) (PkgApi := FsApiM)
       (RawReq := ScopedRawFsStepReq) (RawOut := ScopedRawFsStepOut)
@@ -384,7 +384,7 @@ theorem refinesStepFromFinally_mkApiFromScopedRawM :
 
 /-- End-to-end compositional single-step refinement lifting `LinuxSyscall.Files.healthyStep` (`HealthyFilesCapM`) through `SysBridge.mkRawFsOpsM` and `Internal.mkApiFromScopedRawM` to `Internal.mkApiFromHealthyFilesM`. -/
 theorem refinesStepFromFinally_mkApiFromHealthyFilesM :
-    Core.RefinesStepFromFinally
+    Core.ObeysStepFromFinally
       (RawS := FsWorld) (PkgS := FsWorld)
       (RawOps := HealthyFilesCapM) (PkgApi := FsApiM)
       (RawReq := FilesCapStepReq) (RawOut := FilesCapStepOut)

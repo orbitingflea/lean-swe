@@ -1,11 +1,22 @@
 import LeanSwe.CmdLine.Types
 import LeanSwe.CmdLine.Model
+import LeanSwe.CmdLine.Model.Obeys
 import LeanSwe.CmdLine.Impl
 import LeanSwe.CmdLine.SysBridge
 import LeanSwe.EnvVars.Interface
 import LeanSwe.LinuxSyscall.Files.Interface
 
 namespace LeanSwe.CmdLine
+
+namespace Internal
+
+/-- Build `CmdLineApiM m` over a `Model.CheckedCliOpsM m` capability bundle. -/
+def mkCheckedApiM {m : Type → Type} [Monad m] (ops : Model.CheckedCliOpsM m) : CmdLineApiM m :=
+  { Internal.mkApiM ops.cliOps with
+    promptLine := fun prompt default => SysBridge.promptLineChecked ops prompt default
+    confirm := fun prompt default maxAttempts => SysBridge.confirmChecked ops prompt default maxAttempts }
+
+end Internal
 
 /-- Default `CliOps` wired directly to unbuffered OS stdio descriptors `0`/`1`/`2` via
     `LeanSwe.LinuxSyscall.Files.defaultOps` (`dupStdio`/`read`/`write`/`close`) and `LeanSwe.EnvVars.getEnv`.
@@ -27,23 +38,13 @@ def defaultOps : CliOps :=
           message := err.message
           target := err.key }
 
-private def catchIoAsCmdLineError {α : Type} (act : IO (Except CmdLineError α)) :
-    IO (Except CmdLineError α) :=
-  BaseIO.toEIO (EIO.catchExceptions act fun err =>
-    let msg := err.toString
-    pure (.error { kind := .ioError, message := if msg.isEmpty then "stdio I/O error" else msg }))
-
 /-- Default `CmdLineApi` backed by `defaultOps` (unbuffered OS descriptors `0`/`1`/`2` via
     `LeanSwe.LinuxSyscall.Files.dupStdio`), catching `IO.Error` throws from `promptLine`/`confirm` into `.ioError`.
     Does not flush C/Lean `IO.FS.Stream` buffers or honor `IO.withStdin`/`IO.withStdout`/`IO.withStderr`; do not
     mix buffered `IO.getStdin` reads with `CmdLine` `stdin` reads (bytes read ahead by `IO.getStdin` are invisible
     to descriptor `0` and cannot be recovered by flushing). -/
 def defaultApi : CmdLineApi :=
-  { Internal.mkApiM defaultOps with
-    promptLine := fun prompt default =>
-      catchIoAsCmdLineError (Internal.promptLine defaultOps prompt default)
-    confirm := fun prompt default maxAttempts =>
-      catchIoAsCmdLineError (Internal.confirm defaultOps prompt default maxAttempts) }
+  Internal.mkCheckedApiM (SysBridge.mkCheckedCliOps defaultOps)
 
 /-- Return `true` iff `spec` satisfies `ValidSpec`. -/
 @[inline] def isValidSpec (spec : CommandSpec) : Bool :=

@@ -9,7 +9,7 @@ open LeanSwe.Fs.Model
 
 /-- Confined step refinement for `SubtreeOpReq.withFileLock`. -/
 theorem subtree_withFileLock_step {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootPath : String) (rel : RelPath) (mode : LockMode) (createIfMissing : Bool)
     (actRes : Except FsError Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execSubtreeStep (Internal.mkSubtreeOpenerFromHealthyFilesM cap) ⟨rootPath, .withFileLock rel mode createIfMissing actRes⟩).run s
@@ -133,7 +133,7 @@ theorem subtree_withFileLock_step {W : Type} {proj : W → FsWorld} {cap : Healt
 
 /-- Confined step refinement for `SubtreeOpReq.tryWithFileLock`. -/
 theorem subtree_tryWithFileLock_step {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootPath : String) (rel : RelPath) (mode : LockMode) (createIfMissing : Bool)
     (actRes : Except FsError Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (execSubtreeStep (Internal.mkSubtreeOpenerFromHealthyFilesM cap) ⟨rootPath, .tryWithFileLock rel mode createIfMissing actRes⟩).run s
@@ -287,7 +287,7 @@ theorem subtree_tryWithFileLock_step {W : Type} {proj : W → FsWorld} {cap : He
 
 /-- End-to-end descriptor-confined refinement of `Internal.mkSubtreeOpenerFromHealthyFilesM` against `allowedSubtreeStep` directly over `LinuxSyscall.Files.healthyStep`. -/
 theorem refinesStepFromFinally_mkSubtreeOpenerFromHealthyFilesM :
-    Core.RefinesStepFromFinally
+    Core.ObeysStepFromFinally
       (id : FsWorld → FsWorld)
       Model.fsWorldWf
       Model.execFilesCapStep

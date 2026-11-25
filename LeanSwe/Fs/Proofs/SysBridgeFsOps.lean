@@ -9,7 +9,7 @@ open LeanSwe.Fs.Model
 
 /-- Trace specification for `SysBridge.createFileNewPure`. -/
 theorem createFileNewPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (path : String) (bytes : ByteArray) (eintrFuel : Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.createFileNewPure cap.files path bytes eintrFuel).run s
     fsWorldWf (proj p.2) = true ∧
@@ -81,7 +81,7 @@ theorem createFileNewPure_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
 
 /-- Trace specification for `SysBridge.readDirPure`. -/
 theorem readDirPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (path : String) (eintrFuel streamFuel : Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.readDirPure cap.files path eintrFuel streamFuel).run s
     fsWorldWf (proj p.2) = true ∧
@@ -155,7 +155,7 @@ theorem readDirPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesC
 
 /-- Trace specification for `SysBridge.acquireLockPure`. -/
 theorem acquireLockPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (path : String) (mode : LockMode) (createIfMissing nonBlocking : Bool) (eintrFuel : Nat)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.acquireLockPure cap.files path mode createIfMissing nonBlocking eintrFuel).run s

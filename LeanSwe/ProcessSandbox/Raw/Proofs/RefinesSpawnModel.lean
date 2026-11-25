@@ -30,7 +30,7 @@ private theorem preserves_err_eq {W α β : Type} {proj : W → RawHostWorld} {Q
   exact hQ _ ((hMa w (by rw [hEq]; exact hWf)).trans hEq)
 
 private theorem preservesProj_allocCtrlSocketpair {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (nFwds eintrFuel : Nat) :
     PreservesProj proj (allocCtrlSocketpair cap.net nFwds eintrFuel) := by
   unfold allocCtrlSocketpair
@@ -41,7 +41,7 @@ private theorem preservesProj_allocCtrlSocketpair {W : Type} {proj : W → RawHo
   cases r <;> exact preservesProj_pure _
 
 private theorem preservesProj_setupSpawnCgroupLimits {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (cgDir : String) (limits : SandboxLimits) (eintrFuel : Nat) :
     PreservesProj proj (setupSpawnCgroupLimits cap.files cgDir limits eintrFuel) := by
   have hPids : PreservesProj proj
@@ -74,7 +74,7 @@ private theorem preservesProj_setupSpawnCgroupLimits {W : Type} {proj : W → Ra
       | error fe => rcases fe with ⟨_, _⟩; exact preservesProj_pure _
 
 private theorem preservesProj_recvPortListenerFds {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (ctrlR? : Option Nat) (statusR nFwds : Nat) :
     PreservesProj proj (recvPortListenerFds cap.files cap.net cap.poll ctrlR? statusR nFwds) := by
   unfold recvPortListenerFds
@@ -87,7 +87,7 @@ private theorem preservesProj_recvPortListenerFds {W : Type} {proj : W → RawHo
 
 /-- `spawnBoxPure` satisfies `allowedRawOpsStep` for `.spawnBox ph`. -/
 theorem spawnBoxPure_refines {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (eintrFuel : Nat) (ph : PlanHandle) (w : W) (hWf : rawHostWorldWf (proj w) = true) :
     let r := (spawnBoxPure (toHostSysDeps cap) (toHostTableOps cap) eintrFuel ph).run w
     allowedRawOpsStep (proj w) (.spawnBox ph) (.exceptBox r.1) (proj r.2) := by

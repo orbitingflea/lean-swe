@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.ProcessSandbox.Raw.Model.Refines
 import LeanSwe.ProcessSandbox.Raw.SysBridge
 import LeanSwe.ProcessSandbox.Raw.Proofs.HostCgroupPresetProofs
@@ -196,13 +196,13 @@ theorem forIn_array_preservesProj_inv {W α β : Type} {proj : W → RawHostWorl
 
 /-- Cap-step preservation extractor for `files.close`. -/
 theorem cap_files_close_preserves {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fd : Nat) :
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fd : Nat) :
     PreservesProj proj (cap.files.close fd) :=
   preservesProj_of_seqUnit _ fun w hWf => (hCap w (.filesClose fd) hWf).2
 
 /-- `Files.closeOpt` preserves `proj`. -/
 theorem preservesProj_closeOpt {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fd? : Option Nat) :
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fd? : Option Nat) :
     PreservesProj proj (Files.closeOpt cap.files fd?) := by
   cases fd? with
   | none => exact preservesProj_pure ()
@@ -212,7 +212,7 @@ theorem preservesProj_closeOpt {W : Type} {proj : W → RawHostWorld} {cap : Raw
 
 /-- `Files.setNonblockingOpt` preserves `proj`. -/
 theorem preservesProj_setNonblockingOpt {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fd? : Option Nat) :
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fd? : Option Nat) :
     PreservesProj proj (Files.setNonblockingOpt cap.files fd?) := by
   cases fd? with
   | none => exact preservesProj_pure ()
@@ -224,7 +224,7 @@ theorem preservesProj_setNonblockingOpt {W : Type} {proj : W → RawHostWorld} {
 
 /-- `closeFdArray` preserves `proj`. -/
 theorem preservesProj_closeFdArray {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fds : Array Nat) :
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (fds : Array Nat) :
     PreservesProj proj (closeFdArray cap.files fds) := by
   unfold closeFdArray
   exact (forIn_array_preservesProj_inv (fun _ => True) _ fds () trivial fun fd _ _ _ =>
@@ -233,7 +233,7 @@ theorem preservesProj_closeFdArray {W : Type} {proj : W → RawHostWorld} {cap :
 
 /-- `writeAllFd` preserves `proj`. -/
 theorem preservesProj_writeAllFd {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (h : Nat) (data : ByteArray) :
     ∀ off fuel, PreservesProj proj (writeAllFd cap.files h data off fuel)
   | off, 0 => by unfold writeAllFd; exact preservesProj_ite (preservesProj_pure _) (preservesProj_pure _)
@@ -250,7 +250,7 @@ theorem preservesProj_writeAllFd {W : Type} {proj : W → RawHostWorld} {cap : R
 
 /-- `writeTextFile` preserves `proj`. -/
 theorem preservesProj_writeTextFile {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (path text : String) (fuel : Nat) :
     PreservesProj proj (writeTextFile cap.files path text fuel) := by
   unfold writeTextFile
@@ -264,7 +264,7 @@ theorem preservesProj_writeTextFile {W : Type} {proj : W → RawHostWorld} {cap 
 
 /-- `readBoundedLoop` preserves `proj`. -/
 theorem preservesProj_readBoundedLoop {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (h : Nat) (maxBytes : Nat) :
     ∀ chunks total fuel, PreservesProj proj (readBoundedLoop cap.files h maxBytes chunks total fuel)
   | _, _, 0 => preservesProj_pure _
@@ -281,7 +281,7 @@ theorem preservesProj_readBoundedLoop {W : Type} {proj : W → RawHostWorld} {ca
 
 /-- `readSmallFile` preserves `proj`. -/
 theorem preservesProj_readSmallFile {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (path : String) (maxBytes fuel : Nat) :
     PreservesProj proj (readSmallFile cap.files path maxBytes fuel) := by
   unfold readSmallFile
@@ -295,7 +295,7 @@ theorem preservesProj_readSmallFile {W : Type} {proj : W → RawHostWorld} {cap 
 
 /-- `findDelegatedCgroupParent` preserves `proj`. -/
 theorem preservesProj_findDelegatedCgroupParent {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (fuel : Nat) :
     PreservesProj proj (findDelegatedCgroupParent cap.files fuel) := by
   unfold findDelegatedCgroupParent
@@ -312,7 +312,7 @@ theorem preservesProj_findDelegatedCgroupParent {W : Type} {proj : W → RawHost
 
 /-- `createSiblingCgroup` preserves `proj`. -/
 theorem preservesProj_createSiblingCgroup {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (pid : UInt32) (seq fuel : Nat) :
     PreservesProj proj (createSiblingCgroup cap.files pid seq fuel) := by
   unfold createSiblingCgroup
@@ -326,7 +326,7 @@ theorem preservesProj_createSiblingCgroup {W : Type} {proj : W → RawHostWorld}
 
 /-- `configureCgroupMemory` preserves `proj`. -/
 theorem preservesProj_configureCgroupMemory {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (cgDir memLimit : String) (fuel : Nat) :
     PreservesProj proj (configureCgroupMemory cap.files cgDir memLimit fuel) := by
   have hOom : PreservesProj proj ((do
@@ -352,7 +352,7 @@ theorem preservesProj_configureCgroupMemory {W : Type} {proj : W → RawHostWorl
 
 /-- `TimeRand.sleepMonoMs` preserves `proj`. -/
 theorem preservesProj_sleepMonoMs {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (ms : Nat) :
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) (ms : Nat) :
     PreservesProj proj (TimeRand.sleepMonoMs cap.timeRand ms) := by
   unfold TimeRand.sleepMonoMs
   exact preservesProj_bind
@@ -361,7 +361,7 @@ theorem preservesProj_sleepMonoMs {W : Type} {proj : W → RawHostWorld} {cap : 
 
 /-- `pollCgroupUnpopulated` preserves `proj`. -/
 theorem preservesProj_pollCgroupUnpopulated {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (eventsPath : String) (fuel : Nat) :
     ∀ steps, PreservesProj proj (pollCgroupUnpopulated cap.files cap.timeRand eventsPath fuel steps)
   | 0 => preservesProj_pure ()
@@ -383,7 +383,7 @@ theorem preservesProj_pollCgroupUnpopulated {W : Type} {proj : W → RawHostWorl
 
 /-- `retryRmdirCgroup` preserves `proj`. -/
 theorem preservesProj_retryRmdirCgroup {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (cgBytes : ByteArray) :
     ∀ steps, PreservesProj proj (retryRmdirCgroup cap.files cap.timeRand cgBytes steps)
   | 0 => by
@@ -405,7 +405,7 @@ theorem preservesProj_retryRmdirCgroup {W : Type} {proj : W → RawHostWorld} {c
 
 /-- `cleanupCgroupDir` preserves `proj`. -/
 theorem preservesProj_cleanupCgroupDir {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.RefinesStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
+    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
     (cgDir : String) (pSteps rSteps fuel : Nat) :
     PreservesProj proj (cleanupCgroupDir cap.files cap.timeRand cgDir pSteps rSteps fuel) := by
   unfold cleanupCgroupDir

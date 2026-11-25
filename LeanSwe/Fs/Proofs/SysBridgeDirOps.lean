@@ -33,7 +33,7 @@ theorem fsErrorKind_beq_iff_eq (a b : FsErrorKind) : (a == b) = true ↔ a = b :
 
 /-- Trace specification for `SysBridge.openDirPure`. -/
 theorem openDirPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (rootPath : String) (eintrFuel : Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.openDirPure cap.files rootPath eintrFuel).run s
     fsWorldWf (proj p.2) = true ∧
@@ -86,7 +86,7 @@ theorem openDirPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesC
 
 /-- Confined trace specification for `SysBridge.openDirAtPure`. -/
 theorem openDirAtPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (dirFd : HandleId) (name : EntryName) (held : List HandleId) (eintrFuel : Nat)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.openDirAtPure cap.files dirFd name eintrFuel).run s
@@ -175,7 +175,7 @@ theorem openDirAtPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFile
 
 /-- Confined trace specification for `SysBridge.readDirAtPure`. -/
 theorem readDirAtPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (dirFd : HandleId) (held : List HandleId) (eintrFuel streamFuel : Nat)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.readDirAtPure cap.files dirFd eintrFuel streamFuel).run s
@@ -312,7 +312,7 @@ theorem readDirAtPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFile
 
 /-- Confined trace specification for `SysBridge.readRegularAtPure`. -/
 theorem readRegularAtPure_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (dirFd : HandleId) (name : EntryName) (held : List HandleId) (eintrFuel streamFuel : Nat)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.readRegularAtPure cap.files dirFd name eintrFuel streamFuel).run s

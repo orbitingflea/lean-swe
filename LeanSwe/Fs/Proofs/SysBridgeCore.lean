@@ -203,9 +203,9 @@ theorem renderAbsRev_isAbsolute (rev : List String) :
   · simp only [↓reduceIte]
     rfl
 
-/-- Helper to unpack any single `FilesOpsM` method call from `Core.RefinesStep` over `HealthyFilesCapM`. -/
+/-- Helper to unpack any single `FilesOpsM` method call from `Core.ObeysStep` over `HealthyFilesCapM`. -/
 theorem cap_method_step {W α : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (req : FilesReq) (act : StateM W (Except Errno α)) (toOut : Except Errno α → FilesOutcome)
     (hExec : execFilesReq cap.files req = toOut <$> act)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
@@ -219,7 +219,7 @@ theorem cap_method_step {W α : Type} {proj : W → FsWorld} {cap : HealthyFiles
 
 /-- `SysBridge.closeQuiet` always executes `.close h`, popping `h` from `h :: held`, and stays confined. -/
 theorem closeQuiet_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (h : HandleId) (held : List HandleId) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.closeQuiet cap.files h).run s
     fsWorldWf (proj p.2) = true ∧
@@ -242,7 +242,7 @@ theorem closeQuiet_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCa
 
 /-- `SysBridge.closeCheck` always executes `.close h`, popping `h` from `h :: held`, and yields `nonLockErrOk` on error. -/
 theorem closeCheck_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (h : HandleId) (path? : Option String) (held : List HandleId) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.closeCheck cap.files h path?).run s
     fsWorldWf (proj p.2) = true ∧
@@ -281,7 +281,7 @@ theorem closeCheck_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCa
 
 /-- Trace specification for `SysBridge.readAllChunksLoop`: reads exact `readBytesOn h trRead` to 0-byte EOF and always closes `h`. -/
 theorem readAllChunksLoop_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (h : HandleId) (path : String) (held : List HandleId)
     (chunks : Array ByteArray) (total fuel : Nat) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.readAllChunksLoop cap.files h path chunks total fuel).run s
@@ -403,7 +403,7 @@ theorem readAllChunksLoop_trace {W : Type} {proj : W → FsWorld} {cap : Healthy
 
 /-- Trace specification for `SysBridge.readRegularFd`: validates `.reg` via `fstat`, clears `O_NONBLOCK`, reads exact payload to EOF, and closes `h`. -/
 theorem readRegularFd_trace {W : Type} {proj : W → FsWorld} {cap : HealthyFilesCapM (StateM W)}
-    (hCap : Core.RefinesStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
+    (hCap : Core.ObeysStep proj Model.fsWorldWf (Model.execFilesCapStep cap) Model.allowedFilesCapStep)
     (h : HandleId) (path : String) (held : List HandleId) (streamFuel : Nat)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let p := (SysBridge.readRegularFd cap.files h path streamFuel).run s

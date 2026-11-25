@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.ProcessSandbox.Raw.Interface
 import LeanSwe.ProcessSandbox.Raw.Model.Refines
 import LeanSwe.ProcessSandbox.Raw.Proofs.EncodePlan
@@ -10,12 +10,12 @@ open LeanSwe.ProcessSandbox.Raw.Model
 
 /-- `Raw.mapRawError` equals `Model.Internal.mapRawError` everywhere. -/
 theorem refinesPure_mapRawError :
-    Core.RefinesPureEq LeanSwe.ProcessSandbox.Raw.mapRawError Model.Internal.mapRawError :=
+    Core.ObeysPureEq LeanSwe.ProcessSandbox.Raw.mapRawError Model.Internal.mapRawError :=
   fun _ => rfl
 
 /-- `Raw.decodeHostAuditArch` equals `Model.decodeHostAuditArch` everywhere. -/
 theorem refinesPure_decodeHostAuditArch :
-    Core.RefinesPureEq LeanSwe.ProcessSandbox.Raw.decodeHostAuditArch Model.decodeHostAuditArch :=
+    Core.ObeysPureEq LeanSwe.ProcessSandbox.Raw.decodeHostAuditArch Model.decodeHostAuditArch :=
   fun _ => rfl
 
 private theorem pushStr_ok_iff (ba : ByteArray) (s : String) :
@@ -232,7 +232,7 @@ private theorem getElem!_of_extract_eq {a tgt : ByteArray} {b e i : Nat}
 
 /-- `Raw.encodePlan` refines `Model.allowedEncodePlan` across all plans and seccomp byte payloads. -/
 theorem refinesPure_encodePlan :
-    Core.RefinesPure2 LeanSwe.ProcessSandbox.Raw.encodePlan Model.allowedEncodePlan := by
+    Core.ObeysPure2 LeanSwe.ProcessSandbox.Raw.encodePlan Model.allowedEncodePlan := by
   intro plan seccompBytes
   have hinv := encodePlan_inv plan seccompBytes
   have hEq : LeanSwe.ProcessSandbox.Raw.encodePlan plan seccompBytes = Internal.encodePlan plan seccompBytes := rfl

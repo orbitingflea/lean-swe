@@ -24,49 +24,49 @@ private theorem ne_empty_of_isEmpty_false {s : String} (h : (!s.isEmpty) = true)
   intro he; rw [he] at h; contradiction
 /-- `test_cmdline_validSpec_rejectsFlagCollisions` holds universally for `defaultApi`. -/
 theorem allPass_validSpec_rejectsFlagCollisions : AllPass (test_cmdline_validSpec_rejectsFlagCollisions defaultApi) := by
-  dsimp only [AllPass, AllPassRun, test_cmdline_validSpec_rejectsFlagCollisions, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkApiM]
+  dsimp only [AllPass, AllPassRun, test_cmdline_validSpec_rejectsFlagCollisions, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkCheckedApiM, Internal.mkApiM]
   simp only [Shared.isValidSpecTR_eq]; cbv
 /-- `test_cmdline_validSpec_rejectsFlagCollisions` is reachable. -/
 theorem canReach_validSpec_rejectsFlagCollisions : CanReach (test_cmdline_validSpec_rejectsFlagCollisions defaultApi) := allPass_validSpec_rejectsFlagCollisions
 /-- `test_cmdline_validSpec_rejectsStructuralAndEnvErrors` holds universally for `defaultApi`. -/
 theorem allPass_validSpec_rejectsStructuralAndEnvErrors : AllPass (test_cmdline_validSpec_rejectsStructuralAndEnvErrors defaultApi) := by
-  dsimp only [AllPass, AllPassRun, test_cmdline_validSpec_rejectsStructuralAndEnvErrors, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkApiM]
+  dsimp only [AllPass, AllPassRun, test_cmdline_validSpec_rejectsStructuralAndEnvErrors, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkCheckedApiM, Internal.mkApiM]
   simp only [Shared.isValidSpecTR_eq]; cbv
 /-- `test_cmdline_validSpec_rejectsStructuralAndEnvErrors` is reachable. -/
 theorem canReach_validSpec_rejectsStructuralAndEnvErrors : CanReach (test_cmdline_validSpec_rejectsStructuralAndEnvErrors defaultApi) := allPass_validSpec_rejectsStructuralAndEnvErrors
 /-- `test_cmdline_validSpec_shortOptOutAndParseRejectsInvalid` holds universally for `defaultApi`. -/
 theorem allPass_validSpec_shortOptOutAndParseRejectsInvalid : AllPass (test_cmdline_validSpec_shortOptOutAndParseRejectsInvalid defaultApi) := by
-  dsimp only [AllPass, AllPassRun, test_cmdline_validSpec_shortOptOutAndParseRejectsInvalid, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkApiM, Internal.parse, Internal.parseWith]
+  dsimp only [AllPass, AllPassRun, test_cmdline_validSpec_shortOptOutAndParseRejectsInvalid, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkCheckedApiM, Internal.mkApiM, Internal.parse, Internal.parseWith]
   simp only [Shared.parseWithEnvM_eq_spec, Internal.parseWithEnvSpecM, Shared.isValidSpecTR_eq]; cbv
 /-- `test_cmdline_validSpec_shortOptOutAndParseRejectsInvalid` is reachable. -/
 theorem canReach_validSpec_shortOptOutAndParseRejectsInvalid : CanReach (test_cmdline_validSpec_shortOptOutAndParseRejectsInvalid defaultApi) := allPass_validSpec_shortOptOutAndParseRejectsInvalid
 /-- `test_cmdline_parse_shortBundlesAndValues` holds universally for `defaultApi`. -/
 theorem allPass_parse_shortBundlesAndValues : AllPass (test_cmdline_parse_shortBundlesAndValues defaultApi) := by
-  dsimp only [AllPass, AllPassRun, test_cmdline_parse_shortBundlesAndValues, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkApiM, Internal.parse, Internal.parseWith]
+  dsimp only [AllPass, AllPassRun, test_cmdline_parse_shortBundlesAndValues, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkCheckedApiM, Internal.mkApiM, Internal.parse, Internal.parseWith]
   simp only [Shared.parseWithEnvM_eq_spec, Internal.parseWithEnvSpecM, Shared.isValidSpecTR_eq]; cbv
 /-- `test_cmdline_parse_shortBundlesAndValues` is reachable. -/
 theorem canReach_parse_shortBundlesAndValues : CanReach (test_cmdline_parse_shortBundlesAndValues defaultApi) := allPass_parse_shortBundlesAndValues
 /-- `test_cmdline_parse_shortLeftToRightHelpPrecedence` holds universally for `defaultApi`. -/
 theorem allPass_parse_shortLeftToRightHelpPrecedence : AllPass (test_cmdline_parse_shortLeftToRightHelpPrecedence defaultApi) := by
-  dsimp only [AllPass, AllPassRun, test_cmdline_parse_shortLeftToRightHelpPrecedence, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkApiM, Internal.parse, Internal.parseWith]
+  dsimp only [AllPass, AllPassRun, test_cmdline_parse_shortLeftToRightHelpPrecedence, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkCheckedApiM, Internal.mkApiM, Internal.parse, Internal.parseWith]
   simp only [Shared.parseWithEnvM_eq_spec, Internal.parseWithEnvSpecM, Shared.isValidSpecTR_eq]; cbv
 /-- `test_cmdline_parse_shortLeftToRightHelpPrecedence` is reachable. -/
 theorem canReach_parse_shortLeftToRightHelpPrecedence : CanReach (test_cmdline_parse_shortLeftToRightHelpPrecedence defaultApi) := allPass_parse_shortLeftToRightHelpPrecedence
 /-- `test_cmdline_parse_duplicatesNegationAndSpaceBool` holds universally for `defaultApi`. -/
 theorem allPass_parse_duplicatesNegationAndSpaceBool : AllPass (test_cmdline_parse_duplicatesNegationAndSpaceBool defaultApi) := by
-  dsimp only [AllPass, AllPassRun, test_cmdline_parse_duplicatesNegationAndSpaceBool, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkApiM, Internal.parse, Internal.parseWith]
+  dsimp only [AllPass, AllPassRun, test_cmdline_parse_duplicatesNegationAndSpaceBool, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkCheckedApiM, Internal.mkApiM, Internal.parse, Internal.parseWith]
   simp only [Shared.parseWithEnvM_eq_spec, Internal.parseWithEnvSpecM, Shared.isValidSpecTR_eq]; cbv
 /-- `test_cmdline_parse_duplicatesNegationAndSpaceBool` is reachable. -/
 theorem canReach_parse_duplicatesNegationAndSpaceBool : CanReach (test_cmdline_parse_duplicatesNegationAndSpaceBool defaultApi) := allPass_parse_duplicatesNegationAndSpaceBool
 /-- `test_cmdline_parse_negativeNumbersAndDashDash` holds universally for `defaultApi`. -/
 theorem allPass_parse_negativeNumbersAndDashDash : AllPass (test_cmdline_parse_negativeNumbersAndDashDash defaultApi) := by
-  dsimp only [AllPass, AllPassRun, test_cmdline_parse_negativeNumbersAndDashDash, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkApiM, Internal.parse, Internal.parseWith]
+  dsimp only [AllPass, AllPassRun, test_cmdline_parse_negativeNumbersAndDashDash, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkCheckedApiM, Internal.mkApiM, Internal.parse, Internal.parseWith]
   simp only [Shared.parseWithEnvM_eq_spec, Internal.parseWithEnvSpecM, Shared.isValidSpecTR_eq]; cbv; decide
 /-- `test_cmdline_parse_negativeNumbersAndDashDash` is reachable. -/
 theorem canReach_parse_negativeNumbersAndDashDash : CanReach (test_cmdline_parse_negativeNumbersAndDashDash defaultApi) := allPass_parse_negativeNumbersAndDashDash
 /-- `test_cmdline_parse_subcommandsAndInheritedGlobals` holds universally for `defaultApi`. -/
 theorem allPass_parse_subcommandsAndInheritedGlobals : AllPass (test_cmdline_parse_subcommandsAndInheritedGlobals defaultApi) := by
-  dsimp only [AllPass, AllPassRun, test_cmdline_parse_subcommandsAndInheritedGlobals, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkApiM, Internal.parse, Internal.parseWith]
+  dsimp only [AllPass, AllPassRun, test_cmdline_parse_subcommandsAndInheritedGlobals, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkCheckedApiM, Internal.mkApiM, Internal.parse, Internal.parseWith]
   simp only [Shared.parseWithEnvM_eq_spec, Internal.parseWithEnvSpecM, Shared.isValidSpecTR_eq]; cbv
 /-- `test_cmdline_parse_subcommandsAndInheritedGlobals` is reachable. -/
 theorem canReach_parse_subcommandsAndInheritedGlobals : CanReach (test_cmdline_parse_subcommandsAndInheritedGlobals defaultApi) := allPass_parse_subcommandsAndInheritedGlobals
@@ -87,7 +87,7 @@ theorem allPass_parse_typoSuggestions : AllPass (test_cmdline_parse_typoSuggesti
 theorem canReach_parse_typoSuggestions : CanReach (test_cmdline_parse_typoSuggestions defaultApi) := allPass_parse_typoSuggestions
 /-- `test_cmdline_parseWith_customValidatorAndDecoder` holds universally for `defaultApi`. -/
 theorem allPass_parseWith_customValidatorAndDecoder : AllPass (test_cmdline_parseWith_customValidatorAndDecoder defaultApi) := by
-  dsimp only [AllPass, AllPassRun, test_cmdline_parseWith_customValidatorAndDecoder, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkApiM, Internal.parseWith]
+  dsimp only [AllPass, AllPassRun, test_cmdline_parseWith_customValidatorAndDecoder, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkCheckedApiM, Internal.mkApiM, Internal.parseWith]
   simp only [Shared.parseWithEnvM_eq_spec, Internal.parseWithEnvSpecM, Shared.isValidSpecTR_eq]; cbv
 /-- `test_cmdline_parseWith_customValidatorAndDecoder` is reachable. -/
 theorem canReach_parseWith_customValidatorAndDecoder : CanReach (test_cmdline_parseWith_customValidatorAndDecoder defaultApi) := allPass_parseWith_customValidatorAndDecoder
@@ -99,7 +99,7 @@ theorem allPass_env_precedenceAndErrorPropagation : AllPass (test_cmdline_env_pr
 theorem canReach_env_precedenceAndErrorPropagation : CanReach (test_cmdline_env_precedenceAndErrorPropagation Internal.mkApiM) := allPass_env_precedenceAndErrorPropagation
 /-- `test_cmdline_renderArgs_roundTripEdgeCases` holds universally for `defaultApi`. -/
 theorem allPass_renderArgs_roundTripEdgeCases : AllPass (test_cmdline_renderArgs_roundTripEdgeCases defaultApi) := by
-  dsimp only [AllPass, AllPassRun, test_cmdline_renderArgs_roundTripEdgeCases, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkApiM, Internal.parse, Internal.parseWith]
+  dsimp only [AllPass, AllPassRun, test_cmdline_renderArgs_roundTripEdgeCases, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkCheckedApiM, Internal.mkApiM, Internal.parse, Internal.parseWith]
   simp only [Shared.parseWithEnvM_eq_spec, Internal.parseWithEnvSpecM, Shared.isValidSpecTR_eq, Shared.renderArgsTR_eq]; cbv
 /-- `test_cmdline_renderArgs_roundTripEdgeCases` is reachable. -/
 theorem canReach_renderArgs_roundTripEdgeCases : CanReach (test_cmdline_renderArgs_roundTripEdgeCases defaultApi) := allPass_renderArgs_roundTripEdgeCases
@@ -138,7 +138,7 @@ theorem allPass_parse_helpAndVersionRouting : AllPass (test_cmdline_parse_helpAn
   dsimp only [AllPass, AllPassRun, test_cmdline_parse_helpAndVersionRouting, Bind.bind, Pure.pure, NondetTest.assert]
   rcases parse_err_of_pred toolHvSpec ["--help", "--badopt"] (fun e => decide (e.kind = .helpRequested) && !e.message.isEmpty) (by cbv) with ⟨e4, he4, hp4⟩
   dsimp only [toolHvSpec] at he4; simp only [decide_eq_true_eq, Bool.and_eq_true] at hp4
-  simp only [defaultApi, Internal.mkApiM, Internal.parse, Internal.parseWith, Shared.parseWithEnvM_eq_spec, Internal.parseWithEnvSpecM, Shared.isValidSpecTR_eq] at he4 ⊢
+  simp only [defaultApi, Internal.mkCheckedApiM, Internal.mkApiM, Internal.parse, Internal.parseWith, Shared.parseWithEnvM_eq_spec, Internal.parseWithEnvSpecM, Shared.isValidSpecTR_eq] at he4 ⊢
   have h1 : Model.isValidSpec { name := "app" } = true := by decide
   have h2 : Model.isValidSpec toolHvSpec = true := by decide
   dsimp only [toolHvSpec] at h2
@@ -148,7 +148,7 @@ theorem allPass_parse_helpAndVersionRouting : AllPass (test_cmdline_parse_helpAn
 theorem canReach_parse_helpAndVersionRouting : CanReach (test_cmdline_parse_helpAndVersionRouting defaultApi) := allPass_parse_helpAndVersionRouting
 /-- `test_cmdline_parse_positionalArgsAndErrors` holds universally for `defaultApi`. -/
 theorem allPass_parse_positionalArgsAndErrors : AllPass (test_cmdline_parse_positionalArgsAndErrors defaultApi) := by
-  dsimp only [AllPass, AllPassRun, test_cmdline_parse_positionalArgsAndErrors, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkApiM, Internal.parse, Internal.parseWith]
+  dsimp only [AllPass, AllPassRun, test_cmdline_parse_positionalArgsAndErrors, Bind.bind, Pure.pure, NondetTest.assert, defaultApi, Internal.mkCheckedApiM, Internal.mkApiM, Internal.parse, Internal.parseWith]
   simp only [Shared.parseWithEnvM_eq_spec, Internal.parseWithEnvSpecM, Shared.isValidSpecTR_eq]; cbv
 /-- `test_cmdline_parse_positionalArgsAndErrors` is reachable. -/
 theorem canReach_parse_positionalArgsAndErrors : CanReach (test_cmdline_parse_positionalArgsAndErrors defaultApi) := allPass_parse_positionalArgsAndErrors

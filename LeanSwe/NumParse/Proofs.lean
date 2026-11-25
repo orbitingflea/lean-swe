@@ -1,4 +1,5 @@
 import Core.Obeys
+import LeanSwe.NumParse.Model.Obeys
 import LeanSwe.NumParse.Proofs.IntProofs
 import LeanSwe.NumParse.Proofs.FloatExpProofs
 import LeanSwe.NumParse.Proofs.FloatParseProofs
@@ -81,7 +82,7 @@ theorem obeys_model :
     Core.ObeysPure LeanSwe.NumParse.parseInt64 Model.allowedParseInt64 ∧
     Core.ObeysPure LeanSwe.NumParse.formatInt Model.allowedFormatInt ∧
     Core.ObeysPure LeanSwe.NumParse.parseFloat Model.allowedParseFloat ∧
-    Core.ObeysPure LeanSwe.NumParse.formatFloat Model.FloatFormatSpec :=
+    Core.ObeysPure LeanSwe.NumParse.formatFloat Model.allowedFormatFloat :=
   ⟨parseInt_spec,
    parseInt64_spec,
    parseIntModel_formatInt,

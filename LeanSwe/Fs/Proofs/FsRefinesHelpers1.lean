@@ -79,7 +79,7 @@ theorem toFileStat_kind_symlink_beq (rawSt : StatInfo) : ((toFileStat rawSt).kin
 
 /-- Unpack `stat` from `RefinesStep` on `ScopedRawFsOpsM`. -/
 theorem scoped_stat {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (follow : Bool) (path : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (ops.stat follow path).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
@@ -94,7 +94,7 @@ theorem scoped_stat {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (St
 
 /-- Unpack `readDir` from `RefinesStep` on `ScopedRawFsOpsM`. -/
 theorem scoped_readDir {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (ops.readDir path).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
@@ -107,7 +107,7 @@ theorem scoped_readDir {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM 
 
 /-- Unpack `createDir` from `RefinesStep` on `ScopedRawFsOpsM`. -/
 theorem scoped_createDir {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (ops.createDir path).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
@@ -120,7 +120,7 @@ theorem scoped_createDir {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOps
 
 /-- Unpack `removeDir` from `RefinesStep` on `ScopedRawFsOpsM`. -/
 theorem scoped_removeDir {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (ops.removeDir path).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
@@ -133,7 +133,7 @@ theorem scoped_removeDir {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOps
 
 /-- Unpack `unlinkFile` from `RefinesStep` on `ScopedRawFsOpsM`. -/
 theorem scoped_unlinkFile {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (ops.unlinkFile path).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
@@ -146,7 +146,7 @@ theorem scoped_unlinkFile {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOp
 
 /-- Unpack `readBytes` from `RefinesStep` on `ScopedRawFsOpsM`. -/
 theorem scoped_readBytes {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (ops.readBytes path).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
@@ -159,7 +159,7 @@ theorem scoped_readBytes {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOps
 
 /-- Unpack `writeBytes` from `RefinesStep` on `ScopedRawFsOpsM`. -/
 theorem scoped_writeBytes {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) (data : ByteArray) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (ops.writeBytes path data).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
@@ -172,7 +172,7 @@ theorem scoped_writeBytes {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOp
 
 /-- Unpack `createFileNew` from `RefinesStep` on `ScopedRawFsOpsM`. -/
 theorem scoped_createFileNew {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) (data : ByteArray) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (ops.createFileNew path data).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
@@ -185,7 +185,7 @@ theorem scoped_createFileNew {W : Type} {proj : W → FsWorld} {ops : ScopedRawF
 
 /-- Unpack `appendText` from `RefinesStep` on `ScopedRawFsOpsM`. -/
 theorem scoped_appendText {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path content : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (ops.appendText path content).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
@@ -198,7 +198,7 @@ theorem scoped_appendText {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOp
 
 /-- Unpack `rename` from `RefinesStep` on `ScopedRawFsOpsM`. -/
 theorem scoped_rename {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (src dst : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (ops.rename src dst).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
@@ -211,7 +211,7 @@ theorem scoped_rename {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (
 
 /-- Unpack `realPath` from `RefinesStep` on `ScopedRawFsOpsM`. -/
 theorem scoped_realPath {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (ops.realPath path).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
@@ -224,7 +224,7 @@ theorem scoped_realPath {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM
 
 /-- Unpack `cwd` from `RefinesStep` on `ScopedRawFsOpsM`. -/
 theorem scoped_cwd {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := ops.cwd.run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
@@ -237,7 +237,7 @@ theorem scoped_cwd {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (Sta
 
 /-- Unpack `monotonicNonce` from `RefinesStep` on `ScopedRawFsOpsM`. -/
 theorem scoped_monotonicNonce {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := ops.monotonicNonce.run s
     FsWorldTrace (proj s) [] (proj r.2) ∧ (proj r.2).env = (proj s).env ∧
@@ -248,7 +248,7 @@ theorem scoped_monotonicNonce {W : Type} {proj : W → FsWorld} {ops : ScopedRaw
 
 /-- Trace specification for `Internal.listDirSortedM`. -/
 theorem listDirSortedM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (Internal.listDirSortedM ops.toNonLockFsOpsM path).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧ (proj r.2).tempSeq = (proj s).tempSeq ∧
@@ -280,7 +280,7 @@ theorem listDirSortedM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawF
 
 /-- Trace specification for `Internal.ensureDirM`. -/
 theorem ensureDirM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (anc : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (Internal.ensureDirM ops.toNonLockFsOpsM anc).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧
@@ -336,7 +336,7 @@ theorem ensureDirM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOps
 
 /-- Trace specification for `Internal.ensureAncestorsM`. -/
 theorem ensureAncestorsM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (ancs : List String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (Internal.ensureAncestorsM ops.toNonLockFsOpsM ancs).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧
@@ -372,7 +372,7 @@ theorem ensureAncestorsM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRa
 
 /-- Trace specification for `Internal.createDirExistOkM`. -/
 theorem createDirExistOkM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (Internal.createDirExistOkM ops.toNonLockFsOpsM path).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧
@@ -412,7 +412,7 @@ theorem createDirExistOkM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedR
 
 /-- Trace specification for `Internal.mkdirImplM`. -/
 theorem mkdirImplM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (StateM W)}
-    (hOps : Core.RefinesStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
+    (hOps : Core.ObeysStep proj fsWorldWf (execScopedRawFsStep ops) allowedScopedRawFsStep)
     (path : String) (parents existOk : Bool) {s : W} (hWf : fsWorldWf (proj s) = true) :
     let r := (Internal.mkdirImplM ops.toNonLockFsOpsM path parents existOk).run s
     ∃ tr, FsWorldTrace (proj s) tr (proj r.2) ∧

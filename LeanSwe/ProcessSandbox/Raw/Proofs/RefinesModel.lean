@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.ProcessSandbox.Raw.Interface
 import LeanSwe.ProcessSandbox.Raw.Proofs.RefinesPreflightSealModel
 import LeanSwe.ProcessSandbox.Raw.Proofs.RefinesSpawnModel
@@ -34,7 +34,7 @@ private theorem preserves_err_eq {W α β : Type} {proj : W → RawHostWorld} {Q
 
 /-- Main single-step behavioral refinement theorem for `Internal.mkOpsFromHostCapM` across all 13 effectful `RawProcessSandboxOpsM` operations. -/
 theorem refinesStepFrom_mkOpsFromHostCapM :
-    Core.RefinesStepFrom id Model.rawHostWorldWf Model.execRawCapStep Model.allowedRawCapStep
+    Core.ObeysStepFrom id Model.rawHostWorldWf Model.execRawCapStep Model.allowedRawCapStep
       Model.rawHostWorldWf Internal.mkOpsFromHostCapM Model.execRawOpsStep Model.allowedRawOpsStep := by
   intro W proj cap hCap w req hWf
   dsimp only [Function.comp, id] at hCap hWf ⊢
@@ -525,7 +525,7 @@ def modelRawHostCap (isLinux : Bool) (target : String) : RawHostCapM (StateM Raw
 
 /-- Non-vacuity witness: `modelRawHostCap` satisfies `allowedRawCapStep` for every platform `(isLinux, target)`. -/
 theorem modelRawHostCap_refines_allowedRawCapStep (isLinux : Bool) (target : String) :
-    Core.RefinesStep (fun t : RawTableState => ({ isLinux := isLinux, target := target, table := t } : RawHostWorld))
+    Core.ObeysStep (fun t : RawTableState => ({ isLinux := isLinux, target := target, table := t } : RawHostWorld))
       rawHostWorldWf (execRawCapStep (modelRawHostCap isLinux target)) allowedRawCapStep := by
   intro t req _
   cases req <;> exact ⟨rfl, rfl⟩
