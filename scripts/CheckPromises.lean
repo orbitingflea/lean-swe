@@ -2136,6 +2136,35 @@ private def connectProxyRequiredModules : Array Name := #[
   `LeanSwe.ConnectProxy.Impl,
   `LeanSwe.ConnectProxy.Interface,
   `LeanSwe.ConnectProxy.SpecTests,
+  `LeanSwe.ConnectProxy.Proofs.IpPolicyProofs,
+  `LeanSwe.ConnectProxy.Proofs.HostNormProofs,
+  `LeanSwe.ConnectProxy.Proofs.ParserAndModelProofs,
+  `LeanSwe.ConnectProxy.Proofs.Lifecycle,
+  `LeanSwe.ConnectProxy.Proofs.HealthyWitnessBase,
+  `LeanSwe.ConnectProxy.Proofs.HealthyWitnessNetConn,
+  `LeanSwe.ConnectProxy.Proofs.HealthyWitnessNetSend,
+  `LeanSwe.ConnectProxy.Proofs.HealthyWitnessNetOps,
+  `LeanSwe.ConnectProxy.Proofs.HealthyWitnessPollDns,
+  `LeanSwe.ConnectProxy.Proofs.HealthyWitness,
+  `LeanSwe.ConnectProxy.Proofs.RingBufHelpers,
+  `LeanSwe.ConnectProxy.Proofs.SysBridgeCoreBase,
+  `LeanSwe.ConnectProxy.Proofs.SysBridgeCoreRelay,
+  `LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs,
+  `LeanSwe.ConnectProxy.Proofs.SysBridgeHandshake,
+  `LeanSwe.ConnectProxy.Proofs.SysBridgeTeardown,
+  `LeanSwe.ConnectProxy.Proofs.SysBridgeListener,
+  `LeanSwe.ConnectProxy.Proofs.SysBridgeProofs,
+  `LeanSwe.ConnectProxy.Proofs.LoopPreservesWf,
+  `LeanSwe.ConnectProxy.Proofs.LoopRelayLaws,
+  `LeanSwe.ConnectProxy.Proofs.LoopSlotLaws,
+  `LeanSwe.ConnectProxy.Proofs.LoopHandshakeWf,
+  `LeanSwe.ConnectProxy.Proofs.LoopAndRelayProofs,
+  `LeanSwe.ConnectProxy.Proofs.HealthySpecProofs,
+  `LeanSwe.ConnectProxy.Proofs.FullObeysHelpers,
+  `LeanSwe.ConnectProxy.Proofs.FullObeysLoop,
+  `LeanSwe.ConnectProxy.Proofs.FullObeysDriver,
+  `LeanSwe.ConnectProxy.Proofs.FullObeysWitness,
+  `LeanSwe.ConnectProxy.Proofs.FullObeys,
   `LeanSwe.ConnectProxy.Proofs
 ]
 
@@ -2957,10 +2986,6 @@ private def auditImportDagEnv
 `LeanSwe/LinuxSyscall/Net/Model/State.lean`). Every entry must stay active; removing a listed
 violation forces removing its entry from this table, and any new violation fails the audit gate. -/
 private def importDagAllowlist : Array String := #[
-  "CROSS|LeanSwe.ConnectProxy.Proofs.HealthyWitness|LeanSwe.LinuxSyscall.Dns.Proofs",
-  "CROSS|LeanSwe.ConnectProxy.Proofs.HealthyWitness|LeanSwe.LinuxSyscall.TimeRand.Proofs",
-  "CROSS|LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs|LeanSwe.LinuxSyscall.Net.Proofs.HealthyStep",
-  "CROSS|LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs|LeanSwe.NetRelay.Proofs",
   "CROSS|LeanSwe.Toml.Proofs|LeanSwe.NumParse.Proofs"
 ]
 
