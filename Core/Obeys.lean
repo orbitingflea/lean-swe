@@ -87,6 +87,27 @@ def ObeysInverseRender {Obj Tape Raw Err : Type}
     (wf : Obj → Prop) (equiv : Obj → Obj → Prop) (msgOf : Err → String) : Prop :=
   ObeysPure parse (InverseRenderSpec render wf equiv msgOf)
 
+/-- Resource-bounded inverse-renderer relational spec for parsers returning `Except Err Obj`:
+    `.ok out` requires `wf out`, a pure-grammar witness tape rendering `out` to `raw`, and
+    uniqueness up to `equiv` across all tapes; `.error e` requires non-empty `msgOf e` and that
+    any `(a, t)` rendering to `raw` exceeds `withinLimits t`. -/
+def InverseRenderWithinSpec {Obj Tape Raw Err : Type}
+    (render : Obj → Tape → Option Raw) (withinLimits : Tape → Prop)
+    (wf : Obj → Prop) (equiv : Obj → Obj → Prop)
+    (msgOf : Err → String) (raw : Raw) (res : Except Err Obj) : Prop :=
+  match res with
+  | .ok out =>
+    wf out ∧ (∃ tape, render out tape = some raw) ∧ ∀ a t, render a t = some raw → equiv a out
+  | .error e =>
+    !(msgOf e).isEmpty ∧ ∀ a t, render a t = some raw → ¬ withinLimits t
+
+/-- Pure parser refinement stating that `parse` obeys `InverseRenderWithinSpec` on every input `raw`. -/
+def ObeysInverseRenderWithin {Obj Tape Raw Err : Type}
+    (parse : Raw → Except Err Obj) (render : Obj → Tape → Option Raw)
+    (withinLimits : Tape → Prop) (wf : Obj → Prop) (equiv : Obj → Obj → Prop)
+    (msgOf : Err → String) : Prop :=
+  ObeysPure parse (InverseRenderWithinSpec render withinLimits wf equiv msgOf)
+
 /-- Single-step stateful refinement relating `StateM W Out` transitions under `proj` and `wf` to `allowedStep`. -/
 def ObeysStep {W S Req Out : Type} (proj : W → S) (wf : S → Bool)
     (step : Req → StateM W Out) (allowedStep : S → Req → Out → S → Prop) : Prop :=
@@ -202,6 +223,41 @@ theorem ObeysInverseRender.render_roundtrip {Obj Tape Raw Err : Type}
   | ok out =>
     have hO : wf out ∧ (∃ t, render out t = some raw) ∧ ∀ a t, render a t = some raw → equiv a out := by
       simpa [InverseRenderSpec, hp] using h
+    exact ⟨out, rfl, hO.1, hO.2.2 obj tape hRend⟩
+
+/-- Derive `ObeysInverseRenderWithin` from renderer injectivity plus `.ok` witness and resource-bounded `.error` completeness. -/
+theorem ObeysInverseRenderWithin.of_injective {Obj Tape Raw Err : Type}
+    {parse : Raw → Except Err Obj} {render : Obj → Tape → Option Raw}
+    {withinLimits : Tape → Prop} {wf : Obj → Prop} {equiv : Obj → Obj → Prop}
+    {msgOf : Err → String} (hInj : RenderInjectiveModulo render equiv)
+    (hOk : ∀ raw out, parse raw = .ok out → wf out ∧ ∃ tape, render out tape = some raw)
+    (hErr : ∀ raw e, parse raw = .error e → !(msgOf e).isEmpty ∧ ∀ a t, render a t = some raw → ¬ withinLimits t) :
+    ObeysInverseRenderWithin parse render withinLimits wf equiv msgOf := by
+  intro raw
+  cases hp : parse raw with
+  | ok out =>
+    rcases hOk raw out hp with ⟨hwf, tape, hRend⟩
+    exact ⟨hwf, ⟨tape, hRend⟩, fun a t hA => hInj a out t tape raw hA hRend⟩
+  | error e => exact hErr raw e hp
+
+/-- Any resource-bounded rendered wire value round-trips through an `ObeysInverseRenderWithin` parser up to `equiv`. -/
+theorem ObeysInverseRenderWithin.render_roundtrip {Obj Tape Raw Err : Type}
+    {parse : Raw → Except Err Obj} {render : Obj → Tape → Option Raw}
+    {withinLimits : Tape → Prop} {wf : Obj → Prop} {equiv : Obj → Obj → Prop}
+    {msgOf : Err → String}
+    (hParse : ObeysInverseRenderWithin parse render withinLimits wf equiv msgOf)
+    {obj : Obj} {tape : Tape} {raw : Raw}
+    (hLim : withinLimits tape) (hRend : render obj tape = some raw) :
+    ∃ out, parse raw = .ok out ∧ wf out ∧ equiv obj out := by
+  have h := hParse raw
+  cases hp : parse raw with
+  | error e =>
+    have hE : !(msgOf e).isEmpty ∧ ∀ a t, render a t = some raw → ¬ withinLimits t := by
+      simpa [InverseRenderWithinSpec, hp] using h
+    exact False.elim (hE.2 obj tape hRend hLim)
+  | ok out =>
+    have hO : wf out ∧ (∃ t, render out t = some raw) ∧ ∀ a t, render a t = some raw → equiv a out := by
+      simpa [InverseRenderWithinSpec, hp] using h
     exact ⟨out, rfl, hO.1, hO.2.2 obj tape hRend⟩
 
 /-- Weaken the relational postcondition of an `ObeysPure` contract. -/

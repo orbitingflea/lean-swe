@@ -1,5 +1,14 @@
+import Core.Obeys
+import LeanSwe.Json.Model
 import LeanSwe.Json.Interface
 import LeanSwe.Json.SpecTests
+import LeanSwe.Json.Proofs.ErrorKinds
+import LeanSwe.Json.Proofs.Injective
+import LeanSwe.Json.Proofs.ParseSound
+import LeanSwe.Json.Proofs.ParseComplete
+import LeanSwe.Json.Proofs.Accessors
+import LeanSwe.Json.Proofs.FormatCompress
+import LeanSwe.Json.Proofs.FormatPretty
 import Std.Data.TreeMap.Raw.Lemmas
 import Std.Data.TreeMap.Raw.WF
 
@@ -353,102 +362,6 @@ theorem reach_json_parse_onError_returnsParseErrorWithNonEmptyMessage :
     CanReach (test_json_parse_onError_returnsParseErrorWithNonEmptyMessage defaultApi) :=
   ⟨"", proof_json_parse_onError_returnsParseErrorWithNonEmptyMessage ""⟩
 
-private theorem parse_error_kind_eq (raw : String) {e : JsonError}
-    (h : LeanSwe.Json.parse raw = .error e) : e.kind = .parseError := by
-  dsimp [LeanSwe.Json.parse, Internal.parse] at h
-  cases hparse : Internal.parsePure raw with
-  | ok _ => simp [hparse] at h
-  | error msg =>
-    simp [hparse] at h
-    cases h
-    rfl
-
-private theorem decode_error_kind_eq {α : Type} [Lean.FromJson α] (j : Lean.Json) {e : JsonError}
-    (h : LeanSwe.Json.decode (α := α) j = .error e) : e.kind = .decodeError := by
-  dsimp [LeanSwe.Json.decode, Internal.decode] at h
-  cases hdec : Lean.fromJson? (α := α) j with
-  | ok _ => simp [hdec] at h
-  | error msg =>
-    simp [hdec] at h
-    cases h
-    rfl
-
-private theorem getObject_error_kind_eq (j : Lean.Json) {e : JsonError}
-    (h : LeanSwe.Json.getObject j = .error e) : e.kind = .typeMismatch := by
-  cases j <;> simp [LeanSwe.Json.getObject, Internal.getObject] at h <;> cases h <;> rfl
-
-private theorem getArray_error_kind_eq (j : Lean.Json) {e : JsonError}
-    (h : LeanSwe.Json.getArray j = .error e) : e.kind = .typeMismatch := by
-  cases j <;> simp [LeanSwe.Json.getArray, Internal.getArray] at h <;> cases h <;> rfl
-
-private theorem getField_error_kind_ne_parseError {α : Type} [Lean.FromJson α]
-    (j : Lean.Json) (key : String) {e : JsonError}
-    (h : LeanSwe.Json.getField (α := α) j key = .error e) : e.kind ≠ .parseError := by
-  cases j with
-  | obj kvs =>
-    unfold LeanSwe.Json.getField Internal.getField at h
-    dsimp only at h
-    split at h
-    · split at h
-      · cases h
-      · cases h
-        exact decode_error_kind_eq _ ‹_› ▸ by decide
-    · cases h
-      simp
-  | null => simp [LeanSwe.Json.getField, Internal.getField] at h; cases h; simp
-  | bool _ => simp [LeanSwe.Json.getField, Internal.getField] at h; cases h; simp
-  | num _ => simp [LeanSwe.Json.getField, Internal.getField] at h; cases h; simp
-  | str _ => simp [LeanSwe.Json.getField, Internal.getField] at h; cases h; simp
-  | arr _ => simp [LeanSwe.Json.getField, Internal.getField] at h; cases h; simp
-
-private theorem getOptField_error_kind {α : Type} [Lean.FromJson α]
-    (j : Lean.Json) (key : String) {e : JsonError}
-    (h : LeanSwe.Json.getOptField (α := α) j key = .error e) :
-    e.kind = .typeMismatch ∨ e.kind = .decodeError := by
-  cases j with
-  | obj kvs =>
-    unfold LeanSwe.Json.getOptField Internal.getOptField at h
-    dsimp only at h
-    split at h
-    · cases h
-    · cases h
-    · split at h
-      · cases h
-      · cases h
-        rename_i heq
-        have hk := decode_error_kind_eq _ heq
-        exact Or.inr hk
-  | null => simp [LeanSwe.Json.getOptField, Internal.getOptField] at h; cases h; exact Or.inl rfl
-  | bool _ => simp [LeanSwe.Json.getOptField, Internal.getOptField] at h; cases h; exact Or.inl rfl
-  | num _ => simp [LeanSwe.Json.getOptField, Internal.getOptField] at h; cases h; exact Or.inl rfl
-  | str _ => simp [LeanSwe.Json.getOptField, Internal.getOptField] at h; cases h; exact Or.inl rfl
-  | arr _ => simp [LeanSwe.Json.getOptField, Internal.getOptField] at h; cases h; exact Or.inl rfl
-
-private theorem getPathAux_error_kind_ne_parseError {α : Type} [Lean.FromJson α]
-    (keys : List String) (revPrefix : List String) (j : Lean.Json) {e : JsonError}
-    (h : Internal.getPathAux (α := α) revPrefix j keys = .error e) : e.kind ≠ .parseError := by
-  induction keys generalizing revPrefix j with
-  | nil =>
-    unfold Internal.getPathAux at h
-    split at h
-    · cases h
-    · have hk : _ = JsonErrorKind.decodeError := decode_error_kind_eq j ‹_›
-      split at h <;> cases h <;> simp [hk]
-  | cons key rest ih =>
-    cases j with
-    | obj kvs =>
-      unfold Internal.getPathAux at h
-      dsimp only at h
-      split at h
-      · exact ih (key :: revPrefix) _ h
-      · cases h
-        simp
-    | null => simp [Internal.getPathAux] at h; cases h; simp
-    | bool _ => simp [Internal.getPathAux] at h; cases h; simp
-    | num _ => simp [Internal.getPathAux] at h; cases h; simp
-    | str _ => simp [Internal.getPathAux] at h; cases h; simp
-    | arr _ => simp [Internal.getPathAux] at h; cases h; simp
-
 /-- `LeanSwe.Json.parse` never returns `.missingField`. -/
 theorem json_parse_never_missingField (raw : String) :
     NeverErrorKindPure JsonError.kind .missingField (LeanSwe.Json.parse raw) := by
@@ -604,22 +517,20 @@ theorem json_getPath_never_parseError {α : Type} [Lean.FromJson α] (j : Lean.J
 /-- `LeanSwe.Json.compress` renders `Lean.Json.null` as `"null"`. -/
 theorem json_compress_null :
     LeanSwe.Json.compress Lean.Json.null = "null" := by
-  simp [LeanSwe.Json.compress, Internal.compress, Internal.compressLoop]
+  rw [compress_eq_compactOne]; unfold treeDoc; rfl
 
 /-- `LeanSwe.Json.compress` renders `Lean.Json.bool b` as `"true"` or `"false"`. -/
 theorem json_compress_bool (b : Bool) :
     LeanSwe.Json.compress (Lean.Json.bool b) = if b then "true" else "false" := by
-  cases b <;> simp [LeanSwe.Json.compress, Internal.compress, Internal.compressLoop]
+  rw [compress_eq_compactOne]; cases b <;> (unfold treeDoc; rfl)
 
 /-- `LeanSwe.Json.compress` renders empty array and empty object as `"[]"` and `"{}"`. -/
 theorem json_compress_emptyContainers :
     LeanSwe.Json.compress (Lean.Json.arr #[]) = "[]" ∧
       LeanSwe.Json.compress (Lean.Json.mkObj []) = "{}" := by
   constructor
-  · simp [LeanSwe.Json.compress, Internal.compress, Internal.compressLoop]
-  · simp [LeanSwe.Json.compress, Internal.compress, Internal.compressLoop, mkObj_empty_eq]
-    have hLeaf : (∅ : Std.TreeMap.Raw String Lean.Json compare).inner.inner = .leaf := rfl
-    rw [hLeaf]
+  · rw [compress_eq_compactOne, treeDoc_arr_nil rfl]; rfl
+  · rw [mkObj_empty_eq, compress_eq_compactOne, treeDoc_obj_nil rfl]; rfl
 
 /-- Any error returned by `LeanSwe.Json.parse` has `.parseError` kind, non-empty message, and `path = none`. -/
 theorem json_parse_error_invariants (raw : String) {e : JsonError}
@@ -632,5 +543,29 @@ theorem json_parse_error_invariants (raw : String) {e : JsonError}
     simp [hparse] at h
     cases h
     exact ⟨rfl, ensureNonEmpty_ne_empty "JSON parse error" msg (by decide), rfl⟩
+
+/-- Full public `Interface` refinement of `LeanSwe.Json` against `LeanSwe.Json.Model`. -/
+theorem obeys_model :
+    Core.ObeysInverseRenderWithin LeanSwe.Json.parse Model.render
+      Model.withinResourceLimits Model.WellFormedJson Model.JsonEquiv JsonError.message ∧
+    Core.ObeysPure LeanSwe.Json.compress Model.allowedCompress ∧
+    Core.ObeysPure2 (@LeanSwe.Json.pretty) Model.allowedPretty ∧
+    Core.ObeysPure LeanSwe.Json.getObject Model.allowedGetObject ∧
+    Core.ObeysPure LeanSwe.Json.getArray Model.allowedGetArray ∧
+    (∀ {α : Type} [Lean.FromJson α], Core.ObeysPure (@LeanSwe.Json.decode α _) (@Model.allowedDecode α _)) ∧
+    (∀ {α : Type} [Lean.ToJson α], Core.ObeysPureEq (@LeanSwe.Json.encode α _) (@Model.encodeModel α _)) ∧
+    (∀ {α : Type} [Lean.FromJson α], Core.ObeysPure2 (@LeanSwe.Json.getField α _) (@Model.allowedGetField α _)) ∧
+    (∀ {α : Type} [Lean.FromJson α], Core.ObeysPure2 (@LeanSwe.Json.getOptField α _) (@Model.allowedGetOptField α _)) ∧
+    (∀ {α : Type} [Lean.FromJson α], Core.ObeysPure2 (@LeanSwe.Json.getPath α _) (@Model.allowedGetPath α _)) :=
+  ⟨parse_obeys_inverse_render,
+   allowedCompress_holds,
+   fun j w => allowedPretty_holds j w,
+   allowedGetObject_holds,
+   allowedGetArray_holds,
+   fun j => allowedDecode_holds j,
+   fun _ => rfl,
+   fun j key => allowedGetField_holds j key,
+   fun j key => allowedGetOptField_holds j key,
+   fun j keys => allowedGetPath_holds j keys⟩
 
 end LeanSwe.Json.Proofs

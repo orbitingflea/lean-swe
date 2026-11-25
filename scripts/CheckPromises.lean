@@ -3175,8 +3175,6 @@ private def loadPackageManifest (repoDir : System.FilePath) : IO (Except String 
 `<Pkg>.Proofs.{obeys_model,refines_model}` at `5304439`. Fails on both new missing specs and
 stale entries as follow-up PRs land. -/
 private def modelPresenceAllowlist : Array String := #[
-  "MISSING_MODEL|LeanSwe.Json",
-  "MISSING_OBEYS_MODEL|LeanSwe.Json",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Files",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Net",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Process",
@@ -3233,7 +3231,8 @@ private def isKnownContractPredHead (fn : Name) : Bool :=
     fn == `Core.ObeysPureEq || fn == `Core.ObeysPureEq2 || fn == `Core.ObeysPureEq3 || fn == `Core.ObeysPureEq4 ||
     fn == `Core.ObeysPureEqUpToErrMsg || fn == `Core.ObeysPureEqUpToErrMsg2 ||
     fn == `Core.ObeysPureEqUpToErrMsg3 || fn == `Core.ObeysPureEqUpToErrMsg4 ||
-    fn == `Core.ObeysInverseRender || fn == `Core.ObeysStep || fn == `Core.ObeysStepId ||
+    fn == `Core.ObeysInverseRender || fn == `Core.ObeysInverseRenderWithin ||
+    fn == `Core.ObeysStep || fn == `Core.ObeysStepId ||
     fn == `Core.ObeysStepFrom || fn == `Core.ObeysStepFromFinally || fn == `Core.ObeysStepFrom2 ||
     fn == `Core.RefinesPure || fn == `Core.RefinesPure2 || fn == `Core.RefinesPure3 || fn == `Core.RefinesPure4 ||
     fn == `Core.RefinesPureEq || fn == `Core.RefinesPureEq2 || fn == `Core.RefinesPureEq3 || fn == `Core.RefinesPureEq4 ||
@@ -3269,6 +3268,20 @@ private def isTrivialFalseBoolFn (env : Environment) (e : Expr) : Bool :=
       | some (.defnInfo dv) => (peelLambdas dv.value).consumeMData.isConstOf ``Bool.false
       | _ => false
     | _ => false
+
+private def isVacuousFalseUnaryPred (env : Environment) (domTy predExpr : Expr) : MetaM Bool := do
+  if isTrivialFalsePred env predExpr then return true
+  Meta.withLocalDeclD `_vacArg domTy fun x => do
+    let app := (mkApp predExpr x).headBeta
+    let w := (← Meta.withTransparency .all (Meta.whnf app)).consumeMData
+    if w.isConstOf ``False then return true
+    if w.isAppOfArity ``Eq 3 then
+      let lhs := (← Meta.withTransparency .all (Meta.whnf w.appFn!.appArg!)).consumeMData
+      let rhs := (← Meta.withTransparency .all (Meta.whnf w.appArg!)).consumeMData
+      if (lhs.isConstOf ``Bool.false && rhs.isConstOf ``Bool.true) ||
+          (lhs.isConstOf ``Bool.true && rhs.isConstOf ``Bool.false) then
+        return true
+    return false
 
 private def declTypeTouchesConcreteIo (ty : Expr) : MetaM Bool :=
   Meta.forallTelescopeReducing ty fun xs ret => do
@@ -3818,18 +3831,26 @@ private def synthPureOpConjunct
       if let some (_, renderExpr, tapeTy) ← findInverseRenderModel? env modelMods modelDefs spec.name objTy rawTy then
         let wfTy := Expr.forallE `_ objTy (.sort .zero) .default
         let equivTy := Expr.forallE `_ objTy (Expr.forallE `_ objTy (.sort .zero) .default) .default
+        let withinTy := Expr.forallE `_ tapeTy (.sort .zero) .default
         let wf? ← findModelConstByShortNames? env modelMods modelDefs spec.name
-          #["wf", "WellFormed", "WellFormedDoc", "WellFormedTable", "WellFormedValue", "wellFormed"] polyXs wfTy
+          #["wf", "WellFormed", "WellFormedDoc", "WellFormedTable", "WellFormedValue", "WellFormedJson", "wellFormed"] polyXs wfTy
         let equiv? ← findModelConstByShortNames? env modelMods modelDefs spec.name
           #["equiv", "Equiv", "TomlTableEquiv", "TableEquiv", "JsonEquiv", "DocEquiv", "ValueEquiv"] polyXs equivTy
+        let within? ← findModelConstByShortNames? env modelMods modelDefs spec.name
+          #["withinResourceLimits", "withinLimits"] polyXs withinTy
         let msgOf? ← extractErrMsgOnly? env errTy
         match wf?, msgOf? with
         | some (_, wfExpr), some msgExpr =>
           let equivExpr := match equiv? with
             | some (_, eqE) => eqE
             | none => mkApp (mkConst ``Eq [Level.succ Level.zero]) objTy
-          let pred := mkAppN (mkConst `Core.ObeysInverseRender [])
-            #[objTy, tapeTy, rawTy, errTy, opApplied, renderExpr, wfExpr, equivExpr, msgExpr]
+          let pred := match within? with
+            | some (_, withinExpr) =>
+              mkAppN (mkConst `Core.ObeysInverseRenderWithin [])
+                #[objTy, tapeTy, rawTy, errTy, opApplied, renderExpr, withinExpr, wfExpr, equivExpr, msgExpr]
+            | none =>
+              mkAppN (mkConst `Core.ObeysInverseRender [])
+                #[objTy, tapeTy, rawTy, errTy, opApplied, renderExpr, wfExpr, equivExpr, msgExpr]
           return .ok (← Meta.mkForallFVars polyXs pred)
         | none, _ =>
           return .error s!"inverse_render op {opName} has Model.render but lacks wf predicate in {spec.name}.Model"
@@ -4719,6 +4740,13 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
                     else if (fnName == `Core.ObeysPure4 || fnName == `Core.RefinesPure4) && args.size == 7 then
                       if isTrivialTruePred env args[6]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} uses vacuous True predicate"
+                    else if fnName == `Core.ObeysInverseRender && args.size == 9 then
+                      if ← isVacuousFalseUnaryPred env args[0]! args[6]! then
+                        ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous False wf in ObeysInverseRender"
+                    else if fnName == `Core.ObeysInverseRenderWithin && args.size == 10 then
+                      if (← isVacuousFalseUnaryPred env args[1]! args[6]!) ||
+                          (← isVacuousFalseUnaryPred env args[0]! args[7]!) then
+                        ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous False withinLimits or wf in ObeysInverseRenderWithin"
                     else if (fnName == `Core.ObeysStep || fnName == `Core.RefinesStep) && args.size == 8 then
                       if isTrivialFalseBoolFn env args[5]! || isTrivialTruePred env args[7]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous wf or allowedStep"

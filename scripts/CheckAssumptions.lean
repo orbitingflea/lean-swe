@@ -2902,14 +2902,23 @@ private def checkRefinesModelTheorem
             coveredPureOpsRef.modify (·.insert implFn)
           return aErrs
 
-        if ab.isAppOfArity `Core.ObeysInverseRender 9 then
+        if ab.isAppOfArity `Core.ObeysInverseRender 9 || ab.isAppOfArity `Core.ObeysInverseRenderWithin 10 then
+          let hasWithin := ab.isAppOfArity `Core.ObeysInverseRenderWithin 10
           let a := ab.getAppArgs
           let (objTy, tapeTy, rawTy, errTy) := (a[0]!, a[1]!, a[2]!, a[3]!)
-          let (parseArg, renderArg, wfArg, equivArg, msgArg) := (a[4]!, a[5]!, a[6]!, a[7]!, a[8]!)
+          let parseArg := a[4]!
+          let renderArg := a[5]!
+          let withinArg? := if hasWithin then some a[6]! else none
+          let (wfArg, equivArg, msgArg) := if hasWithin then (a[7]!, a[8]!, a[9]!) else (a[6]!, a[7]!, a[8]!)
           let some parseFn ← checkBareConstArg env allowedAtomFVs false parseArg
             | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare parse argument in {thmName}"]
           let some renderFn ← checkBareConstArg env allowedAtomFVs false renderArg
             | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare render argument in {thmName}"]
+          let mut withinFn? : Option Name := none
+          if let some withinArg := withinArg? then
+            let some wfn ← checkBareConstArg env allowedAtomFVs false withinArg
+              | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare withinLimits argument in {thmName}"]
+            withinFn? := some wfn
           let some wfFn ← checkBareConstArg env allowedAtomFVs false wfArg
             | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare wf argument in {thmName}"]
           let some equivFn ←
@@ -2920,14 +2929,16 @@ private def checkRefinesModelTheorem
             | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare msgOf argument in {thmName}"]
           if isPrivateName parseFn || moduleOfConst env parseFn != ifaceMod then
             aErrs := aErrs.push s!"NON_INTERFACE_IMPL_IN_REFINES: {parseFn} in {thmName} is not a public constant in {ifaceMod}"
-          for mFn in #[renderFn, wfFn] do
+          let mut modelReqFns := #[renderFn, wfFn]
+          if let some wfn := withinFn? then modelReqFns := modelReqFns.push wfn
+          for mFn in modelReqFns do
             if isPrivateName mFn || !modelMods.contains (moduleOfConst env mFn) then
               aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {mFn} in {thmName} is not a public constant in {pkg}.Model"
           if equivFn != ``Eq && (isPrivateName equivFn || !modelMods.contains (moduleOfConst env equivFn)) then
             aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {equivFn} in {thmName} must be Eq or a public constant in {pkg}.Model"
           if !isAllowedErrorExtractorConst env pkg modelMods msgFn then
             aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {msgFn} in {thmName} must be a public Types/Model constant"
-          for mFn in #[renderFn, wfFn, equivFn, msgFn] do
+          for mFn in modelReqFns ++ #[equivFn, msgFn] do
             if mFn != ``Eq && (← constTransitivelyTouchesSweImplOrIfaceCached env safeModelConstsRef mFn) then
               aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {mFn} in {thmName} transitively references Interface/Impl"
           let objTyS := applySubst (stripOptParamType objTy)
@@ -2937,6 +2948,15 @@ private def checkRefinesModelTheorem
           for dTy in #[objTyS, tapeTyS, rawTyS, errTyS] do
             if !(← isProvablyInhabitedDataType env 8 dTy) then
               aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited domain in ObeysInverseRender for {parseFn} in {thmName}"
+          if let (some withinArg, some withinFn) := (withinArg?, withinFn?) then
+            let withinSubst := applySubst withinArg
+            let withinCheck ← withLocalDeclD `_invTape tapeTyS fun t => isStaticFalseProp (mkApp withinSubst t)
+            match withinCheck with
+            | .isFalse => pure ()
+            | .isTrue =>
+              aErrs := aErrs.push s!"VACUOUS_WITHIN_LIMITS_IN_REFINES: {withinFn} in {thmName} is identically false"
+            | .inconclusive reason =>
+              aErrs := aErrs.push s!"INCONCLUSIVE_REFINES_CHECK: {withinFn} in {thmName} ({reason})"
           let wfSubst := applySubst wfArg
           let wfCheck ← withLocalDeclD `_invObj objTyS fun o => isStaticFalseProp (mkApp wfSubst o)
           match wfCheck with
