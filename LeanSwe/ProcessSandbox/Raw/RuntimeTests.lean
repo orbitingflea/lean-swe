@@ -2,6 +2,8 @@ import Core.Assumptions
 import LeanSwe.ProcessSandbox.Raw.Interface
 import LeanSwe.ProcessSandbox.Raw.RuntimeTests.ErrorHelpers
 import LeanSwe.ProcessSandbox.Raw.SysBridge.Bwrap
+import LeanSwe.ProcessSandbox.Raw.SysBridge.HostCap
+import LeanSwe.ProcessSandbox.Raw.SysBridge.Driver
 import LeanSwe.ProcessSandbox.Model
 import LeanSwe.Fs.Interface
 import LeanSwe.LinuxSyscall.Files.Interface
@@ -29,7 +31,7 @@ private def isSystemRootPrefix (p : String) : Bool :=
 private def assertCapErr {α : Type} (mkCap : IO (Model.RawHostCapM IO))
     (act : RawProcessSandboxOps → IO (Except SandboxError α))
     (expected : SandboxErrorKind) (label : String) : IO Unit := do
-  assertErrKind (← act (Internal.mkOpsFromHostCapM (← mkCap))) expected label
+  assertErrKind (← act (SysBridge.mkOpsFromHostCapM (← mkCap))) expected label
 
 /-- Real error test: `decodeHostAuditArch` rejects unsupported architecture constants with `.unavailable`. -/
 def err_psandboxRaw_decodeHostAuditArch_unavailable : IO Unit :=
@@ -178,16 +180,34 @@ def registeredErrorTests : Array Core.RegisteredErrorTest := #[
 /-- Execute OS-level runtime verification tests for `LeanSwe.ProcessSandbox.Raw`, returning `some reason` if skipped. -/
 def runAllOutcome : IO (Option String) := do
   Core.runRegisteredErrorTests registeredErrorTests
-  let caughtErrno ← SysBridge.catchErrno (throw (IO.userError "boom") : IO (Except Errno Unit))
+  let caughtErrno ← SysBridge.Driver.catchSysErrno Core.ioConcOps
+    (throw (IO.userError "boom") : IO (Except Errno Unit))
   match caughtErrno with
-  | .ok () => throw (IO.userError "ASSERTION FAILED: catchErrno must return .error on thrown IO.Error")
-  | .error e => assertTrue (e == Errno.EIO) "catchErrno converts userError to Errno.EIO"
-  let caughtTotal ← SysBridge.catchIoTotal (throw (IO.userError "boom") : IO Nat) (fun _ => 7)
-  assertTrue (caughtTotal == 7) "catchIoTotal converts thrown IO.Error to fallback"
-  let caughtPf ← SysBridge.catchPf (throw (IO.userError "boom") : IO (Except PostFork.PostForkError Unit))
+  | .ok () => throw (IO.userError "ASSERTION FAILED: catchSysErrno must return .error on thrown IO.Error")
+  | .error e => assertTrue (e == Errno.EIO) "catchSysErrno converts userError to Errno.EIO"
+  let caughtOpt ← SysBridge.Driver.catchSysOpt Core.ioConcOps
+    (throw (IO.userError "boom") : IO (Option Nat))
+  assertTrue (caughtOpt == none) "catchSysOpt converts thrown IO.Error to none"
+  let caughtPf ← SysBridge.Driver.catchSysPf Core.ioConcOps
+    (throw (IO.userError "boom") : IO (Except PostFork.PostForkError Unit))
   match caughtPf with
-  | .ok () => throw (IO.userError "ASSERTION FAILED: catchPf must return .error on thrown IO.Error")
-  | .error e => assertTrue (e.kind == .sysError && e.errno == some Errno.EIO) "catchPf maps userError to sysError EIO"
+  | .ok () => throw (IO.userError "ASSERTION FAILED: catchSysPf must return .error on thrown IO.Error")
+  | .error e => assertTrue (e.kind == .sysError && e.errno == some Errno.EIO) "catchSysPf maps userError to sysError EIO"
+  let cellNonLinux ← IO.mkRef ({} : HostCellState IO.Ref (fun α => Task (Except IO.Error α)))
+  let fullNonLinux := SysBridge.Driver.mkFullOpsWithPlatformM false "x86_64-apple-darwin"
+    { files := LeanSwe.LinuxSyscall.Files.defaultOps
+      net := LeanSwe.LinuxSyscall.Net.defaultOps
+      poll := LeanSwe.LinuxSyscall.Poll.defaultOps
+      proc := LeanSwe.LinuxSyscall.Process.defaultOps
+      sandbox := LeanSwe.LinuxSyscall.Sandbox.defaultOps
+      timeRand := LeanSwe.LinuxSyscall.TimeRand.defaultOps
+      passwd := LeanSwe.LinuxSyscall.Passwd.defaultOps
+      postFork := LeanSwe.PostFork.defaultOps
+      envVars := LeanSwe.EnvVars.Raw.defaultOps }
+    Core.ioConcOps
+    (Core.ioStateCell cellNonLinux)
+  assertErrKind (← fullNonLinux.hostSeccompArch) .unavailable "mkFullOpsWithPlatformM non-Linux hostSeccompArch"
+  assertErrKind (← fullNonLinux.preflight {}) .unavailable "mkFullOpsWithPlatformM non-Linux preflight"
   let baseCounts ← Raw.activeResourceCounts
   assertTrue (baseCounts == { openPlans := 0, activeBoxes := 0, activeForwarders := 0 })
     "initial Raw.activeResourceCounts == 0"

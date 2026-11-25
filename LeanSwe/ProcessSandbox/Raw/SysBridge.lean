@@ -2,21 +2,16 @@ import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.Net.Types
-import LeanSwe.LinuxSyscall.Net.Interface
 import LeanSwe.LinuxSyscall.Poll.Types
-import LeanSwe.LinuxSyscall.Poll.Interface
 import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Process.Interface
 import LeanSwe.LinuxSyscall.Sandbox.Types
-import LeanSwe.LinuxSyscall.Sandbox.Interface
 import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.LinuxSyscall.TimeRand.Interface
 import LeanSwe.LinuxSyscall.Passwd.Types
-import LeanSwe.LinuxSyscall.Passwd.Interface
 import LeanSwe.PostFork.Types
-import LeanSwe.PostFork.Interface
-import LeanSwe.EnvVars.Raw.Interface
 import LeanSwe.ProcessSandbox.Raw.Types
+import LeanSwe.ProcessSandbox.Raw.Types.Internal
 import LeanSwe.ProcessSandbox.Raw.Impl
 import LeanSwe.ProcessSandbox.Raw.SysBridge.Cgroup
 import LeanSwe.ProcessSandbox.Raw.SysBridge.Preset
@@ -25,7 +20,6 @@ import LeanSwe.ProcessSandbox.Raw.SysBridge.Forwarder
 import LeanSwe.ProcessSandbox.Raw.SysBridge.StreamIo
 import LeanSwe.ProcessSandbox.Raw.SysBridge.State
 import LeanSwe.ProcessSandbox.Raw.SysBridge.Spawn
-import LeanSwe.ProcessSandbox.Raw.SysBridge.IoHostCap
 
 namespace LeanSwe.ProcessSandbox.Raw.SysBridge
 
@@ -315,11 +309,5 @@ def mkRawOpsM {m : Type → Type} [Monad m] {fd fwdTask : Type}
     pidfdKill := pidfdKillPure deps tbl eintrFuel
     reapBox := reapBoxPure deps tbl eintrFuel
     activeResourceCounts := tbl.counts }
-
-private initialize gHostTable : IO.Ref IoHostState ← IO.mkRef {}
-
-/-- Default `IO` host capability bundle backed by `LinuxSyscall.*`, `PostFork`, `EnvVars.Raw`, `Forwarder`, and atomic `gHostTable`. -/
-def defaultOps : Model.RawHostCapM IO :=
-  mkIoHostCap gHostTable
 
 end LeanSwe.ProcessSandbox.Raw.SysBridge

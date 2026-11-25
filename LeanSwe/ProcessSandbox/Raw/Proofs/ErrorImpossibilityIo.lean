@@ -14,8 +14,96 @@ open LeanSwe.ProcessSandbox.Raw.SysBridge.Preset
 open LeanSwe.ProcessSandbox.Raw.SysBridge.Bwrap
 open LeanSwe.ProcessSandbox.Raw.SysBridge.StreamIo
 
-private theorem ioTotal_waitpidReapLoop {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (pid : Int32) : ∀ fuel, IoTotal (LinuxSyscall.Process.waitpidReapLoop cap.proc pid fuel)
+private theorem ioTotal_waitProbeExitZero {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (pid : Int32) : ∀ fuel, IoTotal (waitProbeExitZero deps.proc pid fuel)
+  | 0 => ioTotal_pure _
+  | fuel + 1 => by
+    unfold waitProbeExitZero
+    refine ioTotal_bind (hc.waitpid pid {}) fun r => ?_
+    cases r with
+    | ok wr =>
+      cases wr with
+      | exited _ c => exact if h : c = 0 then by simp [h]; exact ioTotal_pure _ else by simp [h]; exact ioTotal_pure _
+      | _ => exact ioTotal_pure _
+    | error _ => exact ioTotal_ite (ioTotal_waitProbeExitZero hc pid fuel) (ioTotal_pure _)
+
+/-- `probeBwrapNamespaces` is total under `SysDepsTotal`. -/
+theorem ioTotal_probeBwrapNamespaces {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (bw : String) (ib : ByteArray) (fuel : Nat) :
+    IoTotal (probeBwrapNamespaces deps.files deps.sandbox deps.proc deps.postFork bw ib fuel) := by
+  have hOpen3 : IoTotal (openThreeDevNull deps.files fuel) := by
+    unfold openThreeDevNull
+    have h1 := ioTotal_retryEintr (hc.openat none "/dev/null".toUTF8 { access := .rdwr, cloexec := true } 0) fuel
+    refine ioTotal_bind h1 fun r0 => ?_
+    cases r0 with
+    | error _ => exact ioTotal_pure _
+    | ok d0 =>
+      refine ioTotal_bind h1 fun r1 => ?_
+      cases r1 with
+      | error _ => exact ioTotal_bind (ioTotal_closeOpt hc (some d0)) (fun _ => ioTotal_pure _)
+      | ok d1 =>
+        refine ioTotal_bind h1 fun r2 => ?_
+        cases r2 with
+        | error _ =>
+          exact ioTotal_bind (ioTotal_closeOpt hc (some d0)) fun _ =>
+            ioTotal_bind (ioTotal_closeOpt hc (some d1)) (fun _ => ioTotal_pure _)
+        | ok _ => exact ioTotal_pure _
+  unfold probeBwrapNamespaces
+  refine ioTotal_bind hOpen3 fun r3 => ?_
+  cases r3 with
+  | error _ => exact ioTotal_pure _
+  | ok ds =>
+    rcases ds with ⟨d0, d1, d2⟩
+    refine ioTotal_bind (ioTotal_createSealedMemfd hc _ ib fuel) fun rM => ?_
+    cases rM with
+    | error _ =>
+      exact ioTotal_bind (ioTotal_closeOpt hc (some d0)) fun _ =>
+        ioTotal_bind (ioTotal_closeOpt hc (some d1)) fun _ =>
+          ioTotal_bind (ioTotal_closeOpt hc (some d2)) (fun _ => ioTotal_pure _)
+    | ok mfd =>
+      refine ioTotal_bind (ioTotal_retryEintr (hc.reopenReadOnly mfd) fuel) fun rRo => ?_
+      refine ioTotal_bind (ioTotal_closeOpt hc (some mfd)) fun _ => ?_
+      cases rRo with
+      | error _ =>
+        exact ioTotal_bind (ioTotal_closeOpt hc (some d0)) fun _ =>
+          ioTotal_bind (ioTotal_closeOpt hc (some d1)) fun _ =>
+            ioTotal_bind (ioTotal_closeOpt hc (some d2)) (fun _ => ioTotal_pure _)
+      | ok ifd =>
+        refine ioTotal_bind (ioTotal_discoverSystemEntries hc fuel) fun sysEs => ?_
+        have hAfterLd (hasLd : Bool) : IoTotal (do
+            let childSpec : PostFork.ChildSpecM fd := {
+              path := bw
+              argv := buildProbeBwrapArgv bw sysEs hasLd ifd
+              stdio := .redirect (.handle d0) (.handle d1) (.handle d2) false
+              fdPolicy := .closeAllAbove2Except #[.handle ifd]
+              processGroup := .newGroup
+              sigpipe := .resetDefault
+              forkMode := .immortalThread
+            }
+            let spawnRes ← deps.postFork.spawn childSpec
+            Files.closeOpt deps.files (some d0)
+            Files.closeOpt deps.files (some d1)
+            Files.closeOpt deps.files (some d2)
+            Files.closeOpt deps.files (some ifd)
+            match spawnRes with
+            | .error pfErr => return .error (pfErr.errno.getD Errno.EPERM)
+            | .ok child => waitProbeExitZero deps.proc child.pid.toInt32 fuel) := by
+          refine ioTotal_bind (hc.pfSpawn _) fun rSp => ?_
+          refine ioTotal_bind (ioTotal_closeOpt hc (some d0)) fun _ => ?_
+          refine ioTotal_bind (ioTotal_closeOpt hc (some d1)) fun _ => ?_
+          refine ioTotal_bind (ioTotal_closeOpt hc (some d2)) fun _ => ?_
+          refine ioTotal_bind (ioTotal_closeOpt hc (some ifd)) fun _ => ?_
+          cases rSp with
+          | error _ => exact ioTotal_pure _
+          | ok child => exact ioTotal_waitProbeExitZero hc child.pid.toInt32 fuel
+        refine ioTotal_bind (ioTotal_retryEintr (hc.fstatat none "/etc/ld.so.cache".toUTF8 {}) fuel) fun rLd => ?_
+        cases rLd with
+        | ok _ => exact ioTotal_bind (ioTotal_pure true) hAfterLd
+        | error _ => exact ioTotal_bind (ioTotal_pure false) hAfterLd
+
+private theorem ioTotal_waitpidReapLoop {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (pid : Int32) :
+    ∀ fuel, IoTotal (LinuxSyscall.Process.waitpidReapLoop deps.proc pid fuel)
   | 0 => ioTotal_pure _
   | fuel + 1 => by
     unfold LinuxSyscall.Process.waitpidReapLoop
@@ -25,21 +113,12 @@ private theorem ioTotal_waitpidReapLoop {cap : Model.RawHostCapM IO} (hc : CapTo
     | error _ =>
       exact ioTotal_ite (ioTotal_waitpidReapLoop hc pid fuel) (ioTotal_ite (ioTotal_pure _) (ioTotal_pure _))
 
-private theorem ioTotal_tblModify {α : Type} {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (f : Model.RawTableState → Model.RawTableState) (g : Model.RawTableState → α) :
-    IoTotal (do let st ← cap.modifyTable f; return g st) :=
-  ioTotal_bind (hc.modifyTable f) (fun st => ioTotal_pure (g st))
-
-private theorem ioTotal_tblGet {α : Type} {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (g : Model.RawTableState → α) :
-    IoTotal (do let st ← cap.getTable; return g st) :=
-  ioTotal_bind hc.getTable (fun st => ioTotal_pure (g st))
-
-private theorem preflightPure_safe {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
+private theorem preflightPure_safe {fd fwdTask : Type}
+    {deps : HostSysDepsM IO fd fwdTask} {tbl : HostTableOpsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (ht : TableOpsTotal tbl)
     (fuel : Nat) (req : PreflightReq) (emb : Except String ByteArray) :
-    IoSafeErr (· = .unavailable) (preflightPure (toHostSysDeps cap) (toHostTableOps cap) fuel req emb) := by
+    IoSafeErr (· = .unavailable) (preflightPure deps tbl fuel req emb) := by
   unfold preflightPure
-  dsimp only [toHostSysDeps, toHostTableOps]
   refine ioSafeErr_ite (ioSafeErr_err rfl) (ioSafeErr_ite (ioSafeErr_err rfl) ?_)
   refine ioSafeErr_bind (ioTotal_resolveBwrapPath hc fuel) fun bw? => ?_
   cases bw? with
@@ -68,14 +147,14 @@ private theorem preflightPure_safe {cap : Model.RawHostCapM IO} (hc : CapTotal c
               cases rPid with
               | error _ => exact ioSafeErr_err rfl
               | ok pid =>
-                refine ioSafeErr_bind (ioTotal_tblModify hc _ _) fun seq => ?_
+                refine ioSafeErr_bind ht.nextCgSeq fun seq => ?_
                 refine ioSafeErr_bind (ioTotal_createSiblingCgroup hc pid seq fuel) fun rCg => ?_
                 cases rCg with
                 | error _ => exact ioSafeErr_err rfl
                 | ok cgDir =>
                   have hFinish (fail? : Option (Errno × String)) :
                       IoSafeErr (· = .unavailable) (do
-                        let _ ← cleanupCgroupDir cap.files cap.timeRand cgDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS fuel
+                        let _ ← cleanupCgroupDir deps.files deps.timeRand cgDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS fuel
                         match fail? with
                         | some (e, msg) => return .error (Internal.mapRawError (.unavailable (some e) msg))
                         | none => return .ok ()) := by
@@ -89,11 +168,11 @@ private theorem preflightPure_safe {cap : Model.RawHostCapM IO} (hc : CapTotal c
                           | some f => pure (some f)
                           | none =>
                             if req.needPidsCgroup then
-                              match ← configureCgroupPids cap.files cgDir "max" fuel with
+                              match ← configureCgroupPids deps.files cgDir "max" fuel with
                               | .ok () => pure none
                               | .error e => pure (some (e, "direct cgroup v2 pids controller unavailable"))
                             else pure none
-                        let _ ← cleanupCgroupDir cap.files cap.timeRand cgDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS fuel
+                        let _ ← cleanupCgroupDir deps.files deps.timeRand cgDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS fuel
                         match fail? with
                         | some (e, msg) => return .error (Internal.mapRawError (.unavailable (some e) msg))
                         | none => return .ok ()) := by
@@ -132,25 +211,31 @@ private theorem preflightPure_safe {cap : Model.RawHostCapM IO} (hc : CapTotal c
                           exact ioSafeErr_bind (ioTotal_pure (some _)) hAfterMem
 
 private theorem preflight_safe (req : PreflightReq) :
-    IoSafeErr (· = .unavailable) (LeanSwe.ProcessSandbox.Raw.preflight req) :=
-  preflightPure_safe sysBridge_defaultOps_total DEFAULT_EINTR_FUEL req embeddedInitBytes
+    IoSafeErr (· = .unavailable) (LeanSwe.ProcessSandbox.Raw.preflight req) := by
+  dsimp only [LeanSwe.ProcessSandbox.Raw.preflight, LeanSwe.ProcessSandbox.Raw.defaultOps,
+    Internal.mkFullOpsM, Driver.mkFullOpsM, Driver.mkFullOpsWithPlatformM, mkRawOpsM]
+  exact preflightPure_safe (mkSafeSysDepsM_total _ _ _) (mkCellTableOps_ioStateCell_total _)
+    DEFAULT_EINTR_FUEL req embeddedInitBytes
 
-private theorem discoverHostPreset_safe :
-    IoSafeErr (· = .unavailable) LeanSwe.ProcessSandbox.Raw.discoverHostPreset := by
-  have hc := sysBridge_defaultOps_total
-  show IoSafeErr _ (discoverHostPresetPure (toHostSysDeps SysBridge.defaultOps) DEFAULT_EINTR_FUEL)
+private theorem discoverHostPresetPure_safe {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (fuel : Nat) :
+    IoSafeErr (· = .unavailable) (discoverHostPresetPure deps fuel) := by
   unfold discoverHostPresetPure
-  dsimp only [toHostSysDeps]
   refine ioSafeErr_ite (ioSafeErr_err rfl) ?_
   exact ioSafeErr_bind (ioTotal_discoverHostPresetM hc _) (fun p => ioSafeErr_ok p)
 
-private theorem sealPlanPure_safe {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
+private theorem discoverHostPreset_safe :
+    IoSafeErr (· = .unavailable) LeanSwe.ProcessSandbox.Raw.discoverHostPreset :=
+  discoverHostPresetPure_safe (mkSafeSysDepsM_total _ _ _) DEFAULT_EINTR_FUEL
+
+private theorem sealPlanPure_safe {fd fwdTask : Type}
+    {deps : HostSysDepsM IO fd fwdTask} {tbl : HostTableOpsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (ht : TableOpsTotal tbl)
     (fuel : Nat) (plan : CompiledSandboxPlan) (seccompBytes : ByteArray)
     (emb : Except String ByteArray) :
     IoSafeErr (fun k => k = .invalidInput ∨ k = .unavailable ∨ k = .ioError)
-      (sealPlanPure (toHostSysDeps cap) (toHostTableOps cap) fuel plan seccompBytes emb) := by
+      (sealPlanPure deps tbl fuel plan seccompBytes emb) := by
   unfold sealPlanPure
-  dsimp only [toHostSysDeps, toHostTableOps]
   have hInv := encodePlan_inv plan seccompBytes
   cases hEnc : Internal.encodePlan plan seccompBytes with
   | error e =>
@@ -177,7 +262,7 @@ private theorem sealPlanPure_safe {cap : Model.RawHostCapM IO} (hc : CapTotal ca
             exact ioSafeErr_bind (ioTotal_closeOpt hc (some m1)) fun _ =>
               ioSafeErr_bind (ioTotal_closeOpt hc (some m2)) (fun _ => ioSafeErr_err (Or.inr (Or.inr rfl)))
           | ok m3 =>
-            refine ioSafeErr_bind (ioTotal_tblModify hc _ _) fun hid? => ?_
+            refine ioSafeErr_bind (ht.insertPlan _) fun hid? => ?_
             cases hid? with
             | some hid => exact ioSafeErr_ok ({ handleId := hid } : PlanHandle)
             | none =>
@@ -187,17 +272,19 @@ private theorem sealPlanPure_safe {cap : Model.RawHostCapM IO} (hc : CapTotal ca
 
 private theorem sealPlan_safe (plan : CompiledSandboxPlan) (seccompBytes : ByteArray) :
     IoSafeErr (fun k => k = .invalidInput ∨ k = .unavailable ∨ k = .ioError)
-      (LeanSwe.ProcessSandbox.Raw.sealPlan plan seccompBytes) :=
-  sealPlanPure_safe sysBridge_defaultOps_total DEFAULT_EINTR_FUEL plan seccompBytes embeddedInitBytes
+      (LeanSwe.ProcessSandbox.Raw.sealPlan plan seccompBytes) := by
+  dsimp only [LeanSwe.ProcessSandbox.Raw.sealPlan, LeanSwe.ProcessSandbox.Raw.defaultOps,
+    Internal.mkFullOpsM, Driver.mkFullOpsM, Driver.mkFullOpsWithPlatformM, mkRawOpsM]
+  exact sealPlanPure_safe (mkSafeSysDepsM_total _ _ _) (mkCellTableOps_ioStateCell_total _)
+    DEFAULT_EINTR_FUEL plan seccompBytes embeddedInitBytes
 
-private theorem closePlan_safe (ph : PlanHandle) :
-    IoSafeErr (· = .invalidInput) (LeanSwe.ProcessSandbox.Raw.closePlan ph) := by
-  have hc := sysBridge_defaultOps_total
-  show IoSafeErr _ (closePlanPure (toHostSysDeps SysBridge.defaultOps) (toHostTableOps SysBridge.defaultOps) ph)
+private theorem closePlanPure_safe {fd fwdTask : Type}
+    {deps : HostSysDepsM IO fd fwdTask} {tbl : HostTableOpsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (ht : TableOpsTotal tbl) (ph : PlanHandle) :
+    IoSafeErr (· = .invalidInput) (closePlanPure deps tbl ph) := by
   unfold closePlanPure
-  dsimp only [toHostSysDeps, toHostTableOps]
   refine ioSafeErr_ite (ioSafeErr_err rfl) ?_
-  refine ioSafeErr_bind (ioTotal_tblModify hc _ _) fun slot? => ?_
+  refine ioSafeErr_bind (ht.detachPlan _) fun slot? => ?_
   cases slot? with
   | none => exact ioSafeErr_err rfl
   | some slot =>
@@ -205,15 +292,18 @@ private theorem closePlan_safe (ph : PlanHandle) :
       ioSafeErr_bind (ioTotal_closeOpt hc (some slot.initMemfd)) fun _ =>
         ioSafeErr_bind (ioTotal_closeOpt hc (some slot.hostsMemfd)) (fun _ => ioSafeErr_ok ())
 
-private theorem startPortForwarders_safe (bh : BoxHandle) (fwds : Array PortForward) :
+private theorem closePlan_safe (ph : PlanHandle) :
+    IoSafeErr (· = .invalidInput) (LeanSwe.ProcessSandbox.Raw.closePlan ph) :=
+  closePlanPure_safe (mkSafeSysDepsM_total _ _ _) (mkCellTableOps_ioStateCell_total _) ph
+
+private theorem startPortForwardersPure_safe {fd fwdTask : Type}
+    {deps : HostSysDepsM IO fd fwdTask} {tbl : HostTableOpsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (ht : TableOpsTotal tbl) (bh : BoxHandle) (fwds : Array PortForward) :
     IoSafeErr (fun k => k = .invalidInput ∨ k = .ioError)
-      (LeanSwe.ProcessSandbox.Raw.startPortForwarders bh fwds) := by
-  have hc := sysBridge_defaultOps_total
-  show IoSafeErr _ (startPortForwardersPure (toHostSysDeps SysBridge.defaultOps) (toHostTableOps SysBridge.defaultOps) bh fwds)
+      (startPortForwardersPure deps tbl bh fwds) := by
   unfold startPortForwardersPure
-  dsimp only [toHostSysDeps, toHostTableOps]
   refine ioSafeErr_ite (ioSafeErr_err (Or.inl rfl)) ?_
-  refine ioSafeErr_bind (ioTotal_tblModify hc _ _) fun lfds? => ?_
+  refine ioSafeErr_bind (ht.takeBoxListeners _ _) fun lfds? => ?_
   cases lfds? with
   | none => exact ioSafeErr_err (Or.inl rfl)
   | some lfds =>
@@ -221,32 +311,39 @@ private theorem startPortForwarders_safe (bh : BoxHandle) (fwds : Array PortForw
     cases rStart with
     | error _ => exact ioSafeErr_bind (ioTotal_closeFdArray hc lfds) (fun _ => ioSafeErr_err (Or.inr rfl))
     | ok th =>
-      refine ioSafeErr_bind (ioTotal_tblModify hc _ _) fun fhid? => ?_
+      refine ioSafeErr_bind (ht.insertFwd _) fun fhid? => ?_
       cases fhid? with
       | none => exact ioSafeErr_bind (hc.stopFwdTask th) (fun _ => ioSafeErr_err (Or.inr rfl))
       | some fhid => exact ioSafeErr_ok ({ handleId := fhid, boxHandleId := bh.handleId } : PortForwarderHandle)
 
-private theorem stopPortForwarders_safe (fh : PortForwarderHandle) :
-    IoSafeErr (· = .invalidInput) (LeanSwe.ProcessSandbox.Raw.stopPortForwarders fh) := by
-  have hc := sysBridge_defaultOps_total
-  show IoSafeErr _ (stopPortForwardersPure (toHostSysDeps SysBridge.defaultOps) (toHostTableOps SysBridge.defaultOps) fh)
+private theorem startPortForwarders_safe (bh : BoxHandle) (fwds : Array PortForward) :
+    IoSafeErr (fun k => k = .invalidInput ∨ k = .ioError)
+      (LeanSwe.ProcessSandbox.Raw.startPortForwarders bh fwds) :=
+  startPortForwardersPure_safe (mkSafeSysDepsM_total _ _ _) (mkCellTableOps_ioStateCell_total _) bh fwds
+
+private theorem stopPortForwardersPure_safe {fd fwdTask : Type}
+    {deps : HostSysDepsM IO fd fwdTask} {tbl : HostTableOpsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (ht : TableOpsTotal tbl) (fh : PortForwarderHandle) :
+    IoSafeErr (· = .invalidInput) (stopPortForwardersPure deps tbl fh) := by
   unfold stopPortForwardersPure
-  dsimp only [toHostSysDeps, toHostTableOps]
   refine ioSafeErr_ite (ioSafeErr_err rfl) ?_
-  refine ioSafeErr_bind (ioTotal_tblModify hc _ _) fun slot? => ?_
+  refine ioSafeErr_bind (ht.detachFwd _) fun slot? => ?_
   cases slot? with
   | none => exact ioSafeErr_err rfl
   | some slot => exact ioSafeErr_bind (hc.stopFwdTask slot.taskHandle) (fun _ => ioSafeErr_ok ())
 
-private theorem killProcessGroup_safe (bh : BoxHandle) :
+private theorem stopPortForwarders_safe (fh : PortForwarderHandle) :
+    IoSafeErr (· = .invalidInput) (LeanSwe.ProcessSandbox.Raw.stopPortForwarders fh) :=
+  stopPortForwardersPure_safe (mkSafeSysDepsM_total _ _ _) (mkCellTableOps_ioStateCell_total _) fh
+
+private theorem killProcessGroupPure_safe {fd fwdTask : Type}
+    {deps : HostSysDepsM IO fd fwdTask} {tbl : HostTableOpsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (ht : TableOpsTotal tbl) (fuel : Nat) (bh : BoxHandle) :
     IoSafeErr (fun k => k = .invalidInput ∨ k = .ioError)
-      (LeanSwe.ProcessSandbox.Raw.killProcessGroup bh) := by
-  have hc := sysBridge_defaultOps_total
-  show IoSafeErr _ (killProcessGroupPure (toHostSysDeps SysBridge.defaultOps) (toHostTableOps SysBridge.defaultOps) DEFAULT_EINTR_FUEL bh)
+      (killProcessGroupPure deps tbl fuel bh) := by
   unfold killProcessGroupPure
-  dsimp only [toHostSysDeps, toHostTableOps]
   refine ioSafeErr_ite (ioSafeErr_err (Or.inl rfl)) ?_
-  refine ioSafeErr_bind (ioTotal_tblGet hc _) fun info? => ?_
+  refine ioSafeErr_bind (ht.findBoxKillInfo _) fun info? => ?_
   cases info? with
   | none => exact ioSafeErr_err (Or.inl rfl)
   | some p =>
@@ -258,15 +355,20 @@ private theorem killProcessGroup_safe (bh : BoxHandle) :
     | ok _ => exact ioSafeErr_ok ()
     | error _ => exact ioSafeErr_ite (ioSafeErr_ok ()) (ioSafeErr_err (Or.inr rfl))
 
-private theorem pidfdKill_safe (bh : BoxHandle) :
+private theorem killProcessGroup_safe (bh : BoxHandle) :
     IoSafeErr (fun k => k = .invalidInput ∨ k = .ioError)
-      (LeanSwe.ProcessSandbox.Raw.pidfdKill bh) := by
-  have hc := sysBridge_defaultOps_total
-  show IoSafeErr _ (pidfdKillPure (toHostSysDeps SysBridge.defaultOps) (toHostTableOps SysBridge.defaultOps) DEFAULT_EINTR_FUEL bh)
+      (LeanSwe.ProcessSandbox.Raw.killProcessGroup bh) :=
+  killProcessGroupPure_safe (mkSafeSysDepsM_total _ _ _) (mkCellTableOps_ioStateCell_total _)
+    DEFAULT_EINTR_FUEL bh
+
+private theorem pidfdKillPure_safe {fd fwdTask : Type}
+    {deps : HostSysDepsM IO fd fwdTask} {tbl : HostTableOpsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (ht : TableOpsTotal tbl) (fuel : Nat) (bh : BoxHandle) :
+    IoSafeErr (fun k => k = .invalidInput ∨ k = .ioError)
+      (pidfdKillPure deps tbl fuel bh) := by
   unfold pidfdKillPure
-  dsimp only [toHostSysDeps, toHostTableOps]
   refine ioSafeErr_ite (ioSafeErr_err (Or.inl rfl)) ?_
-  refine ioSafeErr_bind (ioTotal_tblGet hc _) fun info? => ?_
+  refine ioSafeErr_bind (ht.findBoxKillInfo _) fun info? => ?_
   cases info? with
   | none => exact ioSafeErr_err (Or.inl rfl)
   | some p =>
@@ -277,15 +379,20 @@ private theorem pidfdKill_safe (bh : BoxHandle) :
     | ok _ => exact ioSafeErr_ok ()
     | error _ => exact ioSafeErr_ite (ioSafeErr_ok ()) (ioSafeErr_err (Or.inr rfl))
 
-private theorem reapBox_safe (bh : BoxHandle) :
+private theorem pidfdKill_safe (bh : BoxHandle) :
     IoSafeErr (fun k => k = .invalidInput ∨ k = .ioError)
-      (LeanSwe.ProcessSandbox.Raw.reapBox bh) := by
-  have hc := sysBridge_defaultOps_total
-  show IoSafeErr _ (reapBoxPure (toHostSysDeps SysBridge.defaultOps) (toHostTableOps SysBridge.defaultOps) DEFAULT_EINTR_FUEL bh)
+      (LeanSwe.ProcessSandbox.Raw.pidfdKill bh) :=
+  pidfdKillPure_safe (mkSafeSysDepsM_total _ _ _) (mkCellTableOps_ioStateCell_total _)
+    DEFAULT_EINTR_FUEL bh
+
+private theorem reapBoxPure_safe {fd fwdTask : Type}
+    {deps : HostSysDepsM IO fd fwdTask} {tbl : HostTableOpsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (ht : TableOpsTotal tbl) (fuel : Nat) (bh : BoxHandle) :
+    IoSafeErr (fun k => k = .invalidInput ∨ k = .ioError)
+      (reapBoxPure deps tbl fuel bh) := by
   unfold reapBoxPure
-  dsimp only [toHostSysDeps, toHostTableOps]
   refine ioSafeErr_ite (ioSafeErr_err (Or.inl rfl)) ?_
-  refine ioSafeErr_bind (ioTotal_tblModify hc _ _) fun slot? => ?_
+  refine ioSafeErr_bind (ht.detachBox _) fun slot? => ?_
   cases slot? with
   | none => exact ioSafeErr_err (Or.inl rfl)
   | some bslot =>
@@ -296,9 +403,9 @@ private theorem reapBox_safe (bh : BoxHandle) :
     refine ioSafeErr_bind (ioTotal_closeOpt hc bslot.goFd?) fun _ => ?_
     refine ioSafeErr_bind (ioTotal_closeFdArray hc bslot.listenerFds) fun _ => ?_
     have hRest1 : IoSafeErr (fun k => k = .invalidInput ∨ k = .ioError) (do
-        Files.closeOpt SysBridge.defaultOps.files (some bslot.pidfd)
-        match ← cleanupCgroupDir SysBridge.defaultOps.files SysBridge.defaultOps.timeRand bslot.cgroupDir
-            CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS DEFAULT_EINTR_FUEL with
+        Files.closeOpt deps.files (some bslot.pidfd)
+        match ← cleanupCgroupDir deps.files deps.timeRand bslot.cgroupDir
+            CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS fuel with
         | .ok () => return .ok ()
         | .error e => return .error (Internal.mapRawError (.ioError none e "failed to remove box cgroup directory"))) := by
       refine ioSafeErr_bind (ioTotal_closeOpt hc (some bslot.pidfd)) fun _ => ?_
@@ -308,20 +415,26 @@ private theorem reapBox_safe (bh : BoxHandle) :
       | error _ => exact ioSafeErr_err (Or.inr rfl)
     have hRest2 : IoSafeErr (fun k => k = .invalidInput ∨ k = .ioError)
         (if bslot.pid > 0 && bslot.pid ≤ LinuxSyscall.Process.MAX_LINUX_PID then do
-          let _ ← LinuxSyscall.Process.waitpidReapLoop SysBridge.defaultOps.proc bslot.pid.toInt32 DEFAULT_EINTR_FUEL
-          Files.closeOpt SysBridge.defaultOps.files (some bslot.pidfd)
-          match ← cleanupCgroupDir SysBridge.defaultOps.files SysBridge.defaultOps.timeRand bslot.cgroupDir
-              CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS DEFAULT_EINTR_FUEL with
+          let _ ← LinuxSyscall.Process.waitpidReapLoop deps.proc bslot.pid.toInt32 fuel
+          Files.closeOpt deps.files (some bslot.pidfd)
+          match ← cleanupCgroupDir deps.files deps.timeRand bslot.cgroupDir
+              CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS fuel with
           | .ok () => return .ok ()
           | .error e => return .error (Internal.mapRawError (.ioError none e "failed to remove box cgroup directory"))
         else do
-          Files.closeOpt SysBridge.defaultOps.files (some bslot.pidfd)
-          match ← cleanupCgroupDir SysBridge.defaultOps.files SysBridge.defaultOps.timeRand bslot.cgroupDir
-              CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS DEFAULT_EINTR_FUEL with
+          Files.closeOpt deps.files (some bslot.pidfd)
+          match ← cleanupCgroupDir deps.files deps.timeRand bslot.cgroupDir
+              CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS fuel with
           | .ok () => return .ok ()
           | .error e => return .error (Internal.mapRawError (.ioError none e "failed to remove box cgroup directory"))) :=
       ioSafeErr_ite (ioSafeErr_bind (ioTotal_waitpidReapLoop hc bslot.pid.toInt32 _) (fun _ => hRest1)) hRest1
     exact ioSafeErr_ite (ioSafeErr_bind (ioTotal_writeTextFile hc _ "1" _) (fun _ => hRest2)) hRest2
+
+private theorem reapBox_safe (bh : BoxHandle) :
+    IoSafeErr (fun k => k = .invalidInput ∨ k = .ioError)
+      (LeanSwe.ProcessSandbox.Raw.reapBox bh) :=
+  reapBoxPure_safe (mkSafeSysDepsM_total _ _ _) (mkCellTableOps_ioStateCell_total _)
+    DEFAULT_EINTR_FUEL bh
 
 /-- `preflight` never fails with `.invalidInput`. -/
 theorem raw_preflight_never_invalidInput (req : PreflightReq) (w : Void IO.RealWorld) :
