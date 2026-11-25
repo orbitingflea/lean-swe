@@ -380,7 +380,8 @@ private theorem encodePlan_body_inv (plan : CompiledSandboxPlan) :
   intro pf ba h
   exact headerPreserved_pushU16LE (headerPreserved_pushU16LE h _) _
 
-private theorem encodePlan_inv (plan : CompiledSandboxPlan) (seccompBytes : ByteArray) :
+/-- Structural invariant for `Internal.encodePlan`: validates `LSWP0002` header, instruction count, trailing filter bytes on `.ok`, and `.invalidInput` with non-empty message on `.error`. -/
+theorem encodePlan_inv (plan : CompiledSandboxPlan) (seccompBytes : ByteArray) :
     match Internal.encodePlan plan seccompBytes with
     | .error err => err.kind = .invalidInput ∧ err.message ≠ ""
     | .ok wire =>
@@ -480,6 +481,8 @@ private theorem pushStr_literal_ok (ba : ByteArray) (s : String)
   have hnot : ¬ (UInt32.size ≤ s.utf8ByteSize) := of_decide_eq_false hsz
   simp [Internal.pushStr, hnul, hnot, pure, Except.pure]
 
+private theorem defaultOps_encodePlan : defaultOps.encodePlan = Internal.encodePlan := rfl
+
 private theorem encodePlan_defaultPlan_ok (seccompBytes : ByteArray)
     (hp : 0 < seccompBytes.size) (hm : seccompBytes.size % 8 = 0)
     (hx : seccompBytes.size ≤ 8 * SECCOMP_MAX_INSNS) :
@@ -494,7 +497,7 @@ private theorem encodePlan_defaultPlan_ok (seccompBytes : ByteArray)
   have hp3 := fun ba => pushStr_literal_ok ba "PATH" (by decide) (by decide)
   have hp4 := fun ba => pushStr_literal_ok ba "/usr/bin:/bin" (by decide) (by decide)
   have hp5 := fun ba => pushStr_literal_ok ba "/tmp" (by decide) (by decide)
-  simp [defaultOps, Internal.encodePlan, Internal.encodePlanPrefix, h5,
+  simp [defaultOps_encodePlan, Internal.encodePlan, Internal.encodePlanPrefix, h5,
     hp1, hp3, hp4, hp5, ← Array.forIn_toList, List.forIn_cons, List.forIn_nil,
     bind, Except.bind, pure, Except.pure]
 

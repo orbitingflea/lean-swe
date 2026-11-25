@@ -1,4 +1,6 @@
+import Core.Assumptions
 import LeanSwe.ProcessSandbox.Raw.Interface
+import LeanSwe.ProcessSandbox.Raw.RuntimeTests.ErrorHelpers
 import LeanSwe.ProcessSandbox.Raw.SysBridge.Bwrap
 import LeanSwe.ProcessSandbox.Model
 import LeanSwe.Fs.Interface
@@ -6,7 +8,10 @@ import LeanSwe.LinuxSyscall.Files.Interface
 
 namespace LeanSwe.ProcessSandbox.Raw.RuntimeTests
 
+open LeanSwe.LinuxSyscall
 open LeanSwe.ProcessSandbox.Raw
+open LeanSwe.ProcessSandbox.Raw.Model
+open LeanSwe.ProcessSandbox.Raw.RuntimeTests.ErrorHelpers
 open LeanSwe.ProcessSandbox.Model
 
 private def assertTrue (cond : Bool) (msg : String) : IO Unit := do
@@ -18,19 +23,171 @@ private def assertOk {ε α : Type} [Repr ε] (res : Except ε α) (msg : String
   | .ok v => return v
   | .error e => throw (IO.userError s!"ASSERTION FAILED: {msg} (unexpected error: {repr e})")
 
-private def assertErrKind {α : Type} (res : Except SandboxError α) (expected : SandboxErrorKind)
-    (msg : String) : IO Unit := do
-  match res with
-  | .ok _ => throw (IO.userError s!"ASSERTION FAILED: {msg} (expected {repr expected}, got ok)")
-  | .error e =>
-    if e.kind != expected || e.message.isEmpty then
-      throw (IO.userError s!"ASSERTION FAILED: {msg} (got {repr e}, expected {repr expected})")
-
 private def isSystemRootPrefix (p : String) : Bool :=
   ["/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/"].any (fun pre => p.startsWith pre)
 
+private def assertCapErr {α : Type} (mkCap : IO (Model.RawHostCapM IO))
+    (act : RawProcessSandboxOps → IO (Except SandboxError α))
+    (expected : SandboxErrorKind) (label : String) : IO Unit := do
+  assertErrKind (← act (Internal.mkOpsFromHostCapM (← mkCap))) expected label
+
+/-- Real error test: `decodeHostAuditArch` rejects unsupported architecture constants with `.unavailable`. -/
+def err_psandboxRaw_decodeHostAuditArch_unavailable : IO Unit :=
+  assertErrKind (Raw.decodeHostAuditArch 0) .unavailable "decodeHostAuditArch 0 -> unavailable"
+
+/-- Real error test: `encodePlan` rejects empty seccomp filter bytes with `.invalidInput`. -/
+def err_psandboxRaw_encodePlan_invalidInput : IO Unit :=
+  assertErrKind (Raw.encodePlan samplePlan ByteArray.empty) .invalidInput "encodePlan empty seccomp -> invalidInput"
+
+/-- Mocked error test: `hostSeccompArch` fails closed with `.unavailable` on non-Linux targets. -/
+def err_psandboxRaw_hostSeccompArch_unavailable : IO Unit :=
+  assertCapErr capNonLinux (fun ops => ops.hostSeccompArch) .unavailable "hostSeccompArch non-Linux"
+
+/-- Mocked error test: `preflight` fails closed with `.unavailable` on non-Linux hosts. -/
+def err_psandboxRaw_preflight_unavailable : IO Unit :=
+  assertCapErr capNonLinux (fun ops => ops.preflight {}) .unavailable "preflight non-Linux"
+
+/-- Mocked error test: `discoverHostPreset` fails closed with `.unavailable` on non-Linux hosts. -/
+def err_psandboxRaw_discoverHostPreset_unavailable : IO Unit :=
+  assertCapErr capNonLinux (fun ops => ops.discoverHostPreset) .unavailable "discoverHostPreset non-Linux"
+
+/-- Real error test: `sealPlan` rejects empty seccomp BPF bytes with `.invalidInput`. -/
+def err_psandboxRaw_sealPlan_invalidInput : IO Unit := do
+  assertErrKind (← Raw.sealPlan samplePlan ByteArray.empty) .invalidInput "sealPlan empty seccomp"
+
+/-- Mocked error test: `sealPlan` fails closed with `.unavailable` on non-Linux hosts. -/
+def err_psandboxRaw_sealPlan_unavailable : IO Unit :=
+  assertCapErr capNonLinux (fun ops => ops.sealPlan samplePlan sampleSeccomp) .unavailable "sealPlan non-Linux"
+
+/-- Mocked error test: `sealPlan` maps `memfdCreate` `ENOMEM` failure to `.ioError`. -/
+def err_psandboxRaw_sealPlan_ioError : IO Unit :=
+  assertCapErr capWithTable (fun ops => ops.sealPlan samplePlan sampleSeccomp) .ioError "sealPlan memfd ENOMEM"
+
+/-- Real error test: `closePlan` rejects forged zero handle with `.invalidInput`. -/
+def err_psandboxRaw_closePlan_invalidInput : IO Unit := do
+  assertErrKind (← Raw.closePlan { handleId := 0 }) .invalidInput "closePlan handle 0"
+
+/-- Real error test: `spawnBox` rejects forged zero `PlanHandle` with `.invalidInput`. -/
+def err_psandboxRaw_spawnBox_invalidInput : IO Unit := do
+  assertErrKind (← Raw.spawnBox { handleId := 0 }) .invalidInput "spawnBox handle 0"
+
+/-- Mocked error test: `spawnBox` fails closed with `.unavailable` when `bwrap` cannot be resolved. -/
+def err_psandboxRaw_spawnBox_unavailable : IO Unit :=
+  assertCapErr (capWithTable seededPlanTable) (fun ops => ops.spawnBox activePlan) .unavailable "spawnBox missing bwrap"
+
+/-- Mocked error test: `spawnBox` maps missing user mount `hostPath` (`ENOENT`) to `.notFound`. -/
+def err_psandboxRaw_spawnBox_notFound : IO Unit :=
+  assertCapErr (capSpawnMountErrno Errno.ENOENT) (fun ops => ops.spawnBox activePlan) .notFound "spawnBox mount ENOENT"
+
+/-- Mocked error test: `spawnBox` maps unsearchable user mount `hostPath` (`EACCES`) to `.permissionDenied`. -/
+def err_psandboxRaw_spawnBox_permissionDenied : IO Unit :=
+  assertCapErr (capSpawnMountErrno Errno.EACCES) (fun ops => ops.spawnBox activePlan) .permissionDenied "spawnBox mount EACCES"
+
+/-- Mocked error test: `spawnBox` maps `pipe2` `EMFILE` failure to `.ioError`. -/
+def err_psandboxRaw_spawnBox_ioError : IO Unit :=
+  assertCapErr capSpawnPipeIoError (fun ops => ops.spawnBox activePlan) .ioError "spawnBox pipe2 EMFILE"
+
+/-- Real error test: `startPortForwarders` rejects forged zero `BoxHandle` with `.invalidInput`. -/
+def err_psandboxRaw_startPortForwarders_invalidInput : IO Unit := do
+  assertErrKind (← Raw.startPortForwarders forgedBox #[]) .invalidInput "startPortForwarders handle 0"
+
+/-- Mocked error test: `startPortForwarders` maps `startFwdTask` `EMFILE` failure to `.ioError`. -/
+def err_psandboxRaw_startPortForwarders_ioError : IO Unit :=
+  assertCapErr (capWithTable (seededBoxTable none #[7])) (fun ops => ops.startPortForwarders activeBox #[{ boxPort := 8080, hostPort := 8081 }]) .ioError "startPortForwarders EMFILE"
+
+/-- Real error test: `stopPortForwarders` rejects forged zero handle with `.invalidInput`. -/
+def err_psandboxRaw_stopPortForwarders_invalidInput : IO Unit := do
+  assertErrKind (← Raw.stopPortForwarders forgedFwd) .invalidInput "stopPortForwarders handle 0"
+
+/-- Real error test: `readBoxOutput` rejects forged zero `BoxHandle` with `.invalidInput`. -/
+def err_psandboxRaw_readBoxOutput_invalidInput : IO Unit := do
+  assertErrKind (← Raw.readBoxOutput forgedBox ByteArray.empty 1000 none) .invalidInput "readBoxOutput handle 0"
+
+/-- Mocked error test: `readBoxOutput` maps `PS_STATUS_INIT_ERR` status frame to `.unavailable`. -/
+def err_psandboxRaw_readBoxOutput_unavailable : IO Unit :=
+  assertCapErr (capReadStatusFrame { kind := PS_STATUS_INIT_ERR, flag := 0, value := 1 }) (fun ops => ops.readBoxOutput activeBox ByteArray.empty 5000 (some 1024)) .unavailable "readBoxOutput INIT_ERR"
+
+/-- Mocked error test: `readBoxOutput` maps `PS_STATUS_EXEC_ERR` (`ENOENT`) status frame to `.notFound`. -/
+def err_psandboxRaw_readBoxOutput_notFound : IO Unit :=
+  assertCapErr (capReadStatusFrame { kind := PS_STATUS_EXEC_ERR, flag := 0, value := 2 }) (fun ops => ops.readBoxOutput activeBox ByteArray.empty 5000 (some 1024)) .notFound "readBoxOutput EXEC_ERR ENOENT"
+
+/-- Mocked error test: `readBoxOutput` maps `PS_STATUS_EXEC_ERR` (`EACCES`) status frame to `.permissionDenied`. -/
+def err_psandboxRaw_readBoxOutput_permissionDenied : IO Unit :=
+  assertCapErr (capReadStatusFrame { kind := PS_STATUS_EXEC_ERR, flag := 0, value := 13 }) (fun ops => ops.readBoxOutput activeBox ByteArray.empty 5000 (some 1024)) .permissionDenied "readBoxOutput EXEC_ERR EACCES"
+
+/-- Mocked error test: `readBoxOutput` maps `clock_gettime` `EINVAL` failure to `.ioError`. -/
+def err_psandboxRaw_readBoxOutput_ioError : IO Unit :=
+  assertCapErr capReadClockEinval (fun ops => ops.readBoxOutput activeBox ByteArray.empty 1000 none) .ioError "readBoxOutput clock_gettime EINVAL"
+
+/-- Real error test: `killProcessGroup` rejects forged zero `BoxHandle` with `.invalidInput`. -/
+def err_psandboxRaw_killProcessGroup_invalidInput : IO Unit := do
+  assertErrKind (← Raw.killProcessGroup forgedBox) .invalidInput "killProcessGroup handle 0"
+
+/-- Mocked error test: `killProcessGroup` maps `kill` `EPERM` failure to `.ioError`. -/
+def err_psandboxRaw_killProcessGroup_ioError : IO Unit :=
+  assertCapErr capKillPgEperm (fun ops => ops.killProcessGroup activeBox) .ioError "killProcessGroup kill EPERM"
+
+/-- Real error test: `pidfdKill` rejects forged zero `BoxHandle` with `.invalidInput`. -/
+def err_psandboxRaw_pidfdKill_invalidInput : IO Unit := do
+  assertErrKind (← Raw.pidfdKill forgedBox) .invalidInput "pidfdKill handle 0"
+
+/-- Mocked error test: `pidfdKill` maps `pidfd_send_signal` `EPERM` failure to `.ioError`. -/
+def err_psandboxRaw_pidfdKill_ioError : IO Unit :=
+  assertCapErr capPidfdKillEperm (fun ops => ops.pidfdKill activeBox) .ioError "pidfdKill EPERM"
+
+/-- Real error test: `reapBox` rejects forged zero `BoxHandle` with `.invalidInput`. -/
+def err_psandboxRaw_reapBox_invalidInput : IO Unit := do
+  assertErrKind (← Raw.reapBox forgedBox) .invalidInput "reapBox handle 0"
+
+/-- Mocked error test: `reapBox` maps cgroup `unlinkat` `EACCES` failure to `.ioError`. -/
+def err_psandboxRaw_reapBox_ioError : IO Unit :=
+  assertCapErr capReapUnlinkEacces (fun ops => ops.reapBox activeBox) .ioError "reapBox unlinkat EACCES"
+
+/-- Registered runtime error-coverage probes matching `LeanSwe.ProcessSandbox.Raw.errorCoverage`. -/
+def registeredErrorTests : Array Core.RegisteredErrorTest := #[
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_decodeHostAuditArch_unavailable", mode := .real, run := err_psandboxRaw_decodeHostAuditArch_unavailable },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_encodePlan_invalidInput", mode := .real, run := err_psandboxRaw_encodePlan_invalidInput },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_hostSeccompArch_unavailable", mode := .mocked, run := err_psandboxRaw_hostSeccompArch_unavailable },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_preflight_unavailable", mode := .mocked, run := err_psandboxRaw_preflight_unavailable },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_discoverHostPreset_unavailable", mode := .mocked, run := err_psandboxRaw_discoverHostPreset_unavailable },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_sealPlan_invalidInput", mode := .real, run := err_psandboxRaw_sealPlan_invalidInput },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_sealPlan_unavailable", mode := .mocked, run := err_psandboxRaw_sealPlan_unavailable },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_sealPlan_ioError", mode := .mocked, run := err_psandboxRaw_sealPlan_ioError },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_closePlan_invalidInput", mode := .real, run := err_psandboxRaw_closePlan_invalidInput },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_spawnBox_invalidInput", mode := .real, run := err_psandboxRaw_spawnBox_invalidInput },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_spawnBox_unavailable", mode := .mocked, run := err_psandboxRaw_spawnBox_unavailable },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_spawnBox_notFound", mode := .mocked, run := err_psandboxRaw_spawnBox_notFound },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_spawnBox_permissionDenied", mode := .mocked, run := err_psandboxRaw_spawnBox_permissionDenied },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_spawnBox_ioError", mode := .mocked, run := err_psandboxRaw_spawnBox_ioError },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_startPortForwarders_invalidInput", mode := .real, run := err_psandboxRaw_startPortForwarders_invalidInput },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_startPortForwarders_ioError", mode := .mocked, run := err_psandboxRaw_startPortForwarders_ioError },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_stopPortForwarders_invalidInput", mode := .real, run := err_psandboxRaw_stopPortForwarders_invalidInput },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_readBoxOutput_invalidInput", mode := .real, run := err_psandboxRaw_readBoxOutput_invalidInput },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_readBoxOutput_unavailable", mode := .mocked, run := err_psandboxRaw_readBoxOutput_unavailable },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_readBoxOutput_notFound", mode := .mocked, run := err_psandboxRaw_readBoxOutput_notFound },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_readBoxOutput_permissionDenied", mode := .mocked, run := err_psandboxRaw_readBoxOutput_permissionDenied },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_readBoxOutput_ioError", mode := .mocked, run := err_psandboxRaw_readBoxOutput_ioError },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_killProcessGroup_invalidInput", mode := .real, run := err_psandboxRaw_killProcessGroup_invalidInput },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_killProcessGroup_ioError", mode := .mocked, run := err_psandboxRaw_killProcessGroup_ioError },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_pidfdKill_invalidInput", mode := .real, run := err_psandboxRaw_pidfdKill_invalidInput },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_pidfdKill_ioError", mode := .mocked, run := err_psandboxRaw_pidfdKill_ioError },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_reapBox_invalidInput", mode := .real, run := err_psandboxRaw_reapBox_invalidInput },
+  { testName := "LeanSwe.ProcessSandbox.Raw.RuntimeTests.err_psandboxRaw_reapBox_ioError", mode := .mocked, run := err_psandboxRaw_reapBox_ioError }
+]
+
 /-- Execute OS-level runtime verification tests for `LeanSwe.ProcessSandbox.Raw`, returning `some reason` if skipped. -/
 def runAllOutcome : IO (Option String) := do
+  Core.runRegisteredErrorTests registeredErrorTests
+  let caughtErrno ← SysBridge.catchErrno (throw (IO.userError "boom") : IO (Except Errno Unit))
+  match caughtErrno with
+  | .ok () => throw (IO.userError "ASSERTION FAILED: catchErrno must return .error on thrown IO.Error")
+  | .error e => assertTrue (e == Errno.EIO) "catchErrno converts userError to Errno.EIO"
+  let caughtTotal ← SysBridge.catchIoTotal (throw (IO.userError "boom") : IO Nat) (fun _ => 7)
+  assertTrue (caughtTotal == 7) "catchIoTotal converts thrown IO.Error to fallback"
+  let caughtPf ← SysBridge.catchPf (throw (IO.userError "boom") : IO (Except PostFork.PostForkError Unit))
+  match caughtPf with
+  | .ok () => throw (IO.userError "ASSERTION FAILED: catchPf must return .error on thrown IO.Error")
+  | .error e => assertTrue (e.kind == .sysError && e.errno == some Errno.EIO) "catchPf maps userError to sysError EIO"
   let baseCounts ← Raw.activeResourceCounts
   assertTrue (baseCounts == { openPlans := 0, activeBoxes := 0, activeForwarders := 0 })
     "initial Raw.activeResourceCounts == 0"

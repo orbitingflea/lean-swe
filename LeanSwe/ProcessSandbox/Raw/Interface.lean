@@ -1,15 +1,23 @@
 import LeanSwe.ProcessSandbox.Raw.Types
+import LeanSwe.ProcessSandbox.Raw.Model.Refines
 import LeanSwe.ProcessSandbox.Raw.Impl
 import LeanSwe.ProcessSandbox.Raw.SysBridge
+import LeanSwe.ProcessSandbox.Raw.SysBridge.HostCap
 
 namespace LeanSwe.ProcessSandbox.Raw
 
+namespace Internal
+
+/-- Build a generic `RawProcessSandboxOpsM m` backed by `Raw.SysBridge.mkRawOpsM` over public `Model.RawHostCapM m`. -/
+def mkOpsFromHostCapM {m : Type → Type} [Monad m]
+    (cap : Model.RawHostCapM m) : RawProcessSandboxOpsM m :=
+  SysBridge.mkOpsFromHostCapM cap
+
+end Internal
+
 /-- Default OS sandbox primitive operations backed by pure Lean `Raw.SysBridge` and embedded `leanswe-psandbox-init`. -/
 def defaultOps : RawProcessSandboxOps :=
-  { SysBridge.defaultOps with
-    mapRawError := Internal.mapRawError
-    decodeHostAuditArch := Internal.decodeHostAuditArch
-    encodePlan := Internal.encodePlan }
+  Internal.mkOpsFromHostCapM SysBridge.defaultOps
 
 /-- Normalize a `SandboxRawError` into a `SandboxError` with a non-empty diagnostic message. -/
 @[inline] def mapRawError (err : SandboxRawError) : SandboxError :=

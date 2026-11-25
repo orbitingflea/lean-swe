@@ -25,6 +25,7 @@ import LeanSwe.ProcessSandbox.Raw.SysBridge.Forwarder
 import LeanSwe.ProcessSandbox.Raw.SysBridge.StreamIo
 import LeanSwe.ProcessSandbox.Raw.SysBridge.State
 import LeanSwe.ProcessSandbox.Raw.SysBridge.Spawn
+import LeanSwe.ProcessSandbox.Raw.SysBridge.IoHostCap
 
 namespace LeanSwe.ProcessSandbox.Raw.SysBridge
 
@@ -44,7 +45,8 @@ def hostSeccompArchPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
 /-- Pure capability-parameterized implementation of `RawProcessSandboxOpsM.preflight`. -/
 def preflightPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
     (deps : HostSysDepsM m fd fwdTask) (tbl : HostTableOpsM m fd fwdTask)
-    (eintrFuel : Nat) (req : PreflightReq) : m (Except SandboxError Unit) := do
+    (eintrFuel : Nat) (req : PreflightReq)
+    (initBytesRes : Except String ByteArray := embeddedInitBytes) : m (Except SandboxError Unit) := do
   if !deps.isLinux then
     return .error (Internal.mapRawError (.unavailable none "ProcessSandbox requires Linux"))
   if detectHostAuditArch deps.isLinux deps.target == 0 then
@@ -63,7 +65,7 @@ def preflightPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
       | .error e =>
         return .error (Internal.mapRawError (.unavailable (some e) "seccomp filter support is required"))
       | .ok _ =>
-        match embeddedInitBytes with
+        match initBytesRes with
         | .error msg =>
           return .error (Internal.mapRawError (.unavailable (some Errno.ENOEXEC) msg))
         | .ok initBytes =>
@@ -130,7 +132,8 @@ def discoverHostPresetPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
 /-- Pure capability-parameterized implementation of `RawProcessSandboxOpsM.sealPlan`. -/
 def sealPlanPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
     (deps : HostSysDepsM m fd fwdTask) (tbl : HostTableOpsM m fd fwdTask)
-    (eintrFuel : Nat) (plan : CompiledSandboxPlan) (seccompBytes : ByteArray) :
+    (eintrFuel : Nat) (plan : CompiledSandboxPlan) (seccompBytes : ByteArray)
+    (initBytesRes : Except String ByteArray := embeddedInitBytes) :
     m (Except SandboxError PlanHandle) := do
   match Internal.encodePlan plan seccompBytes with
   | .error e => return .error e
@@ -139,7 +142,7 @@ def sealPlanPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
       return .error (Internal.mapRawError (.invalidArgument none (some Errno.EINVAL) "invalid compiled sandbox plan"))
     if !deps.isLinux then
       return .error (Internal.mapRawError (.unavailable none "ProcessSandbox requires Linux"))
-    match embeddedInitBytes with
+    match initBytesRes with
     | .error msg =>
       return .error (Internal.mapRawError (.unavailable (some Errno.ENOEXEC) msg))
     | .ok initBytes =>
@@ -300,9 +303,9 @@ def mkRawOpsM {m : Type → Type} [Monad m] {fd fwdTask : Type}
     decodeHostAuditArch := Internal.decodeHostAuditArch
     encodePlan := Internal.encodePlan
     hostSeccompArch := hostSeccompArchPure deps
-    preflight := preflightPure deps tbl eintrFuel
+    preflight := fun req => preflightPure deps tbl eintrFuel req
     discoverHostPreset := discoverHostPresetPure deps eintrFuel
-    sealPlan := sealPlanPure deps tbl eintrFuel
+    sealPlan := fun plan sec => sealPlanPure deps tbl eintrFuel plan sec
     closePlan := closePlanPure deps tbl
     spawnBox := spawnBoxPure deps tbl eintrFuel
     startPortForwarders := startPortForwardersPure deps tbl
@@ -313,72 +316,10 @@ def mkRawOpsM {m : Type → Type} [Monad m] {fd fwdTask : Type}
     reapBox := reapBoxPure deps tbl eintrFuel
     activeResourceCounts := tbl.counts }
 
-private initialize gHostTable : IO.Ref (HostTableState RawFd IoForwarderHandle) ← IO.mkRef {}
+private initialize gHostTable : IO.Ref IoHostState ← IO.mkRef {}
 
-/-- Default `IO` handle-table capability bundle backed by atomic `IO.Ref.modifyGet` transitions. -/
-def ioHostTableOps : HostTableOpsM IO RawFd IoForwarderHandle where
-  insertPlan slot := (gHostTable.modifyGet fun st => insertPlanPure st slot : BaseIO _)
-  findPlan hid := do
-    let st ← (gHostTable.get : BaseIO _)
-    return assocFind hid st.plans
-  detachPlan hid := (gHostTable.modifyGet fun st => detachPlanPure st hid : BaseIO _)
-  insertBox slot := (gHostTable.modifyGet fun st => insertBoxPure st slot : BaseIO _)
-  findBoxKillInfo hid := do
-    let st ← (gHostTable.get : BaseIO _)
-    return (assocFind hid st.boxes).map fun b => (b.pgid, b.pidfd)
-  takeBoxListeners hid expected :=
-    (gHostTable.modifyGet fun st => takeBoxListenersPure st hid expected : BaseIO _)
-  takeBoxIo hid := (gHostTable.modifyGet fun st => takeBoxIoPure st hid : BaseIO _)
-  detachBox hid := (gHostTable.modifyGet fun st => detachBoxPure st hid : BaseIO _)
-  insertFwd slot := (gHostTable.modifyGet fun st => insertFwdPure st slot : BaseIO _)
-  detachFwd hid := (gHostTable.modifyGet fun st => detachFwdPure st hid : BaseIO _)
-  nextCgSeq := (gHostTable.modifyGet fun st => nextCgSeqPure st : BaseIO _)
-  counts := do
-    let st ← (gHostTable.get : BaseIO _)
-    return countsPure st
-
-/-- Default `IO` syscall dependency bundle backed purely by `LinuxSyscall.*`, `PostFork`, `EnvVars.Raw`, and `Forwarder`. -/
-def ioHostSysDeps : HostSysDepsM IO RawFd IoForwarderHandle where
-  files := Files.defaultOps
-  net := Net.defaultOps
-  poll := Poll.defaultOps
-  proc := LinuxSyscall.Process.defaultOps
-  sandbox := Sandbox.defaultOps
-  timeRand := TimeRand.defaultOps
-  passwd := Passwd.defaultOps
-  postFork := PostFork.defaultOps
-  isLinux := !System.Platform.isWindows && !System.Platform.isOSX
-  target := System.Platform.target
-  getEnvPath := do
-    match ← EnvVars.Raw.getEnv "PATH" with
-    | .ok (some s) => return some s.toUTF8
-    | _ => return none
-  getEnvHome := do
-    match ← EnvVars.Raw.getEnv "HOME" with
-    | .ok v? => return v?
-    | .error _ => return none
-  startFwdTask := startIoForwarder
-  stopFwdTask := stopIoForwarder
-
-/-- Default `IO` `RawProcessSandboxOps` bundle implemented in pure Lean over `LinuxSyscall.*`, `PostFork`, `EnvVars.Raw`, and `NetRelay`. -/
-def defaultOps : RawProcessSandboxOps :=
-  let core := mkRawOpsM ioHostSysDeps ioHostTableOps
-  { mapRawError := Internal.mapRawError
-    decodeHostAuditArch := Internal.decodeHostAuditArch
-    encodePlan := Internal.encodePlan
-    hostSeccompArch := Internal.catchSandbox core.hostSeccompArch
-    preflight := fun req => Internal.catchSandbox (core.preflight req)
-    discoverHostPreset := Internal.catchSandbox core.discoverHostPreset
-    sealPlan := fun plan seccomp => Internal.catchSandbox (core.sealPlan plan seccomp)
-    closePlan := fun ph => Internal.catchSandbox (core.closePlan ph)
-    spawnBox := fun ph => Internal.catchSandbox (core.spawnBox ph)
-    startPortForwarders := fun bh fwds => Internal.catchSandbox (core.startPortForwarders bh fwds)
-    stopPortForwarders := fun fh => Internal.catchSandbox (core.stopPortForwarders fh)
-    readBoxOutput := fun bh stdin toMs maxOut? =>
-      Internal.catchSandbox (core.readBoxOutput bh stdin toMs maxOut?)
-    killProcessGroup := fun bh => Internal.catchSandbox (core.killProcessGroup bh)
-    pidfdKill := fun bh => Internal.catchSandbox (core.pidfdKill bh)
-    reapBox := fun bh => Internal.catchSandbox (core.reapBox bh)
-    activeResourceCounts := core.activeResourceCounts }
+/-- Default `IO` host capability bundle backed by `LinuxSyscall.*`, `PostFork`, `EnvVars.Raw`, `Forwarder`, and atomic `gHostTable`. -/
+def defaultOps : Model.RawHostCapM IO :=
+  mkIoHostCap gHostTable
 
 end LeanSwe.ProcessSandbox.Raw.SysBridge

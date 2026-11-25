@@ -1,13 +1,20 @@
+import Core.Refines
 import LeanSwe.ProcessSandbox.Raw.Types
 import LeanSwe.ProcessSandbox.Raw.Model
+import LeanSwe.ProcessSandbox.Raw.Model.Refines
 import LeanSwe.ProcessSandbox.Raw.Interface
 import LeanSwe.ProcessSandbox.Raw.Impl
 import LeanSwe.ProcessSandbox.Raw.SpecTests
 import LeanSwe.ProcessSandbox.Raw.Proofs.EncodePlan
+import LeanSwe.ProcessSandbox.Raw.Proofs.ErrorImpossibility
+import LeanSwe.ProcessSandbox.Raw.Proofs.IoTotalHelpers
+import LeanSwe.ProcessSandbox.Raw.Proofs.ErrorImpossibilityIo
 import LeanSwe.ProcessSandbox.Raw.Proofs.HostCgroupPresetProofs
 import LeanSwe.ProcessSandbox.Raw.Proofs.HostBwrapProofs
 import LeanSwe.ProcessSandbox.Raw.Proofs.HostForwarderStreamProofs
 import LeanSwe.ProcessSandbox.Raw.Proofs.HostBridgeProofs
+import LeanSwe.ProcessSandbox.Raw.Proofs.RefinesPure
+import LeanSwe.ProcessSandbox.Raw.Proofs.RefinesModel
 
 namespace LeanSwe.ProcessSandbox.Raw.Proofs
 
@@ -93,11 +100,16 @@ theorem reach_psandboxRaw_isValidSandboxHandleId_bounds :
     CanReach test_psandboxRaw_isValidSandboxHandleId_bounds := by
   refine ⟨1, by decide, by decide, by decide, by decide, by decide, trivial⟩
 
+private theorem defaultOps_mapRawError : defaultOps.mapRawError = Internal.mapRawError := rfl
+
+private theorem defaultOps_decodeHostAuditArch :
+    defaultOps.decodeHostAuditArch = Internal.decodeHostAuditArch := rfl
+
 /-- Proof of `test_psandboxRaw_mapRawError_returnsNonEmptyMessage` for `defaultOps`. -/
 theorem proof_psandboxRaw_mapRawError_returnsNonEmptyMessage :
     AllPass (test_psandboxRaw_mapRawError_returnsNonEmptyMessage defaultOps) := by
   intro raw
-  simp only [defaultOps, Internal.mapRawError, Model.Internal.mapRawError, assert]
+  simp only [defaultOps_mapRawError, Internal.mapRawError, Model.Internal.mapRawError, assert]
   refine ⟨?_, trivial⟩
   cases raw with
   | unavailable _ _ => exact ifEmpty_ne_empty _ _ (by decide)
@@ -118,12 +130,12 @@ theorem reach_psandboxRaw_mapRawError_returnsNonEmptyMessage :
 theorem proof_psandboxRaw_mapRawError_preservesKindAndFields :
     AllPass (test_psandboxRaw_mapRawError_preservesKindAndFields defaultOps) := by
   intro raw
-  cases raw <;> simp [defaultOps, Internal.mapRawError, Model.Internal.mapRawError, assert]
+  cases raw <;> simp [defaultOps_mapRawError, Internal.mapRawError, Model.Internal.mapRawError, assert]
 
 /-- Non-vacuity `CanReach` witness for `test_psandboxRaw_mapRawError_preservesKindAndFields`. -/
 theorem reach_psandboxRaw_mapRawError_preservesKindAndFields :
     CanReach (test_psandboxRaw_mapRawError_preservesKindAndFields defaultOps) :=
-  ⟨.userError "err", by simp [defaultOps, Internal.mapRawError, Model.Internal.mapRawError, assert]⟩
+  ⟨.userError "err", by simp [defaultOps_mapRawError, Internal.mapRawError, Model.Internal.mapRawError, assert]⟩
 
 /-- Proof of `test_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed` for `defaultOps`. -/
 theorem proof_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed :
@@ -134,7 +146,7 @@ theorem proof_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed :
   · intro raw hne
     have h0 : raw ≠ 0xc000003e := hne.1
     have h1 : raw ≠ 0xc00000b7 := hne.2
-    simp only [defaultOps, Internal.decodeHostAuditArch,
+    simp only [defaultOps_decodeHostAuditArch, Internal.decodeHostAuditArch,
       LeanSwe.ProcessSandbox.Model.seccompArchOfAudit?,
       LeanSwe.ProcessSandbox.Model.AUDIT_ARCH_X86_64,
       LeanSwe.ProcessSandbox.Model.AUDIT_ARCH_AARCH64]
@@ -146,7 +158,7 @@ theorem proof_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed :
 theorem reach_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed :
     CanReach (test_psandboxRaw_decodeHostAuditArch_exactConstantsAndFailClosed defaultOps) := by
   refine ⟨rfl, rfl, 0, ⟨by decide, by decide⟩, ?_⟩
-  simp [defaultOps, Internal.decodeHostAuditArch,
+  simp [defaultOps_decodeHostAuditArch, Internal.decodeHostAuditArch,
     LeanSwe.ProcessSandbox.Model.seccompArchOfAudit?,
     LeanSwe.ProcessSandbox.Model.AUDIT_ARCH_X86_64,
     LeanSwe.ProcessSandbox.Model.AUDIT_ARCH_AARCH64,
@@ -261,5 +273,15 @@ theorem reach_psandboxRaw_boxAndForwarderLifecycle_conservesResources :
   refine ⟨{}, { program := "/bin/true" }, ByteArray.empty, #[{ boxPort := 8080, hostPort := 8080 }], by decide, by decide, ?_⟩
   simp [mockRawOps, hasHandle, isValidSandboxHandleId, UInt64.size, UInt32.size,
     freshU32, Model.Internal.mapRawError, assert, Bind.bind, StateT.run]
+
+/-- Complete behavioral refinement contract for `LeanSwe.ProcessSandbox.Raw` across all 3 pure and 13 effectful `Interface` operations over `Raw.Model.Refines`. -/
+theorem refines_model :
+    Core.RefinesPureEq LeanSwe.ProcessSandbox.Raw.mapRawError Model.Internal.mapRawError ∧
+    Core.RefinesPureEq LeanSwe.ProcessSandbox.Raw.decodeHostAuditArch Model.decodeHostAuditArch ∧
+    Core.RefinesPure2 LeanSwe.ProcessSandbox.Raw.encodePlan Model.allowedEncodePlan ∧
+    Core.RefinesStepFrom id Model.rawHostWorldWf Model.execRawCapStep Model.allowedRawCapStep
+      Model.rawHostWorldWf Internal.mkOpsFromHostCapM Model.execRawOpsStep Model.allowedRawOpsStep :=
+  ⟨refinesPure_mapRawError, refinesPure_decodeHostAuditArch, refinesPure_encodePlan,
+    refinesStepFrom_mkOpsFromHostCapM⟩
 
 end LeanSwe.ProcessSandbox.Raw.Proofs

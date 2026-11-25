@@ -55,6 +55,50 @@ def rollbackRunningChild {m : Type → Type} [Monad m] {fd : Type}
   let _ ← cleanupCgroupDir files timeRand cgDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS eintrFuel
   pure ()
 
+/-- Optionally allocate the `AF_UNIX` `SOCK_SEQPACKET` control socketpair when `nFwds > 0`. -/
+def allocCtrlSocketpair {m : Type → Type} [Monad m] {fd : Type}
+    (net : Net.NetOpsM m fd) (nFwds eintrFuel : Nat) :
+    m (Except Errno (Option (fd × fd))) := do
+  if nFwds > 0 then
+    match ← retryEintr (net.socketpair .unix .seqpacket { cloexec := true }) eintrFuel with
+    | .ok pair => return .ok (some pair)
+    | .error e => return .error e
+  else
+    return .ok none
+
+/-- Verify `cgroup.kill` write access and configure optional `memory` and `pids.max` limits on `cgDir`. -/
+def setupSpawnCgroupLimits {m : Type → Type} [Monad m] {fd : Type}
+    (files : Files.FilesOpsM m fd) (cgDir : String) (limits : SandboxLimits) (eintrFuel : Nat) :
+    m (Option (Errno × String)) := do
+  match ← retryEintr (files.faccessat none (cgroupSubfile cgDir "cgroup.kill").toUTF8 { write := true } {}) eintrFuel with
+  | .error e => return some (e, "direct cgroup v2 cgroup.kill unavailable")
+  | .ok () =>
+    let checkPids : m (Option (Errno × String)) :=
+      match limits.pidsMax with
+      | none => pure none
+      | some pMax => do
+        match ← configureCgroupPids files cgDir (toString (cappedPidsMax pMax)) eintrFuel with
+        | .ok () => pure none
+        | .error e => pure (some (e, s!"failed to set direct cgroup v2 pids.max: {Errno.name e}"))
+    match limits.memoryMaxBytes with
+    | none => checkPids
+    | some memMax =>
+      match ← configureCgroupMemory files cgDir (toString memMax) eintrFuel with
+      | .ok () => checkPids
+      | .error (fname, e) => return some (e, s!"failed to set direct cgroup v2 {fname}: {Errno.name e}")
+
+/-- Receive `nFwds` bound listener descriptors over `ctrlR?` when port forwarding is configured. -/
+def recvPortListenerFds {m : Type → Type} [Monad m] {fd : Type}
+    (files : Files.FilesOpsM m fd) (net : Net.NetOpsM m fd) (poll : Poll.PollOpsM m fd)
+    (ctrlR? : Option fd) (statusR : fd) (nFwds : Nat) :
+    m (Except Errno (Array fd)) := do
+  match ctrlR? with
+  | some cr =>
+    let r ← recvFdsScm files net poll cr statusR nFwds
+    Files.closeOpt files (some cr)
+    return r
+  | none => return .ok #[]
+
 /-- Pure capability-parameterized implementation of `RawProcessSandboxOpsM.spawnBox`. -/
 def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
     (deps : HostSysDepsM m fd fwdTask) (tbl : HostTableOpsM m fd fwdTask)
@@ -122,13 +166,7 @@ def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
                         return .error (Internal.mapRawError (.ioError none e "pipe2 failed"))
                       | .ok (goR, goW) =>
                         let nFwds := plan.portForwards.size
-                        let ctrlRes ←
-                          if nFwds > 0 then
-                            match ← retryEintr (deps.net.socketpair .unix .seqpacket { cloexec := true }) eintrFuel with
-                            | .ok pair => pure (Except.ok (some pair))
-                            | .error e => pure (Except.error e)
-                          else
-                            pure (Except.ok none)
+                        let ctrlRes ← allocCtrlSocketpair deps.net nFwds eintrFuel
                         match ctrlRes with
                         | .error e =>
                           Files.closeOpt deps.files (some goR); Files.closeOpt deps.files (some goW)
@@ -154,26 +192,7 @@ def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
                               closeAllPreFork
                               return .error (Internal.mapRawError (.unavailable (some e) s!"failed to create direct cgroup v2 directory: {Errno.name e}"))
                             | .ok cgDir =>
-                              let cgSetupErr? ← do
-                                match ← retryEintr (deps.files.faccessat none (cgroupSubfile cgDir "cgroup.kill").toUTF8 { write := true } {}) eintrFuel with
-                                | .error e => pure (some (e, "direct cgroup v2 cgroup.kill unavailable"))
-                                | .ok () =>
-                                  let memErr? ←
-                                    match plan.limits.memoryMaxBytes with
-                                    | none => pure none
-                                    | some memMax =>
-                                      match ← configureCgroupMemory deps.files cgDir (toString memMax) eintrFuel with
-                                      | .ok () => pure none
-                                      | .error (fname, e) => pure (some (e, s!"failed to set direct cgroup v2 {fname}: {Errno.name e}"))
-                                  match memErr? with
-                                  | some me => pure (some me)
-                                  | none =>
-                                    match plan.limits.pidsMax with
-                                    | none => pure none
-                                    | some pMax =>
-                                      match ← configureCgroupPids deps.files cgDir (toString (cappedPidsMax pMax)) eintrFuel with
-                                      | .ok () => pure none
-                                      | .error e => pure (some (e, s!"failed to set direct cgroup v2 pids.max: {Errno.name e}"))
+                              let cgSetupErr? ← setupSpawnCgroupLimits deps.files cgDir plan.limits eintrFuel
                               match cgSetupErr? with
                               | some (e, msg) =>
                                 closeAllPreFork
@@ -247,13 +266,7 @@ def spawnBoxPure {m : Type → Type} [Monad m] {fd fwdTask : Type}
                                         let _ ← cleanupCgroupDir deps.files deps.timeRand cgDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS eintrFuel
                                         return .error (Internal.mapRawError (.unavailable pfErr.errno s!"execvp bwrap failed: {pfErr.message}"))
                                       | .ok child =>
-                                        let recvRes ←
-                                          match ctrlR? with
-                                          | some cr =>
-                                            let r ← recvFdsScm deps.files deps.net deps.poll cr statusR nFwds
-                                            Files.closeOpt deps.files (some cr)
-                                            pure r
-                                          | none => pure (.ok #[])
+                                        let recvRes ← recvPortListenerFds deps.files deps.net deps.poll ctrlR? statusR nFwds
                                         match recvRes with
                                         | .error e =>
                                           let snip ← drainStderrSnippet deps.files errR
