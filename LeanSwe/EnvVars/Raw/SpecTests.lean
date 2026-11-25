@@ -2,6 +2,7 @@ import Core.NondetTest
 import Core.Assumptions
 import LeanSwe.EnvVars.Raw.Types
 import LeanSwe.EnvVars.Raw.Model
+import LeanSwe.EnvVars.Raw.Model.Assumptions
 
 namespace LeanSwe.EnvVars.Raw
 
@@ -196,20 +197,6 @@ def test_envvarsraw_listEnv_nulFreeInputsPreserveNulFreedom
   NondetTest.assert (pairs.toList.all fun p =>
     !p.1.isEmpty && !('=' ∈ p.1.toList) &&
     !(Char.ofNat 0 ∈ p.1.toList) && !(Char.ofNat 0 ∈ p.2.toList))
-
-/-- Formal POSIX `environ(7)` / `getenv(3)` boundary assumption consumed by upper-layer
-    `LeanSwe.EnvVars.Proofs.envvars_listEnv_consistent_with_getEnv`: whenever `ops.listEnv` succeeds with `pairs`,
-    every listed key is a valid POSIX key (`k ≠ ""`, `'=' ∉ k`, NUL `∉ k`) and for every valid POSIX key `k`,
-    `ops.getEnv k` returns the value of the first matching entry in `pairs` (`none` when absent). -/
-def assume_envvarsraw_listEnv_consistentWithGetEnv
-    {runner} [NondetTest runner] (ops : RawEnvVarsOpsM Id) : runner Unit := do
-  let pairs ← nondet (Array (String × String))
-  let k ← nondet String
-  assume (ops.listEnv = .ok pairs)
-  assume (k ≠ "" ∧ '=' ∉ k.toList ∧ Char.ofNat 0 ∉ k.toList)
-  NondetTest.assert
-    (pairs.toList.all (fun p => !p.1.isEmpty && !('=' ∈ p.1.toList) && !(Char.ofNat 0 ∈ p.1.toList)) = true ∧
-     ops.getEnv k = .ok ((pairs.toList.find? (fun p => p.1 == k)).map Prod.snd))
 
 /-- Frozen thin-boundary assumptions for `LeanSwe.EnvVars.Raw` over POSIX `getenv(3)` and `environ(7)`
     (`c/envvars_shim.c` raw byte data-passing + 1 formal consistency invariant consumed by `LeanSwe.EnvVars.Proofs`). -/

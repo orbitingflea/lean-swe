@@ -22,7 +22,7 @@ Enforces:
      `assume_*`, zero `externalAssumptions`, and zero `registeredAssumptions`.
    - External-boundary modules with `RuntimeTests` declare `externalAssumptions : List AssumptionObligation`
      linking each obligation to a real `<pkgNs>.Interface`/`Impl` `subject` and 1-to-1 to a named `RuntimeTests` probe.
-   - Formal `assume_*` predicates in `SpecTests` are allowed only when `formalPred? = some name`,
+   - Formal `assume_*` predicates in `SpecTests` or `Model.Assumptions` are allowed only when `formalPred? = some name`,
      non-trivial over the boundary parameter (`isMeaningfulBoundaryProp`), satisfiable via `Core.CanReach`,
      and consumed as a used `Prop` hypothesis (after zeta and beta reduction) in an upper-layer `Proofs` theorem.
 4. Runtime linking, active execution, non-noop checks, and nonce-log anti-forgery across `Tests.Main` and `RuntimeTests`,
@@ -3898,6 +3898,18 @@ unsafe def main (args : List String) : IO UInt32 := do
         if isPrivateName c.name then
           if let .thmInfo _ := c then
             specAndProofRoots := specAndProofRoots.push c.name
+    else if m.getRoot == `LeanSwe && !isProofsModule m && !m.components.contains `RuntimeTests &&
+        (m.components.contains `Model || m.components.contains `SpecTests) then
+      let pkg := pkgNamespaceOfSpecWith knownPkgs m
+      if cfg.legacyAllowlist.contains pkg then continue
+      for c in data.constants do
+        if isCompilerAux c.name || isInductiveElimAux env c.name then continue
+        let short := c.name.getString!
+        if short.startsWith "empirical_" then
+          errors := errors.push s!"RENAMED_OR_EMPIRICAL_ASSUMPTION: {c.name} in {m}"
+        if short.startsWith "assume_" then
+          formalAssumptions := formalAssumptions.push (m, c.name)
+          specAndProofRoots := specAndProofRoots.push c.name
 
   let usedInSpecsOrProofs := collectTransitiveDeps env specAndProofRoots
   let formalAssumpSet0 : Std.HashSet Name := formalAssumptions.foldl (fun s (_, a) => s.insert a) {}
@@ -4223,8 +4235,10 @@ unsafe def main (args : List String) : IO UInt32 := do
         |>.insert `EStateM.throw
         |>.insert `IO.userError
 
+    let mut checkedSpecPkgs : Std.HashSet Name := {}
     for specMod in specModules do
       let pkgNs := pkgNamespaceOfSpecWith knownPkgs specMod
+      checkedSpecPkgs := checkedSpecPkgs.insert pkgNs
       let isExtPkg := isExternalBoundaryPkg env knownPkgs pkgNs
       let rtMod := Name.str pkgNs "RuntimeTests"
       let hasRt := visited.contains rtMod || diskRtPkgs.contains pkgNs
@@ -4317,7 +4331,7 @@ unsafe def main (args : List String) : IO UInt32 := do
               match fp? with
               | none =>
                 if env.contains obConst then
-                  errs := errs.push s!"UNLINKED_FORMAL_ASSUMPTION_PRED: {obName} exists in {specMod} with formalPred? = none"
+                  errs := errs.push s!"UNLINKED_FORMAL_ASSUMPTION_PRED: {obName} exists in {moduleOfConst env obConst} with formalPred? = none"
               | some fpStr =>
                 if fpStr != obName || !formalAssumpSet.contains obConst then
                   errs := errs.push s!"MISSING_FORMAL_ASSUMPTION_PRED: {fpStr} for {obName} in {extAssumpConst}"
@@ -4333,11 +4347,11 @@ unsafe def main (args : List String) : IO UInt32 := do
           errs := errs.push s!"MISSING_EXTERNAL_ASSUMPTIONS: {extAssumpConst}"
 
         for (m, aName) in formalAssumptions do
-          if m == specMod && !listedFormalPreds.contains aName then
+          if pkgNamespaceOfSpecWith knownPkgs m == pkgNs && !listedFormalPreds.contains aName then
             errs := errs.push s!"UNLISTED_FORMAL_ASSUMPTION: {aName} missing from {extAssumpConst}"
       else
         for (m, aName) in formalAssumptions do
-          if m == specMod then
+          if pkgNamespaceOfSpecWith knownPkgs m == pkgNs then
             errs := errs.push s!"UNLISTED_FORMAL_ASSUMPTION: {aName} missing from {extAssumpConst}"
 
       let ifaceMod := Name.str pkgNs "Interface"
@@ -4494,6 +4508,12 @@ unsafe def main (args : List String) : IO UInt32 := do
                 errs := errs.push s!"UNCOVERED_CENTRAL_ERROR_CELL: ({reqName}, {ctor}) in {pkgNs} not discharged by NeverErrorKind*, ERR_HIT log, or coverage_overrides.json"
           if !hasLegacyErrCov && (hasAnyFallibleIfaceSurface || !fallibleReqs.isEmpty) && pkgCentralCells == 0 then
             errs := errs.push s!"MISSING_ERROR_COVERAGE: {errCovConst} (central coverage checked 0 cells for fallible surface in {pkgNs})"
+
+    for (m, aName) in formalAssumptions do
+      let pkgNs := pkgNamespaceOfSpecWith knownPkgs m
+      if !checkedSpecPkgs.contains pkgNs then
+        let extAssumpConst := Name.str pkgNs "externalAssumptions"
+        errs := errs.push s!"UNLISTED_FORMAL_ASSUMPTION: {aName} missing from {extAssumpConst}"
 
     let activeScanErrs := (← activeCacheRef.get).scanErrors.toArray.qsort (fun a b => a.1.toString < b.1.toString)
     for (fnName, reason) in activeScanErrs do

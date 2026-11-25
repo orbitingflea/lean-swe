@@ -1236,6 +1236,115 @@ private def runCentralCoverageSelfTests (base : MiniRepo) (tmpRoot bin : System.
        "    }\n" ++
        "  ]\n}\n")
 
+  do
+    let maDir := tmpRoot / "cc_model_assumptions"
+    let maRepo := maDir / "repo"
+    let maLib := maDir / "lib"
+    IO.FS.createDirAll maDir
+    copyDirTree repo maRepo
+    copyDirTree lib maLib
+    let malp := s!"{maLib}:{base.leanPath}"
+    writeFileCreatingParents (maRepo / "LeanSwe/MiniExt/Model/Assumptions.lean")
+      ("import Core.NondetTest\nimport LeanSwe.MiniExt.Types\n" ++
+       "namespace LeanSwe.MiniExt\nopen Core Core.NondetTest\n" ++
+       "def assume_miniext_probe_nonzero {r} [NondetTest r] (f : String → Nat) : r Unit := do\n" ++
+       "  let k ← nondet String\n" ++
+       "  NondetTest.assert (f k ≥ 1)\n" ++
+       "end LeanSwe.MiniExt\n")
+    writeFileCreatingParents (maRepo / "LeanSwe/MiniExt/SpecTests.lean")
+      ("import Core.Assumptions\nimport LeanSwe.MiniExt.Interface\nimport LeanSwe.MiniExt.Model.Assumptions\n" ++
+       "namespace LeanSwe.MiniExt\nopen Core\n" ++
+       "def externalAssumptions : List AssumptionObligation :=\n" ++
+       "  [ { name := \"LeanSwe.MiniExt.assume_miniext_probe_nonzero\", subject := \"LeanSwe.MiniExt.probe\", formalPred? := some \"LeanSwe.MiniExt.assume_miniext_probe_nonzero\" } ]\n" ++
+       "end LeanSwe.MiniExt\n")
+    writeFileCreatingParents (maRepo / "LeanSwe/MiniPure/Proofs/Consumer.lean")
+      ("import LeanSwe.MiniPure.Interface\nimport LeanSwe.MiniExt.Model.Assumptions\n" ++
+       "namespace LeanSwe.MiniPure.Proofs\n" ++
+       "theorem uses_miniext_assump (f : String → Nat) (h : Core.AllPass (LeanSwe.MiniExt.assume_miniext_probe_nonzero f)) :\n" ++
+       "    LeanSwe.MiniPure.eval (f \"x\") ≥ 2 := by\n" ++
+       "  have hx := (h \"x\").1\n" ++
+       "  unfold LeanSwe.MiniPure.eval LeanSwe.MiniPure.Internal.evalImpl\n" ++
+       "  omega\n" ++
+       "end LeanSwe.MiniPure.Proofs\n")
+    for m in #["LeanSwe/MiniExt/Model/Assumptions", "LeanSwe/MiniExt/SpecTests",
+        "LeanSwe/MiniExt/Proofs", "LeanSwe/MiniPure/Proofs/Consumer", "LeanSwe"] do
+      compileLeanMod maRepo malp (maRepo / s!"{m}.lean") (maLib / s!"{m}.olean")
+    let maOkOut ← runCmd bin.toString
+      #[maLib.toString, maRepo.toString, "--allow-legacy", "--coverage-log", goodCovLog.toString, "--nonce", goodNonce]
+    let maOkComb := maOkOut.stdout ++ "\n" ++ maOkOut.stderr
+    if maOkOut.exitCode != 0 || (maOkComb.splitOn "errors=0").length <= 1 ||
+        (maOkComb.splitOn "formal_assumptions=1").length <= 1 then
+      throw (IO.userError s!"FAIL [central_model_assumptions_relocated_positive]: expected exit=0 errors=0 formal_assumptions=1:\n{maOkComb}")
+    IO.println "PASS [central_model_assumptions_relocated_positive] -> Model.Assumptions formal_assumptions=1 verified"
+
+    let runMaMut (name code : String)
+        (mutate : System.FilePath → IO (Array String))
+        (forbiddenCodes : Array String := #[]) : IO Unit := do
+      let d := tmpRoot / s!"ma_{name}"
+      let rc := d / "repo"
+      let lc := d / "lib"
+      IO.FS.createDirAll d
+      copyDirTree maRepo rc
+      copyDirTree maLib lc
+      let dlp := s!"{lc}:{base.leanPath}"
+      let mods ← mutate rc
+      for m in mods do
+        compileLeanMod rc dlp (rc / s!"{m}.lean") (lc / s!"{m}.olean")
+      let out ← runCmd bin.toString
+        #[lc.toString, rc.toString, "--allow-legacy", "--coverage-log", goodCovLog.toString, "--nonce", goodNonce]
+      expectOutputContains name code out forbiddenCodes
+      IO.FS.removeDirAll d
+
+    runMaMut "central_model_assumptions_unlisted_rejected" "UNLISTED_FORMAL_ASSUMPTION" fun rc => do
+      writeFileCreatingParents (rc / "LeanSwe/MiniExt/Model/Assumptions.lean")
+        ("import Core.NondetTest\nimport LeanSwe.MiniExt.Types\n" ++
+         "namespace LeanSwe.MiniExt\nopen Core Core.NondetTest\n" ++
+         "def assume_miniext_probe_nonzero {r} [NondetTest r] (f : String → Nat) : r Unit := do\n" ++
+         "  let k ← nondet String\n" ++
+         "  NondetTest.assert (f k ≥ 1)\n" ++
+         "def assume_miniext_unlisted {r} [NondetTest r] (f : String → Nat) : r Unit := do\n" ++
+         "  let k ← nondet String\n" ++
+         "  NondetTest.assert (f k ≥ 2)\n" ++
+         "end LeanSwe.MiniExt\n")
+      return #["LeanSwe/MiniExt/Model/Assumptions", "LeanSwe/MiniExt/SpecTests",
+        "LeanSwe/MiniExt/Proofs", "LeanSwe/MiniPure/Proofs/Consumer", "LeanSwe"]
+
+    runMaMut "central_model_assumptions_trivial_rejected" "TRIVIAL_ASSUMPTION_ASSERT"
+        (forbiddenCodes := #["UNLISTED_FORMAL_ASSUMPTION", "UNUSED_FORMAL_ASSUMPTION"]) fun rc => do
+      writeFileCreatingParents (rc / "LeanSwe/MiniExt/Model/Assumptions.lean")
+        ("import Core.NondetTest\nimport LeanSwe.MiniExt.Types\n" ++
+         "namespace LeanSwe.MiniExt\nopen Core Core.NondetTest\n" ++
+         "def assume_miniext_probe_nonzero {r} [NondetTest r] (_ : String → Nat) : r Unit := do\n" ++
+         "  let k ← nondet String\n" ++
+         "  NondetTest.assert (k = k ∧ 0 = 0)\n" ++
+         "end LeanSwe.MiniExt\n")
+      writeFileCreatingParents (rc / "LeanSwe/MiniExt/Proofs.lean")
+        ("import Core.NondetTest\nimport LeanSwe.MiniExt.SpecTests\n" ++
+         "namespace LeanSwe.MiniExt.Proofs\n" ++
+         "theorem assume_miniext_canreach : Core.CanReach (LeanSwe.MiniExt.assume_miniext_probe_nonzero (fun _ => 1)) :=\n" ++
+         "  ⟨\"a\", ⟨rfl, rfl⟩, trivial⟩\n" ++
+         "end LeanSwe.MiniExt.Proofs\n")
+      writeFileCreatingParents (rc / "LeanSwe/MiniPure/Proofs/Consumer.lean")
+        ("import LeanSwe.MiniPure.Interface\nimport LeanSwe.MiniExt.Model.Assumptions\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem uses_miniext_assump (f : String → Nat) (h : Core.AllPass (LeanSwe.MiniExt.assume_miniext_probe_nonzero f)) :\n" ++
+         "    0 = 0 ∧ LeanSwe.MiniPure.eval 0 = 1 := ⟨(h \"\").1.2, rfl⟩\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #["LeanSwe/MiniExt/Model/Assumptions", "LeanSwe/MiniExt/SpecTests",
+        "LeanSwe/MiniExt/Proofs", "LeanSwe/MiniPure/Proofs/Consumer", "LeanSwe"]
+
+    runMaMut "central_model_assumptions_unlinked_pred_rejected"
+        "UNLINKED_FORMAL_ASSUMPTION_PRED: LeanSwe.MiniExt.assume_miniext_probe_nonzero exists in LeanSwe.MiniExt.Model.Assumptions with formalPred? = none" fun rc => do
+      writeFileCreatingParents (rc / "LeanSwe/MiniExt/SpecTests.lean")
+        ("import Core.Assumptions\nimport LeanSwe.MiniExt.Interface\nimport LeanSwe.MiniExt.Model.Assumptions\n" ++
+         "namespace LeanSwe.MiniExt\nopen Core\n" ++
+         "def externalAssumptions : List AssumptionObligation :=\n" ++
+         "  [ { name := \"LeanSwe.MiniExt.assume_miniext_probe_nonzero\", subject := \"LeanSwe.MiniExt.probe\", formalPred? := none } ]\n" ++
+         "end LeanSwe.MiniExt\n")
+      return #["LeanSwe/MiniExt/SpecTests", "LeanSwe/MiniExt/Proofs", "LeanSwe"]
+
+    IO.FS.removeDirAll maDir
+
   IO.FS.removeDirAll cDir
 
 /-- Execute self-tests for `Core.Refines`, boundary retirement, harness parity, and import-DAG gates. -/
