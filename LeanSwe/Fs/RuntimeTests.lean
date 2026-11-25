@@ -1030,21 +1030,36 @@ private def mkMockApiForKind (kind : FsErrorKind) : FsApi :=
   | none =>
     Fs.Internal.mkApiFromScopedRawM (mkErrScopedOps kind)
 
+private def fsErrorKindName : FsErrorKind → String
+  | .notFound => "notFound"
+  | .alreadyExists => "alreadyExists"
+  | .permissionDenied => "permissionDenied"
+  | .isADirectory => "isADirectory"
+  | .notADirectory => "notADirectory"
+  | .notEmpty => "notEmpty"
+  | .invalidInput => "invalidInput"
+  | .unsupported => "unsupported"
+  | .wouldBlock => "wouldBlock"
+  | .ioError => "ioError"
+
 private def runMockErrKinds {α : Type} (kinds : Array FsErrorKind)
     (act : FsApi → IO (Except FsError α)) : IO Unit := do
   for k in kinds do
-    assertErrKind (← act (mkMockApiForKind k)) k s!"mocked {reprStr k}"
+    Core.assertErrorKindPass (fsErrorKindName k) (·.kind) k
+      (← act (mkMockApiForKind k)) s!"mocked {reprStr k}" (fun e => e.message != "")
 
 private def runMockErrKindsScoped {α : Type} (kinds : Array FsErrorKind)
     (act : FsApi → IO (Except FsError α)) : IO Unit := do
   for k in kinds do
     let api := Fs.Internal.mkApiFromScopedRawM (mkErrScopedOps k)
-    assertErrKind (← act api) k s!"mocked scoped {reprStr k}"
+    Core.assertErrorKindPass (fsErrorKindName k) (·.kind) k
+      (← act api) s!"mocked scoped {reprStr k}" (fun e => e.message != "")
 
 private def runMockPredKinds (kinds : Array FsErrorKind)
     (act : FsApi → IO (Except FsError Bool)) : IO Unit := do
   for k in kinds do
-    assertOkEq (← act (mkMockApiForKind k)) false s!"mocked pred {reprStr k}"
+    Core.assertHandledErrorPass (fsErrorKindName k) false
+      (← act (mkMockApiForKind k)) s!"mocked pred {reprStr k}"
 
 private def runMockTryLockWouldBlock : IO Unit := do
   let wbErr : FsError := { kind := .wouldBlock, path := some "/mock/lock", message := "injected wouldBlock" }
@@ -1060,8 +1075,9 @@ private def runMockTryLockWouldBlock : IO Unit := do
       acquireLock := fun _ _ _ _ => pure (.ok ())
       releaseLock := fun _ => pure (.ok ()) }
   let apiOk := Fs.Internal.mkApiFromScopedRawM (Fs.Internal.toScopedRawFsOpsM rawOk)
-  assertErrKind (← apiOk.tryWithFileLock "/mock/lock" .exclusive false (pure (.error wbErr) : IO (Except FsError Unit)))
-    .wouldBlock "tryWithFileLock propagates action wouldBlock"
+  Core.assertErrorKindPass "wouldBlock" (·.kind) .wouldBlock
+    (← apiOk.tryWithFileLock "/mock/lock" .exclusive false (pure (.error wbErr) : IO (Except FsError Unit)))
+    "tryWithFileLock propagates action wouldBlock" (fun e => e.message != "")
 
 private def runMockSubtreeKinds (kinds : Array FsErrorKind) : IO Unit := do
   for k in kinds do
@@ -1073,7 +1089,9 @@ private def runMockSubtreeKinds (kinds : Array FsErrorKind) : IO Unit := do
           openDir := fun _ =>
             pure (.error { kind := k, path := some "/mock/root", message := s!"injected {reprStr k}" }) }
     let opener := Fs.Internal.mkSubtreeOpenerM rawDir
-    assertErrKind (← opener.withSubtree "/mock/root" (fun _ => pure (.ok ()))) k s!"mocked subtree {reprStr k}"
+    Core.assertErrorKindPass (fsErrorKindName k) (·.kind) k
+      (← opener.withSubtree "/mock/root" (fun _ => pure (.ok ())))
+      s!"mocked subtree {reprStr k}" (fun e => e.message != "")
 
 /-- Real error-coverage test for `LeanSwe.Fs.withName` returning `.invalidInput`. -/
 def err_fs_withName_invalidInput : IO Unit :=

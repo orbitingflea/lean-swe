@@ -1571,10 +1571,12 @@ def runSelfTestShrink (seedVal : UInt64) : IO Unit := do
 def suite : FuzzSuite := {
   name := "envvars"
   description := "Stateful POSIX setenv/unsetenv/clearenv and unrestricted raw environ differential fuzzer"
-  runSmoke := fun cfg =>
-    let smokeSteps := min cfg.steps 400
-    runEnvVarsLoop (max 250 smokeSteps) cfg.seed true
-  runFuzz := fun cfg =>
+  runSmoke := fun cfg => do
+    let actual := max 250 (min cfg.steps 400)
+    Fuzz.Common.recordSuiteSteps actual
+    runEnvVarsLoop actual cfg.seed true
+  runFuzz := fun cfg => do
+    Fuzz.Common.recordSuiteSteps cfg.steps
     runEnvVarsLoop cfg.steps cfg.seed false
   selfTestShrink := runSelfTestShrink
 }

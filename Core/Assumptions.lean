@@ -81,10 +81,16 @@ structure RegisteredErrorTest where
   run : IO Unit
 
 private structure AssumpLogSink where
-  nonce : String
-  logPath : String
-  realLogPath : String
-  handle : IO.FS.Handle
+  nonce : String := ""
+  logPath : String := ""
+  realLogPath : String := ""
+  handle? : Option IO.FS.Handle := none
+  coverageNonce : String := ""
+  coverageLogPath : String := ""
+  coverageRealLogPath : String := ""
+  coverageHandle? : Option IO.FS.Handle := none
+  errTestPassHook? : Option (String → ErrorTestMode → IO Unit) := none
+  activeErrTest? : Option (String × ErrorTestMode) := none
 
 private initialize assumpLogSinkRef : IO.Ref (Option AssumpLogSink) ← IO.mkRef none
 private initialize openedAssumpLogPathsRef : IO.Ref (Array String) ← IO.mkRef #[]
@@ -102,25 +108,71 @@ def initAssumpLog (logPath nonce : String) : IO Unit := do
   let handle ← IO.FS.Handle.mk logPath .write
   handle.putStrLn s!"{nonce}|LOG_INIT"
   let realLogPath ← resolvePathBestEffort logPath
-  assumpLogSinkRef.set (some { nonce, logPath, realLogPath, handle })
+  assumpLogSinkRef.modify fun st? =>
+    some { st?.getD {} with nonce, logPath, realLogPath, handle? := some handle }
   openedAssumpLogPathsRef.modify fun paths => paths ++ #[logPath, realLogPath]
+
+/-- Open and initialize the single-handle runtime `ERR_HIT` coverage log with a per-run `nonce`. -/
+def initCoverageLog (logPath nonce : String) : IO Unit := do
+  if logPath.isEmpty || nonce.isEmpty then
+    throw (IO.userError "initCoverageLog requires non-empty path and nonce")
+  let handle ← IO.FS.Handle.mk logPath .write
+  handle.putStrLn s!"{nonce}|LOG_INIT"
+  let realLogPath ← resolvePathBestEffort logPath
+  assumpLogSinkRef.modify fun st? =>
+    some { st?.getD {} with
+      coverageNonce := nonce
+      coverageLogPath := logPath
+      coverageRealLogPath := realLogPath
+      coverageHandle? := some handle }
+  openedAssumpLogPathsRef.modify fun paths => paths ++ #[logPath, realLogPath]
+
+/-- Record a live nonce-authenticated `ERR_HIT` line (`<nonce>|ERR_HIT|<qualOp>|<ErrorKindCtor>|<mode>`). -/
+def logErrHit (qualOp errorKindCtor mode : String) : IO Unit := do
+  if let some st ← assumpLogSinkRef.get then
+    if let some h := st.coverageHandle? then
+      h.putStrLn s!"{st.coverageNonce}|ERR_HIT|{qualOp}|{errorKindCtor}|{mode}"
+
+/-- Flush and close the runtime `ERR_HIT` coverage log opened by `initCoverageLog`. -/
+def closeCoverageLog : IO Unit := do
+  if let some st ← assumpLogSinkRef.get then
+    if let some h := st.coverageHandle? then
+      h.putStrLn s!"{st.coverageNonce}|LOG_CLOSE"
+      h.flush
+      assumpLogSinkRef.modify fun cur? =>
+        cur?.map fun cur =>
+          { cur with
+            coverageNonce := ""
+            coverageLogPath := ""
+            coverageRealLogPath := ""
+            coverageHandle? := none }
+
+/-- Register an optional runtime callback invoked immediately after each `RegisteredErrorTest` executes and passes. -/
+def setErrTestPassHook (hook? : Option (String → ErrorTestMode → IO Unit)) : IO Unit :=
+  assumpLogSinkRef.modify fun st? =>
+    some { st?.getD {} with errTestPassHook? := hook? }
 
 /-- Record a passing runtime assumption check to the open nonce-tagged verification log. -/
 def logAssumpPass (specName : String) : IO Unit := do
-  if let some sink ← assumpLogSinkRef.get then
-    sink.handle.putStrLn s!"{sink.nonce}|ASSUMP_PASS|{specName}"
+  if let some st ← assumpLogSinkRef.get then
+    if let some h := st.handle? then
+      h.putStrLn s!"{st.nonce}|ASSUMP_PASS|{specName}"
 
 /-- Record a passing runtime error-coverage test to the open nonce-tagged verification log. -/
 def logErrPass (testName : String) (mode : ErrorTestMode) : IO Unit := do
-  if let some sink ← assumpLogSinkRef.get then
-    sink.handle.putStrLn s!"{sink.nonce}|ERR_PASS|{testName}|{reprStr mode}"
+  if let some st ← assumpLogSinkRef.get then
+    if let some h := st.handle? then
+      h.putStrLn s!"{st.nonce}|ERR_PASS|{testName}|{reprStr mode}"
 
 /-- Flush and close the assumption/error verification log opened by `initAssumpLog`. -/
 def closeAssumpLog : IO Unit := do
-  if let some sink ← assumpLogSinkRef.get then
-    sink.handle.putStrLn s!"{sink.nonce}|LOG_CLOSE"
-    sink.handle.flush
-    assumpLogSinkRef.set none
+  if let some st ← assumpLogSinkRef.get then
+    if let some h := st.handle? then
+      h.putStrLn s!"{st.nonce}|LOG_CLOSE"
+      h.flush
+      assumpLogSinkRef.modify fun cur? =>
+        cur?.map fun cur =>
+          { cur with nonce := "", logPath := "", realLogPath := "", handle? := none }
 
 /-- Run registered assumption checks and record `PASS` lines to the open nonce-tagged log sink. -/
 def runRegisteredAssumptions (items : Array RegisteredAssumption) : IO Unit := do
@@ -128,11 +180,51 @@ def runRegisteredAssumptions (items : Array RegisteredAssumption) : IO Unit := d
     item.run
     logAssumpPass item.specName
 
+private def notifyActiveErrSubcase (kindTag : String) : IO Unit := do
+  if kindTag.isEmpty then
+    return ()
+  if let some st ← assumpLogSinkRef.get then
+    if let (some hook, some (activeName, activeMode)) := (st.errTestPassHook?, st.activeErrTest?) then
+      if activeName.endsWith "_mocked" then
+        let base := (activeName.dropEnd 7).toString
+        hook s!"{base}_{kindTag}" activeMode
+
+/-- Assert `res` returned `.error e` with `kindOf e == expected` (and `extraOk e`), then notify the active registered error-test hook with `kindTag`. -/
+def assertErrorKindPass {E K α : Type} [BEq K] [Repr E] [Repr K]
+    (kindTag : String) (kindOf : E → K) (expected : K)
+    (res : Except E α) (msg : String) (extraOk : E → Bool := fun _ => true) : IO Unit := do
+  match res with
+  | .ok _ => throw (IO.userError s!"ASSERTION FAILED: {msg} (expected error {repr expected}, got ok)")
+  | .error e =>
+    if kindOf e != expected || !extraOk e then
+      throw (IO.userError s!"ASSERTION FAILED: {msg} (got {repr e}, expected {repr expected})")
+    notifyActiveErrSubcase kindTag
+
+/-- Assert `res` returned `.ok expectedVal` after forcing an error condition, then notify the active registered error-test hook with `kindTag`. -/
+def assertHandledErrorPass {E α : Type} [BEq α] [Repr E] [Repr α]
+    (kindTag : String) (expectedVal : α)
+    (res : Except E α) (msg : String) : IO Unit := do
+  match res with
+  | .error e => throw (IO.userError s!"ASSERTION FAILED: {msg} (unexpected error: {repr e})")
+  | .ok v =>
+    if v != expectedVal then
+      throw (IO.userError s!"ASSERTION FAILED: {msg} (got {repr v}, expected {repr expectedVal})")
+    notifyActiveErrSubcase kindTag
+
 /-- Run registered error-coverage tests and record `PASS` lines to the open nonce-tagged log sink. -/
 def runRegisteredErrorTests (items : Array RegisteredErrorTest) : IO Unit := do
   for item in items do
-    item.run
+    assumpLogSinkRef.modify fun st? =>
+      some { st?.getD {} with activeErrTest? := some (item.testName, item.mode) }
+    try
+      item.run
+    finally
+      assumpLogSinkRef.modify fun cur? =>
+        cur?.map fun cur => { cur with activeErrTest? := none }
     logErrPass item.testName item.mode
+    if let some st ← assumpLogSinkRef.get then
+      if let some hook := st.errTestPassHook? then
+        hook item.testName item.mode
 
 /-- Append formatted markdown to `GITHUB_STEP_SUMMARY` when running in CI. -/
 def appendStepSummary (markdown : String) : IO Unit := do
@@ -140,9 +232,9 @@ def appendStepSummary (markdown : String) : IO Unit := do
   if summaryPath.isEmpty then
     return ()
   let resolvedSummary ← resolvePathBestEffort summaryPath
-  if let some sink ← assumpLogSinkRef.get then
-    if summaryPath == sink.logPath || resolvedSummary == sink.logPath ||
-        summaryPath == sink.realLogPath || resolvedSummary == sink.realLogPath then
+  if let some st ← assumpLogSinkRef.get then
+    let activePaths := #[st.logPath, st.realLogPath, st.coverageLogPath, st.coverageRealLogPath]
+    if activePaths.any (fun p => !p.isEmpty && (summaryPath == p || resolvedSummary == p)) then
       return ()
   let openedPaths ← openedAssumpLogPathsRef.get
   if openedPaths.any (fun p => p == summaryPath || p == resolvedSummary) then

@@ -1,5 +1,6 @@
 import Std.Data.HashMap
 import Std.Data.HashSet
+import Fuzz.Common.Suite
 
 namespace Fuzz.Common
 
@@ -86,7 +87,15 @@ def checkCoverage (tracker : CoverageTracker) (required : Array CoverageBucket) 
 
 /-- Fail loudly with `IO.userError` if any bucket in `required` has `0` hits in `tracker`. -/
 def assertCoverage (suiteName : String) (tracker : CoverageTracker) (required : Array CoverageBucket) : IO Unit := do
+  let mut uniqueCount : Nat := 0
+  let mut seen : Std.HashSet CoverageBucket := {}
+  for req in required do
+    if !seen.contains req then
+      seen := seen.insert req
+      uniqueCount := uniqueCount + 1
   let missing := checkCoverage tracker required
+  let hitCount := uniqueCount - missing.size
+  recordSuiteBuckets hitCount uniqueCount
   unless missing.isEmpty do
     let labels := missing.toList.map CoverageBucket.label
     throw (IO.userError s!"COVERAGE_GAP suite={suiteName} missing={missing.size}: {", ".intercalate labels}")

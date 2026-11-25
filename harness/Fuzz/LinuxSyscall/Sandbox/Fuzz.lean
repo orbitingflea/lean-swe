@@ -1,3 +1,4 @@
+import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Sandbox.Interface
 import LeanSwe.LinuxSyscall.Sandbox.Model
 import Fuzz.LinuxSyscall.Rng
@@ -1720,6 +1721,10 @@ def runFuzz (cfg : FuzzConfig := {}) : IO UInt32 := do
       for (k, n) in hits do
         IO.println s!"  {k}: {n}"
       IO.println "SANDBOX_FUZZ_MATRIX_END"
+    let allRequired := requiredMatrixKeys.push errataExpectedKey
+    let hitRequired := (allRequired.filter fun k => getHitCount hits k > 0).size
+    Fuzz.Common.recordSuiteBuckets hitRequired allRequired.size
+    Fuzz.Common.recordSuiteSteps totalSteps
     if cfg.steps >= 50000 then
       let mut missing : Array String := #[]
       for k in requiredMatrixKeys.push errataExpectedKey do

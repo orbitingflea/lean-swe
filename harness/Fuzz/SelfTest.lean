@@ -351,6 +351,7 @@ private def runStackDiffFuzz (steps : Nat) (seedVal : UInt64) : IO Unit := do
     tracker ← runTraceRecorded tracker trace
     done := done + epLen
   assertCoverage "selftest" tracker requiredBuckets
+  recordSuiteSteps steps
   let missingEmpty := checkCoverage CoverageTracker.empty requiredBuckets
   if missingEmpty.size != requiredBuckets.size then
     throw (IO.userError s!"SELFTEST_COVERAGE_CHECK_FAILED: expected {requiredBuckets.size}, got {missingEmpty.size}")

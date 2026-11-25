@@ -1790,8 +1790,12 @@ private def runCompressShrinkSelfTest (seedVal : UInt64) : IO Unit := do
 def suite : FuzzSuite :=
   { name := "compress"
     description := "3-way differential fuzzer comparing LeanSwe.Compress IO wrapper, Model specification, and Python reference codecs."
-    runSmoke := fun cfg => runSeededFuzz cfg 1000 true
-    runFuzz := fun cfg => runSeededFuzz cfg cfg.steps false
+    runSmoke := fun cfg => do
+      Fuzz.Common.recordSuiteSteps 1000
+      runSeededFuzz cfg 1000 true
+    runFuzz := fun cfg => do
+      Fuzz.Common.recordSuiteSteps cfg.steps
+      runSeededFuzz cfg cfg.steps false
     selfTestShrink := runCompressShrinkSelfTest }
 
 end Fuzz.Compress

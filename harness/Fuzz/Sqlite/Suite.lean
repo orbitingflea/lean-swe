@@ -2306,6 +2306,7 @@ private def runSqliteSmoke (cfg : FuzzConfig) : IO Unit := do
     let fdAfter? ← countOpenFds?
     assertNoFdLeak "smoke" fdBase? fdAfter?
     assertCoverage "sqlite" tr2 requiredBuckets
+    Fuzz.Common.recordSuiteSteps (nOps + nOps2)
     safePrintln (tr2.formatReport "sqlite")
     safePrintln s!"FUZZ_SUMMARY suite=sqlite mode=smoke steps={nOps + nOps2} seed={cfg.seed}"
   finally
@@ -2337,6 +2338,7 @@ private def runSqliteFuzz (cfg : FuzzConfig) : IO Unit := do
     if cfg.steps >= 10000 then
       assertCoverage "sqlite" tr requiredBuckets
     safePrintln (tr.formatReport "sqlite")
+    Fuzz.Common.recordSuiteSteps done
     safePrintln s!"FUZZ_SUMMARY suite=sqlite mode=fuzz steps={done} seed={cfg.seed}"
   finally
     forceRemoveDirAll rootDir
