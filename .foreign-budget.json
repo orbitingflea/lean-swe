@@ -210,7 +210,7 @@
       "legacy_unmigrated": false
     },
     "scripts/mutate_and_test.py": {
-      "max_lines": 662,
+      "max_lines": 660,
       "legacy_unmigrated": false
     },
     "scripts/package_manifest.json": {
@@ -222,7 +222,7 @@
       "legacy_unmigrated": false
     },
     "scripts/test_fuzz_changed.py": {
-      "max_lines": 904,
+      "max_lines": 926,
       "legacy_unmigrated": false
     }
   },
