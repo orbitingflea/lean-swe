@@ -1380,6 +1380,115 @@ def main (_ : List String) : IO UInt32 := do
         "import Core.Refines\nimport LeanSwe.MiniPure.SpecTests\nnamespace LeanSwe.MiniPure.Proofs\ntheorem refines_model : Core.RefinesPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel ∧ Core.RefinesPureEq (@LeanSwe.MiniPure.idPoly Nat) (@LeanSwe.MiniPure.Model.idModel Nat) := ⟨fun _ => rfl, fun _ => rfl⟩\nend LeanSwe.MiniPure.Proofs\n"
       return #["LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
 
+    runPositiveCase base tmpRoot bin "step_from_implicit_ground_fd_and_defaultOpsBase_ok" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure RawFdOpsM (m : Type → Type) (fd : Type) where\n  openFd : UInt32 → m fd\n" ++
+         "structure FdOpsM (m : Type → Type) (fd : Type) where\n  openFd : UInt32 → m fd\n" ++
+         "abbrev HandleId := Nat\n" ++
+         "abbrev HandleRawFdOpsM (m : Type → Type) : Type := RawFdOpsM m HandleId\n" ++
+         "abbrev HandleFdOpsM (m : Type → Type) : Type := FdOpsM m HandleId\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def rawWf (_ : Nat) : Bool := true\n" ++
+         "def execRaw {W : Type} (raw : HandleRawFdOpsM (StateM W)) (k : UInt32) : StateM W HandleId := raw.openFd k\n" ++
+         "def rawAllowed (s : Nat) (k : UInt32) (out s' : Nat) : Prop := out = s + k.toNat ∧ s' = s + 1\n" ++
+         "def execPkg {W : Type} (ops : HandleFdOpsM (StateM W)) (k : UInt32) : StateM W HandleId := ops.openFd k\n" ++
+         "def pkgAllowed (s : Nat) (k : UInt32) (out s' : Nat) : Prop := out = s + k.toNat ∧ s' = s + 1\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkFdOpsM {m : Type → Type} {fd : Type} [Monad m] (raw : RawFdOpsM m fd) : FdOpsM m fd := { openFd := raw.openFd }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n" ++
+         "def defaultOpsBase : FdOpsM BaseIO UInt64 := Internal.mkFdOpsM { openFd := fun k => pure k.toUInt64 }\n" ++
+         "def defaultOps : FdOpsM IO UInt64 := { openFd := fun k => liftM (defaultOpsBase.openFd k) }\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def openFd (k : UInt32) : IO UInt64 := defaultOps.openFd k\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\nnamespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧ " ++
+         "Core.ObeysStepFrom id Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf Internal.mkFdOpsM Model.execPkg Model.pkgAllowed :=\n" ++
+         "  ⟨fun _ => rfl, fun _ _ h => h⟩\nend LeanSwe.MiniPure.Proofs\n")
+      return #["LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl", "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
+
+    runMutantCase base tmpRoot bin "step_from_uninhabited_fd_type_rejected" "LAMBDA_OR_PARTIAL_APP_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure RawFdOpsM (m : Type → Type) (fd : Type) where\n  ping : Nat → m Nat\n" ++
+         "structure FdOpsM (m : Type → Type) (fd : Type) where\n  ping : Nat → m Nat\n" ++
+         "abbrev EmptyRawFdOpsM (m : Type → Type) : Type := RawFdOpsM m Empty\n" ++
+         "abbrev EmptyFdOpsM (m : Type → Type) : Type := FdOpsM m Empty\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def rawWf (_ : Nat) : Bool := true\n" ++
+         "def execRaw {W : Type} (raw : EmptyRawFdOpsM (StateM W)) (k : Nat) : StateM W Nat := raw.ping k\n" ++
+         "def rawAllowed (s k out s' : Nat) : Prop := out = s + k ∧ s' = s\n" ++
+         "def execPkg {W : Type} (ops : EmptyFdOpsM (StateM W)) (k : Nat) : StateM W Nat := ops.ping k\n" ++
+         "def pkgAllowed (s k out s' : Nat) : Prop := out = s + k ∧ s' = s\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkFdOpsM {m : Type → Type} {fd : Type} [Monad m] (raw : RawFdOpsM m fd) : FdOpsM m fd := { ping := raw.ping }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n" ++
+         "def defaultOps : FdOpsM IO Nat := Internal.mkFdOpsM { ping := pure }\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def ping (n : Nat) : IO Nat := defaultOps.ping n\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\nnamespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧ " ++
+         "Core.ObeysStepFrom id Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf Internal.mkFdOpsM Model.execPkg Model.pkgAllowed :=\n" ++
+         "  ⟨fun _ => rfl, fun _ _ h => h⟩\nend LeanSwe.MiniPure.Proofs\n")
+      return #["LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl", "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
+
+    runMutantCase base tmpRoot bin "step_from_term_partial_app_on_mk_rejected" "LAMBDA_OR_PARTIAL_APP_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure RawBoxOpsM (m : Type → Type) where\n  readBox : Nat → m Nat\n" ++
+         "structure BoxApiM (m : Type → Type) where\n  readBox : Nat → m Nat\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def rawWf (_ : Nat) : Bool := true\n" ++
+         "def execRaw {W : Type} (raw : RawBoxOpsM (StateM W)) (k : Nat) : StateM W Nat := raw.readBox k\n" ++
+         "def rawAllowed (s k out s' : Nat) : Prop := out = s + k ∧ s' = s\n" ++
+         "def execPkg {W : Type} (api : BoxApiM (StateM W)) (k : Nat) : StateM W Nat := api.readBox k\n" ++
+         "def pkgAllowed (s k out s' : Nat) : Prop := out = s + k ∧ s' = s\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkApiFlag {m : Type → Type} [Monad m] (flag : Bool) (raw : RawBoxOpsM m) : BoxApiM m := " ++
+         "{ readBox := fun k => if flag then raw.readBox k else pure 0 }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n" ++
+         "def defaultApi : BoxApiM IO := Internal.mkApiFlag true { readBox := pure }\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def readBox (k : Nat) : IO Nat := defaultApi.readBox k\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\nnamespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧ " ++
+         "Core.ObeysStepFrom id Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf (fun {m} [Monad m] => Internal.mkApiFlag true (m := m)) Model.execPkg Model.pkgAllowed :=\n" ++
+         "  ⟨fun _ => rfl, fun _ _ h => h⟩\nend LeanSwe.MiniPure.Proofs\n")
+      return #["LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl", "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
+
     runMutantCase base tmpRoot bin "non_interface_impl_in_refines" "NON_INTERFACE_IMPL_IN_REFINES" fun mr => do
       writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
         "import Core.Refines\nimport LeanSwe.MiniPure.SpecTests\nnamespace LeanSwe.MiniPure.Proofs\ntheorem refines_model : Core.RefinesPureEq LeanSwe.MiniPure.Internal.evalImpl LeanSwe.MiniPure.Model.evalModel := fun _ => rfl\nend LeanSwe.MiniPure.Proofs\n"
@@ -3116,6 +3225,98 @@ def main (_ : List String) : IO UInt32 := do
 
     expectFailureCode bin "print_sig_unknown_pkg_rejected" "UNKNOWN_PACKAGE_FOR_PRINT_SIG"
       base.libDir base.root #["--print-sig", "LeanSwe.DoesNotExist"]
+
+    runPositiveCase base tmpRoot bin "obeys_iface_combinator_ok" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "structure LeafOpsM (m : Type → Type) where\n  ping : Nat → m Nat\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def leafWf (_ : Nat) : Bool := true\n" ++
+         "def execLeaf {W : Type} (ops : LeafOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.ping req\n" ++
+         "def allowedLeaf (s req out s' : Nat) : Prop := out = req ∧ s' = s\n" ++
+         "abbrev PingPairFn (m : Type → Type) : Type := Nat → m (Nat × Nat)\n" ++
+         "def execPingPair {W : Type} (fn : PingPairFn (StateM W)) (n : Nat) : StateM W (Nat × Nat) := fn n\n" ++
+         "def allowedPingPair (s req : Nat) (out : Nat × Nat) (s' : Nat) : Prop := out = (req, req + 1) ∧ s' = s\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkOpsM {m : Type → Type} [Monad m] (raw : LeafOpsM m) : LeafOpsM m := { ping := raw.ping }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def defaultApi : LeafOpsM IO := Internal.mkOpsM { ping := pure }\n" ++
+         "def pingPair {m : Type → Type} [Monad m] (ops : LeafOpsM m) (n : Nat) : m (Nat × Nat) := do\n" ++
+         "  let a ← ops.ping n\n  return (a, a + 1)\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.Interface\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysStepFrom id Model.leafWf Model.execLeaf Model.allowedLeaf Model.leafWf Internal.mkOpsM Model.execLeaf Model.allowedLeaf ∧\n" ++
+         "    Core.ObeysStepFrom (PkgApi := Model.PingPairFn) id Model.leafWf Model.execLeaf Model.allowedLeaf Model.leafWf LeanSwe.MiniPure.pingPair Model.execPingPair Model.allowedPingPair :=\n" ++
+         "  ⟨fun _ => rfl, fun _ _ h => h, fun _ ops h w n hw => by\n" ++
+         "    have hs := h w n hw\n" ++
+         "    dsimp only [Function.comp, id, Model.execLeaf, Model.allowedLeaf, Model.execPingPair, LeanSwe.MiniPure.pingPair, Model.allowedPingPair, Bind.bind, Pure.pure, StateT.run, StateT.bind, StateT.pure] at hs ⊢\n" ++
+         "    rcases hc : ops.ping n w with ⟨v, w'⟩\n" ++
+         "    rw [hc] at hs\n" ++
+         "    dsimp only at hs ⊢\n" ++
+         "    exact ⟨by rw [hs.1], hs.2⟩⟩\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    runMutantCase base tmpRoot bin "obeys_iface_combinator_fake_exec_rejected" "INCOMPLETE_INTERFACE_REFINEMENT" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "structure LeafOpsM (m : Type → Type) where\n  ping : Nat → m Nat\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def leafWf (_ : Nat) : Bool := true\n" ++
+         "def execLeaf {W : Type} (ops : LeafOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.ping req\n" ++
+         "def allowedLeaf (s req out s' : Nat) : Prop := out = req ∧ s' = s\n" ++
+         "abbrev PingPairFn (m : Type → Type) : Type := Nat → m (Nat × Nat)\n" ++
+         "def execPingPairFake {W : Type} (_ : PingPairFn (StateM W)) (n : Nat) : StateM W (Nat × Nat) := pure (n, n + 1)\n" ++
+         "def allowedPingPair (s req : Nat) (out : Nat × Nat) (s' : Nat) : Prop := out = (req, req + 1) ∧ s' = s\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkOpsM {m : Type → Type} [Monad m] (raw : LeafOpsM m) : LeafOpsM m := { ping := raw.ping }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def defaultApi : LeafOpsM IO := Internal.mkOpsM { ping := pure }\n" ++
+         "def pingPair {m : Type → Type} [Monad m] (ops : LeafOpsM m) (n : Nat) : m (Nat × Nat) := do\n" ++
+         "  let a ← ops.ping n\n  return (a, a + 99)\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniPure.Interface\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysStepFrom id Model.leafWf Model.execLeaf Model.allowedLeaf Model.leafWf Internal.mkOpsM Model.execLeaf Model.allowedLeaf ∧\n" ++
+         "    Core.ObeysStepFrom (PkgApi := Model.PingPairFn) id Model.leafWf Model.execLeaf Model.allowedLeaf Model.leafWf LeanSwe.MiniPure.pingPair Model.execPingPairFake Model.allowedPingPair :=\n" ++
+         "  ⟨fun _ => rfl, fun _ _ h => h, fun _ _ _ _ _ _ => ⟨rfl, rfl⟩⟩\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
 
     expectFailureCode bin "inconclusive_dead_branch_fails_closed" "INCONCLUSIVE_DEAD_BRANCH_CHECK"
       base.libDir base.root #["--allow-legacy", "--dead-branch-fuel", "0"]

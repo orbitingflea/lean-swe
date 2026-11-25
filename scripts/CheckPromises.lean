@@ -224,7 +224,8 @@ private def discoverPackageModules (env : Environment) (extraMods : Array Name) 
 private def isAllowedTimeRandClosureModule (m : Name) : Bool :=
   m.getRoot == `Core ||
     m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
-    timeRandAuditModules.contains m
+    (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `TimeRand] &&
+      nameLastStr m != "RuntimeTests" && nameLastStr m != "SpecMutants")
 
 private def isAllowedFilesClosureModule (m : Name) : Bool :=
   m.getRoot == `Core ||
@@ -240,7 +241,8 @@ private def isAllowedPasswdClosureModule (m : Name) : Bool :=
 private def isAllowedDnsClosureModule (m : Name) : Bool :=
   m.getRoot == `Core ||
     m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] ||
-    dnsAuditModules.contains m
+    (m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Dns] &&
+      nameLastStr m != "RuntimeTests" && nameLastStr m != "SpecMutants")
 
 private def isAllowedPollClosureModule (m : Name) : Bool :=
   m.getRoot == `Core ||
@@ -3141,14 +3143,11 @@ private def modelPresenceAllowlist : Array String := #[
   "MISSING_OBEYS_MODEL|LeanSwe.EnvVars.Raw",
   "MISSING_OBEYS_MODEL|LeanSwe.Git",
   "MISSING_OBEYS_MODEL|LeanSwe.Json",
-  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Dns",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Files",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Net",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Passwd",
-  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Poll",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Process",
   "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.Sandbox",
-  "MISSING_OBEYS_MODEL|LeanSwe.LinuxSyscall.TimeRand",
   "MISSING_OBEYS_MODEL|LeanSwe.PostFork",
   "MISSING_OBEYS_MODEL|LeanSwe.ProcessSandbox",
   "MISSING_OBEYS_MODEL|LeanSwe.Sqlite.Raw"
@@ -3297,27 +3296,37 @@ private def extractStepFromConj? (ab : Expr) : Option (Name × Array Expr × Exp
   if ab.isAppOfArity `Core.ObeysStepFrom 16 || ab.isAppOfArity `Core.RefinesStepFrom 16 ||
       ab.isAppOfArity `Core.ObeysStepFromFinally 16 || ab.isAppOfArity `Core.RefinesStepFromFinally 16 then
     let a := ab.getAppArgs
-    match (etaReduceExpr a[13]!).consumeMData.getAppFn.consumeMData with
+    match (peelLambdas (etaReduceExpr a[13]!)).consumeMData.getAppFn.consumeMData with
     | .const mkFn _ => some (mkFn, #[a[2]!], a[3]!)
     | _ => none
   else if ab.isAppOfArity `Core.ObeysStepFrom2 21 || ab.isAppOfArity `Core.RefinesStepFrom2 21 then
     let a := ab.getAppArgs
-    match (etaReduceExpr a[18]!).consumeMData.getAppFn.consumeMData with
+    match (peelLambdas (etaReduceExpr a[18]!)).consumeMData.getAppFn.consumeMData with
     | .const mkFn _ => some (mkFn, #[a[2]!, a[3]!], a[4]!)
     | _ => none
   else
     none
 
 private def unfoldThinIfaceBuilder (env : Environment) (pkg c : Name) : Name :=
-  if modOfConst env c == Name.str pkg "Interface" then
-    match env.find? c with
+  let step1 :=
+    if modOfConst env c == Name.str pkg "Interface" then
+      match env.find? c with
+      | some (.defnInfo dv) =>
+        match (peelLambdas (etaReduceExpr dv.value)).consumeMData.getAppFn.consumeMData with
+        | .const tgt _ =>
+          if modOfConst env tgt == Name.str pkg "Impl" && tgt.getString!.startsWith "mk" then tgt else c
+        | _ => c
+      | _ => c
+    else c
+  if modOfConst env step1 == Name.str pkg "Impl" then
+    match env.find? step1 with
     | some (.defnInfo dv) =>
       match (peelLambdas (etaReduceExpr dv.value)).consumeMData.getAppFn.consumeMData with
       | .const tgt _ =>
-        if modOfConst env tgt == Name.str pkg "Impl" && tgt.getString!.startsWith "mk" then tgt else c
-      | _ => c
-    | _ => c
-  else c
+        if modOfConst env tgt == Name.str pkg "Impl" && tgt.getString!.startsWith "mk" then tgt else step1
+      | _ => step1
+    | _ => step1
+  else step1
 
 private def isPkgBuilderConst (env : Environment) (pkg c : Name) : Bool :=
   let m := modOfConst env c
@@ -3528,7 +3537,8 @@ private def isClassInstanceOrAuxSynth (env : Environment) (n : Name) (ty : Expr)
 
 private def isCapBundleSynth (env : Environment) (knownPkgs : Array Name) (pkg cName : Name) (ty : Expr) :
     MetaM Bool := do
-  if cName != Name.str pkg "defaultApi" && cName != Name.str pkg "defaultOps" then
+  if cName != Name.str pkg "defaultApi" && cName != Name.str pkg "defaultOps" &&
+      cName != Name.str pkg "defaultOpsBase" && cName != Name.str pkg "defaultRawOps" then
     return false
   Meta.forallTelescope ty fun fxs ret => do
     for fx in fxs do
@@ -3843,6 +3853,39 @@ private def collectUsedStructFieldsTransitive
           q := q.push u
   return fields
 
+private partial def isPureReqProjExpr (reqFV : FVarId) (e : Expr) : Bool :=
+  let c := e.consumeMData
+  match c with
+  | .fvar fv => fv == reqFV
+  | .proj ``Prod _ inner => isPureReqProjExpr reqFV inner
+  | _ =>
+    let fn := c.getAppFn.consumeMData
+    let args := c.getAppArgs
+    if (fn.isConstOf ``Prod.fst || fn.isConstOf ``Prod.snd) && args.size == 3 then
+      isPureReqProjExpr reqFV args[2]!
+    else
+      false
+
+private def execPkgInvokesApiParam (env : Environment) (execPkgFn : Name) : MetaM Bool := do
+  let some (.defnInfo dv) := env.find? execPkgFn | return false
+  Meta.lambdaTelescope dv.value fun xs body => do
+    if xs.size < 3 then return false
+    let apiFV := xs[1]!.fvarId!
+    let reqFV := xs[2]!.fvarId!
+    let reqTy := (← Meta.inferType xs[2]!).consumeMData
+    let reqTriv := reqTy.isConstOf ``Unit || reqTy.isConstOf ``PUnit
+    let bc := (etaReduceExpr body).consumeMData
+    if bc.getAppFn.consumeMData != .fvar apiFV then return false
+    let callArgs := bc.getAppArgs
+    if callArgs.isEmpty then
+      return reqTriv
+    for i in [0 : callArgs.size] do
+      let ai := callArgs[i]!.consumeMData
+      if !isPureReqProjExpr reqFV ai then return false
+      for j in [0 : i] do
+        if callArgs[j]!.consumeMData == ai then return false
+    return true
+
 private def collectCoveredMkApiImplHelpers
     (env : Environment) (implMod mkApiFn : Name) (execFields : Std.HashSet (Name × Nat)) :
     MetaM (Std.HashSet Name) := do
@@ -3953,19 +3996,31 @@ private def auditEffectfulStepSynthesis
         provenExecPkgExprs := st.provenExecPkgExprs.push (etaReduceExpr args[14]!)
         provenAllowedPkgExprs := st.provenAllowedPkgExprs.push (etaReduceExpr args[15]!)
         provenMkApiExprs := st.provenMkApiExprs.push mkExpr }
-      let execFlds := collectUsedStructFieldsTransitive env modelMods {} execPkgFn
-      if execFlds.isEmpty then
-        errs := errs.push s!"execPkg {execPkgFn} in {pkg} projects zero capability fields"
-      let mut nextFlds := st.coveredExecFields
-      for f in execFlds do nextFlds := nextFlds.insert f
-      st := { st with coveredExecFields := nextFlds }
-      if let .const mkFn _ := mkExpr.getAppFn.consumeMData then
-        let mkCanon := unfoldThinIfaceBuilder env pkg mkFn
-        st := { st with coveredBuilders := (st.coveredBuilders.insert mkFn).insert mkCanon }
-        let mut nextHelpers := st.coveredImplHelpers
-        for h in ← collectCoveredMkApiImplHelpers env implMod mkCanon execFlds do
-          nextHelpers := nextHelpers.insert h
-        st := { st with coveredImplHelpers := nextHelpers }
+      let mkHead? : Option Name := match (peelLambdas mkExpr).consumeMData.getAppFn.consumeMData with
+        | .const mkFn _ => some mkFn
+        | _ => none
+      let isDirectIfaceComb := match mkHead? with
+        | some mkFn => modOfConst env mkFn == ifaceMod && !isPrivateOrInternal mkFn && !isPkgBuilderConst env pkg mkFn
+        | none => false
+      if isDirectIfaceComb then
+        if !(← execPkgInvokesApiParam env execPkgFn) then
+          errs := errs.push s!"execPkg {execPkgFn} in {pkg} must directly invoke Interface op on request projections"
+        else if let some mkFn := mkHead? then
+          st := { st with coveredStepOps := st.coveredStepOps.insert mkFn }
+      else
+        let execFlds := collectUsedStructFieldsTransitive env modelMods {} execPkgFn
+        if execFlds.isEmpty then
+          errs := errs.push s!"execPkg {execPkgFn} in {pkg} projects zero capability fields"
+        let mut nextFlds := st.coveredExecFields
+        for f in execFlds do nextFlds := nextFlds.insert f
+        st := { st with coveredExecFields := nextFlds }
+        if let some mkFn := mkHead? then
+          let mkCanon := unfoldThinIfaceBuilder env pkg mkFn
+          st := { st with coveredBuilders := (st.coveredBuilders.insert mkFn).insert mkCanon }
+          let mut nextHelpers := st.coveredImplHelpers
+          for h in ← collectCoveredMkApiImplHelpers env implMod mkCanon execFlds do
+            nextHelpers := nextHelpers.insert h
+          st := { st with coveredImplHelpers := nextHelpers }
     else if (fnName == `Core.ObeysStepFrom2 || fnName == `Core.RefinesStepFrom2) && args.size == 21 then
       st := { st with stepCount := st.stepCount + 1 }
       let some _ := checkBareModelConst env modelMods true args[11]!
@@ -3994,19 +4049,31 @@ private def auditEffectfulStepSynthesis
         provenExecPkgExprs := st.provenExecPkgExprs.push (etaReduceExpr args[19]!)
         provenAllowedPkgExprs := st.provenAllowedPkgExprs.push (etaReduceExpr args[20]!)
         provenMkApiExprs := st.provenMkApiExprs.push mkExpr }
-      let execFlds := collectUsedStructFieldsTransitive env modelMods {} execPkgFn
-      if execFlds.isEmpty then
-        errs := errs.push s!"execPkg {execPkgFn} in {pkg} projects zero capability fields"
-      let mut nextFlds := st.coveredExecFields
-      for f in execFlds do nextFlds := nextFlds.insert f
-      st := { st with coveredExecFields := nextFlds }
-      if let .const mkFn _ := mkExpr.getAppFn.consumeMData then
-        let mkCanon := unfoldThinIfaceBuilder env pkg mkFn
-        st := { st with coveredBuilders := (st.coveredBuilders.insert mkFn).insert mkCanon }
-        let mut nextHelpers := st.coveredImplHelpers
-        for h in ← collectCoveredMkApiImplHelpers env implMod mkCanon execFlds do
-          nextHelpers := nextHelpers.insert h
-        st := { st with coveredImplHelpers := nextHelpers }
+      let mkHead? : Option Name := match (peelLambdas mkExpr).consumeMData.getAppFn.consumeMData with
+        | .const mkFn _ => some mkFn
+        | _ => none
+      let isDirectIfaceComb := match mkHead? with
+        | some mkFn => modOfConst env mkFn == ifaceMod && !isPrivateOrInternal mkFn && !isPkgBuilderConst env pkg mkFn
+        | none => false
+      if isDirectIfaceComb then
+        if !(← execPkgInvokesApiParam env execPkgFn) then
+          errs := errs.push s!"execPkg {execPkgFn} in {pkg} must directly invoke Interface op on request projections"
+        else if let some mkFn := mkHead? then
+          st := { st with coveredStepOps := st.coveredStepOps.insert mkFn }
+      else
+        let execFlds := collectUsedStructFieldsTransitive env modelMods {} execPkgFn
+        if execFlds.isEmpty then
+          errs := errs.push s!"execPkg {execPkgFn} in {pkg} projects zero capability fields"
+        let mut nextFlds := st.coveredExecFields
+        for f in execFlds do nextFlds := nextFlds.insert f
+        st := { st with coveredExecFields := nextFlds }
+        if let some mkFn := mkHead? then
+          let mkCanon := unfoldThinIfaceBuilder env pkg mkFn
+          st := { st with coveredBuilders := (st.coveredBuilders.insert mkFn).insert mkCanon }
+          let mut nextHelpers := st.coveredImplHelpers
+          for h in ← collectCoveredMkApiImplHelpers env implMod mkCanon execFlds do
+            nextHelpers := nextHelpers.insert h
+          st := { st with coveredImplHelpers := nextHelpers }
 
   if st.stepCount == 0 then
     return errs.push s!"OBEYS_SYNTH_MISSING_STEP: {pkg} exposes {effOps.size} effectful Interface ops but has zero ObeysStep* conjuncts"
@@ -4033,17 +4100,36 @@ private def auditEffectfulStepSynthesis
 
   let defApiName := Name.str pkg "defaultApi"
   let defOpsName := Name.str pkg "defaultOps"
+  let defOpsBaseName := Name.str pkg "defaultOpsBase"
+  let defRawOpsName := Name.str pkg "defaultRawOps"
   let defRoot? : Option Name :=
     if env.contains defApiName && modOfConst env defApiName == ifaceMod then some defApiName
     else if env.contains defOpsName && modOfConst env defOpsName == ifaceMod then some defOpsName
+    else if env.contains defOpsBaseName && modOfConst env defOpsBaseName == ifaceMod then some defOpsBaseName
     else none
-  if let some defRoot := defRoot? then
+  if let some defRoot0 := defRoot? then
+    let defRoot :=
+      if ifaceHasPrivateExtern && defRoot0 == defOpsName &&
+          env.contains defOpsBaseName && modOfConst env defOpsBaseName == ifaceMod then
+        match env.find? defRoot0 with
+        | some (.defnInfo dv0) =>
+          let b0 := dv0.value.consumeMData
+          match b0.getAppFn.consumeMData with
+          | .const hd0 _ =>
+            if !isPkgBuilderConst env pkg hd0 && b0.getUsedConstants.contains defOpsBaseName then defOpsBaseName
+            else defRoot0
+          | _ => defRoot0
+        | _ => defRoot0
+      else defRoot0
     if let some (.defnInfo dv) := env.find? defRoot then
       let body := dv.value.consumeMData
       match body.getAppFn.consumeMData with
       | .const defHead _ =>
         if ifaceHasPrivateExtern then
-          let ok := st.provenMkApiExprs.any fun mkE => mkE.getUsedConstants.contains defHead
+          let defCanon := unfoldThinIfaceBuilder env pkg defHead
+          let ok := st.provenMkApiExprs.any fun mkE =>
+            let used := mkE.getUsedConstants
+            used.contains defHead || used.contains defCanon
           if !ok then
             errs := errs.push s!"OBEYS_SYNTH_BUILDER_MISMATCH: leaf {defRoot} builder {defHead} not referenced in obeys_model"
         else if !isPkgBuilderConst env pkg defHead then
@@ -4067,7 +4153,11 @@ private def auditEffectfulStepSynthesis
         errs := errs.push s!"OBEYS_SYNTH_BUILDER_MISMATCH: {defRoot} does not apply a constant mk* builder"
 
   let skipBundles : Std.HashSet Name :=
-    Std.HashSet.emptyWithCapacity 2 |>.insert defApiName |>.insert defOpsName
+    Std.HashSet.emptyWithCapacity 4
+      |>.insert defApiName
+      |>.insert defOpsName
+      |>.insert defOpsBaseName
+      |>.insert defRawOpsName
   let ifaceSingleton : Std.HashSet Name := Std.HashSet.emptyWithCapacity 1 |>.insert ifaceMod
   for (opName, _) in effOps do
     let some (.defnInfo dv) := env.find? opName | continue
@@ -4305,13 +4395,20 @@ private def renderSynthesizedObeysSig
         conjuncts := conjuncts.push s!"<MISSING_MODEL_SPEC: {reason}>"
     if !effOps.isEmpty || (spec.purity != "pure" && hasDefBundle) then
       let modelMod := Name.str pkg "Model"
-      let defApiName := Name.str pkg "defaultApi"
-      let mkApiCand := match env.find? defApiName with
+      let bundleCands := #[Name.str pkg "defaultApi", Name.str pkg "defaultOps", Name.str pkg "defaultOpsBase"]
+      let mkApiFromBundle? := bundleCands.findSome? fun bName =>
+        match env.find? bName with
         | some (.defnInfo dv) =>
           match dv.value.consumeMData.getAppFn.consumeMData with
-          | .const fn _ => if isPkgBuilderConst env pkg fn then some fn else none
+          | .const fn _ =>
+            if isPkgBuilderConst env pkg fn then
+              some (if constHasTypeToTypeBinder env fn then fn else unfoldThinIfaceBuilder env pkg fn)
+            else none
           | _ => none
-        | _ =>
+        | _ => none
+      let mkApiCand := match mkApiFromBundle? with
+        | some fn => some fn
+        | none =>
           let cand := Name.str (Name.str pkg "Internal") "mkApiM"
           if env.contains cand then some cand else none
       let stepHead := match mkApiCand.bind (env.find? ·) with
