@@ -1,6 +1,7 @@
 import Core.NondetTest
 import LeanSwe.Toml.SpecTests
 import LeanSwe.Toml.Proofs.FormatBridgeFocus
+import LeanSwe.Toml.Proofs.NumParseContract
 
 /-!
 # Document Formatter & Round-Trip Bridge (`FormatBridge`)
@@ -512,41 +513,51 @@ private theorem formatWithNum_roundTrip_model (numApi : NumParseApi) (hnum : Val
 section
 attribute [local irreducible] parseWithNum
 
-/-- Prove `test_toml_render_parse_roundTrip` for `makeTomlApi numApi`. -/
-theorem allPass_render_parse_roundTrip (numApi : NumParseApi) (hnum : ValidNumApi numApi) :
-    Core.AllPass (test_toml_render_parse_roundTrip (makeTomlApi numApi)) := by
-  rintro ⟨doc, tape⟩
-  dsimp only [test_toml_render_parse_roundTrip, makeTomlApi, Core.NondetTest.assume, Core.NondetTest.nondet, NondetTest.assert, bind, pure]
+/-- Prove `test_toml_render_parse_roundTrip` for `Internal.mkApi` over any `numApi`. -/
+theorem allPass_render_parse_roundTrip (numApi : NumParseApi) :
+    Core.AllPass (test_toml_render_parse_roundTrip Internal.mkApi numApi) := by
+  intro hobeys ⟨doc, tape⟩
+  have hnum := validNumApi_of_obeysApi hobeys
+  dsimp only [test_toml_render_parse_roundTrip, Internal.mkApi, makeTomlApi,
+    Core.NondetTest.assume, Core.NondetTest.nondet, NondetTest.assert, bind, pure]
   cases hr : Model.render doc tape with
   | none => exact fun _ => trivial
   | some out =>
     obtain ⟨_, hp, heq⟩ := render_parse_roundTrip_model numApi hnum doc tape out hr
     dsimp only; rw [hp]; exact ⟨heq, trivial⟩
 
-/-- Witness `CanReach` for `test_toml_render_parse_roundTrip`. -/
-theorem canReach_render_parse_roundTrip (numApi : NumParseApi) (hnum : ValidNumApi numApi) :
-    Core.CanReach (test_toml_render_parse_roundTrip (makeTomlApi numApi)) := by
+/-- Witness `CanReach` for `test_toml_render_parse_roundTrip` using `NumParse.Model.modelApi`. -/
+theorem canReach_render_parse_roundTrip :
+    Core.CanReach (test_toml_render_parse_roundTrip Internal.mkApi LeanSwe.NumParse.Model.modelApi) := by
+  have hobeys := LeanSwe.NumParse.Model.modelApi_obeys
+  have hnum := validNumApi_of_obeysApi hobeys
   have hr : Model.render #[] {} = some "" := render_empty_default
-  obtain ⟨_, hp, heq⟩ := render_parse_roundTrip_model numApi hnum #[] {} "" hr
-  refine ⟨(#[], {}), ?_⟩
-  dsimp only [test_toml_render_parse_roundTrip, makeTomlApi, Core.NondetTest.assume, Core.NondetTest.nondet, NondetTest.assert, bind, pure]
+  obtain ⟨_, hp, heq⟩ := render_parse_roundTrip_model LeanSwe.NumParse.Model.modelApi hnum #[] {} "" hr
+  refine ⟨hobeys, (#[], {}), ?_⟩
+  dsimp only [test_toml_render_parse_roundTrip, Internal.mkApi, makeTomlApi,
+    Core.NondetTest.assume, Core.NondetTest.nondet, NondetTest.assert, bind, pure]
   rw [hr]; dsimp only; rw [hp]; exact ⟨heq, trivial⟩
 
-/-- Prove `test_toml_format_validAndRoundTrip` for `makeTomlApi numApi`. -/
-theorem allPass_format_validAndRoundTrip (numApi : NumParseApi) (hnum : ValidNumApi numApi) :
-    Core.AllPass (test_toml_format_validAndRoundTrip (makeTomlApi numApi)) := by
-  intro doc hwf
-  dsimp only [test_toml_format_validAndRoundTrip, makeTomlApi, Core.NondetTest.assume, Core.NondetTest.nondet, NondetTest.assert, bind, pure]
+/-- Prove `test_toml_format_validAndRoundTrip` for `Internal.mkApi` over any `numApi`. -/
+theorem allPass_format_validAndRoundTrip (numApi : NumParseApi) :
+    Core.AllPass (test_toml_format_validAndRoundTrip Internal.mkApi numApi) := by
+  intro hobeys doc hwf
+  have hnum := validNumApi_of_obeysApi hobeys
+  dsimp only [test_toml_format_validAndRoundTrip, Internal.mkApi, makeTomlApi,
+    Core.NondetTest.assume, Core.NondetTest.nondet, NondetTest.assert, bind, pure]
   obtain ⟨_, hp, heq⟩ := formatWithNum_roundTrip_model numApi hnum doc hwf
   rw [hp]; exact ⟨heq, trivial⟩
 
-/-- Witness `CanReach` for `test_toml_format_validAndRoundTrip`. -/
-theorem canReach_format_validAndRoundTrip (numApi : NumParseApi) (hnum : ValidNumApi numApi) :
-    Core.CanReach (test_toml_format_validAndRoundTrip (makeTomlApi numApi)) := by
+/-- Witness `CanReach` for `test_toml_format_validAndRoundTrip` using `NumParse.Model.modelApi`. -/
+theorem canReach_format_validAndRoundTrip :
+    Core.CanReach (test_toml_format_validAndRoundTrip Internal.mkApi LeanSwe.NumParse.Model.modelApi) := by
+  have hobeys := LeanSwe.NumParse.Model.modelApi_obeys
+  have hnum := validNumApi_of_obeysApi hobeys
   have hwf : WellFormedTable #[] := rfl
-  obtain ⟨_, hp, heq⟩ := formatWithNum_roundTrip_model numApi hnum #[] hwf
-  refine ⟨#[], hwf, ?_⟩
-  dsimp only [test_toml_format_validAndRoundTrip, makeTomlApi, Core.NondetTest.assume, Core.NondetTest.nondet, NondetTest.assert, bind, pure]
+  obtain ⟨_, hp, heq⟩ := formatWithNum_roundTrip_model LeanSwe.NumParse.Model.modelApi hnum #[] hwf
+  refine ⟨hobeys, #[], hwf, ?_⟩
+  dsimp only [test_toml_format_validAndRoundTrip, Internal.mkApi, makeTomlApi,
+    Core.NondetTest.assume, Core.NondetTest.nondet, NondetTest.assert, bind, pure]
   rw [hp]; exact ⟨heq, trivial⟩
 
 end

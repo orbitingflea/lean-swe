@@ -381,4 +381,24 @@ theorem parseIntModel_formatInt (n : Int) :
     | succ m => exact parseIntModel_formatPos false m
   | negSucc m => exact parseIntModel_formatPos true m
 
+private theorem formatIntChars_all_dec_or_minus (n : Int) :
+    (Internal.formatInt n).toList.all (fun c => isDecDigit c || c == '-') = true := by
+  unfold Internal.formatInt Internal.formatIntChars
+  cases n with
+  | ofNat k =>
+    cases k with
+    | zero => decide
+    | succ m =>
+      rw [String.toList_ofList]
+      exact List.all_eq_true.mpr fun c hc => Bool.or_eq_true_iff.mpr (Or.inl (natToDecCharsPos_all_dec (m + 1) c hc))
+  | negSucc m =>
+    rw [String.toList_ofList, List.all_cons]
+    refine Bool.and_eq_true_iff.mpr ⟨by decide, List.all_eq_true.mpr fun c hc => ?_⟩
+    exact Bool.or_eq_true_iff.mpr (Or.inl (natToDecCharsPos_all_dec (m + 1) c hc))
+
+/-- `Internal.formatInt` satisfies the strengthened `allowedFormatInt` relation. -/
+theorem allowedFormatInt_formatInt (n : Int) :
+    allowedFormatInt n (Internal.formatInt n) :=
+  ⟨(parseIntModel_formatInt n).1, formatIntChars_all_dec_or_minus n, (parseIntModel_formatInt n).2⟩
+
 end LeanSwe.NumParse.Proofs

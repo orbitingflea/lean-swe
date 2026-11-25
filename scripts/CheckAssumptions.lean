@@ -2682,6 +2682,93 @@ private def findRefinesOrObeysThm? (env : Environment) (pkg : Name) : Except Str
   else
     .ok none
 
+private partial def peelLambdasRefines (e : Expr) : Expr :=
+  match e.consumeMData with
+  | .lam _ _ b _ => peelLambdasRefines b
+  | cur => cur
+
+private def constValueClosureTouchesSweImplOrIface (env : Environment) (start : Name) : Bool := Id.run do
+  let mut work : Array Name := #[start]
+  let mut seen : Std.HashSet Name := {}
+  while !work.isEmpty do
+    let cur := work.back!
+    work := work.pop
+    if seen.contains cur then continue
+    seen := seen.insert cur
+    let m := moduleOfConst env cur
+    if m.getRoot == `LeanSwe &&
+        (m.components.contains `Impl || m.components.contains `Interface || m.components.contains `SysBridge) then
+      return true
+    if !isProjectModule m then continue
+    if let some ci := env.find? cur then
+      let valUsed := match ci with
+        | .defnInfo v => v.value.getUsedConstants
+        | .thmInfo v => v.value.getUsedConstants
+        | .opaqueInfo v => v.value.getUsedConstants
+        | _ => #[]
+      for u in ci.type.getUsedConstants ++ valUsed do
+        if !seen.contains u then
+          work := work.push u
+  return false
+
+private def hasPureFromModelWitness
+    (env : Environment) (depPkg pkg : Name) (depTy depObeys : Expr) (axCacheIn : AxCache) :
+    MetaM (Bool × AxCache) := do
+  let mut axCache := axCacheIn
+  let depModelMod := Name.str depPkg "Model"
+  let depModelPfx := depModelMod.toString ++ "."
+  let proofsMod := Name.str pkg "Proofs"
+  let proofsPfx := proofsMod.toString ++ "."
+  for h : i in [0 : env.header.moduleNames.size] do
+    let m := env.header.moduleNames[i]
+    let inDepModel := m == depModelMod || m.toString.startsWith depModelPfx
+    let inPkgProofs := m == proofsMod || m.toString.startsWith proofsPfx
+    if !inDepModel && !inPkgProofs then continue
+    let some data := env.header.moduleData[i]? | continue
+    for c in data.constants do
+      let .thmInfo tv := c | continue
+      if isPrivateName c.name || isCompilerAux c.name || env.isProjectionFn c.name then continue
+      let tc := tv.type.consumeMData
+      if !tc.isAppOfArity ``Exists 2 then continue
+      let okTy ← match ← runBoundedMeta (Meta.withNewMCtxDepth <| Meta.withTransparency .default do
+          if !(← isDefEq tc.appFn!.appArg! depTy) then return false
+          withLocalDeclD `_depWit depTy fun d =>
+            isDefEq (mkApp tc.appArg! d) (mkApp depObeys d)) (maxRecDepth := 1024) with
+        | .ok b => pure b
+        | .error _ => pure false
+      if !okTy then continue
+      let (badAx?, nextAx) ← checkAxiomsOk axCache c.name
+      axCache := nextAx
+      if badAx?.isSome then continue
+      if constValueClosureTouchesSweImplOrIface env c.name then continue
+      return (true, axCache)
+  return (false, axCache)
+
+private def resolveInterfaceOpForProj?
+    (env : Environment) (ifaceMod defApiName projFn : Name) : Option Name := Id.run do
+  let stName := projFn.getPrefix
+  let fldShort := Name.mkSimple projFn.getString!
+  let fldIdx? := (Lean.getStructureFields env stName).findIdx? (· == fldShort)
+  let some idx := env.header.moduleNames.findIdx? (· == ifaceMod) | return none
+  let some data := env.header.moduleData[idx]? | return none
+  let mut matchesFound : Array Name := #[]
+  for c in data.constants do
+    let .defnInfo dv := c | continue
+    if isPrivateName c.name || isCompilerAux c.name || env.isProjectionFn c.name || c.name == defApiName then
+      continue
+    let body := peelLambdasRefines dv.value
+    let fn := body.getAppFn.consumeMData
+    let args := body.getAppArgs
+    let hitsProj := match fn with
+      | .proj s i inner =>
+        s == stName && fldIdx? == some i && inner.consumeMData.isConstOf defApiName
+      | .const pFn _ =>
+        pFn == projFn && args.any (fun a => a.consumeMData.isConstOf defApiName)
+      | _ => false
+    if hitsProj then
+      matchesFound := matchesFound.push c.name
+  return if matchesFound.size == 1 then some matchesFound[0]! else none
+
 private def checkRefinesModelTheorem
     (env relaxedEnv : Environment)
     (transImpsOf : Name → Std.HashSet Name)
@@ -2987,6 +3074,153 @@ private def checkRefinesModelTheorem
             aErrs := aErrs.push s!"INCONCLUSIVE_REFINES_CHECK: {msgFn} for {parseFn} in {thmName} ({reason})"
           if aErrs.isEmpty then
             coveredPureOpsRef.modify (·.insert parseFn)
+          return aErrs
+
+        if ab.isAppOfArity `Core.ObeysPureFrom 8 || ab.isAppOfArity `Core.ObeysInverseRenderFrom 13 then
+          let isInvFrom := ab.isAppOfArity `Core.ObeysInverseRenderFrom 13
+          let a := ab.getAppArgs
+          let depTy := a[0]!
+          let pkgApiTy := a[1]!
+          let (depObeysArg, mkApiArg, projArg) :=
+            if isInvFrom then (a[6]!, a[7]!, a[8]!) else (a[4]!, a[5]!, a[6]!)
+          let some depObeysFn ← checkBareConstArg env allowedAtomFVs false depObeysArg
+            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare depObeys argument in {thmName}"]
+          let some mkApiFn ← checkBareConstArg env allowedAtomFVs false mkApiArg
+            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare mkApi argument in {thmName}"]
+          let some projFn ← checkBareConstArg env allowedAtomFVs false projArg
+            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare projOp argument in {thmName}"]
+          let depMod := moduleOfConst env depObeysFn
+          let depPkg := pkgNamespaceOfSpecWith knownPkgs depMod
+          let depModelMod := Name.str depPkg "Model"
+          let inDepModel := depMod == depModelMod || depMod.toString.startsWith (depModelMod.toString ++ ".")
+          if isPrivateName depObeysFn || depPkg == pkg || !inDepModel then
+            aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {depObeysFn} in {thmName} must be a public cross-package Model constant"
+          if ← constTransitivelyTouchesSweImplOrIfaceCached env safeModelConstsRef depObeysFn then
+            aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {depObeysFn} in {thmName} transitively references Interface/Impl"
+          let mkMod := moduleOfConst env mkApiFn
+          if isPrivateName mkApiFn || modelMods.contains mkMod || (mkMod != ifaceMod && mkMod != implMod) then
+            aErrs := aErrs.push s!"NON_INTERFACE_IMPL_IN_REFINES: {mkApiFn} in {thmName} must be a public constant in {ifaceMod} or {implMod}"
+          let pkgTypesMod := Name.str pkg "Types"
+          let pkgApiHead? := pkgApiTy.consumeMData.getAppFn.consumeMData.constName?
+          if isPrivateName projFn || !env.isProjectionFn projFn ||
+              moduleOfConst env projFn != pkgTypesMod || pkgApiHead? != some projFn.getPrefix then
+            aErrs := aErrs.push s!"NON_INTERFACE_IMPL_IN_REFINES: {projFn} in {thmName} must be a structure projection of {pkgApiTy} in {pkgTypesMod}"
+          let defApiName := Name.str pkg "defaultApi"
+          let depDefaultApi := Name.str depPkg "defaultApi"
+          let wiredOk := match env.find? defApiName with
+            | some (.defnInfo defDv) =>
+              moduleOfConst env defApiName == ifaceMod &&
+                let b := defDv.value.consumeMData
+                let bArgs := b.getAppArgs
+                b.getAppFn.consumeMData.constName? == some mkApiFn &&
+                  bArgs.size == 1 && bArgs[0]!.consumeMData.isConstOf depDefaultApi
+            | _ => false
+          if !wiredOk then
+            aErrs := aErrs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: {defApiName} must wire {mkApiFn} directly to {depDefaultApi}"
+          let implOp? := resolveInterfaceOpForProj? env ifaceMod defApiName projFn
+          if implOp?.isNone then
+            aErrs := aErrs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: no unique Interface operation in {ifaceMod} delegates via {projFn} to {defApiName}"
+          let depObeysThm := Name.str (Name.str depPkg "Proofs") "obeys_model"
+          match env.find? depDefaultApi, env.find? depObeysThm with
+          | some (.defnInfo _), some (.thmInfo depTv) =>
+            let bridgeOk ← match ← runBoundedMeta
+                (Meta.withNewMCtxDepth <| Meta.withTransparency .default <|
+                  isDefEq depTv.type (mkApp depObeysArg (mkConst depDefaultApi [])).headBeta)
+                (maxRecDepth := 1024) with
+              | .ok b => pure b
+              | .error _ => pure false
+            if !bridgeOk then
+              aErrs := aErrs.push s!"PURE_FROM_OBEYS_MISMATCH: {depObeysFn} on {depDefaultApi} is not definitionally equal to {depObeysThm}"
+          | _, _ =>
+            aErrs := aErrs.push s!"PURE_FROM_OBEYS_MISMATCH: missing {depDefaultApi} or {depObeysThm} for {depObeysFn} in {thmName}"
+          if !(← isProvablyInhabitedDataType env 8 depTy) then
+            aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited capability domain {depTy} in {thmName}"
+          let depVac ← withLocalDeclD `_depVal depTy fun d => isStaticFalseProp (mkApp depObeysArg d)
+          match depVac with
+          | .isFalse => pure ()
+          | .isTrue =>
+            aErrs := aErrs.push s!"VACUOUS_WF_IN_REFINES: {depObeysFn} in {thmName} is identically false"
+          | .inconclusive reason =>
+            aErrs := aErrs.push s!"INCONCLUSIVE_REFINES_CHECK: {depObeysFn} in {thmName} ({reason})"
+          let (hasWit, _) ← hasPureFromModelWitness env depPkg pkg depTy depObeysArg {}
+          if !hasWit then
+            aErrs := aErrs.push s!"MISSING_PURE_FROM_WITNESS: {thmName} lacks an Impl/Interface-free theorem ∃ d, {depObeysFn} d"
+          if !isInvFrom then
+            let inTy := a[2]!
+            let outTy := a[3]!
+            let specArg := a[7]!
+            let some specFn ← checkBareConstArg env allowedAtomFVs false specArg
+              | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare allowed argument in {thmName}"]
+            if isPrivateName specFn || !modelMods.contains (moduleOfConst env specFn) then
+              aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {specFn} in {thmName} is not a public constant in {pkg}.Model"
+            if ← constTransitivelyTouchesSweImplOrIfaceCached env safeModelConstsRef specFn then
+              aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {specFn} in {thmName} transitively references Interface/Impl"
+            let inTyS := applySubst (stripOptParamType inTy)
+            let outTyS := applySubst (stripOptParamType outTy)
+            if !(← isProvablyInhabitedDataType env 8 inTyS) then
+              aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited input domain for {projFn} in {thmName}"
+            let specSubst := applySubst specArg
+            match ← checkPureAllowedNonTrivial env relaxedEnv modelMods specSubst specFn #[inTyS] outTyS with
+            | .isTrue => pure ()
+            | .isFalse =>
+              aErrs := aErrs.push s!"TRIVIAL_ALLOWED_IN_REFINES: {specFn} for {projFn} in {thmName} is output-insensitive or tautological"
+            | .inconclusive reason =>
+              aErrs := aErrs.push s!"INCONCLUSIVE_REFINES_CHECK: {specFn} for {projFn} in {thmName} ({reason})"
+          else
+            let (objTy, tapeTy, rawTy, errTy) := (a[2]!, a[3]!, a[4]!, a[5]!)
+            let (renderArg, wfArg, equivArg, msgArg) := (a[9]!, a[10]!, a[11]!, a[12]!)
+            let some renderFn ← checkBareConstArg env allowedAtomFVs false renderArg
+              | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare render argument in {thmName}"]
+            let some wfFn ← checkBareConstArg env allowedAtomFVs false wfArg
+              | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare wf argument in {thmName}"]
+            let some equivFn ←
+              if equivArg.consumeMData.isAppOfArity ``Eq 1 then pure (some ``Eq)
+              else checkBareConstArg env allowedAtomFVs false equivArg
+              | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare equiv argument in {thmName}"]
+            let some msgFn ← checkBareConstArg env allowedAtomFVs false msgArg
+              | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare msgOf argument in {thmName}"]
+            for mFn in #[renderFn, wfFn] do
+              if isPrivateName mFn || !modelMods.contains (moduleOfConst env mFn) then
+                aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {mFn} in {thmName} is not a public constant in {pkg}.Model"
+            if equivFn != ``Eq && (isPrivateName equivFn || !modelMods.contains (moduleOfConst env equivFn)) then
+              aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {equivFn} in {thmName} must be Eq or a public constant in {pkg}.Model"
+            if !isAllowedErrorExtractorConst env pkg modelMods msgFn then
+              aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {msgFn} in {thmName} must be a public Types/Model constant"
+            for mFn in #[renderFn, wfFn, equivFn, msgFn] do
+              if mFn != ``Eq && (← constTransitivelyTouchesSweImplOrIfaceCached env safeModelConstsRef mFn) then
+                aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {mFn} in {thmName} transitively references Interface/Impl"
+            let objTyS := applySubst (stripOptParamType objTy)
+            let tapeTyS := applySubst (stripOptParamType tapeTy)
+            let rawTyS := applySubst (stripOptParamType rawTy)
+            let errTyS := applySubst (stripOptParamType errTy)
+            for dTy in #[objTyS, tapeTyS, rawTyS, errTyS] do
+              if !(← isProvablyInhabitedDataType env 8 dTy) then
+                aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited domain in ObeysInverseRenderFrom for {projFn} in {thmName}"
+            let wfSubst := applySubst wfArg
+            let wfCheck ← withLocalDeclD `_invObj objTyS fun o => isStaticFalseProp (mkApp wfSubst o)
+            match wfCheck with
+            | .isFalse => pure ()
+            | .isTrue =>
+              aErrs := aErrs.push s!"VACUOUS_WF_IN_REFINES: {wfFn} in {thmName} is identically false"
+            | .inconclusive reason =>
+              aErrs := aErrs.push s!"INCONCLUSIVE_REFINES_CHECK: {wfFn} in {thmName} ({reason})"
+            let renderSubst := applySubst renderArg
+            match ← checkRenderNotConstantOnObj env relaxedEnv objTyS tapeTyS renderSubst with
+            | .isTrue => pure ()
+            | .isFalse =>
+              aErrs := aErrs.push s!"TRIVIAL_ALLOWED_IN_REFINES: {renderFn} for {projFn} in {thmName} is object-insensitive"
+            | .inconclusive reason =>
+              aErrs := aErrs.push s!"INCONCLUSIVE_REFINES_CHECK: {renderFn} for {projFn} in {thmName} ({reason})"
+            let msgSubst := applySubst msgArg
+            match ← checkFnNotConstantOnType env relaxedEnv errTyS (fun e => (mkApp msgSubst e).headBeta) with
+            | .isTrue => pure ()
+            | .isFalse =>
+              aErrs := aErrs.push s!"TRIVIAL_ALLOWED_IN_REFINES: {msgFn} for {projFn} in {thmName} is constant on errors"
+            | .inconclusive reason =>
+              aErrs := aErrs.push s!"INCONCLUSIVE_REFINES_CHECK: {msgFn} for {projFn} in {thmName} ({reason})"
+          if aErrs.isEmpty then
+            if let some implFn := implOp? then
+              coveredPureOpsRef.modify (·.insert implFn)
           return aErrs
 
         let stepInfo? : Option (Expr × Expr × Expr × Expr × Expr × Expr × Expr × Expr) :=

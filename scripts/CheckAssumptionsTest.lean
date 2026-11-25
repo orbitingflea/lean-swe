@@ -3693,6 +3693,122 @@ def main (_ : List String) : IO UInt32 := do
         "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
       ]
 
+    let writePureFromSetup (mr : MiniRepo) (numModelExtra : String) (docProofsBody : String) : IO (Array String) := do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniDep/Types.lean")
+        "namespace LeanSwe.MiniDep\nstructure NumApi where\n  fmt : Nat → Nat\nend LeanSwe.MiniDep\n"
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniDep/Model.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniDep.Types\nnamespace LeanSwe.MiniDep.Model\n" ++
+         "def fmtModel (n : Nat) : Nat := n + 1\n" ++
+         numModelExtra ++ "\nend LeanSwe.MiniDep.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniDep/Impl.lean")
+        ("import LeanSwe.MiniDep.Types\nnamespace LeanSwe.MiniDep.Internal\n" ++
+         "def fmtImpl (n : Nat) : Nat := n + 1\ndef defaultApi : NumApi := { fmt := fmtImpl }\nend LeanSwe.MiniDep.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniDep/Interface.lean")
+        ("import LeanSwe.MiniDep.Impl\nnamespace LeanSwe.MiniDep\n" ++
+         "def defaultApi : NumApi := Internal.defaultApi\ndef fmt (n : Nat) : Nat := defaultApi.fmt n\nend LeanSwe.MiniDep\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniDep/SpecTests.lean")
+        ("import Core.NondetTest\nimport LeanSwe.MiniDep.Model\nimport LeanSwe.MiniDep.Interface\nnamespace LeanSwe.MiniDep\n" ++
+         "open Core Core.NondetTest\ndef test_minidep {r} [NondetTest r] (fn : Nat → Nat) : r Unit := do\n  let n ← nondet Nat\n  NondetTest.assert (Model.allowedFmt n (fn n))\nend LeanSwe.MiniDep\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniDep/Proofs.lean")
+        ("import Core.Obeys\nimport LeanSwe.MiniDep.SpecTests\nnamespace LeanSwe.MiniDep.Proofs\n" ++
+         "theorem proof_minidep : Core.AllPass (LeanSwe.MiniDep.test_minidep LeanSwe.MiniDep.fmt) := fun n => ⟨by simp [Model.allowedFmt, LeanSwe.MiniDep.fmt, LeanSwe.MiniDep.defaultApi, Internal.defaultApi, Internal.fmtImpl], trivial⟩\n" ++
+         "theorem obeys_model : Core.ObeysPure LeanSwe.MiniDep.fmt Model.allowedFmt := fun n => by simp [Model.allowedFmt, LeanSwe.MiniDep.fmt, LeanSwe.MiniDep.defaultApi, Internal.defaultApi, Internal.fmtImpl]\nend LeanSwe.MiniDep.Proofs\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\nstructure PureCfg where\n  delta : Nat\n" ++
+         "inductive InvKind | zero | bad deriving Repr, BEq, DecidableEq\n" ++
+         "structure InvErr where\n  kind : InvKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
+         "structure PureApi where\n  eval : Nat → Nat\n  parseBool : String → Except InvErr Bool\nend LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\n" ++
+         "def allowedEval (n out : Nat) : Prop := out = n + 1\n" ++
+         "def renderBool (b : Bool) (_ : Unit) : Option String := some (if b then \"1\" else \"0\")\n" ++
+         "def wfBool (_ : Bool) : Prop := True\nend LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import LeanSwe.MiniDep.Types\nimport LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\n" ++
+         "def mkApi (num : LeanSwe.MiniDep.NumApi) : PureApi :=\n" ++
+         "  { eval := num.fmt\n" ++
+         "  , parseBool := fun s => if s == \"1\" && num.fmt 0 == 1 then .ok true else if s == \"0\" && num.fmt 0 == 1 then .ok false else if s.isEmpty then .error { kind := .zero, msg := \"empty\" } else .error { kind := .bad, msg := \"bad\" } }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniDep.Interface\nimport LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n" ++
+         "def defaultApi : PureApi := Internal.mkApi LeanSwe.MiniDep.defaultApi\n" ++
+         "def eval (n : Nat) : Nat := defaultApi.eval n\n" ++
+         "def parseBool (s : String) : Except InvErr Bool := defaultApi.parseBool s\nend LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/SpecTests.lean")
+        ("import Core.NondetTest\nimport Core.Assumptions\nimport LeanSwe.MiniDep.Model\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\n" ++
+         "namespace LeanSwe.MiniPure\nopen Core Core.NondetTest\n" ++
+         "def test_minipure_matches {r} [NondetTest r] (mk : LeanSwe.MiniDep.NumApi → PureApi) (num : LeanSwe.MiniDep.NumApi) : r Unit := do\n  assume (LeanSwe.MiniDep.Model.ObeysApi num)\n  let x ← nondet Nat\n  NondetTest.assert ((mk num).eval x = x + 1)\n" ++
+         "def errorCoverage : List (ErrorObligation InvKind) := [\n" ++
+         "  { request := \"LeanSwe.MiniPure.parseBool\", errorKind := .zero, justification := .tested \"LeanSwe.MiniPure.RuntimeTests.test_err_zero\" .real },\n" ++
+         "  { request := \"LeanSwe.MiniPure.parseBool\", errorKind := .bad, justification := .tested \"LeanSwe.MiniPure.RuntimeTests.test_err_bad\" .real }\n]\nend LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean") docProofsBody
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/RuntimeTests.lean")
+        ("import Core.Assumptions\nimport LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.RuntimeTests\n" ++
+         "def test_err_zero : IO Unit := do\n  match LeanSwe.MiniPure.parseBool \"\" with\n  | .error e => if e.kind != .zero then throw (IO.userError \"wrong\")\n  | .ok _ => throw (IO.userError \"expected err\")\n" ++
+         "def test_err_bad : IO Unit := do\n  match LeanSwe.MiniPure.parseBool \"nope\" with\n  | .error e => if e.kind != .bad then throw (IO.userError \"wrong\")\n  | .ok _ => throw (IO.userError \"expected err\")\n" ++
+         "def registeredErrorTests : Array Core.RegisteredErrorTest := #[\n" ++
+         "  { testName := \"LeanSwe.MiniPure.RuntimeTests.test_err_zero\", mode := .real, run := test_err_zero },\n" ++
+         "  { testName := \"LeanSwe.MiniPure.RuntimeTests.test_err_bad\", mode := .real, run := test_err_bad }]\n" ++
+         "def runAll : IO Unit := Core.runRegisteredErrorTests registeredErrorTests\nend LeanSwe.MiniPure.RuntimeTests\n")
+      let ls ← IO.FS.readFile (mr.root / "LeanSwe.lean")
+      writeFileCreatingParents (mr.root / "LeanSwe.lean")
+        (ls ++ "import LeanSwe.MiniDep.SpecTests\nimport LeanSwe.MiniDep.Proofs\nimport LeanSwe.MiniPure.RuntimeTests\n")
+      writeFileCreatingParents (mr.root / "harness/Tests/Main.lean")
+        "import Core.Assumptions\nimport LeanSwe\ndef main (_ : List String) : IO UInt32 := do\n  Core.initAssumpLog \"a\" \"b\"\n  LeanSwe.MiniPure.RuntimeTests.runAll\n  Core.closeAssumpLog\n  return 0\n"
+      return #[
+        "LeanSwe/MiniDep/Types", "LeanSwe/MiniDep/Model", "LeanSwe/MiniDep/Impl",
+        "LeanSwe/MiniDep/Interface", "LeanSwe/MiniDep/SpecTests", "LeanSwe/MiniDep/Proofs",
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs",
+        "LeanSwe/MiniPure/RuntimeTests", "LeanSwe", "Tests/Main"
+      ]
+
+    let compliantDocProofs :=
+      "import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\nnamespace LeanSwe.MiniPure.Proofs\n" ++
+      "theorem proof_minipure (num : LeanSwe.MiniDep.NumApi) : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches Internal.mkApi num) := fun h n => ⟨h n, trivial⟩\n" ++
+      "theorem reach_minipure : Core.CanReach (LeanSwe.MiniPure.test_minipure_matches Internal.mkApi { fmt := fun n => n + 1 }) := ⟨fun _ => rfl, 0, rfl, trivial⟩\n" ++
+      "private theorem renderBool_inj : Core.RenderInjectiveModulo Model.renderBool Eq := by\n" ++
+      "  intro a b _ _ raw ha hb; cases a <;> cases b <;> simp [Model.renderBool] at ha hb <;> first | rfl | exact absurd (ha.trans hb.symm) (by decide)\n" ++
+      "theorem obeys_model :\n" ++
+      "    Core.ObeysPureFrom LeanSwe.MiniDep.Model.ObeysApi Internal.mkApi PureApi.eval Model.allowedEval ∧\n" ++
+      "    Core.ObeysInverseRenderFrom LeanSwe.MiniDep.Model.ObeysApi Internal.mkApi PureApi.parseBool Model.renderBool Model.wfBool Eq InvErr.msg := by\n" ++
+      "  refine ⟨fun _ h n => h n, fun num hnum => Core.ObeysInverseRender.of_injective renderBool_inj ?_ ?_⟩\n" ++
+      "  · intro raw out hp; have h0 : num.fmt 0 = 1 := hnum 0; simp [Internal.mkApi, h0] at hp\n" ++
+      "    by_cases h1 : raw = \"1\"\n" ++
+      "    · subst h1; simp at hp; subst hp; exact ⟨trivial, ⟨(), rfl⟩⟩\n" ++
+      "    · by_cases h2 : raw = \"0\"\n" ++
+      "      · subst h2; simp at hp; subst hp; exact ⟨trivial, ⟨(), rfl⟩⟩\n" ++
+      "      · by_cases he : raw = \"\" <;> simp [h1, h2, he] at hp\n" ++
+      "  · intro raw e hp; have h0 : num.fmt 0 = 1 := hnum 0; simp [Internal.mkApi, h0] at hp\n" ++
+      "    by_cases h1 : raw = \"1\"\n" ++
+      "    · subst h1; simp at hp\n" ++
+      "    · by_cases h2 : raw = \"0\"\n" ++
+      "      · subst h2; simp at hp\n" ++
+      "      · by_cases he : raw = \"\" <;> simp [h1, h2, he] at hp <;> subst hp <;> refine ⟨by decide, fun a _ hr => ?_⟩ <;> cases a <;> simp [Model.renderBool] at hr <;> exact absurd hr.symm (by assumption)\n" ++
+      "end LeanSwe.MiniPure.Proofs\n"
+
+    runPositiveCase base tmpRoot bin "obeys_pure_from_and_inv_from_accepted" fun mr =>
+      writePureFromSetup mr
+        ("def allowedFmt (n out : Nat) : Prop := out = n + 1\n" ++
+         "def ObeysApi (api : NumApi) : Prop := Core.ObeysPure api.fmt allowedFmt\n" ++
+         "def modelApi : NumApi := { fmt := fun n => n + 1 }\n" ++
+         "theorem obeysApi_satisfiable : ∃ api : NumApi, ObeysApi api := ⟨modelApi, fun _ => rfl⟩")
+        compliantDocProofs
+
+    runMutantCase base tmpRoot bin "obeys_pure_from_obeys_mismatch_rejected" "PURE_FROM_OBEYS_MISMATCH" fun mr =>
+      writePureFromSetup mr
+        ("def allowedFmt (n out : Nat) : Prop := out ≥ n\n" ++
+         "def ObeysApi (api : NumApi) : Prop := ∀ n, api.fmt n = n + 1\n" ++
+         "def modelApi : NumApi := { fmt := fun n => n + 1 }\n" ++
+         "theorem obeysApi_satisfiable : ∃ api : NumApi, ObeysApi api := ⟨modelApi, fun _ => rfl⟩")
+        compliantDocProofs
+
+    runMutantCase base tmpRoot bin "obeys_pure_from_missing_witness_rejected" "MISSING_PURE_FROM_WITNESS" fun mr =>
+      writePureFromSetup mr
+        ("def allowedFmt (n out : Nat) : Prop := out = n + 1\n" ++
+         "def ObeysApi (api : NumApi) : Prop := Core.ObeysPure api.fmt allowedFmt")
+        compliantDocProofs
+
     expectFailureCode bin "inconclusive_dead_branch_fails_closed" "INCONCLUSIVE_DEAD_BRANCH_CHECK"
       base.libDir base.root #["--allow-legacy", "--dead-branch-fuel", "0"]
 

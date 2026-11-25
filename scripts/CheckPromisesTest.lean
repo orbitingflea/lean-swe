@@ -457,40 +457,26 @@ def main (_ : List String) : IO UInt32 := do
     runFiles "leaf_one_hop_extra_arg_mismatch" (some "OBEYS_SYNTH_BUILDER_MISMATCH") (fdLeafFiles "mkOps raw 0" "Internal.mkOps rawOps 99") compExtraRels
 
     runFiles "leaf_struct_lift_defaultOps_ok" none #[
-      ("LeanSwe/MiniLeaf/Interface.lean",
-       rawPingIfaceHdr ++ "def defaultOps : LeafOps := { ping := fun n => liftM ((Internal.mkOps rawPing).ping n) }\nend LeanSwe.MiniLeaf\n")]
+      ("LeanSwe/MiniLeaf/Interface.lean", rawPingIfaceHdr ++ "def defaultOps : LeafOps := { ping := fun n => liftM ((Internal.mkOps rawPing).ping n) }\nend LeanSwe.MiniLeaf\n")]
       #["LeanSwe/MiniLeaf/Proofs.lean", "LeanSwe/MiniComp/Interface.lean", "LeanSwe/MiniComp/Proofs.lean"]
-
     runFiles "leaf_struct_lift_bypass_field" (some "OBEYS_SYNTH_BUILDER_MISMATCH") #[
-      ("LeanSwe/MiniLeaf/Types.lean",
-       "namespace LeanSwe.MiniLeaf\nstructure LeafOpsM (m : Type → Type) where\n  ping : Nat → m Nat\n  pong : Nat → m Nat\nabbrev LeafOps := LeafOpsM IO\nend LeanSwe.MiniLeaf\n"),
-      ("LeanSwe/MiniLeaf/Model.lean",
-       leafModHdr ++ "def execLeaf {W : Type} (ops : LeafOpsM (StateM W)) (req : Nat) : StateM W Nat := if req == 0 then ops.ping req else ops.pong req\ndef allowedLeaf (s req out s' : Nat) : Prop := out = req ∧ s' = s\nend LeanSwe.MiniLeaf.Model\n"),
+      ("LeanSwe/MiniLeaf/Types.lean", "namespace LeanSwe.MiniLeaf\nstructure LeafOpsM (m : Type → Type) where\n  ping : Nat → m Nat\n  pong : Nat → m Nat\nabbrev LeafOps := LeafOpsM IO\nend LeanSwe.MiniLeaf\n"),
+      ("LeanSwe/MiniLeaf/Model.lean", leafModHdr ++ "def execLeaf {W : Type} (ops : LeafOpsM (StateM W)) (req : Nat) : StateM W Nat := if req == 0 then ops.ping req else ops.pong req\ndef allowedLeaf (s req out s' : Nat) : Prop := out = req ∧ s' = s\nend LeanSwe.MiniLeaf.Model\n"),
       ("LeanSwe/MiniLeaf/Impl.lean", leafImplHdr ++ "def mkOps {m : Type → Type} [Monad m] (ops : LeafOpsM m) : LeafOpsM m := ops\nend LeanSwe.MiniLeaf.Internal\n"),
-      ("LeanSwe/MiniLeaf/Interface.lean",
-       rawPingIfaceHdr ++ "private def rawOps : LeafOpsM BaseIO := { ping := rawPing, pong := rawPing }\ndef defaultOps : LeafOps := { ping := fun n => liftM ((Internal.mkOps rawOps).ping n), pong := fun n => liftM (rawPing n) }\nend LeanSwe.MiniLeaf\n"),
+      ("LeanSwe/MiniLeaf/Interface.lean", rawPingIfaceHdr ++ "private def rawOps : LeafOpsM BaseIO := { ping := rawPing, pong := rawPing }\ndef defaultOps : LeafOps := { ping := fun n => liftM ((Internal.mkOps rawOps).ping n), pong := fun n => liftM (rawPing n) }\nend LeanSwe.MiniLeaf\n"),
       ("LeanSwe/MiniLeaf/Proofs.lean", leafIdProofsSrc "Internal.mkOps")] compExtraRels
-
     runFiles "leaf_1hop_impl_delegation_fwd" none #[
-      ("LeanSwe/MiniLeaf/Impl.lean",
-       leafImplHdr ++ "def mkOpsM {m : Type → Type} [Monad m] (ops : LeafOpsM m) : LeafOpsM m := { ping := ops.ping }\ndef mkOps (raw : Nat → BaseIO Nat) : LeafOps := mkOpsM { ping := fun n => liftM (raw n) }\nend LeanSwe.MiniLeaf.Internal\n"),
+      ("LeanSwe/MiniLeaf/Impl.lean", leafImplHdr ++ "def mkOpsM {m : Type → Type} [Monad m] (ops : LeafOpsM m) : LeafOpsM m := { ping := ops.ping }\ndef mkOps (raw : Nat → BaseIO Nat) : LeafOps := mkOpsM { ping := fun n => liftM (raw n) }\nend LeanSwe.MiniLeaf.Internal\n"),
       ("LeanSwe/MiniLeaf/Interface.lean", rawPingIfaceHdr ++ "def defaultOps : LeafOps := Internal.mkOps rawPing\nend LeanSwe.MiniLeaf\n"),
       ("LeanSwe/MiniLeaf/Proofs.lean", leafIdProofsSrc "Internal.mkOpsM")]
-
     runFiles "leaf_1hop_impl_delegation_rev" (some "OBEYS_SYNTH_BUILDER_MISMATCH") #[
-      ("LeanSwe/MiniLeaf/Impl.lean",
-       leafImplHdr ++ "def mkOps {m : Type → Type} [Monad m] (ops : LeafOpsM m) (wrap : m Nat → m Nat := id) : LeafOpsM m := { ping := fun n => wrap (ops.ping n) }\ndef mkOpsM {m : Type → Type} [Monad m] (ops : LeafOpsM m) : LeafOpsM m := mkOps ops\nend LeanSwe.MiniLeaf.Internal\n"),
+      ("LeanSwe/MiniLeaf/Impl.lean", leafImplHdr ++ "def mkOps {m : Type → Type} [Monad m] (ops : LeafOpsM m) (wrap : m Nat → m Nat := id) : LeafOpsM m := { ping := fun n => wrap (ops.ping n) }\ndef mkOpsM {m : Type → Type} [Monad m] (ops : LeafOpsM m) : LeafOpsM m := mkOps ops\nend LeanSwe.MiniLeaf.Internal\n"),
       ("LeanSwe/MiniLeaf/Interface.lean", rawPingIfaceHdr ++ "def defaultOps : LeafOps := Internal.mkOps { ping := fun n => liftM (rawPing n) } id\nend LeanSwe.MiniLeaf\n"),
       ("LeanSwe/MiniLeaf/Proofs.lean", leafIdProofsSrc "Internal.mkOpsM")]
-
     runFiles "synth_derived_inhabited_aux_ignored" none #[
-      ("LeanSwe/MiniPure/Interface.lean",
-       pureIfaceHdr ++ "private structure PrivState where\n  x : Nat := 0\n  deriving Inhabited\ndef eval (n : Nat) : Nat := Internal.evalImpl n\nend LeanSwe.MiniPure\n")] #["LeanSwe/MiniPure/Proofs.lean"]
-
+      ("LeanSwe/MiniPure/Interface.lean", pureIfaceHdr ++ "private structure PrivState where\n  x : Nat := 0\n  deriving Inhabited\ndef eval (n : Nat) : Nat := Internal.evalImpl n\nend LeanSwe.MiniPure\n")] #["LeanSwe/MiniPure/Proofs.lean"]
     runFiles "synth_smuggled_op_via_inst_body_rejected" (some "OBEYS_SYNTH_NO_MODEL_OP") #[
-      ("LeanSwe/MiniPure/Interface.lean",
-       pureIfaceHdr ++ "def instFoo.op (n : Nat) : Nat := n + 2\ninstance instFoo : Inhabited (Nat → Nat) := ⟨instFoo.op⟩\ndef eval (n : Nat) : Nat := Internal.evalImpl n\nend LeanSwe.MiniPure\n")]
-      #["LeanSwe/MiniPure/Proofs.lean"]
+      ("LeanSwe/MiniPure/Interface.lean", pureIfaceHdr ++ "def instFoo.op (n : Nat) : Nat := n + 2\ninstance instFoo : Inhabited (Nat → Nat) := ⟨instFoo.op⟩\ndef eval (n : Nat) : Nat := Internal.evalImpl n\nend LeanSwe.MiniPure\n")] #["LeanSwe/MiniPure/Proofs.lean"]
 
     let invModHdr := "import LeanSwe.MiniInv.Types\nnamespace LeanSwe.MiniInv.Model\n"
     let invImplHdr := "import LeanSwe.MiniInv.Types\nnamespace LeanSwe.MiniInv.Internal\n"
@@ -588,7 +574,9 @@ def main (_ : List String) : IO UInt32 := do
     runFiles "vacuous_step_from_except_rejected" (some "VACUOUS_OR_INVALID_OBEYS_MODEL")
       (stepExceptFiles "False" "fun _ _ h w req hw => False.elim (h w req hw)")
 
-    IO.println "CHECK_PROMISES_SELF_TEST: passed=48 failed=0"
+    assertPass "pure_from_suite"
+      (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesPureFromTest.lean", bin.toString, tmpRoot.toString, realLibAbs.toString])
+    IO.println "CHECK_PROMISES_SELF_TEST: passed=55 failed=0"
     return 0
   finally
     if ← tmpRoot.pathExists then IO.FS.removeDirAll tmpRoot
