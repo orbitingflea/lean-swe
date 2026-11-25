@@ -354,7 +354,7 @@ def run_suite_mode(work: pathlib.Path, mode: str, suite: str, timeout_s: float =
 
 
 def resolve_targets(root: pathlib.Path, suite: str) -> tuple[list[pathlib.Path], list[pathlib.Path]]:
-    """Collect Lean `Impl.lean` / `Impl/**/*.lean` (plus `ConnectProxy` `SysBridge.lean`/`Relay.lean`) and C shim targets."""
+    """Collect Lean `Impl.lean` / `Impl/**/*.lean` (plus `ConnectProxy` `SysBridge*`/`Relay*`) and C shim targets."""
     if suite == "all":
         suite_names = list(SUITE_TO_DIR.keys())
     else:
@@ -374,7 +374,7 @@ def resolve_targets(root: pathlib.Path, suite: str) -> tuple[list[pathlib.Path],
                 if not any(lf.is_relative_to(cd) for cd in child_suite_dirs):
                     lean_targets.append(lf.relative_to(root))
             if sname == "ConnectProxy":
-                lean_targets.extend((pkg_dir / n).relative_to(root) for n in ("SysBridge.lean", "Relay.lean") if (pkg_dir / n).is_file())
+                lean_targets.extend(sorted({lf.relative_to(root) for g in ("SysBridge.lean", "SysBridge/**/*.lean", "Relay.lean", "Relay/**/*.lean") for lf in pkg_dir.rglob(g)}))
         if sname in SUITE_TO_C_SHIMS:
             for c_rel in SUITE_TO_C_SHIMS[sname]:
                 if (root / c_rel).is_file() and c_rel not in c_targets:

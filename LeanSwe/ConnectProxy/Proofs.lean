@@ -1,4 +1,5 @@
-import Core.Refines
+import Core.Obeys
+import Core.ConcOps
 import Core.Assumptions
 import LeanSwe.ConnectProxy.Proofs.IpPolicyProofs
 import LeanSwe.ConnectProxy.Proofs.ParserAndModelProofs
@@ -8,6 +9,7 @@ import LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs
 import LeanSwe.ConnectProxy.Proofs.SysBridgeProofs
 import LeanSwe.ConnectProxy.Proofs.LoopAndRelayProofs
 import LeanSwe.ConnectProxy.Proofs.HealthySpecProofs
+import LeanSwe.ConnectProxy.Proofs.FullObeys
 
 namespace LeanSwe.ConnectProxy.Proofs
 
@@ -125,37 +127,44 @@ theorem cproxy_validateConfig_never_ioError (cfg : ProxyConfig) :
   | ok _ => trivial
   | error e => dsimp only [Core.NeverErrorKindPure]; rw [(validateConfig_err_props h).1]; decide
 
-private theorem refinesStepFrom_mkScopedApiM :
-    Core.RefinesStepFromFinally id Model.proxyStepWf
-      Model.execRawStep Model.allowedRawStep
-      Model.proxyStepWf Internal.mkScopedApiM
-      Model.execPkgStep Model.allowedPkgStep := by
-  intro W proj rawOps hRaw w req hWf
-  dsimp only [Model.execPkgStep, Internal.mkScopedApiM, Model.allowedPkgStep]
-  cases hVal : Model.validateConfig req.cfg with
-  | error err =>
-    exact ⟨rfl, rfl⟩
-  | ok vcfg =>
-    exact hRaw w { vcfg, tag := req.tag } hWf
-
-/-- Full public `Interface` refinement of `LeanSwe.ConnectProxy` against `LeanSwe.ConnectProxy.Model`. -/
-theorem refines_model :
-    Core.RefinesPureEq LeanSwe.ConnectProxy.parseIpAddr Model.parseIpAddr ∧
-    Core.RefinesPureEq LeanSwe.ConnectProxy.parseIpPrefix Model.parseIpPrefix ∧
-    Core.RefinesPureEq LeanSwe.ConnectProxy.isGlobalIp Model.isGlobalIp ∧
-    Core.RefinesPureEq2 LeanSwe.ConnectProxy.allowsIp Model.allowsIp ∧
-    Core.RefinesPureEq LeanSwe.ConnectProxy.parseConnectRequest Model.parseConnectRequest ∧
-    Core.RefinesPureEq LeanSwe.ConnectProxy.validateConfig Model.validateConfig ∧
-    Core.RefinesStepFromFinally id Model.proxyStepWf
-      Model.execRawStep Model.allowedRawStep
-      Model.proxyStepWf Internal.mkScopedApiM
-      Model.execPkgStep Model.allowedPkgStep :=
+/-- Full public `Interface` `Core.Obeys` contract of `LeanSwe.ConnectProxy` (`Internal.mkFullApiM`
+    over `LinuxSyscall.{Files,Net,Poll,Dns,TimeRand}` and `Core.ConcOpsM`) against
+    `LeanSwe.ConnectProxy.Model` and `HealthySysWorld`. -/
+theorem obeys_model :
+    Core.ObeysPureEq LeanSwe.ConnectProxy.parseIpAddr Model.parseIpAddr ∧
+    Core.ObeysPureEq LeanSwe.ConnectProxy.parseIpPrefix Model.parseIpPrefix ∧
+    Core.ObeysPureEq LeanSwe.ConnectProxy.isGlobalIp Model.isGlobalIp ∧
+    Core.ObeysPureEq2 LeanSwe.ConnectProxy.allowsIp Model.allowsIp ∧
+    Core.ObeysPureEq LeanSwe.ConnectProxy.parseConnectRequest Model.parseConnectRequest ∧
+    Core.ObeysPureEq LeanSwe.ConnectProxy.validateConfig Model.validateConfig ∧
+    Core.ObeysStepFromConc Model.mapFullWorldToSim Model.fullWorldWf
+      Model.execFullRawStep Model.allowedFullRawStep
+      Model.proxyStepWf Internal.mkFullApiM
+      Model.execPkgStep Model.allowedPkgStep ∧
+    Core.ObeysStepFromConc id Model.fullWorldWf
+      Model.execFullRawStep Model.allowedFullRawStep
+      Model.fullWorldWf Internal.mkFullApiM
+      Model.execPkgStep Model.allowedFullPkgStep :=
   ⟨fun _ => rfl,
    fun _ => rfl,
    fun _ => rfl,
    fun _ _ => rfl,
    fun _ => rfl,
    fun _ => rfl,
-   refinesStepFrom_mkScopedApiM⟩
+   obeysStepFromConc_mkFullApiM,
+   obeysStepFromConc_mkFullApiM_full⟩
+
+/-- Non-vacuity witness showing both `FullSysOpsM` and `Core.ConcOpsM` hypotheses of `obeys_model`
+    are inhabited by a pure schedule-driven witness (`sched : Nat → Bool`, exercising pending `none`
+    and interleaved execution). -/
+theorem obeys_model_nonvacuous (sched : Nat → Bool) :
+    ∃ (W : Type) (proj : W → Internal.HealthySys.HealthySysWorld)
+      (sys : Model.FullSysOpsM (StateM W)) (conc : Core.ConcOpsM (StateM W)),
+      Core.ObeysStep proj Model.fullWorldWf (Model.execFullRawStep sys) Model.allowedFullRawStep ∧
+      Core.ObeysConc (fun w => Model.fullWorldWf (proj w) = true) conc :=
+  ⟨Internal.HealthySys.HealthySysWorld × Nat, Prod.fst, sampleHealthySysSched,
+   schedConcOps Internal.HealthySys.HealthySysWorld sched,
+   sampleHealthySysSched_obeys,
+   schedConcOps_obeysConc (fun w => Model.fullWorldWf w = true) sched⟩
 
 end LeanSwe.ConnectProxy.Proofs

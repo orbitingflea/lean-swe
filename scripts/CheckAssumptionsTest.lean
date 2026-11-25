@@ -83,6 +83,7 @@ private def setupBaselineMiniRepo (baseDir realRepo realLibAbs : System.FilePath
   writeFileCreatingParents (root / "Core/Assumptions.lean") (← IO.FS.readFile (realRepo / "Core/Assumptions.lean"))
   writeFileCreatingParents (root / "Core/NondetTest.lean") (← IO.FS.readFile (realRepo / "Core/NondetTest.lean"))
   writeFileCreatingParents (root / "Core/Obeys.lean") (← IO.FS.readFile (realRepo / "Core/Obeys.lean"))
+  writeFileCreatingParents (root / "Core/ConcOps.lean") (← IO.FS.readFile (realRepo / "Core/ConcOps.lean"))
   writeFileCreatingParents (root / "Core/Refines.lean") (← IO.FS.readFile (realRepo / "Core/Refines.lean"))
 
   writeFileCreatingParents (root / "LeanSwe/MiniPure/Types.lean")
@@ -2672,6 +2673,100 @@ def main (_ : List String) : IO UInt32 := do
          "  refine ⟨fun _ => rfl, ?_⟩\n" ++
          "  intro W proj raw hRaw w req hw\n" ++
          "  simpa [Model.execPkg, Internal.mkApiM, Model.execRaw, Model.rawAllowed, Model.pkgAllowed] using hRaw w req hw\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    runPositiveCase base tmpRoot bin "obeys_model_conc_accepted" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "structure RawOpsM (m : Type → Type) where\n  getVal : m Nat\n" ++
+         "structure PkgApiM (m : Type → Type) where\n  readVal : m Nat\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def rawWf (_ : Nat) : Bool := true\n" ++
+         "def execRaw {W : Type} (ops : RawOpsM (StateM W)) (_ : Unit) : StateM W Nat := ops.getVal\n" ++
+         "def rawAllowed (s : Nat) (_ : Unit) (out s' : Nat) : Prop := out = s ∧ s' = s\n" ++
+         "def execPkg {W : Type} (api : PkgApiM (StateM W)) (_ : Unit) : StateM W Nat := api.readVal\n" ++
+         "def pkgAllowed (s : Nat) (_ : Unit) (out s' : Nat) : Prop := out = s ∧ s' = s\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import Core.ConcOps\nimport LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkConcApiM {m : Type → Type} [Monad m] [MonadFinally m] (ops : RawOpsM m) (_ : Core.ConcOpsM m) : PkgApiM m :=\n" ++
+         "  { readVal := ops.getVal }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import Core.ConcOps\nimport LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def defaultApi : PkgApiM IO := Internal.mkConcApiM { getVal := pure 0 } Core.ioConcOps\n" ++
+         "def readVal : IO Nat := defaultApi.readVal\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport Core.ConcOps\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysStepFromConc id Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf Internal.mkConcApiM Model.execPkg Model.pkgAllowed := by\n" ++
+         "  refine ⟨fun _ => rfl, ?_⟩\n" ++
+         "  intro W proj raw conc hRaw _ w req hw\n" ++
+         "  simpa [Model.execPkg, Internal.mkConcApiM, Model.execRaw, Model.rawAllowed, Model.pkgAllowed] using hRaw w req hw\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #[
+        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
+        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
+      ]
+
+    runMutantCase base tmpRoot bin "obeys_model_conc_type_app_rejected" "LAMBDA_OR_PARTIAL_APP_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure PureCfg where\n  delta : Nat\n" ++
+         "structure RawOpsM (m : Type → Type) where\n  getVal : m Nat\n" ++
+         "structure PkgApiM (m : Type → Type) where\n  readVal : m Nat\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def rawWf (_ : Nat) : Bool := true\n" ++
+         "def execRaw {W : Type} (ops : RawOpsM (StateM W)) (_ : Unit) : StateM W Nat := ops.getVal\n" ++
+         "def rawAllowed (s : Nat) (_ : Unit) (out s' : Nat) : Prop := out = s ∧ s' = s\n" ++
+         "def execPkg {W : Type} (api : PkgApiM (StateM W)) (_ : Unit) : StateM W Nat := api.readVal\n" ++
+         "def pkgAllowed (s : Nat) (_ : Unit) (out s' : Nat) : Prop := out = s ∧ s' = s\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import Core.ConcOps\nimport LeanSwe.MiniPure.Types\n" ++
+         "namespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkConcApiM {fd : Type} {m : Type → Type} [Monad m] [MonadFinally m] (ops : RawOpsM m) (_ : Core.ConcOpsM m) : PkgApiM m :=\n" ++
+         "  { readVal := do let _ := (fun (_ : fd) => ()); ops.getVal }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import Core.ConcOps\nimport LeanSwe.MiniPure.Impl\n" ++
+         "namespace LeanSwe.MiniPure\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def defaultApi : PkgApiM IO := @Internal.mkConcApiM UInt32 IO _ _ { getVal := pure 0 } Core.ioConcOps\n" ++
+         "def readVal : IO Nat := defaultApi.readVal\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.Obeys\nimport Core.ConcOps\nimport LeanSwe.MiniPure.SpecTests\n" ++
+         "namespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model :\n" ++
+         "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
+         "    Core.ObeysStepFromConc id Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf (@Internal.mkConcApiM Nat) Model.execPkg Model.pkgAllowed := by\n" ++
+         "  refine ⟨fun _ => rfl, ?_⟩\n" ++
+         "  intro W proj raw conc hRaw _ w req hw\n" ++
+         "  simpa [Model.execPkg, Internal.mkConcApiM, Model.execRaw, Model.rawAllowed, Model.pkgAllowed] using hRaw w req hw\n" ++
          "end LeanSwe.MiniPure.Proofs\n")
       return #[
         "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
