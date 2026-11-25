@@ -12,7 +12,7 @@ open LeanSwe.Process
 /-- Frame + outcome invariant for `SysBridge.waitBlockingLoop`. -/
 theorem hostWaitBlockingLoop_spec {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (pid : Int32) (stdout stderr : ByteArray) (fuel : Nat) (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
     let r := (SysBridge.waitBlockingLoop cap.proc pid stdout stderr fuel).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl ∧
@@ -50,7 +50,7 @@ theorem hostWaitBlockingLoop_spec {W : Type} (proj : W → Model.ProcessHostWorl
 /-- Frame + outcome invariant for `SysBridge.waitTimedLoop`. -/
 theorem hostWaitTimedLoop_spec {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (pid : Int32) (startMs timeoutMs : Nat) (stdout stderr : ByteArray) (fuel : Nat)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
     let r := (SysBridge.waitTimedLoop cap.proc cap.timeRand pid startMs timeoutMs stdout stderr fuel).run w
@@ -120,7 +120,7 @@ theorem hostWaitTimedLoop_spec {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame preservation for `SysBridge.killGraceProbeLoop`. -/
 theorem hostKillGraceProbeLoop_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (target : Int32) (steps : Nat) (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
     let r := (SysBridge.killGraceProbeLoop cap.proc cap.timeRand target steps).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
@@ -154,7 +154,7 @@ theorem hostKillGraceProbeLoop_frame {W : Type} (proj : W → Model.ProcessHostW
 /-- Frame preservation for `LinuxSyscall.Process.waitpidReapLoop`. -/
 theorem hostWaitpidReapLoop_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (pid : Int32) (fuel : Nat) (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
     let r := (LinuxSyscall.Process.waitpidReapLoop cap.proc pid fuel).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by

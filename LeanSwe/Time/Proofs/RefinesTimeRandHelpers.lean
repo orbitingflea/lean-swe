@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.Time.Model
 import LeanSwe.Time.Interface
 
@@ -135,7 +135,7 @@ private theorem ambientSeccomp_false_of_wf {env : HealthyEnv} (hw : env.wf = tru
 /-- Healthy `clock_gettime .realtime` always returns `.ok ts` with `ts.hasValidNsec` and unchanged state. -/
 theorem clock_gettime_realtime_healthy {W : Type}
     (proj : W → HealthyEnv) (sys : TimeRandOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep)
     (w : W) (hw : (proj w).wf = true) :
     ∃ ts : Timespec,
       (sys.clock_gettime .realtime).run w = (.ok ts, ((sys.clock_gettime .realtime).run w).2) ∧
@@ -176,7 +176,7 @@ theorem clock_gettime_realtime_healthy {W : Type}
 /-- Healthy `clock_gettime .monotonic` always returns `.ok ts` above `monoLowerBoundNs`. -/
 theorem clock_gettime_monotonic_healthy {W : Type}
     (proj : W → HealthyEnv) (sys : TimeRandOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep)
     (w : W) (hw : (proj w).wf = true) :
     ∃ ts : Timespec,
       (sys.clock_gettime .monotonic).run w = (.ok ts, ((sys.clock_gettime .monotonic).run w).2) ∧
@@ -293,7 +293,7 @@ private theorem healthyStep_clock_nanosleep_err
 /-- Healthy `clock_nanosleep .monotonic` either succeeds advancing `monoLowerBoundNs` or returns `EINTR` spending 1 budget. -/
 theorem clock_nanosleep_monotonic_healthy {W : Type}
     (proj : W → HealthyEnv) (sys : TimeRandOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep)
     (abstime : Bool) (reqTs : Timespec) (hvalid : reqTs.isValid = true)
     (w : W) (hw : (proj w).wf = true) :
     let (res, w') := (sys.clock_nanosleep .monotonic abstime reqTs).run w
@@ -330,7 +330,7 @@ theorem clock_nanosleep_monotonic_healthy {W : Type}
 /-- Bounded `TIMER_ABSTIME` retry loop preserves healthy invariants and advances `monoLowerBoundNs` when un-interrupted. -/
 theorem sleepAbstimeRetry_healthy {W : Type}
     (proj : W → HealthyEnv) (sys : TimeRandOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep)
     (targetTs : Timespec) (hvalid : targetTs.isValid = true) :
     ∀ (fuel : Nat) (w : W),
       (proj w).wf = true →

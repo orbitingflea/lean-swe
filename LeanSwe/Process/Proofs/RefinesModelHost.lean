@@ -14,7 +14,7 @@ open LeanSwe.Process
 
 private theorem awaitOutputPure_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (h : ProcessHandle)
     (stdin : ByteArray) (timeoutMs? maxOutputBytes? : Option Nat) :
     let r := (SysBridge.awaitOutputPure (hostDepsOf cap) cap.table
@@ -217,7 +217,7 @@ private theorem awaitOutputPure_refines_host {W : Type} (proj : W → Model.Proc
 
 private theorem killProcessGroupPure_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (h : ProcessHandle) :
     let r := (SysBridge.killProcessGroupPure (hostDepsOf cap) cap.table DEFAULT_EINTR_FUEL h).run w
     Model.hostWorldWf (proj r.2) = true ∧
@@ -283,7 +283,7 @@ private theorem killProcessGroupPure_refines_host {W : Type} (proj : W → Model
 
 private theorem reapPure_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (h : ProcessHandle) :
     let r := (SysBridge.reapPure (hostDepsOf cap) cap.table DEFAULT_EINTR_FUEL h).run w
     Model.hostWorldWf (proj r.2) = true ∧
@@ -334,7 +334,7 @@ private theorem reapPure_refines_host {W : Type} (proj : W → Model.ProcessHost
 /-- End-to-end `SysBridge.mkRawOpsM` refinement over `Model.HealthyHostCapsM`. -/
 theorem sysBridge_mkRawOpsM_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (req : Model.RawStepReq) (hWf : Model.hostWorldWf (proj w) = true) :
     let (out, w') := (Model.execRawStep (SysBridge.mkRawOpsM (hostDepsOf cap) cap.table) req).run w
     Model.hostWorldWf (proj w') = true ∧
@@ -389,7 +389,7 @@ theorem sysBridge_mkRawOpsM_refines_host {W : Type} (proj : W → Model.ProcessH
 
 /-- End-to-end `Impl + SysBridge` capability refinement over `Model.HealthyHostCapsM` (`LinuxSyscall.{Process,Files,Poll,TimeRand}`, `PostFork`, `EnvVars.Raw`, and handle table). -/
 theorem refinesStepFrom_mkApiFromHostCapsM :
-    Core.RefinesStepFrom id Model.hostWorldWf
+    Core.ObeysStepFrom id Model.hostWorldWf
       Model.execHostCapStep Model.allowedHostCapStep
       Model.hostWorldWf Internal.mkApiFromHostCapsM
       Model.execPkgStep Model.allowedPkgHostStep := by

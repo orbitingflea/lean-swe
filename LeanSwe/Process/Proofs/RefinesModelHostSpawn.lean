@@ -121,7 +121,7 @@ private theorem hostWorldWf_noDup {w : Model.ProcessHostWorld} (hWf : Model.host
 
 theorem capTbl_insertSlot_step {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (slot : SysBridge.ProcSlotM Files.HandleId)
     (hPid1 : 1 ≤ slot.pid) (hPidMax : slot.pid ≤ Model.maxLinuxPidModel)
     (hPgid1 : 1 ≤ slot.pgid) (hPgidMax : slot.pgid ≤ Model.maxLinuxPidModel)
@@ -157,7 +157,7 @@ theorem capTbl_insertSlot_step {W : Type} (proj : W → Model.ProcessHostWorld)
 
 theorem capTbl_takeSlotIo_step {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (hid : Nat) :
     let r := (cap.table.takeSlotIo hid).run w
     Model.hostWorldWf (proj r.2) = true ∧
@@ -202,7 +202,7 @@ theorem capTbl_takeSlotIo_step {W : Type} (proj : W → Model.ProcessHostWorld)
 
 theorem capTbl_markWaited_step {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (hid : Nat) (waited : Bool) :
     let r := (cap.table.markWaited hid waited).run w
     Model.hostWorldWf (proj r.2) = true ∧
@@ -247,7 +247,7 @@ theorem capTbl_markWaited_step {W : Type} (proj : W → Model.ProcessHostWorld)
 
 theorem capTbl_lookupPgid_step {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (hid : Nat) :
     let r := (cap.table.lookupPgid hid).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
@@ -258,7 +258,7 @@ theorem capTbl_lookupPgid_step {W : Type} (proj : W → Model.ProcessHostWorld)
 
 theorem capTbl_detachSlot_step {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (hid : Nat) :
     let r := (cap.table.detachSlot hid).run w
     Model.hostWorldWf (proj r.2) = true ∧
@@ -278,7 +278,7 @@ theorem capTbl_detachSlot_step {W : Type} (proj : W → Model.ProcessHostWorld)
 
 theorem capTbl_activeCount_step {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
     let r := cap.table.activeCount.run w
     Model.hostWorldWf (proj r.2) = true ∧
@@ -299,7 +299,7 @@ theorem tblEq_to_stateEq {w1 w2 : Model.ProcessHostWorld} (h : w1.tbl = w2.tbl) 
 
 theorem spawnPure_refines_host {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (req : ExecRequest) :
     let r := (SysBridge.spawnPure (hostDepsOf cap) cap.table DEFAULT_EINTR_FUEL req).run w
     Model.hostWorldWf (proj r.2) = true ∧

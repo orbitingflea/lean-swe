@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.Time.Model
 import LeanSwe.Time.Interface
 import LeanSwe.Time.Proofs.RefinesTimeRandHelpers
@@ -7,7 +7,7 @@ import LeanSwe.Time.Proofs.RefinesTimeRandHelpers
 # `TimeOpsM` Model Refinement Proofs for `LeanSwe.Time`
 
 Lifts healthy `LeanSwe.LinuxSyscall.TimeRand.Model` transitions through
-`Internal.mkTimeOps` via `Core.RefinesStepFrom`.
+`Internal.mkTimeOps` via `Core.ObeysStepFrom`.
 -/
 
 namespace LeanSwe.Time.Proofs.RefinesModel
@@ -27,7 +27,7 @@ private theorem stateM_bind_run' {σ α β : Type} (a : StateM σ α) (f : α �
 
 /-- Compositional single-step refinement of `Internal.mkTimeOps` over `TimeRand` healthy worlds. -/
 theorem refinesStepFrom_mkTimeOps :
-    Core.RefinesStepFrom id Model.healthyWf Model.execRawStep Model.allowedRawStep
+    Core.ObeysStepFrom id Model.healthyWf Model.execRawStep Model.allowedRawStep
       Model.healthyWf Internal.mkTimeOps Model.execTimeOpsStep Model.allowedTimeOpsStep := by
   intro W proj sys hRaw w req hw
   cases req with

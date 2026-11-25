@@ -1,11 +1,11 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.Process.Types
 import LeanSwe.Process.Model
 
 /-!
 Non-vacuity witness for `LeanSwe.Process.Model.allowedRawStep`, proving that
 `modelRawOps : RawProcessOpsM (StateM Model.ProcessModelState)` genuinely satisfies
-`Core.RefinesStep id Model.processStateWf (Model.execRawStep modelRawOps) Model.allowedRawStep`.
+`Core.ObeysStep id Model.processStateWf (Model.execRawStep modelRawOps) Model.allowedRawStep`.
 -/
 
 namespace LeanSwe.Process.Proofs
@@ -173,7 +173,7 @@ private def modelRawOps : RawProcessOpsM (StateM Model.ProcessModelState) where
 
 /-- Non-vacuity witness proving `Model.allowedRawStep` is genuinely satisfiable over `ProcessModelState`. -/
 theorem modelRawOps_refines_allowedRawStep :
-    Core.RefinesStep id Model.processStateWf
+    Core.ObeysStep id Model.processStateWf
       (Model.execRawStep modelRawOps) Model.allowedRawStep := by
   intro s req hWf
   cases req with

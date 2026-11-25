@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.TempDir.Proofs.RefinesRaw
 /-!
 Package-level single-step refinement proofs relating `LeanSwe.TempDir.Internal.mkApiFromCapsM`
@@ -9,7 +9,7 @@ open LeanSwe.Fs (FsApiM FsError FsErrorKind EntryKind FileStat LockMode)
 open LeanSwe.TempDir.Model
 open LeanSwe.TempDir.Model.Internal
 private theorem resolveRoot_refines_spec {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (root? : Option String) (w : W) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (root? : Option String) (w : W) :
     let r := (Internal.resolveRoot caps.fs caps.env root?).run w
     r.1 = specResolveRoot (proj w) root? ∧ proj r.2 = proj w := by
   have hStep : ∀ (rStr : String) (w1 : W) (hp : proj w1 = proj w),
@@ -74,7 +74,7 @@ private theorem specChmod_dir_head (s : TempDirMockState) (dir : String) (ti : I
   simp only [List.map_cons, beq_iff_eq.mpr hNorm, ↓reduceIte]
   congr 2; congr 1; exact list_map_id_of_mem rest _ fun e he => by simp [beq_false_of_ne (hDisj e he)]
 private theorem createTempDir_refines_spec {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (root? : Option String) (dirPrefix : String) (w : W) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (root? : Option String) (dirPrefix : String) (w : W) :
     let r := (Internal.createTempDir caps.fs caps.uuid caps.env root? dirPrefix).run w
     let sp := specCreateTempDir (proj w) root? dirPrefix
     r.1 = sp.1 ∧ proj r.2 = sp.2 := by
@@ -153,7 +153,7 @@ private theorem specCreateTempDir_ok_parts (s : TempDirMockState) (root? : Optio
           hOk.1.symm, by rw [← hOk.2, ← hOk.1]⟩
   · simp [Bool.eq_false_iff.mpr hVp] at hOk
 private theorem withTempDir_refines_spec {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (root? : Option String)
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (root? : Option String)
     (dirPrefix : String) (act : StepAction) (w : W) :
     let r := (Internal.withTempDirM caps.fs caps.uuid caps.env root? dirPrefix (fun dir => pure (evalStepAction dir act))).run w
     let sp := specWithTempDir (proj w) root? dirPrefix act
@@ -190,7 +190,7 @@ private theorem withTempDir_refines_spec {W : Type} (proj : W → TempDirMockSta
           · rw [stateM_pure_run]; cases evalStepAction dir act <;> rfl
           · rw [stateM_pure_run, hRm.2, hFilt, hS1Eq]
 private theorem withLockedTempDir_refines_spec {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (root? : Option String)
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (root? : Option String)
     (dirPrefix : String) (act : StepAction) (w : W) :
     let r := (Internal.withLockedTempDirM caps.fs caps.uuid caps.env root? dirPrefix (fun dir => pure (evalStepAction dir act))).run w
     let sp := specWithLockedTempDir (proj w) root? dirPrefix act
@@ -251,7 +251,7 @@ private theorem withLockedTempDir_refines_spec {W : Type} (proj : W → TempDirM
             · cases evalStepAction dir act <;> rfl
             · rw [stateM_pure_run, hRm.2, hFilt, hS1Eq]
 private theorem sweepEntry_refines_spec {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep)
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep)
     (root dirPrefix : String) (maxAgeSec : Nat) (nowSec : Int) (rep : CleanupReport) (entryName : String) (w : W) :
     let r := (Internal.sweepEntry caps.fs root dirPrefix maxAgeSec nowSec rep entryName).run w
     let sp := specSweepEntry (proj w) root dirPrefix maxAgeSec nowSec rep entryName
@@ -303,7 +303,7 @@ private theorem sweepEntry_refines_spec {W : Type} (proj : W → TempDirMockStat
                   rw [hRRun] at hRm; dsimp only [specRmtree] at hRm; rw [hLk.2, hLs.2, lookupNode_normKey, hC] at hRm
                   dsimp only at hRm; rw [hRm.1]; exact ⟨rfl, hRm.2⟩
 private theorem sweepEntries_refines_spec {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (root dirPrefix : String)
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (root dirPrefix : String)
     (maxAgeSec : Nat) (nowSec : Int) (rep : CleanupReport) (names : List String) (w : W) :
     let r := (Internal.sweepEntries caps.fs root dirPrefix maxAgeSec nowSec rep names).run w
     let sp := specSweepEntries (proj w) root dirPrefix maxAgeSec nowSec rep names
@@ -322,7 +322,7 @@ private theorem sweepEntries_refines_spec {W : Type} (proj : W → TempDirMockSt
         have hTail := ih rep1 w1; dsimp only at hTail
         have ⟨hRep, hSt⟩ := h1; subst hRep; rw [hSt] at hTail; exact hTail
 private theorem cleanupStaleTempDirs_refines_spec {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (root? : Option String)
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (root? : Option String)
     (dirPrefix : String) (maxAgeSec : Nat) (w : W) :
     let r := (Internal.cleanupStaleTempDirsM caps.fs caps.time caps.env root? dirPrefix maxAgeSec).run w
     let sp := specCleanupStaleTempDirs (proj w) root? dirPrefix maxAgeSec
@@ -360,7 +360,7 @@ private theorem cleanupStaleTempDirs_refines_spec {W : Type} (proj : W → TempD
     simp only [show Internal.validPrefix dirPrefix = false from hVpF, hVpF, Bool.not_false, ↓reduceIte]; exact ⟨rfl, rfl⟩
 /-- Compositional single-step refinement lemma for `LeanSwe.TempDir.Internal.mkApiFromCapsM`. -/
 theorem refinesStepFromFinally_mkApiFromCapsM :
-    Core.RefinesStepFromFinally id tempDirStepWf execRawStep allowedRawStep
+    Core.ObeysStepFromFinally id tempDirStepWf execRawStep allowedRawStep
       tempDirStepWf Internal.mkApiFromCapsM execPkgStep allowedPkgStep := by
   intro W proj caps hRaw w req _
   cases req with

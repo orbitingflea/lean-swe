@@ -1,3 +1,4 @@
+import Core.Obeys
 import LeanSwe.Uuid.Interface
 import LeanSwe.Uuid.Model
 import LeanSwe.Uuid.SpecTests
@@ -359,16 +360,16 @@ theorem uuid_v4_never_invalidFormat (w : Void IO.RealWorld) :
 theorem uuid_v4_never_invalidVersion (w : Void IO.RealWorld) :
     NeverErrorKindIO UuidError.kind .invalidVersion LeanSwe.Uuid.v4 w := uuid_getUuid_never_invalidVersion w
 
-/-- Full public `Interface` refinement of `LeanSwe.Uuid` against `LeanSwe.Uuid.Model`. -/
-theorem refines_model :
-    Core.RefinesPureEq LeanSwe.Uuid.mapRawError Model.mapRawError ∧
-    Core.RefinesPureEq LeanSwe.Uuid.fromRandomBytes Model.fromRandomBytes ∧
-    Core.RefinesPureEq LeanSwe.Uuid.toString Model.toString ∧
-    Core.RefinesPureEq LeanSwe.Uuid.toHex Model.toHex ∧
-    Core.RefinesPureEq LeanSwe.Uuid.parse Model.parse ∧
-    Core.RefinesPureEq LeanSwe.Uuid.parseHex Model.parseHex ∧
-    Core.RefinesPureEq LeanSwe.Uuid.isValid Model.isValid ∧
-    Core.RefinesStepFrom id Model.healthyWf Model.execRawStep Model.allowedRawStep
+/-- Full public `Interface` `Core.Obeys` contract of `LeanSwe.Uuid` against `LeanSwe.Uuid.Model`. -/
+theorem obeys_model :
+    Core.ObeysPureEq LeanSwe.Uuid.mapRawError Model.mapRawError ∧
+    Core.ObeysPureEq LeanSwe.Uuid.fromRandomBytes Model.fromRandomBytes ∧
+    Core.ObeysPureEq LeanSwe.Uuid.toString Model.toString ∧
+    Core.ObeysPureEq LeanSwe.Uuid.toHex Model.toHex ∧
+    Core.ObeysPureEq LeanSwe.Uuid.parse Model.parse ∧
+    Core.ObeysPureEq LeanSwe.Uuid.parseHex Model.parseHex ∧
+    Core.ObeysPureEq LeanSwe.Uuid.isValid Model.isValid ∧
+    Core.ObeysStepFrom id Model.healthyWf Model.execRawStep Model.allowedRawStep
       Model.healthyWf Internal.mkApi Model.execPkgStep Model.allowedPkgStep :=
   LeanSwe.Uuid.Proofs.RefinesModel.refines_model_impl
 

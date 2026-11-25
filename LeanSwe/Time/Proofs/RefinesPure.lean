@@ -1,11 +1,11 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.Time.Model
 import LeanSwe.Time.Interface
 
 /-!
 # Pure Refinement Proofs for `LeanSwe.Time`
 
-Proves `Core.RefinesPureEq*` equivalences for all 10 pure operations in
+Proves `Core.ObeysPureEq*` equivalences for all 10 pure operations in
 `LeanSwe.Time.Interface` against `LeanSwe.Time.Model`.
 -/
 
@@ -48,22 +48,22 @@ private theorem parseOffsetSeconds_eq :
 
 /-- Pure refinement of `LeanSwe.Time.elapsedDuration` to `Model.elapsedDuration`. -/
 theorem refines_elapsedDuration :
-    Core.RefinesPureEq2 LeanSwe.Time.elapsedDuration Model.elapsedDuration := by
+    Core.ObeysPureEq2 LeanSwe.Time.elapsedDuration Model.elapsedDuration := by
   intro a b; rfl
 
 /-- Pure refinement of `LeanSwe.Time.deadlineNanos` to `Model.deadlineNanos`. -/
 theorem refines_deadlineNanos :
-    Core.RefinesPureEq2 LeanSwe.Time.deadlineNanos Model.deadlineNanos := by
+    Core.ObeysPureEq2 LeanSwe.Time.deadlineNanos Model.deadlineNanos := by
   intro a b; rfl
 
 /-- Pure refinement of `LeanSwe.Time.isMonoExpired` to `Model.isMonoExpired`. -/
 theorem refines_isMonoExpired :
-    Core.RefinesPureEq2 LeanSwe.Time.isMonoExpired Model.isMonoExpired := by
+    Core.ObeysPureEq2 LeanSwe.Time.isMonoExpired Model.isMonoExpired := by
   intro a b; rfl
 
 /-- Pure refinement of `LeanSwe.Time.formatUtcIso8601` to `Model.formatUtcIso8601`. -/
 theorem refines_formatUtcIso8601 :
-    Core.RefinesPureEq LeanSwe.Time.formatUtcIso8601 Model.formatUtcIso8601 := by
+    Core.ObeysPureEq LeanSwe.Time.formatUtcIso8601 Model.formatUtcIso8601 := by
   intro ts; rfl
 
 private def mkInvalidFormat (message : String) : TimeError :=
@@ -227,7 +227,7 @@ private theorem parseIsoTimeAndRest_eq (date : Std.Time.PlainDate) (afterDate : 
 
 /-- Pure refinement of `LeanSwe.Time.parseUtcIso8601` to `Model.parseUtcIso8601`. -/
 theorem refines_parseUtcIso8601 :
-    Core.RefinesPureEq LeanSwe.Time.parseUtcIso8601 Model.parseUtcIso8601 := by
+    Core.ObeysPureEq LeanSwe.Time.parseUtcIso8601 Model.parseUtcIso8601 := by
   intro raw
   dsimp [LeanSwe.Time.parseUtcIso8601, defaultApi, Internal.mkApiM,
     Internal.parseUtcIso8601, Model.parseUtcIso8601, Bind.bind, Except.bind]
@@ -239,27 +239,27 @@ theorem refines_parseUtcIso8601 :
 
 /-- Pure refinement of `LeanSwe.Time.formatUtcCompact` to `Model.formatUtcCompact`. -/
 theorem refines_formatUtcCompact :
-    Core.RefinesPureEq LeanSwe.Time.formatUtcCompact Model.formatUtcCompact := by
+    Core.ObeysPureEq LeanSwe.Time.formatUtcCompact Model.formatUtcCompact := by
   intro ts; rfl
 
 /-- Pure refinement of `LeanSwe.Time.formatUtcDate` to `Model.formatUtcDate`. -/
 theorem refines_formatUtcDate :
-    Core.RefinesPureEq LeanSwe.Time.formatUtcDate Model.formatUtcDate := by
+    Core.ObeysPureEq LeanSwe.Time.formatUtcDate Model.formatUtcDate := by
   intro d; rfl
 
 /-- Pure refinement of `LeanSwe.Time.parseUtcDate` to `Model.parseUtcDate`. -/
 theorem refines_parseUtcDate :
-    Core.RefinesPureEq LeanSwe.Time.parseUtcDate Model.parseUtcDate := by
+    Core.ObeysPureEq LeanSwe.Time.parseUtcDate Model.parseUtcDate := by
   intro raw; rfl
 
 /-- Pure refinement of `LeanSwe.Time.utcDateOfTimestamp` to `Model.utcDateOfTimestamp`. -/
 theorem refines_utcDateOfTimestamp :
-    Core.RefinesPureEq LeanSwe.Time.utcDateOfTimestamp Model.utcDateOfTimestamp := by
+    Core.ObeysPureEq LeanSwe.Time.utcDateOfTimestamp Model.utcDateOfTimestamp := by
   intro ts; rfl
 
 /-- Pure refinement of `LeanSwe.Time.timestampOfUtcDate` to `Model.timestampOfUtcDate`. -/
 theorem refines_timestampOfUtcDate :
-    Core.RefinesPureEq LeanSwe.Time.timestampOfUtcDate Model.timestampOfUtcDate := by
+    Core.ObeysPureEq LeanSwe.Time.timestampOfUtcDate Model.timestampOfUtcDate := by
   intro d; rfl
 
 end LeanSwe.Time.Proofs.RefinesModel
