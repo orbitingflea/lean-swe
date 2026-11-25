@@ -13,7 +13,7 @@ open LeanSwe.Process
 /-- Frame + non-outcome-error invariant for `SysBridge.writeStdinStep`. -/
 theorem hostWriteStdinStep_spec {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (inFd : Files.HandleId) (stdin : ByteArray) (startMs : Nat) (timeoutMs? : Option Nat)
     (pos : Nat) (prog : Bool) (fuel : Nat) (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
     let r := (SysBridge.writeStdinStep cap.files cap.timeRand inFd stdin startMs timeoutMs? pos prog fuel).run w
@@ -96,7 +96,7 @@ theorem hostWriteStdinStep_spec {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame + output-bound invariant for `SysBridge.drainPipeStep`. -/
 theorem hostDrainPipeStep_spec {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (pipeFd : Files.HandleId) (otherLen startMs : Nat)
     (timeoutMs? maxOutputBytes? : Option Nat)
     (chunks : Array ByteArray) (curLen iterBytes : Nat) (prog : Bool) (fuel : Nat)
@@ -255,7 +255,7 @@ theorem hostDrainPipeStep_spec {W : Type} (proj : W → Model.ProcessHostWorld)
 
 private theorem hostCloseStreamState_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (st : SysBridge.StreamLoopState Files.HandleId) (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
     let r := (SysBridge.closeStreamState cap.files st).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
@@ -269,7 +269,7 @@ private theorem hostCloseStreamState_frame {W : Type} (proj : W → Model.Proces
 
 private theorem hostStepStdinIfReady_spec {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (ready : Bool) (inFd? : Option Files.HandleId) (stdin : ByteArray)
     (startMs : Nat) (timeoutMs? : Option Nat) (stdinPos stepFuel : Nat)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
@@ -319,7 +319,7 @@ private theorem hostStepStdinIfReady_spec {W : Type} (proj : W → Model.Process
 
 private theorem hostStepDrainIfReady_spec {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (ready : Bool) (pipeFd? : Option Files.HandleId) (otherLen startMs : Nat)
     (timeoutMs? maxOutputBytes? : Option Nat) (chunks : Array ByteArray) (curLen stepFuel : Nat)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true)
@@ -362,7 +362,7 @@ private theorem hostStepDrainIfReady_spec {W : Type} (proj : W → Model.Process
 /-- Frame + outcome invariant for `SysBridge.streamPipesLoop`. -/
 theorem hostStreamPipesLoop_spec {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (stdin : ByteArray) (startMs : Nat) (timeoutMs? maxOutputBytes? : Option Nat) (stepFuel : Nat)
     (st : SysBridge.StreamLoopState Files.HandleId) (ioFuel : Nat)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true)

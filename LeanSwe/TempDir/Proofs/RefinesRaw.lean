@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.TempDir.Proofs.Shared
 import LeanSwe.TempDir.Proofs.LockedProofs
 /-!
@@ -346,7 +346,7 @@ private theorem mockFs_removeLockedTempDir_eq (child lockPath : String) (s : Tem
 /-- Non-vacuity witness: `Model.Internal.modelCaps` satisfies every single `RawStepReq` transition
 in `allowedRawStep`, including `fsUnlink`, `fsRmdir`, and `fsTryWithFileLockRemoveLocked`. -/
 theorem modelCaps_refines_allowedRawStep :
-    Core.RefinesStep id tempDirStepWf (execRawStep modelCaps) allowedRawStep := by
+    Core.ObeysStep id tempDirStepWf (execRawStep modelCaps) allowedRawStep := by
   intro s req _
   cases req with
   | fsJoin _ _ | fsStat _ | fsLstat _ | timeNowTimestamp | uuidGetUuid | uuidToString _ => exact ⟨rfl, rfl⟩
@@ -433,53 +433,53 @@ theorem modelCaps_refines_allowedRawStep :
       ((mockEnv.getEnv name).run s).2 = s
     dsimp only [mockEnv]; cases (name == "TMPDIR") <;> exact ⟨rfl, rfl⟩
 theorem raw_fsJoin_eq {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (a b : String) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (a b : String) :
     caps.fs.join a b = mockJoin a b := RawStepOut.str.inj (hRaw w (.fsJoin a b) rfl).1
 theorem raw_fsStat_eq {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) :
     ((caps.fs.stat p).run w).1 = mockStatPure (proj w) p ∧ proj ((caps.fs.stat p).run w).2 = proj w := by
   have h := hRaw w (.fsStat p) rfl; exact ⟨RawStepOut.stat.inj h.1, h.2⟩
 theorem raw_fsLstat_eq {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) :
     ((caps.fs.lstat p).run w).1 = mockLstatPure (proj w) p ∧ proj ((caps.fs.lstat p).run w).2 = proj w := by
   have h := hRaw w (.fsLstat p) rfl; exact ⟨RawStepOut.stat.inj h.1, h.2⟩
 theorem raw_fsMkdir_eq {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) (par existOk : Bool) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) (par existOk : Bool) :
     ((caps.fs.mkdir p par existOk).run w).1 = (specMkdir (proj w) p existOk).1 ∧
       proj ((caps.fs.mkdir p par existOk).run w).2 = (specMkdir (proj w) p existOk).2 := by
   have h := hRaw w (.fsMkdir p par existOk) rfl; exact ⟨RawStepOut.unitRes.inj h.1, h.2⟩
 theorem raw_fsChmod_eq {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) (mode : Nat) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) (mode : Nat) :
     ((caps.fs.chmod p mode).run w).1 = (specChmod (proj w) p mode).1 ∧
       proj ((caps.fs.chmod p mode).run w).2 = (specChmod (proj w) p mode).2 := by
   have h := hRaw w (.fsChmod p mode) rfl; exact ⟨RawStepOut.unitRes.inj h.1, h.2⟩
 theorem raw_fsUnlink_eq {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) (miss : Bool) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) (miss : Bool) :
     ((caps.fs.unlink p miss).run w).1 = (specUnlink (proj w) p miss).1 ∧
       proj ((caps.fs.unlink p miss).run w).2 = (specUnlink (proj w) p miss).2 := by
   have h := hRaw w (.fsUnlink p miss) rfl; exact ⟨RawStepOut.unitRes.inj h.1, h.2⟩
 theorem raw_fsRmdir_eq {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) :
     ((caps.fs.rmdir p).run w).1 = (specRmdir (proj w) p).1 ∧
       proj ((caps.fs.rmdir p).run w).2 = (specRmdir (proj w) p).2 := by
   have h := hRaw w (.fsRmdir p) rfl; exact ⟨RawStepOut.unitRes.inj h.1, h.2⟩
 theorem raw_fsRmtree_eq {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) (ign : Bool) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) (ign : Bool) :
     ((caps.fs.rmtree p ign).run w).1 = (specRmtree (proj w) p ign).1 ∧
       proj ((caps.fs.rmtree p ign).run w).2 = (specRmtree (proj w) p ign).2 := by
   have h := hRaw w (.fsRmtree p ign) rfl; exact ⟨RawStepOut.unitRes.inj h.1, h.2⟩
 theorem raw_fsListDir_eq {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (p : String) :
     ((caps.fs.listDir p).run w).1 = specListDir (proj w) p ∧ proj ((caps.fs.listDir p).run w).2 = proj w := by
   have h := hRaw w (.fsListDir p) rfl; exact ⟨RawStepOut.names.inj h.1, h.2⟩
 theorem raw_fsWithFileLockRet_eq {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W)
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W)
     (p : String) (mode : LockMode) (createIfMissing : Bool) (res : Except TempDirError String) :
     ((caps.fs.withFileLock p mode createIfMissing (pure (.ok res))).run w).1 = (specWithFileLockRet (proj w) p mode createIfMissing res).1 ∧
       proj ((caps.fs.withFileLock p mode createIfMissing (pure (.ok res))).run w).2 = (specWithFileLockRet (proj w) p mode createIfMissing res).2 := by
   have h := hRaw w (.fsWithFileLockRet p mode createIfMissing res) rfl; exact ⟨RawStepOut.lockRet.inj h.1, h.2⟩
 theorem raw_fsTryLockRemove_eq {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (child lockPath : String) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (child lockPath : String) :
     ((caps.fs.tryWithFileLock lockPath .exclusive false (Internal.removeLockedTempDir caps.fs child lockPath)).run w).1 =
         (specTryLockRemove (proj w) child lockPath).1 ∧
       proj ((caps.fs.tryWithFileLock lockPath .exclusive false (Internal.removeLockedTempDir caps.fs child lockPath)).run w).2 =
@@ -487,27 +487,27 @@ theorem raw_fsTryLockRemove_eq {W : Type} (proj : W → TempDirMockState) (caps 
   rw [removeLockedTempDir_eq_callback]; have h := hRaw w (.fsTryWithFileLockRemoveLocked child lockPath) rfl
   exact ⟨RawStepOut.tryLockRemove.inj h.1, h.2⟩
 theorem raw_timeNow_eq {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) :
     (caps.time.nowTimestamp.run w).1 = Std.Time.Timestamp.ofSecondsSinceUnixEpoch (Std.Time.Second.Offset.ofInt (proj w).nowSec) ∧
       proj (caps.time.nowTimestamp.run w).2 = proj w := by
   have h := hRaw w .timeNowTimestamp rfl; exact ⟨RawStepOut.ts.inj h.1, h.2⟩
 theorem raw_uuidGet_eq {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) :
     (caps.uuid.getUuid.run w).1 = .ok (mockUuidOfNat (proj w).nextUuid) ∧
       proj (caps.uuid.getUuid.run w).2 = { proj w with nextUuid := (proj w).nextUuid + 1 } := by
   have h := hRaw w .uuidGetUuid rfl; exact ⟨RawStepOut.uuid.inj h.1, h.2⟩
 theorem raw_uuidToString_eq {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (u : Uuid) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (u : Uuid) :
     caps.uuid.toString u = mockUuidToString u := RawStepOut.str.inj (hRaw w (.uuidToString u) rfl).1
 theorem raw_envGetEnv_eq {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (name : String) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (w : W) (name : String) :
     ((caps.env.getEnv name).run w).1 = .ok (if name == "TMPDIR" then (proj w).tmpdir else none) ∧
       proj ((caps.env.getEnv name).run w).2 = proj w := by
   have h := hRaw w (.envGetEnv name) rfl; exact ⟨RawStepOut.env.inj h.1, h.2⟩
 /-- Step-by-step refinement of `Internal.removeLockedTempDir` against pure `specRemoveLockedDir`
 over `fsListDir`, `fsLstat`, `fsRmtree`, `fsUnlink`, and `fsRmdir`. -/
 theorem removeLockedTempDir_refines_spec {W : Type} (proj : W → TempDirMockState) (caps : TempDirCaps (StateM W))
-    (hRaw : Core.RefinesStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (child lockPath : String) (w : W) :
+    (hRaw : Core.ObeysStep proj tempDirStepWf (execRawStep caps) allowedRawStep) (child lockPath : String) (w : W) :
     let r := (Internal.removeLockedTempDir caps.fs child lockPath).run w
     let sp := specRemoveLockedDir (proj w) child lockPath
     r.1 = .ok sp.1 ∧ proj r.2 = sp.2 :=

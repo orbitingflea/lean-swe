@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.SlotPool.Impl
 import LeanSwe.SlotPool.Interface
 import LeanSwe.SlotPool.Model.Refines
@@ -46,7 +46,7 @@ private theorem execFsStep_tryLock_eq {W : Type} (fs : FsApiM (StateM W))
 
 /-- Concrete witness that `Model.simFs` satisfies `allowedFsStep` over `PoolSimState`. -/
 theorem simFs_refines_allowedFsStep :
-    Core.RefinesStep id slotPoolStepWf (execFsStep simFs) allowedFsStep := by
+    Core.ObeysStep id slotPoolStepWf (execFsStep simFs) allowedFsStep := by
   intro s req _
   cases req with
   | join base sub =>
@@ -69,20 +69,20 @@ theorem simFs_refines_allowedFsStep :
 
 /-- Concrete witness that `Model.simTime` satisfies `allowedTimeStep` over `PoolSimState`. -/
 theorem simTime_refines_allowedTimeStep :
-    Core.RefinesStep id slotPoolStepWf (execTimeStep simTime) allowedTimeStep := by
+    Core.ObeysStep id slotPoolStepWf (execTimeStep simTime) allowedTimeStep := by
   intro s req _
   cases req with
   | monoNanosNow => exact ⟨rfl, rfl⟩
   | sleep ms => exact ⟨rfl, rfl⟩
 
 private theorem raw_fsJoin_eq {W : Type} (proj : W → PoolSimState) (fs : FsApiM (StateM W))
-    (hFs : Core.RefinesStep proj slotPoolStepWf (execFsStep fs) allowedFsStep)
+    (hFs : Core.ObeysStep proj slotPoolStepWf (execFsStep fs) allowedFsStep)
     (w : W) (base sub : String) :
     fs.join base sub = simJoin base sub :=
   FsStepOut.path.inj (hFs w (.join base sub) rfl).1
 
 private theorem raw_fsMkdir_eq {W : Type} (proj : W → PoolSimState) (fs : FsApiM (StateM W))
-    (hFs : Core.RefinesStep proj slotPoolStepWf (execFsStep fs) allowedFsStep)
+    (hFs : Core.ObeysStep proj slotPoolStepWf (execFsStep fs) allowedFsStep)
     (w : W) (s : PoolSimState) (hs : proj w = s) (path : String) (parents existOk : Bool) :
     let r := (fs.mkdir path parents existOk).run w
     let sp := specMkdir s path parents existOk
@@ -94,7 +94,7 @@ private theorem raw_fsMkdir_eq {W : Type} (proj : W → PoolSimState) (fs : FsAp
   exact ⟨FsStepOut.mkdirRes.inj h.1, h.2⟩
 
 private theorem raw_fsTryLockRet_eq {W : Type} (proj : W → PoolSimState) (fs : FsApiM (StateM W))
-    (hFs : Core.RefinesStep proj slotPoolStepWf (execFsStep fs) allowedFsStep)
+    (hFs : Core.ObeysStep proj slotPoolStepWf (execFsStep fs) allowedFsStep)
     (w : W) (s : PoolSimState) (hs : proj w = s) (path : String) (mode : LockMode)
     (createIfMissing : Bool) (res : Except SlotPoolError Nat) :
     let r := (fs.tryWithFileLock path mode createIfMissing (pure (.ok res))).run w
@@ -107,7 +107,7 @@ private theorem raw_fsTryLockRet_eq {W : Type} (proj : W → PoolSimState) (fs :
   exact ⟨FsStepOut.tryLockRes.inj h.1, h.2⟩
 
 private theorem raw_timeMonoNanos_eq {W : Type} (proj : W → PoolSimState) (time : TimeOpsM (StateM W))
-    (hTime : Core.RefinesStep proj slotPoolStepWf (execTimeStep time) allowedTimeStep)
+    (hTime : Core.ObeysStep proj slotPoolStepWf (execTimeStep time) allowedTimeStep)
     (w : W) (s : PoolSimState) (hs : proj w = s) :
     let r := time.monoNanosNow.run w
     r.1 = s.monoNanos ∧ proj r.2 = s := by
@@ -126,7 +126,7 @@ private theorem execTimeStep_sleep_snd {W : Type} (time : TimeOpsM (StateM W))
   rfl
 
 private theorem raw_timeSleep_eq {W : Type} (proj : W → PoolSimState) (time : TimeOpsM (StateM W))
-    (hTime : Core.RefinesStep proj slotPoolStepWf (execTimeStep time) allowedTimeStep)
+    (hTime : Core.ObeysStep proj slotPoolStepWf (execTimeStep time) allowedTimeStep)
     (w : W) (s : PoolSimState) (hs : proj w = s) (ms : UInt32) :
     proj ((time.sleep ms).run w).2 = specSleepStep s ms := by
   subst hs
@@ -145,7 +145,7 @@ private theorem simTime_sleep_snd (c : UInt32) (s : PoolSimState) :
 
 private theorem runSleepChunks_proj_eq_simTime {W : Type} (proj : W → PoolSimState)
     (time : TimeOpsM (StateM W))
-    (hTime : Core.RefinesStep proj slotPoolStepWf (execTimeStep time) allowedTimeStep)
+    (hTime : Core.ObeysStep proj slotPoolStepWf (execTimeStep time) allowedTimeStep)
     (cs : List UInt32) :
     ∀ (w : W) (s : PoolSimState),
       proj w = s →
@@ -164,7 +164,7 @@ private theorem runSleepChunks_proj_eq_simTime {W : Type} (proj : W → PoolSimS
 
 private theorem runSleepChunks_refines_duration {W : Type} (proj : W → PoolSimState)
     (time : TimeOpsM (StateM W))
-    (hTime : Core.RefinesStep proj slotPoolStepWf (execTimeStep time) allowedTimeStep)
+    (hTime : Core.ObeysStep proj slotPoolStepWf (execTimeStep time) allowedTimeStep)
     (durMs : Nat) (w : W) (s : PoolSimState) (hs : proj w = s) :
     proj ((runSleepChunks time (sleepChunks durMs)).run w).2 =
       specSleepDuration s durMs := by
@@ -179,7 +179,7 @@ private def scanOutcomeToExcept : Internal.ScanOutcome Nat → Except SlotPoolEr
 
 private theorem scanSlotsM_refines_spec {W : Type} (proj : W → PoolSimState)
     (fs : FsApiM (StateM W))
-    (hFs : Core.RefinesStep proj slotPoolStepWf (execFsStep fs) allowedFsStep)
+    (hFs : Core.ObeysStep proj slotPoolStepWf (execFsStep fs) allowedFsStep)
     (poolDir : String) (act : StepAction) (rem : Nat) :
     ∀ (nextIdx : Nat) (w : W) (s : PoolSimState),
       proj w = s →
@@ -218,8 +218,8 @@ private theorem scanSlotsM_refines_spec {W : Type} (proj : W → PoolSimState)
 
 private theorem pollWaitUpToM_refines_spec {W : Type} (proj : W → PoolSimState)
     (fs : FsApiM (StateM W)) (time : TimeOpsM (StateM W))
-    (hFs : Core.RefinesStep proj slotPoolStepWf (execFsStep fs) allowedFsStep)
-    (hTime : Core.RefinesStep proj slotPoolStepWf (execTimeStep time) allowedTimeStep)
+    (hFs : Core.ObeysStep proj slotPoolStepWf (execFsStep fs) allowedFsStep)
+    (hTime : Core.ObeysStep proj slotPoolStepWf (execTimeStep time) allowedTimeStep)
     (cfg : PoolConfig) (deadlineNs : Nat) (act : StepAction) (fuel : Nat) :
     ∀ (w : W) (s : PoolSimState),
       proj w = s →
@@ -279,8 +279,8 @@ private theorem pollWaitUpToM_refines_spec {W : Type} (proj : W → PoolSimState
 
 private theorem pollForeverM_refines_spec {W : Type} (proj : W → PoolSimState)
     (fs : FsApiM (StateM W)) (time : TimeOpsM (StateM W))
-    (hFs : Core.RefinesStep proj slotPoolStepWf (execFsStep fs) allowedFsStep)
-    (hTime : Core.RefinesStep proj slotPoolStepWf (execTimeStep time) allowedTimeStep)
+    (hFs : Core.ObeysStep proj slotPoolStepWf (execFsStep fs) allowedFsStep)
+    (hTime : Core.ObeysStep proj slotPoolStepWf (execTimeStep time) allowedTimeStep)
     (cfg : PoolConfig) (act : StepAction) (fuel : Nat) :
     ∀ (w : W) (s : PoolSimState),
       proj w = s →
@@ -328,8 +328,8 @@ private theorem pollForeverM_refines_spec {W : Type} (proj : W → PoolSimState)
 
 private theorem withSlotM_refines_spec {W : Type} (proj : W → PoolSimState)
     (fs : FsApiM (StateM W)) (time : TimeOpsM (StateM W))
-    (hFs : Core.RefinesStep proj slotPoolStepWf (execFsStep fs) allowedFsStep)
-    (hTime : Core.RefinesStep proj slotPoolStepWf (execTimeStep time) allowedTimeStep)
+    (hFs : Core.ObeysStep proj slotPoolStepWf (execFsStep fs) allowedFsStep)
+    (hTime : Core.ObeysStep proj slotPoolStepWf (execTimeStep time) allowedTimeStep)
     (cfg : PoolConfig) (policy : WaitPolicy) (act : StepAction) (w : W) :
     let r := (Internal.withSlotM fs time cfg policy
       (fun idx => pure (evalStepAction idx act))).run w
@@ -378,7 +378,7 @@ private theorem withSlotM_refines_spec {W : Type} (proj : W → PoolSimState)
 
 /-- Compositional single-step refinement lemma for `LeanSwe.SlotPool.mkApiM`. -/
 theorem refinesStepFrom2_mkApiM :
-    Core.RefinesStepFrom2 id slotPoolStepWf
+    Core.ObeysStepFrom2 id slotPoolStepWf
       execFsStep allowedFsStep
       execTimeStep allowedTimeStep
       slotPoolStepWf LeanSwe.SlotPool.mkApiM
@@ -394,11 +394,11 @@ theorem refinesStepFrom2_mkApiM :
 
 /-- End-to-end non-vacuity witness instantiating `refinesStepFrom2_mkApiM` with `simFs` and `simTime`. -/
 theorem simSlotPool_refines_allowedPkgStep :
-    Core.RefinesStep id slotPoolStepWf
+    Core.ObeysStep id slotPoolStepWf
       (execPkgStep (LeanSwe.SlotPool.mkApiM simFs simTime)) allowedPkgStep :=
   Eq.mp
     (congrArg
-      (fun p => Core.RefinesStep p slotPoolStepWf
+      (fun p => Core.ObeysStep p slotPoolStepWf
         (execPkgStep (LeanSwe.SlotPool.mkApiM simFs simTime)) allowedPkgStep)
       (rfl : (id ∘ id : PoolSimState → PoolSimState) = id))
     (refinesStepFrom2_mkApiM id simFs simTime

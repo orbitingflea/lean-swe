@@ -1,3 +1,4 @@
+import Core.Obeys
 import LeanSwe.Time.Interface
 import LeanSwe.Time.Model
 import LeanSwe.Time.SpecTests
@@ -506,21 +507,21 @@ theorem reach_time_mkTimeOps_sleepAbstimeRetriesEintrWithoutDrift :
     proof_time_mkTimeOps_sleepAbstimeRetriesEintrWithoutDrift
       { sec := 0, nsec := 0 } 1 0 LeanSwe.LinuxSyscall.Errno.EIO (by decide) (by decide) (by decide) (by decide) (by decide)⟩
 
-/-- Full public `Interface` refinement of `LeanSwe.Time` against `LeanSwe.Time.Model`. -/
-theorem refines_model :
-    Core.RefinesPureEq2 LeanSwe.Time.elapsedDuration Model.elapsedDuration ∧
-    Core.RefinesPureEq2 LeanSwe.Time.deadlineNanos Model.deadlineNanos ∧
-    Core.RefinesPureEq2 LeanSwe.Time.isMonoExpired Model.isMonoExpired ∧
-    Core.RefinesPureEq LeanSwe.Time.formatUtcIso8601 Model.formatUtcIso8601 ∧
-    Core.RefinesPureEq LeanSwe.Time.parseUtcIso8601 Model.parseUtcIso8601 ∧
-    Core.RefinesPureEq LeanSwe.Time.formatUtcCompact Model.formatUtcCompact ∧
-    Core.RefinesPureEq LeanSwe.Time.formatUtcDate Model.formatUtcDate ∧
-    Core.RefinesPureEq LeanSwe.Time.parseUtcDate Model.parseUtcDate ∧
-    Core.RefinesPureEq LeanSwe.Time.utcDateOfTimestamp Model.utcDateOfTimestamp ∧
-    Core.RefinesPureEq LeanSwe.Time.timestampOfUtcDate Model.timestampOfUtcDate ∧
-    Core.RefinesStepFrom id Model.healthyWf Model.execRawStep Model.allowedRawStep
+/-- Full public `Interface` `Core.Obeys` contract of `LeanSwe.Time` against `LeanSwe.Time.Model`. -/
+theorem obeys_model :
+    Core.ObeysPureEq2 LeanSwe.Time.elapsedDuration Model.elapsedDuration ∧
+    Core.ObeysPureEq2 LeanSwe.Time.deadlineNanos Model.deadlineNanos ∧
+    Core.ObeysPureEq2 LeanSwe.Time.isMonoExpired Model.isMonoExpired ∧
+    Core.ObeysPureEq LeanSwe.Time.formatUtcIso8601 Model.formatUtcIso8601 ∧
+    Core.ObeysPureEq LeanSwe.Time.parseUtcIso8601 Model.parseUtcIso8601 ∧
+    Core.ObeysPureEq LeanSwe.Time.formatUtcCompact Model.formatUtcCompact ∧
+    Core.ObeysPureEq LeanSwe.Time.formatUtcDate Model.formatUtcDate ∧
+    Core.ObeysPureEq LeanSwe.Time.parseUtcDate Model.parseUtcDate ∧
+    Core.ObeysPureEq LeanSwe.Time.utcDateOfTimestamp Model.utcDateOfTimestamp ∧
+    Core.ObeysPureEq LeanSwe.Time.timestampOfUtcDate Model.timestampOfUtcDate ∧
+    Core.ObeysStepFrom id Model.healthyWf Model.execRawStep Model.allowedRawStep
       Model.healthyWf Internal.mkTimeOps Model.execTimeOpsStep Model.allowedTimeOpsStep ∧
-    Core.RefinesStepFromFinally id Model.healthyWf Model.execTimeOpsStep Model.allowedTimeOpsStep
+    Core.ObeysStepFromFinally id Model.healthyWf Model.execTimeOpsStep Model.allowedTimeOpsStep
       Model.healthyWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep :=
   LeanSwe.Time.Proofs.RefinesModel.refines_model_impl
 

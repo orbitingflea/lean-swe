@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.Process.Types
 import LeanSwe.Process.Model
 import LeanSwe.Process.Impl
@@ -6,7 +6,7 @@ import LeanSwe.Process.Interface
 import LeanSwe.Process.Proofs.RefinesModelWitness
 
 /-!
-Pure and stateful `Core.Refines` proofs for `LeanSwe.Process.Impl.mkApiM`,
+Pure and stateful `Core.Obeys` proofs for `LeanSwe.Process.Impl.mkApiM`,
 providing `mkApiM_refines_of_rawWf` parameterized over an arbitrary world
 well-formedness invariant `wf` stronger than `Model.processStateWf ∘ proj`,
 together with `refinesStepFrom_mkApiM` and pure refinements.
@@ -33,7 +33,7 @@ private theorem stateT_pure_run' {σ α : Type} (a : α) (s : σ) :
 
 /-- `LeanSwe.Process.mapRawError` refines `Model.mapRawErrorModel` with exact equality. -/
 theorem refinesPure_mapRawError :
-    Core.RefinesPureEq LeanSwe.Process.mapRawError Model.mapRawErrorModel := by
+    Core.ObeysPureEq LeanSwe.Process.mapRawError Model.mapRawErrorModel := by
   intro raw
   cases raw <;> rfl
 
@@ -63,19 +63,19 @@ private theorem validateRequest_eq_model (req : ExecRequest) :
 
 /-- `LeanSwe.Process.validateRequest` refines `Model.validateRequestModel` with exact equality. -/
 theorem refinesPure_validateRequest :
-    Core.RefinesPureEq LeanSwe.Process.validateRequest Model.validateRequestModel :=
+    Core.ObeysPureEq LeanSwe.Process.validateRequest Model.validateRequestModel :=
   validateRequest_eq_model
 
 /-- `LeanSwe.Process.mkCommandRequest` refines `Model.mkCommandRequestModel` with exact equality. -/
 theorem refinesPure_mkCommandRequest :
-    @Core.RefinesPureEq2 String (Array String) ExecRequest
+    @Core.ObeysPureEq2 String (Array String) ExecRequest
       (@LeanSwe.Process.mkCommandRequest) Model.mkCommandRequestModel := by
   intro _ _
   rfl
 
 /-- `LeanSwe.Process.withTextInput` refines `Model.withTextInputModel` with exact equality. -/
 theorem refinesPure_withTextInput :
-    Core.RefinesPureEq2 LeanSwe.Process.withTextInput Model.withTextInputModel := by
+    Core.ObeysPureEq2 LeanSwe.Process.withTextInput Model.withTextInputModel := by
   intro _ _
   rfl
 
@@ -544,7 +544,7 @@ theorem mkApiM_refines_of_rawWf {W : Type} (wf : W → Bool)
 
 /-- Compositional capability-refinement theorem lifting `RawProcessOpsM` contracts to `Internal.mkApiM`. -/
 theorem refinesStepFrom_mkApiM :
-    Core.RefinesStepFrom id Model.processStateWf
+    Core.ObeysStepFrom id Model.processStateWf
       Model.execRawStep Model.allowedRawStep
       Model.processStateWf Internal.mkApiM
       Model.execPkgStep Model.allowedPkgStep := by

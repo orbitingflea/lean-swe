@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.CmdLine.Proofs.Concrete
 import LeanSwe.CmdLine.Proofs.ParserCore
 import LeanSwe.CmdLine.Proofs.PhraseBridge
@@ -247,7 +247,7 @@ private theorem allowedParseWith_holds (spec : CommandSpec) (args : List String)
 
 private theorem parseWithEnvM_step_spec {W : Type} (proj : W → Model.CliStepState)
     (ops : CliOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep ops) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep ops) Model.allowedRawStep)
     (spec : CommandSpec) (args : List String) (validators : CustomValidators) (w : W) :
     let r := Internal.parseWithEnvM ops spec args validators w
     Model.allowedParseWithEnvStep (proj w) spec args validators r.1 (proj r.2) := by
@@ -293,7 +293,7 @@ private theorem parseWithEnvM_step_spec {W : Type} (proj : W → Model.CliStepSt
 
 private theorem promptLine_step_spec {W : Type} (proj : W → Model.CliStepState)
     (ops : CliOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep ops) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep ops) Model.allowedRawStep)
     (prompt : String) (default : Option String) (w : W) :
     let r := Internal.promptLine ops prompt default w
     (r.1, proj r.2) = Model.stepCliPromptLine (proj w) prompt default := by
@@ -330,7 +330,7 @@ private theorem promptLine_step_spec {W : Type} (proj : W → Model.CliStepState
 
 private theorem confirm_step_spec {W : Type} (proj : W → Model.CliStepState)
     (ops : CliOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep ops) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep ops) Model.allowedRawStep)
     (prompt : String) (default : Option Bool) (maxAttempts : Nat) :
     ∀ w : W,
       let r := Internal.confirm ops prompt default maxAttempts w
@@ -426,7 +426,7 @@ private theorem confirm_step_spec {W : Type} (proj : W → Model.CliStepState)
 
 private theorem runCliWith_step_spec {W : Type} (proj : W → Model.CliStepState)
     (ops : CliOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.rawStepWf (Model.execRawStep ops) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.rawStepWf (Model.execRawStep ops) Model.allowedRawStep)
     (spec : CommandSpec) (args : List String) (validators : CustomValidators)
     (exitCode : UInt32) (w : W) :
     let r := Internal.runCliWith ops spec args validators (fun _ => pure exitCode) w
@@ -477,7 +477,7 @@ private theorem runCliWith_step_spec {W : Type} (proj : W → Model.CliStepState
       cases e.kind <;> first | exact hOut | exact hErr
 
 private theorem refinesStepFrom_mkApiM :
-    Core.RefinesStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
+    Core.ObeysStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
       Model.rawStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep := by
   intro W proj ops hRaw w req _
   cases req with
@@ -522,15 +522,15 @@ private theorem refinesStepFrom_mkApiM :
       simp only [hp] at h ⊢
       exact h
 
-/-- Full public `Interface` refinement of `LeanSwe.CmdLine` against `LeanSwe.CmdLine.Model`. -/
-theorem refines_model :
-    Core.RefinesPureEq LeanSwe.CmdLine.isValidSpec Model.isValidSpec ∧
-    Core.RefinesPure2 LeanSwe.CmdLine.parse Model.allowedParse ∧
-    Core.RefinesPure3 (@LeanSwe.CmdLine.parseWith) Model.allowedParseWith ∧
-    Core.RefinesPure2 (@LeanSwe.CmdLine.renderHelp) Model.allowedRenderHelp ∧
-    Core.RefinesPureEq2 LeanSwe.CmdLine.renderVersion Model.renderVersionModel ∧
-    Core.RefinesPureEq2 LeanSwe.CmdLine.renderArgs Model.renderArgs ∧
-    Core.RefinesStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
+/-- Full public `Interface` `Core.Obeys` contract of `LeanSwe.CmdLine` against `LeanSwe.CmdLine.Model`. -/
+theorem obeys_model :
+    Core.ObeysPureEq LeanSwe.CmdLine.isValidSpec Model.isValidSpec ∧
+    Core.ObeysPure2 LeanSwe.CmdLine.parse Model.allowedParse ∧
+    Core.ObeysPure3 (@LeanSwe.CmdLine.parseWith) Model.allowedParseWith ∧
+    Core.ObeysPure2 (@LeanSwe.CmdLine.renderHelp) Model.allowedRenderHelp ∧
+    Core.ObeysPureEq2 LeanSwe.CmdLine.renderVersion Model.renderVersionModel ∧
+    Core.ObeysPureEq2 LeanSwe.CmdLine.renderArgs Model.renderArgs ∧
+    Core.ObeysStepFrom id Model.rawStepWf Model.execRawStep Model.allowedRawStep
       Model.rawStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep :=
   ⟨isValidSpecTR_eq,
    fun spec args => allowedParseWith_holds spec args [],

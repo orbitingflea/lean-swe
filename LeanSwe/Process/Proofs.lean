@@ -1,3 +1,4 @@
+import Core.Obeys
 import LeanSwe.Process.Types
 import LeanSwe.Process.Model.HealthySim
 import LeanSwe.Process.SysBridge
@@ -412,18 +413,18 @@ theorem proof_process_lifecycle_delegatesAndNormalizesErrors :
   refine ⟨?_, trivial⟩
   decide +kernel
 
-/-- Top-level `Core.Refines` theorem for `LeanSwe.Process` over `Model` and `Model.HealthyHost`. -/
-theorem refines_model :
-    Core.RefinesPureEq LeanSwe.Process.mapRawError Model.mapRawErrorModel ∧
-    Core.RefinesPureEq LeanSwe.Process.validateRequest Model.validateRequestModel ∧
-    @Core.RefinesPureEq2 String (Array String) ExecRequest
+/-- Top-level `Core.Obeys` theorem for `LeanSwe.Process` over `Model` and `Model.HealthyHost`. -/
+theorem obeys_model :
+    Core.ObeysPureEq LeanSwe.Process.mapRawError Model.mapRawErrorModel ∧
+    Core.ObeysPureEq LeanSwe.Process.validateRequest Model.validateRequestModel ∧
+    @Core.ObeysPureEq2 String (Array String) ExecRequest
       (@LeanSwe.Process.mkCommandRequest) Model.mkCommandRequestModel ∧
-    Core.RefinesPureEq2 LeanSwe.Process.withTextInput Model.withTextInputModel ∧
-    Core.RefinesStepFrom id Model.processStateWf
+    Core.ObeysPureEq2 LeanSwe.Process.withTextInput Model.withTextInputModel ∧
+    Core.ObeysStepFrom id Model.processStateWf
       Model.execRawStep Model.allowedRawStep
       Model.processStateWf Internal.mkApiM
       Model.execPkgStep Model.allowedPkgStep ∧
-    Core.RefinesStepFrom id Model.hostWorldWf
+    Core.ObeysStepFrom id Model.hostWorldWf
       Model.execHostCapStep Model.allowedHostCapStep
       Model.hostWorldWf Internal.mkApiFromHostCapsM
       Model.execPkgStep Model.allowedPkgHostStep :=

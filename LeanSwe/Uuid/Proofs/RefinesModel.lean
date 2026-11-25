@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.Uuid.Model
 import LeanSwe.Uuid.Interface
 import LeanSwe.Uuid.Proofs.Codec
@@ -7,10 +7,10 @@ import LeanSwe.Uuid.Proofs.Entropy
 /-!
 # Model Refinement Proofs for `LeanSwe.Uuid`
 
-Proves `LeanSwe.Uuid.Proofs.refines_model_impl` relating every pure operation
+Proves `LeanSwe.Uuid.Proofs.RefinesModel.refines_model_impl` relating every pure operation
 in `LeanSwe.Uuid.Interface` to `LeanSwe.Uuid.Model` and lifting healthy
 `LeanSwe.LinuxSyscall.TimeRand.Model` transitions through `Internal.mkApi`
-via `Core.RefinesStepFrom`.
+via `Core.ObeysStepFrom`.
 -/
 
 namespace LeanSwe.Uuid.Proofs.RefinesModel
@@ -66,43 +66,43 @@ private theorem parseCanonicalChars_eq (cs : List Char) :
 
 /-- Pure refinement of `LeanSwe.Uuid.mapRawError` to `Model.mapRawError`. -/
 theorem refines_mapRawError :
-    Core.RefinesPureEq LeanSwe.Uuid.mapRawError Model.mapRawError := by
+    Core.ObeysPureEq LeanSwe.Uuid.mapRawError Model.mapRawError := by
   intro raw
   cases raw <;> rfl
 
 /-- Pure refinement of `LeanSwe.Uuid.fromRandomBytes` to `Model.fromRandomBytes`. -/
 theorem refines_fromRandomBytes :
-    Core.RefinesPureEq LeanSwe.Uuid.fromRandomBytes Model.fromRandomBytes := by
+    Core.ObeysPureEq LeanSwe.Uuid.fromRandomBytes Model.fromRandomBytes := by
   intro bs
   rfl
 
 /-- Pure refinement of `LeanSwe.Uuid.toString` to `Model.toString`. -/
 theorem refines_toString :
-    Core.RefinesPureEq LeanSwe.Uuid.toString Model.toString := by
+    Core.ObeysPureEq LeanSwe.Uuid.toString Model.toString := by
   intro u
   rfl
 
 /-- Pure refinement of `LeanSwe.Uuid.toHex` to `Model.toHex`. -/
 theorem refines_toHex :
-    Core.RefinesPureEq LeanSwe.Uuid.toHex Model.toHex := by
+    Core.ObeysPureEq LeanSwe.Uuid.toHex Model.toHex := by
   intro u
   rfl
 
 /-- Pure refinement of `LeanSwe.Uuid.parse` to `Model.parse`. -/
 theorem refines_parse :
-    Core.RefinesPureEq LeanSwe.Uuid.parse Model.parse := by
+    Core.ObeysPureEq LeanSwe.Uuid.parse Model.parse := by
   intro s
   exact parseCanonicalChars_eq s.toList
 
 /-- Pure refinement of `LeanSwe.Uuid.parseHex` to `Model.parseHex`. -/
 theorem refines_parseHex :
-    Core.RefinesPureEq LeanSwe.Uuid.parseHex Model.parseHex := by
+    Core.ObeysPureEq LeanSwe.Uuid.parseHex Model.parseHex := by
   intro s
   exact parseHexChars_eq s.toList
 
 /-- Pure refinement of `LeanSwe.Uuid.isValid` to `Model.isValid`. -/
 theorem refines_isValid :
-    Core.RefinesPureEq LeanSwe.Uuid.isValid Model.isValid := by
+    Core.ObeysPureEq LeanSwe.Uuid.isValid Model.isValid := by
   intro s
   dsimp [LeanSwe.Uuid.isValid, defaultApi, Internal.mkApi, Internal.isValid, Model.isValid]
   rw [show Internal.parse s = Model.parse s from refines_parse s]
@@ -122,7 +122,7 @@ private theorem validGetrandom16_size {got : ByteArray}
 
 private theorem getrandom16_healthy_step {W : Type}
     (proj : W → HealthyEnv) (sys : TimeRandOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep)
+    (hRaw : Core.ObeysStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep)
     (w : W) (hw : (proj w).wf = true) :
     let (res, w') := (sys.getrandom (UInt32.ofNat 16) {}).run w
     match res with
@@ -215,7 +215,7 @@ private theorem gatherRandomBytes16_zero_empty {m : Type → Type} [Monad m]
 
 private theorem gatherRandomBytes16_healthy_spec {W : Type}
     (proj : W → HealthyEnv) (sys : TimeRandOpsM (StateM W))
-    (hRaw : Core.RefinesStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep) :
+    (hRaw : Core.ObeysStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep) :
     ∀ (fuel : Nat) (_hfuel : 0 < fuel) (last? : Option Errno) (w : W),
       (proj w).wf = true →
       let (res, w') := (Internal.gatherRandomBytes16 sys fuel ByteArray.empty last?).run w
@@ -306,7 +306,7 @@ private theorem stateM_map_run {W α β : Type} (f : α → β) (x : StateM W α
 
 /-- Compositional single-step refinement of `Internal.mkApi` over `TimeRand` healthy worlds. -/
 theorem refinesStepFrom_mkApi :
-    Core.RefinesStepFrom id Model.healthyWf Model.execRawStep Model.allowedRawStep
+    Core.ObeysStepFrom id Model.healthyWf Model.execRawStep Model.allowedRawStep
       Model.healthyWf Internal.mkApi Model.execPkgStep Model.allowedPkgStep := by
   intro W proj sys hRaw w req hw
   cases req
@@ -342,14 +342,14 @@ theorem refinesStepFrom_mkApi :
 
 /-- Full public `Interface` refinement of `LeanSwe.Uuid` against `LeanSwe.Uuid.Model`. -/
 theorem refines_model_impl :
-    Core.RefinesPureEq LeanSwe.Uuid.mapRawError Model.mapRawError ∧
-    Core.RefinesPureEq LeanSwe.Uuid.fromRandomBytes Model.fromRandomBytes ∧
-    Core.RefinesPureEq LeanSwe.Uuid.toString Model.toString ∧
-    Core.RefinesPureEq LeanSwe.Uuid.toHex Model.toHex ∧
-    Core.RefinesPureEq LeanSwe.Uuid.parse Model.parse ∧
-    Core.RefinesPureEq LeanSwe.Uuid.parseHex Model.parseHex ∧
-    Core.RefinesPureEq LeanSwe.Uuid.isValid Model.isValid ∧
-    Core.RefinesStepFrom id Model.healthyWf Model.execRawStep Model.allowedRawStep
+    Core.ObeysPureEq LeanSwe.Uuid.mapRawError Model.mapRawError ∧
+    Core.ObeysPureEq LeanSwe.Uuid.fromRandomBytes Model.fromRandomBytes ∧
+    Core.ObeysPureEq LeanSwe.Uuid.toString Model.toString ∧
+    Core.ObeysPureEq LeanSwe.Uuid.toHex Model.toHex ∧
+    Core.ObeysPureEq LeanSwe.Uuid.parse Model.parse ∧
+    Core.ObeysPureEq LeanSwe.Uuid.parseHex Model.parseHex ∧
+    Core.ObeysPureEq LeanSwe.Uuid.isValid Model.isValid ∧
+    Core.ObeysStepFrom id Model.healthyWf Model.execRawStep Model.allowedRawStep
       Model.healthyWf Internal.mkApi Model.execPkgStep Model.allowedPkgStep :=
   ⟨refines_mapRawError,
    refines_fromRandomBytes,

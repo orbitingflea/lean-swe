@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.Process.Model.HealthyHost
 import LeanSwe.Process.Model.HealthySim
 import LeanSwe.Process.Proofs.HealthySim
@@ -158,7 +158,7 @@ private theorem hostWorldWf_simTbl_eq (s s' : Model.Internal.HealthySimState)
 
 /-- Genuine witness proving `healthySimHostCaps` refines `Model.allowedHostCapStep` under `Model.hostWorldWf`. -/
 theorem healthySimHostCaps_refines_allowedHostCapStep :
-    Core.RefinesStep projSimToHostWorld Model.hostWorldWf
+    Core.ObeysStep projSimToHostWorld Model.hostWorldWf
       (Model.execHostCapStep healthySimHostCaps) Model.allowedHostCapStep := by
   intro s req hWf
   cases req with

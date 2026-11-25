@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.Time.Model
 import LeanSwe.Time.Interface
 import LeanSwe.Time.Proofs.RefinesPure
@@ -36,7 +36,7 @@ private theorem stateM_bind_run' {σ α β : Type} (a : StateM σ α) (f : α �
 
 private theorem sleepMs_healthy {W : Type}
     (proj : W → HealthyEnv) (ops : TimeOpsM (StateM W))
-    (hOps : Core.RefinesStep proj Model.healthyWf (Model.execTimeOpsStep ops) Model.allowedTimeOpsStep) :
+    (hOps : Core.ObeysStep proj Model.healthyWf (Model.execTimeOpsStep ops) Model.allowedTimeOpsStep) :
     ∀ (ms : Nat) (w : W), (proj w).wf = true →
       Model.sleepEnvRel (proj w) (ms * 1000000) (proj ((Internal.sleepMs ops ms).run w).2) := by
   intro ms
@@ -100,7 +100,7 @@ private theorem sleepMs_healthy {W : Type}
 
 /-- Compositional single-step refinement of `Internal.mkApiM` over `TimeOpsM` healthy worlds. -/
 theorem refinesStepFrom_mkApiM :
-    Core.RefinesStepFromFinally id Model.healthyWf Model.execTimeOpsStep Model.allowedTimeOpsStep
+    Core.ObeysStepFromFinally id Model.healthyWf Model.execTimeOpsStep Model.allowedTimeOpsStep
       Model.healthyWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep := by
   intro W proj ops hOps w req hw
   cases req with
@@ -223,21 +223,21 @@ theorem refinesStepFrom_mkApiM :
           · rw [hdraws3, hdraws2, hdraws1]
           · exact Nat.le_trans (Nat.le_of_eq hbud3) (Nat.le_trans hbud2 (Nat.le_of_eq hbud1))
 
-/-- Full public `Interface` refinement of `LeanSwe.Time` against `LeanSwe.Time.Model`. -/
+/-- Full public `Interface` `Core.Obeys` contract of `LeanSwe.Time` against `LeanSwe.Time.Model`. -/
 theorem refines_model_impl :
-    Core.RefinesPureEq2 LeanSwe.Time.elapsedDuration Model.elapsedDuration ∧
-    Core.RefinesPureEq2 LeanSwe.Time.deadlineNanos Model.deadlineNanos ∧
-    Core.RefinesPureEq2 LeanSwe.Time.isMonoExpired Model.isMonoExpired ∧
-    Core.RefinesPureEq LeanSwe.Time.formatUtcIso8601 Model.formatUtcIso8601 ∧
-    Core.RefinesPureEq LeanSwe.Time.parseUtcIso8601 Model.parseUtcIso8601 ∧
-    Core.RefinesPureEq LeanSwe.Time.formatUtcCompact Model.formatUtcCompact ∧
-    Core.RefinesPureEq LeanSwe.Time.formatUtcDate Model.formatUtcDate ∧
-    Core.RefinesPureEq LeanSwe.Time.parseUtcDate Model.parseUtcDate ∧
-    Core.RefinesPureEq LeanSwe.Time.utcDateOfTimestamp Model.utcDateOfTimestamp ∧
-    Core.RefinesPureEq LeanSwe.Time.timestampOfUtcDate Model.timestampOfUtcDate ∧
-    Core.RefinesStepFrom id Model.healthyWf Model.execRawStep Model.allowedRawStep
+    Core.ObeysPureEq2 LeanSwe.Time.elapsedDuration Model.elapsedDuration ∧
+    Core.ObeysPureEq2 LeanSwe.Time.deadlineNanos Model.deadlineNanos ∧
+    Core.ObeysPureEq2 LeanSwe.Time.isMonoExpired Model.isMonoExpired ∧
+    Core.ObeysPureEq LeanSwe.Time.formatUtcIso8601 Model.formatUtcIso8601 ∧
+    Core.ObeysPureEq LeanSwe.Time.parseUtcIso8601 Model.parseUtcIso8601 ∧
+    Core.ObeysPureEq LeanSwe.Time.formatUtcCompact Model.formatUtcCompact ∧
+    Core.ObeysPureEq LeanSwe.Time.formatUtcDate Model.formatUtcDate ∧
+    Core.ObeysPureEq LeanSwe.Time.parseUtcDate Model.parseUtcDate ∧
+    Core.ObeysPureEq LeanSwe.Time.utcDateOfTimestamp Model.utcDateOfTimestamp ∧
+    Core.ObeysPureEq LeanSwe.Time.timestampOfUtcDate Model.timestampOfUtcDate ∧
+    Core.ObeysStepFrom id Model.healthyWf Model.execRawStep Model.allowedRawStep
       Model.healthyWf Internal.mkTimeOps Model.execTimeOpsStep Model.allowedTimeOpsStep ∧
-    Core.RefinesStepFromFinally id Model.healthyWf Model.execTimeOpsStep Model.allowedTimeOpsStep
+    Core.ObeysStepFromFinally id Model.healthyWf Model.execTimeOpsStep Model.allowedTimeOpsStep
       Model.healthyWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep :=
   ⟨refines_elapsedDuration,
    refines_deadlineNanos,

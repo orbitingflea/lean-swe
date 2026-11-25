@@ -1,4 +1,4 @@
-import Core.Refines
+import Core.Obeys
 import LeanSwe.Process.Types
 import LeanSwe.Process.Model
 import LeanSwe.Process.Model.HealthyHost
@@ -118,7 +118,7 @@ theorem ensureNonEmpty_host_isNonOutcome (fb : String) (err : ProcessError)
 /-- Frame preservation for `cap.proc` (`pipe2`, `waitpid`, `kill`). -/
 theorem cap_proc_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (req : Model.HostProcReq) :
     let r := (LinuxSyscall.Process.execProcessReq cap.proc req.toProcessReq).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
@@ -131,7 +131,7 @@ theorem cap_proc_frame {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame preservation for `cap.files` (`close`, `read`, `write`, `fstatat`, `faccessat`, `fcntl`). -/
 theorem cap_files_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (req : Model.HostFilesReq) :
     let r := (LinuxSyscall.Files.execFilesReq cap.files req.toFilesReq).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
@@ -144,7 +144,7 @@ theorem cap_files_frame {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame + size-bound preservation for `cap.files.read`. -/
 theorem cap_read_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (hid : Files.HandleId) (capBytes : UInt32) :
     let r := (cap.files.read hid capBytes).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl ∧
@@ -162,7 +162,7 @@ theorem cap_read_frame {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame preservation for `cap.poll.ppoll`. -/
 theorem cap_ppoll_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true)
     (entries : Array (Files.HandleId × Poll.PollEvents)) (timeout? : Option Poll.Timespec) :
     let r := (cap.poll.ppoll entries timeout?).run w
@@ -176,7 +176,7 @@ theorem cap_ppoll_frame {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame preservation for `cap.timeRand`. -/
 theorem cap_timeRand_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (req : TimeRand.TimeRandReq) :
     let r := (TimeRand.execTimeRandReq cap.timeRand req).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
@@ -189,7 +189,7 @@ theorem cap_timeRand_frame {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame + PID/PGID invariant for `cap.postFork.spawn`. -/
 theorem cap_postFork_step {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true)
     (spec : PostFork.ChildSpecM Files.HandleId) :
     let r := (cap.postFork.spawn spec).run w
@@ -209,7 +209,7 @@ theorem cap_postFork_step {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame preservation for `cap.listEnvironBytes`. -/
 theorem cap_listAmbientEnv_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
     let r := cap.listEnvironBytes.run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
@@ -223,7 +223,7 @@ theorem cap_listAmbientEnv_frame {W : Type} (proj : W → Model.ProcessHostWorld
 /-- Frame preservation for `cap.proc.pipe2`. -/
 theorem execProc_pipe2_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (flags : LinuxSyscall.Process.PipeFlags) :
     let r := (cap.proc.pipe2 flags).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
@@ -237,7 +237,7 @@ theorem execProc_pipe2_frame {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame preservation for `cap.proc.waitpid`. -/
 theorem execProc_waitpid_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true)
     (pid : Int32) (flags : LinuxSyscall.Process.WaitFlags) :
     let r := (cap.proc.waitpid pid flags).run w
@@ -252,7 +252,7 @@ theorem execProc_waitpid_frame {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame preservation for `cap.proc.kill`. -/
 theorem execProc_kill_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true)
     (target : Int32) (sig : LinuxSyscall.Process.Signal) :
     let r := (cap.proc.kill target sig).run w
@@ -267,7 +267,7 @@ theorem execProc_kill_frame {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame preservation for `cap.files.close`. -/
 theorem execFiles_close_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (hid : Files.HandleId) :
     let r := (cap.files.close hid).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
@@ -279,7 +279,7 @@ theorem execFiles_close_frame {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame preservation for `cap.files.write`. -/
 theorem execFiles_write_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (hid : Files.HandleId) (data : ByteArray) :
     let r := (cap.files.write hid data).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
@@ -291,7 +291,7 @@ theorem execFiles_write_frame {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame preservation for `cap.files.fstatat`. -/
 theorem execFiles_fstatat_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true)
     (dir : Option Files.HandleId) (path : ByteArray) (flags : Files.AtFlags) :
     let r := (cap.files.fstatat dir path flags).run w
@@ -304,7 +304,7 @@ theorem execFiles_fstatat_frame {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame preservation for `cap.files.faccessat`. -/
 theorem execFiles_faccessat_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true)
     (dir : Option Files.HandleId) (path : ByteArray) (mask : Files.AccessModeMask) (flags : Files.AtFlags) :
     let r := (cap.files.faccessat dir path mask flags).run w
@@ -317,7 +317,7 @@ theorem execFiles_faccessat_frame {W : Type} (proj : W → Model.ProcessHostWorl
 /-- Frame preservation for `cap.files.fcntl`. -/
 theorem execFiles_fcntl_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (hid : Files.HandleId) (cmd : Files.FcntlCmd) :
     let r := (cap.files.fcntl hid cmd).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
@@ -329,7 +329,7 @@ theorem execFiles_fcntl_frame {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame preservation for `cap.timeRand.clock_gettime`. -/
 theorem execTime_clockGettime_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) (clk : TimeRand.ClockId) :
     let r := (cap.timeRand.clock_gettime clk).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
@@ -342,7 +342,7 @@ theorem execTime_clockGettime_frame {W : Type} (proj : W → Model.ProcessHostWo
 /-- Frame preservation for `cap.timeRand.clock_nanosleep`. -/
 theorem execTime_clockNanosleep_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true)
     (clk : TimeRand.ClockId) (abs : Bool) (reqTs : TimeRand.Timespec) :
     let r := (cap.timeRand.clock_nanosleep clk abs reqTs).run w
@@ -383,7 +383,7 @@ theorem hostRetryEintr_frame {W α : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame preservation for `Files.closeOpt`. -/
 theorem hostCloseOpt_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (fd? : Option Files.HandleId) (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
     let r := (Files.closeOpt cap.files fd?).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
@@ -397,7 +397,7 @@ theorem hostCloseOpt_frame {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame preservation for `Files.setNonblockingOpt`. -/
 theorem hostSetNonblockingOpt_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (fd? : Option Files.HandleId) (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
     let r := (Files.setNonblockingOpt cap.files fd?).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
@@ -411,7 +411,7 @@ theorem hostSetNonblockingOpt_frame {W : Type} (proj : W → Model.ProcessHostWo
 /-- Frame + non-outcome-error invariant for `SysBridge.validateWorkingDir`. -/
 theorem hostValidateWorkingDir_spec {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (cwd? : Option String) (eintrFuel : Nat) (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
     let r := (SysBridge.validateWorkingDir cap.files cwd? eintrFuel).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl ∧
@@ -461,7 +461,7 @@ theorem hostValidateWorkingDir_spec {W : Type} (proj : W → Model.ProcessHostWo
 /-- Frame + non-outcome-error invariant for `SysBridge.resolveExecutablePath`. -/
 theorem hostResolveExecutablePath_spec {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (program : String) (cwd? : Option String) (envBytes : Array ByteArray) (eintrFuel : Nat)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
     let r := (SysBridge.resolveExecutablePath cap.files program cwd? envBytes eintrFuel).run w
@@ -536,7 +536,7 @@ theorem hostResolveExecutablePath_spec {W : Type} (proj : W → Model.ProcessHos
 /-- Frame preservation for `TimeRand.monoNowMs`. -/
 theorem hostMonoNowMs_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
     let r := (TimeRand.monoNowMs cap.timeRand).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
@@ -552,7 +552,7 @@ theorem hostMonoNowMs_frame {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame + `timeoutMs?.isSome` invariant for `TimeRand.checkTimedOut`. -/
 theorem hostCheckTimedOut_spec {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (startMs : Nat) (timeoutMs? : Option Nat) (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
     let r := (TimeRand.checkTimedOut cap.timeRand startMs timeoutMs?).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl ∧
@@ -581,7 +581,7 @@ theorem hostCheckTimedOut_spec {W : Type} (proj : W → Model.ProcessHostWorld)
 /-- Frame preservation for `TimeRand.sleepMonoMs`. -/
 theorem hostSleepMonoMs_frame {W : Type} (proj : W → Model.ProcessHostWorld)
     (cap : Model.HealthyHostCapsM (StateM W))
-    (hCap : Core.RefinesStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
+    (hCap : Core.ObeysStep proj Model.hostWorldWf (Model.execHostCapStep cap) Model.allowedHostCapStep)
     (ms : Nat) (w : W) (hWf : Model.hostWorldWf (proj w) = true) :
     let r := (TimeRand.sleepMonoMs cap.timeRand ms).run w
     Model.hostWorldWf (proj r.2) = true ∧ (proj r.2).tbl = (proj w).tbl := by
