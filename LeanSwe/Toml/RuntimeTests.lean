@@ -153,6 +153,14 @@ private def validDifferentialDocs : List (String × String) :=
       "[[fruits]]\nname = \"apple\"\n[fruits.physical]\ncolor = \"red\"\n" ++
       "[[fruits.varieties]]\nname = \"red delicious\"\n" ++
       "[[fruits.varieties]]\nname = \"granny smith\"\n")
+  , ("no_trailing_newline", "a = 1")
+  , ("interleaved_sections_and_crlf",
+      "\r\n# header comment\r\n[a]\r\nx = 1\r\n\r\n# second section\r\n[b]\r\ny = 2\r\n[a.sub]\r\nz = 3")
+  , ("inline_dotted_neg_zero_and_ml_no_nl",
+      "inl = { a.b = 1 , a.c = 2 }\n" ++
+      "odt = 1979-05-27T07:32:00-00:00\n" ++
+      "mlb = \"\"\"hello\"\"\"\n" ++
+      "mll = '''world'''")
   ]
 
 private def invalidDifferentialDocs : List (String × String × TomlErrorKind) :=
@@ -302,6 +310,9 @@ private def testYear0000DirectRfc3339 : IO Unit := do
   let formatted := format tab
   let reparsed ← assertOk (parse formatted) "reparse year 0000 formatted"
   assertTrue (canonicalizeTable reparsed == canonicalizeTable tab) "year 0000 format round-trip"
+  let subNsTab ← assertOk (parse "tm = 07:32:00.123456789999") "parse >9 fractional digits without trailing newline"
+  let tm : Std.Time.PlainTime ← assertOk (getField subNsTab "tm") "getField tm"
+  assertTrue (tm.nanosecond.val == 123456789) "sub-nanosecond truncation to 9 digits"
 
 private def testCodecsAndAccessors : IO Unit := do
   let doc :=

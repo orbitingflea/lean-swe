@@ -3157,9 +3157,7 @@ private def middleHookAllowlist : Array String := #[
 /-- Exact shrinking ratchet allowlist of packages whose `obeys_model` / `refines_model`
 does not yet match mechanical `.olean` `Expr` synthesis at `6a903b4`. Fails on both new
 regressions and stale entries as packages converge. -/
-private def obeysSynthAllowlist : Array String := #[
-  "OBEYS_SYNTH|LeanSwe.Toml"
-]
+private def obeysSynthAllowlist : Array String := #[]
 
 private structure ManifestAuditReport where
   hardErrors : Array String := #[]
