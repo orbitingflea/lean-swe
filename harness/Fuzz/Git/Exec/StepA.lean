@@ -79,6 +79,7 @@ def execStepPartA (st : EpisodeState) (tr : CoverageTracker) (step : GitFuzzStep
           fun s c _ => addKnownCommit s c
       else
         let realRes ← (pickApi st poison).revParseCommit p revStr
+        logGitErr st.emitErrHits step.opName realRes
         let tr' := recordOutcome tr step.opName realRes
         if !allowsRevParseCommit st.model p revStr realRes then
           let (mRes, _) := evalGitApi.revParseCommit p revStr st.model
@@ -99,6 +100,7 @@ def execStepPartA (st : EpisodeState) (tr : CoverageTracker) (step : GitFuzzStep
       let cA := resolveCommitIdx st aIdx rawA?
       let cB := resolveCommitIdx st bIdx rawB?
       let realRes ← (pickApi st poison).mergeBase? p cA cB
+      logGitErr st.emitErrHits step.opName realRes
       let tr' := recordOutcome tr step.opName realRes
       let okRel :=
         allowsMergeBase st.model p cA cB realRes ||
@@ -118,6 +120,7 @@ def execStepPartA (st : EpisodeState) (tr : CoverageTracker) (step : GitFuzzStep
     | .opStatus t poison =>
       let p := resolveTarget st.rootDir t
       let realRes ← (pickApi st poison).status p
+      logGitErr st.emitErrHits step.opName realRes
       let tr' := recordOutcome tr step.opName realRes
       let okRel :=
         allowsStatus st.model p realRes ||
@@ -139,6 +142,7 @@ def execStepPartA (st : EpisodeState) (tr : CoverageTracker) (step : GitFuzzStep
       let revAStr := resolveRevSpec st revA
       let revBStr? := revB?.map (resolveRevSpec st)
       let realRes ← (pickApi st poison).diffNameStatus p revAStr revBStr? ps
+      logGitErr st.emitErrHits step.opName realRes
       let tr' := recordOutcome tr step.opName realRes
       let okRel :=
         allowsDiffNameStatus st.model p revAStr revBStr? ps realRes ||
@@ -158,6 +162,7 @@ def execStepPartA (st : EpisodeState) (tr : CoverageTracker) (step : GitFuzzStep
     | .opListWorktrees t poison =>
       let p := resolveTarget st.rootDir t
       let realRes ← (pickApi st poison).listWorktrees p
+      logGitErr st.emitErrHits step.opName realRes
       let (modelRes, modelNext) := evalGitApi.listWorktrees p st.model
       let tr' := recordOutcome tr step.opName realRes
       match compareWorktreesTagged step.opName realRes modelRes with
@@ -167,6 +172,7 @@ def execStepPartA (st : EpisodeState) (tr : CoverageTracker) (step : GitFuzzStep
       let p := resolveTarget st.rootDir t
       let revStr := resolveRevSpec st rev
       let realRes ← (pickApi st poison).showFile? p revStr relPath
+      logGitErr st.emitErrHits step.opName realRes
       let tr' := recordOutcome tr step.opName realRes
       if !isExtendedRevSpec revStr then
         let (modelRes, modelNext) := (evalGitApi.showFile? p revStr relPath).run st.model
@@ -209,6 +215,7 @@ def execStepPartA (st : EpisodeState) (tr : CoverageTracker) (step : GitFuzzStep
           (evalGitApi.add p ps all)
       else
         let realRes ← (pickApi st poison).add p ps all
+        logGitErr st.emitErrHits step.opName realRes
         let tr' := recordOutcome tr step.opName realRes
         let witnessIdx? ←
           if !hasSpecial then pure none
@@ -231,6 +238,7 @@ def execStepPartA (st : EpisodeState) (tr : CoverageTracker) (step : GitFuzzStep
     | .opCommit t opts poison =>
       let p := resolveTarget st.rootDir t
       let realRes ← (pickApi st poison).commit p opts
+      logGitErr st.emitErrHits step.opName realRes
       let tr' := recordOutcome tr step.opName realRes
       match realRes with
       | .error eReal =>

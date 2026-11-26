@@ -164,7 +164,8 @@ private def restoreAllChmodDirs (rootDir : String) (dirs : Array String) (rawDir
 
 /-- Execute a full trace inside a fresh `TempDir`, running periodic and final readback audits. -/
 def runTrace (tr : CoverageTracker) (trace : Array GitFuzzStep)
-    (extraAuditEvery : Nat := 8) (pinnedAuditTag? : Option String := none) :
+    (extraAuditEvery : Nat := 8) (pinnedAuditTag? : Option String := none)
+    (emitErrHits : Bool := false) :
     IO (Except TraceError CoverageTracker) := do
   let runFinalAndPeriodicAudit :=
     match pinnedAuditTag? with
@@ -184,7 +185,7 @@ def runTrace (tr : CoverageTracker) (trace : Array GitFuzzStep)
       let chmodRawFileRef ← IO.mkRef (#[] : Array ByteArray)
       let nonUtf8Ref ← IO.mkRef false
       let walkChmodRef ← IO.mkRef false
-      let mut cur := st0
+      let mut cur := { st0 with emitErrHits }
       let mut curTr := tr
       try
         let mut idx := 0
@@ -264,14 +265,14 @@ def runTrace (tr : CoverageTracker) (trace : Array GitFuzzStep)
 /-- Execute a trace and assert success, shrinking semantic mismatches while preserving exact failure tag. -/
 def runTraceOrShrink (seedVal : UInt64) (tr : CoverageTracker) (trace : Array GitFuzzStep) :
     IO CoverageTracker := do
-  match ← runTrace tr trace 8 none with
+  match ← runTrace tr trace 8 none true with
   | .ok tr' => return tr'
   | .error (.infra msg) =>
     throw (IO.userError s!"GIT_FUZZ_INFRA_ERROR SEED={seedVal}: {msg}")
   | .error (.mismatch origTag msg) =>
     let shrinkAuditEvery := if origTag.startsWith "audit:" then 1 else 0
     let fails (cand : Array GitFuzzStep) : IO Bool := do
-      match ← runTrace CoverageTracker.empty cand shrinkAuditEvery (some origTag) with
+      match ← runTrace CoverageTracker.empty cand shrinkAuditEvery (some origTag) false with
       | .ok _ => return false
       | .error (.infra _) => return false
       | .error (.mismatch tag' _) => return tag' == origTag
