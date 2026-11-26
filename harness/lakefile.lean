@@ -26,6 +26,10 @@ lean_lib Tests where
   roots := #[`Tests.PropCheck, `Tests.Common]
   globs := #[.one `Tests.PropCheck, .one `Tests.Common, .submodules `Tests.Mutate]
 
+@[default_target]
+lean_lib ModelMutants where
+  globs := #[.submodules `ModelMutants]
+
 private def rootLeanSwePkg : FetchM Package := do
   let some pkg ← findPackageByName? `«lean-swe»
     | error "required package 'lean-swe' not found in workspace"

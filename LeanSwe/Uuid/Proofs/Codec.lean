@@ -1,6 +1,6 @@
 import Core.Assumptions
 import LeanSwe.Uuid.Interface
-import LeanSwe.Uuid.SpecTests
+import LeanSwe.Uuid.Model
 
 /-!
 # UUIDv4 Bitwise, Hex Codec, and Hyphen Framing Lemmas
@@ -16,6 +16,14 @@ Pure algebraic layer for `LeanSwe.Uuid.Proofs`:
 namespace LeanSwe.Uuid.Proofs.Codec
 
 open Core LeanSwe.Uuid
+
+/-- Return `true` iff `c` is a lowercase ASCII hexadecimal digit (`'0'..'9'` or `'a'..'f'`). -/
+def isLowerHexChar (c : Char) : Bool :=
+  ('0' ≤ c && c ≤ '9') || ('a' ≤ c && c ≤ 'f')
+
+/-- Return `true` iff `c` is an ASCII hexadecimal digit (`'0'..'9'`, `'a'..'f'`, or `'A'..'F'`). -/
+def isHexChar (c : Char) : Bool :=
+  isLowerHexChar c || ('A' ≤ c && c ≤ 'F')
 
 /-- Sixteen zero bytes used as a concrete non-vacuity witness. -/
 def zeros16 : ByteArray := ByteArray.mk #[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -380,8 +388,8 @@ theorem toHex_spec {u : Uuid} (hv : ValidV4 u) :
 
 /-- Big-endian high/low nibble indexing for `Internal.toHex` on any valid v4 `Uuid`. -/
 theorem toHex_bigEndian {u : Uuid} (hv : ValidV4 u) {i : Nat} (hi : i < 16) :
-    (Internal.toHex u).toList[2 * i]? = some (lowerHexDigit (u.bytes[i]!.toNat / 16)) ∧
-    (Internal.toHex u).toList[2 * i + 1]? = some (lowerHexDigit (u.bytes[i]!.toNat % 16)) := by
+    (Internal.toHex u).toList[2 * i]? = some (Model.lowerHexDigit (u.bytes[i]!.toNat / 16)) ∧
+    (Internal.toHex u).toList[2 * i + 1]? = some (Model.lowerHexDigit (u.bytes[i]!.toNat % 16)) := by
   have hg := formatHexList_getElem? u.bytes.data.toList i (by rw [validV4_len hv]; exact hi)
   rw [validV4_get_eq hv hi] at hg; unfold Internal.toHex; rw [String.toList_ofList]; exact hg
 

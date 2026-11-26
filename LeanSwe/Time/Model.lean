@@ -1,22 +1,15 @@
-import LeanSwe.LinuxSyscall.TimeRand.Model
 import LeanSwe.Time.Types
 
 /-!
 # Pure Behavior Model for `LeanSwe.Time`
 
 Defines the pure specification of monotonic duration/deadline helpers, UTC ISO
-8601 and `YYYY-MM-DD` formatting/parsing, and the capability-parametric
-single-step refinement contracts (`TimeOpsStepReq`/`TimeOpsStepOut` over
-`TimeRandOpsM` and `PkgStepReq`/`PkgStepOut` over `TimeOpsM`) over
-`LeanSwe.LinuxSyscall.TimeRand.HealthyEnv`.
+8601 and `YYYY-MM-DD` formatting/parsing, and the caller-facing stateful clock
+contracts (`TimeModelState`, `pkgWf`, `allowedTimeOpsStep`, `StepAction`, and
+`allowedPkgStep`).
 -/
 
 namespace LeanSwe.Time.Model
-
-open LeanSwe.LinuxSyscall.TimeRand
-  (TimeRandOpsM TimeRandReq TimeRandOutcome HealthyEnv
-   MIN_TIMESPEC_SEC_INT MAX_TIMESPEC_NANOS
-   execTimeRandReq healthyStep)
 
 /-- Pure behavior model of `LeanSwe.Time.elapsedDuration`. -/
 def elapsedDuration (startMono stopMono : Nat) : Std.Time.Duration :=
@@ -33,10 +26,9 @@ def deadlineNanos (startMono : Nat) (limit : Std.Time.Duration) : Nat :=
 def isMonoExpired (nowMono deadlineMono : Nat) : Bool :=
   decide (deadlineMono ≤ nowMono)
 
-/-- Convert a `Std.Time.Duration` to rounded-up sleep milliseconds. -/
-def sleepDurationMs (d : Std.Time.Duration) : Nat :=
-  if d.toNanoseconds.val ≤ 0 then 0
-  else (d.toNanoseconds.val.toNat + 999999) / 1000000
+/-- Non-negative nanosecond lower bound required for sleeping duration `d` (`0` when `d ≤ 0`). -/
+def sleepNanosLowerBound (d : Std.Time.Duration) : Nat :=
+  if d.toNanoseconds.val ≤ 0 then 0 else d.toNanoseconds.val.toNat
 
 /-- Convert `n % 10` into an ASCII decimal digit character `'0'..'9'`. -/
 def digitChar (n : Nat) : Char :=
@@ -324,21 +316,36 @@ def timestampOfUtcDate (d : Std.Time.PlainDate) : Std.Time.Timestamp :=
   Std.Time.Timestamp.ofNanosecondsSinceUnixEpoch
     (Std.Time.Nanosecond.Offset.ofInt (d.toEpochDay.val * 86400000000000))
 
-/-- Well-formedness guard on `HealthyEnv` for `LeanSwe.Time` single-step refinement. -/
-def healthyWf (env : HealthyEnv) : Bool :=
-  HealthyEnv.wf env
+/-- Minimum representable signed 64-bit UTC epoch timestamp in nanoseconds (`-2^63 * 10^9`). -/
+def minTimestampNanos : Int := -9223372036854775808000000000
 
-/-- Execute a `TimeRandReq` against a `TimeRandOpsM (StateM W)` capability bundle. -/
-def execRawStep {W : Type} (sys : TimeRandOpsM (StateM W)) (req : TimeRandReq) :
-    StateM W TimeRandOutcome :=
-  execTimeRandReq sys req
+/-- Maximum representable signed 64-bit UTC epoch timestamp in nanoseconds (`(2^63 - 1) * 10^9 + 999_999_999`). -/
+def maxTimestampNanos : Int := 9223372036854775807999999999
 
-/-- Allowed `TimeRand` transition relation lifted from `LeanSwe.LinuxSyscall.TimeRand.healthyStep`. -/
-def allowedRawStep (env : HealthyEnv) (req : TimeRandReq) (out : TimeRandOutcome)
-    (env' : HealthyEnv) : Prop :=
-  healthyStep env req out = some env'
+/-- Return `true` iff `ns` lies within valid signed 64-bit UTC nanosecond timestamp bounds. -/
+def isValidTimestampNanos (ns : Int) : Bool :=
+  decide (minTimestampNanos ≤ ns ∧ ns ≤ maxTimestampNanos)
 
-/-- Single-step request sum covering all `TimeOpsM` primitives. -/
+/-- Maximum representable signed 64-bit monotonic clock reading in nanoseconds (`(2^63 - 1) * 10^9 + 999_999_999`). -/
+def maxMonoNanos : Nat := 9223372036854775807999999999
+
+/-- Return `true` iff `ns` lies within valid signed 64-bit monotonic nanosecond bounds. -/
+def isValidMonoNanos (ns : Nat) : Bool :=
+  decide (ns ≤ maxMonoNanos)
+
+/-- Caller-facing abstract clock state for `LeanSwe.Time`. -/
+structure TimeModelState where
+  /-- Abstract UTC wall-clock reading in nanoseconds since the Unix epoch. -/
+  wallNanos : Int := 0
+  /-- Abstract monotonic clock reading in nanoseconds. -/
+  monoNanos : Nat := 0
+  deriving Repr, BEq, DecidableEq, Inhabited
+
+/-- Well-formedness guard on `TimeModelState`: `wallNanos` and `monoNanos` lie within valid 64-bit bounds. -/
+def pkgWf (s : TimeModelState) : Bool :=
+  isValidTimestampNanos s.wallNanos && isValidMonoNanos s.monoNanos
+
+/-- Single-step request sum covering all `TimeOpsM` operations. -/
 inductive TimeOpsStepReq where
   /-- Read UTC wall-clock timestamp (`TimeOpsM.nowTimestamp`). -/
   | nowTimestamp
@@ -346,7 +353,7 @@ inductive TimeOpsStepReq where
   | monoNanosNow
   /-- Sleep `ms` milliseconds (`TimeOpsM.sleep`). -/
   | sleep (ms : UInt32)
-  deriving Repr, DecidableEq, Inhabited
+  deriving Repr, BEq, DecidableEq, Inhabited
 
 /-- Single-step output sum for `TimeOpsStepReq`. -/
 inductive TimeOpsStepOut where
@@ -365,55 +372,90 @@ def execTimeOpsStep {W : Type} (ops : TimeOpsM (StateM W)) :
   | .monoNanosNow => .monoNanosNow <$> ops.monoNanosNow
   | .sleep ms => do ops.sleep ms; pure .sleep
 
-/-- Shared monotonic sleep postcondition relating pre/post `HealthyEnv` for `sleepNs` nanoseconds. -/
-def sleepEnvRel (env : HealthyEnv) (sleepNs : Nat) (env' : HealthyEnv) : Prop :=
-  env'.wf = true ∧
-  env.state.monoLowerBoundNs ≤ env'.state.monoLowerBoundNs ∧
-  env'.state.realtimeNs = env.state.realtimeNs ∧
-  env'.state.crngReady = env.state.crngReady ∧
-  env'.state.entropyDraws = env.state.entropyDraws ∧
-  env'.eintrBudget ≤ env.eintrBudget ∧
-  (env'.eintrBudget = env.eintrBudget →
-    min MAX_TIMESPEC_NANOS (env.state.monoLowerBoundNs + sleepNs) ≤ env'.state.monoLowerBoundNs)
-
-/-- Allowed single-step relation for `TimeOpsM` over `HealthyEnv`. -/
-def allowedTimeOpsStep (env : HealthyEnv) (req : TimeOpsStepReq) (out : TimeOpsStepOut)
-    (env' : HealthyEnv) : Prop :=
+/-- Allowed single-step relation for `TimeOpsM` over `TimeModelState`.
+    Clock reads are non-decreasing (`t' ≥ t`) within valid 64-bit bounds,
+    and `sleep ms` advances monotonic time by at least `ms` milliseconds,
+    clamped at `maxMonoNanos`. -/
+def allowedTimeOpsStep (s : TimeModelState) (req : TimeOpsStepReq) (out : TimeOpsStepOut)
+    (s' : TimeModelState) : Prop :=
   match req, out with
   | .nowTimestamp, .nowTimestamp ts =>
-    MIN_TIMESPEC_SEC_INT * 1000000000 ≤ ts.toNanosecondsSinceUnixEpoch.val ∧
-    ts.toNanosecondsSinceUnixEpoch.val ≤ Int.ofNat MAX_TIMESPEC_NANOS ∧
-    env' = env
+    s.wallNanos ≤ s'.wallNanos ∧
+    isValidTimestampNanos s'.wallNanos = true ∧
+    ts.toNanosecondsSinceUnixEpoch.val = s'.wallNanos ∧
+    s.monoNanos ≤ s'.monoNanos ∧
+    isValidMonoNanos s'.monoNanos = true
   | .monoNanosNow, .monoNanosNow ns =>
-    min env.state.monoLowerBoundNs MAX_TIMESPEC_NANOS ≤ ns ∧
-    ns ≤ MAX_TIMESPEC_NANOS ∧
-    env'.wf = true ∧
-    env'.state.monoLowerBoundNs = max env.state.monoLowerBoundNs ns ∧
-    env'.state.realtimeNs = env.state.realtimeNs ∧
-    env'.state.crngReady = env.state.crngReady ∧
-    env'.state.entropyDraws = env.state.entropyDraws ∧
-    env'.eintrBudget = env.eintrBudget
+    s.monoNanos ≤ s'.monoNanos ∧
+    isValidMonoNanos s'.monoNanos = true ∧
+    ns = s'.monoNanos ∧
+    s.wallNanos ≤ s'.wallNanos ∧
+    isValidTimestampNanos s'.wallNanos = true
   | .sleep ms, .sleep =>
-    sleepEnvRel env (ms.toNat * 1000000) env'
+    min maxMonoNanos (s.monoNanos + ms.toNat * 1000000) ≤ s'.monoNanos ∧
+    isValidMonoNanos s'.monoNanos = true ∧
+    s.wallNanos ≤ s'.wallNanos ∧
+    isValidTimestampNanos s'.wallNanos = true
   | _, _ => False
 
-/-- Finite pure action passed to `TimeApiM.measure` during single-step refinement. -/
-inductive MeasureAction where
-  /-- Return `val` immediately without sleeping. -/
+/-- Stateful action executed inside `TimeApiM.measure`, supporting pure returns,
+    sleeps, clock reads, and sequential composition. -/
+inductive StepAction where
+  /-- Return `val` immediately without invoking any `Time` operation. -/
   | pureNat (val : Nat)
   /-- Sleep `ms` milliseconds via `api.sleepMs`, then return `val`. -/
   | sleepMsNat (ms val : Nat)
-  deriving Repr, BEq, DecidableEq, Inhabited
+  /-- Sleep for duration `d` via `api.sleepDuration`, then return `val`. -/
+  | sleepDurationNat (d : Std.Time.Duration) (val : Nat)
+  /-- Read the monotonic clock via `api.monoNanosNow` and return the reading. -/
+  | readMono
+  /-- Read the UTC wall clock via `api.nowTimestamp`, then return `val`. -/
+  | readWallNat (val : Nat)
+  /-- Execute `first`, discard its result, and execute `second`. -/
+  | seq (first second : StepAction)
+  deriving Repr, DecidableEq, Inhabited
 
-/-- Return value of a `MeasureAction`. -/
-def measureActionResult : MeasureAction → Nat
-  | .pureNat val => val
-  | .sleepMsNat _ val => val
-
-/-- Execute a `MeasureAction` against a `TimeApiM (StateM W)`. -/
-def execMeasureAction {W : Type} (api : TimeApiM (StateM W)) : MeasureAction → StateM W Nat
+/-- Execute a stateful `StepAction` against an arbitrary `TimeApiM (StateM W)`. -/
+def execStepAction {W : Type} (api : TimeApiM (StateM W)) : StepAction → StateM W Nat
   | .pureNat val => pure val
   | .sleepMsNat ms val => do api.sleepMs ms; pure val
+  | .sleepDurationNat d val => do api.sleepDuration d; pure val
+  | .readMono => api.monoNanosNow
+  | .readWallNat val => do let _ ← api.nowTimestamp; pure val
+  | .seq first second => do let _ ← execStepAction api first; execStepAction api second
+
+/-- Allowed state-and-value relation for executing `act : StepAction` from `s` to `s'` returning `val`. -/
+def allowedStepAction (s : TimeModelState) : StepAction → Nat → TimeModelState → Prop
+  | .pureNat v, val, s' =>
+    val = v ∧ s' = s
+  | .sleepMsNat ms v, val, s' =>
+    val = v ∧
+    min maxMonoNanos (s.monoNanos + ms * 1000000) ≤ s'.monoNanos ∧
+    isValidMonoNanos s'.monoNanos = true ∧
+    s.wallNanos ≤ s'.wallNanos ∧
+    isValidTimestampNanos s'.wallNanos = true
+  | .sleepDurationNat d v, val, s' =>
+    val = v ∧
+    min maxMonoNanos (s.monoNanos + sleepNanosLowerBound d) ≤ s'.monoNanos ∧
+    isValidMonoNanos s'.monoNanos = true ∧
+    s.wallNanos ≤ s'.wallNanos ∧
+    isValidTimestampNanos s'.wallNanos = true
+  | .readMono, val, s' =>
+    s.monoNanos ≤ s'.monoNanos ∧
+    isValidMonoNanos s'.monoNanos = true ∧
+    val = s'.monoNanos ∧
+    s.wallNanos ≤ s'.wallNanos ∧
+    isValidTimestampNanos s'.wallNanos = true
+  | .readWallNat v, val, s' =>
+    val = v ∧
+    s.wallNanos ≤ s'.wallNanos ∧
+    isValidTimestampNanos s'.wallNanos = true ∧
+    s.monoNanos ≤ s'.monoNanos ∧
+    isValidMonoNanos s'.monoNanos = true
+  | .seq first second, val, s' =>
+    ∃ (v1 : Nat) (sMid : TimeModelState),
+      allowedStepAction s first v1 sMid ∧
+      allowedStepAction sMid second val s'
 
 /-- Public effectful request sum covering all 5 effectful `TimeApiM` operations. -/
 inductive PkgStepReq where
@@ -425,8 +467,8 @@ inductive PkgStepReq where
   | sleepMs (ms : Nat)
   /-- Sleep for duration `d` (`TimeApiM.sleepDuration`). -/
   | sleepDuration (d : Std.Time.Duration)
-  /-- Measure `act` elapsed monotonic duration (`TimeApiM.measure`). -/
-  | measure (act : MeasureAction)
+  /-- Measure elapsed monotonic duration while running `act` (`TimeApiM.measure`). -/
+  | measure (act : StepAction)
   deriving Repr, DecidableEq, Inhabited
 
 /-- Public effectful output sum for `PkgStepReq`. -/
@@ -447,38 +489,50 @@ def execPkgStep {W : Type} (api : TimeApiM (StateM W)) : PkgStepReq → StateM W
   | .monoNanosNow => .monoNanosNow <$> api.monoNanosNow
   | .sleepMs ms => do api.sleepMs ms; pure .unit
   | .sleepDuration d => do api.sleepDuration d; pure .unit
-  | .measure act => .measured <$> api.measure (execMeasureAction api act)
+  | .measure act => .measured <$> api.measure (execStepAction api act)
 
-/-- Allowed single-step relation for `TimeApiM` over `HealthyEnv`. -/
-def allowedPkgStep (env : HealthyEnv) (req : PkgStepReq) (out : PkgStepOut)
-    (env' : HealthyEnv) : Prop :=
+/-- Allowed single-step relation for `TimeApiM` over `TimeModelState`.
+    Clock reads advance nondeterministically by `≥ 0` within valid 64-bit bounds;
+    positive sleeps advance monotonic time by at least the requested duration,
+    clamped at `maxMonoNanos`; `measure act` brackets `act` with monotonic clock
+    reads and returns exact `elapsedDuration t_before t_after`. -/
+def allowedPkgStep (s : TimeModelState) (req : PkgStepReq) (out : PkgStepOut)
+    (s' : TimeModelState) : Prop :=
   match req, out with
   | .nowTimestamp, .nowTimestamp ts =>
-    MIN_TIMESPEC_SEC_INT * 1000000000 ≤ ts.toNanosecondsSinceUnixEpoch.val ∧
-    ts.toNanosecondsSinceUnixEpoch.val ≤ Int.ofNat MAX_TIMESPEC_NANOS ∧
-    env' = env
+    s.wallNanos ≤ s'.wallNanos ∧
+    isValidTimestampNanos s'.wallNanos = true ∧
+    ts.toNanosecondsSinceUnixEpoch.val = s'.wallNanos ∧
+    s.monoNanos ≤ s'.monoNanos ∧
+    isValidMonoNanos s'.monoNanos = true
   | .monoNanosNow, .monoNanosNow ns =>
-    min env.state.monoLowerBoundNs MAX_TIMESPEC_NANOS ≤ ns ∧
-    ns ≤ MAX_TIMESPEC_NANOS ∧
-    env'.wf = true ∧
-    env'.state.monoLowerBoundNs = max env.state.monoLowerBoundNs ns ∧
-    env'.state.realtimeNs = env.state.realtimeNs ∧
-    env'.state.crngReady = env.state.crngReady ∧
-    env'.state.entropyDraws = env.state.entropyDraws ∧
-    env'.eintrBudget = env.eintrBudget
+    s.monoNanos ≤ s'.monoNanos ∧
+    isValidMonoNanos s'.monoNanos = true ∧
+    ns = s'.monoNanos ∧
+    s.wallNanos ≤ s'.wallNanos ∧
+    isValidTimestampNanos s'.wallNanos = true
   | .sleepMs ms, .unit =>
-    sleepEnvRel env (ms * 1000000) env'
+    min maxMonoNanos (s.monoNanos + ms * 1000000) ≤ s'.monoNanos ∧
+    isValidMonoNanos s'.monoNanos = true ∧
+    s.wallNanos ≤ s'.wallNanos ∧
+    isValidTimestampNanos s'.wallNanos = true
   | .sleepDuration d, .unit =>
-    sleepEnvRel env (sleepDurationMs d * 1000000) env'
+    min maxMonoNanos (s.monoNanos + sleepNanosLowerBound d) ≤ s'.monoNanos ∧
+    isValidMonoNanos s'.monoNanos = true ∧
+    s.wallNanos ≤ s'.wallNanos ∧
+    isValidTimestampNanos s'.wallNanos = true
   | .measure act, .measured (val, elapsed) =>
-    val = measureActionResult act ∧
-    0 ≤ elapsed.toNanoseconds.val ∧
-    env'.wf = true ∧
-    env.state.monoLowerBoundNs ≤ env'.state.monoLowerBoundNs ∧
-    env'.state.realtimeNs = env.state.realtimeNs ∧
-    env'.state.crngReady = env.state.crngReady ∧
-    env'.state.entropyDraws = env.state.entropyDraws ∧
-    env'.eintrBudget ≤ env.eintrBudget
+    ∃ (sBefore sMid : TimeModelState),
+      s.monoNanos ≤ sBefore.monoNanos ∧
+      isValidMonoNanos sBefore.monoNanos = true ∧
+      s.wallNanos ≤ sBefore.wallNanos ∧
+      isValidTimestampNanos sBefore.wallNanos = true ∧
+      allowedStepAction sBefore act val sMid ∧
+      sMid.monoNanos ≤ s'.monoNanos ∧
+      isValidMonoNanos s'.monoNanos = true ∧
+      sMid.wallNanos ≤ s'.wallNanos ∧
+      isValidTimestampNanos s'.wallNanos = true ∧
+      elapsed = elapsedDuration sBefore.monoNanos s'.monoNanos
   | _, _ => False
 
 end LeanSwe.Time.Model

@@ -1,5 +1,6 @@
 import Core.Obeys
 import LeanSwe.Time.Model
+import LeanSwe.Time.Model.Refines
 import LeanSwe.Time.Interface
 import LeanSwe.Time.Proofs.RefinesPure
 import LeanSwe.Time.Proofs.RefinesTimeOps
@@ -7,23 +8,15 @@ import LeanSwe.Time.Proofs.RefinesTimeOps
 /-!
 # `TimeApiM` Model Refinement Proofs for `LeanSwe.Time`
 
-Lifts `TimeOpsM` single-step refinement through `Internal.mkApiM` and assembles
-`LeanSwe.Time.Proofs.RefinesModel.refines_model_impl`.
+Lifts `Model.allowedTimeOpsStep` single-step refinement through `Internal.mkApiM`
+to `Model.allowedPkgStep` and assembles `LeanSwe.Time.Proofs.RefinesModel.refines_model_impl`.
 -/
 
 namespace LeanSwe.Time.Proofs.RefinesModel
 
 open Core
 open Std.Time
-open LeanSwe.LinuxSyscall.TimeRand (HealthyEnv MAX_TIMESPEC_NANOS)
 open LeanSwe.Time
-
-private theorem toNanoseconds_ofNanoseconds' (n : Nanosecond.Offset) :
-    (Duration.ofNanoseconds n).toNanoseconds = n := by
-  apply Internal.UnitVal.ext
-  change (n.val.tdiv 1000000000) * 1000000000 + (n.val.tmod 1000000000) = n.val
-  have h := Int.mul_tdiv_add_tmod n.val 1000000000
-  omega
 
 private theorem stateM_map_run' {W α β : Type} (f : α → β) (x : StateM W α) (w : W) :
     (f <$> x).run w = (f (x.run w).1, (x.run w).2) := rfl
@@ -31,14 +24,18 @@ private theorem stateM_map_run' {W α β : Type} (f : α → β) (x : StateM W �
 private theorem stateM_pure_run' {σ α : Type} (a : α) (s : σ) :
     (pure a : StateM σ α).run s = (a, s) := rfl
 
-private theorem stateM_bind_run' {σ α β : Type} (a : StateM σ α) (f : α → StateM σ β) (s : σ) :
+private theorem stateM_bind_run'' {σ α β : Type} (a : StateM σ α) (f : α → StateM σ β) (s : σ) :
     (a >>= f).run s = (f (a.run s).1).run (a.run s).2 := rfl
 
-private theorem sleepMs_healthy {W : Type}
-    (proj : W → HealthyEnv) (ops : TimeOpsM (StateM W))
-    (hOps : Core.ObeysStep proj Model.healthyWf (Model.execTimeOpsStep ops) Model.allowedTimeOpsStep) :
-    ∀ (ms : Nat) (w : W), (proj w).wf = true →
-      Model.sleepEnvRel (proj w) (ms * 1000000) (proj ((Internal.sleepMs ops ms).run w).2) := by
+private theorem sleepMs_obeys {W : Type}
+    (proj : W → Model.TimeModelState) (ops : TimeOpsM (StateM W))
+    (hOps : Core.ObeysStep proj Model.pkgWf (Model.execTimeOpsStep ops) Model.allowedTimeOpsStep) :
+    ∀ (ms : Nat) (w : W), Model.pkgWf (proj w) = true →
+      min Model.maxMonoNanos ((proj w).monoNanos + ms * 1000000) ≤
+        (proj ((Internal.sleepMs ops ms).run w).2).monoNanos ∧
+      Model.isValidMonoNanos (proj ((Internal.sleepMs ops ms).run w).2).monoNanos = true ∧
+      (proj w).wallNanos ≤ (proj ((Internal.sleepMs ops ms).run w).2).wallNanos ∧
+      Model.isValidTimestampNanos (proj ((Internal.sleepMs ops ms).run w).2).wallNanos = true := by
   intro ms
   induction ms using Nat.strongRecOn with
   | _ ms ih =>
@@ -46,8 +43,8 @@ private theorem sleepMs_healthy {W : Type}
     by_cases h0 : ms = 0
     · subst h0
       rw [Internal.sleepMs]
-      simp only [↓reduceIte, StateT.run, pure, StateT.pure, Nat.zero_mul]
-      exact ⟨hw, Nat.le_refl _, rfl, rfl, rfl, Nat.le_refl _, fun _ => Nat.min_le_right _ _⟩
+      simp only [↓reduceIte, StateT.run, pure, StateT.pure, Nat.zero_mul, Nat.add_zero]
+      exact ⟨Nat.min_le_right _ _, pkgWf_mono hw, Int.le_refl _, pkgWf_wall hw⟩
     · rw [Internal.sleepMs]
       simp only [h0, ↓reduceIte]
       let chunkNat := min ms (UInt32.size - 1)
@@ -59,49 +56,132 @@ private theorem sleepMs_healthy {W : Type}
       have hcToNat : (UInt32.ofNat chunkNat).toNat = chunkNat := by
         rw [UInt32.toNat_ofNat']
         exact Nat.mod_eq_of_lt (Nat.lt_of_le_of_lt hmax (by decide))
-      rw [stateM_bind_run']
+      rw [stateM_bind_run'']
       have hStep := hOps w (.sleep (UInt32.ofNat chunkNat)) hw
       dsimp only [Model.execTimeOpsStep, Model.allowedTimeOpsStep] at hStep
-      rw [stateM_bind_run'] at hStep
+      rw [stateM_bind_run''] at hStep
       cases hsl : (ops.sleep (UInt32.ofNat chunkNat)).run w with
       | mk u w1 =>
         rw [hsl] at hStep
-        dsimp only [Pure.pure, StateT.pure, StateT.run, Model.sleepEnvRel] at hStep ⊢
-        rcases hStep with ⟨hwf1, hmono1, hreal1, hcrng1, hdraws1, hbud1, hsucc1⟩
-        have hih := ih (ms - chunkNat) hlt w1 hwf1
-        dsimp only [Model.sleepEnvRel] at hih
-        rcases hih with ⟨hwf2, hmono2, hreal2, hcrng2, hdraws2, hbud2, hsucc2⟩
-        refine ⟨hwf2, Nat.le_trans hmono1 hmono2, hreal2.trans hreal1,
-          hcrng2.trans hcrng1, hdraws2.trans hdraws1, Nat.le_trans hbud2 hbud1, fun hEq => ?_⟩
-        have hEq' : (proj ((Internal.sleepMs ops (ms - chunkNat)).run w1).2).eintrBudget = (proj w).eintrBudget :=
-          hEq
-        have hEq1 : (proj w1).eintrBudget = (proj w).eintrBudget :=
-          Nat.le_antisymm hbud1 (by rw [← hEq']; exact hbud2)
-        have hEq2 : (proj ((Internal.sleepMs ops (ms - chunkNat)).run w1).2).eintrBudget = (proj w1).eintrBudget :=
-          Nat.le_antisymm hbud2 (by rw [hEq']; exact hbud1)
-        have hs1 := hsucc1 hEq1
-        have hs2 := hsucc2 hEq2
-        rw [hcToNat] at hs1
+        dsimp only [Pure.pure, StateT.pure, StateT.run] at hStep ⊢
+        rcases hStep with ⟨hmLe1, hmVal1, hwLe1, hwVal1⟩
+        rw [hcToNat] at hmLe1
+        have hwf1 : Model.pkgWf (proj w1) = true := pkgWf_mk hwVal1 hmVal1
+        rcases ih (ms - chunkNat) hlt w1 hwf1 with ⟨hmLe2, hmVal2, hwLe2, hwVal2⟩
+        refine ⟨?_, hmVal2, Int.le_trans hwLe1 hwLe2, hwVal2⟩
         have hmul : chunkNat * 1000000 + (ms - chunkNat) * 1000000 = ms * 1000000 := by
           rw [← Nat.add_mul, Nat.add_sub_of_le hcLe]
-        by_cases hC1 : MAX_TIMESPEC_NANOS ≤ (proj w).state.monoLowerBoundNs + chunkNat * 1000000
-        · have h1m : MAX_TIMESPEC_NANOS ≤ (proj w1).state.monoLowerBoundNs := by
-            rw [Nat.min_eq_left hC1] at hs1; exact hs1
-          have h2m : MAX_TIMESPEC_NANOS ≤ (proj ((Internal.sleepMs ops (ms - chunkNat)).run w1).2).state.monoLowerBoundNs :=
-            Nat.le_trans h1m hmono2
-          exact Nat.le_trans (Nat.min_le_left _ _) h2m
-        · have h1m : (proj w).state.monoLowerBoundNs + chunkNat * 1000000 ≤ (proj w1).state.monoLowerBoundNs := by
-            rw [Nat.min_eq_right (Nat.le_of_not_ge hC1)] at hs1; exact hs1
-          have hadd : (proj w).state.monoLowerBoundNs + ms * 1000000 ≤
-              (proj w1).state.monoLowerBoundNs + (ms - chunkNat) * 1000000 := by
+        by_cases hC1 : Model.maxMonoNanos ≤ (proj w).monoNanos + chunkNat * 1000000
+        · have h1m : Model.maxMonoNanos ≤ (proj w1).monoNanos := by
+            rw [Nat.min_eq_left hC1] at hmLe1; exact hmLe1
+          have hC2 : Model.maxMonoNanos ≤ (proj w1).monoNanos + (ms - chunkNat) * 1000000 :=
+            Nat.le_trans h1m (Nat.le_add_right _ _)
+          rw [Nat.min_eq_left hC2] at hmLe2
+          exact Nat.le_trans (Nat.min_le_left _ _) hmLe2
+        · have h1m : (proj w).monoNanos + chunkNat * 1000000 ≤ (proj w1).monoNanos := by
+            rw [Nat.min_eq_right (Nat.le_of_not_ge hC1)] at hmLe1; exact hmLe1
+          have hadd : (proj w).monoNanos + ms * 1000000 ≤
+              (proj w1).monoNanos + (ms - chunkNat) * 1000000 := by
             rw [← hmul, ← Nat.add_assoc]
             exact Nat.add_le_add_right h1m _
-          exact Nat.le_trans (Nat.le_min.mpr ⟨Nat.min_le_left _ _, Nat.le_trans (Nat.min_le_right _ _) hadd⟩) hs2
+          exact Nat.le_trans
+            (Nat.le_min.mpr ⟨Nat.min_le_left _ _, Nat.le_trans (Nat.min_le_right _ _) hadd⟩)
+            hmLe2
 
-/-- Compositional single-step refinement of `Internal.mkApiM` over `TimeOpsM` healthy worlds. -/
+private theorem sleepDuration_lowerBound_le (d : Duration) :
+    Model.sleepNanosLowerBound d ≤ Internal.sleepDurationMs d * 1000000 := by
+  unfold Model.sleepNanosLowerBound Internal.sleepDurationMs
+  by_cases h : d.toNanoseconds.val ≤ 0
+  · simp [h]
+  · simp only [h, ↓reduceIte]
+    omega
+
+private theorem sleepDuration_obeys {W : Type}
+    (proj : W → Model.TimeModelState) (ops : TimeOpsM (StateM W))
+    (hOps : Core.ObeysStep proj Model.pkgWf (Model.execTimeOpsStep ops) Model.allowedTimeOpsStep)
+    (d : Duration) (w : W) (hw : Model.pkgWf (proj w) = true) :
+    min Model.maxMonoNanos ((proj w).monoNanos + Model.sleepNanosLowerBound d) ≤
+      (proj ((Internal.sleepDuration ops d).run w).2).monoNanos ∧
+    Model.isValidMonoNanos (proj ((Internal.sleepDuration ops d).run w).2).monoNanos = true ∧
+    (proj w).wallNanos ≤ (proj ((Internal.sleepDuration ops d).run w).2).wallNanos ∧
+    Model.isValidTimestampNanos (proj ((Internal.sleepDuration ops d).run w).2).wallNanos = true := by
+  rcases sleepMs_obeys proj ops hOps (Internal.sleepDurationMs d) w hw with
+    ⟨hmLe, hmVal, hwLe, hwVal⟩
+  have hlb := sleepDuration_lowerBound_le d
+  have hmin :
+      min Model.maxMonoNanos ((proj w).monoNanos + Model.sleepNanosLowerBound d) ≤
+      min Model.maxMonoNanos ((proj w).monoNanos + Internal.sleepDurationMs d * 1000000) :=
+    Nat.le_min.mpr ⟨Nat.min_le_left _ _, Nat.le_trans (Nat.min_le_right _ _) (Nat.add_le_add_left hlb _)⟩
+  exact ⟨Nat.le_trans hmin hmLe, hmVal, hwLe, hwVal⟩
+
+private theorem execStepAction_obeys {W : Type}
+    (proj : W → Model.TimeModelState) (ops : TimeOpsM (StateM W))
+    (hOps : Core.ObeysStep proj Model.pkgWf (Model.execTimeOpsStep ops) Model.allowedTimeOpsStep)
+    (act : Model.StepAction) :
+    ∀ (w : W), Model.pkgWf (proj w) = true →
+      let r := (Model.execStepAction (Internal.mkApiM ops) act).run w
+      Model.allowedStepAction (proj w) act r.1 (proj r.2) ∧
+      Model.pkgWf (proj r.2) = true := by
+  induction act with
+  | pureNat val =>
+    intro w hw
+    dsimp only [Model.execStepAction, Model.allowedStepAction]
+    rw [stateM_pure_run']
+    exact ⟨⟨rfl, rfl⟩, hw⟩
+  | sleepMsNat ms val =>
+    intro w hw
+    dsimp only [Model.execStepAction, Internal.mkApiM, Model.allowedStepAction]
+    rw [stateM_bind_run'', stateM_pure_run']
+    rcases sleepMs_obeys proj ops hOps ms w hw with ⟨hmLe, hmVal, hwLe, hwVal⟩
+    exact ⟨⟨rfl, hmLe, hmVal, hwLe, hwVal⟩, pkgWf_mk hwVal hmVal⟩
+  | sleepDurationNat d val =>
+    intro w hw
+    dsimp only [Model.execStepAction, Internal.mkApiM, Model.allowedStepAction]
+    rw [stateM_bind_run'', stateM_pure_run']
+    rcases sleepDuration_obeys proj ops hOps d w hw with ⟨hmLe, hmVal, hwLe, hwVal⟩
+    exact ⟨⟨rfl, hmLe, hmVal, hwLe, hwVal⟩, pkgWf_mk hwVal hmVal⟩
+  | readMono =>
+    intro w hw
+    have hStep := hOps w .monoNanosNow hw
+    dsimp only [Model.execTimeOpsStep, Model.allowedTimeOpsStep] at hStep
+    rw [stateM_map_run'] at hStep
+    dsimp only [Model.execStepAction, Internal.mkApiM, Model.allowedStepAction]
+    cases hr : ops.monoNanosNow.run w with
+    | mk ns w' =>
+      rw [hr] at hStep
+      rcases hStep with ⟨hmLe, hmVal, hEq, hwLe, hwVal⟩
+      exact ⟨⟨hmLe, hmVal, hEq, hwLe, hwVal⟩, pkgWf_mk hwVal hmVal⟩
+  | readWallNat val =>
+    intro w hw
+    have hStep := hOps w .nowTimestamp hw
+    dsimp only [Model.execTimeOpsStep, Model.allowedTimeOpsStep] at hStep
+    rw [stateM_map_run'] at hStep
+    dsimp only [Model.execStepAction, Internal.mkApiM, Model.allowedStepAction]
+    rw [stateM_bind_run'']
+    cases hr : ops.nowTimestamp.run w with
+    | mk ts w' =>
+      rw [hr] at hStep
+      rw [stateM_pure_run']
+      rcases hStep with ⟨hwLe, hwVal, _, hmLe, hmVal⟩
+      exact ⟨⟨rfl, hwLe, hwVal, hmLe, hmVal⟩, pkgWf_mk hwVal hmVal⟩
+  | seq first second ihFirst ihSecond =>
+    intro w hw
+    dsimp only [Model.execStepAction, Model.allowedStepAction]
+    rw [stateM_bind_run'']
+    have h1 := ihFirst w hw
+    cases r1 : (Model.execStepAction (Internal.mkApiM ops) first).run w with
+    | mk v1 w1 =>
+      rw [r1] at h1
+      have h2 := ihSecond w1 h1.2
+      cases r2 : (Model.execStepAction (Internal.mkApiM ops) second).run w1 with
+      | mk v2 w2 =>
+        rw [r2] at h2
+        exact ⟨⟨v1, proj w1, h1.1, h2.1⟩, h2.2⟩
+
+/-- Compositional single-step refinement of `Internal.mkApiM` over `Model.allowedTimeOpsStep`. -/
 theorem refinesStepFrom_mkApiM :
-    Core.ObeysStepFromFinally id Model.healthyWf Model.execTimeOpsStep Model.allowedTimeOpsStep
-      Model.healthyWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep := by
+    Core.ObeysStepFromFinally id Model.pkgWf Model.execTimeOpsStep Model.allowedTimeOpsStep
+      Model.pkgWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep := by
   intro W proj ops hOps w req hw
   cases req with
   | nowTimestamp =>
@@ -126,72 +206,44 @@ theorem refinesStepFrom_mkApiM :
       exact hStep
   | sleepMs ms =>
     dsimp only [Model.execPkgStep, Internal.mkApiM, Model.allowedPkgStep, Function.comp, id]
-    rw [stateM_bind_run', stateM_pure_run']
-    dsimp only
-    exact sleepMs_healthy proj ops hOps ms w hw
+    rw [stateM_bind_run'', stateM_pure_run']
+    exact sleepMs_obeys proj ops hOps ms w hw
   | sleepDuration d =>
-    dsimp only [Model.execPkgStep, Internal.mkApiM, Internal.sleepDuration,
-      Model.allowedPkgStep, Function.comp, id]
-    rw [stateM_bind_run', stateM_pure_run']
-    dsimp only
-    have hsl : Internal.sleepDurationMs d = Model.sleepDurationMs d := rfl
-    rw [hsl]
-    exact sleepMs_healthy proj ops hOps (Model.sleepDurationMs d) w hw
+    dsimp only [Model.execPkgStep, Internal.mkApiM, Model.allowedPkgStep, Function.comp, id]
+    rw [stateM_bind_run'', stateM_pure_run']
+    exact sleepDuration_obeys proj ops hOps d w hw
   | measure act =>
     dsimp only [Model.execPkgStep, Function.comp, id]
     change Model.allowedPkgStep (proj w) (.measure act)
       ((Model.PkgStepOut.measured <$>
         (do
           let startMono ← ops.monoNanosNow
-          let out ← Model.execMeasureAction (Internal.mkApiM ops) act
+          let out ← Model.execStepAction (Internal.mkApiM ops) act
           let stopMono ← ops.monoNanosNow
           pure (out, Internal.elapsedDuration startMono stopMono))).run w).1
       (proj
         ((Model.PkgStepOut.measured <$>
           (do
             let startMono ← ops.monoNanosNow
-            let out ← Model.execMeasureAction (Internal.mkApiM ops) act
+            let out ← Model.execStepAction (Internal.mkApiM ops) act
             let stopMono ← ops.monoNanosNow
             pure (out, Internal.elapsedDuration startMono stopMono))).run w).2)
-    rw [stateM_map_run', stateM_bind_run']
+    rw [stateM_map_run', stateM_bind_run'']
     have hStart := hOps w .monoNanosNow hw
     dsimp only [Model.execTimeOpsStep, Model.allowedTimeOpsStep] at hStart
     rw [stateM_map_run'] at hStart
     cases hrun1 : ops.monoNanosNow.run w with
     | mk startMono w1 =>
       rw [hrun1] at hStart
-      dsimp only at hStart ⊢
-      rcases hStart with ⟨_, hStartLe, hwf1, hmono1, hreal1, hcrng1, hdraws1, hbud1⟩
-      have hAct : let (val, w2) := (Model.execMeasureAction (Internal.mkApiM ops) act).run w1
-          val = Model.measureActionResult act ∧
-          (proj w2).wf = true ∧
-          (proj w1).state.monoLowerBoundNs ≤ (proj w2).state.monoLowerBoundNs ∧
-          (proj w2).state.realtimeNs = (proj w1).state.realtimeNs ∧
-          (proj w2).state.crngReady = (proj w1).state.crngReady ∧
-          (proj w2).state.entropyDraws = (proj w1).state.entropyDraws ∧
-          (proj w2).eintrBudget ≤ (proj w1).eintrBudget := by
-        cases act with
-        | pureNat val =>
-          dsimp only [Model.execMeasureAction, Model.measureActionResult]
-          rw [stateM_pure_run']
-          exact ⟨rfl, hwf1, Nat.le_refl _, rfl, rfl, rfl, Nat.le_refl _⟩
-        | sleepMsNat ms val =>
-          dsimp only [Model.execMeasureAction, Model.measureActionResult, Internal.mkApiM]
-          rw [stateM_bind_run', stateM_pure_run']
-          have hs := sleepMs_healthy proj ops hOps ms w1 hwf1
-          cases hsr : (Internal.sleepMs ops ms).run w1 with
-          | mk u w2 =>
-            rw [hsr] at hs
-            dsimp only [Model.sleepEnvRel] at hs ⊢
-            rcases hs with ⟨hwf2, hmono2, hreal2, hcrng2, hdraws2, hbud2, _⟩
-            exact ⟨rfl, hwf2, hmono2, hreal2, hcrng2, hdraws2, hbud2⟩
-      rw [stateM_bind_run']
-      cases hrunAct : (Model.execMeasureAction (Internal.mkApiM ops) act).run w1 with
+      rcases hStart with ⟨hmLe1, hmVal1, hStartEq, hwLe1, hwVal1⟩
+      have hwf1 : Model.pkgWf (proj w1) = true := pkgWf_mk hwVal1 hmVal1
+      rw [stateM_bind_run'']
+      have hAct := execStepAction_obeys proj ops hOps act w1 hwf1
+      cases hrunAct : (Model.execStepAction (Internal.mkApiM ops) act).run w1 with
       | mk val w2 =>
         rw [hrunAct] at hAct
-        dsimp only at hAct ⊢
-        rcases hAct with ⟨hvalEq, hwf2, hmono2, hreal2, hcrng2, hdraws2, hbud2⟩
-        rw [stateM_bind_run']
+        rcases hAct with ⟨hActRel, hwf2⟩
+        rw [stateM_bind_run'']
         have hStop := hOps w2 .monoNanosNow hwf2
         dsimp only [Model.execTimeOpsStep, Model.allowedTimeOpsStep] at hStop
         rw [stateM_map_run'] at hStop
@@ -199,29 +251,13 @@ theorem refinesStepFrom_mkApiM :
         | mk stopMono w3 =>
           rw [hrun3] at hStop
           rw [stateM_pure_run']
-          dsimp only [Model.allowedPkgStep, id] at hStop ⊢
-          rcases hStop with ⟨hStopLb, _, hwf3, hmono3, hreal3, hcrng3, hdraws3, hbud3⟩
-          have hStartLeStop : startMono ≤ stopMono := by
-            have h1 : startMono ≤ (proj w1).state.monoLowerBoundNs := by
-              rw [hmono1]; exact Nat.le_max_right _ _
-            have h2 : startMono ≤ (proj w2).state.monoLowerBoundNs := Nat.le_trans h1 hmono2
-            exact Nat.le_trans (Nat.le_min.mpr ⟨h2, hStartLe⟩) hStopLb
-          have hElNonneg : 0 ≤ (Internal.elapsedDuration startMono stopMono).toNanoseconds.val := by
-            dsimp only [Internal.elapsedDuration]
-            simp only [hStartLeStop, ↓reduceIte]
-            change 0 ≤ (Duration.ofNanoseconds (Nanosecond.Offset.ofNat (stopMono - startMono))).toNanoseconds.val
-            rw [toNanoseconds_ofNanoseconds']
-            exact Int.natCast_nonneg _
-          refine ⟨hvalEq, hElNonneg, hwf3, ?_, ?_, ?_, ?_, ?_⟩
-          · have h1 : (proj w).state.monoLowerBoundNs ≤ (proj w1).state.monoLowerBoundNs := by
-              rw [hmono1]; exact Nat.le_max_left _ _
-            have h3 : (proj w2).state.monoLowerBoundNs ≤ (proj w3).state.monoLowerBoundNs := by
-              rw [hmono3]; exact Nat.le_max_left _ _
-            exact Nat.le_trans h1 (Nat.le_trans hmono2 h3)
-          · rw [hreal3, hreal2, hreal1]
-          · rw [hcrng3, hcrng2, hcrng1]
-          · rw [hdraws3, hdraws2, hdraws1]
-          · exact Nat.le_trans (Nat.le_of_eq hbud3) (Nat.le_trans hbud2 (Nat.le_of_eq hbud1))
+          rcases hStop with ⟨hmLe3, hmVal3, hStopEq, hwLe3, hwVal3⟩
+          dsimp only [Model.allowedPkgStep]
+          refine ⟨proj w1, proj w2, hmLe1, hmVal1, hwLe1, hwVal1,
+            hActRel, hmLe3, hmVal3, hwLe3, hwVal3, ?_⟩
+          dsimp only at hStartEq hStopEq
+          rw [hStartEq, hStopEq]
+          rfl
 
 /-- Full public `Interface` `Core.Obeys` contract of `LeanSwe.Time` against `LeanSwe.Time.Model`. -/
 theorem refines_model_impl :
@@ -235,10 +271,10 @@ theorem refines_model_impl :
     Core.ObeysPureEq LeanSwe.Time.parseUtcDate Model.parseUtcDate ∧
     Core.ObeysPureEq LeanSwe.Time.utcDateOfTimestamp Model.utcDateOfTimestamp ∧
     Core.ObeysPureEq LeanSwe.Time.timestampOfUtcDate Model.timestampOfUtcDate ∧
-    Core.ObeysStepFrom id Model.healthyWf Model.execRawStep Model.allowedRawStep
-      Model.healthyWf Internal.mkTimeOps Model.execTimeOpsStep Model.allowedTimeOpsStep ∧
-    Core.ObeysStepFromFinally id Model.healthyWf Model.execTimeOpsStep Model.allowedTimeOpsStep
-      Model.healthyWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep :=
+    Core.ObeysStepFrom Model.toModelState Model.rawWf Model.execRawStep Model.allowedRawStep
+      Model.pkgWf Internal.mkTimeOps Model.execTimeOpsStep Model.allowedTimeOpsStep ∧
+    Core.ObeysStepFromFinally id Model.pkgWf Model.execTimeOpsStep Model.allowedTimeOpsStep
+      Model.pkgWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep :=
   ⟨refines_elapsedDuration,
    refines_deadlineNanos,
    refines_isMonoExpired,

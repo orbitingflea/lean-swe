@@ -29,7 +29,7 @@ Usage:
 open Lean
 
 private def internalImportRoots : Array String :=
-  #["Core", "LeanSwe", "Fuzz", "Tests"]
+  #["Core", "LeanSwe", "Fuzz", "Tests", "ModelMutants"]
 
 private def forbiddenUmbrellaImports : Array String :=
   #["Mathlib"]
@@ -40,7 +40,7 @@ private def isInternalImportRoot (mod : Name) : Bool :=
   | .str .anonymous rootSeg =>
     !rootSeg.contains '.' &&
     internalImportRoots.contains rootSeg &&
-    (root == `Core || root == `LeanSwe || root == `Fuzz || root == `Tests)
+    (root == `Core || root == `LeanSwe || root == `Fuzz || root == `Tests || root == `ModelMutants)
   | _ => false
 
 private def isForbiddenUmbrellaImport (mod : Name) : Bool :=

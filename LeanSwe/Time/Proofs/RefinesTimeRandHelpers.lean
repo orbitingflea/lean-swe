@@ -1,24 +1,23 @@
 import Core.Obeys
 import LeanSwe.Time.Model
+import LeanSwe.Time.Model.Refines
 import LeanSwe.Time.Interface
 
 /-!
-# `TimeRand` Healthy-Step Helpers for `LeanSwe.Time`
+# `TimeRand` Raw-Step Helpers for `LeanSwe.Time`
 
-Small helper lemmas extracting healthy-step postconditions for
-`clock_gettime`, `clock_nanosleep`, and `sleepAbstimeRetry` over
-`LeanSwe.LinuxSyscall.TimeRand.Model`.
+Helper lemmas extracting `TimeModelState` postconditions for `clock_gettime` and
+`clock_nanosleep` under `LeanSwe.Time.Model.allowedRawStep`, plus `Timespec`
+and `Duration` nanosecond conversion lemmas.
 -/
 
 namespace LeanSwe.Time.Proofs.RefinesModel
 
 open Core
 open Std.Time
-open LeanSwe.LinuxSyscall (Errno)
 open LeanSwe.LinuxSyscall.TimeRand
-  (ClockId Timespec TimeRandOpsM TimeRandReq TimeRandOutcome HealthyEnv
-   NSEC_PER_SEC MIN_TIMESPEC_SEC_INT MAX_TIMESPEC_SEC MAX_TIMESPEC_NANOS
-   execTimeRandReq healthyStep allowedStep allowedStepCore)
+  (Timespec TimeRandOpsM NSEC_PER_SEC MIN_TIMESPEC_SEC_INT MAX_TIMESPEC_SEC
+   MAX_TIMESPEC_NANOS execTimeRandReq)
 open LeanSwe.Time
 
 /-- Conversion of `Nanosecond.Offset` round-trips through `Duration.ofNanoseconds`. -/
@@ -28,6 +27,18 @@ theorem toNanoseconds_ofNanoseconds (n : Nanosecond.Offset) :
   change (n.val.tdiv 1000000000) * 1000000000 + (n.val.tmod 1000000000) = n.val
   have h := Int.mul_tdiv_add_tmod n.val 1000000000
   omega
+
+/-- `Duration.toNanoseconds` is injective. -/
+theorem toNanoseconds_inj {a b : Duration} (h : a.toNanoseconds = b.toNanoseconds) : a = b := by
+  have hv : a.toNanoseconds.val = b.toNanoseconds.val := congrArg Internal.UnitVal.val h
+  rcases a with ⟨⟨sa⟩, ⟨na, hna⟩, hsa⟩
+  rcases b with ⟨⟨sb⟩, ⟨nb, hnb⟩, hsb⟩
+  dsimp only at hna hnb hsa hsb
+  change sa * 1000000000 + na = sb * 1000000000 + nb at hv
+  have hs : sa = sb := by omega
+  have hn : na = nb := by omega
+  subst hs hn
+  rfl
 
 /-- Small `Nat` values round-trip through `Int64.ofInt` without wraparound. -/
 theorem int64_toInt_ofNat (n : Nat) (hn : n < 2 ^ 63) :
@@ -42,6 +53,12 @@ theorem int64_toInt_ofNat (n : Nat) (hn : n < 2 ^ 63) :
     Int.emod_eq_of_lt (Int.natCast_nonneg n) (by omega)
   rw [hm]
   simp [h1]
+
+/-- Signed `Int` values in `[-2^63, 2^63 - 1]` round-trip through `Int64.ofInt`. -/
+theorem int64_toInt_ofInt_range (z : Int)
+    (hlo : (-9223372036854775808 : Int) ≤ z) (hhi : z ≤ 9223372036854775807) :
+    (Int64.ofInt z).toInt = z := by
+  rw [Int64.toInt_ofInt, Int.bmod_eq_of_le] <;> simp only [Int64.size] <;> omega
 
 /-- Signed `Int64.toInt` bounds matching `MIN_TIMESPEC_SEC_INT` and `MAX_TIMESPEC_SEC`. -/
 theorem int64_toInt_bounds (x : Int64) :
@@ -123,285 +140,144 @@ theorem relativeTimespecOfMs_valid (ms : UInt32) :
       _ = ms.toNat * 1000000 := by
         rw [Nat.div_add_mod']
 
+/-- Extract wall-clock validity from `Model.pkgWf`. -/
+theorem pkgWf_wall {s : Model.TimeModelState} (hwf : Model.pkgWf s = true) :
+    Model.isValidTimestampNanos s.wallNanos = true :=
+  (Bool.and_eq_true_iff.mp hwf).1
+
+/-- Extract monotonic-clock validity from `Model.pkgWf`. -/
+theorem pkgWf_mono {s : Model.TimeModelState} (hwf : Model.pkgWf s = true) :
+    Model.isValidMonoNanos s.monoNanos = true :=
+  (Bool.and_eq_true_iff.mp hwf).2
+
+/-- Combine wall-clock and monotonic-clock validity into `Model.pkgWf`. -/
+theorem pkgWf_mk {s : Model.TimeModelState}
+    (hw : Model.isValidTimestampNanos s.wallNanos = true)
+    (hm : Model.isValidMonoNanos s.monoNanos = true) :
+    Model.pkgWf s = true :=
+  Bool.and_eq_true_iff.mpr ⟨hw, hm⟩
+
 private theorem stateM_bind_run {σ α β : Type} (a : StateM σ α) (f : α → StateM σ β) (s : σ) :
     (a >>= f).run s = (f (a.run s).1).run (a.run s).2 := rfl
 
-private theorem ambientSeccomp_false_of_wf {env : HealthyEnv} (hw : env.wf = true) :
-    env.state.ambientSeccomp = false := by
-  cases hb : env.state.ambientSeccomp
-  · rfl
-  · simp [HealthyEnv.wf, hb] at hw
-
-/-- Healthy `clock_gettime .realtime` always returns `.ok ts` with `ts.hasValidNsec` and unchanged state. -/
-theorem clock_gettime_realtime_healthy {W : Type}
-    (proj : W → HealthyEnv) (sys : TimeRandOpsM (StateM W))
-    (hRaw : Core.ObeysStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep)
-    (w : W) (hw : (proj w).wf = true) :
+/-- Raw `clock_gettime .realtime` step postcondition under `Model.allowedRawStep`. -/
+theorem clock_gettime_realtime_raw {W : Type}
+    (proj : W → Model.TimeRawState) (sys : TimeRandOpsM (StateM W))
+    (hRaw : Core.ObeysStep proj Model.rawWf (Model.execRawStep sys) Model.allowedRawStep)
+    (w : W) (hw : Model.rawWf (proj w) = true) :
     ∃ ts : Timespec,
       (sys.clock_gettime .realtime).run w = (.ok ts, ((sys.clock_gettime .realtime).run w).2) ∧
-      ts.hasValidNsec = true ∧
-      proj ((sys.clock_gettime .realtime).run w).2 = proj w := by
+      (proj w).wallNanos ≤ (proj ((sys.clock_gettime .realtime).run w).2).wallNanos ∧
+      Model.isValidTimestampNanos (proj ((sys.clock_gettime .realtime).run w).2).wallNanos = true ∧
+      ts.toEpochNanos = (proj ((sys.clock_gettime .realtime).run w).2).wallNanos ∧
+      (proj w).monoNanos ≤ (proj ((sys.clock_gettime .realtime).run w).2).monoNanos ∧
+      Model.isValidMonoNanos (proj ((sys.clock_gettime .realtime).run w).2).monoNanos = true := by
   have hStep := hRaw w (.clock_gettime .realtime) hw
-  dsimp only [Model.execRawStep, execTimeRandReq, Model.allowedRawStep,
-    healthyStep, LeanSwe.LinuxSyscall.TimeRand.isCriticalFault,
-    LeanSwe.LinuxSyscall.TimeRand.isEintrOutcome] at hStep
+  dsimp only [Model.execRawStep, execTimeRandReq, Model.allowedRawStep] at hStep
   rw [stateM_bind_run] at hStep
-  have hns := ambientSeccomp_false_of_wf hw
-  have hwfF : (!HealthyEnv.wf (proj w)) = false := by
-    have : HealthyEnv.wf (proj w) = true := hw
-    simp [this]
   cases hcg : (sys.clock_gettime .realtime).run w with
   | mk res w' =>
     rw [hcg] at hStep
-    dsimp only [Pure.pure, StateT.pure, StateT.run] at hStep
-    rw [hwfF] at hStep
+    dsimp only [Pure.pure, StateT.pure, StateT.run] at hStep ⊢
     cases res with
-    | error e =>
-      dsimp only [LeanSwe.LinuxSyscall.TimeRand.outcomeOfTimespec, allowedStep, allowedStepCore] at hStep
-      rw [hns] at hStep
-      by_cases hcrit : LeanSwe.LinuxSyscall.Errno.isCriticalOsErrno e = true
-      · simp [hcrit] at hStep
-      · simp [hcrit] at hStep
+    | error _ => exact False.elim hStep
     | ok ts =>
-      dsimp only [LeanSwe.LinuxSyscall.TimeRand.outcomeOfTimespec,
-        LeanSwe.LinuxSyscall.Errno.isCriticalOsErrno, allowedStep, allowedStepCore] at hStep
-      rw [hns] at hStep
-      simp only [Bool.false_or, Bool.false_eq_true, ↓reduceIte] at hStep
-      by_cases hvn : ts.hasValidNsec = true
-      · simp only [hvn, ↓reduceIte] at hStep
-        injection hStep with hProj
-        exact ⟨ts, rfl, hvn, hProj.symm⟩
-      · simp [hvn] at hStep
+      rcases hStep with ⟨_, hwLe, hwVal, hEq, hmLe, hmVal⟩
+      exact ⟨ts, rfl, hwLe, hwVal, hEq, hmLe, hmVal⟩
 
-/-- Healthy `clock_gettime .monotonic` always returns `.ok ts` above `monoLowerBoundNs`. -/
-theorem clock_gettime_monotonic_healthy {W : Type}
-    (proj : W → HealthyEnv) (sys : TimeRandOpsM (StateM W))
-    (hRaw : Core.ObeysStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep)
-    (w : W) (hw : (proj w).wf = true) :
+/-- Raw `clock_gettime .monotonic` step postcondition under `Model.allowedRawStep`. -/
+theorem clock_gettime_monotonic_raw {W : Type}
+    (proj : W → Model.TimeRawState) (sys : TimeRandOpsM (StateM W))
+    (hRaw : Core.ObeysStep proj Model.rawWf (Model.execRawStep sys) Model.allowedRawStep)
+    (w : W) (hw : Model.rawWf (proj w) = true) :
     ∃ ts : Timespec,
       (sys.clock_gettime .monotonic).run w = (.ok ts, ((sys.clock_gettime .monotonic).run w).2) ∧
       ts.isValid = true ∧
-      min (proj w).state.monoLowerBoundNs MAX_TIMESPEC_NANOS ≤ ts.toNanosNat ∧
-      proj ((sys.clock_gettime .monotonic).run w).2 =
-        { state := { (proj w).state with monoLowerBoundNs := max (proj w).state.monoLowerBoundNs ts.toNanosNat }
-          eintrBudget := (proj w).eintrBudget } := by
+      (proj w).monoNanos ≤ (proj ((sys.clock_gettime .monotonic).run w).2).monoNanos ∧
+      Model.isValidMonoNanos (proj ((sys.clock_gettime .monotonic).run w).2).monoNanos = true ∧
+      ts.toNanosNat = (proj ((sys.clock_gettime .monotonic).run w).2).monoNanos ∧
+      (proj w).wallNanos ≤ (proj ((sys.clock_gettime .monotonic).run w).2).wallNanos ∧
+      Model.isValidTimestampNanos (proj ((sys.clock_gettime .monotonic).run w).2).wallNanos = true := by
   have hStep := hRaw w (.clock_gettime .monotonic) hw
-  dsimp only [Model.execRawStep, execTimeRandReq, Model.allowedRawStep,
-    healthyStep, LeanSwe.LinuxSyscall.TimeRand.isCriticalFault,
-    LeanSwe.LinuxSyscall.TimeRand.isEintrOutcome] at hStep
+  dsimp only [Model.execRawStep, execTimeRandReq, Model.allowedRawStep] at hStep
   rw [stateM_bind_run] at hStep
-  have hns := ambientSeccomp_false_of_wf hw
-  have hwfF : (!HealthyEnv.wf (proj w)) = false := by
-    have : HealthyEnv.wf (proj w) = true := hw
-    simp [this]
   cases hcg : (sys.clock_gettime .monotonic).run w with
   | mk res w' =>
     rw [hcg] at hStep
-    dsimp only [Pure.pure, StateT.pure, StateT.run] at hStep
-    rw [hwfF] at hStep
+    dsimp only [Pure.pure, StateT.pure, StateT.run] at hStep ⊢
     cases res with
-    | error e =>
-      dsimp only [LeanSwe.LinuxSyscall.TimeRand.outcomeOfTimespec, allowedStep, allowedStepCore] at hStep
-      rw [hns] at hStep
-      by_cases hcrit : LeanSwe.LinuxSyscall.Errno.isCriticalOsErrno e = true
-      · simp [hcrit] at hStep
-      · simp [hcrit] at hStep
+    | error _ => exact False.elim hStep
     | ok ts =>
-      dsimp only [LeanSwe.LinuxSyscall.TimeRand.outcomeOfTimespec,
-        LeanSwe.LinuxSyscall.Errno.isCriticalOsErrno, allowedStep, allowedStepCore] at hStep
-      rw [hns] at hStep
-      simp only [Bool.false_or, Bool.false_eq_true, ↓reduceIte] at hStep
-      by_cases hcond : (ts.isValid && decide (min (proj w).state.monoLowerBoundNs MAX_TIMESPEC_NANOS ≤ ts.toNanosNat)) = true
-      · rw [hcond] at hStep
-        simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
-        injection hStep with hProj
-        refine ⟨ts, rfl, hcond.1, hcond.2, ?_⟩
-        rw [← hProj]
-        cases hst : (proj w).state
-        simp only [hst] at hns
-        subst hns
-        rfl
-      · have hcondF : (ts.isValid && decide (min (proj w).state.monoLowerBoundNs MAX_TIMESPEC_NANOS ≤ ts.toNanosNat)) = false := by
-          cases hb : (ts.isValid && decide (min (proj w).state.monoLowerBoundNs MAX_TIMESPEC_NANOS ≤ ts.toNanosNat))
-          · rfl
-          · exact absurd hb hcond
-        rw [hcondF] at hStep
-        simp at hStep
+      rcases hStep with ⟨hval, hmLe, hmVal, hEq, hwLe, hwVal⟩
+      exact ⟨ts, rfl, hval, hmLe, hmVal, hEq, hwLe, hwVal⟩
 
-private theorem healthyStep_clock_nanosleep_ok
-    (env env' : HealthyEnv) (hwf : env.wf = true)
-    (abstime : Bool) (reqTs : Timespec) (hvalid : reqTs.isValid = true)
-    (h : healthyStep env (.clock_nanosleep .monotonic abstime reqTs) .unit = some env') :
-    env'.wf = true ∧
-      env'.state.monoLowerBoundNs =
-        max env.state.monoLowerBoundNs
-          (if abstime then reqTs.toNanosNat else min MAX_TIMESPEC_NANOS (env.state.monoLowerBoundNs + reqTs.toNanosNat)) ∧
-      env'.state.realtimeNs = env.state.realtimeNs ∧
-      env'.state.crngReady = env.state.crngReady ∧
-      env'.state.entropyDraws = env.state.entropyDraws ∧
-      env'.eintrBudget = env.eintrBudget := by
-  rcases env with ⟨⟨mono, real, crng, draws, amb⟩, bud⟩
-  cases amb
-  · unfold healthyStep at h
-    simp only [hwf, Bool.not_true, LeanSwe.LinuxSyscall.TimeRand.isCriticalFault,
-      Bool.false_or, Bool.false_eq_true, ↓reduceIte, allowedStep, allowedStepCore,
-      hvalid, LeanSwe.LinuxSyscall.TimeRand.isEintrOutcome] at h
-    injection h with hEq
-    refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
-    · rw [← hEq]; rfl
-    · rw [← hEq]
-      cases abstime
-      · simp only [Bool.false_eq_true, ↓reduceIte]
-      · simp only [↓reduceIte]
-    · rw [← hEq]
-    · rw [← hEq]
-    · rw [← hEq]
-    · rw [← hEq]
-  · simp [HealthyEnv.wf] at hwf
-
-private theorem healthyStep_clock_nanosleep_err
-    (env env' : HealthyEnv) (hwf : env.wf = true)
-    (abstime : Bool) (reqTs : Timespec) (hvalid : reqTs.isValid = true)
-    (e : Errno)
-    (h : healthyStep env (.clock_nanosleep .monotonic abstime reqTs) (.err e) = some env') :
-    e = Errno.EINTR ∧
-      env'.wf = true ∧
-      0 < env.eintrBudget ∧
-      env'.state = env.state ∧
-      env'.eintrBudget = env.eintrBudget - 1 := by
-  rcases env with ⟨⟨mono, real, crng, draws, amb⟩, bud⟩
-  cases amb
-  · unfold healthyStep at h
-    simp only [hwf, Bool.not_true, LeanSwe.LinuxSyscall.TimeRand.isCriticalFault,
-      Bool.false_or, allowedStep, allowedStepCore,
-      hvalid, LeanSwe.LinuxSyscall.TimeRand.isEintrOutcome] at h
-    by_cases hcrit : LeanSwe.LinuxSyscall.Errno.isCriticalOsErrno e = true
-    · simp [hcrit] at h
-    · simp only [hcrit, Bool.false_eq_true, ↓reduceIte] at h
-      by_cases he : e = Errno.EINTR
-      · subst he
-        simp only [beq_self_eq_true, ↓reduceIte] at h
-        by_cases hbud : bud > 0
-        · simp only [hbud, ↓reduceIte] at h
-          injection h with hEq
-          subst hEq
-          exact ⟨rfl, rfl, hbud, rfl, rfl⟩
-        · simp [hbud] at h
-      · simp [he] at h
-  · simp [HealthyEnv.wf] at hwf
-
-/-- Healthy `clock_nanosleep .monotonic` either succeeds advancing `monoLowerBoundNs` or returns `EINTR` spending 1 budget. -/
-theorem clock_nanosleep_monotonic_healthy {W : Type}
-    (proj : W → HealthyEnv) (sys : TimeRandOpsM (StateM W))
-    (hRaw : Core.ObeysStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep)
-    (abstime : Bool) (reqTs : Timespec) (hvalid : reqTs.isValid = true)
-    (w : W) (hw : (proj w).wf = true) :
-    let (res, w') := (sys.clock_nanosleep .monotonic abstime reqTs).run w
-    match res with
-    | .ok () =>
-      (proj w').wf = true ∧
-      (proj w').state.monoLowerBoundNs =
-        max (proj w).state.monoLowerBoundNs
-          (if abstime then reqTs.toNanosNat else min MAX_TIMESPEC_NANOS ((proj w).state.monoLowerBoundNs + reqTs.toNanosNat)) ∧
-      (proj w').state.realtimeNs = (proj w).state.realtimeNs ∧
-      (proj w').state.crngReady = (proj w).state.crngReady ∧
-      (proj w').state.entropyDraws = (proj w).state.entropyDraws ∧
-      (proj w').eintrBudget = (proj w).eintrBudget
-    | .error e =>
-      e = Errno.EINTR ∧
-      (proj w').wf = true ∧
-      0 < (proj w).eintrBudget ∧
-      (proj w').state = (proj w).state ∧
-      (proj w').eintrBudget = (proj w).eintrBudget - 1 := by
-  have hStep := hRaw w (.clock_nanosleep .monotonic abstime reqTs) hw
+/-- Raw valid relative `clock_nanosleep .monotonic` step postcondition under `Model.allowedRawStep`. -/
+theorem clock_nanosleep_monotonic_rel_raw {W : Type}
+    (proj : W → Model.TimeRawState) (sys : TimeRandOpsM (StateM W))
+    (hRaw : Core.ObeysStep proj Model.rawWf (Model.execRawStep sys) Model.allowedRawStep)
+    (reqTs : Timespec) (hvalid : reqTs.isValid = true)
+    (w : W) (hw : Model.rawWf (proj w) = true) :
+    (sys.clock_nanosleep .monotonic false reqTs).run w =
+      (.ok (), ((sys.clock_nanosleep .monotonic false reqTs).run w).2) ∧
+    min Model.maxMonoNanos ((proj w).monoNanos + reqTs.toNanosNat) ≤
+      (proj ((sys.clock_nanosleep .monotonic false reqTs).run w).2).monoNanos ∧
+    Model.isValidMonoNanos (proj ((sys.clock_nanosleep .monotonic false reqTs).run w).2).monoNanos = true ∧
+    (proj w).wallNanos ≤ (proj ((sys.clock_nanosleep .monotonic false reqTs).run w).2).wallNanos ∧
+    Model.isValidTimestampNanos (proj ((sys.clock_nanosleep .monotonic false reqTs).run w).2).wallNanos = true := by
+  have hStep := hRaw w (.clock_nanosleep .monotonic false reqTs) hw
   dsimp only [Model.execRawStep, execTimeRandReq, Model.allowedRawStep] at hStep
   rw [stateM_bind_run] at hStep
-  cases hcn : (sys.clock_nanosleep .monotonic abstime reqTs).run w with
+  cases hcn : (sys.clock_nanosleep .monotonic false reqTs).run w with
   | mk res w' =>
     rw [hcn] at hStep
-    dsimp only [Pure.pure, StateT.pure, StateT.run, LeanSwe.LinuxSyscall.TimeRand.outcomeOfUnit] at hStep ⊢
+    dsimp only [Pure.pure, StateT.pure, StateT.run] at hStep ⊢
     cases res with
+    | error _ =>
+      rcases hStep with ⟨hinv, _, _⟩
+      rw [hvalid] at hinv
+      cases hinv
     | ok u =>
       cases u
-      exact healthyStep_clock_nanosleep_ok (proj w) (proj w') hw abstime reqTs hvalid hStep
-    | error e =>
-      exact healthyStep_clock_nanosleep_err (proj w) (proj w') hw abstime reqTs hvalid e hStep
+      rcases hStep with ⟨_, hmLe, hmVal, hwLe, hwVal⟩
+      simp only [Bool.false_eq_true, ↓reduceIte] at hmLe
+      exact ⟨rfl, hmLe, hmVal, hwLe, hwVal⟩
 
-/-- Bounded `TIMER_ABSTIME` retry loop preserves healthy invariants and advances `monoLowerBoundNs` when un-interrupted. -/
-theorem sleepAbstimeRetry_healthy {W : Type}
-    (proj : W → HealthyEnv) (sys : TimeRandOpsM (StateM W))
-    (hRaw : Core.ObeysStep proj Model.healthyWf (Model.execRawStep sys) Model.allowedRawStep)
-    (targetTs : Timespec) (hvalid : targetTs.isValid = true) :
-    ∀ (fuel : Nat) (w : W),
-      (proj w).wf = true →
-      let w' := ((Internal.sleepAbstimeRetry sys targetTs fuel).run w).2
-      (proj w').wf = true ∧
-      (proj w).state.monoLowerBoundNs ≤ (proj w').state.monoLowerBoundNs ∧
-      (proj w').state.realtimeNs = (proj w).state.realtimeNs ∧
-      (proj w').state.crngReady = (proj w).state.crngReady ∧
-      (proj w').state.entropyDraws = (proj w).state.entropyDraws ∧
-      (proj w').eintrBudget ≤ (proj w).eintrBudget ∧
-      ((proj w').eintrBudget = (proj w).eintrBudget →
-        max (proj w).state.monoLowerBoundNs targetTs.toNanosNat ≤ (proj w').state.monoLowerBoundNs) := by
-  intro fuel
-  induction fuel with
-  | zero =>
-    intro w hw
-    dsimp only [Internal.sleepAbstimeRetry]
-    rw [stateM_bind_run]
-    have hcn := clock_nanosleep_monotonic_healthy proj sys hRaw true targetTs hvalid w hw
-    cases hrun : (sys.clock_nanosleep .monotonic true targetTs).run w with
-    | mk res w1 =>
-      rw [hrun] at hcn
-      dsimp only [Pure.pure, StateT.pure, StateT.run] at hcn ⊢
-      cases res with
-      | ok u =>
-        cases u
-        rcases hcn with ⟨hwf1, hmono1, hreal1, hcrng1, hdraws1, hbud1⟩
-        simp only [↓reduceIte] at hmono1
-        exact ⟨hwf1, by omega, hreal1, hcrng1, hdraws1, Nat.le_of_eq hbud1, fun _ => by omega⟩
-      | error e =>
-        rcases hcn with ⟨_, hwf1, hbudPos, hst1, hbud1⟩
-        refine ⟨hwf1, by rw [hst1]; exact Nat.le_refl _, by rw [hst1], by rw [hst1], by rw [hst1], ?_, fun hEq => ?_⟩
-        · rw [hbud1]; exact Nat.sub_le _ _
-        · exfalso
-          clear hst1 hwf1
-          omega
-  | succ fuel' ih =>
-    intro w hw
-    dsimp only [Internal.sleepAbstimeRetry]
-    rw [stateM_bind_run]
-    have hcn := clock_nanosleep_monotonic_healthy proj sys hRaw true targetTs hvalid w hw
-    cases hrun : (sys.clock_nanosleep .monotonic true targetTs).run w with
-    | mk res w1 =>
-      rw [hrun] at hcn
-      dsimp only at hcn ⊢
-      cases res with
-      | ok u =>
-        cases u
-        rcases hcn with ⟨hwf1, hmono1, hreal1, hcrng1, hdraws1, hbud1⟩
-        simp only [↓reduceIte] at hmono1
-        dsimp only [Pure.pure, StateT.pure, StateT.run]
-        exact ⟨hwf1, by omega, hreal1, hcrng1, hdraws1, Nat.le_of_eq hbud1, fun _ => by omega⟩
-      | error e =>
-        rcases hcn with ⟨he, hwf1, hbudPos, hst1, hbud1⟩
-        subst he
-        have hif : (if (Errno.EINTR == Errno.EINTR) = true then Internal.sleepAbstimeRetry sys targetTs fuel' else pure ()) =
-            Internal.sleepAbstimeRetry sys targetTs fuel' := by
-          simp
-        dsimp only
-        rw [hif]
-        have hih := ih w1 hwf1
-        dsimp only at hih
-        rcases hih with ⟨hwf2, hmono2, hreal2, hcrng2, hdraws2, hbud2, _⟩
-        refine ⟨hwf2, ?_, ?_, ?_, ?_, ?_, fun hEq => ?_⟩
-        · rw [hst1] at hmono2; exact hmono2
-        · rw [hreal2, hst1]
-        · rw [hcrng2, hst1]
-        · rw [hdraws2, hst1]
-        · exact Nat.le_trans hbud2 (by rw [hbud1]; exact Nat.sub_le _ _)
-        · exfalso
-          clear hst1 hreal2 hcrng2 hdraws2 hmono2 hwf2 hwf1 ih hrun hif
-          omega
+/-- Raw valid `TIMER_ABSTIME` `clock_nanosleep .monotonic` step outcome under `Model.allowedRawStep`:
+    either succeeds reaching `max monoNanos reqTs.toNanosNat`, or returns `Errno.EINTR` while strictly
+    decrementing `eintrBudget` and preserving clock monotonicity and validity. -/
+theorem clock_nanosleep_monotonic_abs_raw {W : Type}
+    (proj : W → Model.TimeRawState) (sys : TimeRandOpsM (StateM W))
+    (hRaw : Core.ObeysStep proj Model.rawWf (Model.execRawStep sys) Model.allowedRawStep)
+    (reqTs : Timespec) (hvalid : reqTs.isValid = true)
+    (w : W) (hw : Model.rawWf (proj w) = true) :
+    let r := (sys.clock_nanosleep .monotonic true reqTs).run w
+    (r.1 = .ok () ∧
+      max (proj w).monoNanos reqTs.toNanosNat ≤ (proj r.2).monoNanos ∧
+      Model.isValidMonoNanos (proj r.2).monoNanos = true ∧
+      (proj w).wallNanos ≤ (proj r.2).wallNanos ∧
+      Model.isValidTimestampNanos (proj r.2).wallNanos = true) ∨
+    (r.1 = .error LeanSwe.LinuxSyscall.Errno.EINTR ∧
+      (proj r.2).eintrBudget.val < (proj w).eintrBudget.val ∧
+      (proj w).monoNanos ≤ (proj r.2).monoNanos ∧
+      Model.isValidMonoNanos (proj r.2).monoNanos = true ∧
+      (proj w).wallNanos ≤ (proj r.2).wallNanos ∧
+      Model.isValidTimestampNanos (proj r.2).wallNanos = true) := by
+  have hStep := hRaw w (.clock_nanosleep .monotonic true reqTs) hw
+  dsimp only [Model.execRawStep, execTimeRandReq, Model.allowedRawStep] at hStep
+  rw [stateM_bind_run] at hStep
+  cases hcn : (sys.clock_nanosleep .monotonic true reqTs).run w with
+  | mk res w' =>
+    rw [hcn] at hStep
+    dsimp only [Pure.pure, StateT.pure, StateT.run] at hStep ⊢
+    cases res with
+    | error e =>
+      rcases hStep with ⟨hinv, _, _⟩ | ⟨_, he, hbud, hmLe, hmVal, hwLe, hwVal⟩
+      · rw [hvalid] at hinv; cases hinv
+      · subst he; exact Or.inr ⟨rfl, hbud, hmLe, hmVal, hwLe, hwVal⟩
+    | ok u =>
+      cases u
+      rcases hStep with ⟨_, hmLe, hmVal, hwLe, hwVal⟩
+      simp only [↓reduceIte] at hmLe
+      exact Or.inl ⟨rfl, hmLe, hmVal, hwLe, hwVal⟩
 
 end LeanSwe.Time.Proofs.RefinesModel

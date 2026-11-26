@@ -1,22 +1,15 @@
-import LeanSwe.LinuxSyscall.TimeRand.Model
 import LeanSwe.Uuid.Types
 
 /-!
 # Pure Behavior Model for `LeanSwe.Uuid`
 
-Defines the pure RFC 4122 UUIDv4 codec specification (`fromRandomBytes`,
-`toString`, `toHex`, `parse`, `parseHex`, `isValid`, `mapRawError`) and the
-capability-parametric `TimeRandOpsM` single-step refinement contract
-(`execRawStep`, `allowedRawStep`, `execPkgStep`, `allowedPkgStep`) over
-`LeanSwe.LinuxSyscall.TimeRand.HealthyEnv`.
+Defines the pure RFC 4122 UUIDv4 codec specification (`mapRawError`,
+`fromRandomBytes`, `toString`, `toHex`, `parse`, `parseHex`, `isValid`) and the
+caller-facing stateful step contract (`UuidModelState`, `pkgWf`, `PkgStepReq`,
+`PkgStepOut`, `execPkgStep`, `allowedPkgStep`).
 -/
 
 namespace LeanSwe.Uuid.Model
-
-open LeanSwe.LinuxSyscall (Errno)
-open LeanSwe.LinuxSyscall.TimeRand
-  (TimeRandOpsM TimeRandReq TimeRandOutcome HealthyEnv
-   execTimeRandReq healthyStep)
 
 /-- Return `msg` if non-empty, or `fallback` otherwise. -/
 def nonEmptyMsg (fallback msg : String) : String :=
@@ -156,19 +149,18 @@ def parseHex (s : String) : Except UuidError Uuid :=
 def isValid (s : String) : Bool :=
   (parse s).isOk
 
-/-- Well-formedness guard on `HealthyEnv` for `LeanSwe.Uuid` single-step refinement. -/
-def healthyWf (env : HealthyEnv) : Bool :=
-  HealthyEnv.wf env
+/-- Total number of distinct RFC 4122 version 4 UUID values (`2 ^ 122`). -/
+def maxValidV4Uuids : Nat := 2 ^ 122
 
-/-- Execute a `TimeRandReq` against a `TimeRandOpsM (StateM W)` capability bundle. -/
-def execRawStep {W : Type} (sys : TimeRandOpsM (StateM W)) (req : TimeRandReq) :
-    StateM W TimeRandOutcome :=
-  execTimeRandReq sys req
+/-- Caller-facing abstract state for `LeanSwe.Uuid`, tracking the list of already-issued UUIDs. -/
+structure UuidModelState where
+  /-- UUIDs already issued in this execution; future `getUuid` calls must never repeat any entry. -/
+  seen : List Uuid := []
+  deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Allowed `TimeRand` transition relation lifted from `LeanSwe.LinuxSyscall.TimeRand.healthyStep`. -/
-def allowedRawStep (env : HealthyEnv) (req : TimeRandReq) (out : TimeRandOutcome)
-    (env' : HealthyEnv) : Prop :=
-  healthyStep env req out = some env'
+/-- Well-formedness guard on `UuidModelState`: at least one unseen RFC 4122 v4 UUID remains available. -/
+def pkgWf (s : UuidModelState) : Bool :=
+  decide (s.seen.length < maxValidV4Uuids)
 
 /-- Public effectful request sum for `UuidApiM` single-step refinement. -/
 inductive PkgStepReq where
@@ -186,28 +178,16 @@ inductive PkgStepOut where
 def execPkgStep {W : Type} (api : UuidApiM (StateM W)) : PkgStepReq → StateM W PkgStepOut
   | .getUuid => .getUuid <$> api.getUuid
 
-/-- Allowed `UuidApiM` single-step relation over `HealthyEnv`. -/
-def allowedPkgStep (env : HealthyEnv) (req : PkgStepReq) (out : PkgStepOut)
-    (env' : HealthyEnv) : Prop :=
-  match out with
-  | .getUuid (.ok u) =>
-    req = .getUuid ∧
+/-- Allowed `UuidApiM` single-step relation over `UuidModelState`.
+    On a healthy machine, `getUuid` must succeed with a valid RFC 4122 v4 UUID
+    absent from `s.seen`, and record it at the head of `s'.seen`. -/
+def allowedPkgStep (s : UuidModelState) (req : PkgStepReq) (out : PkgStepOut)
+    (s' : UuidModelState) : Prop :=
+  match req, out with
+  | .getUuid, .getUuid (.ok u) =>
     isValidV4Uuid u = true ∧
-    env'.wf = true ∧
-    env'.state.monoLowerBoundNs = env.state.monoLowerBoundNs ∧
-    env'.state.realtimeNs = env.state.realtimeNs ∧
-    env'.state.crngReady = true ∧
-    env'.state.entropyDraws = env.state.entropyDraws + 1 ∧
-    env'.eintrBudget ≤ env.eintrBudget ∧
-    (env.state.crngReady = true → env'.eintrBudget = env.eintrBudget)
-  | .getUuid (.error e) =>
-    req = .getUuid ∧
-    e.kind = .entropyFailed ∧
-    e.errnoCode = some Errno.EINTR ∧
-    !e.message.isEmpty = true ∧
-    env.state.crngReady = false ∧
-    MAX_GETRANDOM_ATTEMPTS ≤ env.eintrBudget ∧
-    env'.state = env.state ∧
-    env'.eintrBudget = env.eintrBudget - MAX_GETRANDOM_ATTEMPTS
+    u ∉ s.seen ∧
+    s'.seen = u :: s.seen
+  | .getUuid, .getUuid (.error _) => False
 
 end LeanSwe.Uuid.Model

@@ -358,7 +358,8 @@
       "deps": [
         "LeanSwe.LinuxSyscall.TimeRand"
       ],
-      "external_boundary": false,
+      "fuzz_suite": "time",
+      "external_boundary": true,
       "spec_style": "state_step"
     },
     "LeanSwe.Toml": {
@@ -378,7 +379,8 @@
       "deps": [
         "LeanSwe.LinuxSyscall.TimeRand"
       ],
-      "external_boundary": false,
+      "fuzz_suite": "uuid",
+      "external_boundary": true,
       "spec_style": "state_step"
     }
   }

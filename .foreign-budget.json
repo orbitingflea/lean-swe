@@ -34,7 +34,7 @@
       "legacy_unmigrated": false
     },
     "harness/Fuzz/suites.json": {
-      "max_lines": 68,
+      "max_lines": 70,
       "legacy_unmigrated": false
     },
     "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c": {
@@ -214,7 +214,7 @@
       "legacy_unmigrated": false
     },
     "scripts/package_manifest.json": {
-      "max_lines": 385,
+      "max_lines": 387,
       "legacy_unmigrated": false
     },
     "scripts/test_check_spec_change.py": {

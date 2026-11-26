@@ -13,6 +13,8 @@ import Fuzz.Sqlite.Suite
 import Fuzz.Git.Suite
 import Fuzz.Json.Suite
 import Fuzz.Toml.Suite
+import Fuzz.Uuid.Suite
+import Fuzz.Time.Suite
 import Fuzz.LinuxSyscall.Env
 import Fuzz.LinuxSyscall.Main
 
@@ -61,6 +63,8 @@ private def registeredSuites (world : WorldOptions) (outClosed errClosed : Bool)
   , Fuzz.Git.suite
   , Fuzz.Json.suite
   , Fuzz.Toml.suite
+  , Fuzz.Uuid.suite
+  , Fuzz.Time.suite
   ] ++ Fuzz.LinuxSyscall.Main.suites world outClosed errClosed
 
 private def truncArg (s : String) (maxLen : Nat := 64) : String :=
@@ -384,6 +388,8 @@ private def suiteTargetPackages : String → Array String
   | "git" => #["LeanSwe.Git"]
   | "json" => #["LeanSwe.Json"]
   | "toml" => #["LeanSwe.Toml"]
+  | "uuid" => #["LeanSwe.Uuid"]
+  | "time" => #["LeanSwe.Time"]
   | "sandbox" => #["LeanSwe.LinuxSyscall.Sandbox"]
   | "timerand" => #["LeanSwe.LinuxSyscall.TimeRand"]
   | "files" => #["LeanSwe.LinuxSyscall.Files"]
