@@ -6059,6 +6059,9 @@ unsafe def main (args : List String) : IO UInt32 := do
   let fuzzDir := repoDir / "harness" / "Fuzz"
   if ← fuzzDir.pathExists then
     auxFiles := auxFiles ++ (← collectLeanRelFiles fuzzDir "harness/Fuzz")
+  let mutDir := repoDir / "harness" / "ModelMutants"
+  if ← mutDir.pathExists then
+    auxFiles := auxFiles ++ (← collectLeanRelFiles mutDir "harness/ModelMutants")
   for (relPath, filePath) in auxFiles do
     match ← parseModuleCommands rtParseEnv filePath (allowMacroRecovery := true) with
     | .error _ => pure ()

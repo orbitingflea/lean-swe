@@ -1404,7 +1404,8 @@ private def isAllowedLeanSourcePath (relPath : String) : Bool :=
       relPath.startsWith "Core/" ||
       relPath.startsWith "LeanSwe/" ||
       relPath.startsWith "harness/Tests/" ||
-      relPath.startsWith "harness/Fuzz/") then
+      relPath.startsWith "harness/Fuzz/" ||
+      relPath.startsWith "harness/ModelMutants/") then
     true
   else
     relPath.startsWith "scripts/Check" && (relPath.splitOn "/").length == 2

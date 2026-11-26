@@ -104,7 +104,7 @@ jobs:
         run: |
           python3 -c '
           from pathlib import Path
-          for lib, base, roots in ((Path(".lake/build/lib/lean"), Path("."), ("Core", "LeanSwe", "Fuzz", "Tests")), (Path("harness/.lake/build/lib/lean"), Path("harness"), ("Fuzz", "Tests"))):
+          for lib, base, roots in ((Path(".lake/build/lib/lean"), Path("."), ("Core", "LeanSwe", "Fuzz", "Tests")), (Path("harness/.lake/build/lib/lean"), Path("harness"), ("Fuzz", "Tests", "ModelMutants"))):
               for r in roots:
                   if not (lr := lib / r).exists(): continue
                   for o in list(lr.rglob("*.olean")):
@@ -158,7 +158,7 @@ jobs:
           lake exe cache get
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail LeanSwe.PostFork.Verified LeanSwe.ProcessSandbox.Init.Verified
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d harness build --wfail lean-swe-test lean-swe-mut-test leanswe-fuzz
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d harness build --wfail ModelMutants lean-swe-test lean-swe-mut-test leanswe-fuzz
           actual_syms=$(nm -u .lake/build/lib/libleanswe_postfork_rust.a | awk '$1 ~ /^[Uuwv]$/ { print $2 }' | sort -u)
           expected_syms=$(printf '%s\n' __errno_location _exit chdir close dup2 execve fcntl open read setpgid syscall write | sort -u)
           expected_c_syms=$(printf '%s\n' leanswe_postfork_host_close_fd leanswe_postfork_host_fork_run leanswe_postfork_host_pipe_cloexec leanswe_postfork_host_probe_fd leanswe_postfork_host_probe_handle leanswe_postfork_host_read_once leanswe_postfork_host_setpgid leanswe_postfork_host_wait_once leanswe_postfork_host_write_once | sort -u)

@@ -119,7 +119,7 @@ class FuzzChangedUnitTests(unittest.TestCase):
             self.assertIn(f"harness/Fuzz/LinuxSyscall/{sub}/", by_name[ws].paths)
             self.assertIn(f"LeanSwe/LinuxSyscall/{sub}/", by_name[ws].paths)
         self.assertIn("Core/", manifest.common_paths)
-        self.assertIn("passwd", by_name); self.assertIn("sqlite", by_name); self.assertIn("git", by_name); self.assertIn("json", by_name); self.assertIn("toml", by_name)
+        self.assertIn("passwd", by_name); self.assertIn("sqlite", by_name); self.assertIn("git", by_name); self.assertIn("json", by_name); self.assertIn("toml", by_name); self.assertIn("uuid", by_name); self.assertIn("time", by_name)
         self.assertEqual(by_name["json"].paths, ("LeanSwe/Json/", "harness/Fuzz/Json/"))
         self.assertEqual(by_name["toml"].paths, ("LeanSwe/Toml/", "LeanSwe/NumParse/", "harness/Fuzz/Toml/"))
         self.assertTrue({"LeanSwe/Git/", "LeanSwe/Process/", "LeanSwe/EnvVars/", "LeanSwe/Fs/", "harness/Fuzz/Git/"}.issubset(by_name["git"].paths))
@@ -281,7 +281,7 @@ class FuzzChangedUnitTests(unittest.TestCase):
                     ("envvars", "harness/Fuzz/EnvVars"), ("cryptohash", "harness/Fuzz/CryptoHash"),
                     ("passwd", "harness/Fuzz/Passwd"), ("dns", "harness/Fuzz/Dns"),
                     ("compress", "harness/Fuzz/Compress"), ("postfork", "harness/Fuzz/PostFork"),
-                    ("sqlite", "harness/Fuzz/Sqlite"), ("git", "harness/Fuzz/Git"), ("json", "harness/Fuzz/Json"), ("toml", "harness/Fuzz/Toml"),
+                    ("sqlite", "harness/Fuzz/Sqlite"), ("git", "harness/Fuzz/Git"), ("json", "harness/Fuzz/Json"), ("toml", "harness/Fuzz/Toml"), ("uuid", "harness/Fuzz/Uuid"), ("time", "harness/Fuzz/Time"),
                     ("sandbox", "harness/Fuzz/LinuxSyscall/Sandbox"), ("timerand", "harness/Fuzz/LinuxSyscall/TimeRand"),
                     ("files", "harness/Fuzz/LinuxSyscall/Files"), ("process", "harness/Fuzz/LinuxSyscall/Process"),
                     ("poll", "harness/Fuzz/LinuxSyscall/Poll"), ("net", "harness/Fuzz/LinuxSyscall/Net"),
@@ -539,7 +539,7 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
         gate_script = audit_blocks["Run opt-in fuzz suites"]
         all_suites = [
             "selftest", "float", "cmdline", "envvars", "cryptohash", "passwd", "dns",
-            "compress", "postfork", "sqlite", "git", "json", "toml", "sandbox", "timerand", "files",
+            "compress", "postfork", "sqlite", "git", "json", "toml", "uuid", "time", "sandbox", "timerand", "files",
             "process", "poll", "net",
         ]
         manifest = {"version": 1, "common_paths": [], "suites": {s: {"paths": [f"s/{s}/"]} for s in all_suites}}

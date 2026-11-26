@@ -26,6 +26,7 @@ lean_lib Tests where
   roots := #[`Tests.PropCheck, `Tests.Common]
   globs := #[.one `Tests.PropCheck, .one `Tests.Common, .submodules `Tests.Mutate]
 
+@[default_target]
 lean_lib ModelMutants where
   globs := #[.submodules `ModelMutants]
 

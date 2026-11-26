@@ -1,22 +1,22 @@
 import Core.Obeys
 import LeanSwe.Time.Model
+import LeanSwe.Time.Model.Refines
 import LeanSwe.Time.Interface
 import LeanSwe.Time.Proofs.RefinesTimeRandHelpers
 
 /-!
 # `TimeOpsM` Model Refinement Proofs for `LeanSwe.Time`
 
-Lifts healthy `LeanSwe.LinuxSyscall.TimeRand.Model` transitions through
-`Internal.mkTimeOps` via `Core.ObeysStepFrom`.
+Lifts `Model.allowedRawStep` transitions (including bounded `Errno.EINTR`
+interruption and fixed-deadline `TIMER_ABSTIME` retries up to `MAX_EINTR_RETRIES`)
+through `Internal.mkTimeOps` to `Model.allowedTimeOpsStep` via `Core.ObeysStepFrom`.
 -/
 
 namespace LeanSwe.Time.Proofs.RefinesModel
 
 open Core
 open Std.Time
-open LeanSwe.LinuxSyscall.TimeRand
-  (Timespec TimeRandOpsM HealthyEnv
-   NSEC_PER_SEC MIN_TIMESPEC_SEC_INT MAX_TIMESPEC_SEC MAX_TIMESPEC_NANOS)
+open LeanSwe.LinuxSyscall.TimeRand (Timespec TimeRandOpsM)
 open LeanSwe.Time
 
 private theorem stateM_map_run {W α β : Type} (f : α → β) (x : StateM W α) (w : W) :
@@ -25,174 +25,134 @@ private theorem stateM_map_run {W α β : Type} (f : α → β) (x : StateM W α
 private theorem stateM_bind_run' {σ α β : Type} (a : StateM σ α) (f : α → StateM σ β) (s : σ) :
     (a >>= f).run s = (f (a.run s).1).run (a.run s).2 := rfl
 
-/-- Compositional single-step refinement of `Internal.mkTimeOps` over `TimeRand` healthy worlds. -/
+private theorem stateM_pure_run {σ α : Type} (a : α) (s : σ) :
+    (pure a : StateM σ α).run s = (a, s) := rfl
+
+/-- Inductive verification of the full `Internal.sleepAbstimeRetry` loop across up to
+    `fuel` `Errno.EINTR` interruptions against a fixed valid `TIMER_ABSTIME` deadline `targetTs`. -/
+theorem sleepAbstimeRetry_raw {W : Type}
+    (proj : W → Model.TimeRawState) (sys : TimeRandOpsM (StateM W))
+    (hRaw : Core.ObeysStep proj Model.rawWf (Model.execRawStep sys) Model.allowedRawStep)
+    (targetTs : Timespec) (htValid : targetTs.isValid = true) :
+    ∀ (fuel : Nat) (w : W),
+      Model.rawWf (proj w) = true →
+      (proj w).eintrBudget.val ≤ fuel →
+      let w' := (Internal.sleepAbstimeRetry sys targetTs fuel).run w |>.2
+      max (proj w).monoNanos targetTs.toNanosNat ≤ (proj w').monoNanos ∧
+      Model.isValidMonoNanos (proj w').monoNanos = true ∧
+      (proj w).wallNanos ≤ (proj w').wallNanos ∧
+      Model.isValidTimestampNanos (proj w').wallNanos = true
+  | 0, w, hw, hbud => by
+    dsimp only [Internal.sleepAbstimeRetry]
+    rw [stateM_bind_run', stateM_pure_run]
+    rcases clock_nanosleep_monotonic_abs_raw proj sys hRaw targetTs htValid w hw with
+      ⟨_, hmLe, hmVal, hwLe, hwVal⟩ | ⟨_, hlt, _, _, _, _⟩
+    · exact ⟨hmLe, hmVal, hwLe, hwVal⟩
+    · omega
+  | fuel' + 1, w, hw, hbud => by
+    dsimp only [Internal.sleepAbstimeRetry]
+    rw [stateM_bind_run']
+    have hstep := clock_nanosleep_monotonic_abs_raw proj sys hRaw targetTs htValid w hw
+    cases hcn : (sys.clock_nanosleep .monotonic true targetTs).run w with
+    | mk res w1 =>
+      rw [hcn] at hstep
+      dsimp only at hstep ⊢
+      rcases hstep with ⟨hok, hmLe, hmVal, hwLe, hwVal⟩ | ⟨herr, hlt, hmLe1, hmVal1, hwLe1, hwVal1⟩
+      · subst hok
+        rw [stateM_pure_run]
+        exact ⟨hmLe, hmVal, hwLe, hwVal⟩
+      · subst herr
+        simp only [beq_self_eq_true, ↓reduceIte]
+        have hw1 : Model.rawWf (proj w1) = true := pkgWf_mk hwVal1 hmVal1
+        have hbud1 : (proj w1).eintrBudget.val ≤ fuel' := by omega
+        obtain ⟨hmLe2, hmVal2, hwLe2, hwVal2⟩ :=
+          sleepAbstimeRetry_raw proj sys hRaw targetTs htValid fuel' w1 hw1 hbud1
+        refine ⟨Nat.le_trans ?_ hmLe2, hmVal2, Int.le_trans hwLe1 hwLe2, hwVal2⟩
+        exact Nat.max_le.mpr ⟨Nat.le_trans hmLe1 (Nat.le_max_left _ _), Nat.le_max_right _ _⟩
+
+/-- Compositional single-step refinement of `Internal.mkTimeOps` over `Model.allowedRawStep`. -/
 theorem refinesStepFrom_mkTimeOps :
-    Core.ObeysStepFrom id Model.healthyWf Model.execRawStep Model.allowedRawStep
-      Model.healthyWf Internal.mkTimeOps Model.execTimeOpsStep Model.allowedTimeOpsStep := by
+    Core.ObeysStepFrom Model.toModelState Model.rawWf Model.execRawStep Model.allowedRawStep
+      Model.pkgWf Internal.mkTimeOps Model.execTimeOpsStep Model.allowedTimeOpsStep := by
   intro W proj sys hRaw w req hw
   cases req with
   | nowTimestamp =>
-    dsimp only [Model.execTimeOpsStep, Internal.mkTimeOps]
+    dsimp only [Model.execTimeOpsStep, Internal.mkTimeOps, Function.comp, Model.toModelState]
     rw [stateM_map_run, stateM_bind_run']
-    obtain ⟨ts, hcg, hvn, hproj⟩ := clock_gettime_realtime_healthy proj sys hRaw w hw
+    obtain ⟨ts, hcg, hwLe, hwVal, hEq, hmLe, hmVal⟩ := clock_gettime_realtime_raw proj sys hRaw w hw
     rw [hcg]
-    dsimp only [Pure.pure, StateT.pure, StateT.run, Model.allowedTimeOpsStep, Function.comp, id]
-    have hval : (Timestamp.ofNanosecondsSinceUnixEpoch (Nanosecond.Offset.ofInt ts.toEpochNanos)).toNanosecondsSinceUnixEpoch.val =
+    dsimp only [Pure.pure, StateT.pure, StateT.run, Model.allowedTimeOpsStep]
+    have hval :
+        (Timestamp.ofNanosecondsSinceUnixEpoch
+          (Nanosecond.Offset.ofInt ts.toEpochNanos)).toNanosecondsSinceUnixEpoch.val =
         ts.toEpochNanos :=
       congrArg Internal.UnitVal.val (toNanoseconds_ofNanoseconds (Nanosecond.Offset.ofInt ts.toEpochNanos))
-    have hb := int64_toInt_bounds ts.sec
-    have hlo0 : (-9223372036854775808 : Int) ≤ ts.sec.toInt := hb.1
-    have hhi0 : ts.sec.toInt ≤ 9223372036854775807 := hb.2
-    have hn : ts.nsec.toNat < 1000000000 := of_decide_eq_true hvn
-    have hepoch : ts.toEpochNanos = ts.sec.toInt * 1000000000 + Int.ofNat ts.nsec.toNat := rfl
-    have hn0 : (0 : Int) ≤ Int.ofNat ts.nsec.toNat := Int.natCast_nonneg _
-    have hn1 : Int.ofNat ts.nsec.toNat ≤ 999999999 := by
-      change Int.ofNat ts.nsec.toNat ≤ Int.ofNat 999999999
-      exact Int.ofNat_le.mpr (Nat.le_sub_one_of_lt hn)
-    have hlo : MIN_TIMESPEC_SEC_INT * 1000000000 ≤ ts.toEpochNanos := by
-      rw [hepoch]
-      change (-9223372036854775808 : Int) * 1000000000 ≤ ts.sec.toInt * 1000000000 + Int.ofNat ts.nsec.toNat
-      have hm : (-9223372036854775808 : Int) * 1000000000 ≤ ts.sec.toInt * 1000000000 :=
-        Int.mul_le_mul_of_nonneg_right hlo0 (by decide)
-      exact Int.le_trans hm (Int.le_add_of_nonneg_right hn0)
-    have hhi : ts.toEpochNanos ≤ Int.ofNat MAX_TIMESPEC_NANOS := by
-      rw [hepoch]
-      change ts.sec.toInt * 1000000000 + Int.ofNat ts.nsec.toNat ≤ 9223372036854775807 * 1000000000 + 999999999
-      have hm : ts.sec.toInt * 1000000000 ≤ 9223372036854775807 * 1000000000 :=
-        Int.mul_le_mul_of_nonneg_right hhi0 (by decide)
-      exact Int.add_le_add hm hn1
     rw [hval]
-    exact ⟨hlo, hhi, hproj⟩
+    exact ⟨hwLe, hwVal, hEq, hmLe, hmVal⟩
   | monoNanosNow =>
-    dsimp only [Model.execTimeOpsStep, Internal.mkTimeOps]
+    dsimp only [Model.execTimeOpsStep, Internal.mkTimeOps, Function.comp, Model.toModelState]
     rw [stateM_map_run, stateM_bind_run']
-    obtain ⟨ts, hcg, hval, hlb, hproj⟩ := clock_gettime_monotonic_healthy proj sys hRaw w hw
+    obtain ⟨ts, hcg, hval, hmLe, hmVal, hEq, hwLe, hwVal⟩ :=
+      clock_gettime_monotonic_raw proj sys hRaw w hw
     rw [hcg]
-    dsimp only [Pure.pure, StateT.pure, StateT.run, Model.allowedTimeOpsStep, Function.comp, id]
-    dsimp only [StateT.run] at hproj
-    obtain ⟨hsec0, _, hleMax⟩ := timespec_valid_toNanosNat_le hval
+    dsimp only [Pure.pure, StateT.pure, StateT.run, Model.allowedTimeOpsStep]
+    obtain ⟨hsec0, _, _⟩ := timespec_valid_toNanosNat_le hval
     rw [decide_eq_true hsec0]
     simp only [↓reduceIte]
-    have hwf' : (proj ((sys.clock_gettime .monotonic).run w).2).wf = true := by
-      dsimp only [StateT.run]
-      rw [hproj]
-      exact hw
-    refine ⟨hlb, hleMax, hwf', ?_, ?_, ?_, ?_, ?_⟩
-    all_goals rw [hproj]
+    exact ⟨hmLe, hmVal, hEq, hwLe, hwVal⟩
   | sleep ms =>
-    dsimp only [Model.execTimeOpsStep, Internal.mkTimeOps, Model.allowedTimeOpsStep, Model.sleepEnvRel, Function.comp, id]
+    dsimp only [Model.execTimeOpsStep, Internal.mkTimeOps, Function.comp, Model.toModelState]
     rw [stateM_bind_run']
     by_cases h0 : ms = 0
     · subst h0
       simp only [beq_self_eq_true, ↓reduceIte]
-      dsimp only [Pure.pure, StateT.pure, StateT.run]
-      refine ⟨hw, Nat.le_refl _, rfl, rfl, rfl, Nat.le_refl _, fun _ => ?_⟩
+      rw [stateM_pure_run]
+      dsimp only [Model.allowedTimeOpsStep]
       simp only [UInt32.toNat_zero, Nat.zero_mul, Nat.add_zero]
-      exact Nat.min_le_right _ _
+      exact ⟨Nat.min_le_right _ _, pkgWf_mono hw, Int.le_refl _, pkgWf_wall hw⟩
     · simp only [beq_false_of_ne h0, Bool.false_eq_true, ↓reduceIte]
       rw [stateM_bind_run']
-      obtain ⟨nowTs, hcg, hval, hlb, hproj1⟩ := clock_gettime_monotonic_healthy proj sys hRaw w hw
+      obtain ⟨nowTs, hcg, hval, hmLe1, hmVal1, hEq1, hwLe1, hwVal1⟩ :=
+        clock_gettime_monotonic_raw proj sys hRaw w hw
       rw [hcg]
       dsimp only
       obtain ⟨hsec0, _, _⟩ := timespec_valid_toNanosNat_le hval
       rw [decide_eq_true hsec0]
       simp only [↓reduceIte]
-      have hwf1 : (proj ((sys.clock_gettime .monotonic).run w).2).wf = true := by
-        rw [hproj1]
-        exact hw
+      have hwf1 : Model.rawWf (proj ((sys.clock_gettime .monotonic).run w).2) = true :=
+        pkgWf_mk hwVal1 hmVal1
       cases hopt : Timespec.ofNanosNat? (nowTs.toNanosNat + ms.toNat * 1000000) with
       | some targetTs =>
         obtain ⟨htValid, htNs⟩ := ofNanosNat?_some_props hopt
-        have hret := sleepAbstimeRetry_healthy proj sys hRaw targetTs htValid Internal.MAX_EINTR_RETRIES
-          ((sys.clock_gettime .monotonic).run w).2 hwf1
-        dsimp only at hret
-        rcases hret with ⟨hwf2, hmono2, hreal2, hcrng2, hdraws2, hbud2, hmonoSucc⟩
-        dsimp only [Pure.pure, StateT.pure, StateT.run]
-        dsimp only [StateT.run] at hproj1 hwf2 hmono2 hreal2 hcrng2 hdraws2 hbud2 hmonoSucc
-        refine ⟨hwf2, ?_, ?_, ?_, ?_, ?_, fun hEq => ?_⟩
-        · rw [hproj1] at hmono2; dsimp only at hmono2
-          exact Nat.le_trans (Nat.le_max_left _ _) hmono2
-        · rw [hreal2, hproj1]
-        · rw [hcrng2, hproj1]
-        · rw [hdraws2, hproj1]
-        · rw [hproj1] at hbud2; exact hbud2
-        · have hEq1 : (proj ((Internal.sleepAbstimeRetry sys targetTs Internal.MAX_EINTR_RETRIES).run
-              ((sys.clock_gettime .monotonic).run w).2).2).eintrBudget =
-              (proj ((sys.clock_gettime .monotonic).run w).2).eintrBudget := by
-            dsimp only [StateT.run]
-            rw [hproj1]; exact hEq
-          have hsuc := hmonoSucc hEq1
-          rw [hproj1, htNs] at hsuc
-          dsimp only at hsuc
-          have hTarget : nowTs.toNanosNat + ms.toNat * 1000000 ≤
-              (proj (Internal.sleepAbstimeRetry sys targetTs Internal.MAX_EINTR_RETRIES
-                (sys.clock_gettime .monotonic w).snd).snd).state.monoLowerBoundNs :=
-            Nat.le_trans (Nat.le_max_right _ _) hsuc
-          by_cases hMax : (proj w).state.monoLowerBoundNs ≤ MAX_TIMESPEC_NANOS
-          · have hminEq : min (proj w).state.monoLowerBoundNs MAX_TIMESPEC_NANOS = (proj w).state.monoLowerBoundNs :=
-              Nat.min_eq_left hMax
-            rw [hminEq] at hlb
-            exact Nat.le_trans (Nat.min_le_right _ _) (Nat.le_trans (Nat.add_le_add_right hlb _) hTarget)
-          · have hMaxLt : MAX_TIMESPEC_NANOS ≤ (proj w).state.monoLowerBoundNs := by
-              cases Nat.le_total (proj w).state.monoLowerBoundNs MAX_TIMESPEC_NANOS with
-              | inl hle => exact absurd hle hMax
-              | inr hge => exact hge
-            have hminEq : min (proj w).state.monoLowerBoundNs MAX_TIMESPEC_NANOS = MAX_TIMESPEC_NANOS :=
-              Nat.min_eq_right hMaxLt
-            rw [hminEq] at hlb
-            have hmono1 : MAX_TIMESPEC_NANOS ≤
-                (proj ((sys.clock_gettime .monotonic).run w).2).state.monoLowerBoundNs := by
-              dsimp only [StateT.run]
-              rw [hproj1]; exact Nat.le_trans hlb (Nat.le_max_right _ _)
-            dsimp only [StateT.run] at hmono1 hmono2
-            exact Nat.le_trans (Nat.min_le_left _ _) (Nat.le_trans hmono1 hmono2)
+        have hbud : (proj ((sys.clock_gettime .monotonic).run w).2).eintrBudget.val ≤
+            Internal.MAX_EINTR_RETRIES :=
+          Nat.le_of_lt_succ (proj ((sys.clock_gettime .monotonic).run w).2).eintrBudget.isLt
+        obtain ⟨hmLe2, hmVal2, hwLe2, hwVal2⟩ :=
+          sleepAbstimeRetry_raw proj sys hRaw targetTs htValid Internal.MAX_EINTR_RETRIES
+            ((sys.clock_gettime .monotonic).run w).2 hwf1 hbud
+        dsimp only
+        rw [stateM_pure_run]
+        dsimp only [Model.allowedTimeOpsStep]
+        have hTarget : (proj w).monoNanos + ms.toNat * 1000000 ≤ targetTs.toNanosNat := by
+          rw [htNs, hEq1]
+          exact Nat.add_le_add_right hmLe1 _
+        exact ⟨Nat.le_trans (Nat.min_le_right _ _)
+            (Nat.le_trans hTarget (Nat.le_trans (Nat.le_max_right _ _) hmLe2)),
+          hmVal2, Int.le_trans hwLe1 hwLe2, hwVal2⟩
       | none =>
-        have ⟨hrValid, hrNs⟩ := relativeTimespecOfMs_valid ms
-        have hcn := clock_nanosleep_monotonic_healthy proj sys hRaw false (Internal.relativeTimespecOfMs ms) hrValid
-          ((sys.clock_gettime .monotonic).run w).2 hwf1
-        rw [stateM_bind_run']
-        cases hcnRun : (sys.clock_nanosleep .monotonic false (Internal.relativeTimespecOfMs ms)).run
-            ((sys.clock_gettime .monotonic).run w).2 with
-        | mk res w2 =>
-          rw [hcnRun] at hcn
-          dsimp only [Pure.pure, StateT.pure, StateT.run] at hcn ⊢
-          dsimp only [StateT.run] at hproj1
-          cases res with
-          | ok u =>
-            cases u
-            rcases hcn with ⟨hwf2, hmono2, hreal2, hcrng2, hdraws2, hbud2⟩
-            rw [hproj1] at hmono2 hreal2 hcrng2 hdraws2 hbud2
-            dsimp only at hmono2 hreal2 hcrng2 hdraws2 hbud2
-            simp only [Bool.false_eq_true, ↓reduceIte] at hmono2
-            refine ⟨hwf2, ?_, hreal2, hcrng2, hdraws2, Nat.le_of_eq hbud2, fun _ => ?_⟩
-            · rw [hmono2]
-              exact Nat.le_trans (Nat.le_max_left _ _) (Nat.le_max_left _ _)
-            · rw [hmono2, hrNs]
-              have hmonoLe : (proj w).state.monoLowerBoundNs ≤
-                  max (proj w).state.monoLowerBoundNs nowTs.toNanosNat :=
-                Nat.le_max_left _ _
-              have hle1 : min MAX_TIMESPEC_NANOS ((proj w).state.monoLowerBoundNs + ms.toNat * 1000000) ≤
-                  min MAX_TIMESPEC_NANOS (max (proj w).state.monoLowerBoundNs nowTs.toNanosNat + ms.toNat * 1000000) := by
-                by_cases h1 : max (proj w).state.monoLowerBoundNs nowTs.toNanosNat + ms.toNat * 1000000 ≤ MAX_TIMESPEC_NANOS
-                · have h0' : (proj w).state.monoLowerBoundNs + ms.toNat * 1000000 ≤ MAX_TIMESPEC_NANOS :=
-                    Nat.le_trans (Nat.add_le_add_right hmonoLe _) h1
-                  rw [Nat.min_eq_right h0', Nat.min_eq_right h1]
-                  exact Nat.add_le_add_right hmonoLe _
-                · have hge : MAX_TIMESPEC_NANOS ≤ max (proj w).state.monoLowerBoundNs nowTs.toNanosNat + ms.toNat * 1000000 :=
-                    Nat.le_of_not_ge h1
-                  rw [Nat.min_eq_left hge]
-                  exact Nat.min_le_left _ _
-              exact Nat.le_trans hle1 (Nat.le_max_right _ _)
-          | error e =>
-            rcases hcn with ⟨_, hwf2, hbudPos, hst2, hbud2⟩
-            rw [hproj1] at hbudPos hst2 hbud2
-            dsimp only at hbudPos hst2 hbud2
-            refine ⟨hwf2, ?_, ?_, ?_, ?_, by omega, fun hEq => ?_⟩
-            · rw [hst2]; exact Nat.le_max_left _ _
-            · rw [hst2]
-            · rw [hst2]
-            · rw [hst2]
-            · clear hst2 hwf2 hwf1 hcnRun hopt hval hlb hproj1
-              omega
+        obtain ⟨hrValid, hrNs⟩ := relativeTimespecOfMs_valid ms
+        have hcn := clock_nanosleep_monotonic_rel_raw proj sys hRaw (Internal.relativeTimespecOfMs ms)
+          hrValid ((sys.clock_gettime .monotonic).run w).2 hwf1
+        rcases hcn with ⟨hcnRun, hmLe2, hmVal2, hwLe2, hwVal2⟩
+        rw [hrNs] at hmLe2
+        dsimp only
+        rw [stateM_bind_run', hcnRun, stateM_pure_run, stateM_pure_run]
+        dsimp only [Model.allowedTimeOpsStep]
+        have hMinLe :
+            min Model.maxMonoNanos ((proj w).monoNanos + ms.toNat * 1000000) ≤
+            min Model.maxMonoNanos ((proj ((sys.clock_gettime .monotonic).run w).2).monoNanos + ms.toNat * 1000000) := by
+          apply Nat.le_min.mpr
+          exact ⟨Nat.min_le_left _ _, Nat.le_trans (Nat.min_le_right _ _) (Nat.add_le_add_right hmLe1 _)⟩
+        exact ⟨Nat.le_trans hMinLe hmLe2, hmVal2, Int.le_trans hwLe1 hwLe2, hwVal2⟩
 
 end LeanSwe.Time.Proofs.RefinesModel
