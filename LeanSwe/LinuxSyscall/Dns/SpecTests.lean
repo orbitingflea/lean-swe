@@ -1,11 +1,10 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.LinuxSyscall.Dns.Types
 import LeanSwe.LinuxSyscall.Dns.Model
 
 namespace LeanSwe.LinuxSyscall.Dns
 
-open Core (NondetTest ErrorObligation ErrorJustification ErrorTestMode AssumptionObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.LinuxSyscall
 
@@ -296,22 +295,5 @@ def test_dns_healthyStep_and_healthyModelOps
             none
         else
           some { state := s', eintrBudget := anyEnv.eintrBudget })
-
-/-- Thin C-wrapper boundary assumptions for `LeanSwe.LinuxSyscall.Dns` (`c/dns_shim.c`), verified offline at runtime with nonce logging. -/
-def externalAssumptions : List AssumptionObligation :=
-  [ { name := "LeanSwe.LinuxSyscall.Dns.assume_dns_getaddrinfo_offlineAndScoped"
-      subject := "LeanSwe.LinuxSyscall.Dns.getaddrinfo"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.Dns.assume_dns_getaddrinfo_hostGuardsAndHints"
-      subject := "LeanSwe.LinuxSyscall.Dns.getaddrinfo"
-      formalPred? := none } ]
-
-/-- Complete `(request × DnsErrorKind)` error-coverage matrix for caller-facing `LeanSwe.LinuxSyscall.Dns` operations (`5` obligations). -/
-def errorCoverage : List (ErrorObligation DnsErrorKind) :=
-  [ { request := "LeanSwe.LinuxSyscall.Dns.getaddrinfo", errorKind := .invalidHost, justification := .tested "LeanSwe.LinuxSyscall.Dns.RuntimeTests.err_dns_getaddrinfo_invalidHost" .real }
-  , { request := "LeanSwe.LinuxSyscall.Dns.getaddrinfo", errorKind := .nameNotFound, justification := .tested "LeanSwe.LinuxSyscall.Dns.RuntimeTests.err_dns_getaddrinfo_nameNotFound" .real }
-  , { request := "LeanSwe.LinuxSyscall.Dns.getaddrinfo", errorKind := .temporaryFailure, justification := .tested "LeanSwe.LinuxSyscall.Dns.RuntimeTests.err_dns_getaddrinfo_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Dns.getaddrinfo", errorKind := .systemError, justification := .tested "LeanSwe.LinuxSyscall.Dns.RuntimeTests.err_dns_getaddrinfo_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Dns.getaddrinfo", errorKind := .otherGai, justification := .tested "LeanSwe.LinuxSyscall.Dns.RuntimeTests.err_dns_getaddrinfo_mocked" .mocked } ]
 
 end LeanSwe.LinuxSyscall.Dns

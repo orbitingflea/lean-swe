@@ -1,3 +1,4 @@
+import Core.Assumptions
 import Core.Obeys
 import LeanSwe.EnvVars.Raw.Types
 import LeanSwe.EnvVars.Raw.Model

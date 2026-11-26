@@ -1,10 +1,9 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.Sqlite.Raw.Types
 
 namespace LeanSwe.Sqlite.Raw
 
-open Core (NondetTest AssumptionObligation ErrorObligation)
+open Core (NondetTest)
 open Core.NondetTest
 
 /-- Extract the deterministic token from a `RawDbHandle` (`0` for opaque `.ext` handles). -/
@@ -944,140 +943,5 @@ def test_sqliteraw_finalize_releasesStmtEvenOnStickyErrorAndRejectsDoubleFinaliz
   let (rRej, sRej1) := (ops.finalize sh).run sRejInit
   NondetTest.assert ((∃ e, rRej = .error e ∧ e.kind = .busy) ∧
     sRej1.liveRawStmts = [(100, 200)] ∧ (ops.activeStmtCount.run sRej1).1 = 1)
-
-/-- Thin `sqlite3_*` C boundary assumptions for `LeanSwe.Sqlite.Raw`, checked 1-to-1 by `RuntimeTests.lean`. -/
-def externalAssumptions : List AssumptionObligation :=
-  [ { name := "LeanSwe.Sqlite.Raw.assume_sqliteraw_openV2_honorsFlagsAndMemoryUri"
-      subject := "LeanSwe.Sqlite.Raw.openDb"
-      formalPred? := none }
-  , { name := "LeanSwe.Sqlite.Raw.assume_sqliteraw_close_releasesDbAndRejectsClosedOrPinnedHandle"
-      subject := "LeanSwe.Sqlite.Raw.closeDb"
-      formalPred? := none }
-  , { name := "LeanSwe.Sqlite.Raw.assume_sqliteraw_prepareV2_returnsConsumedPrefixByteLen"
-      subject := "LeanSwe.Sqlite.Raw.prepare"
-      formalPred? := none }
-  , { name := "LeanSwe.Sqlite.Raw.assume_sqliteraw_bind_roundTripsAllFiveValueTypes"
-      subject := "LeanSwe.Sqlite.Raw.bind"
-      formalPred? := none }
-  , { name := "LeanSwe.Sqlite.Raw.assume_sqliteraw_step_reportsRowAndDoneAccurately"
-      subject := "LeanSwe.Sqlite.Raw.step"
-      formalPred? := none }
-  , { name := "LeanSwe.Sqlite.Raw.assume_sqliteraw_columns_preserveRawBytesAndRejectClosedStmt"
-      subject := "LeanSwe.Sqlite.Raw.step"
-      formalPred? := none }
-  , { name := "LeanSwe.Sqlite.Raw.assume_sqliteraw_finalize_destroysStmtEvenOnStickyStepError"
-      subject := "LeanSwe.Sqlite.Raw.finalize"
-      formalPred? := none } ]
-
-/-- Complete 6-request × 6-kind error-coverage matrix for `LeanSwe.Sqlite.Raw` (`SqliteErrorKind`). -/
-def errorCoverage : List (ErrorObligation SqliteErrorKind) :=
-  [ { request := "LeanSwe.Sqlite.Raw.openDb"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_openDb_notFound" .real }
-  , { request := "LeanSwe.Sqlite.Raw.openDb"
-      errorKind := .busy
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_openDb_busy" .real }
-  , { request := "LeanSwe.Sqlite.Raw.openDb"
-      errorKind := .constraint
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_openDb_constraint" .mocked }
-  , { request := "LeanSwe.Sqlite.Raw.openDb"
-      errorKind := .misuse
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_openDb_misuse" .mocked }
-  , { request := "LeanSwe.Sqlite.Raw.openDb"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_openDb_invalidInput" .real }
-  , { request := "LeanSwe.Sqlite.Raw.openDb"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_openDb_ioError" .real }
-  , { request := "LeanSwe.Sqlite.Raw.closeDb"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_closeDb_notFound" .mocked }
-  , { request := "LeanSwe.Sqlite.Raw.closeDb"
-      errorKind := .busy
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_closeDb_busy" .real }
-  , { request := "LeanSwe.Sqlite.Raw.closeDb"
-      errorKind := .constraint
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_closeDb_constraint" .mocked }
-  , { request := "LeanSwe.Sqlite.Raw.closeDb"
-      errorKind := .misuse
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_closeDb_misuse" .real }
-  , { request := "LeanSwe.Sqlite.Raw.closeDb"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_closeDb_invalidInput" .mocked }
-  , { request := "LeanSwe.Sqlite.Raw.closeDb"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_closeDb_ioError" .mocked }
-  , { request := "LeanSwe.Sqlite.Raw.prepare"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_prepare_notFound" .mocked }
-  , { request := "LeanSwe.Sqlite.Raw.prepare"
-      errorKind := .busy
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_prepare_busy" .real }
-  , { request := "LeanSwe.Sqlite.Raw.prepare"
-      errorKind := .constraint
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_prepare_constraint" .mocked }
-  , { request := "LeanSwe.Sqlite.Raw.prepare"
-      errorKind := .misuse
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_prepare_misuse" .real }
-  , { request := "LeanSwe.Sqlite.Raw.prepare"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_prepare_invalidInput" .real }
-  , { request := "LeanSwe.Sqlite.Raw.prepare"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_prepare_ioError" .real }
-  , { request := "LeanSwe.Sqlite.Raw.bind"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_bind_notFound" .real }
-  , { request := "LeanSwe.Sqlite.Raw.bind"
-      errorKind := .busy
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_bind_busy" .real }
-  , { request := "LeanSwe.Sqlite.Raw.bind"
-      errorKind := .constraint
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_bind_constraint" .real }
-  , { request := "LeanSwe.Sqlite.Raw.bind"
-      errorKind := .misuse
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_bind_misuse" .real }
-  , { request := "LeanSwe.Sqlite.Raw.bind"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_bind_invalidInput" .real }
-  , { request := "LeanSwe.Sqlite.Raw.bind"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_bind_ioError" .real }
-  , { request := "LeanSwe.Sqlite.Raw.step"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_step_notFound" .real }
-  , { request := "LeanSwe.Sqlite.Raw.step"
-      errorKind := .busy
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_step_busy" .real }
-  , { request := "LeanSwe.Sqlite.Raw.step"
-      errorKind := .constraint
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_step_constraint" .real }
-  , { request := "LeanSwe.Sqlite.Raw.step"
-      errorKind := .misuse
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_step_misuse" .real }
-  , { request := "LeanSwe.Sqlite.Raw.step"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_step_invalidInput" .mocked }
-  , { request := "LeanSwe.Sqlite.Raw.step"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_step_ioError" .real }
-  , { request := "LeanSwe.Sqlite.Raw.finalize"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_finalize_notFound" .real }
-  , { request := "LeanSwe.Sqlite.Raw.finalize"
-      errorKind := .busy
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_finalize_busy" .real }
-  , { request := "LeanSwe.Sqlite.Raw.finalize"
-      errorKind := .constraint
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_finalize_constraint" .real }
-  , { request := "LeanSwe.Sqlite.Raw.finalize"
-      errorKind := .misuse
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_finalize_misuse" .real }
-  , { request := "LeanSwe.Sqlite.Raw.finalize"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_finalize_invalidInput" .mocked }
-  , { request := "LeanSwe.Sqlite.Raw.finalize"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.Sqlite.Raw.RuntimeTests.err_sqliteraw_finalize_ioError" .real } ]
 
 end LeanSwe.Sqlite.Raw

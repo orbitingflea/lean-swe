@@ -1,11 +1,10 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Process.Model
 
 namespace LeanSwe.LinuxSyscall.Process
 
-open Core (NondetTest ErrorObligation ErrorJustification ErrorTestMode AssumptionObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.LinuxSyscall
 
@@ -1260,80 +1259,5 @@ def test_process_model_subthreadGroupExitCloneFlagsSigcontAndWatchQueue
   NondetTest.assert (wOrphTty = .ok .stillRunning)
   NondetTest.assert ((step sOrphTtin2 (.waitpid 2603 { nohang := true, untraced := true }) (.waited (.stopped 2603 21))).isNone)
   NondetTest.assert ((step sOrphTtin2 (.waitpid 2603 { nohang := true, untraced := true }) (.waited (.stopped 2603 22))).isNone)
-
-/-- External trust-boundary assumptions for `LeanSwe.LinuxSyscall.Process` C wrappers (`process_shim.c` + `fd_box.h`) and Linux kernel ABI (`x86_64` + `aarch64`). `process_shim.c` must map any non-zero `extraBits` to canonical invalid kernel flag bits (`0x80000000u` for `pipe2`, `pidfd_open`, and `pidfd_send_signal`, and `0x10` for `wait4`) rather than forwarding raw shifted bits, and `Fuzz` (`leanswe-world-fuzz`) must run episodes as `PID 1` inside an isolated `unshare(CLONE_NEWUSER | CLONE_NEWPID)` + `fork()` + `setsid()` child namespace so every `pidOrNegPgid : Int32` (`-1`, `0`, `1`, `-pgid`) and every `Signal` (`0..64` including `SIGKILL` and `SIGSTOP`) executes safely with zero avoided inputs. -/
-def externalAssumptions : List AssumptionObligation :=
-  [ { name := "LeanSwe.LinuxSyscall.Process.assume_process_pipe2_atomicFlagsAndFdPair"
-      subject := "LeanSwe.LinuxSyscall.Process.pipe2"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.Process.assume_process_waitpid_wait4StatusAndReap"
-      subject := "LeanSwe.LinuxSyscall.Process.waitpid"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.Process.assume_process_kill_signalAndGroupRouting"
-      subject := "LeanSwe.LinuxSyscall.Process.kill"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.Process.assume_process_pidfdOpen_nr434AndCloexec"
-      subject := "LeanSwe.LinuxSyscall.Process.pidfd_open"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.Process.assume_process_pidfdSendSignal_nr424AndReapRaceGuard"
-      subject := "LeanSwe.LinuxSyscall.Process.pidfd_send_signal"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.Process.assume_process_getpid_positiveAndStable"
-      subject := "LeanSwe.LinuxSyscall.Process.getpid"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.Process.assume_process_getuid_stableRealUid"
-      subject := "LeanSwe.LinuxSyscall.Process.getuid"
-      formalPred? := none } ]
-
-/-- Complete `(request × ProcessErrorKind)` error-coverage matrix for all 7 fallible `Process` syscalls (`42` obligations, including seccomp-synthesizable `getpid`/`getuid` errors). -/
-def errorCoverage : List (ErrorObligation ProcessErrorKind) :=
-  [ { request := "LeanSwe.LinuxSyscall.Process.pipe2", errorKind := .noSuchProcess, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pipe2_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.pipe2", errorKind := .noChild, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pipe2_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.pipe2", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pipe2_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.pipe2", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pipe2_invalidArg" .real }
-  , { request := "LeanSwe.LinuxSyscall.Process.pipe2", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pipe2_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.pipe2", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pipe2_mocked" .mocked }
-
-  , { request := "LeanSwe.LinuxSyscall.Process.waitpid", errorKind := .noSuchProcess, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_waitpid_noSuchProcess" .real }
-  , { request := "LeanSwe.LinuxSyscall.Process.waitpid", errorKind := .noChild, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_waitpid_noChild" .real }
-  , { request := "LeanSwe.LinuxSyscall.Process.waitpid", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_waitpid_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.waitpid", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_waitpid_invalidArg" .real }
-  , { request := "LeanSwe.LinuxSyscall.Process.waitpid", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_waitpid_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.waitpid", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_waitpid_mocked" .mocked }
-
-  , { request := "LeanSwe.LinuxSyscall.Process.kill", errorKind := .noSuchProcess, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_kill_noSuchProcess" .real }
-  , { request := "LeanSwe.LinuxSyscall.Process.kill", errorKind := .noChild, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_kill_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.kill", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_kill_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.kill", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_kill_invalidArg" .real }
-  , { request := "LeanSwe.LinuxSyscall.Process.kill", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_kill_permissionDenied" .real }
-  , { request := "LeanSwe.LinuxSyscall.Process.kill", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_kill_mocked" .mocked }
-
-  , { request := "LeanSwe.LinuxSyscall.Process.pidfd_open", errorKind := .noSuchProcess, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdOpen_noSuchProcess" .real }
-  , { request := "LeanSwe.LinuxSyscall.Process.pidfd_open", errorKind := .noChild, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdOpen_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.pidfd_open", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdOpen_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.pidfd_open", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdOpen_invalidArg" .real }
-  , { request := "LeanSwe.LinuxSyscall.Process.pidfd_open", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdOpen_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.pidfd_open", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdOpen_mocked" .mocked }
-
-  , { request := "LeanSwe.LinuxSyscall.Process.pidfd_send_signal", errorKind := .noSuchProcess, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdSendSignal_noSuchProcess" .real }
-  , { request := "LeanSwe.LinuxSyscall.Process.pidfd_send_signal", errorKind := .noChild, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdSendSignal_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.pidfd_send_signal", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdSendSignal_badFd" .real }
-  , { request := "LeanSwe.LinuxSyscall.Process.pidfd_send_signal", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdSendSignal_invalidArg" .real }
-  , { request := "LeanSwe.LinuxSyscall.Process.pidfd_send_signal", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdSendSignal_permissionDenied" .real }
-  , { request := "LeanSwe.LinuxSyscall.Process.pidfd_send_signal", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_pidfdSendSignal_mocked" .mocked }
-
-  , { request := "LeanSwe.LinuxSyscall.Process.getpid", errorKind := .noSuchProcess, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getpid_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.getpid", errorKind := .noChild, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getpid_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.getpid", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getpid_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.getpid", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getpid_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.getpid", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getpid_seccomp" .real }
-  , { request := "LeanSwe.LinuxSyscall.Process.getpid", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getpid_mocked" .mocked }
-
-  , { request := "LeanSwe.LinuxSyscall.Process.getuid", errorKind := .noSuchProcess, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getuid_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.getuid", errorKind := .noChild, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getuid_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.getuid", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getuid_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.getuid", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getuid_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Process.getuid", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getuid_seccomp" .real }
-  , { request := "LeanSwe.LinuxSyscall.Process.getuid", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Process.RuntimeTests.err_getuid_mocked" .mocked } ]
 
 end LeanSwe.LinuxSyscall.Process

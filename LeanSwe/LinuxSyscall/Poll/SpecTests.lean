@@ -1,11 +1,10 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.LinuxSyscall.Poll.Types
 import LeanSwe.LinuxSyscall.Poll.Model
 
 namespace LeanSwe.LinuxSyscall.Poll
 
-open Core (NondetTest ErrorObligation ErrorJustification ErrorTestMode AssumptionObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.LinuxSyscall
 
@@ -278,26 +277,5 @@ def test_poll_interface_defaultOpsWiring
   NondetTest.assert (ppollDefault fds = ops.ppoll fds none)
   NondetTest.assert (eventfd2Fn initval flags = ops.eventfd2 initval flags)
   NondetTest.assert (eventfd2Default = ops.eventfd2 0 { nonblock := false, cloexec := true, semaphore := false })
-
-/-- External trust-boundary assumptions for `LeanSwe.LinuxSyscall.Poll` C wrappers (`poll_shim.c` + `fd_box.h`) and Linux kernel ABI (`x86_64` + `aarch64`), verified 1-to-1 by `RuntimeTests.lean`, `leanswe-world-fuzz`, and `strace` fault injection. -/
-def externalAssumptions : List AssumptionObligation :=
-  [ { name := "LeanSwe.LinuxSyscall.Poll.assume_poll_ppoll_fdPinTimespecAndEventsAbi"
-      subject := "LeanSwe.LinuxSyscall.Poll.ppoll"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.Poll.assume_poll_eventfd2_flagsAndInitvalAbi"
-      subject := "LeanSwe.LinuxSyscall.Poll.eventfd2"
-      formalPred? := none } ]
-
-/-- Complete `(request × PollErrorKind)` error-coverage matrix for both curated `Poll` syscalls (`8` obligations), linked to real Linux tests and `strace`/mocked fault-injection tests in `RuntimeTests.lean`. -/
-def errorCoverage : List (ErrorObligation PollErrorKind) :=
-  [ { request := "LeanSwe.LinuxSyscall.Poll.ppoll", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Poll.RuntimeTests.err_ppoll_badFd" .real }
-  , { request := "LeanSwe.LinuxSyscall.Poll.ppoll", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Poll.RuntimeTests.err_ppoll_invalidArg" .real }
-  , { request := "LeanSwe.LinuxSyscall.Poll.ppoll", errorKind := .interrupted, justification := .tested "LeanSwe.LinuxSyscall.Poll.RuntimeTests.err_ppoll_interrupted" .real }
-  , { request := "LeanSwe.LinuxSyscall.Poll.ppoll", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Poll.RuntimeTests.err_ppoll_transient" .mocked }
-
-  , { request := "LeanSwe.LinuxSyscall.Poll.eventfd2", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Poll.RuntimeTests.err_eventfd2_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Poll.eventfd2", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Poll.RuntimeTests.err_eventfd2_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Poll.eventfd2", errorKind := .interrupted, justification := .tested "LeanSwe.LinuxSyscall.Poll.RuntimeTests.err_eventfd2_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Poll.eventfd2", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Poll.RuntimeTests.err_eventfd2_transient" .mocked } ]
 
 end LeanSwe.LinuxSyscall.Poll

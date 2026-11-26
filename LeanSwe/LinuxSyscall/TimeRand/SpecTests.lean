@@ -1,11 +1,10 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.LinuxSyscall.TimeRand.Model
 
 namespace LeanSwe.LinuxSyscall.TimeRand
 
-open Core (NondetTest ErrorObligation ErrorJustification ErrorTestMode AssumptionObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.LinuxSyscall
 
@@ -340,34 +339,5 @@ def test_timerand_healthyStep_and_healthyModelOps
             none
         else
           some { state := s', eintrBudget := anyEnv.eintrBudget })
-
-/-- Thin C-wrapper boundary assumptions for `LeanSwe.LinuxSyscall.TimeRand` (`c/timerand_shim.c`), verified at runtime against the host Linux kernel with nonce logging. -/
-def externalAssumptions : List AssumptionObligation :=
-  [ { name := "LeanSwe.LinuxSyscall.TimeRand.assume_timerand_clockGettime_realtimeAndMonotonic"
-      subject := "LeanSwe.LinuxSyscall.TimeRand.clock_gettime"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.TimeRand.assume_timerand_clockNanosleep_relativeAndAbstime"
-      subject := "LeanSwe.LinuxSyscall.TimeRand.clock_nanosleep"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.TimeRand.assume_timerand_getrandom_exactAndFlags"
-      subject := "LeanSwe.LinuxSyscall.TimeRand.getrandom"
-      formalPred? := none } ]
-
-/-- Complete `(request × TimeRandErrorKind)` error-coverage matrix for all 3 curated `TimeRand` syscalls (`12` obligations), linked to real Linux kernel tests and mocked/`strace` fault-injection tests in `RuntimeTests.lean`. -/
-def errorCoverage : List (ErrorObligation TimeRandErrorKind) :=
-  [ { request := "LeanSwe.LinuxSyscall.TimeRand.clock_gettime", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_clock_gettime_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.TimeRand.clock_gettime", errorKind := .wouldBlock, justification := .tested "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_clock_gettime_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.TimeRand.clock_gettime", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_clock_gettime_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.TimeRand.clock_gettime", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_clock_gettime_mocked" .mocked }
-
-  , { request := "LeanSwe.LinuxSyscall.TimeRand.clock_nanosleep", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_clock_nanosleep_invalidArg" .real }
-  , { request := "LeanSwe.LinuxSyscall.TimeRand.clock_nanosleep", errorKind := .wouldBlock, justification := .tested "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_clock_nanosleep_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.TimeRand.clock_nanosleep", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_clock_nanosleep_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.TimeRand.clock_nanosleep", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_clock_nanosleep_transient" .mocked }
-
-  , { request := "LeanSwe.LinuxSyscall.TimeRand.getrandom", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_getrandom_invalidArg" .real }
-  , { request := "LeanSwe.LinuxSyscall.TimeRand.getrandom", errorKind := .wouldBlock, justification := .tested "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_getrandom_wouldBlock" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.TimeRand.getrandom", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_getrandom_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.TimeRand.getrandom", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.TimeRand.RuntimeTests.err_getrandom_transient" .mocked } ]
 
 end LeanSwe.LinuxSyscall.TimeRand

@@ -1,3 +1,4 @@
+import Core.Assumptions
 import LeanSwe.LinuxSyscall.Dns.Proofs.WireAndLiteralHelpers
 
 namespace LeanSwe.LinuxSyscall.Dns.Internal

@@ -3486,44 +3486,20 @@ private def legacyErrorCoverageAllowlist : Array String := #[
   "LeanSwe.Compress",
   "LeanSwe.ConnectProxy",
   "LeanSwe.CryptoHash",
-  "LeanSwe.CryptoHash.Raw",
   "LeanSwe.EnvVars",
-  "LeanSwe.EnvVars.Raw",
   "LeanSwe.Fs",
   "LeanSwe.Git",
-  "LeanSwe.LinuxSyscall.Dns",
-  "LeanSwe.LinuxSyscall.Files",
-  "LeanSwe.LinuxSyscall.Net",
-  "LeanSwe.LinuxSyscall.Passwd",
-  "LeanSwe.LinuxSyscall.Poll",
-  "LeanSwe.LinuxSyscall.Process",
-  "LeanSwe.LinuxSyscall.Sandbox",
-  "LeanSwe.LinuxSyscall.TimeRand",
-  "LeanSwe.PostFork",
   "LeanSwe.Process",
   "LeanSwe.ProcessSandbox",
   "LeanSwe.ProcessSandbox.Raw",
-  "LeanSwe.Sqlite",
-  "LeanSwe.Sqlite.Raw"
+  "LeanSwe.Sqlite"
 ]
 
 /-- Exact shrinking ratchet allowlist of packages currently still declaring legacy `SpecTests.externalAssumptions`.
     Fails on any new declaration or stale allowlist entry; shrinks to `#[]` as Wave B deletes the tables. -/
 private def legacyExternalAssumptionsAllowlist : Array String := #[
   "LeanSwe.Compress",
-  "LeanSwe.CryptoHash.Raw",
-  "LeanSwe.EnvVars.Raw",
-  "LeanSwe.Git",
-  "LeanSwe.LinuxSyscall.Dns",
-  "LeanSwe.LinuxSyscall.Files",
-  "LeanSwe.LinuxSyscall.Net",
-  "LeanSwe.LinuxSyscall.Passwd",
-  "LeanSwe.LinuxSyscall.Poll",
-  "LeanSwe.LinuxSyscall.Process",
-  "LeanSwe.LinuxSyscall.Sandbox",
-  "LeanSwe.LinuxSyscall.TimeRand",
-  "LeanSwe.PostFork",
-  "LeanSwe.Sqlite.Raw"
+  "LeanSwe.Git"
 ]
 
 private def evaluateLegacyTableRatchetWith
