@@ -32,48 +32,47 @@ private theorem preserves_err_eq {W α β : Type} {proj : W → RawHostWorld} {Q
   simp only [stateM_bind_run, stateM_pure_run]
   exact hQ _ ((hMa w (by rw [hEq]; exact hWf)).trans hEq)
 
-/-- Main single-step behavioral refinement theorem for `Internal.mkOpsFromHostCapM` across all 13 effectful `RawProcessSandboxOpsM` operations. -/
-theorem refinesStepFrom_mkOpsFromHostCapM :
-    Core.ObeysStepFrom id Model.rawHostWorldWf Model.execRawCapStep Model.allowedRawCapStep
-      Model.rawHostWorldWf Internal.mkOpsFromHostCapM Model.execRawOpsStep Model.allowedRawOpsStep := by
-  intro W proj cap hCap w req hWf
-  dsimp only [Function.comp, id] at hCap hWf ⊢
+/-- Polymorphic single-step behavioral refinement theorem for `SysBridge.mkRawOpsM deps tbl` over arbitrary `{fd fwdTask : Type}` satisfying `DepsPreservesProj` and `TblObeysRawWorld`. -/
+theorem mkRawOpsM_refines_allowedRawOpsStep {W fd fwdTask : Type} {proj : W → RawHostWorld}
+    {deps : HostSysDepsM (StateM W) fd fwdTask} {tbl : HostTableOpsM (StateM W) fd fwdTask}
+    (hDeps : DepsPreservesProj proj deps) (hTbl : TblObeysRawWorld proj tbl) :
+    Core.ObeysStep proj Model.rawHostWorldWf (Model.execRawOpsStep (mkRawOpsM deps tbl))
+      Model.allowedRawOpsStep := by
+  intro w req hWf
   cases req with
   | hostSeccompArch =>
-    have ⟨hLin, hTgt⟩ := cap_metaInfo_eq hCap hWf
-    simp only [execRawOpsStep, Internal.mkOpsFromHostCapM, SysBridge.mkOpsFromHostCapM,
-      mkRawOpsM, hostSeccompArchPure, toHostSysDeps, stateM_map_run, stateM_pure_run]
+    have ⟨hLin, hTgt⟩ := hDeps.metaInfo w hWf
+    simp only [execRawOpsStep, mkRawOpsM, hostSeccompArchPure, stateM_map_run, stateM_pure_run]
     dsimp only [allowedRawOpsStep]
     refine ⟨hWf, rfl, rfl, ?_, rfl⟩
-    rw [hLin, hTgt]
-    rfl
+    rw [hLin, hTgt]; rfl
   | preflight preq =>
-    dsimp only [execRawOpsStep, Internal.mkOpsFromHostCapM, SysBridge.mkOpsFromHostCapM, mkRawOpsM]
+    dsimp only [execRawOpsStep, mkRawOpsM]
     rw [stateM_map_run]
-    exact preflightPure_refines hCap DEFAULT_EINTR_FUEL preq w hWf
+    exact preflightPure_refines hDeps hTbl DEFAULT_EINTR_FUEL preq w hWf
   | discoverHostPreset =>
-    have ⟨hLin, _⟩ := cap_metaInfo_eq hCap hWf
-    simp only [execRawOpsStep, Internal.mkOpsFromHostCapM, SysBridge.mkOpsFromHostCapM,
-      mkRawOpsM, discoverHostPresetPure, stateM_map_run]
-    rcases Bool.eq_false_or_eq_true (toHostSysDeps cap).isLinux with hCapLin | hCapLin
-    · have hProjT : (proj w).isLinux = true := by rw [← hLin]; exact hCapLin
-      simp only [hCapLin, Bool.not_true, Bool.false_eq_true, ↓reduceIte, stateM_bind_run, stateM_pure_run]
-      dsimp only [toHostSysDeps, allowedRawOpsStep]
-      have ⟨hP, hInv⟩ := discoverHostPresetM_spec hCap DEFAULT_EINTR_FUEL
+    have ⟨hLin, _⟩ := hDeps.metaInfo w hWf
+    simp only [execRawOpsStep, mkRawOpsM, discoverHostPresetPure, stateM_map_run]
+    cases hCapLin : deps.isLinux with
+    | false =>
+      have hProjF : (proj w).isLinux = false := by rw [← hLin]; exact hCapLin
+      simp only [Bool.not_false, ↓reduceIte, stateM_pure_run]
+      dsimp only [allowedRawOpsStep]
+      exact ⟨hWf, rfl, rfl, rfl, hProjF, rfl, mapRawError_unavail_ne_empty _ _⟩
+    | true =>
+      have hProjT : (proj w).isLinux = true := by rw [← hLin]; exact hCapLin
+      simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, stateM_bind_run, stateM_pure_run]
+      dsimp only [allowedRawOpsStep]
+      have ⟨hP, hInv⟩ := discoverHostPresetM_spec hDeps DEFAULT_EINTR_FUEL
       have hEq := hP w hWf
       have ⟨hSys, hEtc, hHome⟩ := hInv w hWf
       exact ⟨by rw [hEq]; exact hWf, by rw [hEq], by rw [hEq], hEq, hProjT, hSys, hEtc, hHome⟩
-    · have hProjF : (proj w).isLinux = false := by rw [← hLin]; exact hCapLin
-      simp only [hCapLin, Bool.not_false, ↓reduceIte, stateM_pure_run]
-      dsimp only [allowedRawOpsStep]
-      exact ⟨hWf, rfl, rfl, rfl, hProjF, rfl, mapRawError_unavail_ne_empty _ _⟩
   | sealPlan plan sec =>
-    dsimp only [execRawOpsStep, Internal.mkOpsFromHostCapM, SysBridge.mkOpsFromHostCapM, mkRawOpsM]
+    dsimp only [execRawOpsStep, mkRawOpsM]
     rw [stateM_map_run]
-    exact sealPlanPure_refines hCap DEFAULT_EINTR_FUEL plan sec w hWf
+    exact sealPlanPure_refines hDeps hTbl DEFAULT_EINTR_FUEL plan sec w hWf
   | closePlan ph =>
-    simp only [execRawOpsStep, Internal.mkOpsFromHostCapM, SysBridge.mkOpsFromHostCapM,
-      mkRawOpsM, closePlanPure, stateM_map_run]
+    simp only [execRawOpsStep, mkRawOpsM, closePlanPure, stateM_map_run]
     cases hVal : isValidSandboxHandleId ph.handleId with
     | false =>
       simp only [Bool.not_false, ↓reduceIte, stateM_pure_run]
@@ -81,11 +80,10 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
       exact ⟨hWf, rfl, rfl, rfl, rfl, rfl, (mapRawError_invalidArg_spec _ _ _).2, Or.inl hVal, rfl⟩
     | true =>
       simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, stateM_bind_run]
-      dsimp only [toHostSysDeps]
-      have hDet := tbl_detachPlan_spec hCap hWf ph.handleId
+      have hDet := hTbl.detachPlan hWf ph.handleId
       rcases hDet with ⟨hWf1, hL1, hT1, hBx1, hFw1, hBody⟩
-      let w1 := ((toHostTableOps cap).detachPlan ph.handleId).run w |>.2
-      cases hR : (((toHostTableOps cap).detachPlan ph.handleId).run w).1 with
+      let w1 := (tbl.detachPlan ph.handleId).run w |>.2
+      cases hR : ((tbl.detachPlan ph.handleId).run w).1 with
       | none =>
         rw [hR] at hBody
         rcases hBody with ⟨hKeyF, hEq⟩
@@ -98,18 +96,17 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
         let Q : Except SandboxError Unit → W → Prop :=
           fun out u => allowedRawOpsStep (proj w) (.closePlan ph) (.exceptUnit out) (proj u)
         change Q _ _
-        refine preserves_bind_eq (w := w1) rfl hWf1 (preservesProj_closeOpt hCap (some slot.planMemfd)) fun _ s hEq => ?_
-        refine preserves_bind_eq hEq hWf1 (preservesProj_closeOpt hCap (some slot.initMemfd)) fun _ s hEq => ?_
-        exact preserves_err_eq hEq hWf1 (preservesProj_closeOpt hCap (some slot.hostsMemfd)) fun s' hEq' =>
+        refine preserves_bind_eq (w := w1) rfl hWf1 (preservesProj_closeOpt hDeps (some slot.planMemfd)) fun _ s hEq => ?_
+        refine preserves_bind_eq hEq hWf1 (preservesProj_closeOpt hDeps (some slot.initMemfd)) fun _ s hEq => ?_
+        exact preserves_err_eq hEq hWf1 (preservesProj_closeOpt hDeps (some slot.hostsMemfd)) fun s' hEq' =>
           ⟨by rw [hEq']; exact hWf1, by rw [hEq']; exact hL1, by rw [hEq']; exact hT1,
             by rw [hEq']; exact hBx1, by rw [hEq']; exact hFw1, hVal, hKeyT, by rw [hEq']; exact hLen⟩
   | spawnBox ph =>
-    dsimp only [execRawOpsStep, Internal.mkOpsFromHostCapM, SysBridge.mkOpsFromHostCapM, mkRawOpsM]
+    dsimp only [execRawOpsStep, mkRawOpsM]
     rw [stateM_map_run]
-    exact spawnBoxPure_refines hCap DEFAULT_EINTR_FUEL ph w hWf
+    exact spawnBoxPure_refines hDeps hTbl DEFAULT_EINTR_FUEL ph w hWf
   | startPortForwarders bh fwds =>
-    simp only [execRawOpsStep, Internal.mkOpsFromHostCapM, SysBridge.mkOpsFromHostCapM,
-      mkRawOpsM, startPortForwardersPure, stateM_map_run]
+    simp only [execRawOpsStep, mkRawOpsM, startPortForwardersPure, stateM_map_run]
     cases hVal : isValidSandboxHandleId bh.handleId with
     | false =>
       simp only [Bool.not_false, ↓reduceIte, stateM_pure_run]
@@ -118,11 +115,10 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
     | true =>
       simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
       rw [stateM_bind_run]
-      dsimp only [toHostSysDeps]
-      have hTk := tbl_takeBoxListeners_spec hCap hWf bh.handleId fwds.size
+      have hTk := hTbl.takeBoxListeners hWf bh.handleId fwds.size
       rcases hTk with ⟨hWf1, hL1, hT1, hPl1, hFw1, hBxLen1, hBody⟩
-      let w1 := ((toHostTableOps cap).takeBoxListeners bh.handleId fwds.size).run w |>.2
-      cases hR : (((toHostTableOps cap).takeBoxListeners bh.handleId fwds.size).run w).1 with
+      let w1 := (tbl.takeBoxListeners bh.handleId fwds.size).run w |>.2
+      cases hR : ((tbl.takeBoxListeners bh.handleId fwds.size).run w).1 with
       | none =>
         rw [hR] at hBody
         simp only [stateM_pure_run]
@@ -136,12 +132,12 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
           fun out s => allowedRawOpsStep (proj w) (.startPortForwarders bh fwds) (.exceptFwd out) (proj s)
         change Q _ _
         refine preserves_bind_eq (w := w1) rfl hWf1
-          (preservesProj_of_seqUnit _ fun u hu => (hCap u (.startFwdTask listenerFds (fwds.map PortForward.hostPort)) hu).2)
+          (hDeps.startFwdTask listenerFds (fwds.map PortForward.hostPort))
           fun rStart s hEq => ?_
         cases rStart with
         | error e =>
           dsimp only
-          exact preserves_err_eq hEq hWf1 (preservesProj_closeFdArray hCap listenerFds) fun s' hEq' => by
+          exact preserves_err_eq hEq hWf1 (preservesProj_closeFdArray hDeps listenerFds) fun s' hEq' => by
             refine ⟨by rw [hEq']; exact hWf1, by rw [hEq']; exact hL1, by rw [hEq']; exact hT1,
               by rw [hEq']; exact hPl1, by rw [hEq']; exact hBxLen1, mapRawError_ioError_ne_empty e _,
               by rw [hEq']; exact hFw1, fun hOr => ?_⟩
@@ -149,18 +145,17 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
         | ok taskHandle =>
           dsimp only
           rw [stateM_bind_run]
-          let fslot : ForwarderSlotM Nat := { boxHandleId := bh.handleId, taskHandle := taskHandle }
-          have hIns := tbl_insertFwd_spec hCap (by rw [hEq]; exact hWf1) fslot
+          let fslot : ForwarderSlotM fwdTask := { boxHandleId := bh.handleId, taskHandle := taskHandle }
+          have hIns := hTbl.insertFwd (w := s) (by rw [hEq]; exact hWf1) fslot
           rcases hIns with ⟨hWf3, hL3, hT3, hPl3, hBx3, hIBody⟩
-          cases hI : (((toHostTableOps cap).insertFwd fslot).run s).1 with
+          cases hI : ((tbl.insertFwd fslot).run s).1 with
           | none =>
             rw [hI] at hIBody
-            exact preserves_err_eq (hIBody.trans hEq) hWf1
-              (preservesProj_of_seqUnit _ fun u hu => (hCap u (.stopFwdTask taskHandle) hu).2) fun s' hEq' => by
-                refine ⟨by rw [hEq']; exact hWf1, by rw [hEq']; exact hL1, by rw [hEq']; exact hT1,
-                  by rw [hEq']; exact hPl1, by rw [hEq']; exact hBxLen1,
-                  mapRawError_ioError_ne_empty Errno.ENOMEM _, by rw [hEq']; exact hFw1, fun hOr => ?_⟩
-                rcases hOr with hF | hF <;> simp [hVal, hKeyT] at hF
+            exact preserves_err_eq (hIBody.trans hEq) hWf1 (hDeps.stopFwdTask taskHandle) fun s' hEq' => by
+              refine ⟨by rw [hEq']; exact hWf1, by rw [hEq']; exact hL1, by rw [hEq']; exact hT1,
+                by rw [hEq']; exact hPl1, by rw [hEq']; exact hBxLen1,
+                mapRawError_ioError_ne_empty Errno.ENOMEM _, by rw [hEq']; exact hFw1, fun hOr => ?_⟩
+              rcases hOr with hF | hF <;> simp [hVal, hKeyT] at hF
           | some fhid =>
             rw [hI] at hIBody
             rcases hIBody with ⟨hFhidV, hFwLen⟩
@@ -170,8 +165,7 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
               by rw [hPl3, hEq]; exact hPl1, by rw [hBx3, hEq]; exact hBxLen1,
               hVal, hKeyT, hFhidV, rfl, by rw [hFwLen, hEq, hFw1]⟩
   | stopPortForwarders fh =>
-    simp only [execRawOpsStep, Internal.mkOpsFromHostCapM, SysBridge.mkOpsFromHostCapM,
-      mkRawOpsM, stopPortForwardersPure, stateM_map_run]
+    simp only [execRawOpsStep, mkRawOpsM, stopPortForwardersPure, stateM_map_run]
     cases hVal : isValidSandboxHandleId fh.handleId with
     | false =>
       simp only [Bool.not_false, ↓reduceIte, stateM_pure_run]
@@ -179,11 +173,10 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
       exact ⟨hWf, rfl, rfl, rfl, rfl, rfl, (mapRawError_invalidArg_spec _ _ _).2, Or.inl hVal, rfl⟩
     | true =>
       simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, stateM_bind_run]
-      dsimp only [toHostSysDeps]
-      have hDet := tbl_detachFwd_spec hCap hWf fh.handleId
+      have hDet := hTbl.detachFwd hWf fh.handleId
       rcases hDet with ⟨hWf1, hL1, hT1, hPl1, hBx1, hBody⟩
-      let w1 := ((toHostTableOps cap).detachFwd fh.handleId).run w |>.2
-      cases hR : (((toHostTableOps cap).detachFwd fh.handleId).run w).1 with
+      let w1 := (tbl.detachFwd fh.handleId).run w |>.2
+      cases hR : ((tbl.detachFwd fh.handleId).run w).1 with
       | none =>
         rw [hR] at hBody
         rcases hBody with ⟨hKeyF, hEq⟩
@@ -196,13 +189,11 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
         let Q : Except SandboxError Unit → W → Prop :=
           fun out u => allowedRawOpsStep (proj w) (.stopPortForwarders fh) (.exceptUnit out) (proj u)
         change Q _ _
-        exact preserves_err_eq (w := w1) rfl hWf1
-          (preservesProj_of_seqUnit _ fun u hu => (hCap u (.stopFwdTask fslot.taskHandle) hu).2) fun s' hEq' =>
+        exact preserves_err_eq (w := w1) rfl hWf1 (hDeps.stopFwdTask fslot.taskHandle) fun s' hEq' =>
           ⟨by rw [hEq']; exact hWf1, by rw [hEq']; exact hL1, by rw [hEq']; exact hT1,
             by rw [hEq']; exact hPl1, by rw [hEq']; exact hBx1, hVal, hKeyT, by rw [hEq']; exact hLen⟩
   | readBoxOutput bh stdin toMs maxOut? =>
-    simp only [execRawOpsStep, Internal.mkOpsFromHostCapM, SysBridge.mkOpsFromHostCapM,
-      mkRawOpsM, readBoxOutputPure, stateM_map_run]
+    simp only [execRawOpsStep, mkRawOpsM, readBoxOutputPure, stateM_map_run]
     cases hVal : isValidSandboxHandleId bh.handleId with
     | false =>
       simp only [Bool.not_false, ↓reduceIte, stateM_pure_run]
@@ -210,11 +201,10 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
       exact ⟨hWf, rfl, rfl, rfl, rfl, rfl, (mapRawError_invalidArg_spec _ _ _).2, fun _ => ⟨rfl, rfl⟩⟩
     | true =>
       simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, stateM_bind_run]
-      dsimp only [toHostSysDeps]
-      have hTk := tbl_takeBoxIo_spec hCap hWf bh.handleId
+      have hTk := hTbl.takeBoxIo hWf bh.handleId
       rcases hTk with ⟨hWf1, hL1, hT1, hPl1, hFw1, hBxLen1, hBody⟩
-      let w1 := ((toHostTableOps cap).takeBoxIo bh.handleId).run w |>.2
-      cases hR : (((toHostTableOps cap).takeBoxIo bh.handleId).run w).1 with
+      let w1 := (tbl.takeBoxIo bh.handleId).run w |>.2
+      cases hR : ((tbl.takeBoxIo bh.handleId).run w).1 with
       | none =>
         rw [hR] at hBody
         simp only [stateM_pure_run]
@@ -225,13 +215,13 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
         have hKeyT : tableHasKey bh.handleId (proj w).table.boxes = true := hBody
         rcases ioInfo with ⟨inFd?, outFd?, errFd?, statusFd?, goFd?, prog, cwd⟩
         dsimp only
-        have ⟨hCoreP, hCoreI⟩ := readBoxOutputCore_spec hCap prog cwd inFd? outFd? errFd? statusFd? goFd? stdin toMs maxOut? DEFAULT_EINTR_FUEL DEFAULT_IO_FUEL
+        have ⟨hCoreP, hCoreI⟩ := readBoxOutputCore_spec hDeps prog cwd inFd? outFd? errFd? statusFd? goFd? stdin toMs maxOut? DEFAULT_EINTR_FUEL DEFAULT_IO_FUEL
         have hP2 := hCoreP w1 hWf1
         have hI2 := hCoreI w1 hWf1
         change allowedRawOpsStep (proj w) (.readBoxOutput bh stdin toMs maxOut?)
-          (.exceptResult ((readBoxOutputCore cap.files cap.poll cap.timeRand prog cwd inFd? outFd? errFd? statusFd? goFd? stdin toMs maxOut? DEFAULT_EINTR_FUEL DEFAULT_IO_FUEL).run w1).1)
-          (proj ((readBoxOutputCore cap.files cap.poll cap.timeRand prog cwd inFd? outFd? errFd? statusFd? goFd? stdin toMs maxOut? DEFAULT_EINTR_FUEL DEFAULT_IO_FUEL).run w1).2)
-        cases hC : ((readBoxOutputCore cap.files cap.poll cap.timeRand prog cwd inFd? outFd? errFd? statusFd? goFd? stdin toMs maxOut? DEFAULT_EINTR_FUEL DEFAULT_IO_FUEL).run w1).1 with
+          (.exceptResult ((readBoxOutputCore deps.files deps.poll deps.timeRand prog cwd inFd? outFd? errFd? statusFd? goFd? stdin toMs maxOut? DEFAULT_EINTR_FUEL DEFAULT_IO_FUEL).run w1).1)
+          (proj ((readBoxOutputCore deps.files deps.poll deps.timeRand prog cwd inFd? outFd? errFd? statusFd? goFd? stdin toMs maxOut? DEFAULT_EINTR_FUEL DEFAULT_IO_FUEL).run w1).2)
+        cases hC : ((readBoxOutputCore deps.files deps.poll deps.timeRand prog cwd inFd? outFd? errFd? statusFd? goFd? stdin toMs maxOut? DEFAULT_EINTR_FUEL DEFAULT_IO_FUEL).run w1).1 with
         | ok res =>
           rw [hC] at hI2
           dsimp only [allowedRawOpsStep]
@@ -245,8 +235,7 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
             by rw [hP2]; exact hPl1, by rw [hP2]; exact hBxLen1, by rw [hP2]; exact hFw1, hI2, fun hOr => ?_⟩
           rcases hOr with hF | hF <;> simp [hVal, hKeyT] at hF
   | killProcessGroup bh =>
-    simp only [execRawOpsStep, Internal.mkOpsFromHostCapM, SysBridge.mkOpsFromHostCapM,
-      mkRawOpsM, killProcessGroupPure, stateM_map_run]
+    simp only [execRawOpsStep, mkRawOpsM, killProcessGroupPure, stateM_map_run]
     cases hVal : isValidSandboxHandleId bh.handleId with
     | false =>
       simp only [Bool.not_false, ↓reduceIte, stateM_pure_run]
@@ -255,11 +244,10 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
       exact ⟨hWf, trivial, trivial, trivial, (mapRawError_invalidArg_spec _ _ _).2, rfl⟩
     | true =>
       simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, stateM_bind_run]
-      dsimp only [toHostSysDeps]
-      have ⟨hSome, hProj⟩ := tbl_findBoxKillInfo_spec hCap hWf bh.handleId
-      let w1 := ((toHostTableOps cap).findBoxKillInfo bh.handleId).run w |>.2
+      have ⟨hSome, hProj⟩ := hTbl.findBoxKillInfo hWf bh.handleId
+      let w1 := (tbl.findBoxKillInfo bh.handleId).run w |>.2
       have hWf1 : rawHostWorldWf (proj w1) = true := by rw [hProj]; exact hWf
-      cases hF : (((toHostTableOps cap).findBoxKillInfo bh.handleId).run w).1 with
+      cases hF : ((tbl.findBoxKillInfo bh.handleId).run w).1 with
       | none =>
         rw [hF] at hSome
         have hKeyF : tableHasKey bh.handleId (proj w).table.boxes = false := hSome.symm
@@ -274,12 +262,12 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
         have hKeyT : tableHasKey bh.handleId (proj w).table.boxes = true := hSome.symm
         rcases info with ⟨pgid, _⟩
         dsimp only
-        have ⟨hKP, hKE⟩ := killBoxPg_spec hCap pgid DEFAULT_EINTR_FUEL
-        have hEnd : proj ((killBoxPg cap.proc pgid DEFAULT_EINTR_FUEL).run w1).2 = proj w := (hKP w1 hWf1).trans hProj
+        have ⟨hKP, hKE⟩ := killBoxPg_spec hDeps pgid DEFAULT_EINTR_FUEL
+        have hEnd : proj ((killBoxPg deps.proc pgid DEFAULT_EINTR_FUEL).run w1).2 = proj w := (hKP w1 hWf1).trans hProj
         change allowedRawOpsStep (proj w) (.killProcessGroup bh)
-          (.exceptUnit ((killBoxPg cap.proc pgid DEFAULT_EINTR_FUEL).run w1).1)
-          (proj ((killBoxPg cap.proc pgid DEFAULT_EINTR_FUEL).run w1).2)
-        cases hK : ((killBoxPg cap.proc pgid DEFAULT_EINTR_FUEL).run w1).1 with
+          (.exceptUnit ((killBoxPg deps.proc pgid DEFAULT_EINTR_FUEL).run w1).1)
+          (proj ((killBoxPg deps.proc pgid DEFAULT_EINTR_FUEL).run w1).2)
+        cases hK : ((killBoxPg deps.proc pgid DEFAULT_EINTR_FUEL).run w1).1 with
         | ok u =>
           cases u
           dsimp only [allowedRawOpsStep]
@@ -292,8 +280,7 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
           simp only [hVal, hKeyT, Bool.and_self, ↓reduceIte]
           exact ⟨hWf, trivial, trivial, trivial, hMsg, hKind⟩
   | pidfdKill bh =>
-    simp only [execRawOpsStep, Internal.mkOpsFromHostCapM, SysBridge.mkOpsFromHostCapM,
-      mkRawOpsM, pidfdKillPure, stateM_map_run]
+    simp only [execRawOpsStep, mkRawOpsM, pidfdKillPure, stateM_map_run]
     cases hVal : isValidSandboxHandleId bh.handleId with
     | false =>
       simp only [Bool.not_false, ↓reduceIte, stateM_pure_run]
@@ -302,11 +289,10 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
       exact ⟨hWf, trivial, trivial, trivial, (mapRawError_invalidArg_spec _ _ _).2, rfl⟩
     | true =>
       simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, stateM_bind_run]
-      dsimp only [toHostSysDeps]
-      have ⟨hSome, hProj⟩ := tbl_findBoxKillInfo_spec hCap hWf bh.handleId
-      let w1 := ((toHostTableOps cap).findBoxKillInfo bh.handleId).run w |>.2
+      have ⟨hSome, hProj⟩ := hTbl.findBoxKillInfo hWf bh.handleId
+      let w1 := (tbl.findBoxKillInfo bh.handleId).run w |>.2
       have hWf1 : rawHostWorldWf (proj w1) = true := by rw [hProj]; exact hWf
-      cases hF : (((toHostTableOps cap).findBoxKillInfo bh.handleId).run w).1 with
+      cases hF : ((tbl.findBoxKillInfo bh.handleId).run w).1 with
       | none =>
         rw [hF] at hSome
         have hKeyF : tableHasKey bh.handleId (proj w).table.boxes = false := hSome.symm
@@ -321,12 +307,12 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
         have hKeyT : tableHasKey bh.handleId (proj w).table.boxes = true := hSome.symm
         rcases info with ⟨_, pidfd⟩
         dsimp only
-        have ⟨hKP, hKE⟩ := killBoxPidfd_spec hCap pidfd DEFAULT_EINTR_FUEL
-        have hEnd : proj ((killBoxPidfd cap.proc pidfd DEFAULT_EINTR_FUEL).run w1).2 = proj w := (hKP w1 hWf1).trans hProj
+        have ⟨hKP, hKE⟩ := killBoxPidfd_spec hDeps pidfd DEFAULT_EINTR_FUEL
+        have hEnd : proj ((killBoxPidfd deps.proc pidfd DEFAULT_EINTR_FUEL).run w1).2 = proj w := (hKP w1 hWf1).trans hProj
         change allowedRawOpsStep (proj w) (.pidfdKill bh)
-          (.exceptUnit ((killBoxPidfd cap.proc pidfd DEFAULT_EINTR_FUEL).run w1).1)
-          (proj ((killBoxPidfd cap.proc pidfd DEFAULT_EINTR_FUEL).run w1).2)
-        cases hK : ((killBoxPidfd cap.proc pidfd DEFAULT_EINTR_FUEL).run w1).1 with
+          (.exceptUnit ((killBoxPidfd deps.proc pidfd DEFAULT_EINTR_FUEL).run w1).1)
+          (proj ((killBoxPidfd deps.proc pidfd DEFAULT_EINTR_FUEL).run w1).2)
+        cases hK : ((killBoxPidfd deps.proc pidfd DEFAULT_EINTR_FUEL).run w1).1 with
         | ok u =>
           cases u
           dsimp only [allowedRawOpsStep]
@@ -339,8 +325,7 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
           simp only [hVal, hKeyT, Bool.and_self, ↓reduceIte]
           exact ⟨hWf, trivial, trivial, trivial, hMsg, hKind⟩
   | reapBox bh =>
-    simp only [execRawOpsStep, Internal.mkOpsFromHostCapM, SysBridge.mkOpsFromHostCapM,
-      mkRawOpsM, reapBoxPure, stateM_map_run]
+    simp only [execRawOpsStep, mkRawOpsM, reapBoxPure, stateM_map_run]
     cases hVal : isValidSandboxHandleId bh.handleId with
     | false =>
       simp only [Bool.not_false, ↓reduceIte, stateM_pure_run]
@@ -350,11 +335,10 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
     | true =>
       simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
       rw [stateM_bind_run]
-      dsimp only [toHostSysDeps]
-      have hDet := tbl_detachBox_spec hCap hWf bh.handleId
+      have hDet := hTbl.detachBox hWf bh.handleId
       rcases hDet with ⟨hWf1, hL1, hT1, hPl1, hFw1, hBody⟩
-      let w1 := ((toHostTableOps cap).detachBox bh.handleId).run w |>.2
-      cases hR : (((toHostTableOps cap).detachBox bh.handleId).run w).1 with
+      let w1 := (tbl.detachBox bh.handleId).run w |>.2
+      cases hR : ((tbl.detachBox bh.handleId).run w).1 with
       | none =>
         rw [hR] at hBody
         rcases hBody with ⟨hKeyF, hEq⟩
@@ -369,15 +353,15 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
           fun out u => allowedRawOpsStep (proj w) (.reapBox bh) (.exceptUnit out) (proj u)
         have hPostCg : ∀ s, proj s = proj w1 →
             let tail : StateM W (Except SandboxError Unit) := do
-              Files.closeOpt cap.files (some bslot.pidfd)
-              match ← cleanupCgroupDir cap.files cap.timeRand bslot.cgroupDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS DEFAULT_EINTR_FUEL with
+              Files.closeOpt deps.files (some bslot.pidfd)
+              match ← cleanupCgroupDir deps.files deps.timeRand bslot.cgroupDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS DEFAULT_EINTR_FUEL with
               | .ok () => pure (.ok ())
               | .error e => pure (.error (Internal.mapRawError (.ioError none e "failed to remove box cgroup directory")))
             Q (tail.run s).1 (tail.run s).2 := by
           intro s hEq
           dsimp only
-          refine preserves_bind_eq hEq hWf1 (preservesProj_closeOpt hCap (some bslot.pidfd)) fun _ s hEq => ?_
-          refine preserves_bind_eq hEq hWf1 (preservesProj_cleanupCgroupDir hCap bslot.cgroupDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS DEFAULT_EINTR_FUEL) fun rCl s hEq => ?_
+          refine preserves_bind_eq hEq hWf1 (preservesProj_closeOpt hDeps (some bslot.pidfd)) fun _ s hEq => ?_
+          refine preserves_bind_eq hEq hWf1 (preservesProj_cleanupCgroupDir hDeps bslot.cgroupDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS DEFAULT_EINTR_FUEL) fun rCl s hEq => ?_
           cases rCl with
           | ok _ =>
             simp only [stateM_pure_run]
@@ -394,10 +378,10 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
         have hPostWait : ∀ s, proj s = proj w1 →
             let act : StateM W (Except SandboxError Unit) := do
               if bslot.pid > 0 && bslot.pid ≤ LinuxSyscall.Process.MAX_LINUX_PID then
-                let _ ← LinuxSyscall.Process.waitpidReapLoop cap.proc bslot.pid.toInt32 DEFAULT_EINTR_FUEL
+                let _ ← LinuxSyscall.Process.waitpidReapLoop deps.proc bslot.pid.toInt32 DEFAULT_EINTR_FUEL
                 pure ()
-              Files.closeOpt cap.files (some bslot.pidfd)
-              match ← cleanupCgroupDir cap.files cap.timeRand bslot.cgroupDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS DEFAULT_EINTR_FUEL with
+              Files.closeOpt deps.files (some bslot.pidfd)
+              match ← cleanupCgroupDir deps.files deps.timeRand bslot.cgroupDir CGROUP_POLL_STEPS CGROUP_RMDIR_STEPS DEFAULT_EINTR_FUEL with
               | .ok () => pure (.ok ())
               | .error e => pure (.error (Internal.mapRawError (.ioError none e "failed to remove box cgroup directory")))
             Q (act.run s).1 (act.run s).2 := by
@@ -409,29 +393,38 @@ theorem refinesStepFrom_mkOpsFromHostCapM :
             exact hPostCg s hEq
           | true =>
             simp only [↓reduceIte]
-            refine preserves_bind_eq hEq hWf1 (preservesProj_waitpidReapLoop hCap bslot.pid.toInt32 DEFAULT_EINTR_FUEL) fun _ s hEq => ?_
+            refine preserves_bind_eq hEq hWf1 (preservesProj_waitpidReapLoop hDeps bslot.pid.toInt32 DEFAULT_EINTR_FUEL) fun _ s hEq => ?_
             exact hPostCg s hEq
         change Q _ _
-        refine preserves_bind_eq (w := w1) rfl hWf1 (preservesProj_closeOpt hCap bslot.stdinFd?) fun _ s hEq => ?_
-        refine preserves_bind_eq hEq hWf1 (preservesProj_closeOpt hCap bslot.stdoutFd?) fun _ s hEq => ?_
-        refine preserves_bind_eq hEq hWf1 (preservesProj_closeOpt hCap bslot.stderrFd?) fun _ s hEq => ?_
-        refine preserves_bind_eq hEq hWf1 (preservesProj_closeOpt hCap bslot.statusFd?) fun _ s hEq => ?_
-        refine preserves_bind_eq hEq hWf1 (preservesProj_closeOpt hCap bslot.goFd?) fun _ s hEq => ?_
-        refine preserves_bind_eq hEq hWf1 (preservesProj_closeFdArray hCap bslot.listenerFds) fun _ s hEq => ?_
+        refine preserves_bind_eq (w := w1) rfl hWf1 (preservesProj_closeOpt hDeps bslot.stdinFd?) fun _ s hEq => ?_
+        refine preserves_bind_eq hEq hWf1 (preservesProj_closeOpt hDeps bslot.stdoutFd?) fun _ s hEq => ?_
+        refine preserves_bind_eq hEq hWf1 (preservesProj_closeOpt hDeps bslot.stderrFd?) fun _ s hEq => ?_
+        refine preserves_bind_eq hEq hWf1 (preservesProj_closeOpt hDeps bslot.statusFd?) fun _ s hEq => ?_
+        refine preserves_bind_eq hEq hWf1 (preservesProj_closeOpt hDeps bslot.goFd?) fun _ s hEq => ?_
+        refine preserves_bind_eq hEq hWf1 (preservesProj_closeFdArray hDeps bslot.listenerFds) fun _ s hEq => ?_
         cases hCg : (!bslot.cgroupDir.isEmpty) with
         | false =>
           simp only [Bool.false_eq_true, ↓reduceIte]
           exact hPostWait s hEq
         | true =>
           simp only [↓reduceIte]
-          refine preserves_bind_eq hEq hWf1 (preservesProj_writeTextFile hCap (cgroupSubfile bslot.cgroupDir "cgroup.kill") "1" DEFAULT_EINTR_FUEL) fun _ s hEq => ?_
+          refine preserves_bind_eq hEq hWf1 (preservesProj_writeTextFile hDeps (cgroupSubfile bslot.cgroupDir "cgroup.kill") "1" DEFAULT_EINTR_FUEL) fun _ s hEq => ?_
           exact hPostWait s hEq
   | activeResourceCounts =>
-    have ⟨hCnt, hProj⟩ := tbl_counts_spec hCap hWf
-    dsimp only [execRawOpsStep, Internal.mkOpsFromHostCapM, SysBridge.mkOpsFromHostCapM, mkRawOpsM]
+    have ⟨hCnt, hProj⟩ := hTbl.counts hWf
+    dsimp only [execRawOpsStep, mkRawOpsM]
     rw [stateM_map_run]
     dsimp only [allowedRawOpsStep]
     exact ⟨by rw [hProj]; exact hWf, by rw [hProj], by rw [hProj], hCnt, hProj⟩
+
+/-- Single-step behavioral refinement theorem for `SysBridge.mkOpsFromHostCapM` as a direct corollary of `mkRawOpsM_refines_allowedRawOpsStep`. -/
+theorem refinesStepFrom_mkOpsFromHostCapM :
+    Core.ObeysStepFrom id Model.rawHostWorldWf Model.execRawCapStep Model.allowedRawCapStep
+      Model.rawHostWorldWf SysBridge.mkOpsFromHostCapM Model.execRawOpsStep Model.allowedRawOpsStep :=
+  fun proj _ hCap =>
+    mkRawOpsM_refines_allowedRawOpsStep (proj := proj)
+      (depsPreservesProj_toHostSysDeps hCap)
+      (tblObeysRawWorld_toHostTableOps hCap)
 
 /-- Concrete non-vacuity capability model over `StateM RawTableState` for any `(isLinux, target)` platform identity. -/
 def modelRawHostCap (isLinux : Bool) (target : String) : RawHostCapM (StateM RawTableState) where
@@ -467,11 +460,11 @@ def modelRawHostCap (isLinux : Bool) (target : String) : RawHostCapM (StateM Raw
     listen := fun _ _ => pure (.error Errno.ENOSYS)
     accept4 := fun _ _ => pure (.error Errno.ENOSYS)
     connect := fun _ _ => pure (.error Errno.ENOSYS)
-    getsockopt := fun _ _ => pure (.error Errno.ENOSYS)
-    setsockopt := fun _ _ _ => pure (.error Errno.ENOSYS)
+    getsockopt := fun _ _ => pure (Except.error Errno.ENOSYS)
+    setsockopt := fun _ _ _ => pure (Except.error Errno.ENOSYS)
     getsockname := fun _ => pure (.error Errno.ENOSYS)
-    recvfrom := fun _ _ _ => pure (.error Errno.ENOSYS)
-    sendto := fun _ _ _ => pure (.error Errno.ENOSYS)
+    recvfrom := fun _ _ _ => pure (Except.error Errno.ENOSYS)
+    sendto := fun _ _ _ => pure (Except.error Errno.ENOSYS)
     shutdown := fun _ _ => pure (.error Errno.ENOSYS)
     sendmsg := fun _ _ => pure (.error Errno.ENOSYS)
     recvmsg := fun _ _ => pure (.error Errno.ENOSYS)
@@ -528,6 +521,10 @@ theorem modelRawHostCap_refines_allowedRawCapStep (isLinux : Bool) (target : Str
     Core.ObeysStep (fun t : RawTableState => ({ isLinux := isLinux, target := target, table := t } : RawHostWorld))
       rawHostWorldWf (execRawCapStep (modelRawHostCap isLinux target)) allowedRawCapStep := by
   intro t req _
-  cases req <;> exact ⟨rfl, rfl⟩
+  cases req <;>
+    (dsimp only [execRawCapStep, modelRawHostCap];
+     try rw [stateM_map_run];
+     try rw [stateM_seqRight_run, stateM_pure_run];
+     exact ⟨rfl, rfl⟩)
 
 end LeanSwe.ProcessSandbox.Raw.Proofs

@@ -103,11 +103,11 @@ private theorem hostSeccompArch_never_kind (forbidden : SandboxErrorKind)
     Core.NeverErrorKindIO SandboxError.kind forbidden LeanSwe.ProcessSandbox.Raw.hostSeccompArch w := by
   have hRun : LeanSwe.ProcessSandbox.Raw.hostSeccompArch w =
       .ok (Internal.decodeHostAuditArch (SysBridge.Bwrap.detectHostAuditArch
-        SysBridge.defaultOps.isLinux SysBridge.defaultOps.target)) w := rfl
+        Model.hostPlatformIsLinux Model.hostPlatformTarget)) w := rfl
   unfold Core.NeverErrorKindIO
   rw [hRun]
   cases h : Internal.decodeHostAuditArch (SysBridge.Bwrap.detectHostAuditArch
-      SysBridge.defaultOps.isLinux SysBridge.defaultOps.target) with
+      Model.hostPlatformIsLinux Model.hostPlatformTarget) with
   | ok _ => trivial
   | error e =>
     dsimp only

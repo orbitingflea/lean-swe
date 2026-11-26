@@ -1,17 +1,17 @@
+import Core.ConcOps
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Net.Types
 import LeanSwe.LinuxSyscall.Poll.Types
-import LeanSwe.LinuxSyscall.Files.Interface
-import LeanSwe.LinuxSyscall.Net.Interface
-import LeanSwe.LinuxSyscall.Poll.Interface
 import LeanSwe.NetRelay.Types
 import LeanSwe.NetRelay.Interface
+import LeanSwe.ProcessSandbox.Raw.Types.Internal
 
 namespace LeanSwe.ProcessSandbox.Raw.SysBridge.Forwarder
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.NetRelay
+open LeanSwe.ProcessSandbox.Raw
 
 /-- Maximum number of simultaneous active TCP port-forward relay connections per box (`128`). -/
 def MAX_RELAY_SLOTS : Nat := 128
@@ -81,88 +81,100 @@ def stepRelayConnect {m : Type → Type} [Monad m] {fd : Type}
   else
     return some c
 
+/-- Non-blocking inbound box-to-host ring read step for `stepForwardRelay`. -/
+def stepRelayRecvBox {m : Type → Type} [Monad m] {fd : Type}
+    (net : Net.NetOpsM m fd) (c1 : ForwardRelayConn fd) (bRev : Poll.PollEvents) :
+    m (Option (ForwardRelayConn fd)) :=
+  if !c1.boxEofIn && (bRev.pollin || bRev.pollhup || bRev.pollerr) then do
+    match ← recvIntoRing net c1.boxFd MAX_RELAY_IO_STEPS c1.b2h with
+    | none => pure none
+    | some (b2h', eof') => pure (some { c1 with b2h := b2h', boxEofIn := c1.boxEofIn || eof' })
+  else
+    pure (some c1)
+
+/-- Non-blocking inbound host-to-box ring read step for `stepForwardRelay`. -/
+def stepRelayRecvHost {m : Type → Type} [Monad m] {fd : Type}
+    (net : Net.NetOpsM m fd) (c2 : ForwardRelayConn fd) (hRev : Poll.PollEvents) :
+    m (Option (ForwardRelayConn fd)) :=
+  if !c2.hostConnecting && !c2.hostEofIn && (hRev.pollin || hRev.pollhup || hRev.pollerr) then do
+    match ← recvIntoRing net c2.hostFd MAX_RELAY_IO_STEPS c2.h2b with
+    | none => pure none
+    | some (h2b', eof') => pure (some { c2 with h2b := h2b', hostEofIn := c2.hostEofIn || eof' })
+  else
+    pure (some c2)
+
+/-- Flush `rb` via `flushRingNonblock` when non-empty, or return `some rb` when empty. -/
+def flushRingIfNonEmpty {m : Type → Type} [Monad m] {fd : Type}
+    (net : Net.NetOpsM m fd) (targetFd : fd) (rb : RingBuf) : m (Option RingBuf) :=
+  if !rb.isEmpty then flushRingNonblock net targetFd MAX_RELAY_IO_STEPS rb
+  else pure (some rb)
+
+/-- Non-blocking outbound box-to-host ring flush and half-close step for `stepForwardRelay`. -/
+def stepRelayFlushHost {m : Type → Type} [Monad m] {fd : Type}
+    (net : Net.NetOpsM m fd) (c3 : ForwardRelayConn fd) :
+    m (Option (ForwardRelayConn fd)) :=
+  if !c3.hostConnecting then do
+    match ← flushRingIfNonEmpty net c3.hostFd c3.b2h with
+    | none => pure none
+    | some b2h' =>
+      let c3a := { c3 with b2h := b2h' }
+      if c3a.boxEofIn && c3a.b2h.isEmpty && !c3a.hostShutdownWr then do
+        let _ ← shutdownWrClean net c3a.hostFd MAX_RELAY_IO_STEPS
+        pure (some { c3a with hostShutdownWr := true })
+      else
+        pure (some c3a)
+  else
+    pure (some c3)
+
+/-- Perform `shutdownWrClean` on `c.boxFd` when `c.hostEofIn && c.h2b.isEmpty && !c.boxShutdownWr`. -/
+def maybeShutdownBoxWr {m : Type → Type} [Monad m] {fd : Type}
+    (net : Net.NetOpsM m fd) (c : ForwardRelayConn fd) : m (ForwardRelayConn fd) :=
+  if c.hostEofIn && c.h2b.isEmpty && !c.boxShutdownWr then do
+    let _ ← shutdownWrClean net c.boxFd MAX_RELAY_IO_STEPS
+    pure { c with boxShutdownWr := true }
+  else
+    pure c
+
 /-- Advance one poll tick for a single `ForwardRelayConn`, reusing `LeanSwe.NetRelay` `16 KiB` ring operations and directional `SHUT_WR` half-close. -/
 def stepForwardRelay {m : Type → Type} [Monad m] {fd : Type}
     (net : Net.NetOpsM m fd) (closeFd : fd → m Unit)
     (c0 : ForwardRelayConn fd) (bRev hRev : Poll.PollEvents) :
-    m (Option (ForwardRelayConn fd)) := do
-  if bRev.pollnval || hRev.pollnval then
+    m (Option (ForwardRelayConn fd)) :=
+  if bRev.pollnval || hRev.pollnval then do
     closeForwardRelay closeFd c0
-    return none
-  match ← stepRelayConnect net c0 hRev with
-  | none =>
-    closeForwardRelay closeFd c0
-    return none
-  | some c1 =>
-    let c2? ←
-      if !c1.boxEofIn && (bRev.pollin || bRev.pollhup || bRev.pollerr) then
-        match ← recvIntoRing net c1.boxFd MAX_RELAY_IO_STEPS c1.b2h with
-        | none => pure none
-        | some (b2h', eof') => pure (some { c1 with b2h := b2h', boxEofIn := c1.boxEofIn || eof' })
-      else
-        pure (some c1)
-    match c2? with
+    pure none
+  else do
+    match ← stepRelayConnect net c0 hRev with
     | none =>
-      closeForwardRelay closeFd c1
-      return none
-    | some c2 =>
-      let c3? ←
-        if !c2.hostConnecting && !c2.hostEofIn && (hRev.pollin || hRev.pollhup || hRev.pollerr) then
-          match ← recvIntoRing net c2.hostFd MAX_RELAY_IO_STEPS c2.h2b with
-          | none => pure none
-          | some (h2b', eof') => pure (some { c2 with h2b := h2b', hostEofIn := c2.hostEofIn || eof' })
-        else
-          pure (some c2)
-      match c3? with
+      closeForwardRelay closeFd c0
+      pure none
+    | some c1 =>
+      match ← stepRelayRecvBox net c1 bRev with
       | none =>
-        closeForwardRelay closeFd c2
-        return none
-      | some c3 =>
-        let c4? ←
-          if !c3.hostConnecting then
-            let b2hRes? ←
-              if !c3.b2h.isEmpty then
-                flushRingNonblock net c3.hostFd MAX_RELAY_IO_STEPS c3.b2h
-              else
-                pure (some c3.b2h)
-            match b2hRes? with
-            | none => pure none
-            | some b2h' =>
-              let c3a := { c3 with b2h := b2h' }
-              if c3a.boxEofIn && c3a.b2h.isEmpty && !c3a.hostShutdownWr then
-                let _ ← shutdownWrClean net c3a.hostFd MAX_RELAY_IO_STEPS
-                pure (some { c3a with hostShutdownWr := true })
-              else
-                pure (some c3a)
-          else
-            pure (some c3)
-        match c4? with
+        closeForwardRelay closeFd c1
+        pure none
+      | some c2 =>
+        match ← stepRelayRecvHost net c2 hRev with
         | none =>
-          closeForwardRelay closeFd c3
-          return none
-        | some c4 =>
-          let h2bRes? ←
-            if !c4.h2b.isEmpty then
-              flushRingNonblock net c4.boxFd MAX_RELAY_IO_STEPS c4.h2b
-            else
-              pure (some c4.h2b)
-          match h2bRes? with
+          closeForwardRelay closeFd c2
+          pure none
+        | some c3 =>
+          match ← stepRelayFlushHost net c3 with
           | none =>
-            closeForwardRelay closeFd c4
-            return none
-          | some h2b' =>
-            let c5 := { c4 with h2b := h2b' }
-            let c6 ←
-              if c5.hostEofIn && c5.h2b.isEmpty && !c5.boxShutdownWr then do
-                let _ ← shutdownWrClean net c5.boxFd MAX_RELAY_IO_STEPS
-                pure { c5 with boxShutdownWr := true }
+            closeForwardRelay closeFd c3
+            pure none
+          | some c4 =>
+            match ← flushRingIfNonEmpty net c4.boxFd c4.h2b with
+            | none =>
+              closeForwardRelay closeFd c4
+              pure none
+            | some h2b' =>
+              let c6 ← maybeShutdownBoxWr net { c4 with h2b := h2b' }
+              if c6.boxEofIn && c6.b2h.isEmpty && c6.hostEofIn && c6.h2b.isEmpty then do
+                closeForwardRelay closeFd c6
+                pure none
               else
-                pure c5
-            if c6.boxEofIn && c6.b2h.isEmpty && c6.hostEofIn && c6.h2b.isEmpty then
-              closeForwardRelay closeFd c6
-              return none
-            else
-              return some c6
+                pure (some c6)
 
 /-- Accept pending connections on one handed-off listener socket up to `MAX_RELAY_SLOTS` and initiate non-blocking `connect(127.0.0.1:hostPort)`. -/
 def acceptOnListenerLoop {m : Type → Type} [Monad m] {fd : Type}
@@ -247,6 +259,27 @@ inductive ForwarderTickResult (fd : Type) where
   /-- Tick completed cleanly with updated active `relays`. -/
   | stepped (relays : Array (ForwardRelayConn fd))
 
+/-- Advance all active relays across indices `0 .. relays.size - 1` using `stepForwardRelay`. -/
+def stepRelaysAt {m : Type → Type} [Monad m] {fd : Type}
+    (net : Net.NetOpsM m fd) (closeFd : fd → m Unit)
+    (relays : Array (ForwardRelayConn fd))
+    (relayIndices : Array (Option Nat × Option Nat))
+    (revents : Array Poll.PollEvents) :
+    Nat → Array (ForwardRelayConn fd) → m (Array (ForwardRelayConn fd))
+  | 0, acc => pure acc
+  | rem + 1, acc => do
+    let i := relays.size - (rem + 1)
+    if h : i < relays.size then
+      let c := relays[i]
+      let (bIdx?, hIdx?) := relayIndices[i]?.getD (none, none)
+      let bRev := match bIdx? with | some idx => revents[idx]?.getD {} | none => {}
+      let hRev := match hIdx? with | some idx => revents[idx]?.getD {} | none => {}
+      match ← stepForwardRelay net closeFd c bRev hRev with
+      | some c' => stepRelaysAt net closeFd relays relayIndices revents rem (acc.push c')
+      | none => stepRelaysAt net closeFd relays relayIndices revents rem acc
+    else
+      pure acc
+
 /-- Execute one `ppoll` tick of the host TCP forwarder (wake check, listener accept, and bidirectional relay steps). -/
 def stepForwarderTick {m : Type → Type} [Monad m] {fd : Type}
     (net : Net.NetOpsM m fd) (poll : Poll.PollOpsM m fd) (closeFd : fd → m Unit)
@@ -259,22 +292,16 @@ def stepForwarderTick {m : Type → Type} [Monad m] {fd : Type}
   | .error e =>
     if e == Errno.EINTR then return .retryEintr else return .stop
   | .ok revents =>
-    let wakeRev := revents[0]?.getD {}
+    let wakeRev : Poll.PollEvents := revents[0]?.getD {}
     if wakeRev.pollin || wakeRev.pollhup || wakeRev.pollerr || wakeRev.pollnval then
       return .stop
     if ← checkStop then
       return .stop
-    let mut nextRelays : Array (ForwardRelayConn fd) := Array.emptyWithCapacity relays.size
-    for h : i in [0 : relays.size] do
-      let c := relays[i]
-      let (bIdx?, hIdx?) := plan.relayIndices[i]?.getD (none, none)
-      let bRev := match bIdx? with | some idx => revents[idx]?.getD {} | none => {}
-      let hRev := match hIdx? with | some idx => revents[idx]?.getD {} | none => {}
-      match ← stepForwardRelay net closeFd c bRev hRev with
-      | some c' => nextRelays := nextRelays.push c'
-      | none => pure ()
+    let mut nextRelays ←
+      stepRelaysAt net closeFd relays plan.relayIndices revents relays.size
+        (Array.emptyWithCapacity relays.size)
     for (lIdx, lfd, hport) in plan.listenerIndices do
-      let lRev := revents[lIdx]?.getD {}
+      let lRev : Poll.PollEvents := revents[lIdx]?.getD {}
       if lRev.pollin && nextRelays.size < MAX_RELAY_SLOTS then
         nextRelays ← acceptOnListenerLoop net closeFd lfd hport MAX_ACCEPT_BATCH nextRelays
     return .stepped nextRelays
@@ -291,36 +318,27 @@ def runForwarderLoop {m : Type → Type} [Monad m] {fd : Type}
     | .retryEintr => runForwarderLoop net poll closeFd checkStop wakeR listeners relays fuel
     | .stepped relays' => runForwarderLoop net poll closeFd checkStop wakeR listeners relays' fuel
 
-/-- Live `IO` handle for a dedicated host-side TCP port-forwarder task and its wakeup `socketpair`. -/
-structure IoForwarderHandle where
-  /-- Flag checked by the forwarder loop before and after `ppoll`. -/
-  stopRequested : IO.Ref Bool
-  /-- Read end of the wakeup `socketpair` (closed after `IO.wait`). -/
-  wakeR : RawFd
-  /-- Write end of the wakeup `socketpair` (signaled and closed on stop). -/
-  wakeWRef : IO.Ref (Option RawFd)
-  /-- Handed-off box listener descriptors (closed after `IO.wait`). -/
-  listenerFds : Array RawFd
-  /-- Dedicated OS task executing `runForwarderLoop`. -/
-  task : Task (Except IO.Error Unit)
-
-/-- Start a dedicated `IO` TCP port-forwarder task over `(listenerFds, hostPorts)` with `socketpair` wakeup. -/
-def startIoForwarder (listenerFds : Array RawFd) (hostPorts : Array UInt16) :
-    IO (Except Errno IoForwarderHandle) := do
+/-- Start a dedicated TCP port-forwarder task over `(listenerFds, hostPorts)` with `socketpair` wakeup using `conc : Core.ConcOpsM m`. -/
+def startForwarderM {m : Type → Type} [Monad m] {fd : Type}
+    (files : Files.FilesOpsM m fd) (net : Net.NetOpsM m fd) (poll : Poll.PollOpsM m fd)
+    (conc : Core.ConcOpsM m) (listenerFds : Array fd) (hostPorts : Array UInt16) :
+    m (Except Errno (ConcForwarderHandle fd conc.Ref conc.TaskHandle)) := do
   match ← retryEintr
-      (Net.defaultOps.socketpair .unix .stream { nonblock := true, cloexec := true })
+      (net.socketpair .unix .stream { nonblock := true, cloexec := true })
       DEFAULT_EINTR_FUEL with
   | .error e => return .error e
   | .ok (wakeR, wakeW) =>
-    let stopRequested ← IO.mkRef false
-    let wakeWRef ← IO.mkRef (some wakeW)
+    let stopRequested ← conc.mkRef false
+    let wakeWRef ← conc.mkRef (some wakeW)
     let listeners := listenerFds.zip hostPorts
-    let closeFd : RawFd → IO Unit := fun h => do
-      let _ ← Files.defaultOps.close h
+    let closeFd : fd → m Unit := fun h => do
+      let _ ← files.close h
       pure ()
-    let task ← IO.asTask (prio := .dedicated) do
-      runForwarderLoop Net.defaultOps Poll.defaultOps closeFd
-        stopRequested.get wakeR listeners #[] FORWARDER_LOOP_FUEL
+    let task ← conc.spawnTask do
+      let _ ← conc.tryCatchMsg
+        (runForwarderLoop net poll closeFd
+          (conc.readRef stopRequested) wakeR listeners #[] FORWARDER_LOOP_FUEL)
+      pure ()
     return .ok {
       stopRequested := stopRequested
       wakeR := wakeR
@@ -330,20 +348,23 @@ def startIoForwarder (listenerFds : Array RawFd) (hostPorts : Array UInt16) :
     }
 
 /-- Signal `h`, wait for its dedicated forwarder task to terminate and close all relay sockets, then close `wakeR` and all listener descriptors. -/
-def stopIoForwarder (h : IoForwarderHandle) : IO Unit := do
-  h.stopRequested.set true
-  let wakeW? ← h.wakeWRef.modifyGet fun w => (w, none)
+def stopForwarderM {m : Type → Type} [Monad m] {fd : Type}
+    (files : Files.FilesOpsM m fd) (net : Net.NetOpsM m fd)
+    (conc : Core.ConcOpsM m) (h : ConcForwarderHandle fd conc.Ref conc.TaskHandle) :
+    m Unit := do
+  conc.writeRef h.stopRequested true
+  let wakeW? ← conc.modifyGetRef h.wakeWRef fun w => (w, none)
   match wakeW? with
   | some w =>
     let _ ← retryEintr
-      (Net.defaultOps.sendto w (ByteArray.mk #[1]) { nosignal := true, dontwait := true })
+      (net.sendto w (ByteArray.mk #[1]) { nosignal := true, dontwait := true })
       DEFAULT_EINTR_FUEL
-    let _ ← Files.defaultOps.close w
+    let _ ← files.close w
     pure ()
   | none => pure ()
-  let _ ← IO.wait h.task
-  let closeFd : RawFd → IO Unit := fun d => do
-    let _ ← Files.defaultOps.close d
+  let _ ← conc.waitTask h.task
+  let closeFd : fd → m Unit := fun d => do
+    let _ ← files.close d
     pure ()
   closeFd h.wakeR
   for lfd in h.listenerFds do

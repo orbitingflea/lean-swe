@@ -1,23 +1,53 @@
+import Core.ConcOps
+import LeanSwe.LinuxSyscall.Files.Interface
+import LeanSwe.LinuxSyscall.Net.Interface
+import LeanSwe.LinuxSyscall.Poll.Interface
+import LeanSwe.LinuxSyscall.Process.Interface
+import LeanSwe.LinuxSyscall.Sandbox.Interface
+import LeanSwe.LinuxSyscall.TimeRand.Interface
+import LeanSwe.LinuxSyscall.Passwd.Interface
+import LeanSwe.PostFork.Interface
+import LeanSwe.EnvVars.Raw.Interface
 import LeanSwe.ProcessSandbox.Raw.Types
+import LeanSwe.ProcessSandbox.Raw.Types.Internal
 import LeanSwe.ProcessSandbox.Raw.Model.Refines
+import LeanSwe.ProcessSandbox.Raw.Model.FullWorld
 import LeanSwe.ProcessSandbox.Raw.Impl
 import LeanSwe.ProcessSandbox.Raw.SysBridge
 import LeanSwe.ProcessSandbox.Raw.SysBridge.HostCap
+import LeanSwe.ProcessSandbox.Raw.SysBridge.Driver
 
 namespace LeanSwe.ProcessSandbox.Raw
 
 namespace Internal
 
-/-- Build a generic `RawProcessSandboxOpsM m` backed by `Raw.SysBridge.mkRawOpsM` over public `Model.RawHostCapM m`. -/
-def mkOpsFromHostCapM {m : Type → Type} [Monad m]
-    (cap : Model.RawHostCapM m) : RawProcessSandboxOpsM m :=
-  SysBridge.mkOpsFromHostCapM cap
+/-- Build the canonical `RawProcessSandboxOpsM m` bundle over `Model.FullSysOpsM m`, `Core.ConcOpsM m`, and `Core.StateCellM m`. -/
+def mkFullOpsM {m : Type → Type} [Monad m] [MonadFinally m]
+    (sys : Model.FullSysOpsM m) (conc : Core.ConcOpsM m)
+    (cell : Core.StateCellM m (HostCellState conc.Ref conc.TaskHandle)) :
+    RawProcessSandboxOpsM m :=
+  SysBridge.Driver.mkFullOpsM sys conc cell
 
 end Internal
 
-/-- Default OS sandbox primitive operations backed by pure Lean `Raw.SysBridge` and embedded `leanswe-psandbox-init`. -/
+private initialize gHostTable :
+    IO.Ref (HostCellState IO.Ref (fun α => Task (Except IO.Error α))) ←
+  IO.mkRef {}
+
+/-- Default OS sandbox primitive operations wired directly to `LinuxSyscall.*`, `PostFork`, `EnvVars.Raw`, `Core.ioConcOps`, and `Core.ioStateCell gHostTable`. -/
 def defaultOps : RawProcessSandboxOps :=
-  Internal.mkOpsFromHostCapM SysBridge.defaultOps
+  Internal.mkFullOpsM
+    { files := LeanSwe.LinuxSyscall.Files.defaultOps
+      net := LeanSwe.LinuxSyscall.Net.defaultOps
+      poll := LeanSwe.LinuxSyscall.Poll.defaultOps
+      proc := LeanSwe.LinuxSyscall.Process.defaultOps
+      sandbox := LeanSwe.LinuxSyscall.Sandbox.defaultOps
+      timeRand := LeanSwe.LinuxSyscall.TimeRand.defaultOps
+      passwd := LeanSwe.LinuxSyscall.Passwd.defaultOps
+      postFork := LeanSwe.PostFork.defaultOps
+      envVars := LeanSwe.EnvVars.Raw.defaultOps }
+    Core.ioConcOps
+    (Core.ioStateCell gHostTable)
 
 /-- Normalize a `SandboxRawError` into a `SandboxError` with a non-empty diagnostic message. -/
 @[inline] def mapRawError (err : SandboxRawError) : SandboxError :=

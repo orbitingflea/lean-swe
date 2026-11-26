@@ -1,3 +1,4 @@
+import Core.ConcOps
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Net.Types
@@ -8,74 +9,15 @@ import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.LinuxSyscall.Passwd.Types
 import LeanSwe.PostFork.Types
 import LeanSwe.ProcessSandbox.Raw.Types
+import LeanSwe.ProcessSandbox.Raw.Types.Internal
 
 namespace LeanSwe.ProcessSandbox.Raw.SysBridge
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.ProcessSandbox.Raw
 
-/-- Sealed sandbox plan slot holding the structured `CompiledSandboxPlan` and three immutable `memfd` descriptors (zero duplicate wire parsing). -/
-structure PlanSlotM (fd : Type) where
-  /-- Validated structured sandbox plan retained directly for `bwrap` argv construction and cgroup setup. -/
-  plan : CompiledSandboxPlan
-  /-- Sealed `memfd` containing the `LSWP0002` wire payload read by `psandbox_init`. -/
-  planMemfd : fd
-  /-- Sealed `memfd` containing the compiled `leanswe-psandbox-init` helper ELF binary. -/
-  initMemfd : fd
-  /-- Sealed `memfd` containing synthetic `/etc/hosts` bytes. -/
-  hostsMemfd : fd
-
-/-- Active spawned sandbox box slot holding process identifiers, pipes, handed-off listeners, and per-box cgroup directory. -/
-structure BoxSlotM (fd : Type) where
-  /-- Host-visible `bwrap` PID (`1 ≤ pid ≤ 0x7fffffff`). -/
-  pid : UInt32
-  /-- Dedicated host process group ID (`pgid = pid`). -/
-  pgid : UInt32
-  /-- Race-free Linux `pidfd` descriptor tracking `pid`. -/
-  pidfd : fd
-  /-- Parent write end of guest `stdin` pipe (taken by `readBoxOutput`). -/
-  stdinFd? : Option fd
-  /-- Parent read end of guest `stdout` pipe (taken by `readBoxOutput`). -/
-  stdoutFd? : Option fd
-  /-- Parent read end of guest `stderr` pipe (taken by `readBoxOutput`). -/
-  stderrFd? : Option fd
-  /-- Parent read end of `psandbox_init` `status_pipe` (taken by `readBoxOutput`). -/
-  statusFd? : Option fd
-  /-- Parent write end of `psandbox_init` `go_pipe` (taken by `readBoxOutput`). -/
-  goFd? : Option fd
-  /-- Whether `readBoxOutput` has already claimed this box's I/O pipes. -/
-  readStarted : Bool := false
-  /-- Whether `startPortForwarders` has already claimed `listenerFds`. -/
-  fwdsTaken : Bool := false
-  /-- Handed-off in-box `127.0.0.1:boxPort` listener descriptors awaiting `startPortForwarders`. -/
-  listenerFds : Array fd := #[]
-  /-- Per-box direct `/sys/fs/cgroup/...` sibling directory path. -/
-  cgroupDir : String
-  /-- Guest executable path for `execvp` error reporting. -/
-  program : String
-  /-- Guest working directory for `chdir` error reporting. -/
-  cwd : String
-
-/-- Active host-side TCP port-forwarder slot linking handle ID to box handle ID and running task handle. -/
-structure ForwarderSlotM (fwdTask : Type) where
-  /-- Associated `BoxHandle.handleId`. -/
-  boxHandleId : Nat
-  /-- Backend forwarder task handle stopped by `stopPortForwarders`. -/
-  taskHandle : fwdTask
-
-/-- Pure in-memory host handle table tracking active plans, boxes, forwarders, and monotonic IDs. -/
-structure HostTableState (fd : Type) (fwdTask : Type) where
-  /-- Next monotonically increasing 64-bit handle ID (`≥ 1`). -/
-  nextId : Nat := 1
-  /-- Monotonic per-process cgroup directory sequence counter (`≥ 1`). -/
-  cgSeq : Nat := 1
-  /-- Active sealed plan slots keyed by `handleId`. -/
-  plans : List (Nat × PlanSlotM fd) := []
-  /-- Active unreaped box slots keyed by `handleId`. -/
-  boxes : List (Nat × BoxSlotM fd) := []
-  /-- Active running forwarder slots keyed by `handleId`. -/
-  forwarders : List (Nat × ForwarderSlotM fwdTask) := []
-  deriving Inhabited
+export LeanSwe.ProcessSandbox.Raw
+  (PlanSlotM BoxSlotM ForwarderSlotM ConcForwarderHandle HostTableState HostCellState)
 
 /-- Lookup helper over association list `xs`. -/
 def assocFind {α : Type} (hid : Nat) : List (Nat × α) → Option α
@@ -216,6 +158,28 @@ structure HostTableOpsM (m : Type → Type) (fd : Type) (fwdTask : Type) where
   nextCgSeq : m Nat
   /-- Snapshot active `(openPlans, activeBoxes, activeForwarders)` counts. -/
   counts : m SandboxResourceCounts
+
+/-- Instantiate `HostTableOpsM m fd fwdTask` over a `Core.StateCellM m (HostTableState fd fwdTask)`. -/
+def mkCellTableOps {m : Type → Type} [Monad m] {fd fwdTask : Type}
+    (cell : Core.StateCellM m (HostTableState fd fwdTask)) : HostTableOpsM m fd fwdTask where
+  insertPlan slot := cell.modifyGet (insertPlanPure · slot)
+  findPlan hid := do
+    let st ← cell.get
+    return assocFind hid st.plans
+  detachPlan hid := cell.modifyGet (detachPlanPure · hid)
+  insertBox slot := cell.modifyGet (insertBoxPure · slot)
+  findBoxKillInfo hid := do
+    let st ← cell.get
+    return (assocFind hid st.boxes).map fun b => (b.pgid, b.pidfd)
+  takeBoxListeners hid expected := cell.modifyGet (takeBoxListenersPure · hid expected)
+  takeBoxIo hid := cell.modifyGet (takeBoxIoPure · hid)
+  detachBox hid := cell.modifyGet (detachBoxPure · hid)
+  insertFwd slot := cell.modifyGet (insertFwdPure · slot)
+  detachFwd hid := cell.modifyGet (detachFwdPure · hid)
+  nextCgSeq := cell.modifyGet nextCgSeqPure
+  counts := do
+    let st ← cell.get
+    return countsPure st
 
 /-- Pure `StateM S` instantiation of `HostTableOpsM` via lens `(getTbl, setTbl)`. -/
 def stateHostTableOps {S fd fwdTask : Type}

@@ -7,6 +7,7 @@ open Core
 open LeanSwe.LinuxSyscall
 open LeanSwe.ProcessSandbox.Raw
 open LeanSwe.ProcessSandbox.Raw.SysBridge
+open LeanSwe.ProcessSandbox.Raw.SysBridge.Driver
 open LeanSwe.ProcessSandbox.Raw.SysBridge.Cgroup
 open LeanSwe.ProcessSandbox.Raw.SysBridge.Preset
 open LeanSwe.ProcessSandbox.Raw.SysBridge.Bwrap
@@ -31,11 +32,6 @@ theorem baseIo_total {α : Type} (b : BaseIO α) : IoTotal (b : IO α) := by
   cases b w with
   | mk a w' => exact ⟨a, w', rfl⟩
 
-/-- `catchIoTotal` produces a total `IO` action for any underlying `act` and `fb`. -/
-theorem catchIoTotal_total {α : Type} (act : IO α) (fb : IO.Error → α) :
-    IoTotal (catchIoTotal act fb) :=
-  baseIo_total _
-
 /-- `pure a` is total in `IO`. -/
 theorem ioTotal_pure {α : Type} (a : α) : IoTotal (pure a : IO α) :=
   fun w => ⟨a, w, rfl⟩
@@ -56,6 +52,39 @@ theorem ioTotal_bind {α β : Type} {ma : IO α} {k : α → IO β}
 theorem ioTotal_ite {α : Type} {c : Prop} [Decidable c] {t e : IO α}
     (ht : IoTotal t) (he : IoTotal e) : IoTotal (if c then t else e) := by
   by_cases hc : c <;> simp [hc, ht, he]
+
+private theorem ioTotal_est_tryCatch {β : Type} (m1 : IO β) (h : IO.Error → IO β)
+    (hh : ∀ err, IoTotal (h err)) : IoTotal (EST.tryCatch m1 h) := by
+  intro w; unfold EST.tryCatch
+  cases m1 w with
+  | ok b w' => exact ⟨b, w', rfl⟩
+  | error err w' => exact hh err w'
+
+/-- `Core.ioConcOps.tryCatchMsg` is total in `IO` for every underlying `act : IO α`. -/
+theorem ioTotal_ioConcOps_tryCatchMsg {α : Type} (act : IO α) :
+    IoTotal (Core.ioConcOps.tryCatchMsg act) :=
+  ioTotal_est_tryCatch _ _ (fun _ w => ⟨_, w, rfl⟩)
+
+/-- `catchSysErrno Core.ioConcOps` is total in `IO`. -/
+theorem ioTotal_catchSysErrno {α : Type} (act : IO (Except Errno α)) :
+    IoTotal (catchSysErrno Core.ioConcOps act) := by
+  unfold catchSysErrno
+  refine ioTotal_bind (ioTotal_ioConcOps_tryCatchMsg act) fun r => ?_
+  cases r <;> exact ioTotal_pure _
+
+/-- `catchSysPf Core.ioConcOps` is total in `IO`. -/
+theorem ioTotal_catchSysPf {α : Type} (act : IO (Except PostFork.PostForkError α)) :
+    IoTotal (catchSysPf Core.ioConcOps act) := by
+  unfold catchSysPf
+  refine ioTotal_bind (ioTotal_ioConcOps_tryCatchMsg act) fun r => ?_
+  cases r <;> exact ioTotal_pure _
+
+/-- `catchSysOpt Core.ioConcOps` is total in `IO`. -/
+theorem ioTotal_catchSysOpt {α : Type} (act : IO (Option α)) :
+    IoTotal (catchSysOpt Core.ioConcOps act) := by
+  unfold catchSysOpt
+  refine ioTotal_bind (ioTotal_ioConcOps_tryCatchMsg act) fun r => ?_
+  cases r <;> exact ioTotal_pure _
 
 /-- `List.forIn` preserves `IoTotal`. -/
 theorem ioTotal_forIn_list {α β : Type} (step : α → β → IO (ForInStep β))
@@ -120,75 +149,140 @@ theorem ioSafeErr_never {α : Type} {P : SandboxErrorKind → Prop}
   | ok _ => trivial
   | error e => exact hForb e.kind hP
 
-/-- Bundle of `IoTotal` witnesses for all host syscall and table methods used by `SysBridge`. -/
-structure CapTotal (cap : Model.RawHostCapM IO) : Prop where
+/-- Bundle of `IoTotal` witnesses for all `HostSysDepsM IO fd fwdTask` methods used by `SysBridge`. -/
+structure SysDepsTotal {fd fwdTask : Type} (deps : HostSysDepsM IO fd fwdTask) : Prop where
   /-- `files.openat` is total. -/
-  openat : ∀ d p fl m, IoTotal (cap.files.openat d p fl m)
+  openat : ∀ d p fl m, IoTotal (deps.files.openat d p fl m)
   /-- `files.close` is total. -/
-  close : ∀ fd, IoTotal (cap.files.close fd)
+  close : ∀ fd, IoTotal (deps.files.close fd)
   /-- `files.read` is total. -/
-  read : ∀ fd n, IoTotal (cap.files.read fd n)
+  read : ∀ fd n, IoTotal (deps.files.read fd n)
   /-- `files.write` is total. -/
-  write : ∀ fd bs, IoTotal (cap.files.write fd bs)
+  write : ∀ fd bs, IoTotal (deps.files.write fd bs)
   /-- `files.fstatat` is total. -/
-  fstatat : ∀ d p fl, IoTotal (cap.files.fstatat d p fl)
+  fstatat : ∀ d p fl, IoTotal (deps.files.fstatat d p fl)
   /-- `files.faccessat` is total. -/
-  faccessat : ∀ d p mk fl, IoTotal (cap.files.faccessat d p mk fl)
+  faccessat : ∀ d p mk fl, IoTotal (deps.files.faccessat d p mk fl)
   /-- `files.mkdirat` is total. -/
-  mkdirat : ∀ d p m, IoTotal (cap.files.mkdirat d p m)
+  mkdirat : ∀ d p m, IoTotal (deps.files.mkdirat d p m)
   /-- `files.unlinkat` is total. -/
-  unlinkat : ∀ d p rm, IoTotal (cap.files.unlinkat d p rm)
+  unlinkat : ∀ d p rm, IoTotal (deps.files.unlinkat d p rm)
   /-- `files.readlinkat` is total. -/
-  readlinkat : ∀ d p c, IoTotal (cap.files.readlinkat d p c)
+  readlinkat : ∀ d p c, IoTotal (deps.files.readlinkat d p c)
   /-- `files.fcntl` is total. -/
-  fcntl : ∀ fd cmd, IoTotal (cap.files.fcntl fd cmd)
+  fcntl : ∀ fd cmd, IoTotal (deps.files.fcntl fd cmd)
   /-- `files.reopenReadOnly` is total. -/
-  reopenReadOnly : ∀ fd, IoTotal (cap.files.reopenReadOnly fd)
+  reopenReadOnly : ∀ fd, IoTotal (deps.files.reopenReadOnly fd)
   /-- `proc.waitpid` is total. -/
-  waitpid : ∀ pid fl, IoTotal (cap.proc.waitpid pid fl)
+  waitpid : ∀ pid fl, IoTotal (deps.proc.waitpid pid fl)
   /-- `proc.kill` is total. -/
-  kill : ∀ pid sig, IoTotal (cap.proc.kill pid sig)
+  kill : ∀ pid sig, IoTotal (deps.proc.kill pid sig)
   /-- `proc.pidfd_send_signal` is total. -/
-  pidfdSendSignal : ∀ fd sig fl, IoTotal (cap.proc.pidfd_send_signal fd sig fl)
+  pidfdSendSignal : ∀ fd sig fl, IoTotal (deps.proc.pidfd_send_signal fd sig fl)
   /-- `proc.getpid` is total. -/
-  getpid : IoTotal cap.proc.getpid
+  getpid : IoTotal deps.proc.getpid
   /-- `proc.getuid` is total. -/
-  getuid : IoTotal cap.proc.getuid
+  getuid : IoTotal deps.proc.getuid
   /-- `sandbox.landlockCreateRuleset` is total. -/
-  landlockCreateRuleset : ∀ a fl, IoTotal (cap.sandbox.landlockCreateRuleset a fl)
+  landlockCreateRuleset : ∀ a fl, IoTotal (deps.sandbox.landlockCreateRuleset a fl)
   /-- `sandbox.seccomp` is total. -/
-  seccomp : ∀ op fl bs, IoTotal (cap.sandbox.seccomp op fl bs)
+  seccomp : ∀ op fl bs, IoTotal (deps.sandbox.seccomp op fl bs)
   /-- `sandbox.memfdCreate` is total. -/
-  memfdCreate : ∀ n fl, IoTotal (cap.sandbox.memfdCreate n fl)
+  memfdCreate : ∀ n fl, IoTotal (deps.sandbox.memfdCreate n fl)
   /-- `timeRand.clock_nanosleep` is total. -/
-  clockNanosleep : ∀ clk a ts, IoTotal (cap.timeRand.clock_nanosleep clk a ts)
+  clockNanosleep : ∀ clk a ts, IoTotal (deps.timeRand.clock_nanosleep clk a ts)
   /-- `passwd.getpwuid` is total. -/
-  getpwuid : ∀ uid, IoTotal (cap.passwd.getpwuid uid)
+  getpwuid : ∀ uid, IoTotal (deps.passwd.getpwuid uid)
   /-- `postFork.spawn` is total. -/
-  pfSpawn : ∀ sp, IoTotal (cap.postFork.spawn sp)
+  pfSpawn : ∀ sp, IoTotal (deps.postFork.spawn sp)
   /-- `getEnvPath` is total. -/
-  getEnvPath : IoTotal cap.getEnvPath
+  getEnvPath : IoTotal deps.getEnvPath
   /-- `getEnvHome` is total. -/
-  getEnvHome : IoTotal cap.getEnvHome
+  getEnvHome : IoTotal deps.getEnvHome
   /-- `startFwdTask` is total. -/
-  startFwdTask : ∀ fds ps, IoTotal (cap.startFwdTask fds ps)
+  startFwdTask : ∀ fds ps, IoTotal (deps.startFwdTask fds ps)
   /-- `stopFwdTask` is total. -/
-  stopFwdTask : ∀ tid, IoTotal (cap.stopFwdTask tid)
-  /-- `getTable` is total. -/
-  getTable : IoTotal cap.getTable
-  /-- `modifyTable` is total. -/
-  modifyTable : ∀ f, IoTotal (cap.modifyTable f)
+  stopFwdTask : ∀ tid, IoTotal (deps.stopFwdTask tid)
 
-/-- `mkIoHostCap ref` satisfies `CapTotal` for every `ref`. -/
-theorem mkIoHostCap_total (ref : IO.Ref IoHostState) : CapTotal (mkIoHostCap ref) := by
-  dsimp only [mkIoHostCap, mkIoFilesOps, mkIoProcOps, mkIoSandboxOps,
-    mkIoTimeRandOps, mkIoPasswdOps, mkIoPostForkOps, catchErrno, catchPf]
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
-    intros <;> exact catchIoTotal_total _ _
+/-- Bundle of `IoTotal` witnesses for all `HostTableOpsM IO fd fwdTask` methods. -/
+structure TableOpsTotal {fd fwdTask : Type} (tbl : HostTableOpsM IO fd fwdTask) : Prop where
+  /-- `insertPlan` is total. -/
+  insertPlan : ∀ s, IoTotal (tbl.insertPlan s)
+  /-- `findPlan` is total. -/
+  findPlan : ∀ hid, IoTotal (tbl.findPlan hid)
+  /-- `detachPlan` is total. -/
+  detachPlan : ∀ hid, IoTotal (tbl.detachPlan hid)
+  /-- `insertBox` is total. -/
+  insertBox : ∀ s, IoTotal (tbl.insertBox s)
+  /-- `findBoxKillInfo` is total. -/
+  findBoxKillInfo : ∀ hid, IoTotal (tbl.findBoxKillInfo hid)
+  /-- `takeBoxListeners` is total. -/
+  takeBoxListeners : ∀ hid exp, IoTotal (tbl.takeBoxListeners hid exp)
+  /-- `takeBoxIo` is total. -/
+  takeBoxIo : ∀ hid, IoTotal (tbl.takeBoxIo hid)
+  /-- `detachBox` is total. -/
+  detachBox : ∀ hid, IoTotal (tbl.detachBox hid)
+  /-- `insertFwd` is total. -/
+  insertFwd : ∀ s, IoTotal (tbl.insertFwd s)
+  /-- `detachFwd` is total. -/
+  detachFwd : ∀ hid, IoTotal (tbl.detachFwd hid)
+  /-- `nextCgSeq` is total. -/
+  nextCgSeq : IoTotal tbl.nextCgSeq
+  /-- `counts` is total. -/
+  counts : IoTotal tbl.counts
 
-/-- `SysBridge.defaultOps` satisfies `CapTotal`. -/
-theorem sysBridge_defaultOps_total : CapTotal SysBridge.defaultOps :=
-  mkIoHostCap_total _
+/-- `mkSafeSysDepsM sys Core.ioConcOps` satisfies `SysDepsTotal` for every `sys`, `isLinux`, and `target`. -/
+theorem mkSafeSysDepsM_total (sys : Model.FullSysOpsM IO) (isLinux : Bool) (target : String) :
+    SysDepsTotal (mkSafeSysDepsM sys Core.ioConcOps isLinux target) := by
+  dsimp only [mkSafeSysDepsM, mkSafeFilesOps, mkSafeNetOps, mkSafePollOps, mkSafeProcOps,
+    mkSafeSandboxOps, mkSafeTimeRandOps, mkSafePasswdOps, mkSafePostForkOps]
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · intro d p fl m; exact ioTotal_catchSysErrno _
+  · intro fd; exact ioTotal_catchSysErrno _
+  · intro fd n; exact ioTotal_catchSysErrno _
+  · intro fd bs; exact ioTotal_catchSysErrno _
+  · intro d p fl; exact ioTotal_catchSysErrno _
+  · intro d p mk fl; exact ioTotal_catchSysErrno _
+  · intro d p m; exact ioTotal_catchSysErrno _
+  · intro d p rm; exact ioTotal_catchSysErrno _
+  · intro d p c; exact ioTotal_catchSysErrno _
+  · intro fd cmd; exact ioTotal_catchSysErrno _
+  · intro fd; exact ioTotal_catchSysErrno _
+  · intro pid fl; exact ioTotal_catchSysErrno _
+  · intro pid sig; exact ioTotal_catchSysErrno _
+  · intro fd sig fl; exact ioTotal_catchSysErrno _
+  · exact ioTotal_catchSysErrno _
+  · exact ioTotal_catchSysErrno _
+  · intro a fl; exact ioTotal_catchSysErrno _
+  · intro op fl bs; exact ioTotal_catchSysErrno _
+  · intro n fl; exact ioTotal_catchSysErrno _
+  · intro clk a ts; exact ioTotal_catchSysErrno _
+  · intro uid; exact ioTotal_catchSysErrno _
+  · intro sp; exact ioTotal_catchSysPf _
+  · exact ioTotal_catchSysOpt _
+  · exact ioTotal_catchSysOpt _
+  · intro fds ps; exact ioTotal_catchSysErrno _
+  · intro tid
+    exact ioTotal_bind (ioTotal_ioConcOps_tryCatchMsg _) (fun _ => ioTotal_pure ())
+
+/-- `mkCellTableOps (Core.ioStateCell ref)` satisfies `TableOpsTotal` for every `ref`. -/
+theorem mkCellTableOps_ioStateCell_total {fd fwdTask : Type}
+    (ref : IO.Ref (HostTableState fd fwdTask)) :
+    TableOpsTotal (mkCellTableOps (Core.ioStateCell ref)) := by
+  dsimp only [mkCellTableOps, Core.ioStateCell]
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · intro _; exact baseIo_total _
+  · intro _; exact ioTotal_bind (baseIo_total _) (fun _ => ioTotal_pure _)
+  · intro _; exact baseIo_total _
+  · intro _; exact baseIo_total _
+  · intro _; exact ioTotal_bind (baseIo_total _) (fun _ => ioTotal_pure _)
+  · intro _ _; exact baseIo_total _
+  · intro _; exact baseIo_total _
+  · intro _; exact baseIo_total _
+  · intro _; exact baseIo_total _
+  · intro _; exact baseIo_total _
+  · exact baseIo_total _
+  · exact ioTotal_bind (baseIo_total _) (fun _ => ioTotal_pure _)
 
 /-- `retryEintr` preserves `IoTotal`. -/
 theorem ioTotal_retryEintr {α : Type} {act : IO (Except Errno α)} (hact : IoTotal act) :
@@ -201,29 +295,30 @@ theorem ioTotal_retryEintr {α : Type} {act : IO (Except Errno α)} (hact : IoTo
     | ok _ => exact ioTotal_pure _
     | error _ => exact ioTotal_ite (ioTotal_retryEintr hact fuel) (ioTotal_pure _)
 
-/-- `Files.closeOpt` is total under `CapTotal`. -/
-theorem ioTotal_closeOpt {cap : Model.RawHostCapM IO} (hc : CapTotal cap) :
-    ∀ opt : Option Nat, IoTotal (Files.closeOpt cap.files opt)
+/-- `Files.closeOpt` is total under `SysDepsTotal`. -/
+theorem ioTotal_closeOpt {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) : ∀ opt : Option fd, IoTotal (Files.closeOpt deps.files opt)
   | none => ioTotal_pure ()
   | some h => ioTotal_bind (hc.close h) (fun _ => ioTotal_pure ())
 
-/-- `closeFdArray` is total under `CapTotal`. -/
-theorem ioTotal_closeFdArray {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (fds : Array Nat) : IoTotal (closeFdArray cap.files fds) := by
+/-- `closeFdArray` is total under `SysDepsTotal`. -/
+theorem ioTotal_closeFdArray {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (fds : Array fd) : IoTotal (closeFdArray deps.files fds) := by
   unfold closeFdArray
   refine ioTotal_bind (ioTotal_forIn_array _ ?_ fds PUnit.unit) (fun _ => ioTotal_pure ())
   intro h _
   exact ioTotal_bind (ioTotal_closeOpt hc (some h)) (fun _ => ioTotal_pure (ForInStep.yield PUnit.unit))
 
-/-- `TimeRand.sleepMonoMs` is total under `CapTotal`. -/
-theorem ioTotal_sleepMonoMs {cap : Model.RawHostCapM IO} (hc : CapTotal cap) (ms : Nat) :
-    IoTotal (TimeRand.sleepMonoMs cap.timeRand ms) := by
+/-- `TimeRand.sleepMonoMs` is total under `SysDepsTotal`. -/
+theorem ioTotal_sleepMonoMs {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (ms : Nat) : IoTotal (TimeRand.sleepMonoMs deps.timeRand ms) := by
   unfold TimeRand.sleepMonoMs
   exact ioTotal_bind (hc.clockNanosleep _ _ _) (fun _ => ioTotal_pure ())
 
-/-- `writeAllFd` is total under `CapTotal`. -/
-theorem ioTotal_writeAllFd {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (h : Nat) (data : ByteArray) : ∀ off fuel, IoTotal (writeAllFd cap.files h data off fuel)
+/-- `writeAllFd` is total under `SysDepsTotal`. -/
+theorem ioTotal_writeAllFd {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (h : fd) (data : ByteArray) :
+    ∀ off fuel, IoTotal (writeAllFd deps.files h data off fuel)
   | _, 0 => ioTotal_ite (ioTotal_pure _) (ioTotal_pure _)
   | off, fuel + 1 => by
     unfold writeAllFd
@@ -233,9 +328,10 @@ theorem ioTotal_writeAllFd {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
     | ok _ => exact ioTotal_ite (ioTotal_pure _) (ioTotal_writeAllFd hc h data _ fuel)
     | error _ => exact ioTotal_ite (ioTotal_writeAllFd hc h data off fuel) (ioTotal_pure _)
 
-/-- `writeTextFile` is total under `CapTotal`. -/
-theorem ioTotal_writeTextFile {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (path text : String) (fuel : Nat) : IoTotal (writeTextFile cap.files path text fuel) := by
+/-- `writeTextFile` is total under `SysDepsTotal`. -/
+theorem ioTotal_writeTextFile {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (path text : String) (fuel : Nat) :
+    IoTotal (writeTextFile deps.files path text fuel) := by
   unfold writeTextFile
   refine ioTotal_bind (ioTotal_retryEintr (hc.openat _ _ _ _) fuel) fun r => ?_
   cases r with
@@ -244,9 +340,10 @@ theorem ioTotal_writeTextFile {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
     refine ioTotal_bind (ioTotal_writeAllFd hc h text.toUTF8 0 fuel) fun res => ?_
     exact ioTotal_bind (ioTotal_closeOpt hc (some h)) (fun _ => ioTotal_pure res)
 
-/-- `readBoundedLoop` is total under `CapTotal`. -/
-theorem ioTotal_readBoundedLoop {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (h maxB : Nat) : ∀ chunks tot fuel, IoTotal (readBoundedLoop cap.files h maxB chunks tot fuel)
+/-- `readBoundedLoop` is total under `SysDepsTotal`. -/
+theorem ioTotal_readBoundedLoop {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (h : fd) (maxB : Nat) :
+    ∀ chunks tot fuel, IoTotal (readBoundedLoop deps.files h maxB chunks tot fuel)
   | _, _, 0 => ioTotal_pure _
   | chunks, tot, fuel + 1 => by
     unfold readBoundedLoop
@@ -256,9 +353,10 @@ theorem ioTotal_readBoundedLoop {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
     | ok _ => exact ioTotal_ite (ioTotal_pure _) (ioTotal_readBoundedLoop hc h maxB _ _ fuel)
     | error _ => exact ioTotal_ite (ioTotal_readBoundedLoop hc h maxB chunks tot fuel) (ioTotal_pure _)
 
-/-- `readSmallFile` is total under `CapTotal`. -/
-theorem ioTotal_readSmallFile {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (path : String) (maxB fuel : Nat) : IoTotal (readSmallFile cap.files path maxB fuel) := by
+/-- `readSmallFile` is total under `SysDepsTotal`. -/
+theorem ioTotal_readSmallFile {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (path : String) (maxB fuel : Nat) :
+    IoTotal (readSmallFile deps.files path maxB fuel) := by
   unfold readSmallFile
   refine ioTotal_bind (ioTotal_retryEintr (hc.openat _ _ _ _) fuel) fun r => ?_
   cases r with
@@ -267,9 +365,10 @@ theorem ioTotal_readSmallFile {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
     refine ioTotal_bind (ioTotal_readBoundedLoop hc h maxB #[] 0 fuel) fun res => ?_
     exact ioTotal_bind (ioTotal_closeOpt hc (some h)) (fun _ => ioTotal_pure res)
 
-/-- `createSiblingCgroup` is total under `CapTotal`. -/
-theorem ioTotal_createSiblingCgroup {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (pid : UInt32) (seq fuel : Nat) : IoTotal (createSiblingCgroup cap.files pid seq fuel) := by
+/-- `createSiblingCgroup` is total under `SysDepsTotal`. -/
+theorem ioTotal_createSiblingCgroup {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (pid : UInt32) (seq fuel : Nat) :
+    IoTotal (createSiblingCgroup deps.files pid seq fuel) := by
   unfold createSiblingCgroup findDelegatedCgroupParent
   refine ioTotal_bind (ioTotal_bind (ioTotal_readSmallFile hc _ _ fuel) fun r => ?_) fun rPar => ?_
   · cases r with
@@ -287,16 +386,17 @@ theorem ioTotal_createSiblingCgroup {cap : Model.RawHostCapM IO} (hc : CapTotal 
       refine ioTotal_bind (ioTotal_retryEintr (hc.mkdirat _ _ _) fuel) fun rMk => ?_
       cases rMk <;> exact ioTotal_pure _
 
-/-- `configureCgroupMemory` is total under `CapTotal`. -/
-theorem ioTotal_configureCgroupMemory {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (cgDir lim : String) (fuel : Nat) : IoTotal (configureCgroupMemory cap.files cgDir lim fuel) := by
+/-- `configureCgroupMemory` is total under `SysDepsTotal`. -/
+theorem ioTotal_configureCgroupMemory {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (cgDir lim : String) (fuel : Nat) :
+    IoTotal (configureCgroupMemory deps.files cgDir lim fuel) := by
   unfold configureCgroupMemory
   refine ioTotal_bind (ioTotal_writeTextFile hc _ lim fuel) fun r1 => ?_
   cases r1 with
   | error _ => exact ioTotal_pure _
   | ok _ =>
     have hRest : IoTotal (do
-        match ← writeTextFile cap.files (cgroupSubfile cgDir "memory.oom.group") "1" fuel with
+        match ← writeTextFile deps.files (cgroupSubfile cgDir "memory.oom.group") "1" fuel with
         | .error e =>
           if e != Errno.ENOENT then pure (Except.error ("memory.oom.group", e))
           else pure (Except.ok ())
@@ -310,9 +410,10 @@ theorem ioTotal_configureCgroupMemory {cap : Model.RawHostCapM IO} (hc : CapTota
     | ok _ => exact hRest
     | error _ => exact ioTotal_ite (ioTotal_pure _) hRest
 
-/-- `pollCgroupUnpopulated` is total under `CapTotal`. -/
-theorem ioTotal_pollCgroupUnpopulated {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (evPath : String) (fuel : Nat) : ∀ steps, IoTotal (pollCgroupUnpopulated cap.files cap.timeRand evPath fuel steps)
+/-- `pollCgroupUnpopulated` is total under `SysDepsTotal`. -/
+theorem ioTotal_pollCgroupUnpopulated {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (evPath : String) (fuel : Nat) :
+    ∀ steps, IoTotal (pollCgroupUnpopulated deps.files deps.timeRand evPath fuel steps)
   | 0 => ioTotal_pure ()
   | steps + 1 => by
     unfold pollCgroupUnpopulated
@@ -328,9 +429,10 @@ theorem ioTotal_pollCgroupUnpopulated {cap : Model.RawHostCapM IO} (hc : CapTota
         exact ioTotal_ite (ioTotal_pure ())
           (ioTotal_bind (ioTotal_sleepMonoMs hc _) (fun _ => ioTotal_pollCgroupUnpopulated hc evPath fuel steps))
 
-/-- `retryRmdirCgroup` is total under `CapTotal`. -/
-theorem ioTotal_retryRmdirCgroup {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (bs : ByteArray) : ∀ steps, IoTotal (retryRmdirCgroup cap.files cap.timeRand bs steps)
+/-- `retryRmdirCgroup` is total under `SysDepsTotal`. -/
+theorem ioTotal_retryRmdirCgroup {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (bs : ByteArray) :
+    ∀ steps, IoTotal (retryRmdirCgroup deps.files deps.timeRand bs steps)
   | 0 => by
     unfold retryRmdirCgroup
     refine ioTotal_bind (hc.unlinkat none bs true) fun r => ?_
@@ -348,19 +450,19 @@ theorem ioTotal_retryRmdirCgroup {cap : Model.RawHostCapM IO} (hc : CapTotal cap
           (ioTotal_bind (ioTotal_sleepMonoMs hc _) (fun _ => ioTotal_retryRmdirCgroup hc bs steps))
           (ioTotal_pure _))
 
-/-- `cleanupCgroupDir` is total under `CapTotal`. -/
-theorem ioTotal_cleanupCgroupDir {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (cgDir : String) (ps rs fuel : Nat) :
-    IoTotal (cleanupCgroupDir cap.files cap.timeRand cgDir ps rs fuel) := by
+/-- `cleanupCgroupDir` is total under `SysDepsTotal`. -/
+theorem ioTotal_cleanupCgroupDir {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (cgDir : String) (ps rs fuel : Nat) :
+    IoTotal (cleanupCgroupDir deps.files deps.timeRand cgDir ps rs fuel) := by
   unfold cleanupCgroupDir
   refine ioTotal_ite (ioTotal_pure _) ?_
   refine ioTotal_bind (ioTotal_writeTextFile hc _ "1" fuel) fun _ => ?_
   refine ioTotal_bind (ioTotal_pollCgroupUnpopulated hc _ fuel ps) fun _ => ?_
   exact ioTotal_retryRmdirCgroup hc _ rs
 
-/-- `discoverSystemEntries` is total under `CapTotal`. -/
-theorem ioTotal_discoverSystemEntries {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (fuel : Nat) : IoTotal (discoverSystemEntries cap.files fuel) := by
+/-- `discoverSystemEntries` is total under `SysDepsTotal`. -/
+theorem ioTotal_discoverSystemEntries {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (fuel : Nat) : IoTotal (discoverSystemEntries deps.files fuel) := by
   unfold discoverSystemEntries
   refine ioTotal_bind (ioTotal_forIn_array _ ?_ presetSystemRoots #[]) (fun es => ioTotal_pure es)
   intro root _
@@ -376,12 +478,13 @@ theorem ioTotal_discoverSystemEntries {cap : Model.RawHostCapM IO} (hc : CapTota
       refine ioTotal_ite ?_ (ioTotal_pure _)
       cases String.fromUTF8? _ <;> exact ioTotal_pure _
 
-/-- `discoverHostPresetM` is total under `CapTotal`. -/
-theorem ioTotal_discoverHostPresetM {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (fuel : Nat) : IoTotal (discoverHostPresetM cap.files cap.proc cap.passwd cap.getEnvHome fuel) := by
+/-- `discoverHostPresetM` is total under `SysDepsTotal`. -/
+theorem ioTotal_discoverHostPresetM {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (fuel : Nat) :
+    IoTotal (discoverHostPresetM deps.files deps.proc deps.passwd deps.getEnvHome fuel) := by
   unfold discoverHostPresetM
   refine ioTotal_bind (ioTotal_discoverSystemEntries hc fuel) fun sysEs => ?_
-  have hEtc : IoTotal (discoverEtcPaths cap.files fuel) := by
+  have hEtc : IoTotal (discoverEtcPaths deps.files fuel) := by
     unfold discoverEtcPaths
     refine ioTotal_bind (ioTotal_forIn_array _ ?_ presetEtcAllowlist #[]) (fun ps => ioTotal_pure ps)
     intro p _
@@ -391,7 +494,7 @@ theorem ioTotal_discoverHostPresetM {cap : Model.RawHostCapM IO} (hc : CapTotal 
   unfold discoverExcludedHomes
   refine ioTotal_bind (ioTotal_bind hc.getEnvHome fun home? => ?_) fun exHs =>
     ioTotal_pure ({ systemEntries := sysEs, etcPaths := etcPs, excludedHomePaths := exHs } : HostRuntimePreset)
-  have hFilt (pwDir? : Option String) : IoTotal (filterExistingNestedHomes cap.files [home?, pwDir?] fuel) := by
+  have hFilt (pwDir? : Option String) : IoTotal (filterExistingNestedHomes deps.files [home?, pwDir?] fuel) := by
     unfold filterExistingNestedHomes
     refine ioTotal_bind (ioTotal_forIn_list _ ?_ _ []) (fun ks => ioTotal_pure (dedupStrings ks))
     intro c? _
@@ -421,10 +524,10 @@ theorem ioTotal_discoverHostPresetM {cap : Model.RawHostCapM IO} (hc : CapTotal 
       | none => exact ioTotal_bind (ioTotal_pure none) hFilt
       | some entry => exact ioTotal_bind (ioTotal_pure entry.homeDirUtf8?) hFilt
 
-/-- `createSealedMemfd` is total under `CapTotal`. -/
-theorem ioTotal_createSealedMemfd {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (nm : String) (bs : ByteArray) (fuel : Nat) :
-    IoTotal (createSealedMemfd cap.sandbox cap.files nm bs fuel) := by
+/-- `createSealedMemfd` is total under `SysDepsTotal`. -/
+theorem ioTotal_createSealedMemfd {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (nm : String) (bs : ByteArray) (fuel : Nat) :
+    IoTotal (createSealedMemfd deps.sandbox deps.files nm bs fuel) := by
   unfold createSealedMemfd
   refine ioTotal_bind (hc.memfdCreate _ _) fun r => ?_
   cases r with
@@ -434,12 +537,12 @@ theorem ioTotal_createSealedMemfd {cap : Model.RawHostCapM IO} (hc : CapTotal ca
     have hAfterWr (rW : Except Errno Unit) : IoTotal (do
         match rW with
         | .error e =>
-          Files.closeOpt cap.files (some h)
+          Files.closeOpt deps.files (some h)
           pure (Except.error e)
         | .ok () =>
-          match ← retryEintr (cap.files.fcntl h (.addSeals F_SEAL_ALL)) fuel with
+          match ← retryEintr (deps.files.fcntl h (.addSeals F_SEAL_ALL)) fuel with
           | .error e =>
-            Files.closeOpt cap.files (some h)
+            Files.closeOpt deps.files (some h)
             pure (Except.error e)
           | .ok _ => pure (Except.ok h)) := by
       cases rW with
@@ -455,8 +558,8 @@ theorem ioTotal_createSealedMemfd {cap : Model.RawHostCapM IO} (hc : CapTotal ca
     · simp only [hb, ↓reduceIte]
       exact ioTotal_bind (ioTotal_pure (Except.ok ())) hAfterWr
 
-private theorem ioTotal_searchBwrapDirs {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (fuel : Nat) : ∀ ds : List String, IoTotal (searchBwrapDirs cap.files fuel ds)
+private theorem ioTotal_searchBwrapDirs {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (fuel : Nat) : ∀ ds : List String, IoTotal (searchBwrapDirs deps.files fuel ds)
   | [] => by
     unfold searchBwrapDirs isExecutableRegFile
     refine ioTotal_bind (ioTotal_bind (ioTotal_retryEintr (hc.fstatat none _ {}) fuel) fun r => ?_) fun _ =>
@@ -478,98 +581,11 @@ private theorem ioTotal_searchBwrapDirs {cap : Model.RawHostCapM IO} (hc : CapTo
       refine ioTotal_bind (ioTotal_retryEintr (hc.faccessat none _ _ {}) fuel) fun r2 => ?_
       cases r2 <;> exact ioTotal_pure _
 
-/-- `resolveBwrapPath` is total under `CapTotal`. -/
-theorem ioTotal_resolveBwrapPath {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (fuel : Nat) : IoTotal (resolveBwrapPath cap.files cap.getEnvPath fuel) := by
+/-- `resolveBwrapPath` is total under `SysDepsTotal`. -/
+theorem ioTotal_resolveBwrapPath {fd fwdTask : Type} {deps : HostSysDepsM IO fd fwdTask}
+    (hc : SysDepsTotal deps) (fuel : Nat) : IoTotal (resolveBwrapPath deps.files deps.getEnvPath fuel) := by
   unfold resolveBwrapPath
   refine ioTotal_bind hc.getEnvPath fun r => ?_
   cases r <;> exact ioTotal_searchBwrapDirs hc fuel _
-
-private theorem ioTotal_waitProbeExitZero {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (pid : Int32) : ∀ fuel, IoTotal (waitProbeExitZero cap.proc pid fuel)
-  | 0 => ioTotal_pure _
-  | fuel + 1 => by
-    unfold waitProbeExitZero
-    refine ioTotal_bind (hc.waitpid pid {}) fun r => ?_
-    cases r with
-    | ok wr =>
-      cases wr with
-      | exited _ c => exact if h : c = 0 then by simp [h]; exact ioTotal_pure _ else by simp [h]; exact ioTotal_pure _
-      | _ => exact ioTotal_pure _
-    | error _ => exact ioTotal_ite (ioTotal_waitProbeExitZero hc pid fuel) (ioTotal_pure _)
-
-/-- `probeBwrapNamespaces` is total under `CapTotal`. -/
-theorem ioTotal_probeBwrapNamespaces {cap : Model.RawHostCapM IO} (hc : CapTotal cap)
-    (bw : String) (ib : ByteArray) (fuel : Nat) :
-    IoTotal (probeBwrapNamespaces cap.files cap.sandbox cap.proc cap.postFork bw ib fuel) := by
-  have hOpen3 : IoTotal (openThreeDevNull cap.files fuel) := by
-    unfold openThreeDevNull
-    have h1 := ioTotal_retryEintr (hc.openat none "/dev/null".toUTF8 { access := .rdwr, cloexec := true } 0) fuel
-    refine ioTotal_bind h1 fun r0 => ?_
-    cases r0 with
-    | error _ => exact ioTotal_pure _
-    | ok d0 =>
-      refine ioTotal_bind h1 fun r1 => ?_
-      cases r1 with
-      | error _ => exact ioTotal_bind (ioTotal_closeOpt hc (some d0)) (fun _ => ioTotal_pure _)
-      | ok d1 =>
-        refine ioTotal_bind h1 fun r2 => ?_
-        cases r2 with
-        | error _ =>
-          exact ioTotal_bind (ioTotal_closeOpt hc (some d0)) fun _ =>
-            ioTotal_bind (ioTotal_closeOpt hc (some d1)) (fun _ => ioTotal_pure _)
-        | ok _ => exact ioTotal_pure _
-  unfold probeBwrapNamespaces
-  refine ioTotal_bind hOpen3 fun r3 => ?_
-  cases r3 with
-  | error _ => exact ioTotal_pure _
-  | ok ds =>
-    rcases ds with ⟨d0, d1, d2⟩
-    refine ioTotal_bind (ioTotal_createSealedMemfd hc _ ib fuel) fun rM => ?_
-    cases rM with
-    | error _ =>
-      exact ioTotal_bind (ioTotal_closeOpt hc (some d0)) fun _ =>
-        ioTotal_bind (ioTotal_closeOpt hc (some d1)) fun _ =>
-          ioTotal_bind (ioTotal_closeOpt hc (some d2)) (fun _ => ioTotal_pure _)
-    | ok mfd =>
-      refine ioTotal_bind (ioTotal_retryEintr (hc.reopenReadOnly mfd) fuel) fun rRo => ?_
-      refine ioTotal_bind (ioTotal_closeOpt hc (some mfd)) fun _ => ?_
-      cases rRo with
-      | error _ =>
-        exact ioTotal_bind (ioTotal_closeOpt hc (some d0)) fun _ =>
-          ioTotal_bind (ioTotal_closeOpt hc (some d1)) fun _ =>
-            ioTotal_bind (ioTotal_closeOpt hc (some d2)) (fun _ => ioTotal_pure _)
-      | ok ifd =>
-        refine ioTotal_bind (ioTotal_discoverSystemEntries hc fuel) fun sysEs => ?_
-        have hAfterLd (hasLd : Bool) : IoTotal (do
-            let childSpec : PostFork.ChildSpecM Nat := {
-              path := bw
-              argv := buildProbeBwrapArgv bw sysEs hasLd ifd
-              stdio := .redirect (.handle d0) (.handle d1) (.handle d2) false
-              fdPolicy := .closeAllAbove2Except #[.handle ifd]
-              processGroup := .newGroup
-              sigpipe := .resetDefault
-              forkMode := .immortalThread
-            }
-            let spawnRes ← cap.postFork.spawn childSpec
-            Files.closeOpt cap.files (some d0)
-            Files.closeOpt cap.files (some d1)
-            Files.closeOpt cap.files (some d2)
-            Files.closeOpt cap.files (some ifd)
-            match spawnRes with
-            | .error pfErr => return .error (pfErr.errno.getD Errno.EPERM)
-            | .ok child => waitProbeExitZero cap.proc child.pid.toInt32 fuel) := by
-          refine ioTotal_bind (hc.pfSpawn _) fun rSp => ?_
-          refine ioTotal_bind (ioTotal_closeOpt hc (some d0)) fun _ => ?_
-          refine ioTotal_bind (ioTotal_closeOpt hc (some d1)) fun _ => ?_
-          refine ioTotal_bind (ioTotal_closeOpt hc (some d2)) fun _ => ?_
-          refine ioTotal_bind (ioTotal_closeOpt hc (some ifd)) fun _ => ?_
-          cases rSp with
-          | error _ => exact ioTotal_pure _
-          | ok child => exact ioTotal_waitProbeExitZero hc child.pid.toInt32 fuel
-        refine ioTotal_bind (ioTotal_retryEintr (hc.fstatat none "/etc/ld.so.cache".toUTF8 {}) fuel) fun rLd => ?_
-        cases rLd with
-        | ok _ => exact ioTotal_bind (ioTotal_pure true) hAfterLd
-        | error _ => exact ioTotal_bind (ioTotal_pure false) hAfterLd
 
 end LeanSwe.ProcessSandbox.Raw.Proofs

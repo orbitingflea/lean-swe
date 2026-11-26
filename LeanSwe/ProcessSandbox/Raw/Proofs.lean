@@ -15,6 +15,8 @@ import LeanSwe.ProcessSandbox.Raw.Proofs.HostForwarderStreamProofs
 import LeanSwe.ProcessSandbox.Raw.Proofs.HostBridgeProofs
 import LeanSwe.ProcessSandbox.Raw.Proofs.RefinesPure
 import LeanSwe.ProcessSandbox.Raw.Proofs.RefinesModel
+import LeanSwe.ProcessSandbox.Raw.Proofs.FullObeysTable
+import LeanSwe.ProcessSandbox.Raw.Proofs.FullObeysWitness
 
 namespace LeanSwe.ProcessSandbox.Raw.Proofs
 
@@ -274,14 +276,15 @@ theorem reach_psandboxRaw_boxAndForwarderLifecycle_conservesResources :
   simp [mockRawOps, hasHandle, isValidSandboxHandleId, UInt64.size, UInt32.size,
     freshU32, Model.Internal.mapRawError, assert, Bind.bind, StateT.run]
 
-/-- Complete behavioral `Core.Obeys` contract for `LeanSwe.ProcessSandbox.Raw` across all 3 pure and 13 effectful `Interface` operations over `Raw.Model.Refines`. -/
+/-- Complete behavioral `Core.Obeys` contract for `LeanSwe.ProcessSandbox.Raw` across all 3 pure and 13 effectful `Interface` operations over `FullSysOpsM`, `Core.ConcOpsM`, and `Core.StateCellM`. -/
 theorem obeys_model :
     Core.ObeysPureEq LeanSwe.ProcessSandbox.Raw.mapRawError Model.Internal.mapRawError ∧
     Core.ObeysPureEq LeanSwe.ProcessSandbox.Raw.decodeHostAuditArch Model.decodeHostAuditArch ∧
     Core.ObeysPure2 LeanSwe.ProcessSandbox.Raw.encodePlan Model.allowedEncodePlan ∧
-    Core.ObeysStepFrom id Model.rawHostWorldWf Model.execRawCapStep Model.allowedRawCapStep
-      Model.rawHostWorldWf Internal.mkOpsFromHostCapM Model.execRawOpsStep Model.allowedRawOpsStep :=
+    Core.ObeysStepFromConcCell (CellS := HostCellState) Model.mapFullToRawWorld Model.cellToRawTable
+      Model.fullWorldWf Model.execFullRawStep Model.allowedFullRawStep
+      Model.rawHostWorldWf Internal.mkFullOpsM Model.execPkgStep Model.allowedPkgStep :=
   ⟨refinesPure_mapRawError, refinesPure_decodeHostAuditArch, refinesPure_encodePlan,
-    refinesStepFrom_mkOpsFromHostCapM⟩
+    obeysStepFromConcCell_mkFullOpsM⟩
 
 end LeanSwe.ProcessSandbox.Raw.Proofs

@@ -99,42 +99,42 @@ theorem classifyBoxStreamResult_spec (program cwd : String) (to lim : Bool)
               | false => exact ⟨rfl, rfl, Int.natCast_nonneg 9⟩
 
 /-- `TimeRand.monoNowMs` preserves `proj`. -/
-theorem preservesProj_monoNowMs {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep) :
-    PreservesProj proj (TimeRand.monoNowMs cap.timeRand) := by
+theorem preservesProj_monoNowMs {W fd fwdTask : Type} {proj : W → RawHostWorld}
+    {deps : HostSysDepsM (StateM W) fd fwdTask}
+    (hDeps : DepsPreservesProj proj deps) :
+    PreservesProj proj (TimeRand.monoNowMs deps.timeRand) := by
   unfold TimeRand.monoNowMs
-  refine preservesProj_bind
-    (preservesProj_of_seqUnit _ fun w hWf => (hCap w (.timeRandClockGettime .monotonic) hWf).2) fun r => ?_
+  refine preservesProj_bind (hDeps.timeRandClockGettime .monotonic) fun r => ?_
   cases r <;> exact preservesProj_pure _
 
 /-- `TimeRand.checkTimedOut` preserves `proj`. -/
-theorem preservesProj_checkTimedOut {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
-    (startMs : Nat) (to? : Option Nat) :
-    PreservesProj proj (TimeRand.checkTimedOut cap.timeRand startMs to?) := by
+theorem preservesProj_checkTimedOut {W fd fwdTask : Type} {proj : W → RawHostWorld}
+    {deps : HostSysDepsM (StateM W) fd fwdTask}
+    (hDeps : DepsPreservesProj proj deps) (startMs : Nat) (to? : Option Nat) :
+    PreservesProj proj (TimeRand.checkTimedOut deps.timeRand startMs to?) := by
   unfold TimeRand.checkTimedOut
   cases to? with
   | none => exact preservesProj_pure _
   | some _ =>
-    refine preservesProj_bind (preservesProj_monoNowMs hCap) fun r => ?_
+    refine preservesProj_bind (preservesProj_monoNowMs hDeps) fun r => ?_
     cases r with
     | error _ => exact preservesProj_pure _
     | ok _ => exact preservesProj_ite (preservesProj_pure _) (preservesProj_pure _)
 
 /-- `writeStdinStep` preserves `proj` and returns non-empty error messages on failure. -/
-theorem writeStdinStep_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
-    (inFd : Nat) (stdin : ByteArray) (startMs : Nat) (to? : Option Nat) :
+theorem writeStdinStep_spec {W fd fwdTask : Type} {proj : W → RawHostWorld}
+    {deps : HostSysDepsM (StateM W) fd fwdTask}
+    (hDeps : DepsPreservesProj proj deps) (inFd : fd) (stdin : ByteArray) (startMs : Nat) (to? : Option Nat) :
     ∀ pos prog fuel,
-      PreservesProj proj (writeStdinStep cap.files cap.timeRand inFd stdin startMs to? pos prog fuel) ∧
+      PreservesProj proj (writeStdinStep deps.files deps.timeRand inFd stdin startMs to? pos prog fuel) ∧
       ∀ w, rawHostWorldWf (proj w) = true →
-        ∀ e, ((writeStdinStep cap.files cap.timeRand inFd stdin startMs to? pos prog fuel).run w).1 = .error e →
+        ∀ e, ((writeStdinStep deps.files deps.timeRand inFd stdin startMs to? pos prog fuel).run w).1 = .error e →
           e.message ≠ ""
-  | pos, prog, 0 => by
+  | pos, _, 0 => by
     unfold writeStdinStep
     constructor
     · exact preservesProj_ite
-        (preservesProj_bind (preservesProj_closeOpt hCap (some inFd)) (fun _ => preservesProj_pure _))
+        (preservesProj_bind (preservesProj_closeOpt hDeps (some inFd)) (fun _ => preservesProj_pure _))
         (preservesProj_pure _)
     · intro w _ e he
       by_cases hPos : pos ≥ stdin.size
@@ -144,38 +144,38 @@ theorem writeStdinStep_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHos
     unfold writeStdinStep
     constructor
     · refine preservesProj_ite
-        (preservesProj_bind (preservesProj_closeOpt hCap (some inFd)) (fun _ => preservesProj_pure _)) ?_
-      refine preservesProj_bind (preservesProj_checkTimedOut hCap startMs to?) fun r => ?_
+        (preservesProj_bind (preservesProj_closeOpt hDeps (some inFd)) (fun _ => preservesProj_pure _)) ?_
+      refine preservesProj_bind (preservesProj_checkTimedOut hDeps startMs to?) fun r => ?_
       cases r with
-      | error _ => exact preservesProj_bind (preservesProj_closeOpt hCap (some inFd)) (fun _ => preservesProj_pure _)
+      | error _ => exact preservesProj_bind (preservesProj_closeOpt hDeps (some inFd)) (fun _ => preservesProj_pure _)
       | ok pair =>
         rcases pair with ⟨b, rem⟩
         dsimp only
         cases b with
-        | true => exact preservesProj_bind (preservesProj_closeOpt hCap (some inFd)) (fun _ => preservesProj_pure _)
+        | true => exact preservesProj_bind (preservesProj_closeOpt hDeps (some inFd)) (fun _ => preservesProj_pure _)
         | false =>
-          refine preservesProj_bind (preservesProj_of_seqUnit _ fun w hWf => (hCap w (.filesWrite inFd _) hWf).2) fun wr => ?_
+          refine preservesProj_bind (hDeps.filesWrite inFd _) fun wr => ?_
           cases wr with
           | ok _ =>
             exact preservesProj_ite
-              (preservesProj_bind (preservesProj_closeOpt hCap (some inFd)) (fun _ => preservesProj_pure _))
+              (preservesProj_bind (preservesProj_closeOpt hDeps (some inFd)) (fun _ => preservesProj_pure _))
               (preservesProj_ite
-                (preservesProj_bind (preservesProj_closeOpt hCap (some inFd)) (fun _ => preservesProj_pure _))
-                (writeStdinStep_spec hCap inFd stdin startMs to? _ true fuel).1)
+                (preservesProj_bind (preservesProj_closeOpt hDeps (some inFd)) (fun _ => preservesProj_pure _))
+                (writeStdinStep_spec hDeps inFd stdin startMs to? _ true fuel).1)
           | error _ =>
             exact preservesProj_ite
-              (writeStdinStep_spec hCap inFd stdin startMs to? pos prog fuel).1
+              (writeStdinStep_spec hDeps inFd stdin startMs to? pos prog fuel).1
               (preservesProj_ite (preservesProj_pure _)
-                (preservesProj_bind (preservesProj_closeOpt hCap (some inFd)) (fun _ => preservesProj_pure _)))
+                (preservesProj_bind (preservesProj_closeOpt hDeps (some inFd)) (fun _ => preservesProj_pure _)))
     · intro w hWf e he
       by_cases hPos : pos ≥ stdin.size
       · simp only [hPos, ↓reduceIte, stateM_bind_run, stateM_pure_run] at he; cases he
       · simp only [hPos, ↓reduceIte, stateM_bind_run] at he
-        have h1 := preservesProj_checkTimedOut hCap startMs to? w hWf
-        have hWf1 : rawHostWorldWf (proj ((TimeRand.checkTimedOut cap.timeRand startMs to?).run w).2) = true := by
+        have h1 := preservesProj_checkTimedOut hDeps startMs to? w hWf
+        have hWf1 : rawHostWorldWf (proj ((TimeRand.checkTimedOut deps.timeRand startMs to?).run w).2) = true := by
           rw [h1]; exact hWf
-        cases hTo : ((TimeRand.checkTimedOut cap.timeRand startMs to?).run w).1 with
-        | error err =>
+        cases hTo : ((TimeRand.checkTimedOut deps.timeRand startMs to?).run w).1 with
+        | error _ =>
           rw [hTo] at he
           simp only [stateM_bind_run, stateM_pure_run] at he
           cases he; exact mapRawError_ioError_ne_empty _ _
@@ -188,11 +188,11 @@ theorem writeStdinStep_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHos
           | false =>
             dsimp only at he
             simp only [stateM_bind_run] at he
-            let w1 := ((TimeRand.checkTimedOut cap.timeRand startMs to?).run w).2
-            let w2 := ((cap.files.write inFd (stdin.extract pos (Nat.min stdin.size (pos + STDIN_WRITE_CHUNK)))).run w1).2
-            have h2 := preservesProj_of_seqUnit _ (fun u hu => (hCap u (.filesWrite inFd (stdin.extract pos (Nat.min stdin.size (pos + STDIN_WRITE_CHUNK)))) hu).2) w1 hWf1
+            let w1 := ((TimeRand.checkTimedOut deps.timeRand startMs to?).run w).2
+            let w2 := ((deps.files.write inFd (stdin.extract pos (Nat.min stdin.size (pos + STDIN_WRITE_CHUNK)))).run w1).2
+            have h2 := hDeps.filesWrite inFd (stdin.extract pos (Nat.min stdin.size (pos + STDIN_WRITE_CHUNK))) w1 hWf1
             have hWf2 : rawHostWorldWf (proj w2) = true := by rw [h2]; exact hWf1
-            cases hWr : ((cap.files.write inFd (stdin.extract pos (Nat.min stdin.size (pos + STDIN_WRITE_CHUNK)))).run w1).1 with
+            cases hWr : ((deps.files.write inFd (stdin.extract pos (Nat.min stdin.size (pos + STDIN_WRITE_CHUNK)))).run w1).1 with
             | ok n =>
               rw [hWr] at he
               dsimp only at he
@@ -203,14 +203,14 @@ theorem writeStdinStep_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHos
                 by_cases hDone : pos + n.toNat ≥ stdin.size
                 · simp only [hDone, ↓reduceIte, stateM_bind_run, stateM_pure_run] at he; cases he
                 · simp only [hDone, ↓reduceIte] at he
-                  exact (writeStdinStep_spec hCap inFd stdin startMs to? (pos + n.toNat) true fuel).2 _ hWf2 e he
+                  exact (writeStdinStep_spec hDeps inFd stdin startMs to? (pos + n.toNat) true fuel).2 _ hWf2 e he
             | error err =>
               rw [hWr] at he
               dsimp only at he
               cases hEi : (err == Errno.EINTR) with
               | true =>
                 simp only [hEi, ↓reduceIte] at he
-                exact (writeStdinStep_spec hCap inFd stdin startMs to? pos prog fuel).2 _ hWf2 e he
+                exact (writeStdinStep_spec hDeps inFd stdin startMs to? pos prog fuel).2 _ hWf2 e he
               | false =>
                 simp only [hEi, Bool.false_eq_true, ↓reduceIte] at he
                 cases hEa : (err == Errno.EAGAIN) with
@@ -218,7 +218,7 @@ theorem writeStdinStep_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHos
                 | false => simp only [hEa, Bool.false_eq_true, ↓reduceIte, stateM_bind_run, stateM_pure_run] at he; cases he
 
 /-- Loop invariant on `PipeStepResult`: tracks chunk-length sum and combined output cap `maxOut?`. -/
-def PipeStepInv (otherLen : Nat) (maxOut? : Option Nat) (r : PipeStepResult Nat) : Prop :=
+def PipeStepInv {fd : Type} (otherLen : Nat) (maxOut? : Option Nat) (r : PipeStepResult fd) : Prop :=
   match r with
   | .cont _ chunks len _ =>
     len = (chunks.toList.map ByteArray.size).sum ∧ (∀ m, maxOut? = some m → len + otherLen ≤ m)
@@ -229,16 +229,16 @@ def PipeStepInv (otherLen : Nat) (maxOut? : Option Nat) (r : PipeStepResult Nat)
   | .ioErr e => e.message ≠ ""
 
 /-- `drainPipeStep` preserves `proj` and maintains `PipeStepInv`. -/
-theorem drainPipeStep_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
-    (pipeFd otherLen startMs : Nat) (to? maxOut? : Option Nat) :
+theorem drainPipeStep_spec {W fd fwdTask : Type} {proj : W → RawHostWorld}
+    {deps : HostSysDepsM (StateM W) fd fwdTask}
+    (hDeps : DepsPreservesProj proj deps) (pipeFd : fd) (otherLen startMs : Nat) (to? maxOut? : Option Nat) :
     ∀ chunks curLen iterBytes prog fuel,
       curLen = (chunks.toList.map ByteArray.size).sum →
       (∀ m, maxOut? = some m → curLen + otherLen ≤ m) →
-      PreservesProj proj (drainPipeStep cap.files cap.timeRand pipeFd otherLen startMs to? maxOut? chunks curLen iterBytes prog fuel) ∧
+      PreservesProj proj (drainPipeStep deps.files deps.timeRand pipeFd otherLen startMs to? maxOut? chunks curLen iterBytes prog fuel) ∧
       ∀ w, rawHostWorldWf (proj w) = true →
-        PipeStepInv otherLen maxOut? ((drainPipeStep cap.files cap.timeRand pipeFd otherLen startMs to? maxOut? chunks curLen iterBytes prog fuel).run w).1
-  | chunks, curLen, _, _, 0, hSum, hBnd =>
+        PipeStepInv otherLen maxOut? ((drainPipeStep deps.files deps.timeRand pipeFd otherLen startMs to? maxOut? chunks curLen iterBytes prog fuel).run w).1
+  | _, _, _, _, 0, hSum, hBnd =>
     ⟨preservesProj_pure _, fun _ _ => ⟨hSum, hBnd⟩⟩
   | chunks, curLen, iterBytes, prog, fuel + 1, hSum, hBnd => by
     unfold drainPipeStep
@@ -246,49 +246,49 @@ theorem drainPipeStep_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHost
     · simp only [hFair, ↓reduceIte]
       exact ⟨preservesProj_pure _, fun _ _ => ⟨hSum, hBnd⟩⟩
     · simp only [hFair, ↓reduceIte]
-      have hTo := preservesProj_checkTimedOut hCap startMs to?
-      have hRd := preservesProj_of_seqUnit _ fun u hu => (hCap u (.filesRead pipeFd PIPE_READ_CHUNK) hu).2
+      have hTo := preservesProj_checkTimedOut hDeps startMs to?
+      have hRd := hDeps.filesRead pipeFd PIPE_READ_CHUNK
       constructor
       · refine preservesProj_bind hTo fun r => ?_
         cases r with
-        | error _ => exact preservesProj_bind (preservesProj_closeOpt hCap (some pipeFd)) (fun _ => preservesProj_pure _)
+        | error _ => exact preservesProj_bind (preservesProj_closeOpt hDeps (some pipeFd)) (fun _ => preservesProj_pure _)
         | ok pair =>
           rcases pair with ⟨b, rem⟩
           cases b with
-          | true => exact preservesProj_bind (preservesProj_closeOpt hCap (some pipeFd)) (fun _ => preservesProj_pure _)
+          | true => exact preservesProj_bind (preservesProj_closeOpt hDeps (some pipeFd)) (fun _ => preservesProj_pure _)
           | false =>
             refine preservesProj_bind hRd fun rd => ?_
             cases rd with
             | error _ =>
               exact preservesProj_ite
-                (drainPipeStep_spec hCap pipeFd otherLen startMs to? maxOut? chunks curLen iterBytes prog fuel hSum hBnd).1
+                (drainPipeStep_spec hDeps pipeFd otherLen startMs to? maxOut? chunks curLen iterBytes prog fuel hSum hBnd).1
                 (preservesProj_ite (preservesProj_pure _)
-                  (preservesProj_bind (preservesProj_closeOpt hCap (some pipeFd)) (fun _ => preservesProj_pure _)))
+                  (preservesProj_bind (preservesProj_closeOpt hDeps (some pipeFd)) (fun _ => preservesProj_pure _)))
             | ok chunk =>
               refine preservesProj_ite
-                (preservesProj_bind (preservesProj_closeOpt hCap (some pipeFd)) (fun _ => preservesProj_pure _)) ?_
+                (preservesProj_bind (preservesProj_closeOpt hDeps (some pipeFd)) (fun _ => preservesProj_pure _)) ?_
               cases maxOut? with
               | none =>
                 have hSum' : curLen + chunk.size = ((chunks.push chunk).toList.map ByteArray.size).sum := by
                   simp [Array.toList_push, List.map_append, List.sum_append, hSum]
-                exact (drainPipeStep_spec hCap pipeFd otherLen startMs to? none (chunks.push chunk) (curLen + chunk.size) (iterBytes + chunk.size) true fuel hSum' (fun _ h => by cases h)).1
+                exact (drainPipeStep_spec hDeps pipeFd otherLen startMs to? none (chunks.push chunk) (curLen + chunk.size) (iterBytes + chunk.size) true fuel hSum' (fun _ h => by cases h)).1
               | some maxOut =>
                 by_cases hGt : curLen + otherLen + chunk.size > maxOut
                 · simp only [hGt, ↓reduceIte]
-                  exact preservesProj_bind (preservesProj_closeOpt hCap (some pipeFd)) (fun _ => preservesProj_pure _)
+                  exact preservesProj_bind (preservesProj_closeOpt hDeps (some pipeFd)) (fun _ => preservesProj_pure _)
                 · simp only [hGt, ↓reduceIte]
                   have hSum' : curLen + chunk.size = ((chunks.push chunk).toList.map ByteArray.size).sum := by
                     simp [Array.toList_push, List.map_append, List.sum_append, hSum]
                   have hBnd' : ∀ m, some maxOut = some m → curLen + chunk.size + otherLen ≤ m := by
                     intro m hm; cases hm; omega
-                  exact (drainPipeStep_spec hCap pipeFd otherLen startMs to? (some maxOut) (chunks.push chunk) (curLen + chunk.size) (iterBytes + chunk.size) true fuel hSum' hBnd').1
+                  exact (drainPipeStep_spec hDeps pipeFd otherLen startMs to? (some maxOut) (chunks.push chunk) (curLen + chunk.size) (iterBytes + chunk.size) true fuel hSum' hBnd').1
       · intro w hWf
         simp only [stateM_bind_run]
         have h1 := hTo w hWf
-        have hWf1 : rawHostWorldWf (proj ((TimeRand.checkTimedOut cap.timeRand startMs to?).run w).2) = true := by
+        have hWf1 : rawHostWorldWf (proj ((TimeRand.checkTimedOut deps.timeRand startMs to?).run w).2) = true := by
           rw [h1]; exact hWf
-        cases hTr : ((TimeRand.checkTimedOut cap.timeRand startMs to?).run w).1 with
-        | error err =>
+        cases hTr : ((TimeRand.checkTimedOut deps.timeRand startMs to?).run w).1 with
+        | error _ =>
           simp only [stateM_bind_run, stateM_pure_run, PipeStepInv]
           exact mapRawError_ioError_ne_empty _ _
         | ok pair =>
@@ -300,17 +300,17 @@ theorem drainPipeStep_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHost
           | false =>
             dsimp only
             simp only [stateM_bind_run]
-            let w1 := ((TimeRand.checkTimedOut cap.timeRand startMs to?).run w).2
-            let w2 := ((cap.files.read pipeFd PIPE_READ_CHUNK).run w1).2
+            let w1 := ((TimeRand.checkTimedOut deps.timeRand startMs to?).run w).2
+            let w2 := ((deps.files.read pipeFd PIPE_READ_CHUNK).run w1).2
             have h2 := hRd w1 hWf1
             have hWf2 : rawHostWorldWf (proj w2) = true := by rw [h2]; exact hWf1
-            cases hR : ((cap.files.read pipeFd PIPE_READ_CHUNK).run w1).1 with
+            cases hR : ((deps.files.read pipeFd PIPE_READ_CHUNK).run w1).1 with
             | error err =>
               dsimp only
               cases hEi : (err == Errno.EINTR) with
               | true =>
                 simp only [↓reduceIte]
-                exact (drainPipeStep_spec hCap pipeFd otherLen startMs to? maxOut? chunks curLen iterBytes prog fuel hSum hBnd).2 _ hWf2
+                exact (drainPipeStep_spec hDeps pipeFd otherLen startMs to? maxOut? chunks curLen iterBytes prog fuel hSum hBnd).2 _ hWf2
               | false =>
                 simp only [Bool.false_eq_true, ↓reduceIte]
                 cases hEa : (err == Errno.EAGAIN) with
@@ -332,7 +332,7 @@ theorem drainPipeStep_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHost
                 | none =>
                   have hSum' : curLen + chunk.size = ((chunks.push chunk).toList.map ByteArray.size).sum := by
                     simp [Array.toList_push, List.map_append, List.sum_append, hSum]
-                  exact (drainPipeStep_spec hCap pipeFd otherLen startMs to? none (chunks.push chunk) (curLen + chunk.size) (iterBytes + chunk.size) true fuel hSum' (fun _ h => by cases h)).2 _ hWf2
+                  exact (drainPipeStep_spec hDeps pipeFd otherLen startMs to? none (chunks.push chunk) (curLen + chunk.size) (iterBytes + chunk.size) true fuel hSum' (fun _ h => by cases h)).2 _ hWf2
                 | some maxOut =>
                   dsimp only
                   by_cases hGt : curLen + otherLen + chunk.size > maxOut
@@ -351,7 +351,7 @@ theorem drainPipeStep_spec {W : Type} {proj : W → RawHostWorld} {cap : RawHost
                       simp [Array.toList_push, List.map_append, List.sum_append, hSum]
                     have hBnd' : ∀ m, some maxOut = some m → curLen + chunk.size + otherLen ≤ m := by
                       intro m hm; cases hm; omega
-                    exact (drainPipeStep_spec hCap pipeFd otherLen startMs to? (some maxOut) (chunks.push chunk) (curLen + chunk.size) (iterBytes + chunk.size) true fuel hSum' hBnd').2 _ hWf2
+                    exact (drainPipeStep_spec hDeps pipeFd otherLen startMs to? (some maxOut) (chunks.push chunk) (curLen + chunk.size) (iterBytes + chunk.size) true fuel hSum' hBnd').2 _ hWf2
 
 /-- Postcondition on `readBoxOutputCore`: non-negative outcome and `maxOut?` bound on `.ok`, non-empty message on `.error`. -/
 def StreamResInv (maxOut? : Option Nat) (r : Except SandboxError SandboxResult) : Prop :=
@@ -381,14 +381,14 @@ theorem classify_streamResInv (program cwd : String) (to lim : Bool)
     exact hBnd m hm
 
 /-- `closeBoxStreamState` preserves `proj`. -/
-theorem preservesProj_closeBoxStreamState {W : Type} {proj : W → RawHostWorld} {cap : RawHostCapM (StateM W)}
-    (hCap : Core.ObeysStep proj rawHostWorldWf (execRawCapStep cap) allowedRawCapStep)
-    (st : BoxStreamState Nat) :
-    PreservesProj proj (closeBoxStreamState cap.files st) := by
+theorem preservesProj_closeBoxStreamState {W fd fwdTask : Type} {proj : W → RawHostWorld}
+    {deps : HostSysDepsM (StateM W) fd fwdTask}
+    (hDeps : DepsPreservesProj proj deps) (st : BoxStreamState fd) :
+    PreservesProj proj (closeBoxStreamState deps.files st) := by
   unfold closeBoxStreamState
-  exact preservesProj_bind (preservesProj_closeOpt hCap st.inFd?) fun _ =>
-    preservesProj_bind (preservesProj_closeOpt hCap st.outFd?) fun _ =>
-      preservesProj_bind (preservesProj_closeOpt hCap st.errFd?) fun _ =>
-        preservesProj_closeOpt hCap st.statusFd?
+  exact preservesProj_bind (preservesProj_closeOpt hDeps st.inFd?) fun _ =>
+    preservesProj_bind (preservesProj_closeOpt hDeps st.outFd?) fun _ =>
+      preservesProj_bind (preservesProj_closeOpt hDeps st.errFd?) fun _ =>
+        preservesProj_closeOpt hDeps st.statusFd?
 
 end LeanSwe.ProcessSandbox.Raw.Proofs

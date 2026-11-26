@@ -2114,8 +2114,8 @@ private def checkProcessSandboxHostClosure (env : Environment) : IO (Array Strin
               errs := errs.push s!"PSANDBOX_FORBIDDEN_UNSAFE: {c.name} in {m}"
         if (Lean.regularInitAttr.getParam? env c.name).isSome then
           let allowedInit :=
-            m == `LeanSwe.ProcessSandbox.Raw.SysBridge &&
-            privateToUserName? c.name == some `LeanSwe.ProcessSandbox.Raw.SysBridge.gHostTable
+            m == `LeanSwe.ProcessSandbox.Raw.Interface &&
+            privateToUserName? c.name == some `LeanSwe.ProcessSandbox.Raw.gHostTable
           if !allowedInit then
             errs := errs.push s!"PSANDBOX_FORBIDDEN_INIT: {c.name} in {m}"
         let usesBaseMutex (e : Expr) : Bool :=
@@ -2129,8 +2129,23 @@ private def checkProcessSandboxHostClosure (env : Environment) : IO (Array Strin
           errs := errs.push s!"PSANDBOX_FORBIDDEN_BASEMUTEX: {c.name} in {m} references Std.BaseMutex"
   match env.find? `LeanSwe.ProcessSandbox.Raw.defaultOps with
   | some (.defnInfo dv) =>
-    if !dv.value.getUsedConstants.contains `LeanSwe.ProcessSandbox.Raw.SysBridge.defaultOps then
-      errs := errs.push "PSANDBOX_INTERFACE_WIRING_MISMATCH: LeanSwe.ProcessSandbox.Raw.defaultOps must delegate to Raw.SysBridge.defaultOps"
+    let used := dv.value.getUsedConstants
+    let reqUsed : Array Name := #[
+      `LeanSwe.ProcessSandbox.Raw.Internal.mkFullOpsM,
+      `LeanSwe.LinuxSyscall.Files.defaultOps,
+      `LeanSwe.LinuxSyscall.Net.defaultOps,
+      `LeanSwe.LinuxSyscall.Poll.defaultOps,
+      `LeanSwe.LinuxSyscall.Process.defaultOps,
+      `LeanSwe.LinuxSyscall.Sandbox.defaultOps,
+      `LeanSwe.LinuxSyscall.TimeRand.defaultOps,
+      `LeanSwe.LinuxSyscall.Passwd.defaultOps,
+      `LeanSwe.PostFork.defaultOps,
+      `LeanSwe.EnvVars.Raw.defaultOps,
+      `Core.ioConcOps,
+      `Core.ioStateCell
+    ]
+    if !reqUsed.all used.contains then
+      errs := errs.push "PSANDBOX_INTERFACE_WIRING_MISMATCH: LeanSwe.ProcessSandbox.Raw.defaultOps must wire Internal.mkFullOpsM directly to LinuxSyscall.{Files,Net,Poll,Process,Sandbox,TimeRand,Passwd}.defaultOps, PostFork.defaultOps, EnvVars.Raw.defaultOps, Core.ioConcOps, and Core.ioStateCell"
   | _ =>
     errs := errs.push "PSANDBOX_INTERFACE_WIRING_MISMATCH: missing LeanSwe.ProcessSandbox.Raw.defaultOps"
   return errs
@@ -3185,9 +3200,7 @@ private def modelPresenceAllowlist : Array String := #[]
 through a same-package un-fuzzed middle hook (`SysBridge.defaultOps`, `CliOpsM`,
 `ScopedRawFsOpsM`, `RelayRawOps`, `defaultRawOps`) instead of imported `manifest.deps`
 capabilities. -/
-private def middleHookAllowlist : Array String := #[
-  "MIDDLE_HOOK|LeanSwe.ProcessSandbox.Raw"
-]
+private def middleHookAllowlist : Array String := #[]
 
 /-- Exact shrinking ratchet allowlist of packages whose `obeys_model` / `refines_model`
 does not yet match mechanical `.olean` `Expr` synthesis at `6a903b4`. Fails on both new
@@ -4880,10 +4893,10 @@ private def renderSynthesizedObeysSig
           else (modelDefs.find? fun d => nameLastStr d == s).map (·.toString) with
         | some found => found
         | none => fallback
-      let mapStr := findShort #["mapFullWorldToState", "mapS"] "id"
-      let cellToModelStr := findShort #["procCellToState", "cellToModel"] "id"
+      let mapStr := findShort #["mapFullWorldToState", "mapFullToRawWorld", "mapS"] "id"
+      let cellToModelStr := findShort #["procCellToState", "cellToRawTable", "cellToModel"] "id"
       let rawWfStr := findShort #["rawStepWf", "healthyWf", "pkgWf", "fullWorldWf", "proxyStepWf", "fullRawWf"] "<WF>"
-      let pkgWfStr := findShort #["processStateWf", "rawStepWf", "healthyWf", "pkgWf", "fullWorldWf", "proxyStepWf"] rawWfStr
+      let pkgWfStr := findShort #["processStateWf", "rawHostWorldWf", "rawStepWf", "healthyWf", "pkgWf", "fullWorldWf", "proxyStepWf"] rawWfStr
       let execRawStr := findShort (if isConcCell then #["execFullRawStep", "execRawStep", "execRaw"] else #["execRawStep", "execFullRawStep", "execRaw"]) "<EXEC_RAW>"
       let allowedRawStr := findShort (if isConcCell then #["allowedFullRawStep", "allowedRawStep", "allowedRaw"] else #["allowedRawStep", "allowedFullRawStep", "allowedRaw"]) "<ALLOWED_RAW>"
       let execPkgStr := findShort #["execPkgStep", "execPkg"] "<EXEC_PKG>"

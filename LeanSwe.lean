@@ -378,7 +378,6 @@ import LeanSwe.ProcessSandbox.Raw.SysBridge.PipeIo
 import LeanSwe.ProcessSandbox.Raw.SysBridge.StreamIo
 import LeanSwe.ProcessSandbox.Raw.SysBridge.State
 import LeanSwe.ProcessSandbox.Raw.SysBridge.Spawn
-import LeanSwe.ProcessSandbox.Raw.SysBridge.IoHostCap
 import LeanSwe.ProcessSandbox.Raw.SysBridge
 import LeanSwe.ProcessSandbox.Raw.SysBridge.HostCap
 import LeanSwe.ProcessSandbox.Raw.Interface
