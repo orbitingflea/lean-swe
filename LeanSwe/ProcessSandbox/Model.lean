@@ -1,3 +1,5 @@
+import LeanSwe.Process.Types
+import LeanSwe.Process.Model
 import LeanSwe.ProcessSandbox.Types
 
 namespace LeanSwe.ProcessSandbox.Model
@@ -102,6 +104,35 @@ def validateMountsList : List SandboxMount → Except SandboxError (List Sandbox
     let normRest ← validateMountsList rest
     .ok (normM :: normRest)
 
+/-- Return `true` iff `m` is a `.readWrite` mount. -/
+def isReadWriteMount : SandboxMount → Bool
+  | .readWrite _ _ => true
+  | .readOnly _ _ | .scratch _ => false
+
+/-- Return `true` iff distinct mounts `m₁` and `m₂` introduce an unshadowed overlapping `.readWrite` `hostPath` alias. -/
+def hasUnshadowedRwOverlapPair (m₁ m₂ : SandboxMount) : Bool :=
+  if !(isReadWriteMount m₁ || isReadWriteMount m₂) then false
+  else
+    match mountHostPath? m₁, mountHostPath? m₂ with
+    | some hp₁, some hp₂ =>
+      match parseCleanAbsSegs hp₁, parseCleanAbsSegs (mountBoxPath m₁),
+            parseCleanAbsSegs hp₂, parseCleanAbsSegs (mountBoxPath m₂) with
+      | some h₁, some b₁, some h₂, some b₂ =>
+        let p₁₂ := h₁.isPrefixOf h₂
+        let p₂₁ := h₂.isPrefixOf h₁
+        if !(p₁₂ || p₂₁) then false
+        else
+          let shadowed₁₂ := p₁₂ && b₂ == b₁ ++ h₂.drop h₁.length
+          let shadowed₂₁ := p₂₁ && b₁ == b₂ ++ h₁.drop h₂.length
+          !(shadowed₁₂ || shadowed₂₁)
+      | _, _, _, _ => false
+    | _, _ => false
+
+/-- Return `true` iff any pair of distinct mounts in `ms` introduces an unshadowed overlapping `.readWrite` `hostPath` alias. -/
+def hasUnshadowedRwOverlap : List SandboxMount → Bool
+  | [] => false
+  | m :: rest => rest.any (hasUnshadowedRwOverlapPair m) || hasUnshadowedRwOverlap rest
+
 /-- Authoritative pure boundary validator turning `BoxSpec` into `ValidBoxSpec` or `.invalidInput`. -/
 def validateSpecPure (spec : BoxSpec) : Except SandboxError ValidBoxSpec := do
   if spec.program.isEmpty then .error (invalidInput "program must not be empty")
@@ -123,6 +154,8 @@ def validateSpecPure (spec : BoxSpec) : Except SandboxError ValidBoxSpec := do
     let normMounts ← validateMountsList spec.mounts.toList
     if !allDistinct (normMounts.map mountBoxPath) then
       .error (invalidInput "duplicate mount boxPath in BoxSpec")
+    else if hasUnshadowedRwOverlap normMounts then
+      .error (invalidInput "overlapping readWrite mount hostPath in BoxSpec")
     else
       let mountsWithTmp :=
         if normMounts.any (fun m => mountBoxPath m == "/tmp") then normMounts
@@ -135,6 +168,10 @@ def validateSpecPure (spec : BoxSpec) : Except SandboxError ValidBoxSpec := do
             cwd := normCwd, stdin := spec.stdin, mounts := mountsWithTmp.toArray,
             network := spec.network, timeoutMs := spec.timeoutMs,
             maxOutputBytes := spec.maxOutputBytes }
+
+/-- Pure model of `LeanSwe.ProcessSandbox.validateSpec`, delegating directly to `validateSpecPure`. -/
+def validateSpecModel (spec : BoxSpec) : Except SandboxError ValidBoxSpec :=
+  validateSpecPure spec
 
 /-- Abstract filesystem mapping canonical absolute paths to optional file contents. -/
 abbrev FsState := String → Option ByteArray
@@ -151,9 +188,33 @@ structure NonFsState where
   orphanCount : Nat
   deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Arbitrary guest program semantics `f` mapping `(S', guestNonFs)` to `(outcome, stdout, stderr, S'', guestNonFs')`. -/
+/-- Isolated command and state bundle delivered to a guest program launched under a `ValidBoxSpec`. -/
+structure GuestInput where
+  /-- Validated executable name or path invoked inside the sandbox. -/
+  program : String
+  /-- Validated explicit argument array passed verbatim to the guest. -/
+  args : Array String
+  /-- Canonical absolute working directory inside the sandbox. -/
+  cwd : String
+  /-- Standard input bytes delivered to the guest before closing stdin. -/
+  stdin : ByteArray
+  /-- Projected initial guest filesystem `S'`. -/
+  fs : FsState
+  /-- Projected initial isolated guest non-filesystem state. -/
+  nonFs : NonFsState
+
+instance : Inhabited GuestInput where
+  default :=
+    { program := "/bin/true"
+      args := #[]
+      cwd := defaultSandboxCwd
+      stdin := ByteArray.empty
+      fs := fun _ => none
+      nonFs := default }
+
+/-- Arbitrary guest program semantics mapping `GuestInput` to `(outcome, stdout, stderr, S'', guestNonFs')`. -/
 abbrev GuestProgram :=
-  FsState × NonFsState → SandboxOutcome × ByteArray × ByteArray × FsState × NonFsState
+  GuestInput → SandboxOutcome × ByteArray × ByteArray × FsState × NonFsState
 
 /-- Return `true` iff `k` is a non-validation host error category permitted on a `ValidBoxSpec`. -/
 def isHostErrorKind : SandboxErrorKind → Bool
@@ -163,15 +224,23 @@ def isHostErrorKind : SandboxErrorKind → Bool
 /-- Abstract host state observed before and after each sandbox operation. -/
 structure HostWorld where
   /-- Host filesystem state `S`. -/
-  fs : FsState
+  fs : FsState := fun _ => none
   /-- Read-only OS runtime preset exposed under reserved top-level directories inside the sandbox. -/
-  presetFs : FsState
+  presetFs : FsState := fun _ => none
   /-- Host non-filesystem state (environment, processes, network, surviving orphans). -/
-  nonFs : NonFsState
+  nonFs : NonFsState := default
   /-- Whether the host supports sandboxed execution (`isAvailable` result). -/
-  available : Bool
+  available : Bool := true
+  /-- Whether transient guest execution timeouts are permitted when `timeoutMs` is configured. -/
+  allowTimeout : Bool := false
   /-- Optional pre-execution host failure for a validated spec (e.g. missing mount source or executable). -/
   hostError : ValidBoxSpec → Option SandboxErrorKind := fun _ => none
+  /-- Arbitrary guest program semantics executed inside the sandbox. -/
+  guest : GuestProgram := fun inp =>
+    (.exited 0, ByteArray.empty, ByteArray.empty, inp.fs, inp.nonFs)
+
+instance : Inhabited HostWorld where
+  default := {}
 
 /-- Select the mount with the longest canonical `boxPath` prefix covering `targetSegs`. -/
 def bestMountForBoxPath (mounts : List SandboxMount) (targetSegs : List String) :
@@ -210,6 +279,15 @@ def projectGuestNonFs (hostNonFs : NonFsState) (valid : ValidBoxSpec) : NonFsSta
     processes := []
     network := match valid.network with | .closed => [] | .open => hostNonFs.network
     orphanCount := 0 }
+
+/-- Project `HostWorld` and validated `ValidBoxSpec` into the isolated `GuestInput` seen by `s.guest`. -/
+def projectGuestInput (s : HostWorld) (valid : ValidBoxSpec) : GuestInput where
+  program := valid.program
+  args := valid.args
+  cwd := valid.cwd
+  stdin := valid.stdin
+  fs := projectGuestFs s.fs valid.mounts.toList s.presetFs
+  nonFs := projectGuestNonFs s.nonFs valid
 
 /-- Return `true` iff `m` is a `.readWrite` mount whose canonical `hostPath` is a prefix of `hSegs`. -/
 def mountCoversHostSegs (hSegs : List String) : SandboxMount → Bool
@@ -268,11 +346,11 @@ def withinOutputCap (maxOutputBytes : Option Nat) (stdout stderr : ByteArray) : 
   | none => True
   | some cap => stdout.size + stderr.size ≤ cap
 
-/-- Allowed outcomes for executing `f` on a capable host with validated specification `valid`. -/
-def allowedGuestRun (s : HostWorld) (valid : ValidBoxSpec) (f : GuestProgram)
+/-- Allowed outcomes for executing `s.guest` on a capable host with validated specification `valid`. -/
+def allowedGuestRun (s : HostWorld) (valid : ValidBoxSpec)
     (out : Except SandboxError SandboxResult) (s' : HostWorld) : Prop :=
   let (rawOutcome, rawStdout, rawStderr, rawFsAfter, rawNonFsAfter) :=
-    f (projectGuestFs s.fs valid.mounts.toList s.presetFs, projectGuestNonFs s.nonFs valid)
+    s.guest (projectGuestInput s valid)
   (withinOutputCap valid.maxOutputBytes rawStdout rawStderr ∧
     out = .ok { outcome := rawOutcome, stdout := rawStdout, stderr := rawStderr } ∧
     s' = commitGuestState s valid rawFsAfter rawNonFsAfter) ∨
@@ -284,14 +362,15 @@ def allowedGuestRun (s : HostWorld) (valid : ValidBoxSpec) (f : GuestProgram)
     res.stdout.size + res.stderr.size ≤ cap ∧
     s' = commitGuestState s valid midFs midNonFs) ∨
   (∃ res midFs midNonFs,
+    s.allowTimeout = true ∧
     valid.timeoutMs.isSome ∧
     out = .ok res ∧
     res.outcome = .timedOut ∧
     withinOutputCap valid.maxOutputBytes res.stdout res.stderr ∧
     s' = commitGuestState s valid midFs midNonFs)
 
-/-- Relational specification for `ProcessSandbox.run` on world `s`, input `spec`, and arbitrary guest program `f`. -/
-def allowedRun (s : HostWorld) (spec : BoxSpec) (f : GuestProgram)
+/-- Relational specification for `ProcessSandbox.run` on world `s` and input `spec`. -/
+def allowedRun (s : HostWorld) (spec : BoxSpec)
     (out : Except SandboxError SandboxResult) (s' : HostWorld) : Prop :=
   match validateSpecPure spec with
   | .error _ => ∃ e, out = .error e ∧ e.kind = .invalidInput ∧ !e.message.isEmpty ∧ s' = s
@@ -303,29 +382,31 @@ def allowedRun (s : HostWorld) (spec : BoxSpec) (f : GuestProgram)
       | some k =>
         if isHostErrorKind k then
           ∃ e, out = .error e ∧ e.kind = k ∧ !e.message.isEmpty ∧ s' = s
-        else allowedGuestRun s valid f out s'
-      | none => allowedGuestRun s valid f out s'
+        else allowedGuestRun s valid out s'
+      | none => allowedGuestRun s valid out s'
 
-/-- Package-level request union covering all public operations of `ProcessSandboxApiM`. -/
-inductive PkgReq where
+/-- Single-step request union over `HostWorld` covering all public operations of `ProcessSandboxApiM`. -/
+inductive SandboxStepReq where
   /-- Call `validateSpec` on `spec`. -/
   | validateSpec (spec : BoxSpec)
-  /-- Call `run` on `spec` with guest semantics `guest`. -/
-  | run (spec : BoxSpec) (guest : GuestProgram)
+  /-- Call `run` on `spec` against `HostWorld.guest`. -/
+  | run (spec : BoxSpec)
   /-- Call `isAvailable`. -/
   | isAvailable
+  deriving Inhabited
 
-/-- Package-level response union matching `PkgReq`. -/
-inductive PkgOut where
+/-- Single-step response union matching `SandboxStepReq`. -/
+inductive SandboxStepOut where
   /-- Response of `validateSpec`. -/
   | validateSpec (res : Except SandboxError ValidBoxSpec)
   /-- Response of `run`. -/
   | run (res : Except SandboxError SandboxResult)
   /-- Response of `isAvailable`. -/
   | isAvailable (ok : Bool)
+  deriving Inhabited
 
-/-- Package-level transition relation across `validateSpec`, `run`, and `isAvailable`. -/
-def allowedPkgStep (s : HostWorld) (req : PkgReq) (out : PkgOut) (s' : HostWorld) : Prop :=
+/-- Relational transition contract over `HostWorld` across `validateSpec`, `run`, and `isAvailable`. -/
+def allowedSandboxStep (s : HostWorld) (req : SandboxStepReq) (out : SandboxStepOut) (s' : HostWorld) : Prop :=
   match req, out with
   | .validateSpec spec, .validateSpec res =>
     s' = s ∧
@@ -333,7 +414,7 @@ def allowedPkgStep (s : HostWorld) (req : PkgReq) (out : PkgOut) (s' : HostWorld
     | .ok a, .ok b => a = b
     | .error e₁, .error e₂ => e₁.kind = e₂.kind ∧ !e₁.message.isEmpty
     | _, _ => False
-  | .run spec f, .run res => allowedRun s spec f res s'
+  | .run spec, .run res => allowedRun s spec res s'
   | .isAvailable, .isAvailable ok => ok = s.available ∧ s' = s
   | _, _ => False
 
@@ -341,20 +422,92 @@ def allowedPkgStep (s : HostWorld) (req : PkgReq) (out : PkgOut) (s' : HostWorld
 structure SandboxRunner where
   /-- Validate and normalize an untrusted `BoxSpec`. -/
   validateSpec : BoxSpec → Except SandboxError ValidBoxSpec
-  /-- Execute `guest` under `spec` against `HostWorld`, returning `(result, nextWorld)`. -/
-  run : HostWorld → BoxSpec → GuestProgram → Except SandboxError SandboxResult × HostWorld
+  /-- Execute `HostWorld.guest` under `spec` against `HostWorld`, returning `(result, nextWorld)`. -/
+  run : HostWorld → BoxSpec → Except SandboxError SandboxResult × HostWorld
   /-- Probe whether `HostWorld` supports sandboxed execution. -/
   isAvailable : HostWorld → Bool
 
-/-- Comprehensive contract requiring `runner` to satisfy `allowedPkgStep` across every world, `BoxSpec`, and guest program `f`. -/
+/-- Comprehensive contract requiring `runner` to satisfy `allowedSandboxStep` across every `HostWorld` and `BoxSpec`. -/
 def obeys_sandbox_model (runner : SandboxRunner) : Prop :=
   (∀ (s : HostWorld) (spec : BoxSpec),
-    allowedPkgStep s (.validateSpec spec) (.validateSpec (runner.validateSpec spec)) s) ∧
-  (∀ (s : HostWorld) (spec : BoxSpec) (f : GuestProgram),
-    let r := runner.run s spec f
-    allowedPkgStep s (.run spec f) (.run r.1) r.2) ∧
+    allowedSandboxStep s (.validateSpec spec) (.validateSpec (runner.validateSpec spec)) s) ∧
+  (∀ (s : HostWorld) (spec : BoxSpec),
+    let r := runner.run s spec
+    allowedSandboxStep s (.run spec) (.run r.1) r.2) ∧
   (∀ (s : HostWorld),
-    allowedPkgStep s .isAvailable (.isAvailable (runner.isAvailable s)) s)
+    allowedSandboxStep s .isAvailable (.isAvailable (runner.isAvailable s)) s)
+
+/-- Single-step request sum covering all 3 public operations of `ProcessSandboxApiM` for `Core.ObeysStepFrom`. -/
+inductive PkgStepReq where
+  /-- Pure `api.validateSpec spec`. -/
+  | validateSpec (spec : BoxSpec)
+  /-- Effectful `api.run spec`. -/
+  | run (spec : BoxSpec)
+  /-- Effectful `api.isAvailable`. -/
+  | isAvailable
+  deriving Inhabited
+
+/-- Single-step output sum for `PkgStepReq` transitions in `Core.ObeysStepFrom`. -/
+inductive PkgStepOut where
+  /-- Validation outcome returned by `validateSpec`. -/
+  | validateSpec (res : Except SandboxError ValidBoxSpec)
+  /-- Execution outcome returned by `run`. -/
+  | run (res : Except SandboxError SandboxResult)
+  /-- Boolean probe result returned by `isAvailable`. -/
+  | isAvailable (ok : Bool)
+  deriving Inhabited
+
+/-- Execute one `PkgStepReq` against an arbitrary `ProcessSandboxApiM (StateM W)`. -/
+def execPkgStep {W : Type} (api : ProcessSandboxApiM (StateM W)) : PkgStepReq → StateM W PkgStepOut
+  | .validateSpec spec => pure (.validateSpec (api.validateSpec spec))
+  | .run spec => .run <$> api.run spec
+  | .isAvailable => .isAvailable <$> api.isAvailable
+
+/-- Well-formedness guard on `LeanSwe.Process.Model.ProcessModelState` for `Core.ObeysStepFrom`. -/
+def processStepWf (s : LeanSwe.Process.Model.ProcessModelState) : Bool :=
+  LeanSwe.Process.Model.processStateWf s
+
+/-- Execute one `LeanSwe.Process.Model.PkgStepReq` against `proc : LeanSwe.Process.ProcessApiM (StateM W)`. -/
+def execProcessStep {W : Type} (proc : LeanSwe.Process.ProcessApiM (StateM W))
+    (req : LeanSwe.Process.Model.PkgStepReq) : StateM W LeanSwe.Process.Model.PkgStepOut :=
+  LeanSwe.Process.Model.execPkgStep proc req
+
+/-- Direct `ProcessApiM` single-step contract delegated to `LeanSwe.Process.Model.allowedPkgStep`. -/
+def allowedProcessStep (s : LeanSwe.Process.Model.ProcessModelState)
+    (req : LeanSwe.Process.Model.PkgStepReq) (out : LeanSwe.Process.Model.PkgStepOut)
+    (s' : LeanSwe.Process.Model.ProcessModelState) : Prop :=
+  LeanSwe.Process.Model.allowedPkgStep s req out s'
+
+/-- Handle-conserving `ProcessModelState` transition when `ProcessSandbox` executes a `ProcessApiM` call. -/
+def allowedProcessHandleStep (s s' : LeanSwe.Process.Model.ProcessModelState) : Prop :=
+  LeanSwe.Process.Model.processStateWf s = true ∧
+  LeanSwe.Process.Model.processStateWf s' = true ∧
+  s'.activeHandles = s.activeHandles ∧
+  (s'.nextHandleId = s.nextHandleId ∨ s'.nextHandleId = s.nextHandleId + 1)
+
+/-- Relational single-step contract for all 3 `ProcessSandboxApiM` operations over `ProcessModelState`. -/
+def allowedPkgStep (s : LeanSwe.Process.Model.ProcessModelState)
+    (req : PkgStepReq) (out : PkgStepOut)
+    (s' : LeanSwe.Process.Model.ProcessModelState) : Prop :=
+  match req, out with
+  | .validateSpec spec, .validateSpec res =>
+    res = validateSpecModel spec ∧ s' = s ∧ processStepWf s = true
+  | .isAvailable, .isAvailable _ =>
+    allowedProcessHandleStep s s'
+  | .run spec, .run res =>
+    match validateSpecPure spec with
+    | .error eExpected =>
+      res = .error eExpected ∧ s' = s ∧ processStepWf s = true
+    | .ok valid =>
+      allowedProcessHandleStep s s' ∧
+      match res with
+      | .ok r =>
+        withinOutputCap valid.maxOutputBytes r.stdout r.stderr ∧
+        (r.outcome = .timedOut → valid.timeoutMs.isSome = true) ∧
+        (r.outcome = .outputLimitExceeded → valid.maxOutputBytes.isSome = true)
+      | .error e =>
+        isHostErrorKind e.kind = true ∧ !e.message.isEmpty
+  | _, _ => False
 
 private theorem foldl_applyMountWriteBack_eq (allMounts : List SandboxMount)
     (guestFsAfter : FsState) (hSegs : List String) :

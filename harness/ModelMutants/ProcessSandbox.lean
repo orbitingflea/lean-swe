@@ -6,12 +6,11 @@ namespace ModelMutants.ProcessSandbox
 open LeanSwe.ProcessSandbox
 open LeanSwe.ProcessSandbox.Model
 
-/-- Execute `f` on projected guest state and commit only permitted write-backs. -/
-def runValidGuest (s : HostWorld) (valid : ValidBoxSpec) (f : GuestProgram) :
+/-- Execute `s.guest` on projected `GuestInput` and commit only permitted write-backs. -/
+def runValidGuest (s : HostWorld) (valid : ValidBoxSpec) :
     Except SandboxError SandboxResult × HostWorld :=
-  let guestFs₀ := projectGuestFs s.fs valid.mounts.toList s.presetFs
-  let guestNonFs₀ := projectGuestNonFs s.nonFs valid
-  let (rawOutcome, rawStdout, rawStderr, rawFsAfter, rawNonFsAfter) := f (guestFs₀, guestNonFs₀)
+  let (rawOutcome, rawStdout, rawStderr, rawFsAfter, rawNonFsAfter) :=
+    s.guest (projectGuestInput s valid)
   let sNext := commitGuestState s valid rawFsAfter rawNonFsAfter
   match valid.maxOutputBytes with
   | some cap =>
@@ -25,7 +24,7 @@ def runValidGuest (s : HostWorld) (valid : ValidBoxSpec) (f : GuestProgram) :
 /-- Clean reference implementation matching `LeanSwe.ProcessSandbox.Model` directly. -/
 def referenceSandboxRunner : SandboxRunner where
   validateSpec := validateSpecPure
-  run s spec f :=
+  run s spec :=
     match validateSpecPure spec with
     | .error e => (.error e, s)
     | .ok valid =>
@@ -36,8 +35,8 @@ def referenceSandboxRunner : SandboxRunner where
         | some k =>
           if isHostErrorKind k then
             (.error { kind := k, message := "host pre-execution failure" }, s)
-          else runValidGuest s valid f
-        | none => runValidGuest s valid f
+          else runValidGuest s valid
+        | none => runValidGuest s valid
   isAvailable s := s.available
 
 private theorem invalidInput_kind_msg (msg : String) (p : Option String)
@@ -113,6 +112,8 @@ private theorem validateSpecPure_err_kind_msg (spec : BoxSpec) (e : SandboxError
       simp only [hm] at h
       split at h
       · injection h with h; subst h; exact invalidInput_kind_msg _ _ (by decide)
+      split at h
+      · injection h with h; subst h; exact invalidInput_kind_msg _ _ (by decide)
       · contradiction
   | some d =>
     simp only [hCwd] at h
@@ -130,39 +131,41 @@ private theorem validateSpecPure_err_kind_msg (spec : BoxSpec) (e : SandboxError
         simp only [hm] at h
         split at h
         · injection h with h; subst h; exact invalidInput_kind_msg _ _ (by decide)
+        split at h
+        · injection h with h; subst h; exact invalidInput_kind_msg _ _ (by decide)
         · contradiction
 
-private theorem runValidGuest_satisfies (s : HostWorld) (valid : ValidBoxSpec) (f : GuestProgram) :
-    let r := runValidGuest s valid f
-    allowedGuestRun s valid f r.1 r.2 := by
+private theorem runValidGuest_satisfies (s : HostWorld) (valid : ValidBoxSpec) :
+    let r := runValidGuest s valid
+    allowedGuestRun s valid r.1 r.2 := by
   dsimp only [runValidGuest, allowedGuestRun]
   cases hCap : valid.maxOutputBytes with
   | none =>
     exact Or.inl ⟨by simp [withinOutputCap], rfl, rfl⟩
   | some cap =>
     by_cases hLe :
-      (f (projectGuestFs s.fs valid.mounts.toList s.presetFs, projectGuestNonFs s.nonFs valid)).2.1.size +
-      (f (projectGuestFs s.fs valid.mounts.toList s.presetFs, projectGuestNonFs s.nonFs valid)).2.2.1.size ≤ cap
+      (s.guest (projectGuestInput s valid)).2.1.size +
+      (s.guest (projectGuestInput s valid)).2.2.1.size ≤ cap
     · simp only [hLe, ↓reduceIte]
       exact Or.inl ⟨by simpa [withinOutputCap] using hLe, trivial, trivial⟩
     · simp only [hLe, ↓reduceIte]
       refine Or.inr (Or.inl ⟨cap,
         { outcome := .outputLimitExceeded, stdout := ByteArray.empty, stderr := ByteArray.empty },
-        (f (projectGuestFs s.fs valid.mounts.toList s.presetFs, projectGuestNonFs s.nonFs valid)).2.2.2.1,
-        (f (projectGuestFs s.fs valid.mounts.toList s.presetFs, projectGuestNonFs s.nonFs valid)).2.2.2.2,
+        (s.guest (projectGuestInput s valid)).2.2.2.1,
+        (s.guest (projectGuestInput s valid)).2.2.2.2,
         rfl, Nat.lt_of_not_le hLe, rfl, rfl, Nat.zero_le cap, rfl⟩)
 
 /-- Satisfiability witness: `referenceSandboxRunner` satisfies `obeys_sandbox_model` unconditionally. -/
 theorem referenceSandboxRunner_obeys_model : obeys_sandbox_model referenceSandboxRunner := by
   refine ⟨?_, ?_, ?_⟩
   · intro s spec
-    dsimp only [allowedPkgStep, referenceSandboxRunner]
+    dsimp only [allowedSandboxStep, referenceSandboxRunner]
     refine ⟨rfl, ?_⟩
     cases hv : validateSpecPure spec with
     | ok _ => rfl
     | error e => exact ⟨rfl, (validateSpecPure_err_kind_msg spec e hv).2⟩
-  · intro s spec f
-    dsimp only [allowedPkgStep, allowedRun, referenceSandboxRunner]
+  · intro s spec
+    dsimp only [allowedSandboxStep, allowedRun, referenceSandboxRunner]
     cases hv : validateSpecPure spec with
     | error e =>
       have hErr := validateSpecPure_err_kind_msg spec e hv
@@ -174,7 +177,7 @@ theorem referenceSandboxRunner_obeys_model : obeys_sandbox_model referenceSandbo
       | true =>
         simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
         cases hErr : s.hostError valid with
-        | none => exact runValidGuest_satisfies s valid f
+        | none => exact runValidGuest_satisfies s valid
         | some k =>
           cases hk : isHostErrorKind k with
           | true =>
@@ -184,14 +187,14 @@ theorem referenceSandboxRunner_obeys_model : obeys_sandbox_model referenceSandbo
             decide
           | false =>
             simp only [hk, Bool.false_eq_true, ↓reduceIte]
-            exact runValidGuest_satisfies s valid f
+            exact runValidGuest_satisfies s valid
   · intro s
     exact ⟨rfl, rfl⟩
 
-/-- Trivial Mutant 1: validates input and returns `.exited 0` without running `f`. -/
+/-- Trivial Mutant 1: validates input and returns `.exited 0` without running `HostWorld.guest`. -/
 def noRunDummy : SandboxRunner where
   validateSpec := validateSpecPure
-  run s spec _f :=
+  run s spec :=
     match validateSpecPure spec with
     | .error e => (.error e, s)
     | .ok _ =>
@@ -201,26 +204,35 @@ def noRunDummy : SandboxRunner where
         (.ok { outcome := .exited 0, stdout := ByteArray.empty, stderr := ByteArray.empty }, s)
   isAvailable s := s.available
 
-/-- Trivial Mutant 2: runs `f` directly against host `fs` and `nonFs` with no isolation. -/
+/-- Trivial Mutant 2: runs `HostWorld.guest` directly against host `fs` and `nonFs` with no isolation. -/
 def unsandboxedHostRunner : SandboxRunner where
   validateSpec := validateSpecPure
-  run s spec f :=
+  run s spec :=
     match validateSpecPure spec with
     | .error e => (.error e, s)
-    | .ok _ =>
+    | .ok valid =>
       if !s.available then
         (.error { kind := .unavailable, message := "sandbox unavailable on host" }, s)
       else
-        let (outcome, stdout, stderr, nextFs, nextNonFs) := f (s.fs, s.nonFs)
+        let rawInp : GuestInput :=
+          { program := valid.program
+            args := valid.args
+            cwd := valid.cwd
+            stdin := valid.stdin
+            fs := s.fs
+            nonFs := s.nonFs }
+        let (outcome, stdout, stderr, nextFs, nextNonFs) := s.guest rawInp
         (.ok { outcome, stdout, stderr }, { s with fs := nextFs, nonFs := nextNonFs })
   isAvailable s := s.available
 
-private def cleanHostWorld : HostWorld where
+private def cleanHostWorld (guest : GuestProgram) : HostWorld where
   fs := fun _ => none
   presetFs := fun _ => none
   nonFs := { env := [("HOST_SECRET", "keep")], processes := ["init"], network := [], orphanCount := 0 }
   available := true
+  allowTimeout := false
   hostError := fun _ => none
+  guest := guest
 
 private instance {ε α : Type} [DecidableEq ε] [DecidableEq α] : DecidableEq (Except ε α)
   | .ok a, .ok b => if h : a = b then isTrue (congrArg Except.ok h) else isFalse (by intro hEq; injection hEq; exact h ‹_›)
@@ -232,9 +244,9 @@ private instance {ε α : Type} [DecidableEq ε] [DecidableEq α] : DecidableEq 
 theorem noRunDummy_fails_model : ¬ obeys_sandbox_model noRunDummy := by
   intro hObeys
   let spec : BoxSpec := { program := "/bin/false" }
-  let f : GuestProgram := fun (gFs, gNonFs) =>
-    (.exited 1, ByteArray.empty, ByteArray.empty, gFs, gNonFs)
-  have hStep := hObeys.2.1 cleanHostWorld spec f
+  let f : GuestProgram := fun inp =>
+    (.exited 1, ByteArray.empty, ByteArray.empty, inp.fs, inp.nonFs)
+  have hStep := hObeys.2.1 (cleanHostWorld f) spec
   have hVal : validateSpecPure spec = .ok
       { program := "/bin/false"
         args := #[]
@@ -246,7 +258,7 @@ theorem noRunDummy_fails_model : ¬ obeys_sandbox_model noRunDummy := by
         timeoutMs := none
         maxOutputBytes := none } := by
     decide
-  simp [allowedPkgStep, allowedRun, allowedGuestRun, noRunDummy, cleanHostWorld, hVal, f] at hStep
+  simp [allowedSandboxStep, allowedRun, allowedGuestRun, noRunDummy, cleanHostWorld, hVal, f] at hStep
 
 /-- Mutant 2 (`unsandboxedHostRunner`) fails `obeys_sandbox_model`, witnessed by a guest overwriting a read-only host path and host env/network. -/
 theorem unsandboxedHostRunner_fails_model : ¬ obeys_sandbox_model unsandboxedHostRunner := by
@@ -256,13 +268,13 @@ theorem unsandboxedHostRunner_fails_model : ¬ obeys_sandbox_model unsandboxedHo
       mounts := #[.readOnly "/host/secret" "/ro"]
       network := .closed }
   let payload : ByteArray := ByteArray.mk #[1]
-  let f : GuestProgram := fun (gFs, gNonFs) =>
+  let f : GuestProgram := fun inp =>
     ( .exited 0
     , ByteArray.empty
     , ByteArray.empty
-    , (fun p => if p == "/host/secret" then some payload else gFs p)
-    , { gNonFs with env := [], network := ["exfiltrated"] } )
-  have hStep := hObeys.2.1 cleanHostWorld spec f
+    , (fun p => if p == "/host/secret" then some payload else inp.fs p)
+    , { inp.nonFs with env := [], network := ["exfiltrated"] } )
+  have hStep := hObeys.2.1 (cleanHostWorld f) spec
   have hVal : validateSpecPure spec = .ok
       { program := "/bin/sh"
         args := #[]
@@ -274,7 +286,7 @@ theorem unsandboxedHostRunner_fails_model : ¬ obeys_sandbox_model unsandboxedHo
         timeoutMs := none
         maxOutputBytes := none } := by
     decide
-  simp only [allowedPkgStep, allowedRun, allowedGuestRun, unsandboxedHostRunner, cleanHostWorld,
+  simp only [allowedSandboxStep, allowedRun, allowedGuestRun, unsandboxedHostRunner, cleanHostWorld,
     hVal, f, Bool.not_true, Bool.false_eq_true, ↓reduceIte, Option.isSome_none, reduceCtorEq,
     false_and, exists_false, or_false, withinOutputCap, true_and] at hStep
   have hFsEq := congrArg (fun (w : HostWorld) => w.fs "/host/secret") hStep
