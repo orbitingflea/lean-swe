@@ -1,14 +1,153 @@
 import Core.Obeys
 import LeanSwe.Glob.Interface
 import LeanSwe.Glob.Model
-import LeanSwe.Glob.SpecTests
-import LeanSwe.Glob.Proofs.EscapeAndProps
 import LeanSwe.Glob.Proofs.ParserMatch
 
 namespace LeanSwe.Glob.Proofs
 
 open Core
-open Core.NondetTest
+
+private def NonEmptyErr {α : Type} (r : Except GlobError α) : Prop :=
+  ∀ e, r = .error e → e.message ≠ ""
+
+private theorem nonEmptyErr_ok {α : Type} (a : α) : NonEmptyErr (.ok a) := by
+  intro _ h; cases h
+
+private theorem nonEmptyErr_pure {α : Type} (a : α) : NonEmptyErr (pure a : Except GlobError α) :=
+  nonEmptyErr_ok a
+
+private theorem nonEmptyErr_error {α : Type} {e : GlobError} (he : e.message ≠ "") :
+    NonEmptyErr (.error e : Except GlobError α) := by
+  intro e' h; simp only [Except.error.injEq] at h; subst h; exact he
+
+private theorem nonEmptyErr_bind {α β : Type} {x : Except GlobError α}
+    {f : α → Except GlobError β} (hx : NonEmptyErr x) (hf : ∀ a, NonEmptyErr (f a)) :
+    NonEmptyErr (x >>= f) := by
+  cases x with
+  | error e =>
+    intro e' h
+    simp only [bind, Except.bind, Except.error.injEq] at h
+    subst h
+    exact hx e rfl
+  | ok a =>
+    intro e' h
+    exact hf a e' h
+
+private theorem nonEmptyErr_map {α β : Type} {x : Except GlobError α} {f : α → β}
+    (hx : NonEmptyErr x) : NonEmptyErr (f <$> x) := by
+  cases x with
+  | error e =>
+    intro e' h
+    simp only [Functor.map, Except.map, Except.error.injEq] at h
+    subst h
+    exact hx e rfl
+  | ok _ =>
+    intro _ h
+    simp [Functor.map, Except.map] at h
+
+private theorem invalidRangeErr_msg_ne_empty (lo hi : Char) :
+    (Internal.invalidRangeErr lo hi).message ≠ "" := by
+  intro h
+  have hlen : (Internal.invalidRangeErr lo hi).message.length = 0 := by rw [h]; rfl
+  simp [Internal.invalidRangeErr, String.length_append] at hlen
+  have hdash : ("-" : String).length = 0 := by simpa [toString] using hlen.1.1.2
+  contradiction
+
+private theorem readClassAtom_nonEmptyErr (cs : List Char) :
+    NonEmptyErr (Internal.readClassAtom cs) := by
+  unfold Internal.readClassAtom
+  split
+  · exact nonEmptyErr_error (by decide)
+  · exact nonEmptyErr_error (by decide)
+  · exact nonEmptyErr_ok _
+  · exact nonEmptyErr_ok _
+
+private theorem parseClassItems_nonEmptyErr_aux (n : Nat) :
+    ∀ cs acc, cs.length ≤ n → NonEmptyErr (Internal.parseClassItems cs acc) := by
+  induction n using Nat.strongRecOn with
+  | ind n ih =>
+    intro cs acc hn
+    rw [Internal.parseClassItems.eq_def]
+    split
+    · exact nonEmptyErr_error (by decide)
+    · split
+      · exact nonEmptyErr_error (by decide)
+      · exact nonEmptyErr_ok _
+    · refine nonEmptyErr_bind (readClassAtom_nonEmptyErr _) fun ⟨lo, ⟨afterLo, hLo⟩⟩ => ?_
+      have hStep : afterLo.length < n := by
+        rw [List.length_cons] at hn hLo
+        omega
+      dsimp only
+      split
+      · exact nonEmptyErr_ok _
+      · refine nonEmptyErr_bind (readClassAtom_nonEmptyErr _) fun ⟨hi, ⟨afterHi, hHi⟩⟩ => ?_
+        have hStep2 : afterHi.length < n :=
+          Nat.lt_trans hHi (Nat.lt_trans (Nat.lt_succ_self _) hStep)
+        dsimp only
+        split
+        · refine nonEmptyErr_bind (ih afterHi.length hStep2 afterHi _ (Nat.le_refl _)) ?_
+          intro ⟨_, ⟨_, _⟩⟩; exact nonEmptyErr_pure _
+        · exact nonEmptyErr_error (invalidRangeErr_msg_ne_empty lo hi)
+      · refine nonEmptyErr_bind (ih _ hStep _ _ (Nat.le_refl _)) ?_
+        intro ⟨_, ⟨_, _⟩⟩; exact nonEmptyErr_pure _
+
+private theorem parseClassItems_nonEmptyErr (cs : List Char) (acc : List Internal.CharClassItem) :
+    NonEmptyErr (Internal.parseClassItems cs acc) :=
+  parseClassItems_nonEmptyErr_aux cs.length cs acc (Nat.le_refl _)
+
+private theorem parseCharClass_nonEmptyErr (cs : List Char) :
+    NonEmptyErr (Internal.parseCharClass cs) := by
+  unfold Internal.parseCharClass
+  split
+  · exact nonEmptyErr_bind (parseClassItems_nonEmptyErr _ []) fun ⟨items, ⟨r, _⟩⟩ =>
+      nonEmptyErr_pure _
+  · exact nonEmptyErr_bind (parseClassItems_nonEmptyErr _ []) fun ⟨items, ⟨r, _⟩⟩ =>
+      nonEmptyErr_pure _
+
+private theorem parseAtoms_nonEmptyErr (cs : List Char) :
+    NonEmptyErr (Internal.parseAtoms cs) := by
+  rw [Internal.parseAtoms.eq_def]
+  split
+  · exact nonEmptyErr_ok _
+  · exact nonEmptyErr_error (by decide)
+  · exact nonEmptyErr_bind (parseAtoms_nonEmptyErr _) fun _ => nonEmptyErr_pure _
+  · exact nonEmptyErr_bind (parseAtoms_nonEmptyErr _) fun t => by
+      cases t with
+      | nil => exact nonEmptyErr_pure _
+      | cons hd _ => cases hd <;> exact nonEmptyErr_pure _
+  · exact nonEmptyErr_bind (parseAtoms_nonEmptyErr _) fun _ => nonEmptyErr_pure _
+  · refine nonEmptyErr_bind (parseCharClass_nonEmptyErr _) fun ⟨_, ⟨after, _⟩⟩ => ?_
+    exact nonEmptyErr_bind (parseAtoms_nonEmptyErr after) fun _ => nonEmptyErr_pure _
+  · exact nonEmptyErr_bind (parseAtoms_nonEmptyErr _) fun _ => nonEmptyErr_pure _
+termination_by cs.length
+decreasing_by all_goals (simp only [*, List.length_cons] at *; omega)
+
+private theorem parseSegment_nonEmptyErr (seg : List Char) :
+    NonEmptyErr (Internal.parseSegment seg) := by
+  unfold Internal.parseSegment
+  split
+  · exact nonEmptyErr_ok _
+  · exact nonEmptyErr_map (parseAtoms_nonEmptyErr seg)
+
+private theorem parseSegList_nonEmptyErr (segs : List (List Char)) :
+    NonEmptyErr (Internal.parseSegList segs) := by
+  induction segs with
+  | nil => exact nonEmptyErr_ok _
+  | cons seg rest ih =>
+    unfold Internal.parseSegList
+    refine nonEmptyErr_bind (parseSegment_nonEmptyErr seg) fun p => ?_
+    refine nonEmptyErr_bind ih fun ps => ?_
+    cases p with
+    | atoms _ => exact nonEmptyErr_pure _
+    | globStar =>
+      cases ps with
+      | nil => exact nonEmptyErr_pure _
+      | cons hd _ => cases hd <;> exact nonEmptyErr_pure _
+
+/-- `Internal.compilePattern` always emits a non-empty diagnostic message on error. -/
+theorem compilePattern_err_ne_empty {pat : String} {err : GlobError}
+    (h : Internal.compilePattern pat = .error err) : err.message ≠ "" :=
+  parseSegList_nonEmptyErr _ err h
 
 private theorem model_parseAtoms_lbracket (rest : List Char) :
     Model.parseAtoms ('[' :: rest) = modelParseClass rest := by
@@ -344,95 +483,6 @@ private theorem compilePattern_match (pat : String) :
   simp only [Internal.compilePattern, Model.parsePattern, splitOnChar_slash_eq_splitSlash]
   exact parseSegList_match (Model.splitSlash pat.toList)
 
-/-- Proof of `test_glob_validate_matchesModel` for `defaultApi`. -/
-theorem proof_glob_validate_matchesModel :
-    AllPass (test_glob_validate_matchesModel defaultApi) := by
-  intro pat
-  have h := compilePattern_match pat
-  simp only [defaultApi, validate, Internal.validate, Model.validateModel,
-    bind, Except.bind, pure, Except.pure, Except.map]
-  cases hc : Internal.compilePattern pat with
-  | error e =>
-    cases hm : Model.parsePattern pat with
-    | error k => rw [hc, hm] at h; exact ⟨⟨h, compilePattern_err_ne_empty hc⟩, trivial⟩
-    | ok ps2 => rw [hc, hm] at h; exact False.elim h
-  | ok ps1 =>
-    cases hm : Model.parsePattern pat with
-    | error k => rw [hc, hm] at h; exact False.elim h
-    | ok ps2 => exact ⟨trivial, trivial⟩
-
-/-- Proof of `test_glob_isMatch_matchesModel` for `defaultApi`. -/
-theorem proof_glob_isMatch_matchesModel :
-    AllPass (test_glob_isMatch_matchesModel defaultApi) := by
-  intro pat path
-  have h := compilePattern_match pat
-  simp only [defaultApi, isMatch, Internal.isMatch, Model.isMatchModel,
-    splitOnChar_slash_eq_splitSlash, bind, Except.bind, pure, Except.pure, Except.map]
-  cases hc : Internal.compilePattern pat with
-  | error e =>
-    cases hm : Model.parsePattern pat with
-    | error k => rw [hc, hm] at h; exact ⟨⟨h, compilePattern_err_ne_empty hc⟩, trivial⟩
-    | ok ps2 => rw [hc, hm] at h; exact False.elim h
-  | ok ps1 =>
-    cases hm : Model.parsePattern pat with
-    | error k => rw [hc, hm] at h; exact False.elim h
-    | ok ps2 => rw [hc, hm] at h; exact ⟨h (Model.splitSlash path.toList), trivial⟩
-
-/-- Proof of `test_glob_filter_matchesModel` for `defaultApi`. -/
-theorem proof_glob_filter_matchesModel :
-    AllPass (test_glob_filter_matchesModel defaultApi) := by
-  intro pat paths
-  have h := compilePattern_match pat
-  simp only [defaultApi, filter, Internal.filter, Internal.filterCompiled, Model.filterModel,
-    splitOnChar_slash_eq_splitSlash, bind, Except.bind, pure, Except.pure, Except.map]
-  cases hc : Internal.compilePattern pat with
-  | error e =>
-    cases hm : Model.parsePattern pat with
-    | error k => rw [hc, hm] at h; exact ⟨⟨h, compilePattern_err_ne_empty hc⟩, trivial⟩
-    | ok ps2 => rw [hc, hm] at h; exact False.elim h
-  | ok ps1 =>
-    cases hm : Model.parsePattern pat with
-    | error k => rw [hc, hm] at h; exact False.elim h
-    | ok ps2 =>
-      rw [hc, hm] at h
-      have hEq : (paths.filter fun p => Internal.matchSegPats ps1 (Model.splitSlash p.toList)) =
-          (paths.filter fun p => Model.evalPath ps2 (Model.splitSlash p.toList)) := by
-        congr 1
-        funext p
-        exact h (Model.splitSlash p.toList)
-      exact ⟨hEq, trivial⟩
-
-/-- Proof of `test_glob_countMatches_matchesModel` for `defaultApi`. -/
-theorem proof_glob_countMatches_matchesModel :
-    AllPass (test_glob_countMatches_matchesModel defaultApi) := by
-  intro pat paths
-  have h := compilePattern_match pat
-  simp only [defaultApi, countMatches, Internal.countMatches, Internal.filter,
-    Internal.filterCompiled, Model.countMatchesModel, Model.filterModel,
-    splitOnChar_slash_eq_splitSlash, bind, Except.bind, pure, Except.pure, Except.map]
-  cases hc : Internal.compilePattern pat with
-  | error e =>
-    cases hm : Model.parsePattern pat with
-    | error k => rw [hc, hm] at h; exact ⟨⟨h, compilePattern_err_ne_empty hc⟩, trivial⟩
-    | ok ps2 => rw [hc, hm] at h; exact False.elim h
-  | ok ps1 =>
-    cases hm : Model.parsePattern pat with
-    | error k => rw [hc, hm] at h; exact False.elim h
-    | ok ps2 =>
-      rw [hc, hm] at h
-      have hEq : (paths.filter fun p => Internal.matchSegPats ps1 (Model.splitSlash p.toList)) =
-          (paths.filter fun p => Model.evalPath ps2 (Model.splitSlash p.toList)) := by
-        congr 1
-        funext p
-        exact h (Model.splitSlash p.toList)
-      exact ⟨congrArg Array.size hEq, trivial⟩
-
-/-- Proof of `test_glob_escape_matchesModel` for `defaultApi`. -/
-theorem proof_glob_escape_matchesModel :
-    AllPass (test_glob_escape_matchesModel defaultApi) := by
-  intro literal
-  simp [defaultApi, escape, Internal.escape, Model.escapeModel, escapeChars_eq_model, assert]
-
 /-- Full public `Interface` obedience of `LeanSwe.Glob` against `LeanSwe.Glob.Model`. -/
 theorem obeys_model :
     Core.ObeysPure LeanSwe.Glob.validate Model.allowedValidate ∧
@@ -440,28 +490,70 @@ theorem obeys_model :
     Core.ObeysPure2 LeanSwe.Glob.filter Model.allowedFilter ∧
     Core.ObeysPure2 LeanSwe.Glob.countMatches Model.allowedCountMatches ∧
     Core.ObeysPureEq LeanSwe.Glob.escape Model.escapeModel := by
-  refine ⟨fun pat => ?_, fun pat path => ?_, fun pat paths => ?_, fun pat paths => ?_,
-    fun literal => (proof_glob_escape_matchesModel literal).1⟩
-  · have h := proof_glob_validate_matchesModel pat
-    dsimp only [AllPass, AllPassRun, test_glob_validate_matchesModel, defaultApi,
-      LeanSwe.Glob.validate, Model.allowedValidate, nondet, bind, pure, assert] at h ⊢
-    cases hx : Internal.validate pat <;> cases hm : Model.validateModel pat <;>
-      simp [hx, hm] at h ⊢
-    exact h
-  · have h := proof_glob_isMatch_matchesModel pat path
-    dsimp only [AllPass, AllPassRun, test_glob_isMatch_matchesModel, defaultApi,
-      LeanSwe.Glob.isMatch, Model.allowedIsMatch, nondet, bind, pure, assert] at h ⊢
-    cases hx : Internal.isMatch pat path <;> cases hm : Model.isMatchModel pat path <;>
-      simp [hx, hm] at h ⊢ <;> exact h
-  · have h := proof_glob_filter_matchesModel pat paths
-    dsimp only [AllPass, AllPassRun, test_glob_filter_matchesModel, defaultApi,
-      LeanSwe.Glob.filter, Model.allowedFilter, nondet, bind, pure, assert] at h ⊢
-    cases hx : Internal.filter pat paths <;> cases hm : Model.filterModel pat paths <;>
-      simp [hx, hm] at h ⊢ <;> exact h
-  · have h := proof_glob_countMatches_matchesModel pat paths
-    dsimp only [AllPass, AllPassRun, test_glob_countMatches_matchesModel, defaultApi,
-      LeanSwe.Glob.countMatches, Model.allowedCountMatches, nondet, bind, pure, assert] at h ⊢
-    cases hx : Internal.countMatches pat paths <;> cases hm : Model.countMatchesModel pat paths <;>
-      simp [hx, hm] at h ⊢ <;> exact h
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩
+  · intro pat
+    have h := compilePattern_match pat
+    simp only [Model.allowedValidate, validate, Internal.validate, Model.validateModel,
+      bind, Except.bind, pure, Except.pure, Except.map]
+    cases hc : Internal.compilePattern pat with
+    | error e =>
+      cases hm : Model.parsePattern pat with
+      | error k => rw [hc, hm] at h; exact ⟨h, compilePattern_err_ne_empty hc⟩
+      | ok ps2 => rw [hc, hm] at h; exact False.elim h
+    | ok ps1 =>
+      cases hm : Model.parsePattern pat with
+      | error k => rw [hc, hm] at h; exact False.elim h
+      | ok ps2 => trivial
+  · intro pat path
+    have h := compilePattern_match pat
+    simp only [Model.allowedIsMatch, isMatch, Internal.isMatch, Model.isMatchModel,
+      splitOnChar_slash_eq_splitSlash, bind, Except.bind, pure, Except.pure, Except.map]
+    cases hc : Internal.compilePattern pat with
+    | error e =>
+      cases hm : Model.parsePattern pat with
+      | error k => rw [hc, hm] at h; exact ⟨h, compilePattern_err_ne_empty hc⟩
+      | ok ps2 => rw [hc, hm] at h; exact False.elim h
+    | ok ps1 =>
+      cases hm : Model.parsePattern pat with
+      | error k => rw [hc, hm] at h; exact False.elim h
+      | ok ps2 => rw [hc, hm] at h; exact h (Model.splitSlash path.toList)
+  · intro pat paths
+    have h := compilePattern_match pat
+    simp only [Model.allowedFilter, filter, Internal.filter, Internal.filterCompiled, Model.filterModel,
+      splitOnChar_slash_eq_splitSlash, bind, Except.bind, pure, Except.pure, Except.map]
+    cases hc : Internal.compilePattern pat with
+    | error e =>
+      cases hm : Model.parsePattern pat with
+      | error k => rw [hc, hm] at h; exact ⟨h, compilePattern_err_ne_empty hc⟩
+      | ok ps2 => rw [hc, hm] at h; exact False.elim h
+    | ok ps1 =>
+      cases hm : Model.parsePattern pat with
+      | error k => rw [hc, hm] at h; exact False.elim h
+      | ok ps2 =>
+        rw [hc, hm] at h
+        congr 1
+        funext p
+        exact h (Model.splitSlash p.toList)
+  · intro pat paths
+    have h := compilePattern_match pat
+    simp only [Model.allowedCountMatches, countMatches, Internal.countMatches, Internal.filter,
+      Internal.filterCompiled, Model.countMatchesModel, Model.filterModel,
+      splitOnChar_slash_eq_splitSlash, bind, Except.bind, pure, Except.pure, Except.map]
+    cases hc : Internal.compilePattern pat with
+    | error e =>
+      cases hm : Model.parsePattern pat with
+      | error k => rw [hc, hm] at h; exact ⟨h, compilePattern_err_ne_empty hc⟩
+      | ok ps2 => rw [hc, hm] at h; exact False.elim h
+    | ok ps1 =>
+      cases hm : Model.parsePattern pat with
+      | error k => rw [hc, hm] at h; exact False.elim h
+      | ok ps2 =>
+        rw [hc, hm] at h
+        apply congrArg Array.size
+        congr 1
+        funext p
+        exact h (Model.splitSlash p.toList)
+  · intro literal
+    simp [escape, Internal.escape, Model.escapeModel, escapeChars_eq_model]
 
 end LeanSwe.Glob.Proofs
