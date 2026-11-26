@@ -1,11 +1,10 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.LinuxSyscall.TimeRand.Model
 import LeanSwe.Uuid.Types
 
 namespace LeanSwe.Uuid
 
-open Core (NondetTest ErrorObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.LinuxSyscall (Errno)
 open LeanSwe.LinuxSyscall.TimeRand (TimeRandOpsM TimeRandState GrndFlags)
@@ -355,72 +354,5 @@ def test_uuid_getUuid_persistentEintrAndInvalidChunkReturnEntropyFailed
   NondetTest.assert (callsBig = 1 ∧
     ∃ err, rBig = .error err ∧ err.kind = .entropyFailed ∧
       err.errnoCode = none ∧ err.message ≠ "")
-
-/-- Declared error-coverage matrix for pure helper package `LeanSwe.Uuid` (`UuidErrorKind`, `20` obligations across `fromRandomBytes`, `parse`, `parseHex`, `getUuid`, and `v4`). -/
-def errorCoverage : List (ErrorObligation UuidErrorKind) :=
-  [ { request := "LeanSwe.Uuid.fromRandomBytes"
-      errorKind := .entropyFailed
-      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_fromRandomBytes_never_entropyFailed" }
-  , { request := "LeanSwe.Uuid.fromRandomBytes"
-      errorKind := .invalidLength
-      justification := .tested "LeanSwe.Uuid.RuntimeTests.err_uuid_fromRandomBytes_invalidLength" .real }
-  , { request := "LeanSwe.Uuid.fromRandomBytes"
-      errorKind := .invalidFormat
-      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_fromRandomBytes_never_invalidFormat" }
-  , { request := "LeanSwe.Uuid.fromRandomBytes"
-      errorKind := .invalidVersion
-      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_fromRandomBytes_never_invalidVersion" }
-
-  , { request := "LeanSwe.Uuid.parse"
-      errorKind := .entropyFailed
-      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_parse_never_entropyFailed" }
-  , { request := "LeanSwe.Uuid.parse"
-      errorKind := .invalidLength
-      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_parse_never_invalidLength" }
-  , { request := "LeanSwe.Uuid.parse"
-      errorKind := .invalidFormat
-      justification := .tested "LeanSwe.Uuid.RuntimeTests.err_uuid_parse_invalidFormat" .real }
-  , { request := "LeanSwe.Uuid.parse"
-      errorKind := .invalidVersion
-      justification := .tested "LeanSwe.Uuid.RuntimeTests.err_uuid_parse_invalidVersion" .real }
-
-  , { request := "LeanSwe.Uuid.parseHex"
-      errorKind := .entropyFailed
-      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_parseHex_never_entropyFailed" }
-  , { request := "LeanSwe.Uuid.parseHex"
-      errorKind := .invalidLength
-      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_parseHex_never_invalidLength" }
-  , { request := "LeanSwe.Uuid.parseHex"
-      errorKind := .invalidFormat
-      justification := .tested "LeanSwe.Uuid.RuntimeTests.err_uuid_parseHex_invalidFormat" .real }
-  , { request := "LeanSwe.Uuid.parseHex"
-      errorKind := .invalidVersion
-      justification := .tested "LeanSwe.Uuid.RuntimeTests.err_uuid_parseHex_invalidVersion" .real }
-
-  , { request := "LeanSwe.Uuid.getUuid"
-      errorKind := .entropyFailed
-      justification := .tested "LeanSwe.Uuid.RuntimeTests.err_uuid_getUuid_entropyFailed" .mocked }
-  , { request := "LeanSwe.Uuid.getUuid"
-      errorKind := .invalidLength
-      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_getUuid_never_invalidLength" }
-  , { request := "LeanSwe.Uuid.getUuid"
-      errorKind := .invalidFormat
-      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_getUuid_never_invalidFormat" }
-  , { request := "LeanSwe.Uuid.getUuid"
-      errorKind := .invalidVersion
-      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_getUuid_never_invalidVersion" }
-
-  , { request := "LeanSwe.Uuid.v4"
-      errorKind := .entropyFailed
-      justification := .tested "LeanSwe.Uuid.RuntimeTests.err_uuid_v4_entropyFailed" .mocked }
-  , { request := "LeanSwe.Uuid.v4"
-      errorKind := .invalidLength
-      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_v4_never_invalidLength" }
-  , { request := "LeanSwe.Uuid.v4"
-      errorKind := .invalidFormat
-      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_v4_never_invalidFormat" }
-  , { request := "LeanSwe.Uuid.v4"
-      errorKind := .invalidVersion
-      justification := .provedImpossible "LeanSwe.Uuid.Proofs.uuid_v4_never_invalidVersion" } ]
 
 end LeanSwe.Uuid

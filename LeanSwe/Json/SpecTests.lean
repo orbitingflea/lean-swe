@@ -1,10 +1,9 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.Json.Types
 
 namespace LeanSwe.Json
 
-open Core (NondetTest AssumptionObligation ErrorObligation)
+open Core (NondetTest)
 open Core.NondetTest
 
 /-- Encoding then decoding primitive types (`Bool`, `Nat`, `Int`, `String`) matches `Lean.toJson` and recovers the original values. -/
@@ -167,92 +166,5 @@ def test_json_parse_onError_returnsParseErrorWithNonEmptyMessage
   match api.parse raw with
   | .ok _ => NondetTest.assert True
   | .error e => NondetTest.assert (e.kind = .parseError ∧ e.message ≠ "" ∧ e.path = none)
-
-/-- Declared error-coverage matrix for `LeanSwe.Json` fallible requests (`JsonErrorKind`). -/
-def errorCoverage : List (ErrorObligation JsonErrorKind) :=
-  [ { request := "LeanSwe.Json.parse"
-      errorKind := .parseError
-      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_parse_parseError" .real }
-  , { request := "LeanSwe.Json.parse"
-      errorKind := .missingField
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_parse_never_missingField" }
-  , { request := "LeanSwe.Json.parse"
-      errorKind := .typeMismatch
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_parse_never_typeMismatch" }
-  , { request := "LeanSwe.Json.parse"
-      errorKind := .decodeError
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_parse_never_decodeError" }
-  , { request := "LeanSwe.Json.decode"
-      errorKind := .parseError
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_decode_never_parseError" }
-  , { request := "LeanSwe.Json.decode"
-      errorKind := .missingField
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_decode_never_missingField" }
-  , { request := "LeanSwe.Json.decode"
-      errorKind := .typeMismatch
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_decode_never_typeMismatch" }
-  , { request := "LeanSwe.Json.decode"
-      errorKind := .decodeError
-      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_decode_decodeError" .real }
-  , { request := "LeanSwe.Json.getObject"
-      errorKind := .parseError
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getObject_never_parseError" }
-  , { request := "LeanSwe.Json.getObject"
-      errorKind := .missingField
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getObject_never_missingField" }
-  , { request := "LeanSwe.Json.getObject"
-      errorKind := .typeMismatch
-      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getObject_typeMismatch" .real }
-  , { request := "LeanSwe.Json.getObject"
-      errorKind := .decodeError
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getObject_never_decodeError" }
-  , { request := "LeanSwe.Json.getArray"
-      errorKind := .parseError
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getArray_never_parseError" }
-  , { request := "LeanSwe.Json.getArray"
-      errorKind := .missingField
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getArray_never_missingField" }
-  , { request := "LeanSwe.Json.getArray"
-      errorKind := .typeMismatch
-      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getArray_typeMismatch" .real }
-  , { request := "LeanSwe.Json.getArray"
-      errorKind := .decodeError
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getArray_never_decodeError" }
-  , { request := "LeanSwe.Json.getField"
-      errorKind := .parseError
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getField_never_parseError" }
-  , { request := "LeanSwe.Json.getField"
-      errorKind := .missingField
-      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getField_missingField" .real }
-  , { request := "LeanSwe.Json.getField"
-      errorKind := .typeMismatch
-      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getField_typeMismatch" .real }
-  , { request := "LeanSwe.Json.getField"
-      errorKind := .decodeError
-      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getField_decodeError" .real }
-  , { request := "LeanSwe.Json.getOptField"
-      errorKind := .parseError
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getOptField_never_parseError" }
-  , { request := "LeanSwe.Json.getOptField"
-      errorKind := .missingField
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getOptField_never_missingField" }
-  , { request := "LeanSwe.Json.getOptField"
-      errorKind := .typeMismatch
-      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getOptField_typeMismatch" .real }
-  , { request := "LeanSwe.Json.getOptField"
-      errorKind := .decodeError
-      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getOptField_decodeError" .real }
-  , { request := "LeanSwe.Json.getPath"
-      errorKind := .parseError
-      justification := .provedImpossible "LeanSwe.Json.Proofs.json_getPath_never_parseError" }
-  , { request := "LeanSwe.Json.getPath"
-      errorKind := .missingField
-      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getPath_missingField" .real }
-  , { request := "LeanSwe.Json.getPath"
-      errorKind := .typeMismatch
-      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getPath_typeMismatch" .real }
-  , { request := "LeanSwe.Json.getPath"
-      errorKind := .decodeError
-      justification := .tested "LeanSwe.Json.RuntimeTests.err_json_getPath_decodeError" .real } ]
 
 end LeanSwe.Json

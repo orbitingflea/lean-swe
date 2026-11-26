@@ -3482,7 +3482,6 @@ private def parseArgs (args : List String) : CliConfig :=
 /-- Exact shrinking ratchet allowlist of packages currently still declaring legacy `SpecTests.errorCoverage`.
     Fails on any new declaration or stale allowlist entry; shrinks to `#[]` as Wave B deletes the tables. -/
 private def legacyErrorCoverageAllowlist : Array String := #[
-  "LeanSwe.Base64",
   "LeanSwe.CmdLine",
   "LeanSwe.Compress",
   "LeanSwe.ConnectProxy",
@@ -3492,8 +3491,6 @@ private def legacyErrorCoverageAllowlist : Array String := #[
   "LeanSwe.EnvVars.Raw",
   "LeanSwe.Fs",
   "LeanSwe.Git",
-  "LeanSwe.Glob",
-  "LeanSwe.Json",
   "LeanSwe.LinuxSyscall.Dns",
   "LeanSwe.LinuxSyscall.Files",
   "LeanSwe.LinuxSyscall.Net",
@@ -3502,20 +3499,12 @@ private def legacyErrorCoverageAllowlist : Array String := #[
   "LeanSwe.LinuxSyscall.Process",
   "LeanSwe.LinuxSyscall.Sandbox",
   "LeanSwe.LinuxSyscall.TimeRand",
-  "LeanSwe.NumParse",
   "LeanSwe.PostFork",
   "LeanSwe.Process",
   "LeanSwe.ProcessSandbox",
   "LeanSwe.ProcessSandbox.Raw",
-  "LeanSwe.RegExp",
-  "LeanSwe.SlotPool",
   "LeanSwe.Sqlite",
-  "LeanSwe.Sqlite.Raw",
-  "LeanSwe.Tar",
-  "LeanSwe.TempDir",
-  "LeanSwe.Time",
-  "LeanSwe.Toml",
-  "LeanSwe.Uuid"
+  "LeanSwe.Sqlite.Raw"
 ]
 
 /-- Exact shrinking ratchet allowlist of packages currently still declaring legacy `SpecTests.externalAssumptions`.

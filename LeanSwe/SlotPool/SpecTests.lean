@@ -1,5 +1,4 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.Fs.Types
 import LeanSwe.SlotPool.Model
 import LeanSwe.SlotPool.Types
@@ -7,7 +6,7 @@ import LeanSwe.Time.Types
 
 namespace LeanSwe.SlotPool
 
-open Core (NondetTest ErrorObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.Fs (FsApiM FsError FsErrorKind LockMode)
 open LeanSwe.Time (TimeOpsM)
@@ -398,32 +397,5 @@ def test_slotpool_waitForever_contendedPool_pollsUntilSlotFree
   NondetTest.assert (freeIdx + 1 ≥ cfg.totalSlots ∨ hasSimFile out.2 nextPath = false)
   NondetTest.assert (out.2.monoNanos = targetRelNs ∧
     out.2.sleepLog.toList = repeatSleepChunks cfg.pollIntervalMs rounds)
-
-/-- Complete `1 × 8` `(request, errorKind)` coverage matrix for pure orchestration package `LeanSwe.SlotPool` (`SlotPoolErrorKind`). -/
-def errorCoverage : List (ErrorObligation SlotPoolErrorKind) :=
-  [ { request := "LeanSwe.SlotPool.withSlot"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_invalidInput" .real }
-  , { request := "LeanSwe.SlotPool.withSlot"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_notFound" .real }
-  , { request := "LeanSwe.SlotPool.withSlot"
-      errorKind := .alreadyExists
-      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_alreadyExists" .real }
-  , { request := "LeanSwe.SlotPool.withSlot"
-      errorKind := .permissionDenied
-      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_permissionDenied" .real }
-  , { request := "LeanSwe.SlotPool.withSlot"
-      errorKind := .isADirectory
-      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_isADirectory" .real }
-  , { request := "LeanSwe.SlotPool.withSlot"
-      errorKind := .notADirectory
-      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_notADirectory" .real }
-  , { request := "LeanSwe.SlotPool.withSlot"
-      errorKind := .unsupported
-      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_unsupported" .mocked }
-  , { request := "LeanSwe.SlotPool.withSlot"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.SlotPool.RuntimeTests.err_slotpool_withSlot_ioError" .real } ]
 
 end LeanSwe.SlotPool
