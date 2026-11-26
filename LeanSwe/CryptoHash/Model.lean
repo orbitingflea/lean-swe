@@ -95,7 +95,7 @@ def modelApi : CryptoHashApiM Id :=
 def mapRawErrorModel (err : CryptoHashRawError) : CryptoHashError :=
   Raw.Model.mapRawErrorModel err
 
-/-- Request sum for raw `RawCryptoHashOpsM` transitions in `Core.RefinesStepFrom`. -/
+/-- Request sum for raw `RawCryptoHashOpsM` transitions in `Core.ObeysStepFrom`. -/
 inductive RawStepReq where
   /-- Normalize a raw error record. -/
   | mapRawError (err : CryptoHashRawError)
@@ -106,7 +106,7 @@ inductive RawStepReq where
   /-- Compare equal-length byte slices in constant time. -/
   | ctEqualRaw (a b : ByteArray)
 
-/-- Output sum for raw `RawCryptoHashOpsM` transitions in `Core.RefinesStepFrom`. -/
+/-- Output sum for raw `RawCryptoHashOpsM` transitions in `Core.ObeysStepFrom`. -/
 inductive RawStepOut where
   /-- Result of `RawCryptoHashOpsM.mapRawError`. -/
   | mapped (err : CryptoHashError)
@@ -115,7 +115,7 @@ inductive RawStepOut where
   /-- Result of `RawCryptoHashOpsM.ctEqualRaw`. -/
   | eqRes (res : Except CryptoHashError Bool)
 
-/-- Total well-formedness guard on `Unit` state for `Core.RefinesStepFrom`. -/
+/-- Total well-formedness guard on `Unit` state for `Core.ObeysStepFrom`. -/
 def rawStepWf (_ : Unit) : Bool := true
 
 /-- Execute one `RawStepReq` against an arbitrary `RawCryptoHashOpsM (StateM W)`. -/

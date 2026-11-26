@@ -4,7 +4,7 @@ import LeanSwe.Process.Types
 Pure top-level domain model and single-step capability-refinement specification for
 `LeanSwe.Process`. Defines pure request-validation/error-mapping models alongside the
 handle-lifecycle state `ProcessModelState`, `RawProcessOpsM` step contract (`allowedRawStep`),
-and `ProcessApiM` step contract (`allowedPkgStep`) for `Core.RefinesStepFrom`.
+and `ProcessApiM` step contract (`allowedPkgStep`) for `Core.ObeysStepFrom`.
 -/
 
 namespace LeanSwe.Process.Model
@@ -131,7 +131,7 @@ def hasNoDupHandleIds : List Nat → Bool
   | [] => true
   | x :: xs => !(xs.contains x) && hasNoDupHandleIds xs
 
-/-- Total well-formedness guard on `ProcessModelState` for `Core.RefinesStepFrom`. -/
+/-- Total well-formedness guard on `ProcessModelState` for `Core.ObeysStepFrom`. -/
 def processStateWf (s : ProcessModelState) : Bool :=
   decide (s.nextHandleId ≥ 1) &&
   hasNoDupHandleIds (s.activeHandles.map (·.handleId)) &&
@@ -221,7 +221,7 @@ inductive RawStepReq where
   | activeProcessCount
   deriving BEq, DecidableEq, Inhabited
 
-/-- Single-step output sum for `RawStepReq` transitions in `Core.RefinesStepFrom`. -/
+/-- Single-step output sum for `RawStepReq` transitions in `Core.ObeysStepFrom`. -/
 inductive RawStepOut where
   /-- Normalized error returned by `RawProcessOpsM.mapRawError`. -/
   | mapped (err : ProcessError)
@@ -282,7 +282,7 @@ inductive PkgStepReq where
   | activeProcessCount
   deriving BEq, DecidableEq, Inhabited
 
-/-- Single-step output sum for `PkgStepReq` transitions in `Core.RefinesStepFrom`. -/
+/-- Single-step output sum for `PkgStepReq` transitions in `Core.ObeysStepFrom`. -/
 inductive PkgStepOut where
   /-- Spawn result returned by `ProcessApiM.spawn`. -/
   | spawned (res : Except ProcessError ProcessHandle)

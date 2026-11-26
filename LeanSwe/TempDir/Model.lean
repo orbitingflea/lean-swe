@@ -310,7 +310,7 @@ def specCleanupStaleTempDirs (s : TempDirMockState) (root? : Option String) (dir
         let (rep, s') := specSweepEntries s root dirPrefix maxAgeSec s.nowSec {} names.toList
         (.ok { removed := (sortStrings rep.removed.toList).toArray, keptLocked := (sortStrings rep.keptLocked.toList).toArray
                keptFresh := (sortStrings rep.keptFresh.toList).toArray, skipped := (sortStrings rep.skipped.toList).toArray, failed := rep.failed }, s')
-/-- Total well-formedness guard on `TempDirMockState` for `Core.RefinesStepFromFinally`. -/
+/-- Total well-formedness guard on `TempDirMockState` for `Core.ObeysStepFromFinally`. -/
 def tempDirStepWf (_ : TempDirMockState) : Bool := true
 /-- Single-step lower-layer capability request sum covering every `TempDirCaps` operation invoked by `TempDir`. -/
 inductive RawStepReq where
@@ -360,13 +360,13 @@ def evalRawStep (s : TempDirMockState) : RawStepReq → RawStepOut × TempDirMoc
 /-- Allowed deterministic single-step relation for lower-layer `TempDir` capabilities over `TempDirMockState`. -/
 def allowedRawStep (s : TempDirMockState) (req : RawStepReq) (out : RawStepOut) (s' : TempDirMockState) : Prop :=
   let r := evalRawStep s req; out = r.1 ∧ s' = r.2
-/-- Public request sum covering all 3 `TempDirApiM` operations inside `Core.RefinesStepFromFinally`. -/
+/-- Public request sum covering all 3 `TempDirApiM` operations inside `Core.ObeysStepFromFinally`. -/
 inductive PkgStepReq where
   /-- Create and clean up an exclusive temp directory, returning `evalStepAction dir act`. -/ | withTempDir (root? : Option String) (dirPrefix : String) (act : StepAction)
   /-- Like `withTempDir`, while holding a `.shared` advisory lock on `<dir>/.lock`. -/ | withLockedTempDir (root? : Option String) (dirPrefix : String) (act : StepAction)
   /-- Sweep immediate stale subdirectories of `root?` matching `dirPrefix`. -/ | cleanupStaleTempDirs (root? : Option String) (dirPrefix : String) (maxAgeSec : Nat)
   deriving Repr, BEq, DecidableEq
-/-- Output sum for `PkgStepReq` transitions in `Core.RefinesStepFromFinally`. -/
+/-- Output sum for `PkgStepReq` transitions in `Core.ObeysStepFromFinally`. -/
 inductive PkgStepOut where
   /-- Result of `withTempDir` or `withLockedTempDir`. -/ | dirRes (res : Except TempDirError String)
   /-- Result of `cleanupStaleTempDirs`. -/ | report (res : Except TempDirError CleanupReport)

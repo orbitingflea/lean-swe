@@ -6721,7 +6721,7 @@ def stepInsertRelational (st : SqliteWorldState) (db : DbHandle) (sql : String)
       | .ok _, none =>
         (.error (mapRawError (.sqliteCodeError 1 "relational insert step failed")), none)
 
-/-- Total well-formedness guard on `SqliteWorldState` for `Core.RefinesStepFromFinally`. -/
+/-- Total well-formedness guard on `SqliteWorldState` for `Core.ObeysStepFromFinally`. -/
 def rawStepWf (_ : SqliteWorldState) : Bool := true
 
 /-- Execute one `Raw.Model.RawStepReq` against an arbitrary `RawSqliteOpsM (StateM W)`. -/
@@ -6735,7 +6735,7 @@ def allowedRawStep (s : SqliteWorldState) (req : Raw.Model.RawStepReq)
   let r := (execRawStep modelRawOps req).run s
   out = r.1 ∧ s' = r.2
 
-/-- Finite reified database action used to exercise `withDb` and `withTransaction` inside `Core.RefinesStepFromFinally`. -/
+/-- Finite reified database action used to exercise `withDb` and `withTransaction` inside `Core.ObeysStepFromFinally`. -/
 inductive StepAction where
   /-- Return a pure result without calling SQLite. -/
   | ret (res : Except SqliteError Unit)
@@ -6754,7 +6754,7 @@ def runStepAction {W : Type} (api : SqliteApiM (StateM W)) (db : DbHandle) :
     | .error e => pure (.error e)
     | .ok () => runStepAction api db second
 
-/-- Request sum covering all effectful `SqliteApiM` operations in `Core.RefinesStepFromFinally`. -/
+/-- Request sum covering all effectful `SqliteApiM` operations in `Core.ObeysStepFromFinally`. -/
 inductive PkgStepReq where
   /-- Open a connection, execute `act`, and always close the handle. -/
   | withDb (path : String) (cfg : OpenConfig) (act : StepAction)
@@ -6771,7 +6771,7 @@ inductive PkgStepReq where
   /-- Read the active prepared statement handle count. -/
   | activeStmtCount
 
-/-- Output sum for `PkgStepReq` transitions in `Core.RefinesStepFromFinally`. -/
+/-- Output sum for `PkgStepReq` transitions in `Core.ObeysStepFromFinally`. -/
 inductive PkgStepOut where
   /-- Result of `withDb`, `withTransaction`, or `exec`. -/
   | unit (res : Except SqliteError Unit)

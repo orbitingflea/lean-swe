@@ -300,14 +300,14 @@ def SubtreeConfinedReq : FilesReq → Prop
 def nonLockErrOk (e : FsError) : Prop :=
   e.message ≠ "" ∧ e.kind ≠ .wouldBlock
 
-/-- Single-step request sum for `HealthyFilesCapM` inside `Core.RefinesStepFromFinally`. -/
+/-- Single-step request sum for `HealthyFilesCapM` inside `Core.ObeysStepFromFinally`. -/
 inductive FilesCapStepReq where
   /-- Execute one curated `LinuxSyscall.Files.FilesReq` syscall. -/
   | fileReq (req : FilesReq)
   /-- Allocate the next monotonic temporary-name sequence number. -/
   | nextTempSeq
 
-/-- Single-step output sum for `HealthyFilesCapM` inside `Core.RefinesStepFromFinally`. -/
+/-- Single-step output sum for `HealthyFilesCapM` inside `Core.ObeysStepFromFinally`. -/
 inductive FilesCapStepOut where
   /-- Decoded `LinuxSyscall.Files.FilesOutcome`. -/
   | fileOut (out : FilesOutcome)

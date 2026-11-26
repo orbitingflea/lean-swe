@@ -1505,7 +1505,7 @@ def allowedParse (spec : CommandSpec) (args : List String)
     (out : Except CmdLineError ParsedCmd) : Prop :=
   allowedParseWith spec args [] out
 
-/-- Pure abstract state for monadic `CliOpsM` step refinement in `Core.RefinesStepFrom`. -/
+/-- Pure abstract state for monadic `CliOpsM` step refinement in `Core.ObeysStepFrom`. -/
 structure CliStepState where
   /-- Queued input lines returned by `CliOpsM.readLine`. -/
   stdinLines : List String := []
@@ -1517,7 +1517,7 @@ structure CliStepState where
   env : List (String × Except CmdLineError (Option String)) := []
   deriving Inhabited
 
-/-- Request sum for `CliOpsM` primitives in `Core.RefinesStepFrom`. -/
+/-- Request sum for `CliOpsM` primitives in `Core.ObeysStepFrom`. -/
 inductive RawStepReq where
   /-- Pop the next line from `stdin`. -/
   | readLine
@@ -1528,7 +1528,7 @@ inductive RawStepReq where
   /-- Query environment variable `key`. -/
   | getEnv (key : String)
 
-/-- Output sum for `CliOpsM` primitives in `Core.RefinesStepFrom`. -/
+/-- Output sum for `CliOpsM` primitives in `Core.ObeysStepFrom`. -/
 inductive RawStepOut where
   /-- Result of `CliOpsM.readLine`. -/
   | line (res : Option String)
@@ -1537,7 +1537,7 @@ inductive RawStepOut where
   /-- Result of `CliOpsM.getEnv`. -/
   | envVal (res : Except CmdLineError (Option String))
 
-/-- Total well-formedness guard on `CliStepState` for `Core.RefinesStepFrom`. -/
+/-- Total well-formedness guard on `CliStepState` for `Core.ObeysStepFrom`. -/
 def rawStepWf (_ : CliStepState) : Bool := true
 
 /-- Execute one `RawStepReq` against an arbitrary `CliOpsM (StateM W)`. -/

@@ -83,7 +83,7 @@ structure RelayTraceState where
 def relayStepWf (s : RelayTraceState) : Bool :=
   s.wf
 
-/-- Raw socket call dispatch request for `Core.RefinesStepFrom`. -/
+/-- Raw socket call dispatch request for `Core.ObeysStepFrom`. -/
 inductive RelayRawReq where
   /-- Close descriptor `fd`. -/
   | closeFd (fd : Nat)

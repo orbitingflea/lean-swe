@@ -62,7 +62,7 @@ def modelApi (s : Raw.Model.EnvironState) : EnvVarsApiM Id :=
 def mapRawErrorModel (err : EnvVarsRawError) : EnvVarsError :=
   Raw.Model.mapRawErrorModel err
 
-/-- Request sum for raw `RawEnvVarsOpsM` transitions in `Core.RefinesStepFrom`. -/
+/-- Request sum for raw `RawEnvVarsOpsM` transitions in `Core.ObeysStepFrom`. -/
 inductive RawStepReq where
   /-- Normalize a raw OS error record. -/
   | mapRawError (err : EnvVarsRawError)
@@ -71,7 +71,7 @@ inductive RawStepReq where
   /-- Snapshot all raw environment entries. -/
   | listEnv
 
-/-- Output sum for raw `RawEnvVarsOpsM` transitions in `Core.RefinesStepFrom`. -/
+/-- Output sum for raw `RawEnvVarsOpsM` transitions in `Core.ObeysStepFrom`. -/
 inductive RawStepOut where
   /-- Result of `RawEnvVarsOpsM.mapRawError`. -/
   | mapped (err : EnvVarsError)
@@ -80,7 +80,7 @@ inductive RawStepOut where
   /-- Result of `RawEnvVarsOpsM.listEnv`. -/
   | listEnv (res : Except EnvVarsRawError (Array (String × String)))
 
-/-- Total well-formedness guard on `Raw.Model.EnvironState` for `Core.RefinesStepFrom`. -/
+/-- Total well-formedness guard on `Raw.Model.EnvironState` for `Core.ObeysStepFrom`. -/
 def rawStepWf (_ : Raw.Model.EnvironState) : Bool := true
 
 /-- Execute one `RawStepReq` against an arbitrary `RawEnvVarsOpsM (StateM W)`. -/
