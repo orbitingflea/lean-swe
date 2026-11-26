@@ -295,19 +295,26 @@ theorem splitPathBytes_of_noSlash (path : ByteArray) (hPos : 0 < path.size)
 private def mkRepPath (n : Nat) : ByteArray :=
   ByteArray.mk (List.replicate n (97 : UInt8)).toArray
 
-private theorem hasEmbeddedNul_replicate_97 :
-    ∀ n, (List.replicate n (97 : UInt8)).any (· == (0 : UInt8)) = false
-  | 0 => rfl
-  | n + 1 => hasEmbeddedNul_replicate_97 n
+private theorem hasEmbeddedNulLoop_mkRepPath (n : Nat) :
+    ∀ k i : Nat, hasEmbeddedNulLoop (mkRepPath n) i k = false
+  | 0, _ => rfl
+  | k + 1, i => by
+    unfold hasEmbeddedNulLoop
+    split
+    · rename_i hlt
+      have hElem : (mkRepPath n)[i] = (97 : UInt8) := by
+        show (mkRepPath n).data[i] = (97 : UInt8)
+        unfold mkRepPath
+        exact List.getElem_replicate ..
+      rw [hElem]
+      exact hasEmbeddedNulLoop_mkRepPath n k (i + 1)
+    · rfl
 
 private theorem witness_longSeg_gen (n : Nat) (h1 : n > 0) (h2 : n < PATH_MAX) (h3 : n > NAME_MAX) :
     hasEmbeddedNul (mkRepPath n) = false ∧ (mkRepPath n).data.size < PATH_MAX ∧
     (mkRepPath n).data.size > NAME_MAX ∧ (splitPathBytes (mkRepPath n)).2.1 = [mkRepPath n] := by
-  have hNul : hasEmbeddedNul (mkRepPath n) = false := by
-    rw [hasEmbeddedNul_eq_toList_any]
-    unfold mkRepPath
-    rw [List.toList_toArray]
-    exact hasEmbeddedNul_replicate_97 n
+  have hNul : hasEmbeddedNul (mkRepPath n) = false :=
+    hasEmbeddedNulLoop_mkRepPath n (mkRepPath n).size 0
   have hSz : (mkRepPath n).data.size = n := by
     unfold mkRepPath
     rw [List.size_toArray, List.length_replicate]
@@ -329,14 +336,10 @@ private theorem witness_longSeg_gen (n : Nat) (h1 : n > 0) (h2 : n < PATH_MAX) (
 
 private theorem witness_maxPath_gen (n : Nat) (h : n ≥ PATH_MAX) :
     hasEmbeddedNul (mkRepPath n) = false ∧ (mkRepPath n).data.size ≥ PATH_MAX := by
-  refine ⟨?_, ?_⟩
-  · rw [hasEmbeddedNul_eq_toList_any]
-    unfold mkRepPath
-    rw [List.toList_toArray]
-    exact hasEmbeddedNul_replicate_97 n
-  · unfold mkRepPath
-    rw [List.size_toArray, List.length_replicate]
-    exact h
+  refine ⟨hasEmbeddedNulLoop_mkRepPath n (mkRepPath n).size 0, ?_⟩
+  unfold mkRepPath
+  rw [List.size_toArray, List.length_replicate]
+  exact h
 
 private theorem test_symlinkLoop_of_witness
     (hAll : AllPass (test_files_ops_symlinkLoopAndNameTooLong modelOps FilesState.initial))

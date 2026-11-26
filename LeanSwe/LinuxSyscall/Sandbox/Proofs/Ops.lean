@@ -6,20 +6,27 @@ open Core (NondetTest AllPass CanReach CanReachRun)
 open Core.NondetTest
 open LeanSwe.LinuxSyscall
 
-private theorem hasEmbeddedNul_mkRepBytes_97 :
-    ∀ n, (List.replicate n (97 : UInt8)).any (· == (0 : UInt8)) = false
-  | 0 => rfl
-  | n + 1 => hasEmbeddedNul_mkRepBytes_97 n
+private theorem hasEmbeddedNulLoop_mkRepBytes (n : Nat) :
+    ∀ k i : Nat, hasEmbeddedNulLoop (mkRepBytes n) i k = false
+  | 0, _ => rfl
+  | k + 1, i => by
+    unfold hasEmbeddedNulLoop
+    split
+    · rename_i hlt
+      have hElem : (mkRepBytes n)[i] = (97 : UInt8) := by
+        show (mkRepBytes n).data[i] = (97 : UInt8)
+        unfold mkRepBytes
+        exact List.getElem_replicate ..
+      rw [hElem]
+      exact hasEmbeddedNulLoop_mkRepBytes n k (i + 1)
+    · rfl
 
 private theorem mkRepBytes_size (n : Nat) : (mkRepBytes n).data.size = n := by
   unfold mkRepBytes
   rw [List.size_toArray, List.length_replicate]
 
-private theorem mkRepBytes_noNul (n : Nat) : hasEmbeddedNul (mkRepBytes n) = false := by
-  rw [hasEmbeddedNul_eq_toList_any]
-  unfold mkRepBytes
-  rw [List.toList_toArray]
-  exact hasEmbeddedNul_mkRepBytes_97 n
+private theorem mkRepBytes_noNul (n : Nat) : hasEmbeddedNul (mkRepBytes n) = false :=
+  hasEmbeddedNulLoop_mkRepBytes n (mkRepBytes n).size 0
 
 /-- `modelOps.prctl` satisfies `test_sandbox_ops_prctl_noNewPrivsSubreaperAndPdeathsig` from `SandboxSysState.unprivileged`. -/
 theorem sandbox_ops_prctl_noNewPrivsSubreaperAndPdeathsig_allPass :

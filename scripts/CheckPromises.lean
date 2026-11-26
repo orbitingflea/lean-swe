@@ -23,6 +23,8 @@ Checks:
    - Within-package transitive checks (`Types`/`Model`/`SpecTests`/`Properties` cannot import
      same-package `Impl`/`SysBridge`/`Interface` or any non-API role
      `Properties`/`Proofs`/`SpecMutants`/`RuntimeTests`/`TestSupport`/`Umbrella`/`Other`;
+     `SpecMutants` cannot transitively import same-package `Impl`/`SysBridge`/`Interface` or
+     `Properties`/`RuntimeTests`/`TestSupport`/`Umbrella`/`Other`;
      `Impl`/`SysBridge`/`Interface` cannot import same-package
      `SpecTests` or any non-API role
      `Properties`/`Proofs`/`SpecMutants`/`RuntimeTests`/`TestSupport`/`Umbrella`/`Other`).
@@ -291,7 +293,8 @@ private def isInitVerifiedMod (m : Name) : Bool :=
   m.components.take 3 == [`LeanSwe, `ProcessSandbox, `Init]
 
 private def isPostForkVerifiedMod (m : Name) : Bool :=
-  m == `LeanSwe.PostFork.Verified || m == `LeanSwe.PostFork.SpecTests || m == `LeanSwe.PostFork.SpecMutants ||
+  m == `LeanSwe.PostFork.Verified || m.components.take 3 == [`LeanSwe, `PostFork, `SpecTests] ||
+    m.components.take 3 == [`LeanSwe, `PostFork, `SpecMutants] ||
     m.components.take 3 == [`LeanSwe, `PostFork, `Aeneas] || m.components.take 3 == [`LeanSwe, `PostFork, `Proofs] ||
     isInitVerifiedMod m
 
@@ -2910,6 +2913,13 @@ private def auditImportDagEnv
           let key := s!"WITHIN|{m}|{t}"
           let msg := s!"DAG_WITHIN_VIOLATION: {m} ({roleM.label}) transitively imports same-package {t} ({roleT.label})"
           violations := recordDagViolation violations key msg
+        if roleM == .specMutants &&
+            (roleT == .impl || roleT == .sysBridge || roleT == .iface ||
+             roleT == .properties || roleT == .runtimeTests || roleT == .testSupport ||
+             roleT == .umbrella || roleT == .other) then
+          let key := s!"WITHIN|{m}|{t}"
+          let msg := s!"DAG_WITHIN_VIOLATION: {m} ({roleM.label}) transitively imports same-package {t} ({roleT.label})"
+          violations := recordDagViolation violations key msg
         if (roleM == .impl || roleM == .sysBridge || roleM == .iface) &&
             (roleT == .specTests || roleT.isDisallowedSpecOrSigRole) then
           let key := s!"WITHIN|{m}|{t}"
@@ -2921,7 +2931,7 @@ private def auditImportDagEnv
           let key := s!"TRANS_LEAK|{m}|{t}"
           let msg := s!"DAG_TRANS_LEAK: {m} ({roleM.label}) transitively imports cross-package {t} ({roleT.label})"
           violations := recordDagViolation violations key msg
-        if (roleM == .specTests || roleM == .properties) && roleT.isDisallowedSpecOrSigRole then
+        if (roleM == .specTests || roleM == .properties || roleM == .specMutants) && roleT.isDisallowedSpecOrSigRole then
           let key := s!"TRANS_LEAK|{m}|{t}"
           let msg := s!"DAG_TRANS_LEAK: {m} ({roleM.label}) transitively imports cross-package {t} ({roleT.label})"
           violations := recordDagViolation violations key msg
@@ -5316,6 +5326,24 @@ private def evaluateManifestRatchet (rep : ManifestAuditReport) : Array String :
 
 /-- Audit compiled `.olean` artifacts reachable from `LeanSwe` for promise coverage. -/
 unsafe def main (args : List String) : IO UInt32 := do
+  if args.head? == some "--internal-dag-audit" then
+    match args.drop 1 with
+    | [libDirStr, rootsCsv] =>
+      let libDir : System.FilePath := libDirStr
+      let rootMods := (rootsCsv.splitOn ",").filter (!·.isEmpty) |>.toArray.map (·.toName)
+      initSearchPath (← findSysroot) [libDir]
+      enableInitializersExecution
+      let testEnv ← importModules (rootMods.map fun m => { module := m }) {} (loadExts := true)
+      let rep := auditImportDagEnv testEnv (fun _ => true) {} {} (scanPublicAllPassDirect := true)
+      let errs := evaluateDagRatchetWith #[] #[] rep
+      IO.println s!"DAG_AUDIT_TEST: modules={rep.checkedModules} edges_obs={rep.violations.size} sig_obs={rep.sigProofCounts.size} errors={errs.size}"
+      for e in errs do
+        IO.eprintln e
+      testEnv.freeRegions
+      return if errs.isEmpty then 0 else 1
+    | _ =>
+      IO.eprintln "USAGE_ERROR: --internal-dag-audit <libDir> <rootsCsv>"
+      return 1
   if args.head? == some "--internal-manifest-audit" then
     match args.drop 1 with
     | [libDirStr, manifestPathStr, rootsCsv, modelAllowCsv, hookAllowCsv]

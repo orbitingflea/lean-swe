@@ -1,7 +1,5 @@
 import LeanSwe.LinuxSyscall.Files.SpecTests
-import LeanSwe.LinuxSyscall.Files.Impl
-import LeanSwe.LinuxSyscall.Files.Interface
-import LeanSwe.LinuxSyscall.Files.Proofs.ExecCases
+import LeanSwe.LinuxSyscall.Files.SpecMutants.Extra
 
 namespace LeanSwe.LinuxSyscall.Files
 
@@ -233,60 +231,89 @@ example : ¬ Core.AllPass (test_files_ops_appendTruncAndCreatEdgeCases
     stubUnitOps, Bind.bind, assert, StateT.run, pure, StateT.pure] at h
   cases h.2.1.1
 
+private theorem splitPathBytesLoop_noSlash (path : ByteArray) (hPos : 0 < path.size)
+    (hNo : ∀ j, (hj : j < path.size) → path[j] != slashByte) :
+    ∀ k i, i + k = path.size →
+      splitPathBytesLoop path i 0 [] k = [path]
+  | 0, i, hk => by
+    have hEq : i = path.size := by omega
+    subst hEq
+    unfold splitPathBytesLoop
+    simp [hPos]
+  | k + 1, i, hk => by
+    have hi : i < path.size := by omega
+    unfold splitPathBytesLoop
+    simp only [hi, ↓reduceDIte]
+    have hNe : (path[i] == slashByte) = false := by
+      have h1 := hNo i hi
+      simpa [bne] using h1
+    rw [hNe]
+    exact splitPathBytesLoop_noSlash path hPos hNo k (i + 1) (by omega)
+
+private theorem splitPathBytes_of_noSlash (path : ByteArray) (hPos : 0 < path.size)
+    (hNo : ∀ j, (hj : j < path.size) → path[j] != slashByte) :
+    splitPathBytes path = (false, [path], false) := by
+  unfold splitPathBytes
+  have h0 : (path[0] == slashByte) = false := by
+    have := hNo 0 hPos
+    simpa [bne] using this
+  have hLast : (path[path.size - 1] == slashByte) = false := by
+    have := hNo (path.size - 1) (Nat.sub_lt hPos Nat.zero_lt_one)
+    simpa [bne] using this
+  simp only [hPos, ↓reduceDIte, h0, hLast]
+  exact congrArg (fun x => (false, x, false))
+    (splitPathBytesLoop_noSlash path hPos hNo path.size 0 (Nat.zero_add _))
+
 private def mkRepPath (n : Nat) : ByteArray :=
   ByteArray.mk (List.replicate n (97 : UInt8)).toArray
 
-private theorem hasEmbeddedNul_replicate_97 :
-    ∀ n, (List.replicate n (97 : UInt8)).any (· == (0 : UInt8)) = false
-  | 0 => rfl
-  | n + 1 => hasEmbeddedNul_replicate_97 n
-
-private theorem witness_longSeg (n : Nat) (h1 : n > 0) (h2 : n < PATH_MAX) (h3 : n > NAME_MAX) :
-    hasEmbeddedNul (mkRepPath n) = false ∧ (mkRepPath n).data.size < PATH_MAX ∧
-    (mkRepPath n).data.size > NAME_MAX ∧ (splitPathBytes (mkRepPath n)).2.1 = [mkRepPath n] := by
-  have hNul : hasEmbeddedNul (mkRepPath n) = false := by
-    rw [hasEmbeddedNul_eq_toList_any]
-    unfold mkRepPath
-    rw [List.toList_toArray]
-    exact hasEmbeddedNul_replicate_97 n
-  have hSz : (mkRepPath n).data.size = n := by
-    unfold mkRepPath
-    rw [List.size_toArray, List.length_replicate]
-  have hSplit : (splitPathBytes (mkRepPath n)).2.1 = [mkRepPath n] := by
-    have hPos : 0 < (mkRepPath n).size := by
-      show 0 < (mkRepPath n).data.size
-      omega
-    have hNo : ∀ j, (hj : j < (mkRepPath n).size) → (mkRepPath n)[j] != slashByte := by
-      intro j hj
-      have hElem : (mkRepPath n)[j] = (97 : UInt8) := by
-        show (mkRepPath n).data[j] = (97 : UInt8)
+private theorem hasEmbeddedNulLoop_mkRepPath (n : Nat) :
+    ∀ k i : Nat, hasEmbeddedNulLoop (mkRepPath n) i k = false
+  | 0, _ => rfl
+  | k + 1, i => by
+    unfold hasEmbeddedNulLoop
+    split
+    · rename_i hlt
+      have hElem : (mkRepPath n)[i] = (97 : UInt8) := by
+        show (mkRepPath n).data[i] = (97 : UInt8)
         unfold mkRepPath
         exact List.getElem_replicate ..
       rw [hElem]
-      decide
-    rw [splitPathBytes_of_noSlash (mkRepPath n) hPos hNo]
-  rw [hSz]
-  exact ⟨hNul, h2, h3, hSplit⟩
+      exact hasEmbeddedNulLoop_mkRepPath n k (i + 1)
+    · rfl
 
-private theorem witness_maxPath (n : Nat) (h : n ≥ PATH_MAX) :
-    hasEmbeddedNul (mkRepPath n) = false ∧ (mkRepPath n).data.size ≥ PATH_MAX := by
-  refine ⟨?_, ?_⟩
-  · rw [hasEmbeddedNul_eq_toList_any]
+private theorem mkRepPath_size (n : Nat) : (mkRepPath n).data.size = n := by
+  unfold mkRepPath
+  rw [List.size_toArray, List.length_replicate]
+
+private theorem mkRepPath_noSlash (n : Nat) (j : Nat) (hj : j < (mkRepPath n).size) :
+    (mkRepPath n)[j] != slashByte := by
+  have hElem : (mkRepPath n)[j] = (97 : UInt8) := by
+    show (mkRepPath n).data[j] = (97 : UInt8)
     unfold mkRepPath
-    rw [List.toList_toArray]
-    exact hasEmbeddedNul_replicate_97 n
-  · unfold mkRepPath
-    rw [List.size_toArray, List.length_replicate]
-    exact h
+    exact List.getElem_replicate ..
+  rw [hElem]
+  rfl
 
 private theorem exists_longSeg :
     ∃ p : ByteArray, hasEmbeddedNul p = false ∧ p.data.size < PATH_MAX ∧
       p.data.size > NAME_MAX ∧ (splitPathBytes p).2.1 = [p] :=
-  ⟨mkRepPath 256, witness_longSeg 256 (by decide) (by decide) (by decide)⟩
+  ⟨mkRepPath 256,
+    hasEmbeddedNulLoop_mkRepPath 256 (mkRepPath 256).size 0,
+    by rw [mkRepPath_size]; decide,
+    by rw [mkRepPath_size]; decide,
+    by
+      have hPos : 0 < (mkRepPath 256).size := by
+        show 0 < (mkRepPath 256).data.size
+        rw [mkRepPath_size]
+        decide
+      rw [splitPathBytes_of_noSlash (mkRepPath 256) hPos (mkRepPath_noSlash 256)]⟩
 
 private theorem exists_maxPath :
     ∃ p : ByteArray, hasEmbeddedNul p = false ∧ p.data.size ≥ PATH_MAX :=
-  ⟨mkRepPath 4096, witness_maxPath 4096 (by decide)⟩
+  ⟨mkRepPath 4096,
+    hasEmbeddedNulLoop_mkRepPath 4096 (mkRepPath 4096).size 0,
+    by rw [mkRepPath_size]; decide⟩
 
 example : ¬ Core.AllPass (test_files_ops_symlinkLoopAndNameTooLong stubUnitOps ()) := by
   intro h
@@ -316,237 +343,9 @@ example : ¬ Core.AllPass (test_files_ops_symlinkLoopAndNameTooLong
   change (Except.ok (0 : Nat) : Except Errno Nat) = Except.error Errno.ELOOP at hLoop
   cases hLoop
 
-example : ¬ Core.AllPass (test_files_model_allowedStep_partialReadAndInvariants
-    (fun s req out =>
-      match req, out with
-      | .close _, .unit => some s
-      | _, _ => allowedStep s req out)) := by
-  intro h
-  exact absurd h.2.2.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_model_allowedStep_partialReadAndInvariants
-    (fun s req out =>
-      match req, out with
-      | .getcwd _, .bytes _ => some s
-      | _, _ => allowedStep s req out)) := by
-  intro h
-  exact absurd h.2.2.2.2.2.2.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_model_hardenedInvariants
-    (fun s req out =>
-      match req, out with
-      | .openat _ _ _ _, .err e => if e == Errno.EISDIR then some s else allowedStep s req out
-      | _, _ => allowedStep s req out)) := by
-  intro h
-  exact absurd h.2.2.2.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_model_hardenedInvariants
-    (fun s req out =>
-      match req, out with
-      | .fsync _, .err e => if e == Errno.EINVAL then some s else allowedStep s req out
-      | _, _ => allowedStep s req out)) := by
-  intro h
-  exact absurd h.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_model_hardenedInvariants
-    (fun s req out =>
-      match req, out with
-      | .getdents64 _ _, .bytes _ => some s
-      | _, _ => allowedStep s req out)) := by
-  intro h
-  exact absurd h.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_model_envGeneralizationInvariants
-    (fun s req out =>
-      match req, out with
-      | .openat _ _ _ _, .opened _ => some s
-      | _, _ => allowedStep s req out)) := by
-  intro h
-  exact absurd h.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 (by decide)
-
 example : ¬ Core.AllPass (test_files_ops_lseekReopenDupStdioAndOpath stubUnitOps ()) := by
   intro h
   dsimp only [stubUnitOps, Bind.bind, assert, StateT.run, pure, StateT.pure] at h
   cases h.2.2.2.1
-
-example : ¬ Core.AllPass (test_files_errno_classificationAndTransient
-    Errno.isTransientOsErrno
-    (fun e => if e == Errno.EROFS then .invalidArg else FilesErrorKind.ofErrno e)) := by
-  intro h
-  have h0 := h Errno.EROFS
-  exact absurd h0.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_flags_exactWireValues
-    (encOpen := fun f => { f with path := false }.toBits)) := by
-  intro h
-  have h0 := h {} {} {} {} {} 0
-  exact absurd h0.1.2.2.2.2.2.2.2.2.2.2.2.2.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_flags_exactWireValues
-    (encResolve := fun r => { r with cached := false }.toBits)) := by
-  intro h
-  have h0 := h {} {} {} {} {} 0
-  exact absurd h0.2.1.2.2.2.2.2.2.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_flags_exactWireValues
-    (encAt := fun a => { a with eaccess := false }.toBits)) := by
-  intro h
-  have h0 := h {} {} {} {} {} 0
-  exact absurd h0.2.2.1.2.2.2.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_flags_exactWireValues
-    (encAcc := fun m => { m with exec := false }.toBits)) := by
-  intro h
-  have h0 := h {} {} {} {} {} 0
-  exact absurd h0.2.2.2.1.2.2.2.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_flags_exactWireValues
-    (encRen := fun rn => { rn with whiteout := false }.toBits)) := by
-  intro h
-  have h0 := h {} {} {} {} {} 0
-  exact absurd h0.2.2.2.2.1.2.2.2.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_flags_exactWireValues
-    (encFlock := fun _ => 0)) := by
-  intro h
-  have h0 := h {} {} {} {} {} 0
-  exact absurd h0.2.2.2.2.2.1.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_flags_exactWireValues
-    (encFcntl := fun _ => (0, 0))) := by
-  intro h
-  have h0 := h {} {} {} {} {} 0
-  exact absurd h0.2.2.2.2.2.2.1.2.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_flags_exactWireValues
-    (encWhence := fun w => match w with | .seekSet => 2 | .seekCur => 1 | .seekEnd => 0)) := by
-  intro h
-  have h0 := h {} {} {} {} {} 0
-  exact absurd h0.2.2.2.2.2.2.2.1.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_flags_exactWireValues
-    (encStdio := fun s => match s with | .stdin => 2 | .stdout => 1 | .stderr => 0)) := by
-  intro h
-  have h0 := h {} {} {} {} {} 0
-  exact absurd h0.2.2.2.2.2.2.2.2.1.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_impl_mkFilesOpsM
-    (fun raw => { Internal.mkFilesOpsM raw with openat := fun d p f m => raw.openat d p f.toBits m })) := by
-  intro h
-  have h0 := h (ByteArray.mk #[0]) rfl none none {} {} {} {} {} .unlock .getFl 0 .seekSet .stdin false
-  dsimp only [Bind.bind, assert, pure, StateT.run, StateT.bind, StateT.pure,
-    modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, Internal.mkFilesOpsM] at h0
-  cases h0.1
-
-example : ¬ Core.AllPass (test_files_impl_mkFilesOpsM
-    (fun raw => { Internal.mkFilesOpsM raw with close := raw.fsync })) := by
-  intro h
-  have h0 := h (ByteArray.mk #[0]) rfl none none {} {} {} {} {} .unlock .getFl 0 .seekSet .stdin false
-  dsimp only [Bind.bind, assert, pure, StateT.run, StateT.bind, StateT.pure,
-    modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, Internal.mkFilesOpsM] at h0
-  cases h0.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1
-
-example : ¬ Core.AllPass (test_files_impl_mkFilesOpsM
-    (fun raw => { Internal.mkFilesOpsM raw with
-      lseek := fun fd off w => raw.lseek fd (Int64.ofInt off.toInt32.toInt) w.toRaw })) := by
-  intro h
-  have h0 := h (ByteArray.mk #[0]) rfl none none {} {} {} {} {} .unlock .getFl (0x100000005 : Int64) .seekSet .stdin false
-  dsimp only [Bind.bind, assert, pure, StateT.run, StateT.bind, StateT.pure,
-    modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, Internal.mkFilesOpsM] at h0
-  exact absurd (congrArg Prod.snd h0.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1) (by decide)
-
-example : ¬ Core.AllPass (test_files_impl_mkFilesOpsM
-    (fun raw => { Internal.mkFilesOpsM raw with
-      symlinkat := fun t _ lp =>
-        if hasEmbeddedNul t || hasEmbeddedNul lp then pure (.error Errno.EINVAL)
-        else raw.symlinkat t none lp })) := by
-  intro h
-  have h0 := h (ByteArray.mk #[0]) rfl (some 7) none {} {} {} {} {} .unlock .getFl 0 .seekSet .stdin false
-  dsimp only [Bind.bind, assert, pure, StateT.run, StateT.bind, StateT.pure,
-    modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, Internal.mkFilesOpsM] at h0
-  exact absurd (congrArg Prod.snd h0.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1) (by decide)
-
-example : ¬ Core.AllPass (test_files_impl_mkFilesOpsM
-    (fun raw => { Internal.mkFilesOpsM raw with
-      symlinkat := fun t d lp =>
-        if hasEmbeddedNul t || hasEmbeddedNul lp then pure (.error Errno.EINVAL)
-        else raw.symlinkat lp d t })) := by
-  intro h
-  have h0 := h (ByteArray.mk #[0]) rfl none none {} {} {} {} {} .unlock .getFl 0 .seekSet .stdin false
-  dsimp only [Bind.bind, assert, pure, StateT.run, StateT.bind, StateT.pure,
-    modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, Internal.mkFilesOpsM] at h0
-  exact absurd (congrArg Prod.snd h0.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1) (by decide)
-
-example : ¬ Core.AllPass (test_files_impl_mkFilesOpsM
-    (fun raw => { Internal.mkFilesOpsM raw with
-      renameat2 := fun od op nd np f =>
-        if hasEmbeddedNul op || hasEmbeddedNul np then pure (.error Errno.EINVAL)
-        else raw.renameat2 nd np od op f.toBits })) := by
-  intro h
-  have h0 := h (ByteArray.mk #[0]) rfl (some 3) (some 4) {} {} {} {} {} .unlock .getFl 0 .seekSet .stdin false
-  dsimp only [Bind.bind, assert, pure, StateT.run, StateT.bind, StateT.pure,
-    modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, Internal.mkFilesOpsM] at h0
-  exact absurd (congrArg Prod.snd h0.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1) (by decide)
-
-example : ¬ Core.AllPass (test_files_impl_mkFilesOpsM
-    (fun raw => { Internal.mkFilesOpsM raw with
-      write := fun fd data => raw.write fd (replicateZeroBytes data.size) })) := by
-  intro h
-  have h0 := h (ByteArray.mk #[0]) rfl none none {} {} {} {} {} .unlock .getFl 0 .seekSet .stdin false
-  dsimp only [Bind.bind, assert, pure, StateT.run, StateT.bind, StateT.pure,
-    modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, Internal.mkFilesOpsM] at h0
-  exact absurd (congrArg Prod.snd h0.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1) (by decide)
-
-example : ¬ Core.AllPass (test_files_interface_wrappersAndDefaults
-    { defaultOps with close := fun _ => pure (.ok ()) }
-    (fun d p f m => openat d p f m) (fun d p f => openat d p f) openat2
-    (fun _ => pure (.error Errno.EBADF)) read write fstat
-    (fun d p fl => fstatat d p fl) (fun d p => fstatat d p)
-    (fun d p m fl => faccessat d p m fl) (fun d p => faccessat d p)
-    (fun d p m => mkdirat d p m) (fun d p => mkdirat d p)
-    (fun d p rm => unlinkat d p rm) (fun d p => unlinkat d p)
-    (fun od op nd np rf => renameat2 od op nd np rf) (fun od op nd np => renameat2 od op nd np)
-    symlinkat (fun d p c => readlinkat d p c) (fun d p => readlinkat d p)
-    (fun fd c => getdents64 fd c) (fun fd => getdents64 fd)
-    fchmodat fchmod flock fcntl fsync (fun c => getcwd c) getcwd
-    (fun fd off wh => lseek fd off wh) (fun fd off => lseek fd off)
-    reopenReadOnly dupStdio) := by
-  intro h
-  have h0 := h none none (ByteArray.mk #[]) (ByteArray.mk #[]) (Classical.choice (inferInstance : Nonempty RawFd)) {} {} 0 {} {} false {} 0 .unlock .getFl 0 .seekSet .stdin
-  have hc := congrFun h0.2.2.2.1 (Classical.choice inferInstance)
-  cases hc
-
-example : ¬ Core.AllPass (test_files_model_dynamicFifoStdioInvariants (fun _ _ _ => none) evalModel) := by
-  intro h
-  cases h.1
-
-example : ¬ Core.AllPass (test_files_model_dynamicFifoStdioInvariants allowedStep (fun s _ => (.err Errno.EBADF, s))) := by
-  intro h
-  rcases h.2.1 with ⟨_, _, _, _, hExt, _⟩
-  cases hExt
-
-example : ¬ Core.AllPass (test_files_model_allowedStep_partialReadAndInvariants
-    (fun s req out =>
-      match req, out with
-      | .fstat _, .statted _ => some s
-      | _, _ => allowedStep s req out)) := by
-  intro h
-  exact absurd h.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_model_allowedStep_partialReadAndInvariants
-    (fun s req out =>
-      match req, out with
-      | .fcntl 1 .getFd, .u32 _ => none
-      | _, _ => allowedStep s req out)) := by
-  intro h
-  exact absurd h.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 (by decide)
-
-example : ¬ Core.AllPass (test_files_model_stateRefinementAndUserns (fun _ _ _ => none) evalModel) := by
-  intro h
-  cases h.2.2.1
-
-example : ¬ Core.AllPass (test_files_model_stateRefinementAndUserns allowedStep (fun s _ => (.u32 0, s))) := by
-  intro h
-  cases h.1.2.1
 
 end LeanSwe.LinuxSyscall.Files
