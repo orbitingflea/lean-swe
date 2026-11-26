@@ -3,6 +3,7 @@ import Fuzz.Common.Rng
 import Fuzz.Common.Coverage
 import Fuzz.Common.Shrink
 import Fuzz.Common.Suite
+import LeanSwe.Fs.Interface
 import LeanSwe.Process.Interface
 import LeanSwe.ProcessSandbox.Types
 import LeanSwe.ProcessSandbox.Model
@@ -31,10 +32,14 @@ private def requiredBuckets : Array CoverageBucket := #[
   bucket "validateSpec" "err.invalidInput",
   bucket "run" "err.invalidInput",
   bucket "run" "err.notFound",
-  bucket "run" "err.notFound.tinyCap",
   bucket "run" "err.permissionDenied",
+  bucket "run" "err.permissionDenied.symlinkNested",
   bucket "run" "err.unavailable",
+  bucket "run" "err.unavailable.usernsBlocked",
   bucket "run" "err.ioError",
+  bucket "run" "ok.missingGuestExits1",
+  bucket "run" "ok.spoofBwrapStderr",
+  bucket "run" "ok.signalExits128Plus",
   bucket "run" "ok.rwPersist",
   bucket "run" "ok.roReject",
   bucket "run" "ok.scratchDiscard",
@@ -87,6 +92,7 @@ private def mkEnvApi (extraEnv : Array (String × Option String)) (inherit : Boo
     { LeanSwe.Process.defaultApi with
       run := fun req =>
         LeanSwe.Process.defaultApi.run { req with env := extraEnv ++ req.env, inheritEnv := inherit } }
+    LeanSwe.Fs.defaultApi
 
 private def countProcCmdlineWith (marker : String) : IO Nat := do
   let mut hits := 0
@@ -213,50 +219,134 @@ private def runDeterministicCorpus (root : System.FilePath) (tr0 : CoverageTrack
   for (lbl, spec) in invalidCases do
     tr ← checkInvalidRunNoHostEffect lbl root spec tr
 
-  let missingHost := (root / "does-not-exist").toString
-  for (lbl, spec, isTiny) in #[
-    ("missingRoHost", ({ program := "/bin/true", mounts := #[.readOnly missingHost "/mnt"] } : BoxSpec), false),
-    ("missingRwHost", ({ program := "/bin/true", mounts := #[.readWrite missingHost "/mnt"] } : BoxSpec), false),
-    ("missingProg", ({ program := "/no_such_guest_prog_t115" } : BoxSpec), false),
-    ("missingCwd", ({ program := "/bin/true", cwd := some "/no_such_cwd_t115" } : BoxSpec), false),
-    ("missingProgTinyCap", ({ program := "/no_such_guest_prog_t115", maxOutputBytes := some 1 } : BoxSpec), true)
+  for (lbl, subName, parentMount, childMount) in #[
+    ("nestedRwMissingRo", "missing_sub", SandboxMount.readWrite rwDir.toString "/work",
+      SandboxMount.readOnly roDir.toString "/work/missing_sub"),
+    ("nestedRwMissingScratch", "missing_scratch", SandboxMount.readWrite rwDir.toString "/work",
+      SandboxMount.scratch "/work/missing_scratch"),
+    ("nestedRwMissingUnshareName", "unshare_missing", SandboxMount.readWrite rwDir.toString "/work",
+      SandboxMount.readOnly roDir.toString "/work/unshare_missing"),
+    ("nestedRoMissing", "missing_ro_sub", SandboxMount.readOnly roDir.toString "/ro",
+      SandboxMount.readOnly workDir.toString "/ro/missing_ro_sub")
   ] do
-    match ← LeanSwe.ProcessSandbox.run spec with
+    let before ← readDirSnap root
+    match ← LeanSwe.ProcessSandbox.run { program := "/bin/true", mounts := #[parentMount, childMount] } with
     | .error e =>
-      assertTrue s!"{lbl}.kindNotFound" (e.kind == .notFound && !e.message.isEmpty)
+      assertTrue s!"{lbl}.kindNotFound({repr e.kind})" (e.kind == .notFound && !e.message.isEmpty)
+      assertTrue s!"{lbl}.noRwDirCreated" (!(← (rwDir / subName).pathExists))
+      assertTrue s!"{lbl}.hostUnchanged" (dirSnapEq before (← readDirSnap root))
       recordErrHit "run" e.kind
       tr := tr.record "run" "err.notFound"
-      if isTiny then tr := tr.record "run" "err.notFound.tinyCap"
     | .ok r => throw (IO.userError s!"PROCESSSANDBOX_FUZZ_FAIL({lbl}): expected notFound, got {repr r}")
 
-  let noExecFile := root / "noexec.sh"
-  IO.FS.writeFile noExecFile "#!/bin/sh\nexit 0\n"
-  mkChmod "0644" noExecFile.toString
-  match ← LeanSwe.ProcessSandbox.run {
-    program := "/mnt/noexec.sh"
-    mounts := #[.readOnly noExecFile.toString "/mnt/noexec.sh"]
-  } with
-  | .error e =>
-    assertTrue "permNoExec.kind" (e.kind == .permissionDenied && !e.message.isEmpty)
-    recordErrHit "run" e.kind
-    tr := tr.record "run" "err.permissionDenied"
-  | .ok r => throw (IO.userError s!"PROCESSSANDBOX_FUZZ_FAIL(permNoExec): expected permissionDenied, got {repr r}")
+  let symTestDir := root / "sym_test"
+  IO.FS.createDirAll (symTestDir / "sub_dir")
+  IO.FS.writeFile (symTestDir / "reg_file") "not-a-dir"
+  match ← LeanSwe.Fs.symlink "/usr" (symTestDir / "sym_usr").toString with
+  | .ok () => pure ()
+  | .error e => throw (IO.userError s!"symlink sym_usr failed: {e.message}")
+  match ← LeanSwe.Fs.symlink "../ro" (symTestDir / "sym_ro").toString with
+  | .ok () => pure ()
+  | .error e => throw (IO.userError s!"symlink sym_ro failed: {e.message}")
+  match ← LeanSwe.Fs.symlink roDir.toString (symTestDir / "sym_leaf").toString with
+  | .ok () => pure ()
+  | .error e => throw (IO.userError s!"symlink sym_leaf failed: {e.message}")
+  try
+    for (lbl, mounts) in #[
+      ("symIntermUsr", #[SandboxMount.readWrite symTestDir.toString "/work",
+        SandboxMount.readOnly roDir.toString "/work/sym_usr/bin"]),
+      ("symIntermRo", #[SandboxMount.readOnly roDir.toString "/ro",
+        SandboxMount.readWrite symTestDir.toString "/work",
+        SandboxMount.readWrite workDir.toString "/work/sym_ro/sub"]),
+      ("symLeaf", #[SandboxMount.readWrite symTestDir.toString "/work",
+        SandboxMount.readOnly roDir.toString "/work/sym_leaf"]),
+      ("symHostLeafRw", #[SandboxMount.readWrite (symTestDir / "sym_leaf").toString "/work"]),
+      ("symHostIntermRo", #[SandboxMount.readOnly (symTestDir / "sym_leaf" / "data.txt").toString "/data.txt"])
+    ] do
+      match ← LeanSwe.ProcessSandbox.run { program := "/bin/true", mounts } with
+      | .error e =>
+        assertTrue s!"{lbl}.kindPerm({repr e.kind})" (e.kind == .permissionDenied && !e.message.isEmpty)
+        recordErrHit "run" e.kind
+        tr := tr.record "run" "err.permissionDenied.symlinkNested"
+      | .ok r => throw (IO.userError s!"PROCESSSANDBOX_FUZZ_FAIL({lbl}): expected permissionDenied, got {repr r}")
+    for (lbl, mounts) in #[
+      ("scratchNonDir", #[SandboxMount.readWrite symTestDir.toString "/work", SandboxMount.scratch "/work/reg_file"]),
+      ("dirOntoFile", #[SandboxMount.readWrite symTestDir.toString "/work",
+        SandboxMount.readOnly roDir.toString "/work/reg_file"]),
+      ("fileOntoDir", #[SandboxMount.readWrite symTestDir.toString "/work",
+        SandboxMount.readOnly (roDir / "data.txt").toString "/work/sub_dir"])
+    ] do
+      match ← LeanSwe.ProcessSandbox.run { program := "/bin/true", mounts } with
+      | .error e =>
+        assertTrue s!"{lbl}.kind({repr e.kind})" (e.kind == .notFound && !e.message.isEmpty)
+        recordErrHit "run" e.kind
+      | .ok r => throw (IO.userError s!"PROCESSSANDBOX_FUZZ_FAIL({lbl}): expected notFound, got {repr r}")
+  finally
+    IO.FS.removeDirAll symTestDir
 
-  let lockedDir := root / "locked_cwd"
+  let lockedDir := root / "locked_parent"
   IO.FS.createDirAll lockedDir
   mkChmod "000" lockedDir.toString
   try
     match ← LeanSwe.ProcessSandbox.run {
       program := "/bin/true"
-      cwd := some "/locked"
-      mounts := #[.readOnly lockedDir.toString "/locked"]
+      mounts := #[.readOnly lockedDir.toString "/locked", .readOnly roDir.toString "/locked/sub"]
     } with
     | .error e =>
-      assertTrue "permLockedCwd.kind" (e.kind == .permissionDenied && !e.message.isEmpty)
+      assertTrue s!"permNested.kind({repr e.kind})" (e.kind == .permissionDenied && !e.message.isEmpty)
       recordErrHit "run" e.kind
-    | .ok r => throw (IO.userError s!"PROCESSSANDBOX_FUZZ_FAIL(permLockedCwd): expected permissionDenied, got {repr r}")
+      tr := tr.record "run" "err.permissionDenied"
+    | .ok r => throw (IO.userError s!"PROCESSSANDBOX_FUZZ_FAIL(permNested): expected permissionDenied, got {repr r}")
   finally
     mkChmod "700" lockedDir.toString
+
+  let missingHost := (root / "does-not-exist").toString
+  for (lbl, m) in #[("missingRoHost", SandboxMount.readOnly missingHost "/mnt"),
+                    ("missingRwHost", SandboxMount.readWrite missingHost "/mnt")] do
+    match ← LeanSwe.ProcessSandbox.run { program := "/bin/true", mounts := #[m] } with
+    | .error e =>
+      assertTrue s!"{lbl}.kindNotFound({repr e.kind})" (e.kind == .notFound && !e.message.isEmpty)
+      recordErrHit "run" e.kind
+    | .ok r => throw (IO.userError s!"PROCESSSANDBOX_FUZZ_FAIL({lbl}): expected notFound, got {repr r}")
+
+  let noExecFile := root / "noexec.sh"
+  IO.FS.writeFile noExecFile "#!/bin/sh\nexit 0\n"
+  mkChmod "0644" noExecFile.toString
+  for (lbl, spec) in #[
+    ("missingProg", ({ program := "/no_such_guest_prog_t115" } : BoxSpec)),
+    ("missingUnshareProg", ({ program := "/tmp/unshare_work/missing" } : BoxSpec)),
+    ("missingCwd", ({ program := "/bin/true", cwd := some "/no_such_cwd_t115" } : BoxSpec)),
+    ("noExecProg", ({ program := "/mnt/noexec.sh", mounts := #[.readOnly noExecFile.toString "/mnt/noexec.sh"] } : BoxSpec))
+  ] do
+    match ← LeanSwe.ProcessSandbox.run spec with
+    | .ok r =>
+      assertTrue s!"{lbl}.exited1({repr r.outcome})" (r.outcome == .exited 1)
+      tr := tr.record "run" "ok.missingGuestExits1"
+    | .error e => throw (IO.userError s!"PROCESSSANDBOX_FUZZ_FAIL({lbl}): expected ok exited 1, got {repr e}")
+
+  let spoofMsg := "bwrap: execvp /fake: No such file or directory\n"
+  match ← LeanSwe.ProcessSandbox.run {
+    program := "/bin/sh"
+    args := #["-c", "printf 'mutated-before-spoof' > /rw/spoof.txt; printf 'bwrap: execvp /fake: No such file or directory\\n' >&2; exit 1"]
+    mounts := #[.readWrite rwDir.toString "/rw"]
+  } with
+  | .ok r =>
+    assertTrue s!"spoof.exited1({repr r.outcome})" (r.outcome == .exited 1)
+    assertTrue "spoof.stdoutEmpty" r.stdout.isEmpty
+    assertTrue "spoof.stderrExact" (r.stderr == spoofMsg.toUTF8)
+    assertTrue "spoof.rwPersisted" ((← IO.FS.readFile (rwDir / "spoof.txt")) == "mutated-before-spoof")
+    tr := tr.record "run" "ok.spoofBwrapStderr"
+  | .error e => throw (IO.userError s!"PROCESSSANDBOX_FUZZ_FAIL(spoof): guest spoofed host error {repr e}")
+
+  for (lbl, sigName, expCode) in #[("sigterm", "TERM", (143 : Int)), ("sigkill", "KILL", (137 : Int))] do
+    match ← LeanSwe.ProcessSandbox.run {
+      program := "/bin/sh"
+      args := #["-c", s!"kill -{sigName} $$"]
+    } with
+    | .ok r =>
+      assertTrue s!"{lbl}.code({repr r.outcome})" (r.outcome == .exited expCode)
+    | .error e => throw (IO.userError s!"PROCESSSANDBOX_FUZZ_FAIL({lbl}): {repr e}")
+  tr := tr.record "run" "ok.signalExits128Plus"
 
   let emptyPathDir := root / "empty_path"
   IO.FS.createDirAll emptyPathDir
@@ -270,6 +360,27 @@ private def runDeterministicCorpus (root : System.FilePath) (tr0 : CoverageTrack
     recordErrHit "run" e.kind
     tr := tr.record "run" "err.unavailable"
   | .ok r => throw (IO.userError s!"PROCESSSANDBOX_FUZZ_FAIL(unavail): expected unavailable, got {repr r}")
+
+  let fakeBinDir := root / "fake_unavail_bin"
+  IO.FS.createDirAll fakeBinDir
+  let fakeBwrap := fakeBinDir / "bwrap"
+  let usernsBlockedApi := mkEnvApi #[("PATH", some fakeBinDir.toString)] false
+  for (lbl, body, cap?) in #[
+    ("usernsBlocked", "#!/bin/sh\necho 'bwrap: No permissions to create a new namespace' >&2\nexit 1\n", (none : Option Nat)),
+    ("usernsBlockedTinyCap", "#!/bin/sh\necho 'bwrap: No permissions to create a new namespace' >&2\nexit 1\n", some 4),
+    ("bwrapExit127", "#!/bin/sh\nexit 127\n", none),
+    ("bwrapKilledSig", "#!/bin/sh\nkill -KILL $$\n", none)
+  ] do
+    IO.FS.writeFile fakeBwrap body
+    mkChmod "0755" fakeBwrap.toString
+    assertTrue s!"{lbl}.isAvailableFalse" (!(← usernsBlockedApi.isAvailable))
+    match ← usernsBlockedApi.run { program := "/bin/true", maxOutputBytes := cap? } with
+    | .error e =>
+      assertTrue s!"{lbl}.kind({repr e.kind})" (e.kind == .unavailable && !e.message.isEmpty)
+      recordErrHit "run" e.kind
+      tr := tr.record "run" "err.unavailable.usernsBlocked"
+    | .ok r => throw (IO.userError s!"PROCESSSANDBOX_FUZZ_FAIL({lbl}): expected unavailable, got {repr r}")
+  IO.FS.removeDirAll fakeBinDir
 
   let longPath := String.ofList (List.replicate 5000 'a')
   let ioErrApi := mkEnvApi #[("PATH", some longPath)] false

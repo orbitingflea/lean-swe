@@ -1,3 +1,4 @@
+import LeanSwe.Fs.Types
 import LeanSwe.Process.Types
 import LeanSwe.ProcessSandbox.Types
 
@@ -164,9 +165,6 @@ def validateSpec (spec : BoxSpec) : Except SandboxError ValidBoxSpec := do
             network := spec.network, timeoutMs := spec.timeoutMs,
             maxOutputBytes := spec.maxOutputBytes }
 
-/-- Extra pipe slack added to `maxOutputBytes` so `bwrap` pre-exec diagnostics on tiny caps are not misclassified as `.outputLimitExceeded`. -/
-def bwrapStderrSlack : Nat := 4096
-
 /-- Return the canonical path-segment depth of `m`'s `boxPath`. -/
 def mountBoxDepth (m : SandboxMount) : Nat :=
   match parseCleanAbsSegs (mountBoxPath m) with
@@ -176,6 +174,20 @@ def mountBoxDepth (m : SandboxMount) : Nat :=
 /-- Sort mounts by ascending `boxPath` segment depth so parent mounts precede shadowed child submounts. -/
 def sortMountsByDepth (ms : List SandboxMount) : List SandboxMount :=
   ms.mergeSort (fun a b => mountBoxDepth a ≤ mountBoxDepth b)
+
+/-- Return the mount with the longest canonical `boxPath` strictly prefixing `childSegs`. -/
+def deepestProperAncestorMount (mounts : List SandboxMount) (childSegs : List String) :
+    Option SandboxMount :=
+  mounts.foldl (init := (none : Option (Nat × SandboxMount))) (fun best m =>
+    match parseCleanAbsSegs (mountBoxPath m) with
+    | none => best
+    | some pSegs =>
+      if pSegs.length < childSegs.length && pSegs.isPrefixOf childSegs then
+        match best with
+        | none => some (pSegs.length, m)
+        | some (bestLen, _) => if pSegs.length ≥ bestLen then some (pSegs.length, m) else best
+      else best)
+  |>.map Prod.snd
 
 /-- Emit the `bwrap` CLI flags for one normalized `SandboxMount`. -/
 def mountFlags : SandboxMount → List String
@@ -194,19 +206,23 @@ def osPresetFlags : List String :=
    "--ro-bind-try", "/lib", "/lib", "--ro-bind-try", "/lib64", "/lib64", "--ro-bind-try", "/etc", "/etc",
    "--proc", "/proc", "--dev", "/dev"]
 
+/-- Emit network-sharing flags for `net` (`["--share-net"]` iff `.open`). -/
+def networkFlags : NetworkMode → List String
+  | .closed => []
+  | .open => ["--share-net"]
+
 /-- Build the `bwrap` argument vector for a validated `ValidBoxSpec`. -/
 def mkBwrapArgs (valid : ValidBoxSpec) : Array String :=
   let mountArgs := (sortMountsByDepth valid.mounts.toList).flatMap mountFlags
-  let netArgs := match valid.network with | .closed => [] | .open => ["--share-net"]
-  (osPresetFlags ++ mountArgs ++ ["--remount-ro", "/", "--unshare-all"] ++ netArgs ++
-    ["--die-with-parent", "--new-session", "--clearenv"] ++ envFlags valid.env.toList ++
-    ["--chdir", valid.cwd, "--", valid.program] ++ valid.args.toList).toArray
+  (osPresetFlags ++ mountArgs ++ ["--remount-ro", "/", "--unshare-all"] ++
+    networkFlags valid.network ++ ["--die-with-parent", "--new-session", "--clearenv"] ++
+    envFlags valid.env.toList ++ ["--chdir", valid.cwd, "--", valid.program] ++
+    valid.args.toList).toArray
 
 /-- Construct the `LeanSwe.Process.ExecRequest` executing `valid` under `bwrap`. -/
 def mkBwrapRequest (valid : ValidBoxSpec) : ExecRequest :=
   { program := "bwrap", args := mkBwrapArgs valid, cwd := none, env := #[], inheritEnv := true,
-    stdin := valid.stdin, timeoutMs := valid.timeoutMs,
-    maxOutputBytes := valid.maxOutputBytes.map (· + bwrapStderrSlack) }
+    stdin := valid.stdin, timeoutMs := valid.timeoutMs, maxOutputBytes := valid.maxOutputBytes }
 
 /-- Construct the lightweight `ExecRequest` probing whether `bwrap` namespaces work on this host. -/
 def mkProbeRequest : ExecRequest :=
@@ -230,23 +246,85 @@ def truncateToCap (cap? : Option Nat) (out err : ByteArray) : ByteArray × ByteA
 def nonEmptyMsg (fallback msg : String) : String :=
   if msg.isEmpty then fallback else msg
 
-/-- Return `true` iff `needle` appears as a substring of `hay`. -/
-def containsSub (hay needle : String) : Bool :=
-  (hay.splitOn needle).length > 1
-
-/-- Classify a `bwrap: ...` pre-execution diagnostic line into a host `SandboxError`. -/
-def classifyBwrapStderr (raw : String) : SandboxError :=
-  let msg := nonEmptyMsg "bwrap setup failed" raw.trimAsciiEnd.toString
+/-- Map a host `lstat` failure during mount pre-checking into a `SandboxError`. -/
+def mapFsPrecheckError (target : String) (e : LeanSwe.Fs.FsError) : SandboxError :=
   let kind : SandboxErrorKind :=
-    if containsSub msg "No permissions to create new namespace" ||
-       containsSub msg "Creating new namespace failed" ||
-       containsSub msg "setting up uid map" || containsSub msg "unshare" then .unavailable
-    else if containsSub msg "No such file or directory" || containsSub msg "Not a directory" then .notFound
-    else if containsSub msg "Permission denied" then .permissionDenied
-    else if containsSub msg "Operation not permitted" &&
-            (containsSub msg "execvp " || containsSub msg "Can't chdir to ") then .permissionDenied
-    else .unavailable
-  { kind, message := msg }
+    match e.kind with
+    | .notFound | .notADirectory => .notFound
+    | .permissionDenied => .permissionDenied
+    | _ => .ioError
+  { kind, path := some target, message := nonEmptyMsg "mount path unavailable" e.message }
+
+/-- Verify every prefix of `relSegs` under `baseSegs` via `fs.lstat`, refusing symlinks and non-directory intermediates, and return whether the leaf is a directory. -/
+def checkNoSymlinkPrefix {m : Type → Type} [Monad m] (fs : LeanSwe.Fs.FsApiM m)
+    (baseSegs : List String) : List String → m (Except SandboxError Bool)
+  | [] => do
+    let p := formatAbsSegs baseSegs
+    match ← fs.lstat p with
+    | .error e => return .error (mapFsPrecheckError p e)
+    | .ok st =>
+      if st.kind == .symlink then
+        return .error { kind := .permissionDenied, path := some p, message := "mount path refuses symlink" }
+      else
+        return .ok (st.kind == .dir)
+  | [last] => do
+    let p := formatAbsSegs (baseSegs ++ [last])
+    match ← fs.lstat p with
+    | .error e => return .error (mapFsPrecheckError p e)
+    | .ok st =>
+      if st.kind == .symlink then
+        return .error { kind := .permissionDenied, path := some p, message := "mount path refuses symlink" }
+      else
+        return .ok (st.kind == .dir)
+  | seg :: rest => do
+    let nextBase := baseSegs ++ [seg]
+    let p := formatAbsSegs nextBase
+    match ← fs.lstat p with
+    | .error e => return .error (mapFsPrecheckError p e)
+    | .ok st =>
+      if st.kind == .symlink then
+        return .error { kind := .permissionDenied, path := some p, message := "mount path refuses symlink" }
+      else if st.kind != .dir then
+        return .error { kind := .notFound, path := some p, message := "mount path component is not a directory" }
+      else
+        checkNoSymlinkPrefix fs nextBase rest
+
+/-- Verify one mount's host source path (if any) and nested target path/kind before invoking `bwrap`. -/
+def checkOneMountPreconditions {m : Type → Type} [Monad m] (fs : LeanSwe.Fs.FsApiM m)
+    (sorted : List SandboxMount) (mnt : SandboxMount) : m (Except SandboxError Unit) := do
+  let srcRes ← match mountHostPath? mnt with
+    | none => pure (.ok true)
+    | some hp => match parseCleanAbsSegs hp with
+      | none => pure (.error { kind := .notFound, path := some hp, message := "invalid mount hostPath" })
+      | some hpSegs => checkNoSymlinkPrefix fs [] hpSegs
+  match srcRes with
+  | .error e => return .error e
+  | .ok srcIsDir =>
+    match parseCleanAbsSegs (mountBoxPath mnt) with
+    | none => return .ok ()
+    | some cSegs =>
+      match deepestProperAncestorMount sorted cSegs with
+      | some (.readOnly php pbp) | some (.readWrite php pbp) =>
+        match parseCleanAbsSegs php, parseCleanAbsSegs pbp with
+        | some phpSegs, some pbpSegs =>
+          let rel := cSegs.drop pbpSegs.length
+          match ← checkNoSymlinkPrefix fs phpSegs rel with
+          | .error e => return .error e
+          | .ok dstIsDir =>
+            if dstIsDir != srcIsDir then
+              return .error { kind := .notFound, path := some (formatAbsSegs (phpSegs ++ rel)), message := "nested mount target kind mismatch" }
+            else return .ok ()
+        | _, _ => return .ok ()
+      | some (.scratch _) | none => return .ok ()
+
+/-- Verify source paths and nested target mountpoints for every mount in `ms`. -/
+def checkAllMountsPreconditions {m : Type → Type} [Monad m] (fs : LeanSwe.Fs.FsApiM m)
+    (sorted : List SandboxMount) : List SandboxMount → m (Except SandboxError Unit)
+  | [] => return .ok ()
+  | mnt :: rest => do
+    match ← checkOneMountPreconditions fs sorted mnt with
+    | .error e => return .error e
+    | .ok () => checkAllMountsPreconditions fs sorted rest
 
 /-- Map a `ProcessError` from invoking `bwrap` into `Except SandboxError SandboxResult`. -/
 def classifyProcessError (cap? : Option Nat) (pe : ProcessError) : Except SandboxError SandboxResult :=
@@ -257,9 +335,10 @@ def classifyProcessError (cap? : Option Nat) (pe : ProcessError) : Except Sandbo
   | .timedOut => .ok { outcome := .timedOut, stdout := out, stderr := err }
   | .outputLimitExceeded => .ok { outcome := .outputLimitExceeded, stdout := out, stderr := err }
   | .terminatedBySignal =>
+    let code : Int := 128 + pe.signal.getD 9
     let outcome := match cap? with
-      | some cap => if rawOut.size + rawErr.size > cap then .outputLimitExceeded else .signaled (pe.signal.getD 9)
-      | none => .signaled (pe.signal.getD 9)
+      | some cap => if rawOut.size + rawErr.size > cap then .outputLimitExceeded else .exited code
+      | none => .exited code
     .ok { outcome, stdout := out, stderr := err }
   | .notFound | .permissionDenied =>
     .error { kind := .unavailable, message := nonEmptyMsg "bwrap unavailable on host" pe.message }
@@ -268,31 +347,13 @@ def classifyProcessError (cap? : Option Nat) (pe : ProcessError) : Except Sandbo
 
 /-- Map a completed `ExecResult` from `bwrap` into `Except SandboxError SandboxResult`. -/
 def classifyExecResult (cap? : Option Nat) (res : ExecResult) : Except SandboxError SandboxResult :=
-  let preExec? : Option SandboxError :=
-    if res.exitCode == 1 && res.stdout.isEmpty then
-      match String.fromUTF8? res.stderr with
-      | some s => if s.startsWith "bwrap: " then some (classifyBwrapStderr s) else none
-      | none => none
-    else none
-  match preExec? with
-  | some e => .error e
-  | none => match cap? with
-    | some cap =>
-      if res.stdout.size + res.stderr.size > cap then
-        let (out, err) := truncateToCap (some cap) res.stdout res.stderr
-        .ok { outcome := .outputLimitExceeded, stdout := out, stderr := err }
-      else .ok { outcome := .exited res.exitCode, stdout := res.stdout, stderr := res.stderr }
-    | none => .ok { outcome := .exited res.exitCode, stdout := res.stdout, stderr := res.stderr }
-
-/-- Execute `spec` inside an isolated `bwrap` sandbox via `proc`. -/
-def run {m : Type → Type} [Monad m] (proc : ProcessApiM m)
-    (spec : BoxSpec) : m (Except SandboxError SandboxResult) := do
-  match validateSpec spec with
-  | .error e => return .error e
-  | .ok valid =>
-    match ← proc.run (mkBwrapRequest valid) with
-    | .error pe => return classifyProcessError valid.maxOutputBytes pe
-    | .ok res => return classifyExecResult valid.maxOutputBytes res
+  match cap? with
+  | some cap =>
+    if res.stdout.size + res.stderr.size > cap then
+      let (out, err) := truncateToCap (some cap) res.stdout res.stderr
+      .ok { outcome := .outputLimitExceeded, stdout := out, stderr := err }
+    else .ok { outcome := .exited res.exitCode, stdout := res.stdout, stderr := res.stderr }
+  | none => .ok { outcome := .exited res.exitCode, stdout := res.stdout, stderr := res.stderr }
 
 /-- Probe whether `bwrap` unprivileged namespaces work on this host via `proc`. -/
 def isAvailable {m : Type → Type} [Monad m] (proc : ProcessApiM m) : m Bool := do
@@ -300,8 +361,37 @@ def isAvailable {m : Type → Type} [Monad m] (proc : ProcessApiM m) : m Bool :=
   | .ok res => return res.exitCode == 0
   | .error _ => return false
 
-/-- Construct a `ProcessSandboxApiM m` backed by `proc : ProcessApiM m`. -/
-def mkApiM {m : Type → Type} [Monad m] (proc : ProcessApiM m) : ProcessSandboxApiM m :=
-  { validateSpec := validateSpec, run := run proc, isAvailable := isAvailable proc }
+/-- Return `.error .unavailable` when `isAvailable proc` is `false`; otherwise preserve `fallback`. -/
+def checkAvailOr {m : Type → Type} [Monad m] (proc : ProcessApiM m)
+    (fallback : Except SandboxError SandboxResult) : m (Except SandboxError SandboxResult) := do
+  if ← isAvailable proc then
+    return fallback
+  else
+    return .error { kind := .unavailable, message := "sandbox unavailable on host" }
+
+/-- Execute `spec` inside an isolated `bwrap` sandbox via `proc` after checking mount paths via `fs`. -/
+def run {m : Type → Type} [Monad m] (proc : ProcessApiM m) (fs : LeanSwe.Fs.FsApiM m)
+    (spec : BoxSpec) : m (Except SandboxError SandboxResult) := do
+  match validateSpec spec with
+  | .error e => return .error e
+  | .ok valid =>
+    let sorted := sortMountsByDepth valid.mounts.toList
+    match ← checkAllMountsPreconditions fs sorted sorted with
+    | .error e => return .error e
+    | .ok () =>
+      match ← proc.run (mkBwrapRequest valid) with
+      | .error pe =>
+        let res := classifyProcessError valid.maxOutputBytes pe
+        if pe.kind == .outputLimitExceeded || pe.kind == .terminatedBySignal || pe.kind == .timedOut then
+          checkAvailOr proc res
+        else return res
+      | .ok er =>
+        let res := classifyExecResult valid.maxOutputBytes er
+        if er.exitCode != 0 then checkAvailOr proc res else return res
+
+/-- Construct a `ProcessSandboxApiM m` backed by `proc` and `fs`. -/
+def mkApiM {m : Type → Type} [Monad m] (proc : ProcessApiM m) (fs : LeanSwe.Fs.FsApiM m) :
+    ProcessSandboxApiM m :=
+  { validateSpec := validateSpec, run := run proc fs, isAvailable := isAvailable proc }
 
 end LeanSwe.ProcessSandbox.Internal

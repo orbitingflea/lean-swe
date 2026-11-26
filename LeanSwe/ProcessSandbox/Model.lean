@@ -1,3 +1,4 @@
+import LeanSwe.Fs.Types
 import LeanSwe.Process.Types
 import LeanSwe.Process.Model
 import LeanSwe.ProcessSandbox.Types
@@ -478,12 +479,27 @@ def allowedProcessStep (s : LeanSwe.Process.Model.ProcessModelState)
     (s' : LeanSwe.Process.Model.ProcessModelState) : Prop :=
   LeanSwe.Process.Model.allowedPkgStep s req out s'
 
-/-- Handle-conserving `ProcessModelState` transition when `ProcessSandbox` executes a `ProcessApiM` call. -/
+/-- Execute one host path `lstat` pre-check against `fs : LeanSwe.Fs.FsApiM (StateM W)`. -/
+def execFsLstatStep {W : Type} (fs : LeanSwe.Fs.FsApiM (StateM W))
+    (path : String) : StateM W (Except LeanSwe.Fs.FsError LeanSwe.Fs.FileStat) :=
+  fs.lstat path
+
+/-- Handle-preserving host path `lstat` pre-check contract over `ProcessModelState`. -/
+def allowedFsLstatStep (s : LeanSwe.Process.Model.ProcessModelState)
+    (path : String) (out : Except LeanSwe.Fs.FsError LeanSwe.Fs.FileStat)
+    (s' : LeanSwe.Process.Model.ProcessModelState) : Prop :=
+  s' = s ∧ processStepWf s = true ∧
+  match out with
+  | .ok st => (!hasNulChar path.toList && !path.isEmpty) = true ∧ st.mode ≤ 0o7777
+  | .error e => !e.message.isEmpty
+
+/-- Handle-conserving `ProcessModelState` transition when `ProcessSandbox` executes up to two `ProcessApiM` calls. -/
 def allowedProcessHandleStep (s s' : LeanSwe.Process.Model.ProcessModelState) : Prop :=
   LeanSwe.Process.Model.processStateWf s = true ∧
   LeanSwe.Process.Model.processStateWf s' = true ∧
   s'.activeHandles = s.activeHandles ∧
-  (s'.nextHandleId = s.nextHandleId ∨ s'.nextHandleId = s.nextHandleId + 1)
+  s.nextHandleId ≤ s'.nextHandleId ∧
+  s'.nextHandleId ≤ s.nextHandleId + 2
 
 /-- Relational single-step contract for all 3 `ProcessSandboxApiM` operations over `ProcessModelState`. -/
 def allowedPkgStep (s : LeanSwe.Process.Model.ProcessModelState)

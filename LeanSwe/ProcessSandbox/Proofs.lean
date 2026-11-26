@@ -735,19 +735,217 @@ private theorem nonEmptyMsg_not_isEmpty (fallback msg : String)
   | true => rw [ite_eq_left rfl]; exact hfb
   | false => rw [ite_eq_right Bool.false_ne_true, hm]; rfl
 
-private theorem classifyBwrapStderr_post (raw : String) :
-    Model.isHostErrorKind (Internal.classifyBwrapStderr raw).kind = true ∧
-    (!(Internal.classifyBwrapStderr raw).message.isEmpty) = true := by
-  unfold Internal.classifyBwrapStderr
-  refine ⟨?_, nonEmptyMsg_not_isEmpty "bwrap setup failed" _ (by decide)⟩
-  dsimp only
-  split
-  · rfl
-  split
-  · rfl
-  split
-  · rfl
-  split <;> rfl
+private theorem mapFsPrecheckError_post (target : String) (e : LeanSwe.Fs.FsError) :
+    Model.isHostErrorKind (Internal.mapFsPrecheckError target e).kind = true ∧
+    (!(Internal.mapFsPrecheckError target e).message.isEmpty) = true := by
+  unfold Internal.mapFsPrecheckError
+  refine ⟨?_, nonEmptyMsg_not_isEmpty "mount path unavailable" e.message (by decide)⟩
+  cases e.kind <;> rfl
+
+private theorem checkNoSymlinkPrefix_step {W : Type}
+    (proj : W → LeanSwe.Process.Model.ProcessModelState)
+    (fs : LeanSwe.Fs.FsApiM (StateM W))
+    (hStat : Core.ObeysStep proj Model.processStepWf (Model.execFsLstatStep fs) Model.allowedFsLstatStep) :
+    ∀ (baseSegs relSegs : List String) (w : W),
+      Model.processStepWf (proj w) = true →
+      let r := (Internal.checkNoSymlinkPrefix fs baseSegs relSegs).run w
+      proj r.2 = proj w ∧
+      match r.1 with
+      | .ok _ => True
+      | .error e => Model.isHostErrorKind e.kind = true ∧ !e.message.isEmpty = true
+  | baseSegs, [], w, hWf => by
+    simp only [Internal.checkNoSymlinkPrefix]
+    rw [stateT_bind_run]
+    have hOne := hStat w (Internal.formatAbsSegs baseSegs) hWf
+    dsimp only [Model.execFsLstatStep, Model.allowedFsLstatStep, id] at hOne
+    cases hs : (fs.lstat (Internal.formatAbsSegs baseSegs)).run w with
+    | mk res w1 =>
+      rw [hs] at hOne
+      have hEq : proj w1 = proj w := hOne.1
+      cases res with
+      | error e =>
+        rw [stateT_pure_run]
+        exact ⟨hEq, mapFsPrecheckError_post _ e⟩
+      | ok st =>
+        by_cases hSym : (st.kind == .symlink) = true
+        · simp only [hSym, ↓reduceIte]; rw [stateT_pure_run]
+          exact ⟨hEq, rfl, (show (!"mount path refuses symlink".isEmpty) = true from rfl)⟩
+        · simp only [hSym, Bool.false_eq_true, ↓reduceIte]; rw [stateT_pure_run]
+          exact ⟨hEq, trivial⟩
+  | baseSegs, [last], w, hWf => by
+    simp only [Internal.checkNoSymlinkPrefix]
+    rw [stateT_bind_run]
+    have hOne := hStat w (Internal.formatAbsSegs (baseSegs ++ [last])) hWf
+    dsimp only [Model.execFsLstatStep, Model.allowedFsLstatStep, id] at hOne
+    cases hs : (fs.lstat (Internal.formatAbsSegs (baseSegs ++ [last]))).run w with
+    | mk res w1 =>
+      rw [hs] at hOne
+      have hEq : proj w1 = proj w := hOne.1
+      cases res with
+      | error e =>
+        rw [stateT_pure_run]
+        exact ⟨hEq, mapFsPrecheckError_post _ e⟩
+      | ok st =>
+        by_cases hSym : (st.kind == .symlink) = true
+        · simp only [hSym, ↓reduceIte]; rw [stateT_pure_run]
+          exact ⟨hEq, rfl, (show (!"mount path refuses symlink".isEmpty) = true from rfl)⟩
+        · simp only [hSym, Bool.false_eq_true, ↓reduceIte]; rw [stateT_pure_run]
+          exact ⟨hEq, trivial⟩
+  | baseSegs, seg :: seg2 :: rest, w, hWf => by
+    simp only [Internal.checkNoSymlinkPrefix]
+    rw [stateT_bind_run]
+    have hOne := hStat w (Internal.formatAbsSegs (baseSegs ++ [seg])) hWf
+    dsimp only [Model.execFsLstatStep, Model.allowedFsLstatStep, id] at hOne
+    cases hs : (fs.lstat (Internal.formatAbsSegs (baseSegs ++ [seg]))).run w with
+    | mk res w1 =>
+      rw [hs] at hOne
+      have hEq : proj w1 = proj w := hOne.1
+      cases res with
+      | error e =>
+        rw [stateT_pure_run]
+        exact ⟨hEq, mapFsPrecheckError_post _ e⟩
+      | ok st =>
+        by_cases hSym : (st.kind == .symlink) = true
+        · simp only [hSym, ↓reduceIte]; rw [stateT_pure_run]
+          exact ⟨hEq, rfl, (show (!"mount path refuses symlink".isEmpty) = true from rfl)⟩
+        · simp only [hSym, Bool.false_eq_true, ↓reduceIte]
+          by_cases hDir : (st.kind != .dir) = true
+          · simp only [hDir, ↓reduceIte]; rw [stateT_pure_run]
+            exact ⟨hEq, rfl, (show (!"mount path component is not a directory".isEmpty) = true from rfl)⟩
+          · simp only [hDir, Bool.false_eq_true, ↓reduceIte]
+            have ih := checkNoSymlinkPrefix_step proj fs hStat (baseSegs ++ [seg]) (seg2 :: rest) w1 (hEq ▸ hWf)
+            exact ⟨ih.1.trans hEq, ih.2⟩
+
+private theorem checkOneMountPreconditions_step {W : Type}
+    (proj : W → LeanSwe.Process.Model.ProcessModelState)
+    (fs : LeanSwe.Fs.FsApiM (StateM W))
+    (hStat : Core.ObeysStep proj Model.processStepWf (Model.execFsLstatStep fs) Model.allowedFsLstatStep)
+    (sorted : List SandboxMount) (m : SandboxMount) (w : W)
+    (hWf : Model.processStepWf (proj w) = true) :
+    let r := (Internal.checkOneMountPreconditions fs sorted m).run w
+    proj r.2 = proj w ∧
+    match r.1 with
+    | .ok () => True
+    | .error e => Model.isHostErrorKind e.kind = true ∧ !e.message.isEmpty = true := by
+  have hCont : ∀ (srcIsDir : Bool) (w1 : W), proj w1 = proj w →
+      let r := ((match Internal.parseCleanAbsSegs (mountBoxPath m) with
+        | none => pure (.ok ())
+        | some cSegs =>
+          match Internal.deepestProperAncestorMount sorted cSegs with
+          | some (.readOnly php pbp) | some (.readWrite php pbp) =>
+            match Internal.parseCleanAbsSegs php, Internal.parseCleanAbsSegs pbp with
+            | some phpSegs, some pbpSegs => do
+              let rel := cSegs.drop pbpSegs.length
+              match ← Internal.checkNoSymlinkPrefix fs phpSegs rel with
+              | .error e => return .error e
+              | .ok dstIsDir =>
+                if dstIsDir != srcIsDir then
+                  return .error { kind := .notFound, path := some (Internal.formatAbsSegs (phpSegs ++ rel)), message := "nested mount target kind mismatch" }
+                else return .ok ()
+            | _, _ => pure (.ok ())
+          | some (.scratch _) | none => pure (.ok ())) : StateM W (Except SandboxError Unit)).run w1
+      proj r.2 = proj w ∧
+      match r.1 with
+      | .ok () => True
+      | .error e => Model.isHostErrorKind e.kind = true ∧ !e.message.isEmpty = true := by
+    intro srcIsDir w1 hEq1
+    cases Internal.parseCleanAbsSegs (mountBoxPath m) with
+    | none => dsimp only; rw [stateT_pure_run]; exact ⟨hEq1, trivial⟩
+    | some cSegs =>
+      dsimp only
+      cases Internal.deepestProperAncestorMount sorted cSegs with
+      | none => dsimp only; rw [stateT_pure_run]; exact ⟨hEq1, trivial⟩
+      | some anc =>
+        cases anc with
+        | scratch _ => dsimp only; rw [stateT_pure_run]; exact ⟨hEq1, trivial⟩
+        | readOnly php pbp | readWrite php pbp =>
+          dsimp only
+          cases Internal.parseCleanAbsSegs php with
+          | none => dsimp only; rw [stateT_pure_run]; exact ⟨hEq1, trivial⟩
+          | some phpSegs =>
+            cases Internal.parseCleanAbsSegs pbp with
+            | none => dsimp only; rw [stateT_pure_run]; exact ⟨hEq1, trivial⟩
+            | some pbpSegs =>
+              dsimp only
+              rw [stateT_bind_run]
+              have hDst := checkNoSymlinkPrefix_step proj fs hStat phpSegs (cSegs.drop pbpSegs.length) w1 (hEq1 ▸ hWf)
+              cases hDr : (Internal.checkNoSymlinkPrefix fs phpSegs (cSegs.drop pbpSegs.length)).run w1 with
+              | mk dstRes w2 =>
+                rw [hDr] at hDst
+                dsimp only
+                have hEq2 : proj w2 = proj w := hDst.1.trans hEq1
+                cases dstRes with
+                | error e =>
+                  dsimp only
+                  rw [stateT_pure_run]
+                  exact ⟨hEq2, hDst.2⟩
+                | ok dstIsDir =>
+                  dsimp only
+                  by_cases hMis : (dstIsDir != srcIsDir) = true
+                  · simp only [hMis, ↓reduceIte]; rw [stateT_pure_run]
+                    exact ⟨hEq2, rfl, (show (!"nested mount target kind mismatch".isEmpty) = true from rfl)⟩
+                  · simp only [hMis, Bool.false_eq_true, ↓reduceIte]; rw [stateT_pure_run]
+                    exact ⟨hEq2, trivial⟩
+  dsimp only [Internal.checkOneMountPreconditions]
+  cases mountHostPath? m with
+  | none =>
+    dsimp only
+    rw [stateT_bind_run, stateT_pure_run]
+    exact hCont true w rfl
+  | some hp =>
+    dsimp only
+    cases Internal.parseCleanAbsSegs hp with
+    | none =>
+      dsimp only
+      rw [stateT_bind_run, stateT_pure_run, stateT_pure_run]
+      exact ⟨rfl, rfl, (show (!"invalid mount hostPath".isEmpty) = true from rfl)⟩
+    | some hpSegs =>
+      dsimp only
+      rw [stateT_bind_run]
+      have hSrc := checkNoSymlinkPrefix_step proj fs hStat [] hpSegs w hWf
+      cases hSr : (Internal.checkNoSymlinkPrefix fs [] hpSegs).run w with
+      | mk srcRes w1 =>
+        rw [hSr] at hSrc
+        dsimp only
+        cases srcRes with
+        | error e =>
+          dsimp only
+          rw [stateT_pure_run]
+          exact ⟨hSrc.1, hSrc.2⟩
+        | ok srcIsDir => exact hCont srcIsDir w1 hSrc.1
+
+private theorem checkAllMountsPreconditions_step {W : Type}
+    (proj : W → LeanSwe.Process.Model.ProcessModelState)
+    (fs : LeanSwe.Fs.FsApiM (StateM W))
+    (hStat : Core.ObeysStep proj Model.processStepWf (Model.execFsLstatStep fs) Model.allowedFsLstatStep)
+    (sorted : List SandboxMount) :
+    ∀ (ms : List SandboxMount) (w : W),
+      Model.processStepWf (proj w) = true →
+      let r := (Internal.checkAllMountsPreconditions fs sorted ms).run w
+      proj r.2 = proj w ∧
+      match r.1 with
+      | .ok () => True
+      | .error e => Model.isHostErrorKind e.kind = true ∧ !e.message.isEmpty = true
+  | [], w, _ => by
+    simp only [Internal.checkAllMountsPreconditions]
+    rw [stateT_pure_run]
+    exact ⟨rfl, trivial⟩
+  | m :: rest, w, hWf => by
+    simp only [Internal.checkAllMountsPreconditions]
+    rw [stateT_bind_run]
+    have hOne := checkOneMountPreconditions_step proj fs hStat sorted m w hWf
+    cases hs : (Internal.checkOneMountPreconditions fs sorted m).run w with
+    | mk res w1 =>
+      rw [hs] at hOne
+      have hEq : proj w1 = proj w := hOne.1
+      cases res with
+      | error e =>
+        rw [stateT_pure_run]
+        exact ⟨hEq, hOne.2⟩
+      | ok u =>
+        cases u
+        have ih := checkAllMountsPreconditions_step proj fs hStat sorted rest w1 (hEq ▸ hWf)
+        exact ⟨ih.1.trans hEq, ih.2⟩
 
 private theorem classifyProcessError_post (valid : ValidBoxSpec) (pe : ProcessError)
     (hExec : LeanSwe.Process.Model.allowedExecResult false (Internal.mkBwrapRequest valid) (.error pe)) :
@@ -797,68 +995,109 @@ private theorem classifyExecResult_post (cap? : Option Nat) (res : ExecResult) :
     | .error e =>
       Model.isHostErrorKind e.kind = true ∧ !e.message.isEmpty := by
   unfold Internal.classifyExecResult
-  dsimp only
-  have hNone : match ((match cap? with
-      | some cap =>
-        if res.stdout.size + res.stderr.size > cap then
-          let p := Internal.truncateToCap (some cap) res.stdout res.stderr
-          .ok { outcome := .outputLimitExceeded, stdout := p.1, stderr := p.2 }
-        else .ok { outcome := .exited res.exitCode, stdout := res.stdout, stderr := res.stderr }
-      | none => .ok { outcome := .exited res.exitCode, stdout := res.stdout, stderr := res.stderr })
-      : Except SandboxError SandboxResult) with
+  cases cap? with
+  | none => exact ⟨trivial, (fun h => nomatch h), (fun h => nomatch h)⟩
+  | some cap =>
+    dsimp only
+    by_cases hGt : res.stdout.size + res.stderr.size > cap
+    · simp only [hGt, ↓reduceIte]
+      exact ⟨truncateToCap_withinOutputCap (some cap) res.stdout res.stderr,
+        (fun h => nomatch h), (fun _ => rfl)⟩
+    · simp only [hGt, ↓reduceIte]
+      exact ⟨by unfold Model.withinOutputCap; omega, (fun h => nomatch h), (fun h => nomatch h)⟩
+
+private theorem isAvailable_step {W : Type}
+    (proj : W → LeanSwe.Process.Model.ProcessModelState)
+    (proc : ProcessApiM (StateM W))
+    (hProc : Core.ObeysStep proj Model.processStepWf (Model.execProcessStep proc) Model.allowedProcessStep)
+    (w : W) (hWf : Model.processStepWf (proj w) = true) :
+    let r := (Internal.isAvailable proc).run w
+    LeanSwe.Process.Model.processStateWf (proj r.2) = true ∧
+    (proj r.2).activeHandles = (proj w).activeHandles ∧
+    ((proj r.2).nextHandleId = (proj w).nextHandleId ∨
+     (proj r.2).nextHandleId = (proj w).nextHandleId + 1) := by
+  dsimp only [Internal.isAvailable]
+  rw [stateT_bind_run]
+  rcases validateRequestModel_mkProbeRequest with ⟨norm, hReqOk⟩
+  have hRaw := hProc w (.run Internal.mkProbeRequest) hWf
+  dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+    Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep] at hRaw
+  rw [stateT_map_run] at hRaw
+  cases hRun : (proc.run Internal.mkProbeRequest).run w with
+  | mk rawRes w1 =>
+    rw [hRun] at hRaw
+    rcases hRaw with ⟨_, hw2, hPkgRun⟩
+    dsimp only [LeanSwe.Process.Model.allowedPkgRun] at hPkgRun
+    rw [hReqOk] at hPkgRun
+    cases rawRes <;> (rw [stateT_pure_run]; exact ⟨hw2, hPkgRun.1, hPkgRun.2.1⟩)
+
+private theorem checkAvailOr_step {W : Type}
+    (proj : W → LeanSwe.Process.Model.ProcessModelState)
+    (proc : ProcessApiM (StateM W))
+    (hProc : Core.ObeysStep proj Model.processStepWf (Model.execProcessStep proc) Model.allowedProcessStep)
+    (valid : ValidBoxSpec) (w0 w1 : W)
+    (hWf0 : LeanSwe.Process.Model.processStateWf (proj w0) = true)
+    (hWf1 : LeanSwe.Process.Model.processStateWf (proj w1) = true)
+    (hAct1 : (proj w1).activeHandles = (proj w0).activeHandles)
+    (hId1 : (proj w1).nextHandleId = (proj w0).nextHandleId ∨
+            (proj w1).nextHandleId = (proj w0).nextHandleId + 1)
+    (fallback : Except SandboxError SandboxResult)
+    (hFb : match fallback with
       | .ok r =>
-        Model.withinOutputCap cap? r.stdout r.stderr ∧
-        (r.outcome = .timedOut → False) ∧
-        (r.outcome = .outputLimitExceeded → cap?.isSome = true)
+        Model.withinOutputCap valid.maxOutputBytes r.stdout r.stderr ∧
+        (r.outcome = .timedOut → valid.timeoutMs.isSome = true) ∧
+        (r.outcome = .outputLimitExceeded → valid.maxOutputBytes.isSome = true)
       | .error e =>
-        Model.isHostErrorKind e.kind = true ∧ !e.message.isEmpty := by
-    cases cap? with
-    | none => exact ⟨trivial, (fun h => nomatch h), (fun h => nomatch h)⟩
-    | some cap =>
-      dsimp only
-      by_cases hGt : res.stdout.size + res.stderr.size > cap
-      · simp only [hGt, ↓reduceIte]
-        exact ⟨truncateToCap_withinOutputCap (some cap) res.stdout res.stderr,
-          (fun h => nomatch h), (fun _ => rfl)⟩
-      · simp only [hGt, ↓reduceIte]
-        exact ⟨by unfold Model.withinOutputCap; omega, (fun h => nomatch h), (fun h => nomatch h)⟩
-  by_cases hCond : (res.exitCode == 1 && res.stdout.isEmpty) = true
-  · simp only [hCond, ↓reduceIte]
-    cases hs : String.fromUTF8? res.stderr with
-    | none => exact hNone
-    | some s =>
-      dsimp only
-      by_cases hPfx : s.startsWith "bwrap: " = true
-      · simp only [hPfx, ↓reduceIte]
-        exact classifyBwrapStderr_post s
-      · simp only [hPfx, Bool.false_eq_true, ↓reduceIte]
-        exact hNone
-  · simp only [hCond, Bool.false_eq_true, ↓reduceIte]
-    exact hNone
+        Model.isHostErrorKind e.kind = true ∧ !e.message.isEmpty) :
+    let r := (Internal.checkAvailOr proc fallback).run w1
+    Model.allowedProcessHandleStep (proj w0) (proj r.2) ∧
+    match r.1 with
+    | .ok res =>
+      Model.withinOutputCap valid.maxOutputBytes res.stdout res.stderr ∧
+      (res.outcome = .timedOut → valid.timeoutMs.isSome = true) ∧
+      (res.outcome = .outputLimitExceeded → valid.maxOutputBytes.isSome = true)
+    | .error e =>
+      Model.isHostErrorKind e.kind = true ∧ !e.message.isEmpty := by
+  dsimp only [Internal.checkAvailOr]
+  rw [stateT_bind_run]
+  have hAv := isAvailable_step proj proc hProc w1 hWf1
+  cases hA : (Internal.isAvailable proc).run w1 with
+  | mk ok w2 =>
+    rw [hA] at hAv
+    rcases hAv with ⟨hw2, hAct2, hId2⟩
+    dsimp only at hw2 hAct2 hId2
+    have hHdl : Model.allowedProcessHandleStep (proj w0) (proj w2) :=
+      ⟨hWf0, hw2, hAct2.trans hAct1, by omega, by omega⟩
+    cases ok with
+    | true =>
+      simp only [↓reduceIte]
+      rw [stateT_pure_run]
+      exact ⟨hHdl, hFb⟩
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte]
+      rw [stateT_pure_run]
+      exact ⟨hHdl, rfl, by decide⟩
 
 private theorem obeysStepFrom_process :
-    Core.ObeysStepFrom id Model.processStepWf Model.execProcessStep Model.allowedProcessStep
+    Core.ObeysStepFrom2 id Model.processStepWf
+      Model.execProcessStep Model.allowedProcessStep
+      Model.execFsLstatStep Model.allowedFsLstatStep
       Model.processStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep := by
-  intro W proj proc hProc w req hWf
+  intro W proj proc fs hProc hStat w req hWf
   have hWfP : LeanSwe.Process.Model.processStateWf (proj w) = true := hWf
   cases req with
   | validateSpec spec =>
     exact ⟨validateSpec_eq_model spec, rfl, hWf⟩
   | isAvailable =>
-    dsimp only [Model.execPkgStep, Internal.mkApiM, Internal.isAvailable, Function.comp, id]
-    rw [stateT_map_run, stateT_bind_run]
-    rcases validateRequestModel_mkProbeRequest with ⟨norm, hReqOk⟩
-    have hRaw := hProc w (.run Internal.mkProbeRequest) hWf
-    dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
-      Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep] at hRaw
-    rw [stateT_map_run] at hRaw
-    cases hRun : (proc.run Internal.mkProbeRequest).run w with
-    | mk rawRes w1 =>
-      rw [hRun] at hRaw
-      rcases hRaw with ⟨hw1, hw2, hPkgRun⟩
-      dsimp only [LeanSwe.Process.Model.allowedPkgRun] at hPkgRun
-      rw [hReqOk] at hPkgRun
-      cases rawRes <;> exact ⟨hw1, hw2, hPkgRun.1, hPkgRun.2.1⟩
+    dsimp only [Model.execPkgStep, Internal.mkApiM, Function.comp, id]
+    rw [stateT_map_run]
+    have hAv := isAvailable_step proj proc hProc w hWf
+    cases hA : (Internal.isAvailable proc).run w with
+    | mk _ w1 =>
+      rw [hA] at hAv
+      rcases hAv with ⟨hw1, hAct1, hId1⟩
+      dsimp only at hw1 hAct1 hId1 ⊢
+      exact ⟨hWfP, hw1, hAct1, by omega, by omega⟩
   | run spec =>
     dsimp only [Model.execPkgStep, Internal.mkApiM, Internal.run, Function.comp, id]
     rw [stateT_map_run]
@@ -870,39 +1109,77 @@ private theorem obeysStepFrom_process :
       exact ⟨rfl, rfl, hWf⟩
     | ok valid =>
       rw [stateT_bind_run]
-      rcases validateSpec_ok_request_valid spec valid hv with ⟨norm, hReqOk⟩
-      have hRaw := hProc w (.run (Internal.mkBwrapRequest valid)) hWf
-      dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
-        Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep] at hRaw
-      rw [stateT_map_run] at hRaw
-      cases hRun : (proc.run (Internal.mkBwrapRequest valid)).run w with
-      | mk rawRes w1 =>
-        rw [hRun] at hRaw
-        rcases hRaw with ⟨hw1, hw2, hPkgRun⟩
-        dsimp only [LeanSwe.Process.Model.allowedPkgRun] at hPkgRun
-        rw [hReqOk] at hPkgRun
-        have hHdl : Model.allowedProcessHandleStep (proj w) (proj w1) :=
-          ⟨hw1, hw2, hPkgRun.1, hPkgRun.2.1⟩
-        cases rawRes with
-        | error pe =>
+      let sorted := Internal.sortMountsByDepth valid.mounts.toList
+      have hPre := checkAllMountsPreconditions_step proj fs hStat sorted sorted w hWf
+      cases hChk : (Internal.checkAllMountsPreconditions fs sorted sorted).run w with
+      | mk chkRes wPre =>
+        rw [hChk] at hPre
+        have hEqPre : proj wPre = proj w := hPre.1
+        cases chkRes with
+        | error e =>
           rw [stateT_pure_run]
-          exact ⟨hHdl, classifyProcessError_post valid pe hPkgRun.2.2⟩
-        | ok er =>
-          rw [stateT_pure_run]
-          refine ⟨hHdl, ?_⟩
-          have hPost := classifyExecResult_post valid.maxOutputBytes er
-          cases hCl : Internal.classifyExecResult valid.maxOutputBytes er with
-          | error e => rw [hCl] at hPost; exact hPost
-          | ok r =>
-            rw [hCl] at hPost
-            exact ⟨hPost.1, fun ht => False.elim (hPost.2.1 ht), hPost.2.2⟩
+          exact ⟨⟨hWfP, hEqPre ▸ hWfP, by rw [hEqPre],
+            by dsimp only; rw [hEqPre]; exact Nat.le_refl _,
+            by dsimp only; rw [hEqPre]; omega⟩, hPre.2⟩
+        | ok _ =>
+          rw [stateT_bind_run]
+          have hWfPre : Model.processStepWf (proj wPre) = true := hEqPre ▸ hWf
+          rcases validateSpec_ok_request_valid spec valid hv with ⟨norm, hReqOk⟩
+          have hRaw := hProc wPre (.run (Internal.mkBwrapRequest valid)) hWfPre
+          dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+            Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep] at hRaw
+          rw [stateT_map_run] at hRaw
+          cases hRun : (proc.run (Internal.mkBwrapRequest valid)).run wPre with
+          | mk rawRes w1 =>
+            rw [hRun] at hRaw
+            rcases hRaw with ⟨_, hw2, hPkgRun⟩
+            dsimp only [LeanSwe.Process.Model.allowedPkgRun] at hPkgRun
+            rw [hReqOk] at hPkgRun
+            have hAct1 : (proj w1).activeHandles = (proj w).activeHandles := by
+              rw [hPkgRun.1, hEqPre]
+            have hId1 : (proj w1).nextHandleId = (proj w).nextHandleId ∨
+                (proj w1).nextHandleId = (proj w).nextHandleId + 1 := by
+              simpa [hEqPre] using hPkgRun.2.1
+            have hHdl1 : Model.allowedProcessHandleStep (proj w) (proj w1) :=
+              ⟨hWfP, hw2, hAct1, by omega, by omega⟩
+            cases rawRes with
+            | error pe =>
+              have hPost := classifyProcessError_post valid pe hPkgRun.2.2
+              by_cases hOut : (pe.kind == .outputLimitExceeded || pe.kind == .terminatedBySignal || pe.kind == .timedOut) = true
+              · simp only [hOut, ↓reduceIte]
+                exact checkAvailOr_step proj proc hProc valid w w1 hWfP hw2 hAct1 hId1 _ hPost
+              · simp only [hOut, Bool.false_eq_true, ↓reduceIte]
+                rw [stateT_pure_run]
+                exact ⟨hHdl1, hPost⟩
+            | ok er =>
+              have hPostRaw := classifyExecResult_post valid.maxOutputBytes er
+              have hPost : match Internal.classifyExecResult valid.maxOutputBytes er with
+                  | .ok r =>
+                    Model.withinOutputCap valid.maxOutputBytes r.stdout r.stderr ∧
+                    (r.outcome = .timedOut → valid.timeoutMs.isSome = true) ∧
+                    (r.outcome = .outputLimitExceeded → valid.maxOutputBytes.isSome = true)
+                  | .error e =>
+                    Model.isHostErrorKind e.kind = true ∧ !e.message.isEmpty := by
+                cases hCl : Internal.classifyExecResult valid.maxOutputBytes er with
+                | error e => rw [hCl] at hPostRaw; exact hPostRaw
+                | ok r =>
+                  rw [hCl] at hPostRaw
+                  exact ⟨hPostRaw.1, fun ht => False.elim (hPostRaw.2.1 ht), hPostRaw.2.2⟩
+              by_cases hExNz : (er.exitCode != 0) = true
+              · simp only [hExNz, ↓reduceIte]
+                exact checkAvailOr_step proj proc hProc valid w w1 hWfP hw2 hAct1 hId1 _ hPost
+              · simp only [hExNz, Bool.false_eq_true, ↓reduceIte]
+                rw [stateT_pure_run]
+                exact ⟨hHdl1, hPost⟩
 
 /-- Full public `Interface` refinement of `LeanSwe.ProcessSandbox`: exact pure equality on
-    `validateSpec` against `Model.validateSpecModel` and compositional `Core.ObeysStepFrom`
-    lifting `LeanSwe.Process.Model.allowedPkgStep` to `Internal.mkApiM`. -/
+    `validateSpec` against `Model.validateSpecModel` and compositional `Core.ObeysStepFrom2`
+    lifting `LeanSwe.Process.Model.allowedPkgStep` and `Model.allowedFsLstatStep` to `Internal.mkApiM`. -/
 theorem obeys_model :
     Core.ObeysPureEq LeanSwe.ProcessSandbox.validateSpec Model.validateSpecModel ∧
-    Core.ObeysStepFrom id Model.processStepWf Model.execProcessStep Model.allowedProcessStep
+    Core.ObeysStepFrom2 id Model.processStepWf
+      Model.execProcessStep Model.allowedProcessStep
+      Model.execFsLstatStep Model.allowedFsLstatStep
       Model.processStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep :=
   ⟨validateSpec_eq_model, obeysStepFrom_process⟩
 
@@ -992,68 +1269,281 @@ private def witnessProcessApi : ProcessApiM (StateM LeanSwe.Process.Model.Proces
     runCommandChecked := fun prog args => simRunPure (LeanSwe.Process.Model.mkCommandRequestModel prog args)
     activeProcessCount := fun s => (s.activeHandles.length, s) }
 
-/-- Non-vacuity witness showing the `ProcessApiM` step contract assumed by `obeys_model` is inhabited. -/
+private def mockFsErr : LeanSwe.Fs.FsError :=
+  { kind := .notFound, message := "mock fs unavailable" }
+
+private def witnessFsApi :
+    LeanSwe.Fs.FsApiM (StateM LeanSwe.Process.Model.ProcessModelState) :=
+  { join := fun a b => a ++ "/" ++ b
+    joinMany := fun _ => ""
+    normPath := id
+    parent := fun _ => none
+    name := fun _ => none
+    stem := fun _ => none
+    suffix := fun _ => ""
+    suffixes := fun _ => #[]
+    withName := fun _ _ => .error mockFsErr
+    withSuffix := fun _ _ => .error mockFsErr
+    isAbsolute := fun _ => false
+    relativeTo := fun _ _ => .error mockFsErr
+    mapRawError := fun _ => mockFsErr
+    readText := fun _ s => (.error mockFsErr, s)
+    writeText := fun _ _ s => (.error mockFsErr, s)
+    appendText := fun _ _ s => (.error mockFsErr, s)
+    readBytes := fun _ s => (.error mockFsErr, s)
+    writeBytes := fun _ _ s => (.error mockFsErr, s)
+    atomicWriteBytes := fun _ _ s => (.error mockFsErr, s)
+    atomicWriteText := fun _ _ s => (.error mockFsErr, s)
+    touch := fun _ _ s => (.error mockFsErr, s)
+    mkdir := fun _ _ _ s => (.error mockFsErr, s)
+    unlink := fun _ _ s => (.error mockFsErr, s)
+    rmdir := fun _ s => (.error mockFsErr, s)
+    rmtree := fun _ _ s => (.error mockFsErr, s)
+    rename := fun _ _ s => (.error mockFsErr, s)
+    copyFile := fun _ _ s => (.error mockFsErr, s)
+    copyTree := fun _ _ _ s => (.error mockFsErr, s)
+    pathExists := fun _ s => (.error mockFsErr, s)
+    isFile := fun _ s => (.error mockFsErr, s)
+    isDir := fun _ s => (.error mockFsErr, s)
+    isSymlink := fun _ s => (.error mockFsErr, s)
+    stat := fun _ s => (.error mockFsErr, s)
+    lstat := fun _ s => (.error mockFsErr, s)
+    chmod := fun _ _ s => (.error mockFsErr, s)
+    symlink := fun _ _ s => (.error mockFsErr, s)
+    readLink := fun _ s => (.error mockFsErr, s)
+    resolve := fun _ s => (.error mockFsErr, s)
+    cwd := fun s => (.error mockFsErr, s)
+    listDir := fun _ s => (.error mockFsErr, s)
+    walk := fun _ s => (.error mockFsErr, s)
+    glob := fun _ _ s => (.error mockFsErr, s)
+    rglob := fun _ _ s => (.error mockFsErr, s)
+    withFileLock := fun _ _ _ _ s => (.error mockFsErr, s)
+    tryWithFileLock := fun _ _ _ _ s => (.error mockFsErr, s) }
+
+/-- Non-vacuity witness showing both `ProcessApiM` and `FsApiM` contracts assumed by `obeys_model` are inhabited. -/
 theorem obeys_model_nonvacuous :
-    ∃ proc : ProcessApiM (StateM LeanSwe.Process.Model.ProcessModelState),
-      Core.ObeysStep id Model.processStepWf (Model.execProcessStep proc) Model.allowedProcessStep := by
-  refine ⟨witnessProcessApi, ?_⟩
-  intro s req hWf
-  have hWfP : LeanSwe.Process.Model.processStateWf s = true := hWf
-  cases req with
-  | spawn r =>
-    dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
-      Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
-    rw [stateT_map_run]
-    dsimp only [StateT.run, witnessProcessApi]
-    cases LeanSwe.Process.Model.validateSpawnRequestModel r with
-    | error _ => exact ⟨hWfP, hWfP, rfl, rfl⟩
-    | ok _ =>
-      refine ⟨hWfP, hWfP, rfl, ?_⟩
-      dsimp only [LeanSwe.Process.Model.isNonOutcomeError]
-      decide
-  | awaitOutput h stdin timeoutMs maxOutputBytes =>
-    dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
-      Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
-    rw [stateT_map_run]
-    dsimp only [StateT.run, witnessProcessApi]
-    cases hT : (timeoutMs == some 0) with
-    | true =>
-      rw [ite_eq_left rfl, ite_eq_left rfl]
-      exact ⟨hWfP, hWfP, rfl, rfl⟩
+    (∃ proc : ProcessApiM (StateM LeanSwe.Process.Model.ProcessModelState),
+      Core.ObeysStep id Model.processStepWf (Model.execProcessStep proc) Model.allowedProcessStep) ∧
+    (∃ fs : LeanSwe.Fs.FsApiM (StateM LeanSwe.Process.Model.ProcessModelState),
+      Core.ObeysStep id Model.processStepWf (Model.execFsLstatStep fs) Model.allowedFsLstatStep) := by
+  refine ⟨⟨witnessProcessApi, ?_⟩, ⟨witnessFsApi, ?_⟩⟩
+  · intro s req hWf
+    have hWfP : LeanSwe.Process.Model.processStateWf s = true := hWf
+    cases req with
+    | spawn r =>
+      dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+        Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
+      rw [stateT_map_run]
+      dsimp only [StateT.run, witnessProcessApi]
+      cases LeanSwe.Process.Model.validateSpawnRequestModel r with
+      | error _ => exact ⟨hWfP, hWfP, rfl, rfl⟩
+      | ok _ =>
+        refine ⟨hWfP, hWfP, rfl, ?_⟩
+        dsimp only [LeanSwe.Process.Model.isNonOutcomeError]
+        decide
+    | awaitOutput h stdin timeoutMs maxOutputBytes =>
+      dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+        Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
+      rw [stateT_map_run]
+      dsimp only [StateT.run, witnessProcessApi]
+      cases hT : (timeoutMs == some 0) with
+      | true =>
+        rw [ite_eq_left rfl, ite_eq_left rfl]
+        exact ⟨hWfP, hWfP, rfl, rfl⟩
+      | false =>
+        rw [ite_eq_right Bool.false_ne_true, ite_eq_right Bool.false_ne_true]
+        dsimp only [LeanSwe.Process.Model.allowedAwaitCore, LeanSwe.Process.Model.isNonOutcomeError]
+        exact ⟨hWfP, hWfP, hWfP, rfl, rfl, rfl, by decide⟩
+    | killProcessGroup _ => exact ⟨hWfP, hWfP, rfl, trivial⟩
+    | reap _ => exact ⟨hWfP, processStateWf_filter s _ hWfP, rfl, rfl, trivial⟩
+    | run r =>
+      dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+        Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
+      rw [stateT_map_run]
+      dsimp only [StateT.run, witnessProcessApi]
+      refine ⟨hWfP, ?_, simRunPure_allowedPkgRun false r s⟩
+      rw [simRunPure_snd]; exact hWfP
+    | runChecked r =>
+      dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+        Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
+      rw [stateT_map_run]
+      dsimp only [StateT.run, witnessProcessApi]
+      refine ⟨hWfP, ?_, simRunPure_allowedPkgRun true r s⟩
+      rw [simRunPure_snd]; exact hWfP
+    | runCommand prog args =>
+      dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+        Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
+      rw [stateT_map_run]
+      dsimp only [StateT.run, witnessProcessApi]
+      refine ⟨hWfP, ?_, simRunPure_allowedPkgRun false (LeanSwe.Process.Model.mkCommandRequestModel prog args) s⟩
+      rw [simRunPure_snd]; exact hWfP
+    | runCommandChecked prog args =>
+      dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+        Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
+      rw [stateT_map_run]
+      dsimp only [StateT.run, witnessProcessApi]
+      refine ⟨hWfP, ?_, simRunPure_allowedPkgRun true (LeanSwe.Process.Model.mkCommandRequestModel prog args) s⟩
+      rw [simRunPure_snd]; exact hWfP
+    | activeProcessCount => exact ⟨hWfP, hWfP, rfl, rfl⟩
+  · intro s _ hWf
+    refine ⟨rfl, hWf, ?_⟩
+    dsimp only [Model.execFsLstatStep, witnessFsApi, mockFsErr, StateT.run]
+    decide
+
+/-- Exact structural layout of the `bwrap` argv emitted by `Internal.mkBwrapArgs`. -/
+theorem mkBwrapArgs_toList_eq (valid : ValidBoxSpec) :
+    (Internal.mkBwrapArgs valid).toList =
+      Internal.osPresetFlags ++
+      (Internal.sortMountsByDepth valid.mounts.toList).flatMap Internal.mountFlags ++
+      ["--remount-ro", "/", "--unshare-all"] ++
+      Internal.networkFlags valid.network ++
+      ["--die-with-parent", "--new-session", "--clearenv"] ++
+      Internal.envFlags valid.env.toList ++
+      ["--chdir", valid.cwd, "--", valid.program] ++
+      valid.args.toList :=
+  rfl
+
+/-- `Internal.networkFlags` emits `"--share-net"` iff `net = .open`. -/
+theorem networkFlags_share_net_iff (net : NetworkMode) :
+    "--share-net" ∈ Internal.networkFlags net ↔ net = .«open» := by
+  cases net with
+  | closed => simp [Internal.networkFlags]
+  | «open» => simp [Internal.networkFlags]
+
+/-- `Internal.mkBwrapArgs` unconditionally includes all core namespace, session, root-ro, and clean-env flags. -/
+theorem mkBwrapArgs_core_isolation_flags (valid : ValidBoxSpec) :
+    "--remount-ro" ∈ (Internal.mkBwrapArgs valid).toList ∧
+    "--unshare-all" ∈ (Internal.mkBwrapArgs valid).toList ∧
+    "--die-with-parent" ∈ (Internal.mkBwrapArgs valid).toList ∧
+    "--new-session" ∈ (Internal.mkBwrapArgs valid).toList ∧
+    "--clearenv" ∈ (Internal.mkBwrapArgs valid).toList ∧
+    "--chdir" ∈ (Internal.mkBwrapArgs valid).toList ∧
+    "--" ∈ (Internal.mkBwrapArgs valid).toList := by
+  rw [mkBwrapArgs_toList_eq]
+  simp
+
+/-- `Internal.envFlags` expands each `(k, v)` entry into `["--setenv", k, v]` in order. -/
+theorem envFlags_eq_flatMap :
+    ∀ kvs : List (String × String),
+      Internal.envFlags kvs = kvs.flatMap (fun kv => ["--setenv", kv.1, kv.2])
+  | [] => rfl
+  | (k, v) :: rest => by
+    simp [Internal.envFlags, envFlags_eq_flatMap rest]
+
+private theorem list_contains_map_fst_eq_any (xs : List (String × String)) (k : String) :
+    (xs.map Prod.fst).contains k = xs.any (fun p => p.1 == k) := by
+  induction xs with
+  | nil => rfl
+  | cons p rest ih =>
+    have hSwap : (k == p.1) = (p.1 == k) := by
+      by_cases h : k = p.1
+      · subst h; simp
+      · have h' : p.1 ≠ k := fun heq => h heq.symm
+        simp [beq_eq_false_iff_ne.mpr h, beq_eq_false_iff_ne.mpr h']
+    simp only [List.map_cons, List.contains_cons, List.any_cons, ih, hSwap]
+
+/-- `Internal.dedupEnvPairs` yields pairwise distinct environment variable keys. -/
+theorem dedupEnvPairs_distinct_keys :
+    ∀ kvs : List (String × String),
+      Internal.allDistinct ((Internal.dedupEnvPairs kvs).map Prod.fst) = true
+  | [] => rfl
+  | kv :: rest => by
+    have ih := dedupEnvPairs_distinct_keys rest
+    unfold Internal.dedupEnvPairs
+    dsimp only
+    cases hAny : (Internal.dedupEnvPairs rest).any (fun p => p.1 == kv.1) with
+    | true => simp [ih]
     | false =>
-      rw [ite_eq_right Bool.false_ne_true, ite_eq_right Bool.false_ne_true]
-      dsimp only [LeanSwe.Process.Model.allowedAwaitCore, LeanSwe.Process.Model.isNonOutcomeError]
-      exact ⟨hWfP, hWfP, hWfP, rfl, rfl, rfl, by decide⟩
-  | killProcessGroup _ => exact ⟨hWfP, hWfP, rfl, trivial⟩
-  | reap _ => exact ⟨hWfP, processStateWf_filter s _ hWfP, rfl, rfl, trivial⟩
-  | run r =>
-    dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
-      Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
-    rw [stateT_map_run]
-    dsimp only [StateT.run, witnessProcessApi]
-    refine ⟨hWfP, ?_, simRunPure_allowedPkgRun false r s⟩
-    rw [simRunPure_snd]; exact hWfP
-  | runChecked r =>
-    dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
-      Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
-    rw [stateT_map_run]
-    dsimp only [StateT.run, witnessProcessApi]
-    refine ⟨hWfP, ?_, simRunPure_allowedPkgRun true r s⟩
-    rw [simRunPure_snd]; exact hWfP
-  | runCommand prog args =>
-    dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
-      Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
-    rw [stateT_map_run]
-    dsimp only [StateT.run, witnessProcessApi]
-    refine ⟨hWfP, ?_, simRunPure_allowedPkgRun false (LeanSwe.Process.Model.mkCommandRequestModel prog args) s⟩
-    rw [simRunPure_snd]; exact hWfP
-  | runCommandChecked prog args =>
-    dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
-      Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
-    rw [stateT_map_run]
-    dsimp only [StateT.run, witnessProcessApi]
-    refine ⟨hWfP, ?_, simRunPure_allowedPkgRun true (LeanSwe.Process.Model.mkCommandRequestModel prog args) s⟩
-    rw [simRunPure_snd]; exact hWfP
-  | activeProcessCount => exact ⟨hWfP, hWfP, rfl, rfl⟩
+      simp only [Bool.false_eq_true, ↓reduceIte, List.map_cons, Internal.allDistinct,
+        Bool.and_eq_true, Bool.not_eq_true']
+      exact ⟨by rw [list_contains_map_fst_eq_any, hAny], ih⟩
+
+/-- Every validated `ValidBoxSpec` carries deduplicated environment keys including `"PATH"`. -/
+theorem validateSpec_ok_env_distinct_and_path (spec : BoxSpec) (valid : ValidBoxSpec)
+    (hVal : LeanSwe.ProcessSandbox.validateSpec spec = .ok valid) :
+    Internal.allDistinct (valid.env.toList.map Prod.fst) = true ∧
+    valid.env.toList.any (fun kv => kv.1 == "PATH") = true := by
+  have hInt : Internal.validateSpec spec = .ok valid := hVal
+  have hClean :
+      let deduped := Internal.dedupEnvPairs spec.env.toList
+      let cleanEnv :=
+        if deduped.any (fun kv => kv.1 == "PATH") then deduped
+        else ("PATH", Internal.defaultSandboxPath) :: deduped
+      Internal.allDistinct (cleanEnv.map Prod.fst) = true ∧
+      cleanEnv.any (fun kv => kv.1 == "PATH") = true := by
+    dsimp only
+    cases hPath : (Internal.dedupEnvPairs spec.env.toList).any (fun kv => kv.1 == "PATH") with
+    | true => exact ⟨by simpa [hPath] using dedupEnvPairs_distinct_keys spec.env.toList, by simp [hPath]⟩
+    | false =>
+      simp only [hPath, Bool.false_eq_true, ↓reduceIte, List.map_cons, Internal.allDistinct,
+        List.any_cons, Bool.and_eq_true, Bool.not_eq_true', beq_self_eq_true, Bool.true_or, and_true]
+      exact ⟨by rw [list_contains_map_fst_eq_any, hPath], dedupEnvPairs_distinct_keys spec.env.toList⟩
+  unfold Internal.validateSpec at hInt
+  simp only [Bind.bind, Except.bind] at hInt
+  repeat (split at hInt; · contradiction)
+  cases hCwd : spec.cwd with
+  | none =>
+    simp only [hCwd] at hInt
+    cases hm : Internal.validateMountsList spec.mounts.toList with
+    | error _ => rw [hm] at hInt; contradiction
+    | ok _ =>
+      rw [hm] at hInt; dsimp only at hInt
+      split at hInt; · contradiction
+      split at hInt; · contradiction
+      injection hInt with hEq; subst hEq
+      simpa using hClean
+  | some d =>
+    simp only [hCwd] at hInt
+    cases hNorm : Internal.normalizeCleanAbsPath d with
+    | none => simp [hNorm] at hInt
+    | some _ =>
+      simp only [hNorm] at hInt
+      cases hm : Internal.validateMountsList spec.mounts.toList with
+      | error _ => rw [hm] at hInt; contradiction
+      | ok _ =>
+        rw [hm] at hInt; dsimp only at hInt
+        split at hInt; · contradiction
+        split at hInt; · contradiction
+        injection hInt with hEq; subst hEq
+        simpa using hClean
+
+/-- `Internal.sortMountsByDepth` preserves the exact multiset of mounts (`List.Perm`). -/
+theorem sortMountsByDepth_perm (ms : List SandboxMount) :
+    (Internal.sortMountsByDepth ms).Perm ms :=
+  List.mergeSort_perm ms _
+
+/-- `Internal.sortMountsByDepth` orders mounts by ascending canonical `boxPath` segment depth. -/
+theorem sortMountsByDepth_pairwise (ms : List SandboxMount) :
+    (Internal.sortMountsByDepth ms).Pairwise
+      (fun a b => Internal.mountBoxDepth a ≤ Internal.mountBoxDepth b) := by
+  have hPw := List.pairwise_mergeSort (le := fun a b => decide (Internal.mountBoxDepth a ≤ Internal.mountBoxDepth b))
+    (fun _ _ _ hab hbc => decide_eq_true (Nat.le_trans (of_decide_eq_true hab) (of_decide_eq_true hbc)))
+    (fun a b => by
+      cases h : decide (Internal.mountBoxDepth a ≤ Internal.mountBoxDepth b) with
+      | true => rfl
+      | false =>
+        have hNot := of_decide_eq_false h
+        exact decide_eq_true (by omega))
+    ms
+  exact hPw.imp (fun h => of_decide_eq_true h)
+
+/-- A strictly nested child mount can never appear before its parent mount in `Internal.sortMountsByDepth`. -/
+theorem sortMountsByDepth_child_not_before_parent (ms pre mid post : List SandboxMount)
+    (parent child : SandboxMount) (pSegs cSegs : List String)
+    (hp : Internal.parseCleanAbsSegs (mountBoxPath parent) = some pSegs)
+    (hc : Internal.parseCleanAbsSegs (mountBoxPath child) = some cSegs)
+    (hStrict : pSegs.length < cSegs.length)
+    (hSplit : Internal.sortMountsByDepth ms = pre ++ [child] ++ mid ++ [parent] ++ post) :
+    False := by
+  have hPw := sortMountsByDepth_pairwise ms
+  rw [hSplit] at hPw
+  have hLe : Internal.mountBoxDepth child ≤ Internal.mountBoxDepth parent := by
+    have h1 := (List.pairwise_append.mp (by simpa [List.append_assoc] using hPw)).2.1
+    have h2 := (List.pairwise_cons.mp h1).1 parent (by simp)
+    exact h2
+  unfold Internal.mountBoxDepth at hLe
+  rw [hp, hc] at hLe
+  dsimp only at hLe
+  omega
 
 end LeanSwe.ProcessSandbox.Proofs

@@ -2136,10 +2136,11 @@ private def checkProcessSandboxHostClosure (env : Environment) : IO (Array Strin
     let used := dv.value.getUsedConstants
     let reqUsed : Array Name := #[
       `LeanSwe.ProcessSandbox.Internal.mkApiM,
-      `LeanSwe.Process.defaultApi
+      `LeanSwe.Process.defaultApi,
+      `LeanSwe.Fs.defaultApi
     ]
     if !reqUsed.all used.contains then
-      errs := errs.push "PSANDBOX_INTERFACE_WIRING_MISMATCH: LeanSwe.ProcessSandbox.defaultApi must wire Internal.mkApiM directly to LeanSwe.Process.defaultApi"
+      errs := errs.push "PSANDBOX_INTERFACE_WIRING_MISMATCH: LeanSwe.ProcessSandbox.defaultApi must wire Internal.mkApiM directly to LeanSwe.Process.defaultApi and LeanSwe.Fs.defaultApi"
   | _ =>
     errs := errs.push "PSANDBOX_INTERFACE_WIRING_MISMATCH: missing LeanSwe.ProcessSandbox.defaultApi"
   for wrapper in #[`LeanSwe.ProcessSandbox.validateSpec, `LeanSwe.ProcessSandbox.run,

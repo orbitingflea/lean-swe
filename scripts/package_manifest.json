@@ -262,6 +262,7 @@
       "kind": "model",
       "purity": "nondet_io",
       "deps": [
+        "LeanSwe.Fs",
         "LeanSwe.Process"
       ],
       "fuzz_suite": "processsandbox",

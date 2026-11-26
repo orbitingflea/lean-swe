@@ -162,10 +162,8 @@ def validBoxSpecToBoxSpec (v : ValidBoxSpec) : BoxSpec :=
 
 /-- Termination classification for a guest launched inside a sandbox. -/
 inductive SandboxOutcome where
-  /-- Guest exited normally with status `code`. -/
+  /-- Guest exited with status `code` (signal-terminated guests report `128 + sig`). -/
   | exited (code : Int)
-  /-- Guest was terminated by signal `sig`. -/
-  | signaled (sig : Int)
   /-- Guest exceeded `timeoutMs` and all guest processes were terminated and reaped. -/
   | timedOut
   /-- Combined `stdout` and `stderr` exceeded `maxOutputBytes` and all guest processes were terminated and reaped. -/

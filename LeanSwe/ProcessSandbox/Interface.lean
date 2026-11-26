@@ -1,12 +1,13 @@
+import LeanSwe.Fs.Interface
 import LeanSwe.Process.Interface
 import LeanSwe.ProcessSandbox.Types
 import LeanSwe.ProcessSandbox.Impl
 
 namespace LeanSwe.ProcessSandbox
 
-/-- Default `ProcessSandboxApi` backed by `LeanSwe.Process.defaultApi`. -/
+/-- Default `ProcessSandboxApi` backed by `LeanSwe.Process.defaultApi` and `LeanSwe.Fs.defaultApi`. -/
 def defaultApi : ProcessSandboxApi :=
-  Internal.mkApiM LeanSwe.Process.defaultApi
+  Internal.mkApiM LeanSwe.Process.defaultApi LeanSwe.Fs.defaultApi
 
 /-- Validate and normalize an untrusted `BoxSpec`, failing with `.invalidInput` on malformed inputs. -/
 @[inline] def validateSpec (spec : BoxSpec) : Except SandboxError ValidBoxSpec :=
