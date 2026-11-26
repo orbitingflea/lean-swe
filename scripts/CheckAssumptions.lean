@@ -4007,12 +4007,18 @@ unsafe def main (args : List String) : IO UInt32 := do
   let transImpsOf := buildTransitiveImportFn env
 
   let mut visited : Std.HashSet Name := {}
+  let mut knownPkgSet : Std.HashSet Name := {}
   let mut knownPkgs : Array Name := #[]
   for modName in env.header.moduleNames do
     if isProjectModule modName then
       visited := visited.insert modName
-      if let .str p "SpecTests" := modName then
-        knownPkgs := knownPkgs.push p
+      match modName with
+      | .str p "SpecTests"
+      | .str p "Interface" =>
+        if p.getRoot == `LeanSwe && p != `LeanSwe && !knownPkgSet.contains p then
+          knownPkgSet := knownPkgSet.insert p
+          knownPkgs := knownPkgs.push p
+      | _ => pure ()
 
   if let some targetPkg := cfg.printSigPkg? then
     let ctx : Core.Context := { fileName := "<CheckAssumptions>", fileMap := default, maxHeartbeats := 0, maxRecDepth := 8192 }
@@ -4536,8 +4542,9 @@ unsafe def main (args : List String) : IO UInt32 := do
         |>.insert `IO.userError
 
     let mut checkedSpecPkgs : Std.HashSet Name := {}
-    for specMod in specModules do
-      let pkgNs := pkgNamespaceOfSpecWith knownPkgs specMod
+    for pkgNs in knownPkgs do
+      let specMod := Name.str pkgNs "SpecTests"
+      let pkgLabel := if visited.contains specMod then specMod.toString else pkgNs.toString
       checkedSpecPkgs := checkedSpecPkgs.insert pkgNs
       let isExtPkg := isExternalBoundaryPkg env knownPkgs pkgNs
       let rtMod := Name.str pkgNs "RuntimeTests"
@@ -4545,7 +4552,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       let mut runAllName := Name.str rtMod "runAll"
       if hasRt then
         if !visited.contains rtMod then
-          errs := errs.push s!"MISSING_RUNTIMETESTS_MODULE: {rtMod} for {specMod}"
+          errs := errs.push s!"MISSING_RUNTIMETESTS_MODULE: {rtMod} for {pkgLabel}"
           continue
         let candidateRunAll := Name.str rtMod "runAll"
         let candidateRunAllOutcome := Name.str rtMod "runAllOutcome"
@@ -4576,7 +4583,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       let regAssumpConst := Name.str rtMod "registeredAssumptions"
       if !isExtPkg then
         if env.contains extAssumpConst then
-          errs := errs.push s!"PURE_MODULE_ASSUMPTION_FORBIDDEN: {extAssumpConst} in pure module {specMod}"
+          errs := errs.push s!"PURE_MODULE_ASSUMPTION_FORBIDDEN: {extAssumpConst} in pure module {pkgLabel}"
         if hasRt && env.contains regAssumpConst then
           errs := errs.push s!"PURE_MODULE_ASSUMPTION_FORBIDDEN: {regAssumpConst} in pure module {rtMod}"
       else

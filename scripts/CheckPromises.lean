@@ -5,11 +5,14 @@ Promise coverage audit for `lean-swe` compiled `.olean` artifacts.
 
 Checks:
 1. Every `LeanSwe/**/SpecTests.lean` and `LeanSwe/**/SpecMutants.lean` file on disk is
-   transitively imported by `LeanSwe`.
+   transitively imported by `LeanSwe`. (`SpecTests`/`SpecMutants` are optional on
+   `kind == "model"` packages that have verified `obeys_model`, and strictly enforced
+   whenever present.)
 2. Zero custom `axiom` declarations exist in `Core` or `LeanSwe`.
-3. Every `SpecTests` module has a companion `SpecMutants` module containing at least one
-   `Core.AllPass` mutant theorem/example, and no `SpecTests` module contains any theorem,
-   `example`, or `Core.AllPass` reference.
+3. Every present `SpecTests` module has a companion `SpecMutants` module containing at least one
+   `Core.AllPass` mutant theorem/example (and no orphan `SpecMutants` module exists without its
+   companion `SpecTests`), and no `SpecTests` module contains any theorem, `example`, or
+   `Core.AllPass` reference.
 4. Every public `test_*` (and non-legacy `empirical_*`) declaration in a `SpecTests` module has
    a public, non-projection theorem outside `SpecTests`, `SpecMutants`, and `RuntimeTests` whose
    conclusion is `Core.AllPass` applied to that promise, plus one with `Core.CanReach` when the
@@ -223,10 +226,15 @@ private def nameLastStr (n : Name) : String :=
   | .str _ s => s
   | _ => ""
 
+private def isOptionalAuditModule (m : Name) : Bool :=
+  m.components.contains `SpecTests ||
+    (m.components.contains `Proofs && nameLastStr m != "Proofs")
+
 private def discoverPackageModules (env : Environment) (extraMods : Array Name) (pkgPrefix : Name) (baseMods : Array Name) : Array Name := Id.run do
-  let mut mods := baseMods
+  let presentMods := env.header.moduleNames ++ extraMods
+  let mut mods := baseMods.filter fun m => !isOptionalAuditModule m || presentMods.contains m
   let prefStr := pkgPrefix.toString
-  for m in env.header.moduleNames ++ extraMods do
+  for m in presentMods do
     let s := m.toString
     if s == prefStr || s.startsWith (prefStr ++ ".") then
       if !m.components.contains `RuntimeTests && !m.components.contains `SpecMutants && !mods.contains m then
@@ -544,10 +552,13 @@ private def closureForbiddenMetaSyntaxKinds : Array Name :=
     `Lean.Elab.Command.reprove, `Lean.Elab.Command.aux_def,
     `Lean.guardMsgsCmd, `Lean.GuardMsgs.guardMsgsCmd, `Lean.guardPanicCmd]
 
+private def moduleToFilePath (repoDir : System.FilePath) (modName : Name) : System.FilePath :=
+  let parts := modName.components.map (·.toString)
+  (parts.foldl (fun p seg => p / seg) repoDir).withExtension "lean"
+
 private def checkClosureModuleAttrs (repoDir : System.FilePath) (env : Environment) (modName externMod : Name)
     (allowStdSyncMutex : Bool := false) : IO (Option String) := do
-  let parts := modName.components.map (·.toString)
-  let path : System.FilePath := (parts.foldl (fun p seg => p / seg) repoDir).withExtension "lean"
+  let path := moduleToFilePath repoDir modName
   unless ← path.pathExists do
     return some s!"TRUSTED_CLOSURE_MISSING_SOURCE: {path} for {modName}"
   let input ← IO.FS.readFile path
@@ -641,7 +652,11 @@ private unsafe def checkPackageTrustedClosure (repoDir : System.FilePath) (pkgLa
     (seedLinuxCommon : Bool := false) (allowIO : Bool := false)
     (allowInternalForIn : Bool := false) (allowStdSyncMutex : Bool := false) : IO (Array String) := do
   enableInitializersExecution
-  let trEnv ← importModules (auditModules.map fun m => { module := m }) {} (loadExts := true)
+  let mut existingAuditMods : Array Name := #[]
+  for m in auditModules do
+    if !isOptionalAuditModule m || (← (moduleToFilePath repoDir m).pathExists) then
+      existingAuditMods := existingAuditMods.push m
+  let trEnv ← importModules (existingAuditMods.map fun m => { module := m }) {} (loadExts := true)
   let csimpState := Lean.Compiler.CSimp.ext.getState trEnv
   let mut errs : Array String := #[]
   for h : i in [0 : trEnv.header.moduleNames.size] do
@@ -970,7 +985,7 @@ private unsafe def checkSandboxTrustedClosure (env : Environment) : IO (Array St
         s.startsWith "LeanSwe.LinuxSyscall.Common." then
       discoveredMods := discoveredMods.push m
   for reqMod in sandboxAuditModules do
-    if !discoveredMods.contains reqMod then
+    if !isOptionalAuditModule reqMod && !discoveredMods.contains reqMod then
       discoveredMods := discoveredMods.push reqMod
   enableInitializersExecution
   let sbxEnv ← importModules (discoveredMods.map fun m => { module := m }) {} (loadExts := true)
@@ -1516,10 +1531,6 @@ private def isCompilerAuxThm (env : Environment) (n : Name) : Bool :=
       s == "noConfusionType" || s == "eq_def" ||
       (s.startsWith "eq_" && (s.drop 3).all Char.isDigit) ||
       (s.startsWith "_proof_" && (s.drop 7).all Char.isDigit))
-
-private def moduleToFilePath (repoDir : System.FilePath) (modName : Name) : System.FilePath :=
-  let parts := modName.components.map (·.toString)
-  (parts.foldl (fun p seg => p / seg) repoDir).withExtension "lean"
 
 private def moduleToIleanPath (libDir : System.FilePath) (modName : Name) : System.FilePath :=
   let parts := modName.components.map (·.toString)
@@ -2523,7 +2534,8 @@ private def checkConnectProxyTrustedClosure
   let mut errs : Array String := checkConnectProxyWiring env
   for reqMod in connectProxyRequiredModules do
     if !env.header.moduleNames.contains reqMod then
-      errs := errs.push s!"CPROXY_MISSING_REQUIRED_MODULE: {reqMod}"
+      if !isOptionalAuditModule reqMod || (← (moduleToFilePath repoDir reqMod).pathExists) then
+        errs := errs.push s!"CPROXY_MISSING_REQUIRED_MODULE: {reqMod}"
   let csimpState := Lean.Compiler.CSimp.ext.getState env
   let mut cproxyMods : Array Name := #[]
   let mut queue : Array (Name × Bool × Bool × Name) := #[]
@@ -5324,6 +5336,312 @@ private def evaluateManifestRatchetWith
 private def evaluateManifestRatchet (rep : ManifestAuditReport) : Array String :=
   evaluateManifestRatchetWith modelPresenceAllowlist middleHookAllowlist obeysSynthAllowlist rep
 
+private def shouldForbidModuleInit (m : Name) : Bool :=
+  m == `LeanSwe || isMutantModule m || nameLastStr m == "RuntimeTests" ||
+    nameLastStr m == "SpecTests" || (nameLastStr m).endsWith "Proofs" ||
+    m.components.contains `Proofs || m.getRoot == `Core ||
+    m.components.take 2 == [`LeanSwe, `Compress] ||
+    m.components.take 2 == [`LeanSwe, `EnvVars] ||
+    m.components.take 2 == [`LeanSwe, `CryptoHash] ||
+    m.components.take 2 == [`LeanSwe, `LinuxSyscall] ||
+    m.components.take 2 == [`LeanSwe, `PostFork] ||
+    m.components.take 3 == [`LeanSwe, `ProcessSandbox, `Init] ||
+    m.components.take 2 == [`LeanSwe, `Sqlite] ||
+    m.components.take 2 == [`LeanSwe, `Git] ||
+    m.components.take 2 == [`LeanSwe, `ConnectProxy]
+
+private structure PromisePhaseReport where
+  errors : Array String := #[]
+  specModCount : Nat := 0
+  specMods : Array Name := #[]
+  mutantModsWithAllPass : Std.HashSet Name := {}
+  allMutMods : Array Name := #[]
+  promises : Array (Name × Name) := #[]
+  allPass : Std.HashMap Name (Array Name) := {}
+  canReach : Std.HashMap Name (Array Name) := {}
+  assumesCount : Nat := 0
+
+private def specTestsModOfMutant (m : Name) : Name :=
+  let comps := m.components
+  match comps.findIdx? (· == `SpecMutants) with
+  | some idx =>
+    if idx > 0 then
+      let pkg := (comps.take idx).foldl (fun acc seg => Name.str acc seg.getString!) .anonymous
+      Name.str pkg "SpecTests"
+    else
+      Name.str m.getPrefix "SpecTests"
+  | none => Name.str m.getPrefix "SpecTests"
+
+private def checkSpecMutantsParity
+    (specModStrs : Array String) (mutOkAll : Std.HashSet String) (allMutModStrs : Array String) :
+    Array String := Id.run do
+  let mut errs : Array String := #[]
+  let mut specSet : Std.HashSet String := {}
+  for ms in specModStrs do
+    specSet := specSet.insert ms
+    let mutMod := (ms.toName.getPrefix.str "SpecMutants").toString
+    if !mutOkAll.contains mutMod then
+      errs := errs.push s!"MISSING_SPECMUTANTS: {ms} lacks companion {mutMod} with at least 1 negated Core.AllPass mutant"
+  for mm in allMutModStrs do
+    let compSpec := (specTestsModOfMutant mm.toName).toString
+    if !specSet.contains compSpec then
+      errs := errs.push s!"ORPHAN_SPECMUTANTS: {mm} exists without companion {compSpec}"
+  return errs
+
+private unsafe def auditPromisesEnv
+    (libDir repoDir : System.FilePath) (auditE : Environment) (onlyPf? : Option Bool := none) :
+    IO PromisePhaseReport := do
+  let skipPf (m : Name) : Bool :=
+    match onlyPf? with
+    | some true => !isPostForkVerifiedMod m
+    | some false => isPostForkVerifiedMod m
+    | none => false
+  let mut pErrs : Array String := #[]
+  let mut companionPromisesByMutMod : Std.HashMap Name (Std.HashSet Name) := {}
+  for h : i in [0 : auditE.header.moduleNames.size] do
+    let m := auditE.header.moduleNames[i]
+    if skipPf m then continue
+    if isProjectModule m && m.getString! == "SpecTests" then
+      let some data := auditE.header.moduleData[i]? | continue
+      let mut s : Std.HashSet Name := {}
+      for c in data.constants do
+        if isPrivateOrInternal c.name then continue
+        let short := c.name.getString!
+        let trackEmpirical := short.startsWith "empirical_" && !legacyEmpiricalModules.contains m
+        if short.startsWith "test_" || trackEmpirical then
+          s := s.insert c.name
+      companionPromisesByMutMod := companionPromisesByMutMod.insert (m.getPrefix.str "SpecMutants") s
+  let mut specModCount := 0
+  let mut specMods : Array Name := #[]
+  let mut mutantModsWithAllPass : Std.HashSet Name := {}
+  let mut allMutMods : Array Name := #[]
+  let mut sigAuditTasks : Array (Name × Task (Except IO.Error (Except String Nat))) := #[]
+  let mut promises : Array (Name × Name) := #[]
+  let mut promiseSet : Std.HashSet Name := {}
+  for h : i in [0 : auditE.header.moduleNames.size] do
+    let m := auditE.header.moduleNames[i]
+    if !isProjectModule m || skipPf m then continue
+    let some data := auditE.header.moduleData[i]? | continue
+    for imp in data.imports do
+      if !isAllowedProjectDirectImport m imp.module then
+        pErrs := pErrs.push s!"FORBIDDEN_IMPORT: {m} imports {imp.module}"
+    for c in data.constants do
+      if let .axiomInfo _ := c then
+        if !allowedAxioms.contains c.name then
+          pErrs := pErrs.push s!"CUSTOM_AXIOM_FORBIDDEN: {c.name} in {m}"
+      if (Lean.getExportNameFor? auditE c.name).isSome then
+        pErrs := pErrs.push s!"FORBIDDEN_EXPORT: {c.name} in {m}"
+      if let some initFn := Lean.regularInitAttr.getParam? auditE c.name then
+        if isMutantModule m then
+          pErrs := pErrs.push s!"FORBIDDEN_INIT_IN_MUTANT: {c.name} in {m}"
+        else if shouldForbidModuleInit m && !isAllowedCoreInitFn auditE m c.name initFn &&
+            !isAllowedSqliteInitFn auditE m c.name initFn then
+          pErrs := pErrs.push s!"FORBIDDEN_INIT: {c.name} in {m}"
+      if (Lean.builtinInitAttr.getParam? auditE c.name).isSome then
+        if isMutantModule m then
+          pErrs := pErrs.push s!"FORBIDDEN_INIT_IN_MUTANT: {c.name} in {m}"
+        else
+          pErrs := pErrs.push s!"FORBIDDEN_BUILTIN_INIT: {c.name} in {m}"
+    for scEntry in Lean.Compiler.CSimp.ext.ext.getModuleEntries auditE i do
+      let entry := match scEntry with | .global e => e | .scoped _ e => e
+      let origMod := auditE.getModuleIdxFor? entry.fromDeclName |>.bind (auditE.header.moduleNames[·]?) |>.getD .anonymous
+      let thmMod := auditE.getModuleIdxFor? entry.thmName |>.bind (auditE.header.moduleNames[·]?) |>.getD .anonymous
+      let toMod := auditE.getModuleIdxFor? entry.toDeclName |>.bind (auditE.header.moduleNames[·]?) |>.getD .anonymous
+      if isProjectModule m || isProjectModule origMod || isProjectModule thmMod || isProjectModule toMod then
+        pErrs := pErrs.push s!"FORBIDDEN_CSIMP: {entry.fromDeclName} -> {entry.toDeclName} (thm={entry.thmName}, mod={m})"
+    if m.getString! == "SpecTests" then
+      specModCount := specModCount + 1
+      specMods := specMods.push m
+      let mut hasBadSpecConst := false
+      for c in data.constants do
+        let usedInType := c.type.getUsedConstants
+        let usedInVal := (c.value?.map (·.getUsedConstants) |>.getD #[])
+        let usesGateConst :=
+          usedInType.contains `Core.AllPass || usedInType.contains `Core.CanReach ||
+            usedInType.contains `Core.AllPassRun || usedInType.contains `Core.CanReachRun ||
+            usedInVal.contains `Core.AllPass || usedInVal.contains `Core.CanReach ||
+            usedInVal.contains `Core.AllPassRun || usedInVal.contains `Core.CanReachRun
+        if usesGateConst then
+          pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {c.name} in {m} references Core.AllPass or Core.CanReach"
+          hasBadSpecConst := true
+        else if c matches .thmInfo _ && !isCompilerAuxThm auditE c.name then
+          pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {c.name} in {m} is a theorem or example"
+          hasBadSpecConst := true
+        if isPrivateOrInternal c.name then continue
+        let short := c.name.getString!
+        let trackEmpirical := short.startsWith "empirical_" && !legacyEmpiricalModules.contains m
+        if short.startsWith "test_" || trackEmpirical then
+          promises := promises.push (m, c.name)
+          promiseSet := promiseSet.insert c.name
+      match ← readIleanRefNames (moduleToIleanPath libDir m) with
+      | .error err => pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {m} ({err})"
+      | .ok refs =>
+        for r in refs do
+          if r == "Core.AllPass" || r == "Core.CanReach" || r == "Core.AllPassRun" || r == "Core.CanReachRun" then
+            pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {m} .ilean references {r}"
+            hasBadSpecConst := true
+            break
+      let specPath := moduleToFilePath repoDir m
+      if !hasBadSpecConst then
+        match ← parseModuleCommands auditE specPath with
+        | .error err => pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {m} ({err})"
+        | .ok cmds =>
+          for stx in cmds do
+            if hasSyntaxKind ``Lean.Parser.Command.example stx ||
+                hasSyntaxKind ``Lean.Parser.Command.theorem stx then
+              pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {specPath} contains example or theorem"
+              break
+            if let some sig := findSyntaxKind? ``Lean.Parser.Term.typeSpec stx then
+              if hasIdentOrAtom isAllPassToken sig then
+                pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {specPath} references AllPass"
+                break
+            if let some metaErr := checkForbiddenMetaOrAttr specPath stx then
+              pErrs := pErrs.push metaErr
+              break
+    else if isMutantModule m then
+      allMutMods := allMutMods.push m
+      let companionPromises := companionPromisesByMutMod.getD m {}
+      let mut hasAllPassMutantThm := false
+      for c in data.constants do
+        if let .thmInfo v := c then
+          if ← checkValidNegatedMutantIO auditE companionPromises v.type then
+            hasAllPassMutantThm := true
+            break
+      if hasAllPassMutantThm then
+        mutantModsWithAllPass := mutantModsWithAllPass.insert m
+      match ← readIleanRefNames (moduleToIleanPath libDir m) with
+      | .error err => pErrs := pErrs.push s!"UNALLOWED_AXIOM_IN_MUTANT: {m} ({err})"
+      | .ok refs =>
+        for r in refs do
+          if forbiddenIleanMutantRefs.contains r then
+            pErrs := pErrs.push s!"UNALLOWED_AXIOM_IN_MUTANT: {m} .ilean references {r}"
+      let mutPath := moduleToFilePath repoDir m
+      match ← parseModuleCommands auditE mutPath with
+      | .error err => pErrs := pErrs.push s!"MISSING_SPECMUTANTS: {m} ({err})"
+      | .ok cmds =>
+        for stx in cmds do
+          if hasSyntaxKind ``Lean.Parser.Command.axiom stx then
+            pErrs := pErrs.push s!"CUSTOM_AXIOM_FORBIDDEN: axiom declaration in {mutPath}"
+          if hasSyntaxKind ``Lean.Parser.Command.variable stx ||
+              hasSyntaxKind ``Lean.Parser.Command.include stx then
+            pErrs := pErrs.push s!"FORBIDDEN_VARIABLE_IN_MUTANT: {mutPath} uses variable/include"
+          if hasIdentOrAtom isForbiddenMutantToken stx then
+            pErrs := pErrs.push s!"UNALLOWED_AXIOM_IN_MUTANT: {mutPath} uses forbidden sorry/admit/native_decide/unsafe"
+          if let some metaErr := checkForbiddenMetaOrAttr mutPath stx then
+            pErrs := pErrs.push metaErr
+      if !hasAllPassMutantThm then
+        let t ← IO.asTask (countElaboratedNegatedAllPass auditE companionPromises m mutPath)
+        sigAuditTasks := sigAuditTasks.push (m, t)
+  for (m, t) in sigAuditTasks do
+    match t.get with
+    | .error e => pErrs := pErrs.push s!"MISSING_SPECMUTANTS: {m} ({e})"
+    | .ok (.error err) => pErrs := pErrs.push s!"MISSING_SPECMUTANTS: {m} ({err})"
+    | .ok (.ok negCount) =>
+      if negCount > 0 then
+        mutantModsWithAllPass := mutantModsWithAllPass.insert m
+  let ctx : Core.Context := { fileName := "<CheckPromises>", fileMap := default, maxHeartbeats := 0 }
+  let state : Core.State := { env := auditE }
+  let ((allPass, canReach, axErrs), _) ← (Meta.MetaM.run' do
+    let mut allPass : Std.HashMap Name (Array Name) := {}
+    let mut canReach : Std.HashMap Name (Array Name) := {}
+    let mut axErrs : Array String := #[]
+    let mut axCache : AxCache := {}
+    for h : i in [0 : auditE.header.moduleNames.size] do
+      let m := auditE.header.moduleNames[i]
+      if !isProjectModule m || m.getString! == "SpecTests" || m.getString! == "RuntimeTests" ||
+          m.components.contains `SpecTests || m.components.contains `RuntimeTests ||
+          skipPf m then
+        continue
+      let some data := auditE.header.moduleData[i]? | continue
+      if isMutantModule m || isInitVerifiedMod m then
+        for c in data.constants do
+          if c matches .thmInfo _ || c matches .defnInfo _ || c matches .opaqueInfo _ then
+            let (badAx?, nextCache) ← (checkAxiomsOk c.name).run axCache
+            axCache := nextCache
+            if let some badAx := badAx? then
+              let tag := if isMutantModule m then "UNALLOWED_AXIOM_IN_MUTANT" else "UNALLOWED_AXIOM_IN_THEOREM"
+              axErrs := axErrs.push s!"{tag}: {c.name} in {m} uses [{badAx}]"
+        continue
+      for c in data.constants do
+        let .thmInfo v := c | continue
+        if isPrivateOrInternal c.name || auditE.isProjectionFn c.name then continue
+        let used := v.type.getUsedConstants
+        if !used.any (fun k => k == `Core.AllPass || k == `Core.CanReach) then continue
+        let (nextAllPass, nextCanReach, nextAxErrs, nextCache) ←
+          withUnconditionalAtoms v.type fun atoms? => do
+            let mut lAllPass := allPass
+            let mut lCanReach := canReach
+            let mut lAxErrs := axErrs
+            let mut lCache := axCache
+            let some atoms := atoms? | return (lAllPass, lCanReach, lAxErrs, lCache)
+            let mut hasPromiseAtom := false
+            for atom in atoms do
+              if atom.isAppOfArity `Core.AllPass 1 || atom.isAppOfArity `Core.CanReach 1 then
+                if let .const fn _ := atom.appArg!.consumeMData.getAppFn.consumeMData then
+                  if promiseSet.contains fn || fn.getString!.startsWith "test_" || fn.getString!.startsWith "empirical_" then
+                    hasPromiseAtom := true
+            if hasPromiseAtom then
+              let (badAx?, nc) ← (checkAxiomsOk c.name).run lCache
+              lCache := nc
+              if let some badAx := badAx? then
+                lAxErrs := lAxErrs.push s!"UNALLOWED_AXIOM_IN_THEOREM: {c.name} uses [{badAx}]"
+                return (lAllPass, lCanReach, lAxErrs, lCache)
+            for atom in atoms do
+              if atom.isAppOfArity `Core.AllPass 1 then
+                let prog := atom.appArg!.consumeMData
+                if let .const fn _ := prog.getAppFn.consumeMData then
+                  if promiseSet.contains fn then
+                    if !(← hasCanonicalPromiseTarget fn prog) then
+                      lAxErrs := lAxErrs.push s!"NON_CANONICAL_PROMISE_TARGET: {c.name} in {m} proves {fn} against non-canonical target"
+                    else if ← hasCanonicalNondetInst `Core.instNondetTestAllPassRun prog then
+                      match isCanonicalConnectProxyPromiseApp fn prog with
+                      | .ok () =>
+                        lAllPass := lAllPass.insert fn ((lAllPass.getD fn #[]).push c.name)
+                      | .error tgtErr =>
+                        lAxErrs := lAxErrs.push s!"{tgtErr} (in {c.name})"
+                    else
+                      lAxErrs := lAxErrs.push s!"NON_CANONICAL_NONDET_INST: {c.name} in {m} uses non-canonical NondetTest AllPassRun instance for {fn}"
+              else if atom.isAppOfArity `Core.CanReach 1 then
+                let prog := atom.appArg!.consumeMData
+                if let .const fn _ := prog.getAppFn.consumeMData then
+                  if promiseSet.contains fn then
+                    if !(← hasCanonicalPromiseTarget fn prog) then
+                      lAxErrs := lAxErrs.push s!"NON_CANONICAL_PROMISE_TARGET: {c.name} in {m} proves {fn} against non-canonical target"
+                    else if ← hasCanonicalNondetInst `Core.instNondetTestCanReachRun prog then
+                      match isCanonicalConnectProxyPromiseApp fn prog with
+                      | .ok () =>
+                        lCanReach := lCanReach.insert fn ((lCanReach.getD fn #[]).push c.name)
+                      | .error tgtErr =>
+                        lAxErrs := lAxErrs.push s!"{tgtErr} (in {c.name})"
+                    else
+                      lAxErrs := lAxErrs.push s!"NON_CANONICAL_NONDET_INST: {c.name} in {m} uses non-canonical NondetTest CanReachRun instance for {fn}"
+            return (lAllPass, lCanReach, lAxErrs, lCache)
+        allPass := nextAllPass
+        canReach := nextCanReach
+        axErrs := nextAxErrs
+        axCache := nextCache
+    return (allPass, canReach, axErrs)
+  ).toIO ctx state
+  let mut assumesCount := 0
+  for (m, pName) in promises do
+    let usesAssume := usesAssumeTransitive auditE pName
+    if usesAssume then assumesCount := assumesCount + 1
+    if (allPass.getD pName #[]).isEmpty then
+      pErrs := pErrs.push s!"MISSING_ALLPASS: {pName} (defined in {m})"
+    if usesAssume && (canReach.getD pName #[]).isEmpty then
+      pErrs := pErrs.push s!"MISSING_CANREACH: {pName} (defined in {m}, uses assume)"
+  return {
+    errors := pErrs ++ axErrs
+    specModCount
+    specMods
+    mutantModsWithAllPass
+    allMutMods
+    promises
+    allPass
+    canReach
+    assumesCount
+  }
+
 /-- Audit compiled `.olean` artifacts reachable from `LeanSwe` for promise coverage. -/
 unsafe def main (args : List String) : IO UInt32 := do
   if args.head? == some "--internal-dag-audit" then
@@ -5374,6 +5692,36 @@ unsafe def main (args : List String) : IO UInt32 := do
         return if errs.isEmpty then 0 else 1
     | _ =>
       IO.eprintln "USAGE_ERROR: --internal-manifest-audit <libDir> <manifestPath> <rootsCsv> <modelAllowCsv> <hookAllowCsv> [synthAllowCsv]"
+      return 1
+  if args.head? == some "--internal-promise-manifest-audit" then
+    match args.drop 1 with
+    | [libDirStr, repoDirStr, manifestPathStr, rootsCsv] =>
+      let libDir : System.FilePath := libDirStr
+      let repoDir : System.FilePath := repoDirStr
+      let manifestRaw ← IO.FS.readFile manifestPathStr
+      match parsePackageManifest manifestRaw with
+      | .error err =>
+        IO.eprintln err
+        return 1
+      | .ok manifest =>
+        let rootMods := (rootsCsv.splitOn ",").filter (!·.isEmpty) |>.toArray.map (·.toName)
+        initSearchPath (← findSysroot) [libDir]
+        enableInitializersExecution
+        let testEnv ← importModules (rootMods.map fun m => { module := m }) {} (loadExts := true)
+        let pRep ← auditPromisesEnv libDir repoDir testEnv none
+        let specModStrs := pRep.specMods.map (·.toString)
+        let mutOkAll : Std.HashSet String := pRep.mutantModsWithAllPass.fold (fun acc m => acc.insert m.toString) {}
+        let allMutStrs := pRep.allMutMods.map (·.toString)
+        let parityErrs := checkSpecMutantsParity specModStrs mutOkAll allMutStrs
+        let mRep ← auditManifestAndWiring testEnv manifest
+        let mErrs := evaluateManifestRatchetWith #[] #[] #[] mRep
+        let errs := pRep.errors ++ parityErrs ++ mErrs
+        IO.println s!"PROMISE_MANIFEST_AUDIT_TEST: spec_modules={pRep.specModCount} promises={pRep.promises.size} with_assume={pRep.assumesCount} model_pkgs={mRep.checkedModelPkgs} errors={errs.size}"
+        for e in errs do
+          IO.eprintln e
+        return if errs.isEmpty then 0 else 1
+    | _ =>
+      IO.eprintln "USAGE_ERROR: --internal-promise-manifest-audit <libDir> <repoDir> <manifestPath> <rootsCsv>"
       return 1
   if args.head? == some "--internal-print-obeys-sig" then
     match args.drop 1 with
@@ -5495,255 +5843,6 @@ unsafe def main (args : List String) : IO UInt32 := do
     IO.eprintln s!"MISSING_SOURCE_DIR: {leanSweDir} or {coreDir}"
     return 1
   initSearchPath (← findSysroot) [libDir]
-  let shouldForbidModuleInit (m : Name) : Bool :=
-    m == `LeanSwe || isMutantModule m || nameLastStr m == "RuntimeTests" ||
-      nameLastStr m == "SpecTests" || (nameLastStr m).endsWith "Proofs" ||
-      m.components.contains `Proofs || m.getRoot == `Core ||
-      m.components.take 2 == [`LeanSwe, `Compress] ||
-      m.components.take 2 == [`LeanSwe, `EnvVars] ||
-      m.components.take 2 == [`LeanSwe, `CryptoHash] ||
-      m.components.take 2 == [`LeanSwe, `LinuxSyscall] ||
-      m.components.take 2 == [`LeanSwe, `PostFork] ||
-      m.components.take 3 == [`LeanSwe, `ProcessSandbox, `Init] ||
-      m.components.take 2 == [`LeanSwe, `Sqlite] ||
-      m.components.take 2 == [`LeanSwe, `Git] ||
-      m.components.take 2 == [`LeanSwe, `ConnectProxy]
-
-  let auditEnvPhase (auditE : Environment) (onlyPf : Bool) :
-      IO (Array String × Nat × Array Name × Std.HashSet Name × Array (Name × Name) × Std.HashMap Name (Array Name) × Std.HashMap Name (Array Name) × Nat) := do
-    let mut pErrs : Array String := #[]
-    let mut companionPromisesByMutMod : Std.HashMap Name (Std.HashSet Name) := {}
-    for h : i in [0 : auditE.header.moduleNames.size] do
-      let m := auditE.header.moduleNames[i]
-      if (onlyPf && !isPostForkVerifiedMod m) || (!onlyPf && isPostForkVerifiedMod m) then continue
-      if isProjectModule m && m.getString! == "SpecTests" then
-        let some data := auditE.header.moduleData[i]? | continue
-        let mut s : Std.HashSet Name := {}
-        for c in data.constants do
-          if isPrivateOrInternal c.name then continue
-          let short := c.name.getString!
-          let trackEmpirical := short.startsWith "empirical_" && !legacyEmpiricalModules.contains m
-          if short.startsWith "test_" || trackEmpirical then
-            s := s.insert c.name
-        companionPromisesByMutMod := companionPromisesByMutMod.insert (m.getPrefix.str "SpecMutants") s
-    let mut specModCount := 0
-    let mut specMods : Array Name := #[]
-    let mut mutantModsWithAllPass : Std.HashSet Name := {}
-    let mut sigAuditTasks : Array (Name × Task (Except IO.Error (Except String Nat))) := #[]
-    let mut promises : Array (Name × Name) := #[]
-    let mut promiseSet : Std.HashSet Name := {}
-    for h : i in [0 : auditE.header.moduleNames.size] do
-      let m := auditE.header.moduleNames[i]
-      if !isProjectModule m || (onlyPf && !isPostForkVerifiedMod m) || (!onlyPf && isPostForkVerifiedMod m) then continue
-      let some data := auditE.header.moduleData[i]? | continue
-      for imp in data.imports do
-        if !isAllowedProjectDirectImport m imp.module then
-          pErrs := pErrs.push s!"FORBIDDEN_IMPORT: {m} imports {imp.module}"
-      for c in data.constants do
-        if let .axiomInfo _ := c then
-          if !allowedAxioms.contains c.name then
-            pErrs := pErrs.push s!"CUSTOM_AXIOM_FORBIDDEN: {c.name} in {m}"
-        if (Lean.getExportNameFor? auditE c.name).isSome then
-          pErrs := pErrs.push s!"FORBIDDEN_EXPORT: {c.name} in {m}"
-        if let some initFn := Lean.regularInitAttr.getParam? auditE c.name then
-          if isMutantModule m then
-            pErrs := pErrs.push s!"FORBIDDEN_INIT_IN_MUTANT: {c.name} in {m}"
-          else if shouldForbidModuleInit m && !isAllowedCoreInitFn auditE m c.name initFn &&
-              !isAllowedSqliteInitFn auditE m c.name initFn then
-            pErrs := pErrs.push s!"FORBIDDEN_INIT: {c.name} in {m}"
-        if (Lean.builtinInitAttr.getParam? auditE c.name).isSome then
-          if isMutantModule m then
-            pErrs := pErrs.push s!"FORBIDDEN_INIT_IN_MUTANT: {c.name} in {m}"
-          else
-            pErrs := pErrs.push s!"FORBIDDEN_BUILTIN_INIT: {c.name} in {m}"
-      for scEntry in Lean.Compiler.CSimp.ext.ext.getModuleEntries auditE i do
-        let entry := match scEntry with | .global e => e | .scoped _ e => e
-        let origMod := auditE.getModuleIdxFor? entry.fromDeclName |>.bind (auditE.header.moduleNames[·]?) |>.getD .anonymous
-        let thmMod := auditE.getModuleIdxFor? entry.thmName |>.bind (auditE.header.moduleNames[·]?) |>.getD .anonymous
-        let toMod := auditE.getModuleIdxFor? entry.toDeclName |>.bind (auditE.header.moduleNames[·]?) |>.getD .anonymous
-        if isProjectModule m || isProjectModule origMod || isProjectModule thmMod || isProjectModule toMod then
-          pErrs := pErrs.push s!"FORBIDDEN_CSIMP: {entry.fromDeclName} -> {entry.toDeclName} (thm={entry.thmName}, mod={m})"
-      if m.getString! == "SpecTests" then
-        specModCount := specModCount + 1
-        specMods := specMods.push m
-        let mut hasBadSpecConst := false
-        for c in data.constants do
-          let usedInType := c.type.getUsedConstants
-          let usedInVal := (c.value?.map (·.getUsedConstants) |>.getD #[])
-          let usesGateConst :=
-            usedInType.contains `Core.AllPass || usedInType.contains `Core.CanReach ||
-              usedInType.contains `Core.AllPassRun || usedInType.contains `Core.CanReachRun ||
-              usedInVal.contains `Core.AllPass || usedInVal.contains `Core.CanReach ||
-              usedInVal.contains `Core.AllPassRun || usedInVal.contains `Core.CanReachRun
-          if usesGateConst then
-            pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {c.name} in {m} references Core.AllPass or Core.CanReach"
-            hasBadSpecConst := true
-          else if c matches .thmInfo _ && !isCompilerAuxThm auditE c.name then
-            pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {c.name} in {m} is a theorem or example"
-            hasBadSpecConst := true
-          if isPrivateOrInternal c.name then continue
-          let short := c.name.getString!
-          let trackEmpirical := short.startsWith "empirical_" && !legacyEmpiricalModules.contains m
-          if short.startsWith "test_" || trackEmpirical then
-            promises := promises.push (m, c.name)
-            promiseSet := promiseSet.insert c.name
-        match ← readIleanRefNames (moduleToIleanPath libDir m) with
-        | .error err => pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {m} ({err})"
-        | .ok refs =>
-          for r in refs do
-            if r == "Core.AllPass" || r == "Core.CanReach" || r == "Core.AllPassRun" || r == "Core.CanReachRun" then
-              pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {m} .ilean references {r}"
-              hasBadSpecConst := true
-              break
-        let specPath := moduleToFilePath repoDir m
-        if !hasBadSpecConst then
-          match ← parseModuleCommands auditE specPath with
-          | .error err => pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {m} ({err})"
-          | .ok cmds =>
-            for stx in cmds do
-              if hasSyntaxKind ``Lean.Parser.Command.example stx ||
-                  hasSyntaxKind ``Lean.Parser.Command.theorem stx then
-                pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {specPath} contains example or theorem"
-                break
-              if let some sig := findSyntaxKind? ``Lean.Parser.Term.typeSpec stx then
-                if hasIdentOrAtom isAllPassToken sig then
-                  pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {specPath} references AllPass"
-                  break
-              if let some metaErr := checkForbiddenMetaOrAttr specPath stx then
-                pErrs := pErrs.push metaErr
-                break
-      else if isMutantModule m then
-        let companionPromises := companionPromisesByMutMod.getD m {}
-        let mut hasAllPassMutantThm := false
-        for c in data.constants do
-          if let .thmInfo v := c then
-            if ← checkValidNegatedMutantIO auditE companionPromises v.type then
-              hasAllPassMutantThm := true
-              break
-        if hasAllPassMutantThm then
-          mutantModsWithAllPass := mutantModsWithAllPass.insert m
-        match ← readIleanRefNames (moduleToIleanPath libDir m) with
-        | .error err => pErrs := pErrs.push s!"UNALLOWED_AXIOM_IN_MUTANT: {m} ({err})"
-        | .ok refs =>
-          for r in refs do
-            if forbiddenIleanMutantRefs.contains r then
-              pErrs := pErrs.push s!"UNALLOWED_AXIOM_IN_MUTANT: {m} .ilean references {r}"
-        let mutPath := moduleToFilePath repoDir m
-        match ← parseModuleCommands auditE mutPath with
-        | .error err => pErrs := pErrs.push s!"MISSING_SPECMUTANTS: {m} ({err})"
-        | .ok cmds =>
-          for stx in cmds do
-            if hasSyntaxKind ``Lean.Parser.Command.axiom stx then
-              pErrs := pErrs.push s!"CUSTOM_AXIOM_FORBIDDEN: axiom declaration in {mutPath}"
-            if hasSyntaxKind ``Lean.Parser.Command.variable stx ||
-                hasSyntaxKind ``Lean.Parser.Command.include stx then
-              pErrs := pErrs.push s!"FORBIDDEN_VARIABLE_IN_MUTANT: {mutPath} uses variable/include"
-            if hasIdentOrAtom isForbiddenMutantToken stx then
-              pErrs := pErrs.push s!"UNALLOWED_AXIOM_IN_MUTANT: {mutPath} uses forbidden sorry/admit/native_decide/unsafe"
-            if let some metaErr := checkForbiddenMetaOrAttr mutPath stx then
-              pErrs := pErrs.push metaErr
-        if !hasAllPassMutantThm then
-          let t ← IO.asTask (countElaboratedNegatedAllPass auditE companionPromises m mutPath)
-          sigAuditTasks := sigAuditTasks.push (m, t)
-    for (m, t) in sigAuditTasks do
-      match t.get with
-      | .error e => pErrs := pErrs.push s!"MISSING_SPECMUTANTS: {m} ({e})"
-      | .ok (.error err) => pErrs := pErrs.push s!"MISSING_SPECMUTANTS: {m} ({err})"
-      | .ok (.ok negCount) =>
-        if negCount > 0 then
-          mutantModsWithAllPass := mutantModsWithAllPass.insert m
-    let ctx : Core.Context := { fileName := "<CheckPromises>", fileMap := default, maxHeartbeats := 0 }
-    let state : Core.State := { env := auditE }
-    let ((allPass, canReach, axErrs), _) ← (Meta.MetaM.run' do
-      let mut allPass : Std.HashMap Name (Array Name) := {}
-      let mut canReach : Std.HashMap Name (Array Name) := {}
-      let mut axErrs : Array String := #[]
-      let mut axCache : AxCache := {}
-      for h : i in [0 : auditE.header.moduleNames.size] do
-        let m := auditE.header.moduleNames[i]
-        if !isProjectModule m || m.getString! == "SpecTests" || m.getString! == "RuntimeTests" ||
-            m.components.contains `SpecTests || m.components.contains `RuntimeTests ||
-            (onlyPf && !isPostForkVerifiedMod m) || (!onlyPf && isPostForkVerifiedMod m) then
-          continue
-        let some data := auditE.header.moduleData[i]? | continue
-        if isMutantModule m || isInitVerifiedMod m then
-          for c in data.constants do
-            if c matches .thmInfo _ || c matches .defnInfo _ || c matches .opaqueInfo _ then
-              let (badAx?, nextCache) ← (checkAxiomsOk c.name).run axCache
-              axCache := nextCache
-              if let some badAx := badAx? then
-                let tag := if isMutantModule m then "UNALLOWED_AXIOM_IN_MUTANT" else "UNALLOWED_AXIOM_IN_THEOREM"
-                axErrs := axErrs.push s!"{tag}: {c.name} in {m} uses [{badAx}]"
-          continue
-        for c in data.constants do
-          let .thmInfo v := c | continue
-          if isPrivateOrInternal c.name || auditE.isProjectionFn c.name then continue
-          let used := v.type.getUsedConstants
-          if !used.any (fun k => k == `Core.AllPass || k == `Core.CanReach) then continue
-          let (nextAllPass, nextCanReach, nextAxErrs, nextCache) ←
-            withUnconditionalAtoms v.type fun atoms? => do
-              let mut lAllPass := allPass
-              let mut lCanReach := canReach
-              let mut lAxErrs := axErrs
-              let mut lCache := axCache
-              let some atoms := atoms? | return (lAllPass, lCanReach, lAxErrs, lCache)
-              let mut hasPromiseAtom := false
-              for atom in atoms do
-                if atom.isAppOfArity `Core.AllPass 1 || atom.isAppOfArity `Core.CanReach 1 then
-                  if let .const fn _ := atom.appArg!.consumeMData.getAppFn.consumeMData then
-                    if promiseSet.contains fn || fn.getString!.startsWith "test_" || fn.getString!.startsWith "empirical_" then
-                      hasPromiseAtom := true
-              if hasPromiseAtom then
-                let (badAx?, nc) ← (checkAxiomsOk c.name).run lCache
-                lCache := nc
-                if let some badAx := badAx? then
-                  lAxErrs := lAxErrs.push s!"UNALLOWED_AXIOM_IN_THEOREM: {c.name} uses [{badAx}]"
-                  return (lAllPass, lCanReach, lAxErrs, lCache)
-              for atom in atoms do
-                if atom.isAppOfArity `Core.AllPass 1 then
-                  let prog := atom.appArg!.consumeMData
-                  if let .const fn _ := prog.getAppFn.consumeMData then
-                    if promiseSet.contains fn then
-                      if !(← hasCanonicalPromiseTarget fn prog) then
-                        lAxErrs := lAxErrs.push s!"NON_CANONICAL_PROMISE_TARGET: {c.name} in {m} proves {fn} against non-canonical target"
-                      else if ← hasCanonicalNondetInst `Core.instNondetTestAllPassRun prog then
-                        match isCanonicalConnectProxyPromiseApp fn prog with
-                        | .ok () =>
-                          lAllPass := lAllPass.insert fn ((lAllPass.getD fn #[]).push c.name)
-                        | .error tgtErr =>
-                          lAxErrs := lAxErrs.push s!"{tgtErr} (in {c.name})"
-                      else
-                        lAxErrs := lAxErrs.push s!"NON_CANONICAL_NONDET_INST: {c.name} in {m} uses non-canonical NondetTest AllPassRun instance for {fn}"
-                else if atom.isAppOfArity `Core.CanReach 1 then
-                  let prog := atom.appArg!.consumeMData
-                  if let .const fn _ := prog.getAppFn.consumeMData then
-                    if promiseSet.contains fn then
-                      if !(← hasCanonicalPromiseTarget fn prog) then
-                        lAxErrs := lAxErrs.push s!"NON_CANONICAL_PROMISE_TARGET: {c.name} in {m} proves {fn} against non-canonical target"
-                      else if ← hasCanonicalNondetInst `Core.instNondetTestCanReachRun prog then
-                        match isCanonicalConnectProxyPromiseApp fn prog with
-                        | .ok () =>
-                          lCanReach := lCanReach.insert fn ((lCanReach.getD fn #[]).push c.name)
-                        | .error tgtErr =>
-                          lAxErrs := lAxErrs.push s!"{tgtErr} (in {c.name})"
-                      else
-                        lAxErrs := lAxErrs.push s!"NON_CANONICAL_NONDET_INST: {c.name} in {m} uses non-canonical NondetTest CanReachRun instance for {fn}"
-              return (lAllPass, lCanReach, lAxErrs, lCache)
-          allPass := nextAllPass
-          canReach := nextCanReach
-          axErrs := nextAxErrs
-          axCache := nextCache
-      return (allPass, canReach, axErrs)
-    ).toIO ctx state
-    let mut assumesCount := 0
-    for (m, pName) in promises do
-      let usesAssume := usesAssumeTransitive auditE pName
-      if usesAssume then assumesCount := assumesCount + 1
-      if (allPass.getD pName #[]).isEmpty then
-        pErrs := pErrs.push s!"MISSING_ALLPASS: {pName} (defined in {m})"
-      if usesAssume && (canReach.getD pName #[]).isEmpty then
-        pErrs := pErrs.push s!"MISSING_CANREACH: {pName} (defined in {m}, uses assume)"
-    return (pErrs ++ axErrs, specModCount, specMods, mutantModsWithAllPass, promises, allPass, canReach, assumesCount)
 
   if isWorker then
     enableInitializersExecution
@@ -5751,9 +5850,9 @@ unsafe def main (args : List String) : IO UInt32 := do
     for modName in pfEnv.header.moduleNames do
       if isPostForkVerifiedMod modName then
         IO.println s!"PFW_MOD:{modName}"
-    let (eErrs2, sCnt2, sMods2, mutOk2, prom2, ap2, cr2, wAss2) ← auditEnvPhase pfEnv true
+    let rep2 ← auditPromisesEnv libDir repoDir pfEnv (some true)
     let pfAeneasErrs := checkPostForkAeneasWiring pfEnv
-    let pfDagRep := auditImportDagEnv pfEnv isPostForkVerifiedMod ap2 cr2
+    let pfDagRep := auditImportDagEnv pfEnv isPostForkVerifiedMod rep2.allPass rep2.canReach
     let pfManifestParseErrs ← match ← loadPackageManifest repoDir with
       | .error err => pure #[err]
       | .ok manifest => do
@@ -5766,15 +5865,17 @@ unsafe def main (args : List String) : IO UInt32 := do
           IO.println s!"PFW_M_SYNTH:{k}\t{v}"
         IO.println s!"PFW_M_STATS:{pfMRep.checkedSynthPkgs}"
         pure #[]
-    for m in sMods2 do
+    for m in rep2.specMods do
       IO.println s!"PFW_SPEC:{m}"
-    for m in mutOk2 do
+    for m in rep2.mutantModsWithAllPass do
       IO.println s!"PFW_MUT:{m}"
-    for err in eErrs2 ++ pfAeneasErrs ++ pfManifestParseErrs do
+    for m in rep2.allMutMods do
+      IO.println s!"PFW_MUT_ALL:{m}"
+    for err in rep2.errors ++ pfAeneasErrs ++ pfManifestParseErrs do
       IO.println s!"PFW_ERR:{err}"
     for ln in encodeDagReportWireLines pfDagRep do
       IO.println ln
-    IO.println s!"PFW_STATS:{sCnt2}:{prom2.size}:{wAss2}"
+    IO.println s!"PFW_STATS:{rep2.specModCount}:{rep2.promises.size}:{rep2.assumesCount}"
     return 0
 
   let leanExe := (← findSysroot) / "bin" / "lean"
@@ -5790,6 +5891,7 @@ unsafe def main (args : List String) : IO UInt32 := do
   let mut eErrs2 : Array String := #[]
   let mut sMods2 : Array String := #[]
   let mut mutOk2 : Std.HashSet String := {}
+  let mut allMut2 : Array String := #[]
   let mut sCnt2 : Nat := 0
   let mut prom2Count : Nat := 0
   let mut wAss2 : Nat := 0
@@ -5801,6 +5903,7 @@ unsafe def main (args : List String) : IO UInt32 := do
   for ln in workerLines do
     if ln.startsWith "PFW_MOD:" then pfModNames := pfModNames.insert (ln.drop 8).toString
     else if ln.startsWith "PFW_SPEC:" then sMods2 := sMods2.push (ln.drop 9).toString
+    else if ln.startsWith "PFW_MUT_ALL:" then allMut2 := allMut2.push (ln.drop 12).toString
     else if ln.startsWith "PFW_MUT:" then mutOk2 := mutOk2.insert (ln.drop 8).toString
     else if ln.startsWith "PFW_ERR:" then eErrs2 := eErrs2.push (ln.drop 8).toString
     else if ln.startsWith "PFW_M_HARD:" then pfMHard := pfMHard.push (ln.drop 11).toString
@@ -5965,7 +6068,15 @@ unsafe def main (args : List String) : IO UInt32 := do
   if !importableExtraMods.isEmpty then
     rtParseEnv.freeRegions
 
-  let (eErrs1, sCnt1, sMods1, mutOk1, prom1, ap1, cr1, wAss1) ← auditEnvPhase env false
+  let rep1 ← auditPromisesEnv libDir repoDir env (some false)
+  let eErrs1 := rep1.errors
+  let sCnt1 := rep1.specModCount
+  let sMods1 := rep1.specMods
+  let mutOk1 := rep1.mutantModsWithAllPass
+  let prom1 := rep1.promises
+  let ap1 := rep1.allPass
+  let cr1 := rep1.canReach
+  let wAss1 := rep1.assumesCount
   let pwWiringErrs ← checkPasswdPrivateWiring env
   let dnsWiringErrs ← checkDnsInterfaceWiring env
   let pfWiringErrs ← checkPostForkPrivateWiring env
@@ -6046,10 +6157,8 @@ unsafe def main (args : List String) : IO UInt32 := do
   let specModCount := sCnt1 + sCnt2
   let specModStrs := (sMods1.map (·.toString)) ++ sMods2
   let mutOkAll : Std.HashSet String := mutOk1.fold (fun acc m => acc.insert m.toString) mutOk2
-  for ms in specModStrs do
-    let mutMod := (ms.toName.getPrefix.str "SpecMutants").toString
-    if !mutOkAll.contains mutMod then
-      errors := errors.push s!"MISSING_SPECMUTANTS: {ms} lacks companion {mutMod} with at least 1 negated Core.AllPass mutant"
+  let allMutStrs := (rep1.allMutMods.map (·.toString)) ++ allMut2
+  errors := errors ++ checkSpecMutantsParity specModStrs mutOkAll allMutStrs
 
   let promCount := prom1.size + prom2Count
   let withAssumeCount := wAss1 + wAss2
