@@ -18,7 +18,8 @@ private def runCmd (cmd : String) (args : Array String) (cwd? : Option System.Fi
 private def compileLeanMod (repoRoot : System.FilePath) (leanPath : String)
     (src olean : System.FilePath) : IO Unit := do
   if let some parent := olean.parent then IO.FS.createDirAll parent
-  let out ← runCmd "lean" #["-R", repoRoot.toString, "-o", olean.toString, src.toString]
+  let ilean := olean.withExtension "ilean"
+  let out ← runCmd "lean" #["-R", repoRoot.toString, "-o", olean.toString, "-i", ilean.toString, src.toString]
     none #[("LEAN_SRC_PATH", some repoRoot.toString), ("LEAN_PATH", some leanPath)]
   if out.exitCode != 0 then
     throw (IO.userError s!"lean compile failed for {src}:\n{out.stdout}\n{out.stderr}")
@@ -143,6 +144,10 @@ private def runAuditCase (bin libDir manifestPath : System.FilePath)
 private def runPrintSigCase (bin libDir manifestPath : System.FilePath) (rootsCsv pkgStr : String) : IO IO.Process.Output :=
   runCmd bin.toString #["--internal-print-obeys-sig", libDir.toString, manifestPath.toString, rootsCsv, pkgStr]
 
+private def runPromiseManifestAuditCase (bin libDir repoDir manifestPath : System.FilePath)
+    (rootsCsv : String) : IO IO.Process.Output :=
+  runCmd bin.toString #["--internal-promise-manifest-audit", libDir.toString, repoDir.toString, manifestPath.toString, rootsCsv]
+
 private def assertPass (label : String) (out : IO.Process.Output) : IO Unit := do
   if out.exitCode != 0 then
     throw (IO.userError s!"CASE_FAILED ({label}): expected pass (exit 0), got exit={out.exitCode}\nstdout:\n{out.stdout}\nstderr:\n{out.stderr}")
@@ -156,6 +161,22 @@ private def assertFailWith (label expectedDiag : String) (out : IO.Process.Outpu
   let combined := out.stdout ++ "\n" ++ out.stderr
   if out.exitCode == 0 || (combined.splitOn expectedDiag).length <= 1 then
     throw (IO.userError s!"CASE_FAILED ({label}): expected failure containing '{expectedDiag}', got exit={out.exitCode}\nstdout:\n{out.stdout}\nstderr:\n{out.stderr}")
+
+private def runPromiseMutantCase
+    (bin tmpRoot baseDir realLibAbs : System.FilePath) (caseName : String)
+    (mutate : System.FilePath → System.FilePath → String → IO String)
+    (expectedDiag? : Option String) : IO Unit := do
+  let caseDir := tmpRoot / s!"case_{caseName}"
+  copyFileOrDir baseDir caseDir
+  let root := caseDir / "repo"
+  let libDir := caseDir / "lib"
+  let leanPath := s!"{libDir}:{realLibAbs}"
+  let rootsCsv ← mutate root libDir leanPath
+  let out ← runPromiseManifestAuditCase bin libDir root (root / "scripts/package_manifest.json") rootsCsv
+  match expectedDiag? with
+  | none => assertPass caseName out
+  | some diag => assertFailWith caseName diag out
+  IO.FS.removeDirAll caseDir
 
 private def runMutantCase
     (bin tmpRoot baseDir realLibAbs : System.FilePath) (caseName : String)
@@ -575,13 +596,83 @@ def main (_ : List String) : IO UInt32 := do
     runFiles "vacuous_step_from_except_rejected" (some "VACUOUS_OR_INVALID_OBEYS_MODEL")
       (stepExceptFiles "False" "fun _ _ h w req hw => False.elim (h w req hw)")
 
+    assertPassWith "optional_spectests_model_pkg_passes" "spec_modules=0"
+      (← runPromiseManifestAuditCase bin baseLib baseRoot baseMan baselineRootsCsv)
+
+    let pureSpecSrc :=
+      "import Core.NondetTest\nimport LeanSwe.MiniPure.Model\nnamespace LeanSwe.MiniPure\nopen Core Core.NondetTest\n" ++
+      "def test_minipure_matches {r} [NondetTest r] (fn : Nat → Nat) : r Unit := do\n  let x ← nondet Nat\n  NondetTest.assert (fn x = Model.evalModel x)\n" ++
+      "def test_minipure_pos {r} [NondetTest r] (fn : Nat → Nat) : r Unit := do\n  let x ← nondet Nat\n  assume (x > 0)\n  NondetTest.assert (fn x > 1)\nend LeanSwe.MiniPure\n"
+    let pureMutSrc :=
+      "import Core.NondetTest\nimport LeanSwe.MiniPure.SpecTests\nnamespace LeanSwe.MiniPure\n" ++
+      "example : ¬ Core.AllPass (test_minipure_matches (fun x => x)) := by\n  intro h; have h0 := (h 0).1; cases h0\nend LeanSwe.MiniPure\n"
+    let pureProofWithSpec (includeAllPass includeCanReach includeObeys : Bool) : String :=
+      "import Core.Obeys\nimport Core.NondetTest\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\n" ++
+      (if includeAllPass || includeCanReach then "import LeanSwe.MiniPure.SpecTests\n" else "") ++
+      "namespace LeanSwe.MiniPure.Proofs\n" ++
+      (if includeObeys then "theorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel := fun _ => rfl\n" else "") ++
+      (if includeAllPass then
+        "theorem proof_matches : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+        "theorem proof_pos : Core.AllPass (LeanSwe.MiniPure.test_minipure_pos LeanSwe.MiniPure.eval) := fun _ h => ⟨Nat.succ_lt_succ h, trivial⟩\n"
+       else "") ++
+      (if includeCanReach then
+        "theorem reach_pos : Core.CanReach (LeanSwe.MiniPure.test_minipure_pos LeanSwe.MiniPure.eval) := ⟨1, Nat.zero_lt_one, Nat.succ_lt_succ Nat.zero_lt_one, trivial⟩\n"
+       else "") ++
+      "end LeanSwe.MiniPure.Proofs\n"
+    let rootsWithSpec := baselineRootsCsv ++ ",LeanSwe.MiniPure.SpecTests"
+    let rootsWithSpecAndMut := rootsWithSpec ++ ",LeanSwe.MiniPure.SpecMutants"
+
+    runPromiseMutantCase bin tmpRoot baseDir realLibAbs "spectests_present_with_mutants_and_allpass_passes" (fun root libDir leanPath => do
+      writeAndRecompile root libDir leanPath #[
+        ("LeanSwe/MiniPure/SpecTests.lean", pureSpecSrc),
+        ("LeanSwe/MiniPure/SpecMutants.lean", pureMutSrc),
+        ("LeanSwe/MiniPure/Proofs.lean", pureProofWithSpec true true true)]
+      return rootsWithSpecAndMut
+    ) none
+
+    runPromiseMutantCase bin tmpRoot baseDir realLibAbs "spectests_present_missing_mutants_fails" (fun root libDir leanPath => do
+      writeAndRecompile root libDir leanPath #[
+        ("LeanSwe/MiniPure/SpecTests.lean", pureSpecSrc),
+        ("LeanSwe/MiniPure/Proofs.lean", pureProofWithSpec true true true)]
+      return rootsWithSpec
+    ) (some "MISSING_SPECMUTANTS")
+
+    runPromiseMutantCase bin tmpRoot baseDir realLibAbs "spectests_present_missing_allpass_fails" (fun root libDir leanPath => do
+      writeAndRecompile root libDir leanPath #[
+        ("LeanSwe/MiniPure/SpecTests.lean", pureSpecSrc),
+        ("LeanSwe/MiniPure/SpecMutants.lean", pureMutSrc),
+        ("LeanSwe/MiniPure/Proofs.lean", pureProofWithSpec false false true)]
+      return rootsWithSpecAndMut
+    ) (some "MISSING_ALLPASS")
+
+    runPromiseMutantCase bin tmpRoot baseDir realLibAbs "spectests_present_missing_canreach_fails" (fun root libDir leanPath => do
+      writeAndRecompile root libDir leanPath #[
+        ("LeanSwe/MiniPure/SpecTests.lean", pureSpecSrc),
+        ("LeanSwe/MiniPure/SpecMutants.lean", pureMutSrc),
+        ("LeanSwe/MiniPure/Proofs.lean", pureProofWithSpec true false true)]
+      return rootsWithSpecAndMut
+    ) (some "MISSING_CANREACH")
+
+    runPromiseMutantCase bin tmpRoot baseDir realLibAbs "optional_spectests_missing_obeys_model_fails" (fun root libDir leanPath => do
+      writeAndRecompile root libDir leanPath #[
+        ("LeanSwe/MiniPure/Proofs.lean", pureProofWithSpec false false false)]
+      return baselineRootsCsv
+    ) (some "MANIFEST_MISSING_OBEYS_MODEL")
+
+    runPromiseMutantCase bin tmpRoot baseDir realLibAbs "orphan_specmutants_without_spectests_fails" (fun root libDir leanPath => do
+      writeAndRecompile root libDir leanPath #[
+        ("LeanSwe/MiniPure/SpecMutants.lean",
+         "import LeanSwe.MiniPure.Model\nnamespace LeanSwe.MiniPure\ndef orphanDummy : Nat := 0\nend LeanSwe.MiniPure\n")]
+      return baselineRootsCsv ++ ",LeanSwe.MiniPure.SpecMutants"
+    ) (some "ORPHAN_SPECMUTANTS")
+
     assertPass "pure_from_suite"
       (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesPureFromTest.lean", bin.toString, tmpRoot.toString, realLibAbs.toString])
     assertPass "conc_cell_suite"
       (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesConcCellTest.lean", bin.toString, tmpRoot.toString, baseDir.toString, realLibAbs.toString])
     assertPass "dag_suite"
       (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesDagTest.lean", bin.toString, tmpRoot.toString, realLibAbs.toString])
-    IO.println "CHECK_PROMISES_SELF_TEST: passed=63 failed=0"
+    IO.println "CHECK_PROMISES_SELF_TEST: passed=70 failed=0"
     return 0
   finally
     if ← tmpRoot.pathExists then IO.FS.removeDirAll tmpRoot

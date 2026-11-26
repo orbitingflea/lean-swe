@@ -5,16 +5,12 @@ import LeanSwe.RegExp.Types
 import LeanSwe.RegExp.Model
 import LeanSwe.RegExp.Interface
 import LeanSwe.RegExp.Impl
-import LeanSwe.RegExp.SpecTests
-import LeanSwe.RegExp.SpecMutants
 import LeanSwe.RegExp.Proofs
 import LeanSwe.RegExp.RuntimeTests
 import LeanSwe.Glob.Types
 import LeanSwe.Glob.Model
 import LeanSwe.Glob.Interface
 import LeanSwe.Glob.Impl
-import LeanSwe.Glob.SpecTests
-import LeanSwe.Glob.SpecMutants
 import LeanSwe.Glob.Proofs
 import LeanSwe.Glob.RuntimeTests
 import LeanSwe.Fs.Types
@@ -303,8 +299,6 @@ import LeanSwe.Base64.Model
 import LeanSwe.Base64.Model.Obeys
 import LeanSwe.Base64.Impl
 import LeanSwe.Base64.Interface
-import LeanSwe.Base64.SpecTests
-import LeanSwe.Base64.SpecMutants
 import LeanSwe.Base64.Proofs
 import LeanSwe.Base64.RuntimeTests
 import LeanSwe.CryptoHash.Raw.Types
