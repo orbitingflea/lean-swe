@@ -1,3 +1,4 @@
+import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Sandbox.Interface
 import LeanSwe.LinuxSyscall.TestSupport.Seccomp
 import LeanSwe.LinuxSyscall.TimeRand.Impl
@@ -9,6 +10,10 @@ namespace Fuzz.LinuxSyscall.TimeRand.Strace
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.TimeRand
+
+private def logTimeRandErrHit (op : String) (e : Errno) (mode : String) : IO Unit :=
+  Fuzz.Common.logErrHit s!"LeanSwe.LinuxSyscall.TimeRand.{op}"
+    (reprStr (TimeRandErrorKind.ofErrno e)).trimAscii.toString mode
 
 private def failWith {α : Type} (msg : String) : IO α :=
   throw (IO.userError s!"TimeRand.Strace: {msg}")
@@ -109,12 +114,14 @@ private def err_clock_gettime_mocked : IO Unit := do
                      , (Errno.ENOMEM, TimeRandErrorKind.transientOrResource) ] do
     let ops := Internal.mkTimeRandOps (mkMockRawOps (.error eno) (.ok ()) (.ok ByteArray.empty))
     expectErr s!"mock clock_gettime {Errno.name eno}" eno (← ops.clock_gettime .monotonic)
+    logTimeRandErrHit "clock_gettime" eno "mocked"
     assertTrue s!"kind {Errno.name eno}" (TimeRandErrorKind.ofErrno eno == kind)
 
 /-- Verify real `clock_nanosleep` rejects invalid `Timespec`s (`sec < 0` and `nsec ≥ 10^9`) with `EINVAL`. -/
 private def err_clock_nanosleep_invalidArg : IO Unit := do
   expectErr "clock_nanosleep negative sec -> EINVAL"
     Errno.EINVAL (← clock_nanosleep .monotonic false { sec := -1, nsec := 0 })
+  logTimeRandErrHit "clock_nanosleep" Errno.EINVAL "real"
   expectErr "clock_nanosleep nsec >= 1e9 -> EINVAL"
     Errno.EINVAL (← clock_nanosleep .realtime true { sec := 0, nsec := 1000000000 })
   assertTrue "EINVAL is invalidArg" (TimeRandErrorKind.ofErrno Errno.EINVAL == .invalidArg)
@@ -127,6 +134,7 @@ private def err_clock_nanosleep_mocked : IO Unit := do
     let ops := Internal.mkTimeRandOps (mkMockRawOps (.ok (0, 0)) (.error eno) (.ok ByteArray.empty))
     expectErr s!"mock clock_nanosleep {Errno.name eno}" eno
       (← ops.clock_nanosleep .monotonic false { sec := 0, nsec := 1 })
+    logTimeRandErrHit "clock_nanosleep" eno "mocked"
     assertTrue s!"kind {Errno.name eno}" (TimeRandErrorKind.ofErrno eno == kind)
 
 /-- Verify mocked `clock_nanosleep` propagation for `EINTR`, `EIO`, and `ENOMEM` (`transientOrResource`). -/
@@ -135,12 +143,14 @@ private def err_clock_nanosleep_transient : IO Unit := do
     let ops := Internal.mkTimeRandOps (mkMockRawOps (.ok (0, 0)) (.error eno) (.ok ByteArray.empty))
     expectErr s!"mock clock_nanosleep {Errno.name eno}" eno
       (← ops.clock_nanosleep .realtime false { sec := 0, nsec := 1 })
+    logTimeRandErrHit "clock_nanosleep" eno "mocked"
     assertTrue s!"kind {Errno.name eno}" (TimeRandErrorKind.ofErrno eno == .transientOrResource)
 
 /-- Verify real `getrandom` rejects `random && insecure` with `EINVAL` even when `len = 0`. -/
 private def err_getrandom_invalidArg : IO Unit := do
   expectErr "getrandom random && insecure len=16 -> EINVAL"
     Errno.EINVAL (← getrandom 16 { random := true, insecure := true })
+  logTimeRandErrHit "getrandom" Errno.EINVAL "real"
   expectErr "getrandom random && insecure len=0 -> EINVAL"
     Errno.EINVAL (← getrandom 0 { random := true, insecure := true })
   assertTrue "EINVAL is invalidArg" (TimeRandErrorKind.ofErrno Errno.EINVAL == .invalidArg)
@@ -149,6 +159,7 @@ private def err_getrandom_invalidArg : IO Unit := do
 private def err_getrandom_wouldBlock : IO Unit := do
   let ops := Internal.mkTimeRandOps (mkMockRawOps (.ok (0, 0)) (.ok ()) (.error Errno.EAGAIN))
   expectErr "mock getrandom EAGAIN" Errno.EAGAIN (← ops.getrandom 16 { nonblock := true })
+  logTimeRandErrHit "getrandom" Errno.EAGAIN "mocked"
   assertTrue "EAGAIN is wouldBlock" (TimeRandErrorKind.ofErrno Errno.EAGAIN == .wouldBlock)
 
 /-- Verify mocked `getrandom` `EPERM` / `EACCES` (`permissionDenied`) propagation. -/
@@ -156,6 +167,7 @@ private def err_getrandom_mocked : IO Unit := do
   for eno in [Errno.EPERM, Errno.EACCES] do
     let ops := Internal.mkTimeRandOps (mkMockRawOps (.ok (0, 0)) (.ok ()) (.error eno))
     expectErr s!"mock getrandom {Errno.name eno}" eno (← ops.getrandom 16 {})
+    logTimeRandErrHit "getrandom" eno "mocked"
     assertTrue s!"kind {Errno.name eno}" (TimeRandErrorKind.ofErrno eno == .permissionDenied)
 
 /-- Verify mocked `getrandom` `EINTR`, `EIO`, and `ENOMEM` (`transientOrResource`) propagation. -/
@@ -163,6 +175,7 @@ private def err_getrandom_transient : IO Unit := do
   for eno in [Errno.EINTR, Errno.EIO, Errno.ENOMEM] do
     let ops := Internal.mkTimeRandOps (mkMockRawOps (.ok (0, 0)) (.ok ()) (.error eno))
     expectErr s!"mock getrandom {Errno.name eno}" eno (← ops.getrandom 16 {})
+    logTimeRandErrHit "getrandom" eno "mocked"
     assertTrue s!"kind {Errno.name eno}" (TimeRandErrorKind.ofErrno eno == .transientOrResource)
 
 private def parseErrnoName? (s : String) : Option Errno :=

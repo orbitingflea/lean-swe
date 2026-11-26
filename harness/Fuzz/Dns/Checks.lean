@@ -1,3 +1,4 @@
+import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Dns.Impl
 import LeanSwe.LinuxSyscall.Dns.Interface
 import LeanSwe.LinuxSyscall.Dns.Model
@@ -19,12 +20,15 @@ private def expectOk {α : Type} (label : String) (res : Except DnsError α) : I
   | .ok v => return v
   | .error e => failWith s!"{label}: unexpected error ({repr e})"
 
-private def expectErrKind {α : Type} (label : String) (expected : DnsErrorKind) (res : Except DnsError α) : IO DnsError := do
+private def expectErrKind {α : Type} (label : String) (expected : DnsErrorKind) (res : Except DnsError α)
+    (logMode? : Option String := some "real") : IO DnsError := do
   match res with
   | .ok _ => failWith s!"{label}: expected error kind {repr expected}, got ok"
   | .error e =>
     if e.kind != expected then
       failWith s!"{label}: expected {repr expected}, got {repr e}"
+    if let some mode := logMode? then
+      Fuzz.Common.logErrHit "LeanSwe.LinuxSyscall.Dns.getaddrinfo" (reprStr e.kind).trimAscii.toString mode
     return e
 
 private def mkMockRawOps (fn : String → UInt8 → UInt8 → Except (Int32 × UInt32 × ByteArray) ByteArray) :
@@ -156,98 +160,100 @@ private def err_dns_getaddrinfo_nameNotFound : IO Unit := do
 
 /-- Mocked FFI boundary error-classification, family-mismatch, and malformed-payload tests for `getaddrinfo`. -/
 private def err_dns_getaddrinfo_mocked : IO Unit := do
+  let expectMock {α : Type} (label : String) (expected : DnsErrorKind) (res : Except DnsError α) : IO DnsError :=
+    expectErrKind label expected res (logMode? := some "mocked")
   let msg := "mock error".toUTF8
   let nodataOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .error (EAI_NODATA, 0, msg))
-  let _ ← expectErrKind "mock nodata" .nameNotFound (← nodataOps.getaddrinfo "example.invalid.")
+  let _ ← expectMock "mock nodata" .nameNotFound (← nodataOps.getaddrinfo "example.invalid.")
 
   let failOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .error (EAI_FAIL, 0, msg))
-  let _ ← expectErrKind "mock fail" .nameNotFound (← failOps.getaddrinfo "example.invalid.")
+  let _ ← expectMock "mock fail" .nameNotFound (← failOps.getaddrinfo "example.invalid.")
 
   let tempOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .error (EAI_AGAIN, 0, msg))
-  let _ ← expectErrKind "mock temporaryFailure" .temporaryFailure (← tempOps.getaddrinfo "example.invalid.")
+  let _ ← expectMock "mock temporaryFailure" .temporaryFailure (← tempOps.getaddrinfo "example.invalid.")
 
   let sysOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .error (EAI_SYSTEM, Errno.ENOMEM, msg))
-  let eSys ← expectErrKind "mock systemError" .systemError (← sysOps.getaddrinfo "example.invalid.")
+  let eSys ← expectMock "mock systemError" .systemError (← sysOps.getaddrinfo "example.invalid.")
   assertTrue "mock systemError errno" (eSys.errno? == some Errno.ENOMEM && eSys.message == "mock error")
 
   let sysZeroOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .error (EAI_SYSTEM, 0, ByteArray.empty))
-  let eSysZero ← expectErrKind "mock EAI_SYSTEM errno=0" .systemError (← sysZeroOps.getaddrinfo "example.invalid.")
+  let eSysZero ← expectMock "mock EAI_SYSTEM errno=0" .systemError (← sysZeroOps.getaddrinfo "example.invalid.")
   assertTrue "mock EAI_SYSTEM errno=0 -> none" (eSysZero.errno? == none && eSysZero.message == "getaddrinfo failed")
 
   let memOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .error (EAI_MEMORY, Errno.ENOMEM, msg))
-  let eMem ← expectErrKind "mock EAI_MEMORY" .systemError (← memOps.getaddrinfo "example.invalid.")
+  let eMem ← expectMock "mock EAI_MEMORY" .systemError (← memOps.getaddrinfo "example.invalid.")
   assertTrue "mock EAI_MEMORY errno? none" (eMem.errno? == none)
 
   let zeroRcOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .error (0, 0, msg))
-  let eZero ← expectErrKind "mock rc=0" .nameNotFound (← zeroRcOps.getaddrinfo "example.invalid.")
+  let eZero ← expectMock "mock rc=0" .nameNotFound (← zeroRcOps.getaddrinfo "example.invalid.")
   assertTrue "mock rc=0 mapped to EAI_FAIL" (eZero.gaiCode == EAI_FAIL)
 
   let otherOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .error (EAI_FAMILY, 0, msg))
-  let eOther ← expectErrKind "mock otherGai" .otherGai (← otherOps.getaddrinfo "example.invalid.")
+  let eOther ← expectMock "mock otherGai" .otherGai (← otherOps.getaddrinfo "example.invalid.")
   assertTrue "otherGai gaiCode EAI_FAMILY" (eOther.gaiCode == EAI_FAMILY)
 
   let emptyOkNameOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .ok ByteArray.empty)
-  let eEmptyOkName ← expectErrKind "mock empty ok non-numeric -> nameNotFound" .nameNotFound
+  let eEmptyOkName ← expectMock "mock empty ok non-numeric -> nameNotFound" .nameNotFound
     (← emptyOkNameOps.getaddrinfo "example.invalid.")
   assertTrue "mock empty ok non-numeric EAI_NODATA" (eEmptyOkName.gaiCode == EAI_NODATA)
 
-  let eEmptyOkNum ← expectErrKind "mock empty ok numeric ipv6 -> otherGai" .otherGai
+  let eEmptyOkNum ← expectMock "mock empty ok numeric ipv6 -> otherGai" .otherGai
     (← emptyOkNameOps.getaddrinfo "127.0.0.1" { family := .ipv6 })
   assertTrue "mock empty ok numeric EAI_ADDRFAMILY" (eEmptyOkNum.gaiCode == EAI_ADDRFAMILY)
-  let eEmptyOkNumAny ← expectErrKind "mock empty ok numeric any -> EAI_FAIL" .nameNotFound
+  let eEmptyOkNumAny ← expectMock "mock empty ok numeric any -> EAI_FAIL" .nameNotFound
     (← emptyOkNameOps.getaddrinfo "127.0.0.1")
   assertTrue "mock empty ok numeric any EAI_FAIL" (eEmptyOkNumAny.gaiCode == EAI_FAIL)
 
   let mismatchNameOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .ok (Internal.encodeRecords [.ipv6 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0]))
-  let eMisName ← expectErrKind "mock family mismatch non-numeric -> nameNotFound" .nameNotFound
+  let eMisName ← expectMock "mock family mismatch non-numeric -> nameNotFound" .nameNotFound
     (← mismatchNameOps.getaddrinfo "example.invalid." { family := .ipv4 })
   assertTrue "mock family mismatch non-numeric EAI_NODATA" (eMisName.gaiCode == EAI_NODATA)
 
-  let eMisNum ← expectErrKind "mock family mismatch numeric -> otherGai" .otherGai
+  let eMisNum ← expectMock "mock family mismatch numeric -> otherGai" .otherGai
     (← mismatchNameOps.getaddrinfo "127.0.0.1" { family := .ipv6 })
   assertTrue "mock family mismatch numeric EAI_ADDRFAMILY" (eMisNum.gaiCode == EAI_ADDRFAMILY)
 
   let rc42Ops := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .error (42, 0, msg))
-  let eRc42 ← expectErrKind "mock rc=42" .nameNotFound (← rc42Ops.getaddrinfo "example.invalid.")
+  let eRc42 ← expectMock "mock rc=42" .nameNotFound (← rc42Ops.getaddrinfo "example.invalid.")
   assertTrue "mock rc=42 mapped to EAI_FAIL" (eRc42.gaiCode == EAI_FAIL)
 
   let otherNonUtf8Ops := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .error (EAI_FAMILY, 0, ByteArray.mk #[0xff, 0xfe]))
-  let eNonUtf8 ← expectErrKind "mock non-utf8 otherGai" .otherGai (← otherNonUtf8Ops.getaddrinfo "example.invalid.")
+  let eNonUtf8 ← expectMock "mock non-utf8 otherGai" .otherGai (← otherNonUtf8Ops.getaddrinfo "example.invalid.")
   assertTrue "non-utf8 message preserved" (eNonUtf8.message == "<non-utf8:2B>")
 
   let svcOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .error (EAI_SERVICE, 0, msg))
-  let eSvc ← expectErrKind "mock EAI_SERVICE clamped" .nameNotFound (← svcOps.getaddrinfo "example.invalid.")
+  let eSvc ← expectMock "mock EAI_SERVICE clamped" .nameNotFound (← svcOps.getaddrinfo "example.invalid.")
   assertTrue "mock EAI_SERVICE mapped to EAI_FAIL" (eSvc.gaiCode == EAI_FAIL)
 
   let badFlagsOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .error (EAI_BADFLAGS, 0, msg))
-  let eBadFlags ← expectErrKind "mock EAI_BADFLAGS clamped" .nameNotFound (← badFlagsOps.getaddrinfo "example.invalid.")
+  let eBadFlags ← expectMock "mock EAI_BADFLAGS clamped" .nameNotFound (← badFlagsOps.getaddrinfo "example.invalid.")
   assertTrue "mock EAI_BADFLAGS mapped to EAI_FAIL" (eBadFlags.gaiCode == EAI_FAIL)
 
   let efaultOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .error (EAI_SYSTEM, Errno.EFAULT, msg))
-  let eEfault ← expectErrKind "mock EAI_SYSTEM EFAULT" .systemError (← efaultOps.getaddrinfo "example.invalid.")
+  let eEfault ← expectMock "mock EAI_SYSTEM EFAULT" .systemError (← efaultOps.getaddrinfo "example.invalid.")
   assertTrue "mock EAI_SYSTEM EFAULT stripped" (eEfault.errno? == none)
 
   let mixedOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ =>
     .ok (Internal.encodeRecords [.ipv4 127 0 0 1, .ipv6 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0]))
-  let eMixedName ← expectErrKind "mock mixed family rejected non-numeric" .nameNotFound
+  let eMixedName ← expectMock "mock mixed family rejected non-numeric" .nameNotFound
     (← mixedOps.getaddrinfo "example.invalid." { family := .ipv4 })
   assertTrue "mock mixed family rejected EAI_NODATA" (eMixedName.gaiCode == EAI_NODATA)
-  let eMixedNum ← expectErrKind "mock mixed family rejected numeric" .nameNotFound
+  let eMixedNum ← expectMock "mock mixed family rejected numeric" .nameNotFound
     (← mixedOps.getaddrinfo "127.0.0.1" { family := .ipv4 })
   assertTrue "mock mixed family rejected numeric EAI_FAIL" (eMixedNum.gaiCode == EAI_FAIL)
 
   let malOps := Internal.mkDnsOps (mkMockRawOps fun _ _ _ => .ok (ByteArray.mk #[99, 0, 0, 0, 0]))
-  let eMal ← expectErrKind "mock malformed payload -> otherGai" .otherGai (← malOps.getaddrinfo "example.invalid.")
+  let eMal ← expectMock "mock malformed payload -> otherGai" .otherGai (← malOps.getaddrinfo "example.invalid.")
   assertTrue "mock malformed gaiCode=EAI_OVERFLOW" (eMal.gaiCode == EAI_OVERFLOW)
 
 /-- Real decoder test for `.otherGai` (`EAI_OVERFLOW`) on malformed inputs and large tail-recursive round-trips. -/
 private def err_dns_decodeRecords_malformed : IO Unit := do
-  let eTrunc ← expectErrKind "truncated" .otherGai (Internal.decodeRecords (ByteArray.mk #[4, 127, 0]))
+  let eTrunc ← expectErrKind "truncated" .otherGai (Internal.decodeRecords (ByteArray.mk #[4, 127, 0])) none
   assertTrue "truncated EAI_OVERFLOW" (eTrunc.gaiCode == EAI_OVERFLOW)
   let _ ← expectErrKind "bad tag" .otherGai
-    (Internal.decodeRecords (ByteArray.mk #[9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
+    (Internal.decodeRecords (ByteArray.mk #[9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])) none
   let _ ← expectErrKind "bad v4 padding" .otherGai
-    (Internal.decodeRecords (ByteArray.mk #[4, 127, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]))
+    (Internal.decodeRecords (ByteArray.mk #[4, 127, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])) none
   let bulk := List.replicate 5000 (DnsAddr.ipv4 127 0 0 1)
   let decBulk ← expectOk "5000-record tail-rec round-trip" (Internal.decodeRecords (Internal.encodeRecords bulk))
   assertTrue "5000-record count" (decBulk.length == 5000)

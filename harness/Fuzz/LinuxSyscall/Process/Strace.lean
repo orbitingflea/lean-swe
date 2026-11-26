@@ -1,9 +1,9 @@
+import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Process.Model
 import LeanSwe.LinuxSyscall.Process.Interface
 import LeanSwe.LinuxSyscall.Process.Impl
-import LeanSwe.LinuxSyscall.Process.SpecTests
 import Fuzz.LinuxSyscall.ProcessEnv
 
 namespace Fuzz.LinuxSyscall.Process.Strace
@@ -11,6 +11,24 @@ namespace Fuzz.LinuxSyscall.Process.Strace
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Process
 open Fuzz.LinuxSyscall
+
+private def logProcessErrHit (op : String) (e : Errno) (mode : String) : IO Unit :=
+  Fuzz.Common.logErrHit s!"LeanSwe.LinuxSyscall.Process.{op}"
+    (reprStr (ProcessErrorKind.ofErrno e)).trimAscii.toString mode
+
+private def trackProcessErr {α : Type} (op : String) (mode : String) (r : Except Errno α) : IO (Except Errno α) := do
+  if let .error e := r then
+    logProcessErrHit op e mode
+  return r
+
+private def trackProcessOps (mode : String) (ops : ProcessOps) : ProcessOps :=
+  { pipe2 := fun a => do trackProcessErr "pipe2" mode (← ops.pipe2 a)
+    waitpid := fun a b => do trackProcessErr "waitpid" mode (← ops.waitpid a b)
+    kill := fun a b => do trackProcessErr "kill" mode (← ops.kill a b)
+    pidfd_open := fun a b => do trackProcessErr "pidfd_open" mode (← ops.pidfd_open a b)
+    pidfd_send_signal := fun a b c => do trackProcessErr "pidfd_send_signal" mode (← ops.pidfd_send_signal a b c)
+    getpid := do trackProcessErr "getpid" mode (← ops.getpid)
+    getuid := do trackProcessErr "getuid" mode (← ops.getuid) }
 
 private def assertTrue (msg : String) (cond : Bool) : IO Unit := do
   if !cond then
@@ -246,7 +264,7 @@ private def assume_process_getuid_stableRealUid : IO Unit := do
   assertTrue s!"getuid stable ({u1} vs {u2})" (u1 == u2)
 
 private def mkMockProcessOps (e : Errno) : ProcessOps :=
-  Internal.mkProcessOps
+  trackProcessOps "mocked" <| Internal.mkProcessOps
     { pipe2 := fun _ => return .error e
       waitpid := fun _ _ => return .error e
       kill := fun _ _ _ => return .error e
@@ -264,16 +282,19 @@ private def err_pipe2_mocked : IO Unit := do
 /-- Real `pipe2` `invalidArg` error test (`EINVAL` on unsupported flag bits). -/
 private def err_pipe2_invalidArg : IO Unit := do
   assertErr "real pipe2 extraBits=1" (← pipe2 { extraBits := 1 }) Errno.EINVAL
+  logProcessErrHit "pipe2" Errno.EINVAL "real"
   assertErr "real pipe2 extraBits=0x80000000" (← pipe2 { extraBits := 0x80000000 }) Errno.EINVAL
 
 /-- Real `waitpid` `noSuchProcess` error test (`INT32_MIN` returns `ESRCH`). -/
 private def err_waitpid_noSuchProcess : IO Unit := do
   assertErr "real waitpid INT32_MIN" (← waitpid Int32.minValue {}) Errno.ESRCH
+  logProcessErrHit "waitpid" Errno.ESRCH "real"
 
 /-- Real `waitpid` `noChild` error test (`ECHILD` with no matching children). -/
 private def err_waitpid_noChild : IO Unit := do
   let _ ← ProcessEnv.setSigchldAutoreap 0
   assertErr "real waitpid (-1) no children" (← waitpid (-1) {}) Errno.ECHILD
+  logProcessErrHit "waitpid" Errno.ECHILD "real"
   assertErr "real waitpid nonexistent pid" (← waitpid 999999999 {}) Errno.ECHILD
 
 /-- Mocked error-coverage test for `waitpid` (`EBADF`, `EPERM`, `EINTR`, `ENOMEM`). -/
@@ -285,11 +306,13 @@ private def err_waitpid_mocked : IO Unit := do
 /-- Real `waitpid` `invalidArg` error test (`EINVAL` on unsupported option bits). -/
 private def err_waitpid_invalidArg : IO Unit := do
   assertErr "real waitpid extraBits=1" (← waitpid (-1) { extraBits := 1 }) Errno.EINVAL
+  logProcessErrHit "waitpid" Errno.EINVAL "real"
 
 /-- Real `kill` `noSuchProcess` error test (`ESRCH` on `INT32_MIN` and reaped child). -/
 private def err_kill_noSuchProcess : IO Unit := do
   let _ ← ProcessEnv.setSigchldAutoreap 0
   assertErr "real kill INT32_MIN" (← kill Int32.minValue .sigzero) Errno.ESRCH
+  logProcessErrHit "kill" Errno.ESRCH "real"
   let ((pid, _), _) ← assertOk "spawn zombie" (← ProcessEnv.spawnZombie (-1) false 0 false)
   try
     let _ ← assertOk "reap zombie" (← waitpid pid.toInt32 {})
@@ -307,6 +330,7 @@ private def err_kill_mocked : IO Unit := do
 private def err_kill_invalidArg : IO Unit := do
   let selfPid ← assertOk "getpid" (← getpid)
   assertErr "real kill sig -1" (← kill selfPid.toInt32 (.raw (-1))) Errno.EINVAL
+  logProcessErrHit "kill" Errno.EINVAL "real"
   assertErr "real kill sig 65" (← kill selfPid.toInt32 (.raw 65)) Errno.EINVAL
   assertErr "real kill nptl 32" (← kill selfPid.toInt32 (.raw 32)) Errno.EINVAL
   assertErr "real kill nptl 33" (← kill selfPid.toInt32 (.raw 33)) Errno.EINVAL
@@ -331,11 +355,15 @@ private def err_kill_permissionDenied : IO Unit := do
     if target != self.toInt32 then
       let r ← kill target .sigzero
       if let .error e := r then
-        if e == Errno.EPERM || e == Errno.EACCES then return ()
+        if e == Errno.EPERM || e == Errno.EACCES then
+          logProcessErrHit "kill" e "real"
+          return ()
   let canNs ← ProcessEnv.probeUnshare
   if canNs then
     let rc ← assertOk "runNsWorker kill-eperm" (← ProcessEnv.runNsWorker true 6 "kill-eperm" "0")
-    if rc == 0 then return ()
+    if rc == 0 then
+      logProcessErrHit "kill" Errno.EPERM "real"
+      return ()
   if ← isSingleUidUserns then
     let exe ← resolveSelfExe
     let out ← IO.Process.output {
@@ -343,6 +371,7 @@ private def err_kill_permissionDenied : IO Unit := do
       args := #["--process-strace-worker", "seccomp-kill", "EPERM"]
     }
     assertTrue s!"seccomp-kill EPERM worker failed (exit={out.exitCode}): {out.stderr}" (out.exitCode == 0)
+    logProcessErrHit "kill" Errno.EPERM "fault_injected"
     return ()
   throw (IO.userError "err_kill_permissionDenied: could not observe EPERM/EACCES on host or userns")
 
@@ -358,6 +387,7 @@ private def err_pidfdOpen_noSuchProcess : IO Unit := do
   try
     let _ ← assertOk "reap zombie" (← waitpid pid.toInt32 {})
     assertErr "real pidfd_open reaped ESRCH" (← pidfd_open pid {}) Errno.ESRCH
+    logProcessErrHit "pidfd_open" Errno.ESRCH "real"
   finally
     ProcessEnv.cleanupChild pid
 
@@ -371,6 +401,7 @@ private def err_pidfdOpen_mocked : IO Unit := do
 private def err_pidfdOpen_invalidArg : IO Unit := do
   let selfPid ← assertOk "getpid" (← getpid)
   assertErr "real pidfd_open 0" (← pidfd_open 0 {}) Errno.EINVAL
+  logProcessErrHit "pidfd_open" Errno.EINVAL "real"
   assertErr "real pidfd_open extraBits=1" (← pidfd_open selfPid { extraBits := 1 }) Errno.EINVAL
 
 /-- Real `pidfd_send_signal` `noSuchProcess` error test (`ESRCH` after reap). -/
@@ -382,6 +413,7 @@ private def err_pidfdSendSignal_noSuchProcess : IO Unit := do
     try
       let _ ← assertOk "reap zombie" (← waitpid pid.toInt32 {})
       assertErr "real pidfd_send_signal reaped ESRCH" (← pidfd_send_signal pfd .sigzero {}) Errno.ESRCH
+      logProcessErrHit "pidfd_send_signal" Errno.ESRCH "real"
     finally
       closeQuiet pfd
   finally
@@ -404,6 +436,7 @@ private def err_pidfdSendSignal_badFd : IO Unit := do
   let pfd ← assertOk "pidfd_open self" (← pidfd_open selfPid {})
   closeQuiet pfd
   assertErr "closed pidfd EBADF" (← pidfd_send_signal pfd .sigzero {}) Errno.EBADF
+  logProcessErrHit "pidfd_send_signal" Errno.EBADF "real"
   assertErr "closed pidfd extraBits EBADF" (← pidfd_send_signal pfd .sigzero { extraBits := 1 }) Errno.EBADF
   let (rd, wr) ← assertOk "pipe2" (← pipe2 { cloexec := true })
   try
@@ -418,6 +451,7 @@ private def err_pidfdSendSignal_invalidArg : IO Unit := do
   let pfd ← assertOk "pidfd_open self" (← pidfd_open selfPid {})
   try
     assertErr "extraBits=1" (← pidfd_send_signal pfd .sigzero { extraBits := 1 }) Errno.EINVAL
+    logProcessErrHit "pidfd_send_signal" Errno.EINVAL "real"
     assertErr "extraBits=0x80000000" (← pidfd_send_signal pfd .sigzero { extraBits := 0x80000000 }) Errno.EINVAL
     assertErr "thread+process" (← pidfd_send_signal pfd .sigzero { thread := true, processGroup := true }) Errno.EINVAL
     assertErr "sig=999" (← pidfd_send_signal pfd (.raw 999) {}) Errno.EINVAL
@@ -435,11 +469,15 @@ private def err_pidfdSendSignal_permissionDenied : IO Unit := do
         let r ← pidfd_send_signal pfd .sigzero {}
         closeQuiet pfd
         if let .error e := r then
-          if e == Errno.EPERM || e == Errno.EACCES then return ()
+          if e == Errno.EPERM || e == Errno.EACCES then
+            logProcessErrHit "pidfd_send_signal" e "real"
+            return ()
   let canNs ← ProcessEnv.probeUnshare
   if canNs then
     let rc ← assertOk "runNsWorker pidfd-eperm" (← ProcessEnv.runNsWorker true 6 "pidfd-eperm" "0")
-    if rc == 0 then return ()
+    if rc == 0 then
+      logProcessErrHit "pidfd_send_signal" Errno.EPERM "real"
+      return ()
   if ← isSingleUidUserns then
     let exe ← resolveSelfExe
     let out ← IO.Process.output {
@@ -447,6 +485,7 @@ private def err_pidfdSendSignal_permissionDenied : IO Unit := do
       args := #["--process-strace-worker", "seccomp-pidfd-send", "EPERM"]
     }
     assertTrue s!"seccomp-pidfd-send EPERM worker failed (exit={out.exitCode}): {out.stderr}" (out.exitCode == 0)
+    logProcessErrHit "pidfd_send_signal" Errno.EPERM "fault_injected"
     return ()
   throw (IO.userError "err_pidfdSendSignal_permissionDenied: could not observe EPERM/EACCES")
 
@@ -466,6 +505,7 @@ private def err_getpid_seccomp : IO Unit := do
     args := #["--process-strace-worker", "seccomp-getpid", "EPERM"]
   }
   assertTrue s!"seccomp getpid worker failed (exit={out.exitCode}): {out.stderr}" (out.exitCode == 0)
+  logProcessErrHit "getpid" Errno.EPERM "fault_injected"
 
 /-- Mocked error-coverage test for `getuid` (`ESRCH`, `ECHILD`, `EBADF`, `EINVAL`, `ENOMEM`, `EINTR`). -/
 private def err_getuid_mocked : IO Unit := do
@@ -484,6 +524,7 @@ private def err_getuid_seccomp : IO Unit := do
     args := #["--process-strace-worker", "seccomp-getuid", "EPERM"]
   }
   assertTrue s!"seccomp getuid worker failed (exit={out.exitCode}): {out.stderr}" (out.exitCode == 0)
+  logProcessErrHit "getuid" Errno.EPERM "fault_injected"
 
 private def assertModelOk {α : Type} [BEq α] (label : String)
     (res : Except Errno α × ProcessSysState) (expected : α) : IO Unit :=

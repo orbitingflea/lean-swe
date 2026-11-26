@@ -1,9 +1,9 @@
+import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Poll.Types
 import LeanSwe.LinuxSyscall.Poll.Model
 import LeanSwe.LinuxSyscall.Poll.Interface
 import LeanSwe.LinuxSyscall.Poll.Impl
-import LeanSwe.LinuxSyscall.Poll.SpecTests
 import Fuzz.LinuxSyscall.SandboxEnv
 
 namespace Fuzz.LinuxSyscall.Poll.Strace
@@ -11,6 +11,10 @@ namespace Fuzz.LinuxSyscall.Poll.Strace
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Poll
 open Fuzz.LinuxSyscall
+
+private def logPollErrHit (op : String) (e : Errno) (mode : String) : IO Unit :=
+  Fuzz.Common.logErrHit s!"LeanSwe.LinuxSyscall.Poll.{op}"
+    (reprStr (PollErrorKind.ofErrno e)).trimAscii.toString mode
 
 @[extern "leanswe_poll_close_fd"]
 private opaque rawPollClose : @& RawFd → IO (Except Errno Unit)
@@ -198,6 +202,7 @@ private def err_ppoll_badFd : IO Unit := do
   let cfd ← closedEventFd
   try
     assertErr "ppoll closed at 0" (← defaultOps.ppoll #[(cfd, { pollin := true })] (some {})) Errno.EBADF
+    logPollErrHit "ppoll" Errno.EBADF "real"
     assertErr "ppoll closed at 1" (← defaultOps.ppoll #[(live, { pollout := true }), (cfd, { pollin := true })] (some {})) Errno.EBADF
   finally
     safeClose live
@@ -207,6 +212,7 @@ private def err_ppoll_invalidArg : IO Unit := do
   let fd ← assertOk "eventfd2" (← defaultOps.eventfd2 0 { nonblock := true, cloexec := true })
   try
     assertErr "ppoll sec=-1" (← defaultOps.ppoll #[(fd, { pollin := true })] (some { sec := -1, nsec := 0 })) Errno.EINVAL
+    logPollErrHit "ppoll" Errno.EINVAL "real"
     assertErr "ppoll nsec=1e9" (← defaultOps.ppoll #[(fd, { pollin := true })] (some { sec := 0, nsec := NANOS_PER_SEC })) Errno.EINVAL
     let okRawOps : PollOps :=
       Internal.mkPollOps
@@ -225,27 +231,35 @@ private def err_ppoll_invalidArg : IO Unit := do
 private def err_ppoll_interrupted : IO Unit := do
   let _ ← assertOk "ppoll sanity" (← defaultOps.ppoll #[] (some {}))
   straceInjectSpec "ppoll:error=EINTR" "--poll-strace-worker" "EINTR"
+  logPollErrHit "ppoll" Errno.EINTR "fault_injected"
 
 /-- Mocked plus `strace` `ppoll` `.transientOrResource` test (`ENOMEM`). -/
 private def err_ppoll_transient : IO Unit := do
   runMockPollError "ppoll transient" Errno.ENOMEM .transientOrResource fun ops =>
     ops.ppoll #[] (some {}) >>= fun r => pure (r.map fun _ => ())
+  logPollErrHit "ppoll" Errno.ENOMEM "mocked"
   straceInjectSpec "ppoll:error=ENOMEM" "--poll-strace-worker" "ENOMEM"
+  logPollErrHit "ppoll" Errno.ENOMEM "fault_injected"
 
 /-- Mocked `eventfd2` non-transient error paths (`EBADF`, `EINVAL`, `EINTR`). -/
 private def err_eventfd2_mocked : IO Unit := do
   runMockPollError "eventfd2 EBADF" Errno.EBADF .badFd fun ops =>
     ops.eventfd2 0 {} >>= fun r => pure (r.map fun _ => ())
+  logPollErrHit "eventfd2" Errno.EBADF "mocked"
   runMockPollError "eventfd2 EINVAL" Errno.EINVAL .invalidArg fun ops =>
     ops.eventfd2 0 {} >>= fun r => pure (r.map fun _ => ())
+  logPollErrHit "eventfd2" Errno.EINVAL "mocked"
   runMockPollError "eventfd2 EINTR" Errno.EINTR .interrupted fun ops =>
     ops.eventfd2 0 {} >>= fun r => pure (r.map fun _ => ())
+  logPollErrHit "eventfd2" Errno.EINTR "mocked"
 
 /-- Mocked plus `strace` `eventfd2` `.transientOrResource` test (`ENFILE`). -/
 private def err_eventfd2_transient : IO Unit := do
   runMockPollError "eventfd2 transient" Errno.ENFILE .transientOrResource fun ops =>
     ops.eventfd2 0 {} >>= fun r => pure (r.map fun _ => ())
+  logPollErrHit "eventfd2" Errno.ENFILE "mocked"
   straceInjectSpec "eventfd2:error=ENFILE:when=2+" "--poll-strace-efd-worker" "ENFILE"
+  logPollErrHit "eventfd2" Errno.ENFILE "fault_injected"
 
 @[noinline] private def allocPipeReadDroppingWrite : IO RawFd := do
   let (pr, _pw) ← assertOk "finalizer open pipe" (← rawOpenPipe)

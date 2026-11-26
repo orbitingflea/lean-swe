@@ -3439,9 +3439,10 @@ private structure CliConfig where
   repoDir : System.FilePath := "."
   logPath? : Option System.FilePath := none
   nonce? : Option String := none
-  coverageLogPath? : Option System.FilePath := none
+  coverageLogPaths : Array System.FilePath := #[]
   coverageNonce? : Option String := none
   strictCentralCoverage : Bool := false
+  requireFuzzEquiv : Bool := false
   printSigPkg? : Option Name := none
   deadBranchFuel : Nat := 4096
   argError? : Option String := none
@@ -3453,11 +3454,12 @@ private def parseArgs (args : List String) : CliConfig :=
     | ["--verify-log"] => { cfg with argError? := some "MISSING_VERIFY_LOG_VALUE: --verify-log requires a path" }
     | "--nonce" :: nc :: rest => go { cfg with nonce? := some nc } pos rest
     | ["--nonce"] => { cfg with argError? := some "MISSING_NONCE_VALUE: --nonce requires a non-empty argument" }
-    | "--coverage-log" :: lp :: rest => go { cfg with coverageLogPath? := some ⟨lp⟩ } pos rest
+    | "--coverage-log" :: lp :: rest => go { cfg with coverageLogPaths := cfg.coverageLogPaths.push ⟨lp⟩ } pos rest
     | ["--coverage-log"] => { cfg with argError? := some "MISSING_COVERAGE_LOG_VALUE: --coverage-log requires a path" }
     | "--coverage-nonce" :: nc :: rest => go { cfg with coverageNonce? := some nc } pos rest
     | ["--coverage-nonce"] => { cfg with argError? := some "MISSING_COVERAGE_NONCE_VALUE: --coverage-nonce requires a non-empty argument" }
     | "--strict-central-coverage" :: rest => go { cfg with strictCentralCoverage := true } pos rest
+    | "--require-fuzz-equiv" :: rest => go { cfg with requireFuzzEquiv := true } pos rest
     | "--print-sig" :: pkgStr :: rest => go { cfg with printSigPkg? := some pkgStr.toName } pos rest
     | ["--print-sig"] => { cfg with argError? := some "MISSING_PRINT_SIG_VALUE: --print-sig requires a package name" }
     | "--dead-branch-fuel" :: nf :: rest =>
@@ -3476,6 +3478,96 @@ private def parseArgs (args : List String) : CliConfig :=
         { cfg with argError? := some s!"UNEXPECTED_POSITIONAL_ARG: {arg}" }
   termination_by xs => xs.length
   go {} 0 args
+
+/-- Exact shrinking ratchet allowlist of packages currently still declaring legacy `SpecTests.errorCoverage`.
+    Fails on any new declaration or stale allowlist entry; shrinks to `#[]` as Wave B deletes the tables. -/
+private def legacyErrorCoverageAllowlist : Array String := #[
+  "LeanSwe.Base64",
+  "LeanSwe.CmdLine",
+  "LeanSwe.Compress",
+  "LeanSwe.ConnectProxy",
+  "LeanSwe.CryptoHash",
+  "LeanSwe.CryptoHash.Raw",
+  "LeanSwe.EnvVars",
+  "LeanSwe.EnvVars.Raw",
+  "LeanSwe.Fs",
+  "LeanSwe.Git",
+  "LeanSwe.Glob",
+  "LeanSwe.Json",
+  "LeanSwe.LinuxSyscall.Dns",
+  "LeanSwe.LinuxSyscall.Files",
+  "LeanSwe.LinuxSyscall.Net",
+  "LeanSwe.LinuxSyscall.Passwd",
+  "LeanSwe.LinuxSyscall.Poll",
+  "LeanSwe.LinuxSyscall.Process",
+  "LeanSwe.LinuxSyscall.Sandbox",
+  "LeanSwe.LinuxSyscall.TimeRand",
+  "LeanSwe.NumParse",
+  "LeanSwe.PostFork",
+  "LeanSwe.Process",
+  "LeanSwe.ProcessSandbox",
+  "LeanSwe.ProcessSandbox.Raw",
+  "LeanSwe.RegExp",
+  "LeanSwe.SlotPool",
+  "LeanSwe.Sqlite",
+  "LeanSwe.Sqlite.Raw",
+  "LeanSwe.Tar",
+  "LeanSwe.TempDir",
+  "LeanSwe.Time",
+  "LeanSwe.Toml",
+  "LeanSwe.Uuid"
+]
+
+/-- Exact shrinking ratchet allowlist of packages currently still declaring legacy `SpecTests.externalAssumptions`.
+    Fails on any new declaration or stale allowlist entry; shrinks to `#[]` as Wave B deletes the tables. -/
+private def legacyExternalAssumptionsAllowlist : Array String := #[
+  "LeanSwe.Compress",
+  "LeanSwe.CryptoHash.Raw",
+  "LeanSwe.EnvVars.Raw",
+  "LeanSwe.Git",
+  "LeanSwe.LinuxSyscall.Dns",
+  "LeanSwe.LinuxSyscall.Files",
+  "LeanSwe.LinuxSyscall.Net",
+  "LeanSwe.LinuxSyscall.Passwd",
+  "LeanSwe.LinuxSyscall.Poll",
+  "LeanSwe.LinuxSyscall.Process",
+  "LeanSwe.LinuxSyscall.Sandbox",
+  "LeanSwe.LinuxSyscall.TimeRand",
+  "LeanSwe.PostFork",
+  "LeanSwe.Sqlite.Raw"
+]
+
+private def evaluateLegacyTableRatchetWith
+    (errCovAllow extAssumpAllow : Array String)
+    (errCovObs extAssumpObs : Std.HashSet String) : (Array String × Nat × Nat) := Id.run do
+  let mut errs : Array String := #[]
+  let mut ecAllowSet : Std.HashSet String := {}
+  for entry in errCovAllow do
+    if ecAllowSet.contains entry then
+      errs := errs.push s!"DUPLICATE_LEGACY_ERROR_COVERAGE_ALLOWLIST: {entry}"
+    ecAllowSet := ecAllowSet.insert entry
+  for obs in (errCovObs.toList.toArray.qsort (· < ·)) do
+    if !ecAllowSet.contains obs then
+      errs := errs.push s!"DISALLOWED_LEGACY_ERROR_COVERAGE: {obs} declares legacy errorCoverage not in legacyErrorCoverageAllowlist"
+  for entry in errCovAllow do
+    if !errCovObs.contains entry then
+      errs := errs.push s!"STALE_LEGACY_ERROR_COVERAGE_ALLOWLIST: {entry} no longer declares errorCoverage; remove it from legacyErrorCoverageAllowlist"
+
+  let mut eaAllowSet : Std.HashSet String := {}
+  for entry in extAssumpAllow do
+    if eaAllowSet.contains entry then
+      errs := errs.push s!"DUPLICATE_LEGACY_EXTERNAL_ASSUMPTIONS_ALLOWLIST: {entry}"
+    eaAllowSet := eaAllowSet.insert entry
+  for obs in (extAssumpObs.toList.toArray.qsort (· < ·)) do
+    if !eaAllowSet.contains obs then
+      errs := errs.push s!"DISALLOWED_LEGACY_EXTERNAL_ASSUMPTIONS: {obs} declares legacy externalAssumptions not in legacyExternalAssumptionsAllowlist"
+  for entry in extAssumpAllow do
+    if !extAssumpObs.contains entry then
+      errs := errs.push s!"STALE_LEGACY_EXTERNAL_ASSUMPTIONS_ALLOWLIST: {entry} no longer declares externalAssumptions; remove it from legacyExternalAssumptionsAllowlist"
+  return (errs, errCovAllow.size, extAssumpAllow.size)
+
+private def evaluateLegacyTableRatchet (errCovObs extAssumpObs : Std.HashSet String) : (Array String × Nat × Nat) :=
+  evaluateLegacyTableRatchetWith legacyErrorCoverageAllowlist legacyExternalAssumptionsAllowlist errCovObs extAssumpObs
 
 private structure CoverageOverrideEntry where
   op : String
@@ -3927,7 +4019,7 @@ unsafe def main (args : List String) : IO UInt32 := do
     IO.eprintln "EMPTY_COVERAGE_NONCE_FORBIDDEN: --coverage-nonce must be non-empty"
     return 1
   let effectiveCovNonce? := cfg.coverageNonce?.orElse (fun _ => cfg.nonce?)
-  if cfg.coverageLogPath?.isSome && effectiveCovNonce?.isNone then
+  if !cfg.coverageLogPaths.isEmpty && effectiveCovNonce?.isNone then
     IO.eprintln "MISSING_COVERAGE_NONCE: --coverage-log requires --coverage-nonce or --nonce"
     return 1
   let libDir := cfg.libDir
@@ -4025,38 +4117,75 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   let mut covLogData : CoverageLogData := {}
   let mut hasValidCovLog := false
-  if let some covPath := cfg.coverageLogPath? then
-    unless ← covPath.pathExists do
-      errors := errors.push s!"MISSING_COVERAGE_LOG: {covPath}"
-    if ← covPath.pathExists then
-      let expectedCovNonce := effectiveCovNonce?.getD ""
-      covLogData ← parseCoverageLogFile covPath expectedCovNonce
-      if covLogData.badLines > 0 then
-        errors := errors.push s!"INVALID_OR_UNAUTHENTICATED_COVERAGE_LOG_LINES: {covLogData.badLines} lines failed nonce/format check"
-      if !covLogData.sawInit || !covLogData.sawClose then
-        errors := errors.push "INCOMPLETE_OR_UNINITIALIZED_COVERAGE_LOG: missing LOG_INIT or LOG_CLOSE"
-      if covLogData.badLines == 0 && covLogData.sawInit && covLogData.sawClose then
-        hasValidCovLog := true
-      for (pkgStr, suiteStr, _, _, _, okVal) in covLogData.fuzzEquiv do
-        if !okVal then
-          errors := errors.push s!"FUZZ_EQUIV_FAILED: {pkgStr} ({suiteStr}) reported ok=false"
-      for ((qualOp, kindCtor), modes) in covLogData.errHits do
-        if modes.contains "mocked" then
-          let opName := qualOp.toName
-          let opMod := moduleOfConst env opName
-          let opPkg :=
-            if opMod != .anonymous then pkgNamespaceOfSpecWith knownPkgs opMod
-            else pkgNamespaceOfSpecWith knownPkgs opName
-          if isPurePackage env knownPkgs purityMap opPkg then
-            errors := errors.push s!"PURE_PACKAGE_MOCKED_ERR_HIT: ({qualOp}, {kindCtor}) in pure package {opPkg}"
+  let mut passingFuzzEquivPkgs : Std.HashSet Name := {}
+  if (cfg.strictCentralCoverage || cfg.requireFuzzEquiv) && cfg.coverageLogPaths.isEmpty then
+    errors := errors.push "MISSING_COVERAGE_LOG: --strict-central-coverage / --require-fuzz-equiv requires --coverage-log"
+  if !cfg.coverageLogPaths.isEmpty then
+    let expectedCovNonce := effectiveCovNonce?.getD ""
+    let mut allLogsOk := true
+    for covPath in cfg.coverageLogPaths do
+      unless ← covPath.pathExists do
+        errors := errors.push s!"MISSING_COVERAGE_LOG: {covPath}"
+        allLogsOk := false
+      if ← covPath.pathExists then
+        let one ← parseCoverageLogFile covPath expectedCovNonce
+        if one.badLines > 0 then
+          errors := errors.push s!"INVALID_OR_UNAUTHENTICATED_COVERAGE_LOG_LINES: {one.badLines} lines failed nonce/format check in {covPath}"
+          allLogsOk := false
+        if !one.sawInit || !one.sawClose then
+          errors := errors.push s!"INCOMPLETE_OR_UNINITIALIZED_COVERAGE_LOG: missing LOG_INIT or LOG_CLOSE in {covPath}"
+          allLogsOk := false
+        let mut mergedHits := covLogData.errHits
+        for (k, modes) in one.errHits.toList do
+          let prev := mergedHits.getD k {}
+          let combined := modes.fold (init := prev) fun acc m => acc.insert m
+          mergedHits := mergedHits.insert k combined
+        covLogData := {
+          errHits := mergedHits
+          fuzzEquiv := covLogData.fuzzEquiv ++ one.fuzzEquiv
+          badLines := covLogData.badLines + one.badLines
+          sawInit := covLogData.sawInit || one.sawInit
+          sawClose := covLogData.sawClose || one.sawClose
+        }
+    hasValidCovLog := allLogsOk
+    for (pkgStr, suiteStr, steps, hit, total, okVal) in covLogData.fuzzEquiv do
+      if !okVal then
+        errors := errors.push s!"FUZZ_EQUIV_FAILED: {pkgStr} ({suiteStr}) reported ok=false"
+      else if steps > 0 && hit > 0 && total > 0 then
+        passingFuzzEquivPkgs := passingFuzzEquivPkgs.insert pkgStr.toName
+    for ((qualOp, kindCtor), modes) in covLogData.errHits do
+      let opName := qualOp.toName
+      let kindName := kindCtor.toName
+      if !env.contains opName then
+        errors := errors.push s!"INVALID_COVERAGE_ERR_HIT: operation {qualOp} not found in compiled environment"
+      else
+        match env.find? kindName with
+        | some (.ctorInfo _) => pure ()
+        | _ => errors := errors.push s!"INVALID_COVERAGE_ERR_HIT: error kind {kindCtor} is not an inductive constructor in compiled environment"
+      if modes.contains "mocked" then
+        let opMod := moduleOfConst env opName
+        let opPkg :=
+          if opMod != .anonymous then pkgNamespaceOfSpecWith knownPkgs opMod
+          else pkgNamespaceOfSpecWith knownPkgs opName
+        if isPurePackage env knownPkgs purityMap opPkg then
+          errors := errors.push s!"PURE_PACKAGE_MOCKED_ERR_HIT: ({qualOp}, {kindCtor}) in pure package {opPkg}"
+  if (cfg.requireFuzzEquiv || cfg.strictCentralCoverage) && hasValidCovLog then
+    if covLogData.errHits.isEmpty then
+      errors := errors.push "EMPTY_COVERAGE_ERR_HITS: no ERR_HIT records observed across coverage logs"
+    for pkg in (fuzzCoveredPkgs.toList.toArray.qsort (fun a b => a.toString < b.toString)) do
+      if !passingFuzzEquivPkgs.contains pkg then
+        errors := errors.push s!"MISSING_FUZZ_EQUIV: {pkg} missing passing FUZZ_EQUIV attestation in coverage log"
 
   let mut specModules : Array Name := #[]
   let mut formalAssumptions : Array (Name × Name) := #[]
   let mut specAndProofRoots : Array Name := #[]
+  let mut obsErrCovPkgs : Std.HashSet String := {}
+  let mut obsExtAssumpPkgs : Std.HashSet String := {}
   for h : i in [0 : env.header.moduleNames.size] do
     let m := env.header.moduleNames[i]
     if !isProjectOrTestModule m then continue
     let some data := env.header.moduleData[i]? | continue
+    let mPkg := pkgNamespaceOfSpecWith knownPkgs m
     for c in data.constants do
       if let .axiomInfo _ := c then
         if !allowedAxioms.contains c.name then
@@ -4104,6 +4233,11 @@ unsafe def main (args : List String) : IO UInt32 := do
         if let .thmInfo _ := c then
           specAndProofRoots := specAndProofRoots.push c.name
       if isCompilerAux c.name then continue
+      if m.getRoot == `LeanSwe && !isProofsModule m && !m.components.contains `RuntimeTests then
+        if c.name.getString! == "errorCoverage" then
+          obsErrCovPkgs := obsErrCovPkgs.insert mPkg.toString
+        if c.name.getString! == "externalAssumptions" then
+          obsExtAssumpPkgs := obsExtAssumpPkgs.insert mPkg.toString
       if c.name.getString! == "EmpiricalAssumptions" then
         errors := errors.push s!"PROSE_EMPIRICAL_ASSUMPTIONS: {c.name} in {m}"
     if m.getString! == "SpecTests" then
@@ -4495,7 +4629,7 @@ unsafe def main (args : List String) : IO UInt32 := do
           errs := errs.push s!"PURE_MODULE_ASSUMPTION_FORBIDDEN: {extAssumpConst} in pure module {specMod}"
         if hasRt && env.contains regAssumpConst then
           errs := errs.push s!"PURE_MODULE_ASSUMPTION_FORBIDDEN: {regAssumpConst} in pure module {rtMod}"
-      else if hasRt || env.contains extAssumpConst then
+      else
         let mut regAssumpMap : Std.HashMap String Name := {}
         if hasRt then
           if let some (.defnInfo dv) := env.find? regAssumpConst then
@@ -4504,9 +4638,12 @@ unsafe def main (args : List String) : IO UInt32 := do
             if let some elems ← extractArrayElems dv.value then
               for elem in elems do
                 if let some (specName, runFn) ← parseRegisteredAssumption elem then
+                  let obConst := specName.toName
+                  if obConst.getPrefix != pkgNs || !obConst.getString!.startsWith "assume_" then
+                    errs := errs.push s!"MALFORMED_ASSUMPTION_NAME: {specName} in {regAssumpConst}"
                   let runClean := runFn.consumeMData
                   if let .const fnName _ := runClean then
-                    if !isInModuleSubtree (moduleOfConst env fnName) rtMod || fnName.getString! != specName.toName.getString! then
+                    if !isInModuleSubtree (moduleOfConst env fnName) rtMod || fnName.getString! != obConst.getString! then
                       errs := errs.push s!"RUNTIME_ASSUMPTION_NAME_MISMATCH: {specName} bound to {fnName}"
                     else
                       let (deadFn, dbCache') ← hasStaticDeadBranchTransitive env cfg.deadBranchFuel dbCache fnName
@@ -4519,7 +4656,9 @@ unsafe def main (args : List String) : IO UInt32 := do
                         errs := errs.push s!"TRIVIAL_RUNTIME_ASSUMPTION: {fnName} has no active failure/throw path"
                       unless ← usesPackageImplConstActiveCached env activeCacheRef pkgNs rtMod fnName do
                         errs := errs.push s!"MISSING_PACKAGE_REF_IN_TEST: {fnName} does not actively invoke {pkgNs} Interface/Impl"
-                      regAssumpMap := regAssumpMap.insert specName fnName
+                      if !regAssumpMap.contains specName then
+                        regAssumpMap := regAssumpMap.insert specName fnName
+                        expAssumps := expAssumps.push specName
                   else
                     errs := errs.push s!"RUNTIME_ASSUMPTION_NOT_NAMED_CONST: {specName} in {regAssumpConst}"
                 else
@@ -4530,6 +4669,13 @@ unsafe def main (args : List String) : IO UInt32 := do
             errs := errs.push s!"MISSING_REGISTERED_ASSUMPTIONS: {regAssumpConst}"
 
         let mut listedFormalPreds : Std.HashSet Name := {}
+        for entry in externalAssumpJsonEntries do
+          if entry.package.toName == pkgNs then
+            if let some fpStr := entry.formalPred? then
+              let fpName := fpStr.toName
+              if formalAssumpSet.contains fpName then
+                listedFormalPreds := listedFormalPreds.insert fpName
+
         if let some (.defnInfo extDv) := env.find? extAssumpConst then
           if let some obElems ← extractListElems extDv.value then
             let ifaceMod := Name.str pkgNs "Interface"
@@ -4556,19 +4702,15 @@ unsafe def main (args : List String) : IO UInt32 := do
               if hasRt then
                 if !regAssumpMap.contains obName then
                   errs := errs.push s!"MISSING_ASSUMPTION_TEST: {obName} not registered in {regAssumpConst}"
-                expAssumps := expAssumps.push obName
           else
             errs := errs.push s!"UNPARSEABLE_EXTERNAL_ASSUMPTIONS: {extAssumpConst}"
-        else if hasRt then
-          errs := errs.push s!"MISSING_EXTERNAL_ASSUMPTIONS: {extAssumpConst}"
 
         for (m, aName) in formalAssumptions do
-          if pkgNamespaceOfSpecWith knownPkgs m == pkgNs && !listedFormalPreds.contains aName then
-            errs := errs.push s!"UNLISTED_FORMAL_ASSUMPTION: {aName} missing from {extAssumpConst}"
-      else
-        for (m, aName) in formalAssumptions do
           if pkgNamespaceOfSpecWith knownPkgs m == pkgNs then
-            errs := errs.push s!"UNLISTED_FORMAL_ASSUMPTION: {aName} missing from {extAssumpConst}"
+            if !listedFormalPreds.contains aName then
+              errs := errs.push s!"UNLISTED_FORMAL_ASSUMPTION: {aName} missing from scripts/external_assumptions.json"
+            if hasRt && !regAssumpMap.contains aName.toString then
+              errs := errs.push s!"MISSING_ASSUMPTION_TEST: {aName} not registered in {regAssumpConst}"
 
       let ifaceMod := Name.str pkgNs "Interface"
       let implMod := Name.str pkgNs "Impl"
@@ -4628,7 +4770,9 @@ unsafe def main (args : List String) : IO UInt32 := do
                         errs := errs.push s!"TRIVIAL_ERROR_TEST: {fnName} has no active failure/throw path"
                       unless ← usesPackageImplConstActiveCached env activeCacheRef pkgNs rtMod fnName do
                         errs := errs.push s!"MISSING_PACKAGE_REF_IN_TEST: {fnName} does not actively invoke {pkgNs} Interface/Impl"
-                      regErrMap := regErrMap.insert tName (modeCtor, fnName)
+                      if !regErrMap.contains tName then
+                        regErrMap := regErrMap.insert tName (modeCtor, fnName)
+                        expErrTests := expErrTests.push (tName, modeCtor.toString)
                   else
                     errs := errs.push s!"ERROR_TEST_NOT_NAMED_CONST: {tName} in {regErrConst}"
                 else
@@ -4681,7 +4825,6 @@ unsafe def main (args : List String) : IO UInt32 := do
                 | errs := errs.push s!"MISSING_ERROR_TEST: {targetStr} for ({req}, {kindCtor}) not in {regErrConst}"; continue
               if regMode != tag then
                 errs := errs.push s!"MODE_MISMATCH_ERROR_TEST: {targetStr} declared {tag} vs registered {regMode}"
-              expErrTests := expErrTests.push (targetStr, tag.toString)
 
           for reqName in fallibleReqs do
             unless byReq.contains reqName.toString do
@@ -4693,13 +4836,15 @@ unsafe def main (args : List String) : IO UInt32 := do
             for ctor in expectedCtors do
               if !covered.contains ctor then
                 errs := errs.push s!"UNCOVERED_ERROR_KIND: ({req}, {ctor}) missing from {errCovConst}"
-        else if !hasValidCovLog && !cfg.strictCentralCoverage then
-          errs := errs.push s!"MISSING_ERROR_COVERAGE: {errCovConst}"
 
-        let runCentralDischarge :=
-          cfg.strictCentralCoverage || (hasValidCovLog && (hasRt || !hasLegacyErrCov))
-        if runCentralDischarge then
-          let mut pkgCentralCells : Nat := 0
+        let isRetiredFuzzed := !hasRt && fuzzCoveredPkgs.contains pkgNs
+        let hasBadCovLog := !cfg.coverageLogPaths.isEmpty && !hasValidCovLog
+        if hasBadCovLog && !hasLegacyErrCov then
+          errs := errs.push s!"MISSING_ERROR_COVERAGE: {pkgNs} (invalid or incomplete coverage log)"
+        else if !hasLegacyErrCov && isExtPkg && fallibleReqs.isEmpty && !hasAnyFallibleIfaceSurface then
+          errs := errs.push s!"MISSING_ERROR_COVERAGE: {pkgNs} (external boundary package exposes zero fallible Except operations)"
+        else
+          let mut pkgResolvedCells : Array (Name × Name) := #[]
           for reqName in fallibleReqs do
             let some reqInfo := env.find? reqName
               | errs := errs.push s!"UNRESOLVABLE_FALLIBLE_OP: {reqName} in {pkgNs} not found in compiled environment"; continue
@@ -4713,7 +4858,12 @@ unsafe def main (args : List String) : IO UInt32 := do
               errs := errs.push s!"EMPTY_OR_NON_INDUCTIVE_ERROR_ENUM: {enumName} for {reqName} in {pkgNs}"
               continue
             for ctor in enumInd.ctors do
-              pkgCentralCells := pkgCentralCells + 1
+              pkgResolvedCells := pkgResolvedCells.push (reqName, ctor)
+
+          let runCentralDischarge :=
+            cfg.strictCentralCoverage || (hasValidCovLog && (!isRetiredFuzzed || cfg.requireFuzzEquiv))
+          if runCentralDischarge then
+            for (reqName, ctor) in pkgResolvedCells do
               centralCellsN := centralCellsN + 1
               let cell := (reqName.toString, ctor.toString)
               let discharged :=
@@ -4722,14 +4872,23 @@ unsafe def main (args : List String) : IO UInt32 := do
                 overrideCells.contains cell
               unless discharged do
                 errs := errs.push s!"UNCOVERED_CENTRAL_ERROR_CELL: ({reqName}, {ctor}) in {pkgNs} not discharged by NeverErrorKind*, ERR_HIT log, or coverage_overrides.json"
-          if !hasLegacyErrCov && (hasAnyFallibleIfaceSurface || !fallibleReqs.isEmpty) && pkgCentralCells == 0 then
-            errs := errs.push s!"MISSING_ERROR_COVERAGE: {errCovConst} (central coverage checked 0 cells for fallible surface in {pkgNs})"
+            if !hasLegacyErrCov && (hasAnyFallibleIfaceSurface || !fallibleReqs.isEmpty) && pkgResolvedCells.isEmpty then
+              errs := errs.push s!"MISSING_ERROR_COVERAGE: {pkgNs} (central coverage checked 0 cells for fallible surface)"
+          else if !hasLegacyErrCov && !isRetiredFuzzed then
+            let mut hasUndischargedStatic := false
+            for (reqName, ctor) in pkgResolvedCells do
+              let cell := (reqName.toString, ctor.toString)
+              if !provedImpossibleCells.contains cell && !overrideCells.contains cell then
+                hasUndischargedStatic := true
+            if (hasAnyFallibleIfaceSurface || !fallibleReqs.isEmpty) && pkgResolvedCells.isEmpty then
+              errs := errs.push s!"MISSING_ERROR_COVERAGE: {pkgNs} (fallible surface has 0 resolved error cells)"
+            else if hasUndischargedStatic && (!hasRt || regErrMap.isEmpty) then
+              errs := errs.push s!"MISSING_ERROR_COVERAGE: {pkgNs} (pass --coverage-log or register runtime error tests / NeverErrorKind* proofs)"
 
     for (m, aName) in formalAssumptions do
       let pkgNs := pkgNamespaceOfSpecWith knownPkgs m
       if !checkedSpecPkgs.contains pkgNs then
-        let extAssumpConst := Name.str pkgNs "externalAssumptions"
-        errs := errs.push s!"UNLISTED_FORMAL_ASSUMPTION: {aName} missing from {extAssumpConst}"
+        errs := errs.push s!"UNLISTED_FORMAL_ASSUMPTION: {aName} missing from scripts/external_assumptions.json"
 
     let activeScanErrs := (← activeCacheRef.get).scanErrors.toArray.qsort (fun a b => a.1.toString < b.1.toString)
     for (fnName, reason) in activeScanErrs do
@@ -4738,6 +4897,9 @@ unsafe def main (args : List String) : IO UInt32 := do
     return (errs, expAssumps, expErrTests, provedImpossibleCells.size, centralCellsN)
   ).toIO ctx state
 
+  let (legacyRatchetErrs, legacyErrCovAllowN, legacyExtAssumpAllowN) :=
+    evaluateLegacyTableRatchet obsErrCovPkgs obsExtAssumpPkgs
+  errors := errors ++ legacyRatchetErrs
   errors := errors ++ metaErrs
   let mut verifiedLogCount := 0
   if let some logPath := cfg.logPath? then
@@ -4760,7 +4922,7 @@ unsafe def main (args : List String) : IO UInt32 := do
         else
           verifiedLogCount := verifiedLogCount + 1
 
-  IO.println s!"CENTRAL_COVERAGE_CHECK: olean_never_error={oleanNeverErrCount} err_hits={covLogData.errHits.size} fuzz_equiv={covLogData.fuzzEquiv.size} overrides={coverageOverrideEntries.size} ext_assumps={externalAssumpJsonEntries.size} central_cells={centralCellsChecked}"
+  IO.println s!"CENTRAL_COVERAGE_CHECK: olean_never_error={oleanNeverErrCount} err_hits={covLogData.errHits.size} fuzz_equiv={covLogData.fuzzEquiv.size} overrides={coverageOverrideEntries.size} ext_assumps={externalAssumpJsonEntries.size} central_cells={centralCellsChecked} legacy_errcov_obs={obsErrCovPkgs.size} legacy_errcov_allow={legacyErrCovAllowN} legacy_extassump_obs={obsExtAssumpPkgs.size} legacy_extassump_allow={legacyExtAssumpAllowN}"
   IO.println s!"ASSUMPTION_CHECK: spec_modules={specModules.size} assumptions={expectedAssumpNames.size} formal_assumptions={formalAssumptions.size} error_tests={expectedErrorTests.size} log_verified={verifiedLogCount} errors={errors.size}"
   if errors.isEmpty then
     return 0

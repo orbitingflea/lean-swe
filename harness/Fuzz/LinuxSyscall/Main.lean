@@ -539,59 +539,51 @@ private def recordTimeRandCoverage (actualSteps : Nat) (h : TimeRandHitCounters)
   if h.getrandomTransient > 0 then
     logErrHit "LeanSwe.LinuxSyscall.TimeRand.getrandom" "LeanSwe.LinuxSyscall.TimeRand.TimeRandErrorKind.transientOrResource" "fault_injected"
 
+private def withCovChecks (checks act : IO Unit) : IO Unit := do
+  if ← isCoverageLogActive then checks
+  act
+
 /-- Construct the six unified `LinuxSyscall` world-model `FuzzSuite` descriptors (`sandbox`, `timerand`, `files`, `process`, `poll`, `net`). -/
 def suites (opts : WorldOptions) (outClosed errClosed : Bool) : List FuzzSuite :=
   let stdoutOpen := !outClosed
   [ { name := "sandbox"
       description := "LinuxSyscall.Sandbox world-model differential fuzzer (Landlock, seccomp, prctl, setrlimit, memfd)"
-      runSmoke := fun cfg => do
-        Fuzz.LinuxSyscall.Sandbox.Strace.runChecks
-        runSandboxSuiteImpl opts (min cfg.steps 2000) cfg.seed
-      runFuzz := fun cfg => runSandboxSuiteImpl opts cfg.steps cfg.seed
+      runSmoke := fun cfg => do Fuzz.LinuxSyscall.Sandbox.Strace.runChecks; runSandboxSuiteImpl opts (min cfg.steps 2000) cfg.seed
+      runFuzz := fun cfg => withCovChecks Fuzz.LinuxSyscall.Sandbox.Strace.runChecks (runSandboxSuiteImpl opts cfg.steps cfg.seed)
       selfTestShrink := fun seed => SandboxFuzz.runShrinkSelfTest seed }
   , { name := "timerand"
       description := "LinuxSyscall.TimeRand world-model differential fuzzer (clock_gettime, clock_nanosleep, getrandom)"
       runSmoke := fun cfg => do
         Fuzz.LinuxSyscall.TimeRand.Strace.runChecks
-        let allowNoTm := opts.allowNoTimens || !opts.requireNs
         let actualSteps := min cfg.steps 1000
-        let rep ← fuzzTimeRand actualSteps cfg.seed (runEnvSubEpisodes := true) (allowNoTimens := allowNoTm)
+        let rep ← fuzzTimeRand actualSteps cfg.seed (runEnvSubEpisodes := true) (allowNoTimens := opts.allowNoTimens || !opts.requireNs)
         recordTimeRandCoverage actualSteps rep.hits
-      runFuzz := fun cfg => do
+      runFuzz := fun cfg => withCovChecks Fuzz.LinuxSyscall.TimeRand.Strace.runChecks do
         let rep ← fuzzTimeRand cfg.steps cfg.seed (runEnvSubEpisodes := true) (allowNoTimens := opts.allowNoTimens)
         recordTimeRandCoverage cfg.steps rep.hits
       selfTestShrink := fun seed => selfTestShrink seed }
   , { name := "files"
       description := "LinuxSyscall.Files world-model differential fuzzer (23 POSIX file syscalls across FS/mount/seccomp worlds)"
-      runSmoke := fun cfg => do
-        Fuzz.LinuxSyscall.Files.Strace.runChecks
-        let smokeSteps := if opts.requireNs then 2000 else min cfg.steps 1500
-        runFilesSuiteImpl stdoutOpen opts smokeSteps cfg.seed
-      runFuzz := fun cfg => runFilesSuiteImpl stdoutOpen opts cfg.steps cfg.seed
+      runSmoke := fun cfg => do Fuzz.LinuxSyscall.Files.Strace.runChecks; runFilesSuiteImpl stdoutOpen opts (if opts.requireNs then 2000 else min cfg.steps 1500) cfg.seed
+      runFuzz := fun cfg => withCovChecks Fuzz.LinuxSyscall.Files.Strace.runChecks (runFilesSuiteImpl stdoutOpen opts cfg.steps cfg.seed)
       selfTestShrink := fun _ => runFilesShrinkSelfTest opts.dir stdoutOpen }
   , { name := "process"
       description := "LinuxSyscall.Process world-model differential fuzzer (pipe2, waitpid, kill, pidfd_open, pidfd_send_signal)"
-      runSmoke := fun cfg => do
-        ProcessEnv.ensureStdio
-        Fuzz.LinuxSyscall.Process.Strace.runChecks
-        runProcessSuiteImpl opts (min cfg.steps 1500) cfg.seed
-      runFuzz := fun cfg => runProcessSuiteImpl opts cfg.steps cfg.seed
+      runSmoke := fun cfg => do ProcessEnv.ensureStdio; Fuzz.LinuxSyscall.Process.Strace.runChecks; runProcessSuiteImpl opts (min cfg.steps 1500) cfg.seed
+      runFuzz := fun cfg => do ProcessEnv.ensureStdio; withCovChecks Fuzz.LinuxSyscall.Process.Strace.runChecks (runProcessSuiteImpl opts cfg.steps cfg.seed)
       selfTestShrink := fun _ => ProcessFuzz.runShrinkSelfTest }
   , { name := "poll"
       description := "LinuxSyscall.Poll world-model differential fuzzer (ppoll, eventfd2)"
-      runSmoke := fun cfg => do
-        Fuzz.LinuxSyscall.Poll.Strace.runChecks
-        runPollSuiteImpl (min cfg.steps 4000) cfg.seed
-      runFuzz := fun cfg => runPollSuiteImpl cfg.steps cfg.seed
-      selfTestShrink := fun _ => do
-        let detail ← PollFuzz.runShrinkSelfTest
-        IO.println s!"SELF_TEST_SHRINK (poll): {detail}" }
+      runSmoke := fun cfg => do Fuzz.LinuxSyscall.Poll.Strace.runChecks; runPollSuiteImpl (min cfg.steps 4000) cfg.seed
+      runFuzz := fun cfg => withCovChecks Fuzz.LinuxSyscall.Poll.Strace.runChecks (runPollSuiteImpl cfg.steps cfg.seed)
+      selfTestShrink := fun _ => do IO.println s!"SELF_TEST_SHRINK (poll): {← PollFuzz.runShrinkSelfTest}" }
   , { name := "net"
       description := "LinuxSyscall.Net world-model differential fuzzer (15 Linux socket/SCM_RIGHTS/ioctl syscalls)"
-      runSmoke := fun cfg => do
-        Fuzz.LinuxSyscall.Net.Strace.runChecks
-        runNetSuiteImpl opts (min cfg.steps 2000) cfg.seed outClosed errClosed
-      runFuzz := fun cfg => runNetSuiteImpl opts cfg.steps cfg.seed outClosed errClosed
+      runSmoke := fun cfg => do Fuzz.LinuxSyscall.Net.Strace.runChecks; runNetSuiteImpl opts (min cfg.steps 2000) cfg.seed outClosed errClosed
+      runFuzz := fun cfg => do
+        if !opts.inNetns && !opts.initNetnsDropCaps then
+          if ← isCoverageLogActive then Fuzz.LinuxSyscall.Net.Strace.runChecks
+        runNetSuiteImpl opts cfg.steps cfg.seed outClosed errClosed
       selfTestShrink := fun _ => runNetShrinkSelfTest }
   ]
 
