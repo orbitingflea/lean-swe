@@ -1,7 +1,7 @@
 import Lean
 
 /-!
-Hardened checkable-assumptions, error-coverage, and `Core.Obeys` / `Core.Refines` model-refinement
+Hardened checkable-assumptions, error-coverage, and `Core.Obeys` model-refinement
 gate audit for `lean-swe` compiled `.olean` artifacts.
 
 Enforces:
@@ -9,7 +9,7 @@ Enforces:
    - Every `.lean` file under `LeanSwe/` must be transitively imported by `LeanSwe`.
    - Zero custom `axiom` declarations anywhere in `Core`, `LeanSwe`, or `Tests.Main`.
    - Standard axioms only (`propext`, `Classical.choice`, `Quot.sound`) on all `assume_*`, `CanReach`,
-     upper-layer consumer theorems, `.provedImpossible` theorems, and `obeys_model` / `refines_model` theorems.
+     upper-layer consumer theorems, `.provedImpossible` theorems, and `obeys_model` theorems.
 2. Zero prose-only, renamed, or hidden assumptions across non-`Proofs` project modules:
    - No `EmpiricalAssumptions` constant anywhere.
    - No `Prop`-typed inductive/structure field in any non-`Proofs` project module.
@@ -31,30 +31,23 @@ Enforces:
    `<pkgNs>.Model` (relying on `SpecTests` + `Proofs`), preserving unconditional `errorCoverage`, `externalAssumptions`
    subject/predicate, and axiom checks.
 5. Error coverage completeness & canonical `.provedImpossible` shape (`Core.NeverErrorKind{IO,BaseIO,Pure}`).
-6. `Core.Obeys` / `Core.Refines` model-refinement completeness: every non-`@[extern]`/non-CLI package that provides
-   `<pkgNs>.Model` (mandatory for impure boundaries, optional for pure/composed packages; `deferredRefinesModelPackages`
-   is currently empty, as no deferred packages remain) must prove `<pkgNs>.Proofs.obeys_model`
-   or legacy `<pkgNs>.Proofs.refines_model` (never both) via `ObeysPure`, `ObeysPure2`, `ObeysPure3`, `ObeysPure4`,
+6. `Core.Obeys` model-refinement completeness: every non-`@[extern]`/non-CLI package that provides
+   `<pkgNs>.Model` (mandatory for impure boundaries, optional for pure/composed packages) must prove
+   `<pkgNs>.Proofs.obeys_model` via `ObeysPure`, `ObeysPure2`, `ObeysPure3`, `ObeysPure4`,
    `ObeysPureEq`, `ObeysPureEq2`, `ObeysPureEq3`, `ObeysPureEq4`, `ObeysPureEqUpToErrMsg`, `ObeysPureEqUpToErrMsg2`,
-   `ObeysPureEqUpToErrMsg3`, `ObeysPureEqUpToErrMsg4`, `ObeysInverseRender`, `ObeysStep`, `ObeysStepExcept`,
-   `ObeysStepId`, `ObeysStepFrom`, `ObeysStepFromFinally`, `ObeysStepFromConc`, `ObeysStepFromExcept`, or `ObeysStepFrom2` (or legacy `RefinesPure{,2,3,4}`,
-   `RefinesPureEq{,2,3,4}`, `RefinesStep`, `RefinesStepId`, `RefinesStepFrom`, `RefinesStepFromFinally`,
-   `RefinesStepFrom2` aliases) with bare-constant pinning and non-trivial `allowed` relations across the full public
-   `<pkgNs>.Interface` surface.
-7. Supports `--verify-log <path> [--nonce <token>]`, `--allow-legacy [<Csv>]`, and `--print-sig <Pkg>` (emits a
-   starting template with explicit placeholders for `<Pkg>.Proofs.obeys_model`).
+   `ObeysPureEqUpToErrMsg3`, `ObeysPureEqUpToErrMsg4`, `ObeysInverseRender`, `ObeysInverseRenderWithin`,
+   `ObeysPureFrom`, `ObeysInverseRenderFrom`, `ObeysStep`, `ObeysStepExcept`, `ObeysStepId`,
+   `ObeysStepFrom`, `ObeysStepFromFinally`, `ObeysStepFromConc`, `ObeysStepFromExcept`,
+   `ObeysStepFromConcCell`, or `ObeysStepFrom2` with bare-constant pinning and non-trivial `allowed`
+   relations across the full public `<pkgNs>.Interface` surface.
+7. Supports `--verify-log <path> [--nonce <token>]`, `--coverage-log <path> [--coverage-nonce <token>]`,
+   and `--print-sig <Pkg>` (emits a starting template with explicit placeholders for `<Pkg>.Proofs.obeys_model`).
 -/
 
 open Lean Meta
 
 private def allowedAxioms : Std.HashSet Name :=
   Std.HashSet.emptyWithCapacity 4 |>.insert ``propext |>.insert ``Classical.choice |>.insert ``Quot.sound
-
-private def legacyExemptionAllowlist : Array Name := #[]
-
-/-- Packages with temporarily deferred `<pkgNs>.Proofs.obeys_model` / `refines_model` obligations; currently empty (no deferred packages remain). -/
-private def deferredRefinesModelPackages : Std.HashSet Name :=
-  Std.HashSet.emptyWithCapacity
 
 private def forbiddenTestMainConsts : Std.HashSet Name :=
   Std.HashSet.emptyWithCapacity 16
@@ -1695,7 +1688,7 @@ private def mkRelaxedProjectIrreduciblesEnv : CoreM Environment := do
       setReducibilityStatus cName status
   return relaxedEnv
 
-/-- Bounded Meta-level definitional-equality check for `Core.Refines` triviality gates.
+/-- Bounded Meta-level definitional-equality check for `Core.Obeys` triviality gates.
 Temporarily runs `Meta.isDefEq` at `.default` transparency under `relaxedEnv` with fresh
 `CoreM`/`MetaM` caches so project `@[irreducible]` definitions (and cross-module global
 `[irreducible]` attributes applied in project modules) unfold while preserving stdlib
@@ -2667,21 +2660,6 @@ private def isAllowedErrorExtractorConst
       m.toString.startsWith (typesMod.toString ++ ".") ||
       (env.isProjectionFn fn && m.getRoot == `LeanSwe && m.components.contains `Types)
 
-private def findRefinesOrObeysThm? (env : Environment) (pkg : Name) : Except String (Option Name) :=
-  let topProofMod := Name.str pkg "Proofs"
-  let obeysName := Name.str topProofMod "obeys_model"
-  let refinesName := Name.str topProofMod "refines_model"
-  let hasObeys := env.contains obeysName
-  let hasRefines := env.contains refinesName
-  if hasObeys && hasRefines then
-    .error s!"DUPLICATE_OBEYS_AND_REFINES_MODEL: {pkg} defines both {obeysName} and {refinesName}"
-  else if hasObeys then
-    .ok (some obeysName)
-  else if hasRefines then
-    .ok (some refinesName)
-  else
-    .ok none
-
 private partial def peelLambdasRefines (e : Expr) : Expr :=
   match e.consumeMData with
   | .lam _ _ b _ => peelLambdasRefines b
@@ -2787,14 +2765,9 @@ private def checkRefinesModelTheorem
       if imp.getRoot == `LeanSwe && imp.isStr && (imp.getString! == "Interface" || imp.getString! == "Impl") then
         errs := errs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {mMod} transitively imports {imp}"
 
-  let thmName ← match findRefinesOrObeysThm? env pkg with
-    | .error dupErr => return (#[dupErr], axCache)
-    | .ok (some n) => pure n
-    | .ok none =>
-      return (#[s!"MISSING_REFINES_MODEL: {pkg} lacks public theorem {Name.str topProofMod "obeys_model"} (or legacy {Name.str topProofMod "refines_model"})"], axCache)
-
+  let thmName := Name.str topProofMod "obeys_model"
   let some (.thmInfo tv) := env.find? thmName
-    | return (#[s!"MISSING_REFINES_MODEL: {thmName} must be a theorem in {topProofMod}"], axCache)
+    | return (#[s!"MISSING_REFINES_MODEL: {pkg} lacks public theorem {thmName}"], axCache)
   if isPrivateName thmName || moduleOfConst env thmName != topProofMod then
     return (#[s!"MISSING_REFINES_MODEL: {thmName} must be a public theorem in {topProofMod}"], axCache)
 
@@ -2879,21 +2852,21 @@ private def checkRefinesModelTheorem
 
         let ab := atomBody.consumeMData
         let pureInfo? : Option (Bool × Array Expr × Expr × Expr × Expr) :=
-          if ab.isAppOfArity `Core.RefinesPure 4 || ab.isAppOfArity `Core.ObeysPure 4 then
+          if ab.isAppOfArity `Core.ObeysPure 4 then
             let args := ab.getAppArgs; some (false, #[args[0]!], args[1]!, args[2]!, args[3]!)
-          else if ab.isAppOfArity `Core.RefinesPure2 5 || ab.isAppOfArity `Core.ObeysPure2 5 then
+          else if ab.isAppOfArity `Core.ObeysPure2 5 then
             let args := ab.getAppArgs; some (false, #[args[0]!, args[1]!], args[2]!, args[3]!, args[4]!)
-          else if ab.isAppOfArity `Core.RefinesPure3 6 || ab.isAppOfArity `Core.ObeysPure3 6 then
+          else if ab.isAppOfArity `Core.ObeysPure3 6 then
             let args := ab.getAppArgs; some (false, #[args[0]!, args[1]!, args[2]!], args[3]!, args[4]!, args[5]!)
-          else if ab.isAppOfArity `Core.RefinesPure4 7 || ab.isAppOfArity `Core.ObeysPure4 7 then
+          else if ab.isAppOfArity `Core.ObeysPure4 7 then
             let args := ab.getAppArgs; some (false, #[args[0]!, args[1]!, args[2]!, args[3]!], args[4]!, args[5]!, args[6]!)
-          else if ab.isAppOfArity `Core.RefinesPureEq 4 || ab.isAppOfArity `Core.ObeysPureEq 4 then
+          else if ab.isAppOfArity `Core.ObeysPureEq 4 then
             let args := ab.getAppArgs; some (true, #[args[0]!], args[1]!, args[2]!, args[3]!)
-          else if ab.isAppOfArity `Core.RefinesPureEq2 5 || ab.isAppOfArity `Core.ObeysPureEq2 5 then
+          else if ab.isAppOfArity `Core.ObeysPureEq2 5 then
             let args := ab.getAppArgs; some (true, #[args[0]!, args[1]!], args[2]!, args[3]!, args[4]!)
-          else if ab.isAppOfArity `Core.RefinesPureEq3 6 || ab.isAppOfArity `Core.ObeysPureEq3 6 then
+          else if ab.isAppOfArity `Core.ObeysPureEq3 6 then
             let args := ab.getAppArgs; some (true, #[args[0]!, args[1]!, args[2]!], args[3]!, args[4]!, args[5]!)
-          else if ab.isAppOfArity `Core.RefinesPureEq4 7 || ab.isAppOfArity `Core.ObeysPureEq4 7 then
+          else if ab.isAppOfArity `Core.ObeysPureEq4 7 then
             let args := ab.getAppArgs; some (true, #[args[0]!, args[1]!, args[2]!, args[3]!], args[4]!, args[5]!, args[6]!)
           else none
 
@@ -2915,11 +2888,11 @@ private def checkRefinesModelTheorem
               aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited input domain for {implFn} in {thmName}"
           if isEqKind then
             if ← isProp outTySubst then
-              aErrs := aErrs.push s!"TRIVIAL_CODOMAIN_IN_REFINES: Prop codomain in RefinesPureEq for {implFn} in {thmName}"
+              aErrs := aErrs.push s!"TRIVIAL_CODOMAIN_IN_REFINES: Prop codomain in ObeysPureEq for {implFn} in {thmName}"
             else
               let ow := (← whnf outTySubst).consumeMData
               if ow.isConstOf ``Unit || ow.isConstOf ``PUnit then
-                aErrs := aErrs.push s!"TRIVIAL_CODOMAIN_IN_REFINES: Unit codomain in RefinesPureEq for {implFn} in {thmName}"
+                aErrs := aErrs.push s!"TRIVIAL_CODOMAIN_IN_REFINES: Unit codomain in ObeysPureEq for {implFn} in {thmName}"
           else
             let specSubst := applySubst specArg
             match ← checkPureAllowedNonTrivial env relaxedEnv modelMods specSubst specFn inTysSubst outTySubst with
@@ -3224,14 +3197,14 @@ private def checkRefinesModelTheorem
           return aErrs
 
         let stepInfo? : Option (Expr × Expr × Expr × Expr × Expr × Expr × Expr × Expr) :=
-          if ab.isAppOfArity `Core.RefinesStep 8 || ab.isAppOfArity `Core.ObeysStep 8 then
+          if ab.isAppOfArity `Core.ObeysStep 8 then
             let args := ab.getAppArgs
             some (args[0]!, args[1]!, args[2]!, args[3]!, args[4]!, args[5]!, args[6]!, args[7]!)
           else if ab.isAppOfArity `Core.ObeysStepExcept 8 then
             let args := ab.getAppArgs
             let exOutTy := mkApp2 (mkConst ``Except [.zero, .zero]) (mkConst ``IO.Error) args[3]!
             some (args[0]!, args[1]!, args[2]!, exOutTy, args[4]!, args[5]!, args[6]!, args[7]!)
-          else if ab.isAppOfArity `Core.RefinesStepId 6 || ab.isAppOfArity `Core.ObeysStepId 6 then
+          else if ab.isAppOfArity `Core.ObeysStepId 6 then
             let args := ab.getAppArgs
             let sTy := args[0]!
             some (sTy, sTy, args[1]!, args[2]!, mkApp (mkConst ``id [Level.succ Level.zero]) sTy, args[3]!, args[4]!, args[5]!)
@@ -3239,7 +3212,7 @@ private def checkRefinesModelTheorem
 
         if let some (wTy, sTy, reqTy, outTy, projArg, wfArg, stepArg, allowedArg) := stepInfo? then
           if !axs.isEmpty then
-            return #[s!"INVALID_REFINES_ATOM_BINDER: {thmName} RefinesStep conjunct cannot have binders"]
+            return #[s!"INVALID_REFINES_ATOM_BINDER: {thmName} ObeysStep conjunct cannot have binders"]
           let some projFn ← checkBareConstArg env {} true projArg
             | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare proj argument in {thmName}"]
           let some wfFn ← checkBareConstArg env {} false wfArg
@@ -3264,7 +3237,7 @@ private def checkRefinesModelTheorem
             aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {projFn} in {thmName} transitively references Interface/Impl"
           if !(← isProvablyInhabitedDataType env 8 wTy) || !(← isProvablyInhabitedDataType env 8 sTy) ||
               !(← isProvablyInhabitedDataType env 8 reqTy) then
-            aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited state/request domain in RefinesStep of {thmName}"
+            aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited state/request domain in ObeysStep of {thmName}"
           match ← checkWfNotVacuous env sTy wfFn with
           | .isTrue => pure ()
           | .isFalse =>
@@ -3285,9 +3258,7 @@ private def checkRefinesModelTheorem
           return aErrs
 
         let stepFromInfo? : Option (Option (Expr × Expr) × Expr × Expr × Expr × Expr × Expr × Expr × Expr × Expr × Expr × Array (Expr × Expr × Expr × Expr)) :=
-          if ab.isAppOfArity `Core.RefinesStepFrom 16 ||
-              ab.isAppOfArity `Core.RefinesStepFromFinally 16 ||
-              ab.isAppOfArity `Core.ObeysStepFrom 16 ||
+          if ab.isAppOfArity `Core.ObeysStepFrom 16 ||
               ab.isAppOfArity `Core.ObeysStepFromFinally 16 ||
               ab.isAppOfArity `Core.ObeysStepFromConc 16 then
             let args := ab.getAppArgs
@@ -3303,8 +3274,7 @@ private def checkRefinesModelTheorem
             let args := ab.getAppArgs
             some (some (args[1]!, args[11]!), args[0]!, args[2]!, args[8]!, args[9]!, args[10]!, args[12]!, args[15]!, args[16]!, args[17]!,
               #[(args[6]!, args[7]!, args[13]!, args[14]!), (args[8]!, args[9]!, args[17]!, args[18]!)])
-          else if ab.isAppOfArity `Core.RefinesStepFrom2 21 ||
-              ab.isAppOfArity `Core.ObeysStepFrom2 21 then
+          else if ab.isAppOfArity `Core.ObeysStepFrom2 21 then
             let args := ab.getAppArgs
             some (none, args[0]!, args[1]!, args[9]!, args[10]!, args[11]!, args[12]!, args[17]!, args[18]!, args[19]!,
               #[(args[5]!, args[6]!, args[13]!, args[14]!),
@@ -3314,7 +3284,7 @@ private def checkRefinesModelTheorem
 
         if let some (cellInfo?, rawSTy, pkgSTy, pkgReqTy, _pkgOutTy, mapSArg, rawWfArg, pkgWfArg, mkApiArg, execPkgArg, stepLegs) := stepFromInfo? then
           if !axs.isEmpty then
-            return #[s!"INVALID_REFINES_ATOM_BINDER: {thmName} RefinesStepFrom conjunct cannot have binders"]
+            return #[s!"INVALID_REFINES_ATOM_BINDER: {thmName} ObeysStepFrom conjunct cannot have binders"]
           if let some (cellModelSTy, cellToModelArg) := cellInfo? then
             let some cellToModelFn ← checkBareConstArg env {} false cellToModelArg
               | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare cellToModel argument in {thmName}"]
@@ -3348,7 +3318,7 @@ private def checkRefinesModelTheorem
             aErrs := aErrs.push s!"NON_INTERFACE_IMPL_IN_REFINES: {mkApiFn} in {thmName} must be a public constant in {ifaceMod} or {implMod}"
           for dTy in #[rawSTy, pkgSTy, pkgReqTy] do
             if !(← isProvablyInhabitedDataType env 8 dTy) then
-              aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited state/request domain in RefinesStepFrom of {thmName}"
+              aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited state/request domain in ObeysStepFrom of {thmName}"
           match ← checkWfNotVacuous env rawSTy rawWfFn with
           | .isTrue => pure ()
           | .isFalse =>
@@ -3375,7 +3345,7 @@ private def checkRefinesModelTheorem
               if ← constTransitivelyTouchesSweImplOrIfaceCached env safeModelConstsRef mFn then
                 aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {mFn} in {thmName} transitively references Interface/Impl"
             if !(← isProvablyInhabitedDataType env 8 legReqTy) then
-              aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited state/request domain in RefinesStepFrom of {thmName}"
+              aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited state/request domain in ObeysStepFrom of {thmName}"
             match ← checkStepAllowedNonTrivial env relaxedEnv modelMods legAllowedArg legAllowedFn legSTy legReqTy legOutTy with
             | .isTrue => pure ()
             | .isFalse =>
@@ -3473,23 +3443,10 @@ private structure CliConfig where
   coverageNonce? : Option String := none
   strictCentralCoverage : Bool := false
   printSigPkg? : Option Name := none
-  legacyAllowlist : Std.HashSet Name := {}
   deadBranchFuel : Nat := 4096
   argError? : Option String := none
 
-private def parseCsvAllowlist (csv : String) (init : Std.HashSet Name) : Std.HashSet Name :=
-  (csv.splitOn ",").foldl
-    (fun s item =>
-      let t := item.trimAscii.toString
-      if t.isEmpty then s else s.insert t.toName)
-    init
-
-private def isExplicitPkgListArg (s : String) : Bool :=
-  !s.startsWith "-" && !s.startsWith "." && !s.startsWith "/" &&
-    (s.startsWith "LeanSwe" || (s.splitOn ",").length > 1)
-
 private def parseArgs (args : List String) : CliConfig :=
-  let defaultLegacy := legacyExemptionAllowlist.foldl (fun s n => s.insert n) {}
   let rec go (cfg : CliConfig) (pos : Nat) : (xs : List String) → CliConfig
     | [] => cfg
     | "--verify-log" :: lp :: rest => go { cfg with logPath? := some ⟨lp⟩ } pos rest
@@ -3508,25 +3465,15 @@ private def parseArgs (args : List String) : CliConfig :=
       | some n => go { cfg with deadBranchFuel := n } pos rest
       | none => { cfg with argError? := some s!"INVALID_DEAD_BRANCH_FUEL: {nf}" }
     | ["--dead-branch-fuel"] => { cfg with argError? := some "MISSING_DEAD_BRANCH_FUEL: --dead-branch-fuel requires a Nat" }
-    | "--allow-legacy" :: arg :: tail =>
-      if arg.isEmpty then
-        go { cfg with legacyAllowlist := {} } pos tail
-      else if isExplicitPkgListArg arg then
-        go { cfg with legacyAllowlist := parseCsvAllowlist arg cfg.legacyAllowlist } pos tail
-      else
-        go { cfg with legacyAllowlist := defaultLegacy } pos (arg :: tail)
-    | ["--allow-legacy"] =>
-      { cfg with legacyAllowlist := defaultLegacy }
     | arg :: rest =>
-      if arg.startsWith "--allow-legacy=" then
-        let csv := (arg.drop 15).toString
-        go { cfg with legacyAllowlist := parseCsvAllowlist csv cfg.legacyAllowlist } pos rest
+      if arg.startsWith "-" then
+        { cfg with argError? := some s!"UNKNOWN_FLAG: {arg}" }
       else if pos == 0 then
         go { cfg with libDir := ⟨arg⟩ } 1 rest
       else if pos == 1 then
         go { cfg with repoDir := ⟨arg⟩ } 2 rest
       else
-        go cfg (pos + 1) rest
+        { cfg with argError? := some s!"UNEXPECTED_POSITIONAL_ARG: {arg}" }
   termination_by xs => xs.length
   go {} 0 args
 
@@ -3967,7 +3914,7 @@ private def renderExpectedObeysSig (env : Environment) (knownPkgs : Array Name) 
   let header := s!"Template for {pkg}.Proofs.obeys_model (starting skeleton; replace any <...> placeholders before compiling):"
   return .ok s!"{header}\nnamespace {pkg}.Proofs\n\ntheorem obeys_model :\n    {body}\n\nend {pkg}.Proofs"
 
-/-- Audit compiled `.olean` artifacts for hardened checkable assumptions, error coverage, and `Core.Obeys` / `Core.Refines`. -/
+/-- Audit compiled `.olean` artifacts for hardened checkable assumptions, error coverage, and `Core.Obeys`. -/
 unsafe def main (args : List String) : IO UInt32 := do
   let cfg := parseArgs args
   if let some err := cfg.argError? then
@@ -4158,12 +4105,9 @@ unsafe def main (args : List String) : IO UInt32 := do
           specAndProofRoots := specAndProofRoots.push c.name
       if isCompilerAux c.name then continue
       if c.name.getString! == "EmpiricalAssumptions" then
-        let pkg := pkgNamespaceOfSpecWith knownPkgs m
-        if !cfg.legacyAllowlist.contains pkg then
-          errors := errors.push s!"PROSE_EMPIRICAL_ASSUMPTIONS: {c.name} in {m}"
+        errors := errors.push s!"PROSE_EMPIRICAL_ASSUMPTIONS: {c.name} in {m}"
     if m.getString! == "SpecTests" then
       let pkg := pkgNamespaceOfSpecWith knownPkgs m
-      if cfg.legacyAllowlist.contains pkg then continue
       specModules := specModules.push m
       for c in data.constants do
         if isCompilerAux c.name || isInductiveElimAux env c.name then continue
@@ -4182,8 +4126,6 @@ unsafe def main (args : List String) : IO UInt32 := do
             specAndProofRoots := specAndProofRoots.push c.name
     else if m.getRoot == `LeanSwe && !isProofsModule m && !m.components.contains `RuntimeTests &&
         (m.components.contains `Model || m.components.contains `SpecTests) then
-      let pkg := pkgNamespaceOfSpecWith knownPkgs m
-      if cfg.legacyAllowlist.contains pkg then continue
       for c in data.constants do
         if isCompilerAux c.name || isInductiveElimAux env c.name then continue
         let short := c.name.getString!
@@ -4215,7 +4157,6 @@ unsafe def main (args : List String) : IO UInt32 := do
       let m := env.header.moduleNames[i]
       if !isProjectModule m || isProofsModule m then continue
       let pkg := pkgNamespaceOfSpecWith knownPkgs m
-      if cfg.legacyAllowlist.contains pkg then continue
       let some data := env.header.moduleData[i]? | continue
       for c in data.constants do
         if isCompilerAux c.name || isInductiveElimAux env c.name then continue
@@ -4448,7 +4389,6 @@ unsafe def main (args : List String) : IO UInt32 := do
 
     let relaxedEnv ← mkRelaxedProjectIrreduciblesEnv
     for pkg in knownPkgs do
-      if cfg.legacyAllowlist.contains pkg then continue
       let rtMod := Name.str pkg "RuntimeTests"
       let hasRt := visited.contains rtMod || diskRtPkgs.contains pkg
       let isRetired := !hasRt
@@ -4456,12 +4396,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       let isExtPkg := isExternalBoundaryPkg env knownPkgs pkg
       let isFloatPkg := usesRuntimeFloat env knownPkgs pkg
       let isImpureBoundary := isExtPkg || isFloatPkg
-      let hasRefinesThm := match findRefinesOrObeysThm? env pkg with
-        | .ok (some _) => true
-        | .error _ => true
-        | .ok none => false
-      if deferredRefinesModelPackages.contains pkg && hasRefinesThm then
-        errs := errs.push s!"STALE_REFINES_DEFERRAL: {pkg} defines Proofs.obeys_model or Proofs.refines_model; remove from deferredRefinesModelPackages"
+      let hasObeysThm := env.contains (Name.str (Name.str pkg "Proofs") "obeys_model")
       if isRetired && isImpureBoundary && !inSuites then
         errs := errs.push s!"MISSING_FUZZ_SUITE: retired external-boundary package {pkg} is absent from harness/Fuzz/suites.json"
       let modelMod := Name.str pkg "Model"
@@ -4470,12 +4405,11 @@ unsafe def main (args : List String) : IO UInt32 := do
       let usesExtCli := usesExternalCliPkg env knownPkgs pkg
       let isUnprovableExternalBoundary := hasDirectOwnExtern || usesExtCli
       let deferredExternalModel := !isRetired && isExtPkg && !inSuites
-      let deferredSplitRefinesModel := !isRetired && !inSuites && deferredRefinesModelPackages.contains pkg
       let needsModel :=
         (isRetired && isImpureBoundary) || inSuites || (hasModel && !deferredExternalModel)
       let needsRefinesModel :=
-        hasRefinesThm ||
-          (!isUnprovableExternalBoundary && !deferredSplitRefinesModel && (hasModel && !deferredExternalModel))
+        hasObeysThm ||
+          (!isUnprovableExternalBoundary && (hasModel && !deferredExternalModel))
       if needsModel then
         let mut modelMods : Std.HashSet Name := {}
         let modelPfx := modelMod.toString ++ "."

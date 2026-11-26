@@ -112,7 +112,7 @@ def specWithSlot (s : PoolSimState) (cfg : PoolConfig) (policy : WaitPolicy) (ac
       | .waitForever =>
         specPollForever s1 cfg act maxForeverPolls
 
-/-- Total well-formedness guard on `PoolSimState` for `Core.RefinesStepFrom2`. -/
+/-- Total well-formedness guard on `PoolSimState` for `Core.ObeysStepFrom2`. -/
 def slotPoolStepWf (_ : PoolSimState) : Bool := true
 
 /-- Single-step filesystem capability request sum invoked by `LeanSwe.SlotPool`. -/
@@ -191,13 +191,13 @@ def allowedTimeStep (s : PoolSimState) (req : TimeStepReq) (out : TimeStepOut) (
   let r := evalTimeStep s req
   out = r.1 ∧ s' = r.2
 
-/-- Public request sum covering `SlotPoolApiM.withSlot` inside `Core.RefinesStepFrom2`. -/
+/-- Public request sum covering `SlotPoolApiM.withSlot` inside `Core.ObeysStepFrom2`. -/
 inductive PkgStepReq where
   /-- Acquire one exclusive slot lease under `cfg` and `policy`, running `evalStepAction idx act`. -/
   | withSlot (cfg : PoolConfig) (policy : WaitPolicy) (act : StepAction)
   deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Output wrapper for `PkgStepReq` transitions in `Core.RefinesStepFrom2`. -/
+/-- Output wrapper for `PkgStepReq` transitions in `Core.ObeysStepFrom2`. -/
 inductive PkgStepOut where
   /-- Lease outcome or `SlotPoolError` returned by `SlotPoolApiM.withSlot`. -/
   | leaseRes (res : Except SlotPoolError (LeaseOutcome Nat))

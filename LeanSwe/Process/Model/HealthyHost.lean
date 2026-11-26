@@ -135,7 +135,7 @@ def hostSlotWf (s : ProcSlotM LinuxSyscall.Files.HandleId) : Bool :=
   decide (1 ≤ s.pid ∧ s.pid ≤ maxLinuxPidModel ∧
     1 ≤ s.pgid ∧ s.pgid ≤ maxLinuxPidModel)
 
-/-- Total well-formedness guard on `ProcessHostWorld` for `Core.RefinesStepFrom`. -/
+/-- Total well-formedness guard on `ProcessHostWorld` for `Core.ObeysStepFrom`. -/
 def hostWorldWf (w : ProcessHostWorld) : Bool :=
   w.proc.wf &&
   w.files.wf &&

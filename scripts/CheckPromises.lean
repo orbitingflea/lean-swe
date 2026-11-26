@@ -37,7 +37,7 @@ Checks:
    - No constants from non-API roles (`Properties`/`Proofs`/`SpecMutants`/`RuntimeTests`/
      `TestSupport`/`Umbrella`/`Other`, i.e., any `LeanSwe.*` module outside `{Types, Model,
      SpecTests, Impl, SysBridge, Interface}`) in `SpecTests`/`Properties` (`type` or `value`), in
-     exported `refines_model` / `obeys_model` theorem signatures, or in qualifying `AllPass` /
+     exported `obeys_model` theorem signatures, or in qualifying `AllPass` /
      `CanReach` theorem signatures, enforced with a strict shrinking ratchet allowlist (fails on
      both new violations and stale allowlist entries).
 7. Manifest-driven (`scripts/package_manifest.json`) `obeys_model` presence/non-vacuity audit and
@@ -46,7 +46,7 @@ Checks:
    - Strict `@[extern]` boundary discipline (forbidden when `external_boundary == false`; must be
      `private` in `<Pkg>.Interface` for production modules when `external_boundary == true`).
    - Presence, standard-axioms, unconditionality, and non-vacuity checks on `<Pkg>.Model` and
-     `<Pkg>.Proofs.obeys_model` / `<Pkg>.Proofs.refines_model` (exact shrinking
+     `<Pkg>.Proofs.obeys_model` (exact shrinking
      `modelPresenceAllowlist`).
    - Generalized `.olean` wiring and capability-type provenance audit banning same-package
      un-fuzzed middle hooks in composite packages (exact shrinking `middleHookAllowlist`).
@@ -2671,7 +2671,7 @@ private def DagModuleRole.label : DagModuleRole → String
   | .other => "Other"
 
 /-- Non-API/non-production roles disallowed in `SpecTests`/`Properties` bodies, exported
-`refines_model`/`obeys_model` signatures, qualifying `Core.AllPass`/`Core.CanReach` theorem
+`obeys_model` signatures, qualifying `Core.AllPass`/`Core.CanReach` theorem
 signatures, `namespace <Pkg>.Model` declarations, and production-module transitive imports.
 Bare `Properties` modules (outside `SpecTests/`) are not spec-locked by `check_spec_change.py`,
 so they are treated as disallowed targets alongside `Proofs`/`TestSupport`/`Other`. -/
@@ -2961,8 +2961,7 @@ private def auditImportDagEnv
       if roleM != .specMutants && roleM != .runtimeTests &&
           !isPrivateName c.name && !c.name.isInternalOrNum && !env.isProjectionFn c.name then
         let short := c.name.getString!
-        let isRefinesOrObeys := short == "refines_model" || short == "obeys_model"
-        if isRefinesOrObeys then
+        if short == "obeys_model" then
           let mut seenU : Std.HashSet String := {}
           for u in c.type.getUsedConstants do
             let um := modOf u
@@ -3192,7 +3191,7 @@ private def loadPackageManifest (repoDir : System.FilePath) : IO (Except String 
   return parsePackageManifest raw
 
 /-- Exact shrinking ratchet allowlist of `kind == "model"` packages lacking `<Pkg>.Model` or
-`<Pkg>.Proofs.{obeys_model,refines_model}` at `5304439`. Fails on both new missing specs and
+`<Pkg>.Proofs.obeys_model` at `5304439`. Fails on both new missing specs and
 stale entries as follow-up PRs land. -/
 private def modelPresenceAllowlist : Array String := #[]
 
@@ -3202,7 +3201,7 @@ through a same-package un-fuzzed middle hook (`SysBridge.defaultOps`, `CliOpsM`,
 capabilities. -/
 private def middleHookAllowlist : Array String := #[]
 
-/-- Exact shrinking ratchet allowlist of packages whose `obeys_model` / `refines_model`
+/-- Exact shrinking ratchet allowlist of packages whose `obeys_model`
 does not yet match mechanical `.olean` `Expr` synthesis at `6a903b4`. Fails on both new
 regressions and stale entries as packages converge. -/
 private def obeysSynthAllowlist : Array String := #[]
@@ -3241,11 +3240,7 @@ private def isKnownContractPredHead (fn : Name) : Bool :=
     fn == `Core.ObeysPureFrom || fn == `Core.ObeysInverseRenderFrom ||
     fn == `Core.ObeysStep || fn == `Core.ObeysStepExcept || fn == `Core.ObeysStepId ||
     fn == `Core.ObeysStepFrom || fn == `Core.ObeysStepFromFinally || fn == `Core.ObeysStepFromConc ||
-    fn == `Core.ObeysStepFromExcept || fn == `Core.ObeysStepFromConcCell || fn == `Core.ObeysStepFrom2 ||
-    fn == `Core.RefinesPure || fn == `Core.RefinesPure2 || fn == `Core.RefinesPure3 || fn == `Core.RefinesPure4 ||
-    fn == `Core.RefinesPureEq || fn == `Core.RefinesPureEq2 || fn == `Core.RefinesPureEq3 || fn == `Core.RefinesPureEq4 ||
-    fn == `Core.RefinesStep || fn == `Core.RefinesStepId ||
-    fn == `Core.RefinesStepFrom || fn == `Core.RefinesStepFromFinally || fn == `Core.RefinesStepFrom2
+    fn == `Core.ObeysStepFromExcept || fn == `Core.ObeysStepFromConcCell || fn == `Core.ObeysStepFrom2
 
 private def isTrivialTruePred (env : Environment) (e : Expr) : Bool :=
   let b := (peelLambdas e).consumeMData
@@ -3340,8 +3335,7 @@ private def checkConcreteIoInterfaceDecls
   return errs
 
 private def extractStepFromConj? (ab : Expr) : Option (Name × Array Expr × Expr) :=
-  if ab.isAppOfArity `Core.ObeysStepFrom 16 || ab.isAppOfArity `Core.RefinesStepFrom 16 ||
-      ab.isAppOfArity `Core.ObeysStepFromFinally 16 || ab.isAppOfArity `Core.RefinesStepFromFinally 16 ||
+  if ab.isAppOfArity `Core.ObeysStepFrom 16 || ab.isAppOfArity `Core.ObeysStepFromFinally 16 ||
       ab.isAppOfArity `Core.ObeysStepFromConc 16 || ab.isAppOfArity `Core.ObeysStepFromExcept 16 then
     let a := ab.getAppArgs
     match (peelLambdas (etaReduceExpr a[13]!)).consumeMData.getAppFn.consumeMData with
@@ -3352,7 +3346,7 @@ private def extractStepFromConj? (ab : Expr) : Option (Name × Array Expr × Exp
     match (peelLambdas (etaReduceExpr a[16]!)).consumeMData.getAppFn.consumeMData with
     | .const mkFn _ => some (mkFn, #[a[3]!], a[5]!)
     | _ => none
-  else if ab.isAppOfArity `Core.ObeysStepFrom2 21 || ab.isAppOfArity `Core.RefinesStepFrom2 21 then
+  else if ab.isAppOfArity `Core.ObeysStepFrom2 21 then
     let a := ab.getAppArgs
     match (peelLambdas (etaReduceExpr a[18]!)).consumeMData.getAppFn.consumeMData with
     | .const mkFn _ => some (mkFn, #[a[2]!, a[3]!], a[4]!)
@@ -4265,7 +4259,7 @@ private def auditEffectfulStepSynthesis
     let fn := ab.getAppFn.consumeMData
     let .const fnName fnLvls := fn | continue
     let args := ab.getAppArgs
-    if (fnName == `Core.ObeysStep || fnName == `Core.ObeysStepExcept || fnName == `Core.RefinesStep) && args.size == 8 then
+    if (fnName == `Core.ObeysStep || fnName == `Core.ObeysStepExcept) && args.size == 8 then
       st := { st with stepCount := st.stepCount + 1 }
       let some _ := checkBareModelConst env modelMods true args[4]!
         | errs := errs.push s!"step proj in {pkg} is not id or public Model constant"
@@ -4281,7 +4275,7 @@ private def auditEffectfulStepSynthesis
         let sm := modOfConst env stepFn
         if sm == ifaceMod then st := { st with coveredStepOps := st.coveredStepOps.insert stepFn }
         else if sm == implMod then st := { st with coveredImplHelpers := st.coveredImplHelpers.insert stepFn }
-    else if (fnName == `Core.ObeysStepId || fnName == `Core.RefinesStepId) && args.size == 6 then
+    else if fnName == `Core.ObeysStepId && args.size == 6 then
       st := { st with stepCount := st.stepCount + 1 }
       let some _ := checkBareModelConst env modelMods false args[3]!
         | errs := errs.push s!"stepId wf in {pkg} is not a public Model constant"
@@ -4296,11 +4290,10 @@ private def auditEffectfulStepSynthesis
         let sm := modOfConst env stepFn
         if sm == ifaceMod then st := { st with coveredStepOps := st.coveredStepOps.insert stepFn }
         else if sm == implMod then st := { st with coveredImplHelpers := st.coveredImplHelpers.insert stepFn }
-    else if (fnName == `Core.ObeysStepFrom || fnName == `Core.RefinesStepFrom ||
-        fnName == `Core.ObeysStepFromFinally || fnName == `Core.RefinesStepFromFinally ||
+    else if (fnName == `Core.ObeysStepFrom || fnName == `Core.ObeysStepFromFinally ||
         fnName == `Core.ObeysStepFromConc || fnName == `Core.ObeysStepFromExcept) && args.size == 16 then
       st := { st with stepCount := st.stepCount + 1 }
-      let isFin := fnName == `Core.ObeysStepFromFinally || fnName == `Core.RefinesStepFromFinally
+      let isFin := fnName == `Core.ObeysStepFromFinally
       let isConc := fnName == `Core.ObeysStepFromConc
       let isEx := fnName == `Core.ObeysStepFromExcept
       let some _ := checkBareModelConst env modelMods true args[8]!
@@ -4406,7 +4399,7 @@ private def auditEffectfulStepSynthesis
           for h in ← collectCoveredMkApiImplHelpers env implMod mkCanon execFlds do
             nextHelpers := nextHelpers.insert h
           st := { st with coveredImplHelpers := nextHelpers }
-    else if (fnName == `Core.ObeysStepFrom2 || fnName == `Core.RefinesStepFrom2) && args.size == 21 then
+    else if fnName == `Core.ObeysStepFrom2 && args.size == 21 then
       st := { st with stepCount := st.stepCount + 1 }
       let some _ := checkBareModelConst env modelMods true args[11]!
         | errs := errs.push s!"stepFrom2 mapS in {pkg} is not id or public Model constant"
@@ -5006,19 +4999,15 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
         mModelObs := recordManifestObs mModelObs k s!"MANIFEST_MISSING_MODEL: {pkg} lacks {modelMod}"
 
       let obeysName := Name.str proofsMod "obeys_model"
-      let refinesName := Name.str proofsMod "refines_model"
       let hasObeys := env.contains obeysName
-      let hasRefines := env.contains refinesName
       let mut stepFromConjs : Array (Name × Array Expr × Expr) := #[]
       let mut pureFromConjs : Array (Expr × Expr × Expr × Expr × Expr) := #[]
       let mut thmName? : Option Name := none
-      if hasObeys && hasRefines then
-        mHard := mHard.push s!"DUPLICATE_OBEYS_AND_REFINES_MODEL: {pkg} defines both {obeysName} and {refinesName}"
-      else if !hasObeys && !hasRefines then
+      if !hasObeys then
         let k := s!"MISSING_OBEYS_MODEL|{pkg}"
-        mModelObs := recordManifestObs mModelObs k s!"MANIFEST_MISSING_OBEYS_MODEL: {pkg} lacks {obeysName} (or legacy {refinesName})"
+        mModelObs := recordManifestObs mModelObs k s!"MANIFEST_MISSING_OBEYS_MODEL: {pkg} lacks {obeysName}"
       else
-        let thmName := if hasObeys then obeysName else refinesName
+        let thmName := obeysName
         thmName? := some thmName
         match env.find? thmName with
         | some (.thmInfo tv) =>
@@ -5055,16 +5044,16 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
                     return (ae, false, none, none)
                   else
                     let args := ab.getAppArgs
-                    if (fnName == `Core.ObeysPure || fnName == `Core.RefinesPure) && args.size == 4 then
+                    if fnName == `Core.ObeysPure && args.size == 4 then
                       if isTrivialTruePred env args[3]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} uses vacuous True predicate"
-                    else if (fnName == `Core.ObeysPure2 || fnName == `Core.RefinesPure2) && args.size == 5 then
+                    else if fnName == `Core.ObeysPure2 && args.size == 5 then
                       if isTrivialTruePred env args[4]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} uses vacuous True predicate"
-                    else if (fnName == `Core.ObeysPure3 || fnName == `Core.RefinesPure3) && args.size == 6 then
+                    else if fnName == `Core.ObeysPure3 && args.size == 6 then
                       if isTrivialTruePred env args[5]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} uses vacuous True predicate"
-                    else if (fnName == `Core.ObeysPure4 || fnName == `Core.RefinesPure4) && args.size == 7 then
+                    else if fnName == `Core.ObeysPure4 && args.size == 7 then
                       if isTrivialTruePred env args[6]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} uses vacuous True predicate"
                     else if fnName == `Core.ObeysInverseRender && args.size == 9 then
@@ -5085,14 +5074,13 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous depObeys or wf in ObeysInverseRenderFrom"
                       else
                         pfOut? := some (args[0]!, args[1]!, args[6]!, args[7]!, args[8]!)
-                    else if (fnName == `Core.ObeysStep || fnName == `Core.ObeysStepExcept || fnName == `Core.RefinesStep) && args.size == 8 then
+                    else if (fnName == `Core.ObeysStep || fnName == `Core.ObeysStepExcept) && args.size == 8 then
                       if isTrivialFalseBoolFn env args[5]! || isTrivialTruePred env args[7]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous wf or allowedStep"
-                    else if (fnName == `Core.ObeysStepId || fnName == `Core.RefinesStepId) && args.size == 6 then
+                    else if fnName == `Core.ObeysStepId && args.size == 6 then
                       if isTrivialFalseBoolFn env args[3]! || isTrivialTruePred env args[5]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous wf or allowedStep"
-                    else if (fnName == `Core.ObeysStepFrom || fnName == `Core.RefinesStepFrom ||
-                        fnName == `Core.ObeysStepFromFinally || fnName == `Core.RefinesStepFromFinally ||
+                    else if (fnName == `Core.ObeysStepFrom || fnName == `Core.ObeysStepFromFinally ||
                         fnName == `Core.ObeysStepFromConc || fnName == `Core.ObeysStepFromExcept) && args.size == 16 then
                       if isTrivialFalsePred env args[11]! ||
                           isTrivialFalseBoolFn env args[12]! || isTrivialTruePred env args[15]! then
@@ -5101,7 +5089,7 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
                       if isTrivialFalsePred env args[14]! ||
                           isTrivialFalseBoolFn env args[15]! || isTrivialTruePred env args[18]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous rawAllowed, pkgWf, or pkgAllowed"
-                    else if (fnName == `Core.ObeysStepFrom2 || fnName == `Core.RefinesStepFrom2) && args.size == 21 then
+                    else if fnName == `Core.ObeysStepFrom2 && args.size == 21 then
                       if isTrivialFalsePred env args[14]! || isTrivialFalsePred env args[16]! ||
                           isTrivialFalseBoolFn env args[17]! || isTrivialTruePred env args[20]! then
                         ae := ae.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} has vacuous rawAllowed, pkgWf, or pkgAllowed"
@@ -5114,7 +5102,7 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
               if let some sf := sf? then sfs := sfs.push sf
               if let some pf := pf? then pfs := pfs.push pf
             if contractCount == 0 then
-              cErrs := cErrs.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} contains zero Core.Obeys/Core.Refines contracts"
+              cErrs := cErrs.push s!"VACUOUS_OR_INVALID_OBEYS_MODEL: {thmName} contains zero Core.Obeys contracts"
             return (cErrs, sfs, pfs)
           mHard := mHard ++ conjErrs
           stepFromConjs := sfConjs

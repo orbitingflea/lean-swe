@@ -258,20 +258,20 @@ jobs:
           for ((i = 1; i <= N; i++)); do
             echo "=== Test run $i of $N ===" | tee -a "$RUNNER_TEMP/repeat_tests.log"
             RUN_NONCE=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
-            RUN_LOG="$RUNNER_TEMP/assump-run-${i}.log"
-            rm -f "$RUN_LOG"
+            RUN_LOG="$RUNNER_TEMP/assump-run-${i}.log"; RUN_COV_LOG="$RUNNER_TEMP/cov-run-${i}.log"
+            rm -f "$RUN_LOG" "$RUN_COV_LOG"
             set +e
-            LEANSWE_SUMMARY_LABEL="Run $i of $N" harness/.lake/build/bin/lean-swe-test --assump-log "$RUN_LOG" --assump-nonce "$RUN_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
+            LEANSWE_SUMMARY_LABEL="Run $i of $N" harness/.lake/build/bin/lean-swe-test --assump-log "$RUN_LOG" --coverage-log "$RUN_COV_LOG" --assump-nonce "$RUN_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
             RC=$?
             if (( RC == 0 )); then
               if [[ -z "$FIRST_NONCE" ]]; then
-                lake env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --allow-legacy --verify-log "$RUN_LOG" --nonce "$RUN_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1 && FIRST_NONCE="$RUN_NONCE" && FIRST_LOG="$RUN_LOG"
+                lake env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --verify-log "$RUN_LOG" --coverage-log "$RUN_COV_LOG" --nonce "$RUN_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1 && FIRST_NONCE="$RUN_NONCE" && FIRST_LOG="$RUN_LOG"
               else
                 python3 -c 'import pathlib, sys; p1, p2, nc, fnc = sys.argv[1:5]; norm = lambda ls, n: sorted([l.split("|", 1)[1] for l in ls if l.startswith(n + "|")]); l1 = [l.strip() for l in pathlib.Path(p1).read_text().splitlines() if l.strip()]; l2 = [l.strip() for l in pathlib.Path(p2).read_text().splitlines() if l.strip()]; assert len(l2) >= 2 and len(l1) == len(l2) and all(l.startswith(nc + "|") for l in l2) and l2[0] == f"{nc}|LOG_INIT" and l2[-1] == f"{nc}|LOG_CLOSE" and norm(l1, fnc) == norm(l2, nc)' "$FIRST_LOG" "$RUN_LOG" "$RUN_NONCE" "$FIRST_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
               fi
               RC=$?
             fi
-            set -e
+            set -e; rm -f "$RUN_COV_LOG"
             tail -n 5 "$RUNNER_TEMP/repeat_tests.log"
             if (( RC != 0 )); then
               FAILED_RUNS=$((FAILED_RUNS + 1))

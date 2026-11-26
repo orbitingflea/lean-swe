@@ -276,7 +276,7 @@ jobs:
           lane_3() {
             harness/.lake/build/bin/lean-swe-test --assump-log "$ASSUMP_LOG" --assump-nonce "$ASSUMP_NONCE" --coverage-log "$COV_LOG"
             [[ -s "$ASSUMP_LOG" ]] || { echo "ASSUMP_LOG_ERROR: missing or empty assumption log" >&2; return 1; }
-            run_lean_gate scripts/CheckAssumptions.lean --allow-legacy --verify-log "$ASSUMP_LOG" --coverage-log "$COV_LOG" --nonce "$ASSUMP_NONCE"
+            run_lean_gate scripts/CheckAssumptions.lean --verify-log "$ASSUMP_LOG" --coverage-log "$COV_LOG" --nonce "$ASSUMP_NONCE"
             rm -f "$ASSUMP_LOG" "$COV_LOG"
             harness/.lake/build/bin/lean-swe-test --suite Git --suite Compress --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite PostFork --suite Sqlite --suite Sqlite.Raw 0<&- 1>&- 2>&-
           }

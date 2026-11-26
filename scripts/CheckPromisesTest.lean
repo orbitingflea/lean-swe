@@ -243,6 +243,16 @@ def main (_ : List String) : IO UInt32 := do
       ("LeanSwe/MiniPure/Proofs.lean",
        "import LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.Proofs\nend LeanSwe.MiniPure.Proofs\n")]
 
+    runFiles "legacy_refines_model_only_rejected" (some "MANIFEST_MISSING_OBEYS_MODEL") #[
+      ("LeanSwe/MiniPure/Proofs.lean",
+       "import Core.Obeys\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.Proofs\n" ++
+       "theorem refines_model : Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel := fun _ => rfl\nend LeanSwe.MiniPure.Proofs\n")]
+
+    runFiles "legacy_core_refines_head_rejected" (some "VACUOUS_OR_INVALID_OBEYS_MODEL") #[
+      ("LeanSwe/MiniPure/Proofs.lean",
+       "import Core.Obeys\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\nabbrev Core.RefinesPureEq := @Core.ObeysPureEq\nnamespace LeanSwe.MiniPure.Proofs\n" ++
+       "theorem obeys_model : Core.RefinesPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel := fun _ => rfl\nend LeanSwe.MiniPure.Proofs\n")]
+
     runMutantCase bin tmpRoot baseDir realLibAbs "missing_model" (fun root libDir leanPath => do
       writeAndRecompile root libDir leanPath #[("LeanSwe/MiniPure/Proofs.lean",
         "import LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.Proofs\nend LeanSwe.MiniPure.Proofs\n")]
@@ -569,7 +579,7 @@ def main (_ : List String) : IO UInt32 := do
       (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesPureFromTest.lean", bin.toString, tmpRoot.toString, realLibAbs.toString])
     assertPass "conc_cell_suite"
       (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesConcCellTest.lean", bin.toString, tmpRoot.toString, baseDir.toString, realLibAbs.toString])
-    IO.println "CHECK_PROMISES_SELF_TEST: passed=60 failed=0"
+    IO.println "CHECK_PROMISES_SELF_TEST: passed=62 failed=0"
     return 0
   finally
     if ← tmpRoot.pathExists then IO.FS.removeDirAll tmpRoot

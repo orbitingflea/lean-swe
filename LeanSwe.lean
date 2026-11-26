@@ -1,7 +1,6 @@
 import Core.NondetTest
 import Core.Obeys
 import Core.ConcOps
-import Core.Refines
 import LeanSwe.RegExp.Types
 import LeanSwe.RegExp.Model
 import LeanSwe.RegExp.Interface
