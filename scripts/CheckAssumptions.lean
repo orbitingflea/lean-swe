@@ -1526,6 +1526,8 @@ private def suiteCoversPackage (suiteKey : String) (dirPats : Array String) (pkg
   let normKey (s : String) : String :=
     ((s.toLower.replace "_" "").replace "-" "")
   let sk := suiteKey.toLower
+  if sk == "float" && pkg == `LeanSwe.NumParse then
+    return dirPats.contains "LeanSwe/NumParse/" && dirPats.contains "harness/Fuzz/Float/"
   let suiteMatchesPkg :=
     sk == lastSeg.toLower ||
     sk == restSlash.toLower ||
@@ -3539,22 +3541,33 @@ private structure CoverageLogData where
   sawInit : Bool := false
   sawClose : Bool := false
 
-private def parsePackagePurityMap (repoDir : System.FilePath) :
-    IO (Except String (Bool × Std.HashMap Name String)) := do
+private def parsePackageManifest (repoDir : System.FilePath) :
+    IO (Except String (Bool × Std.HashMap Name String × Std.HashMap Name Bool)) := do
   let manifestPath := repoDir / "scripts" / "package_manifest.json"
   if !(← manifestPath.pathExists) then
-    return .ok (false, {})
+    return .ok (false, {}, {})
   let raw ← IO.FS.readFile manifestPath
   match Lean.Json.parse raw with
   | .error err => return .error s!"MALFORMED_PACKAGE_MANIFEST: {err}"
   | .ok j =>
     let .ok (.obj pkgs) := j.getObjVal? "packages"
       | return .error "MALFORMED_PACKAGE_MANIFEST: missing 'packages' object"
-    let mut out : Std.HashMap Name String := {}
+    let mut purityOut : Std.HashMap Name String := {}
+    let mut extBoundaryOut : Std.HashMap Name Bool := {}
     for (pkgStr, entry) in pkgs do
-      if let .ok pStr := entry.getObjValAs? String "purity" then
-        out := out.insert pkgStr.toName pStr
-    return .ok (true, out)
+      let .obj _ := entry
+        | return .error s!"MALFORMED_PACKAGE_MANIFEST: package '{pkgStr}' entry must be a JSON object"
+      match entry.getObjVal? "purity" with
+      | .error _ => pure ()
+      | .ok pVal =>
+        match pVal.getStr? with
+        | .ok pStr => purityOut := purityOut.insert pkgStr.toName pStr
+        | .error _ => return .error s!"MALFORMED_PACKAGE_MANIFEST: package '{pkgStr}' has non-string 'purity'"
+      match entry.getObjValAs? Bool "external_boundary" with
+      | .ok eb => extBoundaryOut := extBoundaryOut.insert pkgStr.toName eb
+      | .error _ =>
+        return .error s!"MALFORMED_PACKAGE_MANIFEST: package '{pkgStr}' missing or non-boolean 'external_boundary'"
+    return .ok (true, purityOut, extBoundaryOut)
 
 private def isPurePackage (env : Environment) (knownPkgs : Array Name)
     (purityMap : Std.HashMap Name String) (pkg : Name) : Bool :=
@@ -4047,11 +4060,11 @@ unsafe def main (args : List String) : IO UInt32 := do
       errors := errors.push err
       pure ({} : Std.HashSet Name)
 
-  let (hasPkgManifest, purityMap) ← match ← parsePackagePurityMap repoDir with
+  let (hasPkgManifest, purityMap, extBoundaryMap) ← match ← parsePackageManifest repoDir with
     | .ok res => pure res
     | .error err =>
       errors := errors.push err
-      pure (false, ({} : Std.HashMap Name String))
+      pure (false, ({} : Std.HashMap Name String), ({} : Std.HashMap Name Bool))
 
   let coverageOverrideEntries ← match ← parseCoverageOverridesJson repoDir hasPkgManifest with
     | .ok arr => pure arr
@@ -4472,6 +4485,7 @@ unsafe def main (args : List String) : IO UInt32 := do
         errs := errs.push "MISSING_MAIN: Tests.Main lacks main"
 
     let relaxedEnv ← mkRelaxedProjectIrreduciblesEnv
+    let mut obeysVerifiedPkgs : Std.HashSet Name := {}
     for pkg in knownPkgs do
       let rtMod := Name.str pkg "RuntimeTests"
       let hasRt := visited.contains rtMod || diskRtPkgs.contains pkg
@@ -4526,6 +4540,8 @@ unsafe def main (args : List String) : IO UInt32 := do
           let (refErrs, nextAx) ← checkRefinesModelTheorem env relaxedEnv transImpsOf knownPkgs pkg modelMods axCache
           axCache := nextAx
           errs := errs ++ refErrs
+          if refErrs.isEmpty then
+            obeysVerifiedPkgs := obeysVerifiedPkgs.insert pkg
 
     let throwTargets : Std.HashSet Name :=
       Std.HashSet.emptyWithCapacity 6
@@ -4678,9 +4694,19 @@ unsafe def main (args : List String) : IO UInt32 := do
               if ← isFallibleCodomain c.type then
                 fallibleReqs := fallibleReqs.push c.name
 
+      let isManifestBoundary ←
+        if hasPkgManifest then
+          match extBoundaryMap.get? pkgNs with
+          | some eb => pure eb
+          | none =>
+            errs := errs.push s!"MISSING_PACKAGE_MANIFEST_ENTRY: {pkgNs} missing from scripts/package_manifest.json"
+            pure true
+        else
+          pure false
+      let isBoundaryPkg := isExtPkg || isManifestBoundary
       let regErrConst := Name.str rtMod "registeredErrorTests"
       let errCovConst := Name.str pkgNs "errorCoverage"
-      if !isExtPkg && fallibleReqs.isEmpty && !hasAnyFallibleIfaceSurface then
+      if !isBoundaryPkg && fallibleReqs.isEmpty && !hasAnyFallibleIfaceSurface then
         if hasRt then
           if let some (.defnInfo dv) := env.find? regErrConst then
             match ← extractArrayElems dv.value with
@@ -4787,14 +4813,17 @@ unsafe def main (args : List String) : IO UInt32 := do
               if !covered.contains ctor then
                 errs := errs.push s!"UNCOVERED_ERROR_KIND: ({req}, {ctor}) missing from {errCovConst}"
 
+        let hasModel := visited.contains (Name.str pkgNs "Model")
+        let hasObeysThm := env.contains (Name.str (Name.str pkgNs "Proofs") "obeys_model")
+        let isModelConstrainedNonBoundary :=
+          hasPkgManifest && !isBoundaryPkg && hasModel && hasObeysThm && obeysVerifiedPkgs.contains pkgNs
         let isRetiredFuzzed := !hasRt && fuzzCoveredPkgs.contains pkgNs
         let hasBadCovLog := !cfg.coverageLogPaths.isEmpty && !hasValidCovLog
-        if hasBadCovLog && !hasLegacyErrCov then
-          errs := errs.push s!"MISSING_ERROR_COVERAGE: {pkgNs} (invalid or incomplete coverage log)"
-        else if !hasLegacyErrCov && isExtPkg && fallibleReqs.isEmpty && !hasAnyFallibleIfaceSurface then
+        if !hasLegacyErrCov && isBoundaryPkg && fallibleReqs.isEmpty && !hasAnyFallibleIfaceSurface then
           errs := errs.push s!"MISSING_ERROR_COVERAGE: {pkgNs} (external boundary package exposes zero fallible Except operations)"
         else
           let mut pkgResolvedCells : Array (Name × Name) := #[]
+          let mut pkgRequiredCells : Array (Name × Name) := #[]
           for reqName in fallibleReqs do
             let some reqInfo := env.find? reqName
               | errs := errs.push s!"UNRESOLVABLE_FALLIBLE_OP: {reqName} in {pkgNs} not found in compiled environment"; continue
@@ -4807,33 +4836,56 @@ unsafe def main (args : List String) : IO UInt32 := do
             if enumInd.ctors.isEmpty then
               errs := errs.push s!"EMPTY_OR_NON_INDUCTIVE_ERROR_ENUM: {enumName} for {reqName} in {pkgNs}"
               continue
+            let opModelConstrained ← do
+              if !isModelConstrainedNonBoundary then pure false
+              else if moduleOfConst env reqName != ifaceMod then pure false
+              else
+                match reqInfo with
+                | .defnInfo dv =>
+                  if isPrivateName reqName || isCompilerAux reqName || env.isProjectionFn reqName then
+                    pure false
+                  else if (← Meta.isInstance reqName) || (← isClassInstanceOrAux env reqName dv.type) then
+                    pure false
+                  else if ← isCapabilityBundleConst env knownPkgs pkgNs reqName dv.type then
+                    pure false
+                  else
+                    pure true
+                | _ => pure false
             for ctor in enumInd.ctors do
               pkgResolvedCells := pkgResolvedCells.push (reqName, ctor)
+              if !opModelConstrained then
+                pkgRequiredCells := pkgRequiredCells.push (reqName, ctor)
 
-          let runCentralDischarge :=
-            cfg.strictCentralCoverage || (hasValidCovLog && (!isRetiredFuzzed || cfg.requireFuzzEquiv))
-          if runCentralDischarge then
-            for (reqName, ctor) in pkgResolvedCells do
-              centralCellsN := centralCellsN + 1
-              let cell := (reqName.toString, ctor.toString)
-              let discharged :=
-                provedImpossibleCells.contains cell ||
-                covLogData.errHits.contains cell ||
-                overrideCells.contains cell
-              unless discharged do
-                errs := errs.push s!"UNCOVERED_CENTRAL_ERROR_CELL: ({reqName}, {ctor}) in {pkgNs} not discharged by NeverErrorKind*, ERR_HIT log, or coverage_overrides.json"
-            if !hasLegacyErrCov && (hasAnyFallibleIfaceSurface || !fallibleReqs.isEmpty) && pkgResolvedCells.isEmpty then
-              errs := errs.push s!"MISSING_ERROR_COVERAGE: {pkgNs} (central coverage checked 0 cells for fallible surface)"
-          else if !hasLegacyErrCov && !isRetiredFuzzed then
-            let mut hasUndischargedStatic := false
-            for (reqName, ctor) in pkgResolvedCells do
-              let cell := (reqName.toString, ctor.toString)
-              if !provedImpossibleCells.contains cell && !overrideCells.contains cell then
-                hasUndischargedStatic := true
-            if (hasAnyFallibleIfaceSurface || !fallibleReqs.isEmpty) && pkgResolvedCells.isEmpty then
-              errs := errs.push s!"MISSING_ERROR_COVERAGE: {pkgNs} (fallible surface has 0 resolved error cells)"
-            else if hasUndischargedStatic && (!hasRt || regErrMap.isEmpty) then
-              errs := errs.push s!"MISSING_ERROR_COVERAGE: {pkgNs} (pass --coverage-log or register runtime error tests / NeverErrorKind* proofs)"
+          let hasZeroResolvedFallible :=
+            (hasAnyFallibleIfaceSurface || !fallibleReqs.isEmpty) && pkgResolvedCells.isEmpty
+          let needsRuntimeDischarge := !pkgRequiredCells.isEmpty || hasZeroResolvedFallible
+          if hasBadCovLog && !hasLegacyErrCov && needsRuntimeDischarge then
+            errs := errs.push s!"MISSING_ERROR_COVERAGE: {pkgNs} (invalid or incomplete coverage log)"
+          else
+            let runCentralDischarge :=
+              cfg.strictCentralCoverage || (hasValidCovLog && (!isRetiredFuzzed || cfg.requireFuzzEquiv))
+            if runCentralDischarge then
+              for (reqName, ctor) in pkgRequiredCells do
+                centralCellsN := centralCellsN + 1
+                let cell := (reqName.toString, ctor.toString)
+                let discharged :=
+                  provedImpossibleCells.contains cell ||
+                  covLogData.errHits.contains cell ||
+                  overrideCells.contains cell
+                unless discharged do
+                  errs := errs.push s!"UNCOVERED_CENTRAL_ERROR_CELL: ({reqName}, {ctor}) in {pkgNs} not discharged by NeverErrorKind*, ERR_HIT log, or coverage_overrides.json"
+              if !hasLegacyErrCov && hasZeroResolvedFallible then
+                errs := errs.push s!"MISSING_ERROR_COVERAGE: {pkgNs} (central coverage checked 0 cells for fallible surface)"
+            else if !hasLegacyErrCov && !isRetiredFuzzed then
+              let mut hasUndischargedStatic := false
+              for (reqName, ctor) in pkgRequiredCells do
+                let cell := (reqName.toString, ctor.toString)
+                if !provedImpossibleCells.contains cell && !overrideCells.contains cell then
+                  hasUndischargedStatic := true
+              if hasZeroResolvedFallible then
+                errs := errs.push s!"MISSING_ERROR_COVERAGE: {pkgNs} (fallible surface has 0 resolved error cells)"
+              else if hasUndischargedStatic && (!hasRt || regErrMap.isEmpty) then
+                errs := errs.push s!"MISSING_ERROR_COVERAGE: {pkgNs} (pass --coverage-log or register runtime error tests / NeverErrorKind* proofs)"
 
     for (m, aName) in formalAssumptions do
       let pkgNs := pkgNamespaceOfSpecWith knownPkgs m

@@ -1823,14 +1823,25 @@ private def rawFdStatOrThrow (label : String) (h : RawFd) : IO (UInt64 × UInt64
   | .ok p => pure p
   | .error e => throw (IO.userError s!"{label}: rawfd_fstat failed errno={e}")
 
-private def expectInvalidInput {α : Type} (label : String) (res : Except PostForkError α) : IO Unit := do
+private def postForkErrKindCtor : PostForkErrorKind → String
+  | .invalidInput => "LeanSwe.PostFork.PostForkErrorKind.invalidInput"
+  | .sysError => "LeanSwe.PostFork.PostForkErrorKind.sysError"
+  | .childFailed => "LeanSwe.PostFork.PostForkErrorKind.childFailed"
+
+private def logPostForkErr {α : Type} (qualOp : String) (res : Except PostForkError α) : IO Unit := do
+  if let .error e := res then
+    Fuzz.Common.logErrHit qualOp (postForkErrKindCtor e.kind) "real"
+
+private def expectInvalidInput {α : Type} (qualOp label : String) (res : Except PostForkError α) : IO Unit := do
+  logPostForkErr qualOp res
   match res with
   | .error e =>
     if e.kind != .invalidInput then
       throw (IO.userError s!"{label}: expected invalidInput, got {repr e}")
   | .ok _ => throw (IO.userError s!"{label}: expected invalidInput, got ok")
 
-private def expectSysError {α : Type} (label : String) (expErrno? : Option Errno) (res : Except PostForkError α) : IO Unit := do
+private def expectSysError {α : Type} (qualOp label : String) (expErrno? : Option Errno) (res : Except PostForkError α) : IO Unit := do
+  logPostForkErr qualOp res
   match res with
   | .error e =>
     if e.kind != .sysError then
@@ -2098,7 +2109,7 @@ private def runInterfaceEpisode
           childPidRef.set (some c.pid)
           checkSpawnedPgid step "iface_release" useNewGroup c
           recordTracker trackerRef "interface" "barrier_release_ok"
-          expectSysError "double releaseBarrier" (some Errno.EBADF) (← LeanSwe.PostFork.releaseBarrier pend)
+          expectSysError "LeanSwe.PostFork.releaseBarrier" "double releaseBarrier" (some Errno.EBADF) (← LeanSwe.PostFork.releaseBarrier pend)
           pure c
         | .error e => throw (IO.userError s!"step={step} releaseBarrier failed: {repr e}")
       else
@@ -2156,7 +2167,9 @@ private def runInterfaceEpisode
         forkMode := fMode
       }
       let expStage : FailureStage := if badStageChdir then .chdir else .execve
-      match ← LeanSwe.PostFork.spawn spec with
+      let spawnRes ← LeanSwe.PostFork.spawn spec
+      logPostForkErr "LeanSwe.PostFork.spawn" spawnRes
+      match spawnRes with
       | .ok _ => throw (IO.userError s!"step={step} expected childFailed for missing path/cwd")
       | .error e =>
         if e.kind != .childFailed || e.errno != some Errno.ENOENT then
@@ -2187,7 +2200,7 @@ private def runInterfaceEpisode
         throw (IO.userError s!"step={step} expected aborted 125, got {repr out}")
       if ← System.FilePath.pathExists ⟨sc.probeOut⟩ then
         throw (IO.userError s!"step={step} abortBarrier leaked probeOut")
-      expectSysError "double abortBarrier" (some Errno.EBADF) (← LeanSwe.PostFork.abortBarrier pend)
+      expectSysError "LeanSwe.PostFork.abortBarrier" "double abortBarrier" (some Errno.EBADF) (← LeanSwe.PostFork.abortBarrier pend)
       recordTracker trackerRef "interface" "barrier_abort_125"
     | 6 =>
       let overlapSpec : ChildSpec := {
@@ -2210,7 +2223,9 @@ private def runInterfaceEpisode
         recordTracker trackerRef "interface" "barrier_failedBefore"
       else
         waitForChildZombie pend.pid
-        match ← LeanSwe.PostFork.releaseBarrier pend with
+        let relRes ← LeanSwe.PostFork.releaseBarrier pend
+        logPostForkErr "LeanSwe.PostFork.releaseBarrier" relRes
+        match relRes with
         | .ok _ => throw (IO.userError s!"step={step} overlap releaseBarrier unexpectedly succeeded")
         | .error e =>
           let expCf : ChildFailure := { stage := .validate, errno := Errno.EINVAL, waitStatus := some (.exited 127) }
@@ -2249,8 +2264,8 @@ private def runInterfaceEpisode
         let bad := badSpecs.getD idx { path := "", argv := #[] }
         if validateSpec bad then
           throw (IO.userError s!"step={step} validateSpec accepted invalid spec idx={idx}")
-        expectInvalidInput s!"step={step} spawn invalid idx={idx}" (← LeanSwe.PostFork.spawn bad)
-        expectInvalidInput s!"step={step} spawnWithBarrier invalid idx={idx}" (← LeanSwe.PostFork.spawnWithBarrier bad)
+        expectInvalidInput "LeanSwe.PostFork.spawn" s!"step={step} spawn invalid idx={idx}" (← LeanSwe.PostFork.spawn bad)
+        expectInvalidInput "LeanSwe.PostFork.spawnWithBarrier" s!"step={step} spawnWithBarrier invalid idx={idx}" (← LeanSwe.PostFork.spawnWithBarrier bad)
       let goodNoCloseSrcs : ChildSpec := {
         path := sc.probeBin, argv := #[], stdio := .redirect (.raw 5) (.raw 1) (.raw 2) false, fdPolicy := .inheritNonCloexec #[.raw 5]
       }
@@ -2383,12 +2398,12 @@ private def runInterfaceEpisode
         argv := #[.ofLiteral sc.probeBin]
         fdPolicy := .inheritNonCloexec #[.raw 9999]
       }
-      expectSysError s!"step={step} spawn closed stdio" (some Errno.EBADF) (← LeanSwe.PostFork.spawn closedStdioSpec)
-      expectSysError s!"step={step} spawnWithBarrier closed keep" (some Errno.EBADF) (← LeanSwe.PostFork.spawnWithBarrier closedKeepSpec)
-      expectSysError s!"step={step} spawn closed raw stdio" (some Errno.EBADF) (← LeanSwe.PostFork.spawn closedRawStdioSpec)
-      expectSysError s!"step={step} spawnWithBarrier closed raw stdio" (some Errno.EBADF) (← LeanSwe.PostFork.spawnWithBarrier closedRawStdioSpec)
-      expectSysError s!"step={step} spawn closed raw keep" (some Errno.EBADF) (← LeanSwe.PostFork.spawn closedRawKeepSpec)
-      expectSysError s!"step={step} spawnWithBarrier closed raw keep" (some Errno.EBADF) (← LeanSwe.PostFork.spawnWithBarrier closedRawKeepSpec)
+      expectSysError "LeanSwe.PostFork.spawn" s!"step={step} spawn closed stdio" (some Errno.EBADF) (← LeanSwe.PostFork.spawn closedStdioSpec)
+      expectSysError "LeanSwe.PostFork.spawnWithBarrier" s!"step={step} spawnWithBarrier closed keep" (some Errno.EBADF) (← LeanSwe.PostFork.spawnWithBarrier closedKeepSpec)
+      expectSysError "LeanSwe.PostFork.spawn" s!"step={step} spawn closed raw stdio" (some Errno.EBADF) (← LeanSwe.PostFork.spawn closedRawStdioSpec)
+      expectSysError "LeanSwe.PostFork.spawnWithBarrier" s!"step={step} spawnWithBarrier closed raw stdio" (some Errno.EBADF) (← LeanSwe.PostFork.spawnWithBarrier closedRawStdioSpec)
+      expectSysError "LeanSwe.PostFork.spawn" s!"step={step} spawn closed raw keep" (some Errno.EBADF) (← LeanSwe.PostFork.spawn closedRawKeepSpec)
+      expectSysError "LeanSwe.PostFork.spawnWithBarrier" s!"step={step} spawnWithBarrier closed raw keep" (some Errno.EBADF) (← LeanSwe.PostFork.spawnWithBarrier closedRawKeepSpec)
       recordTracker trackerRef "interface" "spawn_sysError"
     return r6
   finally

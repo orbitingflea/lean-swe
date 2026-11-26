@@ -46,6 +46,26 @@ private def errorKindBucket : LeanSwe.NumParse.NumParseErrorKind → String
   | .overflow => "err.overflow"
   | .trailingChars => "err.trailingChars"
 
+private def numParseErrKindCtor : LeanSwe.NumParse.NumParseErrorKind → String
+  | .emptyInput => "LeanSwe.NumParse.NumParseErrorKind.emptyInput"
+  | .invalidSyntax => "LeanSwe.NumParse.NumParseErrorKind.invalidSyntax"
+  | .invalidSignForBase => "LeanSwe.NumParse.NumParseErrorKind.invalidSignForBase"
+  | .leadingZero => "LeanSwe.NumParse.NumParseErrorKind.leadingZero"
+  | .invalidUnderscore => "LeanSwe.NumParse.NumParseErrorKind.invalidUnderscore"
+  | .overflow => "LeanSwe.NumParse.NumParseErrorKind.overflow"
+  | .trailingChars => "LeanSwe.NumParse.NumParseErrorKind.trailingChars"
+
+private def tomlErrKindCtor : LeanSwe.Toml.TomlErrorKind → String
+  | .parseError => "LeanSwe.Toml.TomlErrorKind.parseError"
+  | .duplicateKey => "LeanSwe.Toml.TomlErrorKind.duplicateKey"
+  | .redefinedTable => "LeanSwe.Toml.TomlErrorKind.redefinedTable"
+  | .immutableInlineTable => "LeanSwe.Toml.TomlErrorKind.immutableInlineTable"
+  | .invalidUtf8OrControl => "LeanSwe.Toml.TomlErrorKind.invalidUtf8OrControl"
+  | .numericOverflow => "LeanSwe.Toml.TomlErrorKind.numericOverflow"
+  | .missingField => "LeanSwe.Toml.TomlErrorKind.missingField"
+  | .typeMismatch => "LeanSwe.Toml.TomlErrorKind.typeMismatch"
+  | .decodeError => "LeanSwe.Toml.TomlErrorKind.decodeError"
+
 private def isSpecialLiteral (sClean : String) : Bool :=
   sClean == "inf" || sClean == "+inf" || sClean == "-inf" ||
     sClean == "nan" || sClean == "+nan" || sClean == "-nan"
@@ -73,10 +93,12 @@ private def isMidpointLike (sClean : String) : Bool := Id.run do
       sigDigits := sigDigits + 1
   return lastNonZeroPos >= 17
 
-private def checkParseStr (s : String) : Except String (List CoverageBucket × Option PyParseItem) := do
+private def checkParseStr (s : String) :
+    Except String (List CoverageBucket × List (String × String) × Option PyParseItem) := do
   let resImpl := LeanSwe.NumParse.parseFloat s
   let resModel := LeanSwe.NumParse.Model.parseFloatModel s
   let mut bkts : List CoverageBucket := []
+  let mut errHits : List (String × String) := []
   let tomlEligible := isTomlCheckEligible s
   let mut expOk := false
   let mut expBits : UInt64 := 0
@@ -148,15 +170,22 @@ private def checkParseStr (s : String) : Except String (List CoverageBucket × O
       throw s!"PARSE_ERR_KIND_MISMATCH s={repr s} impl={repr e.kind} model={repr expectedKind}"
     if e.message.isEmpty then
       throw s!"PARSE_ERR_EMPTY_MSG s={repr s}"
+    errHits := ("LeanSwe.NumParse.parseFloat", numParseErrKindCtor e.kind) :: errHits
     if !s.contains '_' && !s.contains '\x00' && !hasLeadingAsciiSpace s && !s.isEmpty then
       let (consumed, _) := cStrtod s
       if consumed.toNat == s.utf8ByteSize then
         if !isAllowedStrtodOnlySyntax s then
           throw s!"STRTOD_ACCEPTED_TOML_REJECTED s={repr s} err={repr e.kind}"
     if tomlEligible then
-      if let .ok tbl := LeanSwe.Toml.parse ("x = " ++ s) then
-        if let .ok gotF := LeanSwe.Toml.getField (α := Float) tbl "x" then
+      match LeanSwe.Toml.parse ("x = " ++ s) with
+      | .error te =>
+        errHits := ("LeanSwe.Toml.parse", tomlErrKindCtor te.kind) :: errHits
+      | .ok tbl =>
+        match LeanSwe.Toml.getField (α := Float) tbl "x" with
+        | .ok gotF =>
           throw s!"TOML_ACCEPTED_INVALID_FLOAT s={repr s} got={hex64 gotF.toBits}"
+        | .error ge =>
+          errHits := ("LeanSwe.Toml.getField", tomlErrKindCtor ge.kind) :: errHits
       bkts := bucket "toml_parse" "ok.rejected_nonfloat" :: bkts
     bkts := bucket "parseFloat" (errorKindBucket e.kind) :: bkts
   | .ok actual, .error expectedKind =>
@@ -170,7 +199,7 @@ private def checkParseStr (s : String) : Except String (List CoverageBucket × O
     expectedBits := expBits
     tomlCheck := tomlEligible
   }
-  return (bkts, some pyItem)
+  return (bkts, errHits, some pyItem)
 
 private def checkTomlRoundTripField (tbl : LeanSwe.Toml.TomlTable) (key : String) (expectedBits : UInt64)
     (tomlText : String) : Except String Unit := do
@@ -919,30 +948,31 @@ private def checkExternCase (u : UInt64) (u32 : UInt32) (scaleExp : Int32) :
   }
   return (bkts, #[pyExt64, pyExt32])
 
-private def checkCase (c : FloatFuzzCase) : Except String (List CoverageBucket × PyOracleBatch) := do
+private def checkCase (c : FloatFuzzCase) :
+    Except String (List CoverageBucket × List (String × String) × PyOracleBatch) := do
   match c with
   | .parseStr s =>
-    let (bkts, pyItem?) ← checkParseStr s
+    let (bkts, errHits, pyItem?) ← checkParseStr s
     let parses := match pyItem? with | some it => #[it] | none => #[]
-    return (bkts, { parses })
+    return (bkts, errHits, { parses })
   | .checkBits u =>
     let (bkts, fmtItem) ← checkBitsCase u
-    return (bkts, { formats := #[fmtItem], reprBits := #[u] })
+    return (bkts, [], { formats := #[fmtItem], reprBits := #[u] })
   | .checkBinOp ua ub =>
     let bkts ← checkBinOpCase ua ub
-    return (bkts, {})
+    return (bkts, [], {})
   | .checkFma ua ub uc =>
     let bkts ← checkFmaCase ua ub uc
-    return (bkts, {})
+    return (bkts, [], {})
   | .checkIntConv u =>
     let (bkts, pyInts) ← checkIntConvCase u
-    return (bkts, { intFloats := pyInts })
+    return (bkts, [], { intFloats := pyInts })
   | .checkSci m negExp e =>
     let (bkts, pyItem) ← checkSciCase m negExp e
-    return (bkts, { parses := #[pyItem] })
+    return (bkts, [], { parses := #[pyItem] })
   | .checkExtern u u32 scaleExp =>
     let (bkts, pyExts) ← checkExternCase u u32 scaleExp
-    return (bkts, { externs := pyExts })
+    return (bkts, [], { externs := pyExts })
 
 private def appendBatch (a b : PyOracleBatch) : PyOracleBatch :=
   { parses := a.parses ++ b.parses
@@ -951,21 +981,30 @@ private def appendBatch (a b : PyOracleBatch) : PyOracleBatch :=
     intFloats := a.intFloats ++ b.intFloats
     externs := a.externs ++ b.externs }
 
-private def checkEpisodeWithPy (client : PyOracleClient) (trace : Array FloatFuzzCase) :
+private def checkEpisodeWithPy (client : PyOracleClient) (trace : Array FloatFuzzCase)
+    (emitErrHits : Bool := false) :
     IO (Except String (List CoverageBucket)) := do
   let mut bkts : List CoverageBucket := []
+  let mut errHits : List (String × String) := []
   let mut batch : PyOracleBatch := {}
   for c in trace do
     match checkCase c with
     | .error err => return .error err
-    | .ok (bs, cBatch) =>
+    | .ok (bs, eh, cBatch) =>
       bkts := bs ++ bkts
+      errHits := eh ++ errHits
       batch := appendBatch batch cBatch
   if batch.isEmpty then
+    if emitErrHits then
+      for (op, kind) in errHits do
+        Fuzz.Common.logErrHit op kind "real"
     return .ok bkts
   match ← flushPyBatch client batch with
   | .error err => return .error err
   | .ok () =>
+    if emitErrHits then
+      for (op, kind) in errHits do
+        Fuzz.Common.logErrHit op kind "real"
     bkts := bucket "python_oracle" "ok.batch_verified" :: bkts
     if !batch.externs.isEmpty then
       bkts := bucket "python_oracle" "ok.extern_fraction" :: bkts
@@ -1278,7 +1317,7 @@ private def errorClassTag (err : String) : String := Id.run do
 
 private def runTraceChecked (client : PyOracleClient) (tracker : CoverageTracker)
     (trace : Array FloatFuzzCase) : IO CoverageTracker := do
-  match ← checkEpisodeWithPy client trace with
+  match ← checkEpisodeWithPy client trace true with
   | .ok bkts =>
     let mut tr := tracker
     for b in bkts do
@@ -1289,14 +1328,14 @@ private def runTraceChecked (client : PyOracleClient) (tracker : CoverageTracker
       throw (IO.userError s!"FLOAT_FUZZ_MISMATCH err={err} trace_size={trace.size} trace={repr trace}")
     let origTag := errorClassTag err
     let fails (cand : Array FloatFuzzCase) : IO Bool := do
-      match ← checkEpisodeWithPy client cand with
+      match ← checkEpisodeWithPy client cand false with
       | .ok _ => return false
       | .error e =>
         if e.startsWith "PYTHON_ORACLE_EOF" then
           throw (IO.userError s!"FLOAT_FUZZ_MISMATCH err={e} original_err={err} trace_size={trace.size} trace={repr trace}")
         return errorClassTag e == origTag
     let shrunk ← shrinkToFixedPoint fails trace
-    let shrunkErr := match ← checkEpisodeWithPy client shrunk with
+    let shrunkErr := match ← checkEpisodeWithPy client shrunk false with
       | .error e => e
       | .ok _ => err
     throw (IO.userError s!"FLOAT_FUZZ_MISMATCH err={shrunkErr} original_err={err} shrunk={repr shrunk}")

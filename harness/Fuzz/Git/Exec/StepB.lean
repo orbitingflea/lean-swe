@@ -24,6 +24,7 @@ def execStepPartB
         (evalGitApi.createBranch p br spStr? force)
     else
       let realRes ← (pickApi st poison).createBranch p br spStr? force
+      logGitErr st.emitErrHits step.opName realRes
       let tr' := recordOutcome tr step.opName realRes
       let witnessCid? ←
         match realRes with
@@ -54,6 +55,7 @@ def execStepPartB
     let special := targetTreeHasSpecial st p
     if !ext then
       let realRes ← (pickApi st poison).checkout p tgt force
+      logGitErr st.emitErrHits step.opName realRes
       let (modelRes, modelNext) := evalGitApi.checkout p tgt force st.model
       let tr' := recordOutcome tr step.opName realRes
       match realRes, modelRes with
@@ -84,6 +86,7 @@ def execStepPartB
         | .ok () => return .ok ({ st with model := modelNext }, tr')
     else
       let realRes ← (pickApi st poison).checkout p tgt force
+      logGitErr st.emitErrHits step.opName realRes
       let tr' := recordOutcome tr step.opName realRes
       let witnessCid? ←
         match realRes with
@@ -137,6 +140,7 @@ def execStepPartB
     let special := targetTreeHasSpecial st p
     if !(spStr?.any isExtendedRevSpec) then
       let realRes ← (pickApi st poison).switch p br create spStr? force
+      logGitErr st.emitErrHits step.opName realRes
       let (modelRes, modelNext) := evalGitApi.switch p br create spStr? force st.model
       let tr' := recordOutcome tr step.opName realRes
       match realRes, modelRes with
@@ -167,6 +171,7 @@ def execStepPartB
         | .ok () => return .ok ({ st with model := modelNext }, tr')
     else
       let realRes ← (pickApi st poison).switch p br create spStr? force
+      logGitErr st.emitErrHits step.opName realRes
       let tr' := recordOutcome tr step.opName realRes
       let witnessCid? ←
         match realRes with
@@ -224,6 +229,7 @@ def execStepPartB
           return .ok (st1, tr1)
     else
       let realRes ← (pickApi st poison).reset p mode revStr
+      logGitErr st.emitErrHits step.opName realRes
       let tr' := recordOutcome tr step.opName realRes
       let witnessCid? ←
         match realRes with
@@ -268,6 +274,7 @@ def execStepPartB
           return .ok (st1, tr1)
     else
       let realRes ← (pickApi st poison).worktreeAdd p opts
+      logGitErr st.emitErrHits step.opName realRes
       let tr' := recordOutcome tr step.opName realRes
       let witnessCid? ←
         match realRes with
@@ -298,6 +305,7 @@ def execStepPartB
     let p := resolveTarget st.rootDir t
     let wtP := resolveTarget st.rootDir wtTgt
     let realRes ← (pickApi st poison).worktreeRemove p wtP force
+    logGitErr st.emitErrHits step.opName realRes
     let (modelRes, modelNext) := evalGitApi.worktreeRemove p wtP force st.model
     let tr' := recordOutcome tr step.opName realRes
     let special := pathHasSpecialMetadata st.model wtP
@@ -386,6 +394,7 @@ def execStepPartB
         | .ok (), .ok () => (.ok (), sAfterRem)
         | .ok (), .error ce => (.error ce, sAfterRem)
         | .error ae, _ => (.error ae, sAfterRem)
+    logGitErr curSt.emitErrHits step.opName realRes
     let tr' := recordOutcome curTr step.opName realRes
     if (ext || isAmbiguousHexBranchTarget st.model p opts) && !modelAddRes.isOk then
       let (ok, sFin) := allowsWorktreeAdd st.model p opts wtWitness? realRes wtBrWitness?
@@ -427,12 +436,13 @@ def execStepPartB
       else
         st.cwdDir
     let hangApi := Impl.mkApiM (hangGitRawOps st.rootDir st.cwdDir 25)
-    let res : Except GitError Unit ←
+    let (probeOpName, res) : String × Except GitError Unit ←
       match probeOp % 4 with
-      | 0 => (hangApi.status probeDir).map fun r => r.map (fun _ => ())
-      | 1 => (hangApi.headState probeDir).map fun r => r.map (fun _ => ())
-      | 2 => (hangApi.listWorktrees probeDir).map fun r => r.map (fun _ => ())
-      | _ => (hangApi.revParseCommit probeDir "HEAD").map fun r => r.map (fun _ => ())
+      | 0 => pure ("status", (← hangApi.status probeDir).map fun _ => ())
+      | 1 => pure ("headState", (← hangApi.headState probeDir).map fun _ => ())
+      | 2 => pure ("listWorktrees", (← hangApi.listWorktrees probeDir).map fun _ => ())
+      | _ => pure ("revParseCommit", (← hangApi.revParseCommit probeDir "HEAD").map fun _ => ())
+    logGitErr st.emitErrHits probeOpName res "mocked"
     let tr' := recordOutcome tr step.opName res
     match res with
     | .error e =>

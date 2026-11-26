@@ -7,6 +7,7 @@ import LeanSwe.Process.Interface
 import LeanSwe.TempDir.Interface
 import Fuzz.Common.Coverage
 import Fuzz.Common.Shrink
+import Fuzz.Common.Suite
 import Fuzz.Git.Gen
 
 namespace Fuzz.Git
@@ -47,6 +48,8 @@ structure EpisodeState where
   hasBadUtf8Fixture : Bool := false
   /-- Whether this episode has introduced a quote/newline path or lock reason that can perturb English `git` stderr text. -/
   hasSpoofablePath : Bool := false
+  /-- Whether observed real `LeanSwe.Git` errors should emit `ERR_HIT` coverage records. -/
+  emitErrHits : Bool := false
 
 /-- Helper `stripTrailingSlash`. -/
 def stripTrailingSlash (p : String) : String :=

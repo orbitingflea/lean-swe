@@ -25,6 +25,12 @@ private def errKindTag : SqliteErrorKind → String
   | .invalidInput => "invalidInput"
   | .ioError => "ioError"
 
+private def logSqliteErr {α : Type} (emitErrHits : Bool) (qualOp : String)
+    (res : Except SqliteError α) : IO Unit := do
+  if emitErrHits then
+    if let .error e := res then
+      Fuzz.Common.logErrHit qualOp s!"LeanSwe.Sqlite.Raw.SqliteErrorKind.{errKindTag e.kind}" "real"
+
 private def requiredBuckets : Array CoverageBucket := #[
   bucket "validateConfig" "ok",
   bucket "validateConfig" "err.invalidInput",
@@ -289,12 +295,14 @@ private def runLeafLockstep
     (worldRef : IO.Ref Model.SqliteWorldState)
     (trackerRef : IO.Ref CoverageTracker)
     (opsCountRef : IO.Ref Nat)
-    (mismatchRef : IO.Ref (Option String)) : IO Unit := do
+    (mismatchRef : IO.Ref (Option String))
+    (emitErrHits : Bool := false) : IO Unit := do
   opsCountRef.modify (· + 1)
   let st0 ← worldRef.get
   match op with
   | .exec sql params =>
     let resReal ← LeanSwe.Sqlite.exec realDb sql params
+    logSqliteErr emitErrHits "LeanSwe.Sqlite.exec" resReal
     let stmtsAfter ← LeanSwe.Sqlite.activeStmtCount
     if stmtsAfter != 0 then
       recordMismatch mismatchRef s!"LEAK_STMT_AFTER_EXEC sql={repr sql} activeStmtCount={stmtsAfter}"
@@ -326,6 +334,7 @@ private def runLeafLockstep
           s!"EXEC_OUTCOME_MISMATCH sql={repr sql} params={repr params} real={repr resReal} model={repr resModel}"
   | .query sql params =>
     let resReal ← LeanSwe.Sqlite.query realDb sql params
+    logSqliteErr emitErrHits "LeanSwe.Sqlite.query" resReal
     let stmtsAfter ← LeanSwe.Sqlite.activeStmtCount
     if stmtsAfter != 0 then
       recordMismatch mismatchRef s!"LEAK_STMT_AFTER_QUERY sql={repr sql} activeStmtCount={stmtsAfter}"
@@ -381,6 +390,7 @@ private def runLeafLockstep
           s!"QUERY_OUTCOME_MISMATCH sql={repr sql} params={repr params} real={repr resReal} model={repr resModel}"
   | .queryOne sql params =>
     let resReal ← LeanSwe.Sqlite.queryOne realDb sql params
+    logSqliteErr emitErrHits "LeanSwe.Sqlite.queryOne" resReal
     let stmtsAfter ← LeanSwe.Sqlite.activeStmtCount
     if stmtsAfter != 0 then
       recordMismatch mismatchRef s!"LEAK_STMT_AFTER_QUERYONE sql={repr sql} activeStmtCount={stmtsAfter}"
@@ -452,7 +462,8 @@ private def runTxLockstep
     (worldRef : IO.Ref Model.SqliteWorldState)
     (trackerRef : IO.Ref CoverageTracker)
     (opsCountRef : IO.Ref Nat)
-    (mismatchRef : IO.Ref (Option String)) : IO Unit := do
+    (mismatchRef : IO.Ref (Option String))
+    (emitErrHits : Bool := false) : IO Unit := do
   opsCountRef.modify (· + 1)
   let enteredRef ← IO.mkRef false
   let threwMsgRef ← IO.mkRef (none : Option String)
@@ -471,7 +482,7 @@ private def runTxLockstep
           worldRef.set st1
           for op in txOps do
             if !(← hasActiveMismatch mismatchRef) then
-              runLeafLockstep oracleCfg txRealDb modelDb foreignKeys false op worldRef trackerRef opsCountRef mismatchRef
+              runLeafLockstep oracleCfg txRealDb modelDb foreignKeys false op worldRef trackerRef opsCountRef mismatchRef emitErrHits
           match exitMode with
           | .returnOk => return .ok ()
           | .returnCallerErr err => return .error err
@@ -479,6 +490,7 @@ private def runTxLockstep
     catch e =>
       threwMsgRef.set (some (toString e))
       pure (.ok ())
+  logSqliteErr emitErrHits "LeanSwe.Sqlite.withTransaction" txResReal
   let entered ← enteredRef.get
   let threwMsg? ← threwMsgRef.get
   let stmtsAfter ← LeanSwe.Sqlite.activeStmtCount
@@ -575,7 +587,8 @@ private def withDbLockstep
     (opsCountRef : IO.Ref Nat)
     (mismatchRef : IO.Ref (Option String))
     (escapedRef : IO.Ref (Array DbHandle))
-    (body : DbHandle → DbHandle → IO (Except SqliteError Unit)) : IO Unit := do
+    (body : DbHandle → DbHandle → IO (Except SqliteError Unit))
+    (emitErrHits : Bool := false) : IO Unit := do
   opsCountRef.modify (· + 1)
   let resolvedPath := target.resolve epDir
   let valRes := Model.validateConfigWith Model.mapRawError cfg
@@ -601,6 +614,7 @@ private def withDbLockstep
     catch e =>
       threwMsgRef.set (some (toString e))
       pure (.ok ())
+  logSqliteErr emitErrHits "LeanSwe.Sqlite.withDb" resReal
   let dbCountAfter ← LeanSwe.Sqlite.activeDbCount
   let stmtCountAfter ← LeanSwe.Sqlite.activeStmtCount
   if dbCountAfter != baseActiveDbs || stmtCountAfter != 0 then
@@ -707,33 +721,36 @@ private def runWithDbSession
     (trackerRef : IO.Ref CoverageTracker)
     (opsCountRef : IO.Ref Nat)
     (mismatchRef : IO.Ref (Option String))
-    (escapedRef : IO.Ref (Array DbHandle)) : IO Unit :=
+    (escapedRef : IO.Ref (Array DbHandle))
+    (emitErrHits : Bool := false) : IO Unit :=
   withDbLockstep epDir target cfg 0 exitMode worldRef trackerRef opsCountRef mismatchRef escapedRef
-    fun db1 modelDb1 => do
+    (fun db1 modelDb1 => do
       for op in ops do
         if !(← hasActiveMismatch mismatchRef) then
           match op with
           | .leaf leafOp =>
-            runLeafLockstep oracleCfg db1 modelDb1 cfg.foreignKeys false leafOp worldRef trackerRef opsCountRef mismatchRef
+            runLeafLockstep oracleCfg db1 modelDb1 cfg.foreignKeys false leafOp worldRef trackerRef opsCountRef mismatchRef emitErrHits
           | .withTx txOps txExit =>
-            runTxLockstep oracleCfg db1 modelDb1 cfg.foreignKeys txOps txExit worldRef trackerRef opsCountRef mismatchRef
+            runTxLockstep oracleCfg db1 modelDb1 cfg.foreignKeys txOps txExit worldRef trackerRef opsCountRef mismatchRef emitErrHits
           | .nestedWithDb t2 cfg2 dualOps exitMode2 =>
             withDbLockstep epDir t2 cfg2 1 exitMode2 worldRef trackerRef opsCountRef mismatchRef escapedRef
-              fun db2 modelDb2 => do
+              (fun db2 modelDb2 => do
                 for (useSecond, dOp) in dualOps do
                   if !(← hasActiveMismatch mismatchRef) then
                     let (rDb, mDb, fkFlag) :=
                       if useSecond then (db2, modelDb2, cfg2.foreignKeys)
                       else (db1, modelDb1, cfg.foreignKeys)
-                    runLeafLockstep oracleCfg rDb mDb fkFlag false dOp worldRef trackerRef opsCountRef mismatchRef
+                    runLeafLockstep oracleCfg rDb mDb fkFlag false dOp worldRef trackerRef opsCountRef mismatchRef emitErrHits
                 match exitMode2 with
                 | .returnOk => return (.ok () : Except SqliteError Unit)
                 | .returnCallerErr e => return (.error e : Except SqliteError Unit)
-                | .throwIoUserError msg => throw (IO.userError msg)
+                | .throwIoUserError msg => throw (IO.userError msg))
+              emitErrHits
       match exitMode with
       | .returnOk => return (.ok () : Except SqliteError Unit)
       | .returnCallerErr e => return (.error e : Except SqliteError Unit)
-      | .throwIoUserError msg => throw (IO.userError msg)
+      | .throwIoUserError msg => throw (IO.userError msg))
+    emitErrHits
 
 private def resolveClosedRef (escaped : Array DbHandle) : ClosedHandleRef → DbHandle
   | .zero => { id := 0 }
@@ -890,10 +907,12 @@ private def runRawSessionLockstep
     (worldRef : IO.Ref Model.SqliteWorldState)
     (trackerRef : IO.Ref CoverageTracker)
     (opsCountRef : IO.Ref Nat)
-    (mismatchRef : IO.Ref (Option String)) : IO Unit := do
+    (mismatchRef : IO.Ref (Option String))
+    (emitErrHits : Bool := false) : IO Unit := do
   opsCountRef.modify (· + 1)
   let resolvedPath := target.resolve epDir
   let rOpen ← LeanSwe.Sqlite.Raw.openDb resolvedPath cfg
+  logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.openDb" rOpen
   let st0 ← worldRef.get
   let (mOpen, st1) := Model.modelRawOps.openDb resolvedPath cfg st0
   worldRef.set st1
@@ -930,6 +949,7 @@ private def runRawSessionLockstep
             match rSlots.getD idx none, mSlots.getD idx none with
             | some (oldR, true), some (oldM, true) =>
               let rOldF ← LeanSwe.Sqlite.Raw.finalize oldR
+              logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.finalize" rOldF
               let stC ← worldRef.get
               let (mOldF, stC') := Model.modelRawOps.finalize oldM stC
               worldRef.set stC'
@@ -947,6 +967,7 @@ private def runRawSessionLockstep
             | _, _ => pure ()
             if !(← hasActiveMismatch mismatchRef) then
               let rPrep ← LeanSwe.Sqlite.Raw.prepare realDb sql
+              logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.prepare" rPrep
               let stNow ← worldRef.get
               let (mPrep, stNext) := Model.modelRawOps.prepare modelDb sql stNow
               worldRef.set stNext
@@ -976,6 +997,7 @@ private def runRawSessionLockstep
             if !rLive && (rSlots.getD idx none).isSome then
               trackerRef.modify (·.record "raw" "useAfterFinalize")
             let rB ← LeanSwe.Sqlite.Raw.bind rs ps
+            logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.bind" rB
             let stNow ← worldRef.get
             let (mB, stNext) := Model.modelRawOps.bind ms ps stNow
             worldRef.set stNext
@@ -995,6 +1017,7 @@ private def runRawSessionLockstep
             if !rLive && (rSlots.getD idx none).isSome then
               trackerRef.modify (·.record "raw" "useAfterFinalize")
             let rS ← LeanSwe.Sqlite.Raw.step rs
+            logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.step" rS
             let stNow ← worldRef.get
             let witnessRows? ←
               match rS, rLive with
@@ -1023,6 +1046,7 @@ private def runRawSessionLockstep
             if !rLive && (rSlots.getD idx none).isSome then
               trackerRef.modify (·.record "raw" "useAfterFinalize")
             let rF ← LeanSwe.Sqlite.Raw.finalize rs
+            logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.finalize" rF
             let stNow ← worldRef.get
             let (mF, stNext) := Model.modelRawOps.finalize ms stNow
             worldRef.set stNext
@@ -1043,16 +1067,23 @@ private def runRawSessionLockstep
             let peerCfg : OpenConfig := { walMode := cfg.walMode, busyTimeoutMs := 0, foreignKeys := cfg.foreignKeys }
             if resolvedPath.startsWith "file:" then
               let runRealRawPeer : IO (Except SqliteError Unit) := do
-                match ← LeanSwe.Sqlite.Raw.openDb resolvedPath peerCfg with
+                let rOpen ← LeanSwe.Sqlite.Raw.openDb resolvedPath peerCfg
+                logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.openDb" rOpen
+                match rOpen with
                 | .error e => return Except.error e
                 | .ok pDb =>
+                  let rPrep ← LeanSwe.Sqlite.Raw.prepare pDb sql
+                  logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.prepare" rPrep
                   let res : Except SqliteError Unit ←
-                    match ← LeanSwe.Sqlite.Raw.prepare pDb sql with
+                    match rPrep with
                     | .error e => pure (Except.error e)
                     | .ok psH =>
                       let bRes : Except SqliteError Unit ←
                         if ps.isEmpty then pure (Except.ok ())
-                        else LeanSwe.Sqlite.Raw.bind psH ps
+                        else do
+                          let rBind ← LeanSwe.Sqlite.Raw.bind psH ps
+                          logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.bind" rBind
+                          pure rBind
                       let sRes : Except SqliteError Unit ←
                         match bRes with
                         | .error e => pure (Except.error e)
@@ -1060,7 +1091,9 @@ private def runRawSessionLockstep
                           let mut stepErr? : Option SqliteError := none
                           let mut doneLoop := false
                           while !doneLoop do
-                            match ← LeanSwe.Sqlite.Raw.step psH with
+                            let rStep ← LeanSwe.Sqlite.Raw.step psH
+                            logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.step" rStep
+                            match rStep with
                             | .error e =>
                               stepErr? := some e
                               doneLoop := true
@@ -1072,10 +1105,12 @@ private def runRawSessionLockstep
                           | some e => pure (Except.error e)
                           | none => pure (Except.ok ())
                       let fRes ← LeanSwe.Sqlite.Raw.finalize psH
+                      logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.finalize" fRes
                       match sRes with
                       | .error e => pure (Except.error e)
                       | .ok () => pure fRes
                   let cRes ← LeanSwe.Sqlite.Raw.closeDb pDb
+                  logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.closeDb" cRes
                   match cRes with
                   | .error e => return Except.error e
                   | .ok () => return res
@@ -1100,7 +1135,11 @@ private def runRawSessionLockstep
               | _, _ =>
                 recordMismatch mismatchRef s!"RAW_PEER_OUTCOME_MISMATCH sql={repr sql} real={repr rPeer} model={repr mPeer}"
             else
-              let rPeer ← LeanSwe.Sqlite.withDb resolvedPath peerCfg fun pDb => LeanSwe.Sqlite.exec pDb sql ps
+              let rPeer ← LeanSwe.Sqlite.withDb resolvedPath peerCfg fun pDb => do
+                let rExec ← LeanSwe.Sqlite.exec pDb sql ps
+                logSqliteErr emitErrHits "LeanSwe.Sqlite.exec" rExec
+                return rExec
+              logSqliteErr emitErrHits "LeanSwe.Sqlite.withDb" rPeer
               let stNow ← worldRef.get
               let (mPeer, stNext) := (Model.modelApi.withDb resolvedPath peerCfg fun pMod =>
                 Model.modelApi.exec pMod sql ps).run stNow
@@ -1115,6 +1154,7 @@ private def runRawSessionLockstep
           | .rawPeerExec peerTgt peerCfg sql ps =>
             let peerPath := peerTgt.resolve epDir
             let rPO ← LeanSwe.Sqlite.Raw.openDb peerPath peerCfg
+            logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.openDb" rPO
             let stP0 ← worldRef.get
             let (mPO, stP1) := Model.modelRawOps.openDb peerPath peerCfg stP0
             worldRef.set stP1
@@ -1134,6 +1174,7 @@ private def runRawSessionLockstep
                 s!"RAW_PEER_OPEN_OUTCOME_MISMATCH path={repr peerPath} real={repr e1} model=.ok"
             | .ok rPDb, .ok mPDb =>
               let rPP ← LeanSwe.Sqlite.Raw.prepare rPDb sql
+              logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.prepare" rPP
               let stP2 ← worldRef.get
               let (mPP, stP3) := Model.modelRawOps.prepare mPDb sql stP2
               worldRef.set stP3
@@ -1151,6 +1192,7 @@ private def runRawSessionLockstep
                 let mut bindOk := true
                 if !ps.isEmpty then
                   let rPB ← LeanSwe.Sqlite.Raw.bind rPSt ps
+                  logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.bind" rPB
                   let stPB0 ← worldRef.get
                   let (mPB, stPB1) := Model.modelRawOps.bind mPSt ps stPB0
                   worldRef.set stPB1
@@ -1167,6 +1209,7 @@ private def runRawSessionLockstep
                   let mut doneP := false
                   while !doneP && !(← hasActiveMismatch mismatchRef) do
                     let rPS ← LeanSwe.Sqlite.Raw.step rPSt
+                    logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.step" rPS
                     let stPS0 ← worldRef.get
                     let pWitnessRows? ←
                       match rPS with
@@ -1210,6 +1253,7 @@ private def runRawSessionLockstep
                         | .ok (.row _) => pure ()
                         | _ => doneP := true
                 let rPF ← LeanSwe.Sqlite.Raw.finalize rPSt
+                logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.finalize" rPF
                 let stPF0 ← worldRef.get
                 let (mPF, stPF1) := Model.modelRawOps.finalize mPSt stPF0
                 worldRef.set stPF1
@@ -1222,6 +1266,7 @@ private def runRawSessionLockstep
                   | _, _ =>
                     recordMismatch mismatchRef s!"RAW_PEER_FIN_OUTCOME_MISMATCH real={repr rPF} model={repr mPF}"
               let rPC ← LeanSwe.Sqlite.Raw.closeDb rPDb
+              logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.closeDb" rPC
               let stPC0 ← worldRef.get
               let (mPC, stPC1) := Model.modelRawOps.closeDb mPDb stPC0
               worldRef.set stPC1
@@ -1234,6 +1279,7 @@ private def runRawSessionLockstep
         let hasLiveR := (← realSlotsRef.get).any fun | some (_, true) => true | _ => false
         if hasLiveR then
           let rBusy ← LeanSwe.Sqlite.Raw.closeDb realDb
+          logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.closeDb" rBusy
           let stNow ← worldRef.get
           let (mBusy, stNext) := Model.modelRawOps.closeDb modelDb stNow
           worldRef.set stNext
@@ -1252,6 +1298,7 @@ private def runRawSessionLockstep
         match rFinalSlots.getD i none, mFinalSlots.getD i none with
         | some (rs, true), some (ms, true) =>
           let rFin ← LeanSwe.Sqlite.Raw.finalize rs
+          logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.finalize" rFin
           let stNow ← worldRef.get
           let (mFin, stNext) := Model.modelRawOps.finalize ms stNow
           worldRef.set stNext
@@ -1270,6 +1317,7 @@ private def runRawSessionLockstep
           worldRef.set (Model.modelRawOps.finalize ms stNow).2
         | _, _ => pure ()
       let rClose ← LeanSwe.Sqlite.Raw.closeDb realDb
+      logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.closeDb" rClose
       let stNow ← worldRef.get
       let (mClose, stClose) := Model.modelRawOps.closeDb modelDb stNow
       worldRef.set stClose
@@ -1289,7 +1337,8 @@ private def runEpisode
     (attemptRef : IO.Ref Nat)
     (oracleCfg : OracleBugConfig)
     (ep : SqliteEpisode)
-    (tracker : CoverageTracker) : IO (CoverageTracker × Nat × Option String) := do
+    (tracker : CoverageTracker)
+    (emitErrHits : Bool := false) : IO (CoverageTracker × Nat × Option String) := do
   let idx ← attemptRef.modifyGet fun n => (n, n + 1)
   let epDir := rootDir / s!"ep-{idx}"
   try
@@ -1305,6 +1354,7 @@ private def runEpisode
       | .validateConfig cfg =>
         opsCountRef.modify (· + 1)
         let rRes := LeanSwe.Sqlite.validateConfig cfg
+        logSqliteErr emitErrHits "LeanSwe.Sqlite.validateConfig" rRes
         let mRes := Model.validateConfig cfg
         let eqRes :=
           match rRes, mRes with
@@ -1326,7 +1376,7 @@ private def runEpisode
         let escaped ← escapedRef.get
         let realDb := resolveClosedRef escaped ref
         let modelClosedDb : DbHandle := { id := 999999999 }
-        runLeafLockstep oracleCfg realDb modelClosedDb false true op worldRef trackerRef opsCountRef mismatchRef
+        runLeafLockstep oracleCfg realDb modelClosedDb false true op worldRef trackerRef opsCountRef mismatchRef emitErrHits
         let dbs ← LeanSwe.Sqlite.activeDbCount
         let stmts ← LeanSwe.Sqlite.activeStmtCount
         if dbs != 0 || stmts != 0 then
@@ -1335,16 +1385,16 @@ private def runEpisode
         let escaped ← escapedRef.get
         let realDb := resolveClosedRef escaped ref
         let modelClosedDb : DbHandle := { id := 999999999 }
-        runTxLockstep oracleCfg realDb modelClosedDb false txOps exitMode worldRef trackerRef opsCountRef mismatchRef
+        runTxLockstep oracleCfg realDb modelClosedDb false txOps exitMode worldRef trackerRef opsCountRef mismatchRef emitErrHits
         let dbs ← LeanSwe.Sqlite.activeDbCount
         let stmts ← LeanSwe.Sqlite.activeStmtCount
         if dbs != 0 || stmts != 0 then
           recordMismatch mismatchRef s!"LEAK_AFTER_CLOSED_TX dbs={dbs} stmts={stmts}"
       | .withDbSession target cfg ops exitMode =>
         runWithDbSession epDir oracleCfg target cfg ops exitMode
-          worldRef trackerRef opsCountRef mismatchRef escapedRef
+          worldRef trackerRef opsCountRef mismatchRef escapedRef emitErrHits
       | .rawSession target cfg ops =>
-        runRawSessionLockstep epDir target cfg ops worldRef trackerRef opsCountRef mismatchRef
+        runRawSessionLockstep epDir target cfg ops worldRef trackerRef opsCountRef mismatchRef emitErrHits
     let tr ← trackerRef.get
     let nOps ← opsCountRef.get
     let mm ← mismatchRef.get
@@ -1750,19 +1800,19 @@ private def runBusyWithTxProbe (tpl : EpisodeTemplate) (rootDir : System.FilePat
     let mismatchRef ← IO.mkRef (none : Option String)
     let escapedRef ← IO.mkRef (#[] : Array DbHandle)
     withDbLockstep epDir .db0 { walMode := false } 0 .returnOk worldRef trackerRef opsCountRef mismatchRef escapedRef
-      fun db1 mDb1 => do
+      (fun db1 mDb1 => do
         runLeafLockstep {} db1 mDb1 false false (.exec "CREATE TABLE btx(x INT)" #[])
-          worldRef trackerRef opsCountRef mismatchRef
+          worldRef trackerRef opsCountRef mismatchRef true
         runLeafLockstep {} db1 mDb1 false false (.exec "BEGIN IMMEDIATE" #[])
-          worldRef trackerRef opsCountRef mismatchRef
+          worldRef trackerRef opsCountRef mismatchRef true
         withDbLockstep epDir .db0 { walMode := false, busyTimeoutMs := 0 } 1 .returnOk
-          worldRef trackerRef opsCountRef mismatchRef escapedRef fun db2 mDb2 => do
+          worldRef trackerRef opsCountRef mismatchRef escapedRef (fun db2 mDb2 => do
             runTxLockstep {} db2 mDb2 false #[.exec "INSERT INTO btx VALUES (1)" #[]] .returnOk
-              worldRef trackerRef opsCountRef mismatchRef
-            return (.ok () : Except SqliteError Unit)
+              worldRef trackerRef opsCountRef mismatchRef true
+            return (.ok () : Except SqliteError Unit)) true
         runLeafLockstep {} db1 mDb1 false false (.exec "ROLLBACK" #[])
-          worldRef trackerRef opsCountRef mismatchRef
-        return (.ok () : Except SqliteError Unit)
+          worldRef trackerRef opsCountRef mismatchRef true
+        return (.ok () : Except SqliteError Unit)) true
     if let some msg ← mismatchRef.get then
       throw (IO.userError s!"SQLITE_TX_BUSY_PROBE_MISMATCH: {msg}")
     let tr ← trackerRef.get
@@ -1783,25 +1833,25 @@ private def runCommitBusyWithTxProbe (tpl : EpisodeTemplate) (rootDir : System.F
     let mismatchRef ← IO.mkRef (none : Option String)
     let escapedRef ← IO.mkRef (#[] : Array DbHandle)
     withDbLockstep epDir .db0 { walMode := false } 0 .returnOk worldRef trackerRef opsCountRef mismatchRef escapedRef
-      fun db1 mDb1 => do
+      (fun db1 mDb1 => do
         runLeafLockstep {} db1 mDb1 false false (.exec "CREATE TABLE btx2(x INT)" #[])
-          worldRef trackerRef opsCountRef mismatchRef
+          worldRef trackerRef opsCountRef mismatchRef true
         withDbLockstep epDir .db0 { walMode := false, busyTimeoutMs := 0 } 1 .returnOk
-          worldRef trackerRef opsCountRef mismatchRef escapedRef fun db2 mDb2 => do
+          worldRef trackerRef opsCountRef mismatchRef escapedRef (fun db2 mDb2 => do
             runLeafLockstep {} db2 mDb2 false false (.exec "BEGIN DEFERRED" #[])
-              worldRef trackerRef opsCountRef mismatchRef
+              worldRef trackerRef opsCountRef mismatchRef true
             runLeafLockstep {} db2 mDb2 false false (.query "SELECT x FROM btx2" #[])
-              worldRef trackerRef opsCountRef mismatchRef
+              worldRef trackerRef opsCountRef mismatchRef true
             runTxLockstep {} db1 mDb1 false #[.exec "INSERT INTO btx2 VALUES (1)" #[]] .returnOk
-              worldRef trackerRef opsCountRef mismatchRef
+              worldRef trackerRef opsCountRef mismatchRef true
             runLeafLockstep {} db2 mDb2 false false (.exec "ROLLBACK" #[])
-              worldRef trackerRef opsCountRef mismatchRef
-            return (.ok () : Except SqliteError Unit)
+              worldRef trackerRef opsCountRef mismatchRef true
+            return (.ok () : Except SqliteError Unit)) true
         runTxLockstep {} db1 mDb1 false #[.exec "INSERT INTO btx2 VALUES (2)" #[]] .returnOk
-          worldRef trackerRef opsCountRef mismatchRef
+          worldRef trackerRef opsCountRef mismatchRef true
         runLeafLockstep {} db1 mDb1 false false (.query "SELECT x FROM btx2 ORDER BY x ASC" #[])
-          worldRef trackerRef opsCountRef mismatchRef
-        return (.ok () : Except SqliteError Unit)
+          worldRef trackerRef opsCountRef mismatchRef true
+        return (.ok () : Except SqliteError Unit)) true
     if let some msg ← mismatchRef.get then
       throw (IO.userError s!"SQLITE_TX_COMMIT_BUSY_PROBE_MISMATCH: {msg}")
     let tr ← trackerRef.get
@@ -1910,8 +1960,11 @@ private def runBusyLockGrowthProbe (rootDir : System.FilePath) : IO Unit := do
       let _ ← unwrapOrThrow "SQLITE_BUSY_PROBE_BEGIN" (← LeanSwe.Sqlite.exec db1 "BEGIN IMMEDIATE" #[])
       let _ ← unwrapOrThrow "SQLITE_BUSY_PROBE_INS" (← LeanSwe.Sqlite.exec db1 "INSERT INTO bl VALUES (1)" #[])
       for _ in List.range 500 do
-        let res2 ← LeanSwe.Sqlite.withDb busyPath { walMode := false, busyTimeoutMs := 0 } fun db2 =>
-          LeanSwe.Sqlite.exec db2 "INSERT INTO bl VALUES (2)" #[]
+        let res2 ← LeanSwe.Sqlite.withDb busyPath { walMode := false, busyTimeoutMs := 0 } fun db2 => do
+          let rIns ← LeanSwe.Sqlite.exec db2 "INSERT INTO bl VALUES (2)" #[]
+          logSqliteErr true "LeanSwe.Sqlite.exec" rIns
+          return rIns
+        logSqliteErr true "LeanSwe.Sqlite.withDb" res2
         match res2 with
         | .error e =>
           if e.kind == .busy then busyHitsRef.modify (· + 1)
@@ -1936,6 +1989,7 @@ private def runWithDbBusyCloseProbe (rootDir : System.FilePath) : IO Unit := do
         (← LeanSwe.Sqlite.Raw.prepare db "SELECT id FROM wl")
       heldRef.set (some (db, s))
       return (.ok () : Except SqliteError Unit)
+    logSqliteErr true "LeanSwe.Sqlite.withDb" resBusy
     match resBusy with
     | .error e =>
       if e.kind != .busy then
@@ -1951,6 +2005,7 @@ private def runWithDbBusyCloseProbe (rootDir : System.FilePath) : IO Unit := do
         (← LeanSwe.Sqlite.Raw.prepare db "SELECT id FROM wl")
       heldRef.set (some (db, s))
       return (Except.error { kind := .invalidInput, message := "caller abort" } : Except SqliteError Unit)
+    logSqliteErr true "LeanSwe.Sqlite.withDb" resPrimary
     match resPrimary with
     | .error e =>
       if e.kind != .invalidInput || e.message != "caller abort" then
@@ -2045,8 +2100,10 @@ private def runCorruptBeginImmProbe (rootDir : System.FilePath) : IO Unit := do
     let (mCStRes, stC2) := Model.modelRawOps.prepare mCDb "BEGIN IMMEDIATE" stC1
     let mCSt ← unwrapOrThrow "SQLITE_RAW_CORRUPT_PREP_M" mCStRes
     let rCS ← LeanSwe.Sqlite.Raw.step rCSt
+    logSqliteErr true "LeanSwe.Sqlite.Raw.step" rCS
     let (mCS, stC3) := Model.modelRawOps.step mCSt stC2
     let rCFin ← LeanSwe.Sqlite.Raw.finalize rCSt
+    logSqliteErr true "LeanSwe.Sqlite.Raw.finalize" rCFin
     let (mCFin, _) := Model.modelRawOps.finalize mCSt stC3
     let finMatch := match rCFin, mCFin with
       | .ok (), .ok () => true
@@ -2081,8 +2138,11 @@ private def runMidscanLockProbe (rootDir : System.FilePath) : IO Unit := do
     let mMSt ← unwrapOrThrow "SQLITE_RAW_SCAN_PREP_M" mMStRes
     let rMS1 ← LeanSwe.Sqlite.Raw.step rMSt
     let (mMS1, stM5) := Model.modelRawOps.step mMSt stM4
-    let rW2 ← LeanSwe.Sqlite.withDb scanPath { walMode := false, busyTimeoutMs := 0 } fun d2 =>
-      LeanSwe.Sqlite.exec d2 "INSERT INTO sc VALUES (3)" #[]
+    let rW2 ← LeanSwe.Sqlite.withDb scanPath { walMode := false, busyTimeoutMs := 0 } fun d2 => do
+      let rIns ← LeanSwe.Sqlite.exec d2 "INSERT INTO sc VALUES (3)" #[]
+      logSqliteErr true "LeanSwe.Sqlite.exec" rIns
+      return rIns
+    logSqliteErr true "LeanSwe.Sqlite.withDb" rW2
     let (mW2, stM6) := (Model.modelApi.withDb scanPath { walMode := false, busyTimeoutMs := 0 } fun md2 =>
       Model.modelApi.exec md2 "INSERT INTO sc VALUES (3)" #[]).run stM5
     let _ ← unwrapOrThrow "SQLITE_RAW_SCAN_FIN_R" (← LeanSwe.Sqlite.Raw.finalize rMSt)
@@ -2134,6 +2194,7 @@ private def runRawApiProbe (rootDir : System.FilePath) : IO Unit := do
   try
     for sql in probeSqls do
       let resReal ← LeanSwe.Sqlite.Raw.prepare realDb sql
+      logSqliteErr true "LeanSwe.Sqlite.Raw.prepare" resReal
       let (resModel, stNext) := Model.modelRawOps.prepare modelDb sql st
       st := stNext
       match resReal, resModel with
@@ -2179,6 +2240,7 @@ private def runRawApiProbe (rootDir : System.FilePath) : IO Unit := do
       let sr3 ← LeanSwe.Sqlite.Raw.step rs
       let (sm3, st4) := Model.modelRawOps.step ms st3
       let rbErr ← LeanSwe.Sqlite.Raw.bind rs #[]
+      logSqliteErr true "LeanSwe.Sqlite.Raw.bind" rbErr
       let (mbErr, st5) := Model.modelRawOps.bind ms #[] st4
       let sr4 ← LeanSwe.Sqlite.Raw.step rs
       let (sm4, st6) := Model.modelRawOps.step ms st5
@@ -2214,16 +2276,20 @@ private def runRawApiProbe (rootDir : System.FilePath) : IO Unit := do
     let (mB1, stB1) := Model.modelRawOps.bind mStk #[.int 1] st
     let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_STICKY_BM" mB1
     let rS1 ← LeanSwe.Sqlite.Raw.step rStk
+    logSqliteErr true "LeanSwe.Sqlite.Raw.step" rS1
     let (mS1, stStk1) := Model.modelRawOps.step mStk stB1
     let rB2 ← LeanSwe.Sqlite.Raw.bind rStk #[.int 2]
+    logSqliteErr true "LeanSwe.Sqlite.Raw.bind" rB2
     let (mB2, stStk2) := Model.modelRawOps.bind mStk #[.int 2] stStk1
     let rS2 ← LeanSwe.Sqlite.Raw.step rStk
+    logSqliteErr true "LeanSwe.Sqlite.Raw.step" rS2
     let (mS2, stStk3) := Model.modelRawOps.step mStk stStk2
     let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_STICKY_DR"
       (← LeanSwe.Sqlite.exec realDb "DELETE FROM u_sticky" #[])
     let (mDel, stStk4) := (Model.modelApi.exec modelDb "DELETE FROM u_sticky" #[]).run stStk3
     let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_STICKY_DM" mDel
     let rS3 ← LeanSwe.Sqlite.Raw.step rStk
+    logSqliteErr true "LeanSwe.Sqlite.Raw.step" rS3
     let (mS3, stStk5) := Model.modelRawOps.step mStk stStk4
     let rRows ← LeanSwe.Sqlite.query realDb "SELECT x FROM u_sticky ORDER BY x ASC" #[]
     let (mRows, stStk6) := (Model.modelApi.query modelDb "SELECT x FROM u_sticky ORDER BY x ASC" #[]).run stStk5
@@ -2242,6 +2308,7 @@ private def runRawApiProbe (rootDir : System.FilePath) : IO Unit := do
     let rBadUtf8 ← unwrapOrThrow "SQLITE_RAW_BAD_UTF8_PREP"
       (← LeanSwe.Sqlite.Raw.prepare realDb "SELECT CAST(X'FF' AS TEXT)")
     let rBadStep ← LeanSwe.Sqlite.Raw.step rBadUtf8
+    logSqliteErr true "LeanSwe.Sqlite.Raw.step" rBadStep
     let _ ← unwrapOrThrow "SQLITE_RAW_BAD_UTF8_FIN" (← LeanSwe.Sqlite.Raw.finalize rBadUtf8)
     match rBadStep with
     | .error e =>
@@ -2265,7 +2332,7 @@ private def runWarmup (tpl : EpisodeTemplate) (rootDir : System.FilePath) (attem
   let mut tr := tracker
   let mut totalOps := 0
   for ep in smokeCorpus do
-    let (tr', nOps, mm?) ← runEpisode tpl rootDir attemptRef {} ep tr
+    let (tr', nOps, mm?) ← runEpisode tpl rootDir attemptRef {} ep tr true
     tr := tr'
     totalOps := totalOps + nOps
     if let some msg := mm? then
@@ -2326,7 +2393,7 @@ private def runSqliteFuzz (cfg : FuzzConfig) : IO Unit := do
     while done < cfg.steps do
       let (ep, rNext) := Gen.genEpisode rng
       rng := rNext
-      let (tr', nOps, mm?) ← runEpisode tpl rootDir attemptRef {} ep tr
+      let (tr', nOps, mm?) ← runEpisode tpl rootDir attemptRef {} ep tr true
       tr := tr'
       done := done + nOps
       if let some msg := mm? then
