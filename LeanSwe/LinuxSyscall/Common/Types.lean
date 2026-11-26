@@ -260,40 +260,7 @@ def hasEmbeddedNulLoop (b : ByteArray) (i : Nat) : Nat → Bool
 def hasEmbeddedNul (b : ByteArray) : Bool :=
   hasEmbeddedNulLoop b 0 b.size
 
-private theorem hasEmbeddedNulLoop_eq_toList_drop_any (b : ByteArray) :
-    ∀ k i : Nat, i + k = b.size →
-      hasEmbeddedNulLoop b i k = (b.data.toList.drop i).any (· == (0 : UInt8))
-  | 0, i, hk => by
-    have hLen : b.data.toList.length ≤ i := by
-      rw [Array.length_toList]
-      exact Nat.le_of_eq hk.symm
-    unfold hasEmbeddedNulLoop
-    rw [List.drop_of_length_le hLen]
-    rfl
-  | k + 1, i, hk => by
-    have hlt : i < b.size := by omega
-    unfold hasEmbeddedNulLoop
-    simp only [hlt, ↓reduceDIte]
-    have hsz : i < b.data.toList.length := by
-      show i < b.data.size
-      exact hlt
-    have hdrop : b.data.toList.drop i = b[i] :: b.data.toList.drop (i + 1) := by
-      have hg : b.data.toList[i]'hsz = b[i] := rfl
-      rw [← hg]
-      exact List.drop_eq_getElem_cons hsz
-    rw [hdrop, List.any_cons]
-    cases hb : (b[i] == (0 : UInt8))
-    · simp only [Bool.false_eq_true, ↓reduceIte, Bool.false_or]
-      exact hasEmbeddedNulLoop_eq_toList_drop_any b k (i + 1) (by omega)
-    · simp only [↓reduceIte, Bool.true_or]
-
-/-- Equivalence between `hasEmbeddedNul` and `(b.data.toList.any (· == 0))` for proofs. -/
-theorem hasEmbeddedNul_eq_toList_any (b : ByteArray) :
-    hasEmbeddedNul b = b.data.toList.any (· == (0 : UInt8)) := by
-  unfold hasEmbeddedNul
-  have h := hasEmbeddedNulLoop_eq_toList_drop_any b b.size 0 (Nat.zero_add _)
-  rw [List.drop_zero] at h
-  exact h
+attribute [local simp] hasEmbeddedNulLoop hasEmbeddedNul hasEmbeddedNulLoop.eq_def hasEmbeddedNul.eq_def
 
 /-- Kernel-reducible ASCII byte-array literal helper from `List Char` (avoids opaque `@[extern]` string UTF-8 decoding in proofs). -/
 def asciiBytes (cs : List Char) : ByteArray :=

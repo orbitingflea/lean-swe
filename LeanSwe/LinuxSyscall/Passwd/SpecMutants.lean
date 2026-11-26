@@ -1,5 +1,4 @@
 import LeanSwe.LinuxSyscall.Passwd.SpecTests
-import LeanSwe.LinuxSyscall.Passwd.Proofs
 
 /-! Compile-time negative specification mutants for `LeanSwe.LinuxSyscall.Passwd`. -/
 
@@ -9,16 +8,28 @@ open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.LinuxSyscall
 
-private def stubModelOps : PasswdOpsM (StateM PasswdState) :=
-  { getpwuid := fun _ => pure (.ok none)
-    getpwnam := fun _ => pure (.ok none) }
-
 private def overCapMutantName : ByteArray :=
   ByteArray.mk (Array.replicate (MAX_PASSWD_NAME_BYTES + 1) 97)
 
+private theorem hasEmbeddedNulLoop_overCapMutantName :
+    ∀ k i : Nat, hasEmbeddedNulLoop overCapMutantName i k = false
+  | 0, _ => rfl
+  | k + 1, i => by
+    unfold hasEmbeddedNulLoop
+    split
+    · rename_i hlt
+      have hElem : overCapMutantName[i] = (97 : UInt8) := by
+        show (Array.replicate (MAX_PASSWD_NAME_BYTES + 1) (97 : UInt8))[i] = (97 : UInt8)
+        exact Array.getElem_replicate ..
+      rw [hElem]
+      exact hasEmbeddedNulLoop_overCapMutantName k (i + 1)
+    · rfl
+
 private theorem validPasswdName_overCapMutantName :
-    validPasswdName overCapMutantName = true :=
-  Proofs.validPasswdName_replicate (MAX_PASSWD_NAME_BYTES + 1) 97 (by decide)
+    validPasswdName overCapMutantName = true := by
+  unfold validPasswdName hasEmbeddedNul
+  rw [hasEmbeddedNulLoop_overCapMutantName]
+  rfl
 
 private theorem overCapMutantName_size_gt :
     overCapMutantName.size > MAX_PASSWD_NAME_BYTES := by
@@ -56,7 +67,8 @@ example : ¬ Core.AllPass (test_passwd_entry_utf8Accessors (fun _ => some "")) :
   rcases h0 with ⟨_, _, hHome, _⟩
   exact absurd hHome (by decide)
 
-example : ¬ Core.AllPass (test_passwd_ops_exactContracts stubModelOps) := by
+example : ¬ Core.AllPass (test_passwd_ops_exactContracts
+    { modelOps with getpwnam := fun _ => pure (.ok none) }) := by
   intro h
   have h0 := h {} 0 ByteArray.empty (ByteArray.mk #[0]) overCapMutantName
     { name := ByteArray.empty, uid := 0, gid := 0,
@@ -64,7 +76,7 @@ example : ¬ Core.AllPass (test_passwd_ops_exactContracts stubModelOps) := by
     (by decide) (by decide) validPasswdName_overCapMutantName overCapMutantName_size_gt
     (by decide) (by decide) (by decide) rfl rfl
   have h1 := h0.1
-  dsimp [Core.NondetTest.assert, Bind.bind, stubModelOps, StateT.run, pure, StateT.pure] at h1
+  dsimp [Core.NondetTest.assert, Bind.bind, StateT.run, pure, StateT.pure] at h1
   cases h1
 
 example : ¬ Core.AllPass (test_passwd_ops_exactContracts
@@ -195,21 +207,62 @@ example : ¬ Core.AllPass (test_passwd_allowedStep_withOuterSeccomp
     isUserspaceInvalidReq] at hWrongUid
   cases hWrongUid
 
-example : ¬ Core.AllPass (test_passwd_modelOps_soundAgainstAllowedStep stubModelOps) := by
+example : ¬ Core.AllPass (test_passwd_modelOps_soundAgainstAllowedStep
+    { modelOps with getpwnam := fun _ => pure (.ok none) }) := by
   intro h
   have h0 := h {} 0 (ByteArray.mk #[0]) (by decide)
   rcases h0 with ⟨_, _, h2, _⟩
   have hv : validPasswdName (ByteArray.mk #[0]) = false := by decide
-  dsimp [Core.NondetTest.assert, Bind.bind, stubModelOps, StateT.run, pure, StateT.pure,
+  dsimp [Core.NondetTest.assert, Bind.bind, StateT.run, pure, StateT.pure,
     outcomeOfEntryOpt, allowedStep, allowedStepCore] at h2
   rw [hv] at h2
   cases h2
 
-example : ¬ Core.AllPass (test_passwd_mkPasswdOps_soundAgainstAllowedStep (fun _ _ => stubModelOps)) := by
+private def refPasswdBufSizes : List UInt32 :=
+  [4096, 8192, 16384, 32768, 65536]
+
+private def refValidateRawPasswd (pred : PasswdEntry → Bool) :
+    Except Errno (Option RawPasswdTuple) → Except Errno (Option PasswdEntry)
+  | .error e => .error e
+  | .ok none => .ok none
+  | .ok (some t) =>
+    let entry : PasswdEntry :=
+      { name := t.1, uid := t.2.1, gid := t.2.2.1, gecos := t.2.2.2.1,
+        homeDir := t.2.2.2.2.1, shell := t.2.2.2.2.2 }
+    if pred entry then .ok (some entry) else .error Errno.EIO
+
+private def refRetryPasswdLookup {m : Type → Type} [Monad m]
+    (once : UInt32 → m (Except Errno (Option RawPasswdTuple)))
+    (pred : PasswdEntry → Bool) : List UInt32 → m (Except Errno (Option PasswdEntry))
+  | [] => pure (.error Errno.ERANGE)
+  | [sz] => return refValidateRawPasswd pred (← once sz)
+  | sz :: rest => do
+    match ← once sz with
+    | .error e =>
+      if e == Errno.ERANGE then refRetryPasswdLookup once pred rest else return .error e
+    | .ok opt => return refValidateRawPasswd pred (.ok opt)
+
+private def refMkPasswdOpsM {m : Type → Type} [Monad m]
+    (gUid : UInt32 → UInt32 → m (Except Errno (Option RawPasswdTuple)))
+    (gNam : ByteArray → UInt32 → m (Except Errno (Option RawPasswdTuple))) : PasswdOpsM m :=
+  { getpwuid := fun uid =>
+      refRetryPasswdLookup (gUid uid) (fun e => e.hasNoEmbeddedNul && e.uid == uid) refPasswdBufSizes
+    getpwnam := fun name =>
+      if !validPasswdName name then pure (.error Errno.EINVAL)
+      else if name.size > MAX_PASSWD_NAME_BYTES then pure (.error Errno.ENAMETOOLONG)
+      else refRetryPasswdLookup (gNam name) (fun e => e.hasNoEmbeddedNul && e.name == name) refPasswdBufSizes }
+
+private def refMkPasswdOps := @refMkPasswdOpsM Id _
+
+private def refIoPasswdOps : PasswdOps :=
+  @refMkPasswdOpsM IO _ (fun _ _ => pure (.ok none)) (fun _ _ => pure (.ok none))
+
+example : ¬ Core.AllPass (test_passwd_mkPasswdOps_soundAgainstAllowedStep
+    (fun gUid gNam => { refMkPasswdOpsM gUid gNam with getpwuid := fun _ => pure (.error Errno.EFAULT) })) := by
   intro h
-  let rawGetpwuidStub : UInt32 → UInt32 → StateM PasswdState (Except Errno (Option Internal.RawPasswdTuple)) :=
+  let rawGetpwuidStub : UInt32 → UInt32 → StateM PasswdState (Except Errno (Option RawPasswdTuple)) :=
     fun _ _ => pure (.error Errno.EIO)
-  let rawGetpwnamStub : ByteArray → UInt32 → StateM PasswdState (Except Errno (Option Internal.RawPasswdTuple)) :=
+  let rawGetpwnamStub : ByteArray → UInt32 → StateM PasswdState (Except Errno (Option RawPasswdTuple)) :=
     fun _ _ => pure (.error Errno.EIO)
   have h0 := h PasswdState.initial 0 ByteArray.empty (ByteArray.mk #[0]) overCapMutantName
     rawGetpwuidStub rawGetpwnamStub
@@ -228,20 +281,20 @@ example : ¬ Core.AllPass (test_passwd_mkPasswdOps_soundAgainstAllowedStep (fun 
           Std.DTreeMap.empty]
         rfl
       · decide)
-  have h1 := h0.1
-  dsimp [Core.NondetTest.assert, Bind.bind, stubModelOps, StateT.run, pure, StateT.pure] at h1
-  have hFst := congrArg Prod.fst h1
-  cases hFst
+  have h1 := h0.2.2.1
+  dsimp [Core.NondetTest.assert, Bind.bind, StateT.run, pure, StateT.pure,
+    outcomeOfEntryOpt, allowedStep, allowedStepCore, isAllowedPasswdOsErrno, Errno.EFAULT] at h1
+  cases h1
 
 example : ¬ Core.AllPass (test_passwd_mkPasswdOps_soundAgainstAllowedStep
     (fun gUid gNam =>
-      { Internal.mkPasswdOpsM { getpwuidOnce := gUid, getpwnamOnce := gNam } with
+      { refMkPasswdOpsM gUid gNam with
         getpwnam := fun name =>
           if !validPasswdName name then pure (.error Errno.EINVAL) else pure (.ok none) })) := by
   intro h
-  let rawGetpwuidStub : UInt32 → UInt32 → StateM PasswdState (Except Errno (Option Internal.RawPasswdTuple)) :=
+  let rawGetpwuidStub : UInt32 → UInt32 → StateM PasswdState (Except Errno (Option RawPasswdTuple)) :=
     fun _ _ => pure (.error Errno.EIO)
-  let rawGetpwnamStub : ByteArray → UInt32 → StateM PasswdState (Except Errno (Option Internal.RawPasswdTuple)) :=
+  let rawGetpwnamStub : ByteArray → UInt32 → StateM PasswdState (Except Errno (Option RawPasswdTuple)) :=
     fun _ _ => pure (.error Errno.EIO)
   have h0 := h PasswdState.initial 0 ByteArray.empty (ByteArray.mk #[0]) overCapMutantName
     rawGetpwuidStub rawGetpwnamStub
@@ -267,11 +320,10 @@ example : ¬ Core.AllPass (test_passwd_mkPasswdOps_soundAgainstAllowedStep
   cases hOver
 
 example : ¬ Core.AllPass (test_passwd_mkPasswdOps_exactRetryAndDelegation
-    (fun _ _ =>
-      { getpwuid := fun _ => .error Errno.ERANGE
-        getpwnam := fun _ => .error Errno.ERANGE })
-    Internal.passwdRetryBufSizes
-    (fun gUid gNam => Internal.mkPasswdOps { getpwuidOnce := gUid, getpwnamOnce := gNam })) := by
+    (fun gUid gNam =>
+      { refMkPasswdOps gUid gNam with getpwuid := fun _ => .error Errno.ERANGE })
+    refPasswdBufSizes
+    refMkPasswdOps) := by
   intro h
   have h0 := h (fun _ _ => .ok none) (fun _ _ => .ok none) 0 ByteArray.empty
   have h1 := h0.2.2.2.1
@@ -279,72 +331,71 @@ example : ¬ Core.AllPass (test_passwd_mkPasswdOps_exactRetryAndDelegation
   cases h1
 
 example : ¬ Core.AllPass (test_passwd_mkPasswdOps_exactRetryAndDelegation
-    (fun gUid gNam => Internal.mkPasswdOpsM { getpwuidOnce := gUid, getpwnamOnce := gNam })
+    refMkPasswdOps
     [0]
-    (fun gUid gNam => Internal.mkPasswdOps { getpwuidOnce := gUid, getpwnamOnce := gNam })) := by
+    refMkPasswdOps) := by
   intro h
   have h0 := h (fun _ _ => .ok none) (fun _ _ => .ok none) 0 ByteArray.empty
   have h1 := h0.1
   cases h1
 
 example : ¬ Core.AllPass (test_passwd_mkPasswdOps_exactRetryAndDelegation
-    (fun gUid gNam => Internal.mkPasswdOpsM { getpwuidOnce := gUid, getpwnamOnce := gNam })
-    Internal.passwdRetryBufSizes
-    (fun _ _ =>
-      { getpwuid := fun _ => .ok none
-        getpwnam := fun _ => .ok none })) := by
+    refMkPasswdOps
+    refPasswdBufSizes
+    (fun gUid gNam =>
+      { refMkPasswdOps gUid gNam with getpwuid := fun _ => .ok none })) := by
   intro h
   have h0 := h (fun _ _ => .error Errno.EIO) (fun _ _ => .ok none) 0 ByteArray.empty
   have hAlias := h0.2.1
-  dsimp [Core.NondetTest.assert, Bind.bind, Internal.mkPasswdOpsM, Internal.passwdRetryBufSizes,
-    Internal.retryPasswdLookup] at hAlias
+  dsimp [Core.NondetTest.assert, Bind.bind, refMkPasswdOps, refMkPasswdOpsM, refPasswdBufSizes,
+    refRetryPasswdLookup] at hAlias
   cases hAlias
 
 example : ¬ Core.AllPass (test_passwd_mkPasswdOps_exactRetryAndDelegation
     (fun gUid gNam =>
-      { Internal.mkPasswdOpsM { getpwuidOnce := gUid, getpwnamOnce := gNam } with
+      { refMkPasswdOps gUid gNam with
         getpwnam := fun name =>
           if !validPasswdName name then
             return .error Errno.EINVAL
           else
-            Internal.retryPasswdLookup
+            refRetryPasswdLookup
               (gNam name)
               (fun entry => entry.hasNoEmbeddedNul && entry.name == name)
-              Internal.passwdRetryBufSizes })
-    Internal.passwdRetryBufSizes
-    (fun gUid gNam => Internal.mkPasswdOps { getpwuidOnce := gUid, getpwnamOnce := gNam })) := by
+              refPasswdBufSizes })
+    refPasswdBufSizes
+    refMkPasswdOps) := by
   intro h
   have h0 := h (fun _ _ => .ok none) (fun _ _ => .ok none) 0 overCapMutantName
   have hNam := h0.2.2.2.2.1
   dsimp [Core.NondetTest.assert, Bind.bind] at hNam
   rw [validPasswdName_overCapMutantName] at hNam
   simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, overCapMutantName_size_gt,
-    Internal.passwdRetryBufSizes, Internal.retryPasswdLookup, Internal.validateRawPasswdResult,
+    refPasswdBufSizes, refRetryPasswdLookup, refValidateRawPasswd,
     bind, pure] at hNam
   cases hNam
 
 example : ¬ Core.AllPass (test_passwd_mkPasswdOps_exactRetryAndDelegation
     (fun gUid gNam =>
       { getpwuid := fun uid =>
-          Internal.retryPasswdLookup
+          refRetryPasswdLookup
             (gUid uid)
             (fun _ => true)
-            Internal.passwdRetryBufSizes
-        getpwnam := (Internal.mkPasswdOpsM { getpwuidOnce := gUid, getpwnamOnce := gNam }).getpwnam })
-    Internal.passwdRetryBufSizes
-    (fun gUid gNam => Internal.mkPasswdOps { getpwuidOnce := gUid, getpwnamOnce := gNam })) := by
+            refPasswdBufSizes
+        getpwnam := (refMkPasswdOps gUid gNam).getpwnam })
+    refPasswdBufSizes
+    refMkPasswdOps) := by
   intro h
-  let badTuple : Internal.RawPasswdTuple :=
+  let badTuple : RawPasswdTuple :=
     (ByteArray.empty, 1, 0, ByteArray.empty, ByteArray.empty, ByteArray.empty)
   have h0 := h (fun _ _ => .ok (some badTuple)) (fun _ _ => .ok none) 0 ByteArray.empty
-  dsimp [Core.NondetTest.assert, Bind.bind, Internal.passwdRetryBufSizes,
-    Internal.retryPasswdLookup, Internal.validateRawPasswdResult, bind, pure] at h0
+  dsimp [Core.NondetTest.assert, Bind.bind, refPasswdBufSizes,
+    refRetryPasswdLookup, refValidateRawPasswd, bind, pure] at h0
   have hUid := h0.2.2.2.1
   simp [badTuple, PasswdEntry.hasNoEmbeddedNul] at hUid
 
 example : ¬ Core.AllPass (test_passwd_interface_wiringAndSoundness
-    defaultOps
-    getpwuid
+    refIoPasswdOps
+    refIoPasswdOps.getpwuid
     (fun _ => pure (.error Errno.EFAULT))) := by
   intro h
   have h0 := h 0 (ByteArray.mk #[0])
@@ -352,16 +403,14 @@ example : ¬ Core.AllPass (test_passwd_interface_wiringAndSoundness
   have hFn := h0.2.1
   exact Nonempty.elim (inferInstance : Nonempty (Void IO.RealWorld)) fun w => by
     have hRes := congrArg (fun act => act w) hFn
-    dsimp only [defaultOps, Internal.mkPasswdOpsM] at hRes
+    dsimp only [refIoPasswdOps, refMkPasswdOpsM] at hRes
     have hv : validPasswdName (ByteArray.mk #[0]) = false := by decide
-    simp [hv, pure, liftM, monadLift, MonadLift.monadLift, instMonadEIO._aux_5,
-      instMonadBaseIO._aux_5, BaseIO.toEIO, EST.pure, ST.pure,
-      Errno.EFAULT, Errno.EINVAL] at hRes
+    simp [hv, pure, instMonadEIO._aux_5, EST.pure, Errno.EFAULT, Errno.EINVAL] at hRes
 
 example : ¬ Core.AllPass (test_passwd_interface_wiringAndSoundness
-    { defaultOps with getpwnam := fun _ => pure (.error Errno.EFAULT) }
-    getpwuid
-    getpwnam) := by
+    { refIoPasswdOps with getpwnam := fun _ => pure (.error Errno.EFAULT) }
+    refIoPasswdOps.getpwuid
+    refIoPasswdOps.getpwnam) := by
   intro h
   have h0 := h 0 (ByteArray.mk #[0])
   dsimp [Core.NondetTest.assert, Bind.bind] at h0
@@ -372,11 +421,11 @@ example : ¬ Core.AllPass (test_passwd_interface_wiringAndSoundness
     simp [pure, instMonadEIO._aux_5, EST.pure, Errno.EFAULT, Errno.EINVAL] at hRes
 
 example : ¬ Core.AllPass (test_passwd_interface_wiringAndSoundness
-    { defaultOps with
+    { refIoPasswdOps with
       getpwnam := fun name =>
         if !validPasswdName name then pure (.error Errno.EINVAL) else pure (.ok none) }
-    getpwuid
-    getpwnam) := by
+    refIoPasswdOps.getpwuid
+    refIoPasswdOps.getpwnam) := by
   intro h
   have h0 := h 0 overCapMutantName
   have hOver := h0.2.2.2.1 validPasswdName_overCapMutantName overCapMutantName_size_gt

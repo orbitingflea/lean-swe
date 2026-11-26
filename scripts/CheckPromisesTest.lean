@@ -579,7 +579,9 @@ def main (_ : List String) : IO UInt32 := do
       (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesPureFromTest.lean", bin.toString, tmpRoot.toString, realLibAbs.toString])
     assertPass "conc_cell_suite"
       (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesConcCellTest.lean", bin.toString, tmpRoot.toString, baseDir.toString, realLibAbs.toString])
-    IO.println "CHECK_PROMISES_SELF_TEST: passed=62 failed=0"
+    assertPass "dag_suite"
+      (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesDagTest.lean", bin.toString, tmpRoot.toString, realLibAbs.toString])
+    IO.println "CHECK_PROMISES_SELF_TEST: passed=63 failed=0"
     return 0
   finally
     if ← tmpRoot.pathExists then IO.FS.removeDirAll tmpRoot

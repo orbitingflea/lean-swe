@@ -150,7 +150,7 @@ theorem net_flags_and_sockaddr_codecs_allPass :
   refine ⟨sockAddr_roundtrip sa, ?_⟩
   refine ⟨⟨rfl, rfl, rfl⟩, ⟨rfl, rfl, rfl⟩, ⟨rfl, rfl⟩, ⟨rfl, rfl, rfl⟩, ⟨rfl, rfl, rfl⟩,
     ⟨rfl, rfl, rfl, rfl, rfl⟩, rfl, rfl, rfl, rfl,
-    by unfold SockAddr.isValidTarget; simp [hasEmbeddedNul_eq_toList_any]; decide,
+    by decide +kernel,
     rfl, rfl, rfl,
     ⟨rfl, rfl⟩, ⟨rfl, rfl, rfl⟩, ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩, trivial⟩
 

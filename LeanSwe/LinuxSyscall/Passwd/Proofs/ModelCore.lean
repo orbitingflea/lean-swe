@@ -73,18 +73,26 @@ private theorem treemap_foldl_insert {K V : Type} [Ord K] [Std.TransOrd K] [Std.
     have hmem0 := (Impl.mem_toList_iff_get?_eq_some t.inner.wf).2 hget'
     exact hfold.2 ⟨k', v'⟩ hmem0
 
+private theorem hasEmbeddedNulLoop_replicate_false (n : Nat) (c : UInt8) (hc : c ≠ 0) :
+    ∀ k i : Nat, hasEmbeddedNulLoop (ByteArray.mk (Array.replicate n c)) i k = false
+  | 0, _ => rfl
+  | k + 1, i => by
+    unfold hasEmbeddedNulLoop
+    split
+    · rename_i hlt
+      have hElem : (ByteArray.mk (Array.replicate n c))[i] = c := by
+        show (Array.replicate n c)[i] = c
+        exact Array.getElem_replicate ..
+      have hNe : (c == (0 : UInt8)) = false := beq_eq_false_iff_ne.mpr hc
+      simp only [hElem, hNe, Bool.false_eq_true, ↓reduceIte]
+      exact hasEmbeddedNulLoop_replicate_false n c hc k (i + 1)
+    · rfl
+
 /-- Any repeated non-zero byte array passes `validPasswdName` in `O(1)` proof size. -/
 theorem validPasswdName_replicate (n : Nat) (c : UInt8) (hc : c ≠ 0) :
     validPasswdName (ByteArray.mk (Array.replicate n c)) = true := by
-  unfold validPasswdName
-  rw [hasEmbeddedNul_eq_toList_any]
-  have hfalse : (Array.replicate n c).toList.any (· == (0 : UInt8)) = false := by
-    rw [List.any_eq_false]
-    intro x hx
-    rw [Array.toList_replicate, List.mem_replicate] at hx
-    simp [hx.2, hc]
-  change !((Array.replicate n c).toList.any (· == (0 : UInt8))) = true
-  rw [hfalse]
+  unfold validPasswdName hasEmbeddedNul
+  rw [hasEmbeddedNulLoop_replicate_false n c hc]
   rfl
 
 /-- Canonical oversized NUL-free username witness (`MAX_PASSWD_NAME_BYTES + 1` bytes). -/
