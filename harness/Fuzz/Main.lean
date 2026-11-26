@@ -6,6 +6,7 @@ import Fuzz.Passwd.Suite
 import Fuzz.Passwd.Checks
 import Fuzz.Dns.Suite
 import Fuzz.PostFork.Suite
+import Fuzz.ProcessSandbox.Suite
 import Fuzz.SelfTest
 import Fuzz.EnvVars.Suite
 import Fuzz.CryptoHash.Suite
@@ -59,6 +60,7 @@ private def registeredSuites (world : WorldOptions) (outClosed errClosed : Bool)
   , Fuzz.Dns.suite
   , Fuzz.Compress.suite
   , Fuzz.PostFork.suite
+  , Fuzz.ProcessSandbox.suite
   , Fuzz.Sqlite.suite
   , Fuzz.Git.suite
   , Fuzz.Json.suite
@@ -384,6 +386,7 @@ private def suiteTargetPackages : String → Array String
   | "dns" => #["LeanSwe.LinuxSyscall.Dns"]
   | "compress" => #["LeanSwe.Compress"]
   | "postfork" => #["LeanSwe.PostFork"]
+  | "processsandbox" => #["LeanSwe.ProcessSandbox"]
   | "sqlite" => #["LeanSwe.Sqlite.Raw", "LeanSwe.Sqlite"]
   | "git" => #["LeanSwe.Git"]
   | "json" => #["LeanSwe.Json"]

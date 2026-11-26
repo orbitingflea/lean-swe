@@ -4001,11 +4001,6 @@ unsafe def main (args : List String) : IO UInt32 := do
     unless ← (libDir / "LeanSwe" / "PostFork" / "Verified.olean").pathExists do
       IO.eprintln s!"MISSING_OLEAN: LeanSwe.PostFork.Verified ({libDir / "LeanSwe" / "PostFork" / "Verified.olean"})"
       return 1
-  let hasInitVerifiedSrc ← (leanSweDir / "ProcessSandbox" / "Init" / "Verified.lean").pathExists
-  if hasInitVerifiedSrc then
-    unless ← (libDir / "LeanSwe" / "ProcessSandbox" / "Init" / "Verified.olean").pathExists do
-      IO.eprintln s!"MISSING_OLEAN: LeanSwe.ProcessSandbox.Init.Verified ({libDir / "LeanSwe" / "ProcessSandbox" / "Init" / "Verified.olean"})"
-      return 1
   Lean.enableInitializersExecution
   let searchDirs := if hasTestsMainOlean then [harnessLibDir, libDir] else [libDir]
   initSearchPath (← findSysroot) searchDirs
@@ -4014,8 +4009,6 @@ unsafe def main (args : List String) : IO UInt32 := do
     rootImports := rootImports.push { module := `Tests.Main }
   if hasPostForkVerifiedSrc then
     rootImports := rootImports.push { module := `LeanSwe.PostFork.Verified }
-  if hasInitVerifiedSrc then
-    rootImports := rootImports.push { module := `LeanSwe.ProcessSandbox.Init.Verified }
   let env ← importModules rootImports {} (loadExts := true)
   let transImpsOf := buildTransitiveImportFn env
 

@@ -3,9 +3,6 @@ import LeanSwe.Fs.RuntimeTests
 import LeanSwe.Process.RuntimeTests
 import LeanSwe.Git.RuntimeTests
 import LeanSwe.TempDir.RuntimeTests
-import LeanSwe.ProcessSandbox.Seccomp.RuntimeTests
-import LeanSwe.ProcessSandbox.Raw.RuntimeTests
-import LeanSwe.ProcessSandbox.RuntimeTests
 import LeanSwe.SlotPool.RuntimeTests
 import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.TimeRand.Types
@@ -371,18 +368,6 @@ def gitSuite : MutateSuite :=
 /-- Mutation test suite for `LeanSwe.TempDir`. -/
 def tempDirSuite : MutateSuite :=
   { name := "TempDir", runBase := do TempDir.RuntimeTests.runAll; return none }
-
-/-- Mutation test suite for `LeanSwe.ProcessSandbox.Seccomp`. -/
-def processSandboxSeccompSuite : MutateSuite :=
-  { name := "ProcessSandbox.Seccomp", runBase := do ProcessSandbox.Seccomp.RuntimeTests.runAll; return none }
-
-/-- Mutation test suite for `LeanSwe.ProcessSandbox.Raw`. -/
-def processSandboxRawSuite : MutateSuite :=
-  { name := "ProcessSandbox.Raw", runBase := ProcessSandbox.Raw.RuntimeTests.runAllOutcome }
-
-/-- Mutation test suite for `LeanSwe.ProcessSandbox`. -/
-def processSandboxSuite : MutateSuite :=
-  { name := "ProcessSandbox", runBase := ProcessSandbox.RuntimeTests.runAllOutcome }
 
 /-- Mutation test suite for `LeanSwe.SlotPool`. -/
 def slotPoolSuite : MutateSuite :=

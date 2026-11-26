@@ -1,22 +1,23 @@
+import LeanSwe.Fs.Interface
+import LeanSwe.Process.Interface
 import LeanSwe.ProcessSandbox.Types
 import LeanSwe.ProcessSandbox.Impl
-import LeanSwe.ProcessSandbox.Raw.Interface
 
 namespace LeanSwe.ProcessSandbox
 
-/-- Default `ProcessSandboxApi` backed by `LeanSwe.ProcessSandbox.Raw.defaultOps`. -/
+/-- Default `ProcessSandboxApi` backed by `LeanSwe.Process.defaultApi` and `LeanSwe.Fs.defaultApi`. -/
 def defaultApi : ProcessSandboxApi :=
-  Internal.mkApiM Raw.defaultOps
+  Internal.mkApiM LeanSwe.Process.defaultApi LeanSwe.Fs.defaultApi
 
-/-- Validate and normalize a `BoxSpec`, failing with `.invalidInput` on invalid paths, ports, env, or limits. -/
+/-- Validate and normalize an untrusted `BoxSpec`, failing with `.invalidInput` on malformed inputs. -/
 @[inline] def validateSpec (spec : BoxSpec) : Except SandboxError ValidBoxSpec :=
   defaultApi.validateSpec spec
 
-/-- Execute `BoxSpec` inside a fresh isolated Linux process sandbox and reap all descendants before returning. -/
+/-- Execute `BoxSpec` inside an isolated `bwrap` sandbox, reaping all guest descendants before returning. -/
 @[inline] def run (spec : BoxSpec) : IO (Except SandboxError SandboxResult) :=
   defaultApi.run spec
 
-/-- Probe whether the current host supports `ProcessSandbox.run` with default `cgroup v2` limits. -/
+/-- Probe whether the current host supports `ProcessSandbox.run`. -/
 @[inline] def isAvailable : IO Bool :=
   defaultApi.isAvailable
 

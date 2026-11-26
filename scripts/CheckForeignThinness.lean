@@ -821,10 +821,7 @@ private def isCOrHeader (relPath : String) : Bool :=
 
 private def isAeneasExtractedRustPath (relPath : String) : Bool :=
   relPath == "LeanSwe/PostFork/rust/src/child.rs" ||
-  relPath == "LeanSwe/PostFork/rust/src/fd_ops.rs" ||
-  relPath == "LeanSwe/ProcessSandbox/Init/rust/src/cli.rs" ||
-  relPath == "LeanSwe/ProcessSandbox/Init/rust/src/plan.rs" ||
-  relPath == "LeanSwe/ProcessSandbox/Init/rust/src/ops.rs"
+  relPath == "LeanSwe/PostFork/rust/src/fd_ops.rs"
 
 private inductive RTokKind where
   | ident (name : String)
@@ -1024,11 +1021,6 @@ private def isAllowedSysSyscallNr (s : String) : Bool :=
   s == "SYS_rt_sigaction" || s == "SYS_rt_sigprocmask" ||
   s == "SYS_close_range" || s == "SYS_getdents64"
 
-private def isAllowedInitSysSyscallNr (s : String) : Bool :=
-  s == "SYS_seccomp" || s == "SYS_close_range" || s == "SYS_getdents64" ||
-  s == "SYS_landlock_create_ruleset" || s == "SYS_landlock_add_rule" ||
-  s == "SYS_landlock_restrict_self"
-
 private def isAllowedSysLibcItem (s : String) : Bool :=
   isAllowedSysSyscallNr s ||
   s == "__errno_location" || s == "_exit" || s == "chdir" || s == "close" ||
@@ -1039,42 +1031,12 @@ private def isAllowedSysLibcItem (s : String) : Bool :=
   s == "O_RDONLY" || s == "O_DIRECTORY" || s == "O_CLOEXEC" ||
   s == "c_int" || s == "c_long" || s == "c_ulong" || s == "c_void"
 
-private def isAllowedInitSysLibcItem (s : String) : Bool :=
-  isAllowedInitSysSyscallNr s ||
-  s == "__errno_location" || s == "_exit" || s == "bind" || s == "calloc" ||
-  s == "chdir" || s == "clearenv" || s == "close" || s == "execvp" ||
-  s == "fcntl" || s == "fork" || s == "free" || s == "fstat" ||
-  s == "ioctl" || s == "kill" || s == "listen" || s == "malloc" ||
-  s == "open" || s == "pipe2" || s == "prctl" || s == "putenv" ||
-  s == "read" || s == "realloc" || s == "sendmsg" || s == "setrlimit" ||
-  s == "setsockopt" || s == "signal" || s == "socket" || s == "strlen" ||
-  s == "syscall" || s == "waitpid" || s == "write" ||
-  s == "CMSG_LEN" || s == "CMSG_SPACE" ||
-  s == "AF_INET" || s == "EINVAL" || s == "ENAMETOOLONG" || s == "ENOMEM" ||
-  s == "F_GETFD" || s == "F_SETFD" || s == "MSG_NOSIGNAL" ||
-  s == "O_CLOEXEC" || s == "O_DIRECTORY" || s == "O_PATH" || s == "O_RDONLY" ||
-  s == "PR_SET_CHILD_SUBREAPER" || s == "PR_SET_NO_NEW_PRIVS" ||
-  s == "PR_SET_PDEATHSIG" || s == "PR_SET_SECCOMP" ||
-  s == "RLIMIT_CORE" || s == "RLIMIT_FSIZE" ||
-  s == "SCM_RIGHTS" || s == "SECCOMP_MODE_FILTER" || s == "SECCOMP_SET_MODE_FILTER" ||
-  s == "SIGKILL" || s == "SIGPIPE" || s == "SIG_DFL" ||
-  s == "SIOCGIFFLAGS" || s == "SIOCSIFFLAGS" ||
-  s == "SOCK_CLOEXEC" || s == "SOCK_DGRAM" || s == "SOCK_NONBLOCK" || s == "SOCK_STREAM" ||
-  s == "SOL_SOCKET" || s == "SO_REUSEADDR" ||
-  s == "S_IFDIR" || s == "S_IFMT" ||
-  s == "c_int" || s == "c_long" || s == "c_ulong" || s == "c_void" ||
-  s == "cmsghdr" || s == "in_addr" || s == "iovec" || s == "msghdr" ||
-  s == "rlim_t" || s == "rlimit" || s == "sa_family_t" ||
-  s == "sockaddr" || s == "sockaddr_in" || s == "socklen_t" || s == "stat"
-
 private def isAllowedPostForkNoMangleFn (s : String) : Bool :=
   s == "leanswe_postfork_run_child" || s == "leanswe_postfork_close_fds_above2_except"
 
 private def isExternalRustQual (relPath : String) (s : String) : Bool :=
   s == "libc" || s == "core" || s == "child" || s == "fd_ops" ||
-  s == "cli" || s == "plan" || s == "ops" || s == "psandbox_init" ||
-  (s == "sys" && relPath != "LeanSwe/PostFork/rust/src/sys.rs") ||
-  (s == "init_sys" && relPath != "LeanSwe/ProcessSandbox/Init/rust/src/init_sys.rs")
+  (s == "sys" && relPath != "LeanSwe/PostFork/rust/src/sys.rs")
 
 private def collectRustIntraFileCallees
     (relPath : String)
@@ -1303,8 +1265,7 @@ private def checkNonAeneasRustFile (relPath : String) (bytes : ByteArray) : Arra
         errs := errs.push s!"RUST_THICK_CONSTRUCT_FORBIDDEN: {relPath}:{tok.line} uses '{name}'"
       else if name == "mod" then
         let okLibMod :=
-          (relPath == "LeanSwe/PostFork/rust/src/lib.rs" ||
-            relPath == "LeanSwe/ProcessSandbox/Init/rust/src/lib.rs") &&
+          relPath == "LeanSwe/PostFork/rust/src/lib.rs" &&
           idx + 2 < n &&
           (match toks[idx + 1]!.kind with | .ident _ => true | _ => false) &&
           toks[idx + 2]!.kind == .semi
@@ -1314,15 +1275,10 @@ private def checkNonAeneasRustFile (relPath : String) (bytes : ByteArray) : Arra
           (name == "child" || name == "fd_ops" ||
             (name == "ffi" && !(idx >= 2 && toks[idx - 2]!.kind == .ident "core" && toks[idx - 1]!.kind == .colon2))) then
         errs := errs.push s!"RUST_THICK_CONSTRUCT_FORBIDDEN: {relPath}:{tok.line} references upper module '{name}'"
-      else if relPath == "LeanSwe/ProcessSandbox/Init/rust/src/init_sys.rs" &&
-          (name == "cli" || name == "plan" || name == "ops" ||
-            (name == "ffi" && !(idx >= 2 && toks[idx - 2]!.kind == .ident "core" && toks[idx - 1]!.kind == .colon2))) then
-        errs := errs.push s!"RUST_THICK_CONSTRUCT_FORBIDDEN: {relPath}:{tok.line} references upper module '{name}'"
       else if name == "cfg" then
         let allowedCfg :=
           (relPath == "LeanSwe/PostFork/rust/src/lib.rs" ||
-            relPath == "LeanSwe/PostFork/rust/src/sys.rs" ||
-            relPath == "LeanSwe/ProcessSandbox/Init/rust/src/init_sys.rs") &&
+            relPath == "LeanSwe/PostFork/rust/src/sys.rs") &&
           idx + 5 < n &&
           toks[idx + 1]!.kind == .lparen &&
           toks[idx + 2]!.kind == .ident "feature" &&
@@ -1339,24 +1295,21 @@ private def checkNonAeneasRustFile (relPath : String) (bytes : ByteArray) : Arra
           errs := errs.push s!"RUST_EXTERN_BLOCK_FORBIDDEN: {relPath}:{tok.line} uses foreign extern block or crate"
       else if name == "libc" then
         let isPfSys := relPath == "LeanSwe/PostFork/rust/src/sys.rs"
-        let isInitSys := relPath == "LeanSwe/ProcessSandbox/Init/rust/src/init_sys.rs"
-        if !isPfSys && !isInitSys then
-          errs := errs.push s!"RUST_DIRECT_LIBC_FORBIDDEN: {relPath}:{tok.line} references 'libc' outside sys.rs/init_sys.rs"
+        if !isPfSys then
+          errs := errs.push s!"RUST_DIRECT_LIBC_FORBIDDEN: {relPath}:{tok.line} references 'libc' outside sys.rs"
         else if inUseStmt || idx + 2 >= n || toks[idx + 1]!.kind != .colon2 || (idx > 0 && toks[idx - 1]!.kind == .colon2) then
           errs := errs.push s!"RUST_DIRECT_LIBC_FORBIDDEN: {relPath}:{tok.line} shadows, aliases, or unqualifies 'libc'"
         else
           match toks[idx + 2]!.kind with
           | .ident item =>
-            let itemOk := if isPfSys then isAllowedSysLibcItem item else isAllowedInitSysLibcItem item
-            if !itemOk then
+            if !isAllowedSysLibcItem item then
               errs := errs.push s!"RUST_DIRECT_LIBC_FORBIDDEN: {relPath}:{tok.line} uses non-allowlisted libc item '{item}'"
           | _ =>
             errs := errs.push s!"RUST_DIRECT_LIBC_FORBIDDEN: {relPath}:{tok.line} shadows, aliases, or unqualifies 'libc'"
       else if name == "syscall" then
         let isPfSys := relPath == "LeanSwe/PostFork/rust/src/sys.rs"
-        let isInitSys := relPath == "LeanSwe/ProcessSandbox/Init/rust/src/init_sys.rs"
         let okCall :=
-          (isPfSys || isInitSys) &&
+          isPfSys &&
           idx >= 2 &&
           toks[idx - 2]!.kind == .ident "libc" &&
           toks[idx - 1]!.kind == .colon2 &&
@@ -1366,15 +1319,14 @@ private def checkNonAeneasRustFile (relPath : String) (bytes : ByteArray) : Arra
           toks[idx + 3]!.kind == .colon2 &&
           toks[idx + 5]!.kind == .comma &&
           match toks[idx + 4]!.kind with
-          | .ident nr => if isPfSys then isAllowedSysSyscallNr nr else isAllowedInitSysSyscallNr nr
+          | .ident nr => isAllowedSysSyscallNr nr
           | _ => false
         if !okCall then
           errs := errs.push s!"RUST_SYSCALL_NR_FORBIDDEN: {relPath}:{tok.line} invokes non-allowlisted or uncanonical syscall"
       else if name == "no_mangle" then
         let isPfFfi := relPath == "LeanSwe/PostFork/rust/src/ffi.rs"
-        let isInitMain := relPath == "LeanSwe/ProcessSandbox/Init/rust/src/main.rs"
-        if !isPfFfi && !isInitMain then
-          errs := errs.push s!"RUST_NO_MANGLE_FORBIDDEN: {relPath}:{tok.line} uses #[no_mangle] outside ffi.rs/main.rs"
+        if !isPfFfi then
+          errs := errs.push s!"RUST_NO_MANGLE_FORBIDDEN: {relPath}:{tok.line} uses #[no_mangle] outside ffi.rs"
         else
           let mut j := idx + 1
           let mut fnTarget? : Option String := none
@@ -1386,8 +1338,7 @@ private def checkNonAeneasRustFile (relPath : String) (bytes : ByteArray) : Arra
             j := j + 1
           match fnTarget? with
           | some fnName =>
-            let fnOk := if isPfFfi then isAllowedPostForkNoMangleFn fnName else fnName == "main"
-            if !fnOk then
+            if !isAllowedPostForkNoMangleFn fnName then
               errs := errs.push s!"RUST_NO_MANGLE_FORBIDDEN: {relPath}:{tok.line} exports unauthorized symbol '{fnName}'"
           | none =>
             errs := errs.push s!"RUST_NO_MANGLE_FORBIDDEN: {relPath}:{tok.line} #[no_mangle] does not attach to a named fn"

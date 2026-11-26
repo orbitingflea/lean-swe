@@ -280,7 +280,7 @@ class FuzzChangedUnitTests(unittest.TestCase):
                     ("float", "harness/Fuzz/Float"), ("cmdline", "harness/Fuzz/CmdLine"),
                     ("envvars", "harness/Fuzz/EnvVars"), ("cryptohash", "harness/Fuzz/CryptoHash"),
                     ("passwd", "harness/Fuzz/Passwd"), ("dns", "harness/Fuzz/Dns"),
-                    ("compress", "harness/Fuzz/Compress"), ("postfork", "harness/Fuzz/PostFork"),
+                    ("compress", "harness/Fuzz/Compress"), ("postfork", "harness/Fuzz/PostFork"), ("processsandbox", "harness/Fuzz/ProcessSandbox"),
                     ("sqlite", "harness/Fuzz/Sqlite"), ("git", "harness/Fuzz/Git"), ("json", "harness/Fuzz/Json"), ("toml", "harness/Fuzz/Toml"), ("uuid", "harness/Fuzz/Uuid"), ("time", "harness/Fuzz/Time"),
                     ("sandbox", "harness/Fuzz/LinuxSyscall/Sandbox"), ("timerand", "harness/Fuzz/LinuxSyscall/TimeRand"),
                     ("files", "harness/Fuzz/LinuxSyscall/Files"), ("process", "harness/Fuzz/LinuxSyscall/Process"),

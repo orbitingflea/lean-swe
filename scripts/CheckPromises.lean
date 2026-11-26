@@ -21,7 +21,7 @@ Checks:
    `SpecMutants` declarations/examples use only standard axioms
    (`propext`, `Classical.choice`, `Quot.sound`) with zero `sorry`/`admit`/`native_decide`.
 6. One-way transitive `.olean` import-DAG ratchet and no-proof-content audit covering `LeanSwe`,
-   `LeanSwe.PostFork.Verified`, `LeanSwe.ProcessSandbox.Init.Verified`, and any extra unimported
+   `LeanSwe.PostFork.Verified`, and any extra unimported
    modules:
    - Within-package transitive checks (`Types`/`Model`/`SpecTests`/`Properties` cannot import
      same-package `Impl`/`SysBridge`/`Interface` or any non-API role
@@ -297,14 +297,10 @@ private def isAllowedEnvVarsClosureModule (m : Name) : Bool :=
 private def isAllowedPostForkClosureModule (m : Name) : Bool :=
   m.getRoot == `Core || m.components.take 3 == [`LeanSwe, `LinuxSyscall, `Common] || postForkAuditModules.contains m
 
-private def isInitVerifiedMod (m : Name) : Bool :=
-  m.components.take 3 == [`LeanSwe, `ProcessSandbox, `Init]
-
 private def isPostForkVerifiedMod (m : Name) : Bool :=
   m == `LeanSwe.PostFork.Verified || m.components.take 3 == [`LeanSwe, `PostFork, `SpecTests] ||
     m.components.take 3 == [`LeanSwe, `PostFork, `SpecMutants] ||
-    m.components.take 3 == [`LeanSwe, `PostFork, `Aeneas] || m.components.take 3 == [`LeanSwe, `PostFork, `Proofs] ||
-    isInitVerifiedMod m
+    m.components.take 3 == [`LeanSwe, `PostFork, `Aeneas] || m.components.take 3 == [`LeanSwe, `PostFork, `Proofs]
 
 private def isAllowedCryptoHashClosureModule (m : Name) : Bool :=
   m.getRoot == `Core ||
@@ -534,9 +530,7 @@ private def isAllowedProjectDirectImport (m imp : Name) : Bool :=
   let r := imp.getRoot
   r == `Init || r == `Std || r == `Core || r == `LeanSwe ||
     imp.components.take 2 == [`Lean, `Data] ||
-    (imp == `Aeneas &&
-      (m.components.take 3 == [`LeanSwe, `PostFork, `Aeneas] ||
-        m.components.take 4 == [`LeanSwe, `ProcessSandbox, `Init, `Aeneas]))
+    (imp == `Aeneas && m.components.take 3 == [`LeanSwe, `PostFork, `Aeneas])
 
 private def closureForbiddenMetaSyntaxKinds : Array Name :=
   #[``Lean.Parser.Command.macro, ``Lean.Parser.Command.macro_rules,
@@ -2127,11 +2121,7 @@ private def checkProcessSandboxHostClosure (env : Environment) : IO (Array Strin
             if !(← isAllowedCompilerUnsafeDef env c.name v) then
               errs := errs.push s!"PSANDBOX_FORBIDDEN_UNSAFE: {c.name} in {m}"
         if (Lean.regularInitAttr.getParam? env c.name).isSome then
-          let allowedInit :=
-            m == `LeanSwe.ProcessSandbox.Raw.Interface &&
-            privateToUserName? c.name == some `LeanSwe.ProcessSandbox.Raw.gHostTable
-          if !allowedInit then
-            errs := errs.push s!"PSANDBOX_FORBIDDEN_INIT: {c.name} in {m}"
+          errs := errs.push s!"PSANDBOX_FORBIDDEN_INIT: {c.name} in {m}"
         let usesBaseMutex (e : Expr) : Bool :=
           e.getUsedConstants.any fun u => u.components.take 2 == [`Std, `BaseMutex]
         let val? : Option Expr := match c with
@@ -2141,27 +2131,26 @@ private def checkProcessSandboxHostClosure (env : Environment) : IO (Array Strin
           | _ => none
         if usesBaseMutex c.type || (val?.map usesBaseMutex |>.getD false) then
           errs := errs.push s!"PSANDBOX_FORBIDDEN_BASEMUTEX: {c.name} in {m} references Std.BaseMutex"
-  match env.find? `LeanSwe.ProcessSandbox.Raw.defaultOps with
+  match env.find? `LeanSwe.ProcessSandbox.defaultApi with
   | some (.defnInfo dv) =>
     let used := dv.value.getUsedConstants
     let reqUsed : Array Name := #[
-      `LeanSwe.ProcessSandbox.Raw.Internal.mkFullOpsM,
-      `LeanSwe.LinuxSyscall.Files.defaultOps,
-      `LeanSwe.LinuxSyscall.Net.defaultOps,
-      `LeanSwe.LinuxSyscall.Poll.defaultOps,
-      `LeanSwe.LinuxSyscall.Process.defaultOps,
-      `LeanSwe.LinuxSyscall.Sandbox.defaultOps,
-      `LeanSwe.LinuxSyscall.TimeRand.defaultOps,
-      `LeanSwe.LinuxSyscall.Passwd.defaultOps,
-      `LeanSwe.PostFork.defaultOps,
-      `LeanSwe.EnvVars.Raw.defaultOps,
-      `Core.ioConcOps,
-      `Core.ioStateCell
+      `LeanSwe.ProcessSandbox.Internal.mkApiM,
+      `LeanSwe.Process.defaultApi,
+      `LeanSwe.Fs.defaultApi
     ]
     if !reqUsed.all used.contains then
-      errs := errs.push "PSANDBOX_INTERFACE_WIRING_MISMATCH: LeanSwe.ProcessSandbox.Raw.defaultOps must wire Internal.mkFullOpsM directly to LinuxSyscall.{Files,Net,Poll,Process,Sandbox,TimeRand,Passwd}.defaultOps, PostFork.defaultOps, EnvVars.Raw.defaultOps, Core.ioConcOps, and Core.ioStateCell"
+      errs := errs.push "PSANDBOX_INTERFACE_WIRING_MISMATCH: LeanSwe.ProcessSandbox.defaultApi must wire Internal.mkApiM directly to LeanSwe.Process.defaultApi and LeanSwe.Fs.defaultApi"
   | _ =>
-    errs := errs.push "PSANDBOX_INTERFACE_WIRING_MISMATCH: missing LeanSwe.ProcessSandbox.Raw.defaultOps"
+    errs := errs.push "PSANDBOX_INTERFACE_WIRING_MISMATCH: missing LeanSwe.ProcessSandbox.defaultApi"
+  for wrapper in #[`LeanSwe.ProcessSandbox.validateSpec, `LeanSwe.ProcessSandbox.run,
+      `LeanSwe.ProcessSandbox.isAvailable] do
+    match env.find? wrapper with
+    | some (.defnInfo dv) =>
+      if !dv.value.getUsedConstants.contains `LeanSwe.ProcessSandbox.defaultApi then
+        errs := errs.push s!"PSANDBOX_INTERFACE_WIRING_MISMATCH: {wrapper} must delegate to LeanSwe.ProcessSandbox.defaultApi"
+    | _ =>
+      errs := errs.push s!"PSANDBOX_INTERFACE_WIRING_MISMATCH: missing {wrapper}"
   return errs
 
 private def connectProxyRequiredModules : Array Name := #[
@@ -2774,8 +2763,7 @@ private def dagRoleOf (knownPkgs : Array Name) (m : Name) : DagModuleRole :=
           .iface
         else if head == `SysBridge then
           .sysBridge
-        else if m.components.take 3 == [`LeanSwe, `PostFork, `Aeneas] ||
-            m.components.take 4 == [`LeanSwe, `ProcessSandbox, `Init, `Aeneas] then
+        else if m.components.take 3 == [`LeanSwe, `PostFork, `Aeneas] then
           if last == `Types || last == `TypesExternal then .types
           else if last == `Model || rem.contains `Model then .model
           else .impl
@@ -5345,7 +5333,7 @@ private def shouldForbidModuleInit (m : Name) : Bool :=
     m.components.take 2 == [`LeanSwe, `CryptoHash] ||
     m.components.take 2 == [`LeanSwe, `LinuxSyscall] ||
     m.components.take 2 == [`LeanSwe, `PostFork] ||
-    m.components.take 3 == [`LeanSwe, `ProcessSandbox, `Init] ||
+    m.components.take 2 == [`LeanSwe, `ProcessSandbox] ||
     m.components.take 2 == [`LeanSwe, `Sqlite] ||
     m.components.take 2 == [`LeanSwe, `Git] ||
     m.components.take 2 == [`LeanSwe, `ConnectProxy]
@@ -5553,14 +5541,13 @@ private unsafe def auditPromisesEnv
           skipPf m then
         continue
       let some data := auditE.header.moduleData[i]? | continue
-      if isMutantModule m || isInitVerifiedMod m then
+      if isMutantModule m then
         for c in data.constants do
           if c matches .thmInfo _ || c matches .defnInfo _ || c matches .opaqueInfo _ then
             let (badAx?, nextCache) ← (checkAxiomsOk c.name).run axCache
             axCache := nextCache
             if let some badAx := badAx? then
-              let tag := if isMutantModule m then "UNALLOWED_AXIOM_IN_MUTANT" else "UNALLOWED_AXIOM_IN_THEOREM"
-              axErrs := axErrs.push s!"{tag}: {c.name} in {m} uses [{badAx}]"
+              axErrs := axErrs.push s!"UNALLOWED_AXIOM_IN_MUTANT: {c.name} in {m} uses [{badAx}]"
         continue
       for c in data.constants do
         let .thmInfo v := c | continue
@@ -5834,9 +5821,6 @@ unsafe def main (args : List String) : IO UInt32 := do
   unless ← (libDir / "LeanSwe" / "PostFork" / "Verified.olean").pathExists do
     IO.eprintln s!"MISSING_OLEAN: LeanSwe.PostFork.Verified ({libDir / "LeanSwe" / "PostFork" / "Verified.olean"})"
     return 1
-  unless ← (libDir / "LeanSwe" / "ProcessSandbox" / "Init" / "Verified.olean").pathExists do
-    IO.eprintln s!"MISSING_OLEAN: LeanSwe.ProcessSandbox.Init.Verified ({libDir / "LeanSwe" / "ProcessSandbox" / "Init" / "Verified.olean"})"
-    return 1
   let leanSweDir := repoDir / "LeanSwe"
   let coreDir := repoDir / "Core"
   unless (← leanSweDir.isDir) && (← coreDir.isDir) do
@@ -5846,7 +5830,7 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   if isWorker then
     enableInitializersExecution
-    let pfEnv ← importModules #[{ module := `LeanSwe.PostFork.Verified }, { module := `LeanSwe.ProcessSandbox.Init.Verified }] {} (loadExts := true)
+    let pfEnv ← importModules #[{ module := `LeanSwe.PostFork.Verified }] {} (loadExts := true)
     for modName in pfEnv.header.moduleNames do
       if isPostForkVerifiedMod modName then
         IO.println s!"PFW_MOD:{modName}"
