@@ -39,9 +39,6 @@ private def allSuites : Array MutateSuite := #[
   CryptoHash.cryptoHashRawSuite,
   CryptoHash.cryptoHashSuite,
   Codecs.tarSuite,
-  FsAndProcess.processSandboxSeccompSuite,
-  FsAndProcess.processSandboxRawSuite,
-  FsAndProcess.processSandboxSuite,
   ConnectProxy.connectProxySuite,
   NetRelay.netRelaySuite,
   FsAndProcess.slotPoolSuite

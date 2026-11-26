@@ -262,39 +262,11 @@
       "kind": "model",
       "purity": "nondet_io",
       "deps": [
-        "LeanSwe.ProcessSandbox.Raw",
-        "LeanSwe.ProcessSandbox.Seccomp"
+        "LeanSwe.Process"
       ],
-      "external_boundary": false,
+      "fuzz_suite": "processsandbox",
+      "external_boundary": true,
       "spec_style": "state_step"
-    },
-    "LeanSwe.ProcessSandbox.Raw": {
-      "kind": "model",
-      "purity": "nondet_io",
-      "deps": [
-        "LeanSwe.Base64",
-        "LeanSwe.EnvVars.Raw",
-        "LeanSwe.LinuxSyscall.Common",
-        "LeanSwe.LinuxSyscall.Files",
-        "LeanSwe.LinuxSyscall.Net",
-        "LeanSwe.LinuxSyscall.Passwd",
-        "LeanSwe.LinuxSyscall.Poll",
-        "LeanSwe.LinuxSyscall.Process",
-        "LeanSwe.LinuxSyscall.Sandbox",
-        "LeanSwe.LinuxSyscall.TimeRand",
-        "LeanSwe.NetRelay",
-        "LeanSwe.PostFork",
-        "LeanSwe.ProcessSandbox.Seccomp"
-      ],
-      "external_boundary": false,
-      "spec_style": "state_step"
-    },
-    "LeanSwe.ProcessSandbox.Seccomp": {
-      "kind": "model",
-      "purity": "pure",
-      "deps": [],
-      "external_boundary": false,
-      "spec_style": "pure_eq"
     },
     "LeanSwe.RegExp": {
       "kind": "model",

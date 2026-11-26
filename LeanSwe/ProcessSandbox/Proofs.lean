@@ -1,36 +1,1059 @@
+import Core.Assumptions
 import Core.Obeys
-import LeanSwe.ProcessSandbox.Proofs.ModelProofs
-import LeanSwe.ProcessSandbox.Proofs.ValidateProofs
-import LeanSwe.ProcessSandbox.Proofs.SeccompBytesLemma
-import LeanSwe.ProcessSandbox.Proofs.ApiHelpers
-import LeanSwe.ProcessSandbox.Proofs.ApiBracketHelpers
-import LeanSwe.ProcessSandbox.Proofs.ApiProofs
-import LeanSwe.ProcessSandbox.Proofs.ApiSpawnOkProofs
-import LeanSwe.ProcessSandbox.Proofs.ApiSealProofs
-import LeanSwe.ProcessSandbox.Proofs.ApiOutcomeProofs
-import LeanSwe.ProcessSandbox.Proofs.ApiCancelProofs
-import LeanSwe.ProcessSandbox.Proofs.SeccompApiProofs
-import LeanSwe.ProcessSandbox.Proofs.ErrorImpossibility
-import LeanSwe.ProcessSandbox.Proofs.RefinesHelpers
-import LeanSwe.ProcessSandbox.Proofs.RefinesWitness
-import LeanSwe.ProcessSandbox.Proofs.RefinesModel
+import LeanSwe.Process.Types
+import LeanSwe.Process.Model
+import LeanSwe.ProcessSandbox.Types
+import LeanSwe.ProcessSandbox.Model
+import LeanSwe.ProcessSandbox.Impl
+import LeanSwe.ProcessSandbox.Interface
 
 namespace LeanSwe.ProcessSandbox.Proofs
 
+open LeanSwe.Process
 open LeanSwe.ProcessSandbox
-open LeanSwe.ProcessSandbox.Model
 
-/-- Full public `Interface` `Core.Obeys` contract of `LeanSwe.ProcessSandbox` covering `validateSpec`, `run`, and `isAvailable` over `Raw.Model.RawHostWorld`. -/
+private theorem stateT_pure_run {σ α : Type} (a : α) (s : σ) :
+    (pure a : StateM σ α).run s = (a, s) := rfl
+
+private theorem stateT_bind_run {σ α β : Type} (x : StateM σ α) (f : α → StateM σ β) (s : σ) :
+    (x >>= f).run s = (f (x.run s).1).run (x.run s).2 := by
+  dsimp only [StateT.run, Bind.bind, StateT.bind]
+  cases x s
+  rfl
+
+private theorem stateT_map_run {σ α β : Type} (f : α → β) (x : StateM σ α) (s : σ) :
+    (f <$> x).run s = (f (x.run s).1, (x.run s).2) := by
+  dsimp only [Functor.map, StateT.map, StateT.run]
+  cases x s
+  rfl
+
+private theorem hasNulChar_eq (cs : List Char) :
+    Internal.hasNulChar cs = Model.hasNulChar cs := by
+  induction cs with
+  | nil => rfl
+  | cons c rest ih => simp [Internal.hasNulChar, Model.hasNulChar, ih]
+
+private theorem splitSlashChars_go_eq (acc cs : List Char) :
+    Internal.splitSlashChars.go acc cs = Model.splitSlashChars.go acc cs := by
+  induction cs generalizing acc with
+  | nil => rfl
+  | cons c rest ih =>
+    unfold Internal.splitSlashChars.go Model.splitSlashChars.go
+    split <;> simp [ih]
+
+private theorem splitSlashChars_eq (cs : List Char) :
+    Internal.splitSlashChars cs = Model.splitSlashChars cs :=
+  splitSlashChars_go_eq [] cs
+
+private theorem allDistinct_eq {α : Type} [BEq α] (xs : List α) :
+    Internal.allDistinct xs = Model.allDistinct xs := by
+  induction xs with
+  | nil => rfl
+  | cons x rest ih => simp [Internal.allDistinct, Model.allDistinct, ih]
+
+private theorem dedupEnvPairs_eq (xs : List (String × String)) :
+    Internal.dedupEnvPairs xs = Model.dedupEnvPairs xs := by
+  induction xs with
+  | nil => rfl
+  | cons kv rest ih =>
+    unfold Internal.dedupEnvPairs Model.dedupEnvPairs
+    dsimp only
+    rw [ih]
+
+private theorem parseCleanAbsSegs_eq (p : String) :
+    Internal.parseCleanAbsSegs p = Model.parseCleanAbsSegs p := by
+  unfold Internal.parseCleanAbsSegs Model.parseCleanAbsSegs
+  dsimp only
+  rw [hasNulChar_eq, splitSlashChars_eq]
+
+private theorem formatAbsSegs_eq (segs : List String) :
+    Internal.formatAbsSegs segs = Model.formatAbsSegs segs := by
+  cases segs <;> rfl
+
+private theorem normalizeCleanAbsPath_eq (p : String) :
+    Internal.normalizeCleanAbsPath p = Model.normalizeCleanAbsPath p := by
+  unfold Internal.normalizeCleanAbsPath Model.normalizeCleanAbsPath
+  rw [parseCleanAbsSegs_eq]
+  have hf : Internal.formatAbsSegs = Model.formatAbsSegs := funext formatAbsSegs_eq
+  rw [hf]
+
+private theorem isReservedBoxSegs_eq (segs : List String) :
+    Internal.isReservedBoxSegs segs = Model.isReservedBoxSegs segs := by
+  cases segs <;> rfl
+
+private theorem isValidEnvPair_eq (kv : String × String) :
+    Internal.isValidEnvPair kv = Model.isValidEnvPair kv := by
+  unfold Internal.isValidEnvPair Model.isValidEnvPair
+  dsimp only
+  rw [hasNulChar_eq, hasNulChar_eq]
+
+private theorem invalidInput_eq (msg : String) (p : Option String) :
+    Internal.invalidInput msg p = Model.invalidInput msg p := rfl
+
+private theorem validateHostBoxPair_eq (ctor : String → String → SandboxMount) (hp bp : String) :
+    Internal.validateHostBoxPair ctor hp bp = Model.validateHostBoxPair ctor hp bp := by
+  unfold Internal.validateHostBoxPair Model.validateHostBoxPair
+  rw [parseCleanAbsSegs_eq, parseCleanAbsSegs_eq]
+  cases Model.parseCleanAbsSegs hp with
+  | none => rfl
+  | some hSegs =>
+    cases Model.parseCleanAbsSegs bp with
+    | none => rfl
+    | some bSegs =>
+      dsimp only
+      rw [isReservedBoxSegs_eq, formatAbsSegs_eq, formatAbsSegs_eq]
+      rfl
+
+private theorem validateAndNormalizeMount_eq (m : SandboxMount) :
+    Internal.validateAndNormalizeMount m = Model.validateAndNormalizeMount m := by
+  cases m with
+  | readOnly hp bp => exact validateHostBoxPair_eq .readOnly hp bp
+  | readWrite hp bp => exact validateHostBoxPair_eq .readWrite hp bp
+  | scratch bp =>
+    unfold Internal.validateAndNormalizeMount Model.validateAndNormalizeMount
+    dsimp only
+    rw [parseCleanAbsSegs_eq]
+    cases Model.parseCleanAbsSegs bp with
+    | none => rfl
+    | some bSegs =>
+      dsimp only
+      rw [isReservedBoxSegs_eq, formatAbsSegs_eq]
+      rfl
+
+private theorem validateMountsList_eq (ms : List SandboxMount) :
+    Internal.validateMountsList ms = Model.validateMountsList ms := by
+  induction ms with
+  | nil => rfl
+  | cons m rest ih =>
+    unfold Internal.validateMountsList Model.validateMountsList
+    rw [validateAndNormalizeMount_eq, ih]
+
+private theorem isReadWriteMount_eq (m : SandboxMount) :
+    Internal.isReadWriteMount m = Model.isReadWriteMount m := by
+  cases m <;> rfl
+
+private theorem hasUnshadowedRwOverlapPair_eq (m₁ m₂ : SandboxMount) :
+    Internal.hasUnshadowedRwOverlapPair m₁ m₂ = Model.hasUnshadowedRwOverlapPair m₁ m₂ := by
+  unfold Internal.hasUnshadowedRwOverlapPair Model.hasUnshadowedRwOverlapPair
+  rw [isReadWriteMount_eq, isReadWriteMount_eq]
+  cases mountHostPath? m₁ with
+  | none => rfl
+  | some hp₁ =>
+    cases mountHostPath? m₂ with
+    | none => rfl
+    | some hp₂ =>
+      dsimp only
+      rw [parseCleanAbsSegs_eq hp₁, parseCleanAbsSegs_eq (mountBoxPath m₁),
+          parseCleanAbsSegs_eq hp₂, parseCleanAbsSegs_eq (mountBoxPath m₂)]
+      rfl
+
+private theorem hasUnshadowedRwOverlap_eq (ms : List SandboxMount) :
+    Internal.hasUnshadowedRwOverlap ms = Model.hasUnshadowedRwOverlap ms := by
+  induction ms with
+  | nil => rfl
+  | cons m rest ih =>
+    unfold Internal.hasUnshadowedRwOverlap Model.hasUnshadowedRwOverlap
+    have hp : Internal.hasUnshadowedRwOverlapPair m = Model.hasUnshadowedRwOverlapPair m :=
+      funext (hasUnshadowedRwOverlapPair_eq m)
+    rw [hp, ih]
+
+/-- `Internal.validateSpec` matches `Model.validateSpecPure` identically on every `BoxSpec`. -/
+theorem validateSpec_eq_model (spec : BoxSpec) :
+    Internal.validateSpec spec = Model.validateSpecPure spec := by
+  unfold Internal.validateSpec Model.validateSpecPure
+  have hNul : (fun a : String => Internal.hasNulChar a.toList) =
+      (fun a : String => Model.hasNulChar a.toList) := funext fun a => hasNulChar_eq a.toList
+  have hEnv : Internal.isValidEnvPair = Model.isValidEnvPair := funext isValidEnvPair_eq
+  rw [hasNulChar_eq, hNul, hEnv]
+  split; · rfl
+  split; · rfl
+  split; · rfl
+  split; · rfl
+  split; · rfl
+  split; · rfl
+  dsimp only [Bind.bind, Except.bind]
+  cases spec.cwd with
+  | none =>
+    dsimp only
+    rw [validateMountsList_eq]
+    cases Model.validateMountsList spec.mounts.toList with
+    | error _ => rfl
+    | ok _ =>
+      dsimp only
+      rw [allDistinct_eq, hasUnshadowedRwOverlap_eq, dedupEnvPairs_eq]
+      rfl
+  | some d =>
+    dsimp only
+    rw [normalizeCleanAbsPath_eq]
+    cases Model.normalizeCleanAbsPath d with
+    | none => rfl
+    | some _ =>
+      dsimp only
+      rw [validateMountsList_eq]
+      cases Model.validateMountsList spec.mounts.toList with
+      | error _ => rfl
+      | ok _ =>
+        dsimp only
+        rw [allDistinct_eq, hasUnshadowedRwOverlap_eq, dedupEnvPairs_eq]
+        rfl
+
+private theorem validateAndNormalizeMount_err_kind (m : SandboxMount) (e : SandboxError)
+    (h : Internal.validateAndNormalizeMount m = .error e) : e.kind = .invalidInput := by
+  cases m with
+  | readOnly hp bp | readWrite hp bp =>
+    simp only [Internal.validateAndNormalizeMount, Internal.validateHostBoxPair] at h
+    cases h1 : Internal.parseCleanAbsSegs hp <;> cases h2 : Internal.parseCleanAbsSegs bp <;>
+      simp [h1, h2] at h
+    · subst h; rfl
+    · subst h; rfl
+    · subst h; rfl
+    · split at h <;> simp at h; subst h; rfl
+  | scratch bp =>
+    simp only [Internal.validateAndNormalizeMount] at h
+    cases h1 : Internal.parseCleanAbsSegs bp <;> simp [h1] at h
+    · subst h; rfl
+    · split at h <;> simp at h; subst h; rfl
+
+private theorem validateMountsList_err_kind :
+    ∀ (ms : List SandboxMount) (e : SandboxError),
+      Internal.validateMountsList ms = .error e → e.kind = .invalidInput
+  | [], _, h => by simp [Internal.validateMountsList] at h
+  | m :: rest, e, h => by
+    unfold Internal.validateMountsList at h
+    cases hm : Internal.validateAndNormalizeMount m with
+    | error em =>
+      simp only [hm, Bind.bind, Except.bind, Except.error.injEq] at h; subst h
+      exact validateAndNormalizeMount_err_kind m em hm
+    | ok _ =>
+      cases hr : Internal.validateMountsList rest with
+      | error er =>
+        simp only [hm, hr, Bind.bind, Except.bind, Except.error.injEq] at h; subst h
+        exact validateMountsList_err_kind rest er hr
+      | ok _ => simp [hm, hr, Bind.bind, Except.bind] at h
+
+private theorem validateSpec_err_kind (spec : BoxSpec) (e : SandboxError)
+    (h : Internal.validateSpec spec = .error e) : e.kind = .invalidInput := by
+  unfold Internal.validateSpec at h
+  simp only [Bind.bind, Except.bind] at h
+  split at h; · (injection h with h; subst h; rfl)
+  split at h; · (injection h with h; subst h; rfl)
+  split at h; · (injection h with h; subst h; rfl)
+  split at h; · (injection h with h; subst h; rfl)
+  split at h; · (injection h with h; subst h; rfl)
+  split at h; · (injection h with h; subst h; rfl)
+  cases hCwd : spec.cwd with
+  | none =>
+    simp only [hCwd] at h
+    cases hm : Internal.validateMountsList spec.mounts.toList with
+    | error em =>
+      simp only [hm] at h; injection h with h; subst h
+      exact validateMountsList_err_kind _ em hm
+    | ok _ =>
+      simp only [hm] at h
+      split at h; · (injection h with h; subst h; rfl)
+      split at h; · (injection h with h; subst h; rfl)
+      · contradiction
+  | some d =>
+    simp only [hCwd] at h
+    cases hNorm : Internal.normalizeCleanAbsPath d with
+    | none => simp only [hNorm] at h; injection h with h; subst h; rfl
+    | some _ =>
+      simp only [hNorm] at h
+      cases hm : Internal.validateMountsList spec.mounts.toList with
+      | error em =>
+        simp only [hm] at h; injection h with h; subst h
+        exact validateMountsList_err_kind _ em hm
+      | ok _ =>
+        simp only [hm] at h
+        split at h; · (injection h with h; subst h; rfl)
+        split at h; · (injection h with h; subst h; rfl)
+        · contradiction
+
+private theorem validateSpec_never_of (forbidden : SandboxErrorKind)
+    (hne : forbidden ≠ .invalidInput) (spec : BoxSpec) :
+    Core.NeverErrorKindPure SandboxError.kind forbidden (LeanSwe.ProcessSandbox.validateSpec spec) := by
+  unfold Core.NeverErrorKindPure LeanSwe.ProcessSandbox.validateSpec
+    LeanSwe.ProcessSandbox.defaultApi Internal.mkApiM
+  dsimp only
+  cases h : Internal.validateSpec spec with
+  | ok _ => trivial
+  | error e =>
+    dsimp only
+    rw [validateSpec_err_kind spec e h]
+    exact hne.symm
+
+/-- `LeanSwe.ProcessSandbox.validateSpec` never returns `.unavailable`. -/
+theorem validateSpec_never_unavailable (spec : BoxSpec) :
+    Core.NeverErrorKindPure SandboxError.kind .unavailable (LeanSwe.ProcessSandbox.validateSpec spec) :=
+  validateSpec_never_of .unavailable (by decide) spec
+
+/-- `LeanSwe.ProcessSandbox.validateSpec` never returns `.notFound`. -/
+theorem validateSpec_never_notFound (spec : BoxSpec) :
+    Core.NeverErrorKindPure SandboxError.kind .notFound (LeanSwe.ProcessSandbox.validateSpec spec) :=
+  validateSpec_never_of .notFound (by decide) spec
+
+/-- `LeanSwe.ProcessSandbox.validateSpec` never returns `.permissionDenied`. -/
+theorem validateSpec_never_permissionDenied (spec : BoxSpec) :
+    Core.NeverErrorKindPure SandboxError.kind .permissionDenied (LeanSwe.ProcessSandbox.validateSpec spec) :=
+  validateSpec_never_of .permissionDenied (by decide) spec
+
+/-- `LeanSwe.ProcessSandbox.validateSpec` never returns `.ioError`. -/
+theorem validateSpec_never_ioError (spec : BoxSpec) :
+    Core.NeverErrorKindPure SandboxError.kind .ioError (LeanSwe.ProcessSandbox.validateSpec spec) :=
+  validateSpec_never_of .ioError (by decide) spec
+
+private theorem hasNulChar_eq_contains (cs : List Char) :
+    Internal.hasNulChar cs = cs.contains '\x00' := by
+  induction cs with
+  | nil => rfl
+  | cons c rest ih =>
+    simp only [Internal.hasNulChar, List.contains_cons, ih]
+    have hc : (c == Char.ofNat 0) = ('\x00' == c) := by
+      cases h : (c == Char.ofNat 0) with
+      | true =>
+        have : c = '\x00' := beq_iff_eq.mp h
+        subst this; rfl
+      | false =>
+        have hne : c ≠ '\x00' := fun heq => by subst heq; cases h
+        exact (beq_false_of_ne hne.symm).symm
+    rw [hc]
+
+private theorem hasNulModel_iff_hasNulChar (s : String) :
+    LeanSwe.Process.Model.hasNulModel s = Internal.hasNulChar s.toList := by
+  unfold LeanSwe.Process.Model.hasNulModel
+  exact (hasNulChar_eq_contains s.toList).symm
+
+private theorem list_contains_append_false {xs ys : List Char} {c : Char}
+    (hx : xs.contains c = false) (hy : ys.contains c = false) :
+    (xs ++ ys).contains c = false := by
+  induction xs with
+  | nil => exact hy
+  | cons x rest ih =>
+    simp only [List.cons_append, List.contains_cons, Bool.or_eq_false_iff] at hx ⊢
+    exact ⟨hx.1, ih hx.2⟩
+
+private theorem hasNulModel_append {a b : String}
+    (ha : LeanSwe.Process.Model.hasNulModel a = false)
+    (hb : LeanSwe.Process.Model.hasNulModel b = false) :
+    LeanSwe.Process.Model.hasNulModel (a ++ b) = false := by
+  unfold LeanSwe.Process.Model.hasNulModel at ha hb ⊢
+  rw [String.toList_append]
+  exact list_contains_append_false ha hb
+
+private theorem hasNulChar_reverse (cs : List Char) :
+    Internal.hasNulChar cs.reverse = Internal.hasNulChar cs := by
+  rw [hasNulChar_eq_contains, hasNulChar_eq_contains]
+  cases h : cs.contains '\x00' with
+  | true =>
+    exact List.contains_iff_mem.mpr (List.mem_reverse.mpr (List.contains_iff_mem.mp h))
+  | false =>
+    cases hr : cs.reverse.contains '\x00' with
+    | false => rfl
+    | true =>
+      have hm : '\x00' ∈ cs := List.mem_reverse.mp (List.contains_iff_mem.mp hr)
+      have hc : cs.contains '\x00' = true := List.contains_iff_mem.mpr hm
+      rw [h] at hc; cases hc
+
+private theorem splitSlashChars_go_no_nul (acc cs : List Char)
+    (hAcc : Internal.hasNulChar acc = false) (hCs : Internal.hasNulChar cs = false) :
+    ∀ seg ∈ Internal.splitSlashChars.go acc cs, Internal.hasNulChar seg = false := by
+  induction cs generalizing acc with
+  | nil =>
+    intro seg hSeg
+    simp only [Internal.splitSlashChars.go, List.mem_singleton] at hSeg
+    subst hSeg
+    rw [hasNulChar_reverse]
+    exact hAcc
+  | cons c rest ih =>
+    simp only [Internal.hasNulChar, Bool.or_eq_false_iff] at hCs
+    unfold Internal.splitSlashChars.go
+    split
+    · intro seg hSeg
+      rcases List.mem_cons.mp hSeg with rfl | hTail
+      · rw [hasNulChar_reverse]; exact hAcc
+      · exact ih [] rfl hCs.2 seg hTail
+    · apply ih (c :: acc)
+      · simp [Internal.hasNulChar, hCs.1, hAcc]
+      · exact hCs.2
+
+private theorem parseCleanAbsSegs_no_nul (p : String) (segs : List String)
+    (h : Internal.parseCleanAbsSegs p = some segs) :
+    ∀ s ∈ segs, LeanSwe.Process.Model.hasNulModel s = false := by
+  unfold Internal.parseCleanAbsSegs at h
+  dsimp only at h
+  split at h
+  · contradiction
+  rename_i hCond
+  have hNoNul : Internal.hasNulChar p.toList = false := by
+    cases hn : Internal.hasNulChar p.toList with
+    | false => rfl
+    | true => simp [hn] at hCond
+  have hTailNoNul : Internal.hasNulChar p.toList.tail = false := by
+    cases hCs : p.toList with
+    | nil => rfl
+    | cons _ _ =>
+      rw [hCs] at hNoNul
+      simp only [Internal.hasNulChar, Bool.or_eq_false_iff] at hNoNul
+      exact hNoNul.2
+  split at h
+  · contradiction
+  injection h with hEq
+  subst hEq
+  intro s hs
+  rcases List.mem_filterMap.mp hs with ⟨raw, hRawMem, hRawEq⟩
+  split at hRawEq
+  · contradiction
+  injection hRawEq with hsEq
+  subst hsEq
+  rw [hasNulModel_iff_hasNulChar, String.toList_ofList]
+  exact splitSlashChars_go_no_nul [] p.toList.tail rfl hTailNoNul raw hRawMem
+
+private theorem intercalate_cons_no_nul (sep : String) :
+    ∀ (rest : List String) (acc : String),
+      LeanSwe.Process.Model.hasNulModel acc = false →
+      LeanSwe.Process.Model.hasNulModel sep = false →
+      (∀ s ∈ rest, LeanSwe.Process.Model.hasNulModel s = false) →
+      LeanSwe.Process.Model.hasNulModel (String.intercalate sep (acc :: rest)) = false
+  | [], _, hAcc, _, _ => hAcc
+  | y :: ys, acc, hAcc, hSep, hRest =>
+    intercalate_cons_no_nul sep ys (acc ++ sep ++ y)
+      (hasNulModel_append (hasNulModel_append hAcc hSep) (hRest y List.mem_cons_self))
+      hSep
+      (fun s hs => hRest s (List.mem_cons_of_mem y hs))
+
+private theorem formatAbsSegs_no_nul (segs : List String)
+    (h : ∀ s ∈ segs, LeanSwe.Process.Model.hasNulModel s = false) :
+    LeanSwe.Process.Model.hasNulModel (Internal.formatAbsSegs segs) = false := by
+  cases segs with
+  | nil => rfl
+  | cons x rest =>
+    unfold Internal.formatAbsSegs
+    exact hasNulModel_append rfl
+      (intercalate_cons_no_nul "/" rest x (h x List.mem_cons_self) rfl
+        (fun s hs => h s (List.mem_cons_of_mem x hs)))
+
+private theorem mountFlags_no_nul_of_valid (m norm : SandboxMount)
+    (h : Internal.validateAndNormalizeMount m = .ok norm) :
+    ∀ s ∈ Internal.mountFlags norm, LeanSwe.Process.Model.hasNulModel s = false := by
+  cases m with
+  | readOnly hp bp =>
+    simp only [Internal.validateAndNormalizeMount, Internal.validateHostBoxPair] at h
+    cases h1 : Internal.parseCleanAbsSegs hp with
+    | none => simp [h1] at h
+    | some hs =>
+      cases h2 : Internal.parseCleanAbsSegs bp with
+      | none => simp [h1, h2] at h
+      | some bs =>
+        simp only [h1, h2] at h
+        split at h; · contradiction
+        injection h with hEq; subst hEq
+        intro s hMem
+        simp only [Internal.mountFlags, List.mem_cons, List.not_mem_nil, or_false] at hMem
+        rcases hMem with rfl | rfl | rfl
+        · rfl
+        · exact formatAbsSegs_no_nul hs (parseCleanAbsSegs_no_nul hp hs h1)
+        · exact formatAbsSegs_no_nul bs (parseCleanAbsSegs_no_nul bp bs h2)
+  | readWrite hp bp =>
+    simp only [Internal.validateAndNormalizeMount, Internal.validateHostBoxPair] at h
+    cases h1 : Internal.parseCleanAbsSegs hp with
+    | none => simp [h1] at h
+    | some hs =>
+      cases h2 : Internal.parseCleanAbsSegs bp with
+      | none => simp [h1, h2] at h
+      | some bs =>
+        simp only [h1, h2] at h
+        split at h; · contradiction
+        injection h with hEq; subst hEq
+        intro s hMem
+        simp only [Internal.mountFlags, List.mem_cons, List.not_mem_nil, or_false] at hMem
+        rcases hMem with rfl | rfl | rfl
+        · rfl
+        · exact formatAbsSegs_no_nul hs (parseCleanAbsSegs_no_nul hp hs h1)
+        · exact formatAbsSegs_no_nul bs (parseCleanAbsSegs_no_nul bp bs h2)
+  | scratch bp =>
+    simp only [Internal.validateAndNormalizeMount] at h
+    cases h1 : Internal.parseCleanAbsSegs bp with
+    | none => simp [h1] at h
+    | some bs =>
+      simp only [h1] at h
+      split at h; · contradiction
+      injection h with hEq; subst hEq
+      intro s hMem
+      simp only [Internal.mountFlags, List.mem_cons, List.not_mem_nil, or_false] at hMem
+      rcases hMem with rfl | rfl | rfl | rfl
+      · rfl
+      · rfl
+      · rfl
+      · exact formatAbsSegs_no_nul bs (parseCleanAbsSegs_no_nul bp bs h1)
+
+private theorem validateMountsList_no_nul :
+    ∀ (ms norms : List SandboxMount),
+      Internal.validateMountsList ms = .ok norms →
+      ∀ m ∈ norms, ∀ s ∈ Internal.mountFlags m, LeanSwe.Process.Model.hasNulModel s = false
+  | [], norms, h => by
+    simp only [Internal.validateMountsList, Except.ok.injEq] at h
+    subst h
+    intro _ hm; nomatch hm
+  | m :: rest, norms, h => by
+    unfold Internal.validateMountsList at h
+    cases hm : Internal.validateAndNormalizeMount m with
+    | error _ => simp [hm, Bind.bind, Except.bind] at h
+    | ok nm =>
+      cases hr : Internal.validateMountsList rest with
+      | error _ => simp [hm, hr, Bind.bind, Except.bind] at h
+      | ok nrest =>
+        simp only [hm, hr, Bind.bind, Except.bind, Except.ok.injEq] at h
+        subst h
+        intro x hx
+        rcases List.mem_cons.mp hx with rfl | hTail
+        · exact mountFlags_no_nul_of_valid m x hm
+        · exact validateMountsList_no_nul rest nrest hr x hTail
+
+private theorem dedupEnvPairs_subset {xs : List (String × String)} {kv : String × String}
+    (h : kv ∈ Internal.dedupEnvPairs xs) : kv ∈ xs := by
+  induction xs with
+  | nil => simp [Internal.dedupEnvPairs] at h
+  | cons p rest ih =>
+    unfold Internal.dedupEnvPairs at h
+    dsimp only at h
+    split at h
+    · exact List.mem_cons_of_mem p (ih h)
+    · rcases List.mem_cons.mp h with rfl | hTail
+      · exact List.mem_cons_self
+      · exact List.mem_cons_of_mem p (ih hTail)
+
+private theorem envFlags_no_nul (kvs : List (String × String))
+    (h : ∀ kv ∈ kvs,
+      LeanSwe.Process.Model.hasNulModel kv.1 = false ∧
+      LeanSwe.Process.Model.hasNulModel kv.2 = false) :
+    ∀ s ∈ Internal.envFlags kvs, LeanSwe.Process.Model.hasNulModel s = false := by
+  induction kvs with
+  | nil => intro _ hm; nomatch hm
+  | cons kv rest ih =>
+    intro s hs
+    simp only [Internal.envFlags, List.mem_cons] at hs
+    rcases hs with rfl | rfl | rfl | hTail
+    · rfl
+    · exact (h kv List.mem_cons_self).1
+    · exact (h kv List.mem_cons_self).2
+    · exact ih (fun p hp => h p (List.mem_cons_of_mem kv hp)) s hTail
+
+private theorem osPresetFlags_no_nul :
+    ∀ s ∈ Internal.osPresetFlags, LeanSwe.Process.Model.hasNulModel s = false := by
+  decide
+
+private theorem list_any_false_of_forall {α : Type} {xs : List α} {p : α → Bool}
+    (h : ∀ x ∈ xs, p x = false) : xs.any p = false := by
+  induction xs with
+  | nil => rfl
+  | cons x rest ih =>
+    simp only [List.any_cons, Bool.or_eq_false_iff]
+    exact ⟨h x List.mem_cons_self, ih (fun y hy => h y (List.mem_cons_of_mem x hy))⟩
+
+private theorem validateSpec_ok_request_valid (spec : BoxSpec) (valid : ValidBoxSpec)
+    (hVal : Internal.validateSpec spec = .ok valid) :
+    ∃ norm, LeanSwe.Process.Model.validateRequestModel (Internal.mkBwrapRequest valid) = .ok norm := by
+  have hProps :
+      (valid.timeoutMs == some 0) = false ∧
+      LeanSwe.Process.Model.hasNulModel valid.program = false ∧
+      (∀ a ∈ valid.args.toList, LeanSwe.Process.Model.hasNulModel a = false) ∧
+      (∀ kv ∈ valid.env.toList,
+        LeanSwe.Process.Model.hasNulModel kv.1 = false ∧
+        LeanSwe.Process.Model.hasNulModel kv.2 = false) ∧
+      LeanSwe.Process.Model.hasNulModel valid.cwd = false ∧
+      (∀ m ∈ valid.mounts.toList, ∀ s ∈ Internal.mountFlags m,
+        LeanSwe.Process.Model.hasNulModel s = false) := by
+    unfold Internal.validateSpec at hVal
+    simp only [Bind.bind, Except.bind] at hVal
+    split at hVal; · contradiction
+    split at hVal; · contradiction
+    rename_i hProgNul
+    split at hVal; · contradiction
+    rename_i hArgsNul
+    split at hVal; · contradiction
+    rename_i hEnvOk
+    split at hVal; · contradiction
+    rename_i hToZero
+    split at hVal; · contradiction
+    have hProgF : LeanSwe.Process.Model.hasNulModel spec.program = false := by
+      rw [hasNulModel_iff_hasNulChar]
+      cases hn : Internal.hasNulChar spec.program.toList <;> simp_all
+    have hArgsF : ∀ a ∈ spec.args.toList, LeanSwe.Process.Model.hasNulModel a = false := by
+      intro a ha
+      rw [hasNulModel_iff_hasNulChar]
+      cases hn : Internal.hasNulChar a.toList with
+      | false => rfl
+      | true =>
+        exfalso; apply hArgsNul
+        exact List.any_eq_true.mpr ⟨a, ha, hn⟩
+    have hEnvAll : ∀ kv ∈ spec.env.toList, Internal.isValidEnvPair kv = true := by
+      have hall : spec.env.toList.all Internal.isValidEnvPair = true := by
+        cases hc : spec.env.toList.all Internal.isValidEnvPair <;> simp_all
+      exact List.all_eq_true.mp hall
+    have hCleanEnvF : ∀ kv ∈
+        (let deduped := Internal.dedupEnvPairs spec.env.toList
+         if deduped.any (fun kv => kv.1 == "PATH") then deduped
+         else ("PATH", Internal.defaultSandboxPath) :: deduped),
+        LeanSwe.Process.Model.hasNulModel kv.1 = false ∧
+        LeanSwe.Process.Model.hasNulModel kv.2 = false := by
+      intro kv hkv
+      have hFromOrig : ∀ p ∈ Internal.dedupEnvPairs spec.env.toList,
+          LeanSwe.Process.Model.hasNulModel p.1 = false ∧
+          LeanSwe.Process.Model.hasNulModel p.2 = false := by
+        intro p hp
+        have hv := hEnvAll p (dedupEnvPairs_subset hp)
+        unfold Internal.isValidEnvPair at hv
+        simp only [Bool.and_eq_true, Bool.not_eq_true'] at hv
+        rw [hasNulModel_iff_hasNulChar, hasNulModel_iff_hasNulChar]
+        exact ⟨hv.1.2, hv.2⟩
+      dsimp only at hkv
+      split at hkv
+      · exact hFromOrig kv hkv
+      · rcases List.mem_cons.mp hkv with rfl | hTail
+        · exact ⟨rfl, rfl⟩
+        · exact hFromOrig kv hTail
+    have hToF : (spec.timeoutMs == some 0) = false := by
+      cases hc : (spec.timeoutMs == some 0) <;> simp_all
+    have hTmpOk : ∀ s ∈ Internal.mountFlags (.scratch "/tmp"),
+        LeanSwe.Process.Model.hasNulModel s = false := by
+      decide
+    cases hCwd : spec.cwd with
+    | none =>
+      simp only [hCwd] at hVal
+      cases hm : Internal.validateMountsList spec.mounts.toList with
+      | error _ => rw [hm] at hVal; contradiction
+      | ok normMounts =>
+        rw [hm] at hVal; dsimp only at hVal
+        split at hVal; · contradiction
+        split at hVal; · contradiction
+        injection hVal with hEq; subst hEq
+        refine ⟨hToF, hProgF, hArgsF, hCleanEnvF, ?_, ?_⟩
+        · exact (show LeanSwe.Process.Model.hasNulModel Internal.defaultSandboxCwd = false from rfl)
+        · intro m hmem
+          dsimp only at hmem
+          split at hmem
+          · exact validateMountsList_no_nul spec.mounts.toList normMounts hm m hmem
+          · rcases List.mem_cons.mp hmem with rfl | hTail
+            · exact hTmpOk
+            · exact validateMountsList_no_nul spec.mounts.toList normMounts hm m hTail
+    | some d =>
+      simp only [hCwd] at hVal
+      cases hNorm : Internal.normalizeCleanAbsPath d with
+      | none => simp [hNorm] at hVal
+      | some cleanD =>
+        simp only [hNorm] at hVal
+        have hCleanF : LeanSwe.Process.Model.hasNulModel cleanD = false := by
+          unfold Internal.normalizeCleanAbsPath at hNorm
+          cases hp : Internal.parseCleanAbsSegs d with
+          | none => simp [hp] at hNorm
+          | some segs =>
+            simp only [hp, Option.map_some, Option.some.injEq] at hNorm
+            subst hNorm
+            exact formatAbsSegs_no_nul segs (parseCleanAbsSegs_no_nul d segs hp)
+        cases hm : Internal.validateMountsList spec.mounts.toList with
+        | error _ => rw [hm] at hVal; contradiction
+        | ok normMounts =>
+          rw [hm] at hVal; dsimp only at hVal
+          split at hVal; · contradiction
+          split at hVal; · contradiction
+          injection hVal with hEq; subst hEq
+          refine ⟨hToF, hProgF, hArgsF, hCleanEnvF, hCleanF, ?_⟩
+          intro m hmem
+          dsimp only at hmem
+          split at hmem
+          · exact validateMountsList_no_nul spec.mounts.toList normMounts hm m hmem
+          · rcases List.mem_cons.mp hmem with rfl | hTail
+            · exact hTmpOk
+            · exact validateMountsList_no_nul spec.mounts.toList normMounts hm m hTail
+  rcases hProps with ⟨hToF, hProgF, hArgsF, hEnvF, hCwdF, hMountsF⟩
+  have hAllArgsNoNul : ∀ s ∈ (Internal.mkBwrapArgs valid).toList,
+      LeanSwe.Process.Model.hasNulModel s = false := by
+    intro s hs
+    unfold Internal.mkBwrapArgs at hs
+    simp only [List.mem_append] at hs
+    rcases hs with ((((((h1 | h2) | h3) | h4) | h5) | h6) | h7) | h8
+    · exact osPresetFlags_no_nul s h1
+    · rcases List.mem_flatMap.mp h2 with ⟨m, hmSort, hsM⟩
+      have hmOrig : m ∈ valid.mounts.toList :=
+        (List.mem_mergeSort (l := valid.mounts.toList)).mp hmSort
+      exact hMountsF m hmOrig s hsM
+    · simp only [List.mem_cons, List.not_mem_nil, or_false] at h3
+      rcases h3 with rfl | rfl | rfl <;> rfl
+    · cases hNet : valid.network with
+      | closed => rw [hNet] at h4; cases h4
+      | «open» =>
+        rw [hNet] at h4
+        cases h4 with
+        | head => rfl
+        | tail _ ht => cases ht
+    · simp only [List.mem_cons, List.not_mem_nil, or_false] at h5
+      rcases h5 with rfl | rfl | rfl <;> rfl
+    · exact envFlags_no_nul valid.env.toList hEnvF s h6
+    · simp only [List.mem_cons, List.not_mem_nil, or_false] at h7
+      rcases h7 with rfl | rfl | rfl | rfl
+      · rfl
+      · exact hCwdF
+      · rfl
+      · exact hProgF
+    · exact hArgsF s h8
+  unfold LeanSwe.Process.Model.validateRequestModel
+    LeanSwe.Process.Model.validateSpawnRequestModel Internal.mkBwrapRequest
+  have hArgsAnyF := list_any_false_of_forall hAllArgsNoNul
+  have hProgEmpty : ("bwrap".isEmpty) = false := rfl
+  have hProgNul : LeanSwe.Process.Model.hasNulModel "bwrap" = false := rfl
+  have hEnvEmpty : (#[].toList.any LeanSwe.Process.Model.isInvalidEnvEntryModel) = false := rfl
+  simp only [hProgEmpty, hProgNul, hArgsAnyF, hEnvEmpty, hToF, Bool.false_eq_true, ↓reduceIte]
+  exact ⟨_, rfl⟩
+
+private theorem validateRequestModel_mkProbeRequest :
+    ∃ norm, LeanSwe.Process.Model.validateRequestModel Internal.mkProbeRequest = .ok norm :=
+  ⟨Internal.mkProbeRequest, rfl⟩
+
+private theorem truncateToCap_withinOutputCap (cap? : Option Nat) (out err : ByteArray) :
+    let p := Internal.truncateToCap cap? out err
+    Model.withinOutputCap cap? p.1 p.2 := by
+  cases cap? with
+  | none => trivial
+  | some cap =>
+    dsimp only [Internal.truncateToCap, Model.withinOutputCap]
+    have hExtractOut : (out.extract 0 cap).size = min cap out.size := by simp
+    by_cases h1 : out.size ≤ cap
+    · simp only [h1, ↓reduceIte]
+      by_cases h2 : err.size ≤ cap - out.size
+      · simp only [h2, ↓reduceIte]; omega
+      · simp only [h2, ↓reduceIte]; rw [ByteArray.size_extract]; omega
+    · simp only [h1, ↓reduceIte]
+      by_cases h2 : err.size ≤ cap - (out.extract 0 cap).size
+      · simp only [h2, ↓reduceIte]; omega
+      · simp only [h2, ↓reduceIte]; rw [ByteArray.size_extract, ByteArray.size_extract]; omega
+
+private theorem nonEmptyMsg_not_isEmpty (fallback msg : String)
+    (hfb : (!fallback.isEmpty) = true) :
+    (!(Internal.nonEmptyMsg fallback msg).isEmpty) = true := by
+  unfold Internal.nonEmptyMsg
+  cases hm : msg.isEmpty with
+  | true => rw [ite_eq_left rfl]; exact hfb
+  | false => rw [ite_eq_right Bool.false_ne_true, hm]; rfl
+
+private theorem classifyBwrapStderr_post (raw : String) :
+    Model.isHostErrorKind (Internal.classifyBwrapStderr raw).kind = true ∧
+    (!(Internal.classifyBwrapStderr raw).message.isEmpty) = true := by
+  unfold Internal.classifyBwrapStderr
+  refine ⟨?_, nonEmptyMsg_not_isEmpty "bwrap setup failed" _ (by decide)⟩
+  dsimp only
+  split
+  · rfl
+  split
+  · rfl
+  split
+  · rfl
+  split <;> rfl
+
+private theorem classifyProcessError_post (valid : ValidBoxSpec) (pe : ProcessError)
+    (hExec : LeanSwe.Process.Model.allowedExecResult false (Internal.mkBwrapRequest valid) (.error pe)) :
+    match Internal.classifyProcessError valid.maxOutputBytes pe with
+    | .ok r =>
+      Model.withinOutputCap valid.maxOutputBytes r.stdout r.stderr ∧
+      (r.outcome = .timedOut → valid.timeoutMs.isSome = true) ∧
+      (r.outcome = .outputLimitExceeded → valid.maxOutputBytes.isSome = true)
+    | .error e =>
+      Model.isHostErrorKind e.kind = true ∧ !e.message.isEmpty := by
+  unfold Internal.classifyProcessError
+  have hCap := truncateToCap_withinOutputCap valid.maxOutputBytes
+    (pe.stdout.getD ByteArray.empty) (pe.stderr.getD ByteArray.empty)
+  cases hk : pe.kind with
+  | timedOut =>
+    exact ⟨hCap, (fun _ => (hExec.2.1 hk).1), (fun h => nomatch h)⟩
+  | outputLimitExceeded =>
+    refine ⟨hCap, (fun h => nomatch h), ?_⟩
+    intro _
+    have hm := (hExec.2.2.1 hk).1
+    unfold Internal.mkBwrapRequest at hm
+    cases hc : valid.maxOutputBytes with
+    | none => simp [hc] at hm
+    | some _ => rfl
+  | terminatedBySignal =>
+    dsimp only
+    refine ⟨hCap, ?_, ?_⟩
+    · cases valid.maxOutputBytes with
+      | none => exact fun h => nomatch h
+      | some _ =>
+        dsimp only
+        split <;> exact fun h => nomatch h
+    · cases valid.maxOutputBytes with
+      | none => exact fun h => nomatch h
+      | some _ => exact fun _ => rfl
+  | notFound | permissionDenied =>
+    exact ⟨rfl, nonEmptyMsg_not_isEmpty "bwrap unavailable on host" pe.message (by decide)⟩
+  | invalidInput | nonZeroExit | ioError =>
+    exact ⟨rfl, nonEmptyMsg_not_isEmpty "sandbox process execution failed" pe.message (by decide)⟩
+
+private theorem classifyExecResult_post (cap? : Option Nat) (res : ExecResult) :
+    match Internal.classifyExecResult cap? res with
+    | .ok r =>
+      Model.withinOutputCap cap? r.stdout r.stderr ∧
+      (r.outcome = .timedOut → False) ∧
+      (r.outcome = .outputLimitExceeded → cap?.isSome = true)
+    | .error e =>
+      Model.isHostErrorKind e.kind = true ∧ !e.message.isEmpty := by
+  unfold Internal.classifyExecResult
+  dsimp only
+  have hNone : match ((match cap? with
+      | some cap =>
+        if res.stdout.size + res.stderr.size > cap then
+          let p := Internal.truncateToCap (some cap) res.stdout res.stderr
+          .ok { outcome := .outputLimitExceeded, stdout := p.1, stderr := p.2 }
+        else .ok { outcome := .exited res.exitCode, stdout := res.stdout, stderr := res.stderr }
+      | none => .ok { outcome := .exited res.exitCode, stdout := res.stdout, stderr := res.stderr })
+      : Except SandboxError SandboxResult) with
+      | .ok r =>
+        Model.withinOutputCap cap? r.stdout r.stderr ∧
+        (r.outcome = .timedOut → False) ∧
+        (r.outcome = .outputLimitExceeded → cap?.isSome = true)
+      | .error e =>
+        Model.isHostErrorKind e.kind = true ∧ !e.message.isEmpty := by
+    cases cap? with
+    | none => exact ⟨trivial, (fun h => nomatch h), (fun h => nomatch h)⟩
+    | some cap =>
+      dsimp only
+      by_cases hGt : res.stdout.size + res.stderr.size > cap
+      · simp only [hGt, ↓reduceIte]
+        exact ⟨truncateToCap_withinOutputCap (some cap) res.stdout res.stderr,
+          (fun h => nomatch h), (fun _ => rfl)⟩
+      · simp only [hGt, ↓reduceIte]
+        exact ⟨by unfold Model.withinOutputCap; omega, (fun h => nomatch h), (fun h => nomatch h)⟩
+  by_cases hCond : (res.exitCode == 1 && res.stdout.isEmpty) = true
+  · simp only [hCond, ↓reduceIte]
+    cases hs : String.fromUTF8? res.stderr with
+    | none => exact hNone
+    | some s =>
+      dsimp only
+      by_cases hPfx : s.startsWith "bwrap: " = true
+      · simp only [hPfx, ↓reduceIte]
+        exact classifyBwrapStderr_post s
+      · simp only [hPfx, Bool.false_eq_true, ↓reduceIte]
+        exact hNone
+  · simp only [hCond, Bool.false_eq_true, ↓reduceIte]
+    exact hNone
+
+private theorem obeysStepFrom_process :
+    Core.ObeysStepFrom id Model.processStepWf Model.execProcessStep Model.allowedProcessStep
+      Model.processStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep := by
+  intro W proj proc hProc w req hWf
+  have hWfP : LeanSwe.Process.Model.processStateWf (proj w) = true := hWf
+  cases req with
+  | validateSpec spec =>
+    exact ⟨validateSpec_eq_model spec, rfl, hWf⟩
+  | isAvailable =>
+    dsimp only [Model.execPkgStep, Internal.mkApiM, Internal.isAvailable, Function.comp, id]
+    rw [stateT_map_run, stateT_bind_run]
+    rcases validateRequestModel_mkProbeRequest with ⟨norm, hReqOk⟩
+    have hRaw := hProc w (.run Internal.mkProbeRequest) hWf
+    dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+      Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep] at hRaw
+    rw [stateT_map_run] at hRaw
+    cases hRun : (proc.run Internal.mkProbeRequest).run w with
+    | mk rawRes w1 =>
+      rw [hRun] at hRaw
+      rcases hRaw with ⟨hw1, hw2, hPkgRun⟩
+      dsimp only [LeanSwe.Process.Model.allowedPkgRun] at hPkgRun
+      rw [hReqOk] at hPkgRun
+      cases rawRes <;> exact ⟨hw1, hw2, hPkgRun.1, hPkgRun.2.1⟩
+  | run spec =>
+    dsimp only [Model.execPkgStep, Internal.mkApiM, Internal.run, Function.comp, id]
+    rw [stateT_map_run]
+    dsimp only [Model.allowedPkgStep]
+    rw [← validateSpec_eq_model spec]
+    cases hv : Internal.validateSpec spec with
+    | error e =>
+      rw [stateT_pure_run]
+      exact ⟨rfl, rfl, hWf⟩
+    | ok valid =>
+      rw [stateT_bind_run]
+      rcases validateSpec_ok_request_valid spec valid hv with ⟨norm, hReqOk⟩
+      have hRaw := hProc w (.run (Internal.mkBwrapRequest valid)) hWf
+      dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+        Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep] at hRaw
+      rw [stateT_map_run] at hRaw
+      cases hRun : (proc.run (Internal.mkBwrapRequest valid)).run w with
+      | mk rawRes w1 =>
+        rw [hRun] at hRaw
+        rcases hRaw with ⟨hw1, hw2, hPkgRun⟩
+        dsimp only [LeanSwe.Process.Model.allowedPkgRun] at hPkgRun
+        rw [hReqOk] at hPkgRun
+        have hHdl : Model.allowedProcessHandleStep (proj w) (proj w1) :=
+          ⟨hw1, hw2, hPkgRun.1, hPkgRun.2.1⟩
+        cases rawRes with
+        | error pe =>
+          rw [stateT_pure_run]
+          exact ⟨hHdl, classifyProcessError_post valid pe hPkgRun.2.2⟩
+        | ok er =>
+          rw [stateT_pure_run]
+          refine ⟨hHdl, ?_⟩
+          have hPost := classifyExecResult_post valid.maxOutputBytes er
+          cases hCl : Internal.classifyExecResult valid.maxOutputBytes er with
+          | error e => rw [hCl] at hPost; exact hPost
+          | ok r =>
+            rw [hCl] at hPost
+            exact ⟨hPost.1, fun ht => False.elim (hPost.2.1 ht), hPost.2.2⟩
+
+/-- Full public `Interface` refinement of `LeanSwe.ProcessSandbox`: exact pure equality on
+    `validateSpec` against `Model.validateSpecModel` and compositional `Core.ObeysStepFrom`
+    lifting `LeanSwe.Process.Model.allowedPkgStep` to `Internal.mkApiM`. -/
 theorem obeys_model :
     Core.ObeysPureEq LeanSwe.ProcessSandbox.validateSpec Model.validateSpecModel ∧
-    Core.ObeysStepFromFinally id Model.rawStepWf Model.execRawStep Model.allowedRawStep
-      Model.rawStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep :=
-  ⟨refinesPure_validateSpec, refinesStepFromFinally_mkApiM⟩
+    Core.ObeysStepFrom id Model.processStepWf Model.execProcessStep Model.allowedProcessStep
+      Model.processStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep :=
+  ⟨validateSpec_eq_model, obeysStepFrom_process⟩
 
-/-- Non-vacuity witness showing the `Model.allowedRawStep` premise of `obeys_model` is inhabited. -/
+private theorem list_contains_map_filter_false {xs : List LeanSwe.Process.Model.ProcessHandleEntry}
+    {p : LeanSwe.Process.Model.ProcessHandleEntry → Bool} {x : Nat}
+    (h : (xs.map (·.handleId)).contains x = false) :
+    ((xs.filter p).map (·.handleId)).contains x = false := by
+  induction xs with
+  | nil => rfl
+  | cons e rest ih =>
+    simp only [List.map_cons, List.contains_cons, Bool.or_eq_false_iff] at h
+    simp only [List.filter_cons]
+    split
+    · simp only [List.map_cons, List.contains_cons, Bool.or_eq_false_iff]
+      exact ⟨h.1, ih h.2⟩
+    · exact ih h.2
+
+private theorem hasNoDupHandleIds_filter (xs : List LeanSwe.Process.Model.ProcessHandleEntry)
+    (p : LeanSwe.Process.Model.ProcessHandleEntry → Bool)
+    (h : LeanSwe.Process.Model.hasNoDupHandleIds (xs.map (·.handleId)) = true) :
+    LeanSwe.Process.Model.hasNoDupHandleIds ((xs.filter p).map (·.handleId)) = true := by
+  induction xs with
+  | nil => rfl
+  | cons e rest ih =>
+    simp only [List.map_cons, LeanSwe.Process.Model.hasNoDupHandleIds,
+      Bool.and_eq_true, Bool.not_eq_true'] at h
+    simp only [List.filter_cons]
+    split
+    · simp only [List.map_cons, LeanSwe.Process.Model.hasNoDupHandleIds,
+        Bool.and_eq_true, Bool.not_eq_true']
+      exact ⟨list_contains_map_filter_false h.1, ih h.2⟩
+    · exact ih h.2
+
+private theorem processStateWf_filter (s : LeanSwe.Process.Model.ProcessModelState)
+    (p : LeanSwe.Process.Model.ProcessHandleEntry → Bool)
+    (hWf : LeanSwe.Process.Model.processStateWf s = true) :
+    LeanSwe.Process.Model.processStateWf { s with activeHandles := s.activeHandles.filter p } = true := by
+  unfold LeanSwe.Process.Model.processStateWf at hWf ⊢
+  simp only [Bool.and_eq_true] at hWf ⊢
+  refine ⟨⟨hWf.1.1, hasNoDupHandleIds_filter s.activeHandles p hWf.1.2⟩, ?_⟩
+  rw [List.all_eq_true] at hWf ⊢
+  intro e he
+  exact hWf.2 e (List.mem_filter.mp he).1
+
+private def simRunPure (req : ExecRequest) (s : LeanSwe.Process.Model.ProcessModelState) :
+    Except ProcessError ExecResult × LeanSwe.Process.Model.ProcessModelState :=
+  match LeanSwe.Process.Model.validateRequestModel req with
+  | .error verr => (.error verr, s)
+  | .ok _ => (.ok { exitCode := 0, stdout := ByteArray.empty, stderr := ByteArray.empty }, s)
+
+private theorem simRunPure_snd (req : ExecRequest) (s : LeanSwe.Process.Model.ProcessModelState) :
+    (simRunPure req s).2 = s := by
+  unfold simRunPure
+  cases LeanSwe.Process.Model.validateRequestModel req <;> rfl
+
+private theorem simRunPure_allowedPkgRun (checked : Bool) (req : ExecRequest)
+    (s : LeanSwe.Process.Model.ProcessModelState) :
+    LeanSwe.Process.Model.allowedPkgRun checked s req (simRunPure req s).1 (simRunPure req s).2 := by
+  unfold simRunPure LeanSwe.Process.Model.allowedPkgRun
+  cases LeanSwe.Process.Model.validateRequestModel req with
+  | error _ => exact ⟨rfl, rfl⟩
+  | ok _ =>
+    refine ⟨rfl, Or.inl rfl, fun _ => rfl, fun lim _ => ?_⟩
+    change 0 ≤ lim
+    exact Nat.zero_le lim
+
+private def witnessProcessApi : ProcessApiM (StateM LeanSwe.Process.Model.ProcessModelState) :=
+  { mapRawError := LeanSwe.Process.Model.mapRawErrorModel
+    validateRequest := LeanSwe.Process.Model.validateRequestModel
+    mkCommandRequest := LeanSwe.Process.Model.mkCommandRequestModel
+    withTextInput := LeanSwe.Process.Model.withTextInputModel
+    spawn := fun r s =>
+      match LeanSwe.Process.Model.validateSpawnRequestModel r with
+      | .error err => (.error err, s)
+      | .ok _ => (.error { kind := .ioError, message := "mock spawn unavailable" }, s)
+    awaitOutput := fun _ _ timeoutMs _ s =>
+      if timeoutMs == some 0 then
+        (.error { kind := .invalidInput, message := "timeoutMs must be greater than zero" }, s)
+      else
+        (.error { kind := .ioError, message := "mock await unavailable" }, s)
+    killProcessGroup := fun _ s => (.ok (), s)
+    reap := fun h s =>
+      (.ok (), { s with activeHandles := s.activeHandles.filter (·.handleId != h.handleId) })
+    run := simRunPure
+    runChecked := simRunPure
+    runCommand := fun prog args => simRunPure (LeanSwe.Process.Model.mkCommandRequestModel prog args)
+    runCommandChecked := fun prog args => simRunPure (LeanSwe.Process.Model.mkCommandRequestModel prog args)
+    activeProcessCount := fun s => (s.activeHandles.length, s) }
+
+/-- Non-vacuity witness showing the `ProcessApiM` step contract assumed by `obeys_model` is inhabited. -/
 theorem obeys_model_nonvacuous :
-    ∃ raw : RawProcessSandboxOpsM (StateM Raw.Model.RawHostWorld),
-      Core.ObeysStep id Model.rawStepWf (Model.execRawStep raw) Model.allowedRawStep :=
-  ⟨_, witnessRawOps_obeys_allowedRawStep⟩
+    ∃ proc : ProcessApiM (StateM LeanSwe.Process.Model.ProcessModelState),
+      Core.ObeysStep id Model.processStepWf (Model.execProcessStep proc) Model.allowedProcessStep := by
+  refine ⟨witnessProcessApi, ?_⟩
+  intro s req hWf
+  have hWfP : LeanSwe.Process.Model.processStateWf s = true := hWf
+  cases req with
+  | spawn r =>
+    dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+      Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
+    rw [stateT_map_run]
+    dsimp only [StateT.run, witnessProcessApi]
+    cases LeanSwe.Process.Model.validateSpawnRequestModel r with
+    | error _ => exact ⟨hWfP, hWfP, rfl, rfl⟩
+    | ok _ =>
+      refine ⟨hWfP, hWfP, rfl, ?_⟩
+      dsimp only [LeanSwe.Process.Model.isNonOutcomeError]
+      decide
+  | awaitOutput h stdin timeoutMs maxOutputBytes =>
+    dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+      Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
+    rw [stateT_map_run]
+    dsimp only [StateT.run, witnessProcessApi]
+    cases hT : (timeoutMs == some 0) with
+    | true =>
+      rw [ite_eq_left rfl, ite_eq_left rfl]
+      exact ⟨hWfP, hWfP, rfl, rfl⟩
+    | false =>
+      rw [ite_eq_right Bool.false_ne_true, ite_eq_right Bool.false_ne_true]
+      dsimp only [LeanSwe.Process.Model.allowedAwaitCore, LeanSwe.Process.Model.isNonOutcomeError]
+      exact ⟨hWfP, hWfP, hWfP, rfl, rfl, rfl, by decide⟩
+  | killProcessGroup _ => exact ⟨hWfP, hWfP, rfl, trivial⟩
+  | reap _ => exact ⟨hWfP, processStateWf_filter s _ hWfP, rfl, rfl, trivial⟩
+  | run r =>
+    dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+      Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
+    rw [stateT_map_run]
+    dsimp only [StateT.run, witnessProcessApi]
+    refine ⟨hWfP, ?_, simRunPure_allowedPkgRun false r s⟩
+    rw [simRunPure_snd]; exact hWfP
+  | runChecked r =>
+    dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+      Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
+    rw [stateT_map_run]
+    dsimp only [StateT.run, witnessProcessApi]
+    refine ⟨hWfP, ?_, simRunPure_allowedPkgRun true r s⟩
+    rw [simRunPure_snd]; exact hWfP
+  | runCommand prog args =>
+    dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+      Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
+    rw [stateT_map_run]
+    dsimp only [StateT.run, witnessProcessApi]
+    refine ⟨hWfP, ?_, simRunPure_allowedPkgRun false (LeanSwe.Process.Model.mkCommandRequestModel prog args) s⟩
+    rw [simRunPure_snd]; exact hWfP
+  | runCommandChecked prog args =>
+    dsimp only [Model.execProcessStep, LeanSwe.Process.Model.execPkgStep,
+      Model.allowedProcessStep, LeanSwe.Process.Model.allowedPkgStep, id]
+    rw [stateT_map_run]
+    dsimp only [StateT.run, witnessProcessApi]
+    refine ⟨hWfP, ?_, simRunPure_allowedPkgRun true (LeanSwe.Process.Model.mkCommandRequestModel prog args) s⟩
+    rw [simRunPure_snd]; exact hWfP
+  | activeProcessCount => exact ⟨hWfP, hWfP, rfl, rfl⟩
 
 end LeanSwe.ProcessSandbox.Proofs

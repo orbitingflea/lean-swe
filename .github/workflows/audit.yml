@@ -136,20 +136,16 @@ jobs:
           echo "471047623451a0bd8c885dbd63bb660d0168e23c5393cf184f884091ff7c9233  $RUNNER_TEMP/aeneas.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/aeneas.tar.gz" -C "$RUNNER_TEMP/aeneas-dist" && echo "$RUNNER_TEMP/aeneas-dist" >> "$GITHUB_PATH"
 
-      - name: Verify PostFork and ProcessSandbox.Init Rust builds and Charon/Aeneas 0-diff extraction
+      - name: Verify PostFork Rust build and Charon/Aeneas 0-diff extraction
         run: |
           set -euo pipefail
-          rm -rf "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/psi-regen"
-          mkdir -p "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/psi-regen"
+          rm -rf "$RUNNER_TEMP/pf-regen"
+          mkdir -p "$RUNNER_TEMP/pf-regen"
           export CARGO_TARGET_DIR="$RUNNER_TEMP/pf-cargo-target"
           (cd LeanSwe/PostFork/rust && cargo build --locked --release --features standalone && charon cargo --preset aeneas --opaque postfork::sys --dest-file "$RUNNER_TEMP/pf-regen/postfork.llbc")
-          (cd LeanSwe/ProcessSandbox/Init/rust && cargo build --locked --offline --release --bin psandbox-init --features standalone && charon cargo --preset aeneas --opaque psandbox_init::init_sys --dest-file "$RUNNER_TEMP/psi-regen/psandbox_init.llbc" -- --lib)
           aeneas -backend lean -split-files -subdir LeanSwe.PostFork.Aeneas -use-lean-modules false -dest "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/pf-regen/postfork.llbc"
-          aeneas -backend lean -split-files -subdir LeanSwe.ProcessSandbox.Init.Aeneas -use-lean-modules false -dest "$RUNNER_TEMP/psi-regen" "$RUNNER_TEMP/psi-regen/psandbox_init.llbc"
           diff -u LeanSwe/PostFork/Aeneas/Types.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Types.lean"
           diff -u LeanSwe/PostFork/Aeneas/Funs.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Funs.lean"
-          diff -u LeanSwe/ProcessSandbox/Init/Aeneas/Types.lean "$RUNNER_TEMP/psi-regen/LeanSwe.ProcessSandbox.Init.Aeneas/Types.lean"
-          diff -u LeanSwe/ProcessSandbox/Init/Aeneas/Funs.lean "$RUNNER_TEMP/psi-regen/LeanSwe.ProcessSandbox.Init.Aeneas/Funs.lean"
 
       - name: Build Lean libraries and tests
         id: build
@@ -157,7 +153,7 @@ jobs:
           set -euo pipefail
           lake exe cache get
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail LeanSwe.PostFork.Verified LeanSwe.ProcessSandbox.Init.Verified
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail LeanSwe.PostFork.Verified
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d harness build --wfail ModelMutants lean-swe-test lean-swe-mut-test leanswe-fuzz
           actual_syms=$(nm -u .lake/build/lib/libleanswe_postfork_rust.a | awk '$1 ~ /^[Uuwv]$/ { print $2 }' | sort -u)
           expected_syms=$(printf '%s\n' __errno_location _exit chdir close dup2 execve fcntl open read setpgid syscall write | sort -u)

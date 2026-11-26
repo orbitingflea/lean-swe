@@ -24,7 +24,6 @@ lean_lib Core where
 
 @[default_target]
 lean_lib LeanSwe where
-  extraDepTargets := #[`«leanswe-psandbox-init-data»]
   globs := #[
     .one `LeanSwe,
     .submodules `LeanSwe.Base64,
@@ -53,18 +52,7 @@ lean_lib LeanSwe where
     .andSubmodules `LeanSwe.PostFork.Aeneas.Model,
     .one `LeanSwe.PostFork.Aeneas.Api,
     .submodules `LeanSwe.Process,
-    .one `LeanSwe.ProcessSandbox.Types,
-    .one `LeanSwe.ProcessSandbox.Model,
-    .one `LeanSwe.ProcessSandbox.SpecTests,
-    .one `LeanSwe.ProcessSandbox.SpecMutants,
-    .one `LeanSwe.ProcessSandbox.Impl,
-    .one `LeanSwe.ProcessSandbox.Interface,
-    .andSubmodules `LeanSwe.ProcessSandbox.Proofs,
-    .one `LeanSwe.ProcessSandbox.RuntimeTests,
-    .submodules `LeanSwe.ProcessSandbox.Seccomp,
-    .submodules `LeanSwe.ProcessSandbox.Raw,
-    .andSubmodules `LeanSwe.ProcessSandbox.Init.Proofs,
-    .one `LeanSwe.ProcessSandbox.Init.Verified,
+    .submodules `LeanSwe.ProcessSandbox,
     .submodules `LeanSwe.RegExp,
     .submodules `LeanSwe.SlotPool,
     .submodules `LeanSwe.Sqlite,
@@ -74,13 +62,6 @@ lean_lib LeanSwe where
     .submodules `LeanSwe.Toml,
     .submodules `LeanSwe.Uuid
   ]
-
-@[default_target]
-lean_lib LeanSweProcessSandboxInitData where
-  srcDir := ".lake/build/gen"
-  roots := #[`LeanSwe.ProcessSandbox.Raw.SysBridge.InitData]
-  globs := #[.one `LeanSwe.ProcessSandbox.Raw.SysBridge.InitData]
-  extraDepTargets := #[`«leanswe-psandbox-init-data»]
 
 @[default_target]
 lean_lib «LeanSwe.PostFork.AeneasGen» where
@@ -95,22 +76,6 @@ lean_lib «LeanSwe.PostFork.AeneasGen» where
     .one `LeanSwe.PostFork.Aeneas.Types,
     .one `LeanSwe.PostFork.Aeneas.FunsExternal,
     .one `LeanSwe.PostFork.Aeneas.Funs
-  ]
-  leanOptions := #[⟨`weak.linter.missingDocs, false⟩]
-
-@[default_target]
-lean_lib «LeanSwe.ProcessSandbox.Init.AeneasGen» where
-  roots := #[
-    `LeanSwe.ProcessSandbox.Init.Aeneas.TypesExternal,
-    `LeanSwe.ProcessSandbox.Init.Aeneas.Types,
-    `LeanSwe.ProcessSandbox.Init.Aeneas.FunsExternal,
-    `LeanSwe.ProcessSandbox.Init.Aeneas.Funs
-  ]
-  globs := #[
-    .one `LeanSwe.ProcessSandbox.Init.Aeneas.TypesExternal,
-    .one `LeanSwe.ProcessSandbox.Init.Aeneas.Types,
-    .one `LeanSwe.ProcessSandbox.Init.Aeneas.FunsExternal,
-    .one `LeanSwe.ProcessSandbox.Init.Aeneas.Funs
   ]
   leanOptions := #[⟨`weak.linter.missingDocs, false⟩]
 
@@ -161,38 +126,6 @@ extern_lib «leanswe_cryptohash» pkg := do
   let name := nameToStaticLib "leanswe_cryptohash"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
-private def base64Table : ByteArray :=
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".toUTF8
-
-private def encodeBase64Lake (bs : ByteArray) : String := Id.run do
-  let n := bs.size
-  let mut out := ByteArray.emptyWithCapacity (((n + 2) / 3) * 4)
-  let mut i := 0
-  while i + 2 < n do
-    let b0 := bs[i]!.toNat
-    let b1 := bs[i + 1]!.toNat
-    let b2 := bs[i + 2]!.toNat
-    out := out.push base64Table[b0 >>> 2]!
-    out := out.push base64Table[((b0 &&& 3) <<< 4) ||| (b1 >>> 4)]!
-    out := out.push base64Table[((b1 &&& 15) <<< 2) ||| (b2 >>> 6)]!
-    out := out.push base64Table[b2 &&& 63]!
-    i := i + 3
-  let rem := n - i
-  if rem == 1 then
-    let b0 := bs[i]!.toNat
-    out := out.push base64Table[b0 >>> 2]!
-    out := out.push base64Table[(b0 &&& 3) <<< 4]!
-    out := out.push '='.toNat.toUInt8
-    out := out.push '='.toNat.toUInt8
-  else if rem == 2 then
-    let b0 := bs[i]!.toNat
-    let b1 := bs[i + 1]!.toNat
-    out := out.push base64Table[b0 >>> 2]!
-    out := out.push base64Table[((b0 &&& 3) <<< 4) ||| (b1 >>> 4)]!
-    out := out.push base64Table[(b1 &&& 15) <<< 2]!
-    out := out.push '='.toNat.toUInt8
-  return String.fromUTF8! out
-
 private def resolveCargoAndEnv (rustFlags? : Option String) :
     IO (String × Array (String × Option String)) := do
   let homeDir := (← IO.getEnv "HOME").getD ""
@@ -241,44 +174,6 @@ private def resolveCargoAndEnv (rustFlags? : Option String) :
     | true, some ad => baseEnv ++ #[("CARGO_HOME", some s!"{ad}/cargo"), ("RUSTUP_HOME", some s!"{ad}/rustup")]
     | _, _ => baseEnv
   return (cargoBin, extraEnv)
-
-/-- Compile `#![no_std]` `psandbox-init` and generate `.lake/build/gen/LeanSwe/ProcessSandbox/Raw/SysBridge/InitData.lean`. -/
-target «leanswe-psandbox-init-data» pkg : System.FilePath := do
-  let rustDir := pkg.dir / "LeanSwe" / "ProcessSandbox" / "Init" / "rust"
-  let targetDir := pkg.buildDir / "psandbox-init-rust"
-  let genFile := pkg.buildDir / "gen" / "LeanSwe" / "ProcessSandbox" / "Raw" / "SysBridge" / "InitData.lean"
-  let manifestJob ← inputTextFile (rustDir / "Cargo.toml")
-  let lockJob ← inputTextFile (rustDir / "Cargo.lock")
-  let toolchainJob ← inputTextFile (rustDir / "rust-toolchain.toml")
-  let srcLib ← inputTextFile (rustDir / "src" / "lib.rs")
-  let srcMain ← inputTextFile (rustDir / "src" / "main.rs")
-  let srcSys ← inputTextFile (rustDir / "src" / "init_sys.rs")
-  let srcCli ← inputTextFile (rustDir / "src" / "cli.rs")
-  let srcPlan ← inputTextFile (rustDir / "src" / "plan.rs")
-  let srcOps ← inputTextFile (rustDir / "src" / "ops.rs")
-  let depsJob := Job.collectArray #[manifestJob, lockJob, toolchainJob, srcLib, srcMain, srcSys, srcCli, srcPlan, srcOps]
-  buildFileAfterDep genFile depsJob fun _ => do
-    IO.FS.createDirAll targetDir
-    let absRustDir ← IO.FS.realPath rustDir
-    let absTargetDir ← IO.FS.realPath targetDir
-    let (cargoBin, extraEnv) ← resolveCargoAndEnv none
-    proc {
-      cmd := cargoBin
-      args := #["build", "--locked", "--target-dir", absTargetDir.toString, "--release", "--bin", "psandbox-init", "--features", "standalone"]
-      cwd := some absRustDir
-      env := extraEnv
-    }
-    let initBin := absTargetDir / "release" / "psandbox-init"
-    let bytes ← IO.FS.readBinFile initBin
-    let b64 := encodeBase64Lake bytes
-    createParentDirs genFile
-    let content :=
-      "namespace LeanSwe.ProcessSandbox.Raw.SysBridge.InitData\n\n" ++
-      "/-- Base64-encoded ELF bytes of the compiled `leanswe-psandbox-init` helper binary. -/\n" ++
-      "def initBinaryBase64 : String :=\n" ++
-      "  \"" ++ b64 ++ "\"\n\n" ++
-      "end LeanSwe.ProcessSandbox.Raw.SysBridge.InitData\n"
-    IO.FS.writeFile genFile content
 
 extern_lib «leanswe_linux_process» pkg := do
   let cDir := pkg.dir / "LeanSwe" / "LinuxSyscall" / "c"

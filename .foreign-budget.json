@@ -34,7 +34,7 @@
       "legacy_unmigrated": false
     },
     "harness/Fuzz/suites.json": {
-      "max_lines": 70,
+      "max_lines": 71,
       "legacy_unmigrated": false
     },
     "LeanSwe/CryptoHash/Raw/c/cryptohash_shim.c": {
@@ -107,42 +107,6 @@
     },
     "LeanSwe/PostFork/rust/src/sys.rs": {
       "max_lines": 250,
-      "legacy_unmigrated": false
-    },
-    "LeanSwe/ProcessSandbox/Init/rust/Cargo.lock": {
-      "max_lines": 16,
-      "legacy_unmigrated": false
-    },
-    "LeanSwe/ProcessSandbox/Init/rust/Cargo.toml": {
-      "max_lines": 29,
-      "legacy_unmigrated": false
-    },
-    "LeanSwe/ProcessSandbox/Init/rust/rust-toolchain.toml": {
-      "max_lines": 4,
-      "legacy_unmigrated": false
-    },
-    "LeanSwe/ProcessSandbox/Init/rust/src/cli.rs": {
-      "max_lines": 142,
-      "legacy_unmigrated": false
-    },
-    "LeanSwe/ProcessSandbox/Init/rust/src/init_sys.rs": {
-      "max_lines": 795,
-      "legacy_unmigrated": false
-    },
-    "LeanSwe/ProcessSandbox/Init/rust/src/lib.rs": {
-      "max_lines": 8,
-      "legacy_unmigrated": false
-    },
-    "LeanSwe/ProcessSandbox/Init/rust/src/main.rs": {
-      "max_lines": 16,
-      "legacy_unmigrated": false
-    },
-    "LeanSwe/ProcessSandbox/Init/rust/src/ops.rs": {
-      "max_lines": 1155,
-      "legacy_unmigrated": false
-    },
-    "LeanSwe/ProcessSandbox/Init/rust/src/plan.rs": {
-      "max_lines": 466,
       "legacy_unmigrated": false
     },
     "LeanSwe/Sqlite/Raw/c/sqlite_shim.c": {
