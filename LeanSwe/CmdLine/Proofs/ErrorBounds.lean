@@ -1,3 +1,4 @@
+import Core.Assumptions
 import LeanSwe.CmdLine.Interface
 import LeanSwe.CmdLine.SpecTests
 import LeanSwe.CmdLine.Proofs.ParserCore
