@@ -2,40 +2,65 @@ import Core.Assumptions
 import Core.Obeys
 import LeanSwe.EnvVars.Model
 import LeanSwe.EnvVars.Interface
-import LeanSwe.EnvVars.SpecTests
 import LeanSwe.EnvVars.Raw.Model.Assumptions
-import LeanSwe.EnvVars.Proofs.SpecProofs
 
 namespace LeanSwe.EnvVars.Proofs
 
 open Core
-open Core.NondetTest
 
-/-- Proof of `test_envvars_getEnv_invalidEncodingReportsEncodingError` for `defaultApi` and `Internal.mkApiM`. -/
-theorem proof_envvars_getEnv_invalidEncodingReportsEncodingError :
-    AllPass (test_envvars_getEnv_invalidEncodingReportsEncodingError defaultApi (Internal.mkApiM (m := Id))) := by
-  intro key detail hvalid
-  have hk : Internal.isValidKey key = true := (isValidKey_true_iff key).mpr hvalid
-  have hkind : ∀ k?, (defaultApi.mapRawError (.invalidEncoding (some k?) detail)).kind = .invalidEncoding :=
-    fun _ => rfl
-  have hkey : ∀ k?, (defaultApi.mapRawError (.invalidEncoding (some k?) detail)).key = some k? :=
-    fun _ => rfl
-  have herrno : ∀ k?, (defaultApi.mapRawError (.invalidEncoding (some k?) detail)).errnoCode = none :=
-    fun _ => rfl
-  have hne : ∀ k?, (defaultApi.mapRawError (.invalidEncoding (some k?) detail)).message ≠ "" := by
-    intro k?
-    dsimp [defaultApi, Internal.mkApiM, Raw.defaultOps, Raw.Internal.mkRawOps, Raw.Internal.mapRawError]
-    exact nonEmptyMsg_ne_empty _ _ (by decide)
-  simp only [defaultApi, Internal.mkApiM, hk, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
-    bind, pure, assert]
-  exact ⟨⟨_, rfl, hkind key, hkey key, herrno key, hne key⟩,
-    ⟨_, rfl, hkind "HOME", hkey "HOME", herrno "HOME", hne "HOME"⟩, trivial⟩
+private theorem hasInvalidKeyChar_iff (cs : List Char) :
+    Internal.hasInvalidKeyChar cs = true ↔ '=' ∈ cs ∨ Char.ofNat 0 ∈ cs := by
+  induction cs with
+  | nil => simp [Internal.hasInvalidKeyChar]
+  | cons c rest ih =>
+    simp only [Internal.hasInvalidKeyChar, Bool.or_eq_true, beq_iff_eq, List.mem_cons, ih]
+    constructor
+    · intro h
+      rcases h with (h1 | h2) | h3 | h4
+      · exact Or.inl (Or.inl h1.symm)
+      · exact Or.inr (Or.inl h2.symm)
+      · exact Or.inl (Or.inr h3)
+      · exact Or.inr (Or.inr h4)
+    · intro h
+      rcases h with (h1 | h2) | (h3 | h4)
+      · exact Or.inl (Or.inl h1.symm)
+      · exact Or.inr (Or.inl h2)
+      · exact Or.inl (Or.inr h3.symm)
+      · exact Or.inr (Or.inr h4)
 
-/-- Non-vacuity `CanReach` witness for `test_envvars_getEnv_invalidEncodingReportsEncodingError`. -/
-theorem reach_envvars_getEnv_invalidEncodingReportsEncodingError :
-    CanReach (test_envvars_getEnv_invalidEncodingReportsEncodingError defaultApi (Internal.mkApiM (m := Id))) :=
-  ⟨"BAD_VAL", "bad utf8", ⟨by decide, by decide, by decide⟩,
-    proof_envvars_getEnv_invalidEncodingReportsEncodingError "BAD_VAL" "bad utf8" ⟨by decide, by decide, by decide⟩⟩
+private theorem isValidKey_true_iff (key : String) :
+    Internal.isValidKey key = true ↔ key ≠ "" ∧ '=' ∉ key.toList ∧ Char.ofNat 0 ∉ key.toList := by
+  unfold Internal.isValidKey
+  rw [Bool.and_eq_true, Bool.not_eq_true', Bool.not_eq_true', List.isEmpty_eq_false_iff]
+  have hmem : Internal.hasInvalidKeyChar key.toList = false ↔
+      '=' ∉ key.toList ∧ Char.ofNat 0 ∉ key.toList := by
+    constructor
+    · intro hf
+      refine ⟨?_, ?_⟩
+      · intro heq
+        have ht := (hasInvalidKeyChar_iff key.toList).mpr (Or.inl heq)
+        rw [hf] at ht
+        cases ht
+      · intro hnul
+        have ht := (hasInvalidKeyChar_iff key.toList).mpr (Or.inr hnul)
+        rw [hf] at ht
+        cases ht
+    · intro ⟨h1, h2⟩
+      cases h : Internal.hasInvalidKeyChar key.toList with
+      | false => rfl
+      | true =>
+        rcases (hasInvalidKeyChar_iff key.toList).mp h with heq | hnul
+        · exact absurd heq h1
+        · exact absurd hnul h2
+  have hne : key.toList ≠ [] ↔ key ≠ "" := by
+    constructor
+    · intro h heq
+      subst heq
+      exact h rfl
+    · intro h hl
+      apply h
+      rw [← String.ofList_toList (s := key), hl]
+  rw [hmem, hne]
 
 /-- Upper-layer consumer theorem for `Raw.assume_envvarsraw_listEnv_consistentWithGetEnv`:
     whenever a `RawEnvVarsOpsM Id` backend satisfies the formal listing/lookup consistency assumption,
@@ -305,32 +330,6 @@ private theorem isValidKey_eq_model (key : String) :
     Internal.isValidKey key = Raw.Model.isValidPosixKeyModel key := by
   simp [Internal.isValidKey, Raw.Model.isValidPosixKeyModel, isEmpty_iff_toList_isEmpty,
     hasInvalidKeyCharModel_eq]
-
-/-- Proof of `test_envvars_mkApi_matchesModel` for `Internal.mkApiM`. -/
-theorem proof_envvars_mkApi_matchesModel :
-    AllPass (test_envvars_mkApi_matchesModel (Internal.mkApiM (m := Id))) := by
-  intro s key path rawErr
-  dsimp [test_envvars_mkApi_matchesModel]
-  simp only [Internal.mkApiM, Model.modelApi,
-    Model.getEnvModel, Model.listEnvModel, Model.homeDirModel,
-    Raw.Model.modelRawOps, splitSearchPathModel_eq, isValidKey_eq_model,
-    Except.mapError, Bind.bind, bind, pure, assert]
-  refine ⟨trivial, ?_, ?_, ?_, trivial, trivial⟩
-  · cases Raw.Model.isValidPosixKeyModel key with
-    | false => rfl
-    | true =>
-      simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-      cases Raw.Model.rawGetEnvModel s key <;> rfl
-  · cases Raw.Model.rawListEnvModel s <;> rfl
-  · cases Raw.Model.rawGetEnvModel s "HOME" with
-    | error e => rfl
-    | ok v? =>
-      cases v? with
-      | none => rfl
-      | some v =>
-        by_cases hv : v = ""
-        · subst hv; simp
-        · simp
 
 private theorem mapRawError_eq_model (err : EnvVarsRawError) :
     LeanSwe.EnvVars.mapRawError err = Model.mapRawErrorModel err := by
