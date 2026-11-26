@@ -1,3 +1,4 @@
+import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Passwd.Impl
 import LeanSwe.LinuxSyscall.Passwd.Interface
 import LeanSwe.LinuxSyscall.Passwd.Model
@@ -9,6 +10,10 @@ open LeanSwe.LinuxSyscall.Passwd
 
 private def failWith {α : Type} (msg : String) : IO α :=
   throw (IO.userError s!"Passwd.Checks: {msg}")
+
+private def logPasswdErrHit (op : String) (e : Errno) (mode : String) : IO Unit :=
+  Fuzz.Common.logErrHit s!"LeanSwe.LinuxSyscall.Passwd.{op}"
+    (reprStr (PasswdErrorKind.ofErrno e)).trimAscii.toString mode
 
 private def assertTrue (label : String) (cond : Bool) : IO Unit := do
   if !cond then
@@ -260,6 +265,7 @@ private def err_passwd_getpwuid_mocked : IO Unit := do
       getpwnamOnce := fun _ _ => return .ok none
     }
     expectErr s!"mock getpwuid {Errno.name eno}" eno (← ops.getpwuid 0)
+    logPasswdErrHit "getpwuid" eno "mocked"
     assertTrue s!"kind {Errno.name eno}" (PasswdErrorKind.ofErrno eno == kind)
     let seen ← calls.get
     if eno == Errno.ERANGE then
@@ -304,6 +310,7 @@ private def err_passwd_getpwuid_mocked : IO Unit := do
 /-- Verify real `getpwnam` rejects embedded NUL with `EINVAL`, accepts NUL-free `> 65536`-byte names without `EINVAL`, and rejects `> 1048576`-byte names with `ENAMETOOLONG`. -/
 private def err_passwd_getpwnam_invalidArg : IO Unit := do
   expectErr "getpwnam(NUL) -> EINVAL" Errno.EINVAL (← getpwnam (ByteArray.mk #[97, 0, 98]))
+  logPasswdErrHit "getpwnam" Errno.EINVAL "real"
   let big := ByteArray.mk (Array.replicate 65537 (UInt8.ofNat 'x'.toNat))
   match ← getpwnam big with
   | .error e =>
@@ -331,6 +338,7 @@ private def err_passwd_getpwnam_mocked : IO Unit := do
         return .error eno
     }
     expectErr s!"mock getpwnam {Errno.name eno}" eno (← ops.getpwnam (asciiBytes ['r', 'o', 'o', 't']))
+    logPasswdErrHit "getpwnam" eno "mocked"
     assertTrue s!"kind {Errno.name eno}" (PasswdErrorKind.ofErrno eno == kind)
     let seen ← calls.get
     if eno == Errno.ERANGE then

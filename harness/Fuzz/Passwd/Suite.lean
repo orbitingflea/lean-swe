@@ -887,6 +887,8 @@ def suite : FuzzSuite :=
       Fuzz.Common.recordSuiteSteps actual
       runPasswdSuite actual cfg.seed true
     runFuzz := fun cfg => do
+      if ← Fuzz.Common.isCoverageLogActive then
+        Fuzz.Passwd.Checks.runChecks
       Fuzz.Common.recordSuiteSteps cfg.steps
       runPasswdSuite cfg.steps cfg.seed false
     selfTestShrink := passwdShrinkSelfTest }

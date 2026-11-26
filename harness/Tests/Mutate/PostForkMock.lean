@@ -2,12 +2,84 @@ import Tests.Common
 import LeanSwe.PostFork.Interface
 import LeanSwe.PostFork.Aeneas.Model
 import LeanSwe.PostFork.Aeneas.Funs
-import LeanSwe.PostFork.SpecTests
 
 namespace Tests.Mutate.PostForkMock
 
 open LeanSwe
 open Tests.Common
+
+private structure MutHostMockState where
+  callCount : Nat := 0
+  nextFd : Int32 := 10
+  closedHandles : List Int32 := []
+  failForkErrno : Option LinuxSyscall.Errno := none
+  failReadErrno : Option LinuxSyscall.Errno := none
+  allocSyncWriteFd : Int32 := -1
+  allocRepReadFd : Int32 := -1
+  syncWritten : ByteArray := ByteArray.empty
+  deriving BEq, DecidableEq, Inhabited
+
+private def mutMockPosixHostOps :
+    PostFork.Impl.Internal.PosixHostOpsM (StateM MutHostMockState) Int32 where
+  probeFdOpen _ := do
+    modify fun st => { st with callCount := st.callCount + 1 }
+    return .ok ()
+  probeHandleOpen h := do
+    modify fun st => { st with callCount := st.callCount + 1 }
+    let st ← get
+    if st.closedHandles.contains h then return .error LinuxSyscall.Errno.EBADF
+    else return .ok ()
+  mkPipeCloexec := do
+    let st ← get
+    let rFd := st.nextFd
+    let wFd := st.nextFd + 1
+    let isRep := st.allocRepReadFd < 0
+    set { st with
+      callCount := st.callCount + 1
+      nextFd := st.nextFd + 2
+      allocRepReadFd := if isRep then rFd else st.allocRepReadFd
+      allocSyncWriteFd := if isRep then st.allocSyncWriteFd else wFd }
+    return .ok (rFd, wFd)
+  closeFd h := do
+    let st ← get
+    if st.closedHandles.contains h then
+      set { st with callCount := st.callCount + 1 }
+      return .error LinuxSyscall.Errno.EBADF
+    else
+      set { st with callCount := st.callCount + 1, closedHandles := h :: st.closedHandles }
+      return .ok ()
+  setpgidOnce _ _ := do
+    modify fun st => { st with callCount := st.callCount + 1 }
+    return .ok ()
+  writeOnce fd data off len := do
+    let st ← get
+    if st.closedHandles.contains fd then
+      set { st with callCount := st.callCount + 1 }
+      return .error LinuxSyscall.Errno.EBADF
+    let takeN := Nat.min len.toNat 2
+    let slice := data.extract off.toNat (off.toNat + takeN)
+    set { st with
+      callCount := st.callCount + 1
+      syncWritten := if fd == st.allocSyncWriteFd then PostFork.Model.appendBytes st.syncWritten slice else st.syncWritten }
+    return .ok (UInt64.ofNat slice.size)
+  readOnce fd _ := do
+    let st ← get
+    if st.closedHandles.contains fd then
+      set { st with callCount := st.callCount + 1 }
+      return .error LinuxSyscall.Errno.EBADF
+    set { st with callCount := st.callCount + 1 }
+    match st.failReadErrno with
+    | some e => return .error e
+    | none => return .ok ByteArray.empty
+  waitOnce _ := do
+    modify fun st => { st with callCount := st.callCount + 1 }
+    return .ok (.exited 0)
+  forkRun _ _ _ _ _ _ _ _ _ _ _ := do
+    let st ← get
+    set { st with callCount := st.callCount + 1 }
+    match st.failForkErrno with
+    | some e => return .error e
+    | none => return .ok 4242
 
 /-- Execute pure `StateM` host-ops fault-injection, wire-codec, and Aeneas `ChildState` checks for `LeanSwe.PostFork`. -/
 def runPostForkMockTests : IO Unit := do
@@ -138,7 +210,7 @@ def runPostForkMockTests : IO Unit := do
     (abEintrRes == .ok (.aborted (.exited 125)))
 
   let (spFkRes, spFkSt) :=
-    ((PostFork.Impl.Internal.mkHostOps PostFork.mockPosixHostOps 4).spawn
+    ((PostFork.Impl.Internal.mkHostOps mutMockPosixHostOps 4).spawn
       { path := "/bin/true", argv := #[] }).run { failForkErrno := some LinuxSyscall.Errno.EAGAIN }
   checkM "spawn failForkErrno closes errW and errR"
     (spFkRes.isOk == false && spFkSt.closedHandles == [10, 11])
@@ -320,12 +392,12 @@ def runPostForkMockTests : IO Unit := do
     (wtFuelCnt == 2 && (match wtFuelRes with | .error e => e.errno == some LinuxSyscall.Errno.EINTR | .ok _ => false))
 
   let (spRdErr, spRdSt) :=
-    ((PostFork.Impl.Internal.mkHostOps PostFork.mockPosixHostOps 4).spawn
+    ((PostFork.Impl.Internal.mkHostOps mutMockPosixHostOps 4).spawn
       { path := "/bin/cat", argv := #[] }).run { failReadErrno := some LinuxSyscall.Errno.ENOMEM }
   checkM "awaitExecOrFailure read error does not call blocking waitOnce"
     (!spRdErr.isOk && spRdSt.closedHandles == [10, 11] && spRdSt.callCount == 5)
   let (relClErr, relClSt) :=
-    ((PostFork.Impl.Internal.mkHostOps PostFork.mockPosixHostOps 4).releaseBarrier relPend).run
+    ((PostFork.Impl.Internal.mkHostOps mutMockPosixHostOps 4).releaseBarrier relPend).run
       { allocSyncWriteFd := 13, closedHandles := [10] }
   checkM "releaseBarrier closed errRead fails fast before syncWrite"
     (!relClErr.isOk && relClSt.syncWritten == ByteArray.empty && relClSt.callCount == 1)

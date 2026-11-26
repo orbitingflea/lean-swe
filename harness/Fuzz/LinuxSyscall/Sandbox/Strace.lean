@@ -1,3 +1,4 @@
+import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Sandbox.Interface
 import LeanSwe.LinuxSyscall.Sandbox.Model
 import Fuzz.LinuxSyscall.SandboxEnv
@@ -7,6 +8,24 @@ namespace Fuzz.LinuxSyscall.Sandbox.Strace
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Sandbox
 open Fuzz.LinuxSyscall
+
+private def logSandboxErrHit (op : String) (e : Errno) (mode : String) : IO Unit :=
+  Fuzz.Common.logErrHit s!"LeanSwe.LinuxSyscall.Sandbox.{op}"
+    (reprStr (SandboxErrorKind.ofErrno e)).trimAscii.toString mode
+
+private def trackSandboxErr {α : Type} (op : String) (mode : String) (r : Except Errno α) : IO (Except Errno α) := do
+  if let .error e := r then
+    logSandboxErrHit op e mode
+  return r
+
+private def trackSandboxOps (mode : String) (ops : SandboxOps) : SandboxOps :=
+  { landlockCreateRuleset := fun a b => do trackSandboxErr "landlockCreateRuleset" mode (← ops.landlockCreateRuleset a b)
+    landlockAddRule := fun a b => do trackSandboxErr "landlockAddRule" mode (← ops.landlockAddRule a b)
+    landlockRestrictSelf := fun a => do trackSandboxErr "landlockRestrictSelf" mode (← ops.landlockRestrictSelf a)
+    seccomp := fun a b c => do trackSandboxErr "seccomp" mode (← ops.seccomp a b c)
+    prctl := fun a => do trackSandboxErr "prctl" mode (← ops.prctl a)
+    setrlimit := fun a b c => do trackSandboxErr "setrlimit" mode (← ops.setrlimit a b c)
+    memfdCreate := fun a b => do trackSandboxErr "memfdCreate" mode (← ops.memfdCreate a b) }
 
 private local instance {ε α : Type} [BEq ε] [BEq α] : BEq (Except ε α) where
   beq
@@ -59,7 +78,7 @@ private def runForkedOk (label : String) (action : IO Unit) : IO Unit := do
   assertTrue (waitExitedZero st) s!"{label}: child wait status {st} != exited 0"
 
 private def mkMockOps (err : Errno) : SandboxOps :=
-  Internal.mkSandboxOps
+  trackSandboxOps "mocked" <| Internal.mkSandboxOps
     { landlockQuery := fun _ => pure (.error err)
     , landlockCreate := fun _ _ => pure (.error err)
     , landlockAddPathBeneath := fun _ _ _ => pure (.error err)
@@ -392,6 +411,7 @@ private def assume_sandbox_memfdCreate_nameBoundsAndSeals : IO Unit := do
 /-- Real error test for `landlockCreateRuleset` (`EINVAL`, `ENOMSG`). -/
 private def err_landlockCreateRuleset_invalidArg : IO Unit := do
   assertErr (← landlockCreateRuleset none 0) Errno.EINVAL "null attr flags=0"
+  logSandboxErrHit "landlockCreateRuleset" Errno.EINVAL "real"
   assertErr (← landlockCreateRuleset none 7) Errno.EINVAL "null attr invalid query flags"
   assertErr (← landlockCreateRuleset (some {}) 0) Errno.ENOMSG "empty masks"
 
@@ -405,6 +425,7 @@ private def err_landlockCreateRuleset_transientOrResource : IO Unit := do
     assertTrue ((← setrlimit .nofile 0 safeHigh) == .ok ()) "setrlimit nofile 0"
     assertErr (← landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0)
       Errno.EMFILE "EMFILE expected"
+  logSandboxErrHit "landlockCreateRuleset" Errno.EMFILE "real"
 
 /-- Real error test for `landlockAddRule` (`EBADF`, `EBADFD`). -/
 private def err_landlockAddRule_badFd : IO Unit := do
@@ -422,6 +443,7 @@ private def err_landlockAddRule_badFd : IO Unit := do
     closeFdChecked closedFd
     try
       assertErr (← landlockAddRule mfd (.pathBeneath dirFd LANDLOCK_ACCESS_FS_READ_DIR)) Errno.EBADFD "non-ruleset fd"
+      logSandboxErrHit "landlockAddRule" Errno.EBADFD "real"
       assertErr (← landlockAddRule rs (.pathBeneath mfd LANDLOCK_ACCESS_FS_READ_DIR)) Errno.EBADFD "memfd parent"
       assertErr (← landlockAddRule closedFd (.pathBeneath dirFd LANDLOCK_ACCESS_FS_READ_DIR)) Errno.EBADF "closed ruleset"
     finally
@@ -440,6 +462,7 @@ private def err_landlockAddRule_invalidArg : IO Unit := do
     let fileFd ← openHostOrThrow filePath 3 "file O_PATH"
     try
       assertErr (← landlockAddRule rs (.pathBeneath fileFd LANDLOCK_ACCESS_FS_READ_DIR)) Errno.EINVAL "dir bit on file"
+      logSandboxErrHit "landlockAddRule" Errno.EINVAL "real"
       assertErr (← landlockAddRule rs (.pathBeneath fileFd 0)) Errno.ENOMSG "empty access mask"
       assertErr (← landlockAddRule rs (.netPort 65536 LANDLOCK_ACCESS_NET_CONNECT_TCP)) Errno.EINVAL "port > 65535"
     finally
@@ -456,10 +479,11 @@ private def err_landlockRestrictSelf_badFd : IO Unit := do
     assertErr (← landlockRestrictSelf mfd) Errno.EBADFD "memfd"
     closeFdChecked mfd
     assertErr (← landlockRestrictSelf mfd) Errno.EBADF "closed fd"
+  logSandboxErrHit "landlockRestrictSelf" Errno.EBADF "real"
 
 /-- Real error test for `landlockRestrictSelf` (`EPERM` before `no_new_privs`). -/
 private def err_landlockRestrictSelf_permissionDenied : IO Unit := do
-  runForkedOk "landlockRestrictSelf EPERM" do
+  let (st, out) ← SandboxEnv.runForked do
     let rs ← match ← landlockCreateRuleset (some { handledAccessFs := LANDLOCK_ACCESS_FS_EXECUTE }) 0 with
       | .ok (.ruleset r) => pure r
       | other => throw (IO.userError s!"createRuleset: {repr other}")
@@ -467,9 +491,15 @@ private def err_landlockRestrictSelf_permissionDenied : IO Unit := do
     let nnp ← match ← prctl .getNoNewPrivs with
       | .ok v => pure v
       | .error e => throw (IO.userError s!"getNoNewPrivs: {e}")
+    let mut hit : UInt8 := 0
     if nnp == 0 && euid != 0 then
       assertErr (← landlockRestrictSelf rs) Errno.EPERM "expected EPERM before nnp"
+      hit := 1
     closeFdChecked rs
+    return ByteArray.mk #[hit]
+  assertTrue (waitExitedZero st) s!"landlockRestrictSelf EPERM: child wait status {st} != exited 0"
+  if out.data.getD 0 0 == 1 then
+    logSandboxErrHit "landlockRestrictSelf" Errno.EPERM "real"
 
 /-- Real error test for `landlockRestrictSelf` (`E2BIG` after 16 stacked layers). -/
 private def err_landlockRestrictSelf_limitOrUnsupported : IO Unit := do
@@ -482,10 +512,12 @@ private def err_landlockRestrictSelf_limitOrUnsupported : IO Unit := do
       assertTrue ((← landlockRestrictSelf rs) == .ok ()) "layer restrict"
     assertErr (← landlockRestrictSelf rs) Errno.E2BIG "17th layer E2BIG"
     closeFdChecked rs
+  logSandboxErrHit "landlockRestrictSelf" Errno.E2BIG "real"
 
 /-- Real error test for `seccomp` (`EINVAL`). -/
 private def err_seccomp_invalidArg : IO Unit := do
   assertErr (← seccomp (.getActionAvail SECCOMP_RET_ALLOW) { tsync := true } ByteArray.empty) Errno.EINVAL "nonzero flags"
+  logSandboxErrHit "seccomp" Errno.EINVAL "real"
   assertErr (← seccomp .setModeFilter {} ByteArray.empty) Errno.EINVAL "empty filter"
   assertErr (← seccomp .setModeFilter {} (repBytes 7 0)) Errno.EINVAL "unaligned len"
   let badNoRet := encodeFilter [{ code := 0x0000, jt := 0, jf := 0, k := 0 }]
@@ -495,17 +527,24 @@ private def err_seccomp_invalidArg : IO Unit := do
 
 /-- Real error test for `seccomp` (`EACCES` before `no_new_privs`). -/
 private def err_seccomp_permissionDenied : IO Unit := do
-  runForkedOk "seccomp EACCES" do
+  let (st, out) ← SandboxEnv.runForked do
     let nnp ← match ← prctl .getNoNewPrivs with
       | .ok v => pure v
       | .error e => throw (IO.userError s!"getNoNewPrivs: {e}")
     let euid ← SandboxEnv.getEuid
+    let mut hit : UInt8 := 0
     if nnp == 0 && euid != 0 then
       assertErr (← seccomp .setModeFilter {} allowAllFilter) Errno.EACCES "expected EACCES before nnp"
+      hit := 1
+    return ByteArray.mk #[hit]
+  assertTrue (waitExitedZero st) s!"seccomp EACCES: child wait status {st} != exited 0"
+  if out.data.getD 0 0 == 1 then
+    logSandboxErrHit "seccomp" Errno.EACCES "real"
 
 /-- Real error test for `seccomp` (`EOPNOTSUPP`, `ESRCH`). -/
 private def err_seccomp_limitOrUnsupported : IO Unit := do
   assertErr (← seccomp (.getActionAvail 0x12340000) {} ByteArray.empty) Errno.EOPNOTSUPP "unknown action"
+  logSandboxErrHit "seccomp" Errno.EOPNOTSUPP "real"
   runForkedOk "seccomp TSYNC_ESRCH" do
     let _ ← match ← SandboxEnv.spawnSyncThread with
       | .ok t => pure t
@@ -521,10 +560,12 @@ private def err_seccomp_limitOrUnsupported : IO Unit := do
 /-- Real error test for `prctl` (`EINVAL`). -/
 private def err_prctl_invalidArg : IO Unit := do
   assertErr (← prctl (.setPdeathsig 65)) Errno.EINVAL "PDEATHSIG > 64"
+  logSandboxErrHit "prctl" Errno.EINVAL "real"
 
 /-- Real error test for `setrlimit` (`EINVAL`). -/
 private def err_setrlimit_invalidArg : IO Unit := do
   assertErr (← setrlimit .core 100 50) Errno.EINVAL "core cur > max"
+  logSandboxErrHit "setrlimit" Errno.EINVAL "real"
   assertErr (← setrlimit .fsize 200 100) Errno.EINVAL "fsize cur > max"
 
 /-- Real error test for `setrlimit` (`EPERM`). -/
@@ -533,10 +574,12 @@ private def err_setrlimit_permissionDenied : IO Unit := do
     assertTrue ((← setrlimit .fsize 65536 131072) == .ok ()) "lower fsize"
     assertErr (← setrlimit .fsize 65536 131073) Errno.EPERM "raise fsize hard limit"
     assertErr (← setrlimit .nofile RLIM_INFINITY RLIM_INFINITY) Errno.EPERM "nofile RLIM_INFINITY"
+  logSandboxErrHit "setrlimit" Errno.EPERM "real"
 
 /-- Real error test for `memfdCreate` (`EINVAL`). -/
 private def err_memfdCreate_invalidArg : IO Unit := do
   assertErr (← memfdCreate (ByteArray.mk #[97, 0]) {}) Errno.EINVAL "embedded NUL"
+  logSandboxErrHit "memfdCreate" Errno.EINVAL "real"
   assertErr (← memfdCreate (repBytes 250 97) {}) Errno.EINVAL "name > 249"
   assertErr (← memfdCreate "a".toUTF8 { noexecSeal := true, exec := true }) Errno.EINVAL "conflicting flags"
   assertErr (← (mkMockOps Errno.EIO).memfdCreate (ByteArray.mk #[97, 0]) {}) Errno.EINVAL "wrapper NUL guard"
@@ -551,6 +594,7 @@ private def err_memfdCreate_transientOrResource : IO Unit := do
     let safeHigh := if curMaxNofile > 64 then 64 else curMaxNofile
     assertTrue ((← setrlimit .nofile 0 safeHigh) == .ok ()) "setrlimit nofile 0"
     assertErr (← memfdCreate "x".toUTF8 {}) Errno.EMFILE "EMFILE expected"
+  logSandboxErrHit "memfdCreate" Errno.EMFILE "real"
 
 /-- Mocked error test for `landlockCreateRuleset` (`badFd`, `permissionDenied`, `limitOrUnsupported`). -/
 private def err_landlockCreateRuleset_mocked : IO Unit := do

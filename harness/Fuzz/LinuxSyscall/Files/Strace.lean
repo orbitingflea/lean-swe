@@ -1,10 +1,10 @@
+import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Files.Model
 import LeanSwe.LinuxSyscall.Files.Model.Seed
 import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.Files.Impl
-import LeanSwe.LinuxSyscall.Files.SpecTests
 import Fuzz.LinuxSyscall.Env
 import Fuzz.LinuxSyscall.SandboxEnv
 import LeanSwe.LinuxSyscall.Sandbox.Interface
@@ -13,6 +13,39 @@ namespace Fuzz.LinuxSyscall.Files.Strace
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Files
+
+private def logFilesErrHit {α : Type} (op : String) (mode : String) (r : Except Errno α) : IO (Except Errno α) := do
+  if let .error e := r then
+    Fuzz.Common.logErrHit s!"LeanSwe.LinuxSyscall.Files.{op}"
+      (reprStr (FilesErrorKind.ofErrno e)).trimAscii.toString mode
+  return r
+
+private def trackFilesOps (mode : String) (ops : FilesOps) : FilesOps :=
+  { openat := fun a b c d => do logFilesErrHit "openat" mode (← ops.openat a b c d)
+    openat2 := fun a b c => do logFilesErrHit "openat2" mode (← ops.openat2 a b c)
+    close := fun a => do logFilesErrHit "close" mode (← ops.close a)
+    read := fun a b => do logFilesErrHit "read" mode (← ops.read a b)
+    write := fun a b => do logFilesErrHit "write" mode (← ops.write a b)
+    fstat := fun a => do logFilesErrHit "fstat" mode (← ops.fstat a)
+    fstatat := fun a b c => do logFilesErrHit "fstatat" mode (← ops.fstatat a b c)
+    faccessat := fun a b c d => do logFilesErrHit "faccessat" mode (← ops.faccessat a b c d)
+    mkdirat := fun a b c => do logFilesErrHit "mkdirat" mode (← ops.mkdirat a b c)
+    unlinkat := fun a b c => do logFilesErrHit "unlinkat" mode (← ops.unlinkat a b c)
+    renameat2 := fun a b c d e => do logFilesErrHit "renameat2" mode (← ops.renameat2 a b c d e)
+    symlinkat := fun a b c => do logFilesErrHit "symlinkat" mode (← ops.symlinkat a b c)
+    readlinkat := fun a b c => do logFilesErrHit "readlinkat" mode (← ops.readlinkat a b c)
+    getdents64 := fun a b => do logFilesErrHit "getdents64" mode (← ops.getdents64 a b)
+    fchmodat := fun a b c => do logFilesErrHit "fchmodat" mode (← ops.fchmodat a b c)
+    fchmod := fun a b => do logFilesErrHit "fchmod" mode (← ops.fchmod a b)
+    flock := fun a b => do logFilesErrHit "flock" mode (← ops.flock a b)
+    fcntl := fun a b => do logFilesErrHit "fcntl" mode (← ops.fcntl a b)
+    fsync := fun a => do logFilesErrHit "fsync" mode (← ops.fsync a)
+    getcwd := fun a => do logFilesErrHit "getcwd" mode (← ops.getcwd a)
+    lseek := fun a b c => do logFilesErrHit "lseek" mode (← ops.lseek a b c)
+    reopenReadOnly := fun a => do logFilesErrHit "reopenReadOnly" mode (← ops.reopenReadOnly a)
+    dupStdio := fun a => do logFilesErrHit "dupStdio" mode (← ops.dupStdio a) }
+
+private def defaultOps : FilesOps := trackFilesOps "real" LeanSwe.LinuxSyscall.Files.defaultOps
 
 private def assertTrue (msg : String) (cond : Bool) : IO Unit := do
   if !cond then
@@ -349,9 +382,9 @@ private def runMockTransient (opName : String) (act : FilesOps -> IO (Except Err
     let realOps := defaultOps
     let ref ← IO.mkRef Errno.EIO
     let _ ← realOps.getcwd 64
-    let mockOps : FilesOps := {
+    let mockOps : FilesOps := trackFilesOps "mocked" <| Internal.mkFilesOps {
       openat := fun _ _ _ _ => do return .error (← ref.get)
-      openat2 := fun _ _ _ => do return .error (← ref.get)
+      openat2 := fun _ _ _ _ _ => do return .error (← ref.get)
       close := fun _ => do return .error (← ref.get)
       read := fun _ _ => do return .error (← ref.get)
       write := fun _ _ => do return .error (← ref.get)
@@ -367,19 +400,21 @@ private def runMockTransient (opName : String) (act : FilesOps -> IO (Except Err
       fchmodat := fun _ _ _ => do return .error (← ref.get)
       fchmod := fun _ _ => do return .error (← ref.get)
       flock := fun _ _ => do return .error (← ref.get)
-      fcntl := fun _ _ => do return .error (← ref.get)
+      fcntl := fun _ _ _ => do return .error (← ref.get)
       fsync := fun _ => do return .error (← ref.get)
       getcwd := fun _ => do return .error (← ref.get)
       lseek := fun _ _ _ => do return .error (← ref.get)
       reopenReadOnly := fun _ => do return .error (← ref.get)
       dupStdio := fun _ => do return .error (← ref.get)
     }
-    let res ← act mockOps
-    match res with
-    | .ok () => throw (IO.userError s!"mock {opName} expected transient error")
-    | .error e =>
-      if e != Errno.EIO && e != Errno.EINTR && e != Errno.ENOMEM && e != Errno.ENFILE then
-        throw (IO.userError s!"mock {opName} unexpected errno {e}")
+    for forced in #[Errno.ENOENT, Errno.EBADF, Errno.EINVAL, Errno.EISDIR, Errno.EACCES, Errno.EIO] do
+      ref.set forced
+      let res ← act mockOps
+      match res with
+      | .ok () => throw (IO.userError s!"mock {opName} expected error {forced}")
+      | .error e =>
+        if e != forced then
+          throw (IO.userError s!"mock {opName} unexpected errno {e} (expected {forced})")
 
 /-- Real `openat` `.notFound` test (`ENOENT`). -/
 private def err_openat_notFound : IO Unit := withTempSandbox "eo-nf" fun _ => do

@@ -869,6 +869,8 @@ def suite : FuzzSuite := {
     Fuzz.Common.recordSuiteSteps smokeSteps
     runDnsDiffFuzz smokeSteps cfg.seed 12 10
   runFuzz := fun cfg => do
+    if ← Fuzz.Common.isCoverageLogActive then
+      Fuzz.Dns.Checks.runChecks
     let slowBudget := max 24 (cfg.steps / 400)
     Fuzz.Common.recordSuiteSteps cfg.steps
     runDnsDiffFuzz cfg.steps cfg.seed slowBudget 300

@@ -1,9 +1,9 @@
+import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Net.Types
 import LeanSwe.LinuxSyscall.Net.Model
 import LeanSwe.LinuxSyscall.Net.Interface
 import LeanSwe.LinuxSyscall.Net.Impl
-import LeanSwe.LinuxSyscall.Net.SpecTests
 import Fuzz.LinuxSyscall.SandboxEnv
 
 namespace Fuzz.LinuxSyscall.Net.Strace
@@ -11,6 +11,31 @@ namespace Fuzz.LinuxSyscall.Net.Strace
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Net
 open Fuzz.LinuxSyscall
+
+private def logNetErrHit {α : Type} (op : String) (mode : String) (r : Except Errno α) : IO (Except Errno α) := do
+  if let .error e := r then
+    Fuzz.Common.logErrHit s!"LeanSwe.LinuxSyscall.Net.{op}"
+      (reprStr (NetErrorKind.ofErrno e)).trimAscii.toString mode
+  return r
+
+private def trackNetOps (mode : String) (ops : NetOps) : NetOps :=
+  { socket := fun a b c d => do logNetErrHit "socket" mode (← ops.socket a b c d)
+    socketpair := fun a b c => do logNetErrHit "socketpair" mode (← ops.socketpair a b c)
+    bind := fun a b => do logNetErrHit "bind" mode (← ops.bind a b)
+    listen := fun a b => do logNetErrHit "listen" mode (← ops.listen a b)
+    accept4 := fun a b => do logNetErrHit "accept4" mode (← ops.accept4 a b)
+    connect := fun a b => do logNetErrHit "connect" mode (← ops.connect a b)
+    getsockopt := fun a b => do logNetErrHit "getsockopt" mode (← ops.getsockopt a b)
+    setsockopt := fun a b c => do logNetErrHit "setsockopt" mode (← ops.setsockopt a b c)
+    getsockname := fun a => do logNetErrHit "getsockname" mode (← ops.getsockname a)
+    recvfrom := fun a b c => do logNetErrHit "recvfrom" mode (← ops.recvfrom a b c)
+    sendto := fun a b c => do logNetErrHit "sendto" mode (← ops.sendto a b c)
+    shutdown := fun a b => do logNetErrHit "shutdown" mode (← ops.shutdown a b)
+    sendmsg := fun a b => do logNetErrHit "sendmsg" mode (← ops.sendmsg a b)
+    recvmsg := fun a b => do logNetErrHit "recvmsg" mode (← ops.recvmsg a b)
+    ioctl := fun a b c => do logNetErrHit "ioctl" mode (← ops.ioctl a b c) }
+
+private def defaultOps : NetOps := trackNetOps "real" LeanSwe.LinuxSyscall.Net.defaultOps
 
 @[extern "leanswe_net_close_fd"]
 private opaque rawNetClose : @& RawFd → IO (Except Errno Unit)
@@ -78,7 +103,7 @@ private def closedSockFd : IO RawFd := do
   return fd
 
 private def mkMockNetOps (err : Errno) : NetOps :=
-  Internal.mkNetOps
+  trackNetOps "mocked" <| Internal.mkNetOps
     { socket := fun _ _ _ _ => pure (.error err)
       socketpair := fun _ _ _ => pure (.error err)
       bind := fun _ _ => pure (.error err)

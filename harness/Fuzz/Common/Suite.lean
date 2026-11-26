@@ -38,12 +38,17 @@ private initialize emittedErrHitsRef : IO.Ref (Std.HashSet String) ← IO.mkRef 
 private initialize suiteBucketsRef : IO.Ref (Nat × Nat) ← IO.mkRef (0, 0)
 private initialize suiteStepsRef : IO.Ref (Option Nat) ← IO.mkRef none
 
+/-- Return `true` when a nonce-authenticated fuzz coverage log is currently active. -/
+def isCoverageLogActive : IO Bool :=
+  return (← fuzzCoverageSinkRef.get).isSome
+
 /-- Open `logPath` for nonce-authenticated `ERR_HIT` and `FUZZ_EQUIV` emission and write `LOG_INIT`. -/
 def initCoverageLog (logPath nonce : String) : IO Unit := do
   if logPath.isEmpty || nonce.isEmpty then
     throw (IO.userError "initCoverageLog requires non-empty path and nonce")
   let handle ← IO.FS.Handle.mk logPath .write
   handle.putStrLn s!"{nonce}|LOG_INIT"
+  handle.flush
   emittedErrHitsRef.set {}
   suiteBucketsRef.set (0, 0)
   suiteStepsRef.set none
@@ -57,12 +62,14 @@ def logErrHit (qualOp errorKindCtor mode : String) : IO Unit := do
     if !seen.contains key then
       emittedErrHitsRef.set (seen.insert key)
       sink.handle.putStrLn s!"{sink.nonce}|ERR_HIT|{key}"
+      sink.handle.flush
 
 /-- Emit a nonce-authenticated `FUZZ_EQUIV` summary line for `(pkg, suite)` when coverage logging is active. -/
 def logFuzzEquiv (pkg suite : String) (steps bucketsHit bucketsTotal : Nat) (ok : Bool) : IO Unit := do
   if let some sink ← fuzzCoverageSinkRef.get then
     let okStr := if ok then "true" else "false"
     sink.handle.putStrLn s!"{sink.nonce}|FUZZ_EQUIV|{pkg}|{suite}|{steps}|{bucketsHit}/{bucketsTotal}|ok={okStr}"
+    sink.handle.flush
 
 /-- Reset the per-suite `(bucketsHit, bucketsTotal)` and executed-step accumulators before executing a suite. -/
 def resetSuiteBuckets : IO Unit := do

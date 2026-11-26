@@ -253,8 +253,9 @@ jobs:
               with open(s, "a", encoding="utf-8") as f:
                   f.write(f"`{line}`\n\n")
           ' | tee "$RUNNER_TEMP/repeat_tests.log"
-          FAILED_RUNS=0
-          FIRST_NONCE=""
+          FAILED_RUNS=0; FIRST_NONCE=""; FIRST_LOG=""
+          DAILY_ASSUMP_LOG="$RUNNER_TEMP/daily-assump.log"; DAILY_RT_COV_LOG="$RUNNER_TEMP/daily-rt-cov.log"; DAILY_NONCE_FILE="$RUNNER_TEMP/daily.nonce"; FUZZ_COV_DIR="$RUNNER_TEMP/fuzz-cov"
+          rm -rf "$FUZZ_COV_DIR" "$DAILY_ASSUMP_LOG" "$DAILY_RT_COV_LOG" "$DAILY_NONCE_FILE"; mkdir -p "$FUZZ_COV_DIR"
           for ((i = 1; i <= N; i++)); do
             echo "=== Test run $i of $N ===" | tee -a "$RUNNER_TEMP/repeat_tests.log"
             RUN_NONCE=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
@@ -265,7 +266,7 @@ jobs:
             RC=$?
             if (( RC == 0 )); then
               if [[ -z "$FIRST_NONCE" ]]; then
-                lake env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --verify-log "$RUN_LOG" --coverage-log "$RUN_COV_LOG" --nonce "$RUN_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1 && FIRST_NONCE="$RUN_NONCE" && FIRST_LOG="$RUN_LOG"
+                lake env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --verify-log "$RUN_LOG" --coverage-log "$RUN_COV_LOG" --nonce "$RUN_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1 && FIRST_NONCE="$RUN_NONCE" && FIRST_LOG="$RUN_LOG" && cp "$RUN_LOG" "$DAILY_ASSUMP_LOG" && cp "$RUN_COV_LOG" "$DAILY_RT_COV_LOG" && printf '%s\n' "$RUN_NONCE" > "$DAILY_NONCE_FILE"
               else
                 python3 -c 'import pathlib, sys; p1, p2, nc, fnc = sys.argv[1:5]; norm = lambda ls, n: sorted([l.split("|", 1)[1] for l in ls if l.startswith(n + "|")]); l1 = [l.strip() for l in pathlib.Path(p1).read_text().splitlines() if l.strip()]; l2 = [l.strip() for l in pathlib.Path(p2).read_text().splitlines() if l.strip()]; assert len(l2) >= 2 and len(l1) == len(l2) and all(l.startswith(nc + "|") for l in l2) and l2[0] == f"{nc}|LOG_INIT" and l2[-1] == f"{nc}|LOG_CLOSE" and norm(l1, fnc) == norm(l2, nc)' "$FIRST_LOG" "$RUN_LOG" "$RUN_NONCE" "$FIRST_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
               fi
@@ -284,7 +285,7 @@ jobs:
             fi
             {
               harness/.lake/build/bin/leanswe-fuzz --sandbox-strace-fault-check
-              harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 1000000 --self-test-shrink
+              harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 1000000 --self-test-shrink --coverage-log "$FUZZ_COV_DIR/sandbox.log" --nonce "$FIRST_NONCE"
               harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 250000 --random-seed --self-test-shrink
             } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
             if sudo -n sysctl -n vm.memfd_noexec >/dev/null 2>&1; then
@@ -316,20 +317,20 @@ jobs:
             harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,Compress,LinuxSyscall.Poll,LinuxSyscall.Net,Git,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns,LinuxSyscall.Files,PostFork,Sqlite,Sqlite.Raw
             harness/.lake/build/bin/lean-swe-test --suite Git --suite Compress --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite PostFork --suite Sqlite --suite Sqlite.Raw 0<&- 1>&- 2>&-
             harness/.lake/build/bin/leanswe-fuzz --smoke --suite sandbox,timerand,files,process,poll,net,passwd,dns --self-test-shrink 0<&- 1>&- 2>&-
-            harness/.lake/build/bin/leanswe-fuzz --suite timerand --steps 1000000 --self-test-shrink
+            harness/.lake/build/bin/leanswe-fuzz --suite timerand --steps 1000000 --self-test-shrink --coverage-log "$FUZZ_COV_DIR/timerand.log" --nonce "$FIRST_NONCE"
             harness/.lake/build/bin/leanswe-fuzz --suite timerand --steps 250000 --random-seed --self-test-shrink
             PYTHONUNBUFFERED=1 python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest
-            stdbuf -oL -eL harness/.lake/build/bin/leanswe-fuzz --all --exclude sandbox,timerand,files,process,poll,net --steps 50000 --random-seed --self-test-shrink
+            stdbuf -oL -eL harness/.lake/build/bin/leanswe-fuzz --all --exclude sandbox,timerand,files,process,poll,net --steps 50000 --random-seed --self-test-shrink --coverage-log "$FUZZ_COV_DIR/other.log" --nonce "$FIRST_NONCE"
             harness/.lake/build/bin/leanswe-fuzz --poll-strace-fault-check
             harness/.lake/build/bin/leanswe-fuzz --net-strace-fault-check
-            harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 250000 --self-test-shrink
+            harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 250000 --self-test-shrink --coverage-log "$FUZZ_COV_DIR/poll.log" --nonce "$FIRST_NONCE"
             harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 750000 --random-seed --self-test-shrink
-            harness/.lake/build/bin/leanswe-fuzz --suite net --steps 250000 --self-test-shrink --require-ns
+            harness/.lake/build/bin/leanswe-fuzz --suite net --steps 250000 --self-test-shrink --require-ns --coverage-log "$FUZZ_COV_DIR/net.log" --nonce "$FIRST_NONCE"
             harness/.lake/build/bin/leanswe-fuzz --suite net --seed 11262680905236430927 --steps 50000 --self-test-shrink --require-ns
             harness/.lake/build/bin/leanswe-fuzz --suite net --steps 750000 --random-seed --self-test-shrink --require-ns
             harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process
             harness/.lake/build/bin/leanswe-fuzz --process-strace-fault-check
-            harness/.lake/build/bin/leanswe-fuzz --suite process --steps 50000 --self-test-shrink --require-ns
+            harness/.lake/build/bin/leanswe-fuzz --suite process --steps 50000 --self-test-shrink --require-ns --coverage-log "$FUZZ_COV_DIR/process.log" --nonce "$FIRST_NONCE"
             harness/.lake/build/bin/leanswe-fuzz --suite process --steps 15000 --random-seed --self-test-shrink --require-ns
             harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 100000 --self-test-shrink
             harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 50000 --random-seed --self-test-shrink
@@ -341,9 +342,10 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.lake_check.outcome == 'success' }}
         run: |
           set -euo pipefail
-          LOG="$RUNNER_TEMP/files_world_fuzz.log"
+          LOG="$RUNNER_TEMP/files_world_fuzz.log"; FUZZ_COV_DIR="$RUNNER_TEMP/fuzz-cov"; mkdir -p "$FUZZ_COV_DIR"
+          DAILY_NONCE=$([[ -s "$RUNNER_TEMP/daily.nonce" ]] && cat "$RUNNER_TEMP/daily.nonce" || python3 -c 'import secrets; print(secrets.token_hex(16))')
           harness/.lake/build/bin/leanswe-fuzz --files-strace-fault-check 2>&1 | tee "$LOG"
-          harness/.lake/build/bin/leanswe-fuzz --suite files --steps 250000 --self-test-shrink --require-ns 2>&1 | tee -a "$LOG"
+          harness/.lake/build/bin/leanswe-fuzz --suite files --steps 250000 --self-test-shrink --require-ns --coverage-log "$FUZZ_COV_DIR/files.log" --nonce "$DAILY_NONCE" 2>&1 | tee -a "$LOG"
           harness/.lake/build/bin/leanswe-fuzz --suite files --steps 60000 --random-seed --require-ns 2>&1 | tee -a "$LOG"
           command -v capsh >/dev/null 2>&1 || { echo "ERROR: missing capsh" >&2; exit 1; }
           unshare -Urm sh -c '
@@ -426,6 +428,15 @@ jobs:
           done
           trap - EXIT; cleanup_daily
 
+      - name: Verify combined runtime and fuzzer coverage logs
+        id: verify_fuzz_cov
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.lake_check.outcome == 'success' && steps.repeat_tests.outcome == 'success' && steps.files_world_fuzz.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          [[ -s "$RUNNER_TEMP/daily.nonce" ]] || { echo "ERROR: missing $RUNNER_TEMP/daily.nonce" >&2; exit 1; }
+          DAILY_NONCE=$(< "$RUNNER_TEMP/daily.nonce"); FUZZ_COV_DIR="$RUNNER_TEMP/fuzz-cov"
+          lake env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --verify-log "$RUNNER_TEMP/daily-assump.log" --nonce "$DAILY_NONCE" --require-fuzz-equiv --coverage-log "$RUNNER_TEMP/daily-rt-cov.log" --coverage-log "$FUZZ_COV_DIR/sandbox.log" --coverage-log "$FUZZ_COV_DIR/timerand.log" --coverage-log "$FUZZ_COV_DIR/other.log" --coverage-log "$FUZZ_COV_DIR/poll.log" --coverage-log "$FUZZ_COV_DIR/net.log" --coverage-log "$FUZZ_COV_DIR/process.log" --coverage-log "$FUZZ_COV_DIR/files.log" 2>&1 | tee "$RUNNER_TEMP/verify_fuzz_cov.log"
+
       - name: Open deduplicated GitHub issue on failure
         if: ${{ failure() && !cancelled() && github.ref == 'refs/heads/main' }}
         env:
@@ -439,57 +450,21 @@ jobs:
           OUT_MEM: ${{ steps.mem_check.outcome }}
           OUT_TEST: ${{ steps.repeat_tests.outcome }}
           OUT_FILES_FUZZ: ${{ steps.files_world_fuzz.outcome }}
+          OUT_FUZZ_COV: ${{ steps.verify_fuzz_cov.outcome }}
         run: |
           set -euo pipefail
-          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
-            --json number,title,url | python3 -c '
-          import json, sys
-          rows = [r for r in json.load(sys.stdin) if r["title"].startswith("[audit-daily] Daily audit gate failed")]
-          print(rows[0]["url"] if rows else "")
-          ')
-          if [[ -n "$EXISTING" ]]; then
-            echo "Open issue already exists ($EXISTING); skipping duplicate creation."
-            exit 0
-          fi
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title,url | python3 -c 'import json,sys; rows=[r for r in json.load(sys.stdin) if r["title"].startswith("[audit-daily] Daily audit gate failed")]; print(rows[0]["url"] if rows else "")')
+          if [[ -n "$EXISTING" ]]; then echo "Open issue already exists ($EXISTING); skipping duplicate creation."; exit 0; fi
           python3 -c '
           import os, pathlib, subprocess
-          sha = os.environ["GITHUB_SHA"]
-          short = sha[:8]
-          repo = os.environ["GITHUB_REPOSITORY"]
-          server = os.environ["GITHUB_SERVER_URL"]
-          run_id = os.environ["GITHUB_RUN_ID"]
-          outcomes = ", ".join(
-              f"{label}=`{os.environ[env_key]}`"
-              for label, env_key in (
-                  ("setup", "OUT_SETUP"),
-                  ("toolchain", "OUT_TOOLCHAIN"),
-                  ("check_imports", "OUT_IMPORTS"),
-                  ("rust", "OUT_RUST"),
-                  ("extract", "OUT_EXTRACT"),
-                  ("lake_check", "OUT_CHECK"),
-                  ("mem_check", "OUT_MEM"),
-                  ("repeat_tests", "OUT_TEST"),
-                  ("files_fuzz", "OUT_FILES_FUZZ"),
-              )
-          )
-          run_url = f"{server}/{repo}/actions/runs/{run_id}"
-          temp = pathlib.Path(os.environ["RUNNER_TEMP"])
-          tails = []
-          for name in ("check_imports", "lake_check", "mem_check", "repeat_tests", "files_world_fuzz"):
+          sha, repo, server, run_id = os.environ["GITHUB_SHA"], os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_SERVER_URL"], os.environ["GITHUB_RUN_ID"]
+          outcomes = ", ".join(f"{l}=`{os.environ[k]}`" for l, k in (("setup","OUT_SETUP"),("toolchain","OUT_TOOLCHAIN"),("check_imports","OUT_IMPORTS"),("rust","OUT_RUST"),("extract","OUT_EXTRACT"),("lake_check","OUT_CHECK"),("mem_check","OUT_MEM"),("repeat_tests","OUT_TEST"),("files_fuzz","OUT_FILES_FUZZ"),("verify_fuzz_cov","OUT_FUZZ_COV")))
+          temp, tails = pathlib.Path(os.environ["RUNNER_TEMP"]), []
+          for name in ("check_imports", "lake_check", "mem_check", "repeat_tests", "files_world_fuzz", "verify_fuzz_cov"):
               p = temp / f"{name}.log"
               if p.exists():
                   lines = [ln[:320] for ln in p.read_text(encoding="utf-8", errors="replace").splitlines()[-60:]]
                   tails.append(f"### {name} (last {len(lines)} lines)\n````text\n" + "\n".join(lines) + "\n````")
-          body = "\n\n".join([
-              f"Daily audit gate failed on `main` at `{sha}`.",
-              f"- Run: {run_url}",
-              f"- Outcomes: {outcomes}",
-              *tails,
-          ]).replace("@", "@\u200b")
-          subprocess.run([
-              "gh", "issue", "create",
-              "--repo", repo,
-              "--title", f"[audit-daily] Daily audit gate failed on main ({short})",
-              "--body", body,
-          ], check=True)
+          body = "\n\n".join([f"Daily audit gate failed on `main` at `{sha}`.", f"- Run: {server}/{repo}/actions/runs/{run_id}", f"- Outcomes: {outcomes}", *tails]).replace("@", "@\u200b")
+          subprocess.run(["gh", "issue", "create", "--repo", repo, "--title", f"[audit-daily] Daily audit gate failed on main ({sha[:8]})", "--body", body], check=True)
           '
