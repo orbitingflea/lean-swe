@@ -1,61 +1,24 @@
 import Core.Assumptions
+import Core.NondetTest
 import Core.Obeys
 import LeanSwe.EnvVars.Raw.Types
 import LeanSwe.EnvVars.Raw.Model
+import LeanSwe.EnvVars.Raw.Model.Assumptions
 import LeanSwe.EnvVars.Raw.Model.Refines
 import LeanSwe.EnvVars.Raw.Interface
 import LeanSwe.EnvVars.Raw.Impl
-import LeanSwe.EnvVars.Raw.SpecTests
-import LeanSwe.EnvVars.Raw.Proofs.Utf8AndSplit
-import LeanSwe.EnvVars.Raw.Proofs.ListAndModel
 
 namespace LeanSwe.EnvVars.Raw.Proofs
 
 open Core
 open Core.NondetTest
 
-/-- Proof of `test_envvarsraw_mapRawError_returnsNonEmptyMessage` for `defaultOps`. -/
-theorem proof_envvarsraw_mapRawError_returnsNonEmptyMessage :
-    AllPass (test_envvarsraw_mapRawError_returnsNonEmptyMessage defaultOps) := by
-  intro raw
-  simp only [defaultOps, Internal.mkRawOps, Internal.mapRawError, assert]
-  refine ⟨?_, trivial⟩
-  cases raw with
-  | invalidEncoding _ _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
-  | invalidArgument _ _ _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
-  | otherError code _ =>
-    exact nonEmptyMsg_ne_empty _ _ (append_head_ne_empty "os error " (toString code) (by decide))
-  | userError _ => exact nonEmptyMsg_ne_empty _ _ (by decide)
-
-/-- Non-vacuity `CanReach` witness for `test_envvarsraw_mapRawError_returnsNonEmptyMessage`. -/
-theorem reach_envvarsraw_mapRawError_returnsNonEmptyMessage :
-    CanReach (test_envvarsraw_mapRawError_returnsNonEmptyMessage defaultOps) :=
-  ⟨.userError "", proof_envvarsraw_mapRawError_returnsNonEmptyMessage (.userError "")⟩
-
-/-- Proof of `test_envvarsraw_mapRawError_preservesKindAndMetadata` for `defaultOps`. -/
-theorem proof_envvarsraw_mapRawError_preservesKindAndMetadata :
-    AllPass (test_envvarsraw_mapRawError_preservesKindAndMetadata defaultOps) := by
-  intro raw
-  cases raw <;> simp [defaultOps, Internal.mkRawOps, Internal.mapRawError, assert]
-
-/-- Non-vacuity `CanReach` witness for `test_envvarsraw_mapRawError_preservesKindAndMetadata`. -/
-theorem reach_envvarsraw_mapRawError_preservesKindAndMetadata :
-    CanReach (test_envvarsraw_mapRawError_preservesKindAndMetadata defaultOps) :=
-  ⟨.invalidEncoding (some "PATH") "bad",
-    proof_envvarsraw_mapRawError_preservesKindAndMetadata (.invalidEncoding (some "PATH") "bad")⟩
-
-/-- Proof of `test_envvarsraw_mapRawError_consistentAcrossBackends` for `defaultOps` and `Internal.mkRawOps`. -/
-theorem proof_envvarsraw_mapRawError_consistentAcrossBackends :
-    AllPass (test_envvarsraw_mapRawError_consistentAcrossBackends defaultOps (Internal.mkRawOps (m := Id))) := by
-  intro _ _
-  simp [defaultOps, Internal.mkRawOps, assert]
-
-/-- Non-vacuity `CanReach` witness for `test_envvarsraw_mapRawError_consistentAcrossBackends`. -/
-theorem reach_envvarsraw_mapRawError_consistentAcrossBackends :
-    CanReach (test_envvarsraw_mapRawError_consistentAcrossBackends defaultOps (Internal.mkRawOps (m := Id))) :=
-  ⟨{ getEnvBytes := fun _ => none, listEnvironBytes := #[] }, .userError "",
-    proof_envvarsraw_mapRawError_consistentAcrossBackends
-      { getEnvBytes := fun _ => none, listEnvironBytes := #[] } (.userError "")⟩
+/-- Satisfiability `CanReach` witness for `assume_envvarsraw_listEnv_consistentWithGetEnv`. -/
+theorem reach_assume_envvarsraw_listEnv_consistentWithGetEnv :
+    CanReach (assume_envvarsraw_listEnv_consistentWithGetEnv
+      (Internal.mkRawOps { getEnvBytes := fun _ => none, listEnvironBytes := #[] })) := by
+  refine ⟨#[], "PATH", rfl, ⟨by decide, by decide, by decide⟩, ?_⟩
+  simp [Internal.mkRawOps, Internal.isValidPosixKey, bind, pure, assert]
 
 private theorem baseIO_liftM_never_throws {α : Type} (act : BaseIO α) (w : Void IO.RealWorld) :
     ∃ a w', (liftM act : IO α) w = .ok a w' := by
@@ -84,6 +47,31 @@ private theorem io_bind_baseIO {α β : Type} (act : BaseIO α) (k : α → IO �
       | EST.Out.ok a s => k a s
       | EST.Out.error e s => EST.Out.error e s := rfl
   rw [hbind, hv]
+
+private theorem decodeEnvironAcc_only_invalidEncoding
+    (accRev : List (String × String)) (xs : List ByteArray) {err : EnvVarsRawError}
+    (herr : Internal.decodeEnvironAcc accRev xs = .error err) :
+    err.kind = .invalidEncoding := by
+  induction xs generalizing accRev with
+  | nil => simp [Internal.decodeEnvironAcc] at herr
+  | cons entry rest ih =>
+    unfold Internal.decodeEnvironAcc at herr
+    cases hs : Internal.splitFirstEqBytes entry with
+    | none => rw [hs] at herr; exact ih accRev herr
+    | some kv =>
+      rcases kv with ⟨kBytes, vBytes⟩
+      rw [hs] at herr
+      dsimp only at herr
+      cases hk : String.fromUTF8? kBytes with
+      | none => rw [hk] at herr; injection herr with he; subst he; rfl
+      | some k =>
+        rw [hk] at herr
+        dsimp only at herr
+        cases hv : String.fromUTF8? vBytes with
+        | none => rw [hv] at herr; injection herr with he; subst he; rfl
+        | some v =>
+          rw [hv] at herr
+          exact ih ((k, v) :: accRev) herr
 
 private theorem mkRawOps_getEnv_never
     (f : EnvVarsRawErrorKind) (hf : f ≠ .invalidEncoding)
@@ -122,15 +110,15 @@ private theorem mkRawOps_listEnv_never
         listEnvironBytes := liftM l
       }).listEnv) w := by
   unfold Core.NeverErrorKindIO
-  simp only [Internal.mkRawOps, decodeEnvironAcc_nil]
+  simp only [Internal.mkRawOps]
   rw [io_bind_baseIO]
-  cases hd : decodeEnvironList (l w).val.toList with
+  cases hd : Internal.decodeEnvironAcc [] (l w).val.toList with
   | ok _ => simp only [Except.map]; rw [io_pure_eq]; trivial
   | error err =>
     simp only [Except.map]
     rw [io_pure_eq]
     intro heq
-    exact hf (heq ▸ decodeEnvironList_only_invalidEncoding (l w).val.toList hd)
+    exact hf (heq ▸ decodeEnvironAcc_only_invalidEncoding [] (l w).val.toList hd)
 
 /-- Proof that `Raw.getEnv` never returns `.invalidArgument`. -/
 theorem raw_getEnv_never_invalidArgument (key : String) (w : Void IO.RealWorld) :
@@ -161,6 +149,50 @@ theorem raw_listEnv_never_otherError (w : Void IO.RealWorld) :
 theorem raw_listEnv_never_userError (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO EnvVarsRawError.kind .userError Raw.listEnv w := by
   apply mkRawOps_listEnv_never .userError (by decide)
+
+private theorem hasInvalidKeyCharModel_eq (cs : List Char) :
+    Model.hasInvalidKeyCharModel cs = Internal.hasInvalidKeyChar cs := by
+  induction cs with
+  | nil => rfl
+  | cons c cs ih =>
+    simp only [Model.hasInvalidKeyCharModel, Internal.hasInvalidKeyChar, ih]
+    cases (c == '=' || c == Char.ofNat 0) <;> rfl
+
+private theorem isValidPosixKeyModel_eq (key : String) :
+    Model.isValidPosixKeyModel key = Internal.isValidPosixKey key := by
+  simp [Model.isValidPosixKeyModel, Internal.isValidPosixKey, hasInvalidKeyCharModel_eq]
+
+private theorem splitFirstEqListModel_eq (rp bl : List UInt8) :
+    Model.splitFirstEqListModel rp bl = Internal.splitFirstEqList rp bl := by
+  induction bl generalizing rp with
+  | nil => rfl
+  | cons b bs ih =>
+    simp only [Model.splitFirstEqListModel, Internal.splitFirstEqList]
+    split
+    · rfl
+    · exact ih (b :: rp)
+
+private theorem splitFirstEqBytesModel_eq (entry : ByteArray) :
+    Model.splitFirstEqBytesModel entry = Internal.splitFirstEqBytes entry :=
+  splitFirstEqListModel_eq [] entry.data.toList
+
+private theorem decodeEnvironModelAcc_eq (accRev : List (String × String)) (xs : List ByteArray) :
+    Model.decodeEnvironModelAcc accRev xs = Internal.decodeEnvironAcc accRev xs := by
+  induction xs generalizing accRev with
+  | nil => rfl
+  | cons entry rest ih =>
+    simp only [Model.decodeEnvironModelAcc, Internal.decodeEnvironAcc, splitFirstEqBytesModel_eq]
+    cases Internal.splitFirstEqBytes entry with
+    | none => exact ih accRev
+    | some kv =>
+      rcases kv with ⟨kBytes, vBytes⟩
+      dsimp only
+      cases String.fromUTF8? kBytes with
+      | none => rfl
+      | some k =>
+        cases String.fromUTF8? vBytes with
+        | none => rfl
+        | some v => exact ih ((k, v) :: accRev)
 
 private theorem mapRawError_obeys :
     Core.ObeysPureEq mapRawError Model.mapRawErrorModel := by

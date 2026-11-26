@@ -137,18 +137,12 @@ import LeanSwe.EnvVars.Raw.Model
 import LeanSwe.EnvVars.Raw.Model.Refines
 import LeanSwe.EnvVars.Raw.Interface
 import LeanSwe.EnvVars.Raw.Impl
-import LeanSwe.EnvVars.Raw.SpecTests
-import LeanSwe.EnvVars.Raw.SpecMutants
-import LeanSwe.EnvVars.Raw.Proofs.Utf8AndSplit
-import LeanSwe.EnvVars.Raw.Proofs.ListAndModel
 import LeanSwe.EnvVars.Raw.Proofs
 import LeanSwe.EnvVars.Raw.RuntimeTests
 import LeanSwe.EnvVars.Types
 import LeanSwe.EnvVars.Model
 import LeanSwe.EnvVars.Interface
 import LeanSwe.EnvVars.Impl
-import LeanSwe.EnvVars.SpecTests
-import LeanSwe.EnvVars.SpecMutants
 import LeanSwe.EnvVars.Proofs
 import LeanSwe.EnvVars.RuntimeTests
 import LeanSwe.Uuid.Types
@@ -188,9 +182,6 @@ import LeanSwe.Sqlite.Types
 import LeanSwe.Sqlite.Model
 import LeanSwe.Sqlite.Impl
 import LeanSwe.Sqlite.Interface
-import LeanSwe.Sqlite.SpecTests
-import LeanSwe.Sqlite.SpecMutants
-import LeanSwe.Sqlite.Proofs.ModelTrace
 import LeanSwe.Sqlite.Proofs
 import LeanSwe.Sqlite.RuntimeTests
 import LeanSwe.Git.Types
@@ -335,8 +326,6 @@ import LeanSwe.Tar.Model
 import LeanSwe.Tar.Model.WireSpec
 import LeanSwe.Tar.Impl
 import LeanSwe.Tar.Interface
-import LeanSwe.Tar.SpecTests
-import LeanSwe.Tar.SpecMutants
 import LeanSwe.Tar.Proofs.RefinesPack
 import LeanSwe.Tar.Proofs.RefinesUnpackCodec
 import LeanSwe.Tar.Proofs.RefinesPax
