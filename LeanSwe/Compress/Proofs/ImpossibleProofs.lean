@@ -1,3 +1,4 @@
+import Core.Assumptions
 import LeanSwe.Compress.Types
 import LeanSwe.Compress.Impl
 import LeanSwe.Compress.Interface

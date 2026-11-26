@@ -1,11 +1,10 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.EnvVars.Types
 import LeanSwe.EnvVars.Model
 
 namespace LeanSwe.EnvVars
 
-open Core (NondetTest ErrorObligation)
+open Core (NondetTest)
 open Core.NondetTest
 
 private def mockMapRawError : EnvVarsRawError → EnvVarsError
@@ -198,45 +197,6 @@ def test_envvars_splitSearchPath_roundTripsCleanSegments
   let segs ← nondet (List String)
   assume (segs.all fun s => !s.isEmpty && !(':' ∈ s.toList))
   NondetTest.assert (api.splitSearchPath (String.intercalate ":" segs) = segs.toArray)
-
-/-- Declared error-coverage matrix for pure upper-layer `LeanSwe.EnvVars` requests (`EnvVarsErrorKind`). -/
-def errorCoverage : List (ErrorObligation EnvVarsErrorKind) :=
-  [ { request := "LeanSwe.EnvVars.getEnv"
-      errorKind := .invalidKey
-      justification := .tested "LeanSwe.EnvVars.RuntimeTests.err_envvars_getEnv_invalidKey" .real }
-  , { request := "LeanSwe.EnvVars.getEnv"
-      errorKind := .invalidEncoding
-      justification := .tested "LeanSwe.EnvVars.RuntimeTests.err_envvars_getEnv_invalidEncoding" .real }
-  , { request := "LeanSwe.EnvVars.getEnv"
-      errorKind := .notFound
-      justification := .provedImpossible "LeanSwe.EnvVars.Proofs.envvars_getEnv_never_notFound" }
-  , { request := "LeanSwe.EnvVars.getEnv"
-      errorKind := .ioError
-      justification := .provedImpossible "LeanSwe.EnvVars.Proofs.envvars_getEnv_never_ioError" }
-  , { request := "LeanSwe.EnvVars.listEnv"
-      errorKind := .invalidKey
-      justification := .provedImpossible "LeanSwe.EnvVars.Proofs.envvars_listEnv_never_invalidKey" }
-  , { request := "LeanSwe.EnvVars.listEnv"
-      errorKind := .invalidEncoding
-      justification := .tested "LeanSwe.EnvVars.RuntimeTests.err_envvars_listEnv_invalidEncoding" .real }
-  , { request := "LeanSwe.EnvVars.listEnv"
-      errorKind := .notFound
-      justification := .provedImpossible "LeanSwe.EnvVars.Proofs.envvars_listEnv_never_notFound" }
-  , { request := "LeanSwe.EnvVars.listEnv"
-      errorKind := .ioError
-      justification := .provedImpossible "LeanSwe.EnvVars.Proofs.envvars_listEnv_never_ioError" }
-  , { request := "LeanSwe.EnvVars.homeDir"
-      errorKind := .invalidKey
-      justification := .provedImpossible "LeanSwe.EnvVars.Proofs.envvars_homeDir_never_invalidKey" }
-  , { request := "LeanSwe.EnvVars.homeDir"
-      errorKind := .invalidEncoding
-      justification := .tested "LeanSwe.EnvVars.RuntimeTests.err_envvars_homeDir_invalidEncoding" .real }
-  , { request := "LeanSwe.EnvVars.homeDir"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.EnvVars.RuntimeTests.err_envvars_homeDir_notFound" .real }
-  , { request := "LeanSwe.EnvVars.homeDir"
-      errorKind := .ioError
-      justification := .provedImpossible "LeanSwe.EnvVars.Proofs.envvars_homeDir_never_ioError" } ]
 
 /-- `mkApi (Raw.Model.modelRawOps s)` agrees identically with `Model.modelApi s` across `mapRawError`, `getEnv`, `listEnv`, `homeDir`, and `splitSearchPath`. -/
 def test_envvars_mkApi_matchesModel

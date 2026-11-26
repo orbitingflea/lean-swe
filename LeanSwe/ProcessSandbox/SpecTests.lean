@@ -1,5 +1,4 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.ProcessSandbox.Types
 import LeanSwe.ProcessSandbox.Model
 import LeanSwe.ProcessSandbox.Seccomp.Types
@@ -8,7 +7,7 @@ import LeanSwe.ProcessSandbox.SpecTests.MockOps
 
 namespace LeanSwe.ProcessSandbox
 
-open Core (NondetTest ErrorObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.ProcessSandbox.Model
 
@@ -566,18 +565,5 @@ def test_seccomp_run_queriesHostArchAndSealsEncodedFilter
     sFail.openPlans = sNoArch.openPlans ∧
     sFail.activeBoxes = sNoArch.activeBoxes ∧
     sFail.activeForwarders = sNoArch.activeForwarders)
-
-/-- Declared error-coverage matrix for all 2 public fallible `LeanSwe.ProcessSandbox` operations (`SandboxErrorKind`). -/
-def errorCoverage : List (ErrorObligation SandboxErrorKind) :=
-  [ { request := "LeanSwe.ProcessSandbox.validateSpec", errorKind := .invalidInput, justification := .tested "LeanSwe.ProcessSandbox.RuntimeTests.err_psandbox_validateSpec_invalidInput" .real }
-  , { request := "LeanSwe.ProcessSandbox.validateSpec", errorKind := .unavailable, justification := .provedImpossible "LeanSwe.ProcessSandbox.Proofs.psandbox_validateSpec_never_unavailable" }
-  , { request := "LeanSwe.ProcessSandbox.validateSpec", errorKind := .notFound, justification := .provedImpossible "LeanSwe.ProcessSandbox.Proofs.psandbox_validateSpec_never_notFound" }
-  , { request := "LeanSwe.ProcessSandbox.validateSpec", errorKind := .permissionDenied, justification := .provedImpossible "LeanSwe.ProcessSandbox.Proofs.psandbox_validateSpec_never_permissionDenied" }
-  , { request := "LeanSwe.ProcessSandbox.validateSpec", errorKind := .ioError, justification := .provedImpossible "LeanSwe.ProcessSandbox.Proofs.psandbox_validateSpec_never_ioError" }
-  , { request := "LeanSwe.ProcessSandbox.run", errorKind := .invalidInput, justification := .tested "LeanSwe.ProcessSandbox.RuntimeTests.err_psandbox_run_invalidInput" .real }
-  , { request := "LeanSwe.ProcessSandbox.run", errorKind := .unavailable, justification := .tested "LeanSwe.ProcessSandbox.RuntimeTests.err_psandbox_run_unavailable" .mocked }
-  , { request := "LeanSwe.ProcessSandbox.run", errorKind := .notFound, justification := .tested "LeanSwe.ProcessSandbox.RuntimeTests.err_psandbox_run_notFound" .mocked }
-  , { request := "LeanSwe.ProcessSandbox.run", errorKind := .permissionDenied, justification := .tested "LeanSwe.ProcessSandbox.RuntimeTests.err_psandbox_run_permissionDenied" .mocked }
-  , { request := "LeanSwe.ProcessSandbox.run", errorKind := .ioError, justification := .tested "LeanSwe.ProcessSandbox.RuntimeTests.err_psandbox_run_ioError" .mocked } ]
 
 end LeanSwe.ProcessSandbox

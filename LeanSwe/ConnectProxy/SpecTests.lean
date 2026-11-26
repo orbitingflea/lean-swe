@@ -1,5 +1,4 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.ConnectProxy.Types
 import LeanSwe.ConnectProxy.Model
 import LeanSwe.NetRelay.Types
@@ -10,7 +9,7 @@ import LeanSwe.ConnectProxy.Model.HealthySys
 
 namespace LeanSwe.ConnectProxy
 
-open Core (NondetTest ErrorObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.ConnectProxy.Model
 open LeanSwe.ConnectProxy.Internal
@@ -688,83 +687,5 @@ def test_cproxy_healthy_pollAndStepTickAndFallbackConnect
       stopFlag = false ∧
       nextSlots.size ≤ cfg.limits.maxConcurrentTunnels ∧
       ∀ s ∈ nextSlots.toList, s.isFinished = false))
-
-/-- Declared error-coverage matrix for public fallible `LeanSwe.ConnectProxy` requests (`ProxyErrorKind`). -/
-def errorCoverage : List (ErrorObligation ProxyErrorKind) :=
-  [ { request := "LeanSwe.ConnectProxy.parseIpAddr"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_parseIpAddr_invalidInput" .real }
-  , { request := "LeanSwe.ConnectProxy.parseIpAddr"
-      errorKind := .addressInUse
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpAddr_never_addressInUse" }
-  , { request := "LeanSwe.ConnectProxy.parseIpAddr"
-      errorKind := .permissionDenied
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpAddr_never_permissionDenied" }
-  , { request := "LeanSwe.ConnectProxy.parseIpAddr"
-      errorKind := .resourceExhausted
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpAddr_never_resourceExhausted" }
-  , { request := "LeanSwe.ConnectProxy.parseIpAddr"
-      errorKind := .ioError
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpAddr_never_ioError" }
-  , { request := "LeanSwe.ConnectProxy.parseIpPrefix"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_parseIpPrefix_invalidInput" .real }
-  , { request := "LeanSwe.ConnectProxy.parseIpPrefix"
-      errorKind := .addressInUse
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpPrefix_never_addressInUse" }
-  , { request := "LeanSwe.ConnectProxy.parseIpPrefix"
-      errorKind := .permissionDenied
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpPrefix_never_permissionDenied" }
-  , { request := "LeanSwe.ConnectProxy.parseIpPrefix"
-      errorKind := .resourceExhausted
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpPrefix_never_resourceExhausted" }
-  , { request := "LeanSwe.ConnectProxy.parseIpPrefix"
-      errorKind := .ioError
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseIpPrefix_never_ioError" }
-  , { request := "LeanSwe.ConnectProxy.parseConnectRequest"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_parseConnectRequest_invalidInput" .real }
-  , { request := "LeanSwe.ConnectProxy.parseConnectRequest"
-      errorKind := .addressInUse
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseConnectRequest_never_addressInUse" }
-  , { request := "LeanSwe.ConnectProxy.parseConnectRequest"
-      errorKind := .permissionDenied
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseConnectRequest_never_permissionDenied" }
-  , { request := "LeanSwe.ConnectProxy.parseConnectRequest"
-      errorKind := .resourceExhausted
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseConnectRequest_never_resourceExhausted" }
-  , { request := "LeanSwe.ConnectProxy.parseConnectRequest"
-      errorKind := .ioError
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_parseConnectRequest_never_ioError" }
-  , { request := "LeanSwe.ConnectProxy.validateConfig"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_validateConfig_invalidInput" .real }
-  , { request := "LeanSwe.ConnectProxy.validateConfig"
-      errorKind := .addressInUse
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_validateConfig_never_addressInUse" }
-  , { request := "LeanSwe.ConnectProxy.validateConfig"
-      errorKind := .permissionDenied
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_validateConfig_never_permissionDenied" }
-  , { request := "LeanSwe.ConnectProxy.validateConfig"
-      errorKind := .resourceExhausted
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_validateConfig_never_resourceExhausted" }
-  , { request := "LeanSwe.ConnectProxy.validateConfig"
-      errorKind := .ioError
-      justification := .provedImpossible "LeanSwe.ConnectProxy.Proofs.cproxy_validateConfig_never_ioError" }
-  , { request := "LeanSwe.ConnectProxy.withProxy"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_withProxy_invalidInput" .real }
-  , { request := "LeanSwe.ConnectProxy.withProxy"
-      errorKind := .addressInUse
-      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_withProxy_addressInUse" .real }
-  , { request := "LeanSwe.ConnectProxy.withProxy"
-      errorKind := .permissionDenied
-      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_withProxy_permissionDenied" .mocked }
-  , { request := "LeanSwe.ConnectProxy.withProxy"
-      errorKind := .resourceExhausted
-      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_withProxy_resourceExhausted" .mocked }
-  , { request := "LeanSwe.ConnectProxy.withProxy"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.ConnectProxy.RuntimeTests.err_cproxy_withProxy_ioError" .real } ]
 
 end LeanSwe.ConnectProxy

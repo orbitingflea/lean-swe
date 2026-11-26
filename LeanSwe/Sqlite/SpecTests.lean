@@ -1,11 +1,10 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.Sqlite.Types
 import LeanSwe.Sqlite.Model
 
 namespace LeanSwe.Sqlite
 
-open Core (NondetTest ErrorObligation)
+open Core (NondetTest)
 open Core.NondetTest
 
 /-- Simulated failure injection mode for `mockRawOps`. -/
@@ -577,116 +576,5 @@ def test_sqlite_modelApi_relationalCrudConstraintsAndRollback
     | _ => false)
   NondetTest.assert (resRoBusy.2.conns.isEmpty ∧ resRoBusy.2.stmts.isEmpty)
   NondetTest.assert (∃ e, closedRes.1 = .error e ∧ e.kind = .misuse)
-
-/-- Complete 6-request × 6-kind error-coverage matrix for pure upper-layer `LeanSwe.Sqlite` (`SqliteErrorKind`). -/
-def errorCoverage : List (ErrorObligation SqliteErrorKind) :=
-  [ { request := "LeanSwe.Sqlite.validateConfig"
-      errorKind := .notFound
-      justification := .provedImpossible "LeanSwe.Sqlite.Proofs.sqlite_validateConfig_never_notFound" }
-  , { request := "LeanSwe.Sqlite.validateConfig"
-      errorKind := .busy
-      justification := .provedImpossible "LeanSwe.Sqlite.Proofs.sqlite_validateConfig_never_busy" }
-  , { request := "LeanSwe.Sqlite.validateConfig"
-      errorKind := .constraint
-      justification := .provedImpossible "LeanSwe.Sqlite.Proofs.sqlite_validateConfig_never_constraint" }
-  , { request := "LeanSwe.Sqlite.validateConfig"
-      errorKind := .misuse
-      justification := .provedImpossible "LeanSwe.Sqlite.Proofs.sqlite_validateConfig_never_misuse" }
-  , { request := "LeanSwe.Sqlite.validateConfig"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_validateConfig_invalidInput" .real }
-  , { request := "LeanSwe.Sqlite.validateConfig"
-      errorKind := .ioError
-      justification := .provedImpossible "LeanSwe.Sqlite.Proofs.sqlite_validateConfig_never_ioError" }
-  , { request := "LeanSwe.Sqlite.withDb"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withDb_notFound" .real }
-  , { request := "LeanSwe.Sqlite.withDb"
-      errorKind := .busy
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withDb_busy" .real }
-  , { request := "LeanSwe.Sqlite.withDb"
-      errorKind := .constraint
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withDb_constraint" .real }
-  , { request := "LeanSwe.Sqlite.withDb"
-      errorKind := .misuse
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withDb_misuse" .real }
-  , { request := "LeanSwe.Sqlite.withDb"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withDb_invalidInput" .real }
-  , { request := "LeanSwe.Sqlite.withDb"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withDb_ioError" .real }
-  , { request := "LeanSwe.Sqlite.withTransaction"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withTransaction_notFound" .real }
-  , { request := "LeanSwe.Sqlite.withTransaction"
-      errorKind := .busy
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withTransaction_busy" .real }
-  , { request := "LeanSwe.Sqlite.withTransaction"
-      errorKind := .constraint
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withTransaction_constraint" .real }
-  , { request := "LeanSwe.Sqlite.withTransaction"
-      errorKind := .misuse
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withTransaction_misuse" .real }
-  , { request := "LeanSwe.Sqlite.withTransaction"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withTransaction_invalidInput" .real }
-  , { request := "LeanSwe.Sqlite.withTransaction"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_withTransaction_ioError" .real }
-  , { request := "LeanSwe.Sqlite.exec"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_exec_notFound" .real }
-  , { request := "LeanSwe.Sqlite.exec"
-      errorKind := .busy
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_exec_busy" .real }
-  , { request := "LeanSwe.Sqlite.exec"
-      errorKind := .constraint
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_exec_constraint" .real }
-  , { request := "LeanSwe.Sqlite.exec"
-      errorKind := .misuse
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_exec_misuse" .real }
-  , { request := "LeanSwe.Sqlite.exec"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_exec_invalidInput" .real }
-  , { request := "LeanSwe.Sqlite.exec"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_exec_ioError" .real }
-  , { request := "LeanSwe.Sqlite.query"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_query_notFound" .real }
-  , { request := "LeanSwe.Sqlite.query"
-      errorKind := .busy
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_query_busy" .real }
-  , { request := "LeanSwe.Sqlite.query"
-      errorKind := .constraint
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_query_constraint" .real }
-  , { request := "LeanSwe.Sqlite.query"
-      errorKind := .misuse
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_query_misuse" .real }
-  , { request := "LeanSwe.Sqlite.query"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_query_invalidInput" .real }
-  , { request := "LeanSwe.Sqlite.query"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_query_ioError" .real }
-  , { request := "LeanSwe.Sqlite.queryOne"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_queryOne_notFound" .real }
-  , { request := "LeanSwe.Sqlite.queryOne"
-      errorKind := .busy
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_queryOne_busy" .real }
-  , { request := "LeanSwe.Sqlite.queryOne"
-      errorKind := .constraint
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_queryOne_constraint" .real }
-  , { request := "LeanSwe.Sqlite.queryOne"
-      errorKind := .misuse
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_queryOne_misuse" .real }
-  , { request := "LeanSwe.Sqlite.queryOne"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_queryOne_invalidInput" .real }
-  , { request := "LeanSwe.Sqlite.queryOne"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.Sqlite.RuntimeTests.err_sqlite_queryOne_ioError" .real } ]
 
 end LeanSwe.Sqlite

@@ -1,3 +1,4 @@
+import Core.Assumptions
 import Core.Obeys
 import LeanSwe.Sqlite.Interface
 import LeanSwe.Sqlite.SpecTests

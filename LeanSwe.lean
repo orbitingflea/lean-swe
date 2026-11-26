@@ -206,9 +206,6 @@ import LeanSwe.Git.Impl.MutOps
 import LeanSwe.Git.Impl
 import LeanSwe.Git.Interface
 import LeanSwe.Git.SpecTests.Cases
-import LeanSwe.Git.SpecTests.ErrorCov1
-import LeanSwe.Git.SpecTests.ErrorCov2
-import LeanSwe.Git.SpecTests.ErrorCov3
 import LeanSwe.Git.SpecTests
 import LeanSwe.Git.SpecMutants
 import LeanSwe.Git.Proofs.ParserProofs

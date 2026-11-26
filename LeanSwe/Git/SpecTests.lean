@@ -1,15 +1,11 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.Git.Types
 import LeanSwe.Git.Model
 import LeanSwe.Git.SpecTests.Cases
-import LeanSwe.Git.SpecTests.ErrorCov1
-import LeanSwe.Git.SpecTests.ErrorCov2
-import LeanSwe.Git.SpecTests.ErrorCov3
 
 namespace LeanSwe.Git
 
-open Core (NondetTest AssumptionObligation ErrorObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.Git.Model
 
@@ -408,36 +404,6 @@ def test_git_raw_mkApi_forceAndShortShaGuards
     (mkApi : RawGitOpsM (StateM GitCliMockState) → GitApiM (StateM GitCliMockState)) :
     runner Unit :=
   rawMkApiForceAndShortShaGuardsBody mkApi
-
-/-- External `git` CLI subprocess boundary assumptions (`git >= 2.30`) verified at runtime in
-    `LeanSwe.Git.RuntimeTests` with nonce-authenticated logging. -/
-def externalAssumptions : List AssumptionObligation :=
-  [ { name := "LeanSwe.Git.assume_git_defaultRawOps_stripsPoisonedGitEnvAndHonorsBareConfig"
-      subject := "LeanSwe.Git.defaultOps"
-      formalPred? := none }
-  , { name := "LeanSwe.Git.assume_git_status_porcelainV1Z_emitsUnquotedAndDestFirstRename"
-      subject := "LeanSwe.Git.status"
-      formalPred? := none }
-  , { name := "LeanSwe.Git.assume_git_diffNameStatus_porcelainZ_emitsSourceFirstRename"
-      subject := "LeanSwe.Git.diffNameStatus"
-      formalPred? := none }
-  , { name := "LeanSwe.Git.assume_git_listWorktrees_porcelainZ_emitsBareUnbornAndLinkedStanzas"
-      subject := "LeanSwe.Git.listWorktrees"
-      formalPred? := none }
-  , { name := "LeanSwe.Git.assume_git_mergeBase_andIsAncestor_matchDagSemantics"
-      subject := "LeanSwe.Git.mergeBase?"
-      formalPred? := none }
-  , { name := "LeanSwe.Git.assume_git_headState_andShowFile_unbornDetachedAndTreeVsBlob"
-      subject := "LeanSwe.Git.showFile?"
-      formalPred? := none }
-  , { name := "LeanSwe.Git.assume_git_clone_andFetch_roundTripLocalRefsAndPrune"
-      subject := "LeanSwe.Git.fetch"
-      formalPred? := none } ]
-
-
-/-- Complete `26 × 13` `(request, errorKind)` coverage matrix across all 26 fallible `LeanSwe.Git` entrypoints (`GitErrorKind`). -/
-def errorCoverage : List (ErrorObligation GitErrorKind) :=
-  errorCoveragePart1 ++ errorCoveragePart2 ++ errorCoveragePart3
 
 /-- `mkApiM` delegates secondary revision parameters (`diffNameStatus` `revB?` and `showFile?` `rev`) and 40-hex `worktreeAdd` targets directly to stock `git` without extra subprocess probes. -/
 def test_git_raw_mkApi_secondaryShortShaAnd40HexWorktreeGuards

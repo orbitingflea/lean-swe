@@ -3480,27 +3480,12 @@ private def parseArgs (args : List String) : CliConfig :=
   go {} 0 args
 
 /-- Exact shrinking ratchet allowlist of packages currently still declaring legacy `SpecTests.errorCoverage`.
-    Fails on any new declaration or stale allowlist entry; shrinks to `#[]` as Wave B deletes the tables. -/
-private def legacyErrorCoverageAllowlist : Array String := #[
-  "LeanSwe.CmdLine",
-  "LeanSwe.Compress",
-  "LeanSwe.ConnectProxy",
-  "LeanSwe.CryptoHash",
-  "LeanSwe.EnvVars",
-  "LeanSwe.Fs",
-  "LeanSwe.Git",
-  "LeanSwe.Process",
-  "LeanSwe.ProcessSandbox",
-  "LeanSwe.ProcessSandbox.Raw",
-  "LeanSwe.Sqlite"
-]
+    Emptied to `#[]`, permanently banning legacy `SpecTests.errorCoverage` declarations across `LeanSwe`. -/
+private def legacyErrorCoverageAllowlist : Array String := #[]
 
 /-- Exact shrinking ratchet allowlist of packages currently still declaring legacy `SpecTests.externalAssumptions`.
-    Fails on any new declaration or stale allowlist entry; shrinks to `#[]` as Wave B deletes the tables. -/
-private def legacyExternalAssumptionsAllowlist : Array String := #[
-  "LeanSwe.Compress",
-  "LeanSwe.Git"
-]
+    Emptied to `#[]`, permanently banning legacy `SpecTests.externalAssumptions` declarations across `LeanSwe`. -/
+private def legacyExternalAssumptionsAllowlist : Array String := #[]
 
 private def evaluateLegacyTableRatchetWith
     (errCovAllow extAssumpAllow : Array String)

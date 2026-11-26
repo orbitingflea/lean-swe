@@ -1,12 +1,11 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.Process.Types
 import LeanSwe.Compress.Types
 import LeanSwe.Compress.Model
 
 namespace LeanSwe.Compress
 
-open Core (NondetTest AssumptionObligation ErrorObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.Process
   (ProcessErrorKind ProcessError ExecRequest ExecResult ProcessApiM)
@@ -801,117 +800,5 @@ def test_compress_model_statefulRoundTrip_andContracts_tight
        (recFn Model.State.empty .gzip (ByteArray.mk #[0x1F, 0x9D, 0x90]) plain) = false ∧
      allowDecStepFn envAvail Model.State.empty .gzip {} zstSample (.ok plain)
        (recFn Model.State.empty .gzip zstSample plain) = false)
-
-/-- External CLI boundary assumptions for `zstd`, `xz`, and `gzip` subprocesses executed via `LeanSwe.Compress`,
-    verified at runtime in `LeanSwe.Compress.RuntimeTests` with nonce-authenticated logging. -/
-def externalAssumptions : List AssumptionObligation :=
-  [ { name := "LeanSwe.Compress.assume_compress_isToolAvailable_installedCodecsReportTrue"
-      subject := "LeanSwe.Compress.isToolAvailable"
-      formalPred? := none }
-  , { name := "LeanSwe.Compress.assume_compress_roundTrip_validAndConcatenatedStreams"
-      subject := "LeanSwe.Compress.compress"
-      formalPred? := none }
-  , { name := "LeanSwe.Compress.assume_compress_compressWith_gzipDeterministicAndOptionsRoundTrip"
-      subject := "LeanSwe.Compress.compressWith"
-      formalPred? := none }
-  , { name := "LeanSwe.Compress.assume_compress_decompress_pythonReferenceInterop"
-      subject := "LeanSwe.Compress.decompress"
-      formalPred? := none }
-  , { name := "LeanSwe.Compress.assume_compress_decompress_rejectsCorruptTruncatedAndTrailingGarbage"
-      subject := "LeanSwe.Compress.decompress"
-      formalPred? := none }
-  , { name := "LeanSwe.Compress.assume_compress_defaultApi_sanitizesCodecEnvAndReportsMissingTool"
-      subject := "LeanSwe.Compress.defaultApi"
-      formalPred? := none }
-  , { name := "LeanSwe.Compress.assume_compress_decompressWith_enforcesMaxOutputBytesOnBomb"
-      subject := "LeanSwe.Compress.decompressWith"
-      formalPred? := none } ]
-
-/-- Complete `4 × 7` `(request, errorKind)` coverage matrix for `LeanSwe.Compress` (`CompressErrorKind`). -/
-def errorCoverage : List (ErrorObligation CompressErrorKind) :=
-  [ { request := "LeanSwe.Compress.compress"
-      errorKind := .toolNotFound
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compress_toolNotFound" .real }
-  , { request := "LeanSwe.Compress.compress"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compress_invalidInput" .real }
-  , { request := "LeanSwe.Compress.compress"
-      errorKind := .corruptData
-      justification := .provedImpossible "LeanSwe.Compress.Proofs.compress_compress_never_corruptData" }
-  , { request := "LeanSwe.Compress.compress"
-      errorKind := .outputLimitExceeded
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compress_outputLimitExceeded" .real }
-  , { request := "LeanSwe.Compress.compress"
-      errorKind := .timedOut
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compress_timedOut" .mocked }
-  , { request := "LeanSwe.Compress.compress"
-      errorKind := .commandFailed
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compress_commandFailed" .mocked }
-  , { request := "LeanSwe.Compress.compress"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compress_ioError" .real }
-  , { request := "LeanSwe.Compress.decompress"
-      errorKind := .toolNotFound
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompress_toolNotFound" .real }
-  , { request := "LeanSwe.Compress.decompress"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompress_invalidInput" .real }
-  , { request := "LeanSwe.Compress.decompress"
-      errorKind := .corruptData
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompress_corruptData" .real }
-  , { request := "LeanSwe.Compress.decompress"
-      errorKind := .outputLimitExceeded
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompress_outputLimitExceeded" .real }
-  , { request := "LeanSwe.Compress.decompress"
-      errorKind := .timedOut
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompress_timedOut" .mocked }
-  , { request := "LeanSwe.Compress.decompress"
-      errorKind := .commandFailed
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompress_commandFailed" .mocked }
-  , { request := "LeanSwe.Compress.decompress"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompress_ioError" .real }
-  , { request := "LeanSwe.Compress.compressWith"
-      errorKind := .toolNotFound
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_toolNotFound" .real }
-  , { request := "LeanSwe.Compress.compressWith"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_invalidInput" .real }
-  , { request := "LeanSwe.Compress.compressWith"
-      errorKind := .corruptData
-      justification := .provedImpossible "LeanSwe.Compress.Proofs.compress_compressWith_never_corruptData" }
-  , { request := "LeanSwe.Compress.compressWith"
-      errorKind := .outputLimitExceeded
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_outputLimitExceeded" .real }
-  , { request := "LeanSwe.Compress.compressWith"
-      errorKind := .timedOut
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_timedOut" .real }
-  , { request := "LeanSwe.Compress.compressWith"
-      errorKind := .commandFailed
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_commandFailed" .mocked }
-  , { request := "LeanSwe.Compress.compressWith"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_compressWith_ioError" .real }
-  , { request := "LeanSwe.Compress.decompressWith"
-      errorKind := .toolNotFound
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_toolNotFound" .real }
-  , { request := "LeanSwe.Compress.decompressWith"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_invalidInput" .real }
-  , { request := "LeanSwe.Compress.decompressWith"
-      errorKind := .corruptData
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_corruptData" .real }
-  , { request := "LeanSwe.Compress.decompressWith"
-      errorKind := .outputLimitExceeded
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_outputLimitExceeded" .real }
-  , { request := "LeanSwe.Compress.decompressWith"
-      errorKind := .timedOut
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_timedOut" .real }
-  , { request := "LeanSwe.Compress.decompressWith"
-      errorKind := .commandFailed
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_commandFailed" .mocked }
-  , { request := "LeanSwe.Compress.decompressWith"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.Compress.RuntimeTests.err_compress_decompressWith_ioError" .real } ]
 
 end LeanSwe.Compress
