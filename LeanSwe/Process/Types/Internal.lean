@@ -1,8 +1,10 @@
+import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Process.Types
 import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Poll.Types
 import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.PostFork.Types
+import LeanSwe.EnvVars.Raw.Types
 import LeanSwe.Process.Types
 
 /-! Internal `SysBridge` and host-capability data shapes shared across `LeanSwe.Process`. -/
@@ -25,6 +27,21 @@ structure SysDepsM (m : Type → Type) (fd : Type) where
   postFork : LeanSwe.PostFork.PostForkOpsM m fd
   /-- Snapshot raw NUL-free `environ(7)` byte entries when `inheritEnv = true`. -/
   listAmbientEnv : m (Except ProcessError (Array ByteArray))
+
+/-- Direct imported OS capability bundle for `LeanSwe.Process` over `manifest.deps` specialized to `RawFd`. -/
+structure ProcessSysCapsM (m : Type → Type) where
+  /-- Curated Linux process syscalls (`pipe2`, `waitpid`, `kill`, etc.). -/
+  proc : LeanSwe.LinuxSyscall.Process.ProcessOpsM m LeanSwe.LinuxSyscall.RawFd
+  /-- Curated Linux file and descriptor syscalls (`close`, `read`, `write`, `fstatat`, `faccessat`, `fcntl`, etc.). -/
+  files : LeanSwe.LinuxSyscall.Files.FilesOpsM m LeanSwe.LinuxSyscall.RawFd
+  /-- Curated Linux descriptor-readiness syscall bundle (`ppoll`). -/
+  poll : LeanSwe.LinuxSyscall.Poll.PollOpsM m LeanSwe.LinuxSyscall.RawFd
+  /-- Curated Linux clock and sleep syscalls (`clock_gettime`, `clock_nanosleep`, `getrandom`). -/
+  timeRand : LeanSwe.LinuxSyscall.TimeRand.TimeRandOpsM m
+  /-- Verified post-`fork` child setup and `execve` capability bundle. -/
+  postFork : LeanSwe.PostFork.PostForkOpsM m LeanSwe.LinuxSyscall.RawFd
+  /-- Verified raw `environ(7)` capability bundle (`EnvVars.Raw.defaultOpsBase`). -/
+  envRaw : LeanSwe.EnvVars.Raw.RawEnvVarsBundleM m
 
 /-- Per-process slot tracked between `spawn`, `awaitOutput`, `killProcessGroup`, and `reap`. -/
 structure ProcSlotM (fd : Type) where
@@ -49,6 +66,10 @@ structure ProcTableState (fd : Type) where
   /-- Active handle slots keyed by `handleId`. -/
   slots : List (Nat × ProcSlotM fd) := []
   deriving BEq, DecidableEq, Inhabited
+
+/-- Type family indexing `ProcTableState RawFd` for `Core.ObeysStepFromConcCell`. -/
+abbrev ProcCellS (_ _ : Type → Type) : Type :=
+  ProcTableState LeanSwe.LinuxSyscall.RawFd
 
 /-- Capability interface over active process-slot table operations in monad `m`. -/
 structure ProcTableOpsM (m : Type → Type) (fd : Type) where

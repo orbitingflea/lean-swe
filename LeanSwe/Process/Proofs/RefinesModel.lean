@@ -1,48 +1,46 @@
 import Core.Obeys
+import Core.ConcOps
 import LeanSwe.Process.Types
 import LeanSwe.Process.Model
 import LeanSwe.Process.Model.HealthyHost
+import LeanSwe.Process.Model.FullStep
 import LeanSwe.Process.Interface
 import LeanSwe.Process.Proofs.RefinesModelApi
 import LeanSwe.Process.Proofs.RefinesModelWitness
 import LeanSwe.Process.Proofs.RefinesModelHostWitness
 import LeanSwe.Process.Proofs.RefinesModelHost
-import LeanSwe.Process.Proofs.RefinesModelHostDefault
+import LeanSwe.Process.Proofs.FullObeys
+import LeanSwe.Process.Proofs.FullObeysWitness
 
 /-!
-Top-level `Core.Obeys` assembly for `LeanSwe.Process`, pairing the pure
-`Core.ObeysPureEq*` refinements, `Core.ObeysStepFrom` over `Internal.mkApiM`,
-end-to-end `Core.ObeysStepFrom` over `Internal.mkApiFromHostCapsM` (`Impl + SysBridge`),
-and non-vacuity capability witnesses (`process_refines_model`, `refines_model_nonvacuous`).
+Top-level `Core.Obeys` assembly for `LeanSwe.Process`, pairing pure `Core.ObeysPureEq*`
+refinements with `Core.ObeysStepFromConcCell` over `Internal.mkFullApiM` and the
+schedule-parameterized non-vacuity witness (`process_obeys_model`, `process_obeys_model_nonvacuous`).
 -/
 
 namespace LeanSwe.Process.Proofs
 
 open LeanSwe.Process
 
-/-- Combined `Core.Obeys` theorem for `LeanSwe.Process` over `Model` and `Model.HealthyHost`. -/
-theorem process_refines_model :
+/-- Combined `Core.Obeys` theorem for `LeanSwe.Process` over `Internal.mkFullApiM`, `Model`, and `Model.FullStep`. -/
+theorem process_obeys_model :
     Core.ObeysPureEq LeanSwe.Process.mapRawError Model.mapRawErrorModel ∧
     Core.ObeysPureEq LeanSwe.Process.validateRequest Model.validateRequestModel ∧
     @Core.ObeysPureEq2 String (Array String) ExecRequest
       (@LeanSwe.Process.mkCommandRequest) Model.mkCommandRequestModel ∧
     Core.ObeysPureEq2 LeanSwe.Process.withTextInput Model.withTextInputModel ∧
-    Core.ObeysStepFrom id Model.processStateWf
-      Model.execRawStep Model.allowedRawStep
-      Model.processStateWf Internal.mkApiM
-      Model.execPkgStep Model.allowedPkgStep ∧
-    Core.ObeysStepFrom id Model.hostWorldWf
-      Model.execHostCapStep Model.allowedHostCapStep
-      Model.hostWorldWf Internal.mkApiFromHostCapsM
-      Model.execPkgStep Model.allowedPkgHostStep :=
+    Core.ObeysStepFromConcCell (CellS := Internal.ProcCellS)
+      Model.mapFullWorldToState Model.procCellToState
+      Model.fullRawWf Model.execFullRawStep Model.allowedFullRawStep
+      Model.processStateWf Internal.mkFullApiM
+      Model.execPkgStep Model.allowedPkgStep :=
   ⟨refinesPure_mapRawError,
    refinesPure_validateRequest,
    refinesPure_mkCommandRequest,
    refinesPure_withTextInput,
-   refinesStepFrom_mkApiM,
-   refinesStepFrom_mkApiFromHostCapsM⟩
+   obeysStepFromConcCell_mkFullApiM⟩
 
-/-- Non-vacuity witness showing both raw process-model ops and simulated host capabilities inhabit `process_refines_model`. -/
+/-- Non-vacuity witness showing both raw process-model ops and simulated host capabilities inhabit legacy helper specs. -/
 theorem refines_model_nonvacuous :
     (∃ (ops : RawProcessOpsM (StateM Model.ProcessModelState)),
       Core.ObeysStep id Model.processStateWf (Model.execRawStep ops) Model.allowedRawStep) ∧

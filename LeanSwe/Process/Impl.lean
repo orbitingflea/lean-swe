@@ -1,4 +1,7 @@
+import Core.ConcOps
 import LeanSwe.Process.Types
+import LeanSwe.Process.Types.Internal
+import LeanSwe.Process.SysBridge
 
 namespace LeanSwe.Process.Internal
 
@@ -175,5 +178,40 @@ def mkApiM {m : Type → Type} [Monad m] (raw : RawProcessOpsM m) : ProcessApiM 
     runCommand := fun program args => run raw (mkCommandRequest program args)
     runCommandChecked := fun program args => runChecked raw (mkCommandRequest program args)
     activeProcessCount := raw.activeProcessCount }
+
+/-- Build the full `ProcessApiM m` implementation directly over `ProcessSysCapsM m`, `Core.ConcOpsM m`, and `Core.StateCellM m`. -/
+def mkFullApiM {m : Type → Type} [Monad m] [MonadFinally m]
+    (sys : ProcessSysCapsM m) (conc : Core.ConcOpsM m)
+    (cell : Core.StateCellM m (ProcCellS conc.Ref conc.TaskHandle)) : ProcessApiM m :=
+  { mapRawError := (SysBridge.mkFullRawOpsM sys conc cell).mapRawError
+    validateRequest := validateRequest
+    mkCommandRequest := mkCommandRequest
+    withTextInput := withTextInput
+    spawn := spawn (SysBridge.mkFullRawOpsM sys conc cell)
+    awaitOutput := awaitOutput (SysBridge.mkFullRawOpsM sys conc cell)
+    killProcessGroup := killProcessGroup (SysBridge.mkFullRawOpsM sys conc cell)
+    reap := reap (SysBridge.mkFullRawOpsM sys conc cell)
+    run := run (SysBridge.mkFullRawOpsM sys conc cell)
+    runChecked := runChecked (SysBridge.mkFullRawOpsM sys conc cell)
+    runCommand := fun program args => run (SysBridge.mkFullRawOpsM sys conc cell) (mkCommandRequest program args)
+    runCommandChecked := fun program args => runChecked (SysBridge.mkFullRawOpsM sys conc cell) (mkCommandRequest program args)
+    activeProcessCount := (SysBridge.mkFullRawOpsM sys conc cell).activeProcessCount }
+
+/-- Construct a `ProcessApiM m` composing `Impl` and `SysBridge` over a `ProcessHostCapsM fd m` bundle. -/
+def mkApiFromCapsM {m : Type → Type} [Monad m] {fd : Type}
+    (cap : ProcessHostCapsM fd m) : ProcessApiM m :=
+  let deps : SysDepsM m fd :=
+    { proc := cap.proc
+      files := cap.files
+      poll := cap.poll
+      timeRand := cap.timeRand
+      postFork := cap.postFork
+      listAmbientEnv := Except.ok <$> cap.listEnvironBytes }
+  mkApiM (SysBridge.mkRawOpsM deps cap.table)
+
+/-- Construct a `ProcessApiM m` composing `Impl` and `SysBridge` over `HealthyHostCapsM m` (`LinuxSyscall.{Process,Files,Poll,TimeRand}`, `PostFork`, `EnvVars.Raw`). -/
+def mkApiFromHostCapsM {m : Type → Type} [Monad m]
+    (cap : HealthyHostCapsM m) : ProcessApiM m :=
+  mkApiFromCapsM cap
 
 end LeanSwe.Process.Internal

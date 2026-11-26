@@ -413,21 +413,33 @@ theorem proof_process_lifecycle_delegatesAndNormalizesErrors :
   refine ⟨?_, trivial⟩
   decide +kernel
 
-/-- Top-level `Core.Obeys` theorem for `LeanSwe.Process` over `Model` and `Model.HealthyHost`. -/
+/-- Top-level `Core.Obeys` theorem for `LeanSwe.Process` over `Internal.mkFullApiM`, `Model`, and `Model.FullStep`. -/
 theorem obeys_model :
     Core.ObeysPureEq LeanSwe.Process.mapRawError Model.mapRawErrorModel ∧
     Core.ObeysPureEq LeanSwe.Process.validateRequest Model.validateRequestModel ∧
     @Core.ObeysPureEq2 String (Array String) ExecRequest
       (@LeanSwe.Process.mkCommandRequest) Model.mkCommandRequestModel ∧
     Core.ObeysPureEq2 LeanSwe.Process.withTextInput Model.withTextInputModel ∧
-    Core.ObeysStepFrom id Model.processStateWf
-      Model.execRawStep Model.allowedRawStep
-      Model.processStateWf Internal.mkApiM
-      Model.execPkgStep Model.allowedPkgStep ∧
-    Core.ObeysStepFrom id Model.hostWorldWf
-      Model.execHostCapStep Model.allowedHostCapStep
-      Model.hostWorldWf Internal.mkApiFromHostCapsM
-      Model.execPkgStep Model.allowedPkgHostStep :=
-  process_refines_model
+    Core.ObeysStepFromConcCell (CellS := Internal.ProcCellS)
+      Model.mapFullWorldToState Model.procCellToState
+      Model.fullRawWf Model.execFullRawStep Model.allowedFullRawStep
+      Model.processStateWf Internal.mkFullApiM
+      Model.execPkgStep Model.allowedPkgStep :=
+  process_obeys_model
+
+/-- Non-vacuity witness showing all hypotheses of `obeys_model` are inhabited across every schedule `sched : Nat → Bool`. -/
+theorem obeys_model_nonvacuous (sched : Nat → Bool) :
+    ∃ (W : Type) (projRaw : W → Model.FullHostWorld)
+      (raw : Internal.ProcessSysCapsM (StateM W))
+      (conc : Core.ConcOpsM (StateM W))
+      (projCell : W → Internal.ProcCellS conc.Ref conc.TaskHandle)
+      (cell : Core.StateCellM (StateM W) (Internal.ProcCellS conc.Ref conc.TaskHandle)),
+      Core.ObeysStep projRaw Model.fullRawWf (Model.execFullRawStep raw) Model.allowedFullRawStep ∧
+      (∀ w req, Model.fullRawWf (projRaw w) = true →
+        projCell ((Model.execFullRawStep raw req).run w).2 = projCell w) ∧
+      Core.ObeysConcFrame (fun w => Model.fullRawWf (projRaw w) = true)
+        (fun w₁ w₂ => projCell w₂ = projCell w₁) conc ∧
+      Core.ObeysStateCell projRaw projCell cell :=
+  process_obeys_model_nonvacuous sched
 
 end LeanSwe.Process.Proofs

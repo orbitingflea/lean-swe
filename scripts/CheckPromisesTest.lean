@@ -72,15 +72,12 @@ private def baselineFiles : Array (String × String) := #[
     "theorem obeys_model : Core.ObeysPureEqUpToErrMsg MiniErr.kind MiniErr.message LeanSwe.MiniErrMsg.check LeanSwe.MiniErrMsg.Model.check := by\n" ++
     "  intro n; cases n with | zero => exact ⟨rfl, by decide⟩ | succ _ => rfl\nend LeanSwe.MiniErrMsg.Proofs\n"),
   ("LeanSwe/MiniInv/Types.lean", "namespace LeanSwe.MiniInv\nstructure InvErr where\n  message : String\nend LeanSwe.MiniInv\n"),
-  ("LeanSwe/MiniInv/Model.lean",
-    "import LeanSwe.MiniInv.Types\nnamespace LeanSwe.MiniInv.Model\n" ++
-    "def render (n : Nat) (_ : Unit) : Option Nat := some n\ndef wf (_ : Nat) : Prop := True\ndef equiv (a b : Nat) : Prop := a = b\nend LeanSwe.MiniInv.Model\n"),
+  ("LeanSwe/MiniInv/Model.lean", "import LeanSwe.MiniInv.Types\nnamespace LeanSwe.MiniInv.Model\ndef render (n : Nat) (_ : Unit) : Option Nat := some n\ndef wf (_ : Nat) : Prop := True\ndef equiv (a b : Nat) : Prop := a = b\nend LeanSwe.MiniInv.Model\n"),
   ("LeanSwe/MiniInv/Impl.lean", "import LeanSwe.MiniInv.Types\nnamespace LeanSwe.MiniInv.Internal\ndef parseImpl (n : Nat) : Except InvErr Nat := .ok n\nend LeanSwe.MiniInv.Internal\n"),
   ("LeanSwe/MiniInv/Interface.lean", "import LeanSwe.MiniInv.Impl\nnamespace LeanSwe.MiniInv\ndef parse (n : Nat) : Except InvErr Nat := Internal.parseImpl n\nend LeanSwe.MiniInv\n"),
   ("LeanSwe/MiniInv/Proofs.lean",
     "import Core.Obeys\nimport LeanSwe.MiniInv.Model\nimport LeanSwe.MiniInv.Interface\nnamespace LeanSwe.MiniInv.Proofs\n" ++
-    "theorem obeys_model : Core.ObeysInverseRender LeanSwe.MiniInv.parse LeanSwe.MiniInv.Model.render LeanSwe.MiniInv.Model.wf LeanSwe.MiniInv.Model.equiv InvErr.message :=\n" ++
-    "  fun _ => ⟨trivial, ⟨(), rfl⟩, fun _ _ h => Option.some.inj h⟩\nend LeanSwe.MiniInv.Proofs\n"),
+    "theorem obeys_model : Core.ObeysInverseRender LeanSwe.MiniInv.parse LeanSwe.MiniInv.Model.render LeanSwe.MiniInv.Model.wf LeanSwe.MiniInv.Model.equiv InvErr.message := fun _ => ⟨trivial, ⟨(), rfl⟩, fun _ _ h => Option.some.inj h⟩\nend LeanSwe.MiniInv.Proofs\n"),
   ("LeanSwe/MiniProp/Types.lean", "namespace LeanSwe.MiniProp\ndef inc (n : Nat) : Nat := n + 1\nend LeanSwe.MiniProp\n"),
   ("LeanSwe/MiniProp/Properties.lean",
     "import Core.NondetTest\nimport LeanSwe.MiniProp.Types\nnamespace LeanSwe.MiniProp.Properties\n" ++
@@ -105,15 +102,9 @@ private def baselineFiles : Array (String × String) := #[
     "import LeanSwe.MiniLeaf.Types\nimport LeanSwe.MiniLeaf.Model\nimport LeanSwe.MiniComp.Types\nnamespace LeanSwe.MiniComp.Model\ndef compWf (_ : Nat) : Bool := true\n" ++
     "def execRaw {W : Type} (ops : LeanSwe.MiniLeaf.LeafOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.ping req\ndef allowedRaw (s req out s' : Nat) : Prop := out = req ∧ s' = s\n" ++
     "def execPkg {W : Type} (api : CompApiM (StateM W)) (req : Nat) : StateM W Nat := api.callPing req\ndef allowedPkg (s req out s' : Nat) : Prop := out = req ∧ s' = s\nend LeanSwe.MiniComp.Model\n"),
-  ("LeanSwe/MiniComp/Impl.lean",
-    "import LeanSwe.MiniLeaf.Types\nimport LeanSwe.MiniComp.Types\nnamespace LeanSwe.MiniComp.Internal\n" ++
-    "def mkApiM {m : Type → Type} [Monad m] (leaf : LeanSwe.MiniLeaf.LeafOpsM m) : CompApiM m := { callPing := fun n => leaf.ping n }\nend LeanSwe.MiniComp.Internal\n"),
-  ("LeanSwe/MiniComp/Interface.lean",
-    "import LeanSwe.MiniLeaf.Interface\nimport LeanSwe.MiniComp.Impl\nnamespace LeanSwe.MiniComp\n" ++
-    "def defaultApi : CompApi := Internal.mkApiM LeanSwe.MiniLeaf.defaultOps\ndef callPing (n : Nat) : IO Nat := defaultApi.callPing n\nend LeanSwe.MiniComp\n"),
-  ("LeanSwe/MiniComp/Proofs.lean",
-    "import Core.Obeys\nimport LeanSwe.MiniComp.Model\nimport LeanSwe.MiniComp.Interface\nnamespace LeanSwe.MiniComp.Proofs\n" ++
-    "theorem obeys_model : Core.ObeysStepFrom id Model.compWf Model.execRaw Model.allowedRaw Model.compWf Internal.mkApiM Model.execPkg Model.allowedPkg := fun _ _ h => h\nend LeanSwe.MiniComp.Proofs\n")
+  ("LeanSwe/MiniComp/Impl.lean", "import LeanSwe.MiniLeaf.Types\nimport LeanSwe.MiniComp.Types\nnamespace LeanSwe.MiniComp.Internal\ndef mkApiM {m : Type → Type} [Monad m] (leaf : LeanSwe.MiniLeaf.LeafOpsM m) : CompApiM m := { callPing := fun n => leaf.ping n }\nend LeanSwe.MiniComp.Internal\n"),
+  ("LeanSwe/MiniComp/Interface.lean", "import LeanSwe.MiniLeaf.Interface\nimport LeanSwe.MiniComp.Impl\nnamespace LeanSwe.MiniComp\ndef defaultApi : CompApi := Internal.mkApiM LeanSwe.MiniLeaf.defaultOps\ndef callPing (n : Nat) : IO Nat := defaultApi.callPing n\nend LeanSwe.MiniComp\n"),
+  ("LeanSwe/MiniComp/Proofs.lean", "import Core.Obeys\nimport LeanSwe.MiniComp.Model\nimport LeanSwe.MiniComp.Interface\nnamespace LeanSwe.MiniComp.Proofs\ntheorem obeys_model : Core.ObeysStepFrom id Model.compWf Model.execRaw Model.allowedRaw Model.compWf Internal.mkApiM Model.execPkg Model.allowedPkg := fun _ _ h => h\nend LeanSwe.MiniComp.Proofs\n")
 ]
 
 private def baselineBuildOrder : Array String := #[
@@ -576,7 +567,9 @@ def main (_ : List String) : IO UInt32 := do
 
     assertPass "pure_from_suite"
       (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesPureFromTest.lean", bin.toString, tmpRoot.toString, realLibAbs.toString])
-    IO.println "CHECK_PROMISES_SELF_TEST: passed=55 failed=0"
+    assertPass "conc_cell_suite"
+      (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesConcCellTest.lean", bin.toString, tmpRoot.toString, baseDir.toString, realLibAbs.toString])
+    IO.println "CHECK_PROMISES_SELF_TEST: passed=60 failed=0"
     return 0
   finally
     if ← tmpRoot.pathExists then IO.FS.removeDirAll tmpRoot

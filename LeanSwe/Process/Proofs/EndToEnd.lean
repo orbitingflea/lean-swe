@@ -302,107 +302,175 @@ private theorem io_bind_ok {α β : Type} (act : IO α) (k : α → IO β) (w : 
   change EST.bind act k w = k a w'
   simp [EST.bind, h]
 
-/-- `SysBridge.catchProc` converts every uncaught `IO.Error` into `.error` and never throws in `IO`. -/
-theorem catchProc_never_throws {α : Type} (prog? : Option String)
-    (act : IO (Except ProcessError α)) (w : Void IO.RealWorld) :
-    ∃ res w', SysBridge.catchProc prog? act w = EST.Out.ok res w' := by
-  have heq : SysBridge.catchProc prog? act w =
-      EST.tryCatch act (fun err => EST.pure (.error (SysBridge.mapIoError prog? err))) w := rfl
+/-- `Core.ioConcOps.tryCatchMsg` converts every uncaught `IO.Error` into `.error` and never throws in `IO`. -/
+theorem ioConcOps_tryCatchMsg_never_throws {α : Type} (act : IO α) (w : Void IO.RealWorld) :
+    ∃ res w', Core.ioConcOps.tryCatchMsg act w = EST.Out.ok res w' := by
+  have heq : Core.ioConcOps.tryCatchMsg act w =
+      EST.tryCatch (EST.bind act (fun a => EST.pure (.ok a)))
+        (fun err => EST.pure (.error (toString err))) w := rfl
   rw [heq]
-  cases h : act w with
-  | ok a s => exact ⟨a, s, by simp [EST.tryCatch, h]⟩
-  | error e s => exact ⟨.error (SysBridge.mapIoError prog? e), s, by simp [EST.tryCatch, EST.pure, h]⟩
+  unfold EST.tryCatch EST.bind EST.pure
+  cases act w with
+  | ok a s => exact ⟨.ok a, s, rfl⟩
+  | error e s => exact ⟨.error (toString e), s, rfl⟩
 
-/-- `SysBridge.defaultOps.spawn` never throws an uncaught `IO.Error`. -/
-theorem defaultOps_spawn_never_throws (req : ExecRequest) (w : Void IO.RealWorld) :
-    ∃ res w', SysBridge.defaultOps.spawn req w = EST.Out.ok res w' :=
-  catchProc_never_throws (some req.program) _ w
+/-- `(Core.ioStateCell r).get` lifts `BaseIO` and never throws in `IO`. -/
+theorem ioStateCell_get_never_throws {S : Type} (r : IO.Ref S) (w : Void IO.RealWorld) :
+    ∃ s w', (Core.ioStateCell r).get w = EST.Out.ok s w' := by
+  change ∃ s w', (r.get : BaseIO S).toEIO w = EST.Out.ok s w'
+  unfold BaseIO.toEIO
+  cases (r.get : BaseIO S) w with
+  | mk a s => exact ⟨a, s, rfl⟩
 
-/-- `SysBridge.defaultOps.awaitOutput` never throws an uncaught `IO.Error`. -/
-theorem defaultOps_awaitOutput_never_throws (h : ProcessHandle)
-    (stdin : ByteArray) (timeoutMs? maxOutputBytes? : Option Nat) (w : Void IO.RealWorld) :
-    ∃ res w', SysBridge.defaultOps.awaitOutput h stdin timeoutMs? maxOutputBytes? w = EST.Out.ok res w' :=
-  catchProc_never_throws none _ w
+/-- `(Core.ioStateCell r).modifyGet` lifts `BaseIO` and never throws in `IO`. -/
+theorem ioStateCell_modifyGet_never_throws {S α : Type} (r : IO.Ref S)
+    (f : S → α × S) (w : Void IO.RealWorld) :
+    ∃ a w', (Core.ioStateCell r).modifyGet f w = EST.Out.ok a w' := by
+  change ∃ a w', (r.modifyGet f : BaseIO α).toEIO w = EST.Out.ok a w'
+  unfold BaseIO.toEIO
+  cases (r.modifyGet f : BaseIO α) w with
+  | mk a s => exact ⟨a, s, rfl⟩
 
-/-- `SysBridge.defaultOps.killProcessGroup` never throws an uncaught `IO.Error`. -/
-theorem defaultOps_killProcessGroup_never_throws (h : ProcessHandle) (w : Void IO.RealWorld) :
-    ∃ res w', SysBridge.defaultOps.killProcessGroup h w = EST.Out.ok res w' :=
-  catchProc_never_throws none _ w
+/-- `SysBridge.spawnConc` over `Core.ioConcOps` and `Core.ioStateCell` never throws in `IO`. -/
+theorem mkFullRawOps_spawn_never_throws (sys : Internal.ProcessSysCapsM IO)
+    (r : IO.Ref (Internal.ProcTableState LinuxSyscall.RawFd)) (fuel : Nat)
+    (req : ExecRequest) (w : Void IO.RealWorld) :
+    ∃ res w', SysBridge.spawnConc sys Core.ioConcOps (Core.ioStateCell r) fuel req w = EST.Out.ok res w' := by
+  unfold SysBridge.spawnConc
+  rcases ioConcOps_tryCatchMsg_never_throws _ w with ⟨tr, w1, h1⟩
+  rw [io_bind_ok _ _ _ h1]
+  cases tr with
+  | error msg => exact ⟨_, w1, rfl⟩
+  | ok osRes =>
+    cases osRes with
+    | error err => exact ⟨_, w1, rfl⟩
+    | ok slot =>
+      dsimp only
+      rcases ioStateCell_modifyGet_never_throws r (fun st => SysBridge.insertSlotPure st slot) w1 with ⟨hid, w2, h2⟩
+      rw [io_bind_ok _ _ _ h2]
+      exact ⟨_, w2, rfl⟩
 
-/-- `SysBridge.defaultOps.reap` never throws an uncaught `IO.Error`. -/
-theorem defaultOps_reap_never_throws (h : ProcessHandle) (w : Void IO.RealWorld) :
-    ∃ res w', SysBridge.defaultOps.reap h w = EST.Out.ok res w' :=
-  catchProc_never_throws none _ w
+/-- `SysBridge.awaitOutputConc` over `Core.ioConcOps` and `Core.ioStateCell` never throws in `IO`. -/
+theorem mkFullRawOps_awaitOutput_never_throws (sys : Internal.ProcessSysCapsM IO)
+    (r : IO.Ref (Internal.ProcTableState LinuxSyscall.RawFd)) (ef iof : Nat)
+    (h : ProcessHandle) (stdin : ByteArray) (timeoutMs? maxOutputBytes? : Option Nat)
+    (w : Void IO.RealWorld) :
+    ∃ res w', SysBridge.awaitOutputConc sys Core.ioConcOps (Core.ioStateCell r) ef iof
+      h stdin timeoutMs? maxOutputBytes? w = EST.Out.ok res w' := by
+  unfold SysBridge.awaitOutputConc
+  rcases ioStateCell_modifyGet_never_throws r (fun st => SysBridge.takeSlotIoPure st h.handleId) w with ⟨tk, w1, h1⟩
+  rw [io_bind_ok _ _ _ h1]
+  cases tk with
+  | none => exact ⟨_, w1, rfl⟩
+  | some tup =>
+    rcases tup with ⟨pid, inFd0?, outFd0?, errFd0?⟩
+    dsimp only
+    rcases ioConcOps_tryCatchMsg_never_throws _ w1 with ⟨tr, w2, h2⟩
+    rw [io_bind_ok _ _ _ h2]
+    cases tr with
+    | error msg => exact ⟨_, w2, rfl⟩
+    | ok osRes =>
+      cases osRes with
+      | error err => exact ⟨_, w2, rfl⟩
+      | ok pair =>
+        rcases pair with ⟨waitedFlag, outcome⟩
+        dsimp only
+        rcases ioStateCell_modifyGet_never_throws r (fun st => SysBridge.markWaitedPure st h.handleId waitedFlag) w2 with
+          ⟨okFlag, w3, h3⟩
+        rw [io_bind_ok _ _ _ h3]
+        cases okFlag <;> exact ⟨_, w3, rfl⟩
 
-/-- `Internal.run SysBridge.defaultOps` never throws an uncaught `IO.Error` on any `ExecRequest`. -/
-theorem process_defaultOps_run_never_throws (req : ExecRequest) (w : Void IO.RealWorld) :
-    ∃ res w', Internal.run SysBridge.defaultOps req w = EST.Out.ok res w' := by
-  unfold Internal.run
+/-- `SysBridge.killProcessGroupConc` over `Core.ioConcOps` and `Core.ioStateCell` never throws in `IO`. -/
+theorem mkFullRawOps_killProcessGroup_never_throws (sys : Internal.ProcessSysCapsM IO)
+    (r : IO.Ref (Internal.ProcTableState LinuxSyscall.RawFd)) (ef : Nat)
+    (h : ProcessHandle) (w : Void IO.RealWorld) :
+    ∃ res w', SysBridge.killProcessGroupConc sys Core.ioConcOps (Core.ioStateCell r) ef h w = EST.Out.ok res w' := by
+  unfold SysBridge.killProcessGroupConc
+  rcases ioStateCell_get_never_throws r w with ⟨st, w1, h1⟩
+  rw [io_bind_ok _ _ _ h1]
+  cases (SysBridge.findSlotPure h.handleId st.slots).map (·.pgid) with
+  | none => exact ⟨_, w1, rfl⟩
+  | some pgid =>
+    dsimp only
+    rcases ioConcOps_tryCatchMsg_never_throws _ w1 with ⟨tr, w2, h2⟩
+    rw [io_bind_ok _ _ _ h2]
+    cases tr <;> exact ⟨_, w2, rfl⟩
+
+/-- `SysBridge.reapConc` over `Core.ioConcOps` and `Core.ioStateCell` never throws in `IO`. -/
+theorem mkFullRawOps_reap_never_throws (sys : Internal.ProcessSysCapsM IO)
+    (r : IO.Ref (Internal.ProcTableState LinuxSyscall.RawFd)) (ef : Nat)
+    (h : ProcessHandle) (w : Void IO.RealWorld) :
+    ∃ res w', SysBridge.reapConc sys Core.ioConcOps (Core.ioStateCell r) ef h w = EST.Out.ok res w' := by
+  unfold SysBridge.reapConc
+  rcases ioStateCell_modifyGet_never_throws r (fun st => SysBridge.detachSlotPure st h.handleId) w with ⟨det, w1, h1⟩
+  rw [io_bind_ok _ _ _ h1]
+  cases det with
+  | none => exact ⟨_, w1, rfl⟩
+  | some slot =>
+    dsimp only
+    rcases ioConcOps_tryCatchMsg_never_throws _ w1 with ⟨tr, w2, h2⟩
+    rw [io_bind_ok _ _ _ h2]
+    cases tr <;> exact ⟨_, w2, rfl⟩
+
+/-- `Internal.run (SysBridge.mkFullRawOpsM sys Core.ioConcOps (Core.ioStateCell r))` never throws in `IO`. -/
+theorem mkFullRawOps_run_never_throws (sys : Internal.ProcessSysCapsM IO)
+    (r : IO.Ref (Internal.ProcTableState LinuxSyscall.RawFd))
+    (req : ExecRequest) (w : Void IO.RealWorld) :
+    ∃ res w', Internal.run (SysBridge.mkFullRawOpsM sys Core.ioConcOps (Core.ioStateCell r)) req w = EST.Out.ok res w' := by
+  unfold Internal.run SysBridge.mkFullRawOpsM
   cases Internal.validateRequest req with
   | error err => exact ⟨.error err, w, rfl⟩
   | ok norm =>
     dsimp only
-    rcases defaultOps_spawn_never_throws norm w with ⟨r1, w1, hw1⟩
+    rcases mkFullRawOps_spawn_never_throws sys r _ norm w with ⟨r1, w1, hw1⟩
     rw [io_bind_ok _ _ _ hw1]
     cases r1 with
     | error err => exact ⟨_, w1, rfl⟩
     | ok h =>
       dsimp only
-      rcases defaultOps_awaitOutput_never_throws h norm.stdin norm.timeoutMs norm.maxOutputBytes w1 with
+      rcases mkFullRawOps_awaitOutput_never_throws sys r _ _ h norm.stdin norm.timeoutMs norm.maxOutputBytes w1 with
         ⟨r2, w2, hw2⟩
       rw [io_bind_ok _ _ _ hw2]
       cases r2 with
       | error err =>
         dsimp only
-        rcases defaultOps_killProcessGroup_never_throws h w2 with ⟨_, wk, hwk⟩
+        rcases mkFullRawOps_killProcessGroup_never_throws sys r _ h w2 with ⟨_, wk, hwk⟩
         rw [io_bind_ok _ _ _ hwk]
-        rcases defaultOps_reap_never_throws h wk with ⟨_, wr, hwr⟩
+        rcases mkFullRawOps_reap_never_throws sys r _ h wk with ⟨_, wr, hwr⟩
         rw [io_bind_ok _ _ _ hwr]
         exact ⟨_, wr, rfl⟩
       | ok outcome =>
         cases outcome with
         | exited res =>
           dsimp only
-          rcases defaultOps_reap_never_throws h w2 with ⟨rr, wr, hwr⟩
+          rcases mkFullRawOps_reap_never_throws sys r _ h w2 with ⟨rr, wr, hwr⟩
           rw [io_bind_ok _ _ _ hwr]
           cases rr <;> exact ⟨_, wr, rfl⟩
-        | signaled _ _ _ =>
+        | signaled _ _ _ | timedOut _ _ | outputLimitExceeded _ _ =>
           dsimp only
-          rcases defaultOps_killProcessGroup_never_throws h w2 with ⟨_, wk, hwk⟩
+          rcases mkFullRawOps_killProcessGroup_never_throws sys r _ h w2 with ⟨_, wk, hwk⟩
           rw [io_bind_ok _ _ _ hwk]
-          rcases defaultOps_reap_never_throws h wk with ⟨_, wr, hwr⟩
-          rw [io_bind_ok _ _ _ hwr]
-          exact ⟨_, wr, rfl⟩
-        | timedOut _ _ =>
-          dsimp only
-          rcases defaultOps_killProcessGroup_never_throws h w2 with ⟨_, wk, hwk⟩
-          rw [io_bind_ok _ _ _ hwk]
-          rcases defaultOps_reap_never_throws h wk with ⟨_, wr, hwr⟩
-          rw [io_bind_ok _ _ _ hwr]
-          exact ⟨_, wr, rfl⟩
-        | outputLimitExceeded _ _ =>
-          dsimp only
-          rcases defaultOps_killProcessGroup_never_throws h w2 with ⟨_, wk, hwk⟩
-          rw [io_bind_ok _ _ _ hwk]
-          rcases defaultOps_reap_never_throws h wk with ⟨_, wr, hwr⟩
+          rcases mkFullRawOps_reap_never_throws sys r _ h wk with ⟨_, wr, hwr⟩
           rw [io_bind_ok _ _ _ hwr]
           exact ⟨_, wr, rfl⟩
 
 /-- `LeanSwe.Process.run` never throws an uncaught `IO.Error` on any `ExecRequest`. -/
 theorem process_run_never_throws (req : ExecRequest) (w : Void IO.RealWorld) :
-    ∃ res w', LeanSwe.Process.run req w = EST.Out.ok res w' :=
-  process_defaultOps_run_never_throws req w
+    ∃ res w', LeanSwe.Process.run req w = EST.Out.ok res w' := by
+  unfold LeanSwe.Process.run defaultApi Internal.mkFullApiM
+  dsimp only
+  exact mkFullRawOps_run_never_throws _ _ req w
 
 /-- `LeanSwe.Process.spawn` never throws an uncaught `IO.Error` on any `SpawnRequest`. -/
 theorem process_spawn_never_throws (req : SpawnRequest) (w : Void IO.RealWorld) :
     ∃ res w', LeanSwe.Process.spawn req w = EST.Out.ok res w' := by
-  unfold LeanSwe.Process.spawn defaultApi Internal.mkApiM Internal.spawn
+  unfold LeanSwe.Process.spawn defaultApi Internal.mkFullApiM Internal.spawn SysBridge.mkFullRawOpsM
   dsimp only
   cases Internal.validateSpawnRequest req with
   | error err => exact ⟨.error err, w, rfl⟩
   | ok norm =>
     dsimp only
-    rcases defaultOps_spawn_never_throws { toSpawnRequest := norm } w with ⟨r1, w1, hw1⟩
+    rcases mkFullRawOps_spawn_never_throws _ _ _ { toSpawnRequest := norm } w with ⟨r1, w1, hw1⟩
     rw [io_bind_ok _ _ _ hw1]
     cases r1 <;> exact ⟨_, w1, rfl⟩
 
@@ -410,29 +478,29 @@ theorem process_spawn_never_throws (req : SpawnRequest) (w : Void IO.RealWorld) 
 theorem process_awaitOutput_never_throws (h : ProcessHandle)
     (stdin : ByteArray) (timeoutMs? maxOutputBytes? : Option Nat) (w : Void IO.RealWorld) :
     ∃ res w', LeanSwe.Process.awaitOutput h stdin timeoutMs? maxOutputBytes? w = EST.Out.ok res w' := by
-  unfold LeanSwe.Process.awaitOutput defaultApi Internal.mkApiM Internal.awaitOutput
+  unfold LeanSwe.Process.awaitOutput defaultApi Internal.mkFullApiM Internal.awaitOutput SysBridge.mkFullRawOpsM
   dsimp only
   split
   · exact ⟨_, w, rfl⟩
-  · rcases defaultOps_awaitOutput_never_throws h stdin timeoutMs? maxOutputBytes? w with ⟨r1, w1, hw1⟩
+  · rcases mkFullRawOps_awaitOutput_never_throws _ _ _ _ h stdin timeoutMs? maxOutputBytes? w with ⟨r1, w1, hw1⟩
     rw [io_bind_ok _ _ _ hw1]
     cases r1 <;> exact ⟨_, w1, rfl⟩
 
 /-- `LeanSwe.Process.killProcessGroup` never throws an uncaught `IO.Error`. -/
 theorem process_killProcessGroup_never_throws (h : ProcessHandle) (w : Void IO.RealWorld) :
     ∃ res w', LeanSwe.Process.killProcessGroup h w = EST.Out.ok res w' := by
-  unfold LeanSwe.Process.killProcessGroup defaultApi Internal.mkApiM Internal.killProcessGroup
+  unfold LeanSwe.Process.killProcessGroup defaultApi Internal.mkFullApiM Internal.killProcessGroup SysBridge.mkFullRawOpsM
   dsimp only
-  rcases defaultOps_killProcessGroup_never_throws h w with ⟨r1, w1, hw1⟩
+  rcases mkFullRawOps_killProcessGroup_never_throws _ _ _ h w with ⟨r1, w1, hw1⟩
   rw [io_bind_ok _ _ _ hw1]
   cases r1 <;> exact ⟨_, w1, rfl⟩
 
 /-- `LeanSwe.Process.reap` never throws an uncaught `IO.Error`. -/
 theorem process_reap_never_throws (h : ProcessHandle) (w : Void IO.RealWorld) :
     ∃ res w', LeanSwe.Process.reap h w = EST.Out.ok res w' := by
-  unfold LeanSwe.Process.reap defaultApi Internal.mkApiM Internal.reap
+  unfold LeanSwe.Process.reap defaultApi Internal.mkFullApiM Internal.reap SysBridge.mkFullRawOpsM
   dsimp only
-  rcases defaultOps_reap_never_throws h w with ⟨r1, w1, hw1⟩
+  rcases mkFullRawOps_reap_never_throws _ _ _ h w with ⟨r1, w1, hw1⟩
   rw [io_bind_ok _ _ _ hw1]
   cases r1 <;> exact ⟨_, w1, rfl⟩
 

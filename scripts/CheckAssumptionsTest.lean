@@ -1528,6 +1528,180 @@ def main (_ : List String) : IO UInt32 := do
          "  ⟨fun _ => rfl, fun _ _ h => h⟩\nend LeanSwe.MiniPure.Proofs\n")
       return #["LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl", "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
 
+    runPositiveCase base tmpRoot bin "obeys_stepfrom_conc_cell_accepted" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure RawCellOpsM (m : Type → Type) where\n  stepRaw : Nat → m Nat\n" ++
+         "structure CellApiM (m : Type → Type) where\n  stepPkg : Nat → m Nat\n" ++
+         "abbrev CellFam (_ _ : Type → Type) : Type := Nat\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def mapWorld (r c : Nat) : Nat := r + c\n" ++
+         "def cellProj {R T : Type → Type} (c : CellFam R T) : Nat := c\n" ++
+         "def rawWf (_ : Nat) : Bool := true\n" ++
+         "def execRaw {W : Type} (raw : RawCellOpsM (StateM W)) (k : Nat) : StateM W Nat := raw.stepRaw k\n" ++
+         "def rawAllowed (s k out s' : Nat) : Prop := out = s + k ∧ s' = s + 1\n" ++
+         "def execPkg {W : Type} (api : CellApiM (StateM W)) (k : Nat) : StateM W Nat := api.stepPkg k\n" ++
+         "def pkgAllowed (s k out s' : Nat) : Prop := out = s + k ∧ s' = s + 1\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import Core.ConcOps\nimport LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkFullApiM {m : Type → Type} [Monad m] [MonadFinally m] (raw : RawCellOpsM m) (conc : Core.ConcOpsM m) (cell : Core.StateCellM m (CellFam conc.Ref conc.TaskHandle)) : CellApiM m :=\n" ++
+         "  { stepPkg := fun k => do let _ := conc; let c ← cell.get; let v ← raw.stepRaw k; pure (v + c) }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n" ++
+         "private initialize gCell : IO.Ref Nat ← IO.mkRef 0\n" ++
+         "def defaultApi : CellApiM IO := Internal.mkFullApiM { stepRaw := pure } Core.ioConcOps (Core.ioStateCell gCell)\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def stepPkg (k : Nat) : IO Nat := defaultApi.stepPkg k\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.ConcOps\nimport LeanSwe.MiniPure.SpecTests\nnamespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧ " ++
+         "Core.ObeysStepFromConcCell (CellS := CellFam) Model.mapWorld Model.cellProj Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf Internal.mkFullApiM Model.execPkg Model.pkgAllowed := by\n" ++
+         "  refine ⟨fun _ => rfl, ?_⟩\n" ++
+         "  intro W projRaw raw conc projCell cell hraw hfr _ hcell w req _; have hc := hcell.1 w; cases hg : cell.get.run w with | mk c0 w1 =>\n" ++
+         "    rw [hg] at hc; dsimp only at hc; have hr := hraw w1 req rfl; have hcf := hfr w1 req rfl; dsimp only [Core.ObeysStep, Model.execRaw] at hr hcf; cases hp : (raw.stepRaw req).run w1 with | mk v w2 =>\n" ++
+         "      rw [hp] at hr hcf; dsimp only [Model.rawAllowed] at hr; dsimp only [Core.ObeysStep, Model.execPkg, Model.pkgAllowed, Model.mapWorld, Model.cellProj, Internal.mkFullApiM, bind, StateT.bind, pure, StateT.pure, StateT.run, Id.run] at hg hp ⊢\n" ++
+         "      rw [hg]; dsimp only; rw [hp]; dsimp only; obtain ⟨rfl, hc1, hr1⟩ := hc; obtain ⟨rfl, hr2⟩ := hr; rw [hr2, hcf, hc1, hr1]; omega\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #["LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl", "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
+
+    runMutantCase base tmpRoot bin "obeys_stepfrom_conc_cell_non_model_cell_proj_rejected" "NON_MODEL_SPEC_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure RawCellOpsM (m : Type → Type) where\n  stepRaw : Nat → m Nat\n" ++
+         "structure CellApiM (m : Type → Type) where\n  stepPkg : Nat → m Nat\n" ++
+         "abbrev CellFam (_ _ : Type → Type) : Type := Nat\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def mapWorld (r c : Nat) : Nat := r + c\n" ++
+         "def rawWf (_ : Nat) : Bool := true\n" ++
+         "def execRaw {W : Type} (raw : RawCellOpsM (StateM W)) (k : Nat) : StateM W Nat := raw.stepRaw k\n" ++
+         "def rawAllowed (s k out s' : Nat) : Prop := out = s + k ∧ s' = s + 1\n" ++
+         "def execPkg {W : Type} (api : CellApiM (StateM W)) (k : Nat) : StateM W Nat := api.stepPkg k\n" ++
+         "def pkgAllowed (s k out s' : Nat) : Prop := out = s + k ∧ s' = s + 1\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import Core.ConcOps\nimport LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkFullApiM {m : Type → Type} [Monad m] [MonadFinally m] (raw : RawCellOpsM m) (conc : Core.ConcOpsM m) (cell : Core.StateCellM m (CellFam conc.Ref conc.TaskHandle)) : CellApiM m :=\n" ++
+         "  { stepPkg := fun k => do let _ := conc; let c ← cell.get; let v ← raw.stepRaw k; pure (v + c) }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n" ++
+         "private initialize gCell : IO.Ref Nat ← IO.mkRef 0\n" ++
+         "def defaultApi : CellApiM IO := Internal.mkFullApiM { stepRaw := pure } Core.ioConcOps (Core.ioStateCell gCell)\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def stepPkg (k : Nat) : IO Nat := defaultApi.stepPkg k\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.ConcOps\nimport LeanSwe.MiniPure.SpecTests\nnamespace LeanSwe.MiniPure.Proofs\n" ++
+         "def localCellProj {R T : Type → Type} (c : CellFam R T) : Nat := c\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧ " ++
+         "Core.ObeysStepFromConcCell (CellS := CellFam) Model.mapWorld localCellProj Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf Internal.mkFullApiM Model.execPkg Model.pkgAllowed := by\n" ++
+         "  refine ⟨fun _ => rfl, ?_⟩\n" ++
+         "  intro W projRaw raw conc projCell cell hraw hfr _ hcell w req _; have hc := hcell.1 w; cases hg : cell.get.run w with | mk c0 w1 =>\n" ++
+         "    rw [hg] at hc; dsimp only at hc; have hr := hraw w1 req rfl; have hcf := hfr w1 req rfl; dsimp only [Core.ObeysStep, Model.execRaw] at hr hcf; cases hp : (raw.stepRaw req).run w1 with | mk v w2 =>\n" ++
+         "      rw [hp] at hr hcf; dsimp only [Model.rawAllowed] at hr; dsimp only [Core.ObeysStep, Model.execPkg, Model.pkgAllowed, Model.mapWorld, localCellProj, Internal.mkFullApiM, bind, StateT.bind, pure, StateT.pure, StateT.run, Id.run] at hg hp ⊢\n" ++
+         "      rw [hg]; dsimp only; rw [hp]; dsimp only; obtain ⟨rfl, hc1, hr1⟩ := hc; obtain ⟨rfl, hr2⟩ := hr; rw [hr2, hcf, hc1, hr1]; omega\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #["LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl", "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
+
+    runMutantCase base tmpRoot bin "obeys_stepfrom_conc_cell_lambda_id_map_s_rejected" "LAMBDA_OR_PARTIAL_APP_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure RawCellOpsM (m : Type → Type) where\n  stepRaw : Nat → m Nat\n" ++
+         "structure CellApiM (m : Type → Type) where\n  stepPkg : Nat → m Nat\n" ++
+         "abbrev CellFam (_ _ : Type → Type) : Type := Nat\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def cellProj {R T : Type → Type} (c : CellFam R T) : Nat := c\n" ++
+         "def rawWf (_ : Nat) : Bool := true\n" ++
+         "def execRaw {W : Type} (raw : RawCellOpsM (StateM W)) (k : Nat) : StateM W Nat := raw.stepRaw k\n" ++
+         "def rawAllowed (s k out s' : Nat) : Prop := out = k ∧ s' = s\n" ++
+         "def execPkg {W : Type} (api : CellApiM (StateM W)) (k : Nat) : StateM W Nat := api.stepPkg k\n" ++
+         "def pkgAllowed (s k out s' : Nat) : Prop := out = k + s ∧ s' = s\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import Core.ConcOps\nimport LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkFullApiM {m : Type → Type} [Monad m] [MonadFinally m] (raw : RawCellOpsM m) (conc : Core.ConcOpsM m) (cell : Core.StateCellM m (CellFam conc.Ref conc.TaskHandle)) : CellApiM m :=\n" ++
+         "  { stepPkg := fun k => do let _ := conc; let c ← cell.get; let v ← raw.stepRaw k; pure (v + c) }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n" ++
+         "private initialize gCell : IO.Ref Nat ← IO.mkRef 0\n" ++
+         "def defaultApi : CellApiM IO := Internal.mkFullApiM { stepRaw := pure } Core.ioConcOps (Core.ioStateCell gCell)\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def stepPkg (k : Nat) : IO Nat := defaultApi.stepPkg k\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.ConcOps\nimport LeanSwe.MiniPure.SpecTests\nnamespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧ " ++
+         "Core.ObeysStepFromConcCell (CellS := CellFam) (fun _ => id) Model.cellProj Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf Internal.mkFullApiM Model.execPkg Model.pkgAllowed := by\n" ++
+         "  refine ⟨fun _ => rfl, ?_⟩\n" ++
+         "  intro W projRaw raw conc projCell cell hraw hfr _ hcell w req _; have hc := hcell.1 w; cases hg : cell.get.run w with | mk c0 w1 =>\n" ++
+         "    rw [hg] at hc; dsimp only at hc; have hr := hraw w1 req rfl; have hcf := hfr w1 req rfl; dsimp only [Core.ObeysStep, Model.execRaw] at hr hcf; cases hp : (raw.stepRaw req).run w1 with | mk v w2 =>\n" ++
+         "      rw [hp] at hr hcf; dsimp only [Model.rawAllowed] at hr; dsimp only [Core.ObeysStep, Model.execPkg, Model.pkgAllowed, Model.cellProj, Internal.mkFullApiM, id, bind, StateT.bind, pure, StateT.pure, StateT.run, Id.run] at hg hp ⊢\n" ++
+         "      rw [hg]; dsimp only; rw [hp]; dsimp only; obtain ⟨rfl, hc1, _⟩ := hc; obtain ⟨rfl, _⟩ := hr; rw [hcf, hc1]; exact ⟨rfl, rfl⟩\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #["LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl", "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
+
+    runMutantCase base tmpRoot bin "obeys_stepfrom_conc_cell_lambda_id_cell_proj_rejected" "LAMBDA_OR_PARTIAL_APP_IN_REFINES" fun mr => do
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
+        ("namespace LeanSwe.MiniPure\n" ++
+         "structure RawCellOpsM (m : Type → Type) where\n  stepRaw : Nat → m Nat\n" ++
+         "structure CellApiM (m : Type → Type) where\n  stepPkg : Nat → m Nat\n" ++
+         "abbrev CellFam (_ _ : Type → Type) : Type := Nat\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
+        ("import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\n" ++
+         "def evalModel (n : Nat) : Nat := n + 1\n" ++
+         "def mapWorld (r c : Nat) : Nat := r + c\n" ++
+         "def rawWf (_ : Nat) : Bool := true\n" ++
+         "def execRaw {W : Type} (raw : RawCellOpsM (StateM W)) (k : Nat) : StateM W Nat := raw.stepRaw k\n" ++
+         "def rawAllowed (s k out s' : Nat) : Prop := out = s + k ∧ s' = s + 1\n" ++
+         "def execPkg {W : Type} (api : CellApiM (StateM W)) (k : Nat) : StateM W Nat := api.stepPkg k\n" ++
+         "def pkgAllowed (s k out s' : Nat) : Prop := out = s + k ∧ s' = s + 1\n" ++
+         "end LeanSwe.MiniPure.Model\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
+        ("import Core.ConcOps\nimport LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\n" ++
+         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+         "def mkFullApiM {m : Type → Type} [Monad m] [MonadFinally m] (raw : RawCellOpsM m) (conc : Core.ConcOpsM m) (cell : Core.StateCellM m (CellFam conc.Ref conc.TaskHandle)) : CellApiM m :=\n" ++
+         "  { stepPkg := fun k => do let _ := conc; let c ← cell.get; let v ← raw.stepRaw k; pure (v + c) }\n" ++
+         "end LeanSwe.MiniPure.Internal\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
+        ("import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\n" ++
+         "private initialize gCell : IO.Ref Nat ← IO.mkRef 0\n" ++
+         "def defaultApi : CellApiM IO := Internal.mkFullApiM { stepRaw := pure } Core.ioConcOps (Core.ioStateCell gCell)\n" ++
+         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+         "def stepPkg (k : Nat) : IO Nat := defaultApi.stepPkg k\n" ++
+         "end LeanSwe.MiniPure\n")
+      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
+        ("import Core.ConcOps\nimport LeanSwe.MiniPure.SpecTests\nnamespace LeanSwe.MiniPure.Proofs\n" ++
+         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
+         "theorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧ " ++
+         "Core.ObeysStepFromConcCell (CellS := CellFam) Model.mapWorld (fun {_ _} => id) Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf Internal.mkFullApiM Model.execPkg Model.pkgAllowed := by\n" ++
+         "  refine ⟨fun _ => rfl, ?_⟩\n" ++
+         "  intro W projRaw raw conc projCell cell hraw hfr _ hcell w req _; have hc := hcell.1 w; cases hg : cell.get.run w with | mk c0 w1 =>\n" ++
+         "    rw [hg] at hc; dsimp only at hc; have hr := hraw w1 req rfl; have hcf := hfr w1 req rfl; dsimp only [Core.ObeysStep, Model.execRaw] at hr hcf; cases hp : (raw.stepRaw req).run w1 with | mk v w2 =>\n" ++
+         "      rw [hp] at hr hcf; dsimp only [Model.rawAllowed] at hr; dsimp only [Core.ObeysStep, Model.execPkg, Model.pkgAllowed, Model.mapWorld, Internal.mkFullApiM, id, bind, StateT.bind, pure, StateT.pure, StateT.run, Id.run] at hg hp ⊢\n" ++
+         "      rw [hg]; dsimp only; rw [hp]; dsimp only; obtain ⟨rfl, hc1, hr1⟩ := hc; obtain ⟨rfl, hr2⟩ := hr; rw [hr2, hcf, hc1, hr1]; omega\n" ++
+         "end LeanSwe.MiniPure.Proofs\n")
+      return #["LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl", "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"]
+
     runMutantCase base tmpRoot bin "step_from_uninhabited_fd_type_rejected" "LAMBDA_OR_PARTIAL_APP_IN_REFINES" fun mr => do
       writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
         ("namespace LeanSwe.MiniPure\n" ++
