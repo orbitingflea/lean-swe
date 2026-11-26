@@ -370,8 +370,27 @@ private def verifyCaptureDrain (op : String) (capFd? : Option UInt32)
       throw (IO.userError s!"FUZZ_MISMATCH|{op}|bytes|got={repr drained.data.toList} exp={repr expDelta.data.toList}")
   return clearCapPipePending chNext drained chPrev.writtenBytes.size
 
+private def cmdLineErrKindCtor : CmdLineErrorKind → String
+  | .helpRequested => "LeanSwe.CmdLine.CmdLineErrorKind.helpRequested"
+  | .versionRequested => "LeanSwe.CmdLine.CmdLineErrorKind.versionRequested"
+  | .unknownOption => "LeanSwe.CmdLine.CmdLineErrorKind.unknownOption"
+  | .missingOption => "LeanSwe.CmdLine.CmdLineErrorKind.missingOption"
+  | .missingArgument => "LeanSwe.CmdLine.CmdLineErrorKind.missingArgument"
+  | .unexpectedArgument => "LeanSwe.CmdLine.CmdLineErrorKind.unexpectedArgument"
+  | .invalidValue => "LeanSwe.CmdLine.CmdLineErrorKind.invalidValue"
+  | .unknownSubcommand => "LeanSwe.CmdLine.CmdLineErrorKind.unknownSubcommand"
+  | .invalidSpec => "LeanSwe.CmdLine.CmdLineErrorKind.invalidSpec"
+  | .eof => "LeanSwe.CmdLine.CmdLineErrorKind.eof"
+  | .ioError => "LeanSwe.CmdLine.CmdLineErrorKind.ioError"
+
+private def logCmdLineErr {α : Type} (emitErrHits : Bool) (qualOp : String)
+    (res : Except CmdLineError α) : IO Unit := do
+  if emitErrHits then
+    if let .error e := res then
+      Fuzz.Common.logErrHit qualOp (cmdLineErrKindCtor e.kind) "real"
+
 private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOutErr : Bool)
-    (op : CmdLineFuzzOp) : IO (EpisodeCtx × CoverageTracker × Bool) := do
+    (op : CmdLineFuzzOp) (emitErrHits : Bool := false) : IO (EpisodeCtx × CoverageTracker × Bool) := do
   match op with
   | .setupStdin kind =>
     let (fd?, isPty, backing, skip) ← match kind with
@@ -664,6 +683,7 @@ private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOut
       return (ctx, tracker, priorOutErr)
     disarmSigalrmRaw 0
     let actual ← CmdLine.promptLine prompt default
+    logCmdLineErr emitErrHits "LeanSwe.CmdLine.promptLine" actual
     let outWouldBlock := (Model.stepDefaultWriteOut ctx.world prompt).1 == .threwIo .wouldBlock
     let outCh' ← try
       verifyCaptureDrain "PROMPTLINE_BYTES" ctx.stdoutCapFd? ctx.world.stdout wNext.stdout outWouldBlock
@@ -704,6 +724,7 @@ private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOut
       return (ctx, tracker, priorOutErr)
     disarmSigalrmRaw 0
     let actual ← CmdLine.confirm prompt default maxAttempts
+    logCmdLineErr emitErrHits "LeanSwe.CmdLine.confirm" actual
     let outWouldBlock := (Model.stepDefaultWriteOut ctx.world prompt).1 == .threwIo .wouldBlock
     let errWouldBlock := !outWouldBlock && wNext.lastErrno == 11 && match ctx.world.stderr.backing with
       | .pipe _ _ true _ _ => true
@@ -766,6 +787,7 @@ private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOut
     }
     let exp : Except CmdLineError ParsedCmd := CmdLine.Internal.parseWithEnvSpecM modelOps spec args []
     let actual ← CmdLine.parseWithEnv spec args
+    logCmdLineErr emitErrHits "LeanSwe.CmdLine.parseWithEnv" actual
     if !exceptCmdEq actual exp then
       let _ ← restoreStdioRaw 0
       throw (IO.userError s!"FUZZ_MISMATCH|PARSEWITHENV|mismatch|exp={repr exp} actual={repr actual}")
@@ -840,30 +862,37 @@ private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOut
     let mut t := tracker
     match exp with
     | .returned 0 =>
-      match CmdLine.parse spec args with
+      let pRes := CmdLine.parse spec args
+      logCmdLineErr emitErrHits "LeanSwe.CmdLine.parse" pRes
+      match pRes with
       | .error e =>
         if e.kind == .helpRequested then t := t.record "runCli" "ret.0_help"
         else if e.kind == .versionRequested then t := t.record "runCli" "ret.0_version"
       | .ok _ => t := t.record "runCli" "ret.handler_code"
     | .returned 2 =>
-      match CmdLine.parse spec args with
+      let pRes := CmdLine.parse spec args
+      logCmdLineErr emitErrHits "LeanSwe.CmdLine.parse" pRes
+      match pRes with
       | .error _ => t := t.record "runCli" "ret.2_parse_err"
       | .ok _ => t := t.record "runCli" "ret.2_env_ioError"
     | .returned _ =>
       t := t.record "runCli" "ret.handler_code"
     | .threwIo c =>
-      let bkt := match c with
+      let bkt ← match c with
         | .brokenPipe =>
-          match CmdLine.parse spec args with
+          let pRes := CmdLine.parse spec args
+          logCmdLineErr emitErrHits "LeanSwe.CmdLine.parse" pRes
+          pure (match pRes with
           | .error e => if e.kind == .helpRequested || e.kind == .versionRequested then "threw.epipe_help" else "threw.epipe_err"
-          | .ok _ => "threw.epipe_err"
-        | .noSpace => "threw.enospc_help"
-        | _ => "threw.other"
+          | .ok _ => "threw.epipe_err")
+        | .noSpace => pure "threw.enospc_help"
+        | _ => pure "threw.other"
       t := t.record "runCli" bkt
     return ({ ctx with world := { wNext with stdout := outCh', stderr := errCh' } }, t, priorOutErr)
 
   | .callPureRoundTrip spec args =>
     let helpRoot := CmdLine.renderHelp spec []
+    logCmdLineErr emitErrHits "LeanSwe.CmdLine.renderHelp" helpRoot
     let valid := Model.isValidSpec spec
     if CmdLine.isValidSpec spec != valid then
       throw (IO.userError s!"FUZZ_MISMATCH|PURE_ROUNDTRIP|isValidSpec|spec={spec.name}")
@@ -875,11 +904,14 @@ private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOut
       if valid || e.kind != .invalidSpec then
         throw (IO.userError s!"FUZZ_MISMATCH|PURE_ROUNDTRIP|renderHelp_err|spec={spec.name} kind={repr e.kind}")
     let mut t := tracker
-    match CmdLine.parse spec args with
+    let parseRes := CmdLine.parse spec args
+    logCmdLineErr emitErrHits "LeanSwe.CmdLine.parse" parseRes
+    match parseRes with
     | .ok parsed =>
       if !valid then
         throw (IO.userError s!"FUZZ_MISMATCH|PURE_ROUNDTRIP|invalid_spec_parsed|spec={spec.name}")
       let impRend := CmdLine.renderArgs spec parsed
+      logCmdLineErr emitErrHits "LeanSwe.CmdLine.renderArgs" impRend
       let modRend := Model.renderArgs spec parsed
       if !exceptCmdEq impRend modRend then
         throw (IO.userError s!"FUZZ_MISMATCH|PURE_ROUNDTRIP|renderArgs_model|args={repr args}")
@@ -887,7 +919,9 @@ private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOut
       | .error e =>
         t := t.record "pureRoundTrip" s!"err.render.{repr e.kind}"
       | .ok rendered =>
-        match CmdLine.parse spec rendered with
+        let reparseRes := CmdLine.parse spec rendered
+        logCmdLineErr emitErrHits "LeanSwe.CmdLine.parse" reparseRes
+        match reparseRes with
         | .error e =>
           throw (IO.userError s!"FUZZ_MISMATCH|PURE_ROUNDTRIP|reparse_err|kind={repr e.kind} args={repr args} rendered={repr rendered}")
         | .ok reparsed =>
@@ -900,7 +934,8 @@ private def runSingleOp (ctx : EpisodeCtx) (tracker : CoverageTracker) (priorOut
       t := t.record "pureRoundTrip" s!"err.parse.{repr e.kind}"
     return (ctx, t, priorOutErr)
 
-private def runEpisode (ops : Array CmdLineFuzzOp) (tracker : CoverageTracker) : IO CoverageTracker := do
+private def runEpisode (ops : Array CmdLineFuzzOp) (tracker : CoverageTracker)
+    (emitErrHits : Bool := false) : IO CoverageTracker := do
   let _ ← saveStdioRaw 0
   let _ ← resetStreamsRaw 0
   let savedEnv ← captureHostEnv
@@ -921,7 +956,7 @@ private def runEpisode (ops : Array CmdLineFuzzOp) (tracker : CoverageTracker) :
       let mut priorOutErr := false
       for op in ops do
         let cur ← ctxRef.get
-        let (c', t', p') ← runSingleOp cur t priorOutErr op
+        let (c', t', p') ← runSingleOp cur t priorOutErr op emitErrHits
         ctxRef.set c'
         t := t'
         priorOutErr := p'
@@ -1129,7 +1164,8 @@ private def summarizeOp : CmdLineFuzzOp → String
   | .callPureRoundTrip _ args => s!"callPureRoundTrip({repr args})"
 
 private def shrinkOnMismatch (runner : Array CmdLineFuzzOp → IO CoverageTracker)
-    (ops : Array CmdLineFuzzOp) : IO CoverageTracker := do
+    (ops : Array CmdLineFuzzOp)
+    (shrinkRunner : Array CmdLineFuzzOp → IO CoverageTracker := runner) : IO CoverageTracker := do
   try
     runner ops
   catch e =>
@@ -1139,7 +1175,7 @@ private def shrinkOnMismatch (runner : Array CmdLineFuzzOp → IO CoverageTracke
     | some tag =>
       let failsPinned (cand : Array CmdLineFuzzOp) : IO Bool := do
         try
-          let _ ← runner cand
+          let _ ← shrinkRunner cand
           return false
         catch ce =>
           return extractMismatchTag ce.toString == some tag
@@ -1149,7 +1185,7 @@ private def shrinkOnMismatch (runner : Array CmdLineFuzzOp → IO CoverageTracke
       throw (IO.userError s!"{msg} [shrunk {ops.size}->{shrunkFull.size} ops tag={tag}: {traceDesc}]")
 
 private def runEpisodeShrunk (ops : Array CmdLineFuzzOp) (tracker : CoverageTracker) : IO CoverageTracker :=
-  shrinkOnMismatch (fun c => runEpisode c tracker) ops
+  shrinkOnMismatch (fun c => runEpisode c tracker true) ops (fun c => runEpisode c tracker false)
 
 private def requiredBuckets : Array CoverageBucket := #[
   bucket "readLine" "ok.some_ascii",

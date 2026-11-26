@@ -361,6 +361,13 @@ def execGitRawCreateCrissCrossMerge (st : EpisodeState) (repoSlot : SlotId) : IO
               { slot with index := { entries := mergeTree2, conflicts := [], hasMergeHead := false } }
         return (addKnownCommit { cur with model := { cur.model with vfs := v2, repos := repos2 } } cidM2, true)
 
+/-- Emit an `ERR_HIT` record when `emitErrHits` is enabled and `res` returned `.error`. -/
+def logGitErr {α : Type} (emitErrHits : Bool) (opName : String) (res : Except GitError α)
+    (mode : String := "real") : IO Unit := do
+  if emitErrHits then
+    if let .error e := res then
+      Fuzz.Common.logErrHit s!"LeanSwe.Git.{opName}" s!"LeanSwe.Git.GitErrorKind.{errorKindLabel e.kind}" mode
+
 /-- Helper `recordOutcome`. -/
 def recordOutcome {α : Type} (tr : CoverageTracker) (op : String) (res : Except GitError α) :
     CoverageTracker :=
@@ -374,6 +381,7 @@ def runRawOpChecked {α : Type} [BEq α] [Repr α] (st : EpisodeState) (tr : Cov
     (onBothOk : EpisodeState → α → α → EpisodeState := fun s _ _ => s) :
     IO (Except TraceError (EpisodeState × CoverageTracker)) := do
   let realRes ← realAct
+  logGitErr st.emitErrHits opName realRes
   let (modelRes, modelNext) := modelAct st.model
   let tr' := recordOutcome tr opName realRes
   match compareExceptTagged opName realRes modelRes st.hasSpoofablePath with

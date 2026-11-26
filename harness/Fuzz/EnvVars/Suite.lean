@@ -299,6 +299,19 @@ private def envErrTag (e : EnvVarsError) : String :=
   | .invalidEncoding => "invalidEncoding"
   | .ioError => "ioError"
 
+private def rawErrKindCtor : EnvVarsRawError → String
+  | .invalidEncoding _ _ => "LeanSwe.EnvVars.Raw.EnvVarsRawErrorKind.invalidEncoding"
+  | .invalidArgument _ _ _ => "LeanSwe.EnvVars.Raw.EnvVarsRawErrorKind.invalidArgument"
+  | .otherError _ _ => "LeanSwe.EnvVars.Raw.EnvVarsRawErrorKind.otherError"
+  | .userError _ => "LeanSwe.EnvVars.Raw.EnvVarsRawErrorKind.userError"
+
+private def envErrKindCtor (k : LeanSwe.EnvVars.Raw.EnvVarsErrorKind) : String :=
+  match k with
+  | .invalidKey => "LeanSwe.EnvVars.Raw.EnvVarsErrorKind.invalidKey"
+  | .invalidEncoding => "LeanSwe.EnvVars.Raw.EnvVarsErrorKind.invalidEncoding"
+  | .notFound => "LeanSwe.EnvVars.Raw.EnvVarsErrorKind.notFound"
+  | .ioError => "LeanSwe.EnvVars.Raw.EnvVarsErrorKind.ioError"
+
 private def exceptOptClass {ε α : Type} (errTag : ε → String) : Except ε (Option α) → String
   | .ok none => "ok_none"
   | .ok (some _) => "ok_some"
@@ -355,9 +368,13 @@ private def execUnsetEnvStep (st : EnvironState) (curIsNull : Bool) (tr : Covera
 
 private def execQueryGetStep
     (customQueryGet? : Option (EnvironState → String → IO (Except EnvVarsError (Option String))))
-    (st : EnvironState) (tr : CoverageTracker) (key : String) : IO (Except String CoverageTracker) := do
+    (st : EnvironState) (tr : CoverageTracker) (key : String) (emitErrHits : Bool := false) :
+    IO (Except String CoverageTracker) := do
   let mut t := tr
   let actualRawGet ← LeanSwe.EnvVars.Raw.getEnv key
+  if emitErrHits then
+    if let .error e := actualRawGet then
+      Fuzz.Common.logErrHit "LeanSwe.EnvVars.Raw.getEnv" (rawErrKindCtor e) "real"
   let modelRawGet := rawGetEnvModel st key
   if !exceptEq actualRawGet modelRawGet then
     return .error s!"RAW_GET_MISMATCH:{exceptOptClass rawErrTag modelRawGet}:{exceptOptClass rawErrTag actualRawGet}: key={repr key} model={formatExcept modelRawGet} actual={formatExcept actualRawGet}"
@@ -370,6 +387,9 @@ private def execQueryGetStep
   let actualGet ← match customQueryGet? with
     | some fn => fn st key
     | none => LeanSwe.EnvVars.getEnv key
+  if emitErrHits && customQueryGet?.isNone then
+    if let .error e := actualGet then
+      Fuzz.Common.logErrHit "LeanSwe.EnvVars.getEnv" (envErrKindCtor e.kind) "real"
   let modelGet := Model.getEnvModel st key
   if !exceptEq actualGet modelGet then
     return .error s!"GET_MISMATCH:{exceptOptClass envErrTag modelGet}:{exceptOptClass envErrTag actualGet}: key={repr key} model={formatExcept modelGet} actual={formatExcept actualGet}"
@@ -386,10 +406,14 @@ private def execQueryGetStep
       t := t.record "getEnv" "err.invalidEncoding"
   return .ok t
 
-private def execQueryListStep (st : EnvironState) (curIsNull : Bool) (tr : CoverageTracker) :
+private def execQueryListStep (st : EnvironState) (curIsNull : Bool) (tr : CoverageTracker)
+    (emitErrHits : Bool := false) :
     IO (Except String CoverageTracker) := do
   let mut t := tr
   let actualRawList ← LeanSwe.EnvVars.Raw.listEnv
+  if emitErrHits then
+    if let .error e := actualRawList then
+      Fuzz.Common.logErrHit "LeanSwe.EnvVars.Raw.listEnv" (rawErrKindCtor e) "real"
   let modelRawList := rawListEnvModel st
   if !exceptEq actualRawList modelRawList then
     return .error s!"RAW_LIST_MISMATCH:{exceptValClass rawErrTag modelRawList}:{exceptValClass rawErrTag actualRawList}: model={formatExcept modelRawList} actual={formatExcept actualRawList}"
@@ -405,6 +429,9 @@ private def execQueryListStep (st : EnvironState) (curIsNull : Bool) (tr : Cover
     if hasDupKeys pairs then
       t := t.record "raw_listEnv" "ok.duplicate_keys"
   let actualList ← LeanSwe.EnvVars.listEnv
+  if emitErrHits then
+    if let .error e := actualList then
+      Fuzz.Common.logErrHit "LeanSwe.EnvVars.listEnv" (envErrKindCtor e.kind) "real"
   let modelList := Model.listEnvModel st
   if !exceptEq actualList modelList then
     return .error s!"LIST_MISMATCH:{exceptValClass envErrTag modelList}:{exceptValClass envErrTag actualList}: model={formatExcept modelList} actual={formatExcept actualList}"
@@ -414,9 +441,13 @@ private def execQueryListStep (st : EnvironState) (curIsNull : Bool) (tr : Cover
     t := t.record "listEnv" (if e.key.isNone then "err.invalidEncoding_key" else "err.invalidEncoding_val")
   return .ok t
 
-private def execQueryHomeStep (st : EnvironState) (tr : CoverageTracker) : IO (Except String CoverageTracker) := do
+private def execQueryHomeStep (st : EnvironState) (tr : CoverageTracker) (emitErrHits : Bool := false) :
+    IO (Except String CoverageTracker) := do
   let mut t := tr
   let actualHome ← LeanSwe.EnvVars.homeDir
+  if emitErrHits then
+    if let .error e := actualHome then
+      Fuzz.Common.logErrHit "LeanSwe.EnvVars.homeDir" (envErrKindCtor e.kind) "real"
   let modelHome := Model.homeDirModel st
   if !exceptEq actualHome modelHome then
     return .error s!"HOMEDIR_MISMATCH:{exceptValClass envErrTag modelHome}:{exceptValClass envErrTag actualHome}: model={formatExcept modelHome} actual={formatExcept actualHome}"
@@ -432,12 +463,12 @@ private def execQueryHomeStep (st : EnvironState) (tr : CoverageTracker) : IO (E
   return .ok t
 
 private def checkQueriesOnState (s : EnvironState) (useNullPtr : Bool)
-    (extraQueries : Array String) (tracker : CoverageTracker) :
+    (extraQueries : Array String) (tracker : CoverageTracker) (emitErrHits : Bool := false) :
     IO (Except String CoverageTracker) := do
-  let mut tr ← match ← execQueryListStep s useNullPtr tracker with
+  let mut tr ← match ← execQueryListStep s useNullPtr tracker emitErrHits with
     | .error e => return .error e
     | .ok t => pure t
-  tr ← match ← execQueryHomeStep s tr with
+  tr ← match ← execQueryHomeStep s tr emitErrHits with
     | .error e => return .error e
     | .ok t => pure t
   let mut queryKeys : Array String := extraQueries
@@ -449,7 +480,7 @@ private def checkQueriesOnState (s : EnvironState) (useNullPtr : Bool)
           queryKeys := queryKeys.push kStr
     | none => pure ()
   for qk in queryKeys do
-    match ← execQueryGetStep none s tr qk with
+    match ← execQueryGetStep none s tr qk emitErrHits with
     | .error e => return .error e
     | .ok t => tr := t
   return .ok tr
@@ -457,7 +488,7 @@ private def checkQueriesOnState (s : EnvironState) (useNullPtr : Bool)
 private def execTraceWithOracle
     (customSetEnv? : Option (EnvironState → ByteArray → ByteArray → Bool → IO (UInt32 × EnvironState)) := none)
     (customQueryGet? : Option (EnvironState → String → IO (Except EnvVarsError (Option String))) := none)
-    (trace : Array EnvFuzzOp) : IO (Except String CoverageTracker) := do
+    (trace : Array EnvFuzzOp) (emitErrHits : Bool := false) : IO (Except String CoverageTracker) := do
   rawFuzzClearEnv
   let mut st : EnvironState := posixClearEnvModel
   let mut curIsNull : Bool := true
@@ -478,15 +509,15 @@ private def execTraceWithOracle
       curIsNull := true
       tr := tr.record "clearenv" "ok.null"
     | .queryGet key =>
-      match ← execQueryGetStep customQueryGet? st tr key with
+      match ← execQueryGetStep customQueryGet? st tr key emitErrHits with
       | .error e => return .error e
       | .ok tr' => tr := tr'
     | .queryList =>
-      match ← execQueryListStep st curIsNull tr with
+      match ← execQueryListStep st curIsNull tr emitErrHits with
       | .error e => return .error e
       | .ok tr' => tr := tr'
     | .queryHome =>
-      match ← execQueryHomeStep st tr with
+      match ← execQueryHomeStep st tr emitErrHits with
       | .error e => return .error e
       | .ok tr' => tr := tr'
     | .querySplitPath path =>
@@ -521,7 +552,7 @@ private def execTraceWithOracle
           if setRc != 0 then
             throw (IO.userError s!"RAW_FUZZ_SET_FAILED idx={i} rc={setRc}")
         rawFuzzInstall (if useNullPtr then 1 else 0)
-        match ← checkQueriesOnState sRaw useNullPtr extraQueries tr with
+        match ← checkQueriesOnState sRaw useNullPtr extraQueries tr emitErrHits with
         | .error msg => pure (.error msg)
         | .ok tr0 => do
           let mut rawSt := sRaw
@@ -546,15 +577,15 @@ private def execTraceWithOracle
               rawIsNull := true
               rawTr := rawTr.record "clearenv" "ok.null"
             | .queryGet key =>
-              match ← execQueryGetStep customQueryGet? rawSt rawTr key with
+              match ← execQueryGetStep customQueryGet? rawSt rawTr key emitErrHits with
               | .error e => postErr? := some e
               | .ok t' => rawTr := t'
             | .queryList =>
-              match ← execQueryListStep rawSt rawIsNull rawTr with
+              match ← execQueryListStep rawSt rawIsNull rawTr emitErrHits with
               | .error e => postErr? := some e
               | .ok t' => rawTr := t'
             | .queryHome =>
-              match ← execQueryHomeStep rawSt rawTr with
+              match ← execQueryHomeStep rawSt rawTr emitErrHits with
               | .error e => postErr? := some e
               | .ok t' => rawTr := t'
           match postErr? with
@@ -1159,10 +1190,10 @@ private def shrinkEnvTraceWith (execFn : Array EnvFuzzOp → IO (Except String C
   return (cur, finalMsg)
 
 private def runTraceAndShrink (trace : Array EnvFuzzOp) : IO CoverageTracker := do
-  match ← execTraceWithOracle none none trace with
+  match ← execTraceWithOracle none none trace true with
   | .ok tr => return tr
   | .error msg =>
-    let (shrunk, finalMsg) ← shrinkEnvTraceWith (execTraceWithOracle none none) trace msg
+    let (shrunk, finalMsg) ← shrinkEnvTraceWith (fun c => execTraceWithOracle none none c false) trace msg
     let labels := shrunk.toList.map reprEnvFuzzOp
     throw (IO.userError s!"ENVVARS_FUZZ_MISMATCH: {finalMsg}; shrunk({shrunk.size})=[{String.intercalate "; " labels}]")
 

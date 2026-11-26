@@ -350,6 +350,12 @@ private def cryptoErrKindTag : CryptoHashErrorKind → String
   | .lengthMismatch => "lengthMismatch"
   | .cryptoError => "cryptoError"
 
+private def logCryptoErr {α : Type} (emitErrHits : Bool) (qualOp : String)
+    (res : Except CryptoHashError α) : IO Unit := do
+  if emitErrHits then
+    if let .error e := res then
+      Fuzz.Common.logErrHit qualOp s!"LeanSwe.CryptoHash.Raw.CryptoHashErrorKind.{cryptoErrKindTag e.kind}" "real"
+
 private def exceptClass {α : Type} : Except CryptoHashError α → String
   | .ok _ => "ok"
   | .error e => "err." ++ cryptoErrKindTag e.kind
@@ -373,7 +379,7 @@ private def expectOkEq {α : Type} [BEq α] (label : String)
     return .error s!"{label}:ok:err.{cryptoErrKindTag e1.kind}:got .error {repr e1}, expected .ok"
 
 private def checkDigestAndOracle (c : CryptoCase) (oracle? : Option PyOracle)
-    (tr : CoverageTracker) : IO (Except String (CoverageTracker × Option PyOracleReply)) := do
+    (tr : CoverageTracker) (emitErrHits : Bool := false) : IO (Except String (CoverageTracker × Option PyOracleReply)) := do
   let mut cov := tr
   let msg := c.msg
   let key := c.key
@@ -404,27 +410,35 @@ private def checkDigestAndOracle (c : CryptoCase) (oracle? : Option PyOracle)
     pyReply? := some rep
     cov := cov.record "python_oracle" "verified"
   let r256 ← Raw.digestRaw .sha256 msg
+  logCryptoErr emitErrHits "LeanSwe.CryptoHash.Raw.digestRaw" r256
   if let .error e := ← expectOkEq "Raw.digestRaw sha256" r256 (.ok exp256One) then
     return .error e
   let h256 ← LeanSwe.CryptoHash.hash .sha256 msg
+  logCryptoErr emitErrHits "LeanSwe.CryptoHash.hash" h256
   if let .error e := ← expectOkEq "CryptoHash.hash sha256" h256 (Model.hashModel .sha256 msg) then
     return .error e
   let s256 ← LeanSwe.CryptoHash.sha256 msg
+  logCryptoErr emitErrHits "LeanSwe.CryptoHash.sha256" s256
   if let .error e := ← expectOkEq "CryptoHash.sha256" s256 (Model.sha256Model msg) then
     return .error e
   let r512 ← Raw.digestRaw .sha512 msg
+  logCryptoErr emitErrHits "LeanSwe.CryptoHash.Raw.digestRaw" r512
   if let .error e := ← expectOkEq "Raw.digestRaw sha512" r512 (.ok exp512One) then
     return .error e
   let h512 ← LeanSwe.CryptoHash.hash .sha512 msg
+  logCryptoErr emitErrHits "LeanSwe.CryptoHash.hash" h512
   if let .error e := ← expectOkEq "CryptoHash.hash sha512" h512 (Model.hashModel .sha512 msg) then
     return .error e
   let s512 ← LeanSwe.CryptoHash.sha512 msg
+  logCryptoErr emitErrHits "LeanSwe.CryptoHash.sha512" s512
   if let .error e := ← expectOkEq "CryptoHash.sha512" s512 (Model.sha512Model msg) then
     return .error e
   let rMac ← Raw.hmacSha256Raw key msg
+  logCryptoErr emitErrHits "LeanSwe.CryptoHash.Raw.hmacSha256Raw" rMac
   if let .error e := ← expectOkEq "Raw.hmacSha256Raw" rMac (.ok expHmacOne) then
     return .error e
   let cMac ← LeanSwe.CryptoHash.hmacSha256 key msg
+  logCryptoErr emitErrHits "LeanSwe.CryptoHash.hmacSha256" cMac
   if let .error e := ← expectOkEq "CryptoHash.hmacSha256" cMac (Model.hmacSha256Model key msg) then
     return .error e
   let (oobStatus, oobCode, oobMsg, oobBytes) ← rawDigestDirect c.oobTag msg
@@ -463,11 +477,12 @@ private def checkDigestAndOracle (c : CryptoCase) (oracle? : Option PyOracle)
   return .ok (cov, pyReply?)
 
 private def checkVerifyAndCtAndHex (c : CryptoCase) (pyReply? : Option PyOracleReply)
-    (tr : CoverageTracker) : IO (Except String CoverageTracker) := do
+    (tr : CoverageTracker) (emitErrHits : Bool := false) : IO (Except String CoverageTracker) := do
   let mut cov := tr
   let tag := Raw.Model.hmacSha256Bytes c.key c.msg
   let validDig : Digest := { alg := .sha256, bytes := tag }
   let resValid ← LeanSwe.CryptoHash.verifyHmacSha256 c.key c.msg validDig
+  logCryptoErr emitErrHits "LeanSwe.CryptoHash.verifyHmacSha256" resValid
   if let .error e := ← expectOkEq "verify valid" resValid (Model.verifyHmacSha256Model c.key c.msg validDig) then
     return .error e
   if exceptEq resValid (.ok true) then
@@ -477,6 +492,7 @@ private def checkVerifyAndCtAndHex (c : CryptoCase) (pyReply? : Option PyOracleR
   let tamperedEnd : Digest := { alg := .sha256, bytes := xorBitAt tag 31 }
   for (lbl, td) in [("tamper0", tampered0), ("tamperMid", tamperedMid), ("tamperEnd", tamperedEnd)] do
     let rt ← LeanSwe.CryptoHash.verifyHmacSha256 c.key c.msg td
+    logCryptoErr emitErrHits "LeanSwe.CryptoHash.verifyHmacSha256" rt
     if let .error e := ← expectOkEq s!"verify {lbl}" rt (Model.verifyHmacSha256Model c.key c.msg td) then
       return .error e
     if exceptEq rt (.ok false) then
@@ -485,6 +501,7 @@ private def checkVerifyAndCtAndHex (c : CryptoCase) (pyReply? : Option PyOracleR
   let wrongAlg31 : Digest := { alg := .sha512, bytes := ByteArray.mk (Array.replicate 31 0x41) }
   for (lbl, wd) in [("wrongAlg64", wrongAlg64), ("wrongAlg31", wrongAlg31)] do
     let rw ← LeanSwe.CryptoHash.verifyHmacSha256 c.key c.msg wd
+    logCryptoErr emitErrHits "LeanSwe.CryptoHash.verifyHmacSha256" rw
     if let .error e := ← expectOkEq s!"verify {lbl}" rw (Model.verifyHmacSha256Model c.key c.msg wd) then
       return .error e
     if let .error err := rw then
@@ -493,6 +510,7 @@ private def checkVerifyAndCtAndHex (c : CryptoCase) (pyReply? : Option PyOracleR
   for badSz in [0, 1, 31, 33, 64] do
     let badLenDig : Digest := { alg := .sha256, bytes := ByteArray.mk (Array.replicate badSz 0x42) }
     let rbl ← LeanSwe.CryptoHash.verifyHmacSha256 c.key c.msg badLenDig
+    logCryptoErr emitErrHits "LeanSwe.CryptoHash.verifyHmacSha256" rbl
     if let .error e := ← expectOkEq "verify badLen" rbl (Model.verifyHmacSha256Model c.key c.msg badLenDig) then
       return .error e
     if let .error err := rbl then
@@ -508,9 +526,11 @@ private def checkVerifyAndCtAndHex (c : CryptoCase) (pyReply? : Option PyOracleR
   ]
   for (a, b) in ctPairs do
     let rCt ← LeanSwe.CryptoHash.ctEq a b
+    logCryptoErr emitErrHits "LeanSwe.CryptoHash.ctEq" rCt
     if let .error e := ← expectOkEq "ctEq" rCt (Model.ctEqModel a b) then
       return .error e
     let rRawCt ← Raw.ctEqualRaw a b
+    logCryptoErr emitErrHits "LeanSwe.CryptoHash.Raw.ctEqualRaw" rRawCt
     if let .error e := ← expectOkEq "ctEqualRaw" rRawCt (Raw.Model.ctEqualRawModel a b) then
       return .error e
     if a.size == b.size then
@@ -532,11 +552,13 @@ private def checkVerifyAndCtAndHex (c : CryptoCase) (pyReply? : Option PyOracleR
     if hex != Model.toHexModel dig then
       return .error "toHex != toHexModel"
     let rt := LeanSwe.CryptoHash.fromHex dig.alg hex
+    logCryptoErr emitErrHits "LeanSwe.CryptoHash.fromHex" rt
     if !exceptEq rt (Model.fromHexModel dig.alg hex) || !exceptEq rt (.ok dig) then
       return .error s!"fromHex roundtrip mismatch for alg={repr dig.alg}"
     cov := cov.record "fromHex" "ok_roundtrip"
     let mixed := asciiSwapCase hex
     let rMix := LeanSwe.CryptoHash.fromHex dig.alg mixed
+    logCryptoErr emitErrHits "LeanSwe.CryptoHash.fromHex" rMix
     if !exceptEq rMix (Model.fromHexModel dig.alg mixed) || !exceptEq rMix (.ok dig) then
       return .error s!"fromHex mixed-case mismatch for alg={repr dig.alg}"
     cov := cov.record "fromHex" "ok_mixed_case"
@@ -553,10 +575,12 @@ private def checkVerifyAndCtAndHex (c : CryptoCase) (pyReply? : Option PyOracleR
     if nonStdHex != pyRep.ctHex then
       return .error s!"toHex Python mismatch: got {nonStdHex} vs {pyRep.ctHex}"
   let rExtra256 := LeanSwe.CryptoHash.fromHex .sha256 c.extraHex
+  logCryptoErr emitErrHits "LeanSwe.CryptoHash.fromHex" rExtra256
   let mExtra256 := Model.fromHexModel .sha256 c.extraHex
   if !exceptEq rExtra256 mExtra256 then
     return .error s!"fromHex sha256 extraHex:{exceptClass mExtra256}:{exceptClass rExtra256}:len={c.extraHex.length}"
   let rExtra512 := LeanSwe.CryptoHash.fromHex .sha512 c.extraHex
+  logCryptoErr emitErrHits "LeanSwe.CryptoHash.fromHex" rExtra512
   let mExtra512 := Model.fromHexModel .sha512 c.extraHex
   if !exceptEq rExtra512 mExtra512 then
     return .error s!"fromHex sha512 extraHex:{exceptClass mExtra512}:{exceptClass rExtra512}:len={c.extraHex.length}"
@@ -602,20 +626,20 @@ private def checkVerifyAndCtAndHex (c : CryptoCase) (pyReply? : Option PyOracleR
   return .ok cov
 
 private def execCase (oracle? : Option PyOracle) (injectBug : Option (CryptoCase → Bool))
-    (c : CryptoCase) (tr : CoverageTracker) : IO (Except String CoverageTracker) := do
+    (c : CryptoCase) (tr : CoverageTracker) (emitErrHits : Bool := false) : IO (Except String CoverageTracker) := do
   if let some pred := injectBug then
     if pred c then
       return .error "INJECTED_CRYPTO_FAULT"
   let pyArg := if c.checkPython then oracle? else none
-  match ← checkDigestAndOracle c pyArg tr with
+  match ← checkDigestAndOracle c pyArg tr emitErrHits with
   | .error msg => return .error msg
-  | .ok (tr1, pyRep?) => checkVerifyAndCtAndHex c pyRep? tr1
+  | .ok (tr1, pyRep?) => checkVerifyAndCtAndHex c pyRep? tr1 emitErrHits
 
 private def execBatch (oracle? : Option PyOracle) (injectBug : Option (CryptoCase → Bool))
-    (cases : Array CryptoCase) : IO (Except String CoverageTracker) := do
+    (cases : Array CryptoCase) (emitErrHits : Bool := false) : IO (Except String CoverageTracker) := do
   let mut tr := CoverageTracker.empty
   for c in cases do
-    match ← execCase oracle? injectBug c tr with
+    match ← execCase oracle? injectBug c tr emitErrHits with
     | .error msg => return .error msg
     | .ok nextTr => tr := nextTr
   return .ok tr
@@ -1130,12 +1154,12 @@ private def shrinkCryptoBatchWith (execFn : Array CryptoCase → IO (Except Stri
 
 private def runBatchAndShrink (oracle? : Option PyOracle) (cases : Array CryptoCase) :
     IO CoverageTracker := do
-  match ← execBatch oracle? none cases with
+  match ← execBatch oracle? none cases true with
   | .ok tr => return tr
   | .error msg =>
     if msg.startsWith "PYTHON_ORACLE_EOF:" then
       throw (IO.userError s!"CRYPTOHASH_FUZZ_MISMATCH: {msg}")
-    let (shrunk, finalMsg) ← shrinkCryptoBatchWith (execBatch oracle? none) cases msg
+    let (shrunk, finalMsg) ← shrinkCryptoBatchWith (fun cs => execBatch oracle? none cs false) cases msg
     let labels := shrunk.toList.map reprCryptoCase
     throw (IO.userError s!"CRYPTOHASH_FUZZ_MISMATCH: {finalMsg}; shrunk({shrunk.size})=[{String.intercalate "; " labels}]")
 

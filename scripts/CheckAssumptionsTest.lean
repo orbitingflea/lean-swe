@@ -1183,9 +1183,14 @@ private def runCentralCoverageSelfTests (base : MiniRepo) (tmpRoot bin : System.
         "LeanSwe/MiniPure/Proofs/Consumer", "LeanSwe"] do
       compileLeanMod sRepo slp (sRepo / s!"{m}.lean") (sLib / s!"{m}.olean")
     let validEmptyLog := surfDir / "valid_empty.cov.log"
-    IO.FS.writeFile validEmptyLog s!"{goodNonce}|LOG_INIT\n{goodNonce}|LOG_CLOSE\n"
+    IO.FS.writeFile validEmptyLog
+      (s!"{goodNonce}|LOG_INIT\n" ++
+       s!"{goodNonce}|ERR_HIT|LeanSwe.MiniExt.probe|LeanSwe.MiniExt.ExtErrKind.hostFail|real\n" ++
+       s!"{goodNonce}|FUZZ_EQUIV|LeanSwe.MiniFloat|minifloat|500|2/2|ok=true\n" ++
+       s!"{goodNonce}|FUZZ_EQUIV|LeanSwe.MiniExt|miniext|500|4/4|ok=true\n" ++
+       s!"{goodNonce}|LOG_CLOSE\n")
     expectFailureCode bin "central_cov_fallible_surface_zero_cells_rejected" "MISSING_ERROR_COVERAGE"
-      sLib sRepo #["--coverage-log", validEmptyLog.toString, "--nonce", goodNonce]
+      sLib sRepo #["--strict-central-coverage", "--coverage-log", validEmptyLog.toString, "--nonce", goodNonce]
     IO.FS.removeDirAll surfDir
 
   let badFuzzLog := cDir / "bad_fuzz.cov.log"
@@ -1197,10 +1202,241 @@ private def runCentralCoverageSelfTests (base : MiniRepo) (tmpRoot bin : System.
   expectFailureCode bin "central_cov_fuzz_equiv_false_rejected" "FUZZ_EQUIV_FAILED"
     lib repo #["--coverage-log", badFuzzLog.toString, "--nonce", goodNonce]
 
-  let missingCellLog := cDir / "missing_cell.cov.log"
-  IO.FS.writeFile missingCellLog s!"{goodNonce}|LOG_INIT\n{goodNonce}|LOG_CLOSE\n"
-  expectFailureCode bin "central_cov_uncovered_cell_rejected" "UNCOVERED_CENTRAL_ERROR_CELL"
-    lib repo #["--coverage-log", missingCellLog.toString, "--nonce", goodNonce]
+  do
+    let pureZeroLog := cDir / "pure_zero_err_hits.cov.log"
+    IO.FS.writeFile pureZeroLog
+      (s!"{goodNonce}|LOG_INIT\n" ++
+       s!"{goodNonce}|ERR_HIT|LeanSwe.MiniExt.probe|LeanSwe.MiniExt.ExtErrKind.hostFail|real\n" ++
+       s!"{goodNonce}|FUZZ_EQUIV|LeanSwe.MiniFloat|minifloat|500|2/2|ok=true\n" ++
+       s!"{goodNonce}|FUZZ_EQUIV|LeanSwe.MiniExt|miniext|500|4/4|ok=true\n" ++
+       s!"{goodNonce}|LOG_CLOSE\n")
+    let pureDecOut ← runCmd bin.toString
+      #[lib.toString, repo.toString, "--require-fuzz-equiv", "--strict-central-coverage",
+        "--coverage-log", pureZeroLog.toString, "--nonce", goodNonce]
+    let pureDecComb := pureDecOut.stdout ++ "\n" ++ pureDecOut.stderr
+    if pureDecOut.exitCode != 0 || (pureDecComb.splitOn "errors=0").length <= 1 then
+      throw (IO.userError s!"FAIL [central_cov_pure_model_discharged_without_err_hits]: expected exit=0 errors=0:\n{pureDecComb}")
+    IO.println "PASS [central_cov_pure_model_discharged_without_err_hits] -> pure obeys_model package discharged without RuntimeTests or ERR_HIT"
+
+    let compDir := tmpRoot / "cc_composed_nonboundary"
+    let compRepo := compDir / "repo"
+    IO.FS.createDirAll compDir
+    copyDirTree repo compRepo
+    writeFileCreatingParents (compRepo / "scripts/package_manifest.json")
+      ("{\n  \"version\": 1,\n  \"packages\": {\n" ++
+       "    \"LeanSwe.MiniPure\": { \"kind\": \"model\", \"purity\": \"mixed\", \"deps\": [], \"external_boundary\": false },\n" ++
+       "    \"LeanSwe.MiniFloat\": { \"kind\": \"model\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": false },\n" ++
+       "    \"LeanSwe.MiniExt\": { \"kind\": \"model\", \"purity\": \"nondet_io\", \"deps\": [], \"external_boundary\": true }\n" ++
+       "  }\n}\n")
+    let compOut ← runCmd bin.toString
+      #[lib.toString, compRepo.toString, "--require-fuzz-equiv", "--strict-central-coverage",
+        "--coverage-log", pureZeroLog.toString, "--nonce", goodNonce]
+    let compComb := compOut.stdout ++ "\n" ++ compOut.stderr
+    if compOut.exitCode != 0 || (compComb.splitOn "errors=0").length <= 1 then
+      throw (IO.userError s!"FAIL [central_cov_composed_nonboundary_discharged_without_err_hits]: expected exit=0 errors=0:\n{compComb}")
+    IO.println "PASS [central_cov_composed_nonboundary_discharged_without_err_hits] -> composed mixed non-boundary obeys_model package discharged without ERR_HIT"
+    IO.FS.removeDirAll compDir
+
+    let uncDir := tmpRoot / "cc_uncovered_boundary"
+    let uncRepo := uncDir / "repo"
+    IO.FS.createDirAll uncDir
+    copyDirTree repo uncRepo
+    writeFileCreatingParents (uncRepo / "scripts/coverage_overrides.json")
+      "{\n  \"version\": 1,\n  \"overrides\": []\n}\n"
+    let missingCellLog := cDir / "missing_cell.cov.log"
+    IO.FS.writeFile missingCellLog s!"{goodNonce}|LOG_INIT\n{goodNonce}|LOG_CLOSE\n"
+    expectFailureCode bin "central_cov_uncovered_cell_rejected" "UNCOVERED_CENTRAL_ERROR_CELL"
+      lib uncRepo #["--strict-central-coverage", "--coverage-log", missingCellLog.toString, "--nonce", goodNonce]
+    IO.FS.removeDirAll uncDir
+
+    let mbDir := tmpRoot / "cc_manifest_boundary_enforced"
+    let mbRepo := mbDir / "repo"
+    IO.FS.createDirAll mbDir
+    copyDirTree repo mbRepo
+    writeFileCreatingParents (mbRepo / "scripts/package_manifest.json")
+      ("{\n  \"version\": 1,\n  \"packages\": {\n" ++
+       "    \"LeanSwe.MiniPure\": { \"kind\": \"model\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": true },\n" ++
+       "    \"LeanSwe.MiniFloat\": { \"kind\": \"model\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": false },\n" ++
+       "    \"LeanSwe.MiniExt\": { \"kind\": \"model\", \"purity\": \"nondet_io\", \"deps\": [], \"external_boundary\": true }\n" ++
+       "  }\n}\n")
+    expectFailureCode bin "central_cov_manifest_boundary_flag_enforces_discharge" "UNCOVERED_CENTRAL_ERROR_CELL"
+      lib mbRepo #["--strict-central-coverage", "--coverage-log", pureZeroLog.toString, "--nonce", goodNonce]
+    IO.FS.removeDirAll mbDir
+
+    let mbzDir := tmpRoot / "cc_manifest_boundary_zero_fallible"
+    let mbzRepo := mbzDir / "repo"
+    IO.FS.createDirAll mbzDir
+    copyDirTree repo mbzRepo
+    writeFileCreatingParents (mbzRepo / "scripts/package_manifest.json")
+      ("{\n  \"version\": 1,\n  \"packages\": {\n" ++
+       "    \"LeanSwe.MiniPure\": { \"kind\": \"model\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": false },\n" ++
+       "    \"LeanSwe.MiniFloat\": { \"kind\": \"model\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": true },\n" ++
+       "    \"LeanSwe.MiniExt\": { \"kind\": \"model\", \"purity\": \"nondet_io\", \"deps\": [], \"external_boundary\": true }\n" ++
+       "  }\n}\n")
+    expectFailureCode bin "central_cov_manifest_boundary_zero_fallible_rejected" "MISSING_ERROR_COVERAGE"
+      lib mbzRepo #["--strict-central-coverage", "--coverage-log", pureZeroLog.toString, "--nonce", goodNonce]
+    IO.FS.removeDirAll mbzDir
+
+    let mmDir := tmpRoot / "cc_malformed_manifest_eb"
+    let mmRepo := mmDir / "repo"
+    IO.FS.createDirAll mmDir
+    copyDirTree repo mmRepo
+    writeFileCreatingParents (mmRepo / "scripts/package_manifest.json")
+      ("{\n  \"version\": 1,\n  \"packages\": {\n" ++
+       "    \"LeanSwe.MiniPure\": { \"kind\": \"model\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": \"true\" },\n" ++
+       "    \"LeanSwe.MiniFloat\": { \"kind\": \"model\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": false },\n" ++
+       "    \"LeanSwe.MiniExt\": { \"kind\": \"model\", \"purity\": \"nondet_io\", \"deps\": [], \"external_boundary\": true }\n" ++
+       "  }\n}\n")
+    expectFailureCode bin "central_cov_malformed_manifest_eb_rejected" "MALFORMED_PACKAGE_MANIFEST"
+      lib mmRepo #["--strict-central-coverage", "--coverage-log", pureZeroLog.toString, "--nonce", goodNonce]
+    IO.FS.removeDirAll mmDir
+
+    let mpDir := tmpRoot / "cc_missing_manifest_pkg"
+    let mpRepo := mpDir / "repo"
+    IO.FS.createDirAll mpDir
+    copyDirTree repo mpRepo
+    writeFileCreatingParents (mpRepo / "scripts/package_manifest.json")
+      ("{\n  \"version\": 1,\n  \"packages\": {\n" ++
+       "    \"LeanSwe.MiniFloat\": { \"kind\": \"model\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": false },\n" ++
+       "    \"LeanSwe.MiniExt\": { \"kind\": \"model\", \"purity\": \"nondet_io\", \"deps\": [], \"external_boundary\": true }\n" ++
+       "  }\n}\n")
+    let mpOut ← runCmd bin.toString
+      #[lib.toString, mpRepo.toString, "--strict-central-coverage",
+        "--coverage-log", pureZeroLog.toString, "--nonce", goodNonce]
+    expectOutputContains "central_cov_missing_manifest_pkg_error" "MISSING_PACKAGE_MANIFEST_ENTRY" mpOut
+    expectOutputContains "central_cov_missing_manifest_pkg_fail_closed" "UNCOVERED_CENTRAL_ERROR_CELL" mpOut
+    IO.FS.removeDirAll mpDir
+
+    let lkDir := tmpRoot / "cc_impl_leaked_fallible"
+    let lkRepo := lkDir / "repo"
+    let lkLib := lkDir / "lib"
+    IO.FS.createDirAll lkDir
+    copyDirTree repo lkRepo
+    copyDirTree lib lkLib
+    let lklp := s!"{lkLib}:{base.leanPath}"
+    writeFileCreatingParents (lkRepo / "LeanSwe/MiniPure/Impl.lean")
+      ("import LeanSwe.MiniPure.Types\n" ++
+       "namespace LeanSwe.MiniPure.Internal\n" ++
+       "def evalImpl (n : Nat) : Nat := n + 1\n" ++
+       "def parseImpl (s : String) : Except MiniErr Nat :=\n" ++
+       "  if s.isEmpty then .error { kind := .badInput, msg := \"empty\" } else .ok s.length\n" ++
+       "end LeanSwe.MiniPure.Internal\n" ++
+       "namespace LeanSwe.MiniPure\n" ++
+       "def leakedFallible (s : String) : Except MiniErr Nat :=\n" ++
+       "  if s.isEmpty then .error { kind := .badInput, msg := \"leak\" } else .ok s.length\n" ++
+       "end LeanSwe.MiniPure\n")
+    for m in #["LeanSwe/MiniPure/Impl", "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests",
+        "LeanSwe/MiniPure/Proofs", "LeanSwe/MiniPure/Proofs/Consumer", "LeanSwe"] do
+      compileLeanMod lkRepo lklp (lkRepo / s!"{m}.lean") (lkLib / s!"{m}.olean")
+    expectFailureCode bin "central_cov_impl_leaked_fallible_not_exempt" "UNCOVERED_CENTRAL_ERROR_CELL"
+      lkLib lkRepo #["--strict-central-coverage", "--coverage-log", pureZeroLog.toString, "--nonce", goodNonce]
+    IO.FS.removeDirAll lkDir
+
+    let opqDir := tmpRoot / "cc_iface_opaque_fallible"
+    let opqRepo := opqDir / "repo"
+    let opqLib := opqDir / "lib"
+    IO.FS.createDirAll opqDir
+    copyDirTree repo opqRepo
+    copyDirTree lib opqLib
+    let opqlp := s!"{opqLib}:{base.leanPath}"
+    writeFileCreatingParents (opqRepo / "LeanSwe/MiniPure/Interface.lean")
+      ("import LeanSwe.MiniPure.Impl\n" ++
+       "namespace LeanSwe.MiniPure\n" ++
+       "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
+       "def parse (s : String) : Except MiniErr Nat := Internal.parseImpl s\n" ++
+       "opaque opaqueFallible (s : String) : Except MiniErr Nat := Internal.parseImpl s\n" ++
+       "end LeanSwe.MiniPure\n")
+    for m in #["LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests",
+        "LeanSwe/MiniPure/Proofs", "LeanSwe/MiniPure/Proofs/Consumer", "LeanSwe"] do
+      compileLeanMod opqRepo opqlp (opqRepo / s!"{m}.lean") (opqLib / s!"{m}.olean")
+    expectFailureCode bin "central_cov_iface_opaque_fallible_not_exempt" "UNCOVERED_CENTRAL_ERROR_CELL"
+      opqLib opqRepo #["--strict-central-coverage", "--coverage-log", pureZeroLog.toString, "--nonce", goodNonce]
+    IO.FS.removeDirAll opqDir
+
+    let boDir := tmpRoot / "cc_boundary_with_obeys_model"
+    let boRepo := boDir / "repo"
+    let boLib := boDir / "lib"
+    IO.FS.createDirAll boDir
+    copyDirTree repo boRepo
+    copyDirTree lib boLib
+    let bolp := s!"{boLib}:{base.leanPath}"
+    writeFileCreatingParents (boRepo / "LeanSwe/MiniExt/Types.lean")
+      ("namespace LeanSwe.MiniExt\n" ++
+       "inductive ExtErrKind\n  | hostFail\n  deriving Repr, BEq, DecidableEq\n" ++
+       "structure ExtErr where\n  kind : ExtErrKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
+       "structure RawProbeOpsM (m : Type → Type) where\n  rawProbe : String → m (Option String)\n" ++
+       "structure ExtApiM (m : Type → Type) where\n  probe : String → m (Except ExtErr Nat)\n" ++
+       "end LeanSwe.MiniExt\n")
+    writeFileCreatingParents (boRepo / "LeanSwe/MiniExt/Model.lean")
+      ("import LeanSwe.MiniExt.Types\n" ++
+       "namespace LeanSwe.MiniExt.Model\n" ++
+       "def probeModel (k : String) : Nat := k.length\n" ++
+       "def rawWf (_ : Nat) : Bool := true\n" ++
+       "def execRaw {W : Type} (raw : RawProbeOpsM (StateM W)) (k : String) : StateM W (Option String) := raw.rawProbe k\n" ++
+       "def rawAllowed (s : Nat) (k : String) (out : Option String) (s' : Nat) : Prop :=\n" ++
+       "  s' = s ∧ (out = some k ∨ out = none)\n" ++
+       "def execPkg {W : Type} (api : ExtApiM (StateM W)) (k : String) : StateM W (Except ExtErr Nat) := api.probe k\n" ++
+       "def pkgAllowed (s : Nat) (k : String) (out : Except ExtErr Nat) (s' : Nat) : Prop :=\n" ++
+       "  s' = s ∧ (out = .ok k.length ∨ out = .error { kind := .hostFail, msg := \"missing\" })\n" ++
+       "end LeanSwe.MiniExt.Model\n")
+    writeFileCreatingParents (boRepo / "LeanSwe/MiniExt/Impl.lean")
+      ("import LeanSwe.MiniExt.Types\n" ++
+       "namespace LeanSwe.MiniExt.Internal\n" ++
+       "@[extern \"leanswe_miniext_probe\"]\n" ++
+       "private opaque rawProbeExtern (k : @& String) : IO (Option String)\n" ++
+       "def mkApiM {m : Type → Type} [Monad m] (raw : RawProbeOpsM m) : ExtApiM m := {\n" ++
+       "  probe := fun k => do\n" ++
+       "    match ← raw.rawProbe k with\n" ++
+       "    | some v => return .ok v.length\n" ++
+       "    | none => return .error { kind := .hostFail, msg := \"missing\" }\n" ++
+       "}\n" ++
+       "def defaultOps : RawProbeOpsM IO := { rawProbe := rawProbeExtern }\n" ++
+       "end LeanSwe.MiniExt.Internal\n")
+    writeFileCreatingParents (boRepo / "LeanSwe/MiniExt/Interface.lean")
+      ("import LeanSwe.MiniExt.Impl\n" ++
+       "namespace LeanSwe.MiniExt\n" ++
+       "def defaultApi : ExtApiM IO := Internal.mkApiM Internal.defaultOps\n" ++
+       "def probe (k : String) : IO (Except ExtErr Nat) := defaultApi.probe k\n" ++
+       "end LeanSwe.MiniExt\n")
+    writeFileCreatingParents (boRepo / "LeanSwe/MiniExt/Proofs.lean")
+      ("import Core.NondetTest\nimport Core.Obeys\nimport LeanSwe.MiniExt.Model\nimport LeanSwe.MiniExt.SpecTests\n" ++
+       "namespace LeanSwe.MiniExt.Proofs\n" ++
+       "theorem assume_miniext_canreach : Core.CanReach (LeanSwe.MiniExt.assume_miniext_probe_nonzero (fun _ => 1)) :=\n" ++
+       "  ⟨\"a\", by decide, trivial⟩\n" ++
+       "theorem obeys_model : Core.ObeysStepFrom id Model.rawWf Model.execRaw Model.rawAllowed Model.rawWf Internal.mkApiM Model.execPkg Model.pkgAllowed := by\n" ++
+       "  intro W proj raw hRaw w k _\n" ++
+       "  have h := hRaw w k rfl\n" ++
+       "  dsimp only [Model.execRaw, Model.rawAllowed, Model.execPkg, Model.pkgAllowed, Internal.mkApiM, Bind.bind, StateT.bind, Pure.pure, StateT.pure, StateT.run, Function.comp, id] at h ⊢\n" ++
+       "  cases hr : raw.rawProbe k w with\n" ++
+       "  | mk ov w1 =>\n" ++
+       "    simp only [hr] at h ⊢\n" ++
+       "    rcases h with ⟨hs, hok | hnone⟩\n" ++
+       "    · subst hok; exact ⟨hs, Or.inl rfl⟩\n" ++
+       "    · subst hnone; exact ⟨hs, Or.inr rfl⟩\n" ++
+       "end LeanSwe.MiniExt.Proofs\n")
+    writeFileCreatingParents (boRepo / "scripts/coverage_overrides.json")
+      "{\n  \"version\": 1,\n  \"overrides\": []\n}\n"
+    for m in #["LeanSwe/MiniExt/Types", "LeanSwe/MiniExt/Model", "LeanSwe/MiniExt/Impl",
+        "LeanSwe/MiniExt/Interface", "LeanSwe/MiniExt/SpecTests", "LeanSwe/MiniExt/Proofs",
+        "LeanSwe/MiniPure/Proofs/Consumer", "LeanSwe"] do
+      compileLeanMod boRepo bolp (boRepo / s!"{m}.lean") (boLib / s!"{m}.olean")
+    let boPassOut ← runCmd bin.toString
+      #[boLib.toString, boRepo.toString, "--require-fuzz-equiv", "--strict-central-coverage",
+        "--coverage-log", pureZeroLog.toString, "--nonce", goodNonce]
+    let boPassComb := boPassOut.stdout ++ "\n" ++ boPassOut.stderr
+    if boPassOut.exitCode != 0 || (boPassComb.splitOn "errors=0").length <= 1 then
+      throw (IO.userError s!"FAIL [central_cov_boundary_with_obeys_model_with_err_hit_ok]: expected exit=0 errors=0:\n{boPassComb}")
+    IO.println "PASS [central_cov_boundary_with_obeys_model_with_err_hit_ok] -> boundary package with valid obeys_model + ERR_HIT accepted"
+    let noExtHitLog := cDir / "no_ext_hit.cov.log"
+    IO.FS.writeFile noExtHitLog
+      (s!"{goodNonce}|LOG_INIT\n" ++
+       s!"{goodNonce}|ERR_HIT|LeanSwe.MiniPure.parse|LeanSwe.MiniPure.MiniErrKind.badInput|real\n" ++
+       s!"{goodNonce}|FUZZ_EQUIV|LeanSwe.MiniFloat|minifloat|500|2/2|ok=true\n" ++
+       s!"{goodNonce}|FUZZ_EQUIV|LeanSwe.MiniExt|miniext|500|4/4|ok=true\n" ++
+       s!"{goodNonce}|LOG_CLOSE\n")
+    expectFailureCode bin "central_cov_boundary_with_obeys_model_still_requires_err_hit" "UNCOVERED_CENTRAL_ERROR_CELL"
+      boLib boRepo #["--strict-central-coverage", "--coverage-log", noExtHitLog.toString, "--nonce", goodNonce]
+    IO.FS.removeDirAll boDir
 
   let mockedPureLog := cDir / "mocked_pure.cov.log"
   IO.FS.writeFile mockedPureLog
@@ -1478,13 +1714,25 @@ private def runCentralCoverageSelfTests (base : MiniRepo) (tmpRoot bin : System.
 
   IO.FS.removeDirAll cDir
 
+private def ensureCoreLib (tmpRoot realRepo realLib : System.FilePath) : IO System.FilePath := do
+  let reqMods := #["Core/NondetTest", "Core/Assumptions", "Core/Obeys", "Core/ConcOps"]
+  let mut allPresent := true
+  for m in reqMods do
+    unless ← (realLib / s!"{m}.olean").pathExists do
+      allPresent := false
+  if allPresent then
+    return realLib
+  let coreLib := tmpRoot / "core_lib"
+  IO.FS.createDirAll coreLib
+  let lp := coreLib.toString
+  for m in reqMods do
+    compileLeanMod realRepo lp (realRepo / s!"{m}.lean") (coreLib / s!"{m}.olean")
+  return coreLib
+
 /-- Execute self-tests for `Core.Obeys`, boundary retirement, harness parity, and import-DAG gates. -/
 def main (_ : List String) : IO UInt32 := do
   let realRepo ← IO.FS.realPath "."
-  let realLib := realRepo / ".lake" / "build" / "lib" / "lean"
-  unless ← (realLib / "LeanSwe.olean").pathExists do
-    IO.eprintln s!"MISSING_BUILD: run lake build first ({realLib / "LeanSwe.olean"})"
-    return 1
+  let defaultRealLib := realRepo / ".lake" / "build" / "lib" / "lean"
 
   let mkOut ← runCmd "mktemp" #["-d", "/tmp/leanswe-assump-selftest.XXXXXX"]
   if mkOut.exitCode != 0 then
@@ -1493,6 +1741,7 @@ def main (_ : List String) : IO UInt32 := do
   let tmpRoot : System.FilePath := mkOut.stdout.trimAscii.toString
 
   try
+    let realLib ← ensureCoreLib tmpRoot realRepo defaultRealLib
     let bin ← buildCheckAssumptionsBin tmpRoot
     let baseDir := tmpRoot / "baseline"
     IO.FS.createDirAll baseDir

@@ -30,6 +30,13 @@ private def errorKindTag : CompressErrorKind → String
   | .commandFailed => "commandFailed"
   | .ioError => "ioError"
 
+private def logCompressErr {α : Type} (errHitMode? : Option String) (opName : String)
+    (res : Except CompressError α) : IO Unit := do
+  if let some mode := errHitMode? then
+    if let .error e := res then
+      Fuzz.Common.logErrHit s!"LeanSwe.Compress.{opName}"
+        s!"LeanSwe.Compress.CompressErrorKind.{errorKindTag e.kind}" mode
+
 private def randRequiredBuckets : Array CoverageBucket := Id.run do
   let mut req : Array CoverageBucket := #[]
   for c in #[Codec.zstd, Codec.xz, Codec.gzip] do
@@ -183,7 +190,8 @@ private structure EvalResult where
   produced? : Option (Codec × ByteArray × ByteArray) := none
 
 private def evalOp (env : Model.CompressEnv) (api : CompressApiM IO) (oracle? : Option PyOracle)
-    (st : Model.State) (op : CompressFuzzOp) (tracker : CoverageTracker) :
+    (st : Model.State) (op : CompressFuzzOp) (tracker : CoverageTracker)
+    (errHitMode? : Option String := none) :
     IO EvalResult := do
   match op with
   | .isToolAvailable codec =>
@@ -194,6 +202,7 @@ private def evalOp (env : Model.CompressEnv) (api : CompressApiM IO) (oracle? : 
     return { state := st, tracker := tr', err? := none }
   | .compress codec payload =>
     let res ← api.compress codec payload
+    logCompressErr errHitMode? "compress" res
     let tr' :=
       match res with
       | .ok _ => tracker.record s!"compress.{codecTag codec}" "ok"
@@ -221,6 +230,7 @@ private def evalOp (env : Model.CompressEnv) (api : CompressApiM IO) (oracle? : 
     return { state := st1, tracker := tr', err? := none, produced? := prod? }
   | .compressWith codec opts payload =>
     let res ← api.compressWith codec opts payload
+    logCompressErr errHitMode? "compressWith" res
     let bkt := match res with | .ok _ => "ok" | .error e => s!"err.{errorKindTag e.kind}"
     let tr' := (tracker.record s!"compressWith.{codecTag codec}" bkt).record "compressWith" bkt
     let st1 := match res with | .ok comp => st.record codec comp payload | .error _ => st
@@ -246,6 +256,7 @@ private def evalOp (env : Model.CompressEnv) (api : CompressApiM IO) (oracle? : 
     return { state := st1, tracker := tr', err? := none, produced? := prod? }
   | .decompress codec input tag =>
     let res ← api.decompress codec input
+    logCompressErr errHitMode? "decompress" res
     let bkt :=
       match res with
       | .ok _ => if isMultiOrPaddedTag tag then "ok.multiOrPadded" else "ok"
@@ -276,6 +287,7 @@ private def evalOp (env : Model.CompressEnv) (api : CompressApiM IO) (oracle? : 
     return { state := st1, tracker := tr', err? := none, produced? := prod? }
   | .decompressWith codec opts input tag =>
     let res ← api.decompressWith codec opts input
+    logCompressErr errHitMode? "decompressWith" res
     let bkt :=
       match res with
       | .ok _ => "ok"
@@ -447,8 +459,9 @@ private def readZeroBytes (n : Nat) : IO ByteArray :=
   readDeviceBytes "/dev/zero" n
 
 private def runCheckedOsOp (label : String) (env : Model.CompressEnv) (api : CompressApiM IO)
-    (op : CompressFuzzOp) (tracker : CoverageTracker) : IO CoverageTracker := do
-  let er ← evalOp env api none Model.State.empty op tracker
+    (op : CompressFuzzOp) (tracker : CoverageTracker) (errHitMode? : Option String := some "real") :
+    IO CoverageTracker := do
+  let er ← evalOp env api none Model.State.empty op tracker errHitMode?
   if let some msg := er.err? then
     throw (IO.userError s!"OS_SUBPASS_FAIL({label}): {msg}")
   return er.tracker
@@ -522,23 +535,23 @@ private def runOsSubPass (oracle : PyOracle) (tracker : CoverageTracker) : IO Co
     let rsrcApi : CompressApiM IO :=
       LeanSwe.Compress.Internal.mkApiM { LeanSwe.Process.defaultApi with run := fun _ => pure (.error pe) }
     for c in allCodecs do
-      tr ← runCheckedOsOp s!"{lbl}.comp.{codecTag c}" envIo rsrcApi (.compress c "hi".toUTF8) tr
-      tr ← runCheckedOsOp s!"{lbl}.decW.{codecTag c}" envIo rsrcApi (.decompressWith c {} "hi".toUTF8 "osIo") tr
+      tr ← runCheckedOsOp s!"{lbl}.comp.{codecTag c}" envIo rsrcApi (.compress c "hi".toUTF8) tr (some "mocked")
+      tr ← runCheckedOsOp s!"{lbl}.decW.{codecTag c}" envIo rsrcApi (.decompressWith c {} "hi".toUTF8 "osIo") tr (some "mocked")
 
   let peNoErrno : ProcessError := { kind := .invalidInput, errnoCode := none, message := "cannot allocate memory" }
   let noErrnoMsgApi : CompressApiM IO :=
     LeanSwe.Compress.Internal.mkApiM { LeanSwe.Process.defaultApi with run := fun _ => pure (.error peNoErrno) }
   let envLoop : Model.CompressEnv := { toolStatus := fun _ => .pathSymlinkLoop }
-  tr ← runCheckedOsOp "noErrnoMsg.comp.zstd" envLoop noErrnoMsgApi (.compress .zstd "hi".toUTF8) tr
-  tr ← runCheckedOsOp "noErrnoMsg.decW.zstd" envLoop noErrnoMsgApi (.decompressWith .zstd {} "hi".toUTF8 "osPrec") tr
+  tr ← runCheckedOsOp "noErrnoMsg.comp.zstd" envLoop noErrnoMsgApi (.compress .zstd "hi".toUTF8) tr (some "mocked")
+  tr ← runCheckedOsOp "noErrnoMsg.decW.zstd" envLoop noErrnoMsgApi (.decompressWith .zstd {} "hi".toUTF8 "osPrec") tr (some "mocked")
 
   for (lbl, code) in #[("einvalPrec", (22 : UInt32)), ("eloopPrec", (40 : UInt32))] do
     let pe : ProcessError :=
       { kind := .invalidInput, errnoCode := some code, message := "/tmp/too many open files/zstd: invalid" }
     let precApi : CompressApiM IO :=
       LeanSwe.Compress.Internal.mkApiM { LeanSwe.Process.defaultApi with run := fun _ => pure (.error pe) }
-    tr ← runCheckedOsOp s!"{lbl}.comp.zstd" envLoop precApi (.compress .zstd "hi".toUTF8) tr
-    tr ← runCheckedOsOp s!"{lbl}.decW.zstd" envLoop precApi (.decompressWith .zstd {} "hi".toUTF8 "osPrec") tr
+    tr ← runCheckedOsOp s!"{lbl}.comp.zstd" envLoop precApi (.compress .zstd "hi".toUTF8) tr (some "mocked")
+    tr ← runCheckedOsOp s!"{lbl}.decW.zstd" envLoop precApi (.decompressWith .zstd {} "hi".toUTF8 "osPrec") tr (some "mocked")
 
   let validZstdEmpty := Model.encodeStored .zstd ByteArray.empty
   let childStderrProc : LeanSwe.Process.ProcessApi :=
@@ -546,8 +559,8 @@ private def runOsSubPass (oracle : PyOracle) (tracker : CoverageTracker) : IO Co
       run := fun _ =>
         pure (.ok { exitCode := 1, stdout := ByteArray.empty, stderr := "\ngzip: memory_exhausted\n".toUTF8 }) }
   let childStderrApi := LeanSwe.Compress.Internal.mkApiM childStderrProc
-  tr ← runCheckedOsOp "childStderr.comp" { allowExternalSignal := true } childStderrApi (.compress .gzip "hi".toUTF8) tr
-  tr ← runCheckedOsOp "childStderr.dec" {} childStderrApi (.decompress .gzip "bad".toUTF8 "osChildStderr") tr
+  tr ← runCheckedOsOp "childStderr.comp" { allowExternalSignal := true } childStderrApi (.compress .gzip "hi".toUTF8) tr (some "mocked")
+  tr ← runCheckedOsOp "childStderr.dec" {} childStderrApi (.decompress .gzip "bad".toUTF8 "osChildStderr") tr (some "mocked")
 
   let ldEnoentProc : LeanSwe.Process.ProcessApi :=
     { LeanSwe.Process.defaultApi with
@@ -557,15 +570,15 @@ private def runOsSubPass (oracle : PyOracle) (tracker : CoverageTracker) : IO Co
           stdout := ByteArray.empty
           stderr := "zstd: error while loading shared libraries: libmissing.so: cannot open shared object file: No such file or directory\n".toUTF8 }) }
   let ldEnoentApi := LeanSwe.Compress.Internal.mkApiM ldEnoentProc
-  tr ← runCheckedOsOp "childLdEnoent.comp" { allowExternalSignal := true } ldEnoentApi (.compress .zstd "hi".toUTF8) tr
-  tr ← runCheckedOsOp "childLdEnoent.dec" {} ldEnoentApi (.decompress .zstd "bad".toUTF8 "osLdEnoent") tr
+  tr ← runCheckedOsOp "childLdEnoent.comp" { allowExternalSignal := true } ldEnoentApi (.compress .zstd "hi".toUTF8) tr (some "mocked")
+  tr ← runCheckedOsOp "childLdEnoent.dec" {} ldEnoentApi (.decompress .zstd "bad".toUTF8 "osLdEnoent") tr (some "mocked")
 
   let memLimProc : LeanSwe.Process.ProcessApi :=
     { LeanSwe.Process.defaultApi with
       run := fun _ =>
         pure (.ok { exitCode := 1, stdout := ByteArray.empty, stderr := "xz: (stdin): Memory usage limit reached\n".toUTF8 }) }
   tr ← runCheckedOsOp "xzMemlimitCorrupt" {} (LeanSwe.Compress.Internal.mkApiM memLimProc)
-    (.decompress .xz "bad".toUTF8 "osMemlimit") tr
+    (.decompress .xz "bad".toUTF8 "osMemlimit") tr (some "mocked")
 
   let timedOutProc : LeanSwe.Process.ProcessApi :=
     { LeanSwe.Process.defaultApi with
@@ -575,12 +588,12 @@ private def runOsSubPass (oracle : PyOracle) (tracker : CoverageTracker) : IO Co
   let envTimedOut : Model.CompressEnv := { allowTimeout := true }
   for c in allCodecs do
     let validEmpty := Model.encodeStored c ByteArray.empty
-    tr ← runCheckedOsOp s!"mockTimeout.comp.{codecTag c}" envTimedOut timedOutApi (.compress c "hi".toUTF8) tr
-    tr ← runCheckedOsOp s!"mockTimeout.compW.{codecTag c}" envTimedOut timedOutApi (.compressWith c {} "hi".toUTF8) tr
-    tr ← runCheckedOsOp s!"mockTimeout.decValid.{codecTag c}" envTimedOut timedOutApi (.decompress c validEmpty "osTimedOut") tr
+    tr ← runCheckedOsOp s!"mockTimeout.comp.{codecTag c}" envTimedOut timedOutApi (.compress c "hi".toUTF8) tr (some "mocked")
+    tr ← runCheckedOsOp s!"mockTimeout.compW.{codecTag c}" envTimedOut timedOutApi (.compressWith c {} "hi".toUTF8) tr (some "mocked")
+    tr ← runCheckedOsOp s!"mockTimeout.decValid.{codecTag c}" envTimedOut timedOutApi (.decompress c validEmpty "osTimedOut") tr (some "mocked")
     let decFramingEnv : Model.CompressEnv := if c == .gzip then {} else envTimedOut
     tr ← runCheckedOsOp s!"mockTimeout.decFraming.{codecTag c}" decFramingEnv timedOutApi
-      (.decompressWith c { maxOutputBytes := 64 } "bad".toUTF8 "osTimedOutFraming") tr
+      (.decompressWith c { maxOutputBytes := 64 } "bad".toUTF8 "osTimedOutFraming") tr (some "mocked")
 
   let normCheckOps (pe : ProcessError) : CompressApiM IO :=
     LeanSwe.Compress.Internal.mkApiM {
@@ -588,10 +601,10 @@ private def runOsSubPass (oracle : PyOracle) (tracker : CoverageTracker) : IO Co
       run := fun _ => pure (.error pe) }
   tr ← runCheckedOsOp "normNotFoundStderr" { toolStatus := fun _ => .missingOrNonExec }
     (normCheckOps { kind := .notFound, stderr := some "not found\n".toUTF8, message := "missing" })
-    (.compress .zstd "hi".toUTF8) tr
+    (.compress .zstd "hi".toUTF8) tr (some "mocked")
   tr ← runCheckedOsOp "normCmdZeroExit" { allowExternalSignal := true }
     (normCheckOps { kind := .nonZeroExit, exitCode := some 0, stderr := some "sig\n".toUTF8, message := "failed" })
-    (.compress .zstd "hi".toUTF8) tr
+    (.compress .zstd "hi".toUTF8) tr (some "mocked")
 
   let wantSanitizedEnv : Array (String × Option String) := #[
     ("XZ_OPT", none),
@@ -703,13 +716,13 @@ private def runOsSubPass (oracle : PyOracle) (tracker : CoverageTracker) : IO Co
   for c in allCodecs do
     tr ← runCheckedOsOp s!"poisonAvail.{codecTag c}" {} poisonedApi (.isToolAvailable c) tr
     let sample := s!"poisoned-env-check-{codecTag c}\n".toUTF8
-    let er1 ← evalOp {} poisonedApi (some oracle) stPoison (.compress c sample) tr
+    let er1 ← evalOp {} poisonedApi (some oracle) stPoison (.compress c sample) tr (some "real")
     tr := er1.tracker
     stPoison := er1.state
     if let some msg := er1.err? then
       throw (IO.userError s!"OS_SUBPASS_FAIL(poison.{codecTag c}): {msg}")
     let s := Model.encodeStored c sample
-    let er2 ← evalOp {} poisonedApi (some oracle) stPoison (.decompress c s "poison") tr
+    let er2 ← evalOp {} poisonedApi (some oracle) stPoison (.decompress c s "poison") tr (some "real")
     tr := er2.tracker
     stPoison := er2.state
     if let some msg := er2.err? then
@@ -823,7 +836,7 @@ private def runRegressionSubPass (oracle : PyOracle) (tracker : CoverageTracker)
   ]
   let mut st := Model.State.empty
   for (label, c, opts, plain) in cases do
-    let er1 ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.compressWith c opts plain) tr
+    let er1 ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.compressWith c opts plain) tr (some "real")
     tr := er1.tracker
     st := er1.state
     if let some msg := er1.err? then
@@ -832,14 +845,14 @@ private def runRegressionSubPass (oracle : PyOracle) (tracker : CoverageTracker)
       match ← LeanSwe.Compress.compressWith c opts plain with
       | .ok b => pure b
       | .error e => throw (IO.userError s!"REGRESSION_FAIL(prep.{label}): {e.message}")
-    let er2 ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.decompress c comp s!"reg.{label}") tr
+    let er2 ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.decompress c comp s!"reg.{label}") tr (some "real")
     tr := er2.tracker
     st := er2.state
     if let some msg := er2.err? then
       throw (IO.userError s!"REGRESSION_FAIL(dec.{label}): {msg}")
   let xzMultiChunk76 := hexDecode
     "fd377a585a0000016922de360200210116000000742fe5a3e0000000055d000000000000020000588000000005000000000000004e0e238d00012c033f8fbe809042990d010000000001595a"
-  let er3 ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.decompress .xz xzMultiChunk76 "reg.xz0x02") tr
+  let er3 ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.decompress .xz xzMultiChunk76 "reg.xz0x02") tr (some "real")
   tr := er3.tracker
   st := er3.state
   if let some msg := er3.err? then
@@ -848,7 +861,7 @@ private def runRegressionSubPass (oracle : PyOracle) (tracker : CoverageTracker)
   let zstdBt2Zero1 := hexDecode "28b52ffd0038050000"
   let zstdBt2Zero2 := hexDecode "28b52ffd0038040000010000"
   for (lbl, bs) in #[("wd89Fcs5", zstdWd89), ("bt2ZeroLast", zstdBt2Zero1), ("bt2ZeroMid", zstdBt2Zero2)] do
-    let erk ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.decompress .zstd bs s!"reg.{lbl}") tr
+    let erk ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.decompress .zstd bs s!"reg.{lbl}") tr (some "real")
     tr := erk.tracker
     st := erk.state
     if let some msg := erk.err? then
@@ -862,7 +875,7 @@ private def runRegressionSubPass (oracle : PyOracle) (tracker : CoverageTracker)
   let zstdBt2Skip :=
     (hexDecode "502a4d1808000200" ++ ByteArray.mk (Array.replicate 131080 0xBB)) ++ zstdBt2Zero2
   for (lbl, bs) in #[("zstdBigBlock", zstdBigBlock), ("zstdPadFcs", zstdPadFcs), ("zstdBt2Skip", zstdBt2Skip)] do
-    let erk ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.decompress .zstd bs s!"reg.{lbl}") tr
+    let erk ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.decompress .zstd bs s!"reg.{lbl}") tr (some "real")
     tr := erk.tracker
     st := erk.state
     if let some msg := erk.err? then
@@ -874,7 +887,7 @@ private def runRegressionSubPass (oracle : PyOracle) (tracker : CoverageTracker)
   let gzBombFextra := gzBombRaw.extract 0 3 ++ ByteArray.mk #[0x04] ++ gzBombRaw.extract 4 10 ++
     ByteArray.mk #[0x02, 0x00, 0x1F, 0x9D] ++ gzBombRaw.extract 10 gzBombRaw.size
   let erGz ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st
-    (.decompressWith .gzip { maxOutputBytes := 1024 } gzBombFextra "reg.gzipFextraBomb") tr
+    (.decompressWith .gzip { maxOutputBytes := 1024 } gzBombFextra "reg.gzipFextraBomb") tr (some "real")
   tr := erGz.tracker
   st := erGz.state
   if let some msg := erGz.err? then
@@ -885,7 +898,7 @@ private def runRegressionSubPass (oracle : PyOracle) (tracker : CoverageTracker)
     | .error e => throw (IO.userError s!"REGRESSION_FAIL(prep.xzBomb): {e.message}")
   for lim in #[1, 17, 255, 256, 257, 1024] do
     let erXz ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st
-      (.decompressWith .xz { maxOutputBytes := lim } xzBomb s!"reg.xzLim{lim}") tr
+      (.decompressWith .xz { maxOutputBytes := lim } xzBomb s!"reg.xzLim{lim}") tr (some "real")
     tr := erXz.tracker
     st := erXz.state
     if let some msg := erXz.err? then
@@ -922,7 +935,7 @@ private def runRegressionSubPass (oracle : PyOracle) (tracker : CoverageTracker)
       ("gzNoEob", Codec.gzip, 100, gzNoEob),
       ("xzComp88_100", Codec.xz, 100, xzComp88),
       ("xzComp88_1024", Codec.xz, 1024, xzComp88)] do
-    let erk ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.decompressWith c { maxOutputBytes := lim } bs s!"reg.{lbl}") tr
+    let erk ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.decompressWith c { maxOutputBytes := lim } bs s!"reg.{lbl}") tr (some "real")
     tr := erk.tracker
     st := erk.state
     if let some msg := erk.err? then
@@ -943,7 +956,7 @@ private def runRegressionSubPass (oracle : PyOracle) (tracker : CoverageTracker)
   for (lbl, c, lim, bs) in #[
       ("xzCut47_12500", Codec.xz, 12500, xzCut47),
       ("xzCut47_12288", Codec.xz, 12288, xzCut47)] do
-    let erk ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.decompressWith c { maxOutputBytes := lim } bs s!"reg.{lbl}") tr
+    let erk ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.decompressWith c { maxOutputBytes := lim } bs s!"reg.{lbl}") tr (some "real")
     tr := erk.tracker
     st := erk.state
     if let some msg := erk.err? then
@@ -1070,7 +1083,7 @@ private def runRegressionSubPass (oracle : PyOracle) (tracker : CoverageTracker)
       ("zstdRingMulti", Codec.zstd, zstdRingMulti),
       ("zstdRawSplit131070", Codec.zstd, mkZstdRawSplitReg 131070),
       ("zstdRawSplit131071", Codec.zstd, mkZstdRawSplitReg 131071)] do
-    let erk ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.decompress c bs s!"reg.{lbl}") tr
+    let erk ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st (.decompress c bs s!"reg.{lbl}") tr (some "real")
     tr := erk.tracker
     st := erk.state
     if let some msg := erk.err? then
@@ -1087,7 +1100,7 @@ private def runRegressionSubPass (oracle : PyOracle) (tracker : CoverageTracker)
         CompressFuzzOp.decompressWith c { maxOutputBytes := exactPlain.size } compExact "reg.exactLim",
         CompressFuzzOp.decompressWith c { maxOutputBytes := exactPlain.size - 1 } compExact "reg.exactLimMinus1",
         CompressFuzzOp.decompress c compExact "reg.exactReplay"] do
-      let erE ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st cop tr
+      let erE ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st cop tr (some "real")
       tr := erE.tracker
       st := erE.state
       if let some msg := erE.err? then
@@ -1274,7 +1287,7 @@ private def runSeededFuzz (cfg : FuzzConfig) (steps : Nat) (smokeMode : Bool) : 
             genNextOp oracle rXz
         rng := rng'
         epochTrace := epochTrace.push op
-        let er ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st op randTracker
+        let er ← evalOp {} LeanSwe.Compress.defaultApi (some oracle) st op randTracker (some "real")
         st := er.state
         randTracker := er.tracker
         if let some prod := er.produced? then
