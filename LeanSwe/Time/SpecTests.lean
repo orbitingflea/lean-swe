@@ -1,11 +1,10 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.LinuxSyscall.TimeRand.Model
 import LeanSwe.Time.Types
 
 namespace LeanSwe.Time
 
-open Core (NondetTest ErrorObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.LinuxSyscall (Errno)
 open LeanSwe.LinuxSyscall.TimeRand
@@ -301,14 +300,5 @@ def test_time_mkTimeOps_sleepAbstimeRetriesEintrWithoutDrift
   let stAfterNegSec := (((mkOps (scriptedSleepSysOps)).sleep ms).run initNegSec).2
   NondetTest.assert (stAfterNegSec.gettimeCalls = 1 ∧ stAfterNegSec.nanosleepLog.length = 1 ∧
     stAfterNegSec.nanosleepLog.all isExpectedRelCall = true)
-
-/-- Declared error-coverage matrix for pure helper package `LeanSwe.Time` (`TimeErrorKind`, covering `parseUtcIso8601` and `parseUtcDate`). -/
-def errorCoverage : List (ErrorObligation TimeErrorKind) :=
-  [ { request := "LeanSwe.Time.parseUtcIso8601"
-      errorKind := .invalidFormat
-      justification := .tested "LeanSwe.Time.RuntimeTests.err_time_parseUtcIso8601_invalidFormat" .real }
-  , { request := "LeanSwe.Time.parseUtcDate"
-      errorKind := .invalidFormat
-      justification := .tested "LeanSwe.Time.RuntimeTests.err_time_parseUtcDate_invalidFormat" .real } ]
 
 end LeanSwe.Time

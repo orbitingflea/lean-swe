@@ -1,3 +1,4 @@
+import Core.Assumptions
 import Core.Obeys
 import LeanSwe.Tar.SpecTests
 import LeanSwe.Tar.Interface

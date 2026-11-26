@@ -1,5 +1,4 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.EnvVars.Types
 import LeanSwe.Fs.Types
 import LeanSwe.TempDir.Types
@@ -8,7 +7,7 @@ import LeanSwe.Uuid.Types
 
 namespace LeanSwe.TempDir
 
-open Core (NondetTest ErrorObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.Fs (FsApiM FsError FsErrorKind EntryKind FileStat LockMode)
 open LeanSwe.Time (TimeOpsM)
@@ -589,62 +588,5 @@ def test_tempdir_cleanupStaleTempDirs_nonRegularLockAndPartialFailureSafety
 private def stubRemovePrefix (p : String) (xs : List String) : Bool :=
   let pref := if p == "/" then "/" else p ++ "/"
   xs.any fun k => k == p || pref.toList.isPrefixOf k.toList
-
-/-- Complete `3 × 6` `(request, errorKind)` coverage matrix for pure orchestration package `LeanSwe.TempDir` (`TempDirErrorKind`). -/
-def errorCoverage : List (ErrorObligation TempDirErrorKind) :=
-  [ { request := "LeanSwe.TempDir.withTempDir"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_withTempDir_invalidInput" .real }
-  , { request := "LeanSwe.TempDir.withTempDir"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_withTempDir_notFound" .real }
-  , { request := "LeanSwe.TempDir.withTempDir"
-      errorKind := .alreadyExists
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_withTempDir_alreadyExists" .mocked }
-  , { request := "LeanSwe.TempDir.withTempDir"
-      errorKind := .permissionDenied
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_withTempDir_permissionDenied" .real }
-  , { request := "LeanSwe.TempDir.withTempDir"
-      errorKind := .notADirectory
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_withTempDir_notADirectory" .real }
-  , { request := "LeanSwe.TempDir.withTempDir"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_withTempDir_ioError" .real }
-  , { request := "LeanSwe.TempDir.withLockedTempDir"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_withLockedTempDir_invalidInput" .real }
-  , { request := "LeanSwe.TempDir.withLockedTempDir"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_withLockedTempDir_notFound" .real }
-  , { request := "LeanSwe.TempDir.withLockedTempDir"
-      errorKind := .alreadyExists
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_withLockedTempDir_alreadyExists" .mocked }
-  , { request := "LeanSwe.TempDir.withLockedTempDir"
-      errorKind := .permissionDenied
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_withLockedTempDir_permissionDenied" .real }
-  , { request := "LeanSwe.TempDir.withLockedTempDir"
-      errorKind := .notADirectory
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_withLockedTempDir_notADirectory" .real }
-  , { request := "LeanSwe.TempDir.withLockedTempDir"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_withLockedTempDir_ioError" .real }
-  , { request := "LeanSwe.TempDir.cleanupStaleTempDirs"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_cleanupStaleTempDirs_invalidInput" .real }
-  , { request := "LeanSwe.TempDir.cleanupStaleTempDirs"
-      errorKind := .notFound
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_cleanupStaleTempDirs_notFound" .real }
-  , { request := "LeanSwe.TempDir.cleanupStaleTempDirs"
-      errorKind := .alreadyExists
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_cleanupStaleTempDirs_alreadyExists" .mocked }
-  , { request := "LeanSwe.TempDir.cleanupStaleTempDirs"
-      errorKind := .permissionDenied
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_cleanupStaleTempDirs_permissionDenied" .real }
-  , { request := "LeanSwe.TempDir.cleanupStaleTempDirs"
-      errorKind := .notADirectory
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_cleanupStaleTempDirs_notADirectory" .real }
-  , { request := "LeanSwe.TempDir.cleanupStaleTempDirs"
-      errorKind := .ioError
-      justification := .tested "LeanSwe.TempDir.RuntimeTests.err_tempdir_cleanupStaleTempDirs_ioError" .real } ]
 
 end LeanSwe.TempDir

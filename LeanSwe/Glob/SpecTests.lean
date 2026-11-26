@@ -1,11 +1,10 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.Glob.Types
 import LeanSwe.Glob.Model
 
 namespace LeanSwe.Glob
 
-open Core (NondetTest ErrorObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.Glob.Model
 
@@ -130,56 +129,5 @@ def test_glob_escape_matchesModel
     {runner} [NondetTest runner] (api : GlobApi) : runner Unit := do
   let literal ← nondet String
   NondetTest.assert (api.escape literal = escapeModel literal)
-
-/-- Declared error-coverage matrix for `LeanSwe.Glob` fallible requests (`GlobErrorKind`). -/
-def errorCoverage : List (ErrorObligation GlobErrorKind) :=
-  [ { request := "LeanSwe.Glob.validate"
-      errorKind := .unclosedClass
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_validate_unclosedClass" .real }
-  , { request := "LeanSwe.Glob.validate"
-      errorKind := .emptyClass
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_validate_emptyClass" .real }
-  , { request := "LeanSwe.Glob.validate"
-      errorKind := .invalidRange
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_validate_invalidRange" .real }
-  , { request := "LeanSwe.Glob.validate"
-      errorKind := .trailingEscape
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_validate_trailingEscape" .real }
-  , { request := "LeanSwe.Glob.isMatch"
-      errorKind := .unclosedClass
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_isMatch_unclosedClass" .real }
-  , { request := "LeanSwe.Glob.isMatch"
-      errorKind := .emptyClass
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_isMatch_emptyClass" .real }
-  , { request := "LeanSwe.Glob.isMatch"
-      errorKind := .invalidRange
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_isMatch_invalidRange" .real }
-  , { request := "LeanSwe.Glob.isMatch"
-      errorKind := .trailingEscape
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_isMatch_trailingEscape" .real }
-  , { request := "LeanSwe.Glob.filter"
-      errorKind := .unclosedClass
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_filter_unclosedClass" .real }
-  , { request := "LeanSwe.Glob.filter"
-      errorKind := .emptyClass
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_filter_emptyClass" .real }
-  , { request := "LeanSwe.Glob.filter"
-      errorKind := .invalidRange
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_filter_invalidRange" .real }
-  , { request := "LeanSwe.Glob.filter"
-      errorKind := .trailingEscape
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_filter_trailingEscape" .real }
-  , { request := "LeanSwe.Glob.countMatches"
-      errorKind := .unclosedClass
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_countMatches_unclosedClass" .real }
-  , { request := "LeanSwe.Glob.countMatches"
-      errorKind := .emptyClass
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_countMatches_emptyClass" .real }
-  , { request := "LeanSwe.Glob.countMatches"
-      errorKind := .invalidRange
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_countMatches_invalidRange" .real }
-  , { request := "LeanSwe.Glob.countMatches"
-      errorKind := .trailingEscape
-      justification := .tested "LeanSwe.Glob.RuntimeTests.err_glob_countMatches_trailingEscape" .real } ]
 
 end LeanSwe.Glob
