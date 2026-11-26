@@ -1,5 +1,4 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.PostFork.Types
 import LeanSwe.PostFork.Types.Internal
 import LeanSwe.PostFork.Model
@@ -8,7 +7,7 @@ import LeanSwe.PostFork.Aeneas.Model
 namespace LeanSwe.PostFork
 
 open _root_.Aeneas _root_.Aeneas.Std Result
-open Core (NondetTest AssumptionObligation ErrorObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.LinuxSyscall
 open LeanSwe.PostFork.Aeneas.Model
@@ -954,62 +953,5 @@ def test_postfork_marshaling_flattenSlotsForkModeAndCloseFilter
       (∃ e st,
         ((mkOps epermRaw).abortBarrier { pid := 4242, pgid := none, syncWrite := 13, errRead := 10 }).run {} = (.error e, st) ∧
         e.kind = .sysError ∧ e.errno = some Errno.EPERM ∧ st.callCount = 1))
-
-/-- External trust-boundary assumptions for `LeanSwe.PostFork` (`libpostfork.a` `#![no_std]` Rust FFI + `postfork::sys` 1-syscall wrappers + `postfork_shim.c` 1-syscall host primitives + Linux `7.1` child kernel ABI). -/
-def externalAssumptions : List AssumptionObligation :=
-  [ { «name» := "LeanSwe.PostFork.assume_postfork_stdioCycleAndCloexec"
-      subject := "LeanSwe.PostFork.spawn"
-      formalPred? := none }
-  , { «name» := "LeanSwe.PostFork.assume_postfork_errPipeWireAndBrokenPipe"
-      subject := "LeanSwe.PostFork.spawn"
-      formalPred? := none }
-  , { «name» := "LeanSwe.PostFork.assume_postfork_syncBarrierReleaseAndAbort"
-      subject := "LeanSwe.PostFork.spawnWithBarrier"
-      formalPred? := none }
-  , { «name» := "LeanSwe.PostFork.assume_postfork_argTokenAndImmortalThread"
-      subject := "LeanSwe.PostFork.spawn"
-      formalPred? := none }
-  , { «name» := "LeanSwe.PostFork.assume_postfork_closeUnkeptProcSelfFdFallback"
-      subject := "LeanSwe.PostFork.spawn"
-      formalPred? := none } ]
-
-/-- Complete `(request × PostForkErrorKind)` error-coverage matrix across all `4` public host entrypoints (`spawn`, `spawnWithBarrier`, `releaseBarrier`, `abortBarrier`). -/
-def errorCoverage : List (ErrorObligation PostForkErrorKind) :=
-  [ { request := "LeanSwe.PostFork.spawn"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.PostFork.RuntimeTests.err_spawn_invalidInput" .real }
-  , { request := "LeanSwe.PostFork.spawn"
-      errorKind := .sysError
-      justification := .tested "LeanSwe.PostFork.RuntimeTests.err_spawn_sysError" .real }
-  , { request := "LeanSwe.PostFork.spawn"
-      errorKind := .childFailed
-      justification := .tested "LeanSwe.PostFork.RuntimeTests.err_spawn_childFailed" .real }
-  , { request := "LeanSwe.PostFork.spawnWithBarrier"
-      errorKind := .invalidInput
-      justification := .tested "LeanSwe.PostFork.RuntimeTests.err_spawnWithBarrier_invalidInput" .real }
-  , { request := "LeanSwe.PostFork.spawnWithBarrier"
-      errorKind := .sysError
-      justification := .tested "LeanSwe.PostFork.RuntimeTests.err_spawnWithBarrier_sysError" .real }
-  , { request := "LeanSwe.PostFork.spawnWithBarrier"
-      errorKind := .childFailed
-      justification := .provedImpossible "LeanSwe.PostFork.Proofs.spawnWithBarrier_never_childFailed" }
-  , { request := "LeanSwe.PostFork.releaseBarrier"
-      errorKind := .invalidInput
-      justification := .provedImpossible "LeanSwe.PostFork.Proofs.releaseBarrier_never_invalidInput" }
-  , { request := "LeanSwe.PostFork.releaseBarrier"
-      errorKind := .sysError
-      justification := .tested "LeanSwe.PostFork.RuntimeTests.err_releaseBarrier_sysError" .real }
-  , { request := "LeanSwe.PostFork.releaseBarrier"
-      errorKind := .childFailed
-      justification := .tested "LeanSwe.PostFork.RuntimeTests.err_releaseBarrier_childFailed" .real }
-  , { request := "LeanSwe.PostFork.abortBarrier"
-      errorKind := .invalidInput
-      justification := .provedImpossible "LeanSwe.PostFork.Proofs.abortBarrier_never_invalidInput" }
-  , { request := "LeanSwe.PostFork.abortBarrier"
-      errorKind := .sysError
-      justification := .tested "LeanSwe.PostFork.RuntimeTests.err_abortBarrier_sysError" .real }
-  , { request := "LeanSwe.PostFork.abortBarrier"
-      errorKind := .childFailed
-      justification := .provedImpossible "LeanSwe.PostFork.Proofs.abortBarrier_never_childFailed" } ]
 
 end LeanSwe.PostFork

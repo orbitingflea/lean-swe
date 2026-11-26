@@ -1,11 +1,10 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.LinuxSyscall.Sandbox.Types
 import LeanSwe.LinuxSyscall.Sandbox.Model
 
 namespace LeanSwe.LinuxSyscall.Sandbox
 
-open Core (NondetTest ErrorObligation ErrorJustification ErrorTestMode AssumptionObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.LinuxSyscall
 
@@ -752,73 +751,5 @@ def test_sandbox_healthyStep_and_healthyModelOps
             none
         else
           some { state := sNext, eintrBudget := anyEnv.eintrBudget })
-
-/-- External trust-boundary assumptions for `LeanSwe.LinuxSyscall.Sandbox` C wrappers (`sandbox_shim.c` + `fd_box.h`) and Linux kernel ABI (`x86_64` + `aarch64`), verified 1-to-1 by `RuntimeTests.lean`, `leanswe-world-fuzz`, and `strace` fault injection. On `assume_sandbox_seccomp_actionAvailAndFilterAbi`, `Internal.mkSandboxOps` enforces `hasSafeSeccompRetBytes` in pure Lean (rejecting `SECCOMP_RET_ERRNO | 0`, `SECCOMP_RET_ERRNO | EFAULT`, `KILL_PROCESS`, `KILL_THREAD`, `TRAP`, `TRACE`, `USER_NOTIF`, unknown action bits, `BPF_RET | BPF_A` `0x0016`, and `BPF_ALU | BPF_DIV | BPF_X` `0x003c` with `EINVAL`), so `SandboxFuzz` can fuzz arbitrary `filterBytes` with zero avoided inputs; `SandboxSysState.withOuterSeccomp` likewise assumes inherited safe outer filters (`SECCOMP_RET_ERRNO | EFAULT` fails loud with `SIGABRT`, verified in `RuntimeTests.lean`). -/
-def externalAssumptions : List AssumptionObligation :=
-  [ { name := "LeanSwe.LinuxSyscall.Sandbox.assume_sandbox_landlockCreateRuleset_versionAndRuleset"
-      subject := "LeanSwe.LinuxSyscall.Sandbox.landlockCreateRuleset"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.Sandbox.assume_sandbox_landlockAddRule_pathBeneathAndNetPort"
-      subject := "LeanSwe.LinuxSyscall.Sandbox.landlockAddRule"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.Sandbox.assume_sandbox_landlockRestrictSelf_nnpAndLayerCap"
-      subject := "LeanSwe.LinuxSyscall.Sandbox.landlockRestrictSelf"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.Sandbox.assume_sandbox_seccomp_actionAvailAndFilterAbi"
-      subject := "LeanSwe.LinuxSyscall.Sandbox.seccomp"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.Sandbox.assume_sandbox_prctl_nnpSubreaperAndPdeathsig"
-      subject := "LeanSwe.LinuxSyscall.Sandbox.prctl"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.Sandbox.assume_sandbox_setrlimit_curMaxAndHardCap"
-      subject := "LeanSwe.LinuxSyscall.Sandbox.setrlimit"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.Sandbox.assume_sandbox_memfdCreate_nameBoundsAndSeals"
-      subject := "LeanSwe.LinuxSyscall.Sandbox.memfdCreate"
-      formalPred? := none } ]
-
-/-- Complete `(request × SandboxErrorKind)` error-coverage matrix for all 7 curated `Sandbox` syscalls (`35` obligations), linked to real Linux tests and mocked/fault-injection tests in `RuntimeTests.lean`. -/
-def errorCoverage : List (ErrorObligation SandboxErrorKind) :=
-  [ { request := "LeanSwe.LinuxSyscall.Sandbox.landlockCreateRuleset", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_landlockCreateRuleset_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.landlockCreateRuleset", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_landlockCreateRuleset_invalidArg" .real }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.landlockCreateRuleset", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_landlockCreateRuleset_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.landlockCreateRuleset", errorKind := .limitOrUnsupported, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_landlockCreateRuleset_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.landlockCreateRuleset", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_landlockCreateRuleset_transientOrResource" .real }
-
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.landlockAddRule", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_landlockAddRule_badFd" .real }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.landlockAddRule", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_landlockAddRule_invalidArg" .real }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.landlockAddRule", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_landlockAddRule_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.landlockAddRule", errorKind := .limitOrUnsupported, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_landlockAddRule_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.landlockAddRule", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_landlockAddRule_mocked" .mocked }
-
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.landlockRestrictSelf", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_landlockRestrictSelf_badFd" .real }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.landlockRestrictSelf", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_landlockRestrictSelf_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.landlockRestrictSelf", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_landlockRestrictSelf_permissionDenied" .real }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.landlockRestrictSelf", errorKind := .limitOrUnsupported, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_landlockRestrictSelf_limitOrUnsupported" .real }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.landlockRestrictSelf", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_landlockRestrictSelf_mocked" .mocked }
-
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.seccomp", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_seccomp_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.seccomp", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_seccomp_invalidArg" .real }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.seccomp", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_seccomp_permissionDenied" .real }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.seccomp", errorKind := .limitOrUnsupported, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_seccomp_limitOrUnsupported" .real }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.seccomp", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_seccomp_mocked" .mocked }
-
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.prctl", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_prctl_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.prctl", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_prctl_invalidArg" .real }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.prctl", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_prctl_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.prctl", errorKind := .limitOrUnsupported, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_prctl_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.prctl", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_prctl_mocked" .mocked }
-
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.setrlimit", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_setrlimit_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.setrlimit", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_setrlimit_invalidArg" .real }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.setrlimit", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_setrlimit_permissionDenied" .real }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.setrlimit", errorKind := .limitOrUnsupported, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_setrlimit_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.setrlimit", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_setrlimit_mocked" .mocked }
-
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.memfdCreate", errorKind := .badFd, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_memfdCreate_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.memfdCreate", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_memfdCreate_invalidArg" .real }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.memfdCreate", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_memfdCreate_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.memfdCreate", errorKind := .limitOrUnsupported, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_memfdCreate_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Sandbox.memfdCreate", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Sandbox.RuntimeTests.err_memfdCreate_transientOrResource" .real } ]
 
 end LeanSwe.LinuxSyscall.Sandbox

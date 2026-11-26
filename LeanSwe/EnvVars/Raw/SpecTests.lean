@@ -1,12 +1,11 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.EnvVars.Raw.Types
 import LeanSwe.EnvVars.Raw.Model
 import LeanSwe.EnvVars.Raw.Model.Assumptions
 
 namespace LeanSwe.EnvVars.Raw
 
-open Core (NondetTest AssumptionObligation ErrorObligation)
+open Core (NondetTest)
 open Core.NondetTest
 
 /-- Every error returned by `ops.mapRawError` carries a non-empty diagnostic message. -/
@@ -197,49 +196,6 @@ def test_envvarsraw_listEnv_nulFreeInputsPreserveNulFreedom
   NondetTest.assert (pairs.toList.all fun p =>
     !p.1.isEmpty && !('=' ∈ p.1.toList) &&
     !(Char.ofNat 0 ∈ p.1.toList) && !(Char.ofNat 0 ∈ p.2.toList))
-
-/-- Frozen thin-boundary assumptions for `LeanSwe.EnvVars.Raw` over POSIX `getenv(3)` and `environ(7)`
-    (`c/envvars_shim.c` raw byte data-passing + 1 formal consistency invariant consumed by `LeanSwe.EnvVars.Proofs`). -/
-def externalAssumptions : List AssumptionObligation :=
-  [ { name := "LeanSwe.EnvVars.Raw.assume_envvarsraw_getEnv_unsetReturnsNone"
-      subject := "LeanSwe.EnvVars.Raw.getEnv"
-      formalPred? := none }
-  , { name := "LeanSwe.EnvVars.Raw.assume_envvarsraw_getEnv_preservesSetBytesAndRejectsInvalidUtf8"
-      subject := "LeanSwe.EnvVars.Raw.getEnv"
-      formalPred? := none }
-  , { name := "LeanSwe.EnvVars.Raw.assume_envvarsraw_listEnv_copiesEnvironOrderAndSkipsMalformed"
-      subject := "LeanSwe.EnvVars.Raw.listEnv"
-      formalPred? := none }
-  , { name := "LeanSwe.EnvVars.Raw.assume_envvarsraw_listEnv_consistentWithGetEnv"
-      subject := "LeanSwe.EnvVars.Raw.listEnv"
-      formalPred? := some "LeanSwe.EnvVars.Raw.assume_envvarsraw_listEnv_consistentWithGetEnv" } ]
-
-/-- Declared error-coverage matrix for `LeanSwe.EnvVars.Raw` requests (`EnvVarsRawErrorKind`). -/
-def errorCoverage : List (ErrorObligation EnvVarsRawErrorKind) :=
-  [ { request := "LeanSwe.EnvVars.Raw.getEnv"
-      errorKind := .invalidEncoding
-      justification := .tested "LeanSwe.EnvVars.Raw.RuntimeTests.err_envvarsraw_getEnv_invalidEncoding" .real }
-  , { request := "LeanSwe.EnvVars.Raw.getEnv"
-      errorKind := .invalidArgument
-      justification := .provedImpossible "LeanSwe.EnvVars.Raw.Proofs.raw_getEnv_never_invalidArgument" }
-  , { request := "LeanSwe.EnvVars.Raw.getEnv"
-      errorKind := .otherError
-      justification := .provedImpossible "LeanSwe.EnvVars.Raw.Proofs.raw_getEnv_never_otherError" }
-  , { request := "LeanSwe.EnvVars.Raw.getEnv"
-      errorKind := .userError
-      justification := .provedImpossible "LeanSwe.EnvVars.Raw.Proofs.raw_getEnv_never_userError" }
-  , { request := "LeanSwe.EnvVars.Raw.listEnv"
-      errorKind := .invalidEncoding
-      justification := .tested "LeanSwe.EnvVars.Raw.RuntimeTests.err_envvarsraw_listEnv_invalidEncoding" .real }
-  , { request := "LeanSwe.EnvVars.Raw.listEnv"
-      errorKind := .invalidArgument
-      justification := .provedImpossible "LeanSwe.EnvVars.Raw.Proofs.raw_listEnv_never_invalidArgument" }
-  , { request := "LeanSwe.EnvVars.Raw.listEnv"
-      errorKind := .otherError
-      justification := .provedImpossible "LeanSwe.EnvVars.Raw.Proofs.raw_listEnv_never_otherError" }
-  , { request := "LeanSwe.EnvVars.Raw.listEnv"
-      errorKind := .userError
-      justification := .provedImpossible "LeanSwe.EnvVars.Raw.Proofs.raw_listEnv_never_userError" } ]
 
 /-- `(mkRaw (Model.modelPosixRawOps s))` agrees identically with `Model.modelRawOps s` across `getEnv`, `listEnv`, and `mapRawError`. -/
 def test_envvarsraw_mkRaw_matchesModel

@@ -1,3 +1,4 @@
+import Core.Assumptions
 import LeanSwe.PostFork.Interface
 import LeanSwe.PostFork.Impl
 import LeanSwe.PostFork.SpecTests
@@ -5,9 +6,8 @@ import LeanSwe.PostFork.Proofs.PureAndWire
 import LeanSwe.PostFork.Proofs.HostOrchBase
 
 /-!
-Kernel proofs for `test_postfork_hostOps_validationBarrierEintrAndWire`
-(`Core.AllPass` + `Core.CanReach`) and the `4` `.provedImpossible`
-`Core.NeverErrorKindIO` obligations in `LeanSwe.PostFork.errorCoverage`.
+Kernel proofs for `test_postfork_hostOps_validationBarrierEintrAndWire` (`Core.AllPass` + `Core.CanReach`)
+and the `4` `Core.NeverErrorKindIO` impossibility theorems for `LeanSwe.PostFork`.
 -/
 
 namespace LeanSwe.PostFork.Proofs

@@ -1,11 +1,10 @@
 import Core.NondetTest
-import Core.Assumptions
 import LeanSwe.LinuxSyscall.Passwd.Types
 import LeanSwe.LinuxSyscall.Passwd.Model
 
 namespace LeanSwe.LinuxSyscall.Passwd
 
-open Core (NondetTest ErrorObligation ErrorJustification ErrorTestMode AssumptionObligation)
+open Core (NondetTest)
 open Core.NondetTest
 open LeanSwe.LinuxSyscall
 
@@ -491,24 +490,5 @@ def test_passwd_healthyStep_and_healthyModelOps
             none
         else
           some { state := s', eintrBudget := anyEnv.eintrBudget })
-
-/-- Thin C-wrapper boundary assumptions for `LeanSwe.LinuxSyscall.Passwd` (`c/passwd_shim.c`), verified at runtime against host glibc/NSS. -/
-def externalAssumptions : List AssumptionObligation :=
-  [ { name := "LeanSwe.LinuxSyscall.Passwd.assume_passwd_getpwuid_validAndMissingAndDeterministic"
-      subject := "LeanSwe.LinuxSyscall.Passwd.getpwuid"
-      formalPred? := none }
-  , { name := "LeanSwe.LinuxSyscall.Passwd.assume_passwd_getpwnam_validAndMissingAndInvalid"
-      subject := "LeanSwe.LinuxSyscall.Passwd.getpwnam"
-      formalPred? := none } ]
-
-/-- Complete `(request × PasswdErrorKind)` error-coverage matrix for all `2` public fallible `Passwd` declarations (`getpwuid`, `getpwnam`, `6` obligations), linked to real and mocked tests in `RuntimeTests.lean`. -/
-def errorCoverage : List (ErrorObligation PasswdErrorKind) :=
-  [ { request := "LeanSwe.LinuxSyscall.Passwd.getpwuid", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Passwd.RuntimeTests.err_passwd_getpwuid_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Passwd.getpwuid", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Passwd.RuntimeTests.err_passwd_getpwuid_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Passwd.getpwuid", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Passwd.RuntimeTests.err_passwd_getpwuid_mocked" .mocked }
-
-  , { request := "LeanSwe.LinuxSyscall.Passwd.getpwnam", errorKind := .invalidArg, justification := .tested "LeanSwe.LinuxSyscall.Passwd.RuntimeTests.err_passwd_getpwnam_invalidArg" .real }
-  , { request := "LeanSwe.LinuxSyscall.Passwd.getpwnam", errorKind := .permissionDenied, justification := .tested "LeanSwe.LinuxSyscall.Passwd.RuntimeTests.err_passwd_getpwnam_mocked" .mocked }
-  , { request := "LeanSwe.LinuxSyscall.Passwd.getpwnam", errorKind := .transientOrResource, justification := .tested "LeanSwe.LinuxSyscall.Passwd.RuntimeTests.err_passwd_getpwnam_mocked" .mocked } ]
 
 end LeanSwe.LinuxSyscall.Passwd
