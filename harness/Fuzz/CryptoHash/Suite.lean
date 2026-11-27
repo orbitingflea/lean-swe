@@ -1178,7 +1178,41 @@ private def smokeRandomBuckets : Array CoverageBucket := #[
   bucket "fromHex" "ok_mixed_case"
 ]
 
+private def runMockedRawErrorProbes : IO Unit := do
+  let cases : Array (CryptoHashErrorKind × (UInt32 × UInt64 × String × ByteArray)) := #[
+    (.invalidInput, (1, 0, "mock invalid argument", ByteArray.empty)),
+    (.lengthMismatch, (0, 0, "", ByteArray.mk #[1, 2, 3])),
+    (.cryptoError, (3, 123, "mock crypto error", ByteArray.empty))
+  ]
+  let okTuple : UInt32 × UInt64 × String × ByteArray := (0, 0, "", ByteArray.empty)
+  for (expected, rawTuple) in cases do
+    let dOps := Raw.Internal.mkRawOps
+      { digestRaw := fun _ _ => pure rawTuple
+        hmacSha256Raw := fun _ _ => pure okTuple
+        ctEqualRaw := fun _ _ => pure false }
+    match ← dOps.digestRaw .sha256 ByteArray.empty with
+    | .error e =>
+      if e.kind != expected || e.message.isEmpty then
+        throw (IO.userError s!"CRYPTOHASH_MOCK_PROBE_MISMATCH: digestRaw expected {repr expected}, got {repr e}")
+      Fuzz.Common.logErrHit "LeanSwe.CryptoHash.Raw.digestRaw"
+        s!"LeanSwe.CryptoHash.Raw.CryptoHashErrorKind.{cryptoErrKindTag e.kind}" "mocked"
+    | .ok _ =>
+      throw (IO.userError s!"CRYPTOHASH_MOCK_PROBE_UNEXPECTED_OK: digestRaw expected {repr expected}")
+    let hOps := Raw.Internal.mkRawOps
+      { digestRaw := fun _ _ => pure okTuple
+        hmacSha256Raw := fun _ _ => pure rawTuple
+        ctEqualRaw := fun _ _ => pure false }
+    match ← hOps.hmacSha256Raw ByteArray.empty ByteArray.empty with
+    | .error e =>
+      if e.kind != expected || e.message.isEmpty then
+        throw (IO.userError s!"CRYPTOHASH_MOCK_PROBE_MISMATCH: hmacSha256Raw expected {repr expected}, got {repr e}")
+      Fuzz.Common.logErrHit "LeanSwe.CryptoHash.Raw.hmacSha256Raw"
+        s!"LeanSwe.CryptoHash.Raw.CryptoHashErrorKind.{cryptoErrKindTag e.kind}" "mocked"
+    | .ok _ =>
+      throw (IO.userError s!"CRYPTOHASH_MOCK_PROBE_UNEXPECTED_OK: hmacSha256Raw expected {repr expected}")
+
 private def runCryptoHashLoop (steps : Nat) (seedVal : UInt64) (isSmoke : Bool) : IO Unit := do
+  runMockedRawErrorProbes
   let oracle ← spawnPyOracle
   try
     let smokeTr ← runBatchAndShrink (some oracle) warmupCases

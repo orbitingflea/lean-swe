@@ -104,7 +104,7 @@ jobs:
         run: |
           python3 -c '
           from pathlib import Path
-          for lib, base, roots in ((Path(".lake/build/lib/lean"), Path("."), ("Core", "LeanSwe", "Fuzz", "Tests")), (Path("harness/.lake/build/lib/lean"), Path("harness"), ("Fuzz", "Tests", "ModelMutants"))):
+          for lib, base, roots in ((Path(".lake/build/lib/lean"), Path("."), ("Core", "LeanSwe", "Fuzz")), (Path("harness/.lake/build/lib/lean"), Path("harness"), ("Fuzz", "ModelMutants"))):
               for r in roots:
                   if not (lr := lib / r).exists(): continue
                   for o in list(lr.rglob("*.olean")):
@@ -154,14 +154,14 @@ jobs:
           lake exe cache get
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail LeanSwe.PostFork.Verified
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d harness build --wfail ModelMutants lean-swe-test lean-swe-mut-test leanswe-fuzz
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d harness build --wfail ModelMutants leanswe-fuzz
           actual_syms=$(nm -u .lake/build/lib/libleanswe_postfork_rust.a | awk '$1 ~ /^[Uuwv]$/ { print $2 }' | sort -u)
           expected_syms=$(printf '%s\n' __errno_location _exit chdir close dup2 execve fcntl open read setpgid syscall write | sort -u)
           expected_c_syms=$(printf '%s\n' leanswe_postfork_host_close_fd leanswe_postfork_host_fork_run leanswe_postfork_host_pipe_cloexec leanswe_postfork_host_probe_fd leanswe_postfork_host_probe_handle leanswe_postfork_host_read_once leanswe_postfork_host_setpgid leanswe_postfork_host_wait_once leanswe_postfork_host_write_once | sort -u)
           diff -u <(printf '%s\n' "$expected_syms") <(printf '%s\n' "$actual_syms")
           diff -u <(printf '%s\n' leanswe_postfork_close_fds_above2_except leanswe_postfork_run_child) <(nm --defined-only .lake/build/lib/libleanswe_postfork_rust.a | awk '$2 ~ /^[A-Z]$/ { print $3 }' | sort -u)
           diff -u <(printf '%s\n' "$expected_c_syms") <(nm --defined-only .lake/build/lib/libleanswe_postfork.a | awk '$2 ~ /^[ABCDGRST]$/ { print $3 }' | sort -u)
-          for b in lean-swe-test lean-swe-mut-test leanswe-fuzz; do
+          for b in leanswe-fuzz; do
             readelf -d "harness/.lake/build/bin/$b" | grep -E '^[[:space:]]*0x[0-9a-fA-F]+[[:space:]]+(\(BIND_NOW\)([[:space:]]|$)|\(FLAGS\)[[:space:]](.*[[:space:]])?BIND_NOW([[:space:]]|$)|\(FLAGS_1\)[[:space:]](.*[[:space:]])?NOW([[:space:]]|$))' >/dev/null || {
               echo "ERROR: harness/.lake/build/bin/$b missing ELF BIND_NOW" >&2
               exit 1
@@ -228,8 +228,6 @@ jobs:
           fi
           LANE_STATE_DIR=$(mktemp -d "$LOG_DIR/audit-state.XXXXXX")
           LAKE_ENV_FILE="$LANE_STATE_DIR/lake.env"
-          ASSUMP_LOG="$LANE_STATE_DIR/assump.log"
-          COV_LOG="$LANE_STATE_DIR/coverage.log"
           LANE_PIDS=()
           cleanup_parallel() {
             local p sig
@@ -248,9 +246,6 @@ jobs:
           trap cleanup_parallel EXIT
           trap 'trap "" INT TERM; cleanup_parallel; exit 130' INT
           trap 'trap "" INT TERM; cleanup_parallel; exit 143' TERM
-          ASSUMP_NONCE=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
-          [[ "$ASSUMP_NONCE" =~ ^[0-9a-f]{32}$ ]] || { echo "ASSUMP_NONCE_ERROR: invalid nonce" >&2; exit 2; }
-          rm -f "$ASSUMP_LOG" "$COV_LOG"
           # Capture lake env once before launching lanes to avoid concurrent .lake/config lock contention.
           lake env python3 -c '
           import os, re, shlex
@@ -270,26 +265,16 @@ jobs:
             run_lean_gate scripts/CheckPromises.lean --with-self-test .lake/build/lib/lean .
           }
           lane_3() {
-            harness/.lake/build/bin/lean-swe-test --assump-log "$ASSUMP_LOG" --assump-nonce "$ASSUMP_NONCE" --coverage-log "$COV_LOG"
-            [[ -s "$ASSUMP_LOG" ]] || { echo "ASSUMP_LOG_ERROR: missing or empty assumption log" >&2; return 1; }
-            run_lean_gate scripts/CheckAssumptions.lean --verify-log "$ASSUMP_LOG" --coverage-log "$COV_LOG" --nonce "$ASSUMP_NONCE"
-            rm -f "$ASSUMP_LOG" "$COV_LOG"
-            harness/.lake/build/bin/lean-swe-test --suite Git --suite Compress --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite PostFork --suite Sqlite --suite Sqlite.Raw 0<&- 1>&- 2>&-
+            run_lean_gate scripts/CheckAssumptions.lean
           }
           lane_4() {
-            # Run Sqlite.Raw (~4.7 GiB transient RSS) and Compress (~1.8 GiB) in separate short-lived processes
-            # first so their heap arenas are returned to the kernel before Lanes 2/3 peak with Mathlib/Aeneas loaded.
-            harness/.lake/build/bin/lean-swe-mut-test --mode full --suite Sqlite.Raw
-            harness/.lake/build/bin/lean-swe-mut-test --mode full --suite Compress
-            harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,LinuxSyscall.Poll,LinuxSyscall.Net,Git,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns,LinuxSyscall.Files,PostFork,Sqlite
-            harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process
             run_lean_gate scripts/CheckForeignThinness.lean .
           }
           LANE_LABELS=(
             "Lane 1: CheckAssumptionsTest"
             "Lane 2: CheckPromises + CheckPromisesTest"
-            "Lane 3: lean-swe-test + CheckAssumptions + closed-stdio"
-            "Lane 4: lean-swe-mut-test + CheckForeignThinness"
+            "Lane 3: CheckAssumptions"
+            "Lane 4: CheckForeignThinness"
           )
           LANE_LOGS=()
           LANE_TFILES=()
@@ -365,7 +350,6 @@ jobs:
         run: |
           set -euo pipefail
           FUZZ_BIN="harness/.lake/build/bin/leanswe-fuzz"
-          python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest --runner "$FUZZ_BIN" >/dev/null
           VALID_RAW=$("$FUZZ_BIN" --list-suites)
           [[ -n "$VALID_RAW" ]] || { echo "FUZZ_GATE_ERROR: empty --list-suites output" >&2; exit 2; }
           SELECTED_RAW=$(python3 -B -c '

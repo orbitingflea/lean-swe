@@ -651,7 +651,7 @@ private def err_memfdCreate_mocked : IO Unit := do
   assertErr (← (mkMockOps Errno.EACCES).memfdCreate "m".toUTF8 {}) Errno.EACCES "mock EACCES"
   assertErr (← (mkMockOps Errno.ENOSYS).memfdCreate "m".toUTF8 {}) Errno.ENOSYS "mock ENOSYS"
 
-/-- Worker entry point invoked under `strace -f -e inject=...` via `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`) and `lean-swe-mut-test` to check real C-ABI errno propagation for all 10 C shim hooks (including invalid-argument kernel paths). -/
+/-- Worker entry point invoked under `strace -f -e inject=...` via `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`) to check real C-ABI errno propagation for all 10 C shim hooks (including invalid-argument kernel paths). -/
 def runStraceWorker (mode : String) : IO Unit := do
   match mode with
   | "landlock_query" =>
@@ -887,7 +887,7 @@ def runStraceFaultCheck : IO Unit := do
     for (errName, errCode) in cases do
       straceInjectOnce exe scName mode errName errCode st req
 
-/-- Run all `Sandbox` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke` and `lean-swe-mut-test`). -/
+/-- Run all `Sandbox` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke`). -/
 def runChecks : IO Unit := do
   assume_sandbox_landlockCreateRuleset_versionAndRuleset
   assume_sandbox_landlockAddRule_pathBeneathAndNetPort

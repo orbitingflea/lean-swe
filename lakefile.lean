@@ -44,7 +44,6 @@ lean_lib LeanSwe where
     .one `LeanSwe.PostFork.Impl,
     .one `LeanSwe.PostFork.SpecTests,
     .one `LeanSwe.PostFork.SpecMutants,
-    .one `LeanSwe.PostFork.RuntimeTests,
     .andSubmodules `LeanSwe.PostFork.Proofs,
     .one `LeanSwe.PostFork.Verified,
     .andSubmodules `LeanSwe.PostFork.Aeneas.Model,

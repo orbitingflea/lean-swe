@@ -698,7 +698,90 @@ private def verifyAbsPathspecParity : IO Unit := do
     if let some msg ← errRef.get then
       throw (IO.userError s!"GIT_FUZZ_ABS_PATHSPEC_ERROR: {msg}")
 
+private def mockGitFaultOutput : GitErrorKind → Except GitError GitRawOutput
+  | .notARepo => .ok { exitCode := 1, stdout := ByteArray.empty, stderr := "fatal: not a git repository".toUTF8 }
+  | .invalidRef => .ok { exitCode := 1, stdout := ByteArray.empty, stderr := "fatal: invalid reference: mock".toUTF8 }
+  | .invalidPath => .ok { exitCode := 1, stdout := ByteArray.empty, stderr := "fatal: invalid path".toUTF8 }
+  | .invalidInput => .ok { exitCode := 1, stdout := ByteArray.empty, stderr := "fatal: invalid input".toUTF8 }
+  | .dirtyWorktree => .ok { exitCode := 1, stdout := ByteArray.empty, stderr := "error: local changes would be overwritten by checkout".toUTF8 }
+  | .nothingToCommit => .ok { exitCode := 1, stdout := ByteArray.empty, stderr := "nothing to commit, working tree clean".toUTF8 }
+  | .branchInUse => .ok { exitCode := 1, stdout := ByteArray.empty, stderr := "fatal: 'main' is already used by worktree at '/tmp/wt'".toUTF8 }
+  | .alreadyExists => .ok { exitCode := 1, stdout := ByteArray.empty, stderr := "fatal: a branch named 'main' already exists".toUTF8 }
+  | .notFound => .ok { exitCode := 1, stdout := ByteArray.empty, stderr := "error: branch 'missing' not found".toUTF8 }
+  | .conflict => .ok { exitCode := 1, stdout := ByteArray.empty, stderr := "fatal: Exiting because of an unresolved conflict.".toUTF8 }
+  | .timeout => .error { kind := .timeout, command := some "git", message := "mock git timed out" }
+  | .commandFailed => .ok { exitCode := 1, stdout := ByteArray.empty, stderr := "fatal: mock command failed".toUTF8 }
+  | .parseError => .ok { exitCode := 0, stdout := ByteArray.mk #[0xFF, 0xFE], stderr := ByteArray.empty }
+
+private def isProvedImpossibleGitCell (opName : String) (kind : GitErrorKind) : Bool :=
+  (opName == "isRepo" && kind == .notARepo) ||
+  (opName == "clone" && kind == .invalidPath) ||
+  (kind == .parseError &&
+    #["isRepo", "isAncestor", "init", "clone", "add", "createBranch", "deleteBranch",
+      "checkout", "switch", "reset", "fetch", "worktreeAdd", "worktreeRemove"].contains opName)
+
+private def runMockedGitErrorProbes : IO Unit := do
+  let dummyCid : CommitId := { hex := "0123456789abcdef0123456789abcdef01234567" }
+  let mainRef : RefName := { raw := "main" }
+  let longInvalidPath : String := String.ofList (List.replicate 5000 'a')
+  let mut hugeInvalidPath : String := String.ofList (List.replicate 1024 'a')
+  for _ in List.range 8 do
+    hugeInvalidPath := hugeInvalidPath ++ hugeInvalidPath
+  let allKinds : Array GitErrorKind := #[
+    .notARepo, .invalidRef, .invalidPath, .invalidInput, .dirtyWorktree,
+    .nothingToCommit, .branchInUse, .alreadyExists, .notFound, .conflict,
+    .timeout, .commandFailed, .parseError
+  ]
+  let opsFor (repoPath initPath cloneSrc : String) : Array (String × (GitApi → IO (Except GitError Unit))) := #[
+    ("isRepo", fun a => (·.map fun _ => ()) <$> a.isRepo repoPath),
+    ("repoRoot", fun a => (·.map fun _ => ()) <$> a.repoRoot repoPath),
+    ("commonDir", fun a => (·.map fun _ => ()) <$> a.commonDir repoPath),
+    ("headCommit?", fun a => (·.map fun _ => ()) <$> a.headCommit? repoPath),
+    ("headBranch?", fun a => (·.map fun _ => ()) <$> a.headBranch? repoPath),
+    ("headState", fun a => (·.map fun _ => ()) <$> a.headState repoPath),
+    ("revParseCommit", fun a => (·.map fun _ => ()) <$> a.revParseCommit repoPath "HEAD"),
+    ("isAncestor", fun a => (·.map fun _ => ()) <$> a.isAncestor repoPath dummyCid dummyCid),
+    ("mergeBase?", fun a => (·.map fun _ => ()) <$> a.mergeBase? repoPath dummyCid dummyCid),
+    ("status", fun a => (·.map fun _ => ()) <$> a.status repoPath),
+    ("diffNameStatus", fun a => (·.map fun _ => ()) <$> a.diffNameStatus repoPath "HEAD" none #[]),
+    ("listWorktrees", fun a => (·.map fun _ => ()) <$> a.listWorktrees repoPath),
+    ("showFile?", fun a => (·.map fun _ => ()) <$> a.showFile? repoPath "HEAD" "file.txt"),
+    ("init", fun a => a.init initPath false none),
+    ("clone", fun a => a.clone cloneSrc "/mock/dst" {}),
+    ("add", fun a => a.add repoPath #["file.txt"] false),
+    ("commit", fun a => (·.map fun _ => ()) <$> a.commit repoPath { message := "msg" }),
+    ("createBranch", fun a => a.createBranch repoPath mainRef none false),
+    ("deleteBranch", fun a => a.deleteBranch repoPath mainRef false),
+    ("checkout", fun a => a.checkout repoPath (.branch mainRef) false),
+    ("switch", fun a => a.switch repoPath mainRef false none false),
+    ("reset", fun a => a.reset repoPath .hard "HEAD"),
+    ("fetch", fun a => a.fetch repoPath "origin" none false),
+    ("worktreeAdd", fun a => a.worktreeAdd repoPath { path := "/mock/wt", detach := true }),
+    ("worktreeRemove", fun a => a.worktreeRemove repoPath "/mock/wt" false),
+    ("withWorktree", fun a => a.withWorktree repoPath { path := "/mock/wt", detach := true } fun _ =>
+      pure (.error { kind := .parseError, message := "mock withWorktree callback parseError" }))
+  ]
+  for kind in allKinds do
+    let (repoPath, initPath, cloneSrc) :=
+      match kind with
+      | .invalidPath => ("", "", "/mock/src")
+      | .invalidInput => (longInvalidPath, hugeInvalidPath, "-evil")
+      | _ => ("/mock/repo", "/mock/repo", "/mock/src")
+    let api := Impl.mkApiM { listEnv := pure (.ok #[]), execGit := fun _ _ => pure (mockGitFaultOutput kind) }
+    for (opName, act) in opsFor repoPath initPath cloneSrc do
+      if isProvedImpossibleGitCell opName kind then
+        continue
+      let res ← act api
+      match res with
+      | .error e =>
+        if e.kind != kind || e.message.isEmpty then
+          throw (IO.userError s!"GIT_MOCK_PROBE_MISMATCH: {opName} expected {repr kind}, got {repr e}")
+        logGitErr true opName res "mocked"
+      | .ok () =>
+        throw (IO.userError s!"GIT_MOCK_PROBE_UNEXPECTED_OK: {opName} expected {repr kind}")
+
 private def runSmokeFuzz (cfg : FuzzConfig) : IO Unit := do
+  runMockedGitErrorProbes
   verifyAbsPathspecParity
   let reg2 := mkAttrAndSubmoduleRegressionTraces ()
   let mut tracker ← runTraceOrShrink cfg.seed CoverageTracker.empty warmupCorpus
@@ -714,6 +797,7 @@ private def runSmokeFuzz (cfg : FuzzConfig) : IO Unit := do
   safePrintln s!"FUZZ_SUMMARY suite=git mode=smoke steps={totalSteps} seed={cfg.seed}"
 
 private def runFullFuzz (cfg : FuzzConfig) : IO Unit := do
+  runMockedGitErrorProbes
   verifyAbsPathspecParity
   let reg2 := mkAttrAndSubmoduleRegressionTraces ()
   let mut smokeTracker ← runTraceOrShrink cfg.seed CoverageTracker.empty warmupCorpus

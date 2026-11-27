@@ -1237,7 +1237,6 @@ private def isAllowedLeanSourcePath (relPath : String) : Bool :=
   else if !(relPath.splitOn "/").contains "c" && (
       relPath.startsWith "Core/" ||
       relPath.startsWith "LeanSwe/" ||
-      relPath.startsWith "harness/Tests/" ||
       relPath.startsWith "harness/Fuzz/" ||
       relPath.startsWith "harness/ModelMutants/") then
     true

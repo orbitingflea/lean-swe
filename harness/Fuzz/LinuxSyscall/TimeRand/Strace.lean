@@ -307,7 +307,7 @@ private def checkRawInvalidTags : IO Unit := do
   expectErr "raw clock_nanosleep abstime=2 -> EINVAL"
     Errno.EINVAL (← rawClockNanosleepForTest 1 2 0 1)
 
-/-- Run all `TimeRand` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke` and `lean-swe-mut-test`). -/
+/-- Run all `TimeRand` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke`). -/
 def runChecks : IO Unit := do
   assume_timerand_clockGettime_realtimeAndMonotonic
   assume_timerand_clockNanosleep_relativeAndAbstime
@@ -446,7 +446,7 @@ def runStraceFaultCheck : IO Unit := do
       if out.exitCode != 0 then
         throw (IO.userError s!"strace fault-injection failed for ({opName}, {errName}) exit={out.exitCode}: {out.stderr}")
 
-/-- CLI entrypoint for `--timerand-strace-fault-check`, dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`) and `lean-swe-mut-test`. -/
+/-- CLI entrypoint for `--timerand-strace-fault-check`, dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`). -/
 def probeMain (args : List String) : IO UInt32 := do
   match args with
   | [] =>

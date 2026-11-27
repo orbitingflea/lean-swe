@@ -4948,7 +4948,7 @@ private def runProtectedSymlinkWalkReproducers : IO Unit := do
   let _ ← stepModelCheck "ro_bind protSym=false sym_other W_OK -> EROFS" sRoOff
     (.faccessat none "s_unmap/sym_other".toUTF8 { write := true } {}) (.err Errno.EROFS)
 
-/-- Run all `Files` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke` and `lean-swe-mut-test`). -/
+/-- Run all `Files` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke`). -/
 def runChecks : IO Unit := do
   Fuzz.LinuxSyscall.Env.pinClosedStdio
   let savedMask ← Fuzz.LinuxSyscall.Env.umask 0o022
@@ -5392,7 +5392,7 @@ private def runSanitizeClosedStdioWorker (mode : String) : IO UInt32 := do
     return 0
   | _ => return 9
 
-/-- Handle `--files-strace-fault-check` and `--files-strace-worker` subcommands dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`) and `lean-swe-mut-test`. -/
+/-- Handle `--files-strace-fault-check` and `--files-strace-worker` subcommands dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`). -/
 def probeMain (args : List String) : IO UInt32 := do
   match args with
   | ["--worker", "--sanitize-closed-stdio-check", mode] =>
