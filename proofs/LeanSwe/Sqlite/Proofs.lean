@@ -10,12 +10,15 @@ open LeanSwe.Sqlite
 private theorem validateConfig_never (k : SqliteErrorKind) (hk : k ≠ .invalidInput) (cfg : OpenConfig) :
     Core.NeverErrorKindPure Raw.SqliteError.kind k (LeanSwe.Sqlite.validateConfig cfg) := by
   unfold LeanSwe.Sqlite.validateConfig defaultApi Internal.mkApiM Internal.validateConfigWith
-    Raw.defaultOps Raw.Internal.mkRawOps Raw.Internal.mapRawError
   dsimp only
   split
-  · exact hk.symm
+  · dsimp only [Core.NeverErrorKindPure]
+    rw [Raw.defaultOps_mapRawError_invalidArgument_kind]
+    exact hk.symm
   · split
-    · exact hk.symm
+    · dsimp only [Core.NeverErrorKindPure]
+      rw [Raw.defaultOps_mapRawError_invalidArgument_kind]
+      exact hk.symm
     · trivial
 
 /-- `LeanSwe.Sqlite.validateConfig` never returns `.notFound`. -/

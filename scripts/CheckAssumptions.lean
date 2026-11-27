@@ -2094,6 +2094,7 @@ private def checkRefinesModelTheorem
 private structure CliConfig where
   libDir : System.FilePath := ".lake/build/lib/lean"
   repoDir : System.FilePath := "."
+  proofsLibDir? : Option System.FilePath := none
   nonce? : Option String := none
   coverageLogPaths : Array System.FilePath := #[]
   coverageNonce? : Option String := none
@@ -2105,6 +2106,8 @@ private structure CliConfig where
 private def parseArgs (args : List String) : CliConfig :=
   let rec go (cfg : CliConfig) (pos : Nat) : (xs : List String) → CliConfig
     | [] => cfg
+    | "--proofs-lib" :: p :: rest => go { cfg with proofsLibDir? := some ⟨p⟩ } pos rest
+    | ["--proofs-lib"] => { cfg with argError? := some "MISSING_PROOFS_LIB_VALUE: --proofs-lib requires a path" }
     | "--nonce" :: nc :: rest => go { cfg with nonce? := some nc } pos rest
     | ["--nonce"] => { cfg with argError? := some "MISSING_NONCE_VALUE: --nonce requires a non-empty argument" }
     | "--coverage-log" :: lp :: rest => go { cfg with coverageLogPaths := cfg.coverageLogPaths.push ⟨lp⟩ } pos rest
@@ -2527,6 +2530,49 @@ private def renderExpectedObeysSig (env : Environment) (knownPkgs : Array Name) 
   let header := s!"Template for {pkg}.Proofs.obeys_model (starting skeleton; replace any <...> placeholders before compiling):"
   return .ok s!"{header}\nnamespace {pkg}.Proofs\n\ntheorem obeys_model :\n    {body}\n\nend {pkg}.Proofs"
 
+private def isOleanArtifactName (s : String) : Bool :=
+  s.endsWith ".olean" || s.endsWith ".olean.server" || s.endsWith ".olean.private"
+
+private def withMergedOleanSearchPath {α : Type}
+    (searchPaths : List System.FilePath) (k : Except String Unit → IO α) : IO α := do
+  if searchPaths.length <= 1 then
+    initSearchPath (← findSysroot) searchPaths
+    return ← k (.ok ())
+  let mk ← IO.Process.output { cmd := "mktemp", args := #["-d", "/tmp/leanswe-assump-olean.XXXXXX"] }
+  if mk.exitCode != 0 then
+    return ← k (.error s!"MERGED_OLEAN_DIR_ERROR: mktemp failed ({mk.stderr.trimAscii.toString})")
+  let mergedDir : System.FilePath := mk.stdout.trimAscii.toString
+  try
+    let mut seen : Std.HashMap String System.FilePath := {}
+    let mut byParent : Std.HashMap String (Array System.FilePath) := {}
+    for srcDir in searchPaths do
+      if !(← srcDir.isDir) then continue
+      let absSrcDir ← IO.FS.realPath srcDir
+      let absPrefix := absSrcDir.toString ++ "/"
+      for entry in (← System.FilePath.walkDir absSrcDir) do
+        if ← entry.isDir then continue
+        let es := entry.toString
+        if !isOleanArtifactName es || !es.startsWith absPrefix then continue
+        let rel := (es.drop absPrefix.length).toString
+        if let some prev := seen.get? rel then
+          return ← k (.error s!"DUPLICATE_MODULE_OLEAN: {rel} exists in both {prev} and {entry}")
+        seen := seen.insert rel entry
+        let dst := mergedDir / rel
+        let parentStr := (dst.parent.getD mergedDir).toString
+        byParent := byParent.insert parentStr ((byParent.getD parentStr #[]).push entry)
+    for (parentStr, srcs) in byParent.toList do
+      IO.FS.createDirAll parentStr
+      let ln ← IO.Process.output {
+        cmd := "ln"
+        args := #["-s", "-t", parentStr] ++ srcs.map (·.toString)
+      }
+      if ln.exitCode != 0 then
+        return ← k (.error s!"MERGED_OLEAN_DIR_ERROR: ln -s failed for {parentStr} ({ln.stderr.trimAscii.toString})")
+    initSearchPath (← findSysroot) [mergedDir]
+    k (.ok ())
+  finally
+    try IO.FS.removeDirAll mergedDir catch _ => pure ()
+
 /-- Audit compiled `.olean` artifacts for hardened checkable assumptions, error coverage, and `Core.Obeys`. -/
 unsafe def main (args : List String) : IO UInt32 := do
   let cfg := parseArgs args
@@ -2552,14 +2598,35 @@ unsafe def main (args : List String) : IO UInt32 := do
   unless ← leanSweDir.pathExists do
     IO.eprintln s!"MISSING_SOURCE_DIR: {leanSweDir}"
     return 1
-  let hasPostForkVerifiedSrc ← (leanSweDir / "PostFork" / "Verified.lean").pathExists
+  let proofsLeanSweDir := repoDir / "proofs" / "LeanSwe"
+  let hasProofsTree ← proofsLeanSweDir.isDir
+  let proofsLibDir := cfg.proofsLibDir?.getD (repoDir / "proofs" / ".lake" / "build" / "lib" / "lean")
+  if hasProofsTree then
+    unless ← (proofsLibDir / "LeanSweProofs.olean").pathExists do
+      IO.eprintln s!"MISSING_OLEAN: LeanSweProofs ({proofsLibDir / "LeanSweProofs.olean"})"
+      return 1
+  let hasProofsVerifiedSrc ←
+    if hasProofsTree then (proofsLeanSweDir / "PostFork" / "Verified.lean").pathExists else pure false
+  let hasRootVerifiedSrc ← (leanSweDir / "PostFork" / "Verified.lean").pathExists
+  let hasPostForkVerifiedSrc := hasProofsVerifiedSrc || hasRootVerifiedSrc
   if hasPostForkVerifiedSrc then
-    unless ← (libDir / "LeanSwe" / "PostFork" / "Verified.olean").pathExists do
-      IO.eprintln s!"MISSING_OLEAN: LeanSwe.PostFork.Verified ({libDir / "LeanSwe" / "PostFork" / "Verified.olean"})"
+    let vOlean :=
+      if hasProofsVerifiedSrc then proofsLibDir / "LeanSwe" / "PostFork" / "Verified.olean"
+      else libDir / "LeanSwe" / "PostFork" / "Verified.olean"
+    unless ← vOlean.pathExists do
+      IO.eprintln s!"MISSING_OLEAN: LeanSwe.PostFork.Verified ({vOlean})"
       return 1
   Lean.enableInitializersExecution
-  initSearchPath (← findSysroot) [libDir]
+  let searchPaths := if hasProofsTree then [proofsLibDir, libDir] else [libDir]
+  withMergedOleanSearchPath searchPaths fun spRes => do
+  match spRes with
+  | .error err =>
+    IO.eprintln err
+    return 1
+  | .ok () => pure ()
   let mut rootImports : Array Import := #[{ module := `LeanSwe }]
+  if hasProofsTree then
+    rootImports := rootImports.push { module := `LeanSweProofs }
   if hasPostForkVerifiedSrc then
     rootImports := rootImports.push { module := `LeanSwe.PostFork.Verified }
   let env ← importModules rootImports {} (loadExts := true)
@@ -2592,11 +2659,19 @@ unsafe def main (args : List String) : IO UInt32 := do
       return 1
 
   let mut errors : Array String := #[]
-  for entry in (← System.FilePath.walkDir leanSweDir) do
-    if entry.extension == some "lean" then
-      let modName := moduleNameUnderLeanSwe leanSweDir entry
-      if !visited.contains modName then
-        errors := errors.push s!"UNIMPORTED_MODULE: {entry} (module {modName} not imported by LeanSwe)"
+  let mut seenSourceMods : Std.HashSet Name := {}
+  let srcRoots : Array System.FilePath :=
+    if hasProofsTree then #[leanSweDir, proofsLeanSweDir] else #[leanSweDir]
+  for srcRoot in srcRoots do
+    for entry in (← System.FilePath.walkDir srcRoot) do
+      if entry.extension == some "lean" then
+        let modName := moduleNameUnderLeanSwe srcRoot entry
+        if seenSourceMods.contains modName then
+          errors := errors.push s!"DUPLICATE_MODULE_SOURCE: {entry} duplicates module {modName} across Layer 1 and Layer 2"
+        else
+          seenSourceMods := seenSourceMods.insert modName
+        if !visited.contains modName then
+          errors := errors.push s!"UNIMPORTED_MODULE: {entry} (module {modName} not imported by LeanSwe)"
 
   let (hasSuitesJson, validSuites, suitesManifestFailed) ← match ← parseFuzzSuiteNames repoDir with
     | .ok (present, names) => pure (present, names, false)

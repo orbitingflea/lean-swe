@@ -176,55 +176,9 @@ private theorem io_bind_err {α β : Type} (act : IO α) (k : α → IO β) (w :
 private theorem io_pure_eq {α : Type} (a : α) (w : Void IO.RealWorld) : (pure a : IO α) w = EST.Out.ok a w := rfl
 private theorem io_bind_allowed {α β : Type} (P : CmdLineError → Prop) (act : IO α) (k : α → IO (Except CmdLineError β)) (w : Void IO.RealWorld) (hk : ∀ a w', estOutCmdLineAllowed P (k a w')) : estOutCmdLineAllowed P ((act >>= k) w) := by
   cases ha : act w with | error _ w' => rw [io_bind_err _ _ w ha]; trivial | ok a w' => rw [io_bind_eq _ _ w ha]; exact hk a w'
-private theorem baseIO_liftM_never_throws {α : Type} (act : BaseIO α) (w : Void IO.RealWorld) :
-    ∃ a w', (liftM act : IO α) w = EST.Out.ok a w' := by
-  simp only [liftM, monadLift, MonadLiftT.monadLift, MonadLift.monadLift, BaseIO.toEIO]
-  cases act w with
-  | mk a s => exact ⟨a, s, rfl⟩
-
-private theorem io_bind_full {α β : Type} (act : IO α) (k : α → IO β) (w : Void IO.RealWorld) :
-    (act >>= k) w =
-      match act w with
-      | EST.Out.ok a w' => k a w'
-      | EST.Out.error ex w' => EST.Out.error ex w' := by
-  change EST.bind act k w = _
-  unfold EST.bind
-  cases act w <;> rfl
-
-private theorem mkRawOps_envvars_getEnv_never_throws
-    (g : String → BaseIO (Option ByteArray)) (l : BaseIO (Array ByteArray))
-    (key : String) (w : Void IO.RealWorld) :
-    ∃ res w',
-      (LeanSwe.EnvVars.Internal.mkApiM
-        (LeanSwe.EnvVars.Raw.Internal.mkRawOps (m := IO) {
-          getEnvBytes := fun k => liftM (g k)
-          listEnvironBytes := liftM l
-        })).getEnv key w = EST.Out.ok res w' := by
-  dsimp only [LeanSwe.EnvVars.Internal.mkApiM, LeanSwe.EnvVars.Raw.Internal.mkRawOps]
-  by_cases hk : LeanSwe.EnvVars.Internal.isValidKey key
-  · simp only [hk, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    by_cases hpk : LeanSwe.EnvVars.Raw.Internal.isValidPosixKey key
-    · simp only [hpk, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-      rw [io_bind_full, io_bind_full]
-      rcases baseIO_liftM_never_throws (g key) w with ⟨mb, w1, hG⟩
-      rw [hG]
-      cases mb with
-      | none => exact ⟨.ok none, w1, rfl⟩
-      | some bs =>
-        dsimp only
-        cases hutf : String.fromUTF8? bs with
-        | some s => dsimp only; exact ⟨.ok (some s), w1, rfl⟩
-        | none => dsimp only; exact ⟨_, w1, rfl⟩
-    · simp only [hpk, Bool.not_false, ↓reduceIte]
-      rw [io_bind_full, io_pure_eq]
-      exact ⟨.ok none, w, rfl⟩
-  · simp only [hk, Bool.not_false, ↓reduceIte]
-    exact ⟨_, w, rfl⟩
-
 private theorem envvars_getEnv_never_throws (key : String) (w : Void IO.RealWorld) :
-    ∃ res w', LeanSwe.EnvVars.getEnv key w = EST.Out.ok res w' := by
-  unfold LeanSwe.EnvVars.getEnv LeanSwe.EnvVars.defaultApi
-  apply mkRawOps_envvars_getEnv_never_throws
+    ∃ res w', LeanSwe.EnvVars.getEnv key w = EST.Out.ok res w' :=
+  LeanSwe.EnvVars.defaultApi_getEnv_never_throws key w
 
 private theorem defaultOps_getEnv_noThrow_noEof (key : String) (w : Void IO.RealWorld) :
     (∃ v w', defaultOps.getEnv key w = EST.Out.ok (Except.ok v) w') ∨

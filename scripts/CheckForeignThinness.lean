@@ -1232,13 +1232,17 @@ private def checkNonAeneasRustFile (relPath : String) (bytes : ByteArray) : Arra
 private def isAllowedLeanSourcePath (relPath : String) : Bool :=
   if !relPath.endsWith ".lean" then
     false
-  else if relPath == "lakefile.lean" || relPath == "harness/lakefile.lean" || relPath == "LeanSwe.lean" then
+  else if relPath == "lakefile.lean" || relPath == "proofs/lakefile.lean" ||
+      relPath == "harness/lakefile.lean" || relPath == "LeanSwe.lean" ||
+      relPath == "proofs/LeanSweProofs.lean" || relPath == "harness/UnitTests.lean" then
     true
   else if !(relPath.splitOn "/").contains "c" && (
       relPath.startsWith "Core/" ||
       relPath.startsWith "LeanSwe/" ||
+      relPath.startsWith "proofs/LeanSwe/" ||
       relPath.startsWith "harness/Fuzz/" ||
-      relPath.startsWith "harness/ModelMutants/") then
+      relPath.startsWith "harness/ModelMutants/" ||
+      relPath.startsWith "harness/UnitTests/") then
     true
   else
     relPath.startsWith "scripts/Check" && (relPath.splitOn "/").length == 2
@@ -1257,28 +1261,37 @@ private def previewToolchainBytes (bytes : ByteArray) : String :=
 
 private def checkHarnessToolchainParity (repoDir : System.FilePath) : IO (Array String) := do
   let rootTcPath := repoDir / "lean-toolchain"
+  let proofsTcPath := repoDir / "proofs" / "lean-toolchain"
   let harnessTcPath := repoDir / "harness" / "lean-toolchain"
   let mut errs : Array String := #[]
   unless ← rootTcPath.pathExists do
     errs := errs.push s!"HARNESS_TOOLCHAIN_MISSING: missing root toolchain file {rootTcPath}"
+  unless ← proofsTcPath.pathExists do
+    errs := errs.push s!"PROOFS_TOOLCHAIN_MISSING: missing proofs toolchain file {proofsTcPath}"
   unless ← harnessTcPath.pathExists do
     errs := errs.push s!"HARNESS_TOOLCHAIN_MISSING: missing harness toolchain file {harnessTcPath}"
   if !errs.isEmpty then
     return errs
   let rootBytes ← IO.FS.readBinFile rootTcPath
+  let proofsBytes ← IO.FS.readBinFile proofsTcPath
   let harnessBytes ← IO.FS.readBinFile harnessTcPath
   if rootBytes.isEmpty then
     errs := errs.push s!"HARNESS_TOOLCHAIN_INVALID: {rootTcPath} is empty"
+  if rootBytes.data != proofsBytes.data then
+    errs := errs.push s!"PROOFS_TOOLCHAIN_MISMATCH: proofs/lean-toolchain differs from lean-toolchain byte-for-byte (root={previewToolchainBytes rootBytes}, proofs={previewToolchainBytes proofsBytes})"
   if rootBytes.data != harnessBytes.data then
     errs := errs.push s!"HARNESS_TOOLCHAIN_MISMATCH: harness/lean-toolchain differs from lean-toolchain byte-for-byte (root={previewToolchainBytes rootBytes}, harness={previewToolchainBytes harnessBytes})"
   return errs
 
 private def checkHarnessManifestParity (repoDir : System.FilePath) : IO (Array String × Nat) := do
   let rootManPath := repoDir / "lake-manifest.json"
+  let proofsManPath := repoDir / "proofs" / "lake-manifest.json"
   let harnessManPath := repoDir / "harness" / "lake-manifest.json"
   let mut errs : Array String := #[]
   unless ← rootManPath.pathExists do
     errs := errs.push s!"HARNESS_MANIFEST_MISSING: missing root manifest {rootManPath}"
+  unless ← proofsManPath.pathExists do
+    errs := errs.push s!"PROOFS_MANIFEST_MISSING: missing proofs manifest {proofsManPath}"
   unless ← harnessManPath.pathExists do
     errs := errs.push s!"HARNESS_MANIFEST_MISSING: missing harness manifest {harnessManPath}"
   if !errs.isEmpty then
@@ -1287,10 +1300,20 @@ private def checkHarnessManifestParity (repoDir : System.FilePath) : IO (Array S
     | .ok j@(.obj _) => pure j
     | .ok _ => return (#[s!"HARNESS_MANIFEST_ERROR: {rootManPath} root must be a JSON object"], 0)
     | .error e => return (#[s!"HARNESS_MANIFEST_ERROR: invalid JSON in {rootManPath} ({e})"], 0)
+  let proofsJson ← match Json.parse (← IO.FS.readFile proofsManPath) with
+    | .ok j@(.obj _) => pure j
+    | .ok _ => return (#[s!"PROOFS_MANIFEST_ERROR: {proofsManPath} root must be a JSON object"], 0)
+    | .error e => return (#[s!"PROOFS_MANIFEST_ERROR: invalid JSON in {proofsManPath} ({e})"], 0)
   let harnessJson ← match Json.parse (← IO.FS.readFile harnessManPath) with
     | .ok j@(.obj _) => pure j
     | .ok _ => return (#[s!"HARNESS_MANIFEST_ERROR: {harnessManPath} root must be a JSON object"], 0)
     | .error e => return (#[s!"HARNESS_MANIFEST_ERROR: invalid JSON in {harnessManPath} ({e})"], 0)
+
+  let pPkgDir? := (proofsJson.getObjVal? "packagesDir").toOption
+  match pPkgDir? with
+  | some (.str "../.lake/packages") => pure ()
+  | other =>
+    errs := errs.push s!"PROOFS_MANIFEST_PACKAGES_DIR_MISMATCH: proofs/lake-manifest.json packagesDir must be \"../.lake/packages\", got {fmtOptJson other}"
 
   let hPkgDir? := (harnessJson.getObjVal? "packagesDir").toOption
   match hPkgDir? with
@@ -1299,12 +1322,18 @@ private def checkHarnessManifestParity (repoDir : System.FilePath) : IO (Array S
     errs := errs.push s!"HARNESS_MANIFEST_PACKAGES_DIR_MISMATCH: harness/lake-manifest.json packagesDir must be \"../.lake/packages\", got {fmtOptJson other}"
 
   let rVer? := (rootJson.getObjVal? "version").toOption
+  let pVer? := (proofsJson.getObjVal? "version").toOption
   let hVer? := (harnessJson.getObjVal? "version").toOption
+  if rVer?.map Json.compress != pVer?.map Json.compress then
+    errs := errs.push s!"PROOFS_MANIFEST_FIELD_MISMATCH: manifest 'version' differs (root={fmtOptJson rVer?}, proofs={fmtOptJson pVer?})"
   if rVer?.map Json.compress != hVer?.map Json.compress then
     errs := errs.push s!"HARNESS_MANIFEST_FIELD_MISMATCH: manifest 'version' differs (root={fmtOptJson rVer?}, harness={fmtOptJson hVer?})"
 
   let rFixed? := (rootJson.getObjVal? "fixedToolchain").toOption
+  let pFixed? := (proofsJson.getObjVal? "fixedToolchain").toOption
   let hFixed? := (harnessJson.getObjVal? "fixedToolchain").toOption
+  if rFixed?.map Json.compress != pFixed?.map Json.compress then
+    errs := errs.push s!"PROOFS_MANIFEST_FIELD_MISMATCH: manifest 'fixedToolchain' differs (root={fmtOptJson rFixed?}, proofs={fmtOptJson pFixed?})"
   if rFixed?.map Json.compress != hFixed?.map Json.compress then
     errs := errs.push s!"HARNESS_MANIFEST_FIELD_MISMATCH: manifest 'fixedToolchain' differs (root={fmtOptJson rFixed?}, harness={fmtOptJson hFixed?})"
 
@@ -1313,36 +1342,73 @@ private def checkHarnessManifestParity (repoDir : System.FilePath) : IO (Array S
     | .error _ =>
       errs := errs.push "HARNESS_MANIFEST_ERROR: lake-manifest.json missing string field 'name'"
       pure ""
+  let proofsPkgName ← match proofsJson.getObjValAs? String "name" with
+    | .ok s => pure s
+    | .error _ =>
+      errs := errs.push "PROOFS_MANIFEST_ERROR: proofs/lake-manifest.json missing string field 'name'"
+      pure ""
 
   let rootPkgsArr ← match rootJson.getObjVal? "packages" with
     | .ok (.arr a) => pure a
     | _ => return (errs.push "HARNESS_MANIFEST_ERROR: lake-manifest.json missing array field 'packages'", 0)
+  let proofsPkgsArr ← match proofsJson.getObjVal? "packages" with
+    | .ok (.arr a) => pure a
+    | _ => return (errs.push "PROOFS_MANIFEST_ERROR: proofs/lake-manifest.json missing array field 'packages'", 0)
   let harnessPkgsArr ← match harnessJson.getObjVal? "packages" with
     | .ok (.arr a) => pure a
     | _ => return (errs.push "HARNESS_MANIFEST_ERROR: harness/lake-manifest.json missing array field 'packages'", 0)
 
-  let mut rootPkgs : Std.HashMap String Json := {}
-  let mut rootPkgOrder : Array String := #[]
-  for entry in rootPkgsArr do
-    match entry with
-    | .obj _ =>
-      match entry.getObjValAs? String "name" with
-      | .ok pkgName =>
-        if pkgName.isEmpty then
-          errs := errs.push "HARNESS_MANIFEST_ERROR: lake-manifest.json has package entry with empty 'name'"
-        else if rootPkgs.contains pkgName then
-          errs := errs.push s!"HARNESS_MANIFEST_DUPLICATE_PACKAGE: duplicate package '{pkgName}' in lake-manifest.json"
-        else
-          rootPkgs := rootPkgs.insert pkgName entry
-          rootPkgOrder := rootPkgOrder.push pkgName
+  if !rootPkgsArr.isEmpty then
+    errs := errs.push s!"ROOT_MANIFEST_EXTERNAL_DEPS_FORBIDDEN: root lake-manifest.json must have 0 external dependencies (found {rootPkgsArr.size})"
+
+  let mut extPkgs : Std.HashMap String Json := {}
+  let mut extPkgOrder : Array String := #[]
+  let mut seenProofs : Std.HashSet String := {}
+  let mut sawProofsRootDep := false
+  for entry in proofsPkgsArr do
+    let .obj _ := entry
+      | do
+          errs := errs.push "PROOFS_MANIFEST_ERROR: proofs/lake-manifest.json package entries must be JSON objects"
+          continue
+    let pkgName ← match entry.getObjValAs? String "name" with
+      | .ok s => pure s
       | .error _ =>
-        errs := errs.push "HARNESS_MANIFEST_ERROR: lake-manifest.json package entry missing string 'name'"
-    | _ =>
-      errs := errs.push "HARNESS_MANIFEST_ERROR: lake-manifest.json package entries must be JSON objects"
+        errs := errs.push "PROOFS_MANIFEST_ERROR: proofs/lake-manifest.json package entry missing string 'name'"
+        continue
+    if pkgName.isEmpty then
+      errs := errs.push "PROOFS_MANIFEST_ERROR: proofs/lake-manifest.json has package entry with empty 'name'"
+      continue
+    if seenProofs.contains pkgName then
+      errs := errs.push s!"HARNESS_MANIFEST_DUPLICATE_PACKAGE: duplicate package '{pkgName}' in proofs/lake-manifest.json"
+      continue
+    seenProofs := seenProofs.insert pkgName
+    let inherited ← match parseJsonBoolField entry "inherited" with
+      | .ok b => pure b
+      | .error e =>
+        errs := errs.push s!"PROOFS_MANIFEST_ERROR: proofs/lake-manifest.json package '{pkgName}' {e}"
+        continue
+    if !inherited && !rootPkgName.isEmpty && pkgName == rootPkgName then
+      sawProofsRootDep := true
+      let ty? := (entry.getObjValAs? String "type").toOption
+      let dir? := (entry.getObjValAs? String "dir").toOption
+      let copy? := (entry.getObjVal? "copy").toOption
+      if ty? != some "path" || dir? != some ".." || copy? != some (.bool false) then
+        errs := errs.push s!"PROOFS_MANIFEST_ROOT_DEP_MISMATCH: package '{pkgName}' in proofs/lake-manifest.json must have type=\"path\", dir=\"..\", copy=false"
+    else
+      if (entry.getObjValAs? String "type").toOption == some "git" then
+        for reqField in harnessManifestParityFields do
+          if (entry.getObjVal? reqField).toOption.isNone then
+            errs := errs.push s!"PROOFS_MANIFEST_ERROR: git package '{pkgName}' missing field '{reqField}'"
+      extPkgs := extPkgs.insert pkgName entry
+      extPkgOrder := extPkgOrder.push pkgName
+
+  if !rootPkgName.isEmpty && !sawProofsRootDep then
+    errs := errs.push s!"PROOFS_MANIFEST_MISSING_ROOT_DEP: proofs/lake-manifest.json missing path dependency '{rootPkgName}' pointing to \"..\""
 
   let mut seenHarness : Std.HashSet String := {}
   let mut seenInherited : Std.HashSet String := {}
   let mut sawRootPathDep := false
+  let mut sawProofsPathDep := false
   let mut checkedInherited : Nat := 0
   for entry in harnessPkgsArr do
     let .obj _ := entry
@@ -1369,15 +1435,15 @@ private def checkHarnessManifestParity (repoDir : System.FilePath) : IO (Array S
     if inherited then
       checkedInherited := checkedInherited + 1
       seenInherited := seenInherited.insert pkgName
-      match rootPkgs.get? pkgName with
+      match extPkgs.get? pkgName with
       | none =>
-        errs := errs.push s!"HARNESS_MANIFEST_EXTRA_PACKAGE: inherited package '{pkgName}' in harness/lake-manifest.json is absent from root lake-manifest.json"
-      | some rootEntry =>
+        errs := errs.push s!"HARNESS_MANIFEST_EXTRA_PACKAGE: inherited package '{pkgName}' in harness/lake-manifest.json is absent from proofs/lake-manifest.json"
+      | some baseEntry =>
         for field in harnessManifestParityFields do
-          let rVal? := (rootEntry.getObjVal? field).toOption
+          let bVal? := (baseEntry.getObjVal? field).toOption
           let hVal? := (entry.getObjVal? field).toOption
-          if rVal?.map Json.compress != hVal?.map Json.compress then
-            errs := errs.push s!"HARNESS_MANIFEST_FIELD_MISMATCH: package '{pkgName}' field '{field}' differs (root={fmtOptJson rVal?}, harness={fmtOptJson hVal?})"
+          if bVal?.map Json.compress != hVal?.map Json.compress then
+            errs := errs.push s!"HARNESS_MANIFEST_FIELD_MISMATCH: package '{pkgName}' field '{field}' differs (proofs={fmtOptJson bVal?}, harness={fmtOptJson hVal?})"
         if (entry.getObjValAs? String "type").toOption == some "git" then
           for reqField in harnessManifestParityFields do
             if (entry.getObjVal? reqField).toOption.isNone then
@@ -1389,15 +1455,24 @@ private def checkHarnessManifestParity (repoDir : System.FilePath) : IO (Array S
       let copy? := (entry.getObjVal? "copy").toOption
       if ty? != some "path" || dir? != some ".." || copy? != some (.bool false) then
         errs := errs.push s!"HARNESS_MANIFEST_ROOT_DEP_MISMATCH: package '{pkgName}' in harness/lake-manifest.json must have type=\"path\", dir=\"..\", copy=false"
+    else if !proofsPkgName.isEmpty && pkgName == proofsPkgName then
+      sawProofsPathDep := true
+      let ty? := (entry.getObjValAs? String "type").toOption
+      let dir? := (entry.getObjValAs? String "dir").toOption
+      let copy? := (entry.getObjVal? "copy").toOption
+      if ty? != some "path" || dir? != some "../proofs" || copy? != some (.bool false) then
+        errs := errs.push s!"HARNESS_MANIFEST_PROOFS_DEP_MISMATCH: package '{pkgName}' in harness/lake-manifest.json must have type=\"path\", dir=\"../proofs\", copy=false"
     else
-      errs := errs.push s!"HARNESS_MANIFEST_UNEXPECTED_PACKAGE: non-inherited package '{pkgName}' in harness/lake-manifest.json must not bypass root manifest"
+      errs := errs.push s!"HARNESS_MANIFEST_UNEXPECTED_PACKAGE: non-inherited package '{pkgName}' in harness/lake-manifest.json must not bypass proofs manifest"
 
   if !rootPkgName.isEmpty && !sawRootPathDep then
     errs := errs.push s!"HARNESS_MANIFEST_MISSING_ROOT_DEP: harness/lake-manifest.json missing path dependency '{rootPkgName}' pointing to \"..\""
+  if !proofsPkgName.isEmpty && !sawProofsPathDep then
+    errs := errs.push s!"HARNESS_MANIFEST_MISSING_PROOFS_DEP: harness/lake-manifest.json missing path dependency '{proofsPkgName}' pointing to \"../proofs\""
 
-  for rootName in rootPkgOrder.qsort (· < ·) do
-    if !seenInherited.contains rootName then
-      errs := errs.push s!"HARNESS_MANIFEST_MISSING_PACKAGE: root package '{rootName}' is missing from inherited entries in harness/lake-manifest.json"
+  for extName in extPkgOrder.qsort (· < ·) do
+    if !seenInherited.contains extName then
+      errs := errs.push s!"HARNESS_MANIFEST_MISSING_PACKAGE: proofs package '{extName}' is missing from inherited entries in harness/lake-manifest.json"
 
   return (errs, checkedInherited)
 

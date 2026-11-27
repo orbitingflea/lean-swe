@@ -422,7 +422,9 @@ theorem allPass_renderArgs_universalRoundTrip : Core.AllPass (test_cmdline_rende
 theorem canReach_renderArgs_universalRoundTrip : CanReach (test_cmdline_renderArgs_universalRoundTrip defaultApi) := by
   dsimp only [Core.CanReach, Core.CanReachRun, test_cmdline_renderArgs_universalRoundTrip, Bind.bind, Core.NondetTest.nondet, Core.NondetTest.assume, Core.NondetTest.assert]
   refine ⟨{ name := "app" }, [], by decide, ?_⟩
-  have hp : defaultApi.parse { name := "app" } [] = .ok {} := by cbv
-  have hr : defaultApi.renderArgs { name := "app" } {} = .ok [] := by cbv
+  have hp : defaultApi.parse { name := "app" } [] = .ok {} := by
+    dsimp only [defaultApi, Internal.mkApiFromCapsM, Internal.mkApiM]; cbv
+  have hr : defaultApi.renderArgs { name := "app" } {} = .ok [] := by
+    dsimp only [defaultApi, Internal.mkApiFromCapsM, Internal.mkApiM]; cbv
   rw [hp]; dsimp only; rw [hr]; dsimp only; rw [hp]; exact ⟨rfl, trivial⟩
 end LeanSwe.CmdLine.Proofs

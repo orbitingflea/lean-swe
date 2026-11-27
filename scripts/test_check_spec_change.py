@@ -112,6 +112,13 @@ class SpecSubdirLockTests(unittest.TestCase):
             "LeanSwe/LinuxSyscall/Files/Model/Seed.lean",
             "LeanSwe/Demo/Types/Sub.lean",
             "LeanSwe/Demo/Interface/Sub.lean",
+            "proofs/LeanSwe/Tar/Model.lean",
+            "proofs/LeanSwe/Tar/Properties.lean",
+            "proofs/LeanSwe/Tar/Properties/Helpers.lean",
+            "proofs/LeanSwe/LinuxSyscall/Net/Model/Step.lean",
+            "proofs/LeanSwe/PostFork/Aeneas/Types.lean",
+            "proofs/LeanSwe/PostFork/Aeneas/Funs.lean",
+            "proofs/LeanSwe/PostFork/Aeneas/Api.lean",
             "scripts/package_manifest.json",
             "scripts/external_assumptions.json",
         ]
@@ -139,6 +146,11 @@ class SpecSubdirLockTests(unittest.TestCase):
             "LeanSwe/Tar/Properties/README.md",
             "harness/Fuzz/Properties/Foo.lean",
             "scripts/Properties/Foo.lean",
+            "proofs/LeanSwe/Tar/SpecTests.lean",
+            "proofs/LeanSwe/Tar/SpecTests/Helpers.lean",
+            "proofs/LeanSwe/Tar/SpecMutants.lean",
+            "proofs/LeanSwe/Tar/Proofs/ByteModel.lean",
+            "proofs/LeanSweProofs.lean",
             "scripts/other.json",
             "LeanSwe.lean",
         ]
@@ -274,6 +286,28 @@ class SpecSubdirLockTests(unittest.TestCase):
             _git(repo, "commit", "-m", "brand new package properties submodule")
             res_fresh = self._run_cli(repo, "HEAD~1", "HEAD")
             self.assertEqual(res_fresh.returncode, 0, res_fresh.stderr)
+
+            proof_model = repo / "proofs/LeanSwe/Tar/Model.lean"
+            proof_model.parent.mkdir(parents=True, exist_ok=True)
+            proof_model.write_text("namespace LeanSwe.Tar.Model\ndef m : Nat := 1\nend LeanSwe.Tar.Model\n", encoding="utf-8")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "add proofs model for existing package")
+            self.assertNotEqual(self._run_cli(repo, "HEAD~1", "HEAD").returncode, 0)
+            self.assertEqual(self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-add").returncode, 0)
+
+            proof_model.write_text("namespace LeanSwe.Tar.Model\ndef m : Nat := 2\nend LeanSwe.Tar.Model\n", encoding="utf-8")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "modify proofs model")
+            self.assertNotEqual(self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-add").returncode, 0)
+            self.assertEqual(self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-change").returncode, 0)
+
+            proof_aeneas = repo / "proofs/LeanSwe/Tar/Aeneas/Funs.lean"
+            proof_aeneas.parent.mkdir(parents=True, exist_ok=True)
+            proof_aeneas.write_text("namespace LeanSwe.Tar.Aeneas\ndef f : Nat := 1\nend LeanSwe.Tar.Aeneas\n", encoding="utf-8")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "add proofs aeneas file")
+            self.assertNotEqual(self._run_cli(repo, "HEAD~1", "HEAD").returncode, 0)
+            self.assertEqual(self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-add").returncode, 0)
 
 
 class PackageManifestTests(unittest.TestCase):
@@ -632,6 +666,20 @@ class PackageManifestTests(unittest.TestCase):
 
                 res_chg = self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-change")
                 self.assertEqual(res_chg.returncode, 0, res_chg.stderr)
+
+    def test_extern_in_proofs_tree_caught_by_manifest_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_manifest_repo(tmp)
+            p = repo / "proofs/LeanSwe/PurePkg/Model.lean"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text('@[extern "sneaky"] opaque sneaky : IO Unit\n', encoding="utf-8")
+            errs = check_spec_change.validate_package_manifest(repo)
+            self.assertTrue(any("declares external_boundary=false" in e for e in errs), errs)
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "sneaky extern in proofs")
+            res = self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-change")
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("MANIFEST_CHECK: failed", res.stderr)
 
 
 if __name__ == "__main__":

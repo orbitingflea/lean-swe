@@ -258,6 +258,15 @@ private def moduleToFilePath (repoDir : System.FilePath) (modName : Name) : Syst
   let parts := modName.components.map (·.toString)
   (parts.foldl (fun p seg => p / seg) repoDir).withExtension "lean"
 
+private def resolveModuleFilePath (repoDir : System.FilePath) (modName : Name) : IO System.FilePath := do
+  let rootPath := moduleToFilePath repoDir modName
+  if ← rootPath.pathExists then
+    return rootPath
+  let proofsPath := moduleToFilePath (repoDir / "proofs") modName
+  if ← proofsPath.pathExists then
+    return proofsPath
+  return rootPath
+
 private def proofAttrScanTriggers : Array String :=
   #["macro", "elab", "syntax", "infix", "prefix", "postfix", "binder_predicate",
     "run_cmd", "run_elab", "run_meta", "test_extern", "#eval", "#reduce",
@@ -266,7 +275,7 @@ private def proofAttrScanTriggers : Array String :=
 
 private def checkClosureModuleAttrs (repoDir : System.FilePath) (env : Environment) (modName : Name)
     (allowExtern allowInit isProof : Bool) : IO (Option String) := do
-  let path := moduleToFilePath repoDir modName
+  let path ← resolveModuleFilePath repoDir modName
   unless ← path.pathExists do
     return some s!"TRUSTED_CLOSURE_MISSING_SOURCE: {path} for {modName}"
   let input ← IO.FS.readFile path
@@ -451,6 +460,13 @@ private def isCompilerAuxThm (env : Environment) (n : Name) : Bool :=
 private def moduleToIleanPath (libDir : System.FilePath) (modName : Name) : System.FilePath :=
   let parts := modName.components.map (·.toString)
   (parts.foldl (fun p seg => p / seg) libDir).withExtension "ilean"
+
+private def resolveModuleIleanPath (libDirs : List System.FilePath) (modName : Name) : IO System.FilePath := do
+  for d in libDirs do
+    let p := moduleToIleanPath d modName
+    if ← p.pathExists then
+      return p
+  return moduleToIleanPath (libDirs.headD ".") modName
 
 private def stripRootPrefix (s : String) : String :=
   if s.startsWith "_root_." then (s.drop 7).toString else s
@@ -840,6 +856,13 @@ private def moduleToOleanPath (libDir : System.FilePath) (modName : Name) : Syst
   let parts := modName.components.map (·.toString)
   (parts.foldl (fun p seg => p / seg) libDir).withExtension "olean"
 
+private def resolveModuleOleanPath (libDirs : List System.FilePath) (modName : Name) : IO System.FilePath := do
+  for d in libDirs do
+    let p := moduleToOleanPath d modName
+    if ← p.pathExists then
+      return p
+  return moduleToOleanPath (libDirs.headD ".") modName
+
 private partial def peelLambdas (e : Expr) : Expr :=
   match e.consumeMData with
   | .lam _ _ body _ => peelLambdas body
@@ -1115,6 +1138,19 @@ private def auditImportDagEnv
       qualifyingThms := qualifyingThms.insert t
   let modOf (c : Name) : Name :=
     env.getModuleIdxFor? c |>.bind (env.header.moduleNames[·]?) |>.getD .anonymous
+  let originConstOf (u : Name) : Name := Id.run do
+    let mut cur := u
+    let mut stripped := false
+    while true do
+      match cur with
+      | .str p s =>
+        if isLazyAuxModelSuffix s then
+          cur := p
+          stripped := true
+        else
+          break
+      | _ => break
+    if stripped && env.contains cur then cur else u
   let mut violations : Std.HashMap String String := {}
   let mut sigCounts : Std.HashMap String (Nat × Array String) := {}
   let mut checkedModules : Nat := 0
@@ -1131,6 +1167,10 @@ private def auditImportDagEnv
       let pkgT := dagPkgOf knownPkgs t
       let roleT := dagRoleOf knownPkgs t
       if pkgM == pkgT then
+        if roleM == .types && roleT == .model then
+          let key := s!"WITHIN|{m}|{t}"
+          let msg := s!"DAG_WITHIN_VIOLATION: {m} ({roleM.label}) transitively imports same-package {t} ({roleT.label})"
+          violations := recordDagViolation violations key msg
         if (roleM == .types || roleM == .model || roleM == .specTests) &&
             (roleT == .impl || roleT == .sysBridge || roleT == .iface || roleT.isDisallowedSpecOrSigRole) then
           let key := s!"WITHIN|{m}|{t}"
@@ -1147,13 +1187,19 @@ private def auditImportDagEnv
           let key := s!"WITHIN|{m}|{t}"
           let msg := s!"DAG_WITHIN_VIOLATION: {m} ({roleM.label}) transitively imports same-package {t} ({roleT.label})"
           violations := recordDagViolation violations key msg
+        let isAeneasImpl := roleM == .impl && m.components.contains `Aeneas
         if (roleM == .impl || roleM == .sysBridge || roleM == .iface) &&
-            (roleT == .specTests || roleT.isDisallowedSpecOrSigRole) then
+            ((roleT == .model && !isAeneasImpl) || roleT == .specTests || roleT.isDisallowedSpecOrSigRole) then
           let key := s!"WITHIN|{m}|{t}"
           let msg := s!"DAG_WITHIN_VIOLATION: {m} ({roleM.label}) transitively imports same-package {t} ({roleT.label})"
           violations := recordDagViolation violations key msg
       else
-        if (roleM == .types || roleM == .model || roleM == .impl || roleM == .sysBridge || roleM == .iface) &&
+        if (roleM == .types || roleM == .impl || roleM == .sysBridge || roleM == .iface) &&
+            (roleT == .model || roleT == .specTests || roleT.isDisallowedSpecOrSigRole) then
+          let key := s!"TRANS_LEAK|{m}|{t}"
+          let msg := s!"DAG_TRANS_LEAK: {m} ({roleM.label}) transitively imports cross-package {t} ({roleT.label})"
+          violations := recordDagViolation violations key msg
+        if roleM == .model &&
             (roleT == .specTests || roleT.isDisallowedSpecOrSigRole) then
           let key := s!"TRANS_LEAK|{m}|{t}"
           let msg := s!"DAG_TRANS_LEAK: {m} ({roleM.label}) transitively imports cross-package {t} ({roleT.label})"
@@ -1233,24 +1279,24 @@ private def auditImportDagEnv
                   if !seenU.contains sKey then
                     seenU := seenU.insert sKey
                     sigCounts := recordSigProofHit sigCounts sKey c.name.toString
-      if roleM != .proofs then
-        for u in usedTy ++ usedVal do
-          let um := modOf u
-          if um.getRoot == `LeanSwe && um != `LeanSwe then
-            let pkgU := dagPkgOf knownPkgs um
-            if pkgU != pkgM then
-              let roleU := dagRoleOf knownPkgs um
-              if roleU != .types && roleU != .model && roleU != .iface then
-                if !directCrossNonPublic.contains um then
-                  let key := s!"CROSS_REF|{m}|{um}"
-                  let msg := s!"DAG_CROSS_REACHIN_VIOLATION: {m} ({roleM.label}) reaches into cross-package {um} ({roleU.label}) via {stableConstLabel c.name} -> {stableConstLabel u}"
-                  violations := recordDagViolation violations key msg
-              else
-                let uUser := (privateToUserName? u).getD u
-                if uUser.components.contains `Internal then
-                  let key := s!"CROSS_INTERNAL|{m}|{um}|{uUser}"
-                  let msg := s!"DAG_CROSS_INTERNAL_REACHIN: {m} ({roleM.label}) references cross-package internal constant {uUser} in {um}"
-                  violations := recordDagViolation violations key msg
+      for u in usedTy ++ usedVal do
+        let uOrigin := originConstOf u
+        let um := modOf uOrigin
+        if um.getRoot == `LeanSwe && um != `LeanSwe then
+          let pkgU := dagPkgOf knownPkgs um
+          if pkgU != pkgM then
+            let roleU := dagRoleOf knownPkgs um
+            if roleU != .types && roleU != .model && roleU != .iface then
+              if !directCrossNonPublic.contains um then
+                let key := s!"CROSS_REF|{m}|{um}"
+                let msg := s!"DAG_CROSS_REACHIN_VIOLATION: {m} ({roleM.label}) reaches into cross-package {um} ({roleU.label}) via {stableConstLabel c.name} -> {stableConstLabel u}"
+                violations := recordDagViolation violations key msg
+            else
+              let uUser := (privateToUserName? uOrigin).getD uOrigin
+              if uUser.components.contains `Internal then
+                let key := s!"CROSS_INTERNAL|{m}|{um}|{uUser}"
+                let msg := s!"DAG_CROSS_INTERNAL_REACHIN: {m} ({roleM.label}) references cross-package internal constant {uUser} in {um}"
+                violations := recordDagViolation violations key msg
   return { violations, sigProofCounts := sigCounts, checkedModules }
 
 /-- Shrinking ratchet allowlist of pre-existing import-DAG violations. Every entry must stay
@@ -1957,7 +2003,7 @@ private def checkManifestTrustedClosures
     if m != `Core.Assumptions && role != .runtimeTests && role != .specMutants then
       for c in data.constants do
         if !(c.name == `Core.ioConcOps || c.name == `Core.ioStateCell) then
-          let isProofThm := role == .proofs && (c matches .thmInfo _)
+          let isProofThm := (role == .proofs || role == .iface) && (c matches .thmInfo _)
           queue := queue.push (m, role, false, isBoundaryIface, isProofThm, c.name)
 
   let isProofRefPrim (cName : Name) (extData : ExternAttrData) : Bool :=
@@ -3967,8 +4013,78 @@ private def hasCanonicalAeneasArgs (bundles : Std.HashMap Name Name) (prog : Exp
           return false
   return true
 
+private def resolveRepoLibDirs (libDir repoDir : System.FilePath) :
+    IO (Bool × System.FilePath × List System.FilePath) := do
+  let hasProofsTree ← (repoDir / "proofs" / "LeanSwe").isDir
+  let proofsLibDir := repoDir / "proofs" / ".lake" / "build" / "lib" / "lean"
+  let libDirs := if hasProofsTree then [proofsLibDir, libDir] else [libDir]
+  return (hasProofsTree, proofsLibDir, libDirs)
+
+private def isOleanArtifactName (s : String) : Bool :=
+  s.endsWith ".olean" || s.endsWith ".olean.server" || s.endsWith ".olean.private"
+
+private def withMergedOleanSearchPath
+    (libDirs : List System.FilePath) (k : Except String Unit → IO UInt32) : IO UInt32 := do
+  if libDirs.length <= 1 then
+    initSearchPath (← findSysroot) libDirs
+    return ← k (.ok ())
+  let mk ← IO.Process.output { cmd := "mktemp", args := #["-d", "/tmp/leanswe-prom-olean.XXXXXX"] }
+  if mk.exitCode != 0 then
+    return ← k (.error s!"MERGED_OLEAN_DIR_ERROR: mktemp failed ({mk.stderr.trimAscii.toString})")
+  let mergedDir : System.FilePath := mk.stdout.trimAscii.toString
+  try
+    let mut seen : Std.HashMap String System.FilePath := {}
+    let mut byParent : Std.HashMap String (Array System.FilePath) := {}
+    for srcDir in libDirs do
+      if !(← srcDir.isDir) then continue
+      let absSrcDir ← IO.FS.realPath srcDir
+      let absPrefix := absSrcDir.toString ++ "/"
+      for entry in (← System.FilePath.walkDir absSrcDir) do
+        if ← entry.isDir then continue
+        let es := entry.toString
+        if !isOleanArtifactName es || !es.startsWith absPrefix then continue
+        let rel := (es.drop absPrefix.length).toString
+        if let some prev := seen.get? rel then
+          return ← k (.error s!"DUPLICATE_MODULE_OLEAN: {rel} exists in both {prev} and {entry}")
+        seen := seen.insert rel entry
+        let dst := mergedDir / rel
+        let parentStr := (dst.parent.getD mergedDir).toString
+        byParent := byParent.insert parentStr ((byParent.getD parentStr #[]).push entry)
+    for (parentStr, srcs) in byParent.toList do
+      IO.FS.createDirAll parentStr
+      let ln ← IO.Process.output {
+        cmd := "ln"
+        args := #["-s", "-t", parentStr] ++ srcs.map (·.toString)
+      }
+      if ln.exitCode != 0 then
+        return ← k (.error s!"MERGED_OLEAN_DIR_ERROR: ln -s failed for {parentStr} ({ln.stderr.trimAscii.toString})")
+    initSearchPath (← findSysroot) [mergedDir]
+    k (.ok ())
+  finally
+    try IO.FS.removeDirAll mergedDir catch _ => pure ()
+
+private def reachableModIndices (env : Environment) (startMod : Name) : Std.HashSet Nat :=
+  Id.run do
+    let some startIdx := env.header.moduleNames.findIdx? (· == startMod)
+      | return {}
+    let mut nameToIdx : Std.HashMap Name Nat := {}
+    for h : i in [0 : env.header.moduleNames.size] do
+      nameToIdx := nameToIdx.insert env.header.moduleNames[i] i
+    let mut seen : Std.HashSet Nat := ({} : Std.HashSet Nat).insert startIdx
+    let mut stack : Array Nat := #[startIdx]
+    while !stack.isEmpty do
+      let idx := stack.back!
+      stack := stack.pop
+      if let some data := env.header.moduleData[idx]? then
+        for imp in data.imports do
+          if let some j := nameToIdx.get? imp.module then
+            if !seen.contains j then
+              seen := seen.insert j
+              stack := stack.push j
+    return seen
+
 private unsafe def auditPromisesEnv
-    (libDir repoDir : System.FilePath) (auditE : Environment)
+    (libDirs : List System.FilePath) (repoDir : System.FilePath) (auditE : Environment)
     (manifest? : Option PackageManifest := none)
     (includeMod : Name → Bool := fun _ => true)
     (inVerifiedWorker : Bool := false) :
@@ -4053,7 +4169,7 @@ private unsafe def auditPromisesEnv
         if short.startsWith "test_" || trackEmpirical then
           promises := promises.push (m, c.name)
           promiseSet := promiseSet.insert c.name
-      match ← readIleanRefNames (moduleToIleanPath libDir m) with
+      match ← readIleanRefNames (← resolveModuleIleanPath libDirs m) with
       | .error err => pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {m} ({err})"
       | .ok refs =>
         for r in refs do
@@ -4061,7 +4177,7 @@ private unsafe def auditPromisesEnv
             pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {m} .ilean references {r}"
             hasBadSpecConst := true
             break
-      let specPath := moduleToFilePath repoDir m
+      let specPath ← resolveModuleFilePath repoDir m
       if !hasBadSpecConst then
         match ← parseModuleCommands auditE specPath with
         | .error err => pErrs := pErrs.push s!"MUTANT_OR_THEOREM_IN_SPECTESTS: {m} ({err})"
@@ -4089,13 +4205,13 @@ private unsafe def auditPromisesEnv
             break
       if hasAllPassMutantThm then
         mutantModsWithAllPass := mutantModsWithAllPass.insert m
-      match ← readIleanRefNames (moduleToIleanPath libDir m) with
+      match ← readIleanRefNames (← resolveModuleIleanPath libDirs m) with
       | .error err => pErrs := pErrs.push s!"UNALLOWED_AXIOM_IN_MUTANT: {m} ({err})"
       | .ok refs =>
         for r in refs do
           if forbiddenIleanMutantRefs.contains r then
             pErrs := pErrs.push s!"UNALLOWED_AXIOM_IN_MUTANT: {m} .ilean references {r}"
-      let mutPath := moduleToFilePath repoDir m
+      let mutPath ← resolveModuleFilePath repoDir m
       match ← parseModuleCommands auditE mutPath with
       | .error err => pErrs := pErrs.push s!"MISSING_SPECMUTANTS: {m} ({err})"
       | .ok cmds =>
@@ -4282,10 +4398,14 @@ unsafe def main (args : List String) : IO UInt32 := do
         return 1
       | .ok manifest =>
         let rootMods := (rootsCsv.splitOn ",").filter (!·.isEmpty) |>.toArray.map (·.toName)
-        initSearchPath (← findSysroot) [libDir]
+        let (_, _, libDirs) ← resolveRepoLibDirs libDir repoDir
+        return ← withMergedOleanSearchPath libDirs fun spRes => do
+        if let .error err := spRes then
+          IO.eprintln err
+          return 1
         enableInitializersExecution
         let testEnv ← importModules (rootMods.map fun m => { module := m }) {} (loadExts := true)
-        let pRep ← auditPromisesEnv libDir repoDir testEnv (some manifest)
+        let pRep ← auditPromisesEnv libDirs repoDir testEnv (some manifest)
         let specModStrs := pRep.specMods.map (·.toString)
         let mutOkAll : Std.HashSet String := pRep.mutantModsWithAllPass.fold (fun acc m => acc.insert m.toString) {}
         let allMutStrs := pRep.allMutMods.map (·.toString)
@@ -4370,9 +4490,20 @@ unsafe def main (args : List String) : IO UInt32 := do
         IO.eprintln err
         return 1
       | .ok manifest =>
-        initSearchPath (← findSysroot) [libDir]
+        let (hasProofsTree, proofsLibDir, libDirs) ← resolveRepoLibDirs libDir repoDir
+        if hasProofsTree then
+          unless ← (proofsLibDir / "LeanSweProofs.olean").pathExists do
+            IO.eprintln s!"MISSING_OLEAN: LeanSweProofs ({proofsLibDir / "LeanSweProofs.olean"})"
+            return 1
+        return ← withMergedOleanSearchPath libDirs fun spRes => do
+        if let .error err := spRes then
+          IO.eprintln err
+          return 1
         enableInitializersExecution
-        let sigEnv ← importModules #[{ module := `LeanSwe }] {} (loadExts := true)
+        let rootImports :=
+          if hasProofsTree then #[{ module := `LeanSwe }, { module := `LeanSweProofs }]
+          else #[{ module := `LeanSwe }]
+        let sigEnv ← importModules rootImports {} (loadExts := true)
         let ctx : Core.Context := { fileName := "<CheckPromises.PrintSig>", fileMap := default, maxHeartbeats := 0 }
         let (res, _) ← (Meta.MetaM.run' (renderSynthesizedObeysSig sigEnv manifest pkgStr.toName)).toIO ctx { env := sigEnv }
         match res with
@@ -4393,14 +4524,18 @@ unsafe def main (args : List String) : IO UInt32 := do
       let libDir : System.FilePath := libDirStr
       let repoDir : System.FilePath := repoDirStr
       let isVMod := isVerifiedOnlyMod verifiedMod
-      initSearchPath (← findSysroot) [libDir]
+      let (_, _, libDirs) ← resolveRepoLibDirs libDir repoDir
+      return ← withMergedOleanSearchPath libDirs fun spRes => do
+      if let .error err := spRes then
+        IO.eprintln err
+        return 1
       enableInitializersExecution
       let vEnv ← importModules #[{ module := verifiedMod }] {} (loadExts := true)
       for modName in vEnv.header.moduleNames do
         if isVMod modName then
           IO.println s!"PFW_MOD:{modName}"
       let manifestRes ← loadPackageManifest repoDir
-      let rep2 ← auditPromisesEnv libDir repoDir vEnv manifestRes.toOption isVMod true
+      let rep2 ← auditPromisesEnv libDirs repoDir vEnv manifestRes.toOption isVMod true
       let (vAeneasErrs, _) := checkGenericAeneasApiWiring vEnv verifiedPkg
       let vDagRep := auditImportDagEnv vEnv isVMod rep2.allPass rep2.canReach
       let (vClosureErrs, vManifestParseErrs) ← match manifestRes with
@@ -4484,17 +4619,28 @@ unsafe def main (args : List String) : IO UInt32 := do
   unless (← leanSweDir.isDir) && (← coreDir.isDir) do
     IO.eprintln s!"MISSING_SOURCE_DIR: {leanSweDir} or {coreDir}"
     return 1
-  initSearchPath (← findSysroot) [libDir]
+  let (hasProofsTree, proofsLibDir, libDirs) ← resolveRepoLibDirs libDir repoDir
+  let proofsLeanSweDir := repoDir / "proofs" / "LeanSwe"
+  if hasProofsTree then
+    unless ← (proofsLibDir / "LeanSweProofs.olean").pathExists do
+      IO.eprintln s!"MISSING_OLEAN: LeanSweProofs ({proofsLibDir / "LeanSweProofs.olean"})"
+      return 1
+  withMergedOleanSearchPath libDirs fun spRes => do
+  if let .error err := spRes then
+    IO.eprintln err
+    return 1
 
   let mut verifiedRoots : Array Name := #[]
-  for entry in (← System.FilePath.walkDir leanSweDir) do
-    if !(← entry.isDir) && entry.fileName == some "Verified.lean" then
-      let vm := moduleNameUnderLeanSwe leanSweDir entry
-      if !verifiedRoots.contains vm then
-        verifiedRoots := verifiedRoots.push vm
+  let leanSweDirs := if hasProofsTree then #[leanSweDir, proofsLeanSweDir] else #[leanSweDir]
+  for lsDir in leanSweDirs do
+    for entry in (← System.FilePath.walkDir lsDir) do
+      if !(← entry.isDir) && entry.fileName == some "Verified.lean" then
+        let vm := moduleNameUnderLeanSwe lsDir entry
+        if !verifiedRoots.contains vm then
+          verifiedRoots := verifiedRoots.push vm
   verifiedRoots := verifiedRoots.qsort fun a b => a.toString < b.toString
   for vm in verifiedRoots do
-    let vmOlean := moduleToOleanPath libDir vm
+    let vmOlean ← resolveModuleOleanPath libDirs vm
     unless ← vmOlean.pathExists do
       IO.eprintln s!"MISSING_OLEAN: {vm} ({vmOlean})"
       return 1
@@ -4556,40 +4702,82 @@ unsafe def main (args : List String) : IO UInt32 := do
         | _ => pure ()
 
   enableInitializersExecution
-  let env ← importModules #[{ module := `LeanSwe }] {} (loadExts := true)
+  let rootImports :=
+    if hasProofsTree then #[{ module := `LeanSwe }, { module := `LeanSweProofs }]
+    else #[{ module := `LeanSwe }]
+  let env ← importModules rootImports {} (loadExts := true)
   let manifestRes ← loadPackageManifest repoDir
   let mut visited : Std.HashSet Name := {}
   let mut pubClosureCount := 0
   let mut pubClosureErrs := 0
   let mut errors : Array String := #[]
-  for modName in env.header.moduleNames do
+  for h : i in [0 : env.header.moduleNames.size] do
+    let modName := env.header.moduleNames[i]
     let ms := modName.toString
     if ms == "Aeneas" || ms.startsWith "Aeneas." || modName.components.contains `Aeneas ||
         ms == "Mathlib" || ms.startsWith "Mathlib." || isAnyVerifiedOnlyMod modName then
       errors := errors.push s!"PUBLIC_CLOSURE_VIOLATION: LeanSwe transitively imports {modName}"
       pubClosureErrs := pubClosureErrs + 1
+    if modName == `LeanSweProofs then
+      if let some data := env.header.moduleData[i]? then
+        for imp in data.imports do
+          if !isAllowedProjectDirectImport false modName imp.module then
+            errors := errors.push s!"FORBIDDEN_IMPORT: {modName} imports {imp.module}"
+        for c in data.constants do
+          if let .axiomInfo _ := c then
+            if !allowedAxioms.contains c.name then
+              errors := errors.push s!"CUSTOM_AXIOM_FORBIDDEN: {c.name} in {modName}"
+          if (Lean.getExportNameFor? env c.name).isSome then
+            errors := errors.push s!"FORBIDDEN_EXPORT: {c.name} in {modName}"
+          if (Lean.regularInitAttr.getParam? env c.name).isSome then
+            errors := errors.push s!"FORBIDDEN_INIT: {c.name} in {modName}"
+          if (Lean.builtinInitAttr.getParam? env c.name).isSome then
+            errors := errors.push s!"FORBIDDEN_BUILTIN_INIT: {c.name} in {modName}"
+        for scEntry in Lean.Compiler.CSimp.ext.ext.getModuleEntries env i do
+          let entry := match scEntry with | .global e => e | .scoped _ e => e
+          errors := errors.push s!"FORBIDDEN_CSIMP: {entry.fromDeclName} -> {entry.toDeclName} (thm={entry.thmName}, mod={modName})"
     if isProjectModule modName then
       visited := visited.insert modName
       pubClosureCount := pubClosureCount + 1
+  if hasProofsTree then
+    let knownPkgsL1 := discoverDagPackages env.header.moduleNames
+    let l1Reach := reachableModIndices env `LeanSwe
+    for idx in l1Reach do
+      if let some m := env.header.moduleNames[idx]? then
+        if m == `LeanSweProofs || m.components.contains `Aeneas then
+          errors := errors.push s!"LAYER1_CLOSURE_VIOLATION: LeanSwe transitively imports {m}"
+          pubClosureErrs := pubClosureErrs + 1
+        else if m.getRoot == `LeanSwe && m != `LeanSwe then
+          let r := dagRoleOf knownPkgsL1 m
+          if r == .model || r == .proofs || r == .properties ||
+              r == .specTests || r == .specMutants then
+            errors := errors.push s!"LAYER1_CLOSURE_VIOLATION: LeanSwe transitively imports Layer 2 module {m} ({r.label})"
+            pubClosureErrs := pubClosureErrs + 1
   IO.println s!"PUBLIC_CLOSURE: modules={pubClosureCount} verified_roots={verifiedRoots.size} errors={pubClosureErrs}"
 
   let mut extraProjectMods : Array Name := #[]
   let mut runtimeTestMods : Array Name := #[]
+  let mut seenSourceMods : Std.HashMap Name System.FilePath := {}
   let pushDiscovered (m : Name) (arr : Array Name) : Array Name :=
     if arr.contains m then arr else arr.push m
-  for entry in (← System.FilePath.walkDir leanSweDir) do
-    if !(← entry.isDir) && entry.extension == some "lean" then
-      let modName := moduleNameUnderLeanSwe leanSweDir entry
-      extraProjectMods := pushDiscovered modName extraProjectMods
-      if nameLastStr modName == "RuntimeTests" then
-        runtimeTestMods := pushDiscovered modName runtimeTestMods
-      if !visited.contains modName && !pfModNames.contains modName.toString then
-        if entry.fileName == some "SpecTests.lean" then
-          errors := errors.push s!"UNIMPORTED_SPECTESTS: {entry} (module {modName} is not imported by LeanSwe)"
-        else if isMutantModule modName then
-          errors := errors.push s!"UNIMPORTED_SPECMUTANTS: {entry} (module {modName} is not imported by LeanSwe)"
+  for lsDir in leanSweDirs do
+    for entry in (← System.FilePath.walkDir lsDir) do
+      if !(← entry.isDir) && entry.extension == some "lean" then
+        let modName := moduleNameUnderLeanSwe lsDir entry
+        if let some prev := seenSourceMods.get? modName then
+          errors := errors.push s!"DUPLICATE_MODULE_SOURCE: {modName} exists in both {prev} and {entry}"
         else
-          errors := errors.push s!"UNIMPORTED_LEANSWE_MODULE: {entry} (module {modName} is not imported by LeanSwe)"
+          seenSourceMods := seenSourceMods.insert modName entry
+        extraProjectMods := pushDiscovered modName extraProjectMods
+        if nameLastStr modName == "RuntimeTests" then
+          runtimeTestMods := pushDiscovered modName runtimeTestMods
+        if !visited.contains modName && !pfModNames.contains modName.toString then
+          if entry.fileName == some "SpecTests.lean" then
+            errors := errors.push s!"UNIMPORTED_SPECTESTS: {entry} (module {modName} is not imported by LeanSwe)"
+          else if isMutantModule modName then
+            errors := errors.push s!"UNIMPORTED_SPECMUTANTS: {entry} (module {modName} is not imported by LeanSwe)"
+          else
+            errors := errors.push s!"UNIMPORTED_LEANSWE_MODULE: {entry} (module {modName} is not imported by LeanSwe)"
   for entry in (← System.FilePath.walkDir coreDir) do
     if !(← entry.isDir) && entry.extension == some "lean" then
       let modName := moduleNameUnderRoot coreDir entry `Core
@@ -4600,23 +4788,26 @@ unsafe def main (args : List String) : IO UInt32 := do
   let mut importableExtraMods : Array Name := #[]
   for m in extraProjectMods do
     if !visited.contains m && !pfModNames.contains m.toString then
-      let oleanPath := moduleToOleanPath libDir m
+      let oleanPath ← resolveModuleOleanPath libDirs m
       if ← oleanPath.pathExists then
         importableExtraMods := importableExtraMods.push m
       else
         errors := errors.push s!"MISSING_OLEAN_FOR_SOURCE: {m} ({oleanPath})"
 
-  let rootLeanSwePath := repoDir / "LeanSwe.lean"
-  match ← parseModuleCommands env rootLeanSwePath with
-  | .error err => errors := errors.push s!"ROOT_PARSE_ERROR: LeanSwe ({err})"
-  | .ok cmds =>
-    for stx in cmds do
-      if hasSyntaxKind ``Lean.Parser.Command.initialize stx then
-        errors := errors.push s!"FORBIDDEN_INIT_SYNTAX: {rootLeanSwePath} uses initialize"
-        break
-      if let some metaErr := checkForbiddenMetaOrAttr rootLeanSwePath stx then
-        errors := errors.push metaErr
-        break
+  let rootUmbrellaPaths :=
+    if hasProofsTree then #[(`LeanSwe, repoDir / "LeanSwe.lean"), (`LeanSweProofs, repoDir / "proofs" / "LeanSweProofs.lean")]
+    else #[(`LeanSwe, repoDir / "LeanSwe.lean")]
+  for (uMod, uPath) in rootUmbrellaPaths do
+    match ← parseModuleCommands env uPath with
+    | .error err => errors := errors.push s!"ROOT_PARSE_ERROR: {uMod} ({err})"
+    | .ok cmds =>
+      for stx in cmds do
+        if hasSyntaxKind ``Lean.Parser.Command.initialize stx then
+          errors := errors.push s!"FORBIDDEN_INIT_SYNTAX: {uPath} uses initialize"
+          break
+        if let some metaErr := checkForbiddenMetaOrAttr uPath stx then
+          errors := errors.push metaErr
+          break
 
   let (rtParseEnv, extraDagRep) ← if !importableExtraMods.isEmpty then do
     enableInitializersExecution
@@ -4645,7 +4836,7 @@ unsafe def main (args : List String) : IO UInt32 := do
         let entry := match scEntry with | .global e => e | .scoped _ e => e
         errors := errors.push s!"FORBIDDEN_CSIMP: {entry.fromDeclName} -> {entry.toDeclName} in {m}"
     for extraMod in importableExtraMods do
-      let extraPath := moduleToFilePath repoDir extraMod
+      let extraPath ← resolveModuleFilePath repoDir extraMod
       match ← parseModuleCommands extraEnv extraPath with
       | .error err => errors := errors.push s!"EXTRA_MOD_PARSE_ERROR: {extraMod} ({err})"
       | .ok cmds =>
@@ -4663,7 +4854,7 @@ unsafe def main (args : List String) : IO UInt32 := do
     pure (env, {})
 
   for rtMod in runtimeTestMods do
-    let rtPath := moduleToFilePath repoDir rtMod
+    let rtPath ← resolveModuleFilePath repoDir rtMod
     match ← parseModuleCommands rtParseEnv rtPath with
     | .error err => errors := errors.push s!"RUNTIMETESTS_PARSE_ERROR: {rtMod} ({err})"
     | .ok cmds =>
@@ -4688,6 +4879,12 @@ unsafe def main (args : List String) : IO UInt32 := do
   let mutDir := repoDir / "harness" / "ModelMutants"
   if ← mutDir.pathExists then
     auxFiles := auxFiles ++ (← collectLeanRelFiles mutDir "harness/ModelMutants")
+  let unitDir := repoDir / "harness" / "UnitTests"
+  if ← unitDir.pathExists then
+    auxFiles := auxFiles ++ (← collectLeanRelFiles unitDir "harness/UnitTests")
+  let unitRoot := repoDir / "harness" / "UnitTests.lean"
+  if ← unitRoot.pathExists then
+    auxFiles := auxFiles.push ("harness/UnitTests.lean", unitRoot)
   for (relPath, filePath) in auxFiles do
     match ← parseModuleCommands rtParseEnv filePath (allowMacroRecovery := true) with
     | .error _ => pure ()
@@ -4697,7 +4894,7 @@ unsafe def main (args : List String) : IO UInt32 := do
   if !importableExtraMods.isEmpty then
     rtParseEnv.freeRegions
 
-  let rep1 ← auditPromisesEnv libDir repoDir env manifestRes.toOption (fun m => !isAnyVerifiedOnlyMod m)
+  let rep1 ← auditPromisesEnv libDirs repoDir env manifestRes.toOption (fun m => !isAnyVerifiedOnlyMod m)
   let eErrs1 := rep1.errors
   let sCnt1 := rep1.specModCount
   let sMods1 := rep1.specMods
