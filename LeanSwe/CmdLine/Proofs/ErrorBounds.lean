@@ -1,5 +1,6 @@
 import Core.Assumptions
 import LeanSwe.CmdLine.Interface
+import LeanSwe.CmdLine.Model.Obeys
 import LeanSwe.CmdLine.SpecTests
 import LeanSwe.CmdLine.Proofs.ParserCore
 namespace LeanSwe.CmdLine.Proofs
@@ -47,7 +48,7 @@ private theorem stepToken_noEofIo (rootName : String) (validators : CustomValida
                     · cases (Internal.splitFirstEq _).2 <;> first | exact exceptKindIn_mk (by decide) | trivial
                     · split
                       · cases (Internal.splitFirstEq _).2 with | none => trivial | some rawVal =>
-                          dsimp only; cases hp : Model.parseOptValue .bool rawVal with
+                          dsimp only; rw [Shared.parseOptValueFast_eq]; cases hp : Model.parseOptValue .bool rawVal with
                           | error _ => have h := parseOptValue_kind (k := .bool) (s := rawVal); rw [hp] at h; exact exceptKindIn_mk (by rw [h]; decide)
                           | ok v => cases v <;> first | (dsimp only; split <;> first | exact exceptKindIn_mk (by decide) | trivial) | exact exceptKindIn_mk (by decide)
                       · cases (Internal.splitFirstEq _).2 with | none => trivial | some rawVal =>

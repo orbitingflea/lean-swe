@@ -1,5 +1,6 @@
 import LeanSwe.SlotPool.Types
 import LeanSwe.SlotPool.Model
+import LeanSwe.SlotPool.Impl
 import LeanSwe.SlotPool.SpecTests
 
 namespace LeanSwe.SlotPool.Proofs
@@ -197,4 +198,43 @@ end
 theorem removeFirstSimLock_cons_self (lp : String) (mode : LockMode) (xs : List (String × LockMode)) : removeFirstSimLock lp mode ((lp, mode) :: xs) = xs := by
   have hm : (mode == mode) = true := by cases mode <;> rfl
   simp [removeFirstSimLock, show ((lp, mode) == (lp, mode)) = true by change (lp == lp && mode == mode) = true; simp [hm]]
+
+theorem internal_hasNulChar_eq : ∀ cs, Internal.hasNulChar cs = Model.hasNulChar cs
+  | [] => rfl
+  | c :: cs => by simp [Internal.hasNulChar, Model.hasNulChar, internal_hasNulChar_eq cs]
+theorem internal_validPoolDir_eq (p : String) : Internal.validPoolDir p = Model.validPoolDir p := by
+  simp [Internal.validPoolDir, Model.validPoolDir, internal_hasNulChar_eq]
+theorem internal_validatePoolConfig_eq (cfg : PoolConfig) : Internal.validatePoolConfig cfg = Model.validatePoolConfig cfg := by
+  simp [Internal.validatePoolConfig, Model.validatePoolConfig, internal_validPoolDir_eq]
+theorem internal_natDecCharsAux_eq : ∀ fuel n acc, Internal.natDecCharsAux fuel n acc = Model.natDecCharsAux fuel n acc
+  | 0, _, _ => rfl
+  | fuel + 1, n, acc => by
+    unfold Internal.natDecCharsAux Model.natDecCharsAux Internal.decDigitChar Model.decDigitChar
+    dsimp only; split
+    · rfl
+    · exact internal_natDecCharsAux_eq fuel (n / 10) _
+theorem internal_slotFileName_eq (i : Nat) : Internal.slotFileName i = Model.slotFileName i := by
+  simp [Internal.slotFileName, Model.slotFileName, Internal.natDecString, Model.natDecString, internal_natDecCharsAux_eq]
+theorem internal_slotLockPath_eq (join : String → String → String) (p : String) (i : Nat) :
+    Internal.slotLockPath join p i = Model.slotLockPath join p i := by
+  simp [Internal.slotLockPath, Model.slotLockPath, internal_slotFileName_eq]
+theorem internal_deadlineNanos_eq (s t : Nat) : Internal.deadlineNanos s t = Model.deadlineNanos s t := rfl
+theorem internal_nextSleepMs_eq (p n d : Nat) : Internal.nextSleepMs p n d = Model.nextSleepMs p n d := rfl
+theorem internal_maxForeverPolls_eq : Internal.maxForeverPolls = Model.maxForeverPolls := rfl
+theorem internal_sleepChunksAux_eq : ∀ fuel ms, Internal.sleepChunksAux fuel ms = Model.sleepChunksAux fuel ms
+  | 0, _ => rfl
+  | _ + 1, 0 => rfl
+  | fuel + 1, ms + 1 => by
+    unfold Internal.sleepChunksAux Model.sleepChunksAux
+    exact congrArg _ (internal_sleepChunksAux_eq fuel _)
+theorem internal_sleepChunks_eq (ms : Nat) : Internal.sleepChunks ms = Model.sleepChunks ms :=
+  internal_sleepChunksAux_eq _ ms
+theorem internal_runSleepChunks_eq {m : Type → Type} [Monad m] (time : TimeOpsM m) :
+    ∀ cs, Internal.runSleepChunks time cs = Model.runSleepChunks time cs
+  | [] => rfl
+  | c :: cs => by
+    unfold Internal.runSleepChunks Model.runSleepChunks
+    exact congrArg (time.sleep c >>= fun _ => ·) (internal_runSleepChunks_eq time cs)
+theorem internal_mapFsError_eq (fe : FsError) : Internal.mapFsError fe = Model.mapFsError fe := by
+  cases fe with | mk k p m => cases k <;> rfl
 end LeanSwe.SlotPool.Proofs

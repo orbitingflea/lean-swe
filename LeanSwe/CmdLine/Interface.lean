@@ -1,6 +1,4 @@
 import LeanSwe.CmdLine.Types
-import LeanSwe.CmdLine.Model
-import LeanSwe.CmdLine.Model.Obeys
 import LeanSwe.CmdLine.Impl
 import LeanSwe.CmdLine.SysBridge
 import LeanSwe.EnvVars.Interface
@@ -10,15 +8,15 @@ namespace LeanSwe.CmdLine
 
 namespace Internal
 
-/-- Build `CliOpsM m` directly over a `Model.CmdLineCapsM m` capability bundle (`LinuxSyscall.Files` + `EnvVars`). -/
+/-- Build `CliOpsM m` directly over a `CmdLineCapsM m` capability bundle (`LinuxSyscall.Files` + `EnvVars`). -/
 def mkCliOpsFromCapsM {m : Type → Type} [Monad m] [MonadFinally m] [MonadExceptOf IO.Error m]
-    (caps : Model.CmdLineCapsM m) : CliOpsM m :=
+    (caps : CmdLineCapsM m) : CliOpsM m :=
   SysBridge.mkFilesCliOpsM caps.files (SysBridge.mapEnvVarsGet caps.env)
 
-/-- Build `CmdLineApiM m` directly over a `Model.CmdLineCapsM m` capability bundle (`LinuxSyscall.Files` + `EnvVars`),
+/-- Build `CmdLineApiM m` directly over a `CmdLineCapsM m` capability bundle (`LinuxSyscall.Files` + `EnvVars`),
     catching interactive `IO.Error` throws from `promptLine`/`confirm` into `.ioError`. -/
 def mkApiFromCapsM {m : Type → Type} [Monad m] [MonadFinally m] [MonadExceptOf IO.Error m]
-    (caps : Model.CmdLineCapsM m) : CmdLineApiM m :=
+    (caps : CmdLineCapsM m) : CmdLineApiM m :=
   let ops := mkCliOpsFromCapsM caps
   { Internal.mkApiM ops with
     promptLine := fun prompt default => SysBridge.promptLineCheckedM ops prompt default

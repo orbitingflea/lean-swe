@@ -211,6 +211,7 @@ private theorem getField_never_of (k : TomlErrorKind) (hk1 : k ≠ .missingField
     Core.NeverErrorKindPure TomlError.kind k (LeanSwe.Toml.getField (α := α) t key) := by
   unfold Core.NeverErrorKindPure LeanSwe.Toml.getField defaultApi Internal.mkApi makeTomlApi tomlGetField
   dsimp only
+  rw [lookupKeyImpl_eq]
   cases lookupKey key t with
   | none => exact hk1.symm
   | some v => dsimp only; cases (FromToml.fromToml v : Except TomlError α) <;> first | trivial | exact hk2.symm
@@ -242,6 +243,7 @@ private theorem getOptField_never_of (k : TomlErrorKind) (hk : k ≠ .decodeErro
     Core.NeverErrorKindPure TomlError.kind k (LeanSwe.Toml.getOptField (α := α) t key) := by
   unfold Core.NeverErrorKindPure LeanSwe.Toml.getOptField defaultApi Internal.mkApi makeTomlApi tomlGetOptField
   dsimp only
+  rw [lookupKeyImpl_eq]
   cases lookupKey key t with
   | none => trivial
   | some v => dsimp only; cases (FromToml.fromToml v : Except TomlError α) <;> first | trivial | exact hk.symm
@@ -283,11 +285,13 @@ private theorem getPathAux_never_of (k : TomlErrorKind)
     cases tl with
     | nil =>
       unfold Core.NeverErrorKindPure tomlGetPathAux
+      rw [lookupKeyImpl_eq]
       cases lookupKey hd t with
       | none => exact hk1.symm
       | some v => dsimp only; cases (FromToml.fromToml v : Except TomlError α) <;> first | trivial | exact hk3.symm
     | cons _ _ =>
       unfold Core.NeverErrorKindPure tomlGetPathAux
+      rw [lookupKeyImpl_eq]
       cases lookupKey hd t with
       | none => exact hk1.symm
       | some v =>
@@ -367,6 +371,7 @@ private theorem allowedGetField_holds {α : Type} [FromToml α] (t : TomlTable) 
     Model.allowedGetField t key (LeanSwe.Toml.getField (α := α) t key) := by
   unfold Model.allowedGetField LeanSwe.Toml.getField defaultApi Internal.mkApi makeTomlApi tomlGetField
   dsimp only
+  rw [lookupKeyImpl_eq]
   cases lookupKey key t with
   | none => simp [mkErr, nonEmptyMsg_ne_empty]
   | some v =>
@@ -378,6 +383,7 @@ private theorem allowedGetOptField_holds {α : Type} [FromToml α] (t : TomlTabl
     Model.allowedGetOptField t key (LeanSwe.Toml.getOptField (α := α) t key) := by
   unfold Model.allowedGetOptField LeanSwe.Toml.getOptField defaultApi Internal.mkApi makeTomlApi tomlGetOptField
   dsimp only
+  rw [lookupKeyImpl_eq]
   cases lookupKey key t with
   | none => trivial
   | some v =>
@@ -398,6 +404,7 @@ private theorem allowedGetPathAux_holds {α : Type} [FromToml α]
     cases rest with
     | nil =>
       unfold Model.allowedGetPathAux tomlGetPathAux joinPath
+      rw [lookupKeyImpl_eq]
       cases lookupKey k t with
       | none => simp [mkErr, nonEmptyMsg_ne_empty]
       | some v =>
@@ -406,6 +413,7 @@ private theorem allowedGetPathAux_holds {α : Type} [FromToml α]
         · simp [hf]
     | cons k' tl =>
       unfold Model.allowedGetPathAux tomlGetPathAux joinPath
+      rw [lookupKeyImpl_eq]
       cases lookupKey k t with
       | none => exact ⟨_, rfl, rfl, rfl, nonEmptyMsg_not_isEmpty _⟩
       | some v =>

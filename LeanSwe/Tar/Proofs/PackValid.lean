@@ -69,6 +69,7 @@ private theorem validatePackEntry_err_props (opts : PackOptions) (e : TarEntry)
     {err : TarError} (h : validatePackEntry opts e = .error err) :
     (!err.message.isEmpty) = true ∧ IsPackErrorKind err.kind := by
   unfold validatePackEntry at h
+  simp only [validateEntryPathImpl_eq, validateSymlinkTargetImpl_eq, hasNulStringImpl_eq, u64LimitImpl_eq] at h
   change (validateEntryPath opts.allowAbsolute opts.allowParentTraversal e.kind e.path >>= _) = .error err at h
   rw [except_bind_eq_error] at h
   rcases h with hv | ⟨_, _, hs⟩

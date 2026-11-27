@@ -243,7 +243,7 @@ private theorem spec7_ok_allPass (s₀ : TempDirMockState) (r dirPrefix : String
   let names := (Internal.sortStrings (eraseDupStrings (s₀.nodes.filterMap (fun e => mockParentChild (normKey r) e.1)))).toArray
   have hList : (mockFs.listDir r).run s₀ = (.ok names, s₀) := by
     dsimp only [mockFs]; rw [stateM_bind_run, stateM_get_run]; dsimp only; rw [hLookRootNorm]; dsimp only; rw [hStRoot]
-    simp only [hRwx.1, show (EntryKind.dir != EntryKind.dir) = false from rfl, Bool.false_eq_true, ↓reduceIte, hasRx_of_hasRwx st hRwx, Bool.not_true, stateM_pure_run]; rfl
+    simp only [hRwx.1, show (EntryKind.dir != EntryKind.dir) = false from rfl, Bool.false_eq_true, ↓reduceIte, hasRx_of_hasRwx st hRwx, Bool.not_true, stateM_pure_run, names, internal_sortStrings_eq]
   dsimp only [expectedDir]; rw [mockFs_join_eq, mockUuid_toString_eq]
   rw [show api = Internal.mkApiM mockFs mockTime mockUuid mockEnv from rfl, mkApiM_withTempDir_eq, mkApiM_withLockedTempDir_eq, mkApiM_cleanupStaleTempDirs_eq]
   rw [hRun1, hRun2]; dsimp only; simp only [allPass_assert, allPass_assert_end]

@@ -1,7 +1,6 @@
 import LeanSwe.EnvVars.Interface
 import LeanSwe.Fs.Interface
 import LeanSwe.TempDir.Impl
-import LeanSwe.TempDir.Model
 import LeanSwe.TempDir.Types
 import LeanSwe.Time.Interface
 import LeanSwe.Uuid.Interface

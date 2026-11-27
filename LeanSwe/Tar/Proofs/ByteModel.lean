@@ -169,4 +169,118 @@ theorem nonEmpty_append_left {a b : String} (ha : (!a.isEmpty) = true) :
     have ha0 : a.isEmpty = true := by simp [String.isEmpty, show a.utf8ByteSize = 0 by omega]
     rw [ha0] at ha; contradiction
 
+theorem u64LimitImpl_eq : u64LimitImpl = u64Limit := rfl
+theorem u32LimitImpl_eq : u32LimitImpl = u32Limit := rfl
+theorem ustarOctal7LimitImpl_eq : ustarOctal7LimitImpl = ustarOctal7Limit := rfl
+theorem ustarOctal11LimitImpl_eq : ustarOctal11LimitImpl = ustarOctal11Limit := rfl
+theorem pad512Impl_eq (n : Nat) : pad512Impl n = pad512 n := rfl
+theorem zeroDeterministicMetaImpl_eq (e : TarEntry) : zeroDeterministicMetaImpl e = zeroDeterministicMeta e := rfl
+theorem zeroBlockImpl_eq : zeroBlockImpl = zeroBlock := rfl
+theorem padBlock512Impl_eq (bs : ByteArray) : padBlock512Impl bs = padBlock512 bs := rfl
+theorem isAsciiStringImpl_eq (s : String) : isAsciiStringImpl s = isAsciiString s := rfl
+theorem wirePathOfImpl_eq (k : EntryKind) (p : String) : wirePathOfImpl k p = wirePathOf k p := rfl
+theorem stripTrailingSlashesCharsImpl_eq (cs : List Char) : stripTrailingSlashesCharsImpl cs = stripTrailingSlashesChars cs := rfl
+theorem decDigitsLenImpl_eq (n : Nat) : decDigitsLenImpl n = decDigitsLen n := rfl
+
+theorem hasNulCharsImpl_eq : ∀ cs, hasNulCharsImpl cs = hasNulChars cs
+  | [] => rfl
+  | c :: cs => by simp [hasNulCharsImpl, hasNulChars, hasNulCharsImpl_eq cs]
+
+theorem hasNulStringImpl_eq (s : String) : hasNulStringImpl s = hasNulString s :=
+  hasNulCharsImpl_eq s.toList
+
+private theorem splitSlashCharsImpl_go_eq : ∀ acc cs, splitSlashCharsImpl.go acc cs = splitSlashChars.go acc cs
+  | _, [] => rfl
+  | acc, c :: rest => by
+    by_cases hc : c = '/'
+    · subst hc; exact congrArg _ (splitSlashCharsImpl_go_eq [] rest)
+    · simp only [splitSlashCharsImpl.go, splitSlashChars.go, splitSlashCharsImpl_go_eq (c :: acc) rest]
+
+theorem splitSlashCharsImpl_eq : ∀ cs, splitSlashCharsImpl cs = splitSlashChars cs
+  | [] => rfl
+  | c :: cs => splitSlashCharsImpl_go_eq [] (c :: cs)
+
+private theorem checkSegmentsImpl_go_eq (allowPar : Bool) : ∀ segs, checkSegmentsImpl.go allowPar segs = checkSegments.go allowPar segs
+  | [] => rfl
+  | seg :: rest => by
+    unfold checkSegmentsImpl.go checkSegments.go
+    repeat (split; · rfl)
+    exact checkSegmentsImpl_go_eq allowPar rest
+
+theorem checkSegmentsImpl_eq (allowPar : Bool) : ∀ segs, checkSegmentsImpl allowPar segs = checkSegments allowPar segs
+  | [] => rfl
+  | seg :: rest => checkSegmentsImpl_go_eq allowPar (seg :: rest)
+
+theorem validateEntryPathImpl_eq (allowAbs allowPar : Bool) (kind : EntryKind) (path : String) :
+    validateEntryPathImpl allowAbs allowPar kind path = validateEntryPath allowAbs allowPar kind path := by
+  unfold validateEntryPathImpl validateEntryPath
+  simp only [hasNulCharsImpl_eq, stripTrailingSlashesCharsImpl_eq, splitSlashCharsImpl_eq, checkSegmentsImpl_eq]
+  rfl
+
+private theorem validateSymlinkTargetImpl_walkDepth_eq (entryPath : String) :
+    ∀ depth segs, validateSymlinkTargetImpl.walkDepth entryPath depth segs = validateSymlinkTarget.walkDepth entryPath depth segs
+  | _, [] => rfl
+  | depth, seg :: rest => by
+    unfold validateSymlinkTargetImpl.walkDepth validateSymlinkTarget.walkDepth
+    split
+    · exact validateSymlinkTargetImpl_walkDepth_eq entryPath depth rest
+    · split
+      · split
+        · rfl
+        · exact validateSymlinkTargetImpl_walkDepth_eq entryPath (depth - 1) rest
+      · exact validateSymlinkTargetImpl_walkDepth_eq entryPath (depth + 1) rest
+
+theorem validateSymlinkTargetImpl_eq (allowAbs allowPar : Bool) (entryPath linkTarget : String) :
+    validateSymlinkTargetImpl allowAbs allowPar entryPath linkTarget =
+      validateSymlinkTarget allowAbs allowPar entryPath linkTarget := by
+  unfold validateSymlinkTargetImpl validateSymlinkTarget
+  simp only [hasNulCharsImpl_eq, splitSlashCharsImpl_eq, validateSymlinkTargetImpl_walkDepth_eq]
+  rfl
+
+private theorem findUstarSplitImpl_go_eq : ∀ rev cs, findUstarSplitImpl.go rev cs = findUstarSplit.go rev cs
+  | _, [] => rfl
+  | rev, c :: rest => by
+    by_cases hc : c = '/'
+    · subst hc
+      rw [findUstarSplitImpl.go.eq_2, findUstarSplit.go.eq_2]
+      split
+      · rfl
+      · exact findUstarSplitImpl_go_eq ('/' :: rev) rest
+    · simp only [findUstarSplitImpl.go, findUstarSplit.go, findUstarSplitImpl_go_eq (c :: rev) rest]
+
+theorem findUstarSplitImpl_eq (wp : String) : findUstarSplitImpl wp = findUstarSplit wp :=
+  findUstarSplitImpl_go_eq [] wp.toList
+
+theorem pathFitsUstarImpl_eq (wp : String) : pathFitsUstarImpl wp = pathFitsUstar wp := by
+  unfold pathFitsUstarImpl pathFitsUstar
+  rw [isAsciiStringImpl_eq, findUstarSplitImpl_eq]
+
+theorem needsPaxImpl_eq (e : TarEntry) (wp : String) : needsPaxImpl e wp = needsPax e wp := by
+  unfold needsPaxImpl needsPax
+  simp only [pathFitsUstarImpl_eq, isAsciiStringImpl_eq, ustarOctal7LimitImpl_eq, ustarOctal11LimitImpl_eq]
+  rfl
+
+private theorem paxRecordTotalLenImpl_go_eq (kvBodyLen : Nat) :
+    ∀ digits fuel, paxRecordTotalLenImpl.go kvBodyLen digits fuel = paxRecordTotalLen.go kvBodyLen digits fuel
+  | _, 0 => rfl
+  | digits, fuel + 1 => by
+    unfold paxRecordTotalLenImpl.go paxRecordTotalLen.go
+    dsimp only
+    rw [decDigitsLenImpl_eq]
+    split
+    · rfl
+    · exact paxRecordTotalLenImpl_go_eq kvBodyLen _ fuel
+
+theorem paxRecordTotalLenImpl_eq (kvBodyLen : Nat) : paxRecordTotalLenImpl kvBodyLen = paxRecordTotalLen kvBodyLen :=
+  paxRecordTotalLenImpl_go_eq kvBodyLen 1 20
+
+theorem encodePaxRecordImpl_eq (key value : String) : encodePaxRecordImpl key value = encodePaxRecord key value := by
+  unfold encodePaxRecordImpl encodePaxRecord
+  dsimp only
+  rw [paxRecordTotalLenImpl_eq]
+
+theorem buildPaxPayloadImpl_eq (e : TarEntry) (wp : String) : buildPaxPayloadImpl e wp = buildPaxPayload e wp := by
+  unfold buildPaxPayloadImpl buildPaxPayload
+  simp only [pathFitsUstarImpl_eq, encodePaxRecordImpl_eq, isAsciiStringImpl_eq, ustarOctal11LimitImpl_eq, ustarOctal7LimitImpl_eq]
+
 end LeanSwe.Tar.Proofs

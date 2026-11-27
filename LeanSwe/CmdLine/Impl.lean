@@ -1,11 +1,119 @@
 import Std.Data.HashSet
 import Std.Data.HashMap
 import LeanSwe.CmdLine.Types
-import LeanSwe.CmdLine.Model
 
 namespace LeanSwe.CmdLine.Internal
 
 open LeanSwe.CmdLine
+
+/-- Return `true` iff `c` is an ASCII whitespace character (`' '`, `'\t'`, `'\n'`, `'\r'`). -/
+def isAsciiWhitespace (c : Char) : Bool :=
+  c == ' ' || c == '\t' || c == '\n' || c == '\r'
+
+/-- Drop leading ASCII whitespace from a `List Char`. -/
+def dropLeadingWhitespace : List Char → List Char
+  | [] => []
+  | c :: cs => if isAsciiWhitespace c then dropLeadingWhitespace cs else c :: cs
+
+/-- Trim leading and trailing ASCII whitespace from a `List Char`. -/
+def trimAsciiChars (cs : List Char) : List Char :=
+  (dropLeadingWhitespace (dropLeadingWhitespace cs).reverse).reverse
+
+/-- Trim leading and trailing ASCII whitespace from a `String`. -/
+def trimAscii (s : String) : String :=
+  String.ofList (trimAsciiChars s.toList)
+
+/-- Lowercase an ASCII uppercase letter `'A'..'Z'`, leaving all other characters unchanged. -/
+def asciiLowerChar (c : Char) : Char :=
+  if 'A' ≤ c && c ≤ 'Z' then Char.ofNat (c.toNat + 32) else c
+
+/-- Lowercase all ASCII uppercase letters in a `String`. -/
+def asciiLower (s : String) : String :=
+  String.ofList (s.toList.map asciiLowerChar)
+
+/-- Return `true` iff every element in `xs` is distinct under `BEq`. -/
+def allDistinct {α : Type} [BEq α] : List α → Bool
+  | [] => true
+  | x :: xs => !(xs.contains x) && allDistinct xs
+
+/-- Return `true` iff `c` is forbidden in command/option identifiers (`whitespace`, `'='`, NUL). -/
+def isForbiddenIdentChar (c : Char) : Bool :=
+  isAsciiWhitespace c || c.isWhitespace || c == '=' || c == Char.ofNat 0
+
+/-- Return `true` iff `name` is a valid non-empty command or subcommand name. -/
+def isValidCommandName (name : String) : Bool :=
+  match name.toList with
+  | [] => false
+  | '-' :: _ => false
+  | cs => cs.all (fun c => !isAsciiWhitespace c && !c.isWhitespace && c != Char.ofNat 0)
+
+/-- Return `true` iff `name` is a valid non-empty canonical option or argument lookup key. -/
+def isValidLookupName (name : String) : Bool :=
+  !name.isEmpty && name.toList.all (fun c => !isAsciiWhitespace c && !c.isWhitespace && c != Char.ofNat 0)
+
+/-- Return `true` iff `l` is a valid long option name (non-empty, no leading `-`, no `=`/whitespace/NUL, not `help`/`version`). -/
+def isValidLongName (l : String) : Bool :=
+  match l.toList with
+  | [] => false
+  | '-' :: _ => false
+  | cs =>
+    cs.all (fun c => !isForbiddenIdentChar c) &&
+    l != "help" &&
+    l != "version"
+
+/-- Return `true` iff `c` is a valid short option character (not `'-'`, `'='`, whitespace, or NUL). -/
+def isValidShortChar (c : Char) : Bool :=
+  c != '-' && c != '=' && !isAsciiWhitespace c && !c.isWhitespace && c != Char.ofNat 0
+
+/-- Return `true` iff `key` is a valid POSIX environment variable name (non-empty, no `'='`, no NUL). -/
+def isValidEnvKey (key : String) : Bool :=
+  !key.isEmpty && key.toList.all (fun c => c != '=' && c != Char.ofNat 0)
+
+/-- Return `true` iff `s` starts with `"no-"`. -/
+def startsWithNoDash (s : String) : Bool :=
+  s.toList.take 3 == ['n', 'o', '-']
+
+/-- Return `true` iff `s` starts with `'-'`. -/
+def startsWithDash (s : String) : Bool :=
+  match s.toList with
+  | '-' :: _ => true
+  | _ => false
+
+/-- Parse a case-insensitive boolean string (`1`/`true`/`yes`/`on` vs `0`/`false`/`no`/`off`). -/
+def parseBoolString (s : String) : Option Bool :=
+  match asciiLower s with
+  | "1" | "true" | "yes" | "on" => some true
+  | "0" | "false" | "no" | "off" => some false
+  | _ => none
+
+/-- Run a matching custom validator from `validators` when `kind` is `.custom typeName`. -/
+def validateCustomValue (kind : ValueKind) (s : String) (validators : CustomValidators) :
+    Except CmdLineError Unit :=
+  match kind with
+  | .custom typeName =>
+    match validators.find? (fun p => p.1 == typeName) with
+    | none => .ok ()
+    | some (_, check) =>
+      match check s with
+      | .ok () => .ok ()
+      | .error msg =>
+        .error
+          { kind := .invalidValue
+            message := if msg.isEmpty then s!"invalid {typeName} value '{s}'" else msg }
+  | _ => .ok ()
+
+/-- Validate a `ValueKind` definition (requiring non-empty, non-`""`, duplicate-free `.choice` lists). -/
+def isValidValueKind : ValueKind → Bool
+  | .choice opts => !opts.isEmpty && !opts.contains "" && allDistinct opts
+  | _ => true
+
+/-- Validate positional `ArgSpec` ordering (no required after optional/variadic; nothing after variadic). -/
+def validArgOrder (seenOptOrVar seenVar : Bool) : List ArgSpec → Bool
+  | [] => true
+  | a :: rest =>
+    if seenVar then false
+    else if a.required && seenOptOrVar then false
+    else validArgOrder (seenOptOrVar || !a.required || a.variadic) (seenVar || a.variadic) rest
 
 /-- Tail-recursive pairwise multiplier for decimal chunks `(value, 10^digits)`. -/
 def mergeNatChunksTR (accRev : List (Nat × Nat)) : List (Nat × Nat) → List (Nat × Nat)
@@ -51,7 +159,7 @@ def parseOptValueFast (kind : ValueKind) (s : String) : Except CmdLineError OptV
   match kind with
   | .string => .ok (.string s)
   | .bool =>
-    match Model.parseBoolString s with
+    match parseBoolString s with
     | some b => .ok (.bool b)
     | none => .error { kind := .invalidValue, message := s!"invalid boolean value '{s}'" }
   | .nat =>
@@ -71,11 +179,40 @@ def parseOptValueFast (kind : ValueKind) (s : String) : Except CmdLineError OptV
           message := s!"invalid choice '{s}'; expected one of: {String.intercalate ", " opts}" }
   | .custom _ => .ok (.custom s)
 
-/-- Fast `parseOptValueWith` matching `Model.parseOptValueWith`. -/
+/-- Validate a single `OptSpec` locally (name, flags, kind, default, envVar, required/repeatable rules). -/
+def isValidOptLocal (opt : OptSpec) : Bool :=
+  isValidLookupName opt.name &&
+  (opt.long.isSome || opt.short.isSome) &&
+  (match opt.long with
+   | none => true
+   | some l => isValidLongName l && (if opt.kind == .bool then !startsWithNoDash l else true)) &&
+  (match opt.short with
+   | none => true
+   | some c => isValidShortChar c) &&
+  isValidValueKind opt.kind &&
+  !(opt.required && opt.default.isSome) &&
+  !(opt.repeatable && opt.kind == .bool && opt.default.isSome) &&
+  (match opt.default with
+   | none => true
+   | some d => (parseOptValueFast opt.kind d).isOk) &&
+  (match opt.envVar with
+   | none => true
+   | some k => isValidEnvKey k)
+
+/-- Validate a single `ArgSpec` (name, kind, required/default consistency). -/
+def isValidArg (arg : ArgSpec) : Bool :=
+  isValidLookupName arg.name &&
+  isValidValueKind arg.kind &&
+  !(arg.required && arg.default.isSome) &&
+  (match arg.default with
+   | none => true
+   | some d => (parseOptValueFast arg.kind d).isOk)
+
+/-- Fast `parseOptValueWith` using `parseOptValueFast` and `validateCustomValue`. -/
 def parseOptValueWithFast (kind : ValueKind) (s : String) (validators : CustomValidators := []) :
     Except CmdLineError OptValue := do
   let v ← parseOptValueFast kind s
-  Model.validateCustomValue kind s validators
+  validateCustomValue kind s validators
   pure v
 
 /-- Fast `Model.resolveOptDefault` using `parseOptValueWithFast`. -/
@@ -368,14 +505,14 @@ def checkCommandNodeStep (node : CommandSpec) (ctx : ValidCtx) : Option ValidCtx
     match optNames?, longs?, shorts?, envKeys? with
     | some optNames', some longs', some shorts', some envKeys' =>
       let ok :=
-        Model.isValidCommandName name &&
-        options.all Model.isValidOptLocal &&
+        isValidCommandName name &&
+        options.all isValidOptLocal &&
         (!shortHelp || !shorts'.contains 'h') &&
         (!(shortVersion && effVer.isSome) || !shorts'.contains 'V') &&
-        args.all Model.isValidArg &&
+        args.all isValidArg &&
         (insertDistinctSet ({} : Std.HashSet String) (args.map (·.name))).isSome &&
         args.all (fun a => !optNames'.contains a.name) &&
-        Model.validArgOrder false false args &&
+        validArgOrder false false args &&
         (if subcommands.isEmpty then true else args.isEmpty && options.all (·.global)) &&
         (insertDistinctSet ({} : Std.HashSet String) (subcommands.map (·.name))).isSome
       if ok then
@@ -525,12 +662,39 @@ def renderValueListTR (opt : OptSpec) : List OptValue → List String → Except
         | none =>
           .error { kind := .invalidSpec, message := s!"option '{opt.name}' has neither long nor short flag" }
 
-/-- Tail-recursive equivalent of `Model.renderSingleOpt`. -/
+/-- Tail-recursive single-option token renderer. -/
 def renderSingleOptTR (opt : OptSpec) (vals : List OptValue) : Except CmdLineError (List String) :=
   if vals.isEmpty then
     .ok []
   else if opt.kind == .bool && !opt.repeatable then
-    Model.renderSingleOpt opt vals
+    match vals with
+    | [.bool true] =>
+      match opt.long with
+      | some l => .ok ["--" ++ l]
+      | none =>
+        match opt.short with
+        | some c => .ok ["-" ++ String.singleton c]
+        | none => .error { kind := .invalidSpec, message := s!"option '{opt.name}' has neither long nor short flag" }
+    | [.bool false] =>
+      match opt.long with
+      | some l => .ok ["--no-" ++ l]
+      | none =>
+        let defaultIsTrue :=
+          match opt.default with
+          | some d => parseBoolString d == some true
+          | none => false
+        if defaultIsTrue then
+          .error
+            { kind := .invalidValue
+              message := s!"cannot render false value for short-only boolean option '{opt.name}' with true default"
+              target := some opt.name }
+        else
+          .ok []
+    | _ =>
+      .error
+        { kind := .invalidValue
+          message := s!"invalid boolean value list for option '{opt.name}'"
+          target := some opt.name }
   else
     renderValueListTR opt vals []
 
@@ -563,7 +727,7 @@ def renderArgsTR (spec : CommandSpec) (parsed : ParsedCmd) : Except CmdLineError
       let visibleOpts := globals ++ targetSpec.options
       let optTokens ← renderOptsTR (buildParsedOptMap parsed.options) visibleOpts []
       let posTokens :=
-        if parsed.rawPositionals.any Model.startsWithDash then
+        if parsed.rawPositionals.any startsWithDash then
           "--" :: parsed.rawPositionals
         else
           parsed.rawPositionals
@@ -598,7 +762,7 @@ def lookupLongOpt (visibleOpts : List OptSpec) (namePart : String) :
   match visibleOpts.find? (fun o => o.long == some namePart) with
   | some o => some (o, false)
   | none =>
-    if Model.startsWithNoDash namePart then
+    if startsWithNoDash namePart then
       let base := String.ofList (namePart.toList.drop 3)
       match visibleOpts.find? (fun o => o.kind == .bool && !o.repeatable && o.long == some base) with
       | some o => some (o, true)
@@ -730,7 +894,7 @@ def stepToken (rootName : String) (validators : CustomValidators) (st : ParseSta
                 | none =>
                   .ok { st with cliOpts := recordCliOpt st.cliOpts opt.name (.bool true) }
                 | some rawVal =>
-                  match Model.parseOptValue .bool rawVal with
+                  match parseOptValueFast .bool rawVal with
                   | .error e => .error { e with target := some opt.name }
                   | .ok (.bool b) =>
                     if opt.repeatable && !b then
@@ -1055,7 +1219,7 @@ def stepTokenFast (rootName : String) (validators : CustomValidators) (st : Fast
               | none =>
                 .ok { st with cliMap := recordCliFast st.cliMap opt.name (.bool true) }
               | some rawVal =>
-                match Model.parseOptValue .bool rawVal with
+                match parseOptValueFast .bool rawVal with
                 | .error e => .error { e with target := some opt.name }
                 | .ok (.bool b) =>
                   if opt.repeatable && !b then
@@ -1231,7 +1395,7 @@ def promptLine {m : Type → Type} [Monad m] (ops : CliOpsM m) (prompt : String)
   match ← ops.readLine with
   | none => return .error { kind := .eof, message := "unexpected end of input" }
   | some line =>
-    let trimmed := Model.trimAscii line
+    let trimmed := trimAscii line
     if trimmed.isEmpty then
       match default with
       | some d => return .ok d
@@ -1249,7 +1413,7 @@ def confirm {m : Type → Type} [Monad m] (ops : CliOpsM m) (prompt : String)
     match ← ops.readLine with
     | none => return .error { kind := .eof, message := "unexpected end of input" }
     | some line =>
-      let norm := Model.asciiLower (Model.trimAscii line)
+      let norm := asciiLower (trimAscii line)
       if norm.isEmpty then
         match default with
         | some b => return .ok b

@@ -24,7 +24,7 @@ private theorem withSlot_after_mkdir {S α : Type} (fs : FsApiM (StateM S)) (tim
       | .noWait => match (scanSlotsM fs cfg.poolDir 0 cfg.totalSlots cb).run s₁ with | (.leased i v, s) => (.ok (.leased i v), s) | (.err e, s) => (.error e, s) | (.allBusy, s) => (.ok .noSlot, s)
       | .waitUpTo t => let (startNs, s₂) := time.monoNanosNow.run s₁; (pollWaitUpToM fs time cfg (deadlineNanos startNs t) cb maxForeverPolls).run s₂
       | .waitForever => (pollForeverM fs time cfg cb maxForeverPolls).run s₁ := by
-  dsimp only [mkApiM, Internal.mkApiM, withSlotM]; rw [hVal]; dsimp only; rw [stateM_bind_run, hMk]; dsimp only
+  dsimp only [mkApiM, Internal.mkApiM, withSlotM]; rw [internal_validatePoolConfig_eq, hVal]; dsimp only; rw [stateM_bind_run, hMk]; dsimp only
   cases policy with
   | noWait => rw [stateM_bind_run]; cases (scanSlotsM fs cfg.poolDir 0 cfg.totalSlots cb).run s₁ with | mk r _ => cases r <;> rfl
   | waitUpTo _ => rw [stateM_bind_run]; rfl
@@ -32,21 +32,21 @@ private theorem withSlot_after_mkdir {S α : Type} (fs : FsApiM (StateM S)) (tim
 private theorem scanSlotsM_skip {S α : Type} (fs : FsApiM (StateM S)) (p : String) (cb : Nat → StateM S (Except SlotPoolError α)) (st : Nat → S) :
     ∀ n r, (∀ k, n ≤ k → k < n + r → probeRun fs p cb k (st k) = (.ok none, st (k + 1))) → (scanSlotsM fs p n r cb).run (st n) = (.allBusy, st (n + r))
   | _, 0, _ => rfl
-  | n, r + 1, hB => by unfold scanSlotsM; rw [stateM_bind_run]; dsimp only [probeRun] at hB; rw [hB n (Nat.le_refl _) (by omega)]; dsimp only; rw [scanSlotsM_skip fs p cb st (n + 1) r (fun k _ _ => hB k (by omega) (by omega)), show n + 1 + r = n + (r + 1) by omega]
+  | n, r + 1, hB => by unfold scanSlotsM; rw [stateM_bind_run, internal_slotLockPath_eq]; dsimp only [probeRun] at hB; rw [hB n (Nat.le_refl _) (by omega)]; dsimp only; rw [scanSlotsM_skip fs p cb st (n + 1) r (fun k _ _ => hB k (by omega) (by omega)), show n + 1 + r = n + (r + 1) by omega]
 private theorem scanSlotsM_err {S α : Type} (fs : FsApiM (StateM S)) (p : String) (cb : Nat → StateM S (Except SlotPoolError α)) (st : Nat → S) (errIdx : Nat) (fe : FsError) (sEnd : S) :
     ∀ n r, n ≤ errIdx → errIdx < n + r → (∀ k, n ≤ k → k < errIdx → probeRun fs p cb k (st k) = (.ok none, st (k + 1))) → probeRun fs p cb errIdx (st errIdx) = (.error fe, sEnd) → (scanSlotsM fs p n r cb).run (st n) = (.err (mapFsError fe), sEnd)
   | _, 0, _, _, _, _ => by omega
   | n, r + 1, _, _, hB, hE => by
-    unfold scanSlotsM; rw [stateM_bind_run]; by_cases hlt : n < errIdx
+    unfold scanSlotsM; rw [stateM_bind_run, internal_slotLockPath_eq]; by_cases hlt : n < errIdx
     · have hb := hB n (Nat.le_refl _) hlt; dsimp only [probeRun] at hb; rw [hb]; dsimp only; exact scanSlotsM_err fs p cb st errIdx fe sEnd (n + 1) r (by omega) (by omega) (fun k _ h2 => hB k (by omega) h2) hE
-    · obtain rfl : n = errIdx := (by omega); dsimp only [probeRun] at hE; rw [hE]; rfl
+    · obtain rfl : n = errIdx := (by omega); dsimp only [probeRun] at hE; rw [hE]; dsimp only; rw [internal_mapFsError_eq]; rfl
 private theorem expectedSlotPaths_snoc (join : String → String → String) (p : String) : ∀ n k, expectedSlotPaths join p n (k + 1) = expectedSlotPaths join p n k ++ [slotLockPath join p (n + k)]
   | _, 0 => by simp [expectedSlotPaths]
   | n, k + 1 => by unfold expectedSlotPaths; rw [expectedSlotPaths_snoc join p (n + 1) k, show n + 1 + k = n + (k + 1) by omega]; rfl
 private theorem pollWaitUpToM_busy_step {S α : Type} (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S)) (cfg : PoolConfig) (dl : Nat) (cb : Nat → StateM S (Except SlotPoolError α)) (hL : AllBusyFs fs cfg.poolDir cb) (fuel : Nat) (s : S) :
     (pollWaitUpToM fs time cfg dl cb (fuel + 1)).run s = let (nowNs, s1) := time.monoNanosNow.run s; if nowNs ≥ dl then (.ok .noSlot, s1) else let (_, s2) := (runSleepChunks time (sleepChunks (nextSleepMs cfg.pollIntervalMs nowNs dl))).run s1; (pollWaitUpToM fs time cfg dl cb fuel).run s2 := by
   have hSc := scanSlotsM_skip fs cfg.poolDir cb (fun _ => s) 0 cfg.totalSlots (fun k _ _ => hL s k); conv => lhs; unfold pollWaitUpToM
-  rw [stateM_bind_run, hSc]; dsimp only; rw [stateM_bind_run]; cases time.monoNanosNow.run s with | mk nowNs s1 => dsimp only; split; rfl; rw [stateM_bind_run]; cases (runSleepChunks time (sleepChunks (nextSleepMs cfg.pollIntervalMs nowNs dl))).run s1 with | mk _ _ => rfl
+  rw [stateM_bind_run, hSc]; dsimp only; rw [stateM_bind_run]; cases time.monoNanosNow.run s with | mk nowNs s1 => dsimp only; split; rfl; rw [stateM_bind_run, internal_runSleepChunks_eq, internal_sleepChunks_eq, internal_nextSleepMs_eq]; cases (runSleepChunks time (sleepChunks (nextSleepMs cfg.pollIntervalMs nowNs dl))).run s1 with | mk _ _ => rfl
 private theorem nextSleepMs_bounds {poll nowNs dl : Nat} (hPoll : 1 ≤ poll) (hLt : ¬ nowNs ≥ dl) : 1 ≤ nextSleepMs poll nowNs dl ∧ nextSleepMs poll nowNs dl ≤ poll := by dsimp [nextSleepMs, remainingWaitMs, nanosecondsPerMs]; simp only [hLt, ↓reduceIte]; exact ⟨Nat.le_min.mpr ⟨hPoll, by omega⟩, Nat.min_le_left _ _⟩
 /-- Specification 1 (`AllPass`): `defaultTimingModelOps` satisfies exact deadline arithmetic, ceiling sub-ms rounding, clamping, and positive `UInt32` chunk sums. -/
 theorem proof_model_timingAndSleepChunks : AllPass (test_slotpool_model_timingAndSleepChunks_exactAndChunked defaultTimingModelOps) := by
@@ -60,11 +60,11 @@ variable {S : Type} (fs : FsApiM (StateM S)) (time : TimeOpsM (StateM S))
 /-- Specification 2 (`AllPass`): invalid `PoolConfig` values are rejected with `.invalidInput` before any filesystem, clock, or callback effect. -/
 theorem proof_validation_invalidConfig_rejectedBeforeEffects : AllPass (test_slotpool_validation_invalidConfig_rejectedBeforeEffects mkApiM fs time) := by
   intro s₀ cfg policy markerPath hInvalid; obtain ⟨e, hVal, hKind, hPath, hMsg⟩ := validatePoolConfig_of_false cfg hInvalid; dsimp only [test_slotpool_validation_invalidConfig_rejectedBeforeEffects, AllPass]; rw [allPass_assert_end]
-  rw [show ((mkApiM fs time).withSlot cfg policy fun _ => do let _ ← fs.writeText markerPath "ran"; return (.ok 1 : Except SlotPoolError Nat)).run s₀ = (.error e, s₀) by dsimp only [mkApiM, Internal.mkApiM, withSlotM]; rw [hVal]; rfl]; exact ⟨⟨⟨e, rfl, hKind, hPath, hMsg⟩, rfl⟩, trivial⟩
+  rw [show ((mkApiM fs time).withSlot cfg policy fun _ => do let _ ← fs.writeText markerPath "ran"; return (.ok 1 : Except SlotPoolError Nat)).run s₀ = (.error e, s₀) by dsimp only [mkApiM, Internal.mkApiM, withSlotM]; rw [internal_validatePoolConfig_eq, hVal]; rfl]; exact ⟨⟨⟨e, rfl, hKind, hPath, hMsg⟩, rfl⟩, trivial⟩
 /-- Specification 3 (`AllPass`): `fs.mkdir` failures map to `SlotPoolError` with preserved `path` and non-empty message before polling or callbacks. -/
 theorem proof_mkdir_fsError_propagatedBeforePolling : AllPass (test_slotpool_mkdir_fsError_propagatedBeforePolling mkApiM fs time) := by
   intro s₀ cfg policy markerPath hValid; obtain ⟨hVal, _, _, _⟩ := validatePoolConfig_of_true cfg hValid; dsimp only [test_slotpool_mkdir_fsError_propagatedBeforePolling, AllPass]; cases hMk : (fs.mkdir cfg.poolDir true true).run s₀ with | mk mkRes sAfterMk =>
-  cases mkRes with | ok _ => intro h; cases h | error fe => dsimp only; rw [allPass_assert_end]; rw [show ((mkApiM fs time).withSlot cfg policy fun _ => do let _ ← fs.writeText markerPath "ran"; return (.ok 1 : Except SlotPoolError Nat)).run s₀ = (.error (mapFsError fe), sAfterMk) by dsimp only [mkApiM, Internal.mkApiM, withSlotM]; rw [hVal]; dsimp only; rw [stateM_bind_run, hMk]; rfl]; exact ⟨⟨⟨mapFsError fe, rfl, rfl, rfl, mapFsError_nonEmpty fe⟩, rfl⟩, trivial⟩
+  cases mkRes with | ok _ => intro h; cases h | error fe => dsimp only; rw [allPass_assert_end]; rw [show ((mkApiM fs time).withSlot cfg policy fun _ => do let _ ← fs.writeText markerPath "ran"; return (.ok 1 : Except SlotPoolError Nat)).run s₀ = (.error (mapFsError fe), sAfterMk) by dsimp only [mkApiM, Internal.mkApiM, withSlotM]; rw [internal_validatePoolConfig_eq, hVal]; dsimp only; rw [stateM_bind_run, hMk]; dsimp only; rw [internal_mapFsError_eq]; rfl]; exact ⟨⟨⟨mapFsError fe, rfl, rfl, rfl, mapFsError_nonEmpty fe⟩, rfl⟩, trivial⟩
 /-- Specification 4 (`AllPass`): under `WaitPolicy.noWait`, a saturated pool probes every slot once in ascending order and returns `.ok .noSlot` without sleeping or running `action`. -/
 theorem proof_noWait_allBusy_returnsNoSlotWithoutSleepOrAction : AllPass (test_slotpool_noWait_allBusy_returnsNoSlotWithoutSleepOrAction mkApiM fs time) := by
   intro s₀ cfg markerPath hValid hMkOk hMarker; obtain ⟨hVal, _, _, _⟩ := validatePoolConfig_of_true cfg hValid; dsimp only [test_slotpool_noWait_allBusy_returnsNoSlotWithoutSleepOrAction, AllPass]; rw [allPass_assert_end]
@@ -103,8 +103,8 @@ theorem proof_tryLock_fsError_propagatedWithoutRunningAction : AllPass (test_slo
       · simp only [Bool.false_eq_true, ↓reduceIte]; obtain ⟨ns0, hML0, hEq0⟩ := hMonoLift 0; obtain ⟨ns1, hML1, hEq1⟩ := hMonoLift cfg.totalSlots; rw [hEq1.trans hEq0.symm] at hML1; rw [hML0, maxForeverPolls_eq_succ2]; dsimp only; unfold pollWaitUpToM; rw [stateM_bind_run, hP0]; dsimp only; rw [stateM_bind_run, hML1]; dsimp only
         have hNotGe : ¬ (ns0 ≥ deadlineNanos ns0 cfg.pollIntervalMs) := by dsimp [deadlineNanos, nanosecondsPerMs]; omega
         have hNext : nextSleepMs cfg.pollIntervalMs ns0 (deadlineNanos ns0 cfg.pollIntervalMs) = cfg.pollIntervalMs := by dsimp [nextSleepMs, remainingWaitMs]; simp only [hNotGe, ↓reduceIte]; dsimp [deadlineNanos, nanosecondsPerMs]; apply Nat.min_eq_left; omega
-        simp only [hNotGe, ↓reduceIte]; rw [hNext, stateM_bind_run, hSleepL]; dsimp only; unfold pollWaitUpToM; rw [stateM_bind_run, hP1]; rfl
-      · simp only [↓reduceIte]; rw [maxForeverPolls_eq_succ2]; unfold pollForeverM; rw [stateM_bind_run, hP0]; dsimp only; rw [stateM_bind_run, hSleepL]; dsimp only; unfold pollForeverM; rw [stateM_bind_run, hP1]; rfl
+        simp only [hNotGe, ↓reduceIte]; rw [internal_nextSleepMs_eq, hNext, stateM_bind_run, internal_runSleepChunks_eq, internal_sleepChunks_eq, hSleepL]; dsimp only; unfold pollWaitUpToM; rw [stateM_bind_run, hP1]; rfl
+      · simp only [↓reduceIte]; rw [maxForeverPolls_eq_succ2]; unfold pollForeverM; rw [stateM_bind_run, hP0]; dsimp only; rw [stateM_bind_run, internal_runSleepChunks_eq, internal_sleepChunks_eq, hSleepL]; dsimp only; unfold pollForeverM; rw [stateM_bind_run, hP1]; rfl
     rw [hRun1]; · exact ⟨⟨⟨mapFsError lockFsErr, rfl, rfl, rfl, mapFsError_nonEmpty lockFsErr⟩, rfl, by rw [hSleep] at hMarkerAfter; exact hMarkerAfter⟩, trivial⟩
     · exact hMkL _ rfl
     · rw [show (sAfterMk, cfg.totalSlots) = (sAfterMk, 0 + cfg.totalSlots) by rw [Nat.zero_add]]

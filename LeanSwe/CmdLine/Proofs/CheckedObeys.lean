@@ -57,7 +57,7 @@ theorem mkCliOps_readLine_spec {W : Type} (proj : W → Model.CmdLineHostState)
             simp only [hf, hNotPos, ↓reduceIte, hBytes] at hr
             exact ⟨hr.1, hr.2.trans (by apply hostState_ext <;> first | rfl | exact hf.symm | exact hBytes.symm)⟩)
           SysBridge.stdioEintrFuel (proj w).eintrCount w1 hW1Eq
-        dsimp only [SysBridge.stdioEintrFuel] at hRe ⊢
+        rw [show SysBridge.stdioEintrFuel = Model.stdioEintrRetryLimit from rfl] at hRe ⊢
         cases hAct : (retryEintr (caps.files.read fd 1) Model.stdioEintrRetryLimit).run.run w1 with
         | mk res w2 =>
           rw [hAct] at hRe
@@ -98,7 +98,7 @@ theorem mkCliOps_readLine_spec {W : Type} (proj : W → Model.CmdLineHostState)
             simp only [hf, hNotPos, ↓reduceIte, hBytes] at hr
             exact ⟨hr.1, hr.2.trans (by apply hostState_ext <;> first | rfl | exact hf.symm)⟩)
           SysBridge.stdioEintrFuel (proj w).eintrCount w1 hW1Eq
-        dsimp only [SysBridge.stdioEintrFuel] at hRe ⊢
+        rw [show SysBridge.stdioEintrFuel = Model.stdioEintrRetryLimit from rfl] at hRe ⊢
         cases hAct : (retryEintr (caps.files.read fd 1) Model.stdioEintrRetryLimit).run.run w1 with
         | mk res w2 =>
           rw [hAct] at hRe
@@ -125,7 +125,7 @@ theorem mkCliOps_readLine_spec {W : Type} (proj : W → Model.CmdLineHostState)
               | mk clRes w3 =>
                 rw [hc] at hCl; rcases hCl with ⟨rfl, hw3⟩; dsimp only at hw3 ⊢
                 cases (ByteArray.empty.push b).isEmpty
-                · simp only [Bool.false_eq_true, ↓reduceIte]; dsimp only [exceptT_run_pure]
+                · simp only [Bool.false_eq_true, ↓reduceIte, sysBridge_decodeUtf8LossyLean_eq]; dsimp only [exceptT_run_pure]
                   exact ⟨rfl, by rw [hw3, hw2]; apply hostState_ext <;> first | rfl | exact hf | exact hf.symm⟩
                 · simp only [↓reduceIte]; dsimp only [exceptT_run_pure]
                   exact ⟨rfl, by rw [hw3, hw2]; apply hostState_ext <;> first | rfl | exact hf | exact hf.symm⟩
@@ -151,7 +151,7 @@ theorem mkCliOps_readLine_spec {W : Type} (proj : W → Model.CmdLineHostState)
                     | ok lineBs =>
                       dsimp only
                       cases lineBs.isEmpty
-                      · simp only [Bool.false_eq_true, ↓reduceIte]; dsimp only [exceptT_run_pure]
+                      · simp only [Bool.false_eq_true, ↓reduceIte, sysBridge_decodeUtf8LossyLean_eq]; dsimp only [exceptT_run_pure]
                         exact ⟨rfl, by rw [hw4, hw3, hw2]; apply hostState_ext <;> first | rfl | exact hf | exact hf.symm⟩
                       · simp only [↓reduceIte]; dsimp only [exceptT_run_pure]
                         exact ⟨rfl, by rw [hw4, hw3, hw2]; apply hostState_ext <;> first | rfl | exact hf | exact hf.symm⟩
@@ -189,7 +189,7 @@ theorem mkCliOps_readLine_spec {W : Type} (proj : W → Model.CmdLineHostState)
       rcases hDup with ⟨fd, rfl, hw1⟩
       dsimp only at hw1 ⊢
       rw [exceptT_run_bind, exceptT_run_tryFinally]
-      unfold SysBridge.readStdioLineFdLoop SysBridge.stdioEintrFuel Model.stdioEintrRetryLimit retryEintr
+      unfold SysBridge.readStdioLineFdLoop SysBridge.stdioEintrFuel retryEintr
       rw [exceptT_run_bind, exceptT_run_bind]
       have hr := caps_read1_spec proj caps hCaps fd (proj w).openDups w1 (by rw [hw1])
       rw [hw1] at hr; dsimp only at hr
@@ -314,7 +314,7 @@ theorem mkCliOps_writeSlot_spec {W : Type} (proj : W → Model.CmdLineHostState)
             · simp only [Bool.false_eq_true, ↓reduceIte]; apply hostState_ext <;> first | rfl | exact hf.symm
             · simp only [↓reduceIte]; apply hostState_ext <;> first | rfl | exact hf.symm)
           SysBridge.stdioEintrFuel (proj w).eintrCount w1 hW1Eq
-        dsimp only [SysBridge.stdioEintrFuel] at hRe ⊢
+        rw [show SysBridge.stdioEintrFuel = Model.stdioEintrRetryLimit from rfl] at hRe ⊢
         cases hAct : (retryEintr (caps.files.write fd (text.toUTF8.extract 0 (min text.toUTF8.size (0 + 1048576)))) Model.stdioEintrRetryLimit).run.run w1 with
         | mk res w2 =>
           rw [hAct] at hRe
@@ -422,7 +422,7 @@ theorem mkCliOps_writeSlot_spec {W : Type} (proj : W → Model.CmdLineHostState)
         unfold SysBridge.writeStdioSlicesLoop
         have hNotGe : ¬(0 ≥ text.toUTF8.size) := by omega
         simp only [hNotGe, ↓reduceIte]
-        unfold SysBridge.stdioEintrFuel Model.stdioEintrRetryLimit retryEintr
+        unfold SysBridge.stdioEintrFuel retryEintr
         rw [exceptT_run_bind, exceptT_run_bind]
         have hw := caps_write_spec proj caps hCaps isStdout fd
           (if (0 : Nat) == 0 && min text.toUTF8.size (0 + 1048576) == text.toUTF8.size then text.toUTF8 else text.toUTF8.extract 0 (min text.toUTF8.size (0 + 1048576)))

@@ -36,12 +36,8 @@ def lookupHostEnv (s : LeanSwe.EnvVars.Raw.Model.EnvironState) (key : String) :
     Except CmdLineError (Option String) :=
   (LeanSwe.EnvVars.Model.getEnvModel s key).mapError mapEnvVarsErrorModel
 
-/-- Pure capability container bundling `LinuxSyscall.Files` (`RawFd`) and `EnvVars` for `LeanSwe.CmdLine`. -/
-structure CmdLineCapsM (m : Type → Type) where
-  /-- Unbuffered OS file-descriptor capability (`dupStdio`, `read`, `write`, `close`). -/
-  files : LeanSwe.LinuxSyscall.Files.FilesOpsM m LeanSwe.LinuxSyscall.RawFd
-  /-- Process environment capability (`getEnv`). -/
-  env : LeanSwe.EnvVars.EnvVarsApiM m
+/-- Alias of `LeanSwe.CmdLine.Internal.CmdLineCapsM` retained for model/proof compatibility. -/
+abbrev CmdLineCapsM := LeanSwe.CmdLine.Internal.CmdLineCapsM
 
 /-- Optional fault mode injected on `LinuxSyscall.Files` stdio capability calls. -/
 inductive HostStdioFault where
