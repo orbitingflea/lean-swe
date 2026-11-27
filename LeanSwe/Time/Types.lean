@@ -21,16 +21,6 @@ structure TimeError where
   message : String
   deriving Repr, BEq, DecidableEq
 
-/-- Deterministic fake-clock state for testing and proofs over `TimeOpsM (StateM FakeClock)`. -/
-structure FakeClock where
-  /-- Simulated UTC wall-clock timestamp. -/
-  wall : Std.Time.Timestamp
-  /-- Simulated monotonic clock in nanoseconds. -/
-  monoNanos : Nat
-  /-- Recorded sequence of `UInt32` millisecond chunks passed to `TimeOpsM.sleep`. -/
-  sleepLog : Array UInt32 := #[]
-  deriving Repr, DecidableEq, Inhabited
-
 /-- Minimal effect interface wrapping wall-clock, monotonic-clock, and millisecond-sleep primitives. -/
 structure TimeOpsM (m : Type → Type) where
   /-- Read current UTC wall-clock timestamp (`CLOCK_REALTIME`). -/

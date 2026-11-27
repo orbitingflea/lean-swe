@@ -416,22 +416,4 @@ def mkApiM {m : Type → Type} [Monad m] [MonadFinally m] (ops : TimeOpsM m) : T
     utcDateOfTimestamp := utcDateOfTimestamp
     timestampOfUtcDate := timestampOfUtcDate }
 
-/-- Deterministic `TimeOpsM (StateM FakeClock)` advancing `wall`, `monoNanos`, and `sleepLog` on `sleep`. -/
-def fakeOps : TimeOpsM (StateM FakeClock) :=
-  { nowTimestamp := do
-      let s ← get
-      pure s.wall
-    monoNanosNow := do
-      let s ← get
-      pure s.monoNanos
-    sleep := fun ms =>
-      modify fun s =>
-        { wall := s.wall + Std.Time.Duration.ofMillisecond (Std.Time.Millisecond.Offset.ofNat ms.toNat)
-          monoNanos := s.monoNanos + ms.toNat * 1000000
-          sleepLog := s.sleepLog.push ms } }
-
-/-- Deterministic `TimeApiM (StateM FakeClock)` backed by `fakeOps`. -/
-def fakeApi : TimeApiM (StateM FakeClock) :=
-  mkApiM fakeOps
-
 end LeanSwe.Time.Internal

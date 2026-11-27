@@ -50,7 +50,7 @@ private def assertFailWith (label expectedDiag : String) (out : IO.Process.Outpu
 private def manifestJson (docDeps : String := "\"LeanSwe.MiniNum\"") : String :=
   "{\n  \"version\": 1,\n  \"packages\": {\n" ++
   "    \"LeanSwe.MiniNum\": {\"kind\": \"model\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": false, \"spec_style\": \"pure_eq\"},\n" ++
-  s!"    \"LeanSwe.MiniDoc\": \{\"kind\": \"model\", \"purity\": \"pure\", \"deps\": [{docDeps}], \"external_boundary\": false, \"err_msg_opaque\": true, \"spec_style\": \"inverse_render\"}\n" ++
+  s!"    \"LeanSwe.MiniDoc\": \{\"kind\": \"model\", \"purity\": \"pure\", \"deps\": [{docDeps}], \"external_boundary\": false, \"spec_style\": \"inverse_render\"}\n" ++
   "  }\n}\n"
 
 private def rootsCsv : String := "LeanSwe.MiniNum.Proofs,LeanSwe.MiniDoc.Proofs"
@@ -137,7 +137,7 @@ def main (args : List String) : IO UInt32 := do
     compileLeanMod baseRoot baseLeanPath (baseRoot / rel) ((baseLib / rel).withExtension "olean")
 
   let runAudit (libDir manPath : System.FilePath) : IO IO.Process.Output :=
-    runCmd bin.toString #["--internal-manifest-audit", libDir.toString, manPath.toString, rootsCsv, "", "", ""]
+    runCmd bin.toString #["--internal-manifest-audit", libDir.toString, manPath.toString, rootsCsv]
   let runPrintSig (libDir manPath : System.FilePath) (pkg : String) : IO IO.Process.Output :=
     runCmd bin.toString #["--internal-print-obeys-sig", libDir.toString, manPath.toString, rootsCsv, pkg]
 

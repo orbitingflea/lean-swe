@@ -74,7 +74,7 @@ NON_PACKAGE_SUBDIRS = frozenset({
 })
 MANIFEST_ROOT_KEYS = frozenset({"version", "packages"})
 MANIFEST_PKG_REQUIRED_KEYS = frozenset({"kind", "purity", "deps", "external_boundary"})
-MANIFEST_PKG_OPTIONAL_KEYS = frozenset({"fuzz_suite", "err_msg_opaque", "spec_style"})
+MANIFEST_PKG_OPTIONAL_KEYS = frozenset({"fuzz_suite", "spec_style"})
 MANIFEST_PKG_ALL_KEYS = MANIFEST_PKG_REQUIRED_KEYS | MANIFEST_PKG_OPTIONAL_KEYS
 MANIFEST_KINDS = frozenset({"model", "property", "support"})
 MANIFEST_PURITIES = frozenset({"pure", "nondet_io", "mixed", "types_only"})
@@ -1061,6 +1061,9 @@ def _classify_existing_manifest_pkg_edit(pkg: str, base_entry: object, head_entr
         return LABEL_CHANGE, f"altered entry shape for '{pkg}'"
     if not set(head_entry.keys()).issubset(MANIFEST_PKG_ALL_KEYS):
         return LABEL_CHANGE, f"unknown key(s) added to '{pkg}'"
+    removed_unknown = sorted(set(base_entry.keys()) - MANIFEST_PKG_ALL_KEYS)
+    if removed_unknown:
+        return LABEL_CHANGE, f"removed unknown key(s) from '{pkg}': {', '.join(removed_unknown)}"
 
     b_kind = base_entry.get("kind")
     h_kind = head_entry.get("kind")
@@ -1103,7 +1106,7 @@ def _classify_existing_manifest_pkg_edit(pkg: str, base_entry: object, head_entr
     if removed_deps:
         return LABEL_CHANGE, f"removed deps on '{pkg}': {', '.join(removed_deps)}"
 
-    for key in ("purity", "err_msg_opaque", "spec_style"):
+    for key in ("purity", "spec_style"):
         if (key in base_entry) != (key in head_entry) or base_entry.get(key) != head_entry.get(key):
             return LABEL_CHANGE, f"modified '{key}' on '{pkg}'"
 
@@ -1287,9 +1290,6 @@ def _validate_manifest_data(
             errors.append(f"package '{pkg}' field 'external_boundary' must be a boolean")
         elif kind == "property" and ext_boundary:
             errors.append(f"package '{pkg}' has external_boundary=true and cannot use kind='property'")
-
-        if "err_msg_opaque" in entry and not isinstance(entry["err_msg_opaque"], bool):
-            errors.append(f"package '{pkg}' field 'err_msg_opaque' must be a boolean")
 
         if "spec_style" in entry and entry["spec_style"] not in MANIFEST_SPEC_STYLES:
             errors.append(
