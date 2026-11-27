@@ -2,9 +2,6 @@ import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Poll.Types
 import LeanSweProofs.LinuxSyscall.Poll.Model
 import LeanSwe.LinuxSyscall.Poll.Interface
-import LeanSwe.LinuxSyscall.Net.Types
-import LeanSwe.LinuxSyscall.Net.Interface
-import LeanSwe.LinuxSyscall.Sandbox.Interface
 import Fuzz.LinuxSyscall.Rng
 import Fuzz.LinuxSyscall.SandboxEnv
 import Std.Data.HashMap
@@ -49,6 +46,30 @@ private opaque rawDisarmSigalrm : UInt32 → BaseIO Unit
 
 @[extern "leanswe_poll_get_fd_flags"]
 private opaque rawPollGetFdFlags : @& RawFd → IO (Except Errno UInt32)
+
+@[extern "leanswe_poll_open_seqpair"]
+private opaque rawOpenSeqpair : IO (Except Errno (RawFd × RawFd))
+
+@[extern "leanswe_poll_open_tcp_listener"]
+private opaque rawOpenTcpListener : IO (Except Errno (RawFd × UInt32))
+
+@[extern "leanswe_poll_tcp_connect_loopback"]
+private opaque rawTcpConnectLoopback : UInt32 → IO (Except Errno RawFd)
+
+@[extern "leanswe_poll_accept4"]
+private opaque rawAccept4 : @& RawFd → IO (Except Errno RawFd)
+
+@[extern "leanswe_poll_open_udp_socket"]
+private opaque rawOpenUdpSocket : IO (Except Errno RawFd)
+
+@[extern "leanswe_poll_open_udp_pair"]
+private opaque rawOpenUdpPair : IO (Except Errno (RawFd × RawFd))
+
+@[extern "leanswe_poll_sendto_dontwait"]
+private opaque rawSendtoDontwait : @& RawFd → @& ByteArray → IO (Except Errno UInt32)
+
+@[extern "leanswe_poll_recv_dontwait"]
+private opaque rawRecvDontwait : @& RawFd → UInt32 → UInt8 → IO (Except Errno UInt32)
 
 /-- Symbolic descriptor slot used in shrinkable `Poll` fuzz traces. -/
 abbrev SymFd := Nat
@@ -432,62 +453,31 @@ private def streamSelfKind (symKindMap : Std.HashMap SymFd SymKind) (sid : SymFd
   | _ => none
 
 private def openTcpPairRaw : IO (Except Errno (RawFd × RawFd)) := do
-  let netOps := LeanSwe.LinuxSyscall.Net.defaultOps
   let pollOps := defaultOps
-  match ← netOps.socket .inet .stream { nonblock := true, cloexec := true } 0 with
+  match ← rawOpenTcpListener with
   | .error e => return .error e
-  | .ok lfd =>
-    match ← netOps.bind lfd (.ipv4 LeanSwe.LinuxSyscall.Net.INADDR_LOOPBACK 0) with
+  | .ok (lfd, port) =>
+    match ← rawTcpConnectLoopback port with
     | .error e => let _ ← rawPollClose lfd; return .error e
-    | .ok () =>
-      match ← netOps.getsockname lfd with
-      | .error e => let _ ← rawPollClose lfd; return .error e
-      | .ok laddr =>
-        match ← netOps.listen lfd 4 with
-        | .error e => let _ ← rawPollClose lfd; return .error e
-        | .ok () =>
-          match ← netOps.socket .inet .stream { nonblock := true, cloexec := true } 0 with
-          | .error e => let _ ← rawPollClose lfd; return .error e
-          | .ok cfd =>
-            let _ ← netOps.connect cfd laddr
-            let mut res : Except Errno (RawFd × RawFd) := .error Errno.EAGAIN
-            for _ in [:8] do
-              match ← netOps.accept4 lfd { nonblock := true, cloexec := true } with
-              | .ok (sfd, _) =>
-                let _ ← rawPollClose lfd
-                return .ok (cfd, sfd)
-              | .error e =>
-                res := .error e
-                if e == Errno.EAGAIN then
-                  let _ ← pollOps.ppoll #[(lfd, { pollin := true })] (some { sec := 0, nsec := 10000000 })
-                else
-                  break
-            let _ ← rawPollClose cfd
-            let _ ← rawPollClose lfd
-            return res
+    | .ok cfd =>
+      let mut res : Except Errno (RawFd × RawFd) := .error Errno.EAGAIN
+      for _ in [:8] do
+        match ← rawAccept4 lfd with
+        | .ok sfd =>
+          let _ ← rawPollClose lfd
+          return .ok (cfd, sfd)
+        | .error e =>
+          res := .error e
+          if e == Errno.EAGAIN then
+            let _ ← pollOps.ppoll #[(lfd, { pollin := true })] (some { sec := 0, nsec := 10000000 })
+          else
+            break
+      let _ ← rawPollClose cfd
+      let _ ← rawPollClose lfd
+      return res
 
-private def openUdpPairRaw : IO (Except Errno (RawFd × RawFd)) := do
-  let netOps := LeanSwe.LinuxSyscall.Net.defaultOps
-  match ← netOps.socket .inet .dgram { nonblock := true, cloexec := true } 0 with
-  | .error e => return .error e
-  | .ok u0 =>
-    match ← netOps.socket .inet .dgram { nonblock := true, cloexec := true } 0 with
-    | .error e => let _ ← rawPollClose u0; return .error e
-    | .ok u1 =>
-      match ← netOps.bind u0 (.ipv4 LeanSwe.LinuxSyscall.Net.INADDR_LOOPBACK 0) with
-      | .error e => let _ ← rawPollClose u0; let _ ← rawPollClose u1; return .error e
-      | .ok () =>
-        match ← netOps.bind u1 (.ipv4 LeanSwe.LinuxSyscall.Net.INADDR_LOOPBACK 0) with
-        | .error e => let _ ← rawPollClose u0; let _ ← rawPollClose u1; return .error e
-        | .ok () =>
-          match ← netOps.getsockname u0, ← netOps.getsockname u1 with
-          | .ok a0, .ok a1 =>
-            match ← netOps.connect u0 a1, ← netOps.connect u1 a0 with
-            | .ok (), .ok () => return .ok (u0, u1)
-            | .error e, _ | _, .error e =>
-              let _ ← rawPollClose u0; let _ ← rawPollClose u1; return .error e
-          | .error e, _ | _, .error e =>
-            let _ ← rawPollClose u0; let _ ← rawPollClose u1; return .error e
+private def openUdpPairRaw : IO (Except Errno (RawFd × RawFd)) :=
+  rawOpenUdpPair
 
 private def bigSatChunk : ByteArray := ByteArray.mk (Array.replicate 65536 0x41)
 
@@ -579,7 +569,7 @@ private def execOneStep (ops : PollOps)
   | .openSeqpair =>
     match step.allocIds[0]?, step.allocIds[1]? with
     | some s0, some s1 =>
-      match ← LeanSwe.LinuxSyscall.Net.defaultOps.socketpair .unix .seqpacket { nonblock := true, cloexec := true } with
+      match ← rawOpenSeqpair with
       | .error _ => return .ok stay
       | .ok (r0, r1) =>
         let (h0, st1) := modelState.registerDesc { kind := .endpoint false true false false }
@@ -622,29 +612,17 @@ private def execOneStep (ops : PollOps)
     match step.allocIds[0]? with
     | none => return .error "missing allocId for openTcpListener"
     | some sid =>
-      match ← LeanSwe.LinuxSyscall.Net.defaultOps.socket .inet .stream { nonblock := true, cloexec := true } 0 with
+      match ← rawOpenTcpListener with
       | .error _ => return .ok stay
-      | .ok rfd =>
-        let netOps := LeanSwe.LinuxSyscall.Net.defaultOps
-        let bound ← netOps.bind rfd (.ipv4 LeanSwe.LinuxSyscall.Net.INADDR_LOOPBACK 0)
-        match bound with
-        | .error _ =>
-          let _ ← rawPollClose rfd
-          return .ok stay
-        | .ok () =>
-          match ← netOps.listen rfd 4 with
-          | .error _ =>
-            let _ ← rawPollClose rfd
-            return .ok stay
-          | .ok () =>
-            let (hid, s') := modelState.registerDesc { kind := .endpoint false false false false }
-            return .ok (symMap.insert sid hid, symKindMap.insert sid .tcpListener,
-              rawMap.insert hid rfd, openMap.insert hid rfd, bufMap, hupMap, errMap, finMap, wrFullMap, curNofile, s', none)
+      | .ok (rfd, _) =>
+        let (hid, s') := modelState.registerDesc { kind := .endpoint false false false false }
+        return .ok (symMap.insert sid hid, symKindMap.insert sid .tcpListener,
+          rawMap.insert hid rfd, openMap.insert hid rfd, bufMap, hupMap, errMap, finMap, wrFullMap, curNofile, s', none)
   | .openUdpSocket =>
     match step.allocIds[0]? with
     | none => return .error "missing allocId for openUdpSocket"
     | some sid =>
-      match ← LeanSwe.LinuxSyscall.Net.defaultOps.socket .inet .dgram { nonblock := true, cloexec := true } 0 with
+      match ← rawOpenUdpSocket with
       | .error _ => return .ok stay
       | .ok rfd =>
         let (hid, s') := modelState.registerDesc { kind := .endpoint false true false false }
@@ -834,11 +812,10 @@ private def execOneStep (ops : PollOps)
       | none => return .ok stay
       | some rfd =>
         let isSeq := match symKindMap.get? sid with | some (.seqEnd _) => true | _ => false
-        let netOps := LeanSwe.LinuxSyscall.Net.defaultOps
         let mut added : Nat := 0
         let mut hitEagain := false
         for _ in [:128] do
-          match ← netOps.sendto rfd bigSatChunk { dontwait := true } with
+          match ← rawSendtoDontwait rfd bigSatChunk with
           | .ok n => added := added + (if isSeq then 1 else n.toNat)
           | .error e =>
             if e == Errno.EAGAIN then hitEagain := true
@@ -849,8 +826,8 @@ private def execOneStep (ops : PollOps)
           match symMap.get? peerSid >>= rawMap.get? with
           | some peerRfd =>
             for _ in [:25] do
-              match ← netOps.recvfrom peerRfd 1 { peek := true, dontwait := true } with
-              | .ok b => if b.size > 0 then break
+              match ← rawRecvDontwait peerRfd 1 1 with
+              | .ok n => if n > 0 then break
               | .error _ => pure ()
               IO.sleep 2
           | none => pure ()
@@ -889,19 +866,18 @@ private def execOneStep (ops : PollOps)
       | some rfd =>
         let isTcp := match symKindMap.get? sid with | some (.tcpEnd _) => true | _ => false
         let isSeq := match symKindMap.get? sid with | some (.seqEnd _) => true | _ => false
-        let netOps := LeanSwe.LinuxSyscall.Net.defaultOps
         let mut hitEagain := false
         let mut sawDrainEnd := false
         let mut drained : Nat := 0
         let mut errCleared := errMap.getD sid false
         let mut sawReset := false
         for _ in [:512] do
-          match ← netOps.recvfrom rfd 65536 { dontwait := true } with
-          | .ok b =>
-            if b.size == 0 then
+          match ← rawRecvDontwait rfd 65536 0 with
+          | .ok n =>
+            if n == 0 then
               sawDrainEnd := true
               break
-            drained := drained + (if isSeq then 1 else b.size)
+            drained := drained + (if isSeq then 1 else n.toNat)
           | .error e =>
             if e == Errno.EAGAIN then
               hitEagain := true
@@ -1520,9 +1496,8 @@ def runSigalrmEintrProbe : IO Unit := do
     let _ ← rawPollClose efd
 
 private def installPollSeccompFilter (expected : Errno) : IO Unit := do
-  let sops := LeanSwe.LinuxSyscall.Sandbox.defaultOps
-  match ← sops.prctl .setNoNewPrivs with
-  | .ok _ => pure ()
+  match ← SandboxEnv.setNoNewPrivs with
+  | .ok () => pure ()
   | .error e => throw (IO.userError s!"poll seccomp PR_SET_NO_NEW_PRIVS failed: {e}")
   let bpf := SandboxEnv.encodeSeccompErrnoBpf #[271, 290] #[73, 19] expected
   match ← SandboxEnv.installRawSeccomp bpf with

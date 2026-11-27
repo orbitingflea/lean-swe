@@ -1,8 +1,8 @@
 import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSweProofs.LinuxSyscall.TimeRand.Model
 import LeanSwe.LinuxSyscall.TimeRand.Interface
-import LeanSwe.LinuxSyscall.TestSupport.Seccomp
 import Fuzz.LinuxSyscall.Rng
+import Fuzz.LinuxSyscall.SandboxEnv
 
 namespace Fuzz.LinuxSyscall
 
@@ -778,7 +778,7 @@ def fuzzTimeRandSeccompChild (steps : Nat) (seedVal : UInt64) (eno : UInt32)
   let mut st := if delaySteps == 0 then TimeRandState.initial.withOuterSeccomp else TimeRandState.initial
   let mut seccompInstalled := false
   if delaySteps == 0 then
-    let rc ← TestSupport.Seccomp.installTimeRandSeccompErrno eno mask
+    let rc ← SandboxEnv.installTimeRandSeccompErrno eno mask
     if rc != 0 then
       throw (IO.userError s!"installTimeRandSeccompErrno({eno}, {mask}) failed with errno {rc}")
     seccompInstalled := true
@@ -796,7 +796,7 @@ def fuzzTimeRandSeccompChild (steps : Nat) (seedVal : UInt64) (eno : UInt32)
     if !seccompInstalled && stepIdx == delaySteps then
       if delaySteps ≥ 100 && (st.monoLowerBoundNs == 0 || !st.crngReady) then
         throw (IO.userError s!"mid-episode seccomp child warmup ({delaySteps} steps) did not advance state: mono={st.monoLowerBoundNs} crngReady={st.crngReady}")
-      let rc ← TestSupport.Seccomp.installTimeRandSeccompErrno eno mask
+      let rc ← SandboxEnv.installTimeRandSeccompErrno eno mask
       if rc != 0 then
         throw (IO.userError s!"mid-episode installTimeRandSeccompErrno({eno}, {mask}) failed with errno {rc}")
       st := st.withOuterSeccomp

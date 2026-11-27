@@ -1,6 +1,4 @@
 import Fuzz.Common.Suite
-import LeanSwe.LinuxSyscall.Sandbox.Interface
-import LeanSwe.LinuxSyscall.TestSupport.Seccomp
 import LeanSwe.LinuxSyscall.TimeRand.Impl
 import LeanSwe.LinuxSyscall.TimeRand.Interface
 import LeanSweProofs.LinuxSyscall.TimeRand.Model
@@ -195,7 +193,7 @@ private def seccompWorker (errName : String) : IO UInt32 := do
     | do
         IO.eprintln s!"seccomp-worker: unsupported errno {errName}"
         return 1
-  let rc ← TestSupport.Seccomp.installTimeRandSeccompErrno expected
+  let rc ← SandboxEnv.installTimeRandSeccompErrno expected
   if rc != 0 then
     IO.eprintln s!"seccomp-worker: installTimeRandSeccompErrno failed with errno {rc}"
     return 1
@@ -226,12 +224,12 @@ private def seccompWorker (errName : String) : IO UInt32 := do
   return 0
 
 private def seccompEfaultWorker (opName : String) : IO UInt32 := do
-  match ← Sandbox.prctl .setNoNewPrivs with
+  match ← SandboxEnv.setNoNewPrivs with
   | .error e =>
     IO.eprintln s!"seccomp-efault-worker: prctl(PR_SET_NO_NEW_PRIVS) failed with errno {e}"
     return 1
-  | .ok _ => pure ()
-  let bpf := TestSupport.Seccomp.encodeTimeRandSeccompErrnoBpf Errno.EFAULT
+  | .ok () => pure ()
+  let bpf := SandboxEnv.encodeTimeRandSeccompErrnoBpf Errno.EFAULT
   match ← SandboxEnv.installRawSeccomp bpf with
   | .error e =>
     IO.eprintln s!"seccomp-efault-worker: installRawSeccomp failed with errno {e}"
@@ -257,7 +255,7 @@ private def seccompTsyncWorker : IO UInt32 := do
       IO.eprintln s!"seccomp-tsync-worker: spawnSyncThread failed with errno {e}"
       return 1
   try
-    let rc ← TestSupport.Seccomp.installTimeRandSeccompErrno Errno.EPERM
+    let rc ← SandboxEnv.installTimeRandSeccompErrno Errno.EPERM
     if rc != Errno.EAGAIN then
       IO.eprintln s!"seccomp-tsync-worker: expected EAGAIN ({Errno.EAGAIN}), got errno {rc}"
       return 2
@@ -266,16 +264,16 @@ private def seccompTsyncWorker : IO UInt32 := do
     let _ ← SandboxEnv.stopSyncThread
 
 private def checkOuterSeccompRuntime : IO Unit := do
-  let nnpBefore ← expectOk "PR_GET_NO_NEW_PRIVS before invalid calls" (← Sandbox.prctl .getNoNewPrivs)
+  let nnpBefore ← expectOk "PR_GET_NO_NEW_PRIVS before invalid calls" (← SandboxEnv.getNoNewPrivs)
   for (label, eno, mask) in
       [ ("eno=0", (0 : Errno), (7 : UInt32))
       , ("eno=4096", (4096 : Errno), (7 : UInt32))
       , ("eno=EFAULT", Errno.EFAULT, (7 : UInt32))
       , ("mask=0", Errno.EPERM, (0 : UInt32))
       , ("mask=8", Errno.EPERM, (8 : UInt32)) ] do
-    let rc ← TestSupport.Seccomp.installTimeRandSeccompErrno eno mask
+    let rc ← SandboxEnv.installTimeRandSeccompErrno eno mask
     assertTrue s!"installTimeRandSeccompErrno rejects {label} with EINVAL (got {rc})" (rc == Errno.EINVAL)
-  let nnpAfter ← expectOk "PR_GET_NO_NEW_PRIVS after invalid calls" (← Sandbox.prctl .getNoNewPrivs)
+  let nnpAfter ← expectOk "PR_GET_NO_NEW_PRIVS after invalid calls" (← SandboxEnv.getNoNewPrivs)
   assertTrue "invalid installTimeRandSeccompErrno calls preserve PR_GET_NO_NEW_PRIVS" (nnpAfter == nnpBefore)
   let exe ← IO.appPath
   for errName in ["EPERM", "EINTR"] do

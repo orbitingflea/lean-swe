@@ -1,5 +1,4 @@
 import LeanSwe.LinuxSyscall.Common.Types
-import LeanSwe.LinuxSyscall.TestSupport.Seccomp
 
 namespace Fuzz.LinuxSyscall.SandboxEnv
 
@@ -37,72 +36,33 @@ opaque closeRaw : UInt32 → IO Unit
 @[extern "leanswe_sbx_peek_raw_fd"]
 opaque peekRawFd : @& RawFd → IO UInt32
 
-/-- Close stdio FDs `0..2` not in `keepMask` without closing `libuv` internal event/epoll/io_uring FDs. -/
-@[extern "leanswe_sbx_close_low_fds"]
-opaque closeLowFdsRaw : UInt32 → IO Unit
-
-/-- Close stdio FDs `0..2` safely while preserving `libuv` internal FDs and all live `RawFd`s in `keep`. -/
-def closeLowFdsSafe (keep : Array RawFd := #[]) : IO Unit := do
-  let mut mask : UInt32 := 0
-  for fdObj in keep do
-    let raw ← peekRawFd fdObj
-    if raw < 3 then
-      mask := mask ||| ((1 : UInt32) <<< raw)
-  closeLowFdsRaw mask
-
-/-- Open a host path into a `RawFd` using selector `0..6` (`O_RDONLY|O_DIRECTORY`, `O_PATH|O_DIRECTORY`, `O_RDONLY`, `O_PATH`, `O_RDWR|O_CREAT`, `O_PATH|O_NOFOLLOW`, `O_RDONLY|O_NONBLOCK`). -/
-@[extern "leanswe_sbx_open_host_fd"]
-opaque openHostFd : @& ByteArray → UInt32 → IO (Except Errno RawFd)
-
-/-- Open a pseudo-filesystem pipe `RawFd` (`asOPath != 0` opens `/proc/self/fd/<pipe>` with `O_PATH`). -/
-@[extern "leanswe_sbx_open_pipe_fd"]
-opaque openPipeFd : UInt32 → IO (Except Errno RawFd)
-
-/-- Re-open an existing `RawFd` via `/proc/self/fd/<fd>` with `O_PATH | O_CLOEXEC`. -/
-@[extern "leanswe_sbx_reopen_opath"]
-opaque reopenOPath : @& RawFd → IO (Except Errno RawFd)
-
-/-- Open a specialized kernel descriptor (`0`: `eventfd`, `1`: `AF_UNIX` socket, `2`: `nsfs`, `3`: unlinked file, `4`: unlinked dir, `5`: FIFO `O_PATH`, `6`: dangling symlink `O_PATH|O_NOFOLLOW`, `7`: bound `AF_UNIX` socket `O_PATH`). -/
-@[extern "leanswe_sbx_open_special_fd"]
-opaque openSpecialFd : UInt32 → @& ByteArray → IO (Except Errno RawFd)
-
-/-- Close a boxed `RawFd` cleanly. -/
-@[extern "leanswe_sbx_close_fd"]
-opaque closeFd : @& RawFd → IO (Except Errno Unit)
-
 /-- Enter a fresh user namespace via `unshare(CLONE_NEWUSER)` inside a single-threaded forked child. -/
 @[extern "leanswe_sbx_enter_userns"]
 opaque enterUserns : IO (Except Errno Unit)
 
-/-- Enter extra Linux namespaces (`bit 0`: `CLONE_NEWPID`, `1`: `CLONE_NEWNET`, `2`: `CLONE_NEWUTS`, `3`: `CLONE_NEWIPC`, `4`: `CLONE_NEWCGROUP`). -/
-@[extern "leanswe_sbx_unshare_extra"]
-opaque unshareExtra : UInt32 → IO (Except Errno Unit)
+/-- Enable `PR_SET_NO_NEW_PRIVS` (`prctl(38, 1, 0, 0, 0)`). -/
+@[extern "leanswe_sbx_set_no_new_privs"]
+opaque setNoNewPrivs : IO (Except Errno Unit)
 
-/-- Install an arbitrary raw cBPF seccomp filter directly via `SYS_seccomp` (bypasses Lean wrapper guards for testing outer-filter boundaries). -/
+/-- Query `PR_GET_NO_NEW_PRIVS` (`prctl(39, 0, 0, 0, 0)`). -/
+@[extern "leanswe_sbx_get_no_new_privs"]
+opaque getNoNewPrivs : IO (Except Errno UInt32)
+
+/-- Install a raw cBPF seccomp filter via `SYS_seccomp(SECCOMP_SET_MODE_FILTER, flags, ...)`, returning `0` on success or conflicting TID on `TSYNC` mismatch. -/
 @[extern "leanswe_sbx_install_raw_seccomp"]
-opaque installRawSeccomp : @& ByteArray → IO (Except Errno Unit)
+opaque installSeccompFilter : UInt32 → @& ByteArray → IO (Except Errno UInt32)
 
-/-- Ensure directory/file permissions are `0700` so temporary directories created inside userns can be removed cleanly. -/
-@[extern "leanswe_sbx_chmod_rw"]
-opaque chmodRw : @& ByteArray → IO (Except Errno Unit)
+/-- Install an arbitrary raw cBPF seccomp filter directly via `SYS_seccomp` (`flags = 0`). -/
+def installRawSeccomp (filterBytes : ByteArray) : IO (Except Errno Unit) := do
+  match ← installSeccompFilter 0 filterBytes with
+  | .ok _ => return .ok ()
+  | .error e => return .error e
 
 /-- Enter a mapped user+mount namespace and prepare `overlayfs`, `devpts`, and bind-mount directories under `baseDir` (returns `0` on full success or mount errno after entering userns). -/
 @[extern "leanswe_sbx_setup_mnt_ns"]
 opaque setupMntNs : @& ByteArray → IO (Except Errno UInt32)
 
-/-- Read current `(rlim_cur, rlim_max)` for resource selector `0..2`. -/
-@[extern "leanswe_sbx_get_rlimit"]
-opaque getRlimit : UInt32 → IO (Except Errno (UInt64 × UInt64))
-
-/-- Read current Linux thread ID via `SYS_gettid`. -/
-@[extern "leanswe_sbx_get_tid"]
-opaque getTid : IO UInt32
-
-/-- Read effective user ID via `geteuid(2)`. -/
-@[extern "leanswe_sbx_geteuid"]
-opaque getEuid : IO UInt32
-
-/-- Spawn the helper pthread inside a forked child (`installFilter != 0` installs an independent `SECCOMP_RET_ALLOW` filter) and return its Linux TID. -/
+/-- Spawn the helper pthread inside a forked child (`installFilter != 0` installs an independent `SECCOMP_RET_ALLOW` filter) and return its Linux TID pipe FD. -/
 @[extern "leanswe_sbx_spawn_sync_thread"]
 opaque spawnSyncThreadRaw : UInt32 → IO (Except Errno UInt32)
 
@@ -242,9 +202,61 @@ def runForked (childAction : IO ByteArray) : IO (UInt32 × ByteArray) := do
       let payload := if data.isEmpty then ByteArray.empty else data.extract 1 data.size
       return (st, payload)
 
-/-- Encode a portable `x86_64`+`aarch64` cBPF filter returning `SECCOMP_RET_ERRNO | err` for the listed syscall numbers. -/
-def encodeSeccompErrnoBpf (x86Nrs armNrs : Array UInt32) (err : Errno) : ByteArray :=
-  LeanSwe.LinuxSyscall.TestSupport.Seccomp.encodeSeccompErrnoBpf x86Nrs armNrs err
+private def pushU16LE (b : ByteArray) (v : UInt16) : ByteArray :=
+  (b.push (v &&& 0xff).toUInt8).push ((v >>> 8) &&& 0xff).toUInt8
+
+private def pushU32LE (b : ByteArray) (v : UInt32) : ByteArray :=
+  (((b.push (v &&& 0xff).toUInt8).push ((v >>> 8) &&& 0xff).toUInt8).push
+    ((v >>> 16) &&& 0xff).toUInt8).push ((v >>> 24) &&& 0xff).toUInt8
+
+private def pushBpfInsn (b : ByteArray) (code : UInt16) (jt jf : UInt8) (k : UInt32) : ByteArray :=
+  pushU32LE (((pushU16LE b code).push jt).push jf) k
+
+/-- Encode a portable `x86_64`+`aarch64` cBPF filter returning `SECCOMP_RET_ERRNO | err` for the listed syscall numbers (`3 + x86Nrs.size + armNrs.size ≤ 255`). -/
+def encodeSeccompErrnoBpf (x86Nrs armNrs : Array UInt32) (err : Errno) : ByteArray := Id.run do
+  let nX := x86Nrs.size
+  let nA := armNrs.size
+  let mut b := ByteArray.empty
+  b := pushBpfInsn b 0x0020 0 0 4
+  b := pushBpfInsn b 0x0015 1 0 0xc000003e
+  b := pushBpfInsn b 0x0015 (UInt8.ofNat (2 + nX)) (UInt8.ofNat (3 + nX + nA)) 0xc00000b7
+  b := pushBpfInsn b 0x0020 0 0 0
+  for i in [:nX] do
+    b := pushBpfInsn b 0x0015 (UInt8.ofNat (2 + nX + nA - i)) 0 x86Nrs[i]!
+  b := pushBpfInsn b 0x0006 0 0 0x7fff0000
+  b := pushBpfInsn b 0x0020 0 0 0
+  for j in [:nA] do
+    b := pushBpfInsn b 0x0015 (UInt8.ofNat (nA - j)) 0 armNrs[j]!
+  b := pushBpfInsn b 0x0006 0 0 0x7fff0000
+  b := pushBpfInsn b 0x0006 0 0 (0x00050000 ||| (err &&& 0xffff))
+  return b
+
+/-- Encode a portable (`x86_64`/`aarch64`) `SECCOMP_RET_ERRNO` cBPF filter returning `eno` for the masked `TimeRand` syscalls (`syscallMask` bits: `bit 0 = clock_gettime`, `bit 1 = clock_nanosleep`, `bit 2 = getrandom`). -/
+def encodeTimeRandSeccompErrnoBpf (eno : Errno) (syscallMask : UInt32 := 7) : ByteArray := Id.run do
+  let mut x86Nrs : Array UInt32 := #[]
+  let mut armNrs : Array UInt32 := #[]
+  if (syscallMask &&& 1) != 0 then
+    x86Nrs := x86Nrs.push 228
+    armNrs := armNrs.push 113
+  if (syscallMask &&& 2) != 0 then
+    x86Nrs := x86Nrs.push 230
+    armNrs := armNrs.push 115
+  if (syscallMask &&& 4) != 0 then
+    x86Nrs := x86Nrs.push 318
+    armNrs := armNrs.push 278
+  encodeSeccompErrnoBpf x86Nrs armNrs eno
+
+/-- Install a portable (`x86_64`/`aarch64`) `TSYNC` `SECCOMP_RET_ERRNO` filter returning `eno` (`1..4095`, rejecting `EFAULT`) on the masked `TimeRand` syscalls (`syscallMask` in `1..7`: `bit 0 = clock_gettime`, `bit 1 = clock_nanosleep`, `bit 2 = getrandom`). Returns `0` on success, `EINVAL` on invalid inputs, `EAGAIN` if `TSYNC` returns a conflicting thread ID, or the kernel errno on syscall failure. -/
+def installTimeRandSeccompErrno (eno : Errno) (syscallMask : UInt32 := 7) : IO UInt32 := do
+  if eno == 0 || eno > 4095 || eno == Errno.EFAULT || syscallMask == 0 || syscallMask > 7 then
+    return Errno.EINVAL
+  match ← setNoNewPrivs with
+  | .error e => return e
+  | .ok () =>
+    let bpf := encodeTimeRandSeccompErrnoBpf eno syscallMask
+    match ← installSeccompFilter 1 bpf with
+    | .ok rc => return if rc == 0 then 0 else Errno.EAGAIN
+    | .error e => return e
 
 /-- Parse serialized `HitStats` lines (`"bucket=count\n"`) emitted by a forked child worker. -/
 def decodeHitCounts (bytes : ByteArray) : List (String × Nat) :=

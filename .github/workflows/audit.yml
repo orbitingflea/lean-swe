@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       fuzz_suites:
-        description: 'Comma-separated fuzz suites to run (e.g. net,poll). Empty skips fuzzing; no all/* wildcard.'
+        description: 'Comma-separated fuzz suites to run (e.g. poll,timerand). Empty skips fuzzing; no all/* wildcard.'
         required: false
         default: ''
         type: string
@@ -384,11 +384,11 @@ jobs:
             fi
             SELECTED_SET+="${_s},"
             case "$_s" in
-              sandbox|timerand|files|process|poll|net|postfork) ;;
+              timerand|files|process|poll|postfork) ;;
               *) LIGHT_ARGS+=(--suite "$_s") ;;
             esac
             case "$_s" in
-              sandbox|timerand|files|process|poll|net|passwd|dns) STDIO_ARGS+=(--suite "$_s") ;;
+              timerand|files|process|poll) STDIO_ARGS+=(--suite "$_s") ;;
             esac
           done <<< "$SELECTED_RAW"
           SUMMARY="${SELECTED_SET#,}"
@@ -402,28 +402,6 @@ jobs:
           fi
           if (( ${#LIGHT_ARGS[@]} > 0 )); then
             "$FUZZ_BIN" --smoke "${LIGHT_ARGS[@]}" --self-test-shrink
-          fi
-          if has_suite sandbox; then
-            "$FUZZ_BIN" --sandbox-strace-fault-check
-            "$FUZZ_BIN" --suite sandbox --steps 100000 --self-test-shrink
-            "$FUZZ_BIN" --suite sandbox --steps 50000 --random-seed --self-test-shrink
-            if sudo -n sysctl -n vm.memfd_noexec >/dev/null 2>&1; then
-              OLD_MEMFD_NOEXEC=$(sudo -n sysctl -n vm.memfd_noexec)
-              sudo -n unshare --pid --fork --mount-proc -- bash -ec '
-                ulimit -Hc unlimited
-                if (( $1 == 2 )); then
-                  echo "MEMFD_NOEXEC_WARN: vm.memfd_noexec=2 enforced; skipping vm.memfd_noexec=1"
-                else
-                  sysctl -w vm.memfd_noexec=1 >/dev/null
-                  setpriv --reuid="$2" --regid="$3" --init-groups -- harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink
-                  sysctl -w vm.memfd_noexec=2 >/dev/null
-                fi
-                setpriv --reuid="$2" --regid="$3" --init-groups -- harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink --require-memfd-strict
-                sysctl -w "vm.memfd_noexec=$1" >/dev/null 2>&1 || true
-              ' _ "$OLD_MEMFD_NOEXEC" "$(id -u)" "$(id -g)"
-            else
-              echo "::warning::sudo -n sysctl unavailable; skipping vm.memfd_noexec={1,2} strict checks"
-            fi
           fi
           if has_suite timerand; then
             "$FUZZ_BIN" --timerand-strace-fault-check
@@ -439,12 +417,6 @@ jobs:
             "$FUZZ_BIN" --poll-strace-fault-check
             "$FUZZ_BIN" --suite poll --steps 50000 --self-test-shrink
             "$FUZZ_BIN" --suite poll --steps 50000 --random-seed --self-test-shrink
-          fi
-          if has_suite net; then
-            "$FUZZ_BIN" --net-strace-fault-check
-            "$FUZZ_BIN" --suite net --steps 50000 --self-test-shrink --require-ns
-            "$FUZZ_BIN" --suite net --seed 11262680905236430927 --steps 50000 --self-test-shrink --require-ns
-            "$FUZZ_BIN" --suite net --steps 50000 --random-seed --self-test-shrink --require-ns
           fi
           if has_suite postfork; then
             "$FUZZ_BIN" --suite postfork --steps 25000 --self-test-shrink

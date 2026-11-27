@@ -2,9 +2,6 @@ import Fuzz.Common.Suite
 import Fuzz.Compress.Suite
 import Fuzz.Float.Suite
 import Fuzz.CmdLine.Suite
-import Fuzz.Passwd.Suite
-import Fuzz.Passwd.Checks
-import Fuzz.Dns.Suite
 import Fuzz.PostFork.Suite
 import Fuzz.ProcessSandbox.Suite
 import Fuzz.SelfTest
@@ -50,14 +47,12 @@ structure CliOptions where
   world : WorldOptions := {}
   deriving Repr
 
-private def registeredSuites (world : WorldOptions) (outClosed errClosed : Bool) : List FuzzSuite :=
+private def registeredSuites (world : WorldOptions) (outClosed : Bool) : List FuzzSuite :=
   [ Fuzz.SelfTest.suite
   , Fuzz.Float.suite
   , Fuzz.CmdLine.suite
   , Fuzz.EnvVars.suite
   , Fuzz.CryptoHash.suite
-  , Fuzz.Passwd.suite
-  , Fuzz.Dns.suite
   , Fuzz.Compress.suite
   , Fuzz.PostFork.suite
   , Fuzz.ProcessSandbox.suite
@@ -67,7 +62,7 @@ private def registeredSuites (world : WorldOptions) (outClosed errClosed : Bool)
   , Fuzz.Toml.suite
   , Fuzz.Uuid.suite
   , Fuzz.Time.suite
-  ] ++ Fuzz.LinuxSyscall.Main.suites world outClosed errClosed
+  ] ++ Fuzz.LinuxSyscall.Main.suites world outClosed
 
 private def truncArg (s : String) (maxLen : Nat := 64) : String :=
   let chars := s.toList
@@ -199,20 +194,10 @@ private def parseArgs : List String → (opts : CliOptions := {}) → Except Str
     parseArgs rest { opts with hasRandomSeed := true, config := { opts.config with randomSeed := true } }
   | "--require-ns" :: rest, opts =>
     parseArgs rest { opts with world := { opts.world with requireNs := true } }
-  | "--require-memfd-strict" :: rest, opts =>
-    parseArgs rest { opts with world := { opts.world with requireMemfdStrict := true } }
   | "--allow-no-timens" :: rest, opts =>
     parseArgs rest { opts with world := { opts.world with allowNoTimens := true } }
-  | "--net-userns-worker" :: rest, opts =>
-    parseArgs rest { opts with world := { opts.world with netUsernsWorker := true } }
   | "--poll-seccomp-worker" :: rest, opts =>
     parseArgs rest { opts with world := { opts.world with pollSeccompWorker := true } }
-  | "--net-seccomp-worker" :: rest, opts =>
-    parseArgs rest { opts with world := { opts.world with netSeccompWorker := true } }
-  | "--init-netns-drop-caps" :: rest, opts =>
-    parseArgs rest { opts with world := { opts.world with initNetnsDropCaps := true } }
-  | "--in-netns" :: rest, opts =>
-    parseArgs rest { opts with world := { opts.world with inNetns := true } }
   | "--host-protected" :: rest, opts =>
     parseArgs rest { opts with world := { opts.world with hostProtected := true } }
   | "--preseeded-eps" :: rest, opts =>
@@ -382,8 +367,6 @@ private def suiteTargetPackages : String → Array String
   | "cmdline" => #["LeanSwe.CmdLine"]
   | "envvars" => #["LeanSwe.EnvVars.Raw", "LeanSwe.EnvVars"]
   | "cryptohash" => #["LeanSwe.CryptoHash.Raw", "LeanSwe.CryptoHash"]
-  | "passwd" => #["LeanSwe.LinuxSyscall.Passwd"]
-  | "dns" => #["LeanSwe.LinuxSyscall.Dns"]
   | "compress" => #["LeanSwe.Compress"]
   | "postfork" => #["LeanSwe.PostFork"]
   | "processsandbox" => #["LeanSwe.ProcessSandbox"]
@@ -393,12 +376,10 @@ private def suiteTargetPackages : String → Array String
   | "toml" => #["LeanSwe.Toml"]
   | "uuid" => #["LeanSwe.Uuid"]
   | "time" => #["LeanSwe.Time"]
-  | "sandbox" => #["LeanSwe.LinuxSyscall.Sandbox"]
   | "timerand" => #["LeanSwe.LinuxSyscall.TimeRand"]
   | "files" => #["LeanSwe.LinuxSyscall.Files"]
   | "process" => #["LeanSwe.LinuxSyscall.Process"]
   | "poll" => #["LeanSwe.LinuxSyscall.Poll"]
-  | "net" => #["LeanSwe.LinuxSyscall.Net"]
   | other => #[other]
 
 private def validateOptions (allSuites : List FuzzSuite) (opts : CliOptions) : Except String (List FuzzSuite) := do
@@ -428,7 +409,6 @@ private def printUsage : IO Unit := do
   IO.println "  --random-seed            Draw 64-bit seed from /dev/urandom and print SEED=<u64>"
   IO.println "  --self-test-shrink       Run shrinker self-test before fuzzing"
   IO.println "  --require-ns             Require unprivileged namespaces for namespace-isolated suites"
-  IO.println "  --require-memfd-strict   Require vm.memfd_noexec=2 strict checks in sandbox suite"
   IO.println "  --allow-no-timens        Allow skipping CLONE_NEWTIME sub-episodes when unavailable"
   IO.println "  --dir, --fs-root <path>  Scratch directory root for files fuzzer episodes"
   IO.println "  --coverage-log <path>    Write nonce-authenticated ERR_HIT and FUZZ_EQUIV records"
@@ -440,7 +420,6 @@ private def printUsage : IO Unit := do
 def main (args : List String) : IO UInt32 := do
   match args with
   | "--cmdline-fuzz-worker" :: rest => return ← Fuzz.CmdLine.Subproc.workerMain rest
-  | "--passwd-probe" :: rest => return ← Fuzz.Passwd.Checks.probeMain rest
   | _ => pure ()
   if let some rc ← Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker args then
     return rc
@@ -458,7 +437,7 @@ def main (args : List String) : IO UInt32 := do
     coverageLogPath? := opts.coverageLogPath?
     coverageNonce? := opts.nonce?
   }
-  let allSuites := registeredSuites worldOpts outClosed errClosed
+  let allSuites := registeredSuites worldOpts outClosed
   match validateRegisteredSuites allSuites with
   | .ok () => pure ()
   | .error msg =>
@@ -495,15 +474,8 @@ def main (args : List String) : IO UInt32 := do
     | some lp, some nc => initCoverageLog lp nc
     | _, _ => pure ()
     let rc ← try
-      let code ← Fuzz.LinuxSyscall.Main.runSpecialMode worldOpts opts.suites opts.config.steps
+      Fuzz.LinuxSyscall.Main.runSpecialMode worldOpts opts.suites opts.config.steps
         effectiveSeed opts.hasRandomSeed outClosed errClosed
-      if worldOpts.inNetns || worldOpts.initNetnsDropCaps then
-        let (bucketsHit, bucketsTotal) ← getSuiteBuckets
-        let actualSteps ← getSuiteSteps opts.config.steps
-        if bucketsTotal > 0 || code != 0 then
-          for pkg in suiteTargetPackages "net" do
-            logFuzzEquiv pkg "net" actualSteps bucketsHit bucketsTotal (code == 0)
-      pure code
     finally
       closeCoverageLog
     stdout.flush

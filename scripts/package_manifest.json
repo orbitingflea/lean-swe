@@ -110,16 +110,6 @@
       "deps": [],
       "external_boundary": false
     },
-    "LeanSwe.LinuxSyscall.Dns": {
-      "kind": "model",
-      "purity": "nondet_io",
-      "deps": [
-        "LeanSwe.LinuxSyscall.Common"
-      ],
-      "fuzz_suite": "dns",
-      "external_boundary": true,
-      "spec_style": "state_step"
-    },
     "LeanSwe.LinuxSyscall.Files": {
       "kind": "model",
       "purity": "nondet_io",
@@ -127,26 +117,6 @@
         "LeanSwe.LinuxSyscall.Common"
       ],
       "fuzz_suite": "files",
-      "external_boundary": true,
-      "spec_style": "state_step"
-    },
-    "LeanSwe.LinuxSyscall.Net": {
-      "kind": "model",
-      "purity": "nondet_io",
-      "deps": [
-        "LeanSwe.LinuxSyscall.Common"
-      ],
-      "fuzz_suite": "net",
-      "external_boundary": true,
-      "spec_style": "state_step"
-    },
-    "LeanSwe.LinuxSyscall.Passwd": {
-      "kind": "model",
-      "purity": "nondet_io",
-      "deps": [
-        "LeanSwe.LinuxSyscall.Common"
-      ],
-      "fuzz_suite": "passwd",
       "external_boundary": true,
       "spec_style": "state_step"
     },
@@ -169,24 +139,6 @@
       "fuzz_suite": "process",
       "external_boundary": true,
       "spec_style": "state_step"
-    },
-    "LeanSwe.LinuxSyscall.Sandbox": {
-      "kind": "model",
-      "purity": "nondet_io",
-      "deps": [
-        "LeanSwe.LinuxSyscall.Common"
-      ],
-      "fuzz_suite": "sandbox",
-      "external_boundary": true,
-      "spec_style": "state_step"
-    },
-    "LeanSwe.LinuxSyscall.TestSupport": {
-      "kind": "support",
-      "purity": "pure",
-      "deps": [
-        "LeanSwe.LinuxSyscall.Sandbox"
-      ],
-      "external_boundary": false
     },
     "LeanSwe.LinuxSyscall.TimeRand": {
       "kind": "model",
