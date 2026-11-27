@@ -601,7 +601,7 @@ private theorem singlePhrase_sound {rootSpec : CommandSpec} {validators : Custom
       · rename_i longRest heq; rw [hlist] at heq
         have hlr := (List.cons.inj (List.cons.inj heq).2).2
         rw [← hlr, hsf]
-        simp [hnie, hnhv, hlkp, hkb, hpv, hrb_f, Bind.bind, Except.bind, Internal.parseTokensLoop]
+        simp [hnie, hnhv, hlkp, hkb, Shared.parseOptValueFast_eq, hpv, hrb_f, Bind.bind, Except.bind, Internal.parseTokensLoop]
       · rename_i _ _ h1 heq; rw [hlist] at heq
         injection heq with _ h2; injection h2 with hc _; subst hc; exact False.elim (h1 rfl)
       · rename_i _ h1 _; exact False.elim (h1 _ hlist)
@@ -1902,7 +1902,7 @@ private theorem lookupLongOpt_decomp {opts : List OptSpec} (hnd : (Model.collect
     subst ho_eq hneg_eq
     exact Or.inl ⟨rfl, rfl⟩
   | none =>
-    rw [hf] at h; dsimp only at h
+    rw [hf] at h; dsimp only at h; rw [internal_startsWithNoDash_eq] at h
     cases hsnd : Model.startsWithNoDash namePart with
     | false => rw [hsnd] at h; cases h
     | true =>
@@ -2009,7 +2009,10 @@ private theorem stepToken_long_eq {rootName : String} {validators : CustomValida
           | true => rfl
           | false =>
             by_cases hk : (opt.kind == .bool) = true
-            · simp only [hk, ↓reduceIte]; rfl
+            · simp only [hk, ↓reduceIte]
+              cases eqVal? with
+              | none => rfl
+              | some rawVal => dsimp only; rw [Shared.parseOptValueFast_eq]; rfl
             · simp only [hk, Bool.false_eq_true, ↓reduceIte]
               cases eqVal? with
               | none => rfl

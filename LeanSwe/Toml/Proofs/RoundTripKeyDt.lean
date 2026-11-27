@@ -552,6 +552,6 @@ theorem renderOffset_parseOffsetPartR {o : Std.Time.TimeZone.Offset} {style : Of
       cases decide (o.second.val < 0) <;> decide
     have hbnd_ok : (decide (hh ≤ 23) && decide (mm ≤ 59)) = true := by simp [hdiv_lt, hmod_lt]
     simp only [parseOffsetPart, hsgn_ok, hh_t, hm_t, hbnd_ok, ↓reduceIte]
-    rw [hsec_eq, ho_eq, hvo]; rfl
+    rw [hsec_eq, ho_eq, validTomlOffsetImpl_eq, hvo]; rfl
 
 end LeanSwe.Toml.Proofs

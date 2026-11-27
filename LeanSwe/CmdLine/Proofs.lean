@@ -326,6 +326,8 @@ private theorem promptLine_step_spec {W : Type} (proj : W → Model.CliStepState
       | cons hd tl =>
         simp only [hlines] at hr
         rcases hr with ⟨rfl, hw2⟩
+        dsimp only
+        rw [internal_trimAscii_eq]
         cases default <;>
           (by_cases hEmp : (Model.trimAscii hd).isEmpty = true
            · simp only [hEmp, ↓reduceIte, StateT.pure, Pure.pure, hw2]
@@ -372,6 +374,8 @@ private theorem confirm_step_spec {W : Type} (proj : W → Model.CliStepState)
         | cons hd tl =>
           simp only [hlines] at hr
           rcases hr with ⟨rfl, hw2⟩
+          dsimp only
+          rw [internal_trimAscii_eq, internal_asciiLower_eq]
           by_cases hEmp : (Model.asciiLower (Model.trimAscii hd)).isEmpty = true
           · simp only [hEmp, ↓reduceIte]
             cases default with

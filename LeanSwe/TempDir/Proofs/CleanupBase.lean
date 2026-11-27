@@ -84,16 +84,17 @@ theorem mockFs_listDir_run_of_rwx (s : TempDirMockState) (dir : String) (st : Fi
     let rp := normKey dir; let names := Internal.sortStrings (eraseDupStrings (s.nodes.filterMap (fun e => mockParentChild rp e.1)))
     (mockFs.listDir dir).run s = (.ok names.toArray, s) ∧ names.Nodup ∧ (∀ nm ∈ names, pValidEntryName nm = true) := by
   intro rp names; obtain ⟨nd, hLook, hSt⟩ := lookupNode_of_lstat_ok s dir st hStat; have hLookRp : lookupNode s.nodes rp = some nd := by simpa [lookupNode, rp, normKey_idem] using hLook
-  refine ⟨?_, nodup_sortStrings _ (nodup_eraseDupStrings _), fun nm hnm => ?_⟩
-  · dsimp only [mockFs]; rw [stateM_bind_run, stateM_get_run]; dsimp only; rw [hLookRp]; dsimp only; rw [hSt, show (st.kind != .dir) = false by rw [hRwx.1]; rfl, hasRx_of_hasRwx st hRwx]; simp only [Bool.false_eq_true, ↓reduceIte, Bool.not_true]; rfl
-  · rw [mem_sortStrings, mem_eraseDupStrings, List.mem_filterMap] at hnm; rcases hnm with ⟨e, _, he⟩; exact validEntryName_of_mockParentChild rp e.1 nm he
+  have hNamesEq : names = sortStrings (eraseDupStrings (s.nodes.filterMap (fun e => mockParentChild rp e.1))) := internal_sortStrings_eq _
+  refine ⟨?_, hNamesEq ▸ nodup_sortStrings _ (nodup_eraseDupStrings _), fun nm hnm => ?_⟩
+  · dsimp only [mockFs]; rw [stateM_bind_run, stateM_get_run]; dsimp only; rw [hLookRp]; dsimp only; rw [hSt, show (st.kind != .dir) = false by rw [hRwx.1]; rfl, hasRx_of_hasRwx st hRwx]; simp only [Bool.false_eq_true, ↓reduceIte, Bool.not_true, hNamesEq]; rfl
+  · rw [hNamesEq, mem_sortStrings, mem_eraseDupStrings, List.mem_filterMap] at hnm; rcases hnm with ⟨e, _, he⟩; exact validEntryName_of_mockParentChild rp e.1 nm he
 theorem mockFs_listDir_mem_of_lookupNode (s : TempDirMockState) (dir childName : String) (hd : dir ≠ "") (hn : pValidEntryName childName = true)
     (ndChild : MockNode) (hLookChild : lookupNode s.nodes (mockJoin dir childName) = some ndChild) : childName ∈ Internal.sortStrings (eraseDupStrings (s.nodes.filterMap (fun e => mockParentChild (normKey dir) e.1))) := by
   have ⟨hcNe, _, _, hcNoSlash⟩ := validEntryName_parts childName hn; have hJoinNorm := normKey_mockJoin dir childName hcNe hcNoSlash; unfold lookupNode at hLookChild
   cases hf : s.nodes.find? (fun e => normKey e.1 == normKey (mockJoin dir childName)) with | none => simp [hf] at hLookChild | some p =>
     have hpEq : normKey p.1 = mockJoin dir childName := by have hb := List.find?_some hf; rwa [hJoinNorm, beq_iff_eq] at hb
     have hPc : mockParentChild (normKey dir) p.1 = some childName := by rw [show mockParentChild (normKey dir) p.1 = mockParentChild (normKey dir) (mockJoin dir childName) by unfold mockParentChild; rw [hpEq, hJoinNorm]]; exact mockParentChild_self_join dir childName hd hn
-    rw [mem_sortStrings, mem_eraseDupStrings, List.mem_filterMap]; exact ⟨p, List.mem_of_find?_eq_some hf, hPc⟩
+    rw [internal_sortStrings_eq, mem_sortStrings, mem_eraseDupStrings, List.mem_filterMap]; exact ⟨p, List.mem_of_find?_eq_some hf, hPc⟩
 theorem mockFs_listDir_with_locks (s : TempDirMockState) (locks' : List (Nat × LockMode)) (dir : String) :
     (mockFs.listDir dir).run { s with locks := locks' } = (((mockFs.listDir dir).run s).1, { s with locks := locks' }) := by
   dsimp only [mockFs]; rw [stateM_bind_run, stateM_get_run, stateM_bind_run, stateM_get_run]; dsimp only

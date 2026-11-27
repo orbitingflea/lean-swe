@@ -1,6 +1,5 @@
 import LeanSwe.EnvVars.Types
 import LeanSwe.Fs.Types
-import LeanSwe.TempDir.Model
 import LeanSwe.TempDir.Types
 import LeanSwe.Time.Types
 import LeanSwe.Uuid.Types
@@ -22,10 +21,14 @@ def validRoot (root : String) : Bool :=
   !root.isEmpty && !(Char.ofNat 0 ∈ root.toList)
 
 /-- Insert a path string into a sorted list using lexicographical `String` order. -/
-abbrev insertSorted := Model.insertSorted
+def insertSorted (x : String) : List String → List String
+  | [] => [x]
+  | y :: ys => if x ≤ y then x :: y :: ys else y :: insertSorted x ys
 
 /-- Sort a list of path strings into ascending lexicographical order. -/
-abbrev sortStrings := Model.sortStrings
+def sortStrings : List String → List String
+  | [] => []
+  | x :: xs => insertSorted x (sortStrings xs)
 
 /-- Map an `FsError` into a `TempDirError` with non-empty diagnostic message. -/
 def mapFsError (err : FsError) : TempDirError :=
@@ -254,9 +257,9 @@ def cleanupStaleTempDirsM {m : Type → Type} [Monad m]
           skipped := (sortStrings rep.skipped.toList).toArray
           failed := rep.failed }
 
-/-- Assemble a `TempDirApiM m` from a bundled `Model.Internal.TempDirCaps m` capability record. -/
+/-- Assemble a `TempDirApiM m` from a bundled `TempDirCaps m` capability record. -/
 def mkApiFromCapsM {m : Type → Type} [Monad m] [MonadFinally m]
-    (caps : Model.Internal.TempDirCaps m) : TempDirApiM m :=
+    (caps : TempDirCaps m) : TempDirApiM m :=
   { withTempDir := fun root? dirPrefix action => withTempDirM caps.fs caps.uuid caps.env root? dirPrefix action
     withLockedTempDir := fun root? dirPrefix action => withLockedTempDirM caps.fs caps.uuid caps.env root? dirPrefix action
     cleanupStaleTempDirs := fun root? dirPrefix maxAgeSec =>

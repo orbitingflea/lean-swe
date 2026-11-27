@@ -97,6 +97,7 @@ private theorem decodeTarEntry_refines (opts : UnpackOptions) (bytes : ByteArray
   rcases hh with ⟨hmode, huid, hgid, hsize, hmtime, htype⟩
   rcases optionPaxOvRel_getD hpax with ⟨h1, h2, h3, h4, h5, h6, h7, h8⟩
   unfold decodeTarEntry decodeTarEntryModel
+  simp only [pad512Impl_eq, validateEntryPathImpl_eq, validateSymlinkTargetImpl_eq]
   rw [htype]
   generalize
     (if mhdr.typeflag == 0x30 || mhdr.typeflag == 0x00 then some EntryKind.regular
@@ -250,7 +251,7 @@ private theorem unpackStep_refines (opts : UnpackOptions) (bytes : ByteArray) (o
       simp only [Bool.eq_false_iff.mpr hp1, Bool.false_eq_true, ↓reduceIte]
       by_cases hlim : mhdr.size > maxPaxHeaderBytes
       · simp only [hlim, ↓reduceIte]; exact .error rfl rfl
-      simp only [hlim, ↓reduceIte]
+      simp only [hlim, ↓reduceIte, pad512Impl_eq]
       by_cases htr : offset + 512 + pad512 mhdr.size > bytes.size
       · simp only [htr, ↓reduceIte]; exact .error rfl rfl
       simp only [htr, ↓reduceIte]

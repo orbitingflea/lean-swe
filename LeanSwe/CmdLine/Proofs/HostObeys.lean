@@ -63,6 +63,7 @@ private theorem promptLineCheckedM_step_spec {W : Type} (proj : W → Model.CmdL
                 exact Prod.ext rfl hw2
               | some line =>
                 dsimp only
+                rw [internal_trimAscii_eq]
                 by_cases hEmp : (Model.trimAscii line).isEmpty = true
                 · simp only [hEmp, ↓reduceIte]
                   cases default <;> exact Prod.ext rfl hw2
@@ -159,6 +160,7 @@ private theorem confirmCheckedM_step_spec {W : Type} (proj : W → Model.CmdLine
                           have hRec := ih w3
                           rw [hw3] at hRec
                           exact hRec
+                  rw [internal_trimAscii_eq, internal_asciiLower_eq]
                   by_cases hEmp : (Model.asciiLower (Model.trimAscii line)).isEmpty = true
                   · simp only [hEmp, ↓reduceIte]
                     cases default with

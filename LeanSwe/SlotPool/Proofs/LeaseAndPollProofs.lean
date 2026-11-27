@@ -32,19 +32,19 @@ section
 variable {p : String} {s : PoolSimState}
 private theorem scan_allBusy {α : Type} (hc : CleanSim p s) (act : Nat → StateM PoolSimState (Except SlotPoolError α)) : ∀ n r, (∀ k, n ≤ k → k < n + r → busyEx s p k = true) → (scanSlotsM simFs p n r act).run s = (.allBusy, s)
   | _, 0, _ => rfl
-  | n, r + 1, hB => by unfold scanSlotsM; rw [stateM_bind_run, simFs_tryWithFileLock_run, simTryAcquire_busy s p hc.1 hc.2.1 hc.2.2.1 hc.2.2.2.2.2 n hc.2.2.2.2.1 (hB n (Nat.le_refl _) (by omega))]; exact scan_allBusy hc act (n + 1) r (fun k _ _ => hB k (by omega) (by omega))
+  | n, r + 1, hB => by unfold scanSlotsM; rw [stateM_bind_run, internal_slotLockPath_eq, simFs_tryWithFileLock_run, simTryAcquire_busy s p hc.1 hc.2.1 hc.2.2.1 hc.2.2.2.2.2 n hc.2.2.2.2.1 (hB n (Nat.le_refl _) (by omega))]; exact scan_allBusy hc act (n + 1) r (fun k _ _ => hB k (by omega) (by omega))
 private theorem scan_acq {α : Type} (hc : CleanSim p s) (act : Nat → StateM PoolSimState (Except SlotPoolError α)) (i : Nat) (res : Except SlotPoolError α) (hFree : busyEx s p i = false) (hAct : (act i).run (withL s (lpJoin p i)) = (res, withL s (lpJoin p i))) :
     ∀ n r, n ≤ i → i < n + r → (∀ k, n ≤ k → k < i → busyEx s p k = true) → (scanSlotsM simFs p n r act).run s = (outScan i res, withF s (lpJoin p i))
   | _, 0, _, _, _ => by omega
   | n, r + 1, _, _, hB => by
-    unfold scanSlotsM; rw [stateM_bind_run, simFs_tryWithFileLock_run]; by_cases hlt : n < i
+    unfold scanSlotsM; rw [stateM_bind_run, internal_slotLockPath_eq, simFs_tryWithFileLock_run]; by_cases hlt : n < i
     · rw [simTryAcquire_busy s p hc.1 hc.2.1 hc.2.2.1 hc.2.2.2.2.2 n hc.2.2.2.2.1 (hB n (Nat.le_refl _) hlt)]; exact scan_acq hc act i res hFree hAct (n + 1) r (by omega) (by omega) (fun k _ h2 => hB k (by omega) h2)
     · obtain rfl : n = i := (by omega); rw [simTryAcquire_free s p hc.1 hc.2.1 hc.2.2.1 hc.2.2.2.2.2 n hc.2.2.2.2.1 hFree]; dsimp only; rw [stateM_bind_run, hAct]; dsimp only [StateT.run, Pure.pure, StateT.pure]; rw [(slotLockPath_props hc.1 n).1, removeFirstSimLock_cons_self]; cases res <;> rfl
 private theorem scan_ex_throw (hc : CleanSim p s) (act : Nat → ExceptT String (StateM PoolSimState) (Except SlotPoolError Unit)) (i : Nat) (hFree : busyEx s p i = false) (hAct : (ExceptT.run (act i)).run (withL s (lpJoin p i)) = (.error "boom", withL s (lpJoin p i))) :
     ∀ n r, n ≤ i → i < n + r → (∀ k, n ≤ k → k < i → busyEx s p k = true) → (ExceptT.run (scanSlotsM simFsEx p n r act)).run s = (.error "boom", withF s (lpJoin p i))
   | _, 0, _, _, _ => by omega
   | n, r + 1, _, _, hB => by
-    unfold scanSlotsM; rw [exceptT_bind_run, show simFsEx.join = simFs.join from rfl, simFsEx_tryWithFileLock_run]; by_cases hlt : n < i
+    unfold scanSlotsM; rw [exceptT_bind_run, internal_slotLockPath_eq, show simFsEx.join = simFs.join from rfl, simFsEx_tryWithFileLock_run]; by_cases hlt : n < i
     · rw [simTryAcquire_busy s p hc.1 hc.2.1 hc.2.2.1 hc.2.2.2.2.2 n hc.2.2.2.2.1 (hB n (Nat.le_refl _) hlt)]; exact scan_ex_throw hc act i hFree hAct (n + 1) r (by omega) (by omega) (fun k _ h2 => hB k (by omega) h2)
     · obtain rfl : n = i := (by omega); rw [simTryAcquire_free s p hc.1 hc.2.1 hc.2.2.1 hc.2.2.2.2.2 n hc.2.2.2.2.1 hFree]; dsimp only; rw [exceptT_bind_run, hAct]; dsimp only [ExceptT.run, ExceptT.mk, StateT.run, Pure.pure, StateT.pure]; rw [(slotLockPath_props hc.1 n).1, removeFirstSimLock_cons_self]
 private theorem shared_acq_pure (hc : CleanSim p s) (i : Nat) : simTryAcquirePure (withL s (lpJoin p i)) (lpJoin p i) .shared false = .ok none := by
@@ -62,16 +62,16 @@ private theorem allBusy_until {p : String} {s : PoolSimState} (hV : validPoolDir
   obtain ⟨hLt, hGe, _⟩ := leasesBeforeSlotUntil_conflict hV hExt; intro k _ hk; by_cases h : k < i; exact hLt k (by omega) h (Nat.lt_of_lt_of_le hLtT hLtL); exact hGe k (by omega) (Nat.not_lt.mp h) hLtT
 private theorem poll_step_w {α : Type} (cfg : PoolConfig) (dl : Nat) (act : Nat → StateM PoolSimState (Except SlotPoolError α)) (f : Nat) {s : PoolSimState} (hSc : (scanSlotsM simFs cfg.poolDir 0 cfg.totalSlots act).run s = (.allBusy, s)) (hNotGe : ¬ s.monoNanos ≥ dl) :
     (pollWaitUpToM simFs simTime cfg dl act (f + 1)).run s = let d := nextSleepMs cfg.pollIntervalMs s.monoNanos dl; (pollWaitUpToM simFs simTime cfg dl act f).run { s with monoNanos := s.monoNanos + d * nanosecondsPerMs, sleepLog := s.sleepLog ++ (sleepChunks d).toArray } := by
-  conv => lhs; unfold pollWaitUpToM; rw [stateM_bind_run, hSc]; dsimp only; rw [stateM_bind_run, show simTime.monoNanosNow.run s = (s.monoNanos, s) from rfl]; dsimp only; simp only [hNotGe, ↓reduceIte]; rw [stateM_bind_run, runSleepChunks_simTime_sleepChunks]
+  conv => lhs; unfold pollWaitUpToM; rw [stateM_bind_run, hSc]; dsimp only; rw [stateM_bind_run, show simTime.monoNanosNow.run s = (s.monoNanos, s) from rfl]; dsimp only; simp only [hNotGe, ↓reduceIte]; rw [stateM_bind_run, internal_runSleepChunks_eq, internal_sleepChunks_eq, internal_nextSleepMs_eq, runSleepChunks_simTime_sleepChunks]
 private theorem withSlot_sim_firstScan {α : Type} {cfg : PoolConfig} (pol : WaitPolicy) {s₀ : PoolSimState} {ds : List String} (hV : validPoolConfig cfg = true) (hMk : (simFs.mkdir cfg.poolDir true true).run s₀ = (.ok (), { s₀ with dirs := ds })) (hc : CleanSim cfg.poolDir { s₀ with dirs := ds })
     (i : Nat) (hLt : i < cfg.totalSlots) (hB : ∀ k, 0 ≤ k → k < i → busyEx { s₀ with dirs := ds } cfg.poolDir k = true) (hF : busyEx { s₀ with dirs := ds } cfg.poolDir i = false) (res : Except SlotPoolError α) (act : Nat → StateM PoolSimState (Except SlotPoolError α))
     (hAct : (act i).run (withL { s₀ with dirs := ds } (lpJoin cfg.poolDir i)) = (res, withL { s₀ with dirs := ds } (lpJoin cfg.poolDir i))) :
     ((mkApiM simFs simTime).withSlot cfg pol act).run s₀ = (outLease i res, withF { s₀ with dirs := ds } (lpJoin cfg.poolDir i)) := by
-  have hSc := scan_acq hc act i res hF hAct 0 cfg.totalSlots (Nat.zero_le _) (by omega) hB; dsimp only [mkApiM, Internal.mkApiM, withSlotM]; rw [(validatePoolConfig_of_true cfg hV).1]; dsimp only; rw [stateM_bind_run, hMk]; dsimp only
+  have hSc := scan_acq hc act i res hF hAct 0 cfg.totalSlots (Nat.zero_le _) (by omega) hB; dsimp only [mkApiM, Internal.mkApiM, withSlotM]; rw [internal_validatePoolConfig_eq, (validatePoolConfig_of_true cfg hV).1]; dsimp only; rw [stateM_bind_run, hMk]; dsimp only
   cases pol with
   | noWait => rw [stateM_bind_run, hSc]; cases res <;> rfl
-  | waitUpTo _ => rw [stateM_bind_run, show simTime.monoNanosNow.run { s₀ with dirs := ds } = (s₀.monoNanos, { s₀ with dirs := ds }) from rfl]; dsimp only; rw [maxForeverPolls_succ]; unfold pollWaitUpToM; rw [stateM_bind_run, hSc]; cases res <;> rfl
-  | waitForever => rw [maxForeverPolls_succ]; unfold pollForeverM; rw [stateM_bind_run, hSc]; cases res <;> rfl
+  | waitUpTo _ => rw [stateM_bind_run, show simTime.monoNanosNow.run { s₀ with dirs := ds } = (s₀.monoNanos, { s₀ with dirs := ds }) from rfl]; dsimp only; rw [internal_maxForeverPolls_eq, maxForeverPolls_succ]; unfold pollWaitUpToM; rw [stateM_bind_run, hSc]; cases res <;> rfl
+  | waitForever => rw [internal_maxForeverPolls_eq, maxForeverPolls_succ]; unfold pollForeverM; rw [stateM_bind_run, hSc]; cases res <;> rfl
 private theorem poll_advance_rounds {α : Type} (isF : Bool) (cfg : PoolConfig) (hV : validPoolConfig cfg = true) (i tr lu dl : Nat) (hLeDl : isF = false → tr ≤ dl) (hLtL : tr ≤ lu) (act : Nat → StateM PoolSimState (Except SlotPoolError α)) :
     ∀ k fuel (s : PoolSimState), k < fuel → CleanSim cfg.poolDir s → s.externalLeases = leasesBeforeSlotUntil simFs.join cfg.poolDir i tr lu cfg.totalSlots → s.monoNanos + k * cfg.pollIntervalMs * nanosecondsPerMs = tr →
       ∃ rf, rf ≥ 1 ∧ (if isF then pollForeverM simFs simTime cfg act fuel else pollWaitUpToM simFs simTime cfg dl act fuel).run s = (if isF then pollForeverM simFs simTime cfg act rf else pollWaitUpToM simFs simTime cfg dl act rf).run { s with monoNanos := tr, sleepLog := s.sleepLog ++ (repeatSleepChunks cfg.pollIntervalMs k).toArray }
@@ -82,7 +82,7 @@ private theorem poll_advance_rounds {α : Type} (isF : Bool) (cfg : PoolConfig) 
     have hSc := scan_allBusy hc act 0 cfg.totalSlots (allBusy_until hc.1 hExt (by omega) hLtL); let s1 : PoolSimState := { s with monoNanos := s.monoNanos + cfg.pollIntervalMs * nanosecondsPerMs, sleepLog := s.sleepLog ++ (sleepChunks cfg.pollIntervalMs).toArray }
     have hStep : (if isF then pollForeverM simFs simTime cfg act (f + 1) else pollWaitUpToM simFs simTime cfg dl act (f + 1)).run s = (if isF then pollForeverM simFs simTime cfg act f else pollWaitUpToM simFs simTime cfg dl act f).run s1 := by
       cases isF with
-      | true => simp only [↓reduceIte]; conv => lhs; unfold pollForeverM; rw [stateM_bind_run, hSc]; dsimp only; rw [stateM_bind_run, runSleepChunks_simTime_sleepChunks]
+      | true => simp only [↓reduceIte]; conv => lhs; unfold pollForeverM; rw [stateM_bind_run, hSc]; dsimp only; rw [stateM_bind_run, internal_runSleepChunks_eq, internal_sleepChunks_eq, runSleepChunks_simTime_sleepChunks]
       | false =>
         simp only [Bool.false_eq_true, ↓reduceIte]; have hDl := hLeDl rfl; have hNotGe : ¬ s.monoNanos ≥ dl := (by omega)
         have hNext : nextSleepMs cfg.pollIntervalMs s.monoNanos dl = cfg.pollIntervalMs := (by dsimp [nextSleepMs, remainingWaitMs]; simp only [hNotGe, ↓reduceIte]; apply Nat.min_eq_left; dsimp [nanosecondsPerMs] at hDist hM ⊢; omega); rw [poll_step_w cfg dl act f hSc hNotGe]; dsimp only; rw [hNext]
@@ -108,14 +108,14 @@ private theorem withSlot_sim_waitRounds {α : Type} {cfg : PoolConfig} {i k : Na
     ((mkApiM simFs simTime).withSlot cfg pol act).run s₀ = (outLease i res, withF { s₀ with dirs := ds, monoNanos := tr, sleepLog := s₀.sleepLog ++ (repeatSleepChunks cfg.pollIntervalMs k).toArray } (lpJoin cfg.poolDir i)) := by
   subst hPol; let sT : PoolSimState := { s₀ with dirs := ds, monoNanos := tr, sleepLog := s₀.sleepLog ++ (repeatSleepChunks cfg.pollIntervalMs k).toArray }; obtain ⟨hBLt, _, hFreeAt⟩ := leasesBeforeSlotUntil_conflict (s := sT) hc.1 hExt
   have hSc := scan_acq (s := sT) hc act i res (hFreeAt hc.2.2.2.1 hLt (Nat.le_refl _)) hAct 0 cfg.totalSlots (Nat.zero_le _) (by omega) (fun j _ hlt => hBLt j (by omega) hlt hLocked)
-  dsimp only [mkApiM, Internal.mkApiM, withSlotM]; rw [(validatePoolConfig_of_true cfg hV).1]; dsimp only; rw [stateM_bind_run, hMk]; dsimp only
+  dsimp only [mkApiM, Internal.mkApiM, withSlotM]; rw [internal_validatePoolConfig_eq, (validatePoolConfig_of_true cfg hV).1]; dsimp only; rw [stateM_bind_run, hMk]; dsimp only
   obtain ⟨rf, hrf, hReach⟩ := poll_advance_rounds isF cfg hV i tr lu (deadlineNanos s₀.monoNanos tMs) hLeDl (Nat.le_of_lt hLocked) act k maxForeverPolls { s₀ with dirs := ds } hR hc hExt hMono; obtain ⟨f', rfl⟩ := Nat.exists_eq_succ_of_ne_zero (Nat.ne_of_gt hrf)
   cases isF with
   | true =>
-    simp only [↓reduceIte] at hReach ⊢; rw [hReach]; conv => lhs; unfold pollForeverM
+    simp only [↓reduceIte] at hReach ⊢; rw [internal_maxForeverPolls_eq, hReach]; conv => lhs; unfold pollForeverM
     rw [stateM_bind_run, hSc]; cases res <;> rfl
   | false =>
-    simp only [Bool.false_eq_true, ↓reduceIte] at hReach ⊢; rw [stateM_bind_run, show simTime.monoNanosNow.run { s₀ with dirs := ds } = (s₀.monoNanos, { s₀ with dirs := ds }) from rfl]; dsimp only; rw [hReach]; conv => lhs; unfold pollWaitUpToM
+    simp only [Bool.false_eq_true, ↓reduceIte] at hReach ⊢; rw [stateM_bind_run, show simTime.monoNanosNow.run { s₀ with dirs := ds } = (s₀.monoNanos, { s₀ with dirs := ds }) from rfl]; dsimp only; rw [internal_deadlineNanos_eq, internal_maxForeverPolls_eq, hReach]; conv => lhs; unfold pollWaitUpToM
     rw [stateM_bind_run, hSc]; cases res <;> rfl
 private theorem withSlot_sim_waitUpTo_at_dl {α : Type} {cfg : PoolConfig} {tMs : Nat} {s₀ : PoolSimState} {ds : List String} (hV : validPoolConfig cfg = true) (hTM : tMs < maxForeverPolls)
     (hMk : (simFs.mkdir cfg.poolDir true true).run s₀ = (.ok (), { s₀ with dirs := ds })) (hc : CleanSim cfg.poolDir { s₀ with dirs := ds })
@@ -123,9 +123,9 @@ private theorem withSlot_sim_waitUpTo_at_dl {α : Type} {cfg : PoolConfig} {tMs 
     (hMono' : s'.monoNanos ≥ deadlineNanos s₀.monoNanos tMs)
     (hSc : (scanSlotsM simFs cfg.poolDir 0 cfg.totalSlots act).run { s₀ with dirs := ds, monoNanos := deadlineNanos s₀.monoNanos tMs, sleepLog := s₀.sleepLog ++ (expectedWaitUpToChunks cfg.pollIntervalMs (tMs + 1) tMs).toArray } = (out, s')) :
     ((mkApiM simFs simTime).withSlot cfg (.waitUpTo tMs) act).run s₀ = match out with | .leased i v => (.ok (.leased i v), s') | .err e => (.error e, s') | .allBusy => (.ok .noSlot, s') := by
-  dsimp only [mkApiM, Internal.mkApiM, withSlotM]; rw [(validatePoolConfig_of_true cfg hV).1]; dsimp only; rw [stateM_bind_run, hMk]; dsimp only; rw [stateM_bind_run, show simTime.monoNanosNow.run { s₀ with dirs := ds } = (s₀.monoNanos, { s₀ with dirs := ds }) from rfl]; dsimp only
+  dsimp only [mkApiM, Internal.mkApiM, withSlotM]; rw [internal_validatePoolConfig_eq, (validatePoolConfig_of_true cfg hV).1]; dsimp only; rw [stateM_bind_run, hMk]; dsimp only; rw [stateM_bind_run, show simTime.monoNanosNow.run { s₀ with dirs := ds } = (s₀.monoNanos, { s₀ with dirs := ds }) from rfl]; dsimp only
   obtain ⟨rf, hrf, hReach⟩ := pollWaitUpToM_advance_dl cfg hV (deadlineNanos s₀.monoNanos tMs) act tMs maxForeverPolls (tMs + 1) { s₀ with dirs := ds } hTM (Nat.lt_succ_self _) hc hAll rfl
-  obtain ⟨f', rfl⟩ := Nat.exists_eq_succ_of_ne_zero (Nat.ne_of_gt hrf); rw [hReach]; conv => lhs; unfold pollWaitUpToM; rw [stateM_bind_run, hSc]; dsimp only
+  obtain ⟨f', rfl⟩ := Nat.exists_eq_succ_of_ne_zero (Nat.ne_of_gt hrf); rw [internal_deadlineNanos_eq, internal_maxForeverPolls_eq, hReach]; conv => lhs; unfold pollWaitUpToM; rw [stateM_bind_run, hSc]; dsimp only
   cases out with | leased _ _ => rfl | err _ => rfl | allBusy => rw [stateM_bind_run, show simTime.monoNanosNow.run s' = (s'.monoNanos, s') from rfl]; dsimp only; simp only [hMono', ↓reduceIte]; rfl
 private theorem allPass_ite_assert (c : Prop) [Decidable c] (p : Prop) (rest : AllPassRun Unit) : ((if c then (NondetTest.assert p >>= fun _ => rest) else (NondetTest.assert True >>= fun _ => rest)) (fun _ => True)) = ((c → p) ∧ (rest fun _ => True)) := by by_cases hc : c <;> simp [hc, allPass_assert]
 /-- Specification 7 (`AllPass`): `withSlot` creates `cfg.poolDir`, scans ascending from slot `0`, acquires the lowest free slot `.exclusive` with `createIfMissing = true`, and releases it on `.ok` while keeping the lock file on disk. -/
@@ -155,11 +155,11 @@ theorem proof_monadFinally_uncaughtException_releasesLockAndPropagates : AllPass
   let s₀ : PoolSimState := { externalLeases := leasesBeforeSlot simFs.join cfg.poolDir 1000000000 freeIdx }; obtain ⟨ds, hMk, hc⟩ := simMkdir_empty cfg.poolDir hDV (leasesBeforeSlot simFs.join cfg.poolDir 1000000000 freeIdx); obtain ⟨hB, hF⟩ := leasesBeforeSlot_conflict (s := { s₀ with dirs := ds }) hDV rfl
   have hRun : ∀ act : Nat → ExceptT String (StateM PoolSimState) (Except SlotPoolError Unit), (ExceptT.run (act freeIdx)).run (withL { s₀ with dirs := ds } (lpJoin cfg.poolDir freeIdx)) = (.error "boom", withL { s₀ with dirs := ds } (lpJoin cfg.poolDir freeIdx)) → (ExceptT.run ((mkApiM simFsEx simTimeEx).withSlot cfg policy act)).run s₀ = (.error "boom", withF { s₀ with dirs := ds } (lpJoin cfg.poolDir freeIdx)) := fun act hAct => by
     have hSc := scan_ex_throw hc act freeIdx (hF rfl) hAct 0 cfg.totalSlots (Nat.zero_le _) (by omega) (fun k _ hlt => hB k hlt (by dsimp [s₀]; omega))
-    dsimp only [mkApiM, Internal.mkApiM, withSlotM]; rw [hVal]; dsimp only; rw [exceptT_bind_run, simFsEx_mkdir_run, hMk]; dsimp only
+    dsimp only [mkApiM, Internal.mkApiM, withSlotM]; rw [internal_validatePoolConfig_eq, hVal]; dsimp only; rw [exceptT_bind_run, simFsEx_mkdir_run, hMk]; dsimp only
     cases policy with
     | noWait => rw [exceptT_bind_run, hSc]
-    | waitUpTo _ => rw [exceptT_bind_run, show (ExceptT.run simTimeEx.monoNanosNow).run { s₀ with dirs := ds } = (.ok 0, { s₀ with dirs := ds }) from rfl]; dsimp only; rw [maxForeverPolls_succ]; unfold pollWaitUpToM; rw [exceptT_bind_run, hSc]
-    | waitForever => rw [maxForeverPolls_succ]; unfold pollForeverM; rw [exceptT_bind_run, hSc]
+    | waitUpTo _ => rw [exceptT_bind_run, show (ExceptT.run simTimeEx.monoNanosNow).run { s₀ with dirs := ds } = (.ok 0, { s₀ with dirs := ds }) from rfl]; dsimp only; rw [internal_maxForeverPolls_eq, maxForeverPolls_succ]; unfold pollWaitUpToM; rw [exceptT_bind_run, hSc]
+    | waitForever => rw [internal_maxForeverPolls_eq, maxForeverPolls_succ]; unfold pollForeverM; rw [exceptT_bind_run, hSc]
   rw [hRun]; · rw [post_ok hc freeIdx ((leasesBeforeSlot_conflict (s := withF { s₀ with dirs := ds } _) hDV rfl).2 rfl)]; exact ⟨⟨rfl, rfl, rfl⟩, trivial⟩
   · rw [exceptT_bind_run, show simFsEx.join = simFs.join from rfl, simFsEx_tryWithFileLock_run, shared_acq_pure hc freeIdx]; dsimp only; simp only [beq_self_eq_true, ↓reduceIte]; rfl
 /-- Specification 10 (`AllPass`): `WaitPolicy.waitUpTo` emits `expectedPollSleepLog`, expires cleanly at `deadlineNs`, and acquires the lowest freed slot on full-interval and clamped-remainder polls. -/
