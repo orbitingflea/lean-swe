@@ -48,7 +48,7 @@ BASE_BUDGET = {
         },
     },
     "named_thread_helpers": [
-        "LeanSwe/ConnectProxy/Raw/c/cproxy_shim.c::start_dns_worker",
+        "LeanSwe/PostFork/c/postfork_shim.c::pf_init_spawner_once",
     ],
 }
 

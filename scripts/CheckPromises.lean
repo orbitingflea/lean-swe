@@ -2153,495 +2153,10 @@ private def checkProcessSandboxHostClosure (env : Environment) : IO (Array Strin
       errs := errs.push s!"PSANDBOX_INTERFACE_WIRING_MISMATCH: missing {wrapper}"
   return errs
 
-private def connectProxyRequiredModules : Array Name := #[
-  `LeanSwe.ConnectProxy.Types,
-  `LeanSwe.ConnectProxy.Model,
-  `LeanSwe.ConnectProxy.Model.IpAndHost,
-  `LeanSwe.ConnectProxy.Model.RelayState,
-  `LeanSwe.ConnectProxy.Model.BridgeState,
-  `LeanSwe.ConnectProxy.Model.HealthySys,
-  `LeanSwe.ConnectProxy.Model.FullStep,
-  `LeanSwe.ConnectProxy.Relay,
-  `LeanSwe.ConnectProxy.SysBridge,
-  `LeanSwe.ConnectProxy.SysBridge.SlotSteps,
-  `LeanSwe.ConnectProxy.SysBridge.Driver,
-  `LeanSwe.ConnectProxy.Impl,
-  `LeanSwe.ConnectProxy.Interface,
-  `LeanSwe.ConnectProxy.SpecTests,
-  `LeanSwe.ConnectProxy.Proofs.IpPolicyProofs,
-  `LeanSwe.ConnectProxy.Proofs.HostNormProofs,
-  `LeanSwe.ConnectProxy.Proofs.ParserAndModelProofs,
-  `LeanSwe.ConnectProxy.Proofs.Lifecycle,
-  `LeanSwe.ConnectProxy.Proofs.HealthyWitnessBase,
-  `LeanSwe.ConnectProxy.Proofs.HealthyWitnessNetConn,
-  `LeanSwe.ConnectProxy.Proofs.HealthyWitnessNetSend,
-  `LeanSwe.ConnectProxy.Proofs.HealthyWitnessNetOps,
-  `LeanSwe.ConnectProxy.Proofs.HealthyWitnessPollDns,
-  `LeanSwe.ConnectProxy.Proofs.HealthyWitness,
-  `LeanSwe.ConnectProxy.Proofs.RingBufHelpers,
-  `LeanSwe.ConnectProxy.Proofs.SysBridgeCoreBase,
-  `LeanSwe.ConnectProxy.Proofs.SysBridgeCoreRelay,
-  `LeanSwe.ConnectProxy.Proofs.SysBridgeCoreProofs,
-  `LeanSwe.ConnectProxy.Proofs.SysBridgeHandshake,
-  `LeanSwe.ConnectProxy.Proofs.SysBridgeTeardown,
-  `LeanSwe.ConnectProxy.Proofs.SysBridgeListener,
-  `LeanSwe.ConnectProxy.Proofs.SysBridgeProofs,
-  `LeanSwe.ConnectProxy.Proofs.LoopPreservesWf,
-  `LeanSwe.ConnectProxy.Proofs.LoopRelayLaws,
-  `LeanSwe.ConnectProxy.Proofs.LoopSlotLaws,
-  `LeanSwe.ConnectProxy.Proofs.LoopHandshakeWf,
-  `LeanSwe.ConnectProxy.Proofs.LoopAndRelayProofs,
-  `LeanSwe.ConnectProxy.Proofs.HealthySpecProofs,
-  `LeanSwe.ConnectProxy.Proofs.FullObeysHelpers,
-  `LeanSwe.ConnectProxy.Proofs.FullObeysLoop,
-  `LeanSwe.ConnectProxy.Proofs.FullObeysDriver,
-  `LeanSwe.ConnectProxy.Proofs.FullObeysWitness,
-  `LeanSwe.ConnectProxy.Proofs.FullObeys,
-  `LeanSwe.ConnectProxy.Proofs
-]
-
 private partial def peelLambdas (e : Expr) : Expr :=
   match e.consumeMData with
   | .lam _ _ body _ => peelLambdas body
   | cur => cur
-
-private def expectedConnectProxyPromiseTarget? (fn : Name) : Option Name :=
-  let s := fn.getString!
-  if s.startsWith "test_cproxy_healthy_" then
-    some `LeanSwe.ConnectProxy.SysBridge.realBridgeTarget
-  else if s.startsWith "test_cproxy_withProxy_" then
-    some `LeanSwe.ConnectProxy.Internal.mkApiM
-  else if s.startsWith "test_cproxy_model_authorizeConnect_" then
-    some `LeanSwe.ConnectProxy.Model.authorizeConnect
-  else if s.startsWith "test_cproxy_" then
-    some `LeanSwe.ConnectProxy.defaultApi
-  else
-    none
-
-private def isCanonicalConnectProxyPromiseApp (fn : Name) (prog : Expr) : Except String Unit :=
-  if fn.components.take 2 != [`LeanSwe, `ConnectProxy] then
-    .ok ()
-  else
-    match expectedConnectProxyPromiseTarget? fn with
-    | none =>
-      .error s!"CPROXY_UNPINNED_PROMISE: {fn} lacks canonical target rule"
-    | some expectedTarget =>
-      let args := prog.consumeMData.getAppArgs
-      if args.size != 3 then
-        .error s!"CPROXY_DECOY_TARGET: {fn} expected 3 arguments, got {args.size}"
-      else
-        let tgt := etaReduceExpr args[2]!
-        let ok :=
-          if expectedTarget == `LeanSwe.ConnectProxy.Internal.mkApiM then
-            tgt.isAppOfArity expectedTarget 3
-          else
-            tgt.isConstOf expectedTarget
-        if ok then .ok ()
-        else .error s!"CPROXY_DECOY_TARGET: {fn} proved over non-canonical target instead of {expectedTarget}"
-
-private def isAllowedConnectProxyNonProofProjectMod (m : Name) : Bool :=
-  let s := m.toString
-  if m.getRoot == `Core then
-    m != `Core.Assumptions
-  else if s == "LeanSwe.LinuxSyscall.Common" || s.startsWith "LeanSwe.LinuxSyscall.Common." then
-    true
-  else if m.components.take 2 == [`LeanSwe, `LinuxSyscall] then
-    match m.components.drop 2 with
-    | sub :: rest =>
-      (sub == `Files || sub == `Net || sub == `Poll || sub == `Dns || sub == `TimeRand) &&
-        !rest.contains `RuntimeTests && !rest.contains `SpecMutants &&
-        !rest.contains `Proofs && !rest.contains `SpecTests
-    | [] => false
-  else if m == `LeanSwe.NetRelay.Types || m == `LeanSwe.NetRelay.Model ||
-      m == `LeanSwe.NetRelay.Impl || m == `LeanSwe.NetRelay.Interface then
-    true
-  else if m.components.take 2 == [`LeanSwe, `ConnectProxy] then
-    m != `LeanSwe.ConnectProxy.SpecMutants &&
-      !m.components.contains `RuntimeTests &&
-      !m.components.contains `Proofs
-  else
-    false
-
-private def isAllowedConnectProxyAnyProjectMod (m : Name) : Bool :=
-  if isAllowedConnectProxyNonProofProjectMod m then true
-  else if m == `Core.Assumptions then true
-  else if m.components.take 2 == [`LeanSwe, `ConnectProxy] then
-    m != `LeanSwe.ConnectProxy.SpecMutants && !m.components.contains `RuntimeTests
-  else if m.getRoot == `LeanSwe then
-    (m.components.contains `Proofs || nameLastStr m == "SpecTests") &&
-      !isMutantModule m && nameLastStr m != "RuntimeTests"
-  else
-    false
-
-private def isAllowedConnectProxyProjectExtern (env : Environment) (cMod cName : Name) (cinfo : ConstantInfo) : Bool :=
-  let extData? := getExternAttrData? env cName
-  let userName := (privateToUserName? cName).getD cName
-  if isAllowedCoreInitDecl cMod cName && (cinfo matches .opaqueInfo _) && extData?.isNone then
-    true
-  else if cMod == `LeanSwe.LinuxSyscall.Common.Types &&
-      userName == `LeanSwe.LinuxSyscall.RawFdPointed &&
-      (cinfo matches .opaqueInfo _) && extData?.isNone then
-    true
-  else if !(isPrivateName cName && (cinfo matches .opaqueInfo _)) then
-    false
-  else
-    let symMap? :=
-      if cMod == `LeanSwe.LinuxSyscall.Files.Interface then some allowedFilesExternSyms
-      else if cMod == `LeanSwe.LinuxSyscall.Net.Interface then some allowedNetExternSyms
-      else if cMod == `LeanSwe.LinuxSyscall.Poll.Interface then some allowedPollExternSyms
-      else if cMod == `LeanSwe.LinuxSyscall.Dns.Interface then some allowedDnsExternSyms
-      else if cMod == `LeanSwe.LinuxSyscall.TimeRand.Interface then some allowedTimeRandExternSyms
-      else none
-    match symMap?.bind (·.get? userName) with
-    | some expectedSym => isExactStandardExtern extData? expectedSym
-    | none => false
-
-private def allowedConnectProxyStdExternConsts : Std.HashSet Name :=
-  (#[`Task.get, `Task.pure, `Task.map, `Task.bind,
-     `BaseIO.asTask, `BaseIO.mapTask, `BaseIO.bindTask, `BaseIO.chainTask,
-     `BaseIO.getTaskState, `BaseIO.hasFinished,
-     `IO.RealWorld.nonemptyType, `IO.wait, `IO.cancel, `IO.checkCanceled, `IO.getTaskState, `IO.hasFinished,
-     `ST.RefPointed, `ST.Prim.mkRef, `ST.Prim.Ref.get, `ST.Prim.Ref.set, `ST.Prim.Ref.put,
-     `ST.Prim.Ref.swap, `ST.Prim.Ref.take, `ST.Prim.Ref.modifyGetUnsafe,
-     `System.Platform.getNumBits, `System.Platform.numBits] : Array Name).foldl
-    (fun s n => s.insert n) (Std.HashSet.emptyWithCapacity 32)
-
-private def allowedConnectProxyStdExternCSyms : Std.HashSet String :=
-  (#["lean_task_get", "lean_task_get_own", "lean_task_pure", "lean_task_map", "lean_task_bind",
-     "lean_io_as_task", "lean_io_map_task", "lean_io_bind_task", "lean_io_chain_task",
-     "lean_io_wait", "lean_io_cancel", "lean_io_check_canceled", "lean_io_get_task_state",
-     "lean_st_mk_ref", "lean_st_ref_get", "lean_st_ref_set", "lean_st_ref_put",
-     "lean_st_ref_swap", "lean_st_ref_take", "lean_st_ref_modify_get",
-     "lean_system_platform_nbits"] : Array String).foldl
-    (fun s n => s.insert n) (Std.HashSet.emptyWithCapacity 32)
-
-private def isForbiddenConnectProxyStdExtern (cName : Name) (cinfo : ConstantInfo) (extData? : Option ExternAttrData) : Bool :=
-  let cs := cName.toString
-  if cName == `dbgTrace || cName == `dbgTraceVal ||
-      cs.startsWith "Std.Internal.UV." || cs.startsWith "Std.Internal.Async." ||
-      cs.startsWith "Lean.IO." || cs.startsWith "Lean.Loop." ||
-      cs.startsWith "IO.FS." || cs.startsWith "IO.Process." ||
-      cName == `IO.getEnv || cName == `IO.monoMsNow || cName == `IO.monoNanosNow ||
-      cName == `IO.sleep || cName == `IO.getStdin || cName == `IO.getStdout || cName == `IO.getStderr ||
-      (cs.startsWith "System." && cName != `System.Platform.getNumBits && cName != `System.Platform.numBits) then
-    true
-  else if extData?.isSome || cinfo matches .opaqueInfo _ then
-    if (cs.startsWith "IO." || cs.startsWith "ST." || cs.startsWith "BaseIO." || cs.startsWith "Task.") &&
-        !allowedConnectProxyStdExternConsts.contains cName then
-      true
-    else
-      match extData? with
-      | none => false
-      | some ed =>
-        ed.entries.any fun
-          | .adhoc _ => true
-          | .opaque => false
-          | .inline _ s =>
-            forbiddenHostCSymPrefixes.any (s.startsWith ·) && !allowedConnectProxyStdExternCSyms.contains s
-          | .standard _ s =>
-            forbiddenHostCSymPrefixes.any (s.startsWith ·) && !allowedConnectProxyStdExternCSyms.contains s
-  else
-    false
-
-private def cproxyProofsForbiddenMetaKinds : Array Name :=
-  #[``Lean.Parser.Command.macro_rules,
-    ``Lean.Parser.Command.elab, ``Lean.Parser.Command.elab_rules,
-    ``Lean.Parser.Command.syntax, ``Lean.Parser.Command.syntaxAbbrev,
-    ``Lean.Parser.Command.syntaxCat, ``Lean.Parser.Command.binderPredicate,
-    ``Lean.Parser.Command.notation, ``Lean.Parser.Command.mixfix,
-    ``Lean.Parser.Command.initialize, `Lean.Parser.Command.builtinInitialize,
-    `Lean.runCmd, `Lean.runElab, `Lean.runMeta, `Lean.testExternCmd,
-    ``Lean.Parser.Command.eval, ``Lean.Parser.Command.evalBang,
-    `Lean.reduceCmd, ``Lean.Parser.Command.check, ``Lean.Parser.Command.check_failure,
-    `Lean.Parser.checkTactic, `Lean.Parser.checkTacticFailure,
-    ``Lean.Parser.Command.synth, ``Lean.Parser.Command.init_quot,
-    `Lean.Elab.Command.reprove, `Lean.Elab.Command.aux_def,
-    `Lean.guardMsgsCmd, `Lean.GuardMsgs.guardMsgsCmd, `Lean.guardPanicCmd]
-
-private def checkConnectProxySourceCmd (path : System.FilePath) (isProofs : Bool) (stx : Syntax) : Option String :=
-  if !isProofs then
-    if hasSyntaxKind ``Lean.Parser.Command.initialize stx ||
-        hasSyntaxKind `Lean.Parser.Command.builtinInitialize stx then
-      some s!"FORBIDDEN_INIT_SYNTAX: {path} uses initialize/builtin_initialize"
-    else
-      checkForbiddenMetaOrAttr path stx
-  else if cproxyProofsForbiddenMetaKinds.any (hasSyntaxKind · stx) ||
-      hasIdentOrAtom (fun s => s == "guard_msgs" || s == "#guard_msgs") stx then
-    some s!"FORBIDDEN_SYNTAX_EXT: {path} uses elab/syntax/notation/initialize/eval/reduce/guard_msgs/run_cmd"
-  else if hasSyntaxKind ``Lean.Parser.Command.macro stx && !hasSyntaxKind ``Lean.Parser.Term.local stx then
-    some s!"FORBIDDEN_SYNTAX_EXT: {path} uses non-local macro in ConnectProxy.Proofs"
-  else if hasForbiddenAttr stx then
-    some s!"FORBIDDEN_ATTRIBUTE: {path} uses forbidden attribute (extern/implemented_by/csimp/export)"
-  else if hasNativeTacticConfig stx then
-    some s!"UNALLOWED_AXIOM_IN_MUTANT: {path} uses +native tactic configuration"
-  else
-    none
-
-private def usesConstWithinModule (env : Environment) (modName root target : Name) : Bool := Id.run do
-  let mut q : Array Name := #[root]
-  let mut seen : Std.HashSet Name := {}
-  while !q.isEmpty do
-    let cur := q.back!
-    q := q.pop
-    if cur == target then return true
-    if seen.contains cur then continue
-    seen := seen.insert cur
-    let cMod := env.getModuleIdxFor? cur |>.bind (env.header.moduleNames[·]?) |>.getD .anonymous
-    if cMod != modName then continue
-    if let some (.defnInfo dv) := env.find? cur then
-      for u in dv.value.getUsedConstants do
-        if !seen.contains u then
-          q := q.push u
-  return false
-
-private def exprUsesStructField (stName : Name) : Expr → Bool
-  | .const fn _ => fn.getPrefix == stName
-  | .proj pn _ s => pn == stName || exprUsesStructField stName s
-  | .app f a => exprUsesStructField stName f || exprUsesStructField stName a
-  | .lam _ t b _ | .forallE _ t b _ => exprUsesStructField stName t || exprUsesStructField stName b
-  | .letE _ t v b _ =>
-    exprUsesStructField stName t || exprUsesStructField stName v || exprUsesStructField stName b
-  | .mdata _ b => exprUsesStructField stName b
-  | _ => false
-
-private def checkConnectProxyWiring (env : Environment) : Array String := Id.run do
-  let mut errs : Array String := #[]
-  match env.find? `LeanSwe.ConnectProxy.defaultApi with
-  | some (.defnInfo dv) =>
-    let v := dv.value.consumeMData
-    let used := dv.value.getUsedConstants
-    let ok :=
-      v.getAppFn.consumeMData.isConstOf `LeanSwe.ConnectProxy.Internal.mkFullApiM &&
-      used.contains `LeanSwe.LinuxSyscall.Files.defaultOps &&
-      used.contains `LeanSwe.LinuxSyscall.Net.defaultOps &&
-      used.contains `LeanSwe.LinuxSyscall.Poll.defaultOps &&
-      used.contains `LeanSwe.LinuxSyscall.Dns.defaultOps &&
-      used.contains `LeanSwe.LinuxSyscall.TimeRand.defaultOps &&
-      used.contains `Core.ioConcOps
-    if !ok then
-      errs := errs.push "CPROXY_INTERFACE_WIRING: LeanSwe.ConnectProxy.defaultApi must apply Internal.mkFullApiM directly to LinuxSyscall.{Files,Net,Poll,Dns,TimeRand}.defaultOps and Core.ioConcOps"
-  | _ =>
-    errs := errs.push "CPROXY_INTERFACE_WIRING: missing LeanSwe.ConnectProxy.defaultApi"
-  let pubFns : Array (Name × Name) := #[
-    (`LeanSwe.ConnectProxy.parseIpAddr, `LeanSwe.ConnectProxy.ConnectProxyApiM.parseIpAddr),
-    (`LeanSwe.ConnectProxy.parseIpPrefix, `LeanSwe.ConnectProxy.ConnectProxyApiM.parseIpPrefix),
-    (`LeanSwe.ConnectProxy.isGlobalIp, `LeanSwe.ConnectProxy.ConnectProxyApiM.isGlobalIp),
-    (`LeanSwe.ConnectProxy.allowsIp, `LeanSwe.ConnectProxy.ConnectProxyApiM.allowsIp),
-    (`LeanSwe.ConnectProxy.parseConnectRequest, `LeanSwe.ConnectProxy.ConnectProxyApiM.parseConnectRequest),
-    (`LeanSwe.ConnectProxy.validateConfig, `LeanSwe.ConnectProxy.ConnectProxyApiM.validateConfig),
-    (`LeanSwe.ConnectProxy.withProxy, `LeanSwe.ConnectProxy.ConnectProxyApiM.withProxy)
-  ]
-  for (pubName, projName) in pubFns do
-    match env.find? pubName with
-    | some (.defnInfo dv) =>
-      let used := dv.value.getUsedConstants
-      let body := peelLambdas dv.value
-      let projOk :=
-        body.getAppFn.consumeMData.constName? == some projName ||
-          (match body.getAppFn.consumeMData with
-           | .proj `LeanSwe.ConnectProxy.ConnectProxyApiM _ s => s.consumeMData.isConstOf `LeanSwe.ConnectProxy.defaultApi
-           | _ => false)
-      if !projOk || !used.contains `LeanSwe.ConnectProxy.defaultApi then
-        errs := errs.push s!"CPROXY_INTERFACE_WIRING: {pubName} must delegate directly to defaultApi"
-    | _ =>
-      errs := errs.push s!"CPROXY_INTERFACE_WIRING: missing {pubName}"
-  match env.find? `LeanSwe.ConnectProxy.Internal.mkFullApiM with
-  | some (.defnInfo dv) =>
-    let v := peelLambdas dv.value
-    let args := v.getAppArgs
-    let ok :=
-      v.isAppOfArity `LeanSwe.ConnectProxy.ConnectProxyApiM.mk 8 &&
-      (etaReduceExpr args[1]!).isConstOf `LeanSwe.ConnectProxy.Model.parseIpAddr &&
-      (etaReduceExpr args[2]!).isConstOf `LeanSwe.ConnectProxy.Model.parseIpPrefix &&
-      (etaReduceExpr args[3]!).isConstOf `LeanSwe.ConnectProxy.Model.isGlobalIp &&
-      (etaReduceExpr args[4]!).isConstOf `LeanSwe.ConnectProxy.Model.allowsIp &&
-      (etaReduceExpr args[5]!).isConstOf `LeanSwe.ConnectProxy.Model.parseConnectRequest &&
-      (etaReduceExpr args[6]!).isConstOf `LeanSwe.ConnectProxy.Model.validateConfig &&
-      args[7]!.getUsedConstants.contains `LeanSwe.ConnectProxy.Model.validateConfig &&
-      args[7]!.getUsedConstants.contains `LeanSwe.ConnectProxy.SysBridge.Driver.withProxyM
-    if !ok then
-      errs := errs.push "CPROXY_IMPL_WIRING: Internal.mkFullApiM must wire Model.{parseIpAddr,parseIpPrefix,isGlobalIp,allowsIp,parseConnectRequest,validateConfig} and SysBridge.Driver.withProxyM"
-  | _ =>
-    errs := errs.push "CPROXY_IMPL_WIRING: missing Internal.mkFullApiM"
-  match env.find? `LeanSwe.ConnectProxy.SysBridge.Driver.withProxyM with
-  | some (.defnInfo dv) =>
-    let used := dv.value.getUsedConstants
-    if !used.contains `LeanSwe.ConnectProxy.SysBridge.createListener ||
-        !used.contains `LeanSwe.ConnectProxy.SysBridge.Driver.runProxyLoopM then
-      errs := errs.push "CPROXY_SYSBRIDGE_WIRING: SysBridge.Driver.withProxyM must wire createListener and runProxyLoopM"
-  | _ =>
-    errs := errs.push "CPROXY_SYSBRIDGE_WIRING: missing SysBridge.Driver.withProxyM"
-  match env.find? `LeanSwe.ConnectProxy.SysBridge.Driver.runProxyLoopM with
-  | some (.defnInfo _) =>
-    let modDrv := `LeanSwe.ConnectProxy.SysBridge.Driver
-    let rootLoop := `LeanSwe.ConnectProxy.SysBridge.Driver.runProxyLoopM
-    if !usesConstWithinModule env modDrv rootLoop `LeanSwe.ConnectProxy.SysBridge.pollAndStepTickM ||
-        !usesConstWithinModule env modDrv rootLoop `LeanSwe.ConnectProxy.SysBridge.teardownAllSlotsList then
-      errs := errs.push "CPROXY_SYSBRIDGE_WIRING: SysBridge.Driver.runProxyLoopM must execute verified pollAndStepTickM and teardownAllSlotsList"
-  | _ =>
-    errs := errs.push "CPROXY_SYSBRIDGE_WIRING: missing SysBridge.Driver.runProxyLoopM"
-  match env.find? `LeanSwe.ConnectProxy.SysBridge.realBridgeTarget with
-  | some (.defnInfo dv) =>
-    let v := dv.value.consumeMData
-    let args := v.getAppArgs
-    if !v.isAppOfArity `LeanSwe.ConnectProxy.Internal.HealthySys.SysBridgeTarget.mk 12 then
-      errs := errs.push "CPROXY_BRIDGE_TARGET_WIRING: SysBridge.realBridgeTarget must construct Internal.HealthySys.SysBridgeTarget.mk (arity 12)"
-    else
-      let listenBody := peelLambdas args[3]!
-      let listenOk :=
-        args[3]!.getUsedConstants.contains `LeanSwe.ConnectProxy.SysBridge.listenPollEvents &&
-        (listenBody.getAppFn.consumeMData.constName? == some `LeanSwe.LinuxSyscall.Poll.PollEvents.pollin ||
-          match listenBody with
-          | .proj `LeanSwe.LinuxSyscall.Poll.PollEvents 0 inner =>
-            inner.consumeMData.getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.SysBridge.listenPollEvents
-          | _ => false)
-      let fieldsOk :=
-        (peelLambdas args[0]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.SysBridge.createListener &&
-        (peelLambdas args[1]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.SysBridge.handleCompleteHead &&
-        args[1]!.getUsedConstants.contains `LeanSwe.ConnectProxy.SysBridge.startDnsSync &&
-        (peelLambdas args[2]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.SysBridge.acceptNewClients &&
-        listenOk &&
-        (peelLambdas args[4]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.SysBridge.buildPollBatchSync &&
-        (peelLambdas args[5]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.SysBridge.stepHandshake &&
-        args[5]!.getUsedConstants.contains `LeanSwe.ConnectProxy.SysBridge.startDnsSync &&
-        (peelLambdas args[6]!).getAppFn.consumeMData.constName? == some `LeanSwe.NetRelay.recvIntoRing &&
-        (peelLambdas args[7]!).getAppFn.consumeMData.constName? == some `LeanSwe.NetRelay.flushRingNonblock &&
-        (peelLambdas args[8]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.Relay.stepBidirectionalRelay &&
-        (peelLambdas args[9]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.SysBridge.stepSyncSlot &&
-        (peelLambdas args[10]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.SysBridge.pollAndStepTickSync &&
-        (peelLambdas args[11]!).getAppFn.consumeMData.constName? == some `LeanSwe.ConnectProxy.SysBridge.mkSyncRawOps
-      if !fieldsOk then
-        errs := errs.push "CPROXY_BRIDGE_TARGET_WIRING: SysBridge.realBridgeTarget fields must wire directly to SysBridge and Relay"
-  | _ =>
-    errs := errs.push "CPROXY_BRIDGE_TARGET_WIRING: missing SysBridge.realBridgeTarget"
-  return errs
-
-private def checkConnectProxyTrustedClosure
-    (env : Environment)
-    (repoDir : System.FilePath)
-    (headAllPass headCanReach : Std.HashMap Name (Array Name)) : IO (Array String) := do
-  let mut errs : Array String := checkConnectProxyWiring env
-  for reqMod in connectProxyRequiredModules do
-    if !env.header.moduleNames.contains reqMod then
-      if !isOptionalAuditModule reqMod || (← (moduleToFilePath repoDir reqMod).pathExists) then
-        errs := errs.push s!"CPROXY_MISSING_REQUIRED_MODULE: {reqMod}"
-  let csimpState := Lean.Compiler.CSimp.ext.getState env
-  let mut cproxyMods : Array Name := #[]
-  let mut queue : Array (Name × Bool × Bool × Name) := #[]
-  for h : i in [0 : env.header.moduleNames.size] do
-    let m := env.header.moduleNames[i]
-    if m.components.take 2 == [`LeanSwe, `ConnectProxy] &&
-        !isMutantModule m && !m.components.contains `RuntimeTests then
-      cproxyMods := cproxyMods.push m
-      let isProofs := m.components.contains `Proofs
-      let fromSpecOrProof := isProofs || m == `LeanSwe.ConnectProxy.SpecTests
-      let path := moduleToFilePath repoDir m
-      match ← parseModuleCommands env path (allowMacroRecovery := isProofs) with
-      | .error err => errs := errs.push s!"CPROXY_SOURCE_PARSE_ERR: {m} ({err})"
-      | .ok cmds =>
-        for stx in cmds do
-          if let some synErr := checkConnectProxySourceCmd path isProofs stx then
-            errs := errs.push synErr
-            break
-          if hasSyntaxKind ``Lean.Parser.Command.axiom stx then
-            errs := errs.push s!"CUSTOM_AXIOM_FORBIDDEN: axiom declaration in {path}"
-            break
-          if hasIdentOrAtom isForbiddenMutantToken stx then
-            errs := errs.push s!"FORBIDDEN_UNSAFE_OR_SORRY: {path} uses sorry/admit/native_decide/unsafe"
-            break
-      if let some data := env.header.moduleData[i]? then
-        for imp in data.imports do
-          let impMod := imp.module
-          if isProjectModule impMod then
-            let impOk :=
-              if fromSpecOrProof then isAllowedConnectProxyAnyProjectMod impMod
-              else isAllowedConnectProxyNonProofProjectMod impMod
-            if !impOk then
-              errs := errs.push s!"CPROXY_UNALLOWED_IMPORT: {m} imports {impMod}"
-          else if !isAllowedClosureStdlibModule (m := impMod) then
-            errs := errs.push s!"CPROXY_UNALLOWED_STDLIB_IMPORT: {m} imports {impMod}"
-        for c in data.constants do
-          queue := queue.push (m, false, fromSpecOrProof, c.name)
-  for (pName, thms) in headAllPass.toList ++ headCanReach.toList do
-    if pName.components.take 2 == [`LeanSwe, `ConnectProxy] then
-      for t in thms do
-        queue := queue.push (pName, false, true, t)
-  let mut seen : Std.HashSet (Name × Bool × Bool) := {}
-  let mut seenConst : Std.HashSet Name := {}
-  while !queue.isEmpty do
-    let (originMod, inStdImpl, fromSpecOrProof, cName) := queue.back!
-    queue := queue.pop
-    if seen.contains (cName, inStdImpl, fromSpecOrProof) then continue
-    seen := seen.insert (cName, inStdImpl, fromSpecOrProof)
-    seenConst := seenConst.insert cName
-    let some cinfo := env.find? cName | continue
-    if cinfo matches .axiomInfo _ then
-      if !allowedAxioms.contains cName && !(inStdImpl && cName == `lcProof) then
-        errs := errs.push s!"CPROXY_CLOSURE_AXIOM_FORBIDDEN: {cName} reachable from {originMod}"
-      continue
-    let cMod := env.getModuleIdxFor? cName |>.bind (env.header.moduleNames[·]?) |>.getD .anonymous
-    if cMod == `Core.Assumptions && fromSpecOrProof then
-      continue
-    let projMod := isProjectModule cMod
-    if let some implTarget := Lean.Compiler.getImplementedBy? env cName then
-      let nextStd := inStdImpl || !projMod
-      if !seen.contains (implTarget, nextStd, fromSpecOrProof) then
-        queue := queue.push (originMod, nextStd, fromSpecOrProof, implTarget)
-      if projMod then
-        if !(← isCompilerGeneratedCtorIdx env cName implTarget cinfo) then
-          errs := errs.push s!"CPROXY_CLOSURE_IMPLEMENTED_BY_FORBIDDEN: {cName} -> {implTarget} reachable from {originMod}"
-    if let some csEntry := csimpState.map.find? cName then
-      let nextStd := inStdImpl || !projMod
-      if !seen.contains (csEntry.toDeclName, nextStd, fromSpecOrProof) then
-        queue := queue.push (originMod, nextStd, fromSpecOrProof, csEntry.toDeclName)
-      let thmMod := env.getModuleIdxFor? csEntry.thmName |>.bind (env.header.moduleNames[·]?) |>.getD .anonymous
-      let toMod := env.getModuleIdxFor? csEntry.toDeclName |>.bind (env.header.moduleNames[·]?) |>.getD .anonymous
-      if projMod || isProjectModule thmMod || isProjectModule toMod then
-        errs := errs.push s!"CPROXY_CLOSURE_FORBIDDEN_CSIMP: {cName} -> {csEntry.toDeclName} via {csEntry.thmName} reachable from {originMod}"
-    if projMod then
-      let modOk :=
-        if fromSpecOrProof then isAllowedConnectProxyAnyProjectMod cMod
-        else isAllowedConnectProxyNonProofProjectMod cMod
-      if !modOk then
-        errs := errs.push s!"CPROXY_CLOSURE_UNALLOWED_MODULE: {cName} in {cMod} reachable from {originMod}"
-      if let some expName := Lean.getExportNameFor? env cName then
-        errs := errs.push s!"CPROXY_CLOSURE_FORBIDDEN_EXPORT: {cName} -> {expName} in {cMod}"
-      if let .defnInfo v := cinfo then
-        if v.safety != .safe then
-          if !(← isAllowedCompilerUnsafeDef env cName v) then
-            errs := errs.push s!"CPROXY_CLOSURE_FORBIDDEN_UNSAFE_DEF: {cName} in {cMod} reachable from {originMod}"
-      if csimpState.thmNames.contains cName then
-        errs := errs.push s!"CPROXY_CLOSURE_FORBIDDEN_CSIMP_THM: {cName} in {cMod} marked @[csimp]"
-      if cinfo matches .opaqueInfo _ || (getExternAttrData? env cName).isSome then
-        if !isAllowedConnectProxyProjectExtern env cMod cName cinfo then
-          errs := errs.push s!"CPROXY_CLOSURE_UNALLOWED_EXTERN: {cName} in {cMod} reachable from {originMod}"
-    else
-      if cMod != .anonymous && !isAllowedClosureStdlibModule (m := cMod) then
-        errs := errs.push s!"CPROXY_CLOSURE_UNALLOWED_STDLIB_MOD: {cName} in {cMod} reachable from {originMod}"
-      if isForbiddenConnectProxyStdExtern cName cinfo (getExternAttrData? env cName) then
-        errs := errs.push s!"CPROXY_CLOSURE_FORBIDDEN_STDLIB_HOST: {cName} in {cMod} reachable from {originMod}"
-    for u in cinfo.type.getUsedConstants do
-      if !seen.contains (u, inStdImpl, fromSpecOrProof) then
-        queue := queue.push (originMod, inStdImpl, fromSpecOrProof, u)
-    let val? := match cinfo with
-      | .defnInfo v => some v.value
-      | .thmInfo v => some v.value
-      | .opaqueInfo v => some v.value
-      | _ => none
-    if let some val := val? then
-      for u in val.getUsedConstants do
-        if !seen.contains (u, inStdImpl, fromSpecOrProof) then
-          queue := queue.push (originMod, inStdImpl, fromSpecOrProof, u)
-    let extra : List Name := match cinfo with
-      | .ctorInfo v => [v.induct]
-      | .recInfo v => v.all
-      | .inductInfo v => v.all ++ v.ctors
-      | _ => []
-    for u in extra do
-      if !seen.contains (u, inStdImpl, fromSpecOrProof) then
-        queue := queue.push (originMod, inStdImpl, fromSpecOrProof, u)
-  IO.println s!"TRUSTED_CLOSURE: bundle=LeanSwe.ConnectProxy modules={cproxyMods.size} visited={seenConst.size} errors={errs.size}"
-  return errs
 
 private inductive DagModuleRole where
   | types
@@ -2767,7 +2282,7 @@ private def dagRoleOf (knownPkgs : Array Name) (m : Name) : DagModuleRole :=
           if last == `Types || last == `TypesExternal then .types
           else if last == `Model || rem.contains `Model then .model
           else .impl
-        else if head == `Impl || m == `LeanSwe.ConnectProxy.Relay then
+        else if head == `Impl then
           .impl
         else
           .other
@@ -3207,7 +2722,7 @@ private def modelPresenceAllowlist : Array String := #[]
 
 /-- Exact shrinking ratchet allowlist of non-pure zero-`@[extern]` packages currently wiring
 through a same-package un-fuzzed middle hook (`SysBridge.defaultOps`, `CliOpsM`,
-`ScopedRawFsOpsM`, `RelayRawOps`, `defaultRawOps`) instead of imported `manifest.deps`
+`ScopedRawFsOpsM`, `defaultRawOps`) instead of imported `manifest.deps`
 capabilities. -/
 private def middleHookAllowlist : Array String := #[]
 
@@ -4898,8 +4413,8 @@ private def renderSynthesizedObeysSig
         | none => fallback
       let mapStr := findShort #["mapFullWorldToState", "mapFullToRawWorld", "mapS"] "id"
       let cellToModelStr := findShort #["procCellToState", "cellToRawTable", "cellToModel"] "id"
-      let rawWfStr := findShort #["rawStepWf", "healthyWf", "pkgWf", "fullWorldWf", "proxyStepWf", "fullRawWf"] "<WF>"
-      let pkgWfStr := findShort #["processStateWf", "rawHostWorldWf", "rawStepWf", "healthyWf", "pkgWf", "fullWorldWf", "proxyStepWf"] rawWfStr
+      let rawWfStr := findShort #["rawStepWf", "healthyWf", "pkgWf", "fullWorldWf", "fullRawWf"] "<WF>"
+      let pkgWfStr := findShort #["processStateWf", "rawHostWorldWf", "rawStepWf", "healthyWf", "pkgWf", "fullWorldWf"] rawWfStr
       let execRawStr := findShort (if isConcCell then #["execFullRawStep", "execRawStep", "execRaw"] else #["execRawStep", "execFullRawStep", "execRaw"]) "<EXEC_RAW>"
       let allowedRawStr := findShort (if isConcCell then #["allowedFullRawStep", "allowedRawStep", "allowedRaw"] else #["allowedRawStep", "allowedFullRawStep", "allowedRaw"]) "<ALLOWED_RAW>"
       let execPkgStr := findShort #["execPkgStep", "execPkg"] "<EXEC_PKG>"
@@ -5335,8 +4850,7 @@ private def shouldForbidModuleInit (m : Name) : Bool :=
     m.components.take 2 == [`LeanSwe, `PostFork] ||
     m.components.take 2 == [`LeanSwe, `ProcessSandbox] ||
     m.components.take 2 == [`LeanSwe, `Sqlite] ||
-    m.components.take 2 == [`LeanSwe, `Git] ||
-    m.components.take 2 == [`LeanSwe, `ConnectProxy]
+    m.components.take 2 == [`LeanSwe, `Git]
 
 private structure PromisePhaseReport where
   errors : Array String := #[]
@@ -5581,11 +5095,7 @@ private unsafe def auditPromisesEnv
                     if !(← hasCanonicalPromiseTarget fn prog) then
                       lAxErrs := lAxErrs.push s!"NON_CANONICAL_PROMISE_TARGET: {c.name} in {m} proves {fn} against non-canonical target"
                     else if ← hasCanonicalNondetInst `Core.instNondetTestAllPassRun prog then
-                      match isCanonicalConnectProxyPromiseApp fn prog with
-                      | .ok () =>
-                        lAllPass := lAllPass.insert fn ((lAllPass.getD fn #[]).push c.name)
-                      | .error tgtErr =>
-                        lAxErrs := lAxErrs.push s!"{tgtErr} (in {c.name})"
+                      lAllPass := lAllPass.insert fn ((lAllPass.getD fn #[]).push c.name)
                     else
                       lAxErrs := lAxErrs.push s!"NON_CANONICAL_NONDET_INST: {c.name} in {m} uses non-canonical NondetTest AllPassRun instance for {fn}"
               else if atom.isAppOfArity `Core.CanReach 1 then
@@ -5595,11 +5105,7 @@ private unsafe def auditPromisesEnv
                     if !(← hasCanonicalPromiseTarget fn prog) then
                       lAxErrs := lAxErrs.push s!"NON_CANONICAL_PROMISE_TARGET: {c.name} in {m} proves {fn} against non-canonical target"
                     else if ← hasCanonicalNondetInst `Core.instNondetTestCanReachRun prog then
-                      match isCanonicalConnectProxyPromiseApp fn prog with
-                      | .ok () =>
-                        lCanReach := lCanReach.insert fn ((lCanReach.getD fn #[]).push c.name)
-                      | .error tgtErr =>
-                        lAxErrs := lAxErrs.push s!"{tgtErr} (in {c.name})"
+                      lCanReach := lCanReach.insert fn ((lCanReach.getD fn #[]).push c.name)
                     else
                       lAxErrs := lAxErrs.push s!"NON_CANONICAL_NONDET_INST: {c.name} in {m} uses non-canonical NondetTest CanReachRun instance for {fn}"
             return (lAllPass, lCanReach, lAxErrs, lCache)
@@ -6111,7 +5617,6 @@ unsafe def main (args : List String) : IO UInt32 := do
   let pfClosureErrs ← checkPackageTrustedClosure repoDir "PostFork" postForkAuditModules
     isAllowedPostForkClosureModule `LeanSwe.PostFork.Interface allowedPostForkExternSyms true true true
   let gitClosureErrs ← checkGitTrustedClosure env importableExtraMods
-  let cproxyClosureErrs ← checkConnectProxyTrustedClosure env repoDir ap1 cr1
 
   let mainDagRep := auditImportDagEnv env (fun m => !isPostForkVerifiedMod m) ap1 cr1
   let combinedDagRep := mergeDagReports (mergeDagReports mainDagRep pfDagRep) extraDagRep
@@ -6149,7 +5654,7 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   let promCount := prom1.size + prom2Count
   let withAssumeCount := wAss1 + wAss2
-  errors := errors ++ eErrs1 ++ eErrs2 ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sqClosureErrs ++ sbxClosureErrs ++ compClosureErrs ++ managedProcErrs ++ psandboxHostErrs ++ pfClosureErrs ++ pfWiringErrs ++ gitClosureErrs ++ cproxyClosureErrs ++ dagErrs ++ manifestErrs
+  errors := errors ++ eErrs1 ++ eErrs2 ++ trClosureErrs ++ filesClosureErrs ++ pwClosureErrs ++ pwWiringErrs ++ dnsClosureErrs ++ dnsWiringErrs ++ pollClosureErrs ++ netClosureErrs ++ procClosureErrs ++ envClosureErrs ++ chClosureErrs ++ sqClosureErrs ++ sbxClosureErrs ++ compClosureErrs ++ managedProcErrs ++ psandboxHostErrs ++ pfClosureErrs ++ pfWiringErrs ++ gitClosureErrs ++ dagErrs ++ manifestErrs
   if runSelfTest then
     let selfTestOut ← IO.Process.output {
       cmd := leanExe.toString
