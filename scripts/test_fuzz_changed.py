@@ -600,7 +600,7 @@ class FuzzChangedGitIntegrationTests(unittest.TestCase):
                 return proc.returncode, proc.stdout, proc.stderr, calls, outs
 
             # Default pull_request (no run-fuzz:* labels) and push skip all fuzz suites.
-            for labels_json in ("[]", "null", "", json.dumps(["spec-change", "add-foreign-lang", "bug"])):
+            for labels_json in ("[]", "null", "", json.dumps(["spec-change", "spec-add", "bug"])):
                 rc, out, err, calls, outs = run_gate("pull_request", pr_labels_json=labels_json)
                 self.assertEqual((rc, calls, outs), (0, [], {"run_files": "false"}), (labels_json, err))
                 self.assertIn("selected_suites=none", out)

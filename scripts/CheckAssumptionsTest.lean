@@ -345,17 +345,8 @@ private def runHarnessParitySelfTests (tmpRoot realRepo : System.FilePath) : IO 
   let expectedInheritedCount ← match rootManJson.getObjVal? "packages" with
     | .ok (.arr a) => pure a.size
     | _ => throw (IO.userError "root lake-manifest.json missing 'packages' array")
-  let minBudget : String :=
-    "{\n" ++
-    "  \"version\": 1,\n" ++
-    "  \"files\": {},\n" ++
-    "  \"vendored_files\": {},\n" ++
-    "  \"function_overrides\": {},\n" ++
-    "  \"named_thread_helpers\": []\n" ++
-    "}\n"
   let initParityRepo (dir : System.FilePath) : IO Unit := do
     IO.FS.createDirAll (dir / "harness")
-    IO.FS.writeFile (dir / ".foreign-budget.json") minBudget
     IO.FS.writeBinFile (dir / "lean-toolchain") tcBytes
     IO.FS.writeBinFile (dir / "harness" / "lean-toolchain") tcBytes
     IO.FS.writeFile (dir / "lake-manifest.json") rootManRaw
@@ -363,7 +354,7 @@ private def runHarnessParitySelfTests (tmpRoot realRepo : System.FilePath) : IO 
     let gi ← runCmd "git" #["init", "-q"] (some dir)
     if gi.exitCode != 0 then
       throw (IO.userError s!"git init failed: {gi.stderr}")
-    let ga ← runCmd "git" #["add", ".foreign-budget.json", "lean-toolchain", "lake-manifest.json",
+    let ga ← runCmd "git" #["add", "lean-toolchain", "lake-manifest.json",
       "harness/lean-toolchain", "harness/lake-manifest.json"] (some dir)
     if ga.exitCode != 0 then
       throw (IO.userError s!"git add failed: {ga.stderr}")
@@ -465,6 +456,11 @@ private def runHarnessParitySelfTests (tmpRoot realRepo : System.FilePath) : IO 
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
   runParityMut "harness_manifest_missing" "HARNESS_MANIFEST_MISSING" fun d => do
     IO.FS.removeFile (d / "harness" / "lake-manifest.json")
+  runParityMut "disallowed_lean_source_path" "DISALLOWED_LEAN_SOURCE_PATH" fun d => do
+    writeFileCreatingParents (d / "outside" / "Bad.lean") "def bad : Nat := 1\n"
+    let ga ← runCmd "git" #["add", "outside/Bad.lean"] (some d)
+    if ga.exitCode != 0 then
+      throw (IO.userError s!"git add failed: {ga.stderr}")
   IO.FS.removeDirAll baseDir
 
 private def buildDagRatchetDriver (tmpRoot realRepo : System.FilePath) : IO System.FilePath := do
