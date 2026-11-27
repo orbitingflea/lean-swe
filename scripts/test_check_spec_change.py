@@ -114,7 +114,6 @@ class SpecSubdirLockTests(unittest.TestCase):
             "LeanSwe/Demo/Interface/Sub.lean",
             "scripts/package_manifest.json",
             "scripts/external_assumptions.json",
-            "scripts/coverage_overrides.json",
         ]
         for rel in locked:
             with self.subTest(locked=rel):
@@ -617,7 +616,7 @@ class PackageManifestTests(unittest.TestCase):
     def test_locked_spec_json_files_require_spec_change(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._init_manifest_repo(tmp)
-            for rel in ("scripts/external_assumptions.json", "scripts/coverage_overrides.json"):
+            for rel in ("scripts/external_assumptions.json",):
                 (repo / rel).write_text('{"version": 1, "entries": []}\n', encoding="utf-8")
                 _git(repo, "add", rel)
                 _git(repo, "commit", "-m", f"add {rel}")

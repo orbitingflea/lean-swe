@@ -145,21 +145,27 @@ private def printAndAssertFilesHits (stdoutOpen : Bool) (stats : HitStats) (step
     let pdHits := stats.kindCounts.getD s!"{sname}:permissionDenied" 0
     let trHits := stats.kindCounts.getD s!"{sname}:transientOrResource" 0
     outPrintln stdoutOpen s!"  {sname}: ok={okHits} notFound={nfHits} badFd={bfHits} invalidArg={iaHits} stateConflict={scHits} permissionDenied={pdHits} transientOrResource={trHits}"
-  let mut filesHitCells : Nat := 0
-  let filesTotalCells := allSyscallNames.size * (allFilesErrorKindNames.size + 1)
   for sname in allSyscallNames do
-    if stats.kindCounts.getD s!"{sname}:ok" 0 > 0 then
-      filesHitCells := filesHitCells + 1
     for kname in allFilesErrorKindNames do
       let realCount := realStats.kindCounts.getD s!"{sname}:{kname}" 0
       let totalCount := stats.kindCounts.getD s!"{sname}:{kname}" 0
       if realCount > 0 then
-        filesHitCells := filesHitCells + 1
         logErrHit s!"LeanSwe.LinuxSyscall.Files.{sname}" s!"LeanSwe.LinuxSyscall.Files.FilesErrorKind.{kname}" "real"
       else if totalCount > 0 then
-        filesHitCells := filesHitCells + 1
         logErrHit s!"LeanSwe.LinuxSyscall.Files.{sname}" s!"LeanSwe.LinuxSyscall.Files.FilesErrorKind.{kname}" "fault_injected"
-  recordSuiteBuckets filesHitCells filesTotalCells
+  let filesTotalCells :=
+    allSyscallNames.size + requiredFilesRealErrorHits.size + requiredExtraErrorHits.size
+  let mut missingRequired : Array String := #[]
+  for sname in allSyscallNames do
+    if realStats.kindCounts.getD s!"{sname}:ok" 0 == 0 then
+      missingRequired := missingRequired.push s!"{sname}:ok"
+  for (sname, kname) in requiredFilesRealErrorHits do
+    if realStats.kindCounts.getD s!"{sname}:{kname}" 0 == 0 then
+      missingRequired := missingRequired.push s!"{sname}:{kname}"
+  for (sname, kname) in requiredExtraErrorHits do
+    if realStats.kindCounts.getD s!"{sname}:{kname}" 0 == 0 then
+      missingRequired := missingRequired.push s!"{sname}:{kname}"
+  recordSuiteBuckets (filesTotalCells - missingRequired.size) filesTotalCells
   if steps >= 1000 then
     for sname in allSyscallNames do
       let prefixStr := sname ++ ":"
@@ -178,19 +184,8 @@ private def printAndAssertFilesHits (stdoutOpen : Bool) (stats : HitStats) (step
         acc + stats.kindCounts.getD s!"{sname}:permissionDenied" 0) 0
       if pdTotal == 0 then
         throw (IO.userError "fuzzer ro_bind assertion failed: 0 permissionDenied (EROFS) hits")
-  if steps >= 50000 && allowExtraMatrix then
-    let mut missing : Array String := #[]
-    for sname in allSyscallNames do
-      if realStats.kindCounts.getD s!"{sname}:ok" 0 == 0 then
-        missing := missing.push s!"{sname}:ok"
-    for (sname, kname) in requiredFilesRealErrorHits do
-      if realStats.kindCounts.getD s!"{sname}:{kname}" 0 == 0 then
-        missing := missing.push s!"{sname}:{kname}"
-    for (sname, kname) in requiredExtraErrorHits do
-      if realStats.kindCounts.getD s!"{sname}:{kname}" 0 == 0 then
-        missing := missing.push s!"{sname}:{kname}"
-    if !missing.isEmpty then
-      throw (IO.userError s!"fuzzer errorCoverage matrix failed with 0 hits on: {missing.toList}")
+  if steps >= 50000 && allowExtraMatrix && !missingRequired.isEmpty then
+    throw (IO.userError s!"fuzzer errorCoverage matrix failed with 0 hits on: {missingRequired.toList}")
 
 private def printAndAssertHits (suiteName : String) (expectedNames : Array String)
     (counts : Std.HashMap String Nat) (minStepsForCoverage : Bool)
