@@ -6,7 +6,7 @@ import Fuzz.Common.Suite
 import LeanSwe.Fs.Interface
 import LeanSwe.Process.Interface
 import LeanSwe.ProcessSandbox.Types
-import LeanSwe.ProcessSandbox.Model
+import LeanSweProofs.ProcessSandbox.Model
 import LeanSwe.ProcessSandbox.Impl
 import LeanSwe.ProcessSandbox.Interface
 

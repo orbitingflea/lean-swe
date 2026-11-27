@@ -506,7 +506,7 @@ private def buildDagRatchetDriver (tmpRoot realRepo : System.FilePath) : IO Syst
     "      sigProofCounts := recordSigProofHit (recordSigProofHit (recordSigProofHit {} sKey \"thm2\") sKey \"thm3\") sKey \"thm4\"\n" ++
     "      checkedModules := 2\n" ++
     "    }\n" ++
-    "    let wireLines := #[\"PFW_MOD:LeanSwe.PostFork.Verified\"] ++\n" ++
+    "    let wireLines := #[\"PFW_MOD:LeanSweProofs.PostFork.Verified\"] ++\n" ++
     "      encodeDagReportWireLines workerRep1 ++\n" ++
     "      encodeDagReportWireLines workerRep2 ++\n" ++
     "      #[\"PFW_STATS:1:2:1\"]\n" ++

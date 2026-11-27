@@ -1,5 +1,5 @@
 import LeanSwe.LinuxSyscall.TimeRand.Types
-import LeanSwe.LinuxSyscall.TimeRand.Model
+import LeanSweProofs.LinuxSyscall.TimeRand.Model
 import LeanSwe.LinuxSyscall.TimeRand.Interface
 import LeanSwe.LinuxSyscall.TestSupport.Seccomp
 import Fuzz.LinuxSyscall.Rng

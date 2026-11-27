@@ -1,7 +1,7 @@
 import Fuzz.Common.Rng
 import Fuzz.Toml.Gen
 import LeanSwe.Toml.Interface
-import LeanSwe.Toml.Model
+import LeanSweProofs.Toml.Model
 
 namespace Fuzz.Toml
 

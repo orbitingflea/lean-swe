@@ -1,8 +1,8 @@
 import Fuzz.Common.Rng
 import LeanSwe.Toml.Interface
-import LeanSwe.Toml.Model
+import LeanSweProofs.Toml.Model
 import LeanSwe.NumParse.Interface
-import LeanSwe.NumParse.Model
+import LeanSweProofs.NumParse.Model
 
 namespace Fuzz.Toml
 

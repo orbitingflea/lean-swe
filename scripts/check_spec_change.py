@@ -48,7 +48,7 @@ import sys
 
 SPEC_SUBDIRS = frozenset({"Types", "Model", "Interface", "Properties", "ModelChecks", "Aeneas"})
 SPEC_BASENAMES = frozenset(f"{d}.lean" for d in SPEC_SUBDIRS)
-LEANSWE_SOURCE_ROOTS = ("LeanSwe", "proofs/LeanSwe")
+LEANSWE_SOURCE_ROOTS = ("LeanSwe", "proofs/LeanSweProofs")
 PACKAGE_MANIFEST_PATH = "scripts/package_manifest.json"
 EXTERNAL_ASSUMPTIONS_PATH = "scripts/external_assumptions.json"
 LOCKED_SPEC_JSON_PATHS = frozenset({
@@ -201,12 +201,13 @@ def resolve_effective_base(repo_root: Path, base_ref: str, head_ref: str) -> str
 
 
 def _strip_proofs_prefix(rel_path: str) -> str:
-    """Normalize Layer 2 `proofs/LeanSwe/...` paths to `LeanSwe/...` for package/role matching."""
-    return rel_path[7:] if rel_path.startswith("proofs/LeanSwe/") else rel_path
+    """Normalize Layer 2 `proofs/LeanSweProofs/...` paths to `LeanSwe/...` for package/role matching."""
+    pfx = "proofs/LeanSweProofs/"
+    return "LeanSwe/" + rel_path[len(pfx) :] if rel_path.startswith(pfx) else rel_path
 
 
 def is_spec_file(rel_path: str) -> bool:
-    """Return True when rel_path is a frozen spec file under Core/, LeanSwe/, proofs/LeanSwe/, or locked metadata JSON."""
+    """Return True when rel_path is a frozen spec file under Core/, LeanSwe/, proofs/LeanSweProofs/, or locked metadata JSON."""
     if rel_path in LOCKED_SPEC_JSON_PATHS:
         return True
     norm_path = _strip_proofs_prefix(rel_path)
@@ -224,7 +225,7 @@ def is_spec_file(rel_path: str) -> bool:
 
 
 def top_package_dir(rel_path: str) -> str | None:
-    """Return 'LeanSwe/<Pkg>' for paths under LeanSwe/<Pkg>/... or proofs/LeanSwe/<Pkg>/..., else None."""
+    """Return 'LeanSwe/<Pkg>' for paths under LeanSwe/<Pkg>/... or proofs/LeanSweProofs/<Pkg>/..., else None."""
     norm_path = _strip_proofs_prefix(rel_path)
     parts = Path(norm_path).parts
     if len(parts) >= 3 and parts[0] == "LeanSwe":
@@ -233,9 +234,9 @@ def top_package_dir(rel_path: str) -> str | None:
 
 
 def existing_top_packages_at_base(repo_root: Path, base_ref: str) -> set[str]:
-    """Return the set of 'LeanSwe/<Pkg>' directories present under LeanSwe/ or proofs/LeanSwe/ in base_ref."""
+    """Return the set of 'LeanSwe/<Pkg>' directories present under LeanSwe/ or proofs/LeanSweProofs/ in base_ref."""
     proc = subprocess.run(
-        ["git", "ls-tree", "-d", "--name-only", base_ref, "--", "LeanSwe/", "proofs/LeanSwe/"],
+        ["git", "ls-tree", "-d", "--name-only", base_ref, "--", "LeanSwe/", "proofs/LeanSweProofs/"],
         cwd=repo_root,
         capture_output=True,
         text=True,
@@ -994,7 +995,7 @@ def _is_valid_manifest_pkg_name(pkg: str) -> bool:
 
 
 def _discover_packages_from_lean_paths(lean_paths: list[str]) -> tuple[set[str], set[str]]:
-    """Return `(discovered_pkgs, all_lean_dirs)` from repo-relative `.lean` paths under `LeanSwe/` or `proofs/LeanSwe/`."""
+    """Return `(discovered_pkgs, all_lean_dirs)` from repo-relative `.lean` paths under `LeanSwe/` or `proofs/LeanSweProofs/`."""
     discovered: set[str] = set()
     all_lean_dirs: set[str] = set()
     for rel_path in lean_paths:

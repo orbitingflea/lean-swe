@@ -6,7 +6,7 @@ import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.Uuid.Types
-import LeanSwe.Uuid.Model
+import LeanSweProofs.Uuid.Model
 import LeanSwe.Uuid.Interface
 
 namespace Fuzz.Uuid

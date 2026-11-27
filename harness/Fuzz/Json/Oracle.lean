@@ -1,5 +1,5 @@
 import Lean.Data.Json.Basic
-import LeanSwe.Json.Model
+import LeanSweProofs.Json.Model
 
 namespace Fuzz.Json
 

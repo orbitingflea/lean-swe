@@ -7,7 +7,7 @@ import Fuzz.Json.Gen
 import Fuzz.Json.Corpus
 import Fuzz.Json.Check
 import LeanSwe.Json.Interface
-import LeanSwe.Json.Model
+import LeanSweProofs.Json.Model
 
 namespace Fuzz.Json
 

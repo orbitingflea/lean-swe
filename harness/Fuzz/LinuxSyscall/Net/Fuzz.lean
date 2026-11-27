@@ -1,6 +1,6 @@
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Net.Types
-import LeanSwe.LinuxSyscall.Net.Model
+import LeanSweProofs.LinuxSyscall.Net.Model
 import LeanSwe.LinuxSyscall.Net.Interface
 import LeanSwe.LinuxSyscall.Sandbox.Interface
 import Fuzz.LinuxSyscall.Rng

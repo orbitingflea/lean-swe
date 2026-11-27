@@ -1,7 +1,7 @@
 import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Dns.Impl
 import LeanSwe.LinuxSyscall.Dns.Interface
-import LeanSwe.LinuxSyscall.Dns.Model
+import LeanSweProofs.LinuxSyscall.Dns.Model
 
 namespace Fuzz.Dns.Checks
 

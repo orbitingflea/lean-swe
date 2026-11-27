@@ -19,37 +19,9 @@ package «lean-swe» where
 lean_lib Core where
   globs := #[.submodules `Core]
 
-private partial def collectL1LeanMods (dir : System.FilePath) (pfx : Lean.Name) : IO (Array Lean.Name) := do
-  if !(← dir.isDir) then
-    return #[]
-  let entries ← dir.readDir
-  let sorted := entries.qsort fun a b => a.fileName < b.fileName
-  let mut out : Array Lean.Name := #[]
-  for entry in sorted do
-    if ← entry.path.isDir then
-      out := out ++ (← collectL1LeanMods entry.path (pfx.str entry.fileName))
-    else if entry.path.extension == some "lean" then
-      let stem := (entry.path.withExtension "").fileName.getD ""
-      if !stem.isEmpty then
-        out := out.push (pfx.str stem)
-  return out
-
-private unsafe def l1SubModsUnsafe (_ : Unit) : Array Lean.Name :=
-  match unsafeIO (collectL1LeanMods (__dir__ / "LeanSwe") `LeanSwe) with
-  | .ok mods => mods
-  | .error _ => #[]
-
-@[implemented_by l1SubModsUnsafe]
-private def getL1SubMods (_ : Unit) : Array Lean.Name :=
-  #[]
-
-private def l1SubMods : Array Lean.Name :=
-  getL1SubMods ()
-
 @[default_target]
 lean_lib LeanSwe where
-  roots := l1SubMods
-  globs := (#[`LeanSwe] ++ l1SubMods).map Glob.one
+  globs := #[.one `LeanSwe, .submodules `LeanSwe]
 
 private def buildFdBoxObj (pkg : NPackage __name__) (tag : String) : FetchM (Job System.FilePath) := do
   let cDir := pkg.dir / "LeanSwe" / "LinuxSyscall" / "c"

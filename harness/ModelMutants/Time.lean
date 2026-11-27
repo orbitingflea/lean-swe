@@ -1,6 +1,6 @@
 import Core.Obeys
 import LeanSwe.Time.Types
-import LeanSwe.Time.Model
+import LeanSweProofs.Time.Model
 
 /-!
 # Targeted Dummy Mutants and Satisfiability Witness for `LeanSwe.Time.Model`

@@ -6,7 +6,7 @@ import Fuzz.Common.Suite
 import Fuzz.Dns.Gen
 import Fuzz.Dns.Checks
 import LeanSwe.LinuxSyscall.Dns.Types
-import LeanSwe.LinuxSyscall.Dns.Model
+import LeanSweProofs.LinuxSyscall.Dns.Model
 import LeanSwe.LinuxSyscall.Dns.Interface
 import LeanSwe.LinuxSyscall.Dns.Impl
 import LeanSwe.LinuxSyscall.Sandbox.Interface

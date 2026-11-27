@@ -7,7 +7,7 @@ import Fuzz.Toml.Gen
 import Fuzz.Toml.Corpus
 import Fuzz.Toml.Check
 import LeanSwe.Toml.Interface
-import LeanSwe.Toml.Model
+import LeanSweProofs.Toml.Model
 
 namespace Fuzz.Toml
 

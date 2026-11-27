@@ -4,7 +4,7 @@ import Fuzz.Json.Oracle
 import Fuzz.Json.Gen
 import LeanSwe.Json.Interface
 import LeanSwe.Json.Impl
-import LeanSwe.Json.Model
+import LeanSweProofs.Json.Model
 
 namespace Fuzz.Json
 

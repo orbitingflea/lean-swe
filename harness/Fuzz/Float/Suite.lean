@@ -5,7 +5,7 @@ import Fuzz.Common.Suite
 import Fuzz.Float.Oracle
 import Fuzz.Float.Gen
 import LeanSwe.NumParse.Interface
-import LeanSwe.NumParse.Model
+import LeanSweProofs.NumParse.Model
 import LeanSwe.Toml.Interface
 import Lean.Data.Json.Basic
 

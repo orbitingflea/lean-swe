@@ -3,10 +3,10 @@ import Fuzz.Common.Shrink
 import Fuzz.Common.Coverage
 import Fuzz.Common.Suite
 import LeanSwe.EnvVars.Raw.Types
-import LeanSwe.EnvVars.Raw.Model
+import LeanSweProofs.EnvVars.Raw.Model
 import LeanSwe.EnvVars.Raw.Interface
 import LeanSwe.EnvVars.Types
-import LeanSwe.EnvVars.Model
+import LeanSweProofs.EnvVars.Model
 import LeanSwe.EnvVars.Interface
 
 namespace Fuzz.EnvVars
