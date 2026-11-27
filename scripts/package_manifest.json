@@ -29,21 +29,6 @@
       "external_boundary": true,
       "spec_style": "state_step"
     },
-    "LeanSwe.ConnectProxy": {
-      "kind": "model",
-      "purity": "mixed",
-      "deps": [
-        "LeanSwe.LinuxSyscall.Common",
-        "LeanSwe.LinuxSyscall.Dns",
-        "LeanSwe.LinuxSyscall.Files",
-        "LeanSwe.LinuxSyscall.Net",
-        "LeanSwe.LinuxSyscall.Poll",
-        "LeanSwe.LinuxSyscall.TimeRand",
-        "LeanSwe.NetRelay"
-      ],
-      "external_boundary": false,
-      "spec_style": "state_step"
-    },
     "LeanSwe.CryptoHash": {
       "kind": "model",
       "purity": "mixed",
@@ -211,17 +196,6 @@
       ],
       "fuzz_suite": "timerand",
       "external_boundary": true,
-      "spec_style": "state_step"
-    },
-    "LeanSwe.NetRelay": {
-      "kind": "model",
-      "purity": "mixed",
-      "deps": [
-        "LeanSwe.LinuxSyscall.Common",
-        "LeanSwe.LinuxSyscall.Files",
-        "LeanSwe.LinuxSyscall.Net"
-      ],
-      "external_boundary": false,
       "spec_style": "state_step"
     },
     "LeanSwe.NumParse": {

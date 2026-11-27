@@ -38,8 +38,6 @@ SUITE_TO_DIR: dict[str, pathlib.Path] = {
     "CryptoHash.Raw": pathlib.Path("LeanSwe/CryptoHash/Raw"),
     "CryptoHash": pathlib.Path("LeanSwe/CryptoHash"),
     "Tar": pathlib.Path("LeanSwe/Tar"),
-    "ConnectProxy": pathlib.Path("LeanSwe/ConnectProxy"),
-    "NetRelay": pathlib.Path("LeanSwe/NetRelay"),
     "SlotPool": pathlib.Path("LeanSwe/SlotPool"),
     "LinuxSyscall.Sandbox": pathlib.Path("LeanSwe/LinuxSyscall/Sandbox"),
     "LinuxSyscall.TimeRand": pathlib.Path("LeanSwe/LinuxSyscall/TimeRand"),
@@ -351,7 +349,7 @@ def run_suite_mode(work: pathlib.Path, mode: str, suite: str, timeout_s: float =
 
 
 def resolve_targets(root: pathlib.Path, suite: str) -> tuple[list[pathlib.Path], list[pathlib.Path]]:
-    """Collect Lean `Impl.lean` / `Impl/**/*.lean` (plus `ConnectProxy` `SysBridge*`/`Relay*`) and C shim targets."""
+    """Collect Lean `Impl.lean` / `Impl/**/*.lean` and C shim targets."""
     if suite == "all":
         suite_names = list(SUITE_TO_DIR.keys())
     else:
@@ -370,8 +368,6 @@ def resolve_targets(root: pathlib.Path, suite: str) -> tuple[list[pathlib.Path],
             for lf in sorted(set(pkg_dir.rglob("*Impl.lean")) | set(pkg_dir.rglob("Impl/**/*.lean"))):
                 if not any(lf.is_relative_to(cd) for cd in child_suite_dirs):
                     lean_targets.append(lf.relative_to(root))
-            if sname == "ConnectProxy":
-                lean_targets.extend(sorted({lf.relative_to(root) for g in ("SysBridge.lean", "SysBridge/**/*.lean", "Relay.lean", "Relay/**/*.lean") for lf in pkg_dir.rglob(g)}))
         if sname in SUITE_TO_C_SHIMS:
             for c_rel in SUITE_TO_C_SHIMS[sname]:
                 if (root / c_rel).is_file() and c_rel not in c_targets:

@@ -32,7 +32,6 @@ private def allSuites : Array (String × String × IO (Option String)) := #[
   ("CryptoHash.Raw", "LeanSwe/CryptoHash/Raw/RuntimeTests.lean", do CryptoHash.Raw.RuntimeTests.runAll; return none),
   ("CryptoHash", "LeanSwe/CryptoHash/RuntimeTests.lean", do CryptoHash.RuntimeTests.runAll; return none),
   ("Tar", "LeanSwe/Tar/RuntimeTests.lean", do Tar.RuntimeTests.runAll; return none),
-  ("ConnectProxy", "LeanSwe/ConnectProxy/RuntimeTests.lean", do ConnectProxy.RuntimeTests.runAll; return none),
   ("SlotPool", "LeanSwe/SlotPool/RuntimeTests.lean", do SlotPool.RuntimeTests.runAll; return none),
   ("PostFork", "LeanSwe/PostFork/RuntimeTests.lean", do PostFork.RuntimeTests.runAll; return none)
 ]

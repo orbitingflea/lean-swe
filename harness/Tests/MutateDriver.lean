@@ -2,12 +2,10 @@ import Tests.Common
 import Tests.Mutate.CmdLine
 import Tests.Mutate.Codecs
 import Tests.Mutate.Compress
-import Tests.Mutate.ConnectProxy
 import Tests.Mutate.CryptoHash
 import Tests.Mutate.EnvVars
 import Tests.Mutate.FsAndProcess
 import Tests.Mutate.LinuxSyscall
-import Tests.Mutate.NetRelay
 import Tests.Mutate.NumParse
 import Tests.Mutate.Patterns
 import Tests.Mutate.PostFork
@@ -39,8 +37,6 @@ private def allSuites : Array MutateSuite := #[
   CryptoHash.cryptoHashRawSuite,
   CryptoHash.cryptoHashSuite,
   Codecs.tarSuite,
-  ConnectProxy.connectProxySuite,
-  NetRelay.netRelaySuite,
   FsAndProcess.slotPoolSuite
 ] ++ LinuxSyscall.suites ++ #[PostFork.postForkSuite]
 
