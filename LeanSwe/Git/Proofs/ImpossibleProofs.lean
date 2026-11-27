@@ -136,15 +136,18 @@ private theorem clone_res (source target : String) (opts : CloneOptions)
   rw [show Git.clone source target opts =
       LeanSwe.Git.Impl.cloneImpl LeanSwe.Git.defaultOps source target opts from rfl]
   unfold LeanSwe.Git.Impl.cloneImpl
-  cases hs : LeanSwe.Git.Model.validateCloneEndpoint source with
+  have hEpKind : ∀ (p : String) (e : GitError),
+      LeanSwe.Git.Impl.validateCloneEndpointImpl p = .error e → e.kind = .invalidInput := by
+    intro p e h; unfold LeanSwe.Git.Impl.validateCloneEndpointImpl at h; split at h <;> cases h; rfl
+  cases hs : LeanSwe.Git.Impl.validateCloneEndpointImpl source with
   | error e =>
     dsimp only
-    exact ⟨_, w, rfl, fun _ he => by cases he; rw [validateCloneEndpoint_kind source e hs]; exact ⟨by decide, by decide⟩⟩
+    exact ⟨_, w, rfl, fun _ he => by cases he; rw [hEpKind source e hs]; exact ⟨by decide, by decide⟩⟩
   | ok _ =>
-    cases ht : LeanSwe.Git.Model.validateCloneEndpoint target with
+    cases ht : LeanSwe.Git.Impl.validateCloneEndpointImpl target with
     | error e =>
       dsimp only
-      exact ⟨_, w, rfl, fun _ he => by cases he; rw [validateCloneEndpoint_kind target e ht]; exact ⟨by decide, by decide⟩⟩
+      exact ⟨_, w, rfl, fun _ he => by cases he; rw [hEpKind target e ht]; exact ⟨by decide, by decide⟩⟩
     | ok _ =>
       dsimp only
       let afterBranch : Array String → Array String → IO (Except GitError Unit) := fun depthArgs bArgs =>
@@ -164,7 +167,7 @@ private theorem clone_res (source target : String) (opts : CloneOptions)
               match opts.branch? with
               | none => Except.ok #[]
               | some b =>
-                if LeanSwe.Git.Model.isValidRefNameStr b then Except.ok #["--branch", b]
+                if LeanSwe.Git.Impl.isValidRefNameStrImpl b then Except.ok #["--branch", b]
                 else Except.error ({ kind := GitErrorKind.invalidRef, message := s!"invalid clone branch: '{b}'" } : GitError) with
             | Except.error e => pure (Except.error e)
             | Except.ok bArgs => afterBranch depthArgs bArgs) w = EST.Out.ok res w' ∧
@@ -396,7 +399,7 @@ theorem git_worktreeAdd_never_parseError (repoPath : String) (opts : WorktreeAdd
                 match opts.target? with
                 | none => Except.ok #[]
                 | some t =>
-                  if LeanSwe.Git.Model.isValidStrictRevSpec t then Except.ok #[t]
+                  if LeanSwe.Git.Impl.isValidStrictRevSpecImpl t then Except.ok #[t]
                   else Except.error ({ kind := GitErrorKind.invalidInput, message := s!"invalid worktree target: '{t}'" } : GitError) with
               | Except.error e => pure (Except.error e)
               | Except.ok tArgs => do

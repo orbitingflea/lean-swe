@@ -1,11 +1,9 @@
 import LeanSwe.Git.Types
-import LeanSwe.Git.Model
 import LeanSwe.Git.Impl.Helpers
 
 namespace LeanSwe.Git.Impl
 
 open LeanSwe.Git
-open LeanSwe.Git.Model
 
 /-- Probe whether `repoPath` is inside a Git repository (`notARepo` maps to `false`). -/
 def isRepoImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m) (repoPath : String) :
@@ -67,7 +65,7 @@ def headCommitImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m) (repoPath 
         match decodeUtf8Checked out.stdout with
         | .error e => return .error e
         | .ok s =>
-          match mkCommitId (trimTrailingNewlines s) with
+          match mkCommitIdImpl (trimTrailingNewlines s) with
           | .error e => return .error e
           | .ok cid => return .ok (some cid)
       else
@@ -98,7 +96,7 @@ def headBranchImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m) (repoPath 
         | .ok s =>
           let raw := trimTrailingNewlines s
           let stripped := if raw.startsWith "refs/heads/" then String.ofList (raw.toList.drop 11) else raw
-          match mkRefName stripped with
+          match mkRefNameImpl stripped with
           | .error e => return .error e
           | .ok ref => return .ok (some ref)
       else
@@ -134,7 +132,7 @@ def revParseCommitImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
   match validateRepoPath repoPath with
   | .error e => return .error e
   | .ok () =>
-    if !isValidRevSpec rev then
+    if !isValidRevSpecImpl rev then
       return .error { kind := .invalidInput, message := s!"invalid revision specification: '{rev}'" }
     match ← runGitRaw ops
         { cwd := some repoPath, args := #["rev-parse", "-q", "--verify", rev ++ "^{commit}"] } with
@@ -143,7 +141,7 @@ def revParseCommitImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
       if out.exitCode == 0 then
         match decodeUtf8Checked out.stdout with
         | .error e => return .error e
-        | .ok s => return mkCommitId (trimTrailingNewlines s)
+        | .ok s => return mkCommitIdImpl (trimTrailingNewlines s)
       else
         let err := classifyError "rev-parse" out
         if err.kind == .notARepo then
@@ -164,7 +162,7 @@ def isAncestorImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
   match validateRepoPath repoPath with
   | .error e => return .error e
   | .ok () =>
-    if !isValidCommitIdStr ancestor.hex || !isValidCommitIdStr descendant.hex then
+    if !isValidCommitIdStrImpl ancestor.hex || !isValidCommitIdStrImpl descendant.hex then
       return .error { kind := .invalidRef, message := "invalid commit ID argument" }
     match ← runGitRaw ops
         { cwd := some repoPath, args := #["merge-base", "--is-ancestor", ancestor.hex, descendant.hex] } with
@@ -184,7 +182,7 @@ def mergeBaseImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
   match validateRepoPath repoPath with
   | .error e => return .error e
   | .ok () =>
-    if !isValidCommitIdStr a.hex || !isValidCommitIdStr b.hex then
+    if !isValidCommitIdStrImpl a.hex || !isValidCommitIdStrImpl b.hex then
       return .error { kind := .invalidRef, message := "invalid commit ID argument" }
     match ← runGitRaw ops
         { cwd := some repoPath, args := #["merge-base", a.hex, b.hex] } with
@@ -194,7 +192,7 @@ def mergeBaseImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
         match decodeUtf8Checked out.stdout with
         | .error e => return .error e
         | .ok s =>
-          match mkCommitId (trimTrailingNewlines s) with
+          match mkCommitIdImpl (trimTrailingNewlines s) with
           | .error e => return .error e
           | .ok cid => return .ok (some cid)
       else if out.exitCode == 1 && (classifyError "merge-base" out).kind == .commandFailed &&
@@ -212,7 +210,7 @@ def statusImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m) (repoPath : St
     match ← runGitChecked ops "status"
         { cwd := some repoPath, args := #["status", "--porcelain=v1", "--untracked-files=normal", "-z"] } with
     | .error e => return .error e
-    | .ok out => return parsePorcelainStatusZ out.stdout
+    | .ok out => return parsePorcelainStatusZImpl out.stdout
 
 /-- Query `git diff --name-status -z` between `revA` and optional `revB?`. -/
 def diffNameStatusImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
@@ -221,25 +219,25 @@ def diffNameStatusImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
   match validateRepoPath repoPath with
   | .error e => return .error e
   | .ok () =>
-    if !isValidStrictRevSpec revA then
+    if !isValidStrictRevSpecImpl revA then
       return .error { kind := .invalidInput, message := s!"invalid revision: '{revA}'" }
     let revBArgs : Except GitError (Array String) :=
       match revB? with
       | none => .ok #[]
       | some rb =>
-        if isValidStrictRevSpec rb then
+        if isValidStrictRevSpecImpl rb then
           .ok #[rb]
         else
           .error { kind := .invalidInput, message := s!"invalid revision: '{rb}'" }
     match revBArgs with
     | .error e => return .error e
     | .ok rbArgs =>
-      if !paths.all isValidPathArg then
+      if !paths.all isValidPathArgImpl then
         return .error { kind := .invalidPath, message := "invalid diff path argument" }
       let args := #["diff", "--name-status", "-z", revA] ++ rbArgs ++ #["--"] ++ paths
       match ← runGitChecked ops "diff" { cwd := some repoPath, args := args } with
       | .error e => return .error e
-      | .ok out => return parseDiffNameStatusZ out.stdout
+      | .ok out => return parseDiffNameStatusZImpl out.stdout
 
 /-- Query `git worktree list --porcelain -z` and parse all worktree stanzas. -/
 def listWorktreesImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m) (repoPath : String) :
@@ -250,7 +248,7 @@ def listWorktreesImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m) (repoPa
     match ← runGitChecked ops "worktree"
         { cwd := some repoPath, args := #["worktree", "list", "--porcelain", "-z"] } with
     | .error e => return .error e
-    | .ok out => return parseWorktreeListPorcelain out.stdout
+    | .ok out => return parseWorktreeListPorcelainImpl out.stdout
 
 /-- Read blob bytes at `rev:relPath`, returning `none` when absent or when the object is a tree/commit. -/
 def showFileImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
@@ -258,9 +256,9 @@ def showFileImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
   match validateRepoPath repoPath with
   | .error e => return .error e
   | .ok () =>
-    if !isValidStrictRevSpec rev then
+    if !isValidStrictRevSpecImpl rev then
       return .error { kind := .invalidInput, message := s!"invalid revision: '{rev}'" }
-    match validateRelRepoPath relPath with
+    match validateRelRepoPathImpl relPath with
     | .error e => return .error e
     | .ok () =>
       match ← revParseCommitImpl ops repoPath rev with

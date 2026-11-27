@@ -47,7 +47,7 @@ theorem refinesScopedRawFs_of_refinesFilesFixed
   | mapRawError raw =>
     simp only [execScopedRawFsStep, Internal.toScopedRawFsOpsM, SysBridge.mkRawFsOpsM,
       Pure.pure, StateT.pure, StateT.run, allowedScopedRawFsStep]
-    exact ⟨fsWorldTrace_nil hWf, trivial, trivial⟩
+    exact ⟨fsWorldTrace_nil hWf, trivial, rfl⟩
   | stat follow path =>
     simp only [execScopedRawFsStep, Internal.toScopedRawFsOpsM, SysBridge.mkRawFsOpsM,
       Functor.map, StateT.map, StateT.run]

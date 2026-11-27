@@ -4,7 +4,6 @@ import LeanSwe.LinuxSyscall.Process.Interface
 import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.PostFork.Types
-import LeanSwe.PostFork.Model
 import LeanSwe.Process.Types
 import LeanSwe.Process.Types.Internal
 import LeanSwe.Process.SysBridge.ErrorAndEnv
@@ -87,19 +86,23 @@ def resolveExecutablePath {m : Type → Type} [Monad m] {fd : Type}
     let dirs := (splitPosixPathBytes rawPath).filterMap String.fromUTF8?
     searchPathDirs files program cwd? eintrFuel false dirs
 
+/-- Return `true` iff UTF-8 bytes of `s` contain an embedded NUL (`0x00`) byte. -/
+def hasEmbeddedNulStr (s : String) : Bool :=
+  s.toUTF8.toList.any (· == (0 : UInt8))
+
 /-- Check spawn-time request validity (non-empty `program`, no NUL bytes, valid `env` keys/values). -/
 def isInvalidSpawnRequest (req : ExecRequest) : Bool :=
   req.program.isEmpty ||
   hasNul req.program ||
-  PostFork.Model.hasEmbeddedNulStr req.program ||
-  req.args.toList.any (fun a => hasNul a || PostFork.Model.hasEmbeddedNulStr a) ||
+  hasEmbeddedNulStr req.program ||
+  req.args.toList.any (fun a => hasNul a || hasEmbeddedNulStr a) ||
   (match req.cwd with
-   | some d => hasNul d || PostFork.Model.hasEmbeddedNulStr d
+   | some d => hasNul d || hasEmbeddedNulStr d
    | none => false) ||
   req.env.toList.any (fun kv =>
     isInvalidEnvEntry kv ||
-    PostFork.Model.hasEmbeddedNulStr kv.1 ||
-    match kv.2 with | some v => PostFork.Model.hasEmbeddedNulStr v | none => false)
+    hasEmbeddedNulStr kv.1 ||
+    match kv.2 with | some v => hasEmbeddedNulStr v | none => false)
 
 /-- Map a `PostForkError` from `PostFork.spawn` into `ProcessError` (attributing `.chdir` failures to `req.cwd`). -/
 def mapPostForkError (req : ExecRequest) (pfErr : PostFork.PostForkError) : ProcessError :=
@@ -142,7 +145,7 @@ def spawnOsPhase {m : Type → Type} [Monad m] {fd : Type}
       match ← resolveExecutablePath deps.files req.program req.cwd envBytes eintrFuel with
       | .error resErr => return .error resErr
       | .ok resolvedPath =>
-        if resolvedPath.isEmpty || PostFork.Model.hasEmbeddedNulStr resolvedPath then
+        if resolvedPath.isEmpty || hasEmbeddedNulStr resolvedPath then
           return .error (mapRawError (.invalidArgument (some req.program) Errno.EINVAL "invalid resolved executable path"))
         match ← retryEintr (deps.proc.pipe2 { cloexec := true }) eintrFuel with
         | .error e1 => return .error (mapErrno (some req.program) "pipe2" e1)

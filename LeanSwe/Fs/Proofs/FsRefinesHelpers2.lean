@@ -149,10 +149,10 @@ theorem resolveApproxGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRa
       cases rR with
       | ok _ => simp only [Pure.pure, StateT.pure]; exact ⟨tr1, hTr1⟩
       | error _ =>
-        cases Model.parent cur with
+        cases Internal.parent cur with
         | none => simp only [Pure.pure, StateT.pure]; exact ⟨tr1, hTr1⟩
         | some par =>
-          cases Model.name cur with
+          cases Internal.name cur with
           | none => simp only [Pure.pure, StateT.pure]; exact ⟨tr1, hTr1⟩
           | some seg =>
             dsimp only
@@ -285,8 +285,8 @@ theorem copyTreeGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOp
                       | ok u =>
                         cases u; dsimp only
                         let childFn : String → StateM W (Except FsError Unit) := fun n => do
-                          let sChild := Model.join src n
-                          let dChild := Model.join dst n
+                          let sChild := Internal.join src n
+                          let dChild := Internal.join dst n
                           match ← ops.stat true sChild with
                           | .error e => return .error e
                           | .ok childSt =>
@@ -297,8 +297,8 @@ theorem copyTreeGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOp
                         have hFc := forEachChildM_trace childFn
                           (fun n sX hWX => by
                             dsimp only [childFn]
-                            have hSc := scoped_stat hOps true (Model.join src n) hWX
-                            cases hEsc : (ops.stat true (Model.join src n) sX) with
+                            have hSc := scoped_stat hOps true (Internal.join src n) hWX
+                            cases hEsc : (ops.stat true (Internal.join src n) sX) with
                             | mk rSc sY =>
                               rw [StateT.run] at hSc; rw [hEsc] at hSc; dsimp only at hSc
                               obtain ⟨trSc, hTrSc, _, hOutSc⟩ := hSc
@@ -308,16 +308,16 @@ theorem copyTreeGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOp
                               | ok childSt =>
                                 by_cases hCd : (childSt.kind == .dir) = true
                                 · simp only [hCd, ↓reduceIte]
-                                  have hSub := ih (Model.join src n) (Model.join dst n) (canon :: visited) hTrSc.1
-                                  cases hEsub : (Internal.copyTreeGoM ops.toNonLockFsOpsM (Model.join src n) (Model.join dst n) dirsExistOk (canon :: visited) k sY) with
+                                  have hSub := ih (Internal.join src n) (Internal.join dst n) (canon :: visited) hTrSc.1
+                                  cases hEsub : (Internal.copyTreeGoM ops.toNonLockFsOpsM (Internal.join src n) (Internal.join dst n) dirsExistOk (canon :: visited) k sY) with
                                   | mk rSub sZ =>
                                     rw [StateT.run] at hSub; rw [hEsub] at hSub; dsimp only at hSub
                                     obtain ⟨trSub, hTrSub, hOutSub⟩ := hSub
                                     dsimp only
                                     exact ⟨trSc ++ trSub, fsWorldTrace_append hTrSc hTrSub, by cases rSub with | ok u => cases u; trivial | error e => exact hOutSub⟩
                                 · simp only [hCd, Bool.false_eq_true, ↓reduceIte]
-                                  have hCf := copyFileImplM_trace hOps (Model.join src n) (Model.join dst n) hTrSc.1
-                                  cases hEcf : (Internal.copyFileImplM ops.toNonLockFsOpsM (Model.join src n) (Model.join dst n) sY) with
+                                  have hCf := copyFileImplM_trace hOps (Internal.join src n) (Internal.join dst n) hTrSc.1
+                                  cases hEcf : (Internal.copyFileImplM ops.toNonLockFsOpsM (Internal.join src n) (Internal.join dst n) sY) with
                                   | mk rCf sZ =>
                                     rw [StateT.run] at hCf; rw [hEcf] at hCf; dsimp only at hCf
                                     obtain ⟨trCf, hTrCf, hOutCf⟩ := hCf

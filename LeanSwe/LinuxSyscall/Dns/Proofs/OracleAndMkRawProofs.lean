@@ -252,7 +252,11 @@ theorem test_dns_mkRawOps_soundAgainstAllowedOutcome_ok :
             unfold Internal.mkDnsOpsM
             dsimp only [Bind.bind, Pure.pure]
             simp only [hnv, Bool.false_eq_true, ↓reduceIte, hRaw, Internal.decodeRecords_encodeRecords,
-              hemp, hAll, hMult, Bool.not_true, Bool.or_self, ↓reduceIte]
+              hemp, hAll, Internal.matchesSockTypeMultiplicityImpl_eq, hMult, Bool.not_true, Bool.or_self, ↓reduceIte,
+              Internal.parsePureNumericAddrImpl_eq, Internal.mapAddrForHintsImpl_eq,
+              Internal.expandSockTypeImpl_eq, Internal.parseHybridScopedNumericZoneImpl_eq,
+              Internal.matchesHybridScopedAddrsImpl_eq, Internal.parseScopedNonNumericZoneImpl_eq,
+              Internal.canSymbolicScopedOkImpl_eq, Internal.matchesSymbolicScopedAddrsImpl_eq]
             cases hP : parsePureNumericAddr? host with
             | some rawAddr =>
               simp only [hP] at hTrail

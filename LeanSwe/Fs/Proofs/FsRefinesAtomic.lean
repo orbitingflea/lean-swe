@@ -1,3 +1,4 @@
+import LeanSwe.Fs.Proofs.FsRefinesPure
 import LeanSwe.Fs.Proofs.FsRefinesHelpers3
 
 namespace LeanSwe.Fs.Proofs
@@ -27,7 +28,10 @@ theorem atomicWriteSiblingM_trace {W : Type} {proj : W → FsWorld} {ops : Scope
   | mk nonce s1 =>
     rw [StateT.run] at hN; rw [hEn] at hN; dsimp only at hN
     obtain ⟨hTrN, _⟩ := hN
-    simp only [Bind.bind, StateT.bind, StateT.run, hEn]
+    simp only [Bind.bind, StateT.bind, StateT.run, hEn,
+      show Internal.parent path = Model.parent path from refinesPure_parent path,
+      show Internal.name path = Model.name path from refinesPure_name path,
+      show Internal.join = Model.join from rfl]
     let tmpPath := Model.join ((Model.parent path).getD ".") s!".{(Model.name path).getD "tmp"}.tmp.{nonce}"
     have hC := scoped_createFileNew hOps tmpPath bytes hTrN.1
     cases hEc : (ops.createFileNew tmpPath bytes s1) with
@@ -142,7 +146,10 @@ theorem atomicWriteSiblingRetryM_trace {W : Type} {proj : W → FsWorld} {ops : 
     | mk nonce s1 =>
       rw [StateT.run] at hN; rw [hEn] at hN; dsimp only at hN
       obtain ⟨hTrN, _⟩ := hN
-      simp only [Bind.bind, StateT.bind, StateT.run, hEn]
+      simp only [Bind.bind, StateT.bind, StateT.run, hEn,
+        show Internal.parent path = Model.parent path from refinesPure_parent path,
+        show Internal.name path = Model.name path from refinesPure_name path,
+        show Internal.join = Model.join from rfl]
       let tmpPath := Model.join ((Model.parent path).getD ".") s!".{(Model.name path).getD "tmp"}.tmp.{nonce}"
       have hC := scoped_createFileNew hOps tmpPath bytes hTrN.1
       cases hEc : (ops.createFileNew tmpPath bytes s1) with

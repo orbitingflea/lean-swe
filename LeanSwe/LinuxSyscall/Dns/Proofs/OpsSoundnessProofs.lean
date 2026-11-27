@@ -208,6 +208,11 @@ theorem mkDnsOpsM_id_soundAgainstAllowedOutcome
     simp only [hnv, Bool.false_eq_true, ↓reduceIte]
     cases hRaw : raw.getaddrinfo host hints.family.toWire hints.sockType.toWire with
     | ok recBytes =>
+      simp only [Internal.emptyPayloadErrorImpl_eq, Internal.matchesSockTypeMultiplicityImpl_eq,
+        Internal.parsePureNumericAddrImpl_eq, Internal.mapAddrForHintsImpl_eq,
+        Internal.expandSockTypeImpl_eq, Internal.parseHybridScopedNumericZoneImpl_eq,
+        Internal.matchesHybridScopedAddrsImpl_eq, Internal.parseScopedNonNumericZoneImpl_eq,
+        Internal.canSymbolicScopedOkImpl_eq, Internal.matchesSymbolicScopedAddrsImpl_eq]
       exact decode_post_sound host hv hints recBytes
     | error p =>
       rcases p with ⟨rc, eno, msgBytes⟩
@@ -242,6 +247,11 @@ theorem mkDnsOpsM_soundAgainstAllowedOutcome
         simpa [hDec] using hPost
       | ok addrs =>
         dsimp only
+        simp only [Internal.emptyPayloadErrorImpl_eq, Internal.matchesSockTypeMultiplicityImpl_eq,
+          Internal.parsePureNumericAddrImpl_eq, Internal.mapAddrForHintsImpl_eq,
+          Internal.expandSockTypeImpl_eq, Internal.parseHybridScopedNumericZoneImpl_eq,
+          Internal.matchesHybridScopedAddrsImpl_eq, Internal.parseScopedNonNumericZoneImpl_eq,
+          Internal.canSymbolicScopedOkImpl_eq, Internal.matchesSymbolicScopedAddrsImpl_eq]
         simp only [hDec] at hPost
         by_cases hBad : (addrs.isEmpty || !addrs.all (addrMatchesHints hints)) = true
         · simp only [hBad, ↓reduceIte] at hPost ⊢
@@ -352,6 +362,11 @@ theorem mkDnsOps_soundAgainstAllowedOutcome
         exact io_pure_match (allowedDnsOutcome host hints) _ w1 hPost
       | ok addrs =>
         dsimp only
+        simp only [Internal.emptyPayloadErrorImpl_eq, Internal.matchesSockTypeMultiplicityImpl_eq,
+          Internal.parsePureNumericAddrImpl_eq, Internal.mapAddrForHintsImpl_eq,
+          Internal.expandSockTypeImpl_eq, Internal.parseHybridScopedNumericZoneImpl_eq,
+          Internal.matchesHybridScopedAddrsImpl_eq, Internal.parseScopedNonNumericZoneImpl_eq,
+          Internal.canSymbolicScopedOkImpl_eq, Internal.matchesSymbolicScopedAddrsImpl_eq]
         simp only [hDec] at hPost
         by_cases hBad : (addrs.isEmpty || !addrs.all (addrMatchesHints hints)) = true
         · simp only [hBad, ↓reduceIte] at hPost ⊢
@@ -486,7 +501,12 @@ theorem mkDnsOps_never_error_when_encoded
   simp only [hv, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
   rw [baseio_bind_eq, hRawOk w]
   dsimp only
-  simp only [decodeRecords_encodeRecords, hne, hm, hMult, Bool.false_eq_true, Bool.not_true, Bool.or_self, ↓reduceIte]
+  simp only [decodeRecords_encodeRecords, hne, hm, Internal.matchesSockTypeMultiplicityImpl_eq, hMult,
+    Bool.false_eq_true, Bool.not_true, Bool.or_self, ↓reduceIte,
+    Internal.parsePureNumericAddrImpl_eq, Internal.mapAddrForHintsImpl_eq,
+    Internal.expandSockTypeImpl_eq, Internal.parseHybridScopedNumericZoneImpl_eq,
+    Internal.matchesHybridScopedAddrsImpl_eq, Internal.parseScopedNonNumericZoneImpl_eq,
+    Internal.canSymbolicScopedOkImpl_eq, Internal.matchesSymbolicScopedAddrsImpl_eq]
   cases hP : parsePureNumericAddr? host with
   | some rawAddr =>
     rcases hNum rawAddr hP with ⟨expAddr, hMap, hEq⟩

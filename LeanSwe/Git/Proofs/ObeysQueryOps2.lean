@@ -21,19 +21,15 @@ private theorem obeys_isAncestor {W : Type} {proj : W → GitHostState} {caps : 
     allowedGuardedStep (proj w) (proj r.2) (preValidateCommitPair p a d)
       [.parseError] (fun _ => True) r.1 := by
   unfold Impl.isAncestorImpl Impl.validateRepoPath preValidateCommitPair
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
     exact ⟨trivial, hwf, trivial, validateFsPathArg_err_nonEmpty hv⟩
   | ok _ =>
-    simp only [Except.mapError]
-    cases hPair : (!isValidCommitIdStr a.hex || !isValidCommitIdStr d.hex) with
-    | true =>
-      simp only [↓reduceIte, stateM_pure_run, allowedGuardedStep]
-      exact ⟨trivial, hwf, trivial, by decide⟩
-    | false =>
-      simp only [Bool.false_eq_true, ↓reduceIte, allowedGuardedStep]
+    simp only [Except.mapError, isValidCommitIdStrImpl_eq]
+    rcases (Bool.eq_false_or_eq_true (!isValidCommitIdStr a.hex || !isValidCommitIdStr d.hex)).symm with hPair | hPair
+    · simp only [hPair, Bool.false_eq_true, ↓reduceIte, allowedGuardedStep]
       rw [stateM_bind_run]
       have hRaw := runGitRaw_caps_step hCaps
         { cwd := some p, args := #["merge-base", "--is-ancestor", a.hex, d.hex] } w hwf
@@ -58,6 +54,8 @@ private theorem obeys_isAncestor {W : Type} {proj : W → GitHostState} {caps : 
             intro k hk
             simp only [List.mem_cons, List.not_mem_nil, or_false] at hk
             subst hk; exact hc.2.2
+    · simp only [hPair, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
+      exact ⟨trivial, hwf, trivial, by decide⟩
 
 private theorem obeys_mergeBase {W : Type} {proj : W → GitHostState} {caps : GitHostCapsM (StateM W)}
     (hCaps : Core.ObeysStep proj hostStepWf (execCapsStep caps) allowedHostCapsStep)
@@ -66,19 +64,15 @@ private theorem obeys_mergeBase {W : Type} {proj : W → GitHostState} {caps : G
     allowedGuardedStep (proj w) (proj r.2) (preValidateCommitPair p a b)
       [] (fun c? => c?.all (fun c => isValidCommitIdStr c.hex) = true) r.1 := by
   unfold Impl.mergeBaseImpl Impl.validateRepoPath preValidateCommitPair
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
     exact ⟨trivial, hwf, trivial, validateFsPathArg_err_nonEmpty hv⟩
   | ok _ =>
-    simp only [Except.mapError]
-    cases hPair : (!isValidCommitIdStr a.hex || !isValidCommitIdStr b.hex) with
-    | true =>
-      simp only [↓reduceIte, stateM_pure_run, allowedGuardedStep]
-      exact ⟨trivial, hwf, trivial, by decide⟩
-    | false =>
-      simp only [Bool.false_eq_true, ↓reduceIte, allowedGuardedStep]
+    simp only [Except.mapError, isValidCommitIdStrImpl_eq]
+    rcases (Bool.eq_false_or_eq_true (!isValidCommitIdStr a.hex || !isValidCommitIdStr b.hex)).symm with hPair | hPair
+    · simp only [hPair, Bool.false_eq_true, ↓reduceIte, allowedGuardedStep]
       rw [stateM_bind_run]
       have hRaw := runGitRaw_caps_step hCaps
         { cwd := some p, args := #["merge-base", a.hex, b.hex] } w hwf
@@ -98,6 +92,7 @@ private theorem obeys_mergeBase {W : Type} {proj : W → GitHostState} {caps : G
           | ok s =>
             dsimp only
             have hCid := mkCommitId_spec (Impl.trimTrailingNewlines s)
+            rw [mkCommitIdImpl_eq]
             cases hc : mkCommitId (Impl.trimTrailingNewlines s) with
             | error e =>
               rw [hc] at hCid
@@ -111,6 +106,8 @@ private theorem obeys_mergeBase {W : Type} {proj : W → GitHostState} {caps : G
           · simp only [stateM_pure_run]; exact ⟨hRaw.1, rfl⟩
           · simp only [stateM_pure_run]
             exact ⟨hRaw.1, (classifyError_spec "merge-base" out).1, fun _ h => nomatch h⟩
+    · simp only [hPair, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
+      exact ⟨trivial, hwf, trivial, by decide⟩
 
 private theorem obeys_status {W : Type} {proj : W → GitHostState} {caps : GitHostCapsM (StateM W)}
     (hCaps : Core.ObeysStep proj hostStepWf (execCapsStep caps) allowedHostCapsStep)
@@ -119,6 +116,7 @@ private theorem obeys_status {W : Type} {proj : W → GitHostState} {caps : GitH
     allowedGuardedStep (proj w) (proj r.2) ((validateFsPathArg p).mapError (·.kind))
       [] (fun entries => entries.all (fun e => !e.path.isEmpty) = true) r.1 := by
   unfold Impl.statusImpl Impl.validateRepoPath
+  rw [validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
@@ -137,6 +135,7 @@ private theorem obeys_status {W : Type} {proj : W → GitHostState} {caps : GitH
     | ok out =>
       dsimp only
       have hSt := parsePorcelainStatusZ_spec out.stdout
+      rw [parsePorcelainStatusZImpl_eq]
       cases hp : parsePorcelainStatusZ out.stdout with
       | error e =>
         rw [hp] at hSt
@@ -155,19 +154,17 @@ private theorem obeys_diffNameStatus {W : Type} {proj : W → GitHostState} {cap
     allowedGuardedStep (proj w) (proj r.2) (preValidateDiffNameStatus p revA revB? paths)
       [] (fun _ => True) r.1 := by
   unfold Impl.diffNameStatusImpl Impl.validateRepoPath preValidateDiffNameStatus
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
     exact ⟨trivial, hwf, trivial, validateFsPathArg_err_nonEmpty hv⟩
   | ok _ =>
-    simp only [Except.mapError]
-    cases hA : isValidStrictRevSpec revA with
-    | false =>
-      simp only [Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
+    simp only [Except.mapError, isValidStrictRevSpecImpl_eq]
+    rcases (Bool.eq_false_or_eq_true (isValidStrictRevSpec revA)).symm with hA | hA
+    · simp only [hA, Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
       exact ⟨trivial, hwf, trivial, interp3_ne_empty _ _ _ (by decide)⟩
-    | true =>
-      simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    · simp only [hA, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
       have hAfterB : ∀ (rbArgs : Array String),
           let r :=
             (if !paths.all isValidPathArg then
@@ -206,16 +203,16 @@ private theorem obeys_diffNameStatus {W : Type} {proj : W → GitHostState} {cap
             | ok _ =>
               simp only [stateM_pure_run]
               exact ⟨hChk.1, trivial⟩
+      simp only [show Impl.isValidPathArgImpl = isValidPathArg from funext isValidPathArgImpl_eq,
+        parseDiffNameStatusZImpl_eq]
       cases revB? with
       | none => exact hAfterB #[]
       | some rb =>
         dsimp only
-        cases hB : isValidStrictRevSpec rb with
-        | false =>
-          simp only [Bool.false_eq_true, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
+        rcases (Bool.eq_false_or_eq_true (isValidStrictRevSpec rb)).symm with hB | hB
+        · simp only [hB, Bool.false_eq_true, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
           exact ⟨trivial, hwf, rfl, interp3_ne_empty _ _ _ (by decide)⟩
-        | true =>
-          simp only [↓reduceIte]
+        · simp only [hB, ↓reduceIte]
           exact hAfterB #[rb]
 
 private theorem obeys_listWorktrees {W : Type} {proj : W → GitHostState} {caps : GitHostCapsM (StateM W)}
@@ -225,6 +222,7 @@ private theorem obeys_listWorktrees {W : Type} {proj : W → GitHostState} {caps
     allowedGuardedStep (proj w) (proj r.2) ((validateFsPathArg p).mapError (·.kind))
       [] (fun wts => wts.all isValidWorktreeInfo = true) r.1 := by
   unfold Impl.listWorktreesImpl Impl.validateRepoPath
+  rw [validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
@@ -243,6 +241,7 @@ private theorem obeys_listWorktrees {W : Type} {proj : W → GitHostState} {caps
     | ok out =>
       dsimp only
       have hWt := parseWorktreeListPorcelain_spec out.stdout
+      rw [parseWorktreeListPorcelainImpl_eq]
       cases hp : parseWorktreeListPorcelain out.stdout with
       | error e =>
         rw [hp] at hWt
@@ -260,20 +259,18 @@ private theorem obeys_showFile {W : Type} {proj : W → GitHostState} {caps : Gi
     allowedGuardedStep (proj w) (proj r.2) (preValidateShowFile p rev rel)
       [] (fun _ => True) r.1 := by
   unfold Impl.showFileImpl Impl.validateRepoPath preValidateShowFile
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
     exact ⟨trivial, hwf, trivial, validateFsPathArg_err_nonEmpty hv⟩
   | ok u =>
     cases u
-    simp only [Except.mapError]
-    cases hRev : isValidStrictRevSpec rev with
-    | false =>
-      simp only [Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
+    simp only [Except.mapError, isValidStrictRevSpecImpl_eq]
+    rcases (Bool.eq_false_or_eq_true (isValidStrictRevSpec rev)).symm with hRev | hRev
+    · simp only [hRev, Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
       exact ⟨trivial, hwf, trivial, interp3_ne_empty _ _ _ (by decide)⟩
-    | true =>
-      simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    · simp only [hRev, Bool.not_true, Bool.false_eq_true, ↓reduceIte, validateRelRepoPathImpl_eq]
       cases hRel : validateRelRepoPath rel with
       | error e =>
         simp only [stateM_pure_run, allowedGuardedStep]

@@ -13,13 +13,15 @@ structure DnsOracle where
 def isValidGaiCode (rc : Int32) : Bool :=
   EAI_OVERFLOW ≤ rc && rc ≤ EAI_NONAME && rc != EAI_SERVICE
 
-private def hexVal? (c : Char) : Option Nat :=
+/-- Decode a single ASCII hexadecimal digit into `0..15`. -/
+def hexVal? (c : Char) : Option Nat :=
   if '0' ≤ c && c ≤ '9' then some (c.toNat - '0'.toNat)
   else if 'a' ≤ c && c ≤ 'f' then some (c.toNat - 'a'.toNat + 10)
   else if 'A' ≤ c && c ≤ 'F' then some (c.toNat - 'A'.toNat + 10)
   else none
 
-private def parseUintDigits? (base : Nat) (maxVal : Nat) : List Char → Nat → Option Nat
+/-- Parse unsigned integer digits in `base` bounded above by `maxVal`. -/
+def parseUintDigits? (base : Nat) (maxVal : Nat) : List Char → Nat → Option Nat
   | [], acc => some acc
   | c :: cs, acc => do
     let d ← hexVal? c
@@ -28,7 +30,8 @@ private def parseUintDigits? (base : Nat) (maxVal : Nat) : List Char → Nat →
     if nxt > maxVal then none
     parseUintDigits? base maxVal cs nxt
 
-private def splitCharListAux (sep : Char) : List Char → List Char → List (List Char) → List (List Char)
+/-- Tail-recursive worker splitting a character list on `sep`. -/
+def splitCharListAux (sep : Char) : List Char → List Char → List (List Char) → List (List Char)
   | [], cur, acc => (cur.reverse :: acc).reverse
   | c :: cs, cur, acc =>
     if c == sep then
@@ -36,20 +39,24 @@ private def splitCharListAux (sep : Char) : List Char → List Char → List (Li
     else
       splitCharListAux sep cs (c :: cur) acc
 
-private def splitCharList (sep : Char) (cs : List Char) : List (List Char) :=
+/-- Split `cs` on separator character `sep`. -/
+def splitCharList (sep : Char) (cs : List Char) : List (List Char) :=
   splitCharListAux sep cs [] []
 
-private def splitDoubleColonAux : List Char → List Char → List (List Char) → List (List Char)
+/-- Tail-recursive worker splitting a character list on `"::"`. -/
+def splitDoubleColonAux : List Char → List Char → List (List Char) → List (List Char)
   | [], cur, acc => (cur.reverse :: acc).reverse
   | ':' :: ':' :: cs, cur, acc =>
     splitDoubleColonAux cs [] (cur.reverse :: acc)
   | c :: cs, cur, acc =>
     splitDoubleColonAux cs (c :: cur) acc
 
-private def splitDoubleColonChars (cs : List Char) : List (List Char) :=
+/-- Split `cs` on `"::"` runs. -/
+def splitDoubleColonChars (cs : List Char) : List (List Char) :=
   splitDoubleColonAux cs [] []
 
-private def parseIpv4AtonPart? (cs : List Char) : Option Nat :=
+/-- Parse one `inet_aton(3)` numeric IPv4 component (decimal, octal, or hexadecimal). -/
+def parseIpv4AtonPart? (cs : List Char) : Option Nat :=
   match cs with
   | [] => none
   | '0' :: 'x' :: ds | '0' :: 'X' :: ds =>
@@ -62,7 +69,8 @@ private def parseIpv4AtonPart? (cs : List Char) : Option Nat :=
     else
       none
 
-private def parseIpv4Aton? (host : String) : Option DnsAddr := do
+/-- Parse a 1-to-4-part `inet_aton(3)` IPv4 literal into `DnsAddr`. -/
+def parseIpv4Aton? (host : String) : Option DnsAddr := do
   let parts := splitCharList '.' host.toList
   if parts.any (·.isEmpty) then none
   match parts with
@@ -101,12 +109,14 @@ private def parseIpv4Aton? (host : String) : Option DnsAddr := do
     some (.ipv4 (UInt8.ofNat a) (UInt8.ofNat b) (UInt8.ofNat c) (UInt8.ofNat d))
   | _ => none
 
-private def parseStrictDecOctet? (cs : List Char) : Option Nat := do
+/-- Parse a strict decimal IPv4 octet (`0..255`, no leading zeros). -/
+def parseStrictDecOctet? (cs : List Char) : Option Nat := do
   if cs.isEmpty || cs.length > 3 then none
   if cs.length > 1 && cs.head? == some '0' then none
   parseUintDigits? 10 255 cs 0
 
-private def parseStrictIpv4Hextets? (cs : List Char) : Option (Nat × Nat) := do
+/-- Parse a strict dotted-quad IPv4 tail into two 16-bit IPv6 hextets. -/
+def parseStrictIpv4Hextets? (cs : List Char) : Option (Nat × Nat) := do
   let parts := splitCharList '.' cs
   match parts with
   | [aCs, bCs, cCs, dCs] =>
@@ -117,11 +127,13 @@ private def parseStrictIpv4Hextets? (cs : List Char) : Option (Nat × Nat) := do
     some ((a <<< 8) ||| b, (c <<< 8) ||| d)
   | _ => none
 
-private def parseHexGroup? (cs : List Char) : Option Nat := do
+/-- Parse a 1-to-4-digit hexadecimal IPv6 hextet (`0..0xffff`). -/
+def parseHexGroup? (cs : List Char) : Option Nat := do
   if cs.isEmpty || cs.length > 4 then none
   parseUintDigits? 16 0xffff cs 0
 
-private def parseIpv6PartsLoop (allowV4Tail : Bool) : List (List Char) → List Nat → Option (List Nat)
+/-- Tail-recursive worker parsing colon-separated IPv6 hextet groups with optional IPv4 tail. -/
+def parseIpv6PartsLoop (allowV4Tail : Bool) : List (List Char) → List Nat → Option (List Nat)
   | [], acc => some acc.reverse
   | [last], acc =>
     if allowV4Tail && last.contains '.' then do
@@ -137,7 +149,8 @@ private def parseIpv6PartsLoop (allowV4Tail : Bool) : List (List Char) → List 
       let v ← parseHexGroup? p
       parseIpv6PartsLoop allowV4Tail rest (v :: acc)
 
-private def parseIpv6Parts? (allowV4Tail : Bool) (cs : List Char) : Option (List Nat) :=
+/-- Parse colon-separated IPv6 hextet groups (empty input returns `some []`). -/
+def parseIpv6Parts? (allowV4Tail : Bool) (cs : List Char) : Option (List Nat) :=
   if cs.isEmpty then
     some []
   else
@@ -147,16 +160,19 @@ private def parseIpv6Parts? (allowV4Tail : Bool) (cs : List Char) : Option (List
     else
       parseIpv6PartsLoop allowV4Tail parts []
 
-private def parseNumericZone? (zoneCs : List Char) : Option UInt32 := do
+/-- Parse a non-empty decimal `UInt32` IPv6 zone identifier. -/
+def parseNumericZone? (zoneCs : List Char) : Option UInt32 := do
   if zoneCs.isEmpty then none
   let n ← parseUintDigits? 10 0xffffffff zoneCs 0
   some (UInt32.ofNat n)
 
-private def isIpv4MappedAddr : DnsAddr → Bool
+/-- Return `true` iff `a` is an IPv4-mapped IPv6 address (`::ffff:0:0/96`). -/
+def isIpv4MappedAddr : DnsAddr → Bool
   | .ipv6 0 0 0 0 0 0 0 0 0 0 0xff 0xff _ _ _ _ _ => true
   | _ => false
 
-private def splitFirstZoneAux : List Char → List Char → List Char × Option (List Char)
+/-- Tail-recursive worker splitting a host string at its first `'%'` zone separator. -/
+def splitFirstZoneAux : List Char → List Char → List Char × Option (List Char)
   | [], acc => (acc.reverse, none)
   | '%' :: rest, acc => (acc.reverse, some rest)
   | c :: rest, acc => splitFirstZoneAux rest (c :: acc)

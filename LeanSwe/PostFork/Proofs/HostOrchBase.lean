@@ -912,12 +912,31 @@ theorem filterOpenCloseList_ok (raw : PosixHostOpsM IO RawFd) (hRaw : NoThrowOps
       | ok _ => exact ih (acc.push (.raw n)) w1
       | error _ => exact ih acc w1
 
+theorem appendBytesImpl_eq (a b : ByteArray) :
+    appendBytesImpl a b = appendBytes a b := rfl
+
+theorem decodeChildFailureImpl_eq (bs : ByteArray) :
+    decodeChildFailureImpl bs = decodeChildFailure bs := rfl
+
+theorem flagsOfSpecImpl_eq {fd : Type} (spec : ChildSpecM fd) (withBarrier : Bool) :
+    flagsOfSpecImpl spec withBarrier = flagsOfSpec spec withBarrier := rfl
+
+theorem keepFdsImpl_eq {fd : Type} (p : FdPolicy fd) :
+    keepFdsImpl p = FdPolicy.keepFds p := rfl
+
+theorem formatEnvEntriesBytesImpl_eq (rawEnv : Array ByteArray) (env : Array (String × String)) :
+    formatEnvEntriesBytesImpl rawEnv env = formatEnvEntriesBytes rawEnv env := rfl
+
+theorem validateSpecImpl_eq {fd : Type} (spec : ChildSpecM fd) :
+    validateSpecImpl spec = validateSpec spec := rfl
+
 theorem performFork_sysOnly (raw : PosixHostOpsM IO RawFd) (hRaw : NoThrowOps raw)
     (spec : ChildSpec) (syncRead? : Option RawFd) (errWrite : RawFd)
     (openCloseFds extraClose : Array (FdRef RawFd)) (withBarrier : Bool) (w : Void IO.RealWorld) :
     ∃ r w', Impl.Internal.performFork raw spec syncRead? errWrite openCloseFds extraClose withBarrier w = .ok r w' ∧
       (∀ e, r = .error e → e.kind = .sysError) := by
   unfold Impl.Internal.performFork
+  rw [flagsOfSpecImpl_eq, keepFdsImpl_eq, formatEnvEntriesBytesImpl_eq]
   rw [io_bind_eq]
   rcases hRaw.forkRun_ok (flagsOfSpec spec withBarrier) spec.forkMode syncRead? errWrite
       (Impl.Internal.stdioRefsArray spec.stdio) (openCloseFds ++ extraClose)
@@ -962,6 +981,7 @@ theorem awaitExecOrFailure_never_invalidInput (raw : PosixHostOpsM IO RawFd) (hR
     exact ⟨.error err, w2, rfl, fun e he hKind => by cases he; have hSys := hrr err rfl; rw [hSys] at hKind; cases hKind⟩
   | ok repBytes =>
     dsimp only
+    rw [decodeChildFailureImpl_eq]
     cases hDec : decodeChildFailure repBytes with
     | none =>
       cases barrierBroken with

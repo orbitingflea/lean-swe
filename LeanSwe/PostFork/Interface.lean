@@ -1,11 +1,9 @@
 import LeanSwe.PostFork.Types
-import LeanSwe.PostFork.Model
 import LeanSwe.PostFork.Impl
 
 namespace LeanSwe.PostFork
 
 open LeanSwe.LinuxSyscall
-open LeanSwe.PostFork.Model
 open LeanSwe.PostFork.Impl
 
 @[extern "leanswe_postfork_host_probe_fd"]

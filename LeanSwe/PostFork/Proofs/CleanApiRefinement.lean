@@ -295,13 +295,13 @@ private theorem spawn_closedRawCloseFilter_ok :
       ((Impl.Internal.mkHostOps LeanSwe.PostFork.mockPosixHostOps).spawn specC).run st0 =
       (.ok { pid := 4242, pgid := none }, s5) := by
     dsimp only [Impl.Internal.mkHostOps]
-    simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    simp only [validateSpecImpl_eq, hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.mockPosixHostOps .inherit).run st0 = (.ok (), st0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP1]
     dsimp only
     have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.mockPosixHostOps
       (LeanSwe.PostFork.Model.FdPolicy.keepFds .inheritNonCloexec).toList).run st0 = (.ok (), st0) := rfl
-    rw [stateT_bind_pure_pair _ _ _ _ _ hP2]
+    rw [keepFdsImpl_eq, stateT_bind_pure_pair _ _ _ _ _ hP2]
     dsimp only
     have hFilt :
         (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.mockPosixHostOps
@@ -326,7 +326,7 @@ private theorem spawn_closedRawCloseFilter_ok :
     have hCloseR : (LeanSwe.PostFork.mockPosixHostOps.closeFd 10).run s4 = (.ok (), s5) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hCloseR]
     have hDec : LeanSwe.PostFork.Model.decodeChildFailure ByteArray.empty = none := rfl
-    rw [hDec]
+    rw [decodeChildFailureImpl_eq, hDec]
     rfl
   exact ⟨s5, hColRun, rfl⟩
 
@@ -420,12 +420,13 @@ private theorem pipeCleanup_and_busyAbort_ok :
         { path := "/bin/true", argv := #[] }).run f0 =
       (.error (Impl.Internal.mkSysErr Errno.EAGAIN "fork failed"), f4) := by
     dsimp only [Impl.Internal.mkHostOps]
-    simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    simp only [validateSpecImpl_eq, hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.mockPosixHostOps .inherit).run f0 = (.ok (), f0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP1]
     dsimp only
     have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.mockPosixHostOps
       (LeanSwe.PostFork.Model.FdPolicy.keepFds .inheritNonCloexec).toList).run f0 = (.ok (), f0) := rfl
+    rw [keepFdsImpl_eq]
     rw [stateT_bind_pure_pair _ _ _ _ _ hP2]
     dsimp only
     have hFC : (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.mockPosixHostOps
@@ -455,12 +456,13 @@ private theorem pipeCleanup_and_busyAbort_ok :
         { path := "/bin/true", argv := #[] }).run s0 =
       (.error (Impl.Internal.mkSysErr Errno.EMFILE "pipe2 sync-barrier failed"), s3) := by
     dsimp only [Impl.Internal.mkHostOps]
-    simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    simp only [validateSpecImpl_eq, hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.mockPosixHostOps .inherit).run s0 = (.ok (), s0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP1]
     dsimp only
     have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.mockPosixHostOps
       (LeanSwe.PostFork.Model.FdPolicy.keepFds .inheritNonCloexec).toList).run s0 = (.ok (), s0) := rfl
+    rw [keepFdsImpl_eq]
     rw [stateT_bind_pure_pair _ _ _ _ _ hP2]
     dsimp only
     have hFC : (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.mockPosixHostOps
@@ -489,12 +491,13 @@ private theorem pipeCleanup_and_busyAbort_ok :
         { path := "/bin/true", argv := #[] }).run t0 =
       (.error (Impl.Internal.mkSysErr Errno.EAGAIN "fork failed"), t5) := by
     dsimp only [Impl.Internal.mkHostOps]
-    simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    simp only [validateSpecImpl_eq, hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.mockPosixHostOps .inherit).run t0 = (.ok (), t0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP1]
     dsimp only
     have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.mockPosixHostOps
       (LeanSwe.PostFork.Model.FdPolicy.keepFds .inheritNonCloexec).toList).run t0 = (.ok (), t0) := rfl
+    rw [keepFdsImpl_eq]
     rw [stateT_bind_pure_pair _ _ _ _ _ hP2]
     dsimp only
     have hFC : (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.mockPosixHostOps
@@ -537,12 +540,13 @@ private theorem pipeCleanup_and_busyAbort_ok :
         { path := "/bin/true", argv := #[] }).run rd0 =
       (.error (Impl.Internal.mkSysErr Errno.EIO "host read failed"), rd5) := by
     dsimp only [Impl.Internal.mkHostOps]
-    simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    simp only [validateSpecImpl_eq, hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.mockPosixHostOps .inherit).run rd0 = (.ok (), rd0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP1]
     dsimp only
     have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.mockPosixHostOps
       (LeanSwe.PostFork.Model.FdPolicy.keepFds .inheritNonCloexec).toList).run rd0 = (.ok (), rd0) := rfl
+    rw [keepFdsImpl_eq]
     rw [stateT_bind_pure_pair _ _ _ _ _ hP2]
     dsimp only
     have hFC : (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.mockPosixHostOps
@@ -590,12 +594,13 @@ private theorem pipeCleanup_and_busyAbort_ok :
         { path := "/bin/false", argv := #[] }).run wt0 =
       (.error (Impl.Internal.mkSysErr Errno.ECHILD "waitpid failed"), wt6) := by
     dsimp only [Impl.Internal.mkHostOps]
-    simp only [hValF, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    simp only [validateSpecImpl_eq, hValF, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     have hP1 : (Impl.Internal.probeStdioPlan LeanSwe.PostFork.mockPosixHostOps .inherit).run wt0 = (.ok (), wt0) := rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hP1]
     dsimp only
     have hP2 : (Impl.Internal.probeRefList LeanSwe.PostFork.mockPosixHostOps
       (LeanSwe.PostFork.Model.FdPolicy.keepFds .inheritNonCloexec).toList).run wt0 = (.ok (), wt0) := rfl
+    rw [keepFdsImpl_eq]
     rw [stateT_bind_pure_pair _ _ _ _ _ hP2]
     dsimp only
     have hFC : (Impl.Internal.filterOpenCloseList LeanSwe.PostFork.mockPosixHostOps
@@ -620,7 +625,7 @@ private theorem pipeCleanup_and_busyAbort_ok :
     rw [stateT_bind_pure_pair _ _ _ _ _ hClR]
     have hDec : LeanSwe.PostFork.Model.decodeChildFailure (ByteArray.mk #[0x50, 0x01, 7, 0, 2, 0, 0, 0]) =
         some { stage := .execve, errno := Errno.ENOENT } := rfl
-    rw [hDec]
+    rw [decodeChildFailureImpl_eq, hDec]
     dsimp only
     have hWtE := waitRetry_echild 4242 wt5 rfl
     rw [stateT_bind_pure_pair _ _ _ _ _ hWtE]

@@ -534,6 +534,7 @@ theorem awaitExecOrFailure_sound {W : Type} {proj : W → HostStepState} {raw : 
               cases hE
               exact Or.inr ⟨rfl, rfl, { cf with waitStatus := some wst }, wst,
                 rfl, rfl, rfl, hWait.2.1 wst rfl, hCfErr⟩
+        rw [show decodeChildFailureImpl repBytes = decodeChildFailure repBytes from rfl]
         cases hDec : decodeChildFailure repBytes with
         | some cf =>
           try dsimp only [Bind.bind, pure, Pure.pure, StateT.run, StateT.bind, StateT.pure]
@@ -563,6 +564,9 @@ theorem performFork_sound {W : Type} {proj : W → HostStepState} {raw : RawHost
     spec.cwd spec.path spec.argv (formatEnvEntriesBytes spec.rawEnv spec.env)) hwf
   try dsimp only [allowedRawStep, execRawStep, Functor.map, StateT.map,
     performFork, Bind.bind, pure, Pure.pure, StateT.run, StateT.bind, StateT.pure] at hStep ⊢
+  rw [show flagsOfSpecImpl spec withBarrier = flagsOfSpec spec withBarrier from rfl,
+      show keepFdsImpl spec.fdPolicy = FdPolicy.keepFds spec.fdPolicy from rfl,
+      show formatEnvEntriesBytesImpl spec.rawEnv spec.env = formatEnvEntriesBytes spec.rawEnv spec.env from rfl]
   cases hCall : raw.forkRun (flagsOfSpec spec withBarrier) spec.forkMode syncRead? errWrite
       (stdioRefsArray spec.stdio) (openCloseFds ++ extraClose) (FdPolicy.keepFds spec.fdPolicy)
       spec.cwd spec.path spec.argv (formatEnvEntriesBytes spec.rawEnv spec.env) w with

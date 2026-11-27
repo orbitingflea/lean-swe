@@ -5,7 +5,6 @@ namespace LeanSwe.Fs.Internal
 open LeanSwe.Fs
   (FsErrorKind FsError EntryKind FileStat WalkEntry FsRawError LockMode FsApi FsApiM
    EntryName RelPath SubtreeM SubtreeOpenerM)
-open LeanSwe.Fs.Model (RawDirOpsM)
 
 /-- Execute `action` and unconditionally close `dh`, preserving `action`'s return value. -/
 def bracketCloseDirM {m : Type → Type} {α : Type} [Monad m] [MonadFinally m]

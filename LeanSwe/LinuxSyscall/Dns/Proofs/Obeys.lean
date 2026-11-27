@@ -31,6 +31,7 @@ private theorem classifyGaiError_eq_rawGaiErrorToDnsError
       Model.rawGaiErrorToDnsError host hints rc eno msgBytes := by
   unfold Internal.classifyGaiError Model.rawGaiErrorToDnsError
     Internal.decodeErrorMessage Model.decodeRawErrorMessage
+  rw [Internal.normalizeGaiCodeForHostImpl_eq]
   rfl
 
 private theorem allowedDnsOutcome_of_healthyStep {env env' : HealthyEnv}
@@ -141,7 +142,11 @@ theorem mkDnsOpsM_obeysStepFrom :
         simp [hMult]
       rw [hDec]
       dsimp only
-      simp only [hBadF, hMultF, Bool.false_eq_true, ↓reduceIte]
+      simp only [hBadF, Internal.matchesSockTypeMultiplicityImpl_eq, hMultF, Bool.false_eq_true, ↓reduceIte,
+        Internal.parsePureNumericAddrImpl_eq, Internal.mapAddrForHintsImpl_eq,
+        Internal.expandSockTypeImpl_eq, Internal.parseHybridScopedNumericZoneImpl_eq,
+        Internal.matchesHybridScopedAddrsImpl_eq, Internal.parseScopedNonNumericZoneImpl_eq,
+        Internal.canSymbolicScopedOkImpl_eq, Internal.matchesSymbolicScopedAddrsImpl_eq]
       cases hP : parsePureNumericAddr? host with
       | some rawAddr =>
         simp only [hP] at hTrail

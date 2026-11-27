@@ -184,10 +184,10 @@ private theorem copyTree_step {W : Type} {proj : W → FsWorld} {ops : ScopedRaw
                     | ok u =>
                       cases u; obtain ⟨⟨rawSt, hmS, hDir⟩, hMk⟩ := hOutGo
                       exact ⟨⟨rawSt, List.mem_append_right _ hmS, hDir⟩, mkdirOkTrace_append_right hMk⟩
-            by_cases hAbs : Model.isAbsolute dst = true
+            by_cases hAbs : Internal.isAbsolute dst = true
             · simp only [hAbs, ↓reduceIte]
               simpa [Functor.map, StateT.map, Bind.bind, StateT.bind, StateT.run, Pure.pure, StateT.pure] using
-                hAfterAbs (Model.normPath dst) hTr12 hNe12
+                hAfterAbs (Internal.normPath dst) hTr12 hNe12
             · simp only [hAbs, Bool.false_eq_true, ↓reduceIte]
               have hC := scoped_cwd hOps hTr2.1
               cases hEc : (ops.cwd s2) with
@@ -199,10 +199,10 @@ private theorem copyTree_step {W : Type} {proj : W → FsWorld} {ops : ScopedRaw
                 cases rC with
                 | error _ =>
                   simpa [Functor.map, StateT.map, Bind.bind, StateT.bind, StateT.run, Pure.pure, StateT.pure, hEc] using
-                    hAfterAbs (Model.normPath dst) hTr123 hNe123
+                    hAfterAbs (Internal.normPath dst) hTr123 hNe123
                 | ok d =>
                   simpa [Functor.map, StateT.map, Bind.bind, StateT.bind, StateT.run, Pure.pure, StateT.pure, hEc] using
-                    hAfterAbs (Model.normPath (Model.join d dst)) hTr123 hNe123
+                    hAfterAbs (Internal.normPath (Internal.join d dst)) hTr123 hNe123
 
 /-- Compositional single-step refinement lifting `ScopedRawFsOpsM` to `Internal.mkApiFromScopedRawM` across all 32 effectful `FsApiM` operations. -/
 theorem refinesStepFromFinally_mkApiFromScopedRawM :

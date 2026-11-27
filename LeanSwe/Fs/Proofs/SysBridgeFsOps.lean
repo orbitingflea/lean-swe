@@ -21,6 +21,7 @@ theorem createFileNewPure_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd
       | .ok () => WriteFileTrace none path.toUTF8 createNewOpenFlags 0o644 bytes tr
       | .error e => nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput)) := by
   unfold SysBridge.createFileNewPure
+  rw [show SysBridge.isValidRawPath path = isValidRawPath path from rfl]
   by_cases hVal : isValidRawPath path = true
   · simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     have hOp := retryEintr_single_req (files.openat none path.toUTF8 createNewOpenFlags 0o644)
@@ -180,6 +181,7 @@ theorem acquireLockPure_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd �
         ((nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput))) ∨
          (e.kind = .wouldBlock ∧ nonBlocking = true ∧ TryLockContendedTrace none path.toUTF8 mode tr)) := by
   unfold SysBridge.acquireLockPure
+  rw [show SysBridge.isValidRawPath path = isValidRawPath path from rfl]
   by_cases hVal : isValidRawPath path = true
   · simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     let baseFlags : OpenFlags := { access := .rdonly, nofollow := true, cloexec := true, nonblock := true }

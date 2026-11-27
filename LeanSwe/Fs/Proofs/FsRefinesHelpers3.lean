@@ -50,7 +50,7 @@ theorem walkGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (
         (fun es =>
           (∀ e ∈ es.toList, List.Pairwise (· ≤ ·) e.dirs.toList ∧ List.Pairwise (· ≤ ·) e.files.toList) ∧
           es.size > 0 ∧
-          let fullDir := if relRoot == "." then root else Model.join root relRoot
+          let fullDir := if relRoot == "." then root else Internal.join root relRoot
           ∃ h eof, (.openat none fullDir.toUTF8 dirOpenFlags 0, .opened h) ∈ tr ∧
             (.getdents64 h 8192, .bytes eof) ∈ tr ∧ eof.size = 0)
         (fun e => nonLockErrOk e) := by
@@ -60,7 +60,7 @@ theorem walkGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (
     exact ⟨[], fsWorldTrace_nil hWf, nonEmpty_append_left (by decide), by intro h; cases h⟩
   | succ k ih =>
     unfold Internal.walkGoM
-    let fullDir := if relRoot == "." then root else Model.join root relRoot
+    let fullDir := if relRoot == "." then root else Internal.join root relRoot
     have hL := listDirSortedM_trace hOps fullDir hWf
     cases hEl : (Internal.listDirSortedM ops.toNonLockFsOpsM fullDir s) with
     | mk rL s1 =>
@@ -82,7 +82,7 @@ theorem walkGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (
           (∀ a ∈ p.1.toList, ∀ b ∈ rest, a ≤ b) ∧ (∀ a ∈ p.2.toList, ∀ b ∈ rest, a ≤ b)
         let step1 : String → (Array String × Array String) → StateM W (ForInStep (Array String × Array String)) :=
           fun n p => do
-            let childFull := Model.join fullDir n
+            let childFull := Internal.join fullDir n
             let isSubDir ← match ← ops.stat false childFull with
               | .ok st => pure (st.kind == .dir)
               | .error _ => pure false
@@ -93,8 +93,8 @@ theorem walkGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (
             obtain ⟨hPwR, hPw1, hPw2, hLe1, hLe2⟩ := hI
             have hCons := List.pairwise_cons.mp hPwR
             dsimp only [step1]
-            have hS := scoped_stat hOps false (Model.join fullDir a) hWX
-            cases hEs : (ops.stat false (Model.join fullDir a) sX) with
+            have hS := scoped_stat hOps false (Internal.join fullDir a) hWX
+            cases hEs : (ops.stat false (Internal.join fullDir a) sX) with
             | mk rS sY =>
               rw [StateT.run] at hS; rw [hEs] at hS; dsimp only at hS
               obtain ⟨trS, hTrS, _, _⟩ := hS
@@ -141,7 +141,7 @@ theorem walkGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (
           let step2 : String → (Option (Except FsError (Array WalkEntry)) × Array WalkEntry) →
               StateM W (ForInStep (Option (Except FsError (Array WalkEntry)) × Array WalkEntry)) :=
             fun d st => do
-              let nextRel := if relRoot == "." then d else Model.join relRoot d
+              let nextRel := if relRoot == "." then d else Internal.join relRoot d
               match ← Internal.walkGoM ops.toNonLockFsOpsM root nextRel st.2 k with
               | .error e => pure (.done (some (.error e), st.2))
               | .ok out' => pure (.yield (none, out'))
@@ -157,8 +157,8 @@ theorem walkGoM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM (
                 | error _ => exact False.elim (List.cons_ne_nil d rest hI.1)
               | none =>
                 rw [hOpt] at hI
-                have hSub := ih (if relRoot == "." then d else Model.join relRoot d) st.2 hI.1 hWX
-                cases hEr : (Internal.walkGoM ops.toNonLockFsOpsM root (if relRoot == "." then d else Model.join relRoot d) st.2 k sX) with
+                have hSub := ih (if relRoot == "." then d else Internal.join relRoot d) st.2 hI.1 hWX
+                cases hEr : (Internal.walkGoM ops.toNonLockFsOpsM root (if relRoot == "." then d else Internal.join relRoot d) st.2 k sX) with
                 | mk rSub sY =>
                   rw [StateT.run] at hSub; rw [hEr] at hSub; dsimp only at hSub
                   obtain ⟨trSub, hTrSub, hOutSub⟩ := hSub
@@ -281,7 +281,7 @@ theorem globImplM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM
   unfold Internal.globImplM
   have hMapGlob : ∀ (ge : LeanSwe.Glob.GlobError),
       nonLockErrOk (Internal.mapGlobError pattern ge) ∧ (Internal.mapGlobError pattern ge).kind = .invalidInput := by
-    intro ge; simp only [Internal.mapGlobError, Model.nonEmptyMsg, nonLockErrOk]
+    intro ge; simp only [Internal.mapGlobError, Internal.nonEmptyMsg, nonLockErrOk]
     refine ⟨⟨?_, by decide⟩, trivial⟩
     by_cases hE : ge.message.isEmpty = true
     · simp [hE]
@@ -305,17 +305,17 @@ theorem globImplM_trace {W : Type} {proj : W → FsWorld} {ops : ScopedRawFsOpsM
         let candStep : WalkEntry → Array String → StateM W (ForInStep (Array String)) :=
           fun entry candidates => do
             let candidates ← forIn entry.dirs candidates fun d candidates =>
-              pure (ForInStep.yield (candidates.push (if entry.root == "." then d else Model.join entry.root d)))
+              pure (ForInStep.yield (candidates.push (if entry.root == "." then d else Internal.join entry.root d)))
             let candidates ← forIn entry.files candidates fun f candidates =>
-              pure (ForInStep.yield (candidates.push (if entry.root == "." then f else Model.join entry.root f)))
+              pure (ForInStep.yield (candidates.push (if entry.root == "." then f else Internal.join entry.root f)))
             pure (ForInStep.yield candidates)
         have hCandConst : ((forIn entries (#[] : Array String) candStep).run s1).2 = s1 := by
           refine array_forIn_state_const candStep (fun entry cands sX => ?_) entries #[] s1
           dsimp only [candStep]
           let sDir : String → Array String → StateM W (ForInStep (Array String)) :=
-            fun d c => pure (ForInStep.yield (c.push (if entry.root == "." then d else Model.join entry.root d)))
+            fun d c => pure (ForInStep.yield (c.push (if entry.root == "." then d else Internal.join entry.root d)))
           let sFile : String → Array String → StateM W (ForInStep (Array String)) :=
-            fun f c => pure (ForInStep.yield (c.push (if entry.root == "." then f else Model.join entry.root f)))
+            fun f c => pure (ForInStep.yield (c.push (if entry.root == "." then f else Internal.join entry.root f)))
           have hC1 := array_forIn_state_const sDir (fun _ _ _ => rfl) entry.dirs cands sX
           cases h1 : (forIn entry.dirs cands sDir sX) with
           | mk c1 sA =>

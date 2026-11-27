@@ -75,6 +75,342 @@ theorem all_no_nul_of_list (xs : List String)
   have hmem : xs.toArray[i] ∈ xs := by simp
   exact List.all_eq_true.mp h _ hmem
 
+theorem hasNulCharImpl_eq (cs : List Char) :
+    Impl.hasNulCharImpl cs = hasNulChar cs := by
+  induction cs with
+  | nil => rfl
+  | cons c rest ih => simp only [Impl.hasNulCharImpl, hasNulChar, ih]
+
+theorem hasInvalidEnvKeyCharImpl_eq (cs : List Char) :
+    Impl.hasInvalidEnvKeyCharImpl cs = hasInvalidEnvKeyChar cs := by
+  induction cs with
+  | nil => rfl
+  | cons c rest ih => simp only [Impl.hasInvalidEnvKeyCharImpl, hasInvalidEnvKeyChar, ih]
+
+theorem isValidEnvKeyImpl_eq (k : String) :
+    Impl.isValidEnvKeyImpl k = isValidEnvKey k := by
+  unfold Impl.isValidEnvKeyImpl isValidEnvKey
+  rw [hasInvalidEnvKeyCharImpl_eq]
+
+theorem isValidEnvValImpl_eq (v? : Option String) :
+    Impl.isValidEnvValImpl? v? = isValidEnvVal? v? := by
+  cases v? with
+  | none => rfl
+  | some v => simp only [Impl.isValidEnvValImpl?, isValidEnvVal?, hasNulCharImpl_eq]
+
+theorem cleanGitEnvImpl_eq (inheritedEnv : Array (String × String))
+    (extraEnv : Array (String × Option String) := #[]) :
+    Impl.cleanGitEnvImpl inheritedEnv extraEnv = cleanGitEnv inheritedEnv extraEnv := by
+  unfold Impl.cleanGitEnvImpl cleanGitEnv
+  simp only [isValidEnvKeyImpl_eq, isValidEnvValImpl_eq]
+  rfl
+
+theorem isValidPathArgImpl_eq (s : String) :
+    Impl.isValidPathArgImpl s = isValidPathArg s := by
+  unfold Impl.isValidPathArgImpl isValidPathArg
+  dsimp only
+  rw [hasNulCharImpl_eq]
+
+theorem validateFsPathArgImpl_eq (p : String) :
+    Impl.validateFsPathArgImpl p = validateFsPathArg p := by
+  unfold Impl.validateFsPathArgImpl validateFsPathArg
+  rw [isValidPathArgImpl_eq]
+
+theorem validateCloneEndpointImpl_eq (p : String) :
+    Impl.validateCloneEndpointImpl p = validateCloneEndpoint p := by
+  unfold Impl.validateCloneEndpointImpl validateCloneEndpoint
+  rw [isValidPathArgImpl_eq]
+
+theorem validateRelRepoPathImpl_eq (p : String) :
+    Impl.validateRelRepoPathImpl p = validateRelRepoPath p := by
+  unfold Impl.validateRelRepoPathImpl validateRelRepoPath
+  rw [isValidPathArgImpl_eq]
+
+theorem validateCommitOptionsImpl_eq (opts : CommitOptions) :
+    Impl.validateCommitOptionsImpl opts = validateCommitOptions opts := by
+  unfold Impl.validateCommitOptionsImpl validateCommitOptions
+  simp only [hasNulCharImpl_eq]
+  rfl
+
+theorem startsWithCharsImpl_eq : ∀ (ps cs : List Char), Impl.startsWithCharsImpl ps cs = startsWithChars ps cs
+  | [], _ => rfl
+  | _ :: _, [] => rfl
+  | p :: ps, c :: cs => by simp only [Impl.startsWithCharsImpl, startsWithChars, startsWithCharsImpl_eq ps cs]
+
+theorem hasSubstrCharsImpl_eq (needle : List Char) :
+    ∀ (hay : List Char), Impl.hasSubstrCharsImpl needle hay = hasSubstrChars needle hay
+  | [] => rfl
+  | c :: cs => by
+    simp only [Impl.hasSubstrCharsImpl, hasSubstrChars, startsWithCharsImpl_eq, hasSubstrCharsImpl_eq needle cs]
+
+theorem endsWithCharsImpl_eq (suf cs : List Char) :
+    Impl.endsWithCharsImpl suf cs = endsWithChars suf cs :=
+  startsWithCharsImpl_eq suf.reverse cs.reverse
+
+theorem splitSlashLoopImpl_eq (cur : List Char) (revSegs : List (List Char)) (cs : List Char) :
+    Impl.splitSlashLoopImpl cur revSegs cs = splitSlashLoop cur revSegs cs := by
+  induction cs generalizing cur revSegs with
+  | nil => rfl
+  | cons c rest ih =>
+    unfold Impl.splitSlashLoopImpl splitSlashLoop
+    split
+    · exact ih [] (cur.reverse :: revSegs)
+    · exact ih (c :: cur) revSegs
+
+theorem isValidRefNameStrImpl_eq (s : String) :
+    Impl.isValidRefNameStrImpl s = isValidRefNameStr s := by
+  unfold Impl.isValidRefNameStrImpl isValidRefNameStr Impl.splitSlashCharsImpl splitSlashChars
+    Impl.isValidRefComponentImpl isValidRefComponent
+  simp only [endsWithCharsImpl_eq, hasSubstrCharsImpl_eq, splitSlashLoopImpl_eq]
+  rfl
+
+theorem mkRefNameImpl_eq (s : String) :
+    Impl.mkRefNameImpl s = mkRefName s := by
+  unfold Impl.mkRefNameImpl mkRefName
+  rw [isValidRefNameStrImpl_eq]
+
+theorem isValidCommitIdStrImpl_eq (s : String) :
+    Impl.isValidCommitIdStrImpl s = isValidCommitIdStr s := rfl
+
+theorem mkCommitIdImpl_eq (s : String) :
+    Impl.mkCommitIdImpl s = mkCommitId s := rfl
+
+theorem isValidRevSpecImpl_eq (s : String) :
+    Impl.isValidRevSpecImpl s = isValidRevSpec s := rfl
+
+theorem isValidStrictRevSpecImpl_eq (s : String) :
+    Impl.isValidStrictRevSpecImpl s = isValidStrictRevSpec s := by
+  unfold Impl.isValidStrictRevSpecImpl isValidStrictRevSpec
+  simp only [hasSubstrCharsImpl_eq]
+  rfl
+
+theorem isValidRemoteOrRefspecImpl_eq (s : String) :
+    Impl.isValidRemoteOrRefspecImpl s = isValidRemoteOrRefspec s := rfl
+
+theorem parseNatDigitsAuxImpl_eq (acc : Nat) (cs : List Char) :
+    Impl.parseNatDigitsAuxImpl acc cs = parseNatDigitsAux acc cs := by
+  induction cs generalizing acc with
+  | nil => rfl
+  | cons c rest ih =>
+    unfold Impl.parseNatDigitsAuxImpl parseNatDigitsAux
+    split
+    · exact ih _
+    · rfl
+
+theorem splitNulRecordsLoopImpl_eq (acc : List Char) (revOut : List String) (cs : List Char) :
+    Impl.splitNulRecordsLoopImpl acc revOut cs = splitNulRecordsLoop acc revOut cs := by
+  induction cs generalizing acc revOut with
+  | nil => rfl
+  | cons c rest ih =>
+    unfold Impl.splitNulRecordsLoopImpl splitNulRecordsLoop
+    split
+    · split
+      · rfl
+      · exact ih [] (String.ofList acc.reverse :: revOut)
+    · exact ih (c :: acc) revOut
+
+theorem parsePorcelainStatusLoopImpl_eq (revOut : List StatusEntry) (xs : List String) :
+    Impl.parsePorcelainStatusLoopImpl revOut xs = parsePorcelainStatusLoop revOut xs := by
+  match xs with
+  | [] => rfl
+  | recStr :: rest =>
+    unfold Impl.parsePorcelainStatusLoopImpl parsePorcelainStatusLoop
+    generalize recStr.toList = cs
+    cases cs with
+    | nil => rfl
+    | cons x r1 =>
+      cases r1 with
+      | nil => rfl
+      | cons y r2 =>
+        cases r2 with
+        | nil => rfl
+        | cons c pathChars =>
+          by_cases hc : c = ' '
+          · subst hc
+            simp only
+            by_cases hBad : (pathChars.isEmpty || !isValidStatusPair x y) = true
+            · simp only [show Impl.isValidStatusPairImpl x y = isValidStatusPair x y from rfl, hBad, ↓reduceIte]
+            · simp only [show Impl.isValidStatusPairImpl x y = isValidStatusPair x y from rfl, hBad, Bool.false_eq_true, ↓reduceIte,
+                show Impl.statusCharToKindImpl? x = statusCharToKind? x from rfl,
+                show Impl.statusCharToKindImpl? y = statusCharToKind? y from rfl]
+              cases statusCharToKind? x with
+              | none => rfl
+              | some ix =>
+                cases statusCharToKind? y with
+                | none => rfl
+                | some wt =>
+                  dsimp only
+                  by_cases hRC : (x == 'R' || x == 'C' || y == 'R' || y == 'C') = true
+                  · simp only [hRC, ↓reduceIte]
+                    cases rest with
+                    | nil => rfl
+                    | cons orig tail => exact parsePorcelainStatusLoopImpl_eq _ tail
+                  · simp only [hRC, Bool.false_eq_true, ↓reduceIte]
+                    exact parsePorcelainStatusLoopImpl_eq _ rest
+          · split
+            · simp_all
+            · split <;> simp_all
+termination_by xs.length
+
+theorem parsePorcelainStatusZImpl_eq (bytes : ByteArray) :
+    Impl.parsePorcelainStatusZImpl bytes = parsePorcelainStatusZ bytes := by
+  unfold Impl.parsePorcelainStatusZImpl parsePorcelainStatusZ Impl.splitNulRecordsImpl splitNulRecords
+  simp only [splitNulRecordsLoopImpl_eq, parsePorcelainStatusLoopImpl_eq]
+  rfl
+
+theorem parseDiffTokensLoopImpl_eq (revOut : List DiffEntry) (xs : List String) :
+    Impl.parseDiffTokensLoopImpl revOut xs = parseDiffTokensLoop revOut xs := by
+  match xs with
+  | [] => rfl
+  | tok :: rest =>
+    unfold Impl.parseDiffTokensLoopImpl parseDiffTokensLoop
+    generalize tok.toList = cs
+    cases cs with
+    | nil => rfl
+    | cons c scoreChars =>
+      by_cases h1 : (c = 'A' ∨ c = 'M' ∨ c = 'D' ∨ c = 'T' ∨ c = 'U') ∧ scoreChars = []
+      · rcases h1 with ⟨hc, rfl⟩
+        rcases hc with rfl | rfl | rfl | rfl | rfl <;>
+          (cases rest with
+           | nil => rfl
+           | cons _ tail => exact parseDiffTokensLoopImpl_eq _ tail)
+      · by_cases h2 : c = 'R' ∨ c = 'C'
+        · rcases h2 with rfl | rfl <;> (
+            simp only [Impl.parseSimilarityScoreImpl, parseSimilarityScore, parseNatDigitsAuxImpl_eq]
+            cases (if scoreChars.isEmpty then some 100 else parseNatDigitsAux 0 scoreChars) with
+            | none => rfl
+            | some _ =>
+              cases rest with
+              | nil => rfl
+              | cons _ rest2 =>
+                cases rest2 with
+                | nil => rfl
+                | cons _ tail => exact parseDiffTokensLoopImpl_eq _ tail)
+        · split <;> simp_all
+termination_by xs.length
+
+theorem parseDiffNameStatusZImpl_eq (bytes : ByteArray) :
+    Impl.parseDiffNameStatusZImpl bytes = parseDiffNameStatusZ bytes := by
+  unfold Impl.parseDiffNameStatusZImpl parseDiffNameStatusZ Impl.splitNulRecordsImpl splitNulRecords
+  simp only [splitNulRecordsLoopImpl_eq, parseDiffTokensLoopImpl_eq]
+  rfl
+
+theorem splitNulTokensAllowEmptyLoopImpl_eq (acc : List Char) (revOut : List String) (cs : List Char) :
+    Impl.splitNulTokensAllowEmptyLoopImpl acc revOut cs = splitNulTokensAllowEmptyLoop acc revOut cs := by
+  induction cs generalizing acc revOut with
+  | nil => rfl
+  | cons c rest ih =>
+    unfold Impl.splitNulTokensAllowEmptyLoopImpl splitNulTokensAllowEmptyLoop
+    split
+    · exact ih [] (String.ofList acc.reverse :: revOut)
+    · exact ih (c :: acc) revOut
+
+theorem splitWorktreeStanzasLoopImpl_eq (cur : List String) (revOut : List (List String)) (xs : List String) :
+    Impl.splitWorktreeStanzasLoopImpl cur revOut xs = splitWorktreeStanzasLoop cur revOut xs := by
+  induction xs generalizing cur revOut with
+  | nil => rfl
+  | cons tok rest ih =>
+    by_cases hEmp : tok = ""
+    · subst hEmp
+      simp only [Impl.splitWorktreeStanzasLoopImpl, splitWorktreeStanzasLoop]
+      by_cases hCur : cur.isEmpty = true
+      · simp only [hCur, ↓reduceIte]
+      · simp only [hCur, Bool.false_eq_true, ↓reduceIte]
+        exact ih [] (cur.reverse :: revOut)
+    · have h1 : Impl.splitWorktreeStanzasLoopImpl cur revOut (tok :: rest) =
+          Impl.splitWorktreeStanzasLoopImpl (tok :: cur) revOut rest := by
+        conv => lhs; rw [Impl.splitWorktreeStanzasLoopImpl.eq_def]
+        split
+        · contradiction
+        · rename_i heq; cases heq; contradiction
+        · rename_i heq; cases heq; rfl
+      have h2 : splitWorktreeStanzasLoop cur revOut (tok :: rest) =
+          splitWorktreeStanzasLoop (tok :: cur) revOut rest := by
+        conv => lhs; rw [splitWorktreeStanzasLoop.eq_def]
+        split
+        · contradiction
+        · rename_i heq; cases heq; contradiction
+        · rename_i heq; cases heq; rfl
+      rw [h1, h2]
+      exact ih (tok :: cur) revOut
+
+theorem stripPrefixCharsImpl_eq : ∀ (ps cs : List Char), Impl.stripPrefixCharsImpl ps cs = stripPrefixChars ps cs
+  | [], _ => rfl
+  | _ :: _, [] => rfl
+  | p :: ps, c :: cs => by simp only [Impl.stripPrefixCharsImpl, stripPrefixChars, stripPrefixCharsImpl_eq ps cs]
+
+theorem parseWorktreeAttrsImpl_eq (info : WorktreeInfo) (headSeen : Bool) (lines : List String) :
+    Impl.parseWorktreeAttrsImpl info headSeen lines = parseWorktreeAttrs info headSeen lines := by
+  induction lines generalizing info headSeen with
+  | nil => rfl
+  | cons line rest ih =>
+    unfold Impl.parseWorktreeAttrsImpl parseWorktreeAttrs
+    simp only [stripPrefixCharsImpl_eq, mkRefNameImpl_eq, mkCommitIdImpl_eq,
+      show ∀ s, Impl.isAllZerosCommitStrImpl s = isAllZerosCommitStr s from fun _ => rfl]
+    split
+    · exact ih _ _
+    · split
+      · exact ih _ _
+      · split
+        · exact ih _ _
+        · split
+          · exact ih _ _
+          · cases stripPrefixChars ['H', 'E', 'A', 'D', ' '] line.toList with
+            | some shaChars =>
+              dsimp only
+              split
+              · exact ih _ _
+              · cases mkCommitId (String.ofList shaChars) with
+                | ok _ => exact ih _ _
+                | error _ => rfl
+            | none =>
+              dsimp only
+              cases stripPrefixChars ['b', 'r', 'a', 'n', 'c', 'h', ' '] line.toList with
+              | some refChars =>
+                dsimp only
+                cases stripPrefixChars ['r', 'e', 'f', 's', '/', 'h', 'e', 'a', 'd', 's', '/'] refChars with
+                | some shortChars =>
+                  dsimp only
+                  cases mkRefName (String.ofList shortChars) with
+                  | ok _ => exact ih _ _
+                  | error _ => rfl
+                | none => rfl
+              | none =>
+                dsimp only
+                cases stripPrefixChars ['l', 'o', 'c', 'k', 'e', 'd', ' '] line.toList with
+                | some _ => exact ih _ _
+                | none =>
+                  dsimp only
+                  cases stripPrefixChars ['p', 'r', 'u', 'n', 'a', 'b', 'l', 'e', ' '] line.toList with
+                  | some _ => exact ih _ _
+                  | none => exact ih _ _
+
+theorem parseWorktreeStanzaImpl_eq (xs : List String) :
+    Impl.parseWorktreeStanzaImpl xs = parseWorktreeStanza xs := by
+  unfold Impl.parseWorktreeStanzaImpl parseWorktreeStanza
+  cases xs with
+  | nil => rfl
+  | cons header attrs =>
+    simp only [stripPrefixCharsImpl_eq, parseWorktreeAttrsImpl_eq]
+    rfl
+
+theorem parseWorktreeStanzasLoopImpl_eq (revOut : List WorktreeInfo) (xs : List (List String)) :
+    Impl.parseWorktreeStanzasLoopImpl revOut xs = parseWorktreeStanzasLoop revOut xs := by
+  induction xs generalizing revOut with
+  | nil => rfl
+  | cons st rest ih =>
+    unfold Impl.parseWorktreeStanzasLoopImpl parseWorktreeStanzasLoop
+    rw [parseWorktreeStanzaImpl_eq]
+    cases parseWorktreeStanza st with
+    | ok info => exact ih (info :: revOut)
+    | error _ => rfl
+
+theorem parseWorktreeListPorcelainImpl_eq (bytes : ByteArray) :
+    Impl.parseWorktreeListPorcelainImpl bytes = parseWorktreeListPorcelain bytes := by
+  unfold Impl.parseWorktreeListPorcelainImpl parseWorktreeListPorcelain
+  simp only [splitNulTokensAllowEmptyLoopImpl_eq, splitWorktreeStanzasLoopImpl_eq, parseWorktreeStanzasLoopImpl_eq]
+  rfl
+
 private def splitNulRecordsSpec (acc : List Char) : List Char → Option (List String)
   | [] => if acc.isEmpty then some [] else none
   | c :: cs =>

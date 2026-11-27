@@ -3,8 +3,6 @@ import LeanSwe.Process.Interface
 import LeanSwe.EnvVars.Types
 import LeanSwe.EnvVars.Interface
 import LeanSwe.Git.Types
-import LeanSwe.Git.Model
-import LeanSwe.Git.Model.Refines
 import LeanSwe.Git.Impl
 
 namespace LeanSwe.Git

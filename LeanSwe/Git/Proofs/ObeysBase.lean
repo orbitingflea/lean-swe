@@ -388,12 +388,12 @@ theorem runGitRaw_caps_step {W : Type} {proj : W → GitHostState}
           exact ⟨hEnv.1, hEnv.2.2, by rw [hEnv.2.1]; decide, by rw [hEnv.2.1]; decide,
             fun _ => by rw [hEnv.2.1]; decide⟩
         | ok inherited =>
-          have hExec := mkRawOpsM_execGit_step hCaps (cleanGitEnv inherited req.extraEnv) req
+          have hExec := mkRawOpsM_execGit_step hCaps (Impl.cleanGitEnvImpl inherited req.extraEnv) req
             ((Impl.mkRawOpsM caps).listEnv.run w).2 hEnv.1.2.1
           dsimp only at hExec
           have hTrans := allowedHostTransition_trans hEnv.1 hExec.1
           dsimp only
-          cases hExRes : (((Impl.mkRawOpsM caps).execGit (cleanGitEnv inherited req.extraEnv) req).run
+          cases hExRes : (((Impl.mkRawOpsM caps).execGit (Impl.cleanGitEnvImpl inherited req.extraEnv) req).run
               ((Impl.mkRawOpsM caps).listEnv.run w).2).1 with
           | ok _ => exact ⟨hTrans, trivial⟩
           | error e =>

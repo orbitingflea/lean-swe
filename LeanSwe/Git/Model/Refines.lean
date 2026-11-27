@@ -3,6 +3,7 @@ import LeanSwe.EnvVars.Model
 import LeanSwe.Process.Types
 import LeanSwe.Process.Model
 import LeanSwe.Git.Types
+import LeanSwe.Git.Types.Internal
 import LeanSwe.Git.Model
 
 /-!
@@ -37,11 +38,7 @@ def mapProcessErrorModel (cmd : String) (e : ProcessError) : GitError :=
     message := msg }
 
 /-- Pure capability container bundling `EnvVarsApiM m` and `ProcessApiM m` for `LeanSwe.Git`. -/
-structure GitHostCapsM (m : Type → Type) where
-  /-- Inherited environment capability (`LeanSwe.EnvVars`). -/
-  env : EnvVarsApiM m
-  /-- Subprocess execution capability (`LeanSwe.Process`). -/
-  proc : ProcessApiM m
+abbrev GitHostCapsM := LeanSwe.Git.Internal.GitHostCapsM
 
 /-- Combined abstract host state pairing `EnvVars.Raw.Model.EnvironState` with `Process.Model.ProcessModelState`. -/
 structure GitHostState where

@@ -137,7 +137,7 @@ theorem vfsDirOps_openDir_root_ok (st : VfsState) (dh : DirHandle) (st' : VfsSta
   rcases vfsDirOps_openDir_ok_resolved "/" st dh st' h with
     ⟨hPos, _, hGt, canon, m, hRes, hm, hSt⟩
   have hNorm : vfsAbsNorm st.cwd "/" = "/" := by
-    simp only [vfsAbsNorm, show Internal.isAbsolute "/" = true from rfl, ↓reduceIte]
+    simp only [vfsAbsNorm, show Model.isAbsolute "/" = true from rfl, ↓reduceIte]
     rfl
   have hSplit : vfsSplitSegs (vfsAbsNorm st.cwd "/") = [] := by
     rw [hNorm]

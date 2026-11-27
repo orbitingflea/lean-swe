@@ -1,14 +1,190 @@
+import Std.Data.HashSet
 import LeanSwe.PostFork.Types
 import LeanSwe.PostFork.Types.Internal
-import LeanSwe.PostFork.Model
 
 namespace LeanSwe.PostFork.Impl
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.PostFork
-open LeanSwe.PostFork.Model
 
 namespace Internal
+
+/-- Failure-wire magic byte (`0x50` = `'P'`). -/
+def WIRE_MAGIC_IMPL : UInt8 := 0x50
+
+/-- Failure-wire protocol version byte (`0x01`). -/
+def WIRE_VERSION_IMPL : UInt8 := 0x01
+
+/-- Child flag bit `0`: invoke `setpgid(0, 0)`. -/
+def FLAG_SET_PGID_IMPL : UInt32 := 1
+/-- Child flag bit `1`: reset `SIGPIPE` to `SIG_DFL` and unblock `SIGPIPE`. -/
+def FLAG_RESET_SIGPIPE_IMPL : UInt32 := 2
+/-- Child flag bit `2`: wait for 1-byte token on `sync_r` (`_exit(125)` on EOF). -/
+def FLAG_HAS_SYNC_BARRIER_IMPL : UInt32 := 4
+/-- Child flag bit `3`: redirect `(stdin, stdout, stderr)` onto `(0, 1, 2)` and relocate `rep_w`. -/
+def FLAG_REDIRECT_STDIO_IMPL : UInt32 := 8
+/-- Child flag bit `4`: close unkept descriptors `> 2` via `close_range` + `/proc/self/fd`. -/
+def FLAG_CLOSE_UNKEPT_ABOVE2_IMPL : UInt32 := 16
+/-- Child flag bit `5`: close redirected stdio source descriptors `> 2` in `setup_stdio`. -/
+def FLAG_CLOSE_STDIO_SOURCES_IMPL : UInt32 := 32
+
+/-- Decode a wire stage tag byte (`1..7`). -/
+def failureStageOfTagImpl? (tag : UInt8) : Option FailureStage :=
+  match tag.toNat with
+  | 1 => some .validate
+  | 2 => some .processGroup
+  | 3 => some .signalReset
+  | 4 => some .fdSetup
+  | 5 => some .closeUnkept
+  | 6 => some .chdir
+  | 7 => some .execve
+  | _ => none
+
+/-- Concatenate two `ByteArray` values cleanly without internal kernel wrappers. -/
+def appendBytesImpl (a b : ByteArray) : ByteArray :=
+  b.foldl (fun acc x => acc.push x) a
+
+/-- Decode the uniform 8-byte failure report read from `repR` (`none` on 0-byte `EOF` indicating `execve` succeeded). -/
+def decodeChildFailureImpl (bs : ByteArray) : Option ChildFailure :=
+  if bs.size == 0 then
+    none
+  else if bs.size != 8 then
+    some { stage := .wireTruncated, errno := Errno.EIO }
+  else
+    let b0 := bs.get! 0
+    let b1 := bs.get! 1
+    let b2 := bs.get! 2
+    let b3 := bs.get! 3
+    if b0 != WIRE_MAGIC_IMPL || b1 != WIRE_VERSION_IMPL || b3 != 0 then
+      some { stage := .wireTruncated, errno := Errno.EIO }
+    else
+      match failureStageOfTagImpl? b2 with
+      | none => some { stage := .wireTruncated, errno := Errno.EIO }
+      | some stage =>
+        let e0 := (bs.get! 4).toNat
+        let e1 := (bs.get! 5).toNat
+        let e2 := (bs.get! 6).toNat
+        let e3 := (bs.get! 7).toNat
+        let rawU := e0 + 256 * e1 + 65536 * e2 + 16777216 * e3
+        if 1 ≤ rawU && rawU ≤ 4095 then
+          some { stage := stage, errno := UInt32.ofNat rawU }
+        else
+          some { stage := .wireTruncated, errno := Errno.EIO }
+
+/-- Compute the `LEANSWE_PF_FLAG_*` child setup bitmask for `(spec, withBarrier)`. -/
+def flagsOfSpecImpl {fd : Type} (spec : ChildSpecM fd) (withBarrier : Bool) : UInt32 :=
+  let fPgid : UInt32 := match spec.processGroup with | .newGroup => FLAG_SET_PGID_IMPL | .inherit => 0
+  let fSig : UInt32 := match spec.sigpipe with | .resetDefault => FLAG_RESET_SIGPIPE_IMPL | .inherit => 0
+  let fSync : UInt32 := if withBarrier then FLAG_HAS_SYNC_BARRIER_IMPL else 0
+  let fStdio : UInt32 := match spec.stdio with | .redirect .. => FLAG_REDIRECT_STDIO_IMPL | .inherit => 0
+  let fClose : UInt32 := match spec.fdPolicy with | .closeAllAbove2Except _ => FLAG_CLOSE_UNKEPT_ABOVE2_IMPL | .inheritNonCloexec _ => 0
+  let fCloseSrc : UInt32 := match spec.stdio, spec.fdPolicy with
+    | .redirect _ _ _ true, .inheritNonCloexec _ => FLAG_CLOSE_STDIO_SOURCES_IMPL
+    | _, _ => 0
+  fPgid ||| fSig ||| fSync ||| fStdio ||| fClose ||| fCloseSrc
+
+/-- Return `true` iff UTF-8 bytes of `s` contain an embedded NUL (`0x00`) byte. -/
+def hasEmbeddedNulStrImpl (s : String) : Bool :=
+  s.toUTF8.toList.any (· == (0 : UInt8))
+
+/-- Return `true` iff `(k, v)` is a valid NUL-free `KEY=VALUE` environment binding (`k` non-empty, no `'='`). -/
+def isValidEnvBindingImpl (kv : String × String) : Bool :=
+  !kv.1.isEmpty && !kv.1.contains '=' && !hasEmbeddedNulStrImpl kv.1 && !hasEmbeddedNulStrImpl kv.2
+
+/-- Return `true` iff raw byte slice `entry` contains no embedded NUL (`0x00`) byte. -/
+def isValidRawEnvEntryImpl (entry : ByteArray) : Bool :=
+  !entry.toList.any (· == (0 : UInt8))
+
+/-- Return `true` iff raw `environ(7)` slice `entry` starts with `key ++ "="` (`0x3D`). -/
+def rawEnvHasKeyImpl (key entry : ByteArray) : Bool :=
+  if h : key.size < entry.size then
+    entry.extract 0 key.size == key && entry[key.size] == (0x3D : UInt8)
+  else
+    false
+
+/-- Encode raw NUL-free `rawEnv` slices followed by formatted `(key, value)` bindings as
+    NUL-terminated `ByteArray` C strings for `execve(2)`. -/
+def formatEnvEntriesBytesImpl (rawEnv : Array ByteArray) (env : Array (String × String)) : Array ByteArray :=
+  let keptRaw := rawEnv.filter fun b => !env.any fun (k, _) => rawEnvHasKeyImpl k.toUTF8 b
+  keptRaw.map (fun b => b.push 0) ++ env.map (fun (k, v) => s!"{k}={v}".toUTF8.push 0)
+
+/-- Extract kept descriptor references from `FdPolicy`. -/
+def keepFdsImpl {fd : Type} : FdPolicy fd → Array (FdRef fd)
+  | .inheritNonCloexec ks => ks
+  | .closeAllAbove2Except ks => ks
+
+/-- Return `true` iff `ref` is either a managed handle or a non-negative `.raw` FD. -/
+def fdRefIsNonnegImpl {fd : Type} : FdRef fd → Bool
+  | .handle _ => true
+  | .raw n => decide (n.toInt ≥ 0)
+
+/-- Return `true` iff two `FdRef` values denote the exact same descriptor (`eqFd` on handles or equal `.raw`). -/
+def fdRefSameRefImpl {fd : Type} (eqFd : fd → fd → Bool) : FdRef fd → FdRef fd → Bool
+  | .handle a, .handle b => eqFd a b
+  | .raw a, .raw b => a == b
+  | _, _ => false
+
+/-- Return `true` iff `tok` has NUL-free strings and non-negative `.raw` FD reference. -/
+def argTokenIsValidImpl {fd : Type} : ArgToken fd → Bool
+  | .lit s => !hasEmbeddedNulStrImpl s
+  | .fdDecimal r => fdRefIsNonnegImpl r
+  | .prefixedFd p r s => !hasEmbeddedNulStrImpl p && !hasEmbeddedNulStrImpl s && fdRefIsNonnegImpl r
+
+/-- Return `true` iff `r` is a raw stdio slot `0`, `1`, or `2`. -/
+def fdRefIsRawStdioSlotImpl {fd : Type} : FdRef fd → Bool
+  | .raw n => n == 0 || n == 1 || n == 2
+  | .handle _ => false
+
+/-- Return `true` iff `closeFds` and `keepFds` share no common descriptor under `eqFd`. -/
+def disjointFdRefArraysImpl {fd : Type} (eqFd : fd → fd → Bool)
+    (closeFds keepFds : Array (FdRef fd)) (checkHandles : Bool := true) : Bool :=
+  if closeFds.size ≤ 8 || keepFds.size ≤ 8 then
+    if !checkHandles then
+      !(closeFds.any (fun c => keepFds.any (fdRefSameRefImpl (fun _ _ => false) c)))
+    else
+      !(closeFds.any (fun c => keepFds.any (fdRefSameRefImpl eqFd c)))
+  else
+    let rawKeep : Std.HashSet Int32 :=
+      keepFds.foldl (fun acc r => match r with | .raw n => acc.insert n | .handle _ => acc)
+        (Std.HashSet.emptyWithCapacity keepFds.size)
+    if closeFds.any (fun r => match r with | .raw n => rawKeep.contains n | .handle _ => false) then
+      false
+    else if !checkHandles then
+      true
+    else
+      let closeHandles := closeFds.filterMap (fun r => match r with | .handle h => some h | .raw _ => none)
+      let keepHandles := keepFds.filterMap (fun r => match r with | .handle h => some h | .raw _ => none)
+      !(closeHandles.any (fun ch => keepHandles.any (eqFd ch)))
+
+/-- Pre-`fork` runtime validation parameterized by handle equality `eqFd`. -/
+def validateSpecWithImpl {fd : Type} (eqFd : fd → fd → Bool) (spec : ChildSpecM fd)
+    (checkHandles : Bool := true) : Bool :=
+  let cwdOk := match spec.cwd with | some d => !hasEmbeddedNulStrImpl d | none => true
+  let pathOk := !spec.path.isEmpty && !hasEmbeddedNulStrImpl spec.path
+  let argvOk := spec.argv.all argTokenIsValidImpl
+  let envOk := spec.env.all isValidEnvBindingImpl && spec.rawEnv.all isValidRawEnvEntryImpl
+  let keepFds := keepFdsImpl spec.fdPolicy
+  let closeOk := spec.closeFds.all fdRefIsNonnegImpl
+  let keepOk := keepFds.all fdRefIsNonnegImpl
+  let stdioOk := match spec.stdio with
+    | .inherit => true
+    | .redirect sIn sOut sErr closeSrcs =>
+      fdRefIsNonnegImpl sIn && fdRefIsNonnegImpl sOut && fdRefIsNonnegImpl sErr &&
+      !(keepFds.any fdRefIsRawStdioSlotImpl) &&
+      !(spec.closeFds.any (fun c => fdRefSameRefImpl eqFd c sIn || fdRefSameRefImpl eqFd c sOut || fdRefSameRefImpl eqFd c sErr)) &&
+      match spec.fdPolicy with
+      | .inheritNonCloexec _ =>
+        if !closeSrcs then true
+        else !(keepFds.any (fun k =>
+          (!fdRefIsRawStdioSlotImpl k) &&
+          (fdRefSameRefImpl eqFd k sIn || fdRefSameRefImpl eqFd k sOut || fdRefSameRefImpl eqFd k sErr)))
+      | .closeAllAbove2Except _ => true
+  let disjointCloseKeep := disjointFdRefArraysImpl eqFd spec.closeFds keepFds checkHandles
+  pathOk && cwdOk && argvOk && envOk && closeOk && keepOk && stdioOk && disjointCloseKeep
+
+/-- Default runtime validation checking string hygiene, signs, stdio slots, and `.raw` overlaps. -/
+def validateSpecImpl {fd : Type} (spec : ChildSpecM fd) : Bool :=
+  validateSpecWithImpl (fun _ _ => false) spec false
 
 /-- Binary-exponentiated retry combinator executing up to `2 ^ depth` iterations without `partial`. -/
 def loopPow2 {m : Type → Type} [Monad m] {σ α : Type}
@@ -34,7 +210,7 @@ def mkChildFailedErr (cf : ChildFailure) (msg : String) : PostForkError :=
 /-- Concatenates chunks in linear `O(N)` time. -/
 def concatByteChunks (chunks : Array ByteArray) : ByteArray :=
   let total := chunks.foldl (fun n c => n + c.size) 0
-  chunks.foldl (fun buf c => appendBytes buf c) (ByteArray.emptyWithCapacity total)
+  chunks.foldl (fun buf c => appendBytesImpl buf c) (ByteArray.emptyWithCapacity total)
 
 /-- Write all bytes of `data[off..)` to `fd`, retrying `EINTR` (`4`) (`2 ^ depth` max steps). -/
 def writeAllRetryEintr
@@ -283,7 +459,7 @@ def awaitExecOrFailure
     pure (.error err)
   | .ok repBytes =>
     let cf? : Option ChildFailure :=
-      match decodeChildFailure repBytes with
+      match decodeChildFailureImpl repBytes with
       | some cf => some cf
       | none =>
         if barrierBroken then
@@ -309,11 +485,11 @@ def performFork
     (openCloseFds : Array (FdRef fd))
     (extraClose : Array (FdRef fd))
     (withBarrier : Bool) : m (Except PostForkError Pid) := do
-  let flags := flagsOfSpec spec withBarrier
+  let flags := flagsOfSpecImpl spec withBarrier
   let stdioArr := stdioRefsArray spec.stdio
   let closeArr := openCloseFds ++ extraClose
-  let keepArr := FdPolicy.keepFds spec.fdPolicy
-  let envEntries := formatEnvEntriesBytes spec.rawEnv spec.env
+  let keepArr := keepFdsImpl spec.fdPolicy
+  let envEntries := formatEnvEntriesBytesImpl spec.rawEnv spec.env
   match ← raw.forkRun
       flags spec.forkMode syncRead? errWrite stdioArr closeArr keepArr
       spec.cwd spec.path spec.argv envEntries with
@@ -331,11 +507,11 @@ def mkHostOps
     (raw : PosixHostOpsM m fd)
     (fuel : Nat := 18) : PostForkOpsM m fd where
   spawn spec := do
-    if !validateSpec spec then
+    if !validateSpecImpl spec then
       return .error (mkInvalidErr "invalid ChildSpecM")
     if let .error err ← probeStdioPlan raw spec.stdio then
       return .error err
-    if let .error err ← probeRefList raw (FdPolicy.keepFds spec.fdPolicy).toList then
+    if let .error err ← probeRefList raw (keepFdsImpl spec.fdPolicy).toList then
       return .error err
     let openCloseFds ← filterOpenCloseList raw spec.closeFds.toList #[]
     let (errR, errW) ← match ← raw.mkPipeCloexec with
@@ -352,11 +528,11 @@ def mkHostOps
       awaitExecOrFailure raw pid pgid? errR fuel
 
   spawnWithBarrier spec := do
-    if !validateSpec spec then
+    if !validateSpecImpl spec then
       return .error (mkInvalidErr "invalid ChildSpecM")
     if let .error err ← probeStdioPlan raw spec.stdio then
       return .error err
-    if let .error err ← probeRefList raw (FdPolicy.keepFds spec.fdPolicy).toList then
+    if let .error err ← probeRefList raw (keepFdsImpl spec.fdPolicy).toList then
       return .error err
     let openCloseFds ← filterOpenCloseList raw spec.closeFds.toList #[]
     let (errR, errW) ← match ← raw.mkPipeCloexec with
@@ -420,7 +596,7 @@ def mkHostOps
       let wst ← match ← waitRetryEintr raw pending.pid fuel with
         | .ok s => pure s
         | .error err => return .error err
-      match decodeChildFailure repBytes with
+      match decodeChildFailureImpl repBytes with
       | none => return .ok (.aborted wst)
       | some cf => return .ok (.failedBeforeBarrier { cf with waitStatus := some wst } wst)
 

@@ -88,7 +88,7 @@ theorem obeys_init {W : Type} {proj : W → GitHostState} {caps : GitHostCapsM (
     allowedGuardedStep (proj w) (proj r.2) (preValidateInit p b?)
       [.parseError] (fun _ => True) r.1 := by
   unfold Impl.initImpl Impl.validateRepoPath preValidateInit
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
@@ -103,6 +103,7 @@ theorem obeys_init {W : Type} {proj : W → GitHostState} {caps : GitHostCapsM (
         { cwd := none, args := #["init"] ++ (if bare then #["--bare"] else #[]) ++ #[] ++ #["--", p] } w hwf <;> (intro _; rfl)
     | some b =>
       dsimp only
+      rw [isValidRefNameStrImpl_eq]
       cases hb : isValidRefNameStr b.raw with
       | false =>
         simp only [Bool.false_eq_true, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
@@ -120,7 +121,7 @@ theorem obeys_clone {W : Type} {proj : W → GitHostState} {caps : GitHostCapsM 
     allowedGuardedStep (proj w) (proj r.2) (preValidateClone src dst opts)
       [.invalidPath, .parseError] (fun _ => True) r.1 := by
   unfold Impl.cloneImpl preValidateClone
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateCloneEndpointImpl_eq]
   cases hs : validateCloneEndpoint src with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
@@ -146,6 +147,7 @@ theorem obeys_clone {W : Type} {proj : W → GitHostState} {caps : GitHostCapsM 
                 #[] ++ #[] ++ #["--", src, dst] } rfl w hwf <;> (intro _; rfl)
         | some b =>
           dsimp only
+          rw [isValidRefNameStrImpl_eq]
           cases hb : isValidRefNameStr b with
           | false =>
             simp only [Bool.false_eq_true, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
@@ -176,6 +178,7 @@ theorem obeys_clone {W : Type} {proj : W → GitHostState} {caps : GitHostCapsM 
                   #["--depth", toString (n + 1)] ++ #[] ++ #["--", src, dst] } rfl w hwf <;> (intro _; rfl)
           | some b =>
             dsimp only
+            rw [isValidRefNameStrImpl_eq]
             cases hb : isValidRefNameStr b with
             | false =>
               simp only [Bool.false_eq_true, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
@@ -196,7 +199,7 @@ theorem obeys_add {W : Type} {proj : W → GitHostState} {caps : GitHostCapsM (S
     allowedGuardedStep (proj w) (proj r.2) (preValidateAdd p paths all)
       [.parseError] (fun _ => True) r.1 := by
   unfold Impl.addImpl Impl.validateRepoPath preValidateAdd
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
@@ -210,6 +213,7 @@ theorem obeys_add {W : Type} {proj : W → GitHostState} {caps : GitHostCapsM (S
       exact ⟨trivial, hwf, trivial, by decide⟩
     | false =>
       simp only [Bool.false_eq_true, ↓reduceIte]
+      rw [show Impl.isValidPathArgImpl = isValidPathArg from funext isValidPathArgImpl_eq]
       cases hPs : paths.all isValidPathArg with
       | false =>
         simp only [Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
@@ -229,14 +233,14 @@ theorem obeys_commit {W : Type} {proj : W → GitHostState} {caps : GitHostCapsM
     allowedGuardedStep (proj w) (proj r.2) (preValidateCommit p opts)
       [] (fun cid => isValidCommitIdStr cid.hex = true) r.1 := by
   unfold Impl.commitImpl Impl.validateRepoPath preValidateCommit
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
     exact ⟨trivial, hwf, trivial, validateFsPathArg_err_nonEmpty hv⟩
   | ok u =>
     cases u
-    simp only [Except.mapError]
+    simp only [Except.mapError, validateCommitOptionsImpl_eq]
     cases hOpts : validateCommitOptions opts with
     | error e =>
       simp only [stateM_pure_run, allowedGuardedStep]
@@ -285,20 +289,18 @@ theorem obeys_createBranch {W : Type} {proj : W → GitHostState} {caps : GitHos
     allowedGuardedStep (proj w) (proj r.2) (preValidateCreateBranch p b sp?)
       [.parseError] (fun _ => True) r.1 := by
   unfold Impl.createBranchImpl Impl.validateRepoPath preValidateCreateBranch
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
     exact ⟨trivial, hwf, trivial, validateFsPathArg_err_nonEmpty hv⟩
   | ok u =>
     cases u
-    simp only [Except.mapError]
-    cases hb : isValidRefNameStr b.raw with
-    | false =>
-      simp only [Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
+    simp only [Except.mapError, isValidRefNameStrImpl_eq]
+    rcases (Bool.eq_false_or_eq_true (isValidRefNameStr b.raw)).symm with hb | hb
+    · simp only [hb, Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
       exact ⟨trivial, hwf, trivial, interp3_ne_empty _ _ _ (by decide)⟩
-    | true =>
-      simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    · simp only [hb, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
       cases sp? with
       | none =>
         dsimp only
@@ -306,6 +308,7 @@ theorem obeys_createBranch {W : Type} {proj : W → GitHostState} {caps : GitHos
           { cwd := some p, args := #["branch"] ++ (if force then #["-f"] else #[]) ++ #["--", b.raw] ++ #[] } w hwf <;> (intro _; rfl)
       | some sp =>
         dsimp only
+        rw [isValidStrictRevSpecImpl_eq]
         cases hSp : isValidStrictRevSpec sp with
         | false =>
           simp only [Bool.false_eq_true, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
@@ -323,20 +326,18 @@ theorem obeys_deleteBranch {W : Type} {proj : W → GitHostState} {caps : GitHos
     allowedGuardedStep (proj w) (proj r.2) (preValidateDeleteBranch p b)
       [.parseError] (fun _ => True) r.1 := by
   unfold Impl.deleteBranchImpl Impl.validateRepoPath preValidateDeleteBranch
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
     exact ⟨trivial, hwf, trivial, validateFsPathArg_err_nonEmpty hv⟩
   | ok u =>
     cases u
-    simp only [Except.mapError]
-    cases hb : isValidRefNameStr b.raw with
-    | false =>
-      simp only [Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
+    simp only [Except.mapError, isValidRefNameStrImpl_eq]
+    rcases (Bool.eq_false_or_eq_true (isValidRefNameStr b.raw)).symm with hb | hb
+    · simp only [hb, Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
       exact ⟨trivial, hwf, trivial, interp3_ne_empty _ _ _ (by decide)⟩
-    | true =>
-      simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    · simp only [hb, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
       apply bind_checked_unit_parse hCaps "branch"
         { cwd := some p, args := #["branch", if force then "-D" else "-d", "--", b.raw] } w hwf <;> (intro _; rfl)
 
@@ -348,7 +349,7 @@ theorem obeys_checkout {W : Type} {proj : W → GitHostState} {caps : GitHostCap
     allowedGuardedStep (proj w) (proj r.2) (preValidateCheckout p t)
       [.parseError] (fun _ => True) r.1 := by
   unfold Impl.checkoutImpl Impl.validateRepoPath preValidateCheckout
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
@@ -359,6 +360,7 @@ theorem obeys_checkout {W : Type} {proj : W → GitHostState} {caps : GitHostCap
     cases t with
     | branch b =>
       dsimp only
+      rw [isValidRefNameStrImpl_eq]
       cases hb : isValidRefNameStr b.raw with
       | false =>
         simp only [Bool.false_eq_true, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
@@ -369,6 +371,7 @@ theorem obeys_checkout {W : Type} {proj : W → GitHostState} {caps : GitHostCap
           { cwd := some p, args := #["checkout"] ++ (if force then #["--force"] else #[]) ++ #[b.raw, "--"] } w hwf <;> (intro _; rfl)
     | commit cid =>
       dsimp only
+      rw [isValidCommitIdStrImpl_eq]
       cases hc : isValidCommitIdStr cid.hex with
       | false =>
         simp only [Bool.false_eq_true, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
@@ -379,6 +382,7 @@ theorem obeys_checkout {W : Type} {proj : W → GitHostState} {caps : GitHostCap
           { cwd := some p, args := #["checkout"] ++ (if force then #["--force"] else #[]) ++ #["--detach", cid.hex, "--"] } w hwf <;> (intro _; rfl)
     | ref spec =>
       dsimp only
+      rw [isValidStrictRevSpecImpl_eq]
       cases hr : isValidStrictRevSpec spec with
       | false =>
         simp only [Bool.false_eq_true, ↓reduceIte, stateM_pure_run, allowedGuardedStep]

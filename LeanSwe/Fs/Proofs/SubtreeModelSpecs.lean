@@ -922,7 +922,12 @@ private theorem mDirHasLiveChild_false_of_empty (st : VfsState) (dirPos : List S
           (fun cs => if cs.isEmpty then none else some (String.ofList cs)) := by
       unfold vfsSplitSegs
       rw [hKList]
-      rfl
+      have hSpEq : ∀ (sep : Char) (cs : List Char), Model.splitCharList sep cs = Internal.splitCharList sep cs := by
+        intro sep cs; induction cs with
+        | nil => rfl
+        | cons c r ih => by_cases hc : (c == sep) = true <;> (simp [Model.splitCharList, Internal.splitCharList, hc, ih]; try rfl)
+      simp only [hSpEq]
+      try rfl
     rw [hSplitK, hSplitTail, List.filterMap_append]
     have hMapBack : (dirPos.map String.toList).filterMap
         (fun cs => if cs.isEmpty then none else some (String.ofList cs)) = dirPos := by
@@ -1003,7 +1008,7 @@ private theorem mDirHasLiveChild_false_of_empty (st : VfsState) (dirPos : List S
       exact (pathOfSegs_eq_ofList_joinSlashChars dirPos).symm
     have hNormSelf : Internal.normPath k = k := by
       unfold isCanonPath at hCanon
-      simp only [Bool.and_eq_true, beq_iff_eq] at hCanon
+      simp only [Bool.and_eq_true, beq_iff_eq, model_normPath_eq_internal] at hCanon
       exact hCanon.2
     exact absurd (hNormSelf.symm.trans hNorm) hKNe
   | cons firstSeg restSegs =>

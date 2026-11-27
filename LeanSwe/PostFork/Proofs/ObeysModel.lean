@@ -22,6 +22,7 @@ theorem obeysStepFrom_postfork :
   | spawn spec =>
     try dsimp only [allowedPkgStep, execPkgStep, Functor.map, StateT.map, mkHostOpsM, mkHostOps,
       Bind.bind, pure, Pure.pure, StateT.run, StateT.bind, StateT.pure]
+    rw [show validateSpecImpl spec = validateSpec spec from rfl]
     cases hVal : validateSpec spec with
     | false =>
       simp only [Bool.not_false, ↓reduceIte]
@@ -46,6 +47,7 @@ theorem obeysStepFrom_postfork :
           try dsimp only [Bind.bind, pure, Pure.pure, StateT.run, StateT.bind, StateT.pure]
           have hKeep := probeRefList_sound hRaw (FdPolicy.keepFds spec.fdPolicy).toList w₁ hStd.1.1
           try dsimp only [StateT.run] at hKeep
+          rw [show keepFdsImpl spec.fdPolicy = FdPolicy.keepFds spec.fdPolicy from rfl]
           cases hK : probeRefList raw (FdPolicy.keepFds spec.fdPolicy).toList w₁ with
           | mk keepRes w₂ =>
             rw [hK] at hKeep
@@ -152,6 +154,7 @@ theorem obeysStepFrom_postfork :
   | spawnWithBarrier spec =>
     try dsimp only [allowedPkgStep, execPkgStep, Functor.map, StateT.map, mkHostOpsM, mkHostOps,
       Bind.bind, pure, Pure.pure, StateT.run, StateT.bind, StateT.pure]
+    rw [show validateSpecImpl spec = validateSpec spec from rfl]
     cases hVal : validateSpec spec with
     | false =>
       simp only [Bool.not_false, ↓reduceIte]
@@ -176,6 +179,7 @@ theorem obeysStepFrom_postfork :
           try dsimp only [Bind.bind, pure, Pure.pure, StateT.run, StateT.bind, StateT.pure]
           have hKeep := probeRefList_sound hRaw (FdPolicy.keepFds spec.fdPolicy).toList w₁ hStd.1.1
           try dsimp only [StateT.run] at hKeep
+          rw [show keepFdsImpl spec.fdPolicy = FdPolicy.keepFds spec.fdPolicy from rfl]
           cases hK : probeRefList raw (FdPolicy.keepFds spec.fdPolicy).toList w₁ with
           | mk keepRes w₂ =>
             rw [hK] at hKeep

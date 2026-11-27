@@ -30,6 +30,57 @@ def isValidLockPath (path : String) : Bool :=
   let chars := path.toList
   !chars.isEmpty && !(chars.length > 1 && chars.getLast? == some '/')
 
+private theorem model_splitCharList_eq_internal (sep : Char) (cs : List Char) :
+    Model.splitCharList sep cs = Internal.splitCharList sep cs := by
+  induction cs with
+  | nil => rfl
+  | cons c rest ih =>
+    by_cases h : (c == sep) = true <;> (simp [Model.splitCharList, Internal.splitCharList, h, ih]; try rfl)
+
+private theorem model_joinSlashChars_eq_internal (segs : List (List Char)) :
+    Model.joinSlashChars segs = Internal.joinSlashChars segs := by
+  induction segs with
+  | nil => rfl
+  | cons s rest ih =>
+    cases rest with
+    | nil => rfl
+    | cons _ _ => simp only [Model.joinSlashChars, Internal.joinSlashChars, ih]
+
+private theorem model_collapseChars_eq_internal (abs : Bool) (segs acc : List (List Char)) :
+    Model.collapseChars abs segs acc = Internal.collapseChars abs segs acc := by
+  induction segs generalizing acc with
+  | nil => rfl
+  | cons seg rest ih =>
+    unfold Model.collapseChars Internal.collapseChars
+    split
+    · exact ih acc
+    · split
+      · cases acc with
+        | nil => exact ih _
+        | cons top tail =>
+          dsimp only
+          split
+          · exact ih tail
+          · exact ih _
+      · exact ih (seg :: acc)
+
+/-- Equivalence between `Model.normPath` and `Internal.normPath`. -/
+theorem model_normPath_eq_internal (p : String) :
+    Model.normPath p = Internal.normPath p := by
+  unfold Model.normPath Internal.normPath
+  simp only [model_splitCharList_eq_internal, model_collapseChars_eq_internal, model_joinSlashChars_eq_internal]
+  rfl
+
+/-- Equivalence between `Model.splitLastAux` and `Internal.splitLastAux`. -/
+theorem model_splitLastAux_eq_internal {α : Type} (xs acc : List α) :
+    Model.splitLastAux xs acc = Internal.splitLastAux xs acc := by
+  induction xs generalizing acc with
+  | nil => rfl
+  | cons x rest ih =>
+    cases rest with
+    | nil => rfl
+    | cons _ _ => exact ih (x :: acc)
+
 private def vfsAcquireLockPureWith (d : Nat) (st : VfsState) (path : String) (mode : LockMode)
     (createIfMissing : Bool) (_nonBlocking : Bool) : Except FsError LockHandle × VfsState :=
   if !isValidLockPath path then
@@ -54,7 +105,7 @@ private def vfsAcquireLockPureWith (d : Nat) (st : VfsState) (path : String) (mo
       else if !createIfMissing then
         (.error e, st)
       else
-        match Internal.splitLastAux (vfsSplitSegs abs) [] with
+        match Model.splitLastAux (vfsSplitSegs abs) [] with
         | none =>
           (.error { kind := .isADirectory, path := some path, message := s!"is a directory: {path}" }, st)
         | some (parSegs, lastSeg) =>
@@ -143,6 +194,8 @@ theorem vfsAcquireLockPure_unfold (st : VfsState) (path : String) (mode : LockMo
       rw [hCons, ih]
       rfl
   rw [hEq, hF st.locks]
+  unfold vfsAcquireLockPureWith
+  simp only [model_splitLastAux_eq_internal]
   rfl
 
 /-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
@@ -263,7 +316,7 @@ theorem vfsSplitSegs_joinSlashChars_valid (parts : List (List Char))
     (hParts : ∀ s ∈ parts, !s.isEmpty ∧ '/' ∉ s) :
     vfsSplitSegs (String.ofList ('/' :: Internal.joinSlashChars parts)) = parts.map String.ofList := by
   unfold vfsSplitSegs
-  simp only [String.toList_ofList]
+  simp only [String.toList_ofList, model_splitCharList_eq_internal]
   cases parts with
   | nil => simp [Internal.joinSlashChars, Internal.splitCharList]
   | cons hd tl =>
@@ -367,7 +420,7 @@ theorem isCanonPath_normPath_parts (k : String) (hk : isCanonPath k = true) :
     let parts := (vfsSplitSegs k).map String.toList
     k = String.ofList ('/' :: Internal.joinSlashChars parts) ∧
     (∀ s ∈ parts, !s.isEmpty ∧ s != ['.'] ∧ '/' ∉ s ∧ s ≠ ['.', '.']) := by
-  simp only [isCanonPath, Bool.and_eq_true, beq_iff_eq] at hk
+  simp only [isCanonPath, Bool.and_eq_true, beq_iff_eq, model_normPath_eq_internal] at hk
   rcases hk with ⟨hAbs, hNorm⟩
   have hAbsChars : Internal.isAbsChars k.toList = true := hAbs
   have hElem := collapseChars_elems_valid true (Internal.splitCharList '/' k.toList) []
@@ -404,8 +457,8 @@ theorem isCanonPath_normPath_parts (k : String) (hk : isCanonPath k = true) :
 theorem isCanonPath_of_parts (parts : List (List Char))
     (hParts : ∀ s ∈ parts, !s.isEmpty ∧ s != ['.'] ∧ '/' ∉ s ∧ s ≠ ['.', '.']) :
     isCanonPath (String.ofList ('/' :: Internal.joinSlashChars parts)) = true := by
-  simp only [isCanonPath, Bool.and_eq_true, beq_iff_eq]
-  refine ⟨by simp [Internal.isAbsolute, Internal.isAbsChars], ?_⟩
+  simp only [isCanonPath, Bool.and_eq_true, beq_iff_eq, model_normPath_eq_internal]
+  refine ⟨by simp [Model.isAbsolute, Model.isAbsChars], ?_⟩
   simp only [Internal.normPath, String.toList_ofList, Internal.isAbsChars, ↓reduceIte]
   have hSplitNil : Internal.splitCharList '/' ('/' :: Internal.joinSlashChars parts) =
       [] :: Internal.splitCharList '/' (Internal.joinSlashChars parts) := by
@@ -534,7 +587,7 @@ theorem vfsResolveSegs_isCanon (nodes : String → Option VfsNode) :
         | symlink target _ =>
           cases follow
           · simp only [Bool.false_eq_true, ↓reduceIte, Except.ok.injEq] at hOk; subst hOk; exact hCur
-          · simp only [↓reduceIte] at hOk
+          · simp only [↓reduceIte, model_normPath_eq_internal] at hOk
             exact ih "/" _ true res (by decide) (vfsSplitSegs_normPath_valid _) hOk
     | cons seg rest =>
       cases hNd : nodes cur with
@@ -558,7 +611,8 @@ theorem vfsResolveSegs_isCanon (nodes : String → Option VfsNode) :
           intro s hs
           simp only [List.mem_append] at hs
           rcases hs with hs | hs
-          · exact vfsSplitSegs_normPath_valid _ s hs
+          · rw [model_normPath_eq_internal] at hs
+            exact vfsSplitSegs_normPath_valid _ s hs
           · exact hSegs s (by simp [hs])
 
 
@@ -694,7 +748,9 @@ theorem parent_name_vfsChildPath (c child : String)
 /-- Helper declaration shared across `LeanSwe.Fs.Proofs` submodules. -/
 theorem vfsAbsNorm_abs (cwd p : String) (hp : Internal.isAbsolute p = true) :
     vfsAbsNorm cwd p = Internal.normPath p := by
-  simp [vfsAbsNorm, hp]
+  unfold vfsAbsNorm
+  rw [show Model.isAbsolute p = Internal.isAbsolute p from rfl, hp]
+  simp only [↓reduceIte, model_normPath_eq_internal]
 
 
 end LeanSwe.Fs.ProofsInternal
