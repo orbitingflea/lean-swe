@@ -1,7 +1,7 @@
-import LeanSweProofs.CryptoHash.Raw.Model
-import LeanSweProofs.CryptoHash.Raw.Proofs.HmacEmptyInner
+import LeanSweProofs.CryptoHash.Model
+import LeanSweProofs.CryptoHash.Proofs.HmacEmptyInner
 
-namespace LeanSwe.CryptoHash.Raw.Proofs
+namespace LeanSwe.CryptoHash.Proofs
 
 set_option maxRecDepth 16384 in
 /-- Empty-key empty-message RFC 2104 HMAC-SHA256 vector for `Model.hmacSha256Bytes`. -/
@@ -24,4 +24,4 @@ theorem hmac_empty_vec :
   exact hmac_decomposed ByteArray.empty ByteArray.empty kb ipad opad innerB _ ipadH opadH
     (by decide) (by decide) (by decide) hmac_empty_hi0 hmac_empty_hi1 (by decide) (by decide)
 
-end LeanSwe.CryptoHash.Raw.Proofs
+end LeanSwe.CryptoHash.Proofs

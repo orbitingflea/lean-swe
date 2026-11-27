@@ -4,7 +4,67 @@ namespace LeanSwe.CryptoHash.Internal
 
 open LeanSwe.CryptoHash
   (HashAlg digestLen CryptoHashErrorKind CryptoHashError CryptoHashRawError
-   RawCryptoHashOpsM Digest CryptoHashApiM)
+   RawCryptoHashOpsM CryptoHashFfiOpsM Digest CryptoHashApiM)
+
+/-- Return `msg` if non-empty, or `fallback` otherwise. -/
+def nonEmptyMsg (fallback msg : String) : String :=
+  if msg.isEmpty then fallback else msg
+
+/-- Convert a pure `CryptoHashRawError` record into a normalized `CryptoHashError` with non-empty message. -/
+def mapRawError : CryptoHashRawError → CryptoHashError
+  | .invalidArgument detail =>
+    { kind := .invalidInput
+      opensslCode := none
+      message := nonEmptyMsg "invalid cryptohash argument" detail }
+  | .invalidHexInput detail =>
+    { kind := .invalidHex
+      opensslCode := none
+      message := nonEmptyMsg "invalid hex input" detail }
+  | .lengthError expected got detail =>
+    { kind := .lengthMismatch
+      opensslCode := none
+      message := nonEmptyMsg s!"length mismatch: expected {expected} bytes, got {got}" detail }
+  | .opensslError code detail =>
+    { kind := .cryptoError
+      opensslCode := code
+      message := nonEmptyMsg "openssl crypto error" detail }
+  | .userError detail =>
+    { kind := .cryptoError
+      opensslCode := none
+      message := nonEmptyMsg "cryptohash error" detail }
+
+/-- Decode a non-zero C-shim `(code, detail)` OpenSSL failure into a normalized `CryptoHashError`. -/
+def decodeOpenSslError (code : UInt64) (detail : String) : CryptoHashError :=
+  mapRawError (.opensslError (if code == 0 then none else some code) detail)
+
+/-- Decode a non-zero C-shim `(status, code, detail)` failure into a normalized `CryptoHashError`. -/
+def decodeShimError (status : UInt32) (code : UInt64) (detail : String) : CryptoHashError :=
+  if status == 1 then
+    mapRawError (.invalidArgument detail)
+  else if status == 2 then
+    { kind := .lengthMismatch
+      opensslCode := none
+      message := nonEmptyMsg "cryptohash length mismatch" detail }
+  else
+    decodeOpenSslError code detail
+
+/-- Build a polymorphic `RawCryptoHashOpsM m` bundle from injected OpenSSL C-ABI hooks. -/
+def mkRawOpsM {m : Type → Type} [Monad m] (ffi : CryptoHashFfiOpsM m) : RawCryptoHashOpsM m :=
+  { mapRawError := mapRawError
+    digestRaw := fun alg data => do
+      let tag : UInt8 := match alg with | .sha256 => 0 | .sha512 => 1
+      let (status, code, detail, bs) ← ffi.digestRaw tag data
+      if status != 0 then
+        return .error (decodeShimError status code detail)
+      return .ok bs
+    hmacSha256Raw := fun key msg => do
+      let (status, code, detail, bs) ← ffi.hmacSha256Raw key msg
+      if status != 0 then
+        return .error (decodeShimError status code detail)
+      return .ok bs
+    ctEqualRaw := fun a b => do
+      let eq ← ffi.ctEqualRaw a b
+      return .ok eq }
 
 /-- Convert a nibble `0..15` to its lowercase ASCII hexadecimal character. -/
 def lowerHexDigit (n : Nat) : Char :=
@@ -109,5 +169,9 @@ def mkApiM {m : Type → Type} [Monad m] (rawOps : RawCryptoHashOpsM m) : Crypto
     toHex := toHex
     fromHex := fromHex
     ctEq := ctEqM rawOps }
+
+/-- Build `CryptoHashApiM m` directly from injected OpenSSL C-ABI hooks. -/
+def mkApiFromFfiM {m : Type → Type} [Monad m] (ffi : CryptoHashFfiOpsM m) : CryptoHashApiM m :=
+  mkApiM (mkRawOpsM ffi)
 
 end LeanSwe.CryptoHash.Internal

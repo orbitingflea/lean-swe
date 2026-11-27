@@ -33,7 +33,7 @@ theorem cryptohash_toHex_formatAndRoundTrip :
     AllPass (test_cryptohash_toHex_formatAndRoundTrip defaultApi) := by
   intro d hd
   dsimp only
-  dsimp [test_cryptohash_toHex_formatAndRoundTrip, AllPassRun, defaultApi, Internal.mkApiM,
+  dsimp [test_cryptohash_toHex_formatAndRoundTrip, AllPassRun, defaultApi, Internal.mkApiFromFfiM, Internal.mkApiM,
     Internal.toHex, Internal.fromHex, Bind.bind, Pure.pure, Core.NondetTest.assert,
     Core.NondetTest.nondet, Core.NondetTest.assume]
   rw [decodeHexPairsAcc_nil]
@@ -96,7 +96,7 @@ theorem cryptohash_fromHex_acceptsUppercaseAndRoundTrips :
     AllPass (test_cryptohash_fromHex_acceptsUppercaseAndRoundTrips defaultApi) := by
   intro d hd
   dsimp only
-  dsimp [test_cryptohash_fromHex_acceptsUppercaseAndRoundTrips, AllPassRun, defaultApi, Internal.mkApiM,
+  dsimp [test_cryptohash_fromHex_acceptsUppercaseAndRoundTrips, AllPassRun, defaultApi, Internal.mkApiFromFfiM, Internal.mkApiM,
     Internal.toHex, Internal.fromHex, Bind.bind, Pure.pure, Core.NondetTest.assert]
   rw [decodeHexPairsAcc_nil, String.toList_ofList, String.toList_ofList, decodeHexPairs_upper_formatHexList]
   have hba : ByteArray.mk d.bytes.data.toList.toArray = d.bytes := by
@@ -119,7 +119,7 @@ theorem cryptohash_fromHex_acceptedImpliesValidAndNormalizedRoundTrip :
     AllPass (test_cryptohash_fromHex_acceptedImpliesValidAndNormalizedRoundTrip defaultApi) := by
   intro alg s
   dsimp [test_cryptohash_fromHex_acceptedImpliesValidAndNormalizedRoundTrip, AllPassRun, defaultApi,
-    Internal.mkApiM, Internal.toHex, Internal.fromHex, Bind.bind, Pure.pure, Core.NondetTest.assert]
+    Internal.mkApiFromFfiM, Internal.mkApiM, Internal.toHex, Internal.fromHex, Bind.bind, Pure.pure, Core.NondetTest.assert]
   rw [decodeHexPairsAcc_nil]
   cases hdec : decodeHexPairs s.toList with
   | none =>
@@ -154,7 +154,7 @@ theorem cryptohash_fromHex_rejectsNonHexChar :
   intro alg s idx ⟨hidx, hbad⟩
   dsimp only at hidx hbad ⊢
   change isHexChar s.toList[idx]! = false at hbad
-  dsimp [test_cryptohash_fromHex_rejectsNonHexChar, AllPassRun, defaultApi, Internal.mkApiM,
+  dsimp [test_cryptohash_fromHex_rejectsNonHexChar, AllPassRun, defaultApi, Internal.mkApiFromFfiM, Internal.mkApiM,
     Internal.fromHex, Bind.bind, Pure.pure, Core.NondetTest.assert]
   have hidx_list : idx < s.toList.length := by simpa [String.length_toList] using hidx
   have hbad' : isHexChar s.toList[idx] = false := by
@@ -173,7 +173,7 @@ theorem cryptohash_fromHex_rejectsOddLengthHex :
     AllPass (test_cryptohash_fromHex_rejectsOddLengthHex defaultApi) := by
   intro alg s ⟨hodd, _⟩
   dsimp only at hodd ⊢
-  dsimp [test_cryptohash_fromHex_rejectsOddLengthHex, AllPassRun, defaultApi, Internal.mkApiM,
+  dsimp [test_cryptohash_fromHex_rejectsOddLengthHex, AllPassRun, defaultApi, Internal.mkApiFromFfiM, Internal.mkApiM,
     Internal.fromHex, Bind.bind, Pure.pure, Core.NondetTest.assert]
   have hodd_list : s.toList.length % 2 = 1 := by simpa [String.length_toList] using hodd
   rw [decodeHexPairsAcc_nil, decodeHexPairs_none_of_odd hodd_list]
@@ -191,7 +191,7 @@ theorem cryptohash_fromHex_rejectsWrongEvenHexLength :
   intro alg s ⟨heven, hlen, hall⟩
   dsimp only at heven hlen hall ⊢
   change s.toList.all isHexChar = true at hall
-  dsimp [test_cryptohash_fromHex_rejectsWrongEvenHexLength, AllPassRun, defaultApi, Internal.mkApiM,
+  dsimp [test_cryptohash_fromHex_rejectsWrongEvenHexLength, AllPassRun, defaultApi, Internal.mkApiFromFfiM, Internal.mkApiM,
     Internal.fromHex, Bind.bind, Pure.pure, Core.NondetTest.assert]
   have heven_list : s.toList.length % 2 = 0 := by simpa [String.length_toList] using heven
   obtain ⟨bs, hbs, h2⟩ := decodeHexPairs_some_of_all_hex heven_list hall
@@ -302,7 +302,7 @@ set_option maxRecDepth 2048 in
 /-- `defaultApi` satisfies `test_cryptohash_vectorHexRoundTrip`. -/
 theorem cryptohash_vectorHexRoundTrip :
     AllPass (test_cryptohash_vectorHexRoundTrip defaultApi) := by
-  dsimp only [AllPass, AllPassRun, test_cryptohash_vectorHexRoundTrip, defaultApi, Internal.mkApiM,
+  dsimp only [AllPass, AllPassRun, test_cryptohash_vectorHexRoundTrip, defaultApi, Internal.mkApiFromFfiM, Internal.mkApiM,
     Core.NondetTest.assert, Bind.bind, Pure.pure]
   obtain ⟨d1, h1_ok, h1_hex⟩ := fromHex_toHex_of_validHex .sha256
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

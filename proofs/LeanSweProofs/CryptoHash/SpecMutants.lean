@@ -365,4 +365,14 @@ example : ¬ Core.AllPass (test_cryptohash_mkApi_matchesModel fun _ =>
   injection hfalse with hb
   exact absurd hb (by decide)
 
+example : ¬ Core.AllPass (test_cryptohash_modelDigestsValidLengthsAndVectors
+    { Model.modelRawOps with digestRaw := fun _ _ => .ok ByteArray.empty }) := by
+  intro h
+  have h0 := h .sha256 ByteArray.empty ByteArray.empty
+  dsimp [test_cryptohash_modelDigestsValidLengthsAndVectors, Core.NondetTest.assert, Bind.bind] at h0
+  have hsz := congrArg (fun r : Except CryptoHashError ByteArray =>
+    match r with | .ok bs => bs.size | .error _ => 0) h0.1
+  change 0 = 32 at hsz
+  omega
+
 end LeanSwe.CryptoHash

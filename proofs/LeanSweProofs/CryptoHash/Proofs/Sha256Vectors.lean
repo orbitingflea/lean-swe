@@ -1,6 +1,6 @@
-import LeanSweProofs.CryptoHash.Raw.Model
+import LeanSweProofs.CryptoHash.Model
 
-namespace LeanSwe.CryptoHash.Raw.Proofs
+namespace LeanSwe.CryptoHash.Proofs
 
 set_option maxRecDepth 16384 in
 /-- NIST FIPS 180-4 SHA-256 empty-input vector for `Model.sha256Bytes`. -/
@@ -22,4 +22,4 @@ theorem sha256_abc_vec :
       0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad] := by
   decide
 
-end LeanSwe.CryptoHash.Raw.Proofs
+end LeanSwe.CryptoHash.Proofs

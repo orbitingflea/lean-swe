@@ -1,6 +1,6 @@
-import LeanSweProofs.CryptoHash.Raw.Model
+import LeanSweProofs.CryptoHash.Model
 
-namespace LeanSwe.CryptoHash.Raw.Proofs
+namespace LeanSwe.CryptoHash.Proofs
 
 /-- RFC 4231 Test Case 6 normalized 64-byte key block. -/
 def hmac_tc6_kb : ByteArray :=
@@ -32,4 +32,4 @@ theorem hmac_tc6_hi1 :
       0x5c, 0x10, 0x72, 0xa1, 0x92, 0xbf, 0xe2, 0xc0] := by
   decide
 
-end LeanSwe.CryptoHash.Raw.Proofs
+end LeanSwe.CryptoHash.Proofs

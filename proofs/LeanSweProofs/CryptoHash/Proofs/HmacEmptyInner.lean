@@ -1,6 +1,6 @@
-import LeanSweProofs.CryptoHash.Raw.Model
+import LeanSweProofs.CryptoHash.Model
 
-namespace LeanSwe.CryptoHash.Raw.Proofs
+namespace LeanSwe.CryptoHash.Proofs
 
 /-- Decompose RFC 2104 HMAC-SHA256 evaluation into single-block inner and outer SHA-256 steps. -/
 theorem hmac_decomposed (key msg kBlock ipad opad innerBytes outerBytes : ByteArray)
@@ -38,4 +38,4 @@ theorem hmac_empty_hi1 :
       0xf0, 0xb8, 0x04, 0x7d, 0xf0, 0x6c, 0x85, 0xd2] := by
   decide
 
-end LeanSwe.CryptoHash.Raw.Proofs
+end LeanSwe.CryptoHash.Proofs

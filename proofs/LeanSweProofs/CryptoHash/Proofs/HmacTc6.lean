@@ -1,9 +1,9 @@
-import LeanSweProofs.CryptoHash.Raw.Model
-import LeanSweProofs.CryptoHash.Raw.Proofs.Sha256Vec131
-import LeanSweProofs.CryptoHash.Raw.Proofs.HmacEmptyInner
-import LeanSweProofs.CryptoHash.Raw.Proofs.HmacTc6Inner
+import LeanSweProofs.CryptoHash.Model
+import LeanSweProofs.CryptoHash.Proofs.Sha256Vec131
+import LeanSweProofs.CryptoHash.Proofs.HmacEmptyInner
+import LeanSweProofs.CryptoHash.Proofs.HmacTc6Inner
 
-namespace LeanSwe.CryptoHash.Raw.Proofs
+namespace LeanSwe.CryptoHash.Proofs
 
 set_option maxRecDepth 16384 in
 /-- RFC 4231 Test Case 6 HMAC-SHA256 vector for `Model.hmacSha256Bytes`. -/
@@ -32,4 +32,4 @@ theorem hmac_tc6_vec :
     hmac_tc6_kb ipad opad innerB _ ipadH opadH
     hk rfl rfl hmac_tc6_hi0 hmac_tc6_hi1 (by decide) (by decide)
 
-end LeanSwe.CryptoHash.Raw.Proofs
+end LeanSwe.CryptoHash.Proofs

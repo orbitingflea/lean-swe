@@ -1,6 +1,6 @@
-import LeanSweProofs.CryptoHash.Raw.Model
+import LeanSweProofs.CryptoHash.Model
 
-namespace LeanSwe.CryptoHash.Raw.Proofs
+namespace LeanSwe.CryptoHash.Proofs
 
 set_option maxRecDepth 16384 in
 /-- SHA-256 digest of 131 `0xaa` bytes used by RFC 4231 Test Case 6. -/
@@ -12,4 +12,4 @@ theorem sha256_131aa_vec :
       0xbc, 0x43, 0xc9, 0x7a, 0xa5, 0x21, 0xdb, 0x81] := by
   decide
 
-end LeanSwe.CryptoHash.Raw.Proofs
+end LeanSwe.CryptoHash.Proofs

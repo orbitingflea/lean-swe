@@ -32,16 +32,6 @@
     "LeanSwe.CryptoHash": {
       "kind": "model",
       "purity": "mixed",
-      "deps": [
-        "LeanSwe.CryptoHash.Raw"
-      ],
-      "fuzz_suite": "cryptohash",
-      "external_boundary": false,
-      "spec_style": "state_step"
-    },
-    "LeanSwe.CryptoHash.Raw": {
-      "kind": "model",
-      "purity": "nondet_io",
       "deps": [],
       "fuzz_suite": "cryptohash",
       "external_boundary": true,

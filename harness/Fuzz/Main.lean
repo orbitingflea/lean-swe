@@ -366,7 +366,7 @@ private def suiteTargetPackages : String → Array String
   | "float" => #["LeanSwe.NumParse", "LeanSwe.Toml"]
   | "cmdline" => #["LeanSwe.CmdLine"]
   | "envvars" => #["LeanSwe.EnvVars"]
-  | "cryptohash" => #["LeanSwe.CryptoHash.Raw", "LeanSwe.CryptoHash"]
+  | "cryptohash" => #["LeanSwe.CryptoHash"]
   | "compress" => #["LeanSwe.Compress"]
   | "postfork" => #["LeanSwe.PostFork"]
   | "processsandbox" => #["LeanSwe.ProcessSandbox"]
